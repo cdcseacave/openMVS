@@ -1436,6 +1436,236 @@ bool ROMA2CoverageSampleTest()
 	return true;
 }
 
+// The complementary dense-supplement draw (Task 5b of roma2-matching-redesign-20260831): a weak
+// pair's supplement has to fill the parts of the confident overlap its sparse matches left EMPTY,
+// on a budget counting sparse and dense together, and has to stay spread when that budget bites.
+// The sub-checks are the three ways the first implementation missed the point: it drew blind to the
+// sparse matches (so a pair weak because its matches cluster in one textured region got dense
+// samples poured back into that same region), it capped the matches ADDED rather than the pair's
+// total, and it thinned an over-budget draw by confidence, which re-clustered the survivors onto
+// exactly the well-textured part the sparse matcher had already covered.
+bool ROMA2SupplementDrawTest()
+{
+	TD_TIMER_START();
+
+	// the identity-warp two-image setup of ROMA2CoverageSampleTest: a drawn point of A comes back
+	// unmoved in B, so every check below can be read in A's frame alone
+	Scene scene;
+	const int width = 640, height = 480;
+	scene.cameras.emplace_back(new PinholeCamera(cv::Size(width, height),
+		REAL(600), REAL(600), REAL(width)/2, REAL(height)/2));
+	scene.images.emplace_back((IIndex)0, String("a.jpg"));
+	scene.images.emplace_back((IIndex)1, String("b.jpg"));
+	FOREACH(i, scene.images) {
+		scene.images[i].cameraID = 0;
+		scene.images[i].pCamera = scene.cameras[0];
+	}
+	const Image& imgA = scene.images[0];
+	const Image& imgB = scene.images[1];
+	const int cells = 160;
+	Image32F2 warp(cells, cells);
+	for (int y = 0; y < cells; ++y)
+		for (int x = 0; x < cells; ++x)
+			warp(y, x) = Point2f(
+				((x*(width-1.f)/(cells-1)) + 0.5f)*2.f/width - 1.f,
+				((y*(height-1.f)/(cells-1)) + 0.5f)*2.f/height - 1.f);
+	// the cell <-> pixel map the draw places its winners with and its occupancy test inverts
+	// (CoordFromTo: linear, no half-pixel term), and the documented bucket-grid formula -- replayed
+	// here so the checks speak the implementation's own coordinates rather than an approximation
+	const auto CellToPixel = [&](int cx, int cy) {
+		return Point2f((float)cx*(width-1.f)/(float)(cells-1), (float)cy*(height-1.f)/(float)(cells-1));
+	};
+	const auto PixelToBucket = [&](const Point2f& pt, int numBuckets) {
+		const int cx = MINF(MAXF(ROUND2INT(pt.x*(float)(cells-1)/(width-1.f)), 0), cells-1);
+		const int cy = MINF(MAXF(ROUND2INT(pt.y*(float)(cells-1)/(height-1.f)), 0), cells-1);
+		return (size_t)(cy*numBuckets/cells)*numBuckets + cx*numBuckets/cells;
+	};
+	const auto BucketGridSide = [&](size_t numEligible, unsigned budget) {
+		return MINF((int)std::ceil(std::sqrt((double)budget*(double)cells*(double)cells/(double)numEligible)), cells);
+	};
+	// eligibility restated independently of the draw: a cell the confidence map admits whose warped
+	// point lands inside B. Two readings of it -- how many there are (the E the grid is sized from)
+	// and which buckets hold at least one -- because a border cell can round a hundredth of a pixel
+	// outside B and drop out, and the expected winner count has to account for that rather than
+	// assume a full grid
+	const auto CountEligible = [&](const Image32F& conf) {
+		size_t numEligible = 0;
+		for (int y = 0; y < cells; ++y)
+			for (int x = 0; x < cells; ++x)
+				if (conf(y, x) >= 0.3f && Image8U::isInside(DenormCoord(warp(y, x), imgB.GetSize()), imgB.GetSize()))
+					++numEligible;
+		return numEligible;
+	};
+	const auto MarkCandidateBuckets = [&](const Image32F& conf, int numBuckets, std::vector<bool>& hasCandidate) {
+		hasCandidate.assign((size_t)numBuckets*numBuckets, false);
+		for (int y = 0; y < cells; ++y)
+			for (int x = 0; x < cells; ++x)
+				if (conf(y, x) >= 0.3f && Image8U::isInside(DenormCoord(warp(y, x), imgB.GetSize()), imgB.GetSize()))
+					hasCandidate[(size_t)(y*numBuckets/cells)*numBuckets + x*numBuckets/cells] = true;
+	};
+	// which quadrant of the frame a drawn point sits in: the coarsest honest statement of "spread"
+	const auto Quadrant = [&](const Point2f& pt) {
+		return ((int)pt.y < height/2 ? 0 : 2) + ((int)pt.x < width/2 ? 0 : 1);
+	};
+
+	// 1) COMPLEMENTARITY on a fully confident warp. The pair's verified sparse matches cluster in
+	// the top-left corner -- the one textured region that got the pair verified at all -- so the
+	// supplement must draw over the rest of the frame and nowhere in there.
+	std::vector<Point2f> sparseA;
+	for (int cy = 0; cy < 40; cy += 2)
+		for (int cx = 0; cx < 40; cx += 2)
+			sparseA.push_back(CellToPixel(cx, cy));
+	const unsigned numSparse = (unsigned)sparseA.size();
+	ROMA2Config config; // supplementTotalMatches 2000, denseSampleSize 2000
+	const unsigned denseBudget = config.SupplementDenseBudget(numSparse);
+	if (denseBudget != config.supplementTotalMatches - numSparse) {
+		VERBOSE("ROMA2SupplementDrawTest FAILED: %u sparse inliers of a %u total leave a dense budget of %u, expected %u",
+			numSparse, config.supplementTotalMatches, denseBudget, config.supplementTotalMatches - numSparse);
+		return false;
+	}
+	Image32F overlap(cv::Size(cells, cells), 0.6f);
+	std::vector<Point2f> denseA, denseB;
+	std::vector<float> confidences;
+	const size_t numDense = SampleWarpComplementary(imgA, imgB, warp, overlap, 0.3f, denseBudget,
+		sparseA, denseA, denseB, confidences);
+	if (numDense == 0 || denseB.size() != numDense || confidences.size() != numDense) {
+		VERBOSE("ROMA2SupplementDrawTest FAILED: the draw returned %u points with %u/%u index-parallel arrays",
+			(unsigned)numDense, (unsigned)denseB.size(), (unsigned)confidences.size());
+		return false;
+	}
+	const int numBuckets = BucketGridSide(CountEligible(overlap), denseBudget);
+	std::vector<bool> occupied((size_t)numBuckets*numBuckets, false);
+	for (const Point2f& pt : sparseA)
+		occupied[PixelToBucket(pt, numBuckets)] = true;
+	FOREACH(i, denseA)
+		if (occupied[PixelToBucket(denseA[i], numBuckets)]) {
+			VERBOSE("ROMA2SupplementDrawTest FAILED: dense point %u at (%.1f, %.1f) landed in a bucket the pair's sparse matches already hold",
+				i, denseA[i].x, denseA[i].y);
+			return false;
+		}
+	// and the converse of "nothing in an occupied bucket": one winner in every OTHER bucket that
+	// has a candidate at all, so the draw really did take the whole complement rather than a corner
+	// of it. An occupied bucket contributes nothing, not a reduced quota.
+	std::vector<bool> hasCandidate;
+	MarkCandidateBuckets(overlap, numBuckets, hasCandidate);
+	size_t numExpected = 0;
+	FOREACH(b, hasCandidate)
+		if (hasCandidate[b] && !occupied[b])
+			++numExpected;
+	if (numDense != numExpected) {
+		VERBOSE("ROMA2SupplementDrawTest FAILED: %u dense points for the %u unoccupied buckets of the %dx%d grid that hold a candidate",
+			(unsigned)numDense, (unsigned)numExpected, numBuckets, numBuckets);
+		return false;
+	}
+	// the pair ends at or below its TOTAL, which is the whole point of the renamed budget
+	if (numDense > denseBudget || (size_t)numSparse + numDense > config.supplementTotalMatches) {
+		VERBOSE("ROMA2SupplementDrawTest FAILED: %u sparse + %u dense exceeds the total of %u (dense budget %u)",
+			numSparse, (unsigned)numDense, config.supplementTotalMatches, denseBudget);
+		return false;
+	}
+	FOREACH(i, denseA) {
+		// index-parallel through the identity warp, and each point carries its own cell's
+		// confidence -- the value it was selected on, which is what MakeDenseKeypoint stamps
+		if (norm(denseB[i] - denseA[i]) > 1e-3f || ABS(confidences[i] - 0.6f) > 1e-6f) {
+			VERBOSE("ROMA2SupplementDrawTest FAILED: dense point %u moved %g px and carries confidence %g, expected 0.6",
+				i, norm(denseB[i] - denseA[i]), confidences[i]);
+			return false;
+		}
+	}
+	// warp-grid raster order, which is what makes the keypoint indices AppendDenseMatches hands out
+	// reproducible from one run to the next
+	for (size_t i = 1; i < numDense; ++i)
+		if (denseA[i].y < denseA[i-1].y - 1e-3f ||
+			(ABS(denseA[i].y - denseA[i-1].y) <= 1e-3f && denseA[i].x <= denseA[i-1].x)) {
+			VERBOSE("ROMA2SupplementDrawTest FAILED: point %u at (%.1f, %.1f) breaks the raster order after (%.1f, %.1f)",
+				(unsigned)i, denseA[i].x, denseA[i].y, denseA[i-1].x, denseA[i-1].y);
+			return false;
+		}
+
+	// 2) THE BUDGET IS A TOTAL. A pair already carrying the whole total gets nothing at all -- and
+	// it is reachable, since a small confident overlap triggers supplementation on its own, whatever
+	// the inlier count. A draw asked for nothing must also produce nothing, output buffers included.
+	if (config.SupplementDenseBudget(config.supplementTotalMatches) != 0 ||
+		config.SupplementDenseBudget(config.supplementTotalMatches + 500) != 0) {
+		VERBOSE("ROMA2SupplementDrawTest FAILED: a pair already at %u sparse inliers still asks for a dense budget",
+			config.supplementTotalMatches);
+		return false;
+	}
+	std::vector<Point2f> zeroA(3, Point2f(1.f, 2.f)), zeroB(5, Point2f(3.f, 4.f));
+	std::vector<float> zeroC(7, 0.5f);
+	if (SampleWarpComplementary(imgA, imgB, warp, overlap, 0.3f, 0, sparseA, zeroA, zeroB, zeroC) != 0 ||
+		!zeroA.empty() || !zeroB.empty() || !zeroC.empty()) {
+		VERBOSE("ROMA2SupplementDrawTest FAILED: a zero dense budget still drew %u points", (unsigned)zeroA.size());
+		return false;
+	}
+	// no total budget is the one case where the sparse count does not enter into it: the draw falls
+	// back to its own sample size, the way the gate's draw is bounded
+	ROMA2Config uncapped;
+	uncapped.supplementTotalMatches = 0;
+	if (uncapped.SupplementDenseBudget(5000) != uncapped.denseSampleSize) {
+		VERBOSE("ROMA2SupplementDrawTest FAILED: with no total budget the draw asked for %u, expected the %u-point sample size",
+			uncapped.SupplementDenseBudget(5000), uncapped.denseSampleSize);
+		return false;
+	}
+
+	// 3) OVER BUDGET, WHERE THE THINNING SHOWS. Eligible cells scattered every other cell (E = T/4)
+	// drives the bucket grid up until the winners far outnumber the budget, and the confidence grows
+	// steadily toward the bottom-right corner. Thinning by confidence -- what the first version did
+	// -- keeps only that corner; thinning by an even stride through the raster order has to leave
+	// every quadrant hit.
+	overlap.setTo(0.f);
+	for (int y = 0; y < cells; y += 2)
+		for (int x = 0; x < cells; x += 2)
+			overlap(y, x) = 0.4f + 0.5f*(float)(x + y)/(float)(2*cells);
+	const unsigned smallBudget = 400;
+	const int numSmallBuckets = BucketGridSide(CountEligible(overlap), smallBudget);
+	const size_t numSmall = SampleWarpComplementary(imgA, imgB, warp, overlap, 0.3f, smallBudget,
+		sparseA, denseA, denseB, confidences);
+	if (numSmall != smallBudget || denseB.size() != numSmall || confidences.size() != numSmall) {
+		VERBOSE("ROMA2SupplementDrawTest FAILED: an over-budget draw kept %u points of a %u budget",
+			(unsigned)numSmall, smallBudget);
+		return false;
+	}
+	std::vector<bool> smallOccupied((size_t)numSmallBuckets*numSmallBuckets, false);
+	for (const Point2f& pt : sparseA)
+		smallOccupied[PixelToBucket(pt, numSmallBuckets)] = true;
+	unsigned perQuadrant[4] = {0u, 0u, 0u, 0u};
+	FOREACH(i, denseA) {
+		// complementarity has to survive the thinning too: a stride through the raster order can
+		// only drop points, never move one into a bucket the draw had struck out
+		if (smallOccupied[PixelToBucket(denseA[i], numSmallBuckets)]) {
+			VERBOSE("ROMA2SupplementDrawTest FAILED: the thinned draw put point %u at (%.1f, %.1f) into a sparse-occupied bucket",
+				i, denseA[i].x, denseA[i].y);
+			return false;
+		}
+		++perQuadrant[Quadrant(denseA[i])];
+	}
+	// the sparse cluster only bites into the first quadrant, so all four must keep a real share; a
+	// draw thinned by confidence collapses into the last one and empties the first outright
+	for (int q = 0; q < 4; ++q)
+		if (perQuadrant[q] < smallBudget/10) {
+			VERBOSE("ROMA2SupplementDrawTest FAILED: quadrant %d holds %u of the %u kept points (%u/%u/%u/%u), "
+				"expected at least a tenth in each -- the thinning collapsed the draw onto one region",
+				q, perQuadrant[q], smallBudget, perQuadrant[0], perQuadrant[1], perQuadrant[2], perQuadrant[3]);
+			return false;
+		}
+
+	// 4) DETERMINISM: the same draw twice in one process, the second time into buffers that already
+	// hold something. The draw carries no state between calls and reads no container whose iteration
+	// order could vary, so a caller reusing its buffers must get exactly what a caller passing empty
+	// ones gets -- which is what makes the appended keypoint indices reproducible.
+	std::vector<Point2f> repeatA(11, Point2f(5.f, 6.f)), repeatB(2, Point2f(7.f, 8.f));
+	std::vector<float> repeatC(4, 0.25f);
+	SampleWarpComplementary(imgA, imgB, warp, overlap, 0.3f, smallBudget, sparseA, repeatA, repeatB, repeatC);
+	if (repeatA != denseA || repeatB != denseB || repeatC != confidences) {
+		VERBOSE("ROMA2SupplementDrawTest FAILED: the draw is not a pure function of its inputs");
+		return false;
+	}
+
+	VERBOSE("ROMA2SupplementDrawTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 // The described/dense keypoint boundary (Task 5 of roma2-matching-redesign-20260831): the stored
 // count is what survives a descriptor release and an .sfm round-trip of an image whose
 // keypoints.size() > descriptors.rows -- the two arrays serialize independently, so nothing else

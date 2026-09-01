@@ -51,6 +51,12 @@ bool ROMA2WarpTrackingTest();
 // determinism of the draw
 bool ROMA2CoverageSampleTest();
 
+// The complementary dense-supplement draw (Task 5b of roma2-matching-redesign-20260831): the
+// supplement of a weak pair is drawn only where that pair's verified sparse matches are NOT, on a
+// budget that counts sparse and dense together, thinned when over budget by an even stride rather
+// than by confidence, and deterministic
+bool ROMA2SupplementDrawTest();
+
 // The described/dense keypoint boundary: an image whose keypoints.size() > descriptors.rows keeps
 // its stored described-keypoint count across a descriptor release and an .sfm round-trip, the
 // index tests read it, and PairsMatcher::FilterRedundantKeypoints moves it through the same remap
