@@ -50,7 +50,6 @@ String strSource;
 String strOutputFileName;
 String strOutputFileNameMVS;
 String strDetectorType;
-String strImportIntrinsicsMVS;
 String strImportPosesFile;
 String strKnownPosesConvention;
 FramesConvention knownPosesConvention;
@@ -149,7 +148,6 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output scene file path")
 		("export-mvs", boost::program_options::value<std::string>(&OPT::strOutputFileNameMVS), "output MVS file path (optional)")
 		("detector-type,t", boost::program_options::value<std::string>(&OPT::strDetectorType)->default_value(FeatureTypeToString(FeatureType::DEFAULT)), "feature detector type: AKAZE, ORB, SIFT or SIFTGPU")
-		("import-intrinsics-mvs", boost::program_options::value<std::string>(&OPT::strImportIntrinsicsMVS), "take the camera intrinsics (ONLY) from this .mvs project and mark them trusted: no pose, no point cloud, no tracks are read, so a scene can be calibrated from a reference solution without being handed its geometry (optional)")
 		("import-poses-file", boost::program_options::value<std::string>(&OPT::strImportPosesFile)->default_value("poses.csv"), "import camera poses from file: .csv (OpenMVS pose CSV) or .json (frames.json)")
 		("export-poses-csv", boost::program_options::value<std::string>(&OPT::strExportPosesCSV), "export camera poses to CSV file (optional)")
 		("export-pose-quality", boost::program_options::value<std::string>(&OPT::strExportPoseQuality), "estimate the pose covariance during the final bundle adjustment and export the per-image quality report to CSV file (optional)")
@@ -252,7 +250,6 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		LOG("error: unknown match mode %d (accepted: -1, 0, 1, 2, 3, 4)", OPT::matchMode);
 		return false;
 	}
-	Util::ensureValidPath(OPT::strImportIntrinsicsMVS);
 	Util::ensureValidPath(OPT::strImportPosesFile);
 	// Parse the camera-axes convention; empty means auto-detect.
 	if (!FramesConventionFromString(OPT::strKnownPosesConvention, OPT::knownPosesConvention)) {
@@ -349,7 +346,6 @@ int main(int argc, LPCTSTR* argv)
 	cfg.importCfg.k1 = OPT::k1;
 	cfg.importCfg.k2 = OPT::k2;
 	cfg.importCfg.imageIndicesStr = OPT::strImageIndices;
-	cfg.importCfg.importIntrinsicsMVS = OPT::strImportIntrinsicsMVS.empty() ? String() : MAKE_PATH_SAFE(OPT::strImportIntrinsicsMVS);
 	cfg.importCfg.importPosesFile = OPT::importPosesMode ? OPT::strImportPosesFile : String();
 	cfg.importCfg.importPosesMode = static_cast<SFM::PoseImportMode>(OPT::importPosesMode);
 	cfg.importCfg.framesConvention = OPT::knownPosesConvention;

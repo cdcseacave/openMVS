@@ -672,7 +672,10 @@ struct DensePairValidation {
 	float coverageInlierA = 0.f, coverageInlierB = 0.f;
 	unsigned numSampled = 0;                 // size of the drawn sample
 	unsigned numInliers = 0;                 // RANSAC inlier set of the fitted geometry (ImagePair::GetNumInliers)
-	uint8_t geometryBranch = 0;              // PairsMatcher::GeometryBranch the estimator actually took
+	// PairsMatcher::GeometryBranch the estimator actually took; unset (not some branch's own value)
+	// when the sample was too small for GeometricFilter to even run, so an un-fitted pair cannot be
+	// misread as having taken SHARED_FOCAL, which is also value 0
+	std::optional<PairsMatcher::GeometryBranch> geometryBranch;
 	bool bValidated = false;                 // min(coverageInlierA, coverageInlierB) >= ROMA2Config::minInlierCoverage
 };
 
@@ -714,7 +717,7 @@ void ValidateOnePairROMA2(PairsMatcher& pairsMatcher, const Image& imgA, const I
 	imgBCopy.keypoints = ConvertToKeypoints(val.pointsB);
 	// recorded for the per-pair log only: the estimator makes the same call itself, from the same
 	// one named decision, so the two can never disagree
-	val.geometryBranch = (uint8_t)PairsMatcher::SelectGeometryBranch(cfg, imgACopy, imgBCopy);
+	val.geometryBranch = PairsMatcher::SelectGeometryBranch(cfg, imgACopy, imgBCopy);
 	ImagePair fit(val.ID1, val.ID2);
 	fit.matches.reserve(val.numSampled);
 	for (uint32_t i = 0; i < val.numSampled; ++i)
@@ -808,7 +811,8 @@ unsigned SFM::ValidatePairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, P
 			val.inliers = std::vector<uint32_t>();
 			DEBUG_ULTIMATE("ROMA2 gate (% 4u, % 4u): %s, %u sampled, %u inliers, "
 				"coverage %.3f/%.3f, inlier coverage %.3f/%.3f, %s",
-				pair.i, pair.j, PairsMatcher::GeometryBranchName((PairsMatcher::GeometryBranch)val.geometryBranch),
+				pair.i, pair.j,
+				val.geometryBranch ? PairsMatcher::GeometryBranchName(*val.geometryBranch) : _T("no branch (sample too small)"),
 				val.numSampled, val.numInliers,
 				val.coverageA, val.coverageB, val.coverageInlierA, val.coverageInlierB,
 				val.bValidated ? "validated" : "rejected");

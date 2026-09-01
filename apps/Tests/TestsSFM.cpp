@@ -1198,6 +1198,62 @@ bool ROMA2CoverageSampleTest()
 			coverageA, coverageB);
 		return false;
 	}
+	// pin the documented "one winner per bucket, and nothing else" contract itself: the coverage
+	// checks above run on the coarse DENSE_COVERAGE_GRID (16 per side) and cannot tell 800 points
+	// spread over the eligible region from 2000 points piled into its most confident corner --
+	// both occupy the same ~0.4 of that grid. A lambda since the confidence hot-spot sub-case
+	// below has to pass the identical pin.
+	const auto CheckOneWinnerPerBucket = [cells, width, height](const std::vector<Point2f>& sampled, int numBuckets, const char* label) -> bool {
+		// map each A-point back to the warp-grid cell it came from (the inverse of the identity
+		// mapping the test built the warp from), then to its (numBuckets x numBuckets) bucket, and
+		// require no two samples to share one: a fill-up necessarily puts extra points into buckets
+		// that already have a winner, which this catches directly
+		std::vector<int> bucketHits((size_t)numBuckets*numBuckets, 0);
+		FOREACH(i, sampled) {
+			const int cx = ROUND2INT((sampled[i].x - 0.5f)*(cells-1)/(float)(width-1));
+			const int cy = ROUND2INT((sampled[i].y - 0.5f)*(cells-1)/(float)(height-1));
+			const int bx = MINF(cx*numBuckets/cells, numBuckets-1);
+			const int by = MINF(cy*numBuckets/cells, numBuckets-1);
+			++bucketHits[(size_t)by*numBuckets + bx];
+		}
+		FOREACH(b, bucketHits)
+			if (bucketHits[b] > 1) {
+				VERBOSE("ROMA2CoverageSampleTest FAILED: %s bucket %u holds %d samples, expected at most 1 -- a fill-up puts extra points into buckets that already have a winner",
+					label, (unsigned)b, bucketHits[b]);
+				return false;
+			}
+		// backstop that does not depend on the formula: bin on a grid fine enough to resolve the
+		// eligible region and check the busiest bin is not piled up relative to the rest -- a draw
+		// crammed into a fraction of the region blows past this, a one-per-bucket draw sits near 1x
+		constexpr int fineGrid = 32;
+		std::vector<int> fineHits((size_t)fineGrid*fineGrid, 0);
+		FOREACH(i, sampled) {
+			const int fx = MINF((int)((float)fineGrid*sampled[i].x/(float)width), fineGrid-1);
+			const int fy = MINF((int)((float)fineGrid*sampled[i].y/(float)height), fineGrid-1);
+			++fineHits[(size_t)fy*fineGrid + fx];
+		}
+		int maxHits = 0, sumHits = 0, numNonEmpty = 0;
+		FOREACH(b, fineHits) {
+			if (fineHits[b] == 0)
+				continue;
+			++numNonEmpty;
+			sumHits += fineHits[b];
+			maxHits = MAXF(maxHits, fineHits[b]);
+		}
+		const float meanHits = (float)sumHits/(float)numNonEmpty;
+		if ((float)maxHits > 3.f*meanHits) {
+			VERBOSE("ROMA2CoverageSampleTest FAILED: %s busiest %dx%d bin holds %d samples, %.2fx the %.2f mean over the %d non-empty bins, expected at most 3x",
+				label, fineGrid, fineGrid, maxHits, (float)maxHits/meanHits, meanHits, numNonEmpty);
+			return false;
+		}
+		return true;
+	};
+	// n from the documented formula, E = 100*100 eligible cells of T = cells*cells, capped at the
+	// warp side (160, nowhere near binding here)
+	const int E = 100*100, T = cells*cells;
+	const int numBuckets = MINF((int)std::ceil(std::sqrt((double)budget*T/E)), cells);
+	if (!CheckOneWinnerPerBucket(sampledA, numBuckets, "partial-overlap"))
+		return false;
 	// the draw must be uniform *within* that region, not piled onto its most confident part: raise a
 	// 20x20-cell corner of it to full confidence and the sample must barely move
 	overlap(cv::Rect(2, 2, 20, 20)).setTo(1.f);
@@ -1209,6 +1265,11 @@ bool ROMA2CoverageSampleTest()
 			(unsigned)numPartial, coverageA, (unsigned)numSkew, skewCoverageA);
 		return false;
 	}
+	// the hot-spot's E and T are unchanged -- raising confidence inside an already-eligible region
+	// adds no new eligible cell -- so the same bucket grid applies; this sub-case is where the old
+	// fill-up's bias was strongest, so it is where the pin matters most
+	if (!CheckOneWinnerPerBucket(skewA, numBuckets, "confidence-hot-spot"))
+		return false;
 
 	// the same draw twice in one process: this proves the function is pure -- it carries no state
 	// between calls and reads no container whose iteration order could vary -- which is what the

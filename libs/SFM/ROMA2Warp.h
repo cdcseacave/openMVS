@@ -101,9 +101,17 @@ SFM_API size_t TrackKeypointsByWarp(
 //
 // So maxSamples is a TARGET, not a cap: the returned sample is smaller when the confident overlap is
 // small (which is the informative outcome -- the sample size now tracks the overlap instead of
-// sitting at the budget regardless), and may exceed it slightly when the eligible cells are spread
-// more evenly than a random scatter. Callers must therefore read the returned count, and must cope
-// with a sample too small for whatever they do next.
+// sitting at the budget regardless), and the count of occupied buckets -- the actual sample size --
+// is bounded above by min(E, n^2), not by maxSamples itself. That bound is tight: it is reached
+// when the eligible cells are scattered one per bucket rather than packed into a contiguous overlap,
+// which drives n up to cover the whole grid without shrinking the number of occupied buckets, and
+// it works out to roughly 3.6x maxSamples for a typical warp grid and budget. A contiguous overlap --
+// the normal case -- gives back about the budget, since neighbouring eligible cells then share
+// buckets instead of each claiming one. Either way the tail is bounded and cheap for whatever runs
+// on the sample next (RANSAC's cost grows with the sample, not with the square of it), so it is left
+// alone rather than capped here. Callers must therefore read the returned count, and must cope with
+// a sample too small -- or, less often, a few times larger than the budget -- for whatever they do
+// next.
 //
 // sampledA/sampledB come out in warp-grid raster order and are index-parallel, in the pixels of the
 // working orientation of imgA/imgB (the pixels the keypoints live in, TrackKeypointsByWarp's
