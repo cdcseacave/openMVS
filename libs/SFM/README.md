@@ -508,9 +508,10 @@ RoMa v2 correspondences are not an external format: the descriptor and coarse-ma
 ### Scene-file compatibility (`.sfm`)
 
 The SFM project stream carries a layout version (`SFM_PROJECT_VERSION`, `Scene.cpp`) and
-`Scene::Load` accepts **that exact version only**. Storing the per-image RoMa v2 global descriptor
-bumped it **0 → 1**, so a `.sfm` written by an earlier build is refused with
-`error: unsupported SFM project version 0 (this build reads only version 1) in '<file>'`. There is no
+`Scene::Load` accepts **that exact version only**, so a `.sfm` written by an earlier build is refused
+with `error: unsupported SFM project version N (this build reads only version M) in '<file>'`. It has
+been bumped by: **0 → 1** the per-image RoMa v2 global descriptor, **1 → 2** the per-image
+described/dense keypoint boundary, **2 → 3** the per-pair dense-supplement match count. There is no
 converter: regenerate the scene by re-running the matching stage from the images
 (`CreateStructure -s <images> -o scene.sfm ...`). `.mvs` files are unaffected.
 

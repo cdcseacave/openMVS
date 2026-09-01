@@ -1123,9 +1123,10 @@ bool ROMA2WarpTrackingTest()
 	}
 
 	// dense supplementation (AppendDenseMatches): the appended keypoints land past each image's
-	// described prefix, while the appended matches land INSIDE the pair's filtered-inlier prefix,
-	// which is the only part of `matches` BuildTracks reads -- appending them past it would leave
-	// the whole supplement inert
+	// described prefix, while the appended matches become the pair's own middle segment -- after the
+	// sparse inliers, which stay the pair's descriptor evidence, and before the strict filter's
+	// rejects, so the supplement is inside the track-forming prefix BuildTracks reads but outside
+	// the count every view-graph weight and gate reads
 	{
 		Scene denseScene;
 		denseScene.cameras.emplace_back(new PinholeCamera(cv::Size(width, height),
@@ -1168,19 +1169,23 @@ bool ROMA2WarpTrackingTest()
 			VERBOSE("ROMA2WarpTrackingTest FAILED: dense keypoint positions");
 			return false;
 		}
-		// the two dense matches sit at 5 and 6, the strict-filter rejects moved after them, and the
-		// filtered-inlier count grew by exactly the supplement
-		if (pair.matches.size() != 10 || pair.numFilteredInliers != 7 ||
+		// the two dense matches sit at 5 and 6, the strict-filter rejects moved after them, the
+		// sparse count is untouched, and the dense count grew by exactly the supplement
+		if (pair.matches.size() != 10 || pair.numFilteredInliers != 5 || pair.numDenseInliers != 2 ||
+			pair.GetNumFilteredInliers() != 5 || pair.GetNumTrackFormingMatches() != 7 ||
 			pair.matches[5].queryIdx != 10 || pair.matches[5].trainIdx != 10 ||
 			pair.matches[6].queryIdx != 11 || pair.matches[7].queryIdx != 5) {
-			VERBOSE("ROMA2WarpTrackingTest FAILED: dense matches not inserted at the filtered-inlier boundary (%u matches, %d filtered)",
-				(unsigned)pair.matches.size(), pair.numFilteredInliers);
+			VERBOSE("ROMA2WarpTrackingTest FAILED: dense matches not inserted as their own segment (%u matches, %d sparse, %d dense)",
+				(unsigned)pair.matches.size(), pair.numFilteredInliers, pair.numDenseInliers);
 			return false;
 		}
-		// a second supplemented pair on the same images appends past the first one's dense keypoints
+		// a second supplemented pair on the same images appends past the first one's dense keypoints,
+		// and its matches extend the dense segment rather than reopening the sparse one
 		if (AppendDenseMatches(denseScene, pair, ptsA, ptsB, confidences, cv::Size(cells, cells)) != 2 ||
-			denseScene.images[0].NumDescribedKeypoints() != 10 || denseScene.images[0].NumDenseKeypoints() != 4) {
-			VERBOSE("ROMA2WarpTrackingTest FAILED: a second append moved the described boundary");
+			denseScene.images[0].NumDescribedKeypoints() != 10 || denseScene.images[0].NumDenseKeypoints() != 4 ||
+			pair.numFilteredInliers != 5 || pair.numDenseInliers != 4 ||
+			pair.matches.size() != 12 || pair.matches[7].queryIdx != 12 || pair.matches[9].queryIdx != 5) {
+			VERBOSE("ROMA2WarpTrackingTest FAILED: a second append moved the described boundary or the sparse count");
 			return false;
 		}
 	}
@@ -1651,6 +1656,136 @@ bool DenseKeypointBoundaryTest()
 			VERBOSE("DenseKeypointBoundaryTest FAILED: match-level described-wins rule did not keep the described endpoint (%u matches left, trainIdx %d)",
 				(unsigned)weightPair.matches.size(), weightPair.matches.empty() ? -1 : weightPair.matches[0].trainIdx);
 			return false;
+		}
+	}
+
+	// The match-level partition must survive the duplicate-match filter (step 3). A supplemented pair
+	// carries three segments -- sparse inliers | dense supplement | RANSAC inliers the strict filter
+	// rejected -- and step 3 runs on any pair whose images lost a keypoint. A compaction that sorts
+	// `matches` moves matches ACROSS those bounds: dense keypoints hold the largest indices by
+	// construction, so every dense match sorts to the end while the rejects migrate into the prefix,
+	// which makes part of the supplement inert in BuildTracks and lets an equal number of deliberately
+	// rejected matches form tracks -- with nothing in any counter to show it. So this pair has both:
+	// rejects present, and a described keypoint removed by the keypoint filter.
+	{
+		Scene partScene;
+		for (IIndex k = 0; k < 2; ++k) {
+			Image& im = partScene.images.emplace_back(k, String::FormatString("p%u.jpg", k));
+			// described 0..4, with 1 and 2 coincident (1 wins on response*size, so 2 is removed and
+			// every later index shifts down -- that removal is what makes step 3 run at all)
+			im.keypoints.emplace_back(10.f, 10.f, 4.f, -1.f, 0.05f);
+			im.keypoints.emplace_back(20.f, 20.f, 4.f, -1.f, 0.05f);
+			im.keypoints.emplace_back(20.f, 20.f, 4.f, -1.f, 0.01f);
+			im.keypoints.emplace_back(30.f, 30.f, 4.f, -1.f, 0.05f);
+			im.keypoints.emplace_back(40.f, 40.f, 4.f, -1.f, 0.05f);
+			im.CloseDescribedKeypoints();
+			// dense 5..7, none coincident with anything, so all three survive as themselves
+			im.keypoints.push_back(Image::MakeDenseKeypoint(Point2f(100.f, 100.f), 0.6f, 6.f));
+			im.keypoints.push_back(Image::MakeDenseKeypoint(Point2f(110.f, 110.f), 0.7f, 6.f));
+			im.keypoints.push_back(Image::MakeDenseKeypoint(Point2f(120.f, 120.f), 0.8f, 6.f));
+		}
+		ImagePair& partPair = partScene.pairs.emplace_back(0u, 1u);
+		partPair.matches.emplace_back(0, 0); // sparse inliers: described keypoints the filter kept
+		partPair.matches.emplace_back(3, 3);
+		partPair.matches.emplace_back(4, 4);
+		partPair.matches.emplace_back(5, 5); // the dense supplement, where AppendDenseMatches puts it
+		partPair.matches.emplace_back(6, 6);
+		partPair.matches.emplace_back(7, 7);
+		partPair.matches.emplace_back(1, 1); // rejects: they must stay outside the prefix
+		partPair.matches.emplace_back(2, 2);
+		partPair.numFilteredInliers = 3;
+		partPair.numDenseInliers = 3;
+		MatchConfig partCfg;
+		partCfg.minMatches = 1;
+		PairsMatcher(partScene, partCfg).FilterRedundantKeypoints();
+		const Image& pimg1 = partScene.images[0];
+		const Image& pimg2 = partScene.images[1];
+		// the two rejects remapped onto the same (queryIdx, trainIdx) = (1, 1) and one of them was
+		// dropped as a duplicate; both counts are recomputed from the survivors of their own segment,
+		// so neither can absorb a removal that happened in the other
+		if (partPair.matches.size() != 7 || partPair.numFilteredInliers != 3 || partPair.numDenseInliers != 3 ||
+			partPair.GetNumFilteredInliers() != 3 || partPair.GetNumTrackFormingMatches() != 6) {
+			VERBOSE("DenseKeypointBoundaryTest FAILED: partition not recomputed per segment (%u matches, %d sparse, %d dense)",
+				(unsigned)partPair.matches.size(), partPair.numFilteredInliers, partPair.numDenseInliers);
+			return false;
+		}
+		const uint32_t expectedQuery[7] = {0, 2, 3, 4, 5, 6, 1};
+		for (uint32_t m = 0; m < 7; ++m) {
+			if (partPair.matches[m].queryIdx != expectedQuery[m] || partPair.matches[m].trainIdx != expectedQuery[m]) {
+				VERBOSE("DenseKeypointBoundaryTest FAILED: match %u is (%u, %u), expected (%u, %u) -- the compaction reordered the segments",
+					m, partPair.matches[m].queryIdx, partPair.matches[m].trainIdx, expectedQuery[m], expectedQuery[m]);
+				return false;
+			}
+		}
+		// every match below the track-forming boundary really is track-forming, and no reject entered
+		// it: the sparse segment is described at both ends and never the reject's keypoint (index 1),
+		// the dense segment is dense at both ends, and the single reject sits past the boundary
+		for (uint32_t m = 0; m < partPair.GetNumFilteredInliers(); ++m) {
+			if (pimg1.IsDenseKeypoint(partPair.matches[m].queryIdx) ||
+				pimg2.IsDenseKeypoint(partPair.matches[m].trainIdx) ||
+				partPair.matches[m].queryIdx == 1) {
+				VERBOSE("DenseKeypointBoundaryTest FAILED: sparse segment match %u is not a described non-reject match", m);
+				return false;
+			}
+		}
+		for (uint32_t m = partPair.GetNumFilteredInliers(); m < partPair.GetNumTrackFormingMatches(); ++m) {
+			if (!pimg1.IsDenseKeypoint(partPair.matches[m].queryIdx) ||
+				!pimg2.IsDenseKeypoint(partPair.matches[m].trainIdx)) {
+				VERBOSE("DenseKeypointBoundaryTest FAILED: dense segment match %u lost its dense endpoints", m);
+				return false;
+			}
+		}
+		if (partPair.matches[partPair.GetNumTrackFormingMatches()].queryIdx != 1) {
+			VERBOSE("DenseKeypointBoundaryTest FAILED: the strict-filter reject is not the match past the track-forming boundary");
+			return false;
+		}
+	}
+
+	// The cross-segment prune can leave a two-hop survivor chain: a dense duplicate points at its
+	// intra-segment leader, and that leader is then itself reused into a coincident described
+	// survivor. The remap fixup is a single dereference, so without a flattening pass a chain
+	// resolves correctly only when the leader's index happens to be the smaller one. Three mutually
+	// coincident dense keypoints whose leader is NOT the first of them, plus a described keypoint at
+	// the same position, produce exactly that: all three must remap onto the described survivor and
+	// none onto an intermediate dense index. Each dense index is observed through its own pair, so
+	// the duplicate-match filter cannot collapse the three observations into one.
+	{
+		Scene chainScene;
+		Image& cimg = chainScene.images.emplace_back(0u, String("chain.jpg"));
+		cimg.keypoints.emplace_back(10.f, 10.f, 4.f, -1.f, 0.05f); // described, on its own
+		cimg.keypoints.emplace_back(50.f, 50.f, 4.f, -1.f, 0.05f); // described, the survivor of the cluster
+		cimg.CloseDescribedKeypoints();
+		// three coincident dense keypoints; the middle index is the most confident, so the group's
+		// leader is index 3 and indices 2 and 4 are the two-hop followers
+		cimg.keypoints.push_back(Image::MakeDenseKeypoint(Point2f(50.f, 50.f), 0.5f, 6.f));
+		cimg.keypoints.push_back(Image::MakeDenseKeypoint(Point2f(50.f, 50.f), 0.95f, 6.f));
+		cimg.keypoints.push_back(Image::MakeDenseKeypoint(Point2f(50.f, 50.f), 0.7f, 6.f));
+		for (IIndex k = 1; k <= 3; ++k) {
+			Image& other = chainScene.images.emplace_back(k, String::FormatString("c%u.jpg", k));
+			other.keypoints.emplace_back(70.f, 70.f, 4.f, -1.f, 0.05f);
+		}
+		for (IIndex k = 1; k <= 3; ++k) {
+			ImagePair& p = chainScene.pairs.emplace_back(0u, k);
+			p.matches.emplace_back(1 + k, 0); // dense keypoint 2, 3, 4 respectively
+			p.numFilteredInliers = 1;
+		}
+		MatchConfig chainCfg;
+		chainCfg.minMatches = 1;
+		PairsMatcher(chainScene, chainCfg).FilterRedundantKeypoints();
+		// the whole dense cluster collapsed onto the described keypoint it coincides with
+		if (cimg.keypoints.size() != 2 || !cimg.HasDenseKeypoints() ||
+			cimg.NumDescribedKeypoints() != 2 || cimg.NumDenseKeypoints() != 0) {
+			VERBOSE("DenseKeypointBoundaryTest FAILED: coincident dense cluster left %u keypoints with boundary %u",
+				(unsigned)cimg.keypoints.size(), cimg.NumDescribedKeypoints());
+			return false;
+		}
+		for (IIndex k = 0; k < 3; ++k) {
+			const ImagePair& p = chainScene.pairs[k];
+			if (p.matches.size() != 1 || p.matches[0].queryIdx != 1) {
+				VERBOSE("DenseKeypointBoundaryTest FAILED: dense keypoint %u remapped to %d instead of the described survivor 1",
+					k + 2, p.matches.empty() ? -1 : (int)p.matches[0].queryIdx);
+				return false;
+			}
 		}
 	}
 

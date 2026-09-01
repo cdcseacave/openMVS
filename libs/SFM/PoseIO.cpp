@@ -240,8 +240,7 @@ void CountTriangulationInliers(const Image& img1, const Image& img2,
 		dst.ID = k;
 		dst.cameraID = k;
 		dst.pCamera = src.pCamera;
-		dst.keypoints = src.keypoints;
-		dst.numDescribedKeypoints = src.numDescribedKeypoints; // the boundary describes that array
+		dst.CopyFeaturesFrom(src); // keypoints and their described/dense boundary together
 		dst.C = src.C;
 	}
 	const auto Count = [&images, &matches]() {

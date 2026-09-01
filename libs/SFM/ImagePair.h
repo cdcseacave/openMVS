@@ -57,7 +57,22 @@ public:
 	// Feature matches between the two images
 	std::vector<DMatch> matches; // inliers (after geometric verification and filtering)
 	std::vector<DMatch> outlierMatches; // outlier (split from initial matches)
+	// `matches` carries a three-way partition, and each segment means something different:
+	//   [0, numFilteredInliers)                                   sparse (descriptor-matched)
+	//                                                             correspondences that passed the
+	//                                                             strict filter -- track-forming,
+	//                                                             and the pair's DESCRIPTOR EVIDENCE
+	//   [numFilteredInliers, numFilteredInliers+numDenseInliers)   the dense (ROMAv2 warp) supplement
+	//                                                             -- track-forming, but no evidence
+	//                                                             of the pair's authority
+	//   [numFilteredInliers+numDenseInliers, matches.size())       RANSAC inliers the strict filter
+	//                                                             rejected -- not track-forming
+	// GetNumFilteredInliers() is the first segment only: every view-graph weight and gate reads it as
+	// "how much geometrically verified correspondence evidence does this pair have", and the dense
+	// supplement is a coverage-maximising draw that must not re-rank the graph. What forms tracks is
+	// the union of the first two, GetNumTrackFormingMatches().
 	int numFilteredInliers; // number of inliers after filtering (cheirality, angle, epipole), as the first N of `matches`
+	int numDenseInliers;    // number of dense supplement matches, stored right after those
 
 	// Relative pose from image1 to image2 (optional)
 	std::optional<Pose3D> relativePose;
@@ -83,12 +98,12 @@ public:
 
 public:
 	ImagePair()
-		: ID1(NO_ID), ID2(NO_ID), numFilteredInliers(-1),
+		: ID1(NO_ID), ID2(NO_ID), numFilteredInliers(-1), numDenseInliers(0),
 		  overlapRatio(0.f), overlapArea(0.f), meanRayAngle(0.f),
 		  weightSpatial(0.f), weightConnectivity(0.f), weightTriplet(0.f) {}
 
 	ImagePair(IIndex _ID1, IIndex _ID2)
-		: ID1(_ID1), ID2(_ID2), numFilteredInliers(-1),
+		: ID1(_ID1), ID2(_ID2), numFilteredInliers(-1), numDenseInliers(0),
 		  overlapRatio(0.f), overlapArea(0.f), meanRayAngle(0.f),
 		  weightSpatial(0.f), weightConnectivity(0.f), weightTriplet(0.f)
 	{
@@ -106,12 +121,14 @@ public:
 		matches = std::vector<DMatch>();
 		outlierMatches = std::vector<DMatch>();
 		numFilteredInliers = -1;
+		numDenseInliers = 0;
 	}
 	// Reset inlier matches by merging all matches back
 	void ResetInlierMatches() {
 		matches.insert(matches.end(), outlierMatches.begin(), outlierMatches.end());
 		outlierMatches = std::vector<DMatch>();
 		numFilteredInliers = -1;
+		numDenseInliers = 0;
 	}
 	// Reset geometric data
 	void ResetGeometry() {
@@ -130,6 +147,7 @@ public:
 	// Invalidate pair matches setting them all as outliers
 	void InvalidateMatches() {
 		numFilteredInliers = -1;
+		numDenseInliers = 0;
 		if (matches.empty())
 			return;
 		outlierMatches.insert(outlierMatches.end(), matches.begin(), matches.end());
@@ -145,7 +163,21 @@ public:
 	// Get number of matches/inliers
 	unsigned GetNumMatches() const { return (unsigned)matches.size() + (unsigned)outlierMatches.size(); }
 	unsigned GetNumInliers() const { return (unsigned)matches.size(); }
-	unsigned GetNumFilteredInliers() const { return numFilteredInliers >= 0 ? (unsigned)numFilteredInliers : GetNumInliers(); }
+	// The pair's descriptor evidence: geometrically verified SPARSE correspondences only, the first
+	// segment of `matches`. This is what every view-graph weight, gate and diagnostic reads, and it
+	// deliberately does not count the dense supplement -- see the partition comment on the members.
+	unsigned GetNumFilteredInliers() const {
+		// a dense segment only ever exists past a materialised sparse count (AppendDenseMatches
+		// closes it before inserting), so the -1 "no strict filter ran" case cannot carry one
+		ASSERT(numFilteredInliers >= 0 || numDenseInliers == 0);
+		return numFilteredInliers >= 0 ? (unsigned)numFilteredInliers : GetNumInliers();
+	}
+	// Number of dense (ROMAv2 warp) supplement matches, the second segment of `matches`
+	unsigned GetNumDenseInliers() const { return (unsigned)numDenseInliers; }
+	// The TRACK-FORMING set: the sparse inliers plus the dense supplement, i.e. the leading
+	// `matches` prefix BuildTracks unions. Everything past it are matches the strict filter
+	// deliberately rejected and must never form a track.
+	unsigned GetNumTrackFormingMatches() const { return GetNumFilteredInliers() + GetNumDenseInliers(); }
 
 	// Compute composite weight from components:
 	// W = numInliers * cbrt(weightSpatial * weightConnectivity * (0.5 + weightTriplet))
@@ -175,7 +207,10 @@ public:
 	unsigned PartitionMatchesByMask(const std::vector<char>& mask, int numInliers = -1, bool reorderOnly = false);
 
 	// Return all matched points (either inliers only or all matches)
-	//  - allInliers: if true, returns both filtered and inlier matched points
+	//  - default: only the GetNumFilteredInliers() prefix, i.e. the pair's sparse descriptor
+	//    evidence -- neither the dense supplement nor the strict filter's rejects
+	//  - allInliers: if true, returns every point of `matches` (rejects and dense included), which
+	//    is what a caller iterating `matches` element by element needs
 	//  - allMatches: if true, returns all matched points (inliers + outliers)
 	std::pair<std::vector<Point2f>, std::vector<Point2f>> GetMatchedPoints(
 		const Image& img1, const Image& img2, bool allInliers = false, bool allMatches = false) const;
@@ -184,6 +219,9 @@ public:
 	// minAngle: minimum triangulation angle in degrees
 	// epipoleThresh: minimum distance to epipole in pixels (if > 0)
 	// reprojThreshold: maximum reprojection error in pixels (if > 0)
+	// Rebuilds the whole partition and returns the SPARSE count, i.e. what GetNumFilteredInliers()
+	// reports afterwards -- callers compare it against a minimum-matches bar, which is a
+	// descriptor-evidence bar. The surviving dense supplement is re-derived into its own segment.
 	unsigned FilterMatches(
 		const Image& img1,
 		const Image& img2,
@@ -232,7 +270,7 @@ public:
 	void save(Archive& ar, const unsigned int /*version*/) const {
 		ar & ID1 & ID2;
 		ar & matches & outlierMatches;
-		ar & numFilteredInliers;
+		ar & numFilteredInliers & numDenseInliers;
 		ar & overlapRatio & overlapArea & meanRayAngle;
 		ar & weightSpatial & weightConnectivity & weightTriplet;
 
@@ -262,7 +300,7 @@ public:
 	void load(Archive& ar, const unsigned int /*version*/) {
 		ar & ID1 & ID2;
 		ar & matches & outlierMatches;
-		ar & numFilteredInliers;
+		ar & numFilteredInliers & numDenseInliers;
 		ar & overlapRatio & overlapArea & meanRayAngle;
 		ar & weightSpatial & weightConnectivity & weightTriplet;
 

@@ -280,14 +280,23 @@ unsigned SFM::AppendDenseMatches(Scene& scene, ImagePair& pair,
 		imgB.keypoints.push_back(Image::MakeDenseKeypoint(pointsB[i], confidences[i], cellSizeB));
 		dense.emplace_back(baseA + i, baseB + i);
 	}
-	// into the filtered-inlier prefix, not the end: what sits between numFilteredInliers and
-	// matches.size() are the RANSAC inliers the strict filter then rejected, and BuildTracks reads
-	// neither them nor anything after them
-	const size_t at = pair.numFilteredInliers >= 0 ? (size_t)pair.numFilteredInliers : pair.matches.size();
+	// The supplement becomes the middle segment of `matches` (see the partition comment in
+	// ImagePair.h): after the sparse inliers, which stay the pair's descriptor evidence and are what
+	// GetNumFilteredInliers() counts, and before the RANSAC inliers the strict filter rejected,
+	// which stay outside the track-forming prefix where they belong. Inside the track-forming prefix
+	// rather than at the end because BuildTracks reads only that prefix -- appended past it the
+	// whole supplement would be inert -- and outside the sparse count because a coverage-maximising
+	// draw must not re-rank the view graph.
+	if (pair.numFilteredInliers < 0) {
+		// no strict filter ran on this pair, which is the same statement as "every match is an
+		// inlier"; materialise that so the sparse count stays a count of sparse matches once the
+		// dense ones are in the array
+		pair.numFilteredInliers = (int)pair.matches.size();
+	}
+	const size_t at = (size_t)pair.numFilteredInliers + (size_t)pair.numDenseInliers;
 	ASSERT(at <= pair.matches.size());
 	pair.matches.insert(pair.matches.begin() + at, dense.begin(), dense.end());
-	if (pair.numFilteredInliers >= 0)
-		pair.numFilteredInliers += (int)dense.size();
+	pair.numDenseInliers += (int)dense.size();
 	return (unsigned)dense.size();
 }
 /*----------------------------------------------------------------*/

@@ -1673,6 +1673,8 @@ void PairsMatcher::FilterRedundantKeypoints()
 	// 3. Filter duplicate matches that arose from remapping
 	// When multiple features at the same location matched different features in another image,
 	// after remapping they become duplicate matches. Keep only the match with highest combined weight.
+	// The compaction is order-preserving and recomputes the `matches` partition by counting survivors
+	// per original segment, so the segment bounds this leaves behind are exact rather than estimated.
 	std::atomic<size_t> atomicNumDuplicateMatches{0};
 	scene.threadPool.detach_loop(0u, scene.pairs.size(), [&](unsigned i) {
 		ImagePair& pair = scene.pairs[i];
@@ -1684,61 +1686,91 @@ void PairsMatcher::FilterRedundantKeypoints()
 		const Image& img1 = scene.images[pair.ID1];
 		const Image& img2 = scene.images[pair.ID2];
 
-		// Helper to filter duplicates in a match vector (bidirectional check)
-		const auto FilterDuplicates = [&](std::vector<DMatch>& matches) {
+		// Helper to filter duplicates in a match vector (bidirectional check).
+		// `bounds` are the exclusive end positions of the leading segments of `matches`, in order --
+		// for pair.matches the sparse-inlier end and the dense-supplement end (ImagePair.h documents
+		// the partition); empty for a vector that carries no partition, such as outlierMatches. Each
+		// pass rewrites every bound to the number of survivors that came from below it, so the
+		// partition is exact by construction instead of being guessed from a removal count that
+		// cannot know which segment lost a match.
+		const auto FilterDuplicates = [&](std::vector<DMatch>& matches, std::vector<size_t>& bounds) {
 			unsigned numDuplicateMatches = 0;
 			if (matches.empty())
 				return numDuplicateMatches;
 
-			// Lambda to remove duplicates by a specific index (queryIdx or trainIdx)
+			// Lambda to remove duplicates by a specific index (queryIdx or trainIdx).
+			// ORDER-PRESERVING: detection sorts an index array, compaction walks `data` in its
+			// original order. Sorting `data` itself would move matches across the segment bounds --
+			// dense keypoints hold the largest indices by construction, so every dense match sorts to
+			// the end and the strict-filter rejects migrate into the prefix, which silently makes
+			// part of the supplement inert in BuildTracks and lets an equal number of deliberately
+			// rejected matches form tracks.
 			const auto RemoveDuplicatesByIndex = [&](
 				std::vector<DMatch>& data,
 				auto getIndex) -> unsigned
 			{
-				unsigned numRemoved = 0;
-				std::sort(data.begin(), data.end(), [&](const DMatch& a, const DMatch& b) {
-					return getIndex(a) < getIndex(b);
+				std::vector<uint32_t> order(data.size());
+				std::iota(order.begin(), order.end(), 0u);
+				// stable, so that within a duplicate group the candidates are visited in original
+				// order and an exact tie resolves to the earliest one
+				std::stable_sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
+					return getIndex(data[a]) < getIndex(data[b]);
 				});
 
-				std::vector<DMatch> filtered;
-				filtered.reserve(data.size());
-				for (size_t j = 0; j < data.size(); ) {
-					const DMatch& first = data[j];
+				unsigned numRemoved = 0;
+				std::vector<char> keep(data.size(), 1);
+				for (size_t j = 0; j < order.size(); ) {
 					const size_t start = j;
+					const DMatch& first = data[order[j]];
 					const auto firstIndex = getIndex(first);
-					while (++j < data.size() && getIndex(data[j]) == firstIndex);
-
-					if (j - start == 1) {
-						filtered.push_back(first);
-					} else {
-						// Multiple matches with same index - keep the one with the fewest dense
-						// endpoints, then the best combined weight. Described-wins again, and again
-						// stated explicitly rather than arranged through response*size: a described
-						// correspondence measured at sub-pixel accuracy must not lose the keypoint
-						// it shares to a warp sample. With no dense keypoints in the scene every
-						// count below is 0 and this is the plain weight comparison it has always been.
-						const auto NumDenseEnds = [&](const DMatch& m) {
-							return (unsigned)img1.IsDenseKeypoint(m.queryIdx) + (unsigned)img2.IsDenseKeypoint(m.trainIdx);
-						};
-						size_t bestIdx = start;
-						unsigned bestDense = NumDenseEnds(first);
-						float bestWeight = Image::ComputeKeypointWeight(img1.keypoints[first.queryIdx]) *
-						                   Image::ComputeKeypointWeight(img2.keypoints[first.trainIdx]);
-						for (size_t m = start + 1; m < j; ++m) {
-							const unsigned numDense = NumDenseEnds(data[m]);
-							const float weight = Image::ComputeKeypointWeight(img1.keypoints[data[m].queryIdx]) *
-							                     Image::ComputeKeypointWeight(img2.keypoints[data[m].trainIdx]);
-							if (numDense < bestDense || (numDense == bestDense && weight > bestWeight)) {
-								bestDense = numDense;
-								bestWeight = weight;
-								bestIdx = m;
-							}
+					while (++j < order.size() && getIndex(data[order[j]]) == firstIndex);
+					if (j - start == 1)
+						continue;
+					// Multiple matches with same index - keep the one with the fewest dense
+					// endpoints, then the best combined weight. Described-wins again, and again
+					// stated explicitly rather than arranged through response*size: a described
+					// correspondence measured at sub-pixel accuracy must not lose the keypoint
+					// it shares to a warp sample. With no dense keypoints in the scene every
+					// count below is 0 and this is the plain weight comparison it has always been.
+					const auto NumDenseEnds = [&](const DMatch& m) {
+						return (unsigned)img1.IsDenseKeypoint(m.queryIdx) + (unsigned)img2.IsDenseKeypoint(m.trainIdx);
+					};
+					size_t bestPos = start;
+					unsigned bestDense = NumDenseEnds(first);
+					float bestWeight = Image::ComputeKeypointWeight(img1.keypoints[first.queryIdx]) *
+					                   Image::ComputeKeypointWeight(img2.keypoints[first.trainIdx]);
+					for (size_t m = start + 1; m < j; ++m) {
+						const DMatch& candidate = data[order[m]];
+						const unsigned numDense = NumDenseEnds(candidate);
+						const float weight = Image::ComputeKeypointWeight(img1.keypoints[candidate.queryIdx]) *
+						                     Image::ComputeKeypointWeight(img2.keypoints[candidate.trainIdx]);
+						if (numDense < bestDense || (numDense == bestDense && weight > bestWeight)) {
+							bestDense = numDense;
+							bestWeight = weight;
+							bestPos = m;
 						}
-						filtered.push_back(data[bestIdx]);
-						numRemoved += j - start - 1;
 					}
+					for (size_t m = start; m < j; ++m)
+						if (m != bestPos)
+							keep[order[m]] = 0;
+					numRemoved += (unsigned)(j - start - 1);
 				}
-				data = std::move(filtered);
+				if (numRemoved == 0)
+					return numRemoved;
+				// Recompute each segment bound as its survivor count, then compact in place: both
+				// read the same `keep` array, so a bound can never disagree with the compaction.
+				for (size_t& bound : bounds) {
+					ASSERT(bound <= data.size());
+					size_t numSurvivors = 0;
+					for (size_t r = 0; r < bound; ++r)
+						numSurvivors += (size_t)keep[r];
+					bound = numSurvivors;
+				}
+				size_t w = 0;
+				for (size_t r = 0; r < data.size(); ++r)
+					if (keep[r])
+						data[w++] = data[r];
+				data.resize(w);
 				return numRemoved;
 			};
 
@@ -1751,15 +1783,26 @@ void PairsMatcher::FilterRedundantKeypoints()
 			return numDuplicateMatches;
 		};
 
-		const unsigned numDuplicateMatches = FilterDuplicates(pair.matches);
-		atomicNumDuplicateMatches += numDuplicateMatches + FilterDuplicates(pair.outlierMatches);
+		// the partition carried through the compaction as positions and read back as counts; a pair
+		// with numFilteredInliers < 0 never ran the strict filter and has no partition to carry
+		const bool bPartitioned = pair.numFilteredInliers >= 0;
+		std::vector<size_t> bounds;
+		if (bPartitioned) {
+			ASSERT((size_t)pair.numFilteredInliers + (size_t)pair.numDenseInliers <= pair.matches.size());
+			bounds = {(size_t)pair.numFilteredInliers,
+			          (size_t)pair.numFilteredInliers + (size_t)pair.numDenseInliers};
+		}
+		std::vector<size_t> noBounds;
+		const unsigned numDuplicateMatches = FilterDuplicates(pair.matches, bounds);
+		atomicNumDuplicateMatches += numDuplicateMatches + FilterDuplicates(pair.outlierMatches, noBounds);
 		if (pair.matches.size() < config.minMatches) {
+			// the dense keypoints this pair appended to both images are now unreferenced: still
+			// serialized and still walked, but never observed. Cost only -- BuildTracks' step 3
+			// makes each of them a singleton root that step 4's "< 2 views" filter drops.
 			pair.InvalidateMatches();
-		} else if (pair.numFilteredInliers > 0) {
-			// Update the number of filtered inliers if applicable
-			pair.numFilteredInliers -= (int)numDuplicateMatches;
-			if (pair.numFilteredInliers < 0)
-				pair.numFilteredInliers = pair.matches.size();
+		} else if (bPartitioned) {
+			pair.numFilteredInliers = (int)bounds[0];
+			pair.numDenseInliers = (int)(bounds[1] - bounds[0]);
 		}
 	});
 	scene.threadPool.wait();

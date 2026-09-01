@@ -243,7 +243,11 @@ unsigned ImagePair::FilterMatches(const Image& img1, const Image& img2, float mi
 
 	// Filter matches
 	const REAL maxCosAngle = COS(D2R(REAL(minAngle)));
-	const auto [pts1, pts2] = GetMatchedPoints(img1, img2);
+	// allInliers: the loop below tests every element of `matches`, so the point arrays must cover
+	// all of it -- the default prefix stops at GetNumFilteredInliers(), which is short of
+	// matches.size() on any pair that already carries a partition (a dense supplement, or the
+	// rejects of an earlier strict-filter pass)
+	const auto [pts1, pts2] = GetMatchedPoints(img1, img2, true);
 	std::vector<char> mask(matches.size(), 0);
 	FloatArr cosAngles(0, matches.size()); // per-inlier ray-angle cosines
 	unsigned numInliers = 0;
@@ -296,7 +300,29 @@ unsigned ImagePair::FilterMatches(const Image& img1, const Image& img2, float mi
 	// mismatch-contaminated or badly triangulated matches from skewing the pair statistic
 	meanRayAngle = cosAngles.empty() ? 0.f : ACOS(cosAngles.GetMedian());
 	// Partition matches by inlier mask
-	return numFilteredInliers = (int)PartitionMatchesByMask(mask, (int)numInliers, true);
+	numFilteredInliers = (int)PartitionMatchesByMask(mask, (int)numInliers, true);
+	// PartitionMatchesByMask reorders `matches`, so a dense segment recorded before this call no
+	// longer describes any range of it (ResetInlierMatches/InvalidateMatches zero the count for the
+	// same reason). Re-derive it here instead of dropping it: a supplemented pair re-verified by
+	// ComputeRelativePoses after a ViewGraphCalibrator focal update would otherwise have its dense
+	// matches counted as descriptor evidence again, which is exactly what the partition prevents.
+	// A match with a dense endpoint can only have come from the supplement -- a descriptor match has
+	// a described keypoint at both ends, and FilterRedundantKeypoints' described-wins rule never
+	// moves a described keypoint onto a dense one. The converse is not exact: a supplement match
+	// whose *both* endpoints collapsed onto coincident described keypoints reads as sparse here, and
+	// then it measures a sub-pixel described position at both ends, so counting it as such is fair.
+	if (img1.HasDenseKeypoints() || img2.HasDenseKeypoints()) {
+		const auto HasDenseEnd = [&img1, &img2](const DMatch& m) {
+			return img1.IsDenseKeypoint(m.queryIdx) || img2.IsDenseKeypoint(m.trainIdx);
+		};
+		const auto denseBegin = std::stable_partition(matches.begin(), matches.begin() + numFilteredInliers,
+			[&HasDenseEnd](const DMatch& m) { return !HasDenseEnd(m); });
+		numDenseInliers = (int)(matches.begin() + numFilteredInliers - denseBegin);
+		numFilteredInliers -= numDenseInliers;
+	}
+	// the sparse count, i.e. exactly what GetNumFilteredInliers() will report: every caller compares
+	// this against config.minMatches, which is a descriptor-evidence bar and must stay one
+	return (unsigned)numFilteredInliers;
 }
 
 
@@ -394,8 +420,9 @@ unsigned ImagePair::CheckEpipolarInliers(const Image& img1, const Image& img2, f
 	if (matches.empty())
 		return 0;
 
-	// Extract matched points from keypoints
-	auto [pts1, pts2] = GetMatchedPoints(img1, img2);
+	// Extract matched points from keypoints; allInliers because every branch below checks all of
+	// `matches` against its geometry and fills a mask.size() == matches.size() mask
+	auto [pts1, pts2] = GetMatchedPoints(img1, img2, true);
 
 	// Prepare output mask
 	const float thresholdSq = SQUARE(threshold);

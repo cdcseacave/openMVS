@@ -347,9 +347,49 @@ end of `Image::keypoints`, past the described prefix, with no new keypoint struc
 `descriptors.rows`, because the descriptors are released before `FilterRedundantKeypoints` runs — it
 cannot remap descriptor rows, which is why it only runs there — and long before bundle adjustment, so
 a derived boundary would report every keypoint as dense in exactly the two places that need it. The
-matches join the pair's *filtered-inlier prefix* rather than the end of `matches`, since `BuildTracks`
-reads only that prefix. The append is serial, in the pass's `(ID1,ID2)` order, because the keypoint
-indices it hands out depend on what the two images already carry.
+append is serial, in the pass's `(ID1,ID2)` order, because the keypoint indices it hands out depend on
+what the two images already carry.
+
+**The inlier count means descriptor evidence.** `ImagePair::matches` carries a three-way partition:
+
+```
+[0, numFilteredInliers)                                    sparse matches that passed the strict
+                                                           filter -- track-forming, and the pair's
+                                                           descriptor evidence
+[numFilteredInliers, numFilteredInliers+numDenseInliers)    the dense supplement -- track-forming
+[numFilteredInliers+numDenseInliers, matches.size())        RANSAC inliers the strict filter rejected
+                                                           -- not track-forming
+```
+
+`GetNumFilteredInliers()` is the **first segment only**, and every view-graph weight and gate reads it:
+`ComputeIntrinsicWeight`'s grid-occupancy spread and minimum-support bar, `GetCompositeWeight`'s
+inlier factor and its 1000 cap, `ComputePairsWeights`' connectivity normalisation, rotation-averaging
+and star-initializer edge strength, `ViewGraphCalibrator`'s two "enough inliers to trust this F"
+guards, `BuildTracks`' `minPairWeight` cut, the feedback round's `feedbackSkipHealthyInliers` skip and
+`ApplyROMA2Pair`'s replace test. Supplementation is opt-in and *additive*, so it must not re-rank the
+view graph — and the sample is a coverage-maximising stratified draw, which would drive the spatial
+weight to its maximum and saturate the inlier cap by construction. With the count sparse-only, all of
+those keep their pre-supplement behaviour with no per-consumer discount factor anywhere.
+
+What forms tracks is the union of the first two segments, `GetNumTrackFormingMatches()`, and that is
+what bounds `BuildTracks`' union-find (and `GlobalAlignment`'s cross-sub-scene equivalent). The
+supplement is inside that prefix rather than at the end of `matches` precisely because a match past it
+would form no track and the whole feature would be inert. The duplicate-match filter in
+`FilterRedundantKeypoints` compacts **order-preservingly** and recomputes both counts by counting
+survivors per original segment, so the partition is exact by construction: sorting `matches` there
+would move every dense match (dense keypoints hold the largest indices) past the boundary while the
+strict filter's rejects migrated into it — part of the supplement silently inert, an equal number of
+deliberately rejected matches silently forming tracks.
+
+**A pair the filter pushes below `minMatches` orphans its dense keypoints.** `FilterRedundantKeypoints`
+calls `InvalidateMatches()` on it, and the dense keypoints that pair appended to both images stay in
+`Image::keypoints` with nothing referencing them: counted in the boundary arithmetic, serialized to
+`.sfm`, walked by `BuildTracks`' keypoint enumeration and by every later run of the filter, never
+observed. **Cost only, no wrong answer**: step 3 of `BuildTracks` enumerates all keypoints regardless
+of the partition, so an unreferenced one becomes a singleton union-find root that step 4's "fewer than
+2 views" filter drops. The same is true of a supplemented pair replaced in a later round. Not worth
+code — the alternative is reference-counting keypoints per pair, for memory a bounded draw already
+caps.
 
 **Cross-pair identity is exact-position reuse, not proximity fusion.** There is no fusion radius:
 the warp is sampled from a low-resolution disparity field, so averaging two nearby samples compounds
@@ -376,6 +416,16 @@ provisional and was not measured**: it is `k = 2` in the `1/k^2` a ratio of robu
 picked at the mild end so that a wrong provisional value errs toward the pre-existing behaviour
 rather than toward discarding the dense signal. The value that belongs there is the robust sigma of
 dense versus described reprojection residuals on a ground-truth capture.
+
+It is **exclusive with `BAConfig::useKeypointConfidence`**, which says the same thing by another route:
+`ComputeKeypointPrecision`'s `SQUARE(2/max(size,1))` term reads measurement precision off the sampling
+scale, and the dense `size` convention was chosen precisely so that it reports a dense point as the
+less precise measurement. Multiplying the two charges the sampling scale twice — on the documented
+values that is a ~116x ratio, `k ~ 10.8`, rather than the `k = 2` the default claims, and in the
+opposite direction from "errs toward the pre-existing behaviour". So `SelectReprojectionLoss` applies
+the flat weight only when the confidence term is off, and **the `--ba-dense-weight` measurement this
+branch still owes must be made with `useKeypointConfidence` off** or it fits a quantity that already
+contains the factor being fitted.
 
 **Scale.** A supplemented pair costs up to `--roma2-supplement-max-per-pair` keypoints in *each* of
 its two images, plus about one track per correspondence. `sizeof(cv::KeyPoint)` is 28 bytes, but the

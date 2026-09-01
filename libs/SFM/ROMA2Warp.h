@@ -155,9 +155,11 @@ SFM_API void ComputeSampleCoverage(
 // working orientation of each image (SampleWarpByCoverage's convention); warpSize is the warp grid
 // the sample was drawn on, which fixes the size of the appended keypoints (Image::MakeDenseKeypoint).
 //
-// The matches join the pair's filtered-inlier prefix rather than the end of `matches`: BuildTracks
-// only reads the first GetNumFilteredInliers() matches, so a match appended past that prefix would
-// form no track at all and the whole supplement would be silently inert.
+// The matches become the pair's dense segment, `[numFilteredInliers, +numDenseInliers)` of `matches`
+// (the partition is documented on ImagePair's members): inside the track-forming prefix, because
+// BuildTracks reads only GetNumTrackFormingMatches() matches and a match appended past that prefix
+// would form no track at all, and outside GetNumFilteredInliers(), because that count is the pair's
+// descriptor evidence and a coverage-maximising draw must not re-rank the view graph with it.
 //
 // Callers must invoke this serially and in a fixed pair order: the keypoint indices it hands out
 // depend on how many keypoints the two images already carry, so a parallel or completion-ordered

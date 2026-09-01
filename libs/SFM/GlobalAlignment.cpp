@@ -282,7 +282,11 @@ bool GlobalAlignment::EstimateRelativePoses(
 			if (!imgA.IsValid() || !imgB.IsValid())
 				continue;
 
-			const unsigned numInliers = link.pair->GetNumFilteredInliers();
+			// the track-forming set, not the sparse count: the correspondence search below only
+			// keeps a match whose two endpoints already lie on inlier tracks of the two sub-scenes,
+			// and those tracks were built from this same set -- bounding it by the sparse count
+			// would skip correspondences the tracks prove exist
+			const unsigned numInliers = link.pair->GetNumTrackFormingMatches();
 			for (unsigned i = 0; i < numInliers; ++i) {
 				const DMatch& match = link.pair->matches[i];
 				const uint32_t featureA = link.aIsQuery ? match.queryIdx : match.trainIdx;
@@ -1012,7 +1016,10 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs(const std::vector<bool>&
 
 		const uint32_t offset1 = featureOffsets[pair.ID1];
 		const uint32_t offset2 = featureOffsets[pair.ID2];
-		FOREACHRAW(i, pair.GetNumFilteredInliers()) {
+		// the track-forming set, the same bound BuildTracks' union-find uses: this is that same
+		// union across sub-scene boundaries, so it must see the dense supplement too and must
+		// still stop before the matches the strict filter rejected
+		FOREACHRAW(i, pair.GetNumTrackFormingMatches()) {
 			const DMatch& match = pair.matches[i];
 			if ((unsigned)match.queryIdx >= scene.images[pair.ID1].keypoints.size() ||
 				(unsigned)match.trainIdx >= scene.images[pair.ID2].keypoints.size())

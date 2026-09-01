@@ -385,6 +385,12 @@ size_t FeaturesExtractor::Extract()
 
 bool FeaturesExtractor::ExtractImage(Image& image, cv::Ptr<cv::Feature2D>& detector, bool skipIO)
 {
+	// Extraction produces described keypoints only, and every path below starts by dropping whatever
+	// the image already carried (ReleaseFeatures, or the OpenMVG import overwriting the arrays), so
+	// re-extracting on a supplemented image would discard its dense keypoints while scene.pairs'
+	// matches still reference their indices. Asserted here, before the first of those resets: past
+	// any of them HasDenseKeypoints() is provably false and an assertion could no longer see it.
+	ASSERT(!image.HasDenseKeypoints());
 	if (!skipIO && !config.importOpenMVGDir.empty() && ImportFeaturesOpenMVG(config.importOpenMVGDir, image)) {
 		image.ReleasePixels(); // free pixel memory after feature extraction
 		DEBUG_ULTIMATE("Imported features for image % 4u: % 6u features (%.2f focal-length)",
@@ -522,9 +528,8 @@ bool FeaturesExtractor::ExtractImage(Image& image, cv::Ptr<cv::Feature2D>& detec
 			}
 
 			// Copy selected keypoints and descriptors to output arrays (only once)
-			// extraction appends described keypoints, so it may never run on an image that already
-			// carries dense ones: they would end up inside the described prefix
-			ASSERT(!image.HasDenseKeypoints());
+			// everything appended here is described, and ExtractImage asserted on entry that the
+			// image carried no dense keypoints, so this stays inside the described prefix
 			ASSERT(image.keypoints.size() == vecDescriptors.size());
 			const size_t offset = image.keypoints.size();
 			for (int idx : selectedIndices) {

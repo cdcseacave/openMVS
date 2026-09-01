@@ -50,6 +50,9 @@ struct SFM_API BAConfig
 	double gpsWeightScaleFactor = 1.0;  // Manual scaling override for GPS weights
 
 	// Angular reprojection error with keypoint confidence weighting
+	// Its SQUARE(2/max(size,1)) precision term already reads measurement precision off the sampling
+	// scale, which is the same statement denseObservationWeight below makes, so turning this on
+	// SUPERSEDES that weight rather than composing with it (see SelectReprojectionLoss).
 	bool useKeypointConfidence = false; // Weight observations by keypoint response and size
 	float minKeypointResponse = 0.001f; // Minimum keypoint response to include in BA (0 = include all)
 
@@ -59,8 +62,10 @@ struct SFM_API BAConfig
 	// treat the two as equally precise. It is a measurement-precision weight, not a fifth gate
 	// threshold, and it follows the KEYPOINT rather than the match that created it (see
 	// SelectReprojectionLoss). 1 = no down-weighting.
+	// Ignored when useKeypointConfidence is set: that term already expresses the same thing, and
+	// only one of the two may apply.
 	// The default is PROVISIONAL and was NOT measured -- see BundleAdjustment.cpp for how it was
-	// picked and what has to replace it.
+	// picked and what has to replace it. Measure it with useKeypointConfidence OFF.
 	double denseObservationWeight = 0.25;
 
 	// Solver parameters

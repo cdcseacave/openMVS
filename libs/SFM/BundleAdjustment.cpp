@@ -519,6 +519,15 @@ inline void AddPinholeIntrinsics(std::unordered_map<const Camera*, DoubleArr>& i
 // full weight. This models measurement precision only: a wrong correspondence is the robust loss's
 // and FilterTracks' job, and charging it here as well would model the same thing twice.
 //
+// EXCLUSIVE WITH config.useKeypointConfidence, which expresses the same statement by another route:
+// ComputeKeypointPrecision's SQUARE(2/max(size,1)) term already reads measurement precision off the
+// sampling scale, and the dense `size` convention (Image.h) was chosen precisely so that it reports a
+// dense point as the less precise measurement. Multiplying the two charges that once for the size and
+// once for the flat factor -- on the documented values it takes the effective ratio to ~116x (k ~ 10.8)
+// instead of the k = 2 below, and in the wrong direction from "errs toward the behaviour before this
+// weight existed". So exactly one of them applies, and a --ba-dense-weight sweep must be run with
+// useKeypointConfidence off or it measures a quantity that already contains the factor it is fitting.
+//
 // PROVISIONAL DEFAULT (BAConfig::denseObservationWeight = 0.25). It was NOT measured. The value
 // that belongs here is 1/k^2, where k is the ratio of the robust sigma of dense to described
 // reprojection residuals on a ground-truth capture; 0.25 is k = 2, which is the mild end of what
@@ -537,7 +546,9 @@ inline bool SelectReprojectionLoss(const BAConfig& config, const Image& img, uin
 			return false; // skip low-confidence keypoint
 	}
 	bDense = img.IsDenseKeypoint(featureID);
-	if (bDense)
+	// only when the confidence term did not already say it: the two express the same statement (see
+	// the comment above), so applying both would charge the dense sampling scale twice
+	if (bDense && !config.useKeypointConfidence)
 		weight *= config.denseObservationWeight;
 	if (weight != 1.0)
 		outLoss = new ceres::ScaledLoss(baseLoss, weight, ceres::DO_NOT_TAKE_OWNERSHIP);
@@ -711,8 +722,11 @@ bool BundleAdjustment::Adjust()
 		DEBUG_EXTRA("Created %u reprojection residuals", numReprojResiduals);
 	}
 	if (numDenseResiduals > 0) {
+		// the flat weight does not apply when the confidence term is on: it already carries the
+		// dense sampling scale, so what a dense residual is scaled by then is that term alone
 		DEBUG("Bundle adjustment: %u/%u reprojection residuals are on dense keypoints, weighted %g",
-			numDenseResiduals, numReprojResiduals, config.denseObservationWeight);
+			numDenseResiduals, numReprojResiduals,
+			config.useKeypointConfidence ? 1.0 : config.denseObservationWeight);
 	}
 
 	// Set intrinsic parameter constraints (if refining intrinsics)
@@ -1057,6 +1071,7 @@ bool BundleAdjustment::AdjustLocal(
 
 	// Add reprojection residuals (only observations from window images: local or fixed)
 	uint32_t numReprojResiduals = 0;
+	uint32_t numDenseResiduals = 0;
 	numReprojResidualsPerImage.resize(scene.images.size());
 	numReprojResidualsPerImage.Memset(0);
 	for (const IIndex pointID : activePoints) {
@@ -1080,7 +1095,16 @@ bool BundleAdjustment::AdjustLocal(
 				poseParams.data() + imgID * 7, track.position.ptr(), intrinsicParams);
 			++numReprojResidualsPerImage[imgID];
 			++numReprojResiduals;
+			numDenseResiduals += bDense;
 		}
+	}
+	// reported here as well as in Adjust(): incremental reconstruction runs local BA far more often
+	// than the global pass, so reporting only there would let the dense contribution move silently
+	// in the path that actually carries it
+	if (numDenseResiduals > 0) {
+		DEBUG("Local bundle adjustment: %u/%u reprojection residuals are on dense keypoints, weighted %g",
+			numDenseResiduals, numReprojResiduals,
+			config.useKeypointConfidence ? 1.0 : config.denseObservationWeight);
 	}
 
 	// Set the SE(3) manifold on every pose block that was actually added to the problem.

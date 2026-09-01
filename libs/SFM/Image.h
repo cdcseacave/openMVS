@@ -142,6 +142,14 @@ public:
 		numDescribedKeypoints = src.numDescribedKeypoints;
 		src.ReleaseFeatures();
 	}
+	// Copy src's features, leaving it untouched (a borrowed scratch view over the same keypoints).
+	// Exists for the same reason as MoveFeaturesFrom: the boundary travels with the array it
+	// indexes, so no caller has to remember to carry it by hand.
+	inline void CopyFeaturesFrom(const Image& src) {
+		keypoints = src.keypoints;
+		descriptors = src.descriptors;
+		numDescribedKeypoints = src.numDescribedKeypoints;
+	}
 
 	// Check if image has a global retrieval descriptor
 	inline bool HasGlobalDescriptor() const { return !globalDescriptor.empty(); }
@@ -180,7 +188,9 @@ public:
 	//  - size = warpCellSize, the pixel footprint of one warp cell in this image, i.e. the scale
 	//    the position was actually sampled at. This is the honest number: it makes
 	//    ComputeKeypointPrecision's 1/size^2 report a dense point as the less precise measurement
-	//    it is, which is the same statement the bundle-adjustment down-weighting makes.
+	//    it is, which is the same statement the bundle-adjustment down-weighting makes -- so only
+	//    ONE of the two may apply to a residual, and SelectReprojectionLoss drops
+	//    BAConfig::denseObservationWeight whenever the confidence term is on.
 	// It deliberately does NOT try to make dense points lose the duplicate filter's response*size
 	// ranking: that would depend on the detector's response range and break silently when it
 	// shifts, so described-wins is an explicit rule there instead (FilterRedundantKeypoints).
