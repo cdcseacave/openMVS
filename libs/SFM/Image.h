@@ -44,8 +44,21 @@ public:
 	cv::Mat pixels;        // image pixels (can be empty if not loaded)
 
 	// Feature data
-	std::vector<cv::KeyPoint> keypoints;  // detected keypoints
-	cv::Mat descriptors;                  // feature descriptors (one row per keypoint)
+	// keypoints holds the described keypoints first -- the detector's own detections, one
+	// descriptor row each -- and, past that prefix, the dense keypoints: ROMAv2 warp samples
+	// appended by the dense supplementation pass, which carry no descriptor. So
+	// keypoints.size() >= NumDescribedKeypoints() == descriptors.rows, and there is no separate
+	// keypoint structure: a keypoint index alone says which kind it is (IsDenseKeypoint).
+	std::vector<cv::KeyPoint> keypoints;  // described keypoints, then the appended dense ones
+	cv::Mat descriptors;                  // feature descriptors (one row per described keypoint)
+	// Where the described prefix ends; NO_ID until a dense keypoint is appended, which is the
+	// same statement as "every keypoint is described".
+	// Stored and serialized rather than derived from descriptors.rows, because the descriptors are
+	// released before PairsMatcher::FilterRedundantKeypoints runs (that filter cannot remap
+	// descriptor rows, which is why it only runs there) and long before bundle adjustment: a
+	// boundary derived from them would report every keypoint as dense in exactly the two places
+	// that need it. Read it through NumDescribedKeypoints()/IsDenseKeypoint(), never directly.
+	uint32_t numDescribedKeypoints = NO_ID;
 
 	// Optional 1xD CV_32F L2-normalized global retrieval descriptor of the whole image
 	// (GeM-pooled DINOv3 features from the ROMAv2 describe graph); empty unless the
@@ -80,6 +93,46 @@ public:
 	// Check if image has descriptors
 	inline bool HasDescriptors() const { return !descriptors.empty(); }
 
+	// Number of leading keypoints that carry a descriptor (see numDescribedKeypoints)
+	inline uint32_t NumDescribedKeypoints() const {
+		const uint32_t numDescribed = numDescribedKeypoints == NO_ID ? (uint32_t)keypoints.size() : numDescribedKeypoints;
+		// while the descriptors are still alive they are the boundary, so the stored count must
+		// agree with them; once they are released this is the only record of it left
+		ASSERT(!HasDescriptors() || (uint32_t)descriptors.rows == numDescribed);
+		ASSERT(numDescribed <= keypoints.size());
+		return numDescribed;
+	}
+	// Check if any dense (descriptor-less) keypoint was appended past the described prefix
+	inline bool HasDenseKeypoints() const { return numDescribedKeypoints != NO_ID; }
+	// Number of dense (descriptor-less) keypoints appended past the described prefix
+	inline uint32_t NumDenseKeypoints() const { return (uint32_t)keypoints.size() - NumDescribedKeypoints(); }
+	// Check if the given keypoint index is a dense (descriptor-less) keypoint
+	inline bool IsDenseKeypoint(uint32_t idx) const {
+		ASSERT(idx < keypoints.size());
+		return numDescribedKeypoints != NO_ID && idx >= numDescribedKeypoints;
+	}
+	// Close the described prefix at the current keypoint count, before dense keypoints are appended
+	// past it. Idempotent: a second supplemented pair appending to the same image must not move a
+	// boundary the first one already set.
+	inline void CloseDescribedKeypoints() {
+		if (numDescribedKeypoints == NO_ID)
+			numDescribedKeypoints = (uint32_t)keypoints.size();
+	}
+	// Move the described prefix explicitly, after keypoints were removed from inside it
+	// (PairsMatcher::FilterRedundantKeypoints' remap); only meaningful on an image that already
+	// carries dense keypoints, since the boundary of one without them is its keypoint count
+	inline void SetNumDescribedKeypoints(uint32_t numDescribed) {
+		ASSERT(HasDenseKeypoints() && numDescribed <= keypoints.size());
+		numDescribedKeypoints = numDescribed;
+	}
+	// Drop every feature, boundary included, so a re-extraction or re-import starts from a state
+	// where every keypoint it produces is described
+	inline void ReleaseFeatures() {
+		keypoints.clear();
+		descriptors.release();
+		numDescribedKeypoints = NO_ID;
+	}
+
 	// Check if image has a global retrieval descriptor
 	inline bool HasGlobalDescriptor() const { return !globalDescriptor.empty(); }
 
@@ -105,8 +158,25 @@ public:
 
 	// Select top keypoints/descriptors using grid-based spatial distribution and keypoint response
 	//  - maxKeypoints: maximum number of keypoints to select
-	// Returns vector of indices into keypoints/descriptors arrays
+	// Returns vector of indices into keypoints/descriptors arrays; restricted to the described
+	// prefix, since every caller pairs the returned index with a descriptor row
 	UnsignedArr SelectTopKeypoints(unsigned maxKeypoints) const;
+
+	// Build the keypoint standing for one dense (ROMAv2 warp) correspondence sample.
+	// The response/size convention the weighting functions below then see:
+	//  - response = the warp confidence at that sample, which is the only per-sample quality the
+	//    warp offers; it lands in [ROMA2Config::minConfidence, 1], well above the response of a
+	//    weak detector keypoint, so a dense point is never mistaken for a low-confidence one
+	//  - size = warpCellSize, the pixel footprint of one warp cell in this image, i.e. the scale
+	//    the position was actually sampled at. This is the honest number: it makes
+	//    ComputeKeypointPrecision's 1/size^2 report a dense point as the less precise measurement
+	//    it is, which is the same statement the bundle-adjustment down-weighting makes.
+	// It deliberately does NOT try to make dense points lose the duplicate filter's response*size
+	// ranking: that would depend on the detector's response range and break silently when it
+	// shifts, so described-wins is an explicit rule there instead (FilterRedundantKeypoints).
+	static cv::KeyPoint MakeDenseKeypoint(const Point2f& pt, float confidence, float warpCellSize) {
+		return cv::KeyPoint(pt.x, pt.y, warpCellSize, -1.f, confidence);
+	}
 
 	// Scoring Strategy: Weighted Stability (Response + Size)
 	// Incorporates feature size alongside response to improve SfM geometric stability.
@@ -144,6 +214,7 @@ public:
 		ar & metadata.orientation;
 		ar & keypoints;
 		ar & descriptors;
+		ar & numDescribedKeypoints;
 		ar & globalDescriptor;
 	}
 	template<class Archive>
@@ -160,6 +231,7 @@ public:
 		ar & metadata.orientation;
 		ar & keypoints;
 		ar & descriptors;
+		ar & numDescribedKeypoints;
 		ar & globalDescriptor;
 	}
 	BOOST_SERIALIZATION_SPLIT_MEMBER()

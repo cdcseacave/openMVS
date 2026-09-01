@@ -668,8 +668,10 @@ bool PairsMatcher::MatchPair(
 		const std::optional<size_t> poolIdx = BS::this_thread::get_index();
 		ASSERT(!poolIdx || *poolIdx < matchers.size());
 		const unsigned threadIdx = poolIdx ? (unsigned)*poolIdx : 0u;
-		ASSERT(img1.descriptors.rows == (int)img1.keypoints.size());
-		ASSERT(img2.descriptors.rows == (int)img2.keypoints.size());
+		// the descriptors index the described prefix, which is all this matcher ever sees: an image
+		// already supplemented with dense keypoints carries more keypoints than descriptor rows
+		ASSERT(img1.descriptors.rows == (int)img1.NumDescribedKeypoints());
+		ASSERT(img2.descriptors.rows == (int)img2.NumDescribedKeypoints());
 		MatchFeatures(img1.descriptors, img2.descriptors, pair.matches, threadIdx);
 		if (pair.GetNumMatches() < config.minMatches) {
 			pair.InvalidateMatches();

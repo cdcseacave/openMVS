@@ -347,7 +347,10 @@ UnsignedArr Image::SelectTopKeypoints(unsigned maxKeypoints) const
 	UnsignedArr indices;
 	if (keypoints.empty())
 		return indices;
-	const unsigned numKeypoints = (unsigned)keypoints.size();
+	// the described prefix only: every caller uses the returned index to reach a descriptor row
+	const unsigned numKeypoints = (unsigned)NumDescribedKeypoints();
+	if (numKeypoints == 0)
+		return indices;
 	if (numKeypoints <= maxKeypoints) {
 		// Return all indices if we have fewer keypoints than requested
 		indices.resize(numKeypoints);

@@ -1368,6 +1368,84 @@ bool ROMA2CoverageSampleTest()
 	return true;
 }
 
+// The described/dense keypoint boundary (Task 5 of roma2-matching-redesign-20260831): the stored
+// count is what survives a descriptor release and an .sfm round-trip of an image whose
+// keypoints.size() > descriptors.rows -- the two arrays serialize independently, so nothing else
+// would notice the boundary moving
+bool DenseKeypointBoundaryTest()
+{
+	TD_TIMER_START();
+
+	// one image with 6 described keypoints and 4 dense ones appended past them
+	Scene scene;
+	Image& img = scene.images.emplace_back((IIndex)0, String("a.jpg"));
+	for (unsigned i = 0; i < 6; ++i)
+		img.keypoints.emplace_back((float)i, 1.f, 3.f, -1.f, 0.02f);
+	img.descriptors = cv::Mat::zeros(6, 32, CV_8U);
+	if (img.HasDenseKeypoints() || img.NumDescribedKeypoints() != 6 || img.NumDenseKeypoints() != 0) {
+		VERBOSE("DenseKeypointBoundaryTest FAILED: an image without dense keypoints must report every keypoint described");
+		return false;
+	}
+	img.CloseDescribedKeypoints();
+	for (unsigned i = 0; i < 4; ++i)
+		img.keypoints.push_back(Image::MakeDenseKeypoint(Point2f(10.f + i, 2.f), 0.8f, 6.f));
+	// closing the boundary a second time (a second supplemented pair on the same image) must not
+	// swallow the dense keypoints the first one appended
+	img.CloseDescribedKeypoints();
+	if (!img.HasDenseKeypoints() || img.NumDescribedKeypoints() != 6 || img.NumDenseKeypoints() != 4) {
+		VERBOSE("DenseKeypointBoundaryTest FAILED: boundary %u for %u keypoints",
+			img.NumDescribedKeypoints(), (unsigned)img.keypoints.size());
+		return false;
+	}
+	for (uint32_t i = 0; i < (uint32_t)img.keypoints.size(); ++i) {
+		if (img.IsDenseKeypoint(i) != (i >= 6)) {
+			VERBOSE("DenseKeypointBoundaryTest FAILED: keypoint %u misclassified", i);
+			return false;
+		}
+	}
+	// the described prefix is what a descriptor-indexed selection may return
+	for (const unsigned idx : img.SelectTopKeypoints(10)) {
+		if (idx >= 6) {
+			VERBOSE("DenseKeypointBoundaryTest FAILED: SelectTopKeypoints returned the dense keypoint %u", idx);
+			return false;
+		}
+	}
+
+	// the boundary outlives the descriptor release: this is the whole reason it is stored and not
+	// derived from descriptors.rows, which is zero from here on
+	img.descriptors.release();
+	if (img.NumDescribedKeypoints() != 6 || img.IsDenseKeypoint(5) || !img.IsDenseKeypoint(6)) {
+		VERBOSE("DenseKeypointBoundaryTest FAILED: boundary lost with the descriptors");
+		return false;
+	}
+
+	// and it round-trips through .sfm with keypoints.size() > descriptors.rows
+	ScopedTempDir tmp("DenseKeypointBoundaryTest");
+	if (!tmp.IsValid())
+		return false;
+	if (!scene.Save(tmp("scene.sfm")))
+		return false;
+	Scene loaded;
+	if (!loaded.Load(tmp("scene.sfm"))) {
+		VERBOSE("DenseKeypointBoundaryTest FAILED: load");
+		return false;
+	}
+	const Image& loadedImg = loaded.images[0];
+	if (loadedImg.keypoints.size() != 10 || !loadedImg.HasDenseKeypoints() ||
+		loadedImg.NumDescribedKeypoints() != 6 || loadedImg.NumDenseKeypoints() != 4 ||
+		loadedImg.IsDenseKeypoint(5) || !loadedImg.IsDenseKeypoint(6)) {
+		VERBOSE("DenseKeypointBoundaryTest FAILED: boundary not preserved by the .sfm round-trip");
+		return false;
+	}
+	if (loadedImg.keypoints[7].response != 0.8f || loadedImg.keypoints[7].size != 6.f) {
+		VERBOSE("DenseKeypointBoundaryTest FAILED: dense keypoint response/size not preserved");
+		return false;
+	}
+
+	VERBOSE("DenseKeypointBoundaryTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 // Global-descriptor retrieval test: cosine ranking of the per-image descriptors, its
 // deterministic tie order, the PairsMatcher dispatch that replaces the vocabulary tree with
 // it, the rankings CSV export, and the .sfm round-trip of the descriptors

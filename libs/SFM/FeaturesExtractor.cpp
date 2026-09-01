@@ -408,9 +408,9 @@ bool FeaturesExtractor::ExtractImage(Image& image, cv::Ptr<cv::Feature2D>& detec
 		return false;
 	}
 
-	// Clear existing features
-	image.keypoints.clear();
-	image.descriptors.release();
+	// Clear existing features, described-keypoint boundary included: everything extracted below is
+	// described, so a boundary left over from an earlier dense supplementation would be stale
+	image.ReleaseFeatures();
 
 	// Create the feature detector based on type
 	if (!detector) {
@@ -519,6 +519,9 @@ bool FeaturesExtractor::ExtractImage(Image& image, cv::Ptr<cv::Feature2D>& detec
 			}
 
 			// Copy selected keypoints and descriptors to output arrays (only once)
+			// extraction appends described keypoints, so it may never run on an image that already
+			// carries dense ones: they would end up inside the described prefix
+			ASSERT(!image.HasDenseKeypoints());
 			ASSERT(image.keypoints.size() == vecDescriptors.size());
 			const size_t offset = image.keypoints.size();
 			for (int idx : selectedIndices) {
@@ -675,8 +678,7 @@ bool FeaturesExtractor::ExtractImageSpherical(Image& image, cv::Ptr<cv::Feature2
 		// rows (cloned above) are released.
 	}
 
-	image.keypoints.clear();
-	image.descriptors.release();
+	image.ReleaseFeatures();
 	if (all.empty()) {
 		if (config.releaseImagePixels)
 			image.ReleasePixels();
@@ -760,14 +762,19 @@ bool FeaturesExtractor::ExportFeaturesOpenMVG(const String& outputDir, const Ima
 	const String descPath = basePath + ".desc";
 
 	// Export keypoints (x y scale orientation)
+	// the described prefix only: the OpenMVG format pairs a .feat line with a .desc row by index,
+	// so a dense keypoint -- which has no row -- has nowhere to go in it
+	const unsigned numDescribed = image.NumDescribedKeypoints();
 	{
 		std::ofstream file(featPath, std::ios::trunc);
 		if (!file.is_open()) {
 			VERBOSE("error: failed to open feature file: %s", featPath.c_str());
 			return false;
 		}
-		for (const auto& kp : image.keypoints)
+		for (unsigned i = 0; i < numDescribed; ++i) {
+			const cv::KeyPoint& kp = image.keypoints[i];
 			file << kp.pt.x << ' ' << kp.pt.y << ' ' << kp.size << ' ' << kp.angle << '\n';
+		}
 	}
 
 	// Export descriptors as binary (size_t count + raw bytes)
@@ -787,7 +794,7 @@ bool FeaturesExtractor::ExportFeaturesOpenMVG(const String& outputDir, const Ima
 		}
 	}
 
-	DEBUG_ULTIMATE("Image % 4u exported %zu OpenMVG features: %s, %s", image.ID, image.keypoints.size(), featPath.c_str(), descPath.c_str());
+	DEBUG_ULTIMATE("Image % 4u exported %u OpenMVG features: %s, %s", image.ID, numDescribed, featPath.c_str(), descPath.c_str());
 	return true;
 }
 
@@ -797,8 +804,8 @@ bool FeaturesExtractor::ImportFeaturesOpenMVG(const String& inputDir, Image& ima
 	const String featPath = basePath + ".feat";
 	const String descPath = basePath + ".desc";
 
-	image.keypoints.clear();
-	image.descriptors.release();
+	// boundary included: every keypoint this import produces is described
+	image.ReleaseFeatures();
 
 	// Load keypoints (x y scale orientation)
 	std::ifstream featFile(featPath);
@@ -849,6 +856,10 @@ bool FeaturesExtractor::ImportFeaturesOpenMVG(const String& inputDir, Image& ima
 				return false;
 			}
 		}
+		// ReleaseFeatures above cleared the boundary, so every keypoint read here is described and
+		// the two counts must match exactly. Read straight off the array rather than through
+		// NumDescribedKeypoints(), whose own consistency ASSERT is exactly what a mismatching file
+		// would trip before this diagnostic could report it.
 		if (image.keypoints.size() != numDesc)
 			VERBOSE("error: descriptor/keypoint count mismatch: %zu descriptors vs %zu keypoints", numDesc, image.keypoints.size());
 		DEBUG_LEVEL(3, "Image % 4u imported %zu OpenMVG features and descriptors: %s, %s",
