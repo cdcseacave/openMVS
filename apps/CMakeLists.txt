@@ -1,5 +1,6 @@
 # Add applications
 ADD_SUBDIRECTORY(CreateStructure)
+ADD_SUBDIRECTORY(SceneAnalyzeSFM)
 ADD_SUBDIRECTORY(ExtractKeyframes)
 ADD_SUBDIRECTORY(InterfaceCOLMAP)
 ADD_SUBDIRECTORY(InterfaceMetashape)
