@@ -1204,14 +1204,17 @@ bool ROMA2CoverageSampleTest()
 	// both occupy the same ~0.4 of that grid. A lambda since the confidence hot-spot sub-case
 	// below has to pass the identical pin.
 	const auto CheckOneWinnerPerBucket = [cells, width, height](const std::vector<Point2f>& sampled, int numBuckets, const char* label) -> bool {
-		// map each A-point back to the warp-grid cell it came from (the inverse of the identity
-		// mapping the test built the warp from), then to its (numBuckets x numBuckets) bucket, and
-		// require no two samples to share one: a fill-up necessarily puts extra points into buckets
-		// that already have a winner, which this catches directly
+		// map each A-point back to the warp-grid cell it came from, then to its
+		// (numBuckets x numBuckets) bucket, and require no two samples to share one: a fill-up
+		// necessarily puts extra points into buckets that already have a winner, which this catches
+		// directly. The mapping is the exact inverse of CoordFromTo (ROMA2Warp.cpp), which the
+		// sampler uses to place a cell in image coordinates: it scales by (size-1)/(cells-1) with
+		// no half-pixel term, so the inverse carries none either -- any offset here would bias
+		// every index and would only stay invisible while the bias sat under the rounding threshold
 		std::vector<int> bucketHits((size_t)numBuckets*numBuckets, 0);
 		FOREACH(i, sampled) {
-			const int cx = ROUND2INT((sampled[i].x - 0.5f)*(cells-1)/(float)(width-1));
-			const int cy = ROUND2INT((sampled[i].y - 0.5f)*(cells-1)/(float)(height-1));
+			const int cx = ROUND2INT(sampled[i].x*(cells-1)/(float)(width-1));
+			const int cy = ROUND2INT(sampled[i].y*(cells-1)/(float)(height-1));
 			const int bx = MINF(cx*numBuckets/cells, numBuckets-1);
 			const int by = MINF(cy*numBuckets/cells, numBuckets-1);
 			++bucketHits[(size_t)by*numBuckets + bx];
