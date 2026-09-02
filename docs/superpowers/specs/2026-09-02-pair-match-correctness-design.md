@@ -82,15 +82,24 @@ is never load-bearing.
 
        sampson <= tau   AND   (no depth  OR  reprojection <= tau + sigma * parallax)
 
-   with tau = 3 px at 1024 px width (scaled with the image width), sigma = 0.10, and *parallax* the
+   with tau = 4 px — the pipeline's own `maxEpipolarError`, so "wrong" means wrong by the standard of
+   the filter that kept the match — sigma = 0.35, and *parallax* the
    match's own translational parallax — how far translation alone moved the point, measured against
    the same ray at infinity. The depth term is not a fixed pixel budget because a depth error is
-   relative: on 8d2f4877 the LiDAR agrees with the oracle structure to 4.6 % (relative MAD), which at
-   a 40-100 px parallax is 2-6 px of reprojection error on matches that are perfectly correct. A
-   fixed tolerance would fail them and pass nothing wide-baseline. Measured on that capture's SIFT
-   pairs, the Sampson error under the GT pose is 0.30-0.37 px at every keyframe gap, so the epipolar
-   half of the rule stays sharp. Reported per segment: GT-inlier fraction, Sampson median and p90,
-   reprojection median, parallax median, depth coverage.
+   relative: it shows up in pixels as a fraction of the parallax, so a fixed tolerance would fail
+   every correct wide-baseline match.
+
+   **sigma is calibrated, not assumed.** Over 20176 plain-SIFT matches on 8d2f4877 that sit within
+   tau of their GT epipolar line — matches that are certainly correct — the ratio
+   reprojection/parallax has p50 0.07, p90 0.26, p95 0.36; restricting to locally smooth depth does
+   not move it (93 % of matches are already on smooth depth, so this is the depth's accuracy, not a
+   discontinuity artefact). sigma = 0.35 is that p95. The consequence has to be stated plainly: on
+   this LiDAR the depth half is a **coarse** two-dimensional check that catches a match sliding far
+   along its epipolar line and nothing finer. The sharp half is the epipolar one — 0.3-0.5 px on
+   correct matches at every keyframe gap — and it is reported on its own as `*EpiFrac` so no headline
+   ever rests on the coarse half alone. Reported per segment: GT-inlier fraction (both halves),
+   epipolar-only fraction, Sampson median and p90, reprojection median, parallax median, depth
+   coverage.
 
    Where there is no depth at all (Truck) the two-view epipolar test is the only one available, and a
    match displaced along its own epipolar line passes it. The reported counterweight is
