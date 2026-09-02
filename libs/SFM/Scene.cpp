@@ -773,7 +773,9 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	// Filter weakly connected images and resection remaining images into the reconstruction
 	FilterWeaklyConnectedImages(*this);
 	if (status.nCalibratedImages < images.size()) {
-		Resection resection(*this, config.resectionCfg);
+		ResectionConfig resectionCfg = config.resectionCfg;
+		resectionCfg.DeriveBAConfigs(config.baConfig);
+		Resection resection(*this, resectionCfg);
 		resection.RegisterImages();
 		FilterWeaklyConnectedImages(*this);
 	}
@@ -854,15 +856,22 @@ bool Scene::ReconstructHierarchical(const ReconstructionConfig& config)
 		// Build tracks
 		BuildTracks(subScene, config.minPairWeight);
 
-		// Initialize with star initializer
-		if (!StarInitializer::Initialize(subScene, config.initCfg)) {
+		// Initialize with star initializer; thread the scene's configured BA settings into its
+		// mini bundle adjustments instead of using the compiled-in BAConfig defaults
+		StarInitConfig initCfg = config.initCfg;
+		initCfg.baConfig = config.baConfig;
+		if (!StarInitializer::Initialize(subScene, initCfg)) {
 			VERBOSE("error: star initialization failed for sub-scene %u (skipping)", i);
 			return; // skip this sub-scene
 		}
 
 		// Incrementally resect images into the reconstruction; every Ceres solve
-		// clamps itself to the sub-scene's thread budget (see BundleAdjustment)
-		Resection resection(subScene, config.resectionCfg);
+		// clamps itself to the sub-scene's thread budget (see BundleAdjustment). Derive the
+		// local/full BA settings from the scene's configured BAConfig so the resection's bundle
+		// adjustments see the same settings as the rest of the pipeline.
+		ResectionConfig resectionCfg = config.resectionCfg;
+		resectionCfg.DeriveBAConfigs(config.baConfig);
+		Resection resection(subScene, resectionCfg);
 		resection.RegisterImages();
 
 		// Local / global bundle adjustment for this sub-scene
@@ -941,7 +950,7 @@ bool Scene::ReconstructGlobal(const ReconstructionConfig& config)
 	status.nState.set(Status::STATE::CALIBRATED);
 
 	// 4. Bundle Adjustment for position and structure refinement only
-	BAConfig baCfg;
+	BAConfig baCfg = config.baConfig;
 	baCfg.refinePosesRotation = false;
 	baCfg.maxIterations = 12;
 	BundleAdjustment::Adjust(*this, baCfg);

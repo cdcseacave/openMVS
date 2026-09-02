@@ -68,11 +68,21 @@ struct SFM_API ResectionConfig
 		ransac.max_iterations = 100000;
 		ransac.min_iterations = 1000;
 
+		DeriveBAConfigs(BAConfig());
+	}
+
+	// Derive localBAConfig/fullBAConfig from the scene's configured BAConfig (dense-observation
+	// weight, GPS weights, keypoint-confidence gating, ...): copy it, then reapply resection's own
+	// local overrides (iteration budget, robust threshold, intrinsics refinement) on top, so every
+	// field the caller set on the base config reaches both bundle adjustments unchanged.
+	void DeriveBAConfigs(const BAConfig& baseCfg) {
 		// Local BA defaults (fast)
+		localBAConfig = baseCfg;
 		localBAConfig.maxIterations = 20;
 		localBAConfig.robustThreshold = 2.f;
 
 		// Full BA defaults (stronger)
+		fullBAConfig = baseCfg;
 		fullBAConfig.maxIterations = 40;
 		fullBAConfig.robustThreshold = 2.f;
 		fullBAConfig.RefineMainIntrinsics();

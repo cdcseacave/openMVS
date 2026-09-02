@@ -11,6 +11,7 @@
 // I N C L U D E S /////////////////////////////////////////////////
 
 #include "Image.h"
+#include "BundleAdjustment.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -35,6 +36,11 @@ struct SFM_API StarInitConfig
 	float maxReprojError{6.f};      // Maximum reprojection error (pixels)
 	float minAngleThreshold{1.f};   // Minimum angle between cameras (degrees)
 	bool globalRotations{false};    // Use global rotation averaging to initialize rotations (optional)
+
+	// Base BA settings the mini bundle adjustments derive from (dense-observation weight, GPS
+	// weights, keypoint-confidence gating, ...); the star initializer applies its own local
+	// overrides (iteration budget, intrinsics refinement) on top, same as ResectionConfig.
+	BAConfig baConfig;
 };
 
 /**

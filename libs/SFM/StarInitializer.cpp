@@ -375,7 +375,7 @@ bool StarInitializer::Initialize(
 	}
 
 	// 5. Mini bundle adjustment (refine initial reconstruction)
-	BAConfig baConfig;
+	BAConfig baConfig = config.baConfig;
 	baConfig.maxIterations = 10; // default mini BA iterations
 	if (!BundleAdjustment::Adjust(scene, baConfig)) {
 		VERBOSE("error: mini bundle adjustment failed");
