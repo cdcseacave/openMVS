@@ -31,8 +31,8 @@
 
 // Campaign instrumentation (roma2-matching-redesign, task 6a): a read-only project dump used to
 // measure the RoMa2 dense-supplementation campaign offline. It loads a saved SFM project and emits
-// one CSV per entity (tracks, observations, pairs, images) beside it -- no pipeline change, nothing
-// is written back into the project. Deliberately self-contained and minimal: it carries no
+// one CSV per entity (tracks, observations, pairs, images) beside it, plus matches.bin, every stored
+// match as pixel coordinates -- no pipeline change, nothing is written back into the project. Deliberately self-contained and minimal: it carries no
 // test-suite integration and is meant to be deleted at campaign close, its learnings kept in docs.
 
 #include "../../libs/SFM.h"
@@ -167,14 +167,15 @@ static String CSVQuote(const String& field)
 // one constant, so that adding a column here cannot desynchronize the empty row from the header.
 static bool ExportImagesCSV(const Scene& scene, const String& fileName)
 {
-	constexpr unsigned NUM_POSE_COLUMNS = 8; // focal + quaternion (4) + camera centre (3)
+	constexpr unsigned NUM_POSE_COLUMNS = 8;   // focal + quaternion (4) + camera centre (3)
+	constexpr unsigned NUM_CAMERA_COLUMNS = 4; // image size (2) + principal point (2)
 	std::ofstream ofs(fileName);
 	if (!ofs.is_open()) {
 		VERBOSE("error: cannot open file '%s' for writing", fileName.c_str());
 		return false;
 	}
 	ofs.precision(12); // enough digits that a re-derived pose error is the pose's, not the CSV's
-	ofs << "imageID,name,numKeypoints,numDescribedKeypoints,numDenseKeypoints,registered,focal,qw,qx,qy,qz,cx,cy,cz\n";
+	ofs << "imageID,name,numKeypoints,numDescribedKeypoints,numDenseKeypoints,registered,focal,qw,qx,qy,qz,cx,cy,cz,width,height,ppx,ppy\n";
 	FOREACH(idx, scene.images) {
 		const Image& img = scene.images[idx];
 		const bool bRegistered = img.IsValid();
@@ -194,6 +195,16 @@ static bool ExportImagesCSV(const Scene& scene, const String& fileName)
 			for (unsigned c = 0; c < NUM_POSE_COLUMNS; ++c)
 				ofs << ','; // every pose cell of an unregistered image stays empty
 		}
+		// The camera block is independent of registration: an image that never got a pose still has
+		// the resolution its keypoints were detected at, which is what every pixel metric needs.
+		if (img.pCamera != NULL) {
+			const Point2 pp = img.pCamera->GetPrincipalPoint();
+			ofs << ',' << img.pCamera->GetWidth() << ',' << img.pCamera->GetHeight()
+				<< ',' << pp.x << ',' << pp.y;
+		} else {
+			for (unsigned c = 0; c < NUM_CAMERA_COLUMNS; ++c)
+				ofs << ',';
+		}
 		ofs << '\n';
 	}
 	ofs.close();
@@ -201,31 +212,127 @@ static bool ExportImagesCSV(const Scene& scene, const String& fileName)
 	return true;
 }
 
-// Write pairs.csv: one row per pair, in array order.
+// One row of matches.bin: where a stored match actually lands in each image, and which keypoint it
+// came from. All members are 4 bytes, so the record has no padding on any supported platform and the
+// file is a plain numpy-readable array of records.
+namespace {
+struct MatchRecord {
+	float x1, y1, x2, y2; // keypoint pixel coordinates, in image ID1 and image ID2 respectively
+	uint32_t idx1, idx2;  // the keypoint indices those coordinates were read from
+};
+static_assert(sizeof(MatchRecord) == 24, "MatchRecord must stay tightly packed: readers index it as a flat array");
+const char MATCHES_MAGIC[8] = {'O','M','V','S','M','T','C','1'};
+constexpr uint32_t MATCHES_VERSION = 1;
+} // unnamed namespace
+
+// Write pairs.csv and matches.bin: one row per pair, in array order, plus every one of that pair's
+// stored matches as pixel coordinates.
+// The two files are written by one pass because pairs.csv's matchOffset indexes matches.bin: written
+// separately, a mid-pass failure could leave offsets pointing into a file that never got the rows.
+// Each pair contributes one contiguous block at matchOffset -- its `matches` array followed by its
+// `outlierMatches` array -- so the reader recovers all four segments from the counts in the row:
+//   [0, numSparseInliers)                                        sparse, descriptor evidence
+//   [.., + numDenseInliers)                                      the ROMAv2 dense supplement
+//   [.., + numLooseInliers)                                      RANSAC inliers the strict filter cut
+//   [.., + numOutlierMatches)                                    outlierMatches, never track-forming
 // compositeWeight is not itself a stored field, but is cheaply derivable from the pair's stored
 // weightSpatial/weightConnectivity/weightTriplet components (ImagePair::GetCompositeWeight()), the
 // same accessor every view-graph consumer and PairsMatcher::ExportPairsCSV already reads -- so it
 // is included rather than omitted.
-static bool ExportPairsCSV(const Scene& scene, const String& fileName)
+// The relative pose is written in the convention the pair stores it in and the one poselib handed it
+// to FinalizeRelative in: x2 = R*x1 + t, with t = Pose3D::GetT() (not the camera centre). A pair
+// without a relative pose leaves all twelve cells empty rather than emitting an identity.
+static bool ExportPairsAndMatches(const Scene& scene, const String& pairsFileName, const String& matchesFileName)
 {
-	std::ofstream ofs(fileName);
+	constexpr unsigned NUM_POSE_COLUMNS = 12; // rotation (9, row-major) + translation (3)
+	std::ofstream ofs(pairsFileName);
 	if (!ofs.is_open()) {
-		VERBOSE("error: cannot open file '%s' for writing", fileName.c_str());
+		VERBOSE("error: cannot open file '%s' for writing", pairsFileName.c_str());
 		return false;
 	}
-	ofs << "ID1,ID2,numMatches,numSparseInliers,numDenseInliers,compositeWeight,supplemented\n";
+	std::ofstream mfs(matchesFileName, std::ios::binary);
+	if (!mfs.is_open()) {
+		VERBOSE("error: cannot open file '%s' for writing", matchesFileName.c_str());
+		return false;
+	}
+	// The total row count is known before the first row is written, so the header never has to be
+	// seeked back to and patched -- a truncated file is then detectably short rather than mislabeled.
+	uint32_t numRows = 0;
+	FOREACH(idx, scene.pairs)
+		numRows += (uint32_t)(scene.pairs[idx].matches.size() + scene.pairs[idx].outlierMatches.size());
+	const uint32_t version = MATCHES_VERSION;
+	mfs.write(MATCHES_MAGIC, sizeof(MATCHES_MAGIC));
+	mfs.write((const char*)&version, sizeof(version));
+	mfs.write((const char*)&numRows, sizeof(numRows));
+
+	ofs.precision(12); // enough digits that a re-derived pose error is the pose's, not the CSV's
+	ofs << "ID1,ID2,numMatches,numSparseInliers,numDenseInliers,numLooseInliers,numOutlierMatches,"
+	       "compositeWeight,supplemented,overlapRatio,overlapArea,meanRayAngle,matchOffset,hasPose,"
+	       "R00,R01,R02,R10,R11,R12,R20,R21,R22,tx,ty,tz\n";
+	uint32_t offset = 0;
 	FOREACH(idx, scene.pairs) {
 		const ImagePair& pair = scene.pairs[idx];
-		const unsigned numDenseInliers = pair.GetNumDenseInliers();
+		const unsigned numSparse = pair.GetNumFilteredInliers();
+		const unsigned numDense = pair.GetNumDenseInliers();
+		ASSERT(numSparse + numDense <= pair.matches.size());
+		const unsigned numLoose = (unsigned)pair.matches.size() - numSparse - numDense;
+		const unsigned numOutliers = (unsigned)pair.outlierMatches.size();
 		ofs << pair.ID1 << ',' << pair.ID2 << ','
 			<< pair.GetNumMatches() << ','
-			<< pair.GetNumFilteredInliers() << ','
-			<< numDenseInliers << ','
+			<< numSparse << ','
+			<< numDense << ','
+			<< numLoose << ','
+			<< numOutliers << ','
 			<< pair.GetCompositeWeight() << ','
-			<< (numDenseInliers > 0 ? 1 : 0) << '\n';
+			<< (numDense > 0 ? 1 : 0) << ','
+			<< pair.overlapRatio << ','
+			<< pair.overlapArea << ','
+			<< pair.meanRayAngle << ','
+			<< offset << ','
+			<< (pair.relativePose.has_value() ? 1 : 0);
+		if (pair.relativePose.has_value()) {
+			const Pose3D& rel = pair.relativePose.value();
+			const Point3 t = rel.GetT();
+			for (int r = 0; r < 3; ++r)
+				for (int c = 0; c < 3; ++c)
+					ofs << ',' << rel.R(r, c);
+			ofs << ',' << t.x << ',' << t.y << ',' << t.z;
+		} else {
+			for (unsigned c = 0; c < NUM_POSE_COLUMNS; ++c)
+				ofs << ','; // every pose cell of a pair without a relative pose stays empty
+		}
+		ofs << '\n';
+
+		// the matches themselves, in stored order, so the segment boundaries above are exact
+		const Image& img1 = scene.images[pair.ID1];
+		const Image& img2 = scene.images[pair.ID2];
+		const auto WriteMatches = [&](const std::vector<DMatch>& arr) {
+			for (const DMatch& m : arr) {
+				MatchRecord rec;
+				rec.idx1 = m.queryIdx;
+				rec.idx2 = m.trainIdx;
+				if (m.queryIdx < img1.keypoints.size() && m.trainIdx < img2.keypoints.size()) {
+					const cv::Point2f& pt1 = img1.keypoints[m.queryIdx].pt;
+					const cv::Point2f& pt2 = img2.keypoints[m.trainIdx].pt;
+					rec.x1 = pt1.x; rec.y1 = pt1.y;
+					rec.x2 = pt2.x; rec.y2 = pt2.y;
+				} else {
+					// a match indexing a keypoint that is not there is a corrupt project, not a
+					// position: the row stays, so offsets keep counting, but it scores nothing
+					rec.x1 = rec.y1 = rec.x2 = rec.y2 = std::numeric_limits<float>::quiet_NaN();
+				}
+				mfs.write((const char*)&rec, sizeof(rec));
+			}
+		};
+		WriteMatches(pair.matches);
+		WriteMatches(pair.outlierMatches);
+		offset += (uint32_t)(pair.matches.size() + pair.outlierMatches.size());
 	}
+	ASSERT(offset == numRows);
 	ofs.close();
-	VERBOSE("Exported %u pairs to '%s'", (unsigned)scene.pairs.size(), fileName.c_str());
+	mfs.close();
+	VERBOSE("Exported %u pairs to '%s' and %u matches to '%s'",
+		(unsigned)scene.pairs.size(), pairsFileName.c_str(), numRows, matchesFileName.c_str());
 	return true;
 }
 
@@ -335,7 +442,7 @@ int main(int argc, LPCTSTR* argv)
 	bool ok = true;
 	ok &= ExportTracksCSV(scene, OPT::strOutDir + _T("tracks.csv"));
 	ok &= ExportObservationsCSV(scene, OPT::strOutDir + _T("observations.csv"));
-	ok &= ExportPairsCSV(scene, OPT::strOutDir + _T("pairs.csv"));
+	ok &= ExportPairsAndMatches(scene, OPT::strOutDir + _T("pairs.csv"), OPT::strOutDir + _T("matches.bin"));
 	ok &= ExportImagesCSV(scene, OPT::strOutDir + _T("images.csv"));
 	if (!ok)
 		return EXIT_FAILURE;
