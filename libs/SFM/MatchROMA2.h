@@ -235,10 +235,11 @@ SFM_API bool DrawDenseSupplement(
 // solution must not be able to leak it into a fitted geometry. The dense keypoints do not exist in
 // the images yet (they are appended serially, after the pass that calls this), which is why the
 // refit runs off the drawn positions in `supplement` rather than off the stored pair.
-// On success `pair` receives the refitted relative pose AND the E and F composed from it, so the
-// three describe one geometry -- a pair whose F came from the previous fit would hand
-// ViewGraphCalibrator and the epipolar band a constraint the pose no longer agrees with. On failure
-// the pair is left exactly as it was.
+// On success `pair` receives the refitted relative pose AND the E and F the fit itself produced (the
+// branch's own estimator, in its own convention -- no re-composition from a nominal K), so the three
+// describe one geometry -- a pair whose F came from the previous fit would hand ViewGraphCalibrator
+// and the epipolar band a constraint the pose no longer agrees with. On failure the pair is left
+// exactly as it was.
 // Returns true if the refit landed.
 SFM_API bool RefitInfusedPose(
 	PairsMatcher& pairsMatcher,

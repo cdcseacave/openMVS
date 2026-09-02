@@ -673,19 +673,15 @@ bool SFM::RefitInfusedPose(PairsMatcher& pairsMatcher, const Image& imgA, const 
 		fit.matches.emplace_back(i, i);
 	if (!pairsMatcher.GeometricFilter(imgACopy, imgBCopy, fit) || !fit.relativePose.has_value())
 		return false; // the pair keeps whatever geometry it had: a refit either lands whole or not at all
-	// all THREE members move together, exactly as GeometricFilter::FinalizeRelative composes them
-	// from one fit. Leaving F behind -- the gate's on a dense-only pair, the guided pass's on an
-	// infused one -- would hand ViewGraphCalibrator's focal self-calibration and MatchGeometric's
-	// epipolar band a constraint from a different geometry than the pose and E now describe. F is
-	// composed rather than cleared, because those consumers test F.has_value() and a pair that had
-	// one must keep one; it is meaningless off a pinhole pair (SphericalCamera::GetK is IDENTITY),
-	// which is the one case where there is nothing to compose and nothing may be left stale either.
+	// all THREE members move together, taken straight from `fit` rather than recomposed here:
+	// GeometricFilter already ran the branch's own estimator (FinalizeRelative for
+	// ESSENTIAL/SHARED_FOCAL, DecomposeFundamentalToPose for FUNDAMENTAL) and left `fit.E`/`fit.F` in
+	// that branch's own convention. On SHARED_FOCAL in particular, FinalizeRelative composes F from the
+	// RANSAC-estimated focal (PairsMatcher.cpp), not the camera's nominal K -- recomposing from
+	// imgA/imgB.GetK() here would silently disagree with the pose and E this refit just fitted.
 	guided.relativePose = *fit.relativePose;
-	guided.E = ImagePair::ComposeEssentialMatrix(*guided.relativePose);
-	if (imgA.GetCameraType() == CameraType::PINHOLE && imgB.GetCameraType() == CameraType::PINHOLE)
-		guided.F = ImagePair::ComposeFundamentalMatrix(*guided.E, imgA.GetK(), imgB.GetK());
-	else
-		guided.F.reset();
+	guided.E = fit.E;
+	guided.F = fit.F;
 	return true;
 }
 
