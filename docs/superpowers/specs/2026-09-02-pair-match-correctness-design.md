@@ -59,9 +59,11 @@ size, segment id, and a depth sampler where depth exists.
 * truck: pycolmap on `sparse`. No depth: match error is the Sampson distance under the GT relative
   pose; covisibility comes from shared `points3D`.
 * lidar8d2f: oracle poses (RADIAL distortion applied on projection) with the LiDAR depth converted to
-  oracle units by one robust scale factor `s`, the median ratio of inter-camera distances between the
-  oracle centres and the ARKit centres of the same frames. Match error is then a reprojection error
-  in pixels.
+  oracle units by one robust scale factor `s`. `s` is fitted from the oracle's **own structure** —
+  the median ratio of each triangulated point's z-depth in a camera to the LiDAR depth at that pixel
+  — not from the ARKit trajectory: ARKit gives 0.3063 units/m with an 11 % relative MAD (its drift is
+  exactly what the oracle exists to correct), the structure fit gives 0.3140 with 4.6 %, and that
+  4.6 % is the honest accuracy of this ground truth.
 * normal38: `oracle/frames.npz` (`R_wc` camera-to-world, centre `C`, `K_depth`, per-frame depth
   samples) plus `keyframes/depth/<ts>.Clean.png`. Metric and self-consistent, so reprojection error
   directly. Poses are consistent only inside a `segment`; a cross-segment pair has **no GT** and is
@@ -75,8 +77,25 @@ is never load-bearing.
 
 ## 3. Metrics (per pair)
 
-1. **GT consistency** — fraction of sparse / dense / loose matches within tau = 3 px (at 1024 px
-   width, scaled with the image width), reported per segment.
+1. **GT consistency** — a match is correct when it lies on the GT epipolar geometry *and*, wherever
+   the GT depth can say so, in the right place along it:
+
+       sampson <= tau   AND   (no depth  OR  reprojection <= tau + sigma * parallax)
+
+   with tau = 3 px at 1024 px width (scaled with the image width), sigma = 0.10, and *parallax* the
+   match's own translational parallax — how far translation alone moved the point, measured against
+   the same ray at infinity. The depth term is not a fixed pixel budget because a depth error is
+   relative: on 8d2f4877 the LiDAR agrees with the oracle structure to 4.6 % (relative MAD), which at
+   a 40-100 px parallax is 2-6 px of reprojection error on matches that are perfectly correct. A
+   fixed tolerance would fail them and pass nothing wide-baseline. Measured on that capture's SIFT
+   pairs, the Sampson error under the GT pose is 0.30-0.37 px at every keyframe gap, so the epipolar
+   half of the rule stays sharp. Reported per segment: GT-inlier fraction, Sampson median and p90,
+   reprojection median, parallax median, depth coverage.
+
+   Where there is no depth at all (Truck) the two-view epipolar test is the only one available, and a
+   match displaced along its own epipolar line passes it. The reported counterweight is
+   **triangulated distance**: the matches are triangulated under the GT pose and their median
+   distance to the GT point cloud is reported in units of the cloud's own nearest-neighbour spacing.
 2. **Pose** — stored relative pose against GT: rotation angle and translation-direction angle.
 3. **One-pose explanation (GT-free)** — one essential matrix fitted by RANSAC over sparse ∪ dense at
    the pipeline's own epipolar threshold; the inlier fraction of each segment under that single
@@ -87,7 +106,7 @@ is never load-bearing.
 5. **Under-matched flag** — from the pipeline's own record (supplemented, sparse count, SIFT cell
    coverage), so "did the filling help the pairs it was meant to help" is answerable.
 
-**Pass rule (per pair):** sparse and dense GT-inlier fractions >= 0.9; joint-fit inlier fractions
+**Pass rule (per pair):** sparse and dense GT-inlier fractions (rule 1 above) >= 0.9; joint-fit inlier fractions
 >= 0.9; stored pose within 1 deg / 5 deg of GT; and, for supplemented pairs, `fill >= 0.6` on both
 images. Thresholds are named constants at the top of the script.
 
@@ -111,7 +130,13 @@ the 30 worst pairs). Never in the repo tree.
   100 %, perturbed matches are caught, the grid marks the right overlap cells.
 * A GT sanity gate before any number is trusted: on Truck's `sift` arm the sparse matches must reach
   >= 0.95 median GT-inlier fraction. If they do not, the GT convention is wrong and is fixed first.
-  The same gate runs per dataset on its sparse matches.
+  The same gate runs per dataset on its sparse matches. **Result:** Truck/sift scores a median sparse
+  GT-inlier fraction of 1.000, a joint-fit inlier fraction of 0.999 and a stored relative pose 0.11
+  deg / 0.35 deg from GT. On 8d2f4877 the first gate run failed (0.12) and was traced to the
+  tolerance, not the conventions: the pose fitted from that arm's own matches agrees with the oracle
+  to 0.11-0.25 deg at every gap, and the oracle reprojects its own points through the reader at 0.83
+  px, so the GT is sound and the fixed pixel tolerance was not. That is the measurement that produced
+  the rule above.
 
 ## Out of scope
 
