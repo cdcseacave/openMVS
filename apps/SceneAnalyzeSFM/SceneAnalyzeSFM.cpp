@@ -163,9 +163,11 @@ static String CSVQuote(const String& field)
 // (cx,cy,cz) is the camera centre in world units (Pose3D::C, not the translation -R*C); focal is
 // the camera's mean focal in pixels (Camera::GetFocalLength). An unregistered image -- no pose or
 // no camera -- leaves all eight cells empty rather than emitting an identity pose that a reader
-// could mistake for a fitted one.
+// could mistake for a fitted one. Both branches emit the same NUM_POSE_COLUMNS cells, counted from
+// one constant, so that adding a column here cannot desynchronize the empty row from the header.
 static bool ExportImagesCSV(const Scene& scene, const String& fileName)
 {
+	constexpr unsigned NUM_POSE_COLUMNS = 8; // focal + quaternion (4) + camera centre (3)
 	std::ofstream ofs(fileName);
 	if (!ofs.is_open()) {
 		VERBOSE("error: cannot open file '%s' for writing", fileName.c_str());
@@ -183,13 +185,14 @@ static bool ExportImagesCSV(const Scene& scene, const String& fileName)
 			<< img.NumDenseKeypoints() << ','
 			<< (bRegistered ? 1 : 0);
 		if (bRegistered) {
-			double params[7]; // quaternion (w x y z), then the camera centre
+			double params[NUM_POSE_COLUMNS-1]; // quaternion (w x y z), then the camera centre
 			Pose3DToQuaternionAndCenter(img, params);
 			ofs << ',' << img.pCamera->GetFocalLength();
 			for (const double param : params)
 				ofs << ',' << param;
 		} else {
-			ofs << ",,,,,,,,"; // focal + the seven pose cells, all empty
+			for (unsigned c = 0; c < NUM_POSE_COLUMNS; ++c)
+				ofs << ','; // every pose cell of an unregistered image stays empty
 		}
 		ofs << '\n';
 	}
