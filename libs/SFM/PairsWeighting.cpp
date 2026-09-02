@@ -48,9 +48,13 @@ float ComputeIntrinsicWeight(ImagePair& pair, const Image& img1, const Image& im
 	// deliberately kept in. The MAGNITUDE the score multiplies is discounted instead, in
 	// GetNumWeightedInliers: a dense match counts w, not 1, so a coverage-maximising draw cannot
 	// re-rank the graph by sheer count.
-	// The angle term below stays sparse (FilterMatches accumulates it over sparse matches only) and
-	// reads a neutral 1 when there is none, which is the honest answer for a pair whose baseline no
-	// sub-pixel correspondence ever measured.
+	// The ANGLE term reads meanRayAngle, accumulated over that same track-forming set (FilterMatches,
+	// or ImagePair::ComputeMeanRayAngle when an append changed the set without re-filtering it), for
+	// the same reason: a ray angle is a geometric quantity, not a sub-pixel one, and this is the one
+	// term that can demote a degenerate baseline -- it has to be available on a pair whose evidence
+	// is dense. Only a pair with no relative pose at all reads 0 here, which
+	// ComputeAngleBaselineWeight scores at its MAXIMUM (see the note there): no baseline was
+	// measurable, and no term in this product will demote such a pair.
 	const auto [points1, points2] = pair.GetTrackFormingPoints(img1, img2);
 
 	// Grid Coverage Score (N_eff)

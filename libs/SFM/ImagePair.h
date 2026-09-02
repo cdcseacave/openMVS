@@ -103,9 +103,12 @@ public:
 	// Overlap metrics
 	float overlapRatio;       // ratio of tracked/matched features
 	float overlapArea;        // overlap area computed from homography (0-1)
-	float meanRayAngle;       // median angle between viewing rays of the SPARSE inlier matches in radians
-	                          // (pseudo-baseline); the dense supplement is excluded because this feeds
-	                          // ComputeIntrinsicWeight, i.e. it is part of the pair's authority
+	float meanRayAngle;       // median angle between viewing rays of the TRACK-FORMING matches in
+	                          // radians (pseudo-baseline): the dense supplement is included, because a
+	                          // ray angle is a geometric quantity a warp-sampled position measures
+	                          // just as well, and this feeds ComputeIntrinsicWeight -- the one term
+	                          // that can demote a degenerate baseline must be available on a pair
+	                          // whose evidence is dense. 0 = never measured (no relative pose)
 
 	// Composite weighting scores
 	float weightSpatial;      // Intrinsic: geometric spread/conditioning (0-1)
@@ -286,6 +289,15 @@ public:
 	// the frame it was drawn over whether or not it counts as descriptor evidence.
 	std::pair<std::vector<Point2f>, std::vector<Point2f>> GetTrackFormingPoints(
 		const Image& img1, const Image& img2) const;
+
+	// The median triangulation angle over that same TRACK-FORMING prefix, in radians: what
+	// meanRayAngle holds, measured rather than filtered. FilterMatches computes it as a by-product
+	// of its accept loop; this is for the caller that CHANGED the prefix without re-filtering the
+	// pair -- AppendDenseMatches, which must not put the dense supplement through the strict
+	// geometric filter (that is the whole design of the supplement) but must not leave the pair
+	// claiming a baseline measured on matches it no longer only has either.
+	// 0 when the pair has no relative pose to triangulate against, i.e. no measurable baseline.
+	float ComputeMeanRayAngle(const Image& img1, const Image& img2) const;
 
 	// Filter matches using cheirality, triangulation angle, and epipole distance constraints
 	// minAngle: minimum triangulation angle in degrees

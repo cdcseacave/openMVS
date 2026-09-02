@@ -531,6 +531,16 @@ unsigned SFM::AppendDenseMatches(Scene& scene, ImagePair& pair,
 	ASSERT(at <= pair.matches.size());
 	pair.matches.insert(pair.matches.begin() + at, dense.begin(), dense.end());
 	pair.numDenseInliers += (int)dense.size();
+	// the two per-pair statistics derived from the partition this just changed. The discounted
+	// inlier count is invalidated rather than recomputed, because the weight it is discounted by
+	// lives in the weighting pass and not here; the ray angle IS recomputed, because nothing else
+	// will -- a pair infused here is not re-filtered afterwards (deliberately: the supplement must
+	// not go through the strict geometric filter), and a pair left claiming a baseline measured on
+	// its sparse matches alone -- or, on a dense-only pair, none at all -- would keep the one weight
+	// term that can demote a degenerate baseline unavailable on exactly this population
+	pair.weightedInliers = -1.f;
+	if (pair.relativePose.has_value())
+		pair.meanRayAngle = pair.ComputeMeanRayAngle(imgA, imgB);
 	return (unsigned)dense.size();
 }
 /*----------------------------------------------------------------*/

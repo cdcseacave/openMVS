@@ -486,14 +486,20 @@ own occupancy gather and its `--roma2-supplement-max-inliers` trigger, and the d
 what the descriptor matcher verified (the pairs CSV, `SceneAnalyzeSFM`, `BuildTracks`' skip counters
 and its pose-consistency check, the per-pass statistics).
 
-Each term of `weightSpatial` reads the segment its question is about. The **area** score runs over the
-track-forming matches, supplement included: coverage asks where the pair has correspondences, and a
-dense draw covers what it was drawn over — a dense-only pair would otherwise score no area, hence no
-weight, and be cut from the graph it was deliberately kept in. The median triangulation angle
-`FilterMatches` stores in `meanRayAngle` stays **sparse**: the supplement is a stratified draw over
-the whole overlap while the descriptor correspondences are clustered, so including it moves the angle
-term either way (the weight peaks at 15°), and a pair with no sparse matches reads the neutral 1,
-which is the honest answer for a baseline no sub-pixel correspondence ever measured.
+Both terms of `weightSpatial` run over the **track-forming** matches, supplement included. The
+**area** score, because coverage asks where the pair has correspondences and a dense draw covers what
+it was drawn over — a dense-only pair would otherwise score no area, hence no weight, and be cut from
+the graph it was deliberately kept in. The **angle** term (`ComputeAngleBaselineWeight(meanRayAngle)`)
+for a sharper reason: it is the only factor that can demote a pair for a degenerate baseline, and
+`ComputeAngleBaselineWeight(0)` is not a neutral value but the function's **maximum** — so a
+`meanRayAngle` accumulated over sparse matches alone hands every dense-only pair the best possible
+baseline score by construction. A ray angle is a geometric quantity, not a sub-pixel one: a whole warp
+cell of position error is ~0.05° of ray direction against baselines measured in degrees, so the
+precision argument that keeps a dense position out of the reprojection-based checks does not reach it.
+`FilterMatches` therefore accumulates the median over every accepted track-forming match, and
+`AppendDenseMatches` — which changes that set without re-filtering the pair, deliberately — re-measures
+it through `ImagePair::ComputeMeanRayAngle`. Only a pair with no relative pose at all still reads 0,
+i.e. a baseline that was never measurable; nothing in the product demotes such a pair.
 
 **The validity floor reads `GetNumTrackFormingMatches()`**, undiscounted. It asks "does this pair
 carry enough verified correspondence to be considered at all", and a gate-validated infused pair does.

@@ -103,7 +103,11 @@ Matrix3x3 ImagePair::DecomposeFundamentalMatrix(const Matrix3x3& F, const Matrix
 float ImagePair::ComputeAngleBaselineWeight(float meanAngleDegrees)
 {
 	if (meanAngleDegrees <= 0.f)
-		return 1.f; // no angle info, return neutral weight
+		return 1.f; // NOT a neutral value: 1 is this function's MAXIMUM, the score of an optimal
+		            // baseline. A pair with no measured angle is therefore not demoted at all, which
+		            // is only defensible while "no angle" means "not measurable" -- with a relative
+		            // pose the angle IS measurable over every track-forming match (FilterMatches,
+		            // ImagePair::ComputeMeanRayAngle), and a pair that has one must carry it
 
 	#if 0
 	// Multiplicative Factor:
@@ -224,6 +228,30 @@ std::pair<std::vector<Point2f>, std::vector<Point2f>> ImagePair::GetTrackForming
 	return std::make_pair(pts1, pts2);
 }
 
+float ImagePair::ComputeMeanRayAngle(const Image& img1, const Image& img2) const
+{
+	if (!relativePose.has_value() || matches.empty())
+		return 0.f; // no pose, no measurable baseline
+	const Pose3D& relPose = relativePose.value();
+	const Camera& cam1 = *img1.pCamera;
+	const Camera& cam2 = *img2.pCamera;
+	const unsigned numTrackForming = MINF(GetNumTrackFormingMatches(), (unsigned)matches.size());
+	FloatArr cosAngles(0, numTrackForming);
+	for (unsigned i = 0; i < numTrackForming; ++i) {
+		const DMatch& m = matches[i];
+		// the same bearings, the same triangulation and the same angle FilterMatches accumulates,
+		// on the same set -- this measures, it does not filter, which is the whole difference
+		const Point3 b1 = cam1.UnprojectNormalized(Cast<REAL>(img1.keypoints[m.queryIdx].pt));
+		const Point3 b2 = cam2.UnprojectNormalized(Cast<REAL>(img2.keypoints[m.trainIdx].pt));
+		Point3 X;
+		if (!TriangulatePoint3D(relPose.R, relPose.C, b1, b2, X))
+			continue;
+		const Point3 V2 = X - relPose.C;
+		cosAngles.push_back((float)ComputeAngle(X.ptr(), V2.ptr()));
+	}
+	return cosAngles.empty() ? 0.f : ACOS(cosAngles.GetMedian());
+}
+
 void ImagePair::CheckSparseSegmentIsDescribed(const Image& img1, const Image& img2) const
 {
 	#ifndef _RELEASE
@@ -283,20 +311,21 @@ unsigned ImagePair::FilterMatches(const Image& img1, const Image& img2, float mi
 	// the default already spanning `matches`, so this is the contract stated explicitly rather than
 	// a live bug fix -- but the method is SFM_API and the next caller need not arrive that way.
 	const auto [pts1, pts2] = GetMatchedPoints(img1, img2, true);
-	// A match with a dense (ROMAv2 warp) endpoint is a supplement match: track-forming, but no
-	// evidence of the pair's authority, so it must not vote on any per-pair statistic the view graph
-	// ranks on. meanRayAngle below is exactly such a statistic -- ComputeIntrinsicWeight multiplies
-	// ComputeAngleBaselineWeight(meanRayAngle) into weightSpatial -- and the supplement is a
-	// coverage-maximising stratified draw spread over the whole overlap while the descriptor
-	// correspondences are clustered, so including it moves the median triangulation angle (either
-	// way: the weight peaks at 15 degrees) and re-ranks the graph. Hence cosAngles takes sparse
-	// matches only. The same predicate re-derives the dense segment after the partition below.
+	// The dense (ROMAv2 warp) supplement votes on meanRayAngle, like every other track-forming
+	// match: a ray angle is a GEOMETRIC quantity, and the coarseness that keeps a dense position out
+	// of the reprojection-based checks does not reach it -- a whole warp cell of position error is
+	// ~0.05 degrees of ray direction against baseline angles measured in degrees. The pair's evidence
+	// is sparse + dense wherever the view graph ranks or gates on it, and this statistic feeds
+	// exactly such a place (ComputeIntrinsicWeight multiplies ComputeAngleBaselineWeight(meanRayAngle)
+	// into weightSpatial, over the same track-forming set its area score runs on), so a pair whose
+	// evidence is dense must be able to be demoted for a degenerate baseline like any other.
+	// HasDenseEnd stays: it is what re-derives the dense segment after the partition below.
 	const bool bHasDenseKeypoints = img1.HasDenseKeypoints() || img2.HasDenseKeypoints();
 	const auto HasDenseEnd = [&img1, &img2](const DMatch& m) {
 		return img1.IsDenseKeypoint(m.queryIdx) || img2.IsDenseKeypoint(m.trainIdx);
 	};
 	std::vector<char> mask(matches.size(), 0);
-	FloatArr cosAngles(0, matches.size()); // per-inlier ray-angle cosines, sparse matches only
+	FloatArr cosAngles(0, matches.size()); // per-inlier ray-angle cosines, over the track-forming set
 	unsigned numInliers = 0;
 	FOREACH(i, matches) {
 		// Observed unit bearings (works for both pinhole and spherical)
@@ -337,18 +366,16 @@ unsigned ImagePair::FilterMatches(const Image& img1, const Image& img2, float mi
 		if (minAngle > 0 && cosAngle > maxCosAngle)
 			continue;
 		// Accepted as inlier
-		if (!bHasDenseKeypoints || !HasDenseEnd(matches[i]))
-			cosAngles.push_back((float)cosAngle); // descriptor evidence only, see above
+		cosAngles.push_back((float)cosAngle); // every track-forming match votes, see above
 		mask[i] = 1;
 		++numInliers;
 	}
 
-	// Update ray angle with the median of per-inlier SPARSE angles: cosine is monotone in the angle,
+	// Update ray angle with the median of the per-inlier angles: cosine is monotone in the angle,
 	// so the median cosine maps exactly to the median angle, and a robust order statistic keeps
-	// mismatch-contaminated or badly triangulated matches from skewing the pair statistic. A
-	// supplemented pair whose sparse segment was emptied by the filter keeps no angle at all rather
-	// than borrowing the supplement's, which is the same "no descriptor evidence" answer every other
-	// weight term gives on it.
+	// mismatch-contaminated or badly triangulated matches from skewing the pair statistic. Zero when
+	// nothing survived, which ComputeAngleBaselineWeight reads as "no baseline measured" and scores
+	// at its maximum -- see the note there.
 	meanRayAngle = cosAngles.empty() ? 0.f : ACOS(cosAngles.GetMedian());
 	// The stable_partition below re-derives the dense segment from `mask`'s surviving inliers by
 	// re-evaluating HasDenseEnd, which is the one documented false negative of this re-derivation

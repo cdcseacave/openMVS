@@ -2633,10 +2633,11 @@ bool DenseKeypointBoundaryTest()
 // A dense supplement match is evidence about its pair, discounted for the precision of a
 // warp-sampled position -- not full evidence, and not none. This checks each term of the weight on
 // one supplemented pair, since each reads a different segment for a different reason:
-//  - the ANGLE term, sparse: FilterMatches' meanRayAngle is the median over the SPARSE matches only,
-//    because ComputeIntrinsicWeight multiplies ComputeAngleBaselineWeight(meanRayAngle) into
-//    weightSpatial, and the supplement is a coverage-maximising draw whose triangulation angles are
-//    nothing like the clustered descriptor correspondences'.
+//  - the ANGLE term, track-forming: FilterMatches' meanRayAngle is the median over the sparse matches
+//    AND the supplement. A ray angle is a geometric quantity a warp-sampled position measures as well
+//    as a sub-pixel one, and ComputeIntrinsicWeight multiplies ComputeAngleBaselineWeight(meanRayAngle)
+//    into weightSpatial -- it is the ONE term that can demote a degenerate baseline, and leaving it
+//    sparse hands a pair whose evidence is dense the function's maximum (1.0, not a neutral value).
 //  - the AREA term, track-forming: coverage asks where the pair has correspondences, and a dense
 //    draw covers what it was drawn over. A dense-only pair would otherwise score no area at all.
 //  - the MAGNITUDE, discounted: sparse + w x dense (GetNumWeightedInliers), so a stratified draw
@@ -2697,16 +2698,25 @@ bool SupplementEvidenceIsolationTest()
 	for (uint32_t k = 0; k < (uint32_t)(sparsePts.size() + densePts.size()); ++k)
 		pair.matches.emplace_back(k, k);
 
-	// the median cosine over the SPARSE matches, derived here from the 3D points rather than from
-	// the code under test: FloatArr::GetMedian of an odd count is the middle element after
-	// nth_element, i.e. the 3rd smallest of the 5 cosines, and the cosine is monotone in the angle
-	std::vector<REAL> sparseCos;
-	for (const Point3& X : sparsePts) {
-		const Point3 V1 = X - camCenters[0], V2 = X - camCenters[1];
-		sparseCos.push_back(V1.dot(V2) / (norm(V1) * norm(V2)));
-	}
+	// the median cosine over the TRACK-FORMING matches, sparse and dense together, derived here from
+	// the 3D points rather than from the code under test: FloatArr::GetMedian takes the element at
+	// index size/2 after nth_element, and the cosine is monotone in the angle. The sparse-only median
+	// is derived alongside it, so the check below can state that the two really do differ -- the
+	// fixture's dense points sit ten times closer than its sparse ones for exactly that reason.
+	const auto RayCosines = [&camCenters](const std::vector<Point3>& pts, std::vector<REAL>& cosines) {
+		for (const Point3& X : pts) {
+			const Point3 V1 = X - camCenters[0], V2 = X - camCenters[1];
+			cosines.push_back(V1.dot(V2) / (norm(V1) * norm(V2)));
+		}
+	};
+	std::vector<REAL> sparseCos, allCos;
+	RayCosines(sparsePts, sparseCos);
+	RayCosines(sparsePts, allCos);
+	RayCosines(densePts, allCos);
 	std::sort(sparseCos.begin(), sparseCos.end());
-	const REAL expectedAngle = ACOS(sparseCos[sparseCos.size() >> 1]);
+	std::sort(allCos.begin(), allCos.end());
+	const REAL expectedSparseAngle = ACOS(sparseCos[sparseCos.size() >> 1]);
+	const REAL expectedAngle = ACOS(allCos[allCos.size() >> 1]);
 
 	const unsigned numSparse = pair.FilterMatches(scene.images[0], scene.images[1], 0.5f, 6.f, 0.f);
 	if (numSparse != 5 || pair.GetNumFilteredInliers() != 5 || pair.GetNumDenseInliers() != 15 ||
@@ -2715,10 +2725,11 @@ bool SupplementEvidenceIsolationTest()
 			pair.GetNumFilteredInliers(), pair.GetNumDenseInliers(), numSparse);
 		return false;
 	}
-	if (ABS(REAL(pair.meanRayAngle) - expectedAngle) > 1e-3) {
-		VERBOSE("SupplementEvidenceIsolationTest FAILED: meanRayAngle is %.4f deg, the sparse median is %.4f deg "
-			"-- the dense supplement is voting on the pair's angle statistic",
-			R2D(pair.meanRayAngle), R2D(expectedAngle));
+	if (ABS(REAL(pair.meanRayAngle) - expectedAngle) > 1e-3 ||
+		ABS(expectedAngle - expectedSparseAngle) < D2R(REAL(1))) {
+		VERBOSE("SupplementEvidenceIsolationTest FAILED: meanRayAngle is %.4f deg, the track-forming median is %.4f deg "
+			"(the sparse-only median is %.4f deg) -- the dense supplement must vote on the pair's angle statistic",
+			R2D(pair.meanRayAngle), R2D(expectedAngle), R2D(expectedSparseAngle));
 		return false;
 	}
 
@@ -2761,6 +2772,76 @@ bool SupplementEvidenceIsolationTest()
 		VERBOSE("SupplementEvidenceIsolationTest FAILED: the pair's evidence is %.4f (%u rounded) with %u sparse, "
 			"expected 5 + 0.25 x 15 = 8.75 (9)",
 			weighted.weightedInliers, weighted.GetNumWeightedInliers(), weighted.GetNumFilteredInliers());
+		return false;
+	}
+
+	// THE DEGENERATE BASELINE OF A DENSE-ONLY PAIR. The angle term is the only factor of
+	// weightSpatial that can demote a pair for a bad baseline, and a pair whose evidence is entirely
+	// dense used to be structurally unable to reach it: no sparse match meant no meanRayAngle, and
+	// ComputeAngleBaselineWeight scores an unmeasured baseline at its MAXIMUM. Two dense-only pairs
+	// built through AppendDenseMatches -- the path the matcher uses -- differing in NOTHING but the
+	// depth of what they see: the same twenty image positions, so the grid occupancy and hence the
+	// area score are identical by construction, and the same 1-unit baseline. The far one must come
+	// out strictly weaker, and strictly below the area score it would have carried with an
+	// unmeasured baseline.
+	const auto DenseOnlyWeight = [&](REAL depth, float& weightSpatial, float& rayAngleDeg) -> bool {
+		Scene denseScene;
+		denseScene.cameras.emplace_back(new PinholeCamera(cv::Size(640, 480), 500, 500, 319.5, 239.5));
+		for (unsigned k = 0; k < 2; ++k) {
+			Pose3D pose;
+			pose.C = camCenters[k];
+			pose.R = Matrix3x3::IDENTITY;
+			denseScene.images.emplace_back((IIndex)k, String::FormatString("dns%u.jpg", k), pose, 0, denseScene.cameras[0]);
+		}
+		denseScene.status.nCalibratedImages = denseScene.images.size();
+		// twenty points spread over the frame at a fixed DEPTH: a pixel of image 0 back-projected to
+		// the bearing that reaches that depth, so the A-side positions are the same whatever the depth
+		std::vector<Point2f> pointsA, pointsB;
+		std::vector<float> confidences;
+		for (unsigned gy = 0; gy < 4; ++gy) {
+			for (unsigned gx = 0; gx < 5; ++gx) {
+				const Point2f ptA(200.f + 90.f*(float)gx, 60.f + 120.f*(float)gy);
+				const Point3 bearing = denseScene.cameras[0]->UnprojectNormalized(Cast<REAL>(ptA));
+				const Point3 X = camCenters[0] + bearing*(depth/bearing.z);
+				const auto [proj, valid] = denseScene.images[1].ProjectPoint(X);
+				if (!valid || !Image8U::isInside(Cast<float>(proj), denseScene.images[1].GetSize()))
+					return false;
+				pointsA.push_back(ptA);
+				pointsB.push_back(Cast<float>(proj));
+				confidences.push_back(0.9f);
+			}
+		}
+		ImagePair& densePair = denseScene.pairs.emplace_back(0u, 1u);
+		densePair.relativePose = denseScene.images[1] / denseScene.images[0];
+		// the dense-only construction: no sparse match ever, the whole match set appended here
+		if (AppendDenseMatches(denseScene, densePair, pointsA, pointsB, confidences, cv::Size(160, 160)) != pointsA.size() ||
+			densePair.GetNumFilteredInliers() != 0 || densePair.GetNumDenseInliers() != pointsA.size())
+			return false;
+		ComputePairsWeights(denseScene);
+		weightSpatial = densePair.weightSpatial;
+		rayAngleDeg = (float)R2D(densePair.meanRayAngle);
+		return true;
+	};
+	float farSpatial = 0.f, nearSpatial = 0.f, farAngleDeg = 0.f, nearAngleDeg = 0.f;
+	if (!DenseOnlyWeight(REAL(200), farSpatial, farAngleDeg) ||
+		!DenseOnlyWeight(REAL(4), nearSpatial, nearAngleDeg)) {
+		VERBOSE("SupplementEvidenceIsolationTest FAILED: could not build the two dense-only fixtures");
+		return false;
+	}
+	// the two really are a weak and a wide baseline, measured off the dense matches alone
+	if (farAngleDeg <= 0.f || farAngleDeg > 1.f || nearAngleDeg < 10.f) {
+		VERBOSE("SupplementEvidenceIsolationTest FAILED: the dense-only pairs measured %.4f deg and %.4f deg, "
+			"expected a sub-degree and a wide baseline -- a dense-only pair is not measuring its baseline at all",
+			farAngleDeg, nearAngleDeg);
+		return false;
+	}
+	// ...and the weak one is demoted for it, both against the wide one and against the score an
+	// unmeasured baseline would have handed it (the area alone, since that factor would be 1.0)
+	const float areaOnly = nearSpatial/ImagePair::ComputeAngleBaselineWeight(nearAngleDeg);
+	if (!(farSpatial < nearSpatial) || !(farSpatial < areaOnly*0.9f)) {
+		VERBOSE("SupplementEvidenceIsolationTest FAILED: the %.4f-deg dense-only pair scores %.6f against %.6f for the "
+			"%.4f-deg one (area alone would be %.6f) -- a degenerate baseline is not demoted",
+			farAngleDeg, farSpatial, nearSpatial, nearAngleDeg, areaOnly);
 		return false;
 	}
 
