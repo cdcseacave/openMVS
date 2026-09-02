@@ -310,8 +310,10 @@ public:
 	// descriptor-evidence bar. The surviving dense supplement is re-derived into its own segment.
 	// (Or matches.size(), unchanged, on the early return when there is no relative pose to filter
 	// against; such a pair carries no dense segment either.)
-	// meanRayAngle is updated from the SPARSE matches only, for the same reason the count is sparse:
-	// it feeds ComputeIntrinsicWeight through ComputeAngleBaselineWeight.
+	// meanRayAngle is updated over the whole accepted set, sparse and dense together, unlike the
+	// SPARSE count this function returns: it feeds ComputeIntrinsicWeight through
+	// ComputeAngleBaselineWeight, which scores a geometric quantity a warp-sampled position measures
+	// just as well as a described one.
 	unsigned FilterMatches(
 		const Image& img1,
 		const Image& img2,

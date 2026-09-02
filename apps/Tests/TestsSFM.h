@@ -64,10 +64,12 @@ bool ROMA2DenseInfusionTest();
 // it applies to the keypoint indices
 bool DenseKeypointBoundaryTest();
 
-// Dense supplementation must be additive: on a supplemented pair, FilterMatches' meanRayAngle and
-// ComputeIntrinsicWeight's grid occupancy stay sparse (the supplement must not re-rank the view
-// graph), while the minimum-support floor that decides whether the pair counts at all reads the
-// track-forming set (the supplement must not be able to void itself)
+// Dense supplementation is real evidence, not noise to filter around: on a supplemented pair,
+// FilterMatches' meanRayAngle and ComputeIntrinsicWeight's grid occupancy are both measured over the
+// whole track-forming set (sparse + dense), the minimum-support floor reads that same set so a pair
+// under the sparse-only bar still counts, and GetNumWeightedInliers() discounts the dense share by
+// DENSE_OBSERVATION_WEIGHT rather than dropping or fully counting it. A degenerate all-dense baseline
+// is still demoted, because the angle term finally has something to measure.
 bool SupplementEvidenceIsolationTest();
 
 // Global-descriptor retrieval test: cosine ranking of the per-image global descriptors and its
