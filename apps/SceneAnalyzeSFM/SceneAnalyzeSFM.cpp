@@ -155,6 +155,15 @@ static String CSVQuote(const String& field)
 }
 
 // Write images.csv: one row per image, in array (== ID) order.
+// The registered pose and focal travel with the row so the offline campaign scripts never have to
+// parse the project file to get them. Conventions, as the project itself stores them (Pose.h, the
+// MVS convention P = K*R*[I|-C]): R rotates world coordinates into camera coordinates and is
+// written as the unit quaternion (qw,qx,qy,qz) by the very same Pose3DToQuaternionAndCenter the
+// bundle adjuster parameterizes poses with, so the CSV cannot drift from the solver's convention;
+// (cx,cy,cz) is the camera centre in world units (Pose3D::C, not the translation -R*C); focal is
+// the camera's mean focal in pixels (Camera::GetFocalLength). An unregistered image -- no pose or
+// no camera -- leaves all eight cells empty rather than emitting an identity pose that a reader
+// could mistake for a fitted one.
 static bool ExportImagesCSV(const Scene& scene, const String& fileName)
 {
 	std::ofstream ofs(fileName);
@@ -162,15 +171,27 @@ static bool ExportImagesCSV(const Scene& scene, const String& fileName)
 		VERBOSE("error: cannot open file '%s' for writing", fileName.c_str());
 		return false;
 	}
-	ofs << "imageID,name,numKeypoints,numDescribedKeypoints,numDenseKeypoints,registered\n";
+	ofs.precision(12); // enough digits that a re-derived pose error is the pose's, not the CSV's
+	ofs << "imageID,name,numKeypoints,numDescribedKeypoints,numDenseKeypoints,registered,focal,qw,qx,qy,qz,cx,cy,cz\n";
 	FOREACH(idx, scene.images) {
 		const Image& img = scene.images[idx];
+		const bool bRegistered = img.IsValid();
 		ofs << img.ID << ','
 			<< CSVQuote(Util::getFileName(img.fileName)) << ','
 			<< img.keypoints.size() << ','
 			<< img.NumDescribedKeypoints() << ','
 			<< img.NumDenseKeypoints() << ','
-			<< (img.IsValid() ? 1 : 0) << '\n';
+			<< (bRegistered ? 1 : 0);
+		if (bRegistered) {
+			double params[7]; // quaternion (w x y z), then the camera centre
+			Pose3DToQuaternionAndCenter(img, params);
+			ofs << ',' << img.pCamera->GetFocalLength();
+			for (const double param : params)
+				ofs << ',' << param;
+		} else {
+			ofs << ",,,,,,,,"; // focal + the seven pose cells, all empty
+		}
+		ofs << '\n';
 	}
 	ofs.close();
 	VERBOSE("Exported %u images to '%s'", (unsigned)scene.images.size(), fileName.c_str());
