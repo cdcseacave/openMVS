@@ -95,10 +95,23 @@ constexpr int MinWindowCount = 25;
 // SceneRefine.cpp; CUDA kernelComputeWindowStats, SceneRefineCUDA.cu) --
 // hoisted here so both call the same code instead of two copies that could
 // silently drift.
+// the window variances are floored at VarFloor (a flat window is not a measurement) and the
+// reliability saturates on the scale of ReliabilityVarOffset
+constexpr float VarFloor = 1e-4f;
+constexpr float ReliabilityVarOffset = 0.0015f;
 REFINE_HD inline float ZnccReliability(float varA, float varB)
 {
 	const float minVar(varA < varB ? varA : varB);
-	return minVar/(minVar+0.0015f);
+	return minVar/(minVar+ReliabilityVarOffset);
+}
+// derivative of ZnccReliability with respect to varB: non-zero only where B's window is the
+// less textured of the two and above the floor (the floor makes the weight a constant there)
+REFINE_HD inline float ZnccReliabilityDerivativeVarB(float varA, float varB)
+{
+	if (!(varB < varA) || !(varB > VarFloor))
+		return 0.f;
+	const float d(varB+ReliabilityVarOffset);
+	return ReliabilityVarOffset/(d*d);
 }
 
 // local window statistics of the reference image A and the warped image B at one pixel,
@@ -110,11 +123,11 @@ struct WindowStats {
 };
 
 // reduce the six masked window sums to means/variances/covariance and apply the two rejection
-// gates ported from the Acute3D shader (correlation.frag): a pixel whose two windows disagree
-// on brightness by more than gateMeanDiff, or whose variances differ by more than a factor of
-// gateVarRatio, is not a photo-consistency measurement of the same surface -- it is a specular
-// highlight, a shadow boundary or a partial occlusion the depth test did not catch -- and
-// steering a vertex with its (large, confidently wrong) gradient is worse than not steering it.
+// gates: a pixel whose two windows disagree on brightness by more than gateMeanDiff, or whose
+// variances differ by more than a factor of gateVarRatio, is not a photo-consistency
+// measurement of the same surface -- it is a specular highlight, a shadow boundary or a partial
+// occlusion the depth test did not catch -- and steering a vertex with its (large, confidently
+// wrong) gradient is worse than not steering it.
 // n is the number of valid samples, sA/sB/sAA/sBB/sAB their masked sums; gates <= 0 disable.
 // Returns false if the pixel must be rejected, in which case stats are left undefined.
 REFINE_HD inline bool WindowStatsFromSums(float n, float sA, float sB, float sAA, float sBB, float sAB,
@@ -126,8 +139,8 @@ REFINE_HD inline bool WindowStatsFromSums(float n, float sA, float sB, float sAA
 	s.muA = sA*invN;
 	s.muB = sB*invN;
 	const float vA(sAA*invN - s.muA*s.muA), vB(sBB*invN - s.muB*s.muB);
-	s.varA = vA > 1e-4f ? vA : 1e-4f;
-	s.varB = vB > 1e-4f ? vB : 1e-4f;
+	s.varA = vA > VarFloor ? vA : VarFloor;
+	s.varB = vB > VarFloor ? vB : VarFloor;
 	const float meanDiff(s.muA > s.muB ? s.muA-s.muB : s.muB-s.muA);
 	if (gateMeanDiff > 0.f && meanDiff > gateMeanDiff)
 		return false;
@@ -171,7 +184,7 @@ extern MVS_API int nIgnoreMaskLabel; // label id used during ignore mask filter 
 extern MVS_API int nImageGradient; // image derivative stencil (0 - 3x5 separable, 1 - central (default), 2 - Sobel, 3 - bilinear interpolant derivative)
 extern MVS_API float fGateMeanDiff; // reject a pixel pair whose local mean differs by more than this (0 - disabled)
 extern MVS_API float fGateVarRatio; // reject a pixel pair whose local variance ratio exceeds this (0 - disabled)
-extern MVS_API int nOptimizer; // vertex position optimizer (0 - bold, 1 - fixed; further arms are rejected at the RefineMesh entry until implemented)
+extern MVS_API int nOptimizer; // vertex position optimizer (0 - bold, 1 - fixed; the trust-ratio, Barzilai-Borwein and momentum arms were measured and lost, see the design document)
 } // namespace OPTREFINE
 
 class Scene;

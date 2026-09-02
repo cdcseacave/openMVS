@@ -3227,9 +3227,9 @@ void UI::ShowRefineWorkflowWindow(Window& window) {
 	if (ImGui::IsItemHovered())
 		ImGui::SetTooltip("Initial step of the optimizer, in pixels (at most 1).\nLarger values converge faster, but may be unstable.\nSmaller values are more stable, but slower.");
 	opts.gradientStep = iters + gstep*0.1f;
-	ImGui::DragFloat("Planar Vertex Ratio", &opts.planarVertexRatio, 0.01f, 0.f, 1.f, "%.2f");
+	ImGui::DragFloat("Planar Vertex Ratio", &opts.planarVertexRatio, 0.0001f, 0.f, 0.01f, "%.4f");
 	if (ImGui::IsItemHovered())
-		ImGui::SetTooltip("Ratio of vertices to treat as planar (constrained to move along their normal).\nHigher values preserve flat surfaces better, but reduce flexibility.");
+		ImGui::SetTooltip("Remove vertices whose photometric gradient and Laplacian are both below this fraction of the vertex depth (0 disables; CPU only).\nUseful values are 0.0001-0.001: larger ones strip whole planar patches.");
 
 	ImGui::Separator();
 	const bool workflowRunning = scene.IsWorkflowRunning();

@@ -59,7 +59,6 @@ unsigned nCloseHoles;
 unsigned nEnsureEdgeSize;
 unsigned nScales;
 float fScaleStep;
-unsigned nReduceMemory;
 unsigned nAlternatePair;
 float fRegularityWeight;
 float fRatioRigidityElasticity;
@@ -138,7 +137,6 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("rigidity-elasticity-ratio", boost::program_options::value(&OPT::fRatioRigidityElasticity)->default_value(0.9f), "scalar ratio used to compute the regularity gradient as a combination of rigidity and elasticity")
 		("gradient-step", boost::program_options::value(&OPT::fGradientStep)->default_value(45.05f), "max iterations and initial step in pixels (N.s: N iterations, sx10 px; 0 - Ceres)")
 		("planar-vertex-ratio", boost::program_options::value(&OPT::fPlanarVertexRatio)->default_value(0.f), "threshold used to remove vertices on planar patches (0 - disabled)")
-		("reduce-memory", boost::program_options::value(&OPT::nReduceMemory)->default_value(1), "deprecated: no effect since the masked window statistics")
 		("refine-config-file", boost::program_options::value<std::string>(&OPT::strRefineConfigFileName), "optional configuration file for the refiner (overwritten by the command line options)")
 		;
 
@@ -204,6 +202,19 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	// the CLI (this app's own .cfg file included) always wins over the refine-config-file, same as
 	// DensifyPointCloud's --ignore-mask-label over its --dense-config-file
 	OPTREFINE::nIgnoreMaskLabel = nIgnoreMaskLabel;
+	if (bValidRefineConfig) {
+		// SML keeps every key it reads, registered or not, and update() only ever reads the
+		// registered ones -- so a misspelled knob would run the default and measure it as the
+		// arm; a key nobody registered has no declared values
+		String unknown;
+		for (const auto& item: OPTREFINE::oConfig.GetConfig())
+			if (((const CFGITEM*)item.second.data)->vals.IsEmpty())
+				unknown += (unknown.empty() ? "" : ", ") + item.first;
+		if (!unknown.empty()) {
+			VERBOSE("error: refine configuration file '%s' sets unknown option(s): %s", OPT::strRefineConfigFileName.c_str(), unknown.c_str());
+			return false;
+		}
+	}
 	if (!bValidRefineConfig && !OPT::strRefineConfigFileName.empty()) {
 		if (bRefineConfigPresent) {
 			// an existing file that fails to parse is user input with a defect: overwriting it

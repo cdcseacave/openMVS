@@ -2393,6 +2393,44 @@ bool MeshRefineSyntheticTest(bool forceCPU, bool verbose)
 	}
 	VERBOSE("MeshRefineSyntheticTest CPU: RMS %g -> %g (footprint %g), %u verts (%s)", rmsBefore, rmsAfterCPU, footprintUnit, numVertsUnit, TD_TIMER_GET_FMT().c_str());
 
+	#ifdef _USE_CERES
+	{
+		// --- Ceres arm, unit scale, fresh copy of the same fixture: the L-BFGS line search on the
+		// exact energy has to end on a finite surface much closer to the plane than the input;
+		// the bar is looser than the stepper's because the arm minimizes the pure thin-plate
+		// energy, not the stepper's rigidity/elasticity blend
+		Scene sceneCeres(1);
+		Mesh gtMeshCeres;
+		BuildRefineSyntheticScene(sceneCeres, gtMeshCeres, dir, sceneScaleUnit);
+		// the arm refuses what it cannot honour, before touching the mesh: a planar-vertex
+		// removal (its parameter count is fixed) and an alternating pair schedule (its energy
+		// would change every iteration)
+		if (sceneCeres.RefineMesh(0, 640, 8, 0.f, 30, 1, 16, 2, 0.5f, 0, 0.2f, 0.9f, 0.f, 0.001f)) {
+			VERBOSE("ERROR: MeshRefineSyntheticTest Ceres accepted --planar-vertex-ratio > 0!");
+			return false;
+		}
+		if (sceneCeres.RefineMesh(0, 640, 8, 0.f, 30, 1, 16, 2, 0.5f, 1, 0.2f, 0.9f, 0.f, 0.f)) {
+			VERBOSE("ERROR: MeshRefineSyntheticTest Ceres accepted --alternate-pair 1!");
+			return false;
+		}
+		TD_TIMER_START();
+		if (!sceneCeres.RefineMesh(0, 640, 8, 0.f, 30, 1, 16, 2, 0.5f, 0, 0.2f, 0.9f, 0.f, 0.f)) {
+			VERBOSE("ERROR: MeshRefineSyntheticTest Ceres RefineMesh failed!");
+			return false;
+		}
+		float rmsAfterCeres;
+		if (!RefineSynthComputeRMS(sceneCeres.mesh.vertices, sceneScaleUnit, marginUnit, rmsAfterCeres)) {
+			VERBOSE("ERROR: MeshRefineSyntheticTest Ceres-refined mesh has a non-finite vertex or an empty RMS window!");
+			return false;
+		}
+		if (rmsAfterCeres > 0.5f*rmsBefore) {
+			VERBOSE("ERROR: MeshRefineSyntheticTest Ceres RMS did not converge enough (before %g, after %g, limit %g)!", rmsBefore, rmsAfterCeres, 0.5f*rmsBefore);
+			return false;
+		}
+		VERBOSE("MeshRefineSyntheticTest Ceres: RMS %g -> %g (footprint %g), %u verts (%s)", rmsBefore, rmsAfterCeres, footprintUnit, sceneCeres.mesh.vertices.size(), TD_TIMER_GET_FMT().c_str());
+	}
+	#endif
+
 	// --- CUDA run, unit scale, fresh copy of the same fixture ---
 	#ifdef _USE_CUDA
 	if (!forceCPU && SEACAVE::CUDA::isEnabled()) {
@@ -2500,11 +2538,18 @@ bool MeshRefineEnergyGradientTest(bool verbose)
 		const char* name;
 		float regularityWeight;
 		bool photometric;
+		float perturbPx; // displace the input surface by a bump of this many pixels before probing
 	};
+	// The perturbed arms probe from a surface a few pixels off the plane, where 1-ZNCC is O(0.1):
+	// the terms of the gradient proportional to 1-ZNCC (the reliability weight's own derivative,
+	// the domain's) are invisible on the near-perfect fixture, and a gate that only ever probed
+	// there certified a pair that disagreed on every real scene
 	static const Arm arms[] = {
-		{ "photometric", 0.f, true },
-		{ "smoothness", 1.f, false },
-		{ "combined", 1.f, true },
+		{ "photometric", 0.f, true, 0.f },
+		{ "smoothness", 1.f, false, 0.f },
+		{ "combined", 1.f, true, 0.f },
+		{ "photometric-perturbed", 0.f, true, 2.5f },
+		{ "combined-perturbed", 1.f, true, 2.5f },
 	};
 	// Offsets in +-pairs, as a fraction of one pixel's footprint (the probe's direction field has
 	// unit length at its largest vertex, so an offset IS the largest per-vertex displacement in
@@ -2527,6 +2572,13 @@ bool MeshRefineEnergyGradientTest(bool verbose)
 		Scene scene(1); // single-threaded: the per-vertex sums are then completion-order independent
 		Mesh gtMesh;
 		BuildRefineSyntheticScene(scene, gtMesh, dir, sceneScale);
+		if (arm.perturbPx > 0) {
+			// one low-frequency bump across the plane, band-limited like the probe's own direction
+			AABB3f aabb(scene.mesh.vertices.Begin(), scene.mesh.vertices.GetSize());
+			const Point3f center(aabb.GetCenter()), extent(aabb.GetSize()*0.5f);
+			for (Mesh::Vertex& v: scene.mesh.vertices)
+				v.z += arm.perturbPx*footprint*sinf((float)M_PI*(v.x-center.x)/extent.x)*cosf((float)M_PI*0.5f*(v.y-center.y)/extent.y);
+		}
 
 		Scene::RefineEnergyProbe probe;
 		probe.regularityWeight = arm.regularityWeight;

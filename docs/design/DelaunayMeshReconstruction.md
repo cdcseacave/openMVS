@@ -684,5 +684,6 @@ and nowhere else; all infinite cells are hard-stamped while the 4 finite cells a
 - Other standing guardrails from the executed plan, still binding: confidence enters the
   visibility data term only — never `kQual`/circumsphere quality, camera hard constraints, or a
   second generic per-cell unary; no generic k-NN/smoothing prefilters by default (they erase thin
-  structure); the max-flow solver is TetraFlow (§5's solver entries have the numbers); leave
-  `RefineMesh` untouched; face count is not a completeness metric — score by F1 on ground truth.
+  structure); the max-flow solver is TetraFlow (§5's solver entries have the numbers); `RefineMesh` is out
+  of scope here and has its own design document; face count is not a completeness metric —
+  score by F1 on ground truth.

@@ -579,10 +579,10 @@ graph TD
     E --> F[SubdivideMesh<br/>nMaxFaceArea, fDecimateMesh, nCloseHoles, nEnsureEdgeSize]
     F --> G[ListVertexFacesPost: normals]
     G --> H{Solver}
-    H -->|fGradientStep>0| I[Gradient descent: 75 iterations]
-    H -->|MESHOPT_CERES| J[Ceres GradientProblemSolver]
-    I --> I1[ScoreMesh: photo-consistency cost<br/>+ regularization]
-    I1 --> I2[Apply gradient step to vertices]
+    H -->|fGradientStep>0| I[MeshRefineStep: pixel-unit bold driver<br/>accept/reject, stops on convergence]
+    H -->|fGradientStep==0| J[Ceres GradientProblemSolver<br/>opt-in, CPU only]
+    I --> I1[ScoreMesh: masked ZNCC score S<br/>+ regularization gradient]
+    I1 --> I2[Apply the step, in pixels per vertex<br/>ACCEPT if S improved, else halve and back off]
     I2 --> I3{bAdaptMesh & iter >= iterStart}
     I3 -->|yes| I4[Remove planar vertices<br/>small gradient + near center of patch]
     I3 -->|no| I5
@@ -598,26 +598,30 @@ graph TD
 ### B. Step-by-Step Narrative
 
 **Multi-resolution structure**
-- `nScales` (3) coarse-to-fine levels; scale factor `fScaleStep` (0.5) per level
+- `nScales` (2) coarse-to-fine levels; scale factor `fScaleStep` (0.5) per level
 - Coarsest scale: images at `fScaleStep^(nScales-1)` resolution; allows large moves
 - Finest scale: full resolution; fine detail recovery
+- Each level pre-blurs at `sigma = 0.12*2^(nScales-i) + 0.2` before resizing and differentiating
 
 **Subdivision (`SubdivideMesh()`)**
-- `nMaxFaceArea`: subdivides faces larger than threshold
-- `fDecimateMesh`: decimates at first scale only
+- `fDecimateMesh` (0 = auto): decimates at the first scale only, and in auto mode only when the median projected face area exceeds `nMaxFaceArea` by more than 6x
 - `nCloseHoles`: largest hole to close, in boundary edges
 - `nEnsureEdgeSize`: remeshes isotropically to 2.25x the mean edge length, as part of the same `Mesh::Clean` pass
+- `nMaxFaceArea` (16 px^2): subdivides any face whose projected area in the tightest camera pair exceeds the threshold
 
 **Photo-consistency scoring (`ScoreMesh()`)**
-- Projects each face into all views that can see it (based on normal)
-- Computes ZNCC (zero-normalized cross-correlation) photometric error between rendered patches
+- For every ordered image pair, warps image A into B through the current surface and scores masked 7x7 ZNCC windows; invalid pixels are excluded from the window sums rather than filled with a copy of A
+- Two rejection gates drop windows whose brightness or contrast disagree too much to be the same surface
+- The score `S` is the reliability-weighted mean of `1-ZNCC`, dimensionless and independent of scene scale, resolution and pair count
 - Regularization term weighted by `fRegularityWeight`: penalizes deviation from smooth surface
-- `fRatioRigidityElasticity`: ratio between rigid and elastic deformation energy (high in early iters, 1.0 near end)
+- `fRatioRigidityElasticity`: ratio between rigid and elastic deformation energy, applied as a two-phase per-scale schedule
 - `nAlternatePair`: alternate between using one or both views per pair
 
-**Vertex update**
-- `grad * gstep` applied to each vertex position; `gstep = 0.4` (or from `fGradientStep`)
-- `fThPlanarVertex`: removes nearly-planar low-gradient vertices after `iterStart` = 40% of total iters
+**Vertex update (`MeshRefineStep`, shared by both backends)**
+- The step is measured in pixels through each vertex's own footprint, so the trajectory is scale-invariant; the median seen vertex moves `eta/2` px on the first evaluation and every other vertex moves in proportion to its own gradient
+- Bold driver: an evaluation that worsens `S` is rejected (vertices move back half the offending step, `eta` halves), an accepted one grows `eta` by 1.1 up to 1 px
+- A scale ends on convergence — three stalled accepted iterations, a median step below 0.05 px at full stride, or four consecutive rejections — not on a fixed iteration count
+- `fThPlanarVertex`: removes nearly-planar low-gradient vertices, CPU only, disabled by default
 
 **CUDA variant (`RefineMeshCUDA`)**
 - Same algorithm but GPU-parallelized projection and gradient computation

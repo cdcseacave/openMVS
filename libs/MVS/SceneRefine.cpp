@@ -33,6 +33,7 @@
 #include "Scene.h"
 #include "SceneRefineCommon.h"
 #include "SceneRefineStep.h"
+#include <unordered_map>
 
 using namespace MVS;
 
@@ -299,6 +300,15 @@ public:
 	// over ~1e5 pixel terms cannot resolve a change that small
 	double energyPhoto; // Sum_pairs RegScale_p Sum_pixels r (1-ZNCC)
 	double energySmooth; // 1/2 Sum_{v interior} ||L(v)||^2
+	// energy mode only: multiplies the photometric energy and its gradient (1 = the raw sum); the
+	// Ceres arm derives it from its calibration evaluation at every scale start
+	double energyPhotoScale;
+	// energy mode only: the reliability sum of every pair-direction of the current evaluation,
+	// keyed by PairKey(A,B), and the same at the scale's calibration evaluation (empty = every
+	// weight 1): a direction's photometric term is weighted by sumR0/sumR
+	std::unordered_map<uint64_t,float> pairSumR;
+	std::unordered_map<uint64_t,float> pairSumR0;
+	static inline uint64_t PairKey(uint32_t idxImageA, uint32_t idxImageB) { return ((uint64_t)idxImageA<<32)|idxImageB; }
 	GradArr photoGrad;
 	FloatArr photoGradNorm;
 	GradArr smoothGrad1;
@@ -454,6 +464,7 @@ MeshRefine::MeshRefine(Scene& _scene, unsigned _nAlternatePair, Real _weightRegu
 	bEnergyMode(false),
 	bEnergyPhoto(true),
 	scene(_scene),
+	energyPhotoScale(1),
 	faceNormals(_scene.mesh.faceNormals),
 	vertices(_scene.mesh.vertices),
 	faces(_scene.mesh.faces),
@@ -702,6 +713,7 @@ double MeshRefine::ScoreMesh(double* gradients)
 	// projected in the reference image through the mesh surface
 	scorePhoto = 0;
 	energyPhoto = 0;
+	pairSumR.clear();
 	sumR = 0;
 	sumRZ = 0;
 	photoGrad.Resize(vertices.GetSize());
@@ -800,7 +812,7 @@ double MeshRefine::ScoreMesh(double* gradients)
 			// exact gradient of the exact energy returned below: the raw per-vertex photometric
 			// sum (no 1/c_v, which is the gradient of nothing) plus w*L^T L v
 			FOREACH(v, vertices)
-				((Point3d*)gradients)[v] = Cast<double>(photoGrad[v] + smoothGradLtL[v]*weightRegularity);
+				((Point3d*)gradients)[v] = Cast<double>(photoGrad[v])*energyPhotoScale + Cast<double>(smoothGradLtL[v])*(double)weightRegularity;
 		} else {
 		// g_v, the photometric gradient the combination adds: divided by the number of
 		// pair-directions that saw this vertex
@@ -844,7 +856,7 @@ double MeshRefine::ScoreMesh(double* gradients)
 	// the stepper mode keeps its descent-only score (the leading constants and the L1 smoothing
 	// sum below are not a potential for the gradient it fills, which the stepper never needs)
 	if (bEnergyMode)
-		return energyPhoto + (double)weightRegularity*energySmooth;
+		return energyPhoto*energyPhotoScale + (double)weightRegularity*energySmooth;
 	return (nAlternatePair ? 0.2f : 0.1f)*scorePhoto + 0.01f*scoreSmooth;
 }
 
@@ -1024,11 +1036,14 @@ MeshRefine::PairScore MeshRefine::ComputeWindowStats(
 	// the four per-window numerators of the exact derivative below, each zero at a window centre
 	// that contributes nothing to the score (unwarped, or rejected by a gate)
 	DEC_Image(float, q1); DEC_Image(float, q2); DEC_Image(float, q3); DEC_Image(float, q4);
+	DEC_Image(float, q5); DEC_Image(float, q6);
 	if (bExactDerivative) {
 		q1.create(mask.size()); q1.memset(0);
 		q2.create(mask.size()); q2.memset(0);
 		q3.create(mask.size()); q3.memset(0);
 		q4.create(mask.size()); q4.memset(0);
+		q5.create(mask.size()); q5.memset(0);
+		q6.create(mask.size()); q6.memset(0);
 	}
 	float sumRZ(0), sumR(0);
 	double energyRZ(0);
@@ -1072,6 +1087,18 @@ MeshRefine::PairScore MeshRefine::ComputeWindowStats(
 				q2(r,c) = wAB*s.muA;
 				q3(r,c) = wZ;
 				q4(r,c) = wZ*s.muB;
+				// the reliability weight itself depends on the warped image through varB when
+				// B's window is the less textured one: d conf/d varB times d varB/d B_p =
+				// (2/n)(B_p - muB), so the window's term conf (1-ZNCC) also contributes
+				// (1-ZNCC) conf' (2/n) (B_p - muB) at every pixel it contains -- two more sums,
+				// the factor of B_p and its muB multiple. Without them the gradient was blind to
+				// the energy's reward for flattening the warped image where the match is poor
+				const float dconf(Refine::ZnccReliabilityDerivativeVarB(s.varA, s.varB));
+				if (dconf > 0) {
+					const float q((1.f-zncc)*dconf*2.f/n);
+					q5(r,c) = q;
+					q6(r,c) = q*s.muB;
+				}
 			}
 		}
 	}
@@ -1083,19 +1110,22 @@ MeshRefine::PairScore MeshRefine::ComputeWindowStats(
 		cv::boxFilter(q2, q2, -1, ksize, anchor, false, cv::BORDER_CONSTANT);
 		cv::boxFilter(q3, q3, -1, ksize, anchor, false, cv::BORDER_CONSTANT);
 		cv::boxFilter(q4, q4, -1, ksize, anchor, false, cv::BORDER_CONSTANT);
-		// d/dB_p Sum_c r_c (1-ZNCC_c) = -( A_p S1 - S2 - B_p S3 + S4 ), the pointwise value written
-		// above replaced by the sum over every window that contains p. A pixel outside the mask
-		// enters no window sum (every product is masked), so its derivative does not exist and its
-		// entry stays the 0 the map was created with
+		cv::boxFilter(q5, q5, -1, ksize, anchor, false, cv::BORDER_CONSTANT);
+		cv::boxFilter(q6, q6, -1, ksize, anchor, false, cv::BORDER_CONSTANT);
+		// d/dB_p Sum_c r_c (1-ZNCC_c) = -( A_p S1 - S2 - B_p S3 + S4 ) + ( B_p S5 - S6 ), the
+		// pointwise value written above replaced by the sum over every window that contains p. A
+		// pixel outside the mask enters no window sum (every product is masked), so its derivative
+		// does not exist and its entry stays the 0 the map was created with
 		for (int r=HalfSize; r<RowsEnd; ++r) {
 			for (int c=HalfSize; c<ColsEnd; ++c) {
 				if (!mask(r,c))
 					continue;
-				imageDZNCC(r,c) = -(imageA(r,c)*q1(r,c) - q2(r,c) - imageB(r,c)*q3(r,c) + q4(r,c));
+				imageDZNCC(r,c) = -(imageA(r,c)*q1(r,c) - q2(r,c) - imageB(r,c)*q3(r,c) + q4(r,c)) + (imageB(r,c)*q5(r,c) - q6(r,c));
 			}
 		}
 	}
 	DST_Image(q1); DST_Image(q2); DST_Image(q3); DST_Image(q4);
+	DST_Image(q5); DST_Image(q6);
 	return PairScore{sumRZ, sumR, energyRZ};
 }
 
@@ -1222,9 +1252,13 @@ float MeshRefine::ComputeSmoothnessGradient1(
 		const Mesh::VertexIdxArr& verts = vertexVertices[idxV];
 		if (verts.IsEmpty())
 			continue;
+		// accumulate the differences to the centre, not the coordinates: summing coordinates of
+		// order 1e2 and subtracting the centre afterwards left a residual of order 1e-3 with a
+		// relative error the energy arm's tolerance could not tell from a real change
+		const Grad center(Cast<Real>(vertices[idxV]));
 		FOREACH(v, verts)
-			grad += Cast<Real>(vertices[verts[v]]);
-		grad = grad/(Real)verts.GetSize() - Cast<Real>(vertices[idxV]);
+			grad += Cast<Real>(vertices[verts[v]])-center;
+		grad = grad/(Real)verts.GetSize();
 		const float regularityScore((float)norm(grad));
 		ASSERT(ISFINITE(regularityScore));
 		score += regularityScore;
@@ -1426,6 +1460,16 @@ void MeshRefine::ThProcessPair(uint32_t idxImageA, uint32_t idxImageB)
 	UnsignedArr _photoGradPixels(photoGrad.GetSize());
 	FloatArr _footprint(photoGrad.GetSize());
 	const Real RegularizationScale((Real)((REAL)(imageDataA.avgDepth*imageDataB.avgDepth)/(cameraA.GetFocalLength()*cameraB.GetFocalLength())));
+	// energy mode: this direction's frozen-domain weight, its
+	// reliability sum at the scale's calibration evaluation over the current one, so a step that
+	// drops scored pixels does not lower the energy just by dropping them; 1 outside the energy
+	// mode, before the calibration, and for a direction that scored nothing then
+	Real energyWeight(1);
+	if (bEnergyMode && !pairSumR0.empty()) {
+		const auto it(pairSumR0.find(PairKey(idxImageA, idxImageB)));
+		if (it != pairSumR0.end() && it->second > 0 && pairScore.sumR > 0)
+			energyWeight = (Real)(it->second/pairScore.sumR);
+	}
 	TImage<Real> dbgSG;
 	if (dbgPair) {
 		dbgSG.create(mask.size());
@@ -1435,7 +1479,7 @@ void MeshRefine::ThProcessPair(uint32_t idxImageA, uint32_t idxImageB)
 	const PairGrads grads{_photoGrad, _photoGradPixels, _footprint};
 	// bEnergyMode always wants the bilinear derivative (the energy's own consistency requirement);
 	// OPTREFINE::nImageGradient == 3 asks for the same source on the stepper path too
-	ComputePhotometricGradient(faces, faceNormals, depthMapA, faceMapA, baryMapA, cameraA, cameraB, viewB, maps, grads, RegularizationScale, bEnergyMode || OPTREFINE::nImageGradient == 3, dbgPair ? &dbgSG : NULL);
+	ComputePhotometricGradient(faces, faceNormals, depthMapA, faceMapA, baryMapA, cameraA, cameraB, viewB, maps, grads, RegularizationScale*energyWeight, bEnergyMode || OPTREFINE::nImageGradient == 3, dbgPair ? &dbgSG : NULL);
 	if (dbgPair) {
 		// CPU/CUDA parity diagnostic, continued: the per-pixel photometric scalar each pixel
 		// hands to its face's 3 vertices, and the raw face map of A (-1 where nothing was
@@ -1463,8 +1507,10 @@ void MeshRefine::ThProcessPair(uint32_t idxImageA, uint32_t idxImageB)
 	sumR += pairScore.sumR;
 	sumRZ += pairScore.sumRZ;
 	scorePhoto += (float)RegularizationScale*pairScore.sumRZ;
-	if (bEnergyMode)
-		energyPhoto += (double)RegularizationScale*pairScore.energyRZ;
+	if (bEnergyMode) {
+		energyPhoto += (double)(RegularizationScale*energyWeight)*pairScore.energyRZ;
+		pairSumR[PairKey(idxImageA, idxImageB)] = pairScore.sumR;
+	}
 }
 void MeshRefine::ThSmoothVertices1(VIndex idxStart, VIndex idxEnd)
 {
@@ -1517,6 +1563,15 @@ namespace ceres {
 class MeshProblem : public FirstOrderFunction, public IterationCallback
 {
 public:
+	// The parameters are the vertex coordinates in scene units. A pixel-unit parameterization
+	// (coordinates over the median footprint) was tried and measured worse: Ceres's first line
+	// search moves the largest-gradient coordinate by one parameter unit, which in pixel units is
+	// one pixel for one outlier vertex and next to nothing for the bulk of the mesh, so the first
+	// curvature pair L-BFGS builds from it is noise and the Wolfe zoom fails on the next iteration. In
+	// scene units the largest gradient is below one for any scene whose footprint is a fraction
+	// of its unit, so the first step is the full gradient -- under the stepper-scaled energy
+	// about half a pixel for the median vertex, the stepper's own
+	// first step -- and the line search contracts from there
 	MeshProblem(MeshRefine& _refine) : refine(_refine), params(refine.vertices.GetSize()*3), bestCost(DBL_MAX) {
 		ASSERT(refine.bEnergyMode);
 		// init params
@@ -1525,28 +1580,23 @@ public:
 	}
 	virtual ~MeshProblem() {}
 
-	void ApplyParams() const {
-		FOREACH(i, refine.vertices)
-			refine.vertices[i] = *((Point3d*)params.Begin()+i);
-	}
-	void ApplyParams(const double* parameters) const {
-		memcpy(params.Begin(), parameters, sizeof(double)*params.GetSize());
-		ApplyParams();
-	}
-	// restore the lowest-cost iterate the solver reached. A line search that runs out of step-size
-	// iterations leaves the parameter block wherever it stopped probing, which is not a point the
-	// solver ever accepted; without this the whole refinement used to be abandoned instead
+	// the solver's parameter block: Ceres writes the solution into it when the solve is usable
+	// and nothing else touches it (the probes Evaluate receives go to the mesh directly), so after
+	// Solve it holds either the solution or the scale's start
+	void ApplyParams() const { Apply(params.Begin()); }
+	// the lowest-cost surface any evaluation reached -- at least as good as the last accepted
+	// iterate, and what a solve that ends in FAILURE leaves behind; empty only if not a single
+	// evaluation was valid
 	bool ApplyBestParams() const {
-		if (best.GetSize() != params.GetSize())
+		if (best.IsEmpty())
 			return false;
-		FOREACH(i, refine.vertices)
-			refine.vertices[i] = *((Point3d*)best.Begin()+i);
+		Apply(best.Begin());
 		return true;
 	}
 
 	bool Evaluate(const double* const parameters, double* cost, double* gradient) const {
 		// update surface parameters
-		ApplyParams(parameters);
+		Apply(parameters);
 		// evaluate residuals and gradients
 		Point3dArr gradients;
 		if (!gradient) {
@@ -1554,20 +1604,27 @@ public:
 			gradient = (double*)gradients.Begin();
 		}
 		*cost = refine.ScoreMesh(gradient);
+		// a surface the energy cannot score (no pair-direction contributed a pixel) or a
+		// non-finite energy is not an iterate the solver may accept: false makes the line search
+		// contract its step instead of comparing garbage
+		if (!(refine.S >= 0) || !std::isfinite(*cost))
+			return false;
+		if (*cost < bestCost) {
+			bestCost = *cost;
+			best.Resize(params.GetSize());
+			memcpy(best.Begin(), parameters, sizeof(double)*params.GetSize());
+		}
 		return true;
 	}
 
 	CallbackReturnType operator()(const IterationSummary& summary) {
 		refine.iteration = summary.iteration;
-		// update_state_every_iteration puts the current iterate in params before this runs
-		if (summary.cost < bestCost) {
-			bestCost = summary.cost;
-			best = params;
-		}
-		// the parser (bench/refine_log.py) has no pattern for this arm: neither the legacy
-		// "f:/g:/s:" line nor the stepper's "S: ... step: ...px" one describes a line-search
-		// iteration, which has no per-vertex step in pixels to report
-		DEBUG_EXTRA("\t%2d. E: %.6g\tstep: %.3g", (int)summary.iteration, summary.cost, summary.step_size);
+		// one line per L-BFGS iteration (bench/refine_log.py RE_ITER_CERES reads the first two
+		// fields): the energy, the accepted line-search step, and the score and reliability sum of
+		// the iterate so a run can be read for the two things the energy alone hides -- whether
+		// the per-pixel score really improves, and whether the solver is shrinking the scored
+		// domain instead (a sum over valid pixels rewards losing pixels)
+		DEBUG_EXTRA("\t%2d. E: %.6g\tstep: %.3g\tS: %.5f\tn: %.6g", (int)summary.iteration, summary.cost, summary.step_size, refine.S, refine.sumR);
 		return ceres::SOLVER_CONTINUE;
 	}
 
@@ -1576,10 +1633,16 @@ public:
 	double* GetParameters() { return params.Begin(); }
 
 protected:
+	void Apply(const double* parameters) const {
+		FOREACH(i, refine.vertices)
+			refine.vertices[i] = *((const Point3d*)parameters+i);
+	}
+
+protected:
 	MeshRefine& refine;
 	DoubleArr params;
-	DoubleArr best; // lowest-cost iterate seen so far (empty until the first callback)
-	double bestCost;
+	mutable DoubleArr best; // lowest-cost surface any evaluation reached (empty until one is valid)
+	mutable double bestCost;
 };
 } // namespace ceres
 
@@ -1616,6 +1679,12 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 				" parameter count is fixed for the whole solve");
 			return false;
 		}
+		// the arm minimizes ONE energy: alternating the pair direction between evaluations would
+		// hand the line search a different functional every iteration
+		if (nAlternatePair != 0) {
+			VERBOSE("error: --gradient-step 0 (Ceres) scores both directions of every pair: --alternate-pair must be 0");
+			return false;
+		}
 		// --ratio-rigidity-elasticity has no meaning in this arm: its energy is the pure thin-plate
 		// term, not the rigidity/elasticity blend the stepper's descent direction mixes
 		#endif
@@ -1631,7 +1700,10 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 	// the other externally controlled knobs, validated for the same reason and for both arms: the
 	// weight scales the same regularization gradient whichever optimizer consumes it, and their
 	// ASSERT twins inside the stepper are contracts, not input checks, and compile out in Release
-	if (!(fRegularityWeight >= 0 && fRegularityWeight*MeshRefineStep::StepMax <= 1.f)) {
+	// the upper bound is the stepper's explicit-flow stability limit; the line-search arm has no
+	// such bound (its weight balances two terms of one energy, and any non-negative value is a
+	// valid balance), and its consistent value is larger than the stepper's, see the Ceres block
+	if (!(fRegularityWeight >= 0) || (fGradientStep != 0 && fRegularityWeight*MeshRefineStep::StepMax > 1.f)) {
 		VERBOSE("error: --regularity-weight %g is outside [0, %g]: one full step of the"
 			" regularization term must not amplify the Laplacian it is applied to"
 			" (explicit-flow stability)",
@@ -1685,8 +1757,8 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 			mesh.Save(MAKE_PATH(String::FormatString("MeshRefine%u.ply", nScales-nScale-1)));
 		#endif
 
-		// per-scale iteration budget, shared by both arms: the iteration count of
-		// "--gradient-step N.s" thinned out on the finer (more expensive) scales
+		// per-scale iteration budget of the stepper: the iteration count of "--gradient-step N.s"
+		// thinned out on the finer (more expensive) scales
 		const int N(FLOOR2INT(fGradientStep));
 		const int cap(MAXF(N/(int)(nScale+1),8));
 
@@ -1697,6 +1769,37 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 			refine.bEnergyMode = true;
 			refine.bEnergyPhoto = true;
 			refine.iteration = 0;
+			refine.energyPhotoScale = 1;
+			refine.pairSumR0.clear();
+			// calibration evaluation: the scale-start constants of the normalized energy
+			refine.ScoreMesh(NULL);
+			if (refine.S < 0) {
+				VERBOSE("error: no image pair scores a single pixel at scale %u", nScale);
+				return false;
+			}
+			// the photometric term scaled like the stepper's direction: its gradient at
+			// the scale start has median |g_v|/s_v = 1/kappa pixels, so the regularity
+			// weight balances it as it balances the stepper's normalized photometric step
+			FloatArr calib(0, refine.vertices.GetSize());
+			FOREACH(v, refine.vertices)
+				if (refine.footprint[v] > 0)
+					calib.Insert(norm(refine.photoGrad[v])/refine.footprint[v]);
+			const float m(calib.IsEmpty() ? 0.f : calib.GetMedian());
+			if (m > 0)
+				refine.energyPhotoScale = 1.0/((double)MeshRefineStep::Kappa*m);
+			// the pair-direction count per seen vertex is the factor by which this energy's
+			// photometric pull exceeds the stepper's (which divides by it) at the same weight
+			double sumCount(0);
+			VIndex numSeen(0);
+			FOREACH(v, refine.vertices) {
+				if (refine.photoGradNorm[v] > 0) {
+					sumCount += refine.photoGradNorm[v];
+					++numSeen;
+				}
+			}
+			DEBUG_EXTRA("Ceres arm scale %u: median |g|/s %g px, %.1f pair-directions per seen vertex, photometric energy scale %g",
+				nScale, m, numSeen ? sumCount/numSeen : 0.0, refine.energyPhotoScale);
+			refine.pairSumR0 = refine.pairSumR;
 			ceres::MeshProblem* problemData(new ceres::MeshProblem(refine));
 			#if CERES_VERSION_MAJOR > 2 || (CERES_VERSION_MAJOR == 2 && CERES_VERSION_MINOR >= 3)
 			ceres::GradientProblem problem{std::unique_ptr<ceres::FirstOrderFunction>(problemData)};
@@ -1705,19 +1808,34 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 			#endif
 			// SetMinimizerOptions
 			ceres::GradientProblemSolver::Options options;
-			if (VERBOSITY_LEVEL > 1) {
-				options.logging_type = ceres::LoggingType::PER_MINIMIZER_ITERATION;
-				options.minimizer_progress_to_stdout = true;
-			} else {
-				options.logging_type = ceres::LoggingType::SILENT;
-				options.minimizer_progress_to_stdout = false;
-			}
+			// the iteration callback below logs every iteration into the app's own log; Ceres's
+			// progress lines would go to stdout through glog, a second sink nobody reads
+			options.logging_type = ceres::LoggingType::SILENT;
+			options.minimizer_progress_to_stdout = false;
+			// Ceres 2.2 defaults, kept after a sweep of every direction and line search the solver
+			// offers on this energy (L-BFGS at rank 5/20/50, all three nonlinear conjugate-gradient
+			// updates, steepest descent, Armijo where it is legal, the Oren-Luenberger scaling, and
+			// function tolerances 1e-3/1e-4/1e-5) over three ground-truth scenes: no configuration
+			// wins on more than one of them, and the differences are the size of this arm's own
+			// run-to-run spread. Fletcher-Reeves looked like a winner on two scenes (+0.008 F1 over
+			// L-BFGS on Herz-Jesu-P8) and lost 0.006 on the third, which is why the sweep needed a
+			// third scene. What does not change with the configuration: this arm reaches a lower
+			// energy than the stepper everywhere and never a better F1.
+			// L-BFGS rank 20; Wolfe with cubic interpolation (mandatory with L-BFGS) and 20
+			// step-size iterations -- exhausting them returns an Armijo-only point and skips that
+			// iteration's secant update, so a smaller budget costs curvature, not just robustness;
+			// no Oren-Luenberger scaling of the initial inverse Hessian, which Ceres documents as
+			// harmful where the sensitivity to different parameters varies widely, as it does here
+			// (a vertex seen by twenty textured pair-directions next to one carrying the smoothness
+			// term alone)
 			options.line_search_direction_type = ceres::LBFGS;
-			options.max_lbfgs_rank = 5;
 			options.line_search_type = ceres::WOLFE;
-			options.use_approximate_eigenvalue_bfgs_scaling = true;
-			options.max_num_line_search_step_size_iterations = 10;
-			options.max_num_iterations = cap;
+			// this arm has no "N" (0 selected it): its stopping rule is the relative function
+			// tolerance below, and the cap is a safety net, not a budget -- it has never been
+			// reached on any measured scene (the longest scale ran 88 iterations), and an L-BFGS
+			// iteration costs one energy evaluation whenever the unit step satisfies the Wolfe
+			// conditions, which it does on most of them
+			options.max_num_iterations = 100;
 			options.function_tolerance = 1e-4;
 			// both are absolute thresholds on quantities carrying the scene's own units (the
 			// photometric energy scales with RegularizationScale and the pixel count), so no fixed
@@ -1725,13 +1843,13 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 			// iteration cap are the only stopping rules this arm can state honestly
 			options.gradient_tolerance = 0;
 			options.parameter_tolerance = 0;
-			// the callback reads the current iterate to keep a best-cost snapshot
-			options.update_state_every_iteration = true;
+			// the callback only logs; the best-cost snapshot lives in Evaluate
+			options.update_state_every_iteration = false;
 			options.callbacks.push_back(problemData);
 			ceres::GradientProblemSolver::Summary summary;
 			// SolveProblem
 			ceres::Solve(options, problem, problemData->GetParameters(), &summary);
-			DEBUG_ULTIMATE(summary.FullReport().c_str());
+			DEBUG_ULTIMATE("%s", summary.FullReport().c_str());
 			switch (summary.termination_type) {
 			case ceres::TerminationType::NO_CONVERGENCE:
 				DEBUG_EXTRA("CERES: maximum number of iterations reached!");
@@ -1740,11 +1858,12 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 				problemData->ApplyParams();
 				break;
 			default:
-				// a line search that exhausts its step-size iterations (the common outcome on this
-				// energy, whose masks and gates make it only piecewise smooth) leaves the parameter
-				// block at a probe point the solver never accepted. Fall back on the best iterate
-				// the callback saw and carry on with the next scale: abandoning the whole
-				// refinement threw away every scale already solved
+				// FAILURE: a numerical failure of the line search (a non-finite or invalid
+				// evaluation it could not step away from, a direction with no descent), which on
+				// this only-piecewise-smooth energy does happen. Ceres then leaves the parameter
+				// block at the scale's start; apply the best surface any evaluation reached and
+				// carry on with the next scale, abandoning the whole refinement threw away every
+				// scale already solved
 				VERBOSE("CERES surface refine stopped at scale %u: %s", nScale, summary.message.c_str());
 				if (!problemData->ApplyBestParams())
 					problemData->ApplyParams();
@@ -1835,17 +1954,43 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 				// must already have been consumed
 				VIndex numVertsRemoved(0);
 				if (bAdaptMesh && action == MeshRefineStep::APPLY) {
+					// one evaluation removes vertices with pairwise DISJOINT one-rings only, so every
+					// hole the removal opens is one vertex's ring: a simple loop the fill spans as a
+					// fan, leaving the surface manifold and closed. Removing a whole planar patch at
+					// once opened multi-ring holes (non-manifold after the fill, and the next scale's
+					// subdivision asserts on those), and even non-adjacent vertices whose rings share
+					// a vertex leave two holes touching at that vertex, one non-simple boundary loop
+					// the fill skips. The rest of the patch goes in the following evaluations, each
+					// judged on the re-listed adjacency. A ring that touches the mesh's own open
+					// boundary is skipped for the same reason: the hole's loop would meet the boundary
+					// loop at that vertex and the fill leaves such a merged loop open
 					Mesh::VertexIdxArr vertexRemove;
+					BoolArr vertexTaken(refine.vertices.GetSize()); // in the ring (or the center) of a vertex already selected
+					vertexTaken.Memset(0);
 					FOREACH(v, refine.vertices) {
 						// a vertex no pair-direction saw has no depth and no photometric evidence
 						// that it is planar
 						const float footprint(refine.footprint[v]);
-						if (footprint == 0 || refine.vertexBoundary[v])
+						if (footprint == 0 || refine.vertexBoundary[v] || vertexTaken[v])
 							continue;
 						const float th(fThPlanarVertex*footprint*fMedianFocal);
 						const double gn(norm(Point3d(gradients.row(v))));
-						if ((float)gn < th && norm(refine.smoothGrad1[v]) < th)
-							vertexRemove.Insert(v);
+						if ((float)gn >= th || norm(refine.smoothGrad1[v]) >= th)
+							continue;
+						const Mesh::VertexIdxArr& ring = refine.vertexVertices[v];
+						bool bRingBlocked(false);
+						for (VIndex n: ring) {
+							if (vertexTaken[n] || refine.vertexBoundary[n]) {
+								bRingBlocked = true;
+								break;
+							}
+						}
+						if (bRingBlocked)
+							continue;
+						vertexTaken[v] = true;
+						for (VIndex n: ring)
+							vertexTaken[n] = true;
+						vertexRemove.Insert(v);
 					}
 					if (!vertexRemove.IsEmpty()) {
 						// RemoveVerticesAndFill returns the number of holes it spanned, and the
