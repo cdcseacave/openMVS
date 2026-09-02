@@ -207,6 +207,25 @@ SFM_API bool DrawDenseSupplement(
 	const ImagePair& guided,
 	DenseSupplement& supplement);
 
+// Re-estimate ONE geometry for an infused pair on all of its correspondences, sparse and dense
+// together (ROMA2Config::supplementRefitPose), through the matcher's own estimator -- same branch,
+// same threshold -- on temporary Image copies whose keypoints are those correspondences. The copies
+// carry no pose, for the same reason the gate's do not: a scene that happens to hold a ground-truth
+// solution must not be able to leak it into a fitted geometry. The dense keypoints do not exist in
+// the images yet (they are appended serially, after the pass that calls this), which is why the
+// refit runs off the drawn positions in `supplement` rather than off the stored pair.
+// On success `pair` receives the refitted relative pose AND the E and F composed from it, so the
+// three describe one geometry -- a pair whose F came from the previous fit would hand
+// ViewGraphCalibrator and the epipolar band a constraint the pose no longer agrees with. On failure
+// the pair is left exactly as it was.
+// Returns true if the refit landed.
+SFM_API bool RefitInfusedPose(
+	PairsMatcher& pairsMatcher,
+	const Image& imgA,
+	const Image& imgB,
+	const DenseSupplement& supplement,
+	ImagePair& pair);
+
 // The rotation and unit-translation angles between two relative poses, in degrees: the angle of
 // R1 * R2^T, and the angle between the two translation directions, both in ImagePair::relativePose's
 // own convention.

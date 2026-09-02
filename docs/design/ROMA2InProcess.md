@@ -431,7 +431,10 @@ thresholds can be swept offline against a scene's COLMAP relative poses without 
 matcher. `--roma2-supplement-refit-pose` (off) replaces the choice with a single re-estimate on all
 of the pair's correspondences, sparse and dense together, through the matcher's own estimator (same
 branch, same threshold); it is a hypothesis the sweep has to confirm before it can be a default, and
-a refit on a draw that came from one of the two poses is not independent evidence about it.
+a refit on a draw that came from one of the two poses is not independent evidence about it. The refit
+writes the pose, **E and F together** (`RefitInfusedPose`, composing F the way
+`GeometricFilter::FinalizeRelative` does): F feeds the calibrator and the epipolar band, so a pair
+left holding the previous fit's F next to a new pose would be a silently wrong constraint in both.
 
 The draw is deliberately **not** filtered again against the pair's fitted geometry: the gate already fit one
 geometry to a sample of this same warp and required its inlier subset to cover both images, so a

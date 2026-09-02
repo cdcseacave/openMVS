@@ -2147,6 +2147,100 @@ bool ROMA2DenseInfusionTest()
 		}
 	}
 
+	// (e) THE REFIT (--roma2-supplement-refit-pose), which replaces the choice with one geometry
+	// fitted on sparse and dense together. What it must not do is move the pose and E while leaving
+	// F describing the previous fit: F feeds ViewGraphCalibrator's focal self-calibration and
+	// MatchGeometric's epipolar band, and a pair whose F disagrees with its own pose is a silently
+	// wrong constraint in both. The pair below starts with a deliberately WRONG F, so a refit that
+	// forgets it fails this outright.
+	{
+		Scene scene;
+		PinholeCamera* const camera = new PinholeCamera(cv::Size(width, height), REAL(600), REAL(600), REAL(width)/2, REAL(height)/2);
+		camera->trustIntrinsics = true; // the calibrated branch, the one that yields a relative pose
+		scene.cameras.emplace_back(camera);
+		const Point3 centers[2] = {Point3(0.0, 0.0, 0.0), Point3(0.6, 0.0, 0.0)};
+		for (IIndex k = 0; k < 2; ++k) {
+			Pose3D pose;
+			pose.C = centers[k];
+			pose.R = Matrix3x3::IDENTITY;
+			scene.images.emplace_back(k, String::FormatString("ref%u.jpg", k), pose, 0, scene.cameras[0]);
+		}
+		// 30 points at mixed depths, projected into both views: 10 of them the pair's sparse
+		// matches, 20 the dense supplement the refit is supposed to fit alongside them
+		std::vector<Point2f> sparseA, sparseB, denseA, denseB;
+		std::vector<float> denseC;
+		for (unsigned k = 0; k < 30; ++k) {
+			const Point3 X(-1.2 + 0.09*(REAL)k, -0.8 + 0.055*(REAL)k, 4.0 + 0.11*(REAL)(k%7));
+			const auto [projA, validA] = scene.images[0].ProjectPoint(X);
+			const auto [projB, validB] = scene.images[1].ProjectPoint(X);
+			if (!validA || !validB ||
+				!Image8U::isInside(Cast<float>(projA), scene.images[0].GetSize()) ||
+				!Image8U::isInside(Cast<float>(projB), scene.images[1].GetSize())) {
+				VERBOSE("ROMA2DenseInfusionTest FAILED: the refit fixture projects point %u outside the frame", k);
+				return false;
+			}
+			if (k < 10) {
+				sparseA.push_back(Cast<float>(projA));
+				sparseB.push_back(Cast<float>(projB));
+			} else {
+				denseA.push_back(Cast<float>(projA));
+				denseB.push_back(Cast<float>(projB));
+				denseC.push_back(0.8f);
+			}
+		}
+		for (const Point2f& pt : sparseA)
+			scene.images[0].keypoints.emplace_back(pt.x, pt.y, 4.f, -1.f, 0.05f);
+		for (const Point2f& pt : sparseB)
+			scene.images[1].keypoints.emplace_back(pt.x, pt.y, 4.f, -1.f, 0.05f);
+		for (Image& img : scene.images)
+			img.CloseDescribedKeypoints();
+		ImagePair pair(0, 1);
+		for (uint32_t m = 0; m < (uint32_t)sparseA.size(); ++m)
+			pair.matches.emplace_back(m, m);
+		pair.numFilteredInliers = (int)sparseA.size();
+		// the geometry of a DIFFERENT fit, which the refit has to replace rather than leave behind
+		Matrix3x3 wrongF(Matrix3x3::IDENTITY);
+		wrongF(0, 2) = 17.f;
+		pair.F = wrongF;
+		DenseSupplement supplement;
+		supplement.pointsA = denseA;
+		supplement.pointsB = denseB;
+		supplement.confidences = denseC;
+		MatchConfig matchCfg;
+		matchCfg.minMatches = 8;
+		PairsMatcher matcher(scene, matchCfg);
+		if (!RefitInfusedPose(matcher, scene.images[0], scene.images[1], supplement, pair)) {
+			VERBOSE("ROMA2DenseInfusionTest FAILED: the refit did not land on 10 sparse + 20 dense exact correspondences");
+			return false;
+		}
+		if (!pair.relativePose.has_value() || !pair.E.has_value() || !pair.F.has_value()) {
+			VERBOSE("ROMA2DenseInfusionTest FAILED: the refit left the pair without a pose, an E or an F");
+			return false;
+		}
+		// one geometry: E and F are exactly what the refitted pose composes, and F is no longer the
+		// one the pair carried in
+		const Matrix3x3 expectedE = ImagePair::ComposeEssentialMatrix(*pair.relativePose);
+		const Matrix3x3 expectedF = ImagePair::ComposeFundamentalMatrix(expectedE, scene.images[0].GetK(), scene.images[1].GetK());
+		if (norm(*pair.E - expectedE) > 1e-9 || norm(*pair.F - expectedF) > 1e-9 || norm(*pair.F - wrongF) < 1e-6) {
+			VERBOSE("ROMA2DenseInfusionTest FAILED: after the refit F, E and the pose do not describe one geometry "
+				"(|E - E(pose)| %g, |F - F(E)| %g, |F - F_before| %g)",
+				norm(*pair.E - expectedE), norm(*pair.F - expectedF), norm(*pair.F - wrongF));
+			return false;
+		}
+		// and that one geometry is the true one: the refitted rotation is the identity the fixture
+		// used, and the translation direction points along the baseline
+		float rotationDeg = 0.f, translationDeg = 0.f;
+		Pose3D truePose;
+		truePose.R = Matrix3x3::IDENTITY;
+		truePose.C = centers[1];
+		RelativePoseDifference(*pair.relativePose, truePose, rotationDeg, translationDeg);
+		if (rotationDeg > 0.5f || translationDeg > 0.5f) {
+			VERBOSE("ROMA2DenseInfusionTest FAILED: the refitted pose is %.4f deg / %.4f deg off the fixture's own",
+				rotationDeg, translationDeg);
+			return false;
+		}
+	}
+
 	VERBOSE("ROMA2DenseInfusionTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }

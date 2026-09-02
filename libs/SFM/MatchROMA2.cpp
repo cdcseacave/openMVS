@@ -422,46 +422,6 @@ bool ForEachWarpROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, const PairId
 	return true;
 }
 
-// Re-estimate one relative pose on ALL of an infused pair's correspondences, sparse and dense
-// together (ROMA2Config::supplementRefitPose). The matcher's own estimator on temporary Image copies
-// whose keypoints are those correspondences -- the ValidateOnePairROMA2 precedent, so the branch and
-// the threshold are the ones the descriptor path uses and no second estimator exists. The copies
-// carry no pose, for the same reason the gate's do not: a scene that happens to hold a ground-truth
-// solution must not be able to leak it into a fitted geometry.
-// The dense keypoints do not exist in the images yet (they are appended serially, after this pass),
-// which is why the refit runs off the drawn positions rather than off the stored pair.
-bool RefitInfusedPose(PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
-	const ImagePair& guided, const DenseSupplement& supplement, Pose3D& refitted)
-{
-	const unsigned numSparse = guided.GetNumFilteredInliers();
-	const size_t numTotal = (size_t)numSparse + supplement.pointsA.size();
-	if (numTotal < MAXF(pairsMatcher.GetConfig().minMatches, 8u))
-		return false;
-	std::vector<Point2f> pointsA, pointsB;
-	pointsA.reserve(numTotal);
-	pointsB.reserve(numTotal);
-	for (unsigned m = 0; m < numSparse; ++m) {
-		pointsA.push_back(imgA.keypoints[guided.matches[m].queryIdx].pt);
-		pointsB.push_back(imgB.keypoints[guided.matches[m].trainIdx].pt);
-	}
-	pointsA.insert(pointsA.end(), supplement.pointsA.begin(), supplement.pointsA.end());
-	pointsB.insert(pointsB.end(), supplement.pointsB.begin(), supplement.pointsB.end());
-	Image imgACopy(imgA.ID, imgA.fileName, Pose3D(), imgA.cameraID, imgA.pCamera);
-	Image imgBCopy(imgB.ID, imgB.fileName, Pose3D(), imgB.cameraID, imgB.pCamera);
-	imgACopy.InvalidatePose();
-	imgBCopy.InvalidatePose();
-	imgACopy.keypoints = ConvertToKeypoints(pointsA);
-	imgBCopy.keypoints = ConvertToKeypoints(pointsB);
-	ImagePair fit(guided.ID1, guided.ID2);
-	fit.matches.reserve(numTotal);
-	for (uint32_t i = 0; i < (uint32_t)numTotal; ++i)
-		fit.matches.emplace_back(i, i);
-	if (!pairsMatcher.GeometricFilter(imgACopy, imgBCopy, fit) || !fit.relativePose.has_value())
-		return false;
-	refitted = *fit.relativePose;
-	return true;
-}
-
 // The relative pose an infused pair ends up with, and the record of how it was chosen.
 // Two poses may exist for a pair: the SIFT pose the guided pass fitted on its verified sparse
 // inliers, and the gate's dense pose fitted on its ~denseSampleSize spread warp samples. The SIFT
@@ -483,12 +443,10 @@ void ChooseInfusedPose(PairsMatcher& pairsMatcher, const Image& imgA, const Imag
 	const std::optional<Pose3D>& densePose = validated.relativePose;
 	float rotationDeg = 0.f, translationDeg = 0.f;
 	InfusedPoseChoice choice = SelectInfusedPose(sparsePose, densePose, numSparse, config, rotationDeg, translationDeg);
-	Pose3D refitted;
-	if (config.supplementRefitPose && RefitInfusedPose(pairsMatcher, imgA, imgB, pair, supplement, refitted)) {
-		// one pose fitted on everything the pair carries, instead of a choice between two. The two
-		// angles are still recorded: they are what the offline sweep needs, whichever pose was kept
-		pair.relativePose = refitted;
-		pair.E = ImagePair::ComposeEssentialMatrix(refitted);
+	if (config.supplementRefitPose && RefitInfusedPose(pairsMatcher, imgA, imgB, supplement, pair)) {
+		// one geometry fitted on everything the pair carries, instead of a choice between two (the
+		// refit writes the pose, E and F itself). The two angles are still recorded: they are what
+		// the offline sweep needs, whichever geometry was kept
 		choice = InfusedPoseChoice::REFIT;
 	} else if (choice == InfusedPoseChoice::DENSE) {
 		// the gate's fit, whole: its pose next to another fit's matrices would be two geometries
@@ -655,6 +613,58 @@ bool SFM::DrawDenseSupplement(const Image& imgA, const Image& imgB, const Image3
 	ThinSampleEvenly(supplement.pointsA, supplement.pointsB, supplement.confidences, supplement.budget);
 	ASSERT(config.supplementTotalMatches == 0 ||
 		supplement.pointsA.size() <= config.supplementTotalMatches);
+	return true;
+}
+
+// Re-estimate one relative pose on ALL of an infused pair's correspondences, sparse and dense
+// together (ROMA2Config::supplementRefitPose). The matcher's own estimator on temporary Image copies
+// whose keypoints are those correspondences -- the ValidateOnePairROMA2 precedent, so the branch and
+// the threshold are the ones the descriptor path uses and no second estimator exists. The copies
+// carry no pose, for the same reason the gate's do not: a scene that happens to hold a ground-truth
+// solution must not be able to leak it into a fitted geometry.
+// The dense keypoints do not exist in the images yet (they are appended serially, after this pass),
+// which is why the refit runs off the drawn positions rather than off the stored pair.
+bool SFM::RefitInfusedPose(PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
+	const DenseSupplement& supplement, ImagePair& guided)
+{
+	const unsigned numSparse = guided.GetNumFilteredInliers();
+	const size_t numTotal = (size_t)numSparse + supplement.pointsA.size();
+	if (numTotal < MAXF(pairsMatcher.GetConfig().minMatches, 8u))
+		return false;
+	std::vector<Point2f> pointsA, pointsB;
+	pointsA.reserve(numTotal);
+	pointsB.reserve(numTotal);
+	for (unsigned m = 0; m < numSparse; ++m) {
+		pointsA.push_back(imgA.keypoints[guided.matches[m].queryIdx].pt);
+		pointsB.push_back(imgB.keypoints[guided.matches[m].trainIdx].pt);
+	}
+	pointsA.insert(pointsA.end(), supplement.pointsA.begin(), supplement.pointsA.end());
+	pointsB.insert(pointsB.end(), supplement.pointsB.begin(), supplement.pointsB.end());
+	Image imgACopy(imgA.ID, imgA.fileName, Pose3D(), imgA.cameraID, imgA.pCamera);
+	Image imgBCopy(imgB.ID, imgB.fileName, Pose3D(), imgB.cameraID, imgB.pCamera);
+	imgACopy.InvalidatePose();
+	imgBCopy.InvalidatePose();
+	imgACopy.keypoints = ConvertToKeypoints(pointsA);
+	imgBCopy.keypoints = ConvertToKeypoints(pointsB);
+	ImagePair fit(guided.ID1, guided.ID2);
+	fit.matches.reserve(numTotal);
+	for (uint32_t i = 0; i < (uint32_t)numTotal; ++i)
+		fit.matches.emplace_back(i, i);
+	if (!pairsMatcher.GeometricFilter(imgACopy, imgBCopy, fit) || !fit.relativePose.has_value())
+		return false; // the pair keeps whatever geometry it had: a refit either lands whole or not at all
+	// all THREE members move together, exactly as GeometricFilter::FinalizeRelative composes them
+	// from one fit. Leaving F behind -- the gate's on a dense-only pair, the guided pass's on an
+	// infused one -- would hand ViewGraphCalibrator's focal self-calibration and MatchGeometric's
+	// epipolar band a constraint from a different geometry than the pose and E now describe. F is
+	// composed rather than cleared, because those consumers test F.has_value() and a pair that had
+	// one must keep one; it is meaningless off a pinhole pair (SphericalCamera::GetK is IDENTITY),
+	// which is the one case where there is nothing to compose and nothing may be left stale either.
+	guided.relativePose = *fit.relativePose;
+	guided.E = ImagePair::ComposeEssentialMatrix(*guided.relativePose);
+	if (imgA.GetCameraType() == CameraType::PINHOLE && imgB.GetCameraType() == CameraType::PINHOLE)
+		guided.F = ImagePair::ComposeFundamentalMatrix(*guided.E, imgA.GetK(), imgB.GetK());
+	else
+		guided.F.reset();
 	return true;
 }
 
