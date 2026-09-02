@@ -178,16 +178,37 @@ struct SFM_API ROMA2Config {
 SFM_API unsigned ComputeGlobalDescriptorsROMA2(Scene& scene, RoMa2Onnx& roma2);
 /*----------------------------------------------------------------*/
 
+// Which relative pose an infused pair ends up carrying (MatchPairsROMA2, and the "ROMA2 pose check"
+// record it emits per infused pair).
+enum class InfusedPoseChoice : uint8_t {
+	NONE = 0,   // neither fit produced a pose
+	SPARSE,     // the pose fitted on the pair's verified sparse inliers, which agrees with the gate's
+	DENSE,      // the gate's pose, fitted on its spread warp sample: the two disagreed substantially
+	DENSE_ONLY, // the pair has no sparse inliers, so it is the gate's pose or nothing
+	REFIT,      // one pose re-estimated on sparse and dense together (ROMA2Config::supplementRefitPose)
+};
+SFM_API LPCTSTR InfusedPoseChoiceName(InfusedPoseChoice choice);
+
 // One pair's dense infusion: the correspondences drawn from that pair's own warp, to be appended
 // alongside whatever sparse matches it has. Index-parallel, in the pixels of the working orientation
 // of each image (SampleWarpByCoverage's convention). Empty on a pair that was not infused.
 struct SFM_API DenseSupplement {
 	std::vector<Point2f> pointsA, pointsB;
 	std::vector<float> confidences;
-	// what the decision was taken on, for the per-pair record: the pair's SIFT coverage of its valid
-	// disparity area (0 on a pair whose guided SIFT pass failed) and the budget that coverage bought
+	// what the decision was taken on: the pair's SIFT coverage of its valid disparity area (0 on a
+	// pair whose guided SIFT pass failed) and the budget that coverage bought
 	float coverage = 0.f;
 	unsigned budget = 0;
+	// The "ROMA2 pose check" record of this pair, filled where the choice is made (on the pool, by
+	// ChooseInfusedPose) and printed where the pair is known to be STORED (the serial apply). The
+	// two are separated because the offline threshold sweep must not fit on pairs the reconstruction
+	// does not contain -- the replace policy can still turn an infused result down -- and because a
+	// line printed from the pool arrives in whatever order the pool finished in.
+	unsigned numSparse = 0;                 // verified sparse inliers at the moment of the decision
+	InfusedPoseChoice poseChoice = InfusedPoseChoice::NONE;
+	float poseRotationDeg = 0.f;            // NaN when there was no pair of poses to compare
+	float poseTranslationDeg = 0.f;
+	std::optional<Pose3D> sparsePose, densePose; // both fits, recorded whichever one was kept
 };
 
 // Decide whether to infuse dense correspondences into one pair, and draw them if so. See the
@@ -231,16 +252,6 @@ SFM_API bool RefitInfusedPose(
 // own convention.
 SFM_API void RelativePoseDifference(const Pose3D& pose1, const Pose3D& pose2, float& rotationDeg, float& translationDeg);
 
-// Which relative pose an infused pair ends up carrying (MatchPairsROMA2, and the "ROMA2 pose check"
-// record it emits per infused pair).
-enum class InfusedPoseChoice : uint8_t {
-	NONE = 0,   // neither fit produced a pose
-	SPARSE,     // the pose fitted on the pair's verified sparse inliers, which agrees with the gate's
-	DENSE,      // the gate's pose, fitted on its spread warp sample: the two disagreed substantially
-	DENSE_ONLY, // the pair has no sparse inliers, so it is the gate's pose or nothing
-	REFIT,      // one pose re-estimated on sparse and dense together (ROMA2Config::supplementRefitPose)
-};
-SFM_API LPCTSTR InfusedPoseChoiceName(InfusedPoseChoice choice);
 
 // The pose choice of an infused pair, as a rule with no side effects: the SIFT pose is the more
 // accurate one WHEN THE TWO AGREE (sub-pixel correspondences, even with poor coverage), so the pair

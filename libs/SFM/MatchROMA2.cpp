@@ -436,7 +436,7 @@ bool ForEachWarpROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, const PairId
 // one DEBUG line, fixed prefix, fixed field order, `nan` where a pose is missing.
 void ChooseInfusedPose(PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
 	const ROMA2Config& config, const PairsMatcher::ValidatedGeometry& validated,
-	const DenseSupplement& supplement, ImagePair& pair)
+	DenseSupplement& supplement, ImagePair& pair)
 {
 	const unsigned numSparse = pair.GetNumFilteredInliers();
 	const std::optional<Pose3D> sparsePose = pair.relativePose; // as the guided pass's own fit left it
@@ -456,9 +456,22 @@ void ChooseInfusedPose(PairsMatcher& pairsMatcher, const Image& imgA, const Imag
 		pair.E = validated.E;
 	}
 	// DENSE_ONLY needs no assignment: the pair was built out of the gate's geometry to begin with
-	// the record: one line per infused pair, fixed prefix and field order, greppable out of the
-	// working-folder log of a Release run at -v 3. It is what the pseudo-GT sweep of the two
-	// thresholds is run on, so it carries both poses whether or not they were used.
+	// the record's fields, kept for the serial apply to print if this pair is actually stored
+	// (LogInfusedPoseCheck): a threshold sweep must not be fitted on pairs the reconstruction does
+	// not contain, and the replace policy can still turn an infused result down
+	supplement.numSparse = numSparse;
+	supplement.poseChoice = choice;
+	supplement.poseRotationDeg = rotationDeg;
+	supplement.poseTranslationDeg = translationDeg;
+	supplement.sparsePose = sparsePose;
+	supplement.densePose = densePose;
+}
+
+// The per-pair record every INFUSED and STORED pair contributes to the offline threshold sweep
+// (task 6): one DEBUG line, fixed prefix, fixed field order, `nan` where a pose is missing, printed
+// from the serial apply so the order is the pass's own (ID1,ID2) order run to run.
+void LogInfusedPoseCheck(const ImagePair& pair, const DenseSupplement& supplement)
+{
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	const double qnan = std::numeric_limits<double>::quiet_NaN();
 	double qs[4] = {qnan, qnan, qnan, qnan}, ts[3] = {qnan, qnan, qnan};
@@ -479,16 +492,17 @@ void ChooseInfusedPose(PairsMatcher& pairsMatcher, const Image& imgA, const Imag
 			t[2] = translation.z/n;
 		}
 	};
-	PoseFields(sparsePose, qs, ts);
-	PoseFields(densePose, qd, td);
+	PoseFields(supplement.sparsePose, qs, ts);
+	PoseFields(supplement.densePose, qd, td);
 	DEBUG("ROMA2 pose check pair %u %u, sparse %u, coverage %.4f, dense %u, dR %.4f deg, dt %.4f deg, "
 		"choice %s, qs(%.6f %.6f %.6f %.6f) ts(%.6f %.6f %.6f), qd(%.6f %.6f %.6f %.6f) td(%.6f %.6f %.6f)",
-		pair.ID1, pair.ID2, numSparse, supplement.coverage, (unsigned)supplement.pointsA.size(),
-		rotationDeg, translationDeg, InfusedPoseChoiceName(choice),
+		pair.ID1, pair.ID2, supplement.numSparse, supplement.coverage, (unsigned)supplement.pointsA.size(),
+		supplement.poseRotationDeg, supplement.poseTranslationDeg, InfusedPoseChoiceName(supplement.poseChoice),
 		qs[0], qs[1], qs[2], qs[3], ts[0], ts[1], ts[2],
 		qd[0], qd[1], qd[2], qd[3], td[0], td[1], td[2]);
+	#else
+	(void)pair; (void)supplement;
 	#endif
-	(void)choice; // the record is the only reader, and it compiles out of a non-verbose build
 }
 
 #endif // _USE_ONNXRUNTIME
@@ -605,6 +619,13 @@ bool SFM::DrawDenseSupplement(const Image& imgA, const Image& imgB, const Image3
 		// enough descriptor evidence, spread over enough of the overlap: nothing to infuse. The
 		// draw is discarded rather than kept -- it was made to measure the coverage, which is the
 		// one number that can say this
+		supplement = DenseSupplement();
+		return false;
+	}
+	if (supplement.pointsA.empty()) {
+		// the trigger fires on a warp with no eligible cell at all (nothing occupied, so coverage 0,
+		// and a failed SIFT pass has no inliers either), but there is nothing to infuse: say so, so
+		// that the caller's "empty draw" branch is reachable and its proposal count is exact
 		supplement = DenseSupplement();
 		return false;
 	}
@@ -945,6 +966,9 @@ unsigned SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, cons
 			supplement.pointsA, supplement.pointsB, supplement.confidences,
 			cv::Size(roma2.WarpSize(), roma2.WarpSize()));
 		++numSupplemented;
+		// only now: the pair is in the scene, so the record describes something the reconstruction
+		// contains, and this loop's order is the pass's own (ID1,ID2) order
+		LogInfusedPoseCheck(scene.pairs[itPair->second], supplement);
 	}
 	DEBUG("ROMA2 dense matching (%s round): %u/%u pairs guided, %u created, %u replaced, %u gated, %u skipped healthy, %u failed loads, %u failed matches; %u slots, %u loads, %u reloads (%s)",
 		bFeedbackRound ? "feedback" : "first", numGuided.load(), pairs.size(), numCreated, numReplaced, numGated.load(), numSkippedHealthy,

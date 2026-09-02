@@ -121,6 +121,15 @@ void SFM::ComputePairsWeights(Scene& scene, const PairsWeightingConfig& config, 
 		pair.weightedInliers = pair.HasMatches() ?
 			(float)pair.GetNumFilteredInliers() + config.denseObservationWeight*(float)pair.GetNumDenseInliers() : -1.f;
 		pair.weightSpatial = ComputeIntrinsicWeight(pair, scene.images[pair.ID1], scene.images[pair.ID2], config.gridSize, config.minInliers);
+		// A pair whose evidence ROUNDS AWAY carries none: with a small enough minInliers the floor
+		// above admits a pair of two dense matches, whose discounted evidence is 0.25*2 = 0.5 -> 0,
+		// and a zero magnitude is a zero composite weight however good the quality factors are. Give
+		// it the same answer the floor gives instead, here, once: every later step of this pass and
+		// every consumer downstream reads "no weight" off weightSpatial, and the connectivity step
+		// below in particular divides by a per-node maximum this pair would otherwise be excluded
+		// from while still being asked for its own share of it.
+		if (pair.GetNumWeightedInliers() == 0)
+			pair.weightSpatial = 0.f;
 	}
 
 	#ifdef _USE_BOOST
@@ -217,6 +226,9 @@ void SFM::ComputePairsWeights(Scene& scene, const PairsWeightingConfig& config, 
 		if (pair.weightSpatial <= 0.f)
 			continue; // skip if no matches
 		const unsigned w = pair.GetNumWeightedInliers();
+		// guaranteed by step 1, which zeroes weightSpatial on a pair whose evidence rounds to 0 --
+		// this assertion is therefore a statement about that invariant, not a bar a configuration
+		// can trip
 		ASSERT(w > 0, "ComputePairsWeights: non-positive intrinsic weight in connectivity computation");
 		if (w > maxNodeWeight[pair.ID1]) maxNodeWeight[pair.ID1] = w;
 		if (w > maxNodeWeight[pair.ID2]) maxNodeWeight[pair.ID2] = w;

@@ -560,8 +560,10 @@ bool SFM::ApplyROMA2Pair(Scene& scene, std::unordered_map<PairIdx::PairIndex, II
 			return false;
 		}
 		// polycpp ShouldReplaceROMA2Pair (import_roma2.hpp:39-45): strictly more inliers, and the existing pair below the ceiling
-		if (pair.GetNumFilteredInliers() <= existingInliers || (maxReplaceInliers > 0 && existingInliers >= maxReplaceInliers)) {
-			DEBUG_ULTIMATE("ROMA2 pair (% 4u, % 4u) kept: %u existing vs %u guided inliers", pair.ID1, pair.ID2, existingInliers, pair.GetNumFilteredInliers());
+		// both sides through the same accessor: comparing the candidate's descriptor evidence against
+		// the incumbent's dense-inclusive evidence would be two different questions in one test
+		if (pair.GetNumWeightedInliers() <= existingInliers || (maxReplaceInliers > 0 && existingInliers >= maxReplaceInliers)) {
+			DEBUG_ULTIMATE("ROMA2 pair (% 4u, % 4u) kept: %u existing vs %u guided inliers", pair.ID1, pair.ID2, existingInliers, pair.GetNumWeightedInliers());
 			return false;
 		}
 		scenePair = std::move(pair);
