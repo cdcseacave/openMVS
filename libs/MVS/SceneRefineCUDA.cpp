@@ -80,12 +80,14 @@ public:
 	struct View {
 		Image32F imageHost; // store temporarily the image pixels
 		Image32F imageGradHost[2]; // store temporarily the image x/y derivatives
+		BitMatrix keepMaskHost; // store temporarily the per-view keep-mask (bit set = keep); empty == no mask == keep everything
 		Image8U::Size size;
 		SEACAVE::CUDA::ArrayRT32F image; // float like the CPU's View::image (was half-float; see readSurfFloat in the .cu)
 		SEACAVE::CUDA::ArrayRT32F imageGrad[2]; // x/y derivatives (ComputeRefineImageGradient), sampled by the photometric kernel; kept in float like the CPU's View::imageGrad (half-float cannot hold the sub-6e-5 values a derivative stencil produces on flat regions)
 		SEACAVE::CUDA::MemDevice depthMap;
 		SEACAVE::CUDA::MemDevice faceMap;
 		SEACAVE::CUDA::MemDevice baryMap;
+		SEACAVE::CUDA::MemDevice keepMask; // one byte per pixel (non-zero = keep), uploaded from keepMaskHost only when non-empty; invalid (unallocated) == keep everything
 	};
 	typedef CLISTDEF2(View) ViewsArr;
 
@@ -176,18 +178,29 @@ public:
 	size_t projKeyPixels = 0; // pixels projKey was allocated for (ProjectMesh asserts every view fits)
 	SEACAVE::CUDA::ArrayRT32F imageAB; // warped image B in A, float like the CPU's imageAB
 	SEACAVE::CUDA::MemDevice imageZNCC; // parity diagnostic only, written when the RefineDebug pair matches
-	SEACAVE::CUDA::MemDevice imageConf; // parity diagnostic only, written when the RefineDebug pair matches
+	SEACAVE::CUDA::MemDevice imageConf; // reliability weight; allocated for the parity export only
 	SEACAVE::CUDA::MemDevice imageDZNCC;
 	SEACAVE::CUDA::MemDevice photoGrad;
 	SEACAVE::CUDA::MemDevice photoGradNorm;
-	SEACAVE::CUDA::MemDevice photoGradPixels;
 	SEACAVE::CUDA::MemDevice footprint; // per-vertex scene units per pixel; 0 exactly where photoGradNorm == 0 (SceneRefineStep.h)
+	// per-FACE private accumulators of one pair-direction's photometric term: the atomic-free
+	// replacement for the old per-pixel scatter (see kernelAccumulateFacePhoto). Sized for the
+	// whole mesh and rewritten in full by every accumulation launch, so they never need clearing.
+	SEACAVE::CUDA::MemDevice faceAcc; // 3 floats per face: Sum g_p*b_c per corner
+	SEACAVE::CUDA::MemDevice facePixels; // 1 float per face: contributing pixel count
+	SEACAVE::CUDA::MemDevice faceFoot; // 1 float per face: min footprint over the face's pixels
 	SEACAVE::CUDA::MemDevice sumR; // device scalar: Sum r, accumulated by kernelComputeImageDZNCC over one ScoreMesh() call
 	SEACAVE::CUDA::MemDevice sumRZ; // device scalar: Sum r*(1-ZNCC), same accumulation window as sumR
+	SEACAVE::CUDA::MemDevice statsBlockSums; // 2 floats per window-stats block of the largest view: the partials sumR/sumRZ are folded from, in block order
 	SEACAVE::CUDA::MemDevice debugSG; // WP2 parity diagnostic only: per-pixel photometric scalar, allocated when the RefineDebug pair matches
 	SEACAVE::CUDA::MemDevice vertexVerticesCont;
 	SEACAVE::CUDA::MemDevice vertexVerticesSizes;
 	SEACAVE::CUDA::MemDevice vertexVerticesPointers;
+	// the same flattening for the INCIDENT FACES of each vertex (Mesh::ListIncidentFaces order):
+	// the gather half of the photometric accumulation walks it instead of the pixels scattering
+	SEACAVE::CUDA::MemDevice vertexFacesCont;
+	SEACAVE::CUDA::MemDevice vertexFacesSizes;
+	SEACAVE::CUDA::MemDevice vertexFacesPointers;
 	SEACAVE::CUDA::MemDevice vertBoundary; // per-vertex 0/1 boundary flag (shared valence/boundary split, see ListVertexFacesPost())
 	SEACAVE::CUDA::MemDevice smoothGrad1;
 	SEACAVE::CUDA::MemDevice smoothGrad2;
@@ -211,15 +224,9 @@ MeshRefineCUDA::MeshRefineCUDA(Scene& _scene, unsigned _nAlternatePair, float _w
 	std::unordered_set<uint64_t> mapPairs;
 	mapPairs.reserve(images.GetSize()*nMaxViews);
 	FOREACH(idxImage, images) {
-		// keep only best neighbor views
-		const float fMinArea(0.1f);
-		const float fMinScale(0.2f), fMaxScale(3.2f);
-		const float fMinAngle(D2R(2.5f)), fMaxAngle(D2R(45.f));
-		const Image& imageData = images[idxImage];
-		if (!imageData.IsValid())
+		ViewScoreArr neighbors;
+		if (!SelectRefineNeighbors(scene, idxImage, nMaxViews, neighbors))
 			continue;
-		ViewScoreArr neighbors(imageData.neighbors);
-		Scene::FilterNeighborViews(neighbors, fMinArea, fMinScale, fMaxScale, fMinAngle, fMaxAngle, nMaxViews);
 		for (const ViewScore& neighbor: neighbors) {
 			ASSERT(images[neighbor.ID].IsValid());
 			mapPairs.insert(MakePairIdx((uint32_t)idxImage, neighbor.ID));
@@ -277,7 +284,13 @@ bool MeshRefineCUDA::InitImages(float scale, float sigma)
 			return false;
 			#endif
 		}
-		ComputeRefineImageGradient(img, view.imageGradHost[0], view.imageGradHost[1]);
+		// mode 3 samples the bilinear interpolant of the image directly (computePhotoPixel's
+		// bilinearGradient) and never reads this precomputed stencil, so computing (and, below,
+		// uploading) it would be wasted work
+		if (OPTREFINE::nImageGradient != 3)
+			ComputeRefineImageGradient(img, view.imageGradHost[0], view.imageGradHost[1]);
+		// per-view keep-mask at this scale's working size (the same estimator on both backends)
+		PrepareRefineImageMask(imageData, img.size(), view.keepMaskHost);
 	}
 	#ifdef MESHCUDAOPT_USE_OPENMP
 	if (bAbort)
@@ -311,17 +324,30 @@ bool MeshRefineCUDA::InitImages(float scale, float sigma)
 		reportCudaError(view.image.Reset(size, CUDA_ARRAY3D_SURFACE_LDST));
 		reportCudaError(view.image.SetData(view.imageHost));
 		view.imageHost.release();
-		for (int i=0; i<2; ++i) {
-			ASSERT(view.imageGradHost[i].size() == size);
-			reportCudaError(view.imageGrad[i].Reset(size, CUDA_ARRAY3D_SURFACE_LDST));
-			reportCudaError(view.imageGrad[i].SetData(view.imageGradHost[i]));
-			view.imageGradHost[i].release();
-			createTexture(view.imageGrad[i], viewGPU[idxImage].texGrad[i]);
+		// no gradient stencil texture in mode 3 -- see the comment above where it is computed
+		if (OPTREFINE::nImageGradient != 3) {
+			for (int i=0; i<2; ++i) {
+				ASSERT(view.imageGradHost[i].size() == size);
+				reportCudaError(view.imageGrad[i].Reset(size, CUDA_ARRAY3D_SURFACE_LDST));
+				reportCudaError(view.imageGrad[i].SetData(view.imageGradHost[i]));
+				view.imageGradHost[i].release();
+				createTexture(view.imageGrad[i], viewGPU[idxImage].texGrad[i]);
+			}
 		}
 		const size_t area((size_t)size.area());
 		reportCudaError(view.depthMap.Reset(sizeof(float)*area));
 		reportCudaError(view.faceMap.Reset(sizeof(FIndex)*area));
 		reportCudaError(view.baryMap.Reset(sizeof(hfloat)*3*area));
+		if (view.keepMaskHost.empty()) {
+			view.keepMask.Release();
+		} else {
+			// dense byte mask (non-zero = keep) the kernel can index directly; BitMatrix::copyTo()
+			// already does this exact bit-to-byte expansion (255/0)
+			Image8U keepBytes;
+			view.keepMaskHost.copyTo(keepBytes);
+			reportCudaError(view.keepMask.Reset(keepBytes));
+			view.keepMaskHost.release();
+		}
 		if (maxSize.width < size.width)
 			maxSize.width = size.width;
 		if (maxSize.height < size.height)
@@ -348,6 +374,12 @@ bool MeshRefineCUDA::InitImages(float scale, float sigma)
 	}
 	reportCudaError(sumR.Reset(sizeof(float)));
 	reportCudaError(sumRZ.Reset(sizeof(float)));
+	// one slot per 16x16 block of the window-statistics grid; the largest view's width and height
+	// need not come from the same view, so this is an upper bound rather than an exact count
+	{
+		const size_t maxBlocks(((size_t)maxSize.width + 15)/16 * (((size_t)maxSize.height + 15)/16));
+		reportCudaError(statsBlockSums.Reset(sizeof(float)*2*maxBlocks));
+	}
 	// create surface object for projected image
 	{
 		cudaResourceDesc resDesc = {};
@@ -382,12 +414,20 @@ void MeshRefineCUDA::ListVertexFacesPost()
 	// zeroed vertSizes[] for boundary vertices to short-circuit their own gradient, which also
 	// corrupted every interior neighbour's 1/vertSizes[ni] weight term (divide by zero -> +inf ->
 	// that neighbour's smoothGrad2 collapsed to 0 instead of including the boundary contribution).
+	// the incident FACES of each vertex are flattened the same way, in the order
+	// Mesh::ListIncidentFaces produced (ListVertexFacesPre(), above): kernelGatherVertexPhoto
+	// walks that fixed order to sum one pair-direction's photometric term for the vertex, which
+	// is what makes the sum reproducible without atomics
 	const size_t numVertices(scene.mesh.vertices.GetSize());
+	ASSERT(scene.mesh.vertexFaces.GetSize() == numVertices);
 	Unsigned32Arr _vertexVerticesCont(0, numVertices*6);
 	Unsigned32Arr _vertexVerticesSizes(0, numVertices);
 	Unsigned32Arr _vertexVerticesPointers(0, numVertices);
 	Unsigned8Arr _vertexBoundary(0, numVertices);
-	uint32_t lastPosition(0);
+	Unsigned32Arr _vertexFacesCont(0, scene.mesh.faces.GetSize()*3);
+	Unsigned32Arr _vertexFacesSizes(0, numVertices);
+	Unsigned32Arr _vertexFacesPointers(0, numVertices);
+	uint32_t lastPosition(0), lastFacePosition(0);
 	FOREACH(idxV, scene.mesh.vertices) {
 		const Mesh::VertexIdxArr& verts = scene.mesh.vertexVertices[idxV];
 		ASSERT(!verts.IsEmpty()); // true valence must be > 0 for every vertex
@@ -395,18 +435,31 @@ void MeshRefineCUDA::ListVertexFacesPost()
 		_vertexVerticesSizes.Insert(verts.GetSize());
 		_vertexVerticesPointers.Insert(lastPosition); lastPosition += verts.GetSize();
 		_vertexBoundary.Insert(scene.mesh.vertexBoundary[idxV] ? 1 : 0);
+		const Mesh::FaceIdxArr& vfaces = scene.mesh.vertexFaces[idxV];
+		ASSERT(!vfaces.IsEmpty()); // a vertex with no incident face has no place in the mesh
+		_vertexFacesCont.Join(vfaces.GetData(), vfaces.GetSize());
+		_vertexFacesSizes.Insert(vfaces.GetSize());
+		_vertexFacesPointers.Insert(lastFacePosition); lastFacePosition += vfaces.GetSize();
 	}
 	reportCudaError(vertexVerticesCont.Reset(_vertexVerticesCont));
 	reportCudaError(vertexVerticesSizes.Reset(_vertexVerticesSizes));
 	reportCudaError(vertexVerticesPointers.Reset(_vertexVerticesPointers));
 	reportCudaError(vertBoundary.Reset(_vertexBoundary));
+	reportCudaError(vertexFacesCont.Reset(_vertexFacesCont));
+	reportCudaError(vertexFacesSizes.Reset(_vertexFacesSizes));
+	reportCudaError(vertexFacesPointers.Reset(_vertexFacesPointers));
 	// init memory
 	reportCudaError(photoGrad.Reset(sizeof(Point3f)*numVertices));
 	reportCudaError(photoGradNorm.Reset(sizeof(float)*numVertices));
-	reportCudaError(photoGradPixels.Reset(sizeof(float)*numVertices));
 	reportCudaError(footprint.Reset(sizeof(float)*numVertices));
 	reportCudaError(smoothGrad1.Reset(sizeof(Point3f)*numVertices));
 	reportCudaError(smoothGrad2.Reset(sizeof(Point3f)*numVertices));
+	// the per-face accumulators the photometric pass reduces into (20 bytes per face); this mesh
+	// is final for the scale, so they are sized once here
+	const size_t numFaces(scene.mesh.faces.GetSize());
+	reportCudaError(faceAcc.Reset(sizeof(float)*3*numFaces));
+	reportCudaError(facePixels.Reset(sizeof(float)*numFaces));
+	reportCudaError(faceFoot.Reset(sizeof(float)*numFaces));
 }
 
 // extract array of faces viewed by each image
@@ -644,10 +697,12 @@ bool MeshRefineCUDA::ScoreMesh(Point3f* photoGradOut, float* photoGradNormOut, f
 	}
 
 	// resolve the footprint sentinel now that photoGradNorm holds its final per-vertex count
-	// (contract: footprint[v] > 0 exactly where photoGradNorm[v] > 0)
-	MVS::CUDA::LaunchUpdatePhotoGradNorm(
-		(float*)(CUdeviceptr)photoGradNorm, NULL,
-		(float*)(CUdeviceptr)footprint, numVertices, true);
+	// (contract: footprint[v] > 0 exactly where photoGradNorm[v] > 0), exactly like the CPU's
+	// ScoreMesh resolves it at the same point
+	MVS::CUDA::LaunchFinalizePhotoGrad(
+		(const float*)(CUdeviceptr)photoGradNorm,
+		(float*)(CUdeviceptr)footprint,
+		numVertices);
 
 	// S = sumRZ/sumR, the reliability-weighted mean of (1-ZNCC). sumR == 0 means no pair-direction
 	// contributed a single masked pixel -- broken outside-world input (no pair overlap, bad
@@ -805,6 +860,8 @@ void MeshRefineCUDA::ImageMeshWarp(
 	MVS::CUDA::LaunchImageMeshWarp(
 		(const float*)(CUdeviceptr)views[idxImageA].depthMap,
 		(const float*)(CUdeviceptr)views[idxImageB].depthMap,
+		views[idxImageA].keepMask.IsValid() ? (const uint8_t*)(CUdeviceptr)views[idxImageA].keepMask : NULL,
+		views[idxImageB].keepMask.IsValid() ? (const uint8_t*)(CUdeviceptr)views[idxImageB].keepMask : NULL,
 		(uint8_t*)(CUdeviceptr)mask,
 		MakeCUDACamera(cameraA, size),
 		MakeCUDACamera(cameraB, views[idxImageB].size),
@@ -820,10 +877,11 @@ void MeshRefineCUDA::ComputeWindowStats(cudaSurfaceObject_t surfImageA, cudaSurf
 		(uint8_t*)(CUdeviceptr)maskStats,
 		(float*)(CUdeviceptr)imageDZNCC,
 		exportMaps ? (float*)(CUdeviceptr)imageZNCC : NULL,
-		exportMaps ? (float*)(CUdeviceptr)imageConf : NULL,
+		imageConf.IsValid() ? (float*)(CUdeviceptr)imageConf : NULL,
 		surfImageA, surfImageProj,
 		(float*)(CUdeviceptr)sumR,
 		(float*)(CUdeviceptr)sumRZ,
+		(float*)(CUdeviceptr)statsBlockSums,
 		OPTREFINE::fGateMeanDiff, OPTREFINE::fGateVarRatio,
 		size.width, size.height);
 }
@@ -832,8 +890,6 @@ void MeshRefineCUDA::ComputeWindowStats(cudaSurfaceObject_t surfImageA, cudaSurf
 void MeshRefineCUDA::ComputePhotometricGradient(const Camera& cameraA, const Camera& cameraB, const Image8U::Size& size,
 	uint32_t idxImageA, uint32_t idxImageB, uint32_t numVertices, float RegularizationScale)
 {
-	// compute photometric gradient for all visible vertices
-	reportCudaError(cuMemsetD32(photoGradPixels, 0, numVertices));
 	// WP2 parity diagnostic: per-pixel photometric scalar (the CPU's sg) + face id, same
 	// gating as the pair-map block in ProcessPair(); no-op unless the debug pair matches
 	uint32_t dbgImageA, dbgImageB;
@@ -844,7 +900,18 @@ void MeshRefineCUDA::ComputePhotometricGradient(const Camera& cameraA, const Cam
 		reportCudaError(debugSG.Reset(sizeof(float)*area));
 		reportCudaError(cuMemsetD32(debugSG, 0, area));
 	}
-	MVS::CUDA::LaunchComputePhotometricGradient(
+	const MVS::CUDA::Camera cudaCamA(MakeCUDACamera(cameraA, size));
+	const MVS::CUDA::Camera cudaCamB(MakeCUDACamera(cameraB, views[idxImageB].size));
+	const FIndex numFaces(scene.mesh.faces.GetSize());
+	// mode 3 samples the bilinear interpolant of image B directly and needs no precomputed
+	// gradient stencil texture (InitImages never uploads one in that mode)
+	const bool bBilinearGrad(OPTREFINE::nImageGradient == 3);
+	// the atomic-free accumulation: reduce every face's pixels into its own slots, then let each
+	// vertex gather its incident faces in a fixed order. No float sum here depends on the order
+	// the GPU happened to schedule its threads in, so two identical runs produce identical
+	// meshes; the old per-pixel atomicAdd scatter did not (see kernelAccumulateFacePhoto).
+	MVS::CUDA::LaunchAccumulateFacePhoto(
+		(const MVS::CUDA::Point3*)(CUdeviceptr)vertices,
 		(const MVS::CUDA::Point3u*)(CUdeviceptr)faces,
 		(const MVS::CUDA::Point3*)(CUdeviceptr)faceNormals,
 		(const float*)(CUdeviceptr)views[idxImageA].depthMap,
@@ -852,15 +919,28 @@ void MeshRefineCUDA::ComputePhotometricGradient(const Camera& cameraA, const Cam
 		(const uint16_t*)(CUdeviceptr)views[idxImageA].baryMap,
 		(const float*)(CUdeviceptr)imageDZNCC,
 		(const uint8_t*)(CUdeviceptr)maskStats,
-		(MVS::CUDA::Point3*)(CUdeviceptr)photoGrad,
-		(float*)(CUdeviceptr)photoGradPixels,
-		(float*)(CUdeviceptr)footprint,
+		(float*)(CUdeviceptr)faceAcc,
+		(float*)(CUdeviceptr)facePixels,
+		(float*)(CUdeviceptr)faceFoot,
 		dbgPair ? (float*)(CUdeviceptr)debugSG : NULL,
-		MakeCUDACamera(cameraA, size),
-		MakeCUDACamera(cameraB, views[idxImageB].size),
-		viewGPU[idxImageB].texGrad[0], viewGPU[idxImageB].texGrad[1],
+		cudaCamA, cudaCamB,
+		viewGPU[idxImageB].texObj, viewGPU[idxImageB].texGrad[0], viewGPU[idxImageB].texGrad[1],
+		bBilinearGrad,
 		RegularizationScale,
-		size.width, size.height);
+		numFaces);
+	MVS::CUDA::LaunchGatherVertexPhoto(
+		(const MVS::CUDA::Point3u*)(CUdeviceptr)faces,
+		(const MVS::CUDA::Point3*)(CUdeviceptr)faceNormals,
+		(const uint32_t*)(CUdeviceptr)vertexFacesCont,
+		(const uint32_t*)(CUdeviceptr)vertexFacesSizes,
+		(const uint32_t*)(CUdeviceptr)vertexFacesPointers,
+		(const float*)(CUdeviceptr)faceAcc,
+		(const float*)(CUdeviceptr)facePixels,
+		(const float*)(CUdeviceptr)faceFoot,
+		(MVS::CUDA::Point3*)(CUdeviceptr)photoGrad,
+		(float*)(CUdeviceptr)photoGradNorm,
+		(float*)(CUdeviceptr)footprint,
+		numVertices);
 	if (dbgPair) {
 		// the raw face map of A (-1 where nothing was rasterised; NOT masked, so rasterisation
 		// and warp differences can be told apart), same as the CPU export
@@ -875,20 +955,14 @@ void MeshRefineCUDA::ComputePhotometricGradient(const Camera& cameraA, const Cam
 		RefineDebug::ExportPairMap(nScale, iteration, idxImageA, idxImageB, "face", faceF.getData(), size.width, size.height);
 		debugSG.Release();
 	}
-	// update photometric gradient norm for all visible vertices; the footprint sentinel is
-	// resolved separately, once, after every pair-direction of this ScoreMesh() has run (see
-	// kernelUpdatePhotoGradNorm)
-	MVS::CUDA::LaunchUpdatePhotoGradNorm(
-		(float*)(CUdeviceptr)photoGradNorm,
-		(const float*)(CUdeviceptr)photoGradPixels,
-		NULL, numVertices, false);
+	// this pair-direction's photoGradNorm bookkeeping is done by the gather above; the footprint
+	// sentinel is resolved separately, once, after every pair-direction of this ScoreMesh() has
+	// run (see kernelFinalizePhotoGrad)
 	#if 0
 	// debug view
 	Point3fArr _photoGrad(numVertices);
-	FloatArr _photoGradPixels(numVertices);
 	FloatArr _photoGradNorm(numVertices);
 	photoGrad.GetData(_photoGrad);
-	photoGradPixels.GetData(_photoGradPixels);
 	photoGradNorm.GetData(_photoGradNorm);
 	#endif
 }
@@ -923,11 +997,13 @@ void MeshRefineCUDA::ComputeSmoothnessGradient(uint32_t numVertices)
 
 void MeshRefineCUDA::CombineGradients(uint32_t numVertices)
 {
+	// divide by c_v, the number of pair-directions that saw each vertex
+	const float* photoGradNormPtr((const float*)(CUdeviceptr)photoGradNorm);
 	// compute smoothness gradient for all vertices
 	if (ratioRigidityElasticity >= 1.f) {
 		MVS::CUDA::LaunchCombineGradients(
 			(MVS::CUDA::Point3*)(CUdeviceptr)photoGrad,
-			(const float*)(CUdeviceptr)photoGradNorm,
+			photoGradNormPtr,
 			(const MVS::CUDA::Point3*)(CUdeviceptr)smoothGrad2,
 			numVertices, weightRegularity);
 	} else {
@@ -937,7 +1013,7 @@ void MeshRefineCUDA::CombineGradients(uint32_t numVertices)
 		const float elasticity(ratioRigidityElasticity*weightRegularity);
 		MVS::CUDA::LaunchCombineAllGradients(
 			(MVS::CUDA::Point3*)(CUdeviceptr)photoGrad,
-			(const float*)(CUdeviceptr)photoGradNorm,
+			photoGradNormPtr,
 			(const MVS::CUDA::Point3*)(CUdeviceptr)smoothGrad1,
 			(const MVS::CUDA::Point3*)(CUdeviceptr)smoothGrad2,
 			numVertices, rigidity, elasticity);
@@ -957,7 +1033,8 @@ void MeshRefineCUDA::CombineGradients(uint32_t numVertices)
 // optimize mesh using photo-consistency
 bool Scene::RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews,
 						   float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize, unsigned nMaxFaceArea,
-						   unsigned nScales, float fScaleStep, unsigned nAlternatePair, float fRegularityWeight, float fRatioRigidityElasticity, float fGradientStep)
+						   unsigned nScales, float fScaleStep, unsigned nAlternatePair, float fRegularityWeight, float fRatioRigidityElasticity, float fGradientStep,
+						   float fThPlanarVertex)
 {
 	// "--gradient-step N.s" means N iterations per scale and s*10 pixels of initial step; same
 	// entry validation as the CPU path (Scene::RefineMesh, SceneRefine.cpp) every caller goes
@@ -978,20 +1055,33 @@ bool Scene::RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, u
 				fGradientStep, stepInit, MeshRefineStep::StepMax, MeshRefineStep::StepMax*0.1f);
 			return false;
 		}
-		// the other externally controlled knobs the stepper relies on, validated here for the
-		// same reason: their ASSERT twins inside the stepper are contracts, not input checks,
-		// and compile out in Release
-		if (!(fRegularityWeight >= 0 && fRegularityWeight*MeshRefineStep::StepMax <= 1.f)) {
-			VERBOSE("error: --regularity-weight %g is outside [0, %g]: one full step of the"
-				" regularization term must not amplify the Laplacian it is applied to"
-				" (explicit-flow stability)",
-				fRegularityWeight, 1.f/MeshRefineStep::StepMax);
-			return false;
-		}
-		if (OPTREFINE::nOptimizer != 0 && OPTREFINE::nOptimizer != 1) {
-			VERBOSE("error: optimizer %d is not implemented (0 - bold, 1 - fixed)", OPTREFINE::nOptimizer);
-			return false;
-		}
+	}
+	// the other externally controlled knobs, validated for both arms exactly like the CPU path
+	// (Scene::RefineMesh): their ASSERT twins inside the stepper are contracts, not input checks,
+	// and compile out in Release
+	if (!(fRegularityWeight >= 0 && fRegularityWeight*MeshRefineStep::StepMax <= 1.f)) {
+		VERBOSE("error: --regularity-weight %g is outside [0, %g]: one full step of the"
+			" regularization term must not amplify the Laplacian it is applied to"
+			" (explicit-flow stability)",
+			fRegularityWeight, 1.f/MeshRefineStep::StepMax);
+		return false;
+	}
+	if (OPTREFINE::nOptimizer != 0 && OPTREFINE::nOptimizer != 1) {
+		VERBOSE("error: optimizer %d is not implemented (0 - bold, 1 - fixed)", OPTREFINE::nOptimizer);
+		return false;
+	}
+	// an unknown stencil id used to fall silently to the default one, so an A/B that asked for a
+	// stencil this build does not have measured the default twice
+	if (OPTREFINE::nImageGradient < 0 || OPTREFINE::nImageGradient > 3) {
+		VERBOSE("error: image gradient stencil %d is not implemented (0 - 3x5 separable, 1 - central, 2 - Sobel, 3 - bilinear interpolant derivative)", OPTREFINE::nImageGradient);
+		return false;
+	}
+	// the planar-vertex removal hook lives only on the CPU path, which owns the mid-scale mesh
+	// surgery; refuse it here rather than silently refining without it, so the caller falls back
+	// to the CPU path and the option is honoured
+	if (fThPlanarVertex > 0) {
+		VERBOSE("error: planar-vertex removal (--planar-vertex-ratio) is not implemented on the CUDA backend");
+		return false;
 	}
 
 	bool bGeneratedPointcloud(false);
@@ -1032,8 +1122,8 @@ bool Scene::RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, u
 
 		// pixel-unit stepper (SceneRefineStep.h): fGradientStep is N.s, N the same per-scale
 		// iteration budget as before, s*10 the initial step in pixels; mirrors the CPU's
-		// Scene::RefineMesh loop (SceneRefine.cpp) minus the CPU-only planar-vertex hook (CUDA
-		// has no bAdaptMesh/vertexDepth machinery)
+		// Scene::RefineMesh loop (SceneRefine.cpp) minus the CPU-only planar-vertex hook, which
+		// the entry validation above refuses rather than ignores
 		const int N(FLOOR2INT(fGradientStep));
 		const float eta0((fGradientStep-(float)N)*10.f);
 		const int cap(MAXF(N/(int)(nScale+1),8));
@@ -1106,7 +1196,6 @@ bool Scene::RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, u
 			terms.rigidity = rho;
 			terms.regularityWeight = refine.weightRegularity;
 			terms.numVertices = numVertices;
-			terms.bounded = false; // the sign-vote/tanh photo terms are not implemented yet
 			terms.alternating = bAlternating;
 
 			const unsigned evalIdx(stepper.GetNumEvaluated()); // 0-based, before Evaluate() consumes it
@@ -1142,7 +1231,7 @@ bool Scene::RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, u
 		// Phase B: pure elasticity. The legacy 70/30 iteration split is preserved against phase
 		// A's ACCEPTED count rather than its raw iteration budget, since a rejected evaluation
 		// consumes budget without buying any convergence; step and the S references carry over
-		// unchanged, only the stall counter is given a fresh start
+		// unchanged, only the stop budget is given a fresh start
 		const unsigned nA(stepper.GetNumAccepted());
 		const int capB(MAXF(3, 3*(int)nA/7));
 		stepper.ResetStall();

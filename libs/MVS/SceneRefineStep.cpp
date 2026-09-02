@@ -76,7 +76,8 @@ float MeshRefineStep::ComputeMedianScale(const Terms& terms)
 		if (terms.photoCount[v] < 2)
 			continue;
 		ASSERT(terms.footprint[v] > 0); // guaranteed wherever photoCount > 0
-		scratch.Insert(norm(terms.photoGrad[v]/terms.photoCount[v])/terms.footprint[v]);
+		const Grad g(terms.photoGrad[v]/terms.photoCount[v]);
+		scratch.Insert(norm(g)/terms.footprint[v]);
 	}
 	return scratch.IsEmpty() ? 0.f : scratch.GetMedian();
 } // ComputeMedianScale
@@ -139,10 +140,9 @@ MeshRefineStep::Action MeshRefineStep::Evaluate(const Terms& terms, Mesh::Vertex
 	if (numAccepted >= MinIters && numStalled >= Patience)
 		return STOP;
 
-	// the per-scale normalizer, derived at the first evaluation and then held; the vote/tanh
-	// formulations already deliver a bounded direction and must not be renormalized
+	// the per-scale normalizer, derived at the first evaluation and then held
 	if (median < 0)
-		median = terms.bounded ? 1.f : ComputeMedianScale(terms);
+		median = ComputeMedianScale(terms);
 
 	// move the vertices
 	scratch.Empty();
@@ -158,9 +158,7 @@ MeshRefineStep::Action MeshRefineStep::Evaluate(const Terms& terms, Mesh::Vertex
 		Grad photoDelta(Grad::ZERO);
 		if (terms.photoCount[v] >= 2 && scale > 0) {
 			ASSERT(footprint > 0);
-			photoDelta = terms.bounded ?
-				terms.photoGrad[v]*footprint : // the vote/tanh arms deliver |photoGrad| <= 1 along N
-				terms.photoGrad[v]/(terms.photoCount[v]*scale);
+			photoDelta = terms.photoGrad[v]/(terms.photoCount[v]*scale);
 		}
 		// regularization in scene units, then the combined step: the legacy combination
 		// (photoGrad/count + w*(rho*bilap - (1-rho)*lap)) with eta*P_v in place of gstep*g_v, so

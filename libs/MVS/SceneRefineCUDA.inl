@@ -60,8 +60,11 @@ void LaunchResolveProjection(
 	const uint32_t* faceIDs, const unsigned long long* projKey,
 	float* depthMap, uint32_t* faceMap, uint16_t* baryMap, int width, int height);
 
+// keepA/keepB are the per-pixel keep-masks of image A/B (one byte per pixel, non-zero = keep),
+// NULL if disabled -- see kernelImageMeshWarp
 void LaunchImageMeshWarp(
-	const float* depthMapA, const float* depthMapB, uint8_t* mask,
+	const float* depthMapA, const float* depthMapB,
+	const uint8_t* keepA, const uint8_t* keepB, uint8_t* mask,
 	const Camera& camA, const Camera& camB,
 	cudaTextureObject_t texImageB,
 	cudaSurfaceObject_t surfImageProj);
@@ -70,24 +73,50 @@ void LaunchImageMeshWarp(
 // SECOND mask buffer (the window loops still read mask), pruned of the pixels whose window held
 // fewer than Refine::MinWindowCount valid samples or that failed a gate -- every consumer
 // downstream reads maskOut. zncc/conf are the parity diagnostic's optional outputs (NULL in
-// production); sumR/sumRZ are the device scalars ScoreMesh reduces into S.
+// production); sumR/sumRZ are the device scalars ScoreMesh reduces into S, and blockSums is the
+// scratch this launch's two kernels hand them over in -- 2 floats per 16x16 block of the largest
+// view, so that S is a fixed sequence of additions instead of one atomicAdd race per block.
 void LaunchComputeWindowStats(
 	const uint8_t* mask, uint8_t* maskOut, float* dzncc, float* zncc, float* conf,
 	cudaSurfaceObject_t surfImageA, cudaSurfaceObject_t surfImageProj,
-	float* sumR, float* sumRZ, float gateMeanDiff, float gateVarRatio, int width, int height);
+	float* sumR, float* sumRZ, float* blockSums, float gateMeanDiff, float gateVarRatio, int width, int height);
 
-void LaunchComputePhotometricGradient(
-	const Point3u* faces, const Point3* normals,
+// the photometric accumulation, in two atomic-free halves so that the per-vertex sums are
+// bit-reproducible run to run (float addition is not associative, so the atomicAdd scatter these
+// replace gave a different gradient every run). First half: one thread per MESH face (not per
+// face of this view -- see kernelAccumulateFacePhoto), reducing that face's pixels into private
+// per-face slots; every thread writes its slots, so no buffer needs clearing between
+// pair-directions. faceAcc holds 3 floats per face (one per corner), facePixels/faceFoot one;
+// faceFoot is only read where facePixels > 0. texImageB is the image B texture, sampled directly
+// (four texel fetches) when bBilinearGrad asks for the derivative of the bilinear interpolant
+// instead of the precomputed gradient stencil (OPTREFINE::nImageGradient == 3, where
+// texGradXB/texGradYB carry no texture and are unused).
+void LaunchAccumulateFacePhoto(
+	const Point3* vertices, const Point3u* faces, const Point3* normals,
 	const float* depthMap, const uint32_t* faceMap, const uint16_t* baryMap,
 	const float* dzncc, const uint8_t* mask,
-	Point3* photoGrad, float* photoGradPixels, float* footprint, float* sgMap,
+	float* faceAcc, float* facePixels, float* faceFoot, float* sgMap,
 	const Camera& camA, const Camera& camB,
-	cudaTextureObject_t texGradXB, cudaTextureObject_t texGradYB, float regScale,
-	int width, int height);
+	cudaTextureObject_t texImageB, cudaTextureObject_t texGradXB, cudaTextureObject_t texGradYB,
+	bool bBilinearGrad, float regScale,
+	uint32_t numFaces);
 
-void LaunchUpdatePhotoGradNorm(
-	float* photoGradNorm, const float* photoGradPixels, float* footprint, uint32_t numVertices, bool finalPass);
+// Second half: one thread per vertex, folding its incident faces' slots in the fixed order
+// Mesh::ListIncidentFaces produced (vertFaces/vertFaceSizes/vertFacePointers, the same flattening
+// as vertVertices). It also does this pair-direction's photoGradNorm += 1 bookkeeping.
+void LaunchGatherVertexPhoto(
+	const Point3u* faces, const Point3* normals,
+	const uint32_t* vertFaces, const uint32_t* vertFaceSizes, const uint32_t* vertFacePointers,
+	const float* faceAcc, const float* facePixels, const float* faceFoot,
+	Point3* photoGrad, float* photoGradNorm, float* footprint,
+	uint32_t numVertices);
 
+// once per ScoreMesh(), after every pair-direction: resolves the footprint sentinel now that
+// photoGradNorm holds its final per-vertex count for this ScoreMesh() call.
+void LaunchFinalizePhotoGrad(const float* photoGradNorm, float* footprint, uint32_t numVertices);
+
+// mode selects the level (0 - level 1, over vertex positions; nonzero - level 2, over
+// smoothGrad1)
 void LaunchComputeSmoothnessGradient(
 	const Point3* vertices, const uint32_t* vertVertices,
 	const uint32_t* vertSizes, const uint32_t* vertPointers,

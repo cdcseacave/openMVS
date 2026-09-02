@@ -61,9 +61,7 @@ namespace MVS {
 // eta trajectory, and the per-scale iteration count becomes a property of the surface rather than
 // of the units it was reconstructed in.
 //
-// Per iteration, with rho the rigidity-elasticity ratio and w the regularity weight (the
-// formulas below are the Terms::bounded == false path; a bounded arm delivers |photoGrad| <= 1
-// along the normal and substitutes photoGrad_v * s_v for P_v, with no kappa and no m):
+// Per iteration, with rho the rigidity-elasticity ratio and w the regularity weight:
 //
 //     gamma_v = |g_v| / s_v                        g_v = photoGrad_v / c_v
 //     m       = median gamma_v over seen vertices  (computed ONCE per scale, then held)
@@ -114,8 +112,8 @@ public:
 	// One energy evaluation, as the backend already has it. Pointers are borrowed for the duration
 	// of the Evaluate() call only; the arrays stay the caller's.
 	struct Terms {
-		const Grad* photoGrad; // sum over pair-directions of the photometric gradient (NOT divided by count)
-		const float* photoCount; // c_v: how many pair-directions saw v (0 = unseen)
+		const Grad* photoGrad; // the raw per-vertex photometric gradient sum, not yet divided by photoCount
+		const float* photoCount; // c_v: how many pair-directions saw v (0 = unseen); divides photoGrad
 		const float* footprint; // s_v: scene units per pixel; 0 exactly where c_v == 0
 		const Grad* lap; // first-order smoothness term (smoothGrad1), already 0 on boundary vertices
 		const Grad* bilap; // second-order smoothness term (smoothGrad2), already 0 on boundary vertices
@@ -123,10 +121,6 @@ public:
 		float rigidity; // rho
 		float regularityWeight; // w
 		uint32_t numVertices;
-		// the photometric term is already a bounded direction (|photoDir| <= 1 per vertex) and must
-		// NOT be renormalized by the median: the sign-vote/tanh formulations deliver this, the
-		// legacy magnitude formulation does not
-		bool bounded;
 		// this evaluation saw only one direction of each image pair, alternating with the
 		// evaluation index (nAlternatePair == 1): S is then only comparable with the S of an
 		// evaluation of the same parity, so two references are carried instead of one
@@ -140,7 +134,7 @@ public:
 		float medianPx; // median per-vertex step actually applied, px (0 when not APPLY)
 		uint32_t numMoved; // vertices that received a non-zero step
 		unsigned numAccepted; // accepted evaluations so far this scale
-		unsigned numRejected; // consecutive rejections
+		unsigned numRejected; // rejections this scale
 	};
 
 public:
@@ -161,8 +155,12 @@ public:
 	void TopologyChanged(uint32_t numVertices);
 
 	// a caller running two phases back to back within the same scale (different rigidity, S and
-	// step carried over) calls this between them so the second phase gets its own stall budget
-	// instead of inheriting one already primed to stop by the first phase's tail
+	// step carried over) calls this between them so the second phase does not inherit a stall
+	// count already primed to stop it after a single evaluation. The consecutive-reject streak is
+	// deliberately left alone: resetting it too lets phase B keep stepping a scale that already
+	// gave up on its rejections, which measured -0.0048 mean F1 on the Tanks&Temples set (Ignatius
+	// -0.0137) against carrying it over -- the streak surviving into phase B is the measured
+	// behaviour, not an oversight
 	void ResetStall() { numStalled = 0; }
 
 	float GetStep() const { return step; }

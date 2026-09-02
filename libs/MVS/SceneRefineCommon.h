@@ -91,8 +91,8 @@ constexpr int MinWindowCount = 25;
 
 // ZNCC reliability weight: down-weights the photometric gradient/score at
 // pixels whose local window is low-texture (low variance on either side);
-// identical expression on both backends today (CPU ComputeLocalZNCC,
-// SceneRefine.cpp; CUDA kernelComputeImageDZNCC, SceneRefineCUDA.cu) --
+// the same expression on both backends (CPU MeshRefine::ComputeWindowStats,
+// SceneRefine.cpp; CUDA kernelComputeWindowStats, SceneRefineCUDA.cu) --
 // hoisted here so both call the same code instead of two copies that could
 // silently drift.
 REFINE_HD inline float ZnccReliability(float varA, float varB)
@@ -161,19 +161,28 @@ REFINE_HD inline void ZnccAndDerivative(const WindowStats& s, float n, float pix
 DECOPT_SPACE(OPTREFINE)
 
 namespace OPTREFINE {
-// configuration variables, mirroring OPTDENSE. nImageGradient (the derivative
-// stencil in ComputeRefineImageGradient) and nOptimizer (the stepper arm in
-// Scene::RefineMesh) are consumed; the rest are declared, staged mechanism
-// for later refine work to read
+// configuration variables, mirroring OPTDENSE. Consumed today: nImageGradient
+// (the derivative stencil in ComputeRefineImageGradient), nOptimizer (the
+// stepper arm in Scene::RefineMesh/RefineMeshCUDA) and the two pixel rejection
+// gates fGateMeanDiff/fGateVarRatio (WindowStatsFromSums, read by both
+// backends' window statistics); the rest are declared, staged mechanism for
+// later refine work to read
 extern MVS_API int nIgnoreMaskLabel; // label id used during ignore mask filter (<0 - disabled)
-extern MVS_API int nPhotoTerm; // photo-consistency term formulation (0 - magnitude, 1 - sign vote, 2 - tanh)
-extern MVS_API int nPhotoNorm; // photo-consistency gradient normalization (0 - pair count, 1 - confidence-weighted pixel sum)
-extern MVS_API int nImageGradient; // image derivative stencil (0 - 3x5 separable, 1 - central, 2 - Sobel)
-extern MVS_API int nBoundaryMode; // boundary vertex handling (0 - legacy, 1 - freeze, 2 - rim Laplacian)
+extern MVS_API int nImageGradient; // image derivative stencil (0 - 3x5 separable, 1 - central (default), 2 - Sobel, 3 - bilinear interpolant derivative)
 extern MVS_API float fGateMeanDiff; // reject a pixel pair whose local mean differs by more than this (0 - disabled)
 extern MVS_API float fGateVarRatio; // reject a pixel pair whose local variance ratio exceeds this (0 - disabled)
 extern MVS_API int nOptimizer; // vertex position optimizer (0 - bold, 1 - fixed; further arms are rejected at the RefineMesh entry until implemented)
 } // namespace OPTREFINE
+
+class Scene;
+
+// gather the neighbor views one image contributes refinement pairs with: a scene that never had
+// SelectNeighborViews run (a mesh handed to the refiner directly) has no neighbors stored, so they
+// are recovered here first, then filtered down to the best ones by the shared thresholds below.
+// Both backends call this per image -- the CPU from its thread pool (holding no lock: nothing here
+// touches shared refiner state), CUDA serially -- so the two reach the same pair set on the same
+// scene. Returns false if the image is invalid and contributes no pair.
+MVS_API bool SelectRefineNeighbors(Scene& scene, uint32_t idxImage, unsigned nMaxViews, ViewScoreArr& neighbors);
 
 // load, gray-convert, blur and resize one refine image at the given scale;
 // the hoisted common part of CPU MeshRefine::ThInitImage (SceneRefine.cpp)
@@ -185,10 +194,25 @@ extern MVS_API int nOptimizer; // vertex position optimizer (0 - bold, 1 - fixed
 MVS_API bool PrepareRefineImage(Image& imageData, const PlatformArr& platforms,
 	unsigned nResolutionLevel, unsigned nMinResolution, float scale, float sigma, Image32F& gray);
 
+// per-view keep-mask at the working image size PrepareRefineImage just produced for this scale;
+// called right after it by both backends (CPU MeshRefine::ThInitImage, SceneRefine.cpp; CUDA
+// MeshRefineCUDA::InitImages, SceneRefineCUDA.cpp). Reads OPTREFINE::nIgnoreMaskLabel itself, like
+// ComputeRefineImageGradient reads OPTREFINE::nImageGradient. keepMask is left empty (== keep
+// everything, zero cost on the hot path) when masks are disabled or the image has no mask file to
+// load; a configured-but-missing mask file is not an error and is not reported here -- every image
+// is checked once, up front, by apps/RefineMesh (the same entry that assigns image.maskName), so
+// this per-scale, per-backend call site never warns on its own.
+MVS_API void PrepareRefineImageMask(const Image& imageData, const cv::Size& size, BitMatrix& keepMask);
+
 // image derivative estimate used by the photometric gradient, the same on both
 // backends (the CPU samples it bilinearly from its gradient image, CUDA from a
 // texture of it): OPTREFINE::nImageGradient selects the stencil, default the
-// noise-robust 3x5 separable kernel (CreateDerivativeKernel3x5, unit scale).
+// central difference -- the widest stencils smooth the very detail the
+// refinement is there to recover, and the images are already Gaussian-blurred
+// per scale by PrepareRefineImage. Mode 3 (the derivative of the bilinear
+// interpolant at the warped sample, no precomputed stencil image) is not a
+// stencil this function builds: both backends skip calling it entirely and
+// sample the raw image directly at the point that needs the derivative.
 MVS_API void ComputeRefineImageGradient(const Image32F& gray, Image32F& gradX, Image32F& gradY);
 
 
@@ -216,7 +240,7 @@ MVS_API bool Pair(uint32_t& idxImageA, uint32_t& idxImageB);
 // is empty.
 MVS_API void ExportGradients(unsigned nScale, unsigned iter, uint32_t numVertices,
 	const Point3f* pos, const Point3f* combined,
-	const Point3f* photo, const float* photoNorm,
+	const Point3f* photo, const float* photoCount,
 	const Point3f* smooth1, const Point3f* smooth2,
 	const uint8_t* boundary);
 

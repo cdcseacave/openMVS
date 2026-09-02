@@ -39,6 +39,7 @@
 // against the import libs of Common.dll / MVS.dll / SFM.dll at link time.
 #include "Common.h"
 #include "Scene.h"
+#include "SceneRefineCommon.h"
 #ifndef BOOST_PYTHON_STATIC_LIB
 #define BOOST_PYTHON_STATIC_LIB
 #endif
@@ -64,6 +65,10 @@ public:
 		INIT_WORKING_FOLDER;
 		MVS::Initialize("pyMVS", _nMaxThreads);
 		MVS::OPTDENSE::init();
+		// every DEFVAR_OPTION starts at zero and only init()/update() install the declared
+		// defaults, so the refiner's configuration space needs the same treatment as OPTDENSE
+		MVS::OPTREFINE::init();
+		MVS::OPTREFINE::update();
 	}
 	~Scene() {
 		MVS::Finalize();

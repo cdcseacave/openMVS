@@ -3230,11 +3230,6 @@ void UI::ShowRefineWorkflowWindow(Window& window) {
 	ImGui::DragFloat("Planar Vertex Ratio", &opts.planarVertexRatio, 0.01f, 0.f, 1.f, "%.2f");
 	if (ImGui::IsItemHovered())
 		ImGui::SetTooltip("Ratio of vertices to treat as planar (constrained to move along their normal).\nHigher values preserve flat surfaces better, but reduce flexibility.");
-	int reduceMemory = (int)opts.reduceMemory;
-	if (ImGui::SliderInt("Reduce Memory", &reduceMemory, 0, 3))
-		opts.reduceMemory = (unsigned)MAXF(reduceMemory, 0);
-	if (ImGui::IsItemHovered())
-		ImGui::SetTooltip("Memory reduction strategy:\n- 0 = no reduction (fastest, most memory)\n- 3 = maximum reduction (slowest, least memory)\nUse higher values for large scenes or limited RAM.");
 
 	ImGui::Separator();
 	const bool workflowRunning = scene.IsWorkflowRunning();

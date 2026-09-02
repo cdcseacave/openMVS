@@ -30,6 +30,7 @@
  */
 
 #include "../../libs/MVS.h"
+#include "../../libs/MVS/SceneRefineCommon.h"
 #include "../../libs/MVS/SceneRefineStep.h"
 #include "Tests.h"
 #include "TestsMVS.h"
@@ -619,7 +620,8 @@ static float RefineStepExpectedMedian(const MeshRefineStep::Terms& terms)
 	for (uint32_t v=0; v<terms.numVertices; ++v) {
 		if (terms.photoCount[v] < 2)
 			continue;
-		scratch.Insert(norm(terms.photoGrad[v]/terms.photoCount[v])/terms.footprint[v]);
+		const MeshRefineStep::Grad g(terms.photoGrad[v]/terms.photoCount[v]);
+		scratch.Insert(norm(g)/terms.footprint[v]);
 	}
 	return scratch.IsEmpty() ? 0.f : scratch.GetMedian();
 }
@@ -632,11 +634,8 @@ static MeshRefineStep::Grad RefineStepExpectedDelta(const MeshRefineStep::Terms&
 	const float footprint(terms.footprint[v]);
 	Grad photoDelta(Grad::ZERO);
 	const float scale(MeshRefineStep::Kappa*median);
-	if (terms.photoCount[v] >= 2 && scale > 0) {
-		photoDelta = terms.bounded ?
-			terms.photoGrad[v]*footprint :
-			terms.photoGrad[v]/(terms.photoCount[v]*scale);
-	}
+	if (terms.photoCount[v] >= 2 && scale > 0)
+		photoDelta = terms.photoGrad[v]/(terms.photoCount[v]*scale);
 	const Grad regular(terms.bilap[v]*terms.rigidity - terms.lap[v]*(1.f-terms.rigidity));
 	return (photoDelta + regular*terms.regularityWeight)*-step;
 }
@@ -747,7 +746,6 @@ static bool RefineStepAcceptMoveTest()
 	terms.rigidity = 0.6f;
 	terms.regularityWeight = 0.2f;
 	terms.numVertices = (uint32_t)vertices.GetSize();
-	terms.bounded = false;
 	terms.alternating = false;
 
 	MeshRefineStep stepper;
@@ -811,7 +809,6 @@ static bool RefineStepProportionalityTest()
 	terms.rigidity = 0.5f;
 	terms.regularityWeight = 0.4f;
 	terms.numVertices = (uint32_t)vertices.GetSize();
-	terms.bounded = false;
 	terms.alternating = false;
 
 	MeshRefineStep stepper;
@@ -874,7 +871,6 @@ static bool RefineStepRejectUndoTest()
 	terms.rigidity = 0.5f;
 	terms.regularityWeight = 0.3f;
 	terms.numVertices = (uint32_t)vertices.GetSize();
-	terms.bounded = false;
 	terms.alternating = false;
 
 	MeshRefineStep stepper;
@@ -1017,7 +1013,6 @@ static bool RefineStepPatienceStopTest()
 	terms.rigidity = 0.f;
 	terms.regularityWeight = 0.f;
 	terms.numVertices = (uint32_t)vertices.GetSize();
-	terms.bounded = false;
 	terms.alternating = false;
 
 	MeshRefineStep stepper;
@@ -1080,7 +1075,6 @@ static bool RefineStepConvergenceStopTest()
 	terms.rigidity = 0.f;
 	terms.regularityWeight = 0.f;
 	terms.numVertices = (uint32_t)vertices.GetSize();
-	terms.bounded = false;
 	terms.alternating = false;
 
 	MeshRefineStep stepper;
@@ -1161,7 +1155,6 @@ static bool RefineStepFixedArmTest()
 	terms.rigidity = 0.5f;
 	terms.regularityWeight = 0.3f;
 	terms.numVertices = (uint32_t)vertices.GetSize();
-	terms.bounded = false;
 	terms.alternating = false;
 
 	MeshRefineStep stepper;
@@ -1244,7 +1237,6 @@ static bool RefineStepScaleInvarianceTest()
 		terms1.rigidity = rigidity;
 		terms1.regularityWeight = regularityWeight;
 		terms1.numVertices = numVertices;
-		terms1.bounded = false;
 		terms1.alternating = false;
 
 		Terms terms2(terms1);
@@ -1312,7 +1304,6 @@ static bool RefineStepTopologyChangedTest()
 	terms.rigidity = 0.4f;
 	terms.regularityWeight = 0.2f;
 	terms.numVertices = (uint32_t)vertices.GetSize();
-	terms.bounded = false;
 	terms.alternating = false;
 
 	MeshRefineStep stepper;
@@ -1374,7 +1365,6 @@ static bool RefineStepAlternatingTest()
 	terms.rigidity = 0.5f;
 	terms.regularityWeight = 0.2f;
 	terms.numVertices = (uint32_t)vertices.GetSize();
-	terms.bounded = false;
 	terms.alternating = true;
 
 	MeshRefineStep stepper;
@@ -1414,6 +1404,120 @@ static bool RefineStepAlternatingTest()
 }
 /*----------------------------------------------------------------*/
 
+// ResetStall(): a caller running a second phase within the same scale must get a fresh stall
+// count, not one the first phase's tail already primed to STOP after a single evaluation -- but
+// the consecutive-reject streak is untouched by the call, so a phase that starts right where the
+// first one gave up on its rejections keeps giving up immediately (see ResetStall()'s comment:
+// resetting the streak too measured -0.0048 mean F1 on the T&T set)
+static bool RefineStepResetStallTest()
+{
+	typedef MeshRefineStep::GradArr GradArr;
+	typedef MeshRefineStep::Terms Terms;
+	typedef MeshRefineStep::Stats Stats;
+	typedef MeshRefineStep::Action Action;
+
+	// part 1: the consecutive-reject streak survives ResetStall()
+	{
+		Mesh::VertexArr vertices = {{0.f,0.f,0.f}, {0.f,0.f,0.f}, {0.f,0.f,0.f}};
+		const FloatArr photoCount = {2.f, 3.f, 4.f};
+		const FloatArr footprint  = {1.f, 2.f, 0.5f};
+		const GradArr photoGrad = {{1.f,0.f,0.f}, {2.f,1.f,0.f}, {0.f,3.f,0.f}};
+		const GradArr lap   = {{0.05f,0.f,0.02f}, {0.f,0.f,0.f}, {0.01f,0.f,0.f}};
+		const GradArr bilap = {{0.02f,0.f,0.01f}, {0.f,0.f,0.f}, {0.005f,0.f,0.f}};
+
+		Terms terms;
+		terms.photoGrad = photoGrad.Begin();
+		terms.photoCount = photoCount.Begin();
+		terms.footprint = footprint.Begin();
+		terms.lap = lap.Begin();
+		terms.bilap = bilap.Begin();
+		terms.rigidity = 0.5f;
+		terms.regularityWeight = 0.3f;
+		terms.numVertices = (uint32_t)vertices.GetSize();
+		terms.alternating = false;
+
+		MeshRefineStep stepper;
+		stepper.Reset(terms.numVertices, 0.25f, true);
+		Stats stats;
+
+		// one accepted evaluation, then a reject streak that ends the scale on MaxRejects
+		terms.S = 1.f;
+		if (stepper.Evaluate(terms, vertices, stats) != MeshRefineStep::APPLY) {
+			VERBOSE("ERROR: RefineStepResetStallTest first evaluation was not APPLY!");
+			return false;
+		}
+		terms.S = 2.f;
+		for (unsigned i=0; i<MeshRefineStep::MaxRejects; ++i) {
+			const Action action(stepper.Evaluate(terms, vertices, stats));
+			const Action expected(i+1 < MeshRefineStep::MaxRejects ? MeshRefineStep::REJECT : MeshRefineStep::STOP);
+			if (action != expected) {
+				VERBOSE("ERROR: RefineStepResetStallTest reject-streak step %u had action %d, expected %d!", i, (int)action, (int)expected);
+				return false;
+			}
+		}
+
+		// ResetStall() leaves the reject streak alone: it is still at MaxRejects, so the very
+		// next rejected evaluation STOPs immediately instead of getting a fresh REJECT budget
+		stepper.ResetStall();
+		const Action action(stepper.Evaluate(terms, vertices, stats));
+		if (action != MeshRefineStep::STOP) {
+			VERBOSE("ERROR: RefineStepResetStallTest ResetStall() cleared the reject streak (expected it to carry over and STOP)!");
+			return false;
+		}
+	}
+
+	// part 2: ResetStall() clears a stall count already primed to STOP -- same single-vertex
+	// setup and S sequence as RefineStepPatienceStopTest, which reaches the Patience STOP on the
+	// 4th evaluation
+	{
+		Mesh::VertexArr vertices = {{0.f,0.f,0.f}};
+		const FloatArr photoCount = {2.f};
+		const FloatArr footprint  = {1.f};
+		const GradArr photoGrad = {{0.01f,0.f,0.f}};
+		const GradArr lap   = {{0.f,0.f,0.f}};
+		const GradArr bilap = {{0.f,0.f,0.f}};
+
+		Terms terms;
+		terms.photoGrad = photoGrad.Begin();
+		terms.photoCount = photoCount.Begin();
+		terms.footprint = footprint.Begin();
+		terms.lap = lap.Begin();
+		terms.bilap = bilap.Begin();
+		terms.rigidity = 0.f;
+		terms.regularityWeight = 0.f;
+		terms.numVertices = (uint32_t)vertices.GetSize();
+		terms.alternating = false;
+
+		MeshRefineStep stepper;
+		stepper.Reset(terms.numVertices, 0.1f, true);
+		Stats stats;
+
+		// each S decreases by well under 0.1% relative to the previous accepted one
+		static const float kS[] = {1.0f, 0.9998f, 0.9997f, 0.9996f};
+		for (unsigned i=0; i<4; ++i) {
+			terms.S = kS[i];
+			const Action action(stepper.Evaluate(terms, vertices, stats));
+			const Action expected(i < 3 ? MeshRefineStep::APPLY : MeshRefineStep::STOP);
+			if (action != expected) {
+				VERBOSE("ERROR: RefineStepResetStallTest stall-priming step %u had action %d, expected %d!", i, (int)action, (int)expected);
+				return false;
+			}
+		}
+
+		// ResetStall() clears the stall count: one more equally-stalled evaluation only reaches
+		// numStalled == 1, well under Patience, so it applies instead of stopping again
+		stepper.ResetStall();
+		terms.S = 0.9995f;
+		const Action action(stepper.Evaluate(terms, vertices, stats));
+		if (action != MeshRefineStep::APPLY) {
+			VERBOSE("ERROR: RefineStepResetStallTest ResetStall() did not clear a stall count primed to STOP!");
+			return false;
+		}
+	}
+	return true;
+}
+/*----------------------------------------------------------------*/
+
 // pure unit test of MeshRefineStep against hand-built Terms arrays: no images, no scene,
 // milliseconds to run. Each helper above/below isolates one documented invariant from
 // SceneRefineStep.h.
@@ -1437,6 +1541,233 @@ bool MeshRefineStepTest()
 		return false;
 	if (!RefineStepAlternatingTest())
 		return false;
+	if (!RefineStepResetStallTest())
+		return false;
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+// MeshRefineWindowStats unit tests (SceneRefineCommon.h): the two pure scalar reducers both
+// backends compute identically -- the six masked window sums reduced to means/variances/covariance
+// with the two rejection gates, and the per-pixel ZNCC with its derivative. No scene, no images.
+// Every expectation is derived independently of the production expressions: closed-form identities
+// of an affine window (B = 2A+1 gives muB = 2muA+1, varB = 4varA, cov = 2varA, hence ZNCC = 1),
+// the documented floor and gate boundaries, and a central finite difference of ZNCC itself.
+
+// the six masked sums of one window, accumulated in double and handed over as the floats the
+// production reducer takes; this is the input side of WindowStatsFromSums, not its formula
+struct RefineWindowSums {
+	float n, sA, sB, sAA, sBB, sAB;
+};
+static RefineWindowSums RefineComputeSums(const FloatArr& A, const FloatArr& B)
+{
+	ASSERT(A.GetSize() == B.GetSize());
+	double n(0), sA(0), sB(0), sAA(0), sBB(0), sAB(0);
+	FOREACH(i, A) {
+		const double a(A[i]), b(B[i]);
+		n += 1; sA += a; sB += b; sAA += a*a; sBB += b*b; sAB += a*b;
+	}
+	return RefineWindowSums{(float)n, (float)sA, (float)sB, (float)sAA, (float)sBB, (float)sAB};
+}
+static bool RefineReduceSums(const RefineWindowSums& s, float gateMeanDiff, float gateVarRatio, Refine::WindowStats& stats)
+{
+	return Refine::WindowStatsFromSums(s.n, s.sA, s.sB, s.sAA, s.sBB, s.sAB, gateMeanDiff, gateVarRatio, stats);
+}
+// deterministic values in [0,1): a tiny LCG, so the fixtures below are the same on every platform
+// and compiler without pulling in a random engine whose sequence is implementation-defined
+static void RefineFillRandom(FloatArr& arr, uint32_t& state, unsigned count)
+{
+	arr.Empty();
+	arr.Reserve(count);
+	while (count-- > 0) {
+		state = state*1664525u + 1013904223u;
+		arr.Insert((float)(state>>8)/(float)(1u<<24));
+	}
+}
+static bool RefineCloseRel(float got, float expected, float tol, const char* label)
+{
+	if (ABS(got-expected) <= tol*ABS(expected))
+		return true;
+	VERBOSE("ERROR: %s expected %g, got %g!", label, expected, got);
+	return false;
+}
+
+bool MeshRefineWindowStatsTest()
+{
+	typedef Refine::WindowStats WindowStats;
+
+	// A takes 1/8 steps in [0,1], every value and product exactly representable, so the sums carry
+	// no accumulation error of their own; B = 2A+1 is the affine twin
+	FloatArr A(0, Refine::WindowArea), B(0, Refine::WindowArea);
+	for (int i=0; i<Refine::WindowArea; ++i) {
+		const float a((float)((i*7)%9)*0.125f);
+		A.Insert(a);
+		B.Insert(2.f*a+1.f);
+	}
+	const RefineWindowSums sums(RefineComputeSums(A, B));
+	WindowStats s;
+
+	// (1) MinWindowCount: a window with fewer valid samples is rejected outright
+	{
+		RefineWindowSums few(sums);
+		few.n = (float)(Refine::MinWindowCount-1);
+		if (RefineReduceSums(few, 0.f, 0.f, s)) {
+			VERBOSE("ERROR: MeshRefineWindowStatsTest accepted a window below MinWindowCount!");
+			return false;
+		}
+		few.n = (float)Refine::MinWindowCount;
+		if (!RefineReduceSums(few, 0.f, 0.f, s)) {
+			VERBOSE("ERROR: MeshRefineWindowStatsTest rejected a window at exactly MinWindowCount!");
+			return false;
+		}
+	}
+
+	// (2) affine window identities
+	if (!RefineReduceSums(sums, 0.f, 0.f, s)) {
+		VERBOSE("ERROR: MeshRefineWindowStatsTest rejected the affine window!");
+		return false;
+	}
+	if (!RefineCloseRel(s.muB, 2.f*s.muA+1.f, 1e-5f, "affine muB"))
+		return false;
+	if (!RefineCloseRel(s.varB, 4.f*s.varA, 1e-5f, "affine varB"))
+		return false;
+	if (!RefineCloseRel(s.cov, 2.f*s.varA, 1e-5f, "affine cov"))
+		return false;
+
+	// (3) the variance floor: a constant window has zero variance on both sides
+	{
+		FloatArr C(0, Refine::WindowArea);
+		for (int i=0; i<Refine::WindowArea; ++i)
+			C.Insert(0.5f);
+		WindowStats sc;
+		if (!RefineReduceSums(RefineComputeSums(C, C), 0.f, 0.f, sc)) {
+			VERBOSE("ERROR: MeshRefineWindowStatsTest rejected the constant window!");
+			return false;
+		}
+		if (sc.varA != 1e-4f || sc.varB != 1e-4f) {
+			VERBOSE("ERROR: MeshRefineWindowStatsTest constant window variances not floored (varA=%g, varB=%g)!", sc.varA, sc.varB);
+			return false;
+		}
+	}
+
+	// (4) the mean gate is a strict "greater than": it passes at exact equality and rejects for
+	// any smaller gate (muA-muB is 1+muA on the affine window, so the difference is large)
+	{
+		const float meanDiff(ABS(s.muA-s.muB));
+		WindowStats sg;
+		if (!RefineReduceSums(sums, meanDiff, 0.f, sg)) {
+			VERBOSE("ERROR: MeshRefineWindowStatsTest mean gate rejected at exact equality!");
+			return false;
+		}
+		if (RefineReduceSums(sums, meanDiff*0.5f, 0.f, sg)) {
+			VERBOSE("ERROR: MeshRefineWindowStatsTest mean gate accepted a window past the gate!");
+			return false;
+		}
+	}
+
+	// (5) the variance-ratio gate, in the varA > gate*varB direction: swapping the two sides of
+	// the affine window makes varA exactly 4x varB
+	{
+		const RefineWindowSums swapped{sums.n, sums.sB, sums.sA, sums.sBB, sums.sAA, sums.sAB};
+		WindowStats sg;
+		if (!RefineReduceSums(swapped, 0.f, 0.f, sg) || !RefineCloseRel(sg.varA, 4.f*sg.varB, 1e-5f, "swapped varA"))
+			return false;
+		if (RefineReduceSums(swapped, 0.f, 2.f, sg)) {
+			VERBOSE("ERROR: MeshRefineWindowStatsTest variance gate accepted varA > 2*varB!");
+			return false;
+		}
+		if (!RefineReduceSums(swapped, 0.f, 8.f, sg)) {
+			VERBOSE("ERROR: MeshRefineWindowStatsTest variance gate rejected varA < 8*varB!");
+			return false;
+		}
+		// both gates disabled at <= 0, on the very window that fails both when they are on
+		if (RefineReduceSums(swapped, 0.4f, 2.f, sg)) {
+			VERBOSE("ERROR: MeshRefineWindowStatsTest gates did not reject the window they were sized for!");
+			return false;
+		}
+		if (!RefineReduceSums(swapped, 0.f, 0.f, sg) || !RefineReduceSums(swapped, -1.f, -1.f, sg)) {
+			VERBOSE("ERROR: MeshRefineWindowStatsTest gates were not disabled at <= 0!");
+			return false;
+		}
+	}
+
+	// (6) ZNCC of the affine window is 1, and of the negated one -1
+	{
+		float zncc, dzncc, conf;
+		Refine::ZnccAndDerivative(s, sums.n, A[24], B[24], zncc, dzncc, conf);
+		if (ABS(zncc-1.f) > 1e-5f) {
+			VERBOSE("ERROR: MeshRefineWindowStatsTest ZNCC of B = 2A+1 is %g, expected 1!", zncc);
+			return false;
+		}
+		FloatArr N(0, Refine::WindowArea);
+		FOREACH(i, A)
+			N.Insert(-A[i]);
+		WindowStats sn;
+		if (!RefineReduceSums(RefineComputeSums(A, N), 0.f, 0.f, sn)) {
+			VERBOSE("ERROR: MeshRefineWindowStatsTest rejected the negated window!");
+			return false;
+		}
+		Refine::ZnccAndDerivative(sn, sums.n, A[24], N[24], zncc, dzncc, conf);
+		if (ABS(zncc+1.f) > 1e-5f) {
+			VERBOSE("ERROR: MeshRefineWindowStatsTest ZNCC of B = -A is %g, expected -1!", zncc);
+			return false;
+		}
+	}
+
+	// (7) random windows: |ZNCC| <= 1 despite the variance floor (which can only grow the
+	// denominator), the WindowArea/n factor, and the derivative against a central difference
+	{
+		uint32_t state(12345u);
+		for (unsigned trial=0; trial<3; ++trial) {
+			FloatArr R, Q;
+			RefineFillRandom(R, state, Refine::WindowArea);
+			RefineFillRandom(Q, state, Refine::WindowArea);
+			const RefineWindowSums sr(RefineComputeSums(R, Q));
+			WindowStats sq;
+			if (!RefineReduceSums(sr, 0.f, 0.f, sq)) {
+				VERBOSE("ERROR: MeshRefineWindowStatsTest rejected random window %u!", trial);
+				return false;
+			}
+			const int centre(Refine::WindowArea/2);
+			float zncc, dzncc, conf;
+			Refine::ZnccAndDerivative(sq, sr.n, R[centre], Q[centre], zncc, dzncc, conf);
+			if (!(ABS(zncc) <= 1.f+1e-5f)) {
+				VERBOSE("ERROR: MeshRefineWindowStatsTest random window %u gave |ZNCC| = %g > 1!", trial, ABS(zncc));
+				return false;
+			}
+			// the same statistics with fewer valid samples restore the magnitude a full window
+			// would have produced: dzncc scales exactly as WindowArea/n
+			float znccPartial, dznccPartial, confPartial;
+			Refine::ZnccAndDerivative(sq, 30.f, R[centre], Q[centre], znccPartial, dznccPartial, confPartial);
+			if (!RefineCloseRel(dznccPartial, dzncc*((float)Refine::WindowArea/30.f), 1e-6f, "partial-window dZNCC"))
+				return false;
+			// dZNCC/dB_p = [(A_p-muA)/sqrt(varA varB) - ZNCC (B_p-muB)/varB]/n (the mean's
+			// dependence on B_p cancels because sum(A-muA) = 0), and dzncc is that times
+			// -conf*WindowArea/n, so -dzncc/(conf*WindowArea) is the derivative itself
+			const float analytic(-dzncc/(conf*(float)Refine::WindowArea));
+			const float h(1e-3f);
+			FloatArr Qp(Q), Qm(Q);
+			Qp[centre] += h;
+			Qm[centre] -= h;
+			WindowStats sp, sm;
+			const RefineWindowSums srp(RefineComputeSums(R, Qp)), srm(RefineComputeSums(R, Qm));
+			if (!RefineReduceSums(srp, 0.f, 0.f, sp) || !RefineReduceSums(srm, 0.f, 0.f, sm)) {
+				VERBOSE("ERROR: MeshRefineWindowStatsTest rejected a perturbed random window %u!", trial);
+				return false;
+			}
+			float znccP, znccM, dummyD, dummyC;
+			Refine::ZnccAndDerivative(sp, srp.n, R[centre], Qp[centre], znccP, dummyD, dummyC);
+			Refine::ZnccAndDerivative(sm, srm.n, R[centre], Qm[centre], znccM, dummyD, dummyC);
+			const float fd((znccP-znccM)/(2.f*h));
+			// relative to 1e-3, plus an absolute floor: ZNCC is an O(1) float, so the central
+			// difference of two of them divided by 2e-3 carries a few 1e-4 of cancellation noise
+			// no matter how right the derivative is
+			if (ABS(analytic-fd) > 1e-3f*ABS(fd)+1e-3f) {
+				VERBOSE("ERROR: MeshRefineWindowStatsTest random window %u derivative %g disagrees with the finite difference %g!", trial, analytic, fd);
+				return false;
+			}
+		}
+	}
 	return true;
 }
 /*----------------------------------------------------------------*/
@@ -1687,6 +2018,10 @@ bool PipelineTest(bool forceCPU, bool verbose)
 	}
 	OPTDENSE::init();
 	OPTDENSE::bRemoveDmaps = true;
+	// every DEFVAR_OPTION starts at zero and only init()/update() install the declared defaults,
+	// so the refiner's configuration space needs the same treatment as OPTDENSE
+	OPTREFINE::init();
+	OPTREFINE::update();
 	// The point/face counts and quality vary run-to-run (multi-threaded
 	// densify/mesh) and differ between the CPU and GPU PatchMatch backends, so
 	// these are deliberately wide plausibility windows, not tight regression
@@ -1775,6 +2110,463 @@ bool PipelineTest(bool forceCPU, bool verbose)
 	}
 	VERBOSE("All pipeline stages passed (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
+}
+/*----------------------------------------------------------------*/
+
+
+// Synthetic end-to-end test of the mesh-refinement photometric pipeline: builds a textured flat
+// plane as ground truth, renders it into 4 known cameras to produce the "photographs"
+// Scene::RefineMesh/RefineMeshCUDA read from disk, perturbs a coarse copy of the same plane to
+// serve as the input mesh, and asserts the refiner recovers the flat plane to within a fraction
+// of a pixel's footprint. Unlike MeshRefineStepTest/MeshRefineWindowStatsTest above (hand-built
+// fixtures, no images), this exercises the rasterize/warp/window-stats/ZNCC-gradient/smoothing/
+// stepper chain end to end, the same way PipelineTest exercises densify/reconstruct/texture.
+
+// fixture geometry: a textured GT plane spanning [-sceneScale,sceneScale]^2 at z=0, rendered
+// into 4 pinhole cameras above it, looking down at the origin
+constexpr unsigned RefineSynthGTGridN = 40; // ground-truth mesh grid resolution (vertices/axis)
+constexpr unsigned RefineSynthInputGridN = 10; // pre-refine (input) mesh grid resolution
+constexpr unsigned RefineSynthTexSize = 512; // texture image size, both axes
+constexpr unsigned RefineSynthImgWidth = 640, RefineSynthImgHeight = 480;
+constexpr float RefineSynthFocal = 600.f; // pinhole focal length, pixels
+constexpr float RefineSynthCamHeight = 3.f; // camera height above the plane, x sceneScale
+constexpr float RefineSynthCamOffset = 0.4f; // camera (x,y) offset from the plane centre, x sceneScale
+
+// deterministic LCG in [0,1), the same tiny generator MeshRefineWindowStatsTest's
+// RefineFillRandom above uses: no <random> engine, whose sequence is implementation-defined, so
+// the fixture is byte-identical on every platform and compiler
+static inline float RefineSynthNextUniform(uint32_t& state)
+{
+	state = state*1664525u + 1013904223u;
+	return (float)(state>>8)/(float)(1u<<24);
+}
+// Irwin-Hall approximation of a zero-mean, unit-variance Gaussian: the sum of 12 uniforms in
+// [0,1) has mean 6 and variance 1
+static float RefineSynthGaussian(uint32_t& state, float sigma)
+{
+	float sum(0.f);
+	for (int k=0; k<12; ++k)
+		sum += RefineSynthNextUniform(state);
+	return (sum-6.f)*sigma;
+}
+
+// deterministic seeded texture: blurred noise plus a small-period checkerboard, so every
+// Refine::WindowArea (7x7) window has non-zero variance regardless of where it lands
+static void GenerateRefineSyntheticTexture(Image8U3& texture, unsigned texSize)
+{
+	FloatArr noise; noise.resize(texSize*texSize);
+	uint32_t state(2463534242u);
+	FOREACH(k, noise)
+		noise[k] = RefineSynthNextUniform(state);
+	const auto at = [texSize](const FloatArr& a, int x, int y) -> float {
+		x = CLAMP(x, 0, (int)texSize-1);
+		y = CLAMP(y, 0, (int)texSize-1);
+		return a[(unsigned)y*texSize+(unsigned)x];
+	};
+	// separable 3-tap box blur, applied twice (no OpenCV dependency, fully deterministic)
+	FloatArr blurX; blurX.resize(texSize*texSize);
+	for (unsigned y=0; y<texSize; ++y)
+		for (unsigned x=0; x<texSize; ++x)
+			blurX[y*texSize+x] = (at(noise,(int)x-1,(int)y)+at(noise,(int)x,(int)y)+at(noise,(int)x+1,(int)y))*(1.f/3.f);
+	FloatArr blur; blur.resize(texSize*texSize);
+	for (unsigned y=0; y<texSize; ++y)
+		for (unsigned x=0; x<texSize; ++x)
+			blur[y*texSize+x] = (at(blurX,(int)x,(int)y-1)+at(blurX,(int)x,(int)y)+at(blurX,(int)x,(int)y+1))*(1.f/3.f);
+	constexpr unsigned checkerSize = 4; // < Refine::WindowSize, so every window straddles an edge
+	texture.create((int)texSize, (int)texSize);
+	for (unsigned y=0; y<texSize; ++y) {
+		for (unsigned x=0; x<texSize; ++x) {
+			const bool tile(((x/checkerSize)+(y/checkerSize))%2 == 0);
+			const float base(tile ? 170.f : 85.f);
+			const float n(blur[y*texSize+x]*60.f-30.f);
+			const uint8_t v((uint8_t)CLAMP(base+n, 0.f, 255.f));
+			texture((int)y, (int)x) = Pixel8U(v, v, v);
+		}
+	}
+}
+
+// a flat NxN grid mesh spanning [-halfExtent,halfExtent]^2 at z=0; when texSize>0 also fills
+// faceTexcoords with the linear (x,y)->pixel mapping GenerateRefineSyntheticTexture renders with
+static void BuildRefineSyntheticPlaneMesh(Mesh& mesh, unsigned gridN, float halfExtent, unsigned texSize)
+{
+	ASSERT(gridN >= 2);
+	mesh.Release();
+	mesh.vertices.resize(gridN*gridN);
+	Mesh::TexCoordArr vertexTex;
+	if (texSize > 0)
+		vertexTex.resize(gridN*gridN);
+	for (unsigned j=0; j<gridN; ++j) {
+		for (unsigned i=0; i<gridN; ++i) {
+			const float fx(-halfExtent + 2.f*halfExtent*(float)i/(float)(gridN-1));
+			const float fy(-halfExtent + 2.f*halfExtent*(float)j/(float)(gridN-1));
+			mesh.vertices[j*gridN+i] = Mesh::Vertex(fx, fy, 0.f);
+			if (texSize > 0)
+				vertexTex[j*gridN+i] = Mesh::TexCoord((float)texSize*(float)i/(float)(gridN-1), (float)texSize*(float)j/(float)(gridN-1));
+		}
+	}
+	mesh.faces.Reserve((gridN-1)*(gridN-1)*2);
+	if (texSize > 0)
+		mesh.faceTexcoords.Reserve((gridN-1)*(gridN-1)*2*3);
+	for (unsigned j=0; j+1<gridN; ++j) {
+		for (unsigned i=0; i+1<gridN; ++i) {
+			const Mesh::VIndex v00(j*gridN+i), v10(j*gridN+i+1), v01((j+1)*gridN+i), v11((j+1)*gridN+i+1);
+			mesh.faces.AddConstruct(v00, v10, v11);
+			mesh.faces.AddConstruct(v00, v11, v01);
+			if (texSize > 0) {
+				mesh.faceTexcoords.Insert(vertexTex[v00]);
+				mesh.faceTexcoords.Insert(vertexTex[v10]);
+				mesh.faceTexcoords.Insert(vertexTex[v11]);
+				mesh.faceTexcoords.Insert(vertexTex[v00]);
+				mesh.faceTexcoords.Insert(vertexTex[v11]);
+				mesh.faceTexcoords.Insert(vertexTex[v01]);
+			}
+		}
+	}
+}
+
+// perturb a coarse copy of the plane along z: seeded Gaussian noise plus a smooth two-lobe bump,
+// so the refiner has both high-frequency error to denoise and a low-frequency bias to correct;
+// footprint is the nominal pixel footprint (world units/pixel) computed by the caller
+static void PerturbRefineSyntheticInputMesh(Mesh& mesh, float sceneScale, float footprint)
+{
+	uint32_t state(0x9E3779B9u);
+	const float sigmaZ(3.f*footprint), ampSin(10.f*footprint);
+	const float period((float)PI/sceneScale); // 2*pi/(2*sceneScale)
+	FOREACH(idx, mesh.vertices) {
+		Mesh::Vertex& v = mesh.vertices[idx];
+		const float noiseZ(RefineSynthGaussian(state, sigmaZ));
+		const float bump(ampSin*(float)SIN(period*v.x)*(float)SIN(period*v.y));
+		v.z = noiseZ + bump;
+	}
+}
+
+// build the complete synthetic fixture: a textured GT plane rendered into 4 pinhole cameras
+// (images written to disk under dir, since the refiner reloads them from Image::name at every
+// scale) and a noisy, coarse input mesh (scene.mesh) for RefineMesh to start from
+static void BuildRefineSyntheticScene(Scene& scene, Mesh& gtMesh, const String& dir, float sceneScale)
+{
+	scene.Release();
+	Util::ensureFolder(dir);
+
+	// ground-truth textured plane
+	BuildRefineSyntheticPlaneMesh(gtMesh, RefineSynthGTGridN, sceneScale, RefineSynthTexSize);
+	Image8U3 texture;
+	GenerateRefineSyntheticTexture(texture, RefineSynthTexSize);
+	gtMesh.texturesDiffuse.Insert(texture);
+
+	// one platform, one relative camera mounted at the platform origin (identity pose), and one
+	// world pose per camera position
+	Platform& platform = scene.platforms.AddEmpty();
+	Platform::Camera& relCamera = platform.cameras.AddEmpty();
+	relCamera.R = Matrix3x3::IDENTITY;
+	relCamera.C = Point3(0, 0, 0);
+	Matrix3x3 K(Matrix3x3::IDENTITY);
+	const float focalNorm(RefineSynthFocal/(float)MAXF(RefineSynthImgWidth,RefineSynthImgHeight));
+	K(0,0) = K(1,1) = focalNorm;
+	relCamera.K = K;
+
+	static const float offsets[4][2] = {
+		{-RefineSynthCamOffset,-RefineSynthCamOffset}, {-RefineSynthCamOffset, RefineSynthCamOffset},
+		{ RefineSynthCamOffset,-RefineSynthCamOffset}, { RefineSynthCamOffset, RefineSynthCamOffset}
+	};
+	// SelectNeighborViews() (reached from RefineMesh through SampleMeshWithVisibility +
+	// SelectRefineNeighbors, since the fixture never fills Image::neighbors itself) clamps its
+	// required-neighbor count to nCalibratedImages-1: left at the Scene default (never set by a
+	// caller that builds platforms/images directly instead of going through LoadInterface),
+	// every image would fail that check silently and MeshRefine::IsValid() would report an empty
+	// pair list instead of the real cause
+	scene.nCalibratedImages = 4;
+	for (unsigned i=0; i<4; ++i) {
+		Platform::Pose& pose = platform.poses.AddEmpty();
+		pose.C = Point3(offsets[i][0]*sceneScale, offsets[i][1]*sceneScale, RefineSynthCamHeight*sceneScale);
+		pose.R.LookAt(pose.C, Point3(0,0,0), Point3(0,1,0));
+
+		Image& image = scene.images.AddEmpty();
+		image.ID = i;
+		image.platformID = 0;
+		image.cameraID = 0;
+		image.poseID = i;
+		image.width = RefineSynthImgWidth;
+		image.height = RefineSynthImgHeight;
+		image.scale = 1.f;
+		image.name = dir + String::FormatString("cam%u.png", i);
+		image.UpdateCamera(scene.platforms);
+
+		// render the GT mesh's texture into this camera and save the photograph to disk
+		DepthMap depthMap(cv::Size((int)RefineSynthImgWidth, (int)RefineSynthImgHeight));
+		Image8U3 photo;
+		gtMesh.Project(image.camera, depthMap, photo);
+		photo.Save(image.name);
+	}
+
+	// noisy, coarse input mesh RefineMesh starts from
+	const float footprint(RefineSynthCamHeight*sceneScale/RefineSynthFocal);
+	BuildRefineSyntheticPlaneMesh(scene.mesh, RefineSynthInputGridN, sceneScale, 0);
+	PerturbRefineSyntheticInputMesh(scene.mesh, sceneScale, footprint);
+}
+
+// RMS distance to the GT plane z=0 of the vertices whose (x,y) lies inside the plane extent
+// minus one input-grid cell (avoids boundary effects at the mesh/background silhouette); also
+// rejects (returns false for) a mesh with any non-finite vertex, anywhere, not only inside the
+// RMS window
+static bool RefineSynthComputeRMS(const Mesh::VertexArr& vertices, float sceneScale, float margin, float& rms)
+{
+	double sumSq(0);
+	unsigned count(0);
+	for (const Mesh::Vertex& v: vertices) {
+		if (!ISFINITE(v.x) || !ISFINITE(v.y) || !ISFINITE(v.z))
+			return false;
+		if (ABS(v.x) > sceneScale-margin || ABS(v.y) > sceneScale-margin)
+			continue;
+		sumSq += SQUARE((double)v.z);
+		++count;
+	}
+	if (count == 0)
+		return false;
+	rms = (float)SQRT(sumSq/(double)count);
+	return true;
+}
+
+// synthetic end-to-end test of the mesh-refinement photometric pipeline (see the declaration in
+// TestsMVS.h for the full description)
+bool MeshRefineSyntheticTest(bool forceCPU, bool verbose)
+{
+	OPTREFINE::init();
+	OPTREFINE::update();
+
+	const String dir(MAKE_PATH("refine_synth/"));
+	// removes the fixture directory -- and anything the refiner might drop next to the images --
+	// on every exit path, including an early return on a failed assertion
+	struct DirCleanup {
+		String dir;
+		~DirCleanup() {
+			std::error_code ec;
+			std::filesystem::remove_all(std::filesystem::path(dir.c_str()), ec);
+		}
+	} dirCleanup{dir};
+	// Scene::RefineMesh logs its per-iteration line at -v 2; bump the ambient level for the
+	// duration of this test only if the caller asked for verbose output, and always restore it
+	const int prevVerbosity(g_nVerbosityLevel);
+	if (verbose && g_nVerbosityLevel < 2)
+		g_nVerbosityLevel = 2;
+	struct VerbosityRestore {
+		int prev;
+		~VerbosityRestore() { g_nVerbosityLevel = prev; }
+	} verbosityRestore{prevVerbosity};
+
+	constexpr float sceneScaleUnit(1.f);
+	const float footprintUnit(RefineSynthCamHeight*sceneScaleUnit/RefineSynthFocal);
+	const float marginUnit(2.f*sceneScaleUnit/(float)(RefineSynthInputGridN-1)); // one input-grid cell
+
+	// --- CPU run, unit scale ---
+	Scene sceneCPU(1);
+	Mesh gtMeshUnit;
+	BuildRefineSyntheticScene(sceneCPU, gtMeshUnit, dir, sceneScaleUnit);
+	float rmsBefore;
+	if (!RefineSynthComputeRMS(sceneCPU.mesh.vertices, sceneScaleUnit, marginUnit, rmsBefore)) {
+		VERBOSE("ERROR: MeshRefineSyntheticTest input mesh has a non-finite vertex or an empty RMS window!");
+		return false;
+	}
+	TD_TIMER_START();
+	if (!sceneCPU.RefineMesh(0, 640, 8, 0.f, 30, 1, 16, 2, 0.5f, 0, 0.2f, 0.9f, 45.05f, 0.f)) {
+		VERBOSE("ERROR: MeshRefineSyntheticTest CPU RefineMesh failed!");
+		return false;
+	}
+	const double elapsedCPU(TD_TIMER_GET()); // milliseconds
+	float rmsAfterCPU;
+	if (!RefineSynthComputeRMS(sceneCPU.mesh.vertices, sceneScaleUnit, marginUnit, rmsAfterCPU)) {
+		VERBOSE("ERROR: MeshRefineSyntheticTest CPU-refined mesh has a non-finite vertex or an empty RMS window!");
+		return false;
+	}
+	const Mesh::VIndex numVertsUnit(sceneCPU.mesh.vertices.size());
+	if (elapsedCPU >= 60000.0) {
+		VERBOSE("ERROR: MeshRefineSyntheticTest CPU refinement took %.1f s (limit 60 s)!", elapsedCPU/1000.0);
+		return false;
+	}
+	if (!(rmsAfterCPU < 0.25f*rmsBefore)) {
+		VERBOSE("ERROR: MeshRefineSyntheticTest CPU RMS did not converge enough (before %g, after %g, limit %g)!", rmsBefore, rmsAfterCPU, 0.25f*rmsBefore);
+		return false;
+	}
+	if (!(rmsAfterCPU < 0.5f*footprintUnit)) {
+		VERBOSE("ERROR: MeshRefineSyntheticTest CPU RMS %g exceeds 0.5x pixel-footprint %g!", rmsAfterCPU, 0.5f*footprintUnit);
+		return false;
+	}
+	VERBOSE("MeshRefineSyntheticTest CPU: RMS %g -> %g (footprint %g), %u verts (%s)", rmsBefore, rmsAfterCPU, footprintUnit, numVertsUnit, TD_TIMER_GET_FMT().c_str());
+
+	// --- CUDA run, unit scale, fresh copy of the same fixture ---
+	#ifdef _USE_CUDA
+	if (!forceCPU && SEACAVE::CUDA::isEnabled()) {
+		Scene sceneCUDA(1);
+		Mesh gtMeshCUDA;
+		BuildRefineSyntheticScene(sceneCUDA, gtMeshCUDA, dir, sceneScaleUnit);
+		if (!sceneCUDA.RefineMeshCUDA(0, 640, 8, 0.f, 30, 1, 16, 2, 0.5f, 0, 0.2f, 0.9f, 45.05f, 0.f)) {
+			VERBOSE("ERROR: MeshRefineSyntheticTest CUDA RefineMeshCUDA failed!");
+			return false;
+		}
+		float rmsAfterCUDA;
+		if (!RefineSynthComputeRMS(sceneCUDA.mesh.vertices, sceneScaleUnit, marginUnit, rmsAfterCUDA)) {
+			VERBOSE("ERROR: MeshRefineSyntheticTest CUDA-refined mesh has a non-finite vertex or an empty RMS window!");
+			return false;
+		}
+		const float ratio(rmsAfterCUDA/rmsAfterCPU);
+		if (ABS(ratio-1.f) > 0.1f) {
+			VERBOSE("ERROR: MeshRefineSyntheticTest CUDA RMS %g diverges from CPU RMS %g (ratio %g, limit +-10%%)!", rmsAfterCUDA, rmsAfterCPU, ratio);
+			return false;
+		}
+		if (!(rmsAfterCUDA < 0.5f*footprintUnit)) {
+			VERBOSE("ERROR: MeshRefineSyntheticTest CUDA RMS %g exceeds 0.5x pixel-footprint %g!", rmsAfterCUDA, 0.5f*footprintUnit);
+			return false;
+		}
+		VERBOSE("MeshRefineSyntheticTest CUDA: RMS -> %g (CPU ratio %g)", rmsAfterCUDA, ratio);
+	}
+	#endif
+
+	// --- scale invariance: same fixture at 100x, CPU only ---
+	constexpr float sceneScale100(100.f);
+	const float marginScale100(2.f*sceneScale100/(float)(RefineSynthInputGridN-1));
+	Scene scene100(1);
+	Mesh gtMesh100;
+	BuildRefineSyntheticScene(scene100, gtMesh100, dir, sceneScale100);
+	if (!scene100.RefineMesh(0, 640, 8, 0.f, 30, 1, 16, 2, 0.5f, 0, 0.2f, 0.9f, 45.05f, 0.f)) {
+		VERBOSE("ERROR: MeshRefineSyntheticTest scale-100 RefineMesh failed!");
+		return false;
+	}
+	float rmsAfterScale100;
+	if (!RefineSynthComputeRMS(scene100.mesh.vertices, sceneScale100, marginScale100, rmsAfterScale100)) {
+		VERBOSE("ERROR: MeshRefineSyntheticTest scale-100 refined mesh has a non-finite vertex or an empty RMS window!");
+		return false;
+	}
+	if (scene100.mesh.vertices.size() != numVertsUnit) {
+		VERBOSE("ERROR: MeshRefineSyntheticTest scale-100 refined vertex count %u differs from the unit-scale run's %u!", scene100.mesh.vertices.size(), numVertsUnit);
+		return false;
+	}
+	const float scaledRMS(rmsAfterScale100/sceneScale100);
+	// The pixel-space computation (camera K/R, projections, ZNCC) is exactly scale-invariant in
+	// real arithmetic (proven: a uniform 100x rescale of both the scene and every camera centre
+	// cancels in the projection formula, and LookAt's direction is scale-invariant by
+	// construction), and the vertex/face counts at every subdivision stage above are confirmed
+	// bit-identical between the two runs. But 100 is not a power of two, so the rescale is not
+	// exact in IEEE double/float arithmetic: every downstream computation picks up sub-ULP
+	// rounding differences, and the bold-driver stepper's discrete accept/reject decisions (~74
+	// iterations across 2 subdivision stages) can amplify that into a measurable path-dependent
+	// difference in the converged vertex positions. Empirically this is ~1.3% on this fixture --
+	// both RMS values already sit ~7x below the 0.5x-footprint pass bar, so this is convergence
+	// noise around a near-zero residual, not evidence of scale-dependent bias; 2% keeps a margin
+	// over that measurement while staying two orders of magnitude tighter than the pass bar.
+	if (ABS(scaledRMS-rmsAfterCPU) > 0.02f*rmsAfterCPU) {
+		VERBOSE("ERROR: MeshRefineSyntheticTest scale-100 RMS/100 %g diverges from the unit-scale RMS %g!", scaledRMS, rmsAfterCPU);
+		return false;
+	}
+	VERBOSE("MeshRefineSyntheticTest scale-100: RMS -> %g (/100 = %g)", rmsAfterScale100, scaledRMS);
+
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+
+// Finite-difference consistency gate for the energy the Ceres arm of Scene::RefineMesh
+// (--gradient-step 0) minimizes (see the declaration in TestsMVS.h). Reuses
+// BuildRefineSyntheticScene above, so the surface, the cameras and the photographs are the same
+// fixture MeshRefineSyntheticTest runs the whole refinement on.
+bool MeshRefineEnergyGradientTest(bool verbose)
+{
+	OPTREFINE::init();
+	OPTREFINE::update();
+
+	const String dir(MAKE_PATH("refine_energy/"));
+	// removes the fixture directory on every exit path, including an early return
+	struct DirCleanup {
+		String dir;
+		~DirCleanup() {
+			std::error_code ec;
+			std::filesystem::remove_all(std::filesystem::path(dir.c_str()), ec);
+		}
+	} dirCleanup{dir};
+	const int prevVerbosity(g_nVerbosityLevel);
+	if (verbose && g_nVerbosityLevel < 2)
+		g_nVerbosityLevel = 2;
+	struct VerbosityRestore {
+		int prev;
+		~VerbosityRestore() { g_nVerbosityLevel = prev; }
+	} verbosityRestore{prevVerbosity};
+
+	constexpr float sceneScale(1.f);
+	const float footprint(RefineSynthCamHeight*sceneScale/RefineSynthFocal); // scene units per pixel
+
+	// the three terms the gate must certify separately: the photometric energy alone (no
+	// regularization), the thin-plate energy alone (no image pair scored) and their sum -- an
+	// error in either one would otherwise be able to hide inside the other's finite difference
+	struct Arm {
+		const char* name;
+		float regularityWeight;
+		bool photometric;
+	};
+	static const Arm arms[] = {
+		{ "photometric", 0.f, true },
+		{ "smoothness", 1.f, false },
+		{ "combined", 1.f, true },
+	};
+	// Offsets in +-pairs, as a fraction of one pixel's footprint (the probe's direction field has
+	// unit length at its largest vertex, so an offset IS the largest per-vertex displacement in
+	// scene units). Both magnitudes are small enough for the quadratic term of the expansion and
+	// large enough for the energy difference to clear the rounding of the float vertex array.
+	//
+	// The gate compares the CENTRAL difference against t*<grad E,u>. The one-sided difference the
+	// same numbers also report sits at 5-12% here and cannot be driven lower by shrinking t: this
+	// energy carries an always-positive term proportional to |t| -- a step of either sign moves
+	// warp samples across the depth-similarity test, and dropping a matching sample from a window
+	// always raises its 1-ZNCC -- so the forward difference measures the gradient plus a
+	// step-size-independent 8% offset that no gradient can carry. The central difference cancels
+	// that even term and leaves exactly what this gate is for.
+	const float steps[] = { 2e-1f*footprint, -2e-1f*footprint, 1e-1f*footprint, -1e-1f*footprint };
+	constexpr unsigned numSteps(sizeof(steps)/sizeof(steps[0]));
+	constexpr double maxRatio(0.05);
+	bool bFailed(false);
+
+	for (const Arm& arm: arms) {
+		Scene scene(1); // single-threaded: the per-vertex sums are then completion-order independent
+		Mesh gtMesh;
+		BuildRefineSyntheticScene(scene, gtMesh, dir, sceneScale);
+
+		Scene::RefineEnergyProbe probe;
+		probe.regularityWeight = arm.regularityWeight;
+		probe.photometric = arm.photometric;
+		probe.seed = 0x9E3779B9u;
+		probe.steps.Resize(numSteps);
+		FOREACH(i, probe.steps)
+			probe.steps[i] = steps[i];
+		if (!scene.RefineMeshEnergyProbe(0, 640, 8, probe)) {
+			VERBOSE("ERROR: MeshRefineEnergyGradientTest %s probe failed!", arm.name);
+			return false;
+		}
+		if (!ISFINITE(probe.energy) || !ISFINITE(probe.dirDerivative)) {
+			VERBOSE("ERROR: MeshRefineEnergyGradientTest %s energy %g or directional derivative %g is not finite!",
+				arm.name, probe.energy, probe.dirDerivative);
+			return false;
+		}
+		if (probe.dirDerivative == 0) {
+			VERBOSE("ERROR: MeshRefineEnergyGradientTest %s directional derivative is exactly zero:"
+				" the finite difference below would compare nothing!", arm.name);
+			return false;
+		}
+		for (unsigned i=0; i+1<numSteps; i+=2) {
+			const double t((double)steps[i]);
+			const double predicted(t*probe.dirDerivative);
+			const double forward(probe.steppedEnergies[i]-probe.energy);
+			const double central((probe.steppedEnergies[i]-probe.steppedEnergies[i+1])/2.0);
+			const double ratio(ABS(central-predicted)/ABS(predicted));
+			VERBOSE("MeshRefineEnergyGradientTest %s: t %.3g\tE %.9g\tt<g,u> %.6g\tcentral %.6g (%.3f%%)\tforward %.6g (%.3f%%)",
+				arm.name, t, probe.energy, predicted, central, 100.0*ratio,
+				forward, 100.0*ABS(forward-predicted)/ABS(predicted));
+			if (!(ratio <= maxRatio)) {
+				VERBOSE("ERROR: MeshRefineEnergyGradientTest %s gradient disagrees with the energy at t %g:"
+					" central difference %g vs predicted %g (%.2f%%, limit %.0f%%)!",
+					arm.name, t, central, predicted, 100.0*ratio, 100.0*maxRatio);
+				bFailed = true;
+			}
+		}
+	}
+	return !bFailed;
 }
 /*----------------------------------------------------------------*/
 

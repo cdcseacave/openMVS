@@ -50,6 +50,7 @@ namespace OPT {
 String strInputFileName;
 String strMeshFileName;
 String strOutputFileName;
+String strMaskPath;
 unsigned nResolutionLevel;
 unsigned nMinResolution;
 unsigned nMaxViews;
@@ -115,11 +116,14 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		;
 
 	// group of options allowed both on command line and in config file
+	int nIgnoreMaskLabel;
 	boost::program_options::options_description config("Refine options");
 	config.add_options()
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input filename containing camera poses and image list")
 		("mesh-file,m", boost::program_options::value<std::string>(&OPT::strMeshFileName), "mesh file name to refine (overwrite existing mesh)")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the mesh")
+		("mask-path", boost::program_options::value<std::string>(&OPT::strMaskPath), "path to folder containing mask images with '.mask.png' extension")
+		("ignore-mask-label", boost::program_options::value(&nIgnoreMaskLabel)->default_value(-1), "label value to ignore in the image mask, stored in the MVS scene or next to each image with '.mask.png' extension (<0 - disabled)")
 		("resolution-level", boost::program_options::value(&OPT::nResolutionLevel)->default_value(0), "how many times to scale down the images before mesh refinement")
 		("min-resolution", boost::program_options::value(&OPT::nMinResolution)->default_value(640), "do not scale images lower than this resolution")
 		("max-views", boost::program_options::value(&OPT::nMaxViews)->default_value(8), "maximum number of neighbor images used to refine the mesh")
@@ -134,7 +138,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("rigidity-elasticity-ratio", boost::program_options::value(&OPT::fRatioRigidityElasticity)->default_value(0.9f), "scalar ratio used to compute the regularity gradient as a combination of rigidity and elasticity")
 		("gradient-step", boost::program_options::value(&OPT::fGradientStep)->default_value(45.05f), "max iterations and initial step in pixels (N.s: N iterations, sx10 px; 0 - Ceres)")
 		("planar-vertex-ratio", boost::program_options::value(&OPT::fPlanarVertexRatio)->default_value(0.f), "threshold used to remove vertices on planar patches (0 - disabled)")
-		("reduce-memory", boost::program_options::value(&OPT::nReduceMemory)->default_value(1), "recompute some data in order to reduce memory requirements")
+		("reduce-memory", boost::program_options::value(&OPT::nReduceMemory)->default_value(1), "deprecated: no effect since the masked window statistics")
 		("refine-config-file", boost::program_options::value<std::string>(&OPT::strRefineConfigFileName), "optional configuration file for the refiner (overwritten by the command line options)")
 		;
 
@@ -197,6 +201,9 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	const bool bRefineConfigPresent(!OPT::strRefineConfigFileName.empty() && File::isFile(OPT::strRefineConfigFileName));
 	const bool bValidRefineConfig(OPTREFINE::oConfig.Load(OPT::strRefineConfigFileName));
 	OPTREFINE::update();
+	// the CLI (this app's own .cfg file included) always wins over the refine-config-file, same as
+	// DensifyPointCloud's --ignore-mask-label over its --dense-config-file
+	OPTREFINE::nIgnoreMaskLabel = nIgnoreMaskLabel;
 	if (!bValidRefineConfig && !OPT::strRefineConfigFileName.empty()) {
 		if (bRefineConfigPresent) {
 			// an existing file that fails to parse is user input with a defect: overwriting it
@@ -208,11 +215,22 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		// write a template holding the defaults for the user to edit
 		OPTREFINE::oConfig.Save(OPT::strRefineConfigFileName);
 	}
+	if (OPTREFINE::nIgnoreMaskLabel < -1) {
+		VERBOSE("error: ignore mask label %d is invalid (< -1)", OPTREFINE::nIgnoreMaskLabel);
+		return false;
+	}
+	if (!OPT::strMaskPath.empty()) {
+		Util::ensureValidFolderPath(OPT::strMaskPath);
+		if (!File::isFolder(OPT::strMaskPath)) {
+			VERBOSE("error: mask path '%s' does not exist", OPT::strMaskPath.c_str());
+			return false;
+		}
+	}
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2)
-		DEBUG_EXTRA("OPTREFINE: ignoreMaskLabel=%d photoTerm=%d photoNorm=%d imageGradient=%d boundaryMode=%d gateMeanDiff=%g gateVarRatio=%g optimizer=%d",
-			OPTREFINE::nIgnoreMaskLabel, OPTREFINE::nPhotoTerm, OPTREFINE::nPhotoNorm, OPTREFINE::nImageGradient,
-			OPTREFINE::nBoundaryMode, OPTREFINE::fGateMeanDiff, OPTREFINE::fGateVarRatio, OPTREFINE::nOptimizer);
+		DEBUG_EXTRA("OPTREFINE: ignoreMaskLabel=%d imageGradient=%d gateMeanDiff=%g gateVarRatio=%g optimizer=%d",
+			OPTREFINE::nIgnoreMaskLabel, OPTREFINE::nImageGradient,
+			OPTREFINE::fGateMeanDiff, OPTREFINE::fGateVarRatio, OPTREFINE::nOptimizer);
 	#endif
 
 	MVS::Initialize(APPNAME, OPT::nMaxThreads, OPT::nProcessPriority);
@@ -247,6 +265,30 @@ int main(int argc, LPCTSTR* argv)
 	const Scene::SCENE_TYPE sceneType(scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)));
 	if (sceneType == Scene::SCENE_NA)
 		return EXIT_FAILURE;
+	if (!OPT::strMaskPath.empty()) {
+		for (Image& image: scene.images) {
+			if (!image.maskName.empty()) {
+				VERBOSE("error: Image %s has non-empty maskName %s", image.name.c_str(), image.maskName.c_str());
+				return EXIT_FAILURE;
+			}
+			image.maskName = OPT::strMaskPath + Util::getFileName(image.name) + ".mask.png";
+		}
+	}
+	if (OPTREFINE::nIgnoreMaskLabel >= 0) {
+		// unlike DensifyPointCloud, a missing per-image mask file is not an error here (that image
+		// simply keeps every pixel): report it once per image now instead of repeating the warning
+		// every scale, on both backends' hot per-view mask loader (SceneRefineCommon.cpp)
+		for (const Image& image: scene.images) {
+			if (!image.IsValid())
+				continue;
+			const String maskFileName(image.GetMaskFileName());
+			if (File::isFile(maskFileName)) {
+				DEBUG_EXTRA("Image %3u: using mask '%s' (ignore label %d)", image.ID, maskFileName.c_str(), OPTREFINE::nIgnoreMaskLabel);
+			} else {
+				DEBUG_EXTRA("Image %3u: no mask file '%s' found, keeping all pixels", image.ID, maskFileName.c_str());
+			}
+		}
+	}
 	if (!OPT::strMeshFileName.empty() && !scene.mesh.Load(MAKE_PATH_SAFE(OPT::strMeshFileName))) {
 		VERBOSE("error: cannot load mesh file");
 		return EXIT_FAILURE;
@@ -258,7 +300,7 @@ int main(int argc, LPCTSTR* argv)
 	TD_TIMER_START();
 	#ifdef _USE_CUDA
 	bool bRefined(false);
-	if (!SEACAVE::CUDA::desiredDeviceIDs.empty()) {
+	if (!SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs)) {
 		// refinement mutates the mesh in place (decimation, subdivision, moved vertices), so a
 		// CUDA attempt that dies mid-run leaves neither the input nor a valid output behind;
 		// snapshot the input so the CPU fallback starts from what the user supplied instead of
@@ -272,7 +314,8 @@ int main(int argc, LPCTSTR* argv)
 										OPT::nAlternatePair,
 										OPT::fRegularityWeight,
 										OPT::fRatioRigidityElasticity,
-										OPT::fGradientStep);
+										OPT::fGradientStep,
+										OPT::fPlanarVertexRatio);
 		// announce the fallback: it used to be silent, so a log reader could not tell a CPU
 		// rerun after a failed CUDA attempt from a run where the CPU path was chosen outright
 		if (!bRefined) {
@@ -292,8 +335,7 @@ int main(int argc, LPCTSTR* argv)
 						  OPT::fRegularityWeight,
 						  OPT::fRatioRigidityElasticity,
 						  OPT::fGradientStep,
-						  OPT::fPlanarVertexRatio,
-						  OPT::nReduceMemory))
+						  OPT::fPlanarVertexRatio))
 		return EXIT_FAILURE;
 	VERBOSE("Mesh refinement completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 

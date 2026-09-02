@@ -152,7 +152,6 @@ public:
 		float rigidityElasticityRatio{0.9f};
 		float gradientStep{45.05f};
 		float planarVertexRatio{0.f};
-		unsigned reduceMemory{1};
 	};
 
 	struct TextureMeshWorkflowOptions {

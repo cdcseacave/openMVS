@@ -31,6 +31,7 @@
 
 #include "Common.h"
 #include "Scene.h"
+#include "../../libs/MVS/SceneRefineCommon.h"
 
 using namespace VIEWER;
 
@@ -233,11 +234,15 @@ public:
 		Scene::Layer* layer = pScene->GetLayerByID(layerID);
 		if (layer == NULL)
 			return false;
+		// the refiner reads its own configuration space, which nothing else in the Viewer touches:
+		// without this the declared defaults (the pixel rejection gates in particular) would stay
+		// at the zero every DEFVAR_OPTION starts at
+		MVS::OPTREFINE::init();
+		MVS::OPTREFINE::update();
 		return layer->scene.RefineMesh(options.resolutionLevel, options.minResolution, options.maxViews,
 		                               options.decimateMesh, options.closeHoles, options.ensureEdgeSize, options.maxFaceArea,
 		                               options.scales, options.scaleStep, options.alternatePair, options.regularityWeight,
-		                               options.rigidityElasticityRatio, options.gradientStep, options.planarVertexRatio,
-		                               options.reduceMemory);
+		                               options.rigidityElasticityRatio, options.gradientStep, options.planarVertexRatio);
 	}
 	EVTWorkflowRefineMesh(Scene* _pScene, uint32_t _layerID, const Scene::RefineMeshWorkflowOptions& _options)
 		: EventWorkflow(_pScene, _layerID), options(_options) {}

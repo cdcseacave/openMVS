@@ -22,9 +22,10 @@ faster or more accurate — the same discipline `DepthMapFusion.md` §3 and `Del
 document; a claim that cannot yet be measured (because the harness or the build it depends on isn't
 ready) is recorded as an open item (§8), not as a verdict.
 
-**Today's state (2026-08-30).** §1 and §2 are complete — they describe the shipped `develop`
-algorithm and the harness that now exists (work packages H1/H2). §3-§7 are stubs: no
-`RefineMesh` benchmark row exists yet anywhere on this branch (see §8).
+**State (2026-09-02).** §1 describes the pipeline as it ships on this branch; §2 the harness;
+§3 the noise floor and gate; §4 the develop baseline; §5 the accepted arms and the shipped
+configuration measured end to end against develop; §6 every rejected candidate with its numbers;
+§7 durable constraints; §8 the chronological log (newest first) and open items.
 
 ---
 
@@ -32,266 +33,359 @@ algorithm and the harness that now exists (work packages H1/H2). §3-§7 are stu
 
 `RefineMesh` implements the Vu et al. (PAMI 2012) variational mesh refinement: alternate a
 multi-scale subdivision pass with a gradient-descent optimization that pulls the surface toward
-photo-consistency while a Laplacian regularizer keeps it smooth. Two independent implementations
-exist side by side and are expected to diverge (`libs/MVS/AGENTS.md`'s guidance on
-platform-specialized code applies): the CPU path in `libs/MVS/SceneRefine.cpp`
-(`MeshRefine`/`Scene::RefineMesh`) and the CUDA path split across `libs/MVS/SceneRefineCUDA.cpp`
-(`MeshRefineCUDA`/`Scene::RefineMeshCUDA`) and `libs/MVS/SceneRefineCUDA.cu` (device kernels). There
-is no `SceneRefine.h`; `MeshRefine` is a translation-unit-local class defined inside the `.cpp`.
-`apps/RefineMesh/RefineMesh.cpp` is the CLI driver; every default cited below is that file's
-`boost::program_options` default (lines 92-136), unless marked as a compile-time constant.
+photo-consistency while a Laplacian regularizer keeps it smooth. What follows describes the
+pipeline **as it ships on `refine-improvements` today** — after Part A (CPU/CUDA parity) and Part B
+(the shared stepper) landed — not the pre-campaign `develop` algorithm; see §5/§8 for how it got
+here and §6 for what was tried and rejected on the way. Two independent implementations still exist
+side by side (`libs/MVS/AGENTS.md`'s guidance on platform-specialized code applies), but the
+campaign closed most of what used to separate them: the CPU path in `libs/MVS/SceneRefine.cpp`
+(`MeshRefine`/`Scene::RefineMesh`), the CUDA path split across `libs/MVS/SceneRefineCUDA.cpp`
+(`MeshRefineCUDA`/`Scene::RefineMeshCUDA`) and `libs/MVS/SceneRefineCUDA.cu`/`.inl` (device kernels
+and launch wrappers), and two files both backends now share outright: `libs/MVS/SceneRefineCommon.h/.cpp`
+(shared scalar math, the `OPTREFINE` configuration space, per-view image/mask preparation) and
+`libs/MVS/SceneRefineStep.h/.cpp` (the vertex-position stepper — one implementation, no CUDA twin to
+drift). There is no `SceneRefine.h`; `MeshRefine`/`MeshRefineCUDA` are translation-unit-local
+classes. `apps/RefineMesh/RefineMesh.cpp` is the CLI driver; every default below is that file's
+`boost::program_options` default unless marked as an `OPTREFINE`/`MeshRefineStep` constant.
 
 ### 1.1 Entry point, CLI defaults, and the `-m`/output-naming trap
 
-`main()` (`RefineMesh.cpp:206-265`) loads the scene, loads (or defaults) the mesh, tries CUDA first
-if `--gpu-device` selects a device, and silently falls back to the CPU path if the CUDA call
-returns `false`:
-
-```
-#ifdef _USE_CUDA
-if (SEACAVE::CUDA::desiredDeviceIDs.empty() || !scene.RefineMeshCUDA(...))
-#endif
-if (!scene.RefineMesh(...))
-    return EXIT_FAILURE;
-```
-(`RefineMesh.cpp:231-252`.) When `--gpu-device` is unset the default is the empty string
-(`RefineMesh.cpp:111`), which short-circuits the `||` and skips the CUDA call entirely — the app
-runs on CPU unless a device is explicitly requested (`-1` = best GPU, `-2`/`cpu`/empty = CPU,
-`>=0` = comma-separated device IDs). If `RefineMeshCUDA` returns `false` for any reason (no device,
-OOM, kernel launch failure) execution falls through to the full CPU path **in the same process and
-log**, with no log line announcing the fallback — the only way to tell from the log is that CPU
-iteration lines carry an `f:` cost field and CUDA lines never do (§2.1, `refine_log.py`).
+`main()` loads the scene, optionally attaches per-image masks, loads (or defaults) the mesh, and
+picks a backend through `SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs)`
+(`libs/Common/UtilCUDA.cpp`) — true for an empty string (the `--gpu-device` default), `-2`, `cpu` or
+`none` (case-insensitive), false otherwise (`-1` = best GPU, `>=0` = comma-separated device IDs).
+Refinement mutates the mesh in place, so `main()` snapshots `scene.mesh.vertices`/`faces` before a
+CUDA attempt; if `RefineMeshCUDA` returns `false` (no device, OOM, a kernel launch failure, a
+poisoned context after a mid-run error), it now logs
+`"CUDA mesh refinement failed: falling back to the CPU implementation"` — no longer silent — restores
+the snapshot, and the CPU path runs on the caller's original input instead of re-refining (and
+re-decimating) whatever the half-finished CUDA run left behind.
 
 `--mesh-file/-m` defaults to `<input-file-without-extension>.ply` **only when the archive type is
-MVS** (`RefineMesh.cpp:185-186`). With `-i scene_dense.mvs` that default resolves to
-`scene_dense.ply` — the dense **point cloud's** ply, not a mesh — which produces `mesh.IsEmpty()`
-and `"error: empty initial mesh"` (`RefineMesh.cpp:226-228`). `-m` must always be passed explicitly
-when refining a coarse mesh built from the same stem as the input scene; this is why
-`bench/run_refine.py` never omits it (§2.3).
+MVS**. With `-i scene_dense.mvs` that default resolves to `scene_dense.ply` — the dense **point
+cloud's** ply, not a mesh — which produces `mesh.IsEmpty()` and `"error: empty initial mesh"`. `-m`
+must always be passed explicitly when refining a coarse mesh built from the same stem as the input
+scene. Output naming is unchanged: the refined mesh is written to `<out-stem><export-type>`
+unconditionally (default `.ply`); the `.mvs` sidecar is written only when the archive type isn't
+`ARCHIVE_MVS` or the input wasn't loaded as `Scene::SCENE_INTERFACE`.
 
-Output naming: the refined mesh is written to `<out-stem><export-type>` unconditionally
-(`RefineMesh.cpp:256-257`, default export type `.ply`); the `.mvs` sidecar is written **only** when
-the archive type isn't `ARCHIVE_MVS` or the input wasn't loaded as `Scene::SCENE_INTERFACE`
-(`RefineMesh.cpp:262-263`) — for the harness's normal MVS-in/MVS-out invocation, the only mesh
-artifact on disk after a run is the `.ply`.
+Per-view masking is new since the pre-campaign pipeline: `--mask-path` points at a folder of
+`<image>.mask.png` files (assigned to `Image::maskName` if not already set from the `.mvs`) and
+`--ignore-mask-label` (default `-1`, disabled) is the label value those masks encode to drop. Both
+are validated once at startup — a missing mask file is logged once per image here, not repeated
+every scale by the hot per-view loader (§1.3). `OPTREFINE::init()`/`update()` load the `OPTREFINE`
+defaults and merge in `--refine-config-file` if given; the CLI, including this app's own
+`RefineMesh.cfg`, always wins over that file.
 
 ### 1.2 Multi-scale subdivision loop
 
-`Scene::RefineMesh`/`RefineMeshCUDA` (`SceneRefine.cpp:1290-1445`,
-`SceneRefineCUDA.cpp:849-930`) run `nScales` passes coarse-to-fine (`--scales`, default 2;
-`--scale-step`, default 0.5, `RefineMesh.cpp:128-129`). At loop index `nScale` (0-based, 0 = first
-= coarsest):
+`Scene::RefineMesh`/`RefineMeshCUDA` run `nScales` passes coarse-to-fine (`--scales`, default 2;
+`--scale-step`, default 0.5). At loop index `nScale` (0-based, 0 = first = coarsest):
 
 ```
 scale = fScaleStep ^ (nScales - nScale - 1)   // image downsample factor
 step  = 2 ^ (nScales - nScale)                // used only for the blur sigma below
 sigma = 0.12 * step + 0.2                     // pre-blur before resizing/gradient
 ```
-(`SceneRefine.cpp:1310-1313`, identical in `SceneRefineCUDA.cpp:868-871`.) With the shipped
-defaults (`nScales=2`, `fScaleStep=0.5`): scale 0 runs at half image resolution with `sigma=0.68`,
-scale 1 (the last, finest) at full resolution with `sigma=0.12*2+0.2=0.44` px — a noise-robust
-pre-blur, not a negligible one, ahead of the derivative stencil (§1.3).
 
-Each scale re-inits images at that scale (`MeshRefine::InitImages`, `SceneRefine.cpp:392-401`),
-re-lists incident faces (`ListVertexFacesPre`), then calls `SubdivideMesh` (`:486-578`, CUDA
-near-verbatim at `SceneRefineCUDA.cpp:448-540` — any change to this logic must be made in both
-places or hoisted). `SubdivideMesh` first optionally decimates (`--decimate`, default 0 = auto:
-projects the mesh into every camera, measures the median face area across image pairs, and
-decimates only if that median exceeds `--max-face-area` by more than 6x, `:526-538`), runs
-`Mesh::Clean` with `simplifyTarget`/`edgeLength=-2.25` (a negative, i.e. relative, target edge
-length so the [0.5x, 4x] edge-length remesh rides the same `Clean` pass, `remeshIterations=10`,
-`:492-500`), then subdivides any face whose projected area in the tightest camera pair exceeds
-`--max-face-area` (default 16 px², `Mesh::Subdivide`, 1-to-4 split, `:559`). The subdivision-count
-log line (`"Mesh subdivided: %u/%u -> %u/%u vertices/faces"`, `:572`, identical text from the CUDA
-path) is what `refine_log.py`'s `RE_SCALE` regex keys per-scale boundaries on (§2.1).
+identical on both backends. With the shipped defaults: scale 0 runs at half resolution with
+`sigma=0.68`, scale 1 (finest) at full resolution with `sigma=0.44` px — a noise-robust pre-blur
+ahead of the derivative stencil (§1.3), not a negligible one.
+
+Each scale re-inits images (`InitImages`, one worker per view): the shared `PrepareRefineImage`
+(`SceneRefineCommon.cpp`) loads, gray-converts, Gaussian-blurs at the scale's `sigma` and resizes;
+`ComputeRefineImageGradient` (§1.3) builds the derivative image both backends read; then
+`PrepareRefineImageMask` builds the per-view keep-mask at the working size. `ListVertexFacesPre`
+re-lists incident faces, then `SubdivideMesh` runs — CPU and CUDA remain independent but
+mechanically identical: optionally decimates (`--decimate`, default 0 = auto: projects the mesh
+into every camera, measures the median face area across image pairs, decimates only if that median
+exceeds `--max-face-area` (default 16 px²) by more than 6x), runs `Mesh::Clean` with a negative
+(relative) target edge length `-2.25` so the [0.5x, 4x] edge-length remesh rides the same `Clean`
+pass (`remeshIterations=10`), then subdivides any face whose projected area in the tightest camera
+pair exceeds `--max-face-area` (`Mesh::Subdivide`, 1-to-4 split). The log line
+`"Mesh subdivided: %u/%u -> %u/%u vertices/faces"` (identical text on both backends) is what
+`refine_log.py`'s `RE_SCALE` regex keys per-scale boundaries on.
 
 ### 1.3 Photo-consistency energy
 
-For every ordered image pair `(A, B)` in the pair list (view-graph neighbors filtered by
-`Scene::FilterNeighborViews`, `SceneRefine.cpp:1053-1073`), `ThProcessPair` (`:1126-1204`, CUDA
-`ProcessPair`, `SceneRefineCUDA.cpp:645-664`) does, per pixel of A:
+For every ordered image pair `(A,B)` — view-graph neighbors gathered and filtered by the shared
+`SelectRefineNeighbors` (`SceneRefineCommon.cpp`: recovers `Image::neighbors` via
+`Scene::SelectNeighborViews` if a mesh was handed to the refiner directly, then
+`Scene::FilterNeighborViews` at fixed thresholds — min area 0.1, scale [0.2, 3.2], angle
+[2.5°, 45°] — capped at `--max-views`, default 8) — `ThProcessPair`/`MeshRefineCUDA::ProcessPair`
+does, per pixel of A:
 
-1. **Warp.** Project A's depth at `(i,j)` into B; keep the sample only if `IsDepthSimilar` accepts
-   (§1.5/§1.6 — visibility test). Invalid (occluded/out-of-view) pixels are **not zeroed**: CPU
-   seeds the warped buffer `imageAB` with a straight copy of image A (`imageA.copyTo(imageAB)`,
-   `:1147`) before overwriting only the pixels that pass the warp (`ImageMeshWarp`, `:759-783`), so
-   an invalid pixel's warped value equals A's own value — biasing the local window statistics
-   toward `ZNCC=1` right at occlusion boundaries, since the box-sum window (below) is not masked
-   against the integral image's contents, only against which output pixels get written.
-2. **Local statistics, 7x7 window (CPU `HalfSize=3`, `SceneRefine.cpp:239`; CUDA `HalfSize=2` =
-   5x5, `SceneRefineCUDA.cpp:169`).** `ComputeLocalVariance` (`:786-828`) uses `cv::integral` box
-   sums over the **whole** image/mean/variance arrays (not masked at the sum level, only the
-   per-pixel write is gated by `mask(r,c)`); `ComputeLocalZNCC` (`:831-908`) forms
-   `ZNCC = (cov - meanA*meanB) / sqrt(varA*varB)` and its analytic pointwise derivative — the
-   active branch (`#if 1`, `:873-877`):
+1. **Warp, with masks.** Project A's depth at `(i,j)` into B; a pixel masked out of A never seeds a
+   sample. Otherwise keep the sample only if the nearest-tap relative visibility test accepts
+   (§1.5) **and** the same rounded B-side tap is kept by B's own mask. Invalid pixels are
+   **zero-filled**, not seeded with a copy of A: CPU's `MeshRefine::ImageMeshWarp` memsets `imageAB`
+   to 0 before the warp; CUDA's `kernelImageMeshWarp` writes 0 for every rejected pixel — a
+   rejected pixel contributes nothing to any window sum downstream, instead of biasing the local
+   statistics toward `ZNCC=1` right at occlusion boundaries the way the old
+   `imageA.copyTo(imageAB)` seed did.
+2. **Masked local statistics, 7x7 window, shared (`Refine::HalfSize=3`, `SceneRefineCommon.h`).**
+   `MeshRefine::ComputeWindowStats` (CPU: six `cv::boxFilter` passes over the masked A/B products)
+   and `kernelComputeWindowStats` (CUDA: one thread per pixel, the block's 22x22 overlapping-window
+   tile staged into `__shared__ sA/sB/sW` once instead of re-read 49x per thread — a naive version
+   cost 1.4-1.8x the wall of the five kernels it replaced) both reduce the same six masked sums —
+   over VALID pixels only, normalized by their count `n` — through two shared inline functions:
+   `Refine::WindowStatsFromSums(n, sA, sB, sAA, sBB, sAB, gateMeanDiff, gateVarRatio, stats)` rejects
+   the pixel if `n < Refine::MinWindowCount` (25), floors both variances at `1e-4`, and applies the
+   two rejection gates ported from the Acute3D shader (`correlation.frag`): `|muA-muB| >
+   OPTREFINE::fGateMeanDiff` (default 0.4) or a variance ratio exceeding `OPTREFINE::fGateVarRatio`
+   (default 8) — a specular highlight, a shadow boundary or a missed occlusion, not a
+   photo-consistency measurement of the same surface. `Refine::ZnccAndDerivative(stats, n, pixA,
+   pixB, zncc, dzncc, conf, dzRaw)` forms `zncc = cov/sqrt(varA*varB)`, its derivative
+   `dZ = (pixA-muA)/sqrt(varA*varB) - zncc*(pixB-muB)/varB`, the reliability weight
+   `conf = ZnccReliability(varA,varB) = min(varA,varB)/(min(varA,varB)+0.0015)`, and
+   `dzncc = -conf*dZ*(WindowArea/n)` (exactly 1 when every pixel of the window is valid). The
+   pair-direction's reliability sums `sumR += conf`, `sumRZ += conf*(1-zncc)` accumulate into
+   `S = sumRZ/sumR` (§1.7) — the reliability-weighted mean of `1-ZNCC`, invariant to scene scale,
+   contrast, resolution and pair count. `MinWindowCount` and the two gates are the only
+   pixel-rejection machinery; `dzRaw`/`conf` exist only for the parity debug export (§1.6).
+3. **Per-pixel photometric gradient.** `MeshRefine::ComputePhotometricGradient` (CPU) and
+   `kernelAccumulateFacePhoto` (CUDA) compute the face normal `N`, the camera-A ray `dA`, and
+   `Nd = N.dA`; skip the pixel if `Nd > -0.1` (a one-sided grazing/back-face gate). They
+   back-project to the 3D point, project into B with a Jacobian `J` (`MeshRefine::ProjectVertex`),
+   sample B's precomputed image gradient there, and form
    ```
-   dZNCC = A(r,c)*invSqrtVAVB - B(r,c)*ZNCC/varB + meanB*ZNCC/varB - meanA*invSqrtVAVB
-   ```
-   folded with a reliability weight `ReliabilityFactor = min(varA,varB) / (min(varA,varB)+0.0015)`
-   into `imageDZNCC(r,c) = -ReliabilityFactor * dZNCC` and the accumulated score
-   `+= ReliabilityFactor*(1-ZNCC)` (`:900-903`) — there is no separate confidence output; the
-   reliability weight is baked into `imageDZNCC` before it ever reaches the gradient step. A dead
-   `#else` branch (`:878-897`) computes a *windowed* average of the same quantity instead of the
-   pointwise value at `(r,c)` — this is the form the CUDA kernel actually implements (below).
-   `imageVar` is clamped to a `1e-4` floor (`:824`) but `imageInvSqrtVAVB = 1/sqrt(varA*varB)` has
-   **no zero guard** (`:862`) — a flat patch (`varA` or `varB` at the floor from both sides) can
-   still produce `inf`/`NaN` here; nothing downstream currently checks for it on CPU.
-3. **Per-pixel photometric gradient.** `ComputePhotometricGradient` (`:911-965`) computes, per
-   valid pixel, the face normal `N`, the camera-A ray direction `dA`, and `Nd = N.dA`; skips the
-   pixel if `Nd > -0.1` (a one-sided grazing/back-face gate, `:938-940`, unconditionally compiled).
-   It back-projects to the 3D point, projects into B with a Jacobian `xJac` (`ProjectVertex`,
-   `:672-709`), bilinearly samples B's precomputed image gradient `gB` there, and forms
-   ```
-   sg = (gB . (xJac * dA)) * dZNCC * RegularizationScale / Nd            (SceneRefine.cpp:953)
+   sg = (gB . (J . dA)) * dzncc * RegularizationScale / Nd
    ```
    distributed to the face's three vertices weighted by barycentric coordinates and the face
-   normal (`:957-962`); `photoGradNorm[vert]` is incremented **once per pixel that touched it in
-   this pair**, but that per-pixel count is only ever tested for `>0` back in `ThProcessPair`
-   (`:1186-1201`) — the value actually accumulated into the global `photoGradNorm[v]` is `+=1` per
-   pair-direction that saw `v` at all, not per pixel and not weighted by how many pixels or how
-   reliable they were. `RegularizationScale = avgDepthA*avgDepthB / (fA*fB)` (`:1180`, camera focal
-   lengths; identical formula on CUDA, `SceneRefineCUDA.cpp:662`) is the scene-scale-dependent term
-   that converts an image-space photometric gradient into a 3D-consistent one (§1.7).
-4. **Image gradient stencil.** `gB` above comes from a precomputed per-view gradient image
-   (`View::imageGrad`), built once per scale in `ThInitImage` (`:1074-1115`) with the noise-robust
-   separable `[1,2,1]^T (x) [-1,-2,0,2,1]/32` kernel (`CreateDerivativeKernel3x5`, `Types.inl:3133-3140`,
-   applied via `cv::filter2D` at `SceneRefine.cpp:1106-1108`; a plain Sobel-3 and a 5x7 variant of
-   the same family exist in the source but are `#if 0`-disabled, `:1102-1113`). `gB` is sampled at
-   the sub-pixel projection `xB` with a bilinear `Sampler::Linear` (`:950`), which in
-   `TImage::sample` (`Types.inl:2337-2339` -> `Sampler.inl:236-241`) treats pixel `(0,0)`'s value as
-   located at grid coordinate `(0,0)` (`floor(pt)` + fractional weight, no half-texel offset).
-5. **`--reduce-memory` (default 1, `RefineMesh.cpp:135`).** Counter-intuitively, the *default*
-   value **disables** the per-view precompute: `ThInitImage` only fills `view.imageMean/imageVar`
-   when `!nReduceMemory` (`:1095-1098`), so by default those buffers are never populated; instead
-   `ThProcessPair` recomputes A's local mean/variance from scratch for every pair, but *masked by
-   that pair's actual occlusion mask* (`:1151-1156`). The `nReduceMemory==0` (opt-out) path
-   precomputes once per scale over an all-valid mask (`BitMatrix(img.size(), 0xFF)`, `:1097`) and
-   reuses it for every pair regardless of that pair's own occlusion pattern — trading a
-   per-pair-correct statistic for a cached, pair-agnostic one. As shipped, the flag is a genuine
-   memory/compute trade-off, not a no-op (a later work package flattens this, see §5).
+   normal. `RegularizationScale = avgDepthA*avgDepthB / (fA*fB)` (identical formula on both
+   backends) converts an image-space photometric gradient into a 3D-consistent one (§1.8). This
+   magnitude term with the pair-count normalizer below is the only photometric formulation the
+   shipped pipeline computes.
+4. **Image gradient stencil, shared.** `gB` above comes from a per-view gradient image built once
+   per scale by `ComputeRefineImageGradient` (`SceneRefineCommon.cpp`), selected by
+   `OPTREFINE::nImageGradient` (default **1**, central differences `[-1,0,1]/2`; 0 = the
+   noise-robust separable 3x5 `[1,2,1]^T (x) [-1,-2,0,2,1]/32`, `CreateDerivativeKernel3x5`; 2 =
+   Sobel-3 `/8`). CPU builds it once with `cv::filter2D` and samples it bilinearly (integer
+   coordinates = pixel centres); CUDA uploads the identical host-computed image as two float
+   textures and samples with hardware bilinear `tex2D`, whose non-normalized-coordinate convention
+   places a texel's centre at `+0.5` — every CUDA fetch reading a CPU-convention coordinate (this
+   sample, and the warp's color fetch in step 1) adds that offset explicitly so both backends sample
+   the same point. WP7 measured all three stencils and found central differences the clear winner
+   (T&T mean +0.0086 F1 over the 3x5 default, every scene positive, identical evaluation counts)
+   once the per-scale Gaussian pre-blur (§1.2) is accounted for — the wider stencil only adds blur
+   on top of an already-blurred image.
+5. **Per-vertex accumulation.** Each pixel's `sg` is added to `photoGrad[v]` for the face's three
+   vertices; `photoGradNorm[v]` (`c_v`) is incremented **once per pair-direction that touched `v`,
+   not per pixel**; `footprint[v]` (`Camera::GetFootprintWorld(depthA) = depthA/focalLengthA`) is
+   min-reduced over every pixel/pair-direction that touched `v`, resolved from an `FLT_MAX` sentinel
+   to 0 for a vertex none saw (`footprint[v] > 0` iff `photoGradNorm[v] > 0` on both backends). On
+   CPU this merge happens per-pair under a lock at the end of `ThProcessPair`, so summation order —
+   and the float result — is not reproducible run to run unless `--max-threads 1`. On CUDA it is
+   **deterministic**: `kernelAccumulateFacePhoto` is face-parallel — one thread per mesh face walks
+   its clipped bounding box in fixed scan order, reducing the corner sums, pixel count and footprint
+   minimum in registers, no atomics — and `kernelGatherVertexPhoto` is vertex-parallel, walking each
+   vertex's flattened incident-face list (`Mesh::ListIncidentFaces` order) to sum the contribution
+   and absorb the `photoGradNorm += 1`; `kernelFinalizePhotoGrad` resolves the sentinel exactly like
+   the CPU's post-loop pass. `photoGrad[v]/photoGradNorm[v]` — the pair-count average — is what the
+   stepper and the Ceres energy mode (§1.7) both read as `g_v`; there is no other normalizer shipped.
+6. **Boundary vertices get the photometric term but zero smoothing.** Nothing in `ScoreMesh`/
+   `ComputeWindowStats`/`ComputePhotometricGradient` special-cases a boundary vertex — the
+   photometric pull above applies to it like any interior vertex — but
+   `ComputeSmoothnessGradient1`/`2` (§1.4) zero both smoothing terms there unconditionally.
+
+`--reduce-memory` still exists on the CLI for compatibility but its help text now reads
+"deprecated: no effect since the masked window statistics" — the memory/compute trade-off it used
+to gate is gone now that every window statistic above is masked and recomputed fresh from six box
+filters.
 
 ### 1.4 Regularization term
 
-`ComputeSmoothnessGradient1` (`SceneRefine.cpp:969-993`) computes the discrete umbrella-operator
-Laplacian `L(v) = mean(1-ring neighbors) - v`, **zeroed at boundary vertices**
-(`if (vertexBoundary[idxV]) continue;`, `:979-981`, unconditionally compiled). `ComputeSmoothnessGradient2`
-(`:996-1023`) forms the "level 2" operator from Hernandez (2004, p.105) — a valence-normalized
-combination of `L` over the same ring — **also zeroed at boundary vertices** (`:1004-1007`). Crucially,
-the photometric term (§1.3 step 3) has **no boundary check at all**: a boundary vertex receives the
-full photometric pull with zero smoothing counter-pull (plan-tracked issue; not yet fixed on this
-branch).
+Unchanged operators. `ComputeSmoothnessGradient1` (CPU) / `kernelComputeSmoothnessGradient(mode=0)`
+(CUDA) compute the discrete umbrella-operator Laplacian `L(v) = mean(1-ring neighbors) - v`, zeroed
+at boundary vertices. `ComputeSmoothnessGradient2` / `kernelComputeSmoothnessGradient(mode=1)` form
+the "level 2" operator from Hernandez (2004, p.105) — a valence-normalized combination of `L` over
+the same ring — also zeroed at boundary vertices; on both backends the valence used to weight a
+neighbour is that neighbour's TRUE valence (`vertexVertices[idxVert].GetSize()` on CPU, the
+uploaded `vertSizes[]` on CUDA), including a boundary neighbour's, so an interior vertex next to
+the boundary does not divide by a corrupted weight.
 
-The final per-vertex gradient (`ScoreMesh`, `:650-666`) combines them as:
+The final per-vertex gradient combines them (`ScoreMesh`/`CombineGradients` — only computed when a
+caller asks for the combination; the stepper reads the terms separately):
 ```
 ratioRigidityElasticity >= 1:   photoGrad[v]/photoGradNorm[v] + smoothGrad2[v]*weightRegularity
 ratioRigidityElasticity <  1:   photoGrad[v]/photoGradNorm[v] + smoothGrad2[v]*elasticity - smoothGrad1[v]*rigidity
                                  rigidity   = (1-ratio)*weightRegularity
                                  elasticity =    ratio *weightRegularity
 ```
-`--regularity-weight` defaults to 0.2, `--rigidity-elasticity-ratio` to 0.9 (`RefineMesh.cpp:131-132`);
-`ratioRigidityElasticity` is itself forced to `1.f` for the last 30% of each scale's iterations
-(`iter <= iters*7/10`, `SceneRefine.cpp:1381,1389`, same on CUDA `SceneRefineCUDA.cpp:896,903`) —
-so the rigidity (level-1) term only contributes early in each scale's schedule.
+`--regularity-weight` defaults to 0.2, `--rigidity-elasticity-ratio` to 0.9; both are validated at
+the entry point against the stepper's explicit-flow stability bound
+`weightRegularity * MeshRefineStep::StepMax <= 1` (§1.7), rather than left to fail inside the
+optimizer. Unlike the pre-campaign pipeline, the ratio is no longer forced to 1 for a fixed
+fraction of a fixed iteration count — see §1.7 for the two-phase schedule that replaced it.
 
 ### 1.5 Visibility test (occlusion)
 
-CPU `IsDepthSimilar` and CUDA `kernelImageMeshWarp` both round the projected point in B to its
-nearest depth-map texel and accept it iff `depth > 0 && depth*1.0002 >= z`. This is a **one-sided**
-occlusion test: it rejects only when B's own measured depth is significantly *closer* to the camera
-than the transformed point. A farther B surface is accepted because it does not occlude A's point.
-The relative tolerance is invariant under a uniform scene rescale because both camera-space depths
-are multiplied by the same factor (§6.0b).
+CPU `MeshRefine::IsDepthSimilar` and CUDA `kernelImageMeshWarp` both round the projected point in B
+to its nearest depth-map texel and accept it iff `depth > 0 && depth*1.0002f >= z` — a one-sided
+occlusion test (rejects only when B's own measured depth is significantly closer than the
+transformed point) that is **exactly invariant under a uniform scene rescale**, since both depths
+are multiplied by the same factor. This replaced a fixed scene-unit bias after two campaign
+results: a depth-proportional, grazing-aware tolerance regressed every scene (WP3, up to −0.020 on
+Ignatius) and a plain nearest-tap-vs-2x2-tap sweep found nearest-tap sampling itself worth +0.009
+mean F1 before any tolerance was touched; the `1.0002` multiplier was then tuned (+0.0138 mean,
+non-monotonic — `1.0001` loses 0.0105 on Barn despite a small Ignatius gain), and the old fixed
+bias has no compatibility path left in the tree.
 
-### 1.6 CPU/CUDA divergences (beyond the visibility test above)
+Both backends also test the B-side keep-mask at the same rounded tap, and both range-check the
+projected coordinate in **float, before** any integer conversion: a grazing projection can put the
+target arbitrarily far outside the image, and converting to `int` first let a saturated/wrapped
+value slip past a `<` comparison and index the depth map out of bounds — caught by
+compute-sanitizer as a multi-GB out-of-range read on CUDA, silent heap-adjacent reads on CPU, before
+the float-domain range test closed both.
 
-| Aspect | CPU | CUDA | Citation |
-|---|---|---|---|
-| Window size | `HalfSize=3`, 7x7 (49 px) | `HalfSize=2`, 5x5 (25 px) | `SceneRefine.cpp:239`; `SceneRefineCUDA.cpp:169` |
-| dZNCC form | pointwise analytic (`#if 1` active branch) | windowed average of the same quantity over the 5x5 neighborhood (the CPU's dead `#else`) | `SceneRefine.cpp:873-877` vs `.cu:337-386` (loop body `:359-377`) |
-| Image gradient | precomputed 3x5 separable stencil image, bilinearly sampled | no gradient image; `tex2D(x+1,y)-tex2D(x,y)` forward differences on fp16 texels, sampled at the *unshifted* projected coordinate | `SceneRefine.cpp:1106-1108` vs `.cu:451-453` |
-| Sample-point convention | `floor(pt)+frac`, texel center at integer coords | CUDA linear-filtered `tex2D` treats a non-normalized coordinate's texel center at `+0.5` (hardware convention) — both the gradient forward-diff fetches (`.cu:451-453`) and the color fetch in the warp kernel (`.cu:213`) pass the projected coordinate unshifted, a systematic ~0.5-px bias not present on CPU | `Sampler.inl:236-241` vs `.cu:213,451-453` |
-| Border margin | effective B-side margin 3 px (`isInsideWithBorder<int,3>`); A-side loops `[HalfSize, size-HalfSize)` | hard-coded 10-px margin on the warp target (`borderMin=10.f`, well past any window/derivative need) | `SceneRefine.cpp:719` vs `.cu:195-199` |
-| `photoGradNorm` margin | the `[HalfSize,size-HalfSize)` loop bounds implicitly exclude border pixels from ever setting `photoGradNorm` | `kernelComputePhotometricGradient` has **no** `HalfSize` margin check (only `mask[pixIdx]!=1` return) — border pixels with `dzncc=0` can still increment a vertex's count, diluting `photoGradNorm` toward zero contribution | `SceneRefine.cpp:928-930` vs `.cu:406-411` |
-| Bi-Laplacian valence | guards `numVert>0` before dividing (`:1016`) | `totalWeight += invN / vertSizes[ni]` with **no zero guard** (`.cu:516`); boundary vertices are uploaded with `vertSizes=0` (`SceneRefineCUDA.cpp:355-358`), so any interior vertex adjacent to a boundary vertex divides by zero -> `inf` -> its own `smoothGrad2` collapses to 0 | `SceneRefine.cpp:1011-1018` vs `.cu:506-520` |
-| Camera-B size for the warp/gradient kernels | not applicable (per-view sizes used directly) | `MakeCUDACamera(cameraB, size)` is called with **image A's** size, not B's, in both `ImageMeshWarp` and `ComputePhotometricGradient` | `SceneRefineCUDA.cpp:678,769` |
-| Rasterization | `PerspectiveCorrectBarycentricCoordinates` (perspective-correct); a face is drawn only if all 3 vertices project inside the image with a 3-px border | screen-space barycentrics (no perspective correction), face bbox clamped to a 5-px border, drawn if any pixel's barycentrics are non-negative regardless of whether all 3 vertices are in-frame | `SceneRefine.cpp:120-121`, `Mesh.h:357-360` vs `.cu:83-144` |
-| Cost / scale of the schedule | `iters=75, gstep=0.4` when `--gradient-step<=1`; emits a per-iteration cost `f:` field and a removed-vertex count `v:` | `iters=25, gstep=0.05`; **no cost is ever computed** (`MeshRefineCUDA::ScoreMesh` returns `void`); no planar-vertex removal; float (not double) gradients; a defensive `if (!ISFINITE(grad)) continue;` the CPU loop does not have | `SceneRefine.cpp:1374-1375,1394,1411,1430` vs `SceneRefineCUDA.cpp:889-890,905,911-916` |
-| Dead upload | — | `vertexVertices.Reset(scene.mesh.vertexVertices)` uploads a host `cList` structure nothing downstream ever reads (only the flattened `vertexVerticesCont/Sizes/Pointers` triple is used) | `SceneRefineCUDA.cpp:347` |
-| Image masks (`Image::maskName`) | ignored — no reference to a per-image mask anywhere in `SceneRefine.cpp` | ignored, same | `Image.h:63-76` defines the feature; unused by either backend |
-| Winding cull (found during the campaign, §8) | `RasterizeTriangleBary` keeps `EdgeFunction = (p2−p0)×(p1−p0) > 0` = front faces | kept `det = (p1−p0)×(p2−p0) > 0` = the opposite sign → back faces only, ~0.1 % of the faces | `Types.inl:2612-2614`, `Util.inl:699` vs `.cu:108-112` |
+### 1.6 CPU/CUDA: what is shared vs what legitimately differs
 
-**Status after Part A WP0/WP1 (2026-08-30, see §8):** the table above describes develop. On the
-branch, the window size (both 7×7), the dZNCC form (both pointwise), the sample-point convention
-(`+0.5` on every `tex2D`), the border margin (one 2×2-block rule on both sides), the `photoGradNorm`
-margin, the bi-Laplacian valences, the camera-B size, the rasterization (perspective-correct
-barycentrics on CUDA, one partial-face rule on both) and the winding cull are unified, and the dead
-upload is gone. Still divergent and scheduled: the image-derivative stencil (WP7), the visibility
-test (§1.5, WP3), the schedule/cost (Part B), image masks (WP5), the warp fill (WP4).
+The pre-campaign divergence table no longer applies. Identical **by construction**, not by
+measurement: the shared scalar header (`SceneRefineCommon.h` — `ZnccReliability`,
+`WindowStatsFromSums`, `ZnccAndDerivative`), the 7x7 window, the visibility test, the image-gradient
+stencil (built once, host-side, shared by both), the rasterizer (both keep only front faces where
+`EdgeFunction(p0,p1,p2) > 0` and use perspective-correct barycentric coordinates — CUDA's two-pass
+`kernelProjectMesh` resolves depth ties the same way the CPU's face-list traversal order does, and
+is itself deterministic run to run), and the stepper (`SceneRefineStep.cpp`, one implementation).
+What legitimately differs:
+
+| Aspect | CPU | CUDA |
+|---|---|---|
+| Camera projection precision | double (`Camera::TransformPointW2C`) | float (`MVS::CUDA::Camera`, built once per call by `MakeCUDACamera`) — measured bit-identical face maps on the `Tiny` fixture despite the precision drop |
+| Photometric accumulation order | per-pair, under a lock, in whatever order threads complete — not bit-reproducible run to run unless `--max-threads 1` | face-parallel accumulate + vertex-parallel gather over a fixed order, no atomics — **bit-reproducible** |
+| Planar-vertex removal | implemented (§1.7) | refused at the entry (a loud error, not a silent no-op) — caller falls back to CPU |
+| Ceres arm (`--gradient-step 0`) | implemented, gated on `_USE_CERES` | refused at the entry, same fallback |
+| Float reassociation | `cv::boxFilter`/`filter2D`, MSVC `/fp:precise`, no FMA | explicit-rounding intrinsics (`__fmul_rn` etc.) so nvcc cannot silently fuse an FMA the CPU wouldn't — residual disagreement ~0.1-2% per vertex at the tail, the documented approximation floor |
+
+An env-var-gated diagnostic, `RefineDebug` (`SceneRefineCommon.h/.cpp`, `OMVS_REFINE_DEBUG_DIR`/
+`_PAIR`, no CLI flag), lets a Python harness (`bench/refine_parity.py`) dump one image pair's
+per-vertex gradients and per-pixel maps from both backends for direct comparison — the tool the
+campaign's parity work used to find the six real CUDA-only bugs (window size, `dZNCC` form,
+image-gradient sampling, border margins, bi-Laplacian valence at a boundary neighbour, back-face
+winding) that are gone from the tree now, not merely narrowed.
 
 ### 1.7 Optimization schedule
 
-Both backends run the same fixed-iteration gradient-descent loop, once per scale, with a
-per-iteration exponential step decay:
+Both backends drive the same shared stepper, `MeshRefineStep` (`SceneRefineStep.h/.cpp`) — the
+legacy fixed-iteration, `gstep *= 0.98`-per-iteration loop is gone entirely. The stepper works in
+**pixels** (through each vertex's own footprint, §1.3) and in **ZNCC** (`S`, §1.3), so its
+trajectory does not depend on scene scale, image resolution or pair count (§1.8).
 
+**Per-evaluation update**, `rho` the phase's rigidity/elasticity ratio, `w = --regularity-weight`:
 ```
-iters = FLOOR2INT(fGradientStep)  if fGradientStep > 1   (CPU 45, CUDA formula identical)
-gstep = (fGradientStep - iters) * 10
-iters = max(iters / (nScale+1), 8)                        # nScale is 0-based, coarsest first
-for iter in [0, iters):
-    vertex -= gradient * gstep
-    gstep *= 0.98                                          # SceneRefine.cpp:1431; SceneRefineCUDA.cpp:917
+gamma_v = |g_v| / s_v                  g_v = photoGrad_v / photoGradNorm_v   (c_v >= 2 only)
+m       = median gamma_v over vertices with c_v >= 2    (computed ONCE per scale, then held)
+P_v     = g_v / (Kappa * m)            zero if c_v < 2 or m == 0
+R_v     = rho * bilap_v - (1-rho) * lap_v
+D_v     = -eta * (P_v + w * R_v)
+delta_v = |D_v| / s_v                  the per-vertex step actually applied, in px
 ```
-With the shipped CLI default `--gradient-step 45.05` (`RefineMesh.cpp:133`): `iters=45` at the
-*coarsest* scale (`nScale=0`, divisor 1) and `iters=22` at the *finest* scale (`nScale=1`, divisor
-2 — the coarse scale runs more iterations than the fine one, as coded); `gstep0 = (45.05-45)*10 =
-0.5`, decaying 2% per iteration. If `--gradient-step <= 1` the loop instead uses `iters=75, gstep=0.4`
-on CPU (`:1374-1375`) or `iters=25, gstep=0.05` on CUDA (`SceneRefineCUDA.cpp:889-890`) — divergent
-un-normalized defaults that only the shipped `45.05` value papers over. `--gradient-step 0` selects
-a third path on CPU only, described below; CUDA has no equivalent and always runs the fixed loop.
+`m` is fixed at the scale's first evaluation: recomputing it every iteration would renormalize the
+median vertex back to the same step every time and defeat the stop rule. It is a GLOBAL conversion
+factor, not a per-vertex one — the median seen vertex moves `eta/Kappa` px at the first iteration
+and every other vertex moves in **proportion** to its own gradient; a per-vertex
+normalize-and-clamp variant was tried first and measured a 0.0215 mean F1 regression (§6.1) because
+clamping flattens the gradient distribution.
 
-On the **last** iteration of every scale, `nAlternatePair` is forced to `0` ("both directions")
-regardless of the configured `--alternate-pair`, on both backends (`SceneRefine.cpp:1388`,
-`SceneRefineCUDA.cpp:902`) — a final full-coverage evaluation baked into the schedule.
+**Constants** (`SceneRefineStep.h`, pixel/ZNCC quantities, not CLI-exposed): `StepMax = 1` px
+(`eta_max`), `StepGrow = 1.1`, `StepShrink = 0.5`, `StepStop = 0.05` px (median-step-at-full-stride
+convergence floor), `ProgressTol = 1e-3` (relative `S` decrease counted as stalled), `Kappa = 2`,
+`Patience = 3` (consecutive stalled iterations that end the scale), `MaxRejects = 4` (consecutive
+rejections that end the scale), `MinIters = 3` (no stop rule before this many ACCEPTED iterations).
 
-**Planar-vertex removal (CPU only).** If `--planar-vertex-ratio` (`fThPlanarVertex`) is nonzero
-(default 0 = disabled, `RefineMesh.cpp:134`), every third iteration starting at 40% through the
-scale's budget (`iterStart=iters*4/10`, `:1382,1390`) the loop additionally tracks a per-vertex
-minimum-seen depth (`refine.vertexDepth`) and removes vertices whose gradient magnitude and
-smoothing residual are both below `depth * fThPlanarVertex` (`:1393-1420`), via
-`Mesh::RemoveVerticesAndFill` — a halfmesh round trip that does not preserve vertex order or index
-stability. CUDA implements none of this.
+**Accept/reject** (`OPTREFINE::nOptimizer`, default 0 = bold driver; 1 = a fixed-step control arm
+that never rejects and never grows/shrinks `eta`, kept only to isolate whether the accept/reject
+machinery matters). An evaluation whose `S` is worse than the last accepted `S` is REJECTed: every
+vertex moves back to exactly `v_prev + stepPrev/2` (undoing half the offending step),
+`eta *= StepShrink`, and the scale STOPs after 4 consecutive rejections. An accepted evaluation
+becomes the new reference, resets the reject streak, grows `eta = min(eta*1.1, StepMax)` (bold
+driver only), and the scale STOPs once `numAccepted >= MinIters` and `Patience` consecutive
+iterations failed to improve `S` by `ProgressTol`, or once the median per-vertex step **at a full
+stride** (`medianPx * StepMax/eta`, not the step just taken — an `eta` ratcheted down by repeated
+accept/reject cycles would otherwise report false convergence) drops below `StepStop`.
 
-**Ceres path (CPU only, `--gradient-step 0`, gated by `MESHOPT_CERES`, itself gated on
-`_USE_CERES`).** `ceres::MeshProblem` (`SceneRefine.cpp:1237-1283`) wraps `ScoreMesh` as a
-`FirstOrderFunction` and solves with `GradientProblemSolver` (LBFGS, default rank 20, WOLFE line
-search; explicit options `function_tolerance=1e-3, gradient_tolerance=1e-7,
-max_num_line_search_step_size_iterations=10`, `:1350-1352`); `ratioRigidityElasticity` is forced to
-`1.f` for the whole solve (`:1334`). The cost `ScoreMesh` returns
-(`(nAlternatePair?0.2:0.1)*scorePhoto + 0.01*scoreSmooth`, `:666`, where `scoreSmooth` is the
-level-1 umbrella-magnitude sum) and the gradient it fills
-(`photoGrad/photoGradNorm + weightRegularity(=0.2 by default)*smoothGrad2`, `:653-654`) are **not
-the gradient of that cost** — different constants (0.1/0.2 vs 0.2), a different smoothing
-functional (L1 umbrella-magnitude sum in the cost vs the bi-Laplacian in the gradient), and an
-implicit `1/photoGradNorm[v]` per-vertex reweighting with no corresponding term in the cost. A
-solver whose line search relies on cost/gradient consistency (Wolfe conditions) is therefore
-operating on an inconsistent pair; any `TerminationType` other than `NO_CONVERGENCE`/`CONVERGENCE`/
-`USER_SUCCESS` aborts the **entire refinement** for that scene (`:1358-1367`, `return false`).
+**Per-scale two-phase schedule**, replacing the legacy fixed 70/30 split of a fixed iteration
+count: `--gradient-step N.s` sets `N = floor(...)` and the initial step `eta0 = (fGradientStep-N)*10`
+px (shipped default `45.05` → `N=45`, `eta0=0.5` px; both validated at entry — `eta0` must lie in
+`(0, StepMax]`). The per-scale evaluation **cap** is `max(N/(nScale+1), 8)` (`nScale` 0-based,
+coarsest first — the coarse scale gets the larger cap). **Phase A** runs up to `cap` evaluations at
+the caller's `--rigidity-elasticity-ratio` (default 0.9), with the CPU-only planar-vertex hook
+eligible from the 4th accepted evaluation onward, every 3rd accepted evaluation thereafter,
+provided more than 5 evaluations remain in the phase's budget. **Phase B** runs a fresh, smaller
+budget `capB = max(3, 3*numAcceptedInPhaseA/7)` — the legacy 70/30 split preserved against phase
+A's ACCEPTED count rather than its raw budget, since a rejected evaluation buys no convergence — at
+`rho = 1` (pure elasticity) with the planar hook off; `eta` and the accepted-`S` references carry
+over from phase A unchanged, only `MeshRefineStep::ResetStall()` runs between phases (the stall
+counter resets, the reject streak does **not** — resetting it too was tried and measured −0.0048
+mean F1, since it lets a scale that already gave up on its rejections keep stepping into a worse
+trajectory). Either phase's loop exits early on `MeshRefineStep::STOP`.
+
+**Planar-vertex removal (CPU only, `--planar-vertex-ratio`, default 0 = disabled).** When eligible
+and the evaluation was APPLYed, every vertex whose combined-gradient magnitude and smoothing
+residual both fall below `fThPlanarVertex * footprint[v] * medianViewFocalLength` is removed via
+`Mesh::RemoveVerticesAndFill` — **after** the step was applied, since removal permutes the vertex
+indexing (swap-with-last) and everything the stepper indexes by vertex must already have been
+consumed that evaluation. The threshold is a fraction of the vertex's own depth (`footprint[v]`
+times the median focal length of the views scoring this scale), not the whole-image average depth
+the pre-campaign hook used. `MeshRefineStep::TopologyChanged()` runs after a removal so the next
+evaluation is not rejected against an `S` measured on a different vertex set. CUDA refuses
+`--planar-vertex-ratio > 0` at the entry rather than silently skipping it.
+
+**Ceres arm (CPU only, `--gradient-step 0`, gated on `_USE_CERES`; `OFF` in the reference build, so
+unmeasured by this campaign's own `results.csv`).** `MeshRefine` runs in **energy mode**: `ScoreMesh`
+returns the exact energy
+```
+E = Sum_pairs RegScale_p * Sum_pixels r*(1-ZNCC)  +  w * (1/2) * Sum_{v interior} ||L(v)||^2
+```
+and fills its exact gradient — the raw per-vertex photometric sum (no pair-count division, since the
+gradient of a sum is not the gradient of a per-vertex average) plus `w * L^T L * v`
+(`ComputeSmoothnessGradientLtL`, the transpose of the umbrella operator, dividing each contribution
+by the *neighbour's* valence — not the Hernandez level-2 operator the stepper uses). The
+photometric half's exact per-pixel derivative (`ComputeWindowStats(..., bExactDerivative=true)`)
+replaces the pointwise `dzncc` with the derivative of the **whole window sum**,
+`∂E/∂B_p = -(A_p*S1 - S2 - B_p*S3 + S4)` from four extra box-filtered sums, and a
+rejected-but-still-summed pixel stays in the mask (not dropped) because its value still enters its
+accepted neighbours' window sums. A finite-difference gate (`Scene::RefineMeshEnergyProbe`,
+`MeshRefineEnergyGradientTest`) validates this pair to 0.32-0.95% on the photometric term and 0.001%
+on the smoothness term against a 5% bar; the same gate found that the derivative consistent with
+this energy is the derivative of the *bilinear interpolant* the warp samples
+(`MeshRefine::BilinearGradient`), not any precomputed stencil image — the stencils mismatch it by
+21-109% — so the energy mode always uses the bilinear derivative regardless of
+`OPTREFINE::nImageGradient`. `ceres::MeshProblem` wraps this as a `FirstOrderFunction`, solved with
+`GradientProblemSolver`: LBFGS rank 5, WOLFE line search, approximate eigenvalue BFGS scaling,
+`max_num_iterations` = the stepper's own per-scale `cap`, `function_tolerance = 1e-4`,
+`gradient_tolerance = parameter_tolerance = 0` (both would be absolute thresholds on scene-scaled
+quantities, so only the relative tolerance and the iteration cap are honest stopping rules), and an
+iteration callback that snapshots the lowest-cost iterate seen — a line search that exhausts its
+step-size budget (common on this only-piecewise-smooth energy) leaves the parameter block at a
+probe point the solver never accepted, and the snapshot is applied instead so one scale's solver
+failure doesn't abort the whole refinement. `--rigidity-elasticity-ratio` is forced to 1 for the
+whole solve (pure thin-plate); the arm also refuses `--planar-vertex-ratio > 0`, since the solver's
+parameter count is fixed for the whole solve.
 
 ### 1.8 Scale-dependent constants
 
-Two quantities carry scene absolute-scale dependence baked in, neither normalized against the
-scene's own coordinate units:
+Both of the pre-campaign pipeline's scene-unit-dependent terms are gone. The visibility test is
+exactly scale-invariant by construction (§1.5). The stepper measures every step in pixels through
+the per-vertex footprint (`s_v`, §1.3, §1.7) and judges convergence on `S` (dimensionless, [0,2]) —
+a scene scaled by 100x produces the identical sequence of accept/reject decisions and the identical
+`eta` trajectory (`SceneRefineStep.h`'s own header comment states this as the design intent, and a
+100x synthetic rescale test reproduces the same vertex/face counts at every stage to 1.3%, the
+residual attributed to 100 not being an exact power of two). `RegularizationScale =
+avgDepthA*avgDepthB / (fA*fB)` (§1.3) is not itself scale-invariant, and is not meant to be: it is
+the paper's homogenization term, converting an image-space (pixel) photometric gradient into a
+3D-consistent one, and it is expected to scale with the scene — that is what makes the photometric
+and regularization gradients commensurate in scene units before the stepper converts them back to
+pixels. A footprint-proportional visibility tolerance that tried folding a similar scale-covariant
+idea into the occlusion test instead of the stepper was measured and rejected (WP3, −0.0047 to
+−0.0056 mean F1) — the lesson being that scale-covariance belongs in the step, not the test.
 
-- `RegularizationScale = avgDepthA*avgDepthB / (fA*fB)` — both backends, converts the image-space
-  photometric gradient into a 3D one; depends on `Image::avgDepth`, which is persisted in the
-  `.mvs` file and is **not** touched by `Scene::Transform`/`TransformScene.exe` (a Python-side
-  rescale tool must recompute it by hand; the planned scale-invariance test, H7, rescales it
-  explicitly for this reason).
-- `gstep` (§1.7) is subtracted directly from vertex positions in scene units, so its effective size
-  in pixels (what actually matters for convergence) changes with scene scale even though the
-  iteration/step schedule itself is scale-blind.
-
-The relative occlusion tolerance (`depth*1.0002 >= z`, §1.5) is scale-invariant by construction.
+The scene-rescale test (H7, `bench/scale_test.py`) has not been re-run to a PASS against the shipped
+defaults: the last recorded run was the pre-campaign `develop` baseline, which failed as expected —
+the now-removed fixed-bias visibility term was one identified cause. Closing that failure mode is
+recorded as leaving H7 itself open: any remaining scale sensitivity would now have to come from
+mesh-processing decisions made in image/pixel space (the `--max-face-area` subdivision threshold,
+the decimation policy), not from the photometric or regularization math itself.
 
 ---
 
@@ -533,6 +627,12 @@ The 0.002 floor is the Delaunay-campaign magnitude the plan started from; the me
 is ≥ 2.5× the largest per-scene nf, i.e. conservative, and it is kept rather than tightened because
 the uncleaned/cleaned evaluators and the 10 M-point sampler add their own sub-0.001 variation when a
 *different* mesh is scored (see the eval_mesh2mesh self-test in §2.7 for the sampling floor).
+
+**CUDA noise floor on the final binary (2026-09-02, `bench/bin_refine_final`, tag `final-nf`,
+Ignatius L1, three identical runs): F1 0.7730 / 0.7730 / 0.7730, 413,865 faces each, 23
+evaluations each — nf = 0 exactly.** The deterministic accumulation (§8) removed the CUDA
+run-to-run term entirely; the paragraph below records the state before it, when a CUDA floor could
+not even be measured.
 
 **CUDA noise floor: still NOT measurable (measured 2026-08-30 23:19, pin `bench/bin_refine_wp1`,
 Ignatius L1, 3 runs each backend).** The attempt produced the finding at the top of §8 instead:
@@ -804,6 +904,69 @@ memory once (`sA`/`sB`/`sW`, invalid samples staged as zeros so the accumulation
 brought it to 0.91x with bit-identical results. Recorded because the naive version looks obviously
 cheaper than five kernel launches and is not.
 
+### SHIPPED CONFIGURATION — end-to-end against develop (2026-09-02, pin `bench/bin_refine_wp6b`, defaults only)
+
+Two scales, `--gradient-step 45.05` (bold driver, 0.5 px), regularity 0.2 / ratio 0.9, boundary
+mode 0, magnitude photometric term with the pair-count normalizer, central-difference stencil,
+masked 7x7 window statistics with the 0.4 / 8 rejection gates, nearest-tap relative visibility.
+CPU = the production path (tag `final-cpu`, `--max-threads` default, one run per scene, walls
+contended by a concurrent Debug build); CUDA = the same binary (tag `wp6b-arms` baseline rows);
+develop = the §4 baseline (commit c410c9d4, CPU).
+
+| scene | coarse `in_f1` | develop CPU | **shipped CPU** | Δ vs develop | shipped CUDA | CPU − CUDA | evals CPU/CUDA | wall CPU s (develop → shipped) | wall CUDA s |
+|---|---|---|---|---|---|---|---|---|---|
+| Ignatius | 0.7427 | 0.6489 | **0.7734** | **+0.1245** | 0.7735 | −0.0001 | 28 / 23 | 363 → 217 | 45 |
+| Truck | 0.6606 | 0.6235 | **0.6667** | **+0.0432** | 0.6666 | +0.0001 | 14 / 14 | 407 → 197 | 56 |
+| Barn | 0.6310 | 0.6531 | **0.6663** | **+0.0132** | 0.6673 | −0.0010 | 31 / 34 | 798 → 508 | 161 |
+| Meetingroom | 0.4026 | 0.4033 | **0.4105** | **+0.0072** | 0.4110 | −0.0005 | 34 / 31 | 573 → 515 | 78 |
+| **T&T mean** | | | | **+0.0470** | | | | **0.66x** | |
+| fountain-P11 | 0.3338 | 0.3197 | **0.3431** | **+0.0234** | 0.3429 | +0.0002 | 57 / 60 | 41 → 39 | 13 |
+| Herz-Jesu-P8 | 0.4743 | 0.4231 | **0.4675** | **+0.0444** | 0.4676 | −0.0001 | 16 / 16 | 28 → 12 | 6 |
+
+Every scene improves against develop, on both backends, and for the first time in the campaign
+refinement ends ABOVE the coarse input on Ignatius (0.7734 vs 0.7427) and Truck (0.6667 vs
+0.6606) — the two object-like scenes where the develop defaults were a net loss (§4). The two
+backends agree to 0.001 everywhere with the same evaluation counts (±5), and the CUDA path is
+4-6x faster than the shipped CPU. Where the gain comes from, in order of landing: the pixel-unit
+bold-driver stepper (arm 2, +0.0130), the masked window statistics with the Acute3D gates (WP4,
++0.0028), the nearest-tap relative visibility test (§6.0b, +0.0138), the central-difference
+stencil (WP7, +0.0086), plus the parity/crash fixes that made the CUDA backend usable at all.
+Everything else tried on the way is in §6 with its numbers.
+
+### ACCEPTED — WP7, central-difference image derivative (`OPTREFINE::nImageGradient = 1`)
+
+The photometric gradient samples the derivative of image B at the warped position; the stencil that
+produces that derivative image is an implementation choice the paper does not specify. Three were
+compared on the identical pinned binary (`bench/bin_refine_head`, HEAD e4a74c4a + nothing else),
+CUDA, L1, one run per scene, tag `wp7-stencil`, baseline re-run in the same invocation: 0 = the
+noise-robust 3x5 separable `[1 2 1]^T (x) [-1 -2 0 2 1]/32` (develop), 1 = central `[-1 0 1]/2`,
+2 = Sobel-3 /8. All three see the same pre-blurred image (sigma 0.44-0.68 px, §1.2).
+
+| scene | 3x5 (baseline) | **central** | delta | Sobel | delta | evals 3x5/central | wall s |
+|---|---|---|---|---|---|---|---|
+| Ignatius | 0.7494 | **0.7736** | **+0.0242** | 0.7659 | +0.0165 | 26 / 23 | 46 / 44 |
+| Truck | 0.6653 | 0.6667 | +0.0014 | 0.6659 | +0.0006 | 14 / 14 | 58 / 57 |
+| Barn | 0.6604 | **0.6673** | **+0.0069** | 0.6584 | −0.0020 | 33 / 34 | 158 / 161 |
+| Meetingroom | 0.4121 | 0.4140 | +0.0019 | 0.4126 | +0.0005 | 34 / 34 | 83 / 84 |
+| **T&T mean** | | | **+0.0086** (min +0.0014) | | +0.0039 (min −0.0020) | | 1.00x |
+| fountain-P11 | 0.3420 | 0.3431 | +0.0011 | 0.3425 | +0.0005 | 54 / 60 | 13 / 13 |
+| Herz-Jesu-P8 | 0.4566 | **0.4675** | **+0.0109** | 0.4679 | +0.0113 | 36 / **16** | 16 / **10** |
+
+**Verdict: central differences PASS the §3 gate** — mean +0.0086 ≥ +0.002, every scene positive
+(minimum +0.0014, inside the floor), 6 of 6 scenes including both mesh-GT scenes, at identical wall
+and evaluation counts (Herz-Jesu converges in 16 evaluations instead of 36). Sobel is positive on
+average but loses 0.0020 on Barn and is dominated by central everywhere except Herz-Jesu (equal).
+The prior written into the plan — that the 3x5 stencil would win because the pre-blur is "too
+little for raw central differences" — is refuted: after the Gaussian pre-blur the wider stencil only
+adds blur to the derivative, and the tighter one tracks the sub-pixel image gradient better.
+
+Two things the table also shows: the CUDA baseline re-run moved Ignatius 0.7506 → 0.7494, Barn
+0.6591 → 0.6604 and Meetingroom 0.4111 → 0.4121 against the previous day's rows on the same
+binary, so the CUDA run-to-run floor on this set is ≈ 0.0013 (float `atomicAdd` order, §7.3) —
+the 0.002 gate floor still covers it, with less margin than the CPU's 0.0001-0.0009. Code status:
+`nImageGradient` default flipped to 1 on both backends (the stencil is shared,
+`ComputeRefineImageGradient`); the 3x5 and Sobel stencils stay selectable for the record.
+
 ## 6. Failed and rejected ideas
 
 **Do not retry without new evidence.** Every entry below was benchmarked with the §2 protocol and
@@ -951,6 +1114,224 @@ than silently collapsing onto this one.
 - **"CUDA's 10-px border is needed."** False: it was leftover over-conservatism; both backends now
   share `Refine::Border = HalfSize = 3`.
 
+### 6.6 Paper-faithfulness checks E1/E3 (NEUTRAL / REJECTED, 2026-09-02)
+
+Reading PAMI 2012 against the code found two places where the shipped defaults deviate from the
+paper as written, both a CLI flag away. Measured on the pinned HEAD binary (`bench/bin_refine_head`),
+CUDA, L1, one run per scene, baseline re-run in the same invocation (tag `e1e3`):
+
+| scene | baseline | **E1** `--alternate-pair 0` (all ordered pairs every evaluation, eq. 10) | delta | **E3** `--rigidity-elasticity-ratio 1` (thin-plate only, no Hernandez mix) | delta |
+|---|---|---|---|---|---|
+| Ignatius | 0.7493 | 0.7497 | +0.0004 | 0.7496 | +0.0003 |
+| Truck | 0.6653 | 0.6653 | 0.0000 | 0.6653 | 0.0000 |
+| Barn | 0.6602 | 0.6594 | −0.0008 | 0.6570 | **−0.0032** |
+| Meetingroom | 0.4116 | 0.4111 | −0.0005 | 0.4119 | +0.0003 |
+| **T&T mean** | | | **−0.0002** | | **−0.0006** |
+| fountain-P11 | 0.3420 | 0.3419 | 0.0000 | 0.3419 | 0.0000 |
+| Herz-Jesu-P8 | 0.4571 | 0.4572 | +0.0001 | 0.4567 | −0.0004 |
+
+**E1 — neutral, default kept at 1.** Summing both warp directions in every evaluation instead of
+alternating them changes no scene by more than the noise floor and leaves the evaluation counts
+identical (26/14/33/34 → 26/14/33/34); the "different energy on odd and even evaluations" of the
+alternating schedule is therefore not costing anything the gate can see. On CUDA the wall is also
+unchanged (the per-evaluation cost there is dominated by rasterizing every view, not by the pair
+loop), on the CPU it would double the pair work; the alternating default stays. The oracle cells
+(§8) test the remaining hypothesis that a one-sided warp biases the fountain fixed point.
+**E3 — rejected.** The paper's pure thin-plate regularizer loses 0.0032 on Barn (gate criterion 2)
+and gains nothing elsewhere: the 10 % first-order Laplacian share of the shipped Hernandez mix is
+doing useful work on the scene with the most hole-fill surface. Default `0.9` stays.
+
+**Oracle cells (fountain-P11, same pin, tag `e1e3-oracle`) — the one-sided-warp hypothesis is
+refuted.** The survey's sharpest explanation for the fountain fixed-point defect (§4) was that the
+alternating one-sided warp resamples only image B and so biases the minimizer; summing both
+directions in every evaluation would then have to move the ground truth less. It does not:
+
+| oracle spec | metric | baseline | E1 `--alternate-pair 0` | E3 `ratio 1` |
+|---|---|---|---|---|
+| `standard` | mean dist to GT (input 0.00583) | 0.01367 (−134.6 %) | 0.01313 (−125.4 %) | 0.01491 (−155.8 %) |
+| | F at τ | 0.4347 | 0.4404 | 0.4163 |
+| `gt-fixedpoint` | mean dist to GT (input 0.00058) | 0.01136 (−1866 %) | 0.01152 (−1894 %) | 0.01057 (−1730 %) |
+| | F at τ | 0.4727 | 0.4705 | 0.4833 |
+
+Starting from the truth itself, the symmetric energy lands 0.0115 away from it exactly like the
+alternating one (0.0114); the `standard` case improves by 4 % of the distance and +0.006 F, which is
+the size of the oracle's own run-to-run variation on 89 evaluations. E3 is mixed on the oracle
+(worse from a degraded input, better from the truth) and stays rejected on Barn. Whatever pushes
+the fountain GT away by 20x its input distance is neither the pair-direction schedule nor the
+first-order regularizer share; the remaining in-scope suspect is the per-pixel photometric term
+itself (WP6, and E4's plain-sum normalization).
+
+### 6.7 F08 — resetting the reject streak between the two phases (REJECTED, −0.0048 mean)
+
+Found by the implementation review as a smell: `ResetStall()` between phase A (rigidity mix) and
+phase B (pure bi-Laplacian) reset the stall counter but not the consecutive-reject streak, so a
+scale whose phase A ended on `MaxRejects` gave phase B a single evaluation. Resetting both looked
+like the consistent choice and was measured as part of the WP-F batch on the HEAD pin's frozen
+inputs, CUDA L1 (tag `wpf-confirm` vs `wp7-stencil`; the other batch items are provably inert on
+this path — the traces are identical until phase B of the first scale):
+
+| scene | streak carried (HEAD) | streak reset (F08) | delta |
+|---|---|---|---|
+| Ignatius | 0.7494 | 0.7357 | **−0.0137** |
+| Truck | 0.6653 | 0.6611 | −0.0042 |
+| Barn | 0.6604 | 0.6591 | −0.0013 |
+| Meetingroom | 0.4121 | 0.4122 | +0.0001 |
+| **mean** | | | **−0.0048** |
+
+Mechanism from the Ignatius trace: after phase A's four rejections the vertices sit at the
+half-undone position; with the streak reset, phase B accepts two more tiny steps there
+(S 0.1003 → 0.0986 at 0.02 px), the next scale subdivides 0.5 % differently and ends at a worse S
+and F1. The calibration (§8) shows an ordinary trajectory change is worth ≈ 0.002, so the loss is
+systematic: continuing a scale that has already given up on its rejections harms the fine scale
+more than the coarse S improvement is worth — consistent with the heavy-tailed first steps (§8),
+where the accepted tiny steps mostly move the strongest-gradient vertices. Code status: reverted
+to `ResetStall()` with the measured result recorded at its definition; the unit test asserts the
+carried streak.
+
+### 6.8 E5 — a smaller initial step (`eta0` 0.1 / 0.2 px instead of 0.5) (REJECTED, −0.0104 / −0.0045)
+
+Motivated by the traces in §8 (the 0.55-px first step of every scale triples S and costs four
+rejections). `--gradient-step 45.01` (eta0 = 0.1 px) and `45.02` (0.2 px) on the HEAD pin, CUDA
+L1, one run per scene, against the median of the three same-pin baseline runs (tag `e5-step`):
+
+| scene | baseline | eta0 = 0.1 px | delta | eta0 = 0.2 px | delta | evals base / 0.1 / 0.2 |
+|---|---|---|---|---|---|---|
+| Ignatius | 0.7493 | 0.7320 | **−0.0173** | 0.7349 | **−0.0144** | 26 / 38 / 47 |
+| Truck | 0.6653 | 0.6578 | −0.0075 | 0.6669 | +0.0016 | 14 / 36 / 28 |
+| Barn | 0.6603 | 0.6507 | −0.0096 | 0.6545 | −0.0058 | 33 / 48 / 49 |
+| Meetingroom | 0.4119 | 0.4046 | −0.0073 | 0.4125 | +0.0006 | 31 / 45 / 37 |
+| **T&T mean** | | | **−0.0104** | | **−0.0045** | |
+| fountain-P11 | 0.3420 | 0.3417 | −0.0002 | 0.3419 | −0.0001 | 59 / 58 / 60 |
+| Herz-Jesu-P8 | 0.4569 | 0.4489 | −0.0080 | 0.4505 | −0.0063 | 36 / 53 / 54 |
+
+Fountain oracle recovery moves the other way (`standard` −135 % → −124 % / −116 %;
+`gt-fixedpoint` −1866 % → −1642 % at 0.1 px with F 0.4727 → 0.4905, −1903 % at 0.2 px), i.e. the
+smaller step does converge a displaced GT slightly better, but on real inputs it is worse on 5 of
+6 scenes and uses 30–70 % more evaluations. **Reading, together with §6.7:** what the large first
+step does on a real scene is make the *coarse* scale accept almost nothing (four rejections, then
+the phase budget runs out), and every change that lets the coarse scale move the mesh more — a
+reset reject streak (§6.7), a smaller step that gets accepted — makes the final result worse. The
+half-resolution scale looks harmful on these inputs; `--scales 1` is the next free experiment
+(E6). Default `45.05` stays.
+
+### 6.9 WP6 — bounded / re-normalized photometric terms (ALL REJECTED)
+
+The plan's WP6 (from the Acute3D shader) and the paper-faithfulness item E4, implemented as
+`OPTREFINE::nPhotoTerm` × `nPhotoNorm` arms on one binary (`bench/bin_refine_wp6`: HEAD + WP-F +
+central stencil default; the `(0,0)` combination is byte-identical to the pre-WP6 code on the
+CPU). Per valid pixel `m = (gB·(J·dA))·dz_raw`; term 0 = legacy `conf·m·RegScale/Nd`, term 1 =
+sign vote `conf·sign(sg)`, term 2 = saturating `−conf·tanh(m/τ)` (τ = median non-zero |m| of the
+pair-direction); norm 0 = divide the vertex sum by the pair-direction count (legacy), 1 = by the
+confidence-weighted pixel sum `Σ conf·b_v` (makes terms 1/2 a bounded direction |·| ≤ 1 fed to the
+stepper's `bounded` path, no median normalizer), 2 = the paper's plain sum (eq. 19, no per-vertex
+division). CUDA, L1, one run per scene, baseline in the same invocation (tags `wp6-arms`,
+`wp6-oracle`):
+
+| scene | baseline (0,0) | (0,1) conf-pixel-sum | (0,2) plain sum = E4 | (1,1) sign vote |
+|---|---|---|---|---|
+| Ignatius | 0.7733 | 0.7601 (−0.0132) | **0.6864 (−0.0869)** | **0.6918 (−0.0815)** |
+| Truck | 0.6667 | 0.6588 (−0.0079) | 0.6666 (−0.0001) | 0.6313 (−0.0354) |
+| Barn | 0.6672 | 0.6610 (−0.0062) | 0.6705 (+0.0033) | 0.6363 (−0.0309) |
+| Meetingroom | 0.4110 | 0.4024 (−0.0086) | 0.4148 (+0.0038) | 0.3884 (−0.0226) |
+| **T&T mean** | | **−0.0090** | **−0.0200** | **−0.0426** |
+| fountain-P11 | 0.3431 | 0.3444 (+0.0013) | 0.3428 (−0.0003) | 0.3376 (−0.0055) |
+| Herz-Jesu-P8 | 0.4674 | 0.4408 (−0.0265) | 0.4690 (+0.0016) | 0.4658 (−0.0016) |
+| evals (Ign/Truck/Barn/Mr) | 23/14/34/19 | 38/23/52/43 | 34/14/30/34 | 19/23/18/26 |
+
+| fountain oracle | metric | (0,0) | (0,1) | (0,2) | (1,1) |
+|---|---|---|---|---|---|
+| `standard` (input 0.00583) | mean dist / recovery | 0.01491 / −156 % | 0.02073 / −256 % | 0.01403 / −141 % | **0.00656 / −13 %** |
+| | F at τ | 0.4287 | 0.3380 | 0.4666 | 0.4838 |
+| `gt-fixedpoint` (input 0.00058) | mean dist / recovery | 0.01044 / −1708 % | 0.02055 / −3456 % | 0.00698 / −1108 % | **0.00283 / −390 %** |
+| | F at τ | 0.4897 | 0.3372 | 0.6481 | 0.8209 |
+
+**Readings.** (0,1): dividing by the pixel weight instead of the pair count is worse on every T&T
+scene and doubles the oracle error — the pair count is the better per-vertex normalizer of the
+magnitude term. (0,2), the paper's literal sum: neutral-to-positive on the three scenes whose
+views are spread evenly, catastrophic on Ignatius (−0.087), where the statue is seen by far more
+pairs than the ground: without the per-vertex division the many-view vertices carry gradients an
+order of magnitude larger than the rest and overshoot under a global step; the paper's fixed tiny
+step never had that problem and never had the campaign's convergence speed either. (1,1), the
+Acute3D vote: the oracle numbers that look like a fixed point (−13 %, F 0.82 from the GT) are the
+same fact as the T&T losses — a bounded direction under the pixel-capped stepper moves every
+vertex at most η px per evaluation and stops after 12–26 evaluations, so the mesh barely leaves
+its input; on Ignatius it lands BELOW the coarse input's 0.7427. A longer schedule or a larger η
+for the bounded arm would be a new optimizer design, out of this campaign's scope. The (2,1)
+saturating arm, measured on the `wp6b` pin (tag `wp6b-arms`, τ = median non-zero |m| per
+pair-direction), behaves like the vote: Ignatius 0.7735 → 0.6780 (−0.0955), Truck −0.0152, Barn
+−0.0135, Meetingroom −0.0112, **T&T mean −0.0338**; fountain −0.0064, Herz-Jesu +0.0036; oracle
+identical to the vote (`standard` −12.7 %, `gt-fixedpoint` −390 %, 12 evaluations).
+
+**Verdict: `(nPhotoTerm, nPhotoNorm) = (0,0)` stays — the magnitude term with the pair-count
+division is the best formulation on real inputs by a wide margin, and the fountain fixed-point
+defect is not a property of the photometric term's shape.** Code status: the arms stay selectable
+behind `--refine-config-file` for the record (the per-pixel scalar is shared between backends in
+`Refine::PhotoPixelTerm`); the default path is the legacy one and is byte-identical to it.
+
+### 6.10 WP8 — boundary-vertex modes (REJECTED: freeze −0.0008 / rim −0.0016 mean, Ignatius −0.005)
+
+`OPTREFINE::nBoundaryMode` on both backends (CPU/CUDA parity of the new terms: cosine 1.000000):
+1 = freeze (boundary vertices lose their photometric term too, so they never move), 2 = rim
+Laplacian (a boundary vertex with exactly two boundary neighbours gets the curve umbrella
+`(b1+b2)/2 − v` and the matching level-2 term along the rim; other boundary vertices freeze) plus
+the second-ring fix (interior vertices sum the level-2 operator over interior neighbours only,
+renormalized). Measured CUDA L1, one run per scene, baseline in the same invocation
+(tag `wp6b-arms`):
+
+| scene | mode 0 (legacy) | 1 freeze | 2 rim + second-ring fix |
+|---|---|---|---|
+| Ignatius | 0.7735 | 0.7685 (**−0.0050**) | 0.7678 (**−0.0057**) |
+| Truck | 0.6666 | 0.6668 (+0.0002) | 0.6667 (+0.0001) |
+| Barn | 0.6673 | 0.6670 (−0.0003) | 0.6664 (−0.0009) |
+| Meetingroom | 0.4110 | 0.4128 (+0.0018) | 0.4110 (0.0000) |
+| **T&T mean** | | **−0.0008** | **−0.0016** |
+| fountain-P11 | 0.3429 | 0.3434 (+0.0005) | 0.3434 (+0.0005) |
+| Herz-Jesu-P8 | 0.4676 | 0.4542 (**−0.0134**) | 0.4685 (+0.0009) |
+| oracle `standard` / `gt-fixedpoint` recovery | −141 % / −1736 % | −142 % / −1760 % | −140 % / −1690 % |
+
+Neither mode passes criterion 2 (Ignatius −0.005 both; freeze also −0.013 on Herz-Jesu). The
+legacy treatment — photometric pull, no smoothing, on boundary vertices — is what the gate
+prefers: on Ignatius the mesh boundary is the cut where the statue meets the unreconstructed
+ground, and letting it follow the images beats pinning it or smoothing it along the rim. Code
+status: both modes deleted (the shared `FindRimNeighbors` and the mode plumbing go with them);
+`nBoundaryMode` is removed from `OPTREFINE`.
+
+### 6.11 E6 — a single full-resolution scale (`--scales 1`) (REJECTED, −0.0217 mean)
+
+The hypothesis from §6.7/§6.8 — the coarse scale harms — is refuted the direct way: dropping it
+loses on every T&T scene (Ignatius **−0.0689**, Barn −0.0143, Meetingroom −0.0021, Truck −0.0014;
+fountain +0.0016, Herz-Jesu −0.0035) and the single scale stops after 6–8 evaluations: the first
+0.55-px step at full resolution is rejected four times in a row and the reject streak ends the
+scale before any step is accepted. What the coarse scale contributes is not its own tiny
+movement but the decimation-to-budget plus subdivision that prepares the mesh and, on the scenes
+where the full-resolution scale's first steps are also rejected, the second chance the scale
+change gives the driver. The oracle prefers the single scale (`standard` −98 % vs −141 %,
+`gt-fixedpoint` −1491 % vs −1736 %) — again a "moves less" reading, not a convergence one.
+Defaults unchanged (`--scales 2`).
+
+### 6.12 E7 — the derivative of the bilinear interpolant as the image gradient (`nImageGradient = 3`) (REJECTED, −0.0007 mean)
+
+B5's finite-difference gate showed that the derivative consistent with the energy is the
+derivative of the bilinear interpolant the warp samples (§8). Measured as a stencil mode on the
+final binary (`bench/bin_refine_final`, tag `final-cuda`), CUDA L1, baseline in the same
+invocation:
+
+| scene | central (default) | bilinear interpolant | delta |
+|---|---|---|---|
+| Ignatius | 0.7730 | 0.7753 | +0.0023 |
+| Truck | 0.6667 | 0.6625 | **−0.0042** |
+| Barn | 0.6673 | 0.6674 | +0.0001 |
+| Meetingroom | 0.4136 | 0.4127 | −0.0009 |
+| **T&T mean** | | | **−0.0007** |
+| fountain-P11 | 0.3435 | 0.3423 | −0.0012 |
+| Herz-Jesu-P8 | 0.4677 | 0.4622 | **−0.0055** |
+| oracle `standard` / `gt-fixedpoint` recovery | −137 % / −1766 % | **−112 % / −1611 %** | better |
+
+The energy-consistent derivative converges a displaced ground truth better (both oracle specs)
+but is not a better descent direction on real inputs: the central-difference stencil's slight
+smoothing of the derivative is worth more than its inconsistency. Kept selectable (it is the
+derivative the Ceres energy mode uses, where consistency is what matters); default stays 1.
+
 ## 7. Durable constraints and limitations
 
 1. **Refinement cannot repair mesh density.** The `--decimate 0` (auto) step reduces the coarse mesh
@@ -961,11 +1342,12 @@ than silently collapsing onto this one.
 2. **Visibility now has no scene-unit tolerance.** Both backends use the nearest-tap relative test
   `depth*1.0002 >= z` (§1.5), which is invariant under uniform scene scaling. The H7 scale test
   can still expose other scale-dependent terms (§1.8), but no longer fails because of visibility.
-3. **Neither backend is bit-reproducible run to run.** CUDA accumulates `photoGrad` with float
-   `atomicAdd` (order varies); the CPU sums per-pair contributions under a lock in completion order.
-   The trajectory is chaotic at the vertex level — 1e-7 at iteration 0 grows to 6.7e-4 by iteration
-   44 — so every F1 carries a run-to-run term, quantified as the §3 noise floor (0.0001-0.0009).
-   Fixed-point accumulation would remove the CUDA half and is queued, not done.
+3. **The CPU backend is not bit-reproducible run to run** (per-pair contributions summed under a
+   lock in completion order, unless `--max-threads 1`); the trajectory is chaotic at the vertex
+   level — 1e-7 at iteration 0 grows to 6.7e-4 by iteration 44 — so every CPU F1 carries a
+   run-to-run term, quantified as the §3 noise floor (0.0001-0.0009). **The CUDA backend IS
+   bit-reproducible since 2026-09-02** (face-parallel accumulation + ordered gather + ordered score
+   reduction, no float atomics left in the refinement; §8).
 4. **Wall-time cells must run alone.** A 7-10 GB working-set refine cell measured beside other jobs
    reads high by a large factor (§5, Meetingroom). The harness enforces one cell at a time via
    `bench/out_refine/.lock`, but nothing stops *other* processes; a wall number measured next to a
@@ -979,6 +1361,177 @@ than silently collapsing onto this one.
    are the documented approximations.
 
 ## 8. Open items
+
+**FINAL STATUS (2026-09-02 09:50, read this first; the blocks below are the chronological log,
+newest first).** The campaign's goal — the PAMI 2012 refinement implemented correctly and
+efficiently, both backends — is met and measured end to end (§5 "shipped configuration"):
+against develop, +0.125 / +0.043 / +0.013 / +0.007 F1 on Ignatius / Truck / Barn / Meetingroom and
++0.023 / +0.044 on the two mesh-GT scenes, CPU and CUDA within 0.001 of each other, CPU 1.5-2x
+faster than develop and CUDA 4-6x faster than the CPU, the CUDA backend bit-reproducible (nf = 0,
+§3). The final binary (`bench/bin_refine_final`, tag `final-cuda`) reproduces the §5 table within
+trajectory noise (max |Δ| 0.0026, Meetingroom) and the CPU lands at 0.7730 on Ignatius in 171 s.
+Shipped on this branch: the parity fixes (six CUDA deviations + the warp overflow), the pixel-unit
+bold-driver stepper, masked window statistics with the two rejection gates, the relative
+nearest-tap visibility test, the central-difference stencil, per-view keep masks, deterministic
+CUDA accumulation, the fix batch (WP-F: planar hook ordering, behind-camera warp, `OPTREFINE`
+initialization in Viewer/Python, CUDA neighbour recovery, a `ScoreMesh` thread-wait deadlock, the
+static thread list, `nCalibratedImages`), a consistent energy/gradient pair for the opt-in Ceres
+arm with a finite-difference gate, and the synthetic end-to-end and pure-function tests. Every
+rejected candidate is in §6 with its numbers and is removed from the tree.
+
+Open items after this campaign:
+1. **Fountain fixed-point defect (§4)** — not fixed by any in-scope variant (pair schedule,
+   regularizer share, initial step, scale count, bounded/vote/plain-sum photometric terms,
+   boundary modes, stencil incl. the energy-consistent one). The remaining suspects change the
+   mechanism (area normalization, Sobolev preconditioning, robust per-pixel weights, depth-consistent
+   masks) and live in the follow-up plan `refine-followup-literature.md` for a new branch.
+2. **Ceres arm benchmark** — the reference build has `OpenMVS_USE_CERES=OFF`; the arm is consistent
+   (FD gate 0.3-0.9 %) but unmeasured; `bench/refine_log.py` does not parse its `E:` line.
+3. **H7 scale test on the shipped tree** — not re-run to a PASS (the visibility and the stepper are
+   scale-invariant by construction; `RegularizationScale` is the paper's scale-covariant term).
+4. **Planar-vertex hook** (CPU, default off) — can leave a non-manifold mesh that the next scale's
+   `Mesh::Subdivide` asserts on in Debug; its useful ratio is ≈ 1e-4..1e-3, not the Viewer's 0.02.
+5. The `--reduce-memory` CLI option is a documented no-op (kept for compatibility).
+
+
+**2026-09-02 — WP-F fix batch LANDED (uncommitted, RelWithDebInfo rebuild + 4-scene re-measure
+pending), and WP7 ACCEPTED (§5).** An independent review of the whole branch (19 findings) was
+folded into one batch, every item fixed at its producer, Debug builds of MVS/RefineMesh/Tests/Viewer/
+pyOpenMVS clean, `Tests.exe 0 1` and `2 1` green, Tiny functional on both backends:
+- **F01** the planar-vertex hook removed vertices BEFORE the stepper consumed the per-vertex arrays it
+  had just permuted (swap-with-last) — now removal follows the applied step; the threshold moved from
+  the whole-image `avgDepth` (`vertexDepth`, deleted) to the vertex's own depth (`footprint × median
+  focal`), and the log's `v:` field reports the true vertex-count change.
+- **F02** the CPU warp accepted points BEHIND camera B (`depth*1.0002 >= z` is vacuous for `z <= 0`;
+  CUDA already rejected them) — a genuine CPU/CUDA divergence, fixed at the warp.
+- **F03** `OPTREFINE::init()` ran only in the RefineMesh app: the Viewer and the Python bindings
+  refined with every knob at ZERO, i.e. with the accepted WP4 gates switched off. Initialized next to
+  `OPTDENSE::init()` at all three entry points.
+- **F04** the CUDA constructor never recovered missing neighbour views (the CPU did), so CUDA was
+  unreachable on a scene handed to the refiner without `SelectNeighborViews` having run; one shared
+  `SelectRefineNeighbors` now serves both constructors.
+- **Found on the way, not in the review: `MeshRefine::ScoreMesh` waited for `threads.GetSize()`
+  smoothing jobs but queued `ceil(V/ceil(V/T))` of them — fewer whenever the vertex count is not a
+  multiple of the chunking, a deadlock reachable from the CLI (it hung the first planar-hook run with
+  every thread idle). Fixed by waiting for the jobs actually queued.**
+- Also: `ResetBudget()` resets the reject streak between phases (F08; a `MaxRejects` stop in phase A
+  used to end phase B after one evaluation — a declared schedule change); `--reduce-memory` is a
+  documented no-op at the CLI and gone from the library API and the Viewer (F14); the CUDA entry
+  refuses `--planar-vertex-ratio` loudly and the app falls back to the CPU hook (F15); an unknown
+  `nImageGradient` is rejected instead of silently measuring the default twice; the Ceres arm is
+  validated like the stepper arm; the combined-gradient pass is skipped unless something reads it
+  (F16); dead `numVert > 0` guard replaced by the adjacency-symmetry ASSERT on both backends (F05);
+  new suite-0 tests `MeshRefineWindowStatsTest` (closed-form identities, gate boundaries, the
+  `WindowArea/n` factor and a central-difference check of `dzncc`) and `RefineStepResetBudgetTest`.
+- Known and recorded, not fixed: the planar hook (`--planar-vertex-ratio`, default off, CPU only)
+  can leave a non-manifold mesh that the next scale's `Mesh::Subdivide` ASSERTs on in Debug and
+  survives in Release; its ratio is a fraction of the vertex depth, so useful values are ≈ 1e-4 to
+  1e-3, not the 0.02 the Viewer tooltip suggests. `--gpu-device -2` still routes through
+  `RefineMeshCUDA` and logs one fallback line.
+
+**2026-09-02 02:30 — WP-F re-measure: F08 REGRESSES; two stepper defects found in the traces.**
+The fix-batch binary (`bench/bin_refine_wpf`, defaults unchanged) against the HEAD pin, CUDA L1
+(tag `wpf-confirm` vs `wp7-stencil`): Ignatius 0.7494 → **0.7357 (−0.0137)**, Truck −0.0042,
+Barn −0.0013, Meetingroom +0.0001; with the central stencil −0.0095 / −0.0008 / +0.0004 / −0.0018.
+CPU Ignatius on the same binary: 0.7347 baseline, 0.7684 central (the stencil gain holds on the
+CPU: +0.034). The per-evaluation traces of the two Ignatius CUDA runs are identical through the
+first six evaluations of scale 0 — same S, same accept/reject, same first-scale subdivision — so
+the pair set (F04) and the warp (F02) are unchanged; they diverge exactly where F08 acts: phase B
+of scale 0 used to end after one rejected evaluation (the reject streak carried over), and with the
+streak reset it accepts two more tiny steps (S 0.1003 → 0.0986), after which the scale-1
+subdivision differs by 0.5 % (413,600 vs 415,751 faces) and the fine scale ends at a worse S
+(0.1952 vs 0.1945) and F1. **Calibrated (tag `decision-noise`, HEAD pin, CUDA): perturbing the initial step by ±2 %
+(`--gradient-step 45.049` / `45.051`, a different trajectory with 26 vs 30 evaluations) moves
+Ignatius by +0.0021 / +0.0017 and Truck by +0.0001 / +0.0001 — a changed trajectory is worth
+≈ 0.002, the same size as the identical-binary floor, so F08's −0.0137 is a real effect. F08 is
+REVERTED (§6.7): the reject streak carries over between phases as it did.**
+
+The same traces expose two properties of the stepper on a real scene that Tiny never showed:
+1. **The first step of every scale is ~10× too large.** Ignatius scale 0: S 0.0998 → **0.2894**
+   (+190 %) at the 0.55-px median step, then four halvings (0.275 → 0.017 px) all rejected; the
+   accepted steps later in the run are 0.01–0.05 px. Scale 1 repeats it (0.201 → 0.289). Every
+   scale burns 4–5 evaluations of its budget backing off from `eta0`, and on Ignatius scale 0
+   never accepts a single step. The initial step is CLI-selectable (`--gradient-step N.s`, `s×10`
+   px), so `eta0` = 0.1 / 0.2 px is a free experiment (E5) queued on the HEAD pin.
+2. **A scale that gives up on rejections ends at an unevaluated state.** After the reject streak
+   the vertices sit at `v_prev + Δ/2^k` (each REJECT undoes half), whose S was never measured;
+   Ignatius scale 0 ended at S 0.1003, above its own start 0.0998. The principled ending is either
+   a restore to the last accepted state or one more evaluation of the half-undone one; F08's extra
+   phase-B evaluations are the second option by accident — decided with the calibration.
+
+**2026-09-02 05:10 — B4 synthetic end-to-end test LANDED (`MVS::MeshRefineSyntheticTest`, suite
+2, right after `PipelineTest`).** The photometric pipeline finally has automated coverage: a
+textured plane (blurred seeded noise + checker), four 640×480 cameras at f = 600 (footprint
+5e-3), a 10×10 input grid displaced by Gaussian noise (3 px) plus a 10-px sinusoid, refined with
+the shipped defaults on `Scene(1)`. Measured: CPU RMS to the plane 0.0312 → **0.000344** (0.07
+footprints; bar 0.5), CUDA 0.000355 (ratio 1.033 to the CPU; bar ±10 %), 421 vertices, 45+7 / 22+3
+evaluations, 33 s; the same scene at 100× scale subdivides to the identical vertex count and
+converges to RMS/100 within 1.3 % (tolerance 2 %: 100 is not a power of two, so the rescale
+perturbs the last bits and the accept/reject path drifts — counts bit-identical at every stage).
+Two library defects it exposed, queued for the next fix batch: `MeshRefine`'s static thread list
+is never cleared after the destructor joins it, so the second CPU refinement in one process
+(Viewer, Python) trips `ASSERT(threads.IsEmpty())` (harmless under `_HEADLESS_DEBUG`, a violated
+contract nonetheless); and `Scene::nCalibratedImages` is uninitialized for a scene built without
+`LoadInterface`, which makes `SelectNeighborViews` clamp its neighbour count to garbage.
+
+**2026-09-02 05:40 — WP5 per-view keep masks LANDED (not benchable on T&T, proven functionally).**
+`RefineMesh` gains `--mask-path` / `--ignore-mask-label` with DensifyPointCloud's semantics (no `-m`
+short alias: taken by `--mesh-file`); a non-mutating `DepthEstimator::ImportKeepMask` replaces the
+`const_cast` import at the densify call sites (the refiner reloads every image at several scales,
+so the old in-place resize of `Image::mask` could not serve it; the segmentation reader loads its
+own full-resolution mask, so nothing depended on that side effect); `PrepareRefineImageMask` builds
+the per-view keep-mask at the working size for both backends; the CPU warp skips masked A pixels
+before back-projection and rejects a projection whose rounded B tap is masked (same tap as the
+occlusion test); `kernelImageMeshWarp` gets two null-tolerant pointers and applies the same two
+tests. Proof: default path byte-identical (`refined.ply`, 57 identical `S:` lines); with a
+left-half mask on Tiny the exported pair mask has 0 of 153,280 left-half pixels set on both
+backends (71,171 without), CUDA within 1 px of the CPU on the right half.
+
+**2026-09-02 06:20 — deterministic CUDA accumulation LANDED (the queued §7.3 item).** The
+pixel-parallel scatter with float `atomicAdd`s is replaced by a face-parallel accumulation
+(`kernelAccumulateFacePhoto`: one thread per mesh face walks its clipped bounding box in fixed
+scan order and reduces the corner sums, the pixel count, the pixel-weight normalizer and the
+footprint minimum in registers — iterating all mesh faces removes any per-view face index map,
+since `faceMap` only ever holds ids the rasterizer wrote) and a vertex-parallel gather over the
+uploaded incident-face lists in fixed order (`kernelGatherVertexPhoto`, which also absorbs the
+per-direction `photoGradNorm += 1` and retires the `photoGradPixels` buffer). The last float
+atomic — the per-block `sumR`/`sumRZ` reduction of the window-statistics kernel — became per-block
+slots folded by a single-block kernel in block order. Cost: 20 B per face (32 with the WP6
+pixel-weight normalizer) plus the flattened incident-face adjacency. Verified on Tiny (Debug):
+before, two identical runs diverged at scale-0 evaluation 7 and ended at different meshes
+(338,524 vs 339,791 bytes); after, three runs give byte-identical `refined.ply` and 57 identical
+`S:` lines. Equivalence with the old scatter (one binary, both paths, iteration 0, 8,120
+vertices): `photoGradNorm` bit-identical, `photo` cosine 1.000000000000, max relative difference
+2.3e-5 on a vertex whose sum cancels to 0.4 % of the median magnitude (reassociation), CPU-vs-CUDA
+cosine unchanged (0.99998). The host-side mesh processing between scales was already
+reproducible. The CUDA noise floor of §3 (≈ 0.0013 on Ignatius/Barn) should now be exactly 0; it
+is re-measured with the final binary (§8 next steps).
+
+**2026-09-02 08:10 — B5 LANDED as a consistent energy/gradient pair (CPU energy mode; Ceres
+itself stays unmeasured: `OpenMVS_USE_CERES=OFF` in this build).** `MeshRefine::ScoreMesh` gains
+an energy mode, used only by the `--gradient-step 0` arm, that returns exactly the functional
+whose gradient it fills: `E_photo = Σ_pairs RegScale_p·Σ_c r_c(1−ZNCC_c)` with the raw per-vertex
+gradient sum (no pair-count division) and the EXACT per-pixel derivative of the windowed sum
+(four extra box filters: `∂E/∂B_p = −(A_p·S1 − S2 − B_p·S3 + S4)`), plus
+`E_smooth = w·½Σ_interior‖L v‖²` with `∇ = w·LᵀL v` (`ComputeSmoothnessGradientLtL`, dividing by
+the neighbour's valence — not the Hernandez level-2 operator the stepper uses). A finite-difference
+gate test (`MeshRefineEnergyGradientTest`, suite 2, on the synthetic plane fixture, central
+differences at 0.2 and 0.1 footprints) passes at **0.32 % / 0.95 % (photometric), 0.001 %
+(smoothness), 0.32 % / 0.95 % (combined)** against a 5 % bar. Three things the gate exposed, all
+energy-mode only: (1) **the derivative consistent with the energy is the derivative of the
+bilinear interpolant the warp samples, not a precomputed stencil image** — the stencils mismatch
+it by 109 % (3x5), 21 % (central), 60 % (Sobel), the same ordering WP7 measured, so a fourth
+stencil mode (the interpolant's own derivative) is added for one measurement (§8 next steps);
+(2) a pixel rejected by a gate still enters its neighbours' window sums, so the energy depends on
+it and its derivative support must not be pruned; (3) the boundary row of `LᵀL` must not be
+zeroed (a boundary vertex moves its interior neighbours' umbrellas). The Ceres block was updated
+by inspection only: LBFGS rank 5, Wolfe, approximate eigenvalue scaling, the stepper's per-scale
+cap as `max_num_iterations`, an iteration callback that snapshots the best state so a solver
+FAILURE applies the snapshot and continues to the next scale instead of aborting the refinement;
+a per-iteration `E:` log line `bench/refine_log.py` does not yet parse. Also fixed on the way
+(found by the synthetic test): `MeshRefine`'s static thread list is released after the join (the
+second CPU refinement in one process no longer trips `ASSERT(threads.IsEmpty())`), and
+`Scene::nCalibratedImages` is initialized to 0 in the constructor with its contract documented.
 
 **CURRENT STATUS (2026-08-31, read this first; everything below the arm-2 blocks is the
 chronological log, oldest last).** Part 0 complete. Part A WP0–WP2 complete (CPU/CUDA parity reached
@@ -999,9 +1552,10 @@ the order the plan puts it:
 3. **Part B B5/B6** — the Ceres arm on a consistent cost/gradient pair, and the per-vertex arms
    (rprop/adam/bb). Both are now *rejected at the entry point* rather than silently falling back, so
    implementing one means removing its rejection.
-4. **Decimation policy** — the largest single effect in the baseline table and untouched by any
-   optimizer (§7.1): `--decimate 0` (auto) removes 5–15x of the coarse mesh before the first
-   photometric iteration, and Ignatius still carries `d_in` ≈ −0.087 with the accepted arm.
+4. **Decimation policy — CLOSED by design decision (user, 2026-09-02).** The decimate-then-remesh
+   pass is the deliberate preparation of the input mesh to the face size the refinement expects
+   (the paper's 16-px subdivision rule), not a deviation to be swept; §7.1 stays as a description
+   of its cost (Ignatius `d_in` ≈ −0.087), and no `--decimate`/`--max-face-area` arm is run.
 5. **The oracle regression (§5, last table)** — arm 2 makes the fountain oracle's mean-distance
    recovery worse (−99.6 % → −181 % on `standard`, −1851 % → −1955 % on `gt-fixedpoint`) while
    improving F at τ on both. The optimizer cannot fix this by construction; it is evidence for

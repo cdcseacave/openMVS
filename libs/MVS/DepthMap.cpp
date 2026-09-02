@@ -375,6 +375,30 @@ bool DepthEstimator::ImportIgnoreMask(const Image& image0, const cv::Size& size,
 	return true;
 } // ImportIgnoreMask
 
+// non-mutating counterpart of ImportIgnoreMask: loads the mask file into a LOCAL buffer instead
+// of image0.mask, so the caller's Image is never touched -- needed by the mesh refiner, which
+// reloads every image at several scales and, on the CPU backend, does so from multiple worker
+// threads that can hold the same Image concurrently
+bool DepthEstimator::ImportKeepMask(const Image& image0, const cv::Size& size, uint8_t nIgnoreMaskLabel, BitMatrix& bmask)
+{
+	ASSERT(image0.IsValid());
+	Image8U mask;
+	if (!mask.Load(image0.GetMaskFileName())) {
+		DEBUG("warning: can not load the segmentation mask '%s'", image0.GetMaskFileName().c_str());
+		return false;
+	}
+	cv::resize(mask, mask, size, 0, 0, cv::INTER_NEAREST);
+	bmask.create(size);
+	bmask.memset(0xFF);
+	for (int r=0; r<size.height; ++r) {
+		for (int c=0; c<size.width; ++c) {
+			if (mask(r,c) == nIgnoreMaskLabel)
+				bmask.unset(r,c);
+		}
+	}
+	return true;
+} // ImportKeepMask
+
 // create the map for converting index to matrix position
 //                        1 2 3
 // 1 2 4 7 5 3 6 8 9 -->  4 5 6

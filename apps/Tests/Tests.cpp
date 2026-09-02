@@ -116,6 +116,10 @@ bool UnitTests()
 		VERBOSE("ERROR: MeshRefineStepTest failed!");
 		return false;
 	}
+	if (!MVS::MeshRefineWindowStatsTest()) {
+		VERBOSE("ERROR: MeshRefineWindowStatsTest failed!");
+		return false;
+	}
 	#ifdef _IMAGE_HEIF
 	// the reader's own semantics are tested next to the reader, in libs/IO/ImageHEIF.cpp
 	if (!CImageHEIF::Test(MAKE_PATH("images"))) {
@@ -270,6 +274,10 @@ int main(int argc, LPCTSTR* argv)
 		} else {
 			// Run MVS pipeline test
 			if (!MVS::PipelineTest(forceCPU, verbose))
+				return false;
+			if (!MVS::MeshRefineSyntheticTest(forceCPU, verbose))
+				return false;
+			if (!MVS::MeshRefineEnergyGradientTest(verbose))
 				return false;
 		}
 		return true;

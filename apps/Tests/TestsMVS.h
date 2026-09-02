@@ -45,6 +45,10 @@ bool MeshHalfMeshProcessingTest();
 // arrays: no images, no scene, milliseconds to run
 bool MeshRefineStepTest();
 
+// test the scalar window statistics and ZNCC math both refinement backends share
+// (SceneRefineCommon.h) against closed-form identities and a finite difference
+bool MeshRefineWindowStatsTest();
+
 // test the Delaunay mesh cut on the two hand-solved synthetic fixtures
 // (docs/design/DelaunayMeshReconstruction.md, Appendix)
 bool MeshBipyramidFixtureTest();
@@ -52,6 +56,18 @@ bool MeshTetraInteriorPointFixtureTest();
 
 // test MVS stages on a small sample dataset
 bool PipelineTest(bool forceCPU = false, bool verbose = false);
+
+// synthetic end-to-end test of the mesh-refinement photometric pipeline (rasterize, warp,
+// window statistics, ZNCC gradient, smoothing, stepper) against a textured flat plane with a
+// known ground truth: no other automated test exercises Scene::RefineMesh/RefineMeshCUDA
+bool MeshRefineSyntheticTest(bool forceCPU = false, bool verbose = false);
+
+// finite-difference consistency gate for the exact energy the Ceres arm of Scene::RefineMesh
+// (--gradient-step 0) minimizes: on the same synthetic fixture, E(v+t*u)-E(v) must agree with
+// t*<grad E(v),u> to within 5% for the photometric term alone, the thin-plate term alone and
+// their sum. Runs on the CPU with no Ceres dependency, so a build without _USE_CERES still proves
+// that the cost and the gradient the solver would be handed are the same functional
+bool MeshRefineEnergyGradientTest(bool verbose = false);
 /*----------------------------------------------------------------*/
 
 } // namespace MVS

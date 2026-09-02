@@ -57,16 +57,35 @@ namespace MVS {
 DEFOPT_SPACE(OPTREFINE, _T("Refine"))
 
 DEFVAR_OPTREFINE_int32(nIgnoreMaskLabel, "Ignore Mask Label", "label id used during ignore mask filter (<0 - disabled)", "-1")
-DEFVAR_OPTREFINE_int32(nPhotoTerm, "Photo Term", "photo-consistency term formulation (0 - magnitude, 1 - sign vote, 2 - tanh)", "0")
-DEFVAR_OPTREFINE_int32(nPhotoNorm, "Photo Norm", "photo-consistency gradient normalization (0 - pair count, 1 - confidence-weighted pixel sum)", "0")
-DEFVAR_OPTREFINE_int32(nImageGradient, "Image Gradient", "image derivative stencil (0 - 3x5 separable, 1 - central, 2 - Sobel)", "0")
-DEFVAR_OPTREFINE_int32(nBoundaryMode, "Boundary Mode", "boundary vertex handling (0 - legacy, 1 - freeze, 2 - rim Laplacian)", "0")
+DEFVAR_OPTREFINE_int32(nImageGradient, "Image Gradient", "image derivative stencil (0 - 3x5 separable, 1 - central, 2 - Sobel, 3 - bilinear interpolant derivative)", "1")
 DEFVAR_OPTREFINE_float(fGateMeanDiff, "Gate Mean Diff", "reject a pixel pair whose local mean differs by more than this (0 - disabled)", "0.4")
 DEFVAR_OPTREFINE_float(fGateVarRatio, "Gate Var Ratio", "reject a pixel pair whose local variance ratio exceeds this (0 - disabled)", "8.0")
 DEFVAR_OPTREFINE_int32(nOptimizer, "Optimizer", "vertex position optimizer (0 - bold, 1 - fixed)", "0")
 
 } // namespace MVS
 
+
+// the neighbor views one image contributes refinement pairs with; hoisted out of both backends'
+// constructors (CPU MeshRefine::ThSelectNeighbors, SceneRefine.cpp; CUDA MeshRefineCUDA's
+// constructor, SceneRefineCUDA.cpp) so the filter thresholds and the missing-neighbor recovery
+// exist once -- see the doc comment in SceneRefineCommon.h
+bool MVS::SelectRefineNeighbors(Scene& scene, uint32_t idxImage, unsigned nMaxViews, ViewScoreArr& neighbors)
+{
+	// keep only best neighbor views
+	const float fMinArea(0.1f);
+	const float fMinScale(0.2f), fMaxScale(3.2f);
+	const float fMinAngle(D2R(2.5f)), fMaxAngle(D2R(45.f));
+	Image& imageData = scene.images[idxImage];
+	if (!imageData.IsValid())
+		return false;
+	if (imageData.neighbors.IsEmpty()) {
+		IndexArr points;
+		scene.SelectNeighborViews(idxImage, points);
+	}
+	neighbors = imageData.neighbors;
+	Scene::FilterNeighborViews(neighbors, fMinArea, fMinScale, fMaxScale, fMinAngle, fMaxAngle, nMaxViews);
+	return true;
+}
 
 // load, gray-convert, blur and resize one refine image at the given scale;
 // hoisted common part of CPU MeshRefine::ThInitImage (SceneRefine.cpp) and
@@ -92,6 +111,18 @@ bool MVS::PrepareRefineImage(Image& imageData, const PlatformArr& platforms,
 	}
 	imageData.UpdateCamera(platforms);
 	return true;
+}
+
+// per-view keep-mask, called right after PrepareRefineImage -- see the doc comment in
+// SceneRefineCommon.h; leaves keepMask empty unless masking is enabled and the image has a mask
+// file to load (DepthEstimator::ImportKeepMask itself reports a missing file, but only at a level
+// below what apps/RefineMesh's own once-per-image entry check surfaces)
+void MVS::PrepareRefineImageMask(const Image& imageData, const cv::Size& size, BitMatrix& keepMask)
+{
+	keepMask.release();
+	if (OPTREFINE::nIgnoreMaskLabel < 0)
+		return;
+	DepthEstimator::ImportKeepMask(imageData, size, (uint8_t)OPTREFINE::nIgnoreMaskLabel, keepMask);
 }
 
 void MVS::ComputeRefineImageGradient(const Image32F& gray, Image32F& gradX, Image32F& gradY)
@@ -192,13 +223,13 @@ bool RefineDebug::Pair(uint32_t& idxImageA, uint32_t& idxImageB)
 
 void RefineDebug::ExportGradients(unsigned nScale, unsigned iter, uint32_t numVertices,
 	const Point3f* pos, const Point3f* combined,
-	const Point3f* photo, const float* photoNorm,
+	const Point3f* photo, const float* photoCount,
 	const Point3f* smooth1, const Point3f* smooth2,
 	const uint8_t* boundary)
 {
 	if (Dir().empty())
 		return;
-	ASSERT(numVertices > 0 && pos && combined && photo && photoNorm && smooth1 && smooth2 && boundary);
+	ASSERT(numVertices > 0 && pos && combined && photo && photoCount && smooth1 && smooth2 && boundary);
 	const String fileName(Dir()+String::FormatString("refine_grad_s%u_i%u.ply", nScale, iter));
 	PLY ply;
 	if (!ply.write(fileName, 1, gradElemNames, PLY::BINARY_LE)) {
@@ -217,7 +248,7 @@ void RefineDebug::ExportGradients(unsigned nScale, unsigned iter, uint32_t numVe
 		v.pos = pos[i];
 		v.combined = combined[i];
 		v.photo = photo[i];
-		v.pnorm = photoNorm[i];
+		v.pnorm = photoCount[i];
 		v.smooth1 = smooth1[i];
 		v.smooth2 = smooth2[i];
 		v.boundary = boundary[i];
