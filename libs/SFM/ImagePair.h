@@ -120,7 +120,9 @@ public:
 	// holds that weight (PairsWeightingConfig::denseObservationWeight, DENSE_OBSERVATION_WEIGHT
 	// above); -1 until it has run, and the accessor then answers with the sparse count -- which is
 	// the pre-supplement answer, and is what every consumer running before the weighting pass (the
-	// matcher's own replace and skip tests) has always used. Cleared with the matches it describes.
+	// matcher's own replace and skip tests) has always used. Cleared by every writer that changes the
+	// partition it summarises -- the four reset paths below, AppendDenseMatches, and
+	// FilterRedundantKeypoints' recount -- so a stale value can never be read as a fresh one.
 	// Stored rather than computed on the fly because GetCompositeWeight() and its ~15 callers have
 	// no access to a configuration, and a second hard-coded copy of the weight would be a second
 	// answer to a question that must have one.

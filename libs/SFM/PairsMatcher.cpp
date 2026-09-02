@@ -1844,6 +1844,11 @@ void PairsMatcher::FilterRedundantKeypoints()
 		} else if (bPartitioned) {
 			pair.numFilteredInliers = (int)bounds[0];
 			pair.numDenseInliers = (int)(bounds[1] - bounds[0]);
+			// the discounted evidence summarised the partition this just recounted; invalidate it
+			// with the counts it described rather than trusting that ComputePairsWeights happens to
+			// run after this pass (it does today, and the accessor's fallback is the sparse count,
+			// which is what a stale value must never silently be)
+			pair.weightedInliers = -1.f;
 		}
 		// this is the second of the two sites that maintain the partition (FilterMatches is the
 		// other), and the one the F1/F2 failure modes went through: a dense match drifting into the

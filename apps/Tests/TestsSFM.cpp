@@ -1121,6 +1121,26 @@ bool ROMA2WarpTrackingTest()
 		VERBOSE("ROMA2WarpTrackingTest FAILED: ceiling");
 		return false;
 	}
+	// CREATE-ONLY, the mode a dense-only pair is stored in: it carries no descriptor evidence, so it
+	// must never take the place of a pair that has some -- whatever the two counts say, and with no
+	// ceiling in the way. It is also the one mode that accepts a pair with no matches at all, since
+	// a dense-only pair's matches are appended (AppendDenseMatches) only after it is stored.
+	ImagePair denseOnly(0, 1);
+	denseOnly.relativePose = Pose3D();
+	if (ApplyROMA2Pair(scene, pairIndexMap, std::move(denseOnly), 0, bCreated, true) ||
+		scene.pairs.size() != 1 || scene.pairs[0].GetNumFilteredInliers() != 200) {
+		VERBOSE("ROMA2WarpTrackingTest FAILED: a dense-only result replaced (or disturbed) an existing pair carrying "
+			"%u descriptor inliers", scene.pairs[0].GetNumFilteredInliers());
+		return false;
+	}
+	// ...while on a key nothing holds it creates, matchless, like the matcher's dense-only branch
+	ImagePair denseOnlyNew(0, 2);
+	denseOnlyNew.relativePose = Pose3D();
+	if (!ApplyROMA2Pair(scene, pairIndexMap, std::move(denseOnlyNew), 0, bCreated, true) || !bCreated ||
+		scene.pairs.size() != 2 || !scene.pairs[1].matches.empty()) {
+		VERBOSE("ROMA2WarpTrackingTest FAILED: a dense-only result did not create the pair nothing held");
+		return false;
+	}
 
 	// dense supplementation (AppendDenseMatches): the appended keypoints land past each image's
 	// described prefix, while the appended matches become the pair's own middle segment -- after the
@@ -1325,14 +1345,20 @@ bool ROMA2CoverageSampleTest()
 	const int numBuckets = MINF((int)std::ceil(std::sqrt((double)budget*T/E)), cells);
 	if (!CheckOneWinnerPerBucket(sampledA, numBuckets, "partial-overlap"))
 		return false;
-	// the draw must be uniform *within* that region, not piled onto its most confident part: raise a
-	// 20x20-cell corner of it to full confidence and the sample must barely move
+	// the draw must not be piled onto the most confident part of that region -- and under the shared
+	// lattice winner rule (ROMA2Warp.cpp, WarpCellLatticePriority) confidence does not rank the
+	// candidates at all, only admit them, so raising a 20x20-cell corner of an ALREADY-ELIGIBLE
+	// region to full confidence must not move the draw by a single point. Pinned as exact equality,
+	// not as a tolerance: a tolerance would pass whatever the rule does.
+	const std::vector<Point2f> partialA(sampledA), partialB(sampledB);
 	overlap(cv::Rect(2, 2, 20, 20)).setTo(1.f);
 	std::vector<Point2f> skewA, skewB;
 	float skewCoverageA, skewCoverageB;
 	const size_t numSkew = SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, budget, skewA, skewB, skewCoverageA, skewCoverageB);
-	if (numSkew != numPartial || ABS(skewCoverageA-coverageA) > 0.02f) {
-		VERBOSE("ROMA2CoverageSampleTest FAILED: a confidence hot-spot moved the draw from %u samples at %.3f coverage to %u at %.3f",
+	if (numSkew != numPartial || skewA != partialA || skewB != partialB ||
+		skewCoverageA != coverageA || skewCoverageB != coverageB) {
+		VERBOSE("ROMA2CoverageSampleTest FAILED: a confidence hot-spot moved the draw from %u samples at %.3f coverage to %u at %.3f "
+			"-- confidence is ranking the bucket winners, not just admitting them",
 			(unsigned)numPartial, coverageA, (unsigned)numSkew, skewCoverageA);
 		return false;
 	}
