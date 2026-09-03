@@ -7697,6 +7697,62 @@ bool PairMatcherTest()
 	return true;
 }
 
+// Scene::MatchPairs() must fail the stage rather than report success when matching leaves the
+// view graph empty over two or more images -- the state a fatal matching failure leaves behind,
+// indistinguishable by return value alone from a scene whose candidates were already all matched.
+// A device-allocation failure can not be provoked from a unit test, but the observable state it
+// leaves behind can: a scene whose images share no content rejects every candidate on plain
+// insufficient matches (an ordinary, non-fatal outcome) and reaches the exact same empty graph.
+bool MatchPairsFailureTest()
+{
+	TD_TIMER_START();
+	VERBOSE("--- MatchPairs Failure Signal Test ---");
+
+	// Two images with keypoints but nothing in common: every candidate pair falls under
+	// minMatches, so nothing is ever stored and the view graph comes out empty.
+	Scene scene;
+	SceneConfig scfg;
+	scfg.numImages = 3;
+	scfg.numPoints = 0;
+	scfg.generateDescriptors = true;
+	GenerateTestScene(scene, scfg);
+
+	MatchConfig matchCfg;
+	matchCfg.mode = MatchConfig::EXHAUSTIVE;
+	matchCfg.maxEpipolarError = 0;
+	matchCfg.descriptorsAreBinary = scfg.binaryDescriptors;
+
+	if (scene.MatchPairs(matchCfg)) {
+		VERBOSE("MatchPairsFailureTest FAILED: MatchPairs() reported success with an empty view graph over %u images",
+			(unsigned)scene.images.size());
+		return false;
+	}
+	if (!scene.pairs.empty()) {
+		VERBOSE("MatchPairsFailureTest FAILED: %u unexpected pairs stored", (unsigned)scene.pairs.size());
+		return false;
+	}
+	if (scene.status.nState.isSet(Scene::Status::STATE::MATCHED)) {
+		VERBOSE("MatchPairsFailureTest FAILED: MATCHED state set despite the reported failure");
+		return false;
+	}
+
+	// A single image legitimately produces no pairs (nothing to match), and that must stay
+	// a no-op, not a reported failure.
+	Scene single;
+	SceneConfig singleCfg;
+	singleCfg.numImages = 1;
+	singleCfg.numPoints = 0;
+	singleCfg.generateDescriptors = true;
+	GenerateTestScene(single, singleCfg);
+	if (!single.MatchPairs(matchCfg)) {
+		VERBOSE("MatchPairsFailureTest FAILED: a single-image scene must not be reported as a matching failure");
+		return false;
+	}
+
+	VERBOSE("MatchPairsFailureTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 bool PreMatchTest()
 {
 	TD_TIMER_START();

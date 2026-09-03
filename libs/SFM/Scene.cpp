@@ -609,6 +609,16 @@ bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, c
 	} else {
 		// Convert lightweight config to typed MatchConfig
 		pairsMatcher.Match();
+		// The return value alone can not tell success from failure: it counts pairs processed,
+		// and a scene whose candidates were all matched already, or one with fewer than two
+		// images, legitimately processes none. An empty view graph after matching two or more
+		// images is unambiguous though -- it is what both the dense pass and the descriptor pass
+		// leave behind when either one exits on a fatal error instead of finishing its candidates
+		// -- so treat that combination, and only that one, as the stage having failed.
+		if (pairs.empty() && images.size() > 1) {
+			VERBOSE("error: matching failed, no pairs could be matched among %u images", images.size());
+			return false;
+		}
 		status.nState.set(Status::STATE::MATCHED);
 	}
 

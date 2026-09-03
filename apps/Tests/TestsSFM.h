@@ -241,6 +241,9 @@ bool PairsWeightingTest();
 // PairsMatcher sequential mode test
 bool PairMatcherTest();
 
+// Scene::MatchPairs() fails the stage when matching two or more images leaves the view graph empty
+bool MatchPairsFailureTest();
+
 // Pre-matching optimization test
 bool PreMatchTest();
 

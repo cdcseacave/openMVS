@@ -76,14 +76,17 @@ All in `namespace SFM`. Called sequentially when `argv[1] == 1`.
 | `PairsWeightingTest()` | Spatial, connectivity, and triplet weight computation for image pairs | Spread > clumped; valid triplets > 0 |
 | `ViewGraphCalibratorTest()` | Focal length refinement via view graph (8 images, +30% perturbation) | Focal < 2% error |
 | `PairMatcherTest()` | Sequential matching mode (5 images, overlap=2, 10 expected pairs) | Exact pair count and membership |
+| `MatchPairsFailureTest()` | `Scene::MatchPairs()` fails the stage when matching two or more images leaves the view graph empty, and does not report failure on a single-image scene | Reports failure with no pairs and no `MATCHED` state; single image still reports success |
 | `PreMatchTest()` | Pre-matching threshold filtering (3 images, manual descriptors) | Correct accept/reject per threshold |
 
 ### ROMAv2 Dense Matching Catalog
 
 The one-pass dense matcher (`libs/SFM/MatchROMA2.h`, `libs/SFM/ROMA2Warp.h`), in the order
-`Tests.cpp` dispatches it. The last three need a model: they report themselves skipped unless
+`Tests.cpp` dispatches it. The last two need a model: they report themselves skipped unless
 `OPENMVS_ROMA2_MODEL_PATH` points at an exported model folder, and `OPENMVS_ROMA2_PROVIDER`
 (`auto|cuda|coreml|dml|cpu`) and `OPENMVS_ROMA2_SETTING` (`turbo|fast|base`) narrow what they run.
+`RoMa2PreprocessTest()` needs neither: it is gated only on ONNX Runtime being compiled in, and
+runs entirely off the bundled fixture files.
 
 | Test | Purpose | Key Tolerance |
 |------|---------|---------------|
