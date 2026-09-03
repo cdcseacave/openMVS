@@ -503,7 +503,7 @@ The log line it emits -- median and maximum camera-center delta, median and maxi
 
 The pose CSV schema is `filename,fx,fy,cx,cy,qx,qy,qz,qw,Cx,Cy,Cz,score` per row. Both pose importers share the `PoseImportMode` selector: `POSES_INTRINSICS` applies the intrinsics (when the row/entry carries them, marking them trusted) *and* the rotation + camera center, `POSES` applies only the rotation + center, `POSITIONS` only the center. `ImportConfig::importPosesFile` dispatches on the file extension -- `.csv` to `ImportPosesCSV`, `.json` to `ImportFramesJSON`.
 
-RoMa v2 correspondences are not an external format: the descriptor and coarse-match ONNX graphs run in-process through `OnnxRuntime.h` (the ONNX Runtime session/tensor wrapper, CUDA/CoreML/DirectML/CPU) and `RoMa2Matcher.h` (the two RoMa v2 sessions); the dense warps are turned into pooled global retrieval descriptors (`GlobalDescriptors.h`) and guided sparse re-matches configured and orchestrated by `MatchROMA2.h`, and consumed through `ROMA2Warp.h` (warp coordinate conventions, confidence erosion, keypoint tracking, guided-pair store/replace policy). See `docs/design/ROMA2InProcess.md` for the full design.
+RoMa v2 correspondences are not an external format: the descriptor and coarse-match ONNX graphs run in-process through `OnnxRuntime.h` (the ONNX Runtime session/tensor wrapper, CUDA/CoreML/DirectML/CPU) and `RoMa2Matcher.h` (the two RoMa v2 sessions); the graph-pooled global retrieval descriptors are read through `GlobalDescriptors.h` and the dense warps through `ROMA2Warp.h` (the warp coordinate conventions -- `CoordFromTo`, `DenormCoord`, `NormCoord` -- `WarpTolerance`, keypoint tracking, the coverage-uniform and complementary warp draws, `AppendDenseMatches`), configured and orchestrated by `MatchROMA2.h`: the one pass that judges a candidate pair on its bidirectional warp, matches it guided, fills it densely, fits the union and stores it once. See `docs/design/ROMA2InProcess.md` for the full design.
 
 ### Scene-file compatibility (`.sfm`)
 
@@ -599,7 +599,7 @@ libs/SFM/
 ├── OnnxRuntime.h/cpp                   # ONNX Runtime session/tensor wrapper (CUDA/CoreML/DML/CPU)
 ├── RoMa2Matcher.h/cpp                  # RoMa v2 ONNX graphs: describe + coarse-match sessions
 ├── MatchROMA2.h/cpp                    # In-process RoMa v2 describe pass, dense-matching pass, config
-├── ROMA2Warp.h/cpp                     # RoMa v2 warp coordinates, erosion, keypoint tracking
+├── ROMA2Warp.h/cpp                     # RoMa v2 warp coordinates, keypoint tracking, warp draws, dense append
 ├── PairsWeighting.h/cpp                # Composite pair quality scores
 ├── ViewGraphTriplets.h/cpp             # Camera-triplet view-graph disambiguation (opt-in filter)
 │

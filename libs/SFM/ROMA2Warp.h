@@ -41,11 +41,6 @@ namespace SFM {
 // Forward declarations
 class SFM_API Scene;
 
-// Cells per image side of the coarse grid the spread of a warp sample is measured on
-// (SampleWarpByCoverage): fine enough that a sample clustered in one part of the overlap cannot
-// reach a high fraction, coarse enough that a legitimately sparse but spread-out sample does
-constexpr unsigned DENSE_COVERAGE_GRID = 16;
-
 // Dense correspondence maps of an image pair in ONE direction, as produced by the ROMAv2 coarse
 // matcher: one cell per warp grid position of the source image, holding where that cell lands in
 // the target image and how confident the model is that both images see it
@@ -78,6 +73,33 @@ SFM_API Point2f CoordFromTo(const Point2f& coord, const cv::Size& sizeA, const c
 
 // Map a normalized warp coordinate to the pixel coordinates of an image (align_corners=false)
 SFM_API Point2f DenormCoord(const Point2f& normCoord, const cv::Size& size);
+
+// Inverse of DenormCoord: a pixel position of an image back to the normalized (align_corners=false)
+// coordinate a warp map stores. Declared here, next to its inverse, so the half-pixel convention has
+// ONE definition rather than a copy in every translation unit that has to undo a DenormCoord.
+// Accepted limitation of the round trip (RebuildInlierWarp, MatchROMA2.cpp): a point within ~1e-4 px
+// of the frame border can come back out of DenormCoord a hair outside the frame and fail the
+// in-frame test of whatever reads it, which drops at most a handful of the verdict's inlier cells
+// out of the dense fill. Carrying the warp cell index through PairVerdict would avoid the round trip
+// altogether; the cost is accepted rather than paid for with a wider verdict.
+SFM_API Point2f NormCoord(const Point2f& coord, const cv::Size& size);
+
+// The ONE eligibility predicate every scan of a warp uses (CollectWarpCandidates here, the verdict's
+// CollectEligibleCells in MatchROMA2.cpp): a cell is eligible when the model is at least
+// minConfidence confident about it AND the point it warps to lands inside the target image. `conf`
+// and `normCoord` are the cell's own values in the confidence and warp maps; on success `ptDst`
+// receives the warped point in the pixels of the target image.
+// One implementation, because the population the verdict measures and the population the dense fill
+// draws from must not be able to drift apart.
+inline bool IsWarpCellEligible(float conf, const Point2f& normCoord, float minConfidence,
+	const cv::Size& sizeDst, Point2f& ptDst)
+{
+	if (conf < minConfidence)
+		return false;
+	ptDst = DenormCoord(normCoord, sizeDst);
+	// false here means the warp sends this cell outside the target image
+	return Image8U::isInside(ptDst, sizeDst);
+}
 
 // Half a warp cell in image pixels: the accuracy a coarse-warp correspondence can claim, and the
 // epipolar tolerance every test on warp cells uses -- the verdict's Sampson test on both sides of
@@ -143,10 +165,9 @@ SFM_API size_t TrackKeypointsByWarp(
 //
 // sampledA/sampledB come out in warp-grid raster order and are index-parallel, in the pixels of the
 // working orientation of imgA/imgB (the pixels the keypoints live in, TrackKeypointsByWarp's
-// convention). coverageA/coverageB receive the fraction of a DENSE_COVERAGE_GRID^2 grid over each
-// image that the sample occupies; because the draw is uniform over the whole frame rather than
-// weighted toward wherever confidence is highest, that fraction is a fair proxy for the true
-// overlap area, and a pair whose overlap is a corner of the frame must read as such.
+// convention). Because the draw is uniform over the whole frame rather than weighted toward wherever
+// confidence is highest, the part of each frame it occupies is a fair proxy for the true overlap
+// area, and a pair whose overlap is a corner of the frame reads as a corner.
 // Returns the number of sampled correspondences.
 SFM_API size_t SampleWarpByCoverage(
 	const Image& imgA,
@@ -156,9 +177,7 @@ SFM_API size_t SampleWarpByCoverage(
 	float minConfidence,
 	unsigned maxSamples,
 	std::vector<Point2f>& sampledA,
-	std::vector<Point2f>& sampledB,
-	float& coverageA,
-	float& coverageB);
+	std::vector<Point2f>& sampledB);
 
 // Thin an index-parallel warp sample down to at most maxSamples correspondences by an even stride
 // through its order, in place. Never by confidence: a confidence sort would re-cluster the survivors

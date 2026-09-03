@@ -3,7 +3,8 @@
 ## Overview
 
 RoMa v2 (DINOv3 backbone + a coarse matcher head) runs **in-process** through ONNX Runtime, as an
-optional supplement to the classical SFM pipeline. It plugs into two independent seams:
+optional replacement for two stages of the classical SFM pipeline. It plugs into two independent
+seams:
 
 ```
 CreateStructure --roma2 ...                    Scene::MatchPairs
@@ -304,7 +305,8 @@ bool AssemblePairROMA2(const PairsMatcher&, const Image& imgA, const Image& imgB
 void StorePairROMA2(Scene&, std::unordered_map<PairIdx::PairIndex, IIndex>& pairIndexMap,
     ImagePair&& pair, const DenseMatches& dense, int warpSize);
 
-unsigned MatchPairsROMA2(PairsMatcher&, RoMa2Onnx&, const PairIdxArr& candidatePairs, const ROMA2Config&);
+bool MatchPairsROMA2(PairsMatcher&, RoMa2Onnx&, const PairIdxArr& candidatePairs,
+    const ROMA2Config&, unsigned& numStored);
 ```
 
 `PairsMatcher::GeometricFilter` gains a `(const Image&, const Image&, ImagePair&, float
@@ -326,12 +328,17 @@ and one summary line per pass:
 
 ```
 ROMA2 one pass: <candidates> candidates, <judged> judged, <admitted> admitted, <stored> stored, <dense-only> dense-only;
-  <slots> slots, <loads> loads, <reloads> reloads; <skipped> skipped, <failed loads> failed loads,
-  <failed matches> failed matches, <dense matches> dense matches (<time>)
+  <slots> slots, <loads> loads, <reloads> reloads; <already stored> already stored, <unprepared> unprepared,
+  <failed loads> failed loads, <failed matches> failed matches, <dense matches> dense matches (<time>)
 ```
 
+The two skip counts mean opposite things and are therefore reported apart: `already stored` is a
+candidate the scene already holds (a re-run, or the feedback round proposing a pair round 1 stored),
+the ordinary outcome; `unprepared` is a candidate one of whose images carries no camera or no
+descriptors, i.e. a failure of an earlier stage quietly shrinking the view graph.
+
 `PairsMatcher::Match`, per round: with `roma2 && roma2Cfg.useMatching` the round IS
-`MatchPairsROMA2(*this, *roma2, pairs, roma2Cfg)` and nothing else — no PreMatch, no
+`MatchPairsROMA2(*this, *roma2, pairs, roma2Cfg, numStored)` and nothing else — no PreMatch, no
 `OptimizePairsOrder`, no separate SIFT batch; otherwise the round is the existing SIFT flow, untouched.
 The verification-feedback round proposes pairs from the stored pairs' verified matches as before and
 runs the same one pass on them. `PairsMatcher::MatchStats::densePairs` is the pairs the one pass

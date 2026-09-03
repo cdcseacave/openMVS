@@ -2071,10 +2071,13 @@ bool PairsMatcher::MatchPairsBatch(const PairIdxArr& pairsToMatch, LPCTSTR progr
 	return true;
 }
 
-unsigned PairsMatcher::Match()
+unsigned PairsMatcher::Match(bool& bFatal)
 {
+	bFatal = false;
 	const IIndex nImages = scene.images.size();
 	if (nImages < 2) {
+		// not a fatal round failure: a scene too small to hold a single pair produces none
+		// legitimately, which is exactly the case Scene::MatchPairs excludes from its own check
 		VERBOSE("error: need at least 2 images for matching");
 		return 0;
 	}
@@ -2171,6 +2174,7 @@ unsigned PairsMatcher::Match()
 	}
 	default:
 		ASSERT("Invalid match mode" == NULL);
+		bFatal = true;
 		return 0;
 	}
 	ASSERT(!pairsToMatch.empty());
@@ -2222,15 +2226,21 @@ unsigned PairsMatcher::Match()
 	PairIdxArr attemptedPairs;
 	if (verificationFeedback)
 		attemptedPairs = pairsToMatch;
-	if (!MatchRound(pairsToMatch, _T("Match image pairs")))
+	if (!MatchRound(pairsToMatch, _T("Match image pairs"))) {
+		bFatal = true;
 		return 0;
+	}
 
 	// Second round: spend the held-back pair budget on the pairs suggested by the
-	// geometrically verified matches of the first round
+	// geometrically verified matches of the first round.
+	// Its failure has to be reported as such: round 1 already stored pairs, so neither the count
+	// returned below nor an empty view graph downstream can show that the graph is truncated
 	if (verificationFeedback) {
 		PairIdxArr feedbackPairs = CollectVerificationFeedbackPairs(attemptedPairs);
-		if (!feedbackPairs.empty() && !MatchRound(feedbackPairs, _T("Match feedback pairs")))
+		if (!feedbackPairs.empty() && !MatchRound(feedbackPairs, _T("Match feedback pairs"))) {
+			bFatal = true;
 			return 0;
+		}
 	}
 	fusedRetrievalScores.clear(); // only kept for the verification-feedback round
 

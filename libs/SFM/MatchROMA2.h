@@ -157,8 +157,10 @@ SFM_API void StorePairROMA2(Scene& scene, std::unordered_map<PairIdx::PairIndex,
 // (ID1,ID2) order (StorePairROMA2). A candidate already in scene.pairs is skipped (the feedback round
 // proposes only new pairs, and a re-run must not double-store). A pair whose image could not be
 // described or whose graph call failed is dropped with a message.
-// The summary line reports candidates, judged, admitted, stored, dense-only, and the slot plan's
-// loads/reloads (the cache cost of the order).
+// The summary line reports candidates, judged, admitted, stored, dense-only, the slot plan's
+// loads/reloads (the cache cost of the order), and the two skip counts apart: the candidates the
+// scene already held (ordinary) and the ones an image without a camera or descriptors cost (a
+// failure of an earlier stage).
 // Fills `numStored` with the number of pairs stored and returns true, a pass whose verdict rejected
 // every candidate storing none and still succeeding; returns false only when the pass could not run
 // at all (the device slot pool could not be allocated), which the caller must treat as a failed

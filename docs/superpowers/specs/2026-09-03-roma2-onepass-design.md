@@ -140,11 +140,23 @@ struct SFM_API PairWarps {           // both directions of one (A,B) pair
 };
 ```
 
-Kept (signatures unchanged unless noted): `CoordFromTo`, `DenormCoord`, `TrackKeypointsByWarp`,
-`SampleWarpByCoverage`, `ThinSampleEvenly`, `SampleWarpComplementary` (the `occupiedA` form only —
-the `ImagePair` form and `WarpDrawCoverage` are deleted), `AppendDenseMatches`.
+Kept (signatures unchanged unless noted): `CoordFromTo`, `DenormCoord`, `NormCoord` (moved here from
+`MatchROMA2.cpp`, so the one half-pixel convention has one definition), `TrackKeypointsByWarp`,
+`SampleWarpByCoverage` (**minus its `coverageA`/`coverageB` out-parameters**, which existed only to
+feed the deleted gate's `minInlierCoverage` criterion and which no caller of the one pass reads),
+`ThinSampleEvenly`, `SampleWarpComplementary` (the `occupiedA` form only — the `ImagePair` form and
+`WarpDrawCoverage` are deleted), `AppendDenseMatches`.
 Deleted: `ErodeConfidenceMap`, `ComputeSampleCoverage`, `WarpDrawCoverage`, `DENSE_COVERAGE_GRID` if
 nothing uses it after the deletions, `ApplyROMA2Pair` (replaced by `StorePairROMA2`, §3.6).
+
+Eligibility is one defined term with one implementation: a warp cell is eligible when its confidence
+is at least `minConfidence` and its warped point lands inside the other image. That predicate lives
+once, as `IsWarpCellEligible` in `ROMA2Warp.h`, and both the dense fill's `CollectWarpCandidates` and
+the verdict's cell collection (§3.4) call it — so the population the verdict measures and the
+population the dense fill draws from cannot drift apart. The verdict does not reuse
+`CollectWarpCandidates`'s result directly: that would export `WarpCandidate` and copy three of its
+five fields through a megabyte of transient allocation per pair, for a predicate that is two
+comparisons.
 
 Warp tolerance, used by the verdict and the dense segment (§3.4, §3.6), is a function, not a config:
 

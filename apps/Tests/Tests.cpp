@@ -207,6 +207,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::MatchPairsFailureTest())
 				return false;
+			if (!SFM::MatchRoundFatalSignalTest())
+				return false;
 			if (!SFM::TwoViewTest())
 				return false;
 			if (!SFM::VocabularyTreeTest())

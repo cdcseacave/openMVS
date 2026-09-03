@@ -77,6 +77,7 @@ All in `namespace SFM`. Called sequentially when `argv[1] == 1`.
 | `ViewGraphCalibratorTest()` | Focal length refinement via view graph (8 images, +30% perturbation) | Focal < 2% error |
 | `PairMatcherTest()` | Sequential matching mode (5 images, overlap=2, 10 expected pairs) | Exact pair count and membership |
 | `MatchPairsFailureTest()` | `Scene::MatchPairs()` fails the stage when matching two or more images leaves the view graph empty, and does not report failure on a single-image scene | Reports failure with no pairs and no `MATCHED` state; single image still reports success |
+| `MatchRoundFatalSignalTest()` | `PairsMatcher::Match()`'s fatal-round flag is not the pair count: a round that stored nothing, and a scene too small to hold a pair, both leave it clear | Flag clear on both, so it cannot be conflated with "stored nothing" |
 | `PreMatchTest()` | Pre-matching threshold filtering (3 images, manual descriptors) | Correct accept/reject per threshold |
 
 ### ROMAv2 Dense Matching Catalog

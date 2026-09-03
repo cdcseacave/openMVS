@@ -291,6 +291,14 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		LOG("error: --roma2-slots must be at least the 2 slots a pair needs (got %u)", OPT::nROMA2Slots);
 		return false;
 	}
+	if (OPT::bROMA2Match && !OPT::bROMA2) {
+		// design decision 10 -- a requested-but-unavailable backend never silently degrades: the one
+		// pass IS the matching round when it runs, and without --roma2 the config it reads is never
+		// consulted (ROMA2Config::IsInProcessEnabled), so the descriptor round would quietly run the
+		// whole matching stage in its place with nothing in the log naming ROMA2
+		LOG("error: --roma2-match needs --roma2 true (the one pass is the ROMAv2 warp)");
+		return false;
+	}
 	if (OPT::bROMA2 && (OPT::bROMA2Retrieval || OPT::bROMA2Match)) {
 		// the library refuses this same condition inside Scene::MatchPairs (design decision 10),
 		// gated the same way (enabled && (useRetrieval || useMatching)), Scene.cpp:574; this early

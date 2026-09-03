@@ -56,6 +56,15 @@ Point2f SFM::DenormCoord(const Point2f& normCoord, const cv::Size& size) {
 		0.5f * (normCoord.y + 1.f) * (float)size.height - 0.5f
 	);
 }
+
+Point2f SFM::NormCoord(const Point2f& coord, const cv::Size& size) {
+	// the exact inverse of DenormCoord above, and it stays next to it so the align_corners=False
+	// half-pixel convention is written down once
+	return Point2f(
+		2.f * (coord.x + 0.5f) / (float)size.width - 1.f,
+		2.f * (coord.y + 0.5f) / (float)size.height - 1.f
+	);
+}
 /*----------------------------------------------------------------*/
 
 
@@ -168,11 +177,9 @@ void CollectWarpCandidates(const cv::Size& sizeA, const cv::Size& sizeB, const I
 	for (int y = 0; y < confidence.rows; ++y) {
 		for (int x = 0; x < confidence.cols; ++x) {
 			const float conf = confidence(y, x);
-			if (conf < minConfidence)
+			Point2f ptB;
+			if (!IsWarpCellEligible(conf, warp(y, x), minConfidence, sizeB, ptB))
 				continue;
-			const Point2f ptB(DenormCoord(warp(y, x), sizeB));
-			if (!Image8U::isInside(ptB, sizeB))
-				continue; // the warp sends this cell outside the second image
 			candidates.push_back(WarpCandidate{conf, y*confidence.cols + x,
 				WarpCellLatticePriority(x, y),
 				CoordFromTo(Point2f((float)x, (float)y), confidence.size(), sizeA), ptB});
@@ -204,32 +211,6 @@ inline size_t WarpCellBucket(int cell, const Image32F& confidence, int numBucket
 	return (size_t)(y*numBuckets/confidence.rows)*numBuckets + x*numBuckets/confidence.cols;
 }
 
-// Fraction of a DENSE_COVERAGE_GRID^2 grid over each image that a warp sample occupies. Only
-// SampleWarpByCoverage reports it, so it lives here rather than in the header: a coverage of an
-// arbitrary point set is not a warp concept, it is the spread of the one draw that measures it.
-void ComputeSampleCoverage(
-	const std::vector<Point2f>& sampledA,
-	const std::vector<Point2f>& sampledB,
-	const cv::Size& sizeA,
-	const cv::Size& sizeB,
-	float& coverageA,
-	float& coverageB)
-{
-	ASSERT(sampledA.size() == sampledB.size());
-	std::vector<bool> gridA((size_t)DENSE_COVERAGE_GRID*DENSE_COVERAGE_GRID, false), gridB(gridA);
-	const auto MarkCell = [](std::vector<bool>& grid, const Point2f& pt, const cv::Size& size) {
-		const unsigned cx = MINF((unsigned)MAXF(0.f, (float)DENSE_COVERAGE_GRID*pt.x/(float)size.width), DENSE_COVERAGE_GRID-1);
-		const unsigned cy = MINF((unsigned)MAXF(0.f, (float)DENSE_COVERAGE_GRID*pt.y/(float)size.height), DENSE_COVERAGE_GRID-1);
-		grid[(size_t)cy*DENSE_COVERAGE_GRID + cx] = true;
-	};
-	for (size_t i = 0; i < sampledA.size(); ++i) {
-		MarkCell(gridA, sampledA[i], sizeA);
-		MarkCell(gridB, sampledB[i], sizeB);
-	}
-	coverageA = (float)std::count(gridA.begin(), gridA.end(), true)/(float)gridA.size();
-	coverageB = (float)std::count(gridB.begin(), gridB.end(), true)/(float)gridB.size();
-}
-
 } // namespace
 
 
@@ -241,14 +222,11 @@ size_t SFM::SampleWarpByCoverage(
 	float minConfidence,
 	unsigned maxSamples,
 	std::vector<Point2f>& sampledA,
-	std::vector<Point2f>& sampledB,
-	float& coverageA,
-	float& coverageB)
+	std::vector<Point2f>& sampledB)
 {
 	ASSERT(!warp.empty() && warp.size() == confidence.size());
 	sampledA.clear();
 	sampledB.clear();
-	coverageA = coverageB = 0.f;
 	if (maxSamples == 0)
 		return 0;
 	const cv::Size sizeA(imgA.GetSize()), sizeB(imgB.GetSize());
@@ -287,7 +265,6 @@ size_t SFM::SampleWarpByCoverage(
 		sampledA.push_back(candidate.ptA);
 		sampledB.push_back(candidate.ptB);
 	}
-	ComputeSampleCoverage(sampledA, sampledB, sizeA, sizeB, coverageA, coverageB);
 	return sampledA.size();
 }
 /*----------------------------------------------------------------*/

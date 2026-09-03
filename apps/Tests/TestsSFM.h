@@ -244,6 +244,9 @@ bool PairMatcherTest();
 // Scene::MatchPairs() fails the stage when matching two or more images leaves the view graph empty
 bool MatchPairsFailureTest();
 
+// PairsMatcher::Match()'s fatal-round signal is not "this round stored nothing"
+bool MatchRoundFatalSignalTest();
+
 // Pre-matching optimization test
 bool PreMatchTest();
 

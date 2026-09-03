@@ -141,13 +141,11 @@ size_t SFM::MatchFeaturesGuided(
 		imgB.descriptors.convertTo(trainDescriptorsF, CV_32F);
 		matcher.knnMatch(queryDescriptorsF, trainDescriptorsF, knnMatches, K_NN);
 	}
-	// one neighbour list per query is the matcher's contract; a shorter answer would silently pair
-	// a winner with another one's neighbours, so it is refused rather than indexed into
-	if (knnMatches.size() != winners.size()) {
-		DEBUG("error: MatchFeaturesGuided: the descriptor matcher answered %u of %u queries",
-			(unsigned)knnMatches.size(), (unsigned)winners.size());
-		return 0;
-	}
+	// one neighbour list per query is the matcher's contract, and knnMatch keeps it: with the default
+	// compactResult=false it returns one list per query row, and the one path that returns fewer (an
+	// empty train set) is excluded by the numDescribedB == 0 early return above. Asserted rather than
+	// handled, so the return value below means only how many matches this pass accepted
+	ASSERT(knnMatches.size() == winners.size());
 
 	// Step 3: the ratio test against that reference
 	const float matchRatio = pairsMatcher.GetConfig().matchRatio;
@@ -186,7 +184,12 @@ size_t SFM::MatchFeaturesGuided(
 		// strictly better, like every other ratio test in the matcher: a rival exactly as close as
 		// the winner but outside the disc is the very thing this test exists to reject, and equal
 		// descriptors (the same feature described twice, in two different places of imgB) make that
-		// tie a real case rather than a floating-point curiosity
+		// tie a real case rather than a floating-point curiosity.
+		// Both sides here are TRUE descriptor norms (DescriptorDistance recomputes them), so this
+		// test enforces d0/d1 < matchRatio, while PairsMatcher::MatchFeatures applies the same
+		// constant to FLANN's SQUARED L2 distances and so enforces d0/d1 < sqrt(matchRatio): at the
+		// same setting the guided pass is the stricter of the two (0.8 here against 0.894 there).
+		// See MatchConfig::matchRatio (PairsMatcher.h)
 		if (winner.distance < matchRatio * outsideDistance)
 			matches.emplace_back(winner.queryIdx, winner.trainIdx);
 	}

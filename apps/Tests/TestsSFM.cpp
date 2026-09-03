@@ -1145,7 +1145,7 @@ bool ROMA2WarpTrackingTest()
 }
 
 // Coverage-uniform warp sampling (the verdict's fitting sample): the budget, the spread the
-// bucket stratification buys over a plain top-confidence selection, the reported coverage of a
+// bucket stratification buys over a plain top-confidence selection, the frame occupancy of a
 // sample that really does sit in one corner, and the determinism of the whole draw
 bool ROMA2CoverageSampleTest()
 {
@@ -1174,17 +1174,32 @@ bool ROMA2CoverageSampleTest()
 				((y*(height-1.f)/(cells-1)) + 0.5f)*2.f/height - 1.f);
 	const unsigned budget = 2000;
 	std::vector<Point2f> sampledA, sampledB;
-	float coverageA, coverageB;
+
+	// what fraction of a coarse 16x16 grid over an image a sample occupies -- the occupancy this
+	// test measures the draw's spread by. Computed here rather than reported by the sampler: the
+	// draw's business is the sample, and the claim under test is that a draw uniform over the whole
+	// frame reads as the overlap it came from, so a corner-overlap pair must read as a corner
+	constexpr unsigned coverageGrid = 16;
+	const auto SampleCoverage = [](const std::vector<Point2f>& sampled, const cv::Size& size) {
+		std::vector<bool> grid((size_t)coverageGrid*coverageGrid, false);
+		for (const Point2f& pt : sampled) {
+			const unsigned cx = MINF((unsigned)MAXF(0.f, (float)coverageGrid*pt.x/(float)size.width), coverageGrid-1);
+			const unsigned cy = MINF((unsigned)MAXF(0.f, (float)coverageGrid*pt.y/(float)size.height), coverageGrid-1);
+			grid[(size_t)cy*coverageGrid + cx] = true;
+		}
+		return (float)std::count(grid.begin(), grid.end(), true)/(float)grid.size();
+	};
 
 	// full overlap: every cell eligible, so the bucket grid is ceil(sqrt(budget)) = 45 on a side and
 	// the sample lands at the budget, spread over the whole frame
 	Image32F overlap(cv::Size(cells, cells), 0.6f);
-	const size_t numFull = SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, budget, sampledA, sampledB, coverageA, coverageB);
+	const size_t numFull = SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, budget, sampledA, sampledB);
 	if (numFull < budget*9/10 || numFull > budget*11/10) {
 		VERBOSE("ROMA2CoverageSampleTest FAILED: full overlap drew %u samples, expected about the %u budgeted",
 			(unsigned)numFull, budget);
 		return false;
 	}
+	float coverageA = SampleCoverage(sampledA, imgA.GetSize()), coverageB = SampleCoverage(sampledB, imgB.GetSize());
 	if (coverageA < 0.99f || coverageB < 0.99f) {
 		VERBOSE("ROMA2CoverageSampleTest FAILED: a fully overlapping sample covers only %.3f/%.3f of the two images", coverageA, coverageB);
 		return false;
@@ -1203,21 +1218,23 @@ bool ROMA2CoverageSampleTest()
 	// a fraction of the frame.
 	overlap.setTo(0.f);
 	overlap(cv::Rect(2, 2, 100, 100)).setTo(0.6f);
-	const size_t numPartial = SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, budget, sampledA, sampledB, coverageA, coverageB);
+	const size_t numPartial = SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, budget, sampledA, sampledB);
 	if (numPartial < budget*3/4 || numPartial > budget*5/4) {
 		VERBOSE("ROMA2CoverageSampleTest FAILED: a 39%%-overlap warp drew %u samples, expected near the %u budgeted",
 			(unsigned)numPartial, budget);
 		return false;
 	}
-	// and the sample must report the overlap it actually came from, not the whole frame: the eligible
+	// and the sample must occupy the overlap it actually came from, not the whole frame: the eligible
 	// region spans about 100/160 of each image side, so about (0.63)^2 = 0.4 of the coverage grid
+	coverageA = SampleCoverage(sampledA, imgA.GetSize());
+	coverageB = SampleCoverage(sampledB, imgB.GetSize());
 	if (coverageA < 0.3f || coverageA > 0.5f || ABS(coverageB-coverageA) > 0.02f) {
 		VERBOSE("ROMA2CoverageSampleTest FAILED: a 39%%-overlap sample reports %.3f/%.3f coverage, expected about 0.4",
 			coverageA, coverageB);
 		return false;
 	}
-	// pin the documented "one winner per bucket, and nothing else" contract itself: the coverage
-	// checks above run on the coarse DENSE_COVERAGE_GRID (16 per side) and cannot tell 800 points
+	// pin the documented "one winner per bucket, and nothing else" contract itself: the occupancy
+	// checks above run on a coarse 16-per-side grid and cannot tell 800 points
 	// spread over the eligible region from 2000 points piled into its most confident corner --
 	// both occupy the same ~0.4 of that grid. A lambda since the confidence hot-spot sub-case
 	// below has to pass the identical pin.
@@ -1283,8 +1300,8 @@ bool ROMA2CoverageSampleTest()
 	const std::vector<Point2f> partialA(sampledA), partialB(sampledB);
 	overlap(cv::Rect(2, 2, 20, 20)).setTo(1.f);
 	std::vector<Point2f> skewA, skewB;
-	float skewCoverageA, skewCoverageB;
-	const size_t numSkew = SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, budget, skewA, skewB, skewCoverageA, skewCoverageB);
+	const size_t numSkew = SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, budget, skewA, skewB);
+	const float skewCoverageA = SampleCoverage(skewA, imgA.GetSize()), skewCoverageB = SampleCoverage(skewB, imgB.GetSize());
 	if (numSkew != numPartial || skewA != partialA || skewB != partialB ||
 		skewCoverageA != coverageA || skewCoverageB != coverageB) {
 		VERBOSE("ROMA2CoverageSampleTest FAILED: a confidence hot-spot moved the draw from %u samples at %.3f coverage to %u at %.3f "
@@ -1305,9 +1322,9 @@ bool ROMA2CoverageSampleTest()
 	// nothing here exercises that. Re-drawing from a pre-filled output pair as well, since a
 	// caller reusing its buffers must get the same answer as one passing empty ones.
 	std::vector<Point2f> repeatA(7, Point2f(1.f, 2.f)), repeatB(3, Point2f(3.f, 4.f));
-	float repeatCoverageA = -1.f, repeatCoverageB = -1.f;
-	SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, budget, repeatA, repeatB, repeatCoverageA, repeatCoverageB);
-	if (repeatA != skewA || repeatB != skewB || repeatCoverageA != skewCoverageA || repeatCoverageB != skewCoverageB) {
+	SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, budget, repeatA, repeatB);
+	if (repeatA != skewA || repeatB != skewB ||
+		SampleCoverage(repeatA, imgA.GetSize()) != skewCoverageA || SampleCoverage(repeatB, imgB.GetSize()) != skewCoverageB) {
 		VERBOSE("ROMA2CoverageSampleTest FAILED: the draw is not a pure function of its inputs");
 		return false;
 	}
@@ -1316,14 +1333,14 @@ bool ROMA2CoverageSampleTest()
 	// minimum. maxSamples is a target rather than a cap here (there is no fill-up to trim against),
 	// and at a budget this small the bucket grid is only a few cells on a side, so quantisation
 	// dominates: what must hold is that the draw stays small, stays non-empty, and terminates
-	const size_t numTiny = SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, 8, sampledA, sampledB, coverageA, coverageB);
+	const size_t numTiny = SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, 8, sampledA, sampledB);
 	if (numTiny == 0 || numTiny > 64 || sampledA.size() != numTiny) {
 		VERBOSE("ROMA2CoverageSampleTest FAILED: a budget of 8 drew %u samples", (unsigned)numTiny);
 		return false;
 	}
 	// and a budget of 1 degenerates to a 2x2 bucket grid over the whole warp (n is still scaled by
 	// the inverse overlap fraction), not to a division by zero or an empty draw
-	const size_t numOne = SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, 1, sampledA, sampledB, coverageA, coverageB);
+	const size_t numOne = SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, 1, sampledA, sampledB);
 	if (numOne == 0 || numOne > 8) {
 		VERBOSE("ROMA2CoverageSampleTest FAILED: a budget of 1 drew %u samples", (unsigned)numOne);
 		return false;
@@ -1332,23 +1349,25 @@ bool ROMA2CoverageSampleTest()
 	// a warp confident in one corner only (kept off the very border, where the round trip through
 	// the normalized warp coordinates can put a cell a hundredth of a pixel outside the second
 	// image and TrackKeypointsByWarp's own inside test drops it): E <= budget, so the whole confident
-	// overlap is taken unstratified, the sample is SMALLER than the budget, and the reported coverage
-	// has to show that it really does sit in that corner
+	// overlap is taken unstratified, the sample is SMALLER than the budget, and its occupancy has to
+	// show that it really does sit in that corner
 	overlap.setTo(0.f);
 	overlap(cv::Rect(2, 2, 40, 40)).setTo(1.f);
-	if (SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, budget, sampledA, sampledB, coverageA, coverageB) != 40*40) {
+	if (SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, budget, sampledA, sampledB) != 40*40) {
 		VERBOSE("ROMA2CoverageSampleTest FAILED: %u samples drawn of the 1600 confident cells", (unsigned)sampledA.size());
 		return false;
 	}
+	coverageA = SampleCoverage(sampledA, imgA.GetSize());
+	coverageB = SampleCoverage(sampledB, imgB.GetSize());
 	if (coverageA > 0.15f || coverageA < 0.05f || ABS(coverageB-coverageA) > 0.01f) {
-		VERBOSE("ROMA2CoverageSampleTest FAILED: a corner-only sample reports %.3f/%.3f coverage", coverageA, coverageB);
+		VERBOSE("ROMA2CoverageSampleTest FAILED: a corner-only sample covers %.3f/%.3f of the two images", coverageA, coverageB);
 		return false;
 	}
 
-	// a warp confident nowhere: no sample, no coverage, and no estimator ever sees the pair
+	// a warp confident nowhere: no sample, no occupancy, and no estimator ever sees the pair
 	overlap.setTo(0.f);
-	if (SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, budget, sampledA, sampledB, coverageA, coverageB) != 0 ||
-		!sampledA.empty() || coverageA != 0.f || coverageB != 0.f) {
+	if (SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, budget, sampledA, sampledB) != 0 ||
+		!sampledA.empty() || SampleCoverage(sampledA, imgA.GetSize()) != 0.f || SampleCoverage(sampledB, imgB.GetSize()) != 0.f) {
 		VERBOSE("ROMA2CoverageSampleTest FAILED: an unconfident warp still produced a sample");
 		return false;
 	}
@@ -7657,8 +7676,13 @@ bool PairMatcherTest()
 	mcfg.descriptorsAreBinary = scfg.binaryDescriptors;
 
 	PairsMatcher matcher(scene, mcfg);
-	unsigned numPairs = matcher.Match();
+	bool bFatal;
+	unsigned numPairs = matcher.Match(bFatal);
 	VERBOSE("Matched %u pairs", numPairs);
+	if (bFatal) {
+		VERBOSE("PairMatcherTest FAILED: matching reported a fatal round failure");
+		return false;
+	}
 
 	// Check coverage: pairs (i, i+1) and (i, i+2) should exist
 	// 5 images (0,1,2,3,4)
@@ -7753,6 +7777,68 @@ bool MatchPairsFailureTest()
 	return true;
 }
 
+// PairsMatcher::Match() reports a fatal round failure apart from the pair count, because the count
+// cannot express it: a round legitimately stores nothing, and a round that fails AFTER an earlier
+// one stored pairs leaves a view graph that is truncated rather than empty, which is precisely what
+// Scene::MatchPairs' own empty-graph check can not see.
+// What this test pins is the half of that contract a unit fixture can reach: the signal must stay
+// CLEAR for every non-fatal outcome, so it can not be conflated with "stored nothing". Provoking a
+// genuinely fatal round is out of reach here -- the only two are a SiftMatchGPU coordinator that
+// fails to initialise (SiftGPU + CUDA build, real device) and a device-slot-pool failure inside
+// MatchPairsROMA2 (a loaded RoMa v2 model) -- so the stage-failure side is left to the run-time
+// behaviour Scene::MatchPairs implements and MatchPairsFailureTest pins for the empty-graph case.
+bool MatchRoundFatalSignalTest()
+{
+	TD_TIMER_START();
+	VERBOSE("--- PairsMatcher Fatal Round Signal Test ---");
+
+	// three images with keypoints but nothing in common: every candidate pair falls under
+	// minMatches, so the round completes having stored nothing. An ordinary outcome, and the one a
+	// signal derived from the count ("no pairs, so it must have failed") would get wrong
+	Scene scene;
+	SceneConfig scfg;
+	scfg.numImages = 3;
+	scfg.numPoints = 0;
+	scfg.generateDescriptors = true;
+	GenerateTestScene(scene, scfg);
+
+	MatchConfig matchCfg;
+	matchCfg.mode = MatchConfig::EXHAUSTIVE;
+	matchCfg.maxEpipolarError = 0;
+	matchCfg.descriptorsAreBinary = scfg.binaryDescriptors;
+
+	PairsMatcher matcher(scene, matchCfg);
+	bool bFatal = true;
+	const unsigned numPairs = matcher.Match(bFatal);
+	if (numPairs != 0 || !scene.pairs.empty()) {
+		VERBOSE("MatchRoundFatalSignalTest FAILED: %u pairs matched among three images with nothing in common", numPairs);
+		return false;
+	}
+	if (bFatal) {
+		VERBOSE("MatchRoundFatalSignalTest FAILED: a round that stored nothing is reported as a fatal failure");
+		return false;
+	}
+
+	// a scene too small to hold a single pair: Match() refuses it, and that refusal must not read as
+	// a fatal round either -- Scene::MatchPairs lets a single-image scene through on exactly that
+	// (MatchPairsFailureTest pins the stage side of it)
+	Scene single;
+	SceneConfig singleCfg;
+	singleCfg.numImages = 1;
+	singleCfg.numPoints = 0;
+	singleCfg.generateDescriptors = true;
+	GenerateTestScene(single, singleCfg);
+	PairsMatcher singleMatcher(single, matchCfg);
+	bFatal = true;
+	if (singleMatcher.Match(bFatal) != 0 || bFatal) {
+		VERBOSE("MatchRoundFatalSignalTest FAILED: a single-image scene is reported as a fatal round failure");
+		return false;
+	}
+
+	VERBOSE("MatchRoundFatalSignalTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 bool PreMatchTest()
 {
 	TD_TIMER_START();
@@ -7801,9 +7887,14 @@ bool PreMatchTest()
 	mcfg.maxEpipolarError = 0; // Disable geometric verification (no cameras)
 
 	PairsMatcher matcher(scene, mcfg);
-	unsigned numPairs = matcher.Match();
+	bool bFatal;
+	unsigned numPairs = matcher.Match(bFatal);
 
 	VERBOSE("Matched %u pairs", numPairs);
+	if (bFatal) {
+		VERBOSE("PreMatchTest FAILED: matching reported a fatal round failure");
+		return false;
+	}
 
 	// Pair (0,1) needs >= 5 matches -> should exist
 	// Pair (0,2) needs >= 5 matches (has 2) -> should be filtered out
@@ -7948,9 +8039,11 @@ bool RetrievalModeTest()
 	e2eCfg.matchDistance = FLT_MAX;
 	e2eCfg.descriptorsAreBinary = scfg.binaryDescriptors;
 	PairsMatcher e2eMatcher(e2eScene, e2eCfg);
-	const unsigned numMatched = e2eMatcher.Match();
-	if (numMatched == 0) {
-		VERBOSE("RetrievalModeTest FAILED: end-to-end RETRIEVAL match produced no pairs");
+	bool bFatal;
+	const unsigned numMatched = e2eMatcher.Match(bFatal);
+	if (numMatched == 0 || bFatal) {
+		VERBOSE("RetrievalModeTest FAILED: end-to-end RETRIEVAL match produced no pairs%s",
+			bFatal ? " (fatal round failure)" : "");
 		return false;
 	}
 

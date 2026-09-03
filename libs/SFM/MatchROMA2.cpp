@@ -432,11 +432,12 @@ bool ForEachWarpROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, const PairId
 // the sample.
 constexpr unsigned VERDICT_SAMPLE = 4000;
 
-// Every eligible cell of one warp direction, in raster order. Eligible means what it means
-// everywhere else on a warp (CollectWarpCandidates, ROMA2Warp.cpp): confidence at or above
-// minConfidence AND the warped point landing inside the target image. `ptsSrc` are the cell centres
-// in the pixels of the working orientation of the source image, `ptsDst` the warped points in the
-// target image, index-parallel with `confidences`.
+// Every eligible cell of one warp direction, in raster order. Eligibility is not decided here: the
+// one predicate every warp scan uses decides it (IsWarpCellEligible, ROMA2Warp.h, the same one
+// CollectWarpCandidates walks the grid with), so the population the verdict measures below and the
+// population the dense fill draws from cannot drift apart. `ptsSrc` are the cell centres in the
+// pixels of the working orientation of the source image, `ptsDst` the warped points in the target
+// image, index-parallel with `confidences`.
 // Returns the number of eligible cells.
 size_t CollectEligibleCells(const WarpMaps& maps, const cv::Size& sizeSrc, const cv::Size& sizeDst,
 	float minConfidence, std::vector<Point2f>& ptsSrc, std::vector<Point2f>& ptsDst, std::vector<float>& confidences)
@@ -448,11 +449,9 @@ size_t CollectEligibleCells(const WarpMaps& maps, const cv::Size& sizeSrc, const
 	for (int y = 0; y < maps.confidence.rows; ++y) {
 		for (int x = 0; x < maps.confidence.cols; ++x) {
 			const float conf = maps.confidence(y, x);
-			if (conf < minConfidence)
+			Point2f ptDst;
+			if (!IsWarpCellEligible(conf, maps.warp(y, x), minConfidence, sizeDst, ptDst))
 				continue;
-			const Point2f ptDst(DenormCoord(maps.warp(y, x), sizeDst));
-			if (!Image8U::isInside(ptDst, sizeDst))
-				continue; // the warp sends this cell outside the other image
 			ptsSrc.push_back(CoordFromTo(Point2f((float)x, (float)y), maps.confidence.size(), sizeSrc));
 			ptsDst.push_back(ptDst);
 			confidences.push_back(conf);
@@ -522,16 +521,6 @@ private:
 	bool bFundamental;
 };
 
-// Inverse of DenormCoord: a pixel position of an image back to the normalized (align_corners=false)
-// coordinate a warp map stores.
-inline Point2f NormCoord(const Point2f& coord, const cv::Size& size)
-{
-	return Point2f(
-		2.f * (coord.x + 0.5f) / (float)size.width - 1.f,
-		2.f * (coord.y + 0.5f) / (float)size.height - 1.f
-	);
-}
-
 // Put the verdict's inlier cells back on the warp grid they were read off: a warpSize x warpSize
 // confidence map holding each inlier cell's own confidence and 0 everywhere else, plus the matching
 // normalized warp. This is what lets the dense fill run through the ONE warp draw
@@ -570,10 +559,14 @@ void RebuildInlierWarp(const PairVerdict& verdict, const cv::Size& sizeA, const 
 // keypoints, and NO pose -- so that a scene which happens to hold a ground-truth solution cannot
 // leak it into a fitted geometry however the estimator later changes. Enforced structurally rather
 // than trusted, because judging a pair on its warp alone is the whole point.
+// The caller hands over a pair whose matches are EMPTY: the keypoint arrays are replaced but the
+// matches are appended to, so a reused pair would come out with a match list twice as long as its
+// keypoints and index them out of range in the estimator.
 void MakeFitImages(const std::vector<Point2f>& pointsA, const std::vector<Point2f>& pointsB,
 	Image& imgACopy, Image& imgBCopy, ImagePair& fit)
 {
 	ASSERT(pointsA.size() == pointsB.size());
+	ASSERT(fit.matches.empty());
 	imgACopy.InvalidatePose();
 	imgBCopy.InvalidatePose();
 	ASSERT(!imgACopy.HasPose() && !imgBCopy.HasPose());
@@ -678,9 +671,8 @@ void SFM::JudgePairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA, co
 	// verdict independent of the warp's own claim: the sample is exactly what the warp asserts,
 	// chosen for spread and confidence only, and one geometry either explains it or does not.
 	std::vector<Point2f> sampledA, sampledB;
-	float coverageA, coverageB;
 	SampleWarpByCoverage(imgA, imgB, warps.ab.warp, warps.ab.confidence, config.minConfidence,
-		VERDICT_SAMPLE, sampledA, sampledB, coverageA, coverageB);
+		VERDICT_SAMPLE, sampledA, sampledB);
 	if (sampledA.size() < 8) {
 		// the estimator needs 8 correspondences of its own; a warp that cannot offer that many
 		// confident, spread-out cells is no evidence about the pair
@@ -913,15 +905,22 @@ bool SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, const Pa
 	sorted.Sort();
 	sorted.Resize((PairIdxArr::IDX)(std::unique(sorted.begin(), sorted.end()) - sorted.begin()));
 	PairIdxArr pairs(0, sorted.size());
-	unsigned numSkipped = 0;
+	// the two reasons a candidate never reaches the warp pass, counted apart because they mean
+	// opposite things to whoever reads the summary: a pair the scene already holds is the ordinary
+	// outcome of a re-run or of the feedback round, while an image without a camera or without
+	// descriptors is a failure of an earlier stage that silently shrinks the view graph
+	unsigned numAlreadyStored = 0, numUnprepared = 0;
 	for (const PairIdx& p : sorted) {
 		ASSERT(p.i < p.j); // MakePairIdx orders the two indices, so each unordered pair appears once
+		if (pairIndexMap.find(p.idx) != pairIndexMap.end()) {
+			++numAlreadyStored;
+			continue;
+		}
 		const Image& imgA = scene.images[p.i];
 		const Image& imgB = scene.images[p.j];
 		// the verdict fits in the two cameras' bearings and the guided pass reads descriptors
-		if (!imgA.HasCamera() || !imgB.HasCamera() || !imgA.HasDescriptors() || !imgB.HasDescriptors() ||
-			pairIndexMap.find(p.idx) != pairIndexMap.end()) {
-			++numSkipped;
+		if (!imgA.HasCamera() || !imgB.HasCamera() || !imgA.HasDescriptors() || !imgB.HasDescriptors()) {
+			++numUnprepared;
 			continue;
 		}
 		pairs.push_back(p);
@@ -930,10 +929,10 @@ bool SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, const Pa
 		// same field list as the summary line below (the measurement tools parse both the same way):
 		// nothing past this point ran, so every field the warp pass and the store would have filled is 0
 		DEBUG("ROMA2 one pass: %u candidates, %u judged, %u admitted, %u stored, %u dense-only; "
-			"%u slots, %u loads, %u reloads; %u skipped, %u failed loads, %u failed matches, %u dense matches (%s)",
+			"%u slots, %u loads, %u reloads; %u already stored, %u unprepared, %u failed loads, %u failed matches, %u dense matches (%s)",
 			candidatePairs.size(), 0u, 0u, 0u, 0u,
 			0u, 0u, 0u,
-			numSkipped, 0u, 0u, 0u,
+			numAlreadyStored, numUnprepared, 0u, 0u, 0u,
 			TD_TIMER_GET_FMT().c_str());
 		return true; // no candidate left to judge is an empty pass, not a failed one
 	}
@@ -1009,10 +1008,10 @@ bool SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, const Pa
 		++numStored;
 	}
 	DEBUG("ROMA2 one pass: %u candidates, %u judged, %u admitted, %u stored, %u dense-only; "
-		"%u slots, %u loads, %u reloads; %u skipped, %u failed loads, %u failed matches, %u dense matches (%s)",
+		"%u slots, %u loads, %u reloads; %u already stored, %u unprepared, %u failed loads, %u failed matches, %u dense matches (%s)",
 		candidatePairs.size(), numJudged.load(), numAdmitted.load(), numStored, numDenseOnly,
 		stats.numSlots, (unsigned)stats.numLoads, (unsigned)stats.numReloads,
-		numSkipped, stats.numFailedLoads, stats.numFailedMatches, (unsigned)numDenseMatches,
+		numAlreadyStored, numUnprepared, stats.numFailedLoads, stats.numFailedMatches, (unsigned)numDenseMatches,
 		TD_TIMER_GET_FMT().c_str());
 	return true;
 #else // _USE_ONNXRUNTIME

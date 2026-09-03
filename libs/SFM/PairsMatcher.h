@@ -75,7 +75,13 @@ struct SFM_API MatchConfig
 	unsigned preMatchThreshold = 0;     // Minimum number of matches in pre-matching step to keep the pair (0 = disabled)
 	float minFeatureDistance = 0.f;     // Minimum distance between matched features in pixels (0 = disabled)
 	float matchDistance = 100.f;        // Absolute distance test threshold (100 - AKAZE 486bit, 64 - ORB 256bit, FLT_MAX - SIFT)
-	float matchRatio = 0.9f;            // Lowe's ratio test threshold (0.9 - AKAZE/ORB, 0.8 - SIFT)
+	// Lowe's ratio test threshold (0.9 - AKAZE/ORB, 0.8 - SIFT). The two matching paths range it over
+	// different quantities, so the same constant is not the same strictness: PairsMatcher::MatchFeatures
+	// applies it to the distances FLANN reports, which for its L2 index are SQUARED, hence a true-norm
+	// ratio of sqrt(matchRatio); MatchFeaturesGuided (MatchGeometric.cpp) recomputes both sides as true
+	// norms and applies it to those, hence matchRatio itself. At the SIFT default that is 0.894 for the
+	// descriptor path against 0.8 for the guided one, which is therefore the stricter of the two
+	float matchRatio = 0.9f;
 	bool crossCheck = false;            // Enable cross-check consistency
 	bool useFlannMatcher = true;        // Use FLANN (LSH/KDTree) for faster matching; set false to force BFMatcher
 	unsigned minMatches = 50;           // Minimum inlier matches to accept pair (50 - AKAZE/ORB, 15 - SIFT)
@@ -143,8 +149,13 @@ public:
 	// Match all image pairs according to strategy.
 	// Checks existing pairs and only matches new or incomplete pairs.
 	// Existing pairs with geometric data (non-empty inliers) are preserved.
+	// bFatal is set when a matching round exited on an error instead of finishing its candidates,
+	// which the returned count cannot express: a round legitimately stores nothing (every candidate
+	// already matched, or every pair rejected), and the pairs an earlier round stored hide the
+	// failure of a later one from the caller's own empty-view-graph check. A scene too small to
+	// have any pair is not fatal -- it processes none legitimately.
 	// Return number of valid image pairs created
-	unsigned Match();
+	unsigned Match(bool& bFatal);
 
 	// Match features between two images
 	bool MatchPair(
