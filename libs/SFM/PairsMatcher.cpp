@@ -363,6 +363,16 @@ bool PairsMatcher::GeometricFilter(
 	const Image& img2,
 	ImagePair& pair) const
 {
+	return GeometricFilter(img1, img2, pair, config.maxEpipolarError);
+}
+
+
+bool PairsMatcher::GeometricFilter(
+	const Image& img1,
+	const Image& img2,
+	ImagePair& pair,
+	float maxEpipolarError) const
+{
 	// Start with no outliers; we'll partition after RANSAC
 	pair.ResetInlierMatches();
 	pair.ResetGeometry();
@@ -391,7 +401,7 @@ bool PairsMatcher::GeometricFilter(
 	// holds the inlier threshold (max_error) directly. The estimate_* free functions
 	// no longer take a separate BundleOptions parameter.
 	poselib::RelativePoseOptions opt;
-	opt.max_error = config.maxEpipolarError; // reprojection error threshold
+	opt.max_error = maxEpipolarError; // reprojection error threshold, the caller's (config.maxEpipolarError through the three-argument form)
 	opt.ransac.min_iterations = 100; // min iterations
 	opt.ransac.max_iterations = 10000; // max iterations
 	std::vector<char> inliers;
@@ -2061,17 +2071,6 @@ bool PairsMatcher::MatchPairsBatch(const PairIdxArr& pairsToMatch, LPCTSTR progr
 	return true;
 }
 
-void PairsMatcher::SetValidatedGeometry(PairIdx::PairIndex idx, const ValidatedGeometry& geometry)
-{
-	validatedGeometries[idx] = geometry;
-}
-
-const PairsMatcher::ValidatedGeometry* PairsMatcher::FindValidatedGeometry(PairIdx::PairIndex idx) const
-{
-	const auto it = validatedGeometries.find(idx);
-	return it != validatedGeometries.end() ? &it->second : NULL;
-}
-
 unsigned PairsMatcher::Match()
 {
 	const IIndex nImages = scene.images.size();
@@ -2176,27 +2175,20 @@ unsigned PairsMatcher::Match()
 	}
 	ASSERT(!pairsToMatch.empty());
 
-	// Run a matching round: pre-match filter if requested, GPU-friendly ordering, then
-	// parallel feature matching and geometric verification of all the candidate pairs
+	// Run a matching round, in one of its two shapes: the ROMAv2 one pass when the dense matcher
+	// is enabled, otherwise the descriptor round -- pre-match filter if requested, GPU-friendly
+	// ordering, then parallel feature matching and geometric verification of all the candidates
 	MatchStats stats;
-	const auto MatchRound = [&](PairIdxArr& pairs, LPCTSTR progressCaption, bool bFeedbackRound) {
-		// Dense two-view gate (opt-in): before any descriptor matching, warp every candidate of this
-		// round and drop the ones whose fitted geometry leaves less than
-		// roma2Cfg.minInlierCoverage of either image covered by its inliers
-		// of a coverage-maximising sample of the warp. A rejected pair is dropped, not demoted: it
-		// does not fall through to ordinary descriptor matching. The gate is independent of the
-		// dense matcher below - it judges which pairs exist, that one re-matches the ones that do
-		if (roma2 && roma2Cfg.useValidation) {
-			ValidatePairsROMA2(*this, *roma2, pairs, roma2Cfg);
-			if (pairs.empty())
-				return true; // every candidate of this round was rejected; nothing left to match
+	const auto MatchRound = [&](PairIdxArr& pairs, LPCTSTR progressCaption) {
+		// One-pass dense pair matching (opt-in): the whole round is the ROMAv2 pass, which judges
+		// every candidate from its bidirectional warp alone, guides the sparse matching of the
+		// admitted ones through that warp, fills them densely and stores them. A pair the warp
+		// rejects is dropped: there is no descriptor-matching round to fall back to, and no union
+		// of SIFT-verified and warp-verified pairs
+		if (roma2 && roma2Cfg.useMatching) {
+			stats.densePairs += MatchPairsROMA2(*this, *roma2, pairs, roma2Cfg);
+			return true;
 		}
-		// Snapshot the candidates before pre-matching prunes them from the list in place: the
-		// pairs pre-matching rejects for too few descriptor matches are exactly the ones a dense
-		// matcher exists for, so the ROMA2 pass below has to see the original list
-		PairIdxArr roma2Candidates;
-		if (roma2 && roma2Cfg.useMatching)
-			roma2Candidates = pairs;
 		// Pre-match the pairs if requested
 		// Pre-matching needs the vocabulary-tree top descriptors whatever backend ranked the
 		// candidates, so the tree is built here when the global descriptors did the ranking;
@@ -2217,40 +2209,43 @@ unsigned PairsMatcher::Match()
 		OptimizePairsOrder(pairs);
 		if (!MatchPairsBatch(pairs, progressCaption, stats))
 			return false;
-		// Supplement the descriptor matches with the ROMAv2 dense warps: every candidate of this
-		// round is re-matched through its warp and replaces the stored pair when it is stronger
-		// (design decision 6). Runs before releaseDescriptors and ComputePairsWeights, both of
-		// which only happen once, after the last round.
-		if (roma2 && roma2Cfg.useMatching)
-			stats.roma2Pairs += MatchPairsROMA2(*this, *roma2, roma2Candidates, roma2Cfg, bFeedbackRound);
 		return true;
 	};
 	// Snapshot the candidate list before the round runs: PreMatch prunes rejected pairs from
 	// it in place (and they are not stored in scene.pairs either), so the feedback round must
-	// see the original list or it re-proposes exactly the pairs pre-matching already rejected
+	// see the original list or it re-proposes exactly the pairs pre-matching already rejected.
+	// The one pass leaves the list alone, but it too drops the pairs its verdict rejected without
+	// storing them, so the snapshot is what keeps the feedback round from proposing those again
 	PairIdxArr attemptedPairs;
 	if (verificationFeedback)
 		attemptedPairs = pairsToMatch;
-	if (!MatchRound(pairsToMatch, _T("Match image pairs"), false))
+	if (!MatchRound(pairsToMatch, _T("Match image pairs")))
 		return 0;
 
 	// Second round: spend the held-back pair budget on the pairs suggested by the
 	// geometrically verified matches of the first round
 	if (verificationFeedback) {
 		PairIdxArr feedbackPairs = CollectVerificationFeedbackPairs(attemptedPairs);
-		if (!feedbackPairs.empty() && !MatchRound(feedbackPairs, _T("Match feedback pairs"), true))
+		if (!feedbackPairs.empty() && !MatchRound(feedbackPairs, _T("Match feedback pairs")))
 			return 0;
 	}
 	fusedRetrievalScores.clear(); // only kept for the verification-feedback round
-	validatedGeometries.clear(); // only kept for the ROMA2 guided pass of this Match() call
 
-	const unsigned numProcessedPairs = stats.newPairs + stats.updatedPairs;
-	DEBUG("Images matched: created %u/%u new/updated pairs, %u ROMA2 guided (%u total from %u exhaustive),\n%u/%u/%u matches (%.2f/%.2f/%.2f per pair) in %s",
-		stats.newPairs, stats.updatedPairs, stats.roma2Pairs, scene.pairs.size(), numExhaustivePairs, stats.numFilteredInliers, stats.numInliers, stats.numMatches,
-		numProcessedPairs ? static_cast<double>(stats.numFilteredInliers) / numProcessedPairs : 0.0,
-		numProcessedPairs ? static_cast<double>(stats.numInliers) / numProcessedPairs : 0.0,
-		numProcessedPairs ? static_cast<double>(stats.numMatches) / numProcessedPairs : 0.0,
-		TD_TIMER_GET_FMT().c_str());
+	// the two round shapes count different things, so each closes with the counters it actually
+	// filled: the descriptor rounds their created/updated pairs and match totals, the one pass the
+	// pairs it stored (its own summary line above already reports what each of them cost)
+	if (roma2 && roma2Cfg.useMatching) {
+		DEBUG("Images matched: %u dense pairs stored (%u total from %u exhaustive) in %s",
+			stats.densePairs, scene.pairs.size(), numExhaustivePairs, TD_TIMER_GET_FMT().c_str());
+	} else {
+		const unsigned numProcessedPairs = stats.newPairs + stats.updatedPairs;
+		DEBUG("Images matched: created %u/%u new/updated pairs (%u total from %u exhaustive),\n%u/%u/%u matches (%.2f/%.2f/%.2f per pair) in %s",
+			stats.newPairs, stats.updatedPairs, scene.pairs.size(), numExhaustivePairs, stats.numFilteredInliers, stats.numInliers, stats.numMatches,
+			numProcessedPairs ? static_cast<double>(stats.numFilteredInliers) / numProcessedPairs : 0.0,
+			numProcessedPairs ? static_cast<double>(stats.numInliers) / numProcessedPairs : 0.0,
+			numProcessedPairs ? static_cast<double>(stats.numMatches) / numProcessedPairs : 0.0,
+			TD_TIMER_GET_FMT().c_str());
+	}
 
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2) {

@@ -572,7 +572,7 @@ bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, c
 	PairsMatcher pairsMatcher(*this, config);
 
 	const String modelPath(roma2Cfg.ResolveModelPath());
-	if (roma2Cfg.enabled && (roma2Cfg.useRetrieval || roma2Cfg.useMatching || roma2Cfg.useValidation) && modelPath.empty()) {
+	if (roma2Cfg.enabled && (roma2Cfg.useRetrieval || roma2Cfg.useMatching) && modelPath.empty()) {
 		// design decision 10: a requested-but-unavailable model is an error, never a silent
 		// fallback to the vocabulary tree (which is what IsInProcessEnabled() would otherwise
 		// quietly do, since an empty model path makes it return false)

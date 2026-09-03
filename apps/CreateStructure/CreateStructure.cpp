@@ -73,20 +73,9 @@ String strROMA2Setting;
 bool bROMA2Retrieval;
 bool bROMA2Match;
 unsigned nROMA2Slots;
-unsigned nROMA2SkipHealthy;
-unsigned nROMA2MaxReplace;
+float fROMA2MinConfidence;
 float fROMA2MinOverlap;
-bool bROMA2CrossCheck;
-bool bROMA2Validate;
-unsigned nROMA2DenseSample;
-float fROMA2MinInlierCoverage;
-bool bROMA2Supplement;
-unsigned nROMA2SupplementMaxInliers;
-float fROMA2SupplementMinCoverage;
-unsigned nROMA2SupplementTotalMatches;
-float fROMA2SupplementPoseMaxRot;
-float fROMA2SupplementPoseMaxTrans;
-bool bROMA2SupplementRefitPose;
+unsigned nROMA2DenseMatches;
 bool bFilterTriplets;
 float fTripletMinScore;
 String strROMA2Provider;
@@ -180,22 +169,11 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("roma2-model", boost::program_options::value<std::string>(&OPT::strROMA2Model), "directory with the RoMa v2 ONNX graphs + manifest (default: $OPENMVS_ROMA2_MODEL_PATH)")
 		("roma2-setting", boost::program_options::value<std::string>(&OPT::strROMA2Setting)->default_value("base"), "RoMa v2 export preset: turbo (320px), fast (512px) or base (640px)")
 		("roma2-retrieval", boost::program_options::value<bool>(&OPT::bROMA2Retrieval)->default_value(true), "rank candidate pairs by the global descriptors instead of the vocabulary tree")
-		("roma2-match", boost::program_options::value<bool>(&OPT::bROMA2Match)->default_value(false), "experimental: dense-match every candidate pair and replace weaker descriptor matches (many more inliers and pairs, but degraded poses without known intrinsics; pair with --roma2-skip-healthy 100 --roma2-max-replace 15)")
+		("roma2-match", boost::program_options::value<bool>(&OPT::bROMA2Match)->default_value(false), "one-pass dense pair matching: judge every candidate pair on its bidirectional warp alone, then guide its sparse matching and fill the rest of the overlap densely (a rejected pair is dropped, never descriptor-matched)")
 		("roma2-slots", boost::program_options::value(&OPT::nROMA2Slots)->default_value(64), "images kept resident on the device while dense matching (12.5 MB each at base)")
-		("roma2-skip-healthy", boost::program_options::value(&OPT::nROMA2SkipHealthy)->default_value(0), "round-1 dense matching: skip pairs that already have at least this many inliers (0 = warp every pair)")
-		("roma2-max-replace", boost::program_options::value(&OPT::nROMA2MaxReplace)->default_value(0), "round-1 dense matching: replace only pairs with fewer than this many inliers (0 = replace any weaker pair)")
-		("roma2-min-overlap", boost::program_options::value(&OPT::fROMA2MinOverlap)->default_value(0.f), "dense matching: create a pair the descriptor matcher did not verify only if this fraction of the warp is confidently overlapping (0 = off, 1 = create only on a fully confident warp)")
-		("roma2-cross-check", boost::program_options::value<bool>(&OPT::bROMA2CrossCheck)->default_value(false), "dense matching: keep a guided match only if no closer keypoint of the first image claims the same keypoint of the second")
-		("roma2-validate", boost::program_options::value<bool>(&OPT::bROMA2Validate)->default_value(false), "dense two-view gate: before descriptor matching, warp every candidate pair and drop the ones a single geometry cannot explain (a rejected pair is dropped, not descriptor-matched)")
-		("roma2-dense-sample", boost::program_options::value(&OPT::nROMA2DenseSample)->default_value(2000), "dense two-view gate: size of the coverage-maximising sample drawn from each warp")
-		("roma2-min-inlier-coverage", boost::program_options::value(&OPT::fROMA2MinInlierCoverage)->default_value(0.25f), "dense two-view gate: fraction of both images the fit's inlier subset must still cover for the pair to be kept (0 keeps every pair)")
-		("roma2-supplement", boost::program_options::value<bool>(&OPT::bROMA2Supplement)->default_value(false), "dense supplementation: add dense warp correspondences alongside the sparse matches of a validated pair that is still weak, in the parts of the overlap those matches leave empty, so a weakly-textured pair contributes structure instead of dropping out (needs --roma2-validate true --roma2-match true)")
-		("roma2-supplement-max-inliers", boost::program_options::value(&OPT::nROMA2SupplementMaxInliers)->default_value(500), "dense supplementation: supplement a pair carrying fewer than this many verified correspondences")
-		("roma2-supplement-min-coverage", boost::program_options::value(&OPT::fROMA2SupplementMinCoverage)->default_value(0.3f), "dense supplementation: or one whose verified sparse inliers cover less than this fraction of the valid disparity area (the part of the warp the gate judged the pair on), however many of them there are")
-		("roma2-supplement-total-matches", boost::program_options::value(&OPT::nROMA2SupplementTotalMatches)->default_value(2000), "dense supplementation: correspondences a supplemented pair is drawn against, sparse and dense TOGETHER -- the dense draw gets the share of this proportional to the part of the valid disparity area the sparse inliers do NOT cover, placed only there (0 = no total budget, the draw is then bounded by --roma2-dense-sample alone); each dense match costs a keypoint in both images plus a track")
-		("roma2-supplement-pose-max-rot", boost::program_options::value(&OPT::fROMA2SupplementPoseMaxRot)->default_value(2.f), "dense supplementation: an infused pair takes the gate's dense relative pose instead of the one fitted on its sparse inliers when the two rotations differ by more than this many degrees")
-		("roma2-supplement-pose-max-trans", boost::program_options::value(&OPT::fROMA2SupplementPoseMaxTrans)->default_value(10.f), "dense supplementation: ...or when the two translation directions differ by more than this many degrees")
-		("roma2-supplement-refit-pose", boost::program_options::value<bool>(&OPT::bROMA2SupplementRefitPose)->default_value(false), "dense supplementation: instead of choosing between the two poses, re-estimate one on all of the pair's correspondences, sparse and dense together")
+		("roma2-min-confidence", boost::program_options::value(&OPT::fROMA2MinConfidence)->default_value(0.1f), "dense matching: confidence at which a warp cell takes part in the verdict, the keypoint tracking and the dense fill")
+		("roma2-min-overlap", boost::program_options::value(&OPT::fROMA2MinOverlap)->default_value(0.10f), "dense matching: the verdict, as the smaller of the two inlier areas one fitted geometry explains -- of the first image's confident cells and of the second's (0.10 is about 0.15-0.17 of true overlap, 0.15 about 0.25; 0 admits every pair)")
+		("roma2-dense-matches", boost::program_options::value(&OPT::nROMA2DenseMatches)->default_value(2000), "dense matching: correspondences the dense fill of one pair may add, drawn only where its guided sparse matches are not; each costs a keypoint in both images plus a track")
 		("roma2-provider", boost::program_options::value<std::string>(&OPT::strROMA2Provider)->default_value("auto"), "ONNX Runtime execution provider: auto (CUDA > CoreML > DirectML > CPU), cuda, coreml, dml or cpu")
 		("default-focal-ratio", boost::program_options::value(&OPT::defaultFocalRatio)->default_value(1.2f), "focal-length is set to ratio * max(width,height) for images with unknown focal-length")
 		("focal-length,f", boost::program_options::value(&OPT::focalLength)->default_value(0.f), "force focal-length (in pixels) for specified images (0 = disabled)")
@@ -301,32 +279,19 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		LOG("error: unknown ROMA2 execution provider '%s' (accepted: auto, cuda, coreml, dml, cpu)", OPT::strROMA2Provider.c_str());
 		return false;
 	}
+	if (OPT::fROMA2MinConfidence < 0.f || OPT::fROMA2MinConfidence > 1.f) {
+		LOG("error: --roma2-min-confidence is a confidence, it must be in [0,1] (got %g)", OPT::fROMA2MinConfidence);
+		return false;
+	}
 	if (OPT::fROMA2MinOverlap < 0.f || OPT::fROMA2MinOverlap > 1.f) {
-		LOG("error: --roma2-min-overlap is a fraction of the warp, it must be in [0,1] (got %g)", OPT::fROMA2MinOverlap);
+		LOG("error: --roma2-min-overlap is a fraction of the warp grid, it must be in [0,1] (got %g)", OPT::fROMA2MinOverlap);
 		return false;
 	}
-	if (OPT::nROMA2DenseSample < 8) {
-		LOG("error: --roma2-dense-sample must be at least the 8 correspondences the estimator needs (got %u)", OPT::nROMA2DenseSample);
+	if (OPT::nROMA2Slots < 2) {
+		LOG("error: --roma2-slots must be at least the 2 slots a pair needs (got %u)", OPT::nROMA2Slots);
 		return false;
 	}
-	if (OPT::bROMA2Validate && !OPT::bROMA2) {
-		LOG("error: --roma2-validate needs --roma2 true (the gate is the ROMAv2 warp)");
-		return false;
-	}
-	if (OPT::bROMA2Supplement && (!OPT::bROMA2Validate || !OPT::bROMA2Match)) {
-		LOG("error: --roma2-supplement needs --roma2-validate true (only a validated pair is supplemented)"
-			" and --roma2-match true (the guided pass is where the warp already is)");
-		return false;
-	}
-	if (OPT::fROMA2SupplementMinCoverage < 0.f || OPT::fROMA2SupplementMinCoverage > 1.f) {
-		LOG("error: --roma2-supplement-min-coverage is a fraction of the valid disparity area, it must be in [0,1] (got %g)", OPT::fROMA2SupplementMinCoverage);
-		return false;
-	}
-	if (OPT::fROMA2MinInlierCoverage < 0.f || OPT::fROMA2MinInlierCoverage > 1.f) {
-		LOG("error: --roma2-min-inlier-coverage is a fraction of a coarse grid, it must be in [0,1] (got %g)", OPT::fROMA2MinInlierCoverage);
-		return false;
-	}
-	if (OPT::bROMA2 && (OPT::bROMA2Retrieval || OPT::bROMA2Match || OPT::bROMA2Validate)) {
+	if (OPT::bROMA2 && (OPT::bROMA2Retrieval || OPT::bROMA2Match)) {
 		// the library refuses this same condition inside Scene::MatchPairs (design decision 10),
 		// gated the same way (enabled && (useRetrieval || useMatching)), Scene.cpp:574; this early
 		// check just gives the hint before any feature extraction runs
@@ -391,21 +356,10 @@ int main(int argc, LPCTSTR* argv)
 	cfg.roma2Cfg.setting = OPT::strROMA2Setting;
 	cfg.roma2Cfg.useRetrieval = OPT::bROMA2Retrieval;
 	cfg.roma2Cfg.useMatching = OPT::bROMA2Match;
+	cfg.roma2Cfg.minConfidence = OPT::fROMA2MinConfidence;
+	cfg.roma2Cfg.minOverlap = OPT::fROMA2MinOverlap;
+	cfg.roma2Cfg.denseMatches = OPT::nROMA2DenseMatches;
 	cfg.roma2Cfg.slotBudget = OPT::nROMA2Slots;
-	cfg.roma2Cfg.skipHealthyInliers = OPT::nROMA2SkipHealthy;
-	cfg.roma2Cfg.maxReplaceInliers = OPT::nROMA2MaxReplace;
-	cfg.roma2Cfg.minCreatedOverlap = OPT::fROMA2MinOverlap;
-	cfg.roma2Cfg.guidedCrossCheck = OPT::bROMA2CrossCheck;
-	cfg.roma2Cfg.useValidation = OPT::bROMA2Validate;
-	cfg.roma2Cfg.denseSampleSize = OPT::nROMA2DenseSample;
-	cfg.roma2Cfg.minInlierCoverage = OPT::fROMA2MinInlierCoverage;
-	cfg.roma2Cfg.useSupplement = OPT::bROMA2Supplement;
-	cfg.roma2Cfg.supplementMaxInliers = OPT::nROMA2SupplementMaxInliers;
-	cfg.roma2Cfg.supplementMinCoverage = OPT::fROMA2SupplementMinCoverage;
-	cfg.roma2Cfg.supplementTotalMatches = OPT::nROMA2SupplementTotalMatches;
-	cfg.roma2Cfg.supplementPoseMaxRotationDeg = OPT::fROMA2SupplementPoseMaxRot;
-	cfg.roma2Cfg.supplementPoseMaxTranslationDeg = OPT::fROMA2SupplementPoseMaxTrans;
-	cfg.roma2Cfg.supplementRefitPose = OPT::bROMA2SupplementRefitPose;
 	cfg.roma2Cfg.provider = OPT::strROMA2Provider;
 	#ifdef _USE_CUDA
 	cfg.matchCfg.useCUDA = cfg.featuresCfg.useCUDA = !SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs);

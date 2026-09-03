@@ -41,22 +41,19 @@ namespace SFM {
 bool VocabularyTreeTest();
 
 // ROMA2 warp helpers test: keypoint tracking through an identity warp (the
-// pixel<->grid<->normalized coordinate conventions), overlap gating, confidence-map
-// erosion, and the store/replace-by-inlier-count policy of the guided pairs
+// pixel<->grid<->normalized coordinate conventions), the confidence gate, and the dense append
 bool ROMA2WarpTrackingTest();
 
-// Coverage-maximising warp sampling (step 1 of the dense two-view gate, Task 3 of
-// roma2-matching-redesign-20260831): the sample budget, the spread the bucket stratification buys
-// over a plain top-confidence selection, the coverage a genuinely one-sided sample reports, and the
-// determinism of the draw
+// Coverage-uniform warp sampling, the sample the verdict fits its geometry on: the sample budget,
+// the spread the bucket stratification buys over a plain top-confidence selection, the coverage a
+// genuinely one-sided sample reports, and the determinism of the draw
 bool ROMA2CoverageSampleTest();
 
-// The complementary dense-supplement draw (Task 5b of roma2-matching-redesign-20260831): the
-// supplement of a weak pair is drawn only where that pair's verified sparse matches are NOT, on a
-// budget that counts sparse and dense together, thinned when over budget by an even stride rather
-// than by confidence, and deterministic
-bool ROMA2SupplementDrawTest();
-bool ROMA2DenseInfusionTest();
+// The complementary dense draw, the fill of an admitted pair: it is drawn only where that pair's
+// guided sparse matches are NOT, capped at the pair's dense budget, thinned when over budget by an
+// even stride rather than by confidence, identical across two pairs sharing an image, and
+// deterministic
+bool ROMA2ComplementaryDrawTest();
 
 // The described/dense keypoint boundary: an image whose keypoints.size() > descriptors.rows keeps
 // its stored described-keypoint count across a descriptor release and an .sfm round-trip, the
@@ -145,23 +142,6 @@ bool PairsMatcherSphericalTest();
 // fall back to Sampson-on-sphere + angular threshold when pair.F is absent
 // (pure spherical pairs don't have a meaningful fundamental matrix).
 bool MatchGeometricSphericalTest();
-
-// Unit test for the train-side cross-check of MatchFeaturesGeometric: two keypoints
-// of image A are made to claim the same keypoint of image B, the wrong one carrying
-// the smaller queryIdx, so the test also pins down that the single-candidate
-// descriptor distance is computed instead of being left at 0.
-bool GuidedCrossCheckTest();
-
-// Unit test for MatchFeaturesGeometric's caller-supplied geometry: with only 7 of 70 tracked
-// points -- enough to clear the "insufficient tracked points" floor but one short of
-// GeometricFilter's own minimum of 8 correspondences -- the estimating path must fall back and
-// return false, while the supplied-geometry path must skip the estimation entirely and return
-// true with real guided matches on the same input.
-bool SuppliedGeometrySkipsEstimationTest();
-
-// Parity test: on a healthy pair, supplying the exact geometry the estimator itself produced
-// must guide at least as many matches as the estimating path does on the same tracked points.
-bool SuppliedGeometryParityTest();
 
 // Phase 5 cube-map bridge tests: verify that SFM::ExportMVS can expand
 // every spherical source image into 6 (or 4) pinhole cube-map faces,

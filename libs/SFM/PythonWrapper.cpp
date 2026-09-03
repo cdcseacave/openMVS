@@ -300,7 +300,7 @@ void RegisterBindings()
 		.def_readwrite("import_poses_mode", &SFM::ImportConfig::importPosesMode)
 		.def_readwrite("frames_convention", &SFM::ImportConfig::framesConvention);
 
-	// SFM::ROMA2Config — in-process ROMAv2 retrieval and semi-dense matching
+	// SFM::ROMA2Config — in-process ROMAv2 retrieval and one-pass dense matching
 	class_<SFM::ROMA2Config>("ROMA2Config")
 		.def_readwrite("enabled", &SFM::ROMA2Config::enabled)
 		.DEF_STR_RW("model_path", &SFM::ROMA2Config::modelPath)
@@ -309,16 +309,9 @@ void RegisterBindings()
 		.def_readwrite("use_retrieval", &SFM::ROMA2Config::useRetrieval)
 		.def_readwrite("use_matching", &SFM::ROMA2Config::useMatching)
 		.def_readwrite("min_confidence", &SFM::ROMA2Config::minConfidence)
-		.def_readwrite("min_erode_confidence", &SFM::ROMA2Config::minErodeConfidence)
-		.def_readwrite("erode_border", &SFM::ROMA2Config::erodeBorder)
-		.def_readwrite("epipolar_threshold", &SFM::ROMA2Config::epipolarThreshold)
+		.def_readwrite("min_overlap", &SFM::ROMA2Config::minOverlap)
+		.def_readwrite("dense_matches", &SFM::ROMA2Config::denseMatches)
 		.def_readwrite("slot_budget", &SFM::ROMA2Config::slotBudget)
-		.def_readwrite("max_replace_inliers", &SFM::ROMA2Config::maxReplaceInliers)
-		.def_readwrite("skip_healthy_inliers", &SFM::ROMA2Config::skipHealthyInliers)
-		.def_readwrite("feedback_max_replace_inliers", &SFM::ROMA2Config::feedbackMaxReplaceInliers)
-		.def_readwrite("feedback_skip_healthy_inliers", &SFM::ROMA2Config::feedbackSkipHealthyInliers)
-		.def_readwrite("min_created_overlap", &SFM::ROMA2Config::minCreatedOverlap)
-		.def_readwrite("guided_cross_check", &SFM::ROMA2Config::guidedCrossCheck)
 		.def_readwrite("use_gpu", &SFM::ROMA2Config::useGPU);
 
 	// SFM::TripletFilterConfig — camera-triplet view-graph disambiguation

@@ -116,12 +116,14 @@ bool RoMa2Manifest::Load(const String& fileName)
 	if (!ReadJson(data, "format_version", fileName, formatVersion) ||
 		!ReadJsonString(data, "model", fileName, model))
 		return false;
-	// format_version 1 predates the graph's on-device retrieval pooling (no 'retrieval' output,
-	// enforced below) and this build has no other way to compute one any more (task 1b deleted the
-	// CPU fallback), so it is rejected here, by name, rather than left to fail later on a missing key
-	if (formatVersion != 2 || model != "roma2") {
-		VERBOSE("error: RoMa2 manifest '%s' is version %d of model '%s', expected version 2 of 'roma2' "
-			"(version 1 is no longer supported: no on-device retrieval pooling)",
+	// format_version 3 is the bidirectional coarse-match graph (warp/confidence AND warp_BA/
+	// confidence_BA from one Run, checked below); earlier versions have only the A->B pair and this
+	// build has no other way to get the B->A one (a second Run with the descriptors swapped is not
+	// the same computation: bidirectional=True shares the correlation volume between both heads), so
+	// they are rejected here, by name, rather than left to fail later on the two missing outputs
+	if (formatVersion != 3 || model != "roma2") {
+		VERBOSE("error: RoMa2 manifest '%s' is version %d of model '%s', expected version 3 of 'roma2' "
+			"(earlier versions are no longer supported: no bidirectional coarse-match graph)",
 			fileName.c_str(), formatVersion, model.c_str());
 		return false;
 	}
@@ -174,10 +176,19 @@ bool RoMa2Manifest::Load(const String& fileName)
 		!ExpectManifestShape(*descriptorOutputs, "value_facets", fileName, facetsShape) ||
 		!ExpectManifestShape(*matchInputs, "descriptors_A", fileName, layersShape) ||
 		!ExpectManifestShape(*matchInputs, "descriptors_B", fileName, layersShape) ||
-		!ExpectManifestShape(*matchInputs, "img_A", fileName, imageShape) ||
-		!ExpectManifestShape(*matchInputs, "img_B", fileName, imageShape) ||
 		!ExpectManifestShape(*matchOutputs, "warp", fileName, {1, cells, cells, 2}) ||
-		!ExpectManifestShape(*matchOutputs, "confidence", fileName, {1, cells, cells, (int64_t)confidenceChannels}))
+		!ExpectManifestShape(*matchOutputs, "confidence", fileName, {1, cells, cells, (int64_t)confidenceChannels}) ||
+		!ExpectManifestShape(*matchOutputs, "warp_BA", fileName, {1, cells, cells, 2}) ||
+		!ExpectManifestShape(*matchOutputs, "confidence_BA", fileName, {1, cells, cells, (int64_t)confidenceChannels}))
+		return false;
+	// img_A/img_B are dropped from the traced match_coarse graph now that the coarse head is proven
+	// dead to them (graphs.py's MatchWrap docstring); the ONE tolerated variation is an export whose
+	// trace could not be made without them, which still lists them here -- so they are checked only
+	// when this manifest declares them, never required, and the decision comes from what the export
+	// actually produced, not from a compatibility flag
+	if (matchInputs->find("img_A") != matchInputs->end() && !ExpectManifestShape(*matchInputs, "img_A", fileName, imageShape))
+		return false;
+	if (matchInputs->find("img_B") != matchInputs->end() && !ExpectManifestShape(*matchInputs, "img_B", fileName, imageShape))
 		return false;
 	// the third descriptor output, `retrieval`: the FACETS recipe computed end to end on device, so a
 	// retrieval-only pass reads back facetsDim host floats instead of the whole value_facets tensor.
@@ -305,6 +316,17 @@ bool IsSupportedManifest(const RoMa2Manifest& manifest, const String& setting)
 	// after Load() has already enforced it, can never be false and is worse than no check at all.
 }
 
+// The graph emits the raw overlap logit for both directions; MatchCoarse applies the sigmoid on
+// readback (polycpp matcher.cpp:484-494 GatherOverlap), once per direction, into an Image32F
+// already sized to match logitHost
+void SigmoidInto(const OrtTensor& logitHost, Image32F& confidence)
+{
+	const float* pLogit(logitHost.HostData());
+	float* pConfidence(confidence.ptr<float>());
+	for (int i = 0, n = confidence.rows*confidence.cols; i < n; ++i)
+		pConfidence[i] = 1.f/(1.f + std::exp(-pLogit[i]));
+}
+
 } // namespace
 
 // The two ONNX Runtime sessions are declared first and every OrtTensor after them: members
@@ -314,15 +336,17 @@ bool IsSupportedManifest(const RoMa2Manifest& manifest, const String& setting)
 struct RoMa2Onnx::Impl
 {
 	OnnxModel descriptor;        // image -> (layers, value_facets)
-	OnnxModel match;             // (descriptors_A, descriptors_B, img_A, img_B) -> (warp, confidence)
+	OnnxModel match;             // (descriptors_A, descriptors_B[, img_A, img_B]) -> (warp, confidence, warp_BA, confidence_BA)
 	OrtTensor image;             // host input of the descriptor graph, copied H2D by ORT inside Run
 	OrtTensor facetsScratch;     // matching pass: value_facets stays on the device, never read back
 	OrtTensor facetsHost;        // allocated lazily (Describe): no production caller reads value_facets
 	                             // back any more, only the parity test's independent check of that tensor
 	OrtTensor retrievalHost;     // every Describe() call binds `retrieval` here; ORT copies it out
-	OrtTensor dummyImage;        // the coarse graph's dead img_A/img_B input, shared by both
-	OrtTensor warpHost;          // host output: ORT copies the warp D2H inside Run
-	OrtTensor confidenceHost;    // host output: the raw overlap logit
+	OrtTensor dummyImage;        // the coarse graph's dead img_A/img_B input, when the manifest lists them
+	OrtTensor warpHost;          // host output: ORT copies the A->B warp D2H inside Run
+	OrtTensor confidenceHost;    // host output: the raw A->B overlap logit
+	OrtTensor warpBAHost;        // host output: the B->A warp, same Run, same correlation volume
+	OrtTensor confidenceBAHost;  // host output: the raw B->A overlap logit
 	String modelDir;
 	RoMa2Manifest manifest;
 	bool bMatchFailed = false; // a failed match-graph load is remembered, not retried per pair
@@ -349,6 +373,8 @@ bool RoMa2Onnx::Impl::EnsureMatch()
 		!match.ExpectInputShape("descriptors_B", manifest.layersShape) ||
 		!match.ExpectOutputShape("warp", {1, cells, cells, 2}) ||
 		!match.ExpectOutputShape("confidence", {1, cells, cells, 1}) ||
+		!match.ExpectOutputShape("warp_BA", {1, cells, cells, 2}) ||
+		!match.ExpectOutputShape("confidence_BA", {1, cells, cells, 1}) ||
 		match.Provider() != descriptor.Provider()) {
 		VERBOSE("error: can not load the RoMa2 coarse-match graph '%s'", manifest.matchFile.c_str());
 		match.Unload(); // a graph that got loaded but was rejected must not keep its ~0.46 GB resident
@@ -356,18 +382,22 @@ bool RoMa2Onnx::Impl::EnsureMatch()
 		return false;
 	}
 	// img_A/img_B are in the graph contract (polyml MatchWrap) but dead on the coarse graph
-	// (dpt.py:127-138 ignores them), so one shared image tensor is bound to both. It is a host
-	// tensor, zero-filled by construction and copied H2D by ORT inside Run: the coarse graph
-	// provably ignores it today, and a zero image keeps the outputs deterministic should a future
-	// export wire the images in. No tensor here lives in the match session's arena, which is what
-	// makes the Unload() calls on the failure paths safe.
+	// (dpt.py:127-138 ignores them), so the export drops them; the ONE tolerated variation is an
+	// export whose trace could not be made without them (RoMa2Manifest::Load already checked their
+	// shape when the manifest lists them), in which case one shared host tensor is bound to both,
+	// zero-filled by construction and copied H2D by ORT inside Run -- the coarse graph provably
+	// ignores it today, and a zero image keeps the outputs deterministic should that ever be what is
+	// loaded. No tensor here lives in the match session's arena, which is what makes the Unload()
+	// calls on the failure paths safe.
 	if (match.InputShape("img_A") != NULL) {
 		const int64_t S(manifest.imageSize);
 		dummyImage = OrtTensor::Host({1, 3, S, S});
 	}
 	warpHost = OrtTensor::Host({1, cells, cells, 2});
 	confidenceHost = OrtTensor::Host({1, cells, cells, 1});
-	if (!warpHost.IsValid() || !confidenceHost.IsValid() ||
+	warpBAHost = OrtTensor::Host({1, cells, cells, 2});
+	confidenceBAHost = OrtTensor::Host({1, cells, cells, 1});
+	if (!warpHost.IsValid() || !confidenceHost.IsValid() || !warpBAHost.IsValid() || !confidenceBAHost.IsValid() ||
 		(match.InputShape("img_A") != NULL && !dummyImage.IsValid())) {
 		VERBOSE("error: can not allocate the RoMa2 coarse-match tensors");
 		match.Unload();
@@ -482,7 +512,8 @@ bool RoMa2Onnx::Describe(const float* planarRgb, OrtTensor& layersOut, std::vect
 	return true;
 }
 
-bool RoMa2Onnx::MatchCoarse(const OrtTensor& layersA, const OrtTensor& layersB, Image32F2& warp, Image32F& overlap)
+bool RoMa2Onnx::MatchCoarse(const OrtTensor& layersA, const OrtTensor& layersB,
+	Image32F2& warpAB, Image32F& confidenceAB, Image32F2& warpBA, Image32F& confidenceBA)
 {
 	ASSERT(IsLoaded());
 	if (!impl->EnsureMatch())
@@ -492,21 +523,24 @@ bool RoMa2Onnx::MatchCoarse(const OrtTensor& layersA, const OrtTensor& layersB, 
 	if (!impl->match.BindInput("descriptors_A", layersA) ||
 		!impl->match.BindInput("descriptors_B", layersB) ||
 		!impl->match.BindOutput("warp", impl->warpHost) ||           // host outputs: ORT copies D2H in Run()
-		!impl->match.BindOutput("confidence", impl->confidenceHost))
+		!impl->match.BindOutput("confidence", impl->confidenceHost) ||
+		!impl->match.BindOutput("warp_BA", impl->warpBAHost) ||
+		!impl->match.BindOutput("confidence_BA", impl->confidenceBAHost))
 		return false;
 	if (impl->dummyImage.IsValid() &&
 		(!impl->match.BindInput("img_A", impl->dummyImage) || !impl->match.BindInput("img_B", impl->dummyImage)))
 		return false;
 	if (!impl->match.Run())
 		return false;
-	warp.create(cells, cells);
-	overlap.create(cells, cells);
-	memcpy(warp.data, impl->warpHost.HostData(), (size_t)cells*cells*sizeof(Point2f)); // Point2f{x,y} == the graph's [...,0:2]
-	// the graph emits the raw overlap logit; the sigmoid is applied here (polycpp matcher.cpp:484-494 GatherOverlap)
-	const float* pLogit(impl->confidenceHost.HostData());
-	float* pOverlap(overlap.ptr<float>());
-	for (int i = 0, n = cells*cells; i < n; ++i)
-		pOverlap[i] = 1.f/(1.f + std::exp(-pLogit[i]));
+	warpAB.create(cells, cells);
+	confidenceAB.create(cells, cells);
+	warpBA.create(cells, cells);
+	confidenceBA.create(cells, cells);
+	// Point2f{x,y} == the graph's [...,0:2], for both directions
+	memcpy(warpAB.data, impl->warpHost.HostData(), (size_t)cells*cells*sizeof(Point2f));
+	memcpy(warpBA.data, impl->warpBAHost.HostData(), (size_t)cells*cells*sizeof(Point2f));
+	SigmoidInto(impl->confidenceHost, confidenceAB);
+	SigmoidInto(impl->confidenceBAHost, confidenceBA);
 	return true;
 }
 
@@ -551,7 +585,7 @@ bool RoMa2Onnx::Describe(const float*, OrtTensor&, std::vector<float>*, std::vec
 	return false;
 }
 
-bool RoMa2Onnx::MatchCoarse(const OrtTensor&, const OrtTensor&, Image32F2&, Image32F&)
+bool RoMa2Onnx::MatchCoarse(const OrtTensor&, const OrtTensor&, Image32F2&, Image32F&, Image32F2&, Image32F&)
 {
 	ASSERT(false); // unreachable: Load() always fails, so no caller ever gets a loaded model
 	return false;

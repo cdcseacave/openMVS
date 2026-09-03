@@ -120,8 +120,10 @@ def main():
             inputs, eager = (img_A,), descriptors_A
         else:
             # The real descriptors, not tensors of the right shape: this is the reference that exists
-            # because random inputs give the matcher head nothing to find.
-            inputs = (descriptors_A[0], descriptors_B[0], img_A, img_B)
+            # because random inputs give the matcher head nothing to find. No img_A/img_B: they are not
+            # part of the traced coarse graph's inputs (dead -- see graphs.MatchWrap's docstring), and
+            # MatchWrap.forward's own img_A/img_B parameters default to None for the coarse path.
+            inputs = (descriptors_A[0], descriptors_B[0])
             eager = MatchWrap(model, args.coarse).eval()(*inputs)
     eager_tensors = (eager,) if isinstance(eager, torch.Tensor) else tuple(eager)
 

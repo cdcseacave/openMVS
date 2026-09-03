@@ -27,7 +27,7 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
-#include "ImagePair.h" // the pair the infusion decision is taken on, and Pose3D through it
+#include "ImagePair.h" // the pair the verdict fits and the assembly fills, and Pose3D through it
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -42,107 +42,21 @@ class SFM_API Scene;
 class SFM_API Image;
 class SFM_API RoMa2Onnx;
 class SFM_API PairsMatcher;
+struct SFM_API PairWarps;
 
 // Configuration of the in-process ROMAv2 (ONNX Runtime) retrieval and dense matching
 struct SFM_API ROMA2Config {
-	bool enabled = false;                  // enable the in-process ROMAv2 model (explicit opt-in)
-	String modelPath;                      // folder holding the exported ROMAv2 ONNX graphs (empty = $OPENMVS_ROMA2_MODEL_PATH)
-	String setting = "base";               // model preset to load: turbo|fast|base
-	String provider = "auto";              // execution provider: auto|cuda|coreml|dml|cpu
-	bool useRetrieval = true;              // rank the candidate image pairs with the ROMAv2 global descriptors
-	// guide the sparse feature matching with the ROMAv2 dense warps. EXPERIMENTAL, hence off by
-	// default: end-to-end validation showed it supplies far more inliers and pairs, but degrades
-	// pose accuracy when the intrinsics are self-calibrated (see docs/design/ROMA2InProcess.md,
-	// Limitations). Enable with --roma2-match true, preferably together with
-	// --roma2-skip-healthy 100 --roma2-max-replace 15, or with imported intrinsics
-	bool useMatching = false;
-	float minConfidence = 0.3f;            // minimum warp confidence for a keypoint to be tracked
-	float minErodeConfidence = 0.9f;       // confidence above which a cell survives the erosion of the confidence map
-	int erodeBorder = 8;                   // border size (in warp cells) to erode the confidence map (0 = disabled)
-	float epipolarThreshold = 2.f;         // maximum distance to epipolar line when filtering candidates
-	unsigned slotBudget = 64;              // maximum number of image descriptors kept resident on the device
-	unsigned maxReplaceInliers = 0;        // only replace pairs below this inlier count (0 = replace any weaker pair)
-	unsigned skipHealthyInliers = 0;       // skip pairs already having at least this many inliers (0 = warp every pair)
-	unsigned feedbackMaxReplaceInliers = 15;  // maxReplaceInliers of the verification-feedback round
-	unsigned feedbackSkipHealthyInliers = 100; // skipHealthyInliers of the verification-feedback round
-	// minimum fraction of the warp's cells whose confidence is at least minConfidence, after the
-	// erosion, for a pair the descriptor matcher did not verify to be created out of the warp alone
-	// (0 = off). Pairs that already exist are never gated. On a repetitive scene the created pairs
-	// are what fragments the view graph, and this gate does not fix it: measured alone at 0.05 it
-	// left 32265651 on 124 of 377 registered images, against the 250 the follow-up campaign
-	// pre-registered as the bar for making it a default (docs/design/ROMA2InProcess.md, Limitations)
-	float minCreatedOverlap = 0.f;
-	// drop the guided matches that lose a train-side collision (MatchFeaturesGeometric). Off by the
-	// same ruling: measured alone it costs no verified inliers (median per pair 126 vs 126 and 158
-	// vs 157 on the two captures), but it also registers far fewer images (183 of 345 against 309 on
-	// f7dbf861), and on the only statistic comparable across two arms that registered different sets
-	// -- the alignment-free relative rotation -- it is worse there (+18.1% against the SIFT baseline,
-	// where the plain dense arm is +9.5%); see docs/design/ROMA2InProcess.md, Limitations
-	bool guidedCrossCheck = false;
-	// dense two-view pair validation gate, running before any descriptor matching on the pairs the
-	// match mode selected: each candidate is warped, a coverage-maximising sample of the warp is
-	// drawn, one geometry is fitted to that whole sample without any epipolar pre-selection, and
-	// the pair is kept only if the fit's inlier subset still covers enough of both images
-	// (minInlierCoverage). A rejected pair is dropped, not demoted -- it does not fall through to
-	// descriptor matching. Opt-in and independent of useMatching: the gate judges pairs, the dense
-	// matcher re-matches them
-	bool useValidation = false;
-	unsigned denseSampleSize = 2000;       // budget of the coverage-maximising warp sample (SampleWarpByCoverage)
-	// the gate's whole accept/reject rule: keep the pair when min(coverageInlierA, coverageInlierB)
-	// reaches this fraction of the coarse coverage grid. It replaced the RANSAC inlier ratio the
-	// gate first shipped with, rather than complementing it. Measured over four Truck arms plus
-	// Meetingroom and Courthouse, the ratio separated true from false pairs barely above chance
-	// (restricted-population AUC 0.55-0.70) and cost recall outright -- at 0.5 warp-native px it
-	// rejected 89% of the true pairs it was shown -- while coverage alone leaks 0.00-0.15% of
-	// normal false pairs at 90-99% recall on all three scenes. Pairs that see different instances
-	// of a repeated structure are NOT this gate's job; the triplet view-graph filter handles those.
-	// See docs/design/ROMA2InProcess.md. 0 disables rejection: every pair passes
-	float minInlierCoverage = 0.25f;
-	// dense supplementation: on a pair the gate validated and the guided pass then verified, add
-	// dense correspondences drawn from that pair's own warp ALONGSIDE its sparse matches, as
-	// keypoints appended past each image's described prefix. It exists for the weakly-textured
-	// pairs a descriptor matcher can only find a handful of correspondences on: they contribute
-	// structure instead of dropping out. Needs both useValidation and useMatching -- the gate is
-	// what makes "validated" mean anything, and the guided pass is where the warp already is, so
-	// no third warp pass exists. Opt-in, like every other pass here
-	bool useSupplement = false;
-	// what counts as a pair weak enough to infuse, decided right after the guided pass and its
-	// geometric filter: the SIFT pass failed that filter, OR it left fewer verified inliers than
-	// supplementMaxInliers, OR its coverage of the pair's valid disparity area is below
-	// supplementMinCoverage. Any one is enough; they catch different failures -- no descriptor
-	// evidence at all, too little of it, and enough of it but all in one textured corner of an
-	// overlap whose remainder is exactly what the dense draw is for.
-	// Coverage is measured on the complementary draw's own (fine) bucket grid: the buckets holding a
-	// confident warp cell are the valid disparity area the gate judged, and the ones a verified SIFT
-	// inlier lands in are what the sparse matcher covered (WarpDrawCoverage). A failed SIFT pass
-	// covers nothing, so its coverage is 0.
-	unsigned supplementMaxInliers = 500;
-	float supplementMinCoverage = 0.3f;
-	// TOTAL correspondences a supplemented pair is drawn against, sparse and dense together. The
-	// dense budget is round(supplementTotalMatches * (1 - coverage)): the share of the total
-	// proportional to the part of the valid disparity area the sparse matches left empty, which is
-	// the part the draw can fill. This is also what bounds the scene-wide keypoint growth a wide arm
-	// has to pay for, since a dense match costs a keypoint in EACH of the two images plus one track.
-	// 0 = no total budget, in which case the draw is bounded by denseSampleSize alone
-	unsigned supplementTotalMatches = 2000;
-	// Relative-pose choice on an infused pair that has both a SIFT pose (fitted on its verified
-	// sparse inliers) and the gate's dense pose (fitted on its spread warp sample): the pair keeps
-	// the SIFT pose -- the more accurate one when the two agree, sub-pixel even without coverage --
-	// unless the two differ substantially, and then it takes the dense one. "Substantially" is
-	// either angle over its threshold: the rotation angle of R_sift * R_dense^T, or the angle
-	// between the two unit translation directions.
-	// EDUCATED FIRST GUESSES, to be fitted on pseudo-GT: every infused pair emits both poses and
-	// both angles at -v 3 ("ROMA2 pose check"), so the two can be swept offline against COLMAP
-	// relative poses without re-running the matcher.
-	float supplementPoseMaxRotationDeg = 2.f;
-	float supplementPoseMaxTranslationDeg = 10.f;
-	// Instead of choosing between the two poses, re-estimate one on all of the pair's
-	// correspondences, sparse and dense together, with the matcher's own estimator (same branch,
-	// same threshold). Off: it is a hypothesis the pseudo-GT sweep has to confirm before it can be
-	// a default, and a refit on a draw that came from one of the two poses is not independent
-	// evidence about it.
-	bool supplementRefitPose = false;
-	bool useGPU = true;                    // allow the GPU execution providers (false forces the CPU provider)
+	bool enabled = false;          // enable the in-process ROMAv2 model (explicit opt-in)
+	String modelPath;              // folder of the exported graphs (empty = $OPENMVS_ROMA2_MODEL_PATH)
+	String setting = "base";       // preset: turbo|fast|base
+	String provider = "auto";      // execution provider: auto|cuda|coreml|dml|cpu
+	bool useRetrieval = true;      // rank candidate pairs with the ROMAv2 global descriptors
+	bool useMatching = false;      // one-pass dense pair matching (verdict, guided, fill, store)
+	float minConfidence = 0.1f;    // a warp cell takes part (verdict, tracking, fill) at this confidence or above
+	float minOverlap = 0.10f;      // verdict: min(inlier area A, inlier area B) >= minOverlap
+	unsigned denseMatches = 2000;  // dense fill cap per pair
+	unsigned slotBudget = 64;      // image descriptors kept resident on the device
+	bool useGPU = true;            // allow the GPU execution providers
 
 	// Return the folder holding the exported models: the explicit setting if given,
 	// else the OPENMVS_ROMA2_MODEL_PATH environment variable, else empty
@@ -155,15 +69,13 @@ struct SFM_API ROMA2Config {
 
 	// Return true if the in-process ROMAv2 model is enabled, used by at least one pass, and locatable
 	inline bool IsInProcessEnabled() const {
-		return enabled && (useRetrieval || useMatching || useValidation) && !ResolveModelPath().empty();
+		return enabled && (useRetrieval || useMatching) && !ResolveModelPath().empty();
 	}
 
 	// Return true if a pass needs the coarse-match graph itself (the warps), and not merely the
 	// global descriptors: the ONNX sessions have to be loaded for those, descriptors alone may
 	// already be stored in the scene
-	inline bool NeedsWarps() const {
-		return useMatching || useValidation;
-	}
+	inline bool NeedsWarps() const { return useMatching; }
 };
 /*----------------------------------------------------------------*/
 
@@ -178,154 +90,78 @@ struct SFM_API ROMA2Config {
 SFM_API unsigned ComputeGlobalDescriptorsROMA2(Scene& scene, RoMa2Onnx& roma2);
 /*----------------------------------------------------------------*/
 
-// Which relative pose an infused pair ends up carrying (MatchPairsROMA2, and the "ROMA2 pose check"
-// record it emits per infused pair).
-enum class InfusedPoseChoice : uint8_t {
-	NONE = 0,   // neither fit produced a pose
-	SPARSE,     // the pose fitted on the pair's verified sparse inliers, which agrees with the gate's
-	DENSE,      // the gate's pose, fitted on its spread warp sample: the two disagreed substantially
-	DENSE_ONLY, // the pair has no sparse inliers, so it is the gate's pose or nothing
-	REFIT,      // one pose re-estimated on sparse and dense together (ROMA2Config::supplementRefitPose)
+// What the verdict knows about one pair once it ran
+struct SFM_API PairVerdict {
+	bool admitted = false;
+	float confidentAreaA = 0.f, confidentAreaB = 0.f; // share of each warp grid at conf >= minConfidence and landing in-frame
+	float inlierAreaA = 0.f, inlierAreaB = 0.f;       // share of each warp grid the fitted geometry explains
+	// A's inlier cells, raster order, index-parallel, in the pixels of the working orientation of
+	// each image (SampleWarpByCoverage's convention), with each cell's confidence: the population the
+	// dense fill draws from
+	std::vector<Point2f> inliersA, inliersB;
+	std::vector<float> confidences;
 };
-SFM_API LPCTSTR InfusedPoseChoiceName(InfusedPoseChoice choice);
 
-// One pair's dense infusion: the correspondences drawn from that pair's own warp, to be appended
-// alongside whatever sparse matches it has. Index-parallel, in the pixels of the working orientation
-// of each image (SampleWarpByCoverage's convention). Empty on a pair that was not infused.
-struct SFM_API DenseSupplement {
+// Judge one candidate pair from its bidirectional warp alone. Fits one geometry on a coverage-uniform
+// sample (SampleWarpByCoverage, target VERDICT_SAMPLE = 4000) of A's cells at conf >= config.minConfidence
+// through pairsMatcher.GeometricFilter(tmpA, tmpB, pair, WarpTolerance(...)) on temporary Image copies
+// carrying the sample as keypoints and no pose (a scene holding a ground-truth solution must not leak
+// it into the fit); scores ALL of A's eligible cells against pair.F (Sampson distance <=
+// WarpTolerance) -> inlierAreaA; scores all of B's eligible cells, each as the correspondence
+// (DenormCoord(ba.warp[cell]) in A, cell centre in B), against the same pair.F -> inlierAreaB;
+// admits iff min(inlierAreaA, inlierAreaB) >= config.minOverlap.
+// On admission `pair` carries the fit's F/E/relativePose (whichever the branch produced) and no
+// matches; verdict.inliersA/B are A's inlier cells. On rejection pair is Reset() and verdict says why
+// (areas filled as far as they were computed). A sample under 8 cells is rejected without a fit.
+// Pure function of its inputs; runs on the pool (GeometricFilter is const and thread-safe).
+SFM_API void JudgePairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
+	const PairWarps& warps, const ROMA2Config& config, ImagePair& pair, PairVerdict& verdict);
+/*----------------------------------------------------------------*/
+
+// One pair's dense segment before it is appended
+struct SFM_API DenseMatches {
 	std::vector<Point2f> pointsA, pointsB;
 	std::vector<float> confidences;
-	// what the decision was taken on: the pair's SIFT coverage of its valid disparity area (0 on a
-	// pair whose guided SIFT pass failed) and the budget that coverage bought
-	float coverage = 0.f;
-	unsigned budget = 0;
-	// The "ROMA2 pose check" record of this pair, filled where the choice is made (on the pool, by
-	// ChooseInfusedPose) and printed where the pair is known to be STORED (the serial apply). The
-	// two are separated because the offline threshold sweep must not fit on pairs the reconstruction
-	// does not contain -- the replace policy can still turn an infused result down -- and because a
-	// line printed from the pool arrives in whatever order the pool finished in.
-	unsigned numSparse = 0;                 // verified sparse inliers at the moment of the decision
-	InfusedPoseChoice poseChoice = InfusedPoseChoice::NONE;
-	float poseRotationDeg = 0.f;            // NaN when there was no pair of poses to compare
-	float poseTranslationDeg = 0.f;
-	std::optional<Pose3D> sparsePose, densePose; // both fits, recorded whichever one was kept
 };
 
-// Decide whether to infuse dense correspondences into one pair, and draw them if so. See the
-// implementation for the rule; in short, a gate-validated pair is infused when its guided SIFT pass
-// failed, or left fewer than config.supplementMaxInliers verified inliers, or covered less than
-// config.supplementMinCoverage of the pair's valid disparity area, and the budget is the share of
-// config.supplementTotalMatches proportional to the uncovered remainder.
-// `guided` is the pair as the SIFT pass left it -- its verified sparse inliers, or no matches at all
-// on a pair kept dense-only -- and must carry no dense segment yet.
-// Returns true when the pair is infused, and then `supplement` holds the draw.
-SFM_API bool DrawDenseSupplement(
-	const Image& imgA,
-	const Image& imgB,
-	const Image32F2& warp,
-	const Image32F& overlap,
-	const ROMA2Config& config,
-	const ImagePair& guided,
-	DenseSupplement& supplement);
+// Turn an admitted pair's evidence into the pair the scene stores: draw the dense fill from the
+// verdict's inlier cells where the guided candidates are not (SampleWarpComplementary with occupiedA =
+// the A positions of `guided`, cap config.denseMatches); fit ONE geometry on guided u dense through
+// pairsMatcher.GeometricFilter at the matcher's own maxEpipolarError on temporary Image copies whose
+// keypoints are those correspondences; then classify against pair.F: the guided matches within the
+// matcher's maxEpipolarError are the sparse segment (`pair.matches[0, numFilteredInliers)`, the pair's
+// descriptor evidence), the dense correspondences within WarpTolerance are the dense segment (returned
+// in `dense`, appended by StorePairROMA2 after the pair exists). When the union fit fails (too few
+// inliers at the sparse tolerance, or the branch's strict filters), the verdict's geometry stands:
+// the classification runs against it instead, so an admitted pair is always stored -- a pair with
+// zero sparse inliers is a dense-only pair, its dense segment its whole evidence.
+// `pair` must arrive carrying the verdict's geometry and no matches, and `guided` in increasing
+// queryIdx (MatchFeaturesGuided's own order), which is the order the sparse segment keeps.
+// Returns true when the pair carries at least one correspondence of either kind.
+SFM_API bool AssemblePairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
+	const PairVerdict& verdict, const std::vector<DMatch>& guided, const ROMA2Config& config, int warpSize,
+	ImagePair& pair, DenseMatches& dense);
 
-// Re-estimate ONE geometry for an infused pair on all of its correspondences, sparse and dense
-// together (ROMA2Config::supplementRefitPose), through the matcher's own estimator -- same branch,
-// same threshold -- on temporary Image copies whose keypoints are those correspondences. The copies
-// carry no pose, for the same reason the gate's do not: a scene that happens to hold a ground-truth
-// solution must not be able to leak it into a fitted geometry. The dense keypoints do not exist in
-// the images yet (they are appended serially, after the pass that calls this), which is why the
-// refit runs off the drawn positions in `supplement` rather than off the stored pair.
-// On success `pair` receives the refitted relative pose AND the E and F the fit itself produced (the
-// branch's own estimator, in its own convention -- no re-composition from a nominal K), so the three
-// describe one geometry -- a pair whose F came from the previous fit would hand ViewGraphCalibrator
-// and the epipolar band a constraint the pose no longer agrees with. On failure the pair is left
-// exactly as it was.
-// Returns true if the refit landed.
-SFM_API bool RefitInfusedPose(
-	PairsMatcher& pairsMatcher,
-	const Image& imgA,
-	const Image& imgB,
-	const DenseSupplement& supplement,
-	ImagePair& pair);
-
-// The rotation and unit-translation angles between two relative poses, in degrees: the angle of
-// R1 * R2^T, and the angle between the two translation directions, both in ImagePair::relativePose's
-// own convention.
-SFM_API void RelativePoseDifference(const Pose3D& pose1, const Pose3D& pose2, float& rotationDeg, float& translationDeg);
-
-
-// The pose choice of an infused pair, as a rule with no side effects: the SIFT pose is the more
-// accurate one WHEN THE TWO AGREE (sub-pixel correspondences, even with poor coverage), so the pair
-// keeps it unless the two differ substantially -- either angle over its threshold
-// (config.supplementPoseMaxRotationDeg, config.supplementPoseMaxTranslationDeg) -- and then it takes
-// the dense pose, which rests on evidence spread over the whole overlap. `rotationDeg` and
-// `translationDeg` receive the two angles, or NaN when there is no pair of poses to compare.
-// REFIT is never returned here: it is the caller's own decision, taken when the refit succeeds.
-SFM_API InfusedPoseChoice SelectInfusedPose(
-	const std::optional<Pose3D>& sparsePose,
-	const std::optional<Pose3D>& densePose,
-	unsigned numSparse,
-	const ROMA2Config& config,
-	float& rotationDeg,
-	float& translationDeg);
+// Store one assembled pair: create it, or replace the same-key pair a previous Match() left, then
+// append its dense segment (AppendDenseMatches). Serial, in (ID1,ID2) order -- the keypoint indices
+// the append hands out depend on what the two images already carry.
+SFM_API void StorePairROMA2(Scene& scene, std::unordered_map<PairIdx::PairIndex, IIndex>& pairIndexMap,
+	ImagePair&& pair, const DenseMatches& dense, int warpSize);
 /*----------------------------------------------------------------*/
 
-// Run the ROMAv2 dense matching pass over the given candidate pairs of an already
-// descriptor-matched scene: plans which image descriptors stay resident on the device (Belady
-// over the candidates in (ID1,ID2) order, at most config.slotBudget slots), then, on the
-// calling thread, loads and describes those slots and runs the coarse-match graph pair by
-// pair, while the thread pool turns each warp into a guided sparse re-match of that pair
-// (ErodeConfidenceMap, TrackKeypointsByWarp, MatchFeaturesGeometric). Guided results are
-// stored into the scene serially in (ID1,ID2) order (ApplyROMA2Pair), so what a pair replaces
-// never depends on the order the pool happened to finish in (design decision 11).
-// A pair the descriptor matcher did not verify is only created when the eroded confidence map
-// covers at least config.minCreatedOverlap of the warp grid (0 = off); existing pairs are never
-// gated. config.guidedCrossCheck selects the train-side cross-check of the guided re-match.
-// bFeedbackRound selects the per-round replace policy: the first round warps every candidate
-// and replaces whenever the guided set is larger, the verification-feedback round skips pairs
-// that are already healthy and only replaces the weakest ones (design decision 6).
-// With config.useSupplement, the pass decides right after the guided matching of a gate-validated
-// pair and its geometric filter -- while that pair's warp and its own complementary draw are still
-// at hand -- whether to infuse dense correspondences into it (see ROMA2Config::supplementMaxInliers
-// for the rule and the budget). Infused matches are dense keypoints appended past each image's
-// described prefix, drawn only where the pair's verified sparse matches are NOT
-// (SampleWarpComplementary, AppendDenseMatches). Drawn on the pool but appended in the same serial
-// (ID1,ID2) pass as the results, since the keypoint indices an append hands out depend on what the
-// two images already carry.
-// A validated pair whose guided SIFT pass FAILED is kept as a dense-only pair -- zero sparse
-// inliers, the gate's F/E and relative pose as its geometry, the whole draw -- instead of being
-// dropped. Such a result may only CREATE a pair: an existing pair carries sparse evidence a
-// dense-only one does not, and never loses to it.
-// roma2 must already be loaded (RoMa2Onnx::Load); a pair whose image could not be loaded,
-// described, or matched is dropped with a message, never matched against a stale slot.
-// Returns the number of scene pairs created plus replaced.
-SFM_API unsigned MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, const PairIdxArr& candidatePairs, const ROMA2Config& config, bool bFeedbackRound);
+// One-pass dense pair matching of the given candidate pairs (each unordered pair once, i < j): sorts
+// them in (ID1,ID2) order, plans the device slots (Belady, config.slotBudget), and on the calling
+// thread describes the slots and runs the bidirectional coarse-match graph pair by pair while the pool
+// judges each pair (JudgePairROMA2), guides its sparse matching (TrackKeypointsByWarp,
+// MatchFeaturesGuided) and assembles it (AssemblePairROMA2); assembled pairs are stored serially in
+// (ID1,ID2) order (StorePairROMA2). A candidate already in scene.pairs is skipped (the feedback round
+// proposes only new pairs, and a re-run must not double-store). A pair whose image could not be
+// described or whose graph call failed is dropped with a message.
+// The summary line reports candidates, judged, admitted, stored, dense-only, and the slot plan's
+// loads/reloads (the cache cost of the order).
+// Returns the number of pairs stored.
+SFM_API unsigned MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, const PairIdxArr& candidatePairs, const ROMA2Config& config);
 /*----------------------------------------------------------------*/
-
-// Dense two-view pair validation gate: run the ROMAv2 warp over the given candidate pairs -- the
-// ones the match mode selected, before any descriptor matching -- and keep only those a single
-// geometry explains. Per pair: erode the confidence map, draw a coverage-maximising sample of the
-// warp (SampleWarpByCoverage, config.denseSampleSize points), then fit one geometry to that whole
-// sample through PairsMatcher::GeometricFilter on temporary Image copies whose keypoints are the
-// dense points (the MatchFeaturesGeometric precedent, so no second estimator exists). Nothing is
-// pre-selected along the epipolar lines of a geometry the warp itself supplied, which is what makes
-// the verdict independent of the warp's own claim; the pair passes when the fit's inliers still
-// cover config.minInlierCoverage of both images.
-// The fit is the matcher's own: GeometricFilter is called with the PairsMatcher's configuration, so
-// which geometry runs is PairsMatcher::SelectGeometryBranch's decision from what the two images
-// actually carry (calibrated bearings where both trust their intrinsics, F otherwise) and the
-// epipolar threshold is MatchConfig::maxEpipolarError, the same precision the descriptor path
-// demands. The gate holds no threshold and no branch choice of its own.
-// The device slots, prefetch pipeline and warp order are exactly MatchPairsROMA2's, so the two
-// passes cost the same per pair; unlike it, this pass needs no descriptors, only cameras.
-// `pairs` is filtered in place to the pairs that passed -- a rejected pair is dropped, never
-// demoted to ordinary descriptor matching. A candidate whose image could not be described, or whose
-// warp the graph could not produce, was never judged at all, which is a different fact from being
-// rejected, and the summary line counts the two separately.
-// roma2 must already be loaded (RoMa2Onnx::Load); a pair whose image could not be loaded,
-// described or coarse-matched is dropped with a message, never judged against a stale slot.
-// Returns the number of pairs that passed the gate (== pairs.size() on return).
-SFM_API unsigned ValidatePairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, PairIdxArr& pairs, const ROMA2Config& config);
 
 } // namespace SFM
 

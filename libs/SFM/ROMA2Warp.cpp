@@ -59,40 +59,21 @@ Point2f SFM::DenormCoord(const Point2f& normCoord, const cv::Size& size) {
 /*----------------------------------------------------------------*/
 
 
-// Erode confidence map if requested (helps remove outliers near edges)
-void SFM::ErodeConfidenceMap(Image32F& imgConfidence, int erodeBorder, float minConfidence, float minErodeConfidence)
-{
-	ASSERT(erodeBorder > 0);
-	// Create binary mask: 0 for invalid pixels (0.f values), 1 for valid
-	Image8U mask(imgConfidence >= minConfidence);
-	// Compute distance from each pixel to nearest 0 pixel
-	Image32F distMap;
-	cv::distanceTransform(mask, distMap, cv::DIST_L2, cv::DIST_MASK_PRECISE);
-	// Zero out pixels closer than erodeBorder to invalid pixels, if confidence is below threshold
-	for (int y = 0; y < imgConfidence.rows; ++y)
-		for (int x = 0; x < imgConfidence.cols; ++x)
-			if (distMap(y, x) < erodeBorder && imgConfidence(y, x) < minErodeConfidence)
-				imgConfidence(y, x) = 0.f;
-}
-/*----------------------------------------------------------------*/
-
-
 size_t SFM::TrackKeypointsByWarp(
 	const Image& imgA,
 	const Image& imgB,
 	const Image32F2& warp,
-	const Image32F& overlap,
+	const Image32F& confidence,
 	float minConfidence,
 	std::vector<Point2f>& trackedA,
 	std::vector<Point2f>& trackedB,
 	std::vector<uchar>& trackStatus)
 {
-	ASSERT(!warp.empty() && warp.size() == overlap.size());
-	// Track keypoints from A to B using warp and overlap maps.
-	// The described prefix only: the tracked points guide a descriptor re-match, and a dense
-	// keypoint appended by an earlier supplemented pair has no descriptor to match with. Tracking
-	// it would also break the index-parallel contract MatchFeaturesGeometric asserts, since it
-	// walks the same prefix.
+	ASSERT(!warp.empty() && warp.size() == confidence.size());
+	// Track keypoints from A to B using the warp and confidence maps.
+	// The described prefix only: the tracked points guide a descriptor match, and a dense keypoint
+	// appended by an earlier pair has no descriptor to match with. Tracking it would also break the
+	// index-parallel contract MatchFeaturesGuided asserts, since it walks the same prefix.
 	const size_t numKp = imgA.NumDescribedKeypoints();
 	trackedA.resize(numKp);
 	trackedB.resize(numKp);
@@ -106,7 +87,7 @@ size_t SFM::TrackKeypointsByWarp(
 		// last warp column/row, where the bilinear interpolation of sample() reads the (zero-weighted)
 		// neighbour one past the end of the grid. Clamping that neighbour to the last cell leaves
 		// every interior sample bit-identical and only makes the border reads legal.
-		const float ckpB = overlap.sampleSafe(wkpA);
+		const float ckpB = confidence.sampleSafe(wkpA);
 		if (ckpB < minConfidence) {
 			trackStatus[i] = 0;
 			continue;
@@ -152,9 +133,9 @@ struct WarpCandidate {
 //   Chaining is through the A SIDE ONLY: the B-side position is whatever the warp maps that cell to,
 //   a float that two pairs have no reason to agree on. So a chain grows along the images that play
 //   the A role of their pairs, and stops naturally wherever the confident overlaps stop coinciding.
-// Confidence remains the ELIGIBILITY test (the eroded minConfidence bar in CollectWarpCandidates),
-// it is simply no longer the ranking: every candidate cell is one the warp is confident about, and
-// among those the choice may as well be the one that two pairs can both make.
+// Confidence remains the ELIGIBILITY test (the minConfidence bar in CollectWarpCandidates), it is
+// simply no longer the ranking: every candidate cell is one the warp is confident about, and among
+// those the choice may as well be the one that two pairs can both make.
 inline int WarpCellLatticePriority(int x, int y)
 {
 	// trailing zeros of x, with 0 divisible by every power of two (so it never loses a comparison);
@@ -180,21 +161,21 @@ inline bool WarpCandidateBeats(const WarpCandidate& candidate, const WarpCandida
 // Pass 1 of every warp draw: every eligible cell, in raster order. Their count is what the bucket
 // grid is sized from, so it has to be known before a single bucket exists.
 void CollectWarpCandidates(const cv::Size& sizeA, const cv::Size& sizeB, const Image32F2& warp,
-	const Image32F& overlap, float minConfidence, std::vector<WarpCandidate>& candidates)
+	const Image32F& confidence, float minConfidence, std::vector<WarpCandidate>& candidates)
 {
 	candidates.clear();
-	candidates.reserve((size_t)overlap.rows*overlap.cols/4);
-	for (int y = 0; y < overlap.rows; ++y) {
-		for (int x = 0; x < overlap.cols; ++x) {
-			const float confidence = overlap(y, x);
-			if (confidence < minConfidence)
+	candidates.reserve((size_t)confidence.rows*confidence.cols/4);
+	for (int y = 0; y < confidence.rows; ++y) {
+		for (int x = 0; x < confidence.cols; ++x) {
+			const float conf = confidence(y, x);
+			if (conf < minConfidence)
 				continue;
 			const Point2f ptB(DenormCoord(warp(y, x), sizeB));
 			if (!Image8U::isInside(ptB, sizeB))
 				continue; // the warp sends this cell outside the second image
-			candidates.push_back(WarpCandidate{confidence, y*overlap.cols + x,
+			candidates.push_back(WarpCandidate{conf, y*confidence.cols + x,
 				WarpCellLatticePriority(x, y),
-				CoordFromTo(Point2f((float)x, (float)y), overlap.size(), sizeA), ptB});
+				CoordFromTo(Point2f((float)x, (float)y), confidence.size(), sizeA), ptB});
 		}
 	}
 }
@@ -205,22 +186,48 @@ void CollectWarpCandidates(const cv::Size& sizeA, const cv::Size& sizeB, const I
 // with n^2 * E >= maxSamples * T, which is ceil(sqrt(maxSamples*T/E)) without a libm square root
 // that could land a hair off a perfect square and shift the whole grid on a different platform.
 // Capped at the warp side: beyond one bucket per cell there is nothing left to gain.
-int WarpBucketGridSide(const Image32F& overlap, size_t numCandidates, unsigned maxSamples)
+int WarpBucketGridSide(const Image32F& confidence, size_t numCandidates, unsigned maxSamples)
 {
 	ASSERT(numCandidates > 0);
-	const uint64_t target = (uint64_t)maxSamples*(uint64_t)overlap.rows*(uint64_t)overlap.cols;
+	const uint64_t target = (uint64_t)maxSamples*(uint64_t)confidence.rows*(uint64_t)confidence.cols;
 	int numBuckets = 1;
-	while (numBuckets < overlap.cols &&
+	while (numBuckets < confidence.cols &&
 		(uint64_t)numBuckets*(uint64_t)numBuckets*(uint64_t)numCandidates < target)
 		++numBuckets;
 	return numBuckets;
 }
 
 // The bucket a warp grid cell falls in, on a numBuckets x numBuckets grid over the WHOLE warp
-inline size_t WarpCellBucket(int cell, const Image32F& overlap, int numBuckets)
+inline size_t WarpCellBucket(int cell, const Image32F& confidence, int numBuckets)
 {
-	const int x = cell % overlap.cols, y = cell / overlap.cols;
-	return (size_t)(y*numBuckets/overlap.rows)*numBuckets + x*numBuckets/overlap.cols;
+	const int x = cell % confidence.cols, y = cell / confidence.cols;
+	return (size_t)(y*numBuckets/confidence.rows)*numBuckets + x*numBuckets/confidence.cols;
+}
+
+// Fraction of a DENSE_COVERAGE_GRID^2 grid over each image that a warp sample occupies. Only
+// SampleWarpByCoverage reports it, so it lives here rather than in the header: a coverage of an
+// arbitrary point set is not a warp concept, it is the spread of the one draw that measures it.
+void ComputeSampleCoverage(
+	const std::vector<Point2f>& sampledA,
+	const std::vector<Point2f>& sampledB,
+	const cv::Size& sizeA,
+	const cv::Size& sizeB,
+	float& coverageA,
+	float& coverageB)
+{
+	ASSERT(sampledA.size() == sampledB.size());
+	std::vector<bool> gridA((size_t)DENSE_COVERAGE_GRID*DENSE_COVERAGE_GRID, false), gridB(gridA);
+	const auto MarkCell = [](std::vector<bool>& grid, const Point2f& pt, const cv::Size& size) {
+		const unsigned cx = MINF((unsigned)MAXF(0.f, (float)DENSE_COVERAGE_GRID*pt.x/(float)size.width), DENSE_COVERAGE_GRID-1);
+		const unsigned cy = MINF((unsigned)MAXF(0.f, (float)DENSE_COVERAGE_GRID*pt.y/(float)size.height), DENSE_COVERAGE_GRID-1);
+		grid[(size_t)cy*DENSE_COVERAGE_GRID + cx] = true;
+	};
+	for (size_t i = 0; i < sampledA.size(); ++i) {
+		MarkCell(gridA, sampledA[i], sizeA);
+		MarkCell(gridB, sampledB[i], sizeB);
+	}
+	coverageA = (float)std::count(gridA.begin(), gridA.end(), true)/(float)gridA.size();
+	coverageB = (float)std::count(gridB.begin(), gridB.end(), true)/(float)gridB.size();
 }
 
 } // namespace
@@ -230,7 +237,7 @@ size_t SFM::SampleWarpByCoverage(
 	const Image& imgA,
 	const Image& imgB,
 	const Image32F2& warp,
-	const Image32F& overlap,
+	const Image32F& confidence,
 	float minConfidence,
 	unsigned maxSamples,
 	std::vector<Point2f>& sampledA,
@@ -238,7 +245,7 @@ size_t SFM::SampleWarpByCoverage(
 	float& coverageA,
 	float& coverageB)
 {
-	ASSERT(!warp.empty() && warp.size() == overlap.size());
+	ASSERT(!warp.empty() && warp.size() == confidence.size());
 	sampledA.clear();
 	sampledB.clear();
 	coverageA = coverageB = 0.f;
@@ -246,7 +253,7 @@ size_t SFM::SampleWarpByCoverage(
 		return 0;
 	const cv::Size sizeA(imgA.GetSize()), sizeB(imgB.GetSize());
 	std::vector<WarpCandidate> candidates;
-	CollectWarpCandidates(sizeA, sizeB, warp, overlap, minConfidence, candidates);
+	CollectWarpCandidates(sizeA, sizeB, warp, confidence, minConfidence, candidates);
 	if (candidates.empty())
 		return 0;
 
@@ -258,11 +265,11 @@ size_t SFM::SampleWarpByCoverage(
 		std::iota(chosen.begin(), chosen.end(), 0);
 	} else {
 		// pass 2: one winner per bucket of the n x n grid over the whole warp
-		const int numBuckets = WarpBucketGridSide(overlap, candidates.size(), maxSamples);
+		const int numBuckets = WarpBucketGridSide(confidence, candidates.size(), maxSamples);
 		std::vector<int> bucketBest((size_t)numBuckets*numBuckets, -1);
 		FOREACH(i, candidates) {
 			const WarpCandidate& candidate = candidates[i];
-			int& best = bucketBest[WarpCellBucket(candidate.cell, overlap, numBuckets)];
+			int& best = bucketBest[WarpCellBucket(candidate.cell, confidence, numBuckets)];
 			if (best < 0 || WarpCandidateBeats(candidate, candidates[best]))
 				best = (int)i; // the one winner rule: lattice priority, ties to raster order
 		}
@@ -280,7 +287,7 @@ size_t SFM::SampleWarpByCoverage(
 		sampledA.push_back(candidate.ptA);
 		sampledB.push_back(candidate.ptB);
 	}
-	ComputeSampleCoverage(sampledA, sampledB, sizeA, sizeB, std::vector<uint32_t>(), coverageA, coverageB);
+	ComputeSampleCoverage(sampledA, sampledB, sizeA, sizeB, coverageA, coverageB);
 	return sampledA.size();
 }
 /*----------------------------------------------------------------*/
@@ -316,82 +323,61 @@ size_t SFM::SampleWarpComplementary(
 	const Image& imgA,
 	const Image& imgB,
 	const Image32F2& warp,
-	const Image32F& overlap,
+	const Image32F& confidence,
 	float minConfidence,
 	unsigned maxSamples,
 	const std::vector<Point2f>& occupiedA,
 	std::vector<Point2f>& sampledA,
 	std::vector<Point2f>& sampledB,
-	std::vector<float>& confidences,
-	WarpDrawCoverage* coverage)
+	std::vector<float>& confidences)
 {
-	ASSERT(!warp.empty() && warp.size() == overlap.size());
+	ASSERT(!warp.empty() && warp.size() == confidence.size());
 	// cleared before any early return: the draw is a pure function of its inputs, so a caller
 	// reusing its buffers must get exactly what a caller passing empty ones gets
 	sampledA.clear();
 	sampledB.clear();
 	confidences.clear();
-	if (coverage)
-		*coverage = WarpDrawCoverage();
 	if (maxSamples == 0)
 		return 0;
 	const cv::Size sizeA(imgA.GetSize()), sizeB(imgB.GetSize());
 	std::vector<WarpCandidate> candidates;
-	CollectWarpCandidates(sizeA, sizeB, warp, overlap, minConfidence, candidates);
+	CollectWarpCandidates(sizeA, sizeB, warp, confidence, minConfidence, candidates);
 	if (candidates.empty())
 		return 0;
 	// the grid is sized for THIS draw's budget, which is what makes the sample complementary in
 	// scale as well as in position: a pair whose sparse matches already fill most of its budget
 	// asks for few dense points and gets a coarse grid, one that has almost none asks for many and
 	// gets a fine one
-	const int numBuckets = WarpBucketGridSide(overlap, candidates.size(), maxSamples);
-	// every bucket an already-verified correspondence sits in is out of the draw. Occupancy is
-	// measured in image A only, deliberately: the warp grid lives in A's frame, so that is the one
-	// frame where a sparse keypoint position and a warp cell are directly comparable. On a genuine
-	// pair -- the only kind that reaches here, the gate having validated it -- the warp is close
-	// enough to a diffeomorphism that the B-side density mirrors A's through it, so a second grid
-	// in B (which would also need a B->A back-map the coarse warp does not carry) would mark the
-	// same buckets.
+	const int numBuckets = WarpBucketGridSide(confidence, candidates.size(), maxSamples);
+	// every bucket an already-held correspondence sits in is out of the draw. Occupancy is measured
+	// in image A only, deliberately: the warp grid lives in A's frame, so that is the one frame
+	// where a sparse keypoint position and a warp cell are directly comparable. On a genuine pair --
+	// the only kind that reaches here, the verdict having admitted it -- the warp is close enough to
+	// a diffeomorphism that the B-side density mirrors A's through it, so a second grid in B (which
+	// would also need a B->A back-map of this very draw) would mark the same buckets.
 	std::vector<bool> occupied((size_t)numBuckets*numBuckets, false);
 	for (const Point2f& pt : occupiedA) {
 		// inverse of the cell -> imgA pixel map the draw itself uses: CoordFromTo is linear and
 		// carries no half-pixel term, so its inverse carries none either. Rounded to the nearest
 		// cell, and clamped because a keypoint may sit on the very border of A.
-		const Point2f cell(CoordFromTo(pt, sizeA, overlap.size()));
-		const int x = MINF(MAXF(ROUND2INT(cell.x), 0), overlap.cols-1);
-		const int y = MINF(MAXF(ROUND2INT(cell.y), 0), overlap.rows-1);
-		occupied[WarpCellBucket(y*overlap.cols + x, overlap, numBuckets)] = true;
+		const Point2f cell(CoordFromTo(pt, sizeA, confidence.size()));
+		const int x = MINF(MAXF(ROUND2INT(cell.x), 0), confidence.cols-1);
+		const int y = MINF(MAXF(ROUND2INT(cell.y), 0), confidence.rows-1);
+		occupied[WarpCellBucket(y*confidence.cols + x, confidence, numBuckets)] = true;
 	}
 	// one winner per UNOCCUPIED bucket. An occupied bucket contributes nothing rather than a
 	// reduced quota: "up to" a budget is a ceiling, not a target that has to be filled, and the
 	// point of the draw is the part of the frame the sparse matches left empty.
-	// The same pass censuses the buckets (WarpDrawCoverage): which of them hold an eligible cell at
-	// all -- the pair's valid disparity area on this grid -- and how many of THOSE the caller's own
-	// correspondences already occupy. Counted here rather than by a second sweep because this loop
-	// is the only place both facts are known per bucket, and counted over the eligible cells alone
-	// so that an occupied position outside the valid area (possible: occupancy is rounded to the
-	// nearest cell and a sparse inlier may sit where the warp is not confident) cannot report more
-	// covered area than there is.
-	std::vector<bool> hasCandidate((size_t)numBuckets*numBuckets, false);
-	unsigned numConfidentBuckets = 0, numOccupiedBuckets = 0;
 	std::vector<int> bucketBest((size_t)numBuckets*numBuckets, -1);
 	FOREACH(i, candidates) {
 		const WarpCandidate& candidate = candidates[i];
-		const size_t bucket = WarpCellBucket(candidate.cell, overlap, numBuckets);
-		if (!hasCandidate[bucket]) {
-			hasCandidate[bucket] = true;
-			++numConfidentBuckets;
-			if (occupied[bucket])
-				++numOccupiedBuckets;
-		}
+		const size_t bucket = WarpCellBucket(candidate.cell, confidence, numBuckets);
 		if (occupied[bucket])
 			continue;
 		int& best = bucketBest[bucket];
 		if (best < 0 || WarpCandidateBeats(candidate, candidates[best]))
 			best = (int)i; // the one winner rule: lattice priority, ties to raster order
 	}
-	if (coverage)
-		*coverage = WarpDrawCoverage{numConfidentBuckets, numOccupiedBuckets, numBuckets};
 	std::vector<int> chosen;
 	chosen.reserve(MINF(bucketBest.size(), candidates.size()));
 	for (const int idxCandidate : bucketBest)
@@ -417,73 +403,6 @@ size_t SFM::SampleWarpComplementary(
 /*----------------------------------------------------------------*/
 
 
-size_t SFM::SampleWarpComplementary(
-	const Image& imgA,
-	const Image& imgB,
-	const Image32F2& warp,
-	const Image32F& overlap,
-	float minConfidence,
-	unsigned maxSamples,
-	const ImagePair& pair,
-	std::vector<Point2f>& sampledA,
-	std::vector<Point2f>& sampledB,
-	std::vector<float>& confidences,
-	WarpDrawCoverage* coverage)
-{
-	// the pair's sparse evidence, in imgA's pixels -- see the header for why each of the three
-	// choices made here (the segment, the index side, the image) is the one that makes the draw
-	// complement anything
-	ASSERT(pair.GetNumDenseInliers() == 0); // a pair is supplemented once, before it has a dense segment
-	const unsigned numSparse = pair.GetNumFilteredInliers();
-	std::vector<Point2f> occupiedA;
-	occupiedA.reserve(numSparse);
-	for (unsigned m = 0; m < numSparse; ++m) {
-		// the sparse segment is described at both ends on every path that produces it
-		// (ImagePair::CheckSparseSegmentIsDescribed), so this index is inside imgA's described prefix
-		ASSERT((size_t)pair.matches[m].queryIdx < imgA.NumDescribedKeypoints());
-		occupiedA.push_back(imgA.keypoints[pair.matches[m].queryIdx].pt);
-	}
-	return SampleWarpComplementary(imgA, imgB, warp, overlap, minConfidence, maxSamples,
-		occupiedA, sampledA, sampledB, confidences, coverage);
-}
-/*----------------------------------------------------------------*/
-
-
-void SFM::ComputeSampleCoverage(
-	const std::vector<Point2f>& sampledA,
-	const std::vector<Point2f>& sampledB,
-	const cv::Size& sizeA,
-	const cv::Size& sizeB,
-	const std::vector<uint32_t>& indices,
-	float& coverageA,
-	float& coverageB)
-{
-	ASSERT(sampledA.size() == sampledB.size());
-	std::vector<bool> gridA((size_t)DENSE_COVERAGE_GRID*DENSE_COVERAGE_GRID, false), gridB(gridA);
-	const auto MarkCell = [](std::vector<bool>& grid, const Point2f& pt, const cv::Size& size) {
-		const unsigned cx = MINF((unsigned)MAXF(0.f, (float)DENSE_COVERAGE_GRID*pt.x/(float)size.width), DENSE_COVERAGE_GRID-1);
-		const unsigned cy = MINF((unsigned)MAXF(0.f, (float)DENSE_COVERAGE_GRID*pt.y/(float)size.height), DENSE_COVERAGE_GRID-1);
-		grid[(size_t)cy*DENSE_COVERAGE_GRID + cx] = true;
-	};
-	const auto MarkOne = [&](size_t i) {
-		MarkCell(gridA, sampledA[i], sizeA);
-		MarkCell(gridB, sampledB[i], sizeB);
-	};
-	if (indices.empty()) {
-		for (size_t i = 0; i < sampledA.size(); ++i)
-			MarkOne(i);
-	} else {
-		for (const uint32_t i : indices) {
-			ASSERT(i < sampledA.size());
-			MarkOne(i);
-		}
-	}
-	coverageA = (float)std::count(gridA.begin(), gridA.end(), true)/(float)gridA.size();
-	coverageB = (float)std::count(gridB.begin(), gridB.end(), true)/(float)gridB.size();
-}
-/*----------------------------------------------------------------*/
-
-
 unsigned SFM::AppendDenseMatches(Scene& scene, ImagePair& pair,
 	const std::vector<Point2f>& pointsA, const std::vector<Point2f>& pointsB,
 	const std::vector<float>& confidences, const cv::Size& warpSize)
@@ -500,9 +419,9 @@ unsigned SFM::AppendDenseMatches(Scene& scene, ImagePair& pair,
 	};
 	const float cellSizeA = WarpCellSize(imgA);
 	const float cellSizeB = WarpCellSize(imgB);
-	// the described prefix of each image ends where it stands now; a second supplemented pair on
-	// the same image finds the boundary already closed and appends past the dense keypoints the
-	// first one left, which is what lets FilterRedundantKeypoints reuse a coinciding one
+	// the described prefix of each image ends where it stands now; a second pair on the same image
+	// finds the boundary already closed and appends past the dense keypoints the first one left,
+	// which is what lets FilterRedundantKeypoints reuse a coinciding one
 	imgA.CloseDescribedKeypoints();
 	imgB.CloseDescribedKeypoints();
 	const uint32_t baseA = (uint32_t)imgA.keypoints.size();
@@ -514,13 +433,13 @@ unsigned SFM::AppendDenseMatches(Scene& scene, ImagePair& pair,
 		imgB.keypoints.push_back(Image::MakeDenseKeypoint(pointsB[i], confidences[i], cellSizeB));
 		dense.emplace_back(baseA + i, baseB + i);
 	}
-	// The supplement becomes the middle segment of `matches` (see the partition comment in
+	// The dense fill becomes the middle segment of `matches` (see the partition comment in
 	// ImagePair.h): after the sparse inliers, which stay the pair's descriptor evidence and are what
 	// GetNumFilteredInliers() counts, and before the RANSAC inliers the strict filter rejected,
 	// which stay outside the track-forming prefix where they belong. Inside the track-forming prefix
 	// rather than at the end because BuildTracks reads only that prefix -- appended past it the
-	// whole supplement would be inert -- and outside the sparse count because a coverage-maximising
-	// draw must not re-rank the view graph.
+	// whole fill would be inert -- and outside the sparse count because a coverage-maximising draw
+	// must not re-rank the view graph.
 	if (pair.numFilteredInliers < 0) {
 		// no strict filter ran on this pair, which is the same statement as "every match is an
 		// inlier"; materialise that so the sparse count stays a count of sparse matches once the
@@ -534,7 +453,7 @@ unsigned SFM::AppendDenseMatches(Scene& scene, ImagePair& pair,
 	// the two per-pair statistics derived from the partition this just changed. The discounted
 	// inlier count is invalidated rather than recomputed, because the weight it is discounted by
 	// lives in the weighting pass and not here; the ray angle IS recomputed, because nothing else
-	// will -- a pair infused here is not re-filtered afterwards (deliberately: the supplement must
+	// will -- a pair filled here is not re-filtered afterwards (deliberately: the dense segment must
 	// not go through the strict geometric filter), and a pair left claiming a baseline measured on
 	// its sparse matches alone -- or, on a dense-only pair, none at all -- would keep the one weight
 	// term that can demote a degenerate baseline unavailable on exactly this population
@@ -542,43 +461,6 @@ unsigned SFM::AppendDenseMatches(Scene& scene, ImagePair& pair,
 	if (pair.relativePose.has_value())
 		pair.meanRayAngle = pair.ComputeMeanRayAngle(imgA, imgB);
 	return (unsigned)dense.size();
-}
-/*----------------------------------------------------------------*/
-
-
-bool SFM::ApplyROMA2Pair(Scene& scene, std::unordered_map<PairIdx::PairIndex, IIndex>& pairIndexMap, ImagePair&& pair, unsigned maxReplaceInliers, bool& bCreated, bool bCreateOnly)
-{
-	ASSERT(pair.ID1 < pair.ID2 && (!pair.matches.empty() || bCreateOnly));
-	const PairIdx::PairIndex key = PairIdx(pair.ID1, pair.ID2).idx;
-	const auto it = pairIndexMap.find(key);
-	if (it != pairIndexMap.end()) {
-		ImagePair& scenePair = scene.pairs[it->second];
-		const unsigned existingInliers = scenePair.GetNumWeightedInliers();
-		if (bCreateOnly) {
-			// a dense-only candidate: the existing pair keeps its place, whatever the two counts say
-			DEBUG_ULTIMATE("ROMA2 pair (% 4u, % 4u) kept: %u existing inliers vs a dense-only candidate", pair.ID1, pair.ID2, existingInliers);
-			return false;
-		}
-		// polycpp ShouldReplaceROMA2Pair (import_roma2.hpp:39-45): strictly more inliers, and the existing pair below the ceiling
-		// both sides through the same accessor: comparing the candidate's descriptor evidence against
-		// the incumbent's dense-inclusive evidence would be two different questions in one test
-		if (pair.GetNumWeightedInliers() <= existingInliers || (maxReplaceInliers > 0 && existingInliers >= maxReplaceInliers)) {
-			DEBUG_ULTIMATE("ROMA2 pair (% 4u, % 4u) kept: %u existing vs %u guided inliers", pair.ID1, pair.ID2, existingInliers, pair.GetNumWeightedInliers());
-			return false;
-		}
-		scenePair = std::move(pair);
-		bCreated = false;
-		return true;
-	}
-	// overlapRatio/overlapArea stay at their reset value (0): a created pair is weighted exactly
-	// like any other pair, ComputePairsWeights computing its own overlap proxy for it. Stamping a
-	// full 1/1 overlap here (what the old NPZ import did) would survive PairsMatcher::Match --
-	// nothing else writes overlapRatio, and the weighting only fills in a still-zero overlapArea --
-	// and hand every dense-created pair a best-possible overlap score it was never measured to have
-	pairIndexMap.emplace(key, (IIndex)scene.pairs.size());
-	scene.pairs.emplace_back(std::move(pair));
-	bCreated = true;
-	return true;
 }
 /*----------------------------------------------------------------*/
 

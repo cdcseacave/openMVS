@@ -9,8 +9,11 @@ romav2/{graphs,export}.py):
                                          patch tokens, before attention),
                                          retrieval[1,2048] (value_facets pooled by the FACETS recipe --
                                          graphs.py _facets_retrieval -- on device)
-  roma_<setting>_match_coarse_fp32.onnx  (descriptors_A, descriptors_B, img_A, img_B)
-                                         -> warp[1,S/4,S/4,2], confidence[1,S/4,S/4,1]
+  roma_<setting>_match_coarse_fp32.onnx  (descriptors_A, descriptors_B) -> warp[1,S/4,S/4,2],
+                                         confidence[1,S/4,S/4,1] (A->B), warp_BA[1,S/4,S/4,2],
+                                         confidence_BA[1,S/4,S/4,1] (B->A, from the same bidirectional=True
+                                         matcher pass -- the dead img_A/img_B inputs of format_version 2
+                                         are dropped, spec 2026-09-03-roma2-onepass-design.md §3.2)
 
 `S` is the square input resolution --setting traces for: turbo 320, fast 512, base 640. The graphs are fp32,
 static shape, batch 1; precision is a property of the graph, and the runtime decides the rest (ORT runs the
@@ -54,13 +57,17 @@ DEFAULT_ROMA2_REPO = "~/polyml/romav2"                # the vendored RoMaV2; ~/R
 
 STAGE_IO = {
     "descriptor": (["image"], ["layers", "value_facets", "retrieval"]),
-    "match": (["descriptors_A", "descriptors_B", "img_A", "img_B"], ["warp", "confidence"]),
+    "match": (["descriptors_A", "descriptors_B"], ["warp", "confidence", "warp_BA", "confidence_BA"]),
 }
 
-FORMAT_VERSION = 2    # roma_<setting>.json's schema version, read by RoMa2Manifest::Load: version 2 adds
+FORMAT_VERSION = 3    # roma_<setting>.json's schema version, read by RoMa2Manifest::Load. Version 3
+                      # (spec 2026-09-03-roma2-onepass-design.md §3.2): match_coarse is bidirectional --
+                      # warp_BA/confidence_BA (B->A) join warp/confidence (A->B), both from one
+                      # bidirectional=True matcher pass -- and its dead img_A/img_B inputs (never read by
+                      # the coarse head; see graphs.MatchWrap's docstring) are dropped. Version 2 added
                       # io.descriptor.outputs.retrieval (the FACETS recipe pooled on device, graphs.py
-                      # _facets_retrieval); version 1 (no retrieval output) stays readable by the C++
-                      # loader for models already exported, which keep pooling on the CPU
+                      # _facets_retrieval), unchanged here. The loader rejects any format_version other
+                      # than 3, naming the version it saw.
 
 WARMUP_RUNS = 10      # discarded before timing: the first executions carry allocation and clock ramp
 
@@ -292,7 +299,10 @@ def check_correspondences(reference, produced, args):
     ranking runtimes by it inverts the order that pixel agreement gives.
 
     So: how far the warp moved where the model says there is a match, and how often the two disagree that
-    there is one at all.
+    there is one at all -- for both directions of the bidirectional graph (format_version 3), since A->B
+    and B->A are independent outputs of the same pass and either could regress without the other moving.
+    The worse of the two directions is what the --max-warp-error / --min-agreement bounds are judged
+    against, so a caller reading only "OK" still gets the tighter of the two guarantees.
     """
     # Before anything is measured. A NaN anywhere makes the error NaN, every percentile of it NaN, and
     # every comparison against a bound False — so a graph computing nothing would pass the check that
@@ -302,28 +312,34 @@ def check_correspondences(reference, produced, args):
         if finite != 1.0:
             raise SystemExit(f"FAILED: {name} is {100 * (1 - finite):.2f}% non-finite")
 
-    warp_expected = np.load(reference / "out_warp.npy").astype(np.float64)[0]
-    confidence_expected = np.load(reference / "out_confidence.npy").astype(np.float64)[0]
-    side = warp_expected.shape[0]
-    overlap = 1.0 / (1.0 + np.exp(-confidence_expected[..., 0]))
-    matched = overlap >= 0.5
-    if not matched.any():
-        raise SystemExit("FAILED: the reference has no matched cells to judge against")
+    worst_p99, worst_agreement = 0.0, 100.0
+    for direction, warp_name, confidence_name in (("A->B", "warp", "confidence"),
+                                                   ("B->A", "warp_BA", "confidence_BA")):
+        warp_expected = np.load(reference / f"out_{warp_name}.npy").astype(np.float64)[0]
+        confidence_expected = np.load(reference / f"out_{confidence_name}.npy").astype(np.float64)[0]
+        side = warp_expected.shape[0]
+        overlap = 1.0 / (1.0 + np.exp(-confidence_expected[..., 0]))
+        matched = overlap >= 0.5
+        if not matched.any():
+            raise SystemExit(f"FAILED: the {direction} reference has no matched cells to judge against")
 
-    # Normalized coordinates span the image, so a coordinate delta is (side / 2) pixels.
-    error = np.abs(warp_expected - produced["warp"].astype(np.float64)[0]).max(axis=-1)[matched] * (side / 2)
-    agreement = 100.0 * ((confidence_expected[..., 0] > 0)
-                         == (produced["confidence"].astype(np.float64)[0][..., 0] > 0)).mean()
-    p50, p99 = np.percentile(error, 50), np.percentile(error, 99)
-    print(f"matched cells {100 * matched.mean():.1f}%  warp px p50 {p50:.4f}  p99 {p99:.3f}  "
-          f"max {error.max():.2f}  decision agreement {agreement:.4f}%", flush=True)
+        # Normalized coordinates span the image, so a coordinate delta is (side / 2) pixels.
+        error = (np.abs(warp_expected - produced[warp_name].astype(np.float64)[0]).max(axis=-1)[matched]
+                 * (side / 2))
+        agreement = 100.0 * ((confidence_expected[..., 0] > 0)
+                             == (produced[confidence_name].astype(np.float64)[0][..., 0] > 0)).mean()
+        p50, p99 = np.percentile(error, 50), np.percentile(error, 99)
+        print(f"{direction} matched cells {100 * matched.mean():.1f}%  warp px p50 {p50:.4f}  p99 {p99:.3f}  "
+              f"max {error.max():.2f}  decision agreement {agreement:.4f}%", flush=True)
+        worst_p99 = max(worst_p99, p99)
+        worst_agreement = min(worst_agreement, agreement)
 
-    if p99 > args.max_warp_error:
-        raise SystemExit(f"FAILED: warp p99 {p99:.3f} px exceeds --max-warp-error {args.max_warp_error}")
-    if agreement < args.min_agreement:
-        raise SystemExit(f"FAILED: decision agreement {agreement:.4f}% is below "
+    if worst_p99 > args.max_warp_error:
+        raise SystemExit(f"FAILED: warp p99 {worst_p99:.3f} px exceeds --max-warp-error {args.max_warp_error}")
+    if worst_agreement < args.min_agreement:
+        raise SystemExit(f"FAILED: decision agreement {worst_agreement:.4f}% is below "
                          f"--min-agreement {args.min_agreement}")
-    print(f"OK: warp p99 {p99:.3f} px, decision agreement {agreement:.4f}%", flush=True)
+    print(f"OK: warp p99 {worst_p99:.3f} px, decision agreement {worst_agreement:.4f}%", flush=True)
 
 
 def graph_io(graph):
@@ -424,9 +440,9 @@ def write_manifest(args):
                        {"layers": [1, 2, grid, grid, width], "value_facets": [1, 2, grid, grid, width],
                         "retrieval": [1, 2 * width]}),
         "match_coarse": ({"descriptors_A": [1, 2, grid, grid, width],
-                          "descriptors_B": [1, 2, grid, grid, width],
-                          "img_A": [1, 3, size, size], "img_B": [1, 3, size, size]},
-                         {"warp": [1, cells, cells, 2], "confidence": [1, cells, cells, 1]}),
+                          "descriptors_B": [1, 2, grid, grid, width]},
+                         {"warp": [1, cells, cells, 2], "confidence": [1, cells, cells, 1],
+                          "warp_BA": [1, cells, cells, 2], "confidence_BA": [1, cells, cells, 1]}),
     }
     for key, (inputs, outputs) in expected.items():
         for role, want in (("inputs", inputs), ("outputs", outputs)):

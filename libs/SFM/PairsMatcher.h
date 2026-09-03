@@ -28,7 +28,6 @@
 // I N C L U D E S /////////////////////////////////////////////////
 
 #include "Camera.h"
-#include "Pose.h" // ValidatedGeometry carries the gate's relative pose
 #include "PairsWeighting.h"
 #include "MatchROMA2.h"
 
@@ -135,6 +134,9 @@ public:
 	// the valid range of every threadIdx argument taken by the matching entry points
 	unsigned GetNumMatchers() const { return (unsigned)matchers.size(); }
 
+	// The calling thread's own descriptor matcher, for the guided pass's k-NN query
+	cv::DescriptorMatcher& GetMatcher(unsigned threadIdx) { ASSERT(threadIdx < matchers.size()); return *matchers[threadIdx]; }
+
 	// Pre-match pairs using vocabulary tree top descriptors (filters weak pairs)
 	void PreMatch(PairIdxArr& pairsToMatch);
 
@@ -176,6 +178,17 @@ public:
 		const Image& img2,
 		ImagePair& pair) const;
 
+	// The same estimator at a caller-chosen epipolar tolerance, in pixels: the ROMA2 verdict fits
+	// warp cells, which can only claim half a warp cell of accuracy, and demanding the descriptor
+	// path's sub-pixel precision of them would reject the true pairs along with the false ones
+	// (ROMA2Warp.h, WarpTolerance). The branch choice (SelectGeometryBranch), the strict filters and
+	// minMatches stay the estimator's own; the three-argument form forwards config.maxEpipolarError.
+	bool GeometricFilter(
+		const Image& img1,
+		const Image& img2,
+		ImagePair& pair,
+		float maxEpipolarError) const;
+
 	// Decompose F into E and relative-pose
 	// note: if intrinsics are not accurate, the decomposition will result in very few filtered inliers
 	bool DecomposeFundamentalToPose(
@@ -183,31 +196,6 @@ public:
 		const Image& img2,
 		ImagePair& pair
 	) const;
-
-	// Geometry the dense two-view gate (ValidatePairsROMA2, MatchROMA2.cpp) already fitted and
-	// RANSAC-checked for a pair before any descriptor matching ran: F and/or E, whichever
-	// GeometricFilter set for the branch SelectGeometryBranch picked (never both empty on a pair
-	// the gate validated), plus the relative pose that same fit produced. Carries what
-	// MatchFeaturesGeometric's Step 2 reads off an ImagePair for its epipolar band and what the
-	// dense infusion needs to give a pair the gate's own geometry -- not the sample, not the
-	// inliers, not the coverages, which stay internal to the gate.
-	struct ValidatedGeometry {
-		std::optional<Matrix3x3> F;
-		std::optional<Matrix3x3> E;
-		// The gate's own relative pose, fitted on its ~denseSampleSize spread warp samples. Present
-		// only on a branch that produces one (ESSENTIAL and SHARED_FOCAL both do, FUNDAMENTAL does
-		// not), so a consumer must handle its absence rather than assume the gate always has a pose:
-		// it is the dense-only pair's whole extrinsic evidence and the second half of the
-		// sparse-vs-dense pose comparison (ROMA2Config::supplementPoseMaxRotationDeg).
-		std::optional<Pose3D> relativePose;
-	};
-
-	// Record (ValidatePairsROMA2) or look up (the ROMA2 guided pass, through
-	// MatchFeaturesGeometric) the validated geometry of one pair. Keyed and cleared like
-	// fusedRetrievalScores below: filled while Match()'s rounds run, cleared once they're done.
-	// FindValidatedGeometry returns NULL for a pair the gate never validated.
-	void SetValidatedGeometry(PairIdx::PairIndex idx, const ValidatedGeometry& geometry);
-	const ValidatedGeometry* FindValidatedGeometry(PairIdx::PairIndex idx) const;
 
 	// Recompute relative-pose for all image pairs, or only for those marked as needing update.
 	//  - updatedCameras: if non-empty, only pairs involving these cameras are updated.
@@ -309,11 +297,11 @@ public:
 	static bool ExportPairsCSV(const Scene& scene, const String& fileName, float minWeight = 0.f);
 
 private:
-	// Counters accumulated by MatchPairsBatch across matching rounds
+	// Counters accumulated by the matching rounds
 	struct MatchStats {
 		unsigned newPairs = 0;
 		unsigned updatedPairs = 0;
-		unsigned roma2Pairs = 0; // pairs the ROMA2 dense matching pass created or replaced
+		unsigned densePairs = 0; // pairs the one-pass dense matching stored (MatchPairsROMA2)
 		size_t numMatches = 0;
 		size_t numInliers = 0;
 		size_t numFilteredInliers = 0;
@@ -358,11 +346,6 @@ private:
 	// CollectVocabularyPairs or CollectRetrievalPairs call, kept for
 	// CollectVerificationFeedbackPairs (released by Match once the matching rounds complete)
 	std::unordered_map<PairIdx::PairIndex, float> fusedRetrievalScores;
-
-	// Geometry the dense two-view gate validated for a pair (SetValidatedGeometry), read back by
-	// the ROMA2 guided pass (FindValidatedGeometry) so MatchFeaturesGeometric does not re-estimate
-	// a pair the gate already checked; released the same way as fusedRetrievalScores above
-	std::unordered_map<PairIdx::PairIndex, ValidatedGeometry> validatedGeometries;
 };
 
 /*----------------------------------------------------------------*/

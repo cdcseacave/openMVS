@@ -159,10 +159,13 @@ poses exist the alignment takes precedence over GPS. Clustering is never involve
   weakest verified connectivity refill any leftover budget (2 pairs/image) from their next
   best-ranked first-round candidates
 - Lowe's ratio test, cross-check, FLANN (LSH/KDTree)
-- **ROMAv2 guidance** (`MatchROMA2.h` config, `ROMA2Warp.h` helpers): the dense warps are computed
-  in-process (no external files) and only guide the sparse matching - `TrackKeypointsByWarp` turns a
-  warp into tracked correspondences for `MatchFeaturesGeometric`, `ApplyROMA2Pair` stores the result
-  only when it beats the descriptor-verified pair
+- **ROMAv2 one-pass dense matching** (`MatchROMA2.h`, `ROMA2Warp.h` helpers, `--roma2-match`): the
+  bidirectional dense warps are computed in-process (no external files) and, when enabled, ARE the
+  matching round - `JudgePairROMA2` admits a pair on the smaller of the two inlier areas one fitted
+  geometry explains (`--roma2-min-overlap`), `TrackKeypointsByWarp` + `MatchFeaturesGuided` select
+  its sparse matches inside a disc around each warp prediction, `AssemblePairROMA2` fills the rest
+  of the overlap densely and fits the pair's geometry, `StorePairROMA2` stores it. A rejected pair
+  is dropped, never descriptor-matched
 - **Geometric verification**: RANSAC for E (calibrated) or F (uncalibrated), optional H
 - Threshold: `maxEpipolarError` (pixels), min inliers (default 50)
 

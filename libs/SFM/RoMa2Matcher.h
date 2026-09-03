@@ -130,9 +130,11 @@ public:
 	// caller needs it, only the parity test's independent check of that tensor.
 	bool Describe(const float* planarRgb, OrtTensor& layersOut, std::vector<float>* facetsOut, std::vector<float>& retrievalOut);
 
-	// Run the coarse-match graph on two descriptor tensors, returning the C x C normalized warp
-	// (align_corners=false) into image B and the overlap probability (the graph's logit through a sigmoid)
-	bool MatchCoarse(const OrtTensor& layersA, const OrtTensor& layersB, Image32F2& warp, Image32F& overlap);
+	// Run the coarse-match graph once on two descriptor tensors, returning both directions:
+	// the C x C normalized warp of A's cells into B with its confidence (sigmoid of the logit), and
+	// the same for B's cells into A
+	bool MatchCoarse(const OrtTensor& layersA, const OrtTensor& layersB,
+		Image32F2& warpAB, Image32F& confidenceAB, Image32F2& warpBA, Image32F& confidenceBA);
 
 private:
 	struct Impl;

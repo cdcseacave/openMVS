@@ -213,9 +213,7 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::ROMA2CoverageSampleTest())
 				return false;
-			if (!SFM::ROMA2SupplementDrawTest())
-				return false;
-			if (!SFM::ROMA2DenseInfusionTest())
+			if (!SFM::ROMA2ComplementaryDrawTest())
 				return false;
 			if (!SFM::DenseKeypointBoundaryTest())
 				return false;
@@ -242,12 +240,6 @@ int main(int argc, LPCTSTR* argv)
 			if (!SFM::PairsMatcherSphericalTest())
 				return false;
 			if (!SFM::MatchGeometricSphericalTest())
-				return false;
-			if (!SFM::GuidedCrossCheckTest())
-				return false;
-			if (!SFM::SuppliedGeometrySkipsEstimationTest())
-				return false;
-			if (!SFM::SuppliedGeometryParityTest())
 				return false;
 			if (!SFM::CubeMapFaceRenderTest())
 				return false;

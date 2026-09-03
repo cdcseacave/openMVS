@@ -1018,8 +1018,8 @@ bool VocabularyTreeTest()
 	return true;
 }
 
-// ROMA2 warp helpers test: keypoint tracking through an identity warp, overlap gating,
-// confidence-map erosion and the store/replace policy of the guided pairs
+// ROMA2 warp helpers test: keypoint tracking through an identity warp, the confidence gate
+// that drops the cells the model is unsure about, and the dense append
 bool ROMA2WarpTrackingTest()
 {
 	TD_TIMER_START();
@@ -1072,81 +1072,11 @@ bool ROMA2WarpTrackingTest()
 		}
 	}
 
-	// erosion: a hole in a 0.5-confidence map zeroes cells within erodeBorder unless above minErodeConfidence
-	Image32F conf(cv::Size(cells, cells), 0.5f);
-	conf(80, 80) = 0.f;
-	conf(80, 84) = 0.95f;
-	ErodeConfidenceMap(conf, 8, 0.3f, 0.9f);
-	if (conf(80, 86) != 0.f || conf(80, 84) != 0.95f || conf(80, 100) != 0.5f) {
-		VERBOSE("ROMA2WarpTrackingTest FAILED: erosion");
-		return false;
-	}
-
-	// replacement policy: create, keep on tie, replace when larger, ceiling protects healthy pairs
-	std::unordered_map<PairIdx::PairIndex, IIndex> pairIndexMap;
-	bool bCreated;
-	ImagePair weak(0, 1);
-	weak.matches.resize(20);
-	weak.numFilteredInliers = 20;
-	if (!ApplyROMA2Pair(scene, pairIndexMap, std::move(weak), 0, bCreated) || !bCreated || scene.pairs.size() != 1) {
-		VERBOSE("ROMA2WarpTrackingTest FAILED: first pair not created");
-		return false;
-	}
-	// a created pair carries no overlap of its own: ComputePairsWeights must be free to compute
-	// its usual proxy for it, which it only does while overlapArea is still zero (R40)
-	if (scene.pairs[0].overlapRatio != 0.f || scene.pairs[0].overlapArea != 0.f) {
-		VERBOSE("ROMA2WarpTrackingTest FAILED: created pair was stamped with an overlap it never measured");
-		return false;
-	}
-	ImagePair tie(0, 1);
-	tie.matches.resize(20);
-	tie.numFilteredInliers = 20;
-	if (ApplyROMA2Pair(scene, pairIndexMap, std::move(tie), 0, bCreated)) {
-		VERBOSE("ROMA2WarpTrackingTest FAILED: tie replaced");
-		return false;
-	}
-	ImagePair strong(0, 1);
-	strong.matches.resize(200);
-	strong.numFilteredInliers = 200;
-	if (!ApplyROMA2Pair(scene, pairIndexMap, std::move(strong), 0, bCreated) || bCreated || scene.pairs.size() != 1 ||
-		scene.pairs[0].GetNumFilteredInliers() != 200) {
-		VERBOSE("ROMA2WarpTrackingTest FAILED: stronger pair not replacing in place");
-		return false;
-	}
-	ImagePair stronger(0, 1);
-	stronger.matches.resize(300);
-	stronger.numFilteredInliers = 300;
-	if (ApplyROMA2Pair(scene, pairIndexMap, std::move(stronger), 100, bCreated) ||
-		scene.pairs[0].GetNumFilteredInliers() != 200) {
-		VERBOSE("ROMA2WarpTrackingTest FAILED: ceiling");
-		return false;
-	}
-	// CREATE-ONLY, the mode a dense-only pair is stored in: it carries no descriptor evidence, so it
-	// must never take the place of a pair that has some -- whatever the two counts say, and with no
-	// ceiling in the way. It is also the one mode that accepts a pair with no matches at all, since
-	// a dense-only pair's matches are appended (AppendDenseMatches) only after it is stored.
-	ImagePair denseOnly(0, 1);
-	denseOnly.relativePose = Pose3D();
-	if (ApplyROMA2Pair(scene, pairIndexMap, std::move(denseOnly), 0, bCreated, true) ||
-		scene.pairs.size() != 1 || scene.pairs[0].GetNumFilteredInliers() != 200) {
-		VERBOSE("ROMA2WarpTrackingTest FAILED: a dense-only result replaced (or disturbed) an existing pair carrying "
-			"%u descriptor inliers", scene.pairs[0].GetNumFilteredInliers());
-		return false;
-	}
-	// ...while on a key nothing holds it creates, matchless, like the matcher's dense-only branch
-	ImagePair denseOnlyNew(0, 2);
-	denseOnlyNew.relativePose = Pose3D();
-	if (!ApplyROMA2Pair(scene, pairIndexMap, std::move(denseOnlyNew), 0, bCreated, true) || !bCreated ||
-		scene.pairs.size() != 2 || !scene.pairs[1].matches.empty()) {
-		VERBOSE("ROMA2WarpTrackingTest FAILED: a dense-only result did not create the pair nothing held");
-		return false;
-	}
-
-	// dense supplementation (AppendDenseMatches): the appended keypoints land past each image's
-	// described prefix, while the appended matches become the pair's own middle segment -- after the
-	// sparse inliers, which stay the pair's descriptor evidence, and before the strict filter's
-	// rejects, so the supplement is inside the track-forming prefix BuildTracks reads but outside
-	// the count every view-graph weight and gate reads
+	// the dense fill (AppendDenseMatches): the appended keypoints land past each image's described
+	// prefix, while the appended matches become the pair's own middle segment -- after the sparse
+	// inliers, which stay the pair's descriptor evidence, and before the strict filter's rejects,
+	// so the fill is inside the track-forming prefix BuildTracks reads but outside the count every
+	// view-graph weight and gate reads
 	{
 		Scene denseScene;
 		denseScene.cameras.emplace_back(new PinholeCamera(cv::Size(width, height),
@@ -1165,7 +1095,7 @@ bool ROMA2WarpTrackingTest()
 		const std::vector<Point2f> ptsB{Point2f(110.f, 100.f), Point2f(210.f, 200.f)};
 		const std::vector<float> confidences{0.7f, 0.9f};
 		if (AppendDenseMatches(denseScene, pair, ptsA, ptsB, confidences, cv::Size(cells, cells)) != 2) {
-			VERBOSE("ROMA2WarpTrackingTest FAILED: dense supplement not appended");
+			VERBOSE("ROMA2WarpTrackingTest FAILED: dense fill not appended");
 			return false;
 		}
 		const float cellSize = MAXF((float)width/(float)cells, (float)height/(float)cells);
@@ -1199,7 +1129,7 @@ bool ROMA2WarpTrackingTest()
 				(unsigned)pair.matches.size(), pair.numFilteredInliers, pair.numDenseInliers);
 			return false;
 		}
-		// a second supplemented pair on the same images appends past the first one's dense keypoints,
+		// a second dense fill on the same images appends past the first one's dense keypoints,
 		// and its matches extend the dense segment rather than reopening the sparse one
 		if (AppendDenseMatches(denseScene, pair, ptsA, ptsB, confidences, cv::Size(cells, cells)) != 2 ||
 			denseScene.images[0].NumDescribedKeypoints() != 10 || denseScene.images[0].NumDenseKeypoints() != 4 ||
@@ -1214,7 +1144,7 @@ bool ROMA2WarpTrackingTest()
 	return true;
 }
 
-// Coverage-maximising warp sampling (the dense two-view gate's step 1): the budget, the spread the
+// Coverage-uniform warp sampling (the verdict's fitting sample): the budget, the spread the
 // bucket stratification buys over a plain top-confidence selection, the reported coverage of a
 // sample that really does sit in one corner, and the determinism of the whole draw
 bool ROMA2CoverageSampleTest()
@@ -1382,8 +1312,8 @@ bool ROMA2CoverageSampleTest()
 		return false;
 	}
 
-	// budget boundary: the smallest sample --roma2-dense-sample accepts is 8, the estimator's own
-	// minimum. maxSamples is a target rather than a cap now (there is no fill-up to trim against),
+	// budget boundary: the smallest sample the verdict fits on is 8, the estimator's own
+	// minimum. maxSamples is a target rather than a cap here (there is no fill-up to trim against),
 	// and at a budget this small the bucket grid is only a few cells on a side, so quantisation
 	// dominates: what must hold is that the draw stays small, stays non-empty, and terminates
 	const size_t numTiny = SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, 8, sampledA, sampledB, coverageA, coverageB);
@@ -1423,54 +1353,19 @@ bool ROMA2CoverageSampleTest()
 		return false;
 	}
 
-	// inlier coverage: the same grid restricted to a subset of the sample, which is how the gate
-	// separates "the sample is spread" from "the geometry explains a spread part of it". A synthetic
-	// sample of known occupancy pins both readings: one point in the centre of each of the first 4x4
-	// grid cells of A, every one of them landing in the single central cell of B.
-	const float cell = 1.f/(float)(DENSE_COVERAGE_GRID*DENSE_COVERAGE_GRID);
-	std::vector<Point2f> setA, setB;
-	for (unsigned cy = 0; cy < 4; ++cy)
-		for (unsigned cx = 0; cx < 4; ++cx) {
-			setA.emplace_back(((float)cx + 0.5f)*(float)width/(float)DENSE_COVERAGE_GRID,
-			                  ((float)cy + 0.5f)*(float)height/(float)DENSE_COVERAGE_GRID);
-			setB.emplace_back((float)width*0.5f, (float)height*0.5f);
-		}
-	float fullA, fullB;
-	ComputeSampleCoverage(setA, setB, imgA.GetSize(), imgB.GetSize(), std::vector<uint32_t>(), fullA, fullB);
-	if (ABS(fullA - 16.f*cell) > 1e-6f || ABS(fullB - cell) > 1e-6f) {
-		VERBOSE("ROMA2CoverageSampleTest FAILED: whole-sample coverage %.5f/%.5f, expected %.5f/%.5f",
-			fullA, fullB, 16.f*cell, cell);
-		return false;
-	}
-	// four of those points, in four distinct cells of A: the subset must measure only itself
-	float inlierA, inlierB;
-	ComputeSampleCoverage(setA, setB, imgA.GetSize(), imgB.GetSize(), std::vector<uint32_t>{0, 1, 4, 5}, inlierA, inlierB);
-	if (ABS(inlierA - 4.f*cell) > 1e-6f || ABS(inlierB - cell) > 1e-6f) {
-		VERBOSE("ROMA2CoverageSampleTest FAILED: inlier-subset coverage %.5f/%.5f, expected %.5f/%.5f",
-			inlierA, inlierB, 4.f*cell, cell);
-		return false;
-	}
-	// and a one-point subset occupies exactly one cell of each image -- the degenerate case the
-	// gate's complementary test exists to catch
-	ComputeSampleCoverage(setA, setB, imgA.GetSize(), imgB.GetSize(), std::vector<uint32_t>{7}, inlierA, inlierB);
-	if (ABS(inlierA - cell) > 1e-6f || ABS(inlierB - cell) > 1e-6f) {
-		VERBOSE("ROMA2CoverageSampleTest FAILED: single-inlier coverage %.5f/%.5f, expected %.5f", inlierA, inlierB, cell);
-		return false;
-	}
-
 	VERBOSE("ROMA2CoverageSampleTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 
-// The complementary dense-supplement draw (Task 5b of roma2-matching-redesign-20260831): a weak
-// pair's supplement has to fill the parts of the confident overlap its sparse matches left EMPTY,
-// on a budget counting sparse and dense together, and has to stay spread when that budget bites.
-// The sub-checks are the three ways the first implementation missed the point: it drew blind to the
-// sparse matches (so a pair weak because its matches cluster in one textured region got dense
-// samples poured back into that same region), it capped the matches ADDED rather than the pair's
-// total, and it thinned an over-budget draw by confidence, which re-clustered the survivors onto
-// exactly the well-textured part the sparse matcher had already covered.
-bool ROMA2SupplementDrawTest()
+// The complementary dense draw (SampleWarpComplementary), the fill of an admitted pair: it has to
+// cover the parts of the confident overlap the pair's guided sparse matches left EMPTY, cap itself
+// at the pair's dense budget, and stay spread when that cap bites. The sub-checks are the three
+// ways a draw of this kind goes wrong: drawing blind to the sparse matches (so a pair whose matches
+// cluster in one textured region gets dense points poured back into that same region), ranking the
+// bucket winners by confidence (which breaks the cross-pair keypoint identity the dense tracks rest
+// on), and thinning an over-budget draw by confidence, which re-clusters the survivors onto exactly
+// the well-textured part the sparse matcher already covered.
+bool ROMA2ComplementaryDrawTest()
 {
 	TD_TIMER_START();
 
@@ -1534,27 +1429,22 @@ bool ROMA2SupplementDrawTest()
 		return ((int)pt.y < height/2 ? 0 : 2) + ((int)pt.x < width/2 ? 0 : 1);
 	};
 
-	// 1) COMPLEMENTARITY on a fully confident warp. The pair's verified sparse matches cluster in
-	// the top-left corner -- the one textured region that got the pair verified at all -- so the
-	// supplement must draw over the rest of the frame and nowhere in there.
+	// 1) COMPLEMENTARITY on a fully confident warp. The pair's guided sparse matches cluster in the
+	// top-left corner -- the one textured region descriptors could agree on -- so the fill must draw
+	// over the rest of the frame and nowhere in there.
 	std::vector<Point2f> sparseA;
 	for (int cy = 0; cy < 40; cy += 2)
 		for (int cx = 0; cx < 40; cx += 2)
 			sparseA.push_back(CellToPixel(cx, cy));
-	const unsigned numSparse = (unsigned)sparseA.size();
-	ROMA2Config config; // supplementTotalMatches 2000, denseSampleSize 2000, minCoverage 0.3
-	// the draw is made at the pair's full TOTAL, not at a budget derived from its sparse count: the
-	// grid that total gives is the one the coverage census is taken on (one bucket ~ one of the
-	// total correspondences), and the budget that coverage buys is applied by thinning afterwards
-	const unsigned denseBudget = config.supplementTotalMatches;
+	const ROMA2Config config; // denseMatches 2000, minConfidence 0.1
+	const unsigned denseBudget = config.denseMatches;
 	Image32F overlap(cv::Size(cells, cells), 0.6f);
 	std::vector<Point2f> denseA, denseB;
 	std::vector<float> confidences;
-	WarpDrawCoverage census;
 	const size_t numDense = SampleWarpComplementary(imgA, imgB, warp, overlap, 0.3f, denseBudget,
-		sparseA, denseA, denseB, confidences, &census);
+		sparseA, denseA, denseB, confidences);
 	if (numDense == 0 || denseB.size() != numDense || confidences.size() != numDense) {
-		VERBOSE("ROMA2SupplementDrawTest FAILED: the draw returned %u points with %u/%u index-parallel arrays",
+		VERBOSE("ROMA2ComplementaryDrawTest FAILED: the draw returned %u points with %u/%u index-parallel arrays",
 			(unsigned)numDense, (unsigned)denseB.size(), (unsigned)confidences.size());
 		return false;
 	}
@@ -1564,7 +1454,7 @@ bool ROMA2SupplementDrawTest()
 		occupied[PixelToBucket(pt, numBuckets)] = true;
 	FOREACH(i, denseA)
 		if (occupied[PixelToBucket(denseA[i], numBuckets)]) {
-			VERBOSE("ROMA2SupplementDrawTest FAILED: dense point %u at (%.1f, %.1f) landed in a bucket the pair's sparse matches already hold",
+			VERBOSE("ROMA2ComplementaryDrawTest FAILED: dense point %u at (%.1f, %.1f) landed in a bucket the pair's sparse matches already hold",
 				i, denseA[i].x, denseA[i].y);
 			return false;
 		}
@@ -1578,48 +1468,21 @@ bool ROMA2SupplementDrawTest()
 		if (hasCandidate[b] && !occupied[b])
 			++numExpected;
 	if (numDense != numExpected) {
-		VERBOSE("ROMA2SupplementDrawTest FAILED: %u dense points for the %u unoccupied buckets of the %dx%d grid that hold a candidate",
+		VERBOSE("ROMA2ComplementaryDrawTest FAILED: %u dense points for the %u unoccupied buckets of the %dx%d grid that hold a candidate",
 			(unsigned)numDense, (unsigned)numExpected, numBuckets, numBuckets);
 		return false;
 	}
-	// THE CENSUS the infusion decision is taken on: the valid disparity area on this same grid, and
-	// the share of it the pair's sparse matches already hold. Counted over the buckets that hold an
-	// ELIGIBLE cell, so a sparse inlier sitting where the warp is not confident cannot report more
-	// covered area than exists -- the coverage has to stay in [0,1] for a budget to be derived from it
-	size_t numConfidentBuckets = 0, numOccupiedBuckets = 0;
-	FOREACH(b, hasCandidate)
-		if (hasCandidate[b]) {
-			++numConfidentBuckets;
-			if (occupied[b])
-				++numOccupiedBuckets;
-		}
-	if (census.numBuckets != numBuckets ||
-		census.numConfidentBuckets != numConfidentBuckets || census.numOccupiedBuckets != numOccupiedBuckets ||
-		ABS(census.Coverage() - (float)numOccupiedBuckets/(float)numConfidentBuckets) > 1e-6f ||
-		census.numConfidentBuckets != numOccupiedBuckets + numExpected) {
-		VERBOSE("ROMA2SupplementDrawTest FAILED: the draw censused %u/%u buckets on a %dx%d grid (coverage %.4f), "
-			"expected %u/%u on %dx%d and confident == occupied + drawn",
-			census.numOccupiedBuckets, census.numConfidentBuckets, census.numBuckets, census.numBuckets, census.Coverage(),
-			(unsigned)numOccupiedBuckets, (unsigned)numConfidentBuckets, numBuckets, numBuckets);
-		return false;
-	}
-	// THE BUDGET the census buys: the share of the total proportional to the uncovered part of the
-	// valid disparity area, and the draw thinned to it stays inside the total
-	const unsigned expectedBudget = (unsigned)ROUND2INT((float)config.supplementTotalMatches*(1.f - census.Coverage()));
-	std::vector<Point2f> budgetA(denseA), budgetB(denseB);
-	std::vector<float> budgetC(confidences);
-	ThinSampleEvenly(budgetA, budgetB, budgetC, expectedBudget);
-	if (numDense > denseBudget || budgetA.size() > expectedBudget ||
-		budgetA.size() > config.supplementTotalMatches) {
-		VERBOSE("ROMA2SupplementDrawTest FAILED: a %.4f-covered pair drew %u points and kept %u of a %u budget, total %u",
-			census.Coverage(), (unsigned)numDense, (unsigned)budgetA.size(), expectedBudget, config.supplementTotalMatches);
+	// the budget is a real CAP here, not merely the target it is for the verdict's draw
+	if (numDense > denseBudget) {
+		VERBOSE("ROMA2ComplementaryDrawTest FAILED: the draw kept %u points of a %u budget",
+			(unsigned)numDense, denseBudget);
 		return false;
 	}
 	FOREACH(i, denseA) {
 		// index-parallel through the identity warp, and each point carries its own cell's
 		// confidence -- the value it was selected on, which is what MakeDenseKeypoint stamps
 		if (norm(denseB[i] - denseA[i]) > 1e-3f || ABS(confidences[i] - 0.6f) > 1e-6f) {
-			VERBOSE("ROMA2SupplementDrawTest FAILED: dense point %u moved %g px and carries confidence %g, expected 0.6",
+			VERBOSE("ROMA2ComplementaryDrawTest FAILED: dense point %u moved %g px and carries confidence %g, expected 0.6",
 				i, norm(denseB[i] - denseA[i]), confidences[i]);
 			return false;
 		}
@@ -1629,30 +1492,18 @@ bool ROMA2SupplementDrawTest()
 	for (size_t i = 1; i < numDense; ++i)
 		if (denseA[i].y < denseA[i-1].y - 1e-3f ||
 			(ABS(denseA[i].y - denseA[i-1].y) <= 1e-3f && denseA[i].x <= denseA[i-1].x)) {
-			VERBOSE("ROMA2SupplementDrawTest FAILED: point %u at (%.1f, %.1f) breaks the raster order after (%.1f, %.1f)",
+			VERBOSE("ROMA2ComplementaryDrawTest FAILED: point %u at (%.1f, %.1f) breaks the raster order after (%.1f, %.1f)",
 				(unsigned)i, denseA[i].x, denseA[i].y, denseA[i-1].x, denseA[i-1].y);
 			return false;
 		}
 
-	// 2) THE BUDGET IS THE UNCOVERED SHARE OF THE TOTAL. A fully covered pair buys nothing, a pair
-	// covering nothing buys the whole total, and in between the budget is linear in the coverage --
-	// so a pair with plenty of inliers piled in one corner is still infused over the remainder.
-	// A draw asked for nothing must produce nothing, output buffers included.
-	struct { float coverage; unsigned budget; } budgetCases[] = {
-		{0.f, config.supplementTotalMatches}, {1.f, 0u}, {0.25f, 1500u}, {0.9f, 200u}};
-	for (const auto& budgetCase : budgetCases) {
-		const unsigned budget = (unsigned)ROUND2INT((float)config.supplementTotalMatches*(1.f - budgetCase.coverage));
-		if (budget != budgetCase.budget) {
-			VERBOSE("ROMA2SupplementDrawTest FAILED: coverage %.2f of a %u total buys %u dense matches, expected %u",
-				budgetCase.coverage, config.supplementTotalMatches, budget, budgetCase.budget);
-			return false;
-		}
-	}
+	// 2) A DRAW ASKED FOR NOTHING PRODUCES NOTHING, output buffers included: a pair whose whole
+	// budget went to its guided matches gets no dense segment rather than a stale one
 	std::vector<Point2f> zeroA(3, Point2f(1.f, 2.f)), zeroB(5, Point2f(3.f, 4.f));
 	std::vector<float> zeroC(7, 0.5f);
 	if (SampleWarpComplementary(imgA, imgB, warp, overlap, 0.3f, 0, sparseA, zeroA, zeroB, zeroC) != 0 ||
 		!zeroA.empty() || !zeroB.empty() || !zeroC.empty()) {
-		VERBOSE("ROMA2SupplementDrawTest FAILED: a zero dense budget still drew %u points", (unsigned)zeroA.size());
+		VERBOSE("ROMA2ComplementaryDrawTest FAILED: a zero dense budget still drew %u points", (unsigned)zeroA.size());
 		return false;
 	}
 
@@ -1670,7 +1521,7 @@ bool ROMA2SupplementDrawTest()
 	const size_t numSmall = SampleWarpComplementary(imgA, imgB, warp, overlap, 0.3f, smallBudget,
 		sparseA, denseA, denseB, confidences);
 	if (numSmall != smallBudget || denseB.size() != numSmall || confidences.size() != numSmall) {
-		VERBOSE("ROMA2SupplementDrawTest FAILED: an over-budget draw kept %u points of a %u budget",
+		VERBOSE("ROMA2ComplementaryDrawTest FAILED: an over-budget draw kept %u points of a %u budget",
 			(unsigned)numSmall, smallBudget);
 		return false;
 	}
@@ -1682,7 +1533,7 @@ bool ROMA2SupplementDrawTest()
 		// complementarity has to survive the thinning too: a stride through the raster order can
 		// only drop points, never move one into a bucket the draw had struck out
 		if (smallOccupied[PixelToBucket(denseA[i], numSmallBuckets)]) {
-			VERBOSE("ROMA2SupplementDrawTest FAILED: the thinned draw put point %u at (%.1f, %.1f) into a sparse-occupied bucket",
+			VERBOSE("ROMA2ComplementaryDrawTest FAILED: the thinned draw put point %u at (%.1f, %.1f) into a sparse-occupied bucket",
 				i, denseA[i].x, denseA[i].y);
 			return false;
 		}
@@ -1692,7 +1543,7 @@ bool ROMA2SupplementDrawTest()
 	// draw thinned by confidence collapses into the last one and empties the first outright
 	for (int q = 0; q < 4; ++q)
 		if (perQuadrant[q] < smallBudget/10) {
-			VERBOSE("ROMA2SupplementDrawTest FAILED: quadrant %d holds %u of the %u kept points (%u/%u/%u/%u), "
+			VERBOSE("ROMA2ComplementaryDrawTest FAILED: quadrant %d holds %u of the %u kept points (%u/%u/%u/%u), "
 				"expected at least a tenth in each -- the thinning collapsed the draw onto one region",
 				q, perQuadrant[q], smallBudget, perQuadrant[0], perQuadrant[1], perQuadrant[2], perQuadrant[3]);
 			return false;
@@ -1706,87 +1557,11 @@ bool ROMA2SupplementDrawTest()
 	std::vector<float> repeatC(4, 0.25f);
 	SampleWarpComplementary(imgA, imgB, warp, overlap, 0.3f, smallBudget, sparseA, repeatA, repeatB, repeatC);
 	if (repeatA != denseA || repeatB != denseB || repeatC != confidences) {
-		VERBOSE("ROMA2SupplementDrawTest FAILED: the draw is not a pure function of its inputs");
+		VERBOSE("ROMA2ComplementaryDrawTest FAILED: the draw is not a pure function of its inputs");
 		return false;
 	}
 
-	// 5) THE GATHER, through the entry point a supplemented pair actually uses. Everything above
-	// hands the draw a ready-made list of occupied positions, so the one step that decides WHICH
-	// points those are -- the pair's sparse segment, queryIdx, image A -- goes untested, and every
-	// wrong answer to it still compiles and still returns a plausible-looking supplement that
-	// complements nothing. The fixture makes each wrong answer land somewhere visibly different:
-	// image A carries the sparse cluster at indices [0, 400) and a bottom-right cluster at
-	// [400, 800) that the strict-filter rejects reference; image B carries a top-right cluster at
-	// [0, 400); and every sparse match is (m, 400+m), so queryIdx and trainIdx can never be
-	// confused for one another and neither index can run out of range (which would abort on the
-	// gather's own assertion instead of failing a check).
-	overlap.setTo(0.6f);
-	std::vector<Point2f> rejectA, otherB;
-	for (int cy = 120; cy < 160; cy += 2)
-		for (int cx = 120; cx < 160; cx += 2)
-			rejectA.push_back(CellToPixel(cx, cy));
-	for (int cy = 0; cy < 40; cy += 2)
-		for (int cx = 120; cx < 160; cx += 2)
-			otherB.push_back(CellToPixel(cx, cy));
-	ASSERT(rejectA.size() == numSparse && otherB.size() == numSparse);
-	Image& mutA = scene.images[0];
-	Image& mutB = scene.images[1];
-	for (const Point2f& pt : sparseA)
-		mutA.keypoints.emplace_back(pt.x, pt.y, 4.f, -1.f, 0.05f);
-	for (const Point2f& pt : rejectA)
-		mutA.keypoints.emplace_back(pt.x, pt.y, 4.f, -1.f, 0.05f);
-	for (const Point2f& pt : otherB)
-		mutB.keypoints.emplace_back(pt.x, pt.y, 4.f, -1.f, 0.05f);
-	for (const Point2f& pt : rejectA)
-		mutB.keypoints.emplace_back(pt.x, pt.y, 4.f, -1.f, 0.05f);
-	ImagePair gatherPair(0, 1);
-	for (unsigned m = 0; m < numSparse; ++m)
-		gatherPair.matches.emplace_back(m, numSparse + m); // sparse inlier: imgA cluster -> imgB cluster
-	for (unsigned k = 0; k < numSparse; ++k)
-		gatherPair.matches.emplace_back(numSparse + k, k); // RANSAC inlier the strict filter rejected
-	gatherPair.numFilteredInliers = (int)numSparse;
-	gatherPair.numDenseInliers = 0;
-	std::vector<Point2f> expectedA, expectedB, gatherA, gatherB;
-	std::vector<float> expectedC, gatherC;
-	SampleWarpComplementary(imgA, imgB, warp, overlap, 0.3f, denseBudget, sparseA, expectedA, expectedB, expectedC);
-	const size_t numGather = SampleWarpComplementary(imgA, imgB, warp, overlap, 0.3f, denseBudget,
-		gatherPair, gatherA, gatherB, gatherC);
-	if (gatherA != expectedA || gatherB != expectedB || gatherC != expectedC) {
-		VERBOSE("ROMA2SupplementDrawTest FAILED: the draw off the pair (%u points) differs from the same draw off that "
-			"pair's sparse image-A positions (%u points) -- the gather reads the wrong segment, index side or image",
-			(unsigned)numGather, (unsigned)expectedA.size());
-		return false;
-	}
-	// the same statement region by region, so a failure names the wrong answer rather than only
-	// reporting a mismatch: the strict-filter rejects' region and image B's own keypoint region are
-	// NOT the pair's sparse evidence, so the draw has to reach into both of them
-	std::vector<bool> rejectBuckets((size_t)numBuckets*numBuckets, false), otherBBuckets(rejectBuckets);
-	for (const Point2f& pt : rejectA)
-		rejectBuckets[PixelToBucket(pt, numBuckets)] = true;
-	for (const Point2f& pt : otherB)
-		otherBBuckets[PixelToBucket(pt, numBuckets)] = true;
-	unsigned numInRejects = 0, numInOtherB = 0;
-	FOREACH(i, gatherA) {
-		const size_t bucket = PixelToBucket(gatherA[i], numBuckets);
-		if (rejectBuckets[bucket])
-			++numInRejects;
-		if (otherBBuckets[bucket])
-			++numInOtherB;
-		// while the sparse cluster's own buckets stay empty, now measured through the pair
-		if (occupied[bucket]) {
-			VERBOSE("ROMA2SupplementDrawTest FAILED: the draw off the pair put point %u at (%.1f, %.1f) into a bucket "
-				"the pair's sparse inliers hold", i, gatherA[i].x, gatherA[i].y);
-			return false;
-		}
-	}
-	if (numInRejects == 0 || numInOtherB == 0) {
-		VERBOSE("ROMA2SupplementDrawTest FAILED: the draw reached the strict-filter rejects' region with %u points and "
-			"image B's keypoint region with %u, expected both non-empty -- the gather ran past the sparse segment, or read image B",
-			numInRejects, numInOtherB);
-		return false;
-	}
-
-	// 6) CONFIDENCE IS THE ELIGIBILITY TEST, NOT THE RANKING. Two warps confident over the same
+	// 5) CONFIDENCE IS THE ELIGIBILITY TEST, NOT THE RANKING. Two warps confident over the same
 	// region with OPPOSITE confidence ramps must produce the very same draw: the winner of a bucket
 	// is its highest-lattice-priority eligible cell, which depends on the cell coordinates alone.
 	// This is what makes two pairs sharing image A able to agree on a point at all.
@@ -1802,18 +1577,18 @@ bool ROMA2SupplementDrawTest()
 	SampleWarpComplementary(imgA, imgB, warp, rampUp, 0.3f, 900, noneOccupied, upA, upB, upC);
 	SampleWarpComplementary(imgA, imgB, warp, rampDown, 0.3f, 900, noneOccupied, downA, downB, downC);
 	if (upA.empty() || upA != downA || upB != downB) {
-		VERBOSE("ROMA2SupplementDrawTest FAILED: opposite confidence ramps over one region drew %u and %u points "
+		VERBOSE("ROMA2ComplementaryDrawTest FAILED: opposite confidence ramps over one region drew %u and %u points "
 			"at different positions -- confidence is still ranking the bucket winners",
 			(unsigned)upA.size(), (unsigned)downA.size());
 		return false;
 	}
 	// ...while each point still carries ITS OWN cell's confidence, which is what MakeDenseKeypoint stamps
 	if (upC == downC) {
-		VERBOSE("ROMA2SupplementDrawTest FAILED: the two ramps stamped identical confidences on the same cells");
+		VERBOSE("ROMA2ComplementaryDrawTest FAILED: the two ramps stamped identical confidences on the same cells");
 		return false;
 	}
 
-	// 7) CROSS-PAIR COINCIDENCE, the reason for the lattice rule. Two pairs sharing image A, with
+	// 6) CROSS-PAIR COINCIDENCE, the reason for the lattice rule. Two pairs sharing image A, with
 	// partially overlapping confident regions and budgets that give them DIFFERENT bucket grids: in
 	// the region both cover, the A-side positions they draw must land on the same pixels, exactly,
 	// so that the keypoint dedup downstream (FilterRedundantKeypoints, 0.1 px) can chain them into
@@ -1833,7 +1608,7 @@ bool ROMA2SupplementDrawTest()
 	const int numBucketsAB = BucketGridSide(CountEligible(overlapAB), 900);
 	const int numBucketsAC = BucketGridSide(CountEligible(overlapAC), 1500);
 	if (numAB == 0 || numAC == 0 || numBucketsAB == numBucketsAC) {
-		VERBOSE("ROMA2SupplementDrawTest FAILED: the two pairs drew %u/%u points on %dx%d and %dx%d grids -- "
+		VERBOSE("ROMA2ComplementaryDrawTest FAILED: the two pairs drew %u/%u points on %dx%d and %dx%d grids -- "
 			"the fixture must give them different grids for the coincidence to mean anything",
 			(unsigned)numAB, (unsigned)numAC, numBucketsAB, numBucketsAB, numBucketsAC, numBucketsAC);
 		return false;
@@ -1862,7 +1637,7 @@ bool ROMA2SupplementDrawTest()
 		}
 	const unsigned numCommonMin = MINF(numCommonAB, numCommonAC);
 	if (numCommonMin == 0 || numCoincident*5 < numCommonMin*2) {
-		VERBOSE("ROMA2SupplementDrawTest FAILED: only %u of the %u/%u points the two pairs drew in their common "
+		VERBOSE("ROMA2ComplementaryDrawTest FAILED: only %u of the %u/%u points the two pairs drew in their common "
 			"region coincide exactly, expected at least two fifths -- the draws are not chaining across pairs",
 			numCoincident, numCommonAB, numCommonAC, numCommonMin);
 		return false;
@@ -1875,31 +1650,31 @@ bool ROMA2SupplementDrawTest()
 		++hitsAC[PixelToBucket(pt, numBucketsAC)];
 	FOREACH(b, hitsAB)
 		if (hitsAB[b] > 1) {
-			VERBOSE("ROMA2SupplementDrawTest FAILED: bucket %u of the first pair holds %d points, expected at most 1", (unsigned)b, hitsAB[b]);
+			VERBOSE("ROMA2ComplementaryDrawTest FAILED: bucket %u of the first pair holds %d points, expected at most 1", (unsigned)b, hitsAB[b]);
 			return false;
 		}
 	FOREACH(b, hitsAC)
 		if (hitsAC[b] > 1) {
-			VERBOSE("ROMA2SupplementDrawTest FAILED: bucket %u of the second pair holds %d points, expected at most 1", (unsigned)b, hitsAC[b]);
+			VERBOSE("ROMA2ComplementaryDrawTest FAILED: bucket %u of the second pair holds %d points, expected at most 1", (unsigned)b, hitsAC[b]);
 			return false;
 		}
 	std::vector<Point2f> repeatAC_A, repeatAC_B;
 	std::vector<float> repeatAC_C;
 	SampleWarpComplementary(imgA, imgB, warp, overlapAC, 0.3f, 1500, noneOccupied, repeatAC_A, repeatAC_B, repeatAC_C);
 	if (repeatAC_A != acA || repeatAC_B != acB || repeatAC_C != acC) {
-		VERBOSE("ROMA2SupplementDrawTest FAILED: the lattice draw is not a pure function of its inputs");
+		VERBOSE("ROMA2ComplementaryDrawTest FAILED: the lattice draw is not a pure function of its inputs");
 		return false;
 	}
 
-	// 8) THE EVEN THINNING, as its own entry point: the draw caps itself with it, and the infusion
-	// thins a full draw to a budget only the finished draw's coverage could name, so the two must
-	// thin identically. An even stride keeps the order, keeps the first point, and spans the sample.
+	// 7) THE EVEN THINNING, as its own entry point: it is how the draw caps itself once the
+	// unoccupied buckets outnumber the budget. An even stride keeps the order, keeps the first
+	// point, and spans the sample -- a confidence sort would re-cluster the survivors instead.
 	std::vector<Point2f> thinA(acA), thinB(acB);
 	std::vector<float> thinC(acC);
 	const unsigned thinTo = (unsigned)(acA.size()/3);
 	ThinSampleEvenly(thinA, thinB, thinC, thinTo);
 	if (thinA.size() != thinTo || thinB.size() != thinTo || thinC.size() != thinTo || !(thinA[0] == acA[0])) {
-		VERBOSE("ROMA2SupplementDrawTest FAILED: thinning %u points to %u kept %u", (unsigned)acA.size(), thinTo, (unsigned)thinA.size());
+		VERBOSE("ROMA2ComplementaryDrawTest FAILED: thinning %u points to %u kept %u", (unsigned)acA.size(), thinTo, (unsigned)thinA.size());
 		return false;
 	}
 	size_t src = 0;
@@ -1907,7 +1682,7 @@ bool ROMA2SupplementDrawTest()
 		while (src < acA.size() && !(acA[src] == thinA[i]))
 			++src;
 		if (src == acA.size() || !(acB[src] == thinB[i]) || acC[src] != thinC[i]) {
-			VERBOSE("ROMA2SupplementDrawTest FAILED: the thinned sample is not an order-preserving index-parallel subsequence of the draw at %u", i);
+			VERBOSE("ROMA2ComplementaryDrawTest FAILED: the thinned sample is not an order-preserving index-parallel subsequence of the draw at %u", i);
 			return false;
 		}
 	}
@@ -1917,357 +1692,11 @@ bool ROMA2SupplementDrawTest()
 	ThinSampleEvenly(keepA, keepB, keepC, (unsigned)acA.size() + 10);
 	ThinSampleEvenly(thinA, thinB, thinC, 0);
 	if (keepA != acA || keepB != acB || keepC != acC || !thinA.empty() || !thinB.empty() || !thinC.empty()) {
-		VERBOSE("ROMA2SupplementDrawTest FAILED: thinning to a budget above the sample size, or to zero, did not behave");
+		VERBOSE("ROMA2ComplementaryDrawTest FAILED: thinning to a budget above the sample size, or to zero, did not behave");
 		return false;
 	}
 
-	VERBOSE("ROMA2SupplementDrawTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
-	return true;
-}
-
-// The DENSE INFUSION DECISION, taken right after a pair's guided SIFT pass and its geometric
-// filter (DrawDenseSupplement) plus the relative-pose choice that follows it (SelectInfusedPose).
-// Four cases, each of which the previous rule -- "few inliers OR small confident warp overlap, for
-// a budget of total - inliers" -- got wrong:
-//  (a) a validated pair whose SIFT pass FAILED: covered nothing, so it is infused at the whole
-//      total and kept as a dense-only pair carrying the gate's geometry. The old rule never saw it:
-//      the decision sat inside the branch where the SIFT pass survived.
-//  (b) a STRONG but CLUSTERED pair (>= supplementMaxInliers inliers, all in one corner): infused,
-//      because coverage -- not the inlier count, and not the warp's confident fraction -- is what
-//      says the rest of the overlap is empty. Budget round(total * (1 - coverage)), drawn only in
-//      buckets the sparse inliers do not hold.
-//  (c) a strong pair whose inliers are SPREAD over the valid area: nothing at all.
-//  (d) the pose choice: the SIFT pose while the two agree, the gate's dense pose once either angle
-//      disagrees substantially, the gate's alone on a pair with no sparse inliers.
-// And the consequence requirement 6 turns on: a dense-only pair carries a positive composite weight
-// and forms tracks, instead of weighing 0 and being cut by BuildTracks' minPairWeight.
-bool ROMA2DenseInfusionTest()
-{
-	TD_TIMER_START();
-
-	// the identity-warp two-image fixture of ROMA2SupplementDrawTest: a point of A comes back
-	// unmoved in B, so every check reads in A's frame alone
-	const int width = 640, height = 480, cells = 160;
-	Image32F2 warp(cells, cells);
-	for (int y = 0; y < cells; ++y)
-		for (int x = 0; x < cells; ++x)
-			warp(y, x) = Point2f(
-				((x*(width-1.f)/(cells-1)) + 0.5f)*2.f/width - 1.f,
-				((y*(height-1.f)/(cells-1)) + 0.5f)*2.f/height - 1.f);
-	const Image32F overlap(cv::Size(cells, cells), 0.6f); // the whole warp is the valid disparity area
-	const auto CellToPixel = [&](int cx, int cy) {
-		return Point2f((float)cx*(width-1.f)/(float)(cells-1), (float)cy*(height-1.f)/(float)(cells-1));
-	};
-	// the documented bucket grid of a draw budgeted at `budget` over a fully eligible warp, and the
-	// bucket a pixel of A falls in, both restated independently of the implementation
-	const auto BucketGridSide = [&](unsigned budget) {
-		return MINF((int)std::ceil(std::sqrt((double)budget)), cells);
-	};
-	const auto PixelToBucket = [&](const Point2f& pt, int numBuckets) {
-		const int cx = MINF(MAXF(ROUND2INT(pt.x*(float)(cells-1)/(width-1.f)), 0), cells-1);
-		const int cy = MINF(MAXF(ROUND2INT(pt.y*(float)(cells-1)/(height-1.f)), 0), cells-1);
-		return (size_t)(cy*numBuckets/cells)*numBuckets + cx*numBuckets/cells;
-	};
-	// a two-image scene whose pair carries `sparseCells` sparse inliers at those cells of A
-	const auto BuildScene = [&](Scene& scene, const std::vector<std::pair<int,int>>& sparseCells) -> ImagePair& {
-		scene.cameras.emplace_back(new PinholeCamera(cv::Size(width, height),
-			REAL(600), REAL(600), REAL(width)/2, REAL(height)/2));
-		for (IIndex k = 0; k < 2; ++k) {
-			scene.images.emplace_back(k, String::FormatString("inf%u.jpg", k));
-			scene.images[k].cameraID = 0;
-			scene.images[k].pCamera = scene.cameras[0];
-		}
-		for (const auto& [cx, cy] : sparseCells) {
-			const Point2f pt = CellToPixel(cx, cy);
-			scene.images[0].keypoints.emplace_back(pt.x, pt.y, 4.f, -1.f, 0.05f);
-			scene.images[1].keypoints.emplace_back(pt.x, pt.y, 4.f, -1.f, 0.05f);
-		}
-		for (Image& img : scene.images)
-			img.CloseDescribedKeypoints();
-		ImagePair& pair = scene.pairs.emplace_back(0u, 1u);
-		for (uint32_t m = 0; m < (uint32_t)sparseCells.size(); ++m)
-			pair.matches.emplace_back(m, m);
-		pair.numFilteredInliers = (int)sparseCells.size();
-		pair.numDenseInliers = 0;
-		return pair;
-	};
-	ROMA2Config config; // total 2000, maxInliers 500, minCoverage 0.3
-	// the census the decision reads, recomputed here from the warp itself: every bucket of the grid
-	// holds an eligible cell (the warp is confident everywhere and the identity maps it inside B),
-	// so the confident buckets are the whole grid and the occupied ones are those the sparse
-	// inliers land in
-	const int numBuckets = BucketGridSide(config.supplementTotalMatches);
-	const auto Census = [&](const std::vector<std::pair<int,int>>& sparseCells) {
-		std::vector<bool> occupied((size_t)numBuckets*numBuckets, false);
-		for (const auto& [cx, cy] : sparseCells)
-			occupied[PixelToBucket(CellToPixel(cx, cy), numBuckets)] = true;
-		return occupied;
-	};
-
-	// (a) A VALIDATED PAIR WHOSE SIFT PASS FAILED: no sparse inliers, so nothing is occupied, the
-	// coverage is 0 and the budget is the whole total.
-	{
-		Scene scene;
-		ImagePair& pair = BuildScene(scene, {});
-		// the geometry the guided pass copies onto a dense-only pair: the gate's, whole
-		Pose3D gatePose;
-		gatePose.R = Matrix3x3::IDENTITY;
-		gatePose.SetT(Point3(1.0, 0.0, 0.0));
-		pair.relativePose = gatePose;
-		pair.E = ImagePair::ComposeEssentialMatrix(gatePose);
-		DenseSupplement supplement;
-		if (!DrawDenseSupplement(scene.images[0], scene.images[1], warp, overlap, config, pair, supplement)) {
-			VERBOSE("ROMA2DenseInfusionTest FAILED: a validated pair whose SIFT pass failed was not infused");
-			return false;
-		}
-		if (supplement.coverage != 0.f || supplement.budget != config.supplementTotalMatches ||
-			supplement.pointsA.size() != config.supplementTotalMatches) {
-			VERBOSE("ROMA2DenseInfusionTest FAILED: a pair with no sparse inliers has coverage %.4f and a budget of %u "
-				"(%u points), expected 0 coverage and the whole %u total",
-				supplement.coverage, supplement.budget, (unsigned)supplement.pointsA.size(), config.supplementTotalMatches);
-			return false;
-		}
-		// stored the way the pass stores it: the dense matches are the pair's whole match set, so
-		// the partition is 0 sparse / N dense -- the invariant every consumer of the segments reads
-		const unsigned numAppended = AppendDenseMatches(scene, pair, supplement.pointsA, supplement.pointsB,
-			supplement.confidences, cv::Size(cells, cells));
-		if (numAppended != supplement.pointsA.size() || pair.GetNumFilteredInliers() != 0 ||
-			pair.GetNumDenseInliers() != numAppended || pair.GetNumTrackFormingMatches() != numAppended) {
-			VERBOSE("ROMA2DenseInfusionTest FAILED: a dense-only pair partitions as %u sparse / %u dense of %u appended",
-				pair.GetNumFilteredInliers(), pair.GetNumDenseInliers(), numAppended);
-			return false;
-		}
-		if (!pair.relativePose.has_value() || !pair.E.has_value() ||
-			norm(pair.relativePose->R - gatePose.R) > 1e-9 || norm(pair.relativePose->GetT() - gatePose.GetT()) > 1e-9) {
-			VERBOSE("ROMA2DenseInfusionTest FAILED: the dense-only pair did not keep the gate's geometry");
-			return false;
-		}
-		// ...and it is a first-class member of the view graph: a positive composite weight, above
-		// the default minPairWeight, and tracks out of BuildTracks
-		ComputePairsWeights(scene);
-		if (!pair.HasValidWeight() || pair.GetNumWeightedInliers() == 0 || pair.GetCompositeWeight() <= 3.f) {
-			VERBOSE("ROMA2DenseInfusionTest FAILED: the dense-only pair weighs %.3f (%u weighted inliers, %.3f spatial, "
-				"%.3f connectivity) -- it is cut by BuildTracks' minPairWeight",
-				pair.GetCompositeWeight(), pair.GetNumWeightedInliers(), pair.weightSpatial, pair.weightConnectivity);
-			return false;
-		}
-		BuildTracks(scene, 3.f);
-		if (scene.tracks.size() != numAppended) {
-			VERBOSE("ROMA2DenseInfusionTest FAILED: the dense-only pair formed %u tracks of %u dense matches",
-				(unsigned)scene.tracks.size(), numAppended);
-			return false;
-		}
-	}
-
-	// (b) STRONG BUT CLUSTERED: 625 verified inliers -- past supplementMaxInliers, so the old
-	// inlier-count trigger would have left this pair alone -- packed into the top-left corner. The
-	// coverage of the valid disparity area is what sees the empty remainder.
-	std::vector<std::pair<int,int>> clustered;
-	for (int cy = 0; cy < 50; cy += 2)
-		for (int cx = 0; cx < 50; cx += 2)
-			clustered.emplace_back(cx, cy);
-	{
-		Scene scene;
-		ImagePair& pair = BuildScene(scene, clustered);
-		const std::vector<bool> occupied = Census(clustered);
-		const unsigned numOccupied = (unsigned)std::count(occupied.begin(), occupied.end(), true);
-		const float expectedCoverage = (float)numOccupied/(float)(numBuckets*numBuckets);
-		const unsigned expectedBudget = (unsigned)ROUND2INT((float)config.supplementTotalMatches*(1.f - expectedCoverage));
-		if (pair.GetNumFilteredInliers() < config.supplementMaxInliers || expectedCoverage >= config.supplementMinCoverage) {
-			VERBOSE("ROMA2DenseInfusionTest FAILED: the fixture is not strong-but-clustered (%u inliers, %.4f coverage)",
-				pair.GetNumFilteredInliers(), expectedCoverage);
-			return false;
-		}
-		DenseSupplement supplement;
-		if (!DrawDenseSupplement(scene.images[0], scene.images[1], warp, overlap, config, pair, supplement)) {
-			VERBOSE("ROMA2DenseInfusionTest FAILED: a pair with %u inliers covering %.4f of its valid disparity area "
-				"was not infused", pair.GetNumFilteredInliers(), expectedCoverage);
-			return false;
-		}
-		if (ABS(supplement.coverage - expectedCoverage) > 1e-6f || supplement.budget != expectedBudget ||
-			supplement.pointsA.size() != expectedBudget) {
-			VERBOSE("ROMA2DenseInfusionTest FAILED: coverage %.4f (expected %.4f) bought %u points of a %u budget, expected %u",
-				supplement.coverage, expectedCoverage, (unsigned)supplement.pointsA.size(), supplement.budget, expectedBudget);
-			return false;
-		}
-		// and every one of them outside the buckets the sparse inliers already hold
-		FOREACH(i, supplement.pointsA)
-			if (occupied[PixelToBucket(supplement.pointsA[i], numBuckets)]) {
-				VERBOSE("ROMA2DenseInfusionTest FAILED: infused point %u at (%.1f, %.1f) sits in a bucket the pair's "
-					"sparse inliers hold", i, supplement.pointsA[i].x, supplement.pointsA[i].y);
-				return false;
-			}
-	}
-
-	// (c) STRONG AND SPREAD: the same inlier count, spread over the whole valid area, is left alone.
-	{
-		std::vector<std::pair<int,int>> spread;
-		for (int cy = 0; cy < cells; cy += 5)
-			for (int cx = 0; cx < cells; cx += 5)
-				spread.emplace_back(cx, cy);
-		Scene scene;
-		ImagePair& pair = BuildScene(scene, spread);
-		const std::vector<bool> occupied = Census(spread);
-		const float expectedCoverage = (float)std::count(occupied.begin(), occupied.end(), true)/(float)(numBuckets*numBuckets);
-		if (pair.GetNumFilteredInliers() < config.supplementMaxInliers || expectedCoverage < config.supplementMinCoverage) {
-			VERBOSE("ROMA2DenseInfusionTest FAILED: the fixture is not strong-and-spread (%u inliers, %.4f coverage)",
-				pair.GetNumFilteredInliers(), expectedCoverage);
-			return false;
-		}
-		DenseSupplement supplement;
-		if (DrawDenseSupplement(scene.images[0], scene.images[1], warp, overlap, config, pair, supplement) ||
-			!supplement.pointsA.empty() || !supplement.pointsB.empty() || !supplement.confidences.empty() ||
-			supplement.budget != 0) {
-			VERBOSE("ROMA2DenseInfusionTest FAILED: a pair with %u inliers covering %.4f of its valid disparity area "
-				"was infused with %u points", pair.GetNumFilteredInliers(), expectedCoverage,
-				(unsigned)supplement.pointsA.size());
-			return false;
-		}
-	}
-
-	// (d) THE POSE CHOICE. The SIFT pose is kept while the two fits agree and dropped for the gate's
-	// once either angle disagrees substantially; a pair with no sparse inliers has only the gate's.
-	{
-		Pose3D densePose;
-		densePose.R = Matrix3x3::IDENTITY;
-		densePose.SetT(Point3(1.0, 0.0, 0.0));
-		const auto MakePose = [](REAL rotationDeg, REAL translationDeg) {
-			Pose3D pose;
-			pose.R = RMatrix(Point3(0.0, 1.0, 0.0), D2R(rotationDeg)); // about Y, so the angle is exactly this
-			pose.SetT(Point3(COS(D2R(translationDeg)), SIN(D2R(translationDeg)), 0.0));
-			return pose;
-		};
-		struct Case { REAL rotationDeg, translationDeg; InfusedPoseChoice choice; } cases[] = {
-			{0.0, 0.0, InfusedPoseChoice::SPARSE},   // identical fits
-			{1.5, 8.0, InfusedPoseChoice::SPARSE},   // both inside their thresholds (2 deg, 10 deg)
-			{3.0, 0.0, InfusedPoseChoice::DENSE},    // the rotations disagree
-			{0.0, 25.0, InfusedPoseChoice::DENSE},   // the translation directions do
-			{5.0, 30.0, InfusedPoseChoice::DENSE},   // both
-		};
-		for (const Case& c : cases) {
-			float rotationDeg = -1.f, translationDeg = -1.f;
-			const Pose3D sparsePose = MakePose(c.rotationDeg, c.translationDeg);
-			const InfusedPoseChoice choice = SelectInfusedPose(sparsePose, densePose, 800, config, rotationDeg, translationDeg);
-			if (choice != c.choice || ABS(rotationDeg - (float)c.rotationDeg) > 1e-3f ||
-				ABS(translationDeg - (float)c.translationDeg) > 1e-3f) {
-				VERBOSE("ROMA2DenseInfusionTest FAILED: poses %g deg / %g deg apart measured %.4f/%.4f and chose %s, expected %s",
-					c.rotationDeg, c.translationDeg, rotationDeg, translationDeg,
-					InfusedPoseChoiceName(choice), InfusedPoseChoiceName(c.choice));
-				return false;
-			}
-		}
-		// a pair with no sparse inliers, and a gate branch that fitted no pose at all
-		float rotationDeg = -1.f, translationDeg = -1.f;
-		if (SelectInfusedPose(std::optional<Pose3D>(), densePose, 0, config, rotationDeg, translationDeg) != InfusedPoseChoice::DENSE_ONLY ||
-			SelectInfusedPose(MakePose(30.0, 40.0), std::optional<Pose3D>(), 800, config, rotationDeg, translationDeg) != InfusedPoseChoice::SPARSE ||
-			SelectInfusedPose(std::optional<Pose3D>(), std::optional<Pose3D>(), 800, config, rotationDeg, translationDeg) != InfusedPoseChoice::NONE) {
-			VERBOSE("ROMA2DenseInfusionTest FAILED: the pose choice mishandles a missing pose");
-			return false;
-		}
-		// the thresholds are configuration, not constants
-		ROMA2Config strict = config;
-		strict.supplementPoseMaxRotationDeg = 0.5f;
-		if (SelectInfusedPose(MakePose(1.5, 8.0), densePose, 800, strict, rotationDeg, translationDeg) != InfusedPoseChoice::DENSE) {
-			VERBOSE("ROMA2DenseInfusionTest FAILED: a 1.5 deg rotation difference passed a 0.5 deg threshold");
-			return false;
-		}
-	}
-
-	// (e) THE REFIT (--roma2-supplement-refit-pose), which replaces the choice with one geometry
-	// fitted on sparse and dense together. What it must not do is move the pose and E while leaving
-	// F describing the previous fit: F feeds ViewGraphCalibrator's focal self-calibration and
-	// MatchGeometric's epipolar band, and a pair whose F disagrees with its own pose is a silently
-	// wrong constraint in both. The pair below starts with a deliberately WRONG F, so a refit that
-	// forgets it fails this outright.
-	{
-		Scene scene;
-		PinholeCamera* const camera = new PinholeCamera(cv::Size(width, height), REAL(600), REAL(600), REAL(width)/2, REAL(height)/2);
-		camera->trustIntrinsics = true; // the calibrated branch, the one that yields a relative pose
-		scene.cameras.emplace_back(camera);
-		const Point3 centers[2] = {Point3(0.0, 0.0, 0.0), Point3(0.6, 0.0, 0.0)};
-		for (IIndex k = 0; k < 2; ++k) {
-			Pose3D pose;
-			pose.C = centers[k];
-			pose.R = Matrix3x3::IDENTITY;
-			scene.images.emplace_back(k, String::FormatString("ref%u.jpg", k), pose, 0, scene.cameras[0]);
-		}
-		// 30 points at mixed depths, projected into both views: 10 of them the pair's sparse
-		// matches, 20 the dense supplement the refit is supposed to fit alongside them
-		std::vector<Point2f> sparseA, sparseB, denseA, denseB;
-		std::vector<float> denseC;
-		for (unsigned k = 0; k < 30; ++k) {
-			const Point3 X(-1.2 + 0.09*(REAL)k, -0.8 + 0.055*(REAL)k, 4.0 + 0.11*(REAL)(k%7));
-			const auto [projA, validA] = scene.images[0].ProjectPoint(X);
-			const auto [projB, validB] = scene.images[1].ProjectPoint(X);
-			if (!validA || !validB ||
-				!Image8U::isInside(Cast<float>(projA), scene.images[0].GetSize()) ||
-				!Image8U::isInside(Cast<float>(projB), scene.images[1].GetSize())) {
-				VERBOSE("ROMA2DenseInfusionTest FAILED: the refit fixture projects point %u outside the frame", k);
-				return false;
-			}
-			if (k < 10) {
-				sparseA.push_back(Cast<float>(projA));
-				sparseB.push_back(Cast<float>(projB));
-			} else {
-				denseA.push_back(Cast<float>(projA));
-				denseB.push_back(Cast<float>(projB));
-				denseC.push_back(0.8f);
-			}
-		}
-		for (const Point2f& pt : sparseA)
-			scene.images[0].keypoints.emplace_back(pt.x, pt.y, 4.f, -1.f, 0.05f);
-		for (const Point2f& pt : sparseB)
-			scene.images[1].keypoints.emplace_back(pt.x, pt.y, 4.f, -1.f, 0.05f);
-		for (Image& img : scene.images)
-			img.CloseDescribedKeypoints();
-		ImagePair pair(0, 1);
-		for (uint32_t m = 0; m < (uint32_t)sparseA.size(); ++m)
-			pair.matches.emplace_back(m, m);
-		pair.numFilteredInliers = (int)sparseA.size();
-		// the geometry of a DIFFERENT fit, which the refit has to replace rather than leave behind
-		Matrix3x3 wrongF(Matrix3x3::IDENTITY);
-		wrongF(0, 2) = 17.f;
-		pair.F = wrongF;
-		DenseSupplement supplement;
-		supplement.pointsA = denseA;
-		supplement.pointsB = denseB;
-		supplement.confidences = denseC;
-		MatchConfig matchCfg;
-		matchCfg.minMatches = 8;
-		PairsMatcher matcher(scene, matchCfg);
-		if (!RefitInfusedPose(matcher, scene.images[0], scene.images[1], supplement, pair)) {
-			VERBOSE("ROMA2DenseInfusionTest FAILED: the refit did not land on 10 sparse + 20 dense exact correspondences");
-			return false;
-		}
-		if (!pair.relativePose.has_value() || !pair.E.has_value() || !pair.F.has_value()) {
-			VERBOSE("ROMA2DenseInfusionTest FAILED: the refit left the pair without a pose, an E or an F");
-			return false;
-		}
-		// one geometry: E and F are exactly what the refitted pose composes, and F is no longer the
-		// one the pair carried in
-		const Matrix3x3 expectedE = ImagePair::ComposeEssentialMatrix(*pair.relativePose);
-		const Matrix3x3 expectedF = ImagePair::ComposeFundamentalMatrix(expectedE, scene.images[0].GetK(), scene.images[1].GetK());
-		if (norm(*pair.E - expectedE) > 1e-9 || norm(*pair.F - expectedF) > 1e-9 || norm(*pair.F - wrongF) < 1e-6) {
-			VERBOSE("ROMA2DenseInfusionTest FAILED: after the refit F, E and the pose do not describe one geometry "
-				"(|E - E(pose)| %g, |F - F(E)| %g, |F - F_before| %g)",
-				norm(*pair.E - expectedE), norm(*pair.F - expectedF), norm(*pair.F - wrongF));
-			return false;
-		}
-		// and that one geometry is the true one: the refitted rotation is the identity the fixture
-		// used, and the translation direction points along the baseline
-		float rotationDeg = 0.f, translationDeg = 0.f;
-		Pose3D truePose;
-		truePose.R = Matrix3x3::IDENTITY;
-		truePose.C = centers[1];
-		RelativePoseDifference(*pair.relativePose, truePose, rotationDeg, translationDeg);
-		if (rotationDeg > 0.5f || translationDeg > 0.5f) {
-			VERBOSE("ROMA2DenseInfusionTest FAILED: the refitted pose is %.4f deg / %.4f deg off the fixture's own",
-				rotationDeg, translationDeg);
-			return false;
-		}
-	}
-
-	VERBOSE("ROMA2DenseInfusionTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	VERBOSE("ROMA2ComplementaryDrawTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 
@@ -3242,9 +2671,53 @@ static bool RoMa2OnnxParityDescribe(RoMa2Onnx& model, const String& descDir, con
 	return true;
 }
 
+// polyml's check_correspondences in C++, for one match direction: the warp error in pixels of the
+// SxS grid over the cells the reference calls overlapping, and the agreement of the overlap
+// logit's sign. Shared by both directions of RoMa2OnnxParityMatchCoarse below, which compares a
+// computed (warp, confidence) pair to a same-shaped reference dump twice, once per direction.
+static bool RoMa2OnnxCheckDirection(const Image32F2& warp, const Image32F& confidence,
+	const std::vector<float>& refWarp, const std::vector<float>& refConfidence,
+	int S, int cells, const RoMa2ParityBounds& bounds, const String& setting, const char* direction,
+	float& outP99, double& outAgreement)
+{
+	const cv::Size gridSize(S, S);
+	std::vector<float> errors;
+	errors.reserve((size_t)cells*cells);
+	unsigned numAgree = 0;
+	for (int r = 0; r < cells; ++r) {
+		for (int c = 0; c < cells; ++c) {
+			const int i = r*cells + c;
+			const float refLogit = refConfidence[i];
+			// sign(logit) == sign(refLogit), read off the sigmoid MatchCoarse already applied
+			if ((confidence(r, c) >= 0.5f) == (refLogit >= 0.f))
+				++numAgree;
+			if (1.f/(1.f + std::exp(-refLogit)) < 0.5f)
+				continue; // the reference calls this cell non-overlapping: its warp is unconstrained
+			const Point2f coord(DenormCoord(warp(r, c), gridSize));
+			const Point2f refCoord(DenormCoord(Point2f(refWarp[i*2], refWarp[i*2+1]), gridSize));
+			errors.push_back(std::sqrt(SQUARE(coord.x-refCoord.x) + SQUARE(coord.y-refCoord.y)));
+		}
+	}
+	if (errors.empty()) {
+		VERBOSE("RoMa2OnnxParityTest[%s] FAILED: the reference overlap gates every %s warp cell", setting.c_str(), direction);
+		return false;
+	}
+	outP99 = Percentile(errors, 99);
+	outAgreement = 100. * numAgree / (double)(cells*cells);
+	DEBUG("RoMa2OnnxParityTest[%s]: %s warp error p99 %.4f px over %u/%d overlapping cells, logit sign agreement %.4f%%",
+		setting.c_str(), direction, outP99, (unsigned)errors.size(), cells*cells, outAgreement);
+	if (outP99 > bounds.maxWarpErrorPx || outAgreement < bounds.minAgreementPercent) {
+		VERBOSE("RoMa2OnnxParityTest[%s] FAILED: %s warp error p99 %.4f px (bound %g), logit sign agreement %.4f%% (bound %g)",
+			setting.c_str(), direction, outP99, bounds.maxWarpErrorPx, outAgreement, bounds.minAgreementPercent);
+		return false;
+	}
+	return true;
+}
+
 // The coarse-match stage of one preset against real_<setting>_match_coarse.reference, driven end
 // to end: both sources preprocessed, described, and matched, then judged as polyml's
-// check_correspondences does, by the bounds in that dump's own parity.json
+// check_correspondences does, by the bounds in that dump's own parity.json, on both directions
+// of the bidirectional graph (warp/confidence A->B, warp_BA/confidence_BA B->A)
 static bool RoMa2OnnxParityMatchCoarse(RoMa2Onnx& model, const String& matchDir, const String& setting)
 {
 	RoMa2ParityBounds bounds;
@@ -3270,60 +2743,36 @@ static bool RoMa2OnnxParityMatchCoarse(RoMa2Onnx& model, const String& matchDir,
 		VERBOSE("RoMa2OnnxParityTest[%s] FAILED: describe of the match pair", setting.c_str());
 		return false;
 	}
-	Image32F2 warp;
-	Image32F overlap;
+	Image32F2 warpAB, warpBA;
+	Image32F confidenceAB, confidenceBA;
 	{
 		TD_TIMER_STARTD();
-		if (!model.MatchCoarse(layersA, layersB, warp, overlap)) {
+		if (!model.MatchCoarse(layersA, layersB, warpAB, confidenceAB, warpBA, confidenceBA)) {
 			VERBOSE("RoMa2OnnxParityTest[%s] FAILED: coarse match", setting.c_str());
 			return false;
 		}
 		// the only pair of the test, so this timing also carries the lazy match-graph load
 		DEBUG_EXTRA("RoMa2OnnxParityTest[%s]: MatchCoarse, match-graph load included, %s", setting.c_str(), TD_TIMER_GET_FMT().c_str());
 	}
-	if (warp.cols != cells || warp.rows != cells || overlap.cols != cells || overlap.rows != cells) {
-		VERBOSE("RoMa2OnnxParityTest[%s] FAILED: warp %dx%d, expected %dx%d", setting.c_str(), warp.cols, warp.rows, cells, cells);
+	if (warpAB.cols != cells || warpAB.rows != cells || confidenceAB.cols != cells || confidenceAB.rows != cells ||
+		warpBA.cols != cells || warpBA.rows != cells || confidenceBA.cols != cells || confidenceBA.rows != cells) {
+		VERBOSE("RoMa2OnnxParityTest[%s] FAILED: warp %dx%d/%dx%d, expected %dx%d",
+			setting.c_str(), warpAB.cols, warpAB.rows, warpBA.cols, warpBA.rows, cells, cells);
 		return false;
 	}
-	std::vector<float> refWarp, refConfidence;
-	if (!ReadNpyExpect(matchDir + "out_warp.npy", (size_t)cells*cells*2, refWarp) ||
-		!ReadNpyExpect(matchDir + "out_confidence.npy", (size_t)cells*cells, refConfidence))
+	std::vector<float> refWarpAB, refConfidenceAB, refWarpBA, refConfidenceBA;
+	if (!ReadNpyExpect(matchDir + "out_warp.npy", (size_t)cells*cells*2, refWarpAB) ||
+		!ReadNpyExpect(matchDir + "out_confidence.npy", (size_t)cells*cells, refConfidenceAB) ||
+		!ReadNpyExpect(matchDir + "out_warp_BA.npy", (size_t)cells*cells*2, refWarpBA) ||
+		!ReadNpyExpect(matchDir + "out_confidence_BA.npy", (size_t)cells*cells, refConfidenceBA))
 		return false;
-	// polyml's check_correspondences in C++: the warp error in pixels of the SxS grid over the
-	// cells the reference calls overlapping, and the agreement of the overlap logit's sign
-	const cv::Size gridSize(S, S);
-	std::vector<float> errors;
-	errors.reserve((size_t)cells*cells);
-	unsigned numAgree = 0;
-	for (int r = 0; r < cells; ++r) {
-		for (int c = 0; c < cells; ++c) {
-			const int i = r*cells + c;
-			const float refLogit = refConfidence[i];
-			// sign(logit) == sign(refLogit), read off the sigmoid MatchCoarse already applied
-			if ((overlap(r, c) >= 0.5f) == (refLogit >= 0.f))
-				++numAgree;
-			if (1.f/(1.f + std::exp(-refLogit)) < 0.5f)
-				continue; // the reference calls this cell non-overlapping: its warp is unconstrained
-			const Point2f coord(DenormCoord(warp(r, c), gridSize));
-			const Point2f refCoord(DenormCoord(Point2f(refWarp[i*2], refWarp[i*2+1]), gridSize));
-			errors.push_back(std::sqrt(SQUARE(coord.x-refCoord.x) + SQUARE(coord.y-refCoord.y)));
-		}
-	}
-	if (errors.empty()) {
-		VERBOSE("RoMa2OnnxParityTest[%s] FAILED: the reference overlap gates every warp cell", setting.c_str());
+	float p99AB = 0, p99BA = 0;
+	double agreementAB = 0, agreementBA = 0;
+	if (!RoMa2OnnxCheckDirection(warpAB, confidenceAB, refWarpAB, refConfidenceAB, S, cells, bounds, setting, "A->B", p99AB, agreementAB) ||
+		!RoMa2OnnxCheckDirection(warpBA, confidenceBA, refWarpBA, refConfidenceBA, S, cells, bounds, setting, "B->A", p99BA, agreementBA))
 		return false;
-	}
-	const float p99 = Percentile(errors, 99);
-	const double agreement = 100. * numAgree / (double)(cells*cells);
-	DEBUG("RoMa2OnnxParityTest[%s]: warp error p99 %.4f px over %u/%d overlapping cells, logit sign agreement %.4f%%",
-		setting.c_str(), p99, (unsigned)errors.size(), cells*cells, agreement);
-	if (p99 > bounds.maxWarpErrorPx || agreement < bounds.minAgreementPercent) {
-		VERBOSE("RoMa2OnnxParityTest[%s] FAILED: warp error p99 %.4f px (bound %g), logit sign agreement %.4f%% (bound %g)",
-			setting.c_str(), p99, bounds.maxWarpErrorPx, agreement, bounds.minAgreementPercent);
-		return false;
-	}
-	VERBOSE("RoMa2OnnxParityTest[%s] match passed on %s: warp p99 %.4f px, agreement %.4f%%",
-		setting.c_str(), model.ProviderName().c_str(), p99, agreement);
+	VERBOSE("RoMa2OnnxParityTest[%s] match passed on %s: A->B warp p99 %.4f px agreement %.4f%%, B->A warp p99 %.4f px agreement %.4f%%",
+		setting.c_str(), model.ProviderName().c_str(), p99AB, agreementAB, p99BA, agreementBA);
 	return true;
 }
 
@@ -3414,20 +2863,23 @@ bool RoMa2OnnxParityTest()
 static bool ReconstructMatchedScene(Scene& scene, const char* testName, unsigned minTracks, unsigned maxTracks, REAL maxDistortion);
 
 // One matched pair of a ROMA2ReconstructScene run, reduced to what the checks below compare:
-// which pair it is and how large its match set is. A pair the dense pass created carries no
-// marker of its own (ApplyROMA2Pair deliberately leaves its overlap at 0 so the weighting treats
-// it like any other pair), so creation is read off the difference between two runs' pair sets.
+// which pair it is and how large each of its two evidence segments is. A pair the one pass stored
+// carries no marker of its own, so a pair the pass created is read off the difference between two
+// runs' pair sets; the dense count is what says the pass's fill reached the scene, and it is part
+// of the tuple so the determinism runs compare the fill too -- the dense keypoint indices are
+// handed out by a serial append whose order is exactly what a parallel pass could disturb.
 struct ROMA2PairSummary {
 	IIndex ID1, ID2;
-	unsigned numMatches, numFilteredInliers;
+	unsigned numMatches, numFilteredInliers, numDenseInliers;
 
 	// order by pair identity alone: two runs of the same scene match the same pairs
 	bool operator<(const ROMA2PairSummary& r) const {
 		return ID1 != r.ID1 ? ID1 < r.ID1 : ID2 < r.ID2;
 	}
-	// the (ID1, ID2, numMatches, numFilteredInliers) tuple the determinism check compares
+	// the (ID1, ID2, numMatches, numFilteredInliers, numDenseInliers) tuple the determinism check compares
 	bool operator==(const ROMA2PairSummary& r) const {
-		return ID1 == r.ID1 && ID2 == r.ID2 && numMatches == r.numMatches && numFilteredInliers == r.numFilteredInliers;
+		return ID1 == r.ID1 && ID2 == r.ID2 && numMatches == r.numMatches &&
+			numFilteredInliers == r.numFilteredInliers && numDenseInliers == r.numDenseInliers;
 	}
 };
 typedef std::vector<ROMA2PairSummary> ROMA2PairSummaries;
@@ -3440,21 +2892,23 @@ static ROMA2PairSummaries SummarizePairs(const Scene& scene)
 	summaries.reserve(scene.pairs.size());
 	for (const ImagePair& pair : scene.pairs)
 		summaries.push_back(ROMA2PairSummary{pair.ID1, pair.ID2, (unsigned)pair.matches.size(),
-			pair.GetNumFilteredInliers()});
+			pair.GetNumFilteredInliers(), pair.GetNumDenseInliers()});
 	std::sort(summaries.begin(), summaries.end());
 	return summaries;
 }
 
 // One configuration of ROMA2ReconstructTest: import the bundled 4-image scene, extract AKAZE features,
 // then MatchPairs with the in-process ROMAv2 model describing every image and, when bUseMatching
-// is set, re-matching every candidate pair through its dense warp. Checks the global retrieval
-// descriptors the describe pass stores and that EXHAUSTIVE matching still connects and
-// geometrically verifies every pair, and hands the matched pairs back so the caller can compare
-// whole runs against each other. The caller varies nThreads and slotBudget so that both the
-// describe pass's prefetch ring (MINF(2*nThreads, 8) buffers) and the dense pass's slot pool
-// have to reuse a buffer/slot mid-pass at least once (nThreads=1 -> 2 buffers < 4 images;
-// slotBudget=2 -> 8 loads for the 6 pairs of 4 images, i.e. 4 reloads); the pairwise-distinctness
-// check below, and the pair checks, are what would catch a stale-buffer or stale-slot bug.
+// is set, matching every candidate pair in the one dense pass INSTEAD of the descriptor batch --
+// the verdict on its bidirectional warp, the guided sparse matching of what the verdict admits,
+// the dense fill and the store. Checks the global retrieval descriptors the describe pass stores
+// and that EXHAUSTIVE matching still connects and geometrically verifies every pair, and hands the
+// matched pairs back so the caller can compare whole runs against each other. The caller varies
+// nThreads and slotBudget so that both the describe pass's prefetch ring (MINF(2*nThreads, 8)
+// buffers) and the dense pass's slot pool have to reuse a buffer/slot mid-pass at least once
+// (nThreads=1 -> 2 buffers < 4 images; slotBudget=2 -> 8 loads for the 6 pairs of 4 images, i.e.
+// 4 reloads); the pairwise-distinctness check below, and the pair checks, are what would catch a
+// stale-buffer or stale-slot bug.
 // bViewGraphCalibration turns off the post-matching view-graph calibration, which these runs
 // keep off: it optimizes one focal length per camera and then recomputes every relative pose from
 // it, so its result depends on how Scene::Import grouped the images into cameras, and that is one
@@ -3471,14 +2925,14 @@ static bool ROMA2ReconstructScene(Scene& scene, const String& setting, const Str
 	// forces a deliberately wrong 900 px / k1=0.6 / k2=-0.09 and leans on the view-graph
 	// calibrator to recover them from the fundamental matrices. That recovery is exactly what
 	// warp-guided matching cannot feed: it keeps, per keypoint of A, the descriptor-best keypoint
-	// of B within 2 px of the epipolar line of the geometry the warp itself produced, so the
-	// stored correspondences are consistent with a whole family of F near that seed and the
-	// focal a calibrator extracts from them is wildly unstable (measured on these 4 images at
-	// turbo with the forced 900 px: 690 px from the descriptor matches, 133 px from the guided
-	// ones on the CPU provider, which then drags the bundle to f=315, and a rejected 34450 px
-	// estimate on CUDA). Nothing else in the pipeline reads a focal out of F,
-	// and with the imported intrinsics trusted the pairs carry a relative pose straight from
-	// matching, which is what the reconstruction stage below actually consumes.
+	// of B inside a disc around the position the warp predicts, so the stored correspondences are
+	// consistent with a whole family of F near the warp's own geometry and the focal a calibrator
+	// extracts from them is wildly unstable (measured on these 4 images at turbo with the forced
+	// 900 px: 690 px from the descriptor matches, 133 px from the guided ones on the CPU provider,
+	// which then drags the bundle to f=315, and a rejected 34450 px estimate on CUDA). Nothing else
+	// in the pipeline reads a focal out of F, and with the imported intrinsics trusted the pairs
+	// carry a relative pose straight from matching, which is what the reconstruction stage below
+	// actually consumes.
 	ImportConfig importCfg;
 	if (!scene.Import(MAKE_PATH("images"), importCfg)) {
 		VERBOSE("ROMA2ReconstructTest FAILED: Import failed");
@@ -3575,19 +3029,24 @@ static bool ROMA2ReconstructScene(Scene& scene, const String& setting, const Str
 		}
 	}
 
-	// exhaustive matching: all n*(n-1)/2 candidate pairs, unaffected by the describe pass and
-	// still exactly that many after the dense pass, which can only replace one of those pairs
-	// or create one the descriptor matching failed on -- never propose a pair outside the
-	// candidate list it was handed
+	// exhaustive matching: all n*(n-1)/2 candidate pairs, unaffected by the describe pass. The one
+	// pass never proposes a pair outside the candidate list it was handed, and on these four
+	// close-up shots of one small scene its verdict admits every one of them, so the count is the
+	// same either way -- what differs is the evidence each pair carries
 	if (scene.pairs.size() != expectedPairs) {
 		VERBOSE("ROMA2ReconstructTest FAILED: expected %u geometrically matched pairs, got %u",
 			(unsigned)expectedPairs, (unsigned)scene.pairs.size());
 		return false;
 	}
 	for (const ImagePair& pair : scene.pairs) {
-		if (!pair.HasGeometricVerification() || pair.GetNumFilteredInliers() < matchCfg.minMatches) {
-			VERBOSE("ROMA2ReconstructTest FAILED: pair (% 4u, % 4u) not geometrically verified (%u inliers, %s geometry)",
-				pair.ID1, pair.ID2, pair.GetNumFilteredInliers(), pair.HasGeometricVerification() ? "with" : "without");
+		// the one pass's evidence may be dense as well as sparse (a pair whose guided matching
+		// found little is still stored, its dense fill its whole evidence), so the bar there is the
+		// track-forming set rather than the descriptor inliers alone
+		const unsigned numEvidence = bUseMatching ? pair.GetNumTrackFormingMatches() : pair.GetNumFilteredInliers();
+		if (!pair.HasGeometricVerification() || numEvidence < matchCfg.minMatches) {
+			VERBOSE("ROMA2ReconstructTest FAILED: pair (% 4u, % 4u) not geometrically verified (%u sparse + %u dense, %s geometry)",
+				pair.ID1, pair.ID2, pair.GetNumFilteredInliers(), pair.GetNumDenseInliers(),
+				pair.HasGeometricVerification() ? "with" : "without");
 			return false;
 		}
 	}
@@ -3601,11 +3060,12 @@ static bool ROMA2ReconstructScene(Scene& scene, const String& setting, const Str
 
 // ROMA2 reconstruct test: runs the whole import/AKAZE/EXHAUSTIVE pipeline of ReconstructTest
 // with the in-process ROMAv2 model attached, and checks both of its passes -- the describe pass
-// (per-image global retrieval descriptors, 2048-D, the graph's own on-device pooling) and the
-// dense matching pass (every candidate pair re-matched through its warp). The dense pass is measured
-// against a baseline run of the very same configuration with it switched off, so what is
-// asserted is what the warps actually changed; the run is then repeated on a fresh scene to
-// prove determinism (design decision 11), round-tripped through Scene::Save/Load, and finished
+// (per-image global retrieval descriptors, 2048-D, the graph's own on-device pooling) and the ONE
+// PASS that replaces the descriptor batch outright when --roma2-match is on: every candidate pair
+// judged on its bidirectional warp, the admitted ones guided, filled densely and stored. The one
+// pass is measured against a baseline run of the very same configuration with it switched off, so
+// what is asserted is what the warps actually produced; the run is then repeated on a fresh scene
+// to prove determinism (design decision 11), round-tripped through Scene::Save/Load, and finished
 // with ReconstructTest's own reconstruction stage. Configured by the environment like
 // RoMa2OnnxParityTest: OPENMVS_ROMA2_MODEL_PATH (unset => skipped), OPENMVS_ROMA2_SETTING
 // (default "turbo"), OPENMVS_ROMA2_PROVIDER (default "auto")
@@ -3630,66 +3090,66 @@ bool ROMA2ReconstructTest()
 	const char* const envProvider = getenv("OPENMVS_ROMA2_PROVIDER");
 	const String provider(envProvider != NULL && *envProvider != 0 ? String(envProvider) : String("auto"));
 
-	// 1) baseline: the same run with the dense matching pass switched off, so that comparing it
-	// against the guided run below isolates exactly what the warps changed. Both runs keep the
-	// view-graph calibration off, like the determinism runs and for the same reason: it re-solves
-	// a focal per camera and then re-filters every pair's inliers through it (Scene.cpp:604-613),
-	// so how the import grouped the images into cameras would move inlier counts on its own --
-	// and inlier counts are exactly what the "the dense pass changed something" assertion below
-	// reads. (The grouping no longer varies between runs: the intermittent import camera split
-	// that originally forced this choice was an uninitialized read in Image::LoadMetadata's
-	// container-EXIF path, fixed there and pinned by ImportMetadataDeterminismTest.) With the
-	// calibration off, a pair that grew can only have grown because a warp replaced it.
+	// 1) baseline: the same run with the one pass switched off, i.e. the ordinary descriptor
+	// matching, so that comparing it against the dense run below isolates exactly what the warps
+	// produced. Both runs keep the view-graph calibration off, like the determinism runs and for
+	// the same reason: it re-solves a focal per camera and then re-filters every pair's inliers
+	// through it (Scene.cpp:604-613), so how the import grouped the images into cameras would move
+	// inlier counts on its own -- and inlier counts are exactly what the assertions below read.
+	// (The grouping no longer varies between runs: the intermittent import camera split that
+	// originally forced this choice was an uninitialized read in Image::LoadMetadata's
+	// container-EXIF path, fixed there and pinned by ImportMetadataDeterminismTest.)
 	ROMA2PairSummaries baseline;
 	{
 		Scene scene(2);
 		if (!ROMA2ReconstructScene(scene, setting, provider, 2048, false, 64, false, baseline)) {
-			VERBOSE("ROMA2ReconstructTest FAILED: baseline run (dense matching off)");
+			VERBOSE("ROMA2ReconstructTest FAILED: baseline run (one pass off)");
 			return false;
 		}
 	}
 
-	// 2) the same scene with the dense matching pass on
+	// 2) the same scene through the one pass
 	ROMA2PairSummaries guided;
 	{
 		Scene scene(2);
 		if (!ROMA2ReconstructScene(scene, setting, provider, 2048, true, 64, false, guided)) {
-			VERBOSE("ROMA2ReconstructTest FAILED: dense matching");
+			VERBOSE("ROMA2ReconstructTest FAILED: one-pass dense matching");
 			return false;
 		}
-		// Neither kind of change is marked on the pair itself, so both are read off the two runs'
-		// summaries: a pair the dense pass created is one the guided run has and the baseline does
-		// not (both summaries are sorted by pair identity, so this is a plain set difference), and
-		// a pair it replaced is one that grew, ApplyROMA2Pair only replacing when the guided match
-		// set has strictly more filtered inliers than the stored one. Either proves the pass ran
-		// and reached the scene. On this scene EXHAUSTIVE matching already stored every one of the
-		// n*(n-1)/2 candidate pairs, so the dense pass can only replace and numCreated must be 0 --
-		// which is exactly what the pair-set check below states, and why the pair count checked in
-		// ROMA2ReconstructScene is still exactly n*(n-1)/2.
-		unsigned numCreated = 0, numGrown = 0;
-		FOREACH(i, guided)
-			if (!std::binary_search(baseline.begin(), baseline.end(), guided[i]))
-				++numCreated;
+		// the pass is judged on the pairs it stored, read off the two runs' summaries: every
+		// candidate of these four close-up shots is co-visible, so the verdict admits them all and
+		// the pair set is the baseline's (both summaries are sorted by pair identity, so this is a
+		// plain set comparison), while the evidence is the pass's own -- a dense segment on every
+		// pair, and a sparse segment that came from the guided matching rather than the descriptor
+		// batch, so it cannot be the baseline's. Nothing here demands MORE sparse inliers than the
+		// baseline: the guided pass restricts each keypoint of A to a disc around the warp's
+		// prediction and tests it against the best keypoint OUTSIDE that disc, which is a different
+		// -- and stricter -- selection, not a superset of the descriptor batch's.
 		if (baseline.size() != guided.size()) {
-			VERBOSE("ROMA2ReconstructTest FAILED: %u pairs with dense matching, %u without",
+			VERBOSE("ROMA2ReconstructTest FAILED: %u pairs through the one pass, %u through descriptor matching",
 				(unsigned)guided.size(), (unsigned)baseline.size());
 			return false;
 		}
+		unsigned numDenseFilled = 0, numChanged = 0, numDense = 0;
 		FOREACH(i, guided) {
 			if (guided[i].ID1 != baseline[i].ID1 || guided[i].ID2 != baseline[i].ID2) {
-				VERBOSE("ROMA2ReconstructTest FAILED: dense matching changed the pair set");
+				VERBOSE("ROMA2ReconstructTest FAILED: the one pass stored a different pair set");
 				return false;
 			}
-			if (guided[i].numFilteredInliers > baseline[i].numFilteredInliers)
-				++numGrown;
+			if (guided[i].numDenseInliers > 0)
+				++numDenseFilled;
+			if (!(guided[i] == baseline[i]))
+				++numChanged;
+			numDense += guided[i].numDenseInliers;
 		}
-		if (numCreated + numGrown == 0) {
-			VERBOSE("ROMA2ReconstructTest FAILED: the dense matching pass created or strengthened no pair"
-				" (see the 'ROMA2 dense matching' line above)");
+		if (numDenseFilled != guided.size() || numChanged != guided.size()) {
+			VERBOSE("ROMA2ReconstructTest FAILED: %u of the %u stored pairs carry a dense segment and %u carry evidence "
+				"of their own (see the 'ROMA2 one pass' summary line above)",
+				numDenseFilled, (unsigned)guided.size(), numChanged);
 			return false;
 		}
-		DEBUG("ROMA2ReconstructTest: dense matching created %u and strengthened %u of the %u pairs",
-			numCreated, numGrown, (unsigned)guided.size());
+		DEBUG("ROMA2ReconstructTest: the one pass stored %u pairs with %u dense correspondences",
+			(unsigned)guided.size(), numDense);
 
 		// the global descriptors and the matched pairs survive a scene file round-trip
 		{
@@ -3725,36 +3185,38 @@ bool ROMA2ReconstructTest()
 			}
 		}
 
-		// the rest of the ReconstructTest flow still passes on the ROMA2-matched scene; it needs
-		// all four bundled images (the star initializer asks for three views per track), so it
-		// only runs in a build that can decode the two HEIC ones.
-		// ReconstructTest's expectations, except the residual-distortion ceiling: guided matching
-		// keeps, per keypoint of A, the descriptor-best keypoint of B within 2 px of the epipolar
-		// line of the geometry the warp itself produced, so the correspondences carry that warp's
-		// bias and the bundle absorbs it into the distortion coefficients of a scene that has
-		// none. Everything else lands where the descriptor-only run lands -- all 4 images
-		// calibrated, the focal recovered to within 14-19 px of the 700 px truth, ~2200-2350
-		// inlier tracks -- but the residual distortion measures 12.4 px (turbo, CUDA) / 14.0 px
-		// (turbo, CPU provider) / 2.0 px (base, CUDA) against the 1.5 px of ReconstructTest.
-		// 20 px keeps the check meaningful (a blown-up distortion is still caught) at the coarsest
-		// preset the test defaults to, though at ~1.4x the worst measured value it is a guard rail
-		// rather than a tight bound.
-		// Note what the two checks mean here, which differs from ReconstructTest: the imported EXIF
-		// focal is 720.51 px, so the `focal_error > 100` bound is already satisfied before the
-		// bundle runs and this stage asserts that the guided scene keeps the focal stable, not
+		// the rest of the ReconstructTest flow still passes on the one-pass scene; it needs all four
+		// bundled images (the star initializer asks for three views per track), so it only runs in
+		// a build that can decode the two HEIC ones.
+		// ReconstructTest's expectations, at two bounds this path has to set for itself:
+		//  - THE TRACK COUNT. The dense fill adds up to --roma2-dense-matches correspondences per
+		//    pair, each one a keypoint in both images, so the pass hands the track builder several
+		//    times what the descriptor batch does: ~7.7k inlier tracks (turbo, CUDA) against the
+		//    ~2.2k of the descriptor-only run, on a hard ceiling of 6 pairs x 2000 = 12000 dense
+		//    plus the sparse segments. [5000, 12000] brackets that without pinning the model's
+		//    exact output.
+		//  - THE RESIDUAL DISTORTION. Guided matching keeps, per keypoint of A, the descriptor-best
+		//    keypoint of B inside a disc around the warp's prediction, and the dense segment is the
+		//    warp itself, so the correspondences carry that warp's bias and the bundle absorbs it
+		//    into the distortion coefficients of a scene that has none: measured at 10.1 px (turbo,
+		//    CUDA) against the 1.5 px of ReconstructTest. 20 px keeps the check meaningful (a
+		//    blown-up distortion is still caught) while leaving room above the measured value.
+		// Note what the focal check means here, which differs from ReconstructTest: the imported
+		// EXIF focal is 720.51 px, so the `focal_error > 100` bound is already satisfied before the
+		// bundle runs and this stage asserts that the one-pass scene keeps the focal stable, not
 		// that it recovers it -- recovery from a deliberately wrong 900 px is what ReconstructTest
 		// still tests, on the descriptor matches that can support it.
 		#ifdef _IMAGE_HEIF
-		if (!ReconstructMatchedScene(scene, "ROMA2ReconstructTest", 1500, 3000, 20))
+		if (!ReconstructMatchedScene(scene, "ROMA2ReconstructTest", 5000, 12000, 20))
 			return false;
 		#endif
 	}
 
 	// 3+4) determinism (design decision 11): the very same configuration run twice on two fresh
-	// scenes must store the very same pairs, the warps being applied serially in (ID1, ID2) order
-	// however the pool interleaved them. The configuration is deliberately the awkward one: a
-	// single thread, with a slot pool too small to hold the scene, so that the describe pass
-	// reuses a prefetch buffer and the dense pass reloads evicted slots (see the
+	// scenes must store the very same pairs, sparse and dense segments alike, the pairs being
+	// stored serially in (ID1, ID2) order however the pool interleaved them. The configuration is
+	// deliberately the awkward one: a single thread, with a slot pool too small to hold the scene,
+	// so that the describe pass reuses a prefetch buffer and the one pass reloads evicted slots (see the
 	// ROMA2ReconstructScene comment) -- the paths where a stale buffer or slot would show up as a
 	// difference. The view-graph calibration is off here so that the comparison sees the matching
 	// alone (again, see ROMA2ReconstructScene).
@@ -3777,10 +3239,11 @@ bool ROMA2ReconstructTest()
 		VERBOSE("ROMA2ReconstructTest FAILED: two runs of the same configuration matched different pairs");
 		FOREACH(i, repeated)
 			if (i >= tightPool.size() || !(repeated[i] == tightPool[i]))
-				VERBOSE("  pair (% 4u, % 4u): %u matches / %u inliers, was (% 4u, % 4u): %u matches / %u inliers",
-					repeated[i].ID1, repeated[i].ID2, repeated[i].numMatches, repeated[i].numFilteredInliers,
+				VERBOSE("  pair (% 4u, % 4u): %u matches / %u sparse / %u dense, was (% 4u, % 4u): %u matches / %u sparse / %u dense",
+					repeated[i].ID1, repeated[i].ID2, repeated[i].numMatches, repeated[i].numFilteredInliers, repeated[i].numDenseInliers,
 					i < tightPool.size() ? tightPool[i].ID1 : NO_ID, i < tightPool.size() ? tightPool[i].ID2 : NO_ID,
-					i < tightPool.size() ? tightPool[i].numMatches : 0, i < tightPool.size() ? tightPool[i].numFilteredInliers : 0);
+					i < tightPool.size() ? tightPool[i].numMatches : 0, i < tightPool.size() ? tightPool[i].numFilteredInliers : 0,
+					i < tightPool.size() ? tightPool[i].numDenseInliers : 0);
 		return false;
 	}
 	VERBOSE("ROMA2ReconstructTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
@@ -4864,7 +4327,7 @@ bool MatchGeometricSphericalTest()
 
 	ImagePair pair(0, 1);
 	const bool geometryEstimated = MatchFeaturesGeometric(
-		matcher, img0, img1, trackedPoints1, trackedPoints2, trackStatus, pair, NULL, 2.f);
+		matcher, img0, img1, trackedPoints1, trackedPoints2, trackStatus, pair, 2.f);
 
 	if (!geometryEstimated) {
 		VERBOSE("MatchGeometricSphericalTest FAILED: MatchFeaturesGeometric reported fallback (no geometry estimated)");
@@ -4929,416 +4392,6 @@ bool MatchGeometricSphericalTest()
 	}
 
 	VERBOSE("MatchGeometricSphericalTest PASSED");
-	return true;
-}
-/*----------------------------------------------------------------*/
-
-
-// ===============================================================================
-// MatchFeaturesGeometric train-side cross-check test: the forward selection is
-// one-sided, so several keypoints of image A may end up claiming the same keypoint
-// of image B. The fixture below stages exactly one such collision, where the wrong
-// claimant is also the one with the smaller queryIdx: without the cross-check both
-// matches are kept, and without the single-candidate distance both would sit at
-// distance 0 and the wrong (first) one would win the tie.
-// ===============================================================================
-bool GuidedCrossCheckTest()
-{
-	VERBOSE("\n=== GuidedCrossCheckTest: train-side cross-check of the guided matching ===");
-
-	// two pinhole views of a grid of points, the second camera translated along +X, so every
-	// epipolar line in image B is the image-A row of its keypoint and the disparity is constant
-	// along a row (one depth per row): the grid stays 55 px apart in B, well beyond the spatial
-	// search radius, which makes every candidate set a singleton and the collision below the
-	// only one in the pair
-	Scene scene;
-	const int width = 640, height = 480;
-	const REAL focal = 600, baseline = 0.25;
-	scene.cameras.emplace_back(new PinholeCamera(cv::Size(width, height),
-		focal, focal, REAL(width)/2, REAL(height)/2));
-	for (unsigned i = 0; i < 2; ++i) {
-		Pose3D pose;
-		pose.C = Point3(i == 0 ? REAL(0) : baseline, REAL(0), REAL(0));
-		pose.R = Matrix3x3::IDENTITY;
-		scene.images.emplace_back((IIndex)i, String(), pose, 0, scene.cameras[0]);
-	}
-	scene.status.nCalibratedImages = scene.images.size();
-	Image& img0 = scene.images[0];
-	Image& img1 = scene.images[1];
-	const unsigned numCols = 10, numRows = 7;
-	for (unsigned r = 0; r < numRows; ++r) {
-		const REAL z = REAL(3) + REAL(0.6)*r; // one depth per row keeps the row's disparity constant
-		for (unsigned c = 0; c < numCols; ++c) {
-			const REAL x = REAL(90 + 55*c), y = REAL(50 + 60*r);
-			const Point3 X((x - width/2)*z/focal, (y - height/2)*z/focal, z);
-			for (unsigned v = 0; v < 2; ++v) {
-				Image& img = scene.images[v];
-				const auto [proj, valid] = img.ProjectPoint(X);
-				if (!valid || !Image8U::isInside(proj, img.GetSize())) {
-					VERBOSE("GuidedCrossCheckTest FAILED: grid point (%u,%u) falls outside image %u", c, r, v);
-					return false;
-				}
-				img.keypoints.emplace_back(Cast<float>(proj), 0.f, 0.f, 10.f);
-			}
-		}
-	}
-	scene.status.nState.set(Scene::Status::STATE::FEATURES_EXTRACTED);
-	const unsigned numPoints = numCols*numRows;
-	ASSERT(img0.keypoints.size() == numPoints && img1.keypoints.size() == numPoints);
-
-	// the collision: the intruder keeps its own (row-mate) epipolar line but is told it tracks
-	// onto the victim's keypoint of B, and is given a descriptor 16 bits away from it, while the
-	// rightful claimant is 8 bits away. The intruder has the SMALLER queryIdx on purpose
-	const unsigned trueIdx = 2*numCols + 4, intruderIdx = 2*numCols + 1; // same row, hence same epipolar line
-	ASSERT(intruderIdx < trueIdx);
-	std::vector<Point2f> trackedPoints1(numPoints), trackedPoints2(numPoints);
-	std::vector<uchar> trackStatus(numPoints, 1);
-	for (unsigned i = 0; i < numPoints; ++i) {
-		trackedPoints1[i] = img0.keypoints[i].pt;
-		trackedPoints2[i] = img1.keypoints[i].pt;
-	}
-	trackedPoints2[intruderIdx] = img1.keypoints[trueIdx].pt;
-
-	// unique 256-bit binary descriptors, shared by the two views of the same point
-	const int descBytes = 32;
-	img0.descriptors.create((int)numPoints, descBytes, CV_8U);
-	img1.descriptors.create((int)numPoints, descBytes, CV_8U);
-	std::mt19937 descRng(0x5EACA7Eu);
-	for (unsigned i = 0; i < numPoints; ++i)
-		for (int b = 0; b < descBytes; ++b) {
-			const uint8_t byte = (uint8_t)(descRng() & 0xFF);
-			img0.descriptors.at<uint8_t>((int)i, b) = byte;
-			img1.descriptors.at<uint8_t>((int)i, b) = byte;
-		}
-	img0.descriptors.at<uint8_t>((int)trueIdx, 0) ^= 0xFF; // 8 bits from the victim's descriptor
-	for (int b = 0; b < descBytes; ++b)
-		img0.descriptors.at<uint8_t>((int)intruderIdx, b) = img1.descriptors.at<uint8_t>((int)trueIdx, b);
-	img0.descriptors.at<uint8_t>((int)intruderIdx, 0) ^= 0xFF; // 16 bits from the victim's descriptor
-	img0.descriptors.at<uint8_t>((int)intruderIdx, 1) ^= 0xFF;
-
-	MatchConfig matchCfg;
-	matchCfg.minMatches = 20;
-	matchCfg.maxEpipolarError = 4.f;
-	matchCfg.matchRatio = 0.9f;
-	matchCfg.descriptorsAreBinary = true;
-	matchCfg.minTriangulationAngle = 0.f;
-	matchCfg.reprojThreshold = 0.f;
-	matchCfg.epipoleFilterThreshold = 0.f;
-	PairsMatcher matcher(scene, matchCfg);
-
-	// counts the matches claiming the victim's keypoint of B, and the queryIdx of the last of them
-	const auto CountClaims = [&](const ImagePair& pair, unsigned& lastQueryIdx) {
-		unsigned numClaims = 0;
-		for (const DMatch& m : pair.matches)
-			if ((unsigned)m.trainIdx == trueIdx) {
-				++numClaims;
-				lastQueryIdx = (unsigned)m.queryIdx;
-			}
-		return numClaims;
-	};
-
-	// without the cross-check both claimants survive, and the count reports both of them
-	ImagePair pairOff(0, 1);
-	unsigned numSharedOff = 0;
-	if (!MatchFeaturesGeometric(matcher, img0, img1, trackedPoints1, trackedPoints2, trackStatus,
-			pairOff, NULL, 2.f, 0, false, &numSharedOff)) {
-		VERBOSE("GuidedCrossCheckTest FAILED: MatchFeaturesGeometric reported fallback (cross-check off)");
-		return false;
-	}
-	unsigned queryIdxOff = NO_ID;
-	const unsigned numClaimsOff = CountClaims(pairOff, queryIdxOff);
-	VERBOSE("GuidedCrossCheckTest: cross-check off -> %u matches, %u claim keypoint %u, %u shared-train",
-		(unsigned)pairOff.matches.size(), numClaimsOff, trueIdx, numSharedOff);
-	if (numClaimsOff != 2 || numSharedOff != 2) {
-		VERBOSE("GuidedCrossCheckTest FAILED: expected 2 claims and 2 shared-train with the cross-check off, got %u and %u",
-			numClaimsOff, numSharedOff);
-		return false;
-	}
-
-	// with it on only the closest claimant survives -- which is also the check that the
-	// single-candidate descriptor distance is computed: left at 0 both claimants would tie and
-	// the intruder, having the smaller queryIdx, would be the one kept
-	ImagePair pairOn(0, 1);
-	unsigned numSharedOn = 0;
-	if (!MatchFeaturesGeometric(matcher, img0, img1, trackedPoints1, trackedPoints2, trackStatus,
-			pairOn, NULL, 2.f, 0, true, &numSharedOn)) {
-		VERBOSE("GuidedCrossCheckTest FAILED: MatchFeaturesGeometric reported fallback (cross-check on)");
-		return false;
-	}
-	unsigned queryIdxOn = NO_ID;
-	const unsigned numClaimsOn = CountClaims(pairOn, queryIdxOn);
-	VERBOSE("GuidedCrossCheckTest: cross-check on -> %u matches, %u claim keypoint %u (queryIdx %u), %u shared-train",
-		(unsigned)pairOn.matches.size(), numClaimsOn, trueIdx, queryIdxOn, numSharedOn);
-	if (numClaimsOn != 1 || numSharedOn != 1) {
-		VERBOSE("GuidedCrossCheckTest FAILED: expected 1 claim and 1 shared-train with the cross-check on, got %u and %u",
-			numClaimsOn, numSharedOn);
-		return false;
-	}
-	if (queryIdxOn != trueIdx) {
-		VERBOSE("GuidedCrossCheckTest FAILED: the cross-check kept keypoint %u, not the closer %u"
-			" (the single-candidate descriptor distance was left at 0)", queryIdxOn, trueIdx);
-		return false;
-	}
-	if (pairOn.matches.size() + 1 != pairOff.matches.size()) {
-		VERBOSE("GuidedCrossCheckTest FAILED: the cross-check dropped %zu matches, expected exactly 1",
-			pairOff.matches.size() - pairOn.matches.size());
-		return false;
-	}
-
-	VERBOSE("GuidedCrossCheckTest PASSED");
-	return true;
-}
-/*----------------------------------------------------------------*/
-
-
-// ===============================================================================
-// MatchFeaturesGeometric supplied-geometry test: proves the caller's already-checked
-// geometry is genuinely used, and the per-pair estimator genuinely skipped. Only 7 of the
-// 70 grid points below are marked tracked -- enough to clear MatchFeaturesGeometric's own
-// "insufficient tracked points" floor (which stays in effect whether or not a geometry is
-// supplied) but one short of GeometricFilter's own hard minimum of 8 correspondences, so the
-// estimating path cannot even attempt a fit and must fall back to descriptor-only matching
-// (return false). With the identical 7 tracked points but a supplied geometry, Step 1's
-// estimation is skipped entirely and Step 2 runs on that geometry instead, so the call must
-// return true with real guided matches -- proving both that the supplied geometry is used and
-// that the estimator is not.
-// ===============================================================================
-bool SuppliedGeometrySkipsEstimationTest()
-{
-	VERBOSE("\n=== SuppliedGeometrySkipsEstimationTest: caller-supplied geometry bypasses estimation ===");
-
-	// same two-pinhole-camera rig as GuidedCrossCheckTest: baseline along X, identity rotation,
-	// so every epipolar line in image B is the image-A row of its keypoint
-	Scene scene;
-	const int width = 640, height = 480;
-	const REAL focal = 600, baseline = 0.25;
-	scene.cameras.emplace_back(new PinholeCamera(cv::Size(width, height),
-		focal, focal, REAL(width)/2, REAL(height)/2));
-	for (unsigned i = 0; i < 2; ++i) {
-		Pose3D pose;
-		pose.C = Point3(i == 0 ? REAL(0) : baseline, REAL(0), REAL(0));
-		pose.R = Matrix3x3::IDENTITY;
-		scene.images.emplace_back((IIndex)i, String(), pose, 0, scene.cameras[0]);
-	}
-	scene.status.nCalibratedImages = scene.images.size();
-	Image& img0 = scene.images[0];
-	Image& img1 = scene.images[1];
-	const unsigned numCols = 10, numRows = 7;
-	for (unsigned r = 0; r < numRows; ++r) {
-		const REAL z = REAL(3) + REAL(0.6)*r;
-		for (unsigned c = 0; c < numCols; ++c) {
-			const REAL x = REAL(90 + 55*c), y = REAL(50 + 60*r);
-			const Point3 X((x - width/2)*z/focal, (y - height/2)*z/focal, z);
-			for (unsigned v = 0; v < 2; ++v) {
-				Image& img = scene.images[v];
-				const auto [proj, valid] = img.ProjectPoint(X);
-				if (!valid || !Image8U::isInside(proj, img.GetSize())) {
-					VERBOSE("SuppliedGeometrySkipsEstimationTest FAILED: grid point (%u,%u) falls outside image %u", c, r, v);
-					return false;
-				}
-				img.keypoints.emplace_back(Cast<float>(proj), 0.f, 0.f, 10.f);
-			}
-		}
-	}
-	scene.status.nState.set(Scene::Status::STATE::FEATURES_EXTRACTED);
-	const unsigned numPoints = numCols*numRows;
-	ASSERT(img0.keypoints.size() == numPoints && img1.keypoints.size() == numPoints);
-
-	// unique 256-bit binary descriptors, shared by the two views of the same point, so the
-	// ratio test always prefers the true correspondence over any other candidate on the line
-	const int descBytes = 32;
-	img0.descriptors.create((int)numPoints, descBytes, CV_8U);
-	img1.descriptors.create((int)numPoints, descBytes, CV_8U);
-	std::mt19937 descRng(0x5EAC0DEu);
-	for (unsigned i = 0; i < numPoints; ++i)
-		for (int b = 0; b < descBytes; ++b) {
-			const uint8_t byte = (uint8_t)(descRng() & 0xFF);
-			img0.descriptors.at<uint8_t>((int)i, b) = byte;
-			img1.descriptors.at<uint8_t>((int)i, b) = byte;
-		}
-
-	MatchConfig matchCfg;
-	const unsigned numTracked = 7; // one short of GeometricFilter's own >= 8 correspondences
-	matchCfg.minMatches = numTracked; // clears MatchFeaturesGeometric's tracked-point floor exactly
-	matchCfg.maxEpipolarError = 4.f;
-	matchCfg.matchRatio = 0.9f;
-	matchCfg.descriptorsAreBinary = true;
-	matchCfg.minTriangulationAngle = 0.f;
-	matchCfg.reprojThreshold = 0.f;
-	matchCfg.epipoleFilterThreshold = 0.f;
-	PairsMatcher matcher(scene, matchCfg);
-
-	// the geometry the dense gate would have handed over: fitted from the full, healthy
-	// correspondence (img0.keypoints[i] <-> img1.keypoints[i] for every i), independent of
-	// however many points are marked tracked below
-	ImagePair truthFit(0, 1);
-	truthFit.matches.reserve(numPoints);
-	for (unsigned i = 0; i < numPoints; ++i)
-		truthFit.matches.emplace_back(i, i);
-	if (!matcher.GeometricFilter(img0, img1, truthFit)) {
-		VERBOSE("SuppliedGeometrySkipsEstimationTest FAILED: could not fit the ground-truth geometry");
-		return false;
-	}
-	const PairsMatcher::ValidatedGeometry validated{truthFit.F, truthFit.E};
-
-	// only the first 7 points are tracked; the rest carry trackStatus 0 (Step 2 still scans
-	// every keypoint of img1 for them, it just cannot restrict the search to a spatial disc)
-	std::vector<Point2f> trackedPoints1(numPoints), trackedPoints2(numPoints);
-	std::vector<uchar> trackStatus(numPoints, 0);
-	for (unsigned i = 0; i < numPoints; ++i) {
-		trackedPoints1[i] = img0.keypoints[i].pt;
-		trackedPoints2[i] = img1.keypoints[i].pt;
-	}
-	for (unsigned i = 0; i < numTracked; ++i)
-		trackStatus[i] = 1;
-
-	// estimating path: the same 7 tracked points, no supplied geometry -- GeometricFilter's own
-	// "< 8 correspondences" floor rejects it outright, so this must fall back and return false
-	ImagePair pairEstimated(0, 1);
-	const bool estimatedOk = MatchFeaturesGeometric(matcher, img0, img1, trackedPoints1, trackedPoints2, trackStatus,
-		pairEstimated, NULL, 4.f, 0, false, NULL);
-	if (estimatedOk) {
-		VERBOSE("SuppliedGeometrySkipsEstimationTest FAILED: the estimating path unexpectedly succeeded with only %u tracked points", numTracked);
-		return false;
-	}
-
-	// supplied-geometry path: identical inputs, but the caller hands in the already-checked
-	// geometry -- Step 1's estimation is skipped, so the guided pass must run and succeed
-	ImagePair pairSupplied(0, 1);
-	const bool suppliedOk = MatchFeaturesGeometric(matcher, img0, img1, trackedPoints1, trackedPoints2, trackStatus,
-		pairSupplied, &validated, 4.f, 0, false, NULL);
-	if (!suppliedOk) {
-		VERBOSE("SuppliedGeometrySkipsEstimationTest FAILED: the supplied-geometry path reported no geometry available");
-		return false;
-	}
-	if (pairSupplied.matches.empty()) {
-		VERBOSE("SuppliedGeometrySkipsEstimationTest FAILED: the supplied-geometry path produced no guided matches");
-		return false;
-	}
-	// every kept match must land on the true correspondence (unique per-point descriptors): the
-	// epipolar band it walked came from the supplied geometry, since the estimating path above
-	// just proved no geometry could have been fitted from the 7 tracked points
-	for (const DMatch& m : pairSupplied.matches) {
-		if (m.queryIdx != m.trainIdx) {
-			VERBOSE("SuppliedGeometrySkipsEstimationTest FAILED: guided match (%u,%u) is not the true correspondence",
-				m.queryIdx, m.trainIdx);
-			return false;
-		}
-	}
-	VERBOSE("SuppliedGeometrySkipsEstimationTest: %zu guided matches from the supplied geometry", pairSupplied.matches.size());
-
-	VERBOSE("SuppliedGeometrySkipsEstimationTest PASSED");
-	return true;
-}
-/*----------------------------------------------------------------*/
-
-
-// ===============================================================================
-// MatchFeaturesGeometric supplied-geometry parity test: on a healthy pair, handing in the
-// geometry the estimator would itself have produced must guide at least as many matches as
-// the estimating path does -- Step 2 (epipolar band + spatial disc) runs identically either
-// way, so nothing about the caller-supplied path may cost matches on a pair the estimator
-// already handles well.
-// ===============================================================================
-bool SuppliedGeometryParityTest()
-{
-	VERBOSE("\n=== SuppliedGeometryParityTest: supplied geometry matches the estimating path ===");
-
-	Scene scene;
-	const int width = 640, height = 480;
-	const REAL focal = 600, baseline = 0.25;
-	scene.cameras.emplace_back(new PinholeCamera(cv::Size(width, height),
-		focal, focal, REAL(width)/2, REAL(height)/2));
-	for (unsigned i = 0; i < 2; ++i) {
-		Pose3D pose;
-		pose.C = Point3(i == 0 ? REAL(0) : baseline, REAL(0), REAL(0));
-		pose.R = Matrix3x3::IDENTITY;
-		scene.images.emplace_back((IIndex)i, String(), pose, 0, scene.cameras[0]);
-	}
-	scene.status.nCalibratedImages = scene.images.size();
-	Image& img0 = scene.images[0];
-	Image& img1 = scene.images[1];
-	const unsigned numCols = 10, numRows = 7;
-	for (unsigned r = 0; r < numRows; ++r) {
-		const REAL z = REAL(3) + REAL(0.6)*r;
-		for (unsigned c = 0; c < numCols; ++c) {
-			const REAL x = REAL(90 + 55*c), y = REAL(50 + 60*r);
-			const Point3 X((x - width/2)*z/focal, (y - height/2)*z/focal, z);
-			for (unsigned v = 0; v < 2; ++v) {
-				Image& img = scene.images[v];
-				const auto [proj, valid] = img.ProjectPoint(X);
-				if (!valid || !Image8U::isInside(proj, img.GetSize())) {
-					VERBOSE("SuppliedGeometryParityTest FAILED: grid point (%u,%u) falls outside image %u", c, r, v);
-					return false;
-				}
-				img.keypoints.emplace_back(Cast<float>(proj), 0.f, 0.f, 10.f);
-			}
-		}
-	}
-	scene.status.nState.set(Scene::Status::STATE::FEATURES_EXTRACTED);
-	const unsigned numPoints = numCols*numRows;
-	ASSERT(img0.keypoints.size() == numPoints && img1.keypoints.size() == numPoints);
-
-	const int descBytes = 32;
-	img0.descriptors.create((int)numPoints, descBytes, CV_8U);
-	img1.descriptors.create((int)numPoints, descBytes, CV_8U);
-	std::mt19937 descRng(0x5EACA71u);
-	for (unsigned i = 0; i < numPoints; ++i)
-		for (int b = 0; b < descBytes; ++b) {
-			const uint8_t byte = (uint8_t)(descRng() & 0xFF);
-			img0.descriptors.at<uint8_t>((int)i, b) = byte;
-			img1.descriptors.at<uint8_t>((int)i, b) = byte;
-		}
-
-	MatchConfig matchCfg;
-	matchCfg.minMatches = 20;
-	matchCfg.maxEpipolarError = 4.f;
-	matchCfg.matchRatio = 0.9f;
-	matchCfg.descriptorsAreBinary = true;
-	matchCfg.minTriangulationAngle = 0.f;
-	matchCfg.reprojThreshold = 0.f;
-	matchCfg.epipoleFilterThreshold = 0.f;
-	PairsMatcher matcher(scene, matchCfg);
-
-	std::vector<Point2f> trackedPoints1(numPoints), trackedPoints2(numPoints);
-	std::vector<uchar> trackStatus(numPoints, 1);
-	for (unsigned i = 0; i < numPoints; ++i) {
-		trackedPoints1[i] = img0.keypoints[i].pt;
-		trackedPoints2[i] = img1.keypoints[i].pt;
-	}
-
-	// estimating path: the baseline this task must not regress
-	ImagePair pairEstimating(0, 1);
-	const bool estimatedOk = MatchFeaturesGeometric(matcher, img0, img1, trackedPoints1, trackedPoints2, trackStatus,
-		pairEstimating, NULL, 4.f, 0, false, NULL);
-	if (!estimatedOk) {
-		VERBOSE("SuppliedGeometryParityTest FAILED: the estimating path reported no geometry on a healthy pair");
-		return false;
-	}
-	if (!pairEstimating.F.has_value()) {
-		VERBOSE("SuppliedGeometryParityTest FAILED: the estimating path produced no F");
-		return false;
-	}
-
-	// supply exactly what the estimator itself just produced
-	const PairsMatcher::ValidatedGeometry equalGeometry{pairEstimating.F, pairEstimating.E};
-	ImagePair pairSupplied(0, 1);
-	const bool suppliedOk = MatchFeaturesGeometric(matcher, img0, img1, trackedPoints1, trackedPoints2, trackStatus,
-		pairSupplied, &equalGeometry, 4.f, 0, false, NULL);
-	if (!suppliedOk) {
-		VERBOSE("SuppliedGeometryParityTest FAILED: the supplied-geometry path reported no geometry");
-		return false;
-	}
-
-	VERBOSE("SuppliedGeometryParityTest: estimating %zu matches, supplied %zu matches",
-		pairEstimating.matches.size(), pairSupplied.matches.size());
-	if (pairSupplied.matches.size() < pairEstimating.matches.size()) {
-		VERBOSE("SuppliedGeometryParityTest FAILED: supplied-geometry path matched fewer (%zu) than the estimating path (%zu)",
-			pairSupplied.matches.size(), pairEstimating.matches.size());
-		return false;
-	}
-
-	VERBOSE("SuppliedGeometryParityTest PASSED");
 	return true;
 }
 /*----------------------------------------------------------------*/
@@ -7090,8 +6143,8 @@ static bool ReconstructMatchedScene(Scene& scene, const char* testName, unsigned
 		return false;
 	}
 
-	// Test 3: Should have ~2000 inlier tracks
-	VERBOSE("%s: Found %u inlier tracks (expected ~2000)", testName, scene.status.nTracks);
+	// Test 3: the inlier track count, in the range the caller's matching produces
+	VERBOSE("%s: Found %u inlier tracks (expected [%u, %u])", testName, scene.status.nTracks, minTracks, maxTracks);
 	if (scene.status.nTracks < minTracks || scene.status.nTracks > maxTracks) {
 		VERBOSE("%s: number of inlier tracks out of range [%u, %u]", testName, minTracks, maxTracks);
 		return false;

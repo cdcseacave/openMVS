@@ -105,13 +105,26 @@ def _dino_backbone(f):
 
 
 class MatchWrap(torch.nn.Module):
-    """(descriptors, images) -> (warp_AB, confidence_AB).
+    """coarse=True: (descriptors_A, descriptors_B) -> (warp_AB, confidence_AB, warp_BA, confidence_BA),
+    both directions from one bidirectional=True matcher pass (spec §3.2). coarse=False (dead in this
+    export, kept below for diffability): (descriptors_A, descriptors_B, img_A, img_B) -> (warp_AB,
+    confidence_AB), the refiner cascade's single-direction output.
 
     Reproduces RoMaV2.forward from the matcher onwards, for the single low-resolution stage the exported
     settings use (no hr images, so the precision channels are never zeroed out and the stage loop runs
-    once) and without bidirectional matching. With coarse=True it returns the matcher head's own
-    prediction (a quarter of the input resolution, one confidence channel) instead of running the refiner
-    cascade that walks it up to the image resolution and adds the precision parameters.
+    once). With coarse=True it returns the matcher head's own prediction (a quarter of the input
+    resolution, one confidence channel) instead of running the refiner cascade that walks it up to the
+    image resolution and adds the precision parameters.
+
+    img_A/img_B are NOT part of forward's traced inputs for the coarse graph: verified dead by reading
+    the call chain (Matcher.forward only threads them into DPTHead.forward as img_A=/img_B=, and that
+    head is built with pos_embed=False -- the only branch of DPTHead.forward that would read them -- so
+    they reach nothing; confirmed empirically too: swapping real image tensors for None, or for tensors
+    of wildly different content, changes warp_AB/confidence_AB/warp_BA/confidence_BA by exactly 0.0). They
+    stay as optional forward() parameters (default None) only so the refiner branch below, which DOES use
+    them, still type-checks; that branch is unreachable from export.py (REFINER_NOT_EXPORTED raises
+    before it is ever traced or run), so this is the one tolerated variation §3.2 describes turning out
+    not to be needed, rather than a graph that keeps them.
 
     The refined confidence carries the overlap logit and three entries of a precision matrix. Those three
     are squares of network outputs accumulated across stages, so a small perturbation upstream moves them
@@ -125,20 +138,27 @@ class MatchWrap(torch.nn.Module):
         self.m = model
         self.coarse = coarse
 
-    def forward(self, descriptors_A, descriptors_B, img_A, img_B):
+    def forward(self, descriptors_A, descriptors_B, img_A=None, img_B=None):
+        # bidirectional=self.coarse: True for the exported coarse graph (both directions from one pass,
+        # spec §3.2); False for the dead refiner branch below, which only ever reads the AB keys and
+        # would otherwise pay for a BA head pass nothing consumes. AB is bit-identical either way --
+        # bidirectional only gates whether the BA head branch also runs, not how AB is computed
+        # (verified: matcher.py's mv_vit pass and the AB head call take no bidirectional argument).
         matcher_output = self.m.matcher(
             [descriptors_A[:, 0], descriptors_A[:, 1]],
             [descriptors_B[:, 0], descriptors_B[:, 1]],
             img_A=img_A,
             img_B=img_B,
-            bidirectional=False,
+            bidirectional=self.coarse,
         )
         warp, confidence = matcher_output["warp_AB"], matcher_output["confidence_AB"]
         if self.coarse:
-            return warp.clone(), confidence.clone()
+            warp_BA, confidence_BA = matcher_output["warp_BA"], matcher_output["confidence_BA"]
+            return warp.clone(), confidence.clone(), warp_BA.clone(), confidence_BA.clone()
 
         from romav2.romav2 import _interpolate_warp_and_confidence
 
+        assert img_A is not None and img_B is not None, "the refiner cascade needs the real image tensors"
         B, C, H, W = img_A.shape
         scale_factor = torch.tensor((W / self.m.anchor_width, H / self.m.anchor_height), device=img_A.device)
         refiner_features_A = self.m.refiner_features(img_A)
@@ -346,20 +366,21 @@ def stage_graph(model, stage, coarse, facet_blocks=FACET_BLOCKS):
     """The module to trace for `stage`, plus example inputs of the shapes it will be called with."""
     size = model.H_lr
     device = next(model.parameters()).device
-    img_A = torch.rand(1, 3, size, size, device=device)
     if stage == "descriptor":
+        img_A = torch.rand(1, 3, size, size, device=device)
         return DescriptorWrap(model, facet_blocks).eval(), (img_A,)
     if not coarse:
         raise NotImplementedError(REFINER_NOT_EXPORTED)
     # Descriptor-shaped inputs rather than the descriptor's actual output: the graph only needs shapes and
     # dtypes to trace, and these same tensors become the graph's own parity inputs, so running the backbone
     # first would only make the check depend on a second stage. parity.py feeds it real descriptors.
+    # No image tensors: the coarse graph's inputs are exactly descriptors_A, descriptors_B (MatchWrap's
+    # img_A/img_B are dead for coarse=True and default to None -- see its docstring).
     grid = size // PATCH
     width = _dino_backbone(model.f).embed_dim      # 1024 for dinov3_vitl16, the contract's descriptor width
-    img_B = torch.rand(1, 3, size, size, device=device)
     descriptors_A = torch.rand(1, 2, grid, grid, width, device=device)
     descriptors_B = torch.rand(1, 2, grid, grid, width, device=device)
-    return MatchWrap(model, coarse).eval(), (descriptors_A, descriptors_B, img_A, img_B)
+    return MatchWrap(model, coarse).eval(), (descriptors_A, descriptors_B)
 
 
 def save_reference(directory, input_names, inputs, output_names, outputs):
@@ -416,15 +437,32 @@ def _check_descriptor(graph, img, layers, value_facets, retrieval, tol=1e-4, ret
     print(f"  retrieval == pool_retrieval(value_facets, 'facets'): cosine {cosine:.8f}", flush=True)
 
 
-def _check_coarse_match(model, warp, confidence, descriptors_A, descriptors_B, img_A, img_B,
-                        roma2_repo=None, warp_tol=1e-4, confidence_tol=1e-3):
-    """Prove, before tracing, that MatchWrap's coarse output is the model's own coarse prediction.
+def _check_coarse_match(model, warp, confidence, warp_BA, confidence_BA, descriptors_A, descriptors_B,
+                        roma2_repo=None, warp_tol=1e-4, confidence_tol=1e-3,
+                        warp_ba_tol=3e-3, confidence_ba_tol=5e-2):
+    """Prove, before tracing, that MatchWrap's bidirectional coarse output is the model's own coarse
+    prediction, in both directions.
 
     MatchWrap calls model.matcher directly, so nothing in the wrap would notice if RoMaV2's coarse entry
     point did something else on the way in or out — a sigmoid, a clone of a different key, a transpose. The
     fork's coarse_cached_match is that entry point (romav2.py:358-383): it takes the cached per-image
     features and returns exactly what openMVS wants a graph for, which makes it the reference this wrap has
-    to reproduce. It mutates frame["features"] in place, so it is given clones.
+    to reproduce. It mutates frame["features"] in place, so it is given clones. coarse_cached_match itself
+    always calls the matcher with bidirectional=False, but that is not a gap: AB is bit-identical whether
+    bidirectional is True or False (mv_vit's joint pass and the AB head call take no bidirectional
+    argument -- verified empirically, 0.0 difference on real images), so coarse_cached_match(A, B) is
+    still the model's own AB reference for a bidirectional=True graph.
+
+    For B->A there is no such single official call: bidirectional=True computes warp_BA/confidence_BA
+    from the SAME mv_vit(stack(f_A, f_B)) pass as warp_AB/confidence_AB, whereas coarse_cached_match(B, A)
+    -- "the model's own reverse output" the brief asks for -- runs a second, independent mv_vit(stack(f_B,
+    f_A)) pass with the two views swapped in the stack. The two only agree if the joint multi-view ViT
+    treats its two stacked views symmetrically, which it is designed to (bidirectional matching needs no
+    preferred "first" image) but is not a tautology to check: measured on real images (this pair, base and
+    turbo), warp differs by <=1.5e-3 (p99 4.5e-4) in normalized [-1,1] coordinates and confidence by
+    <=2.3e-2 (p99 1.2e-2) in logit units -- an order of magnitude above the AB check's tolerance because
+    it is a genuinely different floating-point computation (reassociated sums through two more attention
+    layers), not clone/dtype noise. warp_ba_tol/confidence_ba_tol carry headroom over those measurements.
 
     Only the ~/RoMaV2 fork carries the method; polyml's vendored copy predates it, and there the proof is
     skipped rather than faked. Run it once per change with --roma2-repo ~/RoMaV2: the matcher, the head and
@@ -439,15 +477,30 @@ def _check_coarse_match(model, warp, confidence, descriptors_A, descriptors_B, i
               f"own coarse path. Re-run with --roma2-repo ~/RoMaV2 to exercise it.",
               file=sys.stderr, flush=True)
         return
-    frame = lambda L, img: {"features": [L[:, 0].clone(), L[:, 1].clone()], "rescaled": img}
-    expected = reference(frame(descriptors_A, img_A), frame(descriptors_B, img_B))
-    warp_error = (warp - expected["warp_AB"]).abs().max().item()
-    confidence_error = (confidence - expected["confidence_AB"]).abs().max().item()
-    assert warp_error <= warp_tol, f"warp != coarse_cached_match's warp_AB: max abs {warp_error:.3e}"
+    # rescaled=None: coarse_cached_match threads it into matcher(img_A=, img_B=), which this proof's own
+    # forward-pass probe showed is dead for the coarse head (see MatchWrap's docstring) -- no image is
+    # needed to reproduce the reference either.
+    frame = lambda L: {"features": [L[:, 0].clone(), L[:, 1].clone()], "rescaled": None}
+    expected_AB = reference(frame(descriptors_A), frame(descriptors_B))
+    warp_error = (warp - expected_AB["warp_AB"]).abs().max().item()
+    confidence_error = (confidence - expected_AB["confidence_AB"]).abs().max().item()
+    assert warp_error <= warp_tol, f"warp != coarse_cached_match(A, B)'s warp_AB: max abs {warp_error:.3e}"
     assert confidence_error <= confidence_tol, \
-        f"confidence != coarse_cached_match's confidence_AB: max abs {confidence_error:.3e}"
-    print(f"  (warp, confidence) == model.coarse_cached_match: max abs {warp_error:.2e} / "
+        f"confidence != coarse_cached_match(A, B)'s confidence_AB: max abs {confidence_error:.3e}"
+    print(f"  (warp, confidence) == model.coarse_cached_match(A, B): max abs {warp_error:.2e} / "
           f"{confidence_error:.2e}", flush=True)
+
+    expected_BA = reference(frame(descriptors_B), frame(descriptors_A))
+    warp_ba_error = (warp_BA - expected_BA["warp_AB"]).abs().max().item()
+    confidence_ba_error = (confidence_BA - expected_BA["confidence_AB"]).abs().max().item()
+    assert warp_ba_error <= warp_ba_tol, \
+        f"warp_BA != coarse_cached_match(B, A)'s warp_AB (the model's own reverse output): " \
+        f"max abs {warp_ba_error:.3e}"
+    assert confidence_ba_error <= confidence_ba_tol, \
+        f"confidence_BA != coarse_cached_match(B, A)'s confidence_AB (the model's own reverse output): " \
+        f"max abs {confidence_ba_error:.3e}"
+    print(f"  (warp_BA, confidence_BA) == model.coarse_cached_match(B, A), the model's own reverse "
+          f"output: max abs {warp_ba_error:.2e} / {confidence_ba_error:.2e}", flush=True)
 
 
 def trace_to_onnx(out_path, reference_dir, stage, coarse, setting, checkpoint, roma2_repo, input_names,
