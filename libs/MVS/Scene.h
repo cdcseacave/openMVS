@@ -59,13 +59,19 @@ public:
 	OBB3f obb; // region-of-interest represented as oriented bounding box containing the entire scene (optional)
 	Matrix4x4 transform; // transformation used to convert from absolute to relative coordinate system (optional)
 
-	unsigned nCalibratedImages; // number of valid images
+	// number of valid images. Filled by LoadInterface/Load; a scene built by hand (a test, the
+	// Python bindings, the Viewer) must set it itself, since nothing else counts the images.
+	// SelectNeighborViews clamps its required-neighbor count with nCalibratedImages-1, so the 0 a
+	// hand-built scene starts from wraps that unsigned expression to UINT_MAX and leaves the
+	// caller's nMinViews unclamped -- a stricter requirement every image then fails, reported as
+	// "not enough images in view" rather than crashing
+	unsigned nCalibratedImages;
 
 	unsigned nMaxThreads; // maximum number of threads used to distribute the work load
 
 public:
 	inline Scene(unsigned _nMaxThreads=0)
-		: obb(true), transform(Matrix4x4::IDENTITY), nMaxThreads(Thread::getMaxThreads(_nMaxThreads)) {}
+		: obb(true), transform(Matrix4x4::IDENTITY), nCalibratedImages(0), nMaxThreads(Thread::getMaxThreads(_nMaxThreads)) {}
 
 	void Release();
 	bool IsValid() const;
@@ -212,14 +218,36 @@ public:
 	};
 	bool ReconstructMesh(const ReconstructMeshParams& params=ReconstructMeshParams());
 
-	// Mesh refinement
+	// Mesh refinement: fThPlanarVertex > 0 removes the vertices of planar patches as the
+	// refinement proceeds (CPU only), bUseCeres minimizes the exact energy with Ceres instead of
+	// the bold-driver stepper (CPU only, opt-in: slower and no better, kept as the reference arm)
 	bool RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews, float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize,
-		unsigned nMaxFaceArea, unsigned nScales, float fScaleStep, unsigned nAlternatePair, float fRegularityWeight, float fRatioRigidityElasticity, float fGradientStep,
-		float fThPlanarVertex=0.f, unsigned nReduceMemory=1);
+		unsigned nMaxFaceArea, unsigned nScales, float fScaleStep, unsigned nAlternatePair, float fRegularityWeight, float fRatioRigidityElasticity,
+		float fThPlanarVertex=0.f, bool bUseCeres=false);
 	#ifdef _USE_CUDA
+	// the CPU overload minus its CPU-only arms; fThPlanarVertex > 0 is refused at the entry
 	bool RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews, float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize,
-		unsigned nMaxFaceArea, unsigned nScales, float fScaleStep, unsigned nAlternatePair, float fRegularityWeight, float fRatioRigidityElasticity, float fGradientStep);
+		unsigned nMaxFaceArea, unsigned nScales, float fScaleStep, unsigned nAlternatePair, float fRegularityWeight, float fRatioRigidityElasticity,
+		float fThPlanarVertex=0.f);
 	#endif
+	// input/output of RefineMeshEnergyProbe below
+	struct RefineEnergyProbe {
+		// in
+		float regularityWeight{0.f}; // w of the thin-plate term; 0 evaluates the photometric energy alone
+		bool photometric{true}; // false scores no image pair, leaving the thin-plate energy alone
+		uint32_t seed{0}; // seeds the random direction u
+		FloatArr steps; // the offsets t at which to evaluate E(v + t u)
+		// out
+		double energy{0}; // E(v)
+		double dirDerivative{0}; // <grad E(v), u>
+		DoubleArr steppedEnergies; // E(v + t u), one per steps entry
+	};
+	// finite-difference consistency gate for the exact energy the Ceres arm (--use-ceres)
+	// minimizes: initializes one refinement scale in energy mode, evaluates E and its exact
+	// gradient at the current mesh, then E again at mesh + t*u for a seeded random unit direction
+	// u. Test entry point only (see MVS::MeshRefineEnergyGradientTest); no option reaches it and
+	// it leaves the mesh unchanged
+	bool RefineMeshEnergyProbe(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews, RefineEnergyProbe& probe);
 
 	// Mesh texturing
 	bool TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned minCommonCameras=0, float fOutlierThreshold=0.f, float fRatioDataSmoothness=0.3f,

@@ -186,7 +186,7 @@ Key parameters you'll see:
 - `fDecimateMesh`: Target decimation ratio
 - `nCloseHoles`: Maximum hole size to close (in edges)
 - `fRegularityWeight`: How much to penalize non-smooth surfaces
-- `fGradientStep`: Step size for vertex deformation
+- `bUseCeres`: Minimize the energy with Ceres instead of the built-in bold-driver stepper (CPU only, opt-in)
 
 ### Stage 5: Texture Mapping
 

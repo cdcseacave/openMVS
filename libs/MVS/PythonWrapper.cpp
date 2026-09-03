@@ -39,6 +39,7 @@
 // against the import libs of Common.dll / MVS.dll / SFM.dll at link time.
 #include "Common.h"
 #include "Scene.h"
+#include "SceneRefineCommon.h"
 #ifndef BOOST_PYTHON_STATIC_LIB
 #define BOOST_PYTHON_STATIC_LIB
 #endif
@@ -64,6 +65,10 @@ public:
 		INIT_WORKING_FOLDER;
 		MVS::Initialize("pyMVS", _nMaxThreads);
 		MVS::OPTDENSE::init();
+		// every DEFVAR_OPTION starts at zero and only init()/update() install the declared
+		// defaults, so the refiner's configuration space needs the same treatment as OPTDENSE
+		MVS::OPTREFINE::init();
+		MVS::OPTREFINE::update();
 	}
 	~Scene() {
 		MVS::Finalize();
@@ -111,7 +116,7 @@ public:
 	}
 	bool pyRefineMesh(unsigned nResolutionLevel=0, unsigned nEnsureEdgeSize=1, unsigned nMaxFaceArea=32, unsigned nScales=2, float fScaleStep=0.5f, float fRegularityWeight=0.2f) {
 		return RefineMesh(nResolutionLevel, 640/*nMinResolution*/, 8/*nMaxViews*/, 0.f/*fDecimateMesh*/, 30/*nCloseHoles*/, nEnsureEdgeSize,
-			nMaxFaceArea, nScales, fScaleStep, 0/*nAlternatePair*/, fRegularityWeight, 0.9f/*fRatioRigidityElasticity*/, 45.05f/*fGradientStep*/);
+			nMaxFaceArea, nScales, fScaleStep, 0/*nAlternatePair*/, fRegularityWeight, 0.9f/*fRatioRigidityElasticity*/);
 	}
 	bool pyTextureMesh(unsigned nResolutionLevel=0, uint32_t nColEmpty=0x00FF7F27) {
 		return TextureMesh(nResolutionLevel, 640/*nMinResolution*/, 0/*minCommonCameras*/, 0.f/*fOutlierThreshold*/, 0.3f/*fRatioDataSmoothness*/,
