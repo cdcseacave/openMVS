@@ -1190,7 +1190,7 @@ void Mesh::Subdivide(const AreaArr& maxAreas, uint32_t maxArea)
 	FacetCountMap mapFaces; mapFaces.reserve(12*3);
 	vertices.Reserve(vertices.size()*2);
 	faces.Reserve(faces.size()*3);
-	const FIndex numFacesOld(faces.size());
+	MAYBEUNUSED const FIndex numFacesOld(faces.size());
 	const uint32_t maxAreaTh(2*maxArea);
 	FOREACH(f, maxAreas) {
 		const AreaArr::Type area(maxAreas[f]);

@@ -32,7 +32,6 @@
 #include "Common.h"
 #include "Scene.h"
 #include "SceneRefineCommon.h"
-#include <unordered_map>
 
 using namespace MVS;
 
