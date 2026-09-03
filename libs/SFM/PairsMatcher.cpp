@@ -2186,7 +2186,10 @@ unsigned PairsMatcher::Match()
 		// rejects is dropped: there is no descriptor-matching round to fall back to, and no union
 		// of SIFT-verified and warp-verified pairs
 		if (roma2 && roma2Cfg.useMatching) {
-			stats.densePairs += MatchPairsROMA2(*this, *roma2, pairs, roma2Cfg);
+			unsigned numStored = 0;
+			if (!MatchPairsROMA2(*this, *roma2, pairs, roma2Cfg, numStored))
+				return false;
+			stats.densePairs += numStored;
 			return true;
 		}
 		// Pre-match the pairs if requested

@@ -886,12 +886,14 @@ void SFM::StorePairROMA2(Scene& scene, std::unordered_map<PairIdx::PairIndex, II
 
 // T H E   O N E   P A S S ////////////////////////////////////////////
 
-unsigned SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, const PairIdxArr& candidatePairs, const ROMA2Config& config)
+bool SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, const PairIdxArr& candidatePairs,
+	const ROMA2Config& config, unsigned& numStored)
 {
+	numStored = 0;
 #ifdef _USE_ONNXRUNTIME
 	ASSERT(roma2.IsLoaded());
 	if (candidatePairs.empty())
-		return 0;
+		return true;
 	TD_TIMER_STARTD();
 	Scene& scene = pairsMatcher.GetScene();
 	// every candidate pair indexes scene.images directly (slot planning, loads, the pair keys), so
@@ -933,7 +935,7 @@ unsigned SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, cons
 			0u, 0u, 0u,
 			numSkipped, 0u, 0u, 0u,
 			TD_TIMER_GET_FMT().c_str());
-		return 0;
+		return true; // no candidate left to judge is an empty pass, not a failed one
 	}
 
 	// 2) the warp pass: this thread plans the device slots, pipelines the image loads and runs the
@@ -990,11 +992,11 @@ unsigned SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, cons
 				(unsigned)result.dense.pointsA.size(), bTimePair ?
 				(unsigned)SEACAVE::Timer::SysTime2TimeMs(SEACAVE::Timer::GetSysTime() - pairTimeStart) : 0u);
 		}, stats))
-		return 0;
+		return false; // the slot pool could not be allocated: nothing was warped, and the round fails
 
 	// 3) serial store, in (ID1,ID2) order: the keypoint indices the dense append hands out depend on
 	// what the two images already carry, so the labelling must not depend on the pool's order
-	unsigned numStored = 0, numDenseOnly = 0;
+	unsigned numDenseOnly = 0;
 	size_t numDenseMatches = 0;
 	FOREACH(p, results) {
 		AssembledPair& result = results[p];
@@ -1012,12 +1014,12 @@ unsigned SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, cons
 		stats.numSlots, (unsigned)stats.numLoads, (unsigned)stats.numReloads,
 		numSkipped, stats.numFailedLoads, stats.numFailedMatches, (unsigned)numDenseMatches,
 		TD_TIMER_GET_FMT().c_str());
-	return numStored;
+	return true;
 #else // _USE_ONNXRUNTIME
 	// unreachable: RoMa2Onnx::IsAvailable() is false in this build, so Scene::MatchPairs never
 	// loads a model and PairsMatcher::Match never calls here
 	ASSERT(false);
-	return 0;
+	return false;
 #endif // _USE_ONNXRUNTIME
 }
 

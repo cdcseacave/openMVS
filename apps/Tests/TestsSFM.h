@@ -59,8 +59,9 @@ bool ROMA2ComplementaryDrawTest();
 // at a non-planar surface: a warp confident over ~30% of both frames is admitted with both inlier
 // areas measuring that share, a warp confident over 30% of A whose B side maps into A over only 3%
 // is rejected by the min side alone, a smooth warp unrelated to the cameras (a homography of A's
-// grid) is rejected however exactly one geometry explains its own side, and minOverlap 0 admits
-// the first two
+// grid) is rejected however exactly one geometry explains its own side -- through the calibrated
+// branch and, with forceFundamental, through the 7-DoF one the min-side rule was designed for --
+// and minOverlap 0 admits the first two
 bool ROMA2VerdictTest();
 
 // Guided sparse matching (MatchFeaturesGuided): the ratio taken against the best descriptor OUTSIDE
@@ -73,7 +74,8 @@ bool ROMA2GuidedMatchTest();
 // and the dense fill is fitted once and splits into the pair's sparse and dense segments under one
 // relative pose, a pair with no guided match is still assembled as a dense-only pair, a fill too
 // small to fit leaves the verdict's geometry untouched, and the store appends the dense keypoints
-// past each image's described prefix with reproducible indices
+// past each image's described prefix with reproducible indices, inserting the dense block ahead of
+// a pair's rejected tail rather than past it
 bool ROMA2AssemblyTest();
 
 // The described/dense keypoint boundary: an image whose keypoints.size() > descriptors.rows keeps
@@ -117,9 +119,9 @@ bool RoMa2OnnxParityTest();
 // ROMA2 reconstruct test: runs the full in-process path on the bundled 4-image scene through
 // Scene::MatchPairs, four times. The per-image global retrieval descriptor (2048-D, the graph's
 // own on-device pooling) is checked, EXHAUSTIVE geometric matching still connecting and verifying
-// every pair; a run with the dense matching pass on is
-// compared against a baseline run with it off (pairs created, i.e. present only in the guided
-// run, or strengthened by a warp), survives an .sfm round-trip of the descriptors and the pairs,
+// every pair; a run with the dense matching pass on is compared against a baseline run with it off
+// (the same pair set, every pair carrying a dense segment of its own and a sparse segment the
+// guided matching produced), survives an .sfm round-trip of the descriptors and the pairs,
 // and then goes through ReconstructTest's own reconstruction stage; and two runs of one awkward
 // configuration (single thread, a slot pool too small for the scene) must match identical pairs,
 // which is what pins the determinism of the pass. Skipped unless OPENMVS_ROMA2_MODEL_PATH points

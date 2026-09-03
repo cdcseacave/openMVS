@@ -274,8 +274,12 @@ verdict's); it is never composed from another fit's F. `ImagePair::weightedInlie
 // described or whose graph call failed is dropped with a message.
 // The summary line reports candidates, judged, admitted, stored, dense-only, and the slot plan's
 // loads/reloads (the cache cost of the order).
-// Returns the number of pairs stored.
-SFM_API unsigned MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, const PairIdxArr& candidatePairs, const ROMA2Config& config);
+// Fills `numStored` with the number of pairs stored and returns true, a pass whose verdict rejected
+// every candidate storing none and still succeeding; returns false only when the pass could not run
+// at all (the device slot pool could not be allocated), which the caller must treat as a failed
+// matching round rather than as an empty one.
+SFM_API bool MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, const PairIdxArr& candidatePairs,
+	const ROMA2Config& config, unsigned& numStored);
 ```
 
 Pair order and cache: pairs are processed in (ID1,ID2) order, so consecutive pairs share their first
@@ -285,7 +289,7 @@ direction comes out of the same call, and the candidate list holds each unordere
 (`MakePairIdx` orders the indices; the pass asserts it and de-duplicates after sorting).
 
 `PairsMatcher::Match`, per round: with `roma2 && roma2Cfg.useMatching` the round is
-`MatchPairsROMA2(*this, *roma2, pairs, roma2Cfg)` and nothing else — no PreMatch, no
+`MatchPairsROMA2(*this, *roma2, pairs, roma2Cfg, numStored)` and nothing else — no PreMatch, no
 `OptimizePairsOrder`, no `MatchPairsBatch`; otherwise the round is the existing SIFT flow, untouched.
 The verification-feedback round proposes from the stored pairs' verified matches as today and runs
 the same one pass on the proposed pairs. Deleted from PairsMatcher: `ValidatedGeometry`,

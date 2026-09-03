@@ -159,8 +159,12 @@ SFM_API void StorePairROMA2(Scene& scene, std::unordered_map<PairIdx::PairIndex,
 // described or whose graph call failed is dropped with a message.
 // The summary line reports candidates, judged, admitted, stored, dense-only, and the slot plan's
 // loads/reloads (the cache cost of the order).
-// Returns the number of pairs stored.
-SFM_API unsigned MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, const PairIdxArr& candidatePairs, const ROMA2Config& config);
+// Fills `numStored` with the number of pairs stored and returns true, a pass whose verdict rejected
+// every candidate storing none and still succeeding; returns false only when the pass could not run
+// at all (the device slot pool could not be allocated), which the caller must treat as a failed
+// matching round rather than as an empty one.
+SFM_API bool MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, const PairIdxArr& candidatePairs,
+	const ROMA2Config& config, unsigned& numStored);
 /*----------------------------------------------------------------*/
 
 } // namespace SFM

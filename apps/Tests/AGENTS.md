@@ -78,6 +78,29 @@ All in `namespace SFM`. Called sequentially when `argv[1] == 1`.
 | `PairMatcherTest()` | Sequential matching mode (5 images, overlap=2, 10 expected pairs) | Exact pair count and membership |
 | `PreMatchTest()` | Pre-matching threshold filtering (3 images, manual descriptors) | Correct accept/reject per threshold |
 
+### ROMAv2 Dense Matching Catalog
+
+The one-pass dense matcher (`libs/SFM/MatchROMA2.h`, `libs/SFM/ROMA2Warp.h`), in the order
+`Tests.cpp` dispatches it. The last three need a model: they report themselves skipped unless
+`OPENMVS_ROMA2_MODEL_PATH` points at an exported model folder, and `OPENMVS_ROMA2_PROVIDER`
+(`auto|cuda|coreml|dml|cpu`) and `OPENMVS_ROMA2_SETTING` (`turbo|fast|base`) narrow what they run.
+
+| Test | Purpose | Key Tolerance |
+|------|---------|---------------|
+| `ROMA2WarpTrackingTest()` | Keypoint tracking through an identity warp: the pixel/grid/normalized conventions, the confidence gate, the dense append | Tracked positions exact; gated cells dropped |
+| `ROMA2CoverageSampleTest()` | The coverage-uniform sample the verdict fits on: budget, bucket stratification against a top-confidence pick, one-sided coverage, determinism | One winner per bucket; identical draw on a repeat |
+| `ROMA2ComplementaryDrawTest()` | The dense fill of an admitted pair: drawn only where the guided matches are not, capped, thinned by an even stride, chained across pairs sharing an image | >= 2/5 of the common-region points coincide exactly; repeat draw identical |
+| `ROMA2VerdictTest()` | `JudgePairROMA2` on the exact bidirectional warp of a two-camera wedge fixture: ~30% of both frames admitted, a 3% B side rejected by the min-side rule, a homography warp rejected in the calibrated AND the forced-fundamental branch, `minOverlap` 0 admitting both | Inlier areas within 0.05 of the confident region; pose < 0.05 deg and t-dot > 0.9999 off the two cameras |
+| `ROMA2GuidedMatchTest()` | `MatchFeaturesGuided`: the ratio taken against the best descriptor OUTSIDE the search disc, so a lookalike elsewhere still rejects and a scale duplicate inside no longer blocks | Exact accept/reject per case; same matches in the same order on a repeat |
+| `ROMA2AssemblyTest()` | `AssemblePairROMA2` + `StorePairROMA2`: one fit over guided u dense splitting into the sparse and dense segments, a dense-only pair, a fill too small to refit, and the store's dense append past each image's described prefix and ahead of a pair's rejected tail | Sparse/dense/outlier counts exact; assembled pose < 0.05 deg off; keypoint indices reproducible across two runs |
+| `DenseKeypointBoundaryTest()` | The described/dense keypoint boundary survives a descriptor release and an `.sfm` round-trip | Stored described count preserved exactly |
+| `SupplementEvidenceIsolationTest()` | Dense supplementation as evidence: ray angle, grid occupancy and the support floor measured over sparse + dense, `GetNumWeightedInliers()` discounting the dense share | Degenerate all-dense baseline still demoted |
+| `GlobalDescriptorsQueryTest()` | Cosine ranking of the per-image global descriptors, its tie order, the `PairsMatcher` dispatch through them, the rankings CSV and the `.sfm` round-trip | Deterministic ranking; descriptors bit-identical after round-trip |
+| `RetrievalModeTest()` | `RETRIEVAL` match mode: ranks purely on the global descriptors with no ROMAv2 opt-in, agrees pair-for-pair with `VOCABULARY`, a missing descriptor is a hard error | Identical candidate set to VOCABULARY; no vocabulary-tree fallback |
+| `RoMa2PreprocessTest()` | CPU preprocessing: constant image to constant planes with the R/G/B swap, and resampling against torch's `F.interpolate(bicubic, align_corners=False, antialias=True)` | Within 1e-5 of the torch reference |
+| `RoMa2OnnxParityTest()` | The exported descriptor and coarse-match graphs through `RoMa2Onnx` against the Python reference dumps shipped with the models | Per-preset parity thresholds of the dumps |
+| `ROMA2ReconstructTest()` | The full in-process path on the bundled 4-image scene through `Scene::MatchPairs`, four times: the 2048-D retrieval descriptors, a dense run compared against a baseline run with dense matching off, an `.sfm` round-trip, `ReconstructTest`'s reconstruction stage, and two runs of one awkward configuration (1 thread, 2 slots) | Same pair set as the baseline, a dense segment on every pair and a differing sparse count on most; tracks in [5000, 12000] (measured, see the comment); max distortion < 20 px; the two awkward runs bit-identical |
+
 ### Key Helpers
 
 - `GenerateRandomRotation()` / `GenerateRandomTranslation()` — synthetic pose generation

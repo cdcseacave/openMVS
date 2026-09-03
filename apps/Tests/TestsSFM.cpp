@@ -1703,9 +1703,13 @@ bool ROMA2ComplementaryDrawTest()
 // The two-camera fixture the verdict and the assembly tests below share: a 640x480 pinhole pair of
 // focal 400, the second camera offset along X and Y and not rotated, looking at a NON-PLANAR
 // surface -- a wedge of two planes meeting at the world plane X = 0 and receding to either side of
-// it. Non-planar is what makes the fixture a test rather than a tautology: a single plane is
-// explained exactly by a whole family of fundamental matrices, so a warp of one could not tell the
-// geometry of the two cameras from any other.
+// it. The camera trusts its intrinsics, so a fit on this fixture takes the calibrated (essential)
+// branch unless a test forces the fundamental one.
+// Non-planar is what makes the fixture a test rather than a tautology: a plane is a valid two-view
+// interpretation in either branch -- the calibrated fit reads it as one of the two cheirality-valid
+// poses it admits, the uncalibrated one as any member of a whole family of fundamental matrices --
+// so a warp of a single plane would be explained exactly by a geometry that has nothing to do with
+// these two cameras.
 constexpr REAL ROMA2_WEDGE_SEAM_Z = 3.0; // depth of the seam, on the optical axis of the first camera
 constexpr REAL ROMA2_WEDGE_SLOPE = 1.6;  // how fast the two planes recede to either side of it
 
@@ -1826,7 +1830,8 @@ static void MakeROMA2HomographyWarp(const Image& imgSrc, const Image& imgDst, in
 // at a non-planar surface: a warp confident over ~30% of both frames is admitted with both inlier
 // areas measuring that share, a warp confident over 30% of A whose B side maps into A over only 3%
 // is rejected by the min side alone, a smooth warp unrelated to the cameras is rejected however
-// exactly one geometry explains its own side, and minOverlap 0 admits the first two
+// exactly one geometry explains its own side -- through the calibrated branch and through the
+// fundamental one alike -- and minOverlap 0 admits the first two
 bool ROMA2VerdictTest()
 {
 	TD_TIMER_START();
@@ -1875,8 +1880,12 @@ bool ROMA2VerdictTest()
 			(unsigned)verdict.confidences.size(), (unsigned)((rx1-rx0)*(ry1-ry0)));
 		return false;
 	}
-	// an admitted pair carries the fit's geometry -- the one the two cameras really have, recovered
-	// from the warp cells alone -- and no matches
+	// an admitted pair carries the fit's geometry and no matches, and that geometry is the one the
+	// two cameras really have: the fit is handed warp cells and nothing else, and it comes back
+	// within a twentieth of a degree of the truth, which is what says the warp carried the geometry.
+	// It is not evidence that the scene's own solution stayed out of the fit -- a leak would read
+	// exactly the same; the temporary poseless Image copies JudgePairROMA2 builds are what keeps it
+	// out
 	if (!pair.relativePose.has_value() || !pair.F.has_value() || !pair.matches.empty()) {
 		VERBOSE("ROMA2VerdictTest FAILED: an admitted pair carries %u matches, pose %d, F %d",
 			(unsigned)pair.matches.size(), (int)pair.relativePose.has_value(), (int)pair.F.has_value());
@@ -1905,17 +1914,20 @@ bool ROMA2VerdictTest()
 	}
 
 	// (c) a smooth warp that has nothing to do with the two cameras -- a homography of A's grid --
-	// against the same camera-exact B side as (a). A homography is explained exactly by a whole
-	// family of fundamental matrices, so A's own side cannot tell it from a true pair; the other
-	// direction can, and that is the whole point of measuring the min of the two
+	// against the same camera-exact B side as (a). The fixture trusts its intrinsics, so this is the
+	// calibrated branch: a homography is a valid planar two-view interpretation there too, one of
+	// the poses it admits explaining the whole of A's own side, so A cannot tell it from a true
+	// pair; the other direction can, and that is the whole point of measuring the min of the two
 	MakeROMA2WedgeWarp(imgB, imgA, cells, rx0, rx1, ry0, ry1, warps.ba);
 	MakeROMA2HomographyWarp(imgA, imgB, cells, rx0, rx1, ry0, ry1, warps.ab);
 	JudgePairROMA2(matcher, imgA, imgB, warps, config, pair, verdict);
 	// one geometry does explain the whole of the homography's own side, exactly as it explains a
 	// true pair's -- an inlier count or ratio on A's cells cannot separate the two -- while the B
-	// side reads a fraction of it, and under the bar
+	// side reads a fraction of it, and under the bar. B's side is measured, not skipped: it comes
+	// out at 0.0637 here, and demanding it above zero is what separates "the min-side rule rejected
+	// the pair" from "B's side was never computed"
 	if (verdict.admitted || verdict.confidentAreaA != regionShare ||
-		ABS(verdict.inlierAreaA - regionShare) > 0.05f ||
+		ABS(verdict.inlierAreaA - regionShare) > 0.05f || verdict.inlierAreaB <= 0.f ||
 		verdict.inlierAreaB >= config.minOverlap || verdict.inlierAreaB >= 0.5f*verdict.inlierAreaA) {
 		VERBOSE("ROMA2VerdictTest FAILED: a homography warp confident over %.4f of A (inlier areas %.4f/%.4f, bar %.4f) was %s",
 			verdict.confidentAreaA, verdict.inlierAreaA, verdict.inlierAreaB, config.minOverlap,
@@ -1923,7 +1935,35 @@ bool ROMA2VerdictTest()
 		return false;
 	}
 
-	// (d) minOverlap 0 admits both (a) and (b): the threshold is the only thing that rejected (b)
+	// (d) the same homography, re-judged through the UNCALIBRATED branch. This is the case the
+	// min-side rule was designed for: seven degrees of freedom, and a plane is explained exactly by
+	// a whole family of fundamental matrices, so no fit on A's cells alone -- however many inliers
+	// it counts -- can tell a hallucinated warp from a true pair. The verdict has to reject it here
+	// for the same reason it rejects it in (c), on B's side and nothing else.
+	{
+		MatchConfig fundamentalCfg;
+		fundamentalCfg.forceFundamental = true; // 7-DoF F over the fixture's trusted intrinsics
+		const PairsMatcher fundamentalMatcher(scene, fundamentalCfg);
+		if (PairsMatcher::SelectGeometryBranch(fundamentalCfg, imgA, imgB) != PairsMatcher::GeometryBranch::FUNDAMENTAL) {
+			VERBOSE("ROMA2VerdictTest FAILED: forceFundamental did not select the fundamental branch");
+			return false;
+		}
+		// same outcome as (c), and for the same reason: A's own side fully explained (0.2988 of the
+		// grid, all of it), B's side measured and small (0.0173 here), the pair rejected by the min
+		// of the two
+		JudgePairROMA2(fundamentalMatcher, imgA, imgB, warps, config, pair, verdict);
+		if (verdict.admitted || verdict.confidentAreaA != regionShare ||
+			ABS(verdict.inlierAreaA - regionShare) > 0.05f || verdict.inlierAreaB <= 0.f ||
+			verdict.inlierAreaB >= config.minOverlap) {
+			VERBOSE("ROMA2VerdictTest FAILED: through the fundamental branch a homography warp confident over %.4f of A "
+				"(inlier areas %.4f/%.4f, bar %.4f) was %s",
+				verdict.confidentAreaA, verdict.inlierAreaA, verdict.inlierAreaB, config.minOverlap,
+				verdict.admitted ? "admitted" : "rejected");
+			return false;
+		}
+	}
+
+	// (e) minOverlap 0 admits both (a) and (b): the threshold is the only thing that rejected (b)
 	config.minOverlap = 0.f;
 	MakeROMA2WedgeWarp(imgA, imgB, cells, rx0, rx1, ry0, ry1, warps.ab);
 	MakeROMA2WedgeWarp(imgB, imgA, cells, rx0, rx1, ry0, ry1, warps.ba);
@@ -2257,7 +2297,10 @@ bool ROMA2AssemblyTest()
 
 	// the store: the dense keypoints of a pair land past each image's described prefix, and the
 	// indices they get depend only on how many keypoints the two images already carry -- which is
-	// why the pass has to store serially, in pair order
+	// why the pass has to store serially, in pair order. The first pair also carries one match past
+	// its filtered count -- a RANSAC inlier the strict filter rejected, which lives in `matches`
+	// after the sparse segment -- so that where the dense block is inserted is pinned: a fill pushed
+	// onto the end of `matches` would land outside the track-forming prefix BuildTracks reads
 	const auto RunStore = [cells](Scene& out) {
 		out.cameras.emplace_back(new PinholeCamera(cv::Size(640, 480), REAL(400), REAL(400), REAL(320), REAL(240)));
 		for (unsigned i = 0; i < 3; ++i) {
@@ -2273,6 +2316,8 @@ bool ROMA2AssemblyTest()
 			for (uint32_t m = 0; m < j; ++m)
 				pair.matches.emplace_back(m, m);
 			pair.numFilteredInliers = (int)j;
+			if (j == 1)
+				pair.matches.emplace_back(4, 4); // the rejected tail, past the filtered count
 			DenseMatches dense;
 			for (unsigned d = 0; d < 5 - j; ++d) {
 				dense.pointsA.emplace_back(100.f + 10.f*(float)d, 100.f + 10.f*(float)j);
@@ -2306,7 +2351,7 @@ bool ROMA2AssemblyTest()
 	// past its first fill, image 2 starts at its own prefix
 	const ImagePair& pair01 = storeScene.pairs[0];
 	const ImagePair& pair02 = storeScene.pairs[1];
-	if (pair01.numFilteredInliers != 1 || pair01.numDenseInliers != 4 || pair01.matches.size() != 5 ||
+	if (pair01.numFilteredInliers != 1 || pair01.numDenseInliers != 4 || pair01.matches.size() != 6 ||
 		pair02.numFilteredInliers != 2 || pair02.numDenseInliers != 3 || pair02.matches.size() != 5) {
 		VERBOSE("ROMA2AssemblyTest FAILED: the stored pairs partition %u/%u matches as %d+%d and %d+%d",
 			(unsigned)pair01.matches.size(), (unsigned)pair02.matches.size(),
@@ -2325,6 +2370,15 @@ bool ROMA2AssemblyTest()
 				d, pair02.matches[2 + d].queryIdx, pair02.matches[2 + d].trainIdx, 9 + d, 5 + d);
 			return false;
 		}
+	// and the rejected match the first pair carried stays behind the whole dense block: the fill is
+	// inserted into the track-forming prefix, never appended past the segments that follow it
+	const unsigned idxRejected = (unsigned)pair01.matches.size() - 1;
+	if (pair01.matches[idxRejected].queryIdx != 4 || pair01.matches[idxRejected].trainIdx != 4) {
+		VERBOSE("ROMA2AssemblyTest FAILED: match %u of the first pair is (%u,%u), not the rejected (4,4), so the dense "
+			"block did not land before it",
+			idxRejected, pair01.matches[idxRejected].queryIdx, pair01.matches[idxRejected].trainIdx);
+		return false;
+	}
 	// the same two stores over again label everything identically
 	Scene storeSceneAgain;
 	RunStore(storeSceneAgain);
@@ -3793,7 +3847,7 @@ bool ROMA2ReconstructTest()
 				(unsigned)guided.size(), (unsigned)baseline.size());
 			return false;
 		}
-		unsigned numDenseFilled = 0, numChanged = 0, numDense = 0;
+		unsigned numDenseFilled = 0, numSparseDiffers = 0, numDense = 0;
 		FOREACH(i, guided) {
 			if (guided[i].ID1 != baseline[i].ID1 || guided[i].ID2 != baseline[i].ID2) {
 				VERBOSE("ROMA2ReconstructTest FAILED: the one pass stored a different pair set");
@@ -3801,18 +3855,23 @@ bool ROMA2ReconstructTest()
 			}
 			if (guided[i].numDenseInliers > 0)
 				++numDenseFilled;
-			if (!(guided[i] == baseline[i]))
-				++numChanged;
+			if (guided[i].numFilteredInliers != baseline[i].numFilteredInliers)
+				++numSparseDiffers;
 			numDense += guided[i].numDenseInliers;
 		}
-		if (numDenseFilled != guided.size() || numChanged != guided.size()) {
-			VERBOSE("ROMA2ReconstructTest FAILED: %u of the %u stored pairs carry a dense segment and %u carry evidence "
-				"of their own (see the 'ROMA2 one pass' summary line above)",
-				numDenseFilled, (unsigned)guided.size(), numChanged);
+		// the sparse segment is compared on its own count, not on the whole summary tuple: the
+		// baseline carries no dense correspondence at all, so any tuple comparison would report
+		// every pair as different whatever the guided matching did, and say nothing about it
+		if (numDenseFilled != guided.size() || 2*numSparseDiffers <= guided.size()) {
+			VERBOSE("ROMA2ReconstructTest FAILED: %u of the %u stored pairs carry a dense segment and %u a sparse "
+				"segment of a different size than the descriptor batch's, expected all and most "
+				"(see the 'ROMA2 one pass' summary line above)",
+				numDenseFilled, (unsigned)guided.size(), numSparseDiffers);
 			return false;
 		}
-		DEBUG("ROMA2ReconstructTest: the one pass stored %u pairs with %u dense correspondences",
-			(unsigned)guided.size(), numDense);
+		DEBUG("ROMA2ReconstructTest: the one pass stored %u pairs with %u dense correspondences, %u of them "
+			"carrying a sparse segment of a different size than the descriptor batch's",
+			(unsigned)guided.size(), numDense, numSparseDiffers);
 
 		// the global descriptors and the matched pairs survive a scene file round-trip
 		{
@@ -3855,9 +3914,12 @@ bool ROMA2ReconstructTest()
 		//  - THE TRACK COUNT. The dense fill adds up to --roma2-dense-matches correspondences per
 		//    pair, each one a keypoint in both images, so the pass hands the track builder several
 		//    times what the descriptor batch does: ~7.7k inlier tracks (turbo, CUDA) against the
-		//    ~2.2k of the descriptor-only run, on a hard ceiling of 6 pairs x 2000 = 12000 dense
-		//    plus the sparse segments. [5000, 12000] brackets that without pinning the model's
-		//    exact output.
+		//    ~2.2k of the descriptor-only run. [5000, 12000] is that measurement with margin either
+		//    side, and nothing more: the dense and guided correspondences of six pairs merge into
+		//    two-view tracks at a ratio nothing here bounds, so the per-pair budget does not derive
+		//    the window. A model, preset or budget change moves it -- re-measure against the track
+		//    count this stage prints and the dense total the line above reports, and widen the
+		//    window to the new measurement rather than reasoning about it.
 		//  - THE RESIDUAL DISTORTION. Guided matching keeps, per keypoint of A, the descriptor-best
 		//    keypoint of B inside a disc around the warp's prediction, and the dense segment is the
 		//    warp itself, so the correspondences carry that warp's bias and the bundle absorbs it

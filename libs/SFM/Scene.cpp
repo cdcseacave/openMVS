@@ -586,11 +586,10 @@ bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, c
 			return false;
 		}
 		// the ONNX sessions are only loaded when they still have something to produce: the dense
-		// warps (the dense matching pass, the dense two-view gate), or global descriptors this
-		// scene does not carry yet. Retrieval alone over descriptors an earlier run already stored
-		// ranks the pairs straight from Image::globalDescriptor (PairsMatcher::QueryRetrieval) and
-		// never enters a session, so loading 1.2 GB of graph weights onto the device for it would
-		// buy nothing
+		// warps (the dense matching pass), or global descriptors this scene does not carry yet.
+		// Retrieval alone over descriptors an earlier run already stored ranks the pairs straight
+		// from Image::globalDescriptor (PairsMatcher::QueryRetrieval) and never enters a session,
+		// so loading 1.2 GB of graph weights onto the device for it would buy nothing
 		if (roma2Cfg.NeedsWarps() || !status.nState.isSet(Status::STATE::GLOBAL_DESCRIPTORS)) {
 			if (!roma2.Load(modelPath, roma2Cfg.setting, roma2Cfg.useGPU ? roma2Cfg.provider : String("cpu"))) {
 				VERBOSE("error: failed to load ROMA2 model '%s' (%s)", modelPath.c_str(), roma2Cfg.setting.c_str());
