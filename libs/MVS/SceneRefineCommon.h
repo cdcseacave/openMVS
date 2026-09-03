@@ -32,30 +32,26 @@
 #ifndef _MVS_SCENEREFINECOMMON_H_
 #define _MVS_SCENEREFINECOMMON_H_
 
-// This header is the single reference for scalar math that the CPU
-// (SceneRefine.cpp, MeshRefine) and CUDA (SceneRefineCUDA.cpp/.cu,
-// MeshRefineCUDA) mesh-refinement backends must compute identically, plus
-// the OPTREFINE configuration space (mirrors OPTDENSE, see
-// DepthMap.h/DepthMap.cpp) that later refine work packages read from.
+// Everything the CPU (SceneRefine.cpp, MeshRefine) and CUDA (SceneRefineCUDA.cpp/.cu,
+// MeshRefineCUDA) mesh-refinement backends share: the scalar math both must compute identically,
+// the OPTREFINE configuration space (mirrors OPTDENSE, see DepthMap.h/DepthMap.cpp), the per-view
+// image and mask preparation, and the vertex-position stepper (MeshRefineStep) that turns one
+// energy evaluation into one step -- one implementation, no CUDA twin to drift.
 //
 // Include rules:
-//  - Everything above the "#ifndef __CUDACC__" guards below (the REFINE_HD
-//    macro, the MVS::Refine constants and ZnccReliability()) is compiled by
-//    nvcc as part of SceneRefineCUDA.cu's device code, so it must never drag
-//    in OpenCV or SEACAVE types -- plain float/int only (the same constraint
-//    that keeps Util.h from referencing Matrix3x4: libs/Common stays
-//    untouched by this header).
-//  - Everything below those guards (OPTREFINE, PrepareRefineImage) is
-//    host-only. Like DepthMap.h/OPTDENSE, it relies on the including
-//    translation unit having already done `#include "Common.h"` (for
-//    MVS_API/DECOPT_SPACE) and `#include "Scene.h"` (for Image/PlatformArr)
-//    before this header; it is never reached while compiling as __CUDACC__.
+//  - Everything above the "#ifndef __CUDACC__" guard below (the REFINE_HD macro, the MVS::Refine
+//    constants and the window/ZNCC math) is compiled by nvcc as part of SceneRefineCUDA.cu's
+//    device code, so it must never drag in OpenCV or SEACAVE types -- plain float/int only.
+//  - Everything below the guard is host-only. Like DepthMap.h/OPTDENSE, it relies on the
+//    including translation unit having already done `#include "Common.h"` (for
+//    MVS_API/DECOPT_SPACE) before this header.
 
 
 // I N C L U D E S /////////////////////////////////////////////////
 
 #ifndef __CUDACC__
 #include "Image.h"
+#include "Mesh.h"
 #endif
 
 
@@ -129,7 +125,7 @@ struct WindowStats {
 // occlusion the depth test did not catch -- and steering a vertex with its (large, confidently
 // wrong) gradient is worse than not steering it.
 // n is the number of valid samples, sA/sB/sAA/sBB/sAB their masked sums; gates <= 0 disable.
-// Returns false if the pixel must be rejected, in which case stats are left undefined.
+// Returns false if the pixel must be rejected; stats must not be read then.
 REFINE_HD inline bool WindowStatsFromSums(float n, float sA, float sB, float sAA, float sBB, float sAB,
 	float gateMeanDiff, float gateVarRatio, WindowStats& s)
 {
@@ -174,17 +170,11 @@ REFINE_HD inline void ZnccAndDerivative(const WindowStats& s, float n, float pix
 DECOPT_SPACE(OPTREFINE)
 
 namespace OPTREFINE {
-// configuration variables, mirroring OPTDENSE. Consumed today: nImageGradient
-// (the derivative stencil in ComputeRefineImageGradient), nOptimizer (the
-// stepper arm in Scene::RefineMesh/RefineMeshCUDA) and the two pixel rejection
-// gates fGateMeanDiff/fGateVarRatio (WindowStatsFromSums, read by both
-// backends' window statistics); the rest are declared, staged mechanism for
-// later refine work to read
+// configuration variables, mirroring OPTDENSE; read from --refine-config-file by apps/RefineMesh
 extern MVS_API int nIgnoreMaskLabel; // label id used during ignore mask filter (<0 - disabled)
 extern MVS_API int nImageGradient; // image derivative stencil (0 - 3x5 separable, 1 - central (default), 2 - Sobel, 3 - bilinear interpolant derivative)
 extern MVS_API float fGateMeanDiff; // reject a pixel pair whose local mean differs by more than this (0 - disabled)
 extern MVS_API float fGateVarRatio; // reject a pixel pair whose local variance ratio exceeds this (0 - disabled)
-extern MVS_API int nOptimizer; // vertex position optimizer (0 - bold, 1 - fixed; the trust-ratio, Barzilai-Borwein and momentum arms were measured and lost, see the design document)
 } // namespace OPTREFINE
 
 class Scene;
@@ -212,9 +202,8 @@ MVS_API bool PrepareRefineImage(Image& imageData, const PlatformArr& platforms,
 // MeshRefineCUDA::InitImages, SceneRefineCUDA.cpp). Reads OPTREFINE::nIgnoreMaskLabel itself, like
 // ComputeRefineImageGradient reads OPTREFINE::nImageGradient. keepMask is left empty (== keep
 // everything, zero cost on the hot path) when masks are disabled or the image has no mask file to
-// load; a configured-but-missing mask file is not an error and is not reported here -- every image
-// is checked once, up front, by apps/RefineMesh (the same entry that assigns image.maskName), so
-// this per-scale, per-backend call site never warns on its own.
+// load; a configured-but-missing mask file is not an error and is not reported here: every image
+// is checked once, up front, by apps/RefineMesh (the same entry that assigns image.maskName).
 MVS_API void PrepareRefineImageMask(const Image& imageData, const cv::Size& size, BitMatrix& keepMask);
 
 // image derivative estimate used by the photometric gradient, the same on both
@@ -227,6 +216,135 @@ MVS_API void PrepareRefineImageMask(const Image& imageData, const cv::Size& size
 // stencil this function builds: both backends skip calling it entirely and
 // sample the raw image directly at the point that needs the derivative.
 MVS_API void ComputeRefineImageGradient(const Image32F& gray, Image32F& gradX, Image32F& gradY);
+
+
+// Vertex-position stepper shared by the CPU and CUDA mesh-refinement backends: a bold driver
+// that works in pixels and in ZNCC, so its trajectory and its stopping point are properties of
+// the surface rather than of the scene's units, the image resolution or the pair count:
+//
+//   * every step length is a pixel length converted through the per-vertex footprint s_v
+//     (scene units per pixel: depth/f minimized over the pair-directions that saw v);
+//   * progress is judged on S, the reliability-weighted mean of (1 - ZNCC) over every scored
+//     pixel, which lies in [0,2] whatever the scene.
+//
+// Per evaluation, with rho the rigidity-elasticity ratio and w the regularity weight:
+//
+//     g_v = photoGrad_v / c_v                             (zero if c_v < 2)
+//     m   = median |g_v| / s_v over the seen vertices     (computed ONCE per scale, then held)
+//     D_v = -eta * (g_v / (Kappa m) + w * (rho * bilap_v - (1 - rho) * lap_v))
+//
+// so the median seen vertex moves eta/Kappa px at the scale's first evaluation and every other
+// vertex moves in PROPORTION to its own gradient. m is a GLOBAL factor on purpose: recomputing
+// it every evaluation would renormalize the median vertex back to the same step every time and
+// defeat the stop rule, and a per-vertex normalization flattens the gradient distribution (a
+// measured regression, see the design document). The caller owns the vertices and the energy
+// evaluation; this class owns only the step state.
+class MVS_API MeshRefineStep
+{
+public:
+	typedef TPoint3<float> Grad;
+	typedef CLISTDEF0IDX(Grad,uint32_t) GradArr;
+
+	// the single operating point: pixel/ZNCC quantities, scene-independent, hence not exposed
+	static constexpr float StepInit = 0.5f; // eta at the start of every scale, px
+	static constexpr float StepMax = 1.f; // eta never exceeds this, px
+	static constexpr float StepGrow = 1.1f; // eta *= this after an accepted evaluation
+	static constexpr float StepShrink = 0.5f; // eta *= this after a rejected one
+	static constexpr float StepStop = 0.05f; // median per-vertex step at a full stride below which the scale has converged, px
+	static constexpr float ProgressTol = 1e-3f; // relative decrease of S at or below which an evaluation counts as stalled
+	static constexpr float Kappa = 2.f; // the median seen vertex moves eta/Kappa px at the first evaluation
+	static constexpr unsigned Patience = 3; // consecutive stalled evaluations that end the scale
+	static constexpr unsigned MaxRejects = 4; // consecutive rejections that end the scale
+	static constexpr unsigned MinIters = 3; // no stop rule fires before this many accepted evaluations
+	static constexpr unsigned MaxIters = 45; // evaluation budget of the coarsest scale, see Budget()
+
+	// evaluation budget of a scale (0-based, coarsest first), thinned on the finer, more expensive
+	// ones; a safety net behind the stop rules, not a stopping rule: raising it 20x changes no
+	// measured result
+	static unsigned Budget(unsigned nScale) { return MAXF(MaxIters/(nScale+1), 8u); }
+
+	enum Action {
+		APPLY, // the vertices were moved; evaluate the energy again
+		REJECT, // half the previous step was undone (vertices sit at v_prev + stepPrev/2) and eta was halved; evaluate the energy again
+		STOP // converged, or out of rejects: leave this scale
+	};
+
+	// one energy evaluation, as the backend already has it; the pointers are borrowed for the
+	// duration of the Evaluate() call only
+	struct Terms {
+		const Grad* photoGrad; // raw per-vertex photometric gradient sum, not yet divided by photoCount
+		const float* photoCount; // c_v: how many pair-directions saw v (0 = unseen)
+		const float* footprint; // s_v: scene units per pixel; 0 exactly where c_v == 0
+		const Grad* lap; // first-order smoothness term, 0 on boundary vertices
+		const Grad* bilap; // second-order smoothness term, 0 on boundary vertices
+		float S; // reliability-weighted mean of (1 - ZNCC) over all pairs, in [0,2]
+		float rigidity; // rho
+		float regularityWeight; // w
+		uint32_t numVertices;
+		// this evaluation saw only one direction of each image pair, alternating with the
+		// evaluation index (nAlternatePair == 1): its S is comparable only with the S of an
+		// evaluation of the same parity, so two references are carried instead of one
+		bool alternating;
+	};
+
+	// what one Evaluate() decided, for the caller's log line
+	struct Stats {
+		float S; // the S this evaluation reported
+		float relChange; // (S - reference) / reference, the reference being the last accepted S (0 while there is none)
+		float step; // eta after the decision, px
+		float medianPx; // median per-vertex step applied, px (0 unless APPLY)
+		uint32_t numMoved; // vertices that received a non-zero step
+		unsigned numAccepted; // accepted evaluations so far this scale
+		unsigned numRejected; // rejected evaluations so far this scale
+		bool accepted; // this evaluation was accepted
+	};
+
+public:
+	MeshRefineStep() { Reset(0); }
+
+	// begin a scale: eta starts at stepInit, the median normalizer is re-derived at the next
+	// evaluation, and that evaluation is accepted unconditionally (nothing to compare it against)
+	void Reset(uint32_t numVertices, float stepInit=StepInit);
+
+	// judge one evaluation and, when it is accepted, move the vertices
+	Action Evaluate(const Terms& terms, Mesh::VertexArr& vertices, Stats& stats);
+
+	// the mesh changed under us (planar-vertex removal): the S references are dropped, so the
+	// next evaluation of either parity is accepted unconditionally, and the undo buffer is rebuilt
+	void TopologyChanged(uint32_t numVertices);
+
+	// begin the scale's second, pure-elasticity phase and return its evaluation budget: 3/7 of
+	// the evaluations accepted so far, the one budget that is not convergence-driven (running this
+	// phase to convergence over-smooths, see the design document). eta and the S references carry
+	// over; the stall count restarts, since one the first phase's tail primed would end this
+	// phase after a single evaluation, while the reject streak deliberately carries over too (a
+	// scale that gave up on its rejections stays given up: resetting it measured worse)
+	unsigned BeginSecondPhase() { numStalled = 0; return MAXF(3u, numAccepted*3/7); }
+
+	unsigned GetNumAccepted() const { return numAccepted; }
+	// index of the evaluation about to be judged; the caller feeds it to the energy as its
+	// iteration number so the pair direction an alternating run scores matches the parity this
+	// class compares S against
+	unsigned GetNumEvaluated() const { return numEvaluated; }
+
+protected:
+	// |g_v|/s_v of the median seen vertex, computed once per scale
+	float ComputeMedianScale(const Terms& terms);
+
+protected:
+	float step; // eta, px
+	float median; // m, the scale's held normalizer; negative until the first evaluation derives it
+	float scoreRef; // S of the last accepted evaluation; FLT_MAX until there is one
+	float scoreRefAlt; // the same for the odd evaluations of an alternating-pair run
+	unsigned numAccepted;
+	unsigned numRejected; // CONSECUTIVE rejections, reset by every accepted evaluation
+	unsigned numRejectedTotal;
+	unsigned numStalled;
+	unsigned numEvaluated; // evaluations this scale, accepted or not
+	GradArr stepPrev; // the last applied per-vertex step, for the halving undo
+	FloatArr scratch; // median workspace, kept across evaluations so none allocates
+};
+/*----------------------------------------------------------------*/
 
 
 // CPU/CUDA parity diagnostic: export per-vertex gradients and

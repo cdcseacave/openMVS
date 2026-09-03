@@ -11,10 +11,10 @@ Two implementations exist side by side (`libs/MVS/AGENTS.md`'s guidance on platf
 code applies): the CPU path in `libs/MVS/SceneRefine.cpp` (`MeshRefine`/`Scene::RefineMesh`) and
 the CUDA path split across `libs/MVS/SceneRefineCUDA.cpp` (`MeshRefineCUDA`/
 `Scene::RefineMeshCUDA`) and `libs/MVS/SceneRefineCUDA.cu`/`.inl` (device kernels and launch
-wrappers). Two files both backends share outright: `libs/MVS/SceneRefineCommon.h/.cpp` (shared
-scalar math, the `OPTREFINE` configuration space, per-view image/mask preparation) and
-`libs/MVS/SceneRefineStep.h/.cpp` (the vertex-position stepper — one implementation, no CUDA twin
-to drift). There is no `SceneRefine.h`; `MeshRefine`/`MeshRefineCUDA` are translation-unit-local
+wrappers). One file both backends share outright: `libs/MVS/SceneRefineCommon.h/.cpp` (shared
+scalar math, the `OPTREFINE` configuration space, per-view image/mask preparation, and the
+vertex-position stepper `MeshRefineStep` — one implementation, no CUDA twin to drift). There is no
+`SceneRefine.h`; `MeshRefine`/`MeshRefineCUDA` are translation-unit-local
 classes. `apps/RefineMesh/RefineMesh.cpp` is the CLI driver; every default below is that file's
 `boost::program_options` default unless marked as an `OPTREFINE`/`MeshRefineStep` constant.
 
@@ -211,7 +211,7 @@ Identical **by construction**, not by measurement: the shared scalar header (`Sc
 the image-gradient stencil (built once, host-side, shared by both), the rasterizer (both keep only
 front faces where `EdgeFunction(p0,p1,p2) > 0` and use perspective-correct barycentric coordinates —
 CUDA's two-pass `kernelProjectMesh` resolves depth ties the same way the CPU's face-list traversal
-order does, and is itself deterministic run to run), and the stepper (`SceneRefineStep.cpp`, one
+order does, and is itself deterministic run to run), and the stepper (`MeshRefineStep`, one
 implementation). What legitimately differs:
 
 | Aspect | CPU | CUDA |
@@ -219,7 +219,7 @@ implementation). What legitimately differs:
 | Camera projection precision | double (`Camera::TransformPointW2C`) | float (`MVS::CUDA::Camera`, built once per call by `MakeCUDACamera`) — measured bit-identical face maps on the `Tiny` fixture despite the precision drop |
 | Photometric accumulation order | per-pair, under a lock, in whatever order threads complete — not bit-reproducible run to run unless `--max-threads 1` | face-parallel accumulate + vertex-parallel gather over a fixed order, no atomics — **bit-reproducible** |
 | Planar-vertex removal | implemented (§1.7) | refused at the entry (a loud error, not a silent no-op) — caller falls back to CPU |
-| Ceres arm (`--gradient-step 0`) | implemented, gated on `_USE_CERES` | refused at the entry, same fallback |
+| Ceres arm (`--use-ceres`) | implemented, gated on `_USE_CERES` | refused at the entry, same fallback |
 | Float reassociation | `cv::boxFilter`/`filter2D`, MSVC `/fp:precise`, no FMA | explicit-rounding intrinsics (`__fmul_rn` etc.) so nvcc cannot silently fuse an FMA the CPU wouldn't — residual disagreement ~0.1-2% per vertex at the tail, the documented approximation floor |
 
 An env-var-gated diagnostic, `RefineDebug` (`SceneRefineCommon.h/.cpp`, `OMVS_REFINE_DEBUG_DIR`/
@@ -230,7 +230,7 @@ back-face winding) now closed.
 
 ### 1.7 Optimization schedule
 
-Both backends drive the same shared stepper, `MeshRefineStep` (`SceneRefineStep.h/.cpp`). The
+Both backends drive the same shared stepper, `MeshRefineStep` (`SceneRefineCommon.h/.cpp`). The
 stepper works in **pixels** (through each vertex's own footprint, §1.3) and in **ZNCC** (`S`,
 §1.3), so its trajectory does not depend on scene scale, image resolution or pair count (§1.8).
 
@@ -252,17 +252,16 @@ and every other vertex moves in **proportion** to its own gradient. A per-vertex
 normalize-and-clamp variant measured a 0.0215 mean F1 regression (§4) because clamping flattens the
 gradient distribution; the header documents why the normalization must stay global.
 
-**Constants** (`SceneRefineStep.h`, pixel/ZNCC quantities, deliberately not CLI-exposed):
-`StepMax = 1` px (`eta_max`), `StepGrow = 1.1`, `StepShrink = 0.5`, `StepStop = 0.05` px
-(median-step-at-full-stride convergence floor), `ProgressTol = 1e-3` (relative `S` decrease counted
-as stalled), `Kappa = 2`, `Patience = 3` (consecutive stalled iterations that end the scale),
-`MaxRejects = 4` (consecutive rejections that end the scale), `MinIters = 3` (no stop rule before
-this many ACCEPTED iterations). `ProgressTol` and `Patience` were swept and sit on a flat optimum
-(§2.4).
+**Constants** (`MeshRefineStep`, pixel/ZNCC quantities, deliberately not CLI-exposed):
+`StepInit = 0.5` px (`eta` at the start of every scale), `StepMax = 1` px (`eta_max`),
+`StepGrow = 1.1`, `StepShrink = 0.5`, `StepStop = 0.05` px (median-step-at-full-stride convergence
+floor), `ProgressTol = 1e-3` (relative `S` decrease counted as stalled), `Kappa = 2`,
+`Patience = 3` (consecutive stalled iterations that end the scale), `MaxRejects = 4` (consecutive
+rejections that end the scale), `MinIters = 3` (no stop rule before this many ACCEPTED
+iterations), `MaxIters = 45` (the coarsest scale's evaluation budget, below). `ProgressTol` and
+`Patience` were swept and sit on a flat optimum (§2.4).
 
-**Accept/reject** (`OPTREFINE::nOptimizer`, default 0 = bold driver; 1 = a fixed-step control arm
-that never rejects and never grows/shrinks `eta`, kept only to isolate whether the accept/reject
-machinery matters). An evaluation whose `S` is worse than the last accepted `S` is REJECTed: every
+**Accept/reject.** An evaluation whose `S` is worse than the last accepted `S` is REJECTed: every
 vertex moves back to exactly `v_prev + stepPrev/2` (undoing half the offending step),
 `eta *= StepShrink`, and the scale STOPs after 4 consecutive rejections. An accepted evaluation
 becomes the new reference, resets the reject streak, grows `eta = min(eta*1.1, StepMax)`, and the
@@ -271,20 +270,21 @@ scale STOPs once `numAccepted >= MinIters` and `Patience` consecutive iterations
 (`medianPx * StepMax/eta`, not the step just taken — an `eta` ratcheted down by repeated
 accept/reject cycles would otherwise report false convergence) drops below `StepStop`.
 
-**Per-scale two-phase schedule.** `--gradient-step N.s` sets `N = floor(...)` and the initial step
-`eta0 = (fGradientStep-N)*10` px (shipped default `45.05` → `N=45`, `eta0=0.5` px; both validated at
-entry — `eta0` must lie in `(0, StepMax]`). The per-scale evaluation **cap** is
-`max(N/(nScale+1), 8)` (`nScale` 0-based, coarsest first — the coarse scale gets the larger cap);
-it is a safety net, not the operating stop: raising `N` from 45 to 1000 changes no result (§2.4).
+**Per-scale two-phase schedule.** `eta` starts every scale at `StepInit`. The per-scale evaluation
+**cap** is `MeshRefineStep::Budget(nScale) = max(MaxIters/(nScale+1), 8)` (`nScale` 0-based,
+coarsest first — the coarse scale gets the larger cap); it is a safety net, not the operating stop:
+raising `MaxIters` from 45 to 1000 changes no result (§2.4), which is why the `--gradient-step`
+option that used to set it and the initial step no longer exists.
 **Phase A** runs up to `cap` evaluations at the caller's `--rigidity-elasticity-ratio` (default
 0.9), with the CPU-only planar-vertex hook eligible from the 4th accepted evaluation onward, every
 3rd accepted evaluation thereafter, provided more than 5 evaluations remain in the phase's budget.
 **Phase B** runs a fresh, smaller budget `capB = max(3, 3*numAcceptedInPhaseA/7)` — a 70/30 split
 taken against phase A's ACCEPTED count rather than its raw budget, since a rejected evaluation buys
 no convergence — at `rho = 1` (pure elasticity) with the planar hook off; `eta` and the
-accepted-`S` references carry over from phase A unchanged, only `MeshRefineStep::ResetStall()` runs
-between phases (the stall counter resets, the reject streak does **not** — resetting it too
-measured −0.0048 mean F1, §4). Either phase's loop exits early on `MeshRefineStep::STOP`.
+accepted-`S` references carry over from phase A unchanged, only `MeshRefineStep::BeginSecondPhase()`
+runs between phases (it hands back that budget and resets the stall counter; the reject streak does
+**not** reset — resetting it too measured −0.0048 mean F1, §4). Either phase's loop exits early on
+`MeshRefineStep::STOP`.
 Phase B's budget is the one part of the schedule that is not convergence-driven, and deliberately
 so: letting it run under phase A's stop rules over-smooths (§2.4).
 
@@ -332,7 +332,7 @@ scene-unit constant in the refinement.
 
 ### 1.9 Ceres arm (opt-in, CPU only)
 
-`--gradient-step 0` selects a first-order Ceres solve instead of the stepper, gated on `_USE_CERES`
+`--use-ceres` selects a first-order Ceres solve instead of the stepper, gated on `_USE_CERES`
 (`OpenMVS_USE_CERES`, ON by default — Ceres is a mandatory SFM dependency). It is a research and
 reference arm, not a default: it is slower and no better (§2.5). `MeshRefine` runs in **energy
 mode**: `ScoreMesh` returns the exact energy
@@ -409,7 +409,7 @@ against the previous `develop` behaviour on the identical frozen input.
 
 ### 2.1 Shipped configuration against the previous behaviour
 
-Defaults only: two scales, `--gradient-step 45.05` (bold driver, initial step 0.5 px), regularity
+Defaults only: two scales, the bold driver from its 0.5 px initial step, regularity
 0.2, rigidity/elasticity ratio 0.9, magnitude photometric term with the pair-count normalizer,
 central-difference stencil, masked 7x7 window statistics with the 0.4 / 8 rejection gates,
 nearest-tap relative visibility. `develop` is commit `c410c9d4`, CPU, same inputs, same evaluator.
@@ -515,8 +515,8 @@ is fully active there — and both survivors lose on it:
 | Barzilai-Borwein | −0.0004 | +0.0028 | **−0.0015** | +0.0003 | 0.93x |
 | Trust ratio | +0.0013 | +0.0014 | **−0.0032** | −0.0002 | 1.08x |
 
-The arms and the extra stop rules are therefore removed from the tree; `OPTREFINE::nOptimizer`
-keeps only the shipped bold driver and the fixed-step control.
+The arms, the extra stop rules and the fixed-step control are therefore removed from the tree;
+only the bold driver ships.
 
 **Nothing beats the shipped stop rules either, and the one budget-limited phase must stay that
 way.** Same two scenes, iterations per scale in brackets:
@@ -531,7 +531,7 @@ way.** Same two scenes, iterations per scale in brackets:
 | Phase B under phase A's stop rules | +0.0002 [36, 39] | **−0.0108** [28, 27] | −0.0053 | 1.16x |
 | … and ProgressTol 1e-4 | +0.0004 [67, 44] | **−0.0151** [50, 44] | −0.0073 | 1.30x |
 
-Three conclusions. The per-scale evaluation cap is **not** binding — raising `--gradient-step` from
+Three conclusions. The per-scale evaluation cap is **not** binding — raising `MaxIters` from
 45 to 100, 200 and 1000 changes nothing (all within ±0.0006) — so scales already end on the rules,
 not on a budget. The stall thresholds sit on a flat optimum: a stricter tolerance runs fountain's
 coarse scale 67 % longer to a *lower* score and a lower F1, a looser one halves the iterations at
@@ -651,7 +651,7 @@ entry says otherwise.
 | 1 | Per-vertex normalized, unit-clamped photometric direction (every vertex moves at most η px along its own gradient) | **−0.0215** (Truck −0.0427, Barn −0.0241, Meetingroom −0.0379) | no |
 | 2 | Rescuing #1 by retuning the regularity weight | monotone in `w` up to the stability limit and still below the old optimizer; the arm does best with its photometric term suppressed | no |
 | 3 | Running fewer iterations of the old fixed schedule as a speed arm | −0.0015 at 2.06x faster, but Ignatius −0.0203 | no |
-| 4 | Fixed-step control arm (never rejects, never adapts η) | −0.0891 on the ground-truth scenes | kept as a control only |
+| 4 | Fixed-step control arm (never rejects, never adapts η) | −0.0891 on the ground-truth scenes | removed |
 | 5 | Depth-proportional, grazing-aware visibility tolerance | **−0.0047** at base 1, **−0.0056** at base 5 (Ignatius −0.0153 / −0.0197); loosening it makes it worse, so it is not a tuning problem | no |
 | 6 | 2x2 any-passing depth tap instead of nearest tap | +0.0002 legacy bias, +0.0000 exact, +0.0008 receiver bias — all inside noise, at three extra depth loads and a branchy search | no |
 | 7 | Exact shadow comparison `depth >= z` at the nearest tap | +0.0140 mean but **Barn −0.0076** | no |

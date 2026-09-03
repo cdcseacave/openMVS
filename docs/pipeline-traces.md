@@ -579,8 +579,8 @@ graph TD
     E --> F[SubdivideMesh<br/>nMaxFaceArea, fDecimateMesh, nCloseHoles, nEnsureEdgeSize]
     F --> G[ListVertexFacesPost: normals]
     G --> H{Solver}
-    H -->|fGradientStep>0| I[MeshRefineStep: pixel-unit bold driver<br/>accept/reject, stops on convergence]
-    H -->|fGradientStep==0| J[Ceres GradientProblemSolver<br/>opt-in, CPU only]
+    H -->|default| I[MeshRefineStep: pixel-unit bold driver<br/>accept/reject, stops on convergence]
+    H -->|bUseCeres| J[Ceres GradientProblemSolver<br/>opt-in, CPU only]
     I --> I1[ScoreMesh: masked ZNCC score S<br/>+ regularization gradient]
     I1 --> I2[Apply the step, in pixels per vertex<br/>ACCEPT if S improved, else halve and back off]
     I2 --> I3{bAdaptMesh & iter >= iterStart}

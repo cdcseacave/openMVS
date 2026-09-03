@@ -120,7 +120,7 @@ Scene::RefineMeshCUDA(...)                    // GPU
 ```
 Multi-resolution loop: subdivide -> project to images -> deform vertices using image gradients -> regularize -> close holes -> decimate.
 
-Key params: `nResolutionLevel`, `fDecimateMesh`, `nCloseHoles`, `fRegularityWeight`, `fGradientStep`.
+Key params: `nResolutionLevel`, `fDecimateMesh`, `nCloseHoles`, `fRegularityWeight`, `nScales`; the step and the iteration count are chosen by `MeshRefineStep` (`SceneRefineCommon.h`), see `docs/design/MeshRefinement.md`.
 
 ### 5. Texture Mapping (`SceneTexture.cpp`, 82KB)
 ```cpp

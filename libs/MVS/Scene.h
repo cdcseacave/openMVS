@@ -218,34 +218,35 @@ public:
 	};
 	bool ReconstructMesh(const ReconstructMeshParams& params=ReconstructMeshParams());
 
-	// Mesh refinement
+	// Mesh refinement: fThPlanarVertex > 0 removes the vertices of planar patches as the
+	// refinement proceeds (CPU only), bUseCeres minimizes the exact energy with Ceres instead of
+	// the bold-driver stepper (CPU only, opt-in: slower and no better, kept as the reference arm)
 	bool RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews, float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize,
-		unsigned nMaxFaceArea, unsigned nScales, float fScaleStep, unsigned nAlternatePair, float fRegularityWeight, float fRatioRigidityElasticity, float fGradientStep,
-		float fThPlanarVertex=0.f);
+		unsigned nMaxFaceArea, unsigned nScales, float fScaleStep, unsigned nAlternatePair, float fRegularityWeight, float fRatioRigidityElasticity,
+		float fThPlanarVertex=0.f, bool bUseCeres=false);
 	#ifdef _USE_CUDA
-	// same signature as the CPU overload; fThPlanarVertex is accepted and rejected at the entry
-	// point, since the planar-vertex removal it asks for exists only on the CPU path
+	// the CPU overload minus its CPU-only arms; fThPlanarVertex > 0 is refused at the entry
 	bool RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews, float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize,
-		unsigned nMaxFaceArea, unsigned nScales, float fScaleStep, unsigned nAlternatePair, float fRegularityWeight, float fRatioRigidityElasticity, float fGradientStep,
+		unsigned nMaxFaceArea, unsigned nScales, float fScaleStep, unsigned nAlternatePair, float fRegularityWeight, float fRatioRigidityElasticity,
 		float fThPlanarVertex=0.f);
 	#endif
 	// input/output of RefineMeshEnergyProbe below
 	struct RefineEnergyProbe {
 		// in
-		float regularityWeight; // w of the thin-plate term; 0 evaluates the photometric energy alone
-		bool photometric; // false scores no image pair, leaving the thin-plate energy alone
-		uint32_t seed; // seeds the random direction u
+		float regularityWeight{0.f}; // w of the thin-plate term; 0 evaluates the photometric energy alone
+		bool photometric{true}; // false scores no image pair, leaving the thin-plate energy alone
+		uint32_t seed{0}; // seeds the random direction u
 		FloatArr steps; // the offsets t at which to evaluate E(v + t u)
 		// out
-		double energy; // E(v)
-		double dirDerivative; // <grad E(v), u>
+		double energy{0}; // E(v)
+		double dirDerivative{0}; // <grad E(v), u>
 		DoubleArr steppedEnergies; // E(v + t u), one per steps entry
 	};
-	// finite-difference consistency gate for the exact energy the Ceres arm (--gradient-step 0)
+	// finite-difference consistency gate for the exact energy the Ceres arm (--use-ceres)
 	// minimizes: initializes one refinement scale in energy mode, evaluates E and its exact
 	// gradient at the current mesh, then E again at mesh + t*u for a seeded random unit direction
-	// u that is zero on the boundary vertices this arm holds fixed. Test entry point only (see
-	// MVS::MeshRefineEnergyGradientTest); no option reaches it and it leaves the mesh unchanged
+	// u. Test entry point only (see MVS::MeshRefineEnergyGradientTest); no option reaches it and
+	// it leaves the mesh unchanged
 	bool RefineMeshEnergyProbe(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews, RefineEnergyProbe& probe);
 
 	// Mesh texturing

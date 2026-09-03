@@ -41,8 +41,8 @@ namespace MVS {
 bool MeshVertexColorsPLYTest();
 bool MeshHalfMeshProcessingTest();
 
-// test the pixel-unit bold-driver optimizer (SceneRefineStep.h) against hand-built Terms
-// arrays: no images, no scene, milliseconds to run
+// test the pixel-unit bold-driver optimizer (MeshRefineStep, SceneRefineCommon.h) against
+// hand-built Terms arrays: no images, no scene, milliseconds to run
 bool MeshRefineStepTest();
 
 // test the scalar window statistics and ZNCC math both refinement backends share
@@ -63,7 +63,7 @@ bool PipelineTest(bool forceCPU = false, bool verbose = false);
 bool MeshRefineSyntheticTest(bool forceCPU = false, bool verbose = false);
 
 // finite-difference consistency gate for the exact energy the Ceres arm of Scene::RefineMesh
-// (--gradient-step 0) minimizes: on the same synthetic fixture, E(v+t*u)-E(v) must agree with
+// (--use-ceres) minimizes: on the same synthetic fixture, E(v+t*u)-E(v) must agree with
 // t*<grad E(v),u> to within 5% for the photometric term alone, the thin-plate term alone and
 // their sum. Runs on the CPU with no Ceres dependency, so a build without _USE_CERES still proves
 // that the cost and the gradient the solver would be handed are the same functional

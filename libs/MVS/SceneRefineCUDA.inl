@@ -49,16 +49,18 @@ namespace CUDA {
 // rasterizer, per visible face, launched twice: resolve=false does an atomicMin of the
 // (depth, position-in-faceIDs) key into projKey (one 64-bit word per pixel, pre-filled with
 // ~0ull); resolve=true lets the thread holding each pixel's winning key write depth/face/bary
-// (faceMap pre-filled with NO_ID). LaunchResolveProjection then zeroes the uncovered pixels
-// (0 / NO_ID / 0) and, in Debug, asserts every covered pixel received its payload.
+// (faceMap pre-filled with NO_ID, depthMap with 0). In Debug, LaunchCheckProjection then asserts
+// every covered pixel received its payload.
 void LaunchProjectMesh(
 	const Point3* vertices, const Point3u* faces, const uint32_t* faceIDs,
 	unsigned long long* projKey, float* depthMap, uint32_t* faceMap, uint16_t* baryMap,
 	const Camera& camera, uint32_t numFacesView, bool resolve);
 
-void LaunchResolveProjection(
+#ifdef _DEBUG
+void LaunchCheckProjection(
 	const uint32_t* faceIDs, const unsigned long long* projKey,
-	float* depthMap, uint32_t* faceMap, uint16_t* baryMap, int width, int height);
+	const float* depthMap, const uint32_t* faceMap, int width, int height);
+#endif
 
 // keepA/keepB are the per-pixel keep-masks of image A/B (one byte per pixel, non-zero = keep),
 // NULL if disabled -- see kernelImageMeshWarp
@@ -75,16 +77,16 @@ void LaunchImageMeshWarp(
 // downstream reads maskOut. zncc/conf are the parity diagnostic's optional outputs (NULL in
 // production); sumR/sumRZ are the device scalars ScoreMesh reduces into S, and blockSums is the
 // scratch this launch's two kernels hand them over in -- 2 floats per 16x16 block of the largest
-// view, so that S is a fixed sequence of additions instead of one atomicAdd race per block.
+// view, so that S is a fixed sequence of additions.
 void LaunchComputeWindowStats(
 	const uint8_t* mask, uint8_t* maskOut, float* dzncc, float* zncc, float* conf,
 	cudaSurfaceObject_t surfImageA, cudaSurfaceObject_t surfImageProj,
 	float* sumR, float* sumRZ, float* blockSums, float gateMeanDiff, float gateVarRatio, int width, int height);
 
 // the photometric accumulation, in two atomic-free halves so that the per-vertex sums are
-// bit-reproducible run to run (float addition is not associative, so the atomicAdd scatter these
-// replace gave a different gradient every run). First half: one thread per MESH face (not per
-// face of this view -- see kernelAccumulateFacePhoto), reducing that face's pixels into private
+// bit-reproducible run to run (float addition is not associative). First half: one thread per
+// MESH face (not per face of this view -- see kernelAccumulateFacePhoto), reducing that face's
+// pixels into private
 // per-face slots; every thread writes its slots, so no buffer needs clearing between
 // pair-directions. faceAcc holds 3 floats per face (one per corner), facePixels/faceFoot one;
 // faceFoot is only read where facePixels > 0. texImageB is the image B texture, sampled directly

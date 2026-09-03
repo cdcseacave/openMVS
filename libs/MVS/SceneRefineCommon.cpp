@@ -60,7 +60,6 @@ DEFVAR_OPTREFINE_int32(nIgnoreMaskLabel, "Ignore Mask Label", "label id used dur
 DEFVAR_OPTREFINE_int32(nImageGradient, "Image Gradient", "image derivative stencil (0 - 3x5 separable, 1 - central, 2 - Sobel, 3 - bilinear interpolant derivative)", "1")
 DEFVAR_OPTREFINE_float(fGateMeanDiff, "Gate Mean Diff", "reject a pixel pair whose local mean differs by more than this (0 - disabled)", "0.4")
 DEFVAR_OPTREFINE_float(fGateVarRatio, "Gate Var Ratio", "reject a pixel pair whose local variance ratio exceeds this (0 - disabled)", "8.0")
-DEFVAR_OPTREFINE_int32(nOptimizer, "Optimizer", "vertex position optimizer (0 - bold, 1 - fixed)", "0")
 
 } // namespace MVS
 
@@ -115,8 +114,6 @@ bool MVS::PrepareRefineImage(Image& imageData, const PlatformArr& platforms,
 
 // per-view keep-mask, called right after PrepareRefineImage -- see the doc comment in
 // SceneRefineCommon.h; leaves keepMask empty unless masking is enabled and the image has a mask
-// file to load (DepthEstimator::ImportKeepMask itself reports a missing file, but only at a level
-// below what apps/RefineMesh's own once-per-image entry check surfaces)
 void MVS::PrepareRefineImageMask(const Image& imageData, const cv::Size& size, BitMatrix& keepMask)
 {
 	keepMask.release();
@@ -146,6 +143,148 @@ void MVS::ComputeRefineImageGradient(const Image32F& gray, Image32F& gradX, Imag
 		break; }
 	}
 }
+/*----------------------------------------------------------------*/
+
+
+// M E S H   R E F I N E   S T E P /////////////////////////////////
+
+void MeshRefineStep::Reset(uint32_t numVertices, float stepInit)
+{
+	ASSERT(stepInit > 0 && stepInit <= StepMax);
+	step = stepInit;
+	median = -1.f; // derived at the scale's first evaluation
+	scoreRef = scoreRefAlt = FLT_MAX; // nothing to compare the first evaluation against: accepted
+	numAccepted = numRejected = numRejectedTotal = numStalled = numEvaluated = 0;
+	stepPrev.Resize(numVertices);
+	stepPrev.Memset(0);
+	scratch.Reserve(numVertices);
+	scratch.Empty();
+} // Reset
+
+void MeshRefineStep::TopologyChanged(uint32_t numVertices)
+{
+	// the vertex array was rebuilt: the undo buffer no longer indexes the same vertices, and the
+	// next S of either parity is measured on a different surface, so neither reference survives
+	scoreRef = scoreRefAlt = FLT_MAX;
+	stepPrev.Resize(numVertices);
+	stepPrev.Memset(0);
+	scratch.Reserve(numVertices);
+} // TopologyChanged
+
+// |g_v|/s_v of the median seen vertex: the scale that turns the raw photometric gradient into a
+// step in pixels, computed once per scale and then held (see the class comment)
+float MeshRefineStep::ComputeMedianScale(const Terms& terms)
+{
+	scratch.Empty();
+	for (uint32_t v=0; v<terms.numVertices; ++v) {
+		// a vertex a single pair-direction saw has no triangulation behind its gradient; it is
+		// left out of the normalizer for the same reason it is not moved
+		if (terms.photoCount[v] < 2)
+			continue;
+		ASSERT(terms.footprint[v] > 0); // guaranteed wherever photoCount > 0
+		scratch.Insert(norm(terms.photoGrad[v]/terms.photoCount[v])/terms.footprint[v]);
+	}
+	return scratch.IsEmpty() ? 0.f : scratch.GetMedian();
+} // ComputeMedianScale
+
+MeshRefineStep::Action MeshRefineStep::Evaluate(const Terms& terms, Mesh::VertexArr& vertices, Stats& stats)
+{
+	ASSERT(terms.numVertices == vertices.GetSize() && stepPrev.GetSize() == terms.numVertices);
+	ASSERT(terms.S >= 0 && terms.S <= 2);
+	// explicit-flow stability of the regularization term: one step of StepMax px must not
+	// amplify the Laplacian it is applied to
+	ASSERT(StepMax*terms.regularityWeight <= 1);
+	const unsigned index(numEvaluated++);
+
+	// the S this one has to beat: when each evaluation sees only one direction of every pair,
+	// only evaluations of the same parity measured the same pixels
+	float& reference = (terms.alternating && (index&1)) ? scoreRefAlt : scoreRef;
+	stats.S = terms.S;
+	stats.relChange = reference < FLT_MAX && reference > 0 ? (terms.S-reference)/reference : 0.f;
+	stats.medianPx = 0;
+	stats.numMoved = 0;
+	stats.accepted = !(terms.S > reference);
+
+	if (!stats.accepted) {
+		// REJECT: the step overshot. Undo half of it -- every vertex goes back to exactly
+		// v_prev + stepPrev/2 -- and leave the halved step behind so a second rejection undoes
+		// half of what is left. The reference, the accepted count and the stall count stay: a
+		// rejected evaluation never becomes the thing later ones are compared against.
+		for (uint32_t v=0; v<terms.numVertices; ++v) {
+			Grad& delta = stepPrev[v];
+			delta *= 0.5f;
+			vertices[v] -= delta;
+		}
+		step *= StepShrink;
+		++numRejected;
+		++numRejectedTotal;
+		stats.step = step;
+		stats.numAccepted = numAccepted;
+		stats.numRejected = numRejectedTotal;
+		return numRejected >= MaxRejects ? STOP : REJECT;
+	}
+
+	// ACCEPT: this S becomes the reference, and one that did not improve on the previous one by
+	// ProgressTol counts as a stall (the product form needs no guard against a perfect S of 0)
+	if (reference < FLT_MAX)
+		numStalled = reference-terms.S <= ProgressTol*reference ? numStalled+1 : 0;
+	reference = terms.S;
+	numRejected = 0;
+	++numAccepted;
+	step = MINF(step*StepGrow, StepMax);
+	stats.step = step;
+	stats.numAccepted = numAccepted;
+	stats.numRejected = numRejectedTotal;
+	// S has stopped moving: more evaluations of this scale buy nothing
+	if (numAccepted >= MinIters && numStalled >= Patience)
+		return STOP;
+
+	// the per-scale normalizer, derived at the first evaluation and then held
+	if (median < 0)
+		median = ComputeMedianScale(terms);
+
+	// move the vertices
+	scratch.Empty();
+	const float scale(Kappa*median);
+	for (uint32_t v=0; v<terms.numVertices; ++v) {
+		// photometric step in scene units, PROPORTIONAL to the raw gradient (see the class
+		// comment); a vertex a single pair-direction saw has no triangulation behind its gradient
+		// and moves on smoothing alone
+		const float footprint(terms.footprint[v]);
+		Grad photoDelta(Grad::ZERO);
+		if (terms.photoCount[v] >= 2 && scale > 0) {
+			ASSERT(footprint > 0);
+			photoDelta = terms.photoGrad[v]/(terms.photoCount[v]*scale);
+		}
+		const Grad regular(terms.bilap[v]*terms.rigidity - terms.lap[v]*(1.f-terms.rigidity));
+		const Grad delta((photoDelta + regular*terms.regularityWeight)*-step);
+		// contract on the producers (ScoreMesh on either backend): every term is finite; a
+		// non-finite delta would be "not applied" by the len > 0 test below and yet be stored
+		// for a later rejection's undo to subtract from a vertex that never moved
+		ASSERT(ISFINITE(delta));
+		stepPrev[v] = delta;
+		const float len(norm(delta));
+		if (len > 0) {
+			vertices[v] += delta;
+			++stats.numMoved;
+			// the stop rule is in pixels: a vertex with no footprint (unseen, moved on smoothing
+			// alone) contributes a position change but no pixel measurement
+			if (footprint > 0)
+				scratch.Insert(len/footprint);
+		}
+	}
+	stats.medianPx = scratch.IsEmpty() ? 0.f : scratch.GetMedian();
+	// Nobody is moving any more, measured in pixels: this scale has converged. The test is on
+	// what the median vertex WOULD move at a full stride, not on what it just moved: medianPx is
+	// proportional to eta, and eta is the bold driver's own state -- a rejection halves it while
+	// an acceptance only grows it by 1.1, so an accept/reject oscillation around a plateau
+	// ratchets eta down by 0.55 per cycle and would otherwise report convergence while the
+	// direction field is still large (measured on Truck: eta collapsed 0.605 -> 0.101 px over
+	// five evaluations and the scale stopped at 0.023 px with S improved by only 0.4%)
+	if (numAccepted >= MinIters && stats.medianPx*(StepMax/step) < StepStop)
+		return STOP;
+	return APPLY;
+} // Evaluate
 /*----------------------------------------------------------------*/
 
 

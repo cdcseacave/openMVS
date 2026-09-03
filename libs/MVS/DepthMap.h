@@ -534,12 +534,11 @@ struct MVS_API DepthEstimator {
 	}
 
 	static bool ImportIgnoreMask(const Image&, const cv::Size&, uint8_t nIgnoreMaskLabel, BitMatrix&, Image8U* =NULL);
-	// non-mutating counterpart of ImportIgnoreMask: always loads the mask file fresh into a local
-	// buffer instead of caching/resizing it in image0.mask, so unlike ImportIgnoreMask it is safe
-	// to call concurrently for the same Image, or repeatedly across scales, without racing on
-	// shared state. Returns the keep-mask (bit set = keep), nearest-neighbour resized to size, in
-	// bmask; leaves bmask untouched (empty == keep everything) and returns false if the image has
-	// no mask file to load.
+	// non-mutating counterpart of ImportIgnoreMask: resizes the mask (the one stored in the scene,
+	// else the file next to the image, loaded fresh) into a local buffer instead of image0.mask,
+	// so it is safe to call concurrently for the same Image or repeatedly across scales. Returns
+	// the keep-mask (bit set = keep), nearest-neighbour resized to size, in bmask; leaves bmask
+	// untouched (empty == keep everything) and returns false if there is no mask to load.
 	static bool ImportKeepMask(const Image& image0, const cv::Size& size, uint8_t nIgnoreMaskLabel, BitMatrix& bmask);
 	static void MapMatrix2ZigzagIdx(const cv::Size& size, DepthEstimator::MapRefArr& coords, const BitMatrix& mask, int rawStride=16);
 

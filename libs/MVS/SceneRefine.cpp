@@ -32,7 +32,6 @@
 #include "Common.h"
 #include "Scene.h"
 #include "SceneRefineCommon.h"
-#include "SceneRefineStep.h"
 #include <unordered_map>
 
 using namespace MVS;
@@ -240,7 +239,7 @@ public:
 		const Camera& cameraB, const View& viewB,
 		const PairMaps& maps, const PairGrads& grads, Real RegularizationScale, bool bExactDerivative,
 		TImage<Real>* debugSG = NULL); // CPU/CUDA parity diagnostic only: receives the per-pixel photometric scalar (see RefineDebug)
-	static float ComputeSmoothnessGradient1(
+	static void ComputeSmoothnessGradient1(
 		const Mesh::VertexArr& vertices, const Mesh::VertexVerticesArr& vertexVertices, const BoolArr& vertexBoundary,
 		GradArr& smoothGrad1, VIndex idxStart, VIndex idxEnd);
 	static void ComputeSmoothnessGradient2(
@@ -291,13 +290,9 @@ public:
 
 	Scene& scene; // the mesh vertices and faces
 
-	// gradient related
-	float scorePhoto;
-	float scoreSmooth;
-	// energy mode only: the two terms of E, accumulated in double alongside (never instead of) the
-	// float scores above, which stay bit-for-bit what the stepper has always seen. The energy is
-	// what a line search compares across a step of a fraction of a pixel, and a float running sum
-	// over ~1e5 pixel terms cannot resolve a change that small
+	// energy mode only: the two terms of E, accumulated in double: the energy is what a line
+	// search compares across a step of a fraction of a pixel, and a float running sum over ~1e5
+	// pixel terms cannot resolve a change that small
 	double energyPhoto; // Sum_pairs RegScale_p Sum_pixels r (1-ZNCC)
 	double energySmooth; // 1/2 Sum_{v interior} ||L(v)||^2
 	// energy mode only: multiplies the photometric energy and its gradient (1 = the raw sum); the
@@ -316,9 +311,8 @@ public:
 	GradArr smoothGradLtL; // energy mode only: L^T L v, the exact gradient of 1/2 Sum ||L v||^2
 
 	// reliability-weighted photo-consistency score (S = sumRZ/sumR): invariant to scene scale,
-	// contrast, resolution and pair count, unlike scorePhoto which is weighted by
-	// RegularizationScale and summed rather than averaged; sumR/sumRZ accumulate the reliability
-	// weight r and r*(1-ZNCC) over every pixel that contributes to a pair-direction's score
+	// contrast, resolution and pair count; sumR/sumRZ accumulate the reliability weight r and
+	// r*(1-ZNCC) over every pixel that contributes to a pair-direction's score
 	float sumR;
 	float sumRZ;
 	float S;
@@ -711,7 +705,6 @@ double MeshRefine::ScoreMesh(double* gradients)
 	// for each pair of images, compute a photo-consistency score
 	// between the reference image and the pixels of the second image
 	// projected in the reference image through the mesh surface
-	scorePhoto = 0;
 	energyPhoto = 0;
 	pairSumR.clear();
 	sumR = 0;
@@ -724,7 +717,7 @@ double MeshRefine::ScoreMesh(double* gradients)
 	footprint.MemsetValue(FLT_MAX); // sentinel, resolved to 0 for unseen vertices once every pair-direction has run
 	ASSERT(events.IsEmpty());
 	// bEnergyPhoto is false only in the energy mode's smoothness-alone evaluation: no
-	// pair-direction runs, so scorePhoto and photoGrad stay zero and every footprint falls to the
+	// pair-direction runs, so photoGrad stays zero and every footprint falls to the
 	// documented 0 below
 	if (bEnergyPhoto) {
 	FOREACHPTR(pPair, pairs) {
@@ -768,8 +761,7 @@ double MeshRefine::ScoreMesh(double* gradients)
 	} else
 		S = -1.f;
 
-	// loop through all vertices and compute the smoothing score
-	scoreSmooth = 0;
+	// loop through all vertices and compute the smoothing terms
 	energySmooth = 0;
 	const VIndex idxStep((vertices.GetSize()+(VIndex)threads.GetSize()-1)/(VIndex)threads.GetSize());
 	smoothGrad1.Resize(vertices.GetSize());
@@ -853,11 +845,8 @@ double MeshRefine::ScoreMesh(double* gradients)
 
 	// energy mode returns exactly the energy the gradient above belongs to:
 	//   E = Sum_pairs RegScale_p Sum_pixels r (1-ZNCC) + w * 1/2 Sum_{v interior} ||L(v)||^2
-	// the stepper mode keeps its descent-only score (the leading constants and the L1 smoothing
-	// sum below are not a potential for the gradient it fills, which the stepper never needs)
-	if (bEnergyMode)
-		return energyPhoto*energyPhotoScale + (double)weightRegularity*energySmooth;
-	return (nAlternatePair ? 0.2f : 0.1f)*scorePhoto + 0.01f*scoreSmooth;
+	// the energy, accumulated in energy mode only: the stepper reads S and the per-vertex terms
+	return energyPhoto*energyPhotoScale + (double)weightRegularity*energySmooth;
 }
 
 
@@ -906,18 +895,13 @@ T MeshRefine::ProjectVertex(const TP* P, const TX* X, T* x, TJ* jacobian)
 // check whether the nearest depth-map texel to the projected coordinate is not an occluder
 bool MeshRefine::IsDepthSimilar(const DepthMap& depthMap, const Point2f& pt, Depth z, const BitMatrix& keepMask)
 {
-	// the rounded nearest tap read below must sit inside the shared Refine::Border margin, which
-	// is the window half-size every per-pixel window statistic downstream also needs around it;
-	// the bound is one pixel tighter than the tap itself needs so that a pt anywhere in the
-	// accepted range rounds into the margin (same rule as CUDA's kernelImageMeshWarp). The old
-	// per-corner isInsideWithBorder<int,3> test independently skipped a failing corner instead of
-	// rejecting the whole block, so its effective margin was 1px short of the intended 3px.
-	// The range test is in FLOAT, before FLOOR2INT: the caller projects a point whose depth in the
-	// other camera can be arbitrarily small, so pt can be far outside any int range, and converting
-	// first then testing "ir.x >= cols-Border" overflows and wrongly passes. Border and the sizes
-	// being integers, this is exactly the floor-based test it replaces, and it also rejects a
-	// non-finite pt. The identical hole in the CUDA twin indexed a depth map 3.4 GB out of bounds;
-	// here it only read whatever heap followed the depth map, which is why it went unnoticed for years.
+	// the rounded nearest tap read below must sit inside the shared Refine::Border margin, the
+	// window half-size every per-pixel window statistic downstream needs around it; the bound is
+	// one pixel tighter than the tap itself needs so that a pt anywhere in the accepted range
+	// rounds into the margin (same rule as CUDA's kernelImageMeshWarp). The test is in FLOAT,
+	// before FLOOR2INT: a point whose depth in the other camera is arbitrarily small projects far
+	// outside any int range, and converting first would overflow and wrongly pass; this form also
+	// rejects a non-finite pt
 	if (!(pt.x >= (float)Refine::Border && pt.y >= (float)Refine::Border &&
 		  pt.x < (float)(depthMap.cols-Refine::Border-1) && pt.y < (float)(depthMap.rows-Refine::Border-1)))
 		return false;
@@ -1238,12 +1222,11 @@ void MeshRefine::ComputePhotometricGradient(
 
 // computes the discrete analog of the Laplacian using
 // the umbrella-operator on the first triangle ring at each point
-float MeshRefine::ComputeSmoothnessGradient1(
+void MeshRefine::ComputeSmoothnessGradient1(
 	const Mesh::VertexArr& vertices, const Mesh::VertexVerticesArr& vertexVertices, const BoolArr& vertexBoundary,
 	GradArr& smoothGrad1, VIndex idxStart, VIndex idxEnd)
 {
 	ASSERT(!vertices.IsEmpty() && vertices.GetSize() == vertexVertices.GetSize() && vertices.GetSize() == smoothGrad1.GetSize());
-	float score(0);
 	for (VIndex idxV=idxStart; idxV<idxEnd; ++idxV) {
 		Grad& grad = smoothGrad1[idxV];
 		grad = Grad::ZERO;
@@ -1259,11 +1242,8 @@ float MeshRefine::ComputeSmoothnessGradient1(
 		FOREACH(v, verts)
 			grad += Cast<Real>(vertices[verts[v]])-center;
 		grad = grad/(Real)verts.GetSize();
-		const float regularityScore((float)norm(grad));
-		ASSERT(ISFINITE(regularityScore));
-		score += regularityScore;
+		ASSERT(ISFINITE(grad));
 	}
-	return score;
 }
 // same as above, but used to compute level 2;
 // normalized as in "Stereo and Silhouette Fusion for 3D Object Modeling from Uncalibrated Images Under Circular Motion" C. Hernandez, 2004
@@ -1418,9 +1398,7 @@ void MeshRefine::ThProcessPair(uint32_t idxImageA, uint32_t idxImageB)
 	DEC_BitMatrix(mask);
 	DEC_Image(float, imageAB);
 	imageAB.create(imageA.size());
-	// invalid pixels stay 0: ComputeWindowStats masks them out of every window sum, so their
-	// value is never read -- unlike the old imageA.copyTo(imageAB), which made an unwarped pixel
-	// look like a perfect match to its own window
+	// invalid pixels stay 0: ComputeWindowStats masks them out of every window sum
 	imageAB.memset(0);
 	ImageMeshWarp(depthMapA, cameraA, depthMapB, cameraB, imageB, imageAB, mask, viewA.keepMask, viewB.keepMask);
 	// compute the masked window statistics, the rejection gates and the ZNCC derivative
@@ -1506,7 +1484,6 @@ void MeshRefine::ThProcessPair(uint32_t idxImageA, uint32_t idxImageB)
 	// raw (unscaled by RegularizationScale) reliability sums for S = sumRZ/sumR (ScoreMesh)
 	sumR += pairScore.sumR;
 	sumRZ += pairScore.sumRZ;
-	scorePhoto += (float)RegularizationScale*pairScore.sumRZ;
 	if (bEnergyMode) {
 		energyPhoto += (double)(RegularizationScale*energyWeight)*pairScore.energyRZ;
 		pairSumR[PairKey(idxImageA, idxImageB)] = pairScore.sumR;
@@ -1514,16 +1491,16 @@ void MeshRefine::ThProcessPair(uint32_t idxImageA, uint32_t idxImageB)
 }
 void MeshRefine::ThSmoothVertices1(VIndex idxStart, VIndex idxEnd)
 {
-	const float score(ComputeSmoothnessGradient1(vertices, vertexVertices, vertexBoundary, smoothGrad1, idxStart, idxEnd));
-	// energy mode scores the same residuals as the thin-plate energy 1/2 Sum ||L(v)||^2 that
-	// L^T L v is the exact gradient of, next to the legacy L1 sum of their magnitudes
+	ComputeSmoothnessGradient1(vertices, vertexVertices, vertexBoundary, smoothGrad1, idxStart, idxEnd);
+	// energy mode scores the thin-plate energy 1/2 Sum ||L(v)||^2 that L^T L v is the exact
+	// gradient of
+	if (!bEnergyMode)
+		return;
 	double energy(0);
-	if (bEnergyMode)
-		for (VIndex idxV=idxStart; idxV<idxEnd; ++idxV)
-			if (!vertexBoundary[idxV])
-				energy += (double)normSq(smoothGrad1[idxV]);
+	for (VIndex idxV=idxStart; idxV<idxEnd; ++idxV)
+		if (!vertexBoundary[idxV])
+			energy += (double)normSq(smoothGrad1[idxV]);
 	Lock l(cs);
-	scoreSmooth += score;
 	energySmooth += 0.5*energy;
 }
 void MeshRefine::ThSmoothVertices2(VIndex idxStart, VIndex idxEnd)
@@ -1547,7 +1524,9 @@ void MeshRefine::ThSmoothVertices2(VIndex idxStart, VIndex idxEnd)
 #undef CHECK
 #pragma push_macro("ERROR")
 #undef ERROR
+#ifndef GLOG_NO_ABBREVIATED_SEVERITIES
 #define GLOG_NO_ABBREVIATED_SEVERITIES
+#endif
 #include <ceres/ceres.h>
 #include <ceres/cost_function.h>
 #include <ceres/dynamic_autodiff_cost_function.h>
@@ -1563,15 +1542,12 @@ namespace ceres {
 class MeshProblem : public FirstOrderFunction, public IterationCallback
 {
 public:
-	// The parameters are the vertex coordinates in scene units. A pixel-unit parameterization
-	// (coordinates over the median footprint) was tried and measured worse: Ceres's first line
-	// search moves the largest-gradient coordinate by one parameter unit, which in pixel units is
-	// one pixel for one outlier vertex and next to nothing for the bulk of the mesh, so the first
-	// curvature pair L-BFGS builds from it is noise and the Wolfe zoom fails on the next iteration. In
-	// scene units the largest gradient is below one for any scene whose footprint is a fraction
-	// of its unit, so the first step is the full gradient -- under the stepper-scaled energy
-	// about half a pixel for the median vertex, the stepper's own
-	// first step -- and the line search contracts from there
+	// the parameters are the vertex coordinates in scene units, deliberately not pixels: Ceres's
+	// first line search moves the largest-gradient coordinate by one parameter unit, which in
+	// scene units is below a pixel for the whole mesh (about half a pixel for the median vertex
+	// under the stepper-scaled energy) while in pixel units it is a full pixel for one outlier
+	// vertex and nothing for the rest, a first curvature pair L-BFGS cannot use (measured, see
+	// the design document)
 	MeshProblem(MeshRefine& _refine) : refine(_refine), params(refine.vertices.GetSize()*3), bestCost(DBL_MAX) {
 		ASSERT(refine.bEnergyMode);
 		// init params
@@ -1652,66 +1628,43 @@ protected:
 // optimize mesh using photo-consistency
 // fThPlanarVertex - threshold used to remove vertices on planar patches, as a fraction of the
 //   vertex depth (its footprint times the median view focal length; 0 - disable)
+// bUseCeres - minimize the exact energy with Ceres instead of the bold-driver stepper (slower and
+//   no better, kept as the reference arm; see the design document)
 bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews,
 					   float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize, unsigned nMaxFaceArea,
 					   unsigned nScales, float fScaleStep,
-					   unsigned nAlternatePair, float fRegularityWeight, float fRatioRigidityElasticity, float fGradientStep, float fThPlanarVertex)
+					   unsigned nAlternatePair, float fRegularityWeight, float fRatioRigidityElasticity, float fThPlanarVertex, bool bUseCeres)
 {
-	// "--gradient-step N.s" means N iterations per scale and s*10 pixels of initial step (0 selects
-	// the Ceres arm where it is built in). The stepper measures its step in pixels and never lets it
-	// exceed MeshRefineStep::StepMax, so the fractional part has a real valid range; a value outside
-	// it is a user error and is reported here, at the entry point every caller goes through, rather
-	// than reaching the optimizer as a step nothing would honour
-	if (fGradientStep == 0) {
-		// 0 selects the Ceres optimizer; without it compiled in, 0 used to fall through to the
-		// stepper with a zero initial step -- 3 accepted evaluations that move nothing, then a
-		// "converged" STOP: a silent no-op with a zero exit code. Refuse it loudly instead.
+	// the externally controlled knobs are validated here, at the entry point every caller goes
+	// through: their ASSERT twins inside the stepper are contracts, not input checks
+	if (bUseCeres) {
 		#ifndef MESHOPT_CERES
-		VERBOSE("error: --gradient-step 0 selects the Ceres optimizer, which this build does not include");
+		VERBOSE("error: this build does not include the Ceres optimizer");
 		return false;
 		#else
 		// the Ceres arm minimizes one explicit energy
 		//   E = Sum_pairs RegScale_p Sum_pixels r (1-ZNCC) + w/2 Sum_{v interior} ||L(v)||^2
-		// and hands the line search its exact gradient. fThPlanarVertex below replaces the vertex
-		// set the gradient is computed over, which is not something this arm can return
+		// and hands the line search its exact gradient: it can neither change the vertex set under
+		// the solver (its parameter count is fixed for the whole solve) nor the functional between
+		// evaluations (an alternating pair direction), and --rigidity-elasticity-ratio has no
+		// meaning in its pure thin-plate term
 		if (fThPlanarVertex > 0) {
-			VERBOSE("error: --gradient-step 0 (Ceres) cannot remove planar vertices: the solver's"
-				" parameter count is fixed for the whole solve");
+			VERBOSE("error: the Ceres optimizer cannot remove planar vertices (--planar-vertex-ratio must be 0)");
 			return false;
 		}
-		// the arm minimizes ONE energy: alternating the pair direction between evaluations would
-		// hand the line search a different functional every iteration
 		if (nAlternatePair != 0) {
-			VERBOSE("error: --gradient-step 0 (Ceres) scores both directions of every pair: --alternate-pair must be 0");
+			VERBOSE("error: the Ceres optimizer scores both directions of every pair (--alternate-pair must be 0)");
 			return false;
 		}
-		// --ratio-rigidity-elasticity has no meaning in this arm: its energy is the pure thin-plate
-		// term, not the rigidity/elasticity blend the stepper's descent direction mixes
 		#endif
-	} else {
-		const float stepInit((fGradientStep-(float)FLOOR2INT(fGradientStep))*10.f);
-		if (stepInit <= 0 || stepInit > MeshRefineStep::StepMax) {
-			VERBOSE("error: --gradient-step %g asks for an initial step of %g px, outside (0, %g]:"
-				" pass N.s with a fractional part in (0, %g], for example 45.05 = 45 iterations at 0.5 px",
-				fGradientStep, stepInit, MeshRefineStep::StepMax, MeshRefineStep::StepMax*0.1f);
-			return false;
-		}
 	}
-	// the other externally controlled knobs, validated for the same reason and for both arms: the
-	// weight scales the same regularization gradient whichever optimizer consumes it, and their
-	// ASSERT twins inside the stepper are contracts, not input checks, and compile out in Release
 	// the upper bound is the stepper's explicit-flow stability limit; the line-search arm has no
-	// such bound (its weight balances two terms of one energy, and any non-negative value is a
-	// valid balance), and its consistent value is larger than the stepper's, see the Ceres block
-	if (!(fRegularityWeight >= 0) || (fGradientStep != 0 && fRegularityWeight*MeshRefineStep::StepMax > 1.f)) {
+	// such bound, its weight balances two terms of one energy and any non-negative value is valid
+	if (!(fRegularityWeight >= 0) || (!bUseCeres && fRegularityWeight*MeshRefineStep::StepMax > 1.f)) {
 		VERBOSE("error: --regularity-weight %g is outside [0, %g]: one full step of the"
 			" regularization term must not amplify the Laplacian it is applied to"
 			" (explicit-flow stability)",
 			fRegularityWeight, 1.f/MeshRefineStep::StepMax);
-		return false;
-	}
-	if (OPTREFINE::nOptimizer != 0 && OPTREFINE::nOptimizer != 1) {
-		VERBOSE("error: optimizer %d is not implemented (0 - bold, 1 - fixed)", OPTREFINE::nOptimizer);
 		return false;
 	}
 	// an unknown stencil id used to fall silently to the default one, so an A/B that asked for a
@@ -1757,14 +1710,9 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 			mesh.Save(MAKE_PATH(String::FormatString("MeshRefine%u.ply", nScales-nScale-1)));
 		#endif
 
-		// per-scale iteration budget of the stepper: the iteration count of "--gradient-step N.s"
-		// thinned out on the finer (more expensive) scales
-		const int N(FLOOR2INT(fGradientStep));
-		const int cap(MAXF(N/(int)(nScale+1),8));
-
 		// minimize
 		#ifdef MESHOPT_CERES
-		if (fGradientStep == 0) {
+		if (bUseCeres) {
 			// DefineProblem: energy mode, so the cost and the gradient are the same functional
 			refine.bEnergyMode = true;
 			refine.bEnergyPhoto = true;
@@ -1812,29 +1760,18 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 			// progress lines would go to stdout through glog, a second sink nobody reads
 			options.logging_type = ceres::LoggingType::SILENT;
 			options.minimizer_progress_to_stdout = false;
-			// Ceres 2.2 defaults, kept after a sweep of every direction and line search the solver
-			// offers on this energy (L-BFGS at rank 5/20/50, all three nonlinear conjugate-gradient
-			// updates, steepest descent, Armijo where it is legal, the Oren-Luenberger scaling, and
-			// function tolerances 1e-3/1e-4/1e-5) over three ground-truth scenes: no configuration
-			// wins on more than one of them, and the differences are the size of this arm's own
-			// run-to-run spread. Fletcher-Reeves looked like a winner on two scenes (+0.008 F1 over
-			// L-BFGS on Herz-Jesu-P8) and lost 0.006 on the third, which is why the sweep needed a
-			// third scene. What does not change with the configuration: this arm reaches a lower
-			// energy than the stepper everywhere and never a better F1.
-			// L-BFGS rank 20; Wolfe with cubic interpolation (mandatory with L-BFGS) and 20
-			// step-size iterations -- exhausting them returns an Armijo-only point and skips that
-			// iteration's secant update, so a smaller budget costs curvature, not just robustness;
-			// no Oren-Luenberger scaling of the initial inverse Hessian, which Ceres documents as
-			// harmful where the sensitivity to different parameters varies widely, as it does here
-			// (a vertex seen by twenty textured pair-directions next to one carrying the smoothness
-			// term alone)
+			// the Ceres 2.2 defaults: L-BFGS (rank 20, no Oren-Luenberger scaling, which Ceres
+			// documents as harmful where the parameter sensitivities vary as widely as they do
+			// here) with the Wolfe line search. A sweep of every direction and line search the
+			// solver offers, the L-BFGS rank, the scaling and the function tolerance found no
+			// configuration that wins on more than one of three ground-truth scenes (design
+			// document, the Ceres section)
 			options.line_search_direction_type = ceres::LBFGS;
 			options.line_search_type = ceres::WOLFE;
-			// this arm has no "N" (0 selected it): its stopping rule is the relative function
-			// tolerance below, and the cap is a safety net, not a budget -- it has never been
-			// reached on any measured scene (the longest scale ran 88 iterations), and an L-BFGS
-			// iteration costs one energy evaluation whenever the unit step satisfies the Wolfe
-			// conditions, which it does on most of them
+			// the stopping rule is the relative function tolerance below; the cap is a safety net,
+			// never reached on any measured scene (the longest scale ran 88 iterations), and an
+			// L-BFGS iteration costs one energy evaluation whenever the unit step satisfies the
+			// Wolfe conditions, which it does on most of them
 			options.max_num_iterations = 100;
 			options.function_tolerance = 1e-4;
 			// both are absolute thresholds on quantities carrying the scene's own units (the
@@ -1853,6 +1790,7 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 			switch (summary.termination_type) {
 			case ceres::TerminationType::NO_CONVERGENCE:
 				DEBUG_EXTRA("CERES: maximum number of iterations reached!");
+				[[fallthrough]];
 			case ceres::TerminationType::CONVERGENCE:
 			case ceres::TerminationType::USER_SUCCESS:
 				problemData->ApplyParams();
@@ -1873,9 +1811,8 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 		} else
 		#endif // MESHOPT_CERES
 		{
-			// pixel-unit stepper (SceneRefineStep.h): fGradientStep is N.s, N the same per-scale
-			// iteration budget as before, s*10 the initial step in pixels
-			const float eta0((fGradientStep-(float)N)*10.f);
+			// pixel-unit bold driver (MeshRefineStep, SceneRefineCommon.h)
+			const int cap((int)MeshRefineStep::Budget(nScale));
 			const bool bAlternating(nAlternatePair == 1);
 			const bool bPlanarHook(fThPlanarVertex > 0);
 			// the combined gradient is a full extra pass over the vertices, only the planar hook
@@ -1896,12 +1833,9 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 			}
 
 			MeshRefineStep stepper;
-			stepper.Reset(refine.vertices.GetSize(), eta0, OPTREFINE::nOptimizer == 0);
+			stepper.Reset(refine.vertices.GetSize());
 
 			Eigen::Matrix<double,Eigen::Dynamic,3,Eigen::RowMajor> gradients(refine.vertices.GetSize(),3);
-			// mirrors of the stepper's own accept-only S references, kept only to print the
-			// relative-change column below (the stepper exposes no getter for them)
-			float logScoreRef(FLT_MAX), logScoreRefAlt(FLT_MAX);
 			// set when an evaluation finds the scene cannot be scored at all (S < 0, see
 			// ScoreMesh): both phase loops stop and the whole refinement fails
 			bool bScoreFailed(false);
@@ -1911,7 +1845,6 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 			// the same body serve both phases below
 			const auto RunEvaluation = [&](Real rho, bool allowPlanarHook, int idx, int phaseCap) -> MeshRefineStep::Action {
 				refine.iteration = stepper.GetNumEvaluated();
-				refine.nAlternatePair = nAlternatePair;
 				refine.ratioRigidityElasticity = rho;
 				const unsigned numAcceptedSoFar(stepper.GetNumAccepted());
 				const bool bAdaptMesh(allowPlanarHook && numAcceptedSoFar >= 4 && (numAcceptedSoFar-4)%3 == 0 && phaseCap-idx > 5);
@@ -1936,16 +1869,8 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 				terms.numVertices = refine.vertices.GetSize();
 				terms.alternating = bAlternating;
 
-				const unsigned evalIdx(stepper.GetNumEvaluated()); // 0-based, before Evaluate() consumes it
-				float& logReference = (bAlternating && (evalIdx&1)) ? logScoreRefAlt : logScoreRef;
-				const float relChange(logReference < FLT_MAX ? (terms.S-logReference)/logReference : 0.f);
-				const unsigned prevAccepted(stepper.GetNumAccepted());
-
 				MeshRefineStep::Stats stats;
 				const MeshRefineStep::Action action(stepper.Evaluate(terms, refine.vertices, stats));
-				const bool accepted(stepper.GetNumAccepted() > prevAccepted);
-				if (accepted)
-					logReference = terms.S;
 
 				// remove planar vertices (small gradient and almost on the center of their
 				// surrounding patch) AFTER the step was applied: the gradient and smoothing terms
@@ -1997,9 +1922,8 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 						// removal can drop further vertices the patched surface no longer
 						// references, so the count reported below is the change in vertices
 						const VIndex numVertsBefore(refine.vertices.GetSize());
-						mesh.RemoveVerticesAndFill(vertexRemove);
+						mesh.RemoveVerticesAndFill(vertexRemove); // rebuilds the adjacency and boundary lists it found
 						numVertsRemoved = numVertsBefore-refine.vertices.GetSize();
-						refine.ListVertexFacesPost();
 						// the surface changed under the stepper: its undo buffer and its S no
 						// longer describe the same vertices, so the next evaluation cannot be
 						// rejected against the S just measured
@@ -2008,7 +1932,7 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 				}
 
 				DEBUG_EXTRA("\t%2d. S: %.5f (%+.2e)\tstep: %.3fpx\tmed: %.3fpx\tv: %5u\t%s",
-					(int)stepper.GetNumEvaluated(), stats.S, relChange, stats.step, stats.medianPx, numVertsRemoved, accepted ? "acc" : "rej");
+					(int)stepper.GetNumEvaluated(), stats.S, stats.relChange, stats.step, stats.medianPx, numVertsRemoved, stats.accepted ? "acc" : "rej");
 				return action;
 			};
 
@@ -2028,13 +1952,9 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 				return false;
 			}
 
-			// Phase B: pure elasticity, planar hook off. The legacy 70/30 iteration split is
-			// preserved against phase A's ACCEPTED count rather than its raw iteration budget,
-			// since a rejected evaluation consumes budget without buying any convergence; step and
-			// the S references carry over unchanged, only the stop budget is given a fresh start
-			const unsigned nA(stepper.GetNumAccepted());
-			const int capB(MAXF(3, 3*(int)nA/7));
-			stepper.ResetStall();
+			// Phase B: pure elasticity, planar hook off; eta and the S references carry over, the
+			// budget is the stepper's
+			const int capB((int)stepper.BeginSecondPhase());
 			{
 				Util::Progress progress(_T("Processed iterations"), capB);
 				for (int idx=0; idx<capB; ++idx) {
@@ -2110,10 +2030,8 @@ bool Scene::RefineMeshEnergyProbe(unsigned nResolutionLevel, unsigned nMinResolu
 	};
 	AABB3f aabb(mesh.vertices.Begin(), numVertices);
 	const Point3f center(aabb.GetCenter());
-	Point3f extent(aabb.GetSize()*0.5f);
-	for (int i=0; i<3; ++i)
-		if (!(extent[i] > 0))
-			extent[i] = 1.f; // a degenerate axis contributes a constant, not a division by zero
+	const Point3f extent(aabb.GetSize()*0.5f);
+	ASSERT(extent.x > 0 && extent.y > 0); // the field below is parameterized over x and y
 	Real phase[6], freq[6];
 	for (int i=0; i<6; ++i) {
 		phase[i] = NextUniform()*Real(2*M_PI);

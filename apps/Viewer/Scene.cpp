@@ -242,7 +242,7 @@ public:
 		return layer->scene.RefineMesh(options.resolutionLevel, options.minResolution, options.maxViews,
 		                               options.decimateMesh, options.closeHoles, options.ensureEdgeSize, options.maxFaceArea,
 		                               options.scales, options.scaleStep, options.alternatePair, options.regularityWeight,
-		                               options.rigidityElasticityRatio, options.gradientStep, options.planarVertexRatio);
+		                               options.rigidityElasticityRatio, options.planarVertexRatio);
 	}
 	EVTWorkflowRefineMesh(Scene* _pScene, uint32_t _layerID, const Scene::RefineMeshWorkflowOptions& _options)
 		: EventWorkflow(_pScene, _layerID), options(_options) {}

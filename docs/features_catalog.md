@@ -606,14 +606,14 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 
 - **Files:** `libs/MVS/SceneRefine.cpp`
 - **Algorithms:**
-  - Multi-resolution coarse-to-fine: `nScales` (3) levels, `fScaleStep` (0.5) per level
+  - Multi-resolution coarse-to-fine: `nScales` (2) levels, `fScaleStep` (0.5) per level
   - `SubdivideMesh()`: `nMaxFaceArea`, `fDecimateMesh`, `nCloseHoles`, `nEnsureEdgeSize`
-  - `ScoreMesh()`: ZNCC photo-consistency + Laplacian regularization weighted by `fRegularityWeight`
-  - Gradient descent: 75 iterations per scale with `gstep` (0.4)
-  - `fRatioRigidityElasticity`: rigid vs elastic deformation ratio
-  - Ceres `GradientProblemSolver` variant via `MESHOPT_CERES`
-  - `fThPlanarVertex`: adaptive removal of planar low-gradient vertices after 40% of iterations
-- **Configuration:** `nResolutionLevel`, `fDecimateMesh`, `nCloseHoles`, `fRegularityWeight`, `fGradientStep`, `nScales`, `fScaleStep`, `nAlternatePair`
+  - `ScoreMesh()`: masked ZNCC photo-consistency + Laplacian regularization weighted by `fRegularityWeight`
+  - `MeshRefineStep` (`SceneRefineCommon.h`): pixel-unit bold-driver descent shared with the CUDA backend, stops on convergence
+  - `fRatioRigidityElasticity`: rigid vs elastic deformation ratio, two-phase per-scale schedule
+  - Ceres `GradientProblemSolver` arm via `bUseCeres` (`--use-ceres`, opt-in)
+  - `fThPlanarVertex`: removal of planar low-gradient vertices between evaluations (CPU only)
+- **Configuration:** `nResolutionLevel`, `fDecimateMesh`, `nCloseHoles`, `fRegularityWeight`, `nScales`, `fScaleStep`, `nAlternatePair`, `fThPlanarVertex`, `bUseCeres`
 - **GPU Support:** No
 - **Threading:** OpenMP for parallel face projection scoring
 - **Dependencies:** OpenCV, Ceres Solver (optional), Common

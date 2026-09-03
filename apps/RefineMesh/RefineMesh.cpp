@@ -64,7 +64,7 @@ float fRegularityWeight;
 float fRatioRigidityElasticity;
 unsigned nMaxFaceArea;
 float fPlanarVertexRatio;
-float fGradientStep;
+bool bUseCeres;
 unsigned nArchiveType;
 int nProcessPriority;
 unsigned nMaxThreads;
@@ -135,7 +135,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("alternate-pair", boost::program_options::value(&OPT::nAlternatePair)->default_value(0), "refine mesh using an image pair alternatively as reference (0 - both, 1 - alternate, 2 - only left, 3 - only right)")
 		("regularity-weight", boost::program_options::value(&OPT::fRegularityWeight)->default_value(0.2f), "scalar regularity weight to balance between photo-consistency and regularization terms during mesh optimization")
 		("rigidity-elasticity-ratio", boost::program_options::value(&OPT::fRatioRigidityElasticity)->default_value(0.9f), "scalar ratio used to compute the regularity gradient as a combination of rigidity and elasticity")
-		("gradient-step", boost::program_options::value(&OPT::fGradientStep)->default_value(45.05f), "max iterations and initial step in pixels (N.s: N iterations, sx10 px; 0 - Ceres)")
+		("use-ceres", boost::program_options::value(&OPT::bUseCeres)->default_value(false), "minimize the refinement energy with the Ceres solver instead of the gradient descent (CPU only)")
 		("planar-vertex-ratio", boost::program_options::value(&OPT::fPlanarVertexRatio)->default_value(0.f), "threshold used to remove vertices on planar patches (0 - disabled)")
 		("refine-config-file", boost::program_options::value<std::string>(&OPT::strRefineConfigFileName), "optional configuration file for the refiner (overwritten by the command line options)")
 		;
@@ -239,9 +239,9 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	}
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2)
-		DEBUG_EXTRA("OPTREFINE: ignoreMaskLabel=%d imageGradient=%d gateMeanDiff=%g gateVarRatio=%g optimizer=%d",
+		DEBUG_EXTRA("OPTREFINE: ignoreMaskLabel=%d imageGradient=%d gateMeanDiff=%g gateVarRatio=%g",
 			OPTREFINE::nIgnoreMaskLabel, OPTREFINE::nImageGradient,
-			OPTREFINE::fGateMeanDiff, OPTREFINE::fGateVarRatio, OPTREFINE::nOptimizer);
+			OPTREFINE::fGateMeanDiff, OPTREFINE::fGateVarRatio);
 	#endif
 
 	MVS::Initialize(APPNAME, OPT::nMaxThreads, OPT::nProcessPriority);
@@ -311,7 +311,8 @@ int main(int argc, LPCTSTR* argv)
 	TD_TIMER_START();
 	#ifdef _USE_CUDA
 	bool bRefined(false);
-	if (!SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs)) {
+	// the Ceres optimizer exists only on the CPU path
+	if (!OPT::bUseCeres && !SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs)) {
 		// refinement mutates the mesh in place (decimation, subdivision, moved vertices), so a
 		// CUDA attempt that dies mid-run leaves neither the input nor a valid output behind;
 		// snapshot the input so the CPU fallback starts from what the user supplied instead of
@@ -325,7 +326,6 @@ int main(int argc, LPCTSTR* argv)
 										OPT::nAlternatePair,
 										OPT::fRegularityWeight,
 										OPT::fRatioRigidityElasticity,
-										OPT::fGradientStep,
 										OPT::fPlanarVertexRatio);
 		// announce the fallback: it used to be silent, so a log reader could not tell a CPU
 		// rerun after a failed CUDA attempt from a run where the CPU path was chosen outright
@@ -345,8 +345,8 @@ int main(int argc, LPCTSTR* argv)
 						  OPT::nAlternatePair,
 						  OPT::fRegularityWeight,
 						  OPT::fRatioRigidityElasticity,
-						  OPT::fGradientStep,
-						  OPT::fPlanarVertexRatio))
+						  OPT::fPlanarVertexRatio,
+						  OPT::bUseCeres))
 		return EXIT_FAILURE;
 	VERBOSE("Mesh refinement completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 

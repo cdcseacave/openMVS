@@ -306,7 +306,7 @@ class StepsStore:
              ["scene_dense.mvs", "-p", "scene_dense.ply", "-w", "\"%mvs_dir%\""]],
             ["Refine the mesh",              # 20
              os.path.join(OPENMVS_BIN, "RefineMesh"),
-             ["scene_dense.mvs", "-m", "scene_dense_mesh.ply", "-o", "scene_dense_mesh_refine.mvs", "--scales", "1", "--gradient-step", "25.05", "-w", "\"%mvs_dir%\""]],
+             ["scene_dense.mvs", "-m", "scene_dense_mesh.ply", "-o", "scene_dense_mesh_refine.mvs", "--scales", "1", "-w", "\"%mvs_dir%\""]],
             ["Texture the mesh",             # 21
              os.path.join(OPENMVS_BIN, "TextureMesh"),
              ["scene_dense.mvs", "-m", "scene_dense_mesh_refine.ply", "--decimate", "0.5", "-w", "\"%mvs_dir%\""]],
