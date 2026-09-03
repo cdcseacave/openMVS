@@ -342,7 +342,9 @@ struct RoMa2Onnx::Impl
 	OrtTensor facetsHost;        // allocated lazily (Describe): no production caller reads value_facets
 	                             // back any more, only the parity test's independent check of that tensor
 	OrtTensor retrievalHost;     // every Describe() call binds `retrieval` here; ORT copies it out
-	OrtTensor dummyImage;        // the coarse graph's dead img_A/img_B input, when the manifest lists them
+	OrtTensor dummyImage;        // the coarse graph's dead img_A/img_B input, allocated when the loaded
+	                             // match graph's own input metadata still declares them (EnsureMatch's
+	                             // match.InputShape("img_A") check, not the manifest's io.match_coarse)
 	OrtTensor warpHost;          // host output: ORT copies the A->B warp D2H inside Run
 	OrtTensor confidenceHost;    // host output: the raw A->B overlap logit
 	OrtTensor warpBAHost;        // host output: the B->A warp, same Run, same correlation volume

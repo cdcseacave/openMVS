@@ -215,6 +215,12 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::ROMA2ComplementaryDrawTest())
 				return false;
+			if (!SFM::ROMA2VerdictTest())
+				return false;
+			if (!SFM::ROMA2GuidedMatchTest())
+				return false;
+			if (!SFM::ROMA2AssemblyTest())
+				return false;
 			if (!SFM::DenseKeypointBoundaryTest())
 				return false;
 			if (!SFM::SupplementEvidenceIsolationTest())

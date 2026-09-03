@@ -860,7 +860,10 @@ void SFM::StorePairROMA2(Scene& scene, std::unordered_map<PairIdx::PairIndex, II
 	IIndex idxPair;
 	if (it != pairIndexMap.end()) {
 		// a same-key pair a previous Match() left: this pass judged the pair again on its warp
-		// alone, so its verdict replaces that pair whole rather than merging two sets of evidence
+		// alone, so its verdict replaces that pair whole rather than merging two sets of evidence.
+		// Unreached today -- MatchPairsROMA2 skips every candidate already in pairIndexMap -- and
+		// safe only as long as that holds: the incumbent must carry no dense segment of its own, or
+		// this move would orphan the keypoints its dense fill already appended to both images.
 		idxPair = it->second;
 		scene.pairs[idxPair] = std::move(pair);
 	} else {
@@ -922,8 +925,14 @@ unsigned SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, cons
 		pairs.push_back(p);
 	}
 	if (pairs.empty()) {
-		DEBUG("ROMA2 one pass: %u candidates, 0 judged, 0 admitted, 0 stored, 0 dense-only; %u skipped (already stored, or without camera or descriptors)",
-			candidatePairs.size(), numSkipped);
+		// same field list as the summary line below (the measurement tools parse both the same way):
+		// nothing past this point ran, so every field the warp pass and the store would have filled is 0
+		DEBUG("ROMA2 one pass: %u candidates, %u judged, %u admitted, %u stored, %u dense-only; "
+			"%u slots, %u loads, %u reloads; %u skipped, %u failed loads, %u failed matches, %u dense matches (%s)",
+			candidatePairs.size(), 0u, 0u, 0u, 0u,
+			0u, 0u, 0u,
+			numSkipped, 0u, 0u, 0u,
+			TD_TIMER_GET_FMT().c_str());
 		return 0;
 	}
 
@@ -941,7 +950,11 @@ unsigned SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, cons
 	WarpPassStats stats;
 	if (!ForEachWarpROMA2(pairsMatcher, roma2, pairs, config.slotBudget, _T("Dense match image pairs"),
 		[&](size_t p, const PairIdx& pairIdx, PairWarps& warps, unsigned threadIdx) {
-			TD_TIMER_START();
+			// this pair's own clock, named apart from the pass's TD_TIMER_STARTD() one (a nested
+			// TD_TIMER_START() would redeclare that timer's local) and wound up only when the record
+			// below will actually print, so a run below verbosity 3 never pays for it
+			const bool bTimePair = VERBOSITY_LEVEL > 2;
+			const SEACAVE::Timer::SysType pairTimeStart = bTimePair ? SEACAVE::Timer::GetSysTime() : 0;
 			const Image& imgA = scene.images[pairIdx.i];
 			const Image& imgB = scene.images[pairIdx.j];
 			ImagePair pair(pairIdx.i, pairIdx.j);
@@ -974,7 +987,8 @@ unsigned SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, cons
 			DEBUG_ULTIMATE("ROMA2 pair %u-%u: conf %.4f %.4f inl %.4f %.4f ADMIT guided %u sparse %u dense %u %ums",
 				pairIdx.i, pairIdx.j, verdict.confidentAreaA, verdict.confidentAreaB,
 				verdict.inlierAreaA, verdict.inlierAreaB, (unsigned)guided.size(), numSparse,
-				(unsigned)result.dense.pointsA.size(), (unsigned)TD_TIMER_GET());
+				(unsigned)result.dense.pointsA.size(), bTimePair ?
+				(unsigned)SEACAVE::Timer::SysTime2TimeMs(SEACAVE::Timer::GetSysTime() - pairTimeStart) : 0u);
 		}, stats))
 		return 0;
 

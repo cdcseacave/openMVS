@@ -55,6 +55,27 @@ bool ROMA2CoverageSampleTest();
 // deterministic
 bool ROMA2ComplementaryDrawTest();
 
+// The pair verdict (JudgePairROMA2) on the exact bidirectional warp of two pinhole cameras looking
+// at a non-planar surface: a warp confident over ~30% of both frames is admitted with both inlier
+// areas measuring that share, a warp confident over 30% of A whose B side maps into A over only 3%
+// is rejected by the min side alone, a smooth warp unrelated to the cameras (a homography of A's
+// grid) is rejected however exactly one geometry explains its own side, and minOverlap 0 admits
+// the first two
+bool ROMA2VerdictTest();
+
+// Guided sparse matching (MatchFeaturesGuided): the ratio taken against the best descriptor OUTSIDE
+// the search disc rejects a keypoint whose lookalike sits elsewhere in the other image, accepts one
+// whose only close descriptor is inside the disc, and is no longer defeated by a scale duplicate
+// inside it; the same inputs give the same matches, in the same order
+bool ROMA2GuidedMatchTest();
+
+// Pair assembly and storage (AssemblePairROMA2, StorePairROMA2): the union of the guided matches
+// and the dense fill is fitted once and splits into the pair's sparse and dense segments under one
+// relative pose, a pair with no guided match is still assembled as a dense-only pair, a fill too
+// small to fit leaves the verdict's geometry untouched, and the store appends the dense keypoints
+// past each image's described prefix with reproducible indices
+bool ROMA2AssemblyTest();
+
 // The described/dense keypoint boundary: an image whose keypoints.size() > descriptors.rows keeps
 // its stored described-keypoint count across a descriptor release and an .sfm round-trip, the
 // index tests read it, and PairsMatcher::FilterRedundantKeypoints moves it through the same remap

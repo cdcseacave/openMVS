@@ -1700,6 +1700,669 @@ bool ROMA2ComplementaryDrawTest()
 	return true;
 }
 
+// The two-camera fixture the verdict and the assembly tests below share: a 640x480 pinhole pair of
+// focal 400, the second camera offset along X and Y and not rotated, looking at a NON-PLANAR
+// surface -- a wedge of two planes meeting at the world plane X = 0 and receding to either side of
+// it. Non-planar is what makes the fixture a test rather than a tautology: a single plane is
+// explained exactly by a whole family of fundamental matrices, so a warp of one could not tell the
+// geometry of the two cameras from any other.
+constexpr REAL ROMA2_WEDGE_SEAM_Z = 3.0; // depth of the seam, on the optical axis of the first camera
+constexpr REAL ROMA2_WEDGE_SLOPE = 1.6;  // how fast the two planes recede to either side of it
+
+static void MakeROMA2WedgeScene(Scene& scene)
+{
+	const int width = 640, height = 480;
+	PinholeCamera* const camera = new PinholeCamera(cv::Size(width, height),
+		REAL(400), REAL(400), REAL(width)/2, REAL(height)/2);
+	camera->trustIntrinsics = true; // the calibrated branch, so every fit here reports a relative pose
+	scene.cameras.emplace_back(camera);
+	for (unsigned i = 0; i < 2; ++i) {
+		Pose3D pose;
+		pose.R = Matrix3x3::IDENTITY;
+		pose.C = Point3(i == 0 ? REAL(0) : REAL(0.4), i == 0 ? REAL(0) : REAL(0.1), REAL(0));
+		scene.images.emplace_back((IIndex)i, String::FormatString("%u.jpg", i), pose, (IIndex)0, scene.cameras[0]);
+	}
+}
+
+// Where the ray through pixel `pt` of `img` meets the wedge, in world coordinates; false when it
+// meets neither plane in front of the camera, which only happens far off axis -- outside the region
+// the tests below make confident
+static bool IntersectROMA2Wedge(const Image& img, const Point2f& pt, Point3& X)
+{
+	const Point3 dir(img.Ray(Cast<REAL>(pt)));
+	const Point3& C = img.C;
+	// Z = SEAM_Z - SLOPE*X where X <= 0 and Z = SEAM_Z + SLOPE*X where X > 0, along X(t) = C + t*dir
+	const REAL denom[2] = { dir.z + ROMA2_WEDGE_SLOPE*dir.x, dir.z - ROMA2_WEDGE_SLOPE*dir.x };
+	const REAL num[2] = { ROMA2_WEDGE_SEAM_Z - ROMA2_WEDGE_SLOPE*C.x - C.z,
+	                      ROMA2_WEDGE_SEAM_Z + ROMA2_WEDGE_SLOPE*C.x - C.z };
+	for (int side = 0; side < 2; ++side) {
+		if (ABS(denom[side]) < 1e-9)
+			continue; // the ray runs parallel to this plane
+		const REAL t = num[side]/denom[side];
+		if (t <= 0)
+			continue;
+		const REAL x = C.x + t*dir.x;
+		if (side == 0 ? x > 0 : x <= 0)
+			continue; // this root lies on the other plane's half of the wedge
+		X = Point3(x, C.y + t*dir.y, C.z + t*dir.z);
+		return true;
+	}
+	return false;
+}
+
+// The exact correspondence of a pixel of imgSrc in imgDst through the wedge; false when the ray
+// misses the surface or the point it hits falls outside imgDst
+static bool ROMA2WedgeCorrespondence(const Image& imgSrc, const Image& imgDst, const Point2f& ptSrc, Point2f& ptDst)
+{
+	Point3 X;
+	if (!IntersectROMA2Wedge(imgSrc, ptSrc, X))
+		return false;
+	const auto [proj, valid] = imgDst.ProjectPoint(X);
+	if (!valid)
+		return false;
+	ptDst = Point2f((float)proj.x, (float)proj.y);
+	return Image8U::isInside(ptDst, imgDst.GetSize());
+}
+
+// The normalized (align_corners=false) coordinate a warp map stores for a pixel of the target image
+static inline Point2f ROMA2NormCoord(const Point2f& pt, const cv::Size& size)
+{
+	return Point2f(2.f*(pt.x + 0.5f)/(float)size.width - 1.f, 2.f*(pt.y + 0.5f)/(float)size.height - 1.f);
+}
+
+// One direction of the exact bidirectional warp: every cell of imgSrc's grid projected onto imgDst
+// through the wedge, with confidence 1 on the given cell rectangle and 0 everywhere else. A cell
+// whose ray misses the surface is pointed far outside imgDst, the "no correspondence here" encoding
+// every warp draw reads.
+static void MakeROMA2WedgeWarp(const Image& imgSrc, const Image& imgDst, int cells,
+	int x0, int x1, int y0, int y1, WarpMaps& maps)
+{
+	const cv::Size gridSize(cells, cells), sizeSrc(imgSrc.GetSize()), sizeDst(imgDst.GetSize());
+	maps.warp.create(gridSize);
+	maps.confidence.create(gridSize);
+	maps.confidence.memset(0);
+	for (int y = 0; y < cells; ++y) {
+		for (int x = 0; x < cells; ++x) {
+			maps.warp(y, x) = Point2f(-3.f, -3.f);
+			Point2f ptDst;
+			if (!ROMA2WedgeCorrespondence(imgSrc, imgDst,
+				CoordFromTo(Point2f((float)x, (float)y), gridSize, sizeSrc), ptDst))
+				continue;
+			maps.warp(y, x) = ROMA2NormCoord(ptDst, sizeDst);
+			if (x >= x0 && x < x1 && y >= y0 && y < y1)
+				maps.confidence(y, x) = 1.f;
+		}
+	}
+}
+
+// A warp of the same grid that has nothing to do with the two cameras: one fixed homography of A --
+// 5 degrees of rotation, a 5% scale, a shift and a mild projective term -- confident over the same
+// cell rectangle. Smooth and locally consistent, exactly like a hallucinated warp.
+static void MakeROMA2HomographyWarp(const Image& imgSrc, const Image& imgDst, int cells,
+	int x0, int x1, int y0, int y1, WarpMaps& maps)
+{
+	const cv::Size gridSize(cells, cells), sizeSrc(imgSrc.GetSize()), sizeDst(imgDst.GetSize());
+	maps.warp.create(gridSize);
+	maps.confidence.create(gridSize);
+	maps.confidence.memset(0);
+	const float cosT = 0.95f*(float)COS(D2R(REAL(5))), sinT = 0.95f*(float)SIN(D2R(REAL(5)));
+	const float cxSrc = 0.5f*(float)sizeSrc.width, cySrc = 0.5f*(float)sizeSrc.height;
+	const float cxDst = 0.5f*(float)sizeDst.width, cyDst = 0.5f*(float)sizeDst.height;
+	for (int y = 0; y < cells; ++y) {
+		for (int x = 0; x < cells; ++x) {
+			const Point2f ptSrc(CoordFromTo(Point2f((float)x, (float)y), gridSize, sizeSrc));
+			const float dx = ptSrc.x - cxSrc, dy = ptSrc.y - cySrc;
+			const float w = 1.f + 3e-4f*dx - 2e-4f*dy;
+			const Point2f ptDst(cxDst + (cosT*dx - sinT*dy - 30.f)/w, cyDst + (sinT*dx + cosT*dy + 12.f)/w);
+			maps.warp(y, x) = Image8U::isInside(ptDst, sizeDst) ?
+				ROMA2NormCoord(ptDst, sizeDst) : Point2f(-3.f, -3.f);
+			if (x >= x0 && x < x1 && y >= y0 && y < y1)
+				maps.confidence(y, x) = 1.f;
+		}
+	}
+}
+
+// The pair verdict (JudgePairROMA2) on the exact bidirectional warp of two pinhole cameras looking
+// at a non-planar surface: a warp confident over ~30% of both frames is admitted with both inlier
+// areas measuring that share, a warp confident over 30% of A whose B side maps into A over only 3%
+// is rejected by the min side alone, a smooth warp unrelated to the cameras is rejected however
+// exactly one geometry explains its own side, and minOverlap 0 admits the first two
+bool ROMA2VerdictTest()
+{
+	TD_TIMER_START();
+
+	Scene scene;
+	MakeROMA2WedgeScene(scene);
+	const Image& imgA = scene.images[0];
+	const Image& imgB = scene.images[1];
+	const Pose3D poseGT(imgB / imgA);
+	MatchConfig matchCfg;
+	PairsMatcher matcher(scene, matchCfg);
+	const int cells = 64;
+	// the confident region: 36x34 of the 64x64 cells, 29.9% of the grid, placed so that every one
+	// of its cells lands inside the other frame in both directions
+	const int rx0 = 14, rx1 = 50, ry0 = 13, ry1 = 47;
+	const float regionShare = (float)((rx1-rx0)*(ry1-ry0))/(float)(cells*cells);
+
+	// (a) a region covering ~30% of both frames: admitted, both inlier areas measuring the region
+	PairWarps warps;
+	MakeROMA2WedgeWarp(imgA, imgB, cells, rx0, rx1, ry0, ry1, warps.ab);
+	MakeROMA2WedgeWarp(imgB, imgA, cells, rx0, rx1, ry0, ry1, warps.ba);
+	ROMA2Config config; // minConfidence 0.1, minOverlap 0.10
+	ImagePair pair(0, 1);
+	PairVerdict verdict;
+	JudgePairROMA2(matcher, imgA, imgB, warps, config, pair, verdict);
+	if (!verdict.admitted ||
+		ABS(verdict.inlierAreaA - regionShare) > 0.05f || ABS(verdict.inlierAreaB - regionShare) > 0.05f) {
+		VERBOSE("ROMA2VerdictTest FAILED: a warp confident over %.4f of both frames was %s with inlier areas %.4f/%.4f",
+			regionShare, verdict.admitted ? "admitted" : "rejected", verdict.inlierAreaA, verdict.inlierAreaB);
+		return false;
+	}
+	// every confident cell of either direction lands in the other frame and is explained by the one
+	// fitted geometry, so both areas are the region itself and not some fraction of it
+	if (verdict.confidentAreaA != regionShare || verdict.confidentAreaB != regionShare ||
+		verdict.inlierAreaA != verdict.confidentAreaA || verdict.inlierAreaB != verdict.confidentAreaB) {
+		VERBOSE("ROMA2VerdictTest FAILED: confident areas %.4f/%.4f and inlier areas %.4f/%.4f over a region of %.4f",
+			verdict.confidentAreaA, verdict.confidentAreaB, verdict.inlierAreaA, verdict.inlierAreaB, regionShare);
+		return false;
+	}
+	// the population the dense fill draws from: A's inlier cells, index-parallel with their confidences
+	if (verdict.inliersA.size() != (size_t)((rx1-rx0)*(ry1-ry0)) ||
+		verdict.inliersB.size() != verdict.inliersA.size() ||
+		verdict.confidences.size() != verdict.inliersA.size()) {
+		VERBOSE("ROMA2VerdictTest FAILED: the verdict kept %u/%u cells with %u confidences, expected %u",
+			(unsigned)verdict.inliersA.size(), (unsigned)verdict.inliersB.size(),
+			(unsigned)verdict.confidences.size(), (unsigned)((rx1-rx0)*(ry1-ry0)));
+		return false;
+	}
+	// an admitted pair carries the fit's geometry -- the one the two cameras really have, recovered
+	// from the warp cells alone -- and no matches
+	if (!pair.relativePose.has_value() || !pair.F.has_value() || !pair.matches.empty()) {
+		VERBOSE("ROMA2VerdictTest FAILED: an admitted pair carries %u matches, pose %d, F %d",
+			(unsigned)pair.matches.size(), (int)pair.relativePose.has_value(), (int)pair.F.has_value());
+		return false;
+	}
+	const REAL angleErr = R2D(ACOS(ComputeAngle(pair.relativePose->R, poseGT.R)));
+	const REAL tSim = ABS(normalized(pair.relativePose->GetT()).dot(normalized(poseGT.GetT())));
+	if (angleErr > REAL(0.05) || tSim < REAL(0.9999)) {
+		VERBOSE("ROMA2VerdictTest FAILED: the fitted geometry is %.4f deg and %.6f off the two cameras", angleErr, tSim);
+		return false;
+	}
+
+	// (b) the same 30% of A, but B's confident cells map into A over only 3%: the min side rejects
+	// the pair although A's own side would have admitted it
+	const int bx0 = 20, bx1 = 32, by0 = 20, by1 = 30;
+	const float smallShare = (float)((bx1-bx0)*(by1-by0))/(float)(cells*cells);
+	MakeROMA2WedgeWarp(imgB, imgA, cells, bx0, bx1, by0, by1, warps.ba);
+	JudgePairROMA2(matcher, imgA, imgB, warps, config, pair, verdict);
+	if (verdict.admitted || ABS(verdict.inlierAreaA - regionShare) > 0.05f ||
+		ABS(verdict.inlierAreaB - smallShare) > 0.01f || !verdict.inliersA.empty() || pair.F.has_value()) {
+		VERBOSE("ROMA2VerdictTest FAILED: a B side of %.4f (expected %.4f) next to an A side of %.4f was %s, "
+			"keeping %u cells and %d geometry",
+			verdict.inlierAreaB, smallShare, verdict.inlierAreaA, verdict.admitted ? "admitted" : "rejected",
+			(unsigned)verdict.inliersA.size(), (int)pair.F.has_value());
+		return false;
+	}
+
+	// (c) a smooth warp that has nothing to do with the two cameras -- a homography of A's grid --
+	// against the same camera-exact B side as (a). A homography is explained exactly by a whole
+	// family of fundamental matrices, so A's own side cannot tell it from a true pair; the other
+	// direction can, and that is the whole point of measuring the min of the two
+	MakeROMA2WedgeWarp(imgB, imgA, cells, rx0, rx1, ry0, ry1, warps.ba);
+	MakeROMA2HomographyWarp(imgA, imgB, cells, rx0, rx1, ry0, ry1, warps.ab);
+	JudgePairROMA2(matcher, imgA, imgB, warps, config, pair, verdict);
+	// one geometry does explain the whole of the homography's own side, exactly as it explains a
+	// true pair's -- an inlier count or ratio on A's cells cannot separate the two -- while the B
+	// side reads a fraction of it, and under the bar
+	if (verdict.admitted || verdict.confidentAreaA != regionShare ||
+		ABS(verdict.inlierAreaA - regionShare) > 0.05f ||
+		verdict.inlierAreaB >= config.minOverlap || verdict.inlierAreaB >= 0.5f*verdict.inlierAreaA) {
+		VERBOSE("ROMA2VerdictTest FAILED: a homography warp confident over %.4f of A (inlier areas %.4f/%.4f, bar %.4f) was %s",
+			verdict.confidentAreaA, verdict.inlierAreaA, verdict.inlierAreaB, config.minOverlap,
+			verdict.admitted ? "admitted" : "rejected");
+		return false;
+	}
+
+	// (d) minOverlap 0 admits both (a) and (b): the threshold is the only thing that rejected (b)
+	config.minOverlap = 0.f;
+	MakeROMA2WedgeWarp(imgA, imgB, cells, rx0, rx1, ry0, ry1, warps.ab);
+	MakeROMA2WedgeWarp(imgB, imgA, cells, rx0, rx1, ry0, ry1, warps.ba);
+	JudgePairROMA2(matcher, imgA, imgB, warps, config, pair, verdict);
+	const bool bAdmittedFull = verdict.admitted && ABS(verdict.inlierAreaB - regionShare) <= 0.05f;
+	MakeROMA2WedgeWarp(imgB, imgA, cells, bx0, bx1, by0, by1, warps.ba);
+	JudgePairROMA2(matcher, imgA, imgB, warps, config, pair, verdict);
+	if (!bAdmittedFull || !verdict.admitted || ABS(verdict.inlierAreaB - smallShare) > 0.01f) {
+		VERBOSE("ROMA2VerdictTest FAILED: minOverlap 0 admitted the 30%% B side %d and the %.4f one %d",
+			(int)bAdmittedFull, verdict.inlierAreaB, (int)verdict.admitted);
+		return false;
+	}
+
+	VERBOSE("ROMA2VerdictTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// Guided sparse matching (MatchFeaturesGuided) on synthetic descriptors: the ratio is taken against
+// the best descriptor OUTSIDE the search disc, so a lookalike sitting anywhere else in imgB still
+// rejects the match, a keypoint whose only close descriptor is inside the disc is accepted, and a
+// scale duplicate on top of the true match inside the disc -- the classic ratio-test failure -- no
+// longer blocks it; the same inputs give the same matches, in the same order
+bool ROMA2GuidedMatchTest()
+{
+	TD_TIMER_START();
+
+	Scene scene;
+	const int width = 640, height = 480;
+	scene.cameras.emplace_back(new PinholeCamera(cv::Size(width, height),
+		REAL(400), REAL(400), REAL(width)/2, REAL(height)/2));
+	for (unsigned i = 0; i < 2; ++i) {
+		Image& img = scene.images.emplace_back((IIndex)i, String::FormatString("%u.jpg", i));
+		img.cameraID = 0;
+		img.pCamera = scene.cameras[0];
+	}
+	Image& imgA = scene.images[0];
+	Image& imgB = scene.images[1];
+
+	// four queries of imgA, each answering one question, and the keypoints of imgB the warp sends
+	// them to: the prediction of query i is its own position plus one fixed offset
+	const Point2f offset(20.f, 10.f);
+	const float positionsA[4][2] = { {100.f, 100.f}, {200.f, 100.f}, {300.f, 100.f}, {400.f, 100.f} };
+	for (const auto& pt : positionsA)
+		imgA.keypoints.emplace_back(pt[0], pt[1], 10.f);
+	// imgB: the true match of every query at its prediction, an equal-descriptor lookalike of query 0
+	// far away from it, a scale duplicate of query 2's match on top of that match, and distractors
+	const float positionsB[16][2] = {
+		{120.f, 110.f}, {500.f, 300.f}, {220.f, 110.f}, {320.f, 110.f}, {320.f, 110.f}, {420.f, 110.f},
+		{ 60.f, 300.f}, {160.f, 320.f}, {260.f, 340.f}, {360.f, 360.f}, {460.f, 380.f}, {560.f, 400.f},
+		{ 80.f, 420.f}, {180.f, 440.f}, {280.f, 460.f}, {380.f,  40.f}
+	};
+	for (const auto& pt : positionsB)
+		imgB.keypoints.emplace_back(pt[0], pt[1], 10.f);
+	// binary descriptors: one random 32-byte row per query of imgA, copied verbatim onto the imgB
+	// keypoints that stand for it, everything else random -- so a "close descriptor" is an exact
+	// duplicate and the ratio test is decided by positions alone
+	const int descBytes = 32;
+	std::mt19937 rng(20260903u);
+	imgA.descriptors.create((int)imgA.keypoints.size(), descBytes, CV_8U);
+	imgB.descriptors.create((int)imgB.keypoints.size(), descBytes, CV_8U);
+	for (int r = 0; r < imgA.descriptors.rows; ++r)
+		for (int b = 0; b < descBytes; ++b)
+			imgA.descriptors.at<uint8_t>(r, b) = (uint8_t)(rng() & 0xFF);
+	for (int r = 0; r < imgB.descriptors.rows; ++r)
+		for (int b = 0; b < descBytes; ++b)
+			imgB.descriptors.at<uint8_t>(r, b) = (uint8_t)(rng() & 0xFF);
+	const int copyDescriptor[6][2] = { {0,0}, {0,1}, {1,2}, {2,3}, {2,4}, {3,5} }; // {query of A, keypoint of B}
+	for (const auto& copy : copyDescriptor)
+		imgA.descriptors.row(copy[0]).copyTo(imgB.descriptors.row(copy[1]));
+
+	// the predictions the warp would produce, with query 3 left untracked
+	std::vector<Point2f> trackedB(imgA.keypoints.size());
+	std::vector<uchar> trackStatus(imgA.keypoints.size(), 1);
+	FOREACH(i, trackedB)
+		trackedB[i] = Point2f(imgA.keypoints[i].pt) + offset;
+	trackStatus[3] = 0;
+	// two warp cells of a 160-cell grid over imgB, the radius the one pass passes in
+	const float discRadius = 2.f*(float)MAXF(width, height)/160.f;
+
+	MatchConfig matchCfg;
+	matchCfg.descriptorsAreBinary = true;
+	matchCfg.crossCheck = false;      // the guided path refuses a cross-checking matcher (it needs k > 1)
+	matchCfg.useFlannMatcher = false; // exact k-NN: the LSH index is approximate, and this test compares exact sets
+	PairsMatcher matcher(scene, matchCfg);
+
+	// query 0 is rejected: its lookalike sits outside the disc, so the winner has nothing to beat.
+	// query 1 is accepted: its only close descriptor is the one inside the disc.
+	// query 2 is accepted despite the duplicate inside its disc, and elects the smaller train index.
+	// query 3 is untracked, so it never reaches a disc at all.
+	std::vector<DMatch> matches;
+	if (MatchFeaturesGuided(matcher, imgA, imgB, trackedB, trackStatus, discRadius, 0, matches) != 2 ||
+		matches.size() != 2 ||
+		matches[0].queryIdx != 1 || matches[0].trainIdx != 2 ||
+		matches[1].queryIdx != 2 || matches[1].trainIdx != 3) {
+		VERBOSE("ROMA2GuidedMatchTest FAILED: %u matches, expected (1,2) and (2,3)", (unsigned)matches.size());
+		FOREACH(k, matches)
+			VERBOSE("ROMA2GuidedMatchTest:   match %u: (%u,%u)", k, matches[k].queryIdx, matches[k].trainIdx);
+		return false;
+	}
+
+	// the same query with the same lookalike moved INSIDE its disc is accepted: what rejected it was
+	// the lookalike's position, not its existence -- which is exactly the rule the outside-the-disc
+	// reference distance encodes
+	imgB.keypoints[1].pt = cv::Point2f(121.f, 110.f);
+	std::vector<DMatch> movedMatches;
+	if (MatchFeaturesGuided(matcher, imgA, imgB, trackedB, trackStatus, discRadius, 0, movedMatches) != 3 ||
+		movedMatches[0].queryIdx != 0 || movedMatches[0].trainIdx != 0) {
+		VERBOSE("ROMA2GuidedMatchTest FAILED: the lookalike moved into the disc left %u matches, expected 3 starting with (0,0)",
+			(unsigned)movedMatches.size());
+		return false;
+	}
+	imgB.keypoints[1].pt = cv::Point2f(positionsB[1][0], positionsB[1][1]);
+
+	// the same inputs give the same matches in the same order, twice over
+	std::vector<DMatch> again;
+	MatchFeaturesGuided(matcher, imgA, imgB, trackedB, trackStatus, discRadius, 0, again);
+	if (again.size() != matches.size()) {
+		VERBOSE("ROMA2GuidedMatchTest FAILED: a second run returned %u matches instead of %u",
+			(unsigned)again.size(), (unsigned)matches.size());
+		return false;
+	}
+	FOREACH(k, again)
+		if (again[k].queryIdx != matches[k].queryIdx || again[k].trainIdx != matches[k].trainIdx) {
+			VERBOSE("ROMA2GuidedMatchTest FAILED: match %u is (%u,%u) and was (%u,%u)",
+				k, again[k].queryIdx, again[k].trainIdx, matches[k].queryIdx, matches[k].trainIdx);
+			return false;
+		}
+
+	VERBOSE("ROMA2GuidedMatchTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// Pair assembly and storage (AssemblePairROMA2, StorePairROMA2) on the exact geometry of two
+// pinhole cameras: the union of the guided matches and the dense fill is fitted once and splits
+// into the pair's sparse and dense segments, the fill is drawn only where the guided matches are
+// not, a pair with no guided match at all is still assembled as a dense-only pair, a fill too small
+// to fit leaves the verdict's geometry untouched, and the store appends the dense keypoints past
+// each image's described prefix with indices that depend only on what the images already carry
+bool ROMA2AssemblyTest()
+{
+	TD_TIMER_START();
+
+	Scene scene;
+	MakeROMA2WedgeScene(scene);
+	Image& imgA = scene.images[0];
+	Image& imgB = scene.images[1];
+	const Pose3D poseGT(imgB / imgA);
+	const int cells = 64;
+	const int rx0 = 14, rx1 = 50, ry0 = 13, ry1 = 47;
+
+	// the verdict of an admitted pair: every cell of the region, projected through the wedge, with a
+	// confidence of its own
+	PairVerdict verdict;
+	verdict.admitted = true;
+	for (int y = ry0; y < ry1; ++y) {
+		for (int x = rx0; x < rx1; ++x) {
+			const Point2f ptA(CoordFromTo(Point2f((float)x, (float)y), cv::Size(cells, cells), imgA.GetSize()));
+			Point2f ptB;
+			if (!ROMA2WedgeCorrespondence(imgA, imgB, ptA, ptB))
+				continue;
+			verdict.inliersA.push_back(ptA);
+			verdict.inliersB.push_back(ptB);
+			verdict.confidences.push_back(0.25f + 0.5f*(float)(x + y)/(float)(2*(cells - 1)));
+		}
+	}
+	const size_t numInlierCells = verdict.inliersA.size();
+	verdict.confidentAreaA = verdict.confidentAreaB =
+		verdict.inlierAreaA = verdict.inlierAreaB = (float)numInlierCells/(float)(cells*cells);
+	if (numInlierCells != (size_t)((rx1-rx0)*(ry1-ry0))) {
+		VERBOSE("ROMA2AssemblyTest FAILED: %u of the %u region cells have a correspondence",
+			(unsigned)numInlierCells, (unsigned)((rx1-rx0)*(ry1-ry0)));
+		return false;
+	}
+
+	// the guided matches: 80 exact descriptor correspondences on cell centres of the region, then 6
+	// the geometry contradicts (their B side displaced across the epipolar lines, which run along
+	// the baseline direction (0.4, 0.1) here). Both kinds occupy their cell, so the complementary
+	// fill has to leave all 86 of them out.
+	const size_t numSparse = 80, numOutliers = 6, numGuided = numSparse + numOutliers;
+	std::vector<DMatch> guided;
+	for (size_t k = 0; k < numInlierCells && guided.size() < numGuided; k += 14) {
+		const uint32_t idx = (uint32_t)imgA.keypoints.size();
+		imgA.keypoints.emplace_back(verdict.inliersA[k].x, verdict.inliersA[k].y, 10.f);
+		imgB.keypoints.emplace_back(verdict.inliersB[k].x,
+			verdict.inliersB[k].y + (guided.size() >= numSparse ? 40.f : 0.f), 10.f);
+		guided.emplace_back(idx, idx);
+	}
+	if (guided.size() != numGuided) {
+		VERBOSE("ROMA2AssemblyTest FAILED: the region offers %u cells, too few for %u guided matches",
+			(unsigned)numInlierCells, (unsigned)numGuided);
+		return false;
+	}
+
+	MatchConfig matchCfg;
+	PairsMatcher matcher(scene, matchCfg);
+	ROMA2Config config; // minConfidence 0.1, denseMatches 2000
+	// the geometry the verdict handed over, 3 degrees off the truth, so that a pair carrying the
+	// union fit's geometry is told apart from one that kept the verdict's
+	const REAL tilt = D2R(REAL(3));
+	Pose3D poseVerdict(poseGT);
+	poseVerdict.R = poseGT.R * Matrix3x3(COS(tilt), 0, SIN(tilt), 0, 1, 0, -SIN(tilt), 0, COS(tilt));
+	const auto ArmVerdictGeometry = [&](ImagePair& pair, const Pose3D& pose) {
+		pair.relativePose = pose;
+		pair.E = ImagePair::ComposeEssentialMatrix(pose);
+		pair.F = ImagePair::ComposeFundamentalMatrix(pair.E.value(), imgA.GetK(), imgB.GetK());
+	};
+	const auto PoseErrorFromGT = [&](const Pose3D& pose, REAL& angleErr, REAL& tSim) {
+		angleErr = R2D(ACOS(ComputeAngle(pose.R, poseGT.R)));
+		tSim = ABS(normalized(pose.GetT()).dot(normalized(poseGT.GetT())));
+	};
+
+	// guided u dense on an exact geometry: the 80 sound guided matches become the sparse segment,
+	// the 6 the geometry contradicts the pair's outliers, and the fill covers every region cell no
+	// guided match sits on
+	ImagePair pair(0, 1);
+	ArmVerdictGeometry(pair, poseVerdict);
+	DenseMatches dense;
+	if (!AssemblePairROMA2(matcher, imgA, imgB, verdict, guided, config, cells, pair, dense)) {
+		VERBOSE("ROMA2AssemblyTest FAILED: an admitted pair with %u guided matches was not assembled", (unsigned)guided.size());
+		return false;
+	}
+	if (pair.matches.size() != numSparse || (size_t)pair.numFilteredInliers != numSparse ||
+		pair.outlierMatches.size() != numOutliers || pair.numDenseInliers != 0) {
+		VERBOSE("ROMA2AssemblyTest FAILED: the sparse segment holds %u of %u matches (%d filtered, %u outliers, %d dense)",
+			(unsigned)pair.matches.size(), (unsigned)numGuided, pair.numFilteredInliers,
+			(unsigned)pair.outlierMatches.size(), pair.numDenseInliers);
+		return false;
+	}
+	FOREACH(k, pair.matches)
+		if (pair.matches[k].queryIdx != k || pair.matches[k].trainIdx != k) {
+			VERBOSE("ROMA2AssemblyTest FAILED: sparse match %u is (%u,%u), so the segment lost the guided order",
+				k, pair.matches[k].queryIdx, pair.matches[k].trainIdx);
+			return false;
+		}
+	const size_t expectedDense = numInlierCells - numGuided;
+	if (dense.pointsA.size() != expectedDense ||
+		dense.pointsB.size() != dense.pointsA.size() || dense.confidences.size() != dense.pointsA.size()) {
+		VERBOSE("ROMA2AssemblyTest FAILED: the fill drew %u/%u points with %u confidences, expected %u",
+			(unsigned)dense.pointsA.size(), (unsigned)dense.pointsB.size(), (unsigned)dense.confidences.size(),
+			(unsigned)expectedDense);
+		return false;
+	}
+	// every drawn point is one of the verdict's cells, carries that cell's own confidence, and sits
+	// on no cell a guided match occupies
+	{
+		const cv::Size gridSize(cells, cells);
+		const auto CellOf = [&](const Point2f& ptA) {
+			const Point2f cell(CoordFromTo(ptA, imgA.GetSize(), gridSize));
+			return ROUND2INT(cell.y)*cells + ROUND2INT(cell.x);
+		};
+		std::vector<int> inlierOfCell((size_t)cells*cells, -1);
+		FOREACH(k, verdict.inliersA)
+			inlierOfCell[CellOf(verdict.inliersA[k])] = (int)k;
+		std::vector<bool> occupied((size_t)cells*cells, false);
+		for (const DMatch& match : guided)
+			occupied[CellOf(Point2f(imgA.keypoints[match.queryIdx].pt))] = true;
+		FOREACH(k, dense.pointsA) {
+			const int cell = CellOf(dense.pointsA[k]);
+			if (inlierOfCell[cell] < 0 || occupied[cell] ||
+				dense.confidences[k] != verdict.confidences[inlierOfCell[cell]]) {
+				VERBOSE("ROMA2AssemblyTest FAILED: dense point %u at cell (%d,%d) is %s and carries confidence %g",
+					k, cell%cells, cell/cells, inlierOfCell[cell] < 0 ? "not a verdict cell" :
+					(occupied[cell] ? "on a guided match" : "mislabelled"), dense.confidences[k]);
+				return false;
+			}
+		}
+	}
+	// ONE geometry for the pair, and it is the union fit's: the verdict handed over a pose 3 degrees
+	// off the two cameras and the assembled pair carries the right one
+	REAL angleErr, tSim;
+	if (!pair.relativePose.has_value()) {
+		VERBOSE("ROMA2AssemblyTest FAILED: the assembled pair carries no relative pose");
+		return false;
+	}
+	PoseErrorFromGT(pair.relativePose.value(), angleErr, tSim);
+	if (angleErr > REAL(0.05) || tSim < REAL(0.9999) || !pair.F.has_value() || !pair.E.has_value()) {
+		VERBOSE("ROMA2AssemblyTest FAILED: the assembled pose is %.4f deg and %.6f off the two cameras (F %d, E %d)",
+			angleErr, tSim, (int)pair.F.has_value(), (int)pair.E.has_value());
+		return false;
+	}
+
+	// no guided match at all: the pair is still assembled, its dense segment its whole evidence, and
+	// the fill now covers every one of the verdict's cells
+	ImagePair pairDense(0, 1);
+	ArmVerdictGeometry(pairDense, poseVerdict);
+	DenseMatches denseOnly;
+	if (!AssemblePairROMA2(matcher, imgA, imgB, verdict, std::vector<DMatch>(), config, cells, pairDense, denseOnly) ||
+		!pairDense.matches.empty() || pairDense.numFilteredInliers != 0 ||
+		denseOnly.pointsA.size() != numInlierCells) {
+		VERBOSE("ROMA2AssemblyTest FAILED: a pair with no guided match holds %u sparse (%d filtered) and %u dense correspondences, expected 0 and %u",
+			(unsigned)pairDense.matches.size(), pairDense.numFilteredInliers,
+			(unsigned)denseOnly.pointsA.size(), (unsigned)numInlierCells);
+		return false;
+	}
+	if (!pairDense.relativePose.has_value()) {
+		VERBOSE("ROMA2AssemblyTest FAILED: a dense-only pair carries no relative pose");
+		return false;
+	}
+	PoseErrorFromGT(pairDense.relativePose.value(), angleErr, tSim);
+	if (angleErr > REAL(0.05) || tSim < REAL(0.9999)) {
+		VERBOSE("ROMA2AssemblyTest FAILED: the dense-only pose is %.4f deg and %.6f off the two cameras", angleErr, tSim);
+		return false;
+	}
+
+	// a fill too small for a fit of its own (under the estimator's 8 correspondences): the verdict's
+	// geometry stands, unchanged, and the pair is stored on it
+	PairVerdict tinyVerdict;
+	tinyVerdict.admitted = true;
+	for (size_t k = 0; k < 6; ++k) {
+		tinyVerdict.inliersA.push_back(verdict.inliersA[k*97]);
+		tinyVerdict.inliersB.push_back(verdict.inliersB[k*97]);
+		tinyVerdict.confidences.push_back(verdict.confidences[k*97]);
+	}
+	ImagePair pairTiny(0, 1);
+	ArmVerdictGeometry(pairTiny, poseGT); // exact, so its own cells survive the classification
+	const Matrix3x3 Fverdict(pairTiny.F.value());
+	DenseMatches denseTiny;
+	if (!AssemblePairROMA2(matcher, imgA, imgB, tinyVerdict, std::vector<DMatch>(), config, cells, pairTiny, denseTiny) ||
+		denseTiny.pointsA.size() != tinyVerdict.inliersA.size()) {
+		VERBOSE("ROMA2AssemblyTest FAILED: a %u-cell fill was not assembled (%u dense correspondences)",
+			(unsigned)tinyVerdict.inliersA.size(), (unsigned)denseTiny.pointsA.size());
+		return false;
+	}
+	for (int r = 0; r < 3; ++r)
+		for (int c = 0; c < 3; ++c)
+			if (pairTiny.F.value()(r, c) != Fverdict(r, c) ||
+				pairTiny.relativePose->R(r, c) != poseGT.R(r, c)) {
+				VERBOSE("ROMA2AssemblyTest FAILED: a fill too small to fit still moved the pair's geometry at (%d,%d)", r, c);
+				return false;
+			}
+
+	// the store: the dense keypoints of a pair land past each image's described prefix, and the
+	// indices they get depend only on how many keypoints the two images already carry -- which is
+	// why the pass has to store serially, in pair order
+	const auto RunStore = [cells](Scene& out) {
+		out.cameras.emplace_back(new PinholeCamera(cv::Size(640, 480), REAL(400), REAL(400), REAL(320), REAL(240)));
+		for (unsigned i = 0; i < 3; ++i) {
+			Image& img = out.images.emplace_back((IIndex)i, String::FormatString("%u.jpg", i));
+			img.cameraID = 0;
+			img.pCamera = out.cameras[0];
+			for (unsigned k = 0; k < 5; ++k)
+				img.keypoints.emplace_back(10.f*(float)k, 20.f*(float)i + 5.f, 10.f);
+		}
+		std::unordered_map<PairIdx::PairIndex, IIndex> pairIndexMap;
+		for (unsigned j = 1; j < 3; ++j) {
+			ImagePair pair(0, j);
+			for (uint32_t m = 0; m < j; ++m)
+				pair.matches.emplace_back(m, m);
+			pair.numFilteredInliers = (int)j;
+			DenseMatches dense;
+			for (unsigned d = 0; d < 5 - j; ++d) {
+				dense.pointsA.emplace_back(100.f + 10.f*(float)d, 100.f + 10.f*(float)j);
+				dense.pointsB.emplace_back(110.f + 10.f*(float)d, 100.f + 10.f*(float)j);
+				dense.confidences.push_back(0.5f + 0.1f*(float)d);
+			}
+			StorePairROMA2(out, pairIndexMap, std::move(pair), dense, cells);
+		}
+		return pairIndexMap;
+	};
+	Scene storeScene;
+	const std::unordered_map<PairIdx::PairIndex, IIndex> pairIndexMap(RunStore(storeScene));
+	if (storeScene.pairs.size() != 2 || pairIndexMap.size() != 2 ||
+		pairIndexMap.at(PairIdx(0, 1).idx) != 0 || pairIndexMap.at(PairIdx(0, 2).idx) != 1) {
+		VERBOSE("ROMA2AssemblyTest FAILED: the store left %u pairs and %u index entries",
+			(unsigned)storeScene.pairs.size(), (unsigned)pairIndexMap.size());
+		return false;
+	}
+	// image 0 took both fills (4 then 3), images 1 and 2 one each, all past the described 5
+	const unsigned expectedKeypoints[3] = { 5 + 4 + 3, 5 + 4, 5 + 3 };
+	for (unsigned i = 0; i < 3; ++i) {
+		const Image& img = storeScene.images[i];
+		if (img.NumDescribedKeypoints() != 5 || img.keypoints.size() != expectedKeypoints[i] ||
+			img.IsDenseKeypoint(4) || !img.IsDenseKeypoint(5)) {
+			VERBOSE("ROMA2AssemblyTest FAILED: image %u carries %u keypoints past a described prefix of %u, expected %u",
+				i, (unsigned)img.keypoints.size(), img.NumDescribedKeypoints(), expectedKeypoints[i]);
+			return false;
+		}
+	}
+	// the dense segment of each pair names the keypoints the append handed out: image 0 continues
+	// past its first fill, image 2 starts at its own prefix
+	const ImagePair& pair01 = storeScene.pairs[0];
+	const ImagePair& pair02 = storeScene.pairs[1];
+	if (pair01.numFilteredInliers != 1 || pair01.numDenseInliers != 4 || pair01.matches.size() != 5 ||
+		pair02.numFilteredInliers != 2 || pair02.numDenseInliers != 3 || pair02.matches.size() != 5) {
+		VERBOSE("ROMA2AssemblyTest FAILED: the stored pairs partition %u/%u matches as %d+%d and %d+%d",
+			(unsigned)pair01.matches.size(), (unsigned)pair02.matches.size(),
+			pair01.numFilteredInliers, pair01.numDenseInliers, pair02.numFilteredInliers, pair02.numDenseInliers);
+		return false;
+	}
+	for (unsigned d = 0; d < 4; ++d)
+		if (pair01.matches[1 + d].queryIdx != 5 + d || pair01.matches[1 + d].trainIdx != 5 + d) {
+			VERBOSE("ROMA2AssemblyTest FAILED: the first pair's dense match %u is (%u,%u), expected (%u,%u)",
+				d, pair01.matches[1 + d].queryIdx, pair01.matches[1 + d].trainIdx, 5 + d, 5 + d);
+			return false;
+		}
+	for (unsigned d = 0; d < 3; ++d)
+		if (pair02.matches[2 + d].queryIdx != 9 + d || pair02.matches[2 + d].trainIdx != 5 + d) {
+			VERBOSE("ROMA2AssemblyTest FAILED: the second pair's dense match %u is (%u,%u), expected (%u,%u)",
+				d, pair02.matches[2 + d].queryIdx, pair02.matches[2 + d].trainIdx, 9 + d, 5 + d);
+			return false;
+		}
+	// the same two stores over again label everything identically
+	Scene storeSceneAgain;
+	RunStore(storeSceneAgain);
+	FOREACH(i, storeScene.images) {
+		const Image& img = storeScene.images[i];
+		const Image& imgAgain = storeSceneAgain.images[i];
+		if (img.keypoints.size() != imgAgain.keypoints.size() ||
+			img.NumDescribedKeypoints() != imgAgain.NumDescribedKeypoints()) {
+			VERBOSE("ROMA2AssemblyTest FAILED: a second store run gave image %u %u keypoints instead of %u",
+				i, (unsigned)imgAgain.keypoints.size(), (unsigned)img.keypoints.size());
+			return false;
+		}
+		FOREACH(k, img.keypoints)
+			if (img.keypoints[k].pt != imgAgain.keypoints[k].pt ||
+				img.keypoints[k].response != imgAgain.keypoints[k].response) {
+				VERBOSE("ROMA2AssemblyTest FAILED: a second store run moved keypoint %u of image %u", k, i);
+				return false;
+			}
+	}
+	FOREACH(p, storeScene.pairs) {
+		const ImagePair& lhs = storeScene.pairs[p];
+		const ImagePair& rhs = storeSceneAgain.pairs[p];
+		if (lhs.matches.size() != rhs.matches.size() || lhs.numFilteredInliers != rhs.numFilteredInliers ||
+			lhs.numDenseInliers != rhs.numDenseInliers) {
+			VERBOSE("ROMA2AssemblyTest FAILED: a second store run partitioned pair %u differently", p);
+			return false;
+		}
+		FOREACH(k, lhs.matches)
+			if (lhs.matches[k].queryIdx != rhs.matches[k].queryIdx || lhs.matches[k].trainIdx != rhs.matches[k].trainIdx) {
+				VERBOSE("ROMA2AssemblyTest FAILED: a second store run relabelled match %u of pair %u", k, p);
+				return false;
+			}
+	}
+
+	VERBOSE("ROMA2AssemblyTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 // The described/dense keypoint boundary (Task 5 of roma2-matching-redesign-20260831): the stored
 // count is what survives a descriptor release and an .sfm round-trip of an image whose
 // keypoints.size() > descriptors.rows -- the two arrays serialize independently, so nothing else

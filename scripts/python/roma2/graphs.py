@@ -117,14 +117,16 @@ class MatchWrap(torch.nn.Module):
     image resolution and adds the precision parameters.
 
     img_A/img_B are NOT part of forward's traced inputs for the coarse graph: verified dead by reading
-    the call chain (Matcher.forward only threads them into DPTHead.forward as img_A=/img_B=, and that
-    head is built with pos_embed=False -- the only branch of DPTHead.forward that would read them -- so
-    they reach nothing; confirmed empirically too: swapping real image tensors for None, or for tensors
-    of wildly different content, changes warp_AB/confidence_AB/warp_BA/confidence_BA by exactly 0.0). They
-    stay as optional forward() parameters (default None) only so the refiner branch below, which DOES use
-    them, still type-checks; that branch is unreachable from export.py (REFINER_NOT_EXPORTED raises
-    before it is ever traced or run), so this is the one tolerated variation §3.2 describes turning out
-    not to be needed, rather than a graph that keeps them.
+    the call chain (Matcher.forward only threads them into DPTHead.forward as img_A=/img_B=, and
+    DPTHead.forward never threads them any further -- its body calls self._forward_impl(tokens, H, W),
+    the method that actually computes the output, and _forward_impl takes no img_A/img_B parameters at
+    all -- so they reach nothing, unconditionally, whatever pos_embed is set to; confirmed empirically
+    too: swapping real image tensors for None, or for tensors of wildly different content, changes
+    warp_AB/confidence_AB/warp_BA/confidence_BA by exactly 0.0). They stay as optional forward()
+    parameters (default None) only so the refiner branch below, which DOES use them, still type-checks;
+    that branch is unreachable from export.py (REFINER_NOT_EXPORTED raises before it is ever traced or
+    run), so this is the one tolerated variation §3.2 describes turning out not to be needed, rather
+    than a graph that keeps them.
 
     The refined confidence carries the overlap logit and three entries of a precision matrix. Those three
     are squares of network outputs accumulated across stages, so a small perturbation upstream moves them

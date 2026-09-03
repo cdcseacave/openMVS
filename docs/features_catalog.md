@@ -171,16 +171,15 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 
 ### RoMa v2 In-Process Retrieval and Dense Matching
 
-- **Files:** `libs/SFM/OnnxRuntime.h/cpp`, `libs/SFM/RoMa2Matcher.h/cpp`, `libs/SFM/MatchROMA2.h/cpp`, `libs/SFM/ROMA2Warp.h/cpp`, `libs/SFM/GlobalDescriptors.h/cpp`
+- **Files:** `libs/SFM/OnnxRuntime.h/cpp`, `libs/SFM/RoMa2Matcher.h/cpp`, `libs/SFM/MatchROMA2.h/cpp`, `libs/SFM/ROMA2Warp.h/cpp`, `libs/SFM/MatchGeometric.h/cpp`, `libs/SFM/GlobalDescriptors.h/cpp`
 - **Algorithms:**
   - Optional (`--roma2`, default off) in-process ONNX Runtime deployment of a RoMa v2 preset (turbo/fast/base): a DINOv3 descriptor graph + a coarse-match graph, no refiner
   - **Retrieval** (`--roma2-retrieval`, default on): the descriptor graph pools its own `value_facets` output into a 2048-D global descriptor on device and hands it back as the `retrieval` output (`RoMa2Onnx::Describe`), replacing the vocabulary tree as the per-image ranking source pair selection consumes (`PairsMatcher::QueryRetrieval`) — everything downstream (RRF, mutual top-K, bridging, verification feedback) is unchanged
-  - **Dense matching** (`--roma2-match`, **default off, experimental**): a Belady-scheduled slot pool keeps at most `--roma2-slots` (64 default) image descriptors resident, runs the coarse-match graph pair by pair, and turns each warp into a guided sparse re-match (confidence erosion, keypoint tracking, geometric verification) that replaces the classical descriptor match only when it has strictly more inliers — RoMa v2 warps supplement, never replace, SIFT/AKAZE/ORB. Opt-in because end-to-end validation measured 2.8-5x the median inliers and +57-111% verified pairs but degraded like-for-like pose on 3 of 5 captures and a +1.2-6.2 px self-calibrated focal drift; `--roma2-skip-healthy N` / `--roma2-max-replace N` expose the round-1 fill-only policy that removes the drift (see `docs/design/ROMA2InProcess.md`, Limitations)
-  - Round-1 policy knobs `--roma2-skip-healthy` / `--roma2-max-replace` (both 0 by default = warp every candidate and replace any weaker pair) apply the feedback round's fill-only rule to round 1 as well
+  - **One-pass dense pair matching** (`--roma2-match`, default off): per candidate pair, one bidirectional coarse-match call (`RoMa2Onnx::MatchCoarse`, both warp directions from one joint-ViT pass) feeds a verdict that admits the pair iff the min of its two inlier areas clears `--roma2-min-overlap`, a warp-guided sparse match, a dense fill of the remaining overlap, one union geometry fit, and one store — a rejected pair is dropped, never descriptor-matched. A Belady-scheduled slot pool keeps at most `--roma2-slots` (64 default) image descriptors resident, pairs processed in `(ID1,ID2)` order so consecutive pairs share an image. See `docs/design/ROMA2InProcess.md`, One-Pass Dense Pair Matching, for the measured basis and the defaults table
   - Execution-provider policy: CUDA > CoreML > DirectML > CPU, overridable with `--roma2-provider`
-- **Configuration:** `ROMA2Config` (`--roma2*` CLI flags on `CreateStructure`) — `enabled`, `modelPath`/`$OPENMVS_ROMA2_MODEL_PATH`, `setting`, `provider`, `useRetrieval`, `useMatching`, `slotBudget`, and separate replace-policy thresholds for the first and verification-feedback rounds
+- **Configuration:** `ROMA2Config` (`--roma2*` CLI flags on `CreateStructure`) — `enabled`, `modelPath`/`$OPENMVS_ROMA2_MODEL_PATH`, `setting`, `provider`, `useRetrieval`, `useMatching`, `minConfidence`, `minOverlap`, `denseMatches`, `slotBudget`
 - **GPU Support:** Yes (ONNX Runtime CUDA/CoreML/DirectML execution providers; CPU fallback always available)
-- **Threading:** All ONNX Runtime calls from one thread per `RoMa2Onnx` session; guided re-matching on `BS::light_thread_pool`
+- **Threading:** All ONNX Runtime calls from one thread per `RoMa2Onnx` session; the verdict, the guided match and the pair assembly run on the thread pool
 - **Dependencies:** ONNX Runtime (`-DOpenMVS_USE_ONNXRUNTIME=ON`); see `docs/design/ROMA2InProcess.md`
 
 ---

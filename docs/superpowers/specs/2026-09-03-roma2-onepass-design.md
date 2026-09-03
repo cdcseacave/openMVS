@@ -106,9 +106,10 @@ validation block only checks what remains (setting/provider names, ranges 0..1, 
 Manifest `format_version` **3**. The match graph `match_coarse`:
 
 - inputs: `descriptors_A`, `descriptors_B` ([1,2,G,G,1024]) — the dead `img_A`/`img_B` inputs are
-  dropped from the trace; if the wrapper cannot be traced without them the exporter keeps them and
-  says so in its report, and the C++ binds them only when the manifest's `io` lists them (that is the
-  ONE tolerated variation, decided by the exported manifest, not a compatibility path).
+  dropped from the trace (the export confirmed they are unconditionally dead: the matcher head never
+  threads them into its forward implementation). If a future trace has to keep them, the C++ binds
+  them only when the LOADED GRAPH declares them — `RoMa2Onnx` decides from the session's own input
+  metadata, not from the manifest, which is used only for the shape checks at load.
 - outputs: `warp` [1,C,C,2], `confidence` [1,C,C,1] (A→B, unchanged), `warp_BA` [1,C,C,2],
   `confidence_BA` [1,C,C,1] (B→A, from the same forward pass, `bidirectional=True`).
 - The reference dumps (`*.reference`, `save_reference`) and the parity check cover all four outputs.
