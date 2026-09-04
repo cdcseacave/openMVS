@@ -3595,12 +3595,13 @@ bool RoMa2ManifestVersionTest()
 
 // ROMA2Config::ResolveModelPath precedence test: an explicit modelPath wins over everything
 // (even a set environment variable); with modelPath empty, $OPENMVS_ROMA2_MODEL_PATH wins; with
-// both absent, the result is empty. This is the precedence the whole --roma2 pipeline depends
-// on -- it decides whether the CLI's own "needs a model" error fires -- so it is checked here
-// directly rather than only indirectly through CreateStructure. This build's install-prefix
-// fallback (OPENMVS_ROMA2_MODEL_INSTALL_DIR, if this target even defines it) only returns when
-// that directory exists on disk, which per the plan this test must not create, so the third case
-// stays empty without needing to know whether that macro is defined.
+// both absent, the result falls back to the install prefix's own copy
+// (OPENMVS_ROMA2_MODEL_INSTALL_DIR) when that directory actually exists on disk, else it is empty.
+// This is the precedence the whole --roma2 pipeline depends on -- it decides whether the CLI's own
+// "needs a model" error fires -- so it is checked here directly rather than only indirectly through
+// CreateStructure. The third case below must not create that directory, so it reads the same
+// File::isFolder check the implementation uses and asserts against whichever outcome is already
+// true on this machine.
 bool ResolveModelPathTest()
 {
 	// Save/restore OPENMVS_ROMA2_MODEL_PATH around this test: RoMa2OnnxParityTest and
@@ -3648,14 +3649,24 @@ bool ResolveModelPathTest()
 		}
 	}
 
-	// both absent: modelPath empty, no environment variable -- the result is empty (the
-	// install-prefix fallback, per the plan, is not exercised by creating anything on disk)
+	// both absent: modelPath empty, no environment variable -- the result depends on whether the
+	// install-prefix fallback directory actually exists on disk. Read that with the same
+	// File::isFolder check the implementation uses rather than creating (or assuming the absence
+	// of) the directory, so this test is hermetic on any machine, installed or not.
 	{
 		ROMA2Config config;
 		EnvGuard::Set(NULL);
 		const String resolved = config.ResolveModelPath();
+		#ifdef OPENMVS_ROMA2_MODEL_INSTALL_DIR
+		if (File::isFolder(OPENMVS_ROMA2_MODEL_INSTALL_DIR)) {
+			if (resolved != OPENMVS_ROMA2_MODEL_INSTALL_DIR) {
+				VERBOSE("ResolveModelPathTest FAILED: expected the install-prefix fallback '%s' since it exists on disk, got '%s'", OPENMVS_ROMA2_MODEL_INSTALL_DIR, resolved.c_str());
+				return false;
+			}
+		} else
+		#endif
 		if (!resolved.empty()) {
-			VERBOSE("ResolveModelPathTest FAILED: expected an empty result with modelPath and the environment both absent, got '%s'", resolved.c_str());
+			VERBOSE("ResolveModelPathTest FAILED: expected an empty result with modelPath and the environment both absent and no install-prefix folder on disk, got '%s'", resolved.c_str());
 			return false;
 		}
 	}

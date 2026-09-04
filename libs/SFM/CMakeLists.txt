@@ -70,8 +70,10 @@ TARGET_LINK_LIBRARIES(SFM PUBLIC Common Math IO ${SFM_EXTRA_LIBS})
 
 # Where `cmake --build . --target roma2-model` installs the exported model, so --roma2 can find it
 # without an environment variable (ROMA2Config::ResolveModelPath in MatchROMA2.h). PUBLIC so every
-# target linking SFM compiles that inline function with the same definition (ODR). Guarded so a
-# build with no install prefix configured still compiles.
+# target linking SFM compiles that inline function with the same definition (ODR). The IF() guard
+# only matters for a configure that explicitly clears CMAKE_INSTALL_PREFIX, since CMake seeds it to
+# /usr/local otherwise; what actually keeps a wrong path from ever being returned is the runtime
+# File::isFolder() check inside ResolveModelPath() itself.
 IF(CMAKE_INSTALL_PREFIX)
 	TARGET_COMPILE_DEFINITIONS(SFM PUBLIC OPENMVS_ROMA2_MODEL_INSTALL_DIR="${CMAKE_INSTALL_PREFIX}/share/openMVS/roma2")
 ENDIF()
