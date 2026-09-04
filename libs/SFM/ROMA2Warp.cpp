@@ -132,13 +132,18 @@ struct WarpCandidate {
 // multiples of 2^k, so cells on a coarse dyadic lattice outrank cells on a finer one and (0,0)
 // outranks everything. Depends on the cell alone -- not on this pair's confidences, not on its
 // bucket grid -- which is the whole point:
-//   The bucket grid is sized per draw (WarpBucketGridSide), so two pairs sharing image A stratify
-//   the SAME region of A on grids of different pitch and phase. Picking the most confident cell in
-//   each bucket then puts the two draws' A-side points a few cells apart, and the exact-position
-//   dedup downstream (FilterRedundantKeypoints, 0.1 px) sees two distinct keypoints where one
-//   surface point was sampled twice. A lattice priority makes any two buckets that cover a common
-//   region agree on which cell of it to take whenever both find it eligible, so those samples land
-//   on the same pixel of A and dedup chains them into one track across pairs.
+//   The dense fill's pitch is shared (DenseFillGridSide), so two pairs sharing image A already
+//   agree on the BUCKETS of it. What they do not agree on is what is in one: their confident
+//   overlaps on A differ, so a bucket both cover offers each of them a different set of eligible
+//   cells, at different confidences. A rule that ranked those by confidence would take a different
+//   cell of the same bucket for each pair, leaving the two draws' A-side points a few cells apart,
+//   and the exact-position dedup downstream (FilterRedundantKeypoints, 0.1 px) would see two
+//   distinct keypoints where one surface point was sampled twice. A lattice priority makes any two
+//   pairs covering a common region agree on which cell of it to take whenever both find it
+//   eligible, so those samples land on the same pixel of A and dedup chains them into one track
+//   across pairs. It is also the key the ceiling's enforcement thins on
+//   (ThinSampleByLatticePriority), for the same reason: nothing pair-dependent may decide which of
+//   the agreed winners a pair keeps.
 //   Chaining is through the A SIDE ONLY: the B-side position is whatever the warp maps that cell to,
 //   a float that two pairs have no reason to agree on. So a chain grows along the images that play
 //   the A role of their pairs, and stops naturally wherever the confident overlaps stop coinciding.

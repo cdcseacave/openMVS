@@ -465,21 +465,37 @@ unsigned SFM::ExportPoseUncertaintyCSV(const String& fileName, const Scene& scen
 // measurement than a described one, and never worth nothing -- on a capture where the descriptor
 // matcher is very good the ratio can run away, and a weight of zero would discard the only evidence
 // a textureless region has. Falls back to the fixed DENSE_OBSERVATION_WEIGHT when either population
-// is under MIN_SIGMA_OBSERVATIONS, which is the honest answer for an early incremental step whose
-// scene is a handful of tracks.
+// is under MIN_SIGMA_OBSERVATIONS -- the honest answer for an early incremental step whose scene is a
+// handful of tracks -- or when either sigma is zero, which is what a scene that fits itself exactly
+// (a synthetic one, or a solve that has converged onto its own measurements) would divide by.
 constexpr size_t MIN_SIGMA_OBSERVATIONS = 100;
 constexpr double MIN_DENSE_OBSERVATION_WEIGHT = 0.01;
 
-double SFM::EstimateDenseObservationWeight(const Scene& scene, const BAConfig& config)
+double SFM::EstimateDenseObservationWeight(const Scene& scene, const BAConfig& config,
+	DenseObservationSigmas* sigmas)
 {
+	if (sigmas)
+		*sigmas = DenseObservationSigmas();
 	if (config.denseObservationWeight >= 0.0)
 		return config.denseObservationWeight;
+	// nothing to weight means nothing to measure, and this is the shipped default: --roma2-match is
+	// off, so a descriptor-only reconstruction carries no dense keypoint and SelectReprojectionLoss
+	// never multiplies by the weight. The test is O(1) per image, against the full reprojection of
+	// every observation of every inlier track it saves -- once per Adjust(), and once per local BA,
+	// which incremental reconstruction runs once per registered image.
+	if (!std::any_of(scene.images.begin(), scene.images.end(),
+			[](const Image& img) { return img.HasDenseKeypoints(); }))
+		return DENSE_OBSERVATION_WEIGHT;
 	double sigmaDescribed = 0, sigmaDense = 0;
 	size_t numDescribed = 0, numDense = 0;
 	ComputeObservationSigmas(scene, sigmaDescribed, numDescribed, sigmaDense, numDense);
+	if (sigmas)
+		*sigmas = DenseObservationSigmas{sigmaDescribed, sigmaDense, numDescribed, numDense, false};
 	if (numDescribed < MIN_SIGMA_OBSERVATIONS || numDense < MIN_SIGMA_OBSERVATIONS ||
 		sigmaDescribed <= 0.0 || sigmaDense <= 0.0)
 		return DENSE_OBSERVATION_WEIGHT;
+	if (sigmas)
+		sigmas->measured = true;
 	const double k = sigmaDense/sigmaDescribed;
 	return CLAMP(1.0/(k*k), MIN_DENSE_OBSERVATION_WEIGHT, 1.0);
 }
@@ -557,9 +573,8 @@ inline void AddPinholeIntrinsics(std::unordered_map<const Camera*, DoubleArr>& i
 // ComputeKeypointPrecision's SQUARE(2/max(size,1)) term already reads measurement precision off the
 // sampling scale, and the dense `size` convention (Image.h) was chosen precisely so that it reports a
 // dense point as the less precise measurement. Multiplying the two charges that once for the size and
-// once for the flat factor -- on the documented values it takes the effective ratio to ~116x (k ~ 10.8)
-// instead of a k = 2 weight, and in the wrong direction from "errs toward the behaviour before this
-// weight existed". So exactly one of them applies.
+// once for the flat factor -- on the documented values it takes the effective ratio to ~116x
+// (k ~ 10.8), against the k = 1.55-4.02 the captures actually measure. So exactly one of them applies.
 inline bool SelectReprojectionLoss(const BAConfig& config, double denseObservationWeight,
 	const Image& img, uint32_t featureID,
 	ceres::LossFunction* baseLoss, ceres::LossFunction*& outLoss, bool& bDense) {
@@ -702,7 +717,9 @@ bool BundleAdjustment::Adjust()
 	// Short-circuited to 1.0 under useKeypointConfidence: that mode supersedes this weight entirely
 	// (SelectReprojectionLoss never multiplies by it), so running the estimator would be a full scene
 	// walk whose result is discarded, and reporting it below would claim a weight nothing applied.
-	const double denseWeight = config.useKeypointConfidence ? 1.0 : EstimateDenseObservationWeight(scene, config);
+	DenseObservationSigmas denseSigmas; // what that weight was measured on, for the report below
+	const double denseWeight = config.useKeypointConfidence ? 1.0 :
+		EstimateDenseObservationWeight(scene, config, &denseSigmas);
 
 	// Set the SE(3) manifold on every valid pose block (shared instance; Ceres owns it once attached)
 	auto* se3_manifold = CreateSE3PoseManifold();
@@ -754,19 +771,18 @@ bool BundleAdjustment::Adjust()
 		DEBUG_EXTRA("Created %u reprojection residuals", numReprojResiduals);
 	}
 	if (numDenseResiduals > 0) {
-		// the flat weight does not apply when the confidence term is on: it already carries the
-		// dense sampling scale, so what a dense residual is scaled by then is that term alone
-		// (denseWeight is 1.0 in that mode, resolved above -- nothing was measured, so the sigma
-		// branch below must not claim it was)
-		if (!config.useKeypointConfidence && config.denseObservationWeight < 0.0) {
-			// weight was measured, not configured -- log what it was measured on, so a stale sigma
-			// jumping between runs shows up in the log rather than only as a downstream drift
-			double sigmaDescribed = 0, sigmaDense = 0;
-			size_t numSigmaDescribed = 0, numSigmaDense = 0;
-			ComputeObservationSigmas(scene, sigmaDescribed, numSigmaDescribed, sigmaDense, numSigmaDense);
+		// the sigmas are reported only where the weight actually came from them, so that what the
+		// line prints is always what produced the number next to it: a weight the config pinned
+		// measured nothing, the confidence term supersedes this weight entirely (denseWeight is 1.0
+		// in that mode, and what scales a dense residual is that term alone), and a sample the
+		// estimator refused fell back to the constant. Reported at all so that a sigma jumping
+		// between runs shows up here rather than only as a downstream drift.
+		if (denseSigmas.measured) {
 			DEBUG("Bundle adjustment: %u/%u reprojection residuals are on dense keypoints, weighted %g "
-				"(sigma described %g / dense %g px)",
-				numDenseResiduals, numReprojResiduals, denseWeight, sigmaDescribed, sigmaDense);
+				"(sigma described %g px over %u obs / dense %g px over %u obs)",
+				numDenseResiduals, numReprojResiduals, denseWeight,
+				denseSigmas.sigmaDescribed, (unsigned)denseSigmas.numDescribed,
+				denseSigmas.sigmaDense, (unsigned)denseSigmas.numDense);
 		} else {
 			DEBUG("Bundle adjustment: %u/%u reprojection residuals are on dense keypoints, weighted %g",
 				numDenseResiduals, numReprojResiduals, denseWeight);
@@ -1118,7 +1134,9 @@ bool BundleAdjustment::AdjustLocal(
 	// one reconstruction would be worse than a slightly stale one. Short-circuited to 1.0 under
 	// useKeypointConfidence for the same reason as Adjust(): that mode supersedes this weight, so
 	// estimating it would be a wasted whole-scene walk whose result nothing uses.
-	const double denseWeight = config.useKeypointConfidence ? 1.0 : EstimateDenseObservationWeight(scene, config);
+	DenseObservationSigmas denseSigmas; // what that weight was measured on, for the report below
+	const double denseWeight = config.useKeypointConfidence ? 1.0 :
+		EstimateDenseObservationWeight(scene, config, &denseSigmas);
 
 	// Add reprojection residuals (only observations from window images: local or fixed)
 	uint32_t numReprojResiduals = 0;
@@ -1153,15 +1171,15 @@ bool BundleAdjustment::AdjustLocal(
 	// than the global pass, so reporting only there would let the dense contribution move silently
 	// in the path that actually carries it
 	if (numDenseResiduals > 0) {
-		// nothing was measured when the confidence term short-circuited denseWeight to 1.0 above,
-		// so the sigma branch below must not claim it was
-		if (!config.useKeypointConfidence && config.denseObservationWeight < 0.0) {
-			double sigmaDescribed = 0, sigmaDense = 0;
-			size_t numSigmaDescribed = 0, numSigmaDense = 0;
-			ComputeObservationSigmas(scene, sigmaDescribed, numSigmaDescribed, sigmaDense, numSigmaDense);
+		// the sigmas only where the weight came from them, exactly as in Adjust(): a pinned weight,
+		// the confidence term's 1.0, and a refused sample's fallback constant all print alone rather
+		// than beside two sigmas that do not produce them
+		if (denseSigmas.measured) {
 			DEBUG("Local bundle adjustment: %u/%u reprojection residuals are on dense keypoints, weighted %g "
-				"(sigma described %g / dense %g px)",
-				numDenseResiduals, numReprojResiduals, denseWeight, sigmaDescribed, sigmaDense);
+				"(sigma described %g px over %u obs / dense %g px over %u obs)",
+				numDenseResiduals, numReprojResiduals, denseWeight,
+				denseSigmas.sigmaDescribed, (unsigned)denseSigmas.numDescribed,
+				denseSigmas.sigmaDense, (unsigned)denseSigmas.numDense);
 		} else {
 			DEBUG("Local bundle adjustment: %u/%u reprojection residuals are on dense keypoints, weighted %g",
 				numDenseResiduals, numReprojResiduals, denseWeight);

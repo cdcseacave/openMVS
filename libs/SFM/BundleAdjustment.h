@@ -272,12 +272,28 @@ private:
 /*----------------------------------------------------------------*/
 
 
+// What EstimateDenseObservationWeight measured, for a caller that reports the weight as well as
+// applying it -- so the report costs no second walk of the scene and cannot disagree with the
+// estimate. `measured` says the returned weight is 1/k^2 of these two sigmas; where it is false they
+// are whatever was read before the sample was refused, or nothing at all, and printing them beside
+// the weight would invite a reader to divide one by the other and get a number nothing applied.
+struct DenseObservationSigmas {
+	double sigmaDescribed = 0; // median raw-pixel reprojection error of the described observations
+	double sigmaDense = 0;     // and of the dense ones
+	size_t numDescribed = 0;   // how many observations each median was taken over
+	size_t numDense = 0;
+	bool measured = false;
+};
+
 // The weight a dense reprojection residual carries relative to a described one, measured rather than
 // configured: 1/k^2 for k = sigma_dense/sigma_described, the two populations' robust reprojection
 // sigmas on the scene as it stands (ComputeObservationSigmas). Returns config.denseObservationWeight
-// when that is non-negative, and DENSE_OBSERVATION_WEIGHT when either population is too small to
-// give a sigma or the scene carries no dense keypoints at all.
-SFM_API double EstimateDenseObservationWeight(const Scene& scene, const BAConfig& config);
+// as given whenever that is non-negative, and DENSE_OBSERVATION_WEIGHT when no image carries a dense
+// keypoint -- recognized before the scene is walked, since there is then nothing to weight -- or when
+// either population is under MIN_SIGMA_OBSERVATIONS or either sigma is zero.
+// `sigmas`, when given, receives what was measured and whether the weight came from it.
+SFM_API double EstimateDenseObservationWeight(const Scene& scene, const BAConfig& config,
+	DenseObservationSigmas* sigmas = NULL);
 /*----------------------------------------------------------------*/
 
 

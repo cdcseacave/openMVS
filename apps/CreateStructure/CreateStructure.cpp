@@ -189,7 +189,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("align-gps-threshold", boost::program_options::value<float>(&OPT::thAlignGPS)->default_value(5.f), "maximum distance in meters for aligning GPS positions to reconstruction poses (0 = disabled)")
 		("gps-position-weight", boost::program_options::value(&OPT::gpsPositionWeight)->default_value(0.0), "horizontal weight of the GPS position priors used to refine the geo-aligned reconstruction (0 = disabled)")
 		("gps-position-weight-z", boost::program_options::value(&OPT::gpsPositionWeightZ)->default_value(0.0), "vertical weight of the GPS position priors used to refine the geo-aligned reconstruction (0 = disabled)")
-		("ba-dense-weight", boost::program_options::value(&OPT::baDenseWeight)->default_value(-1.0), "bundle adjustment: loss weight of a reprojection residual on a dense (warp-sampled) keypoint, relative to the 1.0 a described one carries; negative (default) measures it as (sigma described/sigma dense)^2 on the scene each solve is about to fit, a value in [0,1] pins it (1 = no down-weighting)")
+		("ba-dense-weight", boost::program_options::value(&OPT::baDenseWeight)->default_value(-1.0), "bundle adjustment: loss weight of a reprojection residual on a dense (warp-sampled) keypoint, relative to the 1.0 a described one carries; negative (default) measures it as (sigma described/sigma dense)^2 on the scene each solve is about to fit and falls back to 0.25 on a scene too small to give either sigma; any value >= 0 pins it as given, so use [0,1] (1 = no down-weighting)")
 		;
 
 	boost::program_options::options_description cmdline_options;

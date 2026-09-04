@@ -387,9 +387,12 @@ ROMA2 pair 0-1: conf 0.9523 0.9658 inl 0.9393 0.8929 ADMIT cap 1786 grid 45 guid
 
 is a pair whose two inlier areas (0.9393, 0.8929) capped its draw at `round(2000 * 0.8929) = 1786`
 correspondences (`cap`), stratified over a 45x45 pitch fixed for every pair in the run (`grid`), and
-actually drew 1642 — under the cap, so it was the fixed pitch over the pair's own uncovered overlap
-that bound the draw here, not the ceiling. A rejected pair draws nothing, so it keeps the shorter form
-above with no `cap`/`grid` fields.
+kept 1642 of them. `dense` is NOT the size of the draw: it is `result.dense.pointsA.size()` after
+`AssemblePairROMA2` has classified the draw against the union fit's geometry and dropped whatever the
+fit calls an outlier, so a pair thinned to the ceiling and then pruned prints the same line as a pair
+that never reached it. `dense < cap` therefore says nothing about which term bound the draw, and a
+readout asking whether the pitch or the ceiling binds cannot answer it from this record. A rejected
+pair draws nothing, so it keeps the shorter form above with no `cap`/`grid` fields.
 
 and one summary line per pass:
 
@@ -434,8 +437,9 @@ The dense fill's correspondences are real geometric evidence, not noise to filte
 and the intrinsic weight already treat them that way (`SupplementEvidenceIsolationTest`, Tests below) —
 but a warp correspondence localizes a point several times less precisely than a described one, and a
 bundle solve has to charge every residual for the precision of the measurement it minimizes.
-`--ba-dense-weight` (`BAConfig::denseObservationWeight`, default `-1.0`, "measure it"; a value in
-`[0,1]` pins it, `1` turning the down-weight off) scales a dense reprojection residual's loss weight by
+`--ba-dense-weight` (`BAConfig::denseObservationWeight`, default `-1.0`, "measure it"; ANY value
+`>= 0` pins it and is used unclamped, so use `[0,1]`, `1` turning the down-weight off) scales a dense
+reprojection residual's loss weight by
 
 ```
 w = (sigma_described / sigma_dense)^2
@@ -449,8 +453,11 @@ since a reconstruction runs fifty or more of them and the scene the estimate is 
 growing. `w` is clamped to `[0.01, 1]` — a dense correspondence is never a MORE precise measurement
 than a described one, and never worth nothing to a textureless region that has no other evidence — and
 falls back to the fixed `DENSE_OBSERVATION_WEIGHT` (0.25, `ImagePair.h`) when either population is
-under 100 observations, the honest answer for an early incremental step whose scene is a handful of
-tracks.
+under 100 observations or either sigma is zero, the honest answer for an early incremental step whose
+scene is a handful of tracks and for a scene that fits itself exactly. The same constant answers a
+scene carrying no dense keypoints at all, which the estimator recognises before walking anything: the
+stock `--roma2-match false` reconstruction has no dense observation to weight, and its solves must not
+pay for a whole-scene reprojection pass to be told so.
 
 Measured rather than configured because `k = sigma_dense / sigma_described` is a property of the
 CAPTURE, not of the matcher: across this campaign's three captures the dense sigma barely moved

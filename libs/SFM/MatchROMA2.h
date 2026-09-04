@@ -112,9 +112,13 @@ struct SFM_API PairVerdict {
 // them up in it. This is the term that stops that, and it binds only when B is the constraining
 // frame: with inlierAreaA <= inlierAreaB it sits above the draw the pitch produces anyway, so it
 // never charges the sparse matches' coverage a second time.
+// Rounded in double and clamped into the unsigned the knob itself is, rather than through the int a
+// float rounding would land in: the density has no upper bound the CLI enforces, and the product of
+// an absurd one with an area near 1 has no int to be converted to.
 inline unsigned DenseFillCeiling(const ROMA2Config& config, const PairVerdict& verdict) {
-	return (unsigned)ROUND2INT((float)config.denseMatchesPerFrame *
-		MINF(verdict.inlierAreaA, verdict.inlierAreaB));
+	const double ceiling = std::floor((double)config.denseMatchesPerFrame *
+		(double)MINF(verdict.inlierAreaA, verdict.inlierAreaB) + 0.5);
+	return (unsigned)MINF(MAXF(ceiling, 0.0), (double)std::numeric_limits<unsigned>::max());
 }
 
 // Judge one candidate pair from its bidirectional warp alone. Fits one geometry on a coverage-uniform

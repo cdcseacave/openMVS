@@ -145,13 +145,16 @@ bool ROMA2ReconstructTest();
 // Test Bundle-Adjustment PinholeReprojectionErrorAnalytic Jacobians against AutoDiff
 bool BAPinholeReprojectionJacobianTest();
 
-// ComputeObservationSigmas recovers the known displacement of a synthetic scene's described and
-// dense observations, and reports zero dense observations on a scene that has none
+// ComputeObservationSigmas recovers the displacement the BULK of a synthetic scene's described and
+// dense observations carry, with a tenth of each population thrown far out and a tenth left almost
+// on the point so that only a median answers it, and reports zero dense observations on a scene that
+// has none
 bool ObservationSigmasTest();
 
 // EstimateDenseObservationWeight returns 1/k^2 for the k a synthetic scene's described/dense
 // displacement ratio gives, clamps to 1 when the dense population is no less precise than the
-// described one, and falls back to the configured constant when a scene has no dense keypoints
+// described one, floors a far coarser one, and falls back to the configured constant both on a scene
+// with no dense keypoints and on one whose dense population exists but is under the sigma threshold
 bool DenseObservationWeightEstimateTest();
 
 // Small SFM smoke test: build tiny scene and run BundleAdjustment::Adjust

@@ -4592,17 +4592,29 @@ bool ObservationSigmasTest()
 	GenerateTestScene(scene, cfg);
 
 	// displace the described observations by 0.5 px and give every track a second, DENSE observation
-	// of the same point displaced by 2.0 px: k = 4 by construction
+	// of the same point displaced by 2.0 px: k = 4 by construction.
+	// Neither population is displaced UNIFORMLY, which is what makes this a test of the median: one
+	// observation in ten is thrown 20 px out and one in ten left almost on the point, so of the four
+	// statistics one could read off the population only the median still reports the bulk of it. On
+	// the described side the mean answers ~2.4 px and the max 20 px against the 0.5 px the median
+	// holds, and the min answers 0.05 px. That robustness is the whole reason these sigmas can be
+	// read off RAW residuals, before any solve has pulled the outliers in.
 	constexpr float describedError = 0.5f, denseError = 2.0f;
+	constexpr float outlierError = 20.0f, innerError = 0.05f;
+	const auto Displace = [](size_t idxObs, float nominal) {
+		return idxObs%10 == 0 ? outlierError : (idxObs%10 == 1 ? innerError : nominal);
+	};
 	for (Image& img : scene.images)
 		img.CloseDescribedKeypoints();
+	size_t idxObs = 0;
 	for (Track& track : scene.tracks) {
 		const size_t numDescribedObs = track.observations.size();
-		for (size_t i = 0; i < numDescribedObs; ++i) {
+		for (size_t i = 0; i < numDescribedObs; ++i, ++idxObs) {
 			const Observation obs = track.observations[i];
 			Image& img = scene.images[obs.imageID];
-			img.keypoints[obs.featureID].pt.x += describedError;
-			const cv::KeyPoint dense(img.keypoints[obs.featureID].pt.x - describedError + denseError,
+			const float x = img.keypoints[obs.featureID].pt.x;
+			img.keypoints[obs.featureID].pt.x = x + Displace(idxObs, describedError);
+			const cv::KeyPoint dense(x + Displace(idxObs, denseError),
 				img.keypoints[obs.featureID].pt.y, 10.f, -1.f, 0.9f);
 			const uint32_t featID = (uint32_t)img.keypoints.size();
 			img.keypoints.push_back(dense);
@@ -4619,11 +4631,17 @@ bool ObservationSigmasTest()
 			(unsigned)numDescribed, (unsigned)numDense);
 		return false;
 	}
-	// the medians are the displacements this test applied, and their ratio is the k the weight is
-	// computed from -- checked to a hundredth of a pixel, because nothing here is approximate
+	// the medians are the displacement four fifths of each population carries, and their ratio is the
+	// k the weight is computed from. To a hundredth of a pixel rather than exactly: the implementation
+	// takes the UPPER median (errors[size/2]), which on an even-sized population is one particular
+	// element and not the average of the middle two, so the value asserted here is the displacement
+	// and the tolerance covers the reprojection of it
 	if (ABS(sigmaDescribed - describedError) > 0.01 || ABS(sigmaDense - denseError) > 0.01) {
-		VERBOSE("ObservationSigmasTest FAILED: sigmas %.4f described / %.4f dense against %.2f / %.2f",
-			sigmaDescribed, sigmaDense, describedError, denseError);
+		VERBOSE("ObservationSigmasTest FAILED: sigmas %.4f described / %.4f dense against %.2f / %.2f -- "
+			"a mean would answer near %.2f / %.2f and a max %.2f",
+			sigmaDescribed, sigmaDense, describedError, denseError,
+			0.8f*describedError + 0.1f*(outlierError + innerError),
+			0.8f*denseError + 0.1f*(outlierError + innerError), outlierError);
 		return false;
 	}
 
@@ -4737,6 +4755,55 @@ bool DenseObservationWeightEstimateTest()
 	if (fallback != DENSE_OBSERVATION_WEIGHT) {
 		VERBOSE("DenseObservationWeightEstimateTest FAILED: fallback %.4f against the constant %.4f",
 			fallback, DENSE_OBSERVATION_WEIGHT);
+		return false;
+	}
+
+	// the fallback's other form, and the one a real run actually reaches: a dense population that
+	// EXISTS but is too small to give a sigma. A few images into an incremental reconstruction on a
+	// textureless capture the dense observations are still a handful while the described ones are
+	// already thousands, and a median over 40 points is not a sigma to divide by. Both populations
+	// are displaced here, so it is the count that refuses the sample and not a zero sigma.
+	Scene fewDense;
+	SceneConfig fewDenseCfg;
+	fewDenseCfg.numImages = 4;
+	fewDenseCfg.numPoints = 300;
+	GenerateTestScene(fewDense, fewDenseCfg);
+	constexpr size_t numFewDense = 40;
+	for (Image& img : fewDense.images)
+		img.CloseDescribedKeypoints();
+	size_t numAdded = 0;
+	for (Track& track : fewDense.tracks) {
+		const size_t numDescribedObs = track.observations.size();
+		for (size_t i = 0; i < numDescribedObs; ++i) {
+			const Observation obs = track.observations[i];
+			Image& img = fewDense.images[obs.imageID];
+			img.keypoints[obs.featureID].pt.x += describedError;
+			if (numAdded >= numFewDense)
+				continue;
+			const cv::KeyPoint dense(img.keypoints[obs.featureID].pt.x - describedError + denseError,
+				img.keypoints[obs.featureID].pt.y, 10.f, -1.f, 0.9f);
+			const uint32_t featID = (uint32_t)img.keypoints.size();
+			img.keypoints.push_back(dense);
+			track.observations.emplace_back(obs.imageID, featID);
+			++numAdded;
+		}
+		track.numInliers = (uint8_t)MINF((size_t)track.observations.size(), (size_t)255);
+	}
+	double sigmaFewDescribed = 0, sigmaFewDense = 0;
+	size_t numFewDescribedObs = 0, numFewDenseObs = 0;
+	ComputeObservationSigmas(fewDense, sigmaFewDescribed, numFewDescribedObs, sigmaFewDense, numFewDenseObs);
+	if (numFewDenseObs != numFewDense || numFewDescribedObs < 100 ||
+		sigmaFewDescribed <= 0.0 || sigmaFewDense <= 0.0) {
+		VERBOSE("DenseObservationWeightEstimateTest FAILED: the small-sample fixture holds %u dense and %u described "
+			"observations at sigmas %.4f/%.4f -- it must put the dense population alone under the threshold",
+			(unsigned)numFewDenseObs, (unsigned)numFewDescribedObs, sigmaFewDescribed, sigmaFewDense);
+		return false;
+	}
+	const double smallSample = EstimateDenseObservationWeight(fewDense, config);
+	if (smallSample != DENSE_OBSERVATION_WEIGHT) {
+		VERBOSE("DenseObservationWeightEstimateTest FAILED: %u dense observations against %u described ones weigh "
+			"%.4f instead of falling back to the constant %.4f",
+			(unsigned)numFewDenseObs, (unsigned)numFewDescribedObs, smallSample, DENSE_OBSERVATION_WEIGHT);
 		return false;
 	}
 
