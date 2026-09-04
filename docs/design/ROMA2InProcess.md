@@ -327,7 +327,7 @@ struct PairVerdict {
 void JudgePairROMA2(const PairsMatcher&, const Image& imgA, const Image& imgB,
     const PairWarps& warps, const ROMA2Config& config, ImagePair& pair, PairVerdict& verdict);
 
-// ROMA2Warp.h — the fixed pitch (density -> bucket grid side) and the per-pair cap it feeds
+// ROMA2Warp.h — the fixed pitch (density -> bucket grid side); bounds the draw in A
 int DenseFillGridSide(unsigned denseMatchesPerFrame, int warpSide);
 
 // MatchROMA2.h — density over the smaller inlier area; bounds the draw in B, which the grid cannot see
