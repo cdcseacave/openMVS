@@ -207,9 +207,26 @@ visible beside what it bought:
 ROMA2 slot plan: 3399 pairs, 139 slots, 218 loads (0 reloads)
 ```
 
-Measured on a 225-image capture: 3399 candidate pairs needed 139 slots, 218 loads and 0 reloads — the
-`(ID1,ID2)` order keeps almost every image's descriptor resident across the whole window it is needed
-in, with essentially no re-describe cost.
+Measured on a 225-image capture, 3399 candidate pairs, at four slot budgets (2026-09-04,
+`<capture>/openmvs-roma2-2026090[34]-*`; round 1 shown, the feedback round tracks it):
+
+| `--roma2-slots` | slots used | loads | reloads | matching wall (both rounds) |
+|---|---|---|---|---|
+| 225 (one per image) | 139 | 218 | 0 | 4 m 28.7 s |
+| 64 | 64 | 350 | 132 (38%) | 4 m 39.4 s |
+| 32 | 32 | 664 | 446 (67%) | 5 m 02.1 s |
+| 16 | 16 | 1467 | 1249 (85%) | 5 m 52.5 s |
+
+Two things follow. **The budget is a pure cost knob** — the same 3345 pairs are stored at every one
+of those budgets, so lowering it trades re-describes for device memory and changes nothing else.
+And **the zero at the top is the budget's, not the order's**: with a slot per image nothing can be
+reloaded, so a run sized that way says nothing about the ordering.
+
+What the `(ID1,ID2)` order is worth shows only under a constrained budget. Replaying the run's own
+processing order through the same Belady policy reproduces the measured loads to within five;
+replaying the same pairs shuffled costs **7.4x more loads at 64 slots** (2599 against 350), 5.9x at
+32 and 3.3x at 16. The order is what keeps a small slot pool affordable: at 64 slots the 132 reloads
+add 11 s to a 269 s matching stage.
 
 ---
 
@@ -430,14 +447,14 @@ build.
 
 ## Memory (fp32, base preset)
 
-**Not revalidated for the one-pass matcher.** The device-memory table and the round-1/feedback-round
-staging below it were measured under the previous multi-pass pipeline (gate, guided re-match, dense
-infusion) on the pre-bidirectional export; the one-pass matcher has not been profiled on this metric
-yet. In particular the "34-55% of slot loads are already reloads at 64" figure the `--roma2-slots 16`
-advice rests on is a multi-pass-pipeline number: the Slot Plan section's own measurement on the
-current pass (225 images, 64-slot budget, 218 loads, **0 reloads**) is the only reload rate taken
-against the one-pass matcher, and it does not support that advice. Treat everything below as a floor
-from the old pipeline, not a bound on the current one, until it is remeasured.
+**Device memory is not revalidated for the one-pass matcher** — the table and the round-1/feedback-
+round staging below it were measured under the previous multi-pass pipeline on the pre-bidirectional
+export, and the one-pass matcher has not been profiled with `nvidia-smi` since. Treat them as a floor
+from the old pipeline, not a bound on the current one. The reload rates in the `--roma2-slots 16`
+advice at the end of this section, however, **have** been remeasured on the one pass (Slot Plan
+above): 38% of loads are reloads at 64 slots and 85% at 16, on a 225-image capture — the same band
+the multi-pass pipeline reported, and the wall-clock cost of dropping to 16 slots is +31% of the
+matching stage for about 2.6 GB of device memory saved.
 
 | Item | Size |
 |---|---|
@@ -465,19 +482,19 @@ So the analytic table is a **floor**, not a bound: budget from the measured colu
 (`--roma2-match false`, the default) never opens the coarse-match session and stays at the 2.6 GB
 row — it runs comfortably on a 4 GB device at any slot count, `--roma2-slots` being a dense-matching
 knob only. Dense matching needs headroom for the 12.0 GB transition peak, so on a 16 GB device drop
-to `--roma2-slots 16` (200 MiB of slots instead of 800 MiB, at the cost of more re-describes — 34-55%
-of slot loads are already reloads at 64) and expect the arena, not the slots, to dominate; below
+to `--roma2-slots 16` (200 MiB of slots instead of 800 MiB, at the cost of more re-describes — 85% of
+slot loads are reloads at 16 against 38% at 64, worth +31% of the matching stage) and expect the
+arena, not the slots, to dominate; below
 ~12 GB of free device memory, dense matching at `base` is not a good fit — use `--roma2-setting fast`
 or `turbo`, whose tensors are 8.0/3.1 MiB per slot.
 
 ## Measured Latencies (CUDA, fp32, median over 100 runs)
 
-**Not revalidated for the one-pass matcher.** These numbers were measured on the pre-bidirectional
-export (`roma2onnx-20260829-facets1520`, `format_version` 1 — unsupported and rejected at load by the
-current loader; see Graph Contract and Export tooling above); the bidirectional `match_coarse` graph
-the one-pass matcher actually runs (`roma2onnx-20260903-bidir`, two extra outputs from the same
-forward pass) has not been re-timed. Real one-pass latency numbers are being produced by measurement
-runs separately and are not yet in this document.
+The per-graph numbers below were measured on the pre-bidirectional export
+(`roma2onnx-20260829-facets1520`, `format_version` 1 — unsupported and rejected at load by the
+current loader; see Graph Contract and Export tooling above). The bidirectional `match_coarse` graph
+the one-pass matcher runs (`roma2onnx-20260903-bidir`) adds two outputs to the same forward pass, so
+the joint-ViT cost is unchanged and the second direction is a second head call.
 
 | Preset | Descriptor | Match coarse |
 |---|---|---|
@@ -486,6 +503,31 @@ runs separately and are not yet in this document.
 | turbo (320) | 12.6 ms | 8.5 ms |
 
 Source: `~/virginia/models/roma2-onnx/roma2onnx-20260829-facets1520/export.log`.
+
+### The one pass, end to end (2026-09-04 campaign, A100, base, fp32)
+
+Per-pair, from the `-v3` per-pair records of three captures; the pair time covers the graph call,
+the verdict, the guided match, the dense fill, the union fit and the store:
+
+| capture | judged | admitted | admitted pair ms (p10 / median / p90) | guided matches (median) | dense matches (median) |
+|---|---|---|---|---|---|
+| 8d2f4877 (225 img, LiDAR interior) | 5474 | 3345 | 86 / **116** / 159 | 48 | 1991 |
+| 38004114 (311 img, textureless) | 6865 | 3513 | 65 / **86** / 135 | 33 | 1995 |
+| Truck (251 img, well-textured) | 6275 | 5872 | 329 / **633** / 1043 | 1048 | 1753 |
+
+The whole matching stage, both rounds, is 269 s / 343 s / 338 s respectively. Two readings:
+
+- **On textureless captures the graph call dominates** and a pair costs about 100 ms. The dense fill
+  runs at the `--roma2-dense-matches` cap (2000) on essentially every admitted pair, because there is
+  nothing else filling the overlap.
+- **On a texture-rich capture the guided descriptor search dominates**: Truck carries 4.3 M described
+  keypoints, its median pair takes 1048 guided matches, and the pair time is 5x the interiors'. The
+  dense fill draws less (median 1753) because the sparse matches already occupy the overlap.
+
+Matching is never the expensive stage end to end. On the same three runs it was 269 s, 343 s and
+338 s against total wall times of 2 h 46 m, 4 h 59 m and 1 h 14 m: bundle adjustment over the two
+million tracks the dense fill creates is what the pass actually costs
+(`<tools>/PAIR-CORRECTNESS-REPORT.md`).
 
 ---
 
