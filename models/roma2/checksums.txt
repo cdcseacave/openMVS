@@ -2,8 +2,9 @@
 # scripts/fetch_roma2_model.py --setting <setting> --precision <precision> --dest <dir>.
 #
 # Format: one entry per line, "<sha256>  <relative/path>" (two spaces, sha256sum-compatible).
-# '#' starts a comment; blank lines are ignored. Paths are relative to --dest and always begin
-# with "<setting>-<precision>/", e.g. for setting=base, precision=fp32:
+# '#' starts a comment; blank lines are ignored. Paths are the *published* paths -- on the
+# Hugging Face repo and on the GitHub-release mirror -- always beginning with
+# "<setting>-<precision>/", e.g. for setting=base, precision=fp32:
 #
 #   <digest>  base-fp32/roma_base.json
 #   <digest>  base-fp32/roma_base_descriptor_fp32.onnx
@@ -13,14 +14,21 @@
 #   <digest>  base-fp32/roma_base_match_coarse_fp32.onnx.data
 #   <digest>  base-fp32/roma_base_match_coarse_fp32.export.json
 #
+# scripts/fetch_roma2_model.py writes these files flat into --dest (no "<setting>-<precision>/"
+# segment on disk -- see its _local_path()); --dest *is* the model directory RoMa2Onnx::Load reads
+# directly. Neither a fetched --dest nor the flat export directory a bundle is built from carries
+# the prefix -- it is a publishing convention only, so add it by hand when regenerating from
+# either one.
+#
 # This file is what pins the published artefact's exact bytes without the OpenMVS repository
 # carrying any of it (the model itself lives on Hugging Face, mirrored as GitHub release assets,
 # ~1.4 GB for base/fp32) -- and what makes the mirror as trustworthy as the canonical host.
 #
 # Regenerate it from the export run (scripts/python/roma2/export.py) whenever a new bundle is
-# published, and replace every entry below in the same commit: a digest that no longer matches the
-# published bytes stops every fetch. A checksums file with no entries is refused outright, with a
-# message naming this file, rather than silently accepting whatever it downloaded.
+# published, adding the "<setting>-<precision>/" prefix by hand, and replace every entry below in
+# the same commit: a digest that no longer matches the published bytes stops every fetch. A
+# checksums file with no entries is refused outright, with a message naming this file, rather than
+# silently accepting whatever it downloaded.
 
 cb2cd7c98b5bcdaf1648053bfe8217d873873a6f051c508e0e5a7ac268027703  base-fp32/roma_base.json
 bf54183ecc5b67dccfe96df931ac415b6852688f0e5cefd9651be5ddc19bba0c  base-fp32/roma_base_descriptor_fp32.onnx

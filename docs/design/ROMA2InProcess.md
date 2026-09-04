@@ -133,8 +133,8 @@ slice → concat → L2 → `sign(d)·|d|^p` power normalization → L2, `p` = t
 is pooled end to end **on device**, inside the exported descriptor graph, and read back as the
 `retrieval` output (`RoMa2Onnx::Describe`, `libs/SFM/RoMa2Matcher.h/cpp`) -- one path, no
 runtime-configurable recipe or host-side pooling. A manifest that does not declare a `retrieval`
-output (`format_version` 1) is an unsupported model and fails loudly at load, naming the model
-directory and the missing output.
+output (an export predating the on-device pooling) is an unsupported model and fails loudly at
+load, naming the model directory and the missing output.
 
 An earlier revision of this branch pooled FACETS (and a legacy LAYERS recipe: GeM p=3 on `layers`
 slice 1) on the CPU (`SFM::PoolRetrievalDescriptor`); once the graph took over the pooling that CPU
@@ -169,16 +169,21 @@ its destructor runs after (a `RoMa2Onnx*`/tensor held by `PairsMatcher` must not
 remembered so later calls fail fast. `layers` are **not** cached across the describe pass and the
 matching pass (13 GB per 1000 images at base) — the matching pass re-describes on slot load.
 
-`ROMA2Config::IsInProcessEnabled()` now only asks `enabled && !ResolveModelPath().empty()` — whether
-any pass actually needs the model moved to the caller, because `ROMA2Config` cannot see the match
-mode. `Scene::MatchPairs` computes that itself: `needsDescriptors` (the match mode is RETRIEVAL, or
-`--export-retrieval-csv` was requested, and the scene does not already carry global descriptors) and
-`needsWarps` (`ROMA2Config::NeedsWarps()`, i.e. `useMatching`) — the model loads only when at least
-one of the two is true. A requested-but-unavailable model is always an error, never a silent fallback
-to the vocabulary tree — `Scene::MatchPairs` checks this before loading anything, and `CreateStructure`
-checks a stricter version during option validation (`--roma2 has nothing to do without --roma2-match
-true or --match-mode 4 (RETRIEVAL)`, unless `--export-retrieval-csv` was given) so the user gets the
-hint before any feature extraction runs.
+Whether any pass actually needs the model is decided entirely by the caller, not by `ROMA2Config`
+itself: the config cannot see the match mode, so it exposes no "is this in process enabled" query
+of its own. `Scene::MatchPairs` computes that itself: `needsDescriptors` (the match mode is
+RETRIEVAL, or `--export-retrieval-csv` was requested, and the scene does not already carry global
+descriptors) and `needsWarps` (`roma2Cfg.useMatching`) — the model loads only when at least one of
+the two is true. A requested-but-unavailable model is always an error, never a silent fallback
+to the vocabulary tree — `Scene::MatchPairs` checks this before loading anything, by name, and is
+the only place that can, since only it knows whether the scene already carries global descriptors.
+`CreateStructure` gives the same hint earlier, before any feature extraction runs, wherever it can
+be sure without seeing the scene: unconditionally that `--roma2` has nothing to do at all without
+`--roma2-match true`, `--match-mode 4` (RETRIEVAL) or `--export-retrieval-csv`, and unconditionally
+that `--roma2-match true` needs a resolvable model (the dense pass always needs it, regardless of
+what the scene already carries). It deliberately does not require a model for `--match-mode 4` or
+`--export-retrieval-csv` alone, since a scene loaded from disk may already carry the descriptors
+they need and then require no model at all — `Scene::MatchPairs`' own check covers that case.
 
 ---
 
