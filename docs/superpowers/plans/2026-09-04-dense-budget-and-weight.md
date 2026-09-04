@@ -471,7 +471,7 @@ bool ObservationSigmasTest()
 }
 ```
 
-Declare in `apps/Tests/TestsSFM.h`, call from `apps/Tests/Tests.cpp` next to the other bundle-adjustment tests (after `BAPinholeReprojectionJacobianTest`).
+**Placement matters:** `SceneConfig` and `GenerateTestScene` are defined at `apps/Tests/TestsSFM.cpp:4008-4180`, so this test's DEFINITION goes after them, not up with the ROMA2 tests. Declare it in `apps/Tests/TestsSFM.h` next to `BAPinholeReprojectionJacobianTest` and call it from `apps/Tests/Tests.cpp` beside that one.
 
 - [ ] **Step 2: Run the build to verify it fails**
 
@@ -629,7 +629,7 @@ bool DenseObservationWeightEstimateTest()
 }
 ```
 
-Declare in `apps/Tests/TestsSFM.h`, call from `apps/Tests/Tests.cpp` right after `ObservationSigmasTest`.
+Same placement rule as Task 3 — the definition goes after `GenerateTestScene` (`apps/Tests/TestsSFM.cpp:4074`). Declare in `apps/Tests/TestsSFM.h`, call from `apps/Tests/Tests.cpp` right after `ObservationSigmasTest`.
 
 - [ ] **Step 2: Run the build to verify it fails**
 
@@ -702,8 +702,6 @@ double SFM::EstimateDenseObservationWeight(const Scene& scene, const BAConfig& c
 	return CLAMP(1.0/(k*k), MIN_DENSE_OBSERVATION_WEIGHT, 1.0);
 }
 ```
-
-(If `CLAMP` is not available in this translation unit, use `MINF(MAXF(...))` in the codebase's own idiom — check what neighbouring code uses rather than adding an include.)
 
 - [ ] **Step 5: Pass the resolved weight through both solves**
 
