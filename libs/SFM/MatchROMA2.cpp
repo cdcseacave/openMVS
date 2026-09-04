@@ -747,7 +747,10 @@ bool SFM::AssemblePairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA,
 	dense = DenseMatches();
 	const cv::Size sizeA(imgA.GetSize()), sizeB(imgB.GetSize());
 
-	// 1) the dense fill: the verdict's inlier cells where the guided candidates are NOT. Occupancy
+	// 1) the dense fill: the verdict's inlier cells where the guided candidates are NOT, drawn at
+	// config.denseMatchesPerFrame's density over the overlap (DenseFillGridSide) and capped by
+	// DenseFillCeiling, the same density over whichever of the verdict's two inlier areas is smaller --
+	// the term that keeps the draw bounded in B, which the bucket grid itself cannot see. Occupancy
 	// is read in A's frame, the frame the warp grid lives in and the only one where a keypoint
 	// position and a warp cell are directly comparable.
 	std::vector<Point2f> occupiedA;
@@ -761,7 +764,7 @@ bool SFM::AssemblePairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA,
 		Image32F inlierConfidence;
 		RebuildInlierWarp(verdict, sizeA, sizeB, warpSize, inlierWarp, inlierConfidence);
 		SampleWarpComplementary(imgA, imgB, inlierWarp, inlierConfidence, config.minConfidence,
-			DenseFillGridSide(config.denseMatches, warpSize), config.denseMatches,
+			DenseFillGridSide(config.denseMatchesPerFrame, warpSize), DenseFillCeiling(config, verdict),
 			occupiedA, dense.pointsA, dense.pointsB, dense.confidences);
 	}
 

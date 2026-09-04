@@ -62,6 +62,10 @@ bool ROMA2ComplementaryDrawTest();
 // two pairs sharing an image stratify it on the same grid and so agree on the pixels they sample
 bool ROMA2DenseFillDensityTest();
 
+// The dense fill ceiling (DenseFillCeiling): the configured density over the SMALLER of the
+// verdict's two inlier areas, symmetric in A and B, and linear in the density knob
+bool ROMA2DenseFillCeilingTest();
+
 // The pair verdict (JudgePairROMA2) on the exact bidirectional warp of two pinhole cameras looking
 // at a non-planar surface: a warp confident over ~30% of both frames is admitted with both inlier
 // areas measuring that share, a warp confident over 30% of A whose B side maps into A over only 3%

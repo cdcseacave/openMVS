@@ -173,7 +173,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("roma2-slots", boost::program_options::value(&OPT::nROMA2Slots)->default_value(64), "images kept resident on the device while dense matching (12.5 MB each at base)")
 		("roma2-min-confidence", boost::program_options::value(&OPT::fROMA2MinConfidence)->default_value(0.1f), "dense matching: confidence at which a warp cell takes part in the verdict, the keypoint tracking and the dense fill")
 		("roma2-min-overlap", boost::program_options::value(&OPT::fROMA2MinOverlap)->default_value(0.10f), "dense matching: the verdict, as the smaller of the two inlier areas one fitted geometry explains -- of the first image's confident cells and of the second's (0.10 is about 0.15-0.17 of true overlap, 0.15 about 0.25; 0 admits every pair)")
-		("roma2-dense-matches", boost::program_options::value(&OPT::nROMA2DenseMatches)->default_value(2000), "dense matching: correspondences the dense fill of one pair may add, drawn only where its guided sparse matches are not; each costs a keypoint in both images plus a track")
+		("roma2-dense-matches", boost::program_options::value(&OPT::nROMA2DenseMatches)->default_value(2000), "dense matching: correspondences the dense fill adds per FULL FRAME of overlap; a pair draws that density over the part of its overlap its guided sparse matches did not already cover, capped by the smaller of the two inlier areas the verdict measured, so the dense keypoint density is bounded in both images; each costs a keypoint in both images plus a track")
 		("roma2-provider", boost::program_options::value<std::string>(&OPT::strROMA2Provider)->default_value("auto"), "ONNX Runtime execution provider: auto (CUDA > CoreML > DirectML > CPU), cuda, coreml, dml or cpu")
 		("default-focal-ratio", boost::program_options::value(&OPT::defaultFocalRatio)->default_value(1.2f), "focal-length is set to ratio * max(width,height) for images with unknown focal-length")
 		("focal-length,f", boost::program_options::value(&OPT::focalLength)->default_value(0.f), "force focal-length (in pixels) for specified images (0 = disabled)")
@@ -366,7 +366,7 @@ int main(int argc, LPCTSTR* argv)
 	cfg.roma2Cfg.useMatching = OPT::bROMA2Match;
 	cfg.roma2Cfg.minConfidence = OPT::fROMA2MinConfidence;
 	cfg.roma2Cfg.minOverlap = OPT::fROMA2MinOverlap;
-	cfg.roma2Cfg.denseMatches = OPT::nROMA2DenseMatches;
+	cfg.roma2Cfg.denseMatchesPerFrame = OPT::nROMA2DenseMatches;
 	cfg.roma2Cfg.slotBudget = OPT::nROMA2Slots;
 	cfg.roma2Cfg.provider = OPT::strROMA2Provider;
 	#ifdef _USE_CUDA

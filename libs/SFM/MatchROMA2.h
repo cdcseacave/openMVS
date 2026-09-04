@@ -54,7 +54,10 @@ struct SFM_API ROMA2Config {
 	bool useMatching = false;      // one-pass dense pair matching (verdict, guided, fill, store)
 	float minConfidence = 0.1f;    // a warp cell takes part (verdict, tracking, fill) at this confidence or above
 	float minOverlap = 0.10f;      // verdict: min(inlier area A, inlier area B) >= minOverlap
-	unsigned denseMatches = 2000;  // dense fill cap per pair
+	// Dense correspondences the fill may draw per FULL FRAME of overlap: a density, not a count per
+	// pair. A pair's draw is that density over the part of its overlap its guided matches did not
+	// already cover (DenseFillGridSide sets the pitch that makes it so), capped by DenseFillCeiling.
+	unsigned denseMatchesPerFrame = 2000;
 	unsigned slotBudget = 64;      // image descriptors kept resident on the device
 	bool useGPU = true;            // allow the GPU execution providers
 
@@ -102,6 +105,18 @@ struct SFM_API PairVerdict {
 	std::vector<float> confidences;
 };
 
+// The most dense correspondences one pair may keep: the configured density over the SMALLER of the
+// two inlier areas the verdict measured. The fill's bucket grid lives in image A's frame, so it
+// bounds the dense keypoint density there and nowhere else -- but every dense correspondence costs a
+// keypoint in B as well, and a warp that puts a large part of A onto a small part of B would pile
+// them up in it. This is the term that stops that, and it binds only when B is the constraining
+// frame: with inlierAreaA <= inlierAreaB it sits above the draw the pitch produces anyway, so it
+// never charges the sparse matches' coverage a second time.
+inline unsigned DenseFillCeiling(const ROMA2Config& config, const PairVerdict& verdict) {
+	return (unsigned)ROUND2INT((float)config.denseMatchesPerFrame *
+		MINF(verdict.inlierAreaA, verdict.inlierAreaB));
+}
+
 // Judge one candidate pair from its bidirectional warp alone. Fits one geometry on a coverage-uniform
 // sample (SampleWarpByCoverage, target VERDICT_SAMPLE = 4000) of A's cells at conf >= config.minConfidence
 // through pairsMatcher.GeometricFilter(tmpA, tmpB, pair, WarpTolerance(...)) on temporary Image copies
@@ -126,7 +141,8 @@ struct SFM_API DenseMatches {
 
 // Turn an admitted pair's evidence into the pair the scene stores: draw the dense fill from the
 // verdict's inlier cells where the guided candidates are not (SampleWarpComplementary with occupiedA =
-// the A positions of `guided`, cap config.denseMatches); fit ONE geometry on guided u dense through
+// the A positions of `guided`, at config.denseMatchesPerFrame's density, capped by DenseFillCeiling);
+// fit ONE geometry on guided u dense through
 // pairsMatcher.GeometricFilter at the matcher's own maxEpipolarError on temporary Image copies whose
 // keypoints are those correspondences; then classify against pair.F: the guided matches within the
 // matcher's maxEpipolarError are the sparse segment (`pair.matches[0, numFilteredInliers)`, the pair's

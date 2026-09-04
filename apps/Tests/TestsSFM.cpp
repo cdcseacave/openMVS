@@ -1443,8 +1443,8 @@ bool ROMA2ComplementaryDrawTest()
 	for (int cy = 0; cy < 40; cy += 2)
 		for (int cx = 0; cx < 40; cx += 2)
 			sparseA.push_back(CellToPixel(cx, cy));
-	const ROMA2Config config; // denseMatches 2000, minConfidence 0.1
-	const unsigned denseBudget = config.denseMatches;
+	const ROMA2Config config; // denseMatchesPerFrame 2000 (a density per full frame of overlap), minConfidence 0.1
+	const unsigned denseBudget = config.denseMatchesPerFrame;
 	const int numBuckets = DenseFillGridSide(denseBudget, cells);
 	Image32F overlap(cv::Size(cells, cells), 0.6f);
 	std::vector<Point2f> denseA, denseB;
@@ -1825,6 +1825,44 @@ bool ROMA2DenseFillDensityTest()
 	}
 
 	VERBOSE("ROMA2 dense fill density test passed (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+bool ROMA2DenseFillCeilingTest()
+{
+	TD_TIMER_START();
+
+	// The ceiling is the configured density over the SMALLER of the verdict's two inlier areas: the
+	// bucket grid lives in A's frame and cannot see how much of B the pair's dense matches would
+	// land on, so this is the only term that bounds their density in B.
+	ROMA2Config config;
+	config.denseMatchesPerFrame = 2000;
+	PairVerdict verdict;
+
+	verdict.inlierAreaA = 0.50f; verdict.inlierAreaB = 0.50f;
+	const unsigned symmetric = DenseFillCeiling(config, verdict);
+	verdict.inlierAreaA = 0.50f; verdict.inlierAreaB = 0.10f;
+	const unsigned narrowB = DenseFillCeiling(config, verdict);
+	verdict.inlierAreaA = 0.10f; verdict.inlierAreaB = 0.50f;
+	const unsigned narrowA = DenseFillCeiling(config, verdict);
+	verdict.inlierAreaA = 1.00f; verdict.inlierAreaB = 1.00f;
+	const unsigned identical = DenseFillCeiling(config, verdict);
+	if (symmetric != 1000 || narrowB != 200 || narrowA != 200 || identical != 2000) {
+		VERBOSE("ROMA2DenseFillCeilingTest FAILED: ceilings %u/%u/%u/%u for .5|.5, .5|.1, .1|.5, 1|1",
+			symmetric, narrowB, narrowA, identical);
+		return false;
+	}
+	// the two sides are symmetric -- it is min(), not "A's area" -- and the density is linear in the
+	// knob, which is what makes --roma2-dense-matches readable as matches per frame of overlap
+	config.denseMatchesPerFrame = 500;
+	verdict.inlierAreaA = 0.50f; verdict.inlierAreaB = 0.50f;
+	if (DenseFillCeiling(config, verdict) != 250) {
+		VERBOSE("ROMA2DenseFillCeilingTest FAILED: ceiling %u at density 500 over half an overlap",
+			DenseFillCeiling(config, verdict));
+		return false;
+	}
+
+	VERBOSE("ROMA2 dense fill ceiling test passed (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 
@@ -2287,7 +2325,7 @@ bool ROMA2AssemblyTest()
 
 	MatchConfig matchCfg;
 	PairsMatcher matcher(scene, matchCfg);
-	ROMA2Config config; // minConfidence 0.1, denseMatches 2000
+	ROMA2Config config; // minConfidence 0.1, denseMatchesPerFrame 2000 (a density per full frame of overlap)
 	// the geometry the verdict handed over, 3 degrees off the truth, so that a pair carrying the
 	// union fit's geometry is told apart from one that kept the verdict's
 	const REAL tilt = D2R(REAL(3));
@@ -2330,7 +2368,9 @@ bool ROMA2AssemblyTest()
 	// the region cell each verdict/guided index falls on is known without a pixel round-trip: the
 	// region loop above ran y then x with no skipped cell (checked at numInlierCells above), and the
 	// guided loop took every 14th of those in the same order
-	const int gridSide = DenseFillGridSide(config.denseMatches, cells);
+	// this calls the same production function the code under test calls for its pitch, so unlike the
+	// bucket-mapping arithmetic just below it does not independently re-verify the pitch formula
+	const int gridSide = DenseFillGridSide(config.denseMatchesPerFrame, cells);
 	const int regionWidth = rx1 - rx0;
 	const auto RegionBucket = [&](size_t k) {
 		const int y = ry0 + (int)(k/(size_t)regionWidth), x = rx0 + (int)(k%(size_t)regionWidth);
@@ -2398,16 +2438,21 @@ bool ROMA2AssemblyTest()
 
 	// no guided match at all: the pair is still assembled, its dense segment its whole evidence, and
 	// the fill draws one point per bucket of the fixed-pitch grid that holds a region cell -- nothing
-	// left to strike out this time, but still a bucket count, not a cell count
+	// left to strike out this time, but still a bucket count, not a cell count. The region's edge
+	// does not tile the fixed pitch evenly, so a border bucket counts as used from just a sliver of
+	// region inside it, and the resulting bucket count runs a little over the per-frame density --
+	// so DenseFillCeiling actually binds here, unlike in the guided u dense case above where the
+	// guided matches' own strike-outs already keep the draw under it.
+	const size_t expectedDenseOnly = MINF(numCandidateBuckets, (size_t)DenseFillCeiling(config, verdict));
 	ImagePair pairDense(0, 1);
 	ArmVerdictGeometry(pairDense, poseVerdict);
 	DenseMatches denseOnly;
 	if (!AssemblePairROMA2(matcher, imgA, imgB, verdict, std::vector<DMatch>(), config, cells, pairDense, denseOnly) ||
 		!pairDense.matches.empty() || pairDense.numFilteredInliers != 0 ||
-		denseOnly.pointsA.size() != numCandidateBuckets) {
+		denseOnly.pointsA.size() != expectedDenseOnly) {
 		VERBOSE("ROMA2AssemblyTest FAILED: a pair with no guided match holds %u sparse (%d filtered) and %u dense correspondences, expected 0 and %u",
 			(unsigned)pairDense.matches.size(), pairDense.numFilteredInliers,
-			(unsigned)denseOnly.pointsA.size(), (unsigned)numCandidateBuckets);
+			(unsigned)denseOnly.pointsA.size(), (unsigned)expectedDenseOnly);
 		return false;
 	}
 	if (!pairDense.relativePose.has_value()) {
@@ -2421,9 +2466,14 @@ bool ROMA2AssemblyTest()
 	}
 
 	// a fill too small for a fit of its own (under the estimator's 8 correspondences): the verdict's
-	// geometry stands, unchanged, and the pair is stored on it
+	// geometry stands, unchanged, and the pair is stored on it. The inlier areas stay the parent
+	// verdict's -- only the SAMPLE of inlier cells shrinks here, to drive the union fit below the
+	// estimator's minimum -- so DenseFillCeiling does not also clamp the fill down from the 6 cells
+	// this case means to exercise.
 	PairVerdict tinyVerdict;
 	tinyVerdict.admitted = true;
+	tinyVerdict.inlierAreaA = verdict.inlierAreaA;
+	tinyVerdict.inlierAreaB = verdict.inlierAreaB;
 	for (size_t k = 0; k < 6; ++k) {
 		tinyVerdict.inliersA.push_back(verdict.inliersA[k*97]);
 		tinyVerdict.inliersB.push_back(verdict.inliersB[k*97]);

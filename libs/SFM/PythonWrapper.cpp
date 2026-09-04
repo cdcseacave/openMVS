@@ -310,7 +310,7 @@ void RegisterBindings()
 		.def_readwrite("use_matching", &SFM::ROMA2Config::useMatching)
 		.def_readwrite("min_confidence", &SFM::ROMA2Config::minConfidence)
 		.def_readwrite("min_overlap", &SFM::ROMA2Config::minOverlap)
-		.def_readwrite("dense_matches", &SFM::ROMA2Config::denseMatches)
+		.def_readwrite("dense_matches_per_frame", &SFM::ROMA2Config::denseMatchesPerFrame)
 		.def_readwrite("slot_budget", &SFM::ROMA2Config::slotBudget)
 		.def_readwrite("use_gpu", &SFM::ROMA2Config::useGPU);
 

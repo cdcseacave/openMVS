@@ -221,6 +221,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::ROMA2DenseFillDensityTest())
 				return false;
+			if (!SFM::ROMA2DenseFillCeilingTest())
+				return false;
 			if (!SFM::ROMA2VerdictTest())
 				return false;
 			if (!SFM::ROMA2GuidedMatchTest())
