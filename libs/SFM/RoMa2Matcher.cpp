@@ -116,14 +116,13 @@ bool RoMa2Manifest::Load(const String& fileName)
 	if (!ReadJson(data, "format_version", fileName, formatVersion) ||
 		!ReadJsonString(data, "model", fileName, model))
 		return false;
-	// format_version 3 is the bidirectional coarse-match graph (warp/confidence AND warp_BA/
-	// confidence_BA from one Run, checked below); earlier versions have only the A->B pair and this
-	// build has no other way to get the B->A one (a second Run with the descriptors swapped is not
-	// the same computation: bidirectional=True shares the correlation volume between both heads), so
-	// they are rejected here, by name, rather than left to fail later on the two missing outputs
-	if (formatVersion != 3 || model != "roma2") {
-		VERBOSE("error: RoMa2 manifest '%s' is version %d of model '%s', expected version 3 of 'roma2' "
-			"(earlier versions are no longer supported: no bidirectional coarse-match graph)",
+	// format_version 1 is the RoMa2 manifest format this build reads: a bidirectional coarse-match
+	// graph that returns warp/confidence AND warp_BA/confidence_BA from one Run (bidirectional=True
+	// shares the correlation volume between both heads, so a second Run with the descriptors swapped
+	// would not be the same computation), plus a descriptor graph whose third output `retrieval` is
+	// the FACETS recipe pooled on device.
+	if (formatVersion != 1 || model != "roma2") {
+		VERBOSE("error: RoMa2 manifest '%s' is version %d of model '%s', expected version 1 of 'roma2'",
 			fileName.c_str(), formatVersion, model.c_str());
 		return false;
 	}

@@ -3542,6 +3542,69 @@ bool RoMa2PreprocessTest()
 	#endif
 }
 
+// RoMa2 manifest format-version test: a manifest declaring format_version 1 (this build's schema)
+// loads, and one declaring format_version 3 (a schema this build no longer reads) is rejected.
+// RoMa2Manifest::Load is plain JSON parsing, compiled in every build, so this test needs neither
+// ONNX Runtime nor OPENMVS_ROMA2_MODEL_PATH.
+bool RoMa2ManifestVersionTest()
+{
+	const ScopedTempDir tmpDir(_T("RoMa2ManifestVersionTest"));
+	if (!tmpDir.IsValid())
+		return false;
+
+	// A minimal manifest carrying every key RoMa2Manifest::Load reads, at made-up but internally
+	// consistent sizes (S=32, cells=4, facetsDim=8): every declared io shape is cross-checked
+	// against these, so a mismatch here would fail the test for the wrong reason.
+	const auto WriteManifest = [&tmpDir](const String& fileName, int formatVersion) -> String {
+		const String path = tmpDir(fileName);
+		std::ofstream os(path.c_str());
+		os << "{"
+		      "\"format_version\":" << formatVersion << ","
+		      "\"model\":\"roma2\","
+		      "\"setting\":\"turbo\","
+		      "\"image_size\":32,"
+		      "\"patch\":16,"
+		      "\"layers\":[11,17],"
+		      "\"descriptor_layers_shape\":[1,2,2,2,8],"
+		      "\"warp_size\":4,"
+		      "\"confidence_channels\":1,"
+		      "\"value_facet_blocks\":[15,20],"
+		      "\"value_facets_shape\":[1,2,2,2,8],"
+		      "\"opset\":18,"
+		      "\"retrieval_recipes\":{\"facets\":{\"dim\":8}},"
+		      "\"files\":{\"descriptor\":\"d.onnx\",\"descriptor_data\":\"d.onnx.data\","
+		                 "\"match_coarse\":\"m.onnx\",\"match_coarse_data\":\"m.onnx.data\"},"
+		      "\"io\":{"
+		        "\"descriptor\":{\"inputs\":{\"image\":[1,3,32,32]},"
+		                        "\"outputs\":{\"layers\":[1,2,2,2,8],\"value_facets\":[1,2,2,2,8],\"retrieval\":[1,8]}},"
+		        "\"match_coarse\":{\"inputs\":{\"descriptors_A\":[1,2,2,2,8],\"descriptors_B\":[1,2,2,2,8]},"
+		                          "\"outputs\":{\"warp\":[1,4,4,2],\"confidence\":[1,4,4,1],"
+		                                       "\"warp_BA\":[1,4,4,2],\"confidence_BA\":[1,4,4,1]}}"
+		      "}"
+		   "}";
+		return path;
+	};
+
+	RoMa2Manifest manifestV1;
+	if (!manifestV1.Load(WriteManifest(_T("roma_v1.json"), 1))) {
+		VERBOSE("RoMa2ManifestVersionTest FAILED: a format_version 1 manifest did not load");
+		return false;
+	}
+	if (manifestV1.imageSize != 32 || manifestV1.warpSize != 4 || manifestV1.facetsDim != 8) {
+		VERBOSE("RoMa2ManifestVersionTest FAILED: a format_version 1 manifest loaded with unexpected sizes");
+		return false;
+	}
+
+	RoMa2Manifest manifestV3;
+	if (manifestV3.Load(WriteManifest(_T("roma_v3.json"), 3))) {
+		VERBOSE("RoMa2ManifestVersionTest FAILED: a format_version 3 manifest loaded, expected rejection");
+		return false;
+	}
+
+	VERBOSE("RoMa2ManifestVersionTest PASSED");
+	return true;
+}
+
 #ifdef _USE_ONNXRUNTIME
 // The reference dump folder of one preset and stage, with its trailing path separator
 static String RoMa2ReferenceDir(const String& modelDir, const String& setting, const char* stage)

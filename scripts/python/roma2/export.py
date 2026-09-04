@@ -12,8 +12,8 @@ romav2/{graphs,export}.py):
   roma_<setting>_match_coarse_fp32.onnx  (descriptors_A, descriptors_B) -> warp[1,S/4,S/4,2],
                                          confidence[1,S/4,S/4,1] (A->B), warp_BA[1,S/4,S/4,2],
                                          confidence_BA[1,S/4,S/4,1] (B->A, from the same bidirectional=True
-                                         matcher pass -- the dead img_A/img_B inputs of format_version 2
-                                         are dropped, spec 2026-09-03-roma2-onepass-design.md §3.2)
+                                         matcher pass -- the dead img_A/img_B inputs are dropped, spec
+                                         2026-09-03-roma2-onepass-design.md §3.2)
 
 `S` is the square input resolution --setting traces for: turbo 320, fast 512, base 640. The graphs are fp32,
 static shape, batch 1; precision is a property of the graph, and the runtime decides the rest (ORT runs the
@@ -60,14 +60,13 @@ STAGE_IO = {
     "match": (["descriptors_A", "descriptors_B"], ["warp", "confidence", "warp_BA", "confidence_BA"]),
 }
 
-FORMAT_VERSION = 3    # roma_<setting>.json's schema version, read by RoMa2Manifest::Load. Version 3
-                      # (spec 2026-09-03-roma2-onepass-design.md §3.2): match_coarse is bidirectional --
-                      # warp_BA/confidence_BA (B->A) join warp/confidence (A->B), both from one
-                      # bidirectional=True matcher pass -- and its dead img_A/img_B inputs (never read by
-                      # the coarse head; see graphs.MatchWrap's docstring) are dropped. Version 2 added
-                      # io.descriptor.outputs.retrieval (the FACETS recipe pooled on device, graphs.py
-                      # _facets_retrieval), unchanged here. The loader rejects any format_version other
-                      # than 3, naming the version it saw.
+FORMAT_VERSION = 1    # roma_<setting>.json's schema version, read by RoMa2Manifest::Load. Describes a
+                      # bidirectional match_coarse graph -- warp_BA/confidence_BA (B->A) join warp/
+                      # confidence (A->B), both from one bidirectional=True matcher pass, its dead
+                      # img_A/img_B inputs (never read by the coarse head; see graphs.MatchWrap's
+                      # docstring) dropped -- and a descriptor graph whose io.descriptor.outputs.retrieval
+                      # is the FACETS recipe pooled on device (graphs.py _facets_retrieval). The loader
+                      # rejects any other format_version, naming the version it saw.
 
 WARMUP_RUNS = 10      # discarded before timing: the first executions carry allocation and clock ramp
 
@@ -224,8 +223,8 @@ def check_onnx(args):
         produced[name] = host
         expected_path = reference / f"out_{name}.npy"
         if not expected_path.is_file():
-            # exactly the situation this task creates: a v1-era reference directory (traced before
-            # the graph gained `retrieval`) checked against a v2 graph -- name the stale directory
+            # exactly the situation this task creates: a reference directory traced before the graph
+            # gained `retrieval`, checked against a graph that now emits it -- name the stale directory
             # rather than a bare FileNotFoundError, same as the "which half is missing" case below
             raise SystemExit(f"FAILED: {reference} has no '{expected_path.name}': this looks like a "
                              f"reference directory traced before this graph gained a '{name}' output; "
@@ -273,10 +272,10 @@ def check_onnx(args):
                 raise SystemExit(f"FAILED: pooled {recipe} descriptor cosine {cosine:.6f} is below "
                                  f"--min-cosine {args.min_cosine}")
         if "retrieval" in produced:
-            # format_version 2: the graph pools FACETS on device (graphs.py _facets_retrieval), so this is
-            # judged directly against PoolRetrievalDescriptor's own Python reference rather than against a
-            # second pooling of value_facets -- what a retrieval-only pass actually ships to openMVS, at
-            # the tight bound Task 1's parity gate sets rather than the raw-tensor --min-cosine above.
+            # the graph pools FACETS on device (graphs.py _facets_retrieval), so this is judged directly
+            # against PoolRetrievalDescriptor's own Python reference rather than against a second pooling
+            # of value_facets -- what a retrieval-only pass actually ships to openMVS, at the tight bound
+            # Task 1's parity gate sets rather than the raw-tensor --min-cosine above.
             want = pool_retrieval(np.load(reference / "out_value_facets.npy"), "facets")
             got = produced["retrieval"].astype(np.float64).reshape(-1)
             got = got / np.linalg.norm(got)   # defensive: the graph already emits a unit vector
@@ -299,7 +298,7 @@ def check_correspondences(reference, produced, args):
     ranking runtimes by it inverts the order that pixel agreement gives.
 
     So: how far the warp moved where the model says there is a match, and how often the two disagree that
-    there is one at all -- for both directions of the bidirectional graph (format_version 3), since A->B
+    there is one at all -- for both directions of the bidirectional match_coarse graph, since A->B
     and B->A are independent outputs of the same pass and either could regress without the other moving.
     The worse of the two directions is what the --max-warp-error / --min-agreement bounds are judged
     against, so a caller reading only "OK" still gets the tighter of the two guarantees.
@@ -554,12 +553,11 @@ def main():
     pk.add_argument("--min-cosine", type=float, default=0.998,
                     help="descriptor only: fail below this, on the raw outputs and on the pooled "
                          "descriptors, or on any non-finite output")
-    # Task 1's own gate, tighter than --min-cosine: format_version 2 only, judges the graph's on-device
-    # retrieval output directly against PoolRetrievalDescriptor's Python reference (pool_retrieval).
+    # Task 1's own gate, tighter than --min-cosine: judges the graph's on-device retrieval output
+    # directly against PoolRetrievalDescriptor's Python reference (pool_retrieval).
     pk.add_argument("--retrieval-min-cosine", type=float, default=0.99999,
-                    help="descriptor only, format_version 2 graphs: fail if the graph's own 'retrieval' "
-                         "output falls below this cosine against pool_retrieval('facets') of the "
-                         "reference value_facets")
+                    help="descriptor only: fail if the graph's own 'retrieval' output falls below this "
+                         "cosine against pool_retrieval('facets') of the reference value_facets")
     # polyml's bounds, which carry roughly 4x margin over what its bf16 engines measure: warp p99 reaches
     # 0.35 px on the coarse stage there, and agreement stays above 99.88%.
     pk.add_argument("--max-warp-error", type=float, default=2.0,

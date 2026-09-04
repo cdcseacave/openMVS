@@ -122,6 +122,11 @@ bool RetrievalModeTest();
 // F.interpolate(mode="bicubic", align_corners=False, antialias=True) to within 1e-5
 bool RoMa2PreprocessTest();
 
+// RoMa2 manifest format-version test: a manifest declaring format_version 1 loads, and one
+// declaring format_version 3 is rejected. Pure JSON parsing, so it needs neither ONNX Runtime
+// nor OPENMVS_ROMA2_MODEL_PATH.
+bool RoMa2ManifestVersionTest();
+
 // RoMa2 ONNX parity test: runs the exported descriptor and coarse-match graphs through
 // RoMa2Onnx and compares them to the Python reference dumps shipped with the models.
 // Skipped unless OPENMVS_ROMA2_MODEL_PATH points at an exported model folder;
