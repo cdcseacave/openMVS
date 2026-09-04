@@ -6,15 +6,35 @@ carrying a byte of it.
     fetch_roma2_model.py [--setting base] [--precision fp32]
                           [--dest DIR] [--repo ID] [--revision REV] [--mirror URL]
 
-Two sources, always producing the same on-disk tree under `<dest>/<setting>-<precision>/`:
+RULING R147: `--dest` *is* the model directory the C++ side consumes -- the same thing
+`--roma2-model DIR` and `OPENMVS_ROMA2_MODEL_PATH` have always meant (`RoMa2Onnx::Load` reads
+`modelDir + "roma_" + setting + ".json"` and every graph file directly under it, no further
+nesting). So the files this script writes to `--dest` are flat: `roma_<setting>.json`,
+`roma_<setting>_descriptor_<precision>.onnx[.data]`,
+`roma_<setting>_match_coarse_<precision>.onnx[.data]`, and their `.export.json` sidecars.
+
+`models/roma2/checksums.txt` still names each file under a `<setting>-<precision>/` prefix --
+that is the *published* path on both hosts (the Hub repo really does nest by preset, and so does
+the reconstructed tree on the mirror side), not the local one. Mapping published path -> local
+path is one line (`Path(published).name`), done in exactly one place below.
+
+Multiple presets can coexist in one `--dest`: `roma_<setting>.json` and the graph filenames
+already carry `setting` and `precision`, so `--roma2-setting` picks between presets already
+fetched into the same directory. The one real collision would be two *precisions of the same
+setting* (e.g. base/fp32 and a future base/fp16): both manifests would want the name
+`roma_base.json`, so a base/fp16 bundle -- not published today -- will need a distinct manifest
+name of its own before it can share a `--dest` with base/fp32.
+
+Two sources:
 
   * Canonical: the Hugging Face model repo (`--repo`), via `huggingface_hub.snapshot_download`
-    when that package is importable -- resumable, deduplicating, revision-pinned.
+    when that package is importable -- resumable, deduplicating, revision-pinned. It fetches the
+    Hub's own `<setting>-<precision>/` layout into a scratch directory, then this script moves
+    the needed files up into the flat `--dest` and discards the scratch copy.
   * Mirror: GitHub release assets of the OpenMVS repo (`--mirror`), streamed with
     `urllib.request` when huggingface_hub is not importable. GitHub flattens release assets (no
-    subdirectories), so files are uploaded there under their bare name and this script
-    reconstructs the "<setting>-<precision>/" layout locally on download so both sources leave
-    an identical tree.
+    subdirectories), so the mirror's bare file names are already this script's local names --
+    nothing to reconstruct on that side.
 
 Every fetched file is verified against `models/roma2/checksums.txt` (read relative to this
 script, not the current directory) -- that file is what pins the published artefact's exact
@@ -33,6 +53,7 @@ import hashlib
 import os
 import shutil
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -76,7 +97,9 @@ class FetchResult:
     no-op run from a real transfer without relying on filesystem timestamps."""
 
     dest: Path
-    status: Dict[str, str] = field(default_factory=dict)  # relative path -> "cached"|"downloaded"
+    # keyed by the *published* path from checksums.txt (e.g. "base-fp32/roma_base.json"); the
+    # file itself lives flat at dest / Path(that path).name -- see _local_path().
+    status: Dict[str, str] = field(default_factory=dict)  # published path -> "cached"|"downloaded"
 
     @property
     def downloaded(self) -> list:
@@ -85,6 +108,12 @@ class FetchResult:
     @property
     def cached(self) -> list:
         return sorted(p for p, s in self.status.items() if s == "cached")
+
+
+def _local_path(dest: Path, published_relpath: str) -> Path:
+    """Map a checksums.txt entry ("<setting>-<precision>/<name>", the published path on both
+    hosts) to where it actually lives on disk: flat, directly under `dest` (RULING R147)."""
+    return dest / Path(published_relpath).name
 
 
 def sha256_file(path: Path) -> str:
@@ -134,44 +163,59 @@ def read_checksums(checksums_path: Path) -> Dict[str, str]:
     return entries
 
 
-def _entries_for(checksums: Dict[str, str], setting: str, precision: str) -> Dict[str, str]:
+def _entries_for(checksums: Dict[str, str], setting: str, precision: str, checksums_path: Path) -> Dict[str, str]:
     prefix = f"{setting}-{precision}/"
     subset = {relpath: digest for relpath, digest in checksums.items() if relpath.startswith(prefix)}
     if not subset:
         raise ModelFetchError(
-            f"no checksum entries for '{prefix}' in '{CHECKSUMS_PATH}' -- unknown --setting/"
+            f"no checksum entries for '{prefix}' in '{checksums_path}' -- unknown --setting/"
             "--precision, or that combination has not been published yet"
         )
     return subset
 
 
-def _fetch_via_huggingface(dest: Path, repo: str, revision: str, setting: str, precision: str) -> bool:
+def _fetch_via_huggingface(dest: Path, repo: str, revision: str, setting: str, precision: str,
+                            pending: Dict[str, str]) -> bool:
     """Try `huggingface_hub.snapshot_download`. Returns False (without touching the network) if
     huggingface_hub is not importable, so the caller falls back to the mirror; returns True once
-    the bulk download has run (verification against checksums.txt happens afterward either way)."""
+    the needed files have been moved into place (verification against checksums.txt happens
+    afterward either way)."""
     try:
         from huggingface_hub import snapshot_download
     except ImportError:
         return False
     dest.mkdir(parents=True, exist_ok=True)
-    snapshot_download(
-        repo_id=repo,
-        revision=revision,
-        allow_patterns=[f"{setting}-{precision}/*"],
-        local_dir=str(dest),
-    )
+    prefix = f"{setting}-{precision}"
+    with tempfile.TemporaryDirectory() as scratch:
+        snapshot_download(
+            repo_id=repo,
+            revision=revision,
+            allow_patterns=[f"{prefix}/*"],
+            local_dir=scratch,
+        )
+        # The Hub repo nests by preset ("<setting>-<precision>/"); the local model directory is
+        # flat (RULING R147), so move only the files this call still needs up by basename and
+        # let the scratch directory -- shell and all -- disappear with the `with` block.
+        nested_dir = Path(scratch) / prefix
+        for published_relpath in pending:
+            fetched = nested_dir / Path(published_relpath).name
+            if fetched.is_file():
+                target = _local_path(dest, published_relpath)
+                if target.is_file():
+                    target.unlink()
+                shutil.move(str(fetched), str(target))
     return True
 
 
 def _fetch_via_mirror(dest: Path, mirror: str, pending: Dict[str, str]) -> None:
-    """Stream each pending file from the flat GitHub mirror, writing through a `.part` file so
-    an interrupted fetch never leaves a truncated graph in place, and reconstructing the
-    "<setting>-<precision>/" layout locally (GitHub itself only stores the bare filename)."""
-    for relpath in pending:
-        basename = relpath.rsplit("/", 1)[-1]
+    """Stream each pending file from the flat GitHub mirror release, writing through a `.part`
+    file so an interrupted fetch never leaves a truncated graph in place. GitHub's flattened
+    asset name is already this script's local flat name -- nothing to reconstruct here."""
+    dest.mkdir(parents=True, exist_ok=True)
+    for published_relpath in pending:
+        basename = Path(published_relpath).name
         url = f"{mirror.rstrip('/')}/{basename}"
-        target = dest / relpath
-        target.parent.mkdir(parents=True, exist_ok=True)
+        target = dest / basename
         part = target.with_name(target.name + ".part")
         try:
             with urllib.request.urlopen(url) as response, open(part, "wb") as out:
@@ -192,8 +236,9 @@ def fetch(
     mirror: str = DEFAULT_MIRROR_URL,
     checksums_path=CHECKSUMS_PATH,
 ) -> FetchResult:
-    """Fetch (or verify already-present copies of) every file
-    `models/roma2/checksums.txt` lists under `<setting>-<precision>/`, into `dest`.
+    """Fetch (or verify already-present copies of) every file `models/roma2/checksums.txt`
+    publishes under `<setting>-<precision>/`, writing them flat into `dest` -- the model
+    directory `RoMa2Onnx::Load` / `--roma2-model` / `OPENMVS_ROMA2_MODEL_PATH` reads directly.
 
     Idempotent: a file already present with the right digest costs one hash and is left
     untouched. A file present with the wrong digest is deleted before a fresh attempt. Raises
@@ -201,35 +246,36 @@ def fetch(
     fetching -- callers never see a partially-verified result silently reported as success.
     """
     dest = Path(dest)
-    entries = _entries_for(read_checksums(checksums_path), setting, precision)
+    checksums_path = Path(checksums_path)
+    entries = _entries_for(read_checksums(checksums_path), setting, precision, checksums_path)
     result = FetchResult(dest=dest)
 
     pending: Dict[str, str] = {}
-    for relpath, digest in entries.items():
-        path = dest / relpath
-        if verify_digest(path, digest):
-            result.status[relpath] = "cached"
+    for published_relpath, digest in entries.items():
+        local_path = _local_path(dest, published_relpath)
+        if verify_digest(local_path, digest):
+            result.status[published_relpath] = "cached"
         else:
-            if path.is_file():  # wrong digest: never leave a stale/corrupt file in place
-                path.unlink()
-            pending[relpath] = digest
+            if local_path.is_file():  # wrong digest: never leave a stale/corrupt file in place
+                local_path.unlink()
+            pending[published_relpath] = digest
 
     if not pending:
         return result
 
-    if not _fetch_via_huggingface(dest, repo, revision, setting, precision):
+    if not _fetch_via_huggingface(dest, repo, revision, setting, precision, pending):
         _fetch_via_mirror(dest, mirror, pending)
 
-    for relpath, digest in pending.items():
-        path = dest / relpath
-        if not verify_digest(path, digest):
-            actual = sha256_file(path) if path.is_file() else None
-            if path.is_file():
-                path.unlink()
+    for published_relpath, digest in pending.items():
+        local_path = _local_path(dest, published_relpath)
+        if not verify_digest(local_path, digest):
+            actual = sha256_file(local_path) if local_path.is_file() else None
+            if local_path.is_file():
+                local_path.unlink()
             raise ModelFetchError(
-                f"digest mismatch for '{relpath}': expected {digest}, got {actual or '<missing>'}"
+                f"digest mismatch for '{published_relpath}': expected {digest}, got {actual or '<missing>'}"
             )
-        result.status[relpath] = "downloaded"
+        result.status[published_relpath] = "downloaded"
 
     return result
 
@@ -251,7 +297,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--setting", default="base", help="RoMa v2 preset: turbo|fast|base (default: base)")
     parser.add_argument("--precision", default="fp32", help="exported precision (default: fp32)")
     parser.add_argument("--dest", default=None,
-                         help="destination directory (default: $OPENMVS_ROMA2_MODEL_PATH, else ./roma2-model)")
+                         help="destination directory -- the model directory itself, flat "
+                              "(default: $OPENMVS_ROMA2_MODEL_PATH, else ./roma2-model)")
     parser.add_argument("--repo", default=HF_REPO, help=f"Hugging Face model repo id (default: {HF_REPO})")
     parser.add_argument("--revision", default=DEFAULT_REVISION,
                          help=f"Hugging Face revision/commit to fetch (default: {DEFAULT_REVISION})")
@@ -276,7 +323,6 @@ def main(argv=None) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 1
 
-    model_dir = dest / f"{args.setting}-{args.precision}"
     if result.downloaded:
         print(f"fetched {len(result.downloaded)} file(s), {len(result.cached)} already present and verified")
     else:
@@ -284,12 +330,13 @@ def main(argv=None) -> int:
     print()
     print(DINOV3_NOTICE)
     print()
-    print(f"model ready at: {model_dir}")
-    print(f"set OPENMVS_ROMA2_MODEL_PATH={model_dir} (or pass --roma2-model {model_dir} to "
-          "CreateStructure) so --roma2 finds it. The install-prefix fallback in "
-          "ROMA2Config::ResolveModelPath() only looks directly under the install directory "
-          "itself (no <setting>-<precision> segment), so unless OPENMVS_ROMA2_MODEL_PATH is set "
-          "you still need --roma2-model to point at the path above.")
+    # RULING R147: --dest *is* the model directory -- RoMa2Onnx::Load reads its files directly,
+    # with no "<setting>-<precision>" segment to append.
+    print(f"model ready at: {dest.resolve()}")
+    print(f"set OPENMVS_ROMA2_MODEL_PATH={dest.resolve()} (or pass --roma2-model {dest.resolve()} "
+          "to CreateStructure) so --roma2 finds it. If --dest was the CMake install prefix's own "
+          "share/openMVS/roma2, ROMA2Config::ResolveModelPath()'s install-prefix fallback already "
+          "finds it with no environment variable needed.")
     return 0
 
 

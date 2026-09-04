@@ -50,7 +50,14 @@ class VerifyDigestTests(unittest.TestCase):
 class FetchTests(unittest.TestCase):
     """Exercises `fetch()` entirely over a local file:// mirror. huggingface_hub is not
     installed in this environment, so the ImportError fallback to the mirror is the only path
-    that ever runs -- exactly what a no-network test needs."""
+    that ever runs -- exactly what a no-network test needs.
+
+    RULING R147: `--dest` is the flat model directory RoMa2Onnx::Load reads directly
+    (`modelDir + "roma_<setting>.json"`, no "<setting>-<precision>" segment). checksums.txt
+    still names the *published* path under that prefix -- these fixtures use the real manifest
+    basename (roma_base.json) so a regression back to the nested layout would be caught by
+    test_manifest_lands_flat_directly_under_dest below, not just inferred from a generic name.
+    """
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -63,9 +70,9 @@ class FetchTests(unittest.TestCase):
 
         self.setting = "base"
         self.precision = "fp32"
-        self.basename = "roma_base_descriptor_fp32.onnx"
-        self.relpath = f"{self.setting}-{self.precision}/{self.basename}"
-        self.content = b"fake onnx bytes, repeated for a non-trivial digest " * 50
+        self.basename = "roma_base.json"  # the manifest RoMa2Onnx::Load looks for, verbatim
+        self.published_relpath = f"{self.setting}-{self.precision}/{self.basename}"
+        self.content = b'{"setting": "base", "fixture": true}' + b" " * 200
         self.digest = _sha256(self.content)
 
         # The mirror is flat -- exactly what a GitHub release gives back.
@@ -73,7 +80,7 @@ class FetchTests(unittest.TestCase):
 
         self.checksums_path = root / "checksums.txt"
         self.checksums_path.write_text(
-            f"# test fixture\n{self.digest}  {self.relpath}\n")
+            f"# test fixture\n{self.digest}  {self.published_relpath}\n")
 
     def _fetch(self, **overrides):
         params = dict(
@@ -85,17 +92,29 @@ class FetchTests(unittest.TestCase):
         params.update(overrides)
         return fm.fetch(self.dest, **params)
 
-    def test_downloads_missing_file_from_mirror_and_reconstructs_subdirectory(self):
+    def _local_target(self) -> Path:
+        return self.dest / self.basename
+
+    def test_downloads_missing_file_from_mirror_flat(self):
         result = self._fetch()
-        target = self.dest / self.relpath
+        target = self._local_target()
         self.assertTrue(target.is_file())
         self.assertEqual(target.read_bytes(), self.content)
-        self.assertFalse((self.dest / (self.relpath + ".part")).exists())
-        self.assertEqual(result.downloaded, [self.relpath])
+        self.assertFalse(target.with_name(target.name + ".part").exists())
+        self.assertEqual(result.downloaded, [self.published_relpath])
         self.assertEqual(result.cached, [])
 
+    def test_manifest_lands_flat_directly_under_dest(self):
+        """The one assertion that would have caught RULING R147's bug: this is exactly the path
+        ROMA2Config::ResolveModelPath() hands to RoMa2Onnx::Load, which reads
+        modelDir + "roma_" + setting + ".json" with no further nesting."""
+        self._fetch()
+        self.assertTrue((self.dest / f"roma_{self.setting}.json").is_file())
+        # and definitely not tucked under a reconstructed "<setting>-<precision>/" shell
+        self.assertFalse((self.dest / f"{self.setting}-{self.precision}").exists())
+
     def test_file_already_present_with_right_digest_is_left_untouched_and_cached(self):
-        target = self.dest / self.relpath
+        target = self._local_target()
         _write(target, self.content)
         # Remove the mirror's copy so a redownload attempt -- if one wrongly happened -- would
         # fail loudly instead of silently re-writing identical bytes.
@@ -103,14 +122,14 @@ class FetchTests(unittest.TestCase):
 
         result = self._fetch()
 
-        # RULING R145/R139: assert on the actually-transferred-file counter, not mtime (whose
+        # RULING R139: assert on the actually-transferred-file counter, not mtime (whose
         # one-second granularity on many filesystems would make a fast run flaky).
         self.assertEqual(result.downloaded, [])
-        self.assertEqual(result.cached, [self.relpath])
+        self.assertEqual(result.cached, [self.published_relpath])
         self.assertEqual(target.read_bytes(), self.content)
 
     def test_file_present_with_wrong_digest_is_deleted_and_fetch_fails(self):
-        target = self.dest / self.relpath
+        target = self._local_target()
         _write(target, b"corrupted, not the published bytes")
         # The mirror has no fix available either, so the re-fetch attempt itself fails too --
         # the file must not survive the wrong-digest check regardless.
