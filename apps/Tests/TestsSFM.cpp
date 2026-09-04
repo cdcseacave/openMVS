@@ -4113,15 +4113,18 @@ bool ROMA2ReconstructTest()
 		// bundled images (the star initializer asks for three views per track), so it only runs in
 		// a build that can decode the two HEIC ones.
 		// ReconstructTest's expectations, at two bounds this path has to set for itself:
-		//  - THE TRACK COUNT. The dense fill adds up to --roma2-dense-matches correspondences per
-		//    pair, each one a keypoint in both images, so the pass hands the track builder several
-		//    times what the descriptor batch does: ~7.7k inlier tracks (turbo, CUDA) against the
-		//    ~2.2k of the descriptor-only run. [5000, 12000] is that measurement with margin either
-		//    side, and nothing more: the dense and guided correspondences of six pairs merge into
-		//    two-view tracks at a ratio nothing here bounds, so the per-pair budget does not derive
-		//    the window. A model, preset or budget change moves it -- re-measure against the track
-		//    count this stage prints and the dense total the line above reports, and widen the
-		//    window to the new measurement rather than reasoning about it.
+		//  - THE TRACK COUNT. The dense fill draws --roma2-dense-matches correspondences per full
+		//    frame of the overlap its guided matches did not already cover, each one a keypoint in
+		//    both images, so the pass hands the track builder several times what the descriptor
+		//    batch does: ~7.7k inlier tracks (turbo, CUDA) against the ~2.2k of the descriptor-only
+		//    run. [5000, 12000] is that measurement with margin either side, and nothing more: the
+		//    dense and guided correspondences of six pairs merge into tracks at a ratio nothing here
+		//    bounds, so the fill's budget does not derive the window. Both numbers were measured
+		//    under the flat per-pair cap the density rule replaced, and the density draws strictly
+		//    less, so the window is loose at its top rather than wrong -- re-measure it. A model,
+		//    preset or budget change moves it too: re-measure against the track count this stage
+		//    prints and the cap, pitch and dense total the line above reports, and set the window
+		//    to the new measurement rather than reasoning about it.
 		//  - THE RESIDUAL DISTORTION. Guided matching keeps, per keypoint of A, the descriptor-best
 		//    keypoint of B inside a disc around the warp's prediction, and the dense segment is the
 		//    warp itself, so the correspondences carry that warp's bias and the bundle absorbs it
