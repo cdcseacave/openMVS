@@ -55,6 +55,13 @@ bool ROMA2CoverageSampleTest();
 // deterministic
 bool ROMA2ComplementaryDrawTest();
 
+// The dense fill's bucket pitch (DenseFillGridSide): a function of the density and the warp side
+// alone, not of the pair, so the draw it feeds is a density over the overlap the sparse matches did
+// not cover rather than a fixed count per pair -- a larger confident region draws proportionally
+// more, an occupied bucket still yields nothing so the sparse share comes out of the same draw, and
+// two pairs sharing an image stratify it on the same grid and so agree on the pixels they sample
+bool ROMA2DenseFillDensityTest();
+
 // The pair verdict (JudgePairROMA2) on the exact bidirectional warp of two pinhole cameras looking
 // at a non-planar surface: a warp confident over ~30% of both frames is admitted with both inlier
 // areas measuring that share, a warp confident over 30% of A whose B side maps into A over only 3%

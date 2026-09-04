@@ -109,6 +109,17 @@ inline bool IsWarpCellEligible(float conf, const Point2f& normCoord, float minCo
 inline float WarpTolerance(const cv::Size& sizeA, const cv::Size& sizeB, int warpSize) {
 	return 0.5f * (float)MAXF(MAXF(sizeA.width, sizeA.height), MAXF(sizeB.width, sizeB.height)) / (float)warpSize;
 }
+
+// Side of the square bucket grid the dense fill stratifies the WHOLE warp grid on. Unlike the
+// verdict sampler's grid (WarpBucketGridSide) this is a constant of the configuration and not of the
+// pair: one bucket per dense match at full overlap, so a pair's overlap holds
+// denseMatchesPerFrame * overlapArea buckets whatever that overlap is, and the draw's density -- the
+// thing the reconstruction actually pays for -- is the same in every pair. Clamped to the warp side,
+// because a bucket finer than a cell would hold at most one candidate and stratify nothing.
+inline int DenseFillGridSide(unsigned denseMatchesPerFrame, int warpSide) {
+	ASSERT(warpSide > 0);
+	return MINF(warpSide, MAXF(1, (int)std::ceil(std::sqrt((double)denseMatchesPerFrame))));
+}
 /*----------------------------------------------------------------*/
 
 // Track the DESCRIBED keypoints of imgA into imgB through the given warp and confidence maps;
@@ -193,18 +204,24 @@ SFM_API void ThinSampleEvenly(
 // Draw a sample of confident correspondences out of a warp that COMPLEMENTS correspondences the
 // caller already has: the dense fill of an admitted pair, drawn so that the union of the pair's
 // guided sparse matches and this sample is spread as evenly as the warp allows. Same eligibility
-// rule, same n x n bucket stratification and the same in-bucket winner rule as SampleWarpByCoverage,
-// with n sized from maxSamples -- this draw's budget -- and with two differences:
+// rule and the same in-bucket winner rule as SampleWarpByCoverage, but the n x n bucket grid it
+// stratifies on is sized by the CALLER (`bucketGridSide`, normally DenseFillGridSide) rather than by
+// this draw's own budget: the pitch is the same for every pair, so a pair's overlap holds
+// bucketGridSide^2 * overlapArea buckets whatever that overlap is, and the draw is a DENSITY over
+// the overlap rather than a count per pair. Two further differences from SampleWarpByCoverage:
 //
 //  - `occupiedA` are positions in imgA's pixels (the pair's guided matches) whose buckets are
-//    struck out of the draw entirely. An occupied bucket yields NO dense point: "up to" a budget
-//    is a ceiling, not a quota to fill, and a bucket the sparse matcher already covered is exactly
-//    where a dense point adds nothing. Occupancy is read in A's frame alone -- the frame the warp
-//    grid lives in, and the only one where a keypoint position and a warp cell are directly
-//    comparable; on a genuine pair the warp carries that density over to B.
+//    struck out of the draw entirely. An occupied bucket yields NO dense point -- and that is what
+//    turns the fixed pitch into a density over the UNCOVERED overlap: the sparse matches take their
+//    share out of the very grid the dense draw is counted on, with no separate coverage term needed.
+//    Occupancy is read in A's frame alone -- the frame the warp grid lives in, and the only one
+//    where a keypoint position and a warp cell are directly comparable; on a genuine pair the warp
+//    carries that density over to B.
 //  - maxSamples is a real CAP here, not only the target it is for the verdict: a pair has a match
-//    budget, so a draw whose unoccupied-bucket count still runs over it is thinned by an even stride
-//    through the raster order (ThinSampleEvenly).
+//    budget, and it is also what bounds the density the draw can reach in image B -- the bucket grid
+//    lives in A's frame and cannot see how densely B's side of the pair ends up covered. A draw
+//    whose unoccupied-bucket count still runs over the cap is thinned by an even stride through the
+//    raster order (ThinSampleEvenly).
 //
 // sampledA/sampledB/confidences are index-parallel and in warp-grid raster order (the order
 // AppendDenseMatches needs to hand out reproducible keypoint indices), sampledA/sampledB in the
@@ -218,6 +235,7 @@ SFM_API size_t SampleWarpComplementary(
 	const Image32F2& warp,
 	const Image32F& confidence,
 	float minConfidence,
+	int bucketGridSide,
 	unsigned maxSamples,
 	const std::vector<Point2f>& occupiedA,
 	std::vector<Point2f>& sampledA,

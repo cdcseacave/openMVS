@@ -761,7 +761,8 @@ bool SFM::AssemblePairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA,
 		Image32F inlierConfidence;
 		RebuildInlierWarp(verdict, sizeA, sizeB, warpSize, inlierWarp, inlierConfidence);
 		SampleWarpComplementary(imgA, imgB, inlierWarp, inlierConfidence, config.minConfidence,
-			config.denseMatches, occupiedA, dense.pointsA, dense.pointsB, dense.confidences);
+			DenseFillGridSide(config.denseMatches, warpSize), config.denseMatches,
+			occupiedA, dense.pointsA, dense.pointsB, dense.confidences);
 	}
 
 	// 2) ONE geometry for the pair, fitted on guided u dense through the matcher's own estimator at

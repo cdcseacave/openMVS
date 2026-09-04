@@ -1420,22 +1420,10 @@ bool ROMA2ComplementaryDrawTest()
 		const int cy = MINF(MAXF(ROUND2INT(pt.y*(float)(cells-1)/(height-1.f)), 0), cells-1);
 		return (size_t)(cy*numBuckets/cells)*numBuckets + cx*numBuckets/cells;
 	};
-	const auto BucketGridSide = [&](size_t numEligible, unsigned budget) {
-		return MINF((int)std::ceil(std::sqrt((double)budget*(double)cells*(double)cells/(double)numEligible)), cells);
-	};
 	// eligibility restated independently of the draw: a cell the confidence map admits whose warped
-	// point lands inside B. Two readings of it -- how many there are (the E the grid is sized from)
-	// and which buckets hold at least one -- because a border cell can round a hundredth of a pixel
-	// outside B and drop out, and the expected winner count has to account for that rather than
-	// assume a full grid
-	const auto CountEligible = [&](const Image32F& conf) {
-		size_t numEligible = 0;
-		for (int y = 0; y < cells; ++y)
-			for (int x = 0; x < cells; ++x)
-				if (conf(y, x) >= 0.3f && Image8U::isInside(DenormCoord(warp(y, x), imgB.GetSize()), imgB.GetSize()))
-					++numEligible;
-		return numEligible;
-	};
+	// point lands inside B, and which buckets hold at least one -- because a border cell can round a
+	// hundredth of a pixel outside B and drop out, and the expected winner count has to account for
+	// that rather than assume a full grid
 	const auto MarkCandidateBuckets = [&](const Image32F& conf, int numBuckets, std::vector<bool>& hasCandidate) {
 		hasCandidate.assign((size_t)numBuckets*numBuckets, false);
 		for (int y = 0; y < cells; ++y)
@@ -1457,17 +1445,17 @@ bool ROMA2ComplementaryDrawTest()
 			sparseA.push_back(CellToPixel(cx, cy));
 	const ROMA2Config config; // denseMatches 2000, minConfidence 0.1
 	const unsigned denseBudget = config.denseMatches;
+	const int numBuckets = DenseFillGridSide(denseBudget, cells);
 	Image32F overlap(cv::Size(cells, cells), 0.6f);
 	std::vector<Point2f> denseA, denseB;
 	std::vector<float> confidences;
-	const size_t numDense = SampleWarpComplementary(imgA, imgB, warp, overlap, 0.3f, denseBudget,
+	const size_t numDense = SampleWarpComplementary(imgA, imgB, warp, overlap, 0.3f, numBuckets, denseBudget,
 		sparseA, denseA, denseB, confidences);
 	if (numDense == 0 || denseB.size() != numDense || confidences.size() != numDense) {
 		VERBOSE("ROMA2ComplementaryDrawTest FAILED: the draw returned %u points with %u/%u index-parallel arrays",
 			(unsigned)numDense, (unsigned)denseB.size(), (unsigned)confidences.size());
 		return false;
 	}
-	const int numBuckets = BucketGridSide(CountEligible(overlap), denseBudget);
 	std::vector<bool> occupied((size_t)numBuckets*numBuckets, false);
 	for (const Point2f& pt : sparseA)
 		occupied[PixelToBucket(pt, numBuckets)] = true;
@@ -1486,6 +1474,7 @@ bool ROMA2ComplementaryDrawTest()
 	FOREACH(b, hasCandidate)
 		if (hasCandidate[b] && !occupied[b])
 			++numExpected;
+	numExpected = MINF(numExpected, (size_t)denseBudget); // ThinSampleEvenly's cap, if the winners ran over it
 	if (numDense != numExpected) {
 		VERBOSE("ROMA2ComplementaryDrawTest FAILED: %u dense points for the %u unoccupied buckets of the %dx%d grid that hold a candidate",
 			(unsigned)numDense, (unsigned)numExpected, numBuckets, numBuckets);
@@ -1520,24 +1509,25 @@ bool ROMA2ComplementaryDrawTest()
 	// budget went to its guided matches gets no dense segment rather than a stale one
 	std::vector<Point2f> zeroA(3, Point2f(1.f, 2.f)), zeroB(5, Point2f(3.f, 4.f));
 	std::vector<float> zeroC(7, 0.5f);
-	if (SampleWarpComplementary(imgA, imgB, warp, overlap, 0.3f, 0, sparseA, zeroA, zeroB, zeroC) != 0 ||
+	if (SampleWarpComplementary(imgA, imgB, warp, overlap, 0.3f, numBuckets, 0, sparseA, zeroA, zeroB, zeroC) != 0 ||
 		!zeroA.empty() || !zeroB.empty() || !zeroC.empty()) {
 		VERBOSE("ROMA2ComplementaryDrawTest FAILED: a zero dense budget still drew %u points", (unsigned)zeroA.size());
 		return false;
 	}
 
-	// 3) OVER BUDGET, WHERE THE THINNING SHOWS. Eligible cells scattered every other cell (E = T/4)
-	// drives the bucket grid up until the winners far outnumber the budget, and the confidence grows
-	// steadily toward the bottom-right corner. Thinning by confidence -- what the first version did
-	// -- keeps only that corner; thinning by an even stride through the raster order has to leave
-	// every quadrant hit.
+	// 3) OVER BUDGET, WHERE THE THINNING SHOWS. A pitch far finer than the budget needs (cells/2,
+	// against a budget of 400) drives the winner count far past the budget on its own, without
+	// needing to scatter the eligible cells thin -- the fixed pitch does not care how sparse the
+	// overlap is -- and the confidence grows steadily toward the bottom-right corner. Thinning by
+	// confidence -- what the first version did -- keeps only that corner; thinning by an even stride
+	// through the raster order has to leave every quadrant hit.
 	overlap.setTo(0.f);
 	for (int y = 0; y < cells; y += 2)
 		for (int x = 0; x < cells; x += 2)
 			overlap(y, x) = 0.4f + 0.5f*(float)(x + y)/(float)(2*cells);
 	const unsigned smallBudget = 400;
-	const int numSmallBuckets = BucketGridSide(CountEligible(overlap), smallBudget);
-	const size_t numSmall = SampleWarpComplementary(imgA, imgB, warp, overlap, 0.3f, smallBudget,
+	const int numSmallBuckets = cells/2;
+	const size_t numSmall = SampleWarpComplementary(imgA, imgB, warp, overlap, 0.3f, numSmallBuckets, smallBudget,
 		sparseA, denseA, denseB, confidences);
 	if (numSmall != smallBudget || denseB.size() != numSmall || confidences.size() != numSmall) {
 		VERBOSE("ROMA2ComplementaryDrawTest FAILED: an over-budget draw kept %u points of a %u budget",
@@ -1574,7 +1564,7 @@ bool ROMA2ComplementaryDrawTest()
 	// ones gets -- which is what makes the appended keypoint indices reproducible.
 	std::vector<Point2f> repeatA(11, Point2f(5.f, 6.f)), repeatB(2, Point2f(7.f, 8.f));
 	std::vector<float> repeatC(4, 0.25f);
-	SampleWarpComplementary(imgA, imgB, warp, overlap, 0.3f, smallBudget, sparseA, repeatA, repeatB, repeatC);
+	SampleWarpComplementary(imgA, imgB, warp, overlap, 0.3f, numSmallBuckets, smallBudget, sparseA, repeatA, repeatB, repeatC);
 	if (repeatA != denseA || repeatB != denseB || repeatC != confidences) {
 		VERBOSE("ROMA2ComplementaryDrawTest FAILED: the draw is not a pure function of its inputs");
 		return false;
@@ -1593,8 +1583,9 @@ bool ROMA2ComplementaryDrawTest()
 	std::vector<Point2f> upA, upB, downA, downB;
 	std::vector<float> upC, downC;
 	const std::vector<Point2f> noneOccupied;
-	SampleWarpComplementary(imgA, imgB, warp, rampUp, 0.3f, 900, noneOccupied, upA, upB, upC);
-	SampleWarpComplementary(imgA, imgB, warp, rampDown, 0.3f, 900, noneOccupied, downA, downB, downC);
+	const int gridSide900 = DenseFillGridSide(900, cells);
+	SampleWarpComplementary(imgA, imgB, warp, rampUp, 0.3f, gridSide900, 900, noneOccupied, upA, upB, upC);
+	SampleWarpComplementary(imgA, imgB, warp, rampDown, 0.3f, gridSide900, 900, noneOccupied, downA, downB, downC);
 	if (upA.empty() || upA != downA || upB != downB) {
 		VERBOSE("ROMA2ComplementaryDrawTest FAILED: opposite confidence ramps over one region drew %u and %u points "
 			"at different positions -- confidence is still ranking the bucket winners",
@@ -1620,12 +1611,12 @@ bool ROMA2ComplementaryDrawTest()
 	for (int y = 40; y < cells; ++y)
 		for (int x = 40; x < cells; ++x)
 			overlapAC(y, x) = 0.95f - 0.6f*(float)(x + y)/(float)(2*cells);
+	const int numBucketsAB = DenseFillGridSide(900, cells);
+	const int numBucketsAC = DenseFillGridSide(1500, cells);
 	std::vector<Point2f> abA, abB, acA, acB;
 	std::vector<float> abC, acC;
-	const size_t numAB = SampleWarpComplementary(imgA, imgB, warp, overlapAB, 0.3f, 900, noneOccupied, abA, abB, abC);
-	const size_t numAC = SampleWarpComplementary(imgA, imgB, warp, overlapAC, 0.3f, 1500, noneOccupied, acA, acB, acC);
-	const int numBucketsAB = BucketGridSide(CountEligible(overlapAB), 900);
-	const int numBucketsAC = BucketGridSide(CountEligible(overlapAC), 1500);
+	const size_t numAB = SampleWarpComplementary(imgA, imgB, warp, overlapAB, 0.3f, numBucketsAB, 900, noneOccupied, abA, abB, abC);
+	const size_t numAC = SampleWarpComplementary(imgA, imgB, warp, overlapAC, 0.3f, numBucketsAC, 1500, noneOccupied, acA, acB, acC);
 	if (numAB == 0 || numAC == 0 || numBucketsAB == numBucketsAC) {
 		VERBOSE("ROMA2ComplementaryDrawTest FAILED: the two pairs drew %u/%u points on %dx%d and %dx%d grids -- "
 			"the fixture must give them different grids for the coincidence to mean anything",
@@ -1679,7 +1670,7 @@ bool ROMA2ComplementaryDrawTest()
 		}
 	std::vector<Point2f> repeatAC_A, repeatAC_B;
 	std::vector<float> repeatAC_C;
-	SampleWarpComplementary(imgA, imgB, warp, overlapAC, 0.3f, 1500, noneOccupied, repeatAC_A, repeatAC_B, repeatAC_C);
+	SampleWarpComplementary(imgA, imgB, warp, overlapAC, 0.3f, numBucketsAC, 1500, noneOccupied, repeatAC_A, repeatAC_B, repeatAC_C);
 	if (repeatAC_A != acA || repeatAC_B != acB || repeatAC_C != acC) {
 		VERBOSE("ROMA2ComplementaryDrawTest FAILED: the lattice draw is not a pure function of its inputs");
 		return false;
@@ -1716,6 +1707,124 @@ bool ROMA2ComplementaryDrawTest()
 	}
 
 	VERBOSE("ROMA2ComplementaryDrawTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+bool ROMA2DenseFillDensityTest()
+{
+	TD_TIMER_START();
+
+	// --- the identity-warp setup of ROMA2ComplementaryDrawTest -------------------------------
+	Scene scene;
+	const int width = 640, height = 480;
+	scene.cameras.emplace_back(new PinholeCamera(cv::Size(width, height),
+		REAL(600), REAL(600), REAL(width)/2, REAL(height)/2));
+	scene.images.emplace_back((IIndex)0, String("a.jpg"));
+	scene.images.emplace_back((IIndex)1, String("b.jpg"));
+	FOREACH(i, scene.images) {
+		scene.images[i].cameraID = 0;
+		scene.images[i].pCamera = scene.cameras[0];
+	}
+	const Image& imgA = scene.images[0];
+	const Image& imgB = scene.images[1];
+	const int cells = 160;
+	Image32F2 warp(cells, cells);
+	for (int y = 0; y < cells; ++y)
+		for (int x = 0; x < cells; ++x)
+			warp(y, x) = Point2f(
+				((x*(width-1.f)/(cells-1)) + 0.5f)*2.f/width - 1.f,
+				((y*(height-1.f)/(cells-1)) + 0.5f)*2.f/height - 1.f);
+	const auto CellToPixel = [&](int cx, int cy) {
+		return Point2f((float)cx*(width-1.f)/(float)(cells-1), (float)cy*(height-1.f)/(float)(cells-1));
+	};
+
+	// --- 1) THE PITCH IS A FUNCTION OF THE DENSITY ALONE -------------------------------------
+	// one bucket per dense match at full overlap, clamped to the warp side, never below 1
+	if (DenseFillGridSide(2000, cells) != 45 || DenseFillGridSide(0, cells) != 1 ||
+		DenseFillGridSide(1000000, cells) != cells) {
+		VERBOSE("ROMA2DenseFillDensityTest FAILED: pitch %d/%d/%d for densities 2000/0/1000000",
+			DenseFillGridSide(2000, cells), DenseFillGridSide(0, cells), DenseFillGridSide(1000000, cells));
+		return false;
+	}
+
+	// --- 2) THE DRAW SCALES WITH THE OVERLAP AREA, NOT WITH THE BUDGET -----------------------
+	// the same pitch over two confident regions, one four times the other: the draw has to come out
+	// about four times larger, which is what "a density" means and what the old per-draw grid (sized
+	// so that ANY overlap yielded ~maxSamples) could not do
+	const unsigned density = 2000;
+	const int grid = DenseFillGridSide(density, cells);
+	const std::vector<Point2f> none;
+	std::vector<Point2f> bigA, bigB, smallA, smallB;
+	std::vector<float> bigC, smallC;
+	Image32F confidence(cells, cells);
+	const auto DrawOver = [&](int cellsWide, int cellsHigh, const std::vector<Point2f>& occupied,
+		std::vector<Point2f>& outA, std::vector<Point2f>& outB, std::vector<float>& outC) {
+		confidence.setTo(0.f);
+		for (int y = 0; y < cellsHigh; ++y)
+			for (int x = 0; x < cellsWide; ++x)
+				confidence(y, x) = 0.9f;
+		return SampleWarpComplementary(imgA, imgB, warp, confidence, 0.3f, grid, density,
+			occupied, outA, outB, outC);
+	};
+	const size_t numBig = DrawOver(80, 80, none, bigA, bigB, bigC);      // a quarter of the frame
+	const size_t numSmall = DrawOver(40, 40, none, smallA, smallB, smallC); // a sixteenth
+	if (numBig < 3*numSmall || numBig > 5*numSmall || numSmall == 0) {
+		VERBOSE("ROMA2DenseFillDensityTest FAILED: a 4x larger overlap drew %u against %u points",
+			(unsigned)numBig, (unsigned)numSmall);
+		return false;
+	}
+
+	// --- 3) THE SPARSE MATCHES TAKE THEIR SHARE OUT OF THE DRAW ------------------------------
+	// the same region drawn three times: uncovered, half covered by guided matches, fully covered.
+	// The yield has to fall with the uncovered area and reach zero when nothing is left uncovered.
+	std::vector<Point2f> halfOccupied, allOccupied;
+	for (int y = 0; y < 80; ++y)
+		for (int x = 0; x < 80; ++x) {
+			if (x < 40)
+				halfOccupied.push_back(CellToPixel(x, y));
+			allOccupied.push_back(CellToPixel(x, y));
+		}
+	std::vector<Point2f> halfA, halfB, fullA, fullB;
+	std::vector<float> halfC, fullC;
+	const size_t numHalf = DrawOver(80, 80, halfOccupied, halfA, halfB, halfC);
+	const size_t numFull = DrawOver(80, 80, allOccupied, fullA, fullB, fullC);
+	if (numHalf == 0 || numHalf > numBig*3/5 || numHalf < numBig/3) {
+		VERBOSE("ROMA2DenseFillDensityTest FAILED: half the overlap covered drew %u of %u",
+			(unsigned)numHalf, (unsigned)numBig);
+		return false;
+	}
+	if (numFull != 0) {
+		VERBOSE("ROMA2DenseFillDensityTest FAILED: a fully covered overlap still drew %u points",
+			(unsigned)numFull);
+		return false;
+	}
+
+	// --- 4) TWO PAIRS SHARING IMAGE A AGREE ON WHERE THEY SAMPLE IT --------------------------
+	// the property the fixed pitch buys downstream: two pairs that both hold A stratify it on the
+	// same grid, so their winners are the same cells and their A-side keypoints the same pixels --
+	// which is what lets FilterRedundantKeypoints chain them into a track longer than two. The
+	// second pair sees a LARGER confident region, so this is not two identical inputs: the shared
+	// part of the two draws still has to agree pixel for pixel.
+	std::vector<Point2f> wideA, wideB;
+	std::vector<float> wideC;
+	DrawOver(120, 120, none, wideA, wideB, wideC);
+	size_t numShared = 0;
+	for (const Point2f& pt : bigA)
+		if (std::find_if(wideA.begin(), wideA.end(), [&](const Point2f& q) {
+				return normSq(q - pt) < 1e-4f; }) != wideA.end())
+			++numShared;
+	// not all of them: the buckets STRADDLING the edge of the smaller pair's confident region see
+	// different candidate sets in the two draws (the wider one reaches cells the narrower one has no
+	// confidence in), so their winners may differ. Those are 45 of the 529 buckets here. The bar is
+	// what the property is worth -- the great majority of the two draws land on the same pixels of A
+	// -- not an exact count that would break on any change to the region sizes.
+	if (numShared*20 < bigA.size()*17) {
+		VERBOSE("ROMA2DenseFillDensityTest FAILED: only %u of %u samples of A are shared by a second pair",
+			(unsigned)numShared, (unsigned)bigA.size());
+		return false;
+	}
+
+	VERBOSE("ROMA2 dense fill density test passed (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 
@@ -2195,8 +2304,9 @@ bool ROMA2AssemblyTest()
 	};
 
 	// guided u dense on an exact geometry: the 80 sound guided matches become the sparse segment,
-	// the 6 the geometry contradicts the pair's outliers, and the fill covers every region cell no
-	// guided match sits on
+	// the 6 the geometry contradicts the pair's outliers, and the fill draws one point per bucket of
+	// the fixed-pitch grid (DenseFillGridSide) that holds a region cell and no guided match -- not one
+	// point per uncovered cell, now that the pitch no longer shrinks to fit this one pair's overlap
 	ImagePair pair(0, 1);
 	ArmVerdictGeometry(pair, poseVerdict);
 	DenseMatches dense;
@@ -2217,7 +2327,29 @@ bool ROMA2AssemblyTest()
 				k, pair.matches[k].queryIdx, pair.matches[k].trainIdx);
 			return false;
 		}
-	const size_t expectedDense = numInlierCells - numGuided;
+	// the region cell each verdict/guided index falls on is known without a pixel round-trip: the
+	// region loop above ran y then x with no skipped cell (checked at numInlierCells above), and the
+	// guided loop took every 14th of those in the same order
+	const int gridSide = DenseFillGridSide(config.denseMatches, cells);
+	const int regionWidth = rx1 - rx0;
+	const auto RegionBucket = [&](size_t k) {
+		const int y = ry0 + (int)(k/(size_t)regionWidth), x = rx0 + (int)(k%(size_t)regionWidth);
+		return (size_t)(y*gridSide/cells)*gridSide + x*gridSide/cells;
+	};
+	std::vector<bool> hasCandidate((size_t)gridSide*gridSide, false);
+	for (size_t k = 0; k < numInlierCells; ++k)
+		hasCandidate[RegionBucket(k)] = true;
+	size_t numCandidateBuckets = 0; // the dense-only case below draws one point per bucket here, unfiltered
+	FOREACH(b, hasCandidate)
+		if (hasCandidate[b])
+			++numCandidateBuckets;
+	std::vector<bool> guidedBucket((size_t)gridSide*gridSide, false);
+	FOREACH(g, guided)
+		guidedBucket[RegionBucket(g*14)] = true;
+	size_t expectedDense = 0;
+	FOREACH(b, hasCandidate)
+		if (hasCandidate[b] && !guidedBucket[b])
+			++expectedDense;
 	if (dense.pointsA.size() != expectedDense ||
 		dense.pointsB.size() != dense.pointsA.size() || dense.confidences.size() != dense.pointsA.size()) {
 		VERBOSE("ROMA2AssemblyTest FAILED: the fill drew %u/%u points with %u confidences, expected %u",
@@ -2265,16 +2397,17 @@ bool ROMA2AssemblyTest()
 	}
 
 	// no guided match at all: the pair is still assembled, its dense segment its whole evidence, and
-	// the fill now covers every one of the verdict's cells
+	// the fill draws one point per bucket of the fixed-pitch grid that holds a region cell -- nothing
+	// left to strike out this time, but still a bucket count, not a cell count
 	ImagePair pairDense(0, 1);
 	ArmVerdictGeometry(pairDense, poseVerdict);
 	DenseMatches denseOnly;
 	if (!AssemblePairROMA2(matcher, imgA, imgB, verdict, std::vector<DMatch>(), config, cells, pairDense, denseOnly) ||
 		!pairDense.matches.empty() || pairDense.numFilteredInliers != 0 ||
-		denseOnly.pointsA.size() != numInlierCells) {
+		denseOnly.pointsA.size() != numCandidateBuckets) {
 		VERBOSE("ROMA2AssemblyTest FAILED: a pair with no guided match holds %u sparse (%d filtered) and %u dense correspondences, expected 0 and %u",
 			(unsigned)pairDense.matches.size(), pairDense.numFilteredInliers,
-			(unsigned)denseOnly.pointsA.size(), (unsigned)numInlierCells);
+			(unsigned)denseOnly.pointsA.size(), (unsigned)numCandidateBuckets);
 		return false;
 	}
 	if (!pairDense.relativePose.has_value()) {

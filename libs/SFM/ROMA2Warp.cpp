@@ -167,8 +167,10 @@ inline bool WarpCandidateBeats(const WarpCandidate& candidate, const WarpCandida
 	return candidate.priority > best.priority;
 }
 
-// Pass 1 of every warp draw: every eligible cell, in raster order. Their count is what the bucket
-// grid is sized from, so it has to be known before a single bucket exists.
+// Pass 1 of every warp draw: every eligible cell, in raster order -- the population the bucket grid
+// stratifies. SampleWarpByCoverage still sizes its grid from their count (WarpBucketGridSide);
+// SampleWarpComplementary's grid is the caller's pitch instead, but needs this same pass to know
+// which cells there are to put in it.
 void CollectWarpCandidates(const cv::Size& sizeA, const cv::Size& sizeB, const Image32F2& warp,
 	const Image32F& confidence, float minConfidence, std::vector<WarpCandidate>& candidates)
 {
@@ -302,6 +304,7 @@ size_t SFM::SampleWarpComplementary(
 	const Image32F2& warp,
 	const Image32F& confidence,
 	float minConfidence,
+	int bucketGridSide,
 	unsigned maxSamples,
 	const std::vector<Point2f>& occupiedA,
 	std::vector<Point2f>& sampledA,
@@ -321,11 +324,10 @@ size_t SFM::SampleWarpComplementary(
 	CollectWarpCandidates(sizeA, sizeB, warp, confidence, minConfidence, candidates);
 	if (candidates.empty())
 		return 0;
-	// the grid is sized for THIS draw's budget, which is what makes the sample complementary in
-	// scale as well as in position: a pair whose sparse matches already fill most of its budget
-	// asks for few dense points and gets a coarse grid, one that has almost none asks for many and
-	// gets a fine one
-	const int numBuckets = WarpBucketGridSide(confidence, candidates.size(), maxSamples);
+	// the caller's pitch, the same for every pair (DenseFillGridSide): the draw is a density over
+	// the overlap, so the number of buckets a pair's overlap holds is what varies, not the pitch
+	ASSERT(bucketGridSide > 0);
+	const int numBuckets = MINF(bucketGridSide, confidence.cols);
 	// every bucket an already-held correspondence sits in is out of the draw. Occupancy is measured
 	// in image A only, deliberately: the warp grid lives in A's frame, so that is the one frame
 	// where a sparse keypoint position and a warp cell are directly comparable. On a genuine pair --
