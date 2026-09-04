@@ -4021,7 +4021,13 @@ static bool ROMA2ReconstructScene(Scene& scene, const String& setting, const Str
 	roma2Cfg.provider = provider;
 	roma2Cfg.useMatching = bUseMatching;
 	roma2Cfg.slotBudget = slotBudget;
-	if (!scene.MatchPairs(matchCfg, roma2Cfg)) {
+	// MatchPairs now runs the describe pass only for RETRIEVAL mode or an actual
+	// --export-retrieval-csv request (the match mode decides the describe pass), not merely
+	// because ROMA2 is enabled; this test exercises both of ROMA2's passes together in one
+	// model load regardless of EXHAUSTIVE mode below, so it forces the describe pass the same
+	// way --export-retrieval-csv would -- MatchPairs only checks this path for emptiness, it
+	// is never opened here
+	if (!scene.MatchPairs(matchCfg, roma2Cfg, ViewGraphCalibratorConfig(), String(_T("unused.csv")))) {
 		VERBOSE("ROMA2ReconstructTest FAILED: MatchPairs failed");
 		return false;
 	}
@@ -8622,9 +8628,9 @@ bool VocabularyIgnoresGlobalDescriptorsTest()
 	matchCfg.descriptorsAreBinary = true;
 	matchCfg.maxPairsPerImage = 3;
 	PairsMatcher matcher(scene, matchCfg);
-	// opt into ROMA2 retrieval exactly as the deleted substitution required (enabled +
-	// useRetrieval, both true by default here): under the old code this alone would have
-	// taken VOCABULARY over with the global descriptors, no model needed
+	// opt into ROMA2 (enabled=true) exactly as the deleted substitution required: under the old
+	// code this alone was enough to take VOCABULARY over with the global descriptors, no model
+	// needed
 	ROMA2Config roma2Cfg;
 	roma2Cfg.enabled = true;
 	matcher.SetROMA2(NULL, roma2Cfg);

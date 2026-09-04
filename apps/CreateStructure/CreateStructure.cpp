@@ -70,7 +70,6 @@ bool matchImagesOnly;
 bool bROMA2;
 String strROMA2Model;
 String strROMA2Setting;
-bool bROMA2Retrieval;
 bool bROMA2Match;
 unsigned nROMA2Slots;
 float fROMA2MinConfidence;
@@ -168,7 +167,6 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("roma2", boost::program_options::value<bool>(&OPT::bROMA2)->default_value(false), "enable the in-process RoMa v2 model: DINOv3/GeM pair retrieval and dense matching (needs an exported model, see --roma2-model)")
 		("roma2-model", boost::program_options::value<std::string>(&OPT::strROMA2Model), "directory with the RoMa v2 ONNX graphs + manifest (default: $OPENMVS_ROMA2_MODEL_PATH)")
 		("roma2-setting", boost::program_options::value<std::string>(&OPT::strROMA2Setting)->default_value("base"), "RoMa v2 export preset: turbo (320px), fast (512px) or base (640px)")
-		("roma2-retrieval", boost::program_options::value<bool>(&OPT::bROMA2Retrieval)->default_value(true), "rank candidate pairs by the global descriptors instead of the vocabulary tree")
 		("roma2-match", boost::program_options::value<bool>(&OPT::bROMA2Match)->default_value(false), "one-pass dense pair matching: judge every candidate pair on its bidirectional warp alone, then guide its sparse matching and fill the rest of the overlap densely (a rejected pair is dropped, never descriptor-matched)")
 		("roma2-slots", boost::program_options::value(&OPT::nROMA2Slots)->default_value(64), "images kept resident on the device while dense matching (12.5 MB each at base)")
 		("roma2-min-confidence", boost::program_options::value(&OPT::fROMA2MinConfidence)->default_value(0.1f), "dense matching: confidence at which a warp cell takes part in the verdict, the keypoint tracking and the dense fill")
@@ -256,8 +254,8 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	Util::ensureValidFolderPath(OPT::strExportOpenMVGDir);
 	Util::ensureValidPath(OPT::strExportPairsCSV);
 	Util::ensureValidPath(OPT::strExportRetrievalCSV);
-	if (!OPT::strExportRetrievalCSV.empty() && (!OPT::bROMA2 || !OPT::bROMA2Retrieval)) {
-		LOG("error: --export-retrieval-csv needs --roma2 true and --roma2-retrieval true");
+	if (!OPT::strExportRetrievalCSV.empty() && !OPT::bROMA2) {
+		LOG("error: --export-retrieval-csv needs --roma2 true");
 		return false;
 	}
 	Util::ensureValidPath(OPT::strCompareMVS);
@@ -299,10 +297,22 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		LOG("error: --roma2-match needs --roma2 true (the one pass is the ROMAv2 warp)");
 		return false;
 	}
-	if (OPT::bROMA2 && (OPT::bROMA2Retrieval || OPT::bROMA2Match)) {
-		// the library refuses this same condition inside Scene::MatchPairs (design decision 10),
-		// gated the same way (enabled && (useRetrieval || useMatching)), Scene.cpp:574; this early
-		// check just gives the hint before any feature extraction runs
+	if (OPT::bROMA2 && !OPT::bROMA2Match && OPT::matchMode != 4 && OPT::strExportRetrievalCSV.empty()) {
+		// the match mode decides whether the scene needs describing (Scene::MatchPairs' own
+		// wantsDescriptors), and --roma2-match and --export-retrieval-csv are the only other
+		// consumers of the model -- with none of the three, --roma2 has nothing to load a model
+		// for. Deliberately not checked here: the converse, --match-mode 4 without --roma2 -- a
+		// scene loaded from an .sfm may already carry global descriptors, and this parser cannot
+		// see what the source will import, only the flags (GlobalDescriptors::Build fails loudly
+		// and by name if it does not)
+		LOG("error: --roma2 has nothing to do without --roma2-match true or --match-mode 4 (RETRIEVAL)");
+		return false;
+	}
+	if (OPT::bROMA2) {
+		// the library refuses the same missing-model condition inside Scene::MatchPairs (design
+		// decision 10); this early check just gives the hint before any feature extraction runs.
+		// Reached only when ROMA2 has something to do (the check above), matching the library's own
+		// gate (enabled && (needsDescriptors || needsWarps))
 		ROMA2Config roma2Cfg;
 		roma2Cfg.modelPath = OPT::strROMA2Model;
 		if (roma2Cfg.ResolveModelPath().empty()) {
@@ -362,7 +372,6 @@ int main(int argc, LPCTSTR* argv)
 	cfg.roma2Cfg.enabled = OPT::bROMA2;
 	cfg.roma2Cfg.modelPath = OPT::strROMA2Model;
 	cfg.roma2Cfg.setting = OPT::strROMA2Setting;
-	cfg.roma2Cfg.useRetrieval = OPT::bROMA2Retrieval;
 	cfg.roma2Cfg.useMatching = OPT::bROMA2Match;
 	cfg.roma2Cfg.minConfidence = OPT::fROMA2MinConfidence;
 	cfg.roma2Cfg.minOverlap = OPT::fROMA2MinOverlap;

@@ -561,7 +561,7 @@ bool Scene::ExtractFeatures(const FeatureExtractionConfig& config)
 	return true;
 }
 
-bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, const ViewGraphCalibratorConfig& vgConfig)
+bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, const ViewGraphCalibratorConfig& vgConfig, const String& exportRetrievalCSV)
 {
 	// In-process ROMA2: one loaded model serves the retrieval descriptors and the dense
 	// matching; it lives for this call only (design decision 7). Declared before
@@ -571,37 +571,41 @@ bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, c
 	RoMa2Onnx roma2;
 	PairsMatcher pairsMatcher(*this, config);
 
+	// Which passes this run needs. Only the caller can answer the first one: the config cannot see
+	// the match mode, and RETRIEVAL is what makes the global descriptors necessary -- exporting the
+	// retrieval CSV right after this call (Scene::Reconstruct) needs them too, mode aside.
+	const bool wantsDescriptors = (config.mode == MatchConfig::RETRIEVAL || !exportRetrievalCSV.empty());
+	const bool needsDescriptors = wantsDescriptors && !status.nState.isSet(Status::STATE::GLOBAL_DESCRIPTORS);
+	const bool needsWarps = roma2Cfg.useMatching;
+
 	const String modelPath(roma2Cfg.ResolveModelPath());
-	if (roma2Cfg.enabled && (roma2Cfg.useRetrieval || roma2Cfg.useMatching) && modelPath.empty()) {
-		// design decision 10: a requested-but-unavailable model is an error, never a silent
-		// fallback to the vocabulary tree (which is what IsInProcessEnabled() would otherwise
-		// quietly do, since an empty model path makes it return false)
+	if (roma2Cfg.enabled && (needsDescriptors || needsWarps) && modelPath.empty()) {
+		// design decision 10: a requested-but-unavailable model is a named error here, not the
+		// generic "failed to load ROMA2 model ''" that roma2.Load() below would report if this
+		// fell through to it unchecked
 		VERBOSE("error: ROMA2 requested but no model path given (set --roma2-model or OPENMVS_ROMA2_MODEL_PATH)");
 		return false;
 	}
-	const bool useROMA2 = roma2Cfg.IsInProcessEnabled() && !status.nState.isSet(Status::STATE::MATCHED);
+	const bool useROMA2 = roma2Cfg.enabled && (needsDescriptors || needsWarps) && !status.nState.isSet(Status::STATE::MATCHED);
 	if (useROMA2) {
 		if (!RoMa2Onnx::IsAvailable()) {
 			VERBOSE("error: ROMA2 model '%s' requested, but this build has no ONNX Runtime support", modelPath.c_str());
 			return false;
 		}
-		// the ONNX sessions are only loaded when they still have something to produce: the dense
-		// warps (the dense matching pass), or global descriptors this scene does not carry yet.
-		// Retrieval alone over descriptors an earlier run already stored ranks the pairs straight
-		// from Image::globalDescriptor (PairsMatcher::QueryRetrieval) and never enters a session,
-		// so loading 1.2 GB of graph weights onto the device for it would buy nothing
-		if (roma2Cfg.NeedsWarps() || !status.nState.isSet(Status::STATE::GLOBAL_DESCRIPTORS)) {
-			if (!roma2.Load(modelPath, roma2Cfg.setting, roma2Cfg.useGPU ? roma2Cfg.provider : String("cpu"))) {
-				VERBOSE("error: failed to load ROMA2 model '%s' (%s)", modelPath.c_str(), roma2Cfg.setting.c_str());
-				return false;
-			}
-			if (roma2Cfg.useRetrieval && !ComputeGlobalDescriptors(roma2))
-				return false;
-		} else {
-			DEBUG("ROMA2 retrieval reuses the %u global descriptors stored in the scene; no model loaded", images.size());
+		if (!roma2.Load(modelPath, roma2Cfg.setting, roma2Cfg.useGPU ? roma2Cfg.provider : String("cpu"))) {
+			VERBOSE("error: failed to load ROMA2 model '%s' (%s)", modelPath.c_str(), roma2Cfg.setting.c_str());
+			return false;
 		}
+		if (needsDescriptors && !ComputeGlobalDescriptors(roma2))
+			return false;
+	} else if (roma2Cfg.enabled && wantsDescriptors && !status.nState.isSet(Status::STATE::MATCHED)) {
+		// descriptors are wanted and already stored, and no warps are needed either: retrieval over
+		// an earlier run's descriptors ranks the pairs straight from Image::globalDescriptor
+		// (PairsMatcher::QueryRetrieval) and never enters a session, so loading 1.2 GB of graph
+		// weights onto the device for it would buy nothing
+		DEBUG("ROMA2 retrieval reuses the %u global descriptors stored in the scene; no model loaded", images.size());
 	}
-	pairsMatcher.SetROMA2(useROMA2 && roma2Cfg.NeedsWarps() ? &roma2 : NULL, roma2Cfg);
+	pairsMatcher.SetROMA2(useROMA2 && needsWarps ? &roma2 : NULL, roma2Cfg);
 
 	if (status.nState.isSet(Status::STATE::MATCHED)) {
 		VERBOSE("warning: pairs already matched, skipping");
@@ -733,7 +737,7 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 		return false;
 
 	// Match image pairs
-	if (!MatchPairs(config.matchCfg, config.roma2Cfg, config.viewgraphCfg))
+	if (!MatchPairs(config.matchCfg, config.roma2Cfg, config.viewgraphCfg, config.exportRetrievalCSV))
 		return false;
 
 	// export the pairs/retrieval-rankings CSV diagnostics right after matching, before any

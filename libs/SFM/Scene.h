@@ -277,9 +277,14 @@ public:
 	/**
 	 * @brief Match image pairs to find correspondences
 	 * @param config Matching configuration
+	 * @param roma2Cfg In-process ROMAv2 configuration
+	 * @param vgConfig View-graph calibration configuration
+	 * @param exportRetrievalCSV Non-empty iff the caller is about to export the retrieval-rankings
+	 * CSV (ReconstructionConfig::exportRetrievalCSV): the only reason, besides RETRIEVAL mode
+	 * itself, this stage needs the global descriptors
 	 * @return true if matching completed successfully
 	 */
-	bool MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg = ROMA2Config(), const ViewGraphCalibratorConfig& vgConfig = ViewGraphCalibratorConfig());
+	bool MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg = ROMA2Config(), const ViewGraphCalibratorConfig& vgConfig = ViewGraphCalibratorConfig(), const String& exportRetrievalCSV = String());
 
 	/**
 	 * @brief Describe every image with the in-process ROMAv2 model and pool the result into

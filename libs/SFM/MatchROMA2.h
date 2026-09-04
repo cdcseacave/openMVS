@@ -50,7 +50,6 @@ struct SFM_API ROMA2Config {
 	String modelPath;              // folder of the exported graphs (empty = $OPENMVS_ROMA2_MODEL_PATH)
 	String setting = "base";       // preset: turbo|fast|base
 	String provider = "auto";      // execution provider: auto|cuda|coreml|dml|cpu
-	bool useRetrieval = true;      // rank candidate pairs with the ROMAv2 global descriptors
 	bool useMatching = false;      // one-pass dense pair matching (verdict, guided, fill, store)
 	float minConfidence = 0.1f;    // a warp cell takes part (verdict, tracking, fill) at this confidence or above
 	float minOverlap = 0.10f;      // verdict: min(inlier area A, inlier area B) >= minOverlap
@@ -70,9 +69,12 @@ struct SFM_API ROMA2Config {
 		return envModelPath ? String(envModelPath) : String();
 	}
 
-	// Return true if the in-process ROMAv2 model is enabled, used by at least one pass, and locatable
+	// Return true if the in-process ROMAv2 model is enabled and locatable. This no longer asks
+	// whether any pass actually uses it: NeedsWarps() below still answers that for the dense
+	// pass, but the other half -- whether the scene needs describing -- needs the match mode,
+	// which this config cannot see, so it moved to the caller (Scene::MatchPairs).
 	inline bool IsInProcessEnabled() const {
-		return enabled && (useRetrieval || useMatching) && !ResolveModelPath().empty();
+		return enabled && !ResolveModelPath().empty();
 	}
 
 	// Return true if a pass needs the coarse-match graph itself (the warps), and not merely the
