@@ -8,19 +8,19 @@
 #   <digest>  base-fp32/roma_base.json
 #   <digest>  base-fp32/roma_base_descriptor_fp32.onnx
 #   <digest>  base-fp32/roma_base_descriptor_fp32.onnx.data
-#   <digest>  base-fp32/roma_base_descriptor_fp32.onnx.export.json
+#   <digest>  base-fp32/roma_base_descriptor_fp32.export.json
 #   <digest>  base-fp32/roma_base_match_coarse_fp32.onnx
 #   <digest>  base-fp32/roma_base_match_coarse_fp32.onnx.data
-#   <digest>  base-fp32/roma_base_match_coarse_fp32.onnx.export.json
+#   <digest>  base-fp32/roma_base_match_coarse_fp32.export.json
 #
 # This file is what pins the published artefact's exact bytes without the OpenMVS repository
 # carrying any of it (the model itself lives on Hugging Face, mirrored as GitHub release assets,
 # ~1.4 GB for base/fp32) -- and what makes the mirror as trustworthy as the canonical host.
 #
-# It ships here entry-less: fetch_roma2_model.py refuses to run against a checksums file with no
-# entries, failing with a message naming this file rather than silently succeeding. The
-# controller regenerates this file from the export run (scripts/python/roma2/export.py) and
-# pastes the resulting digests in after each publish.
+# Regenerate it from the export run (scripts/python/roma2/export.py) whenever a new bundle is
+# published, and replace every entry below in the same commit: a digest that no longer matches the
+# published bytes stops every fetch. A checksums file with no entries is refused outright, with a
+# message naming this file, rather than silently accepting whatever it downloaded.
 
 cb2cd7c98b5bcdaf1648053bfe8217d873873a6f051c508e0e5a7ac268027703  base-fp32/roma_base.json
 bf54183ecc5b67dccfe96df931ac415b6852688f0e5cefd9651be5ddc19bba0c  base-fp32/roma_base_descriptor_fp32.onnx

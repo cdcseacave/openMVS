@@ -6,7 +6,7 @@ carrying a byte of it.
     fetch_roma2_model.py [--setting base] [--precision fp32]
                           [--dest DIR] [--repo ID] [--revision REV] [--mirror URL]
 
-RULING R147: `--dest` *is* the model directory the C++ side consumes -- the same thing
+`--dest` *is* the model directory the C++ side consumes -- the same thing
 `--roma2-model DIR` and `OPENMVS_ROMA2_MODEL_PATH` have always meant (`RoMa2Onnx::Load` reads
 `modelDir + "roma_" + setting + ".json"` and every graph file directly under it, no further
 nesting). So the files this script writes to `--dest` are flat: `roma_<setting>.json`,
@@ -114,7 +114,7 @@ class FetchResult:
 
 def _local_path(dest: Path, published_relpath: str) -> Path:
     """Map a checksums.txt entry ("<setting>-<precision>/<name>", the published path on both
-    hosts) to where it actually lives on disk: flat, directly under `dest` (RULING R147)."""
+    hosts) to where it actually lives on disk: flat, directly under `dest`."""
     return dest / Path(published_relpath).name
 
 
@@ -203,7 +203,7 @@ def _fetch_via_huggingface(dest: Path, repo: str, revision: str, setting: str, p
                 local_dir=scratch,
             )
             # The Hub repo nests by preset ("<setting>-<precision>/"); the local model directory
-            # is flat (RULING R147), so move only the files this call still needs up by basename
+            # is flat, so move only the files this call still needs up by basename
             # and let the scratch directory -- shell and all -- disappear with the `with` block.
             nested_dir = Path(scratch) / prefix
             for published_relpath in pending:
@@ -322,7 +322,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     args = build_argument_parser().parse_args(argv)
     dest = resolve_dest(args.dest)
-    # RULING R145: --dest has no way to see the CMake install prefix (a Python script can't read
+    # --dest has no way to see the CMake install prefix (a Python script can't read
     # a compile definition), so a hand-run relying on the default must never be surprised by where
     # things landed.
     print(f"destination: {dest.resolve()}")
@@ -341,7 +341,7 @@ def main(argv=None) -> int:
     print()
     print(DINOV3_NOTICE)
     print()
-    # RULING R147: --dest *is* the model directory -- RoMa2Onnx::Load reads its files directly,
+    # --dest *is* the model directory -- RoMa2Onnx::Load reads its files directly,
     # with no "<setting>-<precision>" segment to append.
     print(f"model ready at: {dest.resolve()}")
     print(f"set OPENMVS_ROMA2_MODEL_PATH={dest.resolve()} (or pass --roma2-model {dest.resolve()} "
