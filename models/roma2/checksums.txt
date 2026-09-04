@@ -1,0 +1,23 @@
+# SHA256 checksums for the published RoMa v2 ONNX model, verified by
+# scripts/fetch_roma2_model.py --setting <setting> --precision <precision> --dest <dir>.
+#
+# Format: one entry per line, "<sha256>  <relative/path>" (two spaces, sha256sum-compatible).
+# '#' starts a comment; blank lines are ignored. Paths are relative to --dest and always begin
+# with "<setting>-<precision>/", e.g. for setting=base, precision=fp32:
+#
+#   <digest>  base-fp32/roma_base.json
+#   <digest>  base-fp32/roma_base_descriptor_fp32.onnx
+#   <digest>  base-fp32/roma_base_descriptor_fp32.onnx.data
+#   <digest>  base-fp32/roma_base_descriptor_fp32.onnx.export.json
+#   <digest>  base-fp32/roma_base_match_coarse_fp32.onnx
+#   <digest>  base-fp32/roma_base_match_coarse_fp32.onnx.data
+#   <digest>  base-fp32/roma_base_match_coarse_fp32.onnx.export.json
+#
+# This file is what pins the published artefact's exact bytes without the OpenMVS repository
+# carrying any of it (the model itself lives on Hugging Face, mirrored as GitHub release assets,
+# ~1.4 GB for base/fp32) -- and what makes the mirror as trustworthy as the canonical host.
+#
+# It ships here entry-less: fetch_roma2_model.py refuses to run against a checksums file with no
+# entries, failing with a message naming this file rather than silently succeeding. The
+# controller regenerates this file from the export run (scripts/python/roma2/export.py) and
+# pastes the resulting digests in after each publish.

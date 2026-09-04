@@ -387,6 +387,26 @@ IF(OpenMVS_USE_ONNXRUNTIME)
 	ENDIF()
 ENDIF()
 
+# Opt-in target: fetch the published RoMa v2 ONNX model (~1.4 GB) on demand. Never at configure
+# time -- that would be hostile and would break offline and CI builds -- and never part of `all`.
+IF(OpenMVS_USE_ONNXRUNTIME)
+	# Python3_EXECUTABLE is not guaranteed to be set yet here: OpenMVS_USE_PYTHON's own
+	# FIND_PACKAGE(Python3 ...) below lives inside that option's own IF() block, so a build with
+	# -DOpenMVS_USE_ONNXRUNTIME=ON alone (OpenMVS_USE_PYTHON off) would otherwise leave it unset.
+	# Look for an interpreter ourselves rather than assume one was already found.
+	FIND_PACKAGE(Python3 COMPONENTS Interpreter QUIET)
+	IF(Python3_EXECUTABLE)
+		ADD_CUSTOM_TARGET(roma2-model
+			COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/fetch_roma2_model.py
+			        --setting base --precision fp32
+			        --dest ${CMAKE_INSTALL_PREFIX}/share/openMVS/roma2
+			COMMENT "Fetching the RoMa v2 ONNX model (~1.4 GB, DINOv3 License)"
+			USES_TERMINAL)
+	ELSE()
+		MESSAGE(STATUS "No Python3 interpreter found; the 'roma2-model' fetch target is not available (run scripts/fetch_roma2_model.py by hand instead)")
+	ENDIF()
+ENDIF()
+
 # Metal compute backend on Apple (replaces CUDA, which is disabled on macOS above)
 IF(APPLE)
 	FIND_LIBRARY(METAL_FRAMEWORK Metal)
