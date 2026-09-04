@@ -53,7 +53,8 @@ struct SFM_API DMatch
 // ImagePair::GetNumWeightedInliers (ComputePairsWeights is the one pass that writes it).
 //
 // Bundle adjustment borrows this same constant, but only as EstimateDenseObservationWeight's
-// small-sample fallback: its real per-observation weight is MEASURED at the head of every solve, off
+// fallback -- a scene with no dense keypoints at all, a population too small to give a sigma, or a
+// sigma of exactly zero: its real per-observation weight is MEASURED at the head of every solve, off
 // the scene's own dense-vs-described reprojection sigmas (BundleAdjustment.cpp), because that is a
 // different question with a different answer. A warp correspondence localizes a point several times
 // less precisely than a descriptor one -- which is exactly what bundle adjustment charges it for --

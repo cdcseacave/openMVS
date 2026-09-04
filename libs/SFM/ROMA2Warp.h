@@ -121,7 +121,10 @@ inline float WarpTolerance(const cv::Size& sizeA, const cv::Size& sizeB, int war
 // identically, the winner rule inside a bucket is pair-independent (WarpCellLatticePriority), and
 // where a pair's ceiling binds the thinning keeps a prefix of that same pair-independent order
 // (ThinSampleByLatticePriority) -- so two ceilings as far apart as their two overlaps allow still
-// leave nested samples of A rather than two disjoint thinnings of one agreement.
+// leave nested samples of A rather than two disjoint thinnings of one agreement. The nesting is
+// exact over the cells the two pairs both drew; where their confident overlaps on A differ they
+// can still pick different winners in the buckets straddling the smaller overlap's edge, and
+// what survives there is the common cells inside the shorter prefix.
 inline int DenseFillGridSide(unsigned denseMatchesPerFrame, int warpSide) {
 	ASSERT(warpSide > 0);
 	return MINF(warpSide, MAXF(1, (int)std::ceil(std::sqrt((double)denseMatchesPerFrame))));
