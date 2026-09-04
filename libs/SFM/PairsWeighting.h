@@ -11,7 +11,7 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
-#include "ImagePair.h" // DENSE_OBSERVATION_WEIGHT, the one definition of the dense discount
+#include "ImagePair.h" // DENSE_OBSERVATION_WEIGHT, the view graph's own (fixed) dense discount
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -64,8 +64,10 @@ struct SFM_API PairsWeightingConfig
     // What one DENSE (ROMAv2 warp sampled) match is worth as pair evidence, relative to the 1.0 a
     // descriptor match carries: this pass is the one that holds it, and it writes the discounted
     // count every view-graph consumer then reads off the pair (ImagePair::GetNumWeightedInliers).
-    // Same quantity as BAConfig::denseObservationWeight -- a dense position is sampled from a
-    // low-resolution warp -- and the same single definition, so the two cannot drift apart.
+    // Not the same quantity as BAConfig::denseObservationWeight, which is measured per solve off
+    // the scene's own residuals (EstimateDenseObservationWeight) -- this one has no CLI flag
+    // because no measurement has ever asked for it, and is deliberately held fixed at
+    // DENSE_OBSERVATION_WEIGHT while the bundle adjustment weight moves.
     float denseObservationWeight = (float)DENSE_OBSERVATION_WEIGHT;
 };
 void SFM_API ComputePairsWeights(Scene& scene, const PairsWeightingConfig& config = PairsWeightingConfig(), IIndexArr* pComponents = NULL);

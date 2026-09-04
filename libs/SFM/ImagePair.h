@@ -47,16 +47,24 @@ struct SFM_API DMatch
 	#endif
 };
 
-// Loss weight of an observation on a DENSE (ROMAv2 warp sampled, descriptor-less) keypoint relative
-// to the 1.0 a described one carries: a dense position is sampled from a low-resolution warp, a
-// described one is sub-pixel at full resolution, and nothing may treat the two as equally precise.
-// Defined ONCE, here, because two independent consumers need the same number and a second copy of it
-// would be a second answer: BAConfig::denseObservationWeight (the reprojection residual's weight) and
-// PairsWeightingConfig::denseObservationWeight (the view-graph evidence a dense match is worth,
-// ImagePair::GetNumWeightedInliers). Both are settable, and CreateStructure drives both from the one
-// --ba-dense-weight option.
-// PROVISIONAL and NOT measured -- see BundleAdjustment.cpp for how it was picked and what has to
-// replace it.
+// How much one DENSE (ROMAv2 warp sampled, descriptor-less) match is worth as EVIDENCE that two
+// images see the same thing, relative to the 1.0 a descriptor match carries: the view graph's own
+// discount, read into PairsWeightingConfig::denseObservationWeight and consumed everywhere through
+// ImagePair::GetNumWeightedInliers (ComputePairsWeights is the one pass that writes it).
+//
+// Bundle adjustment borrows this same constant, but only as EstimateDenseObservationWeight's
+// small-sample fallback: its real per-observation weight is MEASURED at the head of every solve, off
+// the scene's own dense-vs-described reprojection sigmas (BundleAdjustment.cpp), because that is a
+// different question with a different answer. A warp correspondence localizes a point several times
+// less precisely than a descriptor one -- which is exactly what bundle adjustment charges it for --
+// but it says nearly as much about whether the two images overlap. Charging the precision penalty
+// twice would demote exactly the pairs that carry a capture the descriptor matcher cannot match at
+// all: on this campaign's textureless interior capture, those dense-only pairs are the difference
+// between 248 registered images and 0.
+//
+// So this stays a fixed constant deliberately: nothing has asked the view graph's number to be
+// measured, and coupling it to bundle adjustment's moving one would re-couple two answers that must
+// stay independent.
 constexpr double DENSE_OBSERVATION_WEIGHT = 0.25;
 
 // ImagePair stores data for two images: matches, relative pose, etc.
@@ -117,12 +125,13 @@ public:
 	// The pair's INLIER EVIDENCE as everything that ranks the view graph reads it (through
 	// GetNumWeightedInliers): its sparse inliers plus its dense supplement discounted by the dense
 	// observation weight, sparse + w * dense. Written by ComputePairsWeights, the one pass that
-	// holds that weight (PairsWeightingConfig::denseObservationWeight, DENSE_OBSERVATION_WEIGHT
-	// above); -1 until it has run, and the accessor then answers with the sparse count -- which is
-	// the pre-supplement answer, and is what every consumer running before the weighting pass (the
-	// matcher's own replace and skip tests) has always used. Cleared by every writer that changes the
-	// partition it summarises -- the four reset paths below, AppendDenseMatches, and
-	// FilterRedundantKeypoints' recount -- so a stale value can never be read as a fresh one.
+	// holds the view graph's own dense discount (PairsWeightingConfig::denseObservationWeight,
+	// DENSE_OBSERVATION_WEIGHT above); -1 until it has run, and the accessor then answers with the
+	// sparse count -- which is the pre-supplement answer, and is what every consumer running before
+	// the weighting pass (the matcher's own replace and skip tests) has always used. Cleared by every
+	// writer that changes the partition it summarises -- the four reset paths below,
+	// AppendDenseMatches, and FilterRedundantKeypoints' recount -- so a stale value can never be
+	// read as a fresh one.
 	// Stored rather than computed on the fly because GetCompositeWeight() and its ~15 callers have
 	// no access to a configuration, and a second hard-coded copy of the weight would be a second
 	// answer to a question that must have one.
