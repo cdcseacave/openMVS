@@ -698,8 +698,11 @@ bool BundleAdjustment::Adjust()
 		new ceres::HuberLoss(config.robustThreshold) : nullptr;
 
 	// resolved once per solve, not per residual: the estimator walks every observation, and the
-	// weight is a property of the scene this problem is built from, not of any one of its residuals
-	const double denseWeight = EstimateDenseObservationWeight(scene, config);
+	// weight is a property of the scene this problem is built from, not of any one of its residuals.
+	// Short-circuited to 1.0 under useKeypointConfidence: that mode supersedes this weight entirely
+	// (SelectReprojectionLoss never multiplies by it), so running the estimator would be a full scene
+	// walk whose result is discarded, and reporting it below would claim a weight nothing applied.
+	const double denseWeight = config.useKeypointConfidence ? 1.0 : EstimateDenseObservationWeight(scene, config);
 
 	// Set the SE(3) manifold on every valid pose block (shared instance; Ceres owns it once attached)
 	auto* se3_manifold = CreateSE3PoseManifold();
@@ -753,7 +756,9 @@ bool BundleAdjustment::Adjust()
 	if (numDenseResiduals > 0) {
 		// the flat weight does not apply when the confidence term is on: it already carries the
 		// dense sampling scale, so what a dense residual is scaled by then is that term alone
-		if (config.denseObservationWeight < 0.0) {
+		// (denseWeight is 1.0 in that mode, resolved above -- nothing was measured, so the sigma
+		// branch below must not claim it was)
+		if (!config.useKeypointConfidence && config.denseObservationWeight < 0.0) {
 			// weight was measured, not configured -- log what it was measured on, so a stale sigma
 			// jumping between runs shows up in the log rather than only as a downstream drift
 			double sigmaDescribed = 0, sigmaDense = 0;
@@ -1110,8 +1115,10 @@ bool BundleAdjustment::AdjustLocal(
 
 	// same whole-scene estimator as Adjust(), not one scoped to this window: the local window's
 	// described population is often too small to give a sigma, and two different weights inside
-	// one reconstruction would be worse than a slightly stale one
-	const double denseWeight = EstimateDenseObservationWeight(scene, config);
+	// one reconstruction would be worse than a slightly stale one. Short-circuited to 1.0 under
+	// useKeypointConfidence for the same reason as Adjust(): that mode supersedes this weight, so
+	// estimating it would be a wasted whole-scene walk whose result nothing uses.
+	const double denseWeight = config.useKeypointConfidence ? 1.0 : EstimateDenseObservationWeight(scene, config);
 
 	// Add reprojection residuals (only observations from window images: local or fixed)
 	uint32_t numReprojResiduals = 0;
@@ -1146,7 +1153,9 @@ bool BundleAdjustment::AdjustLocal(
 	// than the global pass, so reporting only there would let the dense contribution move silently
 	// in the path that actually carries it
 	if (numDenseResiduals > 0) {
-		if (config.denseObservationWeight < 0.0) {
+		// nothing was measured when the confidence term short-circuited denseWeight to 1.0 above,
+		// so the sigma branch below must not claim it was
+		if (!config.useKeypointConfidence && config.denseObservationWeight < 0.0) {
 			double sigmaDescribed = 0, sigmaDense = 0;
 			size_t numSigmaDescribed = 0, numSigmaDense = 0;
 			ComputeObservationSigmas(scene, sigmaDescribed, numSigmaDescribed, sigmaDense, numSigmaDense);

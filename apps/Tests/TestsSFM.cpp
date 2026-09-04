@@ -4603,14 +4603,51 @@ bool DenseObservationWeightEstimateTest()
 		return false;
 	}
 
-	// a dense population no less precise than the described one is not worth MORE than it
+	// a dense population strictly MORE precise than the described one is not worth MORE than it:
+	// shift the dense keypoints from the 2.0 px displacement above down to 0.25 px (by subtracting
+	// denseError - upperBoundDenseError = 1.75, not the 1.5 that would leave the two populations
+	// merely equal), well inside the described population's 0.5 px, so k = 0.5 and the unclamped
+	// value would be 4.0 -- it is that 4.0 the clamp below must reject, not an accidentally-exact
+	// k = 1 that would pass even with no clamp at all
+	constexpr float upperBoundDenseError = 0.25f;
 	for (Image& img : scene.images)
 		for (uint32_t k = img.NumDescribedKeypoints(); k < img.keypoints.size(); ++k)
-			img.keypoints[k].pt.x -= denseError - describedError;
+			img.keypoints[k].pt.x -= denseError - upperBoundDenseError;
 	const double clamped = EstimateDenseObservationWeight(scene, config);
-	if (clamped != 1.0) {
-		VERBOSE("DenseObservationWeightEstimateTest FAILED: an equally precise dense population weighs %.4f",
-			clamped);
+	if (ABS(clamped - 1.0) > 0.005) {
+		VERBOSE("DenseObservationWeightEstimateTest FAILED: a dense population twice as precise as the "
+			"described one weighs %.4f instead of being clamped to 1", clamped);
+		return false;
+	}
+
+	// and a dense population far coarser than the described one -- the case the whole weight exists
+	// for, a textureless region where the warp is the only correspondence there is -- is clamped to
+	// MIN_DENSE_OBSERVATION_WEIGHT (0.01, file-local to BundleAdjustment.cpp) rather than losing
+	// almost all its influence: 10 px against the described population's 0.5 px gives k = 20 and an
+	// unclamped 1/k^2 = 0.0025, four times below the floor
+	Scene coarseDense;
+	GenerateTestScene(coarseDense, cfg);
+	constexpr float coarseDenseError = 10.0f;
+	for (Image& img : coarseDense.images)
+		img.CloseDescribedKeypoints();
+	for (Track& track : coarseDense.tracks) {
+		const size_t numDescribedObs = track.observations.size();
+		for (size_t i = 0; i < numDescribedObs; ++i) {
+			const Observation obs = track.observations[i];
+			Image& img = coarseDense.images[obs.imageID];
+			img.keypoints[obs.featureID].pt.x += describedError;
+			const cv::KeyPoint dense(img.keypoints[obs.featureID].pt.x - describedError + coarseDenseError,
+				img.keypoints[obs.featureID].pt.y, 10.f, -1.f, 0.9f);
+			const uint32_t featID = (uint32_t)img.keypoints.size();
+			img.keypoints.push_back(dense);
+			track.observations.emplace_back(obs.imageID, featID);
+		}
+		track.numInliers = (uint8_t)MINF((size_t)track.observations.size(), (size_t)255);
+	}
+	const double floored = EstimateDenseObservationWeight(coarseDense, config);
+	if (ABS(floored - 0.01) > 0.0005) {
+		VERBOSE("DenseObservationWeightEstimateTest FAILED: a dense population 20x coarser than the "
+			"described one weighs %.4f instead of being floored to 0.01", floored);
 		return false;
 	}
 
