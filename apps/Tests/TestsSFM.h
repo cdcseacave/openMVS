@@ -134,10 +134,10 @@ bool RoMa2ManifestVersionTest();
 
 // ROMA2Config::ResolveModelPath precedence test: an explicit modelPath wins over everything
 // (including a set environment variable); with modelPath empty, $OPENMVS_ROMA2_MODEL_PATH wins;
-// with both absent, the result is empty (this build's install-prefix fallback, if any, is not
-// exercised here -- it is checked only for existing on disk, and this test does not create
-// anything under the install prefix). Pure config logic, so it needs neither ONNX Runtime nor an
-// actual model.
+// with both absent, the result falls back to this build's install-prefix directory when that
+// directory actually exists on disk, else it is empty -- read with the same File::isFolder check
+// the implementation uses, so this test does not create anything under the install prefix. Pure
+// config logic, so it needs neither ONNX Runtime nor an actual model.
 bool ResolveModelPathTest();
 
 // RoMa2 ONNX parity test: runs the exported descriptor and coarse-match graphs through

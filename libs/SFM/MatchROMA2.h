@@ -79,19 +79,6 @@ struct SFM_API ROMA2Config {
 		#endif
 		return String();
 	}
-
-	// Return true if the in-process ROMAv2 model is enabled and locatable. This no longer asks
-	// whether any pass actually uses it: NeedsWarps() below still answers that for the dense
-	// pass, but the other half -- whether the scene needs describing -- needs the match mode,
-	// which this config cannot see, so it moved to the caller (Scene::MatchPairs).
-	inline bool IsInProcessEnabled() const {
-		return enabled && !ResolveModelPath().empty();
-	}
-
-	// Return true if a pass needs the coarse-match graph itself (the warps), and not merely the
-	// global descriptors: the ONNX sessions have to be loaded for those, descriptors alone may
-	// already be stored in the scene
-	inline bool NeedsWarps() const { return useMatching; }
 };
 /*----------------------------------------------------------------*/
 

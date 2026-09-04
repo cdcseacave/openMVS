@@ -291,13 +291,14 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	}
 	if (OPT::bROMA2Match && !OPT::bROMA2) {
 		// design decision 10 -- a requested-but-unavailable backend never silently degrades: the one
-		// pass IS the matching round when it runs, and without --roma2 the config it reads is never
-		// consulted (ROMA2Config::IsInProcessEnabled), so the descriptor round would quietly run the
-		// whole matching stage in its place with nothing in the log naming ROMA2
+		// pass IS the matching round when it runs, and without --roma2 the enabled flag
+		// Scene::MatchPairs gates on (enabled && (needsDescriptors || needsWarps)) is false regardless
+		// of useMatching, so the descriptor round would quietly run the whole matching stage in its
+		// place with nothing in the log naming ROMA2
 		LOG("error: --roma2-match needs --roma2 true (the one pass is the ROMAv2 warp)");
 		return false;
 	}
-	if (OPT::bROMA2 && !OPT::bROMA2Match && OPT::matchMode != 4 && OPT::strExportRetrievalCSV.empty()) {
+	if (OPT::bROMA2 && !OPT::bROMA2Match && OPT::matchMode != static_cast<int>(MatchConfig::RETRIEVAL) && OPT::strExportRetrievalCSV.empty()) {
 		// the match mode decides whether the scene needs describing (Scene::MatchPairs' own
 		// wantsDescriptors), and --roma2-match and --export-retrieval-csv are the only other
 		// consumers of the model -- with none of the three, --roma2 has nothing to load a model
@@ -308,15 +309,18 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		LOG("error: --roma2 has nothing to do without --roma2-match true or --match-mode 4 (RETRIEVAL)");
 		return false;
 	}
-	if (OPT::bROMA2) {
-		// the library refuses the same missing-model condition inside Scene::MatchPairs (design
-		// decision 10); this early check just gives the hint before any feature extraction runs.
-		// Reached only when ROMA2 has something to do (the check above), matching the library's own
-		// gate (enabled && (needsDescriptors || needsWarps))
+	if (OPT::bROMA2Match) {
+		// --roma2-match unconditionally needs the model to run the warp, unlike the descriptor-only
+		// cases above (--match-mode 4, --export-retrieval-csv): whether those need a model depends on
+		// whether the scene already carries global descriptors, which this parser cannot see, so --
+		// same precedent as the converse case in the check above -- they are deliberately left to
+		// Scene::MatchPairs' own named error, which fires only when a model turns out to actually be
+		// needed (design decision 10). This check just gives the hint before any feature extraction
+		// runs, for the one case the parser can be sure about regardless of scene state.
 		ROMA2Config roma2Cfg;
 		roma2Cfg.modelPath = OPT::strROMA2Model;
 		if (roma2Cfg.ResolveModelPath().empty()) {
-			LOG("error: --roma2 needs a model (set --roma2-model or $OPENMVS_ROMA2_MODEL_PATH)");
+			LOG("error: --roma2-match needs a model (set --roma2-model or $OPENMVS_ROMA2_MODEL_PATH)");
 			return false;
 		}
 	}
