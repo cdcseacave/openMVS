@@ -900,10 +900,11 @@ PairIdxArr PairsMatcher::CollectFusedRetrievalPairs(unsigned topK)
 			}
 		}
 	}
-	// globalDescriptors and vocabularyTree are never both built on the same instance (one
-	// backend per match mode), so which one is set names the caller unambiguously
+	// config.mode is fixed at construction and is itself the thing that decides the backend
+	// (one backend per match mode, permanently) -- name the caller from that, not from which
+	// index the heap happens to hold right now
 	DEBUG("%s-based matching: %u candidate pairs, %u mutual top-%u and %u connectivity bridges (%.2f/%u pairs/image) in %s",
-		globalDescriptors ? _T("Global-descriptor") : _T("Vocabulary"),
+		config.mode == MatchConfig::VOCABULARY ? _T("Vocabulary") : _T("Global-descriptor"),
 		result.size(), numMutualPairs, topK, result.size() - numMutualPairs,
 		(float)result.size() / nImages, config.maxPairsPerImage, TD_TIMER_GET_FMT().c_str());
 	// keep the fused retrieval scores for the verification-feedback round

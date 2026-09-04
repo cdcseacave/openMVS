@@ -314,7 +314,8 @@ private:
 	// reciprocal-rank fusion, mutual top-K agreement and connectivity bridging over the backend
 	// its caller built (QueryRetrieval picks it up automatically); the fusion and the pair
 	// budget are properties of the ranking, not of the backend, so this is the only place
-	// either mode implements them. Each caller's DEBUG summary names its own backend.
+	// either mode implements them. Its DEBUG summary names the backend from config.mode, the
+	// one thing that actually decides it, not from which index happens to be built.
 	PairIdxArr CollectFusedRetrievalPairs(unsigned topK);
 
 	// Mechanical construction behind EnsureGlobalDescriptorsIndex: allocates globalDescriptors
