@@ -36,7 +36,7 @@ below). End-to-end reconstruction numbers for the one pass are not yet in this d
 | `--roma2-slots N` | `64` | image descriptors resident on the device while dense matching |
 | `--roma2-min-confidence F` | `0.1` | confidence at which a warp cell takes part in the verdict, the keypoint tracking and the dense fill |
 | `--roma2-min-overlap F` | `0.10` | verdict: the pair is admitted iff min(inlier area A, inlier area B) ≥ F |
-| `--roma2-dense-matches N` | `2000` | dense fill cap per pair |
+| `--roma2-dense-matches N` | `2000` | dense correspondences per FULL FRAME of overlap (a density, not a per-pair count) |
 | `--export-retrieval-csv F` | — | per-image retrieval rankings (needs `--roma2-retrieval`) |
 
 `--export-retrieval-csv` and `--export-pairs-csv` are both written by `Scene::Reconstruct()` right
@@ -250,8 +250,27 @@ a pair the warp rejects. Per pair:
    best descriptor distance in the disc, accepted iff it beats the best descriptor distance OUTSIDE
    the disc by the matcher's ratio. This is where appearance (descriptor agreement) enters, and the
    only place it does.
-4. **Dense fill** (`SampleWarpComplementary`). Correspondences are drawn from the verdict's inlier
-   cells where the guided matches are not, up to `--roma2-dense-matches` per pair.
+4. **Dense fill** (`SampleWarpComplementary`). `--roma2-dense-matches` (2000, `denseMatchesPerFrame`)
+   is a DENSITY — correspondences per FULL FRAME of overlap, not a count per pair. `DenseFillGridSide`
+   turns that density into a fixed bucket pitch, `ceil(sqrt(density))` clamped to the warp side, over
+   the WHOLE warp grid — the same pitch for every pair regardless of how much of the frame its overlap
+   covers, so a pair's confident overlap holds `density x overlapArea` buckets whatever that overlap
+   is, and the draw is the same density in every pair rather than the same flat count. Because
+   `SampleWarpComplementary` already yields no point from a bucket the guided matches occupy
+   (`occupiedA`), the fixed pitch turns that exclusion rule into an exact density over the UNCOVERED
+   overlap with no separate coverage term to add: a pair whose guided matches already cover half its
+   overlap draws from the other half at the same per-area rate as a pair with no guided coverage at
+   all, instead of the old rule's flat count regardless of how much of the frame the guided matches
+   left for it. A side effect worth stating because it changed what tracks look like: with a per-pair
+   pitch, two pairs sharing image A used to stratify it on grids sized to each pair's own draw, so
+   their A-side samples fell on different lattices and landed a few cells apart — the redundant-keypoint
+   filter then saw two close keypoints where a shared track needed one. The fixed pitch removes that at
+   the source (the same lattice, every pair), which is what lets dense matches chain into tracks longer
+   than two views. `DenseFillCeiling` then bounds the draw at that same density over
+   `min(inlierAreaA, inlierAreaB)`: the bucket grid lives in A's frame, so the pitch alone only bounds
+   the density THERE; every dense correspondence also costs a keypoint in B, and the ceiling is what
+   bounds it in B — it binds only when B is the smaller of the two inlier areas, sitting above the
+   pitch's own draw otherwise, so it never re-charges the coverage discount the pitch already applied.
 5. **One geometry for the pair** (`AssemblePairROMA2`). `PairsMatcher::GeometricFilter` runs once more
    on guided ∪ dense; the guided matches within the matcher's own epipolar tolerance become the pair's
    sparse (descriptor) evidence, the dense correspondences within the warp tolerance its dense segment.
@@ -308,6 +327,12 @@ struct PairVerdict {
 void JudgePairROMA2(const PairsMatcher&, const Image& imgA, const Image& imgB,
     const PairWarps& warps, const ROMA2Config& config, ImagePair& pair, PairVerdict& verdict);
 
+// ROMA2Warp.h — the fixed pitch (density -> bucket grid side) and the per-pair cap it feeds
+int DenseFillGridSide(unsigned denseMatchesPerFrame, int warpSide);
+
+// MatchROMA2.h — density over the smaller inlier area; bounds the draw in B, which the grid cannot see
+unsigned DenseFillCeiling(const ROMA2Config& config, const PairVerdict& verdict);
+
 // MatchGeometric.h
 size_t MatchFeaturesGuided(PairsMatcher&, const Image& imgA, const Image& imgB,
     const std::vector<Point2f>& trackedB, const std::vector<uchar>& trackStatus,
@@ -338,8 +363,23 @@ At verbosity 3, one line per judged pair, machine-parseable — a rejected pair 
 
 ```
 ROMA2 pair <ID1>-<ID2>: conf <areaA> <areaB> inl <inlA> <inlB> REJECT
-ROMA2 pair <ID1>-<ID2>: conf <areaA> <areaB> inl <inlA> <inlB> ADMIT guided <n> sparse <n> dense <n> <ms>ms
+ROMA2 pair <ID1>-<ID2>: conf <areaA> <areaB> inl <inlA> <inlB> ADMIT cap <cap> grid <grid> guided <n> sparse <n> dense <n> <ms>ms
 ```
+
+`cap` and `grid` are `DenseFillCeiling(config, verdict)` and `DenseFillGridSide(config.denseMatchesPerFrame,
+warpSize)` — the same two calls `AssemblePairROMA2` feeds `SampleWarpComplementary`, read again at the
+log site rather than plumbed out of it, so the two numbers that decided the draw are printed next to
+what the draw actually did. A run's own log is then enough to replay the rule that produced it: e.g.
+
+```
+ROMA2 pair 0-1: conf 0.9523 0.9658 inl 0.9393 0.8929 ADMIT cap 1786 grid 45 guided 749 sparse 736 dense 1642 301ms
+```
+
+is a pair whose two inlier areas (0.9393, 0.8929) capped its draw at `round(2000 * 0.8929) = 1786`
+correspondences (`cap`), stratified over a 45x45 pitch fixed for every pair in the run (`grid`), and
+actually drew 1642 — under the cap, so it was the fixed pitch over the pair's own uncovered overlap
+that bound the draw here, not the ceiling. A rejected pair draws nothing, so it keeps the shorter form
+above with no `cap`/`grid` fields.
 
 and one summary line per pass:
 
@@ -367,7 +407,7 @@ stored.
 |---|---|---|
 | `--roma2-min-confidence` | 0.1 | cell floor for the verdict, the tracking and the dense fill |
 | `--roma2-min-overlap` | 0.10 | min-side inlier area; ≈ 0.15–0.17 true overlap; 0.15 ≈ a quarter of the frame |
-| `--roma2-dense-matches` | 2000 | dense fill cap per pair |
+| `--roma2-dense-matches` | 2000 | dense correspondences per full frame of uncovered overlap (density, not a cap per pair) |
 | guided disc | 2 warp cells | fixed |
 | warp tolerance | half a warp cell | fixed, in image pixels |
 | sparse tolerance | `MatchConfig::maxEpipolarError` | the matcher's own |
@@ -377,6 +417,49 @@ stored.
 Unchanged from the SIFT path: on a planar, textureless, small-baseline pair the essential matrix
 degenerates (the warp is right, the pose is not) — `PairsMatcher` has no homography branch, and this
 design does not add one.
+
+### Bundle adjustment's dense observation weight
+
+The dense fill's correspondences are real geometric evidence, not noise to filter around — `FilterMatches`
+and the intrinsic weight already treat them that way (`SupplementEvidenceIsolationTest`, Tests below) —
+but a warp correspondence localizes a point several times less precisely than a described one, and a
+bundle solve has to charge every residual for the precision of the measurement it minimizes.
+`--ba-dense-weight` (`BAConfig::denseObservationWeight`, default `-1.0`, "measure it"; a value in
+`[0,1]` pins it, `1` turning the down-weight off) scales a dense reprojection residual's loss weight by
+
+```
+w = (sigma_described / sigma_dense)^2
+```
+
+both sigmas the MEDIAN raw-pixel reprojection error of, respectively, the described and the dense
+observation populations of the scene each solve is about to fit (`ComputeObservationSigmas`,
+`Track.h/cpp`) — read off the RAW residuals, not the weighting the previous solve ran under, and
+resolved fresh at the head of every solve (`EstimateDenseObservationWeight`, `BundleAdjustment.h/cpp`)
+since a reconstruction runs fifty or more of them and the scene the estimate is measured on keeps
+growing. `w` is clamped to `[0.01, 1]` — a dense correspondence is never a MORE precise measurement
+than a described one, and never worth nothing to a textureless region that has no other evidence — and
+falls back to the fixed `DENSE_OBSERVATION_WEIGHT` (0.25, `ImagePair.h`) when either population is
+under 100 observations, the honest answer for an early incremental step whose scene is a handful of
+tracks.
+
+Measured rather than configured because `k = sigma_dense / sigma_described` is a property of the
+CAPTURE, not of the matcher: across this campaign's three captures the dense sigma barely moved
+(1.14–1.79 px, essentially the warp's own sampling scale) while the described sigma moved 3.6x, from
+0.32 px on the well-textured outdoor capture (Truck) to 1.15 px on the textureless interior
+(38004114) — taking `k` from 1.55 to 4.02 and `w = 1/k^2` with it. A constant tuned to any one of
+those captures is wrong on the other two; nothing here is right in both places, which is why this
+weight is measured and the view graph's is not.
+
+This is deliberately a different quantity from the view graph's own dense discount
+(`PairsWeightingConfig::denseObservationWeight`, `DENSE_OBSERVATION_WEIGHT` above, `ImagePair.h`), and
+bundle adjustment's measured weight does not reach it. A warp correspondence localizes a point several
+times less precisely than a descriptor one — which is exactly what bundle adjustment's weight charges
+it for — but it says nearly as much as a descriptor correspondence about whether the two images
+overlap, which is the only thing the view graph asks. Charging the precision penalty a second time in
+the view graph would demote exactly the dense-only pairs that carry a capture the descriptor matcher
+cannot match at all: on the textureless interior capture those pairs are the difference between 248
+registered images and 0. The view graph's constant therefore stays fixed and independent of bundle
+adjustment's, which is free to move with every capture and every solve.
 
 ---
 
@@ -506,6 +589,11 @@ Source: `~/virginia/models/roma2-onnx/roma2onnx-20260829-facets1520/export.log`.
 
 ### The one pass, end to end (2026-09-04 campaign, A100, base, fp32)
 
+**Measured under the flat per-pair dense cap this document's Dense fill step has since replaced** (up
+to `--roma2-dense-matches` draws on every admitted pair, with no density or fixed pitch) — the table
+and the two readings below are the last measurement on record against that superseded rule, not a
+description of the density rule now in force, and are pending re-measurement against it.
+
 Per-pair, from the `-v3` per-pair records of three captures; the pair time covers the graph call,
 the verdict, the guided match, the dense fill, the union fit and the store:
 
@@ -517,9 +605,13 @@ the verdict, the guided match, the dense fill, the union fit and the store:
 
 The whole matching stage, both rounds, is 269 s / 343 s / 338 s respectively. Two readings:
 
-- **On textureless captures the graph call dominates** and a pair costs about 100 ms. The dense fill
-  runs at the `--roma2-dense-matches` cap (2000) on essentially every admitted pair, because there is
-  nothing else filling the overlap.
+- **On textureless captures the graph call dominates** and a pair costs about 100 ms. Under the flat
+  cap this table was measured against, the dense fill drew up to `--roma2-dense-matches` (2000) on
+  essentially every admitted pair, because there was nothing else filling the overlap. Under the
+  density rule now in force the same "nothing else filling the overlap" condition instead means the
+  fixed pitch draws its full density over nearly the whole confident overlap — still close to a flat
+  2000 on a frame-filling pair, but scaled to that pair's own overlap area rather than constant
+  regardless of it, and capped in B by `DenseFillCeiling` rather than by the pitch alone.
 - **On a texture-rich capture the guided descriptor search dominates**: Truck carries 4.3 M described
   keypoints, its median pair takes 1048 guided matches, and the pair time is 5x the interiors'. The
   dense fill draws less (median 1753) because the sparse matches already occupy the overlap.

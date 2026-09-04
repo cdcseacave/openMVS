@@ -989,9 +989,10 @@ bool SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, const Pa
 			const unsigned numSparse = result.bAssembled ? pair.GetNumFilteredInliers() : 0u;
 			if (result.bAssembled)
 				result.pair = std::move(pair);
-			DEBUG_ULTIMATE("ROMA2 pair %u-%u: conf %.4f %.4f inl %.4f %.4f ADMIT guided %u sparse %u dense %u %ums",
+			DEBUG_ULTIMATE("ROMA2 pair %u-%u: conf %.4f %.4f inl %.4f %.4f ADMIT cap %u grid %d guided %u sparse %u dense %u %ums",
 				pairIdx.i, pairIdx.j, verdict.confidentAreaA, verdict.confidentAreaB,
-				verdict.inlierAreaA, verdict.inlierAreaB, (unsigned)guided.size(), numSparse,
+				verdict.inlierAreaA, verdict.inlierAreaB, DenseFillCeiling(config, verdict),
+				DenseFillGridSide(config.denseMatchesPerFrame, warpSize), (unsigned)guided.size(), numSparse,
 				(unsigned)result.dense.pointsA.size(), bTimePair ?
 				(unsigned)SEACAVE::Timer::SysTime2TimeMs(SEACAVE::Timer::GetSysTime() - pairTimeStart) : 0u);
 		}, stats))
