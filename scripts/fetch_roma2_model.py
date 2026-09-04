@@ -25,16 +25,19 @@ setting* (e.g. base/fp32 and a future base/fp16): both manifests would want the 
 `roma_base.json`, so a base/fp16 bundle -- not published today -- will need a distinct manifest
 name of its own before it can share a `--dest` with base/fp32.
 
-Two sources:
+Two sources, the Hub tried first:
 
   * Canonical: the Hugging Face model repo (`--repo`), via `huggingface_hub.snapshot_download`
     when that package is importable -- resumable, deduplicating, revision-pinned. It fetches the
     Hub's own `<setting>-<precision>/` layout into a scratch directory, then this script moves
     the needed files up into the flat `--dest` and discards the scratch copy.
   * Mirror: GitHub release assets of the OpenMVS repo (`--mirror`), streamed with
-    `urllib.request` when huggingface_hub is not importable. GitHub flattens release assets (no
-    subdirectories), so the mirror's bare file names are already this script's local names --
-    nothing to reconstruct on that side.
+    `urllib.request`. Used whenever the Hub does not deliver the files: huggingface_hub is not
+    importable, or a Hub fetch was attempted and failed (offline, blocked, an outage, an unknown
+    repo/revision) -- installing huggingface_hub never makes this script less able to reach the
+    model, only ever adds a first, canonical attempt before the same mirror it would otherwise go
+    to directly. GitHub flattens release assets (no subdirectories), so the mirror's bare file
+    names are already this script's local names -- nothing to reconstruct on that side.
 
 Every fetched file is verified against `models/roma2/checksums.txt` (read relative to this
 script, not the current directory) -- that file is what pins the published artefact's exact
@@ -179,9 +182,12 @@ def _entries_for(checksums: Dict[str, str], setting: str, precision: str, checks
 def _fetch_via_huggingface(dest: Path, repo: str, revision: str, setting: str, precision: str,
                             pending: Dict[str, str]) -> bool:
     """Try `huggingface_hub.snapshot_download`. Returns False (without touching the network) if
-    huggingface_hub is not importable, so the caller falls back to the mirror; returns True once
-    the needed files have been moved into place (verification against checksums.txt happens
-    afterward either way)."""
+    huggingface_hub is not importable, so the caller falls back to the mirror. Raises
+    ModelFetchError for any other failure (network, auth, an unknown repo/revision, a filesystem
+    error moving the result into place) -- the caller falls back to the mirror for that too, it
+    just needs to know the two cases apart to say which one happened. Returns True once the
+    needed files have been moved into place (verification against checksums.txt happens
+    afterward either way). The caller has already made sure `dest` exists and is writable."""
     try:
         from huggingface_hub import snapshot_download
     except ImportError:
@@ -193,7 +199,6 @@ def _fetch_via_huggingface(dest: Path, repo: str, revision: str, setting: str, p
     # as a raw traceback instead of the clean ModelFetchError/exit(1) every other failure path
     # gives. Wrap it so a network hiccup, the most likely first failure, reads like a message.
     try:
-        dest.mkdir(parents=True, exist_ok=True)
         prefix = f"{setting}-{precision}"
         with tempfile.TemporaryDirectory() as scratch:
             snapshot_download(
@@ -221,8 +226,8 @@ def _fetch_via_huggingface(dest: Path, repo: str, revision: str, setting: str, p
 def _fetch_via_mirror(dest: Path, mirror: str, pending: Dict[str, str]) -> None:
     """Stream each pending file from the flat GitHub mirror release, writing through a `.part`
     file so an interrupted fetch never leaves a truncated graph in place. GitHub's flattened
-    asset name is already this script's local flat name -- nothing to reconstruct here."""
-    dest.mkdir(parents=True, exist_ok=True)
+    asset name is already this script's local flat name -- nothing to reconstruct here. The
+    caller has already made sure `dest` exists and is writable."""
     for published_relpath in pending:
         basename = Path(published_relpath).name
         url = f"{mirror.rstrip('/')}/{basename}"
@@ -235,7 +240,33 @@ def _fetch_via_mirror(dest: Path, mirror: str, pending: Dict[str, str]) -> None:
             if part.is_file():
                 part.unlink()
             raise ModelFetchError(f"failed to fetch '{url}': {e}") from e
+        except BaseException:
+            # any other interruption (e.g. KeyboardInterrupt) must not leave a `.part` file
+            # behind either -- see also the sweep in fetch() that clears litter from a run that
+            # was interrupted even more abruptly than an exception allows for
+            if part.is_file():
+                part.unlink()
+            raise
         part.replace(target)
+
+
+def _ensure_dest_writable(dest: Path) -> None:
+    """Raise a ModelFetchError naming `dest` if it cannot be created or written to. Meant to be
+    called once, before either fetch branch runs: `roma2-model`'s CMake target defaults `--dest`
+    to the CMake install prefix, which an unprivileged user cannot write, and that must be
+    reported plainly rather than escaping as a raw traceback or being blamed on Hugging Face."""
+    try:
+        dest.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise ModelFetchError(
+            f"cannot write to '{dest}': {e} -- re-run with sudo, or pass --dest to a directory "
+            "you own (then set OPENMVS_ROMA2_MODEL_PATH to it)"
+        ) from e
+    if not os.access(dest, os.W_OK):
+        raise ModelFetchError(
+            f"cannot write to '{dest}': permission denied -- re-run with sudo, or pass --dest to "
+            "a directory you own (then set OPENMVS_ROMA2_MODEL_PATH to it)"
+        )
 
 
 def fetch(
@@ -253,13 +284,26 @@ def fetch(
 
     Idempotent: a file already present with the right digest costs one hash and is left
     untouched. A file present with the wrong digest is deleted before a fresh attempt. Raises
-    ModelFetchError on any checksum problem, missing source, or a still-wrong digest after
-    fetching -- callers never see a partially-verified result silently reported as success.
+    ModelFetchError on any checksum problem, missing source, a destination that cannot be
+    written to, or a still-wrong digest after fetching -- callers never see a partially-verified
+    result silently reported as success. The Hub is tried first; a failure there (not merely
+    huggingface_hub being absent) falls back to the mirror instead of giving up, since the two
+    are pinned to the same digests and are meant to be interchangeable.
     """
     dest = Path(dest)
     checksums_path = Path(checksums_path)
     entries = _entries_for(read_checksums(checksums_path), setting, precision, checksums_path)
     result = FetchResult(dest=dest)
+
+    # Litter from an earlier run interrupted more abruptly than `_fetch_via_mirror`'s own
+    # exception handling can catch (a killed process, a lost connection): nothing else ever
+    # revisits a file once it stops being pending, so a `.part` next to an already-cached,
+    # already-verified file would otherwise sit there forever, looking like a broken model.
+    for published_relpath in entries:
+        local_path = _local_path(dest, published_relpath)
+        part = local_path.with_name(local_path.name + ".part")
+        if part.is_file():
+            part.unlink()
 
     pending: Dict[str, str] = {}
     for published_relpath, digest in entries.items():
@@ -274,8 +318,34 @@ def fetch(
     if not pending:
         return result
 
-    if not _fetch_via_huggingface(dest, repo, revision, setting, precision, pending):
-        _fetch_via_mirror(dest, mirror, pending)
+    # Checked before any network attempt, and before either fetch branch creates `dest` itself,
+    # so a destination the caller cannot write to (e.g. the roma2-model CMake target's default
+    # install prefix) is always reported by name instead of surfacing as a raw traceback (the
+    # mirror branch used to create `dest` outside any try) or being blamed on Hugging Face (the
+    # Hub branch used to create `dest` as the first statement inside its own try).
+    _ensure_dest_writable(dest)
+
+    hub_error: Optional[ModelFetchError] = None
+    try:
+        fetched_via_hub = _fetch_via_huggingface(dest, repo, revision, setting, precision, pending)
+    except ModelFetchError as e:
+        fetched_via_hub = False
+        hub_error = e
+
+    if not fetched_via_hub:
+        if hub_error is not None:
+            print(f"warning: {hub_error}", file=sys.stderr)
+            print("falling back to the GitHub mirror", file=sys.stderr)
+        else:
+            print("huggingface_hub not installed; using the GitHub mirror", file=sys.stderr)
+        try:
+            _fetch_via_mirror(dest, mirror, pending)
+        except ModelFetchError as mirror_error:
+            if hub_error is not None:
+                raise ModelFetchError(
+                    f"Hugging Face fetch failed ({hub_error}); mirror fetch also failed: {mirror_error}"
+                ) from mirror_error
+            raise
 
     for published_relpath, digest in pending.items():
         local_path = _local_path(dest, published_relpath)
@@ -292,14 +362,17 @@ def fetch(
 
 
 def resolve_dest(dest_arg: Optional[str]) -> Path:
-    """`--dest` if given; else $OPENMVS_ROMA2_MODEL_PATH; else ./roma2-model. The CMake target
-    always passes --dest explicitly, so this default only ever serves a hand-run."""
+    """`--dest` if given; else $OPENMVS_ROMA2_MODEL_PATH; else `~/.cache/openMVS/roma2`. The
+    CMake target always passes --dest explicitly, so this default only ever serves a hand-run --
+    and it must not be a path under the current directory: the obvious hand-run has a checkout
+    for its cwd, which does not gitignore it, and the DINOv3 weights this fetches must never enter
+    the OpenMVS repository (see docs/RoMa2Model.md's Licence section)."""
     if dest_arg:
         return Path(dest_arg).expanduser()
     env = os.environ.get("OPENMVS_ROMA2_MODEL_PATH")
     if env:
         return Path(env).expanduser()
-    return Path("./roma2-model")
+    return Path("~/.cache/openMVS/roma2").expanduser()
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
@@ -309,13 +382,13 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--precision", default="fp32", help="exported precision (default: fp32)")
     parser.add_argument("--dest", default=None,
                          help="destination directory -- the model directory itself, flat "
-                              "(default: $OPENMVS_ROMA2_MODEL_PATH, else ./roma2-model)")
+                              "(default: $OPENMVS_ROMA2_MODEL_PATH, else ~/.cache/openMVS/roma2)")
     parser.add_argument("--repo", default=HF_REPO, help=f"Hugging Face model repo id (default: {HF_REPO})")
     parser.add_argument("--revision", default=DEFAULT_REVISION,
                          help=f"Hugging Face revision/commit to fetch (default: {DEFAULT_REVISION})")
     parser.add_argument("--mirror", default=DEFAULT_MIRROR_URL,
-                         help="mirror base URL, used only when huggingface_hub is not importable "
-                              f"(default: {DEFAULT_MIRROR_URL})")
+                         help="mirror base URL, used when huggingface_hub is not importable or "
+                              f"the Hugging Face fetch fails (default: {DEFAULT_MIRROR_URL})")
     return parser
 
 
