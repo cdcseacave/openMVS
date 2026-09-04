@@ -149,8 +149,11 @@ SFM_API std::pair<float, bool> ComputeReprojectionErrorPixels(const Camera& came
  * FilterTracks uses, so the two numbers describe the residuals bundle adjustment actually sees.
  * The median of an already non-negative error is taken as the scale directly, with no 1.4826
  * consistency factor: the only consumer takes the RATIO of the two, in which any common factor
- * cancels. Only inlier tracks and valid images take part, and an observation whose projection is
- * invalid is counted by neither population.
+ * cancels. Only inlier tracks and valid images take part -- an image without a pose is skipped
+ * rather than asserted, unlike ComputeTracksMeanReprojectionError, because this runs at the head
+ * of every solve, where a scene still holding images the incremental reconstruction has not
+ * registered yet is the normal state and not a bug. An observation whose projection is invalid
+ * is counted by neither population.
  * The counts come back so the caller can refuse a sample too small to be a sigma.
  */
 SFM_API void ComputeObservationSigmas(const Scene& scene,
