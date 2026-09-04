@@ -7,23 +7,29 @@ optional replacement for two stages of the classical SFM pipeline. It plugs into
 seams:
 
 ```
-CreateStructure --roma2 ...                    Scene::MatchPairs
-  --roma2-retrieval ──> global descriptors ──> PairsMatcher::QueryRetrieval
-                         (GlobalDescriptors.h)   (replaces the vocabulary tree as the ranking source;
-                                                   RRF/mutual-top-K/bridging/feedback unchanged)
-  --roma2-match ─────> bidirectional warp ────> one-pass dense pair matching
-                         (RoMa2Matcher.h/cpp,      (MatchROMA2.h/cpp: verdict, guided sparse match,
-                          OnnxRuntime.h/cpp)         dense fill, one union fit, one store —
-                                                      ROMA2Warp.h/cpp, MatchGeometric.h/cpp)
+CreateStructure --roma2 ...                     Scene::MatchPairs
+  --match-mode 4 ──────> global descriptors ──> PairsMatcher::CollectRetrievalPairs
+   (RETRIEVAL)             (GlobalDescriptors.h,   (QueryRetrieval over the global-descriptor index;
+                             computed by the         the vocabulary tree is never built; RRF/mutual-
+                             describe pass, or        top-K/bridging/feedback shared with VOCABULARY)
+                             already stored)
+  --roma2-match true ──> bidirectional warp ────> one-pass dense pair matching
+                           (RoMa2Matcher.h/cpp,      (MatchROMA2.h/cpp: verdict, guided sparse match,
+                            OnnxRuntime.h/cpp)         dense fill, one union fit, one store —
+                                                        ROMA2Warp.h/cpp, MatchGeometric.h/cpp)
 ```
 
-**What `--roma2 true` does by default:** the retrieval seam only. `--roma2-retrieval` defaults to
-**true**, `--roma2-match` to **false** — so a plain `--roma2 true` describes every image once, ranks
-the candidate pairs by the global descriptors instead of the vocabulary tree, and leaves the matching
-itself to SIFT/AKAZE/ORB. `--roma2-match true` asks for one-pass dense pair matching instead: the
-verdict on a pair comes from the bidirectional warp alone, with no union of SIFT-verified and
-warp-verified pairs and no SIFT fallback for a pair the warp rejects (One-Pass Dense Pair Matching,
-below). End-to-end reconstruction numbers for the one pass are not yet in this document (Limitations).
+**Two independent seams, neither one `--roma2`'s default effect.** `--roma2` on its own has nothing
+to do — `CreateStructure` rejects it unless `--roma2-match true`, `--match-mode 4` (RETRIEVAL) or
+`--export-retrieval-csv` also asks for something the model can produce. `--match-mode 4` is the
+retrieval seam: it ranks candidate pairs by the DINOv3+GeM(p=3) 2048-D global descriptors instead of
+the vocabulary tree, and needs `--roma2 true` only to compute those descriptors when the scene does
+not already carry them — the matching itself stays SIFT/AKAZE/ORB. This is RETRIEVAL's headline use:
+robust pair selection by DINOv3, with no dense matching at all. `--roma2-match true` is the
+independent dense-matching seam, and composes with either match mode: the verdict on a pair comes
+from the bidirectional warp alone, with no union of SIFT-verified and warp-verified pairs and no SIFT
+fallback for a pair the warp rejects (One-Pass Dense Pair Matching, below). End-to-end reconstruction
+numbers for the one pass are not yet in this document (Limitations).
 
 | Flag | Default | Effect |
 |---|---|---|
@@ -31,13 +37,16 @@ below). End-to-end reconstruction numbers for the one pass are not yet in this d
 | `--roma2-model DIR` | `$OPENMVS_ROMA2_MODEL_PATH` | exported graphs + manifest |
 | `--roma2-setting turbo\|fast\|base` | `base` | preset (320/512/640 px) |
 | `--roma2-provider auto\|cuda\|coreml\|dml\|cpu` | `auto` | execution provider; a named one is required, not preferred |
-| `--roma2-retrieval` | `true` | rank candidate pairs by the global descriptors |
 | `--roma2-match` | **`false`** | one-pass dense pair matching (verdict, guided sparse match, dense fill, one union fit, one store) |
 | `--roma2-slots N` | `64` | image descriptors resident on the device while dense matching |
 | `--roma2-min-confidence F` | `0.1` | confidence at which a warp cell takes part in the verdict, the keypoint tracking and the dense fill |
 | `--roma2-min-overlap F` | `0.10` | verdict: the pair is admitted iff min(inlier area A, inlier area B) ≥ F |
 | `--roma2-dense-matches N` | `2000` | dense correspondences per FULL FRAME of overlap (a density, not a per-pair count) |
-| `--export-retrieval-csv F` | — | per-image retrieval rankings (needs `--roma2-retrieval`) |
+| `--export-retrieval-csv F` | — | per-image retrieval rankings (needs `--roma2 true`) |
+
+Which mode ranks candidate pairs how is a property of `--match-mode` alone, with no crossover: `1`
+VOCABULARY always ranks with the SIFT/AKAZE vocabulary tree, `4` RETRIEVAL always ranks with the
+global descriptors above. Neither can substitute itself into the other.
 
 `--export-retrieval-csv` and `--export-pairs-csv` are both written by `Scene::Reconstruct()` right
 after pair matching (`ReconstructionConfig::exportRetrievalCSV`/`exportPairsCSV`), before any
@@ -46,9 +55,22 @@ drop pairs or leave images unregistered — the CSVs describe the matched scene,
 reconstruction happened to keep. A failed export only logs a warning and never fails the
 reconstruction, whose primary output is the scene itself.
 
-No new `MatchMode`: everything downstream of pair ranking is backend-agnostic, and the
-VOCABULARY→EXHAUSTIVE small-scene remap and the KNOWN_POSES unposed-image fallback keep working
-unchanged. The in-process integration replaces the earlier NPZ-based ROMA2 import outright (deleted:
+`--match-mode 4` (RETRIEVAL) is its own `MatchMode`, not a modifier of another one:
+`PairsMatcher::CollectRetrievalPairs` builds the global-descriptor cosine index
+(`EnsureGlobalDescriptorsIndex`, `GlobalDescriptors.h`) and shares the same reciprocal-rank fusion,
+mutual top-K agreement and connectivity bridging as VOCABULARY's `CollectVocabularyPairs`
+(`CollectFusedRetrievalPairs`) — those are properties of the ranking, not of the backend. Everything
+downstream of pair ranking stays backend-agnostic, and the VOCABULARY→EXHAUSTIVE small-scene remap is
+unchanged.
+
+**This changed the KNOWN_POSES unposed-image fallback.** `CollectKnownPosePairs`'s branch that adds
+candidates for images with no imported pose (so an incomplete pose file does not leave them
+unmatched) now always queries the vocabulary tree (`EnsureVocabularyTree`) — it used to be able to
+query the global descriptors instead whenever a scene carried them, so "vocabulary retrieval" there
+silently meant two different rankings depending on what else was enabled. It means exactly one thing
+now: the SIFT/AKAZE vocabulary tree, `--roma2`/`--match-mode` notwithstanding.
+
+The in-process integration replaces the earlier NPZ-based ROMA2 import outright (deleted:
 `ImportROMA2.{h,cpp}`, `--import-roma2`, depth-map import) — there is no dual path.
 
 Source: `libs/SFM/OnnxRuntime.h/cpp` (ONNX Runtime session/tensor wrapper), `libs/SFM/RoMa2Matcher.h/cpp`
@@ -64,7 +86,7 @@ types, coordinate conventions, keypoint tracking, the coverage and complementary
 ## Graph Contract
 
 Per preset `S ∈ {320 (turbo), 512 (fast), 640 (base)}`, `G = S/16` patch grid, `C = S/4` warp cells.
-Manifest `format_version` **3**:
+Manifest `format_version` **1**:
 
 | File | Inputs | Outputs |
 |---|---|---|
@@ -75,7 +97,7 @@ Manifest `format_version` **3**:
 fp32, static shapes, batch 1, opset 18. Coordinate conventions (`ROMA2Warp.h/cpp`, deliberate
 asymmetry): pixel→grid `CoordFromTo` is align_corners=**true**; grid→pixel `DenormCoord` is
 align_corners=**false** (`0.5*(n+1)*W - 0.5`). `RoMa2Manifest::Load` (`libs/SFM/RoMa2Matcher.h/cpp`)
-rejects a manifest of any `format_version` other than 3, naming the version, and rejects a
+rejects a manifest of any `format_version` other than 1, naming the version, and rejects a
 missing/ill-typed key or a declared graph I/O that disagrees with the shapes derived from
 `image_size`/`warp_size`; the C++ loader (`OnnxModel::Load`, `libs/SFM/OnnxRuntime.cpp`) separately
 rejects any negative (dynamic) dim in the graphs themselves.
@@ -92,12 +114,15 @@ Graphs are produced by `scripts/python/roma2/export.sh` (wraps `export.py onnx|c
 --with onnxruntime-gpu==1.23.2`). `RoMa2OnnxParityTest`'s reference dumps (`*.reference`,
 `save_reference`) and parity check cover all four `match_coarse` outputs.
 
-Exported model sets live on the shared volume, one directory per export — the bidirectional export is
-`~/virginia/models/roma2-onnx/roma2onnx-20260903-bidir/` (three presets, references, `export.log`,
-`format_version` 3), referenced by `--roma2-model` or `$OPENMVS_ROMA2_MODEL_PATH` from then on. The
-`.onnx` + `.onnx.data` + `.json` set is byte-portable across OSs (external data is resolved relative to
-the model path on every platform). Earlier exports (`format_version` 1, no `retrieval` output;
-`format_version` 2, unidirectional `match_coarse`) are unsupported and rejected at load, by name.
+Exported model sets live on the shared volume, one directory per export, referenced by
+`--roma2-model` or `$OPENMVS_ROMA2_MODEL_PATH`. The manifest schema is unreleased and carries no
+compatibility duty, so its `format_version` counter was reset to **1** for the bidirectional,
+`retrieval`-carrying schema described above, rather than continuing to climb (nothing outside this
+branch has ever consumed the higher numbers the counter briefly reached during development). An
+export predating that reset is not what the current loader means by `format_version` 1, whatever
+integer its own manifest happens to declare. `RoMa2Manifest::Load` accepts exactly `format_version`
+1, naming the version it saw and rejecting everything else. The `.onnx` + `.onnx.data` + `.json` set
+is byte-portable across OSs (external data is resolved relative to the model path on every platform).
 
 ---
 
@@ -144,11 +169,16 @@ its destructor runs after (a `RoMa2Onnx*`/tensor held by `PairsMatcher` must not
 remembered so later calls fail fast. `layers` are **not** cached across the describe pass and the
 matching pass (13 GB per 1000 images at base) — the matching pass re-describes on slot load.
 
-`ROMA2Config::IsInProcessEnabled()` gates the whole feature: `enabled && (useRetrieval || useMatching)
-&& !ResolveModelPath().empty()`. A requested-but-unavailable model is always an error, never a silent
-fallback to the vocabulary tree — `Scene::MatchPairs` checks this before loading anything, and
-`CreateStructure` checks it again during option validation so the user gets the hint before any
-feature extraction runs.
+`ROMA2Config::IsInProcessEnabled()` now only asks `enabled && !ResolveModelPath().empty()` — whether
+any pass actually needs the model moved to the caller, because `ROMA2Config` cannot see the match
+mode. `Scene::MatchPairs` computes that itself: `needsDescriptors` (the match mode is RETRIEVAL, or
+`--export-retrieval-csv` was requested, and the scene does not already carry global descriptors) and
+`needsWarps` (`ROMA2Config::NeedsWarps()`, i.e. `useMatching`) — the model loads only when at least
+one of the two is true. A requested-but-unavailable model is always an error, never a silent fallback
+to the vocabulary tree — `Scene::MatchPairs` checks this before loading anything, and `CreateStructure`
+checks a stricter version during option validation (`--roma2 has nothing to do without --roma2-match
+true or --match-mode 4 (RETRIEVAL)`, unless `--export-retrieval-csv` was given) so the user gets the
+hint before any feature extraction runs.
 
 ---
 
@@ -543,6 +573,10 @@ fall back to CPU (with the warning logged by `OnnxModel::Load`, not a hard error
 `/usr/local/cuda-12.9/lib64` (or otherwise ensure the cu12 cuDNN resolves first) when running a CUDA
 build.
 
+Building with ONNX Runtime enabled provisions the *library*; it does not fetch the exported *model*.
+See `docs/RoMa2Model.md` for that — the `roma2-model` CMake target, `scripts/fetch_roma2_model.py`,
+and the DINOv3 licence terms accepting the model implies.
+
 ---
 
 ## Memory (fp32, base preset)
@@ -588,13 +622,70 @@ arena, not the slots, to dominate; below
 ~12 GB of free device memory, dense matching at `base` is not a good fit — use `--roma2-setting fast`
 or `turbo`, whose tensors are 8.0/3.1 MiB per slot.
 
+---
+
+## Scaling
+
+**RETRIEVAL-only already runs the fast path.** With pair selection on `--match-mode 4` and
+`--roma2-match false`, the coarse-match graph is never loaded: `RoMa2Onnx::Load` calls only
+`LoadDescriptor`, and the match session is built lazily by `Impl::EnsureMatch()`, whose sole caller is
+`MatchCoarse` (`RoMa2Matcher.cpp`). A retrieval-only run therefore never pays the ~448 MB of
+coarse-graph weights, its session, or its four host warp tensors. `value_facets` is never read back
+either: `Describe` binds it to `facetsScratch`, a device tensor, and the host copy (`facetsHost`) is
+allocated lazily and asked for only by the parity test. One `layers` tensor is allocated for the whole
+pass, not one per image (`ComputeGlobalDescriptorsROMA2`, `MatchROMA2.cpp`); the graph pools GeM(p=3)
+→ concat → signed power → L2 on device and hands back the finished 2048-D vector as the `retrieval`
+output, so only **8 KB per image** crosses the bus. Image load and preprocessing are pipelined on the
+thread pool ahead of the single-threaded `Describe` call (`PrefetchRing`). Measured: 225 images
+described in 9.7 s on an A100 (43 ms/image), against ~2 min 45 s for the same scene's dense-matching
+pass.
+
+The one thing a retrieval-only run still pays for and does not use is `layers` itself (blocks 11 and
+17): the descriptor graph always emits it, because the same backbone forward pass that produces
+`value_facets` (blocks 15, 20 — what the on-device pooling into `retrieval` actually consumes) has to
+run through block 20 regardless, for the coarse matcher's `descriptors_A`/`descriptors_B` input, so no
+transformer compute is saved either way. Not reading `layers` back leaves **12.5 MB of VRAM**
+(`[1,2,40,40,1024]` fp32) allocated once for the whole pass rather than once per image — a memory
+cost, not a time one, since the device-side write of that tensor is ~13 MB at roughly 1.5 TB/s, well
+under 1 ms against a 43 ms ViT-L forward pass. A retrieval-only export that drops `layers` from the
+descriptor graph would need a third exported graph, a third manifest key and a third parity fixture
+set, for under 1% of the pass — not worth it; revisit only if VRAM, not time, becomes the binding
+constraint.
+
+**The retrieval index is linear in image count and needs no cache.** `GlobalDescriptors` holds one
+`N x 2048` float matrix — 41 MB at 5 000 images, 164 MB at 20 000 — and `Query` is a single GEMV plus
+a partial sort, O(N·D) per query with no N×N matrix anywhere: the vectors are small enough to stay
+resident in RAM at any capture size this codebase targets. `Image::globalDescriptor` is 8 KB per image
+and is serialized with the scene, so a second run over a scene that already carries descriptors skips
+the describe pass entirely — no ONNX session is loaded at all, and pair ranking reads straight off the
+stored vectors (Session Lifecycle, above).
+
+**Dense matching's per-image cost, `layers`, cannot all live on the device — and does not need to.**
+At 12.5 MB each, 5 000 images would be 61 GB. `MakeSlotPlan` (`MatchROMA2.cpp`) schedules which
+descriptors stay resident with Belady's optimal replacement (evict the slot whose next use is
+furthest away) over the candidate pairs sorted `(ID1,ID2)`, at most `--roma2-slots` (default 64,
+12.5 MB each). The plan only grows to what a scene actually needs, so a capture smaller than the
+budget never evicts, and an eviction costs a **43 ms re-describe**, not a correctness problem — there
+is no disk spill. The pass reports `loads` and `reloads` separately (Slot Plan, above), so the cache's
+own cost stays visible per run rather than hiding inside the matching wall time.
+
+A **disk-backed descriptor cache** is a real option — trading 12.5 MB/image of disk I/O against the
+43 ms of recompute an eviction currently costs — but nothing measured here asks for one yet: the
+campaign's 225-image scenes recorded 218 loads and 0 reloads. Whether a much larger capture (5 000+
+images) stays anywhere near that depends on its pair graph's own bandwidth, a property of the capture
+rather than of the code — that measurement, on a capture the campaign hasn't run, is what a decision
+to add the cache would need.
+
+---
+
 ## Measured Latencies (CUDA, fp32, median over 100 runs)
 
 The per-graph numbers below were measured on the pre-bidirectional export
-(`roma2onnx-20260829-facets1520`, `format_version` 1 — unsupported and rejected at load by the
-current loader; see Graph Contract and Export tooling above). The bidirectional `match_coarse` graph
-the one-pass matcher runs (`roma2onnx-20260903-bidir`) adds two outputs to the same forward pass, so
-the joint-ViT cost is unchanged and the second direction is a second head call.
+(`roma2onnx-20260829-facets1520` — an export that predates the bidirectional `match_coarse` graph and
+the descriptor graph's `retrieval` output the current manifest schema requires, so it is not loadable
+by the current loader; see Graph Contract and Export tooling above). The bidirectional `match_coarse`
+graph the one-pass matcher runs (`roma2onnx-20260903-bidir`) adds two outputs to the same forward
+pass, so the joint-ViT cost is unchanged and the second direction is a second head call.
 
 | Preset | Descriptor | Match coarse |
 |---|---|---|
@@ -763,7 +854,8 @@ re-running the matching stage from the images (`CreateStructure -s <images> -o s
 - **Essential-matrix degeneracy on planar, small-baseline pairs** (Known limit, One-Pass Dense Pair
   Matching, above) — unchanged from the SIFT path: the warp can be right while the pose is not, and
   `PairsMatcher` has no homography branch to fall back on.
-- **The describe pass always runs when `--roma2-retrieval` is on**, even for `EXHAUSTIVE` or
-  `SEQUENTIAL` matching where no retrieval ranking is needed for pair selection — the global
-  descriptors are still computed and stored (`Image::globalDescriptor`), which costs the describe pass
-  but not the (lazy) match-graph load.
+- **`--export-retrieval-csv` forces the describe pass under any match mode**, including
+  `EXHAUSTIVE`/`SEQUENTIAL`/`VOCABULARY`/`KNOWN_POSES`, where no retrieval ranking is otherwise needed
+  for pair selection — asking for the per-image rankings is asking for the global descriptors that
+  produce them, so `Scene::MatchPairs` computes and stores them (`Image::globalDescriptor`) regardless
+  of mode. This costs the describe pass but not the (lazy) match-graph load.
