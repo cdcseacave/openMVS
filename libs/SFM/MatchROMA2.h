@@ -142,9 +142,9 @@ struct SFM_API DenseMatches {
 // Turn an admitted pair's evidence into the pair the scene stores: draw the dense fill from the
 // verdict's inlier cells where the guided candidates are not (SampleWarpComplementary with occupiedA =
 // the A positions of `guided`, at config.denseMatchesPerFrame's density, capped by DenseFillCeiling);
-// fit ONE geometry on guided u dense through
-// pairsMatcher.GeometricFilter at the matcher's own maxEpipolarError on temporary Image copies whose
-// keypoints are those correspondences; then classify against pair.F: the guided matches within the
+// fit ONE geometry on guided u dense through pairsMatcher.GeometricFilter at the matcher's own
+// maxEpipolarError on temporary Image copies whose keypoints are those correspondences; then classify
+// against pair.F: the guided matches within the
 // matcher's maxEpipolarError are the sparse segment (`pair.matches[0, numFilteredInliers)`, the pair's
 // descriptor evidence), the dense correspondences within WarpTolerance are the dense segment (returned
 // in `dense`, appended by StorePairROMA2 after the pair exists). When the union fit fails (too few
