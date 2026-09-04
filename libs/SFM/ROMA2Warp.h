@@ -116,6 +116,12 @@ inline float WarpTolerance(const cv::Size& sizeA, const cv::Size& sizeB, int war
 // denseMatchesPerFrame * overlapArea buckets whatever that overlap is, and the draw's density -- the
 // thing the reconstruction actually pays for -- is the same in every pair. Clamped to the warp side,
 // because a bucket finer than a cell would hold at most one candidate and stratify nothing.
+// A shared pitch is also what lets two pairs holding image A put a keypoint on the SAME pixel of it,
+// which is the whole of the cross-pair chaining FilterRedundantKeypoints then performs: they bucket A
+// identically, the winner rule inside a bucket is pair-independent (WarpCellLatticePriority), and
+// where a pair's ceiling binds the thinning keeps a prefix of that same pair-independent order
+// (ThinSampleByLatticePriority) -- so two ceilings as far apart as their two overlaps allow still
+// leave nested samples of A rather than two disjoint thinnings of one agreement.
 inline int DenseFillGridSide(unsigned denseMatchesPerFrame, int warpSide) {
 	ASSERT(warpSide > 0);
 	return MINF(warpSide, MAXF(1, (int)std::ceil(std::sqrt((double)denseMatchesPerFrame))));
@@ -190,15 +196,29 @@ SFM_API size_t SampleWarpByCoverage(
 	std::vector<Point2f>& sampledA,
 	std::vector<Point2f>& sampledB);
 
-// Thin an index-parallel warp sample down to at most maxSamples correspondences by an even stride
-// through its order, in place. Never by confidence: a confidence sort would re-cluster the survivors
-// onto the warp's most certain region, which is the textured region the sparse matcher already
-// covered, and undo the stratification the draw exists for. A sample already within the budget is
-// left exactly as it is, and a zero budget empties it.
-SFM_API void ThinSampleEvenly(
+// Thin an index-parallel warp sample down to at most maxSamples correspondences, in place, keeping
+// the cells that rank highest on the draw's own PAIR-INDEPENDENT key: lattice priority first
+// (WarpCellLatticePriority), the cell's scramble to break the level the prefix stops inside. `cells`
+// carries each sample's warp cell (y*warpCols + x) and is thinned alongside the other three.
+//
+// The key is what makes the thinning safe to apply to a sample two pairs agree on. Two pairs sharing
+// image A stratify it on the same pitch and pick the same winners, and here they keep NESTED
+// prefixes of one order over the cells -- so the smaller budget's survivors are the larger's, and
+// every one they share is still a keypoint at the same pixel of A for FilterRedundantKeypoints to
+// chain. A stride through the sample's own order cannot do that: its survivors depend on the pair's
+// sample count and the pair's budget, so two pairs that agreed on every winner would keep different
+// subsets and the chaining would fall to the product of their two thinning ratios.
+// Never by confidence, and never by raster order: a confidence sort would re-cluster the survivors
+// onto the warp's most certain region -- the textured region the sparse matcher already covered --
+// and a raster prefix would keep the top band of the overlap and delete the bottom of it. The
+// lattice is dyadic, so a prefix of it is spatially uniform wherever it stops.
+// A sample already within the budget is left exactly as it is, and a zero budget empties it.
+SFM_API void ThinSampleByLatticePriority(
 	std::vector<Point2f>& sampledA,
 	std::vector<Point2f>& sampledB,
 	std::vector<float>& confidences,
+	std::vector<int>& cells,
+	int warpCols,
 	unsigned maxSamples);
 
 // Draw a sample of confident correspondences out of a warp that COMPLEMENTS correspondences the
@@ -220,8 +240,10 @@ SFM_API void ThinSampleEvenly(
 //  - maxSamples is a real CAP here, not only the target it is for the verdict: a pair has a match
 //    budget, and it is also what bounds the density the draw can reach in image B -- the bucket grid
 //    lives in A's frame and cannot see how densely B's side of the pair ends up covered. A draw
-//    whose unoccupied-bucket count still runs over the cap is thinned by an even stride through the
-//    raster order (ThinSampleEvenly).
+//    whose unoccupied-bucket count still runs over the cap is thinned down to it by the winner rule
+//    itself (ThinSampleByLatticePriority), not by a stride through this pair's list: the cap is the
+//    one term of the draw that IS per-pair, so enforcing it by anything pair-dependent would undo
+//    the cross-pair agreement the shared pitch above just bought.
 //
 // sampledA/sampledB/confidences are index-parallel and in warp-grid raster order (the order
 // AppendDenseMatches needs to hand out reproducible keypoint indices), sampledA/sampledB in the

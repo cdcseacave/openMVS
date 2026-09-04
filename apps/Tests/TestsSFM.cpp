@@ -1474,7 +1474,7 @@ bool ROMA2ComplementaryDrawTest()
 	FOREACH(b, hasCandidate)
 		if (hasCandidate[b] && !occupied[b])
 			++numExpected;
-	numExpected = MINF(numExpected, (size_t)denseBudget); // ThinSampleEvenly's cap, if the winners ran over it
+	numExpected = MINF(numExpected, (size_t)denseBudget); // the thinning's cap, if the winners ran over it
 	if (numDense != numExpected) {
 		VERBOSE("ROMA2ComplementaryDrawTest FAILED: %u dense points for the %u unoccupied buckets of the %dx%d grid that hold a candidate",
 			(unsigned)numDense, (unsigned)numExpected, numBuckets, numBuckets);
@@ -1519,8 +1519,9 @@ bool ROMA2ComplementaryDrawTest()
 	// against a budget of 400) drives the winner count far past the budget on its own, without
 	// needing to scatter the eligible cells thin -- the fixed pitch does not care how sparse the
 	// overlap is -- and the confidence grows steadily toward the bottom-right corner. Thinning by
-	// confidence -- what the first version did -- keeps only that corner; thinning by an even stride
-	// through the raster order has to leave every quadrant hit.
+	// confidence -- what the first version did -- keeps only that corner; thinning by the lattice
+	// key has to leave every quadrant hit, since the levels it keeps whole are lattices over the
+	// whole frame and the scramble that breaks the level it stops inside is spatially unbiased.
 	overlap.setTo(0.f);
 	for (int y = 0; y < cells; y += 2)
 		for (int x = 0; x < cells; x += 2)
@@ -1539,8 +1540,8 @@ bool ROMA2ComplementaryDrawTest()
 		smallOccupied[PixelToBucket(pt, numSmallBuckets)] = true;
 	unsigned perQuadrant[4] = {0u, 0u, 0u, 0u};
 	FOREACH(i, denseA) {
-		// complementarity has to survive the thinning too: a stride through the raster order can
-		// only drop points, never move one into a bucket the draw had struck out
+		// complementarity has to survive the thinning too: it can only drop points, never move one
+		// into a bucket the draw had struck out
 		if (smallOccupied[PixelToBucket(denseA[i], numSmallBuckets)]) {
 			VERBOSE("ROMA2ComplementaryDrawTest FAILED: the thinned draw put point %u at (%.1f, %.1f) into a sparse-occupied bucket",
 				i, denseA[i].x, denseA[i].y);
@@ -1676,14 +1677,27 @@ bool ROMA2ComplementaryDrawTest()
 		return false;
 	}
 
-	// 7) THE EVEN THINNING, as its own entry point: it is how the draw caps itself once the
-	// unoccupied buckets outnumber the budget. An even stride keeps the order, keeps the first
-	// point, and spans the sample -- a confidence sort would re-cluster the survivors instead.
+	// 7) THE THINNING, as its own entry point: it is how the draw caps itself once the unoccupied
+	// buckets outnumber the budget. It hands the survivors back in the order it got them -- what
+	// AppendDenseMatches labels keypoints by -- and it keeps a PREFIX of one pair-independent order
+	// over the cells, so a tighter budget keeps a SUBSET of what a looser one kept. That nesting is
+	// the property the fixed pitch above depends on: the ceiling is per-pair, so enforcing it by
+	// anything that read this pair's own list would leave two pairs which agreed on every winner
+	// holding different subsets of them.
+	const auto PixelToCell = [&](const Point2f& pt) {
+		const int cx = MINF(MAXF(ROUND2INT(pt.x*(float)(cells-1)/(width-1.f)), 0), cells-1);
+		const int cy = MINF(MAXF(ROUND2INT(pt.y*(float)(cells-1)/(height-1.f)), 0), cells-1);
+		return cy*cells + cx;
+	};
+	std::vector<int> acCellIdx;
+	for (const Point2f& pt : acA)
+		acCellIdx.push_back(PixelToCell(pt));
 	std::vector<Point2f> thinA(acA), thinB(acB);
 	std::vector<float> thinC(acC);
+	std::vector<int> thinCellIdx(acCellIdx);
 	const unsigned thinTo = (unsigned)(acA.size()/3);
-	ThinSampleEvenly(thinA, thinB, thinC, thinTo);
-	if (thinA.size() != thinTo || thinB.size() != thinTo || thinC.size() != thinTo || !(thinA[0] == acA[0])) {
+	ThinSampleByLatticePriority(thinA, thinB, thinC, thinCellIdx, cells, thinTo);
+	if (thinA.size() != thinTo || thinB.size() != thinTo || thinC.size() != thinTo || thinCellIdx.size() != thinTo) {
 		VERBOSE("ROMA2ComplementaryDrawTest FAILED: thinning %u points to %u kept %u", (unsigned)acA.size(), thinTo, (unsigned)thinA.size());
 		return false;
 	}
@@ -1691,17 +1705,30 @@ bool ROMA2ComplementaryDrawTest()
 	FOREACH(i, thinA) {
 		while (src < acA.size() && !(acA[src] == thinA[i]))
 			++src;
-		if (src == acA.size() || !(acB[src] == thinB[i]) || acC[src] != thinC[i]) {
+		if (src == acA.size() || !(acB[src] == thinB[i]) || acC[src] != thinC[i] || acCellIdx[src] != thinCellIdx[i]) {
 			VERBOSE("ROMA2ComplementaryDrawTest FAILED: the thinned sample is not an order-preserving index-parallel subsequence of the draw at %u", i);
 			return false;
 		}
 	}
+	// half that budget again: what survives it must be what the looser budget already kept
+	std::vector<Point2f> tightA(acA), tightB(acB);
+	std::vector<float> tightC(acC);
+	std::vector<int> tightCellIdx(acCellIdx);
+	ThinSampleByLatticePriority(tightA, tightB, tightC, tightCellIdx, cells, thinTo/2);
+	const std::set<int> keptCells(thinCellIdx.begin(), thinCellIdx.end());
+	FOREACH(i, tightCellIdx)
+		if (keptCells.find(tightCellIdx[i]) == keptCells.end()) {
+			VERBOSE("ROMA2ComplementaryDrawTest FAILED: thinning to %u kept cell %d, which thinning the same sample to %u dropped -- "
+				"the two budgets are not keeping nested prefixes of one order", thinTo/2, tightCellIdx[i], thinTo);
+			return false;
+		}
 	// asked for at least what it holds, a sample comes back untouched; asked for nothing, it empties
 	std::vector<Point2f> keepA(acA), keepB(acB);
 	std::vector<float> keepC(acC);
-	ThinSampleEvenly(keepA, keepB, keepC, (unsigned)acA.size() + 10);
-	ThinSampleEvenly(thinA, thinB, thinC, 0);
-	if (keepA != acA || keepB != acB || keepC != acC || !thinA.empty() || !thinB.empty() || !thinC.empty()) {
+	std::vector<int> keepCellIdx(acCellIdx);
+	ThinSampleByLatticePriority(keepA, keepB, keepC, keepCellIdx, cells, (unsigned)acA.size() + 10);
+	ThinSampleByLatticePriority(thinA, thinB, thinC, thinCellIdx, cells, 0);
+	if (keepA != acA || keepB != acB || keepC != acC || !thinA.empty() || !thinB.empty() || !thinC.empty() || !thinCellIdx.empty()) {
 		VERBOSE("ROMA2ComplementaryDrawTest FAILED: thinning to a budget above the sample size, or to zero, did not behave");
 		return false;
 	}
@@ -1821,6 +1848,54 @@ bool ROMA2DenseFillDensityTest()
 	if (numShared*20 < bigA.size()*17) {
 		VERBOSE("ROMA2DenseFillDensityTest FAILED: only %u of %u samples of A are shared by a second pair",
 			(unsigned)numShared, (unsigned)bigA.size());
+		return false;
+	}
+
+	// --- 5) AND THEY STILL AGREE WHEN THEIR CEILINGS DIFFER ----------------------------------
+	// The pitch is shared but DenseFillCeiling is not: it is the density over the SMALLER of the
+	// pair's two inlier areas, so two pairs holding A with differently sized B sides thin one
+	// agreement to two different sizes. Enforcing that ceiling is therefore the step that has to
+	// preserve the agreement, and it does by ranking the sample on the same pair-independent key the
+	// bucket winners were picked on and keeping a prefix of it -- the tighter budget's survivors are
+	// the looser one's, cell for cell. Both pairs see the SAME confident region here on purpose: the
+	// only variable left is the ceiling, section 4 above having varied the region instead.
+	// The arithmetic: a fully confident A fills all 45x45 = 2025 buckets, and B sides of 0.50 and
+	// 0.35 inlier area cap the two draws at round(2000*0.50) = 1000 and round(2000*0.35) = 700. Two
+	// prefixes of one order nest, so all 700 of the tighter draw are among the looser draw's 1000.
+	// An even stride through each pair's own list -- what this used to be -- would keep the index
+	// sets {floor(i*2025/1000)} and {floor(i*2025/700)}, which meet in only 400 of the 700; the bar
+	// below sits above that and below the nesting.
+	ROMA2Config ceilingConfig;
+	ceilingConfig.denseMatchesPerFrame = density;
+	PairVerdict verdictWideB, verdictNarrowB;
+	verdictWideB.inlierAreaA = 1.00f; verdictWideB.inlierAreaB = 0.50f;
+	verdictNarrowB.inlierAreaA = 1.00f; verdictNarrowB.inlierAreaB = 0.35f;
+	const unsigned capWideB = DenseFillCeiling(ceilingConfig, verdictWideB);
+	const unsigned capNarrowB = DenseFillCeiling(ceilingConfig, verdictNarrowB);
+	confidence.setTo(0.9f);
+	std::vector<Point2f> wideBA, wideBB, narrowBA, narrowBB;
+	std::vector<float> wideBC, narrowBC;
+	const size_t numWideB = SampleWarpComplementary(imgA, imgB, warp, confidence, 0.3f, grid, capWideB,
+		none, wideBA, wideBB, wideBC);
+	const size_t numNarrowB = SampleWarpComplementary(imgA, imgB, warp, confidence, 0.3f, grid, capNarrowB,
+		none, narrowBA, narrowBB, narrowBC);
+	if (numWideB != capWideB || numNarrowB != capNarrowB) {
+		VERBOSE("ROMA2DenseFillDensityTest FAILED: ceilings %u/%u drew %u/%u points -- the fixture must put both "
+			"draws over their ceiling for the thinning to be under test at all",
+			capWideB, capNarrowB, (unsigned)numWideB, (unsigned)numNarrowB);
+		return false;
+	}
+	std::set<std::pair<float, float>> keptByWideB;
+	for (const Point2f& pt : wideBA)
+		keptByWideB.emplace(pt.x, pt.y);
+	size_t numSharedCapped = 0;
+	for (const Point2f& pt : narrowBA)
+		if (keptByWideB.find(std::make_pair(pt.x, pt.y)) != keptByWideB.end())
+			++numSharedCapped;
+	if (numSharedCapped*20 < numNarrowB*19) {
+		VERBOSE("ROMA2DenseFillDensityTest FAILED: of the %u points the tighter ceiling kept, only %u are among the "
+			"%u the looser one kept -- the two thinnings are not nested",
+			(unsigned)numNarrowB, (unsigned)numSharedCapped, (unsigned)numWideB);
 		return false;
 	}
 

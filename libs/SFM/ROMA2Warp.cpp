@@ -159,6 +159,25 @@ inline int WarpCellLatticePriority(int x, int y)
 	return MINF(TrailingZeros(x), TrailingZeros(y));
 }
 
+// A PAIR-INDEPENDENT SCRAMBLE of a warp cell index -- an integer finalizer (multiply-xorshift), not
+// randomness. It orders the cells that share a lattice level against each other, which is what the
+// thinning below needs to break its ties, and the thinning is only correct because this is a pure
+// function of the cell: two pairs that reach the same cell scramble it to the same value and so
+// agree on whether it survives. Anything that varied per pair -- a random draw, a running counter,
+// the pair's own confidences -- would put the two back to keeping different subsets of the same
+// winners, which is the very thing the fixed pitch exists to prevent.
+// Raster order would be pair-independent too, and is not usable: a prefix of it is the top band of
+// the overlap, so a thinning that took one would delete the bottom of every draw it binds on. The
+// scramble spreads a prefix over the whole overlap instead.
+inline uint32_t WarpCellScramble(int cell)
+{
+	uint32_t h = (uint32_t)cell;
+	h ^= h >> 16; h *= 0x7feb352dU;
+	h ^= h >> 15; h *= 0x846ca68bU;
+	h ^= h >> 16;
+	return h;
+}
+
 // The ONE bucket winner rule, shared by every warp draw: higher lattice priority wins, and a tie
 // keeps the candidate seen first. Both draws walk their candidates in warp-grid raster order, so
 // "first" is raster order, and the rule is a pure function of the cell coordinates.
@@ -272,28 +291,62 @@ size_t SFM::SampleWarpByCoverage(
 /*----------------------------------------------------------------*/
 
 
-void SFM::ThinSampleEvenly(
+void SFM::ThinSampleByLatticePriority(
 	std::vector<Point2f>& sampledA,
 	std::vector<Point2f>& sampledB,
 	std::vector<float>& confidences,
+	std::vector<int>& cells,
+	int warpCols,
 	unsigned maxSamples)
 {
-	ASSERT(sampledA.size() == sampledB.size() && sampledA.size() == confidences.size());
+	ASSERT(sampledA.size() == sampledB.size() && sampledA.size() == confidences.size() &&
+		sampledA.size() == cells.size());
+	ASSERT(warpCols > 0);
 	const size_t numSamples = sampledA.size();
 	if (numSamples <= maxSamples)
 		return;
-	// an even stride through the sample's own order, which is the warp raster order every draw
-	// hands back: strictly increasing (numSamples > maxSamples), so the survivors keep that order
-	// and the keypoint indices an append hands out stay reproducible
+	// Rank by the SAME pair-independent key the bucket winners were picked on, then keep a prefix
+	// of it: lattice priority first, the cell's scramble to break the level it stops inside. Two
+	// pairs sharing image A therefore keep NESTED prefixes of one order over the cells rather than
+	// two subsets that happen not to meet -- the smaller budget's survivors are the larger's, cell
+	// for cell, so everything they still share is a keypoint at the same pixel of A and chains.
+	// (A stride through this pair's own list, which is what this used to be, has survivors that
+	// depend on the pair's sample count and the pair's ceiling, so two pairs that agreed on every
+	// winner kept different subsets of them and the chaining fell to the product of the two
+	// thinning ratios.) The priority is dyadic -- a level-k cell lies on a 2^k lattice -- so the
+	// prefix that keeps whole levels is spatially uniform whatever level it stops at, and the
+	// scramble makes the part-level remainder an unbiased subset of that level.
+	std::vector<unsigned> order(numSamples);
+	std::iota(order.begin(), order.end(), 0u);
+	const auto Priority = [&cells, warpCols](unsigned i) {
+		return WarpCellLatticePriority(cells[i]%warpCols, cells[i]/warpCols);
+	};
+	std::sort(order.begin(), order.end(), [&](unsigned l, unsigned r) {
+		const int priorityL = Priority(l), priorityR = Priority(r);
+		if (priorityL != priorityR)
+			return priorityL > priorityR;
+		const uint32_t scrambleL = WarpCellScramble(cells[l]), scrambleR = WarpCellScramble(cells[r]);
+		if (scrambleL != scrambleR)
+			return scrambleL < scrambleR;
+		return cells[l] < cells[r]; // a total order even where the scramble collides
+	});
+	order.resize(maxSamples);
+	// and back to the order the sample came in -- the warp-grid raster order every draw hands back,
+	// which is what makes the keypoint indices an append hands out reproducible (AppendDenseMatches).
+	// Sorted ascending, so no survivor is ever written over a source still to be read.
+	std::sort(order.begin(), order.end());
 	for (size_t i = 0; i < maxSamples; ++i) {
-		const size_t src = i*numSamples/maxSamples;
+		const unsigned src = order[i];
+		ASSERT(src >= i);
 		sampledA[i] = sampledA[src];
 		sampledB[i] = sampledB[src];
 		confidences[i] = confidences[src];
+		cells[i] = cells[src];
 	}
 	sampledA.resize(maxSamples);
 	sampledB.resize(maxSamples);
 	confidences.resize(maxSamples);
+	cells.resize(maxSamples);
 }
 /*----------------------------------------------------------------*/
 
@@ -366,6 +419,10 @@ size_t SFM::SampleWarpComplementary(
 	sampledA.reserve(chosen.size());
 	sampledB.reserve(chosen.size());
 	confidences.reserve(chosen.size());
+	// the winners' cells, kept alongside the sample only so the thinning below can rank it on the
+	// same pair-independent key the winners themselves were picked on
+	std::vector<int> cells;
+	cells.reserve(chosen.size());
 	for (const int idxCandidate : chosen) {
 		const WarpCandidate& candidate = candidates[idxCandidate];
 		sampledA.push_back(candidate.ptA);
@@ -373,10 +430,11 @@ size_t SFM::SampleWarpComplementary(
 		// the cell's own confidence, not a bilinear read-back of the map at the point it produced:
 		// the two differ by rounding, and this one is what the winner was actually chosen on
 		confidences.push_back(candidate.confidence);
+		cells.push_back(candidate.cell);
 	}
 	// the unoccupied-bucket count is bounded by min(E, n^2) and not by maxSamples (see
 	// SampleWarpByCoverage's header), so a draw can still come out over its budget
-	ThinSampleEvenly(sampledA, sampledB, confidences, maxSamples);
+	ThinSampleByLatticePriority(sampledA, sampledB, confidences, cells, confidence.cols, maxSamples);
 	return sampledA.size();
 }
 /*----------------------------------------------------------------*/

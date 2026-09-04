@@ -50,16 +50,18 @@ bool ROMA2WarpTrackingTest();
 bool ROMA2CoverageSampleTest();
 
 // The complementary dense draw, the fill of an admitted pair: it is drawn only where that pair's
-// guided sparse matches are NOT, capped at the pair's dense budget, thinned when over budget by an
-// even stride rather than by confidence, identical across two pairs sharing an image, and
-// deterministic
+// guided sparse matches are NOT, capped at the pair's dense budget, thinned when over budget by the
+// pair-independent lattice key rather than by confidence -- so a tighter budget keeps a subset of
+// what a looser one keeps -- identical across two pairs sharing an image, and deterministic
 bool ROMA2ComplementaryDrawTest();
 
 // The dense fill's bucket pitch (DenseFillGridSide): a function of the density and the warp side
 // alone, not of the pair, so the draw it feeds is a density over the overlap the sparse matches did
 // not cover rather than a fixed count per pair -- a larger confident region draws proportionally
 // more, an occupied bucket still yields nothing so the sparse share comes out of the same draw, and
-// two pairs sharing an image stratify it on the same grid and so agree on the pixels they sample
+// two pairs sharing an image stratify it on the same grid and so agree on the pixels they sample,
+// an agreement that survives the one term of the draw that IS per-pair: two pairs whose ceilings
+// thin that agreement to different sizes keep nested samples of it rather than divergent ones
 bool ROMA2DenseFillDensityTest();
 
 // The dense fill ceiling (DenseFillCeiling): the configured density over the SMALLER of the

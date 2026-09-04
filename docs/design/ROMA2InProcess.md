@@ -271,6 +271,16 @@ a pair the warp rejects. Per pair:
    the density THERE; every dense correspondence also costs a keypoint in B, and the ceiling is what
    bounds it in B — it binds only when B is the smaller of the two inlier areas, sitting above the
    pitch's own draw otherwise, so it never re-charges the coverage discount the pitch already applied.
+   The ceiling is the one term of the draw that is still per-pair, so ENFORCING it is where the
+   agreement above could be lost and is not: `ThinSampleByLatticePriority` ranks the drawn sample on
+   the same pair-independent key the bucket winners were picked on (lattice priority, the cell's
+   scramble to break the level the prefix stops inside) and keeps a prefix of it, so two pairs whose
+   ceilings differ keep NESTED samples of A — the tighter one's survivors are the looser one's, cell
+   for cell — instead of two subsets of one agreement that need not meet. A stride through each
+   pair's own list, which is what this was first written as, has survivors that depend on the pair's
+   sample count and the pair's ceiling, and would have cut the chaining to roughly the product of the
+   two pairs' thinning ratios on every pair the ceiling binds on — which, the perimeter of any
+   compact overlap touching more buckets than the ceiling allows, is nearly all of them.
 5. **One geometry for the pair** (`AssemblePairROMA2`). `PairsMatcher::GeometricFilter` runs once more
    on guided ∪ dense; the guided matches within the matcher's own epipolar tolerance become the pair's
    sparse (descriptor) evidence, the dense correspondences within the warp tolerance its dense segment.
@@ -637,8 +647,8 @@ million tracks the dense fill creates is what the pass actually costs
   the draw.
 - **`ROMA2ComplementaryDrawTest`** — the dense fill's own draw (`SampleWarpComplementary`): drawn only
   where a pair's guided sparse matches are NOT, capped at the pair's dense budget, thinned when over
-  budget by an even stride rather than by confidence, identical across two pairs sharing an image, and
-  deterministic.
+  budget by the pair-independent lattice key rather than by confidence -- so a tighter budget keeps a
+  subset of what a looser one keeps -- identical across two pairs sharing an image, and deterministic.
 - **`ROMA2VerdictTest`** (synthetic, no model needed) — the verdict in isolation (`JudgePairROMA2`):
   an exact bidirectional warp computed by projection between two pinhole cameras, admission and
   rejection by the min-side inlier-area rule (including the case a smooth-but-wrong warp — a
