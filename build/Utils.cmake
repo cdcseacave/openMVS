@@ -635,17 +635,13 @@ macro(optimize_default_compiler_settings)
 		set(BUILD_EXTRA_FLAGS_RELEASE "${BUILD_EXTRA_FLAGS_RELEASE} /Zi")
 	  endif()
 
-	  if(NOT MSVC64)
-		# 64-bit MSVC compiler uses SSE/SSE2 by default
-		if(ENABLE_SSE2)
-		  set(BUILD_EXTRA_FLAGS "${BUILD_EXTRA_FLAGS} /arch:SSE2")
-		elseif(ENABLE_SSE)
-		  set(BUILD_EXTRA_FLAGS "${BUILD_EXTRA_FLAGS} /arch:SSE")
-		endif()
-	  endif()
-
+	  # 64-bit MSVC compiler uses SSE/SSE2 by default
 	  if(ENABLE_AVX)
 		set(BUILD_EXTRA_FLAGS "${BUILD_EXTRA_FLAGS} /arch:AVX")
+	  elseif(ENABLE_SSE2 AND NOT MSVC64)
+		set(BUILD_EXTRA_FLAGS "${BUILD_EXTRA_FLAGS} /arch:SSE2")
+	  elseif(ENABLE_SSE AND NOT MSVC64)
+		set(BUILD_EXTRA_FLAGS "${BUILD_EXTRA_FLAGS} /arch:SSE")
 	  endif()
 
 	  if(ENABLE_SSE OR ENABLE_SSE2 OR ENABLE_SSE3 OR ENABLE_SSE4_1)
