@@ -56,12 +56,10 @@ struct SFM_API MatchConfig
 	enum MatchMode {
 		SKIP = -1,
 		EXHAUSTIVE = 0,  // Match all O(N²) pairs (small scenes only)
-		VOCABULARY = 1,  // Use vocabulary tree retrieval (recommended); ranks by the global
-		                 // descriptors instead when the scene carries them and ROMAv2 retrieval
-		                 // is opted in (see PairsMatcher::UseGlobalDescriptors)
+		VOCABULARY = 1,  // Use vocabulary tree retrieval over the local descriptors (recommended)
 		SEQUENTIAL = 2,  // Match consecutive images only (ordered sequences)
 		KNOWN_POSES = 3, // Select pairs from already-known camera poses
-		RETRIEVAL = 4    // Rank candidates by the DINOv3+GeM global descriptors only: no
+		RETRIEVAL = 4    // Use retrieval over the DINOv3+GeM global descriptors instead: no
 		                 // vocabulary tree is ever built, and an image missing its descriptor
 		                 // is an error, not a fallback (design decision 10). Appended rather
 		                 // than inserted so existing serialized/CLI mode values stay unchanged.
@@ -215,25 +213,14 @@ public:
 	// Returns number of pairs updated.
 	unsigned ComputeRelativePoses(bool onlyTrustedIntrinsics = true, bool onlyComputeIfMissing = true, const std::unordered_set<CameraPtr>& updatedCameras = {});
 
-	// Attach the in-process ROMAv2 model and its configuration; model may be NULL, which
-	// still enables the global-descriptor retrieval backend if the scene carries the
-	// descriptors (the model is only needed to compute them, not to rank with them)
+	// Attach the in-process ROMAv2 model and its configuration for the dense one-pass matching
+	// path (MatchPairsROMA2); model may be NULL if roma2Cfg leaves that path disabled.
 	void SetROMA2(RoMa2Onnx* model, const ROMA2Config& cfg);
 
-	// Return true if the candidate pairs are ranked by the ROMAv2 global descriptors
-	// instead of the vocabulary tree: the model explicitly enabled and used for retrieval,
-	// the scene marked as described, and every image carrying a descriptor
-	bool UseGlobalDescriptors() const;
-
-	// Build the retrieval backend on demand (lazy initialization): the global-descriptor
-	// index when UseGlobalDescriptors(), the vocabulary tree otherwise.
-	// Returns false if neither backend could be built.
-	bool EnsureRetrievalIndex();
-
-	// Build the global-descriptor index on demand, unconditionally (RETRIEVAL mode): unlike
-	// EnsureRetrievalIndex, this never builds nor falls back to the vocabulary tree — the
-	// backend is the DINOv3+GeM descriptors already stored on every Image, however they were
-	// produced (CPU pooling or the v2 ONNX graph; this call does not know or care which).
+	// Build the global-descriptor index on demand, unconditionally (RETRIEVAL mode): never
+	// builds nor falls back to the vocabulary tree — the backend is the DINOv3+GeM descriptors
+	// already stored on every Image, however they were produced (CPU pooling or the v2 ONNX
+	// graph; this call does not know or care which).
 	// A scene missing a descriptor on any image is a hard error naming that image (logged by
 	// GlobalDescriptors::Build), matching design decision 10: a requested-but-unavailable
 	// backend never silently degrades into a different one.
@@ -241,7 +228,7 @@ public:
 	bool EnsureGlobalDescriptorsIndex();
 
 	// Query the ranked list of the images most similar to the given one (as an index in the
-	// scene image array) from whichever retrieval backend EnsureRetrievalIndex built;
+	// scene image array) from whichever retrieval backend its caller already built;
 	// the vocabulary tree includes the query image itself in its results, the
 	// global-descriptor index does not, so callers must skip self-matches.
 	// Returns an empty list if no backend is ready.
@@ -324,15 +311,15 @@ private:
 	bool MatchPairsBatch(const PairIdxArr& pairsToMatch, LPCTSTR progressCaption, MatchStats& stats);
 
 	// Shared core behind CollectVocabularyPairs and CollectRetrievalPairs: the symmetric
-	// reciprocal-rank fusion, mutual top-K agreement and connectivity bridging over whichever
-	// backend the caller already ensured (QueryRetrieval picks it up automatically); the
-	// fusion and the pair budget are properties of the ranking, not of the backend, so this is
-	// the only place either mode implements them. backendName only labels the DEBUG summary.
-	PairIdxArr CollectFusedRetrievalPairs(unsigned topK, LPCTSTR backendName);
+	// reciprocal-rank fusion, mutual top-K agreement and connectivity bridging over the backend
+	// its caller built (QueryRetrieval picks it up automatically); the fusion and the pair
+	// budget are properties of the ranking, not of the backend, so this is the only place
+	// either mode implements them. Each caller's DEBUG summary names its own backend.
+	PairIdxArr CollectFusedRetrievalPairs(unsigned topK);
 
-	// Mechanical construction shared by EnsureRetrievalIndex and EnsureGlobalDescriptorsIndex:
-	// allocates globalDescriptors and builds it from the scene, releasing it again on failure.
-	// Callers keep their own already-built check and their own error message; this only
+	// Mechanical construction behind EnsureGlobalDescriptorsIndex: allocates globalDescriptors
+	// and builds it from the scene, releasing it again on failure.
+	// The caller keeps its own already-built check and its own error message; this only
 	// reports whether the build succeeded.
 	bool BuildGlobalDescriptorsIndex();
 
@@ -345,8 +332,8 @@ private:
 	// Vocabulary tree for image retrieval (lazy initialization)
 	std::unique_ptr<VocabularyTree> vocabularyTree;
 
-	// Global-descriptor retrieval index, replacing the vocabulary tree as the ranking
-	// backend when the scene carries the ROMAv2 descriptors (lazy initialization)
+	// Global-descriptor retrieval index: the sole ranking backend for RETRIEVAL mode, never
+	// built for VOCABULARY (lazy initialization)
 	std::unique_ptr<GlobalDescriptors> globalDescriptors;
 
 	// In-process ROMAv2 model and its configuration (NULL/defaults unless SetROMA2 was called)

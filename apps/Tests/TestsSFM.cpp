@@ -3393,8 +3393,8 @@ bool SupplementEvidenceIsolationTest()
 }
 
 // Global-descriptor retrieval test: cosine ranking of the per-image descriptors, its
-// deterministic tie order, the PairsMatcher dispatch that replaces the vocabulary tree with
-// it, the rankings CSV export, and the .sfm round-trip of the descriptors
+// deterministic tie order, PairsMatcher's RETRIEVAL-mode pair selection over the same
+// descriptors, the rankings CSV export, and the .sfm round-trip of the descriptors
 bool GlobalDescriptorsQueryTest()
 {
 	TD_TIMER_START();
@@ -3439,25 +3439,13 @@ bool GlobalDescriptorsQueryTest()
 		return false;
 	}
 
-	// the pair selection ranks through the global descriptors instead of the vocabulary tree,
-	// and still returns a connected view graph, joined by at most two cross-cluster bridges
+	// RETRIEVAL mode ranks the pair selection through these same global descriptors, and still
+	// returns a connected view graph, joined by at most two cross-cluster bridges
 	MatchConfig matchCfg;
-	matchCfg.mode = MatchConfig::VOCABULARY;
+	matchCfg.mode = MatchConfig::RETRIEVAL;
 	matchCfg.maxPairsPerImage = 3;
 	PairsMatcher matcher(scene, matchCfg);
-	matcher.SetROMA2(NULL, ROMA2Config()); // ROMAv2 is an explicit opt-in, so the default config ranks with the tree
-	if (matcher.UseGlobalDescriptors()) {
-		VERBOSE("GlobalDescriptorsQueryTest FAILED: backend taken over without an explicit opt-in");
-		return false;
-	}
-	ROMA2Config roma2Cfg;
-	roma2Cfg.enabled = true; // retrieval-only: the descriptors are in the scene, no model needed
-	matcher.SetROMA2(NULL, roma2Cfg);
-	if (!matcher.UseGlobalDescriptors()) {
-		VERBOSE("GlobalDescriptorsQueryTest FAILED: backend");
-		return false;
-	}
-	const PairIdxArr pairs = matcher.CollectVocabularyPairs(2);
+	const PairIdxArr pairs = matcher.CollectRetrievalPairs(2);
 	DisjointSet<IIndex> components(12);
 	unsigned numCross = 0;
 	for (const PairIdx& p : pairs) {
@@ -8474,10 +8462,10 @@ bool PreMatchTest()
 	return true;
 }
 
-// RETRIEVAL match-mode test: candidate selection ranks purely by the global descriptors with
-// no ROMAv2 opt-in needed (unlike VOCABULARY), agrees pair-for-pair with VOCABULARY once it is
-// opted into the same backend, a missing descriptor is a hard error rather than a vocabulary-
-// tree fallback, and the mode dispatches correctly end-to-end through Match()
+// RETRIEVAL match-mode test: candidate selection ranks purely by the global descriptors --
+// VOCABULARY and RETRIEVAL name two backends and neither consults a gate to borrow the
+// other's -- a missing descriptor is a hard error rather than a vocabulary-tree fallback, and
+// the mode dispatches correctly end-to-end through Match()
 bool RetrievalModeTest()
 {
 	TD_TIMER_START();
@@ -8502,15 +8490,10 @@ bool RetrievalModeTest()
 	matchCfg.mode = MatchConfig::RETRIEVAL;
 	matchCfg.maxPairsPerImage = 3;
 
-	// RETRIEVAL ranks by the descriptors without the ROMAv2 opt-in that VOCABULARY needs: the
-	// default ROMA2Config (enabled=false) leaves UseGlobalDescriptors() false, yet the mode
-	// still ranks correctly because it never consults that gate
+	// RETRIEVAL ranks by the descriptors regardless of the ROMA2Config passed to SetROMA2: the
+	// mode is its own opt-in and never consults a gate (design decision 10)
 	PairsMatcher matcher(scene, matchCfg);
 	matcher.SetROMA2(NULL, ROMA2Config());
-	if (matcher.UseGlobalDescriptors()) {
-		VERBOSE("RetrievalModeTest FAILED: UseGlobalDescriptors should stay false without an explicit ROMA2 opt-in");
-		return false;
-	}
 	const PairIdxArr pairs = matcher.CollectRetrievalPairs(2);
 	if (pairs.empty()) {
 		VERBOSE("RetrievalModeTest FAILED: RETRIEVAL produced no pairs despite a fully described scene");
@@ -8530,25 +8513,6 @@ bool RetrievalModeTest()
 	}
 	if (numCross > 2) {
 		VERBOSE("RetrievalModeTest FAILED: %u cross-cluster pairs", numCross);
-		return false;
-	}
-
-	// VOCABULARY, once opted into the same global-descriptor backend, selects the identical
-	// pair set on the identical scene: the fusion and the budget are properties of the ranking
-	// (CollectFusedRetrievalPairs), not of which mode called it
-	MatchConfig vocabCfg = matchCfg;
-	vocabCfg.mode = MatchConfig::VOCABULARY;
-	PairsMatcher vocabMatcher(scene, vocabCfg);
-	ROMA2Config roma2Cfg;
-	roma2Cfg.enabled = true; // retrieval-only opt-in, as in GlobalDescriptorsQueryTest
-	vocabMatcher.SetROMA2(NULL, roma2Cfg);
-	const PairIdxArr vocabPairs = vocabMatcher.CollectVocabularyPairs(2);
-	std::set<uint64_t> pairSet, vocabPairSet;
-	for (const PairIdx& p : pairs) pairSet.insert(p.idx);
-	for (const PairIdx& p : vocabPairs) vocabPairSet.insert(p.idx);
-	if (pairSet != vocabPairSet) {
-		VERBOSE("RetrievalModeTest FAILED: RETRIEVAL and opted-in VOCABULARY disagree on the identical descriptors (%u vs %u pairs)",
-			(unsigned)pairSet.size(), (unsigned)vocabPairSet.size());
 		return false;
 	}
 
@@ -8607,6 +8571,117 @@ bool RetrievalModeTest()
 
 	VERBOSE("RetrievalModeTest PASSED: %u candidate pairs (%u cross-cluster), %u end-to-end matched pairs (%s)",
 		(unsigned)pairs.size(), numCross, numMatched, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// VOCABULARY/RETRIEVAL backend-isolation test: a 12-image scene deliberately given two
+// disagreeing truths -- the global descriptors cluster {0-3}{4-7}{8-11} (i/4), exactly as in
+// RetrievalModeTest, while the local (binary) descriptors cluster {0,4,8}{1,5,9}{2,6,10}{3,7,11}
+// (i%4) via four well-separated Hamming prototypes. VOCABULARY's matcher opts into ROMA2
+// retrieval (enabled=true) exactly as the deleted substitution required, so if its candidate
+// pairs still followed the i/4 partition, that could only mean the deleted global-descriptor
+// substitution (or some new equivalent of it) is back. Asserted on the produced pair sets
+// themselves, never on log text.
+bool VocabularyIgnoresGlobalDescriptorsTest()
+{
+	TD_TIMER_START();
+
+	Scene scene;
+	const int D = 64;
+	const int descriptorBytes = 32; // 256-bit ORB-like
+	const unsigned numDescriptorsPerImage = 300;
+	std::mt19937 rng(41);
+	std::normal_distribution<float> noise(0.f, 0.05f);
+	std::uniform_int_distribution<int> bitPos(0, descriptorBytes * 8 - 1);
+	// four local-descriptor prototypes, pairwise far apart in Hamming distance
+	std::vector<std::vector<uint8_t>> localProto(4);
+	for (int c = 0; c < 4; ++c)
+		localProto[c].assign(descriptorBytes, (uint8_t)(0x11 * (c + 1)));
+	for (IIndex i = 0; i < 12; ++i) {
+		Image& img = scene.images.emplace_back(i, String::FormatString("%02u.jpg", i));
+		img.keypoints.resize(numDescriptorsPerImage);
+		img.descriptors.create((int)numDescriptorsPerImage, descriptorBytes, CV_8U);
+		const std::vector<uint8_t>& proto = localProto[i % 4]; // local clustering: i%4
+		for (unsigned r = 0; r < numDescriptorsPerImage; ++r) {
+			uint8_t* row = img.descriptors.ptr<uint8_t>((int)r);
+			std::memcpy(row, proto.data(), proto.size());
+			for (int f = 0; f < 8; ++f) { // a handful of flipped bits, well inside the inter-prototype gap
+				const int b = bitPos(rng);
+				row[b / 8] ^= (uint8_t)(1u << (b % 8));
+			}
+		}
+		img.globalDescriptor.create(1, D, CV_32F);
+		for (int c = 0; c < D; ++c) // global clustering: i/4 (same construction as RetrievalModeTest)
+			img.globalDescriptor.at<float>(c) = (c/8 == (int)(i/4) ? 1.f : 0.f) + noise(rng);
+		img.globalDescriptor /= cv::norm(img.globalDescriptor);
+	}
+	scene.status.nState.set(Scene::Status::STATE::GLOBAL_DESCRIPTORS);
+
+	MatchConfig matchCfg;
+	matchCfg.mode = MatchConfig::VOCABULARY;
+	matchCfg.descriptorsAreBinary = true;
+	matchCfg.maxPairsPerImage = 3;
+	PairsMatcher matcher(scene, matchCfg);
+	// opt into ROMA2 retrieval exactly as the deleted substitution required (enabled +
+	// useRetrieval, both true by default here): under the old code this alone would have
+	// taken VOCABULARY over with the global descriptors, no model needed
+	ROMA2Config roma2Cfg;
+	roma2Cfg.enabled = true;
+	matcher.SetROMA2(NULL, roma2Cfg);
+	const PairIdxArr vocabPairs = matcher.CollectVocabularyPairs(2);
+	if (vocabPairs.empty()) {
+		VERBOSE("VocabularyIgnoresGlobalDescriptorsTest FAILED: VOCABULARY produced no candidate pairs");
+		return false;
+	}
+
+	MatchConfig retrievalCfg = matchCfg;
+	retrievalCfg.mode = MatchConfig::RETRIEVAL;
+	PairsMatcher retrievalMatcher(scene, retrievalCfg);
+	const PairIdxArr retrievalPairs = retrievalMatcher.CollectRetrievalPairs(2);
+	if (retrievalPairs.empty()) {
+		VERBOSE("VocabularyIgnoresGlobalDescriptorsTest FAILED: RETRIEVAL produced no candidate pairs");
+		return false;
+	}
+
+	std::set<uint64_t> vocabSet, retrievalSet;
+	for (const PairIdx& p : vocabPairs) vocabSet.insert(p.idx);
+	for (const PairIdx& p : retrievalPairs) retrievalSet.insert(p.idx);
+	if (vocabSet == retrievalSet) {
+		VERBOSE("VocabularyIgnoresGlobalDescriptorsTest FAILED: VOCABULARY and RETRIEVAL selected the identical "
+			"pair set on a scene built so the local and global clusterings disagree -- the global descriptors "
+			"are still leaking into VOCABULARY's ranking");
+		return false;
+	}
+
+	// stronger: VOCABULARY's own pairs must actually follow the local (i%4, 4 clusters of 3)
+	// clustering it was given, not merely "differ from RETRIEVAL" for some unrelated reason.
+	// CollectFusedRetrievalPairs bridges any connected components its mutual-top-K selection
+	// left disjoint (see its step 4), so up to numClusters-1 pairs are legitimately cross-cluster;
+	// every remaining pair must stay inside its local cluster
+	unsigned vocabCross = 0;
+	for (const PairIdx& p : vocabPairs)
+		vocabCross += (p.i % 4 != p.j % 4);
+	if (vocabCross > 3) {
+		VERBOSE("VocabularyIgnoresGlobalDescriptorsTest FAILED: %u/%u VOCABULARY pairs cross the local "
+			"descriptor clustering (more than the 3 connectivity bridges 4 clusters can need)",
+			vocabCross, (unsigned)vocabPairs.size());
+		return false;
+	}
+	// and RETRIEVAL's pairs must follow the global (i/4, 3 clusters of 4) clustering it was
+	// given, up to the 2 connectivity bridges 3 clusters can need
+	unsigned retrievalCross = 0;
+	for (const PairIdx& p : retrievalPairs)
+		retrievalCross += (p.i / 4 != p.j / 4);
+	if (retrievalCross > 2) {
+		VERBOSE("VocabularyIgnoresGlobalDescriptorsTest FAILED: %u/%u RETRIEVAL pairs cross the global "
+			"descriptor clustering (more than the 2 connectivity bridges 3 clusters can need)",
+			retrievalCross, (unsigned)retrievalPairs.size());
+		return false;
+	}
+
+	VERBOSE("VocabularyIgnoresGlobalDescriptorsTest PASSED: %u VOCABULARY pairs (local clustering), "
+		"%u RETRIEVAL pairs (global clustering) (%s)",
+		(unsigned)vocabPairs.size(), (unsigned)retrievalPairs.size(), TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 /*----------------------------------------------------------------*/

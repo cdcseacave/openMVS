@@ -106,16 +106,21 @@ bool DenseKeypointBoundaryTest();
 bool SupplementEvidenceIsolationTest();
 
 // Global-descriptor retrieval test: cosine ranking of the per-image global descriptors and its
-// deterministic tie order, the PairsMatcher dispatch that ranks the candidate pairs through them
-// instead of the vocabulary tree, the rankings CSV export, and the .sfm round-trip of the
-// descriptors
+// deterministic tie order, PairsMatcher's RETRIEVAL-mode pair selection over the same
+// descriptors, the rankings CSV export, and the .sfm round-trip of the descriptors
 bool GlobalDescriptorsQueryTest();
 
-// RETRIEVAL match-mode test: candidate selection ranks purely by the global descriptors with
-// no ROMAv2 opt-in needed (unlike VOCABULARY), agrees pair-for-pair with VOCABULARY once it is
-// opted into the same backend, a missing descriptor is a hard error rather than a vocabulary-
-// tree fallback, and the mode dispatches correctly end-to-end through Match()
+// RETRIEVAL match-mode test: candidate selection ranks purely by the global descriptors --
+// VOCABULARY and RETRIEVAL name two backends and neither consults a gate to borrow the
+// other's -- a missing descriptor is a hard error rather than a vocabulary-tree fallback, and
+// the mode dispatches correctly end-to-end through Match()
 bool RetrievalModeTest();
+
+// VOCABULARY/RETRIEVAL backend-isolation test: on a scene where the local descriptors and the
+// global descriptors cluster the 12 images into two different partitions, VOCABULARY's pair
+// set follows the local-descriptor clustering and RETRIEVAL's follows the global one -- the
+// two provably disagree, so neither mode can be silently ranking with the other's backend
+bool VocabularyIgnoresGlobalDescriptorsTest();
 
 // RoMa2 CPU preprocessing test: a constant image maps to constant planes with the expected
 // R/G/B channel swap, and resampling a real fixture image reproduces torch's own

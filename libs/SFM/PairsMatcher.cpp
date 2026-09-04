@@ -712,20 +712,6 @@ void PairsMatcher::SetROMA2(RoMa2Onnx* model, const ROMA2Config& cfg)
 	globalDescriptors.reset();
 }
 
-bool PairsMatcher::UseGlobalDescriptors() const
-{
-	// the model is an explicit opt-in, so a scene described by an earlier run does not
-	// silently switch the ranking backend of every later run that leaves ROMAv2 off
-	if (!roma2Cfg.enabled || !roma2Cfg.useRetrieval ||
-		!scene.status.nState.isSet(Scene::Status::STATE::GLOBAL_DESCRIPTORS))
-		return false;
-	// a partially described scene would rank its images against incomparable backends
-	FOREACH(i, scene.images)
-		if (!scene.images[i].HasGlobalDescriptor())
-			return false;
-	return true;
-}
-
 bool PairsMatcher::BuildGlobalDescriptorsIndex()
 {
 	TD_TIMER_STARTD();
@@ -739,26 +725,11 @@ bool PairsMatcher::BuildGlobalDescriptorsIndex()
 	return true;
 }
 
-bool PairsMatcher::EnsureRetrievalIndex()
-{
-	if (!UseGlobalDescriptors()) {
-		EnsureVocabularyTree();
-		return vocabularyTree && vocabularyTree->IsValid();
-	}
-	if (globalDescriptors)
-		return globalDescriptors->IsValid();
-	if (!BuildGlobalDescriptorsIndex()) {
-		VERBOSE("error: failed to build the global-descriptor retrieval index");
-		return false;
-	}
-	return true;
-}
-
 bool PairsMatcher::EnsureGlobalDescriptorsIndex()
 {
-	// unlike EnsureRetrievalIndex, no UseGlobalDescriptors() opt-in gate and no vocabulary-tree
-	// fallback: RETRIEVAL mode is itself the explicit opt-in, and a scene not fully described
-	// is an error here rather than a silently different ranking algorithm (design decision 10)
+	// no opt-in gate and no vocabulary-tree fallback: RETRIEVAL mode is itself the explicit
+	// opt-in, and a scene not fully described is an error here rather than a silently
+	// different ranking algorithm (design decision 10)
 	if (globalDescriptors)
 		return globalDescriptors->IsValid();
 	if (!BuildGlobalDescriptorsIndex()) {
@@ -800,10 +771,11 @@ void PairsMatcher::EnsureVocabularyTree()
 
 PairIdxArr PairsMatcher::CollectVocabularyPairs(unsigned topK)
 {
-	// Ensure the retrieval backend is ready (global descriptors if the scene carries them)
-	if (!EnsureRetrievalIndex())
+	// VOCABULARY mode: the vocabulary tree over the local descriptors only
+	EnsureVocabularyTree();
+	if (!vocabularyTree)
 		return PairIdxArr();
-	return CollectFusedRetrievalPairs(topK, UseGlobalDescriptors() ? _T("Global-descriptor") : _T("Vocabulary"));
+	return CollectFusedRetrievalPairs(topK);
 }
 
 PairIdxArr PairsMatcher::CollectRetrievalPairs(unsigned topK)
@@ -812,10 +784,10 @@ PairIdxArr PairsMatcher::CollectRetrievalPairs(unsigned topK)
 	// decision 10 — see EnsureGlobalDescriptorsIndex)
 	if (!EnsureGlobalDescriptorsIndex())
 		return PairIdxArr();
-	return CollectFusedRetrievalPairs(topK, _T("Global-descriptor"));
+	return CollectFusedRetrievalPairs(topK);
 }
 
-PairIdxArr PairsMatcher::CollectFusedRetrievalPairs(unsigned topK, LPCTSTR backendName)
+PairIdxArr PairsMatcher::CollectFusedRetrievalPairs(unsigned topK)
 {
 	PairIdxArr result;
 	TD_TIMER_STARTD();
@@ -928,8 +900,10 @@ PairIdxArr PairsMatcher::CollectFusedRetrievalPairs(unsigned topK, LPCTSTR backe
 			}
 		}
 	}
+	// globalDescriptors and vocabularyTree are never both built on the same instance (one
+	// backend per match mode), so which one is set names the caller unambiguously
 	DEBUG("%s-based matching: %u candidate pairs, %u mutual top-%u and %u connectivity bridges (%.2f/%u pairs/image) in %s",
-		backendName,
+		globalDescriptors ? _T("Global-descriptor") : _T("Vocabulary"),
 		result.size(), numMutualPairs, topK, result.size() - numMutualPairs,
 		(float)result.size() / nImages, config.maxPairsPerImage, TD_TIMER_GET_FMT().c_str());
 	// keep the fused retrieval scores for the verification-feedback round
@@ -1190,7 +1164,8 @@ PairIdxArr PairsMatcher::CollectKnownPosePairs(unsigned topK)
 			if (!scene.images[i].HasPose())
 				unposedImages.push_back(i);
 		PairIdxArr unposedCandidates;
-		if (EnsureRetrievalIndex()) {
+		EnsureVocabularyTree();
+		if (vocabularyTree) {
 			const unsigned queryDepth = (unsigned)MINF(requestedTopK, nImages - 1);
 			std::vector<PairIdxArr> pairsPerImage(unposedImages.size());
 			scene.threadPool.detach_loop(0u, unposedImages.size(), [&](IIndex u) {
@@ -2196,16 +2171,9 @@ unsigned PairsMatcher::Match(bool& bFatal)
 			stats.densePairs += numStored;
 			return true;
 		}
-		// Pre-match the pairs if requested
-		// Pre-matching needs the vocabulary-tree top descriptors whatever backend ranked the
-		// candidates, so the tree is built here when the global descriptors did the ranking;
-		// otherwise it runs, as before, only when candidate collection built the tree
-		// (VOCABULARY, or KNOWN_POSES with unposed images).
-		// RETRIEVAL is excluded on purpose: no vocabulary tree is ever built in this mode, so
-		// pre-matching (and the tree it needs) stays unreachable regardless of this setting
-		// (design decision 10 — a requested-but-unavailable backend never silently degrades).
-		if (matchMode != MatchConfig::RETRIEVAL && config.preMatchThreshold > 0 && UseGlobalDescriptors())
-			EnsureVocabularyTree();
+		// Pre-match the pairs if requested: the tree is already built by construction whenever
+		// one exists to pre-match with (VOCABULARY, or KNOWN_POSES with unposed images); RETRIEVAL
+		// never builds one, so pre-matching stays unreachable there regardless of this setting.
 		if (vocabularyTree) {
 			if (config.preMatchThreshold > 0)
 				PreMatch(pairs);
