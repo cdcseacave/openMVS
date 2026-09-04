@@ -143,6 +143,10 @@ bool ROMA2ReconstructTest();
 // Test Bundle-Adjustment PinholeReprojectionErrorAnalytic Jacobians against AutoDiff
 bool BAPinholeReprojectionJacobianTest();
 
+// ComputeObservationSigmas recovers the known displacement of a synthetic scene's described and
+// dense observations, and reports zero dense observations on a scene that has none
+bool ObservationSigmasTest();
+
 // Small SFM smoke test: build tiny scene and run BundleAdjustment::Adjust
 bool PipelineTest();
 

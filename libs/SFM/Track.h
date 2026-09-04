@@ -143,6 +143,20 @@ SFM_API std::pair<float, float> ComputeTracksMeanReprojectionError(Scene& scene)
 SFM_API std::pair<float, bool> ComputeReprojectionErrorPixels(const Camera& camera, const Point3& Xcam, const Point2f& kpPt);
 
 /**
+ * Robust reprojection sigma of the two observation populations of the current solution, in pixels:
+ * the median reprojection error over the observations on described keypoints, and over those on
+ * dense (warp-sampled) ones, each computed with ComputeReprojectionErrorPixels -- the same formula
+ * FilterTracks uses, so the two numbers describe the residuals bundle adjustment actually sees.
+ * The median of an already non-negative error is taken as the scale directly, with no 1.4826
+ * consistency factor: the only consumer takes the RATIO of the two, in which any common factor
+ * cancels. Only inlier tracks and valid images take part, and an observation whose projection is
+ * invalid is counted by neither population.
+ * The counts come back so the caller can refuse a sample too small to be a sigma.
+ */
+SFM_API void ComputeObservationSigmas(const Scene& scene,
+	double& sigmaDescribed, size_t& numDescribed, double& sigmaDense, size_t& numDense);
+
+/**
  * @brief Filter tracks based on various criteria
  *
  * Reprojection error is always evaluated in the angular domain — the pixel threshold is

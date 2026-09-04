@@ -4501,6 +4501,70 @@ void GenerateTestScene(Scene& scene, const SceneConfig& cfg, Scene* scenePerturb
 /*----------------------------------------------------------------*/
 
 
+bool ObservationSigmasTest()
+{
+	TD_TIMER_START();
+
+	// a posed synthetic scene whose observations are exact, so every reprojection error below is
+	// one this test put there
+	Scene scene;
+	SceneConfig cfg;
+	cfg.numImages = 4;
+	cfg.numPoints = 200;
+	GenerateTestScene(scene, cfg);
+
+	// displace the described observations by 0.5 px and give every track a second, DENSE observation
+	// of the same point displaced by 2.0 px: k = 4 by construction
+	constexpr float describedError = 0.5f, denseError = 2.0f;
+	for (Image& img : scene.images)
+		img.CloseDescribedKeypoints();
+	for (Track& track : scene.tracks) {
+		const size_t numDescribedObs = track.observations.size();
+		for (size_t i = 0; i < numDescribedObs; ++i) {
+			const Observation obs = track.observations[i];
+			Image& img = scene.images[obs.imageID];
+			img.keypoints[obs.featureID].pt.x += describedError;
+			const cv::KeyPoint dense(img.keypoints[obs.featureID].pt.x - describedError + denseError,
+				img.keypoints[obs.featureID].pt.y, 10.f, -1.f, 0.9f);
+			const uint32_t featID = (uint32_t)img.keypoints.size();
+			img.keypoints.push_back(dense);
+			track.observations.emplace_back(obs.imageID, featID);
+		}
+		track.numInliers = (uint8_t)MINF((size_t)track.observations.size(), (size_t)255);
+	}
+
+	double sigmaDescribed = 0, sigmaDense = 0;
+	size_t numDescribed = 0, numDense = 0;
+	ComputeObservationSigmas(scene, sigmaDescribed, numDescribed, sigmaDense, numDense);
+	if (numDescribed == 0 || numDense != numDescribed) {
+		VERBOSE("ObservationSigmasTest FAILED: %u described and %u dense observations",
+			(unsigned)numDescribed, (unsigned)numDense);
+		return false;
+	}
+	// the medians are the displacements this test applied, and their ratio is the k the weight is
+	// computed from -- checked to a hundredth of a pixel, because nothing here is approximate
+	if (ABS(sigmaDescribed - describedError) > 0.01 || ABS(sigmaDense - denseError) > 0.01) {
+		VERBOSE("ObservationSigmasTest FAILED: sigmas %.4f described / %.4f dense against %.2f / %.2f",
+			sigmaDescribed, sigmaDense, describedError, denseError);
+		return false;
+	}
+
+	// a scene with no dense keypoints reports none, and reports the described population anyway
+	Scene sparseOnly;
+	GenerateTestScene(sparseOnly, cfg);
+	ComputeObservationSigmas(sparseOnly, sigmaDescribed, numDescribed, sigmaDense, numDense);
+	if (numDense != 0 || numDescribed == 0) {
+		VERBOSE("ObservationSigmasTest FAILED: a scene with no dense keypoints reported %u of them",
+			(unsigned)numDense);
+		return false;
+	}
+
+	VERBOSE("Observation sigmas test passed (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+
 // Pose-guided selection must still produce candidate pairs for images absent from the pose file.
 bool KnownPosePairSelectionTest()
 {

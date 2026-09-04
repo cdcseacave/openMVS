@@ -299,6 +299,39 @@ std::pair<float, float> SFM::ComputeTracksMeanReprojectionError(Scene& scene)
 	return std::make_pair(avgPixel, avgAngular);
 }
 
+void SFM::ComputeObservationSigmas(const Scene& scene,
+	double& sigmaDescribed, size_t& numDescribed, double& sigmaDense, size_t& numDense)
+{
+	std::vector<float> errorsDescribed, errorsDense;
+	for (const Track& track : scene.tracks) {
+		if (!track.IsInlier())
+			continue;
+		for (const auto& obs : track) {
+			const Image& img = scene.images[obs.imageID];
+			if (!img.IsValid())
+				continue;
+			ASSERT(obs.featureID < img.keypoints.size());
+			const Point3 Xcam = img.TransformPointW2C(track.position);
+			const auto [pixelError, valid] =
+				ComputeReprojectionErrorPixels(*img.pCamera, Xcam, img.keypoints[obs.featureID].pt);
+			if (!valid)
+				continue;
+			(img.IsDenseKeypoint(obs.featureID) ? errorsDense : errorsDescribed).push_back(pixelError);
+		}
+	}
+	const auto Median = [](std::vector<float>& errors) {
+		if (errors.empty())
+			return 0.0;
+		const size_t half = errors.size()/2;
+		std::nth_element(errors.begin(), errors.begin() + half, errors.end());
+		return (double)errors[half];
+	};
+	numDescribed = errorsDescribed.size();
+	numDense = errorsDense.size();
+	sigmaDescribed = Median(errorsDescribed);
+	sigmaDense = Median(errorsDense);
+}
+
 std::pair<float, float> SFM::FilterTracks(Scene& scene,
 	float maxReprojErrorPixels, float minAngleDegrees,
 	float multDepthNear, float multDepthFar)
