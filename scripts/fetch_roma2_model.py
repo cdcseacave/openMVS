@@ -29,8 +29,11 @@ Two sources, the Hub tried first:
 
   * Canonical: the Hugging Face model repo (`--repo`), via `huggingface_hub.snapshot_download`
     when that package is importable -- resumable, deduplicating, revision-pinned. It fetches the
-    Hub's own `<setting>-<precision>/` layout into a scratch directory, then this script moves
-    the needed files up into the flat `--dest` and discards the scratch copy.
+    Hub's own `<setting>-<precision>/` layout into a staging directory nested under `--dest`
+    itself (not a temporary one thrown away on every call, which would discard the resume state
+    an interrupted multi-gigabyte download depends on), then this script moves the needed files up
+    into the flat `--dest` and, once nothing is left to move, removes the now-empty staging
+    directory.
   * Mirror: GitHub release assets of the OpenMVS repo (`--mirror`), streamed with
     `urllib.request`. Used whenever the Hub does not deliver the files: huggingface_hub is not
     importable, or a Hub fetch was attempted and failed (offline, blocked, an outage, an unknown
@@ -56,7 +59,6 @@ import hashlib
 import os
 import shutil
 import sys
-import tempfile
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -194,30 +196,50 @@ def _fetch_via_huggingface(dest: Path, repo: str, revision: str, setting: str, p
         return False
     # Everything below talks to the network (snapshot_download) or can hit a filesystem error
     # (shutil.move across a mountpoint, a full disk): neither is a correctness problem -- a
-    # partial/failed move here can never pass digest verification, on this run or the next, and
-    # the `with` block below always tears down `scratch` -- but left unguarded it would surface
-    # as a raw traceback instead of the clean ModelFetchError/exit(1) every other failure path
-    # gives. Wrap it so a network hiccup, the most likely first failure, reads like a message.
+    # partial/failed move here can never pass digest verification, on this run or the next -- but
+    # left unguarded it would surface as a raw traceback instead of the clean
+    # ModelFetchError/exit(1) every other failure path gives. Wrap it so a network hiccup, the
+    # most likely first failure, reads like a message.
     try:
         prefix = f"{setting}-{precision}"
-        with tempfile.TemporaryDirectory() as scratch:
-            snapshot_download(
-                repo_id=repo,
-                revision=revision,
-                allow_patterns=[f"{prefix}/*"],
-                local_dir=scratch,
-            )
-            # The Hub repo nests by preset ("<setting>-<precision>/"); the local model directory
-            # is flat, so move only the files this call still needs up by basename
-            # and let the scratch directory -- shell and all -- disappear with the `with` block.
-            nested_dir = Path(scratch) / prefix
-            for published_relpath in pending:
-                fetched = nested_dir / Path(published_relpath).name
-                if fetched.is_file():
-                    target = _local_path(dest, published_relpath)
-                    if target.is_file():
-                        target.unlink()
-                    shutil.move(str(fetched), str(target))
+        # `local_dir=dest`, not a fresh temporary directory: huggingface_hub's local_dir mode
+        # keeps its own resume/etag metadata under `<local_dir>/.cache/huggingface/`, reused only
+        # when the same local_dir is handed back on a later call. A directory thrown away at the
+        # end of every call -- even one ended by an exception -- can never reuse that state, so a
+        # download interrupted partway through a multi-gigabyte file used to restart from zero
+        # every time. `dest` is stable across runs (it is `--roma2-model`/
+        # `$OPENMVS_ROMA2_MODEL_PATH` itself), so it is what makes resuming possible.
+        nested_dir = dest / prefix
+        if nested_dir.is_dir() and any(nested_dir.iterdir()):
+            print(f"resuming a Hugging Face download already in progress under '{nested_dir}'",
+                  file=sys.stderr)
+        snapshot_download(
+            repo_id=repo,
+            revision=revision,
+            allow_patterns=[f"{prefix}/*"],
+            local_dir=dest,
+        )
+        # The Hub repo nests by preset ("<setting>-<precision>/"); the local model directory is
+        # flat, so move only the files this call still needs up by basename.
+        for published_relpath in pending:
+            fetched = nested_dir / Path(published_relpath).name
+            if fetched.is_file():
+                target = _local_path(dest, published_relpath)
+                if target.is_file():
+                    target.unlink()
+                shutil.move(str(fetched), str(target))
+        # A successful run leaves no staging shell behind: every file the nested directory held
+        # had a name in checksums.txt and was moved up, so it should now be empty. It is left in
+        # place, unremoved, only if something is still sitting in it (e.g. a file the published
+        # repo carries that checksums.txt never named) -- this never forces a directory away, since
+        # doing so could delete a file this call did not itself decide was safe to move. The hidden
+        # `.cache/huggingface/` metadata directory is deliberately left alone either way: removing
+        # it would throw away exactly the resumability (and, across presets sharing one `--dest`,
+        # the deduplication) this staging directory exists to keep.
+        try:
+            nested_dir.rmdir()
+        except OSError:
+            pass
     except Exception as e:
         raise ModelFetchError(f"failed to fetch '{repo}' (revision '{revision}') from Hugging Face: {e}") from e
     return True

@@ -240,6 +240,62 @@ class FetchTests(unittest.TestCase):
         self.assertEqual(result.cached, [self.published_relpath])
         self.assertEqual(result.downloaded, [])
 
+    def test_stable_staging_directory_persists_across_an_interrupted_and_a_resumed_run(self):
+        """A Hugging Face fetch interrupted partway through must be able to pick up where it left
+        off on the next call instead of starting over -- the reason for handing snapshot_download
+        a staging directory nested under --dest itself rather than a fresh temporary one it would
+        forget as soon as the call that made it raises.
+        """
+        second_basename = "roma_base_descriptor_fp32.onnx"
+        second_relpath = f"{self.setting}-{self.precision}/{second_basename}"
+        second_content = b"second file content" + b" " * 50
+        second_digest = _sha256(second_content)
+        self.checksums_path.write_text(
+            f"# test fixture\n{self.digest}  {self.published_relpath}\n"
+            f"{second_digest}  {second_relpath}\n"
+        )
+        (self.mirror_dir / self.basename).unlink()  # no mirror fallback in this test either way
+
+        prefix = f"{self.setting}-{self.precision}"
+        nested_dir = self.dest / prefix
+
+        def interrupted_snapshot_download(repo_id, revision, allow_patterns, local_dir):
+            # One file finishes; the connection drops before the second does. Real
+            # huggingface_hub would leave the first file's bytes at their final path and the
+            # second's partial bytes plus resume metadata under local_dir/.cache/huggingface/ --
+            # what this test can observe from outside that library is whether the first file's
+            # bytes survive the call raising, which depends entirely on local_dir being a stable
+            # directory rather than one this script deletes on the way out.
+            _write(Path(local_dir) / prefix / self.basename, self.content)
+            raise ConnectionError("simulated connection drop partway through the second file")
+
+        self._install_fake_huggingface_hub(interrupted_snapshot_download)
+
+        with self.assertRaises(fm.ModelFetchError):
+            self._fetch()
+
+        self.assertTrue((nested_dir / self.basename).is_file())
+        self.assertEqual((nested_dir / self.basename).read_bytes(), self.content)
+
+        def resumed_snapshot_download(repo_id, revision, allow_patterns, local_dir):
+            self.assertTrue((Path(local_dir) / prefix / self.basename).is_file(),
+                            "the file that already completed must still be there to resume from")
+            _write(Path(local_dir) / prefix / second_basename, second_content)
+
+        self._install_fake_huggingface_hub(resumed_snapshot_download)
+
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            result = self._fetch()
+
+        self.assertIn(f"resuming a Hugging Face download already in progress under '{nested_dir}'",
+                      stderr.getvalue())
+        self.assertEqual((self.dest / self.basename).read_bytes(), self.content)
+        self.assertEqual((self.dest / second_basename).read_bytes(), second_content)
+        self.assertEqual(sorted(result.downloaded), sorted([self.published_relpath, second_relpath]))
+        # a successful run leaves no staging shell behind
+        self.assertFalse(nested_dir.exists())
+
     def test_file_already_present_with_right_digest_is_left_untouched_and_cached(self):
         target = self._local_target()
         _write(target, self.content)
