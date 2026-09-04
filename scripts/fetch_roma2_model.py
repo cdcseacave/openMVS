@@ -80,8 +80,10 @@ DINOV3_NOTICE = (
     "-----------------------------------------------------------------------------\n"
     "The RoMa v2 descriptor graph embeds DINOv3 (Meta) weights, distributed under\n"
     "Meta's DINOv3 License -- NOT MIT/BSD. RoMa v2's own code is MIT (Johan Edstedt).\n"
-    "By fetching this model you accept the DINOv3 License terms; see LICENSE-DINOv3.md\n"
-    "alongside the fetched files for the pinned text.\n"
+    "By fetching this model you accept the DINOv3 License terms; see docs/RoMa2Model.md\n"
+    "(Licence section) for a summary, and LICENSE-DINOv3.md in the published repo itself\n"
+    f"({HF_REPO} on Hugging Face, or the GitHub-release mirror) for the pinned text --\n"
+    "it is not one of the files this script fetches into --dest.\n"
     "-----------------------------------------------------------------------------"
 )
 
@@ -184,26 +186,35 @@ def _fetch_via_huggingface(dest: Path, repo: str, revision: str, setting: str, p
         from huggingface_hub import snapshot_download
     except ImportError:
         return False
-    dest.mkdir(parents=True, exist_ok=True)
-    prefix = f"{setting}-{precision}"
-    with tempfile.TemporaryDirectory() as scratch:
-        snapshot_download(
-            repo_id=repo,
-            revision=revision,
-            allow_patterns=[f"{prefix}/*"],
-            local_dir=scratch,
-        )
-        # The Hub repo nests by preset ("<setting>-<precision>/"); the local model directory is
-        # flat (RULING R147), so move only the files this call still needs up by basename and
-        # let the scratch directory -- shell and all -- disappear with the `with` block.
-        nested_dir = Path(scratch) / prefix
-        for published_relpath in pending:
-            fetched = nested_dir / Path(published_relpath).name
-            if fetched.is_file():
-                target = _local_path(dest, published_relpath)
-                if target.is_file():
-                    target.unlink()
-                shutil.move(str(fetched), str(target))
+    # Everything below talks to the network (snapshot_download) or can hit a filesystem error
+    # (shutil.move across a mountpoint, a full disk): neither is a correctness problem -- a
+    # partial/failed move here can never pass digest verification, on this run or the next, and
+    # the `with` block below always tears down `scratch` -- but left unguarded it would surface
+    # as a raw traceback instead of the clean ModelFetchError/exit(1) every other failure path
+    # gives. Wrap it so a network hiccup, the most likely first failure, reads like a message.
+    try:
+        dest.mkdir(parents=True, exist_ok=True)
+        prefix = f"{setting}-{precision}"
+        with tempfile.TemporaryDirectory() as scratch:
+            snapshot_download(
+                repo_id=repo,
+                revision=revision,
+                allow_patterns=[f"{prefix}/*"],
+                local_dir=scratch,
+            )
+            # The Hub repo nests by preset ("<setting>-<precision>/"); the local model directory
+            # is flat (RULING R147), so move only the files this call still needs up by basename
+            # and let the scratch directory -- shell and all -- disappear with the `with` block.
+            nested_dir = Path(scratch) / prefix
+            for published_relpath in pending:
+                fetched = nested_dir / Path(published_relpath).name
+                if fetched.is_file():
+                    target = _local_path(dest, published_relpath)
+                    if target.is_file():
+                        target.unlink()
+                    shutil.move(str(fetched), str(target))
+    except Exception as e:
+        raise ModelFetchError(f"failed to fetch '{repo}' (revision '{revision}') from Hugging Face: {e}") from e
     return True
 
 

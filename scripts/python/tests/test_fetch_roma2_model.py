@@ -9,6 +9,7 @@ release's flat asset list.
 import hashlib
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 
@@ -95,6 +96,15 @@ class FetchTests(unittest.TestCase):
     def _local_target(self) -> Path:
         return self.dest / self.basename
 
+    def _install_fake_huggingface_hub(self, snapshot_download) -> None:
+        """Stand in for huggingface_hub (not installed in this environment, and this suite must
+        not install it) so the Hugging Face branch's own logic -- not just the ImportError
+        fallback to the mirror -- gets exercised too, still with no real network access."""
+        fake_module = types.ModuleType("huggingface_hub")
+        fake_module.snapshot_download = snapshot_download
+        sys.modules["huggingface_hub"] = fake_module
+        self.addCleanup(sys.modules.pop, "huggingface_hub", None)
+
     def test_downloads_missing_file_from_mirror_flat(self):
         result = self._fetch()
         target = self._local_target()
@@ -112,6 +122,58 @@ class FetchTests(unittest.TestCase):
         self.assertTrue((self.dest / f"roma_{self.setting}.json").is_file())
         # and definitely not tucked under a reconstructed "<setting>-<precision>/" shell
         self.assertFalse((self.dest / f"{self.setting}-{self.precision}").exists())
+
+    def test_huggingface_branch_moves_only_files_named_in_checksums(self):
+        """Fix round 2, finding #3: a file the published source carries but
+        models/roma2/checksums.txt never named must not be silently accepted into --dest.
+
+        Chosen on the Hugging Face branch, not the mirror one: the HF branch lists a whole
+        "<setting>-<precision>/" folder via allow_patterns and then must filter what it moves up
+        by `pending` -- that filter is exactly the kind of guarantee a future change (say, moving
+        the whole nested folder instead of iterating `pending`) could quietly break. The mirror
+        branch never lists a folder at all -- it only ever requests exact basenames drawn from
+        `pending` -- so a stray file sitting in the mirror directory could never be fetched by
+        construction; a test for it there would pass by tautology, not by exercising a filter.
+        huggingface_hub is not installed here (nor should this suite install it), so the branch's
+        own move-up logic is exercised through a fake module standing in for it -- still no
+        network.
+        """
+        stray_name = "roma_base_a_file_checksums_txt_never_named.bin"
+
+        def fake_snapshot_download(repo_id, revision, allow_patterns, local_dir):
+            prefix = allow_patterns[0].split("/", 1)[0]
+            nested = Path(local_dir) / prefix
+            _write(nested / self.basename, self.content)
+            _write(nested / stray_name, b"present upstream, never pinned in checksums.txt")
+
+        self._install_fake_huggingface_hub(fake_snapshot_download)
+        # Remove the mirror's copy too: if the Hugging Face branch were skipped (e.g. the
+        # ImportError check broke and never picked up the fake module above), a fall-through to
+        # the mirror must fail loudly instead of masking that with an unrelated success.
+        (self.mirror_dir / self.basename).unlink()
+
+        result = self._fetch()
+
+        self.assertTrue((self.dest / self.basename).is_file())
+        self.assertFalse((self.dest / stray_name).exists())
+        self.assertEqual(result.downloaded, [self.published_relpath])
+
+    def test_huggingface_branch_wraps_failures_as_model_fetch_error(self):
+        """Fix round 2, finding #1: a network hiccup (the most likely first failure a user
+        hits) -- or any other failure inside the Hugging Face branch, e.g. a cross-filesystem
+        shutil.move error -- must read as this tool's own clean error, not a raw traceback."""
+        def fake_snapshot_download(repo_id, revision, allow_patterns, local_dir):
+            raise ConnectionError("simulated network failure")
+
+        self._install_fake_huggingface_hub(fake_snapshot_download)
+        # If the Hugging Face branch were skipped, a fall-through to the mirror could still
+        # succeed and hide the missing wrap -- remove its copy so that path fails loudly too.
+        (self.mirror_dir / self.basename).unlink()
+
+        with self.assertRaises(fm.ModelFetchError) as ctx:
+            self._fetch()
+
+        self.assertIn("simulated network failure", str(ctx.exception))
 
     def test_file_already_present_with_right_digest_is_left_untouched_and_cached(self):
         target = self._local_target()
