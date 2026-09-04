@@ -60,12 +60,14 @@ rather than silently ignored.
 ```
 scale = fScaleStep ^ (nScales - nScale - 1)   // image downsample factor
 step  = 2 ^ (nScales - nScale)                // used only for the blur sigma below
-sigma = 0.12 * step + 0.2                     // pre-blur before resizing/gradient
+sigma = 0.09 * step + 0.15                    // pre-blur before resizing/gradient
 ```
 
 identical on both backends. With the shipped defaults: scale 0 runs at half resolution with
-`sigma=0.68`, scale 1 (finest) at full resolution with `sigma=0.44` px — a noise-robust pre-blur
-ahead of the derivative stencil (§1.3), not a negligible one.
+`sigma=0.51`, scale 1 (finest) at full resolution with `sigma=0.33` px — a noise-robust pre-blur
+ahead of the derivative stencil (§1.3), not a negligible one. The multiplier on this sigma was
+swept in 2026-09 (§2.6): it is coupled to `MeshRefineStep::StepGrow` and the two only work as a
+pair — see the entry there before changing either.
 
 Each scale re-inits images (`InitImages`, one worker per view): the shared `PrepareRefineImage`
 (`SceneRefineCommon.cpp`) loads, gray-converts, Gaussian-blurs at the scale's `sigma` and resizes;
@@ -254,17 +256,20 @@ gradient distribution; the header documents why the normalization must stay glob
 
 **Constants** (`MeshRefineStep`, pixel/ZNCC quantities, deliberately not CLI-exposed):
 `StepInit = 0.5` px (`eta` at the start of every scale), `StepMax = 1` px (`eta_max`),
-`StepGrow = 1.1`, `StepShrink = 0.5`, `StepStop = 0.05` px (median-step-at-full-stride convergence
+`StepGrow = 1.05`, `StepShrink = 0.5`, `StepStop = 0.05` px (median-step-at-full-stride convergence
 floor), `ProgressTol = 1e-3` (relative `S` decrease counted as stalled), `Kappa = 2`,
 `Patience = 3` (consecutive stalled iterations that end the scale), `MaxRejects = 4` (consecutive
 rejections that end the scale), `MinIters = 3` (no stop rule before this many ACCEPTED
 iterations), `MaxIters = 45` (the coarsest scale's evaluation budget, below). `ProgressTol` and
-`Patience` were swept and sit on a flat optimum (§2.4).
+`Patience` were swept and sit on a flat optimum (§2.4); every other constant here was swept in
+2026-09 (§2.6). Two results from that sweep matter when reading this list: `StepGrow` is COUPLED to
+the pre-blur sigma of §1.2 and the two may only be changed together, and `StepMax` never binds —
+`eta` never exceeds 0.550 px in any trace on any scene, so the cap is documentation, not a rule.
 
 **Accept/reject.** An evaluation whose `S` is worse than the last accepted `S` is REJECTed: every
 vertex moves back to exactly `v_prev + stepPrev/2` (undoing half the offending step),
 `eta *= StepShrink`, and the scale STOPs after 4 consecutive rejections. An accepted evaluation
-becomes the new reference, resets the reject streak, grows `eta = min(eta*1.1, StepMax)`, and the
+becomes the new reference, resets the reject streak, grows `eta = min(eta*StepGrow, StepMax)`, and the
 scale STOPs once `numAccepted >= MinIters` and `Patience` consecutive iterations failed to improve
 `S` by `ProgressTol`, or once the median per-vertex step **at a full stride**
 (`medianPx * StepMax/eta`, not the step just taken — an `eta` ratcheted down by repeated
@@ -429,6 +434,11 @@ refinement **lost** 0.094 against its own coarse input on Ignatius and 0.037 on 
 ends above the input on both (0.7734 vs 0.7427, 0.6667 vs 0.6606). The CPU is 1.5-2x faster than
 before because the stepper stops on convergence instead of running a fixed 67 evaluations.
 
+This table predates the 2026-09 default sweep (§2.6), which moved the pre-blur sigma and
+`StepGrow` and adds a further +0.0031 on Tanks & Temples; the comparison against `develop` it makes
+is therefore conservative by that much. It is not re-measured here because the CPU cells behind it
+cost 363-798 s per scene and the conclusion only strengthens — §2.6 carries the shipped numbers.
+
 Two scenes still end below their coarse input and bound what this stage can claim. On the EPFL
 scenes the coarse input is far better than anything the refinement produces (fountain 0.3338 input
 vs 0.3431 refined is a gain, but Herz-Jesu-P8's 0.4743 input vs 0.4675 refined is still a net
@@ -591,6 +601,75 @@ and the step cap are doing quality work that minimizing this energy further does
 
 ---
 
+### 2.6 The default-parameter sweep (2026-09)
+
+Every remaining number in §1 was screened, not just the ones an idea had touched: 127 arms over
+mesh preparation, regularization and schedule, the stepper constants, the photometric term, and
+view/scale selection, on the three EPFL ground-truth scenes, with the survivors put through the §3
+gate on the four Tanks & Temples scenes. **Two defaults moved, and they move together.**
+
+Measured on the shipping build (CUDA, resolution level 1), against the same frozen inputs at the
+previous defaults:
+
+| scene | previous | **shipped** | Δ | wall s |
+|---|---|---|---|---|
+| Truck | 0.6667 | **0.6679** | +0.0012 | 71.6 → 69.4 |
+| Barn | 0.6673 | **0.6706** | +0.0033 | 199.1 → 198.6 |
+| Ignatius | 0.7731 | **0.7799** | +0.0068 | 58.8 → 60.7 |
+| Meetingroom | 0.4119 | **0.4129** | +0.0010 | 158.1 → 138.7 |
+| **Tanks & Temples mean** | | | **+0.0031** | |
+| fountain-P11 | 0.3430 | **0.3442** | +0.0012 | |
+| Herz-Jesu-P8 | 0.4674 | **0.4700** | +0.0026 | |
+| Herz-Jesu-P25 | 0.6298 | **0.6345** | +0.0047 | |
+| **EPFL mean** | | | **+0.0028** | |
+
+Positive on all seven scenes, no scene below the gate's −0.002, pooled wall 0.91-0.95x, peak
+working set 1.00x, face counts flat to 0.1 %.
+
+The change is the pre-blur sigma multiplied by 0.75 (`0.12·step + 0.2` → `0.09·step + 0.15`,
+§1.2) together with `StepGrow` 1.1 → 1.05 (§1.7). **Neither may be reverted alone.** Sharpening
+the images makes the gradient more informative but the objective more locally rugged, and the
+old growth factor then over-steps that finer landscape; slowing growth without sharpening just
+spends evaluations more slowly on the blurrier one. On Tanks & Temples the parts measure +0.0011
+(blur alone, and it misses the gate) and **−0.0022** (`StepGrow` alone, Ignatius −0.0087) against
++0.0033 for the pair — an interaction worth +0.0044, fifteen times Ignatius's noise floor. On EPFL
+the two are merely additive, so what generalizes is the weaker statement: the pair is positive on
+all seven scenes across both datasets while neither knob is.
+
+**What the sweep confirmed rather than changed.** `--max-face-area` 16, `--max-views` 8, `--scales`
+2 × 0.5, `--regularity-weight` 0.2, `--rigidity-elasticity-ratio` 0.9, the 3·nA/7 phase-B budget,
+remesh crease angle 20°, remesh target edge −2.25× mean, 10 remesh iterations, auto-decimate factor
+6 and floor 0.1, `StepInit` 0.5, `StepShrink`, `MaxRejects` 4, `Kappa`, `HalfSize` 3,
+`MinWindowCount` 25, `VarFloor`, the reliability offset and both occlusion gates. Most now have a
+measured response curve behind them for the first time.
+
+**`StepMax` never binds.** `StepInit` is 0.5 and the first accepted evaluation grows it to 0.550 px;
+0.550 is the largest step in every trace on all seven scenes. Reaching the 1.0 px cap would need
+about seven consecutive accepts, which do not happen. `StepStop` and `MinIters`, by contrast, are
+both live — but only on Tanks & Temples: on Truck, `StepStop` is what ends the scale and `MinIters`
+is what stops it firing two evaluations early, while on EPFL every scale ends on `MaxRejects`
+instead, so EPFL alone cannot see either rule.
+
+**Two traps that any repeat of this exercise will hit.** *(a) The chaotic floor is ~0.003 F1 on
+Herz-Jesu-P25*, proven by a pure rounding control: writing the remesh band `[4/5, 4/3]` as
+`[0.8, 1.3333]` — a 3e-5 relative change — moved F1 by +0.0028 off a 22-vertex difference. Single-
+scene evidence below that is not evidence. *(b) The do-less artifact.* Refinement **degrades** F1
+against its own input mesh on Herz-Jesu-P8 (−0.0070) and P25 (−0.0225), so on those scenes an arm
+can "win" purely by refining less — corr(Δiterations, ΔF1) is −0.93 on P8. Rank on fountain-P11,
+the one scene where refinement improves F1; treat P8 as do-no-harm evidence only; and always report
+Δfaces and Δiterations beside ΔF1. The artifact **reverses sign** on Tanks & Temples, where
+refinement does improve F1, which is why `--max-views` looked like the campaign's biggest win on
+EPFL (+0.0099) and failed the gate at −0.0058 (#31).
+
+**Method note.** Three of the four EPFL "winners" were withdrawn by their own follow-up runs: two
+by bracketing (a knob whose best value sits on the edge of the tested range is not yet measured —
+both the remesh crease angle and `StepGrow` looked like standalone wins until their neighbours were
+filled in and the curve turned out flat or non-monotone), and one by the T&T gate. A three-scene
+*mean* hides a non-monotone shape; a knob is a winner only when the curve is monotone on
+fountain-P11 and the neighbours on both sides have been measured.
+
+---
+
 ## 3. How these numbers were produced
 
 The harness lives under the gitignored `bench/` tree; this section records what it does, so a
@@ -678,6 +757,13 @@ entry says otherwise.
 | 28 | Non-default Ceres solver configurations: direction, line search, L-BFGS rank, Oren-Luenberger scaling, iteration cap, function tolerance (§2.5) | no configuration wins on more than one of the three ground-truth scenes; Fletcher-Reeves led after two and lost 0.0057 on the third | no |
 | 29 | Pixel-unit parameterization for the Ceres arm | the first line search moves one outlier vertex a pixel and the bulk nothing; the scale dies after one iteration | no |
 | 30 | Raising the regularity weight for the Ceres arm (0.5 / 1.0) | −0.0005 / −0.0022 on fountain-P11, −0.0228 / −0.0235 on Herz-Jesu-P8 | no |
+| 31 | Lowering `--max-views` (4 or 2 instead of 8) | the largest EPFL win of the whole sweep (+0.0099 at 4) and a **−0.0058 / −0.0191** loss on Tanks & Temples, negative on all four scenes (Ignatius −0.0498 at 2). EPFL scenes hold 8-25 images, so cutting to 4 there filters bad views; T&T scenes hold 150-300, so it discards good ones — and fewer views also mean fewer pairs, a smaller max-over-pairs projected area and a coarser prepared mesh, which flatters the EPFL scenes and costs on T&T (§2.6) | no, 8 |
+| 32 | `--max-face-area` 12 or 9 instead of 16 | +0.0005 / +0.0007 on EPFL for +13 % / +26 % faces and 1.19x / 1.33x wall; still only +0.0007 when re-tested at 4 views, where a coarser pairing might have justified a finer target | no, 16 |
+| 33 | Remesh crease angle other than 20° | monotone and harmful above it (30° −0.0018, 45° −0.0031, 90° −0.0099 on fountain-P11); below it 5°/10°/15° are all worth the same +0.0015 — half the noise floor — while inflating the mesh up to +50 % | no, 20° |
+| 34 | Lowering the auto-decimate floor to 0.05 | +0.0020 EPFL mean carried entirely by Herz-Jesu-P25, which it earns by deleting 29 % of the faces on the two scenes where refining less scores better; also a change to the delivered mesh density, not a tuning change | no, 0.1 |
+| 35 | `--regularity-weight` 0.5 or 0.8 instead of 0.2 | +0.0011 mean on Tanks & Temples, never negative on any scene but never reaching the +0.002 gate, and flat between the two values | no, 0.2 |
+| 36 | Neighbour-selection thresholds (min common area 0.1, angle band 2.5-45°) | inert: 0.05 and 0.2 produce **byte-identical** output on EPFL, and every angle-band variant is inside the noise floor. Only the neighbour *count* matters, not the thresholds that picked them | unchanged |
+| 37 | Pre-blur multipliers below 0.75 (0.6, 0.5) | best on fountain-P11 and Herz-Jesu-P25 but negative on Herz-Jesu-P8 with face counts flat and iterations *up*, so a real loss rather than a do-less effect | no, 0.75 |
 
 Three of these carry a mechanism worth stating, because they look like independent ideas and are
 not.

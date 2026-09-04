@@ -1050,7 +1050,8 @@ bool Scene::RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, u
 		const float scale(POWI(fScaleStep, nScales-nScale-1));
 		const float step(POWI(2.f, nScales-nScale));
 		DEBUG_ULTIMATE("Refine mesh at: %.2f image scale", scale);
-		if (!refine.InitImages(scale, 0.12f*step+0.2f))
+		// the sigma multiplier is tied to MeshRefineStep::StepGrow, see the note there
+		if (!refine.InitImages(scale, 0.09f*step+0.15f))
 			return false;
 		refine.nScale = nScale;
 
@@ -1138,8 +1139,11 @@ bool Scene::RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, u
 
 			MeshRefineStep::Stats stats;
 			const MeshRefineStep::Action action(stepper.Evaluate(terms, mesh.vertices, stats));
-			DEBUG_EXTRA("\t%2d. S: %.5f (%+.2e)\tstep: %.3fpx\tmed: %.3fpx\t%s",
-				(int)stepper.GetNumEvaluated(), stats.S, stats.relChange, stats.step, stats.medianPx, stats.accepted ? "acc" : "rej");
+			// same fields and order as the CPU line in SceneRefine.cpp, including the
+			// vertex-removal count (always 0 here: this backend removes none), because
+			// bench/refine_log.py parses the trace of both backends with one regex
+			DEBUG_EXTRA("\t%2d. S: %.5f (%+.2e)\tstep: %.3fpx\tmed: %.3fpx\tv: %5u\t%s",
+				(int)stepper.GetNumEvaluated(), stats.S, stats.relChange, stats.step, stats.medianPx, 0u, stats.accepted ? "acc" : "rej");
 			return action;
 		};
 

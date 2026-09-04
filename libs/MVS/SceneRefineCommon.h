@@ -248,7 +248,11 @@ public:
 	// the single operating point: pixel/ZNCC quantities, scene-independent, hence not exposed
 	static constexpr float StepInit = 0.5f; // eta at the start of every scale, px
 	static constexpr float StepMax = 1.f; // eta never exceeds this, px
-	static constexpr float StepGrow = 1.1f; // eta *= this after an accepted evaluation
+	// StepGrow is tied to the pre-blur sigma the caller passes to InitImages(): sharpening the
+	// images makes the objective more locally rugged, and 1.1 then over-steps it. The two move
+	// together or not at all - reverting either one alone measures WORSE than reverting both
+	// (Tanks & Temples mean F1: pair +0.0033, this constant alone -0.0022; design doc §2.6)
+	static constexpr float StepGrow = 1.05f; // eta *= this after an accepted evaluation
 	static constexpr float StepShrink = 0.5f; // eta *= this after a rejected one
 	static constexpr float StepStop = 0.05f; // median per-vertex step at a full stride below which the scale has converged, px
 	static constexpr float ProgressTol = 1e-3f; // relative decrease of S at or below which an evaluation counts as stalled

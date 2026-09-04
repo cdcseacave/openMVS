@@ -1691,7 +1691,8 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 		const Real scale(POWI(fScaleStep, nScales-nScale-1));
 		const Real step(POWI(2.f, nScales-nScale));
 		DEBUG_ULTIMATE("Refine mesh at: %.2f image scale", scale);
-		if (!refine.InitImages(scale, Real(0.12)*step+Real(0.2)))
+		// the sigma multiplier is tied to MeshRefineStep::StepGrow, see the note there
+		if (!refine.InitImages(scale, Real(0.09)*step+Real(0.15)))
 			return false;
 		refine.nScale = nScale;
 
@@ -2003,8 +2004,8 @@ bool Scene::RefineMeshEnergyProbe(unsigned nResolutionLevel, unsigned nMinResolu
 		return false;
 	refine.bEnergyMode = true;
 	refine.bEnergyPhoto = probe.photometric;
-	// the single-scale case of RefineMesh's schedule above: image scale 1, blur 0.12*2+0.2
-	if (!refine.InitImages(1.f, Real(0.44)))
+	// the single-scale case of RefineMesh's schedule above: image scale 1, blur 0.09*2+0.15
+	if (!refine.InitImages(1.f, Real(0.33)))
 		return false;
 	refine.ListVertexFacesPre();
 	refine.ListVertexFacesPost();
