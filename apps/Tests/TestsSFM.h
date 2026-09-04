@@ -132,6 +132,14 @@ bool RoMa2PreprocessTest();
 // nor OPENMVS_ROMA2_MODEL_PATH.
 bool RoMa2ManifestVersionTest();
 
+// ROMA2Config::ResolveModelPath precedence test: an explicit modelPath wins over everything
+// (including a set environment variable); with modelPath empty, $OPENMVS_ROMA2_MODEL_PATH wins;
+// with both absent, the result is empty (this build's install-prefix fallback, if any, is not
+// exercised here -- it is checked only for existing on disk, and this test does not create
+// anything under the install prefix). Pure config logic, so it needs neither ONNX Runtime nor an
+// actual model.
+bool ResolveModelPathTest();
+
 // RoMa2 ONNX parity test: runs the exported descriptor and coarse-match graphs through
 // RoMa2Onnx and compares them to the Python reference dumps shipped with the models.
 // Skipped unless OPENMVS_ROMA2_MODEL_PATH points at an exported model folder;

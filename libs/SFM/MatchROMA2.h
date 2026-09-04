@@ -60,13 +60,24 @@ struct SFM_API ROMA2Config {
 	unsigned slotBudget = 64;      // image descriptors kept resident on the device
 	bool useGPU = true;            // allow the GPU execution providers
 
-	// Return the folder holding the exported models: the explicit setting if given,
-	// else the OPENMVS_ROMA2_MODEL_PATH environment variable, else empty
+	// Return the folder holding the exported models: the explicit setting if given, else the
+	// OPENMVS_ROMA2_MODEL_PATH environment variable if set, else the install prefix's own copy
+	// (what `cmake --build . --target roma2-model` fetched) if that is actually present on disk,
+	// else empty
 	inline String ResolveModelPath() const {
 		if (!modelPath.empty())
 			return modelPath;
 		const char* const envModelPath = getenv("OPENMVS_ROMA2_MODEL_PATH");
-		return envModelPath ? String(envModelPath) : String();
+		if (envModelPath)
+			return String(envModelPath);
+		#ifdef OPENMVS_ROMA2_MODEL_INSTALL_DIR
+		// last: what `cmake --build . --target roma2-model` fetched. Only when it is actually there --
+		// an uninstalled build must keep producing the "needs a model" error rather than a path that
+		// does not exist.
+		if (File::isFolder(OPENMVS_ROMA2_MODEL_INSTALL_DIR))
+			return String(OPENMVS_ROMA2_MODEL_INSTALL_DIR);
+		#endif
+		return String();
 	}
 
 	// Return true if the in-process ROMAv2 model is enabled and locatable. This no longer asks

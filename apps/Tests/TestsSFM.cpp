@@ -3593,6 +3593,77 @@ bool RoMa2ManifestVersionTest()
 	return true;
 }
 
+// ROMA2Config::ResolveModelPath precedence test: an explicit modelPath wins over everything
+// (even a set environment variable); with modelPath empty, $OPENMVS_ROMA2_MODEL_PATH wins; with
+// both absent, the result is empty. This is the precedence the whole --roma2 pipeline depends
+// on -- it decides whether the CLI's own "needs a model" error fires -- so it is checked here
+// directly rather than only indirectly through CreateStructure. This build's install-prefix
+// fallback (OPENMVS_ROMA2_MODEL_INSTALL_DIR, if this target even defines it) only returns when
+// that directory exists on disk, which per the plan this test must not create, so the third case
+// stays empty without needing to know whether that macro is defined.
+bool ResolveModelPathTest()
+{
+	// Save/restore OPENMVS_ROMA2_MODEL_PATH around this test: RoMa2OnnxParityTest and
+	// ROMA2ReconstructTest run right after it in the same process and read this same variable to
+	// decide whether to skip, so every exit path here must put the environment back exactly as
+	// it was found.
+	struct EnvGuard {
+		const bool hadPrev;
+		const String prevValue;
+		EnvGuard() : hadPrev(getenv("OPENMVS_ROMA2_MODEL_PATH") != NULL),
+		             prevValue(hadPrev ? getenv("OPENMVS_ROMA2_MODEL_PATH") : "") {}
+		~EnvGuard() { Set(hadPrev ? prevValue.c_str() : NULL); }
+		static void Set(const char* value) {
+			#ifdef _MSC_VER
+			_putenv_s("OPENMVS_ROMA2_MODEL_PATH", value ? value : "");
+			#else
+			if (value)
+				setenv("OPENMVS_ROMA2_MODEL_PATH", value, 1);
+			else
+				unsetenv("OPENMVS_ROMA2_MODEL_PATH");
+			#endif
+		}
+	} envGuard;
+
+	// explicit modelPath wins over the environment, even when the environment is also set
+	{
+		ROMA2Config config;
+		config.modelPath = "/explicit/model/path";
+		EnvGuard::Set("/env/model/path");
+		const String resolved = config.ResolveModelPath();
+		if (resolved != "/explicit/model/path") {
+			VERBOSE("ResolveModelPathTest FAILED: explicit modelPath did not win over the environment (got '%s')", resolved.c_str());
+			return false;
+		}
+	}
+
+	// modelPath empty, OPENMVS_ROMA2_MODEL_PATH set: the environment variable wins
+	{
+		ROMA2Config config;
+		EnvGuard::Set("/env/model/path");
+		const String resolved = config.ResolveModelPath();
+		if (resolved != "/env/model/path") {
+			VERBOSE("ResolveModelPathTest FAILED: OPENMVS_ROMA2_MODEL_PATH did not win with modelPath empty (got '%s')", resolved.c_str());
+			return false;
+		}
+	}
+
+	// both absent: modelPath empty, no environment variable -- the result is empty (the
+	// install-prefix fallback, per the plan, is not exercised by creating anything on disk)
+	{
+		ROMA2Config config;
+		EnvGuard::Set(NULL);
+		const String resolved = config.ResolveModelPath();
+		if (!resolved.empty()) {
+			VERBOSE("ResolveModelPathTest FAILED: expected an empty result with modelPath and the environment both absent, got '%s'", resolved.c_str());
+			return false;
+		}
+	}
+
+	VERBOSE("ResolveModelPathTest PASSED");
+	return true;
+}
+
 #ifdef _USE_ONNXRUNTIME
 // The reference dump folder of one preset and stage, with its trailing path separator
 static String RoMa2ReferenceDir(const String& modelDir, const String& setting, const char* stage)
@@ -4119,7 +4190,8 @@ static bool ROMA2ReconstructScene(Scene& scene, const String& setting, const Str
 // to prove determinism (design decision 11), round-tripped through Scene::Save/Load, and finished
 // with ReconstructTest's own reconstruction stage. Configured by the environment like
 // RoMa2OnnxParityTest: OPENMVS_ROMA2_MODEL_PATH (unset => skipped), OPENMVS_ROMA2_SETTING
-// (default "turbo"), OPENMVS_ROMA2_PROVIDER (default "auto")
+// (default "base", matching --roma2-setting's own default and the published model bundle),
+// OPENMVS_ROMA2_PROVIDER (default "auto")
 bool ROMA2ReconstructTest()
 {
 	#ifndef _USE_ONNXRUNTIME
@@ -4137,7 +4209,7 @@ bool ROMA2ReconstructTest()
 	}
 	TD_TIMER_STARTD();
 	const char* const envSetting = getenv("OPENMVS_ROMA2_SETTING");
-	const String setting(envSetting != NULL && *envSetting != 0 ? String(envSetting) : String("turbo"));
+	const String setting(envSetting != NULL && *envSetting != 0 ? String(envSetting) : String("base"));
 	const char* const envProvider = getenv("OPENMVS_ROMA2_PROVIDER");
 	const String provider(envProvider != NULL && *envProvider != 0 ? String(envProvider) : String("auto"));
 
