@@ -684,8 +684,9 @@ The per-graph numbers below were measured on the pre-bidirectional export
 (`roma2onnx-20260829-facets1520` — an export that predates the bidirectional `match_coarse` graph and
 the descriptor graph's `retrieval` output the current manifest schema requires, so it is not loadable
 by the current loader; see Graph Contract and Export tooling above). The bidirectional `match_coarse`
-graph the one-pass matcher runs (`roma2onnx-20260903-bidir`) adds two outputs to the same forward
-pass, so the joint-ViT cost is unchanged and the second direction is a second head call.
+graph the one-pass matcher runs today (`roma2onnx-20260904-v1`, fp32, `format_version` 1) adds two
+outputs to the same forward pass, so the joint-ViT cost is unchanged and the second direction is a
+second head call.
 
 | Preset | Descriptor | Match coarse |
 |---|---|---|

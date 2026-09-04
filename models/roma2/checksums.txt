@@ -21,3 +21,11 @@
 # entries, failing with a message naming this file rather than silently succeeding. The
 # controller regenerates this file from the export run (scripts/python/roma2/export.py) and
 # pastes the resulting digests in after each publish.
+
+cb2cd7c98b5bcdaf1648053bfe8217d873873a6f051c508e0e5a7ac268027703  base-fp32/roma_base.json
+bf54183ecc5b67dccfe96df931ac415b6852688f0e5cefd9651be5ddc19bba0c  base-fp32/roma_base_descriptor_fp32.onnx
+c14360913eeb2355398b066b0ed4a00d23f9e7853d68f85c4aaf0987854b3a4c  base-fp32/roma_base_descriptor_fp32.onnx.data
+28c52a1e3e4f8b1bcae9c3e1baa8ea69229923e7b57900d35c1ad4111f75ceea  base-fp32/roma_base_match_coarse_fp32.onnx
+06db858c3780ec605b2f3fcaa18094a37a6b2e6d7a1d001441e5fc712b97a827  base-fp32/roma_base_match_coarse_fp32.onnx.data
+1226c74b4f701b3744737da35c14be8a5b1b7f37547b60881b188c450b61705b  base-fp32/roma_base_descriptor_fp32.export.json
+9abdcec9f5a112cdb4055122c28bc0a1242ec31c6a7e53dbb7b11541ac7f486c  base-fp32/roma_base_match_coarse_fp32.export.json

@@ -37,7 +37,7 @@ scripts/fetch_roma2_model.py [--setting base] [--precision fp32] [--dest DIR]
 - `--precision` — exported precision (default `fp32`; `fp16` is not published yet).
 - `--dest` — the model directory itself (default: `$OPENMVS_ROMA2_MODEL_PATH`, else `./roma2-model`
   — the CMake target always passes `--dest` explicitly, so this default only ever serves a hand-run).
-  **RULING R147: `--dest` *is* what `--roma2-model DIR` / `$OPENMVS_ROMA2_MODEL_PATH` mean** —
+  **`--dest` *is* what `--roma2-model DIR` / `$OPENMVS_ROMA2_MODEL_PATH` mean** —
   `RoMa2Onnx::Load` reads `roma_<setting>.json` and every graph file directly under it, with no
   further nesting. The script therefore writes flat files (`roma_<setting>.json`,
   `roma_<setting>_descriptor_<precision>.onnx[.data]`,
@@ -61,12 +61,13 @@ to reconstruct on that side, unlike the Hub fetch, which moves the needed files 
 Every fetched file is verified against `models/roma2/checksums.txt` (SHA256, read relative to the
 script itself, not the caller's working directory) — that file is what pins the published artefact's
 exact bytes without the repository carrying any of it, and what makes the mirror as trustworthy as
-the canonical host. A file already present with the right digest costs one hash and is left
-untouched ("cached"); one with the wrong digest is deleted before a fresh attempt; a mismatch after
-fetching deletes the file, prints both digests and exits with an error — never a partially-verified
-result reported as success. If `models/roma2/checksums.txt` has no entries yet (this checkout
-predates a publish, or none has been made), the script refuses to fetch anything and names the file
-in its error rather than silently succeeding with nothing to verify against.
+the canonical host. `base`/`fp32`'s seven digests are pinned there already (they are hashes of file
+contents, so they were valid before any upload). A file already present with the right digest costs
+one hash and is left untouched ("cached"); one with the wrong digest is deleted before a fresh
+attempt; a mismatch after fetching deletes the file, prints both digests and exits with an error —
+never a partially-verified result reported as success. Requesting a `--setting`/`--precision`
+combination the file has no entries for (today, anything but `base`/`fp32`) fails the same way,
+naming the missing prefix rather than fetching files nothing can verify.
 
 Nothing about this runs in CI: the model is large and needs network access, and the fetch is never
 triggered by a plain build.
@@ -93,12 +94,12 @@ distributed under Meta's DINOv3 License, which:
 - **§8** lets Meta amend the Agreement.
 
 **Running `--roma2` means accepting the DINOv3 License.** `scripts/fetch_roma2_model.py` prints this
-notice every time it fetches the model, pointing at `LICENSE-DINOv3.md` alongside the fetched files
-for the pinned text. This is neither more permissive than a plain MIT/BSD grant (redistribution
-still carries the same-agreement-plus-copy condition, and §1(b)(iii)/(v) are real use restrictions)
-nor more restrictive (no revenue cap, no field-of-use annex, no separate commercial licence to
-negotiate) — read the Agreement itself for the exact terms; this section summarizes it, it does not
-replace it.
+notice every time it fetches the model, pointing back at this section for a summary and at
+`LICENSE-DINOv3.md` in the published repo itself (`cDcSeacave/openmvs-roma2-onnx` on Hugging Face, or
+the GitHub-release mirror — it is not one of the files this script fetches into `--dest`) for the
+pinned text. The grant in §1(a) and the restrictions in §1(b)(iii)/(v) both apply in full; neither
+narrows the other — read the Agreement itself for the exact terms, this section summarizes it, it
+does not replace it.
 
 ## Publishing a new bundle (maintainer only)
 
@@ -111,7 +112,8 @@ gh release upload <tag> <files> --repo cdcseacave/openMVS                    # m
 
 GitHub release assets cannot carry a subdirectory, which is why the mirror is a flat file set and why
 the fetch script's mirror path reconstructs the local flat names itself rather than mapping a nested
-one (Obtaining the model, above). After an upload, two things get pinned: the seven digests in
-`models/roma2/checksums.txt` (regenerated from the export that produced `<bundle-dir>`), and this
-script's default `--revision` (moved off the `main` placeholder to the commit the upload actually
-produced).
+one (Obtaining the model, above). A new export's checksums can be pinned into
+`models/roma2/checksums.txt` as soon as the export exists — they are hashes of file content, valid
+before any upload (as already done for `base`/`fp32` above). The one thing that must wait for the
+upload itself is this script's default `--revision`: only once the upload has actually happened does
+it have a real commit SHA to move onto, off the `main` placeholder.
