@@ -451,6 +451,40 @@ unsigned SFM::ExportPoseUncertaintyCSV(const String& fileName, const Scene& scen
 }
 /*----------------------------------------------------------------*/
 
+// 1/k^2 for k the ratio of the two populations' robust reprojection sigmas, measured on the scene
+// this solve is about to fit. Both sigmas are read off the RAW pixel residuals, so the estimate does
+// not carry the weighting the previous solve ran under, and it is recomputed at the head of every
+// solve -- a reconstruction runs fifty or more of them, so it settles.
+//
+// Measured rather than configured because k is a property of the CAPTURE, not of the dense matcher:
+// on the campaign's three captures the dense sigma barely moved (1.14-1.79 px, the warp's sampling
+// scale) while the described sigma moved 3.6x, from 0.32 px where the texture is rich to 1.15 px
+// where it is not, taking k from 1.55 to 4.02. No constant is right in both places.
+//
+// Clamped to [MIN_DENSE_OBSERVATION_WEIGHT, 1]: a dense correspondence is never a MORE precise
+// measurement than a described one, and never worth nothing -- on a capture where the descriptor
+// matcher is very good the ratio can run away, and a weight of zero would discard the only evidence
+// a textureless region has. Falls back to the fixed DENSE_OBSERVATION_WEIGHT when either population
+// is under MIN_SIGMA_OBSERVATIONS, which is the honest answer for an early incremental step whose
+// scene is a handful of tracks.
+constexpr size_t MIN_SIGMA_OBSERVATIONS = 100;
+constexpr double MIN_DENSE_OBSERVATION_WEIGHT = 0.01;
+
+double SFM::EstimateDenseObservationWeight(const Scene& scene, const BAConfig& config)
+{
+	if (config.denseObservationWeight >= 0.0)
+		return config.denseObservationWeight;
+	double sigmaDescribed = 0, sigmaDense = 0;
+	size_t numDescribed = 0, numDense = 0;
+	ComputeObservationSigmas(scene, sigmaDescribed, numDescribed, sigmaDense, numDense);
+	if (numDescribed < MIN_SIGMA_OBSERVATIONS || numDense < MIN_SIGMA_OBSERVATIONS ||
+		sigmaDescribed <= 0.0 || sigmaDense <= 0.0)
+		return DENSE_OBSERVATION_WEIGHT;
+	const double k = sigmaDense/sigmaDescribed;
+	return CLAMP(1.0/(k*k), MIN_DENSE_OBSERVATION_WEIGHT, 1.0);
+}
+/*----------------------------------------------------------------*/
+
 namespace {
 // Set a parameter block constant only if it was actually added to the problem, returning
 // whether it was. A pose/intrinsic/point block exists only when a residual referenced it:
@@ -510,7 +544,7 @@ inline void AddPinholeIntrinsics(std::unordered_map<const Camera*, DoubleArr>& i
 // Sets bDense for the caller's summary. Returns false if the keypoint is below the confidence
 // threshold and the observation should be skipped.
 //
-// A dense (descriptor-less) keypoint's residual is scaled by config.denseObservationWeight: its
+// A dense (descriptor-less) keypoint's residual is scaled by denseObservationWeight: its
 // position was sampled from a low-resolution warp, while a described keypoint's is sub-pixel at
 // full resolution, so the two are not equally precise measurements and BA must not weight them
 // alike. The weight follows the KEYPOINT, not the match that created it -- after the described-wins
@@ -524,19 +558,10 @@ inline void AddPinholeIntrinsics(std::unordered_map<const Camera*, DoubleArr>& i
 // sampling scale, and the dense `size` convention (Image.h) was chosen precisely so that it reports a
 // dense point as the less precise measurement. Multiplying the two charges that once for the size and
 // once for the flat factor -- on the documented values it takes the effective ratio to ~116x (k ~ 10.8)
-// instead of the k = 2 below, and in the wrong direction from "errs toward the behaviour before this
-// weight existed". So exactly one of them applies, and a --ba-dense-weight sweep must be run with
-// useKeypointConfidence off or it measures a quantity that already contains the factor it is fitting.
-//
-// PROVISIONAL DEFAULT (BAConfig::denseObservationWeight = 0.25). It was NOT measured. The value
-// that belongs here is 1/k^2, where k is the ratio of the robust sigma of dense to described
-// reprojection residuals on a ground-truth capture; 0.25 is k = 2, which is the mild end of what
-// the warp's own sampling scale implies (a 640-px warp frame over a multi-megapixel image puts one
-// warp cell across several pixels, against sub-pixel detector localization -- k = 4, weight 0.0625,
-// is just as plausible). It is deliberately the mild end: a provisional value that is wrong then
-// errs toward the behaviour before this weight existed rather than toward discarding the dense
-// signal. Sweep it with --ba-dense-weight and replace this default with the measured one.
-inline bool SelectReprojectionLoss(const BAConfig& config, const Image& img, uint32_t featureID,
+// instead of a k = 2 weight, and in the wrong direction from "errs toward the behaviour before this
+// weight existed". So exactly one of them applies.
+inline bool SelectReprojectionLoss(const BAConfig& config, double denseObservationWeight,
+	const Image& img, uint32_t featureID,
 	ceres::LossFunction* baseLoss, ceres::LossFunction*& outLoss, bool& bDense) {
 	outLoss = baseLoss;
 	double weight = 1.0;
@@ -549,7 +574,7 @@ inline bool SelectReprojectionLoss(const BAConfig& config, const Image& img, uin
 	// only when the confidence term did not already say it: the two express the same statement (see
 	// the comment above), so applying both would charge the dense sampling scale twice
 	if (bDense && !config.useKeypointConfidence)
-		weight *= config.denseObservationWeight;
+		weight *= denseObservationWeight;
 	if (weight != 1.0)
 		outLoss = new ceres::ScaledLoss(baseLoss, weight, ceres::DO_NOT_TAKE_OWNERSHIP);
 	return true;
@@ -672,6 +697,10 @@ bool BundleAdjustment::Adjust()
 	ceres::LossFunction* loss_function = config.robustThreshold > 0.f ?
 		new ceres::HuberLoss(config.robustThreshold) : nullptr;
 
+	// resolved once per solve, not per residual: the estimator walks every observation, and the
+	// weight is a property of the scene this problem is built from, not of any one of its residuals
+	const double denseWeight = EstimateDenseObservationWeight(scene, config);
+
 	// Set the SE(3) manifold on every valid pose block (shared instance; Ceres owns it once attached)
 	auto* se3_manifold = CreateSE3PoseManifold();
 	FOREACH(i, scene.images) {
@@ -704,7 +733,7 @@ bool BundleAdjustment::Adjust()
 			// keypoint (whose position came from the warp, not from the detector)
 			ceres::LossFunction* residual_loss_function;
 			bool bDense = false;
-			if (!SelectReprojectionLoss(config, img, obs.featureID, loss_function, residual_loss_function, bDense)) {
+			if (!SelectReprojectionLoss(config, denseWeight, img, obs.featureID, loss_function, residual_loss_function, bDense)) {
 				++numSkippedLowConfidence;
 				continue; // skip low-confidence keypoints
 			}
@@ -724,9 +753,19 @@ bool BundleAdjustment::Adjust()
 	if (numDenseResiduals > 0) {
 		// the flat weight does not apply when the confidence term is on: it already carries the
 		// dense sampling scale, so what a dense residual is scaled by then is that term alone
-		DEBUG("Bundle adjustment: %u/%u reprojection residuals are on dense keypoints, weighted %g",
-			numDenseResiduals, numReprojResiduals,
-			config.useKeypointConfidence ? 1.0 : config.denseObservationWeight);
+		if (config.denseObservationWeight < 0.0) {
+			// weight was measured, not configured -- log what it was measured on, so a stale sigma
+			// jumping between runs shows up in the log rather than only as a downstream drift
+			double sigmaDescribed = 0, sigmaDense = 0;
+			size_t numSigmaDescribed = 0, numSigmaDense = 0;
+			ComputeObservationSigmas(scene, sigmaDescribed, numSigmaDescribed, sigmaDense, numSigmaDense);
+			DEBUG("Bundle adjustment: %u/%u reprojection residuals are on dense keypoints, weighted %g "
+				"(sigma described %g / dense %g px)",
+				numDenseResiduals, numReprojResiduals, denseWeight, sigmaDescribed, sigmaDense);
+		} else {
+			DEBUG("Bundle adjustment: %u/%u reprojection residuals are on dense keypoints, weighted %g",
+				numDenseResiduals, numReprojResiduals, denseWeight);
+		}
 	}
 
 	// Set intrinsic parameter constraints (if refining intrinsics)
@@ -1069,6 +1108,11 @@ bool BundleAdjustment::AdjustLocal(
 	ceres::LossFunction* loss_function = config.robustThreshold > 0.f ?
 		new ceres::HuberLoss(config.robustThreshold) : nullptr;
 
+	// same whole-scene estimator as Adjust(), not one scoped to this window: the local window's
+	// described population is often too small to give a sigma, and two different weights inside
+	// one reconstruction would be worse than a slightly stale one
+	const double denseWeight = EstimateDenseObservationWeight(scene, config);
+
 	// Add reprojection residuals (only observations from window images: local or fixed)
 	uint32_t numReprojResiduals = 0;
 	uint32_t numDenseResiduals = 0;
@@ -1089,7 +1133,7 @@ bool BundleAdjustment::AdjustLocal(
 			// keypoint (whose position came from the warp, not from the detector)
 			ceres::LossFunction* residual_loss_function;
 			bool bDense = false;
-			if (!SelectReprojectionLoss(config, img, obs.featureID, loss_function, residual_loss_function, bDense))
+			if (!SelectReprojectionLoss(config, denseWeight, img, obs.featureID, loss_function, residual_loss_function, bDense))
 				continue; // skip low-confidence keypoints
 			AddReprojectionResidual(problem, residual_loss_function, img, img.keypoints[obs.featureID],
 				poseParams.data() + imgID * 7, track.position.ptr(), intrinsicParams);
@@ -1102,9 +1146,17 @@ bool BundleAdjustment::AdjustLocal(
 	// than the global pass, so reporting only there would let the dense contribution move silently
 	// in the path that actually carries it
 	if (numDenseResiduals > 0) {
-		DEBUG("Local bundle adjustment: %u/%u reprojection residuals are on dense keypoints, weighted %g",
-			numDenseResiduals, numReprojResiduals,
-			config.useKeypointConfidence ? 1.0 : config.denseObservationWeight);
+		if (config.denseObservationWeight < 0.0) {
+			double sigmaDescribed = 0, sigmaDense = 0;
+			size_t numSigmaDescribed = 0, numSigmaDense = 0;
+			ComputeObservationSigmas(scene, sigmaDescribed, numSigmaDescribed, sigmaDense, numSigmaDense);
+			DEBUG("Local bundle adjustment: %u/%u reprojection residuals are on dense keypoints, weighted %g "
+				"(sigma described %g / dense %g px)",
+				numDenseResiduals, numReprojResiduals, denseWeight, sigmaDescribed, sigmaDense);
+		} else {
+			DEBUG("Local bundle adjustment: %u/%u reprojection residuals are on dense keypoints, weighted %g",
+				numDenseResiduals, numReprojResiduals, denseWeight);
+		}
 	}
 
 	// Set the SE(3) manifold on every pose block that was actually added to the problem.

@@ -147,6 +147,11 @@ bool BAPinholeReprojectionJacobianTest();
 // dense observations, and reports zero dense observations on a scene that has none
 bool ObservationSigmasTest();
 
+// EstimateDenseObservationWeight returns 1/k^2 for the k a synthetic scene's described/dense
+// displacement ratio gives, clamps to 1 when the dense population is no less precise than the
+// described one, and falls back to the configured constant when a scene has no dense keypoints
+bool DenseObservationWeightEstimateTest();
+
 // Small SFM smoke test: build tiny scene and run BundleAdjustment::Adjust
 bool PipelineTest();
 

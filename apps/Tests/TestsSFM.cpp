@@ -4565,6 +4565,72 @@ bool ObservationSigmasTest()
 /*----------------------------------------------------------------*/
 
 
+bool DenseObservationWeightEstimateTest()
+{
+	TD_TIMER_START();
+
+	// the scene of ObservationSigmasTest: described observations off by 0.5 px, dense ones by
+	// 2.0 px, so k = 4 and the weight the estimator must return is 1/16
+	Scene scene;
+	SceneConfig cfg;
+	cfg.numImages = 4;
+	cfg.numPoints = 200;
+	GenerateTestScene(scene, cfg);
+	constexpr float describedError = 0.5f, denseError = 2.0f;
+	for (Image& img : scene.images)
+		img.CloseDescribedKeypoints();
+	for (Track& track : scene.tracks) {
+		const size_t numDescribedObs = track.observations.size();
+		for (size_t i = 0; i < numDescribedObs; ++i) {
+			const Observation obs = track.observations[i];
+			Image& img = scene.images[obs.imageID];
+			img.keypoints[obs.featureID].pt.x += describedError;
+			const cv::KeyPoint dense(img.keypoints[obs.featureID].pt.x - describedError + denseError,
+				img.keypoints[obs.featureID].pt.y, 10.f, -1.f, 0.9f);
+			const uint32_t featID = (uint32_t)img.keypoints.size();
+			img.keypoints.push_back(dense);
+			track.observations.emplace_back(obs.imageID, featID);
+		}
+		track.numInliers = (uint8_t)MINF((size_t)track.observations.size(), (size_t)255);
+	}
+
+	BAConfig config;
+	config.denseObservationWeight = -1.0; // estimate
+	const double weight = EstimateDenseObservationWeight(scene, config);
+	if (ABS(weight - 1.0/16.0) > 0.005) {
+		VERBOSE("DenseObservationWeightEstimateTest FAILED: weight %.4f against 1/k^2 = %.4f for k = 4",
+			weight, 1.0/16.0);
+		return false;
+	}
+
+	// a dense population no less precise than the described one is not worth MORE than it
+	for (Image& img : scene.images)
+		for (uint32_t k = img.NumDescribedKeypoints(); k < img.keypoints.size(); ++k)
+			img.keypoints[k].pt.x -= denseError - describedError;
+	const double clamped = EstimateDenseObservationWeight(scene, config);
+	if (clamped != 1.0) {
+		VERBOSE("DenseObservationWeightEstimateTest FAILED: an equally precise dense population weighs %.4f",
+			clamped);
+		return false;
+	}
+
+	// and a scene with no dense keypoints at all falls back to the configured constant rather than
+	// dividing by a sigma it does not have
+	Scene sparseOnly;
+	GenerateTestScene(sparseOnly, cfg);
+	const double fallback = EstimateDenseObservationWeight(sparseOnly, config);
+	if (fallback != DENSE_OBSERVATION_WEIGHT) {
+		VERBOSE("DenseObservationWeightEstimateTest FAILED: fallback %.4f against the constant %.4f",
+			fallback, DENSE_OBSERVATION_WEIGHT);
+		return false;
+	}
+
+	VERBOSE("Dense observation weight estimate test passed (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+
 // Pose-guided selection must still produce candidate pairs for images absent from the pose file.
 bool KnownPosePairSelectionTest()
 {

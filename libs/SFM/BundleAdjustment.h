@@ -56,19 +56,16 @@ struct SFM_API BAConfig
 	bool useKeypointConfidence = false; // Weight observations by keypoint response and size
 	float minKeypointResponse = 0.001f; // Minimum keypoint response to include in BA (0 = include all)
 
-	// Loss weight of a reprojection residual on a DENSE (descriptor-less) keypoint, relative to
-	// the 1.0 a described one carries: a dense keypoint's position is sampled from a
-	// low-resolution warp, a described keypoint's is sub-pixel at full resolution, and BA must not
-	// treat the two as equally precise. It is a measurement-precision weight, not a fifth gate
-	// threshold, and it follows the KEYPOINT rather than the match that created it (see
-	// SelectReprojectionLoss). 1 = no down-weighting.
-	// Ignored when useKeypointConfidence is set: that term already expresses the same thing, and
-	// only one of the two may apply.
-	// The default is PROVISIONAL and was NOT measured -- see BundleAdjustment.cpp for how it was
-	// picked and what has to replace it. Measure it with useKeypointConfidence OFF.
-	// Shares its definition with the view-graph evidence a dense match is worth
-	// (PairsWeightingConfig::denseObservationWeight): one quantity, one number.
-	double denseObservationWeight = DENSE_OBSERVATION_WEIGHT;
+	// Loss weight of a reprojection residual on a DENSE (descriptor-less) keypoint relative to the
+	// 1.0 a described one carries, as an OVERRIDE: negative (the default) means the weight is
+	// measured on the scene each solve is about to fit, positive pins it -- which is what a sweep or
+	// a regression test wants. It is a measurement-precision weight, not a fifth gate threshold, and
+	// it follows the KEYPOINT rather than the match that created it (see SelectReprojectionLoss).
+	// Ignored when useKeypointConfidence is set: that term expresses the same thing by another
+	// route, and only one of the two may apply.
+	// This is NOT the view graph's dense discount (PairsWeightingConfig::denseObservationWeight),
+	// which answers a different question -- see DENSE_OBSERVATION_WEIGHT in ImagePair.h.
+	double denseObservationWeight = -1.0;
 
 	// Solver parameters
 	unsigned maxIterations = 100;    // Maximum solver iterations
@@ -272,6 +269,15 @@ private:
 	UnsignedArr numReprojResidualsPerImage;  // per-image reprojection-residual count (gauge/datum selection)
 	uint32_t numGPSResiduals = 0;            // GPS priors in the problem: they anchor the gauge (no datum)
 };
+/*----------------------------------------------------------------*/
+
+
+// The weight a dense reprojection residual carries relative to a described one, measured rather than
+// configured: 1/k^2 for k = sigma_dense/sigma_described, the two populations' robust reprojection
+// sigmas on the scene as it stands (ComputeObservationSigmas). Returns config.denseObservationWeight
+// when that is non-negative, and DENSE_OBSERVATION_WEIGHT when either population is too small to
+// give a sigma or the scene carries no dense keypoints at all.
+SFM_API double EstimateDenseObservationWeight(const Scene& scene, const BAConfig& config);
 /*----------------------------------------------------------------*/
 
 
