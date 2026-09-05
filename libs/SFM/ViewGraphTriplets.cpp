@@ -75,6 +75,9 @@ constexpr uint32_t NO_INDEX = (uint32_t)-1;
 // min(1, u_e / H). No populated bin at all -- fewer than five edges everywhere -- means no
 // envelope and every yield 1. The percentile, the bin width and the bin floor are properties of
 // the estimate, not of the scene: 75, 90 and 95 replay identically on every reference set.
+// An edge whose ray angle is not finite or is negative has no measurable geometry: it takes no
+// part in any bin's envelope and its own yield is left at the initial 1 -- absence of evidence is
+// not evidence of a deficit, and the yield never removes a pair on its own.
 static std::vector<float> ComputeEdgeYields(const std::vector<PairIdx>& edgeImages,
 	const std::vector<unsigned>& edgeInliers, const std::vector<float>& edgeRayAngle, IIndex numImages)
 {
@@ -92,6 +95,10 @@ static std::vector<float> ComputeEdgeYields(const std::vector<PairIdx>& edgeImag
 	std::vector<unsigned> binOfEdge(numEdges);
 	std::vector<std::vector<float>> bins(numBins);
 	for (uint32_t e = 0; e < numEdges; ++e) {
+		if (!ISFINITE(edgeRayAngle[e]) || edgeRayAngle[e] < 0.f) {
+			binOfEdge[e] = numBins; // sentinel: no measurable geometry, outside every real bin
+			continue;
+		}
 		delivered[e] = (float)edgeInliers[e] / (float)MINF(capacity[edgeImages[e].i], capacity[edgeImages[e].j]);
 		binOfEdge[e] = (unsigned)MINF((int)std::floor(R2D(edgeRayAngle[e])), (int)numBins - 1);
 		bins[binOfEdge[e]].push_back(delivered[e]);
@@ -115,13 +122,17 @@ static std::vector<float> ComputeEdgeYields(const std::vector<PairIdx>& edgeImag
 	for (unsigned b = 1; b < numBins; ++b)
 		if (envelope[b] < 0.f)
 			envelope[b] = envelope[b - 1];
-	for (uint32_t e = 0; e < numEdges; ++e)
+	for (uint32_t e = 0; e < numEdges; ++e) {
+		if (binOfEdge[e] == numBins)
+			continue; // no finite, non-negative ray angle: yield stays at the initial 1
 		yields[e] = MINF(1.f, delivered[e] / envelope[binOfEdge[e]]);
+	}
 	return yields;
 }
-// (binOfEdge uses std::floor of a non-negative angle, so the cast to int is safe; envelope
-// values are percentiles of delivered, which is in (0,1], so the division is safe once best
-// is non-negative.)
+// (an edge with no finite, non-negative ray angle is guarded into the numBins sentinel above and
+// never reaches the std::floor/(int) cast, so every remaining binOfEdge is a finite, non-negative
+// angle's floor and the cast to int is safe; envelope values are percentiles of delivered, which
+// is in (0,1], so the division is safe once best is non-negative.)
 
 TripletScores SFM::ComputeTripletScores(const Scene& scene, float minScore, float minYield, int gridSize)
 {

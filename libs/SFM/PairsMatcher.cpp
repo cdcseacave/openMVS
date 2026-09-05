@@ -2302,10 +2302,11 @@ bool PairsMatcher::ExportPairsCSV(const Scene& scene, const String& fileName, fl
 	// filter itself acts on: coverage-discounted strengths, and a triangle whose three pairs all
 	// yield below minYield (look-alike copies vouching for one another) giving its edges no
 	// evidence. It does not depend on the minimum score m, only the threshold derived from it does,
-	// so the column is written once and can be re-thresholded by any consumer. The Coverage column
-	// is exported beside the raw NumMatches count so the discount that turns one into the edge
-	// strength s_ij = n_ij * c_ij can be replayed offline, against any count, without re-running the
-	// matcher.
+	// so the column is written once and can be re-thresholded by any consumer -- but it IS computed
+	// with this run's own minYield, so two runs' CSVs agree only when compared under the same
+	// minYield. The Coverage column is exported beside the raw NumMatches count so the discount
+	// that turns one into the edge strength s_ij = n_ij * c_ij can be replayed offline, against any
+	// count, without re-running the matcher.
 	const TripletScores tripletScores = ComputeTripletScores(scene, 0.f, minYield, gridSize);
 	ofs << "ImageA,ImageB,NumMatches,Coverage,Weight,WeightSpatial,WeightConnectivity,WeightTriplet,MeanRayAngle,TripletScore\n";
 	FOREACH(idxPair, scene.pairs) {

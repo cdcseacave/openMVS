@@ -8387,6 +8387,29 @@ bool TripletYieldTest()
 			off.numDoppelgangerTriplets, off.scores[idx03], off.scores[idx06], off.scores[idx01], off.scores[idx02]);
 		return false;
 	}
+	// A ray angle that is not finite has no measurable geometry: on a fresh scene, giving (0,6)'s
+	// own pair a NaN ray angle takes it out of every envelope bin and leaves its yield at the
+	// initial 1 (absence of evidence is not evidence of a deficit). (0,6) sits in exactly three of
+	// the ten look-alike triangles -- (0,3,6), (0,6,9), (0,6,12) -- each entirely of look-alike
+	// edges (300 inliers, equal strength), and each stops being a doppelganger triangle once one of
+	// its three edges yields 1 instead of 0.3: 10 - 3 = 7 doppelganger triplets remain (the other
+	// seven look-alike triangles do not touch (0,6) and are unaffected). (0,3)'s five triplets are
+	// (0,1,3) and (0,2,3) (mixed, 300/1000 = 0.3 each, unaffected) and (0,3,6), (0,3,9), (0,3,12)
+	// (look-alike): (0,3,9) and (0,3,12) still yield-fail and give 0, but (0,3,6) now scores
+	// 300/300 = 1 (all three of its edges carry equal 300-inlier strength once it is no longer
+	// silenced), so (0,3)'s sum is 0.3 + 0.3 + 1 + 0 + 0 = 1.6 over the same 5 triplets: 0.32.
+	// (0,1) and (0,2) share no triplet with (0,6) and keep their earlier scores.
+	Scene sceneNaN;
+	build(sceneNaN);
+	sceneNaN.pairs[idx06].meanRayAngle = std::numeric_limits<float>::quiet_NaN();
+	const TripletScores nanScores = ComputeTripletScores(sceneNaN, 0.f, defaults.minYield, weightingCfg.gridSize);
+	if (nanScores.numDoppelgangerTriplets != 7 || !ISEQUAL(nanScores.scores[idx03], 0.32f) ||
+		!ISEQUAL(nanScores.scores[idx01], 1.f) || !ISEQUAL(nanScores.scores[idx02], 0.6f)) {
+		VERBOSE("TripletYieldTest FAILED: a NaN ray angle on (0,6), %u doppelganger triplets; (0,1) %g (0,2) %g (0,3) %g; "
+			"expected 7; 1 0.6 0.32",
+			nanScores.numDoppelgangerTriplets, nanScores.scores[idx01], nanScores.scores[idx02], nanScores.scores[idx03]);
+		return false;
+	}
 	// The filter: G_LCT has 15 nodes and max degree 8 (image 3: 0,1,2,4,5,6,9,12), so the ceiling
 	// at m = 0.6 is 0.6 * (1 - 8/15) + 8/15 = 0.813; the fourteen consecutive pairs score 1 and
 	// hold all fifteen images together, so the ceiling applies as given and they are all that
