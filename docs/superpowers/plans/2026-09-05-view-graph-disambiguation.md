@@ -1740,11 +1740,13 @@ and a tail of one- to four-image stragglers, each attached to the graph by a sin
 fetching them costs everything between the ceiling and that pair's score: church descends from
 0.723 to 0.426 and keeps 800 more pairs for 20 images; radcliffe from 0.734 to 0.293 for twelve.
 A straggler is not an over-split. From now on a *piece* is a component of the survivor graph at
-the ceiling holding at least `ceil(n0 / 100)` images (`n0` the unfiltered largest component), and
-the threshold is the strictest one whose survivor graph joins every piece — its largest component
-holds at least as many images as the pieces hold together. Stragglers are left as they are. On
-sets under 101 images every component is a piece, so the six small sets and their tests are
-unchanged.
+the ceiling that lies inside the unfiltered graph's largest component and holds at least
+`ceil(n0 / 100)` images (`n0` that component's size), and the threshold is the strictest one whose
+survivor graph joins every piece — its largest component holds at least as many images as the
+pieces hold together. Stragglers are left as they are, and so is any component of the unfiltered
+graph outside its largest one: no threshold can join an island that shares no pair with the rest,
+and counting it as a piece would set a target no candidate reaches. On sets under 101 images every
+component inside the largest one is a piece, so the six small sets and their tests are unchanged.
 
 **Files:**
 - Modify: `libs/SFM/ViewGraphTriplets.h` (`SurvivorGraph` gains `numPieces` and `numInPieces`; `EvaluateSurvivorGraph` gains `minPiece`; comments)
@@ -1852,8 +1854,8 @@ struct SFM_API SurvivorGraph
 // Pass tau = 0 for the unfiltered graph: scores lie in [0,1] and unscored pairs are always kept.
 // Nodes are counted on the unfiltered graph, so an image that loses all its edges still counts as
 // a node -- with degree 0, which is exactly what the low-degree test is there to catch.
-// A component of at least minPiece nodes is a piece; the filter's descent joins pieces and lets
-// stragglers be (see FilterPairsByTriplets).
+// A component of at least minPiece nodes inside the unfiltered graph's largest component is a
+// piece; the filter's descent joins pieces and lets stragglers be (see FilterPairsByTriplets).
 SurvivorGraph SFM_API EvaluateSurvivorGraph(const Scene& scene, const std::vector<float>& scores, float tau, unsigned minPiece = 1);
 ```
 
@@ -1877,9 +1879,11 @@ In `FilterPairsByTriplets`, the block under `if (config.autoTau)` becomes:
 	if (config.autoTau) {
 		// Below the ceiling, the threshold is the STRICTEST one that joins every piece: the largest
 		// value whose survivor graph holds, in one component, every image that the ceiling's
-		// pieces hold together. A piece is a component of the survivor graph at the ceiling with
-		// at least 1% of the unfiltered largest component; anything smaller is a straggler -- an
-		// image the graph vouches for through a single weak pair -- and fetching it would admit
+		// pieces hold together. A piece is a component of the survivor graph at the ceiling that
+		// lies inside the unfiltered largest component and holds at least 1% of it; anything
+		// smaller is a straggler -- an image the graph vouches for through a single weak pair --
+		// and so is anything outside that component, which no threshold can join. Fetching a
+		// straggler would admit
 		// every edge between the ceiling and that pair's score to gain one image (church: from
 		// 0.72 to 0.43 for twenty such images). Stragglers are neither chased nor removed: an
 		// unscored pair still carries them, and so does a bridge above the chosen threshold.
@@ -1942,8 +1946,8 @@ leaves" — the header paragraph and the `autoTau` comment both mention the rule
 In `docs/design/TripletDisambiguation.md`, the paragraph or step describing the connectivity-driven
 threshold (search for "99") states the new rule in two sentences: below the ceiling the threshold
 is the strictest one whose survivor graph joins every piece — a component of the ceiling's survivor
-graph holding at least 1 % of the unfiltered largest component — and stragglers smaller than that
-are neither chased nor removed.
+graph that lies inside the unfiltered largest component and holds at least 1 % of it — and
+stragglers smaller than that, or outside it, are neither chased nor removed.
 
 - [ ] **Step 6: Build, run the SFM suite, mutate**
 

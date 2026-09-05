@@ -87,8 +87,8 @@ Score once. The paper's Eqn. 3, `tau(m) = m (1 - r) + r` with `r = d_max/|V|` of
 **ceiling**: the filter is never stricter than the `m` it was given. Below it, the threshold is the
 **strictest** `tau` whose survivor graph — every unscored pair, every pair scoring at or above
 `tau` — joins every *piece* the ceiling leaves: a component of the survivor graph at the ceiling
-holding at least 1 % of the unfiltered graph's largest component (§3.7; on a set of fewer than 101
-images every component is a piece). There is no other bar. If the ceiling itself joins every piece
+that lies inside the unfiltered graph's largest component and holds at least 1 % of it (§3.7; on a
+set of fewer than 101 images every component inside it is a piece). There is no other bar. If the ceiling itself joins every piece
 it is applied as given; if nothing above the lowest score does, the lowest score is chosen and
 nothing is removed.
 
@@ -339,15 +339,23 @@ to fetch it admits *every* edge between the ceiling and that pair's score — hu
 church, doppelgangers among them — to gain one image, which the paper simply drops and which
 resection can still register if its unscored pairs carry it.
 
-**Rule.** A *piece* is a component of the survivor graph at the ceiling holding at least 1 % of
-the unfiltered graph's largest component (`ceil(n0 / 100)` images, so every component counts on a
-set of fewer than 101 images); anything smaller is a straggler. The threshold is the strictest one
-at or below the ceiling whose survivor graph joins every piece into one component — its largest
-component holds at least the images the pieces hold together. There is no percentage any more: the
-99 % of §3.2 was a straggler allowance that fitted the small sets (where it rounds to 100 %) and is
-too small on the large ones. Stragglers are neither chased nor removed: they keep whatever
-unscored pairs they have, and a scored bridge that happens to sit above the chosen threshold keeps
-them attached.
+**Rule.** A *piece* is a component of the survivor graph at the ceiling that lies inside the
+unfiltered graph's largest component and holds at least 1 % of it (`ceil(n0 / 100)` images, so
+every component inside it counts on a set of fewer than 101 images); anything smaller is a
+straggler, and so is anything outside that component. The threshold is the strictest one at or
+below the ceiling whose survivor graph joins every piece into one component — its largest component
+holds at least the images the pieces hold together. There is no percentage any more: the 99 % of
+§3.2 was a straggler allowance that fitted the small sets (where it rounds to 100 %) and is too
+small on the large ones. Stragglers are neither chased nor removed: they keep whatever unscored
+pairs they have, and a scored bridge that happens to sit above the chosen threshold keeps them
+attached.
+
+The restriction to the unfiltered graph's largest component is not a nicety. A component of the
+unfiltered graph that shares no pair with the rest — a verified pair sitting in no triangle with
+anything else — cannot be joined to anything by any threshold, since no score admits an edge that
+does not exist. Counting it as a piece sets a target no candidate can reach and the search falls
+through to the loosest one, keeping every scored pair; in the paper's terms such an island is
+simply another model, and the filter treats it as it treats a straggler.
 
 On the small sets this changes nothing: `ceil(n0 / 100)` = 1 there, every component is a piece and
 "every piece joined" is what 99 % rounded to. On church and big_ben the ceiling now applies as

@@ -37,8 +37,9 @@ and `c_ij = ComputePairCoverage(...)` the fraction of the frame the inliers cove
    edge-selection problem); unscored pairs are removed. `tau` is Eqn. 3's value at `m`, but with
    `--triplet-auto-tau` (the default) that value is only a **ceiling**: below it, the threshold
    actually used is the strictest one whose survivor graph joins every *piece* — a component of the
-   ceiling's survivor graph holding at least 1% of the unfiltered largest component — or the ceiling
-   itself when it already does. A straggler smaller than that is neither chased nor removed: fetching
+   ceiling's survivor graph that lies inside the unfiltered largest component and holds at least 1%
+   of it — or the ceiling itself when it already does. A straggler smaller than that, or outside that
+   component, is neither chased nor removed: fetching
    it would admit every edge between the ceiling and the single weak pair that attaches it, for one
    image. The paper's step 11, extracting the largest component of the filtered graph, is **not**
    applied — `SceneCluster` already selects components.
