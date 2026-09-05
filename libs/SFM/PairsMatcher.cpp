@@ -2290,7 +2290,7 @@ unsigned PairsMatcher::Match(bool& bFatal)
 }
 
 
-bool PairsMatcher::ExportPairsCSV(const Scene& scene, const String& fileName, float minWeight, int gridSize)
+bool PairsMatcher::ExportPairsCSV(const Scene& scene, const String& fileName, float minWeight, float minYield, int gridSize)
 {
 	std::ofstream ofs(fileName);
 	if (!ofs.is_open()) {
@@ -2298,14 +2298,15 @@ bool PairsMatcher::ExportPairsCSV(const Scene& scene, const String& fileName, fl
 		return false;
 	}
 	const String basePath = MAKE_PATH_FULL(WORKING_FOLDER_FULL, Util::getFilePath(fileName));
-	// the triplet disambiguation score of every pair (ViewGraphTriplets.h); it does not depend on
-	// the minimum score m, only the threshold derived from it does, so the column is written once
-	// and can be re-thresholded by any consumer. The Coverage column is exported beside the raw
-	// NumMatches count so the discount that turns one into the edge strength s_ij = n_ij * c_ij can
-	// be replayed offline, against any count, without re-running the matcher.
-	// minYield 0: the exported score is the paper's, un-thresholded by the yield rule -- the
-	// NumMatches and MeanRayAngle columns exported below let any offline consumer replay that rule too
-	const TripletScores tripletScores = ComputeTripletScores(scene, 0.f, 0.f, gridSize);
+	// the triplet disambiguation score of every pair (ViewGraphTriplets.h), the same score the
+	// filter itself acts on: coverage-discounted strengths, and a triangle whose three pairs all
+	// yield below minYield (look-alike copies vouching for one another) giving its edges no
+	// evidence. It does not depend on the minimum score m, only the threshold derived from it does,
+	// so the column is written once and can be re-thresholded by any consumer. The Coverage column
+	// is exported beside the raw NumMatches count so the discount that turns one into the edge
+	// strength s_ij = n_ij * c_ij can be replayed offline, against any count, without re-running the
+	// matcher.
+	const TripletScores tripletScores = ComputeTripletScores(scene, 0.f, minYield, gridSize);
 	ofs << "ImageA,ImageB,NumMatches,Coverage,Weight,WeightSpatial,WeightConnectivity,WeightTriplet,MeanRayAngle,TripletScore\n";
 	FOREACH(idxPair, scene.pairs) {
 		const ImagePair& pair = scene.pairs[idxPair];

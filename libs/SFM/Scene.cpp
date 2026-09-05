@@ -679,7 +679,8 @@ namespace {
 void ExportMatchingCSVs(const Scene& scene, const ReconstructionConfig& config)
 {
 	if (!config.exportPairsCSV.empty() &&
-		!PairsMatcher::ExportPairsCSV(scene, config.exportPairsCSV, config.minPairWeight, config.matchCfg.weightingCfg.gridSize))
+		!PairsMatcher::ExportPairsCSV(scene, config.exportPairsCSV, config.minPairWeight,
+			config.tripletFilterCfg.minYield, config.matchCfg.weightingCfg.gridSize))
 		VERBOSE("warning: failed to export image pairs to CSV file '%s'", config.exportPairsCSV.c_str());
 	if (!config.exportRetrievalCSV.empty() &&
 		!ExportRetrievalRankingsCSV(scene, config.exportRetrievalCSV, 50))

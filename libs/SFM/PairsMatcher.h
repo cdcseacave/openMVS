@@ -292,7 +292,7 @@ public:
 	void FilterRedundantKeypoints();
 
 	// Export image pairs to a CSV file
-	static bool ExportPairsCSV(const Scene& scene, const String& fileName, float minWeight, int gridSize);
+	static bool ExportPairsCSV(const Scene& scene, const String& fileName, float minWeight, float minYield, int gridSize);
 
 private:
 	// Counters accumulated by the matching rounds
