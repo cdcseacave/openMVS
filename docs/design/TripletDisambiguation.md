@@ -59,8 +59,9 @@ and `c_ij = ComputePairCoverage(...)` the fraction of the frame the inliers cove
    bridging the facades (the church: 0.942 at 0.6, bridges scoring 0.89-0.96, merged in two matchings
    of four; at 0.75 every one of seven graphs splits into the facades, 130-135 and 80-83 images),
    while on a building whose graph is one face the stricter ceiling cuts the graph so thin that the
-   reconstruction discards most of what it registers (Big Ben: 147 of 403 images at 0.75, 371 at
-   0.6, one piece either way); a second piece of a third is the bar because the other face of a
+   reconstruction discards most of what it registers (Big Ben: 147 of 403 images at the stricter
+   ceiling, 371-377 at the paper's across two matchings, one piece either way); a second piece of a
+   third is the bar because the other face of a
    two-faced building holds a substantial share of the views and a night or detail cluster hanging
    off the largest piece holds a few percent (Brandenburg: 7 of 102 at 0.75).
 7. **Seeding.** The filter reports the images of the largest piece the ceiling leaves (ties to the
@@ -70,9 +71,10 @@ and `c_ij = ComputePairCoverage(...)` the fraction of the frame the inliers cove
    image among every image, else — when nothing qualifies anywhere — the heaviest image overall, so
    the caller can report the shortfall. Why: the resection refuses the doppelganger bridges the
    descent lets through but cannot choose the side it starts on, and the heaviest image overall sits
-   in the densest cluster of look-alike views (Radcliffe: the 45-image piece, so the 120-image piece
-   never registered; Street: the largest piece's heaviest image had two pairs, the star needs three,
-   and the run reconstructed nothing).
+   in the densest cluster of look-alike views (in the matching that showed this, Radcliffe's
+   heaviest image sat in a 45-image piece and the 120-image piece never registered; Street: the
+   largest piece's heaviest image had two pairs, the star needs three, and the run reconstructed
+   nothing).
 
 *Why it catches what the existing cycle test cannot.* `ImagePair::weightTriplet`
 (`PairsWeighting.cpp`) scores a pair by how many of its triangles close rotationally, and a
@@ -119,7 +121,7 @@ edge, nothing is scored, and the filter removes the **whole** graph — the log 
 |---|---|---|
 | `--filter-triplets B` | **`false`** | apply the filter to the matched view graph |
 | `--triplet-auto-tau B` | **`true`** | treat `tau(m)` as a ceiling: below it, the strictest threshold that joins every piece the ceiling leaves, unless the largest piece already holds a majority of the images in pieces, in which case the ceiling is applied as given; off applies `tau(m)` as given, the second face included |
-| `--triplet-min-score F` | `0.6` | the paper's minimum edge score *m*, in (0,1); with `--triplet-auto-tau` the ceiling the threshold is derived from, otherwise applied as given |
+| `--triplet-min-score F` | `0.6` | the paper's minimum edge score *m*, in [0,1]; with `--triplet-auto-tau` the ceiling the threshold is derived from, otherwise applied as given |
 | `--triplet-second-face-score F` | `0.75` | with `--triplet-auto-tau`, a stricter minimum score whose ceiling replaces the default's when the graph it leaves has two faces: a majority piece and a second piece of at least a third of it |
 
 `TripletFilterConfig::minYield` (0.4) has no flag.
@@ -137,7 +139,7 @@ where **plausible** = true edge, **implausible** = false edge, **ambiguous** exc
 ## Measurements
 
 Run folders live under the captures on the shared volume (never in the repo), `<capture>/openmvs-triplet-20260830-*`, driven by `.../polycam/normal/openmvs-triplet-20260830-tools/`.
-**Parity:** 7 graphs (5 SIFT + 2 dense), 2078–6241 pairs, identical unscored sets, maximum absolute C++/Python difference **5.3e-7**.
+**Parity:** checked against two exhaustive exports, identical unscored sets both, maximum absolute C++/Python difference **5.140e-07** on `street` (171 pairs) and **5.287e-07** on `radcliffe_camera` (22197 pairs, 19383 of them scored).
 **Discrimination** vs the depth-derived labels (AUC over all labelled pairs with unscored ranked
 last / over the scored pairs alone):
 
