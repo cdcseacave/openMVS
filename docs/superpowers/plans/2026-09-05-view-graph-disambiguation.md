@@ -1358,6 +1358,380 @@ count times the fraction of a grid its inliers occupy, measured by the same func
 weighting uses; pairs.csv exports the coverage beside the count."
 ```
 
+### Task 7: A triangle of three inlier-deficient pairs is no evidence
+
+Spec §3.6. On ToH — a 338-frame orbit of a round, three-fold symmetric temple — both arms fold
+the orbit onto itself at a frame gap of 110 (one third of a turn), and Task 6's coverage cannot
+see it: the whole frame is the duplicated object, so look-alike pairs have the coverage of true
+ones. Nothing in the triangles sees it either, because look-alike pairs form triangles among
+themselves (three copies of one facade, each pair as strong as the other two) and such a triangle
+scores every edge at 1. What separates them is a deficit: two-view geometry reads a look-alike pair
+as a near-duplicate viewpoint (median ray angle 2-3 degrees, the angle of a consecutive pair), yet
+it carries a fifth of the inliers a consecutive pair carries, because only the repeated structure
+matches. The *yield* of a pair is how much of what its two images can deliver it delivered,
+against what pairs at its ray angle deliver in this graph; a triangle whose three edges all yield
+less than `minYield` = 0.4 is a doppelganger triangle and contributes zero to its edges' score sums
+while still counting in the divisor. Replayed offline, ToH keeps zero edges in every look-alike
+band and its closure and consecutive pairs as before; every small set replays identically to
+Task 6. The yield never scales a strength and never removes a pair on its own — both were tried
+and both lose a set (spec §3.6).
+
+**Files:**
+- Modify: `libs/SFM/ViewGraphTriplets.h` (`TripletFilterConfig::minYield`, `TripletScores::numDoppelgangerTriplets`, `ComputeTripletScores` signature, header and function comments)
+- Modify: `libs/SFM/ViewGraphTriplets.cpp` (`ComputeEdgeYields`; `ComputeTripletScores` step 1 records inliers and ray angle per edge, step 5 skips doppelganger triangles; `FilterPairsByTriplets` passes `config.minYield` and logs the count)
+- Modify: `libs/SFM/PythonWrapper.cpp` (`compute_triplet_scores` gains `min_yield`, the dict gains `num_doppelganger_triplets`, `TripletFilterConfig` exposes `min_yield`)
+- Modify: `apps/CreateStructure/CreateStructure.cpp` (`--filter-triplets` help text)
+- Modify: `apps/Tests/TestsSFM.cpp` (new `TripletYieldTest`; the three existing triplet tests switch the rule off), `apps/Tests/TestsSFM.h`, `apps/Tests/Tests.cpp` (register it after `TripletCoverageTest`)
+- Modify: `docs/design/TripletDisambiguation.md` (the Overview's strength sentence and a yield step in "The algorithm"; the full rewrite stays Task 4)
+
+**Interfaces:**
+- Consumes: `ImagePair::meanRayAngle` (radians; the median triangulation angle over the track-forming matches, 0 when there is no measurable baseline), `ImagePair::GetNumWeightedInliers()`, the edge arrays `edgeImages`/`edgeStrength` and the `ForEachTriplet` walk already inside `ComputeTripletScores`.
+- Produces: `float TripletFilterConfig::minYield = 0.4f`; `unsigned TripletScores::numDoppelgangerTriplets`; `TripletScores SFM_API ComputeTripletScores(const Scene& scene, float minScore, float minYield, int gridSize)`; Python `compute_triplet_scores(scene, min_score=0, min_yield=TripletFilterConfig().minYield, grid_size=PairsWeightingConfig().gridSize)` and `TripletFilterConfig.min_yield`.
+
+- [ ] **Step 1: Write the failing test**
+
+Add to `apps/Tests/TestsSFM.cpp` right after `TripletCoverageTest`:
+
+```cpp
+// Look-alike copies of one structure vouch for one another: the triangles they form among
+// themselves score every edge at 1 whatever the counts, and no per-pair statistic tells such a
+// pair from a true one -- its coverage is the true pair's, its ray angle is a consecutive pair's.
+// What does is the yield: a look-alike pair delivers a fraction of the inliers a pair at its ray
+// angle delivers between these images, because only the repeated structure matches. A 15-image
+// walk in five 3-image copies (0-2, 3-5, 6-8, 9-11, 12-14): consecutive images share 1000
+// inliers at 2 degrees, images two apart 600 at 4 degrees (every consecutive triple is a
+// triangle, so the walk is one triplet component), and the first image of every copy pairs with
+// the first image of every other copy on 300 inliers at 1 degree -- a near-duplicate viewpoint
+// by its geometry, with less than a third of the inliers a real one delivers.
+//   capacities: every image's strongest pair carries 1000, so u = 1.0 / 0.6 / 0.3
+//   envelope: bin 1 holds the ten look-alikes (90th percentile 0.3), bin 2 the fourteen
+//   consecutive pairs (1.0), bin 4 the thirteen gap-2 pairs (0.6); the suffix maximum lifts
+//   bin 1 to 1.0, so the look-alikes yield 0.3 and everything else 1.0
+//   (0,3): triangles (0,1,3) and (0,2,3) are mixed and give 300/1000 each; (0,3,6), (0,3,9)
+//   and (0,3,12) are look-alike triangles and give nothing: (0.3 + 0.3 + 0 + 0 + 0) / 5 = 0.12
+//   (0,6): only look-alike triangles, with 3, 9 and 12: 0
+//   (0,1): 1 in (0,1,2) and in (0,1,3); (0,2): 600/1000 in (0,1,2) and in (0,2,3): 0.6
+//   31 triplets: 13 consecutive triples, 10 among the five look-alikes, 8 mixed
+// Without the rule the same edges score 0.72 and 1.0, and the filter keeps the six look-alike
+// pairs between non-adjacent copies at any ceiling: that is the fold on ToH.
+bool TripletYieldTest()
+{
+	TD_TIMER_START();
+	const PairsWeightingConfig weightingCfg;
+	const auto build = [](Scene& scene) {
+		AddTripletImages(scene, 15);
+		const auto add = [&scene](IIndex a, IIndex b, unsigned numInliers, float rayAngleDeg) {
+			AddTripletPair(scene, a, b, numInliers);
+			scene.pairs.Last().meanRayAngle = (float)D2R(rayAngleDeg);
+		};
+		for (IIndex i = 0; i + 1 < 15; ++i)
+			add(i, i + 1, 1000, 2.f);
+		for (IIndex i = 0; i + 2 < 15; ++i)
+			add(i, i + 2, 600, 4.f);
+		for (IIndex a = 0; a < 15; a += 3)
+			for (IIndex b = a + 3; b < 15; b += 3)
+				add(a, b, 300, 1.f);
+	};
+	Scene scene;
+	build(scene);
+	const unsigned idx01 = 0, idx02 = 14, idx03 = 27, idx06 = 28; // in order of insertion
+	const TripletFilterConfig defaults;
+	const TripletScores scores = ComputeTripletScores(scene, 0.f, defaults.minYield, weightingCfg.gridSize);
+	if (scores.numTriplets != 31 || scores.numDoppelgangerTriplets != 10 || scores.numScoredPairs != 37 ||
+		!ISEQUAL(scores.scores[idx01], 1.f) || !ISEQUAL(scores.scores[idx02], 0.6f) ||
+		!ISEQUAL(scores.scores[idx03], 0.12f) || !ISEQUAL(scores.scores[idx06], 0.f)) {
+		VERBOSE("TripletYieldTest FAILED: %u triplets (%u doppelganger), %u scored; (0,1) %g (0,2) %g (0,3) %g (0,6) %g; "
+			"expected 31 (10), 37; 1 0.6 0.12 0",
+			scores.numTriplets, scores.numDoppelgangerTriplets, scores.numScoredPairs,
+			scores.scores[idx01], scores.scores[idx02], scores.scores[idx03], scores.scores[idx06]);
+		return false;
+	}
+	// minYield 0 is the paper's scoring: the look-alike triangles count like any other
+	const TripletScores off = ComputeTripletScores(scene, 0.f, 0.f, weightingCfg.gridSize);
+	if (off.numDoppelgangerTriplets != 0 || !ISEQUAL(off.scores[idx03], 0.72f) || !ISEQUAL(off.scores[idx06], 1.f) ||
+		!ISEQUAL(off.scores[idx01], 1.f) || !ISEQUAL(off.scores[idx02], 0.6f)) {
+		VERBOSE("TripletYieldTest FAILED: with the rule off, %u doppelganger triplets; (0,3) %g (0,6) %g (0,1) %g (0,2) %g; "
+			"expected 0; 0.72 1 1 0.6",
+			off.numDoppelgangerTriplets, off.scores[idx03], off.scores[idx06], off.scores[idx01], off.scores[idx02]);
+		return false;
+	}
+	// The filter: G_LCT has 15 nodes and max degree 8 (image 3: 0,1,2,4,5,6,9,12), so the ceiling
+	// at m = 0.6 is 0.6 * (1 - 8/15) + 8/15 = 0.813; the fourteen consecutive pairs score 1 and
+	// hold all fifteen images together, so the ceiling applies as given and they are all that
+	// stays. With the rule off the six look-alike pairs between non-adjacent copies score 1 too
+	// and stay with them.
+	TripletFilterConfig filterCfg;
+	filterCfg.enabled = true;
+	std::set<std::pair<IIndex,IIndex>> expected;
+	for (IIndex i = 0; i + 1 < 15; ++i)
+		expected.emplace(i, i + 1);
+	const unsigned numRemoved = FilterPairsByTriplets(scene, filterCfg, weightingCfg);
+	if (numRemoved != 23 || TripletKeptPairs(scene) != expected) {
+		VERBOSE("TripletYieldTest FAILED: %u pairs removed, %u kept; expected 23 removed and the 14 consecutive pairs kept",
+			numRemoved, (unsigned)scene.pairs.size());
+		return false;
+	}
+	Scene sceneOff;
+	build(sceneOff);
+	filterCfg.minYield = 0.f;
+	const unsigned numRemovedOff = FilterPairsByTriplets(sceneOff, filterCfg, weightingCfg);
+	std::set<std::pair<IIndex,IIndex>> expectedOff(expected);
+	for (const auto& lookAlike : {std::make_pair(0u,6u), std::make_pair(0u,9u), std::make_pair(0u,12u),
+			std::make_pair(3u,9u), std::make_pair(3u,12u), std::make_pair(6u,12u)})
+		expectedOff.emplace((IIndex)lookAlike.first, (IIndex)lookAlike.second);
+	if (numRemovedOff != 17 || TripletKeptPairs(sceneOff) != expectedOff) {
+		VERBOSE("TripletYieldTest FAILED: with the rule off, %u pairs removed, %u kept; expected 17 removed, "
+			"the 14 consecutive pairs and the 6 look-alike pairs between non-adjacent copies kept",
+			numRemovedOff, (unsigned)sceneOff.pairs.size());
+		return false;
+	}
+	VERBOSE("TripletYieldTest PASSED: look-alike triangles give no evidence, (0,6) scores 0 against 1 with the rule off, "
+		"and the filter keeps the walk alone (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+```
+
+Declare `bool TripletYieldTest();` in `apps/Tests/TestsSFM.h` right after `TripletCoverageTest`,
+and register it in `apps/Tests/Tests.cpp` right after `TripletCoverageTest`'s block, in the same
+form.
+
+The three existing triplet tests build scenes whose pairs carry no ray angle (every
+`meanRayAngle` is 0, one bin, nothing for an envelope to measure) and assert hand-computed
+literals, so they run the paper's scoring: every `ComputeTripletScores(scene, m, weightingCfg.gridSize)`
+call in `TripletFilterTest`, `TripletAutoTauTest` and `TripletCoverageTest` becomes
+`ComputeTripletScores(scene, m, 0.f, weightingCfg.gridSize)`, and every `TripletFilterConfig` they
+build sets `filterCfg.minYield = 0.f`, each with a one-line comment: "no ray angles here, so the
+yield rule is off; it is TripletYieldTest's subject". Do not change their literals.
+
+- [ ] **Step 2: Run the suite to verify it fails**
+
+Run: `cd make && ninja -f build-Release.ninja Tests 2>&1 | tail -5`
+Expected: compile errors — `minYield`, `numDoppelgangerTriplets` and the four-argument
+`ComputeTripletScores` do not exist yet.
+
+- [ ] **Step 3: The configuration, the statistic and the signature**
+
+In `libs/SFM/ViewGraphTriplets.h`:
+
+```cpp
+struct SFM_API TripletFilterConfig
+{
+	bool enabled = false;   // remove the pairs the triplet score rejects (opt-in, see docs/design/TripletDisambiguation.md)
+	// The paper's tau(m) is a ceiling: below it, the threshold is the strictest one whose survivor
+	// graph keeps 99% of the unfiltered largest component together. Off, tau(m) is applied as given.
+	bool autoTau = true;
+	// The paper's minimum edge score m, in [0,1] (the domain this implementation enforces): 0.6
+	// generic/large-scale, 0.9 highly ambiguous, 0.3 medium/small ambiguous. With autoTau this is
+	// the ceiling the threshold is derived from and never exceeds.
+	float minScore = 0.6f;
+	// A triangle whose three pairs all yield less than this fraction of the inliers pairs at their
+	// ray angle deliver in this graph (ComputeTripletScores) is a doppelganger triangle -- look-alike
+	// copies vouching for one another -- and gives its edges no evidence. 0 switches the rule off.
+	float minYield = 0.4f;
+};
+```
+
+`TripletScores` gains, after `numTripletComponents`:
+
+```cpp
+	unsigned numDoppelgangerTriplets; // triplets of G_LCT whose three edges all yield below minYield: counted, no evidence
+```
+
+The declaration becomes
+`TripletScores SFM_API ComputeTripletScores(const Scene& scene, float minScore, float minYield, int gridSize);`
+and its comment gains, after the sentence ending "measures coverage on the grid the pair weighting does).":
+
+```
+// The yield of an edge is u_ij / H(theta_ij), capped at 1: u_ij = n_ij / min(K_i, K_j) with K_i
+// the inlier count of image i's strongest pair, and H the graph's own envelope -- the 90th
+// percentile of u over the edges in each 1-degree bin of median ray angle (bins holding at least
+// five edges), made non-increasing in the angle. A triplet whose three edges all yield less than
+// minYield is a doppelganger triplet -- three look-alike copies vouching for one another, each
+// pair reading as a near-duplicate viewpoint while delivering a fraction of the inliers such a
+// pair delivers -- and adds nothing to its edges' score sums while still counting in their
+// divisor; minYield 0 is the paper's scoring.
+```
+
+In the header paragraph above `TripletFilterConfig`, after the sentence ending "which the counts
+and the triangles cannot.", add:
+
+```
+// Coverage cannot see a look-alike that fills the frame -- a round, symmetric building seen from
+// a third of a turn away -- and neither can the triangles, since such pairs form triangles among
+// themselves that score every edge at 1. What can is the yield: two-view geometry reads such a
+// pair as a near-duplicate viewpoint, yet it delivers a fraction of the inliers a near-duplicate
+// pair of these images delivers, because only the repeated structure matches. A triangle whose
+// three pairs all yield poorly is no evidence for any of them.
+```
+
+- [ ] **Step 4: The yields, and the triangles that give no evidence**
+
+In `libs/SFM/ViewGraphTriplets.cpp`, step 1 of `ComputeTripletScores` keeps, beside
+`edgeStrength`, the inlier count and ray angle of the scene pair that supplied the strength:
+
+```cpp
+	std::vector<float> edgeStrength;    // s_ij = n_ij * c_ij
+	std::vector<unsigned> edgeInliers;  // n_ij of the scene pair that supplied the strength
+	std::vector<float> edgeRayAngle;    // its median ray angle, radians
+	...
+		if (inserted.second) {
+			edgeImages.emplace_back(imagePair);
+			edgeStrength.emplace_back(strength);
+			edgeInliers.emplace_back(numInliers);
+			edgeRayAngle.emplace_back(pair.meanRayAngle);
+		} else if (strength > edgeStrength[inserted.first->second]) {
+			edgeStrength[inserted.first->second] = strength;
+			edgeInliers[inserted.first->second] = numInliers;
+			edgeRayAngle[inserted.first->second] = pair.meanRayAngle;
+		}
+```
+
+Add, above `ComputeTripletScores` in the anonymous/static section of the file:
+
+```cpp
+// The yield of every edge: how much of what its two images can deliver the pair delivered,
+// against what pairs at its ray angle deliver in this graph. u_e = n_e / min(K_i, K_j), K_i the
+// inlier count of image i's strongest edge; the envelope H is the 90th percentile of u over the
+// edges of each 1-degree bin of ray angle among bins holding at least five edges, made
+// non-increasing in the angle by a suffix maximum (a near-duplicate viewpoint never promises
+// less than a wider one), so a bin without an envelope of its own takes the nearest populated
+// bin above it and the bins above the highest populated one keep its value; the yield is
+// min(1, u_e / H). No populated bin at all -- fewer than five edges everywhere -- means no
+// envelope and every yield 1. The percentile, the bin width and the bin floor are properties of
+// the estimate, not of the scene: 75, 90 and 95 replay identically on every reference set.
+static std::vector<float> ComputeEdgeYields(const std::vector<PairIdx>& edgeImages,
+	const std::vector<unsigned>& edgeInliers, const std::vector<float>& edgeRayAngle, IIndex numImages)
+{
+	constexpr unsigned numBins = 90;        // 1-degree bins; 90 degrees and beyond share the last
+	constexpr size_t minEdgesPerBin = 5;
+	constexpr float percentile = 0.9f;
+	const uint32_t numEdges = (uint32_t)edgeImages.size();
+	std::vector<float> yields(numEdges, 1.f);
+	std::vector<unsigned> capacity(numImages, 0);
+	for (uint32_t e = 0; e < numEdges; ++e) {
+		capacity[edgeImages[e].i] = MAXF(capacity[edgeImages[e].i], edgeInliers[e]);
+		capacity[edgeImages[e].j] = MAXF(capacity[edgeImages[e].j], edgeInliers[e]);
+	}
+	std::vector<float> delivered(numEdges);
+	std::vector<unsigned> binOfEdge(numEdges);
+	std::vector<std::vector<float>> bins(numBins);
+	for (uint32_t e = 0; e < numEdges; ++e) {
+		delivered[e] = (float)edgeInliers[e] / (float)MINF(capacity[edgeImages[e].i], capacity[edgeImages[e].j]);
+		binOfEdge[e] = (unsigned)MINF((int)std::floor(R2D(edgeRayAngle[e])), (int)numBins - 1);
+		bins[binOfEdge[e]].push_back(delivered[e]);
+	}
+	std::vector<float> envelope(numBins, -1.f);
+	for (unsigned b = 0; b < numBins; ++b) {
+		std::vector<float>& values = bins[b];
+		if (values.size() < minEdgesPerBin)
+			continue;
+		const size_t rank = MINF(values.size() - 1, (size_t)((float)values.size() * percentile));
+		std::nth_element(values.begin(), values.begin() + rank, values.end());
+		envelope[b] = values[rank];
+	}
+	float best = -1.f;
+	for (unsigned b = numBins; b-- > 0; ) {
+		best = MAXF(best, envelope[b]);
+		envelope[b] = best;
+	}
+	if (best < 0.f)
+		return yields;
+	for (unsigned b = 1; b < numBins; ++b)
+		if (envelope[b] < 0.f)
+			envelope[b] = envelope[b - 1];
+	for (uint32_t e = 0; e < numEdges; ++e)
+		yields[e] = MINF(1.f, delivered[e] / envelope[binOfEdge[e]]);
+	return yields;
+}
+```
+
+(`binOfEdge` uses `std::floor` of a non-negative angle, so the cast to `int` is safe; `envelope`
+values are percentiles of `delivered`, which is in `(0,1]`, so the division is safe once `best`
+is non-negative.)
+
+Step 5 becomes:
+
+```cpp
+	// 5. Score the edges of G_LCT (Algorithm 1 steps 4-8): a second streaming pass over the
+	// triplets of the largest component accumulates the per-triplet maximum s_kl and the per-edge
+	// running sum of q^t_ij = s_ij / max_{(k,l) in t} s_kl. A triplet whose three edges all yield
+	// below minYield is look-alike copies vouching for one another: it stays in the divisor
+	// (numTripletsOfEdge) and adds nothing to the sum.
+	const std::vector<float> yields = minYield > 0.f
+		? ComputeEdgeYields(edgeImages, edgeInliers, edgeRayAngle, numImages) : std::vector<float>();
+	std::vector<double> scoreSumOfEdge(numEdges, 0.0);
+	ForEachTriplet([&](uint32_t e0, uint32_t e1, uint32_t e2) {
+		if (components.Find(e0) != largestComponent)
+			return;
+		if (minYield > 0.f && MAXF3(yields[e0], yields[e1], yields[e2]) < minYield) {
+			++result.numDoppelgangerTriplets;
+			return;
+		}
+		const float maxStrength = MAXF3(edgeStrength[e0], edgeStrength[e1], edgeStrength[e2]);
+		ASSERT(maxStrength > 0.f, "ComputeTripletScores: triplet with no strength");
+		scoreSumOfEdge[e0] += (double)edgeStrength[e0] / (double)maxStrength;
+		scoreSumOfEdge[e1] += (double)edgeStrength[e1] / (double)maxStrength;
+		scoreSumOfEdge[e2] += (double)edgeStrength[e2] / (double)maxStrength;
+	});
+```
+
+`result.numDoppelgangerTriplets` is zeroed with the other counters at the top of the function.
+The signature gains `float minYield` before `int gridSize`.
+
+In `FilterPairsByTriplets`: guard `config.minYield` exactly as `minScore` is guarded (NaN → 0,
+otherwise clamped to `[0,1]`, with the same style of warning naming "minimum yield"), pass it to
+`ComputeTripletScores`, and extend the final log line:
+
+```cpp
+	VERBOSE("Triplet filter: kept %u/%u scene pairs (tau %.3f; %u nodes, max degree %u; "
+		"%u triplets in %u components, %u doppelganger triplets gave no evidence; %u below tau removed, %u unscored kept)",
+		numKept, numPairs, tau,
+		tripletScores.numNodes, tripletScores.maxDegree,
+		tripletScores.numTriplets, tripletScores.numTripletComponents, tripletScores.numDoppelgangerTriplets,
+		numBelowTau, numUnscored);
+```
+
+- [ ] **Step 5: Callers, the binding, the help text, the design note**
+
+- `libs/SFM/PythonWrapper.cpp`: `ComputeTripletScoresDict(const Scene& scene, float minScore, float minYield, int gridSize)` passes `minYield` through and adds `out["num_doppelganger_triplets"] = tripletScores.numDoppelgangerTriplets;` after `num_triplet_components`; the `def` becomes `(arg("scene"), arg("min_score")=0.f, arg("min_yield")=SFM::TripletFilterConfig().minYield, arg("grid_size")=SFM::PairsWeightingConfig().gridSize)`; the comment above the function gains one sentence: "min_yield is the doppelganger-triplet bar of TripletFilterConfig (0 for the paper's scoring)". `TripletFilterConfig` exposes `.def_readwrite("min_yield", &SFM::TripletFilterConfig::minYield)` after `min_score`.
+- `apps/CreateStructure/CreateStructure.cpp`: the `--filter-triplets` help text becomes: "disambiguate the matched view graph with the camera-triplet filter (Manam & Govindu, CVPR 2024): remove the pairs whose inlier count, discounted by the image area those inliers cover, is systematically weak in the triangles they belong to; a triangle of three pairs that all deliver far fewer inliers than pairs at their ray angle do is look-alike copies vouching for one another and counts for nothing".
+- `docs/design/TripletDisambiguation.md`: in the Overview, after "which is what tells apart a doppelganger with more inliers than the true junction beside it." add: "A triangle whose three pairs all *yield* poorly — each reads as a near-duplicate viewpoint by its ray angle yet delivers a fraction of the inliers such pairs deliver between these images — is look-alike copies vouching for one another and carries no evidence." In "The algorithm", step 2 becomes: "**Score.** `q^t_ij = s_ij / max_{(k,l) in t} s_kl` per triplet `t`; `q_ij` is its mean over the triplets of `G_LCT` containing `(i,j)`. A triplet whose three edges all yield less than `minYield` (0.4) contributes 0 to that mean: the yield of an edge is `n_ij / min(K_i, K_j)` (each `K` the image's strongest pair) against the graph's own 90th-percentile envelope of that ratio per degree of median ray angle, capped at 1."
+
+- [ ] **Step 6: Build, run the SFM suite, mutate**
+
+Run: `cd make && ninja -f build-Release.ninja Tests SFM CreateStructure SceneAnalyzeSFM 2>&1 | tail -3 && ./bin/Release/Tests 1 2>&1 | /usr/bin/grep -E 'Triplet|PASSED|FAILED' | tail -8`
+Expected: `TripletFilterTest`, `TripletAutoTauTest`, `TripletCoverageTest` and `TripletYieldTest`
+PASSED, every other test of the suite unchanged, exit code 0.
+
+Then each mutation in turn (rebuild `Tests`, run, restore):
+
+| mutation | expected failure |
+|---|---|
+| in step 5, delete the `++result.numDoppelgangerTriplets; return;` branch so doppelganger triplets score normally | `TripletYieldTest`: (0,6) scores 1, (0,3) 0.72, 0 doppelganger triplets |
+| `MAXF3(yields...) < minYield` → `MINF3(yields...) < minYield` (any deficient edge silences the triangle) | `TripletYieldTest`: (0,1) scores 0.5 — its mixed triangle (0,1,3) is silenced |
+| delete the suffix-maximum loop (`best`) in `ComputeEdgeYields` | `TripletYieldTest`: bin 1's own envelope is 0.3, the look-alikes yield 1, 0 doppelganger triplets |
+
+Report the exact failing line of each in the report file, and confirm the suite is green again
+with the mutations reverted.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add libs/SFM/ViewGraphTriplets.h libs/SFM/ViewGraphTriplets.cpp libs/SFM/PythonWrapper.cpp apps/CreateStructure/CreateStructure.cpp apps/Tests/TestsSFM.cpp apps/Tests/TestsSFM.h apps/Tests/Tests.cpp docs/design/TripletDisambiguation.md
+git -c user.name=cDc -c user.email=cdc.seacave@gmail.com commit -m "sfm: give a triangle of three inlier-deficient pairs no say in the triplet score
+
+On a round, symmetric building every frame has look-alikes a third of a turn away, and
+the look-alike pairs form triangles among themselves that score each edge at 1: the
+coverage cannot see them (the whole frame is the repeated structure) and the orbit folds.
+What tells them apart is a deficit: two-view geometry reads such a pair as a near-duplicate
+viewpoint, yet it delivers a fraction of the inliers a near-duplicate pair of these images
+delivers, because only the repeated structure matches. A pair's yield is its inlier count
+against its two images' capacity and the graph's own envelope of that ratio per degree of
+ray angle; a triplet whose three pairs all yield below 0.4 contributes nothing to their
+scores. Replayed on the reference sets this empties every look-alike band of the orbit and
+changes nothing on the small sets; the yield never scales a strength."
+```
+
 ## Measurement (the controller's, after the branch is green)
 
 Not tasks and not a subagent's: they run the pipeline and read datasets, which no implementer does.

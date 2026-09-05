@@ -245,6 +245,78 @@ cereal too (7 cameras).
 `pairs.csv` gains a `Coverage` column, so the discount can be replayed offline against the raw
 count; `TripletScore` is the discounted score from now on.
 
+### 3.6 A triangle of three inlier-deficient pairs is no evidence
+
+Coverage (§3.5) tells a doppelganger from a true junction when the duplicated object is part of
+the frame. On ToH the whole frame is the duplicated object: the Temple of Heaven is round and
+three-fold symmetric, and every frame of the 338-image orbit has look-alikes a third and two
+thirds of a turn away. Both arms of the first campaign fold the orbit the same way (`fold_map.py`:
+frames 130-170 land on 240-280 and 200-220 on 310-330, a frame gap of 110 = one third of the
+orbit), and the look-alike pairs have the coverage of the true ones (0.47 against 0.49; raising the
+coverage power shrinks both bands alike). Nothing in the triangles separates them either, because
+the look-alike pairs form triangles among *themselves* — three copies of one facade, each pair as
+strong as the other two — and such a triangle scores each of its edges at 1. On the vocab-50 graph
+that gives the gap-110 band scores of 0.55-0.80 against a ceiling of 0.689, and the reconstruction
+folds through it.
+
+What separates them is a deficit. Two-view geometry reads a look-alike pair as a near-duplicate
+viewpoint: its median ray angle is 2-3 degrees, the angle of a consecutive pair of the walk. A
+consecutive pair at that angle carries 7500 inliers; the look-alike carries 800-1500, because
+only the repeated structure matches and nothing else does — the details that differ between the
+copies, the background, the ground. That is the "missing correspondences" cue of the
+disambiguation literature (Jiang et al. 2012, Heinly et al. 2014), measured on the pair's own
+matches instead of on a reconstruction. A genuine wide-baseline pair also has few inliers, but at
+a wide angle. On ToH (`gap_stats.py`, vocab-50 graph):
+
+| pairs | median ray angle | median inliers | yield p10 / median / p90 |
+|---|---|---|---|
+| frame gap 1 | 1.5° | 7494 | 0.97 / 1.00 / 1.00 |
+| gap 5 | 7.5° | 3563 | 0.87 / 0.96 / 1.00 |
+| gap 10 | 15.8° | 1704 | 0.81 / 0.90 / 1.00 |
+| look-alike bands (gaps 25, 30-59, 60-89, 90-119, 150-179, 210-239) | 1.9-3.4° | 800-1500 | 0.07-0.18 / 0.13-0.24 / 0.15-0.32 |
+| gap 330 and more (the orbit's closure) | 3.7° | 3614 | 0.60 / 0.65 / 0.75 |
+
+**Yield.** For a pair, `u_ij = n_ij / min(K_i, K_j)`, with `K_i` the inlier count of image i's
+strongest pair: the fraction of what these two images can deliver that the pair delivered. The
+graph's own envelope `H(θ)` is the 90th percentile of `u` over the pairs in each 1-degree bin of
+median ray angle (bins holding at least five pairs), made non-increasing in θ by a suffix maximum;
+a pair whose bin holds no envelope takes the nearest populated bin above it, and above the highest
+populated bin the envelope stays at that bin's value. The yield is `y_ij = min(1, u_ij / H(θ_ij))`:
+how much of what a pair at this angle normally delivers in this graph the pair delivered. It is
+scale-free and carries no constant of the scene or the matcher — the envelope is what this graph's
+own pairs do — and a graph with fewer than five pairs in every bin has no envelope and every yield
+is 1. The three constants (1-degree bins, five pairs, the 90th percentile) live in the scorer, not
+in the configuration; 75, 90 and 95 replay identically, and so does an `exp(-θ/10°)` envelope in
+place of the measured one.
+
+**Rule.** A triangle whose three edges all yield less than `minYield` = 0.4 is a doppelganger
+triangle — look-alike copies vouching for one another — and contributes zero to the score sum of
+each of its edges while still counting in the divisor. Everything else is as it was: the strength
+`s_ij = n_ij c_ij`, the mean over triangles, G_LCT, the threshold of §3.2, the unscored rule of §3.1.
+The yield never scales a strength and never removes a pair on its own; `minYield` = 0 switches the
+rule off.
+
+Why not the two obvious forms. Multiplying the yield into the strength loses oats — its
+doppelganger `(6,21)` yields 0.79 against the junction's 0.54, because on the small sets the
+doppelganger *is* the strong pair, which is what coverage handles — and cannot touch ToH, where
+every edge of a look-alike triangle is discounted alike and the triangle still scores 1; it also
+drops ToH's closure along with the look-alikes. Removing every pair below a yield gate fixes ToH
+but halves cup's complete graph, lowers its ceiling from 0.994 to 0.887 and lets cup's half-turn
+band `(0-1, 36-38)` in. The triangle rule touches neither: every small set replays identically to
+§3.5, and ToH keeps zero edges in every look-alike band, 50 of the 153 closure edges (gap 300 and
+more) and the consecutive pairs exactly as before, with the ceiling applied as given.
+
+Sensitivity: `minYield` 0.35 and 0.45 replay identically to 0.4 on all seven sets; 0.6 lets oats'
+`(6,21)` back in, because the true triangles of the small sets start yielding below the bar.
+
+Cost if wrong: a scene whose true pairs all yield poorly at small angles — a day/night mix, a set
+whose only near-duplicate viewpoints are look-alikes — has fewer triangles to score with and falls
+back to the descent of §3.2, which is where it was before this rule.
+
+**The frontier after this cue is still cereal**, and now also the first real measurement on the
+heinly2014 collections, whose images are not a walk: the envelope there is set by the tourists'
+near-duplicate photos, which every popular viewpoint has.
+
 ### 3.4 Where the filter runs
 
 The filter runs at `Scene.cpp:697`, in `Reconstruct`. `ViewGraphCalibrator` runs at
