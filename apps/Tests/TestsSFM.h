@@ -268,13 +268,25 @@ bool ReconstructExportCSVTest();
 // and unverified pairs, and a graph with no triplet at all
 bool TripletFilterTest();
 
-// The camera-triplet filter's auto-tau sweep, with one scene per acceptance bar so each is shown
-// to be load-bearing on its own: a barbell where every candidate severs the graph, a ring dense
-// enough to absorb a couple of removals (relaxing from the requested m to the one that drops only
-// the two planted weak edges), a bridge between two dense cliques where only the largest-
-// component bar can reject the cut, a pendant scene only the low-degree bar can reject, a baseline
-// scene pinning that bar to the graph's own low-degree count rather than an absolute cap, a
-// boundary scene pinning where the ladder must start, and a gapped ring pinning where it must stop
+// The camera-triplet filter's auto-tau sweep, with one scene per property of the search so each is
+// shown to be load-bearing on its own: a barbell where the only score below the ceiling is the
+// same weak pair it already cut, so relaxing finds nothing to remove; a ring whose structural
+// edges alone hold every image together, so the ceiling is applied as given; a bridge of two dense
+// cliques joined by a weak pair, severed at under 3% of the edges yet halving the graph, with
+// nothing below the ceiling to relax to either; a pendant scene where dropping three weak spokes
+// strands nobody, so the ceiling is applied as given even though it leaves each pendant at degree
+// 1; a baseline scene where removing the one weak hub-to-hub edge strands nobody either, pinning
+// low degree to the graph's own count rather than an absolute cap; a boundary scene where one
+// score sits exactly at the ceiling, pinning that the ceiling is applied with >=, not >; a pan
+// pinning the search actually finding the strictest reconnecting threshold rather than the loosest
+// one or none at all, with a verified pair outside every triangle kept apart from the count; a
+// walk pinning that a straggler too small to be a piece is left alone rather than chased; three
+// chains that the ceiling shatters into three equal pieces, none a majority, pinning that the
+// descent joins them at the strictest threshold that does so; a straggler flood pinning that the
+// descent's bar is the pieces sharing a component, not a count of nodes, since stragglers accreting
+// onto one piece can satisfy a count while another piece stays apart; and a chain of pairs whose
+// ceiling leaves no piece at all, pinning that every component then becomes a piece and the descent
+// still runs to join them
 bool TripletAutoTauTest();
 
 // The strength of a triplet edge is its inlier count discounted by the fraction of the frame its

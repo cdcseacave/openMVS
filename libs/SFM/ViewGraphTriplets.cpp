@@ -75,9 +75,10 @@ constexpr uint32_t NO_INDEX = (uint32_t)-1;
 // min(1, u_e / H). No populated bin at all -- fewer than five edges everywhere -- means no
 // envelope and every yield 1. The percentile, the bin width and the bin floor are properties of
 // the estimate, not of the scene: 75, 90 and 95 replay identically on every reference set.
-// An edge whose ray angle is not finite or is negative has no measurable geometry: it takes no
-// part in any bin's envelope and its own yield is left at the initial 1 -- absence of evidence is
-// not evidence of a deficit, and the yield never removes a pair on its own.
+// An edge whose ray angle is not finite, negative or zero -- zero being ImagePair::meanRayAngle's
+// value on a pair whose relative pose was never decomposed -- has no measurable geometry: it takes
+// no part in any bin's envelope and its own yield is left at the initial 1 -- absence of evidence
+// is not evidence of a deficit, and the yield never removes a pair on its own.
 static std::vector<float> ComputeEdgeYields(const std::vector<PairIdx>& edgeImages,
 	const std::vector<unsigned>& edgeInliers, const std::vector<float>& edgeRayAngle, IIndex numImages)
 {
@@ -95,7 +96,7 @@ static std::vector<float> ComputeEdgeYields(const std::vector<PairIdx>& edgeImag
 	std::vector<unsigned> binOfEdge(numEdges);
 	std::vector<std::vector<float>> bins(numBins);
 	for (uint32_t e = 0; e < numEdges; ++e) {
-		if (!ISFINITE(edgeRayAngle[e]) || edgeRayAngle[e] < 0.f) {
+		if (!ISFINITE(edgeRayAngle[e]) || edgeRayAngle[e] <= 0.f) {
 			binOfEdge[e] = numBins; // sentinel: no measurable geometry, outside every real bin
 			continue;
 		}
@@ -124,12 +125,12 @@ static std::vector<float> ComputeEdgeYields(const std::vector<PairIdx>& edgeImag
 			envelope[b] = envelope[b - 1];
 	for (uint32_t e = 0; e < numEdges; ++e) {
 		if (binOfEdge[e] == numBins)
-			continue; // no finite, non-negative ray angle: yield stays at the initial 1
+			continue; // no finite, positive ray angle: yield stays at the initial 1
 		yields[e] = MINF(1.f, delivered[e] / envelope[binOfEdge[e]]);
 	}
 	return yields;
 }
-// (an edge with no finite, non-negative ray angle is guarded into the numBins sentinel above and
+// (an edge with no finite, positive ray angle is guarded into the numBins sentinel above and
 // never reaches the std::floor/(int) cast, so every remaining binOfEdge is a finite, non-negative
 // angle's floor and the cast to int is safe; envelope values are percentiles of delivered, which
 // is in (0,1], so the division is safe once best is non-negative.)
@@ -322,9 +323,11 @@ TripletScores SFM::ComputeTripletScores(const Scene& scene, float minScore, floa
 }
 /*----------------------------------------------------------------*/
 
-SurvivorGraph SFM::EvaluateSurvivorGraph(const Scene& scene, const std::vector<float>& scores, float tau, unsigned minPiece)
+SurvivorGraph SFM::EvaluateSurvivorGraph(const Scene& scene, const std::vector<float>& scores, float tau,
+	unsigned minPiece, const IIndexArr* views)
 {
 	SurvivorGraph result{0, 0, 0, 0, 0, 0, 0};
+	result.viewsJoined = true;
 	ASSERT(scores.size() == scene.pairs.size(), "EvaluateSurvivorGraph: one score per scene pair");
 	const IIndex numImages = scene.images.size();
 	if (numImages == 0)
@@ -409,6 +412,7 @@ SurvivorGraph SFM::EvaluateSurvivorGraph(const Scene& scene, const std::vector<f
 		if (Find(parentUnfiltered, component.first) != largestUnfilteredComponent)
 			continue;
 		++result.numPieces;
+		result.pieceRoots.push_back((IIndex)component.first); // the root is the component's smallest image index
 		result.numInPieces += component.second;
 		// the root of a component is its smallest image index (a union hangs the larger root under
 		// the smaller), so the smaller root among equally large pieces is the piece holding the
@@ -419,10 +423,19 @@ SurvivorGraph SFM::EvaluateSurvivorGraph(const Scene& scene, const std::vector<f
 			largestPieceRoot = component.first;
 		}
 	}
+	std::sort(result.pieceRoots.begin(), result.pieceRoots.end());
 	if (largestPieceRoot != NO_INDEX)
 		for (IIndex i = 0; i < numImages; ++i)
 			if (isNode[i] && Find(parent, (uint32_t)i) == largestPieceRoot)
 				result.largestPieceViews.push_back(i);
+	if (views && !views->empty()) {
+		const uint32_t root = Find(parent, (uint32_t)(*views)[0]);
+		FOREACH(i, *views)
+			if (Find(parent, (uint32_t)(*views)[i]) != root) {
+				result.viewsJoined = false;
+				break;
+			}
+	}
 	return result;
 }
 /*----------------------------------------------------------------*/
@@ -456,8 +469,15 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 	const float ceiling = tripletScores.tau;
 	float tau = ceiling;
 	const SurvivorGraph unfiltered = EvaluateSurvivorGraph(scene, tripletScores.scores, 0.f);
-	const unsigned minPiece = (unsigned)std::ceil(0.01 * (double)unfiltered.largestComponent);
-	const SurvivorGraph atCeiling = EvaluateSurvivorGraph(scene, tripletScores.scores, ceiling, minPiece);
+	unsigned minPiece = (unsigned)std::ceil(0.01 * (double)unfiltered.largestComponent);
+	SurvivorGraph atCeiling = EvaluateSurvivorGraph(scene, tripletScores.scores, ceiling, minPiece);
+	// A ceiling that leaves no piece -- every component below the floor, a large collection
+	// shattered into pairs -- is the graph that most needs repair, not one to leave alone: every
+	// component of the unfiltered largest component is then a piece, as on a small set.
+	if (atCeiling.numPieces == 0 && minPiece > 1) {
+		minPiece = 1;
+		atCeiling = EvaluateSurvivorGraph(scene, tripletScores.scores, ceiling, minPiece);
+	}
 	// The reconstruction seeds in the largest piece the ceiling leaves, whatever the descent joins
 	// to it afterwards: the resection refuses the doppelganger bridges the descent lets through but
 	// cannot choose the side it starts on, and the heaviest image overall sits in the densest
@@ -495,12 +515,13 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 		// ceiling is applied as given and the smaller pieces stay apart. A strict majority, so a
 		// graph cut into two equal halves is still repaired.
 		const bool shattered = 2 * survivor.largestPiece <= survivor.numInPieces;
-		if (shattered && survivor.largestComponent < minComponent) {
-			// The largest component only grows as tau falls, so among the distinct scores below
-			// the ceiling, strictest first, the first that passes is a binary search away. The
-			// loosest candidate keeps every scored pair -- the unfiltered graph itself, whose
-			// largest component holds every piece -- so it always passes, and the ceiling
-			// leaving a piece apart means at least one scored pair sits below it.
+		if (shattered && atCeiling.numPieces > 1) {
+			// The pieces, once joined, stay joined as tau falls, so among the distinct scores
+			// below the ceiling, strictest first, the first that joins them all is a binary
+			// search away. The loosest candidate keeps every scored pair, whose graph joins
+			// every piece -- they all lie in the unfiltered graph's largest component -- so it
+			// always passes, and the ceiling leaving a piece apart means at least one scored
+			// pair sits below it.
 			std::vector<float> candidates;
 			candidates.reserve(tripletScores.numScoredPairs);
 			for (float score : tripletScores.scores)
@@ -512,7 +533,7 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 			size_t lo = 0, hi = candidates.size() - 1;
 			while (lo < hi) {
 				const size_t mid = (lo + hi) / 2;
-				if (EvaluateSurvivorGraph(scene, tripletScores.scores, candidates[mid]).largestComponent >= minComponent)
+				if (EvaluateSurvivorGraph(scene, tripletScores.scores, candidates[mid], 1, &atCeiling.pieceRoots).viewsJoined)
 					hi = mid;
 				else
 					lo = mid + 1;

@@ -85,6 +85,8 @@ struct SFM_API SurvivorGraph
 	unsigned largestPiece;      // images in the largest piece (0 when there is none)
 	IIndexArr largestPieceViews; // the images of the largest piece, ascending (empty when there is none);
 	                            // between equally large pieces, the one holding the lowest image index
+	IIndexArr pieceRoots;       // one image per piece, its smallest index, ascending
+	bool viewsJoined;           // the images passed as `views` all lie in one component (true when none were passed)
 };
 
 // Evaluate the graph left by keeping every unscored pair and every pair scoring at or above `tau`.
@@ -95,7 +97,13 @@ struct SFM_API SurvivorGraph
 // piece; a component of a different, always-disconnected island of the unfiltered graph never is,
 // since no tau ever gives it an edge to the rest. The filter's descent joins pieces and lets
 // stragglers be (see FilterPairsByTriplets).
-SurvivorGraph SFM_API EvaluateSurvivorGraph(const Scene& scene, const std::vector<float>& scores, float tau, unsigned minPiece = 1);
+// `views`, when given, are images whose joining the caller asks about -- the descent passes the
+// pieces' roots of the ceiling's graph and reads `viewsJoined` at each candidate threshold:
+// joining every piece means the pieces share one component, not the largest component reaching a
+// count of nodes, which stragglers accreting onto one piece can satisfy with another piece still
+// apart.
+SurvivorGraph SFM_API EvaluateSurvivorGraph(const Scene& scene, const std::vector<float>& scores, float tau,
+	unsigned minPiece = 1, const IIndexArr* views = NULL);
 
 // Per-pair triplet scores of a view graph, plus the statistics of the graph they were read from.
 struct SFM_API TripletScores

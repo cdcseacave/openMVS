@@ -25,6 +25,7 @@
 #include "RoMa2Matcher.h"
 
 #include <TinyEXIF.h>
+#include <unordered_set>
 
 using namespace SFM;
 
