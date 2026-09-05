@@ -11,12 +11,13 @@ The view graph has the images as nodes and the verified pairs as edges, each car
 epipolar inlier count ``n_ij``. The triplet graph ``G_T`` has the triangles of that graph as
 nodes, two of them adjacent iff they share an edge; the edges of ``G`` taking part in the largest
 connected component of ``G_T`` form ``G_LCT``. Every edge of ``G_LCT`` is scored by the mean over
-its triangles of ``n_ij / max_{(k,l) in t} n_kl``, and kept iff that score reaches
+its triangles of ``n_ij / max_{(k,l) in t} n_kl``, and removed only if that score falls below
 
     tau = m * (1 - d_max/|V|) + d_max/|V|,
 
 with ``|V|`` and ``d_max`` the node count and maximum degree **of G_LCT**. Everything else --
-including every edge in no triangle at all -- is unscored, and the filter removes it.
+including every edge in no triangle at all -- is unscored: it carries no evidence either way, and
+the filter keeps it.
 
 Subcommands
 -----------
@@ -28,7 +29,9 @@ Subcommands
             most the tolerance (1e-5 by default). Exits non-zero when they disagree.
 ``roc``     join the scores with a labels CSV and report AUC plus, at tau(m) for
             m in {0.3, 0.6, 0.9}, the precision, recall and kept fraction of the true and false
-            edges; writes the full ROC curve as a CSV.
+            edges; writes the full ROC curve as a CSV. An unscored pair is kept at every m, so it
+            has no score to rank by: the AUC is reported only over the scored labelled pairs, and
+            the kept/precision/recall figures count every unscored labelled pair as kept.
 
 **Labels.** ``--labels`` accepts the output of ``scripts/python/tests/pair_gt_labels.py`` (run it
 in ``coverage`` mode, which reads the capture's own Polycam depth maps: ``pair_gt_labels.py
@@ -246,9 +249,10 @@ def cmd_score(args):
         writer = csv.writer(handle)
         writer.writerow(["ImageA", "ImageB", "NumMatches", "TripletScore", "Kept"])
         for (a, b, inliers), score in zip(pairs, result.scores):
-            kept = bool(score >= result.tau) if not np.isnan(score) else False
+            # unscored (no evidence either way) is kept; a scored pair is kept iff it reaches tau
+            kept = True if np.isnan(score) else bool(score >= result.tau)
             writer.writerow([a, b, inliers, "" if np.isnan(score) else "%.6f" % score, int(kept)])
-    kept = int(np.count_nonzero(np.nan_to_num(result.scores, nan=-1.0) >= result.tau))
+    kept = int(np.count_nonzero(np.isnan(result.scores) | (result.scores >= result.tau)))
     print("%s\ntau %.6f at m %g; kept %d of %d pairs -> '%s'"
           % (result.summary(), result.tau, args.min_score, kept, len(pairs), args.output))
     return 0
@@ -320,28 +324,29 @@ def cmd_roc(args):
     if scores.size == 0:
         sys.exit("error: no pair of '%s' is labelled in '%s'" % (args.pairs, args.labels))
     scored = ~np.isnan(scores)
-    # an unscored pair carries no score but is removed by the filter, so it ranks below every
-    # scored pair: -1 is the rank the filter itself gives it
-    ranked = np.where(scored, scores, -1.0)
+    # an unscored pair carries no score and no threshold ever removes it: it is kept unconditionally,
+    # at every m, so it has no position in a score-ranked sweep at all. The AUC below is therefore
+    # reported only over the scored pairs -- the only ones the score actually ranks; see the
+    # module docstring's note on why an all-pairs AUC would be silently meaningless now.
 
     print("%s" % result.summary())
     print("%d labelled pairs (%d true, %d false), %d ambiguous and %d unlabelled dropped; "
           "%d of the labelled pairs are scored"
           % (scores.size, int(np.count_nonzero(isTrue)), int(np.count_nonzero(~isTrue)),
              numAmbiguous, numUnlabelled, int(np.count_nonzero(scored))))
-    # the largest-triplet-graph-component step alone removes these, before any threshold applies
-    print("the %d unscored labelled pairs are %d true and %d false"
+    # the largest-triplet-graph-component step alone leaves these unscored, before any threshold
+    # applies -- and, being unscored, they are kept regardless of m
+    print("the %d unscored labelled pairs are %d true and %d false (always kept)"
           % (int(np.count_nonzero(~scored)), int(np.count_nonzero(~scored & isTrue)),
              int(np.count_nonzero(~scored & ~isTrue))))
-    aucAll = roc_auc(ranked, isTrue)
-    aucScored = roc_auc(scores[scored], isTrue[scored])
-    print("AUC %.4f over every labelled pair (unscored ranked last), %.4f over the scored ones alone"
-          % (aucAll, aucScored))
+    auc = roc_auc(scores[scored], isTrue[scored])
+    print("AUC %.4f over the %d scored labelled pairs (unscored pairs are always kept and carry "
+          "no rank)" % (auc, int(np.count_nonzero(scored))))
 
     numTrue, numFalse = int(np.count_nonzero(isTrue)), int(np.count_nonzero(~isTrue))
     for m in args.min_scores:
         tau = result.threshold(m)
-        kept = scored & (scores >= tau)
+        kept = ~scored | (scores >= tau)  # unscored: no evidence either way, always kept
         keptTrue, keptFalse = int(np.count_nonzero(kept & isTrue)), int(np.count_nonzero(kept & ~isTrue))
         precision = keptTrue / max(keptTrue + keptFalse, 1)
         print("m %.2f: tau %.4f | kept %d/%d labelled (%.1f%%) | true kept %d/%d (%.1f%%) | "
@@ -356,16 +361,20 @@ def cmd_roc(args):
                      % (os.path.basename(args.pairs), os.path.basename(args.labels)))
         handle.write("# %s\n" % result.summary())
         handle.write("# plausible = true edge, implausible = false edge, ambiguous excluded; "
-                     "unscored pairs enter at threshold -1\n")
-        handle.write("# AUC %.6f over every labelled pair, %.6f over the scored ones alone\n"
-                     % (aucAll, aucScored))
+                     "an unscored pair carries no score and is kept at every threshold below\n")
+        handle.write("# AUC %.6f over the scored labelled pairs (unscored pairs are always kept "
+                     "and carry no rank)\n" % auc)
         handle.write("# the %d unscored labelled pairs are %d true and %d false\n"
                      % (int(np.count_nonzero(~scored)), int(np.count_nonzero(~scored & isTrue)),
                         int(np.count_nonzero(~scored & ~isTrue))))
         writer = csv.writer(handle)
         writer.writerow(["threshold", "kept", "kept_true", "kept_false", "tpr", "fpr", "precision"])
-        for threshold in np.unique(np.concatenate(([-1.0], ranked))):
-            kept = ranked >= threshold
+        # sweep only the scored labelled values: an unscored pair is kept at every one of them, so
+        # it never changes which threshold moves the kept set and needs no entry of its own
+        scoredValues = scores[scored]
+        thresholds = np.unique(scoredValues) if scoredValues.size else np.array([-np.inf])
+        for threshold in thresholds:
+            kept = ~scored | (scores >= threshold)
             keptTrue, keptFalse = int(np.count_nonzero(kept & isTrue)), int(np.count_nonzero(kept & ~isTrue))
             writer.writerow(["%.6f" % threshold, keptTrue + keptFalse, keptTrue, keptFalse,
                              "%.6f" % (keptTrue / max(numTrue, 1)),
