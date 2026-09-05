@@ -2236,6 +2236,408 @@ majority of the images in pieces the ceiling has done its job and is applied as 
 smaller pieces stay apart, like stragglers. Small sets and indoor are unchanged."
 ```
 
+### Task 10: The reconstruction seeds in the largest piece the ceiling leaves
+
+Spec §3.9. `StarInitializer::SelectReferenceView` (`libs/SFM/StarInitializer.cpp`) picks the image
+whose valid pairs carry the most weighted inliers, and the star, then resection, grow from it.
+That measure favours the densest cluster of look-alike views: on Radcliffe matched exhaustively
+the seed lands in the 45-image piece (median 21,000 weighted inliers per image against 11,500 in
+the 120-image piece), resection refuses the doppelganger bridges the descent let through, and the
+model is 45+19+4 images while the 120-piece never registers; on the church the seed lands in the
+85-piece and the 140-piece never registers. From now on the filter reports the images of the
+largest piece the ceiling leaves, and the reference view is the heaviest of them. The descent is
+unchanged.
+
+**Files:**
+- Modify: `libs/SFM/ViewGraphTriplets.h` (`SurvivorGraph`, `FilterPairsByTriplets`)
+- Modify: `libs/SFM/ViewGraphTriplets.cpp` (`EvaluateSurvivorGraph`, `FilterPairsByTriplets`, and one stale comment)
+- Modify: `libs/SFM/StarInitializer.h`, `libs/SFM/StarInitializer.cpp` (`StarInitConfig`, `SelectReferenceView`, `Initialize`)
+- Modify: `libs/SFM/Scene.h`, `libs/SFM/Scene.cpp` (`ExportMatchingCSVsAndFilterPairs`, `Reconstruct`, `ReconstructHierarchical`)
+- Modify: `libs/SFM/PythonWrapper.cpp` (`pyReconstructHierarchical`)
+- Modify: `apps/Tests/TestsSFM.cpp`, `apps/Tests/TestsSFM.h`, `apps/Tests/Tests.cpp` (a new `StarReferenceViewTest` registered like `TripletYieldTest`; two assertions added to `TripletAutoTauTest`)
+- Modify: `docs/design/TripletDisambiguation.md` (the section "Where it runs, and the flags")
+
+**Interfaces:**
+- Consumes: `EvaluateSurvivorGraph(scene, scores, tau, minPiece)` and its union-find (`parent`, whose root is the smallest image index of its component, since a union always hangs the larger root under the smaller), `SurvivorGraph`, `FilterPairsByTriplets(scene, config, weightingCfg)` (Tasks 6-9); `StarInitializer::SelectReferenceView(const Scene&)`; `ImagePair::relativePose` (`std::optional<Pose3D>`), `ImagePair::HasValidWeight()`, `ImagePair::GetNumWeightedInliers()`; `Scene::ReconstructHierarchical(config)` and its `localToGlobals` (one `IIndexArr` per sub-scene, local index → global index; empty when the scene was not clustered); the test helpers `AddTripletImages(scene, n)`, `AddTripletPair(scene, a, b, numInliers)` (a pair they build has no relative pose and no weights) and `TripletKeptPairs(scene)`; `IIndexArr` is SEACAVE's `cList` (`push_back`, `back()`, `Empty()`, `begin()`/`end()`, `FOREACH`).
+- Produces: `SurvivorGraph::largestPieceViews` (`IIndexArr`, ascending image indices of the largest piece, empty when there is none; ties between equally large pieces go to the one holding the lowest image index); `unsigned FilterPairsByTriplets(Scene&, const TripletFilterConfig&, const PairsWeightingConfig&, IIndexArr* pSeedViews = NULL)` — `*pSeedViews` receives the largest ceiling piece's images (emptied when the filter is off or leaves no piece); `StarInitConfig::seedViews` (`IIndexArr`, empty = every image); `IIndex StarInitializer::SelectReferenceView(const Scene&, const IIndexArr& seedViews)`; `bool Scene::ReconstructHierarchical(const ReconstructionConfig&, const IIndexArr& seedViews)`.
+
+- [ ] **Step 1: Write the failing tests**
+
+In `apps/Tests/TestsSFM.cpp`, immediately after `TripletYieldTest`, add:
+
+```cpp
+// The star initializer's reference view is chosen among the seed views the caller names -- the
+// triplet filter's largest ceiling piece -- and only among every image when none is named, or
+// none of the named has a valid pair. After the filter, the seed's side of a symmetric building
+// becomes the model, and the heaviest image overall sits in the densest cluster of look-alike
+// views, which is the worst place to start.
+bool StarReferenceViewTest()
+{
+	TD_TIMER_START();
+	// Ten images. A triangle (0-2) joined by 3000-inlier pairs: 6000 weighted inliers each, the
+	// heaviest in the scene. A chain (3-8): 500-inlier consecutive pairs, 300-inlier pairs two
+	// apart, and one 100-inlier pair (5,8), so that image 5 (1700) outweighs 6 (1600), 4 and 7
+	// (1300), 8 (900) and 3 (800). Image 9 has no pair at all.
+	Scene scene;
+	AddTripletImages(scene, 10);
+	const auto addPair = [&scene](IIndex a, IIndex b, unsigned numInliers) {
+		AddTripletPair(scene, a, b, numInliers);
+		ImagePair& pair = scene.pairs.back();
+		pair.relativePose = Pose3D::Identity();
+		pair.weightSpatial = 1.f;
+		pair.weightConnectivity = 1.f;
+	};
+	addPair(0, 1, 3000);
+	addPair(1, 2, 3000);
+	addPair(0, 2, 3000);
+	for (IIndex i = 3; i + 1 < 9; ++i)
+		addPair(i, i + 1, 500);
+	for (IIndex i = 3; i + 2 < 9; ++i)
+		addPair(i, i + 2, 300);
+	addPair(5, 8, 100);
+	const IIndex refAll = StarInitializer::SelectReferenceView(scene, IIndexArr());
+	if (refAll != 0) {
+		VERBOSE("StarReferenceViewTest FAILED: reference view %u with no seed views; expected 0, the heaviest image", refAll);
+		return false;
+	}
+	IIndexArr chain;
+	for (IIndex i = 3; i < 9; ++i)
+		chain.push_back(i);
+	const IIndex refChain = StarInitializer::SelectReferenceView(scene, chain);
+	if (refChain != 5) {
+		VERBOSE("StarReferenceViewTest FAILED: reference view %u among the chain's images; expected 5, the heaviest "
+			"of them, not an image of the heavier triangle", refChain);
+		return false;
+	}
+	IIndexArr lonely;
+	lonely.push_back(9);
+	const IIndex refLonely = StarInitializer::SelectReferenceView(scene, lonely);
+	if (refLonely != 0) {
+		VERBOSE("StarReferenceViewTest FAILED: reference view %u with a seed view that has no valid pair; expected "
+			"the fallback to every image, 0", refLonely);
+		return false;
+	}
+	VERBOSE("StarReferenceViewTest PASSED: the reference view is the heaviest seed view, and the heaviest image "
+		"when none is named or usable (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+```
+
+Declare it in `apps/Tests/TestsSFM.h` beside `TripletYieldTest` (same one-line style), and register it
+in `apps/Tests/Tests.cpp` immediately after `TripletYieldTest`, in exactly the way `TripletYieldTest`
+is registered there (same macro or call, same suite).
+
+In `TripletAutoTauTest`, the walk scene's filter call currently reads
+`const unsigned walkRemoved = FilterPairsByTriplets(walk, walkCfg, weightingCfg);`. Replace it with:
+
+```cpp
+	IIndexArr walkSeeds;
+	const unsigned walkRemoved = FilterPairsByTriplets(walk, walkCfg, weightingCfg, &walkSeeds);
+```
+
+and, after the block that reports `walkRight`, add:
+
+```cpp
+	// the largest piece the ceiling leaves is the walk itself, images 0-119, in order: the
+	// reconstruction seeds there, not in the 2-piece or at a straggler
+	bool walkSeedsRight = walkSeeds.size() == 120;
+	FOREACH(i, walkSeeds)
+		walkSeedsRight = walkSeedsRight && walkSeeds[i] == (IIndex)i;
+	if (!walkSeedsRight) {
+		VERBOSE("TripletAutoTauTest FAILED: the walk's seed views hold %u images (first %u, last %u); expected images "
+			"0-119, the largest piece the ceiling leaves",
+			(unsigned)walkSeeds.size(), walkSeeds.empty() ? NO_ID : walkSeeds.front(), walkSeeds.empty() ? NO_ID : walkSeeds.back());
+		return false;
+	}
+```
+
+The three-chains scene's filter call currently reads
+`const unsigned chainsRemoved = FilterPairsByTriplets(chains, chainsCfg, weightingCfg);`. Replace it with:
+
+```cpp
+	IIndexArr chainsSeeds;
+	const unsigned chainsRemoved = FilterPairsByTriplets(chains, chainsCfg, weightingCfg, &chainsSeeds);
+```
+
+and, after the block that reports `chainsRight`, add:
+
+```cpp
+	// three equal pieces at the ceiling: the seed views are the one holding the lowest image index,
+	// the first chain (0-39), reported at the ceiling even though the descent then joins all three
+	bool chainsSeedsRight = chainsSeeds.size() == 40;
+	FOREACH(i, chainsSeeds)
+		chainsSeedsRight = chainsSeedsRight && chainsSeeds[i] == (IIndex)i;
+	if (!chainsSeedsRight) {
+		VERBOSE("TripletAutoTauTest FAILED: the three chains' seed views hold %u images (first %u, last %u); expected "
+			"images 0-39, the first of three equal pieces, taken at the ceiling before the descent",
+			(unsigned)chainsSeeds.size(), chainsSeeds.empty() ? NO_ID : chainsSeeds.front(), chainsSeeds.empty() ? NO_ID : chainsSeeds.back());
+		return false;
+	}
+```
+
+Extend the test's closing PASSED message so it also says that the seed views are the largest ceiling piece.
+
+- [ ] **Step 2: Run the build to verify the tests fail**
+
+Run (from `make/`): `ninja -f build-Release.ninja Tests 2>&1 | tail -20`
+Expected: compilation errors on `FilterPairsByTriplets`'s fourth argument and `SelectReferenceView`'s second — the red state; nothing in this step passes.
+
+- [ ] **Step 3: The filter reports the largest ceiling piece**
+
+In `libs/SFM/ViewGraphTriplets.h`, add to `SurvivorGraph`, after `largestPiece`:
+
+```cpp
+	IIndexArr largestPieceViews; // the images of the largest piece, ascending (empty when there is none);
+	                            // between equally large pieces, the one holding the lowest image index
+```
+
+Change the declaration of `FilterPairsByTriplets` to
+
+```cpp
+unsigned SFM_API FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& config,
+	const PairsWeightingConfig& weightingCfg, IIndexArr* pSeedViews = NULL);
+```
+
+and append to its comment block: "`pSeedViews`, when given, receives the images of the largest piece
+the ceiling leaves (§ the piece rule: at the ceiling, before any descent; ties to the piece holding
+the lowest image index), ascending, and is emptied when the filter is off or the ceiling leaves no
+piece: the reconstruction chooses its reference view among them (StarInitConfig::seedViews), since
+after the filter the seed's side of a symmetric building is the model and the heaviest image
+overall sits in the densest cluster of look-alike views." Write it as prose in the file's style, without the section sign.
+
+In `libs/SFM/ViewGraphTriplets.cpp`, `EvaluateSurvivorGraph`: the aggregate initialiser
+`SurvivorGraph result{0, 0, 0, 0, 0, 0, 0};` gains nothing (the array default-constructs; add a trailing
+`{}` if the compiler asks for it). In the loop over `componentSize` that counts pieces, track the largest
+piece's root:
+
+```cpp
+	uint32_t largestPieceRoot = NO_INDEX;
+	for (const auto& component : componentSize) {
+		if (component.second < minPiece)
+			continue;
+		// (existing island test and counters unchanged)
+		...
+		result.numInPieces += component.second;
+		// the root of a component is its smallest image index (a union hangs the larger root under
+		// the smaller), so the smaller root among equally large pieces is the piece holding the
+		// lowest image index: deterministic, and the same tie-break the triplet components use
+		if (component.second > result.largestPiece ||
+			(component.second == result.largestPiece && component.first < largestPieceRoot)) {
+			result.largestPiece = component.second;
+			largestPieceRoot = component.first;
+		}
+	}
+	if (largestPieceRoot != NO_INDEX)
+		for (IIndex i = 0; i < numImages; ++i)
+			if (isNode[i] && Find(parent, (uint32_t)i) == largestPieceRoot)
+				result.largestPieceViews.push_back(i);
+```
+
+replacing the existing `result.largestPiece = MAXF(result.largestPiece, component.second);`.
+
+In `FilterPairsByTriplets`, the ceiling's survivor graph must exist on both paths (with `autoTau` off
+nothing is evaluated today). Hoist `unfiltered`, `minPiece` and the ceiling's survivor out of the
+`if (config.autoTau)` block, keep the ceiling's copy, and report it:
+
+```cpp
+	const float ceiling = tripletScores.tau;
+	float tau = ceiling;
+	const SurvivorGraph unfiltered = EvaluateSurvivorGraph(scene, tripletScores.scores, 0.f);
+	const unsigned minPiece = (unsigned)std::ceil(0.01 * (double)unfiltered.largestComponent);
+	const SurvivorGraph atCeiling = EvaluateSurvivorGraph(scene, tripletScores.scores, ceiling, minPiece);
+	// The reconstruction seeds in the largest piece the ceiling leaves, whatever the descent joins
+	// to it afterwards: the resection refuses the doppelganger bridges the descent lets through but
+	// cannot choose the side it starts on, and the heaviest image overall sits in the densest
+	// cluster of look-alike views (Radcliffe matched exhaustively: the 45-image piece, while the
+	// 120-image piece never registered).
+	if (pSeedViews)
+		*pSeedViews = atCeiling.largestPieceViews;
+	if (config.autoTau) {
+		// (the existing comment)
+		SurvivorGraph survivor = atCeiling;
+		const unsigned minComponent = survivor.numInPieces;
+		...
+```
+
+with the rest of the block as it is (the descent still reassigns `survivor`). Move the three `const`
+locals it used (`minComponent`, `numPieces`, `numStragglers`) and the VERBOSE line unchanged. When the
+filter is disabled (`!config.enabled`, the early `return 0`), empty `*pSeedViews` first if it was given.
+Extend the final `VERBOSE("Triplet filter: kept %u/%u scene pairs ...")` line with
+`; the reconstruction seeds in the largest piece the ceiling leaves (%u images)` fed
+`atCeiling.largestPiece`.
+
+Correct the stale numbers in the comment above `shattered` (the church sentence): it reads "143 and 85
+images, and one 253-inlier pair at 0.931"; the run's own scores give "140 and 85 images, and one
+253-inlier pair at 0.892". Change only those numbers.
+
+- [ ] **Step 4: The star initializer chooses among the seed views**
+
+In `libs/SFM/StarInitializer.h`, add to `StarInitConfig`, after `globalRotations`:
+
+```cpp
+	// The images the reference view is chosen among; empty, every image. The triplet filter fills
+	// it with the largest piece its ceiling leaves (ViewGraphTriplets.h).
+	IIndexArr seedViews;
+```
+
+and change the declaration and comment of `SelectReferenceView` to
+
+```cpp
+	/**
+	 * @brief Select the reference view: the image whose valid pairs carry the most weighted
+	 * inliers, among the seed views when any of them has a valid pair, else among every image
+	 * @param scene Scene with image pairs
+	 * @param seedViews Candidate images (empty: every image)
+	 * @return Image ID of reference view
+	 */
+	static IIndex SelectReferenceView(const Scene& scene, const IIndexArr& seedViews);
+```
+
+In `libs/SFM/StarInitializer.cpp`, replace the body of `SelectReferenceView` with:
+
+```cpp
+	// weighted inliers per view over its valid pairs, dense supplement discounted and included: a
+	// dense-only pair is a real connection of both its images, and the star initializer must see
+	// the same graph the weights that let it through were computed on
+	UnsignedArr degree(scene.images.size());
+	degree.Memset(0);
+	for (const ImagePair& pair : scene.pairs) {
+		if (!pair.relativePose.has_value() || !pair.HasValidWeight())
+			continue;
+		degree[pair.ID1] += pair.GetNumWeightedInliers();
+		degree[pair.ID2] += pair.GetNumWeightedInliers();
+	}
+	// the heaviest candidate: the seed views when any of them has a valid pair, else every image
+	const auto Heaviest = [&degree](const auto& views, IIndex& bestView) {
+		unsigned maxDegree = 0;
+		for (IIndex i : views) {
+			if (degree[i] > maxDegree) {
+				maxDegree = degree[i];
+				bestView = i;
+			}
+		}
+		return maxDegree;
+	};
+	IIndex bestView = NO_ID;
+	unsigned maxDegree = Heaviest(seedViews, bestView);
+	if (maxDegree > 0) {
+		VERBOSE("Selected reference view %u with %u connections among %u seed views", bestView, maxDegree, seedViews.size());
+		return bestView;
+	}
+	if (!seedViews.empty())
+		VERBOSE("warning: none of the %u seed views has a valid pair, choosing the reference view among every image", seedViews.size());
+	std::vector<IIndex> every(scene.images.size());
+	std::iota(every.begin(), every.end(), IIndex(0));
+	maxDegree = Heaviest(every, bestView);
+	if (bestView == NO_ID) {
+		VERBOSE("error: no valid reference view found");
+		return NO_ID;
+	}
+	VERBOSE("Selected reference view %u with %u connections", bestView, maxDegree);
+	return bestView;
+```
+
+(`#include <numeric>` for `std::iota` if the file does not already have it.) In `Initialize`, change
+the call to `SelectReferenceView(scene, config.seedViews)`.
+
+- [ ] **Step 5: The seed views travel from the filter to the star**
+
+In `libs/SFM/Scene.cpp`, change the helper `ExportMatchingCSVsAndFilterPairs` to return the seed views:
+
+```cpp
+// Export the matching diagnostics of a freshly matched scene, then disambiguate its view graph
+// with the camera-triplet filter (ViewGraphTriplets.h, off unless the caller enables it). The
+// order is deliberate: the CSVs describe the whole matched graph and carry the triplet score of
+// every pair, including the pairs the filter is about to remove, so a run can be re-scored and
+// re-thresholded offline from its own export alone. Returns the images the filter's ceiling
+// vouches for most (its largest piece), the reconstruction's seed views; empty without the filter.
+IIndexArr ExportMatchingCSVsAndFilterPairs(Scene& scene, const ReconstructionConfig& config)
+{
+	ExportMatchingCSVs(scene, config);
+	IIndexArr seedViews;
+	FilterPairsByTriplets(scene, config.tripletFilterCfg, config.matchCfg.weightingCfg, &seedViews);
+	return seedViews;
+}
+```
+
+Add beside it, in the same anonymous namespace:
+
+```cpp
+// The seed views of one sub-scene: the images of `seedViews` (indices of the whole scene) it holds,
+// in its own local indices. An unclustered scene is its own single sub-scene and the indices coincide.
+IIndexArr SubSceneSeedViews(const IIndexArr& seedViews, const std::vector<IIndexArr>& localToGlobals, IIndex idxSubScene)
+{
+	if (localToGlobals.empty())
+		return seedViews;
+	std::unordered_set<IIndex> isSeed(seedViews.begin(), seedViews.end());
+	const IIndexArr& localToGlobal = localToGlobals[idxSubScene];
+	IIndexArr local;
+	FOREACH(l, localToGlobal)
+		if (isSeed.count(localToGlobal[l]))
+			local.push_back((IIndex)l);
+	return local;
+}
+```
+
+In `Scene::Reconstruct`: declare `IIndexArr seedViews;` just before the `#if 1` that starts the
+feature/matching block, so both preprocessor branches see it; at the second call site (after
+`MatchPairs`) write `seedViews = ExportMatchingCSVsAndFilterPairs(*this, config);` (the first call
+site, the already-matched early return, ignores the return as today); and call
+`ReconstructHierarchical(config, seedViews)`.
+
+Change `ReconstructHierarchical` in `libs/SFM/Scene.h` and `libs/SFM/Scene.cpp` to
+`bool ReconstructHierarchical(const ReconstructionConfig& config, const IIndexArr& seedViews);`
+(comment: "seedViews: the images the star initializer chooses its reference view among, in this
+scene's indices; empty, every image"). In its sub-scene loop, after `initCfg.baConfig = config.baConfig;`
+add `initCfg.seedViews = SubSceneSeedViews(seedViews, localToGlobals, i);`.
+
+In `libs/SFM/PythonWrapper.cpp`, `pyReconstructHierarchical` calls `ReconstructHierarchical(config, IIndexArr())`.
+
+- [ ] **Step 6: Run the tests to verify they pass**
+
+Run (from `make/`): `ninja -f build-Release.ninja Tests SFM CreateStructure SceneAnalyzeSFM && ./bin/Release/Tests 1`
+Expected: `StarReferenceViewTest PASSED`, `TripletAutoTauTest PASSED`, every other test PASSED, exit
+code 0, no FAILED line and no compiler warning from the changed files. `TripletStarInitTest` and the
+other star-initializer tests run with empty seed views and must be unchanged.
+
+- [ ] **Step 7: Mutate**
+
+One at a time, rebuild `Tests` only, run, confirm the named failure, revert, rebuild, confirm green:
+
+| mutation | expected failure |
+|---|---|
+| `SelectReferenceView` ignores `seedViews` (calls `Heaviest(every, ...)` first) | `StarReferenceViewTest FAILED: reference view 0 among the chain's images; expected 5` |
+| the seed views taken from the descended `survivor` instead of `atCeiling` | `TripletAutoTauTest FAILED: the three chains' seed views hold 120 images` |
+| the tie-break reversed (`component.first > largestPieceRoot`) | `TripletAutoTauTest FAILED: the three chains' seed views hold 40 images (first 80, last 119)` |
+
+- [ ] **Step 8: Design note**
+
+In `docs/design/TripletDisambiguation.md`, section "Where it runs, and the flags", after the paragraph
+ending "the log line says so.", add:
+
+"The reconstruction that follows seeds in the largest piece the ceiling leaves: the filter reports
+that piece's images, and `StarInitializer::SelectReferenceView` takes the heaviest of them rather
+than the heaviest image overall, which sits in the densest cluster of look-alike views. The descent
+still joins the pieces; the resection then crosses the true bridges and refuses the doppelganger
+ones, and starting on the right side is what lets it register the larger face rather than the
+denser one (Radcliffe matched exhaustively: the 120-image piece rather than the 45-image one)."
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add libs/SFM/ViewGraphTriplets.h libs/SFM/ViewGraphTriplets.cpp libs/SFM/StarInitializer.h libs/SFM/StarInitializer.cpp libs/SFM/Scene.h libs/SFM/Scene.cpp libs/SFM/PythonWrapper.cpp apps/Tests/TestsSFM.cpp apps/Tests/TestsSFM.h apps/Tests/Tests.cpp docs/design/TripletDisambiguation.md
+git -c user.name=cDc -c user.email=cdc.seacave@gmail.com commit -m "sfm: the reconstruction seeds in the largest piece the triplet ceiling leaves
+
+The star initializer's reference view was the image whose pairs carry the most weighted
+inliers, which after the triplet filter sits in the densest cluster of look-alike views: on
+Radcliffe matched exhaustively the model grew from a 45-image piece and the 120-image piece
+never registered, and on the church from the 85-image piece while the 140-image one never
+did. The filter now reports the images of the largest piece its ceiling leaves and the
+reference view is the heaviest of them; every image remains a candidate without the filter,
+or when none of the reported images has a valid pair. The descent is unchanged: the
+resection crosses the true bridges and refuses the doppelganger ones from the right side."
+```
+
 ## Measurement (the controller's, after the branch is green)
 
 Not tasks and not a subagent's: they run the pipeline and read datasets, which no implementer does.

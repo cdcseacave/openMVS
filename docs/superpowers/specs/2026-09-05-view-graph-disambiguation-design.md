@@ -374,9 +374,9 @@ joined — the paper's behaviour, and a separate model rather than a wrong merge
 collection matched exhaustively, `d_max/|V|` is close to 1, the ceiling sits at 0.94-0.995, and
 it leaves pieces of two to forty images out of twenty to a hundred and fifty — fragments of one
 camera path or one building, which reassembling is the whole job. On the church matched
-exhaustively the same kind of ceiling (0.942) leaves something else: two pieces of 143 and 85
+exhaustively the same kind of ceiling (0.942) leaves something else: two pieces of 140 and 85
 images, the south facade with the canal views and the north facade, separated the way
-Doppelgangers++ separates them (157+106), and joined at 0.931 by one pair of 253 inliers. The
+Doppelgangers++ separates them (157+106), and joined at 0.892 by one pair of 253 inliers. The
 descent joined them; only the reconstruction's failure to cross that pair kept the model
 unfolded. A ceiling whose largest piece already holds most of the images has done the paper's
 job: what hangs below it is a straggler or the other face of a symmetric building, and no
@@ -384,12 +384,17 @@ threshold can tell which.
 
 | graph | ceiling | largest piece / images in pieces |
 |---|---|---|
-| oats, cup, cereal, books, desk, street (exhaustive) | 0.979-0.994 | 9/23, 11/64, 5/25, 7/21, 6/31, 5/19 |
-| indoor (exhaustive) | 0.995 | 28/152 |
-| church (exhaustive) | 0.942 | 143/248 |
-| radcliffe (exhaustive) | 0.943 | 176/258 — the paper's 177 |
-| brandenburg (exhaustive) | 0.973 | 134/155 |
+| books, cereal, cup, desk, oats, street (exhaustive) | 0.979-0.994 | 7/21, 5/25, 17/64, 8/31, 9/23, 5/19 |
+| indoor (exhaustive) | 0.995 | 33/151 |
+| church (exhaustive) | 0.942 | 140/244 |
+| radcliffe (exhaustive) | 0.943 | 120/254 — no majority: the descent joins every piece (§3.9) |
+| brandenburg (exhaustive) | 0.973 | 124/144 |
 | ToH, big_ben, the vocab-50 heinly graphs | 0.68-0.81 | one piece |
+
+The pieces are those of the runs' own scores (the `TripletScore` column of their pair export). The
+offline replay approximates the strength from the match count rather than the filtered inlier
+count, and on these near-complete graphs its pieces differ from the run's by tens of images
+(Radcliffe: 176 against 120+52); every number a rule is argued from is the run's.
 
 **Rule.** The descent below the ceiling happens only when the ceiling shattered the graph: when
 no piece holds a strict majority of the images the pieces hold together. If the largest piece
@@ -401,6 +406,47 @@ ceiling cuts in two equal halves (the pan of §5, three and three) is still repa
 Cost if wrong: a collection whose ceiling leaves a majority piece and a genuine second sub-scene
 joined only below the ceiling gets that sub-scene as a separate model — the paper's own
 behaviour — and never a merge through a doppelganger.
+
+### 3.9 The reconstruction seeds in the largest piece the ceiling leaves
+
+The filter's output only counts once it is reconstructed, and the reconstruction begins with a
+star around one reference view: `StarInitializer::SelectReferenceView` takes the image whose
+valid pairs carry the most weighted inliers, and the star, then resection, grow from there. That
+measure favours the densest cluster of look-alike views: on Radcliffe matched exhaustively the
+images of the 45-image piece carry a median of 21,000 weighted inliers against 11,500 in the
+120-image piece, so the seed lands in the 45-piece. The resection then does the paper's step 11
+of its own accord — it refuses the doppelganger bridges the descent let through: the church run
+grew from its 85-piece to 93 images and never crossed the 253-inlier pair into the 140-piece,
+Radcliffe grew from the 45-piece to 45+19+4 and never crossed into the 120-piece — but it can
+only refuse, not choose: the seed's side becomes the model, and that side is whichever holds the
+most near-duplicate views, the worst criterion there is for a symmetric building. The Radcliffe
+run with the ceiling applied as given, in whose graph the heaviest image happened to sit in the
+121-piece, registered exactly that piece.
+
+Stopping the descent at a majority instead was tried on the runs' own scores and rejected: it
+gives Radcliffe 174 (the paper's 177) and the church 140, and halves every small set (books 14/21,
+cereal 13/25, cup 34/64, desk 19/31, oats 12/23, street 12/19) and the indoor loop (106/152),
+because the fragments of one camera path join at the same scores the doppelganger pieces do
+(Radcliffe's 45-piece at 0.876, books' last fragment at 0.875). The scores cannot tell them apart;
+the resection can, given the right start.
+
+**Rule.** The filter reports the images of the largest piece the ceiling leaves — the pieces of
+§3.7, at the ceiling and before any descent; between equally large pieces, the one holding the
+lowest image index — and the reconstruction chooses its reference view among them, the heaviest by
+the same measure as before. When the filter is off, or none of the reported images has a valid
+pair, every image is a candidate, as before. With clustering, a sub-scene's candidates are the
+reported images it holds, and a sub-scene holding none chooses among all its own. The descent is
+unchanged: the pieces are still joined, and the resection still decides which joins it crosses.
+
+Expected on the exhaustive runs: Radcliffe seeds in the 120-piece, crosses the 0.928 bridges into
+the 52-piece (172 images; the paper 177, Doppelgangers++ 186) and refuses the 45-piece's; the
+church seeds in the 140-piece the ceiling already cut it to (the paper 136, Doppelgangers++ 157);
+the small sets and the indoor loop seed in one fragment of their single path and grow through it
+as before.
+
+Cost if wrong: on a collection whose largest ceiling piece is the wrong face of the building —
+more views of the doppelganger than of the rest — the model is that face, the paper's own
+outcome, and no worse than today's arbitrary side.
 
 ### 3.4 Where the filter runs
 
