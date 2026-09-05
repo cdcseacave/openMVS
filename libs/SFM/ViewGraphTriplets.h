@@ -28,12 +28,16 @@ class SFM_API Scene;
 //   Structure-from-Motion", CVPR 2024 (Algorithm 1, Eqn. 3).
 //
 // The view graph G = (V,E) has the images as nodes and the geometrically verified pairs as
-// edges, each carrying a single integer: its epipolar inlier count n_ij. Wrong edges — the
-// repeated-structure ("doppelganger") pairs a retrieval step happily proposes and two-view
-// geometry happily verifies — are found purely from how that integer is distributed over the
-// triangles of the graph: a true edge is, in every triangle it belongs to, comparable in
-// strength to the strongest edge of that triangle, while a false edge is systematically the
-// weak side of triangles built around true edges.
+// edges, each carrying one strength s_ij = n_ij * c_ij: its epipolar inlier count n_ij discounted
+// by c_ij, the fraction of the frame those inliers cover (ComputePairCoverage, the grid the pair
+// weighting measures on). Wrong edges -- the repeated-structure ("doppelganger") pairs a
+// retrieval step happily proposes and two-view geometry happily verifies -- are found purely from
+// how that strength is distributed over the triangles of the graph: a true edge is, in every
+// triangle it belongs to, comparable to the strongest edge of that triangle, while a false edge is
+// systematically the weak side of triangles built around true edges. The paper weighs edges by
+// n_ij alone; the coverage is what tells a doppelganger with more inliers than the true junction
+// beside it (matches on the duplicated object and nowhere else) from that junction (matches over
+// the whole overlap), which the counts and the triangles cannot.
 //
 // This is orthogonal to the rotation-cycle-consistency weight ImagePair::weightTriplet
 // (PairsWeighting.cpp): a doppelganger's false edges are mutually *consistent* — the rotations
@@ -81,13 +85,17 @@ struct SFM_API TripletScores
 
 // Score every pair of the scene by the paper's Algorithm 1, steps 1-9: build the triplet graph
 // G_T of the view graph, keep the edges participating in its largest connected component
-// (G_LCT), score each such edge by the mean over its triplets of n_ij / max_{(k,l) in t} n_kl,
-// and derive the threshold tau from the minimum score m and the connectivity of G_LCT.
+// (G_LCT), score each such edge by the mean over its triplets of s_ij / max_{(k,l) in t} s_kl,
+// and derive the threshold tau from the minimum score m and the connectivity of G_LCT. The
+// strength s_ij = n_ij * c_ij is the epipolar inlier count discounted by c_ij, the fraction of the
+// frame the inliers cover; gridSize is the coverage grid (PairsWeightingConfig::gridSize, so the
+// filter measures coverage on the grid the pair weighting does).
 // Only pairs with HasGeometricVerification() and at least one inlier are edges of G; every
 // other pair — and every edge outside G_LCT, including the edges in no triplet at all — stays
-// unscored (-1). The scores themselves do not depend on m; only `tau` does, so a caller that
+// unscored (-1). A verified pair whose matches are not stored has a coverage of 0 and is not an
+// edge either. The scores themselves do not depend on m; only `tau` does, so a caller that
 // wants the scores alone can pass 0.
-TripletScores SFM_API ComputeTripletScores(const Scene& scene, float minScore);
+TripletScores SFM_API ComputeTripletScores(const Scene& scene, float minScore, int gridSize);
 
 // Apply Algorithm 1 step 10 to the scene: remove only the pairs scoring below tau, then recompute
 // the pair weights so the connectivity/cycle-consistency weights describe the filtered graph. This

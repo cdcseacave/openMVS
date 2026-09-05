@@ -65,7 +65,7 @@ constexpr uint32_t NO_INDEX = (uint32_t)-1;
 
 // F U N C T I O N S ///////////////////////////////////////////////
 
-TripletScores SFM::ComputeTripletScores(const Scene& scene, float minScore)
+TripletScores SFM::ComputeTripletScores(const Scene& scene, float minScore, int gridSize)
 {
 	TripletScores result;
 	result.scores.assign(scene.pairs.size(), -1.f);
@@ -83,8 +83,8 @@ TripletScores SFM::ComputeTripletScores(const Scene& scene, float minScore)
 	const IIndex numImages = scene.images.size();
 	std::unordered_map<PairIdx::PairIndex, uint32_t> edgeOfImagePair;
 	std::vector<uint32_t> edgeOfScenePair(scene.pairs.size(), NO_INDEX);
-	std::vector<PairIdx> edgeImages;   // the two image indices of each edge (i < j)
-	std::vector<unsigned> edgeInliers; // n_ij
+	std::vector<PairIdx> edgeImages;    // the two image indices of each edge (i < j)
+	std::vector<float> edgeStrength;    // s_ij = n_ij * c_ij
 	edgeOfImagePair.reserve(scene.pairs.size());
 	FOREACH(idxPair, scene.pairs) {
 		const ImagePair& pair = scene.pairs[idxPair];
@@ -92,13 +92,21 @@ TripletScores SFM::ComputeTripletScores(const Scene& scene, float minScore)
 		const unsigned numInliers = pair.GetNumWeightedInliers(); // n_ij: the pair's evidence, dense included
 		if (!pair.HasGeometricVerification() || numInliers == 0 || pair.ID1 == pair.ID2)
 			continue;
+		// s_ij: the count discounted by the fraction of the frame the inliers cover. A verified
+		// pair whose matches are not stored has nothing to measure coverage on and is no edge --
+		// EvaluateSurvivorGraph still counts it, so it ends up unscored and kept, which is what
+		// "no evidence" means here.
+		const float strength = (float)numInliers *
+			ComputePairCoverage(pair, scene.images[pair.ID1], scene.images[pair.ID2], gridSize);
+		if (strength <= 0.f)
+			continue;
 		const PairIdx imagePair(MakePairIdx(pair.ID1, pair.ID2));
 		const auto inserted = edgeOfImagePair.emplace(imagePair.idx, (uint32_t)edgeImages.size());
 		if (inserted.second) {
 			edgeImages.emplace_back(imagePair);
-			edgeInliers.emplace_back(numInliers);
-		} else if (numInliers > edgeInliers[inserted.first->second]) {
-			edgeInliers[inserted.first->second] = numInliers;
+			edgeStrength.emplace_back(strength);
+		} else if (strength > edgeStrength[inserted.first->second]) {
+			edgeStrength[inserted.first->second] = strength;
 		}
 		edgeOfScenePair[idxPair] = inserted.first->second;
 	}
@@ -190,17 +198,17 @@ TripletScores SFM::ComputeTripletScores(const Scene& scene, float minScore)
 	};
 
 	// 5. Score the edges of G_LCT (Algorithm 1 steps 4-8): a second streaming pass over the
-	// triplets of the largest component accumulates the per-triplet maximum n_kl and the per-edge
-	// running sum of q^t_ij = n_ij / max_{(k,l) in t} n_kl.
+	// triplets of the largest component accumulates the per-triplet maximum s_kl and the per-edge
+	// running sum of q^t_ij = s_ij / max_{(k,l) in t} s_kl.
 	std::vector<double> scoreSumOfEdge(numEdges, 0.0);
 	ForEachTriplet([&](uint32_t e0, uint32_t e1, uint32_t e2) {
 		if (components.Find(e0) != largestComponent)
 			return;
-		const unsigned maxInliers = MAXF3(edgeInliers[e0], edgeInliers[e1], edgeInliers[e2]);
-		ASSERT(maxInliers > 0, "ComputeTripletScores: triplet with no inliers");
-		scoreSumOfEdge[e0] += (double)edgeInliers[e0] / (double)maxInliers;
-		scoreSumOfEdge[e1] += (double)edgeInliers[e1] / (double)maxInliers;
-		scoreSumOfEdge[e2] += (double)edgeInliers[e2] / (double)maxInliers;
+		const float maxStrength = MAXF3(edgeStrength[e0], edgeStrength[e1], edgeStrength[e2]);
+		ASSERT(maxStrength > 0.f, "ComputeTripletScores: triplet with no strength");
+		scoreSumOfEdge[e0] += (double)edgeStrength[e0] / (double)maxStrength;
+		scoreSumOfEdge[e1] += (double)edgeStrength[e1] / (double)maxStrength;
+		scoreSumOfEdge[e2] += (double)edgeStrength[e2] / (double)maxStrength;
 	});
 
 	// 6. |V| and d_max of G_LCT, and the adaptive threshold of Eqn. 3. Both quantities are taken
@@ -295,7 +303,7 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 	const float minScore = std::isnan(config.minScore) ? 0.f : CLAMP(config.minScore, 0.f, 1.f);
 	if (minScore != config.minScore)
 		VERBOSE("warning: triplet filter: minimum edge score %g is outside [0,1], using %g", config.minScore, minScore);
-	const TripletScores tripletScores = ComputeTripletScores(scene, minScore);
+	const TripletScores tripletScores = ComputeTripletScores(scene, minScore, weightingCfg.gridSize);
 	const float degreeRatio = tripletScores.numNodes > 0
 		? (float)tripletScores.maxDegree / (float)tripletScores.numNodes : 0.f;
 	// Eqn. 3 on G_LCT, tau(m) = m (1 - d_max/|V|) + d_max/|V|, is the CEILING: the filter is never

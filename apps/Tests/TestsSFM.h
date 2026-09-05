@@ -277,6 +277,11 @@ bool TripletFilterTest();
 // boundary scene pinning where the ladder must start, and a gapped ring pinning where it must stop
 bool TripletAutoTauTest();
 
+// The strength of a triplet edge is its inlier count discounted by the fraction of the frame its
+// inliers cover: a doppelganger with more inliers than the true junction beside it still loses on
+// coverage, so the filter removes it and not the chain
+bool TripletCoverageTest();
+
 // Test function for rotation estimation
 bool RotationEstimatorTest();
 

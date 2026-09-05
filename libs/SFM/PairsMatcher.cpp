@@ -2290,7 +2290,7 @@ unsigned PairsMatcher::Match(bool& bFatal)
 }
 
 
-bool PairsMatcher::ExportPairsCSV(const Scene& scene, const String& fileName, float minWeight)
+bool PairsMatcher::ExportPairsCSV(const Scene& scene, const String& fileName, float minWeight, int gridSize)
 {
 	std::ofstream ofs(fileName);
 	if (!ofs.is_open()) {
@@ -2300,15 +2300,18 @@ bool PairsMatcher::ExportPairsCSV(const Scene& scene, const String& fileName, fl
 	const String basePath = MAKE_PATH_FULL(WORKING_FOLDER_FULL, Util::getFilePath(fileName));
 	// the triplet disambiguation score of every pair (ViewGraphTriplets.h); it does not depend on
 	// the minimum score m, only the threshold derived from it does, so the column is written once
-	// and can be re-thresholded by any consumer
-	const TripletScores tripletScores = ComputeTripletScores(scene, 0.f);
-	ofs << "ImageA,ImageB,NumMatches,Weight,WeightSpatial,WeightConnectivity,WeightTriplet,MeanRayAngle,TripletScore\n";
+	// and can be re-thresholded by any consumer. The Coverage column is exported beside the raw
+	// NumMatches count so the discount that turns one into the edge strength s_ij = n_ij * c_ij can
+	// be replayed offline, against any count, without re-running the matcher.
+	const TripletScores tripletScores = ComputeTripletScores(scene, 0.f, gridSize);
+	ofs << "ImageA,ImageB,NumMatches,Coverage,Weight,WeightSpatial,WeightConnectivity,WeightTriplet,MeanRayAngle,TripletScore\n";
 	FOREACH(idxPair, scene.pairs) {
 		const ImagePair& pair = scene.pairs[idxPair];
 		const String relImageNameA = MAKE_PATH_REL(basePath, scene.images[pair.ID1].fileName);
 		const String relImageNameB = MAKE_PATH_REL(basePath, scene.images[pair.ID2].fileName);
 		ofs << relImageNameA << "," << relImageNameB << ","
 		    << pair.GetNumFilteredInliers() << ","
+			<< ComputePairCoverage(pair, scene.images[pair.ID1], scene.images[pair.ID2], gridSize) << ","
 			<< pair.GetCompositeWeight() << ","
 			<< pair.weightSpatial << ","
 			<< pair.weightConnectivity << ","

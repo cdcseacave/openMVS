@@ -7711,10 +7711,10 @@ bool ReconstructExportCSVTest()
 
 namespace {
 
-// Shared by TripletFilterTest and TripletAutoTauTest: a pair carries an inlier count and
-// F = Matrix3x3::IDENTITY as its stand-in geometric verification -- the score reads nothing else
-// off a pair, so neither descriptors nor real images are needed (as ROMA2WarpTrackingTest builds
-// its pairs) -- and the images need only a camera.
+// Shared by TripletFilterTest and TripletAutoTauTest: a pair carries an inlier count, its matches'
+// coverage, and a verification flag -- F = Matrix3x3::IDENTITY stands in for the geometric
+// verification -- so neither descriptors nor real images are needed (as ROMA2WarpTrackingTest
+// builds its pairs) -- and the images need only a camera.
 struct TripletPairSpec { IIndex idA, idB; int numInliers; bool verified; };
 
 void AddTripletImages(Scene& scene, IIndex numImages)
@@ -7727,9 +7727,29 @@ void AddTripletImages(Scene& scene, IIndex numImages)
 	}
 }
 
-void AddTripletPair(Scene& scene, IIndex idA, IIndex idB, unsigned numInliers, bool verified = true)
+// A pair of numInliers track-forming matches whose keypoints occupy the first cellsA (cellsB)
+// cells of a 10x10 grid over each 640x480 image, walked row by row from the top left; 100 cells
+// is full coverage, which leaves the pair's triplet strength equal to its inlier count -- what
+// every scene below relies on unless it says otherwise.
+void AddTripletPair(Scene& scene, IIndex idA, IIndex idB, unsigned numInliers, bool verified = true,
+	unsigned cellsA = 100, unsigned cellsB = 100)
 {
+	ASSERT(cellsA >= 1 && cellsA <= 100 && cellsB >= 1 && cellsB <= 100);
 	ImagePair pair(idA, idB);
+	// ImagePair's constructor orders ID1 < ID2, swapping when idA > idB: every later reader
+	// (ComputePairCoverage included) looks up images by pair.ID1/pair.ID2, so the match indices
+	// recorded below must be built against those, not against idA/idB directly, or a swapped call
+	// (idA > idB) would store queryIdx/trainIdx into the wrong image's keypoints.
+	Image& imageA = scene.images[pair.ID1];
+	Image& imageB = scene.images[pair.ID2];
+	const auto cellCentre = [](unsigned cell) {
+		return cv::Point2f((float)(cell % 10) * 64.f + 32.f, (float)(cell / 10) * 48.f + 24.f);
+	};
+	for (unsigned m = 0; m < numInliers; ++m) {
+		imageA.keypoints.emplace_back(cellCentre(m % cellsA), 1.f);
+		imageB.keypoints.emplace_back(cellCentre(m % cellsB), 1.f);
+		pair.matches.emplace_back((uint32_t)imageA.keypoints.size() - 1, (uint32_t)imageB.keypoints.size() - 1);
+	}
 	pair.numFilteredInliers = numInliers;
 	if (verified)
 		pair.F = Matrix3x3::IDENTITY; // stands in for the geometric verification
@@ -7762,6 +7782,14 @@ bool TripletFilterTest()
 {
 	TD_TIMER_START();
 	constexpr float eps = 1e-6f;
+	// This test's pairs carry as few as 10 track-forming matches, far short of a 10x10 grid's 100
+	// cells -- AddTripletPair's default cellsA/cellsB cannot give them the full coverage its own
+	// comment describes, since a match fills at most one cell. A single-cell grid sidesteps that:
+	// every pair with at least one match trivially covers the whole (one-cell) frame, so strength
+	// reduces to the inlier count exactly, which is what this test's numbers were computed against
+	// -- coverage discounting a real, sub-full grid is TripletCoverageTest's subject, not this one's.
+	PairsWeightingConfig weightingCfg;
+	weightingCfg.gridSize = 1;
 	static const TripletPairSpec pairSpecs[] = {
 		{0,1,100,true}, {0,2,100,true}, {1,2,70,true}, {1,3,50,true}, {2,3,40,true},
 		{3,4,30,true}, {3,5,20,true}, {5,6,10,true}, {6,7,10,true}, {5,7,10,true}
@@ -7773,7 +7801,7 @@ bool TripletFilterTest()
 	// (a) scores and statistics of the full graph
 	Scene scene;
 	buildScene(scene, pairSpecs, 10);
-	const TripletScores scores03 = ComputeTripletScores(scene, 0.3f);
+	const TripletScores scores03 = ComputeTripletScores(scene, 0.3f, weightingCfg.gridSize);
 	if (scores03.numTriplets != 3 || scores03.numTripletComponents != 2 ||
 		scores03.numScoredPairs != 5 || scores03.numNodes != 4 || scores03.maxDegree != 3) {
 		VERBOSE("TripletFilterTest FAILED: statistics %u triplets in %u components, %u scored pairs, "
@@ -7795,7 +7823,7 @@ bool TripletFilterTest()
 		VERBOSE("TripletFilterTest FAILED: tau %g for m=0.3, expected 0.825", scores03.tau);
 		return false;
 	}
-	const TripletScores scores06 = ComputeTripletScores(scene, 0.6f);
+	const TripletScores scores06 = ComputeTripletScores(scene, 0.6f, weightingCfg.gridSize);
 	if (ABS(scores06.tau - 0.9f) > eps) {
 		VERBOSE("TripletFilterTest FAILED: tau %g for m=0.6, expected 0.9", scores06.tau);
 		return false;
@@ -7822,7 +7850,7 @@ bool TripletFilterTest()
 		specs[13] = TripletPairSpec{3, 3, 30, true};   // a self-pair joins no two images
 		Scene sceneDup;
 		buildScene(sceneDup, specs, 14);
-		const TripletScores scoresDup = ComputeTripletScores(sceneDup, 0.3f);
+		const TripletScores scoresDup = ComputeTripletScores(sceneDup, 0.3f, weightingCfg.gridSize);
 		if (scoresDup.numTriplets != 3 || scoresDup.numScoredPairs != 6 ||
 			scoresDup.numNodes != 4 || scoresDup.maxDegree != 3 ||
 			ABS(scoresDup.tau - 0.825f) > eps) {
@@ -7851,7 +7879,6 @@ bool TripletFilterTest()
 	// as given; the connectivity-driven threshold below it is TripletAutoTauTest's subject.
 	filterCfg.autoTau = false;
 	filterCfg.minScore = 0.3f;
-	const PairsWeightingConfig weightingCfg; // defaults; FilterPairsByTriplets takes no default
 	if (FilterPairsByTriplets(scene, filterCfg, weightingCfg) != 2 || scene.pairs.size() != 8) {
 		VERBOSE("TripletFilterTest FAILED: m=0.3 left %u pairs, expected 8", scene.pairs.size());
 		return false;
@@ -7884,7 +7911,7 @@ bool TripletFilterTest()
 	Scene scenePath;
 	static const TripletPairSpec pathSpecs[] = {{0,1,100,true}, {1,2,70,true}, {2,3,40,true}};
 	buildScene(scenePath, pathSpecs, 3);
-	const TripletScores scoresPath = ComputeTripletScores(scenePath, 0.6f);
+	const TripletScores scoresPath = ComputeTripletScores(scenePath, 0.6f, weightingCfg.gridSize);
 	if (scoresPath.numTriplets != 0 || scoresPath.numTripletComponents != 0 ||
 		scoresPath.numScoredPairs != 0 || scoresPath.numNodes != 0 || scoresPath.maxDegree != 0 ||
 		ABS(scoresPath.tau - 0.6f) > eps) {
@@ -7929,7 +7956,14 @@ bool TripletFilterTest()
 bool TripletAutoTauTest()
 {
 	TD_TIMER_START();
-	const PairsWeightingConfig weightingCfg; // defaults; FilterPairsByTriplets takes no default
+	// This test's scenes carry pairs as weak as 1 track-forming match, far short of a 10x10 grid's
+	// 100 cells, so AddTripletPair's default cellsA/cellsB cannot give them full coverage (a match
+	// fills at most one cell). A single-cell grid sidesteps that: every pair with at least one
+	// match trivially covers the whole (one-cell) frame, so strength reduces to the inlier count
+	// exactly, which is what this test's numbers were computed against -- coverage discounting a
+	// real, sub-full grid is TripletCoverageTest's subject, not this one's.
+	PairsWeightingConfig weightingCfg;
+	weightingCfg.gridSize = 1;
 
 	// Scene 1, the barbell -- the filter must remove nothing. Six images, eight pairs: triangle A
 	// {0,1,2}, triangle B {3,4,5}, and triangle C {2,3,4} sharing edge (3,4) with B. B and C share
@@ -7953,7 +7987,7 @@ bool TripletAutoTauTest()
 
 	// The unfiltered graph, which is what the threshold search measures itself against: tau = 0 keeps every
 	// scored pair, and an unscored pair is kept regardless.
-	const TripletScores scores = ComputeTripletScores(barbell, 0.f);
+	const TripletScores scores = ComputeTripletScores(barbell, 0.f, weightingCfg.gridSize);
 	const SurvivorGraph unfiltered = EvaluateSurvivorGraph(barbell, scores.scores, 0.f);
 	if (unfiltered.numNodes != 6 || unfiltered.largestComponent != 6 || unfiltered.numKept != 8) {
 		VERBOSE("TripletAutoTauTest FAILED: unfiltered barbell %u nodes, component %u, %u edges; expected 6, 6, 8",
@@ -8045,7 +8079,7 @@ bool TripletAutoTauTest()
 	AddTripletPair(bridge, 0, 1, 100); // duplicate of the loop's own (0,1) edge: must collapse onto
 	                                   // it rather than inflate the edge or pair counts below
 
-	const TripletScores bridgeScores = ComputeTripletScores(bridge, 0.f);
+	const TripletScores bridgeScores = ComputeTripletScores(bridge, 0.f, weightingCfg.gridSize);
 	const SurvivorGraph bridgeUnfiltered = EvaluateSurvivorGraph(bridge, bridgeScores.scores, 0.f);
 	if (bridgeUnfiltered.numNodes != 20 || bridgeUnfiltered.largestComponent != 20 || bridgeUnfiltered.numKept != 92) {
 		VERBOSE("TripletAutoTauTest FAILED: unfiltered bridge %u nodes, component %u, %u edges; expected 20, 20, 92",
@@ -8089,7 +8123,7 @@ bool TripletAutoTauTest()
 	AddTripletPair(pendant, 10, 4, 1);
 	AddTripletPair(pendant, 10, 5, 100);
 
-	const TripletScores pendantScores = ComputeTripletScores(pendant, 0.6f);
+	const TripletScores pendantScores = ComputeTripletScores(pendant, 0.6f, weightingCfg.gridSize);
 	const SurvivorGraph pendantUnfiltered = EvaluateSurvivorGraph(pendant, pendantScores.scores, 0.f);
 	if (pendantUnfiltered.numLowDegree != 0 || pendantUnfiltered.numKept != 34) {
 		VERBOSE("TripletAutoTauTest FAILED: unfiltered pendant scene %u low-degree, %u edges; expected 0, 34",
@@ -8129,7 +8163,7 @@ bool TripletAutoTauTest()
 	AddTripletPair(baseline, 8, 9, 1);   // the one weak edge, scores 0.01
 	AddTripletPair(baseline, 10, 0, 50); // a pendant with a single, unscored edge: permanently degree 1
 
-	const TripletScores baselineScores = ComputeTripletScores(baseline, 0.6f);
+	const TripletScores baselineScores = ComputeTripletScores(baseline, 0.6f, weightingCfg.gridSize);
 	const SurvivorGraph baselineUnfiltered = EvaluateSurvivorGraph(baseline, baselineScores.scores, 0.f);
 	if (baselineUnfiltered.numLowDegree != 1 || baselineUnfiltered.numKept != 46) {
 		VERBOSE("TripletAutoTauTest FAILED: unfiltered baseline scene %u low-degree, %u edges; expected 1, 46",
@@ -8200,7 +8234,7 @@ bool TripletAutoTauTest()
 			AddTripletPair(pan, i, j, panInliers[i][j]);
 	AddTripletPair(pan, 6, 7, 100); // verified, in no triangle: unscored, kept, and not the largest component
 
-	const TripletScores panScores = ComputeTripletScores(pan, 0.6f);
+	const TripletScores panScores = ComputeTripletScores(pan, 0.6f, weightingCfg.gridSize);
 	if (!ISEQUAL(panScores.tau, 0.93333f, 1e-4f) || panScores.numScoredPairs != 15) {
 		VERBOSE("TripletAutoTauTest FAILED: pan ceiling %g with %u scored pairs, expected 0.9333 and 15",
 			panScores.tau, panScores.numScoredPairs);
@@ -8233,6 +8267,55 @@ bool TripletAutoTauTest()
 	}
 
 	VERBOSE("TripletAutoTauTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// The strength of an edge is its inlier count discounted by the fraction of the frame its inliers
+// cover (ViewGraphTriplets.h): a doppelganger's matches sit on the duplicated object alone, a true
+// adjacent pair's spread over the whole overlap. Triangle {0,1,2}: (0,1) and (1,2) carry 600
+// inliers over all 100 cells, (0,2) carries 900 inliers over 10 cells of image 0 and all 100 of
+// image 2. Strengths 600, 600 and 900 * min(0.1, 1.0) = 90, so the scores are (0,1) = (1,2) = 1.0
+// and (0,2) = 0.15. By count alone (0,2) would score 1.0 and the other two 600/900 = 0.667.
+bool TripletCoverageTest()
+{
+	TD_TIMER_START();
+	const PairsWeightingConfig weightingCfg; // defaults; the coverage grid is its gridSize
+	Scene scene;
+	AddTripletImages(scene, 3);
+	AddTripletPair(scene, 0, 1, 600);
+	AddTripletPair(scene, 1, 2, 600);
+	AddTripletPair(scene, 0, 2, 900, true, 10, 100);
+	const TripletScores scores = ComputeTripletScores(scene, 0.f, weightingCfg.gridSize);
+	if (scores.numTriplets != 1 || scores.numScoredPairs != 3 ||
+		!ISEQUAL(scores.scores[0], 1.f) || !ISEQUAL(scores.scores[1], 1.f) || !ISEQUAL(scores.scores[2], 0.15f)) {
+		VERBOSE("TripletCoverageTest FAILED: %u triplets, %u scored, scores %g %g %g; expected 1, 3, 1 1 0.15",
+			scores.numTriplets, scores.numScoredPairs, scores.scores[0], scores.scores[1], scores.scores[2]);
+		return false;
+	}
+	// The coverage is measured on the grid the caller names, the same one the pair weighting
+	// uses: on a 2x2 grid the ten cells of image 0 are the top row of the 10x10 grid, i.e. the
+	// two upper cells of the coarse one, coverage 0.5, strength 450, score 450/600 = 0.75.
+	const TripletScores coarse = ComputeTripletScores(scene, 0.f, 2);
+	if (!ISEQUAL(coarse.scores[0], 1.f) || !ISEQUAL(coarse.scores[1], 1.f) || !ISEQUAL(coarse.scores[2], 0.75f)) {
+		VERBOSE("TripletCoverageTest FAILED: 2x2 grid scores %g %g %g; expected 1 1 0.75",
+			coarse.scores[0], coarse.scores[1], coarse.scores[2]);
+		return false;
+	}
+	// And the filter acts on it: G_LCT has 3 nodes and max degree 2, so at m = 0.5 the threshold
+	// is 0.5 * (1 - 2/3) + 2/3 = 0.833, applied as given. The doppelganger goes and the chain
+	// stays; by count alone it would be the chain that goes.
+	TripletFilterConfig filterCfg;
+	filterCfg.enabled = true;
+	filterCfg.autoTau = false;
+	filterCfg.minScore = 0.5f;
+	const unsigned numRemoved = FilterPairsByTriplets(scene, filterCfg, weightingCfg);
+	const std::set<std::pair<IIndex,IIndex>> expected{{0,1},{1,2}};
+	if (numRemoved != 1 || TripletKeptPairs(scene) != expected) {
+		VERBOSE("TripletCoverageTest FAILED: %u pairs removed, %u kept; expected 1 removed, (0,1) and (1,2) kept",
+			numRemoved, (unsigned)scene.pairs.size());
+		return false;
+	}
+	VERBOSE("TripletCoverageTest PASSED: doppelganger (0,2) scores 0.15 against the chain's 1.0 and is the one removed (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 

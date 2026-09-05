@@ -285,6 +285,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::TripletAutoTauTest())
 				return false;
+			if (!SFM::TripletCoverageTest())
+				return false;
 			// Hierarchical SFM tests - Phase 1: Scene Clustering
 			if (!SFM::SceneClusterSingleClusterTest())
 				return false;

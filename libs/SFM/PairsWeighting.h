@@ -70,6 +70,13 @@ struct SFM_API PairsWeightingConfig
     // DENSE_OBSERVATION_WEIGHT while the bundle adjustment weight moves.
     float denseObservationWeight = (float)DENSE_OBSERVATION_WEIGHT;
 };
+
+// The fraction of a gridSize x gridSize grid over the image that the pair's track-forming matches
+// occupy, in [0,1], taken as the smaller of the two images' fractions: how much of the frame the
+// pair's evidence covers, whatever its count. Pinhole images bin on a uniform pixel grid,
+// spherical ones on equal-solid-angle cells. 0 for a pair with no stored matches.
+float SFM_API ComputePairCoverage(const ImagePair& pair, const Image& img1, const Image& img2, int gridSize);
+
 void SFM_API ComputePairsWeights(Scene& scene, const PairsWeightingConfig& config = PairsWeightingConfig(), IIndexArr* pComponents = NULL);
 
 } // namespace SFM

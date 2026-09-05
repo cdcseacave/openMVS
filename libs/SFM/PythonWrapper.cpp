@@ -197,9 +197,11 @@ static bool ExportRetrievalRankingsCSVFile(const Scene& scene, const std::string
 // a dict so a caller can score a scene in-process without exporting a CSV first: "scores" holds
 // one float per scene pair, in scene.pairs order, with -1 marking an unscored pair; "tau" is the
 // threshold Eqn. 3 derives from the given minimum score m (the scores themselves do not depend
-// on m); the remaining entries are the graph statistics the filter's log line reports.
-static boost::python::dict ComputeTripletScoresDict(const Scene& scene, float minScore) {
-	const SFM::TripletScores tripletScores = SFM::ComputeTripletScores(scene, minScore);
+// on m); the remaining entries are the graph statistics the filter's log line reports. The scores
+// depend on the coverage grid (grid_size): each edge's strength is its inlier count discounted by
+// the fraction of the frame its inliers cover, measured on that grid.
+static boost::python::dict ComputeTripletScoresDict(const Scene& scene, float minScore, int gridSize) {
+	const SFM::TripletScores tripletScores = SFM::ComputeTripletScores(scene, minScore, gridSize);
 	boost::python::list scores;
 	for (float score : tripletScores.scores)
 		scores.append(score);
@@ -401,7 +403,7 @@ void RegisterBindings()
 
 	// Free function: the camera-triplet disambiguation scores of a matched scene.
 	def("compute_triplet_scores", &ComputeTripletScoresDict,
-			(arg("scene"), arg("min_score")=0.f));
+			(arg("scene"), arg("min_score")=0.f, arg("grid_size")=SFM::PairsWeightingConfig().gridSize));
 }
 
 } // namespace pySFM

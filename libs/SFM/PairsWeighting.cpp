@@ -8,6 +8,7 @@
 #include "Common.h"
 #include "PairsWeighting.h"
 #include "Scene.h"
+#include <algorithm>
 
 #ifdef _USE_BOOST
 #include <boost/graph/adjacency_list.hpp>
@@ -27,37 +28,15 @@ using namespace SFM;
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-// Compute spatial spread of inliers (Intrinsic Weight)
-// Combines coverage (grid)
-float ComputeIntrinsicWeight(ImagePair& pair, const Image& img1, const Image& img2, int gridSize = 10, unsigned minInliers = 15) {
+float SFM::ComputePairCoverage(const ImagePair& pair, const Image& img1, const Image& img2, int gridSize)
+{
+	ASSERT(gridSize > 0);
 	if (!pair.HasMatches())
 		return 0.f;
-
-	// The VALIDITY FLOOR: does this pair carry enough verified correspondence to be considered at
-	// all. The track-forming set is the right quantity -- a gate-validated dense supplement is
-	// evidence about the pair's geometry -- and returning 0 here zeroes weightSpatial, hence
-	// GetCompositeWeight(), hence BuildTracks' minPairWeight cut, so an infused pair whose sparse
-	// segment dips below the floor would contribute NO tracks at all, sparse or dense, and the
-	// infusion would go silently inert on exactly the weak pairs it exists to serve.
-	if (pair.GetNumTrackFormingMatches() < minInliers)
-		return 0.f; // minimal support needed
-	// The AREA SCORE runs over the track-forming matches, dense supplement included: it measures
+	// The coverage runs over the TRACK-FORMING matches, dense supplement included: it measures
 	// where this pair has correspondences, and a dense draw covers the frame it was drawn over
-	// whether or not that counts as descriptor evidence. A dense-only pair (no sparse matches at
-	// all) would otherwise score 0 area, hence 0 weight, and be cut from the view graph it was
-	// deliberately kept in. The MAGNITUDE the score multiplies is discounted instead, in
-	// GetNumWeightedInliers: a dense match counts w, not 1, so a coverage-maximising draw cannot
-	// re-rank the graph by sheer count.
-	// The ANGLE term reads meanRayAngle, accumulated over that same track-forming set (FilterMatches,
-	// or ImagePair::ComputeMeanRayAngle when an append changed the set without re-filtering it), for
-	// the same reason: a ray angle is a geometric quantity, not a sub-pixel one, and this is the one
-	// term that can demote a degenerate baseline -- it has to be available on a pair whose evidence
-	// is dense. Only a pair with no relative pose at all reads 0 here, which
-	// ComputeAngleBaselineWeight scores at its MAXIMUM (see the note there): no baseline was
-	// measurable, and no term in this product will demote such a pair.
+	// whether or not that counts as descriptor evidence.
 	const auto [points1, points2] = pair.GetTrackFormingPoints(img1, img2);
-
-	// Grid Coverage Score (N_eff)
 	// Divide each view into gridSize x gridSize cells:
 	//  - pinhole  : uniform pixel grid (each cell = equal pixel area)
 	//  - spherical: equal-solid-angle bins on the unit sphere via (azimuth, sin(latitude));
@@ -76,22 +55,40 @@ float ComputeIntrinsicWeight(ImagePair& pair, const Image& img1, const Image& im
 		}
 		return std::make_pair(gx, gy);
 	};
-	std::vector<bool> grid1(gridSize * gridSize, false);
-	std::vector<bool> grid2(gridSize * gridSize, false);
-	for (const auto& p : points1) {
-		auto [gx, gy] = binFeature(p, img1);
-		if (gx >= 0 && gx < gridSize && gy >= 0 && gy < gridSize)
-			grid1[gy * gridSize + gx] = true;
-	}
-	for (const auto& p : points2) {
-		auto [gx, gy] = binFeature(p, img2);
-		if (gx >= 0 && gx < gridSize && gy >= 0 && gy < gridSize)
-			grid2[gy * gridSize + gx] = true;
-	}
-	int occupied1 = 0, occupied2 = 0;
-	for (bool b : grid1) if (b) occupied1++;
-	for (bool b : grid2) if (b) occupied2++;
-	const float areaScore = (float)MINF(occupied1, occupied2) / (float)(gridSize * gridSize);
+	const auto occupied = [&](const std::vector<Point2f>& points, const Image& img) {
+		std::vector<bool> grid(gridSize * gridSize, false);
+		for (const Point2f& p : points) {
+			const auto [gx, gy] = binFeature(p, img);
+			if (gx >= 0 && gx < gridSize && gy >= 0 && gy < gridSize)
+				grid[gy * gridSize + gx] = true;
+		}
+		return (int)std::count(grid.begin(), grid.end(), true);
+	};
+	return (float)MINF(occupied(points1, img1), occupied(points2, img2)) / (float)(gridSize * gridSize);
+}
+
+// Compute spatial spread of inliers (Intrinsic Weight)
+// Combines coverage (grid)
+float ComputeIntrinsicWeight(ImagePair& pair, const Image& img1, const Image& img2, int gridSize = 10, unsigned minInliers = 15) {
+	if (!pair.HasMatches())
+		return 0.f;
+
+	// The VALIDITY FLOOR: does this pair carry enough verified correspondence to be considered at
+	// all. The track-forming set is the right quantity -- a gate-validated dense supplement is
+	// evidence about the pair's geometry -- and returning 0 here zeroes weightSpatial, hence
+	// GetCompositeWeight(), hence BuildTracks' minPairWeight cut, so an infused pair whose sparse
+	// segment dips below the floor would contribute NO tracks at all, sparse or dense, and the
+	// infusion would go silently inert on exactly the weak pairs it exists to serve.
+	if (pair.GetNumTrackFormingMatches() < minInliers)
+		return 0.f; // minimal support needed
+	// The ANGLE term reads meanRayAngle, accumulated over that same track-forming set (FilterMatches,
+	// or ImagePair::ComputeMeanRayAngle when an append changed the set without re-filtering it), for
+	// the same reason: a ray angle is a geometric quantity, not a sub-pixel one, and this is the one
+	// term that can demote a degenerate baseline -- it has to be available on a pair whose evidence
+	// is dense. Only a pair with no relative pose at all reads 0 here, which
+	// ComputeAngleBaselineWeight scores at its MAXIMUM (see the note there): no baseline was
+	// measurable, and no term in this product will demote such a pair.
+	const float areaScore = ComputePairCoverage(pair, img1, img2, gridSize);
 	if (pair.overlapArea <= 0.f)
 		pair.overlapArea = areaScore; // no overlap, store area score as proxy
 

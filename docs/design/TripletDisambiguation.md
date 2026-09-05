@@ -4,7 +4,10 @@
 
 An optional, dependency-free pre-reconstruction filter that removes wrong image pairs — repeated
 structure ("doppelgangers"), retrieval false positives — from the matched view graph using nothing
-but the graph itself and **one integer per edge**: the epipolar inlier count. It reimplements
+but the graph itself and one strength per edge: the epipolar inlier count discounted by the
+fraction of the frame the inliers cover. A doppelganger's matches sit on the duplicated object
+alone while a true adjacent pair's spread over the whole overlap, which is what tells apart a
+doppelganger with more inliers than the true junction beside it. It reimplements
 S. M. Manam and V. M. Govindu, *Leveraging Camera Triplets for Efficient and Accurate
 Structure-from-Motion*, CVPR 2024, pp. 4959–4968 (Algorithm 1, Eqn. 3), from the paper alone — no
 code from the MATLAB release or any port. `ViewGraphTriplets.{h,cpp}`; **off by default**.
@@ -12,12 +15,13 @@ code from the MATLAB release or any port. `ViewGraphTriplets.{h,cpp}`; **off by 
 ## The algorithm
 
 View graph `G = (V,E)`: nodes = images, edges = pairs with a stored two-view geometry and at least
-one inlier `n_ij = ImagePair::GetNumFilteredInliers()`.
+one inlier, carrying the strength `s_ij = n_ij * c_ij`, with `n_ij = ImagePair::GetNumWeightedInliers()`
+and `c_ij = ComputePairCoverage(...)` the fraction of the frame the inliers cover.
 
 1. **Triplet graph.** The triangles of `G` are the nodes of the *triplet graph* `G_T`, two adjacent
    iff they share an edge of `G`. The edges taking part in its largest connected component form
    `G_LCT`; everything else — every edge in no triangle included — is **unscored**.
-2. **Score.** `q^t_ij = n_ij / max_{(k,l) in t} n_kl` per triplet `t`; `q_ij` is its mean over the
+2. **Score.** `q^t_ij = s_ij / max_{(k,l) in t} s_kl` per triplet `t`; `q_ij` is its mean over the
    triplets of `G_LCT` containing `(i,j)`.
 3. **Threshold.** `tau = m·(1 − d_max/|V|) + d_max/|V|`, with `|V|` and `d_max` the node count and
    maximum degree **of `G_LCT`** (the paper says "of the graph"; the graph whose edges carry a score
