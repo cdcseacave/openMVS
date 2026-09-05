@@ -274,8 +274,9 @@ bool TripletAutoTauTest()
 		return false;
 	}
 
-	// 3. Auto-tau on this graph must stand down: no threshold both removes something and keeps
-	// 0.99 of the largest component with under 1% of nodes below degree 2.
+	// 3. Auto-tau on this graph must stand down: no threshold at or below the configured m keeps
+	// 0.99 of the largest component, strands no extra images and removes at most a fifth of the
+	// edges, all at once.
 	TripletFilterConfig cfg;
 	cfg.enabled = true;
 	cfg.autoTau = true;
@@ -312,13 +313,14 @@ meaning:
 struct SFM_API TripletFilterConfig
 {
 	bool enabled = false;   // remove the pairs the triplet score rejects (opt-in, see docs/design/TripletDisambiguation.md)
-	// The sweep below picks the threshold from the graph it would leave behind, because the
-	// paper's constant is the part that fails on video keyframes: it is not calibrated for them,
-	// and at m = 0.6 every measured capture loses registered images.
+	// Relax minScore against the graph the filter would leave behind, rather than applying it as
+	// given. The paper's constant is the part that fails on video keyframes: it is not calibrated
+	// for them, and at m = 0.6 every measured capture loses registered images while a densely
+	// connected orbit loses two thirds of its edges.
 	bool autoTau = true;
-	// With autoTau, the FLOOR of the sweep -- the most permissive m it will consider. Without it,
-	// the threshold itself: the paper's minimum edge score m (0.6 generic/large-scale, 0.9 highly
-	// ambiguous, 0.3 medium/small ambiguous).
+	// The strictness asked for: the paper's minimum edge score m (0.6 generic/large-scale, 0.9
+	// highly ambiguous, 0.3 medium/small ambiguous). With autoTau the sweep starts here and only
+	// ever relaxes, so this is a ceiling on how aggressive the filter may be, never a floor.
 	float minScore = 0.6f;
 };
 
@@ -403,41 +405,58 @@ carries both terms, so no rescoring is needed:
 	const TripletScores tripletScores = ComputeTripletScores(scene, config.minScore);
 	float tau = tripletScores.tau;
 	if (config.autoTau) {
-		// Eqn. 3 on G_LCT: tau(m) = m (1 - d_max/|V|) + d_max/|V|, monotone in m, so the
-		// strictest safe m is the first accepted candidate on a downward sweep.
+		// Eqn. 3 on G_LCT: tau(m) = m (1 - d_max/|V|) + d_max/|V|, monotone in m. The sweep starts
+		// at the m that was asked for and only ever relaxes: strictness is a cost, not a virtue.
+		// Sweeping UP instead -- taking the strictest threshold that survives the tests below --
+		// removes 92% of a well-connected outdoor orbit while passing every one of them.
 		const float degreeRatio = tripletScores.numNodes > 0
 			? (float)tripletScores.maxDegree / (float)tripletScores.numNodes : 0.f;
 		const SurvivorGraph unfiltered = EvaluateSurvivorGraph(scene, tripletScores.scores, 0.f);
-		// A candidate is safe when it neither fragments the reconstruction nor strands images: it
-		// keeps 99% of the largest component and adds at most 1% of the nodes to those below
-		// degree 2. BOTH bars are relative to the unfiltered graph, and the second one has to be:
-		// a real capture already has images below degree 2 before any filtering -- 5 of 209 on the
+		// A candidate is accepted when it fragments nothing, strands nobody and rewrites little.
+		//
+		// The first two bars are RELATIVE to the unfiltered graph, and the second one has to be: a
+		// real capture already has images below degree 2 before any filtering -- 5 of 209 on the
 		// measured lidar graph -- so an absolute "under 1% of nodes" bar refuses every threshold,
 		// including the one that removes nothing.
+		//
+		// The third bar is the one connectivity cannot supply. At the paper's own m = 0.6 the
+		// filter removes 65-67% of a healthy, fully connected orbit and the first two bars still
+		// pass, because the score is relative: on a dense graph the mean of n_ij / max(n_kl) over
+		// many triangles sits well below 1 for almost every edge, doppelganger or not. A filter
+		// removing two thirds of a graph is not finding outliers, and doppelgangers are a minority
+		// by construction. MAX_REMOVED_FRACTION says what the filter is for; it is a policy choice
+		// rather than a measured constant, and the log line below reports what was actually
+		// removed so a wrong value shows up in the first run rather than being inferred.
+		constexpr double MAX_REMOVED_FRACTION = 0.20;
 		const unsigned minComponent = (unsigned)std::ceil(0.99 * (double)unfiltered.largestComponent);
 		const unsigned maxLowDegree = unfiltered.numLowDegree +
 			(unsigned)std::floor(0.01 * (double)unfiltered.numNodes);
+		const unsigned minKept = unfiltered.numKept -
+			(unsigned)std::floor(MAX_REMOVED_FRACTION * (double)unfiltered.numKept);
 		tau = -1.f;
-		for (int step = 19; step >= 0; --step) { // m = 0.95 .. 0.00 in steps of 0.05
+		for (int step = (int)std::floor(config.minScore / 0.05f); step >= 0; --step) {
 			const float m = (float)step * 0.05f;
-			if (m < config.minScore)
-				break;
 			const float candidate = m * (1.f - degreeRatio) + degreeRatio;
 			const SurvivorGraph survivor = EvaluateSurvivorGraph(scene, tripletScores.scores, candidate);
-			if (survivor.largestComponent >= minComponent && survivor.numLowDegree <= maxLowDegree) {
+			if (survivor.largestComponent >= minComponent && survivor.numLowDegree <= maxLowDegree &&
+				survivor.numKept >= minKept) {
 				tau = candidate;
-				VERBOSE("Triplet filter: auto-tau chose m %.2f (tau %.3f); survivor graph keeps "
-					"%u/%u images in its largest component, %u below degree 2",
-					m, candidate, survivor.largestComponent, unfiltered.largestComponent,
-					survivor.numLowDegree);
+				VERBOSE("Triplet filter: auto-tau relaxed m %.2f to %.2f (tau %.3f); survivor graph "
+					"keeps %u/%u images in its largest component, %u below degree 2 (%u before), "
+					"and %u/%u edges",
+					config.minScore, m, candidate, survivor.largestComponent,
+					unfiltered.largestComponent, survivor.numLowDegree, unfiltered.numLowDegree,
+					survivor.numKept, unfiltered.numKept);
 				break;
 			}
 		}
 		if (tau < 0.f) {
 			// A graph where no threshold is safe is a graph this filter has no business touching.
-			VERBOSE("Triplet filter: auto-tau found no threshold that keeps %u/%u images connected "
-				"with at most %u below degree 2 (%u before filtering); leaving the view graph alone",
-				minComponent, unfiltered.largestComponent, maxLowDegree, unfiltered.numLowDegree);
+			VERBOSE("Triplet filter: auto-tau found no threshold at or below m %.2f that keeps "
+				"%u/%u images connected, at most %u below degree 2 (%u before) and at least %u/%u "
+				"edges; leaving the view graph alone",
+				config.minScore, minComponent, unfiltered.largestComponent, maxLowDegree,
+				unfiltered.numLowDegree, minKept, unfiltered.numKept);
 			return 0;
 		}
 	}
@@ -452,12 +471,13 @@ actually applied, and let the auto-tau line above report which m produced it.
 `apps/CreateStructure/CreateStructure.cpp`, beside the two existing options:
 
 ```cpp
-		("triplet-auto-tau", boost::program_options::value<bool>(&OPT::bTripletAutoTau)->default_value(TripletFilterConfig().autoTau), "camera-triplet filter: choose the threshold from the graph the filter would leave behind -- the strictest one that still keeps 99% of the largest connected component and adds at most 1% of the images to those below degree 2 -- instead of using --triplet-min-score directly; if no threshold qualifies, the filter leaves the view graph alone")
+		("triplet-auto-tau", boost::program_options::value<bool>(&OPT::bTripletAutoTau)->default_value(TripletFilterConfig().autoTau), "camera-triplet filter: relax --triplet-min-score against the graph the filter would leave behind instead of applying it as given -- back off until the survivor graph keeps 99% of the largest connected component, adds at most 1% of the images to those below degree 2, and removes at most a fifth of the pairs; if no threshold qualifies, the filter leaves the view graph alone")
 ```
 
 Declare `bTripletAutoTau` beside `bFilterTriplets`, assign `cfg.tripletFilterCfg.autoTau` beside
 the existing `minScore` assignment at line 395, and rewrite `--triplet-min-score`'s help so it
-states both meanings — the sweep's floor under auto-tau, the threshold itself without it.
+states both meanings — under auto-tau the strictness the sweep starts from and only ever relaxes,
+without it the threshold itself.
 
 `libs/SFM/PythonWrapper.cpp`, in the `TripletFilterConfig` class definition:
 
@@ -507,13 +527,19 @@ The paper derives tau from a constant m and the connectivity of the
 triplet graph, and nothing in that derivation knows the view graph is
 about to fragment -- which is why m = 0.6 costs registered images on
 every measured capture. The filter now sweeps m downward and takes the
-strictest value whose survivor graph still keeps 99% of the largest
-connected component with under 1% of images below degree 2, and leaves
-the graph alone when no value qualifies.
+requested m and relaxes it until the survivor graph keeps 99% of the
+largest connected component, strands no more images than a hundredth of
+the graph, and loses at most a fifth of its pairs -- leaving the graph
+alone when no value qualifies.
+
+That last bound is the one connectivity cannot supply: at m = 0.6 the
+filter removes two thirds of a healthy, fully connected orbit and every
+connectivity test still passes, because the score is relative and on a
+dense graph almost every edge scores below 1.
 
 The scores do not depend on m, so the whole sweep costs one scoring pass
-and a union-find per candidate. --triplet-min-score becomes the floor of
-the sweep; --triplet-auto-tau turns it off."
+and a union-find per candidate. --triplet-min-score is the strictness the
+sweep starts from; --triplet-auto-tau turns the relaxation off."
 ```
 
 ---
@@ -662,7 +688,8 @@ lists as open two things this plan closed and two it did not.
 - The method section must state the departure from Algorithm 1 step 1 (Task 1) as part of the
   method, with the labelled-reference counts as its evidence.
 - The threshold section must describe the sweep (Task 2), including that it stands down when no
-  threshold is safe, and that `--triplet-min-score` is now its floor.
+  threshold is safe, and that `--triplet-min-score` is the strictness it starts from and only ever
+  relaxes.
 - The follow-ups section: **close** "tau is the weak part" and "discarding the unscored pairs is
   what costs the images"; **keep** "auto-enabling is the obvious next step" (the sweep chooses a
   threshold, it does not choose whether to run — `--filter-triplets` is still an explicit flag) and

@@ -83,42 +83,75 @@ must not give back the one place the filter earns its keep.
 
 ### 3.2 The threshold comes from the survivor graph, not from a constant
 
-**Rule A.** Score once. Sweep `m` downward over a fixed ladder. At each candidate, evaluate the
-survivor graph the filter *would* produce and accept the candidate only if both hold:
+**Rule A.** Score once. Start at the configured `m` and relax downward over a fixed ladder. At each
+candidate, evaluate the survivor graph the filter *would* produce and accept it only if all three
+hold:
 
 - `keptLCC >= 0.99 x LCC(unfiltered)` — the filter may not fragment the reconstruction;
-- `lowDegree(survivor) <= lowDegree(unfiltered) + 0.01 x |V|` — it may not strand images.
+- `lowDegree(survivor) <= lowDegree(unfiltered) + 0.01 x |V|` — it may not strand images;
+- `removed <= 0.20 x |E|` — it may not rewrite the graph.
 
-**Both bars are relative to the unfiltered graph, and the second one has to be.** Written as an
-absolute "under 1 % of nodes below degree 2", the rule is unreachable on real captures: the
-unfiltered lidar one-pass graph already has 5 images below degree 2 out of 209, against an absolute
-bar of 2, so every candidate fails — *including* the one that removes nothing. Replaying the ladder
-on this branch's own recorded graphs showed exactly that, with the survivor graph at `m = 0.6`
-identical to the unfiltered graph and the rule still refusing it. What the test exists to prevent is
-the *filter* stranding images, so it bounds the increase.
+Take the **first** accepted candidate, so the filter is never stricter than what was asked for. If
+none is accepted, it removes nothing and says so: a graph where no threshold is safe is a graph this
+filter has no business touching.
 
-Take the **strictest** (largest `m`) accepted candidate. If none is accepted, the filter removes
-nothing and says so: a graph where no threshold is safe is a graph this filter has no business
-touching.
+Three things about this rule were established by replaying the ladder on this branch's own recorded
+graphs, and each corrects a formulation that looked reasonable on paper:
+
+**The connectivity bars must be relative to the unfiltered graph.** Written as an absolute "under
+1 % of nodes below degree 2", the rule is unreachable on real captures: the unfiltered lidar
+one-pass graph already has 5 images below degree 2 out of 209, against an absolute bar of 2, so
+every candidate fails — *including* the one that removes nothing. The replay showed the survivor
+graph at `m = 0.6` identical to the unfiltered graph and the rule still refusing it. What the test
+exists to prevent is the *filter* stranding images, so it bounds the increase.
+
+**Strictness is a cost, not a virtue.** Taking the strictest safe `m` — sweeping down from 0.95 —
+removes **92 % of Truck's edges** while leaving all 251 images connected with none below degree 2,
+so every connectivity test passes. Relaxing from the configured `m` instead means the sweep can only
+ever back off from what was asked for.
+
+**Connectivity alone cannot bound the damage, hence the third bar.** At the paper's own `m = 0.6`
+the filter removes **65-67 %** of a healthy, fully connected outdoor orbit, and every connectivity
+test still passes. The cause is structural: the score is *relative*, so on a dense graph the mean of
+`n_ij / max n_kl` over many triangles sits well below 1 for almost every edge, doppelganger or not.
+A filter removing two thirds of a graph is not finding outliers. Doppelganger edges are a minority
+by construction, so the fraction removed is bounded directly.
+
+**The 0.20 is a policy choice, not a measurement, and is labelled as one.** It says what the filter
+is *for*. It is inert where the filter is safe — the measured arms remove 4-10 % — and it is what
+stops the one case that would otherwise be rewritten wholesale. It is also why this can be decided
+now rather than after another campaign: `--filter-triplets` is off by default, so the rule only ever
+runs for someone who asked for it, and the promotion measurement is what would move the constant.
+
+Measured behaviour of the whole rule, on the graphs this branch has recorded:
+
+| arm | chosen | survivor | removed |
+|---|---|---|---|
+| 8d2f4877 sift | stands down | — | — |
+| 8d2f4877 onepass | m = 0.60 | 209/5 | 7 % |
+| 38004114 sift | m = 0.15 | 247/14 | 10 % |
+| 38004114 onepass | m = 0.60 | 305/1 | 4 % |
+| Truck sift | stands down | — | — |
+| Truck onepass | m = 0.05 | 251/0 | 17 % |
 
 This is cheap. The scores do not depend on `m` — only `tau` does, through Eqn. 3 on `G_LCT` — so
 one `ComputeTripletScores` call serves the whole sweep, and each candidate costs one union-find
 pass over the edges plus a degree count. The ladder is `m = 0.95` down to the configured
 `minScore` in steps of `0.05`.
 
-`minScore` therefore changes meaning: it stops being *the* threshold and becomes the **floor of the
-sweep**. That is a rename of intent, not of the field, and the CLI help says so.
+`minScore` keeps its meaning as the strictness asked for; the sweep only ever relaxes from it. The
+CLI help says exactly that.
 
 `--triplet-auto-tau`, default **true**. When false, the single configured `minScore` is used, which
 is the paper's behaviour and what every recorded measurement used. Auto is the default because the
 manual value is the part all three measurements say is unreliable.
 
-**Honesty about the fit:** Rule A is 6/6 correct on the measured arms, firing only on
-`32265651`/`roma2gate` at `tau 0.70` and standing down on the five arms where the filter loses. But
-it is fitted on those same arms with a single positive, and it was fitted *before* §3.1 existed.
-With triangle-less edges kept, more captures satisfy the connectivity test, so the sweep will start
-filtering where it currently stands down. Rule A must therefore be re-swept on top of §3.1
-(§5.2) and checked outdoors (§5.3) before it is trusted, and it may not flip any default on its own.
+**Honesty about the fit:** the original Rule A was reported 6/6 correct on seven arms with a single
+positive, and it was fitted *before* §3.1 existed. That claim has not survived contact with this
+branch's own graphs: the replay found its stranded-image bar unreachable, its objective inverted and
+its damage unbounded, all three corrected above. What the corrected rule has is six arms of measured
+behaviour, not a validation. It may not flip any default on its own, and the promotion conjunction
+in §5.6 is what would.
 
 ### 3.3 A second cue, measured before it is trusted
 
@@ -163,7 +196,7 @@ measurement supports it.
 
 | File | Change |
 |---|---|
-| `libs/SFM/ViewGraphTriplets.h` | `TripletFilterConfig::autoTau`; `minScore` documented as the sweep floor; the two header comments corrected for §3.1; declaration of the survivor-graph evaluator and of the bipartite cue |
+| `libs/SFM/ViewGraphTriplets.h` | `TripletFilterConfig::autoTau`; `minScore` documented as the strictness the sweep starts from; the two header comments corrected for §3.1; declaration of the survivor-graph evaluator and of the bipartite cue |
 | `libs/SFM/ViewGraphTriplets.cpp` | §3.1 removal rule; §3.2 sweep; §3.3 Cue 1; corrected log line |
 | `libs/SFM/PairsMatcher.cpp` | `ExportPairsCSV` gains the Cue 1 column beside `TripletScore` |
 | `apps/CreateStructure/CreateStructure.cpp` | `--triplet-auto-tau`; corrected `--filter-triplets` and `--triplet-min-score` help |
@@ -191,16 +224,19 @@ On the one-pass graphs the shipped rule restores the unfiltered component exactl
 removing weak scored edges. On the 38004114 sift graph the paper's rule costs 125 of 247 images;
 keeping the unscored edges recovers 98 of them.
 
-**5.2 Rule A re-swept on top of §3.1.** **Done**, and it corrected the rule (the relative bar
-above). With that correction the sweep fires on four of the five arms — `m = 0.90`, `0.65`, `0.15`
-and `0.65` — and stands down on 8d2f4877 sift, whose graph loses 13 images of its largest component
-at every threshold. Standing down there is the rule working, not failing.
+**5.2 Rule A re-swept on top of §3.1.** **Done**, and it rewrote the rule — all three corrections in
+§3.2 came out of this replay, not out of reasoning about it. The measured behaviour of the corrected
+rule is the table in §3.2.
 
-**5.3 The outdoor check.** Scene type dominates difficulty: outdoor object orbits essentially never
-fire (fraction of pairs below 0.5: Truck 0.005, Barn 0.040) while indoor captures fire on 41-77 %.
-A rule fitted indoors is untested exactly where it is most likely to misfire, so `Truck` and
-`Courthouse` are in the arm list and a regression there is a reportable result, not something to
-tune away.
+**5.3 The outdoor check.** **Done, and it is what found the missing third bar.** Scene type
+dominates difficulty: outdoor object orbits essentially never fire (fraction of pairs below 0.5:
+Truck 0.005, Barn 0.040) while indoor captures fire on 41-77 %, so a rule fitted indoors is untested
+exactly where it is most likely to misfire — and it misfired. On Truck both removal rules and every
+threshold leave the graph at 251/0, so connectivity could never object, and the rule happily removed
+first 92 % and then 67 % of it. `Courthouse` remains unrun and is the next outdoor arm.
+
+What still needs a *reconstruction* rather than a replay: whether the 17 % the corrected rule removes
+from Truck's one-pass graph costs anything. Connectivity says no; only pose error can say.
 
 **5.4 Filter placement.** §3.4, both positions, reporting calibrated focals and registration.
 
@@ -221,9 +257,14 @@ relaxed.
 
 ## 6. Risks
 
-- **Rule A is fitted on seven arms with one positive.** §5.2 and §5.3 are the detectors; if the
-  sweep starts firing where it used to stand down and loses images there, Rule A is wrong and the
-  manual threshold stays.
+- **The 0.20 removal bound is a policy choice.** It is the one number in Rule A that no measurement
+  produced, and it is load-bearing: it is the only thing standing between the filter and a graph it
+  would otherwise rewrite. Too low and the filter stands down where it would have helped; too high
+  and it strips a healthy graph. Every arm reports what it removed, so a wrong value is visible in
+  the first measurement rather than inferred.
+- **Rule A still has no validation, only measured behaviour.** Six arms of replay say it does
+  sensible things; none of them says the result reconstructs better. The promotion conjunction is
+  the gate, and it is unchanged.
 - **§3.1 could give back the win.** A less aggressive filter removes fewer doppelgangers. The
   measured prediction is that the win case moves 376 → 377, but it is a prediction from one
   reference; §5.1 checks it on this branch's own graphs before the code ships.
