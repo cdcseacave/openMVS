@@ -282,6 +282,13 @@ bool TripletAutoTauTest();
 // coverage, so the filter removes it and not the chain
 bool TripletCoverageTest();
 
+// Look-alike copies of one structure form triangles among themselves that score every edge at 1:
+// coverage cannot see them (the whole frame is the repeated structure) and neither can the
+// triangles. The yield -- a pair's inlier count against its images' capacity and the graph's own
+// envelope of that ratio per degree of ray angle -- can: a triplet whose three edges all yield
+// below minYield contributes no evidence, and the filter keeps the walk alone instead of folding it
+bool TripletYieldTest();
+
 // Test function for rotation estimation
 bool RotationEstimatorTest();
 

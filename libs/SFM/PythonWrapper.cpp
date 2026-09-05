@@ -199,9 +199,10 @@ static bool ExportRetrievalRankingsCSVFile(const Scene& scene, const std::string
 // threshold Eqn. 3 derives from the given minimum score m (the scores themselves do not depend
 // on m); the remaining entries are the graph statistics the filter's log line reports. The scores
 // depend on the coverage grid (grid_size): each edge's strength is its inlier count discounted by
-// the fraction of the frame its inliers cover, measured on that grid.
-static boost::python::dict ComputeTripletScoresDict(const Scene& scene, float minScore, int gridSize) {
-	const SFM::TripletScores tripletScores = SFM::ComputeTripletScores(scene, minScore, gridSize);
+// the fraction of the frame its inliers cover, measured on that grid. min_yield is the
+// doppelganger-triplet bar of TripletFilterConfig (0 for the paper's scoring).
+static boost::python::dict ComputeTripletScoresDict(const Scene& scene, float minScore, float minYield, int gridSize) {
+	const SFM::TripletScores tripletScores = SFM::ComputeTripletScores(scene, minScore, minYield, gridSize);
 	boost::python::list scores;
 	for (float score : tripletScores.scores)
 		scores.append(score);
@@ -210,6 +211,7 @@ static boost::python::dict ComputeTripletScoresDict(const Scene& scene, float mi
 	out["tau"] = tripletScores.tau;
 	out["num_triplets"] = tripletScores.numTriplets;
 	out["num_triplet_components"] = tripletScores.numTripletComponents;
+	out["num_doppelganger_triplets"] = tripletScores.numDoppelgangerTriplets;
 	out["num_scored_pairs"] = tripletScores.numScoredPairs;
 	out["num_nodes"] = tripletScores.numNodes;
 	out["max_degree"] = tripletScores.maxDegree;
@@ -319,7 +321,8 @@ void RegisterBindings()
 	class_<SFM::TripletFilterConfig>("TripletFilterConfig")
 		.def_readwrite("enabled", &SFM::TripletFilterConfig::enabled)
 		.def_readwrite("auto_tau", &SFM::TripletFilterConfig::autoTau)
-		.def_readwrite("min_score", &SFM::TripletFilterConfig::minScore);
+		.def_readwrite("min_score", &SFM::TripletFilterConfig::minScore)
+		.def_readwrite("min_yield", &SFM::TripletFilterConfig::minYield);
 
 	// SFM::ViewGraphCalibratorConfig — focal-length verification
 	class_<SFM::ViewGraphCalibratorConfig>("ViewGraphCalibratorConfig");
@@ -403,7 +406,8 @@ void RegisterBindings()
 
 	// Free function: the camera-triplet disambiguation scores of a matched scene.
 	def("compute_triplet_scores", &ComputeTripletScoresDict,
-			(arg("scene"), arg("min_score")=0.f, arg("grid_size")=SFM::PairsWeightingConfig().gridSize));
+			(arg("scene"), arg("min_score")=0.f, arg("min_yield")=SFM::TripletFilterConfig().minYield,
+				arg("grid_size")=SFM::PairsWeightingConfig().gridSize));
 }
 
 } // namespace pySFM

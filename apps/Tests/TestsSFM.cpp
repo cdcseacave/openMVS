@@ -7801,7 +7801,7 @@ bool TripletFilterTest()
 	// (a) scores and statistics of the full graph
 	Scene scene;
 	buildScene(scene, pairSpecs, 10);
-	const TripletScores scores03 = ComputeTripletScores(scene, 0.3f, weightingCfg.gridSize);
+	const TripletScores scores03 = ComputeTripletScores(scene, 0.3f, 0.f, weightingCfg.gridSize);
 	if (scores03.numTriplets != 3 || scores03.numTripletComponents != 2 ||
 		scores03.numScoredPairs != 5 || scores03.numNodes != 4 || scores03.maxDegree != 3) {
 		VERBOSE("TripletFilterTest FAILED: statistics %u triplets in %u components, %u scored pairs, "
@@ -7823,7 +7823,7 @@ bool TripletFilterTest()
 		VERBOSE("TripletFilterTest FAILED: tau %g for m=0.3, expected 0.825", scores03.tau);
 		return false;
 	}
-	const TripletScores scores06 = ComputeTripletScores(scene, 0.6f, weightingCfg.gridSize);
+	const TripletScores scores06 = ComputeTripletScores(scene, 0.6f, 0.f, weightingCfg.gridSize);
 	if (ABS(scores06.tau - 0.9f) > eps) {
 		VERBOSE("TripletFilterTest FAILED: tau %g for m=0.6, expected 0.9", scores06.tau);
 		return false;
@@ -7850,7 +7850,7 @@ bool TripletFilterTest()
 		specs[13] = TripletPairSpec{3, 3, 30, true};   // a self-pair joins no two images
 		Scene sceneDup;
 		buildScene(sceneDup, specs, 14);
-		const TripletScores scoresDup = ComputeTripletScores(sceneDup, 0.3f, weightingCfg.gridSize);
+		const TripletScores scoresDup = ComputeTripletScores(sceneDup, 0.3f, 0.f, weightingCfg.gridSize);
 		if (scoresDup.numTriplets != 3 || scoresDup.numScoredPairs != 6 ||
 			scoresDup.numNodes != 4 || scoresDup.maxDegree != 3 ||
 			ABS(scoresDup.tau - 0.825f) > eps) {
@@ -7879,6 +7879,8 @@ bool TripletFilterTest()
 	// as given; the connectivity-driven threshold below it is TripletAutoTauTest's subject.
 	filterCfg.autoTau = false;
 	filterCfg.minScore = 0.3f;
+	// no ray angles here, so the yield rule is off; it is TripletYieldTest's subject
+	filterCfg.minYield = 0.f;
 	if (FilterPairsByTriplets(scene, filterCfg, weightingCfg) != 2 || scene.pairs.size() != 8) {
 		VERBOSE("TripletFilterTest FAILED: m=0.3 left %u pairs, expected 8", scene.pairs.size());
 		return false;
@@ -7911,7 +7913,7 @@ bool TripletFilterTest()
 	Scene scenePath;
 	static const TripletPairSpec pathSpecs[] = {{0,1,100,true}, {1,2,70,true}, {2,3,40,true}};
 	buildScene(scenePath, pathSpecs, 3);
-	const TripletScores scoresPath = ComputeTripletScores(scenePath, 0.6f, weightingCfg.gridSize);
+	const TripletScores scoresPath = ComputeTripletScores(scenePath, 0.6f, 0.f, weightingCfg.gridSize);
 	if (scoresPath.numTriplets != 0 || scoresPath.numTripletComponents != 0 ||
 		scoresPath.numScoredPairs != 0 || scoresPath.numNodes != 0 || scoresPath.maxDegree != 0 ||
 		ABS(scoresPath.tau - 0.6f) > eps) {
@@ -7987,7 +7989,7 @@ bool TripletAutoTauTest()
 
 	// The unfiltered graph, which is what the threshold search measures itself against: tau = 0 keeps every
 	// scored pair, and an unscored pair is kept regardless.
-	const TripletScores scores = ComputeTripletScores(barbell, 0.f, weightingCfg.gridSize);
+	const TripletScores scores = ComputeTripletScores(barbell, 0.f, 0.f, weightingCfg.gridSize);
 	const SurvivorGraph unfiltered = EvaluateSurvivorGraph(barbell, scores.scores, 0.f);
 	if (unfiltered.numNodes != 6 || unfiltered.largestComponent != 6 || unfiltered.numKept != 8) {
 		VERBOSE("TripletAutoTauTest FAILED: unfiltered barbell %u nodes, component %u, %u edges; expected 6, 6, 8",
@@ -8005,6 +8007,8 @@ bool TripletAutoTauTest()
 	cfg.enabled = true;
 	cfg.autoTau = true;
 	cfg.minScore = 0.6f;
+	// no ray angles here, so the yield rule is off; it is TripletYieldTest's subject
+	cfg.minYield = 0.f;
 	Scene barbellAuto(barbell);
 	const unsigned numBarbellRemoved = FilterPairsByTriplets(barbellAuto, cfg, weightingCfg);
 	if (numBarbellRemoved != 0 || barbellAuto.pairs.size() != 8) {
@@ -8079,7 +8083,7 @@ bool TripletAutoTauTest()
 	AddTripletPair(bridge, 0, 1, 100); // duplicate of the loop's own (0,1) edge: must collapse onto
 	                                   // it rather than inflate the edge or pair counts below
 
-	const TripletScores bridgeScores = ComputeTripletScores(bridge, 0.f, weightingCfg.gridSize);
+	const TripletScores bridgeScores = ComputeTripletScores(bridge, 0.f, 0.f, weightingCfg.gridSize);
 	const SurvivorGraph bridgeUnfiltered = EvaluateSurvivorGraph(bridge, bridgeScores.scores, 0.f);
 	if (bridgeUnfiltered.numNodes != 20 || bridgeUnfiltered.largestComponent != 20 || bridgeUnfiltered.numKept != 92) {
 		VERBOSE("TripletAutoTauTest FAILED: unfiltered bridge %u nodes, component %u, %u edges; expected 20, 20, 92",
@@ -8123,7 +8127,7 @@ bool TripletAutoTauTest()
 	AddTripletPair(pendant, 10, 4, 1);
 	AddTripletPair(pendant, 10, 5, 100);
 
-	const TripletScores pendantScores = ComputeTripletScores(pendant, 0.6f, weightingCfg.gridSize);
+	const TripletScores pendantScores = ComputeTripletScores(pendant, 0.6f, 0.f, weightingCfg.gridSize);
 	const SurvivorGraph pendantUnfiltered = EvaluateSurvivorGraph(pendant, pendantScores.scores, 0.f);
 	if (pendantUnfiltered.numLowDegree != 0 || pendantUnfiltered.numKept != 34) {
 		VERBOSE("TripletAutoTauTest FAILED: unfiltered pendant scene %u low-degree, %u edges; expected 0, 34",
@@ -8163,7 +8167,7 @@ bool TripletAutoTauTest()
 	AddTripletPair(baseline, 8, 9, 1);   // the one weak edge, scores 0.01
 	AddTripletPair(baseline, 10, 0, 50); // a pendant with a single, unscored edge: permanently degree 1
 
-	const TripletScores baselineScores = ComputeTripletScores(baseline, 0.6f, weightingCfg.gridSize);
+	const TripletScores baselineScores = ComputeTripletScores(baseline, 0.6f, 0.f, weightingCfg.gridSize);
 	const SurvivorGraph baselineUnfiltered = EvaluateSurvivorGraph(baseline, baselineScores.scores, 0.f);
 	if (baselineUnfiltered.numLowDegree != 1 || baselineUnfiltered.numKept != 46) {
 		VERBOSE("TripletAutoTauTest FAILED: unfiltered baseline scene %u low-degree, %u edges; expected 1, 46",
@@ -8234,7 +8238,7 @@ bool TripletAutoTauTest()
 			AddTripletPair(pan, i, j, panInliers[i][j]);
 	AddTripletPair(pan, 6, 7, 100); // verified, in no triangle: unscored, kept, and not the largest component
 
-	const TripletScores panScores = ComputeTripletScores(pan, 0.6f, weightingCfg.gridSize);
+	const TripletScores panScores = ComputeTripletScores(pan, 0.6f, 0.f, weightingCfg.gridSize);
 	if (!ISEQUAL(panScores.tau, 0.93333f, 1e-4f) || panScores.numScoredPairs != 15) {
 		VERBOSE("TripletAutoTauTest FAILED: pan ceiling %g with %u scored pairs, expected 0.9333 and 15",
 			panScores.tau, panScores.numScoredPairs);
@@ -8285,7 +8289,7 @@ bool TripletCoverageTest()
 	AddTripletPair(scene, 0, 1, 600);
 	AddTripletPair(scene, 1, 2, 600);
 	AddTripletPair(scene, 0, 2, 900, true, 10, 100);
-	const TripletScores scores = ComputeTripletScores(scene, 0.f, weightingCfg.gridSize);
+	const TripletScores scores = ComputeTripletScores(scene, 0.f, 0.f, weightingCfg.gridSize);
 	if (scores.numTriplets != 1 || scores.numScoredPairs != 3 ||
 		!ISEQUAL(scores.scores[0], 1.f) || !ISEQUAL(scores.scores[1], 1.f) || !ISEQUAL(scores.scores[2], 0.15f)) {
 		VERBOSE("TripletCoverageTest FAILED: %u triplets, %u scored, scores %g %g %g; expected 1, 3, 1 1 0.15",
@@ -8295,7 +8299,7 @@ bool TripletCoverageTest()
 	// The coverage is measured on the grid the caller names, the same one the pair weighting
 	// uses: on a 2x2 grid the ten cells of image 0 are the top row of the 10x10 grid, i.e. the
 	// two upper cells of the coarse one, coverage 0.5, strength 450, score 450/600 = 0.75.
-	const TripletScores coarse = ComputeTripletScores(scene, 0.f, 2);
+	const TripletScores coarse = ComputeTripletScores(scene, 0.f, 0.f, 2);
 	if (!ISEQUAL(coarse.scores[0], 1.f) || !ISEQUAL(coarse.scores[1], 1.f) || !ISEQUAL(coarse.scores[2], 0.75f)) {
 		VERBOSE("TripletCoverageTest FAILED: 2x2 grid scores %g %g %g; expected 1 1 0.75",
 			coarse.scores[0], coarse.scores[1], coarse.scores[2]);
@@ -8308,6 +8312,8 @@ bool TripletCoverageTest()
 	filterCfg.enabled = true;
 	filterCfg.autoTau = false;
 	filterCfg.minScore = 0.5f;
+	// no ray angles here, so the yield rule is off; it is TripletYieldTest's subject
+	filterCfg.minYield = 0.f;
 	const unsigned numRemoved = FilterPairsByTriplets(scene, filterCfg, weightingCfg);
 	const std::set<std::pair<IIndex,IIndex>> expected{{0,1},{1,2}};
 	if (numRemoved != 1 || TripletKeptPairs(scene) != expected) {
@@ -8316,6 +8322,103 @@ bool TripletCoverageTest()
 		return false;
 	}
 	VERBOSE("TripletCoverageTest PASSED: doppelganger (0,2) scores 0.15 against the chain's 1.0 and is the one removed (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// Look-alike copies of one structure vouch for one another: the triangles they form among
+// themselves score every edge at 1 whatever the counts, and no per-pair statistic tells such a
+// pair from a true one -- its coverage is the true pair's, its ray angle is a consecutive pair's.
+// What does is the yield: a look-alike pair delivers a fraction of the inliers a pair at its ray
+// angle delivers between these images, because only the repeated structure matches. A 15-image
+// walk in five 3-image copies (0-2, 3-5, 6-8, 9-11, 12-14): consecutive images share 1000
+// inliers at 2 degrees, images two apart 600 at 4 degrees (every consecutive triple is a
+// triangle, so the walk is one triplet component), and the first image of every copy pairs with
+// the first image of every other copy on 300 inliers at 1 degree -- a near-duplicate viewpoint
+// by its geometry, with less than a third of the inliers a real one delivers.
+//   capacities: every image's strongest pair carries 1000, so u = 1.0 / 0.6 / 0.3
+//   envelope: bin 1 holds the ten look-alikes (90th percentile 0.3), bin 2 the fourteen
+//   consecutive pairs (1.0), bin 4 the thirteen gap-2 pairs (0.6); the suffix maximum lifts
+//   bin 1 to 1.0, so the look-alikes yield 0.3 and everything else 1.0
+//   (0,3): triangles (0,1,3) and (0,2,3) are mixed and give 300/1000 each; (0,3,6), (0,3,9)
+//   and (0,3,12) are look-alike triangles and give nothing: (0.3 + 0.3 + 0 + 0 + 0) / 5 = 0.12
+//   (0,6): only look-alike triangles, with 3, 9 and 12: 0
+//   (0,1): 1 in (0,1,2) and in (0,1,3); (0,2): 600/1000 in (0,1,2) and in (0,2,3): 0.6
+//   31 triplets: 13 consecutive triples, 10 among the five look-alikes, 8 mixed
+// Without the rule the same edges score 0.72 and 1.0, and the filter keeps the six look-alike
+// pairs between non-adjacent copies at any ceiling: that is the fold on ToH.
+bool TripletYieldTest()
+{
+	TD_TIMER_START();
+	const PairsWeightingConfig weightingCfg;
+	const auto build = [](Scene& scene) {
+		AddTripletImages(scene, 15);
+		const auto add = [&scene](IIndex a, IIndex b, unsigned numInliers, float rayAngleDeg) {
+			AddTripletPair(scene, a, b, numInliers);
+			scene.pairs.Last().meanRayAngle = (float)D2R(rayAngleDeg);
+		};
+		for (IIndex i = 0; i + 1 < 15; ++i)
+			add(i, i + 1, 1000, 2.f);
+		for (IIndex i = 0; i + 2 < 15; ++i)
+			add(i, i + 2, 600, 4.f);
+		for (IIndex a = 0; a < 15; a += 3)
+			for (IIndex b = a + 3; b < 15; b += 3)
+				add(a, b, 300, 1.f);
+	};
+	Scene scene;
+	build(scene);
+	const unsigned idx01 = 0, idx02 = 14, idx03 = 27, idx06 = 28; // in order of insertion
+	const TripletFilterConfig defaults;
+	const TripletScores scores = ComputeTripletScores(scene, 0.f, defaults.minYield, weightingCfg.gridSize);
+	if (scores.numTriplets != 31 || scores.numDoppelgangerTriplets != 10 || scores.numScoredPairs != 37 ||
+		!ISEQUAL(scores.scores[idx01], 1.f) || !ISEQUAL(scores.scores[idx02], 0.6f) ||
+		!ISEQUAL(scores.scores[idx03], 0.12f) || !ISEQUAL(scores.scores[idx06], 0.f)) {
+		VERBOSE("TripletYieldTest FAILED: %u triplets (%u doppelganger), %u scored; (0,1) %g (0,2) %g (0,3) %g (0,6) %g; "
+			"expected 31 (10), 37; 1 0.6 0.12 0",
+			scores.numTriplets, scores.numDoppelgangerTriplets, scores.numScoredPairs,
+			scores.scores[idx01], scores.scores[idx02], scores.scores[idx03], scores.scores[idx06]);
+		return false;
+	}
+	// minYield 0 is the paper's scoring: the look-alike triangles count like any other
+	const TripletScores off = ComputeTripletScores(scene, 0.f, 0.f, weightingCfg.gridSize);
+	if (off.numDoppelgangerTriplets != 0 || !ISEQUAL(off.scores[idx03], 0.72f) || !ISEQUAL(off.scores[idx06], 1.f) ||
+		!ISEQUAL(off.scores[idx01], 1.f) || !ISEQUAL(off.scores[idx02], 0.6f)) {
+		VERBOSE("TripletYieldTest FAILED: with the rule off, %u doppelganger triplets; (0,3) %g (0,6) %g (0,1) %g (0,2) %g; "
+			"expected 0; 0.72 1 1 0.6",
+			off.numDoppelgangerTriplets, off.scores[idx03], off.scores[idx06], off.scores[idx01], off.scores[idx02]);
+		return false;
+	}
+	// The filter: G_LCT has 15 nodes and max degree 8 (image 3: 0,1,2,4,5,6,9,12), so the ceiling
+	// at m = 0.6 is 0.6 * (1 - 8/15) + 8/15 = 0.813; the fourteen consecutive pairs score 1 and
+	// hold all fifteen images together, so the ceiling applies as given and they are all that
+	// stays. With the rule off the six look-alike pairs between non-adjacent copies score 1 too
+	// and stay with them.
+	TripletFilterConfig filterCfg;
+	filterCfg.enabled = true;
+	std::set<std::pair<IIndex,IIndex>> expected;
+	for (IIndex i = 0; i + 1 < 15; ++i)
+		expected.emplace(i, i + 1);
+	const unsigned numRemoved = FilterPairsByTriplets(scene, filterCfg, weightingCfg);
+	if (numRemoved != 23 || TripletKeptPairs(scene) != expected) {
+		VERBOSE("TripletYieldTest FAILED: %u pairs removed, %u kept; expected 23 removed and the 14 consecutive pairs kept",
+			numRemoved, (unsigned)scene.pairs.size());
+		return false;
+	}
+	Scene sceneOff;
+	build(sceneOff);
+	filterCfg.minYield = 0.f;
+	const unsigned numRemovedOff = FilterPairsByTriplets(sceneOff, filterCfg, weightingCfg);
+	std::set<std::pair<IIndex,IIndex>> expectedOff(expected);
+	for (const auto& lookAlike : {std::make_pair(0u,6u), std::make_pair(0u,9u), std::make_pair(0u,12u),
+			std::make_pair(3u,9u), std::make_pair(3u,12u), std::make_pair(6u,12u)})
+		expectedOff.emplace((IIndex)lookAlike.first, (IIndex)lookAlike.second);
+	if (numRemovedOff != 17 || TripletKeptPairs(sceneOff) != expectedOff) {
+		VERBOSE("TripletYieldTest FAILED: with the rule off, %u pairs removed, %u kept; expected 17 removed, "
+			"the 14 consecutive pairs and the 6 look-alike pairs between non-adjacent copies kept",
+			numRemovedOff, (unsigned)sceneOff.pairs.size());
+		return false;
+	}
+	VERBOSE("TripletYieldTest PASSED: look-alike triangles give no evidence, (0,6) scores 0 against 1 with the rule off, "
+		"and the filter keeps the walk alone (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 

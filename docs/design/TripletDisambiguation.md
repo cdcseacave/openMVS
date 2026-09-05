@@ -7,7 +7,10 @@ structure ("doppelgangers"), retrieval false positives — from the matched view
 but the graph itself and one strength per edge: the epipolar inlier count discounted by the
 fraction of the frame the inliers cover. A doppelganger's matches sit on the duplicated object
 alone while a true adjacent pair's spread over the whole overlap, which is what tells apart a
-doppelganger with more inliers than the true junction beside it. It reimplements
+doppelganger with more inliers than the true junction beside it. A triangle whose three pairs all
+*yield* poorly — each reads as a near-duplicate viewpoint by its ray angle yet delivers a fraction
+of the inliers such pairs deliver between these images — is look-alike copies vouching for one
+another and carries no evidence. It reimplements
 S. M. Manam and V. M. Govindu, *Leveraging Camera Triplets for Efficient and Accurate
 Structure-from-Motion*, CVPR 2024, pp. 4959–4968 (Algorithm 1, Eqn. 3), from the paper alone — no
 code from the MATLAB release or any port. `ViewGraphTriplets.{h,cpp}`; **off by default**.
@@ -22,7 +25,10 @@ and `c_ij = ComputePairCoverage(...)` the fraction of the frame the inliers cove
    iff they share an edge of `G`. The edges taking part in its largest connected component form
    `G_LCT`; everything else — every edge in no triangle included — is **unscored**.
 2. **Score.** `q^t_ij = s_ij / max_{(k,l) in t} s_kl` per triplet `t`; `q_ij` is its mean over the
-   triplets of `G_LCT` containing `(i,j)`.
+   triplets of `G_LCT` containing `(i,j)`. A triplet whose three edges all yield less than
+   `minYield` (0.4) contributes 0 to that mean: the yield of an edge is `n_ij / min(K_i, K_j)`
+   (each `K` the image's strongest pair) against the graph's own 90th-percentile envelope of that
+   ratio per degree of median ray angle, capped at 1.
 3. **Threshold.** `tau = m·(1 − d_max/|V|) + d_max/|V|`, with `|V|` and `d_max` the node count and
    maximum degree **of `G_LCT`** (the paper says "of the graph"; the graph whose edges carry a score
    is `G_LCT`). `m` is the one user parameter — per the paper 0.6 generic/large-scale, 0.9 highly

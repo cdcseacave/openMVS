@@ -65,12 +65,70 @@ constexpr uint32_t NO_INDEX = (uint32_t)-1;
 
 // F U N C T I O N S ///////////////////////////////////////////////
 
-TripletScores SFM::ComputeTripletScores(const Scene& scene, float minScore, int gridSize)
+// The yield of every edge: how much of what its two images can deliver the pair delivered,
+// against what pairs at its ray angle deliver in this graph. u_e = n_e / min(K_i, K_j), K_i the
+// inlier count of image i's strongest edge; the envelope H is the 90th percentile of u over the
+// edges of each 1-degree bin of ray angle among bins holding at least five edges, made
+// non-increasing in the angle by a suffix maximum (a near-duplicate viewpoint never promises
+// less than a wider one), so a bin without an envelope of its own takes the nearest populated
+// bin above it and the bins above the highest populated one keep its value; the yield is
+// min(1, u_e / H). No populated bin at all -- fewer than five edges everywhere -- means no
+// envelope and every yield 1. The percentile, the bin width and the bin floor are properties of
+// the estimate, not of the scene: 75, 90 and 95 replay identically on every reference set.
+static std::vector<float> ComputeEdgeYields(const std::vector<PairIdx>& edgeImages,
+	const std::vector<unsigned>& edgeInliers, const std::vector<float>& edgeRayAngle, IIndex numImages)
+{
+	constexpr unsigned numBins = 90;        // 1-degree bins; 90 degrees and beyond share the last
+	constexpr size_t minEdgesPerBin = 5;
+	constexpr float percentile = 0.9f;
+	const uint32_t numEdges = (uint32_t)edgeImages.size();
+	std::vector<float> yields(numEdges, 1.f);
+	std::vector<unsigned> capacity(numImages, 0);
+	for (uint32_t e = 0; e < numEdges; ++e) {
+		capacity[edgeImages[e].i] = MAXF(capacity[edgeImages[e].i], edgeInliers[e]);
+		capacity[edgeImages[e].j] = MAXF(capacity[edgeImages[e].j], edgeInliers[e]);
+	}
+	std::vector<float> delivered(numEdges);
+	std::vector<unsigned> binOfEdge(numEdges);
+	std::vector<std::vector<float>> bins(numBins);
+	for (uint32_t e = 0; e < numEdges; ++e) {
+		delivered[e] = (float)edgeInliers[e] / (float)MINF(capacity[edgeImages[e].i], capacity[edgeImages[e].j]);
+		binOfEdge[e] = (unsigned)MINF((int)std::floor(R2D(edgeRayAngle[e])), (int)numBins - 1);
+		bins[binOfEdge[e]].push_back(delivered[e]);
+	}
+	std::vector<float> envelope(numBins, -1.f);
+	for (unsigned b = 0; b < numBins; ++b) {
+		std::vector<float>& values = bins[b];
+		if (values.size() < minEdgesPerBin)
+			continue;
+		const size_t rank = MINF(values.size() - 1, (size_t)((float)values.size() * percentile));
+		std::nth_element(values.begin(), values.begin() + rank, values.end());
+		envelope[b] = values[rank];
+	}
+	float best = -1.f;
+	for (unsigned b = numBins; b-- > 0; ) {
+		best = MAXF(best, envelope[b]);
+		envelope[b] = best;
+	}
+	if (best < 0.f)
+		return yields;
+	for (unsigned b = 1; b < numBins; ++b)
+		if (envelope[b] < 0.f)
+			envelope[b] = envelope[b - 1];
+	for (uint32_t e = 0; e < numEdges; ++e)
+		yields[e] = MINF(1.f, delivered[e] / envelope[binOfEdge[e]]);
+	return yields;
+}
+// (binOfEdge uses std::floor of a non-negative angle, so the cast to int is safe; envelope
+// values are percentiles of delivered, which is in (0,1], so the division is safe once best
+// is non-negative.)
+
+TripletScores SFM::ComputeTripletScores(const Scene& scene, float minScore, float minYield, int gridSize)
 {
 	TripletScores result;
 	result.scores.assign(scene.pairs.size(), -1.f);
 	result.tau = minScore; // no G_LCT: d_max/|V| is taken as 0, so Eqn. 3 degenerates to tau = m
-	result.numTriplets = result.numTripletComponents = result.numScoredPairs = 0;
+	result.numTriplets = result.numTripletComponents = result.numDoppelgangerTriplets = result.numScoredPairs = 0;
 	result.numNodes = result.maxDegree = 0;
 	if (scene.pairs.empty() || scene.images.empty())
 		return result;
@@ -85,6 +143,8 @@ TripletScores SFM::ComputeTripletScores(const Scene& scene, float minScore, int 
 	std::vector<uint32_t> edgeOfScenePair(scene.pairs.size(), NO_INDEX);
 	std::vector<PairIdx> edgeImages;    // the two image indices of each edge (i < j)
 	std::vector<float> edgeStrength;    // s_ij = n_ij * c_ij
+	std::vector<unsigned> edgeInliers;  // n_ij of the scene pair that supplied the strength
+	std::vector<float> edgeRayAngle;    // its median ray angle, radians
 	edgeOfImagePair.reserve(scene.pairs.size());
 	FOREACH(idxPair, scene.pairs) {
 		const ImagePair& pair = scene.pairs[idxPair];
@@ -105,8 +165,12 @@ TripletScores SFM::ComputeTripletScores(const Scene& scene, float minScore, int 
 		if (inserted.second) {
 			edgeImages.emplace_back(imagePair);
 			edgeStrength.emplace_back(strength);
+			edgeInliers.emplace_back(numInliers);
+			edgeRayAngle.emplace_back(pair.meanRayAngle);
 		} else if (strength > edgeStrength[inserted.first->second]) {
 			edgeStrength[inserted.first->second] = strength;
+			edgeInliers[inserted.first->second] = numInliers;
+			edgeRayAngle[inserted.first->second] = pair.meanRayAngle;
 		}
 		edgeOfScenePair[idxPair] = inserted.first->second;
 	}
@@ -199,11 +263,19 @@ TripletScores SFM::ComputeTripletScores(const Scene& scene, float minScore, int 
 
 	// 5. Score the edges of G_LCT (Algorithm 1 steps 4-8): a second streaming pass over the
 	// triplets of the largest component accumulates the per-triplet maximum s_kl and the per-edge
-	// running sum of q^t_ij = s_ij / max_{(k,l) in t} s_kl.
+	// running sum of q^t_ij = s_ij / max_{(k,l) in t} s_kl. A triplet whose three edges all yield
+	// below minYield is look-alike copies vouching for one another: it stays in the divisor
+	// (numTripletsOfEdge) and adds nothing to the sum.
+	const std::vector<float> yields = minYield > 0.f
+		? ComputeEdgeYields(edgeImages, edgeInliers, edgeRayAngle, numImages) : std::vector<float>();
 	std::vector<double> scoreSumOfEdge(numEdges, 0.0);
 	ForEachTriplet([&](uint32_t e0, uint32_t e1, uint32_t e2) {
 		if (components.Find(e0) != largestComponent)
 			return;
+		if (minYield > 0.f && MAXF3(yields[e0], yields[e1], yields[e2]) < minYield) {
+			++result.numDoppelgangerTriplets;
+			return;
+		}
 		const float maxStrength = MAXF3(edgeStrength[e0], edgeStrength[e1], edgeStrength[e2]);
 		ASSERT(maxStrength > 0.f, "ComputeTripletScores: triplet with no strength");
 		scoreSumOfEdge[e0] += (double)edgeStrength[e0] / (double)maxStrength;
@@ -303,7 +375,10 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 	const float minScore = std::isnan(config.minScore) ? 0.f : CLAMP(config.minScore, 0.f, 1.f);
 	if (minScore != config.minScore)
 		VERBOSE("warning: triplet filter: minimum edge score %g is outside [0,1], using %g", config.minScore, minScore);
-	const TripletScores tripletScores = ComputeTripletScores(scene, minScore, weightingCfg.gridSize);
+	const float minYield = std::isnan(config.minYield) ? 0.f : CLAMP(config.minYield, 0.f, 1.f);
+	if (minYield != config.minYield)
+		VERBOSE("warning: triplet filter: minimum yield %g is outside [0,1], using %g", config.minYield, minYield);
+	const TripletScores tripletScores = ComputeTripletScores(scene, minScore, minYield, weightingCfg.gridSize);
 	const float degreeRatio = tripletScores.numNodes > 0
 		? (float)tripletScores.maxDegree / (float)tripletScores.numNodes : 0.f;
 	// Eqn. 3 on G_LCT, tau(m) = m (1 - d_max/|V|) + d_max/|V|, is the CEILING: the filter is never
@@ -385,10 +460,11 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 	if (numRemoved > 0)
 		scene.pairs.RemoveLast(numRemoved);
 	VERBOSE("Triplet filter: kept %u/%u scene pairs (tau %.3f; %u nodes, max degree %u; "
-		"%u triplets in %u components; %u below tau removed, %u unscored kept)",
+		"%u triplets in %u components, %u doppelganger triplets gave no evidence; %u below tau removed, %u unscored kept)",
 		numKept, numPairs, tau,
 		tripletScores.numNodes, tripletScores.maxDegree,
-		tripletScores.numTriplets, tripletScores.numTripletComponents, numBelowTau, numUnscored);
+		tripletScores.numTriplets, tripletScores.numTripletComponents, tripletScores.numDoppelgangerTriplets,
+		numBelowTau, numUnscored);
 	// the connectivity and cycle-consistency weights were computed on the unfiltered graph and
 	// the composite-weight order the reconstruction consumes is stale after the removals; a filter
 	// that removed nothing left both intact, so re-running would only cost time

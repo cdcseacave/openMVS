@@ -43,6 +43,13 @@ class SFM_API Scene;
 // (PairsWeighting.cpp): a doppelganger's false edges are mutually *consistent* — the rotations
 // around such a cycle close — so a cycle-error test cannot see them, while their inlier counts
 // still fall short of the true structure around them. Both scores are kept.
+//
+// Coverage cannot see a look-alike that fills the frame -- a round, symmetric building seen from
+// a third of a turn away -- and neither can the triangles, since such pairs form triangles among
+// themselves that score every edge at 1. What can is the yield: two-view geometry reads such a
+// pair as a near-duplicate viewpoint, yet it delivers a fraction of the inliers a near-duplicate
+// pair of these images delivers, because only the repeated structure matches. A triangle whose
+// three pairs all yield poorly is no evidence for any of them.
 struct SFM_API TripletFilterConfig
 {
 	bool enabled = false;   // remove the pairs the triplet score rejects (opt-in, see docs/design/TripletDisambiguation.md)
@@ -53,6 +60,10 @@ struct SFM_API TripletFilterConfig
 	// generic/large-scale, 0.9 highly ambiguous, 0.3 medium/small ambiguous. With autoTau this is
 	// the ceiling the threshold is derived from and never exceeds.
 	float minScore = 0.6f;
+	// A triangle whose three pairs all yield less than this fraction of the inliers pairs at their
+	// ray angle deliver in this graph (ComputeTripletScores) is a doppelganger triangle -- look-alike
+	// copies vouching for one another -- and gives its edges no evidence. 0 switches the rule off.
+	float minYield = 0.4f;
 };
 
 // The view graph the filter would leave behind at a given threshold: what the search judges.
@@ -78,6 +89,7 @@ struct SFM_API TripletScores
 	float tau;                      // the threshold of Eqn. 3 for the requested minimum score m
 	unsigned numTriplets;           // triplets (3-cycles) of the whole view graph G
 	unsigned numTripletComponents;  // connected components of the triplet graph G_T
+	unsigned numDoppelgangerTriplets; // triplets of G_LCT whose three edges all yield below minYield: counted, no evidence
 	unsigned numScoredPairs;        // scene.pairs entries that got a score (the edges of G_LCT)
 	unsigned numNodes;              // |V| of G_LCT (the graph tau is derived from)
 	unsigned maxDegree;             // d_max of G_LCT
@@ -95,7 +107,15 @@ struct SFM_API TripletScores
 // unscored (-1). A verified pair whose matches are not stored has a coverage of 0 and is not an
 // edge either. The scores themselves do not depend on m; only `tau` does, so a caller that
 // wants the scores alone can pass 0.
-TripletScores SFM_API ComputeTripletScores(const Scene& scene, float minScore, int gridSize);
+// The yield of an edge is u_ij / H(theta_ij), capped at 1: u_ij = n_ij / min(K_i, K_j) with K_i
+// the inlier count of image i's strongest pair, and H the graph's own envelope -- the 90th
+// percentile of u over the edges in each 1-degree bin of median ray angle (bins holding at least
+// five edges), made non-increasing in the angle. A triplet whose three edges all yield less than
+// minYield is a doppelganger triplet -- three look-alike copies vouching for one another, each
+// pair reading as a near-duplicate viewpoint while delivering a fraction of the inliers such a
+// pair delivers -- and adds nothing to its edges' score sums while still counting in their
+// divisor; minYield 0 is the paper's scoring.
+TripletScores SFM_API ComputeTripletScores(const Scene& scene, float minScore, float minYield, int gridSize);
 
 // Apply Algorithm 1 step 10 to the scene: remove only the pairs scoring below tau, then recompute
 // the pair weights so the connectivity/cycle-consistency weights describe the filtered graph. This
