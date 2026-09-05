@@ -28,7 +28,9 @@ in-tree `Tests` binary.
 - Never write into a dataset capture's `keyframes/`; run artifacts go to
   `<capture>/<descriptive-run-name>/` with the log beside them. Nothing this plan builds writes
   outside the worktree.
-- The build tree is `make/` (Ninja Multi-Config). Build and test Release.
+- The build tree is `make/` (Ninja Multi-Config). Build and test Release. The `Tests` binary takes
+  a suite number: bare `Tests` runs the generic unit tests and `Tests 1` runs the SFM suite, which
+  is where every test in this plan lives. Running it bare will silently not run them.
 - `grep` is aliased to ugrep on this machine: use `/usr/bin/grep`.
 - No subagent dispatches subagents.
 - Never edit a running shell script in place.
@@ -123,7 +125,7 @@ the disabled filter is a no-op. All three stay exactly as they are.
 - [ ] **Step 2: Run the test and watch all three cases fail**
 
 ```bash
-cd /home/ubuntu/.claude/worktrees/roma2-onnx/make && ninja -f build-Release.ninja Tests && ./bin/Release/Tests 2>&1 | /usr/bin/grep -i -B2 -A3 "TripletFilterTest"
+cd /home/ubuntu/.claude/worktrees/roma2-onnx/make && ninja -f build-Release.ninja Tests && ./bin/Release/Tests 1 2>&1 | /usr/bin/grep -i -B2 -A3 "TripletFilterTest"
 ```
 
 Expected: `TripletFilterTest FAILED: m=0.3 left 3 pairs, expected 8`. If it passes, the edit did not
@@ -195,7 +197,7 @@ stays; a hit that says the *filter* removes it is now wrong.
 - [ ] **Step 6: Run the test and watch it pass**
 
 ```bash
-cd /home/ubuntu/.claude/worktrees/roma2-onnx/make && ninja -f build-Release.ninja Tests && ./bin/Release/Tests 2>&1 | tail -20
+cd /home/ubuntu/.claude/worktrees/roma2-onnx/make && ninja -f build-Release.ninja Tests && ./bin/Release/Tests 1 2>&1 | tail -20
 ```
 
 Expected: the whole suite passes, exit 0, with cases (c), (d) and (e) now asserting the counts from
@@ -466,7 +468,7 @@ states both meanings — the sweep's floor under auto-tau, the threshold itself 
 - [ ] **Step 7: Run the tests**
 
 ```bash
-cd /home/ubuntu/.claude/worktrees/roma2-onnx/make && ninja -f build-Release.ninja Tests && ./bin/Release/Tests 2>&1 | tail -20
+cd /home/ubuntu/.claude/worktrees/roma2-onnx/make && ninja -f build-Release.ninja Tests && ./bin/Release/Tests 1 2>&1 | tail -20
 ```
 
 **Before running it, fix `TripletFilterTest`** — this is required, not conditional. That test sets no
@@ -490,7 +492,7 @@ Set it explicitly, with the reason:
 ```
 
 ```bash
-cd /home/ubuntu/.claude/worktrees/roma2-onnx/make && ninja -f build-Release.ninja Tests && ./bin/Release/Tests 2>&1 | tail -20
+cd /home/ubuntu/.claude/worktrees/roma2-onnx/make && ninja -f build-Release.ninja Tests && ./bin/Release/Tests 1 2>&1 | tail -20
 ```
 
 Expected: the whole suite passes including `TripletAutoTauTest`, with `TripletFilterTest`'s counts
@@ -622,7 +624,7 @@ dict-returning shape so the offline analysis can read both cues the same way.
 - [ ] **Step 7: Run the tests**
 
 ```bash
-cd /home/ubuntu/.claude/worktrees/roma2-onnx/make && ninja -f build-Release.ninja Tests && ./bin/Release/Tests 2>&1 | tail -20
+cd /home/ubuntu/.claude/worktrees/roma2-onnx/make && ninja -f build-Release.ninja Tests && ./bin/Release/Tests 1 2>&1 | tail -20
 ```
 
 - [ ] **Step 8: Commit**

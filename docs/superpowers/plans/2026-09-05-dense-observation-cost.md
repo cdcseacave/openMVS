@@ -22,7 +22,9 @@ bundle adjustment at its estimated weight, still counts in the view graph at its
   no `Co-Authored-By`, no session link, no mention of Claude or AI. This overrides any harness
   default.
 - **No merge, no push, no PR.** The branch stays local.
-- The build tree is `make/` (Ninja Multi-Config). Build and test Release.
+- The build tree is `make/` (Ninja Multi-Config). Build and test Release. The `Tests` binary takes
+  a suite number: bare `Tests` runs the generic unit tests and `Tests 1` runs the SFM suite, which
+  is where every test in this plan lives. Running it bare will silently not run them.
 - `grep` is aliased to ugrep on this machine: use `/usr/bin/grep`.
 - No subagent dispatches subagents.
 - **No process vocabulary in anything a user reads.** Ruling numbers, task numbers and finding IDs
@@ -166,7 +168,7 @@ reader changing `minInliers` must be able to see that it moves two things.
 - [ ] **Step 6: Run the tests**
 
 ```bash
-cd /home/ubuntu/.claude/worktrees/roma2-onnx/make && ninja -f build-Release.ninja Tests && ./bin/Release/Tests 2>&1 | tail -20
+cd /home/ubuntu/.claude/worktrees/roma2-onnx/make && ninja -f build-Release.ninja Tests && ./bin/Release/Tests 1 2>&1 | tail -20
 ```
 
 Expected: the whole suite passes, exit 0. `ROMA2ReconstructTest` runs both a described-only and a
