@@ -215,6 +215,17 @@ bool Image::LoadMetadata(float defaultFocalRatio)
 		}
 		// Projection type: 2 = equirectangular/spherical
 		isSpherical = (exif.ProjectionType == 2);
+		// A focal length no lens can carry is EXIF garbage, not a measurement: below a fifth of the
+		// long side (a 7 mm 35mm-equivalent fisheye) or above a hundred times it (a 3.6 m lens). A
+		// finite, positive and absurd value gets through every arithmetic test below -- a
+		// focal-plane resolution tag of 2.5e-5 px/cm seen in the wild yields a 2e-5 px focal --
+		// and the view-graph calibrator then refuses the camera as infeasible and the whole
+		// reconstruction fails on it. Every rung of the ladder below applies this test and falls
+		// through to the next source when it fails.
+		const auto plausibleFocal = [w, h](REAL f) {
+			const REAL ratio = f / (REAL)MAXF(w, h);
+			return ISFINITE(f) && ratio >= REAL(0.2) && ratio <= REAL(100);
+		};
 		// Focal estimation priority
 		// F1: FocalLength (mm) * FocalPlaneResolution (px per unit)
 		double mmPerUnit = 0.0;
@@ -259,8 +270,8 @@ bool Image::LoadMetadata(float defaultFocalRatio)
 			// incomplete metadata (a FocalPlaneYResolution without an X, say), which otherwise
 			// leaves half a sensor size behind for a focal that came from another source. Drop
 			// everything this branch derived and let the ladder fall through to the sources below.
-			if (!setFromFocalAndSensor || !ISFINITE(fx) || !ISFINITE(fy) ||
-				!ISFINITE(sensorWmm) || !ISFINITE(sensorHmm) || fx <= 0 || fy <= 0 ||
+			if (!setFromFocalAndSensor || !plausibleFocal(fx) || !plausibleFocal(fy) ||
+				!ISFINITE(sensorWmm) || !ISFINITE(sensorHmm) ||
 				sensorWmm < 0 || sensorHmm < 0)
 			{
 				VERBOSE("warning: image '%s' has incomplete or unusable EXIF focal-plane metadata "
@@ -281,7 +292,7 @@ bool Image::LoadMetadata(float defaultFocalRatio)
 			// see: https://en.wikipedia.org/wiki/35_mm_equivalent_focal_length
 			const REAL diagonal = SQRT(SQUARE((REAL)w) + SQUARE((REAL)h));
 			const REAL focal = diagonal * exif.LensInfo.FocalLengthIn35mm / REAL(43.27);
-			if (ISFINITE(focal) && focal > 0) {
+			if (plausibleFocal(focal)) {
 				fx = fy = focal;
 				trustIntrinsics = true;
 			} else {
@@ -291,9 +302,9 @@ bool Image::LoadMetadata(float defaultFocalRatio)
 		}
 		// F3: Calibration focal in pixels (if present)
 		if ((fx <= 0.f || fy <= 0.f) && exif.Calibration.FocalLength > 0.0) {
-			// the test above already rejects a NaN or negative calibration focal; infinity is
-			// what is left to catch
-			if (ISFINITE(exif.Calibration.FocalLength)) {
+			// the test above already rejects a NaN or negative calibration focal; infinity and
+			// an absurd magnitude are what is left to catch
+			if (plausibleFocal((REAL)exif.Calibration.FocalLength)) {
 				fx = fy = (REAL)exif.Calibration.FocalLength;
 				trustIntrinsics = true;
 			} else {
