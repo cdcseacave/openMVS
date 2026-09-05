@@ -56,15 +56,20 @@ struct SFM_API TripletFilterConfig
 	// The paper's tau(m) is a ceiling: below it, the threshold is the strictest one whose survivor
 	// graph joins every piece the ceiling leaves. Off, tau(m) is applied as given.
 	bool autoTau = true;
-	// The paper's minimum edge score m, in [0,1] (the domain this implementation enforces). With
-	// autoTau this is the ceiling the threshold is derived from and never exceeds. The paper's
-	// values are 0.6 generic/large-scale, 0.9 highly ambiguous, 0.3 medium/small ambiguous, for a
-	// score without coverage or yield; 0.75 here is the middle of the band in which an exhaustively
-	// matched two-faced building (the church, four matchings) splits into its faces at the ceiling
-	// whatever north-south pairs the matcher happens to verify -- at 0.6 the ceiling (0.942) sits
-	// among those pairs' scores and two matchings of four merge the faces. Sets whose ceiling
-	// shatters the graph are untouched: the descent reaches the same threshold whatever m is.
-	float minScore = 0.75f;
+	// The paper's minimum edge score m, in [0,1] (the domain this implementation enforces): 0.6
+	// generic/large-scale, 0.9 highly ambiguous, 0.3 medium/small ambiguous. With autoTau this is
+	// the ceiling the threshold is derived from and never exceeds -- unless the graph shows a
+	// second face, see secondFaceScore.
+	float minScore = 0.6f;
+	// A second, stricter ceiling, tau(secondFaceScore), tried first: it is the ceiling used when
+	// the graph it leaves has two faces -- its largest piece holds a strict majority of the images
+	// in pieces and its second-largest piece at least a third of the largest. A two-faced building
+	// matched exhaustively (the church: seven matchings) splits into its faces at this ceiling and
+	// merges them at tau(minScore) in half the matchings, while a building whose graph is one face
+	// (Big Ben) is cut so thin at this ceiling that the reconstruction keeps a third of it. Values
+	// at or below minScore switch the second ceiling off. Part of autoTau: with autoTau off it is
+	// not tried.
+	float secondFaceScore = 0.75f;
 	// A triangle whose three pairs all yield less than this fraction of the inliers pairs at their
 	// ray angle deliver in this graph (ComputeTripletScores) is a doppelganger triangle -- look-alike
 	// copies vouching for one another -- and gives its edges no evidence. 0 switches the rule off.
@@ -83,6 +88,7 @@ struct SFM_API SurvivorGraph
 	                            // largest component, holding at least minPiece nodes
 	unsigned numInPieces;       // nodes in those components; the rest are stragglers
 	unsigned largestPiece;      // images in the largest piece (0 when there is none)
+	unsigned secondPiece;       // images in the second-largest piece (0 when there is none)
 	IIndexArr largestPieceViews; // the images of the largest piece, ascending (empty when there is none);
 	                            // between equally large pieces, the one holding the lowest image index
 	IIndexArr pieceRoots;       // one image per piece, its smallest index, ascending

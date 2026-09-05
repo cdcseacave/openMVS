@@ -7876,7 +7876,8 @@ bool TripletFilterTest()
 	TripletFilterConfig filterCfg;
 	filterCfg.enabled = true;
 	// This test pins the paper's threshold arithmetic -- Eqn. 3 at a given m -- so it applies m
-	// as given; the connectivity-driven threshold below it is TripletAutoTauTest's subject.
+	// as given; the connectivity-driven threshold below it is TripletAutoTauTest's subject. The
+	// second-face ceiling is part of that same connectivity search, so it is off here too.
 	filterCfg.autoTau = false;
 	filterCfg.minScore = 0.3f;
 	// no ray angles here, so the yield rule is off; it is TripletYieldTest's subject
@@ -7959,7 +7960,10 @@ bool TripletFilterTest()
 // chased, and the three-chains pins that the ceiling shatters the graph into three equal pieces,
 // none a majority, and the descent joins them at the strictest threshold that does so; the
 // straggler flood pins that the descent's bar is the pieces sharing a component, not a count of
-// nodes; the chain of pairs pins that a ceiling leaving no piece makes every component a piece.
+// nodes; the chain of pairs pins that a ceiling leaving no piece makes every component a piece;
+// the two faces pin that the ceiling at the second-face score is used when it leaves a majority
+// piece with a second piece of at least a third; the face and its cluster pin that a second piece
+// smaller than that leaves the paper's ceiling in force.
 bool TripletAutoTauTest()
 {
 	TD_TIMER_START();
@@ -8531,10 +8535,84 @@ bool TripletAutoTauTest()
 		return false;
 	}
 
+	// The two faces: at the paper's ceiling the bridges join the chains into one majority piece;
+	// at the higher ceiling the chains are two pieces, the second holding two thirds of the first,
+	// so the higher ceiling is the one used and the bridges go.
+	Scene faces;
+	AddTripletImages(faces, 100);
+	for (IIndex i = 0; i + 1 < 60; ++i)
+		AddTripletPair(faces, i, i + 1, 1000);
+	for (IIndex i = 0; i + 2 < 60; ++i)
+		AddTripletPair(faces, i, i + 2, 600);
+	for (IIndex i = 60; i + 1 < 100; ++i)
+		AddTripletPair(faces, i, i + 1, 1000);
+	for (IIndex i = 60; i + 2 < 100; ++i)
+		AddTripletPair(faces, i, i + 2, 600);
+	AddTripletPair(faces, 59, 60, 700);
+	AddTripletPair(faces, 58, 60, 700);
+	AddTripletPair(faces, 59, 61, 700);
+	const TripletScores facesScores = ComputeTripletScores(faces, 0.6f, 0.f, weightingCfg.gridSize);
+	const SurvivorGraph facesLow = EvaluateSurvivorGraph(faces, facesScores.scores, facesScores.tau);
+	const SurvivorGraph facesHigh = EvaluateSurvivorGraph(faces, facesScores.scores, 0.75f*(1.f-4.f/100.f)+4.f/100.f);
+	if (!ISEQUAL(facesScores.tau, 0.6f*(1.f-4.f/100.f)+4.f/100.f) || facesLow.numPieces != 1 || facesLow.largestPiece != 100 ||
+		facesHigh.numPieces != 2 || facesHigh.largestPiece != 60 || facesHigh.secondPiece != 40) {
+		VERBOSE("TripletAutoTauTest FAILED: two faces at %g: %u pieces, largest %u; at 0.76: %u pieces, largest %u, second %u; "
+			"expected one piece of 100, then two of 60 and 40",
+			facesScores.tau, facesLow.numPieces, facesLow.largestPiece, facesHigh.numPieces, facesHigh.largestPiece, facesHigh.secondPiece);
+		return false;
+	}
+	TripletFilterConfig facesCfg;
+	facesCfg.enabled = true;
+	facesCfg.minYield = 0.f;
+	IIndexArr facesSeeds;
+	const unsigned facesRemoved = FilterPairsByTriplets(faces, facesCfg, weightingCfg, &facesSeeds);
+	const std::set<std::pair<IIndex,IIndex>> facesKept = TripletKeptPairs(faces);
+	bool facesRight = facesRemoved == 99 && facesKept.size() == 98 && facesKept.count({59,60}) == 0 &&
+		facesKept.count({58,59}) == 1 && facesKept.count({60,61}) == 1 && facesSeeds.size() == 60;
+	FOREACH(i, facesSeeds)
+		facesRight = facesRight && facesSeeds[i] == (IIndex)i;
+	if (!facesRight) {
+		VERBOSE("TripletAutoTauTest FAILED: two faces removed %u pairs, kept %u, seed views %u; expected the higher ceiling "
+			"(a majority piece with a second piece of two thirds): 99 removed, 98 kept, the bridges gone, seed views 0-59",
+			facesRemoved, (unsigned)facesKept.size(), (unsigned)facesSeeds.size());
+		return false;
+	}
+
+	// The face and its cluster: the higher ceiling leaves a majority piece with a second piece of
+	// a quarter of it -- a cluster hanging off the building, not its other face -- so the paper's
+	// ceiling stands and the cluster stays joined.
+	Scene cluster;
+	AddTripletImages(cluster, 75);
+	for (IIndex i = 0; i + 1 < 60; ++i)
+		AddTripletPair(cluster, i, i + 1, 1000);
+	for (IIndex i = 0; i + 2 < 60; ++i)
+		AddTripletPair(cluster, i, i + 2, 600);
+	for (IIndex i = 60; i + 1 < 75; ++i)
+		AddTripletPair(cluster, i, i + 1, 1000);
+	for (IIndex i = 60; i + 2 < 75; ++i)
+		AddTripletPair(cluster, i, i + 2, 600);
+	AddTripletPair(cluster, 59, 60, 700);
+	AddTripletPair(cluster, 58, 60, 700);
+	AddTripletPair(cluster, 59, 61, 700);
+	TripletFilterConfig clusterCfg;
+	clusterCfg.enabled = true;
+	clusterCfg.minYield = 0.f;
+	IIndexArr clusterSeeds;
+	const unsigned clusterRemoved = FilterPairsByTriplets(cluster, clusterCfg, weightingCfg, &clusterSeeds);
+	const std::set<std::pair<IIndex,IIndex>> clusterKept = TripletKeptPairs(cluster);
+	if (clusterRemoved != 71 || clusterKept.size() != 76 || clusterKept.count({59,60}) != 1 || clusterSeeds.size() != 75) {
+		VERBOSE("TripletAutoTauTest FAILED: the face and its cluster removed %u pairs, kept %u, seed views %u; expected the "
+			"paper's ceiling (the second piece is a quarter of the first): 71 removed, 76 kept, the bridges kept, seed views 0-74",
+			clusterRemoved, (unsigned)clusterKept.size(), (unsigned)clusterSeeds.size());
+		return false;
+	}
+
 	VERBOSE("TripletAutoTauTest PASSED: the descent repairs a shattered ceiling and leaves a majority piece's "
 		"ceiling as given, the straggler flood pins the descent's bar to the pieces sharing a component rather "
-		"than a count of nodes, the chain of pairs pins that a ceiling leaving no piece still descends, and the "
-		"seed views are the largest ceiling piece (%s)", TD_TIMER_GET_FMT().c_str());
+		"than a count of nodes, the chain of pairs pins that a ceiling leaving no piece still descends, the two "
+		"faces pin that the second-face ceiling is used when it leaves a majority piece with a second piece of "
+		"at least a third, and the face and its cluster pin that a smaller second piece leaves the paper's "
+		"ceiling in force; the seed views are the largest ceiling piece (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 
@@ -8632,10 +8710,15 @@ bool TripletYieldTest()
 	build(scene);
 	const unsigned idx01 = 0, idx02 = 14, idx03 = 27, idx06 = 28; // in order of insertion
 	const TripletFilterConfig defaults;
-	if (!ISEQUAL(defaults.minScore, 0.75f)) {
-		VERBOSE("TripletYieldTest FAILED: default minimum score %g; expected 0.75, the middle of the band in which "
-			"an exhaustively matched two-faced building splits at the ceiling whatever pairs the matcher verifies",
+	if (!ISEQUAL(defaults.minScore, 0.6f)) {
+		VERBOSE("TripletYieldTest FAILED: default minimum score %g; expected 0.6, the paper's generic value",
 			defaults.minScore);
+		return false;
+	}
+	if (!ISEQUAL(defaults.secondFaceScore, 0.75f)) {
+		VERBOSE("TripletYieldTest FAILED: default second-face score %g; expected 0.75, the ceiling that splits "
+			"a two-faced building",
+			defaults.secondFaceScore);
 		return false;
 	}
 	const TripletScores scores = ComputeTripletScores(scene, 0.f, defaults.minYield, weightingCfg.gridSize);

@@ -326,7 +326,7 @@ TripletScores SFM::ComputeTripletScores(const Scene& scene, float minScore, floa
 SurvivorGraph SFM::EvaluateSurvivorGraph(const Scene& scene, const std::vector<float>& scores, float tau,
 	unsigned minPiece, const IIndexArr* views)
 {
-	SurvivorGraph result{0, 0, 0, 0, 0, 0, 0};
+	SurvivorGraph result{0, 0, 0, 0, 0, 0, 0, 0};
 	result.viewsJoined = true;
 	ASSERT(scores.size() == scene.pairs.size(), "EvaluateSurvivorGraph: one score per scene pair");
 	const IIndex numImages = scene.images.size();
@@ -419,8 +419,11 @@ SurvivorGraph SFM::EvaluateSurvivorGraph(const Scene& scene, const std::vector<f
 		// lowest image index: deterministic, and the same tie-break the triplet components use
 		if (component.second > result.largestPiece ||
 			(component.second == result.largestPiece && component.first < largestPieceRoot)) {
+			result.secondPiece = result.largestPiece;
 			result.largestPiece = component.second;
 			largestPieceRoot = component.first;
+		} else {
+			result.secondPiece = MAXF(result.secondPiece, component.second);
 		}
 	}
 	std::sort(result.pieceRoots.begin(), result.pieceRoots.end());
@@ -466,11 +469,37 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 	// what identical facades produce under exhaustive matching -- d_max/|V| is (|V|-1)/|V| and the
 	// ceiling sits at 0.95-0.99 whatever m is; on the sparse graphs of video captures it is 0.7 or
 	// below.
-	const float ceiling = tripletScores.tau;
-	float tau = ceiling;
+	// Two ceilings: the paper's tau(m), and the stricter tau at the second-face score, tried first.
+	// The stricter one is used only when the graph it leaves has two faces -- a majority piece and a
+	// second piece holding at least a third of it. On the church matched exhaustively the paper's
+	// ceiling sits among the scores of the pairs bridging the facades and merges them in half the
+	// matchings, while the stricter one splits them in every matching; on Big Ben, whose graph is one
+	// face, the stricter ceiling keeps so few pairs that the reconstruction discards two thirds of
+	// what it registers, while the paper's keeps 371 of 403. What hangs off a majority piece at the
+	// stricter ceiling with less than a third of its images is a cluster, not a face, and the paper's
+	// ceiling stands.
+	float ceiling = tripletScores.tau;
 	const SurvivorGraph unfiltered = EvaluateSurvivorGraph(scene, tripletScores.scores, 0.f);
 	unsigned minPiece = (unsigned)std::ceil(0.01 * (double)unfiltered.largestComponent);
+	const float secondFace = std::isnan(config.secondFaceScore) ? 0.f : CLAMP(config.secondFaceScore, 0.f, 1.f);
+	const float secondCeiling = secondFace * (1.f - degreeRatio) + degreeRatio;
+	bool twoFaced = false;
+	if (config.autoTau && secondFace > minScore) {
+		const SurvivorGraph atSecond = EvaluateSurvivorGraph(scene, tripletScores.scores, secondCeiling, minPiece);
+		twoFaced = 2 * atSecond.largestPiece > atSecond.numInPieces && 3 * atSecond.secondPiece >= atSecond.largestPiece;
+		if (twoFaced) {
+			ceiling = secondCeiling;
+			VERBOSE("Triplet filter: the ceiling at the second-face score %.2f (%.3f) leaves two faces, pieces of "
+				"%u and %u images: used",
+				secondFace, secondCeiling, atSecond.largestPiece, atSecond.secondPiece);
+		} else {
+			VERBOSE("Triplet filter: the ceiling at the second-face score %.2f (%.3f) leaves no second face "
+				"(largest piece %u, second %u): the paper's ceiling stands",
+				secondFace, secondCeiling, atSecond.largestPiece, atSecond.secondPiece);
+		}
+	}
 	SurvivorGraph atCeiling = EvaluateSurvivorGraph(scene, tripletScores.scores, ceiling, minPiece);
+	float tau = ceiling;
 	// A ceiling that leaves no piece -- every component below the floor, a large collection
 	// shattered into pairs -- is the graph that most needs repair, not one to leave alone: every
 	// component of the unfiltered largest component is then a piece, as on a small set.
@@ -541,14 +570,15 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 			tau = candidates[lo];
 			survivor = EvaluateSurvivorGraph(scene, tripletScores.scores, tau);
 		}
-		VERBOSE("Triplet filter: tau %.3f, %s (ceiling %.3f at m %.2f, d_max/|V| %.3f); the ceiling leaves "
+		VERBOSE("Triplet filter: tau %.3f, %s (ceiling %.3f at m %.2f%s, d_max/|V| %.3f); the ceiling leaves "
 			"%u pieces (components of at least %u images) holding %u images between them, and %u stragglers; "
 			"survivor graph keeps %u/%u images in its largest component, %u below degree 2 (%u before), "
 			"and %u/%u distinct image pairs",
 			tau, tau < ceiling ? "the strictest threshold that joins every piece" :
 				numPieces > 1 && !shattered ? "the ceiling applied as given, its largest piece holding a majority" :
 				"the ceiling applied as given",
-			ceiling, minScore, degreeRatio, numPieces, minPiece, minComponent, numStragglers,
+			ceiling, twoFaced ? secondFace : minScore, twoFaced ? ", the second face's" : "", degreeRatio,
+			numPieces, minPiece, minComponent, numStragglers,
 			survivor.largestComponent, unfiltered.largestComponent,
 			survivor.numLowDegree, unfiltered.numLowDegree, survivor.numKept, unfiltered.numKept);
 	}

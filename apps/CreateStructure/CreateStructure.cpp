@@ -78,6 +78,7 @@ unsigned nROMA2DenseMatches;
 bool bFilterTriplets;
 bool bTripletAutoTau;
 float fTripletMinScore;
+float fTripletSecondFaceScore;
 String strROMA2Provider;
 float defaultFocalRatio;
 float focalLength;
@@ -157,7 +158,8 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("compare-mvs", boost::program_options::value<std::string>(&OPT::strCompareMVS), "compare reconstruction against ground-truth MVS file (optional)")
 		("filter-triplets", boost::program_options::value<bool>(&OPT::bFilterTriplets)->default_value(TripletFilterConfig().enabled), "disambiguate the matched view graph with the camera-triplet filter (Manam & Govindu, CVPR 2024): remove the pairs whose inlier count, discounted by the image area those inliers cover, is systematically weak in the triangles they belong to; a triangle of three pairs that all deliver far fewer inliers than pairs at their ray angle do is look-alike copies vouching for one another and counts for nothing")
 		("triplet-auto-tau", boost::program_options::value<bool>(&OPT::bTripletAutoTau)->default_value(TripletFilterConfig().autoTau), "camera-triplet filter: treat the paper's threshold tau(m) as a ceiling and relax below it to the strictest threshold that joins every piece the ceiling leaves apart, when no piece holds a majority of the images (a ceiling whose largest piece does is applied as given); off applies tau(m) as given")
-		("triplet-min-score", boost::program_options::value(&OPT::fTripletMinScore)->default_value(TripletFilterConfig().minScore), "camera-triplet filter: the paper's minimum edge score m in [0,1], from which the threshold tau = m(1-r)+r is derived with r the maximum-degree ratio of the scored graph; with --triplet-auto-tau that threshold is the ceiling the filter starts from (0.6 generic scenes, 0.9 highly ambiguous, 0.3 medium/small ambiguous), 0.75 here (the default): the ceiling at which an exhaustively matched two-faced building splits into its faces whatever pairs the matcher verifies")
+		("triplet-min-score", boost::program_options::value(&OPT::fTripletMinScore)->default_value(TripletFilterConfig().minScore), "camera-triplet filter: the paper's minimum edge score m in [0,1], from which the threshold tau = m(1-r)+r is derived with r the maximum-degree ratio of the scored graph; with --triplet-auto-tau that threshold is the ceiling the filter starts from (0.6 generic scenes, 0.9 highly ambiguous, 0.3 medium/small ambiguous); the default is the paper's generic 0.6")
+		("triplet-second-face-score", boost::program_options::value(&OPT::fTripletSecondFaceScore)->default_value(TripletFilterConfig().secondFaceScore), "camera-triplet filter: with --triplet-auto-tau, a stricter minimum edge score whose ceiling is used instead of the default's when the graph it leaves has two faces (a majority piece and a second piece of at least a third of it); at or below --triplet-min-score it is off")
 		("max-features-per-cell", boost::program_options::value(&OPT::nMaxFeaturesPerCell)->default_value(3000), "maximum features per grid cell (3x3 grid)")
 		("min-features-per-cell", boost::program_options::value(&OPT::nMinFeaturesPerCell)->default_value(500), "minimum features per cell before adjusting sensitivity")
 		("match-mode", boost::program_options::value(&OPT::matchMode)->default_value(1), "match mode: -1=SKIP,0=EXHAUSTIVE,1=VOCABULARY,2=SEQUENTIAL,3=KNOWN_POSES,4=RETRIEVAL")
@@ -263,6 +265,10 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	Util::ensureValidPath(OPT::strCompareMVS);
 	if (OPT::fTripletMinScore < 0.f || OPT::fTripletMinScore > 1.f) {
 		LOG("error: --triplet-min-score is the paper's minimum edge score m, it must be in [0,1] (got %g)", OPT::fTripletMinScore);
+		return false;
+	}
+	if (OPT::fTripletSecondFaceScore < 0.f || OPT::fTripletSecondFaceScore > 1.f) {
+		LOG("error: --triplet-second-face-score must be in [0,1] (got %g)", OPT::fTripletSecondFaceScore);
 		return false;
 	}
 	Util::ensureValidFolderPath(OPT::strROMA2Model);
@@ -396,6 +402,7 @@ int main(int argc, LPCTSTR* argv)
 	cfg.tripletFilterCfg.enabled = OPT::bFilterTriplets;
 	cfg.tripletFilterCfg.autoTau = OPT::bTripletAutoTau;
 	cfg.tripletFilterCfg.minScore = OPT::fTripletMinScore;
+	cfg.tripletFilterCfg.secondFaceScore = OPT::fTripletSecondFaceScore;
 	cfg.viewgraphCfg.maxTwoViewError = 0; // disable pair filtering after ViewGraph calibration
 	cfg.useGlobalSolver = OPT::bUseGlobalSolver;
 	cfg.thAlignGPS = OPT::thAlignGPS;
