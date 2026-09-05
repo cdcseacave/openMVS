@@ -399,6 +399,7 @@ SurvivorGraph SFM::EvaluateSurvivorGraph(const Scene& scene, const std::vector<f
 			++result.numLowDegree;
 		result.largestComponent = MAXF(result.largestComponent, ++componentSize[Find(parent, (uint32_t)i)]);
 	}
+	uint32_t largestPieceRoot = NO_INDEX;
 	for (const auto& component : componentSize) {
 		if (component.second < minPiece)
 			continue;
@@ -409,16 +410,31 @@ SurvivorGraph SFM::EvaluateSurvivorGraph(const Scene& scene, const std::vector<f
 			continue;
 		++result.numPieces;
 		result.numInPieces += component.second;
-		result.largestPiece = MAXF(result.largestPiece, component.second);
+		// the root of a component is its smallest image index (a union hangs the larger root under
+		// the smaller), so the smaller root among equally large pieces is the piece holding the
+		// lowest image index: deterministic, and the same tie-break the triplet components use
+		if (component.second > result.largestPiece ||
+			(component.second == result.largestPiece && component.first < largestPieceRoot)) {
+			result.largestPiece = component.second;
+			largestPieceRoot = component.first;
+		}
 	}
+	if (largestPieceRoot != NO_INDEX)
+		for (IIndex i = 0; i < numImages; ++i)
+			if (isNode[i] && Find(parent, (uint32_t)i) == largestPieceRoot)
+				result.largestPieceViews.push_back(i);
 	return result;
 }
 /*----------------------------------------------------------------*/
 
-unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& config, const PairsWeightingConfig& weightingCfg)
+unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& config, const PairsWeightingConfig& weightingCfg,
+	IIndexArr* pSeedViews)
 {
-	if (!config.enabled)
+	if (!config.enabled) {
+		if (pSeedViews)
+			pSeedViews->Empty();
 		return 0;
+	}
 	TD_TIMER_STARTD();
 	// config.minScore is the paper's m and only means anything in [0,1]; CLAMP alone passes a NaN
 	// through unclamped, and Eqn. 3 would otherwise turn an out-of-range m into a ceiling outside
@@ -439,6 +455,16 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 	// below.
 	const float ceiling = tripletScores.tau;
 	float tau = ceiling;
+	const SurvivorGraph unfiltered = EvaluateSurvivorGraph(scene, tripletScores.scores, 0.f);
+	const unsigned minPiece = (unsigned)std::ceil(0.01 * (double)unfiltered.largestComponent);
+	const SurvivorGraph atCeiling = EvaluateSurvivorGraph(scene, tripletScores.scores, ceiling, minPiece);
+	// The reconstruction seeds in the largest piece the ceiling leaves, whatever the descent joins
+	// to it afterwards: the resection refuses the doppelganger bridges the descent lets through but
+	// cannot choose the side it starts on, and the heaviest image overall sits in the densest
+	// cluster of look-alike views (Radcliffe matched exhaustively: the 45-image piece, while the
+	// 120-image piece never registered).
+	if (pSeedViews)
+		*pSeedViews = atCeiling.largestPieceViews;
 	if (config.autoTau) {
 		// Below the ceiling, the threshold is the STRICTEST one that joins every piece: the largest
 		// value whose survivor graph holds, in one component, every image that the ceiling's
@@ -455,9 +481,7 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 		// small sets, where every component is a piece, that removes 66-96% of the pairs and
 		// leaves a chain's two endpoints at degree 1, which is why there is no bar on how much is
 		// removed and none on low-degree images.
-		const SurvivorGraph unfiltered = EvaluateSurvivorGraph(scene, tripletScores.scores, 0.f);
-		const unsigned minPiece = (unsigned)std::ceil(0.01 * (double)unfiltered.largestComponent);
-		SurvivorGraph survivor = EvaluateSurvivorGraph(scene, tripletScores.scores, ceiling, minPiece);
+		SurvivorGraph survivor = atCeiling;
 		const unsigned minComponent = survivor.numInPieces;
 		const unsigned numPieces = survivor.numPieces;
 		const unsigned numStragglers = survivor.numNodes - survivor.numInPieces;
@@ -466,8 +490,8 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 		// fragments of a few images each. A ceiling whose largest piece already holds a strict
 		// majority of the images in pieces has done the paper's job: what hangs below it is a
 		// straggler or the other face of a symmetric building (the church matched exhaustively
-		// splits into its two facades at the ceiling, 143 and 85 images, and one 253-inlier pair
-		// at 0.931 would join them), and nothing in the scores tells the two apart, so the
+		// splits into its two facades at the ceiling, 140 and 85 images, and one 253-inlier pair
+		// at 0.892 would join them), and nothing in the scores tells the two apart, so the
 		// ceiling is applied as given and the smaller pieces stay apart. A strict majority, so a
 		// graph cut into two equal halves is still repaired.
 		const bool shattered = 2 * survivor.largestPiece <= survivor.numInPieces;
@@ -533,11 +557,12 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 	if (numRemoved > 0)
 		scene.pairs.RemoveLast(numRemoved);
 	VERBOSE("Triplet filter: kept %u/%u scene pairs (tau %.3f; %u nodes, max degree %u; "
-		"%u triplets in %u components, %u doppelganger triplets gave no evidence; %u below tau removed, %u unscored kept)",
+		"%u triplets in %u components, %u doppelganger triplets gave no evidence; %u below tau removed, %u unscored kept)"
+		"; the reconstruction seeds in the largest piece the ceiling leaves (%u images)",
 		numKept, numPairs, tau,
 		tripletScores.numNodes, tripletScores.maxDegree,
 		tripletScores.numTriplets, tripletScores.numTripletComponents, tripletScores.numDoppelgangerTriplets,
-		numBelowTau, numUnscored);
+		numBelowTau, numUnscored, atCeiling.largestPiece);
 	// the connectivity and cycle-consistency weights were computed on the unfiltered graph and
 	// the composite-weight order the reconstruction consumes is stale after the removals; a filter
 	// that removed nothing left both intact, so re-running would only cost time

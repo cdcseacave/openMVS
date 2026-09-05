@@ -74,6 +74,13 @@ filtered *again*, with a fresh ceiling and, with `--triplet-auto-tau`, a fresh c
 over the already shrunken graph. And with geometric verification disabled (`maxEpipolarError = 0`) no pair carries a two-view geometry, so nothing is an
 edge, nothing is scored, and the filter removes the **whole** graph — the log line says so.
 
+The reconstruction that follows seeds in the largest piece the ceiling leaves: the filter reports
+that piece's images, and `StarInitializer::SelectReferenceView` takes the heaviest of them rather
+than the heaviest image overall, which sits in the densest cluster of look-alike views. The descent
+still joins the pieces; the resection then crosses the true bridges and refuses the doppelganger
+ones, and starting on the right side is what lets it register the larger face rather than the
+denser one (Radcliffe matched exhaustively: the 120-image piece rather than the 45-image one).
+
 | Flag | Default | Effect |
 |---|---|---|
 | `--filter-triplets B` | **`false`** | apply the filter to the matched view graph |

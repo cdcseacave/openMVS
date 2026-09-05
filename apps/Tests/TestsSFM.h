@@ -289,6 +289,13 @@ bool TripletCoverageTest();
 // below minYield contributes no evidence, and the filter keeps the walk alone instead of folding it
 bool TripletYieldTest();
 
+// The star initializer's reference view is chosen among the seed views the caller names -- the
+// triplet filter's largest ceiling piece -- and only among every image when none is named, or
+// none of the named has a valid pair. After the filter, the seed's side of a symmetric building
+// becomes the model, and the heaviest image overall sits in the densest cluster of look-alike
+// views, which is the worst place to start.
+bool StarReferenceViewTest();
+
 // Test function for rotation estimation
 bool RotationEstimatorTest();
 

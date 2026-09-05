@@ -73,7 +73,7 @@ public:
 		return Reconstruct(MAKE_PATH_SAFE(source), config);
 	}
 	bool pyReconstructHierarchical(const SFM::ReconstructionConfig& config) {
-		return ReconstructHierarchical(config);
+		return ReconstructHierarchical(config, SFM::IIndexArr());
 	}
 	bool pyReconstructGlobal(const SFM::ReconstructionConfig& config) {
 		return ReconstructGlobal(config);

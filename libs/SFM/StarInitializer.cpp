@@ -11,37 +11,47 @@
 #include "BundleAdjustment.h"
 #include "GlobalRotationAveraging.h"
 #include "GlobalScaleAveraging.h"
+#include <numeric>
 
 using namespace SFM;
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-IIndex StarInitializer::SelectReferenceView(const Scene& scene)
+IIndex StarInitializer::SelectReferenceView(const Scene& scene, const IIndexArr& seedViews)
 {
-	// Select view with highest connectivity (most matches)
-	IIndex bestView = NO_ID;
-	unsigned maxDegree = 0;
-
-	// Count connections per view
+	// weighted inliers per view over its valid pairs, dense supplement discounted and included: a
+	// dense-only pair is a real connection of both its images, and the star initializer must see
+	// the same graph the weights that let it through were computed on
 	UnsignedArr degree(scene.images.size());
 	degree.Memset(0);
 	for (const ImagePair& pair : scene.pairs) {
 		if (!pair.relativePose.has_value() || !pair.HasValidWeight())
 			continue;
-		// the pair's inlier evidence, dense supplement discounted and included: a dense-only pair is
-		// a real connection of both its images, and the star initializer must see the same graph the
-		// weights that let it through were computed on
 		degree[pair.ID1] += pair.GetNumWeightedInliers();
 		degree[pair.ID2] += pair.GetNumWeightedInliers();
 	}
-
-	// Find view with max degree
-	FOREACH(i, scene.images) {
-		if (degree[i] > maxDegree) {
-			maxDegree = degree[i];
-			bestView = i;
+	// the heaviest candidate: the seed views when any of them has a valid pair, else every image
+	const auto Heaviest = [&degree](const auto& views, IIndex& bestView) {
+		unsigned maxDegree = 0;
+		for (IIndex i : views) {
+			if (degree[i] > maxDegree) {
+				maxDegree = degree[i];
+				bestView = i;
+			}
 		}
+		return maxDegree;
+	};
+	IIndex bestView = NO_ID;
+	unsigned maxDegree = Heaviest(seedViews, bestView);
+	if (maxDegree > 0) {
+		VERBOSE("Selected reference view %u with %u connections among %u seed views", bestView, maxDegree, seedViews.size());
+		return bestView;
 	}
+	if (!seedViews.empty())
+		VERBOSE("warning: none of the %u seed views has a valid pair, choosing the reference view among every image", seedViews.size());
+	std::vector<IIndex> every(scene.images.size());
+	std::iota(every.begin(), every.end(), IIndex(0));
+	maxDegree = Heaviest(every, bestView);
 	if (bestView == NO_ID) {
 		VERBOSE("error: no valid reference view found");
 		return NO_ID;
@@ -273,7 +283,7 @@ bool StarInitializer::Initialize(
 	ASSERT(!scene.IsEmpty() && !scene.pairs.empty() && !scene.tracks.empty())
 
 	// 1. Select reference view (highest connectivity)
-	const IIndex refID = SelectReferenceView(scene);
+	const IIndex refID = SelectReferenceView(scene, config.seedViews);
 	if (refID == NO_ID)
 		return false;
 	// Set reference view to identity pose

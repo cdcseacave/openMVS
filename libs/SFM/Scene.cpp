@@ -691,11 +691,29 @@ void ExportMatchingCSVs(const Scene& scene, const ReconstructionConfig& config)
 // with the camera-triplet filter (ViewGraphTriplets.h, off unless the caller enables it). The
 // order is deliberate: the CSVs describe the whole matched graph and carry the triplet score of
 // every pair, including the pairs the filter is about to remove, so a run can be re-scored and
-// re-thresholded offline from its own export alone.
-void ExportMatchingCSVsAndFilterPairs(Scene& scene, const ReconstructionConfig& config)
+// re-thresholded offline from its own export alone. Returns the images the filter's ceiling
+// vouches for most (its largest piece), the reconstruction's seed views; empty without the filter.
+IIndexArr ExportMatchingCSVsAndFilterPairs(Scene& scene, const ReconstructionConfig& config)
 {
 	ExportMatchingCSVs(scene, config);
-	FilterPairsByTriplets(scene, config.tripletFilterCfg, config.matchCfg.weightingCfg);
+	IIndexArr seedViews;
+	FilterPairsByTriplets(scene, config.tripletFilterCfg, config.matchCfg.weightingCfg, &seedViews);
+	return seedViews;
+}
+
+// The seed views of one sub-scene: the images of `seedViews` (indices of the whole scene) it holds,
+// in its own local indices. An unclustered scene is its own single sub-scene and the indices coincide.
+IIndexArr SubSceneSeedViews(const IIndexArr& seedViews, const std::vector<IIndexArr>& localToGlobals, IIndex idxSubScene)
+{
+	if (localToGlobals.empty())
+		return seedViews;
+	std::unordered_set<IIndex> isSeed(seedViews.begin(), seedViews.end());
+	const IIndexArr& localToGlobal = localToGlobals[idxSubScene];
+	IIndexArr local;
+	FOREACH(l, localToGlobal)
+		if (isSeed.count(localToGlobal[l]))
+			local.push_back((IIndex)l);
+	return local;
 }
 } // namespace
 
@@ -704,6 +722,9 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	TD_TIMER_START();
 	VERBOSE("Starting reconstruction from '%s'", source.c_str());
 
+	// the images the star initializer chooses its reference view among (the triplet filter's
+	// largest ceiling piece), filled in below; empty, every image
+	IIndexArr seedViews;
 	#if 1
 	if (!source.empty()) {
 		// Start a new reconstruction from the source list or folder of images
@@ -745,7 +766,7 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	// reconstruction step (clustering, weak-image filtering, resection) can drop pairs or
 	// leave images unregistered; covers both the match-images-only run and a full reconstruction,
 	// and is immediately followed by the (opt-in) triplet disambiguation of the view graph
-	ExportMatchingCSVsAndFilterPairs(*this, config);
+	seedViews = ExportMatchingCSVsAndFilterPairs(*this, config);
 
 	if (config.matchImagesOnly) {
 		// a frames.json imported with an AUTO convention must be resolved before the scene
@@ -772,7 +793,7 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	// Run reconstruction method
 	if (config.HasKnownPoses() ? !ReconstructKnownPoses(config)
 	    : config.useGlobalSolver ? !ReconstructGlobal(config)
-	                             : !ReconstructHierarchical(config))
+	                             : !ReconstructHierarchical(config, seedViews))
 		return false;
 
 	// Pre-final global bundle adjustment
@@ -850,7 +871,7 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	return true;
 }
 
-bool Scene::ReconstructHierarchical(const ReconstructionConfig& config)
+bool Scene::ReconstructHierarchical(const ReconstructionConfig& config, const IIndexArr& seedViews)
 {
 	if (status.nState.isSet(Status::STATE::CALIBRATED)) {
 		VERBOSE("warning: scene already calibrated");
@@ -882,6 +903,7 @@ bool Scene::ReconstructHierarchical(const ReconstructionConfig& config)
 		// mini bundle adjustments instead of using the compiled-in BAConfig defaults
 		StarInitConfig initCfg = config.initCfg;
 		initCfg.baConfig = config.baConfig;
+		initCfg.seedViews = SubSceneSeedViews(seedViews, localToGlobals, i);
 		if (!StarInitializer::Initialize(subScene, initCfg)) {
 			VERBOSE("error: star initialization failed for sub-scene %u (skipping)", i);
 			return; // skip this sub-scene

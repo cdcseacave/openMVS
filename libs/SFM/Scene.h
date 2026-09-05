@@ -306,6 +306,8 @@ public:
 	/**
 	 * @brief Run hierarchical reconstruction
 	 * @param config Reconstruction configuration
+	 * @param seedViews the images the star initializer chooses its reference view among, in this
+	 * scene's indices; empty, every image
 	 * @return true if reconstruction completed
 	 *
 	 * Pipeline:
@@ -313,7 +315,7 @@ public:
 	 * 2. Reconstruct each cluster
 	 * 3. Merge/align sub-scenes
 	 */
-	bool ReconstructHierarchical(const ReconstructionConfig& config);
+	bool ReconstructHierarchical(const ReconstructionConfig& config, const IIndexArr& seedViews);
 
 	/**
 	 * @brief Run global reconstruction

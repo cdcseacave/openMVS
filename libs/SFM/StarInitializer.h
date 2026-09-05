@@ -37,6 +37,10 @@ struct SFM_API StarInitConfig
 	float minAngleThreshold{1.f};   // Minimum angle between cameras (degrees)
 	bool globalRotations{false};    // Use global rotation averaging to initialize rotations (optional)
 
+	// The images the reference view is chosen among; empty, every image. The triplet filter fills
+	// it with the largest piece its ceiling leaves (ViewGraphTriplets.h).
+	IIndexArr seedViews;
+
 	// Base BA settings the mini bundle adjustments derive from (dense-observation weight, GPS
 	// weights, keypoint-confidence gating, ...); the star initializer applies its own local
 	// overrides (iteration budget, intrinsics refinement) on top, same as ResectionConfig.
@@ -61,11 +65,13 @@ public:
 	static bool Initialize(Scene& scene, const StarInitConfig& config);
 
 	/**
-	 * @brief Select reference view (highest connectivity)
+	 * @brief Select the reference view: the image whose valid pairs carry the most weighted
+	 * inliers, among the seed views when any of them has a valid pair, else among every image
 	 * @param scene Scene with image pairs
+	 * @param seedViews Candidate images (empty: every image)
 	 * @return Image ID of reference view
 	 */
-	static IIndex SelectReferenceView(const Scene& scene);
+	static IIndex SelectReferenceView(const Scene& scene, const IIndexArr& seedViews);
 
 	/**
 	 * @brief Estimate global scale from multiple baselines

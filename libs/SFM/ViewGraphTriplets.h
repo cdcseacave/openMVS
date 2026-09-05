@@ -78,6 +78,8 @@ struct SFM_API SurvivorGraph
 	                            // largest component, holding at least minPiece nodes
 	unsigned numInPieces;       // nodes in those components; the rest are stragglers
 	unsigned largestPiece;      // images in the largest piece (0 when there is none)
+	IIndexArr largestPieceViews; // the images of the largest piece, ascending (empty when there is none);
+	                            // between equally large pieces, the one holding the lowest image index
 };
 
 // Evaluate the graph left by keeping every unscored pair and every pair scoring at or above `tau`.
@@ -136,8 +138,14 @@ TripletScores SFM_API ComputeTripletScores(const Scene& scene, float minScore, f
 // A disabled config is a no-op. Returns the number of removed pairs.
 // The weighting config is not defaulted on purpose: re-weighting with anything other than the
 // config the run itself matched with would silently change gridSize/minInliers under the caller.
+// pSeedViews, when given, receives the images of the largest piece the ceiling leaves (the piece
+// rule: at the ceiling, before any descent; ties to the piece holding the lowest image index),
+// ascending, and is emptied when the filter is off or the ceiling leaves no piece: the
+// reconstruction chooses its reference view among them (StarInitConfig::seedViews), since after
+// the filter the seed's side of a symmetric building is the model and the heaviest image overall
+// sits in the densest cluster of look-alike views.
 unsigned SFM_API FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& config,
-	const PairsWeightingConfig& weightingCfg);
+	const PairsWeightingConfig& weightingCfg, IIndexArr* pSeedViews = NULL);
 
 } // namespace SFM
 
