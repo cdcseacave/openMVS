@@ -239,62 +239,119 @@ The scores are untouched: they were never the weak part."
 - [ ] **Step 1: Write the failing test**
 
 Add `TripletAutoTauTest` to `apps/Tests/TestsSFM.cpp`, beside `TripletFilterTest`, and register it
-in `apps/Tests/Tests.cpp` next to the `TripletFilterTest` call. It pins three things: the evaluator,
-a sweep that picks a threshold, and a sweep that stands down.
+in `apps/Tests/Tests.cpp` next to the `TripletFilterTest` call.
+
+**It needs two scenes, and the reason is worth understanding before you write either.** On a small
+graph the sweep can only ever stand down: any removal is a large fraction of a handful of edges, and
+almost any removal strands a node. A test built only on a six-node scene would assert "stands down"
+in both cases and would keep passing if the sweep were broken. So the stand-down path gets a small
+scene where standing down is over-determined, and the fires-and-relaxes path gets a ring big enough
+to have room.
+
+Reuse `TripletFilterTest`'s own scene construction (a pair carries an inlier count and
+`F = Matrix3x3::IDENTITY` as its stand-in geometric verification, and the images need a camera);
+factor that into a shared local helper rather than copying it.
+
+**Scene 1, the barbell — the sweep must stand down.** Six images, eight pairs:
+
+```
+	(0,1)=100 (0,2)=100 (1,2)=100     triangle A
+	(3,4)=100 (3,5)=100 (4,5)=100     triangle B
+	(2,3)=10  (2,4)=10                with (3,4), triangle C -- the only link between A and B
+```
+
+Triangle C shares edge `(3,4)` with B, so B and C are one triplet-graph component (2 triplets) and A
+is another (1 triplet). The largest is BC, so A's three edges are **unscored and always kept**,
+while the scored edges are `(3,4)=(3,5)=(4,5)=1.0` and `(2,3)=(2,4)=0.1`. `G_LCT` has 4 nodes and
+max degree 3, so `tau(m) = 0.25 m + 0.75` never drops below 0.75 and the two 0.1 edges are removed at
+every candidate — which severs A from B. Standing down is over-determined here: the survivor's
+largest component is 3 against 6, *and* 2 of 8 edges is 25 % against the 20 % bound. Assert it:
 
 ```cpp
-bool TripletAutoTauTest()
-{
-	// Two triangles joined by one bridge edge. The bridge sits in no triangle, so Task 1's rule
-	// keeps it whatever the threshold does, and the two triangles are what the sweep can cut.
-	//   0-1-2 triangle (strong, 100 inliers each), 3-4-5 triangle (strong, 100 each),
-	//   2-3 bridge (weak, 10), plus a weak edge 0-2 replaced below to make one triangle cuttable.
-	Scene scene;
-	const auto AddPair = [&scene](IIndex i, IIndex j, unsigned inliers) { ... };
-	// (build 6 images and the edges above; follow TripletFilterTest's own scene construction
-	// verbatim for how a pair is given geometric verification and an inlier count)
-
-	const TripletScores scores = ComputeTripletScores(scene, 0.f);
-
-	// 1. The unfiltered graph: tau = 0 keeps every scored pair, and unscored pairs are always
-	// kept, so this is the graph the sweep measures itself against.
-	const SurvivorGraph unfiltered = EvaluateSurvivorGraph(scene, scores.scores, 0.f);
-	if (unfiltered.numNodes != 6 || unfiltered.largestComponent != 6) {
-		VERBOSE("TripletAutoTauTest FAILED: unfiltered graph %u nodes, largest component %u, expected 6 and 6",
-			unfiltered.numNodes, unfiltered.largestComponent);
+	// The unfiltered graph, which is what the sweep measures itself against: tau = 0 keeps every
+	// scored pair, and an unscored pair is kept regardless.
+	const TripletScores scores = ComputeTripletScores(barbell, 0.f);
+	const SurvivorGraph unfiltered = EvaluateSurvivorGraph(barbell, scores.scores, 0.f);
+	if (unfiltered.numNodes != 6 || unfiltered.largestComponent != 6 || unfiltered.numKept != 8) {
+		VERBOSE("TripletAutoTauTest FAILED: unfiltered barbell %u nodes, component %u, %u edges; expected 6, 6, 8",
+			unfiltered.numNodes, unfiltered.largestComponent, unfiltered.numKept);
 		return false;
 	}
-
-	// 2. A threshold above every score removes every scored edge; only the unscored bridge
-	// survives, so the graph fragments and the low-degree count explodes.
-	const SurvivorGraph shredded = EvaluateSurvivorGraph(scene, scores.scores, 1.01f);
-	if (shredded.largestComponent != 2 || shredded.numLowDegree != 6) {
-		VERBOSE("TripletAutoTauTest FAILED: shredded graph largest component %u, low-degree %u, expected 2 and 6",
-			shredded.largestComponent, shredded.numLowDegree);
+	// Cutting the two weak edges severs the two triangles: 3 images in the largest component.
+	const SurvivorGraph severed = EvaluateSurvivorGraph(barbell, scores.scores, 0.75f);
+	if (severed.largestComponent != 3 || severed.numKept != 6) {
+		VERBOSE("TripletAutoTauTest FAILED: severed barbell component %u, %u edges; expected 3 and 6",
+			severed.largestComponent, severed.numKept);
 		return false;
 	}
-
-	// 3. Auto-tau on this graph must stand down: no threshold at or below the configured m keeps
-	// 0.99 of the largest component, strands no extra images and removes at most a fifth of the
-	// edges, all at once.
 	TripletFilterConfig cfg;
 	cfg.enabled = true;
 	cfg.autoTau = true;
-	cfg.minScore = 0.3f;
-	Scene sceneAuto(scene);
+	cfg.minScore = 0.6f;
 	const PairsWeightingConfig weightingCfg;
-	if (FilterPairsByTriplets(sceneAuto, cfg, weightingCfg) != 0 || sceneAuto.pairs.size() != scene.pairs.size()) {
-		VERBOSE("TripletAutoTauTest FAILED: auto-tau removed %u pairs on a graph where every threshold fragments",
-			(unsigned)(scene.pairs.size() - sceneAuto.pairs.size()));
+	Scene barbellAuto(barbell);
+	if (FilterPairsByTriplets(barbellAuto, cfg, weightingCfg) != 0 || barbellAuto.pairs.size() != 8) {
+		VERBOSE("TripletAutoTauTest FAILED: auto-tau removed %u pairs from a graph every threshold severs",
+			8u - (unsigned)barbellAuto.pairs.size());
 		return false;
 	}
-	return true;
-}
 ```
 
-Build the scene so that case 3 genuinely stands down; if the graph you build admits a safe
-threshold, the test asserts nothing. Verify by printing the sweep's own per-candidate decision once
-while developing, then remove the print.
+**Scene 2, the ring — the sweep must relax from 0.60 to 0.45 and remove exactly two edges.** 24
+images, all indices modulo 24, 74 pairs:
+
+```cpp
+	// A ring of chained triangles, dense enough that removing a couple of edges costs nothing --
+	// which is exactly the situation the connectivity tests cannot judge on their own.
+	Scene ring;
+	for (IIndex i = 0; i < 24; ++i) {
+		AddPair(ring, i, (i + 1) % 24, 100);   // structural, scores 1.00
+		AddPair(ring, i, (i + 2) % 24, 100);   // structural, scores 1.00
+		AddPair(ring, i, (i + 3) % 24, 65);    // medium,     scores 0.65
+	}
+	AddPair(ring, 0, 12, 5);                   // the two edges the filter should find
+	AddPair(ring, 1, 12, 5);                   //   both score 0.05
+```
+
+Every `(i,i+1)` and `(i,i+2)` edge sits only in triangles whose strongest edge is 100, so all of them
+score exactly 1.0. Each `(i,i+3)` edge sits in two triangles, `{i,i+1,i+3}` and `{i,i+2,i+3}`, whose
+maximum is 100 in both, so it scores `65/100 = 0.65`. The two added edges sit in the single triangle
+`{0,1,12}` whose maximum is 100, so they score `0.05`. `G_LCT` has 24 nodes and max degree 8 (node
+12 carries both added edges), giving `tau(m) = (2/3) m + 1/3`.
+
+That makes the sweep's arithmetic:
+
+| m | tau | removed | verdict |
+|---|---|---|---|
+| 0.60 | 0.733 | 24 medium + 2 weak = 26 of 74 (35 %) | rejected: over the 20 % bound |
+| 0.50 | 0.667 | 26 of 74 | rejected |
+| 0.45 | **0.633** | 2 of 74 (2.7 %) | **accepted** — 0.633 is below the medium 0.65 |
+| — | — | largest component stays 24, nothing below degree 2 | — |
+
+```cpp
+	Scene ringAuto(ring);
+	// Starts at 0.60, where it would strip every medium edge, and relaxes to 0.45, where only the
+	// two genuinely weak edges fall. Node 12 keeps four ring edges, so nothing is stranded.
+	if (FilterPairsByTriplets(ringAuto, cfg, weightingCfg) != 2 || ringAuto.pairs.size() != 72) {
+		VERBOSE("TripletAutoTauTest FAILED: the ring lost %u pairs, expected exactly 2",
+			74u - (unsigned)ringAuto.pairs.size());
+		return false;
+	}
+	// and they must be the RIGHT two -- a sweep that relaxed too far would also remove 2 by
+	// coincidence only if it removed these, so name them
+	for (const ImagePair& pair : ringAuto.pairs) {
+		if ((pair.ID1 == 0 && pair.ID2 == 12) || (pair.ID1 == 1 && pair.ID2 == 12)) {
+			VERBOSE("TripletAutoTauTest FAILED: the ring kept the weak pair (%u,%u)", pair.ID1, pair.ID2);
+			return false;
+		}
+	}
+```
+
+The two rejected candidates are 0.017 clear of the medium score on either side (0.667 and 0.633
+against 0.65), so nothing here sits on a float knife-edge. If your build disagrees with the table,
+**do not adjust the expectations to match** — print `tau` and the survivor counts per candidate,
+find out which of the three bars actually fired, and report it: either the arithmetic above is wrong
+or the sweep is, and both are worth knowing before this ships.
 
 - [ ] **Step 2: Run it and watch it fail to compile**
 
