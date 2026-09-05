@@ -42,18 +42,16 @@ class SFM_API Scene;
 struct SFM_API TripletFilterConfig
 {
 	bool enabled = false;   // remove the pairs the triplet score rejects (opt-in, see docs/design/TripletDisambiguation.md)
-	// Relax minScore against the graph the filter would leave behind, rather than applying it as
-	// given. The paper's constant is the part that fails on video keyframes: it is not calibrated
-	// for them, and at m = 0.6 every measured capture loses registered images while a densely
-	// connected orbit loses two thirds of its edges.
+	// The paper's tau(m) is a ceiling: below it, the threshold is the strictest one whose survivor
+	// graph keeps 99% of the unfiltered largest component together. Off, tau(m) is applied as given.
 	bool autoTau = true;
-	// The strictness asked for: the paper's minimum edge score m (0.6 generic/large-scale, 0.9
-	// highly ambiguous, 0.3 medium/small ambiguous). With autoTau the sweep starts here and only
-	// ever relaxes, so this is a ceiling on how aggressive the filter may be, never a floor.
+	// The paper's minimum edge score m, in [0,1] (the domain this implementation enforces): 0.6
+	// generic/large-scale, 0.9 highly ambiguous, 0.3 medium/small ambiguous. With autoTau this is
+	// the ceiling the threshold is derived from and never exceeds.
 	float minScore = 0.6f;
 };
 
-// The view graph the filter would leave behind at a given threshold: what the sweep judges.
+// The view graph the filter would leave behind at a given threshold: what the search judges.
 struct SFM_API SurvivorGraph
 {
 	unsigned numNodes;          // images incident to at least one edge of the UNFILTERED graph

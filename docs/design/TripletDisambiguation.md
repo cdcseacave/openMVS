@@ -24,8 +24,12 @@ one inlier `n_ij = ImagePair::GetNumFilteredInliers()`.
    is `G_LCT`). `m` is the one user parameter — per the paper 0.6 generic/large-scale, 0.9 highly
    ambiguous, 0.3 medium/small ambiguous.
 4. **Selection.** Keep `(i,j)` iff `q_ij >= tau` (Theorem 1: this solves the paper's regularised
-   edge-selection problem); unscored pairs are removed. The paper's step 11, extracting the largest
-   component of the filtered graph, is **not** applied — `SceneCluster` already selects components.
+   edge-selection problem); unscored pairs are removed. `tau` is Eqn. 3's value at `m`, but with
+   `--triplet-auto-tau` (the default) that value is only a **ceiling**: the threshold actually used
+   is the strictest one below it whose survivor graph still keeps 99% of the unfiltered largest
+   connected component together, or the ceiling itself when it already does. The paper's step 11,
+   extracting the largest component of the filtered graph, is **not** applied — `SceneCluster`
+   already selects components.
 
 *Why it catches what the existing cycle test cannot.* `ImagePair::weightTriplet`
 (`PairsWeighting.cpp`) scores a pair by how many of its triangles close rotationally, and a
@@ -50,13 +54,15 @@ something was removed. One `VERBOSE` line reports everything: `Triplet filter: k
 1274 below tau)`.
 
 Two caveats. It is **not idempotent**: a saved filtered scene re-fed with the flag still set is
-filtered *again*, with a fresh `tau` over the already shrunken graph. And with geometric verification disabled (`maxEpipolarError = 0`) no pair carries a two-view geometry, so nothing is an
+filtered *again*, with a fresh ceiling and, with `--triplet-auto-tau`, a fresh connectivity search
+over the already shrunken graph. And with geometric verification disabled (`maxEpipolarError = 0`) no pair carries a two-view geometry, so nothing is an
 edge, nothing is scored, and the filter removes the **whole** graph — the log line says so.
 
 | Flag | Default | Effect |
 |---|---|---|
 | `--filter-triplets B` | **`false`** | apply the filter to the matched view graph |
-| `--triplet-min-score F` | `0.6` | the paper's minimum edge score *m*, in (0,1); lower removes fewer edges |
+| `--triplet-auto-tau B` | **`true`** | treat `tau(m)` as a ceiling and relax below it to the strictest threshold that keeps 99% of the largest connected component together; off applies `tau(m)` as given |
+| `--triplet-min-score F` | `0.6` | the paper's minimum edge score *m*, in (0,1); with `--triplet-auto-tau` the ceiling the threshold is derived from, otherwise applied as given |
 
 Python: `TripletFilterConfig(enabled, min_score)`, `ReconstructionConfig.triplet_filter_cfg`, and `compute_triplet_scores(scene, m)` → the scores, `tau` and the graph statistics.
 
