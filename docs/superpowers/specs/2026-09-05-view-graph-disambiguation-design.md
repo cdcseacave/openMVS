@@ -521,6 +521,9 @@ images in pieces (§3.8) and its second-largest piece holds at least a third of 
 higher ceiling is the ceiling; otherwise the lower one is, as the paper has it. Everything after
 (§3.7's descent, §3.8's majority, §3.9's seed) applies to the chosen ceiling unchanged.
 
+The second ceiling is part of the automatic ceiling: with `autoTau` off, `tau(m)` applies as given,
+the second face included -- the paper's Eqn. 3 literally, which is what that switch is for.
+
 | graph | at 0.6 | at 0.75 | two-faced? | ceiling used | result |
 |---|---|---|---|---|---|
 | church (seven matchings) | 139/85 or 227 merged | 130-135 / 80-83 | yes (second 60 % of the largest) | 0.75 | 129-135, one-sided |

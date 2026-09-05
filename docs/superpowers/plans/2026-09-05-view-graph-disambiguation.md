@@ -3639,7 +3639,7 @@ In `FilterPairsByTriplets`, where `ceiling` is set from `tripletScores.tau` and 
 	const float secondFace = std::isnan(config.secondFaceScore) ? 0.f : CLAMP(config.secondFaceScore, 0.f, 1.f);
 	const float secondCeiling = secondFace * (1.f - degreeRatio) + degreeRatio;
 	bool twoFaced = false;
-	if (secondFace > minScore) {
+	if (config.autoTau && secondFace > minScore) {
 		const SurvivorGraph atSecond = EvaluateSurvivorGraph(scene, tripletScores.scores, secondCeiling, minPiece);
 		twoFaced = 2 * atSecond.largestPiece > atSecond.numInPieces && 3 * atSecond.secondPiece >= atSecond.largestPiece;
 		if (twoFaced)
