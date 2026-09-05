@@ -249,7 +249,7 @@ float ImagePair::ComputeMeanRayAngle(const Image& img1, const Image& img2) const
 		const Point3 V2 = X - relPose.C;
 		cosAngles.push_back((float)ComputeAngle(X.ptr(), V2.ptr()));
 	}
-	return cosAngles.empty() ? 0.f : ACOS(cosAngles.GetMedian());
+	return cosAngles.empty() ? 0.f : ACOS(CLAMP(cosAngles.GetMedian(), -1.f, 1.f)); // clamped: see FilterMatches
 }
 
 void ImagePair::CheckSparseSegmentIsDescribed(const Image& img1, const Image& img2) const
@@ -376,7 +376,9 @@ unsigned ImagePair::FilterMatches(const Image& img1, const Image& img2, float mi
 	// mismatch-contaminated or badly triangulated matches from skewing the pair statistic. Zero when
 	// nothing survived, which ComputeAngleBaselineWeight reads as "no baseline measured" and scores
 	// at its maximum -- see the note there.
-	meanRayAngle = cosAngles.empty() ? 0.f : ACOS(cosAngles.GetMedian());
+	// The median is a dot product of unit rays; rounding can push it a hair outside [-1,1], where
+	// acos returns NaN and every consumer of the angle would inherit it, so it is clamped first.
+	meanRayAngle = cosAngles.empty() ? 0.f : ACOS(CLAMP(cosAngles.GetMedian(), -1.f, 1.f));
 	// The stable_partition below re-derives the dense segment from `mask`'s surviving inliers by
 	// re-evaluating HasDenseEnd, which is the one documented false negative of this re-derivation
 	// (docs/design/ROMA2InProcess.md): a supplement match whose BOTH endpoints collapsed onto
