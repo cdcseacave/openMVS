@@ -77,6 +77,7 @@ struct SFM_API SurvivorGraph
 	unsigned numPieces;         // components of the kept graph, inside the unfiltered graph's
 	                            // largest component, holding at least minPiece nodes
 	unsigned numInPieces;       // nodes in those components; the rest are stragglers
+	unsigned largestPiece;      // images in the largest piece (0 when there is none)
 };
 
 // Evaluate the graph left by keeping every unscored pair and every pair scoring at or above `tau`.

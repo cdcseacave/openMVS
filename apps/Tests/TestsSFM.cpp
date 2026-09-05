@@ -8282,10 +8282,12 @@ bool TripletAutoTauTest()
 	//   G_LCT: 124 nodes, max degree 5 (images 60 and 61), ceiling 0.6*(1-5/124)+5/124 = 0.616
 	//   at the ceiling: the walk (120 images), {122,123}, {120}, {121} -- and n0 = 124, so a piece
 	//   is a component of at least ceil(124/100) = 2 images: two pieces holding 122 images, two
-	//   stragglers. The strictest threshold joining both pieces is the 2-piece's bridge, 0.2.
-	//   Everything from 0.2 up stays (the 600-inlier pairs included); the five weaker pairs go,
-	//   and images 120 and 121 are left with no pair -- the 99% rule would have descended to
-	//   0.05 for them and kept the two 0.05 pairs as well.
+	//   stragglers. The walk holds 120 of the 122 images in pieces, a majority: the ceiling has done
+	//   its job and is applied as given. Everything scoring below 0.616 goes -- the 118 pairs two
+	//   apart (0.6), the 2-piece's three bridges and the four straggler pairs, 125 in all -- and the
+	//   120 kept pairs are the 119 consecutive ones and (122,123): the 2-piece stays its own
+	//   component, images 120 and 121 are left with no pair. Before this rule the descent went to
+	//   0.2 for the 2-piece and kept the 600-inlier pairs with it.
 	Scene walk;
 	AddTripletImages(walk, 124);
 	for (IIndex i = 0; i + 1 < 120; ++i)
@@ -8304,11 +8306,12 @@ bool TripletAutoTauTest()
 	const SurvivorGraph walkUnfiltered = EvaluateSurvivorGraph(walk, walkScores.scores, 0.f);
 	const SurvivorGraph walkCeiling = EvaluateSurvivorGraph(walk, walkScores.scores, walkScores.tau, 2);
 	if (walkUnfiltered.largestComponent != 124 || walkCeiling.largestComponent != 120 ||
-		walkCeiling.numPieces != 2 || walkCeiling.numInPieces != 122 || walkCeiling.numNodes != 124) {
-		VERBOSE("TripletAutoTauTest FAILED: walk at the ceiling %g: component %u of %u, %u pieces holding %u; "
-			"expected 120 of 124, 2 pieces holding 122",
+		walkCeiling.numPieces != 2 || walkCeiling.numInPieces != 122 || walkCeiling.largestPiece != 120 ||
+		walkCeiling.numNodes != 124) {
+		VERBOSE("TripletAutoTauTest FAILED: walk at the ceiling %g: component %u of %u, %u pieces holding %u, the largest %u; "
+			"expected 120 of 124, 2 pieces holding 122, the largest 120",
 			walkScores.tau, walkCeiling.largestComponent, walkUnfiltered.largestComponent,
-			walkCeiling.numPieces, walkCeiling.numInPieces);
+			walkCeiling.numPieces, walkCeiling.numInPieces, walkCeiling.largestPiece);
 		return false;
 	}
 	TripletFilterConfig walkCfg;
@@ -8316,20 +8319,73 @@ bool TripletAutoTauTest()
 	walkCfg.minYield = 0.f; // no ray angles here, so the yield rule is off; it is TripletYieldTest's subject
 	const unsigned walkRemoved = FilterPairsByTriplets(walk, walkCfg, weightingCfg);
 	const std::set<std::pair<IIndex,IIndex>> walkKept = TripletKeptPairs(walk);
-	const std::set<std::pair<IIndex,IIndex>> walkGone{{0,120},{1,120},{60,121},{61,121},{118,122}};
-	bool walkRight = walkRemoved == 5 && walkKept.size() == 240;
+	const std::set<std::pair<IIndex,IIndex>> walkGone{{0,120},{1,120},{60,121},{61,121},{118,122},{119,122},{119,123},{0,2},{117,119}};
+	bool walkRight = walkRemoved == 125 && walkKept.size() == 120;
 	for (const auto& pair : walkGone)
 		walkRight = walkRight && walkKept.count(pair) == 0;
-	walkRight = walkRight && walkKept.count({119,122}) == 1 && walkKept.count({119,123}) == 1 && walkKept.count({0,2}) == 1;
+	walkRight = walkRight && walkKept.count({0,1}) == 1 && walkKept.count({118,119}) == 1 && walkKept.count({122,123}) == 1;
 	if (!walkRight) {
-		VERBOSE("TripletAutoTauTest FAILED: walk with stragglers removed %u pairs, kept %u; expected the five weakest "
-			"pairs removed (both stragglers cut loose, the 2-piece joined at 0.2) and 240 kept",
+		VERBOSE("TripletAutoTauTest FAILED: walk with stragglers removed %u pairs, kept %u; expected the ceiling applied "
+			"as given (its walk holds a majority): the 118 pairs two apart, the 2-piece's three bridges and the four "
+			"straggler pairs removed, 120 kept",
 			walkRemoved, (unsigned)walkKept.size());
 		return false;
 	}
 
-	VERBOSE("TripletAutoTauTest PASSED: the descent joins every piece the ceiling leaves and lets the walk's "
-		"stragglers be (%s)", TD_TIMER_GET_FMT().c_str());
+	// Scene 9, three chains. 120 images in three walks of 40 (0-39, 40-79, 80-119): consecutive
+	// images share 1000 inliers, images two apart 600, every consecutive triple a triangle. The
+	// walks meet through one 500-inlier pair each, (39,40) and (79,80), and each of those sits in
+	// two triangles closed by a 300-inlier pair: (38,40) and (39,41), (78,80) and (79,81).
+	//   scores: (i,i+1) 1.0, (i,i+2) 0.6 inside a walk; (39,40)=(79,80)=0.5; the four 300-inlier
+	//           pairs 0.3
+	//   G_LCT: 120 nodes, max degree 4, ceiling 0.6*(1-4/120)+4/120 = 0.6133
+	//   at the ceiling: only the consecutive pairs survive, so three pieces of 40 holding 120, no
+	//   stragglers, and no piece holds a majority -- the ceiling shattered the graph, so the
+	//   descent runs: 0.6 leaves the walks apart, 0.5 joins them through (39,40) and (79,80).
+	//   tau 0.5: the four 300-inlier pairs go, 233 pairs stay.
+	Scene chains;
+	AddTripletImages(chains, 120);
+	for (IIndex c = 0; c < 120; c += 40) {
+		for (IIndex i = c; i + 1 < c + 40; ++i)
+			AddTripletPair(chains, i, i + 1, 1000);
+		for (IIndex i = c; i + 2 < c + 40; ++i)
+			AddTripletPair(chains, i, i + 2, 600);
+	}
+	AddTripletPair(chains, 39, 40, 500);
+	AddTripletPair(chains, 38, 40, 300);
+	AddTripletPair(chains, 39, 41, 300);
+	AddTripletPair(chains, 79, 80, 500);
+	AddTripletPair(chains, 78, 80, 300);
+	AddTripletPair(chains, 79, 81, 300);
+	const TripletScores chainsScores = ComputeTripletScores(chains, 0.6f, 0.f, weightingCfg.gridSize);
+	const SurvivorGraph chainsCeiling = EvaluateSurvivorGraph(chains, chainsScores.scores, chainsScores.tau, 2);
+	if (!ISEQUAL(chainsScores.tau, 0.6f*(1.f-4.f/120.f)+4.f/120.f) || chainsCeiling.largestComponent != 40 ||
+		chainsCeiling.numPieces != 3 || chainsCeiling.numInPieces != 120 || chainsCeiling.largestPiece != 40) {
+		VERBOSE("TripletAutoTauTest FAILED: three chains at the ceiling %g: component %u, %u pieces holding %u, the largest %u; "
+			"expected ceiling 0.6133, component 40, 3 pieces holding 120, the largest 40",
+			chainsScores.tau, chainsCeiling.largestComponent, chainsCeiling.numPieces, chainsCeiling.numInPieces,
+			chainsCeiling.largestPiece);
+		return false;
+	}
+	TripletFilterConfig chainsCfg;
+	chainsCfg.enabled = true;
+	chainsCfg.minYield = 0.f;
+	const unsigned chainsRemoved = FilterPairsByTriplets(chains, chainsCfg, weightingCfg);
+	const std::set<std::pair<IIndex,IIndex>> chainsKept = TripletKeptPairs(chains);
+	const std::set<std::pair<IIndex,IIndex>> chainsGone{{38,40},{39,41},{78,80},{79,81}};
+	bool chainsRight = chainsRemoved == 4 && chainsKept.size() == 233;
+	for (const auto& pair : chainsGone)
+		chainsRight = chainsRight && chainsKept.count(pair) == 0;
+	chainsRight = chainsRight && chainsKept.count({39,40}) == 1 && chainsKept.count({79,80}) == 1 && chainsKept.count({0,2}) == 1;
+	if (!chainsRight) {
+		VERBOSE("TripletAutoTauTest FAILED: three chains removed %u pairs, kept %u; expected the descent to 0.5 "
+			"(no piece holds a majority): the four 300-inlier pairs removed, 233 kept",
+			chainsRemoved, (unsigned)chainsKept.size());
+		return false;
+	}
+
+	VERBOSE("TripletAutoTauTest PASSED: the descent repairs a shattered ceiling and leaves a majority piece's "
+		"ceiling as given (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 

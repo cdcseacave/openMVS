@@ -324,7 +324,7 @@ TripletScores SFM::ComputeTripletScores(const Scene& scene, float minScore, floa
 
 SurvivorGraph SFM::EvaluateSurvivorGraph(const Scene& scene, const std::vector<float>& scores, float tau, unsigned minPiece)
 {
-	SurvivorGraph result{0, 0, 0, 0, 0, 0};
+	SurvivorGraph result{0, 0, 0, 0, 0, 0, 0};
 	ASSERT(scores.size() == scene.pairs.size(), "EvaluateSurvivorGraph: one score per scene pair");
 	const IIndex numImages = scene.images.size();
 	if (numImages == 0)
@@ -409,6 +409,7 @@ SurvivorGraph SFM::EvaluateSurvivorGraph(const Scene& scene, const std::vector<f
 			continue;
 		++result.numPieces;
 		result.numInPieces += component.second;
+		result.largestPiece = MAXF(result.largestPiece, component.second);
 	}
 	return result;
 }
@@ -460,7 +461,17 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 		const unsigned minComponent = survivor.numInPieces;
 		const unsigned numPieces = survivor.numPieces;
 		const unsigned numStragglers = survivor.numNodes - survivor.numInPieces;
-		if (survivor.largestComponent < minComponent) {
+		// The descent repairs a ceiling that shattered the graph -- the small sets and every
+		// exhaustively matched collection, where d_max/|V| is near 1 and the ceiling leaves
+		// fragments of a few images each. A ceiling whose largest piece already holds a strict
+		// majority of the images in pieces has done the paper's job: what hangs below it is a
+		// straggler or the other face of a symmetric building (the church matched exhaustively
+		// splits into its two facades at the ceiling, 143 and 85 images, and one 253-inlier pair
+		// at 0.931 would join them), and nothing in the scores tells the two apart, so the
+		// ceiling is applied as given and the smaller pieces stay apart. A strict majority, so a
+		// graph cut into two equal halves is still repaired.
+		const bool shattered = 2 * survivor.largestPiece <= survivor.numInPieces;
+		if (shattered && survivor.largestComponent < minComponent) {
 			// The largest component only grows as tau falls, so among the distinct scores below
 			// the ceiling, strictest first, the first that passes is a binary search away. The
 			// loosest candidate keeps every scored pair -- the unfiltered graph itself, whose
@@ -489,7 +500,9 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 			"%u pieces (components of at least %u images) holding %u images between them, and %u stragglers; "
 			"survivor graph keeps %u/%u images in its largest component, %u below degree 2 (%u before), "
 			"and %u/%u distinct image pairs",
-			tau, tau < ceiling ? "the strictest threshold that joins every piece" : "the ceiling applied as given",
+			tau, tau < ceiling ? "the strictest threshold that joins every piece" :
+				numPieces > 1 && !shattered ? "the ceiling applied as given, its largest piece holding a majority" :
+				"the ceiling applied as given",
 			ceiling, minScore, degreeRatio, numPieces, minPiece, minComponent, numStragglers,
 			survivor.largestComponent, unfiltered.largestComponent,
 			survivor.numLowDegree, unfiltered.numLowDegree, survivor.numKept, unfiltered.numKept);

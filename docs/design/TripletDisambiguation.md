@@ -38,11 +38,14 @@ and `c_ij = ComputePairCoverage(...)` the fraction of the frame the inliers cove
    `--triplet-auto-tau` (the default) that value is only a **ceiling**: below it, the threshold
    actually used is the strictest one whose survivor graph joins every *piece* — a component of the
    ceiling's survivor graph that lies inside the unfiltered largest component and holds at least 1%
-   of it — or the ceiling itself when it already does. A straggler smaller than that, or outside that
-   component, is neither chased nor removed: fetching
-   it would admit every edge between the ceiling and the single weak pair that attaches it, for one
-   image. The paper's step 11, extracting the largest component of the filtered graph, is **not**
-   applied — `SceneCluster` already selects components.
+   of it — or the ceiling itself when it already does, or when its largest piece already holds a
+   majority of the images in pieces — then the ceiling is applied as given and the smaller pieces
+   stay apart: a ceiling that keeps most of the graph together has done its job, and what hangs
+   below it may be the other face of a symmetric building. A straggler smaller than that, or outside
+   that component, is neither chased nor removed: fetching it would admit every edge between the
+   ceiling and the single weak pair that attaches it, for one image. The paper's step 11, extracting
+   the largest component of the filtered graph, is **not** applied — `SceneCluster` already selects
+   components.
 
 *Why it catches what the existing cycle test cannot.* `ImagePair::weightTriplet`
 (`PairsWeighting.cpp`) scores a pair by how many of its triangles close rotationally, and a
