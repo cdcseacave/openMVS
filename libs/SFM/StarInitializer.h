@@ -66,12 +66,16 @@ public:
 
 	/**
 	 * @brief Select the reference view: the image whose valid pairs carry the most weighted
-	 * inliers, among the seed views when any of them has a valid pair, else among every image
+	 * inliers, among the seed views when any of them qualifies, else among every image. A
+	 * candidate qualifies with at least minPairs valid pairs, the smallest star the caller
+	 * accepts less its centre; when no image qualifies the heaviest image is returned, so that
+	 * the caller reports the shortfall.
 	 * @param scene Scene with image pairs
 	 * @param seedViews Candidate images (empty: every image)
+	 * @param minPairs Valid pairs a candidate needs (StarInitConfig::minViews - 1)
 	 * @return Image ID of reference view
 	 */
-	static IIndex SelectReferenceView(const Scene& scene, const IIndexArr& seedViews);
+	static IIndex SelectReferenceView(const Scene& scene, const IIndexArr& seedViews, unsigned minPairs);
 
 	/**
 	 * @brief Estimate global scale from multiple baselines

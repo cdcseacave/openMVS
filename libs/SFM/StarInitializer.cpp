@@ -17,46 +17,57 @@ using namespace SFM;
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-IIndex StarInitializer::SelectReferenceView(const Scene& scene, const IIndexArr& seedViews)
+IIndex StarInitializer::SelectReferenceView(const Scene& scene, const IIndexArr& seedViews, unsigned minPairs)
 {
-	// weighted inliers per view over its valid pairs, dense supplement discounted and included: a
+	// weighted inliers and valid pairs per view, dense supplement discounted and included: a
 	// dense-only pair is a real connection of both its images, and the star initializer must see
 	// the same graph the weights that let it through were computed on
-	UnsignedArr degree(scene.images.size());
+	UnsignedArr degree(scene.images.size()), numPairs(scene.images.size());
 	degree.Memset(0);
+	numPairs.Memset(0);
 	for (const ImagePair& pair : scene.pairs) {
 		if (!pair.relativePose.has_value() || !pair.HasValidWeight())
 			continue;
 		degree[pair.ID1] += pair.GetNumWeightedInliers();
 		degree[pair.ID2] += pair.GetNumWeightedInliers();
+		++numPairs[pair.ID1];
+		++numPairs[pair.ID2];
 	}
-	// the heaviest candidate: the seed views when any of them has a valid pair, else every image
-	const auto Heaviest = [&degree](const auto& views, IIndex& bestView) {
+	// the heaviest of the given views with at least minArms valid pairs: the star built around the
+	// reference view has one arm per valid pair and the initializer refuses a star smaller than
+	// its minimum, so a heavier view with fewer arms is no use -- on a sparse kept graph (a chain
+	// of 19 images and 20 pairs) the heaviest seed view had two
+	const auto Heaviest = [&degree, &numPairs](const auto& views, unsigned minArms, IIndex& bestView) {
 		unsigned maxDegree = 0;
 		for (IIndex i : views) {
-			if (degree[i] > maxDegree) {
+			if (numPairs[i] >= minArms && degree[i] > maxDegree) {
 				maxDegree = degree[i];
 				bestView = i;
 			}
 		}
 		return maxDegree;
 	};
+	const unsigned minArms = MAXF(minPairs, 1u);
 	IIndex bestView = NO_ID;
-	unsigned maxDegree = Heaviest(seedViews, bestView);
+	unsigned maxDegree = Heaviest(seedViews, minArms, bestView);
 	if (maxDegree > 0) {
-		VERBOSE("Selected reference view %u with %u connections among %u seed views", bestView, maxDegree, seedViews.size());
+		VERBOSE("Selected reference view %u with %u connections over %u pairs among %u seed views",
+			bestView, maxDegree, numPairs[bestView], seedViews.size());
 		return bestView;
 	}
 	if (!seedViews.empty())
-		VERBOSE("warning: none of the %u seed views has a valid pair, choosing the reference view among every image", seedViews.size());
+		VERBOSE("warning: none of the %u seed views has %u valid pairs, choosing the reference view among every image",
+			seedViews.size(), minArms);
 	std::vector<IIndex> every(scene.images.size());
 	std::iota(every.begin(), every.end(), IIndex(0));
-	maxDegree = Heaviest(every, bestView);
+	maxDegree = Heaviest(every, minArms, bestView);
+	if (maxDegree == 0) // no image has enough pairs: the heaviest image, and the caller reports the shortfall
+		maxDegree = Heaviest(every, 1u, bestView);
 	if (bestView == NO_ID) {
 		VERBOSE("error: no valid reference view found");
 		return NO_ID;
 	}
-	VERBOSE("Selected reference view %u with %u connections", bestView, maxDegree);
+	VERBOSE("Selected reference view %u with %u connections over %u pairs", bestView, maxDegree, numPairs[bestView]);
 	return bestView;
 }
 
@@ -283,7 +294,7 @@ bool StarInitializer::Initialize(
 	ASSERT(!scene.IsEmpty() && !scene.pairs.empty() && !scene.tracks.empty())
 
 	// 1. Select reference view (highest connectivity)
-	const IIndex refID = SelectReferenceView(scene, config.seedViews);
+	const IIndex refID = SelectReferenceView(scene, config.seedViews, config.minViews > 0 ? config.minViews - 1 : 0);
 	if (refID == NO_ID)
 		return false;
 	// Set reference view to identity pose

@@ -75,8 +75,9 @@ over the already shrunken graph. And with geometric verification disabled (`maxE
 edge, nothing is scored, and the filter removes the **whole** graph — the log line says so.
 
 The reconstruction that follows seeds in the largest piece the ceiling leaves: the filter reports
-that piece's images, and `StarInitializer::SelectReferenceView` takes the heaviest of them rather
-than the heaviest image overall, which sits in the densest cluster of look-alike views. The descent
+that piece's images, and `StarInitializer::SelectReferenceView` takes the heaviest of them that has
+enough pairs to centre a star (three, the smallest star it accepts less its centre) rather than the
+heaviest image overall, which sits in the densest cluster of look-alike views. The descent
 still joins the pieces; the resection then crosses the true bridges and refuses the doppelganger
 ones, and starting on the right side is what lets it register the larger face rather than the
 denser one (Radcliffe matched exhaustively: the 120-image piece rather than the 45-image one).

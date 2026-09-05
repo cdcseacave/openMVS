@@ -8597,6 +8597,8 @@ bool StarReferenceViewTest()
 	// heaviest in the scene. A chain (3-8): 500-inlier consecutive pairs, 300-inlier pairs two
 	// apart, and one 100-inlier pair (5,8), so that image 5 (1700) outweighs 6 (1600), 4 and 7
 	// (1300), 8 (900) and 3 (800). Image 9 has no pair at all.
+	// A candidate also needs enough valid pairs to centre a star, since the initializer refuses a
+	// star smaller than its minimum.
 	Scene scene;
 	AddTripletImages(scene, 10);
 	const auto addPair = [&scene](IIndex a, IIndex b, unsigned numInliers) {
@@ -8614,7 +8616,7 @@ bool StarReferenceViewTest()
 	for (IIndex i = 3; i + 2 < 9; ++i)
 		addPair(i, i + 2, 300);
 	addPair(5, 8, 100);
-	const IIndex refAll = StarInitializer::SelectReferenceView(scene, IIndexArr());
+	const IIndex refAll = StarInitializer::SelectReferenceView(scene, IIndexArr(), 2);
 	if (refAll != 0) {
 		VERBOSE("StarReferenceViewTest FAILED: reference view %u with no seed views; expected 0, the heaviest image", refAll);
 		return false;
@@ -8622,7 +8624,7 @@ bool StarReferenceViewTest()
 	IIndexArr chain;
 	for (IIndex i = 3; i < 9; ++i)
 		chain.push_back(i);
-	const IIndex refChain = StarInitializer::SelectReferenceView(scene, chain);
+	const IIndex refChain = StarInitializer::SelectReferenceView(scene, chain, 2);
 	if (refChain != 5) {
 		VERBOSE("StarReferenceViewTest FAILED: reference view %u among the chain's images; expected 5, the heaviest "
 			"of them, not an image of the heavier triangle", refChain);
@@ -8630,14 +8632,33 @@ bool StarReferenceViewTest()
 	}
 	IIndexArr lonely;
 	lonely.push_back(9);
-	const IIndex refLonely = StarInitializer::SelectReferenceView(scene, lonely);
+	const IIndex refLonely = StarInitializer::SelectReferenceView(scene, lonely, 2);
 	if (refLonely != 0) {
 		VERBOSE("StarReferenceViewTest FAILED: reference view %u with a seed view that has no valid pair; expected "
 			"the fallback to every image, 0", refLonely);
 		return false;
 	}
-	VERBOSE("StarReferenceViewTest PASSED: the reference view is the heaviest seed view, and the heaviest image "
-		"when none is named or usable (%s)", TD_TIMER_GET_FMT().c_str());
+	// A seed view with two pairs cannot centre a star of three arms: image 3 is skipped, and so are
+	// the triangle's images (two pairs each) when the choice falls to every image; the reference is
+	// the heaviest image with three or more pairs, 5. This is the Street failure: the largest ceiling
+	// piece's heaviest image had two pairs and the star initializer refused it.
+	IIndexArr three;
+	three.push_back(3);
+	const IIndex refThree = StarInitializer::SelectReferenceView(scene, three, 3);
+	if (refThree != 5) {
+		VERBOSE("StarReferenceViewTest FAILED: reference view %u with a seed view of two pairs and a star of three arms "
+			"required; expected 5, the heaviest image with three or more pairs", refThree);
+		return false;
+	}
+	// No image has six pairs: the heaviest image is returned and the initializer reports the shortfall.
+	const IIndex refSix = StarInitializer::SelectReferenceView(scene, IIndexArr(), 6);
+	if (refSix != 0) {
+		VERBOSE("StarReferenceViewTest FAILED: reference view %u with six arms required and no image having them; "
+			"expected 0, the heaviest image", refSix);
+		return false;
+	}
+	VERBOSE("StarReferenceViewTest PASSED: the reference view is the heaviest seed view with enough pairs to centre a star, "
+		"and the heaviest such image when none is named or usable (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 
