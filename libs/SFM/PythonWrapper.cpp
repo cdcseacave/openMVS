@@ -322,6 +322,7 @@ void RegisterBindings()
 		.def_readwrite("enabled", &SFM::TripletFilterConfig::enabled)
 		.def_readwrite("auto_tau", &SFM::TripletFilterConfig::autoTau)
 		.def_readwrite("min_score", &SFM::TripletFilterConfig::minScore)
+		.def_readwrite("second_face_score", &SFM::TripletFilterConfig::secondFaceScore)
 		.def_readwrite("min_yield", &SFM::TripletFilterConfig::minYield);
 
 	// SFM::ViewGraphCalibratorConfig — focal-length verification
