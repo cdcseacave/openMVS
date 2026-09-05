@@ -8565,6 +8565,7 @@ bool TripletYieldTest()
 	// and stay with them.
 	TripletFilterConfig filterCfg;
 	filterCfg.enabled = true;
+	filterCfg.minScore = 0.6f; // the scene's ceiling and the counts below were derived at the paper's generic m
 	std::set<std::pair<IIndex,IIndex>> expected;
 	for (IIndex i = 0; i + 1 < 15; ++i)
 		expected.emplace(i, i + 1);
