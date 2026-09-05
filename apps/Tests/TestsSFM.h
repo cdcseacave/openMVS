@@ -269,6 +269,12 @@ bool ReconstructExportCSVTest();
 // graph with no triplet at all
 bool TripletFilterTest();
 
+// The camera-triplet filter's auto-tau sweep: a barbell scene where every candidate threshold
+// severs the graph, so the sweep must stand down and leave every pair in place, and a ring scene
+// dense enough to absorb a couple of removals, where the sweep must relax from the requested m
+// down to the one that drops only the two planted weak edges
+bool TripletAutoTauTest();
+
 // Test function for rotation estimation
 bool RotationEstimatorTest();
 

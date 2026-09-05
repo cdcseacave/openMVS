@@ -225,12 +225,115 @@ TripletScores SFM::ComputeTripletScores(const Scene& scene, float minScore)
 }
 /*----------------------------------------------------------------*/
 
+SurvivorGraph SFM::EvaluateSurvivorGraph(const Scene& scene, const std::vector<float>& scores, float tau)
+{
+	SurvivorGraph result{0, 0, 0, 0};
+	ASSERT(scores.size() == scene.pairs.size(), "EvaluateSurvivorGraph: one score per scene pair");
+	const IIndex numImages = scene.images.size();
+	if (numImages == 0)
+		return result;
+	// degree in the kept graph, and membership of the unfiltered one, in a single pass
+	std::vector<unsigned> degree(numImages, 0);
+	std::vector<bool> isNode(numImages, false);
+	std::vector<uint32_t> parent(numImages);
+	FOREACH(i, parent)
+		parent[i] = (uint32_t)i;
+	const std::function<uint32_t(uint32_t)> Find = [&](uint32_t x) {
+		while (parent[x] != x)
+			x = parent[x] = parent[parent[x]];
+		return x;
+	};
+	FOREACH(idxPair, scene.pairs) {
+		const ImagePair& pair = scene.pairs[idxPair];
+		if (!pair.HasGeometricVerification() || pair.GetNumWeightedInliers() == 0 || pair.ID1 == pair.ID2)
+			continue;
+		isNode[pair.ID1] = isNode[pair.ID2] = true;
+		const float score = scores[idxPair];
+		if (score >= 0.f && score < tau)
+			continue; // removed: scored, and below the threshold
+		++degree[pair.ID1];
+		++degree[pair.ID2];
+		++result.numKept;
+		const uint32_t a = Find(pair.ID1), b = Find(pair.ID2);
+		if (a != b)
+			parent[MAXF(a, b)] = MINF(a, b);
+	}
+	std::unordered_map<uint32_t, unsigned> componentSize;
+	for (IIndex i = 0; i < numImages; ++i) {
+		if (!isNode[i])
+			continue;
+		++result.numNodes;
+		if (degree[i] < 2)
+			++result.numLowDegree;
+		result.largestComponent = MAXF(result.largestComponent, ++componentSize[Find((uint32_t)i)]);
+	}
+	return result;
+}
+/*----------------------------------------------------------------*/
+
 unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& config, const PairsWeightingConfig& weightingCfg)
 {
 	if (!config.enabled)
 		return 0;
 	TD_TIMER_STARTD();
 	const TripletScores tripletScores = ComputeTripletScores(scene, config.minScore);
+	float tau = tripletScores.tau;
+	if (config.autoTau) {
+		// Eqn. 3 on G_LCT: tau(m) = m (1 - d_max/|V|) + d_max/|V|, monotone in m. The sweep starts
+		// at the m that was asked for and only ever relaxes: strictness is a cost, not a virtue.
+		// Sweeping UP instead -- taking the strictest threshold that survives the tests below --
+		// removes 92% of a well-connected outdoor orbit while passing every one of them.
+		const float degreeRatio = tripletScores.numNodes > 0
+			? (float)tripletScores.maxDegree / (float)tripletScores.numNodes : 0.f;
+		const SurvivorGraph unfiltered = EvaluateSurvivorGraph(scene, tripletScores.scores, 0.f);
+		// A candidate is accepted when it fragments nothing, strands nobody and rewrites little.
+		//
+		// The first two bars are RELATIVE to the unfiltered graph, and the second one has to be: a
+		// real capture already has images below degree 2 before any filtering -- 5 of 209 on the
+		// measured lidar graph -- so an absolute "under 1% of nodes" bar refuses every threshold,
+		// including the one that removes nothing.
+		//
+		// The third bar is the one connectivity cannot supply. At the paper's own m = 0.6 the
+		// filter removes 65-67% of a healthy, fully connected orbit and the first two bars still
+		// pass, because the score is relative: on a dense graph the mean of n_ij / max(n_kl) over
+		// many triangles sits well below 1 for almost every edge, doppelganger or not. A filter
+		// removing two thirds of a graph is not finding outliers, and doppelgangers are a minority
+		// by construction. MAX_REMOVED_FRACTION says what the filter is for; it is a policy choice
+		// rather than a measured constant, and the log line below reports what was actually
+		// removed so a wrong value shows up in the first run rather than being inferred.
+		constexpr double MAX_REMOVED_FRACTION = 0.20;
+		const unsigned minComponent = (unsigned)std::ceil(0.99 * (double)unfiltered.largestComponent);
+		const unsigned maxLowDegree = unfiltered.numLowDegree +
+			(unsigned)std::floor(0.01 * (double)unfiltered.numNodes);
+		const unsigned minKept = unfiltered.numKept -
+			(unsigned)std::floor(MAX_REMOVED_FRACTION * (double)unfiltered.numKept);
+		tau = -1.f;
+		for (int step = (int)std::floor(config.minScore / 0.05f); step >= 0; --step) {
+			const float m = (float)step * 0.05f;
+			const float candidate = m * (1.f - degreeRatio) + degreeRatio;
+			const SurvivorGraph survivor = EvaluateSurvivorGraph(scene, tripletScores.scores, candidate);
+			if (survivor.largestComponent >= minComponent && survivor.numLowDegree <= maxLowDegree &&
+				survivor.numKept >= minKept) {
+				tau = candidate;
+				VERBOSE("Triplet filter: auto-tau relaxed m %.2f to %.2f (tau %.3f); survivor graph "
+					"keeps %u/%u images in its largest component, %u below degree 2 (%u before), "
+					"and %u/%u edges",
+					config.minScore, m, candidate, survivor.largestComponent,
+					unfiltered.largestComponent, survivor.numLowDegree, unfiltered.numLowDegree,
+					survivor.numKept, unfiltered.numKept);
+				break;
+			}
+		}
+		if (tau < 0.f) {
+			// A graph where no threshold is safe is a graph this filter has no business touching.
+			VERBOSE("Triplet filter: auto-tau found no threshold at or below m %.2f that keeps "
+				"%u/%u images connected, at most %u below degree 2 (%u before) and at least %u/%u "
+				"edges; leaving the view graph alone",
+				config.minScore, minComponent, unfiltered.largestComponent, maxLowDegree,
+				unfiltered.numLowDegree, minKept, unfiltered.numKept);
+			return 0;
+		}
+	}
 	// compact in one forward pass -- moving every kept pair down and truncating once -- rather
 	// than erasing pair by pair: each erase shifts the whole tail, so on a graph where the filter
 	// removes most of the edges that would cost O(removed x kept) moves of a match-carrying pair
@@ -244,7 +347,7 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 		// evidence keeps the pair. Only a scored pair below tau is removed.
 		if (score < 0.f) {
 			++numUnscored;
-		} else if (score < tripletScores.tau) {
+		} else if (score < tau) {
 			++numBelowTau;
 			continue;
 		}
@@ -256,9 +359,9 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 	ASSERT(numRemoved == numBelowTau, "FilterPairsByTriplets: removal count mismatch");
 	if (numRemoved > 0)
 		scene.pairs.RemoveLast(numRemoved);
-	VERBOSE("Triplet filter: kept %u/%u pairs (tau %.3f from m %.2f; %u nodes, max degree %u; "
+	VERBOSE("Triplet filter: kept %u/%u pairs (tau %.3f; %u nodes, max degree %u; "
 		"%u triplets in %u components; %u below tau removed, %u unscored kept)",
-		numKept, numPairs, tripletScores.tau, config.minScore,
+		numKept, numPairs, tau,
 		tripletScores.numNodes, tripletScores.maxDegree,
 		tripletScores.numTriplets, tripletScores.numTripletComponents, numBelowTau, numUnscored);
 	// the connectivity and cycle-consistency weights were computed on the unfiltered graph and

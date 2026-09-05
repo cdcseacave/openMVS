@@ -76,6 +76,7 @@ float fROMA2MinConfidence;
 float fROMA2MinOverlap;
 unsigned nROMA2DenseMatches;
 bool bFilterTriplets;
+bool bTripletAutoTau;
 float fTripletMinScore;
 String strROMA2Provider;
 float defaultFocalRatio;
@@ -155,7 +156,8 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("export-retrieval-csv", boost::program_options::value<std::string>(&OPT::strExportRetrievalCSV), "export the per-image global-descriptor retrieval rankings to CSV file (written right after matching, before reconstruction) (optional)")
 		("compare-mvs", boost::program_options::value<std::string>(&OPT::strCompareMVS), "compare reconstruction against ground-truth MVS file (optional)")
 		("filter-triplets", boost::program_options::value<bool>(&OPT::bFilterTriplets)->default_value(TripletFilterConfig().enabled), "disambiguate the matched view graph with the camera-triplet filter (Manam & Govindu, CVPR 2024): remove the pairs whose inlier count is systematically weak in the triangles they belong to")
-		("triplet-min-score", boost::program_options::value(&OPT::fTripletMinScore)->default_value(TripletFilterConfig().minScore), "camera-triplet filter: minimum edge score m in (0,1), the aggressiveness of the removal (0.6 generic scenes, 0.9 highly ambiguous, 0.3 medium/small ambiguous)")
+		("triplet-auto-tau", boost::program_options::value<bool>(&OPT::bTripletAutoTau)->default_value(TripletFilterConfig().autoTau), "camera-triplet filter: relax --triplet-min-score against the graph the filter would leave behind instead of applying it as given -- back off until the survivor graph keeps 99% of the largest connected component, adds at most 1% of the images to those below degree 2, and removes at most a fifth of the pairs; if no threshold qualifies, the filter leaves the view graph alone")
+		("triplet-min-score", boost::program_options::value(&OPT::fTripletMinScore)->default_value(TripletFilterConfig().minScore), "camera-triplet filter: with --triplet-auto-tau (default), the strictness m the sweep starts from and only ever relaxes; without it, the minimum edge score m in (0,1) applied as given (0.6 generic scenes, 0.9 highly ambiguous, 0.3 medium/small ambiguous)")
 		("max-features-per-cell", boost::program_options::value(&OPT::nMaxFeaturesPerCell)->default_value(3000), "maximum features per grid cell (3x3 grid)")
 		("min-features-per-cell", boost::program_options::value(&OPT::nMinFeaturesPerCell)->default_value(500), "minimum features per cell before adjusting sensitivity")
 		("match-mode", boost::program_options::value(&OPT::matchMode)->default_value(1), "match mode: -1=SKIP,0=EXHAUSTIVE,1=VOCABULARY,2=SEQUENTIAL,3=KNOWN_POSES,4=RETRIEVAL")
@@ -392,6 +394,7 @@ int main(int argc, LPCTSTR* argv)
 	cfg.exportRetrievalCSV = OPT::strExportRetrievalCSV.empty() ? String() : MAKE_PATH_SAFE(OPT::strExportRetrievalCSV);
 	// applied by Scene::Reconstruct() right after those exports, so they still list every matched pair
 	cfg.tripletFilterCfg.enabled = OPT::bFilterTriplets;
+	cfg.tripletFilterCfg.autoTau = OPT::bTripletAutoTau;
 	cfg.tripletFilterCfg.minScore = OPT::fTripletMinScore;
 	cfg.viewgraphCfg.maxTwoViewError = 0; // disable pair filtering after ViewGraph calibration
 	cfg.useGlobalSolver = OPT::bUseGlobalSolver;

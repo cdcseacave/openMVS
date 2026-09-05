@@ -42,8 +42,31 @@ class SFM_API Scene;
 struct SFM_API TripletFilterConfig
 {
 	bool enabled = false;   // remove the pairs the triplet score rejects (opt-in, see docs/design/TripletDisambiguation.md)
-	float minScore = 0.6f;  // the paper's minimum edge score m: 0.6 generic/large-scale, 0.9 highly ambiguous, 0.3 medium/small ambiguous
+	// Relax minScore against the graph the filter would leave behind, rather than applying it as
+	// given. The paper's constant is the part that fails on video keyframes: it is not calibrated
+	// for them, and at m = 0.6 every measured capture loses registered images while a densely
+	// connected orbit loses two thirds of its edges.
+	bool autoTau = true;
+	// The strictness asked for: the paper's minimum edge score m (0.6 generic/large-scale, 0.9
+	// highly ambiguous, 0.3 medium/small ambiguous). With autoTau the sweep starts here and only
+	// ever relaxes, so this is a ceiling on how aggressive the filter may be, never a floor.
+	float minScore = 0.6f;
 };
+
+// The view graph the filter would leave behind at a given threshold: what the sweep judges.
+struct SFM_API SurvivorGraph
+{
+	unsigned numNodes;          // images incident to at least one edge of the UNFILTERED graph
+	unsigned largestComponent;  // images in the largest connected component of the kept edges
+	unsigned numLowDegree;      // of those nodes, how many have degree < 2 in the kept graph
+	unsigned numKept;           // kept edges
+};
+
+// Evaluate the graph left by keeping every unscored pair and every pair scoring at or above `tau`.
+// Pass tau = 0 for the unfiltered graph: scores lie in [0,1] and unscored pairs are always kept.
+// Nodes are counted on the unfiltered graph, so an image that loses all its edges still counts as
+// a node -- with degree 0, which is exactly what the low-degree test is there to catch.
+SurvivorGraph SFM_API EvaluateSurvivorGraph(const Scene& scene, const std::vector<float>& scores, float tau);
 
 // Per-pair triplet scores of a view graph, plus the statistics of the graph they were read from.
 struct SFM_API TripletScores

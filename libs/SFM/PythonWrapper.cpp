@@ -316,6 +316,7 @@ void RegisterBindings()
 	// SFM::TripletFilterConfig — camera-triplet view-graph disambiguation
 	class_<SFM::TripletFilterConfig>("TripletFilterConfig")
 		.def_readwrite("enabled", &SFM::TripletFilterConfig::enabled)
+		.def_readwrite("auto_tau", &SFM::TripletFilterConfig::autoTau)
 		.def_readwrite("min_score", &SFM::TripletFilterConfig::minScore);
 
 	// SFM::ViewGraphCalibratorConfig — focal-length verification

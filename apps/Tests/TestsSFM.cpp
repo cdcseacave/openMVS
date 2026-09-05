@@ -7709,6 +7709,50 @@ bool ReconstructExportCSVTest()
 	return true;
 }
 
+namespace {
+
+// Shared by TripletFilterTest and TripletAutoTauTest: a pair carries an inlier count and
+// F = Matrix3x3::IDENTITY as its stand-in geometric verification -- the score reads nothing else
+// off a pair, so neither descriptors nor real images are needed (as ROMA2WarpTrackingTest builds
+// its pairs) -- and the images need only a camera.
+struct TripletPairSpec { IIndex idA, idB; int numInliers; bool verified; };
+
+void AddTripletImages(Scene& scene, IIndex numImages)
+{
+	scene.cameras.emplace_back(new PinholeCamera(cv::Size(640, 480), REAL(600), REAL(600), REAL(320), REAL(240)));
+	for (IIndex i = 0; i < numImages; ++i) {
+		scene.images.emplace_back(i, String::FormatString("%u.jpg", i));
+		scene.images[i].cameraID = 0;
+		scene.images[i].pCamera = scene.cameras[0];
+	}
+}
+
+void AddTripletPair(Scene& scene, IIndex idA, IIndex idB, unsigned numInliers, bool verified = true)
+{
+	ImagePair pair(idA, idB);
+	pair.numFilteredInliers = numInliers;
+	if (verified)
+		pair.F = Matrix3x3::IDENTITY; // stands in for the geometric verification
+	scene.pairs.emplace_back(std::move(pair));
+}
+
+void BuildTripletScene(Scene& scene, IIndex numImages, const TripletPairSpec* specs, unsigned numPairs)
+{
+	AddTripletImages(scene, numImages);
+	for (unsigned i = 0; i < numPairs; ++i)
+		AddTripletPair(scene, specs[i].idA, specs[i].idB, specs[i].numInliers, specs[i].verified);
+}
+
+std::set<std::pair<IIndex,IIndex>> TripletKeptPairs(const Scene& scene)
+{
+	std::set<std::pair<IIndex,IIndex>> kept;
+	for (const ImagePair& pair : scene.pairs)
+		kept.emplace(pair.ID1, pair.ID2);
+	return kept;
+}
+
+} // namespace
+
 // Task 5 (roma2-followups-20260830): camera-triplet view-graph disambiguation
 // (Manam & Govindu, CVPR 2024), on the hand-computed graph of the task brief:
 //   nodes 0..7; (0,1)=100 (0,2)=100 (1,2)=70 (1,3)=50 (2,3)=40 (3,4)=30 (3,5)=20
@@ -7719,35 +7763,14 @@ bool TripletFilterTest()
 {
 	TD_TIMER_START();
 	constexpr float eps = 1e-6f;
-	struct PairSpec { IIndex idA, idB; int numInliers; bool verified; };
-	static const PairSpec pairSpecs[] = {
+	static const TripletPairSpec pairSpecs[] = {
 		{0,1,100,true}, {0,2,100,true}, {1,2,70,true}, {1,3,50,true}, {2,3,40,true},
 		{3,4,30,true}, {3,5,20,true}, {5,6,10,true}, {6,7,10,true}, {5,7,10,true}
 	};
-	// the pairs carry an inlier count and a stand-in fundamental matrix only: the score reads
-	// nothing else off them, so neither images nor descriptors are needed (as ROMA2WarpTrackingTest
-	// builds its pairs)
-	const auto buildScene = [](Scene& scene, const PairSpec* specs, unsigned numPairs) {
-		scene.cameras.emplace_back(new PinholeCamera(cv::Size(640, 480), REAL(600), REAL(600), REAL(320), REAL(240)));
-		for (IIndex i = 0; i < 8; ++i) {
-			scene.images.emplace_back(i, String::FormatString("%u.jpg", i));
-			scene.images[i].cameraID = 0;
-			scene.images[i].pCamera = scene.cameras[0];
-		}
-		for (unsigned i = 0; i < numPairs; ++i) {
-			ImagePair pair(specs[i].idA, specs[i].idB);
-			pair.numFilteredInliers = specs[i].numInliers;
-			if (specs[i].verified)
-				pair.F = Matrix3x3::IDENTITY; // stands in for the geometric verification
-			scene.pairs.emplace_back(std::move(pair));
-		}
+	const auto buildScene = [](Scene& scene, const TripletPairSpec* specs, unsigned numPairs) {
+		BuildTripletScene(scene, 8, specs, numPairs);
 	};
-	const auto keptPairs = [](const Scene& scene) {
-		std::set<std::pair<IIndex,IIndex>> kept;
-		for (const ImagePair& pair : scene.pairs)
-			kept.emplace(pair.ID1, pair.ID2);
-		return kept;
-	};
+	const auto keptPairs = [](const Scene& scene) { return TripletKeptPairs(scene); };
 
 	// (a) scores and statistics of the full graph
 	Scene scene;
@@ -7793,12 +7816,12 @@ bool TripletFilterTest()
 	// triangle if it were (the self-pair two, through node 3's neighbours 4 and 5), so the triplet
 	// count staying at 3 is what proves they were left out
 	{
-		PairSpec specs[14];
+		TripletPairSpec specs[14];
 		memcpy(specs, pairSpecs, sizeof(pairSpecs));
-		specs[10] = PairSpec{0, 1, 10, true};   // duplicate of the (0,1) edge, weaker
-		specs[11] = PairSpec{0, 3, 25, false};  // inliers but no geometric verification
-		specs[12] = PairSpec{2, 4, 0, true};    // verified but no inlier
-		specs[13] = PairSpec{3, 3, 30, true};   // a self-pair joins no two images
+		specs[10] = TripletPairSpec{0, 1, 10, true};   // duplicate of the (0,1) edge, weaker
+		specs[11] = TripletPairSpec{0, 3, 25, false};  // inliers but no geometric verification
+		specs[12] = TripletPairSpec{2, 4, 0, true};    // verified but no inlier
+		specs[13] = TripletPairSpec{3, 3, 30, true};   // a self-pair joins no two images
 		Scene sceneDup;
 		buildScene(sceneDup, specs, 14);
 		const TripletScores scoresDup = ComputeTripletScores(sceneDup, 0.3f);
@@ -7826,6 +7849,10 @@ bool TripletFilterTest()
 	// keeps them.
 	TripletFilterConfig filterCfg;
 	filterCfg.enabled = true;
+	// This test pins the paper's threshold arithmetic -- Eqn. 3 at a given m -- so it uses m
+	// directly. The sweep is TripletAutoTauTest's subject, and on this small graph it stands
+	// down at every candidate anyway.
+	filterCfg.autoTau = false;
 	filterCfg.minScore = 0.3f;
 	const PairsWeightingConfig weightingCfg; // defaults; FilterPairsByTriplets takes no default
 	if (FilterPairsByTriplets(scene, filterCfg, weightingCfg) != 2 || scene.pairs.size() != 8) {
@@ -7858,7 +7885,7 @@ bool TripletFilterTest()
 	// (e) a graph with no triplet at all scores nothing, so the filter has no evidence to act on
 	// and leaves every pair in place
 	Scene scenePath;
-	static const PairSpec pathSpecs[] = {{0,1,100,true}, {1,2,70,true}, {2,3,40,true}};
+	static const TripletPairSpec pathSpecs[] = {{0,1,100,true}, {1,2,70,true}, {2,3,40,true}};
 	buildScene(scenePath, pathSpecs, 3);
 	const TripletScores scoresPath = ComputeTripletScores(scenePath, 0.6f);
 	if (scoresPath.numTriplets != 0 || scoresPath.numTripletComponents != 0 ||
@@ -7890,6 +7917,108 @@ bool TripletFilterTest()
 	}
 
 	VERBOSE("TripletFilterTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// Auto-tau picks its threshold from the survivor graph instead of applying the paper's constant m
+// as given. Two scenes, because a small graph can only ever stand down -- any removal is a large
+// fraction of a handful of edges, and almost any removal strands a node -- so a test built only on
+// one would assert "stands down" in both cases and keep passing if the sweep were broken.
+bool TripletAutoTauTest()
+{
+	TD_TIMER_START();
+	const PairsWeightingConfig weightingCfg; // defaults; FilterPairsByTriplets takes no default
+
+	// Scene 1, the barbell -- the sweep must stand down. Six images, eight pairs: triangle A
+	// {0,1,2}, triangle B {3,4,5}, and triangle C {2,3,4} sharing edge (3,4) with B. B and C share
+	// an edge so they are one triplet-graph component (2 triplets); A is another (1 triplet). The
+	// largest is BC, so A's three edges are unscored and always kept, while the scored edges are
+	// (3,4)=(3,5)=(4,5)=1.0 and (2,3)=(2,4)=0.1. G_LCT has 4 nodes and max degree 3, so
+	// tau(m) = 0.25 m + 0.75 never drops below 0.75 and the two 0.1 edges are removed at every
+	// candidate -- which severs A from B.
+	Scene barbell;
+	AddTripletImages(barbell, 6);
+	AddTripletPair(barbell, 0, 1, 100);
+	AddTripletPair(barbell, 0, 2, 100);
+	AddTripletPair(barbell, 1, 2, 100);
+	AddTripletPair(barbell, 3, 4, 100);
+	AddTripletPair(barbell, 3, 5, 100);
+	AddTripletPair(barbell, 4, 5, 100);
+	AddTripletPair(barbell, 2, 3, 10);
+	AddTripletPair(barbell, 2, 4, 10);
+
+	// The unfiltered graph, which is what the sweep measures itself against: tau = 0 keeps every
+	// scored pair, and an unscored pair is kept regardless.
+	const TripletScores scores = ComputeTripletScores(barbell, 0.f);
+	const SurvivorGraph unfiltered = EvaluateSurvivorGraph(barbell, scores.scores, 0.f);
+	if (unfiltered.numNodes != 6 || unfiltered.largestComponent != 6 || unfiltered.numKept != 8) {
+		VERBOSE("TripletAutoTauTest FAILED: unfiltered barbell %u nodes, component %u, %u edges; expected 6, 6, 8",
+			unfiltered.numNodes, unfiltered.largestComponent, unfiltered.numKept);
+		return false;
+	}
+	// Cutting the two weak edges severs the two triangles: 3 images in the largest component.
+	const SurvivorGraph severed = EvaluateSurvivorGraph(barbell, scores.scores, 0.75f);
+	if (severed.largestComponent != 3 || severed.numKept != 6) {
+		VERBOSE("TripletAutoTauTest FAILED: severed barbell component %u, %u edges; expected 3 and 6",
+			severed.largestComponent, severed.numKept);
+		return false;
+	}
+	TripletFilterConfig cfg;
+	cfg.enabled = true;
+	cfg.autoTau = true;
+	cfg.minScore = 0.6f;
+	Scene barbellAuto(barbell);
+	if (FilterPairsByTriplets(barbellAuto, cfg, weightingCfg) != 0 || barbellAuto.pairs.size() != 8) {
+		VERBOSE("TripletAutoTauTest FAILED: auto-tau removed %u pairs from a graph every threshold severs",
+			8u - (unsigned)barbellAuto.pairs.size());
+		return false;
+	}
+
+	// Scene 2, the ring -- the sweep must relax from 0.60 to 0.45 and remove exactly two edges.
+	// 24 images, all indices modulo 24, 74 pairs. Every (i,i+1) and (i,i+2) edge sits only in
+	// triangles whose strongest edge is 100, so all of them score exactly 1.0. Each (i,i+3) edge
+	// sits in two triangles, {i,i+1,i+3} and {i,i+2,i+3}, whose maximum is 100 in both, so it
+	// scores 65/100 = 0.65. The two added edges sit in the single triangle {0,1,12} whose maximum
+	// is 100, so they score 0.05. G_LCT has 24 nodes and max degree 8 (node 12 carries both added
+	// edges), giving tau(m) = (2/3) m + 1/3.
+	//
+	// A ring of chained triangles, dense enough that removing a couple of edges costs nothing --
+	// which is exactly the situation the connectivity tests cannot judge on their own.
+	Scene ring;
+	AddTripletImages(ring, 24);
+	for (IIndex i = 0; i < 24; ++i) {
+		AddTripletPair(ring, i, (i + 1) % 24, 100); // structural, scores 1.00
+		AddTripletPair(ring, i, (i + 2) % 24, 100); // structural, scores 1.00
+		AddTripletPair(ring, i, (i + 3) % 24, 65);  // medium,     scores 0.65
+	}
+	AddTripletPair(ring, 0, 12, 5); // the two edges the filter should find
+	AddTripletPair(ring, 1, 12, 5); //   both score 0.05
+
+	Scene ringAuto(ring);
+	// Starts at 0.60, where it would strip every medium edge, and relaxes to 0.45, where only the
+	// two genuinely weak edges fall. Node 12 keeps four ring edges, so nothing is stranded.
+	//
+	// | m    | tau   | removed                          | verdict                            |
+	// | 0.60 | 0.733 | 24 medium + 2 weak = 26/74 (35%) | rejected: over the 20% bound        |
+	// | 0.50 | 0.667 | 26/74                             | rejected                            |
+	// | 0.45 | 0.633 | 2/74 (2.7%)                       | accepted -- 0.633 is below the      |
+	// |      |       |                                   | medium 0.65                         |
+	const unsigned numRingPairsRemoved = FilterPairsByTriplets(ringAuto, cfg, weightingCfg);
+	if (numRingPairsRemoved != 2 || ringAuto.pairs.size() != 72) {
+		VERBOSE("TripletAutoTauTest FAILED: the ring lost %u pairs, expected exactly 2",
+			74u - (unsigned)ringAuto.pairs.size());
+		return false;
+	}
+	// and they must be the RIGHT two -- a sweep that relaxed too far would also remove 2 by
+	// coincidence only if it removed these, so name them
+	for (const ImagePair& pair : ringAuto.pairs) {
+		if ((pair.ID1 == 0 && pair.ID2 == 12) || (pair.ID1 == 1 && pair.ID2 == 12)) {
+			VERBOSE("TripletAutoTauTest FAILED: the ring kept the weak pair (%u,%u)", pair.ID1, pair.ID2);
+			return false;
+		}
+	}
+
+	VERBOSE("TripletAutoTauTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 
