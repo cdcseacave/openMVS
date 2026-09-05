@@ -1066,6 +1066,298 @@ chain whole where the paper's fixed threshold fragments five of them."
 
 ---
 
+### Task 6: The strength of an edge is its inlier count discounted by the inliers' coverage
+
+Spec §3.5. The paper weighs an edge by its inlier count `n_ij`; on the ambiguous small sets that
+ranks the doppelganger above the true junction (oats: `(6,21)` 880 inliers against `(6,7)` 627;
+cup: `(1,38)` 443 against `(11,12)` 358), and Task 5's descent then reconnects the graph through
+the doppelganger and the model folds. What separates the two is where the inliers sit: a
+doppelganger's matches lie on the duplicated object alone, a true adjacent pair's spread over the
+whole overlap. From now on the strength of an edge is `s_ij = n_ij * c_ij`, with `c_ij` the
+fraction of a `gridSize x gridSize` grid the pair's track-forming matches occupy (the smaller of the
+two images' fractions), and the triplet score is the paper's ratio over `s` instead of `n`.
+Replayed offline on the exported graphs, this keeps no doppelganger on oats or cup and leaves
+street, books and desk as they were; cereal stays a known failure. No parameter, no power, no angle
+term: `weightSpatial`'s ray-angle factor measures triangulation conditioning and would drop the
+adjacent pairs of a walk (measured on ToH: pairs with 6000-9000 inliers below 1.5 degrees of
+baseline).
+
+**Files:**
+- Modify: `libs/SFM/PairsWeighting.h` (declare `ComputePairCoverage`)
+- Modify: `libs/SFM/PairsWeighting.cpp` (`ComputePairCoverage` extracted out of `ComputeIntrinsicWeight`, which calls it)
+- Modify: `libs/SFM/ViewGraphTriplets.h` (header comment, `ComputeTripletScores` signature and comment)
+- Modify: `libs/SFM/ViewGraphTriplets.cpp` (`ComputeTripletScores`: edge strength; `FilterPairsByTriplets`: passes the grid size)
+- Modify: `libs/SFM/PairsMatcher.h`, `libs/SFM/PairsMatcher.cpp` (`ExportPairsCSV` takes the grid size, writes a `Coverage` column)
+- Modify: `libs/SFM/Scene.cpp` (`ExportMatchingCSVs` passes `config.matchCfg.weightingCfg.gridSize`)
+- Modify: `libs/SFM/PythonWrapper.cpp` (`ComputeTripletScoresDict` gains a `grid_size` argument)
+- Modify: `apps/CreateStructure/CreateStructure.cpp` (`--filter-triplets` help text)
+- Modify: `apps/Tests/TestsSFM.cpp` (`AddTripletPair` builds real matches; every `ComputeTripletScores` call passes a grid size; new `TripletCoverageTest`), `apps/Tests/TestsSFM.h`, `apps/Tests/Tests.cpp` (register it after `TripletAutoTauTest`)
+- Modify: `docs/design/TripletDisambiguation.md` (the "one integer per edge" and `n_ij` sentences; the full rewrite stays Task 4)
+
+**Interfaces:**
+- Consumes: `ImagePair::GetTrackFormingPoints(img1, img2)`, `ImagePair::GetNumWeightedInliers()`, `PairsWeightingConfig::gridSize`, the pinhole/spherical binning already inside `ComputeIntrinsicWeight`.
+- Produces: `float SFM_API ComputePairCoverage(const ImagePair& pair, const Image& img1, const Image& img2, int gridSize)` in `PairsWeighting.h`; `TripletScores SFM_API ComputeTripletScores(const Scene& scene, float minScore, int gridSize)`; `static bool PairsMatcher::ExportPairsCSV(const Scene& scene, const String& fileName, float minWeight, int gridSize)`; `pairs.csv` header `ImageA,ImageB,NumMatches,Coverage,Weight,WeightSpatial,WeightConnectivity,WeightTriplet,MeanRayAngle,TripletScore`.
+
+- [ ] **Step 1: Make the test scenes carry real matches, and write the failing coverage test**
+
+`AddTripletPair` currently sets `numFilteredInliers` on a pair with no matches and no keypoints,
+which is enough for a count but not for a coverage. Replace it (keep `AddTripletImages`,
+`BuildTripletScene`, `TripletPairSpec` and `TripletKeptPairs` as they are):
+
+```cpp
+// A pair of numInliers track-forming matches whose keypoints occupy the first cellsA (cellsB)
+// cells of a 10x10 grid over each 640x480 image, walked row by row from the top left; 100 cells
+// is full coverage, which leaves the pair's triplet strength equal to its inlier count -- what
+// every scene below relies on unless it says otherwise.
+void AddTripletPair(Scene& scene, IIndex idA, IIndex idB, unsigned numInliers, bool verified = true,
+	unsigned cellsA = 100, unsigned cellsB = 100)
+{
+	ASSERT(cellsA >= 1 && cellsA <= 100 && cellsB >= 1 && cellsB <= 100);
+	ImagePair pair(idA, idB);
+	Image& imageA = scene.images[idA];
+	Image& imageB = scene.images[idB];
+	const auto cellCentre = [](unsigned cell) {
+		return cv::Point2f((float)(cell % 10) * 64.f + 32.f, (float)(cell / 10) * 48.f + 24.f);
+	};
+	for (unsigned m = 0; m < numInliers; ++m) {
+		imageA.keypoints.emplace_back(cellCentre(m % cellsA), 1.f);
+		imageB.keypoints.emplace_back(cellCentre(m % cellsB), 1.f);
+		pair.matches.emplace_back((int)imageA.keypoints.size() - 1, (int)imageB.keypoints.size() - 1, 0.f);
+	}
+	pair.numFilteredInliers = numInliers;
+	if (verified)
+		pair.F = Matrix3x3::IDENTITY; // stands in for the geometric verification
+	scene.pairs.emplace_back(std::move(pair));
+}
+```
+
+Update the comment above the helpers (line ~7714, "a pair carries an inlier count and ...") to say
+a pair carries an inlier count, its matches' coverage, and a verification flag.
+
+Then add, after `TripletAutoTauTest`:
+
+```cpp
+// The strength of an edge is its inlier count discounted by the fraction of the frame its inliers
+// cover (ViewGraphTriplets.h): a doppelganger's matches sit on the duplicated object alone, a true
+// adjacent pair's spread over the whole overlap. Triangle {0,1,2}: (0,1) and (1,2) carry 600
+// inliers over all 100 cells, (0,2) carries 900 inliers over 10 cells of image 0 and all 100 of
+// image 2. Strengths 600, 600 and 900 * min(0.1, 1.0) = 90, so the scores are (0,1) = (1,2) = 1.0
+// and (0,2) = 0.15. By count alone (0,2) would score 1.0 and the other two 600/900 = 0.667.
+bool TripletCoverageTest()
+{
+	TD_TIMER_START();
+	const PairsWeightingConfig weightingCfg; // defaults; the coverage grid is its gridSize
+	Scene scene;
+	AddTripletImages(scene, 3);
+	AddTripletPair(scene, 0, 1, 600);
+	AddTripletPair(scene, 1, 2, 600);
+	AddTripletPair(scene, 0, 2, 900, true, 10, 100);
+	const TripletScores scores = ComputeTripletScores(scene, 0.f, weightingCfg.gridSize);
+	if (scores.numTriplets != 1 || scores.numScoredPairs != 3 ||
+		!ISEQUAL(scores.scores[0], 1.f) || !ISEQUAL(scores.scores[1], 1.f) || !ISEQUAL(scores.scores[2], 0.15f)) {
+		VERBOSE("TripletCoverageTest FAILED: %u triplets, %u scored, scores %g %g %g; expected 1, 3, 1 1 0.15",
+			scores.numTriplets, scores.numScoredPairs, scores.scores[0], scores.scores[1], scores.scores[2]);
+		return false;
+	}
+	// The coverage is measured on the grid the caller names, the same one the pair weighting
+	// uses: on a 2x2 grid the ten cells of image 0 are the top row of the 10x10 grid, i.e. the
+	// two upper cells of the coarse one, coverage 0.5, strength 450, score 450/600 = 0.75.
+	const TripletScores coarse = ComputeTripletScores(scene, 0.f, 2);
+	if (!ISEQUAL(coarse.scores[0], 1.f) || !ISEQUAL(coarse.scores[1], 1.f) || !ISEQUAL(coarse.scores[2], 0.75f)) {
+		VERBOSE("TripletCoverageTest FAILED: 2x2 grid scores %g %g %g; expected 1 1 0.75",
+			coarse.scores[0], coarse.scores[1], coarse.scores[2]);
+		return false;
+	}
+	// And the filter acts on it: G_LCT has 3 nodes and max degree 2, so at m = 0.5 the threshold
+	// is 0.5 * (1 - 2/3) + 2/3 = 0.833, applied as given. The doppelganger goes and the chain
+	// stays; by count alone it would be the chain that goes.
+	TripletFilterConfig filterCfg;
+	filterCfg.enabled = true;
+	filterCfg.autoTau = false;
+	filterCfg.minScore = 0.5f;
+	const unsigned numRemoved = FilterPairsByTriplets(scene, filterCfg, weightingCfg);
+	const std::set<std::pair<IIndex,IIndex>> expected{{0,1},{1,2}};
+	if (numRemoved != 1 || TripletKeptPairs(scene) != expected) {
+		VERBOSE("TripletCoverageTest FAILED: %u pairs removed, %u kept; expected 1 removed, (0,1) and (1,2) kept",
+			numRemoved, (unsigned)scene.pairs.size());
+		return false;
+	}
+	VERBOSE("TripletCoverageTest PASSED: doppelganger (0,2) scores 0.15 against the chain's 1.0 and is the one removed (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+```
+
+Declare it in `apps/Tests/TestsSFM.h` next to `TripletAutoTauTest` and run it from
+`apps/Tests/Tests.cpp` right after it, in the same style as the surrounding calls.
+
+Every existing `ComputeTripletScores(x, m)` call in `TripletFilterTest` and `TripletAutoTauTest`
+becomes `ComputeTripletScores(x, m, weightingCfg.gridSize)` where a `weightingCfg` is in scope and
+`ComputeTripletScores(x, m, PairsWeightingConfig().gridSize)` otherwise. Their expected numbers do
+not change: full coverage is the default of the helper.
+
+- [ ] **Step 2: Build and run, expect the new test to fail to compile**
+
+Run: `cd make && ninja -f build-Release.ninja Tests`
+Expected: compile errors on the three-argument `ComputeTripletScores` (it does not exist yet).
+
+- [ ] **Step 3: Extract the coverage out of the intrinsic weight**
+
+In `libs/SFM/PairsWeighting.h`, after `PairsWeightingConfig`:
+
+```cpp
+// The fraction of a gridSize x gridSize grid over the image that the pair's track-forming matches
+// occupy, in [0,1], taken as the smaller of the two images' fractions: how much of the frame the
+// pair's evidence covers, whatever its count. Pinhole images bin on a uniform pixel grid,
+// spherical ones on equal-solid-angle cells. 0 for a pair with no stored matches.
+float SFM_API ComputePairCoverage(const ImagePair& pair, const Image& img1, const Image& img2, int gridSize);
+```
+
+In `libs/SFM/PairsWeighting.cpp`, before `ComputeIntrinsicWeight`, move the grid part of it into:
+
+```cpp
+float SFM::ComputePairCoverage(const ImagePair& pair, const Image& img1, const Image& img2, int gridSize)
+{
+	ASSERT(gridSize > 0);
+	if (!pair.HasMatches())
+		return 0.f;
+	// The coverage runs over the TRACK-FORMING matches, dense supplement included: it measures
+	// where this pair has correspondences, and a dense draw covers the frame it was drawn over
+	// whether or not that counts as descriptor evidence.
+	const auto [points1, points2] = pair.GetTrackFormingPoints(img1, img2);
+	// Divide each view into gridSize x gridSize cells:
+	//  - pinhole  : uniform pixel grid (each cell = equal pixel area)
+	//  - spherical: equal-solid-angle bins on the unit sphere via (azimuth, sin(latitude));
+	//               each cell covers 4*pi/gridSize^2 sr, and azimuth binning wraps
+	//               across the equirectangular seam (u=0 ~ u=W)
+	const auto binFeature = [gridSize](const Point2f& p, const Image& img) {
+		int gx, gy;
+		if (img.pCamera->GetType() == CameraType::SPHERICAL) {
+			const Point3 b = img.pCamera->UnprojectNormalized(Cast<REAL>(p));
+			const REAL azimuth = ATAN2(b.x, b.z); // [-pi, pi]
+			gx = MINF((int)((azimuth + REAL(M_PI)) / (REAL(2) * REAL(M_PI)) * REAL(gridSize)), gridSize - 1);
+			gy = MINF((int)((b.y + REAL(1)) * REAL(0.5) * REAL(gridSize)), gridSize - 1);
+		} else {
+			gx = (int)(p.x / (float)img.GetWidth() * gridSize);
+			gy = (int)(p.y / (float)img.GetHeight() * gridSize);
+		}
+		return std::make_pair(gx, gy);
+	};
+	const auto occupied = [&](const std::vector<Point2f>& points, const Image& img) {
+		std::vector<bool> grid(gridSize * gridSize, false);
+		for (const Point2f& p : points) {
+			const auto [gx, gy] = binFeature(p, img);
+			if (gx >= 0 && gx < gridSize && gy >= 0 && gy < gridSize)
+				grid[gy * gridSize + gx] = true;
+		}
+		return (int)std::count(grid.begin(), grid.end(), true);
+	};
+	return (float)MINF(occupied(points1, img1), occupied(points2, img2)) / (float)(gridSize * gridSize);
+}
+```
+
+`ComputeIntrinsicWeight` keeps its validity floor and its angle term and replaces everything from
+`const auto [points1, points2] = ...` through `const float areaScore = ...` with
+`const float areaScore = ComputePairCoverage(pair, img1, img2, gridSize);`, keeping the
+`pair.overlapArea` proxy line and the `angleScore` product after it. Fold the "AREA SCORE runs over
+the track-forming matches" paragraph of its comment into the new function's (it is there above);
+what stays on `ComputeIntrinsicWeight` is the floor and the angle term. Include `<algorithm>` if
+`std::count` needs it.
+
+- [ ] **Step 4: Score the triplets on the discounted strength**
+
+`libs/SFM/ViewGraphTriplets.h`: the header comment's second paragraph currently says each edge
+carries "a single integer: its epipolar inlier count n_ij". Rewrite that paragraph:
+
+```cpp
+// The view graph G = (V,E) has the images as nodes and the geometrically verified pairs as
+// edges, each carrying one strength s_ij = n_ij * c_ij: its epipolar inlier count n_ij discounted
+// by c_ij, the fraction of the frame those inliers cover (ComputePairCoverage, the grid the pair
+// weighting measures on). Wrong edges -- the repeated-structure ("doppelganger") pairs a
+// retrieval step happily proposes and two-view geometry happily verifies -- are found purely from
+// how that strength is distributed over the triangles of the graph: a true edge is, in every
+// triangle it belongs to, comparable to the strongest edge of that triangle, while a false edge is
+// systematically the weak side of triangles built around true edges. The paper weighs edges by
+// n_ij alone; the coverage is what tells a doppelganger with more inliers than the true junction
+// beside it (matches on the duplicated object and nowhere else) from that junction (matches over
+// the whole overlap), which the counts and the triangles cannot.
+```
+
+`ComputeTripletScores` becomes `TripletScores SFM_API ComputeTripletScores(const Scene& scene, float minScore, int gridSize);`
+and its comment says the strength is `s_ij = n_ij * c_ij`, the score `q_ij` is the mean over the
+edge's triplets of `s_ij / max_{(k,l) in t} s_kl`, `gridSize` is the coverage grid
+(`PairsWeightingConfig::gridSize`, so the filter measures coverage on the grid the pair weighting
+does), and a verified pair whose matches are not stored has a coverage of 0 and is not an edge.
+
+`libs/SFM/ViewGraphTriplets.cpp`, `ComputeTripletScores`:
+- add `#include "PairsWeighting.h"` if the header does not already bring it in;
+- `std::vector<unsigned> edgeInliers; // n_ij` becomes `std::vector<float> edgeStrength; // s_ij = n_ij * c_ij`;
+- in the edge loop, after the existing admission test:
+
+```cpp
+		// s_ij: the count discounted by the fraction of the frame the inliers cover. A verified
+		// pair whose matches are not stored has nothing to measure coverage on and is no edge --
+		// EvaluateSurvivorGraph still counts it, so it ends up unscored and kept, which is what
+		// "no evidence" means here.
+		const float strength = (float)numInliers *
+			ComputePairCoverage(pair, scene.images[pair.ID1], scene.images[pair.ID2], gridSize);
+		if (strength <= 0.f)
+			continue;
+```
+  with `edgeStrength.emplace_back(strength)` on insertion and `else if (strength > edgeStrength[...])`
+  on a duplicate (the comment above the loop says "weighted by the strongest of them" -- keep it,
+  it is now literally true);
+- step 5: `const float maxStrength = MAXF3(edgeStrength[e0], edgeStrength[e1], edgeStrength[e2]);`,
+  `ASSERT(maxStrength > 0.f, "ComputeTripletScores: triplet with no strength");`, and the three sums
+  divide `edgeStrength[e]` by it (`double` arithmetic as now);
+- the step-5 comment's `q^t_ij = n_ij / max n_kl` becomes `q^t_ij = s_ij / max s_kl`.
+
+`FilterPairsByTriplets` passes `weightingCfg.gridSize`:
+`ComputeTripletScores(scene, minScore, weightingCfg.gridSize)`.
+
+- [ ] **Step 5: The other callers, the CSV, the help text, the design note**
+
+- `libs/SFM/PairsMatcher.h`: `static bool ExportPairsCSV(const Scene& scene, const String& fileName, float minWeight, int gridSize);`
+  (drop the `= 0.f` default: the one caller passes both).
+- `libs/SFM/PairsMatcher.cpp`: `ComputeTripletScores(scene, 0.f, gridSize)`; the header line becomes
+  `"ImageA,ImageB,NumMatches,Coverage,Weight,WeightSpatial,WeightConnectivity,WeightTriplet,MeanRayAngle,TripletScore\n"`
+  and each row writes `ComputePairCoverage(pair, scene.images[pair.ID1], scene.images[pair.ID2], gridSize)`
+  right after the match count. Extend the comment above: the coverage is exported so the
+  discount can be replayed offline against the raw count.
+- `libs/SFM/Scene.cpp`, `ExportMatchingCSVs`: `ExportPairsCSV(scene, config.exportPairsCSV, config.minPairWeight, config.matchCfg.weightingCfg.gridSize)`.
+- `libs/SFM/PythonWrapper.cpp`: `ComputeTripletScoresDict(const Scene& scene, float minScore, int gridSize)`
+  calling `ComputeTripletScores(scene, minScore, gridSize)`; where the function is registered with
+  boost.python, expose the new argument as `grid_size` with the default `PairsWeightingConfig().gridSize`
+  in the same way the file gives other optional arguments their defaults (look at how `ExportRetrievalRankingsCSVFile`'s `maxRank` is exposed and follow it); extend the docstring/comment: the scores depend on the coverage grid.
+- `apps/CreateStructure/CreateStructure.cpp`, `--filter-triplets` help: `"disambiguate the matched view graph with the camera-triplet filter (Manam & Govindu, CVPR 2024): remove the pairs whose inlier count, discounted by the image area those inliers cover, is systematically weak in the triangles they belong to"`.
+- `docs/design/TripletDisambiguation.md`: the Overview's "**one integer per edge**: the epipolar inlier count" becomes "one strength per edge: the epipolar inlier count discounted by the fraction of the frame the inliers cover", and the algorithm's `n_ij = ImagePair::GetNumFilteredInliers()` line becomes `s_ij = n_ij * c_ij`, `n_ij = ImagePair::GetNumWeightedInliers()` and `c_ij = ComputePairCoverage(...)`, with `q^t_ij = s_ij / max s_kl`. One or two sentences on why (the doppelganger with more inliers than the true junction); the full rewrite is Task 4.
+
+- [ ] **Step 6: Build everything and run the SFM suite**
+
+Run: `cd make && ninja -f build-Release.ninja Tests SFM CreateStructure SceneAnalyzeSFM && ./bin/Release/Tests 1`
+Expected: builds without warnings; `TripletFilterTest`, `TripletAutoTauTest`, `TripletCoverageTest` PASSED; exit code 0; no other test regresses (`grep -i FAILED` finds only the deliberate "matching failed" line of another test).
+
+Then apply each mutation below one at a time, rebuild `Tests`, confirm the named assertion fails, revert:
+
+| mutation | what fails |
+|---|---|
+| `strength = (float)numInliers` (coverage dropped) | TripletCoverageTest: scores 0.667 0.667 1.0, and the filter removes the chain |
+| `MAXF` instead of `MINF` over the two images in `ComputePairCoverage` | TripletCoverageTest: (0,2) coverage 1.0, score 1.0 |
+| `gridSize` ignored in `ComputePairCoverage` (10 hard-coded) | TripletCoverageTest: 2x2 grid score 0.15 instead of 0.75 |
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add libs/SFM/PairsWeighting.h libs/SFM/PairsWeighting.cpp libs/SFM/ViewGraphTriplets.h libs/SFM/ViewGraphTriplets.cpp libs/SFM/PairsMatcher.h libs/SFM/PairsMatcher.cpp libs/SFM/Scene.cpp libs/SFM/PythonWrapper.cpp apps/CreateStructure/CreateStructure.cpp apps/Tests/TestsSFM.cpp apps/Tests/TestsSFM.h apps/Tests/Tests.cpp docs/design/TripletDisambiguation.md
+git -c user.name=cDc -c user.email=cdc.seacave@gmail.com commit -m "sfm: weigh triplet edges by inliers discounted by the image area they cover
+
+A doppelganger's matches lie on the duplicated object alone while a true adjacent pair's
+spread over the whole overlap, and on the ambiguous small sets the doppelganger has the
+larger count (oats 880 against 627, cup 443 against 358), so the paper's count-based score
+ranks it first and one such edge folds the model. The strength of an edge is now its inlier
+count times the fraction of a grid its inliers occupy, measured by the same function the pair
+weighting uses; pairs.csv exports the coverage beside the count."
+```
+
 ## Measurement (the controller's, after the branch is green)
 
 Not tasks and not a subagent's: they run the pipeline and read datasets, which no implementer does.

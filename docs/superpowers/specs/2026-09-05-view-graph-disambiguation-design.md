@@ -188,6 +188,63 @@ after that measurement, in a later round. This generalises the constraint the re
 already established for a single cue — no cue rejects an edge on its own — into the rule that a cue
 rejects nothing until its independence has been measured.
 
+### 3.5 The strength of an edge is its inlier count discounted by the inliers' coverage
+
+The paper weighs an edge by `n_ij`, its epipolar inlier count. Measured on the small ambiguous
+sets (§5.7), that number ranks the wrong edge first exactly where it matters: the junction between
+the two halves of oats is `(6,7)` with 627 inliers, and the doppelganger `(6,21)` has 880; on cup
+the chain link `(11,12)` has 358 and the half-turn doppelganger `(1,38)` has 443. §3.2's descent
+then reconnects the graph through the doppelganger, and one such edge among ~40 true ones is
+enough to fold the reconstruction — oats, cereal and cup folded on the first campaign; street,
+books and desk did not. Nothing in the counts or the triangle structure separates the two cases:
+replaying the descent as a sequence of merge events shows the bad merges indistinguishable from
+the good ones in score, count and component size, and the cross-edge matrix between the two halves
+shows why — a doppelganger band between two runs of a pan (forty 400-1000-inlier edges between
+frames 3..6 and 13..22 on oats) is also what a genuine revisit produces.
+
+What differs is *where* the inliers sit. A doppelganger's matches lie on the duplicated object and
+nowhere else; a true adjacent pair's matches spread over the whole overlap. `(6,21)`: 880 inliers
+on the oats can alone. `(6,7)`: 627 over the can, the box beside it and the table.
+
+**Rule:** the strength of an edge is `s_ij = n_ij * c_ij`, where `c_ij` is the fraction of a
+`gridSize x gridSize` grid over the image that the pair's track-forming matches occupy, taken as
+the smaller of the two images' fractions (pinhole images bin on a uniform pixel grid, spherical
+ones on equal-solid-angle cells). It is the same grid, binning and match set `ComputeIntrinsicWeight`
+already uses for `weightSpatial`, computed by one shared function. The triplet score is
+`q_ij = mean over triplets of s_ij / max s_kl` and two scene pairs on one image pair collapse onto
+the stronger `s`. Nothing else changes: the threshold rule of §3.2 and the unscored rule of §3.1
+apply to the discounted scores as they did to the counts.
+
+Not the angle term. `weightSpatial` multiplies the coverage by a ray-angle weight that goes to
+zero below 1.5 degrees of baseline. That measures triangulation conditioning, not overlap, and
+replayed on ToH it drops adjacent pairs with 6000-9000 inliers because consecutive frames of a
+walk have almost no baseline. Coverage alone keeps them.
+
+Evidence, from replaying the exported graphs of the first campaign (`triplet_replay.py`; its
+count mode reproduces the run's `TripletScore` column to four decimals and the same unscored set):
+
+| set | count: doppelganger kept | coverage: doppelganger kept | true junction under coverage |
+|---|---|---|---|
+| street | none | none | kept |
+| books | none | none | kept |
+| desk | none — the revisit `21..24 x 30` is kept, correctly | none | kept |
+| oats | `(6,21)` 880 | **none** | `(6,7)` kept |
+| cup | `(1,38)` 443 | **none** | ring closed through gap-2 edges |
+| cereal | `(7,16)` 862, `(7,15)` 917, `(5,13)` 1390 | the same | `(13,14)` 320 dropped |
+
+The outcome is the same at coverage powers 0.5, 1 and 2; power 1 ships and there is no parameter.
+On ToH's sparse graph (`r` = 0.22) the ceiling applies as given in both modes; coverage keeps 2354
+of 8449 pairs against 2659, with fewer far edges (361 against 545 at a frame gap of 30 or more) and
+three adjacent pairs dropped that the gap-2 edges bridge.
+
+**The frontier after this cue is cereal.** Its true junction `(13,14)` is weak in count (320) and
+in coverage (a mug close-up against a view of the box), while the doppelganger `(7,16)` is a box
+filling both frames. No per-pair statistic of the matches separates them, and the paper oversplits
+cereal too (7 cameras).
+
+`pairs.csv` gains a `Coverage` column, so the discount can be replayed offline against the raw
+count; `TripletScore` is the discounted score from now on.
+
 ### 3.4 Where the filter runs
 
 The filter runs at `Scene.cpp:697`, in `Reconstruct`. `ViewGraphCalibrator` runs at
