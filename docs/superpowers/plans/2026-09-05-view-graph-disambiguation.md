@@ -64,21 +64,52 @@ in-tree `Tests` binary.
 - Produces: the removal rule every later task assumes — an unscored pair (`score < 0`) is kept.
   `FilterPairsByTriplets` still returns the number of pairs removed.
 
-- [ ] **Step 1: Flip the failing assertion in the existing test first**
+- [ ] **Step 1: Update the three existing filter assertions first**
 
-In `apps/Tests/TestsSFM.cpp`, `TripletFilterTest` builds `scenePath`, a path graph with no triangle
-at all, and currently asserts that filtering removes every pair:
+`TripletFilterTest` has three cases that count removals, and **all three change**. Do not assume
+only the path-graph case moves — the 8-node graph has five unscored edges too, and they were being
+counted among the removals.
+
+The scene is `pairSpecs`: `(0,1)100 (0,2)100 (1,2)70 (1,3)50 (2,3)40 (3,4)30 (3,5)20 (5,6)10
+(6,7)10 (5,7)10`. Its triplets are `{0,1,2}`, `{1,2,3}` (one component, sharing edge `(1,2)`) and
+`{5,6,7}` (isolated, so outside the largest component). Five pairs are scored —
+`(0,1)=1.0 (0,2)=1.0 (1,2)=0.85 (1,3)=0.714 (2,3)=0.571` — and five are unscored:
+`(3,4) (3,5) (5,6) (6,7) (5,7)`.
+
+**Case (c), m = 0.3, tau = 0.825.** Scored below tau: `(1,3)`, `(2,3)`. Was 7 removed / 3 kept;
+becomes **2 removed / 8 kept**:
 
 ```cpp
-	if (FilterPairsByTriplets(scenePath, filterCfg, weightingCfg) != 3 || !scenePath.pairs.empty()) {
+	// Only the two scored pairs below tau go. The five pairs in no triplet of the largest
+	// component are unscored -- no evidence either way -- and the filter keeps them.
+	if (FilterPairsByTriplets(scene, filterCfg, weightingCfg) != 2 || scene.pairs.size() != 8) {
+		VERBOSE("TripletFilterTest FAILED: m=0.3 left %u pairs, expected 8", scene.pairs.size());
+		return false;
+	}
+	const std::set<std::pair<IIndex,IIndex>> expectedKept03{
+		{0,1}, {0,2}, {1,2}, {3,4}, {3,5}, {5,6}, {6,7}, {5,7}};
 ```
 
-Replace it with the new rule — a graph with no evidence either way loses nothing — and say why in
-the comment above it:
+**Case (d), m = 0.6, tau = 0.9.** Scored below tau: `(1,2)=0.85`, `(1,3)`, `(2,3)`. Was 8 removed /
+2 kept; becomes **3 removed / 7 kept**:
 
 ```cpp
-	// A graph with no triangle at all carries no evidence about any of its edges. The filter
-	// removes edges for bad evidence, never for absent evidence, so every pair survives.
+	if (FilterPairsByTriplets(scene06, filterCfg, weightingCfg) != 3 || scene06.pairs.size() != 7) {
+		VERBOSE("TripletFilterTest FAILED: m=0.6 left %u pairs, expected 7", scene06.pairs.size());
+		return false;
+	}
+	const std::set<std::pair<IIndex,IIndex>> expectedKept06{
+		{0,1}, {0,2}, {3,4}, {3,5}, {5,6}, {6,7}, {5,7}};
+```
+
+**Case (e), the path graph.** No triplet at all, so nothing is scored and nothing is removed. Was 3
+removed / 0 kept; becomes **0 removed / 3 kept**. Its comment currently reads "the filter empties
+it" — rewrite that too:
+
+```cpp
+	// (e) a graph with no triplet at all scores nothing, so the filter has no evidence to act on
+	// and leaves every pair in place
+	...
 	if (FilterPairsByTriplets(scenePath, filterCfg, weightingCfg) != 0 || scenePath.pairs.size() != 3) {
 		VERBOSE("TripletFilterTest FAILED: a triplet-free graph lost %u of 3 pairs",
 			3u - (unsigned)scenePath.pairs.size());
@@ -86,17 +117,17 @@ the comment above it:
 	}
 ```
 
-Check the surrounding lines: the existing failure message and any `scenePath` assertions after this
-block must agree with the new expectation. Read the whole `scenePath` section before editing it.
+Cases (a) and (b) assert scores and statistics, which this task does not touch, and case (f) asserts
+the disabled filter is a no-op. All three stay exactly as they are.
 
-- [ ] **Step 2: Run the test and watch it fail**
+- [ ] **Step 2: Run the test and watch all three cases fail**
 
 ```bash
-cd /home/ubuntu/.claude/worktrees/roma2-onnx/make && ninja -f build-Release.ninja Tests && ./bin/Release/Tests 2>&1 | /usr/bin/grep -i -A3 "TripletFilterTest"
+cd /home/ubuntu/.claude/worktrees/roma2-onnx/make && ninja -f build-Release.ninja Tests && ./bin/Release/Tests 2>&1 | /usr/bin/grep -i -B2 -A3 "TripletFilterTest"
 ```
 
-Expected: `TripletFilterTest FAILED: a triplet-free graph lost 3 of 3 pairs`. If it passes, the
-edit did not land — stop and re-read the file.
+Expected: `TripletFilterTest FAILED: m=0.3 left 3 pairs, expected 8`. If it passes, the edit did not
+land — stop and re-read the file.
 
 - [ ] **Step 3: Change the removal rule**
 
@@ -167,9 +198,9 @@ stays; a hit that says the *filter* removes it is now wrong.
 cd /home/ubuntu/.claude/worktrees/roma2-onnx/make && ninja -f build-Release.ninja Tests && ./bin/Release/Tests 2>&1 | tail -20
 ```
 
-Expected: the whole suite passes, exit 0. `TripletFilterTest`'s other cases (the 8-node graph at
-m = 0.3 and m = 0.6) exercise scored removals only and must be unaffected — if either changed, the
-edit caught a scored pair by mistake.
+Expected: the whole suite passes, exit 0, with cases (c), (d) and (e) now asserting the counts from
+step 1. Cases (a), (b) and (f) must be untouched — a change there means the edit reached the scoring
+pass or the disabled path, neither of which this task touches.
 
 - [ ] **Step 7: Commit**
 
@@ -433,10 +464,32 @@ states both meanings — the sweep's floor under auto-tau, the threshold itself 
 cd /home/ubuntu/.claude/worktrees/roma2-onnx/make && ninja -f build-Release.ninja Tests && ./bin/Release/Tests 2>&1 | tail -20
 ```
 
-Expected: the whole suite passes including `TripletAutoTauTest`. `TripletFilterTest` sets no
-`autoTau`, so it now runs under the default `true` — read its cases and, if the sweep changes what
-they assert, set `filterCfg.autoTau = false` there explicitly so that test keeps pinning the manual
-threshold it was written for. Say so in a comment.
+**Before running it, fix `TripletFilterTest`** — this is required, not conditional. That test sets no
+`autoTau`, so it would silently start running under the new default `true`, and on its 8-node graph
+the sweep stands down at every candidate: `G_LCT` has 4 nodes and max degree 3, so
+`tau(m) = 0.25 m + 0.75` never drops below 0.75, `(1,3)=0.714` and `(2,3)=0.571` are removed at
+every candidate, and that splits the graph into `{0,1,2}` and `{3,4,5,6,7}` — a largest component of
+5 against the unfiltered 8, far below the 99 % bar. Cases (c) and (d) would then assert 0 removals
+and pin nothing at all.
+
+Set it explicitly, with the reason:
+
+```cpp
+	TripletFilterConfig filterCfg;
+	filterCfg.enabled = true;
+	// This test pins the paper's threshold arithmetic -- Eqn. 3 at a given m -- so it uses m
+	// directly. The sweep is TripletAutoTauTest's subject, and on this small graph it stands
+	// down at every candidate anyway.
+	filterCfg.autoTau = false;
+	filterCfg.minScore = 0.3f;
+```
+
+```bash
+cd /home/ubuntu/.claude/worktrees/roma2-onnx/make && ninja -f build-Release.ninja Tests && ./bin/Release/Tests 2>&1 | tail -20
+```
+
+Expected: the whole suite passes including `TripletAutoTauTest`, with `TripletFilterTest`'s counts
+unchanged from Task 1.
 
 - [ ] **Step 8: Commit**
 
