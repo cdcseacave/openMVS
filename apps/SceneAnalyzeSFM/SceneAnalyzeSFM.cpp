@@ -339,6 +339,9 @@ static bool ExportPairsAndMatches(const Scene& scene, const String& pairsFileNam
 // Write tracks.csv: one row per track, in array (== trackID) order. The observation-refs field is
 // sorted by (imageID,featureID) regardless of the track's own internal array order, which
 // FilterTracks reorders (inliers first) and so is not itself a stable join key across re-runs.
+// The triangulated position travels with the row (empty cells for a track without one), so the
+// sparse cloud can be drawn beside the cameras of images.csv without parsing the scene itself:
+// a folded reconstruction of repeated structure shows in the cloud before it shows in the poses.
 static bool ExportTracksCSV(const Scene& scene, const String& fileName)
 {
 	std::ofstream ofs(fileName);
@@ -346,7 +349,7 @@ static bool ExportTracksCSV(const Scene& scene, const String& fileName)
 		VERBOSE("error: cannot open file '%s' for writing", fileName.c_str());
 		return false;
 	}
-	ofs << "trackID,length,numDenseObs,numDescribedObs,observations\n";
+	ofs << "trackID,length,numDenseObs,numDescribedObs,x,y,z,observations\n";
 	FOREACH(trackIdx, scene.tracks) {
 		const Track& track = scene.tracks[trackIdx];
 		ObservationArr sorted(track.observations);
@@ -366,8 +369,12 @@ static bool ExportTracksCSV(const Scene& scene, const String& fileName)
 		ofs << trackIdx << ','
 			<< track.GetNumObservations() << ','
 			<< numDenseObs << ','
-			<< (track.GetNumObservations() - numDenseObs) << ','
-			<< CSVQuote(refs) << '\n';
+			<< (track.GetNumObservations() - numDenseObs) << ',';
+		if (track.IsInlier())
+			ofs << track.position.x << ',' << track.position.y << ',' << track.position.z;
+		else
+			ofs << ",,";
+		ofs << ',' << CSVQuote(refs) << '\n';
 	}
 	ofs.close();
 	VERBOSE("Exported %u tracks to '%s'", (unsigned)scene.tracks.size(), fileName.c_str());
