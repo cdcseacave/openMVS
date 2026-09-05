@@ -332,12 +332,14 @@ SurvivorGraph SFM::EvaluateSurvivorGraph(const Scene& scene, const std::vector<f
 	// degree in the kept graph, and membership of the unfiltered one, in a single pass
 	std::vector<unsigned> degree(numImages, 0);
 	std::vector<bool> isNode(numImages, false);
-	std::vector<uint32_t> parent(numImages);
-	FOREACH(i, parent)
+	std::vector<uint32_t> parent(numImages), parentUnfiltered(numImages);
+	FOREACH(i, parent) {
 		parent[i] = (uint32_t)i;
-	const auto Find = [&](uint32_t x) {
-		while (parent[x] != x)
-			x = parent[x] = parent[parent[x]];
+		parentUnfiltered[i] = (uint32_t)i;
+	}
+	const auto Find = [](std::vector<uint32_t>& p, uint32_t x) {
+		while (p[x] != x)
+			x = p[x] = p[p[x]];
 		return x;
 	};
 	// Two scene pairs can describe the same image pair (ComputeTripletScores collapses those onto
@@ -352,15 +354,41 @@ SurvivorGraph SFM::EvaluateSurvivorGraph(const Scene& scene, const std::vector<f
 		isNode[pair.ID1] = isNode[pair.ID2] = true;
 		if (!seenEdges.insert(MakePairIdx(pair.ID1, pair.ID2).idx).second)
 			continue; // a duplicate of an edge already counted
+		// The unfiltered graph's own connectivity, independent of tau: an island the ceiling never
+		// touches -- a verified pair sharing no edge path with the rest, at any score -- is fixed
+		// here, before any threshold is applied, and stays an island at every tau below.
+		const uint32_t ua = Find(parentUnfiltered, pair.ID1), ub = Find(parentUnfiltered, pair.ID2);
+		if (ua != ub)
+			parentUnfiltered[MAXF(ua, ub)] = MINF(ua, ub);
 		const float score = scores[idxPair];
 		if (score >= 0.f && score < tau)
 			continue; // removed: scored, and below the threshold
 		++degree[pair.ID1];
 		++degree[pair.ID2];
 		++result.numKept;
-		const uint32_t a = Find(pair.ID1), b = Find(pair.ID2);
+		const uint32_t a = Find(parent, pair.ID1), b = Find(parent, pair.ID2);
 		if (a != b)
 			parent[MAXF(a, b)] = MINF(a, b);
+	}
+	// The unfiltered graph's own largest component: a piece can only ever be joined to another
+	// piece it already shares this component with -- an island of the unfiltered graph never
+	// gains an edge to anything as tau falls, so it can never be joined to anything either.
+	std::unordered_map<uint32_t, unsigned> unfilteredComponentSize;
+	for (IIndex i = 0; i < numImages; ++i) {
+		if (!isNode[i])
+			continue;
+		++unfilteredComponentSize[Find(parentUnfiltered, (uint32_t)i)];
+	}
+	uint32_t largestUnfilteredComponent = NO_INDEX;
+	unsigned largestUnfilteredComponentSize = 0;
+	for (const auto& component : unfilteredComponentSize) {
+		// ties break on the smaller root, the first edge of the component: deterministic, the same
+		// tie-break ComputeTripletScores uses for its own largest-component choice
+		if (component.second > largestUnfilteredComponentSize ||
+			(component.second == largestUnfilteredComponentSize && component.first < largestUnfilteredComponent)) {
+			largestUnfilteredComponent = component.first;
+			largestUnfilteredComponentSize = component.second;
+		}
 	}
 	std::unordered_map<uint32_t, unsigned> componentSize;
 	for (IIndex i = 0; i < numImages; ++i) {
@@ -369,10 +397,15 @@ SurvivorGraph SFM::EvaluateSurvivorGraph(const Scene& scene, const std::vector<f
 		++result.numNodes;
 		if (degree[i] < 2)
 			++result.numLowDegree;
-		result.largestComponent = MAXF(result.largestComponent, ++componentSize[Find((uint32_t)i)]);
+		result.largestComponent = MAXF(result.largestComponent, ++componentSize[Find(parent, (uint32_t)i)]);
 	}
 	for (const auto& component : componentSize) {
 		if (component.second < minPiece)
+			continue;
+		// A kept component is entirely inside one unfiltered component (kept edges are a subset of
+		// unfiltered ones), so its root -- itself a node -- tells which one; a component of a
+		// different unfiltered component is an island's, never joinable to the rest, and not a piece.
+		if (Find(parentUnfiltered, component.first) != largestUnfilteredComponent)
 			continue;
 		++result.numPieces;
 		result.numInPieces += component.second;
@@ -424,13 +457,7 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 		const SurvivorGraph unfiltered = EvaluateSurvivorGraph(scene, tripletScores.scores, 0.f);
 		const unsigned minPiece = (unsigned)std::ceil(0.01 * (double)unfiltered.largestComponent);
 		SurvivorGraph survivor = EvaluateSurvivorGraph(scene, tripletScores.scores, ceiling, minPiece);
-		// A piece that is its own component already in the fully unfiltered graph -- a verified
-		// pair sharing no triangle with the rest, say -- can never join anything: no tau reconnects
-		// what no edge ever spans. unfiltered.largestComponent is what keeping every scored pair
-		// achieves, so it bounds what any threshold can join; capping at it turns such a piece into
-		// a no-op on the target instead of an unreachable one that stalls the search at the loosest
-		// candidate.
-		const unsigned minComponent = MINF(survivor.numInPieces, unfiltered.largestComponent);
+		const unsigned minComponent = survivor.numInPieces;
 		const unsigned numPieces = survivor.numPieces;
 		const unsigned numStragglers = survivor.numNodes - survivor.numInPieces;
 		if (survivor.largestComponent < minComponent) {

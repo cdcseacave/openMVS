@@ -74,7 +74,8 @@ struct SFM_API SurvivorGraph
 	unsigned numLowDegree;      // of those nodes, how many have degree < 2 in the kept graph
 	unsigned numKept;           // kept edges: a scene pair duplicating an already-counted image
 	                            // pair counts once, matching ComputeTripletScores' own collapse
-	unsigned numPieces;         // components of the kept graph holding at least minPiece nodes
+	unsigned numPieces;         // components of the kept graph, inside the unfiltered graph's
+	                            // largest component, holding at least minPiece nodes
 	unsigned numInPieces;       // nodes in those components; the rest are stragglers
 };
 
@@ -82,7 +83,9 @@ struct SFM_API SurvivorGraph
 // Pass tau = 0 for the unfiltered graph: scores lie in [0,1] and unscored pairs are always kept.
 // Nodes are counted on the unfiltered graph, so an image that loses all its edges still counts as
 // a node -- with degree 0, which is exactly what the low-degree test is there to catch.
-// A component of at least minPiece nodes is a piece; the filter's descent joins pieces and lets
+// A component of at least minPiece nodes, inside the unfiltered graph's largest component, is a
+// piece; a component of a different, always-disconnected island of the unfiltered graph never is,
+// since no tau ever gives it an edge to the rest. The filter's descent joins pieces and lets
 // stragglers be (see FilterPairsByTriplets).
 SurvivorGraph SFM_API EvaluateSurvivorGraph(const Scene& scene, const std::vector<float>& scores, float tau, unsigned minPiece = 1);
 
