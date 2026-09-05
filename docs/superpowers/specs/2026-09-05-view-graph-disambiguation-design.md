@@ -162,10 +162,20 @@ cue.
 
 **Cue 1 — bipartite local clustering coefficient** (Wilson & Snavely, ICCV 2013). For an edge
 `(i,j)`, take `A = N(i) \ {j}` and `B = N(j) \ {i}` in the view graph, and score the edge by how
-densely `A` and `B` are cross-connected: the fraction of pairs `(a,b) in A x B` that are themselves
-edges. A true edge sits inside a well-connected local neighbourhood; a doppelganger edge joins two
-neighbourhoods that share nothing but the false edge. Graph-only: no matches, no tracks, no
-descriptors, no model. This is why it lands first.
+densely `A` and `B` are cross-connected: the fraction of pairs `(a,b) in A x B`, `a != b`, that are
+themselves edges. A true edge sits inside a well-connected local neighbourhood; a doppelganger edge
+joins two neighbourhoods that share nothing but the false edge. Graph-only: no matches, no tracks,
+no descriptors, no model. This is why it lands first.
+
+**An edge whose neighbourhoods admit no cross pair is unscored, not zero.** Those are different
+claims, and conflating them is the same mistake §3.1 removes from the triplet filter. On a barbell —
+two triangles joined by one bridge — the bridge scores 0.0 across four cross pairs, none of which is
+an edge, and that is damning. But a triangle edge `(0,1)` has `A = B = {2}`, whose only ordered pair
+is the excluded self-pair, so there is nothing to measure at all; scoring it 0.0 would make a good
+edge indistinguishable from the doppelganger. It carries `-1`, the sentinel `ComputeTripletScores`
+already uses and `pairs.csv` already writes as an empty cell. This also keeps the offline fusion
+honest: both cues mark "no evidence" the same way, so an unmeasurable edge is dropped from an
+average rather than counted as maximally suspicious.
 
 **Cue 2 — ambiguity-aware track cue** (Kataria et al.). This one needs tracks, and at filter time
 there are none: `FilterPairsByTriplets` runs at `Scene.cpp:697`, inside `Reconstruct`, before any

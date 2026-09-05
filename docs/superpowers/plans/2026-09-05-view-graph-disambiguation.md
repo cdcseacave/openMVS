@@ -613,25 +613,40 @@ sweep starts from; --triplet-auto-tau turns the relaxation off."
 **Interfaces:**
 - Consumes: nothing from Tasks 1-2; the cue is deliberately independent of the triplet score.
 - Produces: `std::vector<float> ComputeBipartiteClusteringScores(const Scene&)`, one entry per
-  `scene.pairs` index, in `[0,1]`, `-1` where the pair is not an edge of the view graph.
+  `scene.pairs` index, in `[0,1]`, and `-1` where the cue has nothing to say — either the pair is
+  not an edge of the view graph, or its two neighbourhoods admit no cross pair to measure.
 
 - [ ] **Step 1: Write the failing test**
+
+Three expectations, and they must be three *different* values. The reason matters: an edge whose
+neighbourhoods admit no cross pair is **unscored (`-1`)**, not zero. Those are different claims, and
+conflating them is the same mistake Task 1 removed from the filter — a score of 0 says the two
+neighbourhoods share nothing, which is damning, while `-1` says there was nothing to measure.
 
 ```cpp
 bool BipartiteClusteringTest()
 {
-	// A doppelganger bridge against a genuine edge, in one scene:
-	//   images 0,1,2 fully connected; images 3,4,5 fully connected; edge 2-3 joins them.
-	// For edge (2,3): N(2)\{3} = {0,1}, N(3)\{2} = {4,5}, and NO cross edge exists, so the
-	// bipartite local clustering coefficient is 0 -- the signature of a doppelganger.
-	// For edge (0,1): N(0)\{1} = {2}, N(1)\{0} = {2}; the only ordered pair is (2,2), which is
-	// excluded as a self-pair, leaving no admissible pair, so the score is 0 by the empty-set
-	// convention below -- assert that convention explicitly rather than leaving it implicit.
-	// For edge (0,2) in a scene where 0,1,2,3 are fully connected, the neighbourhoods DO
-	// cross-connect and the score is 1.
+	// The barbell: images 0,1,2 fully connected, images 3,4,5 fully connected, and the single
+	// edge (2,3) joining them -- the shape of a doppelganger link.
+	//
+	//   (2,3): N(2)\{3} = {0,1}, N(3)\{2} = {4,5}. Four ordered cross pairs, none of them an
+	//          edge, so the coefficient is 0.0 -- measured, and damning.
+	//   (0,1): N(0)\{1} = {2}, N(1)\{0} = {2}. The only ordered pair is (2,2), excluded as a
+	//          self-pair, so there is NOTHING to measure and the score is -1. Scoring this 0.0
+	//          would make a perfectly good triangle edge indistinguishable from the bridge above,
+	//          which is exactly the distinction this cue exists to draw.
+	//
+	// Then a second scene, the 4-clique on {0,1,2,3}:
+	//   (0,1): N(0)\{1} = {2,3}, N(1)\{0} = {2,3}. The admissible ordered pairs are (2,3) and
+	//          (3,2), both edges, so the score is 1.0.
+	//
+	// And a pair without HasGeometricVerification() scores -1 in either scene: not an edge.
 	...
 }
 ```
+
+Assert all four rows. Two of them share the `-1` sentinel for different reasons, and that is
+correct — both mean the cue has nothing to say, and `pairs.csv` writes an empty cell for both.
 
 Build two small scenes: the barbell above, and a 4-clique. Assert the barbell bridge scores 0, a
 4-clique edge scores 1, and a pair with no geometric verification scores -1. Register the test in
@@ -683,8 +698,10 @@ For each edge `(i,j)`: take the adjacency of `i` minus `j` and of `j` minus `i`,
 the `MAX_NEIGHBORS` strongest by `edgeInliers` (sort a copy by inlier count descending, then
 re-sort the truncated list by image index so the membership test stays a binary search), and count
 the ordered pairs `(a,b)` with `a != b` where `(a,b)` is an edge. Score = matches / admissible
-pairs, and `0.f` when there are no admissible pairs. Write the score to every `scene.pairs` index
-mapping to that edge, so duplicates agree exactly as they do for the triplet score.
+pairs; where there are **no** admissible pairs the edge stays at `-1`, unscored, because nothing was
+measured — not `0.f`, which would claim the neighbourhoods were checked and found to share nothing.
+Write the score to every `scene.pairs` index mapping to that edge, so duplicates agree exactly as
+they do for the triplet score.
 
 Parallelise the per-edge loop with OpenMP if the serial pass measures above a few hundred
 milliseconds on the 6241-pair graph; the triplet pass is deliberately serial for the same reason
