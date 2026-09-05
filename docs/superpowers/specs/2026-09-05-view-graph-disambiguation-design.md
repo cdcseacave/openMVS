@@ -88,9 +88,10 @@ Score once. The paper's Eqn. 3, `tau(m) = m (1 - r) + r` with `r = d_max/|V|` of
 **strictest** `tau` whose survivor graph — every unscored pair, every pair scoring at or above
 `tau` — joins every *piece* the ceiling leaves: a component of the survivor graph at the ceiling
 that lies inside the unfiltered graph's largest component and holds at least 1 % of it (§3.7; on a
-set of fewer than 101 images every component inside it is a piece). There is no other bar. If the ceiling itself joins every piece
-it is applied as given; if nothing above the lowest score does, the lowest score is chosen and
-nothing is removed.
+set of fewer than 101 images every component inside it is a piece). There is no other bar. If the
+ceiling itself joins every piece, or its largest piece already holds a majority of the images the
+pieces hold together (§3.8), it is applied as given; if nothing above the lowest score does, the
+lowest score is chosen and nothing is removed.
 
 **Why the strictest, and why connectivity alone.** This was decided against the standard
 ambiguous-scene datasets (`~/virginia/datasets/Disambiguation`, the sets of Yan et al. 2017 and
@@ -366,6 +367,40 @@ that pair is a true junction or a look-alike is the reconstruction's answer (§5
 Cost if wrong: a genuine sub-scene of fewer than 1 % of the images (a detail cluster of a large
 collection) that only connects below the ceiling is left as its own component instead of being
 joined — the paper's behaviour, and a separate model rather than a wrong merge.
+
+### 3.8 The descent only repairs a shattered ceiling
+
+§3.2's descent was written for graphs the ceiling shatters. On the small sets, and on any
+collection matched exhaustively, `d_max/|V|` is close to 1, the ceiling sits at 0.94-0.995, and
+it leaves pieces of two to forty images out of twenty to a hundred and fifty — fragments of one
+camera path or one building, which reassembling is the whole job. On the church matched
+exhaustively the same kind of ceiling (0.942) leaves something else: two pieces of 143 and 85
+images, the south facade with the canal views and the north facade, separated the way
+Doppelgangers++ separates them (157+106), and joined at 0.931 by one pair of 253 inliers. The
+descent joined them; only the reconstruction's failure to cross that pair kept the model
+unfolded. A ceiling whose largest piece already holds most of the images has done the paper's
+job: what hangs below it is a straggler or the other face of a symmetric building, and no
+threshold can tell which.
+
+| graph | ceiling | largest piece / images in pieces |
+|---|---|---|
+| oats, cup, cereal, books, desk, street (exhaustive) | 0.979-0.994 | 9/23, 11/64, 5/25, 7/21, 6/31, 5/19 |
+| indoor (exhaustive) | 0.995 | 28/152 |
+| church (exhaustive) | 0.942 | 143/248 |
+| radcliffe (exhaustive) | 0.943 | 176/258 — the paper's 177 |
+| brandenburg (exhaustive) | 0.973 | 134/155 |
+| ToH, big_ben, the vocab-50 heinly graphs | 0.68-0.81 | one piece |
+
+**Rule.** The descent below the ceiling happens only when the ceiling shattered the graph: when
+no piece holds a strict majority of the images the pieces hold together. If the largest piece
+holds more than half of them, the ceiling is applied as given, and the smaller pieces stay apart
+as the paper leaves them, like §3.7's stragglers. Otherwise the threshold is the strictest one
+joining every piece, as §3.2 and §3.7 say. The bar is a strict majority so that a graph the
+ceiling cuts in two equal halves (the pan of §5, three and three) is still repaired.
+
+Cost if wrong: a collection whose ceiling leaves a majority piece and a genuine second sub-scene
+joined only below the ceiling gets that sub-scene as a separate model — the paper's own
+behaviour — and never a merge through a doppelganger.
 
 ### 3.4 Where the filter runs
 

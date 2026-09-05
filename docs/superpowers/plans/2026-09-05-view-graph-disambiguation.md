@@ -1983,6 +1983,259 @@ strictest one that joins every piece, and a straggler keeps whatever pairs sit a
 On sets under 101 images every component is a piece and nothing changes."
 ```
 
+### Task 9: The descent only repairs a shattered ceiling
+
+Spec §3.8. The descent of Task 5, as Task 8 left it, lowers the threshold until every piece the
+ceiling leaves is joined. That is the whole method on graphs the ceiling shatters — the small sets
+and every exhaustively matched collection, where `d_max/|V|` is near 1, the ceiling sits at
+0.94-0.995 and the pieces are fragments of two to forty images. On the church matched exhaustively
+the ceiling (0.942) instead leaves two pieces of 143 and 85 images — the south facade with the canal
+views, and the north facade, split the way Doppelgangers++ splits them — joined at 0.931 by one pair
+of 253 inliers, and the descent joined them. A ceiling whose largest piece holds most of the images
+has done the paper's job; what hangs below it is a straggler or the other face of a symmetric
+building, and no threshold can tell which.
+
+From now on the descent happens only when no piece holds a strict majority of the images the pieces
+hold together. If the largest piece holds more than half of them, the ceiling is applied as given
+and the smaller pieces stay apart, like stragglers. A strict majority, so that a graph cut into two
+equal halves (the pan scene, three and three) is still repaired. Small sets (largest piece 17-39 %
+of the images in pieces), indoor (28/152) and the pan scene are unchanged; the walk-with-stragglers
+scene (120 of 122) becomes a ceiling-as-given case and its expectations change accordingly.
+
+**Files:**
+- Modify: `libs/SFM/ViewGraphTriplets.h` (`SurvivorGraph` gains `largestPiece`)
+- Modify: `libs/SFM/ViewGraphTriplets.cpp` (`EvaluateSurvivorGraph` fills it; `FilterPairsByTriplets` descends only when the ceiling shattered the graph, and says which case it is)
+- Modify: `apps/Tests/TestsSFM.cpp` (`TripletAutoTauTest`: the walk scene's expectations, a new three-chains scene)
+- Modify: `apps/CreateStructure/CreateStructure.cpp` (`--triplet-auto-tau` help text)
+- Modify: `docs/design/TripletDisambiguation.md` (the threshold paragraph)
+
+**Interfaces:**
+- Consumes: `SurvivorGraph {numNodes, largestComponent, numLowDegree, numKept, numPieces, numInPieces}`, `EvaluateSurvivorGraph(scene, scores, tau, minPiece = 1)` (Task 8), `AddTripletImages`, `AddTripletPair`, `TripletKeptPairs` (Tasks 5-7).
+- Produces: `SurvivorGraph::largestPiece` (unsigned; the images in the largest piece, 0 when there is none). No signature changes.
+
+- [ ] **Step 1: Rewrite the walk scene's expectations (the test now fails)**
+
+In `apps/Tests/TestsSFM.cpp`, the walk-with-stragglers scene of `TripletAutoTauTest` (the comment block
+beginning `// Scene 8, the walk with stragglers`). Replace the last three sentences of that comment
+block — from `The strictest threshold joining both pieces is the 2-piece's bridge, 0.2.` to the end
+of the block — with:
+
+```cpp
+	//   stragglers. The walk holds 120 of the 122 images in pieces, a majority: the ceiling has done
+	//   its job and is applied as given. Everything scoring below 0.616 goes -- the 118 pairs two
+	//   apart (0.6), the 2-piece's three bridges and the four straggler pairs, 125 in all -- and the
+	//   120 kept pairs are the 119 consecutive ones and (122,123): the 2-piece stays its own
+	//   component, images 120 and 121 are left with no pair. Before this rule the descent went to
+	//   0.2 for the 2-piece and kept the 600-inlier pairs with it.
+```
+
+Extend the ceiling assertion so it also checks the largest piece — replace
+
+```cpp
+	if (walkUnfiltered.largestComponent != 124 || walkCeiling.largestComponent != 120 ||
+		walkCeiling.numPieces != 2 || walkCeiling.numInPieces != 122 || walkCeiling.numNodes != 124) {
+		VERBOSE("TripletAutoTauTest FAILED: walk at the ceiling %g: component %u of %u, %u pieces holding %u; "
+			"expected 120 of 124, 2 pieces holding 122",
+			walkScores.tau, walkCeiling.largestComponent, walkUnfiltered.largestComponent,
+			walkCeiling.numPieces, walkCeiling.numInPieces);
+		return false;
+	}
+```
+
+with
+
+```cpp
+	if (walkUnfiltered.largestComponent != 124 || walkCeiling.largestComponent != 120 ||
+		walkCeiling.numPieces != 2 || walkCeiling.numInPieces != 122 || walkCeiling.largestPiece != 120 ||
+		walkCeiling.numNodes != 124) {
+		VERBOSE("TripletAutoTauTest FAILED: walk at the ceiling %g: component %u of %u, %u pieces holding %u, the largest %u; "
+			"expected 120 of 124, 2 pieces holding 122, the largest 120",
+			walkScores.tau, walkCeiling.largestComponent, walkUnfiltered.largestComponent,
+			walkCeiling.numPieces, walkCeiling.numInPieces, walkCeiling.largestPiece);
+		return false;
+	}
+```
+
+and replace the filter check — from `const std::set<std::pair<IIndex,IIndex>> walkGone` through the
+`return false;` of its failure branch — with
+
+```cpp
+	const std::set<std::pair<IIndex,IIndex>> walkGone{{0,120},{1,120},{60,121},{61,121},{118,122},{119,122},{119,123},{0,2},{117,119}};
+	bool walkRight = walkRemoved == 125 && walkKept.size() == 120;
+	for (const auto& pair : walkGone)
+		walkRight = walkRight && walkKept.count(pair) == 0;
+	walkRight = walkRight && walkKept.count({0,1}) == 1 && walkKept.count({118,119}) == 1 && walkKept.count({122,123}) == 1;
+	if (!walkRight) {
+		VERBOSE("TripletAutoTauTest FAILED: walk with stragglers removed %u pairs, kept %u; expected the ceiling applied "
+			"as given (its walk holds a majority): the 118 pairs two apart, the 2-piece's three bridges and the four "
+			"straggler pairs removed, 120 kept",
+			walkRemoved, (unsigned)walkKept.size());
+		return false;
+	}
+```
+
+- [ ] **Step 2: Add the three-chains scene (the test still fails)**
+
+Immediately after the walk scene's filter check (before the `TripletAutoTauTest PASSED` line), add:
+
+```cpp
+	// Scene 9, three chains. 120 images in three walks of 40 (0-39, 40-79, 80-119): consecutive
+	// images share 1000 inliers, images two apart 600, every consecutive triple a triangle. The
+	// walks meet through one 500-inlier pair each, (39,40) and (79,80), and each of those sits in
+	// two triangles closed by a 300-inlier pair: (38,40) and (39,41), (78,80) and (79,81).
+	//   scores: (i,i+1) 1.0, (i,i+2) 0.6 inside a walk; (39,40)=(79,80)=0.5; the four 300-inlier
+	//           pairs 0.3
+	//   G_LCT: 120 nodes, max degree 4, ceiling 0.6*(1-4/120)+4/120 = 0.6133
+	//   at the ceiling: only the consecutive pairs survive, so three pieces of 40 holding 120, no
+	//   stragglers, and no piece holds a majority -- the ceiling shattered the graph, so the
+	//   descent runs: 0.6 leaves the walks apart, 0.5 joins them through (39,40) and (79,80).
+	//   tau 0.5: the four 300-inlier pairs go, 233 pairs stay.
+	Scene chains;
+	AddTripletImages(chains, 120);
+	for (IIndex c = 0; c < 120; c += 40) {
+		for (IIndex i = c; i + 1 < c + 40; ++i)
+			AddTripletPair(chains, i, i + 1, 1000);
+		for (IIndex i = c; i + 2 < c + 40; ++i)
+			AddTripletPair(chains, i, i + 2, 600);
+	}
+	AddTripletPair(chains, 39, 40, 500);
+	AddTripletPair(chains, 38, 40, 300);
+	AddTripletPair(chains, 39, 41, 300);
+	AddTripletPair(chains, 79, 80, 500);
+	AddTripletPair(chains, 78, 80, 300);
+	AddTripletPair(chains, 79, 81, 300);
+	const TripletScores chainsScores = ComputeTripletScores(chains, 0.6f, 0.f, weightingCfg.gridSize);
+	const SurvivorGraph chainsCeiling = EvaluateSurvivorGraph(chains, chainsScores.scores, chainsScores.tau, 2);
+	if (!ISEQUAL(chainsScores.tau, 0.6f*(1.f-4.f/120.f)+4.f/120.f) || chainsCeiling.largestComponent != 40 ||
+		chainsCeiling.numPieces != 3 || chainsCeiling.numInPieces != 120 || chainsCeiling.largestPiece != 40) {
+		VERBOSE("TripletAutoTauTest FAILED: three chains at the ceiling %g: component %u, %u pieces holding %u, the largest %u; "
+			"expected ceiling 0.6133, component 40, 3 pieces holding 120, the largest 40",
+			chainsScores.tau, chainsCeiling.largestComponent, chainsCeiling.numPieces, chainsCeiling.numInPieces,
+			chainsCeiling.largestPiece);
+		return false;
+	}
+	TripletFilterConfig chainsCfg;
+	chainsCfg.enabled = true;
+	chainsCfg.minYield = 0.f;
+	const unsigned chainsRemoved = FilterPairsByTriplets(chains, chainsCfg, weightingCfg);
+	const std::set<std::pair<IIndex,IIndex>> chainsKept = TripletKeptPairs(chains);
+	const std::set<std::pair<IIndex,IIndex>> chainsGone{{38,40},{39,41},{78,80},{79,81}};
+	bool chainsRight = chainsRemoved == 4 && chainsKept.size() == 233;
+	for (const auto& pair : chainsGone)
+		chainsRight = chainsRight && chainsKept.count(pair) == 0;
+	chainsRight = chainsRight && chainsKept.count({39,40}) == 1 && chainsKept.count({79,80}) == 1 && chainsKept.count({0,2}) == 1;
+	if (!chainsRight) {
+		VERBOSE("TripletAutoTauTest FAILED: three chains removed %u pairs, kept %u; expected the descent to 0.5 "
+			"(no piece holds a majority): the four 300-inlier pairs removed, 233 kept",
+			chainsRemoved, (unsigned)chainsKept.size());
+		return false;
+	}
+```
+
+Update the test's leading comment block (the scene list at the top of `TripletAutoTauTest`) with one
+line for the three-chains scene, and change the PASSED line to:
+
+```cpp
+	VERBOSE("TripletAutoTauTest PASSED: the descent repairs a shattered ceiling and leaves a majority piece's "
+		"ceiling as given (%s)", TD_TIMER_GET_FMT().c_str());
+```
+
+- [ ] **Step 3: Run the test to verify it fails**
+
+Run (from `make/`): `ninja -f build-Release.ninja Tests && ./bin/Release/Tests 1 2>&1 | /usr/bin/grep -E 'TripletAutoTauTest'`
+Expected: the build fails on `largestPiece` (no such member); after Step 4's header change alone it
+fails at "walk with stragglers removed 5 pairs, kept 240".
+
+- [ ] **Step 4: `SurvivorGraph::largestPiece`**
+
+In `libs/SFM/ViewGraphTriplets.h`, after `numInPieces`:
+
+```cpp
+	unsigned largestPiece;      // images in the largest piece (0 when there is none)
+```
+
+In `libs/SFM/ViewGraphTriplets.cpp`, `EvaluateSurvivorGraph`: initialise `largestPiece` to 0 with
+the other counters, and in the final loop that counts pieces (the one testing `component.second <
+minPiece` and the unfiltered-largest-component membership), where a component qualifies as a piece,
+add `result.largestPiece = MAXF(result.largestPiece, component.second);` beside the existing
+`++result.numPieces; result.numInPieces += component.second;`. Every other early return that builds
+a `SurvivorGraph` must leave `largestPiece` 0.
+
+- [ ] **Step 5: The descent runs only on a shattered ceiling**
+
+In `FilterPairsByTriplets`, after `const unsigned numStragglers = survivor.numNodes - survivor.numInPieces;`
+add
+
+```cpp
+		// The descent repairs a ceiling that shattered the graph -- the small sets and every
+		// exhaustively matched collection, where d_max/|V| is near 1 and the ceiling leaves
+		// fragments of a few images each. A ceiling whose largest piece already holds a strict
+		// majority of the images in pieces has done the paper's job: what hangs below it is a
+		// straggler or the other face of a symmetric building (the church matched exhaustively
+		// splits into its two facades at the ceiling, 143 and 85 images, and one 253-inlier pair
+		// at 0.931 would join them), and nothing in the scores tells the two apart, so the
+		// ceiling is applied as given and the smaller pieces stay apart. A strict majority, so a
+		// graph cut into two equal halves is still repaired.
+		const bool shattered = 2 * survivor.largestPiece <= survivor.numInPieces;
+```
+
+and change the descent's condition `if (survivor.largestComponent < minComponent) {` to
+`if (shattered && survivor.largestComponent < minComponent) {`. Replace the VERBOSE line's case
+expression `tau < ceiling ? "the strictest threshold that joins every piece" : "the ceiling applied as given"`
+with
+
+```cpp
+			tau < ceiling ? "the strictest threshold that joins every piece" :
+				numPieces > 1 && !shattered ? "the ceiling applied as given, its largest piece holding a majority" :
+				"the ceiling applied as given",
+```
+
+Delete the comment sentence in that function which says the descent joins every piece without
+qualification if any remains contradicted (the paragraph above the `unfiltered` line still describes
+the descent; leave it, it is what happens when the descent runs).
+
+- [ ] **Step 6: Help text and design note**
+
+In `apps/CreateStructure/CreateStructure.cpp`, the `--triplet-auto-tau` help string: after "the
+strictest threshold that joins every piece the ceiling leaves apart" add ", when no piece holds a
+majority of the images (a ceiling whose largest piece does is applied as given)". Keep the rest.
+
+In `docs/design/TripletDisambiguation.md`, the algorithm's threshold/selection item (the one that
+says the threshold actually used is the strictest one whose survivor graph joins every piece), add
+after "or the ceiling itself when it already does": ", or when its largest piece already holds a
+majority of the images in pieces — then the ceiling is applied as given and the smaller pieces stay
+apart: a ceiling that keeps most of the graph together has done its job, and what hangs below it
+may be the other face of a symmetric building". Reflow the paragraph.
+
+- [ ] **Step 7: Build, run the suite, mutate**
+
+Run (from `make/`): `ninja -f build-Release.ninja Tests SFM CreateStructure SceneAnalyzeSFM && ./bin/Release/Tests 1`
+Expected: every test PASSED, exit code 0, no FAILED line.
+
+Then, one at a time, rebuild `Tests` only, run, confirm the named failure, revert, rebuild, confirm
+green:
+
+| mutation | expected failure |
+|---|---|
+| `shattered` defined as `2 * survivor.largestPiece < survivor.numInPieces` (strict) | pan scene: no descent (3 of 6 is no longer shattered), 11 removed instead of 10 |
+| `shattered` replaced by `true` | walk scene: descent to 0.2, "removed 5 pairs, kept 240" |
+| `largestPiece` never updated (stays 0) | walk scene: 0 ≤ 122 reads as shattered, same failure as above |
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add libs/SFM/ViewGraphTriplets.h libs/SFM/ViewGraphTriplets.cpp apps/Tests/TestsSFM.cpp apps/CreateStructure/CreateStructure.cpp docs/design/TripletDisambiguation.md
+git -c user.name=cDc -c user.email=cdc.seacave@gmail.com commit -m "sfm: the triplet threshold descends only when the ceiling shattered the graph
+
+The descent below the paper's threshold was written for graphs the ceiling shatters into
+fragments of a few images, the small sets and every exhaustively matched collection, where
+reassembling them is the whole job. On the church matched exhaustively the ceiling instead
+leaves its two facades as pieces of 143 and 85 images, split as Doppelgangers++ splits them,
+and one 253-inlier pair at 0.931 joined them. When the largest piece already holds a strict
+majority of the images in pieces the ceiling has done its job and is applied as given; the
+smaller pieces stay apart, like stragglers. Small sets and indoor are unchanged."
+```
+
 ## Measurement (the controller's, after the branch is green)
 
 Not tasks and not a subagent's: they run the pipeline and read datasets, which no implementer does.
