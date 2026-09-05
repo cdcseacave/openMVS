@@ -744,54 +744,209 @@ measured offline before either gates an edge."
 
 ---
 
-### Task 4: The design note says what ships
+### Task 4: The design note describes the filter that ships
 
 **Files:**
 - Modify: `docs/design/TripletDisambiguation.md`
+- Modify: `libs/SFM/README.md` (the triplet paragraph near line 198)
 
 **Interfaces:**
-- Consumes: the shipped behaviour of Tasks 1-3.
+- Consumes: the shipped behaviour of `libs/SFM/ViewGraphTriplets.{h,cpp}` and `libs/SFM/StarInitializer.{h,cpp}` as they now stand, and the measurements below.
 - Produces: nothing code reads.
 
-- [ ] **Step 1: Read the whole note, then rewrite the three sections that are now wrong**
+The note was written for an earlier version of the filter and is now wrong in three places and silent
+about four rules. Everything a sentence claims about *this implementation* must be true of the code as
+it now stands; a sentence describing the paper may stay. Every number below came from a measurement:
+use it exactly as given, never rounded, restated or re-derived, and never invent a number that is not
+here. The note has no readers of the plan: no task numbers, ruling numbers or process words.
 
-`docs/design/TripletDisambiguation.md` is 150 lines. Its "The default, and why" section describes a
-threshold rule the filter no longer uses by default, and its "Limitations and follow-ups" section
-lists as open two things this plan closed and two it did not.
+- [ ] **Step 1: Read the whole note and the two headers**
 
-- The method section must state the departure from Algorithm 1 step 1 (Task 1) as part of the
-  method, with the labelled-reference counts as its evidence.
-- The threshold section must describe the sweep (Task 2), including that it stands down when no
-  threshold is safe, and that `--triplet-min-score` is the strictness it starts from and only ever
-  relaxes.
-- The follow-ups section: **close** "tau is the weak part" and "discarding the unscored pairs is
-  what costs the images"; **keep** "auto-enabling is the obvious next step" (the sweep chooses a
-  threshold, it does not choose whether to run — `--filter-triplets` is still an explicit flag) and
-  "filtering before view-graph calibration is untested"; **add** the second cue with what it is and
-  the fact that it gates nothing until its fusion is measured.
+Read `docs/design/TripletDisambiguation.md` end to end, then the comment blocks in
+`libs/SFM/ViewGraphTriplets.h` (the file header, `TripletFilterConfig`, `SurvivorGraph`,
+`EvaluateSurvivorGraph`, `ComputeTripletScores`, `FilterPairsByTriplets`) and
+`libs/SFM/StarInitializer.h` (`StarInitConfig::seedViews`, `SelectReferenceView`). Those comments are
+the authority on what ships; the note must agree with them.
 
-- [ ] **Step 2: Keep the measured tables**
+- [ ] **Step 2: The algorithm section says what ships**
 
-Every number in the note came from a measurement. Do not restate, round or re-derive any of them —
-the registered-image counts, the AUC figures, the Doppelgangers table and the default-rule
-conjunction all stay exactly as they are. Only the claims about what the code *does* change.
+Rewrite "The algorithm" so that it states, in order:
 
-- [ ] **Step 3: Check the note against the code one last time**
+1. The view graph and the strength `s_ij = n_ij * c_ij` (as now).
+2. The triplet graph and `G_LCT`; every other edge is **unscored** (as now).
+3. The score, with the yield rule (as now; `minYield` is `TripletFilterConfig::minYield`, 0.4, a
+   configuration field without a command-line flag).
+4. The ceiling `tau(m)` of Eqn. 3 over `G_LCT` (as now).
+5. **Selection**, corrected: a scored pair is removed iff its score is below the threshold; an
+   **unscored pair is kept** — the paper's step 1 discards every edge outside `G_LCT`, but on the two
+   labelled references those pairs are overwhelmingly true (426 of 490 on one capture, 415 of 441 on
+   the other), so absence of evidence keeps a pair. The note currently says "unscored pairs are
+   removed": that sentence is wrong and goes.
+6. **The threshold below the ceiling** (`--triplet-auto-tau`, the default): a *piece* is a component
+   of the ceiling's survivor graph that lies inside the unfiltered graph's largest component and holds
+   at least 1 % of it (so on a set under 101 images every such component is a piece); when the largest
+   piece holds a strict majority of the images the pieces hold together, the ceiling is applied as
+   given and the smaller pieces stay apart; otherwise the threshold is the strictest one whose survivor
+   graph joins every piece in one component. Stragglers (smaller than a piece, or in a different
+   component of the unfiltered graph) are neither chased nor removed. The paper's step 11 (largest
+   component) is not applied. Keep the note's existing reasons for each of these.
+7. **Seeding**: the filter reports the images of the largest piece the ceiling leaves (ties to the
+   piece holding the lowest image index), and `StarInitializer::SelectReferenceView` chooses the
+   reconstruction's reference view among them — the heaviest by weighted inliers that has at least
+   `minViews - 1` valid pairs (three by default), else the next, else every image. Why: the resection
+   refuses the doppelganger bridges the descent lets through but cannot choose the side it starts on,
+   and the heaviest image overall sits in the densest cluster of look-alike views (Radcliffe: the
+   45-image piece, so the 120-image piece never registered; Street: the largest piece's heaviest image
+   had two pairs, the star needs three, and the run reconstructed nothing).
 
-```bash
-cd /home/ubuntu/.claude/worktrees/roma2-onnx && /usr/bin/grep -n "tau\|unscored\|minScore\|min-score\|auto" docs/design/TripletDisambiguation.md
+Keep the two closing paragraphs ("Why it catches what the existing cycle test cannot", "Implementation")
+as they are.
+
+- [ ] **Step 3: "Where it runs, and the flags" shows the current log lines and flags**
+
+Replace the quoted `VERBOSE` example (the one beginning `Triplet filter: kept 599/2078 pairs`) with the
+filter's current output, three lines from the Radcliffe run:
+
+```
+Triplet filter: tau 0.845, the strictest threshold that joins every piece (ceiling 0.967 at m 0.75, d_max/|V| 0.869); the ceiling leaves 8 pieces (components of at least 3 images) holding 243 images between them, and 39 stragglers; survivor graph keeps 270/282 images in its largest component, 16 below degree 2 (0 before), and 2826/20306 distinct image pairs
+Triplet filter: kept 5541/23021 scene pairs (tau 0.845; 282 nodes, max degree 245; 796793 triplets in 1 components, 251605 doppelganger triplets gave no evidence; 17480 below tau removed, 2715 unscored kept); the reconstruction seeds in the largest piece the ceiling leaves (105 images)
+Selected reference view 130 with 45072 connections over 41 pairs among 105 seed views
 ```
 
-Read each hit against `libs/SFM/ViewGraphTriplets.{h,cpp}` as it now stands. A sentence that
-describes the paper is fine; a sentence that describes this implementation must be true of it.
+In the flags table, the `--triplet-auto-tau` row reads: "treat `tau(m)` as a ceiling: below it, the
+strictest threshold that joins every piece the ceiling leaves, unless the largest piece already holds a
+majority of the images in pieces, in which case the ceiling is applied as given; off applies `tau(m)`
+as given". Add one sentence after the table: "`TripletFilterConfig::minYield` (0.4) has no flag."
+Check the Python sentence against `libs/SFM/PythonWrapper.cpp` (`/usr/bin/grep -n "triplet\|Triplet"
+libs/SFM/PythonWrapper.cpp`) and make it name exactly the bindings that exist. Check that
+`scripts/python/tests/triplet_disambiguation.py` still exists (it does today) and describes what the
+"Harness" section says; if a subcommand named there is gone, delete the claim.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: Measurements — keep the old tables, add the ambiguous-scene campaign**
+
+Keep every existing table and number in "Measurements" exactly as it is (parity, discrimination,
+reconstruction effect, Doppelgangers): they are measurements of an earlier rule set on hand-held
+captures and stay as the record of why the default is off. Add, at the end of the section, a
+subsection **"Ambiguous-scene datasets"** with this content and these numbers:
+
+The datasets are the ones the disambiguation literature is written about: the video sets of Yan et al.
+2017 (`books` 21 images, `cereal` 25, `cup` 64, `desk` 31, `oats` 23, `street` 19, and the Temple of
+Heaven `ToH` 338) and the internet collections of Heinly et al. 2014 (`indoor` 153, `brandenburg_gate`
+176, `church_on_spilled_blood` 278, `radcliffe_camera` 283, `big_ben` 403, `arc_de_triomphe` 435,
+`alexander_nevsky_cathedral` 449). Reference counts are registered images: the paper's own filter
+`G_F` (Manam and Govindu 2024, Table 1, `m = 0.3` on these sets) and Doppelgangers++ (Xiangli et al.,
+Table 2, `a+b` = two models). Matching is exhaustive, as in the paper's reference implementation; the
+filter's `m` is its default 0.75. On the sets whose ceiling shatters the graph `m` only sets a ceiling
+the descent replaces, and the paper's 0.6 or 0.3 give the same thresholds; on the church it decides:
+at 0.6 the ceiling (0.942) sits among the scores of the pairs bridging the facades and two matchings of
+four merged them, at 0.75 (0.964) all six graphs seen split.
+
+Video sets (all images register with and without the filter, so the verdict is whether the camera
+path folds; "fold pairs" are camera pairs within one median step of each other at least five frames
+apart, "spread" the extent of the camera path relative to its step):
+
+| set | images | without the filter | with the filter | paper's `G_F` | verdict |
+|---|---|---|---|---|---|
+| books | 21 | 21, folded | 21; 2 fold pairs, the hover at frames 1-6, genuine | 9 | unfolded |
+| cereal | 25 | 25, folded (spread 0.237) | 25, still folded (spread 0.277; frames 8-14): the true junction (13,14) carries 320 inliers at score 0.556, the doppelganger (7,16) 862 at 0.893, weaker in every cue | 7 | folded |
+| cup | 64 | 64, folded | 64; 0 fold pairs, an open ring | 40 (their one failure) | unfolded |
+| desk | 31 | 31, folded | 31; 23 fold pairs, all the start hover and the genuine revisit | 12 | unfolded |
+| oats | 23 | 23, folded (spread 0.293) | 23; 0 fold pairs (spread 0.707) | 9 | unfolded |
+| street | 19 | 19, folded | 19; 0 fold pairs | 19 | unfolded |
+| ToH | 338 | 338, folded on the temple's one-third turn (804 fold pairs at gaps of 20 frames or more) | 338; 4 fold pairs, all the genuine closure of frames 0-9 onto 330-339 | — | unfolded |
+
+Internet collections (the "without the filter" column is the branch's default matching, a vocabulary
+tree at 50 pairs per image, which folds every two-faced building; the filter column is exhaustive
+matching; a model is "one-sided" when every registered camera lies on one side of the facade plane,
+checked with photos of known side):
+
+| set | images | without the filter | with the filter | paper's `G_F` | Doppelgangers++ | verdict |
+|---|---|---|---|---|---|---|
+| indoor | 153 | 152 | 152, one loop | 42 | 152 | the loop is real; the paper over-splits it |
+| brandenburg_gate | 176 | 173, folded | 94: the ceiling (0.983) leaves one 94-image piece holding a majority, mostly the night photos; at the paper's 0.6 the piece holds 125 images and both faces, folded | 129 | 151 | folded |
+| church_on_spilled_blood | 278 | 270, folded | 130 and 129 in two matchings, one-sided: the ceiling (0.964) leaves the south facade with the canal views (133 and 130 images) and the north facade (83) apart, its largest piece holds a majority, the reconstruction seeds in it; the north piece stays unregistered | 136 | 157+106 | unfolded |
+| radcliffe_camera | 283 | 277, folded | 181: the ceiling (0.967) leaves pieces of 105, 53, 44, 18 and 13 images, none a majority, the descent to 0.845 joins them, the reconstruction seeds in the 105-piece, crosses into the 53-piece through a 312-inlier pair scoring 0.932 and refuses the 95-inlier bridge at 0.845 into the other three | 177 | 186+94 | unfolded |
+| big_ben | 403 | 391 | 366 (vocabulary matching, not exhaustive) | 379 | 394 | side not checked |
+| arc_de_triomphe | 435 | 405 | 397 (vocabulary matching, not exhaustive) | 394 | 392 | side not checked |
+| alexander_nevsky_cathedral | 449 | 442 | not run | 429 | 445 | — |
+
+Then one paragraph on what these say: on the two-faced buildings the filter matches the paper (church
+130 against 136, Radcliffe 181 against 177) and, like the paper and Doppelgangers++, produces one face
+per model; Brandenburg and cereal are the two misses, and in both the doppelganger pairs outscore the
+true junction in every cue the filter has; on the video sets every path but cereal's unfolds where the
+paper over-splits (books 9 of 21, oats 9 of 23, desk 12 of 31) or fails (cup).
+
+- [ ] **Step 5: "The default, and why"**
+
+Keep the pre-registered rule and its numbers as they are (they are why the default is off on ordinary
+captures), then add: the filter is a tool for scenes with repeated structure, matched exhaustively;
+on the retrieval-matched graphs the branch builds by default (50 pairs per image) the ceiling leaves
+one piece holding both faces of every two-faced building here, because retrieval prefers the look-alike
+pairs and the triangles a doppelganger sits in hold few of the strong true pairs that would score it
+down. `--filter-triplets` stays an explicit flag, to be set with exhaustive matching on such a scene.
+
+- [ ] **Step 6: "Limitations and follow-ups"**
+
+Delete "`tau` is the weak part, not the score" (the ceiling and the descent replaced Eqn. 3's fixed
+threshold) and "Discarding the unscored pairs is what costs the images" (they are kept). Keep
+"Auto-enabling is the obvious next step" and "Filtering before view-graph calibration is untested",
+rewording the first so it is true of the current rules (the threshold chooses itself; whether to run
+is still a flag). Add, one bullet each:
+
+* Brandenburg Gate: both faces sit inside one ceiling piece (125 images at the paper's 0.6, 94 at 0.75)
+  because the night photos of the two faces match each other as strongly as neighbours do; no
+  inlier-count cue separates them, and the filter has no other.
+* cereal: the true junction is weaker than the doppelganger in every cue (320 inliers at 0.556
+  against 862 at 0.893); the paper over-splits it instead.
+* One model per run: the pieces the ceiling leaves apart stay unregistered (the church's north facade,
+  Radcliffe's three look-alike pieces), where Doppelgangers++ reports two models. Reconstructing the
+  remaining pieces as further models is a pipeline question, not the filter's.
+* Retrieval-matched graphs: the method needs the exhaustive graph; see the default.
+* The offline replay (`triplet_replay.py` beside the datasets) approximates the run's strength from
+  the match count; its pieces at the ceiling differ from the run's by tens of images on these
+  near-complete graphs, and only the run's own `TripletScore` column is evidence.
+
+- [ ] **Step 6b: The library README's triplet paragraph**
+
+`libs/SFM/README.md`, the paragraph on the triplet filter near line 198, still says the edge weight is
+"one integer per edge, its epipolar inlier count" and the score `n_ij / max n_kl`, presents `tau` as the
+threshold, and omits `--triplet-auto-tau`. Rewrite that paragraph in the README's own register to say:
+the strength is the inlier count discounted by the inliers' grid coverage; a triangle whose three pairs
+all yield below 0.4 of the graph's own envelope gives no evidence; unscored pairs are kept; `tau(m)` is a
+ceiling (default `m` 0.75) below which the threshold is the strictest one joining every piece unless the
+largest piece already holds a majority; the reconstruction seeds in the largest ceiling piece. Keep it
+one paragraph and point at `docs/design/TripletDisambiguation.md` for the rest.
+
+Also, in the design note: the "Harness" section must name only subcommands and column names the
+script `scripts/python/tests/triplet_disambiguation.py` actually has after its own rewrite (it scores the
+shipped rule from the export's `NumMatches`, `Coverage` and `MeanRayAngle` columns, and `parity` checks
+the export's `TripletScore` column against that); the parity figure quoted in "Measurements" ("maximum
+absolute C++/Python difference 5.3e-7", "7 graphs") was measured on an older rule and is replaced by the
+parity the rewritten script reports on the two exhaustive exports it is checked against (those two
+numbers are in that script's docstring after its rewrite; if they are not, say so in your report and
+leave the sentence out rather than invent them); and the CSV column list in "Where it runs, and the
+flags" must be the export's actual header:
+`ImageA,ImageB,NumMatches,Coverage,Weight,WeightSpatial,WeightConnectivity,WeightTriplet,MeanRayAngle,TripletScore`.
+
+- [ ] **Step 7: Check every claim against the code**
 
 ```bash
-cd /home/ubuntu/.claude/worktrees/roma2-onnx && git add -A && git commit -m "docs: the triplet note describes the filter that ships
+cd /home/ubuntu/.claude/worktrees/roma2-onnx && /usr/bin/grep -n "tau\|unscored\|minScore\|min-score\|auto\|seed\|piece\|majority\|straggler" docs/design/TripletDisambiguation.md
+```
 
-The removal rule, the swept threshold and the second cue, with the
-follow-ups this closed struck and the two it did not left standing."
+Read each hit against `libs/SFM/ViewGraphTriplets.{h,cpp}` and `libs/SFM/StarInitializer.{h,cpp}` as
+they now stand. Delete any sentence that describes behaviour the code no longer has.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add docs/design/TripletDisambiguation.md libs/SFM/README.md
+git -c user.name=cDc -c user.email=cdc.seacave@gmail.com commit -m "docs: the triplet note describes the filter that ships
+
+Unscored pairs are kept, the threshold descends from the paper's ceiling to the strictest one
+joining the pieces unless a majority piece stands, the reconstruction seeds in the largest
+ceiling piece, and the ambiguous-scene results sit beside the earlier hand-held measurements:
+the church and Radcliffe at the paper's counts and one-sided, Brandenburg and cereal the misses."
 ```
 
 ---
@@ -2928,6 +3083,383 @@ the scores of the pairs that bridge its faces: on the church, four matchings giv
 split at the ceiling and two that merge, and the model is one facade or both folded by the
 matcher's luck. At 0.75 all four split with the south facade whole; the sets whose ceiling shatters
 the graph reach the same threshold by the descent whatever the minimum is."
+```
+
+### Task 13: The descent joins the pieces themselves, a ceiling leaving no piece still descends, a zero ray angle is no measurement
+
+Spec §3.6 ("A ray angle of zero is never measured") and §3.7 ("The bar is the pieces, not a count";
+"A ceiling that leaves no piece"). Three defects the whole-branch reading found, each with the test
+that pins it, plus four stale texts in the files this task touches anyway.
+
+**Files:**
+- Modify: `libs/SFM/ViewGraphTriplets.h` (`SurvivorGraph`, `EvaluateSurvivorGraph`'s declaration and comment)
+- Modify: `libs/SFM/ViewGraphTriplets.cpp` (`ComputeEdgeYields`'s guard and comment; `EvaluateSurvivorGraph`; `FilterPairsByTriplets`'s descent)
+- Modify: `libs/SFM/Scene.cpp` (`#include <unordered_set>`)
+- Modify: `apps/CreateStructure/CreateStructure.cpp` (`--triplet-min-score` help: `[0,1]`)
+- Modify: `apps/Tests/TestsSFM.cpp` (`TripletAutoTauTest`: two new scenes and a disabled-filter check; one stale comment), `apps/Tests/TestsSFM.h` (the `TripletAutoTauTest` comment)
+
+**Interfaces:**
+- Consumes: `SurvivorGraph` (Tasks 5, 8, 9, 10: `numNodes, largestComponent, numLowDegree, numKept, numPieces, numInPieces, largestPiece, largestPieceViews`), `EvaluateSurvivorGraph(scene, scores, tau, minPiece = 1)` whose union-find hangs the larger root under the smaller so a component's root is its smallest image index, `FilterPairsByTriplets`'s descent (Tasks 8-10), the test helpers `AddTripletImages`, `AddTripletPair(scene, a, b, numInliers)` and `TripletKeptPairs`, and `TripletAutoTauTest`'s existing scenes (its configs pin `minScore = 0.6f`, and every ceiling below is `0.6 (1 - d_max/|V|) + d_max/|V|`).
+- Produces: `SurvivorGraph::pieceRoots` (`IIndexArr`, the smallest image index of every piece, ascending); `SurvivorGraph::viewsJoined` (`bool`); `EvaluateSurvivorGraph(const Scene&, const std::vector<float>& scores, float tau, unsigned minPiece = 1, const IIndexArr* views = NULL)`.
+
+- [ ] **Step 1: Write the failing tests**
+
+In `apps/Tests/TestsSFM.cpp`, `TripletAutoTauTest`, before the closing PASSED line, add three checks.
+
+**The straggler flood** (the bar is the pieces, not a count). 310 images: chain A is images 0-99 and
+chain B images 100-199, each with 1000-inlier consecutive pairs and 600-inlier pairs two apart;
+110 stragglers, images 200-309, each hung on one consecutive pair of chain A by a 500-inlier pair to
+its first image and a 400-inlier pair to its second (straggler `s` hangs on `(a, a+1)` with
+`a = (s - 200) % 98`); one bridge, `(99, 100)` with 300 inliers, given its triangle by `(98, 100)` with
+200. Scores: consecutive 1.0, two apart 0.6, the stragglers' 0.5 and 0.4, the bridge 0.3 and its helper
+0.2; chain B's own edges lie in a second triplet component and are unscored, so the scored graph
+`G_LCT` holds 211 nodes (chain A, the stragglers and image 100) and its `d_max` is 8 (images 2-11 of
+chain A carry four straggler edges beside their four chain edges): the ceiling is
+`0.6 (1 - 8/211) + 8/211 = 0.615166`. The unfiltered graph is one component of 310 images (the bridge
+joins chain B), so the floor is `ceil(3.1) = 4`. At the ceiling the pieces are
+chain A (100, its consecutive edges) and chain B (100, unscored edges), 200 images between them,
+neither a majority; the 110 stragglers are apart. A count of nodes is met at 0.5, where the stragglers
+join chain A (210 of 200) with chain B still apart; the pieces share a root only at 0.3. Expected: the
+threshold 0.3, one pair removed (`(98,100)`), 615 kept of 616, the bridge `(99,100)` kept, and the seed
+views chain A (images 0-99).
+
+```cpp
+	// The straggler flood: a count of nodes is met by stragglers accreting onto one piece while
+	// the other is still apart; the bar is that the pieces share a component.
+	Scene flood;
+	AddTripletImages(flood, 310);
+	for (IIndex i = 0; i + 1 < 100; ++i)
+		AddTripletPair(flood, i, i + 1, 1000);
+	for (IIndex i = 0; i + 2 < 100; ++i)
+		AddTripletPair(flood, i, i + 2, 600);
+	for (IIndex i = 100; i + 1 < 200; ++i)
+		AddTripletPair(flood, i, i + 1, 1000);
+	for (IIndex i = 100; i + 2 < 200; ++i)
+		AddTripletPair(flood, i, i + 2, 600);
+	for (IIndex s = 200; s < 310; ++s) {
+		const IIndex a = (s - 200) % 98;
+		AddTripletPair(flood, a, s, 500);
+		AddTripletPair(flood, a + 1, s, 400);
+	}
+	AddTripletPair(flood, 99, 100, 300);
+	AddTripletPair(flood, 98, 100, 200);
+	const TripletScores floodScores = ComputeTripletScores(flood, 0.6f, 0.f, weightingCfg.gridSize);
+	const SurvivorGraph floodCeiling = EvaluateSurvivorGraph(flood, floodScores.scores, floodScores.tau, 4);
+	if (!ISEQUAL(floodScores.tau, 0.6f*(1.f-8.f/211.f)+8.f/211.f) || floodCeiling.numPieces != 2 ||
+		floodCeiling.numInPieces != 200 || floodCeiling.largestPiece != 100 ||
+		floodCeiling.pieceRoots.size() != 2 || floodCeiling.pieceRoots[0] != 0 || floodCeiling.pieceRoots[1] != 100) {
+		VERBOSE("TripletAutoTauTest FAILED: straggler flood at the ceiling %g: %u pieces holding %u, the largest %u, roots %u; "
+			"expected 2 pieces of 100 holding 200 with roots 0 and 100",
+			floodScores.tau, floodCeiling.numPieces, floodCeiling.numInPieces, floodCeiling.largestPiece,
+			(unsigned)floodCeiling.pieceRoots.size());
+		return false;
+	}
+	const SurvivorGraph floodAtHalf = EvaluateSurvivorGraph(flood, floodScores.scores, 0.5f, 1, &floodCeiling.pieceRoots);
+	const SurvivorGraph floodAtBridge = EvaluateSurvivorGraph(flood, floodScores.scores, 0.3f, 1, &floodCeiling.pieceRoots);
+	if (floodAtHalf.largestComponent != 210 || floodAtHalf.viewsJoined || !floodAtBridge.viewsJoined) {
+		VERBOSE("TripletAutoTauTest FAILED: straggler flood at 0.5: component %u, pieces joined %s; at 0.3 joined %s; "
+			"expected 210 and not joined, then joined",
+			floodAtHalf.largestComponent, floodAtHalf.viewsJoined ? "yes" : "no", floodAtBridge.viewsJoined ? "yes" : "no");
+		return false;
+	}
+	TripletFilterConfig floodCfg;
+	floodCfg.enabled = true;
+	floodCfg.minYield = 0.f;
+	floodCfg.minScore = 0.6f; // the scene's ceiling and the counts below were derived at the paper's generic m
+	IIndexArr floodSeeds;
+	const unsigned floodRemoved = FilterPairsByTriplets(flood, floodCfg, weightingCfg, &floodSeeds);
+	const std::set<std::pair<IIndex,IIndex>> floodKept = TripletKeptPairs(flood);
+	bool floodRight = floodRemoved == 1 && floodKept.size() == 615 && floodKept.count({99,100}) == 1 &&
+		floodKept.count({98,100}) == 0 && floodSeeds.size() == 100;
+	FOREACH(i, floodSeeds)
+		floodRight = floodRight && floodSeeds[i] == (IIndex)i;
+	if (!floodRight) {
+		VERBOSE("TripletAutoTauTest FAILED: straggler flood removed %u pairs, kept %u, seed views %u; expected the descent to "
+			"0.3 (the pieces share a root only at the bridge): 1 removed, 615 kept, the bridge kept, seed views 0-99",
+			floodRemoved, (unsigned)floodKept.size(), (unsigned)floodSeeds.size());
+		return false;
+	}
+```
+
+**The chain of pairs** (a ceiling that leaves no piece). 210 images in one chain: consecutive pairs
+`(i, i+1)` with 1000 inliers for even `i` and 100 for odd `i`, and 100-inlier pairs two apart. Every
+1000-pair scores 1.0 and every 100-pair 0.1; `d_max` is 4, the ceiling `0.6 (1 - 4/210) + 4/210 =
+0.607619`; the ceiling keeps only the 105 strong pairs, components of two images, below the floor
+`ceil(2.1) = 3`: no piece. Under the rule every component of the unfiltered largest component is then a
+piece: 105 pieces of two, none a majority, the descent's only candidate is 0.1 and nothing is removed;
+the seed views are the piece holding the lowest image index, `{0, 1}`.
+
+```cpp
+	// The chain of pairs: the ceiling leaves only components below the floor; then every component
+	// is a piece and the descent joins them all rather than leaving the graph as pairs.
+	Scene pairsChain;
+	AddTripletImages(pairsChain, 210);
+	for (IIndex i = 0; i + 1 < 210; ++i)
+		AddTripletPair(pairsChain, i, i + 1, i % 2 == 0 ? 1000 : 100);
+	for (IIndex i = 0; i + 2 < 210; ++i)
+		AddTripletPair(pairsChain, i, i + 2, 100);
+	const TripletScores pairsChainScores = ComputeTripletScores(pairsChain, 0.6f, 0.f, weightingCfg.gridSize);
+	const SurvivorGraph pairsChainCeiling = EvaluateSurvivorGraph(pairsChain, pairsChainScores.scores, pairsChainScores.tau, 3);
+	if (!ISEQUAL(pairsChainScores.tau, 0.6f*(1.f-4.f/210.f)+4.f/210.f) || pairsChainCeiling.numPieces != 0 ||
+		pairsChainCeiling.largestComponent != 2 || pairsChainCeiling.numKept != 105) {
+		VERBOSE("TripletAutoTauTest FAILED: chain of pairs at the ceiling %g: %u pieces, largest component %u, %u kept; "
+			"expected no piece of 3, components of 2, 105 kept",
+			pairsChainScores.tau, pairsChainCeiling.numPieces, pairsChainCeiling.largestComponent, pairsChainCeiling.numKept);
+		return false;
+	}
+	TripletFilterConfig pairsChainCfg;
+	pairsChainCfg.enabled = true;
+	pairsChainCfg.minYield = 0.f;
+	pairsChainCfg.minScore = 0.6f; // the scene's ceiling and the counts below were derived at the paper's generic m
+	IIndexArr pairsChainSeeds;
+	const unsigned pairsChainRemoved = FilterPairsByTriplets(pairsChain, pairsChainCfg, weightingCfg, &pairsChainSeeds);
+	if (pairsChainRemoved != 0 || pairsChain.pairs.size() != 417 || pairsChainSeeds.size() != 2 ||
+		pairsChainSeeds[0] != 0 || pairsChainSeeds[1] != 1) {
+		VERBOSE("TripletAutoTauTest FAILED: chain of pairs removed %u, %u pairs left, %u seed views; expected a ceiling "
+			"leaving no piece to make every component a piece: 0 removed, 417 pairs, seed views {0, 1}",
+			pairsChainRemoved, (unsigned)pairsChain.pairs.size(), (unsigned)pairsChainSeeds.size());
+		return false;
+	}
+```
+
+**The disabled filter clears the seed views.** Right after the chain of pairs:
+
+```cpp
+	// A disabled filter reports no seed views, whatever the caller's array held.
+	TripletFilterConfig offCfg;
+	offCfg.enabled = false;
+	IIndexArr offSeeds;
+	offSeeds.push_back(7);
+	if (FilterPairsByTriplets(pairsChain, offCfg, weightingCfg, &offSeeds) != 0 || !offSeeds.empty()) {
+		VERBOSE("TripletAutoTauTest FAILED: a disabled filter left %u seed views; expected none", (unsigned)offSeeds.size());
+		return false;
+	}
+```
+
+Extend the PASSED message so it also names the straggler flood and the chain of pairs, and add the two
+scenes to the test's leading scene index (one line each, in its style: "the straggler flood pins that
+the descent's bar is the pieces sharing a component, not a count of nodes; the chain of pairs pins that a
+ceiling leaving no piece makes every component a piece").
+
+- [ ] **Step 2: Run the build to verify the tests fail**
+
+Run (from `make/`): `ninja -f build-Release.ninja Tests 2>&1 | tail -5`
+Expected: compilation errors on `pieceRoots`, `viewsJoined` and `EvaluateSurvivorGraph`'s fifth argument — the red state.
+
+- [ ] **Step 3: The survivor graph reports its piece roots and joins**
+
+In `libs/SFM/ViewGraphTriplets.h`, add to `SurvivorGraph` after `largestPieceViews`:
+
+```cpp
+	IIndexArr pieceRoots;       // one image per piece, its smallest index, ascending
+	bool viewsJoined;           // the images passed as `views` all lie in one component (true when none were passed)
+```
+
+and change the declaration to
+
+```cpp
+SurvivorGraph SFM_API EvaluateSurvivorGraph(const Scene& scene, const std::vector<float>& scores, float tau,
+	unsigned minPiece = 1, const IIndexArr* views = NULL);
+```
+
+adding to its comment: "`views`, when given, are images whose joining the caller asks about — the
+descent passes the pieces' roots of the ceiling's graph and reads `viewsJoined` at each candidate
+threshold: joining every piece means the pieces share one component, not the largest component
+reaching a count of nodes, which stragglers accreting onto one piece can satisfy with another piece
+still apart."
+
+In `libs/SFM/ViewGraphTriplets.cpp`, `EvaluateSurvivorGraph`: initialise the two new fields
+(`viewsJoined` true); in the loop over `componentSize` that counts pieces, after `++result.numPieces`,
+`result.pieceRoots.push_back((IIndex)component.first);` — the root is the component's smallest image
+index since a union hangs the larger root under the smaller — and after that loop sort `pieceRoots`
+ascending (`std::sort(result.pieceRoots.begin(), result.pieceRoots.end())`). Then, before returning:
+
+```cpp
+	if (views && !views->empty()) {
+		const uint32_t root = Find(parent, (uint32_t)(*views)[0]);
+		FOREACH(i, *views)
+			if (Find(parent, (uint32_t)(*views)[i]) != root) {
+				result.viewsJoined = false;
+				break;
+			}
+	}
+```
+
+- [ ] **Step 4: The descent tests the pieces, and a ceiling leaving no piece descends**
+
+In `FilterPairsByTriplets`, after `atCeiling` is computed:
+
+```cpp
+	// A ceiling that leaves no piece -- every component below the floor, a large collection
+	// shattered into pairs -- is the graph that most needs repair, not one to leave alone: every
+	// component of the unfiltered largest component is then a piece, as on a small set.
+	if (atCeiling.numPieces == 0 && minPiece > 1) {
+		minPiece = 1;
+		atCeiling = EvaluateSurvivorGraph(scene, tripletScores.scores, ceiling, minPiece);
+	}
+```
+
+(`minPiece` and `atCeiling` lose their `const` for this.) In the descent, replace the condition
+`if (shattered && survivor.largestComponent < minComponent)` by `if (shattered && atCeiling.numPieces > 1)`,
+and the binary search's test `EvaluateSurvivorGraph(scene, tripletScores.scores, candidates[mid]).largestComponent >= minComponent`
+by `EvaluateSurvivorGraph(scene, tripletScores.scores, candidates[mid], 1, &atCeiling.pieceRoots).viewsJoined`.
+Update the comment above the search: the largest component only grows as tau falls becomes "the pieces,
+once joined, stay joined as tau falls"; the loosest candidate keeps every scored pair, whose graph joins
+every piece (they all lie in the unfiltered largest component). `minComponent` stays as the VERBOSE's
+count of images the pieces hold; if nothing else reads it, keep it for that alone.
+
+- [ ] **Step 5: A zero ray angle is the never-measured sentinel**
+
+In `ComputeEdgeYields`, the guard `if (!ISFINITE(edgeRayAngle[e]) || edgeRayAngle[e] < 0.f)` becomes
+`if (!ISFINITE(edgeRayAngle[e]) || edgeRayAngle[e] <= 0.f)`, the sentence in the comment above the
+function "An edge whose ray angle is not finite or is negative has no measurable geometry" becomes "An
+edge whose ray angle is not finite, negative or zero -- zero being ImagePair::meanRayAngle's value on a
+pair whose relative pose was never decomposed -- has no measurable geometry", and the closing comment
+after the function says "no finite, positive ray angle" where it says "no finite, non-negative ray
+angle". Add to `TripletYieldTest` (the test with the NaN-angle case) one check in the same style:
+give the pair that case uses a `meanRayAngle` of exactly 0 instead of NaN, run `ComputeTripletScores`
+with `minYield 0.4`, and expect the same doppelganger-triplet count and the same scores the NaN case
+expects.
+
+- [ ] **Step 6: The stale texts**
+
+- `apps/Tests/TestsSFM.h`: the comment above `TripletAutoTauTest` (near lines 271-277) describes a
+  low-degree bar, a ladder and a gapped ring the test no longer has; replace it with one sentence per
+  scene the test holds (barbell, ring, bridge, pendant, baseline, boundary, pan, walk, three chains,
+  straggler flood, chain of pairs), each saying what it pins, matching the scene index at the top of
+  the test body.
+- `apps/Tests/TestsSFM.cpp` near line 8222: the sentence mentioning "99 %" describes a rule the filter
+  no longer has; reword it to the piece rule ("the strictest threshold joining every piece").
+- `apps/CreateStructure/CreateStructure.cpp`: the `--triplet-min-score` help says "in (0,1)"; the code
+  accepts `[0,1]` (`CLAMP` in `FilterPairsByTriplets`, the error message at the option check aside);
+  make the help and the option's range check agree on `[0,1]`.
+- `libs/SFM/Scene.cpp`: add `#include <unordered_set>` beside the other standard includes
+  (`SubSceneSeedViews` uses it).
+
+- [ ] **Step 7: Run the tests to verify they pass**
+
+Run (from `make/`): `ninja -f build-Release.ninja Tests SFM CreateStructure SceneAnalyzeSFM && ./bin/Release/Tests 1`
+Expected: `TripletAutoTauTest PASSED`, `TripletYieldTest PASSED`, every other test PASSED, exit code 0,
+no compiler warning from the changed files. The walk, three-chains, pan and every earlier scene keep
+their expected values: on them a count of nodes and the piece test agree.
+
+- [ ] **Step 8: Mutate**
+
+One at a time, rebuild `Tests` only, run, confirm the named failure, revert, rebuild, confirm green:
+
+| mutation | expected failure |
+|---|---|
+| the search tests `largestComponent >= minComponent` again instead of `viewsJoined` | `TripletAutoTauTest FAILED: straggler flood removed 112 pairs, kept 504` |
+| the no-piece fallback removed | `TripletAutoTauTest FAILED: chain of pairs removed 312` |
+| the guard back to `< 0.f` | `TripletYieldTest FAILED` on the zero-angle check |
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add libs/SFM/ViewGraphTriplets.h libs/SFM/ViewGraphTriplets.cpp libs/SFM/Scene.cpp apps/CreateStructure/CreateStructure.cpp apps/Tests/TestsSFM.cpp apps/Tests/TestsSFM.h
+git -c user.name=cDc -c user.email=cdc.seacave@gmail.com commit -m "sfm: the descent joins the pieces themselves, and a ceiling leaving no piece still descends
+
+The search below the ceiling stopped when the largest component held as many images as the
+pieces, which stragglers accreting onto one piece can satisfy with another piece still apart;
+it now stops when the pieces share a component. A ceiling leaving every component below the
+floor skipped the descent and the seed views; every component is then a piece. A ray angle of
+zero is the never-measured value, not a zero baseline, and no longer feeds the yield envelope."
+```
+
+### Task 14: The Python harness scores the rule that ships
+
+`scripts/python/tests/triplet_disambiguation.py` is the independent NumPy reimplementation whose
+`parity` subcommand is the loud consistency check between the C++ scores and the paper's algorithm. It
+still scores from `NumMatches` alone — the paper's rule — while the C++ column it compares against is the
+shipped one: strength discounted by coverage, doppelganger triangles giving no evidence, a zero ray angle
+outside the envelope. `parity` therefore fails on every real graph. The script learns the shipped rule
+from the export's own columns and is checked against two real exports.
+
+**Files:**
+- Modify: `scripts/python/tests/triplet_disambiguation.py`
+
+**Interfaces:**
+- Consumes: the pairs export of `CreateStructure --export-pairs-csv`, header
+  `ImageA,ImageB,NumMatches,Coverage,Weight,WeightSpatial,WeightConnectivity,WeightTriplet,MeanRayAngle,TripletScore`,
+  where `NumMatches` is the pair's filtered epipolar inlier count `n_ij`, `Coverage` the fraction of
+  the grid the inliers cover `c_ij` (`ComputePairCoverage`), `MeanRayAngle` the pair's mean ray angle in
+  **degrees** (0 when never measured), `TripletScore` the C++ score (empty = unscored); and the C++
+  definition in `libs/SFM/ViewGraphTriplets.cpp`: `ComputeEdgeYields` (the envelope) and
+  `ComputeTripletScores` (the triangles, `G_LCT`, the mean with doppelganger triangles contributing 0).
+  Two real exports to check against, copied into the plan's workspace (not the repository):
+  `.superpowers/sdd/2026-09-05-view-graph-disambiguation/exports/street-pairs.csv` (171 pairs) and
+  `.../exports/radcliffe-pairs.csv` (23,021 pairs, 20,306 scored, 311 of them with a zero ray angle).
+- Produces: the same three subcommands (`score`, `parity`, `roc`) with the shipped score; nothing else reads the script.
+
+- [ ] **Step 1: Run parity to see it fail**
+
+Run (from the worktree root):
+`python3 scripts/python/tests/triplet_disambiguation.py parity --pairs .superpowers/sdd/2026-09-05-view-graph-disambiguation/exports/street-pairs.csv`
+Expected: exits non-zero with a maximum difference far above 1e-5 — the red state.
+
+- [ ] **Step 2: The shipped score**
+
+Rewrite the scoring so that it is, in NumPy, what `ComputeTripletScores` does. Read that function and
+`ComputeEdgeYields` in `libs/SFM/ViewGraphTriplets.cpp` in full first; the rule is:
+
+1. An edge is a pair with `NumMatches > 0` and `Coverage > 0`; its strength is `s = NumMatches * Coverage`.
+   Two rows describing the same image pair collapse onto one edge with the larger strength.
+2. Triangles of that graph; the triplet graph's components (triangles sharing an edge); `G_LCT` is the
+   component with the most triangles (ties: the component whose smallest edge index is smallest, where
+   edges are indexed in the order the rows come, after the collapse); every edge outside `G_LCT`, or in
+   no triangle, is unscored (NaN).
+3. Yields over the edges of the whole graph: `u_e = NumMatches / min(K_i, K_j)` with `K_i` the largest
+   `NumMatches` over image `i`'s edges; the envelope per 1-degree bin of `floor(MeanRayAngle)`, bins
+   at and beyond 90 degrees sharing the last (index 89); a bin with at least five edges gets the value
+   at rank `min(n - 1, floor(0.9 * n))` of its sorted `u` values; a suffix maximum from the highest bin
+   downward makes the envelope non-increasing in the angle; then an empty bin below the lowest populated
+   one takes the value of the bin below it (a forward fill from bin 1 upward, after the suffix maximum);
+   if no bin is populated every yield is 1. An edge whose `MeanRayAngle` is not finite, negative **or
+   zero** takes no part in any bin and keeps yield 1; every other edge's yield is `min(1, u_e / H(bin))`.
+4. The score of an edge of `G_LCT` is the mean over the triangles of `G_LCT` containing it of
+   `s_e / max strength in the triangle`, where a triangle whose three yields are all below `minYield`
+   (0.4) contributes 0 to that sum and still counts in the mean's divisor. `tau = m (1 - d_max/|V|) +
+   d_max/|V|` over `G_LCT`'s nodes and degrees.
+
+Keep the script's structure (its `TripletScores` record, `read_csv_rows`, the subcommands) and its
+docstring's shape, and rewrite the docstring's description of the rule to the above, in the same
+register; delete the sentence about `NumMatches > 0` alone being the edge test. `score` gains
+`--min-yield` (default 0.4) and writes `Coverage` beside `NumMatches`; `parity` and `roc` take the same
+option. The default `-m` becomes 0.75 (the C++ default), and the `roc` subcommand's default `m` list stays
+`0.3, 0.6, 0.9` with 0.75 added.
+
+- [ ] **Step 3: Run parity on both exports**
+
+```
+python3 scripts/python/tests/triplet_disambiguation.py parity --pairs .superpowers/sdd/2026-09-05-view-graph-disambiguation/exports/street-pairs.csv
+python3 scripts/python/tests/triplet_disambiguation.py parity --pairs .superpowers/sdd/2026-09-05-view-graph-disambiguation/exports/radcliffe-pairs.csv
+```
+
+Expected: both exit 0, identical unscored sets, maximum absolute difference at most 1e-5 (the C++ sums
+in double and stores float). If Radcliffe disagrees only on pairs whose `MeanRayAngle` is 0, the export
+predates the zero-angle rule: say so in the report with the count and the maximum difference among the
+other pairs, and the controller will refresh the export. Record the two maximum differences in the
+script's docstring, one sentence: "Checked against two exhaustive exports (Street, 171 pairs; Radcliffe
+Camera, 23,021 pairs): maximum absolute difference X and Y."
+
+- [ ] **Step 4: Mutate**
+
+One at a time, run parity on Street, confirm it fails, revert: (a) the coverage discount dropped
+(`s = NumMatches`); (b) the doppelganger triangles contributing their ratios instead of 0 (with
+`--min-yield 0.4`); (c) the zero-angle edges binned at 0 degrees instead of kept out of the envelope
+(this one on Radcliffe, where such edges exist).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add scripts/python/tests/triplet_disambiguation.py
+git -c user.name=cDc -c user.email=cdc.seacave@gmail.com commit -m "scripts: the triplet harness scores the rule that ships
+
+The NumPy reimplementation scored the paper's rule, inlier counts alone, while the C++ column it
+checks carries the shipped one: the strength discounted by coverage, a triangle whose three pairs
+all yield below the graph's envelope giving no evidence, a zero ray angle outside the envelope.
+It now reads the export's Coverage and MeanRayAngle columns and reproduces the column on two
+exhaustive exports."
 ```
 
 ## Measurement (the controller's, after the branch is green)

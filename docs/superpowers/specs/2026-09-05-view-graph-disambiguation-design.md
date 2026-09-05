@@ -320,6 +320,13 @@ back to the descent of §3.2, which is where it was before this rule.
 heinly2014 collections, whose images are not a walk: the envelope there is set by the tourists'
 near-duplicate photos, which every popular viewpoint has.
 
+**A ray angle of zero is "never measured".** `ImagePair::meanRayAngle` is 0 on a pair whose
+relative pose was never decomposed, not a measurement of a zero baseline; such a pair carries no
+evidence of a deficit and takes yield 1 — outside the envelope, never a doppelganger triangle's
+member on its own account. Binning it at zero degrees would put it in the bin whose envelope is
+highest and read every such pair as inlier-deficient (Radcliffe matched exhaustively: 311 of
+20,306 scored pairs).
+
 ### 3.7 The descent does not chase stragglers
 
 §3.2's descent was written against the small sets, where the ceiling shatters a complete graph
@@ -367,6 +374,21 @@ that pair is a true junction or a look-alike is the reconstruction's answer (§5
 Cost if wrong: a genuine sub-scene of fewer than 1 % of the images (a detail cluster of a large
 collection) that only connects below the ceiling is left as its own component instead of being
 joined — the paper's behaviour, and a separate model rather than a wrong merge.
+
+**The bar is the pieces, not a count.** "Joins every piece" means the pieces share one
+component of the survivor graph, tested on one representative image per piece; it is not the
+largest component reaching the number of images the pieces hold. The two differ when stragglers
+accrete: as the threshold falls, stragglers attach to a piece before the last piece joins, and a
+count of nodes is satisfied while a piece is still apart (two chains of a hundred images and a
+hundred and ten stragglers hung on the first: the count is met at the stragglers' score with the
+second chain apart; the pieces share a root only at the bridge's). The piece test is monotone in
+the threshold, so the search below the ceiling is unchanged.
+
+**A ceiling that leaves no piece.** When every component the ceiling leaves is smaller than the
+floor — a large collection shattered into pairs — there is nothing to join and nothing to seed
+in; that is the graph that most needs repair, not the one to leave alone. Then every component of
+the unfiltered largest component is a piece (the floor becomes one image), the descent joins them
+as on a small set, and the seed views are the largest of them.
 
 ### 3.8 The descent only repairs a shattered ceiling
 
