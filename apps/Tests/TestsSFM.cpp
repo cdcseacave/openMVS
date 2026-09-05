@@ -8328,7 +8328,8 @@ bool TripletAutoTauTest()
 		return false;
 	}
 
-	VERBOSE("TripletAutoTauTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	VERBOSE("TripletAutoTauTest PASSED: the descent joins every piece the ceiling leaves and lets the walk's "
+		"stragglers be (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 

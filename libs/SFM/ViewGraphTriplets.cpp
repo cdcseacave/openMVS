@@ -486,8 +486,9 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 			survivor = EvaluateSurvivorGraph(scene, tripletScores.scores, tau);
 		}
 		VERBOSE("Triplet filter: tau %.3f, %s (ceiling %.3f at m %.2f, d_max/|V| %.3f); the ceiling leaves "
-			"%u pieces of at least %u images holding %u, %u stragglers; survivor graph keeps %u/%u images "
-			"in its largest component, %u below degree 2 (%u before), and %u/%u distinct image pairs",
+			"%u pieces (components of at least %u images) holding %u images between them, and %u stragglers; "
+			"survivor graph keeps %u/%u images in its largest component, %u below degree 2 (%u before), "
+			"and %u/%u distinct image pairs",
 			tau, tau < ceiling ? "the strictest threshold that joins every piece" : "the ceiling applied as given",
 			ceiling, minScore, degreeRatio, numPieces, minPiece, minComponent, numStragglers,
 			survivor.largestComponent, unfiltered.largestComponent,
