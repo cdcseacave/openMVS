@@ -438,6 +438,16 @@ pair, every image is a candidate, as before. With clustering, a sub-scene's cand
 reported images it holds, and a sub-scene holding none chooses among all its own. The descent is
 unchanged: the pieces are still joined, and the resection still decides which joins it crosses.
 
+**The star must be able to grow.** The reference view is the heaviest candidate with at least
+`minViews − 1` valid pairs — the smallest star the initializer accepts, its centre excluded; three
+by default. On Street matched exhaustively the descent keeps 20 of 171 pairs, a chain; the largest
+ceiling piece holds five images and its heaviest image has two pairs, a star of two arms, which the
+initializer refuses — and the run reconstructed nothing where the heaviest image overall, with
+three, had given all 19. A candidate with too few pairs is skipped; when no seed view qualifies the
+choice falls to every image, and when no image qualifies the heaviest image is chosen and the
+initializer reports the shortfall as it always has. The bar is the initializer's own minimum, not
+a new parameter.
+
 Expected on the exhaustive runs: Radcliffe seeds in the 120-piece, crosses the 0.928 bridges into
 the 52-piece (172 images; the paper 177, Doppelgangers++ 186) and refuses the 45-piece's; the
 church seeds in the 140-piece the ceiling already cut it to (the paper 136, Doppelgangers++ 157);

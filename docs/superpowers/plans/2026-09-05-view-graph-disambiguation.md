@@ -2638,6 +2638,190 @@ or when none of the reported images has a valid pair. The descent is unchanged: 
 resection crosses the true bridges and refuses the doppelganger ones from the right side."
 ```
 
+### Task 11: The reference view needs enough pairs to centre a star
+
+Spec §3.9, "The star must be able to grow". `StarInitializer::Initialize` builds a star with one arm
+per valid pair of the reference view and refuses a star of fewer than `minViews - 1` arms. The
+reference view chosen among the seed views is the heaviest of them, and on a sparse kept graph the
+heaviest can have too few pairs: on Street matched exhaustively the filter keeps 20 of 171 pairs,
+the largest ceiling piece holds five images, its heaviest has two pairs, the initializer reported
+"insufficient initial views (2 < 3)" and the run reconstructed nothing. From now on a candidate
+needs at least `minPairs` valid pairs; the candidate sets and their order are unchanged.
+
+**Files:**
+- Modify: `libs/SFM/StarInitializer.h` (`SelectReferenceView` declaration and comment)
+- Modify: `libs/SFM/StarInitializer.cpp` (`SelectReferenceView`, the call in `Initialize`)
+- Modify: `apps/Tests/TestsSFM.cpp` (`StarReferenceViewTest`)
+- Modify: `docs/design/TripletDisambiguation.md` (one clause in the seed paragraph)
+
+**Interfaces:**
+- Consumes: `StarInitializer::SelectReferenceView(const Scene&, const IIndexArr& seedViews)` and `StarInitConfig::seedViews` / `minViews` (Task 10); `StarReferenceViewTest`'s ten-image scene (Task 10): triangle 0-2 with 3000-inlier pairs (two pairs per image), chain 3-8 with 500-inlier consecutive pairs, 300-inlier pairs two apart and the 100-inlier pair (5,8), image 9 without a pair — so the valid pairs per image are 0,1,2: 2; 3: 2; 4: 3; 5: 5; 6: 4; 7: 3; 8: 3; 9: 0, and the weighted inliers 6000, 6000, 6000, 800, 1300, 1700, 1600, 1300, 900, 0.
+- Produces: `IIndex StarInitializer::SelectReferenceView(const Scene&, const IIndexArr& seedViews, unsigned minPairs)`.
+
+- [ ] **Step 1: Write the failing test**
+
+In `apps/Tests/TestsSFM.cpp`, `StarReferenceViewTest`: every existing call gains a third argument, `2`
+(the triangle's images have two pairs, so nothing else changes), and two checks are added before the
+PASSED line. The three existing calls become
+
+```cpp
+	const IIndex refAll = StarInitializer::SelectReferenceView(scene, IIndexArr(), 2);
+	...
+	const IIndex refChain = StarInitializer::SelectReferenceView(scene, chain, 2);
+	...
+	const IIndex refLonely = StarInitializer::SelectReferenceView(scene, lonely, 2);
+```
+
+with their expectations (0, 5, 0) and messages unchanged. After the `refLonely` check add:
+
+```cpp
+	// A seed view with two pairs cannot centre a star of three arms: image 3 is skipped, and so are
+	// the triangle's images (two pairs each) when the choice falls to every image; the reference is
+	// the heaviest image with three or more pairs, 5. This is the Street failure: the largest ceiling
+	// piece's heaviest image had two pairs and the star initializer refused it.
+	IIndexArr three;
+	three.push_back(3);
+	const IIndex refThree = StarInitializer::SelectReferenceView(scene, three, 3);
+	if (refThree != 5) {
+		VERBOSE("StarReferenceViewTest FAILED: reference view %u with a seed view of two pairs and a star of three arms "
+			"required; expected 5, the heaviest image with three or more pairs", refThree);
+		return false;
+	}
+	// No image has six pairs: the heaviest image is returned and the initializer reports the shortfall.
+	const IIndex refSix = StarInitializer::SelectReferenceView(scene, IIndexArr(), 6);
+	if (refSix != 0) {
+		VERBOSE("StarReferenceViewTest FAILED: reference view %u with six arms required and no image having them; "
+			"expected 0, the heaviest image", refSix);
+		return false;
+	}
+```
+
+Change the PASSED message to `"StarReferenceViewTest PASSED: the reference view is the heaviest seed view
+with enough pairs to centre a star, and the heaviest such image when none is named or usable (%s)"`, and
+extend the test's leading comment with one sentence: "A candidate also needs enough valid pairs to
+centre a star, since the initializer refuses a star smaller than its minimum."
+
+- [ ] **Step 2: Run the build to verify the test fails**
+
+Run (from `make/`): `ninja -f build-Release.ninja Tests 2>&1 | tail -5`
+Expected: a compilation error on `SelectReferenceView`'s third argument — the red state.
+
+- [ ] **Step 3: The reference view needs enough pairs**
+
+In `libs/SFM/StarInitializer.h`, change the declaration and its comment to
+
+```cpp
+	/**
+	 * @brief Select the reference view: the image whose valid pairs carry the most weighted
+	 * inliers, among the seed views when any of them qualifies, else among every image. A
+	 * candidate qualifies with at least minPairs valid pairs, the smallest star the caller
+	 * accepts less its centre; when no image qualifies the heaviest image is returned, so that
+	 * the caller reports the shortfall.
+	 * @param scene Scene with image pairs
+	 * @param seedViews Candidate images (empty: every image)
+	 * @param minPairs Valid pairs a candidate needs (StarInitConfig::minViews - 1)
+	 * @return Image ID of reference view
+	 */
+	static IIndex SelectReferenceView(const Scene& scene, const IIndexArr& seedViews, unsigned minPairs);
+```
+
+In `libs/SFM/StarInitializer.cpp`, replace `SelectReferenceView` with:
+
+```cpp
+IIndex StarInitializer::SelectReferenceView(const Scene& scene, const IIndexArr& seedViews, unsigned minPairs)
+{
+	// weighted inliers and valid pairs per view, dense supplement discounted and included: a
+	// dense-only pair is a real connection of both its images, and the star initializer must see
+	// the same graph the weights that let it through were computed on
+	UnsignedArr degree(scene.images.size()), numPairs(scene.images.size());
+	degree.Memset(0);
+	numPairs.Memset(0);
+	for (const ImagePair& pair : scene.pairs) {
+		if (!pair.relativePose.has_value() || !pair.HasValidWeight())
+			continue;
+		degree[pair.ID1] += pair.GetNumWeightedInliers();
+		degree[pair.ID2] += pair.GetNumWeightedInliers();
+		++numPairs[pair.ID1];
+		++numPairs[pair.ID2];
+	}
+	// the heaviest of the given views with at least minArms valid pairs: the star built around the
+	// reference view has one arm per valid pair and the initializer refuses a star smaller than
+	// its minimum, so a heavier view with fewer arms is no use -- on a sparse kept graph (a chain
+	// of 19 images and 20 pairs) the heaviest seed view had two
+	const auto Heaviest = [&degree, &numPairs](const auto& views, unsigned minArms, IIndex& bestView) {
+		unsigned maxDegree = 0;
+		for (IIndex i : views) {
+			if (numPairs[i] >= minArms && degree[i] > maxDegree) {
+				maxDegree = degree[i];
+				bestView = i;
+			}
+		}
+		return maxDegree;
+	};
+	const unsigned minArms = MAXF(minPairs, 1u);
+	IIndex bestView = NO_ID;
+	unsigned maxDegree = Heaviest(seedViews, minArms, bestView);
+	if (maxDegree > 0) {
+		VERBOSE("Selected reference view %u with %u connections over %u pairs among %u seed views",
+			bestView, maxDegree, numPairs[bestView], seedViews.size());
+		return bestView;
+	}
+	if (!seedViews.empty())
+		VERBOSE("warning: none of the %u seed views has %u valid pairs, choosing the reference view among every image",
+			seedViews.size(), minArms);
+	std::vector<IIndex> every(scene.images.size());
+	std::iota(every.begin(), every.end(), IIndex(0));
+	maxDegree = Heaviest(every, minArms, bestView);
+	if (maxDegree == 0) // no image has enough pairs: the heaviest image, and the caller reports the shortfall
+		maxDegree = Heaviest(every, 1u, bestView);
+	if (bestView == NO_ID) {
+		VERBOSE("error: no valid reference view found");
+		return NO_ID;
+	}
+	VERBOSE("Selected reference view %u with %u connections over %u pairs", bestView, maxDegree, numPairs[bestView]);
+	return bestView;
+}
+```
+
+In `Initialize`, the call becomes
+`SelectReferenceView(scene, config.seedViews, config.minViews > 0 ? config.minViews - 1 : 0)`.
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run (from `make/`): `ninja -f build-Release.ninja Tests SFM CreateStructure SceneAnalyzeSFM && ./bin/Release/Tests 1`
+Expected: `StarReferenceViewTest PASSED`, every other test PASSED, exit code 0, no FAILED line, no
+compiler warning from the changed files.
+
+- [ ] **Step 5: Mutate**
+
+One at a time, rebuild `Tests` only, run, confirm the named failure, revert, rebuild, confirm green:
+
+| mutation | expected failure |
+|---|---|
+| the arm test dropped (`numPairs[i] >= minArms &&` removed) | `StarReferenceViewTest FAILED: reference view 3 with a seed view of two pairs and a star of three arms required; expected 5` |
+| the last resort dropped (the `if (maxDegree == 0)` line and its call removed) | `StarReferenceViewTest FAILED: reference view 4294967295 with six arms required and no image having them; expected 0` |
+
+- [ ] **Step 6: Design note**
+
+In `docs/design/TripletDisambiguation.md`, in the paragraph beginning "The reconstruction that
+follows seeds in the largest piece the ceiling leaves", change "takes the heaviest of them rather than
+the heaviest image overall" to "takes the heaviest of them that has enough pairs to centre a star
+(three, the smallest star it accepts less its centre) rather than the heaviest image overall".
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add libs/SFM/StarInitializer.h libs/SFM/StarInitializer.cpp apps/Tests/TestsSFM.cpp docs/design/TripletDisambiguation.md
+git -c user.name=cDc -c user.email=cdc.seacave@gmail.com commit -m "sfm: the reference view needs enough pairs to centre a star
+
+The star initializer refuses a star of fewer arms than its minimum, and the reference view
+chosen among the seed views was the heaviest of them regardless of its pairs: on Street matched
+exhaustively the kept graph is a chain of 20 pairs, the largest ceiling piece's heaviest image
+has two, and the run reconstructed nothing. A candidate now needs at least the minimum number
+of arms; the candidate sets and their order are unchanged, and when no image qualifies the
+heaviest is chosen and the initializer reports the shortfall as before."
+```
+
 ## Measurement (the controller's, after the branch is green)
 
 Not tasks and not a subagent's: they run the pipeline and read datasets, which no implementer does.
