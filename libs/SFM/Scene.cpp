@@ -673,7 +673,7 @@ namespace {
 // Scene::Reconstruct() finishes pair matching, before any later reconstruction step
 // (largest-connected-component clustering, weak-image filtering, resection) can drop pairs or
 // leave images unregistered. A failed export only logs a warning: both files are diagnostics and
-// must never cost the caller the reconstructed scene itself (ruling R-F1) -- not a member of
+// must never cost the caller the reconstructed scene itself -- not a member of
 // Scene since it has an implicit precondition (must run right after matching) that makes it
 // unsuitable as public API, and it has no callers outside Reconstruct().
 void ExportMatchingCSVs(const Scene& scene, const ReconstructionConfig& config)

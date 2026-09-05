@@ -7847,9 +7847,8 @@ bool TripletFilterTest()
 	// keeps them.
 	TripletFilterConfig filterCfg;
 	filterCfg.enabled = true;
-	// This test pins the paper's threshold arithmetic -- Eqn. 3 at a given m -- so it uses m
-	// directly. The sweep is TripletAutoTauTest's subject, and on this small graph it stands
-	// down at every candidate anyway.
+	// This test pins the paper's threshold arithmetic -- Eqn. 3 at a given m -- so it applies m
+	// as given; the connectivity-driven threshold below it is TripletAutoTauTest's subject.
 	filterCfg.autoTau = false;
 	filterCfg.minScore = 0.3f;
 	const PairsWeightingConfig weightingCfg; // defaults; FilterPairsByTriplets takes no default
@@ -7932,7 +7931,7 @@ bool TripletAutoTauTest()
 	TD_TIMER_START();
 	const PairsWeightingConfig weightingCfg; // defaults; FilterPairsByTriplets takes no default
 
-	// Scene 1, the barbell -- the filter must stand down. Six images, eight pairs: triangle A
+	// Scene 1, the barbell -- the filter must remove nothing. Six images, eight pairs: triangle A
 	// {0,1,2}, triangle B {3,4,5}, and triangle C {2,3,4} sharing edge (3,4) with B. B and C share
 	// an edge so they are one triplet-graph component (2 triplets); A is another (1 triplet). The
 	// largest is BC, so A's three edges are unscored and always kept, while the scored edges are
@@ -7952,7 +7951,7 @@ bool TripletAutoTauTest()
 	AddTripletPair(barbell, 2, 3, 10);
 	AddTripletPair(barbell, 2, 4, 10);
 
-	// The unfiltered graph, which is what the sweep measures itself against: tau = 0 keeps every
+	// The unfiltered graph, which is what the threshold search measures itself against: tau = 0 keeps every
 	// scored pair, and an unscored pair is kept regardless.
 	const TripletScores scores = ComputeTripletScores(barbell, 0.f);
 	const SurvivorGraph unfiltered = EvaluateSurvivorGraph(barbell, scores.scores, 0.f);

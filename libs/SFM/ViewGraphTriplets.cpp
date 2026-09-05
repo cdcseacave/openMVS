@@ -305,7 +305,6 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 	// below.
 	const float ceiling = tripletScores.tau;
 	float tau = ceiling;
-	SurvivorGraph unfiltered{0, 0, 0, 0}, survivor{0, 0, 0, 0};
 	if (config.autoTau) {
 		// Below the ceiling, the threshold is the STRICTEST one that keeps the graph together: the
 		// largest value whose survivor graph keeps 99% of the unfiltered largest component in one
@@ -317,9 +316,9 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 		// removes 66-96% of the pairs and leaves a chain's two endpoints at degree 1, which is why
 		// there is no bar on how much is removed and none on low-degree images: an image with one
 		// strong edge is in the component and can be resected from it.
-		unfiltered = EvaluateSurvivorGraph(scene, tripletScores.scores, 0.f);
+		const SurvivorGraph unfiltered = EvaluateSurvivorGraph(scene, tripletScores.scores, 0.f);
 		const unsigned minComponent = (unsigned)std::ceil(0.99 * (double)unfiltered.largestComponent);
-		survivor = EvaluateSurvivorGraph(scene, tripletScores.scores, ceiling);
+		SurvivorGraph survivor = EvaluateSurvivorGraph(scene, tripletScores.scores, ceiling);
 		if (survivor.largestComponent < minComponent) {
 			// The largest component only grows as tau falls, so among the distinct scores below
 			// the ceiling, strictest first, the first that passes is a binary search away. The
