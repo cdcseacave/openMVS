@@ -502,15 +502,44 @@ the graph whatever `m` is and the descent, which joins every piece, reaches the 
 Radcliffe's ceiling never leaves a majority piece and the descent reaches the same threshold; only
 its seed piece shrinks a little.
 
-**Rule.** The default minimum score `m` is 0.75, the middle of the band [0.7, 0.8] in which every
-church graph splits with its south facade whole. The paper's 0.6 is its generic value, for a score
-without coverage or yield; its 0.3 for these sets would put the church's ceiling at 0.899, below
-every bridge, and merge all four graphs.
+The sweep argued for 0.75 as the default, and it was shipped and run: the church split in both
+further matchings (130 and 129 images, one-sided). Then Big Ben matched exhaustively (r 0.664)
+answered the other way: at 0.75 the ceiling 0.916 keeps 2,299 scored pairs, the near-duplicate
+cliques thinly joined, resection registers 295 images and the reconstruction invalidates 244 of
+them for want of well-conditioned tracks, 147 remain; at 0.6 the ceiling 0.866 keeps 3,281 and
+371 of 403 register (the paper's 379). No single `m` serves both a two-faced building and a tower
+whose graph is one face: §3.11 chooses between the two ceilings from what they leave.
 
-Cost if wrong: on a sparse retrieval-matched graph, where `d_max/|V|` is small and the ceiling is
-`m`-dominated, the ceiling rises with `m` (big_ben: 0.679 to 0.799) and a few more images fall
-below it — a regime the filter does not serve anyway, since retrieval graphs never split at the
-ceiling (§3.8). Brandenburg's one piece shrinks from 125 to 102 images, folded either way.
+**Rule.** The default minimum score `m` stays at the paper's generic 0.6. §3.11 says when the
+ceiling at 0.75 is used instead.
+
+### 3.11 The ceiling looks for the second face
+
+Two ceilings are evaluated: `tau(m)` at the default `m = 0.6`, and `tau(m₂)` at `m₂ = 0.75`. If the
+graph the higher ceiling leaves is *two-faced* — its largest piece holds a strict majority of the
+images in pieces (§3.8) and its second-largest piece holds at least a third of the largest — the
+higher ceiling is the ceiling; otherwise the lower one is, as the paper has it. Everything after
+(§3.7's descent, §3.8's majority, §3.9's seed) applies to the chosen ceiling unchanged.
+
+| graph | at 0.6 | at 0.75 | two-faced? | ceiling used | result |
+|---|---|---|---|---|---|
+| church (seven matchings) | 139/85 or 227 merged | 130-135 / 80-83 | yes (second 60 % of the largest) | 0.75 | 129-135, one-sided |
+| radcliffe | 119 + 54 + 44 + 19 + 15, no majority | 105-117 + 47-53 + ..., no majority | no | 0.6 | descent to 0.84, 175-181 |
+| brandenburg | 125 | 102 + 7 + 6 + ... | no (second 7) | 0.6 | 125, folded |
+| big_ben exhaustive | 387 | 376 | no (one piece) | 0.6 | 371 |
+| big_ben retrieval | 391 | 374 | no | 0.6 | 375 |
+| arc exhaustive | 363 + 29 | 305 + 42 + 9 + 6 + 6 | no (second 42 of 305) | 0.6 | the 363-piece |
+| indoor, ToH, the small sets | shattered | shattered, no majority | no | 0.6 | the descent, unchanged |
+
+The third is a bar, like the 1 % floor and the majority: the other face of a two-faced building
+holds a substantial share of the views (the church's north facade 60 % of the south, Radcliffe's
+look-alike pieces about half of the largest), and a night cluster or a detail cluster hanging off
+the largest piece holds a few percent.
+
+Cost if wrong: a collection with a genuine second sub-scene holding a third of the largest piece,
+joined to it only between the two ceilings, gets that sub-scene as its own model — the paper's own
+behaviour, and a separate model rather than a merge; and one more constant beside the floor and the
+majority.
 
 ### 3.4 Where the filter runs
 

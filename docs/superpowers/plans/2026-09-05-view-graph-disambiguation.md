@@ -3462,6 +3462,250 @@ It now reads the export's Coverage and MeanRayAngle columns and reproduces the c
 exhaustive exports."
 ```
 
+### Task 15: The ceiling looks for the second face
+
+Spec §3.10 (the default `m` returns to 0.6) and §3.11. The default minimum score was moved to 0.75
+because the church's facades split at that ceiling in every matching and merge at 0.6 in half of them;
+Big Ben matched exhaustively then showed the other side: at 0.75 its one-piece graph is cut so thin that
+the reconstruction keeps 147 of 403 images, at 0.6 it keeps 371. Two ceilings are now evaluated, and the
+higher is used only when the graph it leaves has two faces: a majority piece and a second piece holding
+at least a third of it.
+
+**Files:**
+- Modify: `libs/SFM/ViewGraphTriplets.h` (`TripletFilterConfig::minScore` back to `0.6f` and a new `secondFaceScore`; `SurvivorGraph::secondPiece`)
+- Modify: `libs/SFM/ViewGraphTriplets.cpp` (`EvaluateSurvivorGraph`'s piece loop; `FilterPairsByTriplets`'s ceiling choice and its VERBOSE)
+- Modify: `apps/CreateStructure/CreateStructure.cpp` (the `--triplet-min-score` help; a `--triplet-second-face-score` option)
+- Modify: `apps/Tests/TestsSFM.cpp` (`TripletYieldTest`'s default check; two new scenes in `TripletAutoTauTest`)
+- Modify: `docs/design/TripletDisambiguation.md` (the flags table)
+
+**Interfaces:**
+- Consumes: `TripletFilterConfig` (Tasks 1, 7, 12), `SurvivorGraph` and `EvaluateSurvivorGraph(scene, scores, tau, minPiece, views)` (Tasks 5, 8-10, 13), `FilterPairsByTriplets`'s ceiling/descent structure (Tasks 9, 10, 13: `degreeRatio`, `ceiling`, `unfiltered`, `minPiece`, `atCeiling`, the no-piece fallback, the majority test, the descent), the test helpers and `TripletAutoTauTest`'s scene index.
+- Produces: `TripletFilterConfig::secondFaceScore` (`float`, 0.75); `SurvivorGraph::secondPiece` (`unsigned`, images in the second-largest piece, 0 when there is none); the option `--triplet-second-face-score`.
+
+- [ ] **Step 1: Write the failing tests**
+
+In `TripletYieldTest`, the check on `defaults.minScore` expects 0.75; make it expect `0.6f` with the message
+"default minimum score %g; expected 0.6, the paper's generic value", and add beside it a check that
+`defaults.secondFaceScore` is `0.75f` with the message "default second-face score %g; expected 0.75, the
+ceiling that splits a two-faced building".
+
+In `TripletAutoTauTest`, before the closing PASSED line, two scenes.
+
+**The two faces.** 100 images: chain A is images 0-59 and chain B images 60-99, each with 1000-inlier
+consecutive pairs and 600-inlier pairs two apart; three 700-inlier bridges `(59,60)`, `(58,60)`,
+`(59,61)`, which sit in the triangles `(58,59,60)` and `(59,60,61)` and score 0.7. `d_max` is 4 and
+`|V|` 100, so `tau(0.6) = 0.6 (1 - 4/100) + 4/100 = 0.616` and `tau(0.75) = 0.76`. At 0.616 the bridges
+are kept and the graph is one piece of 100, a majority the ceiling would be applied on, merging the two
+chains. At 0.76 the pieces are A (60) and B (40): a majority, and B holds two thirds of A — two faces —
+so 0.76 is the ceiling and is applied as given: the 96 pairs two apart and the 3 bridges go, the 98
+consecutive pairs stay (of 197), the seed views are 0-59.
+
+```cpp
+	// The two faces: at the paper's ceiling the bridges join the chains into one majority piece;
+	// at the higher ceiling the chains are two pieces, the second holding two thirds of the first,
+	// so the higher ceiling is the one used and the bridges go.
+	Scene faces;
+	AddTripletImages(faces, 100);
+	for (IIndex i = 0; i + 1 < 60; ++i)
+		AddTripletPair(faces, i, i + 1, 1000);
+	for (IIndex i = 0; i + 2 < 60; ++i)
+		AddTripletPair(faces, i, i + 2, 600);
+	for (IIndex i = 60; i + 1 < 100; ++i)
+		AddTripletPair(faces, i, i + 1, 1000);
+	for (IIndex i = 60; i + 2 < 100; ++i)
+		AddTripletPair(faces, i, i + 2, 600);
+	AddTripletPair(faces, 59, 60, 700);
+	AddTripletPair(faces, 58, 60, 700);
+	AddTripletPair(faces, 59, 61, 700);
+	const TripletScores facesScores = ComputeTripletScores(faces, 0.6f, 0.f, weightingCfg.gridSize);
+	const SurvivorGraph facesLow = EvaluateSurvivorGraph(faces, facesScores.scores, facesScores.tau);
+	const SurvivorGraph facesHigh = EvaluateSurvivorGraph(faces, facesScores.scores, 0.75f*(1.f-4.f/100.f)+4.f/100.f);
+	if (!ISEQUAL(facesScores.tau, 0.6f*(1.f-4.f/100.f)+4.f/100.f) || facesLow.numPieces != 1 || facesLow.largestPiece != 100 ||
+		facesHigh.numPieces != 2 || facesHigh.largestPiece != 60 || facesHigh.secondPiece != 40) {
+		VERBOSE("TripletAutoTauTest FAILED: two faces at %g: %u pieces, largest %u; at 0.76: %u pieces, largest %u, second %u; "
+			"expected one piece of 100, then two of 60 and 40",
+			facesScores.tau, facesLow.numPieces, facesLow.largestPiece, facesHigh.numPieces, facesHigh.largestPiece, facesHigh.secondPiece);
+		return false;
+	}
+	TripletFilterConfig facesCfg;
+	facesCfg.enabled = true;
+	facesCfg.minYield = 0.f;
+	IIndexArr facesSeeds;
+	const unsigned facesRemoved = FilterPairsByTriplets(faces, facesCfg, weightingCfg, &facesSeeds);
+	const std::set<std::pair<IIndex,IIndex>> facesKept = TripletKeptPairs(faces);
+	bool facesRight = facesRemoved == 99 && facesKept.size() == 98 && facesKept.count({59,60}) == 0 &&
+		facesKept.count({58,59}) == 1 && facesKept.count({60,61}) == 1 && facesSeeds.size() == 60;
+	FOREACH(i, facesSeeds)
+		facesRight = facesRight && facesSeeds[i] == (IIndex)i;
+	if (!facesRight) {
+		VERBOSE("TripletAutoTauTest FAILED: two faces removed %u pairs, kept %u, seed views %u; expected the higher ceiling "
+			"(a majority piece with a second piece of two thirds): 99 removed, 98 kept, the bridges gone, seed views 0-59",
+			facesRemoved, (unsigned)facesKept.size(), (unsigned)facesSeeds.size());
+		return false;
+	}
+```
+
+**The face and its cluster.** The same, with chain B only images 60-74 (15 images): `|V|` 75,
+`tau(0.6) = 0.6 (1 - 4/75) + 4/75 = 0.621333`, `tau(0.75) = 0.763333`. At 0.763 the pieces are A (60)
+and B (15): a majority, but 15 is less than a third of 60 — a cluster, not a face — so the paper's
+ceiling 0.621 is the one used: the bridges (0.7) stay, the graph is one piece of 75, applied as given:
+the 71 pairs two apart go, the 73 consecutive pairs and the 3 bridges stay (of 147), the seed views are
+0-74.
+
+```cpp
+	// The face and its cluster: the higher ceiling leaves a majority piece with a second piece of
+	// a quarter of it -- a cluster hanging off the building, not its other face -- so the paper's
+	// ceiling stands and the cluster stays joined.
+	Scene cluster;
+	AddTripletImages(cluster, 75);
+	for (IIndex i = 0; i + 1 < 60; ++i)
+		AddTripletPair(cluster, i, i + 1, 1000);
+	for (IIndex i = 0; i + 2 < 60; ++i)
+		AddTripletPair(cluster, i, i + 2, 600);
+	for (IIndex i = 60; i + 1 < 75; ++i)
+		AddTripletPair(cluster, i, i + 1, 1000);
+	for (IIndex i = 60; i + 2 < 75; ++i)
+		AddTripletPair(cluster, i, i + 2, 600);
+	AddTripletPair(cluster, 59, 60, 700);
+	AddTripletPair(cluster, 58, 60, 700);
+	AddTripletPair(cluster, 59, 61, 700);
+	TripletFilterConfig clusterCfg;
+	clusterCfg.enabled = true;
+	clusterCfg.minYield = 0.f;
+	IIndexArr clusterSeeds;
+	const unsigned clusterRemoved = FilterPairsByTriplets(cluster, clusterCfg, weightingCfg, &clusterSeeds);
+	const std::set<std::pair<IIndex,IIndex>> clusterKept = TripletKeptPairs(cluster);
+	if (clusterRemoved != 71 || clusterKept.size() != 76 || clusterKept.count({59,60}) != 1 || clusterSeeds.size() != 75) {
+		VERBOSE("TripletAutoTauTest FAILED: the face and its cluster removed %u pairs, kept %u, seed views %u; expected the "
+			"paper's ceiling (the second piece is a quarter of the first): 71 removed, 76 kept, the bridges kept, seed views 0-74",
+			clusterRemoved, (unsigned)clusterKept.size(), (unsigned)clusterSeeds.size());
+		return false;
+	}
+```
+
+Both scenes use the default `minScore` and `secondFaceScore` on purpose (they pin the defaults); do not
+pin them. Extend the PASSED message to name the two faces and the cluster, and add both scenes to the
+test's scene index (one line each: "the two faces pin that the ceiling at the second-face score is used
+when it leaves a majority piece with a second piece of at least a third; the face and its cluster pin that
+a second piece smaller than that leaves the paper's ceiling in force").
+
+- [ ] **Step 2: Run the build to verify the tests fail**
+
+Run (from `make/`): `ninja -f build-Release.ninja Tests 2>&1 | tail -5`
+Expected: compilation errors on `secondFaceScore` and `secondPiece` — the red state.
+
+- [ ] **Step 3: The configuration and the survivor graph**
+
+In `libs/SFM/ViewGraphTriplets.h`, `TripletFilterConfig`: `minScore` back to `0.6f`, its comment back to
+the paper's values with autoTau's role ("The paper's minimum edge score m, in [0,1] (the domain this
+implementation enforces): 0.6 generic/large-scale, 0.9 highly ambiguous, 0.3 medium/small ambiguous.
+With autoTau this is the ceiling the threshold is derived from and never exceeds -- unless the graph
+shows a second face, see secondFaceScore."), and after it:
+
+```cpp
+	// A second, stricter ceiling, tau(secondFaceScore), tried first: it is the ceiling used when
+	// the graph it leaves has two faces -- its largest piece holds a strict majority of the images
+	// in pieces and its second-largest piece at least a third of the largest. A two-faced building
+	// matched exhaustively (the church: seven matchings) splits into its faces at this ceiling and
+	// merges them at tau(minScore) in half the matchings, while a building whose graph is one face
+	// (Big Ben) is cut so thin at this ceiling that the reconstruction keeps a third of it. Values
+	// at or below minScore switch the second ceiling off.
+	float secondFaceScore = 0.75f;
+```
+
+In `SurvivorGraph`, after `largestPiece`: `unsigned secondPiece; // images in the second-largest piece (0 when there is none)`.
+In `EvaluateSurvivorGraph`, initialise it and, in the piece loop where `largestPiece` and its root are
+tracked, keep the top two sizes: when a component becomes the largest, the previous largest becomes
+`secondPiece`; otherwise `secondPiece = MAXF(secondPiece, component.second)`.
+
+- [ ] **Step 4: The ceiling choice**
+
+In `FilterPairsByTriplets`, where `ceiling` is set from `tripletScores.tau` and `atCeiling` computed
+(after `unfiltered` and `minPiece`), the ceiling becomes a choice:
+
+```cpp
+	// Two ceilings: the paper's tau(m), and the stricter tau at the second-face score, tried first.
+	// The stricter one is used only when the graph it leaves has two faces -- a majority piece and a
+	// second piece holding at least a third of it. On the church matched exhaustively the paper's
+	// ceiling sits among the scores of the pairs bridging the facades and merges them in half the
+	// matchings, while the stricter one splits them in every matching; on Big Ben, whose graph is one
+	// face, the stricter ceiling keeps so few pairs that the reconstruction discards two thirds of
+	// what it registers, while the paper's keeps 371 of 403. What hangs off a majority piece at the
+	// stricter ceiling with less than a third of its images is a cluster, not a face, and the paper's
+	// ceiling stands.
+	float ceiling = tripletScores.tau;
+	const SurvivorGraph unfiltered = EvaluateSurvivorGraph(scene, tripletScores.scores, 0.f);
+	unsigned minPiece = (unsigned)std::ceil(0.01 * (double)unfiltered.largestComponent);
+	const float secondFace = std::isnan(config.secondFaceScore) ? 0.f : CLAMP(config.secondFaceScore, 0.f, 1.f);
+	const float secondCeiling = secondFace * (1.f - degreeRatio) + degreeRatio;
+	bool twoFaced = false;
+	if (secondFace > minScore) {
+		const SurvivorGraph atSecond = EvaluateSurvivorGraph(scene, tripletScores.scores, secondCeiling, minPiece);
+		twoFaced = 2 * atSecond.largestPiece > atSecond.numInPieces && 3 * atSecond.secondPiece >= atSecond.largestPiece;
+		if (twoFaced)
+			ceiling = secondCeiling;
+	}
+	SurvivorGraph atCeiling = EvaluateSurvivorGraph(scene, tripletScores.scores, ceiling, minPiece);
+```
+
+(the existing `minPiece`/`atCeiling` lines are replaced by these; the no-piece fallback, the seed views,
+the majority test and the descent follow unchanged and read `ceiling` and `atCeiling`). Change the
+descent's VERBOSE so its ceiling clause reads `(ceiling %.3f at m %.2f%s, d_max/|V| %.3f)` where the
+`%s` is `", the second face's"` when `twoFaced` and `""` otherwise, and `m` printed is the score the
+ceiling came from (`twoFaced ? secondFace : minScore`). Add one line after the ceiling is chosen, at
+VERBOSE level: `"Triplet filter: the ceiling at the second-face score %.2f (%.3f) leaves %s"` with either
+`"two faces, pieces of %u and %u images: used"` or `"no second face (largest piece %u, second %u): the paper's ceiling stands"`
+— write it as one VERBOSE with the two texts chosen by `twoFaced`, filled from `atSecond`'s
+`largestPiece` and `secondPiece` (hoist `atSecond` so it is readable there, or print inside the `if`).
+
+- [ ] **Step 5: The option and the note**
+
+In `apps/CreateStructure/CreateStructure.cpp`: the `--triplet-min-score` help loses its sentence on 0.75
+and reads, after the paper's values, "; the default is the paper's generic 0.6". Add, right after it, the
+option `triplet-second-face-score` bound to a new `OPT::fTripletSecondFaceScore` with default
+`TripletFilterConfig().secondFaceScore` and the help "camera-triplet filter: a stricter minimum edge score
+whose ceiling is used instead of the default's when the graph it leaves has two faces (a majority piece
+and a second piece of at least a third of it); at or below --triplet-min-score it is off", copy it into
+`cfg.tripletFilterCfg.secondFaceScore` beside the other two, and give it the same `[0,1]` range check as
+the minimum score with the message "--triplet-second-face-score must be in [0,1] (got %g)".
+
+In `docs/design/TripletDisambiguation.md`, the flags table: `--triplet-min-score` default `0.6` with its
+clause on 0.75 deleted, and a new row `--triplet-second-face-score F | 0.75 | a stricter minimum score whose
+ceiling replaces the default's when the graph it leaves has two faces: a majority piece and a second piece
+of at least a third of it`.
+
+- [ ] **Step 6: Run the tests to verify they pass**
+
+Run (from `make/`): `ninja -f build-Release.ninja Tests SFM CreateStructure SceneAnalyzeSFM && ./bin/Release/Tests 1`
+Expected: every test PASSED, exit code 0, no compiler warning from the changed files. The walk, chains,
+yield, flood and pairs scenes pin their own `minScore` at 0.6 and keep their values; the pan scene and
+the older scenes (barbell, ring, bridge, pendant, baseline, boundary) run at the default and must keep
+their values too — on each, the second ceiling leaves no majority piece with a large second piece (say so
+in the report if any of them changed, and stop: that is a derivation to check, not an expectation to edit).
+
+- [ ] **Step 7: Mutate**
+
+One at a time, rebuild `Tests` only, run, confirm the named failure, revert, rebuild, confirm green:
+
+| mutation | expected failure |
+|---|---|
+| the second ceiling never used (`twoFaced` forced false) | `TripletAutoTauTest FAILED: two faces removed 96 pairs, kept 101` |
+| the third dropped (`3 * secondPiece >= largestPiece` removed) | `TripletAutoTauTest FAILED: the face and its cluster removed 74 pairs, kept 73` |
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add libs/SFM/ViewGraphTriplets.h libs/SFM/ViewGraphTriplets.cpp apps/CreateStructure/CreateStructure.cpp apps/Tests/TestsSFM.cpp docs/design/TripletDisambiguation.md
+git -c user.name=cDc -c user.email=cdc.seacave@gmail.com commit -m "sfm: the triplet ceiling looks for the second face
+
+The default minimum score returns to the paper's 0.6. A second, stricter ceiling at 0.75 is tried
+first and used only when the graph it leaves has two faces, a majority piece with a second piece
+of at least a third of it: on the church matched exhaustively the paper's ceiling sits among the
+scores of the pairs bridging the facades and merges them in half the matchings while the stricter
+one splits every matching, and on Big Ben, whose graph is one face, the stricter ceiling cuts the
+graph so thin that the reconstruction keeps 147 of 403 images where the paper's keeps 371."
+```
+
 ## Measurement (the controller's, after the branch is green)
 
 Not tasks and not a subagent's: they run the pipeline and read datasets, which no implementer does.
