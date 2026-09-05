@@ -59,7 +59,8 @@ struct SFM_API SurvivorGraph
 	unsigned numNodes;          // images incident to at least one edge of the UNFILTERED graph
 	unsigned largestComponent;  // images in the largest connected component of the kept edges
 	unsigned numLowDegree;      // of those nodes, how many have degree < 2 in the kept graph
-	unsigned numKept;           // kept edges
+	unsigned numKept;           // kept edges: a scene pair duplicating an already-counted image
+	                            // pair counts once, matching ComputeTripletScores' own collapse
 };
 
 // Evaluate the graph left by keeping every unscored pair and every pair scoring at or above `tau`.

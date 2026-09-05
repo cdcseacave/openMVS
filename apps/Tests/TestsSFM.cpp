@@ -7753,8 +7753,7 @@ std::set<std::pair<IIndex,IIndex>> TripletKeptPairs(const Scene& scene)
 
 } // namespace
 
-// Task 5 (roma2-followups-20260830): camera-triplet view-graph disambiguation
-// (Manam & Govindu, CVPR 2024), on the hand-computed graph of the task brief:
+// Camera-triplet view-graph disambiguation (Manam & Govindu, CVPR 2024) on a hand-computed graph:
 //   nodes 0..7; (0,1)=100 (0,2)=100 (1,2)=70 (1,3)=50 (2,3)=40 (3,4)=30 (3,5)=20
 //   (5,6)=10 (6,7)=10 (5,7)=10 inliers.
 // Triplets A={0,1,2}, B={1,2,3} share edge (1,2); C={5,6,7} is an isolated node of the triplet
@@ -7770,7 +7769,6 @@ bool TripletFilterTest()
 	const auto buildScene = [](Scene& scene, const TripletPairSpec* specs, unsigned numPairs) {
 		BuildTripletScene(scene, 8, specs, numPairs);
 	};
-	const auto keptPairs = [](const Scene& scene) { return TripletKeptPairs(scene); };
 
 	// (a) scores and statistics of the full graph
 	Scene scene;
@@ -7861,7 +7859,7 @@ bool TripletFilterTest()
 	}
 	const std::set<std::pair<IIndex,IIndex>> expectedKept03{
 		{0,1}, {0,2}, {1,2}, {3,4}, {3,5}, {5,6}, {6,7}, {5,7}};
-	if (keptPairs(scene) != expectedKept03) {
+	if (TripletKeptPairs(scene) != expectedKept03) {
 		VERBOSE("TripletFilterTest FAILED: m=0.3 kept the wrong pairs");
 		return false;
 	}
@@ -7877,7 +7875,7 @@ bool TripletFilterTest()
 	}
 	const std::set<std::pair<IIndex,IIndex>> expectedKept06{
 		{0,1}, {0,2}, {3,4}, {3,5}, {5,6}, {6,7}, {5,7}};
-	if (keptPairs(scene06) != expectedKept06) {
+	if (TripletKeptPairs(scene06) != expectedKept06) {
 		VERBOSE("TripletFilterTest FAILED: m=0.6 kept the wrong pairs");
 		return false;
 	}
@@ -7921,9 +7919,13 @@ bool TripletFilterTest()
 }
 
 // Auto-tau picks its threshold from the survivor graph instead of applying the paper's constant m
-// as given. Two scenes, because a small graph can only ever stand down -- any removal is a large
-// fraction of a handful of edges, and almost any removal strands a node -- so a test built only on
-// one would assert "stands down" in both cases and keep passing if the sweep were broken.
+// as given. The barbell and the ring are not enough on their own: a small graph can only ever
+// stand down -- any removal is a large fraction of a handful of edges, and almost any removal
+// strands a node -- so a test built only on one would assert "stands down" in both cases and keep
+// passing if the sweep were broken, and neither scene isolates a single acceptance bar as the one
+// doing the rejecting or shows the ladder finding a strictly-interior stopping point. The scenes
+// after the ring each make exactly one bar (or one ladder property) the sole reason a candidate is
+// accepted or rejected, so that removing or weakening that one check breaks that one scene.
 bool TripletAutoTauTest()
 {
 	TD_TIMER_START();
@@ -7968,9 +7970,10 @@ bool TripletAutoTauTest()
 	cfg.autoTau = true;
 	cfg.minScore = 0.6f;
 	Scene barbellAuto(barbell);
-	if (FilterPairsByTriplets(barbellAuto, cfg, weightingCfg) != 0 || barbellAuto.pairs.size() != 8) {
+	const unsigned numBarbellRemoved = FilterPairsByTriplets(barbellAuto, cfg, weightingCfg);
+	if (numBarbellRemoved != 0 || barbellAuto.pairs.size() != 8) {
 		VERBOSE("TripletAutoTauTest FAILED: auto-tau removed %u pairs from a graph every threshold severs",
-			8u - (unsigned)barbellAuto.pairs.size());
+			numBarbellRemoved);
 		return false;
 	}
 
@@ -8006,7 +8009,7 @@ bool TripletAutoTauTest()
 	const unsigned numRingPairsRemoved = FilterPairsByTriplets(ringAuto, cfg, weightingCfg);
 	if (numRingPairsRemoved != 2 || ringAuto.pairs.size() != 72) {
 		VERBOSE("TripletAutoTauTest FAILED: the ring lost %u pairs, expected exactly 2",
-			74u - (unsigned)ringAuto.pairs.size());
+			numRingPairsRemoved);
 		return false;
 	}
 	// and they must be the RIGHT two -- a sweep that relaxed too far would also remove 2 by
@@ -8014,6 +8017,167 @@ bool TripletAutoTauTest()
 	for (const ImagePair& pair : ringAuto.pairs) {
 		if ((pair.ID1 == 0 && pair.ID2 == 12) || (pair.ID1 == 1 && pair.ID2 == 12)) {
 			VERBOSE("TripletAutoTauTest FAILED: the ring kept the weak pair (%u,%u)", pair.ID1, pair.ID2);
+			return false;
+		}
+	}
+
+	// Scene 3, two K10 cliques joined by a single weak bridge triangle -- under 3% of the edges,
+	// so the removal-fraction bar alone would accept cutting it, but doing so halves the largest
+	// component, so only the largest-component bar can reject it. This is also a dense (near-
+	// complete) graph: maxDegree/numNodes -- the floor tau can never drop below, however far the
+	// sweep relaxes -- sits close to 1 here, so every candidate is rejected and the filter stands
+	// down: exactly the outcome a near-complete graph should get, since it has no doppelganger
+	// structure to find.
+	Scene bridge;
+	AddTripletImages(bridge, 20);
+	for (IIndex i = 0; i < 10; ++i) {
+		for (IIndex j = i + 1; j < 10; ++j) {
+			AddTripletPair(bridge, i, j, 100);           // left K10
+			AddTripletPair(bridge, 10 + i, 10 + j, 100); // right K10
+		}
+	}
+	AddTripletPair(bridge, 0, 10, 1); // the only two edges joining the cliques, both weak
+	AddTripletPair(bridge, 0, 11, 1);
+
+	const TripletScores bridgeScores = ComputeTripletScores(bridge, 0.f);
+	const SurvivorGraph bridgeUnfiltered = EvaluateSurvivorGraph(bridge, bridgeScores.scores, 0.f);
+	if (bridgeUnfiltered.numNodes != 20 || bridgeUnfiltered.largestComponent != 20 || bridgeUnfiltered.numKept != 92) {
+		VERBOSE("TripletAutoTauTest FAILED: unfiltered bridge %u nodes, component %u, %u edges; expected 20, 20, 92",
+			bridgeUnfiltered.numNodes, bridgeUnfiltered.largestComponent, bridgeUnfiltered.numKept);
+		return false;
+	}
+	// Cutting the two weak edges leaves two disjoint 10-image cliques: half the graph, even though
+	// removing them is under 3% of the edges.
+	const SurvivorGraph bridgeSevered = EvaluateSurvivorGraph(bridge, bridgeScores.scores, 0.5f);
+	if (bridgeSevered.largestComponent != 10 || bridgeSevered.numKept != 90) {
+		VERBOSE("TripletAutoTauTest FAILED: severed bridge component %u, %u edges; expected 10 and 90",
+			bridgeSevered.largestComponent, bridgeSevered.numKept);
+		return false;
+	}
+	Scene bridgeAuto(bridge);
+	const unsigned numBridgeRemoved = FilterPairsByTriplets(bridgeAuto, cfg, weightingCfg);
+	if (numBridgeRemoved != 0 || bridgeAuto.pairs.size() != 92) {
+		VERBOSE("TripletAutoTauTest FAILED: auto-tau removed %u pairs from a bridge every threshold fragments",
+			numBridgeRemoved);
+		return false;
+	}
+
+	// Scene 4, a K8 core with three pendant images, each keeping one strong spoke into the core
+	// plus one weak spoke the filter would drop. Dropping all three costs nothing under the
+	// removal-fraction bar (3 of 34) and nothing under the largest-component bar (every pendant
+	// keeps its strong spoke), so only the low-degree bar can reject it -- each pendant's degree
+	// falls from 2 to 1. Asserted directly on EvaluateSurvivorGraph's own output, not inferred from
+	// the filter's return value.
+	Scene pendant;
+	AddTripletImages(pendant, 11);
+	for (IIndex i = 0; i < 8; ++i)
+		for (IIndex j = i + 1; j < 8; ++j)
+			AddTripletPair(pendant, i, j, 100); // K8 core, 28 edges
+	AddTripletPair(pendant, 8, 0, 1);    // weak spoke: the filter wants this gone
+	AddTripletPair(pendant, 8, 1, 100);  // strong spoke: always kept
+	AddTripletPair(pendant, 9, 2, 1);
+	AddTripletPair(pendant, 9, 3, 100);
+	AddTripletPair(pendant, 10, 4, 1);
+	AddTripletPair(pendant, 10, 5, 100);
+
+	const TripletScores pendantScores = ComputeTripletScores(pendant, 0.6f);
+	const SurvivorGraph pendantUnfiltered = EvaluateSurvivorGraph(pendant, pendantScores.scores, 0.f);
+	if (pendantUnfiltered.numLowDegree != 0 || pendantUnfiltered.numKept != 34) {
+		VERBOSE("TripletAutoTauTest FAILED: unfiltered pendant scene %u low-degree, %u edges; expected 0, 34",
+			pendantUnfiltered.numLowDegree, pendantUnfiltered.numKept);
+		return false;
+	}
+	// The candidate the m = 0.6 ceiling itself proposes: dropping the three weak spokes stops each
+	// pendant at degree 1.
+	const SurvivorGraph pendantCandidate = EvaluateSurvivorGraph(pendant, pendantScores.scores, pendantScores.tau);
+	if (pendantCandidate.numLowDegree != 3 || pendantCandidate.largestComponent != 11 || pendantCandidate.numKept != 31) {
+		VERBOSE("TripletAutoTauTest FAILED: pendant candidate %u low-degree, component %u, %u edges; expected 3, 11, 31",
+			pendantCandidate.numLowDegree, pendantCandidate.largestComponent, pendantCandidate.numKept);
+		return false;
+	}
+	Scene pendantAuto(pendant);
+	const unsigned numPendantRemoved = FilterPairsByTriplets(pendantAuto, cfg, weightingCfg);
+	if (numPendantRemoved != 0 || pendantAuto.pairs.size() != 34) {
+		VERBOSE("TripletAutoTauTest FAILED: auto-tau removed %u pairs from a graph every candidate strands",
+			numPendantRemoved);
+		return false;
+	}
+
+	// Scene 5, the same K8 core with two hub images strongly tied to the whole core and sharing
+	// one weak edge, plus a single further pendant with one unscored edge -- permanently below
+	// degree 2, since no tau ever touches an unscored pair. The filter must still accept a
+	// candidate that leaves that pendant's count exactly where it started; a low-degree bar that
+	// ignores the graph's own baseline (an absolute cap instead of one relative to the unfiltered
+	// count) would refuse every candidate instead, since that pendant's count can never reach zero.
+	Scene baseline;
+	AddTripletImages(baseline, 11);
+	for (IIndex i = 0; i < 8; ++i)
+		for (IIndex j = i + 1; j < 8; ++j)
+			AddTripletPair(baseline, i, j, 100); // K8 core
+	for (IIndex i = 0; i < 8; ++i) {
+		AddTripletPair(baseline, 8, i, 100); // hub 8 into the whole core
+		AddTripletPair(baseline, 9, i, 100); // hub 9 into the whole core
+	}
+	AddTripletPair(baseline, 8, 9, 1);   // the one weak edge, scores 0.01
+	AddTripletPair(baseline, 10, 0, 50); // a pendant with a single, unscored edge: permanently degree 1
+
+	const TripletScores baselineScores = ComputeTripletScores(baseline, 0.6f);
+	const SurvivorGraph baselineUnfiltered = EvaluateSurvivorGraph(baseline, baselineScores.scores, 0.f);
+	if (baselineUnfiltered.numLowDegree != 1 || baselineUnfiltered.numKept != 46) {
+		VERBOSE("TripletAutoTauTest FAILED: unfiltered baseline scene %u low-degree, %u edges; expected 1, 46",
+			baselineUnfiltered.numLowDegree, baselineUnfiltered.numKept);
+		return false;
+	}
+	Scene baselineAuto(baseline);
+	const unsigned numBaselineRemoved = FilterPairsByTriplets(baselineAuto, cfg, weightingCfg);
+	if (numBaselineRemoved != 1 || baselineAuto.pairs.size() != 45) {
+		VERBOSE("TripletAutoTauTest FAILED: auto-tau removed %u pairs from the baseline scene, expected exactly 1",
+			numBaselineRemoved);
+		return false;
+	}
+
+	// Scene 6, a K8 core with two extra images wired only to images 0 and 1, sharing one edge
+	// scored to sit exactly at tau(0.6) -- kept there, but the next ladder rung up, tau(0.65),
+	// would drop it. A sweep that starts one rung too high tries that stricter candidate first and,
+	// finding it also acceptable, settles on it without ever reaching the requested m = 0.6.
+	Scene boundary;
+	AddTripletImages(boundary, 10);
+	for (IIndex i = 0; i < 8; ++i)
+		for (IIndex j = i + 1; j < 8; ++j)
+			AddTripletPair(boundary, i, j, 100); // K8 core
+	AddTripletPair(boundary, 8, 0, 100);
+	AddTripletPair(boundary, 8, 1, 100);
+	AddTripletPair(boundary, 9, 0, 100);
+	AddTripletPair(boundary, 9, 1, 100);
+	AddTripletPair(boundary, 8, 9, 96); // scores 0.96: exactly tau(0.6), one rung short of tau(0.65)
+
+	Scene boundaryAuto(boundary);
+	const unsigned numBoundaryRemoved = FilterPairsByTriplets(boundaryAuto, cfg, weightingCfg);
+	if (numBoundaryRemoved != 0 || boundaryAuto.pairs.size() != 33) {
+		VERBOSE("TripletAutoTauTest FAILED: auto-tau removed %u pairs at the requested m itself, expected exactly 0",
+			numBoundaryRemoved);
+		return false;
+	}
+
+	// Scene 7, the ring plus one more edge scoring between tau(0) and the tau the sweep actually
+	// settles on -- the ring alone cannot tell "stop at the strictest acceptable m" from "relax as
+	// far as you like", because even at m = 0 its tau stays above every edge it must remove. This
+	// edge is different: stopping at the correct m removes it, but jumping straight to m = 0, or
+	// sweeping upward and stopping at the first (least strict) rung that passes, does not.
+	Scene ringGap(ring);
+	AddTripletPair(ringGap, 2, 12, 45); // scores 0.45: between tau(0) = 0.375 and the accepted tau
+
+	Scene ringGapAuto(ringGap);
+	const unsigned numRingGapRemoved = FilterPairsByTriplets(ringGapAuto, cfg, weightingCfg);
+	if (numRingGapRemoved != 3 || ringGapAuto.pairs.size() != 72) {
+		VERBOSE("TripletAutoTauTest FAILED: the gapped ring lost %u pairs, expected exactly 3",
+			numRingGapRemoved);
+		return false;
+	}
+	for (const ImagePair& pair : ringGapAuto.pairs) {
+		if (pair.ID1 == 2 && pair.ID2 == 12) {
+			VERBOSE("TripletAutoTauTest FAILED: the gapped ring kept the gap pair (2,12), which the "
+				"correctly-stopped sweep must remove");
 			return false;
 		}
 	}

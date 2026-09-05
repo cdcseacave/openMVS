@@ -12,6 +12,9 @@
 // Written from the paper alone: no code was taken from the authors' MATLAB release or from any
 // third-party reimplementation.
 
+#include <cmath>
+#include <unordered_map>
+#include <unordered_set>
 #include "Common.h"
 #include "ViewGraphTriplets.h"
 #include "Scene.h"
@@ -198,8 +201,9 @@ TripletScores SFM::ComputeTripletScores(const Scene& scene, float minScore)
 		scoreSumOfEdge[e2] += (double)edgeInliers[e2] / (double)maxInliers;
 	});
 
-	// 6. |V| and d_max of G_LCT, and the adaptive threshold of Eqn. 3 (ruling R-F2: both are
-	// taken on G_LCT, the graph whose edges carry a score).
+	// 6. |V| and d_max of G_LCT, and the adaptive threshold of Eqn. 3. Both quantities are taken
+	// on G_LCT -- the largest connected component of the triplet graph, the same graph whose
+	// edges carry a score -- rather than on the whole view graph.
 	std::unordered_map<IIndex, unsigned> degreeOfNode;
 	for (uint32_t e = 0; e < numEdges; ++e) {
 		if (!IsScoredEdge(e))
@@ -238,16 +242,22 @@ SurvivorGraph SFM::EvaluateSurvivorGraph(const Scene& scene, const std::vector<f
 	std::vector<uint32_t> parent(numImages);
 	FOREACH(i, parent)
 		parent[i] = (uint32_t)i;
-	const std::function<uint32_t(uint32_t)> Find = [&](uint32_t x) {
+	const auto Find = [&](uint32_t x) {
 		while (parent[x] != x)
 			x = parent[x] = parent[parent[x]];
 		return x;
 	};
+	// Two scene pairs can describe the same image pair (ComputeTripletScores collapses those onto
+	// one scored edge); this walk must agree with that or the two functions describing the same
+	// graph would disagree about its degrees and edge count.
+	std::unordered_set<PairIdx::PairIndex> seenEdges;
 	FOREACH(idxPair, scene.pairs) {
 		const ImagePair& pair = scene.pairs[idxPair];
 		if (!pair.HasGeometricVerification() || pair.GetNumWeightedInliers() == 0 || pair.ID1 == pair.ID2)
 			continue;
 		isNode[pair.ID1] = isNode[pair.ID2] = true;
+		if (!seenEdges.insert(MakePairIdx(pair.ID1, pair.ID2).idx).second)
+			continue; // a duplicate of an edge already counted
 		const float score = scores[idxPair];
 		if (score >= 0.f && score < tau)
 			continue; // removed: scored, and below the threshold
@@ -276,13 +286,25 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 	if (!config.enabled)
 		return 0;
 	TD_TIMER_STARTD();
-	const TripletScores tripletScores = ComputeTripletScores(scene, config.minScore);
+	// config.minScore is the paper's m and only means anything in [0,1]; CLAMP alone passes a NaN
+	// through unclamped, and an out-of-range value would otherwise reach the ladder below as a
+	// loop trip count (a stray 1e6 running 2e7 union-find passes over the whole view graph) or an
+	// undefined float-to-int cast, so both are guarded here, once, before either happens.
+	const float minScore = std::isnan(config.minScore) ? 0.f : CLAMP(config.minScore, 0.f, 1.f);
+	const TripletScores tripletScores = ComputeTripletScores(scene, minScore);
 	float tau = tripletScores.tau;
 	if (config.autoTau) {
 		// Eqn. 3 on G_LCT: tau(m) = m (1 - d_max/|V|) + d_max/|V|, monotone in m. The sweep starts
 		// at the m that was asked for and only ever relaxes: strictness is a cost, not a virtue.
 		// Sweeping UP instead -- taking the strictest threshold that survives the tests below --
 		// removes 92% of a well-connected outdoor orbit while passing every one of them.
+		//
+		// tau can never drop below d_max/|V| however far the sweep relaxes: on a near-complete
+		// graph that ratio approaches 1, so relaxation has nothing left to give and the likely
+		// outcome is standing down rather than a lower tau -- expected, since a graph with barely
+		// any missing edges has no doppelganger structure to find in the first place. On the real
+		// graphs this branch has recorded, d_max/|V| sits between 0.21 and 0.33, so relaxation is
+		// live there; it is only near-complete graphs where the floor bites.
 		const float degreeRatio = tripletScores.numNodes > 0
 			? (float)tripletScores.maxDegree / (float)tripletScores.numNodes : 0.f;
 		const SurvivorGraph unfiltered = EvaluateSurvivorGraph(scene, tripletScores.scores, 0.f);
@@ -308,8 +330,11 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 		const unsigned minKept = unfiltered.numKept -
 			(unsigned)std::floor(MAX_REMOVED_FRACTION * (double)unfiltered.numKept);
 		tau = -1.f;
-		for (int step = (int)std::floor(config.minScore / 0.05f); step >= 0; --step) {
-			const float m = (float)step * 0.05f;
+		for (int step = (int)std::floor(minScore / 0.05f); step >= 0; --step) {
+			// clamped against minScore on every step, not just conceptually at the first one: a
+			// step near the top can reconstruct a value one ULP above minScore by float rounding,
+			// and the sweep must never end up stricter than what was asked for
+			const float m = MINF((float)step * 0.05f, minScore);
 			const float candidate = m * (1.f - degreeRatio) + degreeRatio;
 			const SurvivorGraph survivor = EvaluateSurvivorGraph(scene, tripletScores.scores, candidate);
 			if (survivor.largestComponent >= minComponent && survivor.numLowDegree <= maxLowDegree &&
@@ -317,8 +342,8 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 				tau = candidate;
 				VERBOSE("Triplet filter: auto-tau relaxed m %.2f to %.2f (tau %.3f); survivor graph "
 					"keeps %u/%u images in its largest component, %u below degree 2 (%u before), "
-					"and %u/%u edges",
-					config.minScore, m, candidate, survivor.largestComponent,
+					"and %u/%u distinct image pairs",
+					minScore, m, candidate, survivor.largestComponent,
 					unfiltered.largestComponent, survivor.numLowDegree, unfiltered.numLowDegree,
 					survivor.numKept, unfiltered.numKept);
 				break;
@@ -328,8 +353,8 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 			// A graph where no threshold is safe is a graph this filter has no business touching.
 			VERBOSE("Triplet filter: auto-tau found no threshold at or below m %.2f that keeps "
 				"%u/%u images connected, at most %u below degree 2 (%u before) and at least %u/%u "
-				"edges; leaving the view graph alone",
-				config.minScore, minComponent, unfiltered.largestComponent, maxLowDegree,
+				"distinct image pairs; leaving the view graph alone",
+				minScore, minComponent, unfiltered.largestComponent, maxLowDegree,
 				unfiltered.numLowDegree, minKept, unfiltered.numKept);
 			return 0;
 		}
@@ -359,7 +384,7 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 	ASSERT(numRemoved == numBelowTau, "FilterPairsByTriplets: removal count mismatch");
 	if (numRemoved > 0)
 		scene.pairs.RemoveLast(numRemoved);
-	VERBOSE("Triplet filter: kept %u/%u pairs (tau %.3f; %u nodes, max degree %u; "
+	VERBOSE("Triplet filter: kept %u/%u scene pairs (tau %.3f; %u nodes, max degree %u; "
 		"%u triplets in %u components; %u below tau removed, %u unscored kept)",
 		numKept, numPairs, tau,
 		tripletScores.numNodes, tripletScores.maxDegree,

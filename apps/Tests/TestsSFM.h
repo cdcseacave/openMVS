@@ -263,16 +263,18 @@ bool ReconstructTest(bool verbose = false);
 // .sfm given back as source), before any reconstruction step can drop pairs
 bool ReconstructExportCSVTest();
 
-// Task 5 (roma2-followups-20260830): the camera-triplet view-graph disambiguation of
-// Manam & Govindu (CVPR 2024) on the brief's hand-computed 8-node graph -- scores, tau, the
-// graph statistics, the kept sets at m = 0.3 and 0.6, duplicate and unverified pairs, and a
-// graph with no triplet at all
+// The camera-triplet view-graph disambiguation of Manam & Govindu (CVPR 2024) on a hand-computed
+// 8-node graph -- scores, tau, the graph statistics, the kept sets at m = 0.3 and 0.6, duplicate
+// and unverified pairs, and a graph with no triplet at all
 bool TripletFilterTest();
 
-// The camera-triplet filter's auto-tau sweep: a barbell scene where every candidate threshold
-// severs the graph, so the sweep must stand down and leave every pair in place, and a ring scene
-// dense enough to absorb a couple of removals, where the sweep must relax from the requested m
-// down to the one that drops only the two planted weak edges
+// The camera-triplet filter's auto-tau sweep, with one scene per acceptance bar so each is shown
+// to be load-bearing on its own: a barbell where every candidate severs the graph, a ring dense
+// enough to absorb a couple of removals (relaxing from the requested m to the one that drops only
+// the two planted weak edges), a bridge between two dense cliques where only the largest-
+// component bar can reject the cut, a pendant scene only the low-degree bar can reject, a baseline
+// scene pinning that bar to the graph's own low-degree count rather than an absolute cap, a
+// boundary scene pinning where the ladder must start, and a gapped ring pinning where it must stop
 bool TripletAutoTauTest();
 
 // Test function for rotation estimation
