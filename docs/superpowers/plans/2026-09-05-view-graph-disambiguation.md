@@ -406,10 +406,15 @@ carries both terms, so no rescoring is needed:
 		const float degreeRatio = tripletScores.numNodes > 0
 			? (float)tripletScores.maxDegree / (float)tripletScores.numNodes : 0.f;
 		const SurvivorGraph unfiltered = EvaluateSurvivorGraph(scene, tripletScores.scores, 0.f);
-		// A candidate is safe when it neither fragments the reconstruction nor strands images:
-		// it keeps 99% of the largest component and leaves under 1% of nodes below degree 2.
+		// A candidate is safe when it neither fragments the reconstruction nor strands images: it
+		// keeps 99% of the largest component and adds at most 1% of the nodes to those below
+		// degree 2. BOTH bars are relative to the unfiltered graph, and the second one has to be:
+		// a real capture already has images below degree 2 before any filtering -- 5 of 209 on the
+		// measured lidar graph -- so an absolute "under 1% of nodes" bar refuses every threshold,
+		// including the one that removes nothing.
 		const unsigned minComponent = (unsigned)std::ceil(0.99 * (double)unfiltered.largestComponent);
-		const unsigned maxLowDegree = (unsigned)std::floor(0.01 * (double)unfiltered.numNodes);
+		const unsigned maxLowDegree = unfiltered.numLowDegree +
+			(unsigned)std::floor(0.01 * (double)unfiltered.numNodes);
 		tau = -1.f;
 		for (int step = 19; step >= 0; --step) { // m = 0.95 .. 0.00 in steps of 0.05
 			const float m = (float)step * 0.05f;
@@ -429,8 +434,8 @@ carries both terms, so no rescoring is needed:
 		if (tau < 0.f) {
 			// A graph where no threshold is safe is a graph this filter has no business touching.
 			VERBOSE("Triplet filter: auto-tau found no threshold that keeps %u/%u images connected "
-				"with at most %u below degree 2; leaving the view graph alone",
-				minComponent, unfiltered.largestComponent, maxLowDegree);
+				"with at most %u below degree 2 (%u before filtering); leaving the view graph alone",
+				minComponent, unfiltered.largestComponent, maxLowDegree, unfiltered.numLowDegree);
 			return 0;
 		}
 	}
@@ -445,7 +450,7 @@ actually applied, and let the auto-tau line above report which m produced it.
 `apps/CreateStructure/CreateStructure.cpp`, beside the two existing options:
 
 ```cpp
-		("triplet-auto-tau", boost::program_options::value<bool>(&OPT::bTripletAutoTau)->default_value(TripletFilterConfig().autoTau), "camera-triplet filter: choose the threshold from the graph the filter would leave behind -- the strictest one that still keeps 99% of the largest connected component and leaves under 1% of images below degree 2 -- instead of using --triplet-min-score directly; if no threshold qualifies, the filter leaves the view graph alone")
+		("triplet-auto-tau", boost::program_options::value<bool>(&OPT::bTripletAutoTau)->default_value(TripletFilterConfig().autoTau), "camera-triplet filter: choose the threshold from the graph the filter would leave behind -- the strictest one that still keeps 99% of the largest connected component and adds at most 1% of the images to those below degree 2 -- instead of using --triplet-min-score directly; if no threshold qualifies, the filter leaves the view graph alone")
 ```
 
 Declare `bTripletAutoTau` beside `bFilterTriplets`, assign `cfg.tripletFilterCfg.autoTau` beside

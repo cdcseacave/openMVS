@@ -87,7 +87,15 @@ must not give back the one place the filter earns its keep.
 survivor graph the filter *would* produce and accept the candidate only if both hold:
 
 - `keptLCC >= 0.99 x LCC(unfiltered)` — the filter may not fragment the reconstruction;
-- images of degree < 2 are `<= 1 %` of `|V|` — it may not strand images.
+- `lowDegree(survivor) <= lowDegree(unfiltered) + 0.01 x |V|` — it may not strand images.
+
+**Both bars are relative to the unfiltered graph, and the second one has to be.** Written as an
+absolute "under 1 % of nodes below degree 2", the rule is unreachable on real captures: the
+unfiltered lidar one-pass graph already has 5 images below degree 2 out of 209, against an absolute
+bar of 2, so every candidate fails — *including* the one that removes nothing. Replaying the ladder
+on this branch's own recorded graphs showed exactly that, with the survivor graph at `m = 0.6`
+identical to the unfiltered graph and the rule still refusing it. What the test exists to prevent is
+the *filter* stranding images, so it bounds the increase.
 
 Take the **strictest** (largest `m`) accepted candidate. If none is accepted, the filter removes
 nothing and says so: a graph where no threshold is safe is a graph this filter has no business
@@ -168,13 +176,25 @@ measurement supports it.
 Every number below is controller work: it runs the pipeline, which no implementer does.
 
 **5.1 §3.1 offline, before it ships.** Simulate both removal rules on every `pairs.csv` this branch
-has recorded, from the `TripletScore` column and the inlier counts. Report keptLCC, component
-count and images below degree 2 under each rule. This reproduces the table in §3.1 on the current
-pipeline's own graphs and costs no GPU time.
+has recorded. **Done**, with `triplet_replay.py`, and it reproduces on this branch's own graphs —
+largest component / images below degree 2 at `m = 0.6`, paper's rule against the shipped one:
 
-**5.2 Rule A re-swept on top of §3.1.** The sweep's own acceptance rates and chosen `m` per arm,
-against the recorded manual `m = 0.6`. Rule A was fitted before §3.1 existed; this says whether it
-survives it.
+| arm | unfiltered | paper's rule | keep unscored |
+|---|---|---|---|
+| 8d2f4877 sift | 203/3 | 187/21 | 190/17 |
+| 8d2f4877 onepass | 209/5 | 205/11 | **209/5** |
+| 8d2f4877 capdensity | 209/5 | 205/12 | **209/5** |
+| 38004114 sift | 247/12 | **122**/113 | **220**/23 |
+| 38004114 onepass | 305/1 | 258/53 | **305/1** |
+
+On the one-pass graphs the shipped rule restores the unfiltered component exactly while still
+removing weak scored edges. On the 38004114 sift graph the paper's rule costs 125 of 247 images;
+keeping the unscored edges recovers 98 of them.
+
+**5.2 Rule A re-swept on top of §3.1.** **Done**, and it corrected the rule (the relative bar
+above). With that correction the sweep fires on four of the five arms — `m = 0.90`, `0.65`, `0.15`
+and `0.65` — and stands down on 8d2f4877 sift, whose graph loses 13 images of its largest component
+at every threshold. Standing down there is the rule working, not failing.
 
 **5.3 The outdoor check.** Scene type dominates difficulty: outdoor object orbits essentially never
 fire (fraction of pairs below 0.5: Truck 0.005, Barn 0.040) while indoor captures fire on 41-77 %.
