@@ -2822,6 +2822,114 @@ of arms; the candidate sets and their order are unchanged, and when no image qua
 heaviest is chosen and the initializer reports the shortfall as before."
 ```
 
+### Task 12: The default minimum score is 0.75
+
+Spec §3.10. `TripletFilterConfig::minScore`, the paper's `m`, defaults to 0.6. On the church matched
+exhaustively the ceiling at 0.6 is 0.942, inside the band (0.89-0.96) where the north-south bridge
+pairs score, so two of four matchings split the facades and two merge them. At 0.75 the ceiling is
+0.964 and all four split with the south facade whole; the small sets, ToH, the indoor loop and
+Radcliffe are unchanged because their descents reach the same threshold whatever `m` is. The
+default moves to 0.75; the tests whose scenes were derived at 0.6 say so explicitly.
+
+**Files:**
+- Modify: `libs/SFM/ViewGraphTriplets.h` (`TripletFilterConfig::minScore` and its comment)
+- Modify: `apps/CreateStructure/CreateStructure.cpp` (the `--triplet-min-score` help text)
+- Modify: `apps/Tests/TestsSFM.cpp` (`TripletAutoTauTest`'s `walkCfg` and `chainsCfg`, and any other config whose expectations depend on the default)
+- Modify: `docs/design/TripletDisambiguation.md` (the `--triplet-min-score` row of the flags table)
+
+**Interfaces:**
+- Consumes: `TripletFilterConfig` (Task 1), the test scenes of `TripletAutoTauTest` (Tasks 5, 8, 9: every expected ceiling there is `0.6 * (1 - d_max/|V|) + d_max/|V|`).
+- Produces: nothing new; `TripletFilterConfig().minScore == 0.75f`, which `CreateStructure` reads as the flag's default.
+
+- [ ] **Step 1: Write the failing test**
+
+In `apps/Tests/TestsSFM.cpp`, `TripletFilterTest`, there is a config declared `const TripletFilterConfig defaults;`
+(near the check of `minYield`). Add, at that place, a check that the default minimum score is 0.75:
+
+```cpp
+	if (!ISEQUAL(defaults.minScore, 0.75f)) {
+		VERBOSE("TripletFilterTest FAILED: default minimum score %g; expected 0.75, the middle of the band in which "
+			"an exhaustively matched two-faced building splits at the ceiling whatever pairs the matcher verifies",
+			defaults.minScore);
+		return false;
+	}
+```
+
+If `defaults` is declared in a different test than `TripletFilterTest`, put the check where it is declared and
+name that test in the message instead.
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run (from `make/`): `ninja -f build-Release.ninja Tests && ./bin/Release/Tests 1 2>&1 | /usr/bin/grep -E 'FAILED'`
+Expected: `... FAILED: default minimum score 0.6; expected 0.75, ...`, and nothing else FAILED.
+
+- [ ] **Step 3: The default and its comment**
+
+In `libs/SFM/ViewGraphTriplets.h`, change `float minScore = 0.6f;` to `float minScore = 0.75f;` and replace the
+comment above it with:
+
+```cpp
+	// The paper's minimum edge score m, in [0,1] (the domain this implementation enforces). With
+	// autoTau this is the ceiling the threshold is derived from and never exceeds. The paper's
+	// values are 0.6 generic/large-scale, 0.9 highly ambiguous, 0.3 medium/small ambiguous, for a
+	// score without coverage or yield; 0.75 here is the middle of the band in which an exhaustively
+	// matched two-faced building (the church, four matchings) splits into its faces at the ceiling
+	// whatever north-south pairs the matcher happens to verify -- at 0.6 the ceiling (0.942) sits
+	// among those pairs' scores and two matchings of four merge the faces. Sets whose ceiling
+	// shatters the graph are untouched: the descent reaches the same threshold whatever m is.
+```
+
+- [ ] **Step 4: The tests derived at 0.6 say so**
+
+In `TripletAutoTauTest`, `walkCfg` and `chainsCfg` are constructed without a minimum score, and the walk's
+and the chains' expected ceilings (`0.616129`, `0.6f*(1.f-4.f/120.f)+4.f/120.f`) were derived at 0.6. Add to
+each, right after `enabled = true`:
+
+```cpp
+	walkCfg.minScore = 0.6f; // the scene's ceiling and the counts below were derived at the paper's generic m
+```
+
+(and the same line for `chainsCfg`). Then run the suite (`./bin/Release/Tests 1`) and read every FAILED line:
+any other test whose expectation moved is a config that relied on the old default — give it
+`minScore = 0.6f` with the same comment, never change an expected value. `ComputeTripletScores` calls that
+pass `0.6f` literally are unaffected.
+
+- [ ] **Step 5: The help text and the design note**
+
+In `apps/CreateStructure/CreateStructure.cpp`, the `--triplet-min-score` option's help text ends with the
+paper's values; it keeps them and gains, at its end, ", 0.75 here (the default): the ceiling at which an
+exhaustively matched two-faced building splits into its faces whatever pairs the matcher verifies". Keep the
+sentence in the style of the neighbouring options' text.
+
+In `docs/design/TripletDisambiguation.md`, the flags table's `--triplet-min-score` row: default `0.75`, and
+its text gains "; 0.75 rather than the paper's 0.6 because the church matched exhaustively splits at the
+ceiling in every matching at 0.75 and in half of them at 0.6".
+
+- [ ] **Step 6: Run the tests to verify they pass**
+
+Run (from `make/`): `ninja -f build-Release.ninja Tests SFM CreateStructure SceneAnalyzeSFM && ./bin/Release/Tests 1`
+Expected: every test PASSED, exit code 0, no FAILED line, no compiler warning from the changed files.
+Then `./bin/Release/CreateStructure --help 2>&1 | /usr/bin/grep -A2 'triplet-min-score'` shows the default
+`0.75`.
+
+- [ ] **Step 7: Mutate**
+
+Revert `minScore` to `0.6f`, rebuild `Tests`, run: expected `... FAILED: default minimum score 0.6; expected 0.75`.
+Restore 0.75, rebuild, confirm green.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add libs/SFM/ViewGraphTriplets.h apps/CreateStructure/CreateStructure.cpp apps/Tests/TestsSFM.cpp docs/design/TripletDisambiguation.md
+git -c user.name=cDc -c user.email=cdc.seacave@gmail.com commit -m "sfm: the triplet filter's default minimum score is 0.75
+
+At the paper's generic 0.6 the ceiling on an exhaustively matched two-faced building sits among
+the scores of the pairs that bridge its faces: on the church, four matchings give two graphs that
+split at the ceiling and two that merge, and the model is one facade or both folded by the
+matcher's luck. At 0.75 all four split with the south facade whole; the sets whose ceiling shatters
+the graph reach the same threshold by the descent whatever the minimum is."
+```
+
 ## Measurement (the controller's, after the branch is green)
 
 Not tasks and not a subagent's: they run the pipeline and read datasets, which no implementer does.

@@ -458,6 +458,38 @@ Cost if wrong: on a collection whose largest ceiling piece is the wrong face of 
 more views of the doppelganger than of the rest — the model is that face, the paper's own
 outcome, and no worse than today's arbitrary side.
 
+### 3.10 The minimum score is 0.75
+
+The church matched exhaustively four times gives four graphs whose facades split at the ceiling
+in two and merge in the other two: the north-south pairs the matcher happens to verify score
+between 0.89 and 0.96, and `tau(0.6)` on these graphs is 0.942, inside that band. Whether the
+model is one facade (135 images, the paper's 136) or both folded (223) is decided by the
+matcher's run-to-run variation, not by the rules. On the same four graphs, with the shipped
+majority rule:
+
+| m | ceiling | church, largest piece / second (four graphs) | radcliffe | brandenburg | big_ben (retrieval graph) |
+|---|---|---|---|---|---|
+| 0.6 | 0.942 | 139/85, 140/85, 227 merged, 225 merged | 119 + 54 + 44 + 19 + 15, descent to 0.842 | 125, folded | 391 at the ceiling |
+| 0.7 | 0.957 | 134-137 / 80-83, all four split | 113 + 53 + 44 + 19 + 13, descent to 0.842 | 113 | 382 |
+| 0.75 | 0.964 | 131-134 / 80-83, all four split | 109 + 51 + 43 + 18 + 13, descent to 0.842 | 102 | 374 |
+| 0.8 | 0.971 | 127-131 / 56-58 + 23-24, the south facade fragmenting | 101 + 51 + 42 + 17 + 12 | 69 + 13 + ..., descent | 366 |
+| 0.9 | 0.986 | 96-99 / 49-50 / 19, no majority: the descent merges them | 84 + 46 + ... | 40 + ..., descent | 181 + 168 |
+
+The small sets, ToH and the indoor loop are untouched by `m` in this range: their ceilings shatter
+the graph whatever `m` is and the descent, which joins every piece, reaches the same threshold.
+Radcliffe's ceiling never leaves a majority piece and the descent reaches the same threshold; only
+its seed piece shrinks a little.
+
+**Rule.** The default minimum score `m` is 0.75, the middle of the band [0.7, 0.8] in which every
+church graph splits with its south facade whole. The paper's 0.6 is its generic value, for a score
+without coverage or yield; its 0.3 for these sets would put the church's ceiling at 0.899, below
+every bridge, and merge all four graphs.
+
+Cost if wrong: on a sparse retrieval-matched graph, where `d_max/|V|` is small and the ceiling is
+`m`-dominated, the ceiling rises with `m` (big_ben: 0.679 to 0.799) and a few more images fall
+below it — a regime the filter does not serve anyway, since retrieval graphs never split at the
+ceiling (§3.8). Brandenburg's one piece shrinks from 125 to 102 images, folded either way.
+
 ### 3.4 Where the filter runs
 
 The filter runs at `Scene.cpp:697`, in `Reconstruct`. `ViewGraphCalibrator` runs at
