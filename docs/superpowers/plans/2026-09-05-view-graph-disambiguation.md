@@ -796,6 +796,276 @@ follow-ups this closed struck and the two it did not left standing."
 
 ---
 
+### Task 5: The threshold is the strictest one that keeps the graph together
+
+Supersedes the threshold rule Task 2 shipped. Spec §3.2 as rewritten on 2026-09-05: the paper's
+`tau(m)` is a ceiling, and below it the threshold is the **strictest** value whose survivor graph
+keeps 99 % of the unfiltered largest component in one component. The three-bar sweep (largest
+component, low-degree images, at most 20 % removed) is deleted outright — it stands down on every
+one of the ambiguous-scene datasets, because the correct answer there removes 66-96 % of the pairs
+and leaves a chain's two endpoints at degree 1.
+
+**Files:**
+- Modify: `libs/SFM/ViewGraphTriplets.h` (`TripletFilterConfig` comments, `SurvivorGraph` comment)
+- Modify: `libs/SFM/ViewGraphTriplets.cpp` (`FilterPairsByTriplets`, and the small items below)
+- Modify: `apps/CreateStructure/CreateStructure.cpp` (`--triplet-auto-tau`, `--triplet-min-score` help)
+- Modify: `libs/SFM/PythonWrapper.cpp` (the `auto_tau` docstring, if it describes the old bars)
+- Modify: `docs/design/TripletDisambiguation.md` (the threshold paragraphs and the flags table only)
+- Modify: `scripts/python/tests/triplet_disambiguation.py` (only if it describes the old bars)
+- Test: `apps/Tests/TestsSFM.cpp` (`TripletAutoTauTest`, rewritten scene by scene)
+
+**Interfaces:**
+- Consumes: `ComputeTripletScores`, `EvaluateSurvivorGraph`, `SurvivorGraph` exactly as Task 2 left
+  them. `TripletFilterConfig` keeps its three fields; `autoTau` keeps its default `true`.
+- Produces: nothing new. `FilterPairsByTriplets` keeps its signature and its return value.
+
+- [ ] **Step 1: Rewrite `TripletAutoTauTest` so every scene asserts the new rule's answer**
+
+Seven scenes exist. Under the new rule their expected outcomes are, with the arithmetic:
+
+| scene | ceiling tau(0.6) | outcome under the new rule | assertion |
+|---|---|---|---|
+| barbell | `G_LCT` = {2,3,4,5}, d_max 3, r 0.75 → 0.9 | at 0.9 the two 0.1 edges go and the largest component is 3 of 6; the only score below the ceiling is 0.1, so tau = 0.1 and nothing is removed | 0 removed, 8 pairs left (unchanged) |
+| ring | d_max 8 (node 12), r 1/3 → 0.7333 | at the ceiling the 48 structural edges (1.0) keep all 24 images together, so the ceiling is applied as given: 24 medium (0.65) + 2 weak (0.05) removed | **26 removed, 48 left**; neither `(0,12)` nor `(1,12)` nor any `(i,i+3)` pair survives |
+| bridge | `G_LCT` = right K10 + the two bridge edges, 11 nodes, d_max 10 (node 10) → 0.9636 | the ceiling severs the cliques (component 10 of 20); the only score below it is 0.01 → nothing removed | 0 removed, 92 pairs left (unchanged) |
+| pendant | 11 nodes, d_max 8, r 8/11 → 0.8909 | dropping the three weak spokes (0.01) keeps all 11 together → ceiling applied as given | **3 removed, 31 left**; the three `EvaluateSurvivorGraph` assertions on the candidate (3 below degree 2, component 11, 31 edges) stay exactly as they are |
+| baseline | 10 scored nodes, d_max 9 → 0.96 | `(8,9)` at 0.01 goes; the pendant's unscored edge is kept regardless → 1 removed | 1 removed, 45 left (unchanged) |
+| boundary | 10 nodes, d_max 9 → 0.96 | `(8,9)` scores exactly 0.96 = the ceiling and a score equal to tau is kept | 0 removed, 33 left (unchanged; the comment now says this pins `>=` at the ceiling, not a ladder start) |
+| ringGap | — | **delete the scene.** It pinned the old sweep's stopping rung; under the new rule it duplicates the ring |
+
+And one new scene, **the pan**, which is the one that pins the new rule's actual work — a
+complete graph over a short sequence, one doppelganger pair, one weak chain edge that the ceiling
+severs, and an isolated verified pair that makes the component bar relative:
+
+```cpp
+	// Scene 7, the pan: six frames of one camera sweep, exhaustively matched so every pair
+	// verifies (identical facades give every pair some inliers), plus one doppelganger pair and a
+	// separate verified pair that is in no triangle. The strong chain is (i,i+1) = 100 except
+	// (2,3) = 83; (i,i+2) = 50; every longer gap 10; the doppelganger (0,5) = 30 -- STRONGER than
+	// the true low-overlap pairs, as measured on the real street set. Scores, each edge in four
+	// triangles: chain edges 1.0 except (2,3) = (1 + 0.83 + 0.83 + 1)/4 = 0.915; (0,2) and (3,5)
+	// 0.7756, (1,3) and (2,4) 0.625; (0,5) = (0.3 + 0.6 + 0.6 + 0.3)/4 = 0.45; the gap-3/4/5
+	// pairs 0.1 to 0.13. G_LCT is the K6, so r = 5/6 and the ceiling at m = 0.6 is 0.9333.
+	//
+	// At the ceiling only the four 1.0 chain edges survive: components {0,1,2}, {3,4,5}, {6,7},
+	// largest 3 against the unfiltered 6 (the K6; (6,7) is its own component and the bar is 99% of
+	// the LARGEST component, not of all 8 images). The distinct scores below the ceiling are
+	// 0.915, 0.7756, 0.625, 0.45, 0.13, 0.125, 0.1; the strictest that reconnects the chain is
+	// 0.915, (2,3)'s own score. Kept: the five chain edges and the unscored (6,7); removed: the ten
+	// others, the doppelganger among them. A search that stopped one candidate looser would keep
+	// (0,2) and (3,5); one measuring the bar against all images would never pass and remove nothing.
+	Scene pan;
+	AddTripletImages(pan, 8);
+	static const unsigned panInliers[6][6] = {
+		//   0    1    2    3    4    5
+		{    0, 100,  50,  10,  10,  30 }, // 0: (0,5) = 30 is the doppelganger
+		{    0,   0, 100,  50,  10,  10 },
+		{    0,   0,   0,  83,  50,  10 }, // (2,3) = 83: the weak chain edge the ceiling severs
+		{    0,   0,   0,   0, 100,  50 },
+		{    0,   0,   0,   0,   0, 100 },
+		{    0,   0,   0,   0,   0,   0 },
+	};
+	for (IIndex i = 0; i < 6; ++i)
+		for (IIndex j = i + 1; j < 6; ++j)
+			AddTripletPair(pan, i, j, panInliers[i][j]);
+	AddTripletPair(pan, 6, 7, 100); // verified, in no triangle: unscored, kept, and not the largest component
+
+	const TripletScores panScores = ComputeTripletScores(pan, 0.6f);
+	if (!ISEQUAL(panScores.tau, 0.93333f, 1e-4f) || panScores.numScoredPairs != 15) {
+		VERBOSE("TripletAutoTauTest FAILED: pan ceiling %g with %u scored pairs, expected 0.9333 and 15",
+			panScores.tau, panScores.numScoredPairs);
+		return false;
+	}
+	FOREACH(idxPair, pan.pairs) {
+		const ImagePair& pair = pan.pairs[idxPair];
+		const float score = panScores.scores[idxPair];
+		if ((pair.ID1 == 2 && pair.ID2 == 3 && !ISEQUAL(score, 0.915f, 1e-4f)) ||
+			(pair.ID1 == 0 && pair.ID2 == 5 && !ISEQUAL(score, 0.45f, 1e-4f)) ||
+			(pair.ID1 == 6 && pair.ID2 == 7 && score >= 0.f)) {
+			VERBOSE("TripletAutoTauTest FAILED: pan pair (%u,%u) scored %g", pair.ID1, pair.ID2, score);
+			return false;
+		}
+	}
+	const SurvivorGraph panUnfiltered = EvaluateSurvivorGraph(pan, panScores.scores, 0.f);
+	const SurvivorGraph panAtCeiling = EvaluateSurvivorGraph(pan, panScores.scores, panScores.tau);
+	if (panUnfiltered.largestComponent != 6 || panUnfiltered.numNodes != 8 || panAtCeiling.largestComponent != 3) {
+		VERBOSE("TripletAutoTauTest FAILED: pan components %u of %u unfiltered, %u at the ceiling; expected 6 of 8 and 3",
+			panUnfiltered.largestComponent, panUnfiltered.numNodes, panAtCeiling.largestComponent);
+		return false;
+	}
+	Scene panAuto(pan);
+	const unsigned numPanRemoved = FilterPairsByTriplets(panAuto, cfg, weightingCfg);
+	const std::set<std::pair<IIndex,IIndex>> expectedPanKept{{0,1}, {1,2}, {2,3}, {3,4}, {4,5}, {6,7}};
+	if (numPanRemoved != 10 || panAuto.pairs.size() != 6 || TripletKeptPairs(panAuto) != expectedPanKept) {
+		VERBOSE("TripletAutoTauTest FAILED: the pan lost %u pairs leaving %u; expected exactly the chain and the isolated pair",
+			numPanRemoved, panAuto.pairs.size());
+		return false;
+	}
+```
+
+`ISEQUAL` with a tolerance: use whatever the file already uses for approximate float comparison
+(`TripletFilterTest` compares scores with a tolerance — copy its idiom).
+
+Also in this step, the duplicate-pair coverage the review found missing: add a second
+`AddTripletPair(bridge, 0, 1, 100)` to the bridge scene beside the existing one. The existing
+assertion `bridgeUnfiltered.numKept != 92` then fires the moment `EvaluateSurvivorGraph`'s
+`seenEdges` skip is removed (it would read 93). Verify both directions before committing: with the
+skip present the suite passes; with it temporarily deleted, `TripletAutoTauTest` fails. Restore it.
+
+And the bridge scene's comment gets one sentence on its invariant: `G_LCT` is the *right* clique
+only because its component carries 121 triplets against the left's 120 (the bridge triangle's third
+edge `(10,11)` belongs to the right clique); if that flipped, the right clique's edges would be
+unscored and the scene would stop testing the component bar while still passing.
+
+- [ ] **Step 2: Build and run, and watch the ring, pendant and pan assertions fail against the old rule**
+
+```bash
+cd /home/ubuntu/.claude/worktrees/roma2-onnx/make && ninja -f build-Release.ninja Tests 2>&1 | tail -3 && ./bin/Release/Tests 1 2>&1 | /usr/bin/grep -E "TripletAutoTauTest|passed|failed"
+```
+
+Expected: `TripletAutoTauTest FAILED: the ring lost 2 pairs` (the old sweep relaxes to 0.45 and removes only the two weak pairs).
+
+- [ ] **Step 3: Replace the sweep**
+
+In `FilterPairsByTriplets`, delete everything from the `if (config.autoTau) {` line through its
+closing brace — the comment block about the three bars, `MAX_REMOVED_FRACTION`, the `minComponent`
+/ `maxLowDegree` / `minKept` bars, the `for (int step ...)` ladder, and the stand-down branch — and
+put this in its place:
+
+```cpp
+	const float degreeRatio = tripletScores.numNodes > 0
+		? (float)tripletScores.maxDegree / (float)tripletScores.numNodes : 0.f;
+	// Eqn. 3 on G_LCT, tau(m) = m (1 - d_max/|V|) + d_max/|V|, is the CEILING: the filter is never
+	// stricter than the m it was given. On a complete view graph -- every pair verified, which is
+	// what identical facades produce under exhaustive matching -- d_max/|V| is (|V|-1)/|V| and the
+	// ceiling sits at 0.95-0.99 whatever m is; on the sparse graphs of video captures it is 0.7 or
+	// below.
+	const float ceiling = tripletScores.tau;
+	float tau = ceiling;
+	SurvivorGraph unfiltered{0, 0, 0, 0}, survivor{0, 0, 0, 0};
+	if (config.autoTau) {
+		// Below the ceiling, the threshold is the STRICTEST one that keeps the graph together: the
+		// largest value whose survivor graph keeps 99% of the unfiltered largest component in one
+		// piece. Everything scored below that is either a weak true pair the backbone does not
+		// need or a doppelganger, and nothing in the inlier counts tells the two apart -- on the
+		// ambiguous-scene datasets the doppelganger pairs OUTSCORE the true low-overlap pairs, and
+		// a doppelganger's triangles are mutually consistent -- so the only defensible cut keeps
+		// the strong edges and exactly enough of them. Measured on those datasets that answer
+		// removes 66-96% of the pairs and leaves a chain's two endpoints at degree 1, which is why
+		// there is no bar on how much is removed and none on low-degree images: an image with one
+		// strong edge is in the component and can be resected from it.
+		unfiltered = EvaluateSurvivorGraph(scene, tripletScores.scores, 0.f);
+		const unsigned minComponent = (unsigned)std::ceil(0.99 * (double)unfiltered.largestComponent);
+		survivor = EvaluateSurvivorGraph(scene, tripletScores.scores, ceiling);
+		if (survivor.largestComponent < minComponent) {
+			// The largest component only grows as tau falls, so among the distinct scores below
+			// the ceiling, strictest first, the first that passes is a binary search away. The
+			// loosest candidate keeps every scored pair -- the unfiltered graph itself -- so it
+			// always passes, and the ceiling fragmenting the graph means at least one scored pair
+			// sits below it.
+			std::vector<float> candidates;
+			candidates.reserve(tripletScores.numScoredPairs);
+			for (float score : tripletScores.scores)
+				if (score >= 0.f && score < ceiling)
+					candidates.push_back(score);
+			std::sort(candidates.begin(), candidates.end(), std::greater<float>());
+			candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
+			ASSERT(!candidates.empty(), "FilterPairsByTriplets: the ceiling fragments a graph with no score below it");
+			size_t lo = 0, hi = candidates.size() - 1;
+			while (lo < hi) {
+				const size_t mid = (lo + hi) / 2;
+				if (EvaluateSurvivorGraph(scene, tripletScores.scores, candidates[mid]).largestComponent >= minComponent)
+					hi = mid;
+				else
+					lo = mid + 1;
+			}
+			tau = candidates[lo];
+			survivor = EvaluateSurvivorGraph(scene, tripletScores.scores, tau);
+		}
+		VERBOSE("Triplet filter: tau %.3f, %s (ceiling %.3f at m %.2f, d_max/|V| %.3f); survivor graph "
+			"keeps %u/%u images in its largest component, %u below degree 2 (%u before), "
+			"and %u/%u distinct image pairs",
+			tau, tau < ceiling ? "the strictest threshold that keeps the graph together" : "the ceiling applied as given",
+			ceiling, minScore, degreeRatio, survivor.largestComponent, unfiltered.largestComponent,
+			survivor.numLowDegree, unfiltered.numLowDegree, survivor.numKept, unfiltered.numKept);
+	}
+```
+
+`std::greater` needs `<functional>`; `std::sort`/`std::unique` need `<algorithm>`. The
+`minScore` clamp above stays; add, right after it, a warning when the clamp changed the value —
+`CreateStructure` already refuses an out-of-range `--triplet-min-score`, so this only ever fires
+through the library or Python API, but a mistyped value that silently became a different filter is
+worse than a refused one:
+
+```cpp
+	if (minScore != config.minScore)
+		VERBOSE("warning: triplet filter: minimum edge score %g is outside [0,1], using %g", config.minScore, minScore);
+```
+
+(A NaN compares unequal to everything, so this line fires for NaN too.)
+
+The removal loop, the summary `VERBOSE` and the `ComputePairsWeights` re-run below stay as they are.
+
+- [ ] **Step 4: Comments and help that describe the old rule**
+
+- `libs/SFM/ViewGraphTriplets.h`: `autoTau`'s comment says the paper's constant is uncalibrated and
+  describes a sweep that "only ever relaxes" — replace with: the paper's `tau(m)` is a ceiling, and
+  below it the threshold is the strictest one whose survivor graph keeps 99 % of the unfiltered
+  largest component together; off, `tau(m)` is applied as given. `minScore`'s comment: the paper's
+  `m` in `[0,1]` (the domain the implementation enforces), the ceiling when `autoTau` is on.
+  `SurvivorGraph`'s comment: "what the search judges" rather than "what the sweep judges".
+- `apps/CreateStructure/CreateStructure.cpp`: `--triplet-auto-tau` help → "camera-triplet filter:
+  treat the paper's threshold tau(m) as a ceiling and relax below it to the strictest threshold that
+  still keeps 99% of the largest connected component of the view graph together; off applies tau(m)
+  as given". `--triplet-min-score` help → "camera-triplet filter: the paper's minimum edge score m
+  in (0,1), from which the threshold tau = m(1-r)+r is derived with r the maximum-degree ratio of
+  the scored graph; with --triplet-auto-tau that threshold is the ceiling the filter starts from
+  (0.6 generic scenes, 0.9 highly ambiguous, 0.3 medium/small ambiguous)".
+- `libs/SFM/PythonWrapper.cpp` and `scripts/python/tests/triplet_disambiguation.py`: grep for
+  `20%`, `fifth`, `strand`, `sweep`, `relax`; any sentence describing the three bars is rewritten
+  to describe the ceiling-and-connectivity rule, nothing else changes.
+- `docs/design/TripletDisambiguation.md`: the `Selection` bullet under "The algorithm", the flags
+  table, and the "Two caveats" paragraph describe what ships: the ceiling, the strictest connecting
+  threshold, the 99 % bar. Do not touch any measured table or number; the full rewrite is Task 4.
+- `libs/SFM/ViewGraphTriplets.cpp` header order: it is the only file in `libs/SFM` that puts the
+  standard headers before `"Common.h"`. Reorder to match the directory. And `seenEdges` in
+  `EvaluateSurvivorGraph` is rebuilt unreserved on every call: `reserve(scene.pairs.size())`,
+  matching what `ComputeTripletScores` already does.
+
+- [ ] **Step 5: Run the suite**
+
+```bash
+cd /home/ubuntu/.claude/worktrees/roma2-onnx/make && ninja -f build-Release.ninja Tests SFM 2>&1 | tail -3 && ./bin/Release/Tests 1 2>&1 | tail -5
+```
+
+Expected: 61 passed, 0 failed (the same count: one scene deleted, one added inside the same test).
+
+Then the mutation kills, each applied alone, the suite run, the mutant reverted — report the table:
+
+1. binary search returns the next looser candidate (`hi = mid + 1` / `lo = mid`): the pan keeps `(0,2)` and `(3,5)`.
+2. the bar measured against `unfiltered.numNodes` instead of `unfiltered.largestComponent`: the pan can never pass and removes nothing.
+3. search from the loosest candidate upward, stopping at the first that passes: the pan and the ring remove nothing.
+4. skip the check at the ceiling and always search below it: the ring relaxes to 0.65 and removes only 2.
+5. `score > tau` instead of `>=` in `EvaluateSurvivorGraph`: the boundary scene removes `(8,9)`.
+6. the `seenEdges` skip deleted: the bridge scene's unfiltered edge count reads 93.
+
+- [ ] **Step 6: Commit**
+
+```bash
+cd /home/ubuntu/.claude/worktrees/roma2-onnx && git add -A && git commit -m "sfm: the triplet filter's threshold is the strictest one that keeps the graph together
+
+The paper's tau(m) is a ceiling; below it the filter relaxes only to the
+strictest threshold whose survivor graph keeps 99% of the largest component
+in one piece. The three-bar sweep it replaces stood down on every one of
+the ambiguous-scene datasets: there every pair verifies, the true pairs are
+a minority of the complete graph, and the right answer removes most of the
+edges and leaves the chain's endpoints at degree 1 -- all three things the
+bars forbade. Measured on the six yan2017 sets the new rule keeps every
+chain whole where the paper's fixed threshold fragments five of them."
+```
+
+---
+
 ## Measurement (the controller's, after the branch is green)
 
 Not tasks and not a subagent's: they run the pipeline and read datasets, which no implementer does.

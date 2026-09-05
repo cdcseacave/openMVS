@@ -81,77 +81,74 @@ Predicted survivor-graph effect at the paper's own tau, from `AUTO-ENABLE-ANALYS
 The win case is essentially untouched, which is the property that matters: a less aggressive filter
 must not give back the one place the filter earns its keep.
 
-### 3.2 The threshold comes from the survivor graph, not from a constant
+### 3.2 The threshold is the strictest one that keeps the graph together
 
-**Rule A.** Score once. Start at the configured `m` and relax downward over a fixed ladder. At each
-candidate, evaluate the survivor graph the filter *would* produce and accept it only if all three
-hold:
+Score once. The paper's Eqn. 3, `tau(m) = m (1 - r) + r` with `r = d_max/|V|` of `G_LCT`, is the
+**ceiling**: the filter is never stricter than the `m` it was given. Below it, the threshold is the
+**strictest** `tau` whose survivor graph — every unscored pair, every pair scoring at or above
+`tau` — keeps at least 99 % of the unfiltered graph's largest connected component in one component.
+There is no other bar. If the ceiling itself keeps the graph together it is applied as given; if
+nothing above the lowest score does, the lowest score is chosen and nothing is removed.
 
-- `keptLCC >= 0.99 x LCC(unfiltered)` — the filter may not fragment the reconstruction;
-- `lowDegree(survivor) <= lowDegree(unfiltered) + 0.01 x |V|` — it may not strand images;
-- `removed <= 0.20 x |E|` — it may not rewrite the graph.
+**Why the strictest, and why connectivity alone.** This was decided against the standard
+ambiguous-scene datasets (`~/virginia/datasets/Disambiguation`, the sets of Yan et al. 2017 and
+Heinly et al. 2014 that the disambiguation literature is measured on), by replaying candidate rules
+on each set's exported view graph and looking at the images. On those sets the shape of the problem
+is the opposite of what the previous rule assumed:
 
-Take the **first** accepted candidate, so the filter is never stricter than what was asked for. If
-none is accepted, it removes nothing and says so: a graph where no threshold is safe is a graph this
-filter has no business touching.
+- **Every pair verifies.** Two identical facades give every image pair 50-1000 epipolar inliers, so
+  exhaustive matching on a 19-image street pan yields the complete graph, `r = 18/19` and a ceiling
+  of 0.98 at `m = 0.6`. The true pairs are the band of frames within a few steps of each other — a
+  *minority* of the graph (35 of 171 on street). The correct filter removes most of the edges.
+- **The score ranks them correctly.** Against a frame-gap truth (pairs within two frames true,
+  beyond it false) the triplet score reaches AUC 0.99 on street; the strong chain scores 0.95-1.0,
+  the doppelganger pairs 0.67-0.75, and the true low-overlap pairs *below* the doppelgangers.
+- **So the right answer is the backbone.** Keep the strongest edges down to the point where they
+  hold the graph together, and no further: every edge below that is either a weak true pair the
+  chain does not need or a doppelganger, and nothing in the counts tells the two apart. On street
+  that is `tau = 0.961`: 20 of 171 pairs, the chain intact, no far pair kept.
 
-Three things about this rule were established by replaying the ladder on this branch's own recorded
-graphs, and each corrects a formulation that looked reasonable on paper:
+The rule this replaces — relax from the ceiling and accept the first candidate that fragments
+nothing, strands nobody and removes under 20 % of the pairs — was fitted on video-keyframe captures
+and stands down on **all six** small sets, because the correct answer there removes 66-96 % of the
+pairs and leaves the chain's two endpoints at degree 1. Its "doppelgangers are a minority by
+construction" premise is false exactly where the filter is needed. The paper's own fixed threshold
+errs the other way: at `m = 0.3` it fragments five of the six chains (largest component 10/19,
+7/21, 9/23, 7/25, 20/31, 34/64), which is the oversplit the paper's Table 3 reports on the same sets
+(9/21, 7/25, 12/31, 9/23 cameras). The connectivity-driven threshold keeps every chain whole:
 
-**The connectivity bars must be relative to the unfiltered graph.** Written as an absolute "under
-1 % of nodes below degree 2", the rule is unreachable on real captures: the unfiltered lidar
-one-pass graph already has 5 images below degree 2 out of 209, against an absolute bar of 2, so
-every candidate fails — *including* the one that removes nothing. The replay showed the survivor
-graph at `m = 0.6` identical to the unfiltered graph and the rule still refusing it. What the test
-exists to prevent is the *filter* stranding images, so it bounds the increase.
+| set | images | pairs | r | ceiling (m=0.6) | chosen tau | kept | far pairs kept |
+|---|---|---|---|---|---|---|---|
+| street | 19 | 171 | 0.947 | 0.979 | 0.961 | 20 | 0 |
+| books | 21 | 209 | 0.952 | 0.981 | 0.905 | 47 | 0 |
+| oats | 23 | 253 | 0.957 | 0.983 | 0.893 | 44 | 1 |
+| cereal | 25 | 296 | 0.960 | 0.984 | 0.804 | 69 | 4 |
+| desk | 31 | 439 | 0.968 | 0.987 | 0.978 | 37 | 3 (loop closure) |
+| cup | 64 | 2013 | 0.984 | 0.994 | 0.991 | 75 | 1 |
 
-**Strictness is a cost, not a virtue.** Taking the strictest safe `m` — sweeping down from 0.95 —
-removes **92 % of Truck's edges** while leaving all 251 images connected with none below degree 2,
-so every connectivity test passes. Relaxing from the configured `m` instead means the sweep can only
-ever back off from what was asked for.
+**The known frontier, stated rather than hidden.** When the true junction between two parts of a
+scene is weaker than a doppelganger pair between them, the rule reconnects through the
+doppelganger. On oats the two identical canisters (frames 0-7 and 13-22) are joined by the pair
+(6,21) with 880 inliers at score 0.893 — the chosen threshold *is* that pair's score — because the
+true transition through the featureless Wheat Thins frames scores lower. Cereal has the same shape
+with its two boxes. No statistic of counts and triangles separates that pair from a true junction:
+a doppelganger's triangles are mutually consistent, and its inlier count matches a true adjacent
+pair's. The paper's fixed threshold avoids it only by fragmenting the chain. Whether one such pair
+among forty true ones folds the *reconstruction* — the pipeline's own robust averaging sees the
+loop the filter cannot — is measured (§5.7), not assumed; the tools for the next step (a second
+graph pass, an ordering cue) are chosen from that measurement.
 
-**Connectivity alone cannot bound the damage, hence the third bar.** At the paper's own `m = 0.6`
-the filter removes **65-67 %** of a healthy, fully connected outdoor orbit, and every connectivity
-test still passes. The cause is structural: the score is *relative*, so on a dense graph the mean of
-`n_ij / max n_kl` over many triangles sits well below 1 for almost every edge, doppelganger or not.
-A filter removing two thirds of a graph is not finding outliers. Doppelganger edges are a minority
-by construction, so the fraction removed is bounded directly.
+Sparse graphs are the other regime: on this branch's video captures `r` is 0.21-0.33, the ceiling
+0.7 or below, and connectivity decides how far below it. The ceiling keeps the paper's generic
+behaviour on a dense healthy orbit (Truck: `m = 0.6` removes about two thirds of the pairs, which
+the paper reports as harmless sparsification and this branch has not measured; §5.3).
 
-**The 0.20 is a policy choice, not a measurement, and is labelled as one.** It says what the filter
-is *for*. It is inert where the filter is safe — the measured arms remove 4-10 % — and it is what
-stops the one case that would otherwise be rewritten wholesale. It is also why this can be decided
-now rather than after another campaign: `--filter-triplets` is off by default, so the rule only ever
-runs for someone who asked for it, and the promotion measurement is what would move the constant.
+This is cheap. The scores do not depend on `m`, so one `ComputeTripletScores` call serves the whole
+search; the largest component only grows as `tau` falls, so the strictest passing threshold is a
+binary search over the distinct scores below the ceiling — `O(log |E|)` union-find passes.
 
-Measured behaviour of the whole rule, on the graphs this branch has recorded:
-
-| arm | chosen | survivor | removed |
-|---|---|---|---|
-| 8d2f4877 sift | stands down | — | — |
-| 8d2f4877 onepass | m = 0.60 | 209/5 | 7 % |
-| 38004114 sift | m = 0.15 | 247/14 | 10 % |
-| 38004114 onepass | m = 0.60 | 305/1 | 4 % |
-| Truck sift | stands down | — | — |
-| Truck onepass | m = 0.05 | 251/0 | 17 % |
-
-This is cheap. The scores do not depend on `m` — only `tau` does, through Eqn. 3 on `G_LCT` — so
-one `ComputeTripletScores` call serves the whole sweep, and each candidate costs one union-find
-pass over the edges plus a degree count. The ladder is `m = 0.95` down to the configured
-`minScore` in steps of `0.05`.
-
-`minScore` keeps its meaning as the strictness asked for; the sweep only ever relaxes from it. The
-CLI help says exactly that.
-
-`--triplet-auto-tau`, default **true**. When false, the single configured `minScore` is used, which
-is the paper's behaviour and what every recorded measurement used. Auto is the default because the
-manual value is the part all three measurements say is unreliable.
-
-**Honesty about the fit:** the original Rule A was reported 6/6 correct on seven arms with a single
-positive, and it was fitted *before* §3.1 existed. That claim has not survived contact with this
-branch's own graphs: the replay found its stranded-image bar unreachable, its objective inverted and
-its damage unbounded, all three corrected above. What the corrected rule has is six arms of measured
-behaviour, not a validation. It may not flip any default on its own, and the promotion conjunction
-in §5.6 is what would.
+`minScore` is the paper's `m`, and with the search on it is the ceiling. `--triplet-auto-tau`,
+default **true**; when false, `tau(m)` is applied as given, the paper's behaviour.
 
 ### 3.3 A second cue, measured before it is trusted
 
@@ -238,9 +235,21 @@ On the one-pass graphs the shipped rule restores the unfiltered component exactl
 removing weak scored edges. On the 38004114 sift graph the paper's rule costs 125 of 247 images;
 keeping the unscored edges recovers 98 of them.
 
-**5.2 Rule A re-swept on top of §3.1.** **Done**, and it rewrote the rule — all three corrections in
-§3.2 came out of this replay, not out of reasoning about it. The measured behaviour of the corrected
-rule is the table in §3.2.
+**5.2 The threshold rule, replayed.** **Done twice.** The first replay, on this branch's own video
+captures, produced a three-bar rule (fragment nothing, strand nobody, remove under 20 %). The
+second, on the ambiguous-scene datasets the filter exists for, showed that rule standing down on
+every one of them and replaced it with the connectivity-driven threshold of §3.2; the table there is
+its measured behaviour. The lesson is recorded so it is not relearned: a rule fitted on graphs
+without doppelgangers cannot be validated on graphs without doppelgangers.
+
+**5.7 The ambiguous-scene campaign.** `~/virginia/datasets/Disambiguation/run_disambig_campaign.sh`
+runs the base and triplet arms over the yan2017 sets (exhaustive) and the sparse ToH and
+heinly2014/indoor sets (vocabulary matching, 50 pairs per image); `rule_replay.py` replays threshold
+rules on an arm's `pairs.csv`, `collapse_eval.py` scores a sequence's poses for folding, and
+`plot_cameras.py` draws them. The reference numbers are the paper's Table 3 (cameras in the
+disambiguated reconstruction: books 9/21, cereal 7/25, cup failed, desk 12/31, oats 9/23, street
+19/19, ToH 338/338, indoor 42/152) and, for the heinly2014 sets, Doppelgangers++ Table 2. The bar
+is a reconstruction that does not fold with at least as many cameras.
 
 **5.3 The outdoor check.** **Done, and it is what found the missing third bar.** Scene type
 dominates difficulty: outdoor object orbits essentially never fire (fraction of pairs below 0.5:
@@ -271,14 +280,13 @@ relaxed.
 
 ## 6. Risks
 
-- **The 0.20 removal bound is a policy choice.** It is the one number in Rule A that no measurement
-  produced, and it is load-bearing: it is the only thing standing between the filter and a graph it
-  would otherwise rewrite. Too low and the filter stands down where it would have helped; too high
-  and it strips a healthy graph. Every arm reports what it removed, so a wrong value is visible in
-  the first measurement rather than inferred.
-- **Rule A still has no validation, only measured behaviour.** Six arms of replay say it does
-  sensible things; none of them says the result reconstructs better. The promotion conjunction is
-  the gate, and it is unchanged.
+- **The connectivity-driven threshold reconnects through a doppelganger when the true junction is
+  weaker.** Oats and cereal, §3.2. The filter then leaves one or a few false pairs among tens of
+  true ones, where the unfiltered graph had a hundred; whether the reconstruction survives that is
+  the first thing §5.7 measures.
+- **On a dense healthy graph the ceiling removes most of the pairs.** That is the paper's own
+  sparsification and it is opt-in, but this branch has not measured its cost in pose accuracy.
+  The promotion conjunction is the gate, and it is unchanged.
 - **§3.1 could give back the win.** A less aggressive filter removes fewer doppelgangers. The
   measured prediction is that the win case moves 376 → 377, but it is a prediction from one
   reference; §5.1 checks it on this branch's own graphs before the code ships.
