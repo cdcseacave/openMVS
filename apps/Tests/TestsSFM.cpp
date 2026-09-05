@@ -7955,8 +7955,9 @@ bool TripletFilterTest()
 // passed over for a strictly weaker threshold, the binary search itself, a score sitting exactly
 // at the ceiling -- so that weakening any one of them breaks exactly one scene, the pan pins the
 // search actually finding the strictest reconnecting threshold rather than the loosest one or none
-// at all, and the walk pins that a straggler too small to be a piece is left alone rather than
-// chased.
+// at all, the walk pins that a straggler too small to be a piece is left alone rather than
+// chased, and the three-chains pins that the ceiling shatters the graph into three equal pieces,
+// none a majority, and the descent joins them at the strictest threshold that does so.
 bool TripletAutoTauTest()
 {
 	TD_TIMER_START();
