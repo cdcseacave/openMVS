@@ -238,11 +238,14 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 	unsigned numUnscored = 0, numBelowTau = 0, numKept = 0;
 	for (unsigned idxPair = 0; idxPair < numPairs; ++idxPair) {
 		const float score = tripletScores.scores[idxPair];
-		if (score < tripletScores.tau) {
-			if (score < 0.f)
-				++numUnscored;
-			else
-				++numBelowTau;
+		// An unscored pair is one the method has no evidence about: it takes part in no triangle,
+		// or in none inside the largest triplet-graph component. Those are overwhelmingly TRUE
+		// pairs -- 426 of 490 and 415 of 441 on the two labelled references -- so absence of
+		// evidence keeps the pair. Only a scored pair below tau is removed.
+		if (score < 0.f) {
+			++numUnscored;
+		} else if (score < tripletScores.tau) {
+			++numBelowTau;
 			continue;
 		}
 		if (numKept != idxPair)
@@ -250,14 +253,14 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 		++numKept;
 	}
 	const unsigned numRemoved = numPairs - numKept;
-	ASSERT(numRemoved == numUnscored + numBelowTau, "FilterPairsByTriplets: removal count mismatch");
+	ASSERT(numRemoved == numBelowTau, "FilterPairsByTriplets: removal count mismatch");
 	if (numRemoved > 0)
 		scene.pairs.RemoveLast(numRemoved);
 	VERBOSE("Triplet filter: kept %u/%u pairs (tau %.3f from m %.2f; %u nodes, max degree %u; "
-		"%u triplets in %u components; %u pairs unscored, %u below tau)",
-		numPairs - numRemoved, numPairs, tripletScores.tau, config.minScore,
+		"%u triplets in %u components; %u below tau removed, %u unscored kept)",
+		numKept, numPairs, tripletScores.tau, config.minScore,
 		tripletScores.numNodes, tripletScores.maxDegree,
-		tripletScores.numTriplets, tripletScores.numTripletComponents, numUnscored, numBelowTau);
+		tripletScores.numTriplets, tripletScores.numTripletComponents, numBelowTau, numUnscored);
 	// the connectivity and cycle-consistency weights were computed on the unfiltered graph and
 	// the composite-weight order the reconstruction consumes is stale after the removals; a filter
 	// that removed nothing left both intact, so re-running would only cost time

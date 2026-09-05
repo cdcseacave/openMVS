@@ -67,10 +67,14 @@ struct SFM_API TripletScores
 // wants the scores alone can pass 0.
 TripletScores SFM_API ComputeTripletScores(const Scene& scene, float minScore);
 
-// Apply Algorithm 1 step 10 to the scene: remove the pairs scoring below tau *and* the unscored
-// pairs, then recompute the pair weights so the connectivity/cycle-consistency weights describe
-// the filtered graph. Step 11 of the paper (extract the largest connected component of the
-// filtered graph) is deliberately not applied: openMVS selects components itself (SceneCluster).
+// Apply Algorithm 1 step 10 to the scene: remove only the pairs scoring below tau, then recompute
+// the pair weights so the connectivity/cycle-consistency weights describe the filtered graph. This
+// is a deliberate departure from the paper's step 1, which discards every edge outside G_LCT --
+// including every edge in no triangle at all -- as if absence of triplet evidence meant a false
+// pair; on the two labelled references those unscored pairs are overwhelmingly true (426 of 490 on
+// one, 415 of 441 on the other), so an unscored pair carries no evidence either way and is kept.
+// Step 11 of the paper (extract the largest connected component of the filtered graph) is
+// deliberately not applied: openMVS selects components itself (SceneCluster).
 // A disabled config is a no-op. Returns the number of removed pairs.
 // The weighting config is not defaulted on purpose: re-weighting with anything other than the
 // config the run itself matched with would silently change gridSize/minInliers under the caller.

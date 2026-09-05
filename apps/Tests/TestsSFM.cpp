@@ -7821,36 +7821,42 @@ bool TripletFilterTest()
 		}
 	}
 
-	// (c) the filter at m = 0.3 keeps only the three edges scoring at or above 0.825
+	// (c) the filter at m = 0.3: only the two scored pairs below tau go. The five pairs in no
+	// triplet of the largest component are unscored -- no evidence either way -- and the filter
+	// keeps them.
 	TripletFilterConfig filterCfg;
 	filterCfg.enabled = true;
 	filterCfg.minScore = 0.3f;
 	const PairsWeightingConfig weightingCfg; // defaults; FilterPairsByTriplets takes no default
-	if (FilterPairsByTriplets(scene, filterCfg, weightingCfg) != 7 || scene.pairs.size() != 3) {
-		VERBOSE("TripletFilterTest FAILED: m=0.3 left %u pairs, expected 3", scene.pairs.size());
+	if (FilterPairsByTriplets(scene, filterCfg, weightingCfg) != 2 || scene.pairs.size() != 8) {
+		VERBOSE("TripletFilterTest FAILED: m=0.3 left %u pairs, expected 8", scene.pairs.size());
 		return false;
 	}
-	const std::set<std::pair<IIndex,IIndex>> expectedKept03{{0,1}, {0,2}, {1,2}};
+	const std::set<std::pair<IIndex,IIndex>> expectedKept03{
+		{0,1}, {0,2}, {1,2}, {3,4}, {3,5}, {5,6}, {6,7}, {5,7}};
 	if (keptPairs(scene) != expectedKept03) {
 		VERBOSE("TripletFilterTest FAILED: m=0.3 kept the wrong pairs");
 		return false;
 	}
 
-	// (d) the filter at m = 0.6 raises tau to 0.9 and keeps only the two edges scoring 1
+	// (d) the filter at m = 0.6 raises tau to 0.9: only the three scored pairs below tau go,
+	// keeping the two edges scoring 1 and the five unscored pairs that carry no evidence either way
 	Scene scene06;
 	buildScene(scene06, pairSpecs, 10);
 	filterCfg.minScore = 0.6f;
-	if (FilterPairsByTriplets(scene06, filterCfg, weightingCfg) != 8 || scene06.pairs.size() != 2) {
-		VERBOSE("TripletFilterTest FAILED: m=0.6 left %u pairs, expected 2", scene06.pairs.size());
+	if (FilterPairsByTriplets(scene06, filterCfg, weightingCfg) != 3 || scene06.pairs.size() != 7) {
+		VERBOSE("TripletFilterTest FAILED: m=0.6 left %u pairs, expected 7", scene06.pairs.size());
 		return false;
 	}
-	const std::set<std::pair<IIndex,IIndex>> expectedKept06{{0,1}, {0,2}};
+	const std::set<std::pair<IIndex,IIndex>> expectedKept06{
+		{0,1}, {0,2}, {3,4}, {3,5}, {5,6}, {6,7}, {5,7}};
 	if (keptPairs(scene06) != expectedKept06) {
 		VERBOSE("TripletFilterTest FAILED: m=0.6 kept the wrong pairs");
 		return false;
 	}
 
-	// (e) a graph with no triplet at all scores nothing, and the filter empties it
+	// (e) a graph with no triplet at all scores nothing, so the filter has no evidence to act on
+	// and leaves every pair in place
 	Scene scenePath;
 	static const PairSpec pathSpecs[] = {{0,1,100,true}, {1,2,70,true}, {2,3,40,true}};
 	buildScene(scenePath, pathSpecs, 3);
@@ -7868,8 +7874,9 @@ bool TripletFilterTest()
 			return false;
 		}
 	}
-	if (FilterPairsByTriplets(scenePath, filterCfg, weightingCfg) != 3 || !scenePath.pairs.empty()) {
-		VERBOSE("TripletFilterTest FAILED: a triplet-free graph kept %u pairs, expected none", scenePath.pairs.size());
+	if (FilterPairsByTriplets(scenePath, filterCfg, weightingCfg) != 0 || scenePath.pairs.size() != 3) {
+		VERBOSE("TripletFilterTest FAILED: a triplet-free graph lost %u of 3 pairs",
+			3u - (unsigned)scenePath.pairs.size());
 		return false;
 	}
 
