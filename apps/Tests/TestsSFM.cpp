@@ -7946,15 +7946,17 @@ bool TripletFilterTest()
 	return true;
 }
 
-// Auto-tau treats the paper's tau(m) as a ceiling and, only if the ceiling itself fragments the
-// graph, relaxes to the strictest score below it whose survivor graph keeps 99% of the unfiltered
-// largest component together. The barbell is not enough on its own: on a small graph relaxing
-// below the ceiling can just as well keep everything as fragment it, so a test built only on one
-// scene would keep passing if the search or the 99% bar were broken. The scenes that follow each
-// isolate one property of the search -- the ceiling applied as given, the ceiling passed over for
-// a strictly weaker threshold, the binary search itself, a score sitting exactly at the ceiling --
-// so that weakening any one of them breaks exactly one scene, and the pan pins the search actually
-// finding the strictest reconnecting threshold rather than the loosest one or none at all.
+// Auto-tau treats the paper's tau(m) as a ceiling and, only if the ceiling itself leaves a piece
+// apart, relaxes to the strictest score below it whose survivor graph joins every piece the
+// ceiling leaves. The barbell is not enough on its own: on a small graph relaxing below the
+// ceiling can just as well keep everything as leave a piece apart, so a test built only on one
+// scene would keep passing if the search or the piece-joining bar were broken. The scenes that
+// follow each isolate one property of the search -- the ceiling applied as given, the ceiling
+// passed over for a strictly weaker threshold, the binary search itself, a score sitting exactly
+// at the ceiling -- so that weakening any one of them breaks exactly one scene, the pan pins the
+// search actually finding the strictest reconnecting threshold rather than the loosest one or none
+// at all, and the walk pins that a straggler too small to be a piece is left alone rather than
+// chased.
 bool TripletAutoTauTest()
 {
 	TD_TIMER_START();
@@ -8267,6 +8269,62 @@ bool TripletAutoTauTest()
 	if (numPanRemoved != 10 || panAuto.pairs.size() != 6 || TripletKeptPairs(panAuto) != expectedPanKept) {
 		VERBOSE("TripletAutoTauTest FAILED: the pan lost %u pairs leaving %u; expected exactly the chain and the isolated pair",
 			numPanRemoved, panAuto.pairs.size());
+		return false;
+	}
+
+	// Scene 8, the walk with stragglers. A 120-image walk: consecutive images share 1000 inliers,
+	// images two apart 600, every consecutive triple a triangle. Two stragglers hang off it by one
+	// weak triangle each -- image 120 off (0,1) with 50 and 40 inliers, image 121 off (60,61) the
+	// same way -- and a two-image piece {122,123} (1000 inliers between them) hangs off the far end
+	// through (119,122)=200, (119,123)=200 and (118,122)=150.
+	//   scores: walk (i,i+1) 1.0, (i,i+2) 0.6; (122,123) 1.0; (119,122)=(119,123)=0.2, (118,122)=0.15;
+	//           (0,120)=(60,121)=0.05, (1,120)=(61,121)=0.04
+	//   G_LCT: 124 nodes, max degree 5 (images 60 and 61), ceiling 0.6*(1-5/124)+5/124 = 0.616
+	//   at the ceiling: the walk (120 images), {122,123}, {120}, {121} -- and n0 = 124, so a piece
+	//   is a component of at least ceil(124/100) = 2 images: two pieces holding 122 images, two
+	//   stragglers. The strictest threshold joining both pieces is the 2-piece's bridge, 0.2.
+	//   Everything from 0.2 up stays (the 600-inlier pairs included); the five weaker pairs go,
+	//   and images 120 and 121 are left with no pair -- the 99% rule would have descended to
+	//   0.05 for them and kept the two 0.05 pairs as well.
+	Scene walk;
+	AddTripletImages(walk, 124);
+	for (IIndex i = 0; i + 1 < 120; ++i)
+		AddTripletPair(walk, i, i + 1, 1000);
+	for (IIndex i = 0; i + 2 < 120; ++i)
+		AddTripletPair(walk, i, i + 2, 600);
+	AddTripletPair(walk, 0, 120, 50);
+	AddTripletPair(walk, 1, 120, 40);
+	AddTripletPair(walk, 60, 121, 50);
+	AddTripletPair(walk, 61, 121, 40);
+	AddTripletPair(walk, 122, 123, 1000);
+	AddTripletPair(walk, 119, 122, 200);
+	AddTripletPair(walk, 118, 122, 150);
+	AddTripletPair(walk, 119, 123, 200);
+	const TripletScores walkScores = ComputeTripletScores(walk, 0.6f, 0.f, weightingCfg.gridSize);
+	const SurvivorGraph walkUnfiltered = EvaluateSurvivorGraph(walk, walkScores.scores, 0.f);
+	const SurvivorGraph walkCeiling = EvaluateSurvivorGraph(walk, walkScores.scores, walkScores.tau, 2);
+	if (walkUnfiltered.largestComponent != 124 || walkCeiling.largestComponent != 120 ||
+		walkCeiling.numPieces != 2 || walkCeiling.numInPieces != 122 || walkCeiling.numNodes != 124) {
+		VERBOSE("TripletAutoTauTest FAILED: walk at the ceiling %g: component %u of %u, %u pieces holding %u; "
+			"expected 120 of 124, 2 pieces holding 122",
+			walkScores.tau, walkCeiling.largestComponent, walkUnfiltered.largestComponent,
+			walkCeiling.numPieces, walkCeiling.numInPieces);
+		return false;
+	}
+	TripletFilterConfig walkCfg;
+	walkCfg.enabled = true;
+	walkCfg.minYield = 0.f; // no ray angles here, so the yield rule is off; it is TripletYieldTest's subject
+	const unsigned walkRemoved = FilterPairsByTriplets(walk, walkCfg, weightingCfg);
+	const std::set<std::pair<IIndex,IIndex>> walkKept = TripletKeptPairs(walk);
+	const std::set<std::pair<IIndex,IIndex>> walkGone{{0,120},{1,120},{60,121},{61,121},{118,122}};
+	bool walkRight = walkRemoved == 5 && walkKept.size() == 240;
+	for (const auto& pair : walkGone)
+		walkRight = walkRight && walkKept.count(pair) == 0;
+	walkRight = walkRight && walkKept.count({119,122}) == 1 && walkKept.count({119,123}) == 1 && walkKept.count({0,2}) == 1;
+	if (!walkRight) {
+		VERBOSE("TripletAutoTauTest FAILED: walk with stragglers removed %u pairs, kept %u; expected the five weakest "
+			"pairs removed (both stragglers cut loose, the 2-piece joined at 0.2) and 240 kept",
+			walkRemoved, (unsigned)walkKept.size());
 		return false;
 	}
 

@@ -322,9 +322,9 @@ TripletScores SFM::ComputeTripletScores(const Scene& scene, float minScore, floa
 }
 /*----------------------------------------------------------------*/
 
-SurvivorGraph SFM::EvaluateSurvivorGraph(const Scene& scene, const std::vector<float>& scores, float tau)
+SurvivorGraph SFM::EvaluateSurvivorGraph(const Scene& scene, const std::vector<float>& scores, float tau, unsigned minPiece)
 {
-	SurvivorGraph result{0, 0, 0, 0};
+	SurvivorGraph result{0, 0, 0, 0, 0, 0};
 	ASSERT(scores.size() == scene.pairs.size(), "EvaluateSurvivorGraph: one score per scene pair");
 	const IIndex numImages = scene.images.size();
 	if (numImages == 0)
@@ -371,6 +371,12 @@ SurvivorGraph SFM::EvaluateSurvivorGraph(const Scene& scene, const std::vector<f
 			++result.numLowDegree;
 		result.largestComponent = MAXF(result.largestComponent, ++componentSize[Find((uint32_t)i)]);
 	}
+	for (const auto& component : componentSize) {
+		if (component.second < minPiece)
+			continue;
+		++result.numPieces;
+		result.numInPieces += component.second;
+	}
 	return result;
 }
 /*----------------------------------------------------------------*/
@@ -400,25 +406,39 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 	const float ceiling = tripletScores.tau;
 	float tau = ceiling;
 	if (config.autoTau) {
-		// Below the ceiling, the threshold is the STRICTEST one that keeps the graph together: the
-		// largest value whose survivor graph keeps 99% of the unfiltered largest component in one
-		// piece. Everything scored below that is either a weak true pair the backbone does not
+		// Below the ceiling, the threshold is the STRICTEST one that joins every piece: the largest
+		// value whose survivor graph holds, in one component, every image that the ceiling's
+		// pieces hold together. A piece is a component of the survivor graph at the ceiling with
+		// at least 1% of the unfiltered largest component; anything smaller is a straggler -- an
+		// image the graph vouches for through a single weak pair -- and fetching it would admit
+		// every edge between the ceiling and that pair's score to gain one image (church: from
+		// 0.72 to 0.43 for twenty such images). Stragglers are neither chased nor removed: an
+		// unscored pair still carries them, and so does a bridge above the chosen threshold.
+		// Everything scored below the threshold is either a weak true pair the pieces do not
 		// need or a doppelganger, and nothing in the inlier counts tells the two apart -- on the
-		// ambiguous-scene datasets the doppelganger pairs OUTSCORE the true low-overlap pairs, and
-		// a doppelganger's triangles are mutually consistent -- so the only defensible cut keeps
-		// the strong edges and exactly enough of them. Measured on those datasets that answer
-		// removes 66-96% of the pairs and leaves a chain's two endpoints at degree 1, which is why
-		// there is no bar on how much is removed and none on low-degree images: an image with one
-		// strong edge is in the component and can be resected from it.
+		// ambiguous-scene datasets the doppelganger pairs OUTSCORE the true low-overlap pairs --
+		// so the only defensible cut keeps the strong edges and exactly enough of them. On the
+		// small sets, where every component is a piece, that removes 66-96% of the pairs and
+		// leaves a chain's two endpoints at degree 1, which is why there is no bar on how much is
+		// removed and none on low-degree images.
 		const SurvivorGraph unfiltered = EvaluateSurvivorGraph(scene, tripletScores.scores, 0.f);
-		const unsigned minComponent = (unsigned)std::ceil(0.99 * (double)unfiltered.largestComponent);
-		SurvivorGraph survivor = EvaluateSurvivorGraph(scene, tripletScores.scores, ceiling);
+		const unsigned minPiece = (unsigned)std::ceil(0.01 * (double)unfiltered.largestComponent);
+		SurvivorGraph survivor = EvaluateSurvivorGraph(scene, tripletScores.scores, ceiling, minPiece);
+		// A piece that is its own component already in the fully unfiltered graph -- a verified
+		// pair sharing no triangle with the rest, say -- can never join anything: no tau reconnects
+		// what no edge ever spans. unfiltered.largestComponent is what keeping every scored pair
+		// achieves, so it bounds what any threshold can join; capping at it turns such a piece into
+		// a no-op on the target instead of an unreachable one that stalls the search at the loosest
+		// candidate.
+		const unsigned minComponent = MINF(survivor.numInPieces, unfiltered.largestComponent);
+		const unsigned numPieces = survivor.numPieces;
+		const unsigned numStragglers = survivor.numNodes - survivor.numInPieces;
 		if (survivor.largestComponent < minComponent) {
 			// The largest component only grows as tau falls, so among the distinct scores below
 			// the ceiling, strictest first, the first that passes is a binary search away. The
-			// loosest candidate keeps every scored pair -- the unfiltered graph itself -- so it
-			// always passes, and the ceiling fragmenting the graph means at least one scored pair
-			// sits below it.
+			// loosest candidate keeps every scored pair -- the unfiltered graph itself, whose
+			// largest component holds every piece -- so it always passes, and the ceiling
+			// leaving a piece apart means at least one scored pair sits below it.
 			std::vector<float> candidates;
 			candidates.reserve(tripletScores.numScoredPairs);
 			for (float score : tripletScores.scores)
@@ -426,7 +446,7 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 					candidates.push_back(score);
 			std::sort(candidates.begin(), candidates.end(), std::greater<float>());
 			candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
-			ASSERT(!candidates.empty(), "FilterPairsByTriplets: the ceiling fragments a graph with no score below it");
+			ASSERT(!candidates.empty(), "FilterPairsByTriplets: the ceiling leaves a piece apart with no score below it");
 			size_t lo = 0, hi = candidates.size() - 1;
 			while (lo < hi) {
 				const size_t mid = (lo + hi) / 2;
@@ -438,11 +458,12 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 			tau = candidates[lo];
 			survivor = EvaluateSurvivorGraph(scene, tripletScores.scores, tau);
 		}
-		VERBOSE("Triplet filter: tau %.3f, %s (ceiling %.3f at m %.2f, d_max/|V| %.3f); survivor graph "
-			"keeps %u/%u images in its largest component, %u below degree 2 (%u before), "
-			"and %u/%u distinct image pairs",
-			tau, tau < ceiling ? "the strictest threshold that keeps the graph together" : "the ceiling applied as given",
-			ceiling, minScore, degreeRatio, survivor.largestComponent, unfiltered.largestComponent,
+		VERBOSE("Triplet filter: tau %.3f, %s (ceiling %.3f at m %.2f, d_max/|V| %.3f); the ceiling leaves "
+			"%u pieces of at least %u images holding %u, %u stragglers; survivor graph keeps %u/%u images "
+			"in its largest component, %u below degree 2 (%u before), and %u/%u distinct image pairs",
+			tau, tau < ceiling ? "the strictest threshold that joins every piece" : "the ceiling applied as given",
+			ceiling, minScore, degreeRatio, numPieces, minPiece, minComponent, numStragglers,
+			survivor.largestComponent, unfiltered.largestComponent,
 			survivor.numLowDegree, unfiltered.numLowDegree, survivor.numKept, unfiltered.numKept);
 	}
 	// compact in one forward pass -- moving every kept pair down and truncating once -- rather

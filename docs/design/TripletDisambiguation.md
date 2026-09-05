@@ -35,11 +35,13 @@ and `c_ij = ComputePairCoverage(...)` the fraction of the frame the inliers cove
    ambiguous, 0.3 medium/small ambiguous.
 4. **Selection.** Keep `(i,j)` iff `q_ij >= tau` (Theorem 1: this solves the paper's regularised
    edge-selection problem); unscored pairs are removed. `tau` is Eqn. 3's value at `m`, but with
-   `--triplet-auto-tau` (the default) that value is only a **ceiling**: the threshold actually used
-   is the strictest one below it whose survivor graph still keeps 99% of the unfiltered largest
-   connected component together, or the ceiling itself when it already does. The paper's step 11,
-   extracting the largest component of the filtered graph, is **not** applied — `SceneCluster`
-   already selects components.
+   `--triplet-auto-tau` (the default) that value is only a **ceiling**: below it, the threshold
+   actually used is the strictest one whose survivor graph joins every *piece* — a component of the
+   ceiling's survivor graph holding at least 1% of the unfiltered largest component — or the ceiling
+   itself when it already does. A straggler smaller than that is neither chased nor removed: fetching
+   it would admit every edge between the ceiling and the single weak pair that attaches it, for one
+   image. The paper's step 11, extracting the largest component of the filtered graph, is **not**
+   applied — `SceneCluster` already selects components.
 
 *Why it catches what the existing cycle test cannot.* `ImagePair::weightTriplet`
 (`PairsWeighting.cpp`) scores a pair by how many of its triangles close rotationally, and a
@@ -71,7 +73,7 @@ edge, nothing is scored, and the filter removes the **whole** graph — the log 
 | Flag | Default | Effect |
 |---|---|---|
 | `--filter-triplets B` | **`false`** | apply the filter to the matched view graph |
-| `--triplet-auto-tau B` | **`true`** | treat `tau(m)` as a ceiling and relax below it to the strictest threshold that keeps 99% of the largest connected component together; off applies `tau(m)` as given |
+| `--triplet-auto-tau B` | **`true`** | treat `tau(m)` as a ceiling and relax below it to the strictest threshold that joins every piece the ceiling leaves apart; off applies `tau(m)` as given |
 | `--triplet-min-score F` | `0.6` | the paper's minimum edge score *m*, in (0,1); with `--triplet-auto-tau` the ceiling the threshold is derived from, otherwise applied as given |
 
 Python: `TripletFilterConfig(enabled, min_score)`, `ReconstructionConfig.triplet_filter_cfg`, and `compute_triplet_scores(scene, m)` → the scores, `tau` and the graph statistics.
