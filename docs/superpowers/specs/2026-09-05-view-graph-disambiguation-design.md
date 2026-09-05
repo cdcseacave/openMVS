@@ -86,9 +86,11 @@ must not give back the one place the filter earns its keep.
 Score once. The paper's Eqn. 3, `tau(m) = m (1 - r) + r` with `r = d_max/|V|` of `G_LCT`, is the
 **ceiling**: the filter is never stricter than the `m` it was given. Below it, the threshold is the
 **strictest** `tau` whose survivor graph — every unscored pair, every pair scoring at or above
-`tau` — keeps at least 99 % of the unfiltered graph's largest connected component in one component.
-There is no other bar. If the ceiling itself keeps the graph together it is applied as given; if
-nothing above the lowest score does, the lowest score is chosen and nothing is removed.
+`tau` — joins every *piece* the ceiling leaves: a component of the survivor graph at the ceiling
+holding at least 1 % of the unfiltered graph's largest component (§3.7; on a set of fewer than 101
+images every component is a piece). There is no other bar. If the ceiling itself joins every piece
+it is applied as given; if nothing above the lowest score does, the lowest score is chosen and
+nothing is removed.
 
 **Why the strictest, and why connectivity alone.** This was decided against the standard
 ambiguous-scene datasets (`~/virginia/datasets/Disambiguation`, the sets of Yan et al. 2017 and
@@ -316,6 +318,46 @@ back to the descent of §3.2, which is where it was before this rule.
 **The frontier after this cue is still cereal**, and now also the first real measurement on the
 heinly2014 collections, whose images are not a walk: the envelope there is set by the tourists'
 near-duplicate photos, which every popular viewpoint has.
+
+### 3.7 The descent does not chase stragglers
+
+§3.2's descent was written against the small sets, where the ceiling shatters a complete graph
+into pieces of two to nine frames and reassembling them *is* the job. On the internet collections
+the ceiling leaves something else (`triplet_replay.py --bridges` on the base graphs, §3.6's rules):
+
+| set | images | ceiling | components at the ceiling | descent under the 99 % rule |
+|---|---|---|---|---|
+| church | 277 | 0.723 | 257, 4, 2, 2, 1, 1, ... (16) | to 0.426, 3273 pairs kept against ~2450 at the ceiling, for 20 images in pieces of 1-4 |
+| big_ben | 402 | 0.682 | 392, 2, 1, 1, 1, 1, ... (10) | to 0.517 for 10 images in pieces of 1-2 |
+| radcliffe | 282 | 0.734 | 218, 47, 2, 2, 2, 1, ... (16) | to 0.293 — the 47-piece joins at 0.559 through one 63-inlier pair, the rest of the way is for twelve stragglers |
+| indoor | 152 | 0.808 | 106, 46 | to 0.774, one bridging pair of 471 inliers, coverage 0.68, yield 0.97 |
+| street ... cup | 19-64 | 0.98-0.99 | 5, 4, 3, 3, 2, 2 / 17, 9, 8, 7, 7, 5, ... | as §3.2 |
+
+A one- or two-image component the ceiling leaves behind is not an over-split: it is an image the
+graph vouches for through a single weak pair (23-63 inliers on radcliffe's bridges). Descending
+to fetch it admits *every* edge between the ceiling and that pair's score — hundreds of pairs on
+church, doppelgangers among them — to gain one image, which the paper simply drops and which
+resection can still register if its unscored pairs carry it.
+
+**Rule.** A *piece* is a component of the survivor graph at the ceiling holding at least 1 % of
+the unfiltered graph's largest component (`ceil(n0 / 100)` images, so every component counts on a
+set of fewer than 101 images); anything smaller is a straggler. The threshold is the strictest one
+at or below the ceiling whose survivor graph joins every piece into one component — its largest
+component holds at least the images the pieces hold together. There is no percentage any more: the
+99 % of §3.2 was a straggler allowance that fitted the small sets (where it rounds to 100 %) and is
+too small on the large ones. Stragglers are neither chased nor removed: they keep whatever
+unscored pairs they have, and a scored bridge that happens to sit above the chosen threshold keeps
+them attached.
+
+On the small sets this changes nothing: `ceil(n0 / 100)` = 1 there, every component is a piece and
+"every piece joined" is what 99 % rounded to. On church and big_ben the ceiling now applies as
+given (church joins its 4-piece at 0.652); on radcliffe the descent stops at 0.559, where the
+47-image piece joins; on indoor the two halves still join through their one strong bridge — whether
+that pair is a true junction or a look-alike is the reconstruction's answer (§5.7), not the filter's.
+
+Cost if wrong: a genuine sub-scene of fewer than 1 % of the images (a detail cluster of a large
+collection) that only connects below the ceiling is left as its own component instead of being
+joined — the paper's behaviour, and a separate model rather than a wrong merge.
 
 ### 3.4 Where the filter runs
 

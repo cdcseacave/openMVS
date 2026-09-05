@@ -1732,6 +1732,253 @@ scores. Replayed on the reference sets this empties every look-alike band of the
 changes nothing on the small sets; the yield never scales a strength."
 ```
 
+### Task 8: The descent does not chase stragglers
+
+Spec §3.7. The descent of Task 5 lowers the threshold until 99 % of the unfiltered largest
+component is back in one piece. On the internet collections the ceiling leaves one big component
+and a tail of one- to four-image stragglers, each attached to the graph by a single weak pair, and
+fetching them costs everything between the ceiling and that pair's score: church descends from
+0.723 to 0.426 and keeps 800 more pairs for 20 images; radcliffe from 0.734 to 0.293 for twelve.
+A straggler is not an over-split. From now on a *piece* is a component of the survivor graph at
+the ceiling holding at least `ceil(n0 / 100)` images (`n0` the unfiltered largest component), and
+the threshold is the strictest one whose survivor graph joins every piece — its largest component
+holds at least as many images as the pieces hold together. Stragglers are left as they are. On
+sets under 101 images every component is a piece, so the six small sets and their tests are
+unchanged.
+
+**Files:**
+- Modify: `libs/SFM/ViewGraphTriplets.h` (`SurvivorGraph` gains `numPieces` and `numInPieces`; `EvaluateSurvivorGraph` gains `minPiece`; comments)
+- Modify: `libs/SFM/ViewGraphTriplets.cpp` (`EvaluateSurvivorGraph` counts pieces; `FilterPairsByTriplets` derives the target from the pieces and logs them)
+- Modify: `apps/Tests/TestsSFM.cpp` (`TripletAutoTauTest` gains the straggler scene)
+- Modify: `docs/design/TripletDisambiguation.md` (the threshold paragraph)
+- Modify: `docs/superpowers/specs/2026-09-05-view-graph-disambiguation-design.md` §3.2 first paragraph — already amended by the controller; do not touch.
+
+**Interfaces:**
+- Consumes: `EvaluateSurvivorGraph`, `TripletScores`, `FilterPairsByTriplets`'s existing descent (binary search over the distinct scores below the ceiling).
+- Produces: `SurvivorGraph SFM_API EvaluateSurvivorGraph(const Scene& scene, const std::vector<float>& scores, float tau, unsigned minPiece = 1)`; `unsigned SurvivorGraph::numPieces` (components of at least `minPiece` nodes) and `unsigned SurvivorGraph::numInPieces` (nodes in them).
+
+- [ ] **Step 1: Write the failing test**
+
+In `apps/Tests/TestsSFM.cpp`, inside `TripletAutoTauTest`, right before its final `VERBOSE(... PASSED ...)`
+line, add the straggler scene. It uses the test's existing `weightingCfg` (grid size 1) and follows
+the test's existing pattern of building a `TripletFilterConfig` with `enabled = true` and
+`minYield = 0.f`:
+
+```cpp
+	// Scene 5, the walk with stragglers. A 120-image walk: consecutive images share 1000 inliers,
+	// images two apart 600, every consecutive triple a triangle. Two stragglers hang off it by one
+	// weak triangle each -- image 120 off (0,1) with 50 and 40 inliers, image 121 off (60,61) the
+	// same way -- and a two-image piece {122,123} (1000 inliers between them) hangs off the far end
+	// through (119,122)=200, (119,123)=200 and (118,122)=150.
+	//   scores: walk (i,i+1) 1.0, (i,i+2) 0.6; (122,123) 1.0; (119,122)=(119,123)=0.2, (118,122)=0.15;
+	//           (0,120)=(60,121)=0.05, (1,120)=(61,121)=0.04
+	//   G_LCT: 124 nodes, max degree 5 (images 60 and 61), ceiling 0.6*(1-5/124)+5/124 = 0.616
+	//   at the ceiling: the walk (120 images), {122,123}, {120}, {121} -- and n0 = 124, so a piece
+	//   is a component of at least ceil(124/100) = 2 images: two pieces holding 122 images, two
+	//   stragglers. The strictest threshold joining both pieces is the 2-piece's bridge, 0.2.
+	//   Everything from 0.2 up stays (the 600-inlier pairs included); the five weaker pairs go,
+	//   and images 120 and 121 are left with no pair -- the 99% rule would have descended to
+	//   0.05 for them and kept the two 0.05 pairs as well.
+	Scene walk;
+	AddTripletImages(walk, 124);
+	for (IIndex i = 0; i + 1 < 120; ++i)
+		AddTripletPair(walk, i, i + 1, 1000);
+	for (IIndex i = 0; i + 2 < 120; ++i)
+		AddTripletPair(walk, i, i + 2, 600);
+	AddTripletPair(walk, 0, 120, 50);
+	AddTripletPair(walk, 1, 120, 40);
+	AddTripletPair(walk, 60, 121, 50);
+	AddTripletPair(walk, 61, 121, 40);
+	AddTripletPair(walk, 122, 123, 1000);
+	AddTripletPair(walk, 119, 122, 200);
+	AddTripletPair(walk, 118, 122, 150);
+	AddTripletPair(walk, 119, 123, 200);
+	const TripletScores walkScores = ComputeTripletScores(walk, 0.6f, 0.f, weightingCfg.gridSize);
+	const SurvivorGraph walkUnfiltered = EvaluateSurvivorGraph(walk, walkScores.scores, 0.f);
+	const SurvivorGraph walkCeiling = EvaluateSurvivorGraph(walk, walkScores.scores, walkScores.tau, 2);
+	if (walkUnfiltered.largestComponent != 124 || walkCeiling.largestComponent != 120 ||
+		walkCeiling.numPieces != 2 || walkCeiling.numInPieces != 122 || walkCeiling.numNodes != 124) {
+		VERBOSE("TripletAutoTauTest FAILED: walk at the ceiling %g: component %u of %u, %u pieces holding %u; "
+			"expected 120 of 124, 2 pieces holding 122",
+			walkScores.tau, walkCeiling.largestComponent, walkUnfiltered.largestComponent,
+			walkCeiling.numPieces, walkCeiling.numInPieces);
+		return false;
+	}
+	TripletFilterConfig walkCfg;
+	walkCfg.enabled = true;
+	walkCfg.minYield = 0.f; // no ray angles here, so the yield rule is off; it is TripletYieldTest's subject
+	const unsigned walkRemoved = FilterPairsByTriplets(walk, walkCfg, weightingCfg);
+	const std::set<std::pair<IIndex,IIndex>> walkKept = TripletKeptPairs(walk);
+	const std::set<std::pair<IIndex,IIndex>> walkGone{{0,120},{1,120},{60,121},{61,121},{118,122}};
+	bool walkRight = walkRemoved == 5 && walkKept.size() == 240;
+	for (const auto& pair : walkGone)
+		walkRight = walkRight && walkKept.count(pair) == 0;
+	walkRight = walkRight && walkKept.count({119,122}) == 1 && walkKept.count({119,123}) == 1 && walkKept.count({0,2}) == 1;
+	if (!walkRight) {
+		VERBOSE("TripletAutoTauTest FAILED: walk with stragglers removed %u pairs, kept %u; expected the five weakest "
+			"pairs removed (both stragglers cut loose, the 2-piece joined at 0.2) and 240 kept",
+			walkRemoved, (unsigned)walkKept.size());
+		return false;
+	}
+```
+
+Update the test's leading comment block (the one describing its scenes, if any) and its PASSED
+message to mention the straggler scene.
+
+- [ ] **Step 2: Run the suite to verify it fails**
+
+Run: `cd make && ninja -f build-Release.ninja Tests 2>&1 | tail -5`
+Expected: compile errors — `numPieces`, `numInPieces` and the four-argument `EvaluateSurvivorGraph`
+do not exist yet.
+
+- [ ] **Step 3: Pieces in the survivor graph**
+
+In `libs/SFM/ViewGraphTriplets.h`:
+
+```cpp
+// The view graph the filter would leave behind at a given threshold: what the search judges.
+struct SFM_API SurvivorGraph
+{
+	unsigned numNodes;          // images incident to at least one edge of the UNFILTERED graph
+	unsigned largestComponent;  // images in the largest connected component of the kept edges
+	unsigned numLowDegree;      // of those nodes, how many have degree < 2 in the kept graph
+	unsigned numKept;           // kept edges: a scene pair duplicating an already-counted image
+	                            // pair counts once, matching ComputeTripletScores' own collapse
+	unsigned numPieces;         // components of the kept graph holding at least minPiece nodes
+	unsigned numInPieces;       // nodes in those components; the rest are stragglers
+};
+
+// Evaluate the graph left by keeping every unscored pair and every pair scoring at or above `tau`.
+// Pass tau = 0 for the unfiltered graph: scores lie in [0,1] and unscored pairs are always kept.
+// Nodes are counted on the unfiltered graph, so an image that loses all its edges still counts as
+// a node -- with degree 0, which is exactly what the low-degree test is there to catch.
+// A component of at least minPiece nodes is a piece; the filter's descent joins pieces and lets
+// stragglers be (see FilterPairsByTriplets).
+SurvivorGraph SFM_API EvaluateSurvivorGraph(const Scene& scene, const std::vector<float>& scores, float tau, unsigned minPiece = 1);
+```
+
+In `libs/SFM/ViewGraphTriplets.cpp`, `EvaluateSurvivorGraph` initialises the two new counters to 0
+with the others and, after the loop that fills `componentSize`, counts:
+
+```cpp
+	for (const auto& component : componentSize) {
+		if (component.second < minPiece)
+			continue;
+		++result.numPieces;
+		result.numInPieces += component.second;
+	}
+```
+
+- [ ] **Step 4: The descent joins pieces**
+
+In `FilterPairsByTriplets`, the block under `if (config.autoTau)` becomes:
+
+```cpp
+	if (config.autoTau) {
+		// Below the ceiling, the threshold is the STRICTEST one that joins every piece: the largest
+		// value whose survivor graph holds, in one component, every image that the ceiling's
+		// pieces hold together. A piece is a component of the survivor graph at the ceiling with
+		// at least 1% of the unfiltered largest component; anything smaller is a straggler -- an
+		// image the graph vouches for through a single weak pair -- and fetching it would admit
+		// every edge between the ceiling and that pair's score to gain one image (church: from
+		// 0.72 to 0.43 for twenty such images). Stragglers are neither chased nor removed: an
+		// unscored pair still carries them, and so does a bridge above the chosen threshold.
+		// Everything scored below the threshold is either a weak true pair the pieces do not
+		// need or a doppelganger, and nothing in the inlier counts tells the two apart -- on the
+		// ambiguous-scene datasets the doppelganger pairs OUTSCORE the true low-overlap pairs --
+		// so the only defensible cut keeps the strong edges and exactly enough of them. On the
+		// small sets, where every component is a piece, that removes 66-96% of the pairs and
+		// leaves a chain's two endpoints at degree 1, which is why there is no bar on how much is
+		// removed and none on low-degree images.
+		const SurvivorGraph unfiltered = EvaluateSurvivorGraph(scene, tripletScores.scores, 0.f);
+		const unsigned minPiece = (unsigned)std::ceil(0.01 * (double)unfiltered.largestComponent);
+		SurvivorGraph survivor = EvaluateSurvivorGraph(scene, tripletScores.scores, ceiling, minPiece);
+		const unsigned minComponent = survivor.numInPieces;
+		const unsigned numPieces = survivor.numPieces;
+		const unsigned numStragglers = survivor.numNodes - survivor.numInPieces;
+		if (survivor.largestComponent < minComponent) {
+			// The largest component only grows as tau falls, so among the distinct scores below
+			// the ceiling, strictest first, the first that passes is a binary search away. The
+			// loosest candidate keeps every scored pair -- the unfiltered graph itself, whose
+			// largest component holds every piece -- so it always passes, and the ceiling
+			// leaving a piece apart means at least one scored pair sits below it.
+			std::vector<float> candidates;
+			candidates.reserve(tripletScores.numScoredPairs);
+			for (float score : tripletScores.scores)
+				if (score >= 0.f && score < ceiling)
+					candidates.push_back(score);
+			std::sort(candidates.begin(), candidates.end(), std::greater<float>());
+			candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
+			ASSERT(!candidates.empty(), "FilterPairsByTriplets: the ceiling leaves a piece apart with no score below it");
+			size_t lo = 0, hi = candidates.size() - 1;
+			while (lo < hi) {
+				const size_t mid = (lo + hi) / 2;
+				if (EvaluateSurvivorGraph(scene, tripletScores.scores, candidates[mid]).largestComponent >= minComponent)
+					hi = mid;
+				else
+					lo = mid + 1;
+			}
+			tau = candidates[lo];
+			survivor = EvaluateSurvivorGraph(scene, tripletScores.scores, tau);
+		}
+		VERBOSE("Triplet filter: tau %.3f, %s (ceiling %.3f at m %.2f, d_max/|V| %.3f); the ceiling leaves "
+			"%u pieces of at least %u images holding %u, %u stragglers; survivor graph keeps %u/%u images "
+			"in its largest component, %u below degree 2 (%u before), and %u/%u distinct image pairs",
+			tau, tau < ceiling ? "the strictest threshold that joins every piece" : "the ceiling applied as given",
+			ceiling, minScore, degreeRatio, numPieces, minPiece, minComponent, numStragglers,
+			survivor.largestComponent, unfiltered.largestComponent,
+			survivor.numLowDegree, unfiltered.numLowDegree, survivor.numKept, unfiltered.numKept);
+	}
+```
+
+Delete the previous comment and code of that block entirely (the 99 % target, `minComponent` from
+`0.99 * largestComponent`, and the "keeps the graph together" wording); nothing of the old rule
+stays. Check the file's header comment and the `TripletFilterConfig::autoTau` comment for the
+words "99%" or "keeps the graph together" and reword them to "joins every piece the ceiling
+leaves" — the header paragraph and the `autoTau` comment both mention the rule.
+
+- [ ] **Step 5: The design note**
+
+In `docs/design/TripletDisambiguation.md`, the paragraph or step describing the connectivity-driven
+threshold (search for "99") states the new rule in two sentences: below the ceiling the threshold
+is the strictest one whose survivor graph joins every piece — a component of the ceiling's survivor
+graph holding at least 1 % of the unfiltered largest component — and stragglers smaller than that
+are neither chased nor removed.
+
+- [ ] **Step 6: Build, run the SFM suite, mutate**
+
+Run: `cd make && ninja -f build-Release.ninja Tests SFM CreateStructure SceneAnalyzeSFM 2>&1 | tail -3 && ./bin/Release/Tests 1 2>&1 | /usr/bin/grep -E 'Triplet|FAILED' | tail -8`
+Expected: `TripletFilterTest`, `TripletAutoTauTest` (all five scenes), `TripletCoverageTest`,
+`TripletYieldTest` PASSED, exit code 0. The four earlier scenes of `TripletAutoTauTest` must keep
+every literal: on graphs under 101 nodes `minPiece` is 1, every component is a piece, and "every
+piece joined" is what `ceil(0.99 * n)` rounds to there.
+
+Then each mutation in turn (rebuild `Tests`, run, restore):
+
+| mutation | expected failure |
+|---|---|
+| `minPiece` forced to 1 in `FilterPairsByTriplets` | walk scene: the target becomes 124, the descent goes to 0.05 and removes 2 pairs instead of 5 |
+| `component.second < minPiece` → `component.second <= minPiece` in `EvaluateSurvivorGraph` | walk scene: `numPieces` 1, `numInPieces` 120 at the ceiling — the first assertion fails |
+| `minComponent = survivor.numInPieces` → `survivor.largestComponent` (the target equals what the ceiling already has) | walk scene: tau stays at the ceiling, the 2-piece is not joined, 5 + 118 pairs removed |
+
+Report the exact failing line of each in the report file, and confirm the suite is green again
+with the mutations reverted.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add libs/SFM/ViewGraphTriplets.h libs/SFM/ViewGraphTriplets.cpp apps/Tests/TestsSFM.cpp docs/design/TripletDisambiguation.md
+git -c user.name=cDc -c user.email=cdc.seacave@gmail.com commit -m "sfm: the triplet threshold joins the pieces the ceiling leaves and lets stragglers be
+
+On the internet collections the ceiling leaves one large component and a tail of one- to
+four-image stragglers, each attached by a single weak pair, and descending to fetch them
+admits every edge between the ceiling and that pair's score: church went from 0.72 to 0.43
+and kept 800 more pairs for twenty images. A piece is a component of the ceiling's survivor
+graph holding at least 1% of the unfiltered largest component; the threshold is now the
+strictest one that joins every piece, and a straggler keeps whatever pairs sit above it.
+On sets under 101 images every component is a piece and nothing changes."
+```
+
 ## Measurement (the controller's, after the branch is green)
 
 Not tasks and not a subagent's: they run the pipeline and read datasets, which no implementer does.
