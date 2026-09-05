@@ -86,7 +86,7 @@ denser one (Radcliffe matched exhaustively: the 120-image piece rather than the 
 |---|---|---|
 | `--filter-triplets B` | **`false`** | apply the filter to the matched view graph |
 | `--triplet-auto-tau B` | **`true`** | treat `tau(m)` as a ceiling and relax below it to the strictest threshold that joins every piece the ceiling leaves apart; off applies `tau(m)` as given |
-| `--triplet-min-score F` | `0.6` | the paper's minimum edge score *m*, in (0,1); with `--triplet-auto-tau` the ceiling the threshold is derived from, otherwise applied as given |
+| `--triplet-min-score F` | `0.75` | the paper's minimum edge score *m*, in (0,1); with `--triplet-auto-tau` the ceiling the threshold is derived from, otherwise applied as given; 0.75 rather than the paper's 0.6 because the church matched exhaustively splits at the ceiling in every matching at 0.75 and in half of them at 0.6 |
 
 Python: `TripletFilterConfig(enabled, min_score)`, `ReconstructionConfig.triplet_filter_cfg`, and `compute_triplet_scores(scene, m)` → the scores, `tau` and the graph statistics.
 

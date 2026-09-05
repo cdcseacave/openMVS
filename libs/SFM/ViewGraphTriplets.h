@@ -56,10 +56,15 @@ struct SFM_API TripletFilterConfig
 	// The paper's tau(m) is a ceiling: below it, the threshold is the strictest one whose survivor
 	// graph joins every piece the ceiling leaves. Off, tau(m) is applied as given.
 	bool autoTau = true;
-	// The paper's minimum edge score m, in [0,1] (the domain this implementation enforces): 0.6
-	// generic/large-scale, 0.9 highly ambiguous, 0.3 medium/small ambiguous. With autoTau this is
-	// the ceiling the threshold is derived from and never exceeds.
-	float minScore = 0.6f;
+	// The paper's minimum edge score m, in [0,1] (the domain this implementation enforces). With
+	// autoTau this is the ceiling the threshold is derived from and never exceeds. The paper's
+	// values are 0.6 generic/large-scale, 0.9 highly ambiguous, 0.3 medium/small ambiguous, for a
+	// score without coverage or yield; 0.75 here is the middle of the band in which an exhaustively
+	// matched two-faced building (the church, four matchings) splits into its faces at the ceiling
+	// whatever north-south pairs the matcher happens to verify -- at 0.6 the ceiling (0.942) sits
+	// among those pairs' scores and two matchings of four merge the faces. Sets whose ceiling
+	// shatters the graph are untouched: the descent reaches the same threshold whatever m is.
+	float minScore = 0.75f;
 	// A triangle whose three pairs all yield less than this fraction of the inliers pairs at their
 	// ray angle deliver in this graph (ComputeTripletScores) is a doppelganger triangle -- look-alike
 	// copies vouching for one another -- and gives its edges no evidence. 0 switches the rule off.

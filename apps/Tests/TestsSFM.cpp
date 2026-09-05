@@ -8317,6 +8317,7 @@ bool TripletAutoTauTest()
 	}
 	TripletFilterConfig walkCfg;
 	walkCfg.enabled = true;
+	walkCfg.minScore = 0.6f; // the scene's ceiling and the counts below were derived at the paper's generic m
 	walkCfg.minYield = 0.f; // no ray angles here, so the yield rule is off; it is TripletYieldTest's subject
 	IIndexArr walkSeeds;
 	const unsigned walkRemoved = FilterPairsByTriplets(walk, walkCfg, weightingCfg, &walkSeeds);
@@ -8382,6 +8383,7 @@ bool TripletAutoTauTest()
 	}
 	TripletFilterConfig chainsCfg;
 	chainsCfg.enabled = true;
+	chainsCfg.minScore = 0.6f; // the scene's ceiling and the counts below were derived at the paper's generic m
 	chainsCfg.minYield = 0.f;
 	IIndexArr chainsSeeds;
 	const unsigned chainsRemoved = FilterPairsByTriplets(chains, chainsCfg, weightingCfg, &chainsSeeds);
@@ -8508,6 +8510,12 @@ bool TripletYieldTest()
 	build(scene);
 	const unsigned idx01 = 0, idx02 = 14, idx03 = 27, idx06 = 28; // in order of insertion
 	const TripletFilterConfig defaults;
+	if (!ISEQUAL(defaults.minScore, 0.75f)) {
+		VERBOSE("TripletYieldTest FAILED: default minimum score %g; expected 0.75, the middle of the band in which "
+			"an exhaustively matched two-faced building splits at the ceiling whatever pairs the matcher verifies",
+			defaults.minScore);
+		return false;
+	}
 	const TripletScores scores = ComputeTripletScores(scene, 0.f, defaults.minYield, weightingCfg.gridSize);
 	if (scores.numTriplets != 31 || scores.numDoppelgangerTriplets != 10 || scores.numScoredPairs != 37 ||
 		!ISEQUAL(scores.scores[idx01], 1.f) || !ISEQUAL(scores.scores[idx02], 0.6f) ||
