@@ -187,10 +187,14 @@ The filter runs at `Scene.cpp:697`, in `Reconstruct`. `ViewGraphCalibrator` runs
 `Scene.cpp:639`, inside `MatchPairs`. So the calibrator solves focal lengths over the **unfiltered**
 graph, doppelganger edges included, and the filter only sees the graph afterwards.
 
-Removing those edges first should hand the calibrator a cleaner graph. This is untested, and it is
-a *measurement* in this spec (§5.4), not a code change: the arm runs the filter in both positions
-and reports the calibrated focals and the registration that follows. A move lands only if the
-measurement supports it.
+Removing those edges first should hand the calibrator a cleaner graph. This is untested, and it is a
+*measurement* (§5.4) rather than a feature: the arm runs the filter in both positions and reports
+the calibrated focals and the registration that follows.
+
+Running that A/B does need the call moved, so the "before" arm is built from a **throwaway local
+edit, never a configuration switch**. Where the filter runs is a property of the pipeline, not a
+user's choice, and shipping both positions behind a flag would be exactly the kind of parallel route
+this branch does not take. Whichever position the measurement supports becomes the only one.
 
 ## 4. What changes
 
