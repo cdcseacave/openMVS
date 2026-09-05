@@ -755,7 +755,7 @@ measured offline before either gates an edge."
 - Produces: nothing code reads.
 
 The note was written for an earlier version of the filter and is now wrong in three places and silent
-about four rules. Everything a sentence claims about *this implementation* must be true of the code as
+about five rules. Everything a sentence claims about *this implementation* must be true of the code as
 it now stands; a sentence describing the paper may stay. Every number below came from a measurement:
 use it exactly as given, never rounded, restated or re-derived, and never invent a number that is not
 here. The note has no readers of the plan: no task numbers, ruling numbers or process words.
@@ -776,7 +776,8 @@ Rewrite "The algorithm" so that it states, in order:
 2. The triplet graph and `G_LCT`; every other edge is **unscored** (as now).
 3. The score, with the yield rule (as now; `minYield` is `TripletFilterConfig::minYield`, 0.4, a
    configuration field without a command-line flag).
-4. The ceiling `tau(m)` of Eqn. 3 over `G_LCT` (as now).
+4. The ceiling `tau(m)` of Eqn. 3 over `G_LCT` at the paper's generic `m` 0.6 (as now, with the
+   default corrected).
 5. **Selection**, corrected: a scored pair is removed iff its score is below the threshold; an
    **unscored pair is kept** — the paper's step 1 discards every edge outside `G_LCT`, but on the two
    labelled references those pairs are overwhelmingly true (426 of 490 on one capture, 415 of 441 on
@@ -790,7 +791,19 @@ Rewrite "The algorithm" so that it states, in order:
    graph joins every piece in one component. Stragglers (smaller than a piece, or in a different
    component of the unfiltered graph) are neither chased nor removed. The paper's step 11 (largest
    component) is not applied. Keep the note's existing reasons for each of these.
-7. **Seeding**: the filter reports the images of the largest piece the ceiling leaves (ties to the
+7. **The second face** (`--triplet-second-face-score`, 0.75, part of `--triplet-auto-tau`): before
+   any of item 6, the ceiling at `m` 0.75 is tried first, and it is the ceiling when the graph it
+   leaves is *two-faced* — its largest piece holds a strict majority of the images in pieces and its
+   second-largest piece holds at least a third of the largest; otherwise the paper's ceiling at 0.6
+   stands. Why: on a two-faced building the paper's ceiling sits among the scores of the pairs
+   bridging the facades (the church: 0.942 at 0.6, bridges scoring 0.89-0.96, merged in two matchings
+   of four; at 0.75 every one of seven graphs splits into the facades, 130-135 and 80-83 images),
+   while on a building whose graph is one face the stricter ceiling cuts the graph so thin that the
+   reconstruction discards most of what it registers (Big Ben: 147 of 403 images at 0.75, 371 at
+   0.6, one piece either way); a second piece of a third is the bar because the other face of a
+   two-faced building holds a substantial share of the views and a night or detail cluster hanging
+   off the largest piece holds a few percent (Brandenburg: 7 of 102 at 0.75).
+8. **Seeding**: the filter reports the images of the largest piece the ceiling leaves (ties to the
    piece holding the lowest image index), and `StarInitializer::SelectReferenceView` chooses the
    reconstruction's reference view among them — the heaviest by weighted inliers that has at least
    `minViews - 1` valid pairs (three by default), else the next, else every image. Why: the resection
@@ -816,7 +829,8 @@ Selected reference view 130 with 45072 connections over 41 pairs among 105 seed 
 In the flags table, the `--triplet-auto-tau` row reads: "treat `tau(m)` as a ceiling: below it, the
 strictest threshold that joins every piece the ceiling leaves, unless the largest piece already holds a
 majority of the images in pieces, in which case the ceiling is applied as given; off applies `tau(m)`
-as given". Add one sentence after the table: "`TripletFilterConfig::minYield` (0.4) has no flag."
+as given, the second face included". The `--triplet-min-score` and `--triplet-second-face-score` rows
+stay as they are. Add one sentence after the table: "`TripletFilterConfig::minYield` (0.4) has no flag."
 Check the Python sentence against `libs/SFM/PythonWrapper.cpp` (`/usr/bin/grep -n "triplet\|Triplet"
 libs/SFM/PythonWrapper.cpp`) and make it name exactly the bindings that exist. Check that
 `scripts/python/tests/triplet_disambiguation.py` still exists (it does today) and describes what the
@@ -836,10 +850,13 @@ Heaven `ToH` 338) and the internet collections of Heinly et al. 2014 (`indoor` 1
 `alexander_nevsky_cathedral` 449). Reference counts are registered images: the paper's own filter
 `G_F` (Manam and Govindu 2024, Table 1, `m = 0.3` on these sets) and Doppelgangers++ (Xiangli et al.,
 Table 2, `a+b` = two models). Matching is exhaustive, as in the paper's reference implementation; the
-filter's `m` is its default 0.75. On the sets whose ceiling shatters the graph `m` only sets a ceiling
-the descent replaces, and the paper's 0.6 or 0.3 give the same thresholds; on the church it decides:
-at 0.6 the ceiling (0.942) sits among the scores of the pairs bridging the facades and two matchings of
-four merged them, at 0.75 (0.964) all six graphs seen split.
+filter's minimum score is its default 0.6 and its second-face score 0.75. On the sets whose ceiling
+shatters the graph `m` only sets a ceiling the descent replaces, and the paper's 0.6 or 0.3 give the
+same thresholds; on the church the second ceiling decides: at 0.6 the ceiling (0.942) sits among the
+scores of the pairs bridging the facades and two matchings of four merged them, at 0.75 (0.964) every
+graph seen leaves the two facades as a majority piece and a second piece of two thirds of it, so the
+stricter ceiling is used; on Big Ben (one piece at 0.75), Brandenburg (a second piece of 7 images) and
+Radcliffe (no majority) the paper's ceiling stands.
 
 Video sets (all images register with and without the filter, so the verdict is whether the camera
 path folds; "fold pairs" are camera pairs within one median step of each other at least five frames
@@ -913,19 +930,21 @@ is still a flag). Add, one bullet each:
 threshold, and omits `--triplet-auto-tau`. Rewrite that paragraph in the README's own register to say:
 the strength is the inlier count discounted by the inliers' grid coverage; a triangle whose three pairs
 all yield below 0.4 of the graph's own envelope gives no evidence; unscored pairs are kept; `tau(m)` is a
-ceiling (default `m` 0.75) below which the threshold is the strictest one joining every piece unless the
-largest piece already holds a majority; the reconstruction seeds in the largest ceiling piece. Keep it
-one paragraph and point at `docs/design/TripletDisambiguation.md` for the rest.
+ceiling (default `m` 0.6, or 0.75 when the graph that stricter ceiling leaves is two-faced, a majority
+piece with a second piece of at least a third of it) below which the threshold is the strictest one
+joining every piece unless the largest piece already holds a majority; the reconstruction seeds in the
+largest ceiling piece. Keep it one paragraph and point at `docs/design/TripletDisambiguation.md` for
+the rest.
 
 Also, in the design note: the "Harness" section must name only subcommands and column names the
 script `scripts/python/tests/triplet_disambiguation.py` actually has after its own rewrite (it scores the
 shipped rule from the export's `NumMatches`, `Coverage` and `MeanRayAngle` columns, and `parity` checks
 the export's `TripletScore` column against that); the parity figure quoted in "Measurements" ("maximum
 absolute C++/Python difference 5.3e-7", "7 graphs") was measured on an older rule and is replaced by the
-parity the rewritten script reports on the two exhaustive exports it is checked against (those two
-numbers are in that script's docstring after its rewrite; if they are not, say so in your report and
-leave the sentence out rather than invent them); and the CSV column list in "Where it runs, and the
-flags" must be the export's actual header:
+parity the rewritten script reports on the two exhaustive exports it is checked against: a maximum
+absolute difference of 5.140e-07 on `street` (171 pairs) and 5.287e-07 on `radcliffe_camera` (22197
+pairs, 19383 of them scored); and the CSV column list in "Where it runs, and the flags" must be the
+export's actual header:
 `ImageA,ImageB,NumMatches,Coverage,Weight,WeightSpatial,WeightConnectivity,WeightTriplet,MeanRayAngle,TripletScore`.
 
 - [ ] **Step 7: Check every claim against the code**
@@ -943,10 +962,11 @@ they now stand. Delete any sentence that describes behaviour the code no longer 
 git add docs/design/TripletDisambiguation.md libs/SFM/README.md
 git -c user.name=cDc -c user.email=cdc.seacave@gmail.com commit -m "docs: the triplet note describes the filter that ships
 
-Unscored pairs are kept, the threshold descends from the paper's ceiling to the strictest one
-joining the pieces unless a majority piece stands, the reconstruction seeds in the largest
-ceiling piece, and the ambiguous-scene results sit beside the earlier hand-held measurements:
-the church and Radcliffe at the paper's counts and one-sided, Brandenburg and cereal the misses."
+Unscored pairs are kept, the ceiling looks for the second face before the threshold descends
+from it to the strictest one joining the pieces unless a majority piece stands, the
+reconstruction seeds in the largest ceiling piece, and the ambiguous-scene results sit beside
+the earlier hand-held measurements: the church and Radcliffe at the paper's counts and
+one-sided, Brandenburg and cereal the misses."
 ```
 
 ---
@@ -3690,7 +3710,7 @@ One at a time, rebuild `Tests` only, run, confirm the named failure, revert, reb
 | mutation | expected failure |
 |---|---|
 | the second ceiling never used (`twoFaced` forced false) | `TripletAutoTauTest FAILED: two faces removed 96 pairs, kept 101` |
-| the third dropped (`3 * secondPiece >= largestPiece` removed) | `TripletAutoTauTest FAILED: the face and its cluster removed 74 pairs, kept 73` |
+| the third dropped (`3 * secondPiece >= largestPiece` removed) | `TripletAutoTauTest FAILED: auto-tau removed 1 pairs at the requested m itself, expected exactly 0` -- the boundary scene, which runs first: without the third a graph the second ceiling leaves in one piece is two-faced by the majority test alone, so every one-piece scene switches ceilings; the face and its cluster would fail after it (74 removed, 73 kept) |
 
 - [ ] **Step 8: Commit**
 
