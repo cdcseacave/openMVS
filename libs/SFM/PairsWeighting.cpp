@@ -67,8 +67,8 @@ float SFM::ComputePairCoverage(const ImagePair& pair, const Image& img1, const I
 	return (float)MINF(occupied(points1, img1), occupied(points2, img2)) / (float)(gridSize * gridSize);
 }
 
-// Compute spatial spread of inliers (Intrinsic Weight)
-// Combines coverage (grid)
+// Intrinsic weight of a pair: the grid coverage of its inliers (ComputePairCoverage) times the
+// angle/baseline term, with a proxy from the homography overlap for pairs without stored matches.
 float ComputeIntrinsicWeight(ImagePair& pair, const Image& img1, const Image& img2, int gridSize = 10, unsigned minInliers = 15) {
 	if (!pair.HasMatches())
 		return 0.f;
