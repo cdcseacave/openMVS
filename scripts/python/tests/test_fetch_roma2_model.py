@@ -215,14 +215,17 @@ class FetchTests(unittest.TestCase):
         self.assertIn("mirror", message.lower())
 
     def test_missing_huggingface_hub_falls_back_to_mirror_without_reporting_a_hub_failure(self):
-        """The absence of huggingface_hub is not a failed Hub attempt -- nothing claiming the Hub
-        "failed" should appear, only that the mirror is being used, keeping the two cases the user
-        can hit visibly distinct."""
+        """The absence of huggingface_hub is not a failed Hub attempt: it must be reported as
+        "not installed", never as a failure, keeping the two cases the user can hit visibly
+        distinct."""
         stderr = io.StringIO()
         with contextlib.redirect_stderr(stderr):
-            self._fetch()
+            result = self._fetch()
 
-        self.assertNotIn("failed", stderr.getvalue().lower())
+        output = stderr.getvalue()
+        self.assertIn("huggingface_hub not installed", output)
+        self.assertNotIn("failed", output.lower())
+        self.assertEqual(result.downloaded, [self.published_relpath])
 
     def test_stale_part_file_next_to_an_already_cached_file_is_removed(self):
         """A `.part` left by an earlier interrupted fetch of a file that is now already present
@@ -295,6 +298,50 @@ class FetchTests(unittest.TestCase):
         self.assertEqual(sorted(result.downloaded), sorted([self.published_relpath, second_relpath]))
         # a successful run leaves no staging shell behind
         self.assertFalse(nested_dir.exists())
+
+    def test_huggingface_resume_metadata_is_removed_after_a_fully_verified_fetch(self):
+        """Once a fetch has been independently verified against checksums.txt, nothing is left to
+        resume, so the hidden .cache/huggingface/ bookkeeping a Hugging Face fetch leaves under
+        --dest should not linger as a surprise inside the user's model directory."""
+        prefix = f"{self.setting}-{self.precision}"
+        metadata_file = self.dest / ".cache" / "huggingface" / "download" / prefix / f"{self.basename}.metadata"
+
+        def fake_snapshot_download(repo_id, revision, allow_patterns, local_dir):
+            # real huggingface_hub writes its own resume/dedup bookkeeping here as a side effect
+            # of every local_dir fetch, interrupted or not
+            _write(Path(local_dir) / prefix / self.basename, self.content)
+            _write(Path(local_dir) / ".cache" / "huggingface" / "download" / prefix / f"{self.basename}.metadata",
+                   b"pretend resume bookkeeping")
+
+        self._install_fake_huggingface_hub(fake_snapshot_download)
+        (self.mirror_dir / self.basename).unlink()
+
+        result = self._fetch()
+
+        self.assertEqual(result.downloaded, [self.published_relpath])
+        self.assertFalse(metadata_file.exists())
+        # nothing else was sharing --dest, so the whole huggingface_hub cache tree is gone
+        self.assertFalse((self.dest / ".cache" / "huggingface").exists())
+
+    def test_huggingface_resume_metadata_survives_a_run_that_does_not_fully_succeed(self):
+        """Removing the resume bookkeeping the moment a fetch is merely attempted, rather than
+        once it is verified complete, would defeat the entire point of giving the Hugging Face
+        branch a stable staging directory to resume from."""
+        prefix = f"{self.setting}-{self.precision}"
+        metadata_file = self.dest / ".cache" / "huggingface" / "download" / prefix / f"{self.basename}.metadata"
+
+        def interrupted_snapshot_download(repo_id, revision, allow_patterns, local_dir):
+            _write(Path(local_dir) / ".cache" / "huggingface" / "download" / prefix / f"{self.basename}.metadata",
+                   b"pretend resume bookkeeping")
+            raise ConnectionError("simulated connection drop")
+
+        self._install_fake_huggingface_hub(interrupted_snapshot_download)
+        (self.mirror_dir / self.basename).unlink()  # so the fallback fails too and nothing succeeds
+
+        with self.assertRaises(fm.ModelFetchError):
+            self._fetch()
+
+        self.assertTrue(metadata_file.is_file())
 
     def test_file_already_present_with_right_digest_is_left_untouched_and_cached(self):
         target = self._local_target()
@@ -394,7 +441,10 @@ class DestWritabilityTests(unittest.TestCase):
         with self.assertRaises(fm.ModelFetchError) as ctx:
             self._fetch()
 
-        self.assertIn(str(self.dest), str(ctx.exception))
+        message = str(ctx.exception)
+        self.assertIn(str(self.dest), message)
+        self.assertIn("sudo", message)
+        self.assertNotIn("Hugging Face", message)
 
 
 class ResolveDestTests(unittest.TestCase):

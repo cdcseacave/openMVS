@@ -232,10 +232,10 @@ def _fetch_via_huggingface(dest: Path, repo: str, revision: str, setting: str, p
         # had a name in checksums.txt and was moved up, so it should now be empty. It is left in
         # place, unremoved, only if something is still sitting in it (e.g. a file the published
         # repo carries that checksums.txt never named) -- this never forces a directory away, since
-        # doing so could delete a file this call did not itself decide was safe to move. The hidden
-        # `.cache/huggingface/` metadata directory is deliberately left alone either way: removing
-        # it would throw away exactly the resumability (and, across presets sharing one `--dest`,
-        # the deduplication) this staging directory exists to keep.
+        # doing so could delete a file this call did not itself decide was safe to move. The
+        # hidden `.cache/huggingface/` metadata directory is left alone here regardless: whether it
+        # still serves a purpose depends on whether the digests the caller checks afterward
+        # actually verify, which this function cannot see -- see fetch()'s own cleanup below.
         try:
             nested_dir.rmdir()
         except OSError:
@@ -270,6 +270,31 @@ def _fetch_via_mirror(dest: Path, mirror: str, pending: Dict[str, str]) -> None:
                 part.unlink()
             raise
         part.replace(target)
+
+
+def _cleanup_huggingface_resume_metadata(dest: Path, prefix: str) -> None:
+    """Remove the Hugging Face local_dir resume/dedup bookkeeping for `prefix` under `dest`.
+    Meant to be called only once every file `prefix` names has been fetched AND independently
+    verified against checksums.txt: at that point there is nothing left to resume, and a later
+    re-run of this preset would skip straight to the cached path on digests anyway, so a hidden
+    cache left inside the user's model directory no longer serves a purpose. An interrupted fetch
+    must never reach this call -- that bookkeeping is what makes the *next* run able to resume.
+
+    Scoped to `prefix` alone: a different --setting/--precision sharing this --dest may still be
+    genuinely mid-fetch, so only the shared `.cache/huggingface/` tree itself is removed, and only
+    once nothing else is using it. Best-effort and silent on failure -- this on-disk layout is
+    huggingface_hub's own private bookkeeping, not a public API, and a leftover file changes
+    nothing about correctness."""
+    huggingface_dir = dest / ".cache" / "huggingface"
+    download_dir = huggingface_dir / "download"
+    try:
+        prefix_download_dir = download_dir / prefix
+        if prefix_download_dir.is_dir():
+            shutil.rmtree(prefix_download_dir)
+        if download_dir.is_dir() and not any(download_dir.iterdir()):
+            shutil.rmtree(huggingface_dir)
+    except OSError:
+        pass
 
 
 def _ensure_dest_writable(dest: Path) -> None:
@@ -379,6 +404,13 @@ def fetch(
                 f"digest mismatch for '{published_relpath}': expected {digest}, got {actual or '<missing>'}"
             )
         result.status[published_relpath] = "downloaded"
+
+    # Every file this run needed has now been independently verified against checksums.txt:
+    # nothing is left to resume, and a later re-run would skip straight to the cached path on
+    # digests anyway, so any Hugging Face resume/dedup bookkeeping this run left under `dest` no
+    # longer serves a purpose. A run that raised above never reaches this line, so an interrupted
+    # or unverified fetch keeps whatever bookkeeping the *next* run needs to resume from it.
+    _cleanup_huggingface_resume_metadata(dest, f"{setting}-{precision}")
 
     return result
 
