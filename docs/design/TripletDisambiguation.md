@@ -198,9 +198,12 @@ The datasets are the ones the disambiguation literature is written about: the vi
 2017 (`books` 21 images, `cereal` 25, `cup` 64, `desk` 31, `oats` 23, `street` 19, and the Temple of
 Heaven `ToH` 338) and the internet collections of Heinly et al. 2014 (`indoor` 153, `brandenburg_gate`
 176, `church_on_spilled_blood` 278, `radcliffe_camera` 283, `big_ben` 403, `arc_de_triomphe` 435,
-`alexander_nevsky_cathedral` 449). Reference counts are registered images: the paper's own filter
-`G_F` (Manam and Govindu 2024, Table 1, `m = 0.3` on these sets) and Doppelgangers++ (Xiangli et al.,
-Table 2, `a+b` = two models). Matching is exhaustive, as in the paper's reference implementation; the
+`alexander_nevsky_cathedral` 449). Reference counts are registered images, both columns from Manam and
+Govindu 2024, Table 3 (`m = 0.3` on these sets): their own filter `G_F`, and Doppelgangers (Cai et
+al. 2023) as they ran it. Doppelgangers++ (Xiangli et al.) evaluates five of these collections and
+reports the church as 157+106 and Radcliffe as 94+186 (two models each), Big Ben 394, the Arc 423 and
+Nevsky 447; its Brandenburg Gate is a different, 2137-image collection, and it does not cover Indoor
+or the video sets. Matching is exhaustive, as in the paper's reference implementation; the
 filter's minimum score is its default 0.6 and its second-face score 0.75. On the sets whose ceiling
 shatters the graph `m` only sets a ceiling the descent replaces, and the paper's 0.6 or 0.3 give the
 same thresholds; on the church the second ceiling decides: at 0.6 the ceiling (0.942) sits among the
@@ -228,18 +231,18 @@ vocabulary tree at 50 pairs per image, which folds every two-faced building; the
 exhaustive matching; a model is "one-sided" when every registered camera lies on one side of the
 facade plane, checked with photos of known side):
 
-| set | images | without the filter | with the filter | paper's `G_F` | Doppelgangers++ | verdict |
+| set | images | without the filter | with the filter | paper's `G_F` | Doppelgangers | verdict |
 |---|---|---|---|---|---|---|
 | indoor | 153 | 152 | 152, one loop | 42 | 152 | the loop is real; the paper over-splits it |
 | brandenburg_gate | 176 | 173, folded | 127, folded: at 0.75 the second piece (7 images) is a cluster, not a face, so the paper's ceiling (0.973) stands and leaves one piece of 127 holding both faces and a majority, applied as given; the stricter ceiling on its own leaves 94, still folded | 129 | 151 | folded |
-| church_on_spilled_blood | 278 | 270, folded | 126, one-sided: the stricter ceiling (0.964) leaves the south facade with the canal views (131 images) and the north facade (82) as two faces, so it is used; its largest piece holds a majority, the reconstruction seeds in it and the north facade stays unregistered (129-135 in earlier matchings of the same set) | 136 | 157+106 | unfolded |
-| radcliffe_camera | 283 | 277, folded | 181: at 0.75 the largest piece (110 images) holds no majority, so the paper's ceiling (0.948) stands; it leaves pieces of 121, 55, 44, 19 and 15 images, none a majority, the descent to 0.842 joins them, the reconstruction seeds in the 121-piece, crosses into the 55-piece through a 312-inlier pair scoring 0.932 and refuses the 95-inlier bridge at 0.842 into the other three | 177 | 186+94 | unfolded |
+| church_on_spilled_blood | 278 | 270, folded | 126, one-sided: the stricter ceiling (0.964) leaves the south facade with the canal views (131 images) and the north facade (82) as two faces, so it is used; its largest piece holds a majority, the reconstruction seeds in it and the north facade stays unregistered (129-135 in earlier matchings of the same set) | 136 | 258 | unfolded |
+| radcliffe_camera | 283 | 277, folded | 181: at 0.75 the largest piece (110 images) holds no majority, so the paper's ceiling (0.948) stands; it leaves pieces of 121, 55, 44, 19 and 15 images, none a majority, the descent to 0.842 joins them, the reconstruction seeds in the 121-piece, crosses into the 55-piece through a 312-inlier pair scoring 0.932 and refuses the 95-inlier bridge at 0.842 into the other three | 177 | 94 | unfolded |
 | big_ben | 403 | 391 | 377: at 0.75 the graph is one piece (374 images), so the paper's ceiling (0.866) stands and leaves one piece of 391, applied as given; the stricter ceiling on its own keeps so few pairs that the reconstruction discards most of what it registers (147) | 379 | 394 | one face |
 | arc_de_triomphe | 435 | 405 | 363: at 0.75 the second piece (43 images) is under a third of the largest (320), so the paper's ceiling (0.816) stands and leaves one piece of 395, applied as given; the 39 stragglers and 32 images of the piece do not register (the stricter ceiling on its own: 302) | 394 | 392 | side not checked |
 | alexander_nevsky_cathedral | 449 | 442 | 418: at 0.75 the graph is one piece (411 images), so the paper's ceiling (0.954) stands and leaves one piece of 420, applied as given (the stricter ceiling on its own: 413) | 429 | 445 | one face |
 
 On the two-faced buildings the filter matches the paper (church 126 against 136, Radcliffe 181
-against 177) and, like the paper and Doppelgangers++, produces one face per model; on the one-faced
+against 177) and, like the paper and both learned methods, produces one face per model; on the one-faced
 buildings the second ceiling is not used and the paper's ceiling keeps the model whole (Big Ben 377
 against 379, Nevsky 418 against 429, the Arc 363 against 394); Brandenburg and cereal are the two
 misses, and in both the doppelganger pairs outscore the true junction in every cue the filter has; on
