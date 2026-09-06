@@ -2308,7 +2308,8 @@ bool PairsMatcher::ExportPairsCSV(const Scene& scene, const String& fileName, fl
 	// that turns one into the edge strength s_ij = n_ij * c_ij can be replayed offline, against any
 	// count, without re-running the matcher.
 	const TripletScores tripletScores = ComputeTripletScores(scene, 0.f, minYield, gridSize);
-	ofs << "ImageA,ImageB,NumMatches,Coverage,Weight,WeightSpatial,WeightConnectivity,WeightTriplet,MeanRayAngle,TripletScore\n";
+	ofs << "ImageA,ImageB,NumMatches,Coverage,Weight,WeightSpatial,WeightConnectivity,WeightTriplet,MeanRayAngle,TripletScore,"
+		   "RelQw,RelQx,RelQy,RelQz,RelTx,RelTy,RelTz\n";
 	FOREACH(idxPair, scene.pairs) {
 		const ImagePair& pair = scene.pairs[idxPair];
 		const String relImageNameA = MAKE_PATH_REL(basePath, scene.images[pair.ID1].fileName);
@@ -2323,6 +2324,22 @@ bool PairsMatcher::ExportPairsCSV(const Scene& scene, const String& fileName, fl
 			<< R2D(pair.meanRayAngle) << ",";
 		if (tripletScores.scores[idxPair] >= 0.f)
 			ofs << tripletScores.scores[idxPair]; // an unscored pair leaves the cell empty
+		ofs << ",";
+		if (pair.relativePose.has_value()) {
+			// relativePose->R, C store the pose in the pair's own convention (x2 = R*x1 + t);
+			// Pose3D stores the camera centre C, not the translation, so t = -R*C = GetT()
+			const RMatrix::Quat q(pair.relativePose->R.GetQuaternion()); // (x,y,z,w): q.val[3] is the scalar part
+			CMatrix t(pair.relativePose->GetT());
+			const REAL tLen = cv::norm(t);
+			if (tLen > REAL(0))
+				t *= REAL(1) / tLen; // the scale of a two-view pose is arbitrary: normalize t
+			const std::streamsize oldPrecision = ofs.precision(7);
+			ofs << q.val[3] << "," << q.val[0] << "," << q.val[1] << "," << q.val[2] << ","
+				<< t.x << "," << t.y << "," << t.z;
+			ofs.precision(oldPrecision);
+		} else {
+			ofs << ",,,,,,"; // no relative pose: all seven cells stay empty
+		}
 		ofs << "\n";
 	}
 	ofs.close();

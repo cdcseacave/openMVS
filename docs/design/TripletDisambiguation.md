@@ -92,9 +92,9 @@ pairs, 44 889 triplets). Duplicate pairs collapse onto one edge weighted by the 
 `Scene::Reconstruct` applies it **right after** the diagnostics export (`--export-pairs-csv` /
 `--export-retrieval-csv`) and before `matchImagesOnly` returns, from both call sites (after
 `MatchPairs`, and on the already-matched-`.sfm` early return). The CSV therefore always lists the
-*whole* matched graph, each pair's score in a trailing `TripletScore` column (empty = unscored) of
-the export's header
-`ImageA,ImageB,NumMatches,Coverage,Weight,WeightSpatial,WeightConnectivity,WeightTriplet,MeanRayAngle,TripletScore`,
+*whole* matched graph, each pair's score in a `TripletScore` column (empty = unscored), followed by
+seven relative-pose columns (empty when the pair has none), of the export's header
+`ImageA,ImageB,NumMatches,Coverage,Weight,WeightSpatial,WeightConnectivity,WeightTriplet,MeanRayAngle,TripletScore,RelQw,RelQx,RelQy,RelQz,RelTx,RelTy,RelTz`,
 so a run can be re-scored offline from its own export; `ComputePairsWeights` re-runs afterwards, when
 something was removed. Four lines from a Radcliffe run report everything:
 
