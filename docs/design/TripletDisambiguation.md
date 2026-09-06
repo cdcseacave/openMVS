@@ -140,7 +140,7 @@ Python: `TripletFilterConfig(enabled, auto_tau, min_score, second_face_score, mi
 the yield envelope, the triangles of `G_LCT` -- from a pairs CSV's own `NumMatches`, `Coverage` and
 `MeanRayAngle` columns and applies `tau(m)` as a threshold; it does not replay the second-face
 choice, the descent or the seeding, which stay C++-side only. `score` writes its own score and the
-kept flag for a given m (`-m`, default the shipped 0.6); `parity` compares those scores against the
+kept flag for a given m (`-m`, default the shipped 0.3); `parity` compares those scores against the
 same export's `TripletScore` column (tolerance 1e-5); `roc` joins with `pair_gt_labels.py --mode
 coverage` output, where **plausible** = true edge, **implausible** = false edge, **ambiguous**
 excluded.

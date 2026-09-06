@@ -504,7 +504,7 @@ def main():
     scoreParser = subparsers.add_parser("score", help="score a pairs CSV with this script's own implementation")
     scoreParser.add_argument("--pairs", required=True, help="pairs CSV (ImageA,ImageB,NumMatches,Coverage,...,MeanRayAngle,TripletScore)")
     scoreParser.add_argument("-o", "--output", required=True, help="output CSV")
-    scoreParser.add_argument("-m", "--min-score", type=float, default=0.6, help="the paper's minimum edge score m (default 0.6)")
+    scoreParser.add_argument("-m", "--min-score", type=float, default=0.3, help="the paper's minimum edge score m (default 0.3, the shipped one)")
     scoreParser.add_argument("--min-yield", type=float, default=0.4,
                              help="a triangle whose three edges all yield less than this fraction of what pairs "
                                   "at their ray angle typically deliver gives its edges no evidence (default 0.4; 0 disables it)")
