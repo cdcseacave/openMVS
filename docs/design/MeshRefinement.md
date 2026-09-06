@@ -53,9 +53,9 @@ over that file, and a configuration file naming an option that does not exist is
 rather than silently ignored.
 
 **Trading accuracy for speed.** `--fast` is the measured fast configuration behind one switch: it
-refines against 4 neighbour images and decimates the result within 0.5 px, which runs 1.5-1.7x
-faster than the defaults for −0.006 mean F1 on Tanks & Temples and delivers a mesh 3-14x smaller
-(§2.7). It is a preset over `--max-views` and `--simplify-tolerance` and nothing else, and an
+refines against 4 neighbour images and raises the decimation tolerance to 0.5 px, which runs 1.5-1.7x
+faster than the defaults for −0.006 mean F1 on Tanks & Temples and delivers a mesh 1.8-2.7x
+smaller than the default's already-decimated one (§2.7). It is a preset over `--max-views` and `--simplify-tolerance` and nothing else, and an
 explicitly given one of those wins over it — `--fast --max-views 8` keeps the full view budget and
 only decimates. What no preset can do is go faster than that: 38 % of the wall is the mesh
 preparation, which neither the view count nor the working resolution touches, and the levers that
@@ -92,9 +92,9 @@ pass (`remeshIterations=10`), then subdivides any face whose projected area in t
 pair exceeds `--max-face-area` (`Mesh::Subdivide`, 1-to-4 split). The log line
 `"Mesh subdivided: %u/%u -> %u/%u vertices/faces"` is identical on both backends.
 
-**Post-refinement decimation (opt-in, 2026-09).** The face count the refinement needs (every
+**Post-refinement decimation (on by default since 2026-09).** The face count the refinement needs (every
 face under `--max-face-area` in its tightest pair) is not the face count a deliverable needs.
-`--simplify-tolerance T` (px, default 0 = off; `OPTREFINE::fSimplifyTolerance`) decimates the
+`--simplify-tolerance T` (px, default 0.25, 0 = off; `OPTREFINE::fSimplifyTolerance`) decimates the
 refined mesh once the last scale ends, the same host-side pass on both backends
 (`SimplifyMeshWithinTolerance`): every vertex gets the pixel factor of its most resolving view
 (f/depth, accumulated over the pixels ListCameraFaces rasterized, so `T` is in pixels of the
@@ -107,6 +107,25 @@ the same pixel distance as a fresh one (with the raw sum the same tolerance remo
 vertices, normalized it removes half). Measured on the shipped configuration (§2.7): 0.25 px is
 F1-neutral on all seven scenes at −32..−65 % faces, 0.5 px costs up to −0.004 (Ignatius) at
 −55..−83 %, and every doubling of the tolerance roughly halves the vertex count.
+
+**Why 0.25 px is the default.** F1 at τ cannot see a change that stays inside τ by construction, so
+the default rests on the threshold-free distances the EPFL evaluator also records. In one cell
+(`a3d-s2`, CUDA, all three scenes against the same baseline), 0.25 px moves the accuracy mean by
+−0.03 % on fountain-P11 (0.00796), −0.04 % on Herz-Jesu-P8 (0.01478) and +0.11 % on P25
+(0.01467→0.01468) — the fifth decimal, inside the run-to-run band the CPU cell shows for the same
+arm — with rms and p95 in the same band and no consistent sign. Completeness moves
+**+0.030 / +0.044 / +0.078 %**: small, but the only quantity that moves the same way on all three
+scenes and monotonically in the tolerance, so that is the cost, for a third to two thirds of the
+faces and ~1-2 % wall. The tolerance is in working-resolution pixels, so at the default
+`--resolution-level 0` it is *tighter* than everything above, which was measured at level 1: the
+same 0.5 px removes 49 % of the vertices at level 0 against 66-72 % at level 1. What no measurement
+here covers is appearance — both metrics score distance to ground-truth points, and neither
+penalizes faceting on the large flat regions where a reprojection bound collapses hardest. Pass
+`--simplify-tolerance 0` for the refinement's full output.
+
+Two consequences for the numbers elsewhere in this document: §2.1 and §2.7 were measured on the
+undecimated output, so the shipped default now differs from them by the ±0.0004 the 0.25 px column
+records, and a bench baseline taken after this change already includes the decimation.
 
 ### 1.3 Photo-consistency energy
 
@@ -714,7 +733,7 @@ overlaps a compile.
 | Per-vertex step cap 2 px, halved on reversal | global median normalizer (#1) | Herz-Jesu-P8 −0.025 for every cap | removed (#38) |
 | Fixed 20 evaluations per level, no rejection | bold driver with accept/reject | EPFL −0.016 mean | removed (#39) |
 | Edge-cap subdivision to 10 px in the best view | 1-to-4 split at 16 px² in the tightest pair + edge band | as a pixel-graded isotropic remesh: worse than the split at equal face count | removed (#41) |
-| Post-refinement decimation within 0.5 px | none | 0.25 px F1-neutral on all seven scenes at −32..−65 % faces; 0.5 px −0.004 worst at −55..−83 % | ships as `--simplify-tolerance` (§1.2), default off |
+| Post-refinement decimation within 0.5 px | none | 0.25 px F1-neutral on all seven scenes at −32..−65 % faces, and flat on the threshold-free distances too; 0.5 px −0.004 worst at −55..−83 % | ships as `--simplify-tolerance`, **0.25 px by default** (§1.2) |
 | Colour ZNCC, GPU job partitioning, 3 mip levels | grey ZNCC, whole-scene CUDA, 2 scales | not measured (out of scope here; scale count is in #4-#37) | — |
 
 EPFL screen of the schedule and smoothing arms (ΔF1 against the same pin's baseline, P25 / P8 /
@@ -780,7 +799,8 @@ RefineMesh ... --fast        # --max-views 4 --simplify-tolerance 0.5
 ```
 
 1.5-1.7x faster than the default for −0.006 mean F1 (worst scene Barn −0.017), and it delivers a
-mesh 3-14x smaller than the default's. The preset fills in only what the command line did not
+mesh 1.8-2.7x smaller than the default's — the 0.07-0.35x in the table is against the undecimated
+baseline these rows were measured on, and the default now takes the first half of that itself. The preset fills in only what the command line did not
 state, so an explicit `--max-views` or `--simplify-tolerance` overrides it; the Tiny functional
 runs pin that `--fast` and the two options spelled out produce the same mesh byte for byte, that
 `--fast --max-views 8` reproduces `--simplify-tolerance 0.5` alone, and that `--fast` does not

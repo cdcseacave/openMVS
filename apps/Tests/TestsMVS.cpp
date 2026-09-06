@@ -2323,6 +2323,10 @@ bool MeshRefineSyntheticTest(bool forceCPU, bool verbose)
 {
 	OPTREFINE::init();
 	OPTREFINE::update();
+	// this test scores the refinement itself -- the RMS against the synthetic surface, the CPU/CUDA
+	// parity and the scale invariance all read the vertices the refiner moved, so the shipped
+	// post-refinement decimation (which resamples them) is turned off here
+	OPTREFINE::fSimplifyTolerance = 0;
 
 	const String dir(MAKE_PATH("refine_synth/"));
 	// removes the fixture directory -- and anything the refiner might drop next to the images --

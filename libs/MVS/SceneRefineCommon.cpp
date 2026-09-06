@@ -60,7 +60,7 @@ DEFVAR_OPTREFINE_int32(nIgnoreMaskLabel, "Ignore Mask Label", "label id used dur
 DEFVAR_OPTREFINE_int32(nImageGradient, "Image Gradient", "image derivative stencil (0 - 3x5 separable, 1 - central, 2 - Sobel, 3 - bilinear interpolant derivative)", "1")
 DEFVAR_OPTREFINE_float(fGateMeanDiff, "Gate Mean Diff", "reject a pixel pair whose local mean differs by more than this (0 - disabled)", "0.4")
 DEFVAR_OPTREFINE_float(fGateVarRatio, "Gate Var Ratio", "reject a pixel pair whose local variance ratio exceeds this (0 - disabled)", "8.0")
-DEFVAR_OPTREFINE_float(fSimplifyTolerance, "Simplify Tolerance", "decimate the refined mesh within this reprojection error in every vertex's best view (px at the working resolution) once the refinement ends (0 - disabled)", "0")
+DEFVAR_OPTREFINE_float(fSimplifyTolerance, "Simplify Tolerance", "decimate the refined mesh within this reprojection error in every vertex's best view (px at the working resolution) once the refinement ends (0 - disabled)", "0.25")
 
 } // namespace MVS
 

@@ -175,7 +175,7 @@ extern MVS_API int nIgnoreMaskLabel; // label id used during ignore mask filter 
 extern MVS_API int nImageGradient; // image derivative stencil (0 - 3x5 separable, 1 - central (default), 2 - Sobel, 3 - bilinear interpolant derivative)
 extern MVS_API float fGateMeanDiff; // reject a pixel pair whose local mean differs by more than this (0 - disabled)
 extern MVS_API float fGateVarRatio; // reject a pixel pair whose local variance ratio exceeds this (0 - disabled)
-extern MVS_API float fSimplifyTolerance; // decimate the refined mesh within this reprojection error in every vertex's best view (px at the working resolution) once the refinement ends (0 - disabled)
+extern MVS_API float fSimplifyTolerance; // decimate the refined mesh within this reprojection error in every vertex's best view (px at the working resolution) once the refinement ends (default 0.25, accuracy-neutral; 0 - disabled)
 } // namespace OPTREFINE
 
 class Scene;
