@@ -103,17 +103,18 @@ so a run can be re-scored offline from its own export; `ComputePairsWeights` re-
 something was removed. Four lines from a Radcliffe run report everything:
 
 ```
-Triplet filter: the ceiling at the second-face score 0.75 (0.967) leaves no second face (largest piece 110, second 52): the paper's ceiling stands
-Triplet filter: tau 0.842, the strictest threshold that joins every piece (ceiling 0.948 at m 0.60, d_max/|V| 0.869); the ceiling leaves 5 pieces (components of at least 3 images) holding 254 images between them, and 28 stragglers; survivor graph keeps 268/282 images in its largest component, 18 below degree 2 (0 before), and 2843/20298 distinct image pairs
-Triplet filter: kept 5567/23022 scene pairs (tau 0.842; 282 nodes, max degree 245; 796087 triplets in 1 components, 254099 doppelganger triplets gave no evidence; 17455 below tau removed, 2724 unscored kept); the reconstruction seeds in the largest piece the ceiling leaves (121 images)
-Selected reference view 130 with 45757 connections over 42 pairs among 121 seed views
+Triplet filter: the ceiling at the second-face score 0.75 (0.967) leaves no second face (largest piece 111, second 52): the paper's ceiling stands
+Triplet filter: tau 0.908, the ceiling applied as given, its largest piece holding a majority (ceiling 0.908 at m 0.30, d_max/|V| 0.869); the ceiling leaves 4 pieces (components of at least 3 images) holding 261 images between them, and 21 stragglers; survivor graph keeps 181/282 images in its largest component, 28 below degree 2 (0 before), and 1946/20361 distinct image pairs
+Triplet filter: kept 4668/23083 scene pairs (tau 0.908; 282 nodes, max degree 245; 800921 triplets in 1 components, 242673 doppelganger triplets gave no evidence; 18415 below tau and 0 cut by the face rule removed, 2722 unscored kept); the reconstruction seeds in the largest piece the ceiling leaves (181 images)
+Selected reference view 130 with 38832 connections over 30 pairs among 181 seed views
 ```
 
-and, for contrast, the church's verdict on its second ceiling, where it is used:
+and, for contrast, the church's, where the second ceiling names the faces and the paper's ceiling applies inside the larger one:
 
 ```
-Triplet filter: the ceiling at the second-face score 0.75 (0.964) leaves two faces, pieces of 131 and 82 images: used
-Triplet filter: tau 0.964, the ceiling applied as given, its largest piece holding a majority (ceiling 0.964 at m 0.75, the second face's, d_max/|V| 0.856); the ceiling leaves 7 pieces (components of at least 3 images) holding 237 images between them, and 40 stragglers; survivor graph keeps 131/277 images in its largest component, 62 below degree 2 (0 before), and 812/20004 distinct image pairs
+Triplet filter: the ceiling at the second-face score 0.75 (0.964) leaves two faces, pieces of 133 and 83 images: the paper's ceiling 0.899 applies inside the larger face; 8909 pairs joining the other face and 0 pairs of 0 ambiguous images cut
+Triplet filter: tau 0.899, the paper's ceiling applied inside the larger face, the other face cut off (ceiling 0.899 at m 0.30, d_max/|V| 0.856); the ceiling leaves 7 pieces (components of at least 3 images) holding 257 images between them, and 20 stragglers; survivor graph keeps 148/277 images in its largest component, 33 below degree 2 (0 before), and 1918/20238 distinct image pairs
+Triplet filter: kept 2917/23016 scene pairs (tau 0.899; 277 nodes, max degree 237; 819680 triplets in 1 components, 213544 doppelganger triplets gave no evidence; 11190 below tau and 8909 cut by the face rule removed, 1000 unscored kept); the reconstruction seeds in the largest piece the ceiling leaves (148 images)
 ```
 
 Two caveats. It is **not idempotent**: a saved filtered scene re-fed with the flag still set is
@@ -207,14 +208,20 @@ Govindu 2024, Table 3 (`m = 0.3` on these sets): their own filter `G_F`, and Dop
 al. 2023) as they ran it. Doppelgangers++ (Xiangli et al.) evaluates five of these collections and
 reports the church as 157+106 and Radcliffe as 94+186 (two models each), Big Ben 394, the Arc 423 and
 Nevsky 447; its Brandenburg Gate is a different, 2137-image collection, and it does not cover Indoor
-or the video sets. Matching is exhaustive, as in the paper's reference implementation; the
-filter's minimum score is its default 0.6 and its second-face score 0.75. On the sets whose ceiling
-shatters the graph `m` only sets a ceiling the descent replaces, and the paper's 0.6 or 0.3 give the
-same thresholds; on the church the second ceiling decides: at 0.6 the ceiling (0.942) sits among the
-scores of the pairs bridging the facades and two matchings of four merged them, at 0.75 (0.964) every
-graph seen leaves the two facades as a majority piece and a second piece of two thirds of it, so the
-stricter ceiling is used; on Big Ben (one piece at 0.75), Brandenburg (a second piece of 7 images) and
-Radcliffe (no majority) the paper's ceiling stands.
+or the video sets. Matching is exhaustive, as in the paper's reference implementation; the filter's minimum score is
+its default 0.3, the paper's value on these sets, and its second-face score 0.75; the runs are the
+`openmvs-disambig-20260905l-triplet` folders under each set beside the datasets. On the sets whose
+ceiling shatters the graph `m` only sets a ceiling the descent replaces, and 0.3 and 0.6 give the
+same thresholds. On the church the second ceiling (0.964) leaves the two facades as a majority piece
+and a second piece of two thirds of it, so it names the faces, and the paper's ceiling (0.899)
+applies inside the larger one; on Radcliffe (no majority at 0.75), Brandenburg (a second piece of 7
+images), Big Ben, the Arc and Nevsky (one piece) the paper's ceiling stands, and at 0.3 it leaves a
+majority piece on every one of them, applied as given. A collection's verdict is its comparison with
+the Doppelgangers authors' verified COLMAP model of the same collection (`model_compare.py` beside
+the datasets): after a similarity alignment on the images the two have in common, an image is
+misplaced when its position is off by half the model's radius or more, or its viewing direction by
+30 degrees or more. A folded model has its misplaced images' directions off by 60 degrees and more;
+a scattered one has them off by position alone, with the directions within a few degrees.
 
 **Video sets** (all images register with and without the filter, so the verdict is whether the camera
 path folds; "fold pairs" are camera pairs within one median step of each other at least five frames
@@ -223,35 +230,39 @@ apart, "spread" the extent of the camera path relative to its step):
 | set | images | without the filter | with the filter | paper's `G_F` | verdict |
 |---|---|---|---|---|---|
 | books | 21 | 21, folded | 21; 2 fold pairs, the hover at frames 1-6, genuine | 9 | unfolded |
-| cereal | 25 | 25, folded (spread 0.237) | 25, still folded (spread 0.277; frames 8-14): the true junction (13,14) carries 320 inliers at score 0.556, the doppelganger (7,16) 862 at 0.893, weaker in every cue | 7 | folded |
-| cup | 64 | 64, folded | 64; 0 fold pairs, an open ring | 40 (their one failure) | unfolded |
+| cereal | 25 | 25, folded (spread 0.237) | 25; the descent to 0.782; the path doubles back (spread 0.277, frames 8-14) exactly as the verified reference model has it: 24 of its 24 images in common, none misplaced | 7 | unfolded |
+| cup | 64 | 64, folded | 52; at 0.3 the ceiling (0.989) leaves a majority piece of 52, applied as given, and the other 12 images stay out (at 0.6 the descent joined all 64); 0 fold pairs, an open ring, 51 of the reference's 63 in common and none misplaced | 40 (their one failure) | unfolded |
 | desk | 31 | 31, folded | 31; 23 fold pairs, all the start hover and the genuine revisit | 12 | unfolded |
 | oats | 23 | 23, folded (spread 0.293) | 23; 0 fold pairs (spread 0.707) | 9 | unfolded |
 | street | 19 | 19, folded | 19; 0 fold pairs | 19 | unfolded |
-| ToH | 338 | 338, folded on the temple's one-third turn (804 fold pairs at gaps of 20 frames or more) | 338; 4 fold pairs, all the genuine closure of frames 0-9 onto 330-339 | — | unfolded |
+| ToH | 338 | 338, folded on the temple's one-third turn (804 fold pairs at gaps of 20 frames or more) | 338 (vocabulary tree at 50 pairs per image, tau 0.455 applied as given); 3 fold pairs at gaps of 20 frames or more, all the genuine closure of frame 0 onto 329 | — | unfolded |
 
 **Internet collections** (the "without the filter" column is the branch's default matching, a
 vocabulary tree at 50 pairs per image, which folds every two-faced building; the filter column is
-exhaustive matching; a model is "one-sided" when every registered camera lies on one side of the
-facade plane, checked with photos of known side):
+exhaustive matching except on `indoor`, whose loop the vocabulary tree keeps; a model is "one-sided"
+when every registered camera lies on one side of the facade plane, and the verdict column is the
+reference-model comparison described above):
 
 | set | images | without the filter | with the filter | paper's `G_F` | Doppelgangers | verdict |
 |---|---|---|---|---|---|---|
-| indoor | 153 | 152 | 152, one loop | 42 | 152 | the loop is real; the paper over-splits it |
-| brandenburg_gate | 176 | 173, folded | 127, folded: at 0.75 the second piece (7 images) is a cluster, not a face, so the paper's ceiling (0.973) stands and leaves one piece of 127 holding both faces and a majority, applied as given; the stricter ceiling on its own leaves 94, still folded | 129 | 151 | folded |
-| church_on_spilled_blood | 278 | 270, folded | 126, one-sided: the stricter ceiling (0.964) leaves the south facade with the canal views (131 images) and the north facade (82) as two faces, so it is used; its largest piece holds a majority, the reconstruction seeds in it and the north facade stays unregistered (129-135 in earlier matchings of the same set) | 136 | 258 | unfolded |
-| radcliffe_camera | 283 | 277, folded | 181: at 0.75 the largest piece (110 images) holds no majority, so the paper's ceiling (0.948) stands; it leaves pieces of 121, 55, 44, 19 and 15 images, none a majority, the descent to 0.842 joins them, the reconstruction seeds in the 121-piece, crosses into the 55-piece through a 312-inlier pair scoring 0.932 and refuses the 95-inlier bridge at 0.842 into the other three | 177 | 94 | unfolded |
-| big_ben | 403 | 391 | 377: at 0.75 the graph is one piece (374 images), so the paper's ceiling (0.866) stands and leaves one piece of 391, applied as given; the stricter ceiling on its own keeps so few pairs that the reconstruction discards most of what it registers (147) | 379 | 394 | one face |
-| arc_de_triomphe | 435 | 405 | 363: at 0.75 the second piece (43 images) is under a third of the largest (320), so the paper's ceiling (0.816) stands and leaves one piece of 395, applied as given; the 39 stragglers and 32 images of the piece do not register (the stricter ceiling on its own: 302) | 394 | 392 | side not checked |
-| alexander_nevsky_cathedral | 449 | 442 | 418: at 0.75 the graph is one piece (411 images), so the paper's ceiling (0.954) stands and leaves one piece of 420, applied as given (the stricter ceiling on its own: 413) | 429 | 445 | one face |
+| indoor | 153 | 152 | 152, one loop (vocabulary tree at 50 pairs per image, tau 0.664 applied as given) | 42 | 152 | the loop is real; the paper over-splits it |
+| brandenburg_gate | 176 | 173, folded | 145: at 0.75 the second piece (7 images) is a cluster, not a face, so the paper's ceiling (0.952) stands; it leaves a majority piece and is applied as given | 129 | 151 | unfolded: 144 of the reference's 151 in common, directions within 6 degrees at the 90th percentile |
+| church_on_spilled_blood | 278 | 270, folded | 143, one-sided: the second ceiling (0.964) leaves the south facade with the canal views (133 images) and the north facade (83) as two faces and names them; the paper's ceiling (0.899) applies inside the south face, whose piece grows to 148, and the north face is cut off and stays unregistered | 136 | 258 | one-sided, unfolded: 126 of the south reference's 137 in common, directions within 8 degrees at the 90th percentile |
+| radcliffe_camera | 283 | 277, folded | 181: at 0.75 the largest piece (111 images) holds no majority, so the paper's ceiling (0.908) stands; it leaves a majority piece of 181, applied as given | 177 | 94 | one-sided, unfolded: 181 of the side reference's 185 in common, 11 misplaced by position |
+| big_ben | 403 | 391 | 385: one piece at 0.75, so the paper's ceiling (0.763) stands, applied as given | 379 | 394 | folded: 209 of 377 common images misplaced, the reference's two sides on one another (the limit below) |
+| arc_de_triomphe | 435 | 405 | 403: at 0.75 the second piece is under a third of the largest, so the paper's ceiling (0.679) stands, applied as given | 394 | 392 | unfolded: 370 of the reference's 395 in common, 26 misplaced by position, directions within 5 degrees at the 90th percentile |
+| alexander_nevsky_cathedral | 449 | 442 | 434: one piece at 0.75, so the paper's ceiling (0.919) stands, applied as given | 429 | 445 | unfolded: 433 of the reference's 446 in common, directions within 11 degrees at the 90th percentile |
 
-On the two-faced buildings the filter matches the paper (church 126 against 136, Radcliffe 181
-against 177) and, like the paper and both learned methods, produces one face per model; on the one-faced
-buildings the second ceiling is not used and the paper's ceiling keeps the model whole (Big Ben 377
-against 379, Nevsky 418 against 429, the Arc 363 against 394); Brandenburg and cereal are the two
-misses, and in both the doppelganger pairs outscore the true junction in every cue the filter has; on
-the video sets every path but cereal's unfolds where the paper over-splits (books 9 of 21, oats 9 of
-23, desk 12 of 31) or fails (cup).
+Against the paper's own filter the branch registers more on every collection and keeps every model
+but one unfolded: the church 143 against 136 (one-sided, as the paper's model and both learned
+methods' models are), Radcliffe 181 against 177, Brandenburg 145 against 129, the Arc 403 against 394,
+Nevsky 434 against 429; on the video sets every path unfolds where the paper over-splits (books 9 of
+21, oats 9 of 23, desk 12 of 31, cereal 7 of 25) or fails (cup: 52 whole against 40). Big Ben is the
+one miss: 385 registered against 379, but folded, as every threshold of the pairwise geometry leaves
+it (the limit below). Against Doppelgangers++, which reports two models on the church (157+106) and
+Radcliffe (94+186), the branch's one model is within 5 images of the larger on Radcliffe and 14
+short of it on the church; on the Arc (423) and Nevsky (447) it is 20 and 13 short, and on Big Ben
+(394) short and folded.
 
 ## The default, and why
 
@@ -278,12 +289,13 @@ triangles a doppelganger sits in hold few of the strong true pairs that would sc
 * **Filtering before view-graph calibration is untested.** It runs after `MatchPairs`, so
   `ViewGraphCalibrator` has already solved focal lengths over the *unfiltered* graph. Removing the
   doppelganger edges first should hand it a cleaner graph; it belongs with the experiment above.
-* **Brandenburg Gate**: both faces sit inside one ceiling piece (127 images at the paper's 0.6, 94 at
-  0.75; the second piece at 0.75 holds 7 images, so the stricter ceiling is not used) because the
-  night photos of the two faces match each other as strongly as neighbours do; no inlier-count cue
-  separates them, and the filter has no other.
-* **cereal**: the true junction is weaker than the doppelganger in every cue (320 inliers at 0.556
-  against 862 at 0.893); the paper over-splits it instead.
+* **Big Ben**: the tower's two long sides are near-identical and the matcher verifies more pairs
+  between them than between the true corners: at every threshold of the triplet score the bridges
+  between the sides outnumber the true corner links (at 0.3, 13 against 6), rotation cycles close
+  through the symmetry as often as through true pairs, and the thinnest cut of the kept graph parts
+  the sides from each other, not from their doppelgangers. Nothing in pairwise geometry tells the
+  two apart; the reference model's authors used appearance. The filter registers 385 of 403 images,
+  more than the paper's 379, on a folded model.
 * **One model per run**: the pieces the ceiling leaves apart stay unregistered (the church's north
   facade, Radcliffe's three look-alike pieces), where Doppelgangers++ reports two models.
   Reconstructing the remaining pieces as further models is a pipeline question, not the filter's.
