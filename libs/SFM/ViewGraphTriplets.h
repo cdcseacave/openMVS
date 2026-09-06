@@ -60,7 +60,7 @@ struct SFM_API TripletFilterConfig
 	// generic/large-scale, 0.9 highly ambiguous, 0.3 medium/small ambiguous. With autoTau this is
 	// the ceiling the threshold is derived from and never exceeds -- unless the graph shows a
 	// second face, see secondFaceScore.
-	float minScore = 0.6f;
+	float minScore = 0.3f;
 	// A second, stricter ceiling, tau(secondFaceScore), tried first: it is the ceiling used when
 	// the graph it leaves has two faces -- its largest piece holds a strict majority of the images
 	// in pieces and its second-largest piece at least a third of the largest. A two-faced building

@@ -32,8 +32,8 @@ and `c_ij = ComputePairCoverage(...)` the fraction of the frame the inliers cove
    degree of median ray angle, capped at 1.
 3. **Threshold.** `tau = m·(1 − d_max/|V|) + d_max/|V|`, with `|V|` and `d_max` the node count and
    maximum degree **of `G_LCT`** (the paper says "of the graph"; the graph whose edges carry a score
-   is `G_LCT`). `m` is the one user parameter — the default, 0.6, per the paper's generic/large-scale
-   guidance; 0.9 highly ambiguous, 0.3 medium/small ambiguous.
+   is `G_LCT`). `m` is the one user parameter — the default, 0.3, the paper's value for the medium and
+   small ambiguous sets (0.6 its generic/large-scale value, 0.9 its highly ambiguous one).
 4. **Selection.** A scored pair is removed iff its score is below the threshold; an **unscored pair
    is kept** — the paper's step 1 discards every edge outside `G_LCT`, but on the two labelled
    references those pairs are overwhelmingly true (426 of 490 on one capture, 415 of 441 on the
@@ -127,7 +127,7 @@ unscored kept`.
 |---|---|---|
 | `--filter-triplets B` | **`false`** | apply the filter to the matched view graph |
 | `--triplet-auto-tau B` | **`true`** | treat `tau(m)` as a ceiling: below it, the strictest threshold that joins every piece the ceiling leaves, unless the largest piece already holds a majority of the images in pieces, in which case the ceiling is applied as given; off applies `tau(m)` as given, the second face included |
-| `--triplet-min-score F` | `0.6` | the paper's minimum edge score *m*, in [0,1]; with `--triplet-auto-tau` the ceiling the threshold is derived from, otherwise applied as given |
+| `--triplet-min-score F` | `0.3` | the paper's minimum edge score *m*, in [0,1]; with `--triplet-auto-tau` the ceiling the threshold is derived from, otherwise applied as given |
 | `--triplet-second-face-score F` | `0.75` | with `--triplet-auto-tau`, a stricter minimum score whose ceiling replaces the default's when the graph it leaves has two faces: a majority piece and a second piece of at least a third of it |
 
 `TripletFilterConfig::minYield` (0.4) has no flag.

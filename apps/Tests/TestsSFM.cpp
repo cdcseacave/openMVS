@@ -8618,6 +8618,7 @@ bool TripletAutoTauTest()
 	AddTripletPair(cluster, 59, 61, 700);
 	TripletFilterConfig clusterCfg;
 	clusterCfg.enabled = true;
+	clusterCfg.minScore = 0.6f; // the scene's ceilings and the counts below were derived at the paper's generic m
 	clusterCfg.minYield = 0.f;
 	IIndexArr clusterSeeds;
 	const unsigned clusterRemoved = FilterPairsByTriplets(cluster, clusterCfg, weightingCfg, &clusterSeeds);
@@ -8666,6 +8667,7 @@ bool TripletAutoTauTest()
 	}
 	TripletFilterConfig threeFacesCfg;
 	threeFacesCfg.enabled = true;
+	threeFacesCfg.minScore = 0.6f; // the scene's ceilings and the counts below were derived at the paper's generic m
 	threeFacesCfg.minYield = 0.f;
 	IIndexArr threeFacesSeeds;
 	const unsigned threeFacesRemoved = FilterPairsByTriplets(threeFaces, threeFacesCfg, weightingCfg, &threeFacesSeeds);
@@ -8786,8 +8788,8 @@ bool TripletYieldTest()
 	build(scene);
 	const unsigned idx01 = 0, idx02 = 14, idx03 = 27, idx06 = 28; // in order of insertion
 	const TripletFilterConfig defaults;
-	if (!ISEQUAL(defaults.minScore, 0.6f)) {
-		VERBOSE("TripletYieldTest FAILED: default minimum score %g; expected 0.6, the paper's generic value",
+	if (!ISEQUAL(defaults.minScore, 0.3f)) {
+		VERBOSE("TripletYieldTest FAILED: default minimum score %g; expected 0.3, the paper's value for medium and small ambiguous sets",
 			defaults.minScore);
 		return false;
 	}
