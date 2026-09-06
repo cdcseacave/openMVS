@@ -252,13 +252,13 @@ TripletScores SFM::ComputeTripletScores(const Scene& scene, float minScore, floa
 	// every triplet contributes one to each of its three edges and all three share its component,
 	// so a component's triplet count is a third of what its edges carry; the factor is common to
 	// every component, so the maximum below is the same either way
-	std::unordered_map<uint32_t, unsigned> tripletsOfComponent;
+	std::unordered_map<uint32_t, size_t> tripletsOfComponent;
 	for (uint32_t e = 0; e < numEdges; ++e)
 		if (numTripletsOfEdge[e] > 0)
 			tripletsOfComponent[components.Find(e)] += numTripletsOfEdge[e];
 	result.numTripletComponents = (unsigned)tripletsOfComponent.size();
 	uint32_t largestComponent = NO_INDEX;
-	unsigned largestComponentSize = 0;
+	size_t largestComponentSize = 0;
 	for (const auto& component : tripletsOfComponent) {
 		// ties break on the smaller root, the first edge of the component: deterministic
 		if (component.second > largestComponentSize ||
@@ -608,7 +608,7 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 	if (numRemoved > 0)
 		scene.pairs.RemoveLast(numRemoved);
 	VERBOSE("Triplet filter: kept %u/%u scene pairs (tau %.3f; %u nodes, max degree %u; "
-		"%u triplets in %u components, %u doppelganger triplets gave no evidence; %u below tau removed, %u unscored kept)"
+		"%zu triplets in %u components, %u doppelganger triplets gave no evidence; %u below tau removed, %u unscored kept)"
 		"; the reconstruction seeds in the largest piece the ceiling leaves (%u images)",
 		numKept, numPairs, tau,
 		tripletScores.numNodes, tripletScores.maxDegree,

@@ -7804,7 +7804,7 @@ bool TripletFilterTest()
 	const TripletScores scores03 = ComputeTripletScores(scene, 0.3f, 0.f, weightingCfg.gridSize);
 	if (scores03.numTriplets != 3 || scores03.numTripletComponents != 2 ||
 		scores03.numScoredPairs != 5 || scores03.numNodes != 4 || scores03.maxDegree != 3) {
-		VERBOSE("TripletFilterTest FAILED: statistics %u triplets in %u components, %u scored pairs, "
+		VERBOSE("TripletFilterTest FAILED: statistics %zu triplets in %u components, %u scored pairs, "
 			"%u nodes, max degree %u (expected 3, 2, 5, 4, 3)",
 			scores03.numTriplets, scores03.numTripletComponents, scores03.numScoredPairs,
 			scores03.numNodes, scores03.maxDegree);
@@ -7855,7 +7855,7 @@ bool TripletFilterTest()
 			scoresDup.numNodes != 4 || scoresDup.maxDegree != 3 ||
 			ABS(scoresDup.tau - 0.825f) > eps) {
 			VERBOSE("TripletFilterTest FAILED: a duplicate or a non-edge pair changed the graph "
-				"(%u triplets, %u scored, %u nodes, max degree %u, tau %g)",
+				"(%zu triplets, %u scored, %u nodes, max degree %u, tau %g)",
 				scoresDup.numTriplets, scoresDup.numScoredPairs, scoresDup.numNodes,
 				scoresDup.maxDegree, scoresDup.tau);
 			return false;
@@ -7918,7 +7918,7 @@ bool TripletFilterTest()
 	if (scoresPath.numTriplets != 0 || scoresPath.numTripletComponents != 0 ||
 		scoresPath.numScoredPairs != 0 || scoresPath.numNodes != 0 || scoresPath.maxDegree != 0 ||
 		ABS(scoresPath.tau - 0.6f) > eps) {
-		VERBOSE("TripletFilterTest FAILED: a triplet-free graph reported %u triplets, %u scored pairs, tau %g",
+		VERBOSE("TripletFilterTest FAILED: a triplet-free graph reported %zu triplets, %u scored pairs, tau %g",
 			scoresPath.numTriplets, scoresPath.numScoredPairs, scoresPath.tau);
 		return false;
 	}
@@ -7963,7 +7963,9 @@ bool TripletFilterTest()
 // nodes; the chain of pairs pins that a ceiling leaving no piece makes every component a piece;
 // the two faces pin that the ceiling at the second-face score is used when it leaves a majority
 // piece with a second piece of at least a third; the face and its cluster pin that a second piece
-// smaller than that leaves the paper's ceiling in force.
+// smaller than that leaves the paper's ceiling in force; and the three faces pin that a second
+// piece at least a third is not enough by itself -- without a majority piece too, the paper's
+// ceiling still stands.
 bool TripletAutoTauTest()
 {
 	TD_TIMER_START();
@@ -8607,12 +8609,66 @@ bool TripletAutoTauTest()
 		return false;
 	}
 
+	// The three faces: at the higher ceiling the chains are three pieces, 40/35/25, and the largest
+	// holds no majority of the 100 in pieces (80 is not more than 100) though the second piece is
+	// well over a third of it -- the second-face rule needs both, so the paper's ceiling stands and
+	// the bridges join every chain into one piece.
+	Scene threeFaces;
+	AddTripletImages(threeFaces, 100);
+	for (IIndex i = 0; i + 1 < 40; ++i)
+		AddTripletPair(threeFaces, i, i + 1, 1000);
+	for (IIndex i = 0; i + 2 < 40; ++i)
+		AddTripletPair(threeFaces, i, i + 2, 600);
+	for (IIndex i = 40; i + 1 < 75; ++i)
+		AddTripletPair(threeFaces, i, i + 1, 1000);
+	for (IIndex i = 40; i + 2 < 75; ++i)
+		AddTripletPair(threeFaces, i, i + 2, 600);
+	for (IIndex i = 75; i + 1 < 100; ++i)
+		AddTripletPair(threeFaces, i, i + 1, 1000);
+	for (IIndex i = 75; i + 2 < 100; ++i)
+		AddTripletPair(threeFaces, i, i + 2, 600);
+	AddTripletPair(threeFaces, 39, 40, 700);
+	AddTripletPair(threeFaces, 38, 40, 700);
+	AddTripletPair(threeFaces, 39, 41, 700);
+	AddTripletPair(threeFaces, 74, 75, 700);
+	AddTripletPair(threeFaces, 73, 75, 700);
+	AddTripletPair(threeFaces, 74, 76, 700);
+	const TripletScores threeFacesScores = ComputeTripletScores(threeFaces, 0.6f, 0.f, weightingCfg.gridSize);
+	const SurvivorGraph threeFacesLow = EvaluateSurvivorGraph(threeFaces, threeFacesScores.scores, threeFacesScores.tau);
+	const SurvivorGraph threeFacesHigh = EvaluateSurvivorGraph(threeFaces, threeFacesScores.scores, 0.75f*(1.f-4.f/100.f)+4.f/100.f);
+	if (!ISEQUAL(threeFacesScores.tau, 0.6f*(1.f-4.f/100.f)+4.f/100.f) || threeFacesLow.numPieces != 1 || threeFacesLow.largestPiece != 100 ||
+		threeFacesHigh.numPieces != 3 || threeFacesHigh.largestPiece != 40 || threeFacesHigh.secondPiece != 35) {
+		VERBOSE("TripletAutoTauTest FAILED: the three faces at %g: %u pieces, largest %u; at 0.76: %u pieces, largest %u, second %u; "
+			"expected one piece of 100, then three of 40, 35 and 25",
+			threeFacesScores.tau, threeFacesLow.numPieces, threeFacesLow.largestPiece, threeFacesHigh.numPieces,
+			threeFacesHigh.largestPiece, threeFacesHigh.secondPiece);
+		return false;
+	}
+	TripletFilterConfig threeFacesCfg;
+	threeFacesCfg.enabled = true;
+	threeFacesCfg.minYield = 0.f;
+	IIndexArr threeFacesSeeds;
+	const unsigned threeFacesRemoved = FilterPairsByTriplets(threeFaces, threeFacesCfg, weightingCfg, &threeFacesSeeds);
+	const std::set<std::pair<IIndex,IIndex>> threeFacesKept = TripletKeptPairs(threeFaces);
+	bool threeFacesRight = threeFacesRemoved == 94 && threeFacesKept.size() == 103 && threeFacesKept.count({39,40}) == 1 &&
+		threeFacesKept.count({74,75}) == 1 && threeFacesSeeds.size() == 100;
+	FOREACH(i, threeFacesSeeds)
+		threeFacesRight = threeFacesRight && threeFacesSeeds[i] == (IIndex)i;
+	if (!threeFacesRight) {
+		VERBOSE("TripletAutoTauTest FAILED: the three faces removed %u pairs, kept %u, seed views %u; expected the paper's "
+			"ceiling (no majority piece at the second-face ceiling): 94 removed, 103 kept, the bridges kept, seed views 0-99",
+			threeFacesRemoved, (unsigned)threeFacesKept.size(), (unsigned)threeFacesSeeds.size());
+		return false;
+	}
+
 	VERBOSE("TripletAutoTauTest PASSED: the descent repairs a shattered ceiling and leaves a majority piece's "
 		"ceiling as given, the straggler flood pins the descent's bar to the pieces sharing a component rather "
 		"than a count of nodes, the chain of pairs pins that a ceiling leaving no piece still descends, the two "
 		"faces pin that the second-face ceiling is used when it leaves a majority piece with a second piece of "
-		"at least a third, and the face and its cluster pin that a smaller second piece leaves the paper's "
-		"ceiling in force; the seed views are the largest ceiling piece (%s)", TD_TIMER_GET_FMT().c_str());
+		"at least a third, the face and its cluster pin that a smaller second piece leaves the paper's ceiling "
+		"in force, and the three faces pin that a second piece of at least a third is not enough by itself -- "
+		"without a majority piece too, the paper's ceiling still stands; the seed views are the largest ceiling "
+		"piece (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 
@@ -8634,7 +8690,7 @@ bool TripletCoverageTest()
 	const TripletScores scores = ComputeTripletScores(scene, 0.f, 0.f, weightingCfg.gridSize);
 	if (scores.numTriplets != 1 || scores.numScoredPairs != 3 ||
 		!ISEQUAL(scores.scores[0], 1.f) || !ISEQUAL(scores.scores[1], 1.f) || !ISEQUAL(scores.scores[2], 0.15f)) {
-		VERBOSE("TripletCoverageTest FAILED: %u triplets, %u scored, scores %g %g %g; expected 1, 3, 1 1 0.15",
+		VERBOSE("TripletCoverageTest FAILED: %zu triplets, %u scored, scores %g %g %g; expected 1, 3, 1 1 0.15",
 			scores.numTriplets, scores.numScoredPairs, scores.scores[0], scores.scores[1], scores.scores[2]);
 		return false;
 	}
@@ -8725,7 +8781,7 @@ bool TripletYieldTest()
 	if (scores.numTriplets != 31 || scores.numDoppelgangerTriplets != 10 || scores.numScoredPairs != 37 ||
 		!ISEQUAL(scores.scores[idx01], 1.f) || !ISEQUAL(scores.scores[idx02], 0.6f) ||
 		!ISEQUAL(scores.scores[idx03], 0.12f) || !ISEQUAL(scores.scores[idx06], 0.f)) {
-		VERBOSE("TripletYieldTest FAILED: %u triplets (%u doppelganger), %u scored; (0,1) %g (0,2) %g (0,3) %g (0,6) %g; "
+		VERBOSE("TripletYieldTest FAILED: %zu triplets (%u doppelganger), %u scored; (0,1) %g (0,2) %g (0,3) %g (0,6) %g; "
 			"expected 31 (10), 37; 1 0.6 0.12 0",
 			scores.numTriplets, scores.numDoppelgangerTriplets, scores.numScoredPairs,
 			scores.scores[idx01], scores.scores[idx02], scores.scores[idx03], scores.scores[idx06]);

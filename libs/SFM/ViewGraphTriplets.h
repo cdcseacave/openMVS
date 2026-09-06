@@ -116,7 +116,7 @@ struct SFM_API TripletScores
 {
 	std::vector<float> scores;      // one entry per scene.pairs index; -1 = unscored (not an edge of G_LCT)
 	float tau;                      // the threshold of Eqn. 3 for the requested minimum score m
-	unsigned numTriplets;           // triplets (3-cycles) of the whole view graph G
+	size_t numTriplets;             // triplets (3-cycles) of the whole view graph G
 	unsigned numTripletComponents;  // connected components of the triplet graph G_T
 	unsigned numDoppelgangerTriplets; // triplets of G_LCT whose three edges all yield below minYield: counted, no evidence
 	unsigned numScoredPairs;        // scene.pairs entries that got a score (the edges of G_LCT)

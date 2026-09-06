@@ -284,9 +284,12 @@ bool TripletFilterTest();
 // chains that the ceiling shatters into three equal pieces, none a majority, pinning that the
 // descent joins them at the strictest threshold that does so; a straggler flood pinning that the
 // descent's bar is the pieces sharing a component, not a count of nodes, since stragglers accreting
-// onto one piece can satisfy a count while another piece stays apart; and a chain of pairs whose
+// onto one piece can satisfy a count while another piece stays apart; a chain of pairs whose
 // ceiling leaves no piece at all, pinning that every component then becomes a piece and the descent
-// still runs to join them
+// still runs to join them; and three faces whose second, stricter ceiling splits the graph into
+// pieces of 40, 35 and 25 images -- the largest holding no majority of the pieced images even
+// though the second clears a third of it -- pinning that the stricter ceiling needs both a
+// majority piece and a second at least a third of it, not either alone
 bool TripletAutoTauTest();
 
 // The strength of a triplet edge is its inlier count discounted by the fraction of the frame its
