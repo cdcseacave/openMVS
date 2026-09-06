@@ -3735,6 +3735,893 @@ one splits every matching, and on Big Ben, whose graph is one face, the stricter
 graph so thin that the reconstruction keeps 147 of 403 images where the paper's keeps 371."
 ```
 
+### Task 17: The default minimum score is the paper's 0.3
+
+Spec §3.12. The paper runs `m = 0.3` on the medium and small ambiguous sets (Heinly 2014, Yan 2017),
+0.6 on the large-scale 1DSfM collections and 0.9 on Louvre and Sacre Coeur; the branch has run 0.6.
+Measured with the reference models' per-edge truth, the score removes more than 99 % of the false
+pairs at either value, and at 0.3 the kept graph holds more of the true ones (Arc's largest piece 416
+against 403, Big Ben's 391 against 382); reconstructed at 0.3, Arc registers 410 (363 at 0.6, the
+paper's 394) and Radcliffe stays one-sided at 180. The default moves to 0.3; the second-face score
+stays 0.75.
+
+**Files:**
+- Modify: `libs/SFM/ViewGraphTriplets.h` (`TripletFilterConfig::minScore`)
+- Modify: `apps/CreateStructure/CreateStructure.cpp` (the `--triplet-min-score` help)
+- Modify: `apps/Tests/TestsSFM.cpp` (`TripletYieldTest`'s default check; `TripletAutoTauTest`'s `clusterCfg`, `threeFacesCfg`)
+- Modify: `docs/design/TripletDisambiguation.md` (the paragraph naming the default, the flags table)
+
+**Interfaces:**
+- Consumes: `TripletFilterConfig` (Tasks 1, 7, 12, 15).
+- Produces: `TripletFilterConfig::minScore` defaulting to `0.3f`.
+
+- [ ] **Step 1: Write the failing test**
+
+In `TripletYieldTest`, the check on `defaults.minScore` expects `0.6f`; make it expect `0.3f` with the
+message "default minimum score %g; expected 0.3, the paper's value for medium and small ambiguous sets".
+
+In `TripletAutoTauTest`, two scenes still derive their counts from the paper's generic `m` through a
+default config: give each an explicit minimum score, as `walkCfg`, `pairsChainCfg` and `facesCfg` already
+do, so the counts stand whatever the default is. After `clusterCfg.enabled = true;` add
+
+```cpp
+	clusterCfg.minScore = 0.6f; // the scene's ceilings and the counts below were derived at the paper's generic m
+```
+
+and after `threeFacesCfg.enabled = true;` the same line for `threeFacesCfg`
+(`threeFacesCfg.minScore = 0.6f;` with that comment).
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `ninja -C make -f build-Release.ninja Tests && ./bin/Release/Tests 1`
+Expected: `TripletYieldTest FAILED: default minimum score 0.6; expected 0.3, ...`; every other SFM test PASSED.
+
+- [ ] **Step 3: Move the default**
+
+`libs/SFM/ViewGraphTriplets.h`: `float minScore = 0.3f;`.
+
+`apps/CreateStructure/CreateStructure.cpp`, the `--triplet-min-score` help: replace the closing
+"the default is the paper's generic 0.6" with "the default is the paper's 0.3 for medium and small
+ambiguous sets".
+
+`docs/design/TripletDisambiguation.md`: the sentence "`m` is the one user parameter — the default, 0.6,
+per the paper's generic/large-scale ..." names the default as 0.3, the paper's value for the medium and
+small ambiguous sets (0.6 is its generic/large-scale value, 0.9 its highly ambiguous one); the flags table
+row for `--triplet-min-score` shows `0.3`. Wherever rule 6 says "the paper's ceiling at 0.6" it says "the
+paper's ceiling at `m`". The example log lines stay: they are records of runs at 0.6.
+
+- [ ] **Step 4: Run the suite**
+
+Run: `ninja -C make -f build-Release.ninja Tests CreateStructure && ./bin/Release/Tests 1`
+Expected: 64 PASSED.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add libs/SFM/ViewGraphTriplets.h apps/CreateStructure/CreateStructure.cpp apps/Tests/TestsSFM.cpp docs/design/TripletDisambiguation.md
+git -c user.name=cDc -c user.email=cdc.seacave@gmail.com commit -m "sfm: the triplet filter's default minimum score is the paper's 0.3"
+```
+
+### Task 18: The second ceiling names the faces; the paper's ceiling applies inside the larger one
+
+Spec §3.13. Today the higher ceiling, once it finds two faces, is applied as the ceiling, so the face
+that gets reconstructed is cut as thin as the higher ceiling cuts it (the church: 131 images in the
+piece, 126 registered, the paper's 136). Now the higher ceiling only names the faces -- `A` its largest
+piece, `B` its second -- and the paper's ceiling `tau(m)` is the threshold, with three kinds of pair
+removed whatever their score: every pair joining an image of `B` to an image outside `B` (the other face
+cut off, its own pairs kept), every pair of an *ambiguous* image (outside both faces, its kept pairs at
+the paper's ceiling reaching both), and nothing else. The descent does not run when the faces are
+named. Replayed offline on the church: the south facade's piece grows from 131 to 148 images with no
+north-facade image in it.
+
+**Files:**
+- Modify: `libs/SFM/ViewGraphTriplets.h` (`TripletScores::unscored` and `TripletScores::cut`; `SurvivorGraph::secondPieceViews`)
+- Modify: `libs/SFM/ViewGraphTriplets.cpp` (`ComputeTripletScores`'s initial score; `EvaluateSurvivorGraph`'s kept test and piece loop; `FilterPairsByTriplets`'s face block, descent guard, compaction and VERBOSEs)
+- Modify: `apps/Tests/TestsSFM.cpp` (`TripletAutoTauTest`'s two-faces scene)
+- Modify: `docs/design/TripletDisambiguation.md` (rule 6)
+
+**Interfaces:**
+- Consumes: `TripletScores`, `SurvivorGraph`, `EvaluateSurvivorGraph(scene, scores, tau, minPiece, views)`, `FilterPairsByTriplets`'s ceiling/descent/compaction structure (Tasks 9, 10, 13, 15), `TripletFilterConfig::minScore = 0.3f` (Task 17; the scene below sets 0.6 explicitly).
+- Produces: `TripletScores::unscored` (`static constexpr float`, `-1.f`, kept at every threshold) and `TripletScores::cut` (`-2.f`, removed at every threshold); `SurvivorGraph::secondPieceViews` (`IIndexArr`, the images of the second-largest piece, ascending, empty when there is none).
+
+- [ ] **Step 1: Write the failing test**
+
+Rework `TripletAutoTauTest`'s two-faces scene (the block starting `// The two faces:` up to and including
+its `if (!facesRight) { ... return false; }`) into the scene below. 102 images: chain A is images 0-59
+with 1000-inlier consecutive pairs and **700**-inlier pairs two apart (they score 0.7: above the paper's
+ceiling, below the higher one -- the pairs the old rule removed and the new one keeps); chain B is images
+60-99 with 1000-inlier consecutive pairs and 600-inlier pairs two apart (0.6, below both); the three
+700-inlier bridges `(59,60)`, `(58,60)`, `(59,61)`; image 100 with 700-inlier pairs to 10, 11, 70 and 71
+(an ambiguous image: its pairs score 0.7 and reach both chains); image 101 with 700-inlier pairs to 20
+and 21 (a straggler of A). `d_max` is 5 (image 10 has 8, 9, 11, 12 and 100) and `|V|` 102, so
+`tau(0.6) = 0.6 (1 - 5/102) + 5/102 = 0.61961` and `tau(0.75) = 0.76225`. At 0.762 the pieces are A (60)
+and B (40), images 100 and 101 stragglers: two faces. At 0.620 with the faces named: B's 38 pairs two
+apart go (0.6), the 3 bridges and `(100,70)`, `(100,71)` are cut as joining the other face, `(100,10)` and
+`(100,11)` as an ambiguous image's; 45 of 203 pairs removed, 158 kept: A's 59 + 58, B's 39 consecutive,
+101's 2; the seed views are 0-59 and 101.
+
+```cpp
+	// The two faces: at the paper's ceiling the bridges join the chains into one piece; at the
+	// higher ceiling the chains are two pieces, the second holding two thirds of the first. The
+	// higher ceiling names the faces and the paper's ceiling applies inside the larger one: the
+	// pairs two apart of chain A (0.7, between the ceilings) stay, the bridges and every pair
+	// joining chain B to the outside go, the ambiguous image 100 (its pairs reach both chains) loses
+	// its pairs, the straggler 101 joins chain A.
+	Scene faces;
+	AddTripletImages(faces, 102);
+	for (IIndex i = 0; i + 1 < 60; ++i)
+		AddTripletPair(faces, i, i + 1, 1000);
+	for (IIndex i = 0; i + 2 < 60; ++i)
+		AddTripletPair(faces, i, i + 2, 700);
+	for (IIndex i = 60; i + 1 < 100; ++i)
+		AddTripletPair(faces, i, i + 1, 1000);
+	for (IIndex i = 60; i + 2 < 100; ++i)
+		AddTripletPair(faces, i, i + 2, 600);
+	AddTripletPair(faces, 59, 60, 700);
+	AddTripletPair(faces, 58, 60, 700);
+	AddTripletPair(faces, 59, 61, 700);
+	AddTripletPair(faces, 100, 10, 700);
+	AddTripletPair(faces, 100, 11, 700);
+	AddTripletPair(faces, 100, 70, 700);
+	AddTripletPair(faces, 100, 71, 700);
+	AddTripletPair(faces, 101, 20, 700);
+	AddTripletPair(faces, 101, 21, 700);
+	const float facesLowTau = 0.6f*(1.f-5.f/102.f)+5.f/102.f, facesHighTau = 0.75f*(1.f-5.f/102.f)+5.f/102.f;
+	const TripletScores facesScores = ComputeTripletScores(faces, 0.6f, 0.f, weightingCfg.gridSize);
+	const SurvivorGraph facesLow = EvaluateSurvivorGraph(faces, facesScores.scores, facesScores.tau, 2);
+	const SurvivorGraph facesHigh = EvaluateSurvivorGraph(faces, facesScores.scores, facesHighTau, 2);
+	bool facesGraphRight = ISEQUAL(facesScores.tau, facesLowTau) && facesLow.numPieces == 1 && facesLow.largestPiece == 102 &&
+		facesHigh.numPieces == 2 && facesHigh.largestPiece == 60 && facesHigh.secondPiece == 40 &&
+		facesHigh.largestPieceViews.size() == 60 && facesHigh.secondPieceViews.size() == 40;
+	FOREACH(i, facesHigh.secondPieceViews)
+		facesGraphRight = facesGraphRight && facesHigh.secondPieceViews[i] == (IIndex)(60 + i);
+	if (!facesGraphRight) {
+		VERBOSE("TripletAutoTauTest FAILED: two faces at %g: %u pieces, largest %u; at %g: %u pieces, largest %u (%u views), "
+			"second %u (%u views); expected one piece of 102, then two of 60 and 40 with the second's views 60-99",
+			facesScores.tau, facesLow.numPieces, facesLow.largestPiece, facesHighTau, facesHigh.numPieces, facesHigh.largestPiece,
+			(unsigned)facesHigh.largestPieceViews.size(), facesHigh.secondPiece, (unsigned)facesHigh.secondPieceViews.size());
+		return false;
+	}
+	TripletFilterConfig facesCfg;
+	facesCfg.enabled = true;
+	facesCfg.minScore = 0.6f; // the scene's ceilings and the counts below were derived at the paper's generic m
+	facesCfg.minYield = 0.f;
+	IIndexArr facesSeeds;
+	const unsigned facesRemoved = FilterPairsByTriplets(faces, facesCfg, weightingCfg, &facesSeeds);
+	const std::set<std::pair<IIndex,IIndex>> facesKept = TripletKeptPairs(faces);
+	bool facesRight = facesRemoved == 45 && facesKept.size() == 158 &&
+		facesKept.count({59,60}) == 0 && facesKept.count({58,60}) == 0 && facesKept.count({59,61}) == 0 &&
+		facesKept.count({58,59}) == 1 && facesKept.count({57,59}) == 1 && facesKept.count({60,61}) == 1 && facesKept.count({60,62}) == 0 &&
+		facesKept.count({10,100}) == 0 && facesKept.count({11,100}) == 0 && facesKept.count({70,100}) == 0 && facesKept.count({71,100}) == 0 &&
+		facesKept.count({20,101}) == 1 && facesKept.count({21,101}) == 1 && facesSeeds.size() == 61;
+	FOREACH(i, facesSeeds)
+		facesRight = facesRight && facesSeeds[i] == (i < 60 ? (IIndex)i : (IIndex)101);
+	if (!facesRight) {
+		VERBOSE("TripletAutoTauTest FAILED: two faces removed %u pairs, kept %u, seed views %u; expected the paper's ceiling "
+			"inside the larger face: chain B's 38 pairs two apart below it, the 3 bridges and image 100's 4 pairs cut, "
+			"45 removed, 158 kept, seed views 0-59 and 101",
+			facesRemoved, (unsigned)facesKept.size(), (unsigned)facesSeeds.size());
+		return false;
+	}
+```
+
+(`AddTripletPair` orders the pair's images itself, so `TripletKeptPairs` reports `(10,100)` for the pair
+added as `(100, 10)`.)
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `ninja -C make -f build-Release.ninja Tests && ./bin/Release/Tests 1`
+Expected: a compile error on `secondPieceViews` (it does not exist yet); after adding the field alone,
+`TripletAutoTauTest FAILED: two faces removed 101 pairs, kept 102, ...` (the old rule at the higher ceiling).
+
+- [ ] **Step 3: The sentinels and the second piece's views**
+
+`libs/SFM/ViewGraphTriplets.h`, in `TripletScores`, replace the comment on `scores` and add the two
+constants:
+
+```cpp
+	std::vector<float> scores;      // one entry per scene.pairs index; `unscored` = not an edge of G_LCT
+	static constexpr float unscored = -1.f; // kept at every threshold: the method has no evidence about the pair
+	static constexpr float cut = -2.f;      // removed at every threshold: FilterPairsByTriplets marks, on its own copy, the pairs the face rule cuts
+```
+
+and in `SurvivorGraph`, after `largestPieceViews`:
+
+```cpp
+	IIndexArr secondPieceViews;  // the images of the second-largest piece, ascending (empty when there is none)
+```
+
+`libs/SFM/ViewGraphTriplets.cpp`: `ComputeTripletScores` initialises with `TripletScores::unscored`
+instead of `-1.f`. In `EvaluateSurvivorGraph`, the kept test
+
+```cpp
+		const float score = scores[idxPair];
+		if (score == TripletScores::cut || (score >= 0.f && score < tau))
+			continue; // removed: cut by the face rule, or scored and below the threshold
+```
+
+and the piece loop tracks the second piece's root and fills its views:
+
+```cpp
+	uint32_t largestPieceRoot = NO_INDEX, secondPieceRoot = NO_INDEX;
+	for (const auto& component : componentSize) {
+		if (component.second < minPiece)
+			continue;
+		// (the unfiltered-component check stays as it is)
+		if (Find(parentUnfiltered, component.first) != largestUnfilteredComponent)
+			continue;
+		++result.numPieces;
+		result.pieceRoots.push_back((IIndex)component.first);
+		result.numInPieces += component.second;
+		// the root of a component is its smallest image index (a union hangs the larger root under
+		// the smaller), so the smaller root among equally large pieces is the piece holding the
+		// lowest image index: deterministic, and the same tie-break the triplet components use
+		if (component.second > result.largestPiece ||
+			(component.second == result.largestPiece && component.first < largestPieceRoot)) {
+			result.secondPiece = result.largestPiece;
+			secondPieceRoot = largestPieceRoot;
+			result.largestPiece = component.second;
+			largestPieceRoot = component.first;
+		} else if (component.second > result.secondPiece ||
+			(component.second == result.secondPiece && component.first < secondPieceRoot)) {
+			result.secondPiece = component.second;
+			secondPieceRoot = component.first;
+		}
+	}
+	std::sort(result.pieceRoots.begin(), result.pieceRoots.end());
+	if (largestPieceRoot != NO_INDEX) {
+		for (IIndex i = 0; i < numImages; ++i) {
+			if (!isNode[i])
+				continue;
+			const uint32_t root = Find(parent, (uint32_t)i);
+			if (root == largestPieceRoot)
+				result.largestPieceViews.push_back(i);
+			else if (root == secondPieceRoot)
+				result.secondPieceViews.push_back(i);
+		}
+	}
+```
+
+(the existing comment lines of that loop stay where they are; the change is the `else if` branch and the
+views loop).
+
+- [ ] **Step 4: The face rule**
+
+In `FilterPairsByTriplets`, the filter works on its own copy of the scores from here on. Replace the block
+from `float ceiling = tripletScores.tau;` through the `SurvivorGraph atCeiling = ...` line with:
+
+```cpp
+	// The scores the filter works on: the face rule below marks the pairs it cuts, whatever their score.
+	std::vector<float> scores = tripletScores.scores;
+	const IIndex numImages = scene.images.size();
+	// Eqn. 3 on G_LCT, tau(m) = m (1 - d_max/|V|) + d_max/|V|, is the CEILING: the filter is never
+	// stricter than the m it was given. On a complete view graph -- every pair verified, which is
+	// what identical facades produce under exhaustive matching -- d_max/|V| is (|V|-1)/|V| and the
+	// ceiling sits at 0.95-0.99 whatever m is; on the sparse graphs of video captures it is 0.7 or
+	// below.
+	const float ceiling = tripletScores.tau;
+	const SurvivorGraph unfiltered = EvaluateSurvivorGraph(scene, scores, 0.f);
+	unsigned minPiece = (unsigned)std::ceil(0.01 * (double)unfiltered.largestComponent);
+	// A second, stricter ceiling at the second-face score is tried first, to NAME the faces: when
+	// the graph it leaves has two -- a majority piece and a second piece holding at least a third of
+	// it -- the paper's ceiling applies inside the larger face, and the other face is cut off: every
+	// pair joining one of its images to an image outside it goes, whatever its score. An image
+	// outside both faces whose kept pairs at the paper's ceiling reach both is ambiguous -- a close-up
+	// matching both facades -- and every pair of it goes. What hangs off a majority piece at the
+	// stricter ceiling with less than a third of its images is a cluster, not a face, and the
+	// paper's ceiling stands untouched. On the church matched exhaustively the paper's ceiling sits
+	// among the scores of the pairs bridging the facades and merges them in half the matchings,
+	// while the stricter one splits them in every matching; applied inside the south facade, the
+	// paper's ceiling then keeps 148 of its images in the piece where the stricter one kept 131.
+	const float secondFace = std::isnan(config.secondFaceScore) ? 0.f : CLAMP(config.secondFaceScore, 0.f, 1.f);
+	const float secondCeiling = secondFace * (1.f - degreeRatio) + degreeRatio;
+	bool twoFaced = false;
+	unsigned numCutToFace = 0, numAmbiguous = 0, numCutAmbiguous = 0;
+	if (config.autoTau && secondFace > minScore) {
+		const SurvivorGraph atSecond = EvaluateSurvivorGraph(scene, scores, secondCeiling, minPiece);
+		twoFaced = 2 * atSecond.largestPiece > atSecond.numInPieces && 3 * atSecond.secondPiece >= atSecond.largestPiece;
+		if (twoFaced) {
+			enum : uint8_t { NO_FACE = 0, FACE_A = 1, FACE_B = 2 };
+			std::vector<uint8_t> face(numImages, NO_FACE);
+			for (IIndex i : atSecond.largestPieceViews)
+				face[i] = FACE_A;
+			for (IIndex i : atSecond.secondPieceViews)
+				face[i] = FACE_B;
+			// the faces an outside image's kept pairs at the paper's ceiling reach, as a bit-set
+			std::vector<uint8_t> touches(numImages, NO_FACE);
+			FOREACH(idxPair, scene.pairs) {
+				const ImagePair& pair = scene.pairs[idxPair];
+				const float score = scores[idxPair];
+				if (!pair.HasGeometricVerification() || pair.GetNumWeightedInliers() == 0 || pair.ID1 == pair.ID2 ||
+					(score >= 0.f && score < ceiling))
+					continue; // not a kept edge at the paper's ceiling (the same test EvaluateSurvivorGraph applies)
+				if (face[pair.ID1] == NO_FACE)
+					touches[pair.ID1] |= face[pair.ID2];
+				if (face[pair.ID2] == NO_FACE)
+					touches[pair.ID2] |= face[pair.ID1];
+			}
+			std::vector<bool> ambiguous(numImages, false);
+			for (IIndex i = 0; i < numImages; ++i) {
+				if (face[i] == NO_FACE && touches[i] == (FACE_A | FACE_B)) {
+					ambiguous[i] = true;
+					++numAmbiguous;
+				}
+			}
+			FOREACH(idxPair, scene.pairs) {
+				const ImagePair& pair = scene.pairs[idxPair];
+				if (pair.ID1 == pair.ID2)
+					continue;
+				if ((face[pair.ID1] == FACE_B) != (face[pair.ID2] == FACE_B)) {
+					scores[idxPair] = TripletScores::cut;
+					++numCutToFace;
+				} else if (ambiguous[pair.ID1] || ambiguous[pair.ID2]) {
+					scores[idxPair] = TripletScores::cut;
+					++numCutAmbiguous;
+				}
+			}
+			VERBOSE("Triplet filter: the ceiling at the second-face score %.2f (%.3f) leaves two faces, pieces of "
+				"%u and %u images: the paper's ceiling %.3f applies inside the larger face; %u pairs joining the other "
+				"face and %u pairs of %u ambiguous images cut",
+				secondFace, secondCeiling, atSecond.largestPiece, atSecond.secondPiece, ceiling,
+				numCutToFace, numCutAmbiguous, numAmbiguous);
+		} else {
+			VERBOSE("Triplet filter: the ceiling at the second-face score %.2f (%.3f) leaves no second face "
+				"(largest piece %u, second %u): the paper's ceiling stands",
+				secondFace, secondCeiling, atSecond.largestPiece, atSecond.secondPiece);
+		}
+	}
+	SurvivorGraph atCeiling = EvaluateSurvivorGraph(scene, scores, ceiling, minPiece);
+```
+
+Below that block, every remaining use of `tripletScores.scores` in `FilterPairsByTriplets` becomes
+`scores` (the no-piece fallback's re-evaluation, the descent's candidate list and its
+`EvaluateSurvivorGraph` calls, the final `survivor` evaluation, the compaction). The descent's guard
+becomes
+
+```cpp
+		if (shattered && atCeiling.numPieces > 1 && !twoFaced) {
+```
+
+with, above it, one more sentence in the existing comment: "When the faces are named (twoFaced) the
+descent does not run: the faces are the answer, and with every pair joining them cut at every threshold
+there is nothing for it to join." The reason string of the "Triplet filter: tau ..." VERBOSE gains a
+branch, and the ceiling's `m` is always the paper's now:
+
+```cpp
+			tau, tau < ceiling ? "the strictest threshold that joins every piece" :
+				twoFaced ? "the paper's ceiling applied inside the larger face, the other face cut off" :
+				numPieces > 1 && !shattered ? "the ceiling applied as given, its largest piece holding a majority" :
+				"the ceiling applied as given",
+			ceiling, minScore, degreeRatio,
+```
+
+(the format's `%.2f%s` for the m becomes `%.2f`, and the `", the second face's"` argument goes). The
+compaction counts the cut pairs:
+
+```cpp
+	unsigned numUnscored = 0, numBelowTau = 0, numCut = 0, numKept = 0;
+	for (unsigned idxPair = 0; idxPair < numPairs; ++idxPair) {
+		const float score = scores[idxPair];
+		// An unscored pair is one the method has no evidence about: it takes part in no triangle,
+		// or in none inside the largest triplet-graph component. Those are overwhelmingly TRUE
+		// pairs -- 426 of 490 and 415 of 441 on the two labelled references -- so absence of
+		// evidence keeps the pair. A scored pair below tau is removed, and so is a pair the face
+		// rule cut, whatever its score.
+		if (score == TripletScores::cut) {
+			++numCut;
+			continue;
+		}
+		if (score == TripletScores::unscored) {
+			++numUnscored;
+		} else if (score < tau) {
+			++numBelowTau;
+			continue;
+		}
+		if (numKept != idxPair)
+			scene.pairs[numKept] = std::move(scene.pairs[idxPair]);
+		++numKept;
+	}
+	const unsigned numRemoved = numPairs - numKept;
+	ASSERT(numRemoved == numBelowTau + numCut, "FilterPairsByTriplets: removal count mismatch");
+```
+
+and the "Triplet filter: kept ..." VERBOSE reports `%u below tau and %u cut by the face rule removed,
+%u unscored kept` with `numBelowTau, numCut, numUnscored`.
+
+- [ ] **Step 5: Run the suite**
+
+Run: `ninja -C make -f build-Release.ninja Tests CreateStructure && ./bin/Release/Tests 1`
+Expected: 64 PASSED. The cluster, three-faces, walk and every other `TripletAutoTauTest` scene keep their
+counts: none of them names two faces.
+
+- [ ] **Step 6: The design note**
+
+`docs/design/TripletDisambiguation.md`, rule 6 (**The second face**): rewrite it to say what the rule now
+does -- the ceiling at the second-face score is tried first to *name* the faces (a majority piece and a
+second piece of at least a third of it); when it finds them the paper's ceiling at `m` applies inside the
+larger face, every pair joining the other face to the outside is cut whatever its score, and so is every
+pair of an ambiguous image (outside both faces, reaching both at the paper's ceiling); the descent does
+not run; when it finds none the paper's ceiling stands. Keep the church and Brandenburg evidence sentences
+that are still true (the bridges' scores, the split at 0.75 in every matching, the 7-image cluster) and
+add the replay's result: the south facade's piece 148 at `tau(0.3)` against 131 at the higher ceiling,
+no north-facade image in it. Leave the example log block alone: the controller replaces it with the new
+build's church log.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add libs/SFM/ViewGraphTriplets.h libs/SFM/ViewGraphTriplets.cpp apps/Tests/TestsSFM.cpp docs/design/TripletDisambiguation.md
+git -c user.name=cDc -c user.email=cdc.seacave@gmail.com commit -m "sfm: the second ceiling names the faces and the paper's ceiling applies inside the larger one"
+```
+
+### Task 19: The descent stays off when the faces are named and the larger one holds no majority
+
+Spec §3.13. In Task 18's two-faces scene the larger face still holds a majority of the images in pieces
+at the paper's ceiling, so the descent's guard (`!twoFaced`) is never reached there. This scene reaches
+it: eight fans of five images each -- a hub pair at 1000 and three leaves at 700 to both hubs -- are
+pieces of two at the higher ceiling, where chain A holds a majority (60 of 116) and chain B two thirds
+of it, and pieces of five at the paper's, where chain A holds none (60 of 140). Each fan's hubs reach
+chain A through three pairs at 400 (the hub pair with one chain image, the first hub with the next),
+whose two triangles share an edge with the fan's triangles and an edge with chain A's: the triplet
+graph's largest component then holds every pair (an edge outside it is unscored and kept at every
+threshold), every image is in one component, and `d_max` is 6 (the hubs and the chain images they reach).
+With the guard the paper's ceiling stands and those pairs go; without it the descent, unable to join
+chain B (its joins are cut at every threshold), would fall to 0.4 and keep them.
+
+**Files:**
+- Modify: `apps/Tests/TestsSFM.cpp` (`TripletAutoTauTest`, after the two-faces scene's check and before the "The face and its cluster" scene)
+
+**Interfaces:**
+- Consumes: `AddTripletImages`, `AddTripletPair`, `ComputeTripletScores`, `EvaluateSurvivorGraph`, `FilterPairsByTriplets`, `TripletKeptPairs`, `SurvivorGraph::numInPieces`, `SurvivorGraph::secondPiece` (Task 18).
+- Produces: nothing new; a test.
+
+- [ ] **Step 1: Write the test**
+
+In `TripletAutoTauTest`, directly after the two-faces scene's `if (!facesRight) { ... return false; }` block
+and before the comment "The face and its cluster", add:
+
+```cpp
+	// The faces named with no majority at the paper's ceiling: eight fans of five images -- a hub
+	// pair and three leaves -- are pieces of two at the higher ceiling, where chain A holds a
+	// majority (60 of 116) and chain B two thirds of it, and pieces of five at the paper's, where
+	// chain A holds none (60 of 140). Each fan's hubs reach chain A through three weak pairs whose
+	// triangles share an edge with the fan's and with the chain's, so every pair is scored. The
+	// faces are the answer: the descent does not run, the paper's ceiling stands, and the weak
+	// pairs (0.4) go with chain B's pairs two apart and the bridges.
+	Scene fans;
+	AddTripletImages(fans, 140);
+	for (IIndex i = 0; i + 1 < 60; ++i)
+		AddTripletPair(fans, i, i + 1, 1000);
+	for (IIndex i = 0; i + 2 < 60; ++i)
+		AddTripletPair(fans, i, i + 2, 700);
+	for (IIndex i = 60; i + 1 < 100; ++i)
+		AddTripletPair(fans, i, i + 1, 1000);
+	for (IIndex i = 60; i + 2 < 100; ++i)
+		AddTripletPair(fans, i, i + 2, 600);
+	AddTripletPair(fans, 59, 60, 700);
+	AddTripletPair(fans, 58, 60, 700);
+	AddTripletPair(fans, 59, 61, 700);
+	for (IIndex hub = 100; hub < 140; hub += 5) {
+		AddTripletPair(fans, hub, hub + 1, 1000);
+		for (IIndex leaf = hub + 2; leaf < hub + 5; ++leaf) {
+			AddTripletPair(fans, hub, leaf, 700);
+			AddTripletPair(fans, hub + 1, leaf, 700);
+		}
+		const IIndex reach = 30 + 2 * ((hub - 100) / 5);
+		AddTripletPair(fans, hub, reach, 400);
+		AddTripletPair(fans, hub, reach + 1, 400);
+		AddTripletPair(fans, hub + 1, reach, 400);
+	}
+	const float fansLowTau = 0.6f*(1.f-6.f/140.f)+6.f/140.f, fansHighTau = 0.75f*(1.f-6.f/140.f)+6.f/140.f;
+	const TripletScores fansScores = ComputeTripletScores(fans, 0.6f, 0.f, weightingCfg.gridSize);
+	const SurvivorGraph fansLow = EvaluateSurvivorGraph(fans, fansScores.scores, fansScores.tau, 2);
+	const SurvivorGraph fansHigh = EvaluateSurvivorGraph(fans, fansScores.scores, fansHighTau, 2);
+	if (!ISEQUAL(fansScores.tau, fansLowTau) || fansLow.numPieces != 9 || fansLow.largestPiece != 100 || fansLow.numInPieces != 140 ||
+		fansHigh.numPieces != 10 || fansHigh.largestPiece != 60 || fansHigh.secondPiece != 40 || fansHigh.numInPieces != 116) {
+		VERBOSE("TripletAutoTauTest FAILED: fans at %g: %u pieces, largest %u, %u in pieces; at %g: %u pieces, largest %u, "
+			"second %u, %u in pieces; expected 9 pieces, largest 100, 140 in pieces, then 10 pieces of 60, 40 and eight of 2",
+			fansScores.tau, fansLow.numPieces, fansLow.largestPiece, fansLow.numInPieces, fansHighTau, fansHigh.numPieces,
+			fansHigh.largestPiece, fansHigh.secondPiece, fansHigh.numInPieces);
+		return false;
+	}
+	TripletFilterConfig fansCfg;
+	fansCfg.enabled = true;
+	fansCfg.minScore = 0.6f; // the scene's ceilings and the counts below were derived at the paper's generic m
+	fansCfg.minYield = 0.f;
+	IIndexArr fansSeeds;
+	const unsigned fansRemoved = FilterPairsByTriplets(fans, fansCfg, weightingCfg, &fansSeeds);
+	const std::set<std::pair<IIndex,IIndex>> fansKept = TripletKeptPairs(fans);
+	bool fansRight = fansRemoved == 65 && fansKept.size() == 212 &&
+		fansKept.count({30,100}) == 0 && fansKept.count({31,100}) == 0 && fansKept.count({30,101}) == 0 && fansKept.count({44,135}) == 0 &&
+		fansKept.count({59,60}) == 0 && fansKept.count({58,60}) == 0 && fansKept.count({59,61}) == 0 &&
+		fansKept.count({60,62}) == 0 && fansKept.count({60,61}) == 1 && fansKept.count({28,30}) == 1 &&
+		fansKept.count({100,101}) == 1 && fansKept.count({100,102}) == 1 && fansKept.count({101,104}) == 1 && fansSeeds.size() == 60;
+	FOREACH(i, fansSeeds)
+		fansRight = fansRight && fansSeeds[i] == (IIndex)i;
+	if (!fansRight) {
+		VERBOSE("TripletAutoTauTest FAILED: fans removed %u pairs, kept %u, seed views %u; expected the faces named and the "
+			"descent off: chain B's 38 pairs two apart and the hubs' 24 pairs to chain A below the paper's ceiling, the 3 "
+			"bridges cut, 65 removed, 212 kept, seed views 0-59",
+			fansRemoved, (unsigned)fansKept.size(), (unsigned)fansSeeds.size());
+		return false;
+	}
+```
+
+The pair keys of `TripletKeptPairs` are ordered (lower index, higher index), as the two-faces scene's
+checks use them.
+
+How the numbers come out. Every pair sits in a triangle and every triangle is edge-connected to the
+rest, so all 277 pairs are scored and `|V|` is 140; `d_max` is 6 (chain images 30, 32, ..., 44, each
+reached by a hub pair). The scores: 1 for the chains' consecutive pairs and the hub pairs; 0.7 for
+chain A's pairs two apart, the bridges and the leaves' pairs (each in one triangle whose strongest
+side is 1000); 0.6 for chain B's pairs two apart; 0.4 for the hubs' pairs to chain A (400 against
+1000 in both of their triangles). At the higher ceiling (0.7607) the pairs at 1 remain: chain A,
+chain B and eight hub pairs, 116 images in ten pieces, chain A a strict majority and chain B two
+thirds of it. At the paper's ceiling (0.6171) the pairs at 0.7 join too: before the cuts one piece of
+100 and eight of five; after them chain A (60), chain B (40) and the eight fans, 140 in pieces and no
+majority. Removed: chain B's 38 pairs at 0.6 and the 24 hub pairs at 0.4 below the threshold, the 3
+bridges cut; 65 of 277.
+
+- [ ] **Step 2: Run the suite**
+
+Run: `ninja -C make -f build-Release.ninja Tests && ./bin/Release/Tests 1`
+Expected: 64 PASSED.
+
+- [ ] **Step 3: Check the test guards the descent**
+
+In `libs/SFM/ViewGraphTriplets.cpp`, the descent's condition reads `if (shattered && atCeiling.numPieces > 1 && !twoFaced) {`.
+Temporarily delete ` && !twoFaced` from it, rebuild and run the suite:
+
+Run: `ninja -C make -f build-Release.ninja Tests && ./bin/Release/Tests 1`
+Expected: `TripletAutoTauTest FAILED: fans removed 3 pairs, kept 274, ...` (the descent, unable to join chain B, falls to the lowest score, 0.4, and keeps every scored pair but the cut bridges).
+
+Restore the guard with `git checkout -- libs/SFM/ViewGraphTriplets.cpp`, rebuild and run the suite again:
+64 PASSED. `git status` shows only `apps/Tests/TestsSFM.cpp` modified.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add apps/Tests/TestsSFM.cpp
+git -c user.name=cDc -c user.email=cdc.seacave@gmail.com commit -m "sfm: test the descent staying off when the faces are named and the larger holds no majority"
+```
+
+### Task 20: The offline harness's default minimum score follows the shipped one
+
+Spec §3.12. `scripts/python/tests/triplet_disambiguation.py` replays the shipped rule offline; its
+`score` command's `-m` default stayed at 0.6 when the filter's moved to 0.3 (Task 17), and the design
+note calls that default "the shipped 0.6".
+
+**Files:**
+- Modify: `scripts/python/tests/triplet_disambiguation.py:507` (the `-m` argument of the `score` command)
+- Modify: `docs/design/TripletDisambiguation.md` (the sentence containing "default the shipped 0.6")
+
+**Interfaces:**
+- Consumes: `TripletFilterConfig::minScore = 0.3f` (Task 17).
+- Produces: nothing new.
+
+- [ ] **Step 1: Move the default**
+
+`scripts/python/tests/triplet_disambiguation.py`, line 507, currently
+
+```python
+    scoreParser.add_argument("-m", "--min-score", type=float, default=0.6, help="the paper's minimum edge score m (default 0.6)")
+```
+
+becomes
+
+```python
+    scoreParser.add_argument("-m", "--min-score", type=float, default=0.3, help="the paper's minimum edge score m (default 0.3, the shipped one)")
+```
+
+`docs/design/TripletDisambiguation.md`: in the sentence "kept flag for a given m (`-m`, default the shipped 0.6)"
+replace "default the shipped 0.6" with "default the shipped 0.3". Nothing else in either file changes.
+
+- [ ] **Step 2: Check the help**
+
+Run: `python3 scripts/python/tests/triplet_disambiguation.py score --help`
+Expected: the `-m` line reads "the paper's minimum edge score m (default 0.3, the shipped one)".
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add scripts/python/tests/triplet_disambiguation.py docs/design/TripletDisambiguation.md
+git -c user.name=cDc -c user.email=cdc.seacave@gmail.com commit -m "sfm: the offline triplet harness defaults to the shipped minimum score"
+```
+
+### Task 21: The design note records the campaign at the paper's minimum score and the face rule
+
+Spec §3.12, §3.13, §5.9. The design note's measurements still describe the runs at `m = 0.6` before the
+face rule (snapshot j); the snapshot-l campaign (runs `openmvs-disambig-20260905l-triplet` under each
+set beside the datasets, verdicts in `l-verdict.log`) replaces them. Six edits, all in
+`docs/design/TripletDisambiguation.md`; nothing else in the file changes.
+
+**Files:**
+- Modify: `docs/design/TripletDisambiguation.md`
+
+**Interfaces:**
+- Consumes: the VERBOSE lines of Task 18 (the face rule) and the default of Task 17.
+- Produces: nothing new.
+
+- [ ] **Step 1: The example log lines**
+
+Replace everything from the sentence `Four lines from a Radcliffe run report everything:` (the end of
+the paragraph about the export's header) through the closing code fence of the church's block (the
+fence after the line beginning `Triplet filter: tau 0.964, the ceiling applied as given, its largest
+piece holding a majority (ceiling 0.964 at m 0.75, the second face's`) with:
+
+````markdown
+Four lines from a Radcliffe run report everything:
+
+```
+Triplet filter: the ceiling at the second-face score 0.75 (0.967) leaves no second face (largest piece 111, second 52): the paper's ceiling stands
+Triplet filter: tau 0.908, the ceiling applied as given, its largest piece holding a majority (ceiling 0.908 at m 0.30, d_max/|V| 0.869); the ceiling leaves 4 pieces (components of at least 3 images) holding 261 images between them, and 21 stragglers; survivor graph keeps 181/282 images in its largest component, 28 below degree 2 (0 before), and 1946/20361 distinct image pairs
+Triplet filter: kept 4668/23083 scene pairs (tau 0.908; 282 nodes, max degree 245; 800921 triplets in 1 components, 242673 doppelganger triplets gave no evidence; 18415 below tau and 0 cut by the face rule removed, 2722 unscored kept); the reconstruction seeds in the largest piece the ceiling leaves (181 images)
+Selected reference view 130 with 38832 connections over 30 pairs among 181 seed views
+```
+
+and, for contrast, the church's, where the second ceiling names the faces and the paper's ceiling
+applies inside the larger one:
+
+```
+Triplet filter: the ceiling at the second-face score 0.75 (0.964) leaves two faces, pieces of 133 and 83 images: the paper's ceiling 0.899 applies inside the larger face; 8909 pairs joining the other face and 0 pairs of 0 ambiguous images cut
+Triplet filter: tau 0.899, the paper's ceiling applied inside the larger face, the other face cut off (ceiling 0.899 at m 0.30, d_max/|V| 0.856); the ceiling leaves 7 pieces (components of at least 3 images) holding 257 images between them, and 20 stragglers; survivor graph keeps 148/277 images in its largest component, 33 below degree 2 (0 before), and 1918/20238 distinct image pairs
+Triplet filter: kept 2917/23016 scene pairs (tau 0.899; 277 nodes, max degree 237; 819680 triplets in 1 components, 213544 doppelganger triplets gave no evidence; 11190 below tau and 8909 cut by the face rule removed, 1000 unscored kept); the reconstruction seeds in the largest piece the ceiling leaves (148 images)
+```
+````
+
+The paragraph that follows ("Two caveats. It is **not idempotent** ...") stays.
+
+- [ ] **Step 2: How the ambiguous-scene runs were made and judged**
+
+In the "Ambiguous-scene datasets" section, replace the sentences from `Matching is exhaustive, as in
+the paper's reference implementation; the` through `Radcliffe (no majority) the paper's ceiling
+stands.` (the end of that paragraph) with:
+
+```markdown
+Matching is exhaustive, as in the paper's reference implementation; the filter's minimum score is
+its default 0.3, the paper's value on these sets, and its second-face score 0.75; the runs are the
+`openmvs-disambig-20260905l-triplet` folders under each set beside the datasets. On the sets whose
+ceiling shatters the graph `m` only sets a ceiling the descent replaces, and 0.3 and 0.6 give the
+same thresholds. On the church the second ceiling (0.964) leaves the two facades as a majority piece
+and a second piece of two thirds of it, so it names the faces, and the paper's ceiling (0.899)
+applies inside the larger one; on Radcliffe (no majority at 0.75), Brandenburg (a second piece of 7
+images), Big Ben, the Arc and Nevsky (one piece) the paper's ceiling stands, and at 0.3 it leaves a
+majority piece on every one of them, applied as given. A collection's verdict is its comparison with
+the Doppelgangers authors' verified COLMAP model of the same collection (`model_compare.py` beside
+the datasets): after a similarity alignment on the images the two have in common, an image is
+misplaced when its position is off by half the model's radius or more, or its viewing direction by
+30 degrees or more. A folded model has its misplaced images' directions off by 60 degrees and more;
+a scattered one has them off by position alone, with the directions within a few degrees.
+```
+
+- [ ] **Step 3: The video sets**
+
+In the video-set table, replace the row beginning `| cereal |` with
+
+```markdown
+| cereal | 25 | 25, folded (spread 0.237) | 25; the descent to 0.782; the path doubles back (spread 0.277, frames 8-14) exactly as the verified reference model has it: 24 of its 24 images in common, none misplaced | 7 | unfolded |
+```
+
+and the row beginning `| ToH |` with
+
+```markdown
+| ToH | 338 | 338, folded on the temple's one-third turn (804 fold pairs at gaps of 20 frames or more) | 338 (vocabulary tree at 50 pairs per image, tau 0.455 applied as given); 3 fold pairs at gaps of 20 frames or more, all the genuine closure of frame 0 onto 329 | — | unfolded |
+```
+
+The other rows stay: their thresholds and fold counts are the same at 0.3 (books 2, desk 23, oats 0
+fold pairs; cup 52 of 64 registered is the one change, recorded in the table's own row below).
+Replace the row beginning `| cup |` with
+
+```markdown
+| cup | 64 | 64, folded | 52; at 0.3 the ceiling (0.989) leaves a majority piece of 52, applied as given, and the other 12 images stay out (at 0.6 the descent joined all 64); 0 fold pairs, an open ring, 51 of the reference's 63 in common and none misplaced | 40 (their one failure) | unfolded |
+```
+
+- [ ] **Step 4: The internet collections**
+
+Replace the paragraph beginning `**Internet collections** (the "without the filter" column` through
+its closing `):` and the whole table that follows it (the header row `| set | images | without the
+filter | with the filter | paper's `G_F` | Doppelgangers | verdict |` through the row beginning
+`| alexander_nevsky_cathedral |`) with:
+
+```markdown
+**Internet collections** (the "without the filter" column is the branch's default matching, a
+vocabulary tree at 50 pairs per image, which folds every two-faced building; the filter column is
+exhaustive matching except on `indoor`, whose loop the vocabulary tree keeps; a model is "one-sided"
+when every registered camera lies on one side of the facade plane, and the verdict column is the
+reference-model comparison described above):
+
+| set | images | without the filter | with the filter | paper's `G_F` | Doppelgangers | verdict |
+|---|---|---|---|---|---|---|
+| indoor | 153 | 152 | 152, one loop (vocabulary tree at 50 pairs per image, tau 0.664 applied as given) | 42 | 152 | the loop is real; the paper over-splits it |
+| brandenburg_gate | 176 | 173, folded | 145: at 0.75 the second piece (7 images) is a cluster, not a face, so the paper's ceiling (0.952) stands; it leaves a majority piece and is applied as given | 129 | 151 | unfolded: 144 of the reference's 151 in common, directions within 6 degrees at the 90th percentile |
+| church_on_spilled_blood | 278 | 270, folded | 143, one-sided: the second ceiling (0.964) leaves the south facade with the canal views (133 images) and the north facade (83) as two faces and names them; the paper's ceiling (0.899) applies inside the south face, whose piece grows to 148, and the north face is cut off and stays unregistered | 136 | 258 | one-sided, unfolded: 126 of the south reference's 137 in common, directions within 8 degrees at the 90th percentile |
+| radcliffe_camera | 283 | 277, folded | 181: at 0.75 the largest piece (111 images) holds no majority, so the paper's ceiling (0.908) stands; it leaves a majority piece of 181, applied as given | 177 | 94 | one-sided, unfolded: 181 of the side reference's 185 in common, 11 misplaced by position |
+| big_ben | 403 | 391 | 385: one piece at 0.75, so the paper's ceiling (0.763) stands, applied as given | 379 | 394 | folded: 209 of 377 common images misplaced, the reference's two sides on one another (the limit below) |
+| arc_de_triomphe | 435 | 405 | 403: at 0.75 the second piece is under a third of the largest, so the paper's ceiling (0.679) stands, applied as given | 394 | 392 | unfolded: 370 of the reference's 395 in common, 26 misplaced by position, directions within 5 degrees at the 90th percentile |
+| alexander_nevsky_cathedral | 449 | 442 | 434: one piece at 0.75, so the paper's ceiling (0.919) stands, applied as given | 429 | 445 | unfolded: 433 of the reference's 446 in common, directions within 11 degrees at the 90th percentile |
+```
+
+- [ ] **Step 5: The summary**
+
+Replace the paragraph beginning `On the two-faced buildings the filter matches the paper (church 126
+against 136, Radcliffe 181` through `or fails (cup).` with:
+
+```markdown
+Against the paper's own filter the branch registers more on every collection and keeps every model
+but one unfolded: the church 143 against 136 (one-sided, as the paper's model and both learned
+methods' models are), Radcliffe 181 against 177, Brandenburg 145 against 129, the Arc 403 against 394,
+Nevsky 434 against 429; on the video sets every path unfolds where the paper over-splits (books 9 of
+21, oats 9 of 23, desk 12 of 31, cereal 7 of 25) or fails (cup: 52 whole against 40). Big Ben is the
+one miss: 385 registered against 379, but folded, as every threshold of the pairwise geometry leaves
+it (the limit below). Against Doppelgangers++, which reports two models on the church (157+106) and
+Radcliffe (94+186), the branch's one model is within 5 images of the larger on Radcliffe and 14
+short of it on the church; on the Arc (423) and Nevsky (447) it is 20 and 13 short, and on Big Ben
+(394) short and folded.
+```
+
+- [ ] **Step 6: The limits**
+
+In "Limitations and follow-ups", delete the bullet beginning `* **Brandenburg Gate**:` (four lines)
+and the bullet beginning `* **cereal**:` (two lines), and put in their place, as one bullet:
+
+```markdown
+* **Big Ben**: the tower's two long sides are near-identical and the matcher verifies more pairs
+  between them than between the true corners: at every threshold of the triplet score the bridges
+  between the sides outnumber the true corner links (at 0.3, 13 against 6), rotation cycles close
+  through the symmetry as often as through true pairs, and the thinnest cut of the kept graph parts
+  the sides from each other, not from their doppelgangers. Nothing in pairwise geometry tells the
+  two apart; the reference model's authors used appearance. The filter registers 385 of 403 images,
+  more than the paper's 379, on a folded model.
+```
+
+- [ ] **Step 7: Check and commit**
+
+Run: `/usr/bin/grep -n -E '363|126 against|377: at|418: at|default 0\.6|still folded' docs/design/TripletDisambiguation.md`
+Expected: no output (every stale number and the cereal verdict are gone).
+
+```bash
+git add docs/design/TripletDisambiguation.md
+git -c user.name=cDc -c user.email=cdc.seacave@gmail.com commit -m "sfm: the triplet filter's design note records the campaign at the paper's minimum score and the face rule"
+```
+
+### Task 22: The interface, help, overview and note say what the face rule does, and the export leaves a zero baseline empty
+
+Spec §3.12, §3.13, §5.9. After the face rule (bcfa397) and the default's move (d67dd9b), four places still
+describe the superseded rule -- the stricter ceiling "used instead of" the paper's -- or the old default,
+the note's verdict cells omit the misplaced counts where they are largest, the export writes a zero
+translation for a pair whose baseline is zero, and four counters sit outside the block that uses them.
+Eight edits across five files, each given in full.
+
+**Files:**
+- Modify: `libs/SFM/ViewGraphTriplets.h` (the `minScore` and `secondFaceScore` comments; `EvaluateSurvivorGraph`'s contract)
+- Modify: `libs/SFM/ViewGraphTriplets.cpp` (the scope of `numImages`, `numCutToFace`, `numAmbiguous`, `numCutAmbiguous`)
+- Modify: `libs/SFM/PairsMatcher.cpp` (the pairs export's zero-baseline pose)
+- Modify: `apps/CreateStructure/CreateStructure.cpp` (the `--triplet-second-face-score` help)
+- Modify: `libs/SFM/README.md` (the triplet paragraph)
+- Modify: `docs/design/TripletDisambiguation.md` (the flags table row, the pose convention, the runs' folders, ToH's paper cell, three verdict cells)
+
+**Interfaces:**
+- Consumes: everything Tasks 17-21 produced.
+- Produces: nothing new.
+
+- [ ] **Step 1: The header's contracts**
+
+In `libs/SFM/ViewGraphTriplets.h`, replace the four comment lines above `float minScore = 0.3f;` (from
+`// The paper's minimum edge score m,` through `// second face, see secondFaceScore.`) with
+
+```cpp
+	// The paper's minimum edge score m, in [0,1] (the domain this implementation enforces): 0.3
+	// medium/small ambiguous (the default), 0.6 generic/large-scale, 0.9 highly ambiguous. With
+	// autoTau this is the ceiling the threshold is derived from and never exceeds, a second face
+	// included: see secondFaceScore.
+```
+
+Replace the comment lines above `float secondFaceScore = 0.75f;` (from `// A second, stricter ceiling,
+tau(secondFaceScore), tried first:` through `// not tried.`) with
+
+```cpp
+	// A second, stricter ceiling, tau(secondFaceScore), tried first to NAME the faces: when the
+	// graph it leaves has two -- its largest piece holds a strict majority of the images in pieces
+	// and its second-largest piece at least a third of the largest -- tau(minScore) applies inside
+	// the larger face, every pair joining the other face to an image outside it is cut, and so is
+	// every pair of an image outside both faces whose kept pairs reach both. A two-faced building
+	// matched exhaustively (the church: seven matchings) splits into its faces at this ceiling and
+	// merges them at tau(minScore) in half the matchings, while a building whose graph is one face
+	// (Big Ben) is cut so thin at this ceiling that the reconstruction keeps a third of it. Values
+	// at or below minScore switch the second ceiling off. Part of autoTau: with autoTau off it is
+	// not tried.
+```
+
+Replace the two comment lines `// Evaluate the graph left by keeping every unscored pair and every pair
+scoring at or above `tau`.` and `// Pass tau = 0 for the unfiltered graph: scores lie in [0,1] and
+unscored pairs are always kept.` with
+
+```cpp
+// Evaluate the graph left by keeping every unscored pair and every pair scoring at or above `tau`;
+// a pair marked TripletScores::cut is removed at every tau. Pass tau = 0 for the unfiltered graph
+// of a score array carrying no cut marks: scores lie in [0,1] and unscored pairs are always kept.
+```
+
+- [ ] **Step 2: The counters' scope**
+
+In `libs/SFM/ViewGraphTriplets.cpp`, `FilterPairsByTriplets`: delete the line `const IIndex numImages =
+scene.images.size();` (directly after `std::vector<float> scores = tripletScores.scores;`) and the line
+`unsigned numCutToFace = 0, numAmbiguous = 0, numCutAmbiguous = 0;` (directly before
+`if (config.autoTau && secondFace > minScore) {`), and declare both at the top of the `if (twoFaced) {`
+block, as its first two statements, with the same text and the block's indentation. Everything that
+reads them is inside that block; if the build says otherwise, stop and report BLOCKED with the error.
+
+- [ ] **Step 3: A zero baseline exports no pose**
+
+In `libs/SFM/PairsMatcher.cpp`, the pairs export (the block beginning `if (pair.relativePose.has_value()) {`
+near `// relativePose->R, C store the pose in the pair's own convention`): a relative pose whose
+translation has zero norm has no direction to export. Restructure so that the seven pose cells are
+written only when `tLen > REAL(0)`, and a zero baseline falls through to exactly what the `else`
+branch writes for a pair with no pose; replace the comment `// the scale of a two-view pose is
+arbitrary: normalize t` with `// the scale of a two-view pose is arbitrary: normalize t; a zero
+baseline has no direction and exports no pose`. Keep the precision handling as it is.
+
+- [ ] **Step 4: The help**
+
+In `apps/CreateStructure/CreateStructure.cpp`, the `--triplet-second-face-score` help: replace
+`a stricter minimum edge score whose ceiling is used instead of the default's when the graph it leaves
+has two faces (a majority piece and a second piece of at least a third of it)` with
+`a stricter minimum edge score whose ceiling names the faces when the graph it leaves has two (a
+majority piece and a second piece of at least a third of it): the default's ceiling then applies inside
+the larger face and every pair joining the other face is removed`. The rest of the string stays.
+
+- [ ] **Step 5: The library overview**
+
+In `libs/SFM/README.md`, the triplet paragraph: replace `the default `m` is 0.6, or 0.75 when the graph
+that stricter ceiling leaves is two-faced (a majority piece with` and the rest of that parenthesis, up
+to and including its closing `)`, with `the default `m` is 0.3, the paper's value for the medium and
+small ambiguous sets; a stricter ceiling at the second-face score 0.75 is tried first and, when the
+graph it leaves is two-faced (a majority piece with a second piece of at least a third of it), names
+the faces: the paper's ceiling then applies inside the larger face and every pair joining the other
+face is cut`. Then replace `at `m = 0.6` it discards 56-76 %` with `at the earlier default `m = 0.6`
+it discards 56-76 %`.
+
+- [ ] **Step 6: The note**
+
+In `docs/design/TripletDisambiguation.md`:
+
+1. The flags table row for `--triplet-second-face-score F`: replace `whose ceiling replaces the
+   default's when the graph it leaves has two faces: a majority piece and a second piece of at least a
+   third of it` with `whose ceiling names the faces when the graph it leaves has two (a majority piece
+   and a second piece of at least a third of it): the default's ceiling then applies inside the larger
+   face and every pair joining the other face is removed`.
+2. The export paragraph: replace `so a run can be re-scored offline from its own export;` with `where
+   the rotation maps a point of image A into image B (x_B = R x_A + t, the quaternion scalar first)
+   and the translation is a unit vector, so a run can be re-scored offline from its own export;`.
+3. The runs' folders: replace `the runs are the `openmvs-disambig-20260905l-triplet` folders under each
+   set beside the datasets.` with `the runs are the `openmvs-disambig-20260905l-triplet` folders under
+   each set beside the datasets (`indoor` and `ToH`, matched with the vocabulary tree:
+   `openmvs-disambig-20260905l-vocab50-triplet`).`
+4. The ToH row of the video-set table: its `paper's G_F` cell reads `—`; make it `338` (Manam and
+   Govindu's Table 3 gives 338 on every column for the Temple of Heaven).
+5. Three verdict cells of the internet-collection table:
+   - brandenburg_gate: replace `unfolded: 144 of the reference's 151 in common, directions within 6
+     degrees at the 90th percentile` with `unfolded: 144 of the reference's 151 in common, 21 misplaced
+     by position, directions within 6 degrees at the 90th percentile`;
+   - church_on_spilled_blood: replace `one-sided, unfolded: 126 of the south reference's 137 in common,
+     directions within 8 degrees at the 90th percentile` with `one-sided, unfolded but scattered: 126
+     of the south reference's 137 in common, 46 of them misplaced by position (up to 3.9 model radii; the
+     run at the stricter ceiling alone had 40 of 116), directions within 8 degrees at the 90th
+     percentile`;
+   - alexander_nevsky_cathedral: replace `unfolded: 433 of the reference's 446 in common, directions
+     within 11 degrees at the 90th percentile` with `unfolded: 433 of the reference's 446 in common, 32
+     misplaced by position, directions within 11 degrees at the 90th percentile`.
+
+- [ ] **Step 7: Build, test, commit**
+
+Run: `ninja -C make -f build-Release.ninja Tests CreateStructure && ./bin/Release/Tests 1`
+Expected: 64 PASSED. Then `/usr/bin/grep -rn -E 'used instead of the default|replaces the default|default .m. is 0\.6' libs/SFM/ViewGraphTriplets.h libs/SFM/README.md apps/CreateStructure/CreateStructure.cpp docs/design/TripletDisambiguation.md` prints nothing.
+
+```bash
+git add libs/SFM/ViewGraphTriplets.h libs/SFM/ViewGraphTriplets.cpp libs/SFM/PairsMatcher.cpp apps/CreateStructure/CreateStructure.cpp libs/SFM/README.md docs/design/TripletDisambiguation.md
+git -c user.name=cDc -c user.email=cdc.seacave@gmail.com commit -m "sfm: the interface, help and notes say what the face rule does, and a zero baseline exports no pose"
+```
+
 ## Measurement (the controller's, after the branch is green)
 
 Not tasks and not a subagent's: they run the pipeline and read datasets, which no implementer does.

@@ -480,7 +480,7 @@ Cost if wrong: on a collection whose largest ceiling piece is the wrong face of 
 more views of the doppelganger than of the rest — the model is that face, the paper's own
 outcome, and no worse than today's arbitrary side.
 
-### 3.10 The minimum score is 0.75
+### 3.10 The sweep upward from 0.6
 
 The church matched exhaustively four times gives four graphs whose facades split at the ceiling
 in two and merge in the other two: the north-south pairs the matcher happens to verify score
@@ -510,16 +510,19 @@ them for want of well-conditioned tracks, 147 remain; at 0.6 the ceiling 0.866 k
 371 of 403 register (the paper's 379). No single `m` serves both a two-faced building and a tower
 whose graph is one face: §3.11 chooses between the two ceilings from what they leave.
 
-**Rule.** The default minimum score `m` stays at the paper's generic 0.6. §3.11 says when the
+**Rule.** The sweep argued for nothing below the paper's generic 0.6, which stayed the default until
+§3.12 measured the range below it with the reference models' per-edge truth. §3.11 says when the
 ceiling at 0.75 is used instead.
 
 ### 3.11 The ceiling looks for the second face
 
-Two ceilings are evaluated: `tau(m)` at the default `m = 0.6`, and `tau(m₂)` at `m₂ = 0.75`. If the
+Two ceilings are evaluated: `tau(m)` at the default `m` (0.3, §3.12), and `tau(m₂)` at `m₂ = 0.75`. If the
 graph the higher ceiling leaves is *two-faced* — its largest piece holds a strict majority of the
 images in pieces (§3.8) and its second-largest piece holds at least a third of the largest — the
 higher ceiling is the ceiling; otherwise the lower one is, as the paper has it. Everything after
-(§3.7's descent, §3.8's majority, §3.9's seed) applies to the chosen ceiling unchanged.
+(§3.7's descent, §3.8's majority, §3.9's seed) applies to the chosen ceiling unchanged. §3.13
+refines what the higher ceiling is for: it names the faces, and the paper's ceiling then applies
+inside the larger one.
 
 The second ceiling is part of the automatic ceiling: with `autoTau` off, `tau(m)` applies as given,
 the second face included -- the paper's Eqn. 3 literally, which is what that switch is for.
@@ -528,7 +531,7 @@ the second face included -- the paper's Eqn. 3 literally, which is what that swi
 |---|---|---|---|---|---|
 | church (seven matchings) | 139/85 or 227 merged | 130-135 / 80-83 | yes (second 60 % of the largest) | 0.75 | 129-135, one-sided |
 | radcliffe | 119 + 54 + 44 + 19 + 15, no majority | 105-117 + 47-53 + ..., no majority | no | 0.6 | descent to 0.84, 175-181 |
-| brandenburg | 125 | 102 + 7 + 6 + ... | no (second 7) | 0.6 | 125, folded |
+| brandenburg | 125 | 102 + 7 + 6 + ... | no (second 7) | 0.6 | 125; the reference model (§5.8) finds no fold, only the paper's 129 unreached |
 | big_ben exhaustive | 387 | 376 | no (one piece) | 0.6 | 371 |
 | big_ben retrieval | 391 | 374 | no | 0.6 | 375 |
 | arc exhaustive | 363 + 29 | 305 + 42 + 9 + 6 + 6 | no (second 42 of 305) | 0.6 | the 363-piece |
@@ -543,6 +546,96 @@ Cost if wrong: a collection with a genuine second sub-scene holding a third of t
 joined to it only between the two ceilings, gets that sub-scene as its own model — the paper's own
 behaviour, and a separate model rather than a merge; and one more constant beside the floor and the
 majority.
+
+### 3.12 The minimum score is the paper's 0.3
+
+The paper runs `m = 0.3` on the medium and small ambiguous sets (Heinly 2014, Yan 2017), 0.6 on the
+large-scale 1DSfM collections and 0.9 on Louvre and Sacre Coeur. The branch ran 0.6, and §3.10's
+sweep went up from there, never down. The reference models' per-edge truth (§5.8) counts what a
+lower `m` costs on the two exhaustively matched graphs whose false pairs are known (kept = true +
+false + dubious + unlabelled; the last two columns of the tool's table are omitted):
+
+| graph (scored pairs, false among them) | m | ceiling | kept | true | false | largest piece | images with a false kept pair |
+|---|---|---|---|---|---|---|---|
+| Big Ben (27,842 pairs, 6,378 false) | 0.3 | 0.767 | 4,733 | 4,393 | 34 | 391 | 40 |
+| | 0.6 | 0.867 | 3,234 | 3,048 | 11 | 382 | 16 |
+| | 0.75 | 0.917 | 2,275 | 2,165 | 2 | 367 | 4 |
+| Arc de Triomphe (24,388 pairs, 3,452 false) | 0.3 | 0.679 | 5,133 | 4,703 | 57 | 416 | 62 |
+| | 0.6 | 0.817 | 3,326 | 3,061 | 37 | 403 | 41 |
+| | 0.75 | 0.885 | 2,280 | 2,123 | 12 | 314 | 16 |
+
+The score removes more than 99 % of the false pairs at every `m` in the range. What 0.3 buys is a
+thousand and more true pairs and a larger piece; what it costs is a few dozen false pairs on a few
+close-up images, pairs the resection's own checks, not the threshold, must refuse. Reconstructed at
+0.3 against 0.6, with the verdicts of `model_compare.py` against the reference models (misplaced:
+position off by half the model's radius or more, or viewing direction off by 30 degrees or more):
+
+| set | at 0.6 | at 0.3 | verdict at 0.3 |
+|---|---|---|---|
+| Arc de Triomphe | 363 registered, 25 misplaced of 336 common | 410 registered, 24 misplaced of 375 common, view p90 4.4 degrees | unfolded (the paper's 394) |
+| Alexander Nevsky Cathedral | 418, 31 misplaced | 437, 33 misplaced of 436 common, view p90 10 degrees | unfolded (the paper's 429) |
+| Big Ben | 377, 121 misplaced | 387, 234 misplaced | folded at both: the limit of §5.8 |
+| Church on Spilled Blood | 127 | 127 | the second ceiling (0.963) chosen at both; §3.13 is its answer |
+| Radcliffe Camera | 181, descent to 0.842 | 180, the ceiling 0.908 applied as given | one-sided, unfolded, 11 misplaced at both |
+| Brandenburg Gate | 127, 19 misplaced of 126 common | 146, 18 misplaced of 145 common, view p90 5.5 degrees | unfolded at both; 146 against the paper's 129 |
+| Cereal | 25, none misplaced | 25, none misplaced | unfolded |
+| Cup | 64, none misplaced | 52, none misplaced | unfolded, 12 images lost |
+| Street | 19, none misplaced | 19, 1 misplaced | unfolded |
+| Books, Desk, Oats | descent to 0.875, 0.952, 0.898 | the same thresholds | unchanged: the ceiling shatters the graph at either `m` and the descent reaches the same pair |
+
+Cup is the cost: at 0.3 the ceiling 0.989 leaves a majority piece of 52, so the descent that at 0.6
+joined all 64 does not run. Nothing in the scores tells that chain segment from a face fragment --
+§3.8's majority is the rule -- and 52 is still above the paper's 40. Big Ben's fold deepens with the
+wider graph, but it is folded at every `m` (§5.8).
+
+**Rule.** The default minimum score `m` is the paper's 0.3 for the medium and small ambiguous sets.
+The second-face score stays 0.75 (§3.11), and §3.13 applies the paper's ceiling `tau(m)` inside the
+larger face.
+
+### 3.13 The second ceiling names the faces; the paper's ceiling applies inside the larger one
+
+§3.11 uses the higher ceiling as *the* ceiling once it has found two faces, so the face that gets
+reconstructed is cut as thin as the higher ceiling cuts it: on the church the south facade keeps
+131 of its images in the piece and 126 register, against the paper's 136 and Doppelgangers++'s 157.
+Everything the higher ceiling removed *inside* the facade -- pairs of two south-facade images
+scoring between the two ceilings -- was true, and was removed only because the ceiling that
+separates the facades is one number for the whole graph.
+
+The higher ceiling's job is to name the faces, not to thin them. With the faces named -- `A` the
+largest piece at the higher ceiling, `B` the second -- the paper's ceiling `tau(m)` is the
+threshold, and three kinds of pair are removed whatever their score:
+
+- every pair joining an image of `B` to an image outside `B`: the other face is cut off, not
+  deleted -- its own pairs stay, it is simply unreachable from `A`, exactly as unreachable as §3.11
+  leaves it;
+- every pair of an *ambiguous* image: one outside both faces whose kept pairs at the paper's ceiling
+  reach both `A` and `B` -- a close-up that matches both facades, which is what a straggler joined to
+  both faces is;
+- nothing else: an image outside both faces whose pairs reach only `A` is a straggler of `A` and joins
+  it at the paper's ceiling, as it would on a one-faced building.
+
+The descent does not run when the faces are named: the faces are the answer, and with every
+`A`-`B` pair gone at every threshold there is nothing for it to join. The reconstruction seeds in the
+largest piece the paper's ceiling then leaves, in every graph seen `A` with its stragglers (the code takes the largest piece as it finds it; a third piece gathering more stragglers than `A` would win, and none has).
+
+Replayed offline on the church's exhaustive graph (`face_readmit_replay.py`, the faces at the
+ceiling 0.964 of `m₂ = 0.75`, reference sides from the Doppelgangers models, `?` an image in neither):
+
+| threshold inside the face | the face's piece | north-facade images in it | ambiguous images dropped |
+|---|---|---|---|
+| 0.964, the higher ceiling as today | 131 (A118 / ?13) | 0 | -- |
+| 0.942, `tau(0.6)` | 138 (A123 / ?15) | 0 | 0 |
+| 0.921, `tau(0.45)` | 146 (A127 / ?19) | 0 | 1 |
+| 0.899, `tau(0.3)` | 148 (A129 / ?19) | 0 | 1 |
+
+The church is the only set here on which the two-face rule fires (§3.11's table: Radcliffe leaves
+no majority, Brandenburg's second piece is 7, Big Ben and Nevsky are one piece, Arc's second piece
+is 43 of 320, the small sets shatter), so on every other set this section changes nothing.
+
+Cost if wrong: an image outside both faces that reaches the larger face only through a doppelganger
+pair scoring between the two ceilings joins that face -- the exposure every one-faced graph has at
+the paper's ceiling, and one the higher ceiling did not remove either for the pairs above it; and a
+true straggler that reaches both faces is dropped (one on the church).
 
 ### 3.4 Where the filter runs
 
@@ -633,6 +726,70 @@ it** rather than keeping two gates that do one job.
 more than 2 % of its registered images; none worsens its median rotation error by more than 5 %;
 and the dense repetitive arm keeps its component win. It is a conjunction and it is re-run, not
 relaxed.
+
+**5.8 Verdicts by reference models, and the limit of pairwise geometry.** The Doppelgangers dataset
+(Cai et al., ICCV 2023) ships COLMAP reconstructions of the heinly2014 and yan2017 collections made
+with its own pair classifier, unfolded by construction (and split where the collection's faces
+could not be joined: the church 137 + 95, Radcliffe 185 + 94). They sit under
+`~/virginia/datasets/Disambiguation/doppelgangers_reconstructions/` with the sets' own image names.
+A run's verdict is `model_compare.py`: a similarity alignment of our camera centres to the
+reference's (3-point RANSAC, then a refit on the inliers), then every common image's viewing
+direction against the reference's -- **directions, not full rotations**, since the reference applies
+EXIF orientation and a portrait photo's rotation differs by a roll -- and its position in units of
+the reference's median camera radius. An image is misplaced when its direction is 30° off or its
+position half a radius off; a model is folded when a block of them is. The base (unfiltered) runs
+verdict folded on Arc (117 misplaced), Big Ben (250), Nevsky (266), cereal, cup and street, and
+unfolded on Brandenburg, whose collection never needed disambiguation in this pipeline; the shipped
+rule's runs verdict unfolded on all of them but Big Ben (63 images of one side placed on the other).
+
+The reference also gives a **per-edge truth** (`rotavg_eval.py`, `threshold_truth.py`): the angle
+between the two optical axes that a pair's own relative rotation claims (the arc-cosine of R[2,2],
+invariant to how either photo is rolled about its axis) against the angle between the reference's
+viewing directions. A doppelganger pair claims near-parallel axes for two views the reference has
+facing different ways (a difference over 45° is false, under 20° true). On the exhaustive graphs 23 %
+of Big Ben's verified pairs and 14 % of Arc's are false, and the triplet score removes more than
+99 % of them at any `m` in 0.3-0.75 (§3.12's table); the survivors sit on a few close-up images of the
+duplicated object (Big Ben: 16 images carry the 11 kept false pairs at `m = 0.6`, one of them with
+three of its four pairs false; Arc: one image carries 26 of the 37).
+
+Those survivors are what folds Big Ben, and every second cue this branch measured fails to name
+them (`cycle_stats.py`, `thin_cut.py`, `gauge_vote.py`, `twoface_replay.py`; the ledger has the
+numbers): rotation cycles close through a rigid symmetry's doppelgangers as often as through true
+pairs at every closure angle; the kept graph's thinnest cut isolates Big Ben's sides but is no
+thinner than Arc's and Radcliffe's true junctions; dropping the kept edges that lie in no kept
+triangle leaves Big Ben joined and cuts Arc in two; a vote among the cut edges on the rotation each
+implies between the two sides is right at the top level and wrong below it, where the relative
+rotations' twisted-pair outliers wreck the blocks' averaged rotations, and at `m = 0.3` Big Ben's
+bridges (7 + 4 + 2) outnumber its true corner links (3 + 3), so any majority folds it. Big Ben's true
+junction between its two viewing arcs is made of oblique pairs that score below its bridges at every
+threshold; the reference joined the sides with appearance, which this branch does not use. Big Ben
+is therefore the recorded limit of the pairwise-geometry method: folded at `m = 0.6` and at 0.3, and
+no rule here claims otherwise.
+
+### 5.9 The campaign at the paper's minimum score and the face rule (snapshot l, 2026-09-06)
+
+Frozen from 3ca9cb1 (default `m` 0.3, §3.12; the face rule, §3.13), every set matched exhaustively
+but `ToH` and `indoor` (vocabulary tree at 50 pairs per image); runs `openmvs-disambig-20260905l-triplet`
+under each set (`ToH` and `indoor`: `openmvs-disambig-20260905l-vocab50-triplet`), verdicts against the
+reference models in `l-verdict.log`:
+
+| set | registered (of) | ceiling | verdict | paper `G_F` | Doppelgangers++ |
+|---|---|---|---|---|---|
+| church_on_spilled_blood | 143 (278) | 0.899 inside the larger face (faces 133 / 83 at 0.964) | one-sided, unfolded but scattered: 126 of 137 common, 46 misplaced by position (p90 3.9 radii), view p90 7.7 deg | 136 | 157+106 |
+| brandenburg_gate | 145 (176) | 0.952 applied as given | unfolded: 144 of 151 common, 21 misplaced by position, view p90 5.7 deg | 129 | -- |
+| radcliffe_camera | 181 (283) | 0.908 applied as given | one-sided, unfolded: 181 of 185 common, 11 misplaced by position | 177 | 94+186 |
+| arc_de_triomphe | 403 (435) | 0.679 applied as given | unfolded: 370 of 395 common, view p90 4.7 deg | 394 | 423 |
+| big_ben | 385 (403) | 0.763 applied as given | folded: 209 of 377 common misplaced, view p50 66 deg (§5.8) | 379 | 394 |
+| alexander_nevsky_cathedral | 434 (449) | 0.919 applied as given | unfolded: 433 of 446 common, 32 misplaced by position, view p90 10.3 deg | 429 | 447 |
+| street, books, cereal, desk, oats | 19, 21, 25, 31, 23 (all) | the descent: 0.944, 0.875, 0.782, 0.952, 0.898 | unfolded (cereal 24 of 24 common; books 2, desk 23, oats 0 fold pairs, as before) | 19, 9, 7, 12, 9 | -- |
+| cup | 52 (64) | 0.989 applied as given | unfolded, 51 of 63 common, none misplaced; 12 images out (§3.12's cost) | 40 | -- |
+| ToH | 338 (338) | 0.455 applied as given | unfolded: 3 fold pairs, the closure of frame 0 onto 329 | 338 | -- |
+| indoor | 152 (153) | 0.664 applied as given | one loop, as Doppelgangers | 42 | -- |
+
+The paper's count is met or beaten on every set; Big Ben's model is folded (§5.8). Against the
+learned methods, one model per run: within 5 of Doppelgangers++'s larger Radcliffe model, 14 short
+on the church, 20 and 13 short on the Arc and Nevsky. Run-to-run variation of the matcher moves the
+large collections by a few images (Arc 410 at the same rule on the j binary, 403 here).
 
 ## 6. Risks
 
