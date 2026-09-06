@@ -60,6 +60,7 @@ DEFVAR_OPTREFINE_int32(nIgnoreMaskLabel, "Ignore Mask Label", "label id used dur
 DEFVAR_OPTREFINE_int32(nImageGradient, "Image Gradient", "image derivative stencil (0 - 3x5 separable, 1 - central, 2 - Sobel, 3 - bilinear interpolant derivative)", "1")
 DEFVAR_OPTREFINE_float(fGateMeanDiff, "Gate Mean Diff", "reject a pixel pair whose local mean differs by more than this (0 - disabled)", "0.4")
 DEFVAR_OPTREFINE_float(fGateVarRatio, "Gate Var Ratio", "reject a pixel pair whose local variance ratio exceeds this (0 - disabled)", "8.0")
+DEFVAR_OPTREFINE_float(fSimplifyTolerance, "Simplify Tolerance", "decimate the refined mesh within this reprojection error in every vertex's best view (px at the working resolution) once the refinement ends (0 - disabled)", "0")
 
 } // namespace MVS
 
@@ -120,6 +121,45 @@ void MVS::PrepareRefineImageMask(const Image& imageData, const cv::Size& size, B
 	if (OPTREFINE::nIgnoreMaskLabel < 0)
 		return;
 	DepthEstimator::ImportKeepMask(imageData, size, (uint8_t)OPTREFINE::nIgnoreMaskLabel, keepMask);
+}
+
+// the largest finite value of a per-vertex field, the stand-in for the vertices no view saw
+static float MaxSeen(const FloatArr& values, const FloatArr& pixelFactors)
+{
+	float maxValue(0);
+	FOREACH(v, values)
+		if (pixelFactors[v] > 0 && values[v] > maxValue)
+			maxValue = values[v];
+	return maxValue;
+}
+
+void MVS::PixelFactorsToErrorBounds(const FloatArr& pixelFactors, float tolerancePx, FloatArr& bounds)
+{
+	ASSERT(tolerancePx > 0);
+	bounds.Resize(pixelFactors.size());
+	FOREACH(v, pixelFactors)
+		bounds[v] = pixelFactors[v] > 0 ? SQUARE(tolerancePx/pixelFactors[v]) : 0.f;
+	const float unseen(MaxSeen(bounds, pixelFactors));
+	ASSERT(unseen > 0);
+	FOREACH(v, pixelFactors)
+		if (pixelFactors[v] <= 0)
+			bounds[v] = unseen;
+}
+
+void MVS::SimplifyMeshWithinTolerance(Mesh& mesh, const FloatArr& pixelFactors, float tolerancePx)
+{
+	ASSERT(pixelFactors.size() == mesh.vertices.size() && tolerancePx > 0);
+	TD_TIMER_STARTD();
+	const size_t numVertsOld(mesh.vertices.size());
+	const size_t numFacesOld(mesh.faces.size());
+	FloatArr bounds;
+	PixelFactorsToErrorBounds(pixelFactors, tolerancePx, bounds);
+	Mesh::CleanParams params;
+	params.simplifyTarget = 1.f;
+	params.vertexMaxError = &bounds;
+	mesh.Clean(params);
+	DEBUG_EXTRA("Mesh simplified within %g px: %u/%u -> %u/%u vertices/faces (%s)", tolerancePx,
+		(unsigned)numVertsOld, (unsigned)numFacesOld, (unsigned)mesh.vertices.size(), (unsigned)mesh.faces.size(), TD_TIMER_GET_FMT().c_str());
 }
 
 void MVS::ComputeRefineImageGradient(const Image32F& gray, Image32F& gradX, Image32F& gradY)

@@ -209,6 +209,13 @@ public:
 		float edgeLength{0.f}; // isotropic remeshing target edge length: >0 absolute, <0 that multiple of the current mean edge length (0 - disabled)
 		int remeshIterations{3};
 		bool finalize{true}; // end with degenerate-face/unreferenced-vertex removal and non-manifold repair
+		// optional per-vertex collapse-error bound, one entry per vertex of the mesh as the
+		// decimation receives it: an edge collapses only while the mean squared distance of its
+		// collapse point to the planes its merged quadric holds is within the smaller bound of its
+		// endpoints, and the decimation runs until no edge passes (simplifyTarget must then be 1:
+		// the bound is the one stopping rule). A bound whose size does not match the mesh is
+		// reported and the decimation skipped
+		const FloatArr* vertexMaxError{NULL};
 	};
 	void Clean(const CleanParams& params);
 

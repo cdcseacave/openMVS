@@ -353,7 +353,16 @@ void Mesh::Clean(const CleanParams& params)
 	// halfmesh reads the target by magnitude, so a ratio and an absolute face
 	// count share one field; non-positive is not a target at all and disables the
 	// stage, matching the "0 - auto" the apps resolve before they get here
-	if (params.simplifyTarget > 0.f && params.simplifyTarget != 1.f)
+	if (params.vertexMaxError) {
+		// the per-vertex bound is the decimation's only stopping rule
+		ASSERT(params.simplifyTarget == 1.f);
+		if (params.vertexMaxError->size() != halfMesh.vertices.size()) {
+			VERBOSE("error: the per-vertex error bound holds %u entries for %u vertices: decimation skipped", (unsigned)params.vertexMaxError->size(), (unsigned)halfMesh.vertices.size());
+		} else {
+			const std::vector<float> bounds(params.vertexMaxError->Begin(), params.vertexMaxError->End());
+			halfMesh.Simplify(1.f, 0.f, 0.f, &bounds);
+		}
+	} else if (params.simplifyTarget > 0.f && params.simplifyTarget != 1.f)
 		halfMesh.Simplify(params.simplifyTarget);
 	if (params.maxHoleEdges > 0)
 		halfMesh.CloseHoles(params.maxHoleEdges);

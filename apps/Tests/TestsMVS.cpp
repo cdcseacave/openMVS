@@ -1712,6 +1712,57 @@ bool MeshRefineWindowStatsTest()
 
 // Exercise ROI integration with the first point outside the ROI; this used to leave
 // default entries in the spatial-sort index and could reconstruct the wrong points.
+// an n x n grid of unit quads in the plane z = 0, two triangles per quad, for the per-vertex
+// decimation bound Mesh::Clean routes into halfmesh
+static void MeshCleanBuildGrid(unsigned n, Mesh& mesh)
+{
+	mesh.Release();
+	for (unsigned j=0; j<=n; ++j)
+		for (unsigned i=0; i<=n; ++i)
+			mesh.vertices.emplace_back((float)i, (float)j, 0.f);
+	for (unsigned j=0; j<n; ++j) {
+		for (unsigned i=0; i<n; ++i) {
+			const Mesh::VIndex v00(j*(n+1)+i), v10(v00+1), v01(v00+n+1), v11(v01+1);
+			mesh.faces.emplace_back(v00, v10, v11);
+			mesh.faces.emplace_back(v00, v11, v01);
+		}
+	}
+}
+bool MeshCleanPerVertexTest()
+{
+	// decimation: the left half is locked by a negative bound, the right half collapses freely
+	{
+		Mesh mesh;
+		MeshCleanBuildGrid(16, mesh);
+		const size_t numFaces(mesh.faces.size());
+		FloatArr bounds(mesh.vertices.size());
+		FOREACH(v, mesh.vertices)
+			bounds[v] = mesh.vertices[v].x < 8.f ? -1.f : 1e6f;
+		const auto CountLeft = [](const Mesh& m, size_t& faces, size_t& verts) {
+			faces = verts = 0;
+			for (const Mesh::Face& f: m.faces)
+				if (m.vertices[f[0]].x < 8.f && m.vertices[f[1]].x < 8.f && m.vertices[f[2]].x < 8.f)
+					++faces;
+			for (const Mesh::Vertex& v: m.vertices)
+				if (v.x < 8.f)
+					++verts;
+		};
+		size_t leftFaces0, leftVerts0, leftFaces1, leftVerts1;
+		CountLeft(mesh, leftFaces0, leftVerts0);
+		Mesh::CleanParams params;
+		params.simplifyTarget = 1.f;
+		params.vertexMaxError = &bounds;
+		mesh.Clean(params);
+		CountLeft(mesh, leftFaces1, leftVerts1);
+		if (!(mesh.faces.size() < numFaces) || leftFaces1 != leftFaces0 || leftVerts1 != leftVerts0) {
+			VERBOSE("ERROR: MeshCleanPerVertexTest bounded decimation: %u -> %u faces, locked half %u/%u -> %u/%u faces/vertices!",
+				(unsigned)numFaces, mesh.faces.size(), (unsigned)leftFaces0, (unsigned)leftVerts0, (unsigned)leftFaces1, (unsigned)leftVerts1);
+			return false;
+		}
+	}
+	return true;
+}
+
 static bool ROIMeshReconstructionTest(Scene& scene)
 {
 	PointCloud pointcloud(scene.pointcloud);

@@ -119,6 +119,11 @@ public:
 
 	void ListFaceAreas(Mesh::AreaArr& maxAreas);
 	void SubdivideMesh(uint32_t maxArea, float fDecimate=1.f, unsigned nCloseHoles=15, unsigned nEnsureEdgeSize=1);
+	// pixels per scene unit of every vertex in its most resolving view, off the projections
+	// ListCameraFaces() left on the device (downloaded per view; 0 for a vertex no view rasterized)
+	void ComputePixelFactors(FloatArr& pixelFactors);
+	// decimate the refined mesh within the given reprojection tolerance (px, best view)
+	void SimplifyMesh(float tolerancePx);
 
 	void ComputeNormalFaces();
 
@@ -629,6 +634,33 @@ void MeshRefineCUDA::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned n
 	#endif
 }
 
+
+void MeshRefineCUDA::ComputePixelFactors(FloatArr& pixelFactors)
+{
+	pixelFactors.Resize(scene.mesh.vertices.size());
+	pixelFactors.Memset(0);
+	FOREACH(idxImage, images) {
+		const Image& imageData = images[idxImage];
+		if (!imageData.IsValid())
+			continue;
+		// the maps ListCameraFaces() rasterized on the device, downloaded like ListFaceAreas does
+		const View& view = views[idxImage];
+		TImage<FIndex> faceMap(imageData.height, imageData.width);
+		DepthMap depthMap(imageData.height, imageData.width);
+		view.faceMap.GetData(faceMap);
+		view.depthMap.GetData(depthMap);
+		AccumulatePixelFactors(scene.mesh.faces, faceMap, depthMap, (float)imageData.camera.GetFocalLength(), pixelFactors);
+	}
+}
+
+void MeshRefineCUDA::SimplifyMesh(float tolerancePx)
+{
+	ListCameraFaces();
+	FloatArr pixelFactors;
+	ComputePixelFactors(pixelFactors);
+	SimplifyMeshWithinTolerance(scene.mesh, pixelFactors, tolerancePx);
+	ListVertexFacesPre();
+}
 
 // compute face normals
 void MeshRefineCUDA::ComputeNormalFaces()
@@ -1183,6 +1215,10 @@ bool Scene::RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, u
 			mesh.Save(MAKE_PATH(String::FormatString("MeshRefined%u.ply", nScales-nScale-1)));
 		#endif
 	}
+
+	// the deliverable: the refined surface within a reprojection tolerance (the same pass as the CPU)
+	if (OPTREFINE::fSimplifyTolerance > 0)
+		refine.SimplifyMesh(OPTREFINE::fSimplifyTolerance);
 
 	return true;
 } // RefineMeshCUDA

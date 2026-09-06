@@ -175,6 +175,7 @@ extern MVS_API int nIgnoreMaskLabel; // label id used during ignore mask filter 
 extern MVS_API int nImageGradient; // image derivative stencil (0 - 3x5 separable, 1 - central (default), 2 - Sobel, 3 - bilinear interpolant derivative)
 extern MVS_API float fGateMeanDiff; // reject a pixel pair whose local mean differs by more than this (0 - disabled)
 extern MVS_API float fGateVarRatio; // reject a pixel pair whose local variance ratio exceeds this (0 - disabled)
+extern MVS_API float fSimplifyTolerance; // decimate the refined mesh within this reprojection error in every vertex's best view (px at the working resolution) once the refinement ends (0 - disabled)
 } // namespace OPTREFINE
 
 class Scene;
@@ -205,6 +206,41 @@ MVS_API bool PrepareRefineImage(Image& imageData, const PlatformArr& platforms,
 // load; a configured-but-missing mask file is not an error and is not reported here: every image
 // is checked once, up front, by apps/RefineMesh (the same entry that assigns image.maskName).
 MVS_API void PrepareRefineImageMask(const Image& imageData, const cv::Size& size, BitMatrix& keepMask);
+
+// pixels per scene unit of every vertex in its most resolving view (f/depth), accumulated over
+// the pixels of every face the view rasterized (the corners of the face a pixel shows take its
+// f/depth); 0 stays for a vertex no view sees. FaceMapType is either backend's per-pixel face
+// index image (NO_ID where nothing projects), depthMap the matching depth
+template <typename FaceMapType>
+inline void AccumulatePixelFactors(const Mesh::FaceArr& faces, const FaceMapType& faceMap, const DepthMap& depthMap, float focal, FloatArr& pixelFactors)
+{
+	ASSERT(faceMap.size() == depthMap.size() && focal > 0 && !faces.empty());
+	for (int j=0; j<faceMap.rows; ++j) {
+		for (int i=0; i<faceMap.cols; ++i) {
+			const Mesh::FIndex idxFace(faceMap(j,i));
+			if (idxFace == NO_ID)
+				continue;
+			const Depth depth(depthMap(j,i));
+			ASSERT(depth > 0);
+			const float pixelFactor(focal/depth);
+			const Mesh::Face& face = faces[idxFace];
+			for (int v=0; v<3; ++v) {
+				ASSERT(face[v] < pixelFactors.size());
+				float& pf = pixelFactors[face[v]];
+				if (pixelFactor > pf)
+					pf = pixelFactor;
+			}
+		}
+	}
+}
+// the per-vertex collapse-error bound (a squared distance, compared with the mean squared plane
+// distance of a collapse) for a reprojection tolerance of tolerancePx pixels in the best view
+// ((tolerancePx/pixelFactor)^2), the largest bound of the seen vertices for an unseen one
+MVS_API void PixelFactorsToErrorBounds(const FloatArr& pixelFactors, float tolerancePx, FloatArr& bounds);
+// decimate the mesh within the given reprojection tolerance in every vertex's best view
+// (Mesh::Clean with the per-vertex bound, then its finalize pass); the pixel factors are the
+// mesh's current ones. Both backends call this once the refinement ends
+MVS_API void SimplifyMeshWithinTolerance(Mesh& mesh, const FloatArr& pixelFactors, float tolerancePx);
 
 // image derivative estimate used by the photometric gradient, the same on both
 // backends (the CPU samples it bilinearly from its gradient image, CUDA from a

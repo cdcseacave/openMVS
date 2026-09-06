@@ -49,6 +49,10 @@ bool MeshRefineStepTest();
 // (SceneRefineCommon.h) against closed-form identities and a finite difference
 bool MeshRefineWindowStatsTest();
 
+// test the per-vertex decimation bound Mesh::Clean routes into halfmesh, on a grid one half of
+// which is locked by a negative bound
+bool MeshCleanPerVertexTest();
+
 // test the Delaunay mesh cut on the two hand-solved synthetic fixtures
 // (docs/design/DelaunayMeshReconstruction.md, Appendix)
 bool MeshBipyramidFixtureTest();

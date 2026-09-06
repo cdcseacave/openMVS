@@ -51,6 +51,7 @@ String strInputFileName;
 String strMeshFileName;
 String strOutputFileName;
 String strMaskPath;
+float fSimplifyTolerance;
 unsigned nResolutionLevel;
 unsigned nMinResolution;
 unsigned nMaxViews;
@@ -130,6 +131,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("close-holes", boost::program_options::value(&OPT::nCloseHoles)->default_value(30), "close every hole in the input surface spanned by at most this many boundary edges (0 - disabled)")
 		("ensure-edge-size", boost::program_options::value(&OPT::nEnsureEdgeSize)->default_value(1), "ensure edge size and improve vertex valence of the input surface (0 - disabled, 1 - auto, 2 - force)")
 		("max-face-area", boost::program_options::value(&OPT::nMaxFaceArea)->default_value(16), "maximum face area projected in any pair of images that is not subdivided (0 - disabled)")
+		("simplify-tolerance", boost::program_options::value(&OPT::fSimplifyTolerance), "decimate the refined mesh within this reprojection error in every vertex's best view, in pixels of the working resolution, once the refinement ends (default 0 - disabled)")
 		("scales", boost::program_options::value(&OPT::nScales)->default_value(2), "how many iterations to run mesh optimization on multi-scale images")
 		("scale-step", boost::program_options::value(&OPT::fScaleStep)->default_value(0.5f), "image scale factor used at each mesh optimization step")
 		("alternate-pair", boost::program_options::value(&OPT::nAlternatePair)->default_value(0), "refine mesh using an image pair alternatively as reference (0 - both, 1 - alternate, 2 - only left, 3 - only right)")
@@ -202,6 +204,13 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	// the CLI (this app's own .cfg file included) always wins over the refine-config-file, same as
 	// DensifyPointCloud's --ignore-mask-label over its --dense-config-file
 	OPTREFINE::nIgnoreMaskLabel = nIgnoreMaskLabel;
+	// an option without a CLI default overrides the refine-config-file only when it was given
+	if (OPT::vm.count("simplify-tolerance"))
+		OPTREFINE::fSimplifyTolerance = OPT::fSimplifyTolerance;
+	if (!(OPTREFINE::fSimplifyTolerance >= 0)) {
+		VERBOSE("error: simplify tolerance %g px is invalid (< 0)", OPTREFINE::fSimplifyTolerance);
+		return false;
+	}
 	if (bValidRefineConfig) {
 		// SML keeps every key it reads, registered or not, and update() only ever reads the
 		// registered ones -- so a misspelled knob would run the default and measure it as the
@@ -239,9 +248,9 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	}
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2)
-		DEBUG_EXTRA("OPTREFINE: ignoreMaskLabel=%d imageGradient=%d gateMeanDiff=%g gateVarRatio=%g",
+		DEBUG_EXTRA("OPTREFINE: ignoreMaskLabel=%d imageGradient=%d gateMeanDiff=%g gateVarRatio=%g simplifyTolerance=%g",
 			OPTREFINE::nIgnoreMaskLabel, OPTREFINE::nImageGradient,
-			OPTREFINE::fGateMeanDiff, OPTREFINE::fGateVarRatio);
+			OPTREFINE::fGateMeanDiff, OPTREFINE::fGateVarRatio, OPTREFINE::fSimplifyTolerance);
 	#endif
 
 	MVS::Initialize(APPNAME, OPT::nMaxThreads, OPT::nProcessPriority);

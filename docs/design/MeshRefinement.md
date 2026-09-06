@@ -52,6 +52,14 @@ loader (§1.3). `OPTREFINE::init()`/`update()` load the `OPTREFINE` defaults and
 over that file, and a configuration file naming an option that does not exist is refused by name
 rather than silently ignored.
 
+**Trading accuracy for speed.** `--max-views 4 --simplify-tolerance 0.5` is the measured fast
+configuration: 1.5-1.7x faster than the defaults for −0.006 mean F1 on Tanks & Temples and a mesh
+3-14x smaller (§2.7). It stays a documented command line rather than a preset switch because no
+combination of levers reached the 2x the fast mode aimed for — 38 % of the wall is the mesh
+preparation, which no view or resolution setting touches — and because the levers that do go
+faster (a coarser `--resolution-level`, `--max-views 2`) cost an order of magnitude more accuracy
+(§4 #46).
+
 ### 1.2 Multi-scale subdivision loop
 
 `Scene::RefineMesh`/`RefineMeshCUDA` run `nScales` passes coarse-to-fine (`--scales`, default 2;
@@ -81,6 +89,22 @@ exceeds `--max-face-area` (default 16 px²) by more than 6x), runs `Mesh::Clean`
 pass (`remeshIterations=10`), then subdivides any face whose projected area in the tightest camera
 pair exceeds `--max-face-area` (`Mesh::Subdivide`, 1-to-4 split). The log line
 `"Mesh subdivided: %u/%u -> %u/%u vertices/faces"` is identical on both backends.
+
+**Post-refinement decimation (opt-in, 2026-09).** The face count the refinement needs (every
+face under `--max-face-area` in its tightest pair) is not the face count a deliverable needs.
+`--simplify-tolerance T` (px, default 0 = off; `OPTREFINE::fSimplifyTolerance`) decimates the
+refined mesh once the last scale ends, the same host-side pass on both backends
+(`SimplifyMeshWithinTolerance`): every vertex gets the pixel factor of its most resolving view
+(f/depth, accumulated over the pixels ListCameraFaces rasterized, so `T` is in pixels of the
+working resolution -- the unit `--max-face-area` already uses), the bound `(T/pf)²` is handed to
+`Mesh::Clean` as `CleanParams::vertexMaxError`, and halfmesh's exact QEM decimation collapses an
+edge only while the mean squared distance of its collapse point to the planes its merged quadric
+holds stays within the smaller bound of its endpoints, running until no edge passes. The bound is
+a mean plane distance, not the raw QEM sum, so a vertex that absorbed many collapses is held to
+the same pixel distance as a fresh one (with the raw sum the same tolerance removed a tenth of the
+vertices, normalized it removes half). Measured on the shipped configuration (§2.7): 0.25 px is
+F1-neutral on all seven scenes at −32..−65 % faces, 0.5 px costs up to −0.004 (Ignatius) at
+−55..−83 %, and every doubling of the tolerance roughly halves the vertex count.
 
 ### 1.3 Photo-consistency energy
 
@@ -670,6 +694,95 @@ fountain-P11 and the neighbours on both sides have been measured.
 
 ---
 
+### 2.7 The Acute3D comparison (2026-09)
+
+Acute3D Smart3DCapture 1.8.7 (`RefineMesh`, the same Vu et al. energy) differs from the shipped
+pipeline in twelve places; the ones the registry had not already measured were implemented as
+default-off knobs on both backends, screened on the three EPFL scenes and gated on Tanks &
+Temples (§3 protocol, CUDA, resolution level 1, pins `bench/bin_refine_a3d{2,3}`). Every arm ran
+alone: the mesh2mesh evaluator takes 65 s by itself and ~700 s beside any build, so a screen never
+overlaps a compile.
+
+| Acute3D mechanism | shipped OpenMVS counterpart | measured | outcome |
+|---|---|---|---|
+| Image pairs voted by the tie-point tracks (cells of 8 px, angle weight peaking at 24.6°, top-4 per view with a dominance test) | best neighbours of each view (`--max-views` 8) | EPFL: Herz-Jesu-P25 −0.011..−0.015 for every K; Tanks & Temples K=4 **−0.0221** mean (Ignatius −0.0445) at 0.49-0.64x wall, K=2 −0.0250 at 0.46-0.53x — with the face count halved wherever F1 fell, because the pair set drives the subdivision; re-measured with the pair-independent area rule below | removed (#44) |
+| Photometric support masks (8 px around every reconstructed point) | none (every pixel scores) | inert on EPFL, Tanks & Temples −0.0042 at +0.7 GB | removed (#42) |
+| Umbrella smoothing switched to the bi-Laplacian where the data opposes it | rigidity/elasticity blend | inert at the default weight, fountain-P11 loses at higher weights | removed (#40) |
+| End-of-level relaxation `v += 0.45 (L − mean L)` | none | Herz-Jesu-P25 +0.0101 but Barn −0.0119 | removed (#43) |
+| Per-vertex step cap 2 px, halved on reversal | global median normalizer (#1) | Herz-Jesu-P8 −0.025 for every cap | removed (#38) |
+| Fixed 20 evaluations per level, no rejection | bold driver with accept/reject | EPFL −0.016 mean | removed (#39) |
+| Edge-cap subdivision to 10 px in the best view | 1-to-4 split at 16 px² in the tightest pair + edge band | as a pixel-graded isotropic remesh: worse than the split at equal face count | removed (#41) |
+| Post-refinement decimation within 0.5 px | none | 0.25 px F1-neutral on all seven scenes at −32..−65 % faces; 0.5 px −0.004 worst at −55..−83 % | ships as `--simplify-tolerance` (§1.2), default off |
+| Colour ZNCC, GPU job partitioning, 3 mip levels | grey ZNCC, whole-scene CUDA, 2 scales | not measured (out of scope here; scale count is in #4-#37) | — |
+
+EPFL screen of the schedule and smoothing arms (ΔF1 against the same pin's baseline, P25 / P8 /
+fountain-P11): switch +0.0016 / −0.0000 / −0.0002 (weight 1.0: +0.0066 / +0.0005 / −0.0037);
+end relax 0.45: +0.0101 / −0.0010 / −0.0027; caps 1 / 2 / 4 px: −0.008..−0.012 / −0.024..−0.026 /
+−0.0002..−0.0007; fixed schedule −0.0155 / −0.0329 / +0.0001; sizing remesh 10 px −0.0226 /
+−0.0079 / −0.0008. Tanks & Temples for the survivors (Truck / Barn / Ignatius / Meetingroom):
+support 8 px −0.0002 / −0.0130 / −0.0003 / −0.0034; end relax +0.0001 / −0.0119 / −0.0008 /
++0.0025; simplify 0.25 px −0.0001 / +0.0001 / −0.0004 / +0.0004 at 0.35 / 0.52 / 0.40 / 0.68x
+faces; simplify 0.5 px +0.0009 / +0.0002 / −0.0039 / +0.0002 at 0.17 / 0.30 / 0.22 / 0.45x.
+The shipped tolerance was then re-measured on the **CPU** backend (fountain-P11 and Herz-Jesu-P8,
+where the pixel factors are gathered host-side instead of downloaded from the device): −0.0001 mean
+at 0.25 px and −0.0004 at 0.5 px, against the CUDA screen's −0.0003 and −0.0011 on the same two
+scenes, at the same 0.46-0.60x / 0.28-0.34x face counts.
+
+The voting was re-measured with the mesh resolution decoupled from the pair set. The subdivision
+follows the projected face area, and the shipped rule takes the *smaller* projection of the best
+pair, so dropping pairs coarsens the mesh: every voting arm above carried 0.45-1.03x the baseline
+face count, and F1 fell exactly where the faces did. A temporary `Face Area Rule` 1 (the largest
+projection over the images, which no pair set can change) was added to both backends to separate
+the two effects. EPFL, same pin, ΔF1 P25 / P8 / fountain-P11:
+
+| arm | ΔF1 | mean | faces | wall |
+|---|---|---|---|---|
+| area rule alone | −0.0188 / −0.0266 / +0.0010 | −0.0148 | 1.46-1.54 | 1.25-1.47 |
+| area rule + `--max-views 4` | +0.0027 / −0.0012 / +0.0118 | +0.0044 | 1.46-1.51 | 1.13-1.30 |
+| area rule + `--max-views 2` | −0.0006 / +0.0068 / +0.0161 | +0.0074 | 1.45-1.50 | 1.08-1.24 |
+| voting K=4 + area rule | −0.0293 / +0.0020 / −0.0025 | −0.0099 | 1.46-1.56 | 1.63-1.96 |
+| voting K=2 + area rule | −0.0362 / +0.0036 / +0.0026 | −0.0100 | 1.45-1.56 | 1.58-2.04 |
+
+At an equal view budget and an equal face count the voting scores **−0.0143** (K=4) and **−0.0174**
+(K=2) against its own control and costs 1.5-1.6x that control's wall, so the selection itself is the
+loss and not the resolution it induced (#44). The area rule is no default either: alone it is
+−0.0148 for +50 % faces, and its reduced-view arms win on EPFL only — on Tanks & Temples they are
+−0.0034 (mv4) and −0.0133 (mv2), because there the pair set is dense enough that the two rules
+nearly coincide (1.05-1.24x faces). It was an instrument, and it is removed with the voting (#45).
+
+**The fast mode.** The user-facing question the comparison had to answer is what to trade for
+speed. Three levers were gated on Tanks & Temples against the same baseline (ΔF1 Truck / Barn /
+Ignatius / Meetingroom, wall as a fraction of the baseline's refinement wall):
+
+| lever | ΔF1 | mean | wall | faces |
+|---|---|---|---|---|
+| `--max-views 4` | −0.0034 / −0.0174 / +0.0022 / −0.0030 | −0.0054 | 0.59 / 0.83 / 0.61 / 0.59 | 0.64-1.00 |
+| `--max-views 4 --simplify-tolerance 0.5` | −0.0033 / −0.0169 / −0.0009 / −0.0027 | −0.0060 | 0.60 / 0.84 / 0.59 / 0.61 | 0.07-0.35 |
+| `--max-views 2` (tune-W3) | −0.0054 / −0.0185 / −0.0498 / −0.0027 | −0.0191 | 0.45-0.57 | 0.46-0.98 |
+| `--resolution-level` +1 (`--min-resolution 320`) | −0.0155 / −0.0392 / **−0.1804** / −0.0102 | −0.0613 | 0.57 / 0.39 / 0.53 / 0.34 | 0.33-0.35 |
+
+Only the first two stay inside the acceptance rule for a fast mode (mean ΔF1 ≥ −0.01, no scene
+below −0.02); neither reaches the 0.5x wall the rule also asked for, and none of the levers gets
+close to the 2x the request implied. **The reason is that a large part of the wall is not
+per-pixel work at all.** On Truck the two mesh preparation passes (`--decimate 0` auto plus the
+hole closing and edge-size remesh, one per scale) take 10.8 s and 11.9 s of a 59.9 s refinement:
+38 % of it, invariant under both the view count and the working resolution. Cutting views or
+resolution only attacks the remaining 62 %, which is why `--max-views 4`, `--max-views 2` and one
+resolution level down all saturate in the same 0.4-0.6x band while their accuracy costs differ by
+an order of magnitude.
+
+So the fast mode is a documented command line, not a new switch — every knob in it already exists:
+
+```
+RefineMesh ... --max-views 4 --simplify-tolerance 0.5
+```
+
+1.5-1.7x faster than the default for −0.006 mean F1 (worst scene Barn −0.017), and it delivers a
+mesh 3-14x smaller than the default's. Raising `--resolution-level` instead is recorded as #46: it
+is the cheapest lever per second and by far the most expensive per unit of quality, because it
+also cuts the face count the subdivision reaches (0.33-0.35x) — on Ignatius, whose gap to its own
+input mesh is already the dominant term (§5.1), that removes 0.18 F1.
+
 ## 3. How these numbers were produced
 
 The harness lives under the gitignored `bench/` tree; this section records what it does, so a
@@ -764,6 +877,15 @@ entry says otherwise.
 | 35 | `--regularity-weight` 0.5 or 0.8 instead of 0.2 | +0.0011 mean on Tanks & Temples, never negative on any scene but never reaching the +0.002 gate, and flat between the two values | no, 0.2 |
 | 36 | Neighbour-selection thresholds (min common area 0.1, angle band 2.5-45°) | inert: 0.05 and 0.2 produce **byte-identical** output on EPFL, and every angle-band variant is inside the noise floor. Only the neighbour *count* matters, not the thresholds that picked them | unchanged |
 | 37 | Pre-blur multipliers below 0.75 (0.6, 0.5) | best on fountain-P11 and Herz-Jesu-P25 but negative on Herz-Jesu-P8 with face counts flat and iterations *up*, so a real loss rather than a do-less effect | no, 0.75 |
+| 38 | Per-vertex step cap in pixels on the bold driver (Acute3D: 2 px, halved at every direction reversal, and never past a quarter of the longest ring edge) | EPFL: Herz-Jesu-P8 **−0.024..−0.026** at every cap (1, 2, 4 px), Herz-Jesu-P25 −0.008..−0.012, fountain-P11 inert; the global median normalizer (#1) already sets the stride, a per-vertex clamp only holds back the vertices with the most signal | removed |
+| 39 | Acute3D's fixed schedule: 20 evaluations per level, every step applied, no rejection, the cap as the only adaptivity (alone, with a 1 px cap, with the end relaxation) | EPFL mean **−0.016** / −0.013 / −0.006 (Herz-Jesu-P8 −0.033 / −0.028 / −0.019); the same verdict as #4 in its Acute3D form | removed |
+| 40 | Acute3D's smoothing switch: the umbrella term, swapped for the bi-Laplacian wherever the photometric pull opposes it | inert at the default weight (+0.0004 EPFL mean); at weight 0.5 / 1.0 Herz-Jesu-P25 +0.0037 / +0.0066 but fountain-P11 −0.0013 / **−0.0037** | removed |
+| 41 | Pixel-graded isotropic remesh (every vertex to a 5 / 7 / 10 / 14 px edge in its best view, halfmesh sizing field) in place of the 1-to-4 split and the edge band | worse than the split at equal face count: 10 px Herz-Jesu-P25 **−0.0226**, Herz-Jesu-P8 −0.0079, fountain-P11 −0.0008 at 0.93-1.10x faces; 14 px −0.0206 / −0.0050 / −0.0030 at 0.6-0.8x; 5 px +0.0029 on fountain only, at 2.6-3.0x faces and 1.6-2.7x wall. The remesh re-samples the surface at every scale, the split keeps it | removed (halfmesh keeps the sizing field) |
+| 42 | Photometric support masks from the dense point-cloud (Acute3D: score only the pixels within 8 px of a projected reconstructed point; 4 / 8 / 16 px measured) | inert on EPFL (+0.0005 at 8 px: the dense cloud covers nearly every pixel); Tanks & Temples **−0.0042** (Barn −0.0130, Meetingroom −0.0034) at +0.7 GB peak memory | removed |
+| 43 | End-of-scale bi-Laplacian relaxation `v += 0.45 (L(v) − mean L)` (Acute3D's last step of every level; 0.25 measured too) | Herz-Jesu-P25 +0.0101 and Meetingroom +0.0025, but Barn **−0.0119** and fountain-P11 −0.0027: mean −0.0025 on Tanks & Temples | removed |
+| 44 | Image pairs voted by the tie-point tracks (Acute3D `SelectPairs`: 8 px cells, angle weight peaking at 24.6°, top-4 of a view with a transitive-redundancy test) | **−0.0221** at K=4 (Ignatius −0.0445), −0.0250 at K=2; with the mesh resolution held fixed by the area rule below it still loses −0.0143 / −0.0174 against the shipped selection at the same view budget, at 1.5-1.6x its wall | no, removed |
+| 45 | Subdividing by the largest projection over the images instead of the smaller projection of the best pair (`Face Area Rule` 1) | EPFL −0.0148 alone at +50 % faces; with `--max-views` 4/2 it wins on EPFL (+0.0044 / +0.0074) and loses on Tanks & Temples (−0.0034 / −0.0133) | no, removed — it existed to decouple #44 |
+| 46 | Raising `--resolution-level` by one as the fast mode (with `--min-resolution 320`, else the level is clamped back) | **−0.0613** (Ignatius **−0.1804**, Barn −0.0392) at 0.34-0.57x wall and 0.33-0.35x faces | no |
 
 Three of these carry a mechanism worth stating, because they look like independent ideas and are
 not.
@@ -834,5 +956,11 @@ all. "Moves less" reads as "converges better" on the oracle and as a large loss 
 2. **Decimation policy.** Constraint §5.1 is the largest single term left on the object-like
    scenes. A policy that keeps a coarse mesh already finer than the pixel footprint has never been
    measured; it would have to pay for its face count under the wall and memory criteria.
-3. **The Ceres arm remains opt-in.** §2.5 records why: on both ground-truth scenes it reaches a
+3. **Mesh preparation is 38 % of the wall and nothing measured here touches it.** On Truck the
+   two `Mesh::Clean` passes (auto-decimation, hole closing, edge-size remesh; one per scale) take
+   10.8 s and 11.9 s of a 59.9 s refinement, invariant under `--max-views` and
+   `--resolution-level` — which is why every speed lever saturates near 0.5x (§2.7). A faster
+   preparation is the only remaining route to a fast mode worth the name; it is a halfmesh
+   question, not a refinement one.
+4. **The Ceres arm remains opt-in.** §2.5 records why: on both ground-truth scenes it reaches a
    lower energy than the stepper and never a better F1.

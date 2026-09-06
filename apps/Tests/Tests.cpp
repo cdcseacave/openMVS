@@ -120,6 +120,10 @@ bool UnitTests()
 		VERBOSE("ERROR: MeshRefineWindowStatsTest failed!");
 		return false;
 	}
+	if (!MVS::MeshCleanPerVertexTest()) {
+		VERBOSE("ERROR: MeshCleanPerVertexTest failed!");
+		return false;
+	}
 	#ifdef _IMAGE_HEIF
 	// the reader's own semantics are tested next to the reader, in libs/IO/ImageHEIF.cpp
 	if (!CImageHEIF::Test(MAKE_PATH("images"))) {

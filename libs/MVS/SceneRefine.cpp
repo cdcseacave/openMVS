@@ -160,6 +160,11 @@ public:
 
 	void ListFaceAreas(Mesh::AreaArr& maxAreas);
 	void SubdivideMesh(uint32_t maxArea, float fDecimate=1.f, unsigned nCloseHoles=15, unsigned nEnsureEdgeSize=1);
+	// pixels per scene unit of every vertex in its most resolving view, off the projections
+	// ListCameraFaces() left in the views (0 for a vertex no view rasterized)
+	void ComputePixelFactors(FloatArr& pixelFactors) const;
+	// decimate the refined mesh within the given reprojection tolerance (px, best view)
+	void SimplifyMesh(float tolerancePx);
 
 	// score the mesh and fill in every per-vertex term; `gradients` receives the combined
 	// photometric+smoothness gradient as one Point3d per vertex and may be NULL, in which case
@@ -688,6 +693,29 @@ void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nClos
 	if (VERBOSITY_LEVEL > 3)
 		scene.mesh.Save(MAKE_PATH("MeshSubdivided.ply"));
 	#endif
+}
+
+
+void MeshRefine::ComputePixelFactors(FloatArr& pixelFactors) const
+{
+	pixelFactors.Resize(vertices.size());
+	pixelFactors.Memset(0);
+	FOREACH(idxImage, images) {
+		const Image& imageData = images[idxImage];
+		if (!imageData.IsValid())
+			continue;
+		const View& view = views[idxImage];
+		AccumulatePixelFactors(faces, view.faceMap, view.depthMap, (float)imageData.camera.GetFocalLength(), pixelFactors);
+	}
+}
+
+void MeshRefine::SimplifyMesh(float tolerancePx)
+{
+	ListCameraFaces();
+	FloatArr pixelFactors;
+	ComputePixelFactors(pixelFactors);
+	SimplifyMeshWithinTolerance(scene.mesh, pixelFactors, tolerancePx);
+	ListVertexFacesPre();
 }
 
 
@@ -1978,6 +2006,11 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 			mesh.Save(MAKE_PATH(String::FormatString("MeshRefined%u.ply", nScales-nScale-1)));
 		#endif
 	}
+
+	// the deliverable: the refined surface within a reprojection tolerance, not every face the
+	// preparation needed (the same pass on both backends)
+	if (OPTREFINE::fSimplifyTolerance > 0)
+		refine.SimplifyMesh(OPTREFINE::fSimplifyTolerance);
 
 	return true;
 } // RefineMesh

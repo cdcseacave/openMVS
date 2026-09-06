@@ -7,13 +7,18 @@ endif()
 # The v0.3.0 tag was re-cut (now b8a491c: the glTF image codec moved onto OpenCV),
 # so the SHA512 below no longer matches an older download of the same tag --
 # bump port-version alongside it whenever the tag moves again.
-vcpkg_from_github(
-    OUT_SOURCE_PATH SOURCE_PATH
-    REPO cdcseacave/halfmesh
-    REF "v${VERSION}"
-    SHA512 d41747481d865b2e3693d4ea66f9358ba4af2d2d67e5a55319a0459e5413a0c7bb9769e1f1e6c80d1f1459f180ac8063eba8a3b13a313a8814dc3f71483a88e1
-    HEAD_REF develop
-)
+# DEV LOOP (refine-acute3d branch): the per-vertex decimation error bound
+# (Simplify(..., vertexMaxError), which --simplify-tolerance needs) lives in the local halfmesh
+# checkout until it is tagged upstream; restore vcpkg_from_github(REF v<tag> SHA512 ...) and bump
+# the version when it is.
+set(SOURCE_PATH "C:/Users/danco/Pro/halfmesh")
+#vcpkg_from_github(
+#    OUT_SOURCE_PATH SOURCE_PATH
+#    REPO cdcseacave/halfmesh
+#    REF "v${VERSION}"
+#    SHA512 d41747481d865b2e3693d4ea66f9358ba4af2d2d67e5a55319a0459e5413a0c7bb9769e1f1e6c80d1f1459f180ac8063eba8a3b13a313a8814dc3f71483a88e1
+#    HEAD_REF develop
+#)
 
 vcpkg_cmake_configure(
     SOURCE_PATH "${SOURCE_PATH}"
