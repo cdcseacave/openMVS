@@ -99,7 +99,7 @@ pairs, 44 889 triplets). Duplicate pairs collapse onto one edge weighted by the 
 *whole* matched graph, each pair's score in a `TripletScore` column (empty = unscored), followed by
 seven relative-pose columns (empty when the pair has none), of the export's header
 `ImageA,ImageB,NumMatches,Coverage,Weight,WeightSpatial,WeightConnectivity,WeightTriplet,MeanRayAngle,TripletScore,RelQw,RelQx,RelQy,RelQz,RelTx,RelTy,RelTz`,
-so a run can be re-scored offline from its own export; `ComputePairsWeights` re-runs afterwards, when
+where the rotation maps a point of image A into image B (x_B = R x_A + t, the quaternion scalar first) and the translation is a unit vector, so a run can be re-scored offline from its own export; `ComputePairsWeights` re-runs afterwards, when
 something was removed. Four lines from a Radcliffe run report everything:
 
 ```
@@ -129,7 +129,7 @@ unscored kept`.
 | `--filter-triplets B` | **`false`** | apply the filter to the matched view graph |
 | `--triplet-auto-tau B` | **`true`** | treat `tau(m)` as a ceiling: below it, the strictest threshold that joins every piece the ceiling leaves, unless the largest piece already holds a majority of the images in pieces, in which case the ceiling is applied as given; off applies `tau(m)` as given, the second face included |
 | `--triplet-min-score F` | `0.3` | the paper's minimum edge score *m*, in [0,1]; with `--triplet-auto-tau` the ceiling the threshold is derived from, otherwise applied as given |
-| `--triplet-second-face-score F` | `0.75` | with `--triplet-auto-tau`, a stricter minimum score whose ceiling replaces the default's when the graph it leaves has two faces: a majority piece and a second piece of at least a third of it |
+| `--triplet-second-face-score F` | `0.75` | with `--triplet-auto-tau`, a stricter minimum score whose ceiling names the faces when the graph it leaves has two (a majority piece and a second piece of at least a third of it): the default's ceiling then applies inside the larger face and every pair joining the other face is removed |
 
 `TripletFilterConfig::minYield` (0.4) has no flag.
 
@@ -210,7 +210,8 @@ reports the church as 157+106 and Radcliffe as 94+186 (two models each), Big Ben
 Nevsky 447; its Brandenburg Gate is a different, 2137-image collection, and it does not cover Indoor
 or the video sets. Matching is exhaustive, as in the paper's reference implementation; the filter's minimum score is
 its default 0.3, the paper's value on these sets, and its second-face score 0.75; the runs are the
-`openmvs-disambig-20260905l-triplet` folders under each set beside the datasets. On the sets whose
+`openmvs-disambig-20260905l-triplet` folders under each set beside the datasets (`indoor` and `ToH`,
+matched with the vocabulary tree: `openmvs-disambig-20260905l-vocab50-triplet`). On the sets whose
 ceiling shatters the graph `m` only sets a ceiling the descent replaces, and 0.3 and 0.6 give the
 same thresholds. On the church the second ceiling (0.964) leaves the two facades as a majority piece
 and a second piece of two thirds of it, so it names the faces, and the paper's ceiling (0.899)
@@ -235,7 +236,7 @@ apart, "spread" the extent of the camera path relative to its step):
 | desk | 31 | 31, folded | 31; 23 fold pairs, all the start hover and the genuine revisit | 12 | unfolded |
 | oats | 23 | 23, folded (spread 0.293) | 23; 0 fold pairs (spread 0.707) | 9 | unfolded |
 | street | 19 | 19, folded | 19; 0 fold pairs | 19 | unfolded |
-| ToH | 338 | 338, folded on the temple's one-third turn (804 fold pairs at gaps of 20 frames or more) | 338 (vocabulary tree at 50 pairs per image, tau 0.455 applied as given); 3 fold pairs at gaps of 20 frames or more, all the genuine closure of frame 0 onto 329 | — | unfolded |
+| ToH | 338 | 338, folded on the temple's one-third turn (804 fold pairs at gaps of 20 frames or more) | 338 (vocabulary tree at 50 pairs per image, tau 0.455 applied as given); 3 fold pairs at gaps of 20 frames or more, all the genuine closure of frame 0 onto 329 | 338 | unfolded |
 
 **Internet collections** (the "without the filter" column is the branch's default matching, a
 vocabulary tree at 50 pairs per image, which folds every two-faced building; the filter column is
@@ -246,12 +247,12 @@ reference-model comparison described above):
 | set | images | without the filter | with the filter | paper's `G_F` | Doppelgangers | verdict |
 |---|---|---|---|---|---|---|
 | indoor | 153 | 152 | 152, one loop (vocabulary tree at 50 pairs per image, tau 0.664 applied as given) | 42 | 152 | the loop is real; the paper over-splits it |
-| brandenburg_gate | 176 | 173, folded | 145: at 0.75 the second piece (7 images) is a cluster, not a face, so the paper's ceiling (0.952) stands; it leaves a majority piece and is applied as given | 129 | 151 | unfolded: 144 of the reference's 151 in common, directions within 6 degrees at the 90th percentile |
-| church_on_spilled_blood | 278 | 270, folded | 143, one-sided: the second ceiling (0.964) leaves the south facade with the canal views (133 images) and the north facade (83) as two faces and names them; the paper's ceiling (0.899) applies inside the south face, whose piece grows to 148, and the north face is cut off and stays unregistered | 136 | 258 | one-sided, unfolded: 126 of the south reference's 137 in common, directions within 8 degrees at the 90th percentile |
+| brandenburg_gate | 176 | 173, folded | 145: at 0.75 the second piece (7 images) is a cluster, not a face, so the paper's ceiling (0.952) stands; it leaves a majority piece and is applied as given | 129 | 151 | unfolded: 144 of the reference's 151 in common, 21 misplaced by position, directions within 6 degrees at the 90th percentile |
+| church_on_spilled_blood | 278 | 270, folded | 143, one-sided: the second ceiling (0.964) leaves the south facade with the canal views (133 images) and the north facade (83) as two faces and names them; the paper's ceiling (0.899) applies inside the south face, whose piece grows to 148, and the north face is cut off and stays unregistered | 136 | 258 | one-sided, unfolded but scattered: 126 of the south reference's 137 in common, 46 of them misplaced by position (up to 3.9 model radii; the run at the stricter ceiling alone had 40 of 116), directions within 8 degrees at the 90th percentile |
 | radcliffe_camera | 283 | 277, folded | 181: at 0.75 the largest piece (111 images) holds no majority, so the paper's ceiling (0.908) stands; it leaves a majority piece of 181, applied as given | 177 | 94 | one-sided, unfolded: 181 of the side reference's 185 in common, 11 misplaced by position |
 | big_ben | 403 | 391 | 385: one piece at 0.75, so the paper's ceiling (0.763) stands, applied as given | 379 | 394 | folded: 209 of 377 common images misplaced, the reference's two sides on one another (the limit below) |
 | arc_de_triomphe | 435 | 405 | 403: at 0.75 the second piece is under a third of the largest, so the paper's ceiling (0.679) stands, applied as given | 394 | 392 | unfolded: 370 of the reference's 395 in common, 26 misplaced by position, directions within 5 degrees at the 90th percentile |
-| alexander_nevsky_cathedral | 449 | 442 | 434: one piece at 0.75, so the paper's ceiling (0.919) stands, applied as given | 429 | 445 | unfolded: 433 of the reference's 446 in common, directions within 11 degrees at the 90th percentile |
+| alexander_nevsky_cathedral | 449 | 442 | 434: one piece at 0.75, so the paper's ceiling (0.919) stands, applied as given | 429 | 445 | unfolded: 433 of the reference's 446 in common, 32 misplaced by position, directions within 11 degrees at the 90th percentile |
 
 Against the paper's own filter the branch registers more on every collection and keeps every model
 but one unfolded: the church 143 against 136 (one-sided, as the paper's model and both learned

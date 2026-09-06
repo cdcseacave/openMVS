@@ -56,14 +56,16 @@ struct SFM_API TripletFilterConfig
 	// The paper's tau(m) is a ceiling: below it, the threshold is the strictest one whose survivor
 	// graph joins every piece the ceiling leaves. Off, tau(m) is applied as given.
 	bool autoTau = true;
-	// The paper's minimum edge score m, in [0,1] (the domain this implementation enforces): 0.6
-	// generic/large-scale, 0.9 highly ambiguous, 0.3 medium/small ambiguous. With autoTau this is
-	// the ceiling the threshold is derived from and never exceeds -- unless the graph shows a
-	// second face, see secondFaceScore.
+	// The paper's minimum edge score m, in [0,1] (the domain this implementation enforces): 0.3
+	// medium/small ambiguous (the default), 0.6 generic/large-scale, 0.9 highly ambiguous. With
+	// autoTau this is the ceiling the threshold is derived from and never exceeds, a second face
+	// included: see secondFaceScore.
 	float minScore = 0.3f;
-	// A second, stricter ceiling, tau(secondFaceScore), tried first: it is the ceiling used when
-	// the graph it leaves has two faces -- its largest piece holds a strict majority of the images
-	// in pieces and its second-largest piece at least a third of the largest. A two-faced building
+	// A second, stricter ceiling, tau(secondFaceScore), tried first to NAME the faces: when the
+	// graph it leaves has two -- its largest piece holds a strict majority of the images in pieces
+	// and its second-largest piece at least a third of the largest -- tau(minScore) applies inside
+	// the larger face, every pair joining the other face to an image outside it is cut, and so is
+	// every pair of an image outside both faces whose kept pairs reach both. A two-faced building
 	// matched exhaustively (the church: seven matchings) splits into its faces at this ceiling and
 	// merges them at tau(minScore) in half the matchings, while a building whose graph is one face
 	// (Big Ben) is cut so thin at this ceiling that the reconstruction keeps a third of it. Values
@@ -96,8 +98,9 @@ struct SFM_API SurvivorGraph
 	bool viewsJoined;           // the images passed as `views` all lie in one component (true when none were passed)
 };
 
-// Evaluate the graph left by keeping every unscored pair and every pair scoring at or above `tau`.
-// Pass tau = 0 for the unfiltered graph: scores lie in [0,1] and unscored pairs are always kept.
+// Evaluate the graph left by keeping every unscored pair and every pair scoring at or above `tau`;
+// a pair marked TripletScores::cut is removed at every tau. Pass tau = 0 for the unfiltered graph
+// of a score array carrying no cut marks: scores lie in [0,1] and unscored pairs are always kept.
 // Nodes are counted on the unfiltered graph, so an image that loses all its edges still counts as
 // a node -- with degree 0, which is exactly what the low-degree test is there to catch.
 // A component of at least minPiece nodes, inside the unfiltered graph's largest component, is a

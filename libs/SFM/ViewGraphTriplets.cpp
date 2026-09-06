@@ -476,7 +476,6 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 		? (float)tripletScores.maxDegree / (float)tripletScores.numNodes : 0.f;
 	// The scores the filter works on: the face rule below marks the pairs it cuts, whatever their score.
 	std::vector<float> scores = tripletScores.scores;
-	const IIndex numImages = scene.images.size();
 	// Eqn. 3 on G_LCT, tau(m) = m (1 - d_max/|V|) + d_max/|V|, is the CEILING: the filter is never
 	// stricter than the m it was given. On a complete view graph -- every pair verified, which is
 	// what identical facades produce under exhaustive matching -- d_max/|V| is (|V|-1)/|V| and the
@@ -499,11 +498,12 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 	const float secondFace = std::isnan(config.secondFaceScore) ? 0.f : CLAMP(config.secondFaceScore, 0.f, 1.f);
 	const float secondCeiling = secondFace * (1.f - degreeRatio) + degreeRatio;
 	bool twoFaced = false;
-	unsigned numCutToFace = 0, numAmbiguous = 0, numCutAmbiguous = 0;
 	if (config.autoTau && secondFace > minScore) {
 		const SurvivorGraph atSecond = EvaluateSurvivorGraph(scene, scores, secondCeiling, minPiece);
 		twoFaced = 2 * atSecond.largestPiece > atSecond.numInPieces && 3 * atSecond.secondPiece >= atSecond.largestPiece;
 		if (twoFaced) {
+			const IIndex numImages = scene.images.size();
+			unsigned numCutToFace = 0, numAmbiguous = 0, numCutAmbiguous = 0;
 			enum : uint8_t { NO_FACE = 0, FACE_A = 1, FACE_B = 2 };
 			std::vector<uint8_t> face(numImages, NO_FACE);
 			for (IIndex i : atSecond.largestPieceViews)

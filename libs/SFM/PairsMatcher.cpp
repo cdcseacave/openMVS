@@ -2325,21 +2325,24 @@ bool PairsMatcher::ExportPairsCSV(const Scene& scene, const String& fileName, fl
 		if (tripletScores.scores[idxPair] >= 0.f)
 			ofs << tripletScores.scores[idxPair]; // an unscored pair leaves the cell empty
 		ofs << ",";
+		bool hasPose = false;
 		if (pair.relativePose.has_value()) {
 			// relativePose->R, C store the pose in the pair's own convention (x2 = R*x1 + t);
 			// Pose3D stores the camera centre C, not the translation, so t = -R*C = GetT()
 			const RMatrix::Quat q(pair.relativePose->R.GetQuaternion()); // (x,y,z,w): q.val[3] is the scalar part
 			CMatrix t(pair.relativePose->GetT());
 			const REAL tLen = cv::norm(t);
-			if (tLen > REAL(0))
-				t *= REAL(1) / tLen; // the scale of a two-view pose is arbitrary: normalize t
-			const std::streamsize oldPrecision = ofs.precision(7);
-			ofs << q.val[3] << "," << q.val[0] << "," << q.val[1] << "," << q.val[2] << ","
-				<< t.x << "," << t.y << "," << t.z;
-			ofs.precision(oldPrecision);
-		} else {
-			ofs << ",,,,,,"; // no relative pose: all seven cells stay empty
+			if (tLen > REAL(0)) {
+				t *= REAL(1) / tLen; // the scale of a two-view pose is arbitrary: normalize t; a zero baseline has no direction and exports no pose
+				const std::streamsize oldPrecision = ofs.precision(7);
+				ofs << q.val[3] << "," << q.val[0] << "," << q.val[1] << "," << q.val[2] << ","
+					<< t.x << "," << t.y << "," << t.z;
+				ofs.precision(oldPrecision);
+				hasPose = true;
+			}
 		}
+		if (!hasPose)
+			ofs << ",,,,,,"; // no relative pose: all seven cells stay empty
 		ofs << "\n";
 	}
 	ofs.close();
