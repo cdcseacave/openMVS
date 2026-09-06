@@ -114,8 +114,10 @@ Triplet filter: tau 0.964, the ceiling applied as given, its largest piece holdi
 
 Two caveats. It is **not idempotent**: a saved filtered scene re-fed with the flag still set is
 filtered *again*, with a fresh ceiling and, with `--triplet-auto-tau`, a fresh connectivity search
-over the already shrunken graph. And with geometric verification disabled (`maxEpipolarError = 0`) no pair carries a two-view geometry, so nothing is an
-edge, nothing is scored, and the filter removes the **whole** graph — the log line says so.
+over the already shrunken graph. And with geometric verification disabled (`maxEpipolarError = 0`)
+no pair carries a two-view geometry, so there are no inlier counts, no pair is scored, and the
+filter keeps every pair and does nothing — the log line reports it as `0 below tau removed, N
+unscored kept`.
 
 | Flag | Default | Effect |
 |---|---|---|
@@ -130,11 +132,14 @@ Python: `TripletFilterConfig(enabled, auto_tau, min_score, second_face_score, mi
 
 ## Harness
 
-`scripts/python/tests/triplet_disambiguation.py` (numpy only) reimplements the shipped rule from a
-pairs CSV's own `NumMatches`, `Coverage` and `MeanRayAngle` columns: `score` writes its own score
-and the kept flag for a given m; `parity` compares those scores against the same export's
-`TripletScore` column (tolerance 1e-5); `roc` joins with `pair_gt_labels.py --mode coverage` output,
-where **plausible** = true edge, **implausible** = false edge, **ambiguous** excluded.
+`scripts/python/tests/triplet_disambiguation.py` (numpy only) reimplements the scoring -- strength,
+the yield envelope, the triangles of `G_LCT` -- from a pairs CSV's own `NumMatches`, `Coverage` and
+`MeanRayAngle` columns and applies `tau(m)` as a threshold; it does not replay the second-face
+choice, the descent or the seeding, which stay C++-side only. `score` writes its own score and the
+kept flag for a given m (`-m`, default the shipped 0.6); `parity` compares those scores against the
+same export's `TripletScore` column (tolerance 1e-5); `roc` joins with `pair_gt_labels.py --mode
+coverage` output, where **plausible** = true edge, **implausible** = false edge, **ambiguous**
+excluded.
 
 ## Measurements
 
