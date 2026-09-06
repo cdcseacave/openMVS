@@ -8600,6 +8600,71 @@ bool TripletAutoTauTest()
 		return false;
 	}
 
+	// The faces named with no majority at the paper's ceiling: eight fans of five images -- a hub
+	// pair and three leaves -- are pieces of two at the higher ceiling, where chain A holds a
+	// majority (60 of 116) and chain B two thirds of it, and pieces of five at the paper's, where
+	// chain A holds none (60 of 140). Each fan's hubs reach chain A through three weak pairs whose
+	// triangles share an edge with the fan's and with the chain's, so every pair is scored. The
+	// faces are the answer: the descent does not run, the paper's ceiling stands, and the weak
+	// pairs (0.4) go with chain B's pairs two apart and the bridges.
+	Scene fans;
+	AddTripletImages(fans, 140);
+	for (IIndex i = 0; i + 1 < 60; ++i)
+		AddTripletPair(fans, i, i + 1, 1000);
+	for (IIndex i = 0; i + 2 < 60; ++i)
+		AddTripletPair(fans, i, i + 2, 700);
+	for (IIndex i = 60; i + 1 < 100; ++i)
+		AddTripletPair(fans, i, i + 1, 1000);
+	for (IIndex i = 60; i + 2 < 100; ++i)
+		AddTripletPair(fans, i, i + 2, 600);
+	AddTripletPair(fans, 59, 60, 700);
+	AddTripletPair(fans, 58, 60, 700);
+	AddTripletPair(fans, 59, 61, 700);
+	for (IIndex hub = 100; hub < 140; hub += 5) {
+		AddTripletPair(fans, hub, hub + 1, 1000);
+		for (IIndex leaf = hub + 2; leaf < hub + 5; ++leaf) {
+			AddTripletPair(fans, hub, leaf, 700);
+			AddTripletPair(fans, hub + 1, leaf, 700);
+		}
+		const IIndex reach = 30 + 2 * ((hub - 100) / 5);
+		AddTripletPair(fans, hub, reach, 400);
+		AddTripletPair(fans, hub, reach + 1, 400);
+		AddTripletPair(fans, hub + 1, reach, 400);
+	}
+	const float fansLowTau = 0.6f*(1.f-6.f/140.f)+6.f/140.f, fansHighTau = 0.75f*(1.f-6.f/140.f)+6.f/140.f;
+	const TripletScores fansScores = ComputeTripletScores(fans, 0.6f, 0.f, weightingCfg.gridSize);
+	const SurvivorGraph fansLow = EvaluateSurvivorGraph(fans, fansScores.scores, fansScores.tau, 2);
+	const SurvivorGraph fansHigh = EvaluateSurvivorGraph(fans, fansScores.scores, fansHighTau, 2);
+	if (!ISEQUAL(fansScores.tau, fansLowTau) || fansLow.numPieces != 9 || fansLow.largestPiece != 100 || fansLow.numInPieces != 140 ||
+		fansHigh.numPieces != 10 || fansHigh.largestPiece != 60 || fansHigh.secondPiece != 40 || fansHigh.numInPieces != 116) {
+		VERBOSE("TripletAutoTauTest FAILED: fans at %g: %u pieces, largest %u, %u in pieces; at %g: %u pieces, largest %u, "
+			"second %u, %u in pieces; expected 9 pieces, largest 100, 140 in pieces, then 10 pieces of 60, 40 and eight of 2",
+			fansScores.tau, fansLow.numPieces, fansLow.largestPiece, fansLow.numInPieces, fansHighTau, fansHigh.numPieces,
+			fansHigh.largestPiece, fansHigh.secondPiece, fansHigh.numInPieces);
+		return false;
+	}
+	TripletFilterConfig fansCfg;
+	fansCfg.enabled = true;
+	fansCfg.minScore = 0.6f; // the scene's ceilings and the counts below were derived at the paper's generic m
+	fansCfg.minYield = 0.f;
+	IIndexArr fansSeeds;
+	const unsigned fansRemoved = FilterPairsByTriplets(fans, fansCfg, weightingCfg, &fansSeeds);
+	const std::set<std::pair<IIndex,IIndex>> fansKept = TripletKeptPairs(fans);
+	bool fansRight = fansRemoved == 65 && fansKept.size() == 212 &&
+		fansKept.count({30,100}) == 0 && fansKept.count({31,100}) == 0 && fansKept.count({30,101}) == 0 && fansKept.count({44,135}) == 0 &&
+		fansKept.count({59,60}) == 0 && fansKept.count({58,60}) == 0 && fansKept.count({59,61}) == 0 &&
+		fansKept.count({60,62}) == 0 && fansKept.count({60,61}) == 1 && fansKept.count({28,30}) == 1 &&
+		fansKept.count({100,101}) == 1 && fansKept.count({100,102}) == 1 && fansKept.count({101,104}) == 1 && fansSeeds.size() == 60;
+	FOREACH(i, fansSeeds)
+		fansRight = fansRight && fansSeeds[i] == (IIndex)i;
+	if (!fansRight) {
+		VERBOSE("TripletAutoTauTest FAILED: fans removed %u pairs, kept %u, seed views %u; expected the faces named and the "
+			"descent off: chain B's 38 pairs two apart and the hubs' 24 pairs to chain A below the paper's ceiling, the 3 "
+			"bridges cut, 65 removed, 212 kept, seed views 0-59",
+			fansRemoved, (unsigned)fansKept.size(), (unsigned)fansSeeds.size());
+		return false;
+	}
+
 	// The face and its cluster: the higher ceiling leaves a majority piece with a second piece of
 	// a quarter of it -- a cluster hanging off the building, not its other face -- so the paper's
 	// ceiling stands and the cluster stays joined.
