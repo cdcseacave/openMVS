@@ -51,6 +51,7 @@ String strInputFileName;
 String strMeshFileName;
 String strOutputFileName;
 String strMaskPath;
+bool bFast;
 float fSimplifyTolerance;
 unsigned nResolutionLevel;
 unsigned nMinResolution;
@@ -132,6 +133,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("ensure-edge-size", boost::program_options::value(&OPT::nEnsureEdgeSize)->default_value(1), "ensure edge size and improve vertex valence of the input surface (0 - disabled, 1 - auto, 2 - force)")
 		("max-face-area", boost::program_options::value(&OPT::nMaxFaceArea)->default_value(16), "maximum face area projected in any pair of images that is not subdivided (0 - disabled)")
 		("simplify-tolerance", boost::program_options::value(&OPT::fSimplifyTolerance), "decimate the refined mesh within this reprojection error in every vertex's best view, in pixels of the working resolution, once the refinement ends (default 0 - disabled)")
+		("fast", boost::program_options::bool_switch(&OPT::bFast)->default_value(false), "trade accuracy for speed: refine against 4 neighbor images and decimate the result within 0.5 pixels (1.5-1.7x faster for -0.006 mean F1 and a 3-14x smaller mesh); an explicitly given --max-views or --simplify-tolerance wins over it")
 		("scales", boost::program_options::value(&OPT::nScales)->default_value(2), "how many iterations to run mesh optimization on multi-scale images")
 		("scale-step", boost::program_options::value(&OPT::fScaleStep)->default_value(0.5f), "image scale factor used at each mesh optimization step")
 		("alternate-pair", boost::program_options::value(&OPT::nAlternatePair)->default_value(0), "refine mesh using an image pair alternatively as reference (0 - both, 1 - alternate, 2 - only left, 3 - only right)")
@@ -207,6 +209,15 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	// an option without a CLI default overrides the refine-config-file only when it was given
 	if (OPT::vm.count("simplify-tolerance"))
 		OPTREFINE::fSimplifyTolerance = OPT::fSimplifyTolerance;
+	// the fast preset fills in only what the command line did not state itself; both values are
+	// the ones measured in docs/design/MeshRefinement.md 2.7, and neither is a free lunch
+	if (OPT::bFast) {
+		if (OPT::vm["max-views"].defaulted())
+			OPT::nMaxViews = 4;
+		if (!OPT::vm.count("simplify-tolerance"))
+			OPTREFINE::fSimplifyTolerance = 0.5f;
+		VERBOSE("fast mode: max-views %u, simplify-tolerance %g", OPT::nMaxViews, OPTREFINE::fSimplifyTolerance);
+	}
 	if (!(OPTREFINE::fSimplifyTolerance >= 0)) {
 		VERBOSE("error: simplify tolerance %g px is invalid (< 0)", OPTREFINE::fSimplifyTolerance);
 		return false;

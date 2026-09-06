@@ -52,13 +52,15 @@ loader (§1.3). `OPTREFINE::init()`/`update()` load the `OPTREFINE` defaults and
 over that file, and a configuration file naming an option that does not exist is refused by name
 rather than silently ignored.
 
-**Trading accuracy for speed.** `--max-views 4 --simplify-tolerance 0.5` is the measured fast
-configuration: 1.5-1.7x faster than the defaults for −0.006 mean F1 on Tanks & Temples and a mesh
-3-14x smaller (§2.7). It stays a documented command line rather than a preset switch because no
-combination of levers reached the 2x the fast mode aimed for — 38 % of the wall is the mesh
-preparation, which no view or resolution setting touches — and because the levers that do go
-faster (a coarser `--resolution-level`, `--max-views 2`) cost an order of magnitude more accuracy
-(§4 #46).
+**Trading accuracy for speed.** `--fast` is the measured fast configuration behind one switch: it
+refines against 4 neighbour images and decimates the result within 0.5 px, which runs 1.5-1.7x
+faster than the defaults for −0.006 mean F1 on Tanks & Temples and delivers a mesh 3-14x smaller
+(§2.7). It is a preset over `--max-views` and `--simplify-tolerance` and nothing else, and an
+explicitly given one of those wins over it — `--fast --max-views 8` keeps the full view budget and
+only decimates. What no preset can do is go faster than that: 38 % of the wall is the mesh
+preparation, which neither the view count nor the working resolution touches, and the levers that
+do go faster (a coarser `--resolution-level`, `--max-views 2`) cost an order of magnitude more
+accuracy (§4 #46).
 
 ### 1.2 Multi-scale subdivision loop
 
@@ -771,14 +773,18 @@ resolution only attacks the remaining 62 %, which is why `--max-views 4`, `--max
 resolution level down all saturate in the same 0.4-0.6x band while their accuracy costs differ by
 an order of magnitude.
 
-So the fast mode is a documented command line, not a new switch — every knob in it already exists:
+So the fast mode is the first two rows, packaged as one switch over knobs that already exist:
 
 ```
-RefineMesh ... --max-views 4 --simplify-tolerance 0.5
+RefineMesh ... --fast        # --max-views 4 --simplify-tolerance 0.5
 ```
 
 1.5-1.7x faster than the default for −0.006 mean F1 (worst scene Barn −0.017), and it delivers a
-mesh 3-14x smaller than the default's. Raising `--resolution-level` instead is recorded as #46: it
+mesh 3-14x smaller than the default's. The preset fills in only what the command line did not
+state, so an explicit `--max-views` or `--simplify-tolerance` overrides it; the Tiny functional
+runs pin that `--fast` and the two options spelled out produce the same mesh byte for byte, that
+`--fast --max-views 8` reproduces `--simplify-tolerance 0.5` alone, and that `--fast` does not
+rescue an invalid tolerance. Raising `--resolution-level` instead is recorded as #46: it
 is the cheapest lever per second and by far the most expensive per unit of quality, because it
 also cuts the face count the subdivision reaches (0.33-0.35x) — on Ignatius, whose gap to its own
 input mesh is already the dominant term (§5.1), that removes 0.18 F1.
