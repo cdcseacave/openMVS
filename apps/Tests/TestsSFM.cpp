@@ -8537,15 +8537,18 @@ bool TripletAutoTauTest()
 		return false;
 	}
 
-	// The two faces: at the paper's ceiling the bridges join the chains into one majority piece;
-	// at the higher ceiling the chains are two pieces, the second holding two thirds of the first,
-	// so the higher ceiling is the one used and the bridges go.
+	// The two faces: at the paper's ceiling the bridges join the chains into one piece; at the
+	// higher ceiling the chains are two pieces, the second holding two thirds of the first. The
+	// higher ceiling names the faces and the paper's ceiling applies inside the larger one: the
+	// pairs two apart of chain A (0.7, between the ceilings) stay, the bridges and every pair
+	// joining chain B to the outside go, the ambiguous image 100 (its pairs reach both chains) loses
+	// its pairs, the straggler 101 joins chain A.
 	Scene faces;
-	AddTripletImages(faces, 100);
+	AddTripletImages(faces, 102);
 	for (IIndex i = 0; i + 1 < 60; ++i)
 		AddTripletPair(faces, i, i + 1, 1000);
 	for (IIndex i = 0; i + 2 < 60; ++i)
-		AddTripletPair(faces, i, i + 2, 600);
+		AddTripletPair(faces, i, i + 2, 700);
 	for (IIndex i = 60; i + 1 < 100; ++i)
 		AddTripletPair(faces, i, i + 1, 1000);
 	for (IIndex i = 60; i + 2 < 100; ++i)
@@ -8553,29 +8556,46 @@ bool TripletAutoTauTest()
 	AddTripletPair(faces, 59, 60, 700);
 	AddTripletPair(faces, 58, 60, 700);
 	AddTripletPair(faces, 59, 61, 700);
+	AddTripletPair(faces, 100, 10, 700);
+	AddTripletPair(faces, 100, 11, 700);
+	AddTripletPair(faces, 100, 70, 700);
+	AddTripletPair(faces, 100, 71, 700);
+	AddTripletPair(faces, 101, 20, 700);
+	AddTripletPair(faces, 101, 21, 700);
+	const float facesLowTau = 0.6f*(1.f-5.f/102.f)+5.f/102.f, facesHighTau = 0.75f*(1.f-5.f/102.f)+5.f/102.f;
 	const TripletScores facesScores = ComputeTripletScores(faces, 0.6f, 0.f, weightingCfg.gridSize);
-	const SurvivorGraph facesLow = EvaluateSurvivorGraph(faces, facesScores.scores, facesScores.tau);
-	const SurvivorGraph facesHigh = EvaluateSurvivorGraph(faces, facesScores.scores, 0.75f*(1.f-4.f/100.f)+4.f/100.f);
-	if (!ISEQUAL(facesScores.tau, 0.6f*(1.f-4.f/100.f)+4.f/100.f) || facesLow.numPieces != 1 || facesLow.largestPiece != 100 ||
-		facesHigh.numPieces != 2 || facesHigh.largestPiece != 60 || facesHigh.secondPiece != 40) {
-		VERBOSE("TripletAutoTauTest FAILED: two faces at %g: %u pieces, largest %u; at 0.76: %u pieces, largest %u, second %u; "
-			"expected one piece of 100, then two of 60 and 40",
-			facesScores.tau, facesLow.numPieces, facesLow.largestPiece, facesHigh.numPieces, facesHigh.largestPiece, facesHigh.secondPiece);
+	const SurvivorGraph facesLow = EvaluateSurvivorGraph(faces, facesScores.scores, facesScores.tau, 2);
+	const SurvivorGraph facesHigh = EvaluateSurvivorGraph(faces, facesScores.scores, facesHighTau, 2);
+	bool facesGraphRight = ISEQUAL(facesScores.tau, facesLowTau) && facesLow.numPieces == 1 && facesLow.largestPiece == 102 &&
+		facesHigh.numPieces == 2 && facesHigh.largestPiece == 60 && facesHigh.secondPiece == 40 &&
+		facesHigh.largestPieceViews.size() == 60 && facesHigh.secondPieceViews.size() == 40;
+	FOREACH(i, facesHigh.secondPieceViews)
+		facesGraphRight = facesGraphRight && facesHigh.secondPieceViews[i] == (IIndex)(60 + i);
+	if (!facesGraphRight) {
+		VERBOSE("TripletAutoTauTest FAILED: two faces at %g: %u pieces, largest %u; at %g: %u pieces, largest %u (%u views), "
+			"second %u (%u views); expected one piece of 102, then two of 60 and 40 with the second's views 60-99",
+			facesScores.tau, facesLow.numPieces, facesLow.largestPiece, facesHighTau, facesHigh.numPieces, facesHigh.largestPiece,
+			(unsigned)facesHigh.largestPieceViews.size(), facesHigh.secondPiece, (unsigned)facesHigh.secondPieceViews.size());
 		return false;
 	}
 	TripletFilterConfig facesCfg;
 	facesCfg.enabled = true;
+	facesCfg.minScore = 0.6f; // the scene's ceilings and the counts below were derived at the paper's generic m
 	facesCfg.minYield = 0.f;
 	IIndexArr facesSeeds;
 	const unsigned facesRemoved = FilterPairsByTriplets(faces, facesCfg, weightingCfg, &facesSeeds);
 	const std::set<std::pair<IIndex,IIndex>> facesKept = TripletKeptPairs(faces);
-	bool facesRight = facesRemoved == 99 && facesKept.size() == 98 && facesKept.count({59,60}) == 0 &&
-		facesKept.count({58,59}) == 1 && facesKept.count({60,61}) == 1 && facesSeeds.size() == 60;
+	bool facesRight = facesRemoved == 45 && facesKept.size() == 158 &&
+		facesKept.count({59,60}) == 0 && facesKept.count({58,60}) == 0 && facesKept.count({59,61}) == 0 &&
+		facesKept.count({58,59}) == 1 && facesKept.count({57,59}) == 1 && facesKept.count({60,61}) == 1 && facesKept.count({60,62}) == 0 &&
+		facesKept.count({10,100}) == 0 && facesKept.count({11,100}) == 0 && facesKept.count({70,100}) == 0 && facesKept.count({71,100}) == 0 &&
+		facesKept.count({20,101}) == 1 && facesKept.count({21,101}) == 1 && facesSeeds.size() == 61;
 	FOREACH(i, facesSeeds)
-		facesRight = facesRight && facesSeeds[i] == (IIndex)i;
+		facesRight = facesRight && facesSeeds[i] == (i < 60 ? (IIndex)i : (IIndex)101);
 	if (!facesRight) {
-		VERBOSE("TripletAutoTauTest FAILED: two faces removed %u pairs, kept %u, seed views %u; expected the higher ceiling "
-			"(a majority piece with a second piece of two thirds): 99 removed, 98 kept, the bridges gone, seed views 0-59",
+		VERBOSE("TripletAutoTauTest FAILED: two faces removed %u pairs, kept %u, seed views %u; expected the paper's ceiling "
+			"inside the larger face: chain B's 38 pairs two apart below it, the 3 bridges and image 100's 4 pairs cut, "
+			"45 removed, 158 kept, seed views 0-59 and 101",
 			facesRemoved, (unsigned)facesKept.size(), (unsigned)facesSeeds.size());
 		return false;
 	}

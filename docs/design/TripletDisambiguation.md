@@ -52,16 +52,20 @@ and `c_ij = ComputePairCoverage(...)` the fraction of the frame the inliers cove
    11, extracting the largest component of the filtered graph, is **not** applied — `SceneCluster`
    already selects components.
 6. **The second face** (`--triplet-second-face-score`, 0.75, part of `--triplet-auto-tau`). Before
-   any of the above, the ceiling at `m` 0.75 is tried first, and it is the ceiling when the graph it
-   leaves is *two-faced* — its largest piece holds a strict majority of the images in pieces and its
-   second-largest piece holds at least a third of the largest; otherwise the paper's ceiling at 0.6
-   stands. Why: on a two-faced building the paper's ceiling sits among the scores of the pairs
-   bridging the facades (the church: 0.942 at 0.6, bridges scoring 0.89-0.96, merged in two matchings
-   of four; at 0.75 every one of seven graphs splits into the facades, 130-135 and 80-83 images),
-   while on a building whose graph is one face the stricter ceiling cuts the graph so thin that the
-   reconstruction discards most of what it registers (Big Ben: 147 of 403 images at the stricter
-   ceiling, 371-377 at the paper's across two matchings, one piece either way); a second piece of a
-   third is the bar because the other face of a
+   any of the above, the ceiling at `m` 0.75 is tried first, not as a threshold but to **name** the
+   faces: when the graph it leaves is *two-faced* — its largest piece holds a strict majority of the
+   images in pieces and its second-largest piece holds at least a third of the largest — the paper's
+   ceiling at `m` applies **inside the larger face**, and every pair joining the other face to an
+   image outside it is cut whatever its score, and so is every pair of an *ambiguous* image: one
+   outside both faces whose pairs kept at the paper's ceiling reach both. The descent does not run
+   once the faces are named — every pair between them is cut at every threshold, so there is nothing
+   left for it to join. When the graph at the stricter ceiling is not two-faced, the paper's ceiling
+   stands untouched. Why: on a two-faced building the paper's ceiling sits among the scores of the
+   pairs bridging the facades (the church: 0.942 at 0.6, bridges scoring 0.89-0.96, merged in two
+   matchings of four; at 0.75 every one of seven graphs splits into the facades, 130-135 and 80-83
+   images) — applied inside the south facade, the paper's ceiling at `tau(0.3)` keeps 148 of its
+   images in the piece where the higher ceiling by itself kept 131, with no north-facade image in it;
+   a second piece of a third is the bar because the other face of a
    two-faced building holds a substantial share of the views and a night or detail cluster hanging
    off the largest piece holds a few percent (Brandenburg: 7 of 102 at 0.75).
 7. **Seeding.** The filter reports the images of the largest piece the ceiling leaves (ties to the

@@ -91,6 +91,7 @@ struct SFM_API SurvivorGraph
 	unsigned secondPiece;       // images in the second-largest piece (0 when there is none)
 	IIndexArr largestPieceViews; // the images of the largest piece, ascending (empty when there is none);
 	                            // between equally large pieces, the one holding the lowest image index
+	IIndexArr secondPieceViews;  // the images of the second-largest piece, ascending (empty when there is none)
 	IIndexArr pieceRoots;       // one image per piece, its smallest index, ascending
 	bool viewsJoined;           // the images passed as `views` all lie in one component (true when none were passed)
 };
@@ -114,7 +115,9 @@ SurvivorGraph SFM_API EvaluateSurvivorGraph(const Scene& scene, const std::vecto
 // Per-pair triplet scores of a view graph, plus the statistics of the graph they were read from.
 struct SFM_API TripletScores
 {
-	std::vector<float> scores;      // one entry per scene.pairs index; -1 = unscored (not an edge of G_LCT)
+	std::vector<float> scores;      // one entry per scene.pairs index; `unscored` = not an edge of G_LCT
+	static constexpr float unscored = -1.f; // kept at every threshold: the method has no evidence about the pair
+	static constexpr float cut = -2.f;      // removed at every threshold: FilterPairsByTriplets marks, on its own copy, the pairs the face rule cuts
 	float tau;                      // the threshold of Eqn. 3 for the requested minimum score m
 	size_t numTriplets;             // triplets (3-cycles) of the whole view graph G
 	unsigned numTripletComponents;  // connected components of the triplet graph G_T
