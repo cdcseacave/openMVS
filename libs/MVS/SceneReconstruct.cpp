@@ -1395,4 +1395,148 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 }
 /*----------------------------------------------------------------*/
 
+
+namespace {
+// mesh renderer used by RemoveUnseenMeshFaces(): a z-buffer plus the face owning each pixel
+typedef TImage<cuint32_t> UnseenFaceMap;
+struct UnseenRasterMesh : TRasterMesh<UnseenRasterMesh> {
+	typedef TRasterMesh<UnseenRasterMesh> Base;
+	UnseenFaceMap& faceMap;
+	Mesh::FIndex idxFace;
+	UnseenRasterMesh(const Mesh::VertexArr& _vertices, const Camera& _camera, DepthMap& _depthMap, UnseenFaceMap& _faceMap)
+		: Base(_vertices, _camera, _depthMap), faceMap(_faceMap) {}
+	// accept any vertex in front of the camera and let RasterizeTriangleBary clip the triangle to
+	// the image; the inherited TRasterMeshBase::ProjectVertex additionally requires every vertex
+	// inside a hardcoded 3px border, which would drop the whole face -- and so report it unseen --
+	// the moment it touches the image edge
+	inline bool ProjectVertex(const Point3f& pt, int v, Triangle& t) {
+		t.ptc[v] = camera.TransformPointW2C(Cast<REAL>(pt));
+		if (t.ptc[v].z <= 0)
+			return false;
+		t.pti[v] = camera.TransformPointC2I(t.ptc[v]);
+		return true;
+	}
+	inline void Clear() {
+		Base::Clear();
+		faceMap.memset((uint8_t)NO_ID);
+	}
+	void Raster(const ImageRef& pt, const Triangle& t, const Point3f& bary) {
+		const Point3f pbary(PerspectiveCorrectBarycentricCoordinates(t, bary));
+		const Depth z(ComputeDepth(t, pbary));
+		ASSERT(z > Depth(0));
+		Depth& depth = depthMap(pt);
+		if (depth == 0 || depth > z) {
+			depth = z;
+			faceMap(pt) = idxFace;
+		}
+	}
+};
+} // unnamed namespace
+
+// remove the mesh faces no image sees:
+// the mesh is rendered with a z-buffer into every valid image of the scene and a face survives
+// only if at least nMinViews images see it. An image sees a face when at least one pixel of its
+// rasterization survives the depth test, or -- the sub-pixel case, a face smaller than a pixel
+// never wins a pixel of its own -- when its centroid projects inside the image in front of the
+// camera at a depth no deeper than the z-buffer there by more than kUnseenDepthTol (an empty
+// z-buffer pixel means nothing stands in front of it). Same semantics as the Python reference
+// bench/mesh_visibility.py.
+// This deletes the surface the graph-cut invents in the volume no camera ever observed
+// (undersides, vehicle interiors, pockets between wheels): correct as an interpolation, but with
+// no observation behind it, so it only costs precision.
+// Only the cameras are used, no image pixels are read; the views are rendered one at a time, so
+// a single z-buffer pair per thread is alive at once
+unsigned Scene::RemoveUnseenMeshFaces(unsigned nMinViews, unsigned nResolutionLevel, unsigned nMinResolution)
+{
+	ASSERT(nMinViews > 0);
+	ASSERT(!mesh.vertices.IsEmpty() && !mesh.faces.IsEmpty());
+	ASSERT(!images.IsEmpty() && !platforms.IsEmpty());
+	TD_TIMER_START();
+	// relative depth tolerance of the centroid visibility probe
+	constexpr float kUnseenDepthTol = 0.01f;
+	const Mesh::FIndex numFaces(mesh.faces.GetSize());
+	// how many images see each face
+	CLISTDEF0IDX(uint32_t,Mesh::FIndex) faceViews(numFaces);
+	faceViews.Memset(0);
+	// face centroids, the sub-pixel visibility probes
+	Mesh::VertexArr centroids(numFaces);
+	FOREACH(idxFace, mesh.faces) {
+		const Mesh::Face& face = mesh.faces[idxFace];
+		centroids[idxFace] = (mesh.vertices[face[0]]+mesh.vertices[face[1]]+mesh.vertices[face[2]])/3.f;
+	}
+	#ifdef DELAUNAY_USE_OPENMP
+	#pragma omp parallel for schedule(dynamic)
+	for (int64_t i=0; i<(int64_t)images.GetSize(); ++i) {
+		const IIndex idxImage((IIndex)i);
+	#else
+	FOREACH(idxImage, images) {
+	#endif
+		const Image& imageData = images[idxImage];
+		if (!imageData.IsValid())
+			continue;
+		ASSERT(imageData.HasResolution());
+		// working resolution and the camera matching it, both derived from the stored image size
+		unsigned level(nResolutionLevel);
+		const unsigned imageSize(Image8U::computeMaxResolution(imageData.width, imageData.height, level, nMinResolution));
+		const cv::Size size(imageData.GetSize(imageSize));
+		const Camera camera(imageData.GetCamera(platforms, size));
+		// render the mesh into this view
+		DepthMap depthMap(size);
+		UnseenFaceMap faceMap(size);
+		UnseenRasterMesh rasterizer(mesh.vertices, camera, depthMap, faceMap);
+		UnseenRasterMesh::Triangle triangle;
+		UnseenRasterMesh::TriangleRasterizer triangleRasterizer(triangle, rasterizer);
+		rasterizer.Clear();
+		FOREACH(idxFace, mesh.faces) {
+			rasterizer.idxFace = idxFace;
+			rasterizer.Project(mesh.faces[idxFace], triangleRasterizer);
+		}
+		// the faces this view sees: the ones owning at least one pixel...
+		CLISTDEF0IDX(uint8_t,Mesh::FIndex) seen(numFaces);
+		seen.Memset(0);
+		const cuint32_t* pFaceMap(faceMap.getData());
+		for (int p=0, np=faceMap.area(); p<np; ++p) {
+			const uint32_t idxFace(pFaceMap[p]);
+			if (idxFace != NO_ID)
+				seen[idxFace] = 1;
+		}
+		// ...plus the ones whose centroid is not occluded
+		FOREACH(idxFace, mesh.faces) {
+			if (seen[idxFace])
+				continue;
+			const Point3 X(camera.TransformPointW2C(Cast<REAL>(centroids[idxFace])));
+			if (X.z <= 0)
+				continue;
+			const ImageRef x(ROUND2INT(camera.TransformPointC2I(X)));
+			if (!depthMap.isInside(x))
+				continue;
+			const Depth depth(depthMap(x));
+			if (depth == 0 || (Depth)X.z <= depth*(1.f+kUnseenDepthTol))
+				seen[idxFace] = 1;
+		}
+		FOREACH(idxFace, mesh.faces) {
+			if (!seen[idxFace])
+				continue;
+			uint32_t& numViews(faceViews[idxFace]);
+			#ifdef DELAUNAY_USE_OPENMP
+			#pragma omp atomic
+			#endif
+			++numViews;
+		}
+	}
+	// remove the faces too few views see, and the vertices they orphan
+	Mesh::FaceIdxArr facesRemove(0, numFaces);
+	FOREACH(idxFace, mesh.faces)
+		if (faceViews[idxFace] < nMinViews)
+			facesRemove.Insert(idxFace);
+	const Mesh::FIndex numRemoved(facesRemove.GetSize());
+	if (numRemoved > 0) {
+		mesh.RemoveFaces(facesRemove);
+		mesh.RemoveUnreferencedVertices();
+	}
+	DEBUG_EXTRA("Mesh unseen faces removed: %u of %u faces (%u views min) (%s)", numRemoved, numFaces, nMinViews, TD_TIMER_GET_FMT().c_str());
+	return numRemoved;
+} // RemoveUnseenMeshFaces
+/*----------------------------------------------------------------*/
+
 #pragma pop_macro("VERBOSE")

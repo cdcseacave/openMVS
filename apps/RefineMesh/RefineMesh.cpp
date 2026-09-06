@@ -67,6 +67,7 @@ float fRatioRigidityElasticity;
 unsigned nMaxFaceArea;
 float fPlanarVertexRatio;
 bool bUseCeres;
+unsigned nRemoveUnseenFaces;
 unsigned nArchiveType;
 int nProcessPriority;
 unsigned nMaxThreads;
@@ -141,6 +142,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("rigidity-elasticity-ratio", boost::program_options::value(&OPT::fRatioRigidityElasticity)->default_value(0.9f), "scalar ratio used to compute the regularity gradient as a combination of rigidity and elasticity")
 		("use-ceres", boost::program_options::value(&OPT::bUseCeres)->default_value(false), "minimize the refinement energy with the Ceres solver instead of the gradient descent (CPU only)")
 		("planar-vertex-ratio", boost::program_options::value(&OPT::fPlanarVertexRatio)->default_value(0.f), "threshold used to remove vertices on planar patches (0 - disabled)")
+		("remove-unseen-faces", boost::program_options::value(&OPT::nRemoveUnseenFaces)->default_value(0), "after the refinement, remove the faces seen by fewer than this many images, rendering the mesh with a z-buffer into every camera (0 - disabled)")
 		("refine-config-file", boost::program_options::value<std::string>(&OPT::strRefineConfigFileName), "optional configuration file for the refiner (overwritten by the command line options)")
 		;
 
@@ -369,6 +371,10 @@ int main(int argc, LPCTSTR* argv)
 						  OPT::bUseCeres))
 		return EXIT_FAILURE;
 	VERBOSE("Mesh refinement completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
+
+	// remove the surface no camera ever observed
+	if (OPT::nRemoveUnseenFaces > 0 && !scene.mesh.IsEmpty())
+		scene.RemoveUnseenMeshFaces(OPT::nRemoveUnseenFaces, OPT::nResolutionLevel, OPT::nMinResolution);
 
 	// save the final mesh
 	const String baseFileName(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName)));

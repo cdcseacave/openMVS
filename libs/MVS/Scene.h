@@ -218,6 +218,14 @@ public:
 	};
 	bool ReconstructMesh(const ReconstructMeshParams& params=ReconstructMeshParams());
 
+	// Remove the mesh faces no image sees, and the vertices they orphan; returns the number of
+	// faces removed. A face survives only if at least nMinViews images see it, where an image
+	// sees a face when a pixel of its rasterization survives the z-buffer depth test or, the
+	// sub-pixel case, when its centroid projects unoccluded into that image. The mesh is
+	// rendered at the resolution nResolutionLevel/nMinResolution select; only the cameras are
+	// used, no image pixels are read
+	unsigned RemoveUnseenMeshFaces(unsigned nMinViews=1, unsigned nResolutionLevel=0, unsigned nMinResolution=640);
+
 	// Mesh refinement: fThPlanarVertex > 0 removes the vertices of planar patches as the
 	// refinement proceeds (CPU only), bUseCeres minimizes the exact energy with Ceres instead of
 	// the bold-driver stepper (CPU only, opt-in: slower and no better, kept as the reference arm)

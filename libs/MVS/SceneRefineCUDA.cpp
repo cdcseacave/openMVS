@@ -48,7 +48,6 @@ using namespace MVS;
 
 // uncomment to ensure edge size and improve vertex valence
 // (should enable more stable flow)
-#define MESHOPT_ENSUREEDGESIZE 1 // 0 - at all resolution
 
 
 // S T R U C T S ///////////////////////////////////////////////////
@@ -538,100 +537,11 @@ void MeshRefineCUDA::ListFaceAreas(Mesh::AreaArr& maxAreas)
 	}
 }
 
-// decimate or subdivide mesh such that for each face there is no image pair in which
-// its projection area is bigger than the given number of pixels in both images
+// the shared preparation (PrepareRefineMesh, SceneRefineCommon.h): decimate, remesh and
+// subdivide so that no face projects larger than the area cap in both images of a pair
 void MeshRefineCUDA::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nCloseHoles, unsigned nEnsureEdgeSize)
 {
-	Mesh::AreaArr maxAreas;
-	// remeshing to the midpoint of the [0.5x, 4x] mean-edge band the refinement
-	// wants is expressed as a negative (relative) target edge length, so it runs
-	// as the remesh stage of the same Clean pass instead of a second round trip
-	constexpr float fEnsureEdgeLength(-2.25f);
-	const auto cleanMesh = [&](float simplifyTarget, float edgeLength=0.f) {
-		Mesh::CleanParams params;
-		params.simplifyTarget = simplifyTarget;
-		params.maxHoleEdges = nCloseHoles;
-		params.edgeLength = edgeLength;
-		params.remeshIterations = 10;
-		scene.mesh.Clean(params);
-	};
-
-	// first decimate if necessary
-	const bool bNoDecimation(fDecimate >= 1.f);
-	const bool bNoSimplification(maxArea == 0);
-	if (!bNoDecimation) {
-		if (fDecimate > 0.f) {
-			// decimate to the desired resolution
-			cleanMesh(fDecimate);
-
-			#ifdef MESHOPT_ENSUREEDGESIZE
-			// make sure there are no edges too small or too long
-			if (nEnsureEdgeSize > 0 && bNoSimplification)
-				cleanMesh(1.f, fEnsureEdgeLength);
-			#endif
-
-			// re-map vertex and camera faces
-			ListVertexFacesPre();
-		} else {
-			// extract array of faces viewed by each camera
-			ListCameraFaces();
-
-			// estimate the faces' area that have big projection areas in both images of a pair
-			ListFaceAreas(maxAreas);
-			ASSERT(!maxAreas.IsEmpty());
-
-			const float maxAreaf((float)(maxArea > 0 ? maxArea : 64));
-			const float medianArea(6.f*(float)Mesh::AreaArr(maxAreas).GetMedian());
-			if (medianArea < maxAreaf) {
-				maxAreas.Empty();
-
-				// decimate to the auto detected resolution
-				cleanMesh(MAXF(0.1f, medianArea/maxAreaf));
-
-				#ifdef MESHOPT_ENSUREEDGESIZE
-				// make sure there are no edges too small or too long
-				if (nEnsureEdgeSize > 0 && bNoSimplification)
-					cleanMesh(1.f, fEnsureEdgeLength);
-				#endif
-
-				// re-map vertex and camera faces
-				ListVertexFacesPre();
-			}
-		}
-	}
-	if (bNoSimplification)
-		return;
-
-	if (maxAreas.IsEmpty()) {
-		// extract array of faces viewed by each camera
-		ListCameraFaces();
-
-		// estimate the faces' area that have big projection areas in both images of a pair
-		ListFaceAreas(maxAreas);
-	}
-
-	// subdivide mesh faces if its projection area is bigger than the given number of pixels
-	const size_t numVertsOld(scene.mesh.vertices.GetSize());
-	const size_t numFacesOld(scene.mesh.faces.GetSize());
-	scene.mesh.Subdivide(maxAreas, maxArea);
-
-	#ifdef MESHOPT_ENSUREEDGESIZE
-	// make sure there are no edges too small or too long
-	#if MESHOPT_ENSUREEDGESIZE==1
-	if ((nEnsureEdgeSize == 1 && !bNoDecimation) || nEnsureEdgeSize > 1)
-	#endif
-		cleanMesh(1.f, fEnsureEdgeLength);
-	#endif
-
-	// re-map vertex and camera faces
-	ListVertexFacesPre();
-
-	DEBUG_EXTRA("Mesh subdivided: %u/%u -> %u/%u vertices/faces", numVertsOld, numFacesOld, scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize());
-
-	#if TD_VERBOSE != TD_VERBOSE_OFF
-	if (VERBOSITY_LEVEL > 3)
-		scene.mesh.Save(MAKE_PATH("MeshSubdivided.ply"));
-	#endif
+	PrepareRefineMesh(*this, maxArea, fDecimate, nCloseHoles, nEnsureEdgeSize);
 }
 
 

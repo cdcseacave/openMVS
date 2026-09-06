@@ -1459,6 +1459,94 @@ static bool RefineStepSecondPhaseTest()
 }
 /*----------------------------------------------------------------*/
 
+// The shipped bold driver (MeshRefineStep) on a synthetic 1-D objective: ONE vertex, no smoothing
+// (regularityWeight 0), footprint 1 and photoCount 2, so the stepper's own normalization makes
+// the applied displacement exactly eta/Kappa scene units along -photoGrad and the whole
+// trajectory is predictable in closed form. Update() sets
+//   S(x) = SFloor + (x - XMin)^2/2  and  photoGrad = dS/dx
+struct RefineStepSynthetic {
+	static constexpr float XMin = 0.05f; // the minimizer, deliberately much closer than one full step
+	static constexpr float SFloor = 0.1f;
+	Mesh::VertexArr vertices;
+	FloatArr photoCount, footprint;
+	MeshRefineStep::GradArr photoGrad, lap, bilap;
+	MeshRefineStep::Terms terms;
+	RefineStepSynthetic() {
+		vertices.Insert(Mesh::Vertex(0.f,0.f,0.f));
+		photoCount.Insert(2.f);
+		footprint.Insert(1.f);
+		photoGrad.Insert(MeshRefineStep::Grad(0.f,0.f,0.f));
+		lap.Insert(MeshRefineStep::Grad(0.f,0.f,0.f));
+		bilap.Insert(MeshRefineStep::Grad(0.f,0.f,0.f));
+		terms.photoGrad = photoGrad.Begin();
+		terms.photoCount = photoCount.Begin();
+		terms.footprint = footprint.Begin();
+		terms.lap = lap.Begin();
+		terms.bilap = bilap.Begin();
+		terms.rigidity = 1.f;
+		terms.regularityWeight = 0.f;
+		terms.numVertices = 1;
+		terms.alternating = false;
+		Update();
+	}
+	// the score and the raw photometric gradient at the current vertex, as a backend's ScoreMesh
+	// would report them
+	void Update() {
+		const float d(vertices[0].x-XMin);
+		photoGrad[0] = MeshRefineStep::Grad(d, 0.f, 0.f);
+		terms.S = SFloor+0.5f*d*d;
+	}
+	float X() const { return vertices[0].x; }
+};
+static bool RefineStepClose(float value, float expected, float tol, const char* label, const char* what, unsigned idx)
+{
+	if (ABS(value-expected) <= tol)
+		return true;
+	VERBOSE("ERROR: %s evaluation %u %s is %.8g, expected %.8g (tolerance %g)!", label, idx, what, value, expected, tol);
+	return false;
+}
+/*----------------------------------------------------------------*/
+
+// pins the shipped bold driver's rules with an independently computed table: the synthetic
+// quadratic's exact accept/reject/eta/position trajectory was computed by replaying the
+// documented rules of SceneRefineCommon.h in float32 -- not captured from the implementation --
+// so it pins the RULES, not the code that runs them
+static bool RefineStepDefaultTrajectoryTest()
+{
+	typedef MeshRefineStep::Action Action;
+	struct Expected { bool accepted; float step; float x; Action action; };
+	static const Expected kExpected[] = {
+		{ true,  0.52499998f, 0.26249999f, MeshRefineStep::APPLY  }, // opens at StepInit*StepGrow, overshoots the minimizer
+		{ false, 0.26249999f, 0.13124999f, MeshRefineStep::REJECT },
+		{ false, 0.13124999f, 0.06562500f, MeshRefineStep::REJECT },
+		{ true,  0.13781248f, 0.04409181f, MeshRefineStep::APPLY  },
+		{ true,  0.14470311f, 0.05264115f, MeshRefineStep::APPLY  },
+		{ true,  0.15193826f, 0.04862824f, MeshRefineStep::STOP   }, // the full-stride median step falls below StepStop
+	};
+	RefineStepSynthetic p;
+	MeshRefineStep stepper;
+	stepper.Reset(p.terms.numVertices);
+	MeshRefineStep::Stats stats;
+	for (unsigned i=0; i<(unsigned)SizeOfArray(kExpected); ++i) {
+		const Expected& e = kExpected[i];
+		p.Update();
+		const Action action(stepper.Evaluate(p.terms, p.vertices, stats));
+		if (action != e.action || stats.accepted != e.accepted) {
+			VERBOSE("ERROR: RefineStepDefaultTrajectoryTest evaluation %u decided %d/%s, expected %d/%s!",
+				i+1, (int)action, stats.accepted ? "acc" : "rej", (int)e.action, e.accepted ? "acc" : "rej");
+			return false;
+		}
+		if (!RefineStepClose(stats.step, e.step, 1e-5f, "RefineStepDefaultTrajectoryTest", "step", i+1) ||
+			!RefineStepClose(p.X(), e.x, 1e-5f, "RefineStepDefaultTrajectoryTest", "position", i+1))
+			return false;
+		if (action == MeshRefineStep::STOP)
+			return i+1 == (unsigned)SizeOfArray(kExpected);
+	}
+	VERBOSE("ERROR: RefineStepDefaultTrajectoryTest did not STOP where the shipped rules do!");
+	return false;
+}
+/*----------------------------------------------------------------*/
+
 // pure unit test of MeshRefineStep against hand-built Terms arrays: no images, no scene,
 // milliseconds to run. Each helper above isolates one documented invariant of the class.
 bool MeshRefineStepTest()
@@ -1480,6 +1568,8 @@ bool MeshRefineStepTest()
 	if (!RefineStepAlternatingTest())
 		return false;
 	if (!RefineStepSecondPhaseTest())
+		return false;
+	if (!RefineStepDefaultTrajectoryTest())
 		return false;
 	return true;
 }
@@ -2604,6 +2694,155 @@ bool MeshRefineEnergyGradientTest(bool verbose)
 		}
 	}
 	return !bFailed;
+}
+/*----------------------------------------------------------------*/
+
+
+// build a closed axis-aligned box centered at the origin, of the given half-extent: 8 vertices and
+// 12 triangles wound so that every face normal points outwards -- the winding is what makes the
+// rasterizer cull the back-facing faces, so it is part of the fixture, not decoration
+static void BuildUnseenFacesBoxMesh(Mesh& mesh, float h)
+{
+	mesh.Release();
+	static const int corners[8][3] = {
+		{-1,-1,-1}, { 1,-1,-1}, { 1, 1,-1}, {-1, 1,-1},
+		{-1,-1, 1}, { 1,-1, 1}, { 1, 1, 1}, {-1, 1, 1}
+	};
+	for (const int* c: corners)
+		mesh.vertices.AddConstruct(c[0]*h, c[1]*h, c[2]*h);
+	static const Mesh::VIndex sides[12][3] = {
+		{4,5,6}, {4,6,7}, // +Z
+		{0,3,2}, {0,2,1}, // -Z
+		{1,2,6}, {1,6,5}, // +X
+		{0,4,7}, {0,7,3}, // -X
+		{3,7,6}, {3,6,2}, // +Y
+		{0,1,5}, {0,5,4}  // -Y
+	};
+	for (const Mesh::VIndex* f: sides)
+		mesh.faces.AddConstruct(f[0], f[1], f[2]);
+}
+
+// count the faces of a box mesh by the side their centroid lies on, indexed +X,-X,+Y,-Y,+Z,-Z;
+// false if some face centroid lies on none of the six sides (only a box face triangle has exactly
+// one coordinate at +-h, the other two at +-h/3)
+static bool CountUnseenFacesBoxSides(const Mesh& mesh, float h, unsigned counts[6])
+{
+	for (int i=0; i<6; ++i)
+		counts[i] = 0;
+	const float eps(h*1e-3f);
+	FOREACH(idxFace, mesh.faces) {
+		const Mesh::Face& face = mesh.faces[idxFace];
+		const Point3f c((mesh.vertices[face[0]]+mesh.vertices[face[1]]+mesh.vertices[face[2]])/3.f);
+		const float coords[3] = {c.x, c.y, c.z};
+		int side(-1);
+		for (int i=0; i<3; ++i) {
+			if (ABS(coords[i]-h) < eps)
+				side = i*2;
+			else if (ABS(coords[i]+h) < eps)
+				side = i*2+1;
+		}
+		if (side < 0)
+			return false;
+		++counts[side];
+	}
+	return true;
+}
+
+// test Scene::RemoveUnseenMeshFaces on a closed box photographed from one side only: the surface
+// no camera observes (the far side, the bottom, the back-facing sides) must go, the observed one
+// must stay, the nMinViews threshold must separate the side both cameras see from the side only
+// one of them does, and a second pass must find nothing left to remove
+bool MeshUnseenFacesTest()
+{
+	constexpr float h(1.f);
+	constexpr uint32_t imgSize(320);
+	// one platform, one normalized pinhole of focal = one image size, two poses in front of the +Z
+	// side of the box: camera 0 sits on the +Z axis and sees that side alone, camera 1 sits on the
+	// +X/+Z diagonal and sees the +X side as well. The images carry no pixels and need none - the
+	// pass renders the mesh from the cameras alone
+	static const Point3 camCenters[2] = {Point3(0,0,5), Point3(5,0,5)};
+	Scene scene(1);
+	Platform& platform = scene.platforms.AddEmpty();
+	Platform::Camera& relCamera = platform.cameras.AddEmpty();
+	relCamera.R = Matrix3x3::IDENTITY;
+	relCamera.C = Point3(0,0,0);
+	Matrix3x3 K(Matrix3x3::IDENTITY);
+	K(0,0) = K(1,1) = 1.0;
+	relCamera.K = K;
+	for (unsigned i=0; i<2; ++i) {
+		Platform::Pose& pose = platform.poses.AddEmpty();
+		pose.C = camCenters[i];
+		pose.R.LookAt(pose.C, Point3(0,0,0), Point3(0,1,0));
+		Image& image = scene.images.AddEmpty();
+		image.ID = i;
+		image.platformID = 0;
+		image.cameraID = 0;
+		image.poseID = i;
+		image.width = image.height = imgSize;
+		image.scale = 1.f;
+		image.UpdateCamera(scene.platforms);
+		// both cameras must look at the box, not away from it: the whole fixture rests on it
+		const Point3 X(image.camera.TransformPointW2C(Point3(0,0,0)));
+		const Point2 x(image.camera.TransformPointC2I(X));
+		if (X.z <= 0 || ABS(x.x-imgSize*0.5) > 1 || ABS(x.y-imgSize*0.5) > 1) {
+			VERBOSE("ERROR: MeshUnseenFacesTest camera %u projects the box center at (%g,%g) depth %g,"
+				" expected the image center (%u,%u) in front!", i, x.x, x.y, X.z, imgSize/2, imgSize/2);
+			return false;
+		}
+	}
+	scene.nCalibratedImages = 2;
+
+	// seen by at least one camera: the 2 faces of the +Z side and the 2 of the +X side
+	unsigned counts[6];
+	BuildUnseenFacesBoxMesh(scene.mesh, h);
+	unsigned numRemoved(scene.RemoveUnseenMeshFaces(1));
+	if (numRemoved != 8 || scene.mesh.faces.GetSize() != 4) {
+		VERBOSE("ERROR: MeshUnseenFacesTest removed %u of 12 faces leaving %u, expected 8 leaving 4!",
+			numRemoved, scene.mesh.faces.GetSize());
+		return false;
+	}
+	if (!CountUnseenFacesBoxSides(scene.mesh, h, counts)) {
+		VERBOSE("ERROR: MeshUnseenFacesTest left a face whose centroid is on no box side!");
+		return false;
+	}
+	if (counts[0] != 2 || counts[4] != 2 || counts[1] || counts[2] || counts[3] || counts[5]) {
+		VERBOSE("ERROR: MeshUnseenFacesTest kept +X %u, -X %u, +Y %u, -Y %u, +Z %u, -Z %u faces,"
+			" expected 2 on +X and 2 on +Z!", counts[0], counts[1], counts[2], counts[3], counts[4], counts[5]);
+		return false;
+	}
+	// idempotent: every face still standing is still seen
+	numRemoved = scene.RemoveUnseenMeshFaces(1);
+	if (numRemoved != 0 || scene.mesh.faces.GetSize() != 4) {
+		VERBOSE("ERROR: MeshUnseenFacesTest second pass removed %u faces leaving %u, expected 0 leaving 4!",
+			numRemoved, scene.mesh.faces.GetSize());
+		return false;
+	}
+
+	// seen by both cameras: only the 2 faces of the +Z side
+	BuildUnseenFacesBoxMesh(scene.mesh, h);
+	numRemoved = scene.RemoveUnseenMeshFaces(2);
+	if (numRemoved != 10 || scene.mesh.faces.GetSize() != 2) {
+		VERBOSE("ERROR: MeshUnseenFacesTest removed %u of 12 faces leaving %u with 2 views required,"
+			" expected 10 leaving 2!", numRemoved, scene.mesh.faces.GetSize());
+		return false;
+	}
+	if (!CountUnseenFacesBoxSides(scene.mesh, h, counts)) {
+		VERBOSE("ERROR: MeshUnseenFacesTest left a face whose centroid is on no box side!");
+		return false;
+	}
+	if (counts[4] != 2 || counts[0] || counts[1] || counts[2] || counts[3] || counts[5]) {
+		VERBOSE("ERROR: MeshUnseenFacesTest with 2 views required kept +X %u, -X %u, +Y %u, -Y %u,"
+			" +Z %u, -Z %u faces, expected 2 on +Z only!",
+			counts[0], counts[1], counts[2], counts[3], counts[4], counts[5]);
+		return false;
+	}
+	// the removal must not leave the vertices of the deleted faces behind
+	if (scene.mesh.vertices.GetSize() != 4) {
+		VERBOSE("ERROR: MeshUnseenFacesTest left %u vertices, expected the 4 of the +Z side!",
+			scene.mesh.vertices.GetSize());
+		return false;
+	}
+	return true;
 }
 /*----------------------------------------------------------------*/
 

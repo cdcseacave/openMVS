@@ -242,6 +242,163 @@ MVS_API void PixelFactorsToErrorBounds(const FloatArr& pixelFactors, float toler
 // mesh's current ones. Both backends call this once the refinement ends
 MVS_API void SimplifyMeshWithinTolerance(Mesh& mesh, const FloatArr& pixelFactors, float tolerancePx);
 
+// the preparation's projection log line: faces seen, their sampled analytic mean area and the
+// percentiles of their rasterized areas
+MVS_API void LogFaceAreas(const char* stage, const Mesh::AreaArr& maxAreas, float meanSeenArea, const String& elapsed);
+
+// mean tightest-pair projected area (px^2 at the working resolution) of a stride sample of the
+// faces some pair saw, computed analytically from the projected vertices: the rasterized areas
+// are pixel counts, so on a sub-pixel input mesh every seen face reads 1 whatever its true size,
+// while this measures it. Same rule as ListFaceAreas (min over the two images of a pair, max
+// over the pairs), with a face counted in an image when its vertices project in front of the
+// camera and its centroid inside the image; occlusion is not tested, a face seen somewhere only
+// gains the area of a pair it may be hidden in. REFINE supplies scene, images (cameras at the
+// working resolution) and pairs
+template<class REFINE>
+float SampleSeenFaceArea(const REFINE& refine, const Mesh::AreaArr& maxAreas, size_t maxSamples=50000)
+{
+	const Mesh& mesh = refine.scene.mesh;
+	ASSERT(maxAreas.size() == mesh.faces.size() && maxSamples > 0);
+	size_t numSeen(0);
+	for (uint16_t area: maxAreas)
+		if (area > 0)
+			++numSeen;
+	if (numSeen == 0)
+		return 0.f;
+	const size_t stride(MAXF(numSeen/maxSamples, (size_t)1));
+	FloatArr viewAreas(refine.images.size()); // the face's projected area per image (negative = not seen there)
+	double sum(0);
+	size_t num(0), idxSeen(0);
+	FOREACH(f, maxAreas) {
+		if (maxAreas[f] == 0)
+			continue;
+		if ((idxSeen++)%stride != 0)
+			continue;
+		const Mesh::Face& face = mesh.faces[f];
+		FOREACH(idxImage, refine.images) {
+			const Image& imageData = refine.images[idxImage];
+			float& area = viewAreas[idxImage];
+			area = -1.f;
+			if (!imageData.IsValid())
+				continue;
+			Point2f pt[3];
+			int k(0);
+			for (; k<3; ++k) {
+				const Point3 X(imageData.camera.TransformPointW2C(Cast<REAL>(mesh.vertices[face[k]])));
+				if (X.z <= 0)
+					break;
+				pt[k] = Cast<float>(imageData.camera.TransformPointC2I(X));
+			}
+			if (k < 3)
+				continue;
+			const Point2f c((pt[0]+pt[1]+pt[2])/3.f);
+			if (c.x < 0 || c.y < 0 || c.x >= (float)imageData.width || c.y >= (float)imageData.height)
+				continue;
+			area = (float)ABS((pt[1]-pt[0]).cross(pt[2]-pt[0]))*0.5f;
+		}
+		float maxArea(0);
+		for (const PairIdx& pair: refine.pairs) {
+			const float a(viewAreas[pair.i]), b(viewAreas[pair.j]);
+			if (a < 0 || b < 0)
+				continue;
+			maxArea = MAXF(maxArea, MINF(a, b));
+		}
+		if (maxArea > 0) {
+			sum += maxArea;
+			++num;
+		}
+	}
+	return num ? (float)(sum/(double)num) : 0.f;
+}
+
+// the mesh preparation both backends run at the start of every scale (their SubdivideMesh()
+// forwards here): the auto-decimation of the first scale, the edge-band remesh and the split of
+// every face whose projection exceeds the area cap in both images of a pair. REFINE supplies
+// scene, ListCameraFaces(), ListFaceAreas() and ListVertexFacesPre(); the log lines are identical
+// on both backends
+template<class REFINE>
+void PrepareRefineMesh(REFINE& refine, uint32_t maxArea, float fDecimate, unsigned nCloseHoles, unsigned nEnsureEdgeSize)
+{
+	Mesh& mesh = refine.scene.mesh;
+	Mesh::AreaArr maxAreas;
+	// remeshing to the midpoint of the [0.5x, 4x] mean-edge band the refinement wants is expressed
+	// as a negative (relative) target edge length, so it runs as the remesh stage of the same
+	// Clean pass instead of a second round trip
+	constexpr float fEdgeLength(-2.25f);
+	const auto cleanMesh = [&](float simplifyTarget, float edgeLength=0.f) {
+		Mesh::CleanParams params;
+		params.simplifyTarget = simplifyTarget;
+		params.maxHoleEdges = nCloseHoles;
+		params.edgeLength = edgeLength;
+		params.remeshIterations = 10;
+		mesh.Clean(params);
+	};
+	// project the mesh into every view and measure every face's projected area in the tightest pair
+	const auto projectMesh = [&](const char* stage) {
+		ASSERT(maxAreas.IsEmpty());
+		TD_TIMER_STARTD();
+		refine.ListCameraFaces();
+		refine.ListFaceAreas(maxAreas);
+		LogFaceAreas(stage, maxAreas, SampleSeenFaceArea(refine, maxAreas), TD_TIMER_GET_FMT());
+	};
+
+	// first decimate if necessary
+	const bool bNoDecimation(fDecimate >= 1.f);
+	const bool bNoSimplification(maxArea == 0);
+	if (!bNoDecimation) {
+		float ratio(fDecimate);
+		if (fDecimate <= 0.f) {
+			// auto: from the projected areas of the input mesh
+			projectMesh("input");
+			ASSERT(!maxAreas.IsEmpty());
+			ratio = 1.f;
+			// six times the median over every face, unseen ones included, against the area cap
+			// (an explicit pixel target measured worse at equal density, see the design document)
+			const float fMaxArea((float)(maxArea > 0 ? maxArea : 64));
+			const float fMedianArea(6.f*(float)Mesh::AreaArr(maxAreas).GetMedian());
+			if (fMedianArea < fMaxArea)
+				ratio = MAXF(0.1f, fMedianArea/fMaxArea);
+			if (ratio < 1.f)
+				maxAreas.Empty();
+		}
+		if (ratio < 1.f) {
+			// decimate to the desired resolution
+			cleanMesh(ratio);
+			// make sure there are no edges too small or too long
+			if (nEnsureEdgeSize > 0 && bNoSimplification)
+				cleanMesh(1.f, fEdgeLength);
+			// re-map vertex and camera faces
+			refine.ListVertexFacesPre();
+		}
+	}
+	if (bNoSimplification)
+		return;
+
+	// the edge-band remesh: once, on the scale that decimated, or on every scale when forced
+	const bool bRemesh((nEnsureEdgeSize == 1 && !bNoDecimation) || nEnsureEdgeSize > 1);
+	if (maxAreas.IsEmpty())
+		projectMesh("prepared");
+
+	// subdivide mesh faces if its projection area is bigger than the given number of pixels
+	const size_t numVertsOld(mesh.vertices.GetSize());
+	const size_t numFacesOld(mesh.faces.GetSize());
+	{
+		TD_TIMER_STARTD();
+		mesh.Subdivide(maxAreas, maxArea);
+		DEBUG_EXTRA("Mesh split: %u -> %u faces (%s)", (unsigned)numFacesOld, (unsigned)mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
+	}
+	if (bRemesh)
+		cleanMesh(1.f, fEdgeLength);
+	// re-map vertex and camera faces
+	refine.ListVertexFacesPre();
+	DEBUG_EXTRA("Mesh subdivided: %u/%u -> %u/%u vertices/faces", (unsigned)numVertsOld, (unsigned)numFacesOld, (unsigned)mesh.vertices.GetSize(), (unsigned)mesh.faces.GetSize());
+
+	#if TD_VERBOSE != TD_VERBOSE_OFF
+	if (VERBOSITY_LEVEL > 3)
+		mesh.Save(MAKE_PATH("MeshSubdivided.ply"));
+	#endif
+}
+
 // image derivative estimate used by the photometric gradient, the same on both
 // backends (the CPU samples it bilinearly from its gradient image, CUDA from a
 // texture of it): OPTREFINE::nImageGradient selects the stencil, default the

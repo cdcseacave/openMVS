@@ -359,8 +359,8 @@ void Mesh::Clean(const CleanParams& params)
 		if (params.vertexMaxError->size() != halfMesh.vertices.size()) {
 			VERBOSE("error: the per-vertex error bound holds %u entries for %u vertices: decimation skipped", (unsigned)params.vertexMaxError->size(), (unsigned)halfMesh.vertices.size());
 		} else {
-			const std::vector<float> bounds(params.vertexMaxError->Begin(), params.vertexMaxError->End());
-			halfMesh.Simplify(1.f, 0.f, 0.f, &bounds);
+			halfMesh.Simplify(1.f, 0.f, 0.f, std::span<const float>(params.vertexMaxError->data(), params.vertexMaxError->size()));
+			params.vertexMaxError->resize(halfMesh.vertices.size()); // the decimation may have modified the per-vertex error bound
 		}
 	} else if (params.simplifyTarget > 0.f && params.simplifyTarget != 1.f)
 		halfMesh.Simplify(params.simplifyTarget);

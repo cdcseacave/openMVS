@@ -67,6 +67,7 @@ bool bRemoveSpikes;
 unsigned nCloseHoles;
 unsigned nSmoothMesh;
 float fEdgeLength;
+unsigned nRemoveUnseenFaces;
 bool bCrop2ROI;
 float fBorderROI;
 float fSplitMaxArea;
@@ -142,6 +143,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("close-holes", boost::program_options::value(&OPT::nCloseHoles)->default_value(30), "close every hole in the reconstructed surface spanned by at most this many boundary edges (0 - disabled)")
 		("smooth", boost::program_options::value(&OPT::nSmoothMesh)->default_value(10), "number of Taubin band-pass iterations used to smooth the reconstructed surface; the filter is deliberately gentle per pass, so it wants tens of them, not the two a plain Laplacian needed (0 - disabled)")
 		("edge-length", boost::program_options::value(&OPT::fEdgeLength)->default_value(0.f), "remesh such that the average edge length is this size (0 - disabled)")
+		("remove-unseen-faces", boost::program_options::value(&OPT::nRemoveUnseenFaces)->default_value(0), "remove the faces seen by fewer than this many images, rendering the mesh with a z-buffer into every camera (0 - disabled)")
 		("roi-border", boost::program_options::value(&OPT::fBorderROI)->default_value(0), "add a border to the region-of-interest when cropping the scene (0 - disabled, >0 - percentage, <0 - absolute)")
 		("crop-to-roi", boost::program_options::value(&OPT::bCrop2ROI)->default_value(true), "crop scene using the region-of-interest")
 		;
@@ -485,6 +487,10 @@ int main(int argc, LPCTSTR* argv)
 		cleanParams.edgeLength = OPT::fEdgeLength;
 		scene.mesh.Clean(cleanParams);
 		scene.obb = initialOBB;
+
+		// remove the surface no camera ever observed
+		if (OPT::nRemoveUnseenFaces > 0 && !scene.mesh.IsEmpty())
+			scene.RemoveUnseenMeshFaces(OPT::nRemoveUnseenFaces);
 
 		// save the final mesh
 		scene.mesh.Save(baseFileName+OPT::strExportType);

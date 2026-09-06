@@ -146,6 +146,29 @@ void MVS::PixelFactorsToErrorBounds(const FloatArr& pixelFactors, float toleranc
 			bounds[v] = unseen;
 }
 
+// the tightest-pair areas of the faces some pair saw, in place of the caller's array
+static void SeenFaceAreas(const Mesh::AreaArr& maxAreas, Mesh::AreaArr& seen)
+{
+	seen.Empty();
+	seen.Reserve(maxAreas.size());
+	for (uint16_t area: maxAreas)
+		if (area > 0)
+			seen.Insert(area);
+}
+
+void MVS::LogFaceAreas(const char* stage, const Mesh::AreaArr& maxAreas, float meanSeenArea, const String& elapsed)
+{
+	Mesh::AreaArr seen;
+	SeenFaceAreas(maxAreas, seen);
+	if (seen.IsEmpty()) {
+		DEBUG_EXTRA("Mesh projected (%s): no face seen by any image pair (%s)", stage, elapsed.c_str());
+		return;
+	}
+	const size_t n(seen.size());
+	DEBUG_EXTRA("Mesh projected (%s): %u/%u faces seen by a pair, tightest-pair area px2 mean %.2f (sampled), rasterized p10/p50/p90/p99 %u/%u/%u/%u (%s)",
+		stage, (unsigned)n, (unsigned)maxAreas.size(), meanSeenArea, (unsigned)seen.GetNth(n/10), (unsigned)seen.GetNth(n/2), (unsigned)seen.GetNth(n*9/10), (unsigned)seen.GetNth(n*99/100), elapsed.c_str());
+}
+
 void MVS::SimplifyMeshWithinTolerance(Mesh& mesh, const FloatArr& pixelFactors, float tolerancePx)
 {
 	ASSERT(pixelFactors.size() == mesh.vertices.size() && tolerancePx > 0);
@@ -155,7 +178,6 @@ void MVS::SimplifyMeshWithinTolerance(Mesh& mesh, const FloatArr& pixelFactors, 
 	FloatArr bounds;
 	PixelFactorsToErrorBounds(pixelFactors, tolerancePx, bounds);
 	Mesh::CleanParams params;
-	params.simplifyTarget = 1.f;
 	params.vertexMaxError = &bounds;
 	mesh.Clean(params);
 	DEBUG_EXTRA("Mesh simplified within %g px: %u/%u -> %u/%u vertices/faces (%s)", tolerancePx,

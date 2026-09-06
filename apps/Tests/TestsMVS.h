@@ -72,6 +72,11 @@ bool MeshRefineSyntheticTest(bool forceCPU = false, bool verbose = false);
 // their sum. Runs on the CPU with no Ceres dependency, so a build without _USE_CERES still proves
 // that the cost and the gradient the solver would be handed are the same functional
 bool MeshRefineEnergyGradientTest(bool verbose = false);
+
+// test Scene::RemoveUnseenMeshFaces on a closed box photographed from one side only: only the
+// faces a camera actually observes may survive, the nMinViews threshold must separate the side
+// both cameras see from the side only one of them does, and a second pass must remove nothing
+bool MeshUnseenFacesTest();
 /*----------------------------------------------------------------*/
 
 } // namespace MVS

@@ -83,14 +83,28 @@ Each scale re-inits images (`InitImages`, one worker per view): the shared `Prep
 (`SceneRefineCommon.cpp`) loads, gray-converts, Gaussian-blurs at the scale's `sigma` and resizes;
 `ComputeRefineImageGradient` (§1.3) builds the derivative image both backends read; then
 `PrepareRefineImageMask` builds the per-view keep-mask at the working size. `ListVertexFacesPre`
-re-lists incident faces, then `SubdivideMesh` runs — CPU and CUDA remain independent but
-mechanically identical: optionally decimates (`--decimate`, default 0 = auto: projects the mesh
-into every camera, measures the median face area across image pairs, decimates only if that median
-exceeds `--max-face-area` (default 16 px²) by more than 6x), runs `Mesh::Clean` with a negative
-(relative) target edge length `-2.25` so the [0.5x, 4x] edge-length remesh rides the same `Clean`
-pass (`remeshIterations=10`), then subdivides any face whose projected area in the tightest camera
-pair exceeds `--max-face-area` (`Mesh::Subdivide`, 1-to-4 split). The log line
-`"Mesh subdivided: %u/%u -> %u/%u vertices/faces"` is identical on both backends.
+re-lists incident faces, then `SubdivideMesh` runs — one shared body on both backends since
+2026-09 (`PrepareRefineMesh`, `SceneRefineCommon.h`), so the two can no longer drift. At the first
+scale it projects the input mesh into every camera (`ListCameraFaces`, `ListFaceAreas`: for every
+face the *tightest-pair area*, the larger over the image pairs of the smaller of the two rasterized
+pixel counts, 0 for a face no pair sees) and auto-decimates (`--decimate` 0) to the ratio
+`max(0.1, 6·median / --max-face-area)`, the median taken over *every* face, unseen zeros included;
+then it projects again and splits 1-to-4 every face whose tightest-pair area exceeds **twice**
+`--max-face-area` (`Mesh::Subdivide` tests `2*maxArea`, 32 px² at the default 16 — an earlier
+version of this text said 16); then `Mesh::Clean` remeshes to a band around 2.25x the mean edge
+(`edgeLength` −2.25, 10 iterations, holes up to 30 edges closed) — *after* the split, so on the
+first scale the remesh, not the split or the decimation, sets the density. Later scales only
+project and split. Two things follow, measured on Truck at level 1: the remesh collapses ~4x more
+faces than the decimation left (1.77 M → 425 k), so the world-space edge length decides the
+resolution and the pixel cap only catches the far faces; and the finest scale splits only 6-15 %
+of the faces (425 k → 497 k), so the coarse scale already iterates on nearly the full-resolution
+mesh — the coarse-to-fine schedule is one for the images, not for the mesh (§2.8 measures the
+alternatives). The log lines `"Mesh projected (input|prepared): …"`, `"Mesh split: …"` and
+`"Mesh subdivided: %u/%u -> %u/%u vertices/faces"` are identical on both backends; the projected
+line reports the fraction of faces some pair sees, the analytic mean tightest-pair area of a
+stride sample of them (the rasterized counts quantize to 1 px² on a sub-pixel mesh, which is what
+every dense input mesh here is: Truck's reads 1.0 rasterized against 0.6 analytic) and the
+rasterized p10/p50/p90/p99.
 
 **Post-refinement decimation (on by default since 2026-09).** The face count the refinement needs (every
 face under `--max-face-area` in its tightest pair) is not the face count a deliverable needs.
@@ -728,8 +742,8 @@ overlaps a compile.
 |---|---|---|---|
 | Image pairs voted by the tie-point tracks (cells of 8 px, angle weight peaking at 24.6°, top-4 per view with a dominance test) | best neighbours of each view (`--max-views` 8) | EPFL: Herz-Jesu-P25 −0.011..−0.015 for every K; Tanks & Temples K=4 **−0.0221** mean (Ignatius −0.0445) at 0.49-0.64x wall, K=2 −0.0250 at 0.46-0.53x — with the face count halved wherever F1 fell, because the pair set drives the subdivision; re-measured with the pair-independent area rule below | removed (#44) |
 | Photometric support masks (8 px around every reconstructed point) | none (every pixel scores) | inert on EPFL, Tanks & Temples −0.0042 at +0.7 GB | removed (#42) |
-| Umbrella smoothing switched to the bi-Laplacian where the data opposes it | rigidity/elasticity blend | inert at the default weight, fountain-P11 loses at higher weights | removed (#40) |
-| End-of-level relaxation `v += 0.45 (L − mean L)` | none | Herz-Jesu-P25 +0.0101 but Barn −0.0119 | removed (#43) |
+| Umbrella smoothing switched to the bi-Laplacian where the data opposes it | rigidity/elasticity blend | inert at the default weight, fountain-P11 loses at higher weights; Tanks & Temples −0.0008 mean at the default weight (Barn −0.0024), +0.0005 at weight 1.0, where the plain weight 1.0 already earns +0.0009 without the switch | removed (#40) |
+| End-of-level relaxation `v += 0.45 (L − mean L)` | none | Herz-Jesu-P25 +0.0101 but Barn −0.0119; Barn's loss is a schedule artifact, without it Ignatius loses instead (§2.8) | removed (#43, #49) |
 | Per-vertex step cap 2 px, halved on reversal | global median normalizer (#1) | Herz-Jesu-P8 −0.025 for every cap | removed (#38) |
 | Fixed 20 evaluations per level, no rejection | bold driver with accept/reject | EPFL −0.016 mean | removed (#39) |
 | Edge-cap subdivision to 10 px in the best view | 1-to-4 split at 16 px² in the tightest pair + edge band | as a pixel-graded isotropic remesh: worse than the split at equal face count | removed (#41) |
@@ -808,6 +822,154 @@ rescue an invalid tolerance. Raising `--resolution-level` instead is recorded as
 is the cheapest lever per second and by far the most expensive per unit of quality, because it
 also cuts the face count the subdivision reaches (0.33-0.35x) — on Ignatius, whose gap to its own
 input mesh is already the dominant term (§5.1), that removes 0.18 F1.
+
+### 2.8 Preparation, schedule, relaxation and visibility arms on Tanks & Temples (2026-09)
+
+Five follow-ups to §2.7, all measured on Tanks & Temples directly (Truck / Barn / Ignatius /
+Meetingroom, CUDA, level 1, pin `bench/bin_refine_prep`, one arm at a time, ΔF1 against the same
+pin's baseline; the EPFL screen is a do-less instrument for anything that changes the mesh
+preparation, and the stepper arms below turn on behaviour Truck alone exhibits). The baseline of
+this pin reproduces §2.7's: 0.6678 / 0.6707 / 0.7795 / 0.4133.
+
+**What the optimizer asks of its input mesh.** The energy is evaluated per pixel and scattered
+onto the three vertices of the face the pixel lands on; the per-vertex direction is that raw
+scattered sum, the stride is one global pixel-unit eta, and the regularizer is the umbrella or
+bi-Laplacian of the 1-ring. Five requirements follow. *Resolution*: a face must be small enough
+in every view that scores it for the surface to bend where the images say it bends, and the 7x7
+ZNCC window is the unit of evidence — a face much smaller than a window buys nothing the window
+does not already blur. *Signal*: below ~1-2 px² in its best pair a face receives no pixel centre
+and its vertices move on smoothing alone; between 2 and ~10 px² the gradient is the average of a
+handful of pixels. *Regularity*: the umbrella approximates the mean-curvature normal only on
+isotropic, valence-6 rings; a skinny ring gives it a tangential component that slides vertices
+along the surface. *Persistence*: vertices the coarse scale placed must survive to the fine scale
+(a resampling pass between scales throws away what the coarse scale bought, #41). *Cost*: every
+vertex costs the same per evaluation, and every `Mesh::Clean` pass a fixed amount.
+
+Against that, the shipped preparation (§1.2) stacks two relative heuristics — decimate to six
+times the median area, then remesh to 2.25x the mean edge — and only the 32 px² split states a
+pixel size. The remesh, run after the split, is what sets the density, uniformly in world space:
+near regions end up over-resolved in pixels and far ones are caught by the split. On Truck the
+prepared coarse mesh carries 425 k faces at ~3 px² per face for its half-resolution images
+(11.7 px² mean, median 8, at full resolution), 85 % of the fine mesh's count; the coarse scale is
+coarse for the images only. The preparation is also 40 s of Truck's 75 s. Three arms, single
+factor each, were measured as default-off knobs of the shared `PrepareRefineMesh` and removed
+again: an *explicit pixel target*
+(`Prepare Target Area` T: decimate straight to a mean tightest-pair area of T px² over the seen
+faces, measured analytically on a stride sample because the rasterized counts quantize to 1 px²
+on a sub-pixel mesh, then remesh in a band around the *resulting* mean edge so the remesh
+regularizes without coarsening; T = 4 keeps today's density, 8 and 12 make a genuinely coarse
+first scale that the 1-to-4 split refills); *remesh before the split* (`Prepare Order` 1, so the
+split's vertices survive the remesh and the cap holds on the first scale too); and a
+*butterfly-interpolated split* (`Prepare Split` 1: the new vertices land on the modified-butterfly
+surface through the coarse vertices and their wings instead of on the flat facets, without moving
+a coarse vertex). Not pursued: curvature-adaptive sizing allocates faces by the *input* mesh's
+curvature, which the refinement is about to change; pixel-graded sizing at both scales already
+lost (#41); anisotropic remeshing breaks the umbrella's ring assumption.
+
+**What the baseline schedule actually does on these scenes.** Every scale opens at
+`StepInit` 0.5 px, and on all four scenes that opening is rejected three to five times in a row
+before the first step is accepted on its merit (`Arrrr…`): 8 of Truck's 14 evaluations, 8 of
+Barn's 34, 8 of Ignatius's 26 and 8 of Meetingroom's 31 are opening cascades. On Truck and
+Meetingroom the coarse scale accepts *nothing* beyond its free first evaluation — the cascade
+runs into `MaxRejects` and the scale ends with the surface 1/32 of a 0.5 px step from where it
+started — and the fine scale accepts 3 of 8 (Truck) at strides of 0.02-0.03 px. The usable
+stride on Truck is ~0.01-0.02 px, fifty times below the opening. The gain over the input mesh
+(+0.0072 on Truck) is therefore the preparation's, not the iterations'.
+
+**The first-order model of S is not usable.** The arms below that predict S along the applied
+step use dS ≈ ⟨g, D⟩ / photoNorm, with g the raw photometric gradient (`Terms::photoNorm`, both
+backends). Measured against the actual change (the `step search` debug line), the ratio
+measured/predicted has a median of 0.16-0.22 over the accepted steps and does **not** tend to 1
+as the step shrinks (0.10-1.06 at 0.025 px): the ZNCC energy is not predictable from its
+gradient at any stride the driver uses, so a Levenberg-Marquardt gain ratio cannot be
+calibrated on it and a quadratic backtrack degenerates to the shipped halving except at the
+opening.
+
+| arm (knob) | Truck | Barn | Ignatius | Meetingroom | mean | wall | faces | outcome |
+|---|---|---|---|---|---|---|---|---|
+| Opening rejections exempt from `MaxRejects` (`Step Search` 16) | −0.0013 | −0.0037 | **+0.0031** | −0.0030 | −0.0012 | 1.22x | 1.08x | removed |
+| Quadratic backtracking on a rejection (`Step Search` 1; 17 with the exemption is identical) | −0.0051 | −0.0037 | −0.0038 | −0.0048 | **−0.0043** | 1.12x | 1.08x | removed |
+| End relaxation 0.45 between scales only, opening exempt (`End Relax` 0.45, mode 1 + 16) | −0.0001 | +0.0003 | −0.0024 | −0.0017 | −0.0010 | 1.16x | 0.93x | removed |
+| End relaxation 0.45 after the last scale only, opening exempt (mode 2 + 16) | +0.0004 | −0.0018 | −0.0021 | −0.0008 | −0.0011 | 1.23x | 0.81x | removed |
+| Remove the faces no image sees, after the refinement (`--remove-unseen-faces` 1) | +0.0000 | −0.0002 | +0.0000 | +0.0003 | +0.0000 | 1.01x | 1.00x | inert: 15 / 53 / 21 / 734 faces of 172-500 k removed |
+
+Three readings. **Letting a scale run past its opening loses on three scenes of four.** The
+exemption turns Truck's coarse scale from 1 accepted evaluation into 13 (strides of 0.01 px, S
+−1.8 %) and Meetingroom's into 24, and both lose F1; only Ignatius, the one object scene, gains.
+This is §4's law (#12, #13, #20) in its Tanks & Temples form: the more the coarse scale moves the
+mesh, the worse the result, and the shipped driver's early death at `MaxRejects` is what protects
+it. The quadratic backtrack loses for the same reason from the other side: it reaches an
+acceptable stride in fewer rejections (retain 0.31 instead of 0.5 on the first one), so the
+scale stays alive and moves more (30 evaluations on Truck instead of 14). **The Barn loss of the
+relaxation (#43) was the schedule artifact it was suspected to be** — under the exemption Barn
+reads +0.0003 instead of −0.0119 — but with it removed the relaxation is a low-pass filter that
+Ignatius pays for (−0.0024 / −0.0021) and nothing else earns enough on; against the exemption
+alone it is +0.0003 mean, with the same Ignatius loss. **OpenMVS meshes have no unseen faces to
+remove.** Acute3D's FinishMesh visibility test drops 2.8 % of its facets and lifts Truck's
+precision 0.467 → 0.521 because its mesher produces undersides and interiors; the Delaunay
+graph-cut here carves the surface along the visibility rays, so the same test finds 0.01-0.15 %
+of the faces and precision does not move. The pass stays as an opt-in for imported meshes.
+
+The second cell, same scenes, pin `bench/bin_refine_prep2` (the same tree plus the two arms marked †):
+
+| arm (knob) | Truck | Barn | Ignatius | Meetingroom | mean | wall | faces | outcome |
+|---|---|---|---|---|---|---|---|---|
+| Coarse scales prepare the mesh but run no evaluation († `Skip Coarse Evaluations` 1) | +0.0017 | **−0.0182** | **+0.0129** | +0.0001 | −0.0009 | 0.85x | 0.94x | removed |
+| Warm start: a scale after the first opens at twice the eta the previous one ended with († `Step Search` 4) | +0.0030 | −0.0004 | +0.0009 | +0.0007 | +0.0011 | 0.97x | 1.02x | removed (under the gate) |
+| Fixed opening: the first 3 evaluations of every scale accepted unconditionally (`Step Search` 8) | −0.5435 | −0.1426 | −0.7170 | −0.2873 | **−0.4226** | 16x | 1.50x | removed |
+| Quadratic backtracking + Levenberg-Marquardt gain-ratio growth (`Step Search` 3) | +0.0003 | −0.0111 | −0.0098 | −0.0015 | −0.0055 | 0.98x | 0.97x | removed |
+| Explicit pixel target 4 px² + regularizing remesh (`Prepare Target Area` 4, `Prepare Remesh Edge` −1) | −0.0022 | +0.0014 | −0.0037 | −0.0034 | −0.0020 | 1.02x | 1.07x | removed |
+| Explicit pixel target 8 px² (a coarse first scale) | −0.0030 | +0.0017 | −0.0004 | +0.0000 | −0.0004 | 0.85x | 0.79x | removed (nothing on top of `--fast`, below) |
+| Explicit pixel target 12 px² | −0.0044 | +0.0008 | −0.0082 | +0.0013 | −0.0026 | 0.73x | 0.65x | removed (nothing on top of `--fast`, below) |
+| Remesh before the split (`Prepare Order` 1) | +0.0000 | −0.0026 | −0.0018 | −0.0006 | −0.0012 | 0.96x | 1.01x | removed |
+| Butterfly-interpolated split (`Prepare Split` 1) | +0.0004 | −0.0034 | +0.0003 | +0.0004 | −0.0006 | 0.98x | 1.00x | removed |
+| Relaxation 0.45 after the last scale only, shipped schedule (`End Relax` 0.45, mode 2) | +0.0006 | +0.0004 | −0.0062 | +0.0025 | −0.0007 | 1.00x | 0.76x | removed |
+| Relaxation 0.25 after the last scale only | +0.0007 | +0.0010 | −0.0005 | +0.0017 | +0.0007 | 0.99x | 0.86x | removed (under the gate) |
+| Unseen-face filter on the input mesh as well (`--remove-unseen-faces-pre` 1) | −0.0005 | −0.0033 | +0.0002 | −0.0016 | −0.0013 | 1.00x | 1.00x | removed |
+
+**Preparation.** The explicit target at today's density (T = 4, 0.93-1.23x the faces) loses on
+three scenes: decimating a dense, noisy mesh straight to the target with the shape-preserving
+QEM keeps the noise the shipped path removes, where a mild decimation (ratio 0.375 on Truck) is
+followed by the strong isotropic remesh to 2.25x the mean edge. The remesh is a denoiser, not only
+a regularizer, and that is the property the stacked heuristics have that a stated pixel size
+does not. The coarser first scales (T = 8, 12) trade F1 for wall along the density line — 0.85x
+wall at −0.0004, 0.73x at −0.0026, the losses exactly where faces were removed (Ignatius 0.55x
+faces, −0.0082) — so they fail as accuracy defaults, and as fast-mode components they add
+nothing: on top of `--fast` (`--max-views 4 --simplify-tolerance 0.5`, itself −0.0059 mean at
+0.57-0.85x wall on this pin) the target at 8 / 12 px² costs −0.0086 / −0.0098 mean (Ignatius
+−0.0129 / −0.0181) for the **same** 0.65x / 0.63x wall — the first `Mesh::Clean` costs 15-25 s
+whatever it is asked to keep, and the fewer views already took the per-evaluation part. Remeshing
+before the split and the butterfly split are inert on three scenes and lose on
+Barn, where the fine scale stopped after 20 evaluations instead of 26. **Barn's column is a
+lottery on the stop rule**: for every arm that perturbs the mesh by a few faces its F1 tracks how
+many evaluations the fine scale got before a streak of four rejections ended it (26 → 0.6707,
+20 → 0.6673-0.6681, 15 → 0.6674, 8 → 0.6525), which is also what #43/#49 and #40's Barn
+losses were. The scene is kept in the gate because that fragility is the shipped behaviour, but
+a Barn-only loss of a few thousandths is not evidence about the arm.
+
+**Schedule.** The fixed opening — the hybrid idea of spending a budget of unconditional steps
+before managing the stride — is catastrophic without a per-vertex cap: three 0.5 px steps along
+the raw gradient double S each time and blow the mesh up (the 16-31x wall is the rasterization of
+the exploded faces). Acute3D's fixed schedule survives only because of its 2 px cap, and #38
+measured that the cap loses on its own. The Levenberg-Marquardt gain ratio loses −0.0055 as the
+calibration predicted: with rho ≈ 0.2 on most accepted steps it halves eta where the bold driver
+grows it. The warm start is the one stepper change that is positive, +0.0011 mean with no scene
+below −0.0004 at 0.97x wall: the fine scale skips its opening cascade (Ignatius 21 evaluations
+instead of 26) but then runs longer wherever it can (Truck 13 instead of 8, +0.0030), so it is not
+a speed lever and stays under the +0.002 gate; removed, like #35. Skipping the coarse scale's
+evaluations says how scene-dependent that scale's contribution is: Ignatius gains **+0.0129**
+without it (its two accepted coarse steps cost that much), Truck +0.0017 at 0.91x wall,
+Meetingroom is inert at 0.87x, and Barn loses **−0.0182** because the fine scale, opening from
+the unrefined surface, rejects four times and dies after 8 evaluations. The coarse scale is
+neither the do-nothing it is on Truck nor the guard it is on Barn by design; no arm here can tell
+the two cases apart, which is why the knob goes and the finding stays (§6).
+
+**Relaxation.** Applied after the last scale only, where it cannot touch the schedule, the
+bi-Laplacian relaxation is a pure post-smoothing: 0.45 lifts three scenes by +0.0004..+0.0025 and
+costs Ignatius −0.0062, and 0.25 halves both sides (+0.0007 mean, Ignatius −0.0005). It cannot be
+made an always-win because it is a low-pass filter: the noisy large scenes like it and the
+detailed object pays for it, and the fraction only sets where between the two it sits. Filtering
+the input mesh as well as the output removes a few faces and rolls Barn's dice (−0.0033).
 
 ## 3. How these numbers were produced
 
@@ -905,13 +1067,26 @@ entry says otherwise.
 | 37 | Pre-blur multipliers below 0.75 (0.6, 0.5) | best on fountain-P11 and Herz-Jesu-P25 but negative on Herz-Jesu-P8 with face counts flat and iterations *up*, so a real loss rather than a do-less effect | no, 0.75 |
 | 38 | Per-vertex step cap in pixels on the bold driver (Acute3D: 2 px, halved at every direction reversal, and never past a quarter of the longest ring edge) | EPFL: Herz-Jesu-P8 **−0.024..−0.026** at every cap (1, 2, 4 px), Herz-Jesu-P25 −0.008..−0.012, fountain-P11 inert; the global median normalizer (#1) already sets the stride, a per-vertex clamp only holds back the vertices with the most signal | removed |
 | 39 | Acute3D's fixed schedule: 20 evaluations per level, every step applied, no rejection, the cap as the only adaptivity (alone, with a 1 px cap, with the end relaxation) | EPFL mean **−0.016** / −0.013 / −0.006 (Herz-Jesu-P8 −0.033 / −0.028 / −0.019); the same verdict as #4 in its Acute3D form | removed |
-| 40 | Acute3D's smoothing switch: the umbrella term, swapped for the bi-Laplacian wherever the photometric pull opposes it | inert at the default weight (+0.0004 EPFL mean); at weight 0.5 / 1.0 Herz-Jesu-P25 +0.0037 / +0.0066 but fountain-P11 −0.0013 / **−0.0037** | removed |
+| 40 | Acute3D's smoothing switch: the umbrella term, swapped for the bi-Laplacian wherever the photometric pull opposes it | inert at the default weight (+0.0004 EPFL mean); at weight 0.5 / 1.0 Herz-Jesu-P25 +0.0037 / +0.0066 but fountain-P11 −0.0013 / **−0.0037**. Re-measured on Tanks & Temples (Truck / Barn / Ignatius / Meetingroom) in case the textured or the textureless scenes liked it: weight 0.2 +0.0000 / **−0.0024** / −0.0001 / −0.0006, weight 0.5 +0.0001 / −0.0025 / +0.0000 / +0.0016, weight 1.0 +0.0002 / −0.0011 / +0.0014 / +0.0017 — while the plain weight 0.5 / 1.0 without the switch scores +0.0007 / +0.0009 mean with no negative scene (#35 again, still under the gate). Inert on Truck, and Barn's loss is the opening artifact of §2.8: the switch costs one more rejection at the start of the fine scale, which hits `MaxRejects` and ends it at 15-16 evaluations instead of 25 | removed |
 | 41 | Pixel-graded isotropic remesh (every vertex to a 5 / 7 / 10 / 14 px edge in its best view, halfmesh sizing field) in place of the 1-to-4 split and the edge band | worse than the split at equal face count: 10 px Herz-Jesu-P25 **−0.0226**, Herz-Jesu-P8 −0.0079, fountain-P11 −0.0008 at 0.93-1.10x faces; 14 px −0.0206 / −0.0050 / −0.0030 at 0.6-0.8x; 5 px +0.0029 on fountain only, at 2.6-3.0x faces and 1.6-2.7x wall. The remesh re-samples the surface at every scale, the split keeps it | removed (halfmesh keeps the sizing field) |
 | 42 | Photometric support masks from the dense point-cloud (Acute3D: score only the pixels within 8 px of a projected reconstructed point; 4 / 8 / 16 px measured) | inert on EPFL (+0.0005 at 8 px: the dense cloud covers nearly every pixel); Tanks & Temples **−0.0042** (Barn −0.0130, Meetingroom −0.0034) at +0.7 GB peak memory | removed |
 | 43 | End-of-scale bi-Laplacian relaxation `v += 0.45 (L(v) − mean L)` (Acute3D's last step of every level; 0.25 measured too) | Herz-Jesu-P25 +0.0101 and Meetingroom +0.0025, but Barn **−0.0119** and fountain-P11 −0.0027: mean −0.0025 on Tanks & Temples | removed |
 | 44 | Image pairs voted by the tie-point tracks (Acute3D `SelectPairs`: 8 px cells, angle weight peaking at 24.6°, top-4 of a view with a transitive-redundancy test) | **−0.0221** at K=4 (Ignatius −0.0445), −0.0250 at K=2; with the mesh resolution held fixed by the area rule below it still loses −0.0143 / −0.0174 against the shipped selection at the same view budget, at 1.5-1.6x its wall | no, removed |
 | 45 | Subdividing by the largest projection over the images instead of the smaller projection of the best pair (`Face Area Rule` 1) | EPFL −0.0148 alone at +50 % faces; with `--max-views` 4/2 it wins on EPFL (+0.0044 / +0.0074) and loses on Tanks & Temples (−0.0034 / −0.0133) | no, removed — it existed to decouple #44 |
 | 46 | Raising `--resolution-level` by one as the fast mode (with `--min-resolution 320`, else the level is clamped back) | **−0.0613** (Ignatius **−0.1804**, Barn −0.0392) at 0.34-0.57x wall and 0.33-0.35x faces | no |
+| 47 | Exempting the opening cascade from `MaxRejects` (the rejections before a scale's first merit acceptance no longer end it; cap 8) | Tanks & Temples **−0.0012** mean: Ignatius +0.0031 but Truck −0.0013, Barn −0.0037, Meetingroom −0.0030 at 1.22x wall and 1.08x faces; Truck's coarse scale goes from 1 accepted evaluation to 13 at 0.01 px strides and loses (§2.8) | removed |
+| 48 | Quadratic backtracking on a rejection (the trial retreats to the minimizer of the parabola through the reference, the model slope and the rejected S, clamped to [0.1, 0.5] of the step) | **−0.0043** mean on Tanks & Temples, every scene between −0.0037 and −0.0051; the first rejection retreats to 0.31 of the step instead of 0.5, so the scale reaches an acceptable stride within `MaxRejects` and keeps moving (Truck 30 evaluations instead of 14) | removed |
+| 49 | End-of-scale relaxation (#43) with its schedule confound removed (#47's exemption), between scales only or after the last scale only | Barn's −0.0119 was the confound (now +0.0003 / −0.0018) but Ignatius −0.0024 / −0.0021 and the means −0.0010 / −0.0011; against the exemption alone +0.0003 mean, same Ignatius loss | removed |
+| 50 | Removing the faces no image sees after the refinement (z-buffer render into every camera; Acute3D's FinishMesh visibility test, precision +0.054 on its Truck) | +0.0000 mean: 15 / 53 / 21 / 734 faces of 172-500 k are unseen on Truck / Barn / Ignatius / Meetingroom, the Delaunay graph-cut mesher never produced the undersides Acute3D's did | inert on OpenMVS meshes; kept opt-in (`--remove-unseen-faces`, RefineMesh and ReconstructMesh) for imported meshes |
+| 51 | Coarse scales that prepare the mesh but run no evaluation (`Skip Coarse Evaluations`) | Ignatius **+0.0129** and Truck +0.0017 at 0.85-0.91x wall, but Barn **−0.0182**: its fine scale, opening from the unrefined surface, rejects four times and ends after 8 evaluations; mean −0.0009 (§2.8) | removed — the coarse scale's value is scene-dependent and nothing here can tell the cases apart |
+| 52 | Warm start: every scale after the first opens at twice the eta the previous one ended with (`Step Search` 4) | +0.0011 mean (Truck +0.0030, Barn −0.0004) at 0.97x wall: the fine scale skips its 3-4 opening rejections and then runs longer where it can, so no speed is gained; under the +0.002 gate like #35 | removed |
+| 53 | Fixed opening: the first three evaluations of every scale applied unconditionally, the stride managed only afterwards (`Step Search` 8; the hybrid schedule) | **−0.42** mean, wall 16x: three 0.5 px steps along the raw gradient double S each and blow the mesh up. Without a per-vertex cap the idea is not viable, and #38 measured that the cap loses too | removed |
+| 54 | Quadratic backtracking with Levenberg-Marquardt gain-ratio growth (`Step Search` 3; the lmfit-style rule on rho = measured/predicted decrease) | −0.0055 mean (Barn −0.0111, Ignatius −0.0098): the first-order model over-predicts the decrease 4-6x and does not converge to it as the step shrinks (rho 0.10-1.06 at 0.025 px), so rho ≈ 0.2 halves eta on most accepted steps | removed |
+| 55 | Explicit pixel target for the decimation with a regularizing remesh in place of the two stacked relative heuristics (`Prepare Target Area` T, `Prepare Remesh Edge` −1) | T = 4 (today's density) −0.0020 mean at 0.93-1.23x faces: the shape-preserving QEM keeps the dense mesh's noise that the shipped strong remesh averages out; T = 8 / 12 −0.0004 / −0.0026 at 0.85x / 0.73x wall and 0.79x / 0.65x faces, the losses where faces were removed | removed; on top of `--fast` it costs a further −0.003..−0.004 (Ignatius −0.013..−0.018) at the same 0.63-0.65x wall |
+| 56 | Remesh before the split (`Prepare Order` 1), so the split's vertices survive the remesh | −0.0012 mean, inert on three scenes, Barn −0.0026 with its fine scale ending at 20 evaluations instead of 26 | removed |
+| 57 | Butterfly-interpolated 1-to-4 split (new vertices on the modified-butterfly surface through the coarse vertices and their wings) | −0.0006 mean: +0.0003/+0.0004 on Truck, Ignatius, Meetingroom and Barn −0.0034 (the same 20-evaluation stop) | removed |
+| 58 | Bi-Laplacian relaxation after the last scale only (a post-smoothing that cannot touch the schedule), 0.45 and 0.25 | 0.45: three scenes +0.0004..+0.0025, Ignatius **−0.0062**; 0.25: +0.0007 mean, Ignatius −0.0005 — a low-pass filter the noisy scenes like and the detailed object pays for, never an always-win and under the gate at every fraction | removed |
+| 59 | Unseen-face filter on the input mesh as well as the output (`--remove-unseen-faces-pre`) | −0.0013 mean, Barn −0.0033 by the stop-rule lottery; the input meshes have as few unseen faces as the outputs | removed (the post filter stays opt-in, #50) |
 
 Three of these carry a mechanism worth stating, because they look like independent ideas and are
 not.
@@ -982,11 +1157,23 @@ all. "Moves less" reads as "converges better" on the oracle and as a large loss 
 2. **Decimation policy.** Constraint §5.1 is the largest single term left on the object-like
    scenes. A policy that keeps a coarse mesh already finer than the pixel footprint has never been
    measured; it would have to pay for its face count under the wall and memory criteria.
-3. **Mesh preparation is 38 % of the wall and nothing measured here touches it.** On Truck the
+3. **Mesh preparation is 38 % of the wall, and the density it sets is not a stated pixel size.** On Truck the
    two `Mesh::Clean` passes (auto-decimation, hole closing, edge-size remesh; one per scale) take
    10.8 s and 11.9 s of a 59.9 s refinement, invariant under `--max-views` and
    `--resolution-level` — which is why every speed lever saturates near 0.5x (§2.7). A faster
    preparation is the only remaining route to a fast mode worth the name; it is a halfmesh
-   question, not a refinement one.
+   question, not a refinement one. §2.8 measured the preparation itself: the strong isotropic
+   remesh after the split is what sets the density and it doubles as a denoiser, so replacing the
+   stacked heuristics by an explicit pixel target loses at equal density and only buys speed by
+   delivering fewer faces — and none at all on top of `--fast`. The first `Mesh::Clean` (the QEM
+   decimation of the multi-million-face input) costs the same 15-25 s whatever it is asked to
+   keep; a cheaper first pass is the untouched lever.
+5. **The coarse scale's contribution is scene-dependent, and the stop rule is fragile.** With no
+   evaluation on the coarse scale Ignatius gains +0.0129 and Barn loses −0.0182 (§2.8, #51), and
+   on Barn every arm that perturbs the mesh by a few faces scores by how many evaluations its
+   fine scale gets before four consecutive rejections end it. A schedule that decides per scene
+   whether the coarse scale should move, and a stop rule that does not turn one extra rejection
+   into a 0.018 loss, are the largest levers left on these scenes; both need a signal that is not
+   the benchmark's F1.
 4. **The Ceres arm remains opt-in.** §2.5 records why: on both ground-truth scenes it reaches a
    lower energy than the stepper and never a better F1.
