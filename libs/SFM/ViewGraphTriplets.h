@@ -60,8 +60,9 @@ struct SFM_API TripletFilterConfig
 	// the pieces below it left apart, the second ceiling naming the faces and the other face cut
 	// off, the descent below a shattered ceiling, no floor. The rule for a scene with repeated
 	// structure -- a symmetric building is unfolded by cutting its graph -- and the rule that
-	// halves the registrations of an interior, whose ceiling cuts off rooms. Off, the keep mode:
-	// the ceiling names the candidates (the scored pairs below it), every image keeps at least
+	// halves the registrations of an interior, whose ceiling cuts off rooms. Off, the keep
+	// mode: the candidates are the scored pairs below the threshold that join two pieces the
+	// ceiling keeps apart (a weak pair inside one piece is kept), every image keeps at least
 	// keepPairs of its pairs and enough of its best-scoring ones to hold keepMatches inliers, and
 	// every component of the matched graph stays one component (its strongest candidates are
 	// kept until it does). autoTau and secondFaceScore apply only with cut.
@@ -210,15 +211,16 @@ TripletScores SFM_API ComputeTripletScores(const Scene& scene, float minScore, f
 // sits in the densest cluster of look-alike views.
 // Two modes. With config.cut the filter applies the cutting rule above: the ceiling as given
 // when its largest piece holds a majority (the smaller pieces left apart), the second ceiling
-// naming the faces, the descent below a shattered ceiling. Without it (the default) the ceiling
-// names the candidates, the scored pairs below it, and of those only what the graph can spare
-// goes: every image keeps at least config.keepPairs pairs and enough of its best-scoring pairs
-// to hold config.keepMatches weighted inliers, counting only pairs whose ray angle reaches
-// config.keepMinAngle degrees, at the strictest threshold at or below the ceiling where at most
-// config.keepMaxShort of the images fall short of that floor from their pairs above it alone; a
-// graph that fits no threshold loses nothing, and every connected component of the matched
-// graph stays one component, joined by its best-scoring candidates. A distinct image pair
-// decides once, through its highest-scoring scene pair; duplicates follow it.
+// naming the faces, the descent below a shattered ceiling. Without it (the default) the
+// candidates are the scored pairs below the threshold that join two pieces the ceiling keeps
+// apart -- a graph the ceiling leaves in one piece loses nothing -- and of those only what the
+// graph can spare goes: every image keeps at least config.keepPairs pairs and enough of its
+// best-scoring pairs to hold config.keepMatches weighted inliers, counting only pairs whose
+// ray angle reaches config.keepMinAngle degrees, at the strictest threshold at or below the
+// ceiling where at most config.keepMaxShort of the images fall short of that floor from their
+// pairs above it alone; a graph that fits no threshold loses nothing, and every connected
+// component of the matched graph stays one component, joined by its best-scoring candidates.
+// A distinct image pair decides once, through its highest-scoring scene pair; duplicates follow it.
 unsigned SFM_API FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& config,
 	const PairsWeightingConfig& weightingCfg, IIndexArr* pSeedViews = NULL);
 

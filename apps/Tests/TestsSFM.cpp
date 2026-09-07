@@ -9142,12 +9142,11 @@ bool TripletKeepTest()
 	// two-apart pairs (800) at 1.5 degrees, and six wide pairs (i, i+4) for i in 2..7 with 100
 	// inliers at 6 degrees. Image 6 holds six pairs, so r = 6/14 and the ceiling is 0.6; a wide
 	// pair sits in the one triangle (i, i+2, i+4) and scores 100/800 = 0.125, the two-apart
-	// pairs score at least 0.8, so the six wide pairs are the candidates. With every pair
-	// counting (keepMinAngle 0) each image with a candidate keeps four pairs holding at least
-	// 3,400 matches and the six wide pairs go, as they do under the cutting rule; counting only
-	// pairs at 3 degrees or more, an image holds at most two counting pairs where the floor asks
-	// three, so every image needs the floor at every threshold, the graph fits none and nothing
-	// is removed: the burst keeps its links to the rest of the chain.
+	// pairs score at least 0.8. The cutting rule removes the six wide pairs. The keep mode
+	// removes nothing, whatever the floor: the consecutive and two-apart pairs hold the chain
+	// in one piece at the ceiling, so no pair below it joins two pieces and none is a candidate
+	// -- on a sequential capture the wide pairs are the weak side of a triangle a consecutive
+	// pair tops, and they are what bundle adjustment needs most.
 	const auto buildBurst = [](Scene& scene) {
 		AddTripletImages(scene, 14);
 		const auto add = [&scene](IIndex a, IIndex b, unsigned numInliers, float rayAngleDeg) {
@@ -9164,19 +9163,6 @@ bool TripletKeepTest()
 	{
 		Scene burst;
 		buildBurst(burst);
-		TripletFilterConfig cfgEvery;
-		cfgEvery.enabled = true;
-		cfgEvery.keepMinAngle = 0.f;
-		cfgEvery.minYield = 0.f;
-		const unsigned removed = FilterPairsByTriplets(burst, cfgEvery, weightingCfg);
-		if (removed != 6 || burst.pairs.size() != 13 + 12) {
-			VERBOSE("TripletKeepTest FAILED: with every pair counting, the burst lost %u pairs of 31; expected the six wide pairs", removed);
-			return false;
-		}
-	}
-	{
-		Scene burst;
-		buildBurst(burst);
 		TripletFilterConfig cfgCut;
 		cfgCut.enabled = true;
 		cfgCut.cut = true;
@@ -9190,92 +9176,156 @@ bool TripletKeepTest()
 	{
 		Scene burst;
 		buildBurst(burst);
-		TripletFilterConfig cfgAngle;
-		cfgAngle.enabled = true;
-		cfgAngle.minYield = 0.f;
-		const unsigned removed = FilterPairsByTriplets(burst, cfgAngle, weightingCfg);
+		TripletFilterConfig cfgOnePiece;
+		cfgOnePiece.enabled = true;
+		cfgOnePiece.keepPairs = 1;
+		cfgOnePiece.keepMatches = 0;
+		cfgOnePiece.keepMinAngle = 0.f;
+		cfgOnePiece.minYield = 0.f;
+		const unsigned removed = FilterPairsByTriplets(burst, cfgOnePiece, weightingCfg);
 		const std::set<std::pair<IIndex,IIndex>> kept = TripletKeptPairs(burst);
-		bool right = removed == 0;
+		bool right = removed == 0 && burst.pairs.size() == 13 + 12 + 6;
 		for (IIndex i = 2; i <= 7; ++i)
 			right = right && kept.count({i, i + 4}) == 1;
 		if (!right) {
-			VERBOSE("TripletKeepTest FAILED: counting pairs at 3 degrees or more, the burst lost %u pairs; expected none, "
-				"every image needing the floor at every threshold and the graph fitting none", removed);
+			VERBOSE("TripletKeepTest FAILED: the keep mode removed %u of the burst's pairs with a floor of one pair; "
+				"expected none, the chain being one piece at the ceiling so that no pair below it joins two pieces", removed);
 			return false;
 		}
 	}
-	// The descent: the burst with five more wide pairs (i, i+5) of 90 inliers at 6 degrees for
-	// i in 2..6, so every image from 2 to 11 holds two or more wide candidates (image 6 now
-	// holds seven pairs: r = 7/14, the ceiling 0.65; a five-apart pair scores 90/1000 = 0.09 in
-	// its two triangles, a four-apart pair 0.1125 at the ends and 0.1083 in the middle). With a
-	// floor of one pair and no matches at 3 degrees, and every threshold fitting (keepMaxShort
-	// 1), the ceiling stands and every image from 2 to 11 is served and retains its best-scoring
-	// wide pair: images 2 to 5 take (2,6), (3,7), (4,8), (5,9), which serve 6 to 9 too, then 10
-	// and 11 take (6,10) and (7,11); the five five-apart pairs go. At the default keepMaxShort
-	// the ceiling fits nothing -- no counting pair sits above it, so all 14 images need the floor
-	// -- and the descent settles at the middle four-apart pairs' 0.1083: at 0.1125 only images 2,
-	// 6, 7 and 11 hold a counting pair and ten of 14 need the floor, while at 0.1083 images 2 to
-	// 11 all hold one and four of 14 need it. The five five-apart pairs are then the candidates,
-	// every image already holds its one pair, and all five go.
-	const auto buildBurstWide = [](Scene& scene) {
+	// A ladder: two bursts, chains of 7 images (0-6 and 7-13; consecutive pairs 1000 inliers at
+	// 1 degree, two-apart 800 at 1.5 degrees), joined by seven rungs (i, i+7) of 100 inliers for
+	// i in 0..6 and six braces (i, i+8) of 90 for i in 0..5, all at 6 degrees. A rung sits in the
+	// triangles (i, i+7, i+8) and (i-1, i, i+7), each topped by a consecutive pair, and scores
+	// 0.1; a brace sits in (i, i+7, i+8) and (i, i+1, i+8) and scores 0.09; the two-apart pairs
+	// score 0.8. Image 3 holds six pairs, so r = 6/14 and the ceiling is 0.6, which leaves the
+	// two chains as pieces of 7 and 7: every rung and brace joins them and is a candidate.
+	//  - The cutting rule: neither piece holds a majority, so the threshold descends to the
+	//    strictest one joining them, the rungs' 0.1, and the six braces go.
+	//  - Counting every pair (keepMinAngle 0) with a floor of one pair: every image keeps two
+	//    or more chain pairs at the ceiling, the ceiling fits, no image needs the floor, and the
+	//    repair alone joins the chains through the best-scoring candidate -- the rungs tie at
+	//    0.1 and 100 inliers, and (0,7), added first, wins: twelve pairs go.
+	//  - Counting pairs at 3 degrees or more (the default) with a floor of one pair and no
+	//    matches: no chain pair counts, every image needs the floor at the ceiling, and the
+	//    threshold descends: at 0.1 every image holds a rung and none needs the floor, so the
+	//    rungs are kept by the threshold, the braces are the candidates, no image retains any,
+	//    and the six braces go.
+	//  - The same with a floor of two pairs: at 0.1 every image holds one counting pair and all
+	//    fourteen need the floor; at the braces' 0.09, the loosest threshold, only images 6 and
+	//    7 (a rung each, no brace) still do, two of fourteen, so the threshold settles there,
+	//    nothing lies below it and nothing is removed.
+	//  - The defaults (3 pairs, 2000 matches): no image ever holds 2000 matches at 3 degrees or
+	//    more, the graph fits no threshold and nothing is removed.
+	const auto buildLadder = [](Scene& scene) {
 		AddTripletImages(scene, 14);
 		const auto add = [&scene](IIndex a, IIndex b, unsigned numInliers, float rayAngleDeg) {
 			AddTripletPair(scene, a, b, numInliers);
 			scene.pairs.Last().meanRayAngle = (float)D2R(rayAngleDeg);
 		};
-		for (IIndex i = 0; i + 1 < 14; ++i)
-			add(i, i + 1, 1000, 1.f);
-		for (IIndex i = 0; i + 2 < 14; ++i)
-			add(i, i + 2, 800, 1.5f);
-		for (IIndex i = 2; i <= 7; ++i)
-			add(i, i + 4, 100, 6.f);
-		for (IIndex i = 2; i <= 6; ++i)
-			add(i, i + 5, 90, 6.f);
+		for (IIndex chain = 0; chain < 14; chain += 7) {
+			for (IIndex i = chain; i + 1 < chain + 7; ++i)
+				add(i, i + 1, 1000, 1.f);
+			for (IIndex i = chain; i + 2 < chain + 7; ++i)
+				add(i, i + 2, 800, 1.5f);
+		}
+		for (IIndex i = 0; i <= 6; ++i)
+			add(i, i + 7, 100, 6.f);
+		for (IIndex i = 0; i <= 5; ++i)
+			add(i, i + 8, 90, 6.f);
+	};
+	const auto rungsKept = [](const std::set<std::pair<IIndex,IIndex>>& kept) {
+		unsigned n = 0;
+		for (IIndex i = 0; i <= 6; ++i)
+			n += kept.count({i, i + 7}) ? 1 : 0;
+		return n;
+	};
+	const auto bracesKept = [](const std::set<std::pair<IIndex,IIndex>>& kept) {
+		unsigned n = 0;
+		for (IIndex i = 0; i <= 5; ++i)
+			n += kept.count({i, i + 8}) ? 1 : 0;
+		return n;
 	};
 	{
-		Scene wide;
-		buildBurstWide(wide);
-		TripletFilterConfig cfgOpen;
-		cfgOpen.enabled = true;
-		cfgOpen.keepPairs = 1;
-		cfgOpen.keepMatches = 0;
-		cfgOpen.keepMaxShort = 1.f;
-		cfgOpen.minYield = 0.f;
-		const unsigned removed = FilterPairsByTriplets(wide, cfgOpen, weightingCfg);
-		const std::set<std::pair<IIndex,IIndex>> kept = TripletKeptPairs(wide);
-		bool right = removed == 5;
-		for (IIndex i = 2; i <= 6; ++i)
-			right = right && kept.count({i, i + 5}) == 0;
-		for (IIndex i = 2; i <= 7; ++i)
-			right = right && kept.count({i, i + 4}) == 1;
-		if (!right) {
-			VERBOSE("TripletKeepTest FAILED: with every threshold fitting, a floor of one pair removed %u pairs at the "
-				"ceiling; expected the five five-apart pairs removed and the six four-apart ones kept", removed);
+		Scene ladder;
+		buildLadder(ladder);
+		TripletFilterConfig cfgCut;
+		cfgCut.enabled = true;
+		cfgCut.cut = true;
+		cfgCut.minYield = 0.f;
+		const unsigned removed = FilterPairsByTriplets(ladder, cfgCut, weightingCfg);
+		const std::set<std::pair<IIndex,IIndex>> kept = TripletKeptPairs(ladder);
+		if (removed != 6 || rungsKept(kept) != 7 || bracesKept(kept) != 0) {
+			VERBOSE("TripletKeepTest FAILED: the cutting rule removed %u of the ladder's pairs, keeping %u rungs and %u braces; "
+				"expected the descent to the rungs' score, all seven kept and the six braces removed",
+				removed, rungsKept(kept), bracesKept(kept));
 			return false;
 		}
 	}
 	{
-		Scene wide;
-		buildBurstWide(wide);
-		TripletFilterConfig cfgDescent;
-		cfgDescent.enabled = true;
-		cfgDescent.keepPairs = 1;
-		cfgDescent.keepMatches = 0;
-		cfgDescent.minYield = 0.f;
-		const unsigned removed = FilterPairsByTriplets(wide, cfgDescent, weightingCfg);
-		const std::set<std::pair<IIndex,IIndex>> kept = TripletKeptPairs(wide);
-		bool right = removed == 5;
-		for (IIndex i = 2; i <= 6; ++i)
-			right = right && kept.count({i, i + 5}) == 0;
-		for (IIndex i = 2; i <= 7; ++i)
-			right = right && kept.count({i, i + 4}) == 1;
-		if (!right) {
-			VERBOSE("TripletKeepTest FAILED: the descent removed %u pairs; expected it to settle at the middle four-apart "
-				"pairs' score, the five five-apart pairs removed and the six four-apart ones kept", removed);
+		Scene ladder;
+		buildLadder(ladder);
+		TripletFilterConfig cfgEvery;
+		cfgEvery.enabled = true;
+		cfgEvery.keepPairs = 1;
+		cfgEvery.keepMatches = 0;
+		cfgEvery.keepMinAngle = 0.f;
+		cfgEvery.minYield = 0.f;
+		const unsigned removed = FilterPairsByTriplets(ladder, cfgEvery, weightingCfg);
+		const std::set<std::pair<IIndex,IIndex>> kept = TripletKeptPairs(ladder);
+		if (removed != 12 || kept.count({0,7}) != 1 || rungsKept(kept) != 1 || bracesKept(kept) != 0) {
+			VERBOSE("TripletKeepTest FAILED: counting every pair, the ladder lost %u pairs, keeping %u rungs ((0,7) %d) and %u braces; "
+				"expected the floor met by the chain pairs and the repair keeping (0,7) alone",
+				removed, rungsKept(kept), kept.count({0,7}) ? 1 : 0, bracesKept(kept));
 			return false;
 		}
 	}
-	VERBOSE("TripletKeepTest PASSED: the keep mode keeps every image its floor and every component whole; the cutting rule cuts the room and the hub off; a burst keeps the links only its wide pairs give; the threshold descends to the strictest one the graph fits, and a graph that fits none loses nothing");
+	{
+		Scene ladder;
+		buildLadder(ladder);
+		TripletFilterConfig cfgOne;
+		cfgOne.enabled = true;
+		cfgOne.keepPairs = 1;
+		cfgOne.keepMatches = 0;
+		cfgOne.minYield = 0.f;
+		const unsigned removed = FilterPairsByTriplets(ladder, cfgOne, weightingCfg);
+		const std::set<std::pair<IIndex,IIndex>> kept = TripletKeptPairs(ladder);
+		if (removed != 6 || rungsKept(kept) != 7 || bracesKept(kept) != 0) {
+			VERBOSE("TripletKeepTest FAILED: a floor of one pair at 3 degrees removed %u of the ladder's pairs, keeping %u rungs and %u braces; "
+				"expected the threshold to descend to the rungs' score, the seven rungs kept and the six braces removed",
+				removed, rungsKept(kept), bracesKept(kept));
+			return false;
+		}
+	}
+	{
+		Scene ladder;
+		buildLadder(ladder);
+		TripletFilterConfig cfgTwo;
+		cfgTwo.enabled = true;
+		cfgTwo.keepPairs = 2;
+		cfgTwo.keepMatches = 0;
+		cfgTwo.minYield = 0.f;
+		const unsigned removed = FilterPairsByTriplets(ladder, cfgTwo, weightingCfg);
+		if (removed != 0 || ladder.pairs.size() != 2 * (6 + 5) + 7 + 6) {
+			VERBOSE("TripletKeepTest FAILED: a floor of two pairs at 3 degrees removed %u of the ladder's pairs; "
+				"expected the threshold to settle at the braces' score, the loosest, with nothing below it", removed);
+			return false;
+		}
+	}
+	{
+		Scene ladder;
+		buildLadder(ladder);
+		TripletFilterConfig cfgDefault;
+		cfgDefault.enabled = true;
+		cfgDefault.minYield = 0.f;
+		const unsigned removed = FilterPairsByTriplets(ladder, cfgDefault, weightingCfg);
+		if (removed != 0) {
+			VERBOSE("TripletKeepTest FAILED: the default floor removed %u of the ladder's pairs; expected none, "
+				"no image holding 2000 matches at 3 degrees or more at any threshold", removed);
+			return false;
+		}
+	}
+	VERBOSE("TripletKeepTest PASSED: the keep mode keeps every image its floor and every component whole and removes only pairs joining pieces the ceiling keeps apart; the cutting rule cuts the room, the hub and the burst's wide pairs off; a burst in one piece keeps everything; the threshold descends to the strictest one the graph fits, and a graph that fits none loses nothing");
 	return true;
 }
 
