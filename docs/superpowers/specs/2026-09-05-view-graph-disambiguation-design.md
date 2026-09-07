@@ -637,6 +637,102 @@ pair scoring between the two ceilings joins that face -- the exposure every one-
 the paper's ceiling, and one the higher ceiling did not remove either for the pairs above it; and a
 true straggler that reaches both faces is dropped (one on the church).
 
+### 3.14 The filter is on by default and, unless told to cut, keeps what the graph cannot spare
+
+**Measured (2026-09-07).** The shipped rule (§3.12, §3.13) on scenes with no repeated structure:
+Tanks and Temples on the undistorted images with the COLMAP focal forced, Polycam interiors on the
+task-6 subsets with the ARKit focal forced and clustering off, the GlueMap models as the per-pair
+truth (§3.12's axis-angle test). Snapshot `bin-triplet-default-20260907`, frozen from 5d847f3;
+runs `openmvs-triplet-default-20260907-{base,triplet}` under each scene, the triplet arm
+reconstructing the base arm's saved matched scene (`scene_pre_reconstruction.sfm`, written at
+verbosity 3), so the two arms differ only in what the filter removes:
+
+| scene (images) | registered, no filter | registered, the shipped rule | what the rule did |
+|---|---|---|---|
+| Truck (251) | 251 | 251 | ceiling 0.520 applied as given: kept 2,326 of 6,054 pairs |
+| 2678a364 (165) | 95 | 50 | ceiling 0.491 applied as given (majority piece 97 of 100): kept 374 of 791; 385 true pairs and 1 false removed |
+| e00da096 (189) | 92 | 14 | ceiling 0.457 applied as given (pieces 103, 38, 11): kept 492 of 885; 364 true and 10 false removed |
+| 5992d620 (223) | 191 | 116 | ceiling 0.503 applied as given (pieces 151, 39, 5, 2): kept 643 of 2,128 distinct; 1,412 true and 27 false removed |
+| 8d2f4877 (225) | 201 | 186 | ceiling 0.501 applied as given (pieces 191, 9): kept 798 of 2,554; 1,663 true and 24 false removed |
+| 5828945d (238) | 33 | 33 | the face rule: faces of 110 and 39 images, 100 pairs joining the second face cut; kept 896 of 1,418 |
+| 16d09ada (242) | 233 | 154 | the face rule: faces of 154 and 79 images, 280 pairs cut; kept 1,136 of 3,418 |
+
+The rule hurts every interior it touches, twice over. The ceiling removes half the pairs, and
+they are true: 385 of the 386 pairs it removes on 2678a364, 1,412 of 1,439 on 5992d620. The
+pieces it leaves are rooms, not faces, and the second ceiling names them faces: 5828945d's 39
+images and 16d09ada's 79 are cut off as "the other face" of a building that has none. Truck
+loses nothing only because it can spare 3,700 pairs.
+
+**Why the rule cannot tell.** Nothing in a pair says whether it is a doppelganger or a weak true
+pair. Not the score: on Big Ben the pairs scoring below 0.2 are 7,394 true and 5,451 false; on
+2678a364 they are 213 true and 8 false. Not the inlier count: a doppelganger pair is weak too
+(Big Ben's false pairs below 0.05: 1,866 of 2,114 under 30 inliers), as weak as the low-overlap
+true pairs of an interior. What differs is the graph around them, and what it can spare:
+
+| | pairs per image | matches per image (median) | bridges per image of the piece the ceiling cuts off |
+|---|---|---|---|
+| interiors (2678a364, e00da096, 5992d620, 8d2f4877, 5828945d) | 10 -- 25 | 740 -- 2,750 | 0.3 -- 10, true |
+| small video sets (street, cereal, cup) | 18 -- 63 | 3,900 -- 13,500 | 5 -- 52 |
+| internet collections (church, Brandenburg, Radcliffe, Arc, Big Ben, Nevsky) | 110 -- 250 | 9,000 -- 24,000 | 12 -- 68, the folds' 25 -- 62 mostly false |
+
+The paper's rule was calibrated on the last row, where an image keeps hundreds of pairs after
+the ceiling. On an interior it keeps five, and the reconstruction needs the weak ones: the
+largest piece of 2678a364 still held 97 of its 100 images at the ceiling, and 45 of the 95
+registrations went with the 385 true pairs anyway.
+
+**The rule.** The filter is on by default, in a mode that removes only what the graph can
+spare; the cutting rule of §3.8, §3.9, §3.12 and §3.13 -- pieces left apart at a majority
+ceiling, faces named and cut, the descent, no floor -- is `TripletFilterConfig::cut`
+(`--triplet-cut`), off by default, and unchanged when on.
+
+With `cut` off:
+
+1. The scores, the ceiling `tau(m)` (§3.12, `m` 0.3) and the seed views (§3.9: the largest
+   piece at the ceiling) are as they are. Neither the second ceiling (§3.13) nor the descent
+   (§3.8) runs: the ceiling names the **candidates**, the scored pairs below it, and nothing
+   else is ever removed.
+2. **The floor.** Every image keeps at least `keepPairs` of its pairs, and enough of them to
+   hold `keepMatches` inliers (the sum of the weighted inlier counts of its kept pairs). Pairs
+   above the ceiling and unscored pairs count first. Images are served in ascending order of
+   (kept pairs, kept matches), fixed before serving begins; each retains its best-scoring
+   candidates, ties to the stronger, until both bounds hold or its candidates run out. A retained
+   pair counts for both its images. An image whose whole graph holds fewer than the floor asks
+   for is short, and counted.
+3. **The repair.** Every connected component of the unfiltered graph stays one component: the
+   candidates still unretained, best-scoring first, are retained whenever they join two
+   components of the survivor graph (a union-find over the kept and retained pairs). A room
+   linked to the rest of a capture by a few weak true pairs keeps its strongest one; the sides
+   of a fold, whose thousands of bridges the ceiling removed, keep one bridge -- which is what
+   the unfiltered graph had a thousand of, so the reconstruction is no worse than without the
+   filter, and better by every bridge removed.
+4. Distinct image pairs decide; a scene pair duplicating an already-counted image pair follows
+   the decision of the pair standing for it (its highest-scoring scene pair). The removal, the
+   re-weighting and the log line are as before; the log says how many candidates the ceiling
+   named, how many the floor and the repair retained, and how many images are short.
+
+Simulated on the labelled exports (the floor at 3 pairs and 2,000 matches; `gentle_sim.py` in
+`~/virginia/datasets/openmvs-triplet-default-20260907-tools/`): the interiors keep 95 %, 99 %,
+54 %, 69 % and 91 % of their pairs (2678a364, e00da096, 5992d620, 8d2f4877, 5828945d); the
+ambiguous sets keep, of their false pairs, 12 of 1,847 (church), 17 of 75 (Brandenburg), 28 of
+967 (Radcliffe), 356 of 3,482 (Arc), 380 of 6,617 (Big Ben), 71 of 20,347 (Nevsky), none of
+street's and cereal's, 7 of cup's 989. The repair restores at most two pairs anywhere: the floor
+has already joined what it needs to.
+
+**Defaults and their decision rule.** `enabled = true`, `cut = false`, `keepPairs = 3`,
+`keepMatches = 2000` until §5.10 settles them: with `keepPairs` at 3, the default `keepMatches`
+is the smallest of 1,000, 2,000 and 4,000 at which no normal scene of the campaign registers
+fewer than 98 % of its no-filter count or worsens its median rotation error against the reference
+by more than 5 % (the bars of the note's earlier pre-registered rule); if none does, the value is
+raised until one does. What each value does on the ambiguous sets is reported beside it; the
+cutting rule remains the answer for a fold, and a set whose keep-mode result differs from §5.9
+is named.
+
+**Interface.** `--filter-triplets` defaults to true; `--triplet-cut B` (false), `--triplet-keep-pairs N`
+(3), `--triplet-keep-matches N` (2000). `--triplet-auto-tau` and `--triplet-second-face-score`
+apply only with `--triplet-cut`. Python: `cut`, `keep_pairs`, `keep_matches` on `TripletFilterConfig`.
+The offline harness (`scripts/python/tests/triplet_disambiguation.py`) scores and thresholds; it
+does not model either mode's removals and is unchanged.
+
 ### 3.4 Where the filter runs
 
 The filter runs at `Scene.cpp:697`, in `Reconstruct`. `ViewGraphCalibrator` runs at
@@ -663,6 +759,7 @@ this branch does not take. Whichever position the measurement supports becomes t
 | `libs/SFM/PythonWrapper.cpp` | `auto_tau` on the config; the cue exposed beside `compute_triplet_scores` |
 | `apps/Tests/TestsSFM.cpp` | `TripletFilterTest`'s path-graph assertion flipped; sweep tests; cue test |
 | `docs/design/TripletDisambiguation.md` | the removal rule, the threshold, the second cue, and which follow-ups this closes |
+| §3.14 | `TripletFilterConfig::enabled` true, `cut`, `keepPairs`, `keepMatches`; the keep mode in `FilterPairsByTriplets`; `--triplet-cut`, `--triplet-keep-pairs`, `--triplet-keep-matches`; `cut`/`keep_pairs`/`keep_matches` in the Python config; `TripletKeepTest`; the existing tests pin the cutting rule with `cut` on; the overview and the note describe both modes and the default's campaign |
 
 ## 5. Measurement
 

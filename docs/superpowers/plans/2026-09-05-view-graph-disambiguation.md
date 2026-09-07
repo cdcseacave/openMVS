@@ -4622,6 +4622,531 @@ git add libs/SFM/ViewGraphTriplets.h libs/SFM/ViewGraphTriplets.cpp libs/SFM/Pai
 git -c user.name=cDc -c user.email=cdc.seacave@gmail.com commit -m "sfm: the interface, help and notes say what the face rule does, and a zero baseline exports no pose"
 ```
 
+### Task 23: The filter is on by default and, unless told to cut, keeps what the graph cannot spare
+
+Spec §3.14. The shipped rule halves the registrations of every Polycam interior it touches
+(2678a364 95 -> 50, e00da096 92 -> 14, 5992d620 191 -> 116, 16d09ada 233 -> 154): the ceiling
+removes half the pairs, all true, and the second ceiling names a room a face. The graph of an
+interior holds 10-25 pairs per image where an internet collection holds 110-250, and the
+reconstruction needs the weak pairs an interior has. This task makes the filter run by default in
+a mode that removes only what the graph can spare -- every image keeps a floor of pairs and
+matches, every component of the matched graph stays whole -- and moves today's rule behind
+`TripletFilterConfig::cut` (`--triplet-cut`), unchanged when on.
+
+**Files:**
+- Modify: `libs/SFM/ViewGraphTriplets.h` (`TripletFilterConfig`: `enabled` true, `cut`, `keepPairs`, `keepMatches`; `FilterPairsByTriplets`' contract)
+- Modify: `libs/SFM/ViewGraphTriplets.cpp` (`FilterPairsByTriplets`: the keep mode)
+- Modify: `libs/SFM/Scene.cpp` (one comment)
+- Modify: `apps/CreateStructure/CreateStructure.cpp` (`--triplet-cut`, `--triplet-keep-pairs`, `--triplet-keep-matches`; the `--filter-triplets` help)
+- Modify: `libs/SFM/PythonWrapper.cpp` (`cut`, `keep_pairs`, `keep_matches`)
+- Modify: `apps/Tests/TestsSFM.cpp` (`TripletKeepTest`; `cut` on in the tests that pin the cutting rule; the defaults)
+- Modify: `apps/Tests/TestsSFM.h` (declare `TripletKeepTest`)
+- Modify: `apps/Tests/Tests.cpp` (register `TripletKeepTest`)
+
+**Interfaces:**
+- Consumes: `FilterPairsByTriplets(Scene&, const TripletFilterConfig&, const PairsWeightingConfig&, IIndexArr*)`, `EvaluateSurvivorGraph`, `TripletScores`, the test helpers `AddTripletImages(scene, n)`, `AddTripletPair(scene, a, b, inliers)`, `TripletKeptPairs(scene)` of `TestsSFM.cpp`.
+- Produces: `TripletFilterConfig::cut` (bool, false), `TripletFilterConfig::keepPairs` (unsigned, 3), `TripletFilterConfig::keepMatches` (unsigned, 2000), `TripletFilterConfig::enabled` defaulting to true; `bool SFM::TripletKeepTest()`.
+
+- [ ] **Step 1: The configuration**
+
+In `libs/SFM/ViewGraphTriplets.h`, replace the line
+
+```cpp
+	bool enabled = false;   // remove the pairs the triplet score rejects (opt-in, see docs/design/TripletDisambiguation.md)
+```
+
+with
+
+```cpp
+	// Remove the pairs the triplet score rejects. On by default: without `cut` the filter
+	// removes only what the graph can spare (see keepPairs), and a graph with no repeated
+	// structure loses nothing it needs (docs/design/TripletDisambiguation.md).
+	bool enabled = true;
+	// The cutting rule: the ceiling applied as given when its largest piece holds a majority,
+	// the pieces below it left apart, the second ceiling naming the faces and the other face cut
+	// off, the descent below a shattered ceiling, no floor. The rule for a scene with repeated
+	// structure -- a symmetric building is unfolded by cutting its graph -- and the rule that
+	// halves the registrations of an interior, whose ceiling cuts off rooms. Off, the keep mode:
+	// the ceiling names the candidates (the scored pairs below it), every image keeps at least
+	// keepPairs of its pairs and enough of its best-scoring ones to hold keepMatches inliers, and
+	// every component of the matched graph stays one component (its strongest candidates are
+	// kept until it does). autoTau and secondFaceScore apply only with cut.
+	bool cut = false;
+	// The floor of the keep mode: the pairs and the weighted inliers (summed over its kept
+	// pairs) every image keeps. Its pairs above the ceiling and its unscored pairs count first;
+	// below the floor, its best-scoring candidates are retained, ties to the stronger. 0 and 0
+	// keep nothing for the floor's sake; the components are kept whole regardless.
+	unsigned keepPairs = 3;
+	unsigned keepMatches = 2000;
+```
+
+Replace the `autoTau` comment lines
+
+```cpp
+	// The paper's tau(m) is a ceiling: below it, the threshold is the strictest one whose survivor
+	// graph joins every piece the ceiling leaves. Off, tau(m) is applied as given.
+```
+
+with
+
+```cpp
+	// With cut: the paper's tau(m) is a ceiling: below it, the threshold is the strictest one
+	// whose survivor graph joins every piece the ceiling leaves. Off, tau(m) is applied as given.
+	// Without cut the ceiling only names the candidates, and this flag plays no part.
+```
+
+In the block comment above `FilterPairsByTriplets`, after the sentence ending `... and is emptied
+when the filter is off or the ceiling leaves no piece: the reconstruction chooses its reference
+view among them (StarInitConfig::seedViews), since after the filter the seed's side of a symmetric
+building is the model and the heaviest image overall sits in the densest cluster of look-alike
+views.` add the paragraph
+
+```cpp
+// Two modes. With config.cut the filter applies the cutting rule above: the ceiling as given
+// when its largest piece holds a majority (the smaller pieces left apart), the second ceiling
+// naming the faces, the descent below a shattered ceiling. Without it (the default) the ceiling
+// names the candidates, the scored pairs below it, and of those only what the graph can spare
+// goes: every image keeps at least config.keepPairs pairs and enough of its best-scoring pairs
+// to hold config.keepMatches weighted inliers, and every connected component of the matched
+// graph stays one component, joined by its best-scoring candidates. A distinct image pair
+// decides once, through its highest-scoring scene pair; duplicates follow it.
+```
+
+- [ ] **Step 2: The keep mode**
+
+In `libs/SFM/ViewGraphTriplets.cpp`, `FilterPairsByTriplets`:
+
+1. The second ceiling runs only with `cut`: replace `if (config.autoTau && secondFace > minScore) {`
+   with `if (config.cut && config.autoTau && secondFace > minScore) {`.
+2. The descent runs only with `cut`: replace the line `if (config.autoTau) {` that opens the block
+   commented `// Below the ceiling, the threshold is the STRICTEST one that joins every piece` with
+   `if (config.cut && config.autoTau) {`.
+3. Directly after that block (after its closing `}` and before the comment `// compact in one
+   forward pass`), add the keep mode:
+
+```cpp
+	// The keep mode (config.cut off, the default): the ceiling names the candidates -- the scored
+	// pairs below it -- and every image keeps what the graph cannot spare. On an interior the
+	// ceiling removes half the pairs and they are true: 385 of 386 on one Polycam capture, whose
+	// registrations went from 95 to 50 with them although its largest piece still held 97 of
+	// 100 images; the pieces the ceiling leaves there are rooms, not faces. What tells such a
+	// graph from an internet collection is not any pair's score or inlier count -- a
+	// doppelganger pair is as weak as a low-overlap true pair -- but what the graph can spare:
+	// 10-25 pairs per image against 110-250. So a candidate goes only if both its images keep
+	// enough without it, and no component of the matched graph is broken.
+	// The floor: every image keeps at least keepPairs pairs and enough of them to hold
+	// keepMatches weighted inliers; its pairs above the ceiling and its unscored pairs count
+	// first, then its best-scoring candidates are retained, ties to the stronger, until both
+	// bounds hold or its candidates run out. Images are served in ascending order of what they
+	// keep, fixed before serving begins, and a retained pair counts for both its images.
+	// The repair: every connected component of the unfiltered graph stays one component -- the
+	// candidates still unretained, best-scoring first, are retained whenever they join two
+	// components of the survivor graph. A room hanging off a capture by a few weak true pairs
+	// keeps its strongest one; the sides of a fold keep one bridge of the thousands the ceiling
+	// removed, no worse than the unfiltered graph and better by every bridge gone.
+	// Distinct image pairs decide, each through its highest-scoring scene pair; duplicates follow.
+	const unsigned numPairs = scene.pairs.size();
+	std::vector<bool> spared(numPairs, false);
+	unsigned numCandidates = 0, numSparedFloor = 0, numSparedRepair = 0, numShort = 0;
+	if (!config.cut) {
+		const IIndex numImages = scene.images.size();
+		// the distinct candidates, each represented by its highest-scoring scene pair, and what
+		// every image keeps before the floor
+		std::unordered_map<PairIdx::PairIndex, unsigned> representative;
+		std::unordered_set<PairIdx::PairIndex> seenKept;
+		std::vector<unsigned> keptPairs(numImages, 0);
+		std::vector<double> keptMatches(numImages, 0.0);
+		FOREACH(idxPair, scene.pairs) {
+			const ImagePair& pair = scene.pairs[idxPair];
+			if (!pair.HasGeometricVerification() || pair.GetNumWeightedInliers() == 0 || pair.ID1 == pair.ID2)
+				continue;
+			const PairIdx::PairIndex key = MakePairIdx(pair.ID1, pair.ID2).idx;
+			const float score = scores[idxPair];
+			if (score >= 0.f && score < tau) {
+				const auto it = representative.find(key);
+				if (it == representative.end())
+					representative.emplace(key, idxPair);
+				else if (score > scores[it->second])
+					it->second = idxPair;
+				continue;
+			}
+			if (!seenKept.insert(key).second)
+				continue; // a duplicate of a kept edge already counted
+			++keptPairs[pair.ID1];
+			++keptPairs[pair.ID2];
+			keptMatches[pair.ID1] += pair.GetNumWeightedInliers();
+			keptMatches[pair.ID2] += pair.GetNumWeightedInliers();
+		}
+		numCandidates = (unsigned)representative.size();
+		// best-scoring first, ties to the stronger, then the lower scene index: a total order
+		const auto better = [&scene, &scores](unsigned a, unsigned b) {
+			if (scores[a] != scores[b])
+				return scores[a] > scores[b];
+			const unsigned na = scene.pairs[a].GetNumWeightedInliers(), nb = scene.pairs[b].GetNumWeightedInliers();
+			if (na != nb)
+				return na > nb;
+			return a < b;
+		};
+		std::vector<unsigned> candidates;
+		candidates.reserve(representative.size());
+		for (const auto& entry : representative)
+			candidates.push_back(entry.second);
+		std::sort(candidates.begin(), candidates.end(), better);
+		std::vector<std::vector<unsigned>> candidatesOf(numImages);
+		for (unsigned idx : candidates) {
+			candidatesOf[scene.pairs[idx].ID1].push_back(idx);
+			candidatesOf[scene.pairs[idx].ID2].push_back(idx);
+		}
+		// the floor, the images served in ascending order of what they keep
+		std::vector<IIndex> order;
+		order.reserve(numImages);
+		for (IIndex i = 0; i < numImages; ++i)
+			if (!candidatesOf[i].empty())
+				order.push_back(i);
+		std::sort(order.begin(), order.end(), [&keptPairs, &keptMatches](IIndex a, IIndex b) {
+			if (keptPairs[a] != keptPairs[b])
+				return keptPairs[a] < keptPairs[b];
+			if (keptMatches[a] != keptMatches[b])
+				return keptMatches[a] < keptMatches[b];
+			return a < b;
+		});
+		for (IIndex i : order) {
+			for (unsigned idx : candidatesOf[i]) {
+				if (keptPairs[i] >= config.keepPairs && keptMatches[i] >= (double)config.keepMatches)
+					break;
+				if (spared[idx])
+					continue; // retained for its other image already, and counted then
+				spared[idx] = true;
+				++numSparedFloor;
+				const ImagePair& pair = scene.pairs[idx];
+				++keptPairs[pair.ID1];
+				++keptPairs[pair.ID2];
+				keptMatches[pair.ID1] += pair.GetNumWeightedInliers();
+				keptMatches[pair.ID2] += pair.GetNumWeightedInliers();
+			}
+			if (keptPairs[i] < config.keepPairs || keptMatches[i] < (double)config.keepMatches)
+				++numShort;
+		}
+		// the repair: union-find over the kept and retained pairs, then the best-scoring
+		// unretained candidates whenever they join two components
+		std::vector<uint32_t> parent(numImages);
+		FOREACH(i, parent)
+			parent[i] = (uint32_t)i;
+		const auto Find = [&parent](uint32_t x) {
+			while (parent[x] != x)
+				x = parent[x] = parent[parent[x]];
+			return x;
+		};
+		const auto Join = [&parent, &Find](IIndex a, IIndex b) {
+			const uint32_t ra = Find((uint32_t)a), rb = Find((uint32_t)b);
+			if (ra == rb)
+				return false;
+			parent[MAXF(ra, rb)] = MINF(ra, rb);
+			return true;
+		};
+		FOREACH(idxPair, scene.pairs) {
+			const ImagePair& pair = scene.pairs[idxPair];
+			if (!pair.HasGeometricVerification() || pair.GetNumWeightedInliers() == 0 || pair.ID1 == pair.ID2)
+				continue;
+			const float score = scores[idxPair];
+			if (score >= 0.f && score < tau && !spared[idxPair])
+				continue; // a candidate, unless retained by the floor (representatives only carry the mark)
+			Join(pair.ID1, pair.ID2);
+		}
+		for (unsigned idx : candidates) {
+			if (spared[idx])
+				continue;
+			if (Join(scene.pairs[idx].ID1, scene.pairs[idx].ID2)) {
+				spared[idx] = true;
+				++numSparedRepair;
+			}
+		}
+		// duplicates follow their representative
+		FOREACH(idxPair, scene.pairs) {
+			const ImagePair& pair = scene.pairs[idxPair];
+			if (!pair.HasGeometricVerification() || pair.GetNumWeightedInliers() == 0 || pair.ID1 == pair.ID2)
+				continue;
+			const float score = scores[idxPair];
+			if (score >= 0.f && score < tau)
+				spared[idxPair] = spared[representative[MakePairIdx(pair.ID1, pair.ID2).idx]];
+		}
+		VERBOSE("Triplet filter: the ceiling %.3f (m %.2f, d_max/|V| %.3f) names %u candidate pairs below it; "
+			"every image keeps at least %u pairs holding %u matches: %u candidates retained for the floor, "
+			"%u to keep every component whole, %u images short of the floor",
+			tau, minScore, degreeRatio, numCandidates, config.keepPairs, config.keepMatches,
+			numSparedFloor, numSparedRepair, numShort);
+	}
+```
+
+   Note: in the repair's first loop a candidate scene pair that duplicates a spared representative
+   is skipped (only the representative carries the mark at that point) -- harmless, since its
+   representative joins the same two images.
+
+4. The compaction: delete the line `const unsigned numPairs = scene.pairs.size();` that opened the
+   compaction (it now sits above the keep mode), and replace
+
+```cpp
+		} else if (score < tau) {
+			++numBelowTau;
+			continue;
+		}
+```
+
+   with
+
+```cpp
+		} else if (score < tau && !spared[idxPair]) {
+			++numBelowTau;
+			continue;
+		}
+```
+
+   In the final `VERBOSE("Triplet filter: kept %u/%u scene pairs ...` line, replace the fragment
+   `"%u below tau and %u cut by the face rule removed, %u unscored kept)"` with
+   `"%u below tau and %u cut by the face rule removed, %u unscored kept)"` unchanged in text but
+   understand that `numBelowTau` now counts only the candidates not spared; no edit is needed there.
+
+5. In `libs/SFM/Scene.cpp`, the comment above `ExportMatchingCSVsAndFilterPairs`: replace
+   `with the camera-triplet filter (ViewGraphTriplets.h, off unless the caller enables it)` with
+   `with the camera-triplet filter (ViewGraphTriplets.h, on by default in its keep mode)`.
+
+- [ ] **Step 3: The command line and the Python config**
+
+In `apps/CreateStructure/CreateStructure.cpp`: add to `OPT`, after `bool bTripletAutoTau;`, the
+members `bool bTripletCut;`, `unsigned nTripletKeepPairs;` and `unsigned nTripletKeepMatches;`.
+Replace the `--filter-triplets` help string with
+
+```
+"disambiguate the matched view graph with the camera-triplet filter (Manam & Govindu, CVPR 2024): score every pair by how its inlier count, discounted by the image area those inliers cover, compares with the strongest pair of the triangles it belongs to; by default only what the graph can spare goes (see --triplet-keep-pairs and --triplet-keep-matches; every component of the graph stays whole), with --triplet-cut the graph is cut into its faces; a triangle of three pairs that all deliver far fewer inliers than pairs at their ray angle do is look-alike copies vouching for one another and counts for nothing"
+```
+
+After the `triplet-auto-tau` option add
+
+```cpp
+		("triplet-cut", boost::program_options::value<bool>(&OPT::bTripletCut)->default_value(TripletFilterConfig().cut), "camera-triplet filter: cut the view graph into its faces -- the paper's threshold applied as given when the piece it leaves largest holds a majority of the images, the smaller pieces left apart, a second face cut off (--triplet-second-face-score), the descent below a shattered ceiling (--triplet-auto-tau); this unfolds a symmetric building and halves the registrations of an interior whose rooms it cuts off; off, only what the graph can spare goes")
+		("triplet-keep-pairs", boost::program_options::value(&OPT::nTripletKeepPairs)->default_value(TripletFilterConfig().keepPairs), "camera-triplet filter, without --triplet-cut: every image keeps at least this many of its pairs, its best-scoring ones")
+		("triplet-keep-matches", boost::program_options::value(&OPT::nTripletKeepMatches)->default_value(TripletFilterConfig().keepMatches), "camera-triplet filter, without --triplet-cut: every image keeps enough of its best-scoring pairs to hold this many matches")
+```
+
+In the `--triplet-auto-tau` help, prefix the string with `"camera-triplet filter, with --triplet-cut: "` in place of `"camera-triplet filter: "`; same for `--triplet-second-face-score` (`"camera-triplet filter, with --triplet-cut and --triplet-auto-tau, "` in place of `"camera-triplet filter: with --triplet-auto-tau, "`). After `cfg.tripletFilterCfg.autoTau = OPT::bTripletAutoTau;` add
+
+```cpp
+	cfg.tripletFilterCfg.cut = OPT::bTripletCut;
+	cfg.tripletFilterCfg.keepPairs = OPT::nTripletKeepPairs;
+	cfg.tripletFilterCfg.keepMatches = OPT::nTripletKeepMatches;
+```
+
+In `libs/SFM/PythonWrapper.cpp`, the `TripletFilterConfig` class: after `.def_readwrite("auto_tau", ...)` add
+`.def_readwrite("cut", &SFM::TripletFilterConfig::cut)`, `.def_readwrite("keep_pairs", &SFM::TripletFilterConfig::keepPairs)`
+and `.def_readwrite("keep_matches", &SFM::TripletFilterConfig::keepMatches)`.
+
+- [ ] **Step 4: The tests**
+
+Every `TripletFilterConfig` in `apps/Tests/TestsSFM.cpp` that sets `enabled = true` pins the
+cutting rule (the ceiling as given, the descent, the faces): add `cut = true;` to each, directly
+after its `enabled = true;` line, with a one-line comment on the first (`TripletFilterTest`'s
+`filterCfg`): `// these tests pin the cutting rule; the keep mode is TripletKeepTest's subject`.
+The configs are `filterCfg` (TripletFilterTest), `cfg`, `walkCfg`, `chainsCfg`, `floodCfg`,
+`pairsChainCfg`, `facesCfg`, `fansCfg`, `clusterCfg`, `threeFacesCfg` (TripletAutoTauTest), and
+the two `filterCfg` of TripletYieldTest. `offCfg` (enabled false) is untouched.
+
+In `TripletYieldTest`, after the `defaults.secondFaceScore` check, add
+
+```cpp
+	if (!defaults.enabled || defaults.cut || defaults.keepPairs != 3 || defaults.keepMatches != 2000) {
+		VERBOSE("TripletYieldTest FAILED: defaults enabled %d cut %d keepPairs %u keepMatches %u; expected the filter on, "
+			"in the keep mode, with a floor of 3 pairs and 2000 matches",
+			defaults.enabled ? 1 : 0, defaults.cut ? 1 : 0, defaults.keepPairs, defaults.keepMatches);
+		return false;
+	}
+```
+
+Add `bool SFM::TripletKeepTest()` after `TripletYieldTest`; declare it in `apps/Tests/TestsSFM.h`
+directly after `TripletYieldTest`, with a comment in that file's style saying what it pins, and
+register it in `apps/Tests/Tests.cpp` directly after `TripletYieldTest`, in the same form. Two
+scenes, the pair weighting config as `TripletAutoTauTest` builds it (`gridSize = 1`):
+
+```cpp
+// The keep mode: the ceiling names the candidates, every image keeps a floor of pairs and
+// matches, and every component of the matched graph stays whole; the cutting rule on the same
+// scene cuts a room off. Two scenes: two rooms joined by three weak true pairs, and an image
+// whose every pair is weak.
+bool SFM::TripletKeepTest()
+{
+	PairsWeightingConfig weightingCfg;
+	weightingCfg.gridSize = 1;
+	// Two rooms, chains of 60 and 30 images (consecutive pairs 1000 inliers, two apart 600),
+	// joined by three weak pairs forming two triangles with the chains' own: (59,60) 60,
+	// (58,60) 50 and (59,61) 50. Image 58 holds five pairs, so r = 5/90 and the ceiling is
+	// 0.3(1 - 5/90) + 5/90 = 0.339: the two-apart pairs score 0.6 and stay, the bridges score
+	// 0.06 and 0.05 and are the only candidates. With cut, the second ceiling (0.764) drops the
+	// two-apart pairs and names the rooms faces of 60 and 30, so the bridges are cut; had it
+	// not, the larger room holds a majority and the ceiling applied as given removes the same
+	// three. Either way the smaller room is cut off.
+	const auto buildRooms = [](Scene& scene) {
+		AddTripletImages(scene, 90);
+		for (IIndex i = 0; i + 1 < 60; ++i)
+			AddTripletPair(scene, i, i + 1, 1000);
+		for (IIndex i = 0; i + 2 < 60; ++i)
+			AddTripletPair(scene, i, i + 2, 600);
+		for (IIndex i = 60; i + 1 < 90; ++i)
+			AddTripletPair(scene, i, i + 1, 1000);
+		for (IIndex i = 60; i + 2 < 90; ++i)
+			AddTripletPair(scene, i, i + 2, 600);
+		AddTripletPair(scene, 59, 60, 60);
+		AddTripletPair(scene, 58, 60, 50);
+		AddTripletPair(scene, 59, 61, 50);
+	};
+	const std::set<std::pair<IIndex,IIndex>> bridges{{59,60},{58,60},{59,61}};
+	{
+		Scene rooms;
+		buildRooms(rooms);
+		TripletFilterConfig cutCfg;
+		cutCfg.enabled = true;
+		cutCfg.cut = true;
+		cutCfg.minYield = 0.f; // no ray angles here
+		IIndexArr seeds;
+		const unsigned removed = FilterPairsByTriplets(rooms, cutCfg, weightingCfg, &seeds);
+		const std::set<std::pair<IIndex,IIndex>> kept = TripletKeptPairs(rooms);
+		bool right = removed == 3 && kept.size() == 59 + 58 + 29 + 28 && seeds.size() == 60;
+		for (const auto& bridge : bridges)
+			right = right && kept.count(bridge) == 0;
+		if (!right) {
+			VERBOSE("TripletKeepTest FAILED: the cutting rule removed %u pairs, kept %u, %u seeds; expected the three "
+				"bridges removed, 174 pairs kept and the larger room's 60 images as seeds",
+				removed, (unsigned)kept.size(), (unsigned)seeds.size());
+			return false;
+		}
+	}
+	// The keep mode with a floor of 2 pairs and no matches: every image keeps two pairs at the
+	// ceiling already (the chain ends 0, 59, 60 and 89 exactly two), so the floor retains
+	// nothing and the repair alone joins the rooms, through the best-scoring bridge (59,60).
+	{
+		Scene rooms;
+		buildRooms(rooms);
+		TripletFilterConfig keepCfg;
+		keepCfg.enabled = true;
+		keepCfg.keepPairs = 2;
+		keepCfg.keepMatches = 0;
+		keepCfg.minYield = 0.f;
+		IIndexArr seeds;
+		const unsigned removed = FilterPairsByTriplets(rooms, keepCfg, weightingCfg, &seeds);
+		const std::set<std::pair<IIndex,IIndex>> kept = TripletKeptPairs(rooms);
+		if (removed != 2 || kept.count({59,60}) != 1 || kept.count({58,60}) != 0 || kept.count({59,61}) != 0 || seeds.size() != 60) {
+			VERBOSE("TripletKeepTest FAILED: the repair removed %u pairs, kept (59,60) %d (58,60) %d (59,61) %d, %u seeds; "
+				"expected the two weaker bridges removed and (59,60) retained to keep the rooms one component",
+				removed, kept.count({59,60}) ? 1 : 0, kept.count({58,60}) ? 1 : 0, kept.count({59,61}) ? 1 : 0, (unsigned)seeds.size());
+			return false;
+		}
+	}
+	// A floor of 3 pairs: the chain ends keep two pairs at the ceiling and 59 and 60 have
+	// candidates; 59 retains (59,60), which serves 60 as well; the other two bridges go.
+	{
+		Scene rooms;
+		buildRooms(rooms);
+		TripletFilterConfig keepCfg;
+		keepCfg.enabled = true;
+		keepCfg.keepPairs = 3;
+		keepCfg.keepMatches = 0;
+		keepCfg.minYield = 0.f;
+		const unsigned removed = FilterPairsByTriplets(rooms, keepCfg, weightingCfg);
+		const std::set<std::pair<IIndex,IIndex>> kept = TripletKeptPairs(rooms);
+		if (removed != 2 || kept.count({59,60}) != 1) {
+			VERBOSE("TripletKeepTest FAILED: a floor of 3 pairs removed %u pairs, kept (59,60) %d; expected 2 removed and (59,60) retained",
+				removed, kept.count({59,60}) ? 1 : 0);
+			return false;
+		}
+	}
+	// The default floor (3 pairs, 2000 matches): 59 keeps (57,59) 600 and (58,59) 1000 at the
+	// ceiling, 1600 matches, and retains both its candidates, (59,60) then (59,61); 60 keeps
+	// (60,61) 1000 and (60,62) 600 plus the retained (59,60), 1660, and retains (58,60). Nothing
+	// is removed.
+	{
+		Scene rooms;
+		buildRooms(rooms);
+		TripletFilterConfig keepCfg;
+		keepCfg.enabled = true;
+		keepCfg.minYield = 0.f;
+		const unsigned removed = FilterPairsByTriplets(rooms, keepCfg, weightingCfg);
+		if (removed != 0 || rooms.pairs.size() != 177) {
+			VERBOSE("TripletKeepTest FAILED: the default floor removed %u pairs of 177; expected none, the rooms' end images "
+				"holding fewer than 2000 matches at the ceiling", removed);
+			return false;
+		}
+	}
+	// An image whose every pair is weak: a chain of 12 images (consecutive 1000, two apart 800)
+	// and image 12 matched to images 0-5 with 100, 90, 80, 70, 60 and 50 inliers, each such pair
+	// in triangles with the chain's own (12's pairs to i and i+1 close a triangle on (i,i+1), to
+	// i and i+2 on (i,i+2)), scoring from 0.11 down to 0.06 in that order; image 12 holds six
+	// pairs, so r = 6/13 and the ceiling is 0.623, above which the two-apart pairs (0.8 to 0.9)
+	// and the consecutive ones (1) sit. With cut, image 12 is a piece of one apart from the
+	// chain's majority and every one of its pairs goes. The keep mode with a floor of 3 pairs
+	// keeps its three best, (0,12), (1,12) and (2,12).
+	const auto buildHub = [](Scene& scene) {
+		AddTripletImages(scene, 13);
+		for (IIndex i = 0; i + 1 < 12; ++i)
+			AddTripletPair(scene, i, i + 1, 1000);
+		for (IIndex i = 0; i + 2 < 12; ++i)
+			AddTripletPair(scene, i, i + 2, 800);
+		const unsigned inliers[6] = {100, 90, 80, 70, 60, 50};
+		for (IIndex i = 0; i < 6; ++i)
+			AddTripletPair(scene, i, 12, inliers[i]);
+	};
+	{
+		Scene hub;
+		buildHub(hub);
+		TripletFilterConfig cutCfg;
+		cutCfg.enabled = true;
+		cutCfg.cut = true;
+		cutCfg.minYield = 0.f;
+		const unsigned removed = FilterPairsByTriplets(hub, cutCfg, weightingCfg);
+		const std::set<std::pair<IIndex,IIndex>> kept = TripletKeptPairs(hub);
+		bool right = removed == 6;
+		for (IIndex i = 0; i < 6; ++i)
+			right = right && kept.count({i, 12}) == 0;
+		if (!right) {
+			VERBOSE("TripletKeepTest FAILED: the cutting rule removed %u of the hub's pairs; expected all six", removed);
+			return false;
+		}
+	}
+	{
+		Scene hub;
+		buildHub(hub);
+		TripletFilterConfig keepCfg;
+		keepCfg.enabled = true;
+		keepCfg.keepPairs = 3;
+		keepCfg.keepMatches = 0;
+		keepCfg.minYield = 0.f;
+		const unsigned removed = FilterPairsByTriplets(hub, keepCfg, weightingCfg);
+		const std::set<std::pair<IIndex,IIndex>> kept = TripletKeptPairs(hub);
+		if (removed != 3 || kept.count({0,12}) != 1 || kept.count({1,12}) != 1 || kept.count({2,12}) != 1 ||
+			kept.count({3,12}) != 0 || kept.count({4,12}) != 0 || kept.count({5,12}) != 0) {
+			VERBOSE("TripletKeepTest FAILED: the floor removed %u of the hub's pairs, kept (0,12) %d (1,12) %d (2,12) %d; "
+				"expected its three best kept and the other three removed",
+				removed, kept.count({0,12}) ? 1 : 0, kept.count({1,12}) ? 1 : 0, kept.count({2,12}) ? 1 : 0);
+			return false;
+		}
+	}
+	VERBOSE("TripletKeepTest PASSED: the keep mode keeps every image its floor and every component whole; the cutting rule cuts the room and the hub off");
+	return true;
+}
+```
+
+The numbers in the scenes are derived by hand from §3.14's rule; if any assertion fails once the
+code is right, check the arithmetic in the scene comment first (the ceiling, the chain ends'
+matches), then the code, and report which was wrong. Do not weaken an assertion to pass.
+
+- [ ] **Step 5: Build, test, commit**
+
+Run: `ninja -C make -f build-Release.ninja Tests CreateStructure && ./bin/Release/Tests 1`
+Expected: 65 PASSED (the suite gains TripletKeepTest). Then
+`./bin/Release/CreateStructure --help | /usr/bin/grep -c 'triplet-'` prints 6.
+
+```bash
+git add libs/SFM/ViewGraphTriplets.h libs/SFM/ViewGraphTriplets.cpp libs/SFM/Scene.cpp apps/CreateStructure/CreateStructure.cpp libs/SFM/PythonWrapper.cpp apps/Tests/TestsSFM.cpp apps/Tests/Tests.cpp
+git -c user.name=cDc -c user.email=cdc.seacave@gmail.com commit -m "sfm: the triplet filter is on by default and, unless told to cut, keeps what the graph cannot spare"
+```
+
 ## Measurement (the controller's, after the branch is green)
 
 Not tasks and not a subagent's: they run the pipeline and read datasets, which no implementer does.
