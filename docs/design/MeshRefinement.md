@@ -891,7 +891,7 @@ opening.
 | Quadratic backtracking on a rejection (`Step Search` 1; 17 with the exemption is identical) | −0.0051 | −0.0037 | −0.0038 | −0.0048 | **−0.0043** | 1.12x | 1.08x | removed |
 | End relaxation 0.45 between scales only, opening exempt (`End Relax` 0.45, mode 1 + 16) | −0.0001 | +0.0003 | −0.0024 | −0.0017 | −0.0010 | 1.16x | 0.93x | removed |
 | End relaxation 0.45 after the last scale only, opening exempt (mode 2 + 16) | +0.0004 | −0.0018 | −0.0021 | −0.0008 | −0.0011 | 1.23x | 0.81x | removed |
-| Remove the faces no image sees, after the refinement (`--remove-unseen-faces` 1) | +0.0000 | −0.0002 | +0.0000 | +0.0003 | +0.0000 | 1.01x | 1.00x | inert: 15 / 53 / 21 / 734 faces of 172-500 k removed |
+| Remove the faces no image sees, after the refinement (measured as a RefineMesh post-pass; now `TransformScene --remove-unseen-faces`) | +0.0000 | −0.0002 | +0.0000 | +0.0003 | +0.0000 | 1.01x | 1.00x | inert: 15 / 53 / 21 / 734 faces of 172-500 k removed |
 
 Three readings. **Letting a scale run past its opening loses on three scenes of four.** The
 exemption turns Truck's coarse scale from 1 accepted evaluation into 13 (strides of 0.01 px, S
@@ -908,7 +908,8 @@ alone it is +0.0003 mean, with the same Ignatius loss. **OpenMVS meshes have no 
 remove.** Acute3D's FinishMesh visibility test drops 2.8 % of its facets and lifts Truck's
 precision 0.467 → 0.521 because its mesher produces undersides and interiors; the Delaunay
 graph-cut here carves the surface along the visibility rays, so the same test finds 0.01-0.15 %
-of the faces and precision does not move. The pass stays as an opt-in for imported meshes.
+of the faces and precision does not move. The pass stays as an opt-in for imported meshes, in
+TransformScene (and ReconstructMesh), not in the refinement.
 
 The second cell, same scenes, pin `bench/bin_refine_prep2` (the same tree plus the two arms marked †):
 
@@ -1077,7 +1078,7 @@ entry says otherwise.
 | 47 | Exempting the opening cascade from `MaxRejects` (the rejections before a scale's first merit acceptance no longer end it; cap 8) | Tanks & Temples **−0.0012** mean: Ignatius +0.0031 but Truck −0.0013, Barn −0.0037, Meetingroom −0.0030 at 1.22x wall and 1.08x faces; Truck's coarse scale goes from 1 accepted evaluation to 13 at 0.01 px strides and loses (§2.8) | removed |
 | 48 | Quadratic backtracking on a rejection (the trial retreats to the minimizer of the parabola through the reference, the model slope and the rejected S, clamped to [0.1, 0.5] of the step) | **−0.0043** mean on Tanks & Temples, every scene between −0.0037 and −0.0051; the first rejection retreats to 0.31 of the step instead of 0.5, so the scale reaches an acceptable stride within `MaxRejects` and keeps moving (Truck 30 evaluations instead of 14) | removed |
 | 49 | End-of-scale relaxation (#43) with its schedule confound removed (#47's exemption), between scales only or after the last scale only | Barn's −0.0119 was the confound (now +0.0003 / −0.0018) but Ignatius −0.0024 / −0.0021 and the means −0.0010 / −0.0011; against the exemption alone +0.0003 mean, same Ignatius loss | removed |
-| 50 | Removing the faces no image sees after the refinement (z-buffer render into every camera; Acute3D's FinishMesh visibility test, precision +0.054 on its Truck) | +0.0000 mean: 15 / 53 / 21 / 734 faces of 172-500 k are unseen on Truck / Barn / Ignatius / Meetingroom, the Delaunay graph-cut mesher never produced the undersides Acute3D's did | inert on OpenMVS meshes; kept opt-in (`--remove-unseen-faces`, RefineMesh and ReconstructMesh) for imported meshes |
+| 50 | Removing the faces no image sees after the refinement (z-buffer render into every camera; Acute3D's FinishMesh visibility test, precision +0.054 on its Truck) | +0.0000 mean: 15 / 53 / 21 / 734 faces of 172-500 k are unseen on Truck / Barn / Ignatius / Meetingroom, the Delaunay graph-cut mesher never produced the undersides Acute3D's did | inert on OpenMVS meshes; kept opt-in for imported meshes as `--remove-unseen-faces` of TransformScene and ReconstructMesh |
 | 51 | Coarse scales that prepare the mesh but run no evaluation (`Skip Coarse Evaluations`) | Ignatius **+0.0129** and Truck +0.0017 at 0.85-0.91x wall, but Barn **−0.0182**: its fine scale, opening from the unrefined surface, rejects four times and ends after 8 evaluations; mean −0.0009 (§2.8) | removed — the coarse scale's value is scene-dependent and nothing here can tell the cases apart |
 | 52 | Warm start: every scale after the first opens at twice the eta the previous one ended with (`Step Search` 4) | +0.0011 mean (Truck +0.0030, Barn −0.0004) at 0.97x wall: the fine scale skips its 3-4 opening rejections and then runs longer where it can, so no speed is gained; under the +0.002 gate like #35 | removed |
 | 53 | Fixed opening: the first three evaluations of every scale applied unconditionally, the stride managed only afterwards (`Step Search` 8; the hybrid schedule) | **−0.42** mean, wall 16x: three 0.5 px steps along the raw gradient double S each and blow the mesh up. Without a per-vertex cap the idea is not viable, and #38 measured that the cap loses too | removed |
