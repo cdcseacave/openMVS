@@ -675,7 +675,6 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 	const unsigned numPairs = scene.pairs.size();
 	std::vector<bool> spared(numPairs, false);
 	if (!config.cut) {
-		unsigned numCandidates = 0, numSparedFloor = 0, numSparedRepair = 0, numShort = 0;
 		const IIndex numImages = scene.images.size();
 		// a pair counts for the floor when its ray angle reaches keepMinAngle, or was never
 		// measured: a near-duplicate pair yields no 3D point, and is what a doppelganger pair
@@ -694,6 +693,38 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 		for (IIndex i = 0; i < numImages; ++i)
 			if (isNode[i])
 				++numNodes;
+		// The distinct pairs the floor counts, collapsed once. A distinct pair stands for every
+		// scene pair carrying it and is kept at a threshold whenever ANY of them is, so it takes
+		// the best case of its own: unscored -- kept at every threshold -- ahead of any score,
+		// and otherwise the highest. Reading the scene pairs in order instead would keep a pair
+		// with an unscored twin and a scored twin below the threshold according to which came
+		// first, and the count below would no longer fall with the threshold.
+		struct FloorPair {
+			IIndex ID1, ID2;
+			unsigned numInliers;
+			float score; // TripletScores::unscored, or the highest score of its scene pairs
+		};
+		std::vector<FloorPair> floorPairs;
+		{
+			std::unordered_map<PairIdx::PairIndex, unsigned> entryOfPair;
+			FOREACH(idxPair, scene.pairs) {
+				const ImagePair& pair = scene.pairs[idxPair];
+				if (!pair.HasGeometricVerification() || pair.GetNumWeightedInliers() == 0 || pair.ID1 == pair.ID2 ||
+					!countsForFloor(pair))
+					continue; // not an edge, or no 3D point to gain from it
+				const float score = scores[idxPair];
+				const auto entry = entryOfPair.emplace(MakePairIdx(pair.ID1, pair.ID2).idx, (unsigned)floorPairs.size());
+				if (entry.second) {
+					floorPairs.push_back({pair.ID1, pair.ID2, pair.GetNumWeightedInliers(), score});
+					continue;
+				}
+				FloorPair& kept = floorPairs[entry.first->second];
+				if (kept.score >= 0.f && (score < 0.f || score > kept.score)) {
+					kept.numInliers = pair.GetNumWeightedInliers();
+					kept.score = score;
+				}
+			}
+		}
 		// what every image keeps at a threshold and how many nodes NEED the floor there: a node
 		// needs it when its counting pairs at or above the threshold and its unscored pairs hold
 		// fewer than keepPairs pairs or fewer than keepMatches matches
@@ -702,19 +733,13 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 		const auto numShortAt = [&](float threshold) {
 			std::fill(keptPairs.begin(), keptPairs.end(), 0u);
 			std::fill(keptMatches.begin(), keptMatches.end(), 0.0);
-			std::unordered_set<PairIdx::PairIndex> seen;
-			FOREACH(idxPair, scene.pairs) {
-				const ImagePair& pair = scene.pairs[idxPair];
-				if (!pair.HasGeometricVerification() || pair.GetNumWeightedInliers() == 0 || pair.ID1 == pair.ID2)
+			for (const FloorPair& pair : floorPairs) {
+				if (pair.score >= 0.f && pair.score < threshold)
 					continue;
-				const float score = scores[idxPair];
-				if ((score >= 0.f && score < threshold) || !countsForFloor(pair) ||
-					!seen.insert(MakePairIdx(pair.ID1, pair.ID2).idx).second)
-					continue; // below the threshold, no 3D point to gain, or a duplicate already counted
 				++keptPairs[pair.ID1];
 				++keptPairs[pair.ID2];
-				keptMatches[pair.ID1] += pair.GetNumWeightedInliers();
-				keptMatches[pair.ID2] += pair.GetNumWeightedInliers();
+				keptMatches[pair.ID1] += pair.numInliers;
+				keptMatches[pair.ID2] += pair.numInliers;
 			}
 			unsigned numNeedFloor = 0;
 			for (IIndex i = 0; i < numImages; ++i)
@@ -778,9 +803,11 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 				ceiling, minScore, degreeRatio, numShortAtCeiling, numNodes,
 				config.keepPairs, config.keepMatches, keepMinAngle, numShortLoosest, 100.f * keepMaxShort);
 		} else {
+			unsigned numCandidates = 0, numSparedFloor = 0, numSparedRepair = 0, numShort = 0;
 			// the counts the floor consumes are the ones at the threshold found, not at whatever
-			// value the search probed last
-			const unsigned numShortAtTau = numShortAt(tau);
+			// value the search probed last; a ceiling that stood was the last probed and its
+			// counts are still in place
+			const unsigned numShortAtTau = tau < ceiling ? numShortAt(tau) : numShortAtCeiling;
 			std::unordered_set<PairIdx::PairIndex> seenKept;
 			FOREACH(idxPair, scene.pairs) {
 				const ImagePair& pair = scene.pairs[idxPair];
