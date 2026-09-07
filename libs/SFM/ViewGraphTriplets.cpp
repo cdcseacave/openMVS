@@ -474,6 +474,9 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 	const float keepMinAngle = std::isnan(config.keepMinAngle) || config.keepMinAngle < 0.f ? 0.f : config.keepMinAngle;
 	if (keepMinAngle != config.keepMinAngle)
 		VERBOSE("warning: triplet filter: minimum ray angle %g is not a non-negative angle, using %g", config.keepMinAngle, keepMinAngle);
+	const float keepMaxShort = std::isnan(config.keepMaxShort) ? 1.f : CLAMP(config.keepMaxShort, 0.f, 1.f);
+	if (keepMaxShort != config.keepMaxShort)
+		VERBOSE("warning: triplet filter: maximum short share %g is outside [0,1], using %g", config.keepMaxShort, keepMaxShort);
 	const TripletScores tripletScores = ComputeTripletScores(scene, minScore, minYield, weightingCfg.gridSize);
 	const float degreeRatio = tripletScores.numNodes > 0
 		? (float)tripletScores.maxDegree / (float)tripletScores.numNodes : 0.f;
@@ -715,6 +718,36 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 		for (const PairIdx::PairIndex key : seenKept)
 			representative.erase(key);
 		numCandidates = (unsigned)representative.size();
+		// the graph must fit the ceiling: a node whose counting pairs above it and unscored
+		// pairs already fall short of the floor needs the floor; when more than keepMaxShort
+		// of the nodes do, the ceiling was derived for a graph this one is not, and nothing goes
+		unsigned numNodes = 0, numShortBefore = 0;
+		{
+			std::vector<bool> isNode(numImages, false);
+			FOREACH(idxPair, scene.pairs) {
+				const ImagePair& pair = scene.pairs[idxPair];
+				if (!pair.HasGeometricVerification() || pair.GetNumWeightedInliers() == 0 || pair.ID1 == pair.ID2)
+					continue;
+				isNode[pair.ID1] = isNode[pair.ID2] = true;
+			}
+			for (IIndex i = 0; i < numImages; ++i) {
+				if (!isNode[i])
+					continue;
+				++numNodes;
+				if (keptPairs[i] < config.keepPairs || keptMatches[i] < (double)config.keepMatches)
+					++numShortBefore;
+			}
+		}
+		const bool standsDown = (double)numShortBefore > (double)keepMaxShort * (double)numNodes;
+		if (standsDown) {
+			for (const auto& entry : representative)
+				spared[entry.second] = true;
+			VERBOSE("Triplet filter: the ceiling %.3f (m %.2f, d_max/|V| %.3f) names %u candidate pairs below it, but %u of "
+				"%u images fall short of the floor (%u pairs holding %u matches at %g degrees or more) from their pairs "
+				"above it alone, more than the %.0f%% the keep mode acts on: nothing removed",
+				tau, minScore, degreeRatio, numCandidates, numShortBefore, numNodes,
+				config.keepPairs, config.keepMatches, keepMinAngle, 100.f * keepMaxShort);
+		}
 		// best-scoring first, ties to the stronger, then the lower scene index: a total order
 		const auto better = [&scene, &scores](unsigned a, unsigned b) {
 			if (scores[a] != scores[b])
@@ -728,77 +761,84 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 		candidates.reserve(representative.size());
 		for (const auto& entry : representative)
 			candidates.push_back(entry.second);
-		std::sort(candidates.begin(), candidates.end(), better);
-		std::vector<std::vector<unsigned>> candidatesOf(numImages);
-		for (unsigned idx : candidates) {
-			if (!countsForFloor(scene.pairs[idx]))
-				continue; // no 3D point to gain: the floor is not served by it
-			candidatesOf[scene.pairs[idx].ID1].push_back(idx);
-			candidatesOf[scene.pairs[idx].ID2].push_back(idx);
-		}
-		// the floor, the images served in ascending order of what they keep
-		std::vector<IIndex> order;
-		order.reserve(numImages);
-		for (IIndex i = 0; i < numImages; ++i)
-			if (!candidatesOf[i].empty())
-				order.push_back(i);
-		std::sort(order.begin(), order.end(), [&keptPairs, &keptMatches](IIndex a, IIndex b) {
-			if (keptPairs[a] != keptPairs[b])
-				return keptPairs[a] < keptPairs[b];
-			if (keptMatches[a] != keptMatches[b])
-				return keptMatches[a] < keptMatches[b];
-			return a < b;
-		});
-		for (IIndex i : order) {
-			for (unsigned idx : candidatesOf[i]) {
-				if (keptPairs[i] >= config.keepPairs && keptMatches[i] >= (double)config.keepMatches)
-					break;
+		if (!standsDown) {
+			std::sort(candidates.begin(), candidates.end(), better);
+			std::vector<std::vector<unsigned>> candidatesOf(numImages);
+			for (unsigned idx : candidates) {
+				if (!countsForFloor(scene.pairs[idx]))
+					continue; // no 3D point to gain: the floor is not served by it
+				candidatesOf[scene.pairs[idx].ID1].push_back(idx);
+				candidatesOf[scene.pairs[idx].ID2].push_back(idx);
+			}
+			// the floor, the images served in ascending order of what they keep
+			std::vector<IIndex> order;
+			order.reserve(numImages);
+			for (IIndex i = 0; i < numImages; ++i)
+				if (!candidatesOf[i].empty())
+					order.push_back(i);
+			std::sort(order.begin(), order.end(), [&keptPairs, &keptMatches](IIndex a, IIndex b) {
+				if (keptPairs[a] != keptPairs[b])
+					return keptPairs[a] < keptPairs[b];
+				if (keptMatches[a] != keptMatches[b])
+					return keptMatches[a] < keptMatches[b];
+				return a < b;
+			});
+			for (IIndex i : order) {
+				for (unsigned idx : candidatesOf[i]) {
+					if (keptPairs[i] >= config.keepPairs && keptMatches[i] >= (double)config.keepMatches)
+						break;
+					if (spared[idx])
+						continue; // retained for its other image already, and counted then
+					spared[idx] = true;
+					++numSparedFloor;
+					const ImagePair& pair = scene.pairs[idx];
+					++keptPairs[pair.ID1];
+					++keptPairs[pair.ID2];
+					keptMatches[pair.ID1] += pair.GetNumWeightedInliers();
+					keptMatches[pair.ID2] += pair.GetNumWeightedInliers();
+				}
+				if (keptPairs[i] < config.keepPairs || keptMatches[i] < (double)config.keepMatches)
+					++numShort;
+			}
+			// the repair: union-find over the kept and retained pairs, then the best-scoring
+			// unretained candidates whenever they join two components
+			std::vector<uint32_t> parent(numImages);
+			FOREACH(i, parent)
+				parent[i] = (uint32_t)i;
+			const auto Find = [&parent](uint32_t x) {
+				while (parent[x] != x)
+					x = parent[x] = parent[parent[x]];
+				return x;
+			};
+			const auto Join = [&parent, &Find](IIndex a, IIndex b) {
+				const uint32_t ra = Find((uint32_t)a), rb = Find((uint32_t)b);
+				if (ra == rb)
+					return false;
+				parent[MAXF(ra, rb)] = MINF(ra, rb);
+				return true;
+			};
+			FOREACH(idxPair, scene.pairs) {
+				const ImagePair& pair = scene.pairs[idxPair];
+				if (!pair.HasGeometricVerification() || pair.GetNumWeightedInliers() == 0 || pair.ID1 == pair.ID2)
+					continue;
+				const float score = scores[idxPair];
+				if (score >= 0.f && score < tau && !spared[idxPair])
+					continue; // a candidate, unless retained by the floor (representatives only carry the mark)
+				Join(pair.ID1, pair.ID2);
+			}
+			for (unsigned idx : candidates) {
 				if (spared[idx])
-					continue; // retained for its other image already, and counted then
-				spared[idx] = true;
-				++numSparedFloor;
-				const ImagePair& pair = scene.pairs[idx];
-				++keptPairs[pair.ID1];
-				++keptPairs[pair.ID2];
-				keptMatches[pair.ID1] += pair.GetNumWeightedInliers();
-				keptMatches[pair.ID2] += pair.GetNumWeightedInliers();
+					continue;
+				if (Join(scene.pairs[idx].ID1, scene.pairs[idx].ID2)) {
+					spared[idx] = true;
+					++numSparedRepair;
+				}
 			}
-			if (keptPairs[i] < config.keepPairs || keptMatches[i] < (double)config.keepMatches)
-				++numShort;
-		}
-		// the repair: union-find over the kept and retained pairs, then the best-scoring
-		// unretained candidates whenever they join two components
-		std::vector<uint32_t> parent(numImages);
-		FOREACH(i, parent)
-			parent[i] = (uint32_t)i;
-		const auto Find = [&parent](uint32_t x) {
-			while (parent[x] != x)
-				x = parent[x] = parent[parent[x]];
-			return x;
-		};
-		const auto Join = [&parent, &Find](IIndex a, IIndex b) {
-			const uint32_t ra = Find((uint32_t)a), rb = Find((uint32_t)b);
-			if (ra == rb)
-				return false;
-			parent[MAXF(ra, rb)] = MINF(ra, rb);
-			return true;
-		};
-		FOREACH(idxPair, scene.pairs) {
-			const ImagePair& pair = scene.pairs[idxPair];
-			if (!pair.HasGeometricVerification() || pair.GetNumWeightedInliers() == 0 || pair.ID1 == pair.ID2)
-				continue;
-			const float score = scores[idxPair];
-			if (score >= 0.f && score < tau && !spared[idxPair])
-				continue; // a candidate, unless retained by the floor (representatives only carry the mark)
-			Join(pair.ID1, pair.ID2);
-		}
-		for (unsigned idx : candidates) {
-			if (spared[idx])
-				continue;
-			if (Join(scene.pairs[idx].ID1, scene.pairs[idx].ID2)) {
-				spared[idx] = true;
-				++numSparedRepair;
-			}
+			VERBOSE("Triplet filter: the ceiling %.3f (m %.2f, d_max/|V| %.3f) names %u candidate pairs below it; "
+				"every image keeps at least %u pairs holding %u matches at %g degrees or more: %u candidates retained "
+				"for the floor, %u to keep every component whole, %u images whose candidates ran out before the floor held",
+				tau, minScore, degreeRatio, numCandidates, config.keepPairs, config.keepMatches, keepMinAngle,
+				numSparedFloor, numSparedRepair, numShort);
 		}
 		// duplicates follow their representative
 		FOREACH(idxPair, scene.pairs) {
@@ -812,11 +852,6 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 				spared[idxPair] = it == representative.end() || spared[it->second];
 			}
 		}
-		VERBOSE("Triplet filter: the ceiling %.3f (m %.2f, d_max/|V| %.3f) names %u candidate pairs below it; "
-			"every image keeps at least %u pairs holding %u matches at %g degrees or more: %u candidates retained "
-			"for the floor, %u to keep every component whole, %u images whose candidates ran out before the floor held",
-			tau, minScore, degreeRatio, numCandidates, config.keepPairs, config.keepMatches, keepMinAngle,
-			numSparedFloor, numSparedRepair, numShort);
 	}
 	// compact in one forward pass -- moving every kept pair down and truncating once -- rather
 	// than erasing pair by pair: each erase shifts the whole tail, so on a graph where the filter

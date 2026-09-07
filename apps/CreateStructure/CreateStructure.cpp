@@ -81,6 +81,7 @@ bool bTripletCut;
 unsigned nTripletKeepPairs;
 unsigned nTripletKeepMatches;
 float fTripletKeepMinAngle;
+float fTripletKeepMaxShort;
 float fTripletMinScore;
 float fTripletSecondFaceScore;
 String strROMA2Provider;
@@ -166,6 +167,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("triplet-keep-pairs", boost::program_options::value(&OPT::nTripletKeepPairs)->default_value(TripletFilterConfig().keepPairs), "camera-triplet filter, without --triplet-cut: every image keeps at least this many of its pairs, its best-scoring ones")
 		("triplet-keep-matches", boost::program_options::value(&OPT::nTripletKeepMatches)->default_value(TripletFilterConfig().keepMatches), "camera-triplet filter, without --triplet-cut: every image keeps enough of its best-scoring pairs to hold this many matches (see --triplet-keep-min-angle)")
 		("triplet-keep-min-angle", boost::program_options::value(&OPT::fTripletKeepMinAngle)->default_value(TripletFilterConfig().keepMinAngle), "camera-triplet filter, without --triplet-cut: only pairs whose ray angle reaches this many degrees count towards an image's floor of pairs and matches (a near-duplicate pair yields no 3D point); 0 counts every pair")
+		("triplet-keep-max-short", boost::program_options::value(&OPT::fTripletKeepMaxShort)->default_value(TripletFilterConfig().keepMaxShort), "camera-triplet filter, without --triplet-cut: the largest share of the images that may fall short of the floor from their pairs above the threshold alone; beyond it the threshold does not fit the graph and nothing is removed (1 never stands down)")
 		("triplet-min-score", boost::program_options::value(&OPT::fTripletMinScore)->default_value(TripletFilterConfig().minScore), "camera-triplet filter: the paper's minimum edge score m in [0,1], from which the threshold tau = m(1-r)+r is derived with r the maximum-degree ratio of the scored graph; with --triplet-auto-tau that threshold is the ceiling the filter starts from (0.6 generic scenes, 0.9 highly ambiguous, 0.3 medium/small ambiguous); the default is the paper's 0.3 for medium and small ambiguous sets")
 		("triplet-second-face-score", boost::program_options::value(&OPT::fTripletSecondFaceScore)->default_value(TripletFilterConfig().secondFaceScore), "camera-triplet filter, with --triplet-cut and --triplet-auto-tau, a stricter minimum edge score whose ceiling names the faces when the graph it leaves has two (a majority piece and a second piece of at least a third of it): the default's ceiling then applies inside the larger face and every pair joining the other face is removed; at or below --triplet-min-score it is off")
 		("max-features-per-cell", boost::program_options::value(&OPT::nMaxFeaturesPerCell)->default_value(3000), "maximum features per grid cell (3x3 grid)")
@@ -413,6 +415,7 @@ int main(int argc, LPCTSTR* argv)
 	cfg.tripletFilterCfg.keepPairs = OPT::nTripletKeepPairs;
 	cfg.tripletFilterCfg.keepMatches = OPT::nTripletKeepMatches;
 	cfg.tripletFilterCfg.keepMinAngle = OPT::fTripletKeepMinAngle;
+	cfg.tripletFilterCfg.keepMaxShort = OPT::fTripletKeepMaxShort;
 	cfg.tripletFilterCfg.minScore = OPT::fTripletMinScore;
 	cfg.tripletFilterCfg.secondFaceScore = OPT::fTripletSecondFaceScore;
 	cfg.viewgraphCfg.maxTwoViewError = 0; // disable pair filtering after ViewGraph calibration
