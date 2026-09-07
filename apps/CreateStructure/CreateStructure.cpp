@@ -77,6 +77,9 @@ float fROMA2MinOverlap;
 unsigned nROMA2DenseMatches;
 bool bFilterTriplets;
 bool bTripletAutoTau;
+bool bTripletCut;
+unsigned nTripletKeepPairs;
+unsigned nTripletKeepMatches;
 float fTripletMinScore;
 float fTripletSecondFaceScore;
 String strROMA2Provider;
@@ -156,10 +159,13 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("export-pairs-csv", boost::program_options::value<std::string>(&OPT::strExportPairsCSV), "export image pairs to CSV file (written right after matching, before reconstruction) (optional)")
 		("export-retrieval-csv", boost::program_options::value<std::string>(&OPT::strExportRetrievalCSV), "export the per-image global-descriptor retrieval rankings to CSV file (written right after matching, before reconstruction) (optional)")
 		("compare-mvs", boost::program_options::value<std::string>(&OPT::strCompareMVS), "compare reconstruction against ground-truth MVS file (optional)")
-		("filter-triplets", boost::program_options::value<bool>(&OPT::bFilterTriplets)->default_value(TripletFilterConfig().enabled), "disambiguate the matched view graph with the camera-triplet filter (Manam & Govindu, CVPR 2024): remove the pairs whose inlier count, discounted by the image area those inliers cover, is systematically weak in the triangles they belong to; a triangle of three pairs that all deliver far fewer inliers than pairs at their ray angle do is look-alike copies vouching for one another and counts for nothing")
-		("triplet-auto-tau", boost::program_options::value<bool>(&OPT::bTripletAutoTau)->default_value(TripletFilterConfig().autoTau), "camera-triplet filter: treat the paper's threshold tau(m) as a ceiling and relax below it to the strictest threshold that joins every piece the ceiling leaves apart, when no piece holds a majority of the images (a ceiling whose largest piece does is applied as given); off applies tau(m) as given")
+		("filter-triplets", boost::program_options::value<bool>(&OPT::bFilterTriplets)->default_value(TripletFilterConfig().enabled), "disambiguate the matched view graph with the camera-triplet filter (Manam & Govindu, CVPR 2024): score every pair by how its inlier count, discounted by the image area those inliers cover, compares with the strongest pair of the triangles it belongs to; by default only what the graph can spare goes (see --triplet-keep-pairs and --triplet-keep-matches; every component of the graph stays whole), with --triplet-cut the graph is cut into its faces; a triangle of three pairs that all deliver far fewer inliers than pairs at their ray angle do is look-alike copies vouching for one another and counts for nothing")
+		("triplet-auto-tau", boost::program_options::value<bool>(&OPT::bTripletAutoTau)->default_value(TripletFilterConfig().autoTau), "camera-triplet filter, with --triplet-cut: treat the paper's threshold tau(m) as a ceiling and relax below it to the strictest threshold that joins every piece the ceiling leaves apart, when no piece holds a majority of the images (a ceiling whose largest piece does is applied as given); off applies tau(m) as given")
+		("triplet-cut", boost::program_options::value<bool>(&OPT::bTripletCut)->default_value(TripletFilterConfig().cut), "camera-triplet filter: cut the view graph into its faces -- the paper's threshold applied as given when the piece it leaves largest holds a majority of the images, the smaller pieces left apart, a second face cut off (--triplet-second-face-score), the descent below a shattered ceiling (--triplet-auto-tau); this unfolds a symmetric building and halves the registrations of an interior whose rooms it cuts off; off, only what the graph can spare goes")
+		("triplet-keep-pairs", boost::program_options::value(&OPT::nTripletKeepPairs)->default_value(TripletFilterConfig().keepPairs), "camera-triplet filter, without --triplet-cut: every image keeps at least this many of its pairs, its best-scoring ones")
+		("triplet-keep-matches", boost::program_options::value(&OPT::nTripletKeepMatches)->default_value(TripletFilterConfig().keepMatches), "camera-triplet filter, without --triplet-cut: every image keeps enough of its best-scoring pairs to hold this many matches")
 		("triplet-min-score", boost::program_options::value(&OPT::fTripletMinScore)->default_value(TripletFilterConfig().minScore), "camera-triplet filter: the paper's minimum edge score m in [0,1], from which the threshold tau = m(1-r)+r is derived with r the maximum-degree ratio of the scored graph; with --triplet-auto-tau that threshold is the ceiling the filter starts from (0.6 generic scenes, 0.9 highly ambiguous, 0.3 medium/small ambiguous); the default is the paper's 0.3 for medium and small ambiguous sets")
-		("triplet-second-face-score", boost::program_options::value(&OPT::fTripletSecondFaceScore)->default_value(TripletFilterConfig().secondFaceScore), "camera-triplet filter: with --triplet-auto-tau, a stricter minimum edge score whose ceiling names the faces when the graph it leaves has two (a majority piece and a second piece of at least a third of it): the default's ceiling then applies inside the larger face and every pair joining the other face is removed; at or below --triplet-min-score it is off")
+		("triplet-second-face-score", boost::program_options::value(&OPT::fTripletSecondFaceScore)->default_value(TripletFilterConfig().secondFaceScore), "camera-triplet filter, with --triplet-cut and --triplet-auto-tau, a stricter minimum edge score whose ceiling names the faces when the graph it leaves has two (a majority piece and a second piece of at least a third of it): the default's ceiling then applies inside the larger face and every pair joining the other face is removed; at or below --triplet-min-score it is off")
 		("max-features-per-cell", boost::program_options::value(&OPT::nMaxFeaturesPerCell)->default_value(3000), "maximum features per grid cell (3x3 grid)")
 		("min-features-per-cell", boost::program_options::value(&OPT::nMinFeaturesPerCell)->default_value(500), "minimum features per cell before adjusting sensitivity")
 		("match-mode", boost::program_options::value(&OPT::matchMode)->default_value(1), "match mode: -1=SKIP,0=EXHAUSTIVE,1=VOCABULARY,2=SEQUENTIAL,3=KNOWN_POSES,4=RETRIEVAL")
@@ -401,6 +407,9 @@ int main(int argc, LPCTSTR* argv)
 	// applied by Scene::Reconstruct() right after those exports, so they still list every matched pair
 	cfg.tripletFilterCfg.enabled = OPT::bFilterTriplets;
 	cfg.tripletFilterCfg.autoTau = OPT::bTripletAutoTau;
+	cfg.tripletFilterCfg.cut = OPT::bTripletCut;
+	cfg.tripletFilterCfg.keepPairs = OPT::nTripletKeepPairs;
+	cfg.tripletFilterCfg.keepMatches = OPT::nTripletKeepMatches;
 	cfg.tripletFilterCfg.minScore = OPT::fTripletMinScore;
 	cfg.tripletFilterCfg.secondFaceScore = OPT::fTripletSecondFaceScore;
 	cfg.viewgraphCfg.maxTwoViewError = 0; // disable pair filtering after ViewGraph calibration

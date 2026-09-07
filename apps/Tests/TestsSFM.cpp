@@ -7875,6 +7875,7 @@ bool TripletFilterTest()
 	// keeps them.
 	TripletFilterConfig filterCfg;
 	filterCfg.enabled = true;
+	filterCfg.cut = true; // these tests pin the cutting rule; the keep mode is TripletKeepTest's subject
 	// This test pins the paper's threshold arithmetic -- Eqn. 3 at a given m -- so it applies m
 	// as given; the connectivity-driven threshold below it is TripletAutoTauTest's subject. The
 	// second-face ceiling is part of that same connectivity search, so it is off here too.
@@ -8016,6 +8017,7 @@ bool TripletAutoTauTest()
 	}
 	TripletFilterConfig cfg;
 	cfg.enabled = true;
+	cfg.cut = true;
 	cfg.autoTau = true;
 	cfg.minScore = 0.6f;
 	// no ray angles here, so the yield rule is off; it is TripletYieldTest's subject
@@ -8326,6 +8328,7 @@ bool TripletAutoTauTest()
 	}
 	TripletFilterConfig walkCfg;
 	walkCfg.enabled = true;
+	walkCfg.cut = true;
 	walkCfg.minScore = 0.6f; // the scene's ceiling and the counts below were derived at the paper's generic m
 	walkCfg.minYield = 0.f; // no ray angles here, so the yield rule is off; it is TripletYieldTest's subject
 	IIndexArr walkSeeds;
@@ -8392,6 +8395,7 @@ bool TripletAutoTauTest()
 	}
 	TripletFilterConfig chainsCfg;
 	chainsCfg.enabled = true;
+	chainsCfg.cut = true;
 	chainsCfg.minScore = 0.6f; // the scene's ceiling and the counts below were derived at the paper's generic m
 	chainsCfg.minYield = 0.f;
 	IIndexArr chainsSeeds;
@@ -8474,6 +8478,7 @@ bool TripletAutoTauTest()
 	}
 	TripletFilterConfig floodCfg;
 	floodCfg.enabled = true;
+	floodCfg.cut = true;
 	floodCfg.minYield = 0.f;
 	floodCfg.minScore = 0.6f; // the scene's ceiling and the counts below were derived at the paper's generic m
 	IIndexArr floodSeeds;
@@ -8515,6 +8520,7 @@ bool TripletAutoTauTest()
 	}
 	TripletFilterConfig pairsChainCfg;
 	pairsChainCfg.enabled = true;
+	pairsChainCfg.cut = true;
 	pairsChainCfg.minYield = 0.f;
 	pairsChainCfg.minScore = 0.6f; // the scene's ceiling and the counts below were derived at the paper's generic m
 	IIndexArr pairsChainSeeds;
@@ -8580,6 +8586,7 @@ bool TripletAutoTauTest()
 	}
 	TripletFilterConfig facesCfg;
 	facesCfg.enabled = true;
+	facesCfg.cut = true;
 	facesCfg.minScore = 0.6f; // the scene's ceilings and the counts below were derived at the paper's generic m
 	facesCfg.minYield = 0.f;
 	IIndexArr facesSeeds;
@@ -8645,6 +8652,7 @@ bool TripletAutoTauTest()
 	}
 	TripletFilterConfig fansCfg;
 	fansCfg.enabled = true;
+	fansCfg.cut = true;
 	fansCfg.minScore = 0.6f; // the scene's ceilings and the counts below were derived at the paper's generic m
 	fansCfg.minYield = 0.f;
 	IIndexArr fansSeeds;
@@ -8683,6 +8691,7 @@ bool TripletAutoTauTest()
 	AddTripletPair(cluster, 59, 61, 700);
 	TripletFilterConfig clusterCfg;
 	clusterCfg.enabled = true;
+	clusterCfg.cut = true;
 	clusterCfg.minScore = 0.6f; // the scene's ceilings and the counts below were derived at the paper's generic m
 	clusterCfg.minYield = 0.f;
 	IIndexArr clusterSeeds;
@@ -8732,6 +8741,7 @@ bool TripletAutoTauTest()
 	}
 	TripletFilterConfig threeFacesCfg;
 	threeFacesCfg.enabled = true;
+	threeFacesCfg.cut = true;
 	threeFacesCfg.minScore = 0.6f; // the scene's ceilings and the counts below were derived at the paper's generic m
 	threeFacesCfg.minYield = 0.f;
 	IIndexArr threeFacesSeeds;
@@ -8795,6 +8805,7 @@ bool TripletCoverageTest()
 	// stays; by count alone it would be the chain that goes.
 	TripletFilterConfig filterCfg;
 	filterCfg.enabled = true;
+	filterCfg.cut = true;
 	filterCfg.autoTau = false;
 	filterCfg.minScore = 0.5f;
 	// no ray angles here, so the yield rule is off; it is TripletYieldTest's subject
@@ -8864,6 +8875,12 @@ bool TripletYieldTest()
 			defaults.secondFaceScore);
 		return false;
 	}
+	if (!defaults.enabled || defaults.cut || defaults.keepPairs != 3 || defaults.keepMatches != 2000) {
+		VERBOSE("TripletYieldTest FAILED: defaults enabled %d cut %d keepPairs %u keepMatches %u; expected the filter on, "
+			"in the keep mode, with a floor of 3 pairs and 2000 matches",
+			defaults.enabled ? 1 : 0, defaults.cut ? 1 : 0, defaults.keepPairs, defaults.keepMatches);
+		return false;
+	}
 	const TripletScores scores = ComputeTripletScores(scene, 0.f, defaults.minYield, weightingCfg.gridSize);
 	if (scores.numTriplets != 31 || scores.numDoppelgangerTriplets != 10 || scores.numScoredPairs != 37 ||
 		!ISEQUAL(scores.scores[idx01], 1.f) || !ISEQUAL(scores.scores[idx02], 0.6f) ||
@@ -8928,6 +8945,7 @@ bool TripletYieldTest()
 	// and stay with them.
 	TripletFilterConfig filterCfg;
 	filterCfg.enabled = true;
+	filterCfg.cut = true;
 	filterCfg.minScore = 0.6f; // the scene's ceiling and the counts below were derived at the paper's generic m
 	std::set<std::pair<IIndex,IIndex>> expected;
 	for (IIndex i = 0; i + 1 < 15; ++i)
@@ -8954,6 +8972,170 @@ bool TripletYieldTest()
 	}
 	VERBOSE("TripletYieldTest PASSED: look-alike triangles give no evidence, (0,6) scores 0 against 1 with the rule off, "
 		"and the filter keeps the walk alone (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// The keep mode: the ceiling names the candidates, every image keeps a floor of pairs and
+// matches, and every component of the matched graph stays whole; the cutting rule on the same
+// scene cuts a room off. Two scenes: two rooms joined by three weak true pairs, and an image
+// whose every pair is weak.
+bool TripletKeepTest()
+{
+	PairsWeightingConfig weightingCfg;
+	weightingCfg.gridSize = 1;
+	// Two rooms, chains of 60 and 30 images (consecutive pairs 1000 inliers, two apart 600),
+	// joined by three weak pairs forming two triangles with the chains' own: (59,60) 60,
+	// (58,60) 50 and (59,61) 50. No image holds more than four pairs, so r = 4/90 and the
+	// ceiling is 0.3(1 - 4/90) + 4/90 = 0.331: the two-apart pairs score 0.6 and stay, the
+	// bridges score 0.06 and 0.05 and are the only candidates. With cut, the second ceiling
+	// (0.761) drops the two-apart pairs and names the rooms faces of 60 and 30, so the bridges
+	// are cut; had it not, the larger room holds a majority and the ceiling applied as given
+	// removes the same three. Either way the smaller room is cut off.
+	const auto buildRooms = [](Scene& scene) {
+		AddTripletImages(scene, 90);
+		for (IIndex i = 0; i + 1 < 60; ++i)
+			AddTripletPair(scene, i, i + 1, 1000);
+		for (IIndex i = 0; i + 2 < 60; ++i)
+			AddTripletPair(scene, i, i + 2, 600);
+		for (IIndex i = 60; i + 1 < 90; ++i)
+			AddTripletPair(scene, i, i + 1, 1000);
+		for (IIndex i = 60; i + 2 < 90; ++i)
+			AddTripletPair(scene, i, i + 2, 600);
+		AddTripletPair(scene, 59, 60, 60);
+		AddTripletPair(scene, 58, 60, 50);
+		AddTripletPair(scene, 59, 61, 50);
+	};
+	const std::set<std::pair<IIndex,IIndex>> bridges{{59,60},{58,60},{59,61}};
+	{
+		Scene rooms;
+		buildRooms(rooms);
+		TripletFilterConfig cutCfg;
+		cutCfg.enabled = true;
+		cutCfg.cut = true;
+		cutCfg.minYield = 0.f; // no ray angles here
+		IIndexArr seeds;
+		const unsigned removed = FilterPairsByTriplets(rooms, cutCfg, weightingCfg, &seeds);
+		const std::set<std::pair<IIndex,IIndex>> kept = TripletKeptPairs(rooms);
+		bool right = removed == 3 && kept.size() == 59 + 58 + 29 + 28 && seeds.size() == 60;
+		for (const auto& bridge : bridges)
+			right = right && kept.count(bridge) == 0;
+		if (!right) {
+			VERBOSE("TripletKeepTest FAILED: the cutting rule removed %u pairs, kept %u, %u seeds; expected the three "
+				"bridges removed, 174 pairs kept and the larger room's 60 images as seeds",
+				removed, (unsigned)kept.size(), (unsigned)seeds.size());
+			return false;
+		}
+	}
+	// The keep mode with a floor of 2 pairs and no matches: every image keeps two pairs at the
+	// ceiling already (the chain ends 0, 59, 60 and 89 exactly two), so the floor retains
+	// nothing and the repair alone joins the rooms, through the best-scoring bridge (59,60).
+	{
+		Scene rooms;
+		buildRooms(rooms);
+		TripletFilterConfig keepCfg;
+		keepCfg.enabled = true;
+		keepCfg.keepPairs = 2;
+		keepCfg.keepMatches = 0;
+		keepCfg.minYield = 0.f;
+		IIndexArr seeds;
+		const unsigned removed = FilterPairsByTriplets(rooms, keepCfg, weightingCfg, &seeds);
+		const std::set<std::pair<IIndex,IIndex>> kept = TripletKeptPairs(rooms);
+		if (removed != 2 || kept.count({59,60}) != 1 || kept.count({58,60}) != 0 || kept.count({59,61}) != 0 || seeds.size() != 60) {
+			VERBOSE("TripletKeepTest FAILED: the repair removed %u pairs, kept (59,60) %d (58,60) %d (59,61) %d, %u seeds; "
+				"expected the two weaker bridges removed and (59,60) retained to keep the rooms one component",
+				removed, kept.count({59,60}) ? 1 : 0, kept.count({58,60}) ? 1 : 0, kept.count({59,61}) ? 1 : 0, (unsigned)seeds.size());
+			return false;
+		}
+	}
+	// A floor of 3 pairs: the chain ends keep two pairs at the ceiling and 59 and 60 have
+	// candidates; 59 retains (59,60), which serves 60 as well; the other two bridges go.
+	{
+		Scene rooms;
+		buildRooms(rooms);
+		TripletFilterConfig keepCfg;
+		keepCfg.enabled = true;
+		keepCfg.keepPairs = 3;
+		keepCfg.keepMatches = 0;
+		keepCfg.minYield = 0.f;
+		const unsigned removed = FilterPairsByTriplets(rooms, keepCfg, weightingCfg);
+		const std::set<std::pair<IIndex,IIndex>> kept = TripletKeptPairs(rooms);
+		if (removed != 2 || kept.count({59,60}) != 1) {
+			VERBOSE("TripletKeepTest FAILED: a floor of 3 pairs removed %u pairs, kept (59,60) %d; expected 2 removed and (59,60) retained",
+				removed, kept.count({59,60}) ? 1 : 0);
+			return false;
+		}
+	}
+	// The default floor (3 pairs, 2000 matches): 59 keeps (57,59) 600 and (58,59) 1000 at the
+	// ceiling, 1600 matches, and retains both its candidates, (59,60) then (59,61); 60 keeps
+	// (60,61) 1000 and (60,62) 600 plus the retained (59,60), 1660, and retains (58,60). Nothing
+	// is removed.
+	{
+		Scene rooms;
+		buildRooms(rooms);
+		TripletFilterConfig keepCfg;
+		keepCfg.enabled = true;
+		keepCfg.minYield = 0.f;
+		const unsigned removed = FilterPairsByTriplets(rooms, keepCfg, weightingCfg);
+		if (removed != 0 || rooms.pairs.size() != 177) {
+			VERBOSE("TripletKeepTest FAILED: the default floor removed %u pairs of 177; expected none, the rooms' end images "
+				"holding fewer than 2000 matches at the ceiling", removed);
+			return false;
+		}
+	}
+	// An image whose every pair is weak: a chain of 12 images (consecutive 1000, two apart 800)
+	// and image 12 matched to images 0-5 with 100, 90, 80, 70, 60 and 50 inliers, each such pair
+	// in triangles with the chain's own (12's pairs to i and i+1 close a triangle on (i,i+1), to
+	// i and i+2 on (i,i+2)), scoring from 0.11 down to 0.06 in that order; image 12 holds six
+	// pairs, so r = 6/13 and the ceiling is 0.623, above which the two-apart pairs (0.8 to 0.9)
+	// and the consecutive ones (1) sit. With cut, image 12 is a piece of one apart from the
+	// chain's majority and every one of its pairs goes. The keep mode with a floor of 3 pairs
+	// keeps its three best, (0,12), (1,12) and (2,12).
+	const auto buildHub = [](Scene& scene) {
+		AddTripletImages(scene, 13);
+		for (IIndex i = 0; i + 1 < 12; ++i)
+			AddTripletPair(scene, i, i + 1, 1000);
+		for (IIndex i = 0; i + 2 < 12; ++i)
+			AddTripletPair(scene, i, i + 2, 800);
+		const unsigned inliers[6] = {100, 90, 80, 70, 60, 50};
+		for (IIndex i = 0; i < 6; ++i)
+			AddTripletPair(scene, i, 12, inliers[i]);
+	};
+	{
+		Scene hub;
+		buildHub(hub);
+		TripletFilterConfig cutCfg;
+		cutCfg.enabled = true;
+		cutCfg.cut = true;
+		cutCfg.minYield = 0.f;
+		const unsigned removed = FilterPairsByTriplets(hub, cutCfg, weightingCfg);
+		const std::set<std::pair<IIndex,IIndex>> kept = TripletKeptPairs(hub);
+		bool right = removed == 6;
+		for (IIndex i = 0; i < 6; ++i)
+			right = right && kept.count({i, 12}) == 0;
+		if (!right) {
+			VERBOSE("TripletKeepTest FAILED: the cutting rule removed %u of the hub's pairs; expected all six", removed);
+			return false;
+		}
+	}
+	{
+		Scene hub;
+		buildHub(hub);
+		TripletFilterConfig keepCfg;
+		keepCfg.enabled = true;
+		keepCfg.keepPairs = 3;
+		keepCfg.keepMatches = 0;
+		keepCfg.minYield = 0.f;
+		const unsigned removed = FilterPairsByTriplets(hub, keepCfg, weightingCfg);
+		const std::set<std::pair<IIndex,IIndex>> kept = TripletKeptPairs(hub);
+		if (removed != 3 || kept.count({0,12}) != 1 || kept.count({1,12}) != 1 || kept.count({2,12}) != 1 ||
+			kept.count({3,12}) != 0 || kept.count({4,12}) != 0 || kept.count({5,12}) != 0) {
+			VERBOSE("TripletKeepTest FAILED: the floor removed %u of the hub's pairs, kept (0,12) %d (1,12) %d (2,12) %d; "
+				"expected its three best kept and the other three removed",
+				removed, kept.count({0,12}) ? 1 : 0, kept.count({1,12}) ? 1 : 0, kept.count({2,12}) ? 1 : 0);
+			return false;
+		}
+	}
+	VERBOSE("TripletKeepTest PASSED: the keep mode keeps every image its floor and every component whole; the cutting rule cuts the room and the hub off");
 	return true;
 }
 

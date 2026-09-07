@@ -304,6 +304,11 @@ bool TripletCoverageTest();
 // below minYield contributes no evidence, and the filter keeps the walk alone instead of folding it
 bool TripletYieldTest();
 
+// The filter is on by default and, without cut, removes only what the graph can spare: the ceiling
+// names the candidates, every image keeps a floor of pairs and matches, and every component of the
+// matched graph stays one component -- where the cutting rule cuts a room off a capture
+bool TripletKeepTest();
+
 // The star initializer's reference view is chosen among the seed views the caller names -- the
 // triplet filter's largest ceiling piece -- and only among every image when none is named, or
 // none of the named has a valid pair. After the filter, the seed's side of a symmetric building

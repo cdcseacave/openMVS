@@ -52,9 +52,29 @@ class SFM_API Scene;
 // three pairs all yield poorly is no evidence for any of them.
 struct SFM_API TripletFilterConfig
 {
-	bool enabled = false;   // remove the pairs the triplet score rejects (opt-in, see docs/design/TripletDisambiguation.md)
-	// The paper's tau(m) is a ceiling: below it, the threshold is the strictest one whose survivor
-	// graph joins every piece the ceiling leaves. Off, tau(m) is applied as given.
+	// Remove the pairs the triplet score rejects. On by default: without `cut` the filter
+	// removes only what the graph can spare (see keepPairs), and a graph with no repeated
+	// structure loses nothing it needs (docs/design/TripletDisambiguation.md).
+	bool enabled = true;
+	// The cutting rule: the ceiling applied as given when its largest piece holds a majority,
+	// the pieces below it left apart, the second ceiling naming the faces and the other face cut
+	// off, the descent below a shattered ceiling, no floor. The rule for a scene with repeated
+	// structure -- a symmetric building is unfolded by cutting its graph -- and the rule that
+	// halves the registrations of an interior, whose ceiling cuts off rooms. Off, the keep mode:
+	// the ceiling names the candidates (the scored pairs below it), every image keeps at least
+	// keepPairs of its pairs and enough of its best-scoring ones to hold keepMatches inliers, and
+	// every component of the matched graph stays one component (its strongest candidates are
+	// kept until it does). autoTau and secondFaceScore apply only with cut.
+	bool cut = false;
+	// The floor of the keep mode: the pairs and the weighted inliers (summed over its kept
+	// pairs) every image keeps. Its pairs above the ceiling and its unscored pairs count first;
+	// below the floor, its best-scoring candidates are retained, ties to the stronger. 0 and 0
+	// keep nothing for the floor's sake; the components are kept whole regardless.
+	unsigned keepPairs = 3;
+	unsigned keepMatches = 2000;
+	// With cut: the paper's tau(m) is a ceiling: below it, the threshold is the strictest one
+	// whose survivor graph joins every piece the ceiling leaves. Off, tau(m) is applied as given.
+	// Without cut the ceiling only names the candidates, and this flag plays no part.
 	bool autoTau = true;
 	// The paper's minimum edge score m, in [0,1] (the domain this implementation enforces): 0.3
 	// medium/small ambiguous (the default), 0.6 generic/large-scale, 0.9 highly ambiguous. With
@@ -169,6 +189,14 @@ TripletScores SFM_API ComputeTripletScores(const Scene& scene, float minScore, f
 // reconstruction chooses its reference view among them (StarInitConfig::seedViews), since after
 // the filter the seed's side of a symmetric building is the model and the heaviest image overall
 // sits in the densest cluster of look-alike views.
+// Two modes. With config.cut the filter applies the cutting rule above: the ceiling as given
+// when its largest piece holds a majority (the smaller pieces left apart), the second ceiling
+// naming the faces, the descent below a shattered ceiling. Without it (the default) the ceiling
+// names the candidates, the scored pairs below it, and of those only what the graph can spare
+// goes: every image keeps at least config.keepPairs pairs and enough of its best-scoring pairs
+// to hold config.keepMatches weighted inliers, and every connected component of the matched
+// graph stays one component, joined by its best-scoring candidates. A distinct image pair
+// decides once, through its highest-scoring scene pair; duplicates follow it.
 unsigned SFM_API FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& config,
 	const PairsWeightingConfig& weightingCfg, IIndexArr* pSeedViews = NULL);
 
