@@ -67,11 +67,20 @@ struct SFM_API TripletFilterConfig
 	// kept until it does). autoTau and secondFaceScore apply only with cut.
 	bool cut = false;
 	// The floor of the keep mode: the pairs and the weighted inliers (summed over its kept
-	// pairs) every image keeps. Its pairs above the ceiling and its unscored pairs count first;
-	// below the floor, its best-scoring candidates are retained, ties to the stronger. 0 and 0
-	// keep nothing for the floor's sake; the components are kept whole regardless.
+	// pairs) every image keeps, counting only the pairs whose ray angle (meanRayAngle, the
+	// median angle between the viewing rays of the track-forming matches) reaches keepMinAngle
+	// degrees -- a near-duplicate pair yields no 3D point, and on a video every pair but the
+	// consecutive ones is the weak side of a triangle a consecutive pair tops, so a burst of
+	// near-duplicate frames would otherwise keep only its own pairs and lose every link to the
+	// rest of the capture, then be invalidated for a median triangulation angle below the
+	// reconstruction's 1.5 degrees; 3 is twice that bar. A pair whose angle was never measured
+	// (0) counts. The image's counting pairs above the ceiling and its unscored ones count
+	// first; below the floor, its best-scoring counting candidates are retained, ties to the
+	// stronger. keepPairs and keepMatches at 0 keep nothing for the floor's sake, keepMinAngle
+	// at 0 counts every pair; the components are kept whole regardless.
 	unsigned keepPairs = 3;
 	unsigned keepMatches = 2000;
+	float keepMinAngle = 3.f;
 	// With cut: the paper's tau(m) is a ceiling: below it, the threshold is the strictest one
 	// whose survivor graph joins every piece the ceiling leaves. Off, tau(m) is applied as given.
 	// Without cut the ceiling only names the candidates, and this flag plays no part.
@@ -194,7 +203,8 @@ TripletScores SFM_API ComputeTripletScores(const Scene& scene, float minScore, f
 // naming the faces, the descent below a shattered ceiling. Without it (the default) the ceiling
 // names the candidates, the scored pairs below it, and of those only what the graph can spare
 // goes: every image keeps at least config.keepPairs pairs and enough of its best-scoring pairs
-// to hold config.keepMatches weighted inliers, and every connected component of the matched
+// to hold config.keepMatches weighted inliers, counting only pairs whose ray angle reaches
+// config.keepMinAngle degrees, and every connected component of the matched
 // graph stays one component, joined by its best-scoring candidates. A distinct image pair
 // decides once, through its highest-scoring scene pair; duplicates follow it.
 unsigned SFM_API FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& config,

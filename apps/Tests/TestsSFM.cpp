@@ -8875,10 +8875,13 @@ bool TripletYieldTest()
 			defaults.secondFaceScore);
 		return false;
 	}
-	if (!defaults.enabled || defaults.cut || defaults.keepPairs != 3 || defaults.keepMatches != 2000) {
-		VERBOSE("TripletYieldTest FAILED: defaults enabled %d cut %d keepPairs %u keepMatches %u; expected the filter on, "
-			"in the keep mode, with a floor of 3 pairs and 2000 matches",
-			defaults.enabled ? 1 : 0, defaults.cut ? 1 : 0, defaults.keepPairs, defaults.keepMatches);
+	if (!defaults.enabled || defaults.cut || defaults.keepPairs != 3 || defaults.keepMatches != 2000 ||
+		!ISEQUAL(defaults.keepMinAngle, 3.f)) {
+		VERBOSE("TripletYieldTest FAILED: defaults enabled %d cut %d keepPairs %u keepMatches %u keepMinAngle %g; "
+			"expected the filter on, in the keep mode, with a floor of 3 pairs and 2000 matches, counting pairs at "
+			"3 degrees or more",
+			defaults.enabled ? 1 : 0, defaults.cut ? 1 : 0, defaults.keepPairs, defaults.keepMatches,
+			defaults.keepMinAngle);
 		return false;
 	}
 	const TripletScores scores = ComputeTripletScores(scene, 0.f, defaults.minYield, weightingCfg.gridSize);
@@ -9135,7 +9138,72 @@ bool TripletKeepTest()
 			return false;
 		}
 	}
-	VERBOSE("TripletKeepTest PASSED: the keep mode keeps every image its floor and every component whole; the cutting rule cuts the room and the hub off");
+	// A burst: a chain of 14 images whose consecutive pairs (1000 inliers) sit at 1 degree and
+	// two-apart pairs (800) at 1.5 degrees, and six wide pairs (i, i+4) for i in 2..7 with 100
+	// inliers at 6 degrees. Image 6 holds six pairs, so r = 6/14 and the ceiling is 0.6; a wide
+	// pair sits in the one triangle (i, i+2, i+4) and scores 100/800 = 0.125, the two-apart
+	// pairs score at least 0.8, so the six wide pairs are the candidates. With every pair
+	// counting (keepMinAngle 0) each image with a candidate keeps four pairs holding at least
+	// 3,400 matches and the six wide pairs go, as they do under the cutting rule; counting only
+	// pairs at 3 degrees or more, no kept pair counts and every image with a candidate is short
+	// of three, so all six are retained: the burst keeps its links to the rest of the chain.
+	const auto buildBurst = [](Scene& scene) {
+		AddTripletImages(scene, 14);
+		const auto add = [&scene](IIndex a, IIndex b, unsigned numInliers, float rayAngleDeg) {
+			AddTripletPair(scene, a, b, numInliers);
+			scene.pairs.Last().meanRayAngle = (float)D2R(rayAngleDeg);
+		};
+		for (IIndex i = 0; i + 1 < 14; ++i)
+			add(i, i + 1, 1000, 1.f);
+		for (IIndex i = 0; i + 2 < 14; ++i)
+			add(i, i + 2, 800, 1.5f);
+		for (IIndex i = 2; i <= 7; ++i)
+			add(i, i + 4, 100, 6.f);
+	};
+	{
+		Scene burst;
+		buildBurst(burst);
+		TripletFilterConfig cfgEvery;
+		cfgEvery.enabled = true;
+		cfgEvery.keepMinAngle = 0.f;
+		cfgEvery.minYield = 0.f;
+		const unsigned removed = FilterPairsByTriplets(burst, cfgEvery, weightingCfg);
+		if (removed != 6 || burst.pairs.size() != 13 + 12) {
+			VERBOSE("TripletKeepTest FAILED: with every pair counting, the burst lost %u pairs of 31; expected the six wide pairs", removed);
+			return false;
+		}
+	}
+	{
+		Scene burst;
+		buildBurst(burst);
+		TripletFilterConfig cfgCut;
+		cfgCut.enabled = true;
+		cfgCut.cut = true;
+		cfgCut.minYield = 0.f;
+		const unsigned removed = FilterPairsByTriplets(burst, cfgCut, weightingCfg);
+		if (removed != 6) {
+			VERBOSE("TripletKeepTest FAILED: the cutting rule removed %u of the burst's pairs; expected the six wide pairs", removed);
+			return false;
+		}
+	}
+	{
+		Scene burst;
+		buildBurst(burst);
+		TripletFilterConfig cfgAngle;
+		cfgAngle.enabled = true;
+		cfgAngle.minYield = 0.f;
+		const unsigned removed = FilterPairsByTriplets(burst, cfgAngle, weightingCfg);
+		const std::set<std::pair<IIndex,IIndex>> kept = TripletKeptPairs(burst);
+		bool right = removed == 0;
+		for (IIndex i = 2; i <= 7; ++i)
+			right = right && kept.count({i, i + 4}) == 1;
+		if (!right) {
+			VERBOSE("TripletKeepTest FAILED: counting pairs at 3 degrees or more, the burst lost %u pairs; expected none, "
+				"every image short of three counting pairs and its wide pairs retained", removed);
+			return false;
+		}
+	}
+	VERBOSE("TripletKeepTest PASSED: the keep mode keeps every image its floor and every component whole; the cutting rule cuts the room and the hub off; a burst keeps the links only its wide pairs give");
 	return true;
 }
 

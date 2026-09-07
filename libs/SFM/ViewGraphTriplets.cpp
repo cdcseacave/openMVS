@@ -471,6 +471,9 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 	const float minYield = std::isnan(config.minYield) ? 0.f : CLAMP(config.minYield, 0.f, 1.f);
 	if (minYield != config.minYield)
 		VERBOSE("warning: triplet filter: minimum yield %g is outside [0,1], using %g", config.minYield, minYield);
+	const float keepMinAngle = std::isnan(config.keepMinAngle) || config.keepMinAngle < 0.f ? 0.f : config.keepMinAngle;
+	if (keepMinAngle != config.keepMinAngle)
+		VERBOSE("warning: triplet filter: minimum ray angle %g is not a non-negative angle, using %g", config.keepMinAngle, keepMinAngle);
 	const TripletScores tripletScores = ComputeTripletScores(scene, minScore, minYield, weightingCfg.gridSize);
 	const float degreeRatio = tripletScores.numNodes > 0
 		? (float)tripletScores.maxDegree / (float)tripletScores.numNodes : 0.f;
@@ -650,9 +653,13 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 	// 10-25 pairs per image against 110-250. So a candidate goes only if both its images keep
 	// enough without it, and no component of the matched graph is broken.
 	// The floor: every image keeps at least keepPairs pairs and enough of them to hold
-	// keepMatches weighted inliers; its pairs above the ceiling and its unscored pairs count
-	// first, then its best-scoring candidates are retained, ties to the stronger, until both
-	// bounds hold or its candidates run out. Images are served in ascending order of what they
+	// keepMatches weighted inliers; only the pairs whose ray angle reaches keepMinAngle degrees
+	// count, and only such candidates are retained for it -- a near-duplicate pair yields no 3D
+	// point, and a burst of near-duplicate frames whose links to the rest of a capture all score
+	// low would otherwise keep nothing but itself and be invalidated for its triangulation angle;
+	// its counting pairs above the ceiling and its unscored pairs count first, then its
+	// best-scoring counting candidates are retained, ties to the stronger, until both bounds hold
+	// or such candidates run out. Images are served in ascending order of what they
 	// keep, fixed before serving begins, and a retained pair counts for both its images. A served
 	// image whose candidates ran out with a bound still unmet is counted for the log; an image the
 	// ceiling never touched asks for nothing and is not.
@@ -673,6 +680,12 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 		std::unordered_set<PairIdx::PairIndex> seenKept;
 		std::vector<unsigned> keptPairs(numImages, 0);
 		std::vector<double> keptMatches(numImages, 0.0);
+		// a pair counts for the floor when its ray angle reaches keepMinAngle, or was never
+		// measured: a near-duplicate pair yields no 3D point, and is what a doppelganger pair
+		// reads as
+		const auto countsForFloor = [keepMinAngle](const ImagePair& pair) {
+			return !(pair.meanRayAngle > 0.f) || R2D(pair.meanRayAngle) >= keepMinAngle;
+		};
 		FOREACH(idxPair, scene.pairs) {
 			const ImagePair& pair = scene.pairs[idxPair];
 			if (!pair.HasGeometricVerification() || pair.GetNumWeightedInliers() == 0 || pair.ID1 == pair.ID2)
@@ -689,10 +702,12 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 			}
 			if (!seenKept.insert(key).second)
 				continue; // a duplicate of a kept edge already counted
-			++keptPairs[pair.ID1];
-			++keptPairs[pair.ID2];
-			keptMatches[pair.ID1] += pair.GetNumWeightedInliers();
-			keptMatches[pair.ID2] += pair.GetNumWeightedInliers();
+			if (countsForFloor(pair)) {
+				++keptPairs[pair.ID1];
+				++keptPairs[pair.ID2];
+				keptMatches[pair.ID1] += pair.GetNumWeightedInliers();
+				keptMatches[pair.ID2] += pair.GetNumWeightedInliers();
+			}
 		}
 		// a distinct pair whose scene pairs split -- one of them unscored and therefore kept (no
 		// stored matches means no coverage and no score), its twin scored below the ceiling -- is
@@ -716,6 +731,8 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 		std::sort(candidates.begin(), candidates.end(), better);
 		std::vector<std::vector<unsigned>> candidatesOf(numImages);
 		for (unsigned idx : candidates) {
+			if (!countsForFloor(scene.pairs[idx]))
+				continue; // no 3D point to gain: the floor is not served by it
 			candidatesOf[scene.pairs[idx].ID1].push_back(idx);
 			candidatesOf[scene.pairs[idx].ID2].push_back(idx);
 		}
@@ -796,9 +813,9 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 			}
 		}
 		VERBOSE("Triplet filter: the ceiling %.3f (m %.2f, d_max/|V| %.3f) names %u candidate pairs below it; "
-			"every image keeps at least %u pairs holding %u matches: %u candidates retained for the floor, "
-			"%u to keep every component whole, %u images whose candidates ran out before the floor held",
-			tau, minScore, degreeRatio, numCandidates, config.keepPairs, config.keepMatches,
+			"every image keeps at least %u pairs holding %u matches at %g degrees or more: %u candidates retained "
+			"for the floor, %u to keep every component whole, %u images whose candidates ran out before the floor held",
+			tau, minScore, degreeRatio, numCandidates, config.keepPairs, config.keepMatches, keepMinAngle,
 			numSparedFloor, numSparedRepair, numShort);
 	}
 	// compact in one forward pass -- moving every kept pair down and truncating once -- rather
