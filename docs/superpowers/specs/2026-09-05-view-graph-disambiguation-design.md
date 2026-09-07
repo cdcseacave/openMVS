@@ -725,6 +725,32 @@ With `cut` off:
    dropped: it does nothing for a dense orbit (Truck keeps 38 % of its pairs at any share up to a
    half, its pairs above the ceiling already holding that) and floods false pairs back on cup and
    Radcliffe.
+2b. **The graph must fit the ceiling.** Before any image is served, the filter counts the nodes
+   of the graph (images with at least one edge) whose counting pairs above the ceiling and
+   unscored pairs already fall short of the floor -- fewer than `keepPairs`, or fewer than
+   `keepMatches` matches. When they are more than `keepMaxShort` of the nodes (a half by
+   default), the ceiling was derived for a graph this one is not, and the filter removes
+   nothing: the scores are still computed and exported, the seeds still named, and the log
+   says the graph stood down and why. The paper's `tau(m)` presumes an internet collection where
+   an image keeps hundreds of pairs above it; on such a graph a handful of images need the floor
+   (church 19 of 277, Big Ben 27 of 402, Arc 68 of 434, the small video sets none), while on an
+   interior most do (2678a364 77 of 99, 5992d620 117 of 193, 17ac94cc 352 of 492), and there
+   nibbling at the pairs of the few rich images is not safe either.
+
+   Why a gate and not a larger floor: measured on the interiors with the floor counting every
+   pair (runs `openmvs-triplet-default-20260907-keep{,-b1000,-b4000}`, pose errors against the
+   GlueMap models in `campaign-summary-2026-09-07.md`), the incremental reconstruction of these
+   captures is unstable under any change of the pair set, in both directions. A floor of 1,000
+   matches breaks 2678a364 outright (median rotation error 28 degrees, none of 94 images within
+   2, against 0.4 degrees for the base); a floor of 4,000 breaks 8d2f4877 after removing 189 of
+   its 2,628 pairs (1.5 degrees median, p90 43, against 0.29) where the floor of 2,000, removing
+   790, improves it (0.26); the default floor registers 468 of 17ac94cc's 554 images against
+   the base's 274, at twice the rotation error, while 1,000 and 4,000 register 275 and 261.
+   Nothing monotone in the floor explains those, and no floor short of keeping everything
+   guarantees the base's result on such a graph. The gate does, by construction: with it the
+   keep mode is the base on every interior of the campaign and acts on every set the cutting
+   rule was built for.
+
 3. **The repair.** Every connected component of the unfiltered graph stays one component: the
    candidates still unretained, best-scoring first, are retained whenever they join two
    components of the survivor graph (a union-find over the kept and retained pairs). A room
@@ -746,7 +772,7 @@ street's and cereal's, 7 of cup's 989. The repair restores at most two pairs any
 has already joined what it needs to.
 
 **Defaults and their decision rule.** `enabled = true`, `cut = false`, `keepPairs = 3`,
-`keepMatches = 2000`, `keepMinAngle = 3` until §5.10 settles them: with `keepPairs` at 3, the default `keepMatches`
+`keepMatches = 2000`, `keepMinAngle = 3`, `keepMaxShort = 0.5` until §5.10 settles them: with `keepPairs` at 3, the default `keepMatches`
 is the smallest of 1,000, 2,000 and 4,000 at which no normal scene of the campaign registers
 fewer than 98 % of its no-filter count or worsens its median rotation error against the reference
 by more than 5 % (the bars of the note's earlier pre-registered rule); if none does, the value is
@@ -755,9 +781,9 @@ cutting rule remains the answer for a fold, and a set whose keep-mode result dif
 is named.
 
 **Interface.** `--filter-triplets` defaults to true; `--triplet-cut B` (false), `--triplet-keep-pairs N`
-(3), `--triplet-keep-matches N` (2000), `--triplet-keep-min-angle F` (3, degrees). `--triplet-auto-tau`
-and `--triplet-second-face-score` apply only with `--triplet-cut`. Python: `cut`, `keep_pairs`,
-`keep_matches`, `keep_min_angle` on `TripletFilterConfig`.
+(3), `--triplet-keep-matches N` (2000), `--triplet-keep-min-angle F` (3, degrees), `--triplet-keep-max-short F`
+(0.5). `--triplet-auto-tau` and `--triplet-second-face-score` apply only with `--triplet-cut`. Python:
+`cut`, `keep_pairs`, `keep_matches`, `keep_min_angle`, `keep_max_short` on `TripletFilterConfig`.
 The offline harness (`scripts/python/tests/triplet_disambiguation.py`) scores and thresholds; it
 does not model either mode's removals and is unchanged.
 
@@ -787,7 +813,7 @@ this branch does not take. Whichever position the measurement supports becomes t
 | `libs/SFM/PythonWrapper.cpp` | `auto_tau` on the config; the cue exposed beside `compute_triplet_scores` |
 | `apps/Tests/TestsSFM.cpp` | `TripletFilterTest`'s path-graph assertion flipped; sweep tests; cue test |
 | `docs/design/TripletDisambiguation.md` | the removal rule, the threshold, the second cue, and which follow-ups this closes |
-| §3.14 | `TripletFilterConfig::enabled` true, `cut`, `keepPairs`, `keepMatches`, `keepMinAngle`; the keep mode in `FilterPairsByTriplets`; `--triplet-cut`, `--triplet-keep-pairs`, `--triplet-keep-matches`; `cut`/`keep_pairs`/`keep_matches` in the Python config; `TripletKeepTest`; the existing tests pin the cutting rule with `cut` on; the overview and the note describe both modes and the default's campaign |
+| §3.14 | `TripletFilterConfig::enabled` true, `cut`, `keepPairs`, `keepMatches`, `keepMinAngle`, `keepMaxShort`; the keep mode in `FilterPairsByTriplets`; `--triplet-cut`, `--triplet-keep-pairs`, `--triplet-keep-matches`; `cut`/`keep_pairs`/`keep_matches` in the Python config; `TripletKeepTest`; the existing tests pin the cutting rule with `cut` on; the overview and the note describe both modes and the default's campaign |
 
 ## 5. Measurement
 

@@ -5353,6 +5353,198 @@ git add libs/SFM/ViewGraphTriplets.h libs/SFM/ViewGraphTriplets.cpp apps/CreateS
 git -c user.name=cDc -c user.email=cdc.seacave@gmail.com commit -m "sfm: the keep mode's floor counts only the pairs that can triangulate"
 ```
 
+### Task 25: The keep mode stands down on a graph the ceiling does not fit
+
+Spec §3.14, step 2b. Measured with the floor counting every pair, the interiors' reconstructions
+flip in both directions under any change of the pair set (a floor of 1,000 matches breaks
+2678a364, one of 4,000 breaks 8d2f4877 after removing 7 % of its pairs, the default registers
+194 more images of 17ac94cc at twice the error); no floor short of keeping everything guarantees
+the base on such a graph. Where most images cannot reach the floor from their pairs above the
+ceiling, the ceiling was derived for a graph this one is not, and the keep mode removes nothing.
+
+**Files:**
+- Modify: `libs/SFM/ViewGraphTriplets.h` (`TripletFilterConfig::keepMaxShort`; the comment)
+- Modify: `libs/SFM/ViewGraphTriplets.cpp` (the gate, before serving)
+- Modify: `apps/CreateStructure/CreateStructure.cpp` (`--triplet-keep-max-short`)
+- Modify: `libs/SFM/PythonWrapper.cpp` (`keep_max_short`)
+- Modify: `apps/Tests/TestsSFM.cpp` (`TripletKeepTest`: the gate; the defaults check)
+
+**Interfaces:**
+- Consumes: the keep mode of Tasks 23-24 (`keptPairs`, `keptMatches`, `countsForFloor`, `candidatesOf`, the serving loop, `spared`, the counters).
+- Produces: `TripletFilterConfig::keepMaxShort` (float, 0.5f).
+
+- [ ] **Step 1: The configuration**
+
+In `libs/SFM/ViewGraphTriplets.h`, after `float keepMinAngle = 3.f;` add
+
+```cpp
+	// The keep mode acts only on a graph the ceiling fits: when more than this share of the
+	// images (nodes of the graph) already fall short of the floor from their pairs above the
+	// ceiling and their unscored pairs alone, the ceiling was derived for a graph this one is
+	// not -- the paper's tau(m) presumes an internet collection where an image keeps hundreds of
+	// pairs above it, and on an interior most images keep a handful -- and the filter removes
+	// nothing, since on such a graph the reconstruction flips under any change of its pairs.
+	// 1 never stands down.
+	float keepMaxShort = 0.5f;
+```
+
+and in the "Two modes." paragraph above `FilterPairsByTriplets`, after `counting only pairs whose
+ray angle reaches config.keepMinAngle degrees` add `, unless more than config.keepMaxShort of the
+images fall short of that floor from their pairs above the ceiling alone, in which case nothing is
+removed`.
+
+- [ ] **Step 2: The gate**
+
+In `libs/SFM/ViewGraphTriplets.cpp`, `FilterPairsByTriplets`, the keep block. Add the clamp with
+the others at the top of the function:
+
+```cpp
+	const float keepMaxShort = std::isnan(config.keepMaxShort) ? 1.f : CLAMP(config.keepMaxShort, 0.f, 1.f);
+	if (keepMaxShort != config.keepMaxShort)
+		VERBOSE("warning: triplet filter: maximum short share %g is outside [0,1], using %g", config.keepMaxShort, keepMaxShort);
+```
+
+In the keep block, directly after `numCandidates` is taken (the erase of the kept keys done) and
+before the candidates are sorted, count the nodes and the short ones and decide:
+
+```cpp
+		// the graph must fit the ceiling: a node whose counting pairs above it and unscored
+		// pairs already fall short of the floor needs the floor; when more than keepMaxShort
+		// of the nodes do, the ceiling was derived for a graph this one is not, and nothing goes
+		unsigned numNodes = 0, numShortBefore = 0;
+		{
+			std::vector<bool> isNode(numImages, false);
+			FOREACH(idxPair, scene.pairs) {
+				const ImagePair& pair = scene.pairs[idxPair];
+				if (!pair.HasGeometricVerification() || pair.GetNumWeightedInliers() == 0 || pair.ID1 == pair.ID2)
+					continue;
+				isNode[pair.ID1] = isNode[pair.ID2] = true;
+			}
+			for (IIndex i = 0; i < numImages; ++i) {
+				if (!isNode[i])
+					continue;
+				++numNodes;
+				if (keptPairs[i] < config.keepPairs || keptMatches[i] < (double)config.keepMatches)
+					++numShortBefore;
+			}
+		}
+		const bool standsDown = (double)numShortBefore > (double)keepMaxShort * (double)numNodes;
+		if (standsDown) {
+			for (const auto& entry : representative)
+				spared[entry.second] = true;
+			VERBOSE("Triplet filter: the ceiling %.3f (m %.2f, d_max/|V| %.3f) names %u candidate pairs below it, but %u of "
+				"%u images fall short of the floor (%u pairs holding %u matches at %g degrees or more) from their pairs "
+				"above it alone, more than the %.0f%% the keep mode acts on: nothing removed",
+				tau, minScore, degreeRatio, numCandidates, numShortBefore, numNodes,
+				config.keepPairs, config.keepMatches, keepMinAngle, 100.f * keepMaxShort);
+		}
+```
+
+Then wrap everything from the sorting of `candidates` through the keep block's own `VERBOSE`
+(the serving loop, the repair) in `if (!standsDown) { ... }`, so a graph that stands down skips
+them; the duplicates pass after it runs in both cases (it reads `spared` through the
+representatives, which the stand-down marked). `numSparedFloor`, `numSparedRepair` and `numShort`
+stay 0 when the graph stood down.
+
+- [ ] **Step 3: The command line and the Python config**
+
+In `apps/CreateStructure/CreateStructure.cpp`: `float fTripletKeepMaxShort;` in `OPT` after
+`fTripletKeepMinAngle`; after the `triplet-keep-min-angle` option add
+
+```cpp
+		("triplet-keep-max-short", boost::program_options::value(&OPT::fTripletKeepMaxShort)->default_value(TripletFilterConfig().keepMaxShort), "camera-triplet filter, without --triplet-cut: the largest share of the images that may fall short of the floor from their pairs above the threshold alone; beyond it the threshold does not fit the graph and nothing is removed (1 never stands down)")
+```
+
+and after `cfg.tripletFilterCfg.keepMinAngle = OPT::fTripletKeepMinAngle;` add
+`cfg.tripletFilterCfg.keepMaxShort = OPT::fTripletKeepMaxShort;`. In `libs/SFM/PythonWrapper.cpp`
+add `.def_readwrite("keep_max_short", &SFM::TripletFilterConfig::keepMaxShort)` after `keep_min_angle`.
+
+- [ ] **Step 4: The tests**
+
+In `TripletYieldTest`'s defaults check add `|| !ISEQUAL(defaults.keepMaxShort, 0.5f)`, the message
+gaining `keepMaxShort %g` and `, standing down past half the images short`.
+
+In `TripletKeepTest`, the burst scene at 3 degrees now stands down (every image is short of the
+floor from its pairs above the ceiling, since none of them counts): update that arm's comment to
+say the gate is what keeps the six wide pairs, and add, before the PASSED line, a scene where
+the gate alone decides:
+
+```cpp
+	// The gate alone: the burst with five more wide pairs (i, i+5) of 90 inliers at 6 degrees
+	// for i in 2..6, so every image from 2 to 11 holds two or more wide candidates (image 6 now
+	// holds seven pairs: r = 7/14, the ceiling 0.65; a five-apart pair scores 90/1000 = 0.09 in
+	// its two triangles, a four-apart pair at least 0.1 in each of its two or three). With a
+	// floor of one pair and no matches at 3 degrees, and the gate off (keepMaxShort 1), every
+	// image from 2 to 11 is served and retains its best-scoring wide pair: images 2 to 5 take
+	// (2,6), (3,7), (4,8), (5,9), which serve 6 to 9 too, then 10 and 11 take (6,10) and (7,11);
+	// the five five-apart pairs go. With the gate at its default, 14 of 14 images are short
+	// before serving and nothing goes.
+	const auto buildBurstWide = [](Scene& scene) {
+		AddTripletImages(scene, 14);
+		const auto add = [&scene](IIndex a, IIndex b, unsigned numInliers, float rayAngleDeg) {
+			AddTripletPair(scene, a, b, numInliers);
+			scene.pairs.Last().meanRayAngle = (float)D2R(rayAngleDeg);
+		};
+		for (IIndex i = 0; i + 1 < 14; ++i)
+			add(i, i + 1, 1000, 1.f);
+		for (IIndex i = 0; i + 2 < 14; ++i)
+			add(i, i + 2, 800, 1.5f);
+		for (IIndex i = 2; i <= 7; ++i)
+			add(i, i + 4, 100, 6.f);
+		for (IIndex i = 2; i <= 6; ++i)
+			add(i, i + 5, 90, 6.f);
+	};
+	{
+		Scene wide;
+		buildBurstWide(wide);
+		TripletFilterConfig cfgOpen;
+		cfgOpen.enabled = true;
+		cfgOpen.keepPairs = 1;
+		cfgOpen.keepMatches = 0;
+		cfgOpen.keepMaxShort = 1.f;
+		cfgOpen.minYield = 0.f;
+		const unsigned removed = FilterPairsByTriplets(wide, cfgOpen, weightingCfg);
+		const std::set<std::pair<IIndex,IIndex>> kept = TripletKeptPairs(wide);
+		bool right = removed == 5;
+		for (IIndex i = 2; i <= 6; ++i)
+			right = right && kept.count({i, i + 5}) == 0;
+		for (IIndex i = 2; i <= 7; ++i)
+			right = right && kept.count({i, i + 4}) == 1;
+		if (!right) {
+			VERBOSE("TripletKeepTest FAILED: with the gate off, a floor of one pair removed %u pairs; expected the five "
+				"five-apart pairs removed and the six four-apart ones kept", removed);
+			return false;
+		}
+	}
+	{
+		Scene wide;
+		buildBurstWide(wide);
+		TripletFilterConfig cfgGate;
+		cfgGate.enabled = true;
+		cfgGate.keepPairs = 1;
+		cfgGate.keepMatches = 0;
+		cfgGate.minYield = 0.f;
+		const unsigned removed = FilterPairsByTriplets(wide, cfgGate, weightingCfg);
+		if (removed != 0 || wide.pairs.size() != 13 + 12 + 6 + 5) {
+			VERBOSE("TripletKeepTest FAILED: with every image short before serving, the keep mode removed %u pairs; "
+				"expected it to stand down", removed);
+			return false;
+		}
+	}
+```
+
+and extend the PASSED message with `; a graph the ceiling does not fit stands down`.
+
+- [ ] **Step 5: Build, test, commit**
+
+Run: `ninja -C make -f build-Release.ninja Tests CreateStructure && ./bin/Release/Tests 1`
+Expected: 65 PASSED.
+
+```bash
+git add libs/SFM/ViewGraphTriplets.h libs/SFM/ViewGraphTriplets.cpp apps/CreateStructure/CreateStructure.cpp libs/SFM/PythonWrapper.cpp apps/Tests/TestsSFM.cpp
+git -c user.name=cDc -c user.email=cdc.seacave@gmail.com commit -m "sfm: the keep mode stands down on a graph the ceiling does not fit"
+```
+
 ## Measurement (the controller's, after the branch is green)
 
 Not tasks and not a subagent's: they run the pipeline and read datasets, which no implementer does.
