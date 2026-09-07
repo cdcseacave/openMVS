@@ -653,7 +653,9 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 	// keepMatches weighted inliers; its pairs above the ceiling and its unscored pairs count
 	// first, then its best-scoring candidates are retained, ties to the stronger, until both
 	// bounds hold or its candidates run out. Images are served in ascending order of what they
-	// keep, fixed before serving begins, and a retained pair counts for both its images.
+	// keep, fixed before serving begins, and a retained pair counts for both its images. A served
+	// image whose candidates ran out with a bound still unmet is counted for the log; an image the
+	// ceiling never touched asks for nothing and is not.
 	// The repair: every connected component of the unfiltered graph stays one component -- the
 	// candidates still unretained, best-scoring first, are retained whenever they join two
 	// components of the survivor graph. A room hanging off a capture by a few weak true pairs
@@ -662,8 +664,8 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 	// Distinct image pairs decide, each through its highest-scoring scene pair; duplicates follow.
 	const unsigned numPairs = scene.pairs.size();
 	std::vector<bool> spared(numPairs, false);
-	unsigned numCandidates = 0, numSparedFloor = 0, numSparedRepair = 0, numShort = 0;
 	if (!config.cut) {
+		unsigned numCandidates = 0, numSparedFloor = 0, numSparedRepair = 0, numShort = 0;
 		const IIndex numImages = scene.images.size();
 		// the distinct candidates, each represented by its highest-scoring scene pair, and what
 		// every image keeps before the floor
@@ -692,6 +694,11 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 			keptMatches[pair.ID1] += pair.GetNumWeightedInliers();
 			keptMatches[pair.ID2] += pair.GetNumWeightedInliers();
 		}
+		// a distinct pair whose scene pairs split -- one of them unscored and therefore kept (no
+		// stored matches means no coverage and no score), its twin scored below the ceiling -- is
+		// kept through the unscored one, so it is no candidate and never counts twice for a floor
+		for (const PairIdx::PairIndex key : seenKept)
+			representative.erase(key);
 		numCandidates = (unsigned)representative.size();
 		// best-scoring first, ties to the stronger, then the lower scene index: a total order
 		const auto better = [&scene, &scores](unsigned a, unsigned b) {
@@ -782,12 +789,15 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 			if (!pair.HasGeometricVerification() || pair.GetNumWeightedInliers() == 0 || pair.ID1 == pair.ID2)
 				continue;
 			const float score = scores[idxPair];
-			if (score >= 0.f && score < tau)
-				spared[idxPair] = spared[representative[MakePairIdx(pair.ID1, pair.ID2).idx]];
+			if (score >= 0.f && score < tau) {
+				const auto it = representative.find(MakePairIdx(pair.ID1, pair.ID2).idx);
+				// no representative left: the distinct pair is kept through its unscored twin
+				spared[idxPair] = it == representative.end() || spared[it->second];
+			}
 		}
 		VERBOSE("Triplet filter: the ceiling %.3f (m %.2f, d_max/|V| %.3f) names %u candidate pairs below it; "
 			"every image keeps at least %u pairs holding %u matches: %u candidates retained for the floor, "
-			"%u to keep every component whole, %u images short of the floor",
+			"%u to keep every component whole, %u images whose candidates ran out before the floor held",
 			tau, minScore, degreeRatio, numCandidates, config.keepPairs, config.keepMatches,
 			numSparedFloor, numSparedRepair, numShort);
 	}
