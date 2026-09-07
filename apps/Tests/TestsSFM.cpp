@@ -9145,9 +9145,9 @@ bool TripletKeepTest()
 	// pairs score at least 0.8, so the six wide pairs are the candidates. With every pair
 	// counting (keepMinAngle 0) each image with a candidate keeps four pairs holding at least
 	// 3,400 matches and the six wide pairs go, as they do under the cutting rule; counting only
-	// pairs at 3 degrees or more, no kept pair counts and all 14 images are short of the floor
-	// before serving, so the keep mode stands down: the burst keeps its links to the rest of the
-	// chain because the ceiling does not fit its graph.
+	// pairs at 3 degrees or more, an image holds at most two counting pairs where the floor asks
+	// three, so every image needs the floor at every threshold, the graph fits none and nothing
+	// is removed: the burst keeps its links to the rest of the chain.
 	const auto buildBurst = [](Scene& scene) {
 		AddTripletImages(scene, 14);
 		const auto add = [&scene](IIndex a, IIndex b, unsigned numInliers, float rayAngleDeg) {
@@ -9200,19 +9200,23 @@ bool TripletKeepTest()
 			right = right && kept.count({i, i + 4}) == 1;
 		if (!right) {
 			VERBOSE("TripletKeepTest FAILED: counting pairs at 3 degrees or more, the burst lost %u pairs; expected none, "
-				"every image short of the floor before serving and the keep mode standing down", removed);
+				"every image needing the floor at every threshold and the graph fitting none", removed);
 			return false;
 		}
 	}
-	// The gate alone: the burst with five more wide pairs (i, i+5) of 90 inliers at 6 degrees
-	// for i in 2..6, so every image from 2 to 11 holds two or more wide candidates (image 6 now
+	// The descent: the burst with five more wide pairs (i, i+5) of 90 inliers at 6 degrees for
+	// i in 2..6, so every image from 2 to 11 holds two or more wide candidates (image 6 now
 	// holds seven pairs: r = 7/14, the ceiling 0.65; a five-apart pair scores 90/1000 = 0.09 in
-	// its two triangles, a four-apart pair at least 0.1 in each of its two or three). With a
-	// floor of one pair and no matches at 3 degrees, and the gate off (keepMaxShort 1), every
-	// image from 2 to 11 is served and retains its best-scoring wide pair: images 2 to 5 take
-	// (2,6), (3,7), (4,8), (5,9), which serve 6 to 9 too, then 10 and 11 take (6,10) and (7,11);
-	// the five five-apart pairs go. With the gate at its default, 14 of 14 images are short
-	// before serving and nothing goes.
+	// its two triangles, a four-apart pair 0.1125 at the ends and 0.1083 in the middle). With a
+	// floor of one pair and no matches at 3 degrees, and every threshold fitting (keepMaxShort
+	// 1), the ceiling stands and every image from 2 to 11 is served and retains its best-scoring
+	// wide pair: images 2 to 5 take (2,6), (3,7), (4,8), (5,9), which serve 6 to 9 too, then 10
+	// and 11 take (6,10) and (7,11); the five five-apart pairs go. At the default keepMaxShort
+	// the ceiling fits nothing -- no counting pair sits above it, so all 14 images need the floor
+	// -- and the descent settles at the middle four-apart pairs' 0.1083: at 0.1125 only images 2,
+	// 6, 7 and 11 hold a counting pair and ten of 14 need the floor, while at 0.1083 images 2 to
+	// 11 all hold one and four of 14 need it. The five five-apart pairs are then the candidates,
+	// every image already holds its one pair, and all five go.
 	const auto buildBurstWide = [](Scene& scene) {
 		AddTripletImages(scene, 14);
 		const auto add = [&scene](IIndex a, IIndex b, unsigned numInliers, float rayAngleDeg) {
@@ -9245,27 +9249,33 @@ bool TripletKeepTest()
 		for (IIndex i = 2; i <= 7; ++i)
 			right = right && kept.count({i, i + 4}) == 1;
 		if (!right) {
-			VERBOSE("TripletKeepTest FAILED: with the gate off, a floor of one pair removed %u pairs; expected the five "
-				"five-apart pairs removed and the six four-apart ones kept", removed);
+			VERBOSE("TripletKeepTest FAILED: with every threshold fitting, a floor of one pair removed %u pairs at the "
+				"ceiling; expected the five five-apart pairs removed and the six four-apart ones kept", removed);
 			return false;
 		}
 	}
 	{
 		Scene wide;
 		buildBurstWide(wide);
-		TripletFilterConfig cfgGate;
-		cfgGate.enabled = true;
-		cfgGate.keepPairs = 1;
-		cfgGate.keepMatches = 0;
-		cfgGate.minYield = 0.f;
-		const unsigned removed = FilterPairsByTriplets(wide, cfgGate, weightingCfg);
-		if (removed != 0 || wide.pairs.size() != 13 + 12 + 6 + 5) {
-			VERBOSE("TripletKeepTest FAILED: with every image short before serving, the keep mode removed %u pairs; "
-				"expected it to stand down", removed);
+		TripletFilterConfig cfgDescent;
+		cfgDescent.enabled = true;
+		cfgDescent.keepPairs = 1;
+		cfgDescent.keepMatches = 0;
+		cfgDescent.minYield = 0.f;
+		const unsigned removed = FilterPairsByTriplets(wide, cfgDescent, weightingCfg);
+		const std::set<std::pair<IIndex,IIndex>> kept = TripletKeptPairs(wide);
+		bool right = removed == 5;
+		for (IIndex i = 2; i <= 6; ++i)
+			right = right && kept.count({i, i + 5}) == 0;
+		for (IIndex i = 2; i <= 7; ++i)
+			right = right && kept.count({i, i + 4}) == 1;
+		if (!right) {
+			VERBOSE("TripletKeepTest FAILED: the descent removed %u pairs; expected it to settle at the middle four-apart "
+				"pairs' score, the five five-apart pairs removed and the six four-apart ones kept", removed);
 			return false;
 		}
 	}
-	VERBOSE("TripletKeepTest PASSED: the keep mode keeps every image its floor and every component whole; the cutting rule cuts the room and the hub off; a burst keeps the links only its wide pairs give; a graph the ceiling does not fit stands down");
+	VERBOSE("TripletKeepTest PASSED: the keep mode keeps every image its floor and every component whole; the cutting rule cuts the room and the hub off; a burst keeps the links only its wide pairs give; the threshold descends to the strictest one the graph fits, and a graph that fits none loses nothing");
 	return true;
 }
 
