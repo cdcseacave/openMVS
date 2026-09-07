@@ -692,12 +692,39 @@ With `cut` off:
    (§3.8) runs: the ceiling names the **candidates**, the scored pairs below it, and nothing
    else is ever removed.
 2. **The floor.** Every image keeps at least `keepPairs` of its pairs, and enough of them to
-   hold `keepMatches` inliers (the sum of the weighted inlier counts of its kept pairs). Pairs
-   above the ceiling and unscored pairs count first. Images are served in ascending order of
-   (kept pairs, kept matches), fixed before serving begins; each retains its best-scoring
-   candidates, ties to the stronger, until both bounds hold or its candidates run out. A retained
-   pair counts for both its images. An image whose whole graph holds fewer than the floor asks
-   for is short, and counted.
+   hold `keepMatches` inliers (the sum of the weighted inlier counts of its kept pairs) -- counting
+   only the pairs whose ray angle (`ImagePair::meanRayAngle`, the median angle between the
+   viewing rays of the track-forming matches) reaches `keepMinAngle` degrees; a pair whose angle
+   was never measured (zero) counts. Pairs above the ceiling and unscored pairs count first.
+   Images are served in ascending order of (kept pairs, kept matches), fixed before serving
+   begins; each retains its best-scoring candidates among those that count, ties to the
+   stronger, until both bounds hold or such candidates run out. A retained pair counts for both
+   its images. A served image whose candidates ran out with a bound still unmet is short, and
+   counted.
+
+   Why the angle: measured on 5992d620 with the floor counting every pair (3 pairs, 2,000
+   matches; run `openmvs-triplet-default-20260907-keep`), ten images the base arm registers are
+   lost, and the run's log names the cause -- each is *invalidated for low median triangulation
+   angle (1.3 -- 1.47 < 1.50)*. They are a burst of near-duplicate frames holding 30 -- 40 pairs
+   and 15,000 -- 23,000 matches each; on a video every non-consecutive pair is the weak side of a
+   triangle whose strongest edge is a consecutive pair, so the burst's links to the rest of the
+   capture (2.5 -- 41 degrees, 50 -- 500 matches) all score 0.02 -- 0.45 and are candidates, and
+   the floor is satisfied by the near-duplicate pairs (0.5 -- 2.5 degrees) that cannot triangulate
+   anything. The keep-nothing control (the same arm with `keepMatches` at a billion, so nothing
+   is removed and only the seed differs) registers the base's 191, so the seed is not the cause.
+   A pair below the reconstruction's own triangulation bars (1.5 degrees for a track's median in
+   `Scene`, 2 in the track filter) yields no 3D point, and the floor counts what can: the default
+   `keepMinAngle` is 3 degrees, twice the bar. Simulated at 3 pairs, 2,000 matches, 3 degrees the
+   interiors keep 94 %, 97 %, 77 %, 85 %, 93 %, 92 % and 84 % of their pairs (2678a364, e00da096,
+   5992d620, 8d2f4877, 5828945d, 5ada248e, 17ac94cc; 5992d620's burst images keep 24 -- 33 of
+   their 30 -- 40 pairs with 2,000 -- 2,900 matches at 3 degrees or more), and the ambiguous sets
+   keep of their false pairs 13 of 1,847 (church), 18 of 75 (Brandenburg), 27 of 967 (Radcliffe),
+   367 of 3,482 (Arc), 422 of 6,617 (Big Ben), 73 of 20,347 (Nevsky), none of street's and
+   cereal's, 5 of cup's 989: a doppelganger pair reads as a near-duplicate viewpoint and does not
+   count either. A floor set as a share of an image's matches was tried in the simulation and
+   dropped: it does nothing for a dense orbit (Truck keeps 38 % of its pairs at any share up to a
+   half, its pairs above the ceiling already holding that) and floods false pairs back on cup and
+   Radcliffe.
 3. **The repair.** Every connected component of the unfiltered graph stays one component: the
    candidates still unretained, best-scoring first, are retained whenever they join two
    components of the survivor graph (a union-find over the kept and retained pairs). A room
@@ -719,7 +746,7 @@ street's and cereal's, 7 of cup's 989. The repair restores at most two pairs any
 has already joined what it needs to.
 
 **Defaults and their decision rule.** `enabled = true`, `cut = false`, `keepPairs = 3`,
-`keepMatches = 2000` until §5.10 settles them: with `keepPairs` at 3, the default `keepMatches`
+`keepMatches = 2000`, `keepMinAngle = 3` until §5.10 settles them: with `keepPairs` at 3, the default `keepMatches`
 is the smallest of 1,000, 2,000 and 4,000 at which no normal scene of the campaign registers
 fewer than 98 % of its no-filter count or worsens its median rotation error against the reference
 by more than 5 % (the bars of the note's earlier pre-registered rule); if none does, the value is
@@ -728,8 +755,9 @@ cutting rule remains the answer for a fold, and a set whose keep-mode result dif
 is named.
 
 **Interface.** `--filter-triplets` defaults to true; `--triplet-cut B` (false), `--triplet-keep-pairs N`
-(3), `--triplet-keep-matches N` (2000). `--triplet-auto-tau` and `--triplet-second-face-score`
-apply only with `--triplet-cut`. Python: `cut`, `keep_pairs`, `keep_matches` on `TripletFilterConfig`.
+(3), `--triplet-keep-matches N` (2000), `--triplet-keep-min-angle F` (3, degrees). `--triplet-auto-tau`
+and `--triplet-second-face-score` apply only with `--triplet-cut`. Python: `cut`, `keep_pairs`,
+`keep_matches`, `keep_min_angle` on `TripletFilterConfig`.
 The offline harness (`scripts/python/tests/triplet_disambiguation.py`) scores and thresholds; it
 does not model either mode's removals and is unchanged.
 
@@ -759,7 +787,7 @@ this branch does not take. Whichever position the measurement supports becomes t
 | `libs/SFM/PythonWrapper.cpp` | `auto_tau` on the config; the cue exposed beside `compute_triplet_scores` |
 | `apps/Tests/TestsSFM.cpp` | `TripletFilterTest`'s path-graph assertion flipped; sweep tests; cue test |
 | `docs/design/TripletDisambiguation.md` | the removal rule, the threshold, the second cue, and which follow-ups this closes |
-| §3.14 | `TripletFilterConfig::enabled` true, `cut`, `keepPairs`, `keepMatches`; the keep mode in `FilterPairsByTriplets`; `--triplet-cut`, `--triplet-keep-pairs`, `--triplet-keep-matches`; `cut`/`keep_pairs`/`keep_matches` in the Python config; `TripletKeepTest`; the existing tests pin the cutting rule with `cut` on; the overview and the note describe both modes and the default's campaign |
+| §3.14 | `TripletFilterConfig::enabled` true, `cut`, `keepPairs`, `keepMatches`, `keepMinAngle`; the keep mode in `FilterPairsByTriplets`; `--triplet-cut`, `--triplet-keep-pairs`, `--triplet-keep-matches`; `cut`/`keep_pairs`/`keep_matches` in the Python config; `TripletKeepTest`; the existing tests pin the cutting rule with `cut` on; the overview and the note describe both modes and the default's campaign |
 
 ## 5. Measurement
 

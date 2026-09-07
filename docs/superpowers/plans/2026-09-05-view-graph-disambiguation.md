@@ -5147,6 +5147,212 @@ git add libs/SFM/ViewGraphTriplets.h libs/SFM/ViewGraphTriplets.cpp libs/SFM/Sce
 git -c user.name=cDc -c user.email=cdc.seacave@gmail.com commit -m "sfm: the triplet filter is on by default and, unless told to cut, keeps what the graph cannot spare"
 ```
 
+### Task 24: The floor counts only the pairs that can triangulate
+
+Spec §3.14, step 2 and its "Why the angle" paragraph. On 5992d620 the keep mode loses ten images
+the base registers, a burst of near-duplicate frames whose floor is satisfied by pairs at half a
+degree that yield no 3D point while their links to the rest of the capture, all candidates, go;
+the reconstruction invalidates them for a median triangulation angle below 1.5 degrees. The floor
+now counts only pairs whose ray angle reaches `keepMinAngle` (3 degrees by default; an unmeasured
+angle counts), and retains only such candidates.
+
+**Files:**
+- Modify: `libs/SFM/ViewGraphTriplets.h` (`TripletFilterConfig::keepMinAngle`; the floor's comments)
+- Modify: `libs/SFM/ViewGraphTriplets.cpp` (the keep mode's floor)
+- Modify: `apps/CreateStructure/CreateStructure.cpp` (`--triplet-keep-min-angle`)
+- Modify: `libs/SFM/PythonWrapper.cpp` (`keep_min_angle`)
+- Modify: `apps/Tests/TestsSFM.cpp` (`TripletKeepTest`: the burst scene; the defaults check)
+
+**Interfaces:**
+- Consumes: the keep mode of Task 23 (`spared`, `representative`, `keptPairs`, `keptMatches`, `candidatesOf`, the serving loop); `ImagePair::meanRayAngle` (radians, 0 when never measured), `R2D`, `D2R`.
+- Produces: `TripletFilterConfig::keepMinAngle` (float, 3.f, degrees).
+
+- [ ] **Step 1: The configuration**
+
+In `libs/SFM/ViewGraphTriplets.h`, replace the floor's comment and the two members
+
+```cpp
+	// The floor of the keep mode: the pairs and the weighted inliers (summed over its kept
+	// pairs) every image keeps. Its pairs above the ceiling and its unscored pairs count first;
+	// below the floor, its best-scoring candidates are retained, ties to the stronger. 0 and 0
+	// keep nothing for the floor's sake; the components are kept whole regardless.
+	unsigned keepPairs = 3;
+	unsigned keepMatches = 2000;
+```
+
+with
+
+```cpp
+	// The floor of the keep mode: the pairs and the weighted inliers (summed over its kept
+	// pairs) every image keeps, counting only the pairs whose ray angle (meanRayAngle, the
+	// median angle between the viewing rays of the track-forming matches) reaches keepMinAngle
+	// degrees -- a near-duplicate pair yields no 3D point, and on a video every pair but the
+	// consecutive ones is the weak side of a triangle a consecutive pair tops, so a burst of
+	// near-duplicate frames would otherwise keep only its own pairs and lose every link to the
+	// rest of the capture, then be invalidated for a median triangulation angle below the
+	// reconstruction's 1.5 degrees; 3 is twice that bar. A pair whose angle was never measured
+	// (0) counts. The image's counting pairs above the ceiling and its unscored ones count
+	// first; below the floor, its best-scoring counting candidates are retained, ties to the
+	// stronger. keepPairs and keepMatches at 0 keep nothing for the floor's sake, keepMinAngle
+	// at 0 counts every pair; the components are kept whole regardless.
+	unsigned keepPairs = 3;
+	unsigned keepMatches = 2000;
+	float keepMinAngle = 3.f;
+```
+
+In the "Two modes." paragraph above `FilterPairsByTriplets`, replace `every image keeps at least
+config.keepPairs pairs and enough of its best-scoring pairs to hold config.keepMatches weighted
+inliers` with `every image keeps at least config.keepPairs pairs and enough of its best-scoring
+pairs to hold config.keepMatches weighted inliers, counting only pairs whose ray angle reaches
+config.keepMinAngle degrees`.
+
+- [ ] **Step 2: The floor**
+
+In `libs/SFM/ViewGraphTriplets.cpp`, the keep-mode block of `FilterPairsByTriplets`:
+
+1. Directly after the clamps of `minScore` and `minYield` at the top of the function, add the
+   same guard for the angle (a NaN or negative angle means 0, every pair counts):
+
+```cpp
+	const float keepMinAngle = std::isnan(config.keepMinAngle) || config.keepMinAngle < 0.f ? 0.f : config.keepMinAngle;
+	if (keepMinAngle != config.keepMinAngle)
+		VERBOSE("warning: triplet filter: minimum ray angle %g is not a non-negative angle, using %g", config.keepMinAngle, keepMinAngle);
+```
+
+2. Before the first pass over `scene.pairs` in the keep block (the one that fills `representative`
+   and `seenKept`), define what counts:
+
+```cpp
+		// a pair counts for the floor when its ray angle reaches keepMinAngle, or was never
+		// measured: a near-duplicate pair yields no 3D point, and is what a doppelganger pair
+		// reads as
+		const auto countsForFloor = [keepMinAngle](const ImagePair& pair) {
+			return !(pair.meanRayAngle > 0.f) || R2D(pair.meanRayAngle) >= keepMinAngle;
+		};
+```
+
+3. In that first pass, the kept-edge branch (after the `seenKept` insertion) accumulates
+   `keptPairs`/`keptMatches` only when `countsForFloor(pair)`: wrap the four accumulating lines
+   in `if (countsForFloor(pair)) { ... }`. Candidates are still all collected into `representative`
+   (the repair needs every candidate).
+
+4. When building `candidatesOf`, add a candidate to its two images only when it counts:
+   `for (unsigned idx : candidates) if (countsForFloor(scene.pairs[idx])) { ...push_back... }`.
+   The serving loop and the repair are unchanged: the floor retains only counting candidates
+   (they are the only ones in `candidatesOf`), and the repair walks every candidate.
+
+5. Update the keep block's header comment: after the sentence `The floor: every image keeps at
+   least keepPairs pairs and enough of them to hold keepMatches weighted inliers;` insert
+   `only the pairs whose ray angle reaches keepMinAngle degrees count, and only such candidates
+   are retained for it -- a near-duplicate pair yields no 3D point, and a burst of near-duplicate
+   frames whose links to the rest of a capture all score low would otherwise keep nothing but
+   itself and be invalidated for its triangulation angle;` and in the log line, after
+   `every image keeps at least %u pairs holding %u matches` add ` at %g degrees or more` with
+   `keepMinAngle` as the argument.
+
+- [ ] **Step 3: The command line and the Python config**
+
+In `apps/CreateStructure/CreateStructure.cpp`: add `float fTripletKeepMinAngle;` to `OPT` after
+`nTripletKeepMatches`; after the `triplet-keep-matches` option add
+
+```cpp
+		("triplet-keep-min-angle", boost::program_options::value(&OPT::fTripletKeepMinAngle)->default_value(TripletFilterConfig().keepMinAngle), "camera-triplet filter, without --triplet-cut: only pairs whose ray angle reaches this many degrees count towards an image's floor of pairs and matches (a near-duplicate pair yields no 3D point); 0 counts every pair")
+```
+
+and after `cfg.tripletFilterCfg.keepMatches = OPT::nTripletKeepMatches;` add
+`cfg.tripletFilterCfg.keepMinAngle = OPT::fTripletKeepMinAngle;`. In the `--triplet-keep-matches`
+help, replace `to hold this many matches` with `to hold this many matches (see --triplet-keep-min-angle)`.
+
+In `libs/SFM/PythonWrapper.cpp`, after `.def_readwrite("keep_matches", ...)` add
+`.def_readwrite("keep_min_angle", &SFM::TripletFilterConfig::keepMinAngle)`.
+
+- [ ] **Step 4: The test**
+
+In `TripletYieldTest`'s defaults check, extend the condition and the message: `|| !ISEQUAL(defaults.keepMinAngle, 3.f)`,
+the message gaining `keepMinAngle %g` and `, counting pairs at 3 degrees or more`.
+
+In `TripletKeepTest`, before the final `VERBOSE(... PASSED ...)`, add the burst scene:
+
+```cpp
+	// A burst: a chain of 14 images whose consecutive pairs (1000 inliers) sit at 1 degree and
+	// two-apart pairs (800) at 1.5 degrees, and six wide pairs (i, i+4) for i in 2..7 with 100
+	// inliers at 6 degrees. Image 6 holds six pairs, so r = 6/14 and the ceiling is 0.6; a wide
+	// pair sits in the one triangle (i, i+2, i+4) and scores 100/800 = 0.125, the two-apart
+	// pairs score at least 0.8, so the six wide pairs are the candidates. With every pair
+	// counting (keepMinAngle 0) each image with a candidate keeps four pairs holding at least
+	// 3,400 matches and the six wide pairs go, as they do under the cutting rule; counting only
+	// pairs at 3 degrees or more, no kept pair counts and every image with a candidate is short
+	// of three, so all six are retained: the burst keeps its links to the rest of the chain.
+	const auto buildBurst = [](Scene& scene) {
+		AddTripletImages(scene, 14);
+		const auto add = [&scene](IIndex a, IIndex b, unsigned numInliers, float rayAngleDeg) {
+			AddTripletPair(scene, a, b, numInliers);
+			scene.pairs.Last().meanRayAngle = (float)D2R(rayAngleDeg);
+		};
+		for (IIndex i = 0; i + 1 < 14; ++i)
+			add(i, i + 1, 1000, 1.f);
+		for (IIndex i = 0; i + 2 < 14; ++i)
+			add(i, i + 2, 800, 1.5f);
+		for (IIndex i = 2; i <= 7; ++i)
+			add(i, i + 4, 100, 6.f);
+	};
+	{
+		Scene burst;
+		buildBurst(burst);
+		TripletFilterConfig cfgEvery;
+		cfgEvery.enabled = true;
+		cfgEvery.keepMinAngle = 0.f;
+		cfgEvery.minYield = 0.f;
+		const unsigned removed = FilterPairsByTriplets(burst, cfgEvery, weightingCfg);
+		if (removed != 6 || burst.pairs.size() != 13 + 12) {
+			VERBOSE("TripletKeepTest FAILED: with every pair counting, the burst lost %u pairs of 31; expected the six wide pairs", removed);
+			return false;
+		}
+	}
+	{
+		Scene burst;
+		buildBurst(burst);
+		TripletFilterConfig cfgCut;
+		cfgCut.enabled = true;
+		cfgCut.cut = true;
+		cfgCut.minYield = 0.f;
+		const unsigned removed = FilterPairsByTriplets(burst, cfgCut, weightingCfg);
+		if (removed != 6) {
+			VERBOSE("TripletKeepTest FAILED: the cutting rule removed %u of the burst's pairs; expected the six wide pairs", removed);
+			return false;
+		}
+	}
+	{
+		Scene burst;
+		buildBurst(burst);
+		TripletFilterConfig cfgAngle;
+		cfgAngle.enabled = true;
+		cfgAngle.minYield = 0.f;
+		const unsigned removed = FilterPairsByTriplets(burst, cfgAngle, weightingCfg);
+		const std::set<std::pair<IIndex,IIndex>> kept = TripletKeptPairs(burst);
+		bool right = removed == 0;
+		for (IIndex i = 2; i <= 7; ++i)
+			right = right && kept.count({i, i + 4}) == 1;
+		if (!right) {
+			VERBOSE("TripletKeepTest FAILED: counting pairs at 3 degrees or more, the burst lost %u pairs; expected none, "
+				"every image short of three counting pairs and its wide pairs retained", removed);
+			return false;
+		}
+	}
+```
+
+and extend the PASSED message with `; a burst keeps the links only its wide pairs give`.
+
+- [ ] **Step 5: Build, test, commit**
+
+Run: `ninja -C make -f build-Release.ninja Tests CreateStructure && ./bin/Release/Tests 1`
+Expected: 65 PASSED.
+
+```bash
+git add libs/SFM/ViewGraphTriplets.h libs/SFM/ViewGraphTriplets.cpp apps/CreateStructure/CreateStructure.cpp libs/SFM/PythonWrapper.cpp apps/Tests/TestsSFM.cpp
+git -c user.name=cDc -c user.email=cdc.seacave@gmail.com commit -m "sfm: the keep mode's floor counts only the pairs that can triangulate"
+```
+
 ## Measurement (the controller's, after the branch is green)
 
 Not tasks and not a subagent's: they run the pipeline and read datasets, which no implementer does.
