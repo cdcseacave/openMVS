@@ -312,20 +312,26 @@ float SampleSeenFaceArea(const REFINE& refine, const Mesh::AreaArr& maxAreas, si
 }
 
 // the mesh preparation both backends run at the start of every scale (their SubdivideMesh()
-// forwards here): the auto-decimation of the first scale, the edge-band remesh and the split of
-// every face whose projection exceeds the area cap in both images of a pair. REFINE supplies
-// scene, ListCameraFaces(), ListFaceAreas() and ListVertexFacesPre(); the log lines are identical
-// on both backends
+// forwards here). The first scale decimates the input mesh straight to the density the
+// refinement wants -- a mean tightest-pair projected area of half the face cap, in pixels of that
+// scale's working resolution (8 px^2 at the default cap of 16: twice the cap once the finest scale
+// doubles the resolution, so its 1-to-4 split of every face above the cap lands the mesh at the
+// cap) -- and regularizes it in the same halfmesh pass with an isotropic remesh in a band around
+// the mean edge the decimation left (relative target -1: the remesh evens the rings out without
+// moving the density). Every scale then projects the mesh and splits the faces whose projection
+// exceeds the cap in both images of a pair. Measured against the previous two-pass preparation
+// (decimate to six times the median area, then remesh to 2.25x the mean edge after the split):
+// +0.0001 F1 at 0.85x faces on Tanks & Temples, the same target with the remesh in a second pass
+// after the split -0.0004 at 0.79x faces and 0.85x wall, see the design document. REFINE
+// supplies scene, ListCameraFaces(), ListFaceAreas() and ListVertexFacesPre(); the log lines are
+// identical on both backends
 template<class REFINE>
 void PrepareRefineMesh(REFINE& refine, uint32_t maxArea, float fDecimate, unsigned nCloseHoles, unsigned nEnsureEdgeSize)
 {
 	Mesh& mesh = refine.scene.mesh;
 	Mesh::AreaArr maxAreas;
-	// remeshing to the midpoint of the [0.5x, 4x] mean-edge band the refinement wants is expressed
-	// as a negative (relative) target edge length, so it runs as the remesh stage of the same
-	// Clean pass instead of a second round trip
-	constexpr float fEdgeLength(-2.25f);
-	const auto cleanMesh = [&](float simplifyTarget, float edgeLength=0.f) {
+	constexpr float fEdgeLength(-1.f); // the remesh band sits on the current mean edge
+	const auto cleanMesh = [&](float simplifyTarget, float edgeLength) {
 		Mesh::CleanParams params;
 		params.simplifyTarget = simplifyTarget;
 		params.maxHoleEdges = nCloseHoles;
@@ -333,13 +339,17 @@ void PrepareRefineMesh(REFINE& refine, uint32_t maxArea, float fDecimate, unsign
 		params.remeshIterations = 10;
 		mesh.Clean(params);
 	};
-	// project the mesh into every view and measure every face's projected area in the tightest pair
-	const auto projectMesh = [&](const char* stage) {
+	// project the mesh into every view and measure every face's projected area in the tightest
+	// pair; returns the sampled analytic mean area of the seen faces (the rasterized areas are
+	// pixel counts and read 1 on the sub-pixel faces of a dense input mesh)
+	const auto projectMesh = [&](const char* stage) -> float {
 		ASSERT(maxAreas.IsEmpty());
 		TD_TIMER_STARTD();
 		refine.ListCameraFaces();
 		refine.ListFaceAreas(maxAreas);
-		LogFaceAreas(stage, maxAreas, SampleSeenFaceArea(refine, maxAreas), TD_TIMER_GET_FMT());
+		const float fMeanSeen(SampleSeenFaceArea(refine, maxAreas));
+		LogFaceAreas(stage, maxAreas, fMeanSeen, TD_TIMER_GET_FMT());
+		return fMeanSeen;
 	};
 
 	// first decimate if necessary
@@ -348,25 +358,20 @@ void PrepareRefineMesh(REFINE& refine, uint32_t maxArea, float fDecimate, unsign
 	if (!bNoDecimation) {
 		float ratio(fDecimate);
 		if (fDecimate <= 0.f) {
-			// auto: from the projected areas of the input mesh
-			projectMesh("input");
+			// auto: the seen faces' mean area to the target (the face count scales inversely
+			// with the area)
+			const float fMeanSeen(projectMesh("input"));
 			ASSERT(!maxAreas.IsEmpty());
+			const float fTargetArea((float)(maxArea > 0 ? maxArea : 64)*0.5f);
 			ratio = 1.f;
-			// six times the median over every face, unseen ones included, against the area cap
-			// (an explicit pixel target measured worse at equal density, see the design document)
-			const float fMaxArea((float)(maxArea > 0 ? maxArea : 64));
-			const float fMedianArea(6.f*(float)Mesh::AreaArr(maxAreas).GetMedian());
-			if (fMedianArea < fMaxArea)
-				ratio = MAXF(0.1f, fMedianArea/fMaxArea);
+			if (fMeanSeen > 0 && fMeanSeen < fTargetArea)
+				ratio = MAXF(0.02f, fMeanSeen/fTargetArea);
 			if (ratio < 1.f)
 				maxAreas.Empty();
 		}
 		if (ratio < 1.f) {
-			// decimate to the desired resolution
-			cleanMesh(ratio);
-			// make sure there are no edges too small or too long
-			if (nEnsureEdgeSize > 0 && bNoSimplification)
-				cleanMesh(1.f, fEdgeLength);
+			// decimate to the desired resolution and even the rings out, one halfmesh pass
+			cleanMesh(ratio, nEnsureEdgeSize > 0 ? fEdgeLength : 0.f);
 			// re-map vertex and camera faces
 			refine.ListVertexFacesPre();
 		}
@@ -374,8 +379,6 @@ void PrepareRefineMesh(REFINE& refine, uint32_t maxArea, float fDecimate, unsign
 	if (bNoSimplification)
 		return;
 
-	// the edge-band remesh: once, on the scale that decimated, or on every scale when forced
-	const bool bRemesh((nEnsureEdgeSize == 1 && !bNoDecimation) || nEnsureEdgeSize > 1);
 	if (maxAreas.IsEmpty())
 		projectMesh("prepared");
 
@@ -387,7 +390,8 @@ void PrepareRefineMesh(REFINE& refine, uint32_t maxArea, float fDecimate, unsign
 		mesh.Subdivide(maxAreas, maxArea);
 		DEBUG_EXTRA("Mesh split: %u -> %u faces (%s)", (unsigned)numFacesOld, (unsigned)mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 	}
-	if (bRemesh)
+	// the edge-band remesh on every scale, when forced (the decimating scale had it above)
+	if (nEnsureEdgeSize > 1)
 		cleanMesh(1.f, fEdgeLength);
 	// re-map vertex and camera faces
 	refine.ListVertexFacesPre();

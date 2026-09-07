@@ -53,9 +53,11 @@ over that file, and a configuration file naming an option that does not exist is
 rather than silently ignored.
 
 **Trading accuracy for speed.** `--fast` is the measured fast configuration behind one switch: it
-refines against 4 neighbour images and raises the decimation tolerance to 0.5 px, which runs 1.5-1.7x
-faster than the defaults for −0.006 mean F1 on Tanks & Temples and delivers a mesh 1.8-2.7x
-smaller than the default's already-decimated one (§2.7). It is a preset over `--max-views` and `--simplify-tolerance` and nothing else, and an
+refines against 4 neighbour images and raises the decimation tolerance to 0.5 px, which on the
+shipped defaults runs 1.2x faster (0.73-0.96x wall) for −0.010 mean F1 on Tanks & Temples (worst
+scene Ignatius −0.020) and delivers a mesh 0.54-0.69x the size of the default's already-decimated
+one (§2.7, §2.8); against the defaults before the one-pass preparation it was 1.5-1.7x faster, and
+most of that gain the new preparation now takes by itself. It is a preset over `--max-views` and `--simplify-tolerance` and nothing else, and an
 explicitly given one of those wins over it — `--fast --max-views 8` keeps the full view budget and
 only decimates. What no preset can do is go faster than that: 38 % of the wall is the mesh
 preparation, which neither the view count nor the working resolution touches, and the levers that
@@ -86,25 +88,29 @@ Each scale re-inits images (`InitImages`, one worker per view): the shared `Prep
 re-lists incident faces, then `SubdivideMesh` runs — one shared body on both backends since
 2026-09 (`PrepareRefineMesh`, `SceneRefineCommon.h`), so the two can no longer drift. At the first
 scale it projects the input mesh into every camera (`ListCameraFaces`, `ListFaceAreas`: for every
-face the *tightest-pair area*, the larger over the image pairs of the smaller of the two rasterized
-pixel counts, 0 for a face no pair sees) and auto-decimates (`--decimate` 0) to the ratio
-`max(0.1, 6·median / --max-face-area)`, the median taken over *every* face, unseen zeros included;
-then it projects again and splits 1-to-4 every face whose tightest-pair area exceeds **twice**
-`--max-face-area` (`Mesh::Subdivide` tests `2*maxArea`, 32 px² at the default 16 — an earlier
-version of this text said 16); then `Mesh::Clean` remeshes to a band around 2.25x the mean edge
-(`edgeLength` −2.25, 10 iterations, holes up to 30 edges closed) — *after* the split, so on the
-first scale the remesh, not the split or the decimation, sets the density. Later scales only
-project and split. Two things follow, measured on Truck at level 1: the remesh collapses ~4x more
-faces than the decimation left (1.77 M → 425 k), so the world-space edge length decides the
-resolution and the pixel cap only catches the far faces; and the finest scale splits only 6-15 %
-of the faces (425 k → 497 k), so the coarse scale already iterates on nearly the full-resolution
-mesh — the coarse-to-fine schedule is one for the images, not for the mesh (§2.8 measures the
-alternatives). The log lines `"Mesh projected (input|prepared): …"`, `"Mesh split: …"` and
-`"Mesh subdivided: %u/%u -> %u/%u vertices/faces"` are identical on both backends; the projected
-line reports the fraction of faces some pair sees, the analytic mean tightest-pair area of a
-stride sample of them (the rasterized counts quantize to 1 px² on a sub-pixel mesh, which is what
-every dense input mesh here is: Truck's reads 1.0 rasterized against 0.6 analytic) and the
-rasterized p10/p50/p90/p99.
+face the *tightest-pair area*, the larger over the image pairs of the smaller of the two
+rasterized pixel counts, 0 for a face no pair sees; and, because those counts are pixels and read
+1 on the sub-pixel faces of every dense input mesh, the analytic mean area of a stride sample of
+the seen faces), and decimates the mesh (`--decimate` 0) straight to the density the refinement
+wants: a mean tightest-pair area of **half `--max-face-area`** in that scale's pixels — 8 px² at
+the default 16, which the finest scale's doubled resolution makes 32 px², twice the cap, so its
+split lands the mesh at the cap. The ratio is the measured mean over the target (floor 0.02),
+handed to one `Mesh::Clean` pass that decimates (halfmesh's QEM), closes holes up to 30 edges and
+remeshes isotropically in a band around the mean edge the decimation left (`edgeLength` −1,
+10 iterations): the remesh evens the rings out for the umbrella operator without moving the
+density. Every scale then projects again and splits 1-to-4 every face whose tightest-pair area
+exceeds **twice** `--max-face-area` (`Mesh::Subdivide` tests `2*maxArea`, 32 px² at the default).
+Until 2026-09 the preparation was two passes and two relative heuristics — decimate to
+`max(0.1, 6·median/cap)` over every face, unseen zeros included, then remesh to 2.25x the mean
+edge *after* the split — and the remesh, not the split or the decimation, set the density: on
+Truck it collapsed 4x more faces than the decimation had left, uniformly in world space, and
+the coarse scale iterated on 85 % of the fine mesh's faces at ~3 px² each. §2.8 measured the
+alternatives; the explicit target became the default on the speed and mesh-size criteria: the
+shipped one-pass composition is +0.0001 F1 at 0.85x faces and 0.83x wall on Tanks & Temples against
+the previous defaults (the preparation itself at 0.67-0.86x of its previous wall: the two Clean
+passes become one, and the second projection runs on a fifth of the faces), the same target with
+the remesh in a second pass after the split −0.0004 at 0.79x faces and 0.85x wall. The log lines `"Mesh projected (input|prepared): …"`, `"Mesh split: …"` and
+`"Mesh subdivided: %u/%u -> %u/%u vertices/faces"` are identical on both backends.
 
 **Post-refinement decimation (on by default since 2026-09).** The face count the refinement needs (every
 face under `--max-face-area` in its tightest pair) is not the face count a deliverable needs.
@@ -314,7 +320,7 @@ normalize-and-clamp variant measured a 0.0215 mean F1 regression (§4) because c
 gradient distribution; the header documents why the normalization must stay global.
 
 **Constants** (`MeshRefineStep`, pixel/ZNCC quantities, deliberately not CLI-exposed):
-`StepInit = 0.5` px (`eta` at the start of every scale), `StepMax = 1` px (`eta_max`),
+`StepInit = 0.5` px (`eta` at the start of every scale; opening the later scales at twice the `eta` the previous one ended with, which skips the fine scale's 3-4 opening rejections, was +0.0011 F1 on the old preparation and −0.008 on Ignatius with the shipped one, §2.8 and #52), `StepMax = 1` px (`eta_max`),
 `StepGrow = 1.05`, `StepShrink = 0.5`, `StepStop = 0.05` px (median-step-at-full-stride convergence
 floor), `ProgressTol = 1e-3` (relative `S` decrease counted as stalled), `Kappa = 2`,
 `Patience = 3` (consecutive stalled iterations that end the scale), `MaxRejects = 4` (consecutive
@@ -812,9 +818,13 @@ So the fast mode is the first two rows, packaged as one switch over knobs that a
 RefineMesh ... --fast        # --max-views 4 --simplify-tolerance 0.5
 ```
 
-1.5-1.7x faster than the default for −0.006 mean F1 (worst scene Barn −0.017), and it delivers a
-mesh 1.8-2.7x smaller than the default's — the 0.07-0.35x in the table is against the undecimated
-baseline these rows were measured on, and the default now takes the first half of that itself. The preset fills in only what the command line did not
+On the defaults of the time it was 1.5-1.7x faster for −0.006 mean F1 (worst scene Barn −0.017)
+and delivered a mesh 1.8-2.7x smaller than the default's — the 0.07-0.35x in the table is against
+the undecimated baseline these rows were measured on. On the shipped defaults (the one-pass
+preparation, §2.8) it is 1.2x faster (0.73-0.96x wall) for −0.010 mean F1 (worst scene Ignatius
+−0.020) at 0.54-0.69x faces: against the previous defaults the preset still lands at 0.68x wall
+and 0.51x faces, now for −0.010 F1, because the new preparation takes most of that speed by
+itself and what `--fast` adds on top has shrunk to a 1.2x. The preset fills in only what the command line did not
 state, so an explicit `--max-views` or `--simplify-tolerance` overrides it; the Tiny functional
 runs pin that `--fast` and the two options spelled out produce the same mesh byte for byte, that
 `--fast --max-views 8` reproduces `--simplify-tolerance 0.5` alone, and that `--fast` does not
@@ -972,6 +982,37 @@ made an always-win because it is a low-pass filter: the noisy large scenes like 
 detailed object pays for it, and the fraction only sets where between the two it sits. Filtering
 the input mesh as well as the output removes a few faces and rolls Barn's dice (−0.0033).
 
+**What became the default, and why the warm start did not.** Two of the losers above were
+re-opened on the speed and mesh-size criteria rather than F1 alone (a user decision: the
+deliverable is a mesh people wait for and store). The explicit target at 8 px² and the warm start
+were composed as the new defaults and measured as a 2x2 on a third pin (`bench/bin_refine_prep3b`,
+tag `prep-tnt5`, ΔF1 against the previous defaults, Truck / Barn / Ignatius / Meetingroom;
+the wall column of that cell is unusable: the machine had crash-rebooted that morning and has
+parked these jobs on its efficiency cores since — the unchanged old-default binary reproduces the
+previous night's meshes bit for bit at 1.55-1.86x the wall — so the shipped composition's wall was
+measured by re-running the previous defaults in the same state (0.83x: Truck 0.66, Barn 0.80,
+Ignatius 0.86, Meetingroom 1.00; the preparation alone 0.67-0.86x), the two-pass arm's is the
+earlier arm's, measured alone, and the warm-start rows have none):
+
+| composition | Truck | Barn | Ignatius | Meetingroom | mean | faces | wall |
+|---|---|---|---|---|---|---|---|
+| one Clean pass (decimate to the target + band remesh), fixed opening — **shipped** | −0.0028 | +0.0022 | +0.0010 | +0.0001 | **+0.0001** | 0.85x | 0.83x |
+| two passes (decimate; split; remesh), fixed opening — the measured arm, reproduced | −0.0030 | +0.0017 | −0.0004 | +0.0000 | −0.0004 | 0.79x | 0.85x |
+| two passes + warm start | +0.0023 | +0.0011 | **−0.0081** | +0.0011 | −0.0009 | 0.80x | — |
+| one pass + warm start | +0.0020 | −0.0012 | **−0.0094** | +0.0007 | −0.0020 | 0.82x | — |
+
+The single pass is the better preparation: it keeps 6-15 % more faces on the coarse scale than
+the two-pass arm (the remesh no longer runs over the split's fresh vertices) and gains on three
+scenes. The warm start, +0.0011 on the old preparation, costs Ignatius −0.008 on the coarse one:
+its fine scale opens at 0.05 px instead of the cascade's 0.03-0.04 px, accepts nine larger strides
+and hits the patience rule after 11 evaluations instead of 20-24, reaching the same S (0.2212
+against 0.2213) on a visibly worse surface — the accepted steps carry the smoothing, and Ignatius
+wants them small and many. It stays out (#52). `--fast` on the shipped defaults, measured in the
+same state: −0.0104 mean against the previous defaults (Truck −0.0026, Barn −0.0129, Ignatius
+−0.0203, Meetingroom −0.0057) at 0.68x wall and 0.51x faces, which against the shipped defaults is
+−0.0105 at 0.81x wall (0.73-0.96x) and 0.60x faces (§2.7): the preset's definition (4 views, 0.5 px)
+was set on the old preparation and is open to revision.
+
 ## 3. How these numbers were produced
 
 The harness lives under the gitignored `bench/` tree; this section records what it does, so a
@@ -1080,10 +1121,10 @@ entry says otherwise.
 | 49 | End-of-scale relaxation (#43) with its schedule confound removed (#47's exemption), between scales only or after the last scale only | Barn's −0.0119 was the confound (now +0.0003 / −0.0018) but Ignatius −0.0024 / −0.0021 and the means −0.0010 / −0.0011; against the exemption alone +0.0003 mean, same Ignatius loss | removed |
 | 50 | Removing the faces no image sees after the refinement (z-buffer render into every camera; Acute3D's FinishMesh visibility test, precision +0.054 on its Truck) | +0.0000 mean: 15 / 53 / 21 / 734 faces of 172-500 k are unseen on Truck / Barn / Ignatius / Meetingroom, the Delaunay graph-cut mesher never produced the undersides Acute3D's did | inert on OpenMVS meshes; kept opt-in for imported meshes as `--remove-unseen-faces` of TransformScene and ReconstructMesh |
 | 51 | Coarse scales that prepare the mesh but run no evaluation (`Skip Coarse Evaluations`) | Ignatius **+0.0129** and Truck +0.0017 at 0.85-0.91x wall, but Barn **−0.0182**: its fine scale, opening from the unrefined surface, rejects four times and ends after 8 evaluations; mean −0.0009 (§2.8) | removed — the coarse scale's value is scene-dependent and nothing here can tell the cases apart |
-| 52 | Warm start: every scale after the first opens at twice the eta the previous one ended with (`Step Search` 4) | +0.0011 mean (Truck +0.0030, Barn −0.0004) at 0.97x wall: the fine scale skips its 3-4 opening rejections and then runs longer where it can, so no speed is gained; under the +0.002 gate like #35 | removed |
+| 52 | Warm start: every scale after the first opens at twice the eta the previous one ended with (`Step Search` 4) | +0.0011 mean (Truck +0.0030, Barn −0.0004) at 0.97x wall: the fine scale skips its 3-4 opening rejections and then runs longer where it can, so no speed is gained; under the +0.002 gate like #35 | removed; re-measured on the shipped one-pass preparation: Ignatius **−0.0094** (fine scale stops after 11 evaluations instead of 24 at the same S), mean −0.0021 — the coarse mesh wants the small strides the cascade leaves behind |
 | 53 | Fixed opening: the first three evaluations of every scale applied unconditionally, the stride managed only afterwards (`Step Search` 8; the hybrid schedule) | **−0.42** mean, wall 16x: three 0.5 px steps along the raw gradient double S each and blow the mesh up. Without a per-vertex cap the idea is not viable, and #38 measured that the cap loses too | removed |
 | 54 | Quadratic backtracking with Levenberg-Marquardt gain-ratio growth (`Step Search` 3; the lmfit-style rule on rho = measured/predicted decrease) | −0.0055 mean (Barn −0.0111, Ignatius −0.0098): the first-order model over-predicts the decrease 4-6x and does not converge to it as the step shrinks (rho 0.10-1.06 at 0.025 px), so rho ≈ 0.2 halves eta on most accepted steps | removed |
-| 55 | Explicit pixel target for the decimation with a regularizing remesh in place of the two stacked relative heuristics (`Prepare Target Area` T, `Prepare Remesh Edge` −1) | T = 4 (today's density) −0.0020 mean at 0.93-1.23x faces: the shape-preserving QEM keeps the dense mesh's noise that the shipped strong remesh averages out; T = 8 / 12 −0.0004 / −0.0026 at 0.85x / 0.73x wall and 0.79x / 0.65x faces, the losses where faces were removed | removed; on top of `--fast` it costs a further −0.003..−0.004 (Ignatius −0.013..−0.018) at the same 0.63-0.65x wall |
+| 55 | Explicit pixel target for the decimation with a regularizing remesh in place of the two stacked relative heuristics (`Prepare Target Area` T, `Prepare Remesh Edge` −1) | T = 4 (today's density) −0.0020 mean at 0.93-1.23x faces: the shape-preserving QEM keeps the dense mesh's noise that the shipped strong remesh averages out; T = 8 / 12 −0.0004 / −0.0026 at 0.85x / 0.73x wall and 0.79x / 0.65x faces, the losses where faces were removed | **became the default** on the speed/size criteria, as one Clean pass with the target at half the face cap: +0.0001 mean at 0.85x faces and 0.83x wall against the previous defaults (§2.8); a coarser target on top of `--fast` still buys nothing (same 0.63-0.65x wall for −0.003..−0.004 more) |
 | 56 | Remesh before the split (`Prepare Order` 1), so the split's vertices survive the remesh | −0.0012 mean, inert on three scenes, Barn −0.0026 with its fine scale ending at 20 evaluations instead of 26 | removed |
 | 57 | Butterfly-interpolated 1-to-4 split (new vertices on the modified-butterfly surface through the coarse vertices and their wings) | −0.0006 mean: +0.0003/+0.0004 on Truck, Ignatius, Meetingroom and Barn −0.0034 (the same 20-evaluation stop) | removed |
 | 58 | Bi-Laplacian relaxation after the last scale only (a post-smoothing that cannot touch the schedule), 0.45 and 0.25 | 0.45: three scenes +0.0004..+0.0025, Ignatius **−0.0062**; 0.25: +0.0007 mean, Ignatius −0.0005 — a low-pass filter the noisy scenes like and the detailed object pays for, never an always-win and under the gate at every fraction | removed |
@@ -1165,8 +1206,9 @@ all. "Moves less" reads as "converges better" on the oracle and as a large loss 
    preparation is the only remaining route to a fast mode worth the name; it is a halfmesh
    question, not a refinement one. §2.8 measured the preparation itself: the strong isotropic
    remesh after the split is what sets the density and it doubles as a denoiser, so replacing the
-   stacked heuristics by an explicit pixel target loses at equal density and only buys speed by
-   delivering fewer faces — and none at all on top of `--fast`. The first `Mesh::Clean` (the QEM
+   stacked heuristics by an explicit pixel target loses at equal density and buys speed by
+   delivering fewer faces — which is what the shipped default now does, 0.85x faces and 0.83x wall for a flat
+   F1, and none at all on top of `--fast`. The first `Mesh::Clean` (the QEM
    decimation of the multi-million-face input) costs the same 15-25 s whatever it is asked to
    keep; a cheaper first pass is the untouched lever.
 5. **The coarse scale's contribution is scene-dependent, and the stop rule is fragile.** With no
