@@ -5751,6 +5751,330 @@ git add libs/SFM/ViewGraphTriplets.h libs/SFM/ViewGraphTriplets.cpp apps/CreateS
 git -c user.name=cDc -c user.email=cdc.seacave@gmail.com commit -m "sfm: the keep mode's threshold is the strictest one the graph fits"
 ```
 
+### Task 27: The keep mode removes only what the ceiling sets apart
+
+Spec: §3.15. The keep mode's candidates become the scored pairs below the threshold whose two
+images lie in different connected components of the ceiling's survivor graph; a scored pair below
+the threshold inside one component is kept and counts towards the floor. A graph whose every
+unfiltered component is one piece at the ceiling loses nothing, and the log says so.
+
+**Files:**
+- Modify: `libs/SFM/ViewGraphTriplets.cpp` (the keep block of `FilterPairsByTriplets`, from the comment "The keep mode (config.cut off, the default)" to the "duplicates follow their representative" loop)
+- Modify: `libs/SFM/ViewGraphTriplets.h` (the `cut` field's comment; the "Two modes." paragraph above `FilterPairsByTriplets`)
+- Modify: `apps/CreateStructure/CreateStructure.cpp` (the `--filter-triplets` help string)
+- Test: `apps/Tests/TestsSFM.cpp` (`TripletKeepTest`)
+
+**Interfaces:**
+- Consumes: `FilterPairsByTriplets(Scene&, const TripletFilterConfig&, const PairsWeightingConfig&, IIndexArr*)`, `TripletFilterConfig` (unchanged), the test helpers `AddTripletImages`, `AddTripletPair`, `TripletKeptPairs`.
+- Produces: nothing new; no flag, no field. The log lines change (below).
+
+- [ ] **Step 1: Rewrite the burst and descent cases of `TripletKeepTest` for the new rule**
+
+In `apps/Tests/TestsSFM.cpp`, `TripletKeepTest`: the rooms and hub cases stay exactly as they are
+(their candidates join two components at the ceiling: the rooms are two pieces, the hub image is a
+piece of one). Replace everything from the comment "A burst: a chain of 14 images" to the
+`VERBOSE("TripletKeepTest PASSED: ...")` line with the following.
+
+```cpp
+	// A burst: a chain of 14 images whose consecutive pairs (1000 inliers) sit at 1 degree and
+	// two-apart pairs (800) at 1.5 degrees, and six wide pairs (i, i+4) for i in 2..7 with 100
+	// inliers at 6 degrees. Image 6 holds six pairs, so r = 6/14 and the ceiling is 0.6; a wide
+	// pair sits in the one triangle (i, i+2, i+4) and scores 100/800 = 0.125, the two-apart
+	// pairs score at least 0.8. The cutting rule removes the six wide pairs. The keep mode
+	// removes nothing, whatever the floor: the consecutive and two-apart pairs hold the chain
+	// in one piece at the ceiling, so no pair below it joins two pieces and none is a candidate
+	// -- on a sequential capture the wide pairs are the weak side of a triangle a consecutive
+	// pair tops, and they are what bundle adjustment needs most.
+	const auto buildBurst = [](Scene& scene) {
+		AddTripletImages(scene, 14);
+		const auto add = [&scene](IIndex a, IIndex b, unsigned numInliers, float rayAngleDeg) {
+			AddTripletPair(scene, a, b, numInliers);
+			scene.pairs.Last().meanRayAngle = (float)D2R(rayAngleDeg);
+		};
+		for (IIndex i = 0; i + 1 < 14; ++i)
+			add(i, i + 1, 1000, 1.f);
+		for (IIndex i = 0; i + 2 < 14; ++i)
+			add(i, i + 2, 800, 1.5f);
+		for (IIndex i = 2; i <= 7; ++i)
+			add(i, i + 4, 100, 6.f);
+	};
+	{
+		Scene burst;
+		buildBurst(burst);
+		TripletFilterConfig cfgCut;
+		cfgCut.enabled = true;
+		cfgCut.cut = true;
+		cfgCut.minYield = 0.f;
+		const unsigned removed = FilterPairsByTriplets(burst, cfgCut, weightingCfg);
+		if (removed != 6) {
+			VERBOSE("TripletKeepTest FAILED: the cutting rule removed %u of the burst's pairs; expected the six wide pairs", removed);
+			return false;
+		}
+	}
+	{
+		Scene burst;
+		buildBurst(burst);
+		TripletFilterConfig cfgOnePiece;
+		cfgOnePiece.enabled = true;
+		cfgOnePiece.keepPairs = 1;
+		cfgOnePiece.keepMatches = 0;
+		cfgOnePiece.keepMinAngle = 0.f;
+		cfgOnePiece.minYield = 0.f;
+		const unsigned removed = FilterPairsByTriplets(burst, cfgOnePiece, weightingCfg);
+		const std::set<std::pair<IIndex,IIndex>> kept = TripletKeptPairs(burst);
+		bool right = removed == 0 && burst.pairs.size() == 13 + 12 + 6;
+		for (IIndex i = 2; i <= 7; ++i)
+			right = right && kept.count({i, i + 4}) == 1;
+		if (!right) {
+			VERBOSE("TripletKeepTest FAILED: the keep mode removed %u of the burst's pairs with a floor of one pair; "
+				"expected none, the chain being one piece at the ceiling so that no pair below it joins two pieces", removed);
+			return false;
+		}
+	}
+	// A ladder: two bursts, chains of 7 images (0-6 and 7-13; consecutive pairs 1000 inliers at
+	// 1 degree, two-apart 800 at 1.5 degrees), joined by seven rungs (i, i+7) of 100 inliers for
+	// i in 0..6 and six braces (i, i+8) of 90 for i in 0..5, all at 6 degrees. A rung sits in the
+	// triangles (i, i+7, i+8) and (i-1, i, i+7), each topped by a consecutive pair, and scores
+	// 0.1; a brace sits in (i, i+7, i+8) and (i, i+1, i+8) and scores 0.09; the two-apart pairs
+	// score 0.8. Image 3 holds six pairs, so r = 6/14 and the ceiling is 0.6, which leaves the
+	// two chains as pieces of 7 and 7: every rung and brace joins them and is a candidate.
+	//  - The cutting rule: neither piece holds a majority, so the threshold descends to the
+	//    strictest one joining them, the rungs' 0.1, and the six braces go.
+	//  - Counting every pair (keepMinAngle 0) with a floor of one pair: every image keeps two
+	//    or more chain pairs at the ceiling, the ceiling fits, no image needs the floor, and the
+	//    repair alone joins the chains through the best-scoring candidate -- the rungs tie at
+	//    0.1 and 100 inliers, and (0,7), added first, wins: twelve pairs go.
+	//  - Counting pairs at 3 degrees or more (the default) with a floor of one pair and no
+	//    matches: no chain pair counts, every image needs the floor at the ceiling, and the
+	//    threshold descends: at 0.1 every image holds a rung and none needs the floor, so the
+	//    rungs are kept by the threshold, the braces are the candidates, no image retains any,
+	//    and the six braces go.
+	//  - The same with a floor of two pairs: at 0.1 every image holds one counting pair and all
+	//    fourteen need the floor; at the braces' 0.09, the loosest threshold, only images 6 and
+	//    7 (a rung each, no brace) still do, two of fourteen, so the threshold settles there,
+	//    nothing lies below it and nothing is removed.
+	//  - The defaults (3 pairs, 2000 matches): no image ever holds 2000 matches at 3 degrees or
+	//    more, the graph fits no threshold and nothing is removed.
+	const auto buildLadder = [](Scene& scene) {
+		AddTripletImages(scene, 14);
+		const auto add = [&scene](IIndex a, IIndex b, unsigned numInliers, float rayAngleDeg) {
+			AddTripletPair(scene, a, b, numInliers);
+			scene.pairs.Last().meanRayAngle = (float)D2R(rayAngleDeg);
+		};
+		for (IIndex chain = 0; chain < 14; chain += 7) {
+			for (IIndex i = chain; i + 1 < chain + 7; ++i)
+				add(i, i + 1, 1000, 1.f);
+			for (IIndex i = chain; i + 2 < chain + 7; ++i)
+				add(i, i + 2, 800, 1.5f);
+		}
+		for (IIndex i = 0; i <= 6; ++i)
+			add(i, i + 7, 100, 6.f);
+		for (IIndex i = 0; i <= 5; ++i)
+			add(i, i + 8, 90, 6.f);
+	};
+	const auto rungsKept = [](const std::set<std::pair<IIndex,IIndex>>& kept) {
+		unsigned n = 0;
+		for (IIndex i = 0; i <= 6; ++i)
+			n += kept.count({i, i + 7}) ? 1 : 0;
+		return n;
+	};
+	const auto bracesKept = [](const std::set<std::pair<IIndex,IIndex>>& kept) {
+		unsigned n = 0;
+		for (IIndex i = 0; i <= 5; ++i)
+			n += kept.count({i, i + 8}) ? 1 : 0;
+		return n;
+	};
+	{
+		Scene ladder;
+		buildLadder(ladder);
+		TripletFilterConfig cfgCut;
+		cfgCut.enabled = true;
+		cfgCut.cut = true;
+		cfgCut.minYield = 0.f;
+		const unsigned removed = FilterPairsByTriplets(ladder, cfgCut, weightingCfg);
+		const std::set<std::pair<IIndex,IIndex>> kept = TripletKeptPairs(ladder);
+		if (removed != 6 || rungsKept(kept) != 7 || bracesKept(kept) != 0) {
+			VERBOSE("TripletKeepTest FAILED: the cutting rule removed %u of the ladder's pairs, keeping %u rungs and %u braces; "
+				"expected the descent to the rungs' score, all seven kept and the six braces removed",
+				removed, rungsKept(kept), bracesKept(kept));
+			return false;
+		}
+	}
+	{
+		Scene ladder;
+		buildLadder(ladder);
+		TripletFilterConfig cfgEvery;
+		cfgEvery.enabled = true;
+		cfgEvery.keepPairs = 1;
+		cfgEvery.keepMatches = 0;
+		cfgEvery.keepMinAngle = 0.f;
+		cfgEvery.minYield = 0.f;
+		const unsigned removed = FilterPairsByTriplets(ladder, cfgEvery, weightingCfg);
+		const std::set<std::pair<IIndex,IIndex>> kept = TripletKeptPairs(ladder);
+		if (removed != 12 || kept.count({0,7}) != 1 || rungsKept(kept) != 1 || bracesKept(kept) != 0) {
+			VERBOSE("TripletKeepTest FAILED: counting every pair, the ladder lost %u pairs, keeping %u rungs ((0,7) %d) and %u braces; "
+				"expected the floor met by the chain pairs and the repair keeping (0,7) alone",
+				removed, rungsKept(kept), kept.count({0,7}) ? 1 : 0, bracesKept(kept));
+			return false;
+		}
+	}
+	{
+		Scene ladder;
+		buildLadder(ladder);
+		TripletFilterConfig cfgOne;
+		cfgOne.enabled = true;
+		cfgOne.keepPairs = 1;
+		cfgOne.keepMatches = 0;
+		cfgOne.minYield = 0.f;
+		const unsigned removed = FilterPairsByTriplets(ladder, cfgOne, weightingCfg);
+		const std::set<std::pair<IIndex,IIndex>> kept = TripletKeptPairs(ladder);
+		if (removed != 6 || rungsKept(kept) != 7 || bracesKept(kept) != 0) {
+			VERBOSE("TripletKeepTest FAILED: a floor of one pair at 3 degrees removed %u of the ladder's pairs, keeping %u rungs and %u braces; "
+				"expected the threshold to descend to the rungs' score, the seven rungs kept and the six braces removed",
+				removed, rungsKept(kept), bracesKept(kept));
+			return false;
+		}
+	}
+	{
+		Scene ladder;
+		buildLadder(ladder);
+		TripletFilterConfig cfgTwo;
+		cfgTwo.enabled = true;
+		cfgTwo.keepPairs = 2;
+		cfgTwo.keepMatches = 0;
+		cfgTwo.minYield = 0.f;
+		const unsigned removed = FilterPairsByTriplets(ladder, cfgTwo, weightingCfg);
+		if (removed != 0 || ladder.pairs.size() != 2 * (6 + 5) + 7 + 6) {
+			VERBOSE("TripletKeepTest FAILED: a floor of two pairs at 3 degrees removed %u of the ladder's pairs; "
+				"expected the threshold to settle at the braces' score, the loosest, with nothing below it", removed);
+			return false;
+		}
+	}
+	{
+		Scene ladder;
+		buildLadder(ladder);
+		TripletFilterConfig cfgDefault;
+		cfgDefault.enabled = true;
+		cfgDefault.minYield = 0.f;
+		const unsigned removed = FilterPairsByTriplets(ladder, cfgDefault, weightingCfg);
+		if (removed != 0) {
+			VERBOSE("TripletKeepTest FAILED: the default floor removed %u of the ladder's pairs; expected none, "
+				"no image holding 2000 matches at 3 degrees or more at any threshold", removed);
+			return false;
+		}
+	}
+	VERBOSE("TripletKeepTest PASSED: the keep mode keeps every image its floor and every component whole and removes only pairs joining pieces the ceiling keeps apart; the cutting rule cuts the room, the hub and the burst's wide pairs off; a burst in one piece keeps everything; the threshold descends to the strictest one the graph fits, and a graph that fits none loses nothing");
+	return true;
+```
+
+Delete `buildBurstWide` and its two cases entirely (the descent is now the ladder's).
+
+- [ ] **Step 2: Build and run the suite to see the new cases fail**
+
+Run: `ninja -C make -f build-Release.ninja Tests && ./make/bin/Release/Tests 1`
+Expected: `TripletKeepTest FAILED: the keep mode removed 6 of the burst's pairs with a floor of one pair ...` (the rule as it is removes the burst's wide pairs).
+
+- [ ] **Step 3: Implement the rule in the keep block**
+
+In `libs/SFM/ViewGraphTriplets.cpp`, inside `if (!config.cut) {`:
+
+(a) Right after `numNodes` is counted and before the `FloorPair` collapse, compute the ceiling's
+survivor components over the verified pairs -- a union-find joining the two images of every
+verified pair (`HasGeometricVerification()`, `GetNumWeightedInliers() > 0`, `ID1 != ID2`) whose
+score is unscored (`scores[idxPair] < 0.f`) or at or above `ceiling`. Store the root per image in
+`std::vector<uint32_t> pieceOf(numImages)` (the same `Find` with path halving the repair uses; move
+that `Find`/`Join` pair up so both places share one definition, or define a second one -- either
+way, no third copy). Count the components over the nodes and the largest one, and count the
+distinct scored pairs below the ceiling that join two components (`numBridgesAtCeiling`, over
+distinct image pairs, one count per `MakePairIdx` key). A lambda
+`const auto joinsPieces = [&pieceOf](const ImagePair& pair) { return pieceOf[pair.ID1] != pieceOf[pair.ID2]; };`
+is the predicate everything below reads.
+
+(b) `FloorPair` gains `bool joins;` set from `joinsPieces(pair)` when the entry is created (every
+scene pair of a distinct pair agrees, the ids being the same). In `numShortAt`, a pair is skipped
+(not counted as kept) only when `pair.joins && pair.score >= 0.f && pair.score < threshold`.
+
+(c) If `numBridgesAtCeiling == 0`, the graph has nothing to set apart: log
+```
+VERBOSE("Triplet filter: the ceiling %.3f (m %.2f, d_max/|V| %.3f) leaves every component of the graph in one piece (%u pieces of %u nodes, the largest %u): no pair below it joins two pieces, nothing to set apart, nothing removed",
+	ceiling, minScore, degreeRatio, numPiecesAtCeiling, numNodes, largestPieceAtCeiling);
+```
+and skip the fit, the floor and the repair (`representative` stays empty, so the duplicates pass
+below spares every scored pair under the ceiling, as it does for a graph fitting none). Otherwise
+proceed as now.
+
+(d) In the fits-none log line, add the pieces: after "fits no threshold:" the text
+`"the ceiling leaves %u pieces (the largest %u of %u nodes) and %u pairs below it join two; "`
+with `numPiecesAtCeiling, largestPieceAtCeiling, numNodes, numBridgesAtCeiling` before the
+existing arguments, keeping the rest of the sentence.
+
+(e) The representatives: a scene pair is a candidate only when `score >= 0.f && score < tau &&
+joinsPieces(pair)`; every other verified pair goes into `seenKept` (a below-threshold pair inside a
+piece is kept and, like an unscored twin, removes its key from `representative`).
+
+(f) The repair's first loop: skip a pair (`continue`) only when it is a candidate not spared, i.e.
+`score >= 0.f && score < tau && joinsPieces(pair) && !spared[idxPair]`.
+
+(g) The duplicates pass: for a scene pair with `score >= 0.f && score < tau`, `spared[idxPair]` is
+true when `!joinsPieces(pair)` or when no representative is left or the representative is spared
+(the existing expression, with the piece test added first).
+
+(h) The main log line becomes:
+```
+VERBOSE("Triplet filter: tau %.3f, %s (ceiling %.3f at m %.2f, d_max/|V| %.3f) leaves %u pieces (the largest %u of %u nodes); "
+	"%u pairs below the threshold join two of them and are the candidates, %u of %u images short of the floor (%u pairs "
+	"holding %u matches at %g degrees or more) without them: %u candidates retained for the floor, %u to keep every "
+	"component whole, %u images whose candidates ran out before the floor held",
+	tau, tau < ceiling ? "the strictest threshold the graph fits" : "the ceiling", ceiling, minScore, degreeRatio,
+	numPiecesAtCeiling, largestPieceAtCeiling, numNodes, numCandidates, numShortAtTau, numNodes,
+	config.keepPairs, config.keepMatches, keepMinAngle, numSparedFloor, numSparedRepair, numShort);
+```
+
+(i) Update the comment block above `if (!config.cut)` ("The keep mode (config.cut off, the
+default): ...") so its first sentences read: "The keep mode (config.cut off, the default): the
+candidates are the scored pairs below the threshold that join two pieces the ceiling keeps apart --
+the paper's evidence that a pair is false is that its threshold separates what the pair joins -- and
+of those every image keeps what the graph cannot spare. A pair below the threshold inside one piece
+is merely weak: on a sequential capture every non-consecutive pair is the weak side of a triangle a
+consecutive pair tops, and removing them cost the Tanks and Temples orbits 7-14 % of their rotation
+accuracy while an orbit is one piece at the ceiling. On an interior the ceiling removes half the
+pairs ..." and continue with the existing text from "On an interior the ceiling removes half the
+pairs and they are true" onward, unchanged.
+
+- [ ] **Step 4: Update the header and the help**
+
+`libs/SFM/ViewGraphTriplets.h`, the `cut` field's comment: replace "Off, the keep mode: the ceiling
+names the candidates (the scored pairs below it), every image keeps at least" with "Off, the keep
+mode: the candidates are the scored pairs below the threshold that join two pieces the ceiling keeps
+apart (a weak pair inside one piece is kept), every image keeps at least". The "Two modes." paragraph
+above `FilterPairsByTriplets`: replace "Without it (the default) the ceiling names the candidates,
+the scored pairs below it, and of those only what the graph can spare goes:" with "Without it (the
+default) the candidates are the scored pairs below the threshold that join two pieces the ceiling
+keeps apart -- a graph the ceiling leaves in one piece loses nothing -- and of those only what the
+graph can spare goes:".
+
+`apps/CreateStructure/CreateStructure.cpp`, the `--filter-triplets` help: replace "by default only
+what the graph can spare goes (see --triplet-keep-pairs and --triplet-keep-matches; every component
+of the graph stays whole)" with "by default only pairs joining pieces the paper's threshold keeps
+apart go, and of those only what the graph can spare (see --triplet-keep-pairs and
+--triplet-keep-matches; every component of the graph stays whole; a scene the threshold leaves in
+one piece loses nothing)".
+
+- [ ] **Step 5: Build and run the suite**
+
+Run: `ninja -C make -f build-Release.ninja Tests CreateStructure && ./make/bin/Release/Tests 1`
+Expected: every SFM test PASSED, `TripletKeepTest` and `TripletYieldTest` included; the cutting-rule
+tests unchanged (they set `cut = true`).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add libs/SFM/ViewGraphTriplets.cpp libs/SFM/ViewGraphTriplets.h apps/CreateStructure/CreateStructure.cpp apps/Tests/TestsSFM.cpp
+git -c user.name=cDc -c user.email=cdc.seacave@gmail.com commit -m "sfm: the triplet filter's keep mode removes only pairs joining pieces the ceiling keeps apart"
+```
+
+---
+
 ## Measurement (the controller's, after the branch is green)
 
 Not tasks and not a subagent's: they run the pipeline and read datasets, which no implementer does.

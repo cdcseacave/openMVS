@@ -689,7 +689,8 @@ With `cut` off:
 
 1. The scores, the ceiling `tau(m)` (§3.12, `m` 0.3) and the seed views (§3.9: the largest
    piece at the ceiling) are as they are. Neither the second ceiling (§3.13) nor the descent
-   (§3.8) runs: the ceiling names the **candidates**, the scored pairs below it, and nothing
+   (§3.8) runs: the ceiling names the **candidates**, the scored pairs below it (§3.15 narrows
+   them to the pairs joining two components of the ceiling's survivor graph), and nothing
    else is ever removed.
 2. **The floor.** Every image keeps at least `keepPairs` of its pairs, and enough of them to
    hold `keepMatches` inliers (the sum of the weighted inlier counts of its kept pairs) -- counting
@@ -800,6 +801,88 @@ is named.
 The offline harness (`scripts/python/tests/triplet_disambiguation.py`) scores and thresholds; it
 does not model either mode's removals and is unchanged.
 
+### 3.15 The keep mode removes only what the ceiling sets apart
+
+**Measured (2026-09-07, snapshot `bin-triplet-keep4-20260907` from a556a7d; runs
+`openmvs-triplet-default-20260907-{final-nofilter,final-keep,final-keep-b8000,final-keep-open,triplet}`
+under each scene, every arm reconstructing the base arm's saved matched scene; pose errors against
+the COLMAP models in `campaign-summary-2026-09-07.md`, summary-run5.log).** The rule of §3.14 is
+the no-filter result on every interior (§5.10), and on the Tanks and Temples orbits it registers
+the same images but costs rotation accuracy:
+
+| scene (images) | no filter: registered, rotation error median / p90 (deg) | keep mode (§3.14): registered, error, what it did |
+|---|---|---|
+| Truck (251) | 251, 0.141 / 0.159 | 251, 0.157 / 0.183: the ceiling 0.520 stands (1 of 251 short), kept 2,327 of 6,054 |
+| Ignatius (263) | 263, 0.110 / 0.117 | 263, 0.104 / 0.114: ceiling 0.486 (9 short), kept 2,304 of 6,508 |
+| Meetingroom (371) | 371, 0.138 / 0.151 | 371, 0.148 / 0.167: ceiling 0.457 (76 short, 690 retained), kept 3,868 of 8,735 |
+| Caterpillar (383) | 376, 0.111 / 0.128 | 374, 0.127 / 0.147: ceiling 0.439, kept 3,598 of 9,483 |
+
+Three of the four worsen their median rotation error by 7 -- 14 % (0.01 -- 0.02 degrees), over the
+5 % bar of the note's pre-registered rule; a floor of 8,000 matches does not help Truck (2,334 kept)
+and only Meetingroom, which fits no threshold at 8,000, returns to its no-filter error. The cost is
+the removal itself: on a dense orbit every image holds 20 -- 50 pairs and the floor is met by its
+pairs above the ceiling, so 60 % of the pairs go, all of them true (Truck: 3,543 true and 114
+labelled false of 3,657 removed in the simulation), and among them the wide-baseline pairs, which
+score lowest on a sequential capture (every non-consecutive pair is the weak side of a triangle a
+consecutive pair tops) and which bundle adjustment needs most.
+
+**What tells the orbits from the ambiguous sets** is not the share of images the floor serves
+(Meetingroom 20 %, Nevsky 18 %) but what the ceiling does to the graph. On every normal scene of
+the campaign the survivor graph at the ceiling -- the unscored pairs and the pairs scoring at or
+above it -- is one connected component: Truck 251 of 251 images, Ignatius 263, Meetingroom 371,
+Caterpillar 383, Barn 410, and so are ToH (338) and indoor (152). On the ambiguous sets it is not:
+the largest component holds 148 of the church's 277 images, 181 of Radcliffe's 282, 145 of
+Brandenburg's 175, 417 of Arc's 434, 438 of Nevsky's 448, 396 of Big Ben's 402, and on the small
+sets matched exhaustively a handful (street 9 of 19, cereal 5 of 25). The paper's method is a cut:
+its evidence for a pair being false is that the threshold *separates* what the pair joins. A pair
+below the ceiling whose two images the ceiling keeps in one component is merely weak -- the
+threshold has found nothing to set apart -- and on an orbit those are the pairs the keep mode was
+removing.
+
+**The rule.** In the keep mode the **candidates** are the scored pairs below the threshold whose
+two images lie in different connected components of the ceiling's survivor graph (over the verified
+pairs; a distinct image pair is present when any scene pair carrying it is unscored or scores at or
+above the ceiling). A scored pair below the threshold inside one component is kept, and counts
+towards the floor like a pair above the threshold. Everything else of §3.14 stands: the fit
+(step 2b) counts the nodes short of the floor from their non-candidate pairs, the floor retains the
+best-scoring counting candidates, the repair keeps every component of the unfiltered graph whole,
+duplicates follow their representative. When no scored pair below the ceiling joins two components
+-- every component of the unfiltered graph is one piece at the ceiling -- there is nothing to set
+apart, and the filter removes nothing, saying so.
+
+Simulated (`gentle_sim.py --bridges`, the floor at 3 pairs and 2,000 matches at 3 degrees; the
+labelled exports of the keep runs for Tanks and Temples and of the snapshot-l runs for the
+ambiguous sets):
+
+| set | components at the ceiling (largest) | kept, §3.14 | kept, §3.15 | removed true / false, §3.14 | removed true / false, §3.15 |
+|---|---|---|---|---|---|
+| Truck, Ignatius, Meetingroom, Caterpillar, Barn | 1 | 32 -- 44 % | 100 % | 3,543 -- 6,065 / 1 -- 479 | 0 / 0 |
+| church | 21 (148) | 17 % | 65 % | 10,528 / 1,834 | 2,591 / 1,719 |
+| Brandenburg | 20 (145) | 16 % | 90 % | 8,887 / 57 | 857 / 33 |
+| Radcliffe | 22 (181) | 12 % | 72 % | 12,838 / 940 | 2,687 / 701 |
+| Arc | 10 (417) | 30 % | 99.7 % | 10,892 / 3,115 | 44 / 9 |
+| Big Ben | 7 (396) | 25 % | 99.9 % | 11,222 / 6,195 | 13 / 4 |
+| Nevsky | 11 (438) | 9 % | 99 % | 22,397 / 20,274 | 255 / 193 |
+| street | 3 (9) | 27 % | 40 % | 116 / 1 | 95 / 1 |
+| cereal | 8 (5) | 18 % | 20 % | 189 / 5 | 183 / 5 |
+| cup | 2 (52) | 10 % | 69 % | 621 / 981 | 150 / 427 |
+
+The orbits lose nothing, by construction. The sets whose ceiling splits them keep four to seven
+times as many true pairs and still lose the false pairs that join the pieces (church 1,719 of
+1,834; Radcliffe 701 of 940; Brandenburg 33 of 57; street and cereal every one the rule as it was
+removed). The three collections the ceiling leaves in one piece but for a few stragglers -- Arc,
+Big Ben, Nevsky -- keep their false pairs inside that piece, as the cutting rule's threshold would
+not; whether those pairs fold the reconstruction without the filter, and what the rule of §3.14
+gained there over no filter at all, is §5.10's measurement (the `final-nofilter` and `final-keep`
+arms of the internet collections). The ceiling now fits everywhere the descent reached before
+(church 44 of 277 short, street 4 of 19, cereal 5 of 25), so the descent is for the graphs whose
+bridges alone leave more than half the images short.
+
+**Interface.** No new flag: this is what the keep mode does. The log names the components the
+ceiling leaves (their number and the largest), how many of the scored pairs below the threshold
+join two of them, and, when none does, that nothing is set apart. `TripletFilterConfig` and the
+Python binding are unchanged.
+
 ### 3.4 Where the filter runs
 
 The filter runs at `Scene.cpp:697`, in `Reconstruct`. `ViewGraphCalibrator` runs at
@@ -827,6 +910,7 @@ this branch does not take. Whichever position the measurement supports becomes t
 | `apps/Tests/TestsSFM.cpp` | `TripletFilterTest`'s path-graph assertion flipped; sweep tests; cue test |
 | `docs/design/TripletDisambiguation.md` | the removal rule, the threshold, the second cue, and which follow-ups this closes |
 | §3.14 | `TripletFilterConfig::enabled` true, `cut`, `keepPairs`, `keepMatches`, `keepMinAngle`, `keepMaxShort`; the keep mode in `FilterPairsByTriplets`; `--triplet-cut`, `--triplet-keep-pairs`, `--triplet-keep-matches`; `cut`/`keep_pairs`/`keep_matches` in the Python config; `TripletKeepTest`; the existing tests pin the cutting rule with `cut` on; the overview and the note describe both modes and the default's campaign |
+| §3.15 | the keep mode's candidates are the scored pairs below the threshold that join two components of the ceiling's survivor graph, in `FilterPairsByTriplets`; the fit, the floor, the repair and the duplicates read the same predicate; a graph the ceiling leaves in one piece per component loses nothing, and the log says so; `TripletKeepTest`'s burst is one piece and keeps everything, its descent scene becomes two bursts joined by a ladder of weak pairs; the `--filter-triplets` help, the header's two-mode paragraph and the note describe the rule |
 
 ## 5. Measurement
 
