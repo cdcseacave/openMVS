@@ -725,19 +725,30 @@ With `cut` off:
    dropped: it does nothing for a dense orbit (Truck keeps 38 % of its pairs at any share up to a
    half, its pairs above the ceiling already holding that) and floods false pairs back on cup and
    Radcliffe.
-2b. **The graph must fit the ceiling.** Before any image is served, the filter counts the nodes
-   of the graph (images with at least one edge) whose counting pairs above the ceiling and
-   unscored pairs already fall short of the floor -- fewer than `keepPairs`, or fewer than
-   `keepMatches` matches. When they are more than `keepMaxShort` of the nodes (a half by
-   default), the ceiling was derived for a graph this one is not, and the filter removes
-   nothing: the scores are still computed and exported, the seeds still named, and the log
-   says the graph stood down and why. The paper's `tau(m)` presumes an internet collection where
-   an image keeps hundreds of pairs above it; on such a graph a handful of images need the floor
-   (church 19 of 277, Big Ben 27 of 402, Arc 68 of 434, the small video sets none), while on an
-   interior most do (2678a364 77 of 99, 5992d620 117 of 193, 17ac94cc 352 of 492), and there
-   nibbling at the pairs of the few rich images is not safe either.
+2b. **The threshold is the strictest one the graph fits.** A node of the graph (an image with at
+   least one edge) *needs the floor* at a threshold when its counting pairs at or above it and
+   its unscored pairs already fall short of the floor -- fewer than `keepPairs`, or fewer than
+   `keepMatches` matches. The keep mode's threshold is the strictest value at or below the
+   ceiling at which at most `keepMaxShort` of the nodes (a half by default) need the floor: the
+   ceiling itself when it fits, else the largest candidate score that does (a binary search over
+   the distinct scores below the ceiling, as the cutting rule's descent searches; the count is
+   monotone in the threshold). When even the loosest threshold -- every scored pair kept -- leaves
+   more than that share needing the floor, the graph fits no threshold and the filter removes
+   nothing: the scores are still computed and exported, the seeds still named, and the log says
+   so and why. The candidates are then the scored pairs below the threshold found, and the floor
+   and the repair follow.
 
-   Why a gate and not a larger floor: measured on the interiors with the floor counting every
+   The paper's `tau(m)` presumes an internet collection where an image keeps hundreds of pairs
+   above it; on such a graph a fraction of the images need the floor at the ceiling (church 90 of
+   277, Radcliffe 57 of 282, Arc 146 of 434, Big Ben 95 of 402, Nevsky 82 of 448) and the ceiling
+   stands. On a small set matched exhaustively the ceiling sits near 1 and most images need the
+   floor there (street 19 of 19, cereal 18 of 25, cup 63 of 64, Brandenburg 104 of 175), and the
+   descent finds the threshold they fit (cup: 32 of 64 need it, 981 of the 989 false pairs still
+   below). On an interior no threshold fits: most images hold fewer than 2,000 matches at 3
+   degrees or more in the whole graph, so even keeping every scored pair leaves them short
+   (2678a364 144 of 148 at the ceiling), and nothing is removed.
+
+   Why a fit and not a larger floor: measured on the interiors with the floor counting every
    pair (runs `openmvs-triplet-default-20260907-keep{,-b1000,-b4000}`, pose errors against the
    GlueMap models in `campaign-summary-2026-09-07.md`), the incremental reconstruction of these
    captures is unstable under any change of the pair set, in both directions. A floor of 1,000
@@ -747,9 +758,11 @@ With `cut` off:
    790, improves it (0.26); the default floor registers 468 of 17ac94cc's 554 images against
    the base's 274, at twice the rotation error, while 1,000 and 4,000 register 275 and 261.
    Nothing monotone in the floor explains those, and no floor short of keeping everything
-   guarantees the base's result on such a graph. The gate does, by construction: with it the
+   guarantees the base's result on such a graph. The fit does, by construction: with it the
    keep mode is the base on every interior of the campaign and acts on every set the cutting
-   rule was built for.
+   rule was built for. A plain stand-down at the ceiling (no descent) was measured first and
+   left the small sets and Brandenburg untouched, since the ceiling of a complete graph fits
+   nothing; the descent is what reaches them.
 
 3. **The repair.** Every connected component of the unfiltered graph stays one component: the
    candidates still unretained, best-scoring first, are retained whenever they join two

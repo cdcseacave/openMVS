@@ -5545,6 +5545,212 @@ git add libs/SFM/ViewGraphTriplets.h libs/SFM/ViewGraphTriplets.cpp apps/CreateS
 git -c user.name=cDc -c user.email=cdc.seacave@gmail.com commit -m "sfm: the keep mode stands down on a graph the ceiling does not fit"
 ```
 
+### Task 26: The keep mode's threshold is the strictest one the graph fits
+
+Spec §3.14, step 2b as rewritten. The stand-down of Task 25 is right where nothing fits (every
+interior) but wrong where the ceiling alone does not: on a small set matched exhaustively the
+ceiling sits near 1 and most images need the floor there, yet a lower threshold fits them and
+still sits above their doppelganger pairs (cup: 981 of 989 false pairs below the threshold found).
+The gate becomes a descent: the strictest threshold at or below the ceiling at which at most
+`keepMaxShort` of the nodes need the floor; nothing is removed only when none fits.
+
+**Files:**
+- Modify: `libs/SFM/ViewGraphTriplets.h` (`keepMaxShort`'s comment; the "Two modes." paragraph)
+- Modify: `libs/SFM/ViewGraphTriplets.cpp` (the keep mode: the descent replaces the stand-down)
+- Modify: `apps/CreateStructure/CreateStructure.cpp` (`--triplet-keep-max-short`'s help)
+- Modify: `apps/Tests/TestsSFM.cpp` (`TripletKeepTest`: the descent scene)
+
+**Interfaces:**
+- Consumes: the keep mode of Tasks 23-25 (`countsForFloor`, `keptPairs`, `keptMatches`, `representative`, `spared`, the serving loop, the repair, the stand-down).
+- Produces: nothing new; `keepMaxShort` keeps its name, default and flag.
+
+- [ ] **Step 1: The comments and the help**
+
+In `libs/SFM/ViewGraphTriplets.h`, replace `keepMaxShort`'s comment with
+
+```cpp
+	// The keep mode's threshold is the strictest one the graph fits: the ceiling when at most
+	// this share of the images (nodes of the graph) already fall short of the floor from their
+	// pairs at or above it and their unscored pairs, else the largest score below the ceiling at
+	// which that holds. The paper's tau(m) presumes an internet collection where an image keeps
+	// hundreds of pairs above it and the ceiling stands; a small set matched exhaustively puts
+	// the ceiling near 1 and fits a lower one, still above its doppelganger pairs; an interior
+	// fits none -- most of its images hold fewer matches than the floor asks for in the whole
+	// graph -- and nothing is removed, since on such a graph the reconstruction flips under any
+	// change of its pairs. 1 fits every threshold.
+	float keepMaxShort = 0.5f;
+```
+
+and in the "Two modes." paragraph replace `, unless more than config.keepMaxShort of the images
+fall short of that floor from their pairs above the ceiling alone, in which case nothing is
+removed` with `, at the strictest threshold at or below the ceiling where at most
+config.keepMaxShort of the images fall short of that floor from their pairs above it alone; a
+graph that fits no threshold loses nothing`.
+
+In `apps/CreateStructure/CreateStructure.cpp`, replace the `--triplet-keep-max-short` help with
+`"camera-triplet filter, without --triplet-cut: the largest share of the images that may fall short of the floor from their pairs above the threshold alone; the threshold is the strictest one at or below the paper's at which that holds, and a graph that fits none loses nothing (1 fits every threshold)"`.
+
+- [ ] **Step 2: The descent**
+
+In `libs/SFM/ViewGraphTriplets.cpp`, the keep block of `FilterPairsByTriplets`. Replace the
+stand-down (the count of `numNodes`/`numShortBefore`, the `standsDown` decision, its sparing and
+log line, and the `if (!standsDown)` wrapper) with a descent that runs BEFORE the candidates are
+named, so that everything after it (the representatives, the floor, the repair) works on the
+threshold found. Concretely, restructure the keep block as:
+
+```cpp
+	if (!config.cut) {
+		const IIndex numImages = scene.images.size();
+		// a pair counts for the floor when its ray angle reaches keepMinAngle, or was never
+		// measured: a near-duplicate pair yields no 3D point, and is what a doppelganger pair
+		// reads as
+		const auto countsForFloor = [keepMinAngle](const ImagePair& pair) {
+			return !(pair.meanRayAngle > 0.f) || R2D(pair.meanRayAngle) >= keepMinAngle;
+		};
+		// the nodes of the graph, and how many need the floor at a threshold: their counting
+		// pairs at or above it and their unscored pairs fall short of it
+		std::vector<bool> isNode(numImages, false);
+		FOREACH(idxPair, scene.pairs) {
+			const ImagePair& pair = scene.pairs[idxPair];
+			if (pair.HasGeometricVerification() && pair.GetNumWeightedInliers() > 0 && pair.ID1 != pair.ID2)
+				isNode[pair.ID1] = isNode[pair.ID2] = true;
+		}
+		unsigned numNodes = 0;
+		for (IIndex i = 0; i < numImages; ++i)
+			if (isNode[i])
+				++numNodes;
+		std::vector<unsigned> keptPairs(numImages);
+		std::vector<double> keptMatches(numImages);
+		const auto numShortAt = [&](float threshold) {
+			std::fill(keptPairs.begin(), keptPairs.end(), 0u);
+			std::fill(keptMatches.begin(), keptMatches.end(), 0.0);
+			std::unordered_set<PairIdx::PairIndex> seen;
+			FOREACH(idxPair, scene.pairs) {
+				const ImagePair& pair = scene.pairs[idxPair];
+				if (!pair.HasGeometricVerification() || pair.GetNumWeightedInliers() == 0 || pair.ID1 == pair.ID2)
+					continue;
+				const float score = scores[idxPair];
+				if ((score >= 0.f && score < threshold) || !countsForFloor(pair) ||
+					!seen.insert(MakePairIdx(pair.ID1, pair.ID2).idx).second)
+					continue;
+				++keptPairs[pair.ID1];
+				++keptPairs[pair.ID2];
+				keptMatches[pair.ID1] += pair.GetNumWeightedInliers();
+				keptMatches[pair.ID2] += pair.GetNumWeightedInliers();
+			}
+			unsigned numShort = 0;
+			for (IIndex i = 0; i < numImages; ++i)
+				if (isNode[i] && (keptPairs[i] < config.keepPairs || keptMatches[i] < (double)config.keepMatches))
+					++numShort;
+			return numShort;
+		};
+		const auto fits = [&](float threshold) {
+			return (double)numShortAt(threshold) <= (double)keepMaxShort * (double)numNodes;
+		};
+		// the threshold: the ceiling when the graph fits it, else the largest score below the
+		// ceiling it fits -- the count of images needing the floor falls as the threshold does,
+		// so a binary search over the distinct scores below the ceiling finds it; a graph that
+		// fits none, every scored pair kept, loses nothing
+		unsigned numShortAtCeiling = numShortAt(ceiling);
+		bool fitsNone = false;
+		if ((double)numShortAtCeiling > (double)keepMaxShort * (double)numNodes) {
+			std::vector<float> candidates;
+			for (float score : scores)
+				if (score >= 0.f && score < ceiling)
+					candidates.push_back(score);
+			std::sort(candidates.begin(), candidates.end(), std::greater<float>());
+			candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
+			if (candidates.empty() || !fits(candidates.back())) {
+				fitsNone = true;
+			} else {
+				size_t lo = 0, hi = candidates.size() - 1;
+				while (lo < hi) {
+					const size_t mid = (lo + hi) / 2;
+					if (fits(candidates[mid]))
+						hi = mid;
+					else
+						lo = mid + 1;
+				}
+				tau = candidates[lo];
+			}
+		}
+		if (fitsNone) {
+			VERBOSE("Triplet filter: the ceiling %.3f (m %.2f, d_max/|V| %.3f) fits no threshold: %u of %u images fall short "
+				"of the floor (%u pairs holding %u matches at %g degrees or more) from their pairs above it, and %u still do "
+				"with every scored pair kept, more than the %.0f%% the keep mode acts on: nothing removed",
+				ceiling, minScore, degreeRatio, numShortAtCeiling, numNodes,
+				config.keepPairs, config.keepMatches, keepMinAngle, numShortAt(0.f), 100.f * keepMaxShort);
+		} else {
+			// the kept pairs at the threshold found are what numShortAt last counted, when the
+			// search settled -- recount at tau so keptPairs/keptMatches describe it
+			const unsigned numShortAtTau = numShortAt(tau);
+			... the rest of the keep block as it is (the representatives of the candidates below
+			    tau, the erase of the kept keys, numCandidates, the sort, candidatesOf, the
+			    serving loop, the repair, the log line), with the log line gaining, after
+			    "names %u candidate pairs below it", the fragment ", %s" printing
+			    tau < ceiling ? "the strictest threshold the graph fits (ceiling %.3f)" : "the ceiling"
+			    -- format it as two branches of one VERBOSE or two VERBOSE calls, whichever reads
+			    better, and add "%u of %u images short of the floor above it" with numShortAtTau
+			    and numNodes ...
+		}
+		// duplicates follow their representative (unchanged; on fitsNone nothing is a candidate
+		// and nothing is spared -- the compaction removes only scored pairs below tau, and tau is
+		// the ceiling, so guard the compaction: when fitsNone, spare every scored pair below tau)
+	}
+```
+
+The essential points, whatever the exact arrangement: (1) `tau` is set to the threshold found
+before the candidates are named, so `spared`, the floor and the repair all work at it and the
+compaction's `score < tau && !spared[idxPair]` removes exactly the unspared candidates below it;
+(2) when the graph fits no threshold, `tau` stays the ceiling and every scored pair below it is
+marked spared (so the compaction removes nothing), `numCandidates`, `numSparedFloor`,
+`numSparedRepair`, `numShort` read 0, and the seeds are still those of the ceiling's largest
+piece; (3) the counting of `keptPairs`/`keptMatches` that the floor consumes is the one at `tau`;
+(4) the first pass that fills `representative` must use `tau`, not `ceiling`. The final
+`Triplet filter: kept ...` line's `tau %.3f` then prints the threshold found. Keep the stand-down
+scene's expectations in mind: it now descends (see Step 3).
+
+- [ ] **Step 3: The tests**
+
+In `TripletKeepTest`:
+
+1. The burst scene's third arm (the default floor at 3 degrees): every image needs the floor at
+   the ceiling, and still does with every scored pair kept (a burst image holds at most two
+   wide pairs, the floor asks three), so the graph fits no threshold and nothing is removed:
+   the expectation stays `removed == 0` and the six wide pairs kept; update the comment and the
+   failure message to say the graph fits no threshold.
+2. The "gate alone" scene (four- and five-apart wide pairs): the arm with the gate off is
+   unchanged (five removed). The arm at the default `keepMaxShort` now DESCENDS: at the ceiling
+   0.65 every image needs the floor of one pair; at 0.1125 (the scores of (2,6) and (7,11)) four
+   images have one; at 0.1083 (the four middle four-apart pairs) images 2 to 11 all have at least
+   one, four of 14 need the floor, the graph fits, and the five five-apart pairs at 0.09 are the
+   candidates: with a floor of one pair already met, nothing is retained and all five go.
+   Replace that arm's expectation `removed != 0 || wide.pairs.size() != 13 + 12 + 6 + 5` with
+   `removed != 5` plus the same kept checks as the gate-off arm (the five five-apart pairs gone,
+   the six four-apart kept), and its comment and message accordingly ("the descent settles at
+   the middle four-apart pairs' score and the five five-apart pairs go").
+3. Add one arm that pins the descent's threshold against the ceiling's: the same scene with
+   `keepMaxShort = 1.f` and `keepPairs = 1`, `keepMatches = 0` (already the gate-off arm) removes
+   the same five -- so instead pin the fit-none path with a scene that has candidates but never
+   fits: the burst scene (Task 24's) with `keepPairs = 3`, `keepMatches = 0`, `keepMinAngle = 3`:
+   at every threshold each image holds at most two counting pairs, so nothing fits and
+   `removed == 0` with all 31 pairs kept. Add it if the third arm of the burst scene does not
+   already assert exactly that (it does with the default floor; then this arm is not needed --
+   say so in the report).
+
+Extend the PASSED message: replace `a graph the ceiling does not fit stands down` with `the
+threshold descends to the strictest one the graph fits, and a graph that fits none loses nothing`.
+
+- [ ] **Step 4: Build, test, commit**
+
+Run: `ninja -C make -f build-Release.ninja Tests CreateStructure && ./bin/Release/Tests 1`
+Expected: 65 PASSED.
+
+```bash
+git add libs/SFM/ViewGraphTriplets.h libs/SFM/ViewGraphTriplets.cpp apps/CreateStructure/CreateStructure.cpp apps/Tests/TestsSFM.cpp
+git -c user.name=cDc -c user.email=cdc.seacave@gmail.com commit -m "sfm: the keep mode's threshold is the strictest one the graph fits"
+```
+
 ## Measurement (the controller's, after the branch is green)
 
 Not tasks and not a subagent's: they run the pipeline and read datasets, which no implementer does.
