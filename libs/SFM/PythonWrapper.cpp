@@ -193,14 +193,11 @@ static bool ExportRetrievalRankingsCSVFile(const Scene& scene, const std::string
 	return SFM::ExportRetrievalRankingsCSV(scene, MAKE_PATH_SAFE(fileName), maxRank);
 }
 
-// The camera-triplet disambiguation scores of a matched scene (ViewGraphTriplets.h), returned as
-// a dict so a caller can score a scene in-process without exporting a CSV first: "scores" holds
-// one float per scene pair, in scene.pairs order, with -1 marking an unscored pair; "tau" is the
-// threshold Eqn. 3 derives from the given minimum score m (the scores themselves do not depend
-// on m); the remaining entries are the graph statistics the filter's log line reports. The scores
-// depend on the coverage grid (grid_size): each edge's strength is its inlier count discounted by
-// the fraction of the frame its inliers cover, measured on that grid. min_yield is the
-// doppelganger-triplet bar of TripletFilterConfig (0 for the paper's scoring).
+// The camera-triplet disambiguation scores of a matched scene (ViewGraphTriplets.h) as a dict:
+// "scores" holds one float per scene pair, in scene.pairs order, -1 marking an unscored pair;
+// "tau" is the threshold derived from min_score (the scores themselves do not depend on it); the
+// remaining entries are the statistics of the scored graph. grid_size is the coverage grid the
+// pair strengths are discounted on, min_yield the look-alike triangle bar of TripletFilterConfig.
 static boost::python::dict ComputeTripletScoresDict(const Scene& scene, float minScore, float minYield, int gridSize) {
 	const SFM::TripletScores tripletScores = SFM::ComputeTripletScores(scene, minScore, minYield, gridSize);
 	boost::python::list scores;
@@ -321,14 +318,13 @@ void RegisterBindings()
 	class_<SFM::TripletFilterConfig>("TripletFilterConfig")
 		.def_readwrite("enabled", &SFM::TripletFilterConfig::enabled)
 		.def_readwrite("cut", &SFM::TripletFilterConfig::cut)
+		.def_readwrite("min_score", &SFM::TripletFilterConfig::minScore)
+		.def_readwrite("min_yield", &SFM::TripletFilterConfig::minYield)
 		.def_readwrite("keep_pairs", &SFM::TripletFilterConfig::keepPairs)
 		.def_readwrite("keep_matches", &SFM::TripletFilterConfig::keepMatches)
 		.def_readwrite("keep_min_angle", &SFM::TripletFilterConfig::keepMinAngle)
 		.def_readwrite("keep_max_short", &SFM::TripletFilterConfig::keepMaxShort)
-		.def_readwrite("auto_tau", &SFM::TripletFilterConfig::autoTau)
-		.def_readwrite("min_score", &SFM::TripletFilterConfig::minScore)
-		.def_readwrite("second_face_score", &SFM::TripletFilterConfig::secondFaceScore)
-		.def_readwrite("min_yield", &SFM::TripletFilterConfig::minYield);
+		.def_readwrite("second_face_score", &SFM::TripletFilterConfig::secondFaceScore);
 
 	// SFM::ViewGraphCalibratorConfig — focal-length verification
 	class_<SFM::ViewGraphCalibratorConfig>("ViewGraphCalibratorConfig");

@@ -263,51 +263,9 @@ bool ReconstructTest(bool verbose = false);
 // .sfm given back as source), before any reconstruction step can drop pairs
 bool ReconstructExportCSVTest();
 
-// The camera-triplet view-graph disambiguation of Manam & Govindu (CVPR 2024) on a hand-computed
-// 8-node graph -- scores, tau, the graph statistics, the kept sets at m = 0.3 and 0.6, duplicate
-// and unverified pairs, and a graph with no triplet at all
+// The camera-triplet view-graph filter of Manam & Govindu (CVPR 2024): the scores, the yield
+// rule and both modes on hand-computed graphs.
 bool TripletFilterTest();
-
-// The camera-triplet filter's auto-tau sweep, with one scene per property of the search so each is
-// shown to be load-bearing on its own: a barbell where the only score below the ceiling is the
-// same weak pair it already cut, so relaxing finds nothing to remove; a ring whose structural
-// edges alone hold every image together, so the ceiling is applied as given; a bridge of two dense
-// cliques joined by a weak pair, severed at under 3% of the edges yet halving the graph, with
-// nothing below the ceiling to relax to either; a pendant scene where dropping three weak spokes
-// strands nobody, so the ceiling is applied as given even though it leaves each pendant at degree
-// 1; a baseline scene where removing the one weak hub-to-hub edge strands nobody either, pinning
-// low degree to the graph's own count rather than an absolute cap; a boundary scene where one
-// score sits exactly at the ceiling, pinning that the ceiling is applied with >=, not >; a pan
-// pinning the search actually finding the strictest reconnecting threshold rather than the loosest
-// one or none at all, with a verified pair outside every triangle kept apart from the count; a
-// walk pinning that a straggler too small to be a piece is left alone rather than chased; three
-// chains that the ceiling shatters into three equal pieces, none a majority, pinning that the
-// descent joins them at the strictest threshold that does so; a straggler flood pinning that the
-// descent's bar is the pieces sharing a component, not a count of nodes, since stragglers accreting
-// onto one piece can satisfy a count while another piece stays apart; a chain of pairs whose
-// ceiling leaves no piece at all, pinning that every component then becomes a piece and the descent
-// still runs to join them; and three faces whose second, stricter ceiling splits the graph into
-// pieces of 40, 35 and 25 images -- the largest holding no majority of the pieced images even
-// though the second clears a third of it -- pinning that the stricter ceiling needs both a
-// majority piece and a second at least a third of it, not either alone
-bool TripletAutoTauTest();
-
-// The strength of a triplet edge is its inlier count discounted by the fraction of the frame its
-// inliers cover: a doppelganger with more inliers than the true junction beside it still loses on
-// coverage, so the filter removes it and not the chain
-bool TripletCoverageTest();
-
-// Look-alike copies of one structure form triangles among themselves that score every edge at 1:
-// coverage cannot see them (the whole frame is the repeated structure) and neither can the
-// triangles. The yield -- a pair's inlier count against its images' capacity and the graph's own
-// envelope of that ratio per degree of ray angle -- can: a triplet whose three edges all yield
-// below minYield contributes no evidence, and the filter keeps the walk alone instead of folding it
-bool TripletYieldTest();
-
-// The filter is on by default and, without cut, removes only what the graph can spare: the ceiling
-// names the candidates, every image keeps a floor of pairs and matches, and every component of the
-// matched graph stays one component -- where the cutting rule cuts a room off a capture
-bool TripletKeepTest();
 
 // The star initializer's reference view is chosen among the seed views the caller names -- the
 // triplet filter's largest ceiling piece -- and only among every image when none is named, or

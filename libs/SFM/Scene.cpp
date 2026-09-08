@@ -689,11 +689,10 @@ void ExportMatchingCSVs(const Scene& scene, const ReconstructionConfig& config)
 }
 
 // Export the matching diagnostics of a freshly matched scene, then disambiguate its view graph
-// with the camera-triplet filter (ViewGraphTriplets.h, on by default in its keep mode). The
-// order is deliberate: the CSVs describe the whole matched graph and carry the triplet score of
-// every pair, including the pairs the filter is about to remove, so a run can be re-scored and
-// re-thresholded offline from its own export alone. Returns the images the filter's ceiling
-// vouches for most (its largest piece), the reconstruction's seed views; empty without the filter.
+// with the camera-triplet filter (ViewGraphTriplets.h): the CSVs describe the whole matched graph,
+// each pair with its triplet score, the pairs the filter removes included. Returns the images of
+// the largest piece the filter's ceiling leaves, the reconstruction's seed views; empty without
+// the filter.
 IIndexArr ExportMatchingCSVsAndFilterPairs(Scene& scene, const ReconstructionConfig& config)
 {
 	ExportMatchingCSVs(scene, config);

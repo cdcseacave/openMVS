@@ -7711,11 +7711,11 @@ bool ReconstructExportCSVTest()
 
 namespace {
 
-// Shared by TripletFilterTest and TripletAutoTauTest: a pair carries an inlier count, its matches'
-// coverage, and a verification flag -- F = Matrix3x3::IDENTITY stands in for the geometric
-// verification -- so neither descriptors nor real images are needed (as ROMA2WarpTrackingTest
-// builds its pairs) -- and the images need only a camera.
-struct TripletPairSpec { IIndex idA, idB; int numInliers; bool verified; };
+// Scenes for the view-graph tests (TripletFilterTest, StarReferenceViewTest): a pair carries an
+// inlier count, its matches' coverage and a verification flag (F = Matrix3x3::IDENTITY stands in
+// for the geometric verification), so neither descriptors nor real images are needed, and the
+// images need only a camera.
+struct TripletPairSpec { IIndex idA, idB; unsigned numInliers; bool verified; };
 
 void AddTripletImages(Scene& scene, IIndex numImages)
 {
@@ -7773,1612 +7773,222 @@ std::set<std::pair<IIndex,IIndex>> TripletKeptPairs(const Scene& scene)
 
 } // namespace
 
-// Camera-triplet view-graph disambiguation (Manam & Govindu, CVPR 2024) on a hand-computed graph:
-//   nodes 0..7; (0,1)=100 (0,2)=100 (1,2)=70 (1,3)=50 (2,3)=40 (3,4)=30 (3,5)=20
-//   (5,6)=10 (6,7)=10 (5,7)=10 inliers.
-// Triplets A={0,1,2}, B={1,2,3} share edge (1,2); C={5,6,7} is an isolated node of the triplet
-// graph, so G_LCT = {A,B} with nodes {0,1,2,3} (|V|=4, d_max=3) and the five edges of A and B.
 bool TripletFilterTest()
 {
 	TD_TIMER_START();
 	constexpr float eps = 1e-6f;
-	// This test's pairs carry as few as 10 track-forming matches, far short of a 10x10 grid's 100
-	// cells -- AddTripletPair's default cellsA/cellsB cannot give them the full coverage its own
-	// comment describes, since a match fills at most one cell. A single-cell grid sidesteps that:
-	// every pair with at least one match trivially covers the whole (one-cell) frame, so strength
-	// reduces to the inlier count exactly, which is what this test's numbers were computed against
-	// -- coverage discounting a real, sub-full grid is TripletCoverageTest's subject, not this one's.
-	PairsWeightingConfig weightingCfg;
-	weightingCfg.gridSize = 1;
+
+	// 1. The scores: an 8-node graph with two triplet-graph components, triangles {0,1,2} and
+	// {1,2,3} sharing edge (1,2), plus the isolated triangle {5,6,7}; G_LCT is the four nodes and
+	// five edges of the first component, scored by the mean over its triangles of s_ij / max s_kl.
+	// A 1-cell grid gives every pair full coverage, so strength = inlier count.
 	static const TripletPairSpec pairSpecs[] = {
 		{0,1,100,true}, {0,2,100,true}, {1,2,70,true}, {1,3,50,true}, {2,3,40,true},
 		{3,4,30,true}, {3,5,20,true}, {5,6,10,true}, {6,7,10,true}, {5,7,10,true}
 	};
-	const auto buildScene = [](Scene& scene, const TripletPairSpec* specs, unsigned numPairs) {
-		BuildTripletScene(scene, 8, specs, numPairs);
-	};
-
-	// (a) scores and statistics of the full graph
-	Scene scene;
-	buildScene(scene, pairSpecs, 10);
-	const TripletScores scores03 = ComputeTripletScores(scene, 0.3f, 0.f, weightingCfg.gridSize);
-	if (scores03.numTriplets != 3 || scores03.numTripletComponents != 2 ||
-		scores03.numScoredPairs != 5 || scores03.numNodes != 4 || scores03.maxDegree != 3) {
-		VERBOSE("TripletFilterTest FAILED: statistics %zu triplets in %u components, %u scored pairs, "
-			"%u nodes, max degree %u (expected 3, 2, 5, 4, 3)",
-			scores03.numTriplets, scores03.numTripletComponents, scores03.numScoredPairs,
-			scores03.numNodes, scores03.maxDegree);
+	Scene scene; BuildTripletScene(scene, 8, pairSpecs, 10);
+	const TripletScores scores03 = ComputeTripletScores(scene, 0.3f, 0.f, 1);
+	if (scores03.numTriplets != 3 || scores03.numTripletComponents != 2 || scores03.numScoredPairs != 5 ||
+		scores03.numNodes != 4 || scores03.maxDegree != 3) {
+		VERBOSE("TripletFilterTest FAILED: statistics %zu triplets in %u components, %u scored pairs, %u nodes, max degree %u (expected 3, 2, 5, 4, 3)",
+			scores03.numTriplets, scores03.numTripletComponents, scores03.numScoredPairs, scores03.numNodes, scores03.maxDegree);
 		return false;
 	}
 	const float expectedScores[] = {1.f, 1.f, 0.85f, 50.f/70.f, 40.f/70.f, -1.f, -1.f, -1.f, -1.f, -1.f};
 	FOREACH(i, scores03.scores) {
 		if (ABS(scores03.scores[i] - expectedScores[i]) > eps) {
-			VERBOSE("TripletFilterTest FAILED: pair %u (%u,%u) scored %g, expected %g",
-				i, scene.pairs[i].ID1, scene.pairs[i].ID2, scores03.scores[i], expectedScores[i]);
+			VERBOSE("TripletFilterTest FAILED: pair %u (%u,%u) scored %g, expected %g", i, scene.pairs[i].ID1, scene.pairs[i].ID2, scores03.scores[i], expectedScores[i]);
 			return false;
 		}
 	}
-	// tau = m*(1 - d_max/|V|) + d_max/|V| with d_max/|V| = 3/4
-	if (ABS(scores03.tau - 0.825f) > eps) {
-		VERBOSE("TripletFilterTest FAILED: tau %g for m=0.3, expected 0.825", scores03.tau);
-		return false;
+	// tau = m(1 - d_max/|V|) + d_max/|V| = m*0.25 + 0.75: 0.825 at m=0.3, 0.9 at m=0.6, and the
+	// scores at m=0.6 (spot-checked) do not depend on m.
+	const TripletScores scores06 = ComputeTripletScores(scene, 0.6f, 0.f, 1);
+	if (ABS(scores03.tau - 0.825f) > eps || ABS(scores06.tau - 0.9f) > eps ||
+		ABS(scores06.scores[2] - expectedScores[2]) > eps || ABS(scores06.scores[3] - expectedScores[3]) > eps) {
+		VERBOSE("TripletFilterTest FAILED: tau %g at m=0.3 (expected 0.825), %g at m=0.6 (expected 0.9); scores at m=0.6 %g %g (expected %g %g)",
+			scores03.tau, scores06.tau, scores06.scores[2], scores06.scores[3], expectedScores[2], expectedScores[3]); return false;
 	}
-	const TripletScores scores06 = ComputeTripletScores(scene, 0.6f, 0.f, weightingCfg.gridSize);
-	if (ABS(scores06.tau - 0.9f) > eps) {
-		VERBOSE("TripletFilterTest FAILED: tau %g for m=0.6, expected 0.9", scores06.tau);
-		return false;
-	}
-	FOREACH(i, scores06.scores) {
-		if (ABS(scores06.scores[i] - expectedScores[i]) > eps) {
-			VERBOSE("TripletFilterTest FAILED: the scores must not depend on m (pair %u: %g vs %g)",
-				i, scores06.scores[i], expectedScores[i]);
-			return false;
-		}
-	}
-
-	// (b) a duplicate pair collapses onto the same edge (weighted by the stronger of the two) and
-	// shares its score; a pair with no geometric verification, a verified pair with no inlier and
-	// a self-pair are never edges -- each of the three added here would close at least one new
-	// triangle if it were (the self-pair two, through node 3's neighbours 4 and 5), so the triplet
-	// count staying at 3 is what proves they were left out
-	{
-		TripletPairSpec specs[14];
-		memcpy(specs, pairSpecs, sizeof(pairSpecs));
-		specs[10] = TripletPairSpec{0, 1, 10, true};   // duplicate of the (0,1) edge, weaker
-		specs[11] = TripletPairSpec{0, 3, 25, false};  // inliers but no geometric verification
-		specs[12] = TripletPairSpec{2, 4, 0, true};    // verified but no inlier
-		specs[13] = TripletPairSpec{3, 3, 30, true};   // a self-pair joins no two images
-		Scene sceneDup;
-		buildScene(sceneDup, specs, 14);
-		const TripletScores scoresDup = ComputeTripletScores(sceneDup, 0.3f, 0.f, weightingCfg.gridSize);
-		if (scoresDup.numTriplets != 3 || scoresDup.numScoredPairs != 6 ||
-			scoresDup.numNodes != 4 || scoresDup.maxDegree != 3 ||
-			ABS(scoresDup.tau - 0.825f) > eps) {
-			VERBOSE("TripletFilterTest FAILED: a duplicate or a non-edge pair changed the graph "
-				"(%zu triplets, %u scored, %u nodes, max degree %u, tau %g)",
-				scoresDup.numTriplets, scoresDup.numScoredPairs, scoresDup.numNodes,
-				scoresDup.maxDegree, scoresDup.tau);
-			return false;
-		}
-		if (ABS(scoresDup.scores[10] - scoresDup.scores[0]) > eps || scoresDup.scores[11] != -1.f ||
-			scoresDup.scores[12] != -1.f || scoresDup.scores[13] != -1.f) {
-			VERBOSE("TripletFilterTest FAILED: duplicate scored %g against %g; the unverified pair "
-				"scored %g, the inlier-less pair %g and the self-pair %g (all three must be unscored)",
-				scoresDup.scores[10], scoresDup.scores[0], scoresDup.scores[11],
-				scoresDup.scores[12], scoresDup.scores[13]);
-			return false;
-		}
+	// A weaker duplicate of (0,1) collapses onto the same edge and shares its score; an unverified
+	// pair and a self-pair are never edges (each would close a new triangle if it were one, so the
+	// triplet count staying at 3 proves they were left out), and a pair without an inlier has no
+	// strength to score and stays unscored.
+	TripletPairSpec dupSpecs[14];
+	memcpy(dupSpecs, pairSpecs, sizeof(pairSpecs));
+	dupSpecs[10] = TripletPairSpec{0, 1, 10, true}; dupSpecs[11] = TripletPairSpec{0, 3, 25, false};
+	dupSpecs[12] = TripletPairSpec{2, 4, 0, true}; dupSpecs[13] = TripletPairSpec{3, 3, 30, true};
+	Scene sceneDup; BuildTripletScene(sceneDup, 8, dupSpecs, 14);
+	const TripletScores scoresDup = ComputeTripletScores(sceneDup, 0.3f, 0.f, 1);
+	if (scoresDup.numTriplets != 3 || scoresDup.numScoredPairs != 6 || scoresDup.numNodes != 4 || scoresDup.maxDegree != 3 ||
+		ABS(scoresDup.scores[10] - scoresDup.scores[0]) > eps ||
+		scoresDup.scores[11] != -1.f || scoresDup.scores[12] != -1.f || scoresDup.scores[13] != -1.f) {
+		VERBOSE("TripletFilterTest FAILED: duplicate scene %zu triplets, %u scored, %u nodes, max degree %u; duplicate %g vs %g, unverified/no-inlier/self-pair %g %g %g "
+			"(expected 3, 6, 4, 3; equal; all -1)",
+			scoresDup.numTriplets, scoresDup.numScoredPairs, scoresDup.numNodes, scoresDup.maxDegree,
+			scoresDup.scores[10], scoresDup.scores[0], scoresDup.scores[11], scoresDup.scores[12], scoresDup.scores[13]); return false;
 	}
 
-	// (c) the filter at m = 0.3: only the two scored pairs below tau go. The five pairs in no
-	// triplet of the largest component are unscored -- no evidence either way -- and the filter
-	// keeps them.
-	TripletFilterConfig filterCfg;
-	filterCfg.enabled = true;
-	filterCfg.cut = true; // these tests pin the cutting rule; the keep mode is TripletKeepTest's subject
-	// This test pins the paper's threshold arithmetic -- Eqn. 3 at a given m -- so it applies m
-	// as given; the connectivity-driven threshold below it is TripletAutoTauTest's subject. The
-	// second-face ceiling is part of that same connectivity search, so it is off here too.
-	filterCfg.autoTau = false;
-	filterCfg.minScore = 0.3f;
-	// no ray angles here, so the yield rule is off; it is TripletYieldTest's subject
-	filterCfg.minYield = 0.f;
-	if (FilterPairsByTriplets(scene, filterCfg, weightingCfg) != 2 || scene.pairs.size() != 8) {
-		VERBOSE("TripletFilterTest FAILED: m=0.3 left %u pairs, expected 8", scene.pairs.size());
-		return false;
+	// 2. The coverage discount: three images, a triangle whose (0,2) edge touches only 10 of the
+	// 100 cells of a 10x10 grid over image 0 while (0,1) and (1,2) touch every cell, so (0,2)
+	// scores 90/600 = 0.15 (a tenth of its raw 900 inliers); on a 2x2 grid the same ten cells are
+	// its whole top row, half the coarse grid, so it scores 450/600 = 0.75 instead.
+	PairsWeightingConfig weightingCfg; // default gridSize (10)
+	Scene sceneCov; AddTripletImages(sceneCov, 3);
+	AddTripletPair(sceneCov, 0, 1, 600); AddTripletPair(sceneCov, 1, 2, 600); AddTripletPair(sceneCov, 0, 2, 900, true, 10, 100);
+	const TripletScores covScores = ComputeTripletScores(sceneCov, 0.f, 0.f, weightingCfg.gridSize);
+	const TripletScores coarseScores = ComputeTripletScores(sceneCov, 0.f, 0.f, 2);
+	if (covScores.numTriplets != 1 || covScores.numScoredPairs != 3 || !ISEQUAL(covScores.scores[0], 1.f) ||
+		!ISEQUAL(covScores.scores[1], 1.f) || !ISEQUAL(covScores.scores[2], 0.15f) || !ISEQUAL(coarseScores.scores[2], 0.75f)) {
+		VERBOSE("TripletFilterTest FAILED: coverage scene %zu triplets, %u scored, scores %g %g %g on the default grid, %g on 2x2 (expected 1, 3, 1 1 0.15, 0.75)",
+			covScores.numTriplets, covScores.numScoredPairs, covScores.scores[0], covScores.scores[1], covScores.scores[2], coarseScores.scores[2]); return false;
 	}
-	const std::set<std::pair<IIndex,IIndex>> expectedKept03{
-		{0,1}, {0,2}, {1,2}, {3,4}, {3,5}, {5,6}, {6,7}, {5,7}};
-	if (TripletKeptPairs(scene) != expectedKept03) {
-		VERBOSE("TripletFilterTest FAILED: m=0.3 kept the wrong pairs");
-		return false;
-	}
-
-	// (d) the filter at m = 0.6 raises tau to 0.9: only the three scored pairs below tau go,
-	// keeping the two edges scoring 1 and the five unscored pairs that carry no evidence either way
-	Scene scene06;
-	buildScene(scene06, pairSpecs, 10);
-	filterCfg.minScore = 0.6f;
-	if (FilterPairsByTriplets(scene06, filterCfg, weightingCfg) != 3 || scene06.pairs.size() != 7) {
-		VERBOSE("TripletFilterTest FAILED: m=0.6 left %u pairs, expected 7", scene06.pairs.size());
-		return false;
-	}
-	const std::set<std::pair<IIndex,IIndex>> expectedKept06{
-		{0,1}, {0,2}, {3,4}, {3,5}, {5,6}, {6,7}, {5,7}};
-	if (TripletKeptPairs(scene06) != expectedKept06) {
-		VERBOSE("TripletFilterTest FAILED: m=0.6 kept the wrong pairs");
-		return false;
+	// The cutting rule at m = 0.5: G_LCT has 3 nodes and max degree 2, so tau = 0.5(1-2/3)+2/3 =
+	// 0.833, applied as given. secondFaceScore (0.75, above minScore) is checked too and the
+	// descent always runs when the ceiling shatters the graph; reading the source, neither changes
+	// anything on three nodes (the two 1.0 edges hold every node in one piece at both ceilings), so
+	// only the doppelganger (0,2) goes.
+	TripletFilterConfig covCfg; covCfg.enabled = true; covCfg.cut = true; covCfg.minScore = 0.5f; covCfg.minYield = 0.f;
+	const unsigned covRemoved = FilterPairsByTriplets(sceneCov, covCfg, weightingCfg);
+	const std::set<std::pair<IIndex,IIndex>> covExpected{{0,1}, {1,2}};
+	if (covRemoved != 1 || TripletKeptPairs(sceneCov) != covExpected) {
+		VERBOSE("TripletFilterTest FAILED: coverage scene removed %u pairs; expected the doppelganger (0,2) alone, (0,1) and (1,2) kept", covRemoved); return false;
 	}
 
-	// (e) a graph with no triplet at all scores nothing, so the filter has no evidence to act on
-	// and leaves every pair in place
-	Scene scenePath;
-	static const TripletPairSpec pathSpecs[] = {{0,1,100,true}, {1,2,70,true}, {2,3,40,true}};
-	buildScene(scenePath, pathSpecs, 3);
-	const TripletScores scoresPath = ComputeTripletScores(scenePath, 0.6f, 0.f, weightingCfg.gridSize);
-	if (scoresPath.numTriplets != 0 || scoresPath.numTripletComponents != 0 ||
-		scoresPath.numScoredPairs != 0 || scoresPath.numNodes != 0 || scoresPath.maxDegree != 0 ||
-		ABS(scoresPath.tau - 0.6f) > eps) {
-		VERBOSE("TripletFilterTest FAILED: a triplet-free graph reported %zu triplets, %u scored pairs, tau %g",
-			scoresPath.numTriplets, scoresPath.numScoredPairs, scoresPath.tau);
-		return false;
-	}
-	for (float score : scoresPath.scores) {
-		if (score != -1.f) {
-			VERBOSE("TripletFilterTest FAILED: a triplet-free graph scored a pair (%g)", score);
-			return false;
-		}
-	}
-	if (FilterPairsByTriplets(scenePath, filterCfg, weightingCfg) != 0 || scenePath.pairs.size() != 3) {
-		VERBOSE("TripletFilterTest FAILED: a triplet-free graph lost %u of 3 pairs",
-			3u - (unsigned)scenePath.pairs.size());
-		return false;
-	}
-
-	// (f) a disabled filter is a no-op
-	Scene sceneOff;
-	buildScene(sceneOff, pairSpecs, 10);
-	filterCfg.enabled = false;
-	if (FilterPairsByTriplets(sceneOff, filterCfg, weightingCfg) != 0 || sceneOff.pairs.size() != 10) {
-		VERBOSE("TripletFilterTest FAILED: the disabled filter removed pairs (%u left)", sceneOff.pairs.size());
-		return false;
-	}
-
-	VERBOSE("TripletFilterTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
-	return true;
-}
-
-// Auto-tau treats the paper's tau(m) as a ceiling and, only if the ceiling itself leaves a piece
-// apart, relaxes to the strictest score below it whose survivor graph joins every piece the
-// ceiling leaves. The barbell is not enough on its own: on a small graph relaxing below the
-// ceiling can just as well keep everything as leave a piece apart, so a test built only on one
-// scene would keep passing if the search or the piece-joining bar were broken. The scenes that
-// follow each isolate one property of the search -- the ceiling applied as given, the ceiling
-// passed over for a strictly weaker threshold, the binary search itself, a score sitting exactly
-// at the ceiling -- so that weakening any one of them breaks exactly one scene, the pan pins the
-// search actually finding the strictest reconnecting threshold rather than the loosest one or none
-// at all, the walk pins that a straggler too small to be a piece is left alone rather than
-// chased, and the three-chains pins that the ceiling shatters the graph into three equal pieces,
-// none a majority, and the descent joins them at the strictest threshold that does so; the
-// straggler flood pins that the descent's bar is the pieces sharing a component, not a count of
-// nodes; the chain of pairs pins that a ceiling leaving no piece makes every component a piece;
-// the two faces pin that the ceiling at the second-face score is used when it leaves a majority
-// piece with a second piece of at least a third; the face and its cluster pin that a second piece
-// smaller than that leaves the paper's ceiling in force; and the three faces pin that a second
-// piece at least a third is not enough by itself -- without a majority piece too, the paper's
-// ceiling still stands.
-bool TripletAutoTauTest()
-{
-	TD_TIMER_START();
-	// This test's scenes carry pairs as weak as 1 track-forming match, far short of a 10x10 grid's
-	// 100 cells, so AddTripletPair's default cellsA/cellsB cannot give them full coverage (a match
-	// fills at most one cell). A single-cell grid sidesteps that: every pair with at least one
-	// match trivially covers the whole (one-cell) frame, so strength reduces to the inlier count
-	// exactly, which is what this test's numbers were computed against -- coverage discounting a
-	// real, sub-full grid is TripletCoverageTest's subject, not this one's.
-	PairsWeightingConfig weightingCfg;
-	weightingCfg.gridSize = 1;
-
-	// Scene 1, the barbell -- the filter must remove nothing. Six images, eight pairs: triangle A
-	// {0,1,2}, triangle B {3,4,5}, and triangle C {2,3,4} sharing edge (3,4) with B. B and C share
-	// an edge so they are one triplet-graph component (2 triplets); A is another (1 triplet). The
-	// largest is BC, so A's three edges are unscored and always kept, while the scored edges are
-	// (3,4)=(3,5)=(4,5)=1.0 and (2,3)=(2,4)=0.1. G_LCT has 4 nodes and max degree 3, so
-	// tau(m) = 0.25 m + 0.75, a ceiling of 0.9 at m = 0.6: at the ceiling the two 0.1 edges go,
-	// severing A's triangle from B's (component 3 of the unfiltered 6). But the only score below
-	// the ceiling is 0.1 itself, and relaxing to it keeps those same two edges -- so the search
-	// finds nothing to remove.
-	Scene barbell;
-	AddTripletImages(barbell, 6);
-	AddTripletPair(barbell, 0, 1, 100);
-	AddTripletPair(barbell, 0, 2, 100);
-	AddTripletPair(barbell, 1, 2, 100);
-	AddTripletPair(barbell, 3, 4, 100);
-	AddTripletPair(barbell, 3, 5, 100);
-	AddTripletPair(barbell, 4, 5, 100);
-	AddTripletPair(barbell, 2, 3, 10);
-	AddTripletPair(barbell, 2, 4, 10);
-
-	// The unfiltered graph, which is what the threshold search measures itself against: tau = 0 keeps every
-	// scored pair, and an unscored pair is kept regardless.
-	const TripletScores scores = ComputeTripletScores(barbell, 0.f, 0.f, weightingCfg.gridSize);
-	const SurvivorGraph unfiltered = EvaluateSurvivorGraph(barbell, scores.scores, 0.f);
-	if (unfiltered.numNodes != 6 || unfiltered.largestComponent != 6 || unfiltered.numKept != 8) {
-		VERBOSE("TripletAutoTauTest FAILED: unfiltered barbell %u nodes, component %u, %u edges; expected 6, 6, 8",
-			unfiltered.numNodes, unfiltered.largestComponent, unfiltered.numKept);
-		return false;
-	}
-	// Cutting the two weak edges severs the two triangles: 3 images in the largest component.
-	const SurvivorGraph severed = EvaluateSurvivorGraph(barbell, scores.scores, 0.75f);
-	if (severed.largestComponent != 3 || severed.numKept != 6) {
-		VERBOSE("TripletAutoTauTest FAILED: severed barbell component %u, %u edges; expected 3 and 6",
-			severed.largestComponent, severed.numKept);
-		return false;
-	}
-	TripletFilterConfig cfg;
-	cfg.enabled = true;
-	cfg.cut = true;
-	cfg.autoTau = true;
-	cfg.minScore = 0.6f;
-	// no ray angles here, so the yield rule is off; it is TripletYieldTest's subject
-	cfg.minYield = 0.f;
-	Scene barbellAuto(barbell);
-	const unsigned numBarbellRemoved = FilterPairsByTriplets(barbellAuto, cfg, weightingCfg);
-	if (numBarbellRemoved != 0 || barbellAuto.pairs.size() != 8) {
-		VERBOSE("TripletAutoTauTest FAILED: auto-tau removed %u pairs from a barbell that only "
-			"reconnects when nothing is removed, expected exactly 0",
-			numBarbellRemoved);
-		return false;
-	}
-
-	// Scene 2, the ring -- the ceiling passes outright and is applied as given. 24 images, all
-	// indices modulo 24, 74 pairs. Every (i,i+1) and (i,i+2) edge sits only in triangles whose
-	// strongest edge is 100, so all of them score exactly 1.0. Each (i,i+3) edge sits in two
-	// triangles, {i,i+1,i+3} and {i,i+2,i+3}, whose maximum is 100 in both, so it scores 65/100 =
-	// 0.65. The two added edges sit in the single triangle {0,1,12} whose maximum is 100, so they
-	// score 0.05. G_LCT has 24 nodes and max degree 8 (node 12 carries both added edges), giving
-	// tau(m) = (2/3) m + 1/3 and a ceiling of 0.7333 at m = 0.6.
-	//
-	// The 48 structural (i,i+1)/(i,i+2) edges alone already connect all 24 images, so the ceiling
-	// keeps 24/24 in one component and is applied as given: every (i,i+3) edge and the two weak
-	// edges into node 12 -- 26 of 74 -- are removed, and none of them survives.
-	Scene ring;
-	AddTripletImages(ring, 24);
-	for (IIndex i = 0; i < 24; ++i) {
-		AddTripletPair(ring, i, (i + 1) % 24, 100); // structural, scores 1.00
-		AddTripletPair(ring, i, (i + 2) % 24, 100); // structural, scores 1.00
-		AddTripletPair(ring, i, (i + 3) % 24, 65);  // medium,     scores 0.65
-	}
-	AddTripletPair(ring, 0, 12, 5); // the two edges the filter should find
-	AddTripletPair(ring, 1, 12, 5); //   both score 0.05
-
-	Scene ringAuto(ring);
-	// At the ceiling (0.7333) the 48 structural edges keep all 24 images together, so the search
-	// never has to relax: 24 medium (0.65) + 2 weak (0.05) edges go, 26 of 74.
-	const unsigned numRingPairsRemoved = FilterPairsByTriplets(ringAuto, cfg, weightingCfg);
-	if (numRingPairsRemoved != 26 || ringAuto.pairs.size() != 48) {
-		VERBOSE("TripletAutoTauTest FAILED: the ring lost %u pairs, expected exactly 26",
-			numRingPairsRemoved);
-		return false;
-	}
-	// and none of the removed edges survives: neither weak edge into node 12, nor any (i,i+3)
-	// medium edge (circular distance 3, i.e. 3 or 24-3)
-	for (const ImagePair& pair : ringAuto.pairs) {
-		const IIndex dist = pair.ID2 - pair.ID1;
-		if ((pair.ID1 == 0 && pair.ID2 == 12) || (pair.ID1 == 1 && pair.ID2 == 12) ||
-			dist == 3 || dist == 21) {
-			VERBOSE("TripletAutoTauTest FAILED: the ring kept a pair it should have removed (%u,%u)",
-				pair.ID1, pair.ID2);
-			return false;
-		}
-	}
-
-	// Scene 3, two K10 cliques joined by a single weak bridge triangle. G_LCT is the RIGHT clique
-	// plus the two bridge edges -- its component carries 121 triplets (120 within the clique, plus
-	// the bridge triangle {0,10,11}, whose third edge (10,11) belongs to the right clique) against
-	// the left clique's 120; if that ever flipped, the right clique's edges would be unscored
-	// instead and this scene would stop testing the component bar while still passing. G_LCT has
-	// 11 nodes and max degree 10 (node 10), giving tau(m) = 0.0909 m + 0.9091 and a ceiling of
-	// 0.9636 at m = 0.6: at the ceiling the two bridge edges (0.01) go, halving the unfiltered
-	// 20-node component to 10. But the only score below the ceiling is 0.01 itself, and relaxing
-	// to it keeps those same two edges -- so the search finds nothing to remove, same as the
-	// barbell: a near-complete graph like this one has no doppelganger structure to cut.
-	Scene bridge;
-	AddTripletImages(bridge, 20);
-	for (IIndex i = 0; i < 10; ++i) {
-		for (IIndex j = i + 1; j < 10; ++j) {
-			AddTripletPair(bridge, i, j, 100);           // left K10
-			AddTripletPair(bridge, 10 + i, 10 + j, 100); // right K10
-		}
-	}
-	AddTripletPair(bridge, 0, 10, 1); // the only two edges joining the cliques, both weak
-	AddTripletPair(bridge, 0, 11, 1);
-	AddTripletPair(bridge, 0, 1, 100); // duplicate of the loop's own (0,1) edge: must collapse onto
-	                                   // it rather than inflate the edge or pair counts below
-
-	const TripletScores bridgeScores = ComputeTripletScores(bridge, 0.f, 0.f, weightingCfg.gridSize);
-	const SurvivorGraph bridgeUnfiltered = EvaluateSurvivorGraph(bridge, bridgeScores.scores, 0.f);
-	if (bridgeUnfiltered.numNodes != 20 || bridgeUnfiltered.largestComponent != 20 || bridgeUnfiltered.numKept != 92) {
-		VERBOSE("TripletAutoTauTest FAILED: unfiltered bridge %u nodes, component %u, %u edges; expected 20, 20, 92",
-			bridgeUnfiltered.numNodes, bridgeUnfiltered.largestComponent, bridgeUnfiltered.numKept);
-		return false;
-	}
-	// Cutting the two weak edges leaves two disjoint 10-image cliques: half the graph, even though
-	// removing them is under 3% of the edges.
-	const SurvivorGraph bridgeSevered = EvaluateSurvivorGraph(bridge, bridgeScores.scores, 0.5f);
-	if (bridgeSevered.largestComponent != 10 || bridgeSevered.numKept != 90) {
-		VERBOSE("TripletAutoTauTest FAILED: severed bridge component %u, %u edges; expected 10 and 90",
-			bridgeSevered.largestComponent, bridgeSevered.numKept);
-		return false;
-	}
-	Scene bridgeAuto(bridge);
-	const unsigned numBridgeRemoved = FilterPairsByTriplets(bridgeAuto, cfg, weightingCfg);
-	if (numBridgeRemoved != 0 || bridgeAuto.pairs.size() != 93) {
-		VERBOSE("TripletAutoTauTest FAILED: auto-tau removed %u pairs from a bridge that only "
-			"reconnects when nothing is removed, expected exactly 0",
-			numBridgeRemoved);
-		return false;
-	}
-
-	// Scene 4, a K8 core with three pendant images, each keeping one strong spoke into the core
-	// plus one weak spoke the ceiling drops. Dropping all three costs nothing under the
-	// connectivity bar -- every pendant keeps its strong spoke, so all 11 images stay in one
-	// component -- and the new rule has no bar of its own on low-degree images, so the ceiling is
-	// applied as given even though it leaves each pendant at degree 1: an image with one strong
-	// edge is still in the component and can be resected from it. Asserted directly on
-	// EvaluateSurvivorGraph's own output, not inferred from the filter's return value, and then on
-	// the filter itself.
-	Scene pendant;
-	AddTripletImages(pendant, 11);
-	for (IIndex i = 0; i < 8; ++i)
-		for (IIndex j = i + 1; j < 8; ++j)
-			AddTripletPair(pendant, i, j, 100); // K8 core, 28 edges
-	AddTripletPair(pendant, 8, 0, 1);    // weak spoke: the filter wants this gone
-	AddTripletPair(pendant, 8, 1, 100);  // strong spoke: always kept
-	AddTripletPair(pendant, 9, 2, 1);
-	AddTripletPair(pendant, 9, 3, 100);
-	AddTripletPair(pendant, 10, 4, 1);
-	AddTripletPair(pendant, 10, 5, 100);
-
-	const TripletScores pendantScores = ComputeTripletScores(pendant, 0.6f, 0.f, weightingCfg.gridSize);
-	const SurvivorGraph pendantUnfiltered = EvaluateSurvivorGraph(pendant, pendantScores.scores, 0.f);
-	if (pendantUnfiltered.numLowDegree != 0 || pendantUnfiltered.numKept != 34) {
-		VERBOSE("TripletAutoTauTest FAILED: unfiltered pendant scene %u low-degree, %u edges; expected 0, 34",
-			pendantUnfiltered.numLowDegree, pendantUnfiltered.numKept);
-		return false;
-	}
-	// The candidate the m = 0.6 ceiling itself proposes: dropping the three weak spokes stops each
-	// pendant at degree 1.
-	const SurvivorGraph pendantCandidate = EvaluateSurvivorGraph(pendant, pendantScores.scores, pendantScores.tau);
-	if (pendantCandidate.numLowDegree != 3 || pendantCandidate.largestComponent != 11 || pendantCandidate.numKept != 31) {
-		VERBOSE("TripletAutoTauTest FAILED: pendant candidate %u low-degree, component %u, %u edges; expected 3, 11, 31",
-			pendantCandidate.numLowDegree, pendantCandidate.largestComponent, pendantCandidate.numKept);
-		return false;
-	}
-	Scene pendantAuto(pendant);
-	const unsigned numPendantRemoved = FilterPairsByTriplets(pendantAuto, cfg, weightingCfg);
-	if (numPendantRemoved != 3 || pendantAuto.pairs.size() != 31) {
-		VERBOSE("TripletAutoTauTest FAILED: auto-tau removed %u pairs from the pendant scene, expected exactly 3",
-			numPendantRemoved);
-		return false;
-	}
-
-	// Scene 5, the same K8 core with two hub images strongly tied to the whole core and sharing
-	// one weak edge, plus a single further pendant with one unscored edge -- permanently below
-	// degree 2, since no tau ever touches an unscored pair. Removing just the weak hub-to-hub edge
-	// strands nobody (both hubs keep their eight strong spokes into the core), so the ceiling
-	// passes outright and is applied as given; the pendant's unscored edge is untouched either way.
-	Scene baseline;
-	AddTripletImages(baseline, 11);
-	for (IIndex i = 0; i < 8; ++i)
-		for (IIndex j = i + 1; j < 8; ++j)
-			AddTripletPair(baseline, i, j, 100); // K8 core
-	for (IIndex i = 0; i < 8; ++i) {
-		AddTripletPair(baseline, 8, i, 100); // hub 8 into the whole core
-		AddTripletPair(baseline, 9, i, 100); // hub 9 into the whole core
-	}
-	AddTripletPair(baseline, 8, 9, 1);   // the one weak edge, scores 0.01
-	AddTripletPair(baseline, 10, 0, 50); // a pendant with a single, unscored edge: permanently degree 1
-
-	const TripletScores baselineScores = ComputeTripletScores(baseline, 0.6f, 0.f, weightingCfg.gridSize);
-	const SurvivorGraph baselineUnfiltered = EvaluateSurvivorGraph(baseline, baselineScores.scores, 0.f);
-	if (baselineUnfiltered.numLowDegree != 1 || baselineUnfiltered.numKept != 46) {
-		VERBOSE("TripletAutoTauTest FAILED: unfiltered baseline scene %u low-degree, %u edges; expected 1, 46",
-			baselineUnfiltered.numLowDegree, baselineUnfiltered.numKept);
-		return false;
-	}
-	Scene baselineAuto(baseline);
-	const unsigned numBaselineRemoved = FilterPairsByTriplets(baselineAuto, cfg, weightingCfg);
-	if (numBaselineRemoved != 1 || baselineAuto.pairs.size() != 45) {
-		VERBOSE("TripletAutoTauTest FAILED: auto-tau removed %u pairs from the baseline scene, expected exactly 1",
-			numBaselineRemoved);
-		return false;
-	}
-
-	// Scene 6, a K8 core with two extra images wired only to images 0 and 1, sharing one edge
-	// scored to sit exactly at the ceiling tau(0.6) = 0.96. This pins that the ceiling is applied
-	// with >=, not >: (8,9) scores exactly 0.96 and must be kept, or the ceiling itself would
-	// fragment the graph and the search would relax to a threshold below the one actually
-	// requested.
-	Scene boundary;
-	AddTripletImages(boundary, 10);
-	for (IIndex i = 0; i < 8; ++i)
-		for (IIndex j = i + 1; j < 8; ++j)
-			AddTripletPair(boundary, i, j, 100); // K8 core
-	AddTripletPair(boundary, 8, 0, 100);
-	AddTripletPair(boundary, 8, 1, 100);
-	AddTripletPair(boundary, 9, 0, 100);
-	AddTripletPair(boundary, 9, 1, 100);
-	AddTripletPair(boundary, 8, 9, 96); // scores 0.96: exactly the ceiling tau(0.6)
-
-	Scene boundaryAuto(boundary);
-	const unsigned numBoundaryRemoved = FilterPairsByTriplets(boundaryAuto, cfg, weightingCfg);
-	if (numBoundaryRemoved != 0 || boundaryAuto.pairs.size() != 33) {
-		VERBOSE("TripletAutoTauTest FAILED: auto-tau removed %u pairs at the requested m itself, expected exactly 0",
-			numBoundaryRemoved);
-		return false;
-	}
-
-	// Scene 7, the pan: six frames of one camera sweep, exhaustively matched so every pair
-	// verifies (identical facades give every pair some inliers), plus one doppelganger pair and a
-	// separate verified pair that is in no triangle. The strong chain is (i,i+1) = 100 except
-	// (2,3) = 83; (i,i+2) = 50; every longer gap 10; the doppelganger (0,5) = 30 -- STRONGER than
-	// the true low-overlap pairs, as measured on the real street set. Scores, each edge in four
-	// triangles: chain edges 1.0 except (2,3) = (1 + 0.83 + 0.83 + 1)/4 = 0.915; (0,2) and (3,5)
-	// 0.7756, (1,3) and (2,4) 0.625; (0,5) = (0.3 + 0.6 + 0.6 + 0.3)/4 = 0.45; the gap-3/4/5
-	// pairs 0.1 to 0.13. G_LCT is the K6, so r = 5/6 and the ceiling at m = 0.6 is 0.9333.
-	//
-	// At the ceiling only the four 1.0 chain edges survive: components {0,1,2}, {3,4,5}, {6,7},
-	// largest 3 against the unfiltered 6 (the K6; (6,7) is its own component, outside it, and never
-	// a piece: the descent's bar is the strictest threshold joining every piece, not a count of
-	// nodes). The distinct scores below the ceiling are
-	// 0.915, 0.7756, 0.625, 0.45, 0.13, 0.125, 0.1; the strictest that reconnects the chain is
-	// 0.915, (2,3)'s own score. Kept: the five chain edges and the unscored (6,7); removed: the ten
-	// others, the doppelganger among them. A search that stopped one candidate looser would keep
-	// (0,2) and (3,5); one measuring the bar against all images would never pass and remove nothing.
-	Scene pan;
-	AddTripletImages(pan, 8);
-	static const unsigned panInliers[6][6] = {
-		//   0    1    2    3    4    5
-		{    0, 100,  50,  10,  10,  30 }, // 0: (0,5) = 30 is the doppelganger
-		{    0,   0, 100,  50,  10,  10 },
-		{    0,   0,   0,  83,  50,  10 }, // (2,3) = 83: the weak chain edge the ceiling severs
-		{    0,   0,   0,   0, 100,  50 },
-		{    0,   0,   0,   0,   0, 100 },
-		{    0,   0,   0,   0,   0,   0 },
-	};
-	for (IIndex i = 0; i < 6; ++i)
-		for (IIndex j = i + 1; j < 6; ++j)
-			AddTripletPair(pan, i, j, panInliers[i][j]);
-	AddTripletPair(pan, 6, 7, 100); // verified, in no triangle: unscored, kept, and not the largest component
-
-	const TripletScores panScores = ComputeTripletScores(pan, 0.6f, 0.f, weightingCfg.gridSize);
-	if (!ISEQUAL(panScores.tau, 0.93333f, 1e-4f) || panScores.numScoredPairs != 15) {
-		VERBOSE("TripletAutoTauTest FAILED: pan ceiling %g with %u scored pairs, expected 0.9333 and 15",
-			panScores.tau, panScores.numScoredPairs);
-		return false;
-	}
-	FOREACH(idxPair, pan.pairs) {
-		const ImagePair& pair = pan.pairs[idxPair];
-		const float score = panScores.scores[idxPair];
-		if ((pair.ID1 == 2 && pair.ID2 == 3 && !ISEQUAL(score, 0.915f, 1e-4f)) ||
-			(pair.ID1 == 0 && pair.ID2 == 5 && !ISEQUAL(score, 0.45f, 1e-4f)) ||
-			(pair.ID1 == 6 && pair.ID2 == 7 && score >= 0.f)) {
-			VERBOSE("TripletAutoTauTest FAILED: pan pair (%u,%u) scored %g", pair.ID1, pair.ID2, score);
-			return false;
-		}
-	}
-	const SurvivorGraph panUnfiltered = EvaluateSurvivorGraph(pan, panScores.scores, 0.f);
-	const SurvivorGraph panAtCeiling = EvaluateSurvivorGraph(pan, panScores.scores, panScores.tau);
-	if (panUnfiltered.largestComponent != 6 || panUnfiltered.numNodes != 8 || panAtCeiling.largestComponent != 3) {
-		VERBOSE("TripletAutoTauTest FAILED: pan components %u of %u unfiltered, %u at the ceiling; expected 6 of 8 and 3",
-			panUnfiltered.largestComponent, panUnfiltered.numNodes, panAtCeiling.largestComponent);
-		return false;
-	}
-	Scene panAuto(pan);
-	const unsigned numPanRemoved = FilterPairsByTriplets(panAuto, cfg, weightingCfg);
-	const std::set<std::pair<IIndex,IIndex>> expectedPanKept{{0,1}, {1,2}, {2,3}, {3,4}, {4,5}, {6,7}};
-	if (numPanRemoved != 10 || panAuto.pairs.size() != 6 || TripletKeptPairs(panAuto) != expectedPanKept) {
-		VERBOSE("TripletAutoTauTest FAILED: the pan lost %u pairs leaving %u; expected exactly the chain and the isolated pair",
-			numPanRemoved, panAuto.pairs.size());
-		return false;
-	}
-
-	// Scene 8, the walk with stragglers. A 120-image walk: consecutive images share 1000 inliers,
-	// images two apart 600, every consecutive triple a triangle. Two stragglers hang off it by one
-	// weak triangle each -- image 120 off (0,1) with 50 and 40 inliers, image 121 off (60,61) the
-	// same way -- and a two-image piece {122,123} (1000 inliers between them) hangs off the far end
-	// through (119,122)=200, (119,123)=200 and (118,122)=150.
-	//   scores: walk (i,i+1) 1.0, (i,i+2) 0.6; (122,123) 1.0; (119,122)=(119,123)=0.2, (118,122)=0.15;
-	//           (0,120)=(60,121)=0.05, (1,120)=(61,121)=0.04
-	//   G_LCT: 124 nodes, max degree 5 (images 60 and 61), ceiling 0.6*(1-5/124)+5/124 = 0.616
-	//   at the ceiling: the walk (120 images), {122,123}, {120}, {121} -- and n0 = 124, so a piece
-	//   is a component of at least ceil(124/100) = 2 images: two pieces holding 122 images, two
-	//   stragglers. The walk holds 120 of the 122 images in pieces, a majority: the ceiling has done
-	//   its job and is applied as given. Everything scoring below 0.616 goes -- the 118 pairs two
-	//   apart (0.6), the 2-piece's three bridges and the four straggler pairs, 125 in all -- and the
-	//   120 kept pairs are the 119 consecutive ones and (122,123): the 2-piece stays its own
-	//   component, images 120 and 121 are left with no pair. Before this rule the descent went to
-	//   0.2 for the 2-piece and kept the 600-inlier pairs with it.
-	Scene walk;
-	AddTripletImages(walk, 124);
-	for (IIndex i = 0; i + 1 < 120; ++i)
-		AddTripletPair(walk, i, i + 1, 1000);
-	for (IIndex i = 0; i + 2 < 120; ++i)
-		AddTripletPair(walk, i, i + 2, 600);
-	AddTripletPair(walk, 0, 120, 50);
-	AddTripletPair(walk, 1, 120, 40);
-	AddTripletPair(walk, 60, 121, 50);
-	AddTripletPair(walk, 61, 121, 40);
-	AddTripletPair(walk, 122, 123, 1000);
-	AddTripletPair(walk, 119, 122, 200);
-	AddTripletPair(walk, 118, 122, 150);
-	AddTripletPair(walk, 119, 123, 200);
-	const TripletScores walkScores = ComputeTripletScores(walk, 0.6f, 0.f, weightingCfg.gridSize);
-	const SurvivorGraph walkUnfiltered = EvaluateSurvivorGraph(walk, walkScores.scores, 0.f);
-	const SurvivorGraph walkCeiling = EvaluateSurvivorGraph(walk, walkScores.scores, walkScores.tau, 2);
-	if (walkUnfiltered.largestComponent != 124 || walkCeiling.largestComponent != 120 ||
-		walkCeiling.numPieces != 2 || walkCeiling.numInPieces != 122 || walkCeiling.largestPiece != 120 ||
-		walkCeiling.numNodes != 124) {
-		VERBOSE("TripletAutoTauTest FAILED: walk at the ceiling %g: component %u of %u, %u pieces holding %u, the largest %u; "
-			"expected 120 of 124, 2 pieces holding 122, the largest 120",
-			walkScores.tau, walkCeiling.largestComponent, walkUnfiltered.largestComponent,
-			walkCeiling.numPieces, walkCeiling.numInPieces, walkCeiling.largestPiece);
-		return false;
-	}
-	TripletFilterConfig walkCfg;
-	walkCfg.enabled = true;
-	walkCfg.cut = true;
-	walkCfg.minScore = 0.6f; // the scene's ceiling and the counts below were derived at the paper's generic m
-	walkCfg.minYield = 0.f; // no ray angles here, so the yield rule is off; it is TripletYieldTest's subject
-	IIndexArr walkSeeds;
-	const unsigned walkRemoved = FilterPairsByTriplets(walk, walkCfg, weightingCfg, &walkSeeds);
-	const std::set<std::pair<IIndex,IIndex>> walkKept = TripletKeptPairs(walk);
-	const std::set<std::pair<IIndex,IIndex>> walkGone{{0,120},{1,120},{60,121},{61,121},{118,122},{119,122},{119,123},{0,2},{117,119}};
-	bool walkRight = walkRemoved == 125 && walkKept.size() == 120;
-	for (const auto& pair : walkGone)
-		walkRight = walkRight && walkKept.count(pair) == 0;
-	walkRight = walkRight && walkKept.count({0,1}) == 1 && walkKept.count({118,119}) == 1 && walkKept.count({122,123}) == 1;
-	if (!walkRight) {
-		VERBOSE("TripletAutoTauTest FAILED: walk with stragglers removed %u pairs, kept %u; expected the ceiling applied "
-			"as given (its walk holds a majority): the 118 pairs two apart, the 2-piece's three bridges and the four "
-			"straggler pairs removed, 120 kept",
-			walkRemoved, (unsigned)walkKept.size());
-		return false;
-	}
-	// the largest piece the ceiling leaves is the walk itself, images 0-119, in order: the
-	// reconstruction seeds there, not in the 2-piece or at a straggler
-	bool walkSeedsRight = walkSeeds.size() == 120;
-	FOREACH(i, walkSeeds)
-		walkSeedsRight = walkSeedsRight && walkSeeds[i] == (IIndex)i;
-	if (!walkSeedsRight) {
-		VERBOSE("TripletAutoTauTest FAILED: the walk's seed views hold %u images (first %u, last %u); expected images "
-			"0-119, the largest piece the ceiling leaves",
-			(unsigned)walkSeeds.size(), walkSeeds.empty() ? NO_ID : walkSeeds.front(), walkSeeds.empty() ? NO_ID : walkSeeds.back());
-		return false;
-	}
-
-	// Scene 9, three chains. 120 images in three walks of 40 (0-39, 40-79, 80-119): consecutive
-	// images share 1000 inliers, images two apart 600, every consecutive triple a triangle. The
-	// walks meet through one 500-inlier pair each, (39,40) and (79,80), and each of those sits in
-	// two triangles closed by a 300-inlier pair: (38,40) and (39,41), (78,80) and (79,81).
-	//   scores: (i,i+1) 1.0, (i,i+2) 0.6 inside a walk; (39,40)=(79,80)=0.5; the four 300-inlier
-	//           pairs 0.3
-	//   G_LCT: 120 nodes, max degree 4, ceiling 0.6*(1-4/120)+4/120 = 0.6133
-	//   at the ceiling: only the consecutive pairs survive, so three pieces of 40 holding 120, no
-	//   stragglers, and no piece holds a majority -- the ceiling shattered the graph, so the
-	//   descent runs: 0.6 leaves the walks apart, 0.5 joins them through (39,40) and (79,80).
-	//   tau 0.5: the four 300-inlier pairs go, 233 pairs stay.
-	Scene chains;
-	AddTripletImages(chains, 120);
-	for (IIndex c = 0; c < 120; c += 40) {
-		for (IIndex i = c; i + 1 < c + 40; ++i)
-			AddTripletPair(chains, i, i + 1, 1000);
-		for (IIndex i = c; i + 2 < c + 40; ++i)
-			AddTripletPair(chains, i, i + 2, 600);
-	}
-	AddTripletPair(chains, 39, 40, 500);
-	AddTripletPair(chains, 38, 40, 300);
-	AddTripletPair(chains, 39, 41, 300);
-	AddTripletPair(chains, 79, 80, 500);
-	AddTripletPair(chains, 78, 80, 300);
-	AddTripletPair(chains, 79, 81, 300);
-	const TripletScores chainsScores = ComputeTripletScores(chains, 0.6f, 0.f, weightingCfg.gridSize);
-	const SurvivorGraph chainsCeiling = EvaluateSurvivorGraph(chains, chainsScores.scores, chainsScores.tau, 2);
-	if (!ISEQUAL(chainsScores.tau, 0.6f*(1.f-4.f/120.f)+4.f/120.f) || chainsCeiling.largestComponent != 40 ||
-		chainsCeiling.numPieces != 3 || chainsCeiling.numInPieces != 120 || chainsCeiling.largestPiece != 40) {
-		VERBOSE("TripletAutoTauTest FAILED: three chains at the ceiling %g: component %u, %u pieces holding %u, the largest %u; "
-			"expected ceiling 0.6133, component 40, 3 pieces holding 120, the largest 40",
-			chainsScores.tau, chainsCeiling.largestComponent, chainsCeiling.numPieces, chainsCeiling.numInPieces,
-			chainsCeiling.largestPiece);
-		return false;
-	}
-	TripletFilterConfig chainsCfg;
-	chainsCfg.enabled = true;
-	chainsCfg.cut = true;
-	chainsCfg.minScore = 0.6f; // the scene's ceiling and the counts below were derived at the paper's generic m
-	chainsCfg.minYield = 0.f;
-	IIndexArr chainsSeeds;
-	const unsigned chainsRemoved = FilterPairsByTriplets(chains, chainsCfg, weightingCfg, &chainsSeeds);
-	const std::set<std::pair<IIndex,IIndex>> chainsKept = TripletKeptPairs(chains);
-	const std::set<std::pair<IIndex,IIndex>> chainsGone{{38,40},{39,41},{78,80},{79,81}};
-	bool chainsRight = chainsRemoved == 4 && chainsKept.size() == 233;
-	for (const auto& pair : chainsGone)
-		chainsRight = chainsRight && chainsKept.count(pair) == 0;
-	chainsRight = chainsRight && chainsKept.count({39,40}) == 1 && chainsKept.count({79,80}) == 1 && chainsKept.count({0,2}) == 1;
-	if (!chainsRight) {
-		VERBOSE("TripletAutoTauTest FAILED: three chains removed %u pairs, kept %u; expected the descent to 0.5 "
-			"(no piece holds a majority): the four 300-inlier pairs removed, 233 kept",
-			chainsRemoved, (unsigned)chainsKept.size());
-		return false;
-	}
-	// three equal pieces at the ceiling: the seed views are the one holding the lowest image index,
-	// the first chain (0-39), reported at the ceiling even though the descent then joins all three
-	bool chainsSeedsRight = chainsSeeds.size() == 40;
-	FOREACH(i, chainsSeeds)
-		chainsSeedsRight = chainsSeedsRight && chainsSeeds[i] == (IIndex)i;
-	if (!chainsSeedsRight) {
-		VERBOSE("TripletAutoTauTest FAILED: the three chains' seed views hold %u images (first %u, last %u); expected "
-			"images 0-39, the first of three equal pieces, taken at the ceiling before the descent",
-			(unsigned)chainsSeeds.size(), chainsSeeds.empty() ? NO_ID : chainsSeeds.front(), chainsSeeds.empty() ? NO_ID : chainsSeeds.back());
-		return false;
-	}
-
-	// Scene 10, the straggler flood (the bar is the pieces, not a count). 310 images: chain A is
-	// images 0-99 and chain B images 100-199, each with 1000-inlier consecutive pairs and 600-inlier
-	// pairs two apart; 110 stragglers, images 200-309, each hung on one consecutive pair of chain A
-	// by a 500-inlier pair to its first image and a 400-inlier pair to its second (straggler s hangs
-	// on (a, a+1) with a = (s - 200) % 98); one bridge, (99,100) with 300 inliers, given its triangle
-	// by (98,100) with 200. Scores: consecutive 1.0, two apart 0.6, the stragglers' 0.5 and 0.4, the
-	// bridge 0.3 and its helper 0.2; chain B's own edges lie in a second triplet component and are
-	// unscored, so the scored graph G_LCT holds 211 nodes (chain A, the stragglers and image 100)
-	// and its d_max is 8 (images 2-11 of chain A carry four straggler edges beside their four chain
-	// edges): the ceiling is 0.6(1 - 8/211) + 8/211 = 0.615166. The unfiltered graph is one component
-	// of 310 images (the bridge joins chain B), so the floor is ceil(3.1) = 4. At the ceiling the
-	// pieces are chain A (100, its consecutive edges) and chain B (100, unscored edges), 200 images
-	// between them, neither a majority; the 110 stragglers are apart. A count of nodes is met at
-	// 0.5, where the stragglers join chain A (210 of 200) with chain B still apart; the pieces share
-	// a root only at 0.3: the descent's bar is that the pieces share a component, not a count of
-	// nodes.
-	Scene flood;
-	AddTripletImages(flood, 310);
-	for (IIndex i = 0; i + 1 < 100; ++i)
-		AddTripletPair(flood, i, i + 1, 1000);
-	for (IIndex i = 0; i + 2 < 100; ++i)
-		AddTripletPair(flood, i, i + 2, 600);
-	for (IIndex i = 100; i + 1 < 200; ++i)
-		AddTripletPair(flood, i, i + 1, 1000);
-	for (IIndex i = 100; i + 2 < 200; ++i)
-		AddTripletPair(flood, i, i + 2, 600);
-	for (IIndex s = 200; s < 310; ++s) {
-		const IIndex a = (s - 200) % 98;
-		AddTripletPair(flood, a, s, 500);
-		AddTripletPair(flood, a + 1, s, 400);
-	}
-	AddTripletPair(flood, 99, 100, 300);
-	AddTripletPair(flood, 98, 100, 200);
-	const TripletScores floodScores = ComputeTripletScores(flood, 0.6f, 0.f, weightingCfg.gridSize);
-	const SurvivorGraph floodCeiling = EvaluateSurvivorGraph(flood, floodScores.scores, floodScores.tau, 4);
-	if (!ISEQUAL(floodScores.tau, 0.6f*(1.f-8.f/211.f)+8.f/211.f) || floodCeiling.numPieces != 2 ||
-		floodCeiling.numInPieces != 200 || floodCeiling.largestPiece != 100 ||
-		floodCeiling.pieceRoots.size() != 2 || floodCeiling.pieceRoots[0] != 0 || floodCeiling.pieceRoots[1] != 100) {
-		VERBOSE("TripletAutoTauTest FAILED: straggler flood at the ceiling %g: %u pieces holding %u, the largest %u, roots %u; "
-			"expected 2 pieces of 100 holding 200 with roots 0 and 100",
-			floodScores.tau, floodCeiling.numPieces, floodCeiling.numInPieces, floodCeiling.largestPiece,
-			(unsigned)floodCeiling.pieceRoots.size());
-		return false;
-	}
-	const SurvivorGraph floodAtHalf = EvaluateSurvivorGraph(flood, floodScores.scores, 0.5f, 1, &floodCeiling.pieceRoots);
-	const SurvivorGraph floodAtBridge = EvaluateSurvivorGraph(flood, floodScores.scores, 0.3f, 1, &floodCeiling.pieceRoots);
-	if (floodAtHalf.largestComponent != 210 || floodAtHalf.viewsJoined || !floodAtBridge.viewsJoined) {
-		VERBOSE("TripletAutoTauTest FAILED: straggler flood at 0.5: component %u, pieces joined %s; at 0.3 joined %s; "
-			"expected 210 and not joined, then joined",
-			floodAtHalf.largestComponent, floodAtHalf.viewsJoined ? "yes" : "no", floodAtBridge.viewsJoined ? "yes" : "no");
-		return false;
-	}
-	TripletFilterConfig floodCfg;
-	floodCfg.enabled = true;
-	floodCfg.cut = true;
-	floodCfg.minYield = 0.f;
-	floodCfg.minScore = 0.6f; // the scene's ceiling and the counts below were derived at the paper's generic m
-	IIndexArr floodSeeds;
-	const unsigned floodRemoved = FilterPairsByTriplets(flood, floodCfg, weightingCfg, &floodSeeds);
-	const std::set<std::pair<IIndex,IIndex>> floodKept = TripletKeptPairs(flood);
-	bool floodRight = floodRemoved == 1 && floodKept.size() == 615 && floodKept.count({99,100}) == 1 &&
-		floodKept.count({98,100}) == 0 && floodSeeds.size() == 100;
-	FOREACH(i, floodSeeds)
-		floodRight = floodRight && floodSeeds[i] == (IIndex)i;
-	if (!floodRight) {
-		VERBOSE("TripletAutoTauTest FAILED: straggler flood removed %u pairs, kept %u, seed views %u; expected the descent to "
-			"0.3 (the pieces share a root only at the bridge): 1 removed, 615 kept, the bridge kept, seed views 0-99",
-			floodRemoved, (unsigned)floodKept.size(), (unsigned)floodSeeds.size());
-		return false;
-	}
-
-	// Scene 11, the chain of pairs (a ceiling that leaves no piece). 210 images in one chain:
-	// consecutive pairs (i,i+1) with 1000 inliers for even i and 100 for odd i, and 100-inlier
-	// pairs two apart. Every 1000-pair scores 1.0 and every 100-pair 0.1; d_max is 4, the ceiling
-	// 0.6(1 - 4/210) + 4/210 = 0.607619; the ceiling keeps only the 105 strong pairs, components of
-	// two images, below the floor ceil(2.1) = 3: no piece. Under the rule every component of the
-	// unfiltered largest component is then a piece: 105 pieces of two, none a majority, the
-	// descent's only candidate is 0.1 and nothing is removed; the seed views are the piece holding
-	// the lowest image index, {0,1}.
-	Scene pairsChain;
-	AddTripletImages(pairsChain, 210);
-	for (IIndex i = 0; i + 1 < 210; ++i)
-		AddTripletPair(pairsChain, i, i + 1, i % 2 == 0 ? 1000 : 100);
-	for (IIndex i = 0; i + 2 < 210; ++i)
-		AddTripletPair(pairsChain, i, i + 2, 100);
-	const TripletScores pairsChainScores = ComputeTripletScores(pairsChain, 0.6f, 0.f, weightingCfg.gridSize);
-	const SurvivorGraph pairsChainCeiling = EvaluateSurvivorGraph(pairsChain, pairsChainScores.scores, pairsChainScores.tau, 3);
-	if (!ISEQUAL(pairsChainScores.tau, 0.6f*(1.f-4.f/210.f)+4.f/210.f) || pairsChainCeiling.numPieces != 0 ||
-		pairsChainCeiling.largestComponent != 2 || pairsChainCeiling.numKept != 105) {
-		VERBOSE("TripletAutoTauTest FAILED: chain of pairs at the ceiling %g: %u pieces, largest component %u, %u kept; "
-			"expected no piece of 3, components of 2, 105 kept",
-			pairsChainScores.tau, pairsChainCeiling.numPieces, pairsChainCeiling.largestComponent, pairsChainCeiling.numKept);
-		return false;
-	}
-	TripletFilterConfig pairsChainCfg;
-	pairsChainCfg.enabled = true;
-	pairsChainCfg.cut = true;
-	pairsChainCfg.minYield = 0.f;
-	pairsChainCfg.minScore = 0.6f; // the scene's ceiling and the counts below were derived at the paper's generic m
-	IIndexArr pairsChainSeeds;
-	const unsigned pairsChainRemoved = FilterPairsByTriplets(pairsChain, pairsChainCfg, weightingCfg, &pairsChainSeeds);
-	if (pairsChainRemoved != 0 || pairsChain.pairs.size() != 417 || pairsChainSeeds.size() != 2 ||
-		pairsChainSeeds[0] != 0 || pairsChainSeeds[1] != 1) {
-		VERBOSE("TripletAutoTauTest FAILED: chain of pairs removed %u, %u pairs left, %u seed views; expected a ceiling "
-			"leaving no piece to make every component a piece: 0 removed, 417 pairs, seed views {0, 1}",
-			pairsChainRemoved, (unsigned)pairsChain.pairs.size(), (unsigned)pairsChainSeeds.size());
-		return false;
-	}
-
-	// A disabled filter reports no seed views, whatever the caller's array held.
-	TripletFilterConfig offCfg;
-	offCfg.enabled = false;
-	IIndexArr offSeeds;
-	offSeeds.push_back(7);
-	if (FilterPairsByTriplets(pairsChain, offCfg, weightingCfg, &offSeeds) != 0 || !offSeeds.empty()) {
-		VERBOSE("TripletAutoTauTest FAILED: a disabled filter left %u seed views; expected none", (unsigned)offSeeds.size());
-		return false;
-	}
-
-	// The two faces: at the paper's ceiling the bridges join the chains into one piece; at the
-	// higher ceiling the chains are two pieces, the second holding two thirds of the first. The
-	// higher ceiling names the faces and the paper's ceiling applies inside the larger one: the
-	// pairs two apart of chain A (0.7, between the ceilings) stay, the bridges and every pair
-	// joining chain B to the outside go, the ambiguous image 100 (its pairs reach both chains) loses
-	// its pairs, the straggler 101 joins chain A.
-	Scene faces;
-	AddTripletImages(faces, 102);
-	for (IIndex i = 0; i + 1 < 60; ++i)
-		AddTripletPair(faces, i, i + 1, 1000);
-	for (IIndex i = 0; i + 2 < 60; ++i)
-		AddTripletPair(faces, i, i + 2, 700);
-	for (IIndex i = 60; i + 1 < 100; ++i)
-		AddTripletPair(faces, i, i + 1, 1000);
-	for (IIndex i = 60; i + 2 < 100; ++i)
-		AddTripletPair(faces, i, i + 2, 600);
-	AddTripletPair(faces, 59, 60, 700);
-	AddTripletPair(faces, 58, 60, 700);
-	AddTripletPair(faces, 59, 61, 700);
-	AddTripletPair(faces, 100, 10, 700);
-	AddTripletPair(faces, 100, 11, 700);
-	AddTripletPair(faces, 100, 70, 700);
-	AddTripletPair(faces, 100, 71, 700);
-	AddTripletPair(faces, 101, 20, 700);
-	AddTripletPair(faces, 101, 21, 700);
-	const float facesLowTau = 0.6f*(1.f-5.f/102.f)+5.f/102.f, facesHighTau = 0.75f*(1.f-5.f/102.f)+5.f/102.f;
-	const TripletScores facesScores = ComputeTripletScores(faces, 0.6f, 0.f, weightingCfg.gridSize);
-	const SurvivorGraph facesLow = EvaluateSurvivorGraph(faces, facesScores.scores, facesScores.tau, 2);
-	const SurvivorGraph facesHigh = EvaluateSurvivorGraph(faces, facesScores.scores, facesHighTau, 2);
-	bool facesGraphRight = ISEQUAL(facesScores.tau, facesLowTau) && facesLow.numPieces == 1 && facesLow.largestPiece == 102 &&
-		facesHigh.numPieces == 2 && facesHigh.largestPiece == 60 && facesHigh.secondPiece == 40 &&
-		facesHigh.largestPieceViews.size() == 60 && facesHigh.secondPieceViews.size() == 40;
-	FOREACH(i, facesHigh.secondPieceViews)
-		facesGraphRight = facesGraphRight && facesHigh.secondPieceViews[i] == (IIndex)(60 + i);
-	if (!facesGraphRight) {
-		VERBOSE("TripletAutoTauTest FAILED: two faces at %g: %u pieces, largest %u; at %g: %u pieces, largest %u (%u views), "
-			"second %u (%u views); expected one piece of 102, then two of 60 and 40 with the second's views 60-99",
-			facesScores.tau, facesLow.numPieces, facesLow.largestPiece, facesHighTau, facesHigh.numPieces, facesHigh.largestPiece,
-			(unsigned)facesHigh.largestPieceViews.size(), facesHigh.secondPiece, (unsigned)facesHigh.secondPieceViews.size());
-		return false;
-	}
-	TripletFilterConfig facesCfg;
-	facesCfg.enabled = true;
-	facesCfg.cut = true;
-	facesCfg.minScore = 0.6f; // the scene's ceilings and the counts below were derived at the paper's generic m
-	facesCfg.minYield = 0.f;
-	IIndexArr facesSeeds;
-	const unsigned facesRemoved = FilterPairsByTriplets(faces, facesCfg, weightingCfg, &facesSeeds);
-	const std::set<std::pair<IIndex,IIndex>> facesKept = TripletKeptPairs(faces);
-	bool facesRight = facesRemoved == 45 && facesKept.size() == 158 &&
-		facesKept.count({59,60}) == 0 && facesKept.count({58,60}) == 0 && facesKept.count({59,61}) == 0 &&
-		facesKept.count({58,59}) == 1 && facesKept.count({57,59}) == 1 && facesKept.count({60,61}) == 1 && facesKept.count({60,62}) == 0 &&
-		facesKept.count({10,100}) == 0 && facesKept.count({11,100}) == 0 && facesKept.count({70,100}) == 0 && facesKept.count({71,100}) == 0 &&
-		facesKept.count({20,101}) == 1 && facesKept.count({21,101}) == 1 && facesSeeds.size() == 61;
-	FOREACH(i, facesSeeds)
-		facesRight = facesRight && facesSeeds[i] == (i < 60 ? (IIndex)i : (IIndex)101);
-	if (!facesRight) {
-		VERBOSE("TripletAutoTauTest FAILED: two faces removed %u pairs, kept %u, seed views %u; expected the paper's ceiling "
-			"inside the larger face: chain B's 38 pairs two apart below it, the 3 bridges and image 100's 4 pairs cut, "
-			"45 removed, 158 kept, seed views 0-59 and 101",
-			facesRemoved, (unsigned)facesKept.size(), (unsigned)facesSeeds.size());
-		return false;
-	}
-
-	// The faces named with no majority at the paper's ceiling: eight fans of five images -- a hub
-	// pair and three leaves -- are pieces of two at the higher ceiling, where chain A holds a
-	// majority (60 of 116) and chain B two thirds of it, and pieces of five at the paper's, where
-	// chain A holds none (60 of 140). Each fan's hubs reach chain A through three weak pairs whose
-	// triangles share an edge with the fan's and with the chain's, so every pair is scored. The
-	// faces are the answer: the descent does not run, the paper's ceiling stands, and the weak
-	// pairs (0.4) go with chain B's pairs two apart and the bridges.
-	Scene fans;
-	AddTripletImages(fans, 140);
-	for (IIndex i = 0; i + 1 < 60; ++i)
-		AddTripletPair(fans, i, i + 1, 1000);
-	for (IIndex i = 0; i + 2 < 60; ++i)
-		AddTripletPair(fans, i, i + 2, 700);
-	for (IIndex i = 60; i + 1 < 100; ++i)
-		AddTripletPair(fans, i, i + 1, 1000);
-	for (IIndex i = 60; i + 2 < 100; ++i)
-		AddTripletPair(fans, i, i + 2, 600);
-	AddTripletPair(fans, 59, 60, 700);
-	AddTripletPair(fans, 58, 60, 700);
-	AddTripletPair(fans, 59, 61, 700);
-	for (IIndex hub = 100; hub < 140; hub += 5) {
-		AddTripletPair(fans, hub, hub + 1, 1000);
-		for (IIndex leaf = hub + 2; leaf < hub + 5; ++leaf) {
-			AddTripletPair(fans, hub, leaf, 700);
-			AddTripletPair(fans, hub + 1, leaf, 700);
-		}
-		const IIndex reach = 30 + 2 * ((hub - 100) / 5);
-		AddTripletPair(fans, hub, reach, 400);
-		AddTripletPair(fans, hub, reach + 1, 400);
-		AddTripletPair(fans, hub + 1, reach, 400);
-	}
-	const float fansLowTau = 0.6f*(1.f-6.f/140.f)+6.f/140.f, fansHighTau = 0.75f*(1.f-6.f/140.f)+6.f/140.f;
-	const TripletScores fansScores = ComputeTripletScores(fans, 0.6f, 0.f, weightingCfg.gridSize);
-	const SurvivorGraph fansLow = EvaluateSurvivorGraph(fans, fansScores.scores, fansScores.tau, 2);
-	const SurvivorGraph fansHigh = EvaluateSurvivorGraph(fans, fansScores.scores, fansHighTau, 2);
-	if (!ISEQUAL(fansScores.tau, fansLowTau) || fansLow.numPieces != 9 || fansLow.largestPiece != 100 || fansLow.numInPieces != 140 ||
-		fansHigh.numPieces != 10 || fansHigh.largestPiece != 60 || fansHigh.secondPiece != 40 || fansHigh.numInPieces != 116) {
-		VERBOSE("TripletAutoTauTest FAILED: fans at %g: %u pieces, largest %u, %u in pieces; at %g: %u pieces, largest %u, "
-			"second %u, %u in pieces; expected 9 pieces, largest 100, 140 in pieces, then 10 pieces of 60, 40 and eight of 2",
-			fansScores.tau, fansLow.numPieces, fansLow.largestPiece, fansLow.numInPieces, fansHighTau, fansHigh.numPieces,
-			fansHigh.largestPiece, fansHigh.secondPiece, fansHigh.numInPieces);
-		return false;
-	}
-	TripletFilterConfig fansCfg;
-	fansCfg.enabled = true;
-	fansCfg.cut = true;
-	fansCfg.minScore = 0.6f; // the scene's ceilings and the counts below were derived at the paper's generic m
-	fansCfg.minYield = 0.f;
-	IIndexArr fansSeeds;
-	const unsigned fansRemoved = FilterPairsByTriplets(fans, fansCfg, weightingCfg, &fansSeeds);
-	const std::set<std::pair<IIndex,IIndex>> fansKept = TripletKeptPairs(fans);
-	bool fansRight = fansRemoved == 65 && fansKept.size() == 212 &&
-		fansKept.count({30,100}) == 0 && fansKept.count({31,100}) == 0 && fansKept.count({30,101}) == 0 && fansKept.count({44,135}) == 0 &&
-		fansKept.count({59,60}) == 0 && fansKept.count({58,60}) == 0 && fansKept.count({59,61}) == 0 &&
-		fansKept.count({60,62}) == 0 && fansKept.count({60,61}) == 1 && fansKept.count({28,30}) == 1 &&
-		fansKept.count({100,101}) == 1 && fansKept.count({100,102}) == 1 && fansKept.count({101,104}) == 1 && fansSeeds.size() == 60;
-	FOREACH(i, fansSeeds)
-		fansRight = fansRight && fansSeeds[i] == (IIndex)i;
-	if (!fansRight) {
-		VERBOSE("TripletAutoTauTest FAILED: fans removed %u pairs, kept %u, seed views %u; expected the faces named and the "
-			"descent off: chain B's 38 pairs two apart and the hubs' 24 pairs to chain A below the paper's ceiling, the 3 "
-			"bridges cut, 65 removed, 212 kept, seed views 0-59",
-			fansRemoved, (unsigned)fansKept.size(), (unsigned)fansSeeds.size());
-		return false;
-	}
-
-	// The face and its cluster: the higher ceiling leaves a majority piece with a second piece of
-	// a quarter of it -- a cluster hanging off the building, not its other face -- so the paper's
-	// ceiling stands and the cluster stays joined.
-	Scene cluster;
-	AddTripletImages(cluster, 75);
-	for (IIndex i = 0; i + 1 < 60; ++i)
-		AddTripletPair(cluster, i, i + 1, 1000);
-	for (IIndex i = 0; i + 2 < 60; ++i)
-		AddTripletPair(cluster, i, i + 2, 600);
-	for (IIndex i = 60; i + 1 < 75; ++i)
-		AddTripletPair(cluster, i, i + 1, 1000);
-	for (IIndex i = 60; i + 2 < 75; ++i)
-		AddTripletPair(cluster, i, i + 2, 600);
-	AddTripletPair(cluster, 59, 60, 700);
-	AddTripletPair(cluster, 58, 60, 700);
-	AddTripletPair(cluster, 59, 61, 700);
-	TripletFilterConfig clusterCfg;
-	clusterCfg.enabled = true;
-	clusterCfg.cut = true;
-	clusterCfg.minScore = 0.6f; // the scene's ceilings and the counts below were derived at the paper's generic m
-	clusterCfg.minYield = 0.f;
-	IIndexArr clusterSeeds;
-	const unsigned clusterRemoved = FilterPairsByTriplets(cluster, clusterCfg, weightingCfg, &clusterSeeds);
-	const std::set<std::pair<IIndex,IIndex>> clusterKept = TripletKeptPairs(cluster);
-	if (clusterRemoved != 71 || clusterKept.size() != 76 || clusterKept.count({59,60}) != 1 || clusterSeeds.size() != 75) {
-		VERBOSE("TripletAutoTauTest FAILED: the face and its cluster removed %u pairs, kept %u, seed views %u; expected the "
-			"paper's ceiling (the second piece is a quarter of the first): 71 removed, 76 kept, the bridges kept, seed views 0-74",
-			clusterRemoved, (unsigned)clusterKept.size(), (unsigned)clusterSeeds.size());
-		return false;
-	}
-
-	// The three faces: at the higher ceiling the chains are three pieces, 40/35/25, and the largest
-	// holds no majority of the 100 in pieces (80 is not more than 100) though the second piece is
-	// well over a third of it -- the second-face rule needs both, so the paper's ceiling stands and
-	// the bridges join every chain into one piece.
-	Scene threeFaces;
-	AddTripletImages(threeFaces, 100);
-	for (IIndex i = 0; i + 1 < 40; ++i)
-		AddTripletPair(threeFaces, i, i + 1, 1000);
-	for (IIndex i = 0; i + 2 < 40; ++i)
-		AddTripletPair(threeFaces, i, i + 2, 600);
-	for (IIndex i = 40; i + 1 < 75; ++i)
-		AddTripletPair(threeFaces, i, i + 1, 1000);
-	for (IIndex i = 40; i + 2 < 75; ++i)
-		AddTripletPair(threeFaces, i, i + 2, 600);
-	for (IIndex i = 75; i + 1 < 100; ++i)
-		AddTripletPair(threeFaces, i, i + 1, 1000);
-	for (IIndex i = 75; i + 2 < 100; ++i)
-		AddTripletPair(threeFaces, i, i + 2, 600);
-	AddTripletPair(threeFaces, 39, 40, 700);
-	AddTripletPair(threeFaces, 38, 40, 700);
-	AddTripletPair(threeFaces, 39, 41, 700);
-	AddTripletPair(threeFaces, 74, 75, 700);
-	AddTripletPair(threeFaces, 73, 75, 700);
-	AddTripletPair(threeFaces, 74, 76, 700);
-	const TripletScores threeFacesScores = ComputeTripletScores(threeFaces, 0.6f, 0.f, weightingCfg.gridSize);
-	const SurvivorGraph threeFacesLow = EvaluateSurvivorGraph(threeFaces, threeFacesScores.scores, threeFacesScores.tau);
-	const SurvivorGraph threeFacesHigh = EvaluateSurvivorGraph(threeFaces, threeFacesScores.scores, 0.75f*(1.f-4.f/100.f)+4.f/100.f);
-	if (!ISEQUAL(threeFacesScores.tau, 0.6f*(1.f-4.f/100.f)+4.f/100.f) || threeFacesLow.numPieces != 1 || threeFacesLow.largestPiece != 100 ||
-		threeFacesHigh.numPieces != 3 || threeFacesHigh.largestPiece != 40 || threeFacesHigh.secondPiece != 35) {
-		VERBOSE("TripletAutoTauTest FAILED: the three faces at %g: %u pieces, largest %u; at 0.76: %u pieces, largest %u, second %u; "
-			"expected one piece of 100, then three of 40, 35 and 25",
-			threeFacesScores.tau, threeFacesLow.numPieces, threeFacesLow.largestPiece, threeFacesHigh.numPieces,
-			threeFacesHigh.largestPiece, threeFacesHigh.secondPiece);
-		return false;
-	}
-	TripletFilterConfig threeFacesCfg;
-	threeFacesCfg.enabled = true;
-	threeFacesCfg.cut = true;
-	threeFacesCfg.minScore = 0.6f; // the scene's ceilings and the counts below were derived at the paper's generic m
-	threeFacesCfg.minYield = 0.f;
-	IIndexArr threeFacesSeeds;
-	const unsigned threeFacesRemoved = FilterPairsByTriplets(threeFaces, threeFacesCfg, weightingCfg, &threeFacesSeeds);
-	const std::set<std::pair<IIndex,IIndex>> threeFacesKept = TripletKeptPairs(threeFaces);
-	bool threeFacesRight = threeFacesRemoved == 94 && threeFacesKept.size() == 103 && threeFacesKept.count({39,40}) == 1 &&
-		threeFacesKept.count({74,75}) == 1 && threeFacesSeeds.size() == 100;
-	FOREACH(i, threeFacesSeeds)
-		threeFacesRight = threeFacesRight && threeFacesSeeds[i] == (IIndex)i;
-	if (!threeFacesRight) {
-		VERBOSE("TripletAutoTauTest FAILED: the three faces removed %u pairs, kept %u, seed views %u; expected the paper's "
-			"ceiling (no majority piece at the second-face ceiling): 94 removed, 103 kept, the bridges kept, seed views 0-99",
-			threeFacesRemoved, (unsigned)threeFacesKept.size(), (unsigned)threeFacesSeeds.size());
-		return false;
-	}
-
-	VERBOSE("TripletAutoTauTest PASSED: the descent repairs a shattered ceiling and leaves a majority piece's "
-		"ceiling as given, the straggler flood pins the descent's bar to the pieces sharing a component rather "
-		"than a count of nodes, the chain of pairs pins that a ceiling leaving no piece still descends, the two "
-		"faces pin that the second-face ceiling is used when it leaves a majority piece with a second piece of "
-		"at least a third, the face and its cluster pin that a smaller second piece leaves the paper's ceiling "
-		"in force, and the three faces pin that a second piece of at least a third is not enough by itself -- "
-		"without a majority piece too, the paper's ceiling still stands; the seed views are the largest ceiling "
-		"piece (%s)", TD_TIMER_GET_FMT().c_str());
-	return true;
-}
-
-// The strength of an edge is its inlier count discounted by the fraction of the frame its inliers
-// cover (ViewGraphTriplets.h): a doppelganger's matches sit on the duplicated object alone, a true
-// adjacent pair's spread over the whole overlap. Triangle {0,1,2}: (0,1) and (1,2) carry 600
-// inliers over all 100 cells, (0,2) carries 900 inliers over 10 cells of image 0 and all 100 of
-// image 2. Strengths 600, 600 and 900 * min(0.1, 1.0) = 90, so the scores are (0,1) = (1,2) = 1.0
-// and (0,2) = 0.15. By count alone (0,2) would score 1.0 and the other two 600/900 = 0.667.
-bool TripletCoverageTest()
-{
-	TD_TIMER_START();
-	const PairsWeightingConfig weightingCfg; // defaults; the coverage grid is its gridSize
-	Scene scene;
-	AddTripletImages(scene, 3);
-	AddTripletPair(scene, 0, 1, 600);
-	AddTripletPair(scene, 1, 2, 600);
-	AddTripletPair(scene, 0, 2, 900, true, 10, 100);
-	const TripletScores scores = ComputeTripletScores(scene, 0.f, 0.f, weightingCfg.gridSize);
-	if (scores.numTriplets != 1 || scores.numScoredPairs != 3 ||
-		!ISEQUAL(scores.scores[0], 1.f) || !ISEQUAL(scores.scores[1], 1.f) || !ISEQUAL(scores.scores[2], 0.15f)) {
-		VERBOSE("TripletCoverageTest FAILED: %zu triplets, %u scored, scores %g %g %g; expected 1, 3, 1 1 0.15",
-			scores.numTriplets, scores.numScoredPairs, scores.scores[0], scores.scores[1], scores.scores[2]);
-		return false;
-	}
-	// The coverage is measured on the grid the caller names, the same one the pair weighting
-	// uses: on a 2x2 grid the ten cells of image 0 are the top row of the 10x10 grid, i.e. the
-	// two upper cells of the coarse one, coverage 0.5, strength 450, score 450/600 = 0.75.
-	const TripletScores coarse = ComputeTripletScores(scene, 0.f, 0.f, 2);
-	if (!ISEQUAL(coarse.scores[0], 1.f) || !ISEQUAL(coarse.scores[1], 1.f) || !ISEQUAL(coarse.scores[2], 0.75f)) {
-		VERBOSE("TripletCoverageTest FAILED: 2x2 grid scores %g %g %g; expected 1 1 0.75",
-			coarse.scores[0], coarse.scores[1], coarse.scores[2]);
-		return false;
-	}
-	// And the filter acts on it: G_LCT has 3 nodes and max degree 2, so at m = 0.5 the threshold
-	// is 0.5 * (1 - 2/3) + 2/3 = 0.833, applied as given. The doppelganger goes and the chain
-	// stays; by count alone it would be the chain that goes.
-	TripletFilterConfig filterCfg;
-	filterCfg.enabled = true;
-	filterCfg.cut = true;
-	filterCfg.autoTau = false;
-	filterCfg.minScore = 0.5f;
-	// no ray angles here, so the yield rule is off; it is TripletYieldTest's subject
-	filterCfg.minYield = 0.f;
-	const unsigned numRemoved = FilterPairsByTriplets(scene, filterCfg, weightingCfg);
-	const std::set<std::pair<IIndex,IIndex>> expected{{0,1},{1,2}};
-	if (numRemoved != 1 || TripletKeptPairs(scene) != expected) {
-		VERBOSE("TripletCoverageTest FAILED: %u pairs removed, %u kept; expected 1 removed, (0,1) and (1,2) kept",
-			numRemoved, (unsigned)scene.pairs.size());
-		return false;
-	}
-	VERBOSE("TripletCoverageTest PASSED: doppelganger (0,2) scores 0.15 against the chain's 1.0 and is the one removed (%s)", TD_TIMER_GET_FMT().c_str());
-	return true;
-}
-
-// Look-alike copies of one structure vouch for one another: the triangles they form among
-// themselves score every edge at 1 whatever the counts, and no per-pair statistic tells such a
-// pair from a true one -- its coverage is the true pair's, its ray angle is a consecutive pair's.
-// What does is the yield: a look-alike pair delivers a fraction of the inliers a pair at its ray
-// angle delivers between these images, because only the repeated structure matches. A 15-image
-// walk in five 3-image copies (0-2, 3-5, 6-8, 9-11, 12-14): consecutive images share 1000
-// inliers at 2 degrees, images two apart 600 at 4 degrees (every consecutive triple is a
-// triangle, so the walk is one triplet component), and the first image of every copy pairs with
-// the first image of every other copy on 300 inliers at 1 degree -- a near-duplicate viewpoint
-// by its geometry, with less than a third of the inliers a real one delivers.
-//   capacities: every image's strongest pair carries 1000, so u = 1.0 / 0.6 / 0.3
-//   envelope: bin 1 holds the ten look-alikes (90th percentile 0.3), bin 2 the fourteen
-//   consecutive pairs (1.0), bin 4 the thirteen gap-2 pairs (0.6); the suffix maximum lifts
-//   bin 1 to 1.0, so the look-alikes yield 0.3 and everything else 1.0
-//   (0,3): triangles (0,1,3) and (0,2,3) are mixed and give 300/1000 each; (0,3,6), (0,3,9)
-//   and (0,3,12) are look-alike triangles and give nothing: (0.3 + 0.3 + 0 + 0 + 0) / 5 = 0.12
-//   (0,6): only look-alike triangles, with 3, 9 and 12: 0
-//   (0,1): 1 in (0,1,2) and in (0,1,3); (0,2): 600/1000 in (0,1,2) and in (0,2,3): 0.6
-//   31 triplets: 13 consecutive triples, 10 among the five look-alikes, 8 mixed
-// Without the rule the same edges score 0.72 and 1.0, and the filter keeps the six look-alike
-// pairs between non-adjacent copies at any ceiling: that is the fold on ToH.
-bool TripletYieldTest()
-{
-	TD_TIMER_START();
-	const PairsWeightingConfig weightingCfg;
-	const auto build = [](Scene& scene) {
-		AddTripletImages(scene, 15);
-		const auto add = [&scene](IIndex a, IIndex b, unsigned numInliers, float rayAngleDeg) {
-			AddTripletPair(scene, a, b, numInliers);
-			scene.pairs.Last().meanRayAngle = (float)D2R(rayAngleDeg);
+	// 3. The yield rule: a 15-image walk in five 3-image copies (0-2, 3-5, ..., 12-14); consecutive
+	// images share 1000 inliers at 2 degrees, images two apart 600 at 4 degrees, and the first
+	// image of every copy pairs with the first image of every other copy on 300 inliers at 1
+	// degree -- a near-duplicate viewpoint delivering far fewer inliers than a real pair at that
+	// ray angle, so a triangle built only from those look-alike pairs gives no evidence.
+	const auto buildWalk = [](Scene& s) {
+		AddTripletImages(s, 15);
+		const auto add = [&s](IIndex a, IIndex b, unsigned numInliers, float rayAngleDeg) {
+			AddTripletPair(s, a, b, numInliers);
+			s.pairs.Last().meanRayAngle = (float)D2R(rayAngleDeg);
 		};
-		for (IIndex i = 0; i + 1 < 15; ++i)
-			add(i, i + 1, 1000, 2.f);
-		for (IIndex i = 0; i + 2 < 15; ++i)
-			add(i, i + 2, 600, 4.f);
+		for (IIndex i = 0; i + 1 < 15; ++i) add(i, i + 1, 1000, 2.f);
+		for (IIndex i = 0; i + 2 < 15; ++i) add(i, i + 2, 600, 4.f);
 		for (IIndex a = 0; a < 15; a += 3)
 			for (IIndex b = a + 3; b < 15; b += 3)
 				add(a, b, 300, 1.f);
 	};
-	Scene scene;
-	build(scene);
+	Scene walk; buildWalk(walk);
 	const unsigned idx01 = 0, idx02 = 14, idx03 = 27, idx06 = 28; // in order of insertion
-	const TripletFilterConfig defaults;
-	if (!ISEQUAL(defaults.minScore, 0.3f)) {
-		VERBOSE("TripletYieldTest FAILED: default minimum score %g; expected 0.3, the paper's value for medium and small ambiguous sets",
-			defaults.minScore);
-		return false;
+	const TripletFilterConfig yieldDefaults;
+	const TripletScores yieldScores = ComputeTripletScores(walk, 0.f, yieldDefaults.minYield, weightingCfg.gridSize);
+	const TripletScores yieldOff = ComputeTripletScores(walk, 0.f, 0.f, weightingCfg.gridSize); // rule off: look-alike triangles count like any other
+	if (yieldScores.numTriplets != 31 || yieldScores.numDoppelgangerTriplets != 10 || yieldScores.numScoredPairs != 37 ||
+		!ISEQUAL(yieldScores.scores[idx01], 1.f) || !ISEQUAL(yieldScores.scores[idx02], 0.6f) ||
+		!ISEQUAL(yieldScores.scores[idx03], 0.12f) || !ISEQUAL(yieldScores.scores[idx06], 0.f) ||
+		yieldOff.numDoppelgangerTriplets != 0 || !ISEQUAL(yieldOff.scores[idx03], 0.72f) || !ISEQUAL(yieldOff.scores[idx06], 1.f)) {
+		VERBOSE("TripletFilterTest FAILED: walk %zu triplets (%u doppelganger), %u scored; (0,1) %g (0,2) %g (0,3) %g (0,6) %g; rule off (0,3) %g (0,6) %g "
+			"(expected 31 (10), 37; 1 0.6 0.12 0; 0.72 1)",
+			yieldScores.numTriplets, yieldScores.numDoppelgangerTriplets, yieldScores.numScoredPairs,
+			yieldScores.scores[idx01], yieldScores.scores[idx02], yieldScores.scores[idx03], yieldScores.scores[idx06],
+			yieldOff.scores[idx03], yieldOff.scores[idx06]); return false;
 	}
-	if (!ISEQUAL(defaults.secondFaceScore, 0.75f)) {
-		VERBOSE("TripletYieldTest FAILED: default second-face score %g; expected 0.75, the ceiling that splits "
-			"a two-faced building",
-			defaults.secondFaceScore);
-		return false;
-	}
-	if (!defaults.enabled || defaults.cut || defaults.keepPairs != 3 || defaults.keepMatches != 2000 ||
-		!ISEQUAL(defaults.keepMinAngle, 3.f) || !ISEQUAL(defaults.keepMaxShort, 0.5f)) {
-		VERBOSE("TripletYieldTest FAILED: defaults enabled %d cut %d keepPairs %u keepMatches %u keepMinAngle %g "
-			"keepMaxShort %g; expected the filter on, in the keep mode, with a floor of 3 pairs and 2000 matches, "
-			"counting pairs at 3 degrees or more, standing down past half the images short",
-			defaults.enabled ? 1 : 0, defaults.cut ? 1 : 0, defaults.keepPairs, defaults.keepMatches,
-			defaults.keepMinAngle, defaults.keepMaxShort);
-		return false;
-	}
-	const TripletScores scores = ComputeTripletScores(scene, 0.f, defaults.minYield, weightingCfg.gridSize);
-	if (scores.numTriplets != 31 || scores.numDoppelgangerTriplets != 10 || scores.numScoredPairs != 37 ||
-		!ISEQUAL(scores.scores[idx01], 1.f) || !ISEQUAL(scores.scores[idx02], 0.6f) ||
-		!ISEQUAL(scores.scores[idx03], 0.12f) || !ISEQUAL(scores.scores[idx06], 0.f)) {
-		VERBOSE("TripletYieldTest FAILED: %zu triplets (%u doppelganger), %u scored; (0,1) %g (0,2) %g (0,3) %g (0,6) %g; "
-			"expected 31 (10), 37; 1 0.6 0.12 0",
-			scores.numTriplets, scores.numDoppelgangerTriplets, scores.numScoredPairs,
-			scores.scores[idx01], scores.scores[idx02], scores.scores[idx03], scores.scores[idx06]);
-		return false;
-	}
-	// minYield 0 is the paper's scoring: the look-alike triangles count like any other
-	const TripletScores off = ComputeTripletScores(scene, 0.f, 0.f, weightingCfg.gridSize);
-	if (off.numDoppelgangerTriplets != 0 || !ISEQUAL(off.scores[idx03], 0.72f) || !ISEQUAL(off.scores[idx06], 1.f) ||
-		!ISEQUAL(off.scores[idx01], 1.f) || !ISEQUAL(off.scores[idx02], 0.6f)) {
-		VERBOSE("TripletYieldTest FAILED: with the rule off, %u doppelganger triplets; (0,3) %g (0,6) %g (0,1) %g (0,2) %g; "
-			"expected 0; 0.72 1 1 0.6",
-			off.numDoppelgangerTriplets, off.scores[idx03], off.scores[idx06], off.scores[idx01], off.scores[idx02]);
-		return false;
-	}
-	// A ray angle that is not finite has no measurable geometry: on a fresh scene, giving (0,6)'s
-	// own pair a NaN ray angle takes it out of every envelope bin and leaves its yield at the
-	// initial 1 (absence of evidence is not evidence of a deficit). (0,6) sits in exactly three of
-	// the ten look-alike triangles -- (0,3,6), (0,6,9), (0,6,12) -- each entirely of look-alike
-	// edges (300 inliers, equal strength), and each stops being a doppelganger triangle once one of
-	// its three edges yields 1 instead of 0.3: 10 - 3 = 7 doppelganger triplets remain (the other
-	// seven look-alike triangles do not touch (0,6) and are unaffected). (0,3)'s five triplets are
-	// (0,1,3) and (0,2,3) (mixed, 300/1000 = 0.3 each, unaffected) and (0,3,6), (0,3,9), (0,3,12)
-	// (look-alike): (0,3,9) and (0,3,12) still yield-fail and give 0, but (0,3,6) now scores
-	// 300/300 = 1 (all three of its edges carry equal 300-inlier strength once it is no longer
-	// silenced), so (0,3)'s sum is 0.3 + 0.3 + 1 + 0 + 0 = 1.6 over the same 5 triplets: 0.32.
-	// (0,1) and (0,2) share no triplet with (0,6) and keep their earlier scores.
-	Scene sceneNaN;
-	build(sceneNaN);
-	sceneNaN.pairs[idx06].meanRayAngle = std::numeric_limits<float>::quiet_NaN();
-	const TripletScores nanScores = ComputeTripletScores(sceneNaN, 0.f, defaults.minYield, weightingCfg.gridSize);
+	// A ray angle that is not finite has no measurable geometry: giving (0,6) a NaN angle takes it
+	// out of every envelope bin, so its own yield reverts to 1 and the three doppelganger triangles
+	// it took part in -- (0,3,6), (0,6,9), (0,6,12) -- stop being doppelgangers, leaving 7; (0,3)'s
+	// triangle with 6 now scores 1 instead of 0, raising its mean from 0.6 to 1.6 over 5 triplets, 0.32.
+	Scene walkNaN; buildWalk(walkNaN);
+	walkNaN.pairs[idx06].meanRayAngle = std::numeric_limits<float>::quiet_NaN();
+	const TripletScores nanScores = ComputeTripletScores(walkNaN, 0.f, yieldDefaults.minYield, weightingCfg.gridSize);
 	if (nanScores.numDoppelgangerTriplets != 7 || !ISEQUAL(nanScores.scores[idx03], 0.32f) ||
 		!ISEQUAL(nanScores.scores[idx01], 1.f) || !ISEQUAL(nanScores.scores[idx02], 0.6f)) {
-		VERBOSE("TripletYieldTest FAILED: a NaN ray angle on (0,6), %u doppelganger triplets; (0,1) %g (0,2) %g (0,3) %g; "
-			"expected 7; 1 0.6 0.32",
-			nanScores.numDoppelgangerTriplets, nanScores.scores[idx01], nanScores.scores[idx02], nanScores.scores[idx03]);
-		return false;
+		VERBOSE("TripletFilterTest FAILED: NaN ray angle on (0,6), %u doppelganger triplets; (0,1) %g (0,2) %g (0,3) %g (expected 7; 1 0.6 0.32)",
+			nanScores.numDoppelgangerTriplets, nanScores.scores[idx01], nanScores.scores[idx02], nanScores.scores[idx03]); return false;
 	}
-	// A ray angle of exactly zero is ImagePair::meanRayAngle's value on a pair whose relative pose
-	// was never decomposed, not a zero baseline: giving (0,6) that value instead of NaN must be
-	// silenced the same way, taking it out of every envelope bin and leaving its own yield at 1, so
-	// the same doppelganger count and the same scores as the NaN case are expected here too.
-	Scene sceneZero;
-	build(sceneZero);
-	sceneZero.pairs[idx06].meanRayAngle = 0.f;
-	const TripletScores zeroScores = ComputeTripletScores(sceneZero, 0.f, defaults.minYield, weightingCfg.gridSize);
-	if (zeroScores.numDoppelgangerTriplets != 7 || !ISEQUAL(zeroScores.scores[idx03], 0.32f) ||
-		!ISEQUAL(zeroScores.scores[idx01], 1.f) || !ISEQUAL(zeroScores.scores[idx02], 0.6f)) {
-		VERBOSE("TripletYieldTest FAILED: a zero ray angle on (0,6), %u doppelganger triplets; (0,1) %g (0,2) %g (0,3) %g; "
-			"expected 7; 1 0.6 0.32",
-			zeroScores.numDoppelgangerTriplets, zeroScores.scores[idx01], zeroScores.scores[idx02], zeroScores.scores[idx03]);
-		return false;
+	// The cutting rule at m = 0.6: G_LCT has 15 nodes and max degree 8 (image 3), so tau =
+	// 0.6(1-8/15)+8/15 = 0.813; the fourteen consecutive pairs alone score 1 and already hold all
+	// 15 images together, so the ceiling applies as given and only they survive.
+	TripletFilterConfig yieldFilterCfg; yieldFilterCfg.enabled = true; yieldFilterCfg.cut = true; yieldFilterCfg.minScore = 0.6f;
+	const unsigned yieldRemoved = FilterPairsByTriplets(walk, yieldFilterCfg, weightingCfg);
+	std::set<std::pair<IIndex,IIndex>> yieldExpected;
+	for (IIndex i = 0; i + 1 < 15; ++i) yieldExpected.emplace(i, i + 1);
+	if (yieldRemoved != 23 || TripletKeptPairs(walk) != yieldExpected) {
+		VERBOSE("TripletFilterTest FAILED: walk removed %u pairs; expected 23, keeping only the 14 consecutive pairs", yieldRemoved); return false;
 	}
-	// The filter: G_LCT has 15 nodes and max degree 8 (image 3: 0,1,2,4,5,6,9,12), so the ceiling
-	// at m = 0.6 is 0.6 * (1 - 8/15) + 8/15 = 0.813; the fourteen consecutive pairs score 1 and
-	// hold all fifteen images together, so the ceiling applies as given and they are all that
-	// stays. With the rule off the six look-alike pairs between non-adjacent copies score 1 too
-	// and stay with them.
-	TripletFilterConfig filterCfg;
-	filterCfg.enabled = true;
-	filterCfg.cut = true;
-	filterCfg.minScore = 0.6f; // the scene's ceiling and the counts below were derived at the paper's generic m
-	std::set<std::pair<IIndex,IIndex>> expected;
-	for (IIndex i = 0; i + 1 < 15; ++i)
-		expected.emplace(i, i + 1);
-	const unsigned numRemoved = FilterPairsByTriplets(scene, filterCfg, weightingCfg);
-	if (numRemoved != 23 || TripletKeptPairs(scene) != expected) {
-		VERBOSE("TripletYieldTest FAILED: %u pairs removed, %u kept; expected 23 removed and the 14 consecutive pairs kept",
-			numRemoved, (unsigned)scene.pairs.size());
-		return false;
-	}
-	Scene sceneOff;
-	build(sceneOff);
-	filterCfg.minYield = 0.f;
-	const unsigned numRemovedOff = FilterPairsByTriplets(sceneOff, filterCfg, weightingCfg);
-	std::set<std::pair<IIndex,IIndex>> expectedOff(expected);
-	for (const auto& lookAlike : {std::make_pair(0u,6u), std::make_pair(0u,9u), std::make_pair(0u,12u),
-			std::make_pair(3u,9u), std::make_pair(3u,12u), std::make_pair(6u,12u)})
-		expectedOff.emplace((IIndex)lookAlike.first, (IIndex)lookAlike.second);
-	if (numRemovedOff != 17 || TripletKeptPairs(sceneOff) != expectedOff) {
-		VERBOSE("TripletYieldTest FAILED: with the rule off, %u pairs removed, %u kept; expected 17 removed, "
-			"the 14 consecutive pairs and the 6 look-alike pairs between non-adjacent copies kept",
-			numRemovedOff, (unsigned)sceneOff.pairs.size());
-		return false;
-	}
-	VERBOSE("TripletYieldTest PASSED: look-alike triangles give no evidence, (0,6) scores 0 against 1 with the rule off, "
-		"and the filter keeps the walk alone (%s)", TD_TIMER_GET_FMT().c_str());
-	return true;
-}
 
-// The keep mode: the ceiling names the candidates, every image keeps a floor of pairs and
-// matches, and every component of the matched graph stays whole; the cutting rule on the same
-// scene cuts a room off. Two scenes: two rooms joined by three weak true pairs, and an image
-// whose every pair is weak.
-bool TripletKeepTest()
-{
-	PairsWeightingConfig weightingCfg;
-	weightingCfg.gridSize = 1;
-	// Two rooms, chains of 60 and 30 images (consecutive pairs 1000 inliers, two apart 600),
-	// joined by three weak pairs forming two triangles with the chains' own: (59,60) 60,
-	// (58,60) 50 and (59,61) 50. No image holds more than four pairs, so r = 4/90 and the
-	// ceiling is 0.3(1 - 4/90) + 4/90 = 0.331: the two-apart pairs score 0.6 and stay, the
-	// bridges score 0.06 and 0.05 and are the only candidates. With cut, the second ceiling
-	// (0.761) drops the two-apart pairs and names the rooms faces of 60 and 30, so the bridges
-	// are cut; had it not, the larger room holds a majority and the ceiling applied as given
-	// removes the same three. Either way the smaller room is cut off.
-	const auto buildRooms = [](Scene& scene) {
-		AddTripletImages(scene, 90);
-		for (IIndex i = 0; i + 1 < 60; ++i)
-			AddTripletPair(scene, i, i + 1, 1000);
-		for (IIndex i = 0; i + 2 < 60; ++i)
-			AddTripletPair(scene, i, i + 2, 600);
-		for (IIndex i = 60; i + 1 < 90; ++i)
-			AddTripletPair(scene, i, i + 1, 1000);
-		for (IIndex i = 60; i + 2 < 90; ++i)
-			AddTripletPair(scene, i, i + 2, 600);
-		AddTripletPair(scene, 59, 60, 60);
-		AddTripletPair(scene, 58, 60, 50);
-		AddTripletPair(scene, 59, 61, 50);
+	// 4. The two modes on two rooms of 60 and 30 images (consecutive pairs 1000 inliers, two apart
+	// 600) joined by three weak pairs, (59,60)=60, (58,60)=50, (59,61)=50: no image holds more than
+	// four pairs, so G_LCT has |V|=90, d_max=4 and tau = 0.3(1-4/90)+4/90 = 0.331, below which only
+	// the three bridges sit.
+	PairsWeightingConfig roomsCfg; roomsCfg.gridSize = 1;
+	const auto buildRooms = [](Scene& s) {
+		AddTripletImages(s, 90);
+		for (IIndex i = 0; i + 1 < 60; ++i) AddTripletPair(s, i, i + 1, 1000);
+		for (IIndex i = 0; i + 2 < 60; ++i) AddTripletPair(s, i, i + 2, 600);
+		for (IIndex i = 60; i + 1 < 90; ++i) AddTripletPair(s, i, i + 1, 1000);
+		for (IIndex i = 60; i + 2 < 90; ++i) AddTripletPair(s, i, i + 2, 600);
+		AddTripletPair(s, 59, 60, 60); AddTripletPair(s, 58, 60, 50); AddTripletPair(s, 59, 61, 50);
 	};
-	const std::set<std::pair<IIndex,IIndex>> bridges{{59,60},{58,60},{59,61}};
 	{
-		Scene rooms;
-		buildRooms(rooms);
-		TripletFilterConfig cutCfg;
-		cutCfg.enabled = true;
-		cutCfg.cut = true;
-		cutCfg.minYield = 0.f; // no ray angles here
+		// The cutting rule removes all three bridges: the larger room's 60 images seed the reconstruction.
+		Scene rooms; buildRooms(rooms);
+		TripletFilterConfig cutCfg; cutCfg.enabled = true; cutCfg.cut = true; cutCfg.minYield = 0.f;
 		IIndexArr seeds;
-		const unsigned removed = FilterPairsByTriplets(rooms, cutCfg, weightingCfg, &seeds);
-		const std::set<std::pair<IIndex,IIndex>> kept = TripletKeptPairs(rooms);
-		bool right = removed == 3 && kept.size() == 59 + 58 + 29 + 28 && seeds.size() == 60;
-		for (const auto& bridge : bridges)
-			right = right && kept.count(bridge) == 0;
-		if (!right) {
-			VERBOSE("TripletKeepTest FAILED: the cutting rule removed %u pairs, kept %u, %u seeds; expected the three "
-				"bridges removed, 174 pairs kept and the larger room's 60 images as seeds",
-				removed, (unsigned)kept.size(), (unsigned)seeds.size());
-			return false;
+		const unsigned removed = FilterPairsByTriplets(rooms, cutCfg, roomsCfg, &seeds);
+		if (removed != 3 || TripletKeptPairs(rooms).size() != 174 || seeds.size() != 60 || seeds.front() != 0 || seeds.back() != 59) {
+			VERBOSE("TripletFilterTest FAILED: rooms cutting rule removed %u pairs, %u seeds; expected 3 removed, 174 kept, 60 seed images 0-59",
+				removed, (unsigned)seeds.size()); return false;
 		}
 	}
-	// The keep mode with a floor of 2 pairs and no matches: every image keeps two pairs at the
-	// ceiling already (the chain ends 0, 59, 60 and 89 exactly two), so the floor retains
-	// nothing and the repair alone joins the rooms, through the best-scoring bridge (59,60).
 	{
-		Scene rooms;
-		buildRooms(rooms);
-		TripletFilterConfig keepCfg;
-		keepCfg.enabled = true;
-		keepCfg.keepPairs = 2;
-		keepCfg.keepMatches = 0;
-		keepCfg.minYield = 0.f;
-		IIndexArr seeds;
-		const unsigned removed = FilterPairsByTriplets(rooms, keepCfg, weightingCfg, &seeds);
+		// A floor of 2 pairs, no matches: every image already keeps two pairs at the ceiling (the
+		// chain ends), so only the repair joins the rooms, through the best-scoring bridge.
+		Scene rooms; buildRooms(rooms);
+		TripletFilterConfig keepCfg; keepCfg.enabled = true; keepCfg.keepPairs = 2; keepCfg.keepMatches = 0; keepCfg.minYield = 0.f;
+		const unsigned removed = FilterPairsByTriplets(rooms, keepCfg, roomsCfg);
 		const std::set<std::pair<IIndex,IIndex>> kept = TripletKeptPairs(rooms);
-		if (removed != 2 || kept.count({59,60}) != 1 || kept.count({58,60}) != 0 || kept.count({59,61}) != 0 || seeds.size() != 60) {
-			VERBOSE("TripletKeepTest FAILED: the repair removed %u pairs, kept (59,60) %d (58,60) %d (59,61) %d, %u seeds; "
-				"expected the two weaker bridges removed and (59,60) retained to keep the rooms one component",
-				removed, kept.count({59,60}) ? 1 : 0, kept.count({58,60}) ? 1 : 0, kept.count({59,61}) ? 1 : 0, (unsigned)seeds.size());
-			return false;
+		if (removed != 2 || kept.count({59,60}) != 1 || kept.count({58,60}) != 0 || kept.count({59,61}) != 0) {
+			VERBOSE("TripletFilterTest FAILED: rooms floor of 2 pairs removed %u pairs; expected the two weaker bridges gone, (59,60) kept by the repair", removed); return false;
 		}
 	}
-	// A floor of 3 pairs and 1700 matches: the chain ends hold two pairs and 1600 matches at the
-	// ceiling ((57,59) 600 and (58,59) 1000, or the mirror at 60) -- enough for the pair bound
-	// with a single bridge, not for the match one. Served first (tied with 60, the lower index),
-	// 59 takes its best candidate, (59,60) 60 -- 3 pairs, 1660 matches, still short of 1700 --
-	// then its other one, (59,61) 50 -- 1710, both bounds met: it retains both of its own
-	// candidates, which the repair alone never would once (59,60) alone already joins the rooms.
-	// 60 inherits (59,60) from 59's turn (3 pairs, 1660 matches) but is still short of 1700 too, so
-	// it retains its own remaining candidate, (58,60) 50 -- 1710, met. All three bridges survive:
-	// where case 2's repair keeps only the best-scoring one, the floor here retains every bridge
-	// two different images separately needed, pinning what the floor alone produces.
 	{
-		Scene rooms;
-		buildRooms(rooms);
-		TripletFilterConfig keepCfg;
-		keepCfg.enabled = true;
-		keepCfg.keepPairs = 3;
-		keepCfg.keepMatches = 1700;
-		keepCfg.minYield = 0.f;
-		const unsigned removed = FilterPairsByTriplets(rooms, keepCfg, weightingCfg);
+		// A floor of 3 pairs and 1700 matches: node 59 needs both bridges to clear 1700 matches
+		// (1600+60+50), and node 60, inheriting (59,60), needs (58,60) too (1660+50): all survive.
+		Scene rooms; buildRooms(rooms);
+		TripletFilterConfig keepCfg; keepCfg.enabled = true; keepCfg.keepPairs = 3; keepCfg.keepMatches = 1700; keepCfg.minYield = 0.f;
+		const unsigned removed = FilterPairsByTriplets(rooms, keepCfg, roomsCfg);
 		const std::set<std::pair<IIndex,IIndex>> kept = TripletKeptPairs(rooms);
-		if (removed != 0 || kept.count({59,60}) != 1 || kept.count({59,61}) != 1 || kept.count({58,60}) != 1) {
-			VERBOSE("TripletKeepTest FAILED: a floor of 3 pairs and 1700 matches removed %u pairs, kept (59,60) %d (59,61) %d (58,60) %d; "
-				"expected nothing removed, every bridge retained by the floor",
-				removed, kept.count({59,60}) ? 1 : 0, kept.count({59,61}) ? 1 : 0, kept.count({58,60}) ? 1 : 0);
-			return false;
+		if (removed != 0 || kept.count({59,60}) != 1 || kept.count({58,60}) != 1 || kept.count({59,61}) != 1) {
+			VERBOSE("TripletFilterTest FAILED: rooms floor of 3 pairs/1700 matches removed %u pairs; expected every bridge retained by the floor", removed); return false;
 		}
 	}
-	// The default floor (3 pairs, 2000 matches): 59 keeps (57,59) 600 and (58,59) 1000 at the
-	// ceiling, 1600 matches, and retains both its candidates, (59,60) then (59,61); 60 keeps
-	// (60,61) 1000 and (60,62) 600 plus the retained (59,60), 1660, and retains (58,60). Nothing
-	// is removed.
 	{
-		Scene rooms;
-		buildRooms(rooms);
-		TripletFilterConfig keepCfg;
-		keepCfg.enabled = true;
-		keepCfg.minYield = 0.f;
-		const unsigned removed = FilterPairsByTriplets(rooms, keepCfg, weightingCfg);
+		// The default floor (3 pairs, 2000 matches) already fits at the ceiling: only the four
+		// chain-end images (0, 59, 60, 89) fall short, well under half of 90, so tau stays the
+		// ceiling; serving the floor gives 59 both its bridges and 60 the third: nothing is removed.
+		Scene rooms; buildRooms(rooms);
+		TripletFilterConfig keepCfg; keepCfg.enabled = true; keepCfg.minYield = 0.f;
+		const unsigned removed = FilterPairsByTriplets(rooms, keepCfg, roomsCfg);
 		if (removed != 0 || rooms.pairs.size() != 177) {
-			VERBOSE("TripletKeepTest FAILED: the default floor removed %u pairs of 177; expected none, the rooms' end images "
-				"holding fewer than 2000 matches at the ceiling", removed);
-			return false;
-		}
-	}
-	// An image whose every pair is weak: a chain of 12 images (consecutive 1000, two apart 800)
-	// and image 12 matched to images 0-5 with 100, 90, 80, 70, 60 and 50 inliers, each such pair
-	// in triangles with the chain's own (12's pairs to i and i+1 close a triangle on (i,i+1), to
-	// i and i+2 on (i,i+2)), scoring from 0.11 down to 0.06 in that order; image 12 holds six
-	// pairs, so r = 6/13 and the ceiling is 0.623, above which the two-apart pairs (0.8 to 0.9)
-	// and the consecutive ones (1) sit. With cut, image 12 is a piece of one apart from the
-	// chain's majority and every one of its pairs goes. The keep mode with a floor of 3 pairs
-	// keeps its three best, (0,12), (1,12) and (2,12).
-	const auto buildHub = [](Scene& scene) {
-		AddTripletImages(scene, 13);
-		for (IIndex i = 0; i + 1 < 12; ++i)
-			AddTripletPair(scene, i, i + 1, 1000);
-		for (IIndex i = 0; i + 2 < 12; ++i)
-			AddTripletPair(scene, i, i + 2, 800);
-		const unsigned inliers[6] = {100, 90, 80, 70, 60, 50};
-		for (IIndex i = 0; i < 6; ++i)
-			AddTripletPair(scene, i, 12, inliers[i]);
-	};
-	{
-		Scene hub;
-		buildHub(hub);
-		TripletFilterConfig cutCfg;
-		cutCfg.enabled = true;
-		cutCfg.cut = true;
-		cutCfg.minYield = 0.f;
-		const unsigned removed = FilterPairsByTriplets(hub, cutCfg, weightingCfg);
-		const std::set<std::pair<IIndex,IIndex>> kept = TripletKeptPairs(hub);
-		bool right = removed == 6;
-		for (IIndex i = 0; i < 6; ++i)
-			right = right && kept.count({i, 12}) == 0;
-		if (!right) {
-			VERBOSE("TripletKeepTest FAILED: the cutting rule removed %u of the hub's pairs; expected all six", removed);
-			return false;
+			VERBOSE("TripletFilterTest FAILED: rooms default floor removed %u of 177 pairs; expected none", removed); return false;
 		}
 	}
 	{
-		Scene hub;
-		buildHub(hub);
-		TripletFilterConfig keepCfg;
-		keepCfg.enabled = true;
-		keepCfg.keepPairs = 3;
-		keepCfg.keepMatches = 0;
-		keepCfg.minYield = 0.f;
-		const unsigned removed = FilterPairsByTriplets(hub, keepCfg, weightingCfg);
-		const std::set<std::pair<IIndex,IIndex>> kept = TripletKeptPairs(hub);
-		if (removed != 3 || kept.count({0,12}) != 1 || kept.count({1,12}) != 1 || kept.count({2,12}) != 1 ||
-			kept.count({3,12}) != 0 || kept.count({4,12}) != 0 || kept.count({5,12}) != 0) {
-			VERBOSE("TripletKeepTest FAILED: the floor removed %u of the hub's pairs, kept (0,12) %d (1,12) %d (2,12) %d; "
-				"expected its three best kept and the other three removed",
-				removed, kept.count({0,12}) ? 1 : 0, kept.count({1,12}) ? 1 : 0, kept.count({2,12}) ? 1 : 0);
-			return false;
+		// A disabled filter removes nothing and reports no seed views.
+		Scene rooms; buildRooms(rooms);
+		TripletFilterConfig offCfg; offCfg.enabled = false;
+		IIndexArr seeds;
+		const unsigned removed = FilterPairsByTriplets(rooms, offCfg, roomsCfg, &seeds);
+		if (removed != 0 || rooms.pairs.size() != 177 || !seeds.empty()) {
+			VERBOSE("TripletFilterTest FAILED: disabled filter removed %u pairs (%u seeds); expected none and no seeds", removed, (unsigned)seeds.size()); return false;
 		}
 	}
-	// A burst: a chain of 14 images whose consecutive pairs (1000 inliers) sit at 1 degree and
-	// two-apart pairs (800) at 1.5 degrees, and six wide pairs (i, i+4) for i in 2..7 with 100
-	// inliers at 6 degrees. Image 6 holds six pairs, so r = 6/14 and the ceiling is 0.6; a wide
-	// pair sits in the one triangle (i, i+2, i+4) and scores 100/800 = 0.125, the two-apart
-	// pairs score at least 0.8. The cutting rule removes the six wide pairs. The keep mode
-	// removes nothing, whatever the floor: the consecutive and two-apart pairs hold the chain
-	// in one piece at the ceiling, so no pair below it joins two pieces and none is a candidate
-	// -- on a sequential capture the wide pairs are the weak side of a triangle a consecutive
-	// pair tops, and they are what bundle adjustment needs most.
-	const auto buildBurst = [](Scene& scene) {
-		AddTripletImages(scene, 14);
-		const auto add = [&scene](IIndex a, IIndex b, unsigned numInliers, float rayAngleDeg) {
-			AddTripletPair(scene, a, b, numInliers);
-			scene.pairs.Last().meanRayAngle = (float)D2R(rayAngleDeg);
-		};
-		for (IIndex i = 0; i + 1 < 14; ++i)
-			add(i, i + 1, 1000, 1.f);
-		for (IIndex i = 0; i + 2 < 14; ++i)
-			add(i, i + 2, 800, 1.5f);
-		for (IIndex i = 2; i <= 7; ++i)
-			add(i, i + 4, 100, 6.f);
-	};
-	{
-		Scene burst;
-		buildBurst(burst);
-		TripletFilterConfig cfgCut;
-		cfgCut.enabled = true;
-		cfgCut.cut = true;
-		cfgCut.minYield = 0.f;
-		const unsigned removed = FilterPairsByTriplets(burst, cfgCut, weightingCfg);
-		if (removed != 6) {
-			VERBOSE("TripletKeepTest FAILED: the cutting rule removed %u of the burst's pairs; expected the six wide pairs", removed);
-			return false;
-		}
+
+	// 5. The defaults: enabled, the keep mode, the paper's minimum score for medium/small ambiguous
+	// sets, the yield rule on, and the floor/ceiling constants of the keep mode.
+	const TripletFilterConfig defaults;
+	if (!defaults.enabled || defaults.cut || !ISEQUAL(defaults.minScore, 0.3f) || !ISEQUAL(defaults.minYield, 0.4f) ||
+		defaults.keepPairs != 3 || defaults.keepMatches != 2000 || !ISEQUAL(defaults.keepMinAngle, 3.f) ||
+		!ISEQUAL(defaults.keepMaxShort, 0.5f) || !ISEQUAL(defaults.secondFaceScore, 0.75f)) {
+		VERBOSE("TripletFilterTest FAILED: defaults enabled %d cut %d minScore %g minYield %g keepPairs %u keepMatches %u keepMinAngle %g keepMaxShort %g secondFaceScore %g",
+			defaults.enabled ? 1 : 0, defaults.cut ? 1 : 0, defaults.minScore, defaults.minYield, defaults.keepPairs,
+			defaults.keepMatches, defaults.keepMinAngle, defaults.keepMaxShort, defaults.secondFaceScore); return false;
 	}
-	{
-		Scene burst;
-		buildBurst(burst);
-		TripletFilterConfig cfgOnePiece;
-		cfgOnePiece.enabled = true;
-		cfgOnePiece.keepPairs = 1;
-		cfgOnePiece.keepMatches = 0;
-		cfgOnePiece.keepMinAngle = 0.f;
-		cfgOnePiece.minYield = 0.f;
-		const unsigned removed = FilterPairsByTriplets(burst, cfgOnePiece, weightingCfg);
-		const std::set<std::pair<IIndex,IIndex>> kept = TripletKeptPairs(burst);
-		bool right = removed == 0 && burst.pairs.size() == 13 + 12 + 6;
-		for (IIndex i = 2; i <= 7; ++i)
-			right = right && kept.count({i, i + 4}) == 1;
-		if (!right) {
-			VERBOSE("TripletKeepTest FAILED: the keep mode removed %u of the burst's pairs with a floor of one pair; "
-				"expected none, the chain being one piece at the ceiling so that no pair below it joins two pieces", removed);
-			return false;
-		}
-	}
-	// A ladder: two bursts, chains of 7 images (0-6 and 7-13; consecutive pairs 1000 inliers at
-	// 1 degree, two-apart 800 at 1.5 degrees), joined by seven rungs (i, i+7) of 100 inliers for
-	// i in 0..6 and six braces (i, i+8) of 90 for i in 0..5, all at 6 degrees. A rung sits in the
-	// triangles (i, i+7, i+8) and (i-1, i, i+7), each topped by a consecutive pair, and scores
-	// 0.1; a brace sits in (i, i+7, i+8) and (i, i+1, i+8) and scores 0.09; the two-apart pairs
-	// score 0.8. Image 3 holds six pairs, so r = 6/14 and the ceiling is 0.6, which leaves the
-	// two chains as pieces of 7 and 7: every rung and brace joins them and is a candidate.
-	//  - The cutting rule: neither piece holds a majority, so the threshold descends to the
-	//    strictest one joining them, the rungs' 0.1, and the six braces go.
-	//  - Counting every pair (keepMinAngle 0) with a floor of one pair: every image keeps two
-	//    or more chain pairs at the ceiling, the ceiling fits, no image needs the floor, and the
-	//    repair alone joins the chains through the best-scoring candidate -- the rungs tie at
-	//    0.1 and 100 inliers, and (0,7), added first, wins: twelve pairs go.
-	//  - Counting pairs at 3 degrees or more (the default) with a floor of one pair and no
-	//    matches: no chain pair counts, every image needs the floor at the ceiling, and the
-	//    threshold descends: at 0.1 every image holds a rung and none needs the floor, so the
-	//    rungs are kept by the threshold, the braces are the candidates, no image retains any,
-	//    and the six braces go.
-	//  - The same with a floor of two pairs: at 0.1 every image holds one counting pair and all
-	//    fourteen need the floor; at the braces' 0.09, the loosest threshold, only images 6 and
-	//    7 (a rung each, no brace) still do, two of fourteen, so the threshold settles there,
-	//    nothing lies below it and nothing is removed.
-	//  - The defaults (3 pairs, 2000 matches): no image ever holds 2000 matches at 3 degrees or
-	//    more, the graph fits no threshold and nothing is removed.
-	const auto buildLadder = [](Scene& scene) {
-		AddTripletImages(scene, 14);
-		const auto add = [&scene](IIndex a, IIndex b, unsigned numInliers, float rayAngleDeg) {
-			AddTripletPair(scene, a, b, numInliers);
-			scene.pairs.Last().meanRayAngle = (float)D2R(rayAngleDeg);
-		};
-		for (IIndex chain = 0; chain < 14; chain += 7) {
-			for (IIndex i = chain; i + 1 < chain + 7; ++i)
-				add(i, i + 1, 1000, 1.f);
-			for (IIndex i = chain; i + 2 < chain + 7; ++i)
-				add(i, i + 2, 800, 1.5f);
-		}
-		for (IIndex i = 0; i <= 6; ++i)
-			add(i, i + 7, 100, 6.f);
-		for (IIndex i = 0; i <= 5; ++i)
-			add(i, i + 8, 90, 6.f);
-	};
-	const auto rungsKept = [](const std::set<std::pair<IIndex,IIndex>>& kept) {
-		unsigned n = 0;
-		for (IIndex i = 0; i <= 6; ++i)
-			n += kept.count({i, i + 7}) ? 1 : 0;
-		return n;
-	};
-	const auto bracesKept = [](const std::set<std::pair<IIndex,IIndex>>& kept) {
-		unsigned n = 0;
-		for (IIndex i = 0; i <= 5; ++i)
-			n += kept.count({i, i + 8}) ? 1 : 0;
-		return n;
-	};
-	{
-		Scene ladder;
-		buildLadder(ladder);
-		TripletFilterConfig cfgCut;
-		cfgCut.enabled = true;
-		cfgCut.cut = true;
-		cfgCut.minYield = 0.f;
-		const unsigned removed = FilterPairsByTriplets(ladder, cfgCut, weightingCfg);
-		const std::set<std::pair<IIndex,IIndex>> kept = TripletKeptPairs(ladder);
-		if (removed != 6 || rungsKept(kept) != 7 || bracesKept(kept) != 0) {
-			VERBOSE("TripletKeepTest FAILED: the cutting rule removed %u of the ladder's pairs, keeping %u rungs and %u braces; "
-				"expected the descent to the rungs' score, all seven kept and the six braces removed",
-				removed, rungsKept(kept), bracesKept(kept));
-			return false;
-		}
-	}
-	{
-		Scene ladder;
-		buildLadder(ladder);
-		TripletFilterConfig cfgEvery;
-		cfgEvery.enabled = true;
-		cfgEvery.keepPairs = 1;
-		cfgEvery.keepMatches = 0;
-		cfgEvery.keepMinAngle = 0.f;
-		cfgEvery.minYield = 0.f;
-		const unsigned removed = FilterPairsByTriplets(ladder, cfgEvery, weightingCfg);
-		const std::set<std::pair<IIndex,IIndex>> kept = TripletKeptPairs(ladder);
-		if (removed != 12 || kept.count({0,7}) != 1 || rungsKept(kept) != 1 || bracesKept(kept) != 0) {
-			VERBOSE("TripletKeepTest FAILED: counting every pair, the ladder lost %u pairs, keeping %u rungs ((0,7) %d) and %u braces; "
-				"expected the floor met by the chain pairs and the repair keeping (0,7) alone",
-				removed, rungsKept(kept), kept.count({0,7}) ? 1 : 0, bracesKept(kept));
-			return false;
-		}
-	}
-	{
-		Scene ladder;
-		buildLadder(ladder);
-		TripletFilterConfig cfgOne;
-		cfgOne.enabled = true;
-		cfgOne.keepPairs = 1;
-		cfgOne.keepMatches = 0;
-		cfgOne.minYield = 0.f;
-		const unsigned removed = FilterPairsByTriplets(ladder, cfgOne, weightingCfg);
-		const std::set<std::pair<IIndex,IIndex>> kept = TripletKeptPairs(ladder);
-		if (removed != 6 || rungsKept(kept) != 7 || bracesKept(kept) != 0) {
-			VERBOSE("TripletKeepTest FAILED: a floor of one pair at 3 degrees removed %u of the ladder's pairs, keeping %u rungs and %u braces; "
-				"expected the threshold to descend to the rungs' score, the seven rungs kept and the six braces removed",
-				removed, rungsKept(kept), bracesKept(kept));
-			return false;
-		}
-	}
-	{
-		Scene ladder;
-		buildLadder(ladder);
-		TripletFilterConfig cfgTwo;
-		cfgTwo.enabled = true;
-		cfgTwo.keepPairs = 2;
-		cfgTwo.keepMatches = 0;
-		cfgTwo.minYield = 0.f;
-		const unsigned removed = FilterPairsByTriplets(ladder, cfgTwo, weightingCfg);
-		if (removed != 0 || ladder.pairs.size() != 2 * (6 + 5) + 7 + 6) {
-			VERBOSE("TripletKeepTest FAILED: a floor of two pairs at 3 degrees removed %u of the ladder's pairs; "
-				"expected the threshold to settle at the braces' score, the loosest, with nothing below it", removed);
-			return false;
-		}
-	}
-	{
-		Scene ladder;
-		buildLadder(ladder);
-		TripletFilterConfig cfgDefault;
-		cfgDefault.enabled = true;
-		cfgDefault.minYield = 0.f;
-		const unsigned removed = FilterPairsByTriplets(ladder, cfgDefault, weightingCfg);
-		if (removed != 0) {
-			VERBOSE("TripletKeepTest FAILED: the default floor removed %u of the ladder's pairs; expected none, "
-				"no image holding 2000 matches at 3 degrees or more at any threshold", removed);
-			return false;
-		}
-	}
-	// A split duplicate: (0,3) has two scene pairs, a 20-inlier one scanned first and a 150-inlier
-	// one scanned second, both left at the default unmeasured ray angle so both count toward the
-	// floor. 0 anchors a strong triangle with 1 and 2 (1000, 1000, 600, all at or above the
-	// ceiling); 3 is 0's duplicated partner, bridged onward to 1 by a lone 30-inlier pair; 4 is a
-	// pendant bridged to 0 and to 2 by lone 15- and 25-inlier pairs. Image 0 holds four pairs, so
-	// r = 4/5 and the ceiling is 0.3(1-4/5)+4/5 = 0.86, above which only the triangle's three
-	// pairs sit; it leaves three pieces -- {0,1,2}, {3} and {4} -- so (0,3), (1,3), (0,4) and (2,4)
-	// are all candidates. The probe must credit image 3 with the larger of its two scene pairs,
-	// 150, not whichever is scanned first: with 150, 3's matches already clear the 100-match floor
-	// (the smaller twin's 20, plus (1,3)'s 30, would not), leaving only 4 short of it -- one of
-	// five images, which a floor of at most 30% (1.5) can still spare -- so the threshold descends
-	// to the strictest score below the ceiling that still fits, 0.15, where (1,3) (0.03) is a
-	// candidate neither the floor (3 is not short) nor the repair ((0,4) and (2,4) already hold 4's
-	// component together) needs, and it alone goes. Crediting image 3 with the smaller, first-seen
-	// twin instead leaves both 3 and 4 short of the floor at every threshold down to the loosest
-	// score kept, two of five images, past what a floor of 30% acts on, so the graph fits no
-	// threshold and nothing is removed -- the bridges stay because the probe overstated who was
-	// short of the floor, not because any of them earned their keep.
-	{
-		Scene scene;
-		AddTripletImages(scene, 5);
-		AddTripletPair(scene, 0, 1, 1000);
-		AddTripletPair(scene, 0, 2, 1000);
-		AddTripletPair(scene, 1, 2, 600);
-		AddTripletPair(scene, 0, 3, 20);  // scanned first, the smaller twin
-		AddTripletPair(scene, 0, 3, 150); // scanned second, the larger twin
-		AddTripletPair(scene, 1, 3, 30);
-		AddTripletPair(scene, 0, 4, 15);
-		AddTripletPair(scene, 2, 4, 25);
-		TripletFilterConfig keepCfg;
-		keepCfg.enabled = true;
-		keepCfg.minYield = 0.f;
-		keepCfg.keepPairs = 0;
-		keepCfg.keepMatches = 100;
-		keepCfg.keepMaxShort = 0.3f;
-		const unsigned removed = FilterPairsByTriplets(scene, keepCfg, weightingCfg);
-		const std::set<std::pair<IIndex,IIndex>> kept = TripletKeptPairs(scene);
-		if (removed != 1 || kept.count({0,3}) != 1 || kept.count({1,3}) != 0 || kept.count({0,4}) != 1 || kept.count({2,4}) != 1) {
-			VERBOSE("TripletKeepTest FAILED: the split duplicate removed %u pairs, kept (0,3) %d (1,3) %d (0,4) %d (2,4) %d; "
-				"expected the duplicate credited with its larger twin, only the (1,3) bridge removed",
-				removed, kept.count({0,3}) ? 1 : 0, kept.count({1,3}) ? 1 : 0, kept.count({0,4}) ? 1 : 0, kept.count({2,4}) ? 1 : 0);
-			return false;
-		}
-	}
-	VERBOSE("TripletKeepTest PASSED: the keep mode keeps every image its floor and every component whole and removes only pairs joining pieces the ceiling keeps apart; the cutting rule cuts the room, the hub and the burst's wide pairs off; a burst in one piece keeps everything; the threshold descends to the strictest one the graph fits, and a graph that fits none loses nothing; a split duplicate is credited with its largest twin");
+
+	VERBOSE("TripletFilterTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 
@@ -9437,8 +8047,8 @@ bool StarReferenceViewTest()
 	}
 	// A seed view with two pairs cannot centre a star of three arms: image 3 is skipped, and so are
 	// the triangle's images (two pairs each) when the choice falls to every image; the reference is
-	// the heaviest image with three or more pairs, 5. This is the Street failure: the largest ceiling
-	// piece's heaviest image had two pairs and the star initializer refused it.
+	// the heaviest image with three or more pairs, 5: a seed piece whose heaviest image holds two
+	// pairs must not stall the star initializer.
 	IIndexArr three;
 	three.push_back(3);
 	const IIndex refThree = StarInitializer::SelectReferenceView(scene, three, 3);
