@@ -413,8 +413,15 @@ bool StarInitializer::Initialize(
 		return false;
 	}
 
-	// 7. Bundle adjustment with intrinsics refinement
-	baConfig.RefineMainIntrinsics();
+	// 7. Bundle adjustment with focal-length refinement: distortion is left to the resection's
+	// global bundle adjustments once the model is large enough to constrain it
+	// (ResectionConfig::minRefineExtIntrs and the final one, both of which already free it) --
+	// on a star of a handful of views it is unconstrained, and a converged focal can still be
+	// bent by a solve free to also absorb error into k1-k3. A forced or otherwise known focal
+	// (config.refineFocalLength == false) is left untouched: the bundle adjustment below runs
+	// with the intrinsics flags baConfig already carries (none, so all of them fixed).
+	if (config.refineFocalLength)
+		baConfig.refineFocalLength = true;
 	baConfig.maxIterations = 25;
 	if (!BundleAdjustment::Adjust(scene, baConfig)) {
 		VERBOSE("error: bundle adjustment with intrinsics refinement failed");

@@ -37,6 +37,12 @@ struct SFM_API StarInitConfig
 	float minAngleThreshold{1.f};   // Minimum angle between cameras (degrees)
 	bool globalRotations{false};    // Use global rotation averaging to initialize rotations (optional)
 
+	// Refine the focal length in the star's own bundle adjustment (step 7 of Initialize()); the
+	// distortion is left to the resection's global bundle adjustments once the model is large
+	// enough to constrain it (a star of a handful of views is not). False for a forced or
+	// otherwise known focal, which must come out of the star exactly as it went in.
+	bool refineFocalLength{true};
+
 	// The images the reference view is chosen among; empty, every image. The triplet filter fills
 	// it with the largest piece its ceiling leaves (ViewGraphTriplets.h).
 	IIndexArr seedViews;

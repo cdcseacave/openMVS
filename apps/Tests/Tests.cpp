@@ -181,6 +181,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::KnownPosePairSelectionTest())
 				return false;
+			if (!SFM::SequentialPairsPriorTest())
+				return false;
 			if (!SFM::AlignToPriorPosesTest())
 				return false;
 			if (!SFM::AlignToPriorPosesCollinearTest())

@@ -1429,6 +1429,28 @@ PairIdxArr PairsMatcher::CollectVerificationFeedbackPairs(const PairIdxArr& atte
 	return result;
 }
 
+unsigned PairsMatcher::AddSequentialPairs(const Scene& scene, unsigned overlap, PairIdxArr& pairs)
+{
+	if (overlap == 0)
+		return 0;
+	const IIndex nImages = (IIndex)scene.images.size();
+	std::unordered_set<PairIdx::PairIndex> present;
+	present.reserve(pairs.size() + (size_t)nImages*overlap);
+	for (const PairIdx& pair : pairs)
+		present.emplace(pair.idx);
+	unsigned numAdded = 0;
+	for (IIndex i = 0; i < nImages; ++i) {
+		for (unsigned k = 1; k <= overlap && i+k < nImages; ++k) {
+			const PairIdx pair(MakePairIdx(scene.images[i].ID, scene.images[i+k].ID));
+			if (present.emplace(pair.idx).second) {
+				pairs.emplace_back(pair);
+				++numAdded;
+			}
+		}
+	}
+	return numAdded;
+}
+
 void PairsMatcher::OptimizePairsOrder(PairIdxArr& pairsToMatch)
 {
 	if (pairsToMatch.empty())
@@ -2152,6 +2174,18 @@ unsigned PairsMatcher::Match(bool& bFatal)
 		ASSERT("Invalid match mode" == NULL);
 		bFatal = true;
 		return 0;
+	}
+
+	// Sequential prior: propose the consecutive-frame pairs a visual ranking is most likely to
+	// leave out, in addition to whatever it already picked (see AddSequentialPairs). Added here,
+	// before the snapshot the verification-feedback round attempts against, so that round never
+	// re-proposes or double-counts them.
+	if (matchMode == MatchConfig::VOCABULARY || matchMode == MatchConfig::RETRIEVAL) {
+		const unsigned numRetrieved = (unsigned)pairsToMatch.size();
+		const unsigned numAdded = AddSequentialPairs(scene, config.matchSequenceOverlap, pairsToMatch);
+		if (numAdded > 0)
+			DEBUG("Sequential prior: %u consecutive pairs added to the %u retrieved (overlap %u)",
+				numAdded, numRetrieved, config.matchSequenceOverlap);
 	}
 	ASSERT(!pairsToMatch.empty());
 

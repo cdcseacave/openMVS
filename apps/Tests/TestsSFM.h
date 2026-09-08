@@ -252,6 +252,10 @@ bool KnownPosePairSelectionTest();
 bool AlignToPriorPosesTest();
 bool AlignToPriorPosesCollinearTest();
 
+// PairsMatcher::AddSequentialPairs: the sequential prior added to the VOCABULARY/RETRIEVAL
+// candidates (MatchConfig::matchSequenceOverlap)
+bool SequentialPairsPriorTest();
+
 // Two-view geometry test: PairsMatcher and ImagePair matrix operations
 bool TwoViewTest();
 

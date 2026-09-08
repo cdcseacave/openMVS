@@ -69,7 +69,7 @@ struct SFM_API MatchConfig
 	unsigned maxDescriptorsPerImage = 2000; // Max descriptors per image for vocabulary tree
 	unsigned maxPairsPerImage = 50;     // Target pairs per image (VOCABULARY/KNOWN_POSES/RETRIEVAL mode)
 	bool verificationFeedback = true;   // Two-round matching: hold back part of the pair budget and re-invest it in pairs suggested by the geometrically verified matches (VOCABULARY/KNOWN_POSES/RETRIEVAL mode)
-	unsigned matchSequenceOverlap = 3;  // Number of subsequent images to match in SEQUENTIAL mode
+	unsigned matchSequenceOverlap = 3;  // Consecutive images each image is matched with: the whole candidate set of SEQUENTIAL mode, and a prior added to the VOCABULARY/RETRIEVAL candidates (0 = no prior)
 	unsigned preMatchThreshold = 0;     // Minimum number of matches in pre-matching step to keep the pair (0 = disabled)
 	float minFeatureDistance = 0.f;     // Minimum distance between matched features in pixels (0 = disabled)
 	float matchDistance = 100.f;        // Absolute distance test threshold (100 - AKAZE 486bit, 64 - ORB 256bit, FLT_MAX - SIFT)
@@ -275,6 +275,15 @@ public:
 	// best-ranked candidates. attemptedPairs lists the already-matched candidates; only new
 	// pairs are returned, at most as many as left in the total budget maxPairsPerImage*N/2.
 	PairIdxArr CollectVerificationFeedbackPairs(const PairIdxArr& attemptedPairs);
+
+	// Sequential prior for the retrieval-based match modes: images are imported in sorted
+	// numeric-stem order (Scene::Import), so for a video or hand-held capture the image index
+	// order is the capture order and a consecutive pair verifies almost every time it is
+	// attempted -- exactly the pairs a visual ranking (vocabulary tree or global-descriptor
+	// retrieval) is most likely to leave out on a repetitive or textureless run. Appends the
+	// missing (i, i+k) pairs for k = 1..overlap (no wrap-around) to pairs, skipping any already
+	// present. overlap 0 is the prior switched off (no-op). Returns the number of pairs added.
+	static unsigned AddSequentialPairs(const Scene& scene, unsigned overlap, PairIdxArr& pairs);
 
 	// Reorder pairs to minimize GPU descriptor transfers by grouping pairs sharing the same first image,
 	// with secondary ordering by descriptor cost (descending) for better thread pool load balancing

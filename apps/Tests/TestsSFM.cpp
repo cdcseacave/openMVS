@@ -4992,6 +4992,75 @@ bool KnownPosePairSelectionTest()
 }
 
 
+// PairsMatcher::AddSequentialPairs unit test: the (i, i+k) pairs it appends to an existing
+// candidate list for k = 1..overlap (no wrap-around), never duplicating a pair already present,
+// and adding nothing at overlap 0.
+bool SequentialPairsPriorTest()
+{
+	Scene scene;
+	SceneConfig sceneCfg;
+	sceneCfg.numImages = 6;
+	sceneCfg.numPoints = 0;
+	GenerateTestScene(scene, sceneCfg);
+
+	// (i, i+k) for k = 1..3, no wrap-around, on 6 images
+	const std::vector<std::pair<IIndex,IIndex>> expectedPairs = {
+		{0,1}, {0,2}, {0,3},
+		{1,2}, {1,3}, {1,4},
+		{2,3}, {2,4}, {2,5},
+		{3,4}, {3,5},
+		{4,5}
+	};
+	const auto ToSet = [](const PairIdxArr& pairs) {
+		std::unordered_set<PairIdx::PairIndex> set;
+		for (const PairIdx& pair : pairs)
+			set.emplace(pair.idx);
+		return set;
+	};
+	const auto HasAllExpected = [&expectedPairs](const std::unordered_set<PairIdx::PairIndex>& set) {
+		for (const auto& [i, j] : expectedPairs)
+			if (set.find(MakePairIdx(i, j).idx) == set.end())
+				return false;
+		return true;
+	};
+
+	// Case 1: an empty candidate list gains exactly the expected pairs
+	PairIdxArr pairs;
+	unsigned numAdded = PairsMatcher::AddSequentialPairs(scene, 3, pairs);
+	if (numAdded != expectedPairs.size() || pairs.size() != expectedPairs.size() || !HasAllExpected(ToSet(pairs))) {
+		VERBOSE("SequentialPairsPriorTest FAILED: empty list gained %u pairs (%u total), expected %u",
+			numAdded, (unsigned)pairs.size(), (unsigned)expectedPairs.size());
+		return false;
+	}
+
+	// Case 2: a list already holding (0,1) and (2,3) gains the rest and holds no duplicates
+	PairIdxArr partial;
+	partial.emplace_back(MakePairIdx(0, 1));
+	partial.emplace_back(MakePairIdx(2, 3));
+	numAdded = PairsMatcher::AddSequentialPairs(scene, 3, partial);
+	const std::unordered_set<PairIdx::PairIndex> partialSet = ToSet(partial);
+	if (numAdded != expectedPairs.size() - 2 || partial.size() != expectedPairs.size() ||
+		partialSet.size() != partial.size() || !HasAllExpected(partialSet)) {
+		VERBOSE("SequentialPairsPriorTest FAILED: partial list gained %u pairs (%u total, %u unique), expected %u (%u total)",
+			numAdded, (unsigned)partial.size(), (unsigned)partialSet.size(),
+			(unsigned)expectedPairs.size() - 2, (unsigned)expectedPairs.size());
+		return false;
+	}
+
+	// Case 3: overlap 0 adds nothing
+	PairIdxArr none;
+	numAdded = PairsMatcher::AddSequentialPairs(scene, 0, none);
+	if (numAdded != 0 || !none.empty()) {
+		VERBOSE("SequentialPairsPriorTest FAILED: overlap 0 added %u pairs", numAdded);
+		return false;
+	}
+
+	VERBOSE("SequentialPairsPriorTest PASSED (%u pairs for overlap 3 on %u images)",
+		(unsigned)expectedPairs.size(), (unsigned)scene.images.size());
+	return true;
+}
+
+
 // Re-align a scene transformed away from its imported camera frame.
 bool AlignToPriorPosesTest()
 {
@@ -7188,7 +7257,7 @@ bool TripletStarInitTest()
 	}
 
 	// Star initialization (reference will be center with connectivity 2)
-	StarInitConfig initCfg; // defaults
+	StarInitConfig initCfg; // defaults (refineFocalLength = true)
 	initCfg.minViews = 3;
 	if (!StarInitializer::Initialize(scene, initCfg)) {
 		VERBOSE("TripletStarInitTest: StarInitializer failed");
@@ -7197,18 +7266,77 @@ bool TripletStarInitTest()
 	DEBUG("TripletStarInitTest: Initialized triplet with %u triangulated tracks",
 		(unsigned)scene.tracks.size())
 
-	// Verify refined intrinsics are close to ground truth
+	// Verify the star recovers the focal on its own: step 7 of Initialize() refines only the
+	// focal length, so this is everything the star itself is responsible for
 	const REAL focalErr = ABS(cam.fx - gt_camera.fx) / gt_camera.fx;
-	const REAL k1Err = ABS(cam.k1 - gt_camera.k1);
-	const REAL k2Err = ABS(cam.k2 - gt_camera.k2);
-	DEBUG("TripletStarInitTest: Refined camera: f=%.2f (err=%.2f%%), k1=%.6f (err=%.6f), k2=%.6f (err=%.6f)",
-		cam.fx, focalErr * 100, cam.k1, k1Err, cam.k2, k2Err);
+	DEBUG("TripletStarInitTest: Refined camera: f=%.2f (err=%.2f%%), k1=%.6f, k2=%.6f",
+		cam.fx, focalErr * 100, cam.k1, cam.k2);
 	if (focalErr > 0.05) { // Allow 5% focal error
 		VERBOSE("TripletStarInitTest: focal length error too large (%.2f%%)", focalErr * 100);
 		return false;
 	}
+
+	// The star leaves distortion to the global bundle adjustments the resection runs once the
+	// model is large enough to constrain it; reproduce the one it runs right after
+	// (ResectionConfig::DeriveBAConfigs) and check the distortion recovery that BA is actually
+	// responsible for
+	BAConfig fullBaConfig;
+	fullBaConfig.RefineMainIntrinsics();
+	if (!BundleAdjustment::Adjust(scene, fullBaConfig)) {
+		VERBOSE("TripletStarInitTest: post-star bundle adjustment with intrinsics refinement failed");
+		return false;
+	}
+	const REAL k1Err = ABS(cam.k1 - gt_camera.k1);
+	const REAL k2Err = ABS(cam.k2 - gt_camera.k2);
+	DEBUG("TripletStarInitTest: Post-star BA distortion: k1=%.6f (err=%.6f), k2=%.6f (err=%.6f)",
+		cam.k1, k1Err, cam.k2, k2Err);
 	if (k1Err > 0.01 || k2Err > 0.01) { // Allow 0.01 absolute error in distortion
 		VERBOSE("TripletStarInitTest: distortion error too large (k1_err=%.6f, k2_err=%.6f)", k1Err, k2Err);
+		return false;
+	}
+
+	// A forced/known focal (StarInitConfig::refineFocalLength = false) stays fixed through the
+	// star's own bundle adjustment: construct the camera already at the ground-truth focal, as a
+	// forced value would be at import, and check the exact bit pattern survives rather than a
+	// tolerance -- the star must never touch it. Distortion stays untouched too: nothing in step 7
+	// refines it, fixed focal or not.
+	Scene sceneGT2, scene2;
+	SceneConfig cfg2 = cfg;
+	cfg2.perturbOptions = SceneConfig::PERTURB_ALL & ~SceneConfig::PERTURB_INTRINSICS;
+	GenerateTestScene(sceneGT2, cfg2, &scene2);
+	PinholeCamera& cam2 = *static_cast<PinholeCamera*>(scene2.cameras[0]);
+	cam2.trustIntrinsics = false;
+	const REAL fixedFocal = cam2.fx;
+	const REAL fixedK1 = cam2.k1;
+	const REAL fixedK2 = cam2.k2;
+
+	scene2.tracks.clear(); // let StarInitializer rebuild them, same as the first case above
+	for (ImagePair& pair : scene2.pairs)
+		if (pair.relativePose)
+			pair.relativePose->C *= scaleDist(rng); // unknown baselines, same as the first case above
+	scene2.images[0].InvalidatePose();
+	scene2.images[1].InvalidatePose();
+	scene2.images[2].InvalidatePose();
+	ComputePairsWeights(scene2, weightCfg);
+	BuildTracks(scene2, -1.f);
+	if (scene2.tracks.empty()) {
+		VERBOSE("TripletStarInitTest: BuildTracks produced zero tracks (fixed-focal case)");
+		return false;
+	}
+	StarInitConfig initCfg2;
+	initCfg2.minViews = 3;
+	initCfg2.refineFocalLength = false;
+	if (!StarInitializer::Initialize(scene2, initCfg2)) {
+		VERBOSE("TripletStarInitTest: StarInitializer failed (fixed-focal case)");
+		return false;
+	}
+	if (cam2.fx != fixedFocal) {
+		VERBOSE("TripletStarInitTest: fixed focal changed (%.9g -> %.9g)", fixedFocal, cam2.fx);
+		return false;
+	}
+	if (cam2.k1 != fixedK1 || cam2.k2 != fixedK2) {
+		VERBOSE("TripletStarInitTest: fixed-focal case distortion changed (k1 %.9g -> %.9g, k2 %.9g -> %.9g)",
+			fixedK1, cam2.k1, fixedK2, cam2.k2);
 		return false;
 	}
 
@@ -7478,6 +7606,17 @@ static bool ReconstructMatchedScene(Scene& scene, const char* testName, unsigned
 		return false;
 	}
 	VERBOSE("%s: Initialized scene with %u calibrated images", testName, (unsigned)scene.status.nCalibratedImages);
+
+	// The star refines only the focal length (StarInitConfig::refineFocalLength); reproduce the
+	// distortion-refining bundle adjustment the pipeline's resection runs right after it
+	// (ResectionConfig::DeriveBAConfigs) so this helper still exercises the calibration recovery
+	// its callers below check for
+	BAConfig fullBaConfig;
+	fullBaConfig.RefineMainIntrinsics();
+	if (!BundleAdjustment::Adjust(scene, fullBaConfig)) {
+		VERBOSE("%s: post-star bundle adjustment with intrinsics refinement failed", testName);
+		return false;
+	}
 
 	// Sample colors for tracks
 	if (!scene.SampleColors() || scene.colors.size() != scene.tracks.size()) {

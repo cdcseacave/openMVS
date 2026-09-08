@@ -725,25 +725,41 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	// the images the star initializer chooses its reference view among (the triplet filter's
 	// largest ceiling piece), filled in below; empty, every image
 	IIndexArr seedViews;
+
+	// A forced focal length (--focal-length) is fixed everywhere below it, not just at import:
+	// cleared once, here, from every bundle-adjustment configuration this function and its
+	// helpers derive from (the star initializer's own refinement, the resection's local/full
+	// configs, the final one and the uncertainty one) instead of at each call site. focalFixed
+	// rides along on cfg.baConfig itself, so it also survives the RefineMainIntrinsics() /
+	// RefineExtendedIntrinsics() calls the resection makes later on its own derived copies
+	// (ResectionConfig::DeriveBAConfigs, Resection::RegisterImages).
+	ReconstructionConfig cfg = config;
+	if (cfg.importCfg.focalLength > 0) {
+		cfg.baIntrinsicFlags &= ~(ReconstructionConfig::INTRINSIC_FOCAL_LENGTH | ReconstructionConfig::INTRINSIC_FOCAL_LENGTH_ASPECT_RATIO);
+		cfg.baConfig.focalFixed = true;
+		cfg.initCfg.refineFocalLength = false;
+		VERBOSE("Focal length forced at %g px: kept fixed in bundle adjustment", cfg.importCfg.focalLength);
+	}
+
 	#if 1
 	if (!source.empty()) {
 		// Start a new reconstruction from the source list or folder of images
 		// or load existing scene if source is pointing to a SFM file
 		Release(); // clear existing scene if any
-		if (!Import(source, config.importCfg))
+		if (!Import(source, cfg.importCfg))
 			return false;
 		if (status.nState.isSet(Status::STATE::CALIBRATED)) {
 			VERBOSE("warning: scene already calibrated after import");
 			return false;
 		}
-		if (config.matchImagesOnly && status.nState.isSet(Status::STATE::MATCHED)) {
+		if (cfg.matchImagesOnly && status.nState.isSet(Status::STATE::MATCHED)) {
 			// the requested work is already done; still resolve an AUTO frames.json
 			// convention before the caller re-persists the scene (the loaded pairs are
 			// already matched, so the detection can run)
 			VERBOSE("warning: scene already matched after import");
-			ExportMatchingCSVsAndFilterPairs(*this, config);
-			if (config.HasKnownPoses() && !ResolveFramesConvention(*this,
-					config.importCfg.framesConvention, config.importCfg.importPosesFile))
+			ExportMatchingCSVsAndFilterPairs(*this, cfg);
+			if (cfg.HasKnownPoses() && !ResolveFramesConvention(*this,
+					cfg.importCfg.framesConvention, cfg.importCfg.importPosesFile))
 				return false;
 			return true;
 		}
@@ -755,25 +771,25 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	// pairsMatcher.ComputeRelativePoses(false, false);
 
 	// Extract image features
-	if (!ExtractFeatures(config.featuresCfg))
+	if (!ExtractFeatures(cfg.featuresCfg))
 		return false;
 
 	// Match image pairs
-	if (!MatchPairs(config.matchCfg, config.roma2Cfg, config.viewgraphCfg, config.exportRetrievalCSV))
+	if (!MatchPairs(cfg.matchCfg, cfg.roma2Cfg, cfg.viewgraphCfg, cfg.exportRetrievalCSV))
 		return false;
 
 	// export the pairs/retrieval-rankings CSV diagnostics right after matching, before any
 	// reconstruction step (clustering, weak-image filtering, resection) can drop pairs or
 	// leave images unregistered; covers both the match-images-only run and a full reconstruction,
 	// and is immediately followed by the triplet disambiguation of the view graph
-	seedViews = ExportMatchingCSVsAndFilterPairs(*this, config);
+	seedViews = ExportMatchingCSVsAndFilterPairs(*this, cfg);
 
-	if (config.matchImagesOnly) {
+	if (cfg.matchImagesOnly) {
 		// a frames.json imported with an AUTO convention must be resolved before the scene
 		// is persisted, otherwise possibly-flipped poses are saved with no record of the
 		// ambiguity and every later consumer inherits reversed optical axes
-		if (config.HasKnownPoses() && !ResolveFramesConvention(*this,
-				config.importCfg.framesConvention, config.importCfg.importPosesFile))
+		if (cfg.HasKnownPoses() && !ResolveFramesConvention(*this,
+				cfg.importCfg.framesConvention, cfg.importCfg.importPosesFile))
 			return false;
 		VERBOSE("Image pairs matched only as per configuration, reconstruction skipped");
 		return true;
@@ -782,7 +798,7 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2) {
 		// Save intermediate scene after matching for debugging
-		Save(MAKE_PATH("scene_pre_reconstruction.sfm"), config.importCfg.archiveType);
+		Save(MAKE_PATH("scene_pre_reconstruction.sfm"), cfg.importCfg.archiveType);
 	}
 	#endif
 	#else
@@ -791,33 +807,33 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	#endif
 
 	// Run reconstruction method
-	if (config.HasKnownPoses() ? !ReconstructKnownPoses(config)
-	    : config.useGlobalSolver ? !ReconstructGlobal(config)
-	                             : !ReconstructHierarchical(config, seedViews))
+	if (cfg.HasKnownPoses() ? !ReconstructKnownPoses(cfg)
+	    : cfg.useGlobalSolver ? !ReconstructGlobal(cfg)
+	                             : !ReconstructHierarchical(cfg, seedViews))
 		return false;
 
 	// Pre-final global bundle adjustment
-	BAConfig finalBaCfg = config.baConfig;
+	BAConfig finalBaCfg = cfg.baConfig;
 	finalBaCfg.maxIterations = 25;
-	finalBaCfg.refineFocalLength = (config.baIntrinsicFlags & ReconstructionConfig::INTRINSIC_FOCAL_LENGTH) != 0;
-	finalBaCfg.refineRadialDistortion123 = (config.baIntrinsicFlags & ReconstructionConfig::INTRINSIC_RADIAL_DIST_123) != 0;
+	finalBaCfg.refineFocalLength = (cfg.baIntrinsicFlags & ReconstructionConfig::INTRINSIC_FOCAL_LENGTH) != 0;
+	finalBaCfg.refineRadialDistortion123 = (cfg.baIntrinsicFlags & ReconstructionConfig::INTRINSIC_RADIAL_DIST_123) != 0;
 	BundleAdjustment::Adjust(*this, finalBaCfg);
-	FilterTracks(*this, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
-	TriangulateTracks(*this, true, config.maxReprojError, config.minAngleThreshold);
-	FilterTracks(*this, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+	FilterTracks(*this, cfg.maxReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
+	TriangulateTracks(*this, true, cfg.maxReprojError, cfg.minAngleThreshold);
+	FilterTracks(*this, cfg.maxReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
 	status.nState.set(Status::STATE::CALIBRATED);
 
 	// Final global bundle adjustment
-	finalBaCfg.maxIterations = config.baConfig.maxIterations;
-	SetBAIntrinsicFlags(finalBaCfg, config.baIntrinsicFlags);
+	finalBaCfg.maxIterations = cfg.baConfig.maxIterations;
+	SetBAIntrinsicFlags(finalBaCfg, cfg.baIntrinsicFlags);
 	BundleAdjustment::Adjust(*this, finalBaCfg);
-	FilterTracks(*this, config.maxFineReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+	FilterTracks(*this, cfg.maxFineReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
 
 	// Filter weakly connected images and resection remaining images into the reconstruction
 	FilterWeaklyConnectedImages(*this);
 	if (status.nCalibratedImages < images.size()) {
-		ResectionConfig resectionCfg = config.resectionCfg;
-		resectionCfg.DeriveBAConfigs(config.baConfig);
+		ResectionConfig resectionCfg = cfg.resectionCfg;
+		resectionCfg.DeriveBAConfigs(cfg.baConfig);
 		Resection resection(*this, resectionCfg);
 		resection.RegisterImages();
 		FilterWeaklyConnectedImages(*this);
@@ -828,12 +844,12 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	// yank the scene out of that very frame), else to GPS if available. A failed prior-pose
 	// alignment leaves the scene in the refined (arbitrary-gauge) frame: it is reported, but
 	// must not discard the finished reconstruction
-	if (config.HasKnownPoses() && !priorPoses.empty()) {
+	if (cfg.HasKnownPoses() && !priorPoses.empty()) {
 		if (!AlignToPriorPoses())
 			VERBOSE("warning: could not align the reconstruction back to the imported pose frame; "
 				"the result is left in the refined (arbitrary) frame");
-	} else if (config.thAlignGPS > 0 && HasImagesWithGPS())
-		AlignToGPS(config.thAlignGPS);
+	} else if (cfg.thAlignGPS > 0 && HasImagesWithGPS())
+		AlignToGPS(cfg.thAlignGPS);
 
 	// Refine the geo-aligned reconstruction with GPS position priors (if enabled): the GPS
 	// residuals are gated on GEO_ALIGN and their meters-vs-pixels weighting assumes the metric
@@ -844,26 +860,26 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	BAConfig uncBaCfg = finalBaCfg;
 	uncBaCfg.refineFocalLength = uncBaCfg.refineFocalLengthAspectRatio = uncBaCfg.refinePrincipalPoint =
 	uncBaCfg.refineRadialDistortion123 = uncBaCfg.refineTangentialDistortion = uncBaCfg.refineRadialDistortion456 = false;
-	if (config.baConfig.IsRefiningGPS() && status.nState.isSet(Status::STATE::GEO_ALIGN)) {
+	if (cfg.baConfig.IsRefiningGPS() && status.nState.isSet(Status::STATE::GEO_ALIGN)) {
 		BundleAdjustment ba(*this, uncBaCfg);
 		if (ba.Adjust()) {
-			if (config.estimatePoseUncertainty) {
+			if (cfg.estimatePoseUncertainty) {
 				// the GPS priors anchor the gauge, so this supersedes the earlier record
 				// with absolute ENU covariances (and covers the images resected since)
 				poseUncertainty = ba.ComputePoseUncertainty();
 			}
-			FilterTracks(*this, config.maxFineReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+			FilterTracks(*this, cfg.maxFineReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
 		}
-	} else if (config.estimatePoseUncertainty) {
+	} else if (cfg.estimatePoseUncertainty) {
 		BundleAdjustment ba(*this, uncBaCfg);
 		if (ba.Adjust()) {
 			poseUncertainty = ba.ComputePoseUncertainty();
-			FilterTracks(*this, config.maxFineReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+			FilterTracks(*this, cfg.maxFineReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
 		}
 	}
 
 	// Estimate color for points
-	if (config.extractColors)
+	if (cfg.extractColors)
 		SampleColors();
 
 	VERBOSE("Reconstruction complete: %u images (%u total), %u points (%u total) in %s",
