@@ -2,7 +2,7 @@
 
 ## Overview
 
-An optional, dependency-free pre-reconstruction filter that removes wrong image pairs — repeated
+A dependency-free pre-reconstruction filter that removes wrong image pairs — repeated
 structure ("doppelgangers"), retrieval false positives — from the matched view graph using nothing
 but the graph itself and one strength per edge: the epipolar inlier count discounted by the
 fraction of the frame the inliers cover. A doppelganger's matches sit on the duplicated object
@@ -37,12 +37,15 @@ and `c_ij = ComputePairCoverage(...)` the fraction of the frame the inliers cove
    maximum degree **of `G_LCT`** (the paper says "of the graph"; the graph whose edges carry a score
    is `G_LCT`). `m` is the one user parameter — the default, 0.3, the paper's value for the medium and
    small ambiguous sets (0.6 its generic/large-scale value, 0.9 its highly ambiguous one).
-4. **Selection.** A scored pair is removed iff its score is below the threshold; an **unscored pair
+4. **Selection.** A scored pair is removed iff its score is below the threshold under the cutting
+   rule (`--triplet-cut`); the keep mode, the default, narrows the removals to the candidates of
+   the section Two modes below and to what the graph can spare of them; an **unscored pair
    is kept** — the paper's step 1 discards every edge outside `G_LCT`, but on the two labelled
    references those pairs are overwhelmingly true (426 of 490 on one capture, 415 of 441 on the
    other), so absence of evidence keeps a pair.
-5. **The threshold below the ceiling** (`--triplet-auto-tau`, the default). `tau` above is Eqn. 3's
-   value at `m`, but it is only a **ceiling**: the filter is never stricter than that value. A
+5. **The threshold below the ceiling** (with `--triplet-cut`, where `--triplet-auto-tau` defaults
+   on). `tau` above is Eqn. 3's value at `m`, but it is only a **ceiling**: the filter is never
+   stricter than that value. A
    *piece* is a component of the ceiling's survivor graph that lies inside the unfiltered graph's
    largest component and holds at least 1% of it (so on a set under 101 images every such component
    is a piece); when the largest piece holds a strict majority of the images the pieces hold
@@ -54,8 +57,9 @@ and `c_ij = ComputePairCoverage(...)` the fraction of the frame the inliers cove
    between the ceiling and the single weak pair that attaches it, for one image. The paper's step
    11, extracting the largest component of the filtered graph, is **not** applied — `SceneCluster`
    already selects components.
-6. **The second face** (`--triplet-second-face-score`, 0.75, part of `--triplet-auto-tau`). Before
-   any of the above, the ceiling at `m` 0.75 is tried first, not as a threshold but to **name** the
+6. **The second face** (`--triplet-second-face-score`, 0.75, part of `--triplet-auto-tau`, with
+   `--triplet-cut`). Before any of the above, the ceiling at `m` 0.75 is tried first, not as a
+   threshold but to **name** the
    faces: when the graph it leaves is *two-faced* — its largest piece holds a strict majority of the
    images in pieces and its second-largest piece holds at least a third of the largest — the paper's
    ceiling at `m` applies **inside the larger face**, and every pair joining the other face to an
@@ -233,7 +237,7 @@ unscored kept`.
 
 `TripletFilterConfig::minYield` (0.4) has no flag.
 
-Python: `TripletFilterConfig(enabled, auto_tau, cut, keep_pairs, keep_matches, keep_min_angle, keep_max_short, min_score, second_face_score, min_yield)`, `ReconstructionConfig.triplet_filter_cfg`, and `compute_triplet_scores(scene, min_score, min_yield, grid_size)` → the scores, `tau` and the graph statistics.
+Python: `TripletFilterConfig(enabled, cut, keep_pairs, keep_matches, keep_min_angle, keep_max_short, auto_tau, min_score, second_face_score, min_yield)`, `ReconstructionConfig.triplet_filter_cfg`, and `compute_triplet_scores(scene, min_score, min_yield, grid_size)` → the scores, `tau` and the graph statistics.
 
 ## Harness
 

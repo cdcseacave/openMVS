@@ -320,12 +320,12 @@ void RegisterBindings()
 	// SFM::TripletFilterConfig — camera-triplet view-graph disambiguation
 	class_<SFM::TripletFilterConfig>("TripletFilterConfig")
 		.def_readwrite("enabled", &SFM::TripletFilterConfig::enabled)
-		.def_readwrite("auto_tau", &SFM::TripletFilterConfig::autoTau)
 		.def_readwrite("cut", &SFM::TripletFilterConfig::cut)
 		.def_readwrite("keep_pairs", &SFM::TripletFilterConfig::keepPairs)
 		.def_readwrite("keep_matches", &SFM::TripletFilterConfig::keepMatches)
 		.def_readwrite("keep_min_angle", &SFM::TripletFilterConfig::keepMinAngle)
 		.def_readwrite("keep_max_short", &SFM::TripletFilterConfig::keepMaxShort)
+		.def_readwrite("auto_tau", &SFM::TripletFilterConfig::autoTau)
 		.def_readwrite("min_score", &SFM::TripletFilterConfig::minScore)
 		.def_readwrite("second_face_score", &SFM::TripletFilterConfig::secondFaceScore)
 		.def_readwrite("min_yield", &SFM::TripletFilterConfig::minYield);

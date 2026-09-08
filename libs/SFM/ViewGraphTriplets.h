@@ -75,7 +75,7 @@ struct SFM_API TripletFilterConfig
 	// near-duplicate frames would otherwise keep only its own pairs and lose every link to the
 	// rest of the capture, then be invalidated for a median triangulation angle below the
 	// reconstruction's 1.5 degrees; 3 is twice that bar. A pair whose angle was never measured
-	// (0) counts. The image's counting pairs above the ceiling and its unscored ones count
+	// (0) counts. The image's counting pairs that are not candidates at that threshold count
 	// first; below the floor, its best-scoring counting candidates are retained, ties to the
 	// stronger. keepPairs and keepMatches at 0 keep nothing for the floor's sake, keepMinAngle
 	// at 0 counts every pair; the components are kept whole regardless.
@@ -84,13 +84,13 @@ struct SFM_API TripletFilterConfig
 	float keepMinAngle = 3.f;
 	// The keep mode's threshold is the strictest one the graph fits: the ceiling when at most
 	// this share of the images (nodes of the graph) already fall short of the floor from their
-	// pairs at or above it and their unscored pairs, else the largest score below the ceiling at
-	// which that holds. The paper's tau(m) presumes an internet collection where an image keeps
-	// hundreds of pairs above it and the ceiling stands; a small set matched exhaustively puts
-	// the ceiling near 1 and fits a lower one, still above its doppelganger pairs; an interior
-	// fits none -- most of its images hold fewer matches than the floor asks for in the whole
-	// graph -- and nothing is removed, since on such a graph the reconstruction flips under any
-	// change of its pairs. 1 fits every threshold.
+	// counting pairs that are not candidates at that threshold, else the largest score below the
+	// ceiling at which that holds. The paper's tau(m) presumes an internet collection where an
+	// image keeps hundreds of pairs above it and the ceiling stands; a small set matched
+	// exhaustively puts the ceiling near 1 and fits a lower one, still above its doppelganger
+	// pairs; an interior fits none -- most of its images hold fewer matches than the floor asks
+	// for in the whole graph -- and nothing is removed, since on such a graph the reconstruction
+	// flips under any change of its pairs. 1 fits every threshold.
 	float keepMaxShort = 0.5f;
 	// With cut: the paper's tau(m) is a ceiling: below it, the threshold is the strictest one
 	// whose survivor graph joins every piece the ceiling leaves. Off, tau(m) is applied as given.
@@ -218,8 +218,9 @@ TripletScores SFM_API ComputeTripletScores(const Scene& scene, float minScore, f
 // best-scoring pairs to hold config.keepMatches weighted inliers, counting only pairs whose
 // ray angle reaches config.keepMinAngle degrees, at the strictest threshold at or below the
 // ceiling where at most config.keepMaxShort of the images fall short of that floor from their
-// pairs above it alone; a graph that fits no threshold loses nothing, and every connected
-// component of the matched graph stays one component, joined by its best-scoring candidates.
+// counting pairs that are not candidates at that threshold; a graph that fits no threshold loses
+// nothing, and every connected component of the matched graph stays one component, joined by its
+// best-scoring candidates.
 // A distinct image pair decides once, through its highest-scoring scene pair; duplicates follow it.
 unsigned SFM_API FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& config,
 	const PairsWeightingConfig& weightingCfg, IIndexArr* pSeedViews = NULL);

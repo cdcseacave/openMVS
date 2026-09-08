@@ -9050,21 +9050,30 @@ bool TripletKeepTest()
 			return false;
 		}
 	}
-	// A floor of 3 pairs: the chain ends keep two pairs at the ceiling and 59 and 60 have
-	// candidates; 59 retains (59,60), which serves 60 as well; the other two bridges go.
+	// A floor of 3 pairs and 1700 matches: the chain ends hold two pairs and 1600 matches at the
+	// ceiling ((57,59) 600 and (58,59) 1000, or the mirror at 60) -- enough for the pair bound
+	// with a single bridge, not for the match one. Served first (tied with 60, the lower index),
+	// 59 takes its best candidate, (59,60) 60 -- 3 pairs, 1660 matches, still short of 1700 --
+	// then its other one, (59,61) 50 -- 1710, both bounds met: it retains both of its own
+	// candidates, which the repair alone never would once (59,60) alone already joins the rooms.
+	// 60 inherits (59,60) from 59's turn (3 pairs, 1660 matches) but is still short of 1700 too, so
+	// it retains its own remaining candidate, (58,60) 50 -- 1710, met. All three bridges survive:
+	// where case 2's repair keeps only the best-scoring one, the floor here retains every bridge
+	// two different images separately needed, pinning what the floor alone produces.
 	{
 		Scene rooms;
 		buildRooms(rooms);
 		TripletFilterConfig keepCfg;
 		keepCfg.enabled = true;
 		keepCfg.keepPairs = 3;
-		keepCfg.keepMatches = 0;
+		keepCfg.keepMatches = 1700;
 		keepCfg.minYield = 0.f;
 		const unsigned removed = FilterPairsByTriplets(rooms, keepCfg, weightingCfg);
 		const std::set<std::pair<IIndex,IIndex>> kept = TripletKeptPairs(rooms);
-		if (removed != 2 || kept.count({59,60}) != 1) {
-			VERBOSE("TripletKeepTest FAILED: a floor of 3 pairs removed %u pairs, kept (59,60) %d; expected 2 removed and (59,60) retained",
-				removed, kept.count({59,60}) ? 1 : 0);
+		if (removed != 0 || kept.count({59,60}) != 1 || kept.count({59,61}) != 1 || kept.count({58,60}) != 1) {
+			VERBOSE("TripletKeepTest FAILED: a floor of 3 pairs and 1700 matches removed %u pairs, kept (59,60) %d (59,61) %d (58,60) %d; "
+				"expected nothing removed, every bridge retained by the floor",
+				removed, kept.count({59,60}) ? 1 : 0, kept.count({59,61}) ? 1 : 0, kept.count({58,60}) ? 1 : 0);
 			return false;
 		}
 	}
@@ -9325,7 +9334,51 @@ bool TripletKeepTest()
 			return false;
 		}
 	}
-	VERBOSE("TripletKeepTest PASSED: the keep mode keeps every image its floor and every component whole and removes only pairs joining pieces the ceiling keeps apart; the cutting rule cuts the room, the hub and the burst's wide pairs off; a burst in one piece keeps everything; the threshold descends to the strictest one the graph fits, and a graph that fits none loses nothing");
+	// A split duplicate: (0,3) has two scene pairs, a 20-inlier one scanned first and a 150-inlier
+	// one scanned second, both left at the default unmeasured ray angle so both count toward the
+	// floor. 0 anchors a strong triangle with 1 and 2 (1000, 1000, 600, all at or above the
+	// ceiling); 3 is 0's duplicated partner, bridged onward to 1 by a lone 30-inlier pair; 4 is a
+	// pendant bridged to 0 and to 2 by lone 15- and 25-inlier pairs. Image 0 holds four pairs, so
+	// r = 4/5 and the ceiling is 0.3(1-4/5)+4/5 = 0.86, above which only the triangle's three
+	// pairs sit; it leaves three pieces -- {0,1,2}, {3} and {4} -- so (0,3), (1,3), (0,4) and (2,4)
+	// are all candidates. The probe must credit image 3 with the larger of its two scene pairs,
+	// 150, not whichever is scanned first: with 150, 3's matches already clear the 100-match floor
+	// (the smaller twin's 20, plus (1,3)'s 30, would not), leaving only 4 short of it -- one of
+	// five images, which a floor of at most 30% (1.5) can still spare -- so the threshold descends
+	// to the strictest score below the ceiling that still fits, 0.15, where (1,3) (0.03) is a
+	// candidate neither the floor (3 is not short) nor the repair ((0,4) and (2,4) already hold 4's
+	// component together) needs, and it alone goes. Crediting image 3 with the smaller, first-seen
+	// twin instead leaves both 3 and 4 short of the floor at every threshold down to the loosest
+	// score kept, two of five images, past what a floor of 30% acts on, so the graph fits no
+	// threshold and nothing is removed -- the bridges stay because the probe overstated who was
+	// short of the floor, not because any of them earned their keep.
+	{
+		Scene scene;
+		AddTripletImages(scene, 5);
+		AddTripletPair(scene, 0, 1, 1000);
+		AddTripletPair(scene, 0, 2, 1000);
+		AddTripletPair(scene, 1, 2, 600);
+		AddTripletPair(scene, 0, 3, 20);  // scanned first, the smaller twin
+		AddTripletPair(scene, 0, 3, 150); // scanned second, the larger twin
+		AddTripletPair(scene, 1, 3, 30);
+		AddTripletPair(scene, 0, 4, 15);
+		AddTripletPair(scene, 2, 4, 25);
+		TripletFilterConfig keepCfg;
+		keepCfg.enabled = true;
+		keepCfg.minYield = 0.f;
+		keepCfg.keepPairs = 0;
+		keepCfg.keepMatches = 100;
+		keepCfg.keepMaxShort = 0.3f;
+		const unsigned removed = FilterPairsByTriplets(scene, keepCfg, weightingCfg);
+		const std::set<std::pair<IIndex,IIndex>> kept = TripletKeptPairs(scene);
+		if (removed != 1 || kept.count({0,3}) != 1 || kept.count({1,3}) != 0 || kept.count({0,4}) != 1 || kept.count({2,4}) != 1) {
+			VERBOSE("TripletKeepTest FAILED: the split duplicate removed %u pairs, kept (0,3) %d (1,3) %d (0,4) %d (2,4) %d; "
+				"expected the duplicate credited with its larger twin, only the (1,3) bridge removed",
+				removed, kept.count({0,3}) ? 1 : 0, kept.count({1,3}) ? 1 : 0, kept.count({0,4}) ? 1 : 0, kept.count({2,4}) ? 1 : 0);
+			return false;
+		}
+	}
+	VERBOSE("TripletKeepTest PASSED: the keep mode keeps every image its floor and every component whole and removes only pairs joining pieces the ceiling keeps apart; the cutting rule cuts the room, the hub and the burst's wide pairs off; a burst in one piece keeps everything; the threshold descends to the strictest one the graph fits, and a graph that fits none loses nothing; a split duplicate is credited with its largest twin");
 	return true;
 }
 

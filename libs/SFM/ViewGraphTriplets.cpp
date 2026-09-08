@@ -474,7 +474,7 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 	const float keepMinAngle = std::isnan(config.keepMinAngle) || config.keepMinAngle < 0.f ? 0.f : config.keepMinAngle;
 	if (keepMinAngle != config.keepMinAngle)
 		VERBOSE("warning: triplet filter: minimum ray angle %g is not a non-negative angle, using %g", config.keepMinAngle, keepMinAngle);
-	const float keepMaxShort = std::isnan(config.keepMaxShort) ? 1.f : CLAMP(config.keepMaxShort, 0.f, 1.f);
+	const float keepMaxShort = std::isnan(config.keepMaxShort) ? 0.f : CLAMP(config.keepMaxShort, 0.f, 1.f);
 	if (keepMaxShort != config.keepMaxShort)
 		VERBOSE("warning: triplet filter: maximum short share %g is outside [0,1], using %g", config.keepMaxShort, keepMaxShort);
 	const TripletScores tripletScores = ComputeTripletScores(scene, minScore, minYield, weightingCfg.gridSize);
@@ -572,7 +572,9 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 	// to it afterwards: the resection refuses the doppelganger bridges the descent lets through but
 	// cannot choose the side it starts on, and the heaviest image overall sits in the densest
 	// cluster of look-alike views (Radcliffe matched exhaustively: the 45-image piece, while the
-	// 120-image piece never registered).
+	// 120-image piece never registered). Its largest piece is taken within the unfiltered graph's
+	// largest component and only among components of at least minPiece nodes, so it can differ
+	// from the pieces the acting line above counts over the whole graph.
 	if (pSeedViews)
 		*pSeedViews = atCeiling.largestPieceViews;
 	if (config.cut && config.autoTau) {
@@ -758,29 +760,48 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 		// first, and the count below would no longer fall with the threshold.
 		struct FloorPair {
 			IIndex ID1, ID2;
-			unsigned numInliers;
-			float score; // TripletScores::unscored, or the highest score of its scene pairs
+			unsigned numInliers; // of the counting twin with the most, among those that count for the floor
+			float score; // TripletScores::unscored, or the highest score of ALL its scene pairs
 			bool joins; // pieceOf[ID1] != pieceOf[ID2]: the same for every scene pair of this distinct pair
 		};
 		std::vector<FloorPair> floorPairs;
 		{
-			std::unordered_map<PairIdx::PairIndex, unsigned> entryOfPair;
+			// The score is collapsed over every twin, counting or not -- exactly as candidacy itself
+			// is decided below (the representative loop): an unscored or at-or-above-tau twin keeps
+			// the whole distinct pair, whichever of its twins count for the floor. A twin that
+			// does not count only withholds its own inliers from the floor's sake; it still takes
+			// part, with every other twin, in deciding whether the pair is a candidate at all.
+			struct FloorAccum {
+				IIndex ID1, ID2;
+				unsigned numInliers;
+				float score;
+				bool joins;
+				bool counts; // true once some twin has counted
+			};
+			std::unordered_map<PairIdx::PairIndex, FloorAccum> accum;
 			FOREACH(idxPair, scene.pairs) {
 				const ImagePair& pair = scene.pairs[idxPair];
-				if (!pair.HasGeometricVerification() || pair.GetNumWeightedInliers() == 0 || pair.ID1 == pair.ID2 ||
-					!countsForFloor(pair))
-					continue; // not an edge, or no 3D point to gain from it
+				if (!pair.HasGeometricVerification() || pair.GetNumWeightedInliers() == 0 || pair.ID1 == pair.ID2)
+					continue; // not an edge
 				const float score = scores[idxPair];
-				const auto entry = entryOfPair.emplace(MakePairIdx(pair.ID1, pair.ID2).idx, (unsigned)floorPairs.size());
+				const auto entry = accum.emplace(MakePairIdx(pair.ID1, pair.ID2).idx,
+					FloorAccum{pair.ID1, pair.ID2, 0, TripletScores::unscored, joinsPieces(pair), false});
+				FloorAccum& a = entry.first->second;
 				if (entry.second) {
-					floorPairs.push_back({pair.ID1, pair.ID2, pair.GetNumWeightedInliers(), score, joinsPieces(pair)});
-					continue;
+					a.score = score;
+				} else if (a.score >= 0.f && (score < 0.f || score > a.score)) {
+					a.score = score; // the highest score wins; an unscored twin wins outright
 				}
-				FloorPair& kept = floorPairs[entry.first->second];
-				if (kept.score >= 0.f && (score < 0.f || score > kept.score)) {
-					kept.numInliers = pair.GetNumWeightedInliers();
-					kept.score = score;
+				if (countsForFloor(pair) && (!a.counts || pair.GetNumWeightedInliers() > a.numInliers)) {
+					a.counts = true;
+					a.numInliers = pair.GetNumWeightedInliers();
 				}
+			}
+			floorPairs.reserve(accum.size());
+			for (const auto& entry : accum) {
+				const FloorAccum& a = entry.second;
+				if (a.counts) // enters only when some twin has a 3D point to gain from it
+					floorPairs.push_back({a.ID1, a.ID2, a.numInliers, a.score, a.joins});
 			}
 		}
 		// what every image keeps at a threshold and how many nodes NEED the floor there: a node
@@ -862,7 +883,8 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 			if (fitsNone) {
 				VERBOSE("Triplet filter: the ceiling %.3f (m %.2f, d_max/|V| %.3f) fits no threshold: the ceiling leaves %u pieces "
 					"(the largest %u of %u nodes) and %u pairs below it join two; %u of %u images fall short "
-					"of the floor (%u pairs holding %u matches at %g degrees or more) from their pairs above it, and %u still do "
+					"of the floor (%u pairs holding %u matches at %g degrees or more) from their counting pairs that are not "
+					"candidates at that threshold, and %u still do "
 					"with every scored pair kept, more than the %.0f%% the keep mode acts on: nothing removed",
 					ceiling, minScore, degreeRatio, numPiecesAtCeiling, largestPieceAtCeiling, numNodes, numBridgesAtCeiling,
 					numShortAtCeiling, numNodes,
@@ -968,7 +990,7 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 						++numSparedRepair;
 					}
 				}
-				VERBOSE("Triplet filter: tau %.3f, %s (ceiling %.3f at m %.2f, d_max/|V| %.3f) leaves %u pieces (the largest %u of %u nodes); "
+				VERBOSE("Triplet filter: tau %.3f, %s (ceiling %.3f at m %.2f, d_max/|V| %.3f); the ceiling leaves %u pieces over the whole graph (the largest %u of %u nodes); "
 					"%u pairs below the threshold join two of them and are the candidates, %u of %u images short of the floor (%u pairs "
 					"holding %u matches at %g degrees or more) without them: %u candidates retained for the floor, %u to keep every "
 					"component whole, %u images whose candidates ran out before the floor held",

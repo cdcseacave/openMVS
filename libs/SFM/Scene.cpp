@@ -766,7 +766,7 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	// export the pairs/retrieval-rankings CSV diagnostics right after matching, before any
 	// reconstruction step (clustering, weak-image filtering, resection) can drop pairs or
 	// leave images unregistered; covers both the match-images-only run and a full reconstruction,
-	// and is immediately followed by the (opt-in) triplet disambiguation of the view graph
+	// and is immediately followed by the triplet disambiguation of the view graph
 	seedViews = ExportMatchingCSVsAndFilterPairs(*this, config);
 
 	if (config.matchImagesOnly) {
