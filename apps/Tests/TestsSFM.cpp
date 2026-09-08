@@ -8208,6 +8208,412 @@ bool StarReferenceViewTest()
 	return true;
 }
 
+namespace {
+
+// Scenes for the two resection tests. Cameras sit on a 5-unit circle in the XZ plane, one every
+// 10 degrees, all looking at the origin, so consecutive centres are 2*5*sin(5 deg) = 0.8716 apart
+// and the seven of a full arc span 2*5*sin(30 deg) = 5.0000 world units -- the scene extent the
+// position tolerances below are a share of. The points they see fill a 2-unit box around the
+// origin, which projects well inside a 640x480 frame of 500-pixel focal from every one of them.
+constexpr REAL RESECTION_ARC_RADIUS = 5;
+constexpr REAL RESECTION_ARC_STEP = 10; // degrees between consecutive cameras
+constexpr REAL RESECTION_ARC_EXTENT = 5; // 2*RESECTION_ARC_RADIUS*sin(3*RESECTION_ARC_STEP)
+
+Pose3D ResectionArcPose(REAL angleDegrees)
+{
+	const REAL angle = D2R(angleDegrees);
+	Pose3D pose;
+	pose.C = Point3(RESECTION_ARC_RADIUS * COS(angle), 0, RESECTION_ARC_RADIUS * SIN(angle));
+	pose.R.LookAt(pose.C, Point3(0, 0, 0), Point3(0, 1, 0));
+	return pose;
+}
+
+// The arc's images, all posed, sharing one pinhole camera
+void BuildResectionArc(Scene& scene, unsigned numImages)
+{
+	scene.cameras.emplace_back(new PinholeCamera(cv::Size(640, 480), REAL(500), REAL(500), REAL(320), REAL(240)));
+	for (unsigned i = 0; i < numImages; ++i) {
+		scene.images.emplace_back(IIndex(i), String::FormatString("%u.jpg", i),
+			ResectionArcPose(i * RESECTION_ARC_STEP), IIndex(0), scene.cameras[0]);
+	}
+	scene.status.nCalibratedImages = numImages;
+}
+
+// One track at the given point, observed by the given images at its exact projection; false (and
+// nothing added) when the point does not project inside all of them
+bool AddResectionTrack(Scene& scene, const Point3& X, const std::vector<IIndex>& imageIDs)
+{
+	std::vector<Point2> projections;
+	for (IIndex imageID : imageIDs) {
+		const Image& img = scene.images[imageID];
+		const auto [proj, valid] = img.ProjectPoint(X);
+		if (!valid || !Image8U::isInside(proj, img.GetSize()))
+			return false;
+		projections.push_back(proj);
+	}
+	Track track(X);
+	FOREACH(i, imageIDs) {
+		Image& img = scene.images[imageIDs[i]];
+		track.observations.emplace_back(imageIDs[i], (uint32_t)img.keypoints.size());
+		img.keypoints.emplace_back(cv::Point2f((float)projections[i].x, (float)projections[i].y), 1.f);
+	}
+	scene.tracks.emplace_back(std::move(track));
+	return true;
+}
+
+// numTracks tracks observed by the given images, at points drawn from a 2-unit box around the origin
+void AddResectionTracks(Scene& scene, const std::vector<IIndex>& imageIDs, unsigned numTracks, std::mt19937& rng)
+{
+	std::uniform_real_distribution<REAL> coord(-1, 1);
+	for (unsigned i = 0; i < numTracks; ) {
+		if (AddResectionTrack(scene, Point3(coord(rng), coord(rng), coord(rng)), imageIDs))
+			++i;
+	}
+}
+
+// A verified pair carrying the ground-truth relative pose of its two images and a chosen strength.
+// The resection reads only the relative pose and the weighted inliers off a pair, so no matches are
+// needed; the two weights are what makes the pair's composite weight non-zero, i.e. valid.
+void AddResectionPair(Scene& scene, IIndex idA, IIndex idB, unsigned numInliers)
+{
+	ImagePair pair(idA, idB);
+	pair.relativePose = scene.images[pair.ID2] / scene.images[pair.ID1];
+	pair.weightedInliers = (float)numInliers;
+	pair.weightSpatial = 1.f;
+	pair.weightConnectivity = 1.f;
+	scene.pairs.emplace_back(std::move(pair));
+}
+
+// Angle in degrees between two rotations
+inline double RotationErrorDeg(const RMatrix& a, const RMatrix& b)
+{
+	return R2D(ACOS(ComputeAngle(a, b)));
+}
+
+// Angle in degrees between two directions
+inline double DirectionErrorDeg(const Point3& a, const Point3& b)
+{
+	return R2D(ACOS(CLAMP(normalized(a).dot(normalized(b)), REAL(-1), REAL(1))));
+}
+
+// The seven-camera arc of ResectionRelativePoseFallbackTest, freshly built:
+//   tracks: 150 points seen by images 0-3   -- the model the resection starts from
+//            40 points seen by images 3,4   -- two-view tracks, image 4's only observations
+//            40 points seen by images 4,5   -- likewise for image 5
+//            40 points seen by images 5,6   -- likewise for image 6
+//   pairs (weighted inliers): (2,4) 300, (3,4) 400, (3,5) 200, (4,5) 350, (5,6) 300
+// Images 4, 5 and 6 lose their poses at the end, so every track of theirs has at most one posed
+// view and cannot be triangulated: they enter the resection with zero 2D-3D correspondences, which
+// is the stall the relative-pose fallback answers. Each pair's relative-pose translation is scaled
+// by a random factor, so only its direction is usable and the fallback has to recover the length.
+void BuildResectionFallbackScene(Scene& scene, std::vector<Pose3D>& gtPoses, std::mt19937& rng)
+{
+	BuildResectionArc(scene, 7);
+	gtPoses.clear();
+	for (const Image& img : scene.images)
+		gtPoses.push_back(static_cast<const Pose3D&>(img));
+
+	AddResectionTracks(scene, {0, 1, 2, 3}, 150, rng);
+	AddResectionTracks(scene, {3, 4}, 40, rng);
+	AddResectionTracks(scene, {4, 5}, 40, rng);
+	AddResectionTracks(scene, {5, 6}, 40, rng);
+
+	AddResectionPair(scene, 2, 4, 300);
+	AddResectionPair(scene, 3, 4, 400);
+	AddResectionPair(scene, 3, 5, 200);
+	AddResectionPair(scene, 4, 5, 350);
+	AddResectionPair(scene, 5, 6, 300);
+	std::uniform_real_distribution<REAL> scaleDist(0.4, 2.5);
+	for (ImagePair& pair : scene.pairs)
+		pair.relativePose->C *= scaleDist(rng);
+
+	for (IIndex imageID = 4; imageID < 7; ++imageID)
+		scene.images[imageID].InvalidatePose();
+	scene.status.nCalibratedImages = 4;
+	TriangulateTracks(scene, false, 4.f, 1.f); // only the 150 tracks of images 0-3 can be
+}
+
+} // namespace
+
+bool ResectionRelativePoseFallbackTest()
+{
+	TD_TIMER_START();
+	std::mt19937 rng(20260908);
+
+	Scene scene;
+	std::vector<Pose3D> gtPoses;
+	BuildResectionFallbackScene(scene, gtPoses, rng);
+
+	// The composition the fallback relies on, stated on the scene's own known poses: a pair stores
+	// the transform from ID1 to ID2, so pose(ID2) = relative * pose(ID1) and pose(ID1) =
+	// relative^-1 * pose(ID2). Getting this backwards is what a wrong fallback would do, and the
+	// pose checks further down are its end-to-end proof.
+	{
+		const Pose3D relative = gtPoses[4] / gtPoses[3];
+		const Pose3D forward = relative * gtPoses[3];
+		const Pose3D backward = relative.Inverse() * gtPoses[4];
+		if (RotationErrorDeg(forward.R, gtPoses[4].R) > 1e-6 || norm(forward.C - gtPoses[4].C) > 1e-9 ||
+			RotationErrorDeg(backward.R, gtPoses[3].R) > 1e-6 || norm(backward.C - gtPoses[3].C) > 1e-9) {
+			VERBOSE("ResectionRelativePoseFallbackTest FAILED: the pair's relative pose does not compose into the "
+				"absolute poses it was computed from");
+			return false;
+		}
+	}
+
+	// The 40 tracks image 4 observes are shared with image 3 alone, so no image can be resected
+	unsigned correspondences = 0;
+	for (const Track& track : scene.tracks)
+		if (track.IsInlier())
+			for (const Observation& obs : track.observations)
+				if (obs.imageID >= 4)
+					++correspondences;
+	if (correspondences != 0) {
+		VERBOSE("ResectionRelativePoseFallbackTest FAILED: images 4-6 start with %u 2D-3D correspondences, expected none",
+			correspondences);
+		return false;
+	}
+
+	ResectionConfig config; // defaults, relativePoseFallback = true
+	Resection resection(scene, config);
+	if (!resection.RegisterImages()) {
+		VERBOSE("ResectionRelativePoseFallbackTest FAILED: the resection registered no image with the fallback on");
+		return false;
+	}
+	for (IIndex imageID = 4; imageID < 7; ++imageID) {
+		if (!scene.images[imageID].HasPose()) {
+			VERBOSE("ResectionRelativePoseFallbackTest FAILED: image %u was not registered with the fallback on", imageID);
+			return false;
+		}
+	}
+
+	// Images 4 and 5 each have two registered neighbours when their turn comes (4 through the pairs
+	// to 2 and 3, then 5 through the pairs to 3 and to the just registered 4), so the two rays fix
+	// their centre outright: their poses must come out at the ground truth, within 1 degree of
+	// rotation and 2% of the 5-unit scene extent (0.1) in position.
+	for (IIndex imageID = 4; imageID < 6; ++imageID) {
+		const double rotErr = RotationErrorDeg(scene.images[imageID].R, gtPoses[imageID].R);
+		const double posErr = norm(scene.images[imageID].C - gtPoses[imageID].C);
+		DEBUG("ResectionRelativePoseFallbackTest: image %u recovered %.4f deg, %.4f units (%.2f%% of the extent) off",
+			imageID, rotErr, posErr, posErr / RESECTION_ARC_EXTENT * 100);
+		if (rotErr > 1.0 || posErr > 0.02 * RESECTION_ARC_EXTENT) {
+			VERBOSE("ResectionRelativePoseFallbackTest FAILED: image %u is %.4f deg and %.4f units off the truth",
+				imageID, rotErr, posErr);
+			return false;
+		}
+	}
+
+	// Image 6 has the single registered neighbour 5, so its centre lies on the one ray that pair
+	// casts and its distance along it comes from the continuity prior (the median of image 5's
+	// baselines to images 3 and 4, 1.7365, against the true 0.8716): the rotation and the direction
+	// of the centre from image 5 are the truth, the length deliberately is not.
+	{
+		const double rotErr = RotationErrorDeg(scene.images[6].R, gtPoses[6].R);
+		const double dirErr = DirectionErrorDeg(scene.images[6].C - scene.images[5].C, gtPoses[6].C - gtPoses[5].C);
+		DEBUG("ResectionRelativePoseFallbackTest: image 6 recovered %.4f deg of rotation and %.4f deg of direction off, "
+			"at a baseline of %.4f against the true %.4f", rotErr, dirErr,
+			norm(scene.images[6].C - scene.images[5].C), norm(gtPoses[6].C - gtPoses[5].C));
+		if (rotErr > 1.0 || dirErr > 1.0) {
+			VERBOSE("ResectionRelativePoseFallbackTest FAILED: image 6 is %.4f deg of rotation and %.4f deg of direction "
+				"off the truth", rotErr, dirErr);
+			return false;
+		}
+	}
+
+	// A candidate whose rays cannot place a centre must not end the resection either: five cameras of
+	// the same arc, image 4 unregistered with two links, and pair (2,4)'s translation aimed along
+	// pair (3,4)'s so the two rays are exactly parallel and their closest point is undefined. The
+	// two-ray solve is refused and the one-ray prior takes over on the strongest link, (3,4): the
+	// rotation and the direction of the centre from image 3 are the truth, and the distance is the
+	// median baseline image 3 already has, which pair (1,3) makes 2*5*sin(10 deg) = 1.7365 against
+	// the true 0.8716.
+	{
+		Scene sceneParallel;
+		BuildResectionArc(sceneParallel, 5);
+		std::vector<Pose3D> gtParallel;
+		for (const Image& img : sceneParallel.images)
+			gtParallel.push_back(static_cast<const Pose3D&>(img));
+		AddResectionTracks(sceneParallel, {0, 1, 2, 3}, 150, rng);
+		AddResectionTracks(sceneParallel, {3, 4}, 40, rng);
+		AddResectionPair(sceneParallel, 1, 3, 100); // the only pair between two registered images
+		AddResectionPair(sceneParallel, 2, 4, 300);
+		AddResectionPair(sceneParallel, 3, 4, 400);
+		// image 2 places image 4's centre along the very direction image 3 does
+		ImagePair* pairParallel = sceneParallel.FindPair(2, 4);
+		pairParallel->relativePose->C = sceneParallel.images[2].R * (gtParallel[4].C - gtParallel[3].C);
+		std::uniform_real_distribution<REAL> scaleDist(0.4, 2.5);
+		for (ImagePair& pair : sceneParallel.pairs)
+			pair.relativePose->C *= scaleDist(rng); // lengths unusable, directions untouched
+		sceneParallel.images[4].InvalidatePose();
+		sceneParallel.status.nCalibratedImages = 4;
+		TriangulateTracks(sceneParallel, false, 4.f, 1.f);
+
+		ResectionConfig configParallel; // defaults
+		Resection resectionParallel(sceneParallel, configParallel);
+		resectionParallel.RegisterImages();
+		if (!sceneParallel.images[4].HasPose()) {
+			VERBOSE("ResectionRelativePoseFallbackTest FAILED: image 4 was not registered although one of its two "
+				"parallel rays could still place it");
+			return false;
+		}
+		const double rotErr = RotationErrorDeg(sceneParallel.images[4].R, gtParallel[4].R);
+		const double dirErr = DirectionErrorDeg(sceneParallel.images[4].C - sceneParallel.images[3].C,
+			gtParallel[4].C - gtParallel[3].C);
+		DEBUG("ResectionRelativePoseFallbackTest: image 4 on parallel rays recovered %.4f deg of rotation and %.4f deg "
+			"of direction off, at a baseline of %.4f against the true %.4f", rotErr, dirErr,
+			norm(sceneParallel.images[4].C - sceneParallel.images[3].C), norm(gtParallel[4].C - gtParallel[3].C));
+		if (rotErr > 1.0 || dirErr > 1.0) {
+			VERBOSE("ResectionRelativePoseFallbackTest FAILED: image 4 on parallel rays is %.4f deg of rotation and "
+				"%.4f deg of direction off the truth", rotErr, dirErr);
+			return false;
+		}
+	}
+
+	// With the fallback off the very same scene stops where the stall leaves it: 4 registered images
+	Scene sceneNoFallback;
+	std::vector<Pose3D> gtPosesNoFallback;
+	std::mt19937 rngNoFallback(20260908);
+	BuildResectionFallbackScene(sceneNoFallback, gtPosesNoFallback, rngNoFallback);
+	ResectionConfig configNoFallback;
+	configNoFallback.relativePoseFallback = false;
+	Resection resectionNoFallback(sceneNoFallback, configNoFallback);
+	if (resectionNoFallback.RegisterImages()) {
+		VERBOSE("ResectionRelativePoseFallbackTest FAILED: the resection registered an image with the fallback off");
+		return false;
+	}
+	unsigned registered = 0;
+	for (const Image& img : sceneNoFallback.images)
+		if (img.HasPose())
+			++registered;
+	if (registered != 4) {
+		VERBOSE("ResectionRelativePoseFallbackTest FAILED: %u images registered with the fallback off, expected 4",
+			registered);
+		return false;
+	}
+
+	VERBOSE("ResectionRelativePoseFallbackTest PASSED: three images with no 2D-3D correspondence registered from their "
+		"relative poses, and none of them without the fallback (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+namespace {
+
+// The five-camera scene of ResectionAcceptanceTest: images 0-3 registered with 150 triangulated
+// tracks, image 4 unregistered and observing 100 of those tracks. Only 20 of the 100 observations
+// are the projections a camera really has: they are the ones a camera 40 degrees further along the
+// arc would see, a decoy pose. The other 80 are random pixels. So the strongest consensus a robust
+// absolute pose estimator can find is 20 of 100 correspondences, at a pose 40 degrees away from
+// image 4's own -- exactly the shape of a misregistration: a small, self-consistent minority.
+// The verified pair (3,4) carries image 4's true relative pose to image 3.
+constexpr REAL RESECTION_DECOY_OFFSET = 40; // degrees between image 4's pose and the decoy one
+constexpr unsigned RESECTION_DECOY_CORRESPONDENCES = 20;
+constexpr unsigned RESECTION_RANDOM_CORRESPONDENCES = 80;
+
+void BuildResectionAcceptanceScene(Scene& scene, Pose3D& truePose, std::mt19937& rng)
+{
+	BuildResectionArc(scene, 5);
+	truePose = static_cast<const Pose3D&>(scene.images[4]);
+	AddResectionTracks(scene, {0, 1, 2, 3}, 150, rng);
+
+	// image 4's correspondences with the first 100 of those tracks
+	const Pose3D decoyPose = ResectionArcPose(4 * RESECTION_ARC_STEP + RESECTION_DECOY_OFFSET);
+	Image& img = scene.images[4];
+	static_cast<Pose3D&>(img) = decoyPose;
+	std::uniform_real_distribution<float> pixelX(10.f, 630.f), pixelY(10.f, 470.f);
+	for (unsigned i = 0; i < RESECTION_DECOY_CORRESPONDENCES + RESECTION_RANDOM_CORRESPONDENCES; ++i) {
+		Track& track = scene.tracks[i];
+		cv::Point2f pt(pixelX(rng), pixelY(rng));
+		if (i < RESECTION_DECOY_CORRESPONDENCES) {
+			const auto [proj, valid] = img.ProjectPoint(track.position);
+			ASSERT(valid && Image8U::isInside(proj, img.GetSize()));
+			pt = cv::Point2f((float)proj.x, (float)proj.y);
+		}
+		track.observations.emplace_back(IIndex(4), (uint32_t)img.keypoints.size());
+		img.keypoints.emplace_back(pt, 1.f);
+	}
+
+	static_cast<Pose3D&>(img) = truePose;
+	AddResectionPair(scene, 3, 4, 400);
+	img.InvalidatePose();
+	scene.status.nCalibratedImages = 4;
+	TriangulateTracks(scene, false, 4.f, 1.f);
+}
+
+} // namespace
+
+bool ResectionAcceptanceTest()
+{
+	TD_TIMER_START();
+
+	// With the defaults, the 20 of 100 inliers the estimator can muster are 20% of the
+	// correspondences, below the 25% minimum share and far below the 100 inliers that would waive
+	// it, so the pose is refused and the image stays unregistered
+	{
+		std::mt19937 rng(20260908);
+		Scene scene;
+		Pose3D truePose;
+		BuildResectionAcceptanceScene(scene, truePose, rng);
+		ResectionConfig config;
+		config.relativePoseFallback = false; // this test is about the acceptance of a resected pose alone
+		Resection resection(scene, config);
+		resection.RegisterImages();
+		if (scene.images[4].HasPose()) {
+			VERBOSE("ResectionAcceptanceTest FAILED: the pose was accepted with the default minimum inlier share, "
+				"%.2f deg off the truth", RotationErrorDeg(scene.images[4].R, truePose.R));
+			return false;
+		}
+	}
+
+	// Both rules off: the same pose is accepted, and it is the wrong one -- which is what makes the
+	// rules above and below the reason the image does not enter the model
+	{
+		std::mt19937 rng(20260908);
+		Scene scene;
+		Pose3D truePose;
+		BuildResectionAcceptanceScene(scene, truePose, rng);
+		ResectionConfig config;
+		config.relativePoseFallback = false;
+		config.minInlierRatio = 0.f;
+		config.maxRelativeRotationError = 180.f;
+		Resection resection(scene, config);
+		resection.RegisterImages();
+		if (!scene.images[4].HasPose()) {
+			VERBOSE("ResectionAcceptanceTest FAILED: the pose was refused with both acceptance rules off");
+			return false;
+		}
+		const double rotErr = RotationErrorDeg(scene.images[4].R, truePose.R);
+		DEBUG("ResectionAcceptanceTest: with both rules off the image registers %.2f deg off the truth", rotErr);
+		if (rotErr <= 15.0) {
+			VERBOSE("ResectionAcceptanceTest FAILED: the pose accepted with both rules off is only %.2f deg off the "
+				"truth, so it is not the misregistration the rules are meant to stop", rotErr);
+			return false;
+		}
+	}
+
+	// The ratio rule off but the relative-pose check on: the pose is 40 degrees away from the one
+	// its strongest verified pair to image 3 composes, and its 20% inlier share does not earn it the
+	// benefit of the doubt, so it is refused on that alone
+	{
+		std::mt19937 rng(20260908);
+		Scene scene;
+		Pose3D truePose;
+		BuildResectionAcceptanceScene(scene, truePose, rng);
+		ResectionConfig config;
+		config.relativePoseFallback = false;
+		config.minInlierRatio = 0.f;
+		Resection resection(scene, config);
+		resection.RegisterImages();
+		if (scene.images[4].HasPose()) {
+			VERBOSE("ResectionAcceptanceTest FAILED: the pose was accepted although it is %.2f deg away from the "
+				"rotation its pair composes", RotationErrorDeg(scene.images[4].R, truePose.R));
+			return false;
+		}
+	}
+
+	VERBOSE("ResectionAcceptanceTest PASSED: a pose supported by a fifth of its correspondences is refused, by the "
+		"inlier share and by the rotation of its strongest pair alike (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 // Test function for rotation estimation
 bool RotationEstimatorTest()
 {

@@ -287,6 +287,10 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::StarReferenceViewTest())
 				return false;
+			if (!SFM::ResectionRelativePoseFallbackTest())
+				return false;
+			if (!SFM::ResectionAcceptanceTest())
+				return false;
 			// Hierarchical SFM tests - Phase 1: Scene Clustering
 			if (!SFM::SceneClusterSingleClusterTest())
 				return false;

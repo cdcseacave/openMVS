@@ -278,6 +278,17 @@ bool TripletFilterTest();
 // views, which is the worst place to start.
 bool StarReferenceViewTest();
 
+// The incremental resection registers an image that has no 2D-3D correspondence at all from the
+// relative poses of its verified pairs to already registered images, instead of stopping there
+// (ResectionConfig::relativePoseFallback).
+bool ResectionRelativePoseFallbackTest();
+
+// A resected pose enters the model only when its support is credible: enough of its 2D-3D
+// correspondences agree with it (ResectionConfig::minInlierRatio / minInliersAbsolute), and a
+// weakly supported one also agrees with the rotation its strongest verified pair to a registered
+// image composes (ResectionConfig::maxRelativeRotationError).
+bool ResectionAcceptanceTest();
+
 // Test function for rotation estimation
 bool RotationEstimatorTest();
 

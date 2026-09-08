@@ -42,6 +42,17 @@ struct SFM_API ResectionConfig
 {
 	unsigned minCorrespondences{15};    // Minimum 2D-3D correspondences to attempt resection
 	unsigned minInliers{12};            // Minimum inliers to accept a pose
+	float minInlierRatio{0.25f};        // Minimum share of the 2D-3D correspondences that must be inliers for a pose to
+	                                    // be accepted; a smaller consensus can agree on a pose that is nowhere near the
+	                                    // image's true one (0 = disabled)
+	unsigned minInliersAbsolute{100};   // Inlier count from which the ratio above is waived: that many correspondences
+	                                    // agreeing on a pose vouch for it whatever share of the total they are
+	float maxRelativeRotationError{15.f}; // Maximum angle (degrees) between the estimated rotation and the one composed
+	                                    // from the strongest verified pair to an already registered image; checked only
+	                                    // for a pose whose inlier share is below half, so that a well supported pose
+	                                    // overrules a possibly wrong pair (0 = disabled)
+	bool relativePoseFallback{true};    // Register one image from its relative poses to registered images when no image
+	                                    // reaches minCorrespondences, instead of stopping there
 	unsigned maxLocalWindow{25};        // Max images in local BA window (0 = all neighbors)
 	unsigned triangulateEvery{0};       // Run triangulation every N registered images (0 = disabled)
 	unsigned localBAEvery{10};          // Run local BA every N registered images (0 = disabled)
@@ -126,6 +137,19 @@ private:
 
 	IIndexArr SelectNextImages(IIndexScores& unregistered) const;
 	std::pair<unsigned, unsigned> RegisterImage(IIndex imageID);
+
+	/**
+	 * @brief Set the pose of one unregistered image from its relative poses to registered images
+	 *
+	 * Used when no image has enough 2D-3D correspondences left: the tracks of the remaining images
+	 * are two-view tracks with a single registered image, which cannot be triangulated, while the
+	 * verified pairs joining those images to registered ones do carry a relative pose. Registering
+	 * one such image turns its two-view tracks into 3D points, which gives the next selection the
+	 * correspondences it was missing.
+	 * @param unregistered Images still without a pose
+	 * @return ID of the image that was registered, NO_ID when none could be
+	 */
+	IIndex RegisterFromRelativePoses(const IIndexScores& unregistered);
 
 	IIndexArr BuildLocalWindow(const IIndexArr& imageIDs) const;
 };
