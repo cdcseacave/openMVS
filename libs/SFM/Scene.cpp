@@ -726,19 +726,13 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	// largest ceiling piece), filled in below; empty, every image
 	IIndexArr seedViews;
 
-	// A forced focal length (--focal-length) is fixed everywhere below it, not just at import:
-	// cleared once, here, from every bundle-adjustment configuration this function and its
-	// helpers derive from (the star initializer's own refinement, the resection's local/full
-	// configs, the final one and the uncertainty one) instead of at each call site. focalFixed
-	// rides along on cfg.baConfig itself, so it also survives the RefineMainIntrinsics() /
-	// RefineExtendedIntrinsics() calls the resection makes later on its own derived copies
-	// (ResectionConfig::DeriveBAConfigs, Resection::RegisterImages).
+	// A forced focal length (--focal-length) is a value the star initializer keeps: a star of a
+	// few views cannot improve it and can bend it. The global bundle adjustments refine it like
+	// any other focal once the model is large enough to hold it.
 	ReconstructionConfig cfg = config;
 	if (cfg.importCfg.focalLength > 0) {
-		cfg.baIntrinsicFlags &= ~(ReconstructionConfig::INTRINSIC_FOCAL_LENGTH | ReconstructionConfig::INTRINSIC_FOCAL_LENGTH_ASPECT_RATIO);
-		cfg.baConfig.focalFixed = true;
 		cfg.initCfg.refineFocalLength = false;
-		VERBOSE("Focal length forced at %g px: kept fixed in bundle adjustment", cfg.importCfg.focalLength);
+		VERBOSE("Focal length forced at %g px: kept by the star initializer, refined by bundle adjustment", cfg.importCfg.focalLength);
 	}
 
 	#if 1

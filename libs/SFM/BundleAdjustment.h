@@ -44,13 +44,6 @@ struct SFM_API BAConfig
 	bool refineTangentialDistortion = false;   // Refine p1, p2
 	bool refineRadialDistortion456 = false;    // Refine k4, k5, k6
 
-	// A forced or otherwise known focal length that must stay untouched: keeps refineFocalLength
-	// and refineFocalLengthAspectRatio off through every call to the Refine*Intrinsics() helpers
-	// below, including calls made later on a config copied from this one (a caller that enables
-	// main/extended intrinsics refinement a second time on its own derived copy, e.g. the
-	// resection's periodic full bundle adjustment, must not re-open the focal by doing so)
-	bool focalFixed = false;
-
 	// GPS position constraints (weight = 0 disables)
 	double gpsPositionWeight = 0.0;     // Horizontal GPS constraint weight
 	double gpsPositionWeightZ = 0.0;    // Vertical GPS constraint weight
@@ -80,10 +73,9 @@ struct SFM_API BAConfig
 	unsigned numThreads = 0;         // Number of threads (0 = auto)
 	double functionTolerance = 1e-6; // Convergence tolerance
 
-	// enable all intrinsic refinement flags, except the focal length when focalFixed is set
+	// enable all intrinsic refinement flags
 	void RefineMainIntrinsics() {
-		if (!focalFixed)
-			refineFocalLength = true;
+		refineFocalLength = true;
 		refineRadialDistortion123 = true;
 	}
 	void RefineExtendedIntrinsics() {
@@ -93,8 +85,7 @@ struct SFM_API BAConfig
 	}
 	void RefineAllIntrinsics() {
 		RefineExtendedIntrinsics();
-		if (!focalFixed)
-			refineFocalLengthAspectRatio = true;
+		refineFocalLengthAspectRatio = true;
 		refineRadialDistortion456 = true;
 	}
 
