@@ -1039,6 +1039,125 @@ learned methods, one model per run: within 5 of Doppelgangers++'s larger Radclif
 on the church, 20 and 13 short on the Arc and Nevsky. Run-to-run variation of the matcher moves the
 large collections by a few images (Arc 410 at the same rule on the j binary, 403 here).
 
+### 5.10 The default-on campaign: the keep mode on scenes with no repeated structure and on the ambiguous sets (2026-09-07)
+
+Two questions, answered on frozen builds of the branch: does the filter, on by default, leave a
+scene with no repeated structure alone -- the campaign's bar is that no capture loses more than 2 %
+of its registered images or 5 % of its median rotation accuracy -- and what does it still do for a
+collection with repeated structure? Every arm reconstructs its scene's saved unfiltered matched
+scene (`scene_pre_reconstruction.sfm`, written by the base arm at verbosity 3), so the arms differ
+only in the filter; `final-nofilter` is that scene reconstructed with the filter off and is the
+baseline every arm is read against (a saved scene reconstructs a few images apart from the
+in-process run, and two reconstructions of the same scene differ by the bundle adjustment's
+run-to-run variance: on Truck the camera centres of the base arm and of `final-nofilter` differ by
+up to 0.24 scene units, those of `final-nofilter` and the default by 0.07). Runs
+`openmvs-triplet-default-20260907-<arm>` under each normal scene and `openmvs-disambig-20260907-<arm>`
+under each ambiguous set; the evaluation tables in `summary-run5..8.log` and the verdicts in
+`verdict-final-<arm>-20260907.log` beside the tools (`.../openmvs-triplet-default-20260907-tools/`).
+
+**The keep mode as first shipped (a556a7d, snapshot `bin-triplet-keep4-20260907`; every scored pair
+below the threshold a candidate, §3.14) on the Tanks and Temples orbits**, arm `final-keep` against
+`final-nofilter`, rotation error median / 90th percentile in degrees against the COLMAP reference:
+
+| scene | images | pairs | at the ceiling | kept | no filter | keep mode |
+|---|---|---|---|---|---|---|
+| Truck | 251 | 6054 | tau 0.520, 1 image short of the floor | 2327 | 0.141 / 0.159 | 0.157 / 0.183 (+11 %) |
+| Ignatius | 263 | 6508 | 0.486, 9 short | 2304 | 0.110 / 0.117 | 0.104 / 0.114 |
+| Meetingroom | 371 | 8735 | 0.457, 76 short | 3868 | 0.138 / 0.151 | 0.148 / 0.167 (+7 %) |
+| Caterpillar | 383 | 9483 | 0.439, 83 short | 3598 | 0.111 / 0.128 (376 registered) | 0.127 / 0.147 (374) (+14 %) |
+| Barn | 410 | 9785 | 0.428, 59 short | 3196 | 0.113 / 0.150 | 0.124 / 0.175 (+10 %) |
+
+The floor at 8,000 matches keeps a third more pairs and halves the loss (Barn 0.115, Truck no
+better); on Meetingroom it fits no threshold and keeps everything. Every one of these graphs is
+one piece at the ceiling (the largest piece holds all 251, 263, 371, 383 and 410 images), and the
+pairs the ceiling names are the wide-baseline true pairs: on Truck 3,544 of the 5,849 true pairs
+(61 %) score below the ceiling, 2,390 of them at a ray angle of 10 degrees or more. That is the
+measurement behind §3.15.
+
+**The keep mode as shipped (3510476, snapshot `bin-triplet-keep5-20260907`; the candidates only the
+pairs joining pieces the ceiling keeps apart)**, arm `final-bridges`, against `final-nofilter`:
+
+| scene | images in the graph | what the filter did | registered | rotation median / p90 |
+|---|---|---|---|---|
+| Truck | 251 | one piece: nothing removed (6054/6054) | 251 / 251 | 0.141 / 0.159 both |
+| Meetingroom | 371 | one piece: nothing removed (8735/8735) | 371 / 371 | 0.138 / 0.151 both |
+| 2678a364 | 148 | 8 pieces, 11 joining pairs, 134 images short: fits no threshold (791/791) | 95 / 95 | 0.402 / 0.704 both |
+| e00da096 | 168 | 7 pieces, 11 joins, 159 short: fits none (885/885) | 92 / 92 | 1.033 / 1.369 both |
+| 5992d620 | 200 | 7 pieces, 420 joins, 144 short: fits none (2152/2152) | 192 / 191 | 0.616 / 0.742 against 0.610 / 0.711 |
+| 8d2f4877 | 205 | 5 pieces, 29 joins, 138 short: fits none (2628/2628) | 199 / 199 | 0.307 / 0.745 against 0.302 / 0.742 |
+| 5828945d | 231 | 6 pieces, 21 joins, 195 short: fits none (1444/1444) | 33 / 33 | 1.258 / 1.492 both |
+| 16d09ada | 242 | one piece: nothing removed (3491/3491) | 233 / 233 | 0.321 / 0.598 against 0.311 / 0.600 |
+| 5ada248e | 501 | 13 pieces, 19 joins, 426 short: fits none (3347/3347) | 207 / 207 | 0.492 / 0.719 both |
+| 17ac94cc | 534 | 10 pieces, 8 joins, 401 short: fits none (3887/3887) | 274 / 274 | 0.690 / 1.043 both |
+
+Nothing removed on any of them; the differences are the run-to-run variance above. Ignatius,
+Caterpillar and Barn were not re-run under the final rule: they are one piece at the ceiling like
+Truck and Meetingroom, and a graph in one piece returns before any candidate exists. The earlier
+keep rule had descended on 16d09ada (to 0.019, removing 95 of 3,491 pairs) and cost Truck,
+Meetingroom, Caterpillar and Barn 7-14 % of their rotation accuracy; the final rule costs nothing
+anywhere, which is the bar.
+
+**The ambiguous sets**, the same three arms on the snapshot-m base scenes (every collection matched
+exhaustively; ToH and indoor by vocabulary tree at 50 pairs per image; Radcliffe's base is the
+re-run after the crash of §5.9's chain, a different matching from the one §5.9 reports), against
+the reference models of §5.9. The two-face collections' faces never co-observe, so a model holding
+cameras of both references joined them through false pairs ("joined"); a video set's fold is
+counted in fold pairs (`collapse_eval.py`: frames within one median step of each other and five or
+more apart); "misplaced" is `model_compare.py`'s count (view 30 degrees or 0.5 radius off) against
+the named reference. The default's column gives the pieces the ceiling leaves with the largest,
+the candidates, and what went:
+
+| set | images | no filter | default (keep mode) | cutting rule (`--triplet-cut`) |
+|---|---|---|---|---|
+| church_on_spilled_blood | 278 | 272, both faces: joined | 20 pieces (240 of 277), 2313 candidates, 872 kept for the floor, 1441 of 22996 removed; 275, both faces: joined | 2917 kept; 142, one-sided (127 of 137 common) |
+| brandenburg_gate | 176 | 173 (151 + 19): joined | 20 pieces (145 of 175), 1655 candidates, 536 kept, 1119 of 11880 removed; 171 (151 + 17): joined | 1155 kept; 145, one-sided (144 of 151) |
+| radcliffe_camera | 283 | 277 (183 + 93): joined | 20 pieces (244 of 281), 2843 candidates, 430 kept, 2413 of 22517 removed; 278 (184 + 93): joined | the ceiling leaves both sides in one piece of 244 on this matching; 4884 kept; 65, one-sided on the smaller side (64 of 94), the reconstruction stalling in the thinned piece (§5.9's matching split at the ceiling, largest 181, and registered 181) |
+| arc_de_triomphe | 435 | 423, folded (119 misplaced, view p90 150 deg) | 11 pieces (414 of 433), 363 candidates, 295 kept, 68 of 27108 removed; 418, folded (121 misplaced, view p90 149) | 8377 kept; 400, unfolded (27 misplaced, view p90 4.9) |
+| big_ben | 403 | 395, folded (240 misplaced, view p90 144) | 7 pieces (396 of 402), 177 candidates, 18 of 35922 removed; 395, folded (242, 145) | 12409 kept; 379, folded (226, 140; §5.8) |
+| alexander_nevsky_cathedral | 449 | 440, folded (277 misplaced, view p50 78) | 14 pieces (434 of 447), 1403 candidates, 458 kept, 945 of 68071 removed; 444, folded (275, view p50 77) | 17229 kept; 432, unfolded (37 misplaced, view p90 9.1) |
+| street | 19 | 19, 10 misplaced | 3 pieces (9 of 19), 111 candidates, 8 kept, 68 of 171 kept in all; 19, 4 misplaced | 20 of 171 kept; 19, 0 misplaced |
+| cereal | 25 | 25, 10 misplaced, folded (view p90 72) | 8 pieces (5 of 25), 255 candidates, 19 kept, 60 of 296 kept in all; 25, 4 misplaced, view p90 5.4 | 64 of 296; 25, 0 misplaced |
+| cup | 64 | 64, 28 misplaced, folded (view p90 158) | 2 pieces (52 of 64), 624 candidates, 1 kept, 1390 of 2013 kept in all; 64, 14 misplaced, still folded (view p90 157) | 69 of 2013; 52, 0 misplaced, 12 images out |
+| books | 21 | 21, spread 0.177, 7 fold pairs | 4 pieces (7 of 21), 152 candidates, 5 kept, 62 of 209 in all; 21, spread 0.378, 2 fold pairs | 47 of 209; 21, 0.378 / 2 |
+| desk | 31 | 31, spread 0.246, 31 fold pairs | 6 pieces (12 of 31), 320 candidates, 12 kept, 131 of 439 in all; 31, spread 0.231, 31 fold pairs | 49 of 439; 31, 0.371 / 23 |
+| oats | 23 | 23, spread 0.227, 0 fold pairs | 6 pieces (8 of 23), 194 candidates, 24 kept, 78 of 248 in all; 23, spread 0.462, 0 | 187 of 248; 22, 0.293 / 0 |
+| ToH | 338 | 338, 804 fold pairs (folded) | one piece: nothing removed; 338, 804 fold pairs | 2891 of 8449; 338, 3 fold pairs (unfolded) |
+| indoor | 153 | 152 | one piece: nothing removed; 152 | 899 of 3825; 152 |
+
+Reading it. The keep mode leaves a scene in one piece alone -- ToH, indoor and every normal scene
+-- and on a collection the ceiling splits it removes the joins the graph can spare; its repair
+then keeps every component of the unfiltered graph whole, so a two-faced building keeps its
+best-scoring joins (through the floor: the images short of it retain their strongest candidates,
+and those are the doppelganger joins) and reconstructs with both faces in one model, as without
+the filter. Arc and Nevsky are nearly one piece at the ceiling (414 of 433 and 434 of 447 images in
+the largest) with their thousands of false pairs inside it, where the rule does not reach, and they
+fold as without the filter. The video sets with repeated objects gain: street, cereal and books lose
+most of their misplacements or fold pairs, cup half of them, desk none; the cutting rule resolves
+all but desk fully at the cost of cup's 12 images. The cutting rule's own numbers reproduce §5.9 on
+this base within a few images (church 142 against 143, Brandenburg 145, Arc 400 against 403, Nevsky
+432 against 434, Big Ben 379 against 385) except on Radcliffe, whose re-matched graph the ceiling
+no longer splits: a fragility of the cutting rule on that collection, not of this change.
+
+What the ceiling actually removes, from the labelled exports (`pair_truth.csv`, the truth from the
+reference poses by optical-axis angle): true pairs below the ceiling Truck 61 %, Meetingroom 63 %,
+Arc 73 %, Big Ben 75 %, Nevsky 86 %, church 86 %, cup 92 %; false pairs below it 98-100 %
+everywhere. The threshold is blunt on every graph; a collection at 62-152 verified pairs per image
+survives losing three quarters of its true pairs by redundancy, an orbit at 24 pairs per image
+loses its wide baselines and 7-14 % of its accuracy. The one cue named as the fix in the design
+note -- the strength normalised by the graph's own yield envelope at the pair's ray angle, so a
+wide-baseline pair stops losing to the consecutive pair in every triangle -- was replayed offline
+on the same exports (`yield_sim.py` beside the tools; the replay reproduces the run's score to 3e-6
+on the video sets once the yield gate is included): at the 90th-percentile envelope Truck's share
+of true pairs below the ceiling moves from 61 % to 50 % and Meetingroom's from 63 % to 49 %, Arc's
+false share stays at 97.5 %, and the church's two faces merge into one piece at the ceiling (the
+largest 148 to 261 on that export). It is not a fix, and no other pairwise cue is pending.
+
+The decision this settles: the filter ships on, in the keep mode, because it costs nothing on a
+scene the ceiling leaves in one piece or a graph that fits no threshold -- every scene with no
+repeated structure measured -- and helps the small video sets; a collection with a symmetric
+building, or a video orbit of a symmetric object, is run with `--triplet-cut`, which unfolds it at
+the price the orbits would pay.
+
 ## 6. Risks
 
 - **The connectivity-driven threshold reconnects through a doppelganger when the true junction is
