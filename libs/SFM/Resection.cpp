@@ -486,9 +486,9 @@ bool Resection::RegisterImages()
 			// valid view keeps the position the previous BA refined instead of being reset to a linear solve
 			FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
 			TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold);
-			if (config.minRefineExtIntrs > 0 && scene.status.nCalibratedImages + registeredCount >= config.minRefineExtIntrs)
-				config.fullBAConfig.RefineExtendedIntrinsics();
-			BundleAdjustment::Adjust(scene, config.fullBAConfig);
+			const bool refineExtended = config.minRefineExtIntrs > 0 &&
+				scene.status.nCalibratedImages + registeredCount >= config.minRefineExtIntrs;
+			BundleAdjustment::Adjust(scene, refineExtended ? config.extendedBAConfig : config.fullBAConfig);
 			FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
 			lastRegistered.clear();
 			avgInliersRatio.Clear();
@@ -574,9 +574,8 @@ bool Resection::RegisterImages()
 	// Full BA after all images are registered (nothing changed if none were)
 	if (registeredCount > 0) {
 		TriangulateTracks(scene, false, config.maxReprojError, config.minAngleThreshold);
-		config.fullBAConfig.maxIterations = 100;
-		config.fullBAConfig.RefineExtendedIntrinsics();
-		BundleAdjustment::Adjust(scene, config.fullBAConfig);
+		config.extendedBAConfig.maxIterations = 100;
+		BundleAdjustment::Adjust(scene, config.extendedBAConfig);
 		FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
 	}
 

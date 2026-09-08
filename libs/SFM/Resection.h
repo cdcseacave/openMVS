@@ -69,8 +69,12 @@ struct SFM_API ResectionConfig
 	float multDepthNear{0.05f};         // Near depth threshold multiplier
 	float multDepthFar{20.f};           // Far depth threshold multiplier
 	RansacOptions ransac;               // RANSAC options for absolute pose estimation
-	BAConfig localBAConfig;             // Local BA settings (incremental)
-	BAConfig fullBAConfig;              // Full BA settings (global)
+	BAConfig localBAConfig;             // Local BA settings (incremental); never refines intrinsics
+	BAConfig fullBAConfig;              // Full BA settings (global), restricted to the main-set intrinsics
+	                                     // (focal length, k1, k2) the reconstruction's flags allow
+	BAConfig extendedBAConfig;          // Same as fullBAConfig, but with every intrinsic the reconstruction's
+	                                     // flags allow, main and extended alike; used once minRefineExtIntrs
+	                                     // images are registered, and for the final solve
 
 	ResectionConfig() {
 		// Robust absolute pose estimation
@@ -82,21 +86,33 @@ struct SFM_API ResectionConfig
 		DeriveBAConfigs(BAConfig());
 	}
 
-	// Derive localBAConfig/fullBAConfig from the scene's configured BAConfig (dense-observation
-	// weight, GPS weights, keypoint-confidence gating, ...): copy it, then reapply resection's own
-	// local overrides (iteration budget, robust threshold, intrinsics refinement) on top, so every
-	// field the caller set on the base config reaches both bundle adjustments unchanged.
+	// Derive localBAConfig/fullBAConfig/extendedBAConfig from the scene's configured BAConfig
+	// (dense-observation weight, GPS weights, keypoint-confidence gating, ...): copy it, then reapply
+	// resection's own local overrides (iteration budget, robust threshold) on top, so every field the
+	// caller set on the base config reaches every bundle adjustment unchanged. The resection never
+	// turns on an intrinsic the reconstruction's flags did not already ask for: fullBAConfig keeps only
+	// whichever of the main-set intrinsics (focal length, k1, k2) baseCfg has, while extendedBAConfig
+	// keeps baseCfg's intrinsic flags as given, main and extended alike.
 	void DeriveBAConfigs(const BAConfig& baseCfg) {
-		// Local BA defaults (fast)
+		// Local BA defaults (fast); never refines intrinsics
 		localBAConfig = baseCfg;
 		localBAConfig.maxIterations = 20;
 		localBAConfig.robustThreshold = 2.f;
 
-		// Full BA defaults (stronger)
+		// Full BA defaults (stronger), main-set intrinsics only
 		fullBAConfig = baseCfg;
 		fullBAConfig.maxIterations = 40;
 		fullBAConfig.robustThreshold = 2.f;
-		fullBAConfig.RefineMainIntrinsics();
+		fullBAConfig.refineFocalLengthAspectRatio = false;
+		fullBAConfig.refinePrincipalPoint = false;
+		fullBAConfig.refineRadialDistortion3 = false;
+		fullBAConfig.refineTangentialDistortion = false;
+		fullBAConfig.refineRadialDistortion456 = false;
+
+		// Extended BA: same solver settings, every intrinsic flag baseCfg allows
+		extendedBAConfig = baseCfg;
+		extendedBAConfig.maxIterations = 40;
+		extendedBAConfig.robustThreshold = 2.f;
 	}
 };
 

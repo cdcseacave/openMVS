@@ -114,17 +114,17 @@ struct SFM_API ReconstructionConfig {
 		INTRINSIC_FOCAL_LENGTH = 1 << 0,              // Refine fx, fy
 		INTRINSIC_FOCAL_LENGTH_ASPECT_RATIO = 1 << 1, // Refine fx, fy while keeping aspect ratio constant
 		INTRINSIC_PRINCIPAL_POINT = 1 << 2,           // Refine cx, cy
-		INTRINSIC_RADIAL_DIST_123 = 1 << 3,           // Refine k1, k2, k3
+		INTRINSIC_RADIAL_DIST_12 = 1 << 3,            // Refine k1, k2
 		INTRINSIC_TANGENTIAL_DIST = 1 << 4,           // Refine p1, p2
 		INTRINSIC_RADIAL_DIST_456 = 1 << 5,           // Refine k4, k5, k6
-		INTRINSIC_MAIN = INTRINSIC_FOCAL_LENGTH | INTRINSIC_RADIAL_DIST_123,
-		INTRINSIC_MAIN_EXTRA = INTRINSIC_FOCAL_LENGTH | INTRINSIC_RADIAL_DIST_123 |
+		INTRINSIC_RADIAL_DIST_3 = 1 << 6,             // Refine k3
+		INTRINSIC_MAIN = INTRINSIC_FOCAL_LENGTH | INTRINSIC_RADIAL_DIST_12,
+		INTRINSIC_MAIN_EXTRA = INTRINSIC_MAIN | INTRINSIC_RADIAL_DIST_3 |
 						INTRINSIC_PRINCIPAL_POINT | INTRINSIC_TANGENTIAL_DIST,
-		INTRINSIC_ALL = INTRINSIC_FOCAL_LENGTH | INTRINSIC_FOCAL_LENGTH_ASPECT_RATIO |
-						INTRINSIC_PRINCIPAL_POINT | INTRINSIC_RADIAL_DIST_123 |
-						INTRINSIC_TANGENTIAL_DIST | INTRINSIC_RADIAL_DIST_456
+		INTRINSIC_ALL = INTRINSIC_MAIN_EXTRA | INTRINSIC_FOCAL_LENGTH_ASPECT_RATIO |
+						INTRINSIC_RADIAL_DIST_456
 	};
-	unsigned baIntrinsicFlags{INTRINSIC_MAIN_EXTRA}; // which intrinsics to refine
+	unsigned baIntrinsicFlags{INTRINSIC_MAIN}; // which intrinsics to refine
 	BAConfig baConfig;  // detailed BA configuration
 
 	float thAlignGPS{5.f}; // threshold for aligning to GPS (meters)
@@ -139,6 +139,10 @@ struct SFM_API ReconstructionConfig {
 			 importCfg.importPosesMode == PoseImportMode::POSES);
 	}
 };
+
+// Translate ReconstructionConfig's intrinsic flags (baIntrinsicFlags) into the matching
+// bundle-adjustment switches on the given BAConfig
+SFM_API void SetBAIntrinsicFlags(BAConfig& baCfg, unsigned baIntrinsicFlags);
 
 
 // Scene contains all data for a Structure-from-Motion reconstruction:

@@ -40,9 +40,10 @@ struct SFM_API BAConfig
 	bool refineFocalLength = false;            // Refine fx, fy
 	bool refineFocalLengthAspectRatio = false; // Refine fx, fy while keeping aspect ratio constant
 	bool refinePrincipalPoint = false;         // Refine cx, cy
-	bool refineRadialDistortion123 = false;    // Refine k1, k2, k3
+	bool refineRadialDistortion12 = false;     // Refine k1, k2
 	bool refineTangentialDistortion = false;   // Refine p1, p2
 	bool refineRadialDistortion456 = false;    // Refine k4, k5, k6
+	bool refineRadialDistortion3 = false;      // Refine k3
 
 	// GPS position constraints (weight = 0 disables)
 	double gpsPositionWeight = 0.0;     // Horizontal GPS constraint weight
@@ -76,10 +77,11 @@ struct SFM_API BAConfig
 	// enable all intrinsic refinement flags
 	void RefineMainIntrinsics() {
 		refineFocalLength = true;
-		refineRadialDistortion123 = true;
+		refineRadialDistortion12 = true;
 	}
 	void RefineExtendedIntrinsics() {
 		RefineMainIntrinsics();
+		refineRadialDistortion3 = true;
 		refinePrincipalPoint = true;
 		refineTangentialDistortion = true;
 	}
@@ -92,8 +94,8 @@ struct SFM_API BAConfig
 	// check if any intrinsic refinement is enabled
 	bool IsRefiningIntrinsics() const {
 		return refineFocalLength || refinePrincipalPoint ||
-		       refineRadialDistortion123 || refineTangentialDistortion ||
-		       refineRadialDistortion456;
+		       refineRadialDistortion12 || refineRadialDistortion3 ||
+		       refineTangentialDistortion || refineRadialDistortion456;
 	}
 	// check if any pose component is being refined
 	bool IsRefiningPoses() const {

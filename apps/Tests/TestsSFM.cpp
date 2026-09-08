@@ -4953,6 +4953,79 @@ bool DenseObservationWeightEstimateTest()
 /*----------------------------------------------------------------*/
 
 
+// Pins SetBAIntrinsicFlags (ReconstructionConfig::IntrinsicFlags -> BAConfig) and
+// ResectionConfig::DeriveBAConfigs, the two places the reconstruction's intrinsic flags turn
+// into the bundle-adjustment switches that are actually solved.
+bool BAIntrinsicFlagsTest()
+{
+	TD_TIMER_START();
+
+	// INTRINSIC_MAIN: focal length and k1, k2 only
+	{
+		BAConfig baCfg;
+		SetBAIntrinsicFlags(baCfg, ReconstructionConfig::INTRINSIC_MAIN);
+		if (!baCfg.refineFocalLength || !baCfg.refineRadialDistortion12 ||
+			baCfg.refineFocalLengthAspectRatio || baCfg.refinePrincipalPoint ||
+			baCfg.refineRadialDistortion3 || baCfg.refineTangentialDistortion ||
+			baCfg.refineRadialDistortion456) {
+			VERBOSE("BAIntrinsicFlagsTest FAILED: INTRINSIC_MAIN did not set exactly focal length and k1, k2");
+			return false;
+		}
+	}
+
+	// INTRINSIC_MAIN_EXTRA: adds k3, the principal point and the tangential terms
+	{
+		BAConfig baCfg;
+		SetBAIntrinsicFlags(baCfg, ReconstructionConfig::INTRINSIC_MAIN_EXTRA);
+		if (!baCfg.refineFocalLength || !baCfg.refineRadialDistortion12 ||
+			!baCfg.refineRadialDistortion3 || !baCfg.refinePrincipalPoint ||
+			!baCfg.refineTangentialDistortion ||
+			baCfg.refineFocalLengthAspectRatio || baCfg.refineRadialDistortion456) {
+			VERBOSE("BAIntrinsicFlagsTest FAILED: INTRINSIC_MAIN_EXTRA did not set focal length, k1, k2, "
+				"k3, the principal point and the tangential terms");
+			return false;
+		}
+	}
+
+	// INTRINSIC_NONE: nothing refined
+	{
+		BAConfig baCfg;
+		SetBAIntrinsicFlags(baCfg, ReconstructionConfig::INTRINSIC_NONE);
+		if (baCfg.IsRefiningIntrinsics()) {
+			VERBOSE("BAIntrinsicFlagsTest FAILED: INTRINSIC_NONE left an intrinsic refined");
+			return false;
+		}
+	}
+
+	// ResectionConfig::DeriveBAConfigs, given a reconstruction config that allows every intrinsic:
+	// fullBAConfig is restricted to the main set, extendedBAConfig keeps all of it
+	{
+		BAConfig baseCfg;
+		SetBAIntrinsicFlags(baseCfg, ReconstructionConfig::INTRINSIC_MAIN_EXTRA);
+		ResectionConfig resectionCfg;
+		resectionCfg.DeriveBAConfigs(baseCfg);
+		const BAConfig& fullCfg = resectionCfg.fullBAConfig;
+		const BAConfig& extCfg = resectionCfg.extendedBAConfig;
+		if (!fullCfg.refineFocalLength || !fullCfg.refineRadialDistortion12 ||
+			fullCfg.refineRadialDistortion3 || fullCfg.refinePrincipalPoint ||
+			fullCfg.refineTangentialDistortion) {
+			VERBOSE("BAIntrinsicFlagsTest FAILED: fullBAConfig kept an extended-set intrinsic");
+			return false;
+		}
+		if (!extCfg.refineFocalLength || !extCfg.refineRadialDistortion12 ||
+			!extCfg.refineRadialDistortion3 || !extCfg.refinePrincipalPoint ||
+			!extCfg.refineTangentialDistortion) {
+			VERBOSE("BAIntrinsicFlagsTest FAILED: extendedBAConfig dropped an intrinsic the reconstruction allowed");
+			return false;
+		}
+	}
+
+	VERBOSE("BAIntrinsicFlagsTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+
 // Pose-guided selection must still produce candidate pairs for images absent from the pose file.
 bool KnownPosePairSelectionTest()
 {
@@ -6752,7 +6825,7 @@ bool PipelineTest()
 
 		BAConfig cfg;
 		cfg.maxIterations = 40;
-		cfg.refineRadialDistortion123 = true;
+		cfg.refineRadialDistortion12 = true;
 		cfg.refinePosesRotation = cfg.refinePosesPosition = false;  // Fix poses to GT
 		cfg.refinePoints = false; // Fix points to GT
 		if (!BundleAdjustment::Adjust(scene, cfg)) {
@@ -7292,6 +7365,33 @@ bool TripletStarInitTest()
 		cam.k1, k1Err, cam.k2, k2Err);
 	if (k1Err > 0.01 || k2Err > 0.01) { // Allow 0.01 absolute error in distortion
 		VERBOSE("TripletStarInitTest: distortion error too large (k1_err=%.6f, k2_err=%.6f)", k1Err, k2Err);
+		return false;
+	}
+
+	// GenerateTestScene's perturbation mask has no entry for k3 (ground truth k3 is 0), so perturb
+	// it by hand: a further main-set solve must leave it alone (k3 is not in the main set), and only
+	// a following extended-set solve, which does refine it, must bring it back near the truth
+	cam.k3 = 0.05;
+	BAConfig mainBaConfig;
+	mainBaConfig.RefineMainIntrinsics();
+	if (!BundleAdjustment::Adjust(scene, mainBaConfig)) {
+		VERBOSE("TripletStarInitTest: post-star bundle adjustment with a perturbed k3 failed");
+		return false;
+	}
+	if (cam.k3 != 0.05) {
+		VERBOSE("TripletStarInitTest: k3 changed by the main-set solve (0.05 -> %.9g)", cam.k3);
+		return false;
+	}
+	BAConfig extendedBaConfig = mainBaConfig;
+	extendedBaConfig.RefineExtendedIntrinsics();
+	if (!BundleAdjustment::Adjust(scene, extendedBaConfig)) {
+		VERBOSE("TripletStarInitTest: post-star extended bundle adjustment failed");
+		return false;
+	}
+	const REAL k3Err = ABS(cam.k3 - gt_camera.k3);
+	DEBUG("TripletStarInitTest: Post-star extended BA distortion: k3=%.6f (err=%.6f)", cam.k3, k3Err);
+	if (k3Err > 0.01) { // Allow 0.01 absolute error in distortion
+		VERBOSE("TripletStarInitTest: k3 error too large (err=%.6f)", k3Err);
 		return false;
 	}
 

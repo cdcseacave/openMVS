@@ -805,9 +805,11 @@ bool BundleAdjustment::Adjust()
 			constantParams.push_back(2);  // cx
 			constantParams.push_back(3);  // cy
 		}
-		if (!config.refineRadialDistortion123) {
+		if (!config.refineRadialDistortion12) {
 			constantParams.push_back(4);  // k1
 			constantParams.push_back(5);  // k2
+		}
+		if (!config.refineRadialDistortion3) {
 			constantParams.push_back(6);  // k3
 		}
 		if (!config.refineTangentialDistortion) {

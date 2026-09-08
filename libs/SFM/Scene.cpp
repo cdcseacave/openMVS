@@ -46,14 +46,15 @@ using namespace SFM;
 DEFINE_LOG_NAME(lt, _T("Scene   "));
 
 // Translate the reconstruction intrinsic flags into the matching bundle-adjustment switches
-static void SetBAIntrinsicFlags(BAConfig& baCfg, unsigned baIntrinsicFlags)
+void SFM::SetBAIntrinsicFlags(BAConfig& baCfg, unsigned baIntrinsicFlags)
 {
 	baCfg.refineFocalLength = (baIntrinsicFlags & ReconstructionConfig::INTRINSIC_FOCAL_LENGTH) != 0;
 	baCfg.refineFocalLengthAspectRatio = (baIntrinsicFlags & ReconstructionConfig::INTRINSIC_FOCAL_LENGTH_ASPECT_RATIO) != 0;
 	baCfg.refinePrincipalPoint = (baIntrinsicFlags & ReconstructionConfig::INTRINSIC_PRINCIPAL_POINT) != 0;
-	baCfg.refineRadialDistortion123 = (baIntrinsicFlags & ReconstructionConfig::INTRINSIC_RADIAL_DIST_123) != 0;
+	baCfg.refineRadialDistortion12 = (baIntrinsicFlags & ReconstructionConfig::INTRINSIC_RADIAL_DIST_12) != 0;
 	baCfg.refineTangentialDistortion = (baIntrinsicFlags & ReconstructionConfig::INTRINSIC_TANGENTIAL_DIST) != 0;
 	baCfg.refineRadialDistortion456 = (baIntrinsicFlags & ReconstructionConfig::INTRINSIC_RADIAL_DIST_456) != 0;
+	baCfg.refineRadialDistortion3 = (baIntrinsicFlags & ReconstructionConfig::INTRINSIC_RADIAL_DIST_3) != 0;
 }
 
 
@@ -810,7 +811,7 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	BAConfig finalBaCfg = cfg.baConfig;
 	finalBaCfg.maxIterations = 25;
 	finalBaCfg.refineFocalLength = (cfg.baIntrinsicFlags & ReconstructionConfig::INTRINSIC_FOCAL_LENGTH) != 0;
-	finalBaCfg.refineRadialDistortion123 = (cfg.baIntrinsicFlags & ReconstructionConfig::INTRINSIC_RADIAL_DIST_123) != 0;
+	finalBaCfg.refineRadialDistortion12 = (cfg.baIntrinsicFlags & ReconstructionConfig::INTRINSIC_RADIAL_DIST_12) != 0;
 	BundleAdjustment::Adjust(*this, finalBaCfg);
 	FilterTracks(*this, cfg.maxReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
 	TriangulateTracks(*this, true, cfg.maxReprojError, cfg.minAngleThreshold);
@@ -827,7 +828,9 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	FilterWeaklyConnectedImages(*this);
 	if (status.nCalibratedImages < images.size()) {
 		ResectionConfig resectionCfg = cfg.resectionCfg;
-		resectionCfg.DeriveBAConfigs(cfg.baConfig);
+		BAConfig resectionBaCfg = cfg.baConfig;
+		SetBAIntrinsicFlags(resectionBaCfg, cfg.baIntrinsicFlags);
+		resectionCfg.DeriveBAConfigs(resectionBaCfg);
 		Resection resection(*this, resectionCfg);
 		resection.RegisterImages();
 		FilterWeaklyConnectedImages(*this);
@@ -853,7 +856,8 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	// Disable intrinsics which already converged in the final bundle adjustment.
 	BAConfig uncBaCfg = finalBaCfg;
 	uncBaCfg.refineFocalLength = uncBaCfg.refineFocalLengthAspectRatio = uncBaCfg.refinePrincipalPoint =
-	uncBaCfg.refineRadialDistortion123 = uncBaCfg.refineTangentialDistortion = uncBaCfg.refineRadialDistortion456 = false;
+	uncBaCfg.refineRadialDistortion12 = uncBaCfg.refineRadialDistortion3 =
+	uncBaCfg.refineTangentialDistortion = uncBaCfg.refineRadialDistortion456 = false;
 	if (cfg.baConfig.IsRefiningGPS() && status.nState.isSet(Status::STATE::GEO_ALIGN)) {
 		BundleAdjustment ba(*this, uncBaCfg);
 		if (ba.Adjust()) {
@@ -924,7 +928,9 @@ bool Scene::ReconstructHierarchical(const ReconstructionConfig& config, const II
 		// local/full BA settings from the scene's configured BAConfig so the resection's bundle
 		// adjustments see the same settings as the rest of the pipeline.
 		ResectionConfig resectionCfg = config.resectionCfg;
-		resectionCfg.DeriveBAConfigs(config.baConfig);
+		BAConfig resectionBaCfg = config.baConfig;
+		SetBAIntrinsicFlags(resectionBaCfg, config.baIntrinsicFlags);
+		resectionCfg.DeriveBAConfigs(resectionBaCfg);
 		Resection resection(subScene, resectionCfg);
 		resection.RegisterImages();
 

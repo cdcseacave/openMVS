@@ -175,6 +175,11 @@ bool ObservationSigmasTest();
 // with no dense keypoints and on one whose dense population exists but is under the sigma threshold
 bool DenseObservationWeightEstimateTest();
 
+// Pins SetBAIntrinsicFlags (ReconstructionConfig::IntrinsicFlags -> BAConfig) and
+// ResectionConfig::DeriveBAConfigs, the two places the reconstruction's intrinsic flags turn
+// into the bundle-adjustment switches that are actually solved
+bool BAIntrinsicFlagsTest();
+
 // Small SFM smoke test: build tiny scene and run BundleAdjustment::Adjust
 bool PipelineTest();
 
