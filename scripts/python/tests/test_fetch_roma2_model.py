@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Unit tests for scripts/fetch_roma2_model.py.
 
-Runs with plain `python3 -m unittest` and touches no network: huggingface_hub is never imported
-here (it need not even be installed -- the whole point of the ImportError fallback is that it
-works without it), and the mirror is a local `file://` directory standing in for a GitHub
-release's flat asset list.
+Runs with plain `python3 -m unittest` and touches no network: the suite blocks the import of
+huggingface_hub (a None entry in sys.modules raises ImportError whether or not the package is
+installed -- the whole point of the ImportError fallback is that the fetch works without it),
+and the mirror is a local `file://` directory standing in for a GitHub release's flat asset list.
 """
 import contextlib
 import hashlib
@@ -52,11 +52,11 @@ class VerifyDigestTests(unittest.TestCase):
 
 
 class FetchTests(unittest.TestCase):
-    """Exercises `fetch()` entirely over a local file:// mirror. huggingface_hub is not
-    installed in this environment, so the ImportError fallback to the mirror is the only path
-    that ever runs -- exactly what a no-network test needs.
+    """Exercises `fetch()` entirely over a local file:// mirror. setUp blocks the import of
+    huggingface_hub, so the ImportError fallback to the mirror is the only path that ever runs
+    unless a test installs a fake module -- exactly what a no-network test needs.
 
-    RULING R147: `--dest` is the flat model directory RoMa2Onnx::Load reads directly
+    `--dest` is the flat model directory RoMa2Onnx::Load reads directly
     (`modelDir + "roma_<setting>.json"`, no "<setting>-<precision>" segment). checksums.txt
     still names the *published* path under that prefix -- these fixtures use the real manifest
     basename (roma_base.json) so a regression back to the nested layout would be caught by
@@ -64,6 +64,9 @@ class FetchTests(unittest.TestCase):
     """
 
     def setUp(self):
+        # a None entry makes `import huggingface_hub` raise ImportError, installed or not
+        sys.modules["huggingface_hub"] = None
+        self.addCleanup(sys.modules.pop, "huggingface_hub", None)
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         root = Path(self._tmp.name)
@@ -100,9 +103,9 @@ class FetchTests(unittest.TestCase):
         return self.dest / self.basename
 
     def _install_fake_huggingface_hub(self, snapshot_download) -> None:
-        """Stand in for huggingface_hub (not installed in this environment, and this suite must
-        not install it) so the Hugging Face branch's own logic -- not just the ImportError
-        fallback to the mirror -- gets exercised too, still with no real network access."""
+        """Stand in for huggingface_hub (whose import setUp blocks) so the Hugging Face
+        branch's own logic -- not just the ImportError fallback to the mirror -- gets exercised
+        too, still with no real network access."""
         fake_module = types.ModuleType("huggingface_hub")
         fake_module.snapshot_download = snapshot_download
         sys.modules["huggingface_hub"] = fake_module
@@ -118,7 +121,7 @@ class FetchTests(unittest.TestCase):
         self.assertEqual(result.cached, [])
 
     def test_manifest_lands_flat_directly_under_dest(self):
-        """The one assertion that would have caught RULING R147's bug: this is exactly the path
+        """The one assertion that would catch a regression back to a nested layout: this is exactly the path
         ROMA2Config::ResolveModelPath() hands to RoMa2Onnx::Load, which reads
         modelDir + "roma_" + setting + ".json" with no further nesting."""
         self._fetch()
@@ -137,9 +140,8 @@ class FetchTests(unittest.TestCase):
         branch never lists a folder at all -- it only ever requests exact basenames drawn from
         `pending` -- so a stray file sitting in the mirror directory could never be fetched by
         construction; a test for it there would pass by tautology, not by exercising a filter.
-        huggingface_hub is not installed here (nor should this suite install it), so the branch's
-        own move-up logic is exercised through a fake module standing in for it -- still no
-        network.
+        The import of huggingface_hub is blocked, so the branch's own move-up logic is exercised
+        through a fake module standing in for it -- still no network.
         """
         stray_name = "roma_base_a_file_checksums_txt_never_named.bin"
 
@@ -352,7 +354,7 @@ class FetchTests(unittest.TestCase):
 
         result = self._fetch()
 
-        # RULING R139: assert on the actually-transferred-file counter, not mtime (whose
+        # Assert on the actually-transferred-file counter, not mtime (whose
         # one-second granularity on many filesystems would make a fast run flaky).
         self.assertEqual(result.downloaded, [])
         self.assertEqual(result.cached, [self.published_relpath])
@@ -388,6 +390,9 @@ class DestWritabilityTests(unittest.TestCase):
     try)."""
 
     def setUp(self):
+        # a None entry makes `import huggingface_hub` raise ImportError, installed or not
+        sys.modules["huggingface_hub"] = None
+        self.addCleanup(sys.modules.pop, "huggingface_hub", None)
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         root = Path(self._tmp.name)

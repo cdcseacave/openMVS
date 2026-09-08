@@ -457,7 +457,7 @@ unsigned SFM::ExportPoseUncertaintyCSV(const String& fileName, const Scene& scen
 // solve -- a reconstruction runs fifty or more of them, so it settles.
 //
 // Measured rather than configured because k is a property of the CAPTURE, not of the dense matcher:
-// on the campaign's three captures the dense sigma barely moved (1.14-1.79 px, the warp's sampling
+// across different captures the dense sigma barely moved (1.14-1.79 px, the warp's sampling
 // scale) while the described sigma moved 3.6x, from 0.32 px where the texture is rich to 1.15 px
 // where it is not, taking k from 1.55 to 4.02. No constant is right in both places.
 //

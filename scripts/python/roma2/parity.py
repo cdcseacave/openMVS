@@ -15,14 +15,14 @@ size), then runs the eager model in fp32 — the same ground truth `export.py on
 npy layout `check` reads. Unlike that traced reference, the pair stage here is fed the descriptor stage's
 real output rather than random tensors of the right shape.
 
-What openMVS adds to polyml's parity.py, all of it for the C++ side (Task 7's RoMa2OnnxParityTest reads
+What openMVS adds to polyml's parity.py, all of it for the C++ side (RoMa2OnnxParityTest reads
 this directory, and its always-on tests read --fixtures):
   source_A.png / source_B.png   the decoded RGB8 sources, losslessly, so the C++ preprocessing test starts
                                 from the same pixels rather than from its own JPEG decoder's
   pooled_facets_{A,B}.npy       [2 * C] and [C]: the FACETS/LAYERS pooling recipes (graphs.py's
   pooled_layers_{A,B}.npy       pool_retrieval) compute for both images of the pair
   retrieval_{A,B}.npy           [2 * C]: the graph's own on-device FACETS pooling (_facets_retrieval) of
-                                the same forward pass -- Task 1's parity gate judges this against
+                                the same forward pass -- this parity gate judges this against
                                 pooled_facets_{A,B}.npy, at a tighter bound than export.py check's default
   parity.json                   what the directory holds and the bounds it is judged under
   --fixtures DIR                the one model-free fixture the always-on C++ tests use, as raw fp32
@@ -144,7 +144,7 @@ def main():
             pooled[f"{recipe}_{side}"] = vector
             print(f"pooled_{recipe}_{side}: [{vector.size}] norm {np.linalg.norm(vector):.6f}", flush=True)
         # the graph's own on-device FACETS pooling (_facets_retrieval), on this same real forward pass --
-        # Task 1's parity gate against pooled_facets_{side} (the CPU PoolRetrievalDescriptor reference)
+        # judged by this parity gate against pooled_facets_{side} (the CPU PoolRetrievalDescriptor reference)
         vector = retrieval.detach().cpu().numpy().reshape(-1)
         np.save(directory / f"retrieval_{side}.npy", vector)
         retrieval_vectors[side] = vector
@@ -164,7 +164,7 @@ def main():
                   | {f"pooled_{name}": [vector.size] for name, vector in pooled.items()}
                   | {f"retrieval_{side}": [vector.size] for side, vector in retrieval_vectors.items()},
         # polyml's, the bounds export.py check defaults to and the ones the C++ test judges under.
-        # retrieval_min_cosine is Task 1's own gate (export.py check's --retrieval-min-cosine default),
+        # retrieval_min_cosine is a gate (export.py check's --retrieval-min-cosine default),
         # judging retrieval_{A,B}.npy against pooled_facets_{A,B}.npy -- tighter than min_cosine above.
         "bounds": {"min_cosine": 0.998, "max_warp_error_px": 2.0, "min_agreement_percent": 99.5,
                    "retrieval_min_cosine": 0.99999},

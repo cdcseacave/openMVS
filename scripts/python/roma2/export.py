@@ -275,7 +275,7 @@ def check_onnx(args):
             # the graph pools FACETS on device (graphs.py _facets_retrieval), so this is judged directly
             # against PoolRetrievalDescriptor's own Python reference rather than against a second pooling
             # of value_facets -- what a retrieval-only pass actually ships to openMVS, at the tight bound
-            # Task 1's parity gate sets rather than the raw-tensor --min-cosine above.
+            # this parity gate sets rather than the raw-tensor --min-cosine above.
             want = pool_retrieval(np.load(reference / "out_value_facets.npy"), "facets")
             got = produced["retrieval"].astype(np.float64).reshape(-1)
             got = got / np.linalg.norm(got)   # defensive: the graph already emits a unit vector
@@ -553,7 +553,7 @@ def main():
     pk.add_argument("--min-cosine", type=float, default=0.998,
                     help="descriptor only: fail below this, on the raw outputs and on the pooled "
                          "descriptors, or on any non-finite output")
-    # Task 1's own gate, tighter than --min-cosine: judges the graph's on-device retrieval output
+    # A gate tighter than --min-cosine: judges the graph's on-device retrieval output
     # directly against PoolRetrievalDescriptor's Python reference (pool_retrieval).
     pk.add_argument("--retrieval-min-cosine", type=float, default=0.99999,
                     help="descriptor only: fail if the graph's own 'retrieval' output falls below this "

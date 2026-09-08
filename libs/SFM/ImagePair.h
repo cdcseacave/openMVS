@@ -60,8 +60,8 @@ struct SFM_API DMatch
 // less precisely than a descriptor one -- which is exactly what bundle adjustment charges it for --
 // but it says nearly as much about whether the two images overlap. Charging the precision penalty
 // twice would demote exactly the pairs that carry a capture the descriptor matcher cannot match at
-// all: on this campaign's textureless interior capture, those dense-only pairs are the difference
-// between 248 registered images and 0.
+// all: for a textureless interior capture, those dense-only pairs can be the difference between
+// images registering at all and not registering.
 //
 // So this stays a fixed constant deliberately: nothing has asked the view graph's number to be
 // measured, and coupling it to bundle adjustment's moving one would re-couple two answers that must

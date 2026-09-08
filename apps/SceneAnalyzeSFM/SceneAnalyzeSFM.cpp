@@ -29,11 +29,12 @@
  *      containing it.
  */
 
-// Campaign instrumentation (roma2-matching-redesign, task 6a): a read-only project dump used to
-// measure the RoMa2 dense-supplementation campaign offline. It loads a saved SFM project and emits
-// one CSV per entity (tracks, observations, pairs, images) beside it, plus matches.bin, every stored
-// match as pixel coordinates -- no pipeline change, nothing is written back into the project. Deliberately self-contained and minimal: it carries no
-// test-suite integration and is meant to be deleted at campaign close, its learnings kept in docs.
+// Reads a saved SFM project (the .mvs/scene file CreateStructure writes) read-only -- no pipeline
+// stage runs and nothing is written back to it -- and exports one CSV per entity beside it:
+// tracks.csv, observations.csv, pairs.csv (plus matches.bin, every stored match as pixel
+// coordinates), and images.csv (registration, pose, camera and keypoint counts per image). For
+// offline inspection of a reconstruction; deliberately self-contained and minimal, with no
+// test-suite integration.
 
 #include "../../libs/SFM.h"
 #include <boost/program_options.hpp>
@@ -155,7 +156,7 @@ static String CSVQuote(const String& field)
 }
 
 // Write images.csv: one row per image, in array (== ID) order.
-// The registered pose and focal travel with the row so the offline campaign scripts never have to
+// The registered pose and focal travel with the row so an offline reader never has to
 // parse the project file to get them. Conventions, as the project itself stores them (Pose.h, the
 // MVS convention P = K*R*[I|-C]): R rotates world coordinates into camera coordinates and is
 // written as the unit quaternion (qw,qx,qy,qz) by the very same Pose3DToQuaternionAndCenter the

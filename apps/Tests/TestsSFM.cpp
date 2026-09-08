@@ -2694,7 +2694,7 @@ bool ROMA2AssemblyTest()
 	return true;
 }
 
-// The described/dense keypoint boundary (Task 5 of roma2-matching-redesign-20260831): the stored
+// The described/dense keypoint boundary: the stored
 // count is what survives a descriptor release and an .sfm round-trip of an image whose
 // keypoints.size() > descriptors.rows -- the two arrays serialize independently, so nothing else
 // would notice the boundary moving
@@ -3752,8 +3752,8 @@ static bool RoMa2OnnxParityDescribe(RoMa2Onnx& model, const String& descDir, con
 	const double cosFacets = CosineSimilarity(facets.data(), reference.data(), numTensor);
 
 	// the graph's own on-device retrieval pooling, judged against the CPU pool_retrieval reference's
-	// pooled_facets_A.npy fixture at Task 1's own tighter bar (export.py check's --retrieval-min-cosine
-	// default) rather than the looser bounds.minCosine below -- the parity gate Task 1 added because
+	// pooled_facets_A.npy fixture at the tighter bar (export.py check's --retrieval-min-cosine
+	// default) rather than the looser bounds.minCosine below -- this parity gate exists because
 	// this readback path had no automated coverage otherwise; it must keep running now that the CPU
 	// pooling it used to also be judged against (PoolRetrievalDescriptor) is gone
 	if (retrieval.size() != manifest.facetsDim) {
@@ -7621,7 +7621,7 @@ bool ReconstructTest(bool verbose)
 	return true;
 }
 
-// Task 1 (roma2-followups-20260830): Scene::Reconstruct() must write the --export-pairs-csv /
+// Scene::Reconstruct() must write the --export-pairs-csv /
 // --export-retrieval-csv diagnostics right after pair matching, before any later reconstruction
 // step (largest-connected-component clustering, weak-image filtering, resection) can drop pairs
 // or leave images unregistered. Runs match-images-only mode on the bundled 4-image scene (fast,

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Export, check and describe every graph an openMVS model directory publishes.
 #
-#   ./export.sh --images A.jpg B.jpg --out-dir ~/virginia/models/roma2-onnx/<export-id>
+#   ./export.sh --images A.jpg B.jpg --out-dir <export-dir>
 #   ./export.sh --images A.jpg B.jpg --settings base --out-dir <dir>          # one preset
 #   ./export.sh --images A.jpg B.jpg --out-dir <dir> --fixtures ~/openMVS/apps/Tests/data/roma2
 #
