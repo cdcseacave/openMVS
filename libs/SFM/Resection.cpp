@@ -509,28 +509,33 @@ bool Resection::RegisterImages()
 		}
 		return false;
 	};
+	// When the resection stalls -- no image reaches the correspondence minimum, or every candidate
+	// that did failed to register -- images joined to the model by a verified pair still have a
+	// relative pose: register one of them from it so its two-view tracks can be triangulated, and
+	// let the next selection pick up from there; false when no image can be registered that way
+	const auto RegisterOneFromRelativePoses = [&]() {
+		const IIndex imageID = config.relativePoseFallback ? RegisterFromRelativePoses(unregistered) : NO_ID;
+		if (imageID == NO_ID)
+			return false;
+		lastRegistered.push_back(imageID);
+		unregistered.erase(imageID);
+		++registeredCount;
+		++relativePoseCount;
+		++sinceFullBA;
+		AdjustIfScheduled();
+		return true;
+	};
 	while (!unregistered.empty()) {
 		IIndexArr nextIDs = SelectNextImages(unregistered);
 		if (nextIDs.empty()) {
-			// No image reaches the correspondence minimum, but images joined to the model by a
-			// verified pair still have a relative pose: register one of them from it so its two-view
-			// tracks can be triangulated, and let the next selection pick up from there
-			const IIndex relativePoseID = config.relativePoseFallback ? RegisterFromRelativePoses(unregistered) : NO_ID;
-			if (relativePoseID == NO_ID) {
-				VERBOSE("warning: no more connected images to register, %u images remain", unregistered.size());
-				for (const auto& it : unregistered) {
-					DEBUG_EXTRA("\timage %u ('%s'): %u 2D-3D correspondences (min %u)", it.first,
-						Util::getFileName(scene.images[it.first].fileName).c_str(), it.second, config.minCorrespondences);
-				}
-				break;
+			if (RegisterOneFromRelativePoses())
+				continue;
+			VERBOSE("warning: no more connected images to register, %u images remain", unregistered.size());
+			for (const auto& it : unregistered) {
+				DEBUG_EXTRA("\timage %u ('%s'): %u 2D-3D correspondences (min %u)", it.first,
+					Util::getFileName(scene.images[it.first].fileName).c_str(), it.second, config.minCorrespondences);
 			}
-			lastRegistered.push_back(relativePoseID);
-			unregistered.erase(relativePoseID);
-			++registeredCount;
-			++relativePoseCount;
-			++sinceFullBA;
-			AdjustIfScheduled();
-			continue;
+			break;
 		}
 		const unsigned startRegisteredCount = registeredCount;
 		for (IIndex n = 0; n < nextIDs.size(); ) {
@@ -560,7 +565,7 @@ bool Resection::RegisterImages()
 				break; // restart selection of next images
 			}
 		}
-		if (registeredCount == startRegisteredCount) {
+		if (registeredCount == startRegisteredCount && !RegisterOneFromRelativePoses()) {
 			VERBOSE("warning: no images were registered in last iteration, stopping resection, %u images remain", unregistered.size());
 			break;
 		}
