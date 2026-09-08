@@ -53,13 +53,16 @@ over that file, and a configuration file naming an option that does not exist is
 rather than silently ignored.
 
 **Trading accuracy for speed.** `--fast` is the measured fast configuration behind one switch: it
-refines against 4 neighbour images and raises the decimation tolerance to 0.5 px, which on the
-shipped defaults runs 1.2x faster (0.73-0.96x wall) for −0.010 mean F1 on Tanks & Temples (worst
-scene Ignatius −0.020) and delivers a mesh 0.54-0.69x the size of the default's already-decimated
-one (§2.7, §2.8); against the defaults before the one-pass preparation it was 1.5-1.7x faster, and
-most of that gain the new preparation now takes by itself. It is a preset over `--max-views` and `--simplify-tolerance` and nothing else, and an
-explicitly given one of those wins over it — `--fast --max-views 8` keeps the full view budget and
-only decimates. What no preset can do is go faster than that: 38 % of the wall is the mesh
+prepares the mesh at twice the default face area (`--max-face-area 32`) and raises the decimation
+tolerance to 0.5 px, which runs 1.3x faster (0.78x wall) for −0.005 mean F1 on Tanks & Temples and
+delivers a mesh 0.40x the size of the default's already-decimated one (§2.7, §2.9). Until 2026-09
+the preset cut the view budget instead (`--max-views 4`); measured against each other in one cell,
+the face area dominates it on every axis at once — −0.005 against −0.010 mean F1, 0.40x against
+0.60x faces, 0.78x against 0.83x wall — because a coarser mesh removes per-pixel work and mesh work
+together while a smaller view budget removes only the first and costs Barn and Ignatius 0.015-0.021
+F1 on its own. It is a preset over `--max-face-area` and `--simplify-tolerance` and nothing else,
+and an explicitly given one of those wins over it — `--fast --max-face-area 16` keeps the default
+density and only decimates. What no preset can do is go faster than that: 38 % of the wall is the mesh
 preparation, which neither the view count nor the working resolution touches, and the levers that
 do go faster (a coarser `--resolution-level`, `--max-views 2`) cost an order of magnitude more
 accuracy (§4 #46).
@@ -94,7 +97,11 @@ rasterized pixel counts, 0 for a face no pair sees; and, because those counts ar
 the seen faces), and decimates the mesh (`--decimate` 0) straight to the density the refinement
 wants: a mean tightest-pair area of **half `--max-face-area`** in that scale's pixels — 8 px² at
 the default 16, which the finest scale's doubled resolution makes 32 px², twice the cap, so its
-split lands the mesh at the cap. The ratio is the measured mean over the target (floor 0.02),
+split lands the mesh at the cap. What arrives is a constant 70-79 % of that nominal target, the
+remesh band's own equilibrium (§2.9), so the cap reads as a split threshold rather than a delivered
+density. The ratio is the measured mean over the target (floor 0.002: it guards a degenerate
+target only, and a floor near the ratios the usable caps ask for silently saturates the knob,
+§2.9),
 handed to one `Mesh::Clean` pass that decimates (halfmesh's QEM), closes holes up to 30 edges and
 remeshes isotropically in a band around the mean edge the decimation left (`edgeLength` −1,
 10 iterations): the remesh evens the rings out for the umbrella operator without moving the
@@ -812,23 +819,22 @@ resolution only attacks the remaining 62 %, which is why `--max-views 4`, `--max
 resolution level down all saturate in the same 0.4-0.6x band while their accuracy costs differ by
 an order of magnitude.
 
-So the fast mode is the first two rows, packaged as one switch over knobs that already exist:
+So the fast mode is one switch over knobs that already exist — since 2026-09 the face area, not
+the view budget (§2.9):
 
 ```
-RefineMesh ... --fast        # --max-views 4 --simplify-tolerance 0.5
+RefineMesh ... --fast        # --max-face-area 32 --simplify-tolerance 0.5
 ```
 
-On the defaults of the time it was 1.5-1.7x faster for −0.006 mean F1 (worst scene Barn −0.017)
-and delivered a mesh 1.8-2.7x smaller than the default's — the 0.07-0.35x in the table is against
-the undecimated baseline these rows were measured on. On the shipped defaults (the one-pass
-preparation, §2.8) it is 1.2x faster (0.73-0.96x wall) for −0.010 mean F1 (worst scene Ignatius
-−0.020) at 0.54-0.69x faces: against the previous defaults the preset still lands at 0.68x wall
-and 0.51x faces, now for −0.010 F1, because the new preparation takes most of that speed by
-itself and what `--fast` adds on top has shrunk to a 1.2x. The preset fills in only what the command line did not
-state, so an explicit `--max-views` or `--simplify-tolerance` overrides it; the Tiny functional
-runs pin that `--fast` and the two options spelled out produce the same mesh byte for byte, that
-`--fast --max-views 8` reproduces `--simplify-tolerance 0.5` alone, and that `--fast` does not
-rescue an invalid tolerance. Raising `--resolution-level` instead is recorded as #46: it
+The rows above measured the view budget on the preparation of the time, where it was the only
+lever that did not also cost an order of magnitude in accuracy. §2.9 re-measured the composition
+once the face area became sweepable and the view budget lost: the shipped preset is
+`--max-face-area 32 --simplify-tolerance 0.5` at −0.005 mean F1, 0.40x faces and 0.78x wall
+against the default. The preset fills in only what the command line did not state, so an explicit
+`--max-face-area` or `--simplify-tolerance` overrides it; the Tiny functional runs pin that
+`--fast` and the two options spelled out produce the same mesh byte for byte, that
+`--fast --max-face-area 16` reproduces `--simplify-tolerance 0.5` alone, and that `--fast` does
+not rescue an invalid tolerance. Raising `--resolution-level` instead is recorded as #46: it
 is the cheapest lever per second and by far the most expensive per unit of quality, because it
 also cuts the face count the subdivision reaches (0.33-0.35x) — on Ignatius, whose gap to its own
 input mesh is already the dominant term (§5.1), that removes 0.18 F1.
@@ -1013,6 +1019,84 @@ same state: −0.0104 mean against the previous defaults (Truck −0.0026, Barn 
 −0.0105 at 0.81x wall (0.73-0.96x) and 0.60x faces (§2.7): the preset's definition (4 views, 0.5 px)
 was set on the old preparation and is open to revision.
 
+### 2.9 The face-area cap swept, and what it did to the fast preset (2026-09)
+
+`--max-face-area` had never been measured: 16 was a guess carried since the option was added, and
+it is the only knob the preparation reads, since the decimation target is half of it (§1.2). Swept
+on the four Tanks & Temples scenes against the shipped default, one cell per curve, walls in-cell:
+
+| cap | target px² | ΔF1 | faces | wall | delivered px² (% of target) |
+|---|---|---|---|---|---|
+| 8 | 4 | −0.0044 | 1.72x | 1.23x | 3.2 (79 %) |
+| **16 (default)** | 8 | — | 1.00x | 1.00x | 6.0 (75 %) |
+| 24 | 12 | −0.0053 | 0.68x | 0.82x | 8.8 (73 %) |
+| 32 | 16 | −0.0036 | 0.57x | 0.78x | 11.6 (72 %) |
+| 48 | 24 | −0.0105 | 0.38x | 0.67x | 17.2 (72 %) |
+| 64 | 32 | −0.0175 | 0.30x | 0.63x | 22.5 (70 %) |
+
+**The default stays at 16.** Denser is worse on every axis at once — cap 8 costs F1 *and* 1.72x the
+faces *and* 1.23x the wall — so the shipped density is not too coarse. Coarser trades F1 for size
+and wall monotonically past 32, so there is no free win to take in either direction.
+
+**Two things the sweep found on the way.** First, the auto decimation floored its ratio at 2 % of
+the input faces, and from cap 32 upward most scenes ask for less than that: the target was silently
+clamped and the cap stopped coarsening the mesh except through the split. The floor is now 0.2 %,
+which never binds at the default (the ratios there are 3.5-13 %) and only restores the knob's reach
+above it — the delivered density in the table is a constant 70-79 % of nominal at every cap now,
+where it used to drift down to 61 % as the clamp bit. Second, that constant undershoot is the
+remesh band's own equilibrium, not the decimation arithmetic: it survives every way of deriving the
+target (below), so `--max-face-area 16` delivers a mean projected area near 22 px² at the finest
+scale rather than 16, and the parameter is a split threshold, not a delivered density.
+
+**Reading the F1 column.** Most of the per-scene spread in this cell is the schedule's stopping
+rule, not the density. Across the six arms of the first cell Ignatius' F1 is a strictly monotone
+function of the evaluations the schedule reached before the patience rule fired — 0.7600 at 24,
+0.7714 at 26, 0.7743 at 28, 0.7805 at 32 — while the face counts over those same runs run from 83k
+to 240k in no order at all. A changed mesh moves where the stop lands, and that motion is larger
+than the density effect anywhere inside 0.5-2x of the default. It is the same lottery §2.8 recorded
+for Barn, and it is why the cap was not chosen on F1 differences of ±0.005.
+
+**The threshold-free check disagrees, mildly.** On the three EPFL scenes, where accuracy and
+completeness are distances rather than a count at τ, coarser is *better*: cap 24 and 32 improve the
+mean accuracy by 2.2 % and 2.6 % and F1 by +0.004 and +0.008, at 0.67x and 0.52x faces, with
+completeness flat (+0.2 %). Cap 8 is worse there too (+3.6 % accuracy error). The two datasets agree
+that denser is wrong and disagree on how much coarser is right, so the default stays where the gate
+dataset puts it.
+
+**Preparation mechanisms, both rejected.** §1.2's preparation reaches the target in two conceptual
+steps — decimate by a face-count ratio, then remesh the rings even — and two more direct
+formulations were measured against it on the same cell (Truck/Barn/Ignatius/Meetingroom):
+
+| arm | ΔF1 | faces | wall |
+|---|---|---|---|
+| remesh pinned to the derived target length (decimation keeps the bulk) | −0.0032 | 0.96x | 0.93x |
+| one remesh carries the mesh to the target, no decimation at all | −0.0010 | 1.11x | 1.06x |
+
+Both derive the target honestly: the sampled seen faces convert pixels to scene units, and an
+equilateral triangle of edge L covers √3/4·L², so the world edge whose projection is the target
+area needs no constant. Neither earns its place. Pinning the remesh changes nothing except on
+Ignatius, where it loses; dropping the decimation costs 11 % more faces and 6 % more wall for no F1,
+because a pure remesh undershoots the target *further* (62 % of nominal against 75 %) and the
+halfmesh pass gets no cheaper for having one stage instead of two. The shipped two-step preparation
+stands, and the temporary `Prepare Mode` knob was removed with them.
+
+**What the sweep did change: the fast preset.** `--fast` was `--max-views 4 --simplify-tolerance
+0.5`. Measured against compositions built on the cap, in one cell against the same baseline:
+
+| preset | ΔF1 | faces | wall |
+|---|---|---|---|
+| `--max-views 4 --simplify-tolerance 0.5` (the old `--fast`) | −0.0105 | 0.60x | 0.83x |
+| `--max-face-area 32 --max-views 4` | −0.0141 | 0.53x | 0.64x |
+| **`--max-face-area 32 --simplify-tolerance 0.5` (the new `--fast`)** | **−0.0046** | **0.40x** | **0.78x** |
+| all three together | −0.0147 | 0.37x | 0.65x |
+
+The face area dominates the view budget on every axis at once: less than half the F1 cost, a third
+fewer faces, and slightly less wall. The reason is §2.7's own finding read the other way — a large
+part of the wall is mesh work that the view count cannot touch, so cutting views buys only the
+per-pixel part and pays for it in accuracy (Barn −0.015, Ignatius −0.021 on its own), while a
+coarser mesh cuts both halves at once. `--max-views` leaves the preset entirely; it remains
+available on its own for anyone who needs the memory back.
+
 ## 3. How these numbers were produced
 
 The harness lives under the gitignored `bench/` tree; this section records what it does, so a
@@ -1129,6 +1213,10 @@ entry says otherwise.
 | 57 | Butterfly-interpolated 1-to-4 split (new vertices on the modified-butterfly surface through the coarse vertices and their wings) | −0.0006 mean: +0.0003/+0.0004 on Truck, Ignatius, Meetingroom and Barn −0.0034 (the same 20-evaluation stop) | removed |
 | 58 | Bi-Laplacian relaxation after the last scale only (a post-smoothing that cannot touch the schedule), 0.45 and 0.25 | 0.45: three scenes +0.0004..+0.0025, Ignatius **−0.0062**; 0.25: +0.0007 mean, Ignatius −0.0005 — a low-pass filter the noisy scenes like and the detailed object pays for, never an always-win and under the gate at every fraction | removed |
 | 59 | Unseen-face filter on the input mesh as well as the output (`--remove-unseen-faces-pre`) | −0.0013 mean, Barn −0.0033 by the stop-rule lottery; the input meshes have as few unseen faces as the outputs | removed (the post filter stays opt-in, #50) |
+| 60 | `--max-face-area` swept 8/16/24/32/48/64 on Tanks & Temples, the first measurement of a value guessed when the option was added | 8: −0.0044 at 1.72x faces and 1.23x wall, worse on every axis at once; 24 / 32: −0.0053 / −0.0036 at 0.68x / 0.57x faces; 48 / 64: −0.0105 / −0.0175. On the three EPFL scenes the threshold-free metrics prefer coarser (24 / 32 improve mean accuracy 2.2 % / 2.6 %, F1 +0.004 / +0.008) | **default stays 16**: denser loses on quality, size and wall together, coarser trades quality for both past 32, and the F1 spread inside 0.5-2x of the default is the stop-rule lottery (§2.9) |
+| 61 | The auto decimation's ratio floor (2 % of the input faces) | from cap 32 up most scenes ask for a smaller ratio, so the target was clamped and the cap stopped coarsening the mesh except through the split; the delivered density drifted from 75 % of nominal at the default to 61 % at cap 32 | **fixed**: floor 0.002, never binding at the default (ratios there are 3.5-13 %), delivered density now a constant 70-79 % of nominal at every cap |
+| 62 | Preparation reaching the target more directly: the remesh pinned to the derived world edge length (the sampled faces convert px to scene units, √3/4·L² for an equilateral face), and one remesh carrying the mesh with no decimation at all | pinned −0.0032 mean at 0.96x faces (inert but for Ignatius, which loses); remesh-only −0.0010 at 1.11x faces and 1.06x wall, undershooting the target further (62 % of nominal against 75 %) | both removed; the two-step preparation of §1.2 stands |
+| 63 | The fast preset rebuilt on the face area instead of the view budget | `--max-face-area 32 --simplify-tolerance 0.5` = −0.0046 mean at 0.40x faces and 0.78x wall, against the old `--max-views 4 --simplify-tolerance 0.5` at −0.0105 / 0.60x / 0.83x; adding `--max-views 4` back costs −0.010 more for 0.13x wall | **became `--fast`**: a coarser mesh cuts the mesh work and the per-pixel work together, a smaller view budget only the second (§2.9) |
 
 Three of these carry a mechanism worth stating, because they look like independent ideas and are
 not.

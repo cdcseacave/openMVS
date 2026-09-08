@@ -359,13 +359,15 @@ void PrepareRefineMesh(REFINE& refine, uint32_t maxArea, float fDecimate, unsign
 		float ratio(fDecimate);
 		if (fDecimate <= 0.f) {
 			// auto: the seen faces' mean area to the target (the face count scales inversely
-			// with the area)
+			// with the area). The floor only guards against a degenerate target -- it must stay
+			// well below the ratio the coarsest usable cap asks for, or the cap silently
+			// saturates and stops coarsening the mesh
 			const float fMeanSeen(projectMesh("input"));
 			ASSERT(!maxAreas.IsEmpty());
 			const float fTargetArea((float)(maxArea > 0 ? maxArea : 64)*0.5f);
 			ratio = 1.f;
 			if (fMeanSeen > 0 && fMeanSeen < fTargetArea)
-				ratio = MAXF(0.02f, fMeanSeen/fTargetArea);
+				ratio = MAXF(0.002f, fMeanSeen/fTargetArea);
 			if (ratio < 1.f)
 				maxAreas.Empty();
 		}
