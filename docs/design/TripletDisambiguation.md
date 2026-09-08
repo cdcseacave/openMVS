@@ -13,7 +13,10 @@ of the inliers such pairs deliver between these images — is look-alike copies 
 another and carries no evidence. It reimplements
 S. M. Manam and V. M. Govindu, *Leveraging Camera Triplets for Efficient and Accurate
 Structure-from-Motion*, CVPR 2024, pp. 4959–4968 (Algorithm 1, Eqn. 3), from the paper alone — no
-code from the MATLAB release or any port. `ViewGraphTriplets.{h,cpp}`; **off by default**.
+code from the MATLAB release or any port. `ViewGraphTriplets.{h,cpp}`; **on by default**, in a
+mode that removes only the pairs joining pieces the paper's threshold keeps apart, and of those
+only what the graph can spare (below); the cutting rule that unfolds a symmetric building is
+`--triplet-cut`.
 
 ## The algorithm
 
@@ -91,6 +94,98 @@ edges) and once to accumulate the scores — so the state is O(|E|), never O(#tr
 solver, no Boost graph, and **serial**: a few ms on the densest capture here (377 images, 6241
 pairs, 44 889 triplets). Duplicate pairs collapse onto one edge weighted by the strongest.
 
+## Two modes
+
+The algorithm above is the **cutting rule**: the threshold applied as the paper means it, the
+pieces it leaves apart left apart, the faces named and cut, the descent below a shattered ceiling.
+It is what unfolds a symmetric building, and it is behind `--triplet-cut` because on a scene with
+no repeated structure it is a loss: on eight Polycam interiors it halves the registrations of
+every capture it touches (2678a364 95 -> 50, e00da096 92 -> 14, 5992d620 191 -> 116, 16d09ada
+233 -> 154), removing pairs the reference trajectories say are true, and the second ceiling names
+a room a face (5828945d: a 39-image room cut off as "the other face"); on a dense orbit it
+removes the wide-baseline pairs bundle adjustment needs most and costs 7-14 % of the rotation
+accuracy (see the default). Nothing in a pair tells a doppelganger from a weak true pair -- on
+Big Ben the pairs scoring below 0.2 are 7,394 true and 5,451 false, and on a video every pair but
+the consecutive ones is the weak side of a triangle a consecutive pair tops -- but the graph
+around them differs, and that is what the default reads.
+
+The default is the **keep mode**. The ceiling `tau(m)` is applied to the verified graph and the
+pairs it keeps -- the unscored ones and those scoring at or above it -- are joined into
+*pieces*, the connected components of the ceiling's survivor graph. The candidates are the scored
+pairs below the threshold whose two images lie in different pieces: what the ceiling sets apart.
+A weak pair inside one piece is kept, whatever its score, and counts toward the floor. Of the
+candidates, only what the graph can spare goes:
+
+1. **The floor.** Every image keeps at least `keepPairs` (3) of its pairs and enough of them to
+   hold `keepMatches` (2,000) weighted inliers, counting only pairs whose ray angle
+   (`ImagePair::meanRayAngle`, the median angle between the viewing rays of the track-forming
+   matches) reaches `keepMinAngle` (3 degrees; an unmeasured angle counts). Pairs that are not
+   candidates count first; images are served in ascending order of what they keep, each retaining
+   its best-scoring counting candidates, ties to the stronger, until both bounds hold or such
+   candidates run out; a retained pair counts for both its images. Why the angle: a near-duplicate
+   pair yields no 3D point, so a burst of near-duplicate frames would otherwise keep only its own
+   pairs, lose every link to the rest of the capture and be invalidated for a median triangulation
+   angle below the reconstruction's 1.5 degrees (5992d620 lost ten such frames before the angle
+   counted).
+2. **The threshold is the strictest one the graph fits.** An image falls short at a threshold when
+   its counting pairs that are not candidates at that threshold already fall short of the floor.
+   The keep mode's threshold is the strictest value at or below the ceiling at which at most
+   `keepMaxShort` (a half) of the images fall short: the ceiling when it fits, else the largest
+   candidate score that does, found by a binary search over the distinct scores below the ceiling
+   (the count is monotone). A graph that fits no threshold -- every scored pair kept and still more
+   than half the images short -- loses nothing; the scores are still computed and exported and the
+   seeds still named. Every interior of the campaign is such a graph: most of its images hold fewer
+   than 2,000 matches at 3 degrees or more in the whole graph.
+3. **The repair.** Every connected component of the unfiltered graph stays one component: the
+   candidates still unretained, best-scoring first, are retained whenever they join two components
+   of the survivor graph.
+4. Distinct image pairs decide, through their highest-scoring scene pair; duplicates follow.
+   Seeding is as in the cutting rule (the largest piece the ceiling leaves).
+
+A graph the ceiling leaves in one piece has no candidates and loses nothing, and the log says so:
+
+```
+Triplet filter: the ceiling 0.520 (m 0.30, d_max/|V| 0.315) leaves every component of the graph in one piece (1 pieces of 251 nodes, the largest 251): no pair below it joins two pieces, nothing to set apart, nothing removed
+```
+
+That is every Tanks and Temples orbit (Truck 251, Ignatius 263, Meetingroom 371, Caterpillar 383,
+Barn 410 images, all one piece), the Temple of Heaven video (338), Heinly's indoor set (152) and
+the interiors that are not one piece fit no threshold. The paper's evidence for the threshold is a
+*collection*: the survivor graph of a two-faced building falls into pieces at the ceiling
+(measured on the campaign's graphs, the largest piece holds 240 of the church's 277 images, 145
+of Brandenburg's 175, 244 of Radcliffe's 281, 414 of the Arc's 433, 434 of Nevsky's 447, 396 of
+Big Ben's 402), and it is the pairs joining those pieces the paper's method removes. On an orbit
+the same threshold names sixty per cent of the pairs -- the wide-baseline ones, which lose to a
+consecutive pair in every triangle -- and the graph stays one piece; an earlier keep rule that
+took every scored pair below the threshold as a candidate removed them (Truck kept 2,327 of 6,054
+pairs, Meetingroom 3,868 of 8,735) and paid 7-14 % of the rotation accuracy for it. The
+labelled exports say why no threshold can do better: the ceiling sits below 61 % of Truck's true
+pairs, 63 % of Meetingroom's, 73 % of the Arc's, 86 % of Nevsky's and 86 % of the church's, and
+below 98-100 % of the false pairs everywhere; a collection at 62-152 verified pairs per image
+survives losing three quarters of its true pairs by redundancy, an orbit at 24 pairs per image
+does not.
+
+When the keep mode acts, the log names the pieces, the candidates and what the floor kept:
+
+```
+Triplet filter: tau 0.963, the ceiling (ceiling 0.963 at m 0.30, d_max/|V| 0.947) leaves 3 pieces (the largest 9 of 19 nodes); 111 pairs below the threshold join two of them and are the candidates, 4 of 19 images short of the floor (3 pairs holding 2000 matches at 3 degrees or more) without them: 8 candidates retained for the floor, 0 to keep every component whole, 0 images whose candidates ran out before the floor held
+Triplet filter: kept 68/171 scene pairs (tau 0.963; 19 nodes, max degree 18; 969 triplets in 1 components, 235 doppelganger triplets gave no evidence; 103 below tau and 0 cut by the face rule removed, 0 unscored kept); the reconstruction seeds in the largest piece the ceiling leaves (9 images)
+```
+
+Why not a larger floor instead of the fit: measured on the interiors with the floor counting every
+pair, the incremental reconstruction of these captures flips under any change of the pair set, in
+both directions -- a floor of 1,000 matches breaks 2678a364 outright (median rotation error 28
+degrees against 0.4), a floor of 4,000 breaks 8d2f4877 after removing 189 of its 2,628 pairs where
+2,000, removing 790, improves it, and 2,000 registers 468 of 17ac94cc's 554 images against 274 at
+twice the error. No floor short of keeping everything guarantees the base on such a graph; the fit
+does, by construction. A floor set as a share of an image's matches was simulated and dropped (it
+does nothing for a dense orbit and floods false pairs back on cup and Radcliffe); a plain stand-down
+at the ceiling without the descent was measured and dropped (it left the small sets and Brandenburg
+untouched); and normalising the strength by the graph's yield envelope at the pair's ray angle, so
+a wide-baseline pair stops losing to the consecutive pair in every triangle, was replayed on the
+labelled exports and dropped: it moves Truck's share of true pairs below the ceiling from 61 % to
+50 % and merges the church's two faces into one piece.
+
 ## Where it runs, and the flags
 
 `Scene::Reconstruct` applies it **right after** the diagnostics export (`--export-pairs-csv` /
@@ -126,14 +221,19 @@ unscored kept`.
 
 | Flag | Default | Effect |
 |---|---|---|
-| `--filter-triplets B` | **`false`** | apply the filter to the matched view graph |
-| `--triplet-auto-tau B` | **`true`** | treat `tau(m)` as a ceiling: below it, the strictest threshold that joins every piece the ceiling leaves, unless the largest piece already holds a majority of the images in pieces, in which case the ceiling is applied as given; off applies `tau(m)` as given, the second face included |
-| `--triplet-min-score F` | `0.3` | the paper's minimum edge score *m*, in [0,1]; with `--triplet-auto-tau` the ceiling the threshold is derived from, otherwise applied as given |
-| `--triplet-second-face-score F` | `0.75` | with `--triplet-auto-tau`, a stricter minimum score whose ceiling names the faces when the graph it leaves has two (a majority piece and a second piece of at least a third of it): the default's ceiling then applies inside the larger face and every pair joining the other face is removed |
+| `--filter-triplets B` | **`true`** | apply the filter to the matched view graph, in the keep mode unless `--triplet-cut` |
+| `--triplet-cut B` | `false` | the cutting rule: the ceiling applied as given when its largest piece holds a majority, the smaller pieces left apart, the faces named and the other face cut, the descent below a shattered ceiling, no floor -- unfolds a symmetric building, halves the registrations of an interior and costs an orbit 7-14 % of its rotation accuracy |
+| `--triplet-keep-pairs N` | `3` | keep mode: the pairs every image keeps at least |
+| `--triplet-keep-matches N` | `2000` | keep mode: the weighted inliers every image keeps at least, over its counting pairs |
+| `--triplet-keep-min-angle F` | `3` | keep mode: only pairs whose ray angle reaches this many degrees count towards the floor (0 counts every pair) |
+| `--triplet-keep-max-short F` | `0.5` | keep mode: the largest share of the images that may fall short of the floor without the candidates; the threshold descends to the strictest one at or below the paper's where that holds, and a graph fitting none loses nothing (1 fits every threshold) |
+| `--triplet-auto-tau B` | `true` | with `--triplet-cut`: treat `tau(m)` as a ceiling and descend below it to the strictest threshold joining every piece the ceiling leaves, unless the largest piece already holds a majority; off applies `tau(m)` as given, the second face included |
+| `--triplet-min-score F` | `0.3` | the paper's minimum edge score *m*, in [0,1], from which the ceiling `tau(m)` is derived (both modes) |
+| `--triplet-second-face-score F` | `0.75` | with `--triplet-cut` and `--triplet-auto-tau`: a stricter minimum score whose ceiling names the faces when the graph it leaves has two (a majority piece and a second piece of at least a third of it); the default's ceiling then applies inside the larger face and every pair joining the other face is removed |
 
 `TripletFilterConfig::minYield` (0.4) has no flag.
 
-Python: `TripletFilterConfig(enabled, auto_tau, min_score, second_face_score, min_yield)`, `ReconstructionConfig.triplet_filter_cfg`, and `compute_triplet_scores(scene, min_score, min_yield, grid_size)` → the scores, `tau` and the graph statistics.
+Python: `TripletFilterConfig(enabled, auto_tau, cut, keep_pairs, keep_matches, keep_min_angle, keep_max_short, min_score, second_face_score, min_yield)`, `ReconstructionConfig.triplet_filter_cfg`, and `compute_triplet_scores(scene, min_score, min_yield, grid_size)` → the scores, `tau` and the graph statistics.
 
 ## Harness
 
@@ -267,26 +367,89 @@ short of it on the church; on the Arc (423) and Nevsky (447) it is 20 and 13 sho
 
 ## The default, and why
 
-The pre-registered rule made `--filter-triplets` default to true only if *all* of: no sift capture
-loses more than 2 % of its registered images; none worsens its median rotation error by more than
-5 %; and the dense `32265651` run registers more images in its largest component than the dense
-gate-only run alone (124). At `m = 0.6` the first fails on **every** capture (−5.3 % to −76.4 %) and the
-second on three of five (+7.1 %, +20.6 %, +128 %); only the third passes, decisively (368 > 124).
-The rule is a conjunction: **the default stays `false`**, enable it on a dense repetitive graph.
+The filter is on by default because the keep mode leaves a scene with no repeated structure as it
+was -- a graph the ceiling keeps in one piece has nothing to set apart, and a graph that fits no
+threshold loses nothing -- and removes, from a collection the ceiling splits, the pairs joining
+its pieces as far as the graph can spare them. The campaign of 2026-09-07 (runs
+`openmvs-triplet-default-20260907-<arm>` under each normal scene and `openmvs-disambig-20260907-<arm>`
+under each ambiguous set; every arm reconstructs the base arm's saved matched scene, so the arms
+differ only in the filter; `final-nofilter` is that scene reconstructed with the filter off, the
+baseline every arm is read against, since a saved scene reconstructs a few images apart from the
+in-process run and two reconstructions of the same scene differ by the bundle adjustment's
+run-to-run variance):
 
-The filter is a tool for scenes with repeated structure, matched exhaustively; on the retrieval-matched
-graphs the branch builds by default (50 pairs per image) the ceiling leaves one piece holding both
-faces of every two-faced building here, because retrieval prefers the look-alike pairs and the
-triangles a doppelganger sits in hold few of the strong true pairs that would score it down.
-`--filter-triplets` stays an explicit flag, to be set with exhaustive matching on such a scene.
+| scene | images | what the filter did | registered: no filter / default | rotation median / p90 (deg): no filter / default |
+|---|---|---|---|---|
+| Truck (T&T) | 251 | one piece: nothing removed | 251 / 251 | 0.141 / 0.159 both |
+| Meetingroom (T&T) | 371 | one piece: nothing removed | 371 / 371 | 0.138 / 0.151 both |
+| 2678a364 (Polycam) | 165 | 8 pieces, 11 joining pairs, 134 of 148 images short: fits no threshold | 95 / 95 | 0.402 / 0.704 both |
+| e00da096 | 189 | 7 pieces, 11 joins, 159 of 168 short: fits none | 92 / 92 | 1.033 / 1.369 both |
+| 5992d620 | 223 | 7 pieces, 420 joins, 144 of 200 short: fits none | 192 / 191 | 0.616 / 0.742 against 0.610 / 0.711 |
+| 8d2f4877 | 225 | 5 pieces, 29 joins, 138 of 205 short: fits none | 199 / 199 | 0.307 / 0.745 against 0.302 / 0.742 |
+| 5828945d | 238 | 6 pieces, 21 joins, 195 of 231 short: fits none | 33 / 33 | 1.258 / 1.492 both |
+| 16d09ada | 242 | one piece: nothing removed | 233 / 233 | 0.321 / 0.598 against 0.311 / 0.600 |
+| 5ada248e | 540 | 13 pieces, 19 joins, 426 of 501 short: fits none | 207 / 207 | 0.492 / 0.719 both |
+| 17ac94cc | 554 | 10 pieces, 8 joins, 401 of 534 short: fits none | 274 / 274 | 0.690 / 1.043 both |
+
+Ignatius, Caterpillar and Barn are one piece at the ceiling like Truck and Meetingroom and take
+the same early return. The pre-registered rule for the default (no capture loses more than 2 % of
+its registrations or 5 % of its median rotation accuracy) is met on every scene above because the
+keep mode removes nothing there; the differences in the table are the run-to-run variance (two
+reconstructions of the same unfiltered Truck scene differ by more than the default and the
+no-filter arm do). An earlier keep rule that took every scored pair below the threshold as a
+candidate cost Truck 0.157 against 0.141, Meetingroom 0.148 against 0.138, Caterpillar 0.127
+against 0.111 and Barn 0.124 against 0.113 (+7 to +14 %) by removing the wide-baseline pairs;
+that measurement is why the candidates are only what the ceiling sets apart.
+
+On the ambiguous sets (the same three arms; the two-face collections' faces never co-observe, so
+a model holding cameras of both reference faces joined them through false pairs -- "joined"; a
+video set's fold is counted in fold pairs, frames within one median step of each other and five
+or more apart; "misplaced" is the reference comparison's count, view 30 degrees or half a radius
+off):
+
+| set | images | no filter | default (keep mode) | cutting rule (`--triplet-cut`) |
+|---|---|---|---|---|
+| church_on_spilled_blood | 278 | 272, both faces: joined | 1441 of 22996 pairs removed; 275, both faces: joined | 142, one-sided |
+| brandenburg_gate | 176 | 173, both sides: joined | 1119 of 11880 removed; 171, both sides: joined | 145, one-sided |
+| radcliffe_camera | 283 | 277, both sides: joined | 2413 of 22517 removed; 278, both sides: joined | 65, one-sided, on a matching the ceiling leaves in one piece (181 on the earlier matching) |
+| arc_de_triomphe | 435 | 423, folded (view p90 150 deg) | 68 of 27108 removed; 418, folded | 400, unfolded (view p90 4.9) |
+| big_ben | 403 | 395, folded | 18 of 35922 removed; 395, folded | 379, folded (the limitation below) |
+| alexander_nevsky_cathedral | 449 | 440, folded (view p50 78) | 945 of 68071 removed; 444, folded | 432, unfolded (view p90 9.1) |
+| street | 19 | 19, 10 misplaced | 103 of 171 removed; 19, 4 misplaced | 19, 0 misplaced |
+| cereal | 25 | 25, 10 misplaced, folded | 236 of 296 removed; 25, 4 misplaced | 25, 0 misplaced |
+| cup | 64 | 64, 28 misplaced, folded | 623 of 2013 removed; 64, 14 misplaced, still folded | 52, 0 misplaced, 12 images out |
+| books | 21 | 21, 7 fold pairs | 147 of 209 removed; 21, 2 fold pairs | 21, 2 fold pairs |
+| desk | 31 | 31, 31 fold pairs | 308 of 439 removed; 31, 31 fold pairs | 31, 23 fold pairs |
+| oats | 23 | 23, 0 fold pairs | 170 of 248 removed; 23, 0 | 22, 0 |
+| ToH | 338 | 338, 804 fold pairs (folded) | one piece: nothing removed; 338, 804 fold pairs | 338, 3 fold pairs (unfolded) |
+| indoor | 153 | 152 | one piece: nothing removed; 152 | 152 |
+
+The keep mode helps the small video sets and leaves the collections as they were: its repair keeps
+every component of the unfiltered graph whole, so a two-faced building keeps its best-scoring
+joins and reconstructs with both faces in one model, and the Arc and Nevsky, nearly one piece at
+the ceiling with their false pairs inside it, fold as without the filter. Those are the scenes for
+`--triplet-cut`, whose numbers reproduce the earlier campaign on this base within a few images
+(church 142 against 143, Arc 400 against 403, Nevsky 432 against 434) except on Radcliffe, whose
+re-matched graph the ceiling no longer splits.
 
 ## Limitations and follow-ups
 
-* **Auto-enabling is the obvious next step.** `--triplet-auto-tau` already picks the threshold;
-  `--filter-triplets` itself is still a manual flag, and the filter is a large win exactly where the
-  matched graph is dense *and* fragments (368 of 377 images in one component against 131 on the dense
-  `32265651` graph) and a loss everywhere else — a rule reading the graph's own statistics would beat
-  that manual flag too.
+* **The keep mode does not separate two faces.** Its repair keeps every component of the
+  unfiltered graph whole, so a two-faced collection whose faces the ceiling sets apart keeps its
+  best-scoring joins and reconstructs as one model with both faces in it (church, Brandenburg and
+  Radcliffe register both reference faces under the default; the cutting rule registers one), and
+  a collection that is nearly one piece at the ceiling (the Arc, Nevsky) keeps the false pairs
+  inside that piece and folds as without the filter. Such a collection is run with `--triplet-cut`.
+* **A symmetric object orbited by a video is one piece at the ceiling.** The Temple of Heaven (338
+  frames) keeps every pair under the default and folds (804 fold pairs, 3 under `--triplet-cut`):
+  its false pairs join symmetric sides of a graph the consecutive frames already hold together, and
+  no structure of the graph tells them from an orbit's wide-baseline true pairs, which score as
+  low. The cutting rule unfolds it at the price the orbits pay.
+* **The wide-baseline bias.** Every non-consecutive pair of a video is the weak side of a triangle
+  a consecutive pair tops, so the pairs bundle adjustment needs most score lowest; the keep mode
+  sidesteps the bias by never removing a pair inside a piece. Normalising the strength by the
+  yield envelope at the pair's ray angle was replayed on the labelled exports and does not remove
+  it (Truck's share of true pairs below the ceiling 61 % to 50 %, and the church's faces merge).
 * **Filtering before view-graph calibration is untested.** It runs after `MatchPairs`, so
   `ViewGraphCalibrator` has already solved focal lengths over the *unfiltered* graph. Removing the
   doppelganger edges first should hand it a cleaner graph; it belongs with the experiment above.
@@ -297,9 +460,10 @@ triangles a doppelganger sits in hold few of the strong true pairs that would sc
   the sides from each other, not from their doppelgangers. Nothing in pairwise geometry tells the
   two apart; the reference model's authors used appearance. The filter registers 385 of 403 images,
   more than the paper's 379, on a folded model.
-* **One model per run**: the pieces the ceiling leaves apart stay unregistered (the church's north
-  facade, Radcliffe's three look-alike pieces), where Doppelgangers++ reports two models.
-  Reconstructing the remaining pieces as further models is a pipeline question, not the filter's.
+* **One model per run, under the cutting rule**: the pieces the ceiling leaves apart stay
+  unregistered (the church's north facade, Radcliffe's three look-alike pieces), where
+  Doppelgangers++ reports two models. Reconstructing the remaining pieces as further models is a
+  pipeline question, not the filter's.
 * **Retrieval-matched graphs**: the method needs the exhaustive graph; see the default.
 * **The offline replay** (`triplet_replay.py` beside the datasets) approximates the run's strength
   from the match count; its pieces at the ceiling differ from the run's by tens of images on these
