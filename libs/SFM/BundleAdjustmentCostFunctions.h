@@ -415,6 +415,92 @@ private:
 	Eigen::Vector3d u_, v_; // pre-scaled tangent basis (includes pixel scale)
 };
 
+// Relative-pose error between the two images of a verified pair
+//
+// An image pair stores the transform from its first image to its second (x_2 = R*x_1 + t) as a pose
+// whose center C = -R^T*t is the second image's center expressed in the first image's frame, so the
+// two absolute poses the pair predicts satisfy
+//     R_2 = R * R_1        and        R_1 * (C_2 - C_1) = C
+// which is the same relation the pose-link helpers state for the resection and the image filter.
+// Six residuals, each an angle in degrees divided by its standard deviation:
+//   [0..2] the angle-axis of R^T * (R_2 * R_1^T), zero exactly when the model's relative rotation
+//          is the pair's;
+//   [3..5] the model's baseline direction in the first image's frame, R_1 * (C_2 - C_1) normalized,
+//          minus the pair's own unit C. The chord between two unit vectors is the angle between
+//          them in radians up to third order, so 180/pi reads it in degrees. Held at zero when the
+//          model's two centers are closer together than the zero tolerance: coincident viewpoints
+//          have no baseline and so fix no direction.
+// A half whose weight (the reciprocal of its sigma) is zero contributes three zero residuals rather
+// than dividing by nothing, so either angle can be dropped without changing the residual layout.
+struct RelativePoseError {
+	// quatRel: the pair's relative rotation R as a unit quaternion [qw, qx, qy, qz]
+	// dirRel: the pair's unit baseline direction C/|C|, in the first image's frame
+	// weightRot, weightDir: 1/sigma in 1/degrees, 0 to drop that half
+	RelativePoseError(const double* quatRel, const double* dirRel, double weightRot, double weightDir) {
+		// kept inverted, since what the rotation residual composes with the model is R^T
+		quatRelInv_[0] =  quatRel[0];
+		quatRelInv_[1] = -quatRel[1];
+		quatRelInv_[2] = -quatRel[2];
+		quatRelInv_[3] = -quatRel[3];
+		dirRel_[0] = dirRel[0];
+		dirRel_[1] = dirRel[1];
+		dirRel_[2] = dirRel[2];
+		weightRot_ = weightRot;
+		weightDir_ = weightDir;
+	}
+
+	template <typename T>
+	bool operator()(
+		const T* const pose1,  // 7 params of the pair's first image: quat[4] + center[3]
+		const T* const pose2,  // 7 params of its second image
+		T* residuals) const
+	{
+		const double radiansToDegrees = 180.0/M_PI;
+		// rotation: angle-axis of R^T * (R_2 * R_1^T), the quaternions being unit by the pose manifold
+		if (weightRot_ > 0.0) {
+			const T quat1Inv[4] = { pose1[0], -pose1[1], -pose1[2], -pose1[3] };
+			const T quatRelInv[4] = { T(quatRelInv_[0]), T(quatRelInv_[1]), T(quatRelInv_[2]), T(quatRelInv_[3]) };
+			T quatModel[4], quatError[4], angleAxis[3];
+			ceres::QuaternionProduct(pose2, quat1Inv, quatModel);
+			ceres::QuaternionProduct(quatRelInv, quatModel, quatError);
+			ceres::QuaternionToAngleAxis(quatError, angleAxis);
+			const T scale(radiansToDegrees * weightRot_);
+			residuals[0] = angleAxis[0] * scale;
+			residuals[1] = angleAxis[1] * scale;
+			residuals[2] = angleAxis[2] * scale;
+		} else {
+			residuals[0] = residuals[1] = residuals[2] = T(0);
+		}
+		// translation: the model's baseline direction in the first image's frame against the pair's
+		residuals[3] = residuals[4] = residuals[5] = T(0);
+		if (weightDir_ > 0.0) {
+			const T baseline[3] = { pose2[4]-pose1[4], pose2[5]-pose1[5], pose2[6]-pose1[6] };
+			T direction[3];
+			ceres::UnitQuaternionRotatePoint(pose1, baseline, direction);
+			const T length = ceres::sqrt(direction[0]*direction[0] + direction[1]*direction[1] + direction[2]*direction[2]);
+			if (length > T(ZEROTOLERANCE<double>())) {
+				const T scale(radiansToDegrees * weightDir_);
+				residuals[3] = (direction[0]/length - dirRel_[0]) * scale;
+				residuals[4] = (direction[1]/length - dirRel_[1]) * scale;
+				residuals[5] = (direction[2]/length - dirRel_[2]) * scale;
+			}
+		}
+		return true;
+	}
+
+	static ceres::CostFunction* Create(const double* quatRel, const double* dirRel,
+		double weightRot, double weightDir)
+	{
+		return new ceres::AutoDiffCostFunction<RelativePoseError, 6, 7, 7>(
+			new RelativePoseError(quatRel, dirRel, weightRot, weightDir));
+	}
+
+private:
+	double quatRelInv_[4];         // the pair's relative rotation, inverted
+	double dirRel_[3];             // its unit baseline direction, in the first image's frame
+	double weightRot_, weightDir_; // 1/sigma in 1/degrees, 0 where that half is dropped
+};
+
 // GPS position error cost functor
 // Constrains camera center to known GPS position
 struct GPSPositionError {

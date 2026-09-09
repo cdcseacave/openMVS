@@ -101,6 +101,7 @@ float thAlignGPS;
 double gpsPositionWeight;
 double gpsPositionWeightZ;
 double baDenseWeight;
+float baPairSigma;
 unsigned refineIntrinsics;
 unsigned nMaxThreads;
 int nArchiveType;
@@ -201,6 +202,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("gps-position-weight", boost::program_options::value(&OPT::gpsPositionWeight)->default_value(0.0), "horizontal weight of the GPS position priors used to refine the geo-aligned reconstruction (0 = disabled)")
 		("gps-position-weight-z", boost::program_options::value(&OPT::gpsPositionWeightZ)->default_value(0.0), "vertical weight of the GPS position priors used to refine the geo-aligned reconstruction (0 = disabled)")
 		("ba-dense-weight", boost::program_options::value(&OPT::baDenseWeight)->default_value(-1.0), "bundle adjustment: loss weight of a reprojection residual on a dense (warp-sampled) keypoint, relative to the 1.0 a described one carries; negative (default) measures it as (sigma described/sigma dense)^2 on the scene each solve is about to fit and falls back to 0.25 on a scene too small to give either sigma; any value >= 0 pins it as given, so use [0,1] (1 = no down-weighting)")
+		("ba-pair-sigma", boost::program_options::value(&OPT::baPairSigma)->default_value(1.f), "bundle adjustment: standard deviation in degrees by which the model's relative rotation may differ from what a verified pair measured, the baseline direction being allowed twice as much; the pairs then hold the joints the tracks are too few to hold (0 = disabled, the solve fits reprojections alone)")
 		("refine-intrinsics", boost::program_options::value(&OPT::refineIntrinsics)->default_value(1), "bundle adjustment intrinsics refinement: 0=fixed intrinsics, 1=focal length and the first two radial terms (k1, k2), 2=all of them: the third radial term, the principal point and the tangential terms")
 		;
 
@@ -430,6 +432,10 @@ int main(int argc, LPCTSTR* argv)
 	// graph's dense discount (PairsWeightingConfig::denseObservationWeight), which is a different
 	// quantity and keeps its own constant
 	cfg.baConfig.denseObservationWeight = OPT::baDenseWeight;
+	// the rotation sigma names the pair constraints; the baseline direction, the weaker of the two
+	// measurements a pair makes, follows at twice it
+	cfg.relativeRotationSigma = MAXF(OPT::baPairSigma, 0.f);
+	cfg.relativeTranslationSigma = 2.f * cfg.relativeRotationSigma;
 	cfg.baIntrinsicFlags = OPT::refineIntrinsics == 0 ? ReconstructionConfig::INTRINSIC_NONE :
 		OPT::refineIntrinsics == 1 ? ReconstructionConfig::INTRINSIC_MAIN :
 		ReconstructionConfig::INTRINSIC_MAIN_EXTRA;

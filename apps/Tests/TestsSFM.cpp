@@ -8600,6 +8600,12 @@ bool ResectionRelativePoseFallbackTest()
 		sceneQuorum.status.nCalibratedImages = 5;
 		TriangulateTracks(sceneQuorum, false, 4.f, 1.f);
 
+		// The rotation image 5 carries INTO the resection, which is what its link offers image 4.
+		// The bundle adjustment that closes the registration hears image 5's own pairs and puts it
+		// back where they say, so the strength of the trap has to be read off the scene the
+		// registration saw rather than off the one it leaves behind.
+		const RMatrix displacedR5(sceneQuorum.images[5].R);
+
 		ResectionConfig configQuorum; // defaults
 		Resection resectionQuorum(sceneQuorum, configQuorum);
 		resectionQuorum.RegisterImages();
@@ -8611,7 +8617,7 @@ bool ResectionRelativePoseFallbackTest()
 		const double rotErr = RotationErrorDeg(sceneQuorum.images[4].R, gtQuorum[4].R);
 		const double posErr = norm(sceneQuorum.images[4].C - gtQuorum[4].C);
 		const double strongestErr = RotationErrorDeg(sceneQuorum.images[4].R,
-			RMatrix((gtQuorum[4] / gtQuorum[5]).R * sceneQuorum.images[5].R));
+			RMatrix((gtQuorum[4] / gtQuorum[5]).R * displacedR5));
 		DEBUG("ResectionRelativePoseFallbackTest: image 4 recovered from a quorum of 2 of its 3 links %.4f deg, "
 			"%.4f units off, while its strongest link places it %.2f deg away", rotErr, posErr, strongestErr);
 		if (rotErr > 1.0 || posErr > 0.02 * RESECTION_ARC_EXTENT) {
@@ -8970,6 +8976,206 @@ bool CorroboratedImageTest()
 
 	VERBOSE("CorroboratedImageTest PASSED: two images with no covisibility edge stay registered on the word of two "
 		"verified pairs each, and one whose pose contradicts its pairs does not (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+namespace {
+
+// How thick, in Y, the slab the cross-joint points are drawn from is: they fill the usual 2-unit box
+// in X and Z but only this much of it in Y, so at 0 they lie exactly in the plane the arc lies in.
+// That is the lever on how much of the bend the two-view geometry across the joint can see: raise it
+// and the points off the plane start to resist, so the reprojections alone recover part of the bend.
+constexpr REAL JOINT_TRACK_SPREAD_Y = 0;
+
+// numTracks tracks the given images share, at points drawn from the 2-unit box around the origin
+// flattened to the given half-height in Y
+void AddFlatResectionTracks(Scene& scene, const std::vector<IIndex>& imageIDs, unsigned numTracks,
+	REAL spreadY, std::mt19937& rng)
+{
+	std::uniform_real_distribution<REAL> coord(-1, 1);
+	for (unsigned i = 0; i < numTracks; ) {
+		if (AddResectionTrack(scene, Point3(coord(rng), spreadY*coord(rng), coord(rng)), imageIDs))
+			++i;
+	}
+}
+
+// Eight cameras of the arc, with a joint between cameras 3 and 4. Cameras 0-3 and cameras 4-7 each
+// carry three-view tracks, so either half of the chain holds its own shape; the only structure
+// across the joint is 40 tracks cameras 3 and 4 share with nobody else, so no track spans 2-3-4 or
+// 3-4-5 and the two halves are joined by two-view geometry alone. Those cross-joint points lie in
+// the plane of the arc -- the plane the camera centres and the axis the joint bends about span --
+// and a two-view pair reads a rotation about that axis only off the points that lie outside it, so
+// with none there the reprojections cannot tell how far the joint is bent. That is the joint a
+// doorway or a textureless wall leaves in a real capture, stated exactly. Verified pairs carrying
+// the true relative poses and 300 inliers join every camera to the next two along the chain, the
+// joint included, which is the evidence the reprojections do not have.
+void BuildPairConstraintScene(Scene& scene, std::vector<Pose3D>& gtPoses, std::mt19937& rng)
+{
+	BuildResectionArc(scene, 8);
+	gtPoses.clear();
+	for (const Image& img : scene.images)
+		gtPoses.push_back(static_cast<const Pose3D&>(img));
+
+	AddResectionTracks(scene, {0, 1, 2}, 80, rng);
+	AddResectionTracks(scene, {1, 2, 3}, 80, rng);
+	AddFlatResectionTracks(scene, {3, 4}, 40, JOINT_TRACK_SPREAD_Y, rng);
+	AddResectionTracks(scene, {4, 5, 6}, 80, rng);
+	AddResectionTracks(scene, {5, 6, 7}, 80, rng);
+
+	FOREACH(id, scene.images) {
+		if (id + 1 < scene.images.size())
+			AddResectionPair(scene, id, id + 1, 300);
+		if (id + 2 < scene.images.size())
+			AddResectionPair(scene, id, id + 2, 300);
+	}
+	TriangulateTracks(scene, false, 4.f, 1.f);
+}
+
+// Bend the model at the joint: cameras 4-7 and the points only they observe turn as one rigid block
+// about the arc's axis through camera 4's centre, the hinge. The block keeps its own shape, so every
+// track inside it still projects exactly where it is observed and the reprojection residuals of both
+// halves stay at zero; what the turn contradicts is every pair across the joint, by the whole angle.
+void BendPairConstraintScene(Scene& scene, REAL angleDegrees)
+{
+	const Point3 pivot = scene.images[4].C;
+	const RMatrix rot(REAL(0), D2R(angleDegrees), REAL(0)); // about the world Y axis, the arc's axis
+	for (IIndex id = 4; id < scene.images.size(); ++id) {
+		Image& img = scene.images[id];
+		img.C = pivot + rot*(img.C - pivot);
+		img.R = img.R * rot.t();
+	}
+	for (Track& track : scene.tracks) {
+		bool blockOnly = true;
+		for (const Observation& obs : track.observations)
+			if (obs.imageID < 4) { blockOnly = false; break; }
+		if (blockOnly)
+			track.position = pivot + rot*(track.position - pivot);
+	}
+}
+
+// The largest rotation error (degrees) and camera-centre error (world units) of the model against
+// the truth, over every image.
+//
+// A bundle adjustment with no metric prior holds one camera fixed, which pins where the model sits
+// and how it is turned but not how large it is: scaling every camera and every point about that
+// camera changes no reprojection, and no relative-pose residual either, since a direction says
+// nothing about length. That one free gauge is taken out before the centres are compared -- the
+// model is resized about its own centroid until it spreads as far as the truth does -- so what the
+// centre error measures is the model's shape. A solve that fixes a whole block of cameras leaves no
+// such freedom, and the resizing is then a no-op.
+void WorstPoseError(const Scene& scene, const std::vector<Pose3D>& gtPoses,
+	double& maxRotationDeg, double& maxCenter)
+{
+	Point3 centroid(0, 0, 0), gtCentroid(0, 0, 0);
+	FOREACH(id, scene.images) {
+		centroid += scene.images[id].C;
+		gtCentroid += gtPoses[id].C;
+	}
+	centroid /= (REAL)scene.images.size();
+	gtCentroid /= (REAL)scene.images.size();
+	REAL spread = 0, gtSpread = 0;
+	FOREACH(id, scene.images) {
+		spread += (REAL)norm(scene.images[id].C - centroid);
+		gtSpread += (REAL)norm(gtPoses[id].C - gtCentroid);
+	}
+	const REAL scale = spread > ZEROTOLERANCE<REAL>() ? gtSpread/spread : REAL(1);
+	maxRotationDeg = maxCenter = 0;
+	FOREACH(id, scene.images) {
+		maxRotationDeg = MAXF(maxRotationDeg, RotationErrorDeg(scene.images[id].R, gtPoses[id].R));
+		const Point3 center(gtCentroid + (scene.images[id].C - centroid)*scale);
+		maxCenter = MAXF(maxCenter, (double)norm(center - gtPoses[id].C));
+	}
+}
+
+} // namespace
+
+// The verified pairs hold the model where the tracks cannot: a chain bent at a joint whose only
+// structure is two-view and degenerate stays bent under the reprojection residuals alone, and the
+// relative-pose residuals straighten it -- in the global solve and in the local one alike
+bool BundleAdjustmentPairConstraintTest()
+{
+	TD_TIMER_START();
+	constexpr REAL PAIR_CONSTRAINT_BEND = 10;                        // degrees the block is turned by
+	constexpr double MAX_ROTATION_ERROR = 0.5;                       // degrees
+	constexpr double MAX_CENTER_ERROR = 0.01 * RESECTION_ARC_EXTENT; // 1% of the arc's extent
+	const IIndex farthestFromHinge = 7; // the camera at the far end of the turned block
+
+	// Without them the bend survives the solve: no reprojection residual in either half of the chain
+	// is violated by it, and the cross-joint tracks are blind to it
+	{
+		std::mt19937 rng(20260909);
+		Scene scene;
+		std::vector<Pose3D> gtPoses;
+		BuildPairConstraintScene(scene, gtPoses, rng);
+		BendPairConstraintScene(scene, PAIR_CONSTRAINT_BEND);
+		BAConfig config;
+		config.relativeRotationSigma = config.relativeTranslationSigma = 0.f;
+		if (!BundleAdjustment::Adjust(scene, config)) {
+			VERBOSE("BundleAdjustmentPairConstraintTest FAILED: the bundle adjustment did not solve the bent scene "
+				"with the pair residuals off");
+			return false;
+		}
+		const double rotationError = RotationErrorDeg(scene.images[farthestFromHinge].R, gtPoses[farthestFromHinge].R);
+		if (rotationError <= 5.0) {
+			VERBOSE("BundleAdjustmentPairConstraintTest FAILED: camera %u is %.2f degrees from the truth after the "
+				"solve with the pair residuals off, so the reprojections already straighten the %.0f-degree bend and "
+				"the scene does not pose the problem", farthestFromHinge, rotationError, (double)PAIR_CONSTRAINT_BEND);
+			return false;
+		}
+	}
+
+	// With them every pair across the joint is heard, and the block returns to where it belongs
+	{
+		std::mt19937 rng(20260909);
+		Scene scene;
+		std::vector<Pose3D> gtPoses;
+		BuildPairConstraintScene(scene, gtPoses, rng);
+		BendPairConstraintScene(scene, PAIR_CONSTRAINT_BEND);
+		if (!BundleAdjustment::Adjust(scene, BAConfig())) {
+			VERBOSE("BundleAdjustmentPairConstraintTest FAILED: the bundle adjustment did not solve the bent scene "
+				"with the pair residuals on");
+			return false;
+		}
+		double maxRotationDeg, maxCenter;
+		WorstPoseError(scene, gtPoses, maxRotationDeg, maxCenter);
+		if (maxRotationDeg > MAX_ROTATION_ERROR || maxCenter > MAX_CENTER_ERROR) {
+			VERBOSE("BundleAdjustmentPairConstraintTest FAILED: the global solve left the model %.3f degrees and "
+				"%.4f units from the truth, past the %.1f degrees and %.3f units the pairs should recover",
+				maxRotationDeg, maxCenter, MAX_ROTATION_ERROR, MAX_CENTER_ERROR);
+			return false;
+		}
+	}
+
+	// And the local solve is held the same way: cameras 0-3 are constants, so the pairs across the
+	// joint constrain the free block alone
+	{
+		std::mt19937 rng(20260909);
+		Scene scene;
+		std::vector<Pose3D> gtPoses;
+		BuildPairConstraintScene(scene, gtPoses, rng);
+		BendPairConstraintScene(scene, PAIR_CONSTRAINT_BEND);
+		IIndexArr localViews, fixedViews;
+		for (IIndex id = 0; id < 4; ++id)
+			fixedViews.push_back(id);
+		for (IIndex id = 4; id < 8; ++id)
+			localViews.push_back(id);
+		if (!BundleAdjustment::AdjustLocal(scene, localViews, fixedViews, BAConfig())) {
+			VERBOSE("BundleAdjustmentPairConstraintTest FAILED: the local bundle adjustment did not solve the bent scene");
+			return false;
+		}
+		double maxRotationDeg, maxCenter;
+		WorstPoseError(scene, gtPoses, maxRotationDeg, maxCenter);
+		if (maxRotationDeg > MAX_ROTATION_ERROR || maxCenter > MAX_CENTER_ERROR) {
+			VERBOSE("BundleAdjustmentPairConstraintTest FAILED: the local solve left the model %.3f degrees and "
+				"%.4f units from the truth, past the %.1f degrees and %.3f units the pairs should recover",
+				maxRotationDeg, maxCenter, MAX_ROTATION_ERROR, MAX_CENTER_ERROR);
+			return false;
+		}
+	}
+
+	VERBOSE("BundleAdjustmentPairConstraintTest PASSED: a %.0f-degree bend at a joint the tracks leave free survives "
+		"the reprojection residuals and is undone by the relative-pose residuals of the verified pairs, globally and "
+		"in a local window alike (%s)", (double)PAIR_CONSTRAINT_BEND, TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 

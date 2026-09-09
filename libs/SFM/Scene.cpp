@@ -57,6 +57,13 @@ void SFM::SetBAIntrinsicFlags(BAConfig& baCfg, unsigned baIntrinsicFlags)
 	baCfg.refineRadialDistortion3 = (baIntrinsicFlags & ReconstructionConfig::INTRINSIC_RADIAL_DIST_3) != 0;
 }
 
+// Copy the reconstruction's relative-pose sigmas onto a bundle-adjustment configuration
+void SFM::SetBAPairConstraints(BAConfig& baCfg, float relativeRotationSigma, float relativeTranslationSigma)
+{
+	baCfg.relativeRotationSigma = relativeRotationSigma;
+	baCfg.relativeTranslationSigma = relativeTranslationSigma;
+}
+
 
 Scene::Scene(unsigned _nMaxThreads)
 	: transform(Matrix4x4::IDENTITY), obb(true), nMaxThreads(Thread::getMaxThreads(_nMaxThreads)),
@@ -731,6 +738,10 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	// few views cannot improve it and can bend it. The global bundle adjustments refine it like
 	// any other focal once the model is large enough to hold it.
 	ReconstructionConfig cfg = config;
+	// Every bundle adjustment below derives its configuration from cfg.baConfig, so mapping the
+	// relative-pose sigmas onto it here is what carries them to all of them: the star initializer's
+	// solves, the resection's local and full ones, and the global passes alike.
+	SetBAPairConstraints(cfg.baConfig, cfg.relativeRotationSigma, cfg.relativeTranslationSigma);
 	if (cfg.importCfg.focalLength > 0) {
 		cfg.initCfg.refineFocalLength = false;
 		VERBOSE("Focal length forced at %g px: kept by the star initializer, refined by bundle adjustment", cfg.importCfg.focalLength);

@@ -50,6 +50,17 @@ struct SFM_API BAConfig
 	double gpsPositionWeightZ = 0.0;    // Vertical GPS constraint weight
 	double gpsWeightScaleFactor = 1.0;  // Manual scaling override for GPS weights
 
+	// Relative-pose constraints from the verified image pairs, as the standard deviation (degrees)
+	// of the two angles a pair measures: how far the model's relative rotation may sit from the
+	// pair's, and how far the model's baseline direction may sit from the pair's. A pair carries a
+	// relative pose measured from hundreds of correspondences, which the reprojection residuals
+	// never see: where the tracks joining two parts of the model are few or two-view only, they
+	// leave the joint between them free to bend, and these residuals are what holds it.
+	// Either sigma at 0 switches its half off; both at 0 leaves the solve fitting reprojections
+	// alone. Smaller = the pairs are trusted more against the tracks.
+	float relativeRotationSigma = 1.f;
+	float relativeTranslationSigma = 2.f;
+
 	// Angular reprojection error with keypoint confidence weighting
 	// Its SQUARE(2/max(size,1)) precision term already reads measurement precision off the sampling
 	// scale, which is the same statement denseObservationWeight below makes, so turning this on
@@ -104,6 +115,10 @@ struct SFM_API BAConfig
 	// check if any GPS-related refinement is enabled
 	bool IsRefiningGPS() const {
 		return gpsPositionWeight > 0 || gpsPositionWeightZ > 0;
+	}
+	// check if the verified pairs' relative poses constrain the solve
+	bool IsUsingPairConstraints() const {
+		return relativeRotationSigma > 0.f || relativeTranslationSigma > 0.f;
 	}
 };
 /*----------------------------------------------------------------*/

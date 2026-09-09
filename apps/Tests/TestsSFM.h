@@ -180,6 +180,12 @@ bool DenseObservationWeightEstimateTest();
 // into the bundle-adjustment switches that are actually solved
 bool BAIntrinsicFlagsTest();
 
+// The bundle adjustment hears the verified pairs: a chain bent at a joint whose only structure is
+// two-view and degenerate stays bent under the reprojection residuals alone, and the relative-pose
+// residuals of the pairs across the joint (BAConfig::relativeRotationSigma /
+// relativeTranslationSigma) put it back, in the global solve and in a local window alike
+bool BundleAdjustmentPairConstraintTest();
+
 // Small SFM smoke test: build tiny scene and run BundleAdjustment::Adjust
 bool PipelineTest();
 

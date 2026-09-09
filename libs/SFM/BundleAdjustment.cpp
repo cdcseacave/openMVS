@@ -8,6 +8,7 @@
 #include "Common.h"
 #include "BundleAdjustment.h"
 #include "Scene.h"
+#include "PoseLink.h"
 #include "../Math/GeodeticTransforms.h"
 #include "BundleAdjustmentCostFunctions.h"
 
@@ -664,6 +665,77 @@ inline ceres::LocalParameterization* CreateSE3PoseManifold() {
 	return new ceres::ProductParameterization(quaternion_param, identity_param);
 }
 #endif
+
+// Threshold of the robust loss the two halves of a pair residual share, in sigmas: past three
+// standard deviations the pair and the model disagree about more than measurement noise, and the
+// residual's pull stops growing rather than dragging a correct model onto a wrong pair.
+constexpr double PAIR_CONSTRAINT_HUBER_SIGMAS = 3.0;
+// Confidence a pair's inliers lend its relative pose, as the factor its two sigmas are divided by:
+// the square root of the weighted inlier count against a reference of 100, the count capped first.
+// A pair of 500 inliers then counts sqrt(5) times a pair of 100 and a pair of 25 counts half, while
+// the cap keeps the heaviest pairs of a graph from overwhelming the reprojections they complement.
+constexpr unsigned MAX_PAIR_CONSTRAINT_INLIERS = 500;
+constexpr double PAIR_CONSTRAINT_REFERENCE_INLIERS = 100;
+inline double PairConstraintConfidence(unsigned numInliers) {
+	return SQRT(MINF(numInliers, MAX_PAIR_CONSTRAINT_INLIERS)/PAIR_CONSTRAINT_REFERENCE_INLIERS);
+}
+
+// One relative-pose residual per verified pair whose two images are both part of the solve: the
+// pair's relative rotation and baseline direction against the model's, the two halves sharing one
+// robust loss. inSolve() answers whether an image takes part; poseParams is the flat
+// [qw,qx,qy,qz,Cx,Cy,Cz] array indexed by image ID. Returns how many residuals were added.
+//
+// A verified pair is a measurement of two images' relative pose from hundreds of correspondences
+// that the reprojection residuals never see: they fit the tracks, and where the tracks joining two
+// parts of the model are few or two-view only the joint between them is free to bend while every
+// pair across it says by how much. Adding the pairs is what holds it straight.
+template <typename TInSolve>
+uint32_t AddRelativePoseResiduals(ceres::Problem& problem, const Scene& scene,
+	const BAConfig& config, double* poseParams, const TInSolve& inSolve)
+{
+	if (!config.IsUsingPairConstraints())
+		return 0;
+	const double weightRotation = config.relativeRotationSigma > 0.f ? 1.0/config.relativeRotationSigma : 0.0;
+	const double weightTranslation = config.relativeTranslationSigma > 0.f ? 1.0/config.relativeTranslationSigma : 0.0;
+	// one loss shared by every pair residual, created with the first of them so that a solve adding
+	// none does not leak it; the problem reference-counts the losses it owns
+	ceres::LossFunction* pairLoss = NULL;
+	uint32_t numResiduals = 0;
+	for (const ImagePair& pair : scene.pairs) {
+		if (!IsPoseLinkPair(pair))
+			continue;
+		ASSERT(pair.ID1 < scene.images.size() && pair.ID2 < scene.images.size());
+		if (!inSolve(pair.ID1) || !inSolve(pair.ID2))
+			continue;
+		const double confidence = PairConstraintConfidence(pair.GetNumWeightedInliers());
+		if (confidence <= 0)
+			continue;
+		const Pose3D& relPose = pair.relativePose.value();
+		// the pair's own baseline direction, in its first image's frame; a pair whose two images
+		// share a viewpoint measured no direction at all, and only its rotation is evidence
+		double direction[3] = { relPose.C.x, relPose.C.y, relPose.C.z };
+		const double baseline = norm(relPose.C);
+		double weightDirection = 0.0;
+		if (baseline > ZEROTOLERANCE<double>()) {
+			direction[0] /= baseline; direction[1] /= baseline; direction[2] /= baseline;
+			weightDirection = weightTranslation;
+		}
+		if (weightRotation <= 0.0 && weightDirection <= 0.0)
+			continue;
+		double quatRelative[4];
+		ceres::RotationMatrixToQuaternion(ceres::RowMajorAdapter3x3(relPose.R.val), quatRelative);
+		if (!pairLoss)
+			pairLoss = new ceres::HuberLoss(PAIR_CONSTRAINT_HUBER_SIGMAS);
+		problem.AddResidualBlock(
+			RelativePoseError::Create(quatRelative, direction,
+				weightRotation*confidence, weightDirection*confidence),
+			pairLoss,
+			poseParams + pair.ID1*7,   // Pose params of the pair's first image
+			poseParams + pair.ID2*7);  // Pose params of its second image
+		++numResiduals;
+	}
+	return numResiduals;
+}
 } // namespace
 /*----------------------------------------------------------------*/
 
@@ -788,6 +860,12 @@ bool BundleAdjustment::Adjust()
 				numDenseResiduals, numReprojResiduals, denseWeight);
 		}
 	}
+
+	// Add relative-pose residuals from the verified pairs joining two registered images
+	const uint32_t numPairResiduals = AddRelativePoseResiduals(problem, scene, config, poseParams.data(),
+		[this](IIndex imgID) { return scene.images[imgID].IsValid(); });
+	if (config.IsUsingPairConstraints())
+		DEBUG("Created %u relative-pose residuals from the verified pairs", numPairResiduals);
 
 	// Set intrinsic parameter constraints (if refining intrinsics)
 	if (config.IsRefiningIntrinsics() && !intrinsicParams.empty()) {
@@ -1187,6 +1265,15 @@ bool BundleAdjustment::AdjustLocal(
 				numDenseResiduals, numReprojResiduals, denseWeight);
 		}
 	}
+
+	// Add relative-pose residuals from the verified pairs joining two window images, the fixed ones
+	// included: a fixed pose block is a constant, so such a residual constrains the free image alone
+	const uint32_t numPairResiduals = AddRelativePoseResiduals(problem, scene, config, poseParams.data(),
+		[&localImages, &fixedImages](IIndex imgID) {
+			return localImages.find(imgID) != localImages.end() || fixedImages.find(imgID) != fixedImages.end();
+		});
+	if (config.IsUsingPairConstraints())
+		DEBUG("Created %u relative-pose residuals from the verified pairs (local BA)", numPairResiduals);
 
 	// Set the SE(3) manifold on every pose block that was actually added to the problem.
 	// Ceres takes ownership of the manifold only once it is attached to a block, so if no

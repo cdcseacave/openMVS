@@ -201,6 +201,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::BAIntrinsicFlagsTest())
 				return false;
+			if (!SFM::BundleAdjustmentPairConstraintTest())
+				return false;
 			if (!SFM::RotationEstimatorTest())
 				return false;
 			if (!SFM::ScaleEstimatorTest())

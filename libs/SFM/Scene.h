@@ -125,6 +125,11 @@ struct SFM_API ReconstructionConfig {
 						INTRINSIC_RADIAL_DIST_456
 	};
 	unsigned baIntrinsicFlags{INTRINSIC_MAIN}; // which intrinsics to refine
+	// Relative-pose constraints from the verified pairs, in degrees (0 disables that half): how far
+	// the bundle adjustment lets the model's relative rotation, and its baseline direction, sit from
+	// what a pair measured. Copied onto every BAConfig the reconstruction derives.
+	float relativeRotationSigma{1.f};
+	float relativeTranslationSigma{2.f};
 	BAConfig baConfig;  // detailed BA configuration
 
 	float thAlignGPS{5.f}; // threshold for aligning to GPS (meters)
@@ -143,6 +148,10 @@ struct SFM_API ReconstructionConfig {
 // Translate ReconstructionConfig's intrinsic flags (baIntrinsicFlags) into the matching
 // bundle-adjustment switches on the given BAConfig
 SFM_API void SetBAIntrinsicFlags(BAConfig& baCfg, unsigned baIntrinsicFlags);
+
+// Copy ReconstructionConfig's relative-pose sigmas onto the given BAConfig, so that every bundle
+// adjustment the reconstruction derives hears the verified pairs on the same terms
+SFM_API void SetBAPairConstraints(BAConfig& baCfg, float relativeRotationSigma, float relativeTranslationSigma);
 
 
 // Scene contains all data for a Structure-from-Motion reconstruction:
