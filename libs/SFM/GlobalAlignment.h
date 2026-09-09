@@ -41,27 +41,36 @@ class SFM_API Scene;
  * STAGE 1: ESTIMATE RELATIVE SIMILARITIES
  *   For every pair of sub-scenes that share images connected by cross-sub-scene
  *   pairs (pairs left in the global scene after splitting), estimate a 7-DOF
- *   similarity transform (Sim(3): rotation, translation, scale) directly from
- *   3D-3D point correspondences using RANSAC:
- *   - Build per-sub-scene observation caches mapping (localImage, feature) to
- *     the 3D position of the inlier track that contains that observation.
- *   - For each cross-sub-scene image pair and each inlier 2D match, look up
- *     both endpoints in the corresponding caches; when both hit, this yields a
- *     3D-3D point correspondence between sub-scene A and sub-scene B (both
- *     expressed in their own local frames).
- *   - Call EstimateSimilarityTransform on the collected correspondences. The
- *     threshold is chosen per pair as a fraction of the source point cloud's
- *     bounding-box diagonal so the criterion is invariant to each sub-scene's
- *     arbitrary units.
- *   - Store the result as a ScenePair with the full Sim(3) relativeTransform
- *     and the RANSAC inlier count.
- *   Pairs with too few inliers or low inlier ratio are discarded.
+ *   similarity transform (Sim(3): rotation, translation, scale) and store it as
+ *   a ScenePair with its inlier count. Both modes start from the same per-sub-scene
+ *   observation cache mapping (localImage, feature) to the 3D position of the inlier
+ *   track holding that observation, and both walk the same cross-sub-scene matches;
+ *   they differ in what they ask of a match. GlobalAlignmentConfig::alignment selects.
  *
- *   Rationale: the previous implementation used PoseLib's generalized relative
- *   pose solver on 2D-2D correspondences, which assumes both sub-scene "rigs"
- *   share the same metric scale — an assumption that does not hold after
- *   independent hierarchical reconstruction. Estimating Sim(3) from the 3D
- *   points the sub-scenes already triangulated avoids that bias entirely.
+ *   ALIGN_POINTS — similarity from 3D-3D correspondences:
+ *   - A match contributes when BOTH its endpoints hit the caches, giving one 3D point
+ *     per sub-scene, each in its own local frame.
+ *   - EstimateSimilarityTransform fits the Sim(3) by RANSAC, with the inlier distance
+ *     a fraction of the destination point cloud's bounding-box diagonal so the
+ *     criterion is invariant to each sub-scene's arbitrary units.
+ *   - This needs a match whose two endpoints both lie on a track. Dense (warp-sampled)
+ *     keypoints are laid out per pair on the target side, so they rarely join a track
+ *     there and such a seam can end up with no correspondence at all.
+ *
+ *   ALIGN_CAMERAS — generalized-camera PnP with scale:
+ *   - One sub-scene's cameras are a rig whose internal poses are known in that
+ *     sub-scene's frame and at its scale; the other sub-scene's inlier tracks are the
+ *     3D points; the cross-sub-scene matches are the rig's observations of them. A
+ *     match contributes when ONE endpoint hits the cache — the other endpoint only has
+ *     to be a keypoint — so a seam is measurable from either side alone.
+ *   - PoseLib's generalized absolute pose with scale (LO-RANSAC over gp4ps, then a
+ *     scale-aware refinement) solves the rig pose and the rig-to-points scale together,
+ *     from bearing vectors, so any central camera model is handled.
+ *   - Both directions are estimated. If both succeed they must agree in rotation and
+ *     scale, or the seam is rejected: a seam trusted on the stronger of two conflicting
+ *     estimates is how a block gets merged upside down. Agreeing directions are refined
+ *     jointly into one Sim(3) over the union of their inliers.
+ *   Pairs with too few inliers or low inlier ratio are discarded, in both modes.
  *
  * STAGE 2: ROTATION AVERAGING
  *   Extract relative rotations R_ij from each ScenePair and solve for global
@@ -213,8 +222,15 @@ struct SFM_API ScenePair
  */
 struct SFM_API GlobalAlignmentConfig
 {
+	// How the relative Sim(3) of two sub-scenes is measured (see EstimateRelativePoses):
+	enum Alignment : unsigned {
+		ALIGN_POINTS = 0,  // similarity from the 3D-3D correspondences of matches lying on an inlier track in BOTH sub-scenes
+		ALIGN_CAMERAS = 1, // generalized-camera PnP with scale of one sub-scene's cameras against the other's tracks, both directions
+	};
+	unsigned alignment{ALIGN_CAMERAS};
 	unsigned minCommonTracks{25};      // minimum tracks to connect sub-scenes
 	bool mergeTrackInliersOnly{true};  // seed union-find with only inlier observations (true) or all observations (false)
+	float maxReprojError{4.f};         // pixels; the camera alignment's reprojection threshold, the resection's own
 	// Cross-sub-scene Sim(3) alignment robustness (see EstimateRelativePoses):
 	double simInlierThresholdFactor{0.01};  // RANSAC inlier distance as a fraction of the destination bbox diagonal
 	double minSimInlierRatio{0.3};          // minimum RANSAC inlier ratio required to accept a sub-scene pair
@@ -224,6 +240,8 @@ struct SFM_API GlobalAlignmentConfig
 	// is too large in scale, rotation or translation are conflicting, and a sub-scene dominated
 	// by conflicting incident edge weight is demoted and rebuilt by the post-merge resection
 	// instead of being merged with its (misaligned) poses.
+	// The scale and rotation limits also gate the camera alignment's two directions against each
+	// other, before any averaging: a seam whose two estimates disagree by more is rejected outright.
 	float maxSimScaleRatio{1.1f};           // max per-edge scale-residual ratio vs the averaged global transforms
 	float maxSimRotationError{3.f};         // degrees; max per-edge rotation residual vs the averaged global transforms
 	float maxSimTranslationError{0.05f};    // max per-edge translation residual as a fraction of the sub-scene's local camera-bbox diagonal
@@ -251,6 +269,18 @@ public:
 	 */
 	bool MergeScenes(std::vector<Scene>& subScenes, const std::vector<IIndexArr>& localToGlobals);
 
+	/**
+	 * @brief Measure the relative similarity of every connected sub-scene pair, exactly as
+	 * MergeScenes does before averaging, without merging anything
+	 *
+	 * The first stage on its own: it neither consumes the sub-scenes nor touches the global
+	 * scene, so the alignment can be measured against a known answer.
+	 */
+	bool EstimateSubScenePairs(
+		const std::vector<Scene>& subScenes,
+		const std::vector<IIndexArr>& localToGlobals,
+		std::vector<ScenePair>& scenePairs);
+
 private:
 	/**
 	 * @brief Build and validate global image -> (sub-scene, local image) mapping
@@ -260,9 +290,9 @@ private:
 	void BuildGlobalToLocalMap(const std::vector<IIndexArr>& localToGlobals);
 
 	/**
-	 * @brief Stage 1: Estimate relative 7-DOF similarity transforms between
-	 * connected sub-scenes via RANSAC over 3D-3D point correspondences
-	 * (EstimateSimilarityTransform). Scale is recovered directly, so no
+	 * @brief Stage 1: Estimate the relative 7-DOF similarity transform of every pair of
+	 * sub-scenes the cross-sub-scene image pairs connect, in whichever of the two modes
+	 * GlobalAlignmentConfig::alignment selects. Scale is recovered directly by both, so no
 	 * separate pairwise scale estimation is needed downstream.
 	 */
 	bool EstimateRelativePoses(

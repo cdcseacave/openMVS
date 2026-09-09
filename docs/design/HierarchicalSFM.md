@@ -82,15 +82,21 @@ If initialization fails for a sub-scene it is skipped; those images remain uncal
 
 Each sub-scene lives in its own arbitrary coordinate system. The merge estimates **similarity transforms** (rotation + scale + translation) to bring all sub-scenes into a single frame, using a decoupled approach where each subproblem is (nearly) convex.
 
-### Stage 1 — Relative Poses
+### Stage 1 — Relative Similarities
 
-For every pair of sub-scenes connected by cross-cluster pairs, estimate the rigid relative pose.
+For every pair of sub-scenes the cross-cluster pairs connect, estimate the 7-DOF similarity `p_B = s·R·p_A + t` that maps one into the other. Two modes measure it; `GlobalAlignmentConfig::alignment` (`--cluster-alignment`) selects. Both start from the same per-sub-scene cache mapping `(localImage, feature)` to the 3D position of the inlier track holding that observation, and both walk the same cross-cluster matches (the track-forming prefix of each pair's `matches`); they differ in what they ask of a match.
 
-Cross-cluster image pairs are grouped by sub-scene pair, sorted by inlier count, and limited to the top 25. Matches are subsampled to 1000 per pair (evenly spaced to preserve spatial distribution). PoseLib's **generalized relative pose** solver runs with RANSAC (`max_epipolar_error ≈ 2px` in normalized coords, 100–10000 iterations).
+**`ALIGN_POINTS` — similarity from 3D-3D correspondences.** A match contributes when **both** its endpoints hit the cache, giving one 3D point per sub-scene in its own local frame. `EstimateSimilarityTransform` fits the Sim(3) by RANSAC with the inlier distance set to a fraction (`simInlierThresholdFactor`, 1%) of the destination cloud's bounding-box diagonal, so the criterion is invariant to each sub-scene's arbitrary units.
 
-Rejection criteria: fewer than 2 camera pairs, fewer than 25 inliers, or inlier ratio below 15%.
+This mode needs a match whose two endpoints both lie on a track. Warp-sampled (dense) keypoints are laid out on the source image's grid, so they coincide across that image's pairs and form tracks there, while the target side gets positions warped per pair which never join one. A seam bridged by dense matches alone can therefore end up with no correspondence at all.
 
-Output: `vector<ScenePair>`, each containing the relative pose and inlier count.
+**`ALIGN_CAMERAS` — generalized-camera PnP with scale.** One sub-scene's cameras form a rig whose internal poses are known in that sub-scene's frame and at its scale; the other sub-scene's inlier tracks are the 3D points; the cross-cluster matches are the rig's observations of them. A match contributes when **one** endpoint hits the cache — the other only has to be a keypoint — so a seam stays measurable from either side alone.
+
+Correspondences are grouped per rig image (images that received none stay out of the rig), the 2D side entering as unit bearings from `Camera::UnprojectNormalized` so any central camera model works. PoseLib's `estimate_generalized_absolute_pose_scale_bearings` (LO-RANSAC over gp4ps followed by a scale-aware refinement) solves the rig pose and the rig-to-points scale together. It models `Z_k = R_k·(R·X + t) + scale·t_k`, i.e. it scales the rig's centers into the frame the points live in, so the similarity mapping the point sub-scene into the rig sub-scene is `p_rig = (1/scale)·R·p_point + (1/scale)·t`. The threshold is angular: the pixel threshold (`maxReprojError`, 4px, the resection's own) read through each camera's `PixelErrorToAngular`, the rig judged at the widest of them since the estimator scores it against one value. The scale is observable only across distinct rig centers, so a rig of fewer than two cameras is not estimated.
+
+Both directions are estimated. A direction counts only if its inliers reach `minCommonTracks` and its inlier ratio reaches `minSimInlierRatio`. If both count they must agree — rotation within `maxSimRotationError`, scale ratio within `maxSimScaleRatio` — or the seam is **rejected**, never resolved in favour of the better supported estimate: a seam accepted wrong merges a whole block into the wrong place. Agreeing directions are then refined jointly, with Ceres, into one Sim(3) over the union of both inlier sets: seven parameters (unit quaternion on its manifold, translation, log scale), residuals the reprojection of A's points into B's cameras through `T` and of B's points into A's cameras through `T⁻¹`, under a Huber loss at the pixel threshold. The pair's weight is the sum of both inlier counts. If only one direction counts, it stands alone on its own inliers.
+
+Output, in both modes: `vector<ScenePair>`, each carrying the full Sim(3) and the inlier count the later averaging weights by.
 
 ### Stage 2 — Rotation Averaging
 
@@ -105,15 +111,15 @@ Output: one angle-axis vector per sub-scene.
 
 ### Stage 3 — Scale Averaging
 
-For each scene pair, match features across sub-scenes via cross-cluster pairs, look up 3D positions in both, compute camera-to-point depths, and take the **median depth ratio** as the pairwise scale (minimum 10 valid depth pairs required).
+The pairwise scale comes straight out of Stage 1: each `relativeTransform` satisfies `p_B = (s_A/s_B)·R·p_A + t`, so its scale field is `s_A/s_B` and its reciprocal is the ratio `s_B/s_A` the estimator wants. Nothing is re-measured here, and a pair whose scale is not positive is dropped.
 
-Solve the global system in log-space via weighted least-squares (SVD):
+Solve the overdetermined system in log-space by weighted least-squares (SVD), each equation weighted by the pair's inlier count:
 
 ```
 log(s_j) − log(s_i) = log(ratio_ij)
 ```
 
-Gauge: first sub-scene pinned to `s = 1.0`.
+Gauge: the fixed node is the sub-scene carrying the most incident pair weight, eliminated from the system rather than penalized, so its scale is exactly 1. With no pairs at all every scale falls back to 1.
 
 ### Stage 4 — Translation Averaging
 
@@ -187,6 +193,6 @@ Intra-sub-scene pairs already had their tracks correctly formed during reconstru
 
 The union-find pattern from `BuildTracks` is reused for efficiency. The 3D proximity guard (2% of bounding box diagonal) addresses a gap specific to the merge scenario: sub-scene tracks have disjoint image sets by construction, so the duplicate-image guard alone cannot catch false matches between sub-scenes.
 
-### Median Depth Ratios for Scale
+### One Seam, Two Directions
 
-Using the median (rather than mean) of depth ratios provides robustness against outlier matches. Computing depth along the viewing direction (rather than raw 3D distance) gives a scale-invariant measurement that properly captures the relative scale between two coordinate systems.
+The camera alignment is asymmetric: it registers one sub-scene's cameras against the other's points, and the two sub-scenes are not interchangeable in it — each side's tracks and each side's camera spread carry different evidence. Running it both ways costs one more estimation per seam and buys two things a single direction cannot: a seam survives when only one side's keypoints ever formed tracks, and when both sides speak they can be made to agree before anything downstream trusts them. Rotation averaging is robust to a wrong edge, but scale and translation averaging are not, and a seam is the joint of a whole block — so disagreement rejects rather than arbitrates.

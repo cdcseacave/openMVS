@@ -363,6 +363,7 @@ bool GlobalAlignmentTranslationAveragingExtendedTest();
 bool GlobalAlignmentMergeSingleSceneTest();
 bool GlobalAlignmentTrackMergeDuplicateImageGuardTest();
 bool GlobalAlignmentTrackMerge3DProximityGuardTest();
+bool HierarchicalCameraAlignmentTest();
 
 // End-to-end hierarchical SFM tests
 bool HierarchicalSFMSplitMergeRoundtripTest();

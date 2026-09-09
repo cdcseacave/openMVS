@@ -329,6 +329,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::GlobalAlignmentTrackMerge3DProximityGuardTest())
 				return false;
+			if (!SFM::HierarchicalCameraAlignmentTest())
+				return false;
 			// Hierarchical SFM tests - End-to-End
 			if (!SFM::HierarchicalSFMSplitMergeRoundtripTest())
 				return false;

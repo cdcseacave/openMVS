@@ -93,6 +93,7 @@ unsigned nMaxFeaturesPerCell;
 unsigned nMinFeaturesPerCell;
 unsigned maxViewsPerCluster;
 bool bClusterCommunities;
+unsigned clusterAlignment;
 bool bUseGlobalSolver;
 bool bExtractColors;
 float undistortAlpha;
@@ -196,6 +197,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("image-indices", boost::program_options::value<std::string>(&OPT::strImageIndices), "image indices to apply forced parameters (e.g., '0 5-10 15', empty = all images)")
 		("max-views-per-cluster", boost::program_options::value(&OPT::maxViewsPerCluster)->default_value(200), "maximum images per cluster for hierarchical reconstruction (0 = disable clustering)")
 		("cluster-communities", boost::program_options::value<bool>(&OPT::bClusterCommunities)->default_value(false), "cluster by community detection + capacity packing instead of pure aggregative clustering")
+		("cluster-alignment", boost::program_options::value(&OPT::clusterAlignment)->default_value(1), "how sub-scenes are aligned before merging: 0 = similarity from 3D-3D track correspondences, 1 = generalized-camera PnP of one sub-scene's cameras against the other's tracks")
 		("use-global-solver", boost::program_options::value<bool>(&OPT::bUseGlobalSolver)->default_value(false), "use global solver for calibration instead of the hierarchical solver")
 		("extract-colors", boost::program_options::value<bool>(&OPT::bExtractColors)->default_value(false), "extract colors for reconstructed points")
 		("undistort-alpha", boost::program_options::value<float>(&OPT::undistortAlpha)->default_value(0.6f), "alpha parameter for undistortion (0=zoomed in, 1=all pixels retained)")
@@ -451,6 +453,7 @@ int main(int argc, LPCTSTR* argv)
 	cfg.extractColors = OPT::bExtractColors;
 	cfg.clusterCfg.maxViewsPerCluster = OPT::maxViewsPerCluster;
 	cfg.clusterCfg.useCommunityDetection = OPT::bClusterCommunities;
+	cfg.globalAlignmentCfg.alignment = OPT::clusterAlignment;
 
 	// known-poses mode: pose-guided pair selection unless the user chose a mode explicitly
 	// (bringing the result back to the imported pose frame, which takes precedence over the
