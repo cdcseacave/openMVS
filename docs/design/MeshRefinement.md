@@ -209,7 +209,8 @@ does, per pixel of A:
    contrast, resolution and pair count. `MinWindowCount` and the two gates are the only
    pixel-rejection machinery.
 3. **Per-pixel photometric gradient.** `MeshRefine::ComputePhotometricGradient` (CPU) and
-   `kernelAccumulateFacePhoto` (CUDA) compute the face normal `N`, the camera-A ray `dA`, and
+   `kernelComputeWindowStats` (CUDA, one thread per pixel, right after the pixel's own ZNCC)
+   compute the face normal `N`, the camera-A ray `dA`, and
    `Nd = N.dA`; skip the pixel if `Nd > -0.1` (a one-sided grazing/back-face gate). They
    back-project to the 3D point, project into B with a Jacobian `J` (`MeshRefine::ProjectVertex`),
    sample B's precomputed image gradient there, and form
@@ -244,11 +245,14 @@ does, per pixel of A:
    CPU this merge happens per-pair under a lock at the end of `ThProcessPair`, so summation order —
    and the float result — is not reproducible run to run unless `--max-threads 1`. On CUDA it is
    **deterministic**: `kernelAccumulateFacePhoto` is face-parallel — one thread per mesh face walks
-   its clipped bounding box in fixed scan order, reducing the corner sums, pixel count and footprint
-   minimum in registers, no atomics — and `kernelGatherVertexPhoto` is vertex-parallel, walking each
-   vertex's flattened incident-face list (`Mesh::ListIncidentFaces` order) to sum the contribution
-   and absorb the `photoGradNorm += 1`; `kernelFinalizePhotoGrad` resolves the sentinel exactly like
-   the CPU's post-loop pass. `photoGrad[v]/photoGradNorm[v]` — the pair-count average — is what the
+   its clipped bounding box in fixed scan order, folding the per-pixel terms the window-statistics
+   kernel left behind (weighted by the barycentrics), the pixel count and the footprint minimum
+   into the face's private slots, which accumulate across the evaluation's pair-directions, no
+   atomics; `kernelCountSeenVertices` absorbs the `photoGradNorm += 1` per direction; and once per
+   evaluation `kernelGatherVertexPhoto` is vertex-parallel, walking each vertex's flattened
+   incident-face list (`Mesh::ListIncidentFaces` order) to sum the contribution and resolve the
+   sentinel exactly like the CPU's post-loop pass. `photoGrad[v]/photoGradNorm[v]` — the pair-count
+   average — is what the
    stepper and the Ceres energy mode (§1.9) both read as `g_v`; there is no other normalizer.
 6. **Boundary vertices get the photometric term but zero smoothing.** Nothing in `ScoreMesh`/
    `ComputeWindowStats`/`ComputePhotometricGradient` special-cases a boundary vertex — the
@@ -303,13 +307,13 @@ Identical **by construction**, not by measurement: the shared scalar header (`Sc
 `ZnccReliability`, `WindowStatsFromSums`, `ZnccAndDerivative`), the 7x7 window, the visibility test,
 the image-gradient stencil (built once, host-side, shared by both), the rasterizer (both keep only
 front faces where `EdgeFunction(p0,p1,p2) > 0` and use perspective-correct barycentric coordinates —
-CUDA's two-pass `kernelProjectMesh` resolves depth ties the same way the CPU's face-list traversal
-order does, and is itself deterministic run to run), and the stepper (`MeshRefineStep`, one
-implementation). What legitimately differs:
+CUDA's two-pass `kernelProjectMesh` is itself deterministic run to run), and the stepper
+(`MeshRefineStep`, one implementation). What legitimately differs:
 
 | Aspect | CPU | CUDA |
 |---|---|---|
 | Camera projection precision | double (`Camera::TransformPointW2C`) | float (`MVS::CUDA::Camera`, built once per call by `MakeCUDACamera`) — measured bit-identical face maps on the `Tiny` fixture despite the precision drop |
+| Rasterizer input | the faces an octree frustum cull lists per camera, rebuilt every evaluation; the first face rasterised wins an exact depth tie | the whole mesh into every view, the kernel rejecting what a view does not see (the cull cost more host time than it saved on the GPU, §1.6.1); the lower face id wins the tie — the only pixels the two face maps can differ on sit exactly on a shared edge |
 | Photometric accumulation order | per-pair, under a lock, in whatever order threads complete — not bit-reproducible run to run unless `--max-threads 1` | face-parallel accumulate + vertex-parallel gather over a fixed order, no atomics — **bit-reproducible** |
 | Planar-vertex removal | implemented (§1.7) | refused at the entry (a loud error, not a silent no-op) — caller falls back to CPU |
 | Ceres arm (`--use-ceres`) | implemented, gated on `_USE_CERES` | refused at the entry, same fallback |
@@ -319,6 +323,49 @@ The two backends were brought to this state by dumping one image pair's per-vert
 per-pixel maps from each and comparing them side by side; that diagnostic found the six CUDA-only
 defects (window size, `dZNCC` form, image-gradient sampling, border margins, bi-Laplacian valence
 at a boundary neighbour, back-face winding) and was removed from the tree once they were closed.
+
+#### 1.6.1 What one CUDA evaluation does, and where its time goes
+
+`MeshRefineCUDA::ScoreMesh` issues everything on the default stream and makes one host round trip,
+at the end: the vertex upload and the rasterization of the whole mesh into every view
+(`kernelProjectMesh` x2 per view, no host frustum cull — see the table above); the face normals and
+both smoothness terms (`kernelComputeFaceNormal`, `kernelComputeSmoothnessGradient` x2, which need
+only the vertices and so run while the host is still issuing the pairs); per pair-direction the
+warp (`kernelImageMeshWarp`), the window statistics with the pixel's photometric term
+(`kernelComputeWindowStats`), the per-face accumulation into slots that persist across the
+directions (`kernelAccumulateFacePhoto`) and the per-vertex direction count
+(`kernelCountSeenVertices`); then one reduction of every direction's block partials into `S`
+(`kernelReduceBlockSums`), one per-vertex gather (`kernelGatherVertexPhoto`) and ONE download of
+all per-vertex terms into a pinned host buffer the stepper reads in place. The stepper and the next
+vertex upload are the only host work between two evaluations.
+
+Measured with Nsight Systems on Herz-Jesu-P8 (RTX 4070, level 1, 8 views, 27 pairs = 54
+pair-directions per evaluation, 81k/157k faces at the two scales), before and after the rework:
+
+| per evaluation | before | after |
+|---|---|---|
+| scale 0: GPU span / host gap to the next evaluation | 13.5 ms / 6 ms | 8 ms / 1.2 ms |
+| scale 1: GPU span / host gap to the next evaluation | 39 ms / 11 ms | 23 ms / 2.3 ms |
+| GPU idle inside the span | 5-12 % | 1.5-4.5 % |
+| `kernelAccumulateFacePhoto`, scale 1 | 409 us | 191 us |
+| `kernelComputeWindowStats`, scale 1 (now also the photometric term) | 105 us | 127 us |
+| per-vertex gather | 54 x 46 us | 1 x 61 us |
+| kernel launches / D2H copies / `cuMemFree` per run | 14,870 / 397 / 549 | 11,930 / 90 / 89 |
+| refinement loop, both scales | 1.95 s (51 evaluations) | 1.10 s (50) |
+| `RefineMesh` wall | 8.1 s | 6.9 s |
+
+The host gap used to be an octree over the mesh rebuilt for every evaluation to frustum-cull a face
+list per view, plus that list's allocation, upload and free (a `cuMemFree` is an implicit device
+sync), plus five pageable downloads; what is left is the stepper. The largest kernel used to
+compute the photometric term itself, one thread walking every pixel of its face, so a warp waited
+for its largest face; the term now comes from the per-pixel window-statistics kernel and the face
+kernel only weights it by the barycentrics. A cooperating-lanes variant of that kernel (8 lanes per
+face, shuffle-tree reduction, a fixed pixel-to-lane mapping) measured 201 us against the 191 us
+above: the kernel is bound by its scattered face-map/mask/barycentric reads, not by divergence, so
+the simpler one stays. What remains of the 6.9 s is the host-side mesh preparation (§2.10),
+identical on both backends, which is why the end-to-end CPU/CUDA ratio on these small scenes stays
+near 3.5x while the refinement loop alone runs about 15x faster than the CPU's 0.33 s per
+evaluation.
 
 ### 1.7 Optimization schedule
 
@@ -558,16 +605,20 @@ defaults, at an operating point that stopped much earlier (16 evaluations on Her
 on the shipped defaults the agreement is a little wider, because the run is longer and the two
 backends get more chances to split a marginal accept/reject:
 
-| scene | CPU | CUDA | CPU − CUDA | evaluations CPU/CUDA | speedup |
-|---|---|---|---|---|---|
-| Herz-Jesu-P8 | 0.45111 | 0.45312 | −0.0020 | 57 / 51 | 3.1x |
-| fountain-P11 | 0.34520 | 0.34618 | −0.0010 | 54 / 50 | 2.8x |
+| scene | CPU | CUDA | CPU − CUDA | evaluations CPU/CUDA | wall CPU / CUDA | speedup |
+|---|---|---|---|---|---|---|
+| Herz-Jesu-P8 | 0.45111 | 0.45216 | −0.0011 | 57 / 50 | 25.5 s / 7.1 s | 3.6x |
+| fountain-P11 | 0.34520 | 0.34638 | −0.0012 | 54 / 56 | 35.9 s / 11.8 s | 3.0x |
 
 The evaluation counts no longer match exactly, so the surfaces are compared at slightly different
 stopping points rather than at the same one; F1 tracks the iteration count closely enough (§2.4)
-that this accounts for the gap on its own. The CUDA numbers reproduce §2.10's shipped combination
-— the sizing field plus the tightest-pair decimation, measured there as an arm — to the fifth
-decimal, so the gap is the CPU's own trajectory and not a regression.
+that this accounts for the gap on its own. Before the GPU rework of §1.6.1 the CUDA build
+reproduced §2.10's shipped combination — the sizing field plus the tightest-pair decimation,
+measured there as an arm — to the fifth decimal (0.45312 / 0.34618); the rework moved it by
+−0.0010 / +0.0002, inside the band, through the rasterizer's tie-break and the summation order,
+so the gap is the CPU's own trajectory and not a regression. The end-to-end speedup is capped by
+the host-side mesh preparation both backends share (5.4 s of the 7.1 s on Herz-Jesu-P8); the
+refinement loop itself runs about 15x faster on the GPU (§1.6.1).
 
 **CUDA is bit-reproducible.** Three identical runs on Ignatius produce F1 0.7730 / 0.7730 / 0.7730,
 413,865 faces and 23 evaluations each — a run-to-run spread of exactly 0. The CPU is not
