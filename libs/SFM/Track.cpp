@@ -819,7 +819,7 @@ IIndexArr SFM::FilterWeaklyConnectedImages(Scene& scene,
 			std::vector<unsigned> numWitnesses(scene.images.size(), 0);
 			unsigned numThin = 0, numTried = 0, numRotationOff = 0, numDirectionOff = 0;
 			for (const ImagePair& pair : scene.pairs) {
-				if (!pair.relativePose.has_value())
+				if (!IsPoseLinkPair(pair))
 					continue;
 				if (pair.GetNumWeightedInliers() < minCorroborationInliers) {
 					++numThin;
@@ -860,7 +860,7 @@ IIndexArr SFM::FilterWeaklyConnectedImages(Scene& scene,
 				else if (numWitnesses[imgIdx] == 1)
 					++numSingle;
 			}
-			DEBUG_EXTRA("Corroboration round %u: %u pairs to a settled neighbour tried (%u thin pairs skipped), %u off in rotation, %u off in direction; %u images with one witness, %u with two or more",
+			DEBUG_EXTRA("Corroboration round %u: %u pairs to a settled neighbour tried, %u thin pairs in the graph, %u off in rotation, %u off in direction; %u images with one witness, %u with two or more",
 				numCorroborationRounds + 1, numTried, numThin, numRotationOff, numDirectionOff, numSingle, (unsigned)newlySettled.size());
 			if (newlySettled.empty())
 				break;
@@ -870,7 +870,6 @@ IIndexArr SFM::FilterWeaklyConnectedImages(Scene& scene,
 			}
 			numCorroborated += (unsigned)newlySettled.size();
 			++numCorroborationRounds;
-			DEBUG_EXTRA("Corroboration round %u: %u images added", numCorroborationRounds, (unsigned)newlySettled.size());
 		}
 	}
 

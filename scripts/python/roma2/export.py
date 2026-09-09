@@ -12,8 +12,7 @@ romav2/{graphs,export}.py):
   roma_<setting>_match_coarse_fp32.onnx  (descriptors_A, descriptors_B) -> warp[1,S/4,S/4,2],
                                          confidence[1,S/4,S/4,1] (A->B), warp_BA[1,S/4,S/4,2],
                                          confidence_BA[1,S/4,S/4,1] (B->A, from the same bidirectional=True
-                                         matcher pass -- the dead img_A/img_B inputs are dropped, spec
-                                         2026-09-03-roma2-onepass-design.md §3.2)
+                                         matcher pass -- the dead img_A/img_B inputs are dropped)
 
 `S` is the square input resolution --setting traces for: turbo 320, fast 512, base 640. The graphs are fp32,
 static shape, batch 1; precision is a property of the graph, and the runtime decides the rest (ORT runs the

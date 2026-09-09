@@ -297,8 +297,8 @@ bool ResectionRelativePoseFallbackTest();
 // A resected pose enters the model only when its support is credible: enough of its 2D-3D
 // correspondences agree with it (ResectionConfig::minInlierRatio / minInliersAbsolute), and a
 // weakly supported one also agrees with the rotation the quorum of its verified pairs to registered
-// images composes -- the largest group of them agreeing on one rotation, so that a single pair to a
-// misplaced neighbour cannot speak for the image (ResectionConfig::maxRelativeRotationError).
+// images composes -- the largest group of them agreeing on one rotation, so that one pair among
+// several cannot speak for the image (ResectionConfig::maxRelativeRotationError).
 bool ResectionAcceptanceTest();
 
 // The image filter judges an image by its triangulated structure, which an image joined to the

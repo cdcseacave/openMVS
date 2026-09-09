@@ -313,7 +313,6 @@ IIndex Resection::RegisterFromRelativePoses(const IIndexScores& unregistered)
 		}
 
 		// The rotation comes from the strongest link of the quorum, composed with its neighbor's pose
-		const PoseLink& strongest = quorum.links.front();
 		const RMatrix R(quorum.R);
 
 		// Every link of the quorum casts a ray from its neighbor's center along the direction in which
@@ -349,7 +348,7 @@ IIndex Resection::RegisterFromRelativePoses(const IIndexScores& unregistered)
 					imageID, (unsigned)rays.size(), angle);
 			} else if (!ClosestPointToRays(rays, C)) {
 				DEBUG("warning: the %u rays of image %u do not meet, placing its center on the strongest one alone",
-					imageID, (unsigned)rays.size());
+					(unsigned)rays.size(), imageID);
 			} else {
 				bool ahead = true;
 				for (const CenterRay& ray : rays) {
@@ -382,8 +381,8 @@ IIndex Resection::RegisterFromRelativePoses(const IIndexScores& unregistered)
 		// the next selection the 2D-3D correspondences it was missing
 		TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold);
 		DEBUG("Image %u registered from the relative pose to image %u (quorum %u of %u links, %s, baseline %s)",
-			imageID, strongest.neighborID, (unsigned)quorum.links.size(), (unsigned)imageLinks.size(), path,
-			String::FormatString("%g", norm(C - scene.images[strongest.neighborID].C)).c_str());
+			imageID, rays.front().neighborID, (unsigned)quorum.links.size(), (unsigned)imageLinks.size(), path,
+			String::FormatString("%g", norm(C - scene.images[rays.front().neighborID].C)).c_str());
 		return imageID;
 	}
 	return NO_ID;

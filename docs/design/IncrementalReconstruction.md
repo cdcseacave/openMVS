@@ -54,9 +54,11 @@ from the quorum's rotation is rejected; contradictory links (no two agree) are l
 When no image reaches `minCorrespondences` (15), or an iteration's candidates all fail to register,
 the resection falls back to relative poses (`relativePoseFallback`, on by default): an image still
 joined to the model by a verified pair -- its tracks two-view, not yet triangulable -- is registered
-from that pair's relative pose instead of PnP, trying up to three ranked candidates and skipping a
-contested one. Rotation and center both come from the quorum: two or more agreeing rays are intersected
-by least squares (rejecting a near-degenerate or behind-the-neighbour solution); one usable ray falls
+from that pair's relative pose instead of PnP, trying up to three ranked candidates and skipping one
+only when it has links to spare and no two of them agree (a candidate with just two contradicting
+links is registered from the heavier one instead). Rotation and center both come from the quorum: two
+or more agreeing rays are intersected by least squares (rejecting a near-degenerate or
+behind-the-neighbour solution); one usable ray falls
 back to a distance drawn from the median baseline its neighbour already has to its own registered
 neighbours -- what a steadily moving capture suggests -- after which the two-view tracks are
 triangulated, handing the next round the correspondences it was missing.
@@ -79,7 +81,7 @@ Every verified pair whose two images are both in the solve also adds a relative-
 (`RelativePoseError`): the model's relative rotation against the pair's, and its baseline direction
 against the pair's, sharing one Huber loss at 3 standard deviations. Their sigmas are `--ba-pair-sigma`
 (default 1 degree for the rotation, twice that for the baseline direction, the weaker of a pair's two
-measurements), scaled down by the square root of the pair's weighted inlier count (capped at 500)
+measurements), divided by the square root of the pair's weighted inlier count (capped at 500)
 against a reference of 100. A verified pair's evidence is otherwise invisible to the reprojection
 residuals, and this is what holds a joint straight where the tracks are few or two-view only. Either
 sigma at 0 switches that half off; both at 0 leaves the solve fitting reprojections alone.

@@ -193,11 +193,15 @@ SFM_API std::pair<float, float> FilterTracks(Scene& scene,
  *   keeps the largest remaining connected component
  *
  * Every stage above judges an image by the structure it has triangulated, which an image joined to
- * the model by two-view geometry alone does not have; such an image is exempted from all of them
- * when two verified pairs to distinct settled images agree with the pose the model gives it
- * (maxCorroborationAngle). Settled starts as the images the filter keeps on their own merits and
- * grows a round at a time as pairs reach further images, so a chain of two-view registrations is
- * rescued as far as it reaches back into the model.
+ * the model by two-view geometry alone does not have; such an image is exempted from the tier
+ * verdicts, the two largest-component passes and the k-core peel when two verified pairs to distinct
+ * settled images agree with the pose the model gives it (maxCorroborationAngle). Settled starts as
+ * the images the filter keeps on their own merits and grows a round at a time as pairs reach further
+ * images, so a chain of two-view registrations is rescued as far as it reaches back into the model.
+ * The agreement-gated backstops below (maxReprojErrorPixels) deliberately do not honor this
+ * exemption: a corroborated image has no triangulated structure of its own, which is exactly the
+ * shape a low match-survival ratio punishes, but it still has to fail the reprojection signal too
+ * before either backstop fires.
  *
  * @param scene Scene containing images and tracks (tracks must be pre-filtered by FilterTracks)
  * @param minCovisibilityCount Minimum number of shared tracks to form a covisibility edge
@@ -217,7 +221,12 @@ SFM_API std::pair<float, float> FilterTracks(Scene& scene,
  *                       pairs join it to distinct settled images -- images those stages keep on their
  *                       own merits, or corroborated in an earlier round -- and both the relative
  *                       rotation and the direction of the baseline the model gives are within this
- *                       angle, in degrees, of what each pair measured. Default: 5 (0 disables it)
+ *                       angle, in degrees, of what each pair measured. Default: 5 (0 disables it).
+ *                       Enabling it pays for a second BuildCovisEdges pass, on the entry-state graph
+ *                       rather than the post-tier one the rest of the filter builds -- the two differ
+ *                       because InvalidateImages strips observations at the tier verdicts, and
+ *                       BuildCovisEdges is the filter's single most expensive step, so this is a
+ *                       deliberate cost paid on every default run, not an oversight.
  * @return Array of invalidated image IDs
  */
 SFM_API IIndexArr FilterWeaklyConnectedImages(Scene& scene,

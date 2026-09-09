@@ -50,12 +50,13 @@ struct SFM_API ResectionConfig
 	float maxRelativeRotationError{15.f}; // Maximum angle (degrees) between the estimated rotation and the one the
 	                                    // quorum of the verified pairs to already registered images composes -- the
 	                                    // largest group of those pairs agreeing on a rotation within this same angle,
-	                                    // so that one pair to a misplaced neighbour cannot speak for the image alone;
+	                                    // so that one pair among several cannot speak for the image;
 	                                    // checked only for a pose whose inlier share is below half, so that a well
 	                                    // supported pose overrules pairs that may themselves be wrong. Also the angle
 	                                    // within which the relative-pose fallback groups an image's links (0 = disabled)
 	bool relativePoseFallback{true};    // Register one image from its relative poses to registered images when no image
-	                                    // reaches minCorrespondences, instead of stopping there
+	                                    // reaches minCorrespondences, or every candidate that did failed to register,
+	                                    // instead of stopping there
 	unsigned maxLocalWindow{25};        // Max images in local BA window (0 = all neighbors)
 	unsigned triangulateEvery{0};       // Run triangulation every N registered images (0 = disabled)
 	unsigned localBAEvery{10};          // Run local BA every N registered images (0 = disabled)
@@ -101,6 +102,13 @@ struct SFM_API ResectionConfig
 		localBAConfig = baseCfg;
 		localBAConfig.maxIterations = 20;
 		localBAConfig.robustThreshold = 2.f;
+		localBAConfig.refineFocalLength = false;
+		localBAConfig.refineFocalLengthAspectRatio = false;
+		localBAConfig.refinePrincipalPoint = false;
+		localBAConfig.refineRadialDistortion12 = false;
+		localBAConfig.refineTangentialDistortion = false;
+		localBAConfig.refineRadialDistortion456 = false;
+		localBAConfig.refineRadialDistortion3 = false;
 
 		// Full BA defaults (stronger), main-set intrinsics only
 		fullBAConfig = baseCfg;
@@ -160,11 +168,11 @@ private:
 	/**
 	 * @brief Set the pose of one unregistered image from its relative poses to registered images
 	 *
-	 * Used when no image has enough 2D-3D correspondences left: the tracks of the remaining images
-	 * are two-view tracks with a single registered image, which cannot be triangulated, while the
-	 * verified pairs joining those images to registered ones do carry a relative pose. Registering
-	 * one such image turns its two-view tracks into 3D points, which gives the next selection the
-	 * correspondences it was missing.
+	 * Used when no image has enough 2D-3D correspondences left, or every candidate that did failed
+	 * to register: the tracks of the remaining images are two-view tracks with a single registered
+	 * image, which cannot be triangulated, while the verified pairs joining those images to
+	 * registered ones do carry a relative pose. Registering one such image turns its two-view
+	 * tracks into 3D points, which gives the next selection the correspondences it was missing.
 	 * @param unregistered Images still without a pose
 	 * @return ID of the image that was registered, NO_ID when none could be
 	 */
