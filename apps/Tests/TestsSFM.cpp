@@ -8878,23 +8878,31 @@ void AddCorroborationPair(Scene& scene, IIndex idA, IIndex idB, unsigned numInli
 	pair.numFilteredInliers = (int)numInliers;
 }
 
-// Six cameras of the resection arc, all at their true poses. Cameras 0-3 share 150 tracks, so they
-// alone carry the covisibility graph; cameras 4 and 5 observe nothing but two-view tracks with their
+// Eight cameras of the resection arc, all at their true poses. Cameras 0-3 share 150 tracks, so they
+// alone carry the covisibility graph; cameras 4-7 observe nothing but two-view tracks with their
 // neighbours, which the covisibility count (three inlier views to an edge) never sees, so the graph
-// holds no edge for them at all. They are joined to the model by verified pairs alone -- the shape
+// holds no edge for any of them. They are joined to the model by verified pairs alone -- the shape
 // of an image the connectivity stages have nothing to judge. Cameras 4 and 5 each have two pairs to
 // cameras the filter keeps on their own merits, 2 and 3, plus the pair joining them to each other.
+// Camera 6's two pairs run to 4 and 5, and camera 7's to 5 and 6: neither reaches a witness directly,
+// only a camera the rescue itself has to corroborate first -- the chain the no-witness rule follows.
 void BuildCorroborationScene(Scene& scene, std::mt19937& rng)
 {
-	BuildResectionArc(scene, 6);
+	BuildResectionArc(scene, 8);
 	AddResectionTracks(scene, {0, 1, 2, 3}, 150, rng);
 	AddResectionTracks(scene, {3, 4}, 40, rng);
 	AddResectionTracks(scene, {4, 5}, 40, rng);
+	AddResectionTracks(scene, {5, 6}, 40, rng);
+	AddResectionTracks(scene, {6, 7}, 40, rng);
 	AddCorroborationPair(scene, 3, 4, 100);
 	AddCorroborationPair(scene, 2, 4, 100);
 	AddCorroborationPair(scene, 4, 5, 100);
 	AddCorroborationPair(scene, 3, 5, 100);
 	AddCorroborationPair(scene, 2, 5, 100);
+	AddCorroborationPair(scene, 5, 6, 100);
+	AddCorroborationPair(scene, 4, 6, 100);
+	AddCorroborationPair(scene, 6, 7, 100);
+	AddCorroborationPair(scene, 5, 7, 100);
 	TriangulateTracks(scene, false, 4.f, 1.f);
 }
 
@@ -8911,22 +8919,25 @@ String ValidImageList(const Scene& scene)
 } // namespace
 
 // An image the connectivity stages would drop for want of triangulated structure stays registered
-// when two verified pairs to images those stages keep agree with the pose the model gives it
+// when two verified pairs to distinct settled images agree with the pose the model gives it, and a
+// chain of such images is followed as far as it reaches back into the model
 bool CorroboratedImageTest()
 {
 	TD_TIMER_START();
 	constexpr REAL CORROBORATION_DISPLACEMENT = 20; // degrees camera 5's stored pose is moved by
 
-	// Without the rescue, cameras 4 and 5 hold no covisibility edge and are dropped
+	// Without the rescue, cameras 4-7 hold no covisibility edge and are dropped
 	{
 		std::mt19937 rng(20260908);
 		Scene scene;
 		BuildCorroborationScene(scene, rng);
 		FilterWeaklyConnectedImages(scene, 5, 0.15f, 1.5f, 2, 0.f, 0.f, 0.f);
-		if (scene.images[4].IsValid() || scene.images[5].IsValid()) {
-			VERBOSE("CorroboratedImageTest FAILED: cameras 4 and 5 survived the filter with the rescue off "
-				"(valid: %s), so the scene does not pose the problem", ValidImageList(scene).c_str());
-			return false;
+		for (IIndex imageID = 4; imageID < 8; ++imageID) {
+			if (scene.images[imageID].IsValid()) {
+				VERBOSE("CorroboratedImageTest FAILED: camera %u survived the filter with the rescue off "
+					"(valid: %s), so the scene does not pose the problem", imageID, ValidImageList(scene).c_str());
+				return false;
+			}
 		}
 		for (IIndex imageID = 0; imageID < 4; ++imageID) {
 			if (!scene.images[imageID].IsValid()) {
@@ -8937,16 +8948,19 @@ bool CorroboratedImageTest()
 		}
 	}
 
-	// With it, both are corroborated by their pairs to cameras 2 and 3 and stay
+	// With it, cameras 4 and 5 are corroborated directly by their pairs to cameras 2 and 3; camera 6,
+	// which reaches no witness at all, is corroborated once 4 and 5 are settled, and camera 7, which
+	// reaches no witness either, once 6 joins them -- a chain of two-view registrations followed one
+	// verified link at a time
 	{
 		std::mt19937 rng(20260908);
 		Scene scene;
 		BuildCorroborationScene(scene, rng);
 		FilterWeaklyConnectedImages(scene, 5, 0.15f, 1.5f, 2, 0.f, 0.f, 5.f);
-		for (IIndex imageID = 0; imageID < 6; ++imageID) {
+		for (IIndex imageID = 0; imageID < 8; ++imageID) {
 			if (!scene.images[imageID].IsValid()) {
-				VERBOSE("CorroboratedImageTest FAILED: camera %u was dropped although two verified pairs agree with its "
-					"pose (valid: %s)", imageID, ValidImageList(scene).c_str());
+				VERBOSE("CorroboratedImageTest FAILED: camera %u was dropped although a chain of verified pairs "
+					"reaches back to the connected core (valid: %s)", imageID, ValidImageList(scene).c_str());
 				return false;
 			}
 		}
@@ -8974,8 +8988,34 @@ bool CorroboratedImageTest()
 		}
 	}
 
+	// A chain does not vouch around a broken link: camera 6's stored pose moved 20 degrees
+	// contradicts both of its own pairs (to 4 and 5), so it is neither a witness nor corroborated.
+	// Camera 7's two pairs run to 5 and 6; 5 is still settled but 6 no longer is, so only one of the
+	// two votes it needs is there and it is dropped too. Cameras 4 and 5, whose own pairs are
+	// untouched, stay.
+	{
+		std::mt19937 rng(20260908);
+		Scene scene;
+		BuildCorroborationScene(scene, rng);
+		static_cast<Pose3D&>(scene.images[6]) =
+			ResectionArcPose(6 * RESECTION_ARC_STEP + CORROBORATION_DISPLACEMENT);
+		FilterWeaklyConnectedImages(scene, 5, 0.15f, 1.5f, 2, 0.f, 0.f, 5.f);
+		if (!scene.images[4].IsValid() || !scene.images[5].IsValid()) {
+			VERBOSE("CorroboratedImageTest FAILED: camera 4 or 5 was dropped although their own pairs still agree "
+				"with them (valid: %s)", ValidImageList(scene).c_str());
+			return false;
+		}
+		if (scene.images[6].IsValid() || scene.images[7].IsValid()) {
+			VERBOSE("CorroboratedImageTest FAILED: camera 6 or 7 was kept although camera 6's pose is %.0f degrees "
+				"from what its own pairs measured, breaking the only chain camera 7 reaches the core through "
+				"(valid: %s)", (double)CORROBORATION_DISPLACEMENT, ValidImageList(scene).c_str());
+			return false;
+		}
+	}
+
 	VERBOSE("CorroboratedImageTest PASSED: two images with no covisibility edge stay registered on the word of two "
-		"verified pairs each, and one whose pose contradicts its pairs does not (%s)", TD_TIMER_GET_FMT().c_str());
+		"verified pairs each, a chain of such images is followed as far as it reaches back into the model, and a "
+		"broken link stops it there (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 

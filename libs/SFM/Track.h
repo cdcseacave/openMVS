@@ -194,8 +194,10 @@ SFM_API std::pair<float, float> FilterTracks(Scene& scene,
  *
  * Every stage above judges an image by the structure it has triangulated, which an image joined to
  * the model by two-view geometry alone does not have; such an image is exempted from all of them
- * when two verified pairs to images the filter keeps agree with the pose the model gives it
- * (maxCorroborationAngle).
+ * when two verified pairs to distinct settled images agree with the pose the model gives it
+ * (maxCorroborationAngle). Settled starts as the images the filter keeps on their own merits and
+ * grows a round at a time as pairs reach further images, so a chain of two-view registrations is
+ * rescued as far as it reaches back into the model.
  *
  * @param scene Scene containing images and tracks (tracks must be pre-filtered by FilterTracks)
  * @param minCovisibilityCount Minimum number of shared tracks to form a covisibility edge
@@ -212,7 +214,8 @@ SFM_API std::pair<float, float> FilterTracks(Scene& scene,
  * @param maxReprojErrorPixels Enable the agreement-gated per-image backstops (match-survival +
  *                       robust reprojection); pass config.maxFineReprojError. Default: 0 (disabled)
  * @param maxCorroborationAngle Keep an image, whatever the stages above decide, when two verified
- *                       pairs join it to distinct images those stages keep and both the relative
+ *                       pairs join it to distinct settled images -- images those stages keep on their
+ *                       own merits, or corroborated in an earlier round -- and both the relative
  *                       rotation and the direction of the baseline the model gives are within this
  *                       angle, in degrees, of what each pair measured. Default: 5 (0 disables it)
  * @return Array of invalidated image IDs

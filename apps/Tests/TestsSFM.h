@@ -303,8 +303,10 @@ bool ResectionAcceptanceTest();
 
 // The image filter judges an image by its triangulated structure, which an image joined to the
 // model by two-view geometry alone does not have. Such an image stays registered when two verified
-// pairs to images the filter keeps agree with the pose the model gives it, in the relative rotation
+// pairs to distinct settled images agree with the pose the model gives it, in the relative rotation
 // and in the direction of the baseline alike (FilterWeaklyConnectedImages maxCorroborationAngle).
+// Settled grows a round at a time, so a chain of such images is followed as far as it reaches back
+// into the model; a link the chain cannot corroborate stops it there.
 bool CorroboratedImageTest();
 
 // Test function for rotation estimation

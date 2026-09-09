@@ -610,13 +610,15 @@ static void BuildCovisEdges(const Scene& scene, unsigned minCovisibilityCount,
 //      geometry alone has none of that -- its tracks have two views, so the covisibility graph,
 //      which counts tracks of three, does not even hold an edge for it -- and every stage therefore
 //      drops it for want of evidence it was never going to have.
-//    - The evidence that does exist for such an image is the verified pairs joining it to the
-//      images the filter keeps. When two of them agree with the pose the model gives it, in the
-//      relative rotation and in the direction of the baseline alike, the image is corroborated and
-//      exempt from the tier verdicts, the largest-CC pass and the peel.
-//    - Decided once, on the entry state, and never from another corroborated image: the witnesses
-//      are images that pass the tier verdicts and lie in the largest component on their own, so no
-//      chain of two-view registrations can vouch for itself.
+//    - The evidence that does exist for such an image is the verified pairs joining it to images
+//      already settled. When two of them agree with the pose the model gives it, in the relative
+//      rotation and in the direction of the baseline alike, the image is corroborated and exempt
+//      from the tier verdicts, the largest-CC pass and the peel.
+//    - Iterative: round 0's settled images are those that pass the tier verdicts and lie in the
+//      largest component of the entry state on their own; a later round settles whatever two pairs
+//      newly reach into that set, so a chain of two-view registrations is followed one verified link
+//      at a time. No image is settled by another its own round is still deciding, so a round only
+//      ever reaches back into what an earlier round already settled -- a chain cannot lift itself.
 //
 // RETURN VALUE:
 // =============
@@ -664,10 +666,13 @@ static void BuildCovisEdges(const Scene& scene, unsigned minCovisibilityCount,
 //     0 leaves the backstops off. Both signals are absolute (never scene-relative).
 //
 // maxCorroborationAngle (default 5 = enabled):
-//   - Keep an image that two verified pairs to distinct images the filter keeps agree with, within
-//     this angle in both the relative rotation and the direction of the baseline. Every stage above
-//     judges an image by its triangulated structure, which an image joined to the model by two-view
-//     geometry alone does not have; this is the one rule that reads the two-view evidence directly.
+//   - Keep an image that two verified pairs to distinct settled images agree with, within this angle
+//     in both the relative rotation and the direction of the baseline. Settled starts as the images
+//     the filter keeps on their own merits and grows a round at a time as pairs reach further images,
+//     so a chain of two-view registrations is rescued as far as it reaches back into the model. Every
+//     stage above judges an image by its triangulated structure, which an image joined to the model
+//     by two-view geometry alone does not have; this is the one rule that reads the two-view evidence
+//     directly.
 //   - 0 disables the rescue, leaving every image to the stages above.
 IIndexArr SFM::FilterWeaklyConnectedImages(Scene& scene,
 	unsigned minCovisibilityCount,
@@ -769,18 +774,21 @@ IIndexArr SFM::FilterWeaklyConnectedImages(Scene& scene,
 	// angle and reprojection filters have run, so it has no covisibility edge and often no spread of
 	// triangulated points either: every stage of this filter judges an image by structure that such
 	// an image simply does not have. Its pose is nevertheless vouched for by verified pairs, so it is
-	// kept when at least two of them join it to distinct images this filter keeps on their own merits
-	// and, for each of those pairs, the model agrees with what the pair measured -- the relative
-	// rotation within maxCorroborationAngle of the pair's, and the direction of the model's baseline
-	// within the same angle of the one the pair's relative pose gives. A pair with no baseline of its
-	// own fixes no direction, so it is judged on the rotation alone.
-	// Corroboration is decided once, here, on the state this call was entered with, and the witnesses
-	// are the images that pass the tier verdicts and lie in the largest component of the covisibility
-	// graph of that same state: a corroborated image is never a witness, so no chain of them can lift
-	// itself into the model.
+	// kept when at least two of them join it to distinct settled images and, for each of those pairs,
+	// the model agrees with what the pair measured -- the relative rotation within
+	// maxCorroborationAngle of the pair's, and the direction of the model's baseline within the same
+	// angle of the one the pair's relative pose gives. A pair with no baseline of its own fixes no
+	// direction, so it is judged on the rotation alone.
+	// Settled starts, in round 0, as the images that pass the tier verdicts and lie in the largest
+	// component of the covisibility graph of the state this call was entered with -- images this
+	// filter keeps on their own merits, whatever the pairs say. Every later round settles whatever two
+	// pairs newly reach into that set and stops when a round settles nothing, so a chain of two-view
+	// registrations is followed one verified link at a time; an image is never settled by another its
+	// own round is still deciding, so a round only reaches back into what an earlier round already
+	// settled and a chain cannot lift itself.
 	std::vector<uint8_t> corroborated(scene.images.size(), 0);
 	std::vector<uint8_t> keptByComponent(scene.images.size(), 0); // the largest-component pass runs more than once
-	unsigned numCorroborated = 0, numKeptTier = 0, numKeptComponent = 0, numKeptPeel = 0;
+	unsigned numCorroborated = 0, numKeptTier = 0, numKeptComponent = 0, numKeptPeel = 0, numCorroborationRounds = 0;
 	if (maxCorroborationAngle > 0.f) {
 		constexpr unsigned minPairInliersForCheck = 30;
 		std::vector<std::array<unsigned, 3>> entryEdges;
@@ -796,40 +804,51 @@ IIndexArr SFM::FilterWeaklyConnectedImages(Scene& scene,
 				maxSize = size;
 				largestRoot = root;
 			}
-		std::vector<uint8_t> witness(scene.images.size(), 0);
+		std::vector<uint8_t> settled(scene.images.size(), 0);
 		FOREACH(imgIdx, scene.images)
-			witness[imgIdx] = (scene.images[imgIdx].IsValid() && !tierDrop[imgIdx] &&
+			settled[imgIdx] = (scene.images[imgIdx].IsValid() && !tierDrop[imgIdx] &&
 				entryDS.Find(imgIdx) == largestRoot) ? 1 : 0;
-		// Count, per image, the witnesses whose pair agrees with the model about it. Both endpoints of
-		// a pair are tried, since either may be the one in need of corroboration.
 		const REAL minCosAngle = COS(D2R(REAL(maxCorroborationAngle)));
-		std::vector<unsigned> numWitnesses(scene.images.size(), 0);
-		for (const ImagePair& pair : scene.pairs) {
-			if (!pair.relativePose.has_value() || pair.GetNumFilteredInliers() < minPairInliersForCheck)
-				continue;
-			for (unsigned side = 0; side < 2; ++side) {
-				const IIndex imageID = side == 0 ? pair.ID1 : pair.ID2;
-				const IIndex neighborID = side == 0 ? pair.ID2 : pair.ID1;
-				if (witness[imageID] || !witness[neighborID] || !scene.images[imageID].IsValid())
+		for (;;) {
+			// One pass over the pairs: count, per not-yet-settled image, the settled neighbours whose
+			// pair agrees with the model about it. Both endpoints of a pair are tried, since either may
+			// be the one in need of corroboration; a pair between two settled images, or two unsettled
+			// ones, decides nothing this round.
+			std::vector<unsigned> numWitnesses(scene.images.size(), 0);
+			for (const ImagePair& pair : scene.pairs) {
+				if (!pair.relativePose.has_value() || pair.GetNumFilteredInliers() < minPairInliersForCheck)
 					continue;
-				const Image& image = scene.images[imageID];
-				const Image& neighbor = scene.images[neighborID];
-				const PoseLink link = MakePoseLink(pair, neighborID);
-				if (ComputeAngle(image.R, link.PredictedRotation(neighbor)) < minCosAngle)
-					continue; // the pair puts the image at another orientation than the model does
-				Point3 modelDirection(image.C - neighbor.C), pairDirection;
-				const REAL baseline = norm(modelDirection);
-				if (baseline > ZEROTOLERANCE<REAL>() && link.PredictedDirection(neighbor, pairDirection) &&
-					pairDirection.dot(modelDirection / baseline) < minCosAngle)
-					continue; // ... or on another side of its neighbor
-				++numWitnesses[imageID];
+				for (unsigned side = 0; side < 2; ++side) {
+					const IIndex imageID = side == 0 ? pair.ID1 : pair.ID2;
+					const IIndex neighborID = side == 0 ? pair.ID2 : pair.ID1;
+					if (settled[imageID] || !settled[neighborID] || !scene.images[imageID].IsValid())
+						continue;
+					const Image& image = scene.images[imageID];
+					const Image& neighbor = scene.images[neighborID];
+					const PoseLink link = MakePoseLink(pair, neighborID);
+					if (ComputeAngle(image.R, link.PredictedRotation(neighbor)) < minCosAngle)
+						continue; // the pair puts the image at another orientation than the model does
+					Point3 modelDirection(image.C - neighbor.C), pairDirection;
+					const REAL baseline = norm(modelDirection);
+					if (baseline > ZEROTOLERANCE<REAL>() && link.PredictedDirection(neighbor, pairDirection) &&
+						pairDirection.dot(modelDirection / baseline) < minCosAngle)
+						continue; // ... or on another side of its neighbor
+					++numWitnesses[imageID];
+				}
 			}
-		}
-		FOREACH(imgIdx, scene.images) {
-			if (numWitnesses[imgIdx] < 2)
-				continue;
-			corroborated[imgIdx] = 1;
-			++numCorroborated;
+			IIndexArr newlySettled;
+			FOREACH(imgIdx, scene.images)
+				if (numWitnesses[imgIdx] >= 2)
+					newlySettled.push_back(imgIdx);
+			if (newlySettled.empty())
+				break;
+			for (const IIndex imgIdx : newlySettled) {
+				corroborated[imgIdx] = 1;
+				settled[imgIdx] = 1;
+			}
+			numCorroborated += (unsigned)newlySettled.size();
+			++numCorroborationRounds;
+			DEBUG_EXTRA("Corroboration round %u: %u images added", numCorroborationRounds, (unsigned)newlySettled.size());
 		}
 	}
 
@@ -1089,9 +1108,9 @@ IIndexArr SFM::FilterWeaklyConnectedImages(Scene& scene,
 	}
 
 	if (numCorroborated > 0)
-		DEBUG("Corroboration: %u images kept by two consistent pairs (%u of them the tier verdicts would have dropped, "
-			"%u as not in the largest connected component, %u for a weak covisibility degree)",
-			numCorroborated, numKeptTier, numKeptComponent, numKeptPeel);
+		DEBUG("Corroboration: %u images kept by two consistent pairs in %u rounds (%u of them the tier verdicts "
+			"would have dropped, %u as not in the largest connected component, %u for a weak covisibility degree)",
+			numCorroborated, numCorroborationRounds, numKeptTier, numKeptComponent, numKeptPeel);
 	DEBUG("Filtered %u/%u weakly connected images in %s",
 		filteredIDs.size(), scene.status.nCalibratedImages+filteredIDs.size(), TD_TIMER_GET_FMT().c_str());
 	return filteredIDs;
