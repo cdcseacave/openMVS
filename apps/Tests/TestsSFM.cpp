@@ -5219,7 +5219,8 @@ void GenerateTwoClusterScene(
 	unsigned numCrossPairs,
 	unsigned matchesPerCrossPair,
 	unsigned numPoints = 100,
-	uint32_t seed = 42)
+	uint32_t seed = 42,
+	bool hubBridge = false)
 {
 	const unsigned totalImages = clusterSizeA + clusterSizeB;
 	SceneConfig cfg;
@@ -5235,8 +5236,23 @@ void GenerateTwoClusterScene(
 	// Choose the cross-cluster pairs to keep before touching the array, preferring the ones that
 	// bring in an image neither side has used yet: a bridge spread over distinct cameras is what a
 	// seam looks like, and it is what an alignment registering one side's cameras needs.
+	// With hubBridge the choice is the opposite one: every cross pair runs through a single image
+	// of cluster A, so that side of the seam has one camera to register with -- too few to observe
+	// a scale -- while the other side keeps one camera per pair.
 	std::vector<bool> keepCross(scene.pairs.size(), false);
-	{
+	if (hubBridge) {
+		const IIndex hub = clusterSizeA - 1;
+		unsigned kept = 0;
+		FOREACH(i, scene.pairs) {
+			if (kept >= numCrossPairs)
+				break;
+			const ImagePair& pair = scene.pairs[i];
+			if ((pair.ID1 < clusterSizeA) == (pair.ID2 < clusterSizeA) || (pair.ID1 != hub && pair.ID2 != hub))
+				continue;
+			keepCross[i] = true;
+			++kept;
+		}
+	} else {
 		std::set<IIndex> usedA, usedB;
 		unsigned kept = 0;
 		for (unsigned pass = 0; pass < 2 && kept < numCrossPairs; ++pass) {
@@ -11497,9 +11513,9 @@ static void KnownSubSceneTransforms(Transform transforms[2])
 // pair of finished sub-scenes looks like to the merge, without running a reconstruction.
 static bool BuildTransformedSubScenes(
 	Scene& scene, std::vector<Scene>& subScenes, std::vector<IIndexArr>& localToGlobals,
-	std::vector<Pose3D>& gtPoses, const Transform transforms[2])
+	std::vector<Pose3D>& gtPoses, const Transform transforms[2], bool hubBridge = false)
 {
-	GenerateTwoClusterScene(scene, 12, 12, 10, 60, 150);
+	GenerateTwoClusterScene(scene, 12, 12, 10, 60, 150, 42, hubBridge);
 	gtPoses.resize(scene.images.size());
 	for (unsigned i = 0; i < scene.images.size(); ++i) {
 		gtPoses[i].R = scene.images[i].R;
@@ -11541,44 +11557,98 @@ static REAL SubSceneExtent(const Scene& subScene)
 	return bbox.IsEmpty() ? REAL(0) : bbox.GetSize().norm();
 }
 
-// Compare one measured seam against the similarity the two sub-scenes were placed at
-static bool CheckSeamTransform(const char* what, const Transform& measured, const Transform& expected, REAL extent)
+// Error of one measured seam against the similarity the two sub-scenes were placed at. The score
+// sums the three in comparable units (degrees and percent) so two measurements of the same seam can
+// be ranked against each other.
+struct SeamError {
+	REAL rotation;    // degrees
+	REAL scale;       // fraction
+	REAL translation; // fraction of the destination sub-scene's camera extent
+	REAL score;
+};
+
+static SeamError ComputeSeamError(const Transform& measured, const Transform& expected, REAL extent)
 {
-	const REAL errRot = R2D(ACOS(ComputeAngle(Matrix3x3(measured.R), Matrix3x3(expected.R))));
-	const REAL errScale = ABS(measured.scale / expected.scale - REAL(1));
-	const REAL errTrans = norm(measured.t - expected.t) / extent;
-	if (errRot > 0.1 || errScale > 0.01 || errTrans > 0.01) {
+	SeamError err;
+	err.rotation = R2D(ACOS(ComputeAngle(Matrix3x3(measured.R), Matrix3x3(expected.R))));
+	err.scale = ABS(measured.scale / expected.scale - REAL(1));
+	err.translation = norm(measured.t - expected.t) / extent;
+	err.score = err.rotation + 100 * err.scale + 100 * err.translation;
+	return err;
+}
+
+// Compare one measured seam against the similarity the two sub-scenes were placed at
+static bool CheckSeamTransform(const char* what, const Transform& measured, const Transform& expected, REAL extent,
+	REAL maxRotation = 0.1, REAL maxScale = 0.01, REAL maxTranslation = 0.01, SeamError* outErr = NULL)
+{
+	const SeamError err = ComputeSeamError(measured, expected, extent);
+	if (outErr)
+		*outErr = err;
+	if (err.rotation > maxRotation || err.scale > maxScale || err.translation > maxTranslation) {
 		VERBOSE("HierarchicalCameraAlignmentTest FAILED: %s seam off by %.4f deg, %.2f%% scale, %.2f%% translation",
-			what, errRot, errScale * 100, errTrans * 100);
+			what, err.rotation, err.scale * 100, err.translation * 100);
 		return false;
 	}
-	VERBOSE("  %s seam: %.4f deg, %.3f%% scale, %.3f%% translation", what, errRot, errScale * 100, errTrans * 100);
+	VERBOSE("  %s seam: %.4f deg, %.3f%% scale, %.3f%% translation", what, err.rotation, err.scale * 100, err.translation * 100);
 	return true;
 }
 
-// Measure the seam of two sub-scenes prepared as above, optionally blinding one of them so that
-// only one direction of the camera alignment has any correspondence to work with.
-// blindScene: NO_ID keeps both directions, otherwise that sub-scene contributes no 3D points.
-static bool MeasureSeam(const Transform transforms[2], unsigned alignment, uint32_t blindScene, Transform& T)
+// How one seam measurement is set up: which sub-scene contributes no 3D points (so only one
+// direction of the camera alignment has correspondences at all), whether the bridge runs through a
+// single image of the first cluster (so that side's rig holds one camera, too few to observe a
+// scale, and the seam has to be verified against it instead), whether one sub-scene's cameras are
+// moved away from its own points (so the two directions measure different similarities), and how
+// much noise the observed bearings carry.
+struct SeamCase {
+	uint32_t blindScene{NO_ID};
+	bool hubBridge{false};
+	uint32_t rescaledPoses{NO_ID};
+	REAL poseScale{2};
+	REAL keypointNoise{0}; // pixels
+};
+
+enum SeamOutcome { SEAM_SETUP_FAILED, SEAM_REJECTED, SEAM_MEASURED };
+
+// Measure the seam of two sub-scenes prepared as above, under one such setup
+static SeamOutcome MeasureSeam(const Transform transforms[2], unsigned alignment, const SeamCase& setup, Transform& T)
 {
 	Scene scene;
 	std::vector<Scene> subScenes;
 	std::vector<IIndexArr> localToGlobals;
 	std::vector<Pose3D> gtPoses;
-	if (!BuildTransformedSubScenes(scene, subScenes, localToGlobals, gtPoses, transforms))
-		return false;
-	if (blindScene != NO_ID)
-		for (Track& track : subScenes[blindScene].tracks)
+	if (!BuildTransformedSubScenes(scene, subScenes, localToGlobals, gtPoses, transforms, setup.hubBridge))
+		return SEAM_SETUP_FAILED;
+	if (setup.blindScene != NO_ID)
+		for (Track& track : subScenes[setup.blindScene].tracks)
 			track.numInliers = 0;
+	if (setup.rescaledPoses != NO_ID)
+		for (Image& img : subScenes[setup.rescaledPoses].images)
+			if (img.IsValid())
+				img.C *= setup.poseScale;
+	if (setup.keypointNoise > 0) {
+		// the tracks were triangulated before this, so the 3D points stay exact and only the
+		// bearings the two directions are estimated from move: their minimal-solver estimates then
+		// differ, and the joint refinement starts away from the answer it has to converge to
+		std::mt19937 rng(11);
+		std::normal_distribution<float> noise(0.f, (float)setup.keypointNoise);
+		for (Scene& subScene : subScenes)
+			for (Image& img : subScene.images)
+				for (cv::KeyPoint& keypoint : img.keypoints) {
+					keypoint.pt.x += noise(rng);
+					keypoint.pt.y += noise(rng);
+				}
+	}
 
 	GlobalAlignmentConfig alignCfg;
 	alignCfg.alignment = alignment;
 	GlobalAlignment alignment_(scene, alignCfg);
 	std::vector<ScenePair> scenePairs;
-	if (!alignment_.EstimateSubScenePairs(subScenes, localToGlobals, scenePairs) || scenePairs.size() != 1)
-		return false;
+	if (!alignment_.EstimateSubScenePairs(subScenes, localToGlobals, scenePairs) || scenePairs.empty())
+		return SEAM_REJECTED;
+	if (scenePairs.size() != 1)
+		return SEAM_SETUP_FAILED;
 	T = scenePairs.front().relativeTransform;
-	return true;
+	return SEAM_MEASURED;
 }
 
 // Merge two such sub-scenes and check every image came back at the truth, up to the one global
@@ -11637,6 +11707,231 @@ static bool CheckMerge(const Transform transforms[2], unsigned alignment, const 
 	return true;
 }
 
+// A scene of three clusters, each pair of them bridged by its own cross pairs over images no other
+// bridge uses, so one seam can be made wrong without touching the two next to it.
+static void GenerateThreeClusterScene(
+	Scene& scene, unsigned clusterSize, unsigned numCrossPairs, unsigned matchesPerCrossPair, unsigned numPoints)
+{
+	SceneConfig cfg;
+	cfg.randomSeed = 42;
+	cfg.numImages = 3 * clusterSize;
+	cfg.numPoints = numPoints;
+	cfg.poseMode = SceneConfig::CIRCULAR_ARRANGEMENT;
+	cfg.rotationAngleStep = 360.0 / cfg.numImages;
+	cfg.generateDescriptors = true;
+	cfg.generatePairs = true;
+	GenerateTestScene(scene, cfg);
+
+	std::vector<bool> keepCross(scene.pairs.size(), false);
+	std::set<IIndex> used;
+	for (unsigned first = 0; first < 3; ++first)
+		for (unsigned second = first + 1; second < 3; ++second) {
+			unsigned kept = 0;
+			FOREACH(i, scene.pairs) {
+				if (kept >= numCrossPairs)
+					break;
+				const ImagePair& pair = scene.pairs[i];
+				const unsigned cluster1 = pair.ID1 / clusterSize, cluster2 = pair.ID2 / clusterSize;
+				if (MINF(cluster1, cluster2) != first || MAXF(cluster1, cluster2) != second)
+					continue;
+				if (used.count(pair.ID1) || used.count(pair.ID2))
+					continue;
+				used.insert(pair.ID1);
+				used.insert(pair.ID2);
+				keepCross[i] = true;
+				++kept;
+			}
+		}
+
+	RFOREACH(i, scene.pairs) {
+		ImagePair& pair = scene.pairs[i];
+		if (pair.ID1 / clusterSize == pair.ID2 / clusterSize) {
+			pair.weightSpatial = 10.f;
+			pair.weightConnectivity = 10.f;
+			pair.weightTriplet = 10.f;
+		} else if (keepCross[i]) {
+			if (pair.matches.size() > matchesPerCrossPair)
+				pair.matches.resize(matchesPerCrossPair);
+			pair.weightSpatial = 1.f;
+			pair.weightConnectivity = 1.f;
+			pair.weightTriplet = 0.f;
+		} else {
+			scene.pairs.RemoveAtMove(i);
+		}
+	}
+}
+
+// Three sub-scenes at three known similarities, with the seam between the first and the third made
+// wrong: the third contributes no 3D points, so both of its seams rest on a single direction, and
+// the cameras that bridge it to the first are moved away from its own points, so that one seam
+// comes out at twice the scale it should while the other two stay right. The triangle is the only
+// thing that can tell them apart.
+static bool BuildTriangleSubScenes(
+	Scene& scene, std::vector<Scene>& subScenes, std::vector<IIndexArr>& localToGlobals,
+	std::vector<Pose3D>& gtPoses, Transform transforms[3], std::vector<IIndex>& perturbedGlobals)
+{
+	GenerateThreeClusterScene(scene, 12, 6, 80, 200);
+	gtPoses.resize(scene.images.size());
+	for (unsigned i = 0; i < scene.images.size(); ++i) {
+		gtPoses[i].R = scene.images[i].R;
+		gtPoses[i].C = scene.images[i].C;
+	}
+
+	ClusterConfig clusterCfg;
+	clusterCfg.maxViewsPerCluster = 14;
+	clusterCfg.minViewsPerCluster = 5;
+	SceneCluster cluster(scene, clusterCfg);
+	localToGlobals.clear();
+	subScenes = cluster.SplitScene(&localToGlobals);
+	if (subScenes.size() != 3)
+		return false;
+
+	std::mt19937 rng(5);
+	const REAL scales[3] = {0.5, 1.5, 2.0};
+	for (unsigned s = 0; s < 3; ++s) {
+		transforms[s].R = GenerateRandomRotation(rng, 0.3 + 0.3 * s);
+		transforms[s].t = Point3(1.0 - s, 0.5 * s - 1.0, 2.0 * s - 1.5);
+		transforms[s].scale = scales[s];
+		Scene& sub = subScenes[s];
+		for (IIndex localID = 0; localID < sub.images.size(); ++localID) {
+			const IIndex globalID = localToGlobals[s][localID];
+			sub.images[localID].R = gtPoses[globalID].R;
+			sub.images[localID].C = gtPoses[globalID].C;
+		}
+		sub.RecomputeCalibratedImages();
+		BuildTracks(sub);
+		if (TriangulateTracks(sub) == 0)
+			return false;
+		sub.Transform(transforms[s]);
+	}
+
+	// the third sub-scene has no points to offer, so neither of its seams can be measured both ways
+	for (Track& track : subScenes[2].tracks)
+		track.numInliers = 0;
+
+	// the images of the third sub-scene that bridge to the first, doubled away from its own points
+	std::unordered_map<IIndex, std::pair<uint32_t, IIndex>> globalToLocal;
+	for (uint32_t s = 0; s < 3; ++s)
+		FOREACH(localID, localToGlobals[s])
+			globalToLocal.emplace(localToGlobals[s][localID], std::make_pair(s, (IIndex)localID));
+	std::set<IIndex> bridgeLocals;
+	for (const ImagePair& pair : scene.pairs) {
+		const auto it1 = globalToLocal.find(pair.ID1), it2 = globalToLocal.find(pair.ID2);
+		if (it1 == globalToLocal.end() || it2 == globalToLocal.end())
+			continue;
+		if (it1->second.first == 2 && it2->second.first == 0)
+			bridgeLocals.insert(it1->second.second);
+		else if (it2->second.first == 2 && it1->second.first == 0)
+			bridgeLocals.insert(it2->second.second);
+	}
+	perturbedGlobals.clear();
+	for (IIndex localID : bridgeLocals) {
+		subScenes[2].images[localID].C *= REAL(2);
+		perturbedGlobals.push_back(localToGlobals[2][localID]);
+	}
+	return bridgeLocals.size() >= 3;
+}
+
+// The seam graph of those three sub-scenes: all three seams must be measured (else the pruning is
+// never reached) and the corrupted one must be the one that is wrong.
+static bool CheckTriangleSeams()
+{
+	Scene scene;
+	std::vector<Scene> subScenes;
+	std::vector<IIndexArr> localToGlobals;
+	std::vector<Pose3D> gtPoses;
+	Transform transforms[3];
+	std::vector<IIndex> perturbedGlobals;
+	if (!BuildTriangleSubScenes(scene, subScenes, localToGlobals, gtPoses, transforms, perturbedGlobals)) {
+		VERBOSE("HierarchicalCameraAlignmentTest FAILED: could not prepare the three sub-scenes");
+		return false;
+	}
+
+	GlobalAlignmentConfig alignCfg;
+	GlobalAlignment merger(scene, alignCfg);
+	std::vector<ScenePair> scenePairs;
+	if (!merger.EstimateSubScenePairs(subScenes, localToGlobals, scenePairs) || scenePairs.size() != 3) {
+		VERBOSE("HierarchicalCameraAlignmentTest FAILED: %u of the 3 seams of the triangle were measured",
+			(unsigned)scenePairs.size());
+		return false;
+	}
+	for (const ScenePair& sp : scenePairs) {
+		const Transform expected = transforms[sp.sceneB] * transforms[sp.sceneA].Invert();
+		const REAL errScale = ABS(sp.relativeTransform.scale / expected.scale - REAL(1));
+		const bool corrupted = (sp.sceneA == 0 && sp.sceneB == 2);
+		VERBOSE("  triangle seam (%u, %u): %.1f%% off in scale", sp.sceneA, sp.sceneB, errScale * 100);
+		if (corrupted != (errScale > 0.5)) {
+			VERBOSE("HierarchicalCameraAlignmentTest FAILED: seam (%u, %u) is %.1f%% off in scale, expected %s",
+				sp.sceneA, sp.sceneB, errScale * 100, corrupted ? "the corrupted one" : "a right one");
+			return false;
+		}
+	}
+	return true;
+}
+
+// The merge of those three sub-scenes: the wrong seam must be pruned by the cycle it closes, so
+// every image but the moved ones comes back at the truth.
+static bool CheckTriangleMerge()
+{
+	Scene scene;
+	std::vector<Scene> subScenes;
+	std::vector<IIndexArr> localToGlobals;
+	std::vector<Pose3D> gtPoses;
+	Transform transforms[3];
+	std::vector<IIndex> perturbedGlobals;
+	if (!BuildTriangleSubScenes(scene, subScenes, localToGlobals, gtPoses, transforms, perturbedGlobals))
+		return false;
+
+	GlobalAlignmentConfig alignCfg;
+	GlobalAlignment merger(scene, alignCfg);
+	if (!merger.MergeScenes(subScenes, localToGlobals)) {
+		VERBOSE("HierarchicalCameraAlignmentTest FAILED: the triangle merge returned false");
+		return false;
+	}
+
+	// the moved cameras are wrong in their own sub-scene and stay wrong after the merge; every
+	// other image must sit on the truth under the one similarity the merged frame is free to choose
+	std::vector<bool> perturbed(scene.images.size(), false);
+	for (IIndex globalID : perturbedGlobals)
+		perturbed[globalID] = true;
+	Point3Arr mergedCenters, gtCenters;
+	IIndexArr checked;
+	FOREACH(i, scene.images) {
+		if (!scene.images[i].IsValid()) {
+			VERBOSE("HierarchicalCameraAlignmentTest FAILED: image %u invalid after the triangle merge", i);
+			return false;
+		}
+		if (perturbed[i])
+			continue;
+		mergedCenters.emplace_back(scene.images[i].C);
+		gtCenters.emplace_back(gtPoses[i].C);
+		checked.emplace_back(i);
+	}
+	Transform T;
+	if (EstimateSimilarityTransform(mergedCenters, gtCenters, T) == 0) {
+		VERBOSE("HierarchicalCameraAlignmentTest FAILED: could not fit the triangle merge to the truth");
+		return false;
+	}
+	AABB3 gtBbox(true);
+	for (const Point3& C : gtCenters)
+		gtBbox.InsertFull(C);
+	const REAL extent = gtBbox.GetSize().norm();
+	REAL maxPos = 0, maxRot = 0;
+	FOREACH(i, checked) {
+		maxPos = MAXF(maxPos, norm(T * mergedCenters[i] - gtCenters[i]) / extent);
+		maxRot = MAXF(maxRot, (REAL)R2D(ACOS(ComputeAngle(
+			Matrix3x3(scene.images[checked[i]].R * T.R.t()), Matrix3x3(gtPoses[checked[i]].R)))));
+	}
+	if (maxPos > 0.01 || maxRot > 0.5) {
+		VERBOSE("HierarchicalCameraAlignmentTest FAILED: the triangle merge is %.2f%% and %.3f deg off the truth",
+			maxPos * 100, maxRot);
+		return false;
+	}
+	VERBOSE("  triangle merge: %u images checked (%u moved), %.3f%% position and %.4f deg from the truth",
+		checked.size(), (unsigned)perturbedGlobals.size(), maxPos * 100, maxRot);
+	return true;
+}
+
 bool HierarchicalCameraAlignmentTest()
 {
 	TD_TIMER_START();
@@ -11664,20 +11959,75 @@ bool HierarchicalCameraAlignmentTest()
 	// each direction on its own, then both together: blinding one sub-scene's tracks leaves the
 	// other sub-scene's cameras as the only rig with anything to register against
 	Transform T;
-	if (!MeasureSeam(transforms, GlobalAlignmentConfig::ALIGN_CAMERAS, 1, T) ||
+	SeamCase setup;
+	setup.blindScene = 1;
+	if (MeasureSeam(transforms, GlobalAlignmentConfig::ALIGN_CAMERAS, setup, T) != SEAM_MEASURED ||
 		!CheckSeamTransform("cameras of sub-scene 1 on points of sub-scene 0", T, expected, extent))
 		return false;
-	if (!MeasureSeam(transforms, GlobalAlignmentConfig::ALIGN_CAMERAS, 0, T) ||
+	setup.blindScene = 0;
+	if (MeasureSeam(transforms, GlobalAlignmentConfig::ALIGN_CAMERAS, setup, T) != SEAM_MEASURED ||
 		!CheckSeamTransform("cameras of sub-scene 0 on points of sub-scene 1", T, expected, extent))
 		return false;
-	if (!MeasureSeam(transforms, GlobalAlignmentConfig::ALIGN_CAMERAS, NO_ID, T) ||
+	setup.blindScene = NO_ID;
+	if (MeasureSeam(transforms, GlobalAlignmentConfig::ALIGN_CAMERAS, setup, T) != SEAM_MEASURED ||
 		!CheckSeamTransform("both directions, jointly refined", T, expected, extent))
 		return false;
+
+	// with noise on the observed bearings the two directions no longer agree to the last digit, so
+	// the joint refinement starts away from the answer: it must end closer to it than either
+	// direction reached alone
+	SeamCase noisy;
+	noisy.keypointNoise = 1.0;
+	SeamError errA, errB, errJoint;
+	noisy.blindScene = 1;
+	if (MeasureSeam(transforms, GlobalAlignmentConfig::ALIGN_CAMERAS, noisy, T) != SEAM_MEASURED ||
+		!CheckSeamTransform("noisy, cameras of sub-scene 1 only", T, expected, extent, 1.0, 0.05, 0.05, &errA))
+		return false;
+	noisy.blindScene = 0;
+	if (MeasureSeam(transforms, GlobalAlignmentConfig::ALIGN_CAMERAS, noisy, T) != SEAM_MEASURED ||
+		!CheckSeamTransform("noisy, cameras of sub-scene 0 only", T, expected, extent, 1.0, 0.05, 0.05, &errB))
+		return false;
+	noisy.blindScene = NO_ID;
+	if (MeasureSeam(transforms, GlobalAlignmentConfig::ALIGN_CAMERAS, noisy, T) != SEAM_MEASURED ||
+		!CheckSeamTransform("noisy, both directions, jointly refined", T, expected, extent, 1.0, 0.05, 0.05, &errJoint))
+		return false;
+	if (errJoint.score > MINF(errA.score, errB.score)) {
+		VERBOSE("HierarchicalCameraAlignmentTest FAILED: the joint refinement scored %.4f, worse than "
+			"%.4f and %.4f from the two directions alone", errJoint.score, errA.score, errB.score);
+		return false;
+	}
+	VERBOSE("  joint refinement scored %.4f against %.4f and %.4f from the two directions alone",
+		errJoint.score, errA.score, errB.score);
+
+	// one direction starved: with the whole bridge running through a single image of the first
+	// cluster, that side's rig cannot observe a scale and the seam has to be verified against its
+	// correspondences instead of standing on the other direction's word
+	SeamCase starved;
+	starved.hubBridge = true;
+	if (MeasureSeam(transforms, GlobalAlignmentConfig::ALIGN_CAMERAS, starved, T) != SEAM_MEASURED ||
+		!CheckSeamTransform("one direction, verified on the other", T, expected, extent))
+		return false;
+
+	// the two directions made to disagree: sub-scene 1's cameras are moved away from its own points,
+	// so the direction that registers them measures a different similarity than the one that
+	// registers its points, and the seam must be refused rather than resolved in favour of either
+	SeamCase disagreeing;
+	disagreeing.rescaledPoses = 1;
+	if (MeasureSeam(transforms, GlobalAlignmentConfig::ALIGN_CAMERAS, disagreeing, T) != SEAM_REJECTED) {
+		VERBOSE("HierarchicalCameraAlignmentTest FAILED: the seam of two disagreeing directions was accepted");
+		return false;
+	}
+	VERBOSE("  two disagreeing directions: seam rejected");
 
 	// the whole merge, in both modes, so the flag is exercised end to end
 	if (!CheckMerge(transforms, GlobalAlignmentConfig::ALIGN_CAMERAS, "camera"))
 		return false;
 	if (!CheckMerge(transforms, GlobalAlignmentConfig::ALIGN_POINTS, "point"))
+		return false;
+
+	// three sub-scenes, two right seams and a wrong one closing the triangle: the cycle is what
+	// indicts it, and the merge must come out right once it is pruned
+	if (!CheckTriangleSeams() || !CheckTriangleMerge())
 		return false;
 
 	VERBOSE("HierarchicalCameraAlignmentTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());

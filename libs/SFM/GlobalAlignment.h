@@ -66,10 +66,14 @@ class SFM_API Scene;
  *   - PoseLib's generalized absolute pose with scale (LO-RANSAC over gp4ps, then a
  *     scale-aware refinement) solves the rig pose and the rig-to-points scale together,
  *     from bearing vectors, so any central camera model is handled.
- *   - Both directions are estimated. If both succeed they must agree in rotation and
- *     scale, or the seam is rejected: a seam trusted on the stronger of two conflicting
- *     estimates is how a block gets merged upside down. Agreeing directions are refined
- *     jointly into one Sim(3) over the union of their inliers.
+ *   - Both directions are estimated, and no seam is accepted on a single opinion. If both
+ *     are measured they must agree in rotation and scale, or the seam is rejected: a seam
+ *     trusted on the stronger of two conflicting estimates is how a block gets merged upside
+ *     down. If only one direction could be measured — the other has too few rig cameras to
+ *     observe a scale — its estimate is verified against that other direction's own
+ *     correspondences, which it must explain; a direction with no rig camera at all leaves
+ *     nothing to verify against, and the seam then stands only on strong evidence. Accepted
+ *     directions are refined jointly into one Sim(3) over the union of their inliers.
  *   Pairs with too few inliers or low inlier ratio are discarded, in both modes.
  *
  * STAGE 2: ROTATION AVERAGING
@@ -98,10 +102,13 @@ class SFM_API Scene;
  * VALIDATION (between stages 4 and 5)
  *   Each sub-scene pair's measured Sim(3) is composed with the averaged global transforms
  *   of its two end-points; the residual is identity when the edge agrees with the
- *   consensus. A sub-scene dominated by conflicting incident edge weight is demoted: it is
- *   merged without its poses so the post-merge resection re-registers its images against
- *   the trusted consensus. The remaining sub-scenes are then re-averaged and re-validated
- *   until the verdict is stable.
+ *   consensus. The seam the consensus contradicts most is dropped and the averaging redone,
+ *   until no residual is past its limit; dropping a seam that bridges the graph also demotes
+ *   the smaller side, which has then lost its only link. A sub-scene still dominated by
+ *   conflicting incident edge weight is demoted as a last resort: it is merged without its
+ *   poses so the post-merge resection re-registers its images against the trusted consensus.
+ *   The remaining sub-scenes are then re-averaged and re-validated until the verdict is stable.
+ *   A seam graph with no cycle has nothing to validate: the averaging fits every edge exactly.
  *
  *   This validates the sub-scenes against EACH OTHER; whether a single sub-scene is itself
  *   internally sound is not re-litigated here. A cluster holding two blocks joined by a
@@ -233,13 +240,19 @@ struct SFM_API GlobalAlignmentConfig
 	float maxReprojError{4.f};         // pixels; the camera alignment's reprojection threshold, the resection's own
 	// Cross-sub-scene Sim(3) alignment robustness (see EstimateRelativePoses):
 	double simInlierThresholdFactor{0.01};  // RANSAC inlier distance as a fraction of the destination bbox diagonal
-	double minSimInlierRatio{0.3};          // minimum RANSAC inlier ratio required to accept a sub-scene pair
+	double minSimInlierRatio{0.3};          // minimum RANSAC inlier ratio required to accept a sub-scene pair (3D-3D)
+	// The camera alignment has its own bar because the correspondences of a generalized PnP over
+	// dense matches carry more outliers than 3D-3D pairs of triangulated points, so the share a
+	// right seam reaches is lower. It gates only whether a measured direction may stand alone;
+	// two directions that agree are accepted on their agreement, whatever their shares.
+	float minCameraInlierRatio{0.15f};
 	unsigned simRansacMaxIters{10000};      // RANSAC iteration budget; needed to find low-inlier-ratio models
-	// Merge validation (see ValidateAlignment): each surviving sub-scene pair's measured Sim(3)
-	// is composed with the averaged global transforms of its two end-points; edges whose residual
-	// is too large in scale, rotation or translation are conflicting, and a sub-scene dominated
-	// by conflicting incident edge weight is demoted and rebuilt by the post-merge resection
-	// instead of being merged with its (misaligned) poses.
+	// Merge validation (see PruneConflictingSeams and ValidateAlignment): each surviving sub-scene
+	// pair's measured Sim(3) is composed with the averaged global transforms of its two end-points;
+	// edges whose residual is too large in scale, rotation or translation are conflicting. They are
+	// dropped one at a time, worst first, and once no seam is left conflicting a sub-scene still
+	// dominated by conflicting incident edge weight is demoted and rebuilt by the post-merge
+	// resection instead of being merged with its (misaligned) poses.
 	// The scale and rotation limits also gate the camera alignment's two directions against each
 	// other, before any averaging: a seam whose two estimates disagree by more is rejected outright.
 	float maxSimScaleRatio{1.1f};           // max per-edge scale-residual ratio vs the averaged global transforms
@@ -341,6 +354,33 @@ private:
 		const std::vector<REAL>& globalScales,
 		const std::vector<Point3>& globalTranslations,
 		const std::vector<bool>& demoted);
+
+	/**
+	 * @brief Drop the seams the averaged consensus contradicts, re-averaging after each one
+	 *
+	 * A seam is measured from two reconstructions that know nothing of each other, so a wrong one
+	 * cannot be recognized on its own evidence; only the cycles of the seam graph can indict it.
+	 * Each round scores every surviving seam against the averaged global transforms, takes the one
+	 * whose residual exceeds its limit by the largest factor and drops it, then re-averages scale
+	 * and translation over what is left (rotation averaging is already robust, so its result is
+	 * kept). A seam whose removal disconnects the graph is dropped too, but its smaller side has
+	 * then lost its only link to the consensus and is demoted to be rebuilt by resection. The loop
+	 * stops when no seam is past its limit, and cannot run longer than there are seams.
+	 *
+	 * A seam graph with no cycle carries no such evidence at all: the averaging reproduces every
+	 * edge exactly and every residual is zero, whatever the seams claim.
+	 *
+	 * @param scenePairs in/out: pruned to the seams the consensus does not contradict
+	 * @param demoted in/out: gains the sub-scenes a dropped bridge left unlinked
+	 * @return false if re-averaging failed, in which case the alignment cannot complete
+	 */
+	bool PruneConflictingSeams(
+		const std::vector<Scene>& subScenes,
+		std::vector<ScenePair>& scenePairs,
+		const std::vector<Point3d>& globalRotations,
+		std::vector<REAL>& globalScales,
+		std::vector<Point3>& globalTranslations,
+		std::vector<bool>& demoted);
 
 	/**
 	 * @brief Validate the averaged alignment via Sim(3) cycle consistency and decide which

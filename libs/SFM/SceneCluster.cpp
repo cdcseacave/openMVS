@@ -1048,6 +1048,9 @@ std::vector<Scene> SceneCluster::BuildSubScenesFromClusters(
 		ReportClusterCoupling(scene, clusters, config);
 	#endif
 
+	// which global images each sub-scene took, as ranges: the membership every later stage is
+	// reported against, so a block that comes out wrong can be traced back to the split
+	std::vector<String> memberships;
 	for (IIndexArr& cluster : clusters) {
 		// Sort by global ID so that local IDs preserve global ordering:
 		// localID1 < localID2 means also globalID1 < globalID2
@@ -1058,6 +1061,21 @@ std::vector<Scene> SceneCluster::BuildSubScenesFromClusters(
 			nSkippedViews += cluster.size();
 			continue;
 		}
+		String membership;
+		FOREACH(i, cluster) {
+			if (i > 0 && cluster[i] == cluster[i-1] + 1)
+				continue; // still inside the current range
+			IIndex last = cluster[i];
+			for (IIndex j = i + 1; j < cluster.size() && cluster[j] == last + 1; ++j)
+				last = cluster[j];
+			if (!membership.empty())
+				membership += ", ";
+			membership += last == cluster[i] ?
+				String::FormatString("%u", cluster[i]) :
+				String::FormatString("%u-%u", cluster[i], last);
+		}
+		memberships.emplace_back(String::FormatString("sub-scene %u: %s (%u images)",
+			(unsigned)subScenes.size(), membership.c_str(), (unsigned)cluster.size()));
 		IIndexArr globalToLocal(scene.images.size());
 		globalToLocal.MemsetValue(NO_ID);
 		FOREACH(localID, cluster)
@@ -1068,6 +1086,8 @@ std::vector<Scene> SceneCluster::BuildSubScenesFromClusters(
 	}
 	DEBUG("Clustering: split into %u sub-scenes and %u skipped views, %u cross-sub-scene pairs remain",
 		(unsigned)subScenes.size(), nSkippedViews, scene.pairs.size());
+	for (const String& membership : memberships)
+		DEBUG_ULTIMATE("Clustering: %s", membership.c_str());
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2 && !subScenes.empty() && !subScenes[0].images.empty() && subScenes[0].images[0].View::metadata.HasGPS())
 		ExportClusterPositions(subScenes, MAKE_PATH(String("clusters_gps.ply")));
