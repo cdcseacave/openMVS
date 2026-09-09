@@ -1,8 +1,8 @@
 {
   "name": "poselib",
-  "version-date": "2026-05-05",
-  "port-version": 3,
-  "description": "Minimal solvers for calibrated camera pose estimation. Pinned to cdcseacave/PoseLib commit ccdd2f62d7ee91b41a1dce4dfd619b688b6c247a from feature/spherical-camera-support, with unified bearing-vector estimate_* API for pinhole and spherical (equirectangular) cameras; opt.max_error is angular (radians) for the bearing estimators.",
+  "version-date": "2026-09-09",
+  "port-version": 0,
+  "description": "Minimal solvers for calibrated camera pose estimation. Pinned to cdcseacave/PoseLib commit 368cae51777bfe669a47412bb29f8830e6dc2a2e from feature/generalized-absolute-pose-scale, which adds estimate_generalized_absolute_pose_scale and its bearing variant estimate_generalized_absolute_pose_scale_bearings, solving a rig pose together with the scale of the rig relative to the 3D points, on top of the unified bearing-vector estimate_* API for pinhole and spherical (equirectangular) cameras; opt.max_error is angular (radians) for the bearing estimators.",
   "homepage": "https://github.com/PoseLib/PoseLib",
   "license": "BSD-3-Clause",
   "dependencies": [
