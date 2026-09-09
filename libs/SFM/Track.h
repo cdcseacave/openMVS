@@ -192,6 +192,11 @@ SFM_API std::pair<float, float> FilterTracks(Scene& scene,
  * - Peels images with too few independent covisibility neighbors (absolute k-core) and
  *   keeps the largest remaining connected component
  *
+ * Every stage above judges an image by the structure it has triangulated, which an image joined to
+ * the model by two-view geometry alone does not have; such an image is exempted from all of them
+ * when two verified pairs to images the filter keeps agree with the pose the model gives it
+ * (maxCorroborationAngle).
+ *
  * @param scene Scene containing images and tracks (tracks must be pre-filtered by FilterTracks)
  * @param minCovisibilityCount Minimum number of shared tracks to form a covisibility edge
  *                             Default: 5 (typically 5-10 for standard images)
@@ -206,6 +211,10 @@ SFM_API std::pair<float, float> FilterTracks(Scene& scene,
  *                       (detects wrongly positioned views). Default: 0 (disabled)
  * @param maxReprojErrorPixels Enable the agreement-gated per-image backstops (match-survival +
  *                       robust reprojection); pass config.maxFineReprojError. Default: 0 (disabled)
+ * @param maxCorroborationAngle Keep an image, whatever the stages above decide, when two verified
+ *                       pairs join it to distinct images those stages keep and both the relative
+ *                       rotation and the direction of the baseline the model gives are within this
+ *                       angle, in degrees, of what each pair measured. Default: 5 (0 disables it)
  * @return Array of invalidated image IDs
  */
 SFM_API IIndexArr FilterWeaklyConnectedImages(Scene& scene,
@@ -214,7 +223,8 @@ SFM_API IIndexArr FilterWeaklyConnectedImages(Scene& scene,
 	float minTriangulationAngle = 1.5f,
 	unsigned minCovisDegree = 2,
 	float maxPoseInconsistencyAngle = 0.f,
-	float maxReprojErrorPixels = 0.f);
+	float maxReprojErrorPixels = 0.f,
+	float maxCorroborationAngle = 5.f);
 /*----------------------------------------------------------------*/
 
 } // namespace SFM

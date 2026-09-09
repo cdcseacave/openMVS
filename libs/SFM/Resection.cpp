@@ -6,6 +6,7 @@
 
 #include "Common.h"
 #include "Resection.h"
+#include "PoseLink.h"
 #include "Scene.h"
 #include "Track.h"
 #include "Triangulation.h"
@@ -20,43 +21,16 @@ using namespace SFM;
 
 namespace {
 
-// A verified pair (valid weight and a known relative pose) joining an image to an already
-// registered one, with the pair's relative pose turned around so that
-//   pose(image) = relPose * pose(neighbor)
-// holds whichever side of the pair the neighbor is on. ImagePair stores the relative pose as the
-// transform from ID1 to ID2, so it is used as it is when the neighbor is ID1 and inverted when the
-// neighbor is ID2 -- the same turn-around the star initializer applies around its reference view.
-struct PoseLink
+// The absolute pose of an image, as the quorum reads its neighbors
+inline auto NeighborPose(const Scene& scene)
 {
-	IIndex neighborID;   // registered image on the other side of the pair
-	unsigned numInliers; // weighted inliers of the pair
-	Pose3D relPose;      // transform from the neighbor's frame to the image's frame
-};
-
-inline PoseLink MakePoseLink(const ImagePair& pair, IIndex neighborID)
-{
-	ASSERT(pair.relativePose.has_value() && (pair.ID1 == neighborID || pair.ID2 == neighborID));
-	return PoseLink{ neighborID, pair.GetNumWeightedInliers(),
-		pair.ID1 == neighborID ? pair.relativePose.value() : pair.relativePose->Inverse() };
+	return [&scene](IIndex imageID) -> const Pose3D& { return scene.images[imageID]; };
 }
 
-// Order links by pair strength, ties by the lower neighbor ID so the choice never depends on the
-// order the pairs happen to be stored in
-inline bool IsStrongerLink(const PoseLink& a, const PoseLink& b)
+// Every link the given image has to an already registered image, strongest first
+void CollectPoseLinks(const Scene& scene, IIndex imageID, std::vector<PoseLink>& links)
 {
-	return a.numInliers > b.numInliers || (a.numInliers == b.numInliers && a.neighborID < b.neighborID);
-}
-
-// Does this pair connect the two images with a usable relative pose?
-inline bool IsPoseLinkPair(const ImagePair& pair)
-{
-	return pair.relativePose.has_value() && pair.HasValidWeight();
-}
-
-// Strongest link of the given image to an already registered image; false if it has none
-bool FindStrongestPoseLink(const Scene& scene, IIndex imageID, PoseLink& strongest)
-{
-	bool found = false;
+	links.clear();
 	for (const ImagePair& pair : scene.pairs) {
 		if (!IsPoseLinkPair(pair))
 			continue;
@@ -67,15 +41,10 @@ bool FindStrongestPoseLink(const Scene& scene, IIndex imageID, PoseLink& stronge
 			neighborID = pair.ID1;
 		else
 			continue;
-		if (!scene.images[neighborID].HasPose())
-			continue;
-		const PoseLink link = MakePoseLink(pair, neighborID);
-		if (!found || IsStrongerLink(link, strongest)) {
-			strongest = link;
-			found = true;
-		}
+		if (scene.images[neighborID].HasPose())
+			links.push_back(MakePoseLink(pair, neighborID));
 	}
-	return found;
+	std::sort(links.begin(), links.end(), IsStrongerLink);
 }
 
 // Median of the given values (the upper one of the two middle values for an even count)
@@ -88,26 +57,18 @@ inline REAL MedianValue(std::vector<REAL>& values)
 }
 
 // Median distance between the given registered image's center and the centers of the registered
-// images its verified pairs join it to; falls back to the median over every registered pair in the
-// scene when it has no other registered neighbor. Returns 0 when the scene has no baseline at all.
-REAL MedianBaseline(const Scene& scene, IIndex imageID)
+// neighbors its own quorum holds -- the ones that agree about how it is oriented, so a neighbor the
+// rest contradict does not set the scale. Falls back to the median over every registered pair in the
+// scene when the image has no such neighbor. Returns 0 when the scene has no baseline at all.
+REAL MedianQuorumBaseline(const Scene& scene, IIndex imageID, float maxRotationError)
 {
 	const Image& img = scene.images[imageID];
+	std::vector<PoseLink> links;
+	CollectPoseLinks(scene, imageID, links);
+	const PoseLinkQuorum quorum = ComputePoseLinkQuorum(links, maxRotationError, NeighborPose(scene));
 	std::vector<REAL> baselines;
-	for (const ImagePair& pair : scene.pairs) {
-		if (!IsPoseLinkPair(pair))
-			continue;
-		IIndex neighborID;
-		if (pair.ID1 == imageID)
-			neighborID = pair.ID2;
-		else if (pair.ID2 == imageID)
-			neighborID = pair.ID1;
-		else
-			continue;
-		const Image& neighbor = scene.images[neighborID];
-		if (neighbor.HasPose())
-			baselines.push_back(norm(img.C - neighbor.C));
-	}
+	for (const PoseLink& link : quorum.links)
+		baselines.push_back(norm(img.C - scene.images[link.neighborID].C));
 	if (baselines.empty()) {
 		for (const ImagePair& pair : scene.pairs) {
 			if (!IsPoseLinkPair(pair))
@@ -265,20 +226,28 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 		return {0, n};
 	}
 
-	// Cross-check the estimated rotation against the one the strongest verified pair to an already
-	// registered image composes: a weakly supported pose that contradicts its own pair is a
-	// misregistration, while a well supported one is trusted over a pair that may itself be wrong.
+	// Cross-check the estimated rotation against the one the image's verified pairs to already
+	// registered images compose: a weakly supported pose that contradicts them is a misregistration,
+	// while a well supported one is trusted over pairs that may themselves be wrong. The witness is
+	// the quorum of those pairs, not the strongest one of them, which speaks falsely whenever that
+	// single neighbor is itself misplaced. When the pairs contradict one another they are no witness
+	// at all, so the pose is left to the other acceptance rules and the disagreement is reported.
 	if (config.maxRelativeRotationError > 0.f && inlierRatio < 0.5f) {
-		PoseLink link;
-		if (FindStrongestPoseLink(scene, imageID, link)) {
-			const RMatrix pairR(link.relPose.R * scene.images[link.neighborID].R);
+		std::vector<PoseLink> links;
+		CollectPoseLinks(scene, imageID, links);
+		const PoseLinkQuorum quorum = ComputePoseLinkQuorum(links, config.maxRelativeRotationError, NeighborPose(scene));
+		if (quorum.IsContested()) {
+			DEBUG("the pairs of image %u to its registered neighbours disagree by up to %.1f degrees",
+				imageID, quorum.maxDisagreement);
+		} else if (!quorum.links.empty()) {
 			RMatrix poseR;
 			poseR = camPose.R();
-			const double angle = R2D(ACOS(ComputeAngle(poseR, pairR)));
+			const double angle = R2D(ACOS(ComputeAngle(poseR, quorum.R)));
 			if (angle > config.maxRelativeRotationError) {
 				DEBUG("warning: rejected the pose of image %u: %u/%u inliers (%.1f%%) and %.1f degrees away from the "
-					"rotation of its strongest pair to image %u", imageID, numInliers, n, inlierRatio * 100.f,
-					angle, link.neighborID);
+					"rotation its quorum of %u of %u pairs composes (strongest to image %u)", imageID, numInliers, n,
+					inlierRatio * 100.f, angle, (unsigned)quorum.links.size(), (unsigned)links.size(),
+					quorum.links.front().neighborID);
 				return {0, n};
 			}
 		}
@@ -331,21 +300,32 @@ IIndex Resection::RegisterFromRelativePoses(const IIndexScores& unregistered)
 		std::vector<PoseLink>& imageLinks = links[imageID];
 		std::sort(imageLinks.begin(), imageLinks.end(), IsStrongerLink);
 
-		// The rotation comes from the strongest link, composed with its neighbor's absolute pose
-		const PoseLink& strongest = imageLinks.front();
-		const RMatrix R(strongest.relPose.R * scene.images[strongest.neighborID].R);
+		// Only the links that agree about how the image is oriented place it: the rotation, the rays
+		// and the baseline prior all come from the quorum, the rest are ignored. A candidate whose
+		// links contradict one another so thoroughly that no two of them agree, while it has links to
+		// spare, is left for a later one: a pose taken from a contested link is a misplacement.
+		const PoseLinkQuorum quorum = ComputePoseLinkQuorum(imageLinks, config.maxRelativeRotationError, NeighborPose(scene));
+		if (quorum.links.size() < 2 && imageLinks.size() >= 3) {
+			DEBUG("warning: cannot register image %u from its relative poses: its %u links to registered images "
+				"disagree by up to %.1f degrees and no two of them agree", imageID, (unsigned)imageLinks.size(),
+				quorum.maxDisagreement);
+			continue;
+		}
 
-		// Every link casts a ray from its neighbor's center along the direction in which the pair
-		// places the image's center; the relative pose fixes that direction but not how far along it
-		// the center lies, so the length is the only unknown left
+		// The rotation comes from the strongest link of the quorum, composed with its neighbor's pose
+		const PoseLink& strongest = quorum.links.front();
+		const RMatrix R(quorum.R);
+
+		// Every link of the quorum casts a ray from its neighbor's center along the direction in which
+		// the pair places the image's center; the relative pose fixes that direction but not how far
+		// along it the center lies, so the length is the only unknown left
 		std::vector<CenterRay> rays;
-		rays.reserve(imageLinks.size());
-		for (const PoseLink& link : imageLinks) {
+		rays.reserve(quorum.links.size());
+		for (const PoseLink& link : quorum.links) {
 			const Image& neighbor = scene.images[link.neighborID];
-			const Point3 direction(neighbor.R.t() * link.relPose.C);
-			const REAL length = norm(direction);
-			if (length > ZEROTOLERANCE<REAL>())
-				rays.emplace_back(CenterRay{link.neighborID, neighbor.C, direction / length});
+			Point3 direction;
+			if (link.PredictedDirection(neighbor, direction))
+				rays.emplace_back(CenterRay{link.neighborID, neighbor.C, direction});
 		}
 		if (rays.empty()) {
 			DEBUG("warning: cannot register image %u from its relative poses: none of its pairs has a baseline", imageID);
@@ -388,7 +368,7 @@ IIndex Resection::RegisterFromRelativePoses(const IIndexScores& unregistered)
 			// One usable ray, or several the solve above could not use: the distance stays open, so
 			// take the median distance the strongest ray's neighbor already has to its own registered
 			// neighbors, which is what a capture moving steadily between views suggests
-			const REAL baseline = MedianBaseline(scene, rays.front().neighborID);
+			const REAL baseline = MedianQuorumBaseline(scene, rays.front().neighborID, config.maxRelativeRotationError);
 			if (baseline <= 0) {
 				DEBUG("warning: cannot register image %u from its relative poses: no baseline to scale its ray with", imageID);
 				continue;
@@ -401,8 +381,8 @@ IIndex Resection::RegisterFromRelativePoses(const IIndexScores& unregistered)
 		// Its two-view tracks with the registered images can now be triangulated, which is what gives
 		// the next selection the 2D-3D correspondences it was missing
 		TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold);
-		DEBUG("Image %u registered from the relative pose to image %u (%u neighbours, %s, baseline %s)",
-			imageID, strongest.neighborID, (unsigned)imageLinks.size(), path,
+		DEBUG("Image %u registered from the relative pose to image %u (quorum %u of %u links, %s, baseline %s)",
+			imageID, strongest.neighborID, (unsigned)quorum.links.size(), (unsigned)imageLinks.size(), path,
 			String::FormatString("%g", norm(C - scene.images[strongest.neighborID].C)).c_str());
 		return imageID;
 	}

@@ -8318,6 +8318,10 @@ namespace {
 constexpr REAL RESECTION_ARC_RADIUS = 5;
 constexpr REAL RESECTION_ARC_STEP = 10; // degrees between consecutive cameras
 constexpr REAL RESECTION_ARC_EXTENT = 5; // 2*RESECTION_ARC_RADIUS*sin(3*RESECTION_ARC_STEP)
+// How far along the arc a camera's stored pose is moved to make it a misregistered one, while the
+// pairs it takes part in keep the relative poses its true place gives: every link to it then
+// predicts a rotation this many degrees away from the truth.
+constexpr REAL RESECTION_DISPLACEMENT = 40;
 
 Pose3D ResectionArcPose(REAL angleDegrees)
 {
@@ -8568,6 +8572,60 @@ bool ResectionRelativePoseFallbackTest()
 		}
 	}
 
+	// A candidate placed by its strongest link alone follows that neighbour wherever it is, so when
+	// the neighbour is misregistered the candidate lands with it: the quorum of the candidate's links
+	// is what has to place it. Six cameras of the same arc, images 0-3 registered with 150 tracks,
+	// image 5 registered but observing nothing and with its stored pose displaced by 40 degrees,
+	// image 4 unregistered with 40 two-view tracks shared with image 3. Image 4's links are (4,5) at
+	// 400 inliers -- the strongest, and to the displaced image -- against (2,4) at 300 and (3,4) at
+	// 250, which agree with each other: the quorum is those two of the three links, and the two rays
+	// they cast meet at image 4's true centre.
+	{
+		Scene sceneQuorum;
+		BuildResectionArc(sceneQuorum, 6);
+		std::vector<Pose3D> gtQuorum;
+		for (const Image& img : sceneQuorum.images)
+			gtQuorum.push_back(static_cast<const Pose3D&>(img));
+		AddResectionTracks(sceneQuorum, {0, 1, 2, 3}, 150, rng);
+		AddResectionTracks(sceneQuorum, {3, 4}, 40, rng);
+		AddResectionPair(sceneQuorum, 4, 5, 400); // strongest, and to the misplaced image
+		AddResectionPair(sceneQuorum, 2, 4, 300);
+		AddResectionPair(sceneQuorum, 3, 4, 250);
+		std::uniform_real_distribution<REAL> scaleQuorum(0.4, 2.5);
+		for (ImagePair& pair : sceneQuorum.pairs)
+			pair.relativePose->C *= scaleQuorum(rng); // lengths unusable, directions untouched
+		sceneQuorum.images[4].InvalidatePose();
+		// image 5 keeps the true relative pose in its pair and loses it in its own stored pose
+		static_cast<Pose3D&>(sceneQuorum.images[5]) = ResectionArcPose(5 * RESECTION_ARC_STEP + RESECTION_DISPLACEMENT);
+		sceneQuorum.status.nCalibratedImages = 5;
+		TriangulateTracks(sceneQuorum, false, 4.f, 1.f);
+
+		ResectionConfig configQuorum; // defaults
+		Resection resectionQuorum(sceneQuorum, configQuorum);
+		resectionQuorum.RegisterImages();
+		if (!sceneQuorum.images[4].HasPose()) {
+			VERBOSE("ResectionRelativePoseFallbackTest FAILED: image 4 was not registered from the two links agreeing "
+				"against its strongest one");
+			return false;
+		}
+		const double rotErr = RotationErrorDeg(sceneQuorum.images[4].R, gtQuorum[4].R);
+		const double posErr = norm(sceneQuorum.images[4].C - gtQuorum[4].C);
+		const double strongestErr = RotationErrorDeg(sceneQuorum.images[4].R,
+			RMatrix((gtQuorum[4] / gtQuorum[5]).R * sceneQuorum.images[5].R));
+		DEBUG("ResectionRelativePoseFallbackTest: image 4 recovered from a quorum of 2 of its 3 links %.4f deg, "
+			"%.4f units off, while its strongest link places it %.2f deg away", rotErr, posErr, strongestErr);
+		if (rotErr > 1.0 || posErr > 0.02 * RESECTION_ARC_EXTENT) {
+			VERBOSE("ResectionRelativePoseFallbackTest FAILED: image 4 is %.4f deg and %.4f units off the truth, so its "
+				"strongest link to the misplaced image 5 carried it", rotErr, posErr);
+			return false;
+		}
+		if (strongestErr < 15.0) {
+			VERBOSE("ResectionRelativePoseFallbackTest FAILED: the strongest link places image 4 only %.2f deg away, so "
+				"the scene does not pit it against the two that agree", strongestErr);
+			return false;
+		}
+	}
+
 	// With the fallback off the very same scene stops where the stall leaves it: 4 registered images
 	Scene sceneNoFallback;
 	std::vector<Pose3D> gtPosesNoFallback;
@@ -8636,6 +8694,48 @@ void BuildResectionAcceptanceScene(Scene& scene, Pose3D& truePose, std::mt19937&
 	img.InvalidatePose();
 	scene.status.nCalibratedImages = 4;
 	TriangulateTracks(scene, false, 4.f, 1.f);
+}
+
+// The five-camera scene of the acceptance test's quorum case: images 0-3 registered with 150
+// triangulated tracks, image 4 unregistered and observing the first 100 of them -- 40 at the
+// projections its own pose gives and 60 at random pixels, so the pose an estimator recovers is
+// image 4's true one on a 40% inlier share, low enough for the rotation check to apply. Its pairs
+// carry the true relative poses, and image 3's stored pose is then displaced along the arc: the
+// strongest pair, (3,4), therefore predicts a rotation that far from the recovered one, while the
+// weaker pairs to the correctly placed images 2 and 1 predict the recovered one. Without those two
+// the displaced neighbour is the only witness and the pose is refused on its word alone.
+constexpr unsigned RESECTION_TRUE_CORRESPONDENCES = 40;
+constexpr unsigned RESECTION_NOISE_CORRESPONDENCES = 60;
+
+void BuildResectionQuorumScene(Scene& scene, Pose3D& truePose, bool corroboratingPairs, std::mt19937& rng)
+{
+	BuildResectionArc(scene, 5);
+	truePose = static_cast<const Pose3D&>(scene.images[4]);
+	AddResectionTracks(scene, {0, 1, 2, 3}, 150, rng);
+
+	Image& img = scene.images[4];
+	std::uniform_real_distribution<float> pixelX(10.f, 630.f), pixelY(10.f, 470.f);
+	for (unsigned i = 0; i < RESECTION_TRUE_CORRESPONDENCES + RESECTION_NOISE_CORRESPONDENCES; ++i) {
+		Track& track = scene.tracks[i];
+		cv::Point2f pt(pixelX(rng), pixelY(rng));
+		if (i < RESECTION_TRUE_CORRESPONDENCES) {
+			const auto [proj, valid] = img.ProjectPoint(track.position);
+			ASSERT(valid && Image8U::isInside(proj, img.GetSize()));
+			pt = cv::Point2f((float)proj.x, (float)proj.y);
+		}
+		track.observations.emplace_back(IIndex(4), (uint32_t)img.keypoints.size());
+		img.keypoints.emplace_back(pt, 1.f);
+	}
+
+	AddResectionPair(scene, 3, 4, 400); // strongest, and to the image displaced below
+	if (corroboratingPairs) {
+		AddResectionPair(scene, 2, 4, 300);
+		AddResectionPair(scene, 1, 4, 250);
+	}
+	img.InvalidatePose();
+	scene.status.nCalibratedImages = 4;
+	TriangulateTracks(scene, false, 4.f, 1.f);
+	static_cast<Pose3D&>(scene.images[3]) = ResectionArcPose(3 * RESECTION_ARC_STEP + RESECTION_DISPLACEMENT);
 }
 
 } // namespace
@@ -8709,8 +8809,167 @@ bool ResectionAcceptanceTest()
 		}
 	}
 
+	// A pair to a misregistered neighbour is a false witness: the strongest pair of image 4 is to the
+	// displaced image 3 and puts its rotation 40 degrees away from the recovered one, while the two
+	// weaker pairs, to the correctly placed images 2 and 1, agree with it. The pose is accepted on
+	// the word of those two.
+	{
+		std::mt19937 rng(20260908);
+		Scene scene;
+		Pose3D truePose;
+		BuildResectionQuorumScene(scene, truePose, true, rng);
+		ResectionConfig config;
+		config.relativePoseFallback = false; // the acceptance of a resected pose alone, again
+		Resection resection(scene, config);
+		resection.RegisterImages();
+		if (!scene.images[4].HasPose()) {
+			VERBOSE("ResectionAcceptanceTest FAILED: the pose was refused although two of its three pairs agree with it");
+			return false;
+		}
+		const double rotErr = RotationErrorDeg(scene.images[4].R, truePose.R);
+		DEBUG("ResectionAcceptanceTest: the pose its quorum vouches for is %.2f deg off the truth", rotErr);
+		if (rotErr > 1.0) {
+			VERBOSE("ResectionAcceptanceTest FAILED: the accepted pose is %.2f deg off the truth, so it is not the one "
+				"the two agreeing pairs vouch for", rotErr);
+			return false;
+		}
+	}
+
+	// The same scene without those two pairs: the displaced neighbour is the only witness left, and
+	// the pose is refused on its word alone -- which is what the quorum above overrules
+	{
+		std::mt19937 rng(20260908);
+		Scene scene;
+		Pose3D truePose;
+		BuildResectionQuorumScene(scene, truePose, false, rng);
+		ResectionConfig config;
+		config.relativePoseFallback = false;
+		Resection resection(scene, config);
+		resection.RegisterImages();
+		if (scene.images[4].HasPose()) {
+			VERBOSE("ResectionAcceptanceTest FAILED: the pose was accepted with only the pair to the misplaced image "
+				"left, so the scene does not show what the agreeing pairs are worth");
+			return false;
+		}
+	}
+
 	VERBOSE("ResectionAcceptanceTest PASSED: a pose supported by a fifth of its correspondences is refused, by the "
-		"inlier share and by the rotation of its strongest pair alike (%s)", TD_TIMER_GET_FMT().c_str());
+		"inlier share and by the rotation its pairs compose alike, and a pose two of three pairs agree with is "
+		"accepted over the strongest pair's objection (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+namespace {
+
+// A verified pair as the image filter reads one: on top of what the resection needs (the ground
+// truth relative pose and a valid weight) it carries filtered inliers, which is the count the filter
+// requires before it takes a pair's word about a pose.
+void AddCorroborationPair(Scene& scene, IIndex idA, IIndex idB, unsigned numInliers)
+{
+	AddResectionPair(scene, idA, idB, numInliers);
+	ImagePair& pair = scene.pairs.back();
+	pair.matches.resize(numInliers);
+	pair.numFilteredInliers = (int)numInliers;
+}
+
+// Six cameras of the resection arc, all at their true poses. Cameras 0-3 share 150 tracks, so they
+// alone carry the covisibility graph; cameras 4 and 5 observe nothing but two-view tracks with their
+// neighbours, which the covisibility count (three inlier views to an edge) never sees, so the graph
+// holds no edge for them at all. They are joined to the model by verified pairs alone -- the shape
+// of an image the connectivity stages have nothing to judge. Cameras 4 and 5 each have two pairs to
+// cameras the filter keeps on their own merits, 2 and 3, plus the pair joining them to each other.
+void BuildCorroborationScene(Scene& scene, std::mt19937& rng)
+{
+	BuildResectionArc(scene, 6);
+	AddResectionTracks(scene, {0, 1, 2, 3}, 150, rng);
+	AddResectionTracks(scene, {3, 4}, 40, rng);
+	AddResectionTracks(scene, {4, 5}, 40, rng);
+	AddCorroborationPair(scene, 3, 4, 100);
+	AddCorroborationPair(scene, 2, 4, 100);
+	AddCorroborationPair(scene, 4, 5, 100);
+	AddCorroborationPair(scene, 3, 5, 100);
+	AddCorroborationPair(scene, 2, 5, 100);
+	TriangulateTracks(scene, false, 4.f, 1.f);
+}
+
+// The IDs of the images still valid, for the messages below
+String ValidImageList(const Scene& scene)
+{
+	String list;
+	FOREACH(imgIdx, scene.images)
+		if (scene.images[imgIdx].IsValid())
+			list += String::FormatString(list.empty() ? "%u" : ",%u", imgIdx);
+	return list.empty() ? String("none") : list;
+}
+
+} // namespace
+
+// An image the connectivity stages would drop for want of triangulated structure stays registered
+// when two verified pairs to images those stages keep agree with the pose the model gives it
+bool CorroboratedImageTest()
+{
+	TD_TIMER_START();
+	constexpr REAL CORROBORATION_DISPLACEMENT = 20; // degrees camera 5's stored pose is moved by
+
+	// Without the rescue, cameras 4 and 5 hold no covisibility edge and are dropped
+	{
+		std::mt19937 rng(20260908);
+		Scene scene;
+		BuildCorroborationScene(scene, rng);
+		FilterWeaklyConnectedImages(scene, 5, 0.15f, 1.5f, 2, 0.f, 0.f, 0.f);
+		if (scene.images[4].IsValid() || scene.images[5].IsValid()) {
+			VERBOSE("CorroboratedImageTest FAILED: cameras 4 and 5 survived the filter with the rescue off "
+				"(valid: %s), so the scene does not pose the problem", ValidImageList(scene).c_str());
+			return false;
+		}
+		for (IIndex imageID = 0; imageID < 4; ++imageID) {
+			if (!scene.images[imageID].IsValid()) {
+				VERBOSE("CorroboratedImageTest FAILED: camera %u of the connected core was dropped with the rescue off "
+					"(valid: %s)", imageID, ValidImageList(scene).c_str());
+				return false;
+			}
+		}
+	}
+
+	// With it, both are corroborated by their pairs to cameras 2 and 3 and stay
+	{
+		std::mt19937 rng(20260908);
+		Scene scene;
+		BuildCorroborationScene(scene, rng);
+		FilterWeaklyConnectedImages(scene, 5, 0.15f, 1.5f, 2, 0.f, 0.f, 5.f);
+		for (IIndex imageID = 0; imageID < 6; ++imageID) {
+			if (!scene.images[imageID].IsValid()) {
+				VERBOSE("CorroboratedImageTest FAILED: camera %u was dropped although two verified pairs agree with its "
+					"pose (valid: %s)", imageID, ValidImageList(scene).c_str());
+				return false;
+			}
+		}
+	}
+
+	// The rescue reads the pairs, not merely counts them: camera 5's stored pose moved 20 degrees
+	// along the arc contradicts both of its pairs to the cameras the filter keeps, so it is dropped
+	// while camera 4, whose pairs still agree, stays
+	{
+		std::mt19937 rng(20260908);
+		Scene scene;
+		BuildCorroborationScene(scene, rng);
+		static_cast<Pose3D&>(scene.images[5]) =
+			ResectionArcPose(5 * RESECTION_ARC_STEP + CORROBORATION_DISPLACEMENT);
+		FilterWeaklyConnectedImages(scene, 5, 0.15f, 1.5f, 2, 0.f, 0.f, 5.f);
+		if (!scene.images[4].IsValid()) {
+			VERBOSE("CorroboratedImageTest FAILED: camera 4 was dropped although its own pairs still agree with it "
+				"(valid: %s)", ValidImageList(scene).c_str());
+			return false;
+		}
+		if (scene.images[5].IsValid()) {
+			VERBOSE("CorroboratedImageTest FAILED: camera 5 was kept although its pose is %.0f degrees from what its "
+				"pairs measured (valid: %s)", (double)CORROBORATION_DISPLACEMENT, ValidImageList(scene).c_str());
+			return false;
+		}
+	}
+
+	VERBOSE("CorroboratedImageTest PASSED: two images with no covisibility edge stay registered on the word of two "
+		"verified pairs each, and one whose pose contradicts its pairs does not (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 

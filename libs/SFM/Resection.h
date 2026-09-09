@@ -47,10 +47,13 @@ struct SFM_API ResectionConfig
 	                                    // image's true one (0 = disabled)
 	unsigned minInliersAbsolute{100};   // Inlier count from which the ratio above is waived: that many correspondences
 	                                    // agreeing on a pose vouch for it whatever share of the total they are
-	float maxRelativeRotationError{15.f}; // Maximum angle (degrees) between the estimated rotation and the one composed
-	                                    // from the strongest verified pair to an already registered image; checked only
-	                                    // for a pose whose inlier share is below half, so that a well supported pose
-	                                    // overrules a possibly wrong pair (0 = disabled)
+	float maxRelativeRotationError{15.f}; // Maximum angle (degrees) between the estimated rotation and the one the
+	                                    // quorum of the verified pairs to already registered images composes -- the
+	                                    // largest group of those pairs agreeing on a rotation within this same angle,
+	                                    // so that one pair to a misplaced neighbour cannot speak for the image alone;
+	                                    // checked only for a pose whose inlier share is below half, so that a well
+	                                    // supported pose overrules pairs that may themselves be wrong. Also the angle
+	                                    // within which the relative-pose fallback groups an image's links (0 = disabled)
 	bool relativePoseFallback{true};    // Register one image from its relative poses to registered images when no image
 	                                    // reaches minCorrespondences, instead of stopping there
 	unsigned maxLocalWindow{25};        // Max images in local BA window (0 = all neighbors)

@@ -10,6 +10,7 @@
 
 #include "Common.h"
 #include "Track.h"
+#include "PoseLink.h"
 #include "Scene.h"
 
 using namespace SFM;
@@ -603,6 +604,20 @@ static void BuildCovisEdges(const Scene& scene, unsigned minCovisibilityCount,
 //      BA all agreeing because the same repetitive structure fooled all of them) is undetectable
 //      from internal geometry; it needs external evidence (GPS, loop closure, semantics).
 //
+// CORROBORATION (maxCorroborationAngle > 0, on by default):
+//    - Stages 1 to 5 all read an image's triangulated structure: its spread of points, its
+//      triangulation angles, its shared tracks. An image that entered the model through two-view
+//      geometry alone has none of that -- its tracks have two views, so the covisibility graph,
+//      which counts tracks of three, does not even hold an edge for it -- and every stage therefore
+//      drops it for want of evidence it was never going to have.
+//    - The evidence that does exist for such an image is the verified pairs joining it to the
+//      images the filter keeps. When two of them agree with the pose the model gives it, in the
+//      relative rotation and in the direction of the baseline alike, the image is corroborated and
+//      exempt from the tier verdicts, the largest-CC pass and the peel.
+//    - Decided once, on the entry state, and never from another corroborated image: the witnesses
+//      are images that pass the tier verdicts and lie in the largest component on their own, so no
+//      chain of two-view registrations can vouch for itself.
+//
 // RETURN VALUE:
 // =============
 // Array of invalidated image IDs (removed by the pre-filters or the connectivity stages).
@@ -647,13 +662,21 @@ static void BuildCovisEdges(const Scene& scene, unsigned minCovisibilityCount,
 // maxReprojErrorPixels (default 0 = disabled; pass config.maxFineReprojError to enable):
 //   - Enables the agreement-gated per-image backstops (match-survival + robust reprojection).
 //     0 leaves the backstops off. Both signals are absolute (never scene-relative).
+//
+// maxCorroborationAngle (default 5 = enabled):
+//   - Keep an image that two verified pairs to distinct images the filter keeps agree with, within
+//     this angle in both the relative rotation and the direction of the baseline. Every stage above
+//     judges an image by its triangulated structure, which an image joined to the model by two-view
+//     geometry alone does not have; this is the one rule that reads the two-view evidence directly.
+//   - 0 disables the rescue, leaving every image to the stages above.
 IIndexArr SFM::FilterWeaklyConnectedImages(Scene& scene,
 	unsigned minCovisibilityCount,
 	float minObservationArea,
 	float minTriangulationAngle,
 	unsigned minCovisDegree,
 	float maxPoseInconsistencyAngle,
-	float maxReprojErrorPixels)
+	float maxReprojErrorPixels,
+	float maxCorroborationAngle)
 {
 	TD_TIMER_STARTD();
 	struct PairIdxCount {
@@ -741,12 +764,86 @@ IIndexArr SFM::FilterWeaklyConnectedImages(Scene& scene,
 	DEBUG_EXTRA("Triangulation angle: mean %.2f° stddev %.2f° range [%.2f°,%.2f°] n %u",
 		R2D(angleStats.GetMean()), R2D(angleStats.GetStdDev()), R2D(angleStats.GetMin()), R2D(angleStats.GetMax()), angleStats.size);
 
+	// Images corroborated by two consistent pairs (optional; off when maxCorroborationAngle <= 0).
+	// An image joined to the model by two-view geometry alone holds no track of three views once the
+	// angle and reprojection filters have run, so it has no covisibility edge and often no spread of
+	// triangulated points either: every stage of this filter judges an image by structure that such
+	// an image simply does not have. Its pose is nevertheless vouched for by verified pairs, so it is
+	// kept when at least two of them join it to distinct images this filter keeps on their own merits
+	// and, for each of those pairs, the model agrees with what the pair measured -- the relative
+	// rotation within maxCorroborationAngle of the pair's, and the direction of the model's baseline
+	// within the same angle of the one the pair's relative pose gives. A pair with no baseline of its
+	// own fixes no direction, so it is judged on the rotation alone.
+	// Corroboration is decided once, here, on the state this call was entered with, and the witnesses
+	// are the images that pass the tier verdicts and lie in the largest component of the covisibility
+	// graph of that same state: a corroborated image is never a witness, so no chain of them can lift
+	// itself into the model.
+	std::vector<uint8_t> corroborated(scene.images.size(), 0);
+	std::vector<uint8_t> keptByComponent(scene.images.size(), 0); // the largest-component pass runs more than once
+	unsigned numCorroborated = 0, numKeptTier = 0, numKeptComponent = 0, numKeptPeel = 0;
+	if (maxCorroborationAngle > 0.f) {
+		constexpr unsigned minPairInliersForCheck = 30;
+		std::vector<std::array<unsigned, 3>> entryEdges;
+		BuildCovisEdges(scene, minCovisibilityCount, minInliersPerTrack, entryEdges);
+		DisjointSet<IIndex> entryDS(scene.images.size());
+		for (const auto& e : entryEdges)
+			entryDS.Union(e[0], e[1]);
+		const std::unordered_map<IIndex, unsigned> entrySizes = entryDS.CompressAllPaths().GetComponentSizes();
+		IIndex largestRoot = NO_ID;
+		unsigned maxSize = 0;
+		for (const auto& [root, size] : entrySizes)
+			if (size > maxSize || (size == maxSize && root < largestRoot)) {
+				maxSize = size;
+				largestRoot = root;
+			}
+		std::vector<uint8_t> witness(scene.images.size(), 0);
+		FOREACH(imgIdx, scene.images)
+			witness[imgIdx] = (scene.images[imgIdx].IsValid() && !tierDrop[imgIdx] &&
+				entryDS.Find(imgIdx) == largestRoot) ? 1 : 0;
+		// Count, per image, the witnesses whose pair agrees with the model about it. Both endpoints of
+		// a pair are tried, since either may be the one in need of corroboration.
+		const REAL minCosAngle = COS(D2R(REAL(maxCorroborationAngle)));
+		std::vector<unsigned> numWitnesses(scene.images.size(), 0);
+		for (const ImagePair& pair : scene.pairs) {
+			if (!pair.relativePose.has_value() || pair.GetNumFilteredInliers() < minPairInliersForCheck)
+				continue;
+			for (unsigned side = 0; side < 2; ++side) {
+				const IIndex imageID = side == 0 ? pair.ID1 : pair.ID2;
+				const IIndex neighborID = side == 0 ? pair.ID2 : pair.ID1;
+				if (witness[imageID] || !witness[neighborID] || !scene.images[imageID].IsValid())
+					continue;
+				const Image& image = scene.images[imageID];
+				const Image& neighbor = scene.images[neighborID];
+				const PoseLink link = MakePoseLink(pair, neighborID);
+				if (ComputeAngle(image.R, link.PredictedRotation(neighbor)) < minCosAngle)
+					continue; // the pair puts the image at another orientation than the model does
+				Point3 modelDirection(image.C - neighbor.C), pairDirection;
+				const REAL baseline = norm(modelDirection);
+				if (baseline > ZEROTOLERANCE<REAL>() && link.PredictedDirection(neighbor, pairDirection) &&
+					pairDirection.dot(modelDirection / baseline) < minCosAngle)
+					continue; // ... or on another side of its neighbor
+				++numWitnesses[imageID];
+			}
+		}
+		FOREACH(imgIdx, scene.images) {
+			if (numWitnesses[imgIdx] < 2)
+				continue;
+			corroborated[imgIdx] = 1;
+			++numCorroborated;
+		}
+	}
+
 	// Apply the tier verdicts in a single batch sweep over the tracks (order-independent).
 	{
 		IIndexArr tierDropIDs;
 		FOREACH(imgIdx, scene.images)
-			if (tierDrop[imgIdx])
+			if (tierDrop[imgIdx]) {
+				if (corroborated[imgIdx]) {
+					++numKeptTier;
+					continue;
+				}
 				tierDropIDs.push_back(imgIdx);
+			}
 		scene.InvalidateImages(tierDropIDs);
 		for (const IIndex id : tierDropIDs)
 			filteredIDs.push_back(id);
@@ -803,7 +900,8 @@ IIndexArr SFM::FilterWeaklyConnectedImages(Scene& scene,
 	// Union all image pairs connected by edges
 	for (const PairIdxCount& edge : edgeWeights)
 		ds.Union(edge.pairIdx.i, edge.pairIdx.j);
-	const auto InvalidateImagesIfNotInLargestComponent = [&scene, &filteredIDs, &ds]() {
+	const auto InvalidateImagesIfNotInLargestComponent =
+		[&scene, &filteredIDs, &ds, &corroborated, &keptByComponent, &numKeptComponent]() {
 		const std::unordered_map<IIndex, unsigned> componentSizes = ds.CompressAllPaths().GetComponentSizes();
 		// Largest component root; tie-break to the smaller root ID so the choice is deterministic
 		// regardless of the (unordered) map iteration order.
@@ -818,6 +916,13 @@ IIndexArr SFM::FilterWeaklyConnectedImages(Scene& scene,
 		IIndexArr dropIDs;
 		FOREACH(imgIdx, scene.images) {
 			if (scene.images[imgIdx].IsValid() && largestComponentRoot != ds.Find(imgIdx)) {
+				if (corroborated[imgIdx]) {
+					if (!keptByComponent[imgIdx]) {
+						keptByComponent[imgIdx] = 1;
+						++numKeptComponent;
+					}
+					continue;
+				}
 				DEBUG_EXTRA("warning: image %u (`%s`) invalidated for not in largest connected component",
 					imgIdx, Util::getFileName(scene.images[imgIdx].fileName).c_str());
 				dropIDs.push_back(imgIdx);
@@ -872,13 +977,13 @@ IIndexArr SFM::FilterWeaklyConnectedImages(Scene& scene,
 					++degree[imgIdx];
 	std::vector<IIndex> peelQueue;
 	FOREACH(imgIdx, scene.images)
-		if (alive[imgIdx] && degree[imgIdx] < minCovisDegree)
+		if (alive[imgIdx] && !corroborated[imgIdx] && degree[imgIdx] < minCovisDegree)
 			peelQueue.push_back(imgIdx);
 	IIndexArr peeledIDs;
 	while (!peelQueue.empty()) {
 		const IIndex imgIdx = peelQueue.back();
 		peelQueue.pop_back();
-		if (!alive[imgIdx] || degree[imgIdx] >= minCovisDegree)
+		if (!alive[imgIdx] || corroborated[imgIdx] || degree[imgIdx] >= minCovisDegree)
 			continue;
 		DEBUG_EXTRA("warning: image %u (`%s`) invalidated for weak covisibility degree (%u < %u)",
 			imgIdx, Util::getFileName(scene.images[imgIdx].fileName).c_str(), degree[imgIdx], minCovisDegree);
@@ -887,10 +992,13 @@ IIndexArr SFM::FilterWeaklyConnectedImages(Scene& scene,
 		for (const IIndex nb : adj[imgIdx])
 			if (alive[nb] && degree[nb] > 0) {
 				--degree[nb];
-				if (degree[nb] < minCovisDegree)
+				if (degree[nb] < minCovisDegree && !corroborated[nb])
 					peelQueue.push_back(nb);
 			}
 	}
+	FOREACH(imgIdx, scene.images)
+		if (alive[imgIdx] && corroborated[imgIdx] && degree[imgIdx] < minCovisDegree)
+			++numKeptPeel;
 	scene.InvalidateImages(peeledIDs);
 	for (const IIndex id : peeledIDs)
 		filteredIDs.push_back(id);
@@ -980,6 +1088,10 @@ IIndexArr SFM::FilterWeaklyConnectedImages(Scene& scene,
 		}
 	}
 
+	if (numCorroborated > 0)
+		DEBUG("Corroboration: %u images kept by two consistent pairs (%u of them the tier verdicts would have dropped, "
+			"%u as not in the largest connected component, %u for a weak covisibility degree)",
+			numCorroborated, numKeptTier, numKeptComponent, numKeptPeel);
 	DEBUG("Filtered %u/%u weakly connected images in %s",
 		filteredIDs.size(), scene.status.nCalibratedImages+filteredIDs.size(), TD_TIMER_GET_FMT().c_str());
 	return filteredIDs;
