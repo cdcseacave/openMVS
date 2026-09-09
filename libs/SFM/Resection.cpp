@@ -449,17 +449,21 @@ bool Resection::RegisterImages()
 	}
 
 	// Resection loop
+	unsigned nBA = 0;
 	unsigned registeredCount = 0;
 	unsigned relativePoseCount = 0;
 	unsigned sinceFullBA = 0;
-	unsigned registeredAtLastFullBA = scene.status.nCalibratedImages;
 	IIndexArr lastRegistered;
+	TRunningAverage<float, 10> avgInliersRatio;
 	// Run the bundle adjustment the registration count has come due for, if any; true when one ran,
 	// in which case the selection of the next images has to start over
 	const auto AdjustIfScheduled = [&]() {
-		if (config.fullBAMinImages > 0 && sinceFullBA >= config.fullBAMinImages &&
-			sinceFullBA >= config.fullBAGrowth * registeredAtLastFullBA) {
-			// Full BA once the model has grown enough since the last one;
+		if ((config.fullBAEvery[nBA] > 0 && sinceFullBA >= config.fullBAEvery[nBA]) ||
+			(config.avgInliersRatioForceBA > 0.f && sinceFullBA >= config.minImagesForceBA &&
+			 // an image registered from a relative pose has no inlier ratio to contribute, so the
+			 // average may hold no measurement at all and must not be read as a low one
+			 avgInliersRatio.GetCount() > 0 && avgInliersRatio.GetAverage() < config.avgInliersRatioForceBA)) {
+			// Full BA every N registered images;
 			// filter first so the observations of the images registered since the last filtering enter the
 			// inlier prefix the BA iterates, then re-triangulate only the tracks left without a valid
 			// position (real outliers and never-triangulated tracks): a track that merely gained a newly
@@ -471,8 +475,10 @@ bool Resection::RegisterImages()
 			BundleAdjustment::Adjust(scene, refineExtended ? config.extendedBAConfig : config.fullBAConfig);
 			FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
 			lastRegistered.clear();
+			avgInliersRatio.Clear();
 			sinceFullBA = 0;
-			registeredAtLastFullBA = scene.status.nCalibratedImages + registeredCount;
+			if (nBA + 1 < config.fullBAEvery.size())
+				++nBA;
 			return true;
 		}
 		if (config.localBAEvery > 0 && lastRegistered.size() >= config.localBAEvery) {
@@ -520,6 +526,8 @@ bool Resection::RegisterImages()
 			// Attempt to register next image
 			const IIndex nextID = nextIDs[n];
 			const auto [numInliers, numPoints] = RegisterImage(nextID);
+			if (numPoints > 0)
+				avgInliersRatio += numInliers / (float)numPoints;
 			if (numInliers == 0) {
 				DEBUG("warning: failed to register image %u (%u/%u correspondences), retrying later", nextID, numInliers, numPoints);
 				nextIDs.RemoveAtMove(n);
@@ -530,8 +538,8 @@ bool Resection::RegisterImages()
 			++registeredCount;
 			++sinceFullBA;
 			++n;
-			DEBUG_EXTRA("\tImage %u registered: %u/%u correspondences (%u/%u images)",
-				nextID, numInliers, numPoints, scene.status.nCalibratedImages+registeredCount, scene.images.size());
+			DEBUG_EXTRA("\tImage %u registered: %u/%u correspondences (%u/%u images, %.2f%% avg inliers ratio)",
+				nextID, numInliers, numPoints, scene.status.nCalibratedImages+registeredCount, scene.images.size(), avgInliersRatio.GetAverage() * 100.f);
 			if (AdjustIfScheduled()) {
 				break; // restart selection of next images
 			} else if (n+1 == nextIDs.size() || (config.triangulateEvery > 0 && (lastRegistered.size() % config.triangulateEvery) == 0)) {
