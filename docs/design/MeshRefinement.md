@@ -50,7 +50,10 @@ missing mask file is logged once per image there, not repeated every scale by th
 loader (§1.3). `OPTREFINE::init()`/`update()` load the `OPTREFINE` defaults and merge in
 `--refine-config-file` if given; the CLI, including this app's own `RefineMesh.cfg`, always wins
 over that file, and a configuration file naming an option that does not exist is refused by name
-rather than silently ignored.
+rather than silently ignored. An option the CLI defines with a default of its own has to be applied
+only when it was actually given (`vm[...].defaulted()`), or the default overwrites what the
+configuration file set and the file silently does nothing -- `--simplify-tolerance` and
+`--adaptive-face-size` both go through that check.
 
 **Trading accuracy for speed.** `--fast` is the measured fast configuration behind one switch: it
 prepares the mesh at twice the default face area (`--max-face-area 32`) and raises the decimation
@@ -105,7 +108,17 @@ target only, and a floor near the ratios the usable caps ask for silently satura
 handed to one `Mesh::Clean` pass that decimates (halfmesh's QEM), closes holes up to 30 edges and
 remeshes isotropically in a band around the mean edge the decimation left (`edgeLength` −1,
 10 iterations): the remesh evens the rings out for the umbrella operator without moving the
-density. Every scale then projects again and splits 1-to-4 every face whose tightest-pair area
+density. With `--adaptive-face-size` (default on since 2026-09) that remesh instead grades the
+density per vertex: the decimation runs alone, the decimated mesh is projected once more, and every
+face states its own scale — it covers `seenArea` pixels for its world area, so the world area that
+would project to the target is `area·target/seenArea`, and a vertex takes the equilateral edge of
+the mean over its incident seen faces (`SeenAreasToEdgeTargets`, handed to halfmesh as
+`RemeshParams::vertexSizing`). The decimation ratio is one number for the whole mesh and can only
+set the total; the remesh's split and collapse are local, so the field is what moves faces from
+where the cameras over-resolve the surface to where they under-resolve it. On a surface seen from a
+constant distance the field comes out flat and the preparation is the uniform one — which is why
+Tanks & Temples measures it as +0.0007 F1 at 1.00x faces (§2.10), and why the mechanism is aimed at
+scenes whose camera-to-surface distance varies, which that benchmark does not contain. Every scale then projects again and splits 1-to-4 every face whose tightest-pair area
 exceeds **twice** `--max-face-area` (`Mesh::Subdivide` tests `2*maxArea`, 32 px² at the default).
 Until 2026-09 the preparation was two passes and two relative heuristics — decimate to
 `max(0.1, 6·median/cap)` over every face, unseen zeros included, then remesh to 2.25x the mean
@@ -123,9 +136,15 @@ the remesh in a second pass after the split −0.0004 at 0.79x faces and 0.85x w
 face under `--max-face-area` in its tightest pair) is not the face count a deliverable needs.
 `--simplify-tolerance T` (px, default 0.25, 0 = off; `OPTREFINE::fSimplifyTolerance`) decimates the
 refined mesh once the last scale ends, the same host-side pass on both backends
-(`SimplifyMeshWithinTolerance`): every vertex gets the pixel factor of its most resolving view
-(f/depth, accumulated over the pixels ListCameraFaces rasterized, so `T` is in pixels of the
-working resolution -- the unit `--max-face-area` already uses), the bound `(T/pf)²` is handed to
+(`SimplifyMeshWithinTolerance`): every vertex gets its pixels per scene unit from the same
+tightest-pair areas the split rule reads (`SeenAreasToPixelFactors`: a face covering `seenArea`
+pixels over its world area resolves `sqrt(seenArea/area)`, averaged over a vertex's incident seen
+faces), so `T` is in pixels of the working resolution -- the unit `--max-face-area` already uses.
+Until 2026-09 this one measurement was the odd one out, taken as f/depth in each vertex's single
+best view: that ignores foreshortening and occlusion, which a rasterized area carries, and it can
+pick an image no refinement pair uses. Unifying it removes 19-20 % more faces at unchanged F1, and
+at accuracy and completeness identical to four decimals on the EPFL scenes (§2.10). The bound
+`(T/pf)²` is handed to
 `Mesh::Clean` as `CleanParams::vertexMaxError`, and halfmesh's exact QEM decimation collapses an
 edge only while the mean squared distance of its collapse point to the planes its merged quadric
 holds stays within the smaller bound of its endpoints, running until no edge passes. The bound is
@@ -1097,6 +1116,74 @@ per-pixel part and pays for it in accuracy (Barn −0.015, Ignatius −0.021 on 
 coarser mesh cuts both halves at once. `--max-views` leaves the preset entirely; it remains
 available on its own for anyone who needs the memory back.
 
+### 2.10 One measurement for the whole pipeline, and the Acute3D pair vote (2026-09)
+
+Four places asked "how big does this face project?" and three of them agreed. `ListFaceAreas`
+reduces the per-view rasterized pixel counts over **the refinement's own pairs** — the smaller of a
+pair's two views, the larger over the pairs — and the split rule, the decimation target
+(`SampleSeenFaceArea`, the same reduction on analytic areas) and the sizing field all read it. The
+post-refinement decimation read something else: `f/depth` in each vertex's single best view. The
+work below unified the fourth, tried the alternatives for the reduction itself, and closed the pair
+vote. Cells `prep-tnt12` … `prep-tnt15` and `prep-epfl2`, pins `bin_refine_prep6` … `prep8`.
+
+**The decimation's units (shipped).** `f/depth` is what a camera would resolve looking at the
+surface head-on with nothing in the way: it carries neither the foreshortening nor the occlusion
+that a rasterized area carries, and the view it picks need not appear in any refinement pair.
+Reading the tolerance off the tightest-pair areas instead is a controlled A/B — the refinement is
+bit-identical, only the last pass differs:
+
+| | Truck | Barn | Ignatius | Meetingroom |
+|---|---|---|---|---|
+| ΔF1 | +0.0000 | +0.0003 | −0.0006 | +0.0005 |
+| faces | 0.84x | 0.80x | 0.80x | 0.81x |
+
+and on the three EPFL scenes the threshold-free accuracy **and** completeness are identical to four
+decimals at 0.85x faces. The removed faces carry no geometry; F1-at-τ cannot see that, which is why
+the density questions in this document are cross-checked there.
+
+**The reduction rule (rejected, `max` stays).** A face is seen by many pairs at wildly different
+sizes, and `max` keeps a face as fine as the *best* pair can exploit. `median` and `mean` — the
+typical pair decides — are not a different rule so much as a different scale: they report ~5x
+smaller areas, so `--max-face-area 16` under them means what cap 80 means under `max`, and
+comparing at a fixed cap only re-measures §2.9's sweep. Density-matched at cap 2 and 3, `mean` gave
++0.0020 mean F1 and `median` −0.0003 at 1.31x faces, but both swing the evaluation counts hard
+(Truck 14 → 28, Barn 33 → 46) and this benchmark's F1 tracks that count, so the gain is not
+attributable to the rule; and `median` at its matched cap puts the working numbers at 1-2 px, where
+counting whole pixels stops being a measurement. Not enough to redefine `--max-face-area`, whose
+value 16 was tuned against `max` (§2.9). The reduction now lives once, in
+`ReduceFaceAreasOverPairs`, called by both backends instead of being copied into each.
+
+**Acute3D's pair vote (rejected).** Reimplemented from the reconstructed points: thin them to one
+cell per 8 px in the view that resolves them best, let every cell give 1 to the pair of views
+seeing it at the best triangulation angle (`((1+cosθ)/2)¹⁰·sinθ`, peaking at 24.6°) and less to the
+rest, then keep a pair that ranks among a view's best unless a third view is better connected to
+both ends. It is a global, symmetric choice and it thins hard — **2.62 pairs per image on Barn,
+3.16 Meetingroom, 3.36 Ignatius, 4.56 Truck**, against eight neighbours each — and the refinement
+runs at 0.69x wall. It is also worse by −0.0100 mean F1, and not through the evaluation count: at
+*equal* counts Barn scores 0.6532 against 0.6728 (31 evaluations both), Meetingroom 0.4013 against
+0.4134, Ignatius 0.7486 against 0.7795 (26 both). Barn's voted run even produced more faces than
+the default. Too few pairs under-constrain the surface, and the vote thins hardest on the scenes
+with the most images. As a *view-budget* lever it beats `--max-views 4` (0.69x wall for the same
+−0.010, against 0.83x), but the view budget is the wrong lever: the face-area cap buys 0.71-0.79x
+for −0.0035 and halves the mesh at the same time (§2.9).
+
+**Ending a scale sooner (`Max Evaluations`, kept as a bound, not a speed lever).** The convergence
+rules run well past the point of return on one scene: Meetingroom's fine scale spends evaluations 8
+to 26 moving the energy by 0.05-0.17 % each. A hard per-scale cap at 12 costs −0.0013 mean F1 for
+−7 % wall, but Truck never reaches it, Ignatius saves 3 %, and the whole benefit is Meetingroom's
+−24 %. Raising the stall tolerance instead (`Progress Tol`, three consecutive evaluations below a
+relative decrease) saves the same wall for twice the loss, −0.0026, and is untunable — 0.002 and
+0.003 give bit-identical results on all four scenes, since the energy sequence holds no stall value
+between them at the deciding point. That knob was removed; `Max Evaluations` stays at its default 0
+(the convergence rules decide) for callers who need a bounded run time rather than a faster one.
+
+**A structural note on the post-refinement decimation.** It is a cliff, not a dial. Two runs of one
+scene at the same tolerance, with meshes 0.3 % apart in size, decimated to 146148 and 50669 faces.
+The preparation remeshes to a uniform density, so nearly every edge carries the same
+QEM-cost-to-bound ratio and the whole mesh sits either above the tolerance or below it. This is why
+delivered face counts have looked erratic between arms differing in nothing else, and it is worth
+remembering before reading any single face count as a property of an arm.
+
 ## 3. How these numbers were produced
 
 The harness lives under the gitignored `bench/` tree; this section records what it does, so a
@@ -1217,6 +1304,11 @@ entry says otherwise.
 | 61 | The auto decimation's ratio floor (2 % of the input faces) | from cap 32 up most scenes ask for a smaller ratio, so the target was clamped and the cap stopped coarsening the mesh except through the split; the delivered density drifted from 75 % of nominal at the default to 61 % at cap 32 | **fixed**: floor 0.002, never binding at the default (ratios there are 3.5-13 %), delivered density now a constant 70-79 % of nominal at every cap |
 | 62 | Preparation reaching the target more directly: the remesh pinned to the derived world edge length (the sampled faces convert px to scene units, √3/4·L² for an equilateral face), and one remesh carrying the mesh with no decimation at all | pinned −0.0032 mean at 0.96x faces (inert but for Ignatius, which loses); remesh-only −0.0010 at 1.11x faces and 1.06x wall, undershooting the target further (62 % of nominal against 75 %) | both removed; the two-step preparation of §1.2 stands |
 | 63 | The fast preset rebuilt on the face area instead of the view budget | `--max-face-area 32 --simplify-tolerance 0.5` = −0.0046 mean at 0.40x faces and 0.78x wall, against the old `--max-views 4 --simplify-tolerance 0.5` at −0.0105 / 0.60x / 0.83x; adding `--max-views 4` back costs −0.010 more for 0.13x wall | **became `--fast`**: a coarser mesh cuts the mesh work and the per-pixel work together, a smaller view budget only the second (§2.9) |
+| 64 | Acute3D's `SelectPairs` reimplemented from the tracks (8 px point cells, angle weight ((1+cosθ)/2)¹⁰·sinθ, per-cell normalisation, top-K with a transitive-redundancy test) in place of the per-image neighbour selection | 2.6-4.6 pairs per image against eight neighbours each, 0.69x wall, **−0.0100 mean F1** — and not the evaluation-count artefact: at equal counts Barn 0.6532 vs 0.6728, Meetingroom 0.4013 vs 0.4134, Ignatius 0.7486 vs 0.7795. Better than `--max-views 4` as a view-budget lever (same loss, 0.69x vs 0.83x wall) | removed: too few pairs under-constrain the surface, and the view budget is the wrong lever next to the face-area cap (§2.10) |
+| 65 | The tightest-pair reduction taken as the median or the mean over the pairs that see a face, instead of the largest | not a rule change but a scale change (~5x smaller areas, so cap 16 means cap 80); density-matched at cap 2/3, mean +0.0020 and median −0.0003 at 1.31x faces, both swinging the evaluation counts hard (Truck 14 → 28), and median puts the working numbers at 1-2 px where whole-pixel counting stops measuring | removed, `max` stays: no evidence strong enough to redefine `--max-face-area`, whose 16 was tuned against it (§2.10) |
+| 66 | `Progress Tol`, ending a scale on three evaluations below a larger relative decrease, as a fast-mode stop | same wall as a hard evaluation cap for twice the F1 cost (−0.0026 vs −0.0013), and untunable: 0.002 and 0.003 are bit-identical on all four scenes | removed; `Max Evaluations` stays at default 0 as a bound on run time, not a speed lever (§2.10) |
+| 67 | The post-refinement decimation measured in the tightest-pair areas the split rule uses, instead of f/depth in each vertex's best view | T&T +0.0001 mean F1 (worst scene −0.0006) at 0.81x faces and 1.01x wall; EPFL accuracy **and** completeness identical to four decimals at 0.85x faces | **shipped unconditionally**, and the f/depth path deleted: foreshortening and occlusion are in a rasterized area and not in f/depth (§2.10) |
+| 68 | Per-vertex sizing field for the preparation (`--adaptive-face-size`), each face graded to the area it projects to in the pair that refines it | +0.0007 mean F1 at 1.00x faces and 0.92x wall (the graded coarse scale is cheaper than the extra projection costs); EPFL accuracy +2.6 % / −1.3 % / unchanged. Neutral by construction on Tanks & Temples, whose viewing distance is near-constant | **default on**: the correct formulation at no cost, aimed at scenes with varying camera-to-surface distance that this benchmark does not contain (§2.10) |
 
 Three of these carry a mechanism worth stating, because they look like independent ideas and are
 not.

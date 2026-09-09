@@ -118,10 +118,8 @@ public:
 
 	void ListFaceAreas(Mesh::AreaArr& maxAreas);
 	void SubdivideMesh(uint32_t maxArea, float fDecimate=1.f, unsigned nCloseHoles=15, unsigned nEnsureEdgeSize=1);
-	// pixels per scene unit of every vertex in its most resolving view, off the projections
-	// ListCameraFaces() left on the device (downloaded per view; 0 for a vertex no view rasterized)
-	void ComputePixelFactors(FloatArr& pixelFactors);
-	// decimate the refined mesh within the given reprojection tolerance (px, best view)
+	// decimate the refined mesh within the given reprojection tolerance, measured in the
+	// projected areas ListFaceAreas() reports (px at the working resolution)
 	void SimplifyMesh(float tolerancePx);
 
 	void ComputeNormalFaces();
@@ -493,17 +491,18 @@ void MeshRefineCUDA::ListCameraFaces()
 	}
 }
 
-// compute for each face the projection area as the maximum area in both images of a pair
-// (make sure ListCameraFaces() was called before)
+// compute for each face the one projected area the preparation reads, over the refinement's own
+// pairs and by the rule `Face Area Rule` selects (make sure ListCameraFaces() was called before)
 void MeshRefineCUDA::ListFaceAreas(Mesh::AreaArr& maxAreas)
 {
 	ASSERT(maxAreas.IsEmpty());
-	// for each image, compute the projection area of visible faces
-	typedef cList<Mesh::AreaArr> ImageAreaArr;
-	ImageAreaArr viewAreas(images.GetSize());
+	// for each image a pair uses, compute the projection area of visible faces
+	Unsigned8Arr usedImages;
+	ListPairImages(pairs, images.GetSize(), usedImages);
+	ViewAreaArr viewAreas(images.GetSize());
 	FOREACH(idxImage, images) {
 		const Image& imageData = images[idxImage];
-		if (!imageData.IsValid())
+		if (!imageData.IsValid() || !usedImages[idxImage])
 			continue;
 		Mesh::AreaArr& areas = viewAreas[idxImage];
 		areas.Resize(scene.mesh.faces.GetSize());
@@ -521,20 +520,8 @@ void MeshRefineCUDA::ListFaceAreas(Mesh::AreaArr& maxAreas)
 			}
 		}
 	}
-	// for each pair, mark the faces that have big projection areas in both images
 	maxAreas.Resize(scene.mesh.faces.GetSize());
-	maxAreas.Memset(0);
-	FOREACHPTR(pPair, pairs) {
-		const Mesh::AreaArr& areasA = viewAreas[pPair->i];
-		const Mesh::AreaArr& areasB = viewAreas[pPair->j];
-		ASSERT(areasA.GetSize() == areasB.GetSize());
-		FOREACH(f, areasA) {
-			const uint16_t minArea(MINF(areasA[f], areasB[f]));
-			uint16_t& maxArea = maxAreas[f];
-			if (maxArea < minArea)
-				maxArea = minArea;
-		}
-	}
+	ReduceFaceAreasOverPairs(viewAreas, pairs, maxAreas);
 }
 
 // the shared preparation (PrepareRefineMesh, SceneRefineCommon.h): decimate, remesh and
@@ -545,29 +532,17 @@ void MeshRefineCUDA::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned n
 }
 
 
-void MeshRefineCUDA::ComputePixelFactors(FloatArr& pixelFactors)
-{
-	pixelFactors.Resize(scene.mesh.vertices.size());
-	pixelFactors.Memset(0);
-	FOREACH(idxImage, images) {
-		const Image& imageData = images[idxImage];
-		if (!imageData.IsValid())
-			continue;
-		// the maps ListCameraFaces() rasterized on the device, downloaded like ListFaceAreas does
-		const View& view = views[idxImage];
-		TImage<FIndex> faceMap(imageData.height, imageData.width);
-		DepthMap depthMap(imageData.height, imageData.width);
-		view.faceMap.GetData(faceMap);
-		view.depthMap.GetData(depthMap);
-		AccumulatePixelFactors(scene.mesh.faces, faceMap, depthMap, (float)imageData.camera.GetFocalLength(), pixelFactors);
-	}
-}
-
 void MeshRefineCUDA::SimplifyMesh(float tolerancePx)
 {
+	// the tolerance is a reprojection error, so it is measured in the same projected areas the
+	// preparation splits against -- every other reading of "how big is this face on screen" in
+	// this file goes through ListFaceAreas, and a decimation that used a different one would
+	// keep faces no pair of the refinement can see
 	ListCameraFaces();
+	Mesh::AreaArr seenAreas;
+	ListFaceAreas(seenAreas);
 	FloatArr pixelFactors;
-	ComputePixelFactors(pixelFactors);
+	SeenAreasToPixelFactors(scene.mesh, seenAreas, pixelFactors);
 	SimplifyMeshWithinTolerance(scene.mesh, pixelFactors, tolerancePx);
 	ListVertexFacesPre();
 }

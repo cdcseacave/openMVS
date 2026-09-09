@@ -49,6 +49,7 @@ using namespace MVS;
 
 #define DEFVAR_OPTREFINE_int32(name, title, desc, ...)  DEFVAR_int32(OPTREFINE, name, title, desc, __VA_ARGS__)
 #define DEFVAR_OPTREFINE_float(name, title, desc, ...)  DEFVAR_float(OPTREFINE, name, title, desc, __VA_ARGS__)
+#define DEFVAR_OPTREFINE_bool(name, title, desc, ...)   DEFVAR_bool(OPTREFINE, name, title, desc, __VA_ARGS__)
 
 
 // S T R U C T S ///////////////////////////////////////////////////
@@ -60,6 +61,8 @@ DEFVAR_OPTREFINE_int32(nIgnoreMaskLabel, "Ignore Mask Label", "label id used dur
 DEFVAR_OPTREFINE_int32(nImageGradient, "Image Gradient", "image derivative stencil (0 - 3x5 separable, 1 - central, 2 - Sobel, 3 - bilinear interpolant derivative)", "1")
 DEFVAR_OPTREFINE_float(fGateMeanDiff, "Gate Mean Diff", "reject a pixel pair whose local mean differs by more than this (0 - disabled)", "0.4")
 DEFVAR_OPTREFINE_float(fGateVarRatio, "Gate Var Ratio", "reject a pixel pair whose local variance ratio exceeds this (0 - disabled)", "8.0")
+DEFVAR_OPTREFINE_int32(nMaxEvaluations, "Max Evaluations", "hard cap on the energy evaluations of every scale (0 - the convergence rules alone decide)", "0")
+DEFVAR_OPTREFINE_bool(bAdaptiveFaceSize, "Adaptive Face Size", "grade the prepared faces per vertex, so every face projects to about the face cap in the pair that refines it, instead of one world-space density for the whole mesh", "1")
 DEFVAR_OPTREFINE_float(fSimplifyTolerance, "Simplify Tolerance", "decimate the refined mesh within this reprojection error in every vertex's best view (px at the working resolution) once the refinement ends (0 - disabled)", "0.25")
 
 } // namespace MVS
@@ -69,6 +72,7 @@ DEFVAR_OPTREFINE_float(fSimplifyTolerance, "Simplify Tolerance", "decimate the r
 // constructors (CPU MeshRefine::ThSelectNeighbors, SceneRefine.cpp; CUDA MeshRefineCUDA's
 // constructor, SceneRefineCUDA.cpp) so the filter thresholds and the missing-neighbor recovery
 // exist once -- see the doc comment in SceneRefineCommon.h
+
 bool MVS::SelectRefineNeighbors(Scene& scene, uint32_t idxImage, unsigned nMaxViews, ViewScoreArr& neighbors)
 {
 	// keep only best neighbor views
@@ -131,6 +135,89 @@ static float MaxSeen(const FloatArr& values, const FloatArr& pixelFactors)
 		if (pixelFactors[v] > 0 && values[v] > maxValue)
 			maxValue = values[v];
 	return maxValue;
+}
+
+void MVS::ListPairImages(const PairIdxArr& pairs, size_t numImages, Unsigned8Arr& used)
+{
+	used.Resize(numImages);
+	used.Memset(0);
+	for (const PairIdx& pair: pairs) {
+		ASSERT(pair.i < numImages && pair.j < numImages);
+		used[pair.i] = used[pair.j] = 1;
+	}
+}
+
+void MVS::ReduceFaceAreasOverPairs(const ViewAreaArr& viewAreas, const PairIdxArr& pairs, Mesh::AreaArr& faceAreas)
+{
+	ASSERT(!faceAreas.IsEmpty());
+	faceAreas.Memset(0);
+	FOREACHPTR(pPair, pairs) {
+		const Mesh::AreaArr& areasA = viewAreas[pPair->i];
+		const Mesh::AreaArr& areasB = viewAreas[pPair->j];
+		ASSERT(areasA.size() == faceAreas.size() && areasB.size() == faceAreas.size());
+		FOREACH(f, faceAreas) {
+			const uint16_t pairArea(MINF(areasA[f], areasB[f]));
+			if (faceAreas[f] < pairArea)
+				faceAreas[f] = pairArea;
+		}
+	}
+}
+
+void MVS::SeenAreasToPixelFactors(const Mesh& mesh, const Mesh::AreaArr& seenAreas, FloatArr& pixelFactors)
+{
+	ASSERT(seenAreas.size() == mesh.faces.size());
+	pixelFactors.Resize(mesh.vertices.size());
+	pixelFactors.Memset(0);
+	Unsigned32Arr numSeen(mesh.vertices.size());
+	numSeen.Memset(0);
+	FOREACH(f, mesh.faces) {
+		if (seenAreas[f] == 0)
+			continue;
+		const float world(mesh.ComputeArea(f));
+		if (!(world > 0))
+			continue;
+		const float factor(SQRT((float)seenAreas[f]/world));
+		const Mesh::Face& face = mesh.faces[f];
+		for (int v=0; v<3; ++v) {
+			pixelFactors[face[v]] += factor;
+			++numSeen[face[v]];
+		}
+	}
+	FOREACH(v, pixelFactors)
+		if (numSeen[v] > 0)
+			pixelFactors[v] /= (float)numSeen[v];
+}
+
+void MVS::SeenAreasToEdgeTargets(const Mesh& mesh, const Mesh::AreaArr& seenAreas, float targetArea, FloatArr& targets)
+{
+	ASSERT(seenAreas.size() == mesh.faces.size() && targetArea > 0);
+	targets.Resize(mesh.vertices.size());
+	targets.Memset(0);
+	Unsigned32Arr numSeen(mesh.vertices.size());
+	numSeen.Memset(0);
+	FOREACH(f, mesh.faces) {
+		if (seenAreas[f] == 0)
+			continue; // no pair saw it: it states no scale
+		const float world(mesh.ComputeArea(f)*targetArea/(float)seenAreas[f]);
+		const Mesh::Face& face = mesh.faces[f];
+		for (int v=0; v<3; ++v) {
+			targets[face[v]] += world;
+			++numSeen[face[v]];
+		}
+	}
+	// an equilateral triangle of area A has edge sqrt(4/sqrt(3)*A)
+	constexpr float squaredEdge(4.f/1.7320508f);
+	float longest(0);
+	FOREACH(v, targets) {
+		if (numSeen[v] == 0)
+			continue;
+		targets[v] = SQRT(squaredEdge*targets[v]/(float)numSeen[v]);
+		longest = MAXF(longest, targets[v]);
+	}
+	ASSERT(longest > 0);
+	FOREACH(v, targets)
+		if (numSeen[v] == 0)
+			targets[v] = longest;
 }
 
 void MVS::PixelFactorsToErrorBounds(const FloatArr& pixelFactors, float tolerancePx, FloatArr& bounds)

@@ -175,6 +175,8 @@ extern MVS_API int nIgnoreMaskLabel; // label id used during ignore mask filter 
 extern MVS_API int nImageGradient; // image derivative stencil (0 - 3x5 separable, 1 - central (default), 2 - Sobel, 3 - bilinear interpolant derivative)
 extern MVS_API float fGateMeanDiff; // reject a pixel pair whose local mean differs by more than this (0 - disabled)
 extern MVS_API float fGateVarRatio; // reject a pixel pair whose local variance ratio exceeds this (0 - disabled)
+extern MVS_API int nMaxEvaluations; // hard cap on the energy evaluations of every scale (0 - the convergence rules alone decide, behind the safety-net budget)
+extern MVS_API bool bAdaptiveFaceSize; // grade the prepared faces per vertex, so every face projects to about the face cap in the pair that refines it, instead of one world-space density for the whole mesh
 extern MVS_API float fSimplifyTolerance; // decimate the refined mesh within this reprojection error in every vertex's best view (px at the working resolution) once the refinement ends (default 0.25, accuracy-neutral; 0 - disabled)
 } // namespace OPTREFINE
 
@@ -187,6 +189,10 @@ class Scene;
 // touches shared refiner state), CUDA serially -- so the two reach the same pair set on the same
 // scene. Returns false if the image is invalid and contributes no pair.
 MVS_API bool SelectRefineNeighbors(Scene& scene, uint32_t idxImage, unsigned nMaxViews, ViewScoreArr& neighbors);
+
+// Acute3D's SelectPairs on the reconstructed points: replaces every image's neighbor list
+// with the globally voted pairs, so SelectRefineNeighbors hands them over unfiltered.
+// Returns false, leaving the lists untouched, if the scene carries no usable points
 
 // load, gray-convert, blur and resize one refine image at the given scale;
 // the hoisted common part of CPU MeshRefine::ThInitImage (SceneRefine.cpp)
@@ -207,36 +213,41 @@ MVS_API bool PrepareRefineImage(Image& imageData, const PlatformArr& platforms,
 // is checked once, up front, by apps/RefineMesh (the same entry that assigns image.maskName).
 MVS_API void PrepareRefineImageMask(const Image& imageData, const cv::Size& size, BitMatrix& keepMask);
 
-// pixels per scene unit of every vertex in its most resolving view (f/depth), accumulated over
-// the pixels of every face the view rasterized (the corners of the face a pixel shows take its
-// f/depth); 0 stays for a vertex no view sees. FaceMapType is either backend's per-pixel face
-// index image (NO_ID where nothing projects), depthMap the matching depth
-template <typename FaceMapType>
-inline void AccumulatePixelFactors(const Mesh::FaceArr& faces, const FaceMapType& faceMap, const DepthMap& depthMap, float focal, FloatArr& pixelFactors)
-{
-	ASSERT(faceMap.size() == depthMap.size() && focal > 0 && !faces.empty());
-	for (int j=0; j<faceMap.rows; ++j) {
-		for (int i=0; i<faceMap.cols; ++i) {
-			const Mesh::FIndex idxFace(faceMap(j,i));
-			if (idxFace == NO_ID)
-				continue;
-			const Depth depth(depthMap(j,i));
-			ASSERT(depth > 0);
-			const float pixelFactor(focal/depth);
-			const Mesh::Face& face = faces[idxFace];
-			for (int v=0; v<3; ++v) {
-				ASSERT(face[v] < pixelFactors.size());
-				float& pf = pixelFactors[face[v]];
-				if (pixelFactor > pf)
-					pf = pixelFactor;
-			}
-		}
-	}
-}
 // the per-vertex collapse-error bound (a squared distance, compared with the mean squared plane
 // distance of a collapse) for a reprojection tolerance of tolerancePx pixels in the best view
 // ((tolerancePx/pixelFactor)^2), the largest bound of the seen vertices for an unseen one
 MVS_API void PixelFactorsToErrorBounds(const FloatArr& pixelFactors, float tolerancePx, FloatArr& bounds);
+
+// per-vertex target edge length in scene units for faces that project to targetArea pixels in the
+// same measurement the split rule uses -- the tightest pair's smaller rasterized area, as
+// ListFaceAreas reports it, which carries the pair's resolution, the foreshortening and the
+// occlusion together. Every seen face states its own scale: it covers seenArea pixels for its
+// world area, so the world area wanted for targetArea pixels is area*targetArea/seenArea, and an
+// equilateral triangle of that area has edge sqrt(4/sqrt(3)*area). A vertex averages its incident
+// seen faces; one with none takes the longest target of the rest, as PixelFactorsToErrorBounds
+// does with its bounds. Nothing here constrains the face count: the field states the size it
+// wants everywhere and the count is whatever that size implies
+MVS_API void SeenAreasToEdgeTargets(const Mesh& mesh, const Mesh::AreaArr& seenAreas, float targetArea, FloatArr& targets);
+
+// per-image rasterized area of every face; an image no refinement pair uses is left empty
+typedef cList<Mesh::AreaArr> ViewAreaArr;
+
+// the images at least one refinement pair uses. Every per-view measurement the preparation makes
+// has to ignore the rest: an image the refinement never scores must not size the mesh
+MVS_API void ListPairImages(const PairIdxArr& pairs, size_t numImages, Unsigned8Arr& used);
+
+// reduce the per-view rasterized face areas over the refinement's OWN pairs into the single number
+// the split rule, the sizing field and (optionally) the decimation tolerance all read. A pair can
+// only resolve a face as well as its worse view, so the smaller of the two is the pair's value;
+// `Face Area Rule` decides how the pairs that see the face combine -- the largest keeps a face as
+// long as ONE pair can exploit it, the median or the mean let the typical pair decide. A face no
+// pair sees stays 0
+MVS_API void ReduceFaceAreasOverPairs(const ViewAreaArr& viewAreas, const PairIdxArr& pairs, Mesh::AreaArr& faceAreas);
+
+// per-vertex pixels per scene unit derived from the same reduced areas, for the decimation
+// tolerance: a face covering seenArea pixels over its world area resolves sqrt(seenArea/area)
+// pixels per scene unit, and a vertex averages that over the incident faces a pair saw
+MVS_API void SeenAreasToPixelFactors(const Mesh& mesh, const Mesh::AreaArr& seenAreas, FloatArr& pixelFactors);
 // decimate the mesh within the given reprojection tolerance in every vertex's best view
 // (Mesh::Clean with the per-vertex bound, then its finalize pass); the pixel factors are the
 // mesh's current ones. Both backends call this once the refinement ends
@@ -266,6 +277,8 @@ float SampleSeenFaceArea(const REFINE& refine, const Mesh::AreaArr& maxAreas, si
 	if (numSeen == 0)
 		return 0.f;
 	const size_t stride(MAXF(numSeen/maxSamples, (size_t)1));
+	Unsigned8Arr usedImages;
+	ListPairImages(refine.pairs, refine.images.size(), usedImages);
 	FloatArr viewAreas(refine.images.size()); // the face's projected area per image (negative = not seen there)
 	double sum(0);
 	size_t num(0), idxSeen(0);
@@ -279,7 +292,7 @@ float SampleSeenFaceArea(const REFINE& refine, const Mesh::AreaArr& maxAreas, si
 			const Image& imageData = refine.images[idxImage];
 			float& area = viewAreas[idxImage];
 			area = -1.f;
-			if (!imageData.IsValid())
+			if (!imageData.IsValid() || !usedImages[idxImage])
 				continue;
 			Point2f pt[3];
 			int k(0);
@@ -296,6 +309,8 @@ float SampleSeenFaceArea(const REFINE& refine, const Mesh::AreaArr& maxAreas, si
 				continue;
 			area = (float)ABS((pt[1]-pt[0]).cross(pt[2]-pt[0]))*0.5f;
 		}
+		// the same reduction ReduceFaceAreasOverPairs applies to the rasterized areas, so the
+		// decimation target and the split threshold stay in one unit
 		float maxArea(0);
 		for (const PairIdx& pair: refine.pairs) {
 			const float a(viewAreas[pair.i]), b(viewAreas[pair.j]);
@@ -352,6 +367,29 @@ void PrepareRefineMesh(REFINE& refine, uint32_t maxArea, float fDecimate, unsign
 		return fMeanSeen;
 	};
 
+	// a per-vertex target needs the mesh the remesh will receive, so the decimation has to be
+	// its own pass: the sizing route decimates, re-projects to measure what every surviving face
+	// covers in its tightest pair, then remeshes against the field that measurement implies
+	const bool bSizingField(OPTREFINE::bAdaptiveFaceSize && maxArea > 0 && fDecimate <= 0.f);
+	const auto remeshToField = [&]() {
+		// the decimation changed the face array, and the CUDA backend keeps its own copy of it:
+		// ListCameraFaces() re-uploads only the vertices, so the faces have to be re-listed first
+		refine.ListVertexFacesPre();
+		Mesh::AreaArr seenAreas;
+		FloatArr targets;
+		refine.ListCameraFaces();
+		refine.ListFaceAreas(seenAreas);
+		SeenAreasToEdgeTargets(mesh, seenAreas, (float)maxArea*0.5f, targets);
+		TD_TIMER_STARTD();
+		Mesh::CleanParams params;
+		params.simplifyTarget = 1.f;
+		params.edgeLength = targets.GetMean(); // the scalar the remesh still validates
+		params.remeshIterations = 10;
+		params.vertexSizing = &targets;
+		mesh.Clean(params);
+		DEBUG_EXTRA("Mesh graded: target edge mean %g, longest %g scene units (%s)", targets.GetMean(), targets.GetMax(), TD_TIMER_GET_FMT().c_str());
+	};
+
 	// first decimate if necessary
 	const bool bNoDecimation(fDecimate >= 1.f);
 	const bool bNoSimplification(maxArea == 0);
@@ -373,7 +411,9 @@ void PrepareRefineMesh(REFINE& refine, uint32_t maxArea, float fDecimate, unsign
 		}
 		if (ratio < 1.f) {
 			// decimate to the desired resolution and even the rings out, one halfmesh pass
-			cleanMesh(ratio, nEnsureEdgeSize > 0 ? fEdgeLength : 0.f);
+			cleanMesh(ratio, bSizingField ? 0.f : (nEnsureEdgeSize > 0 ? fEdgeLength : 0.f));
+			if (bSizingField && nEnsureEdgeSize > 0)
+				remeshToField();
 			// re-map vertex and camera faces
 			refine.ListVertexFacesPre();
 		}
@@ -453,8 +493,8 @@ public:
 	// (Tanks & Temples mean F1: pair +0.0033, this constant alone -0.0022; design doc §2.6)
 	static constexpr float StepGrow = 1.05f; // eta *= this after an accepted evaluation
 	static constexpr float StepShrink = 0.5f; // eta *= this after a rejected one
-	static constexpr float StepStop = 0.05f; // median per-vertex step at a full stride below which the scale has converged, px
 	static constexpr float ProgressTol = 1e-3f; // relative decrease of S at or below which an evaluation counts as stalled
+	static constexpr float StepStop = 0.05f; // median per-vertex step at a full stride below which the scale has converged, px
 	static constexpr float Kappa = 2.f; // the median seen vertex moves eta/Kappa px at the first evaluation
 	static constexpr unsigned Patience = 3; // consecutive stalled evaluations that end the scale
 	static constexpr unsigned MaxRejects = 4; // consecutive rejections that end the scale
@@ -463,8 +503,16 @@ public:
 
 	// evaluation budget of a scale (0-based, coarsest first), thinned on the finer, more expensive
 	// ones; a safety net behind the stop rules, not a stopping rule: raising it 20x changes no
-	// measured result
-	static unsigned Budget(unsigned nScale) { return MAXF(MaxIters/(nScale+1), 8u); }
+	// measured result. `Max Evaluations` replaces it with a hard cap, the same at every scale, for
+	// a caller who needs a bounded run time rather than a faster one: at 12 it measured -0.0013
+	// mean F1 for -7 % wall on Tanks & Temples, and all of that came from the one scene whose
+	// schedule over-runs (Meetingroom -24 %, Truck never reaches it), so it bounds the work
+	// instead of buying speed
+	static unsigned Budget(unsigned nScale) {
+		if (OPTREFINE::nMaxEvaluations > 0)
+			return (unsigned)OPTREFINE::nMaxEvaluations;
+		return MAXF(MaxIters/(nScale+1), 8u);
+	}
 
 	enum Action {
 		APPLY, // the vertices were moved; evaluate the energy again
