@@ -189,11 +189,12 @@ bool BAIntrinsicFlagsTest();
 // relativeTranslationSigma) put it back, in the global solve and in a local window alike
 bool BundleAdjustmentPairConstraintTest();
 
-// The per-image cap on the dense observations a solve takes does not move the solution: on a scene
-// whose images carry far more of them than the cap allows, and which holds both the tracks the cap
-// must top back up (they carry a described observation it may not drop) and the ones it may let go
-// entirely, the capped solve recovers the poses the uncapped one recovers
-bool BADenseObservationCapTest();
+// The per-image cap on the observations a solve takes does not move the solution: on a scene whose
+// images carry far more of them than the cap allows, and which holds both the tracks the cap must
+// top back up and the ones it may let go entirely, the capped solve recovers the poses the uncapped
+// one recovers, dense-matched and described-only alike; below the threshold the cap applies from,
+// the solve fits every observation
+bool BAObservationCapTest();
 
 // Small SFM smoke test: build tiny scene and run BundleAdjustment::Adjust
 bool PipelineTest();

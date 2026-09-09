@@ -79,12 +79,20 @@ beyond the main set.
 Reprojection residuals fit each track's observations against the camera model, robustified by a Huber
 loss (2 px in the resection's own solves); a dense (warp-sampled) keypoint's residual is discounted
 relative to a described one's (measured, or pinned with `--ba-dense-weight`; see `ROMA2InProcess.md`).
-A dense-matched image carries thousands of those warp-sampled observations against a few hundred
-described ones, and they set what the solve costs while adding little to what it determines, so each
-image contributes at most `maxDenseObservationsPerImage` (1500) of them: the survivors are taken
-round-robin across a grid over the image, longest track first inside a cell, so that they cover the
-frame instead of clustering where the warp was densest, and a track cut below two views gets one
-back. Described observations are never dropped.
+What a solve costs is the number of observations it fits, and one image can bring thousands of them
+-- warp samples where it was matched densely, detections where it was not -- so each image
+contributes at most `maxObservationsPerImage` (1000, `--ba-max-obs`) of any kind. The budget goes to
+the described observations first -- a detected position is the precise measurement, so an image keeps
+all of its own unless they alone exceed the budget -- and the warp samples fill what is left of it,
+so that an image with few detections spends most of the budget on warp samples and one with many
+spends little. Each kind is taken round-robin across a grid over the image, so that what survives
+covers the frame instead of clustering where the matcher was densest; inside a cell the longest track
+comes first, and the remaining ties are ordered by a key drawn for that solve alone, so successive
+adjustments take different subsets and, over a reconstruction, most observations take part in some
+solve. A track left with a single view is given a dropped observation back, a described one first; a
+track left with none stays out of the solve. The budget applies only
+once the observations a solve would otherwise fit reach `minObservationsForCap` (1000000,
+`--ba-cap-min-obs`): a scene small enough to be solved whole is solved whole.
 
 Every verified pair whose two images are both in the solve also adds a relative-pose residual
 (`RelativePoseError`): the model's relative rotation against the pair's, and its baseline direction

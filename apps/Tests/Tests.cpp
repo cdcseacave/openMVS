@@ -203,7 +203,7 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::BundleAdjustmentPairConstraintTest())
 				return false;
-			if (!SFM::BADenseObservationCapTest())
+			if (!SFM::BAObservationCapTest())
 				return false;
 			if (!SFM::RotationEstimatorTest())
 				return false;

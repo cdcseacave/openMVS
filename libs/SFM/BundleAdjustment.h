@@ -79,14 +79,22 @@ struct SFM_API BAConfig
 	// which answers a different question -- see DENSE_OBSERVATION_WEIGHT in ImagePair.h.
 	double denseObservationWeight = -1.0;
 
-	// Cap on the dense (descriptor-less) observations one image contributes to the solve, 0 = all;
-	// described observations are never dropped. A dense-matched image brings thousands of
-	// warp-sampled observations against a few hundred described ones, each of them the less precise
-	// measurement of the two (see denseObservationWeight): they set the cost of the solve while
-	// adding little to what it determines. What the cap keeps of them covers the frame evenly and
-	// prefers the longer tracks, so the scene stays as well constrained as the residual count it
-	// costs allows (see BuildDenseObservationCap).
-	unsigned maxDenseObservationsPerImage = 1500;
+	// The most observations one image contributes to a solve, of any keypoint kind, 0 = all. What a
+	// bundle adjustment costs is the number of observations it fits, and one image can bring
+	// thousands of them -- warp samples where it was matched densely, detections where it was not --
+	// while a few hundred spread over its frame already fix its pose. The budget goes to the
+	// described observations first -- a detected position is the precise measurement, so an image
+	// keeps all of its own unless they alone exceed the budget -- and the warp samples fill what is
+	// left of it, each kind spread over the frame rather than clustered where the matcher was
+	// densest. Most of the budget then goes to warp samples on an image with few detections and
+	// little on one with many, and the scene stays as well constrained as the residual count it
+	// costs allows (see BuildObservationCap).
+	unsigned maxObservationsPerImage = 1000;
+
+	// Observations a solve must be about to fit, summed over the tracks entering it, before the
+	// budget above applies at all, 0 = always. A scene small enough to be solved whole is solved
+	// whole: dropping observations there costs accuracy to save time that was not being spent.
+	unsigned minObservationsForCap = 1000000;
 
 	// Solver parameters
 	unsigned maxIterations = 100;    // Maximum solver iterations
@@ -256,6 +264,14 @@ public:
 	 * ComputePoseUncertainty(). Returns empty on failure.
 	 */
 	PoseUncertaintyArr ComputePoseUncertaintyCeres();
+
+	/**
+	 * @brief Reprojection residuals the last solve created, per image
+	 *
+	 * Summed over the images this is what the solve fitted, which is what
+	 * BAConfig::maxObservationsPerImage bounds per image.
+	 */
+	const UnsignedArr& GetNumReprojResidualsPerImage() const { return numReprojResidualsPerImage; }
 
 	/**
 	 * @brief One-shot global bundle adjustment

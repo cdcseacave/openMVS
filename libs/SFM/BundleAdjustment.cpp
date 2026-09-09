@@ -16,6 +16,9 @@
 #include <ceres/covariance.h>
 #include <Eigen/Sparse>
 
+#include <atomic>
+#include <random>
+
 using namespace SFM;
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -557,41 +560,48 @@ inline void AddPinholeIntrinsics(std::unordered_map<const Camera*, DoubleArr>& i
 	ExtractPinholeIntrinsics(static_cast<const PinholeCamera*>(img.pCamera), it.first->second.data());
 }
 
-// Which dense (descriptor-less) observations of an over-cap image a solve keeps.
+// Which observations of an over-budget image a solve keeps.
 //
-// A dense-matched image contributes thousands of warp-sampled observations against a few hundred
-// described ones, and each of them is the less precise measurement of the two (see
-// SelectReprojectionLoss): together they set the cost of the solve while adding little to what it
-// determines. Capping their number per image is what makes that cost bounded, and WHICH of them
-// survive decides whether the cap is free: an even cover of the frame constrains the image's pose
-// as the full set did, while an arbitrary prefix of it would leave whole regions of the image
-// unmeasured and let the pose rotate into them.
+// What a bundle adjustment costs is the number of observations it fits, whatever their kind: a
+// scene of a few hundred dense-matched images carries millions of them, and so does one of
+// thousands of described-only images. Bounding what one image contributes is what keeps that cost
+// in hand, and WHICH of its observations survive decides whether the budget is free: an even cover
+// of the frame constrains the image's pose as the full set did, while an arbitrary prefix of it
+// would leave whole regions of the image unmeasured and let the pose rotate into them.
 //
-// Empty = every observation is kept (no image is over the cap); otherwise one flag per dense
-// keypoint of every image that carries any, indexed by the keypoint's offset into that image's
-// dense suffix (Image.h) -- an under-cap image gets its flags too, all set, since the pass that
-// holds a track's views together may still have to drop one of them. Described observations are
-// never dropped and never consulted.
-class DenseObservationCap
+// Empty = every observation is kept (the solve is under the threshold the budget applies from, or
+// no image is over the budget); otherwise one flag per keypoint of every image taking part -- an
+// under-budget image gets its flags too, all set, since the pass that holds a track's views
+// together may still have to drop one of them.
+class ObservationCap
 {
 public:
 	// Whether the solve keeps the observation of keypoint featureID in image imgID
-	inline bool Keeps(IIndex imgID, const Image& img, uint32_t featureID) const {
+	inline bool Keeps(IIndex imgID, uint32_t featureID) const {
 		if (keep.empty())
 			return true;
 		const std::vector<bool>& imgKeep = keep[imgID];
-		if (imgKeep.empty() || !img.IsDenseKeypoint(featureID))
-			return true;
-		ASSERT(featureID >= numDescribed[imgID]);
-		return imgKeep[featureID - numDescribed[imgID]];
+		ASSERT(imgKeep.empty() || featureID < imgKeep.size());
+		return imgKeep.empty() || imgKeep[featureID];
 	}
 
-	std::vector<std::vector<bool>> keep; // per image, per dense keypoint
-	std::vector<uint32_t> numDescribed;  // per image, where its dense suffix starts
+	std::vector<std::vector<bool>> keep; // per image, per keypoint
+};
+
+// What the budget did to a solve, for the caller to report: what the solve would have fit, what it
+// fits, and what was left out of each keypoint kind. `applied` is false where the budget did not
+// run at all, so that the caller reports nothing rather than a row of zeros.
+struct ObservationCapStats
+{
+	uint32_t numObservations = 0;     // observations the solve would fit uncapped
+	uint32_t numKept = 0;             // of those, the ones it fits
+	uint32_t numDescribedDropped = 0; // described observations the budget left out
+	uint32_t numDenseDropped = 0;     // and dense ones
+	bool applied = false;             // whether the budget ran on this solve
 };
 
 // Grid cell of a keypoint in an image split into gridSize x gridSize cells
-inline uint32_t DenseObservationCell(const Image& img, const cv::KeyPoint& kp, unsigned gridSize) {
+inline uint32_t ObservationCapCell(const Image& img, const cv::KeyPoint& kp, unsigned gridSize) {
 	const int width = img.pCamera->GetWidth(), height = img.pCamera->GetHeight();
 	if (width <= 0 || height <= 0)
 		return 0; // no image size to spread over: one cell, so the track length alone orders them
@@ -600,151 +610,198 @@ inline uint32_t DenseObservationCell(const Image& img, const cv::KeyPoint& kp, u
 	return y*gridSize + x;
 }
 
-// Decide which dense observations of each over-cap image take part in the solve: bucket the
-// image's dense observations on a sqrt(cap) x sqrt(cap) grid scaled to the image and take them
-// round-robin across the cells until the cap is reached, longest track first inside a cell. The
-// round-robin is what spreads the survivors over the frame; the track length orders them inside a
-// cell because an observation of a point many images see is the one that ties them together.
+// Seed of the tie-break drawn below, advanced on every solve: successive adjustments of one
+// reconstruction then take different subsets of the equally ranked observations, so that over a
+// whole reconstruction most of them take part in some solve rather than the same ones every time.
+std::atomic<uint32_t> observationCapSeed{0};
+
+// Decide which observations of each over-budget image take part in the solve: bucket the image's
+// observations on a sqrt(cap) x sqrt(cap) grid scaled to the image and take them round-robin across
+// the cells, which is what spreads the survivors over the frame instead of leaving whole regions of
+// it unmeasured.
+//
+// The round-robin runs per KIND, the described observations first: a detected position is the
+// precise measurement, so the image keeps every described observation it has unless those alone
+// exceed the budget, and the warp samples fill what is left -- most of the budget on an image with
+// few detections, little of it on one with many, so the budget balances the two kinds by itself.
+// Running one round-robin over both kinds together would not do this: the grid holds about as many
+// cells as the budget, so a single round over the cells already spends it, and a cell that carries
+// several described observations would keep one of them and lose the rest to cells that carry only
+// warp samples. Inside a cell the longest track comes first, because an observation of a point many
+// images see is the one that ties them together, and what is equal at that point is ordered by a key
+// drawn for this solve alone.
+//
+// The budget runs only once the observations the solve would otherwise fit reach minObservations:
+// a scene small enough to be solved whole is solved whole, since dropping observations there costs
+// accuracy to save time that was not being spent. That count is exact and comes out of the same
+// pass that measures the images.
 //
 // visitTracks(fn) calls fn(track) for every track the solve builds residuals from and
 // inSolve(imageID) answers whether an observation's image takes part: both mirror the residual
-// loop, whose filtering this pre-pass reproduces. Returns how many observations were dropped.
+// loop, whose filtering this pre-pass reproduces.
 template <typename TVisitTracks, typename TInSolve>
-uint32_t BuildDenseObservationCap(const Scene& scene, unsigned cap,
-	const TVisitTracks& visitTracks, const TInSolve& inSolve, DenseObservationCap& denseCap)
+ObservationCapStats BuildObservationCap(const Scene& scene, unsigned cap, unsigned minObservations,
+	const TVisitTracks& visitTracks, const TInSolve& inSolve, ObservationCap& obsCap)
 {
-	denseCap.keep.clear();
-	denseCap.numDescribed.clear();
+	obsCap.keep.clear();
+	ObservationCapStats stats;
 	if (cap == 0)
-		return 0; // uncapped
-	// how many dense observations every image contributes, so that only the images actually over
-	// the cap are given a decision
-	const IIndex numImages = scene.images.size();
-	std::vector<uint32_t> numDense(numImages, 0);
-	const auto forEachDense = [&](const auto& fn) {
+		return stats; // uncapped
+	const auto forEachObservation = [&](const auto& fn) {
 		visitTracks([&](const Track& track) {
 			for (const Observation& obs : track) {
-				if (!inSolve(obs.imageID))
-					continue;
-				const Image& img = scene.images[obs.imageID];
-				if (img.IsDenseKeypoint(obs.featureID))
-					fn(track, obs, img);
+				if (inSolve(obs.imageID))
+					fn(track, obs, scene.images[obs.imageID]);
 			}
 		});
 	};
-	forEachDense([&](const Track&, const Observation& obs, const Image&) { ++numDense[obs.imageID]; });
+	// what the solve would fit, and how much of it every image brings, so that only the images
+	// actually over the budget are given a decision
+	const IIndex numImages = scene.images.size();
+	std::vector<uint32_t> numObservations(numImages, 0);
+	forEachObservation([&](const Track&, const Observation& obs, const Image&) {
+		++numObservations[obs.imageID];
+		++stats.numObservations;
+	});
+	if (stats.numObservations < minObservations)
+		return stats; // this solve is small enough to take everything
+	stats.applied = true;
+	stats.numKept = stats.numObservations;
 	bool anyOverCap = false;
 	for (IIndex imgID = 0; imgID < numImages && !anyOverCap; ++imgID)
-		anyOverCap = numDense[imgID] > cap;
+		anyOverCap = numObservations[imgID] > cap;
 	if (!anyOverCap)
-		return 0;
+		return stats;
 
-	// gather the candidates of every over-cap image, one sort key per observation:
-	// [cell | inverted track length | dense keypoint index], so sorting it groups an image's
-	// candidates by cell and orders each cell by descending track length, the keypoint index
-	// breaking the ties into one order for a given scene
-	const unsigned gridSize = MAXF((unsigned)CEIL2INT(SQRT((float)cap)), 1u);
-	denseCap.keep.resize(numImages);
-	denseCap.numDescribed.assign(numImages, 0);
+	// gather the candidates of every over-budget image, one sort key per observation:
+	// [dense | cell | inverted track length | drawn key | keypoint index], so sorting it splits an
+	// image's candidates by kind, groups each kind by cell, and orders each cell as described above
+	const unsigned gridSize = CLAMP((unsigned)CEIL2INT(SQRT((float)cap)), 1u, 256u);
+	std::mt19937 rnd(observationCapSeed.fetch_add(1));
+	obsCap.keep.resize(numImages);
 	std::vector<std::vector<uint64_t>> candidates(numImages);
 	FOREACH(imgID, scene.images) {
-		const Image& img = scene.images[imgID];
-		if (!img.HasDenseKeypoints())
+		if (numObservations[imgID] == 0)
 			continue;
-		// every image carrying dense keypoints gets its flags, an under-cap one keeping all of
-		// them: the pass that holds a track's views together must be able to drop any of them
-		denseCap.numDescribed[imgID] = img.NumDescribedKeypoints();
-		denseCap.keep[imgID].assign(img.NumDenseKeypoints(), numDense[imgID] <= cap);
-		if (numDense[imgID] > cap)
-			candidates[imgID].reserve(numDense[imgID]);
+		obsCap.keep[imgID].assign(scene.images[imgID].keypoints.size(), numObservations[imgID] <= cap);
+		if (numObservations[imgID] > cap)
+			candidates[imgID].reserve(numObservations[imgID]);
 	}
-	forEachDense([&](const Track& track, const Observation& obs, const Image& img) {
-		if (numDense[obs.imageID] <= cap)
-			return; // image under the cap: it keeps everything
-		const uint32_t denseIdx = obs.featureID - denseCap.numDescribed[obs.imageID];
-		const uint64_t cell = DenseObservationCell(img, img.keypoints[obs.featureID], gridSize);
+	forEachObservation([&](const Track& track, const Observation& obs, const Image& img) {
+		if (numObservations[obs.imageID] <= cap)
+			return; // image under the budget: it keeps everything
+		const uint64_t cell = ObservationCapCell(img, img.keypoints[obs.featureID], gridSize);
+		const uint64_t dense = img.IsDenseKeypoint(obs.featureID) ? 1 : 0;
 		const uint64_t invLength = 0xff - MINF(track.GetNumInliers(), 0xffu);
-		candidates[obs.imageID].push_back((cell << 40) | (invLength << 32) | denseIdx);
+		const uint64_t drawn = rnd() & 0x7fff;
+		ASSERT(cell < (1u<<16) && obs.featureID < (1u<<24));
+		candidates[obs.imageID].push_back((dense << 63) | (cell << 47) | (invLength << 39) |
+			(drawn << 24) | obs.featureID);
 	});
 
-	// take them round-robin across the cells until the cap is reached
-	uint32_t numDropped = 0;
+	// take them round-robin across the cells, the described observations first and the dense ones on
+	// what is left of the budget
 	std::vector<uint32_t> cellStart, active;
 	FOREACH(imgID, scene.images) {
 		std::vector<uint64_t>& imgCandidates = candidates[imgID];
 		if (imgCandidates.empty())
 			continue;
 		std::sort(imgCandidates.begin(), imgCandidates.end());
-		// the sorted candidates of one cell are contiguous; remember where each run starts
+		// the sorted candidates of one cell of one kind are contiguous; remember where each run
+		// starts, the described runs coming before the dense ones
 		cellStart.clear();
 		for (size_t i = 0; i < imgCandidates.size(); ++i)
-			if (i == 0 || (imgCandidates[i] >> 40) != (imgCandidates[i-1] >> 40))
+			if (i == 0 || (imgCandidates[i] >> 47) != (imgCandidates[i-1] >> 47))
 				cellStart.push_back((uint32_t)i);
 		cellStart.push_back((uint32_t)imgCandidates.size()); // sentinel: end of the last run
-		active.resize(cellStart.size()-1);
-		std::iota(active.begin(), active.end(), 0u);
-		std::vector<bool>& imgKeep = denseCap.keep[imgID];
+		const uint32_t numRuns = (uint32_t)cellStart.size()-1;
+		uint32_t numDescribedRuns = 0;
+		while (numDescribedRuns < numRuns && (imgCandidates[cellStart[numDescribedRuns]] >> 63) == 0)
+			++numDescribedRuns;
+		std::vector<bool>& imgKeep = obsCap.keep[imgID];
 		unsigned numKept = 0;
-		for (uint32_t round = 0; numKept < cap && !active.empty(); ++round) {
-			size_t numAlive = 0;
-			for (uint32_t cell : active) {
-				const uint32_t begin = cellStart[cell], end = cellStart[cell+1];
-				if (begin + round >= end)
-					continue; // this cell ran out of candidates
-				imgKeep[(uint32_t)imgCandidates[begin + round]] = true;
-				active[numAlive++] = cell;
-				if (++numKept == cap)
-					break;
+		// one kind's runs, taken one candidate per cell per round until the budget is spent or the
+		// runs are exhausted: what a cell keeps is spread over the frame, and a kind that fits the
+		// budget entirely is kept entirely
+		const auto takeRoundRobin = [&](uint32_t firstRun, uint32_t lastRun) {
+			active.resize(lastRun - firstRun);
+			std::iota(active.begin(), active.end(), firstRun);
+			for (uint32_t round = 0; numKept < cap && !active.empty(); ++round) {
+				size_t numAlive = 0;
+				for (uint32_t run : active) {
+					const uint32_t begin = cellStart[run], end = cellStart[run+1];
+					if (begin + round >= end)
+						continue; // this cell ran out of candidates
+					imgKeep[(uint32_t)(imgCandidates[begin + round] & 0xffffff)] = true;
+					active[numAlive++] = run;
+					if (++numKept == cap)
+						break;
+				}
+				active.resize(numAlive);
 			}
-			active.resize(numAlive);
-		}
+		};
+		takeRoundRobin(0, numDescribedRuns);
+		takeRoundRobin(numDescribedRuns, numRuns);
 		ASSERT(numKept <= imgCandidates.size());
-		numDropped += (uint32_t)imgCandidates.size() - numKept;
 	}
 
 	// A point one view sees is not determined by it, so a track takes two observations into the
-	// solve or none. A track the cap cut that far is a short one -- the round-robin takes the long
-	// tracks first, and a two-view dense track is what it takes last -- and it leaves the solve
-	// rather than sit in it on a single ray, its position standing until the next triangulation
-	// recomputes it from the cameras this solve moved. Where a DESCRIBED observation is the one
-	// left standing the track cannot leave, since the cap never drops those, so it is given a dense
-	// observation back instead.
+	// solve or none. A track the budget cut to a single view is given a dropped observation back, a
+	// described one before a dense one as everywhere else: such a track is a short one -- the
+	// round-robin takes the long ones first -- and the view is cheaper to pay for than the track is
+	// to lose. A track left with nothing stays out of the solve, its position standing until the
+	// next triangulation recomputes it from the cameras this solve moved.
 	visitTracks([&](const Track& track) {
-		unsigned numInSolve = 0, numKept = 0, numDescribedKept = 0;
+		unsigned numInSolve = 0, numKept = 0;
 		for (const Observation& obs : track) {
 			if (!inSolve(obs.imageID))
 				continue;
-			const Image& img = scene.images[obs.imageID];
 			++numInSolve;
-			if (!denseCap.Keeps(obs.imageID, img, obs.featureID))
-				continue;
-			++numKept;
-			numDescribedKept += !img.IsDenseKeypoint(obs.featureID);
+			numKept += obsCap.Keeps(obs.imageID, obs.featureID);
 		}
-		if (numKept >= 2 || numInSolve < 2)
+		if (numKept != 1 || numInSolve < 2)
 			return;
-		if (numDescribedKept > 0) {
-			// give back dropped dense observations until the track is seen twice
+		for (const bool described : {true, false}) {
 			for (const Observation& obs : track) {
 				if (numKept >= 2)
-					break;
-				if (!inSolve(obs.imageID) || denseCap.Keeps(obs.imageID, scene.images[obs.imageID], obs.featureID))
+					return;
+				if (!inSolve(obs.imageID) || obsCap.Keeps(obs.imageID, obs.featureID))
 					continue;
-				denseCap.keep[obs.imageID][obs.featureID - denseCap.numDescribed[obs.imageID]] = true;
+				if (scene.images[obs.imageID].IsDenseKeypoint(obs.featureID) == described)
+					continue;
+				obsCap.keep[obs.imageID][obs.featureID] = true;
 				++numKept;
-				--numDropped;
 			}
-			return;
-		}
-		// nothing holds the track in the solve: let it go
-		for (const Observation& obs : track) {
-			if (!inSolve(obs.imageID) || !denseCap.Keeps(obs.imageID, scene.images[obs.imageID], obs.featureID))
-				continue;
-			denseCap.keep[obs.imageID][obs.featureID - denseCap.numDescribed[obs.imageID]] = false;
-			++numDropped;
 		}
 	});
-	return numDropped;
+
+	// what the solve is left with, counted on the flags every pass above settled
+	stats.numKept = 0;
+	forEachObservation([&](const Track&, const Observation& obs, const Image& img) {
+		if (obsCap.Keeps(obs.imageID, obs.featureID))
+			++stats.numKept;
+		else if (img.IsDenseKeypoint(obs.featureID))
+			++stats.numDenseDropped;
+		else
+			++stats.numDescribedDropped;
+	});
+	return stats;
+}
+
+// What the budget did, as one line: a keypoint kind that lost nothing is left out of it
+inline String FormatObservationCapReport(const ObservationCapStats& stats) {
+	String dropped;
+	if (stats.numDescribedDropped > 0)
+		dropped = String::FormatString("%u described", stats.numDescribedDropped);
+	if (stats.numDenseDropped > 0) {
+		if (!dropped.empty())
+			dropped += " and ";
+		dropped += String::FormatString("%u dense", stats.numDenseDropped);
+	}
+	if (dropped.empty())
+		dropped = "nothing";
+	return String::FormatString("%s dropped by the per-image cap (%u of %u observations kept)",
+		dropped.c_str(), stats.numKept, stats.numObservations);
 }
 
 // Solve, retrying once with the iterative solver if a sparse solve failed: the sparse
@@ -1010,15 +1067,18 @@ bool BundleAdjustment::Adjust()
 	const double denseWeight = config.useKeypointConfidence ? 1.0 :
 		EstimateDenseObservationWeight(scene, config, &denseSigmas);
 
-	// which dense observations each image contributes, decided before the residuals are added
-	DenseObservationCap denseCap;
-	const uint32_t numDenseDropped = BuildDenseObservationCap(scene, config.maxDenseObservationsPerImage,
+	// how many observations each image contributes, decided before the residuals are added
+	ObservationCap obsCap;
+	const ObservationCapStats capStats = BuildObservationCap(scene, config.maxObservationsPerImage,
+		config.minObservationsForCap,
 		[this](const auto& fn) {
 			for (const Track& track : scene.tracks)
 				if (track.IsInlier())
 					fn(track);
 		},
-		[this](IIndex imgID) { return scene.images[imgID].IsValid(); }, denseCap);
+		[this](IIndex imgID) { return scene.images[imgID].IsValid(); }, obsCap);
+	if (capStats.applied)
+		DEBUG("Bundle adjustment: %s", FormatObservationCapReport(capStats).c_str());
 
 	// Add reprojection residuals
 	uint32_t numReprojResiduals = 0;
@@ -1035,8 +1095,8 @@ bool BundleAdjustment::Adjust()
 			if (!img.IsValid())
 				continue;
 			ASSERT(obs.featureID < img.keypoints.size());
-			if (!denseCap.Keeps(imgID, img, obs.featureID))
-				continue; // dense observation the per-image cap left out
+			if (!obsCap.Keeps(imgID, obs.featureID))
+				continue; // observation the per-image cap left out
 			// Compute weight from keypoint response / size (if enabled), down-weighted on a dense
 			// keypoint (whose position came from the warp, not from the detector)
 			ceres::LossFunction* residual_loss_function;
@@ -1065,17 +1125,15 @@ bool BundleAdjustment::Adjust()
 		// in that mode, and what scales a dense residual is that term alone), and a sample the
 		// estimator refused fell back to the constant. Reported at all so that a sigma jumping
 		// between runs shows up here rather than only as a downstream drift.
-		const String capped(numDenseDropped == 0 ? String() :
-			String::FormatString(", %u dense dropped by the per-image cap", numDenseDropped));
 		if (denseSigmas.measured) {
 			DEBUG("Bundle adjustment: %u/%u reprojection residuals are on dense keypoints, weighted %g "
-				"(sigma described %g px over %u obs / dense %g px over %u obs)%s",
+				"(sigma described %g px over %u obs / dense %g px over %u obs)",
 				numDenseResiduals, numReprojResiduals, denseWeight,
 				denseSigmas.sigmaDescribed, (unsigned)denseSigmas.numDescribed,
-				denseSigmas.sigmaDense, (unsigned)denseSigmas.numDense, capped.c_str());
+				denseSigmas.sigmaDense, (unsigned)denseSigmas.numDense);
 		} else {
-			DEBUG("Bundle adjustment: %u/%u reprojection residuals are on dense keypoints, weighted %g%s",
-				numDenseResiduals, numReprojResiduals, denseWeight, capped.c_str());
+			DEBUG("Bundle adjustment: %u/%u reprojection residuals are on dense keypoints, weighted %g",
+				numDenseResiduals, numReprojResiduals, denseWeight);
 		}
 	}
 
@@ -1442,18 +1500,21 @@ bool BundleAdjustment::AdjustLocal(
 	const double denseWeight = config.useKeypointConfidence ? 1.0 :
 		EstimateDenseObservationWeight(scene, config, &denseSigmas);
 
-	// which dense observations each window image contributes, decided before the residuals are
-	// added and over the window alone: an image is capped on what it brings to THIS solve
+	// how many observations each window image contributes, decided before the residuals are added
+	// and over the window alone: an image is capped on what it brings to THIS solve
 	const auto inWindow = [&localImages, &fixedImages](IIndex imgID) {
 		return localImages.find(imgID) != localImages.end() || fixedImages.find(imgID) != fixedImages.end();
 	};
-	DenseObservationCap denseCap;
-	const uint32_t numDenseDropped = BuildDenseObservationCap(scene, config.maxDenseObservationsPerImage,
+	ObservationCap obsCap;
+	const ObservationCapStats capStats = BuildObservationCap(scene, config.maxObservationsPerImage,
+		config.minObservationsForCap,
 		[this, &activePoints](const auto& fn) {
 			for (const uint32_t pointID : activePoints)
 				fn(scene.tracks[pointID]);
 		},
-		inWindow, denseCap);
+		inWindow, obsCap);
+	if (capStats.applied)
+		DEBUG("Local bundle adjustment: %s", FormatObservationCapReport(capStats).c_str());
 
 	// Add reprojection residuals (only observations from window images: local or fixed)
 	uint32_t numReprojResiduals = 0;
@@ -1470,8 +1531,8 @@ bool BundleAdjustment::AdjustLocal(
 				continue;
 			const Image& img = scene.images[imgID];
 			ASSERT(obs.featureID < img.keypoints.size());
-			if (!denseCap.Keeps(imgID, img, obs.featureID))
-				continue; // dense observation the per-image cap left out
+			if (!obsCap.Keeps(imgID, obs.featureID))
+				continue; // observation the per-image cap left out
 			// Compute weight from keypoint response / size (if enabled), down-weighted on a dense
 			// keypoint (whose position came from the warp, not from the detector)
 			ceres::LossFunction* residual_loss_function;
@@ -1492,17 +1553,15 @@ bool BundleAdjustment::AdjustLocal(
 		// the sigmas only where the weight came from them, exactly as in Adjust(): a pinned weight,
 		// the confidence term's 1.0, and a refused sample's fallback constant all print alone rather
 		// than beside two sigmas that do not produce them
-		const String capped(numDenseDropped == 0 ? String() :
-			String::FormatString(", %u dense dropped by the per-image cap", numDenseDropped));
 		if (denseSigmas.measured) {
 			DEBUG("Local bundle adjustment: %u/%u reprojection residuals are on dense keypoints, weighted %g "
-				"(sigma described %g px over %u obs / dense %g px over %u obs)%s",
+				"(sigma described %g px over %u obs / dense %g px over %u obs)",
 				numDenseResiduals, numReprojResiduals, denseWeight,
 				denseSigmas.sigmaDescribed, (unsigned)denseSigmas.numDescribed,
-				denseSigmas.sigmaDense, (unsigned)denseSigmas.numDense, capped.c_str());
+				denseSigmas.sigmaDense, (unsigned)denseSigmas.numDense);
 		} else {
-			DEBUG("Local bundle adjustment: %u/%u reprojection residuals are on dense keypoints, weighted %g%s",
-				numDenseResiduals, numReprojResiduals, denseWeight, capped.c_str());
+			DEBUG("Local bundle adjustment: %u/%u reprojection residuals are on dense keypoints, weighted %g",
+				numDenseResiduals, numReprojResiduals, denseWeight);
 		}
 	}
 

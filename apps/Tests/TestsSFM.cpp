@@ -9220,9 +9220,9 @@ bool BundleAdjustmentPairConstraintTest()
 }
 
 // Give every track of a generated scene a dense twin of each of its observations, and add a
-// dense-only copy of every track: the first kind of track holds a described observation the cap
-// may never drop, the second nothing but droppable ones, so a solve over this scene meets both
-// halves of the cap's rule that a track takes two observations into it or none.
+// dense-only copy of every track: the first kind of track ranks above the second inside the
+// budget, so a solve over this scene meets both halves of the cap's rule that a track takes two
+// observations into it or none -- the tracks it has to top back up, and the ones it may let go.
 void AddDenseObservations(Scene& scene)
 {
 	for (Image& img : scene.images)
@@ -9248,58 +9248,100 @@ void AddDenseObservations(Scene& scene)
 	scene.tracks.Join(denseTracks);
 }
 
-bool BADenseObservationCapTest()
+// Observations a global solve of scene would fit without any budget: the registered images'
+// observations of its inlier tracks, the same set the residual loop walks
+unsigned CountSolveObservations(const Scene& scene)
+{
+	unsigned numObservations = 0;
+	for (const Track& track : scene.tracks) {
+		if (!track.IsInlier())
+			continue;
+		for (const Observation& obs : track)
+			if (scene.images[obs.imageID].IsValid())
+				++numObservations;
+	}
+	return numObservations;
+}
+
+bool BAObservationCapTest()
 {
 	TD_TIMER_START();
-	// The cap decides which dense observations an image contributes, so what it must not change is
-	// the solution: on a scene whose images carry far more of them than it allows, the capped solve
-	// has to recover the poses the uncapped one recovers. It is also the pass that has to leave no
-	// point in the problem that a single view sees, which no solution comparison would show, so the
-	// scene carries both the tracks the cap has to top back up and the ones it may let go.
+	// The cap decides which observations an image contributes, so what it must not change is the
+	// solution: on a scene whose images carry far more of them than it allows, the capped solve has
+	// to recover the poses the uncapped one recovers -- on a dense-matched scene and on a
+	// described-only one alike, since the budget covers every keypoint kind. What it keeps is drawn
+	// again for every solve, so the comparison is on the solution and never on the kept set.
 	constexpr double MAX_ROTATION_ERROR = 0.05;   // degrees the cap may add to the uncapped solve's
 	constexpr double MAX_CENTER_ERROR = 0.005;    // units it may add (the arrangement spans ~6)
+	constexpr unsigned CAP = 100;                 // well under what an image of either scene holds
 	SceneConfig cfg;
 	cfg.numImages = 8;
 	cfg.numPoints = 300;
 	cfg.perturbOptions = SceneConfig::PERTURB_POSES | SceneConfig::PERTURB_POINTS;
-	Scene truth, capped, uncapped;
-	GenerateTestScene(truth, cfg, &capped);
-	{
-		Scene truthAgain;
-		GenerateTestScene(truthAgain, cfg, &uncapped);
-	}
-	AddDenseObservations(capped);
-	AddDenseObservations(uncapped);
-	std::vector<Pose3D> gtPoses;
-	for (const Image& img : truth.images)
-		gtPoses.push_back(img);
+	double maxRotationDeg[2], maxCenter[2], maxRotationDegUncapped[2], maxCenterUncapped[2];
+	unsigned iScene = 0;
+	for (const bool dense : {true, false}) {
+		const char* const kind = dense ? "dense-matched" : "described-only";
+		Scene truth, capped, uncapped;
+		GenerateTestScene(truth, cfg, &capped);
+		{
+			Scene truthAgain;
+			GenerateTestScene(truthAgain, cfg, &uncapped);
+		}
+		if (dense) {
+			AddDenseObservations(capped);
+			AddDenseObservations(uncapped);
+		}
+		std::vector<Pose3D> gtPoses;
+		for (const Image& img : truth.images)
+			gtPoses.push_back(img);
 
-	BAConfig config;
-	config.maxDenseObservationsPerImage = 0; // every observation
-	if (!BundleAdjustment::Adjust(uncapped, config)) {
-		VERBOSE("BADenseObservationCapTest FAILED: the uncapped bundle adjustment did not solve the scene");
-		return false;
+		BAConfig config;
+		config.minObservationsForCap = 0; // whatever this scene's size, the budget applies
+		config.maxObservationsPerImage = 0; // every observation
+		if (!BundleAdjustment::Adjust(uncapped, config)) {
+			VERBOSE("BAObservationCapTest FAILED: the uncapped bundle adjustment did not solve the %s scene", kind);
+			return false;
+		}
+		config.maxObservationsPerImage = CAP;
+		if (!BundleAdjustment::Adjust(capped, config)) {
+			VERBOSE("BAObservationCapTest FAILED: the capped bundle adjustment did not solve the %s scene", kind);
+			return false;
+		}
+		WorstPoseError(uncapped, gtPoses, maxRotationDegUncapped[iScene], maxCenterUncapped[iScene]);
+		WorstPoseError(capped, gtPoses, maxRotationDeg[iScene], maxCenter[iScene]);
+		if (maxRotationDeg[iScene] > maxRotationDegUncapped[iScene] + MAX_ROTATION_ERROR ||
+			maxCenter[iScene] > maxCenterUncapped[iScene] + MAX_CENTER_ERROR) {
+			VERBOSE("BAObservationCapTest FAILED: the capped solve of the %s scene left the model %.4f degrees and "
+				"%.5f units from the truth, past the %.4f and %.5f the uncapped one reaches by more than the %.2f "
+				"degrees and %.3f units the cap may cost", kind, maxRotationDeg[iScene], maxCenter[iScene],
+				maxRotationDegUncapped[iScene], maxCenterUncapped[iScene], MAX_ROTATION_ERROR, MAX_CENTER_ERROR);
+			return false;
+		}
+
+		// and a solve the threshold leaves alone fits every observation it was given
+		const unsigned numObservations = CountSolveObservations(capped);
+		config.minObservationsForCap = numObservations + 1;
+		BundleAdjustment ba(capped, config);
+		if (!ba.Adjust()) {
+			VERBOSE("BAObservationCapTest FAILED: the uncapped bundle adjustment did not re-solve the %s scene", kind);
+			return false;
+		}
+		unsigned numResiduals = 0;
+		for (const unsigned numImageResiduals : ba.GetNumReprojResidualsPerImage())
+			numResiduals += numImageResiduals;
+		if (numResiduals != numObservations) {
+			VERBOSE("BAObservationCapTest FAILED: the %s scene is under the threshold the cap applies from, yet its "
+				"solve fitted %u of its %u observations", kind, numResiduals, numObservations);
+			return false;
+		}
+		++iScene;
 	}
-	config.maxDenseObservationsPerImage = 32; // against the ~1200 dense observations an image holds
-	if (!BundleAdjustment::Adjust(capped, config)) {
-		VERBOSE("BADenseObservationCapTest FAILED: the capped bundle adjustment did not solve the scene");
-		return false;
-	}
-	double maxRotationDeg, maxCenter, maxRotationDegUncapped, maxCenterUncapped;
-	WorstPoseError(uncapped, gtPoses, maxRotationDegUncapped, maxCenterUncapped);
-	WorstPoseError(capped, gtPoses, maxRotationDeg, maxCenter);
-	if (maxRotationDeg > maxRotationDegUncapped + MAX_ROTATION_ERROR ||
-		maxCenter > maxCenterUncapped + MAX_CENTER_ERROR) {
-		VERBOSE("BADenseObservationCapTest FAILED: the capped solve left the model %.4f degrees and %.5f units from "
-			"the truth, past the %.4f and %.5f the uncapped one reaches by more than the %.2f degrees and %.3f units "
-			"the cap may cost", maxRotationDeg, maxCenter, maxRotationDegUncapped, maxCenterUncapped,
-			MAX_ROTATION_ERROR, MAX_CENTER_ERROR);
-		return false;
-	}
-	VERBOSE("BADenseObservationCapTest PASSED: capping the dense observations at %u an image leaves the solve %.4f "
-		"degrees and %.5f units from the truth, against %.4f and %.5f uncapped (%s)",
-		config.maxDenseObservationsPerImage, maxRotationDeg, maxCenter,
-		maxRotationDegUncapped, maxCenterUncapped, TD_TIMER_GET_FMT().c_str());
+	VERBOSE("BAObservationCapTest PASSED: capping an image at %u observations leaves the solve %.4f degrees and %.5f "
+		"units from the truth against %.4f and %.5f uncapped on a dense-matched scene, %.4f and %.5f against %.4f and "
+		"%.5f on a described-only one, and a scene under the threshold keeps every observation (%s)",
+		CAP, maxRotationDeg[0], maxCenter[0], maxRotationDegUncapped[0], maxCenterUncapped[0],
+		maxRotationDeg[1], maxCenter[1], maxRotationDegUncapped[1], maxCenterUncapped[1], TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 
