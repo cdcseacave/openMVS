@@ -828,9 +828,13 @@ IIndexArr SFM::FilterWeaklyConnectedImages(Scene& scene,
 					const PoseLink link = MakePoseLink(pair, neighborID);
 					if (ComputeAngle(image.R, link.PredictedRotation(neighbor)) < minCosAngle)
 						continue; // the pair puts the image at another orientation than the model does
+					// A near-duplicate viewpoint (the pair's matches triangulate under two degrees) has
+					// no reliable translation direction of its own, so such a pair vouches for the
+					// rotation alone
+					const bool nearDuplicate = pair.meanRayAngle > 0.f && pair.meanRayAngle < D2R(2.f);
 					Point3 modelDirection(image.C - neighbor.C), pairDirection;
 					const REAL baseline = norm(modelDirection);
-					if (baseline > ZEROTOLERANCE<REAL>() && link.PredictedDirection(neighbor, pairDirection) &&
+					if (!nearDuplicate && baseline > ZEROTOLERANCE<REAL>() && link.PredictedDirection(neighbor, pairDirection) &&
 						pairDirection.dot(modelDirection / baseline) < minCosAngle)
 						continue; // ... or on another side of its neighbor
 					++numWitnesses[imageID];
