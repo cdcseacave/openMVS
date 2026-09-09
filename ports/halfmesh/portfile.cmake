@@ -4,21 +4,19 @@ endif()
 
 # 0.3.0 carries the mesh-repair, rect-packing and selected-fill work that this
 # port used to apply as patches, so no patch is needed any more.
-# The v0.3.0 tag was re-cut (now b8a491c: the glTF image codec moved onto OpenCV),
-# so the SHA512 below no longer matches an older download of the same tag --
-# bump port-version alongside it whenever the tag moves again.
-# DEV LOOP (refine-acute3d branch): the per-vertex decimation error bound
-# (Simplify(..., vertexMaxError), which --simplify-tolerance needs) lives in the local halfmesh
-# checkout until it is tagged upstream; restore vcpkg_from_github(REF v<tag> SHA512 ...) and bump
-# the version when it is.
-set(SOURCE_PATH "C:/Users/danco/Pro/halfmesh")
-#vcpkg_from_github(
-#    OUT_SOURCE_PATH SOURCE_PATH
-#    REPO cdcseacave/halfmesh
-#    REF "v${VERSION}"
-#    SHA512 d41747481d865b2e3693d4ea66f9358ba4af2d2d67e5a55319a0459e5413a0c7bb9769e1f1e6c80d1f1459f180ac8063eba8a3b13a313a8814dc3f71483a88e1
-#    HEAD_REF develop
-#)
+# REF is a develop commit and not a tag on purpose: the per-vertex decimation error bound
+# (Simplify(..., vertexMaxError)) and the caller-supplied remesh sizing field
+# (RemeshParams::vertexSizing) -- what --simplify-tolerance and --adaptive-face-size are built
+# on -- are merged upstream but not released, so halfmesh still declares 0.3.0 and its
+# CMakeLists fails the configure if the version below disagrees with it. Point REF at the tag
+# once a release carrying them is cut; bump port-version whenever REF moves.
+vcpkg_from_github(
+    OUT_SOURCE_PATH SOURCE_PATH
+    REPO cdcseacave/halfmesh
+    REF 90778de1d9b18dccbd39a7df684efb75204265af
+    SHA512 4a17d4e0be93236fbdab4c7971a70b9c829de37e3622f11d36618cd3b2b022ca827d00dc6988eca904bfed0f822d547cb55b7f4b43e53c4721985cd19aa75294
+    HEAD_REF develop
+)
 
 vcpkg_cmake_configure(
     SOURCE_PATH "${SOURCE_PATH}"
