@@ -233,30 +233,25 @@ struct SeamObservation {
 };
 
 // Reprojection of one seam observation through the A -> B similarity T = (q, t, exp(logScale)).
-// The residual is the predicted bearing's offset in the tangent plane of the observed one,
-// converted to pixels by the observing camera's own angular-to-pixel rate, so the Huber loss set
-// at the pixel threshold means the same for every camera in the seam. It equals the pixel
-// reprojection error to first order and, unlike it, stays finite for any central camera model.
+// The residual is the chord between the predicted unit bearing and the observed one, converted to
+// pixels by the observing camera's own angular-to-pixel rate, so the Huber loss set at the pixel
+// threshold means the same for every camera in the seam. The chord equals the angular error to
+// first order, stays finite for any central camera model, and grows to 2 radians for a point that
+// ends up behind the camera -- where the offset in the observed bearing's tangent plane, which this
+// replaced, collapses back to zero and reports the worst possible fit as a perfect one.
 struct SeamReprojectionError
 {
-	double X[3], R[9], C[3], e1[3], e2[3], pixelPerRadian;
+	double X[3], R[9], C[3], b[3], pixelPerRadian;
 	bool forward;
 
 	explicit SeamReprojectionError(const SeamObservation& obs) : forward(obs.forward) {
+		const Point3 bearing(normalized(obs.bearing));
 		for (int i = 0; i < 3; ++i) {
 			X[i] = obs.X[i];
 			C[i] = obs.C[i];
+			b[i] = bearing[i];
 			for (int j = 0; j < 3; ++j)
 				R[i*3+j] = obs.R(i, j);
-		}
-		// an orthonormal basis of the plane the observed bearing is normal to
-		const Point3 b(normalized(obs.bearing));
-		const Point3 a(ABS(b.z) < REAL(0.9) ? Point3(0, 0, 1) : Point3(1, 0, 0));
-		const Point3 u(normalized(Point3(b.y*a.z - b.z*a.y, b.z*a.x - b.x*a.z, b.x*a.y - b.y*a.x)));
-		const Point3 v(b.y*u.z - b.z*u.y, b.z*u.x - b.x*u.z, b.x*u.y - b.y*u.x);
-		for (int i = 0; i < 3; ++i) {
-			e1[i] = u[i];
-			e2[i] = v[i];
 		}
 		pixelPerRadian = obs.pixelPerRadian;
 	}
@@ -293,9 +288,7 @@ struct SeamReprojectionError
 		if (len <= T(0))
 			return false;
 		for (int i = 0; i < 3; ++i)
-			c[i] /= len;
-		residuals[0] = T(pixelPerRadian) * (c[0]*T(e1[0]) + c[1]*T(e1[1]) + c[2]*T(e1[2]));
-		residuals[1] = T(pixelPerRadian) * (c[0]*T(e2[0]) + c[1]*T(e2[1]) + c[2]*T(e2[2]));
+			residuals[i] = T(pixelPerRadian) * (c[i] / len - T(b[i]));
 		return true;
 	}
 };
@@ -445,12 +438,14 @@ void RefineSeamTransform(const std::vector<SeamObservation>& observations, float
 	ceres::LossFunction* loss = new ceres::HuberLoss(maxReprojError);
 	for (const SeamObservation& obs : observations)
 		problem.AddResidualBlock(
-			new ceres::AutoDiffCostFunction<SeamReprojectionError, 2, 4, 3, 1>(new SeamReprojectionError(obs)),
+			new ceres::AutoDiffCostFunction<SeamReprojectionError, 3, 4, 3, 1>(new SeamReprojectionError(obs)),
 			loss, q, t, &logScale);
 	problem.SetManifold(q, new ceres::QuaternionManifold);
 
 	ceres::Solver::Options options;
-	options.linear_solver_type = ceres::DENSE_QR;
+	// eight parameters against thousands of residuals: the normal equations are an 8x8 solve, while
+	// a QR would factorize the whole Jacobian for the same answer
+	options.linear_solver_type = ceres::DENSE_NORMAL_CHOLESKY;
 	options.max_num_iterations = 50;
 	options.function_tolerance = 1e-8;
 	options.logging_type = ceres::SILENT;
