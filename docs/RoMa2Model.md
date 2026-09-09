@@ -52,8 +52,8 @@ scripts/fetch_roma2_model.py [--setting base] [--precision fp32] [--dest DIR]
   Multiple presets can share one `--dest` (the filenames already carry `setting` and precision); two
   *precisions of the same setting* cannot yet, since both would want the same manifest name.
 - `--repo` — the Hugging Face model repo id (default `cDcSeacave/openmvs-roma2-onnx`).
-- `--revision` — the Hugging Face revision/commit to fetch (default `main`, a placeholder until a
-  real commit is pinned after the first publish — see Publishing, below).
+- `--revision` — the Hugging Face commit to fetch (default: the commit that published the bundle
+  `models/roma2/checksums.txt` pins; a re-export moves both together — see Publishing, below).
 - `--mirror` — base URL of the GitHub-release mirror, used when `huggingface_hub` is not importable
   or a Hugging Face fetch fails (default `https://github.com/cdcseacave/openMVS/releases/download/roma2-model`).
 
@@ -138,5 +138,5 @@ default mirror URL. A new export's checksums can be pinned into `models/roma2/ch
 as the export exists — they are hashes of file content, valid before any upload (as already done for
 `base`/`fp32` above), with the `<setting>-<precision>/` prefix added by hand (the checksums file's own
 header says so). The one thing that must wait for the upload itself is this script's default
-`--revision`: only once the upload has actually happened does it have a real commit SHA to move onto,
-off the `main` placeholder.
+`--revision`: it moves onto the commit SHA the upload prints, so a fetch pins the exact bytes the
+checksums describe rather than whatever `main` holds later.

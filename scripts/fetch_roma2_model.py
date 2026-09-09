@@ -73,9 +73,9 @@ HF_REPO = "cDcSeacave/openmvs-roma2-onnx"
 GITHUB_MIRROR_REPO = "cdcseacave/openMVS"
 GITHUB_MIRROR_TAG = "roma2-model"
 DEFAULT_MIRROR_URL = f"https://github.com/{GITHUB_MIRROR_REPO}/releases/download/{GITHUB_MIRROR_TAG}"
-# Nothing has been published yet -- this stays "main" until the real commit SHA is pinned here
-# after the upload.
-DEFAULT_REVISION = "main"
+# The Hub commit that published the bundle models/roma2/checksums.txt pins; a re-export moves
+# both together.
+DEFAULT_REVISION = "ea2b04648ba0fb1c33d1dac2bdc65bfb17b0ef5f"
 
 # models/roma2/checksums.txt lives in the OpenMVS repo, next to this script's own parent
 # directory -- resolved from __file__ so a fetch works regardless of the caller's cwd.
