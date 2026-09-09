@@ -67,9 +67,12 @@ Local bundle adjustment (`localBAEvery`, every 10 registrations, a fixed window 
 neighbours, never refining intrinsics) avoids a global solve every step. Full bundle adjustment runs
 every `fullBAEvery` registrations (25, then 50, then 100 and every 100 after), or sooner when the
 average inlier ratio drops below `avgInliersRatioForceBA` (0.6, only once `minImagesForceBA` (3) images
-have registered since the last one) -- refining the main-set intrinsics (focal, k1, k2, as far as
-`--refine-intrinsics` allows them) until `minRefineExtIntrs` (100) images are registered, and after
-that whatever the intrinsics level allows beyond the main set.
+have registered since the last one). A registration's ratio is normalized by its own share of described
+versus dense correspondences before it enters that average (`denseInlierRatioFactor`), since a dense
+correspondence reaches a lower inlier share than a described one even on a healthy model -- refining
+the main-set intrinsics (focal, k1, k2, as far as `--refine-intrinsics` allows them) until
+`minRefineExtIntrs` (100) images are registered, and after that whatever the intrinsics level allows
+beyond the main set.
 
 ## Bundle adjustment
 

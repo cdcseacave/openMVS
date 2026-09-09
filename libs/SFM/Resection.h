@@ -68,6 +68,12 @@ struct SFM_API ResectionConfig
 	unsigned minImagesForceBA{3};       // Minimum images registered since the last full BA before a low average inliers
 	                                    // ratio may force one; without it a persistently low ratio forces a full BA after
 	                                    // every single registration (0 = no minimum; the fullBAEvery cadence is unaffected)
+	float denseInlierRatioFactor{0.58f}; // Inlier share a registration made of dense correspondences alone reaches,
+	                                      // relative to one made of described ones, when the model is healthy: the
+	                                      // dense measurement is the less precise one, so its healthy inlier share is
+	                                      // lower. Normalizes each registration's ratio before it feeds the average
+	                                      // above (a fraction of avgInliersRatioForceBA, not an absolute ratio;
+	                                      // 1 = no distinction)
 	float maxReprojError{4.f};          // Reprojection error for triangulation and filtering
 	float minAngleThreshold{1.f};       // Minimum triangulation angle (degrees)
 	float multDepthNear{0.05f};         // Near depth threshold multiplier
@@ -171,7 +177,9 @@ private:
 	using IIndexScores = std::unordered_map<IIndex,unsigned>;
 
 	IIndexArr SelectNextImages(IIndexScores& unregistered) const;
-	std::pair<unsigned, unsigned> RegisterImage(IIndex imageID);
+	// Returns numInliers, numPoints (2D-3D correspondences tried) and numDescribed (of those, the
+	// share carrying a descriptor rather than being dense/warp-sampled)
+	std::tuple<unsigned, unsigned, unsigned> RegisterImage(IIndex imageID);
 
 	/**
 	 * @brief Set the pose of one unregistered image from its relative poses to registered images

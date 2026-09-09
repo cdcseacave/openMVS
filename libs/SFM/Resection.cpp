@@ -165,7 +165,7 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 	return nextIDs;
 }
 
- std::pair<unsigned, unsigned> Resection::RegisterImage(IIndex imageID)
+ std::tuple<unsigned, unsigned, unsigned> Resection::RegisterImage(IIndex imageID)
 {
 	Image& img = scene.images[imageID];
 	ASSERT(img.HasCamera() && !img.HasPose());
@@ -176,6 +176,7 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 	// hemisphere information (sign(z)) for spherical cameras.
 	std::vector<poselib::Point3D> bearings;
 	std::vector<poselib::Point3D> points3D;
+	unsigned numDescribed = 0;
 	for (const Track& track : scene.tracks) {
 		if (!track.IsInlier())
 			continue;
@@ -184,13 +185,15 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 				const Point2 kp = img.keypoints[obs.featureID].pt;
 				bearings.emplace_back(img.pCamera->UnprojectNormalized(kp));
 				points3D.push_back(track.position);
+				if (!img.IsDenseKeypoint(obs.featureID))
+					++numDescribed;
 				break;
 			}
 		}
 	}
 	const unsigned n = (unsigned)bearings.size();
 	if (n < config.minInliers)
-		return {0, n};
+		return {0, n, numDescribed};
 
 	// Convert the pixel-space reprojection threshold to an angular threshold
 	// on the unit sphere via the camera's PixelErrorToAngular helper and hand
@@ -213,7 +216,7 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 
 	const unsigned numInliers = (unsigned)stats.num_inliers;
 	if (numInliers < config.minInliers)
-		return {0, n};
+		return {0, n, numDescribed};
 
 	// A pose is accepted only when its support is credible. A small consensus inside a large set of
 	// correspondences can agree on a pose the image never had, so the inliers must be a large enough
@@ -223,7 +226,7 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 	if (config.minInlierRatio > 0.f && inlierRatio < config.minInlierRatio && numInliers < config.minInliersAbsolute) {
 		DEBUG("warning: rejected the pose of image %u: %u/%u inliers (%.1f%%) below the %.1f%% minimum share",
 			imageID, numInliers, n, inlierRatio * 100.f, config.minInlierRatio * 100.f);
-		return {0, n};
+		return {0, n, numDescribed};
 	}
 
 	// Cross-check the estimated rotation against the one the image's verified pairs to already
@@ -248,14 +251,14 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 					"rotation its quorum of %u of %u pairs composes (strongest to image %u)", imageID, numInliers, n,
 					inlierRatio * 100.f, angle, (unsigned)quorum.links.size(), (unsigned)links.size(),
 					quorum.links.front().neighborID);
-				return {0, n};
+				return {0, n, numDescribed};
 			}
 		}
 	}
 
 	img.R = camPose.R();
 	img.SetT(camPose.t);
-	return {numInliers, n};
+	return {numInliers, n, numDescribed};
 }
 
 IIndex Resection::RegisterFromRelativePoses(const IIndexScores& unregistered)
@@ -525,9 +528,15 @@ bool Resection::RegisterImages()
 		for (IIndex n = 0; n < nextIDs.size(); ) {
 			// Attempt to register next image
 			const IIndex nextID = nextIDs[n];
-			const auto [numInliers, numPoints] = RegisterImage(nextID);
-			if (numPoints > 0)
-				avgInliersRatio += numInliers / (float)numPoints;
+			const auto [numInliers, numPoints, numDescribed] = RegisterImage(nextID);
+			if (numPoints > 0) {
+				// Weigh the ratio against what a registration with this same mix of described and
+				// dense correspondences reaches on a healthy model, so the average reads drift and
+				// not how much of the image matched densely
+				const float describedShare = numDescribed / (float)numPoints;
+				const float expectedRatio = describedShare + (1.f - describedShare) * config.denseInlierRatioFactor;
+				avgInliersRatio += (numInliers / (float)numPoints) / expectedRatio;
+			}
 			if (numInliers == 0) {
 				DEBUG("warning: failed to register image %u (%u/%u correspondences), retrying later", nextID, numInliers, numPoints);
 				nextIDs.RemoveAtMove(n);
@@ -538,7 +547,7 @@ bool Resection::RegisterImages()
 			++registeredCount;
 			++sinceFullBA;
 			++n;
-			DEBUG_EXTRA("\tImage %u registered: %u/%u correspondences (%u/%u images, %.2f%% avg inliers ratio)",
+			DEBUG_EXTRA("\tImage %u registered: %u/%u correspondences (%u/%u images, %.2f%% avg normalized inliers ratio)",
 				nextID, numInliers, numPoints, scene.status.nCalibratedImages+registeredCount, scene.images.size(), avgInliersRatio.GetAverage() * 100.f);
 			if (AdjustIfScheduled()) {
 				break; // restart selection of next images
