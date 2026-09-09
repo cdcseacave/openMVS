@@ -569,10 +569,10 @@ inline void AddPinholeIntrinsics(std::unordered_map<const Camera*, DoubleArr>& i
 // of the frame constrains the image's pose as the full set did, while an arbitrary prefix of it
 // would leave whole regions of the image unmeasured and let the pose rotate into them.
 //
-// Empty = every observation is kept (the solve is under the threshold the budget applies from, or
-// no image is over the budget); otherwise one flag per keypoint of every image taking part -- an
-// under-budget image gets its flags too, all set, since the pass that holds a track's views
-// together may still have to drop one of them.
+// Empty = every observation is kept (the scene is under the threshold the budget applies from, or
+// no image in this solve is over the budget); otherwise one flag per keypoint of every image taking
+// part -- an under-budget image gets its flags too, all set, since the pass that holds a track's
+// views together may still have to drop one of them.
 class ObservationCap
 {
 public:
@@ -599,6 +599,25 @@ struct ObservationCapStats
 	uint32_t numDenseDropped = 0;     // and dense ones
 	bool applied = false;             // whether the budget ran on this solve
 };
+
+// Observations the scene would fit into a global solve of it: every inlier track's observations
+// in every registered image, summed over the whole of scene.tracks. Whether the per-image budget
+// applies at all is decided from this count and not from any one solve's own (see
+// BuildObservationCap), so that a local window -- which alone rarely holds enough observations to
+// reach the threshold -- is budgeted once the scene it belongs to has grown large. The sum is plain
+// (no allocation) and cheap enough, a few milliseconds even on a scene of millions of observations,
+// that a caller can afford to redo it for every solve rather than cache it.
+inline uint32_t CountSceneObservations(const Scene& scene) {
+	uint32_t numObservations = 0;
+	for (const Track& track : scene.tracks) {
+		if (!track.IsInlier())
+			continue;
+		for (const Observation& obs : track)
+			if (scene.images[obs.imageID].IsValid())
+				++numObservations;
+	}
+	return numObservations;
+}
 
 // Grid cell of a keypoint in an image split into gridSize x gridSize cells
 inline uint32_t ObservationCapCell(const Image& img, const cv::KeyPoint& kp, unsigned gridSize) {
@@ -631,22 +650,24 @@ std::atomic<uint32_t> observationCapSeed{0};
 // images see is the one that ties them together, and what is equal at that point is ordered by a key
 // drawn for this solve alone.
 //
-// The budget runs only once the observations the solve would otherwise fit reach minObservations:
-// a scene small enough to be solved whole is solved whole, since dropping observations there costs
-// accuracy to save time that was not being spent. That count is exact and comes out of the same
-// pass that measures the images.
+// The budget runs only once the SCENE's observations reach minObservations, not this solve's own
+// (sceneObservations, from CountSceneObservations): a scene small enough to be solved whole is
+// solved whole, since dropping observations there costs accuracy to save time that was not being
+// spent, but once a scene has grown past that point every solve of it is budgeted, a local window
+// included even though a window alone rarely holds enough observations to reach the threshold by
+// itself.
 //
 // visitTracks(fn) calls fn(track) for every track the solve builds residuals from and
 // inSolve(imageID) answers whether an observation's image takes part: both mirror the residual
 // loop, whose filtering this pre-pass reproduces.
 template <typename TVisitTracks, typename TInSolve>
 ObservationCapStats BuildObservationCap(const Scene& scene, unsigned cap, unsigned minObservations,
-	const TVisitTracks& visitTracks, const TInSolve& inSolve, ObservationCap& obsCap)
+	uint32_t sceneObservations, const TVisitTracks& visitTracks, const TInSolve& inSolve, ObservationCap& obsCap)
 {
 	obsCap.keep.clear();
 	ObservationCapStats stats;
-	if (cap == 0)
-		return stats; // uncapped
+	if (cap == 0 || sceneObservations < minObservations)
+		return stats; // uncapped, or the scene has not grown large enough for the budget to apply yet
 	const auto forEachObservation = [&](const auto& fn) {
 		visitTracks([&](const Track& track) {
 			for (const Observation& obs : track) {
@@ -663,8 +684,6 @@ ObservationCapStats BuildObservationCap(const Scene& scene, unsigned cap, unsign
 		++numObservations[obs.imageID];
 		++stats.numObservations;
 	});
-	if (stats.numObservations < minObservations)
-		return stats; // this solve is small enough to take everything
 	stats.applied = true;
 	stats.numKept = stats.numObservations;
 	bool anyOverCap = false;
@@ -1067,10 +1086,12 @@ bool BundleAdjustment::Adjust()
 	const double denseWeight = config.useKeypointConfidence ? 1.0 :
 		EstimateDenseObservationWeight(scene, config, &denseSigmas);
 
-	// how many observations each image contributes, decided before the residuals are added
+	// how many observations each image contributes, decided before the residuals are added; whether
+	// the budget applies at all is a property of the scene, not of this one solve (see
+	// BuildObservationCap), so its observations are recounted here
 	ObservationCap obsCap;
 	const ObservationCapStats capStats = BuildObservationCap(scene, config.maxObservationsPerImage,
-		config.minObservationsForCap,
+		config.minObservationsForCap, CountSceneObservations(scene),
 		[this](const auto& fn) {
 			for (const Track& track : scene.tracks)
 				if (track.IsInlier())
@@ -1501,13 +1522,18 @@ bool BundleAdjustment::AdjustLocal(
 		EstimateDenseObservationWeight(scene, config, &denseSigmas);
 
 	// how many observations each window image contributes, decided before the residuals are added
-	// and over the window alone: an image is capped on what it brings to THIS solve
+	// and over the window alone: an image is capped on what it brings to THIS solve. Whether the
+	// budget applies at all is decided from the scene's observations, not the window's: a window
+	// holds only a few images and would rarely reach the threshold on its own, so the whole scene is
+	// recounted here for every local solve -- a plain sum with no allocation, cheap enough (a few
+	// milliseconds even on a scene of millions of observations) not to need caching across the many
+	// windows one reconstruction solves.
 	const auto inWindow = [&localImages, &fixedImages](IIndex imgID) {
 		return localImages.find(imgID) != localImages.end() || fixedImages.find(imgID) != fixedImages.end();
 	};
 	ObservationCap obsCap;
 	const ObservationCapStats capStats = BuildObservationCap(scene, config.maxObservationsPerImage,
-		config.minObservationsForCap,
+		config.minObservationsForCap, CountSceneObservations(scene),
 		[this, &activePoints](const auto& fn) {
 			for (const uint32_t pointID : activePoints)
 				fn(scene.tracks[pointID]);

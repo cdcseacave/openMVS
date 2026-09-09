@@ -81,7 +81,7 @@ loss (2 px in the resection's own solves); a dense (warp-sampled) keypoint's res
 relative to a described one's (measured, or pinned with `--ba-dense-weight`; see `ROMA2InProcess.md`).
 What a solve costs is the number of observations it fits, and one image can bring thousands of them
 -- warp samples where it was matched densely, detections where it was not -- so each image
-contributes at most `maxObservationsPerImage` (1000, `--ba-max-obs`) of any kind. The budget goes to
+contributes at most `maxObservationsPerImage` (1500, `--ba-max-obs`) of any kind. The budget goes to
 the described observations first -- a detected position is the precise measurement, so an image keeps
 all of its own unless they alone exceed the budget -- and the warp samples fill what is left of it,
 so that an image with few detections spends most of the budget on warp samples and one with many
@@ -91,8 +91,9 @@ comes first, and the remaining ties are ordered by a key drawn for that solve al
 adjustments take different subsets and, over a reconstruction, most observations take part in some
 solve. A track left with a single view is given a dropped observation back, a described one first; a
 track left with none stays out of the solve. The budget applies only
-once the observations a solve would otherwise fit reach `minObservationsForCap` (1000000,
-`--ba-cap-min-obs`): a scene small enough to be solved whole is solved whole.
+once the scene's observations reach `minObservationsForCap` (1000000,
+`--ba-cap-min-obs`): a scene small enough to be solved whole is solved whole, and once it is not,
+every solve of it is budgeted, including a local window that alone holds only a few images.
 
 Every verified pair whose two images are both in the solve also adds a relative-pose residual
 (`RelativePoseError`): the model's relative rotation against the pair's, and its baseline direction

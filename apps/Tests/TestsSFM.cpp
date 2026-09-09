@@ -9248,9 +9248,9 @@ void AddDenseObservations(Scene& scene)
 	scene.tracks.Join(denseTracks);
 }
 
-// Observations a global solve of scene would fit without any budget: the registered images'
-// observations of its inlier tracks, the same set the residual loop walks
-unsigned CountSolveObservations(const Scene& scene)
+// Observations the scene holds, the count the per-image budget's threshold is measured against:
+// the registered images' observations of its inlier tracks, over the whole of scene.tracks
+unsigned CountSceneObservations(const Scene& scene)
 {
 	unsigned numObservations = 0;
 	for (const Track& track : scene.tracks) {
@@ -9320,7 +9320,7 @@ bool BAObservationCapTest()
 		}
 
 		// and a solve the threshold leaves alone fits every observation it was given
-		const unsigned numObservations = CountSolveObservations(capped);
+		const unsigned numObservations = CountSceneObservations(capped);
 		config.minObservationsForCap = numObservations + 1;
 		BundleAdjustment ba(capped, config);
 		if (!ba.Adjust()) {

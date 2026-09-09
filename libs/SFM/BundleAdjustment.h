@@ -89,11 +89,14 @@ struct SFM_API BAConfig
 	// densest. Most of the budget then goes to warp samples on an image with few detections and
 	// little on one with many, and the scene stays as well constrained as the residual count it
 	// costs allows (see BuildObservationCap).
-	unsigned maxObservationsPerImage = 1000;
+	unsigned maxObservationsPerImage = 1500;
 
-	// Observations a solve must be about to fit, summed over the tracks entering it, before the
-	// budget above applies at all, 0 = always. A scene small enough to be solved whole is solved
-	// whole: dropping observations there costs accuracy to save time that was not being spent.
+	// Observations the scene must hold -- every inlier track's observations in every registered
+	// image, summed once over the whole scene -- before the budget above applies to any solve,
+	// 0 = always. A scene small enough to be solved whole is solved whole: dropping observations
+	// there costs accuracy to save time that was not being spent. Sized by the scene rather than by
+	// any one solve so that a local window, which alone rarely holds many observations, is budgeted
+	// too once the scene it is part of has grown large.
 	unsigned minObservationsForCap = 1000000;
 
 	// Solver parameters
