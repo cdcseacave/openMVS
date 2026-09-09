@@ -818,33 +818,29 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	                             : !ReconstructHierarchical(cfg, seedViews))
 		return false;
 
-	// Pre-final global bundle adjustment
-	BAConfig finalBaCfg = cfg.baConfig;
-	finalBaCfg.maxIterations = 25;
-	finalBaCfg.refineFocalLength = (cfg.baIntrinsicFlags & ReconstructionConfig::INTRINSIC_FOCAL_LENGTH) != 0;
-	finalBaCfg.refineRadialDistortion12 = (cfg.baIntrinsicFlags & ReconstructionConfig::INTRINSIC_RADIAL_DIST_12) != 0;
-	BundleAdjustment::Adjust(*this, finalBaCfg);
+	// Final global bundle adjustment
 	FilterTracks(*this, cfg.maxReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
 	TriangulateTracks(*this, true, cfg.maxReprojError, cfg.minAngleThreshold);
 	FilterTracks(*this, cfg.maxReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
 	status.nState.set(Status::STATE::CALIBRATED);
-
-	// Final global bundle adjustment
-	finalBaCfg.maxIterations = cfg.baConfig.maxIterations;
+	BAConfig finalBaCfg = cfg.baConfig;
 	SetBAIntrinsicFlags(finalBaCfg, cfg.baIntrinsicFlags);
 	BundleAdjustment::Adjust(*this, finalBaCfg);
 	FilterTracks(*this, cfg.maxFineReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
 
-	// Filter weakly connected images and resection remaining images into the reconstruction
-	FilterWeaklyConnectedImages(*this);
+	// Filter weakly connected images and resection remaining images into the reconstruction;
+	// what the filter just removed is withheld from that resection, so it is not simply handed
+	// back and removed again
+	const IIndexArr removedIDs = FilterWeaklyConnectedImages(*this);
 	if (status.nCalibratedImages < images.size()) {
 		ResectionConfig resectionCfg = cfg.resectionCfg;
 		BAConfig resectionBaCfg = cfg.baConfig;
 		SetBAIntrinsicFlags(resectionBaCfg, cfg.baIntrinsicFlags);
 		resectionCfg.DeriveBAConfigs(resectionBaCfg);
 		Resection resection(*this, resectionCfg);
-		resection.RegisterImages();
-		FilterWeaklyConnectedImages(*this);
+		resection.ExcludeImages(removedIDs);
+		if (resection.RegisterImages())
+			FilterWeaklyConnectedImages(*this);
 	}
 
 	// Align the scene back to the imported prior poses in known-poses mode (preserving the
@@ -944,11 +940,8 @@ bool Scene::ReconstructHierarchical(const ReconstructionConfig& config, const II
 		resectionCfg.DeriveBAConfigs(resectionBaCfg);
 		Resection resection(subScene, resectionCfg);
 		resection.RegisterImages();
-
-		// Local / global bundle adjustment for this sub-scene
-		BAConfig baCfg = config.baConfig;
-		SetBAIntrinsicFlags(baCfg, config.baIntrinsicFlags);
-		BundleAdjustment::Adjust(subScene, baCfg);
+		// The resection already closes with a full adjustment of this sub-scene; only the
+		// tracks it leaves behind need settling before the sub-scenes are merged
 		FilterTracks(subScene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
 	});
 	threadPool.wait();

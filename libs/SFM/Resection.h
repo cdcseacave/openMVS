@@ -157,9 +157,17 @@ public:
 	 */
 	bool RegisterImages();
 
+	/**
+	 * @brief Withhold images from registration, e.g. ones a caller just removed for being
+	 * weakly connected: offering them back would only reproduce the same removal
+	 * @param imageIDs Images to leave unregistered
+	 */
+	void ExcludeImages(const IIndexArr& imageIDs);
+
 private:
 	Scene& scene;
 	ResectionConfig config;
+	std::unordered_set<IIndex> excludedImages;
 
 	using IIndexScores = std::unordered_map<IIndex,unsigned>;
 

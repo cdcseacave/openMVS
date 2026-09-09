@@ -428,6 +428,11 @@ IIndexArr Resection::BuildLocalWindow(const IIndexArr& imageIDs) const
 	return fixedViewIDs;
 }
 
+void Resection::ExcludeImages(const IIndexArr& imageIDs)
+{
+	excludedImages.insert(imageIDs.begin(), imageIDs.end());
+}
+
 bool Resection::RegisterImages()
 {
 	TD_TIMER_STARTD();
@@ -436,7 +441,7 @@ bool Resection::RegisterImages()
 	IIndexScores unregistered;
 	unregistered.reserve(scene.images.size() * 2 / 3);
 	for (const Image& img : scene.images)
-		if (!img.HasPose())
+		if (!img.HasPose() && !excludedImages.count(img.ID))
 			unregistered.emplace(img.ID, 0u);
 	if (unregistered.empty()) {
 		VERBOSE("warning: no unregistered images");
@@ -542,8 +547,9 @@ bool Resection::RegisterImages()
 		}
 	}
 
-	// Full BA after all images are registered (nothing changed if none were)
-	if (registeredCount > 0) {
+	// Full BA to close the resection, unless the last one scheduled inside the loop already
+	// covers every image registered since (nothing left for a further adjustment to refine)
+	if (sinceFullBA > 0) {
 		TriangulateTracks(scene, false, config.maxReprojError, config.minAngleThreshold);
 		config.extendedBAConfig.maxIterations = 100;
 		BundleAdjustment::Adjust(scene, config.extendedBAConfig);

@@ -99,8 +99,10 @@ never refines intrinsics, full BA stays at the main set regardless, and only the
 
 ## The image filter
 
-`FilterWeaklyConnectedImages` runs after the shared tail's pre-final bundle adjustment and again after
-the resection registers whatever unposed images it can reach. Two tier verdicts drop an image outright:
+`FilterWeaklyConnectedImages` runs after the shared tail's final bundle adjustment; the images it
+removes are withheld from the resection offered the rest, so a removed image is not just handed back
+and removed again, and the filter runs a second time only when that resection registers something.
+Two tier verdicts drop an image outright:
 spatial distribution (triangulated points occupy too little of the image, `minObservationArea` 0.15)
 and geometric degeneracy (median triangulation angle too small, `minTriangulationAngle` 1.5 degrees).
 The rest form a covisibility graph -- an edge per pair sharing `minCovisibilityCount` (5) inlier tracks
