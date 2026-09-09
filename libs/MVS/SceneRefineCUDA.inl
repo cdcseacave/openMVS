@@ -74,30 +74,28 @@ void LaunchImageMeshWarp(
 // masked window statistics, rejection gates, ZNCC and its derivative in one pass; maskOut is a
 // SECOND mask buffer (the window loops still read mask), pruned of the pixels whose window held
 // fewer than Refine::MinWindowCount valid samples or that failed a gate -- every consumer
-// downstream reads maskOut. zncc/conf are the parity diagnostic's optional outputs (NULL in
-// production); sumR/sumRZ are the device scalars ScoreMesh reduces into S, and blockSums is the
-// scratch this launch's two kernels hand them over in -- 2 floats per 16x16 block of the largest
-// view, so that S is a fixed sequence of additions.
+// downstream reads maskOut. sumR/sumRZ are the device scalars ScoreMesh reduces into S, and
+// blockSums is the scratch this launch's two kernels hand them over in -- 2 floats per 16x16
+// block of the largest view, so that S is a fixed sequence of additions.
 void LaunchComputeWindowStats(
-	const uint8_t* mask, uint8_t* maskOut, float* dzncc, float* zncc, float* conf,
+	const uint8_t* mask, uint8_t* maskOut, float* dzncc,
 	cudaSurfaceObject_t surfImageA, cudaSurfaceObject_t surfImageProj,
 	float* sumR, float* sumRZ, float* blockSums, float gateMeanDiff, float gateVarRatio, int width, int height);
 
 // the photometric accumulation, in two atomic-free halves so that the per-vertex sums are
 // bit-reproducible run to run (float addition is not associative). First half: one thread per
 // MESH face (not per face of this view -- see kernelAccumulateFacePhoto), reducing that face's
-// pixels into private
-// per-face slots; every thread writes its slots, so no buffer needs clearing between
-// pair-directions. faceAcc holds 3 floats per face (one per corner), facePixels/faceFoot one;
-// faceFoot is only read where facePixels > 0. texImageB is the image B texture, sampled directly
-// (four texel fetches) when bBilinearGrad asks for the derivative of the bilinear interpolant
-// instead of the precomputed gradient stencil (OPTREFINE::nImageGradient == 3, where
+// pixels into private per-face slots; every thread writes its slots, so no buffer needs clearing
+// between pair-directions. faceAcc holds 3 floats per face (one per corner), facePixels/faceFoot
+// one; faceFoot is only read where facePixels > 0. texImageB is the image B texture, sampled
+// directly (four texel fetches) when bBilinearGrad asks for the derivative of the bilinear
+// interpolant instead of the precomputed gradient stencil (OPTREFINE::nImageGradient == 3, where
 // texGradXB/texGradYB carry no texture and are unused).
 void LaunchAccumulateFacePhoto(
 	const Point3* vertices, const Point3u* faces, const Point3* normals,
 	const float* depthMap, const uint32_t* faceMap, const uint16_t* baryMap,
 	const float* dzncc, const uint8_t* mask,
-	float* faceAcc, float* facePixels, float* faceFoot, float* sgMap,
+	float* faceAcc, float* facePixels, float* faceFoot,
 	const Camera& camA, const Camera& camB,
 	cudaTextureObject_t texImageB, cudaTextureObject_t texGradXB, cudaTextureObject_t texGradYB,
 	bool bBilinearGrad, float regScale,
@@ -123,15 +121,6 @@ void LaunchComputeSmoothnessGradient(
 	const Point3* vertices, const uint32_t* vertVertices,
 	const uint32_t* vertSizes, const uint32_t* vertPointers,
 	const uint8_t* vertBoundary, Point3* smoothGrad, uint32_t numVertices, uint8_t mode);
-
-void LaunchCombineGradients(
-	Point3* photoGrad, const float* photoGradNorm,
-	const Point3* smoothGrad, uint32_t numVertices, float smoothWeight);
-
-void LaunchCombineAllGradients(
-	Point3* photoGrad, const float* photoGradNorm,
-	const Point3* smoothGrad1, const Point3* smoothGrad2,
-	uint32_t numVertices, float rigidity, float elasticity);
 
 void LaunchComputeFaceNormal(
 	const Point3* vertices, const Point3u* faces,

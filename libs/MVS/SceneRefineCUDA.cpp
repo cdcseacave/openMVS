@@ -46,9 +46,6 @@ using namespace MVS;
 #define MESHCUDAOPT_USE_OPENMP
 #endif
 
-// uncomment to ensure edge size and improve vertex valence
-// (should enable more stable flow)
-
 
 // S T R U C T S ///////////////////////////////////////////////////
 
@@ -104,7 +101,7 @@ public:
 
 
 public:
-	MeshRefineCUDA(Scene& _scene, unsigned _nAlternatePair=true, float _weightRegularity=1.5f, float _ratioRigidityElasticity=0.8f, unsigned _nResolutionLevel=0, unsigned _nMinResolution=640, unsigned nMaxViews=8);
+	MeshRefineCUDA(Scene& _scene, unsigned _nAlternatePair=true, float _weightRegularity=1.5f, unsigned _nResolutionLevel=0, unsigned _nMinResolution=640, unsigned nMaxViews=8);
 	~MeshRefineCUDA();
 
 	bool IsValid() const { return !pairs.IsEmpty(); }
@@ -140,20 +137,18 @@ public:
 	void ImageMeshWarp(
 		const Camera& cameraA, const Camera& cameraB, const Image8U::Size& size,
 		uint32_t idxImageA, uint32_t idxImageB);
-	void ComputeWindowStats(cudaSurfaceObject_t surfImageA, cudaSurfaceObject_t surfImageProj, const Image8U::Size& size, bool exportMaps);
+	void ComputeWindowStats(cudaSurfaceObject_t surfImageA, cudaSurfaceObject_t surfImageProj, const Image8U::Size& size);
 	void ComputePhotometricGradient(const Camera& cameraA, const Camera& cameraB, const Image8U::Size& size,
 		uint32_t idxImageA, uint32_t idxImageB, uint32_t numVertices, float RegularizationScale);
 	void ComputeSmoothnessGradient(uint32_t numVertices);
-	void CombineGradients(uint32_t numVertices);
 
 public:
 	const float weightRegularity; // a scalar regularity weight to balance between photo-consistency and regularization terms
-	float ratioRigidityElasticity; // a scalar ratio used to compute the regularity gradient as a combination of rigidity and elasticity
 	const unsigned nResolutionLevel; // how many times to scale down the images before mesh optimization
 	const unsigned nMinResolution; // how many times to scale down the images before mesh optimization
 	unsigned nAlternatePair; // using an image pair alternatively as reference image (0 - both, 1 - alternate, 2 - only left, 3 - only right)
 	unsigned iteration; // current refinement iteration
-	unsigned nScale; // current refinement scale (0-based, coarsest first), for the log and the RefineDebug export names
+	unsigned nScale; // current refinement scale (0-based, coarsest first), for the log
 
 	// reliability-weighted photo-consistency score (S = sumRZ/sumR): invariant to scene scale,
 	// contrast, resolution and pair count; set by ScoreMesh (see SceneRefineCommon.h), read by the
@@ -178,8 +173,6 @@ public:
 	SEACAVE::CUDA::MemDevice projKey; // rasterizer scratch, one (depth,face) 64-bit key per pixel of the largest view
 	size_t projKeyPixels = 0; // pixels projKey was allocated for (ProjectMesh asserts every view fits)
 	SEACAVE::CUDA::ArrayRT32F imageAB; // warped image B in A, float like the CPU's imageAB
-	SEACAVE::CUDA::MemDevice imageZNCC; // parity diagnostic only, written when the RefineDebug pair matches
-	SEACAVE::CUDA::MemDevice imageConf; // reliability weight; allocated for the parity export only
 	SEACAVE::CUDA::MemDevice imageDZNCC;
 	SEACAVE::CUDA::MemDevice photoGrad;
 	SEACAVE::CUDA::MemDevice photoGradNorm;
@@ -193,7 +186,6 @@ public:
 	SEACAVE::CUDA::MemDevice sumR; // device scalar: Sum r, accumulated by kernelComputeWindowStats/kernelReduceBlockSums over one ScoreMesh() call
 	SEACAVE::CUDA::MemDevice sumRZ; // device scalar: Sum r*(1-ZNCC), same accumulation window as sumR
 	SEACAVE::CUDA::MemDevice statsBlockSums; // 2 floats per window-stats block of the largest view: the partials sumR/sumRZ are folded from, in block order
-	SEACAVE::CUDA::MemDevice debugSG; // WP2 parity diagnostic only: per-pixel photometric scalar, allocated when the RefineDebug pair matches
 	SEACAVE::CUDA::MemDevice vertexVerticesCont;
 	SEACAVE::CUDA::MemDevice vertexVerticesSizes;
 	SEACAVE::CUDA::MemDevice vertexVerticesPointers;
@@ -207,10 +199,9 @@ public:
 	SEACAVE::CUDA::MemDevice smoothGrad2;
 };
 
-MeshRefineCUDA::MeshRefineCUDA(Scene& _scene, unsigned _nAlternatePair, float _weightRegularity, float _ratioRigidityElasticity, unsigned _nResolutionLevel, unsigned _nMinResolution, unsigned nMaxViews)
+MeshRefineCUDA::MeshRefineCUDA(Scene& _scene, unsigned _nAlternatePair, float _weightRegularity, unsigned _nResolutionLevel, unsigned _nMinResolution, unsigned nMaxViews)
 	:
 	weightRegularity(_weightRegularity),
-	ratioRigidityElasticity(_ratioRigidityElasticity),
 	nResolutionLevel(_nResolutionLevel),
 	nMinResolution(_nMinResolution),
 	nAlternatePair(_nAlternatePair),
@@ -374,10 +365,6 @@ bool MeshRefineCUDA::InitImages(float scale, float sigma)
 	projKeyPixels = area;
 	reportCudaError(imageAB.Reset(maxSize, CUDA_ARRAY3D_SURFACE_LDST));
 	reportCudaError(imageDZNCC.Reset(sizeof(float)*area));
-	if (!RefineDebug::Dir().empty()) {
-		reportCudaError(imageZNCC.Reset(sizeof(float)*area));
-		reportCudaError(imageConf.Reset(sizeof(float)*area));
-	}
 	reportCudaError(sumR.Reset(sizeof(float)));
 	reportCudaError(sumRZ.Reset(sizeof(float)));
 	// one slot per 16x16 block of the window-statistics grid; the largest view's width and height
@@ -491,8 +478,9 @@ void MeshRefineCUDA::ListCameraFaces()
 	}
 }
 
-// compute for each face the one projected area the preparation reads, over the refinement's own
-// pairs and by the rule `Face Area Rule` selects (make sure ListCameraFaces() was called before)
+// compute for each face the one projected area the preparation and the decimation both read:
+// rasterized per view, then reduced over the refinement's own pairs by ReduceFaceAreasOverPairs
+// (the smaller view of a pair, the largest pair); ListCameraFaces() must have run before
 void MeshRefineCUDA::ListFaceAreas(Mesh::AreaArr& maxAreas)
 {
 	ASSERT(maxAreas.IsEmpty());
@@ -641,30 +629,13 @@ bool MeshRefineCUDA::ScoreMesh(Point3f* photoGradOut, float* photoGradNormOut, f
 	// loop through all vertices and compute the smoothing score
 	ComputeSmoothnessGradient(numVertices);
 
-	// ALWAYS download the raw per-vertex terms before any combine: CombineGradients() overwrites
-	// photoGrad in place, and on the hot path (no OMVS_REFINE_DEBUG_DIR) it is never called --
-	// the caller's stepper does the combining instead
+	// download the raw per-vertex terms: the caller's stepper does the combining
 	if (!CheckDownload(reportCudaError(photoGrad.GetData(photoGradOut, sizeof(Point3f)*numVertices)), "photoGrad") ||
 		!CheckDownload(reportCudaError(photoGradNorm.GetData(photoGradNormOut, sizeof(float)*numVertices)), "photoGradNorm") ||
 		!CheckDownload(reportCudaError(footprint.GetData(footprintOut, sizeof(float)*numVertices)), "footprint") ||
 		!CheckDownload(reportCudaError(smoothGrad1.GetData(smoothGrad1Out, sizeof(Point3f)*numVertices)), "smoothGrad1") ||
 		!CheckDownload(reportCudaError(smoothGrad2.GetData(smoothGrad2Out, sizeof(Point3f)*numVertices)), "smoothGrad2"))
 		return false;
-
-	// WP2 parity diagnostic: combine and export on top of the raw terms just downloaded above;
-	// no-op unless OMVS_REFINE_DEBUG_DIR is set
-	if (!RefineDebug::Dir().empty()) {
-		Point3fArr pos(numVertices), combined(numVertices);
-		cList<uint8_t,uint8_t,0> boundary(numVertices);
-		reportCudaError(vertices.GetData(pos));
-		reportCudaError(vertBoundary.GetData(boundary));
-		// set the final gradient as the combination of photometric and smoothness gradients
-		CombineGradients(numVertices);
-		reportCudaError(photoGrad.GetData(combined));
-		RefineDebug::ExportGradients(nScale, iteration, numVertices,
-			pos.Begin(), combined.Begin(), photoGradOut, photoGradNormOut,
-			smoothGrad1Out, smoothGrad2Out, boundary.Begin());
-	}
 	return true;
 }
 
@@ -729,33 +700,7 @@ void MeshRefineCUDA::ProcessPair(uint32_t idxImageA, uint32_t idxImageB)
 	// warp imageB to imageA using the mesh
 	ImageMeshWarp(cameraA, cameraB, sizeA, idxImageA, idxImageB);
 	// masked window statistics, rejection gates, ZNCC and its derivative; prunes mask into maskStats
-	uint32_t dbgImageA, dbgImageB;
-	const bool dbgPair(!RefineDebug::Dir().empty() && RefineDebug::Pair(dbgImageA, dbgImageB) &&
-		dbgImageA == idxImageA && dbgImageB == idxImageB);
-	ComputeWindowStats(viewGPU[idxImageA].surfObj, surfImageProjObj, sizeA, dbgPair);
-
-	// WP2 parity diagnostic: download this pair's maps from the persistent
-	// device buffers above; no-op unless OMVS_REFINE_DEBUG_DIR/_PAIR are both
-	// set and match this exact (A,B) direction
-	if (dbgPair) {
-		const int width(sizeA.width), height(sizeA.height);
-		Image32F imgA(sizeA), imgAB(sizeA);
-		Image8U _mask(sizeA);
-		Image32F _zncc(sizeA), _dzncc(sizeA), _conf(sizeA);
-		reportCudaError(views[idxImageA].image.GetData(imgA));
-		reportCudaError(imageAB.GetData(imgAB));
-		reportCudaError(maskStats.GetData(_mask));
-		reportCudaError(imageZNCC.GetData(_zncc));
-		reportCudaError(imageConf.GetData(_conf));
-		reportCudaError(imageDZNCC.GetData(_dzncc));
-		RefineDebug::ExportPairMap(nScale, iteration, idxImageA, idxImageB, "imageA", imgA.getData(), width, height);
-		RefineDebug::ExportPairMap(nScale, iteration, idxImageA, idxImageB, "imageAB", imgAB.getData(), width, height);
-		RefineDebug::ExportPairMap(nScale, iteration, idxImageA, idxImageB, "zncc", _zncc.getData(), width, height);
-		RefineDebug::ExportPairMap(nScale, iteration, idxImageA, idxImageB, "dzncc", _dzncc.getData(), width, height);
-		RefineDebug::ExportPairMap(nScale, iteration, idxImageA, idxImageB, "conf", _conf.getData(), width, height);
-		RefineDebug::ExportPairMask(nScale, iteration, idxImageA, idxImageB, _mask.getData(), width, height);
-	}
-
+	ComputeWindowStats(viewGPU[idxImageA].surfObj, surfImageProjObj, sizeA);
 	const float RegularizationScale((float)((REAL)(imageDataA.avgDepth*imageDataB.avgDepth)/(cameraA.GetFocalLength()*cameraB.GetFocalLength())));
 	ComputePhotometricGradient(cameraA, cameraB, sizeA, idxImageA, idxImageB, scene.mesh.vertices.GetSize(), RegularizationScale);
 }
@@ -780,14 +725,12 @@ void MeshRefineCUDA::ImageMeshWarp(
 }
 
 // masked window statistics, rejection gates, ZNCC and its per-pixel derivative, in one kernel
-void MeshRefineCUDA::ComputeWindowStats(cudaSurfaceObject_t surfImageA, cudaSurfaceObject_t surfImageProj, const Image8U::Size& size, bool exportMaps)
+void MeshRefineCUDA::ComputeWindowStats(cudaSurfaceObject_t surfImageA, cudaSurfaceObject_t surfImageProj, const Image8U::Size& size)
 {
 	MVS::CUDA::LaunchComputeWindowStats(
 		(const uint8_t*)(CUdeviceptr)mask,
 		(uint8_t*)(CUdeviceptr)maskStats,
 		(float*)(CUdeviceptr)imageDZNCC,
-		exportMaps ? (float*)(CUdeviceptr)imageZNCC : NULL,
-		imageConf.IsValid() ? (float*)(CUdeviceptr)imageConf : NULL,
 		surfImageA, surfImageProj,
 		(float*)(CUdeviceptr)sumR,
 		(float*)(CUdeviceptr)sumRZ,
@@ -800,16 +743,6 @@ void MeshRefineCUDA::ComputeWindowStats(cudaSurfaceObject_t surfImageA, cudaSurf
 void MeshRefineCUDA::ComputePhotometricGradient(const Camera& cameraA, const Camera& cameraB, const Image8U::Size& size,
 	uint32_t idxImageA, uint32_t idxImageB, uint32_t numVertices, float RegularizationScale)
 {
-	// WP2 parity diagnostic: per-pixel photometric scalar (the CPU's sg) + face id, same
-	// gating as the pair-map block in ProcessPair(); no-op unless the debug pair matches
-	uint32_t dbgImageA, dbgImageB;
-	const bool dbgPair(!RefineDebug::Dir().empty() && RefineDebug::Pair(dbgImageA, dbgImageB) &&
-		dbgImageA == idxImageA && dbgImageB == idxImageB);
-	const size_t area((size_t)size.area());
-	if (dbgPair) {
-		reportCudaError(debugSG.Reset(sizeof(float)*area));
-		reportCudaError(cuMemsetD32(debugSG, 0, area));
-	}
 	const MVS::CUDA::Camera cudaCamA(MakeCUDACamera(cameraA, size));
 	const MVS::CUDA::Camera cudaCamB(MakeCUDACamera(cameraB, views[idxImageB].size));
 	const FIndex numFaces(scene.mesh.faces.GetSize());
@@ -831,7 +764,6 @@ void MeshRefineCUDA::ComputePhotometricGradient(const Camera& cameraA, const Cam
 		(float*)(CUdeviceptr)faceAcc,
 		(float*)(CUdeviceptr)facePixels,
 		(float*)(CUdeviceptr)faceFoot,
-		dbgPair ? (float*)(CUdeviceptr)debugSG : NULL,
 		cudaCamA, cudaCamB,
 		viewGPU[idxImageB].texObj, viewGPU[idxImageB].texGrad[0], viewGPU[idxImageB].texGrad[1],
 		bBilinearGrad,
@@ -850,20 +782,6 @@ void MeshRefineCUDA::ComputePhotometricGradient(const Camera& cameraA, const Cam
 		(float*)(CUdeviceptr)photoGradNorm,
 		(float*)(CUdeviceptr)footprint,
 		numVertices);
-	if (dbgPair) {
-		// the raw face map of A (-1 where nothing was rasterised; NOT masked, so rasterisation
-		// and warp differences can be told apart), same as the CPU export
-		Image32F sg(size), faceF(size);
-		TImage<uint32_t> faceMap(size);
-		reportCudaError(debugSG.GetData(sg.getData(), sizeof(float)*area));
-		reportCudaError(views[idxImageA].faceMap.GetData(faceMap.getData(), sizeof(uint32_t)*area));
-		for (int r=0; r<size.height; ++r)
-			for (int c=0; c<size.width; ++c)
-				faceF(r,c) = faceMap(r,c) == NO_ID ? -1.f : (float)faceMap(r,c);
-		RefineDebug::ExportPairMap(nScale, iteration, idxImageA, idxImageB, "sg", sg.getData(), size.width, size.height);
-		RefineDebug::ExportPairMap(nScale, iteration, idxImageA, idxImageB, "face", faceF.getData(), size.width, size.height);
-		debugSG.Release();
-	}
 	// this pair-direction's photoGradNorm bookkeeping is done by the gather above; the footprint
 	// sentinel is resolved separately, once, after every pair-direction of this ScoreMesh() has
 	// run (see kernelFinalizePhotoGrad)
@@ -888,31 +806,6 @@ void MeshRefineCUDA::ComputeSmoothnessGradient(uint32_t numVertices)
 		(const uint8_t*)(CUdeviceptr)vertBoundary,
 		(MVS::CUDA::Point3*)(CUdeviceptr)smoothGrad2,
 		numVertices, uint8_t(1));
-}
-
-void MeshRefineCUDA::CombineGradients(uint32_t numVertices)
-{
-	// divide by c_v, the number of pair-directions that saw each vertex
-	const float* photoGradNormPtr((const float*)(CUdeviceptr)photoGradNorm);
-	// compute smoothness gradient for all vertices
-	if (ratioRigidityElasticity >= 1.f) {
-		MVS::CUDA::LaunchCombineGradients(
-			(MVS::CUDA::Point3*)(CUdeviceptr)photoGrad,
-			photoGradNormPtr,
-			(const MVS::CUDA::Point3*)(CUdeviceptr)smoothGrad2,
-			numVertices, weightRegularity);
-	} else {
-		// compute smoothing gradient as a combination of level 1 and 2 of the Laplacian operator;
-		// (see page 105 of "Stereo and Silhouette Fusion for 3D Object Modeling from Uncalibrated Images Under Circular Motion" C. Hernandez, 2004)
-		const float rigidity((1.f-ratioRigidityElasticity)*weightRegularity);
-		const float elasticity(ratioRigidityElasticity*weightRegularity);
-		MVS::CUDA::LaunchCombineAllGradients(
-			(MVS::CUDA::Point3*)(CUdeviceptr)photoGrad,
-			photoGradNormPtr,
-			(const MVS::CUDA::Point3*)(CUdeviceptr)smoothGrad1,
-			(const MVS::CUDA::Point3*)(CUdeviceptr)smoothGrad2,
-			numVertices, rigidity, elasticity);
-	}
 }
 /*----------------------------------------------------------------*/
 
@@ -955,7 +848,7 @@ bool Scene::RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, u
 		bGeneratedPointcloud = true;
 	}
 
-	MeshRefineCUDA refine(*this, nAlternatePair, fRegularityWeight, fRatioRigidityElasticity, nResolutionLevel, nMinResolution, nMaxViews);
+	MeshRefineCUDA refine(*this, nAlternatePair, fRegularityWeight, nResolutionLevel, nMinResolution, nMaxViews);
 	if (bGeneratedPointcloud)
 		pointcloud.Release();
 	if (!refine.IsValid())
@@ -1009,7 +902,6 @@ bool Scene::RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, u
 		// which differ only in the rho they pass in
 		const auto RunEvaluation = [&](float rho) -> MeshRefineStep::Action {
 			refine.iteration = stepper.GetNumEvaluated();
-			refine.ratioRigidityElasticity = rho;
 			const bool bScoreOK(refine.ScoreMesh(photoGrad.Begin(), photoGradNorm.Begin(), footprint.Begin(), smoothGrad1.Begin(), smoothGrad2.Begin()));
 			// a CUDA fault poisons the whole context: every later call fails, so without this the
 			// loop would keep "refining" a mesh nothing updates any more and still return success;
@@ -1057,8 +949,8 @@ bool Scene::RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, u
 			MeshRefineStep::Stats stats;
 			const MeshRefineStep::Action action(stepper.Evaluate(terms, mesh.vertices, stats));
 			// same fields and order as the CPU line in SceneRefine.cpp, including the
-			// vertex-removal count (always 0 here: this backend removes none), because
-			// bench/refine_log.py parses the trace of both backends with one regex
+			// vertex-removal count (always 0 here: this backend removes none), so the two traces
+			// read alike
 			DEBUG_EXTRA("\t%2d. S: %.5f (%+.2e)\tstep: %.3fpx\tmed: %.3fpx\tv: %5u\t%s",
 				(int)stepper.GetNumEvaluated(), stats.S, stats.relChange, stats.step, stats.medianPx, 0u, stats.accepted ? "acc" : "rej");
 			return action;

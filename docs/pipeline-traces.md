@@ -601,12 +601,12 @@ graph TD
 - `nScales` (2) coarse-to-fine levels; scale factor `fScaleStep` (0.5) per level
 - Coarsest scale: images at `fScaleStep^(nScales-1)` resolution; allows large moves
 - Finest scale: full resolution; fine detail recovery
-- Each level pre-blurs at `sigma = 0.12*2^(nScales-i) + 0.2` before resizing and differentiating
+- Each level pre-blurs at `sigma = 0.09*2^(nScales-i) + 0.15` before resizing and differentiating
 
 **Subdivision (`SubdivideMesh()`)**
-- `fDecimateMesh` (0 = auto): decimates at the first scale only, and in auto mode only when the median projected face area exceeds `nMaxFaceArea` by more than 6x
+- `fDecimateMesh` (0 = auto): decimates at the first scale only, in auto mode straight to a mean projected face area of half `nMaxFaceArea` in the tightest image pair
 - `nCloseHoles`: largest hole to close, in boundary edges
-- `nEnsureEdgeSize`: remeshes isotropically to 2.25x the mean edge length, as part of the same `Mesh::Clean` pass
+- `nEnsureEdgeSize`: remeshes isotropically in a band around the mean edge, or against a per-vertex sizing field with `--adaptive-face-size` (default on), as part of the same `Mesh::Clean` pass
 - `nMaxFaceArea` (16 px^2): subdivides any face whose projected area in the tightest camera pair exceeds the threshold
 
 **Photo-consistency scoring (`ScoreMesh()`)**
@@ -619,9 +619,10 @@ graph TD
 
 **Vertex update (`MeshRefineStep`, shared by both backends)**
 - The step is measured in pixels through each vertex's own footprint, so the trajectory is scale-invariant; the median seen vertex moves `eta/2` px on the first evaluation and every other vertex moves in proportion to its own gradient
-- Bold driver: an evaluation that worsens `S` is rejected (vertices move back half the offending step, `eta` halves), an accepted one grows `eta` by 1.1 up to 1 px
+- Bold driver: an evaluation that worsens `S` is rejected (vertices move back half the offending step, `eta` halves), an accepted one grows `eta` by 1.05 up to 1 px
 - A scale ends on convergence — three stalled accepted iterations, a median step below 0.05 px at full stride, or four consecutive rejections — not on a fixed iteration count
 - `fThPlanarVertex`: removes nearly-planar low-gradient vertices, CPU only, disabled by default
+- Once the last scale ends the mesh is decimated within a 0.25 px reprojection tolerance (`--simplify-tolerance`), roughly halving the face count at unchanged accuracy
 
 **CUDA variant (`RefineMeshCUDA`)**
 - Same algorithm but GPU-parallelized projection and gradient computation

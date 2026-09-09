@@ -323,8 +323,6 @@ __global__ void kernelComputeWindowStats(
 	const uint8_t* __restrict__ mask,
 	uint8_t* __restrict__ maskOut,
 	float* __restrict__ dzncc,
-	float* __restrict__ znccOut, // parity diagnostic only, may be NULL
-	float* __restrict__ confOut, // reliability weight, also a parity diagnostic; NULL unless read
 	cudaSurfaceObject_t surfImageA,
 	cudaSurfaceObject_t surfImageProj,
 	float* __restrict__ blockSums, // 2 floats per block: this block's reliability partials
@@ -389,8 +387,6 @@ __global__ void kernelComputeWindowStats(
 		}
 		dzncc[pixIdx] = dz;
 		maskOut[pixIdx] = valid;
-		if (znccOut) znccOut[pixIdx] = zn;
-		if (confOut) confOut[pixIdx] = cf;
 	}
 
 	// shared-memory block reduction (a fixed tree over a fixed thread mapping, so its result does
@@ -584,7 +580,6 @@ __global__ void kernelAccumulateFacePhoto(
 	float* __restrict__ faceAcc, // 3 per face: Sum over the face's pixels of g_p*b_c, one per corner
 	float* __restrict__ facePixels, // 1 per face: how many pixels contributed (0 = the face contributed nothing)
 	float* __restrict__ faceFoot, // 1 per face: min footprint over the face's pixels; only read where facePixels > 0
-	float* __restrict__ sgMap, // WP2 parity diagnostic: per-pixel scalar handed to the 3 vertices (CPU's sg); NULL in production
 	Camera camA,
 	Camera camB,
 	cudaTextureObject_t texImageB,
@@ -618,8 +613,6 @@ __global__ void kernelAccumulateFacePhoto(
 				if (!computePhotoPixel(ix, iy, pixIdx, depth, normal, dznccMap,
 						camA, camB, texImageB, texGradXB, texGradYB, bBilinearGrad, regScale, pp))
 					continue;
-				if (sgMap)
-					sgMap[pixIdx] = pp.g;
 				const float bary0 = __half2float(*reinterpret_cast<const __half*>(&baryMap[pixIdx * 3 + 0]));
 				const float bary1 = __half2float(*reinterpret_cast<const __half*>(&baryMap[pixIdx * 3 + 1]));
 				const float bary2 = __half2float(*reinterpret_cast<const __half*>(&baryMap[pixIdx * 3 + 2]));
@@ -758,7 +751,7 @@ __global__ void kernelComputeSmoothnessGradient(
 
 	// (1/N)*sum(neighbors - vertex), the CPU's sign convention (ComputeSmoothnessGradient1/2) and
 	// its accumulation of differences rather than of coordinates, which would lose precision to
-	// the subtraction of the centre afterwards; CombineAllGradients subtracts the rigidity term
+	// the subtraction of the centre afterwards; the stepper mixes it with the bi-laplacian by rho
 	const float invN = 1.f / (float)numNeighbors;
 	const Point3 center = vertices[tid];
 	Point3 result = Point3::Zero();
@@ -781,49 +774,7 @@ __global__ void kernelComputeSmoothnessGradient(
 }
 
 
-// 11. CombineGradients — 1D
-__global__ void kernelCombineGradients(
-	Point3* __restrict__ photoGrad,
-	const float* __restrict__ photoGradNorm,
-	const Point3* __restrict__ smoothGrad,
-	uint32_t numVertices,
-	float smoothWeight)
-{
-	const int tid = blockIdx.x * blockDim.x + threadIdx.x;
-	if (tid >= (int)numVertices) return;
-
-	// photoGradNorm (c_v) is exactly zero at a vertex no pair-direction saw
-	const float norm = photoGradNorm ? photoGradNorm[tid] : 1.f;
-	if (norm > 0.f)
-		photoGrad[tid] = photoGrad[tid] / norm + smoothWeight * smoothGrad[tid];
-	else
-		photoGrad[tid] = smoothWeight * smoothGrad[tid];
-}
-
-
-// 12. CombineAllGradients — 1D
-__global__ void kernelCombineAllGradients(
-	Point3* __restrict__ photoGrad,
-	const float* __restrict__ photoGradNorm,
-	const Point3* __restrict__ smoothGrad1,
-	const Point3* __restrict__ smoothGrad2,
-	uint32_t numVertices,
-	float rigidity,
-	float elasticity)
-{
-	const int tid = blockIdx.x * blockDim.x + threadIdx.x;
-	if (tid >= (int)numVertices) return;
-
-	// NULL normalizer: see kernelCombineGradients
-	const float norm = photoGradNorm ? photoGradNorm[tid] : 1.f;
-	if (norm > 0.f)
-		photoGrad[tid] = photoGrad[tid] / norm + elasticity * smoothGrad2[tid] - rigidity * smoothGrad1[tid];
-	else
-		photoGrad[tid] = elasticity * smoothGrad2[tid] - rigidity * smoothGrad1[tid];
-}
-
-
-// 13. ComputeFaceNormal — 1D, 1 thread per face
+// 11. ComputeFaceNormal — 1D, 1 thread per face
 __global__ void kernelComputeFaceNormal(
 	const Point3* __restrict__ vertices,
 	const Point3u* __restrict__ faces,
@@ -885,13 +836,13 @@ void LaunchImageMeshWarp(
 }
 
 void LaunchComputeWindowStats(
-	const uint8_t* mask, uint8_t* maskOut, float* dzncc, float* zncc, float* conf,
+	const uint8_t* mask, uint8_t* maskOut, float* dzncc,
 	cudaSurfaceObject_t surfImageA, cudaSurfaceObject_t surfImageProj,
 	float* sumR, float* sumRZ, float* blockSums, float gateMeanDiff, float gateVarRatio, int width, int height)
 {
 	const dim3 block(16, 16);
 	const dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
-	kernelComputeWindowStats<<<grid, block>>>(mask, maskOut, dzncc, zncc, conf,
+	kernelComputeWindowStats<<<grid, block>>>(mask, maskOut, dzncc,
 		surfImageA, surfImageProj, blockSums, gateMeanDiff, gateVarRatio, width, height);
 	// fold this pair-direction's per-block partials into S's accumulators in block order
 	kernelReduceBlockSums<<<1, 256>>>(blockSums, sumR, sumRZ, grid.x*grid.y);
@@ -901,7 +852,7 @@ void LaunchAccumulateFacePhoto(
 	const Point3* vertices, const Point3u* faces, const Point3* normals,
 	const float* depthMap, const uint32_t* faceMap, const uint16_t* baryMap,
 	const float* dzncc, const uint8_t* mask,
-	float* faceAcc, float* facePixels, float* faceFoot, float* sgMap,
+	float* faceAcc, float* facePixels, float* faceFoot,
 	const Camera& camA, const Camera& camB,
 	cudaTextureObject_t texImageB, cudaTextureObject_t texGradXB, cudaTextureObject_t texGradYB,
 	bool bBilinearGrad, float regScale, uint32_t numFaces)
@@ -910,7 +861,7 @@ void LaunchAccumulateFacePhoto(
 	const int numBlocks = ((int)numFaces + blockSize - 1) / blockSize;
 	kernelAccumulateFacePhoto<<<numBlocks, blockSize>>>(
 		vertices, faces, normals, depthMap, faceMap, baryMap, dzncc, mask,
-		faceAcc, facePixels, faceFoot, sgMap, camA, camB, texImageB, texGradXB, texGradYB, bBilinearGrad, regScale, numFaces);
+		faceAcc, facePixels, faceFoot, camA, camB, texImageB, texGradXB, texGradYB, bBilinearGrad, regScale, numFaces);
 }
 
 void LaunchGatherVertexPhoto(
@@ -940,22 +891,6 @@ void LaunchComputeSmoothnessGradient(
 	const int blockSize = 256;
 	const int numBlocks = ((int)numVertices + blockSize - 1) / blockSize;
 	kernelComputeSmoothnessGradient<<<numBlocks, blockSize>>>(vertices, vertVertices, vertSizes, vertPointers, vertBoundary, smoothGrad, numVertices, mode);
-}
-
-void LaunchCombineGradients(Point3* photoGrad, const float* photoGradNorm, const Point3* smoothGrad, uint32_t numVertices, float smoothWeight)
-{
-	const int blockSize = 256;
-	const int numBlocks = ((int)numVertices + blockSize - 1) / blockSize;
-	kernelCombineGradients<<<numBlocks, blockSize>>>(photoGrad, photoGradNorm, smoothGrad, numVertices, smoothWeight);
-}
-
-void LaunchCombineAllGradients(
-	Point3* photoGrad, const float* photoGradNorm, const Point3* smoothGrad1, const Point3* smoothGrad2,
-	uint32_t numVertices, float rigidity, float elasticity)
-{
-	const int blockSize = 256;
-	const int numBlocks = ((int)numVertices + blockSize - 1) / blockSize;
-	kernelCombineAllGradients<<<numBlocks, blockSize>>>(photoGrad, photoGradNorm, smoothGrad1, smoothGrad2, numVertices, rigidity, elasticity);
 }
 
 void LaunchComputeFaceNormal(

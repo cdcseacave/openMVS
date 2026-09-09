@@ -38,9 +38,6 @@ using namespace MVS;
 
 // D E F I N E S ///////////////////////////////////////////////////
 
-// uncomment to ensure edge size and improve vertex valence
-// (should enable more stable flow)
-
 // uncomment to enable memory pool
 // (should reduce the allocation times for frequent used images)
 #define MESHOPT_TYPEPOOL
@@ -166,7 +163,7 @@ public:
 	// score the mesh and fill in every per-vertex term; `gradients` receives the combined
 	// photometric+smoothness gradient as one Point3d per vertex and may be NULL, in which case
 	// that combination is skipped -- the stepper consumes the terms separately and only the Ceres
-	// arm, the planar-vertex hook and the debug export need them summed
+	// arm and the planar-vertex hook need them summed
 	double ScoreMesh(double* gradients);
 
 	// given a vertex position and a projection camera, compute the projected position and its derivative
@@ -210,8 +207,7 @@ public:
 	// through their neighbours' windows (see the rejection branch)
 	static PairScore ComputeWindowStats(
 		const Image32F& imageA, const Image32F& imageB, BitMatrix& mask,
-		TImage<Real>& imageDZNCC, TImage<Real>* imageZNCC = NULL, TImage<Real>* imageConf = NULL,
-		bool bExactDerivative = false);
+		TImage<Real>& imageDZNCC, bool bExactDerivative = false);
 	// the per-pixel maps one pair-direction hands to the photometric scatter
 	struct PairMaps {
 		const TImage<Real>& dzncc; // reliability-weighted ZNCC derivative
@@ -238,8 +234,7 @@ public:
 		const Mesh::FaceArr& faces, const Mesh::NormalArr& normals,
 		const DepthMap& depthMapA, const FaceMap& faceMapA, const BaryMap& baryMapA, const Camera& cameraA,
 		const Camera& cameraB, const View& viewB,
-		const PairMaps& maps, const PairGrads& grads, Real RegularizationScale, bool bExactDerivative,
-		TImage<Real>* debugSG = NULL); // CPU/CUDA parity diagnostic only: receives the per-pixel photometric scalar (see RefineDebug)
+		const PairMaps& maps, const PairGrads& grads, Real RegularizationScale, bool bExactDerivative);
 	static void ComputeSmoothnessGradient1(
 		const Mesh::VertexArr& vertices, const Mesh::VertexVerticesArr& vertexVertices, const BoolArr& vertexBoundary,
 		GradArr& smoothGrad1, VIndex idxStart, VIndex idxEnd);
@@ -277,7 +272,6 @@ public:
 	const unsigned nMinResolution; // how many times to scale down the images before mesh optimization
 	unsigned nAlternatePair; // using an image pair alternatively as reference image (0 - both, 1 - alternate, 2 - only left, 3 - only right)
 	unsigned iteration; // current refinement iteration
-	unsigned nScale; // current refinement scale (0-based, coarsest first; RefineDebug export file naming only)
 
 	// exact-energy mode, selected by the Ceres arm and by its finite-difference gate: ScoreMesh
 	// returns the exact energy E = E_photo + weightRegularity*E_smooth whose exact gradient it
@@ -511,7 +505,6 @@ bool MeshRefine::InitImages(Real scale, Real sigma)
 		events.AddEvent(new EVTInitImage(idxImage, scale, sigma));
 	WaitThreadWorkers(images.GetSize());
 	iteration = 0;
-	nScale = 0;
 	return true;
 }
 
@@ -553,8 +546,9 @@ void MeshRefine::ListCameraFaces()
 	WaitThreadWorkers(images.GetSize());
 }
 
-// compute for each face the one projected area the preparation reads, over the refinement's own
-// pairs and by the rule `Face Area Rule` selects (make sure ListCameraFaces() was called before)
+// compute for each face the one projected area the preparation and the decimation both read:
+// rasterized per view, then reduced over the refinement's own pairs by ReduceFaceAreasOverPairs
+// (the smaller view of a pair, the largest pair); ListCameraFaces() must have run before
 void MeshRefine::ListFaceAreas(Mesh::AreaArr& maxAreas)
 {
 	ASSERT(maxAreas.IsEmpty());
@@ -741,22 +735,6 @@ double MeshRefine::ScoreMesh(double* gradients)
 					Cast<double>(PhotoTerm(v) + smoothGrad2[v]*elasticity - smoothGrad1[v]*rigidity) :
 					Cast<double>(smoothGrad2[v]*elasticity - smoothGrad1[v]*rigidity);
 		}
-
-		// CPU/CUDA parity diagnostic: dump the per-vertex terms this iteration combined,
-		// right before they are gone (photoGrad/smoothGrad1/smoothGrad2 get
-		// overwritten next ScoreMesh() call); no-op unless OMVS_REFINE_DEBUG_DIR is set
-		// (which is also what makes the caller pass a non-NULL gradients here)
-		if (!RefineDebug::Dir().empty()) {
-			GradArr combined(vertices.GetSize());
-			FOREACH(v, vertices)
-				combined[v] = Cast<float>(((const Point3d*)gradients)[v]);
-			cList<uint8_t,uint8_t,0> boundary(vertices.GetSize());
-			FOREACH(v, vertices)
-				boundary[v] = vertexBoundary[v] ? 1 : 0;
-			RefineDebug::ExportGradients(nScale, iteration, vertices.GetSize(),
-				vertices.Begin(), combined.Begin(), photoGrad.Begin(), photoGradNorm.Begin(),
-				smoothGrad1.Begin(), smoothGrad2.Begin(), boundary.Begin());
-		}
 		}
 	}
 
@@ -896,14 +874,11 @@ void MeshRefine::ImageMeshWarp(
 // compute masked local window statistics and the per-pixel photometric gradient scale
 MeshRefine::PairScore MeshRefine::ComputeWindowStats(
 	const Image32F& imageA, const Image32F& imageB, BitMatrix& mask,
-	TImage<Real>& imageDZNCC, TImage<Real>* imageZNCC, TImage<Real>* imageConf,
-	bool bExactDerivative)
+	TImage<Real>& imageDZNCC, bool bExactDerivative)
 {
 	ASSERT(imageA.size() == mask.size() && imageB.size() == mask.size() && !mask.empty());
 	imageDZNCC.create(mask.size());
 	imageDZNCC.memset(0);
-	if (imageZNCC) { imageZNCC->create(mask.size()); imageZNCC->memset(0); }
-	if (imageConf) { imageConf->create(mask.size()); imageConf->memset(0); }
 	// the six window sums, each accumulated over the VALID pixels only: the products are zeroed
 	// wherever the warp failed, so an unwarped pixel contributes nothing instead of contributing
 	// image A's own value (which is what the old imageA.copyTo(imageAB) + unmasked integral
@@ -969,8 +944,6 @@ MeshRefine::PairScore MeshRefine::ComputeWindowStats(
 			float zncc, dzncc, conf;
 			Refine::ZnccAndDerivative(s, n, imageA(r,c), imageB(r,c), zncc, dzncc, conf);
 			imageDZNCC(r,c) = dzncc;
-			if (imageZNCC) (*imageZNCC)(r,c) = zncc;
-			if (imageConf) (*imageConf)(r,c) = conf;
 			sumRZ += conf*(1.f-zncc);
 			sumR += conf;
 			if (bExactDerivative) {
@@ -1048,12 +1021,10 @@ void MeshRefine::ComputePhotometricGradient(
 	const Mesh::FaceArr& faces, const Mesh::NormalArr& normals,
 	const DepthMap& depthMapA, const FaceMap& faceMapA, const BaryMap& baryMapA, const Camera& cameraA,
 	const Camera& cameraB, const View& viewB,
-	const PairMaps& maps, const PairGrads& grads, Real RegularizationScale, bool bExactDerivative,
-	TImage<Real>* debugSG)
+	const PairMaps& maps, const PairGrads& grads, Real RegularizationScale, bool bExactDerivative)
 {
 	const BitMatrix& mask(maps.mask);
 	ASSERT(faces.GetSize() == normals.GetSize() && !faces.IsEmpty());
-	ASSERT(debugSG == NULL || debugSG->size() == mask.size());
 	ASSERT(depthMapA.size() == mask.size() && faceMapA.size() == mask.size() && baryMapA.size() == mask.size() && maps.dzncc.size() == mask.size() && !mask.empty());
 	// imageGrad is only built when it is actually read (ThInitImage skips it in mode 3)
 	ASSERT(!viewB.image.empty() && (bExactDerivative || viewB.image.size() == viewB.imageGrad.size()));
@@ -1120,8 +1091,6 @@ void MeshRefine::ComputePhotometricGradient(
 			const Real dot(ProjectedGradient(g));
 			const Real dZNCC(maps.dzncc(r,c));
 			const Real gp(dot*dZNCC*RegularizationScale/g.Nd);
-			if (debugSG)
-				(*debugSG)(r,c) = gp;
 			// add gradient to the three vertices
 			const Face& face(faces[g.idxFace]);
 			const Point3f& b(baryMapA(r,c));
@@ -1320,36 +1289,9 @@ void MeshRefine::ThProcessPair(uint32_t idxImageA, uint32_t idxImageB)
 	ImageMeshWarp(depthMapA, cameraA, depthMapB, cameraB, imageB, imageAB, mask, viewA.keepMask, viewB.keepMask);
 	// compute the masked window statistics, the rejection gates and the ZNCC derivative
 	// (this also prunes the mask, which every consumer below therefore reads after the call)
-	uint32_t dbgImageA, dbgImageB;
-	const bool dbgPair(!RefineDebug::Dir().empty() && RefineDebug::Pair(dbgImageA, dbgImageB) &&
-		dbgImageA == idxImageA && dbgImageB == idxImageB);
 	DEC_Image(Real, imageDZNCC);
-	DEC_Image(Real, imageZNCC);
-	DEC_Image(Real, conf);
-	// the reliability weight is a per-pixel map only for the debug pair export
-	const PairScore pairScore(ComputeWindowStats(imageA, imageAB, mask, imageDZNCC,
-		dbgPair ? &imageZNCC : NULL, dbgPair ? &conf : NULL, bEnergyMode));
-
-	// CPU/CUDA parity diagnostic: dump this pair's maps before the pooled buffers
-	// above get recycled; no-op unless OMVS_REFINE_DEBUG_DIR/_PAIR are both set
-	// and match this exact (A,B) direction
-	if (dbgPair) {
-		Image8U maskU8(mask.rows, mask.cols);
-		for (int r=0; r<mask.rows; ++r)
-			for (int c=0; c<mask.cols; ++c)
-				maskU8(r,c) = mask(r,c) ? 1 : 0;
-		RefineDebug::ExportPairMap(nScale, iteration, idxImageA, idxImageB, "imageA", imageA.getData(), imageA.width(), imageA.height());
-		RefineDebug::ExportPairMap(nScale, iteration, idxImageA, idxImageB, "imageAB", imageAB.getData(), imageAB.width(), imageAB.height());
-		RefineDebug::ExportPairMap(nScale, iteration, idxImageA, idxImageB, "zncc", imageZNCC.getData(), imageZNCC.width(), imageZNCC.height());
-		RefineDebug::ExportPairMap(nScale, iteration, idxImageA, idxImageB, "dzncc", imageDZNCC.getData(), imageDZNCC.width(), imageDZNCC.height());
-		RefineDebug::ExportPairMap(nScale, iteration, idxImageA, idxImageB, "conf", conf.getData(), conf.width(), conf.height());
-		RefineDebug::ExportPairMask(nScale, iteration, idxImageA, idxImageB, maskU8.getData(), maskU8.width(), maskU8.height());
-	}
-
-	#ifdef MESHOPT_TYPEPOOL
-	DST_Image(imageZNCC);
+	const PairScore pairScore(ComputeWindowStats(imageA, imageAB, mask, imageDZNCC, bEnergyMode));
 	DST_Image(imageAB);
-	#endif
 	// compute field gradient
 	GradArr _photoGrad(photoGrad.GetSize());
 	UnsignedArr _photoGradPixels(photoGrad.GetSize());
@@ -1365,28 +1307,11 @@ void MeshRefine::ThProcessPair(uint32_t idxImageA, uint32_t idxImageB)
 		if (it != pairSumR0.end() && it->second > 0 && pairScore.sumR > 0)
 			energyWeight = (Real)(it->second/pairScore.sumR);
 	}
-	TImage<Real> dbgSG;
-	if (dbgPair) {
-		dbgSG.create(mask.size());
-		dbgSG.memset(0);
-	}
 	const PairMaps maps{imageDZNCC, mask};
 	const PairGrads grads{_photoGrad, _photoGradPixels, _footprint};
 	// bEnergyMode always wants the bilinear derivative (the energy's own consistency requirement);
 	// OPTREFINE::nImageGradient == 3 asks for the same source on the stepper path too
-	ComputePhotometricGradient(faces, faceNormals, depthMapA, faceMapA, baryMapA, cameraA, cameraB, viewB, maps, grads, RegularizationScale*energyWeight, bEnergyMode || OPTREFINE::nImageGradient == 3, dbgPair ? &dbgSG : NULL);
-	if (dbgPair) {
-		// CPU/CUDA parity diagnostic, continued: the per-pixel photometric scalar each pixel
-		// hands to its face's 3 vertices, and the raw face map of A (-1 where nothing was
-		// rasterised; NOT masked, so rasterisation and warp differences can be told apart)
-		Image32F faceF(mask.size());
-		for (int r=0; r<mask.rows; ++r)
-			for (int c=0; c<mask.cols; ++c)
-				faceF(r,c) = faceMapA(r,c) == NO_ID ? -1.f : (float)faceMapA(r,c);
-		RefineDebug::ExportPairMap(nScale, iteration, idxImageA, idxImageB, "sg", dbgSG.getData(), dbgSG.width(), dbgSG.height());
-		RefineDebug::ExportPairMap(nScale, iteration, idxImageA, idxImageB, "face", faceF.getData(), faceF.width(), faceF.height());
-	}
-	DST_Image(conf);
+	ComputePhotometricGradient(faces, faceNormals, depthMapA, faceMapA, baryMapA, cameraA, cameraB, viewB, maps, grads, RegularizationScale*energyWeight, bEnergyMode || OPTREFINE::nImageGradient == 3);
 	DST_Image(imageDZNCC);
 	DST_BitMatrix(mask);
 	Lock l(cs);
@@ -1512,11 +1437,10 @@ public:
 
 	CallbackReturnType operator()(const IterationSummary& summary) {
 		refine.iteration = summary.iteration;
-		// one line per L-BFGS iteration (bench/refine_log.py RE_ITER_CERES reads the first two
-		// fields): the energy, the accepted line-search step, and the score and reliability sum of
-		// the iterate so a run can be read for the two things the energy alone hides -- whether
-		// the per-pixel score really improves, and whether the solver is shrinking the scored
-		// domain instead (a sum over valid pixels rewards losing pixels)
+		// one line per L-BFGS iteration: the energy, the accepted line-search step, and the score
+		// and reliability sum of the iterate, so a run can be read for the two things the energy
+		// alone hides -- whether the per-pixel score really improves, and whether the solver is
+		// shrinking the scored domain instead (a sum over valid pixels rewards losing pixels)
 		DEBUG_EXTRA("\t%2d. E: %.6g\tstep: %.3g\tS: %.5f\tn: %.6g", (int)summary.iteration, summary.cost, summary.step_size, refine.S, refine.sumR);
 		return ceres::SOLVER_CONTINUE;
 	}
@@ -1612,7 +1536,6 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 		// the sigma multiplier is tied to MeshRefineStep::StepGrow, see the note there
 		if (!refine.InitImages(scale, Real(0.09)*step+Real(0.15)))
 			return false;
-		refine.nScale = nScale;
 
 		// extract array of triangles incident to each vertex
 		refine.ListVertexFacesPre();
@@ -1732,10 +1655,9 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 			// pixel-unit bold driver (MeshRefineStep, SceneRefineCommon.h)
 			const int cap((int)MeshRefineStep::Budget(nScale));
 			const bool bAlternating(nAlternatePair == 1);
+			// the combined gradient is a full extra pass over the vertices that only the planar
+			// hook reads, and ScoreMesh skips it when it is not asked for
 			const bool bPlanarHook(fThPlanarVertex > 0);
-			// the combined gradient is a full extra pass over the vertices, only the planar hook
-			// and the debug export read it, and ScoreMesh skips it when it is not asked for
-			const bool bNeedGradients(bPlanarHook || !RefineDebug::Dir().empty());
 			// the planar threshold is a fraction of the vertex depth, reconstructed from the
 			// per-vertex footprint the stepper already gets (footprint = depth/focal at the current
 			// scale) times the median focal of the views scoring this scale; a per-vertex depth
@@ -1766,7 +1688,7 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 				refine.ratioRigidityElasticity = rho;
 				const unsigned numAcceptedSoFar(stepper.GetNumAccepted());
 				const bool bAdaptMesh(allowPlanarHook && numAcceptedSoFar >= 4 && (numAcceptedSoFar-4)%3 == 0 && phaseCap-idx > 5);
-				refine.ScoreMesh(bNeedGradients ? gradients.data() : NULL);
+				refine.ScoreMesh(bPlanarHook ? gradients.data() : NULL);
 				if (refine.S < 0) {
 					// no image pair contributed a single pixel (see ScoreMesh): an expected,
 					// recoverable outside-world failure -- abort the refinement loudly

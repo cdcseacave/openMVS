@@ -177,7 +177,7 @@ extern MVS_API float fGateMeanDiff; // reject a pixel pair whose local mean diff
 extern MVS_API float fGateVarRatio; // reject a pixel pair whose local variance ratio exceeds this (0 - disabled)
 extern MVS_API int nMaxEvaluations; // hard cap on the energy evaluations of every scale (0 - the convergence rules alone decide, behind the safety-net budget)
 extern MVS_API bool bAdaptiveFaceSize; // grade the prepared faces per vertex, so every face projects to about the face cap in the pair that refines it, instead of one world-space density for the whole mesh
-extern MVS_API float fSimplifyTolerance; // decimate the refined mesh within this reprojection error in every vertex's best view (px at the working resolution) once the refinement ends (default 0.25, accuracy-neutral; 0 - disabled)
+extern MVS_API float fSimplifyTolerance; // decimate the refined mesh within this reprojection error, in pixels of the working resolution in the pair that resolves each vertex best, once the refinement ends (0 - disabled)
 } // namespace OPTREFINE
 
 class Scene;
@@ -189,10 +189,6 @@ class Scene;
 // touches shared refiner state), CUDA serially -- so the two reach the same pair set on the same
 // scene. Returns false if the image is invalid and contributes no pair.
 MVS_API bool SelectRefineNeighbors(Scene& scene, uint32_t idxImage, unsigned nMaxViews, ViewScoreArr& neighbors);
-
-// Acute3D's SelectPairs on the reconstructed points: replaces every image's neighbor list
-// with the globally voted pairs, so SelectRefineNeighbors hands them over unfiltered.
-// Returns false, leaving the lists untouched, if the scene carries no usable points
 
 // load, gray-convert, blur and resize one refine image at the given scale;
 // the hoisted common part of CPU MeshRefine::ThInitImage (SceneRefine.cpp)
@@ -214,8 +210,8 @@ MVS_API bool PrepareRefineImage(Image& imageData, const PlatformArr& platforms,
 MVS_API void PrepareRefineImageMask(const Image& imageData, const cv::Size& size, BitMatrix& keepMask);
 
 // the per-vertex collapse-error bound (a squared distance, compared with the mean squared plane
-// distance of a collapse) for a reprojection tolerance of tolerancePx pixels in the best view
-// ((tolerancePx/pixelFactor)^2), the largest bound of the seen vertices for an unseen one
+// distance of a collapse) for a reprojection tolerance of tolerancePx pixels:
+// (tolerancePx/pixelFactor)^2, and the largest bound of the seen vertices for an unseen one
 MVS_API void PixelFactorsToErrorBounds(const FloatArr& pixelFactors, float tolerancePx, FloatArr& bounds);
 
 // per-vertex target edge length in scene units for faces that project to targetArea pixels in the
@@ -237,20 +233,19 @@ typedef cList<Mesh::AreaArr> ViewAreaArr;
 MVS_API void ListPairImages(const PairIdxArr& pairs, size_t numImages, Unsigned8Arr& used);
 
 // reduce the per-view rasterized face areas over the refinement's OWN pairs into the single number
-// the split rule, the sizing field and (optionally) the decimation tolerance all read. A pair can
-// only resolve a face as well as its worse view, so the smaller of the two is the pair's value;
-// `Face Area Rule` decides how the pairs that see the face combine -- the largest keeps a face as
-// long as ONE pair can exploit it, the median or the mean let the typical pair decide. A face no
-// pair sees stays 0
+// the split rule, the sizing field and the decimation tolerance all read: a pair resolves a face
+// only as well as its worse view, so the smaller of the two is the pair's value, and the largest
+// over the pairs keeps a face as fine as ONE pair can exploit (the median and the mean were
+// measured and rejected, see the design document). A face no pair sees stays 0
 MVS_API void ReduceFaceAreasOverPairs(const ViewAreaArr& viewAreas, const PairIdxArr& pairs, Mesh::AreaArr& faceAreas);
 
 // per-vertex pixels per scene unit derived from the same reduced areas, for the decimation
 // tolerance: a face covering seenArea pixels over its world area resolves sqrt(seenArea/area)
 // pixels per scene unit, and a vertex averages that over the incident faces a pair saw
 MVS_API void SeenAreasToPixelFactors(const Mesh& mesh, const Mesh::AreaArr& seenAreas, FloatArr& pixelFactors);
-// decimate the mesh within the given reprojection tolerance in every vertex's best view
-// (Mesh::Clean with the per-vertex bound, then its finalize pass); the pixel factors are the
-// mesh's current ones. Both backends call this once the refinement ends
+// decimate the mesh within the given reprojection tolerance (Mesh::Clean with the per-vertex
+// bound, then its finalize pass); the pixel factors are the mesh's current ones. Both backends
+// call this once the refinement ends
 MVS_API void SimplifyMeshWithinTolerance(Mesh& mesh, const FloatArr& pixelFactors, float tolerancePx);
 
 // the preparation's projection log line: faces seen, their sampled analytic mean area and the
@@ -333,13 +328,11 @@ float SampleSeenFaceArea(const REFINE& refine, const Mesh::AreaArr& maxAreas, si
 // doubles the resolution, so its 1-to-4 split of every face above the cap lands the mesh at the
 // cap) -- and regularizes it in the same halfmesh pass with an isotropic remesh in a band around
 // the mean edge the decimation left (relative target -1: the remesh evens the rings out without
-// moving the density). Every scale then projects the mesh and splits the faces whose projection
-// exceeds the cap in both images of a pair. Measured against the previous two-pass preparation
-// (decimate to six times the median area, then remesh to 2.25x the mean edge after the split):
-// +0.0001 F1 at 0.85x faces on Tanks & Temples, the same target with the remesh in a second pass
-// after the split -0.0004 at 0.79x faces and 0.85x wall, see the design document. REFINE
-// supplies scene, ListCameraFaces(), ListFaceAreas() and ListVertexFacesPre(); the log lines are
-// identical on both backends
+// moving the density), or, with `Adaptive Face Size`, against a per-vertex field graded to the
+// areas the decimated mesh projects to. Every scale then projects the mesh and splits the faces
+// whose projection exceeds the cap in both images of a pair. REFINE supplies scene,
+// ListCameraFaces(), ListFaceAreas() and ListVertexFacesPre(); the log lines are identical on
+// both backends
 template<class REFINE>
 void PrepareRefineMesh(REFINE& refine, uint32_t maxArea, float fDecimate, unsigned nCloseHoles, unsigned nEnsureEdgeSize)
 {
@@ -489,8 +482,8 @@ public:
 	static constexpr float StepMax = 1.f; // eta never exceeds this, px
 	// StepGrow is tied to the pre-blur sigma the caller passes to InitImages(): sharpening the
 	// images makes the objective more locally rugged, and 1.1 then over-steps it. The two move
-	// together or not at all - reverting either one alone measures WORSE than reverting both
-	// (Tanks & Temples mean F1: pair +0.0033, this constant alone -0.0022; design doc §2.6)
+	// together or not at all -- reverting either one alone measures WORSE than reverting both
+	// (design document, the default-parameter sweep)
 	static constexpr float StepGrow = 1.05f; // eta *= this after an accepted evaluation
 	static constexpr float StepShrink = 0.5f; // eta *= this after a rejected one
 	static constexpr float ProgressTol = 1e-3f; // relative decrease of S at or below which an evaluation counts as stalled
@@ -504,10 +497,8 @@ public:
 	// evaluation budget of a scale (0-based, coarsest first), thinned on the finer, more expensive
 	// ones; a safety net behind the stop rules, not a stopping rule: raising it 20x changes no
 	// measured result. `Max Evaluations` replaces it with a hard cap, the same at every scale, for
-	// a caller who needs a bounded run time rather than a faster one: at 12 it measured -0.0013
-	// mean F1 for -7 % wall on Tanks & Temples, and all of that came from the one scene whose
-	// schedule over-runs (Meetingroom -24 %, Truck never reaches it), so it bounds the work
-	// instead of buying speed
+	// a caller who needs a bounded run time rather than a faster one (it bounds the work of the
+	// one scene whose schedule over-runs and buys no speed elsewhere, see the design document)
 	static unsigned Budget(unsigned nScale) {
 		if (OPTREFINE::nMaxEvaluations > 0)
 			return (unsigned)OPTREFINE::nMaxEvaluations;
@@ -596,50 +587,6 @@ protected:
 	FloatArr scratch; // median workspace, kept across evaluations so none allocates
 };
 /*----------------------------------------------------------------*/
-
-
-// CPU/CUDA parity diagnostic: export per-vertex gradients and
-// per-pixel pair maps to disk so a Python harness (bench/refine_parity.py)
-// can compare the two backends on the identical frozen mesh. Entirely
-// env-var gated -- no public RefineMesh option -- and the only place in the
-// refine code that reads an environment variable; every other function must
-// keep going through OPTREFINE/CLI options instead.
-namespace RefineDebug {
-
-// OMVS_REFINE_DEBUG_DIR: export directory, read once and cached; empty (the
-// env var unset) disables every export below and must cost nothing on the
-// hot path -- callers guard with `if (!RefineDebug::Dir().empty())` before
-// doing any of the extra work needed to fill in the arguments below.
-MVS_API const String& Dir();
-
-// OMVS_REFINE_DEBUG_PAIR=A,B: the single ordered image pair whose per-pixel
-// maps get exported (every pair would be too much data); returns false if
-// the env var is unset or does not parse.
-MVS_API bool Pair(uint32_t& idxImageA, uint32_t& idxImageB);
-
-// per-vertex gradient export: refine_grad_s<scale>_i<iter>.ply, all arrays
-// `numVertices` long; `boundary` is a 0/1 byte per vertex. No-op if Dir()
-// is empty.
-MVS_API void ExportGradients(unsigned nScale, unsigned iter, uint32_t numVertices,
-	const Point3f* pos, const Point3f* combined,
-	const Point3f* photo, const float* photoCount,
-	const Point3f* smooth1, const Point3f* smooth2,
-	const uint8_t* boundary);
-
-// per-pixel pair-map export, one 32-bit-float PFM per call:
-// pair_<A>_<B>_s<scale>_i<iter>_<name>.pfm; `data` must be `width*height`
-// floats, tightly packed (row-major, no padding). No-op if Dir() is empty.
-MVS_API void ExportPairMap(unsigned nScale, unsigned iter, uint32_t idxImageA, uint32_t idxImageB,
-	const char* name, const float* data, int width, int height);
-
-// per-pixel validity mask export: pair_<A>_<B>_s<scale>_i<iter>_mask.png
-// (8-bit, 255 = valid); `mask` is `width*height` bytes, any non-zero value
-// counts as valid -- both callers pass 0/1 (the CPU converts its BitMatrix,
-// CUDA's device mask is already 0/1). No-op if Dir() is empty.
-MVS_API void ExportPairMask(unsigned nScale, unsigned iter, uint32_t idxImageA, uint32_t idxImageB,
-	const uint8_t* mask, int width, int height);
-
-} // namespace RefineDebug
 
 #endif // __CUDACC__
 

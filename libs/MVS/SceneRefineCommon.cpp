@@ -38,9 +38,6 @@
 #define OPTCONFIG_API MVS_API
 #include "SceneRefineCommon.h"
 #include "Scene.h"
-#include <fstream>
-#include <cstdio>
-#include <utility>
 
 using namespace MVS;
 
@@ -63,7 +60,7 @@ DEFVAR_OPTREFINE_float(fGateMeanDiff, "Gate Mean Diff", "reject a pixel pair who
 DEFVAR_OPTREFINE_float(fGateVarRatio, "Gate Var Ratio", "reject a pixel pair whose local variance ratio exceeds this (0 - disabled)", "8.0")
 DEFVAR_OPTREFINE_int32(nMaxEvaluations, "Max Evaluations", "hard cap on the energy evaluations of every scale (0 - the convergence rules alone decide)", "0")
 DEFVAR_OPTREFINE_bool(bAdaptiveFaceSize, "Adaptive Face Size", "grade the prepared faces per vertex, so every face projects to about the face cap in the pair that refines it, instead of one world-space density for the whole mesh", "1")
-DEFVAR_OPTREFINE_float(fSimplifyTolerance, "Simplify Tolerance", "decimate the refined mesh within this reprojection error in every vertex's best view (px at the working resolution) once the refinement ends (0 - disabled)", "0.25")
+DEFVAR_OPTREFINE_float(fSimplifyTolerance, "Simplify Tolerance", "decimate the refined mesh within this reprojection error, in pixels of the working resolution in the pair that resolves each vertex best, once the refinement ends (0 - disabled)", "0.25")
 
 } // namespace MVS
 
@@ -72,7 +69,6 @@ DEFVAR_OPTREFINE_float(fSimplifyTolerance, "Simplify Tolerance", "decimate the r
 // constructors (CPU MeshRefine::ThSelectNeighbors, SceneRefine.cpp; CUDA MeshRefineCUDA's
 // constructor, SceneRefineCUDA.cpp) so the filter thresholds and the missing-neighbor recovery
 // exist once -- see the doc comment in SceneRefineCommon.h
-
 bool MVS::SelectRefineNeighbors(Scene& scene, uint32_t idxImage, unsigned nMaxViews, ViewScoreArr& neighbors)
 {
 	// keep only best neighbor views
@@ -91,11 +87,9 @@ bool MVS::SelectRefineNeighbors(Scene& scene, uint32_t idxImage, unsigned nMaxVi
 	return true;
 }
 
-// load, gray-convert, blur and resize one refine image at the given scale;
-// hoisted common part of CPU MeshRefine::ThInitImage (SceneRefine.cpp) and
-// CUDA MeshRefineCUDA::InitImages (SceneRefineCUDA.cpp) -- see the doc
-// comment in SceneRefineCommon.h; behaviour must stay byte-identical to what
-// each backend did inline before this hoist.
+// load, gray-convert, blur and resize one refine image at the given scale; the common part of
+// CPU MeshRefine::ThInitImage (SceneRefine.cpp) and CUDA MeshRefineCUDA::InitImages
+// (SceneRefineCUDA.cpp), see the doc comment in SceneRefineCommon.h
 bool MVS::PrepareRefineImage(Image& imageData, const PlatformArr& platforms,
 	unsigned nResolutionLevel, unsigned nMinResolution, float scale, float sigma, Image32F& gray)
 {
@@ -434,158 +428,4 @@ MeshRefineStep::Action MeshRefineStep::Evaluate(const Terms& terms, Mesh::Vertex
 		return STOP;
 	return APPLY;
 } // Evaluate
-/*----------------------------------------------------------------*/
-
-
-// R E F I N E   D E B U G /////////////////////////////////////////
-
-// PLY vertex layout for RefineDebug::ExportGradients(); mirrors the
-// BasicPLY pattern in Mesh.cpp (same PLY class, same offsetof-on-member
-// style) but is local to this diagnostic export -- it has nothing to do
-// with the mesh's own vertex/face PLY elements.
-namespace {
-struct GradPlyVertex {
-	Point3f pos;
-	Point3f combined;
-	Point3f photo;
-	float pnorm;
-	Point3f smooth1;
-	Point3f smooth2;
-	uint8_t boundary;
-};
-const char* gradElemNames[] = { "vertex" };
-const PLY::PlyProperty gradProps[] = {
-	{"x",        PLY::Float32, PLY::Float32, offsetof(GradPlyVertex,pos.x),      0, 0, 0, 0},
-	{"y",        PLY::Float32, PLY::Float32, offsetof(GradPlyVertex,pos.y),      0, 0, 0, 0},
-	{"z",        PLY::Float32, PLY::Float32, offsetof(GradPlyVertex,pos.z),      0, 0, 0, 0},
-	{"gx",       PLY::Float32, PLY::Float32, offsetof(GradPlyVertex,combined.x), 0, 0, 0, 0},
-	{"gy",       PLY::Float32, PLY::Float32, offsetof(GradPlyVertex,combined.y), 0, 0, 0, 0},
-	{"gz",       PLY::Float32, PLY::Float32, offsetof(GradPlyVertex,combined.z), 0, 0, 0, 0},
-	{"px",       PLY::Float32, PLY::Float32, offsetof(GradPlyVertex,photo.x),    0, 0, 0, 0},
-	{"py",       PLY::Float32, PLY::Float32, offsetof(GradPlyVertex,photo.y),    0, 0, 0, 0},
-	{"pz",       PLY::Float32, PLY::Float32, offsetof(GradPlyVertex,photo.z),    0, 0, 0, 0},
-	{"pnorm",    PLY::Float32, PLY::Float32, offsetof(GradPlyVertex,pnorm),      0, 0, 0, 0},
-	{"s1x",      PLY::Float32, PLY::Float32, offsetof(GradPlyVertex,smooth1.x),  0, 0, 0, 0},
-	{"s1y",      PLY::Float32, PLY::Float32, offsetof(GradPlyVertex,smooth1.y),  0, 0, 0, 0},
-	{"s1z",      PLY::Float32, PLY::Float32, offsetof(GradPlyVertex,smooth1.z),  0, 0, 0, 0},
-	{"s2x",      PLY::Float32, PLY::Float32, offsetof(GradPlyVertex,smooth2.x),  0, 0, 0, 0},
-	{"s2y",      PLY::Float32, PLY::Float32, offsetof(GradPlyVertex,smooth2.y),  0, 0, 0, 0},
-	{"s2z",      PLY::Float32, PLY::Float32, offsetof(GradPlyVertex,smooth2.z),  0, 0, 0, 0},
-	{"boundary", PLY::Uint8,   PLY::Uint8,   offsetof(GradPlyVertex,boundary),   0, 0, 0, 0},
-};
-} // namespace
-
-const String& RefineDebug::Dir()
-{
-	static const String dir = [] {
-		String d;
-		const char* env = getenv("OMVS_REFINE_DEBUG_DIR");
-		if (env && *env) {
-			d = env;
-			Util::ensureValidFolderPath(d);
-			Util::ensureFolder(d);
-		}
-		return d;
-	}();
-	return dir;
-}
-
-bool RefineDebug::Pair(uint32_t& idxImageA, uint32_t& idxImageB)
-{
-	static const std::pair<uint32_t,uint32_t> pair = [] {
-		uint32_t a(NO_ID), b(NO_ID);
-		const char* env = getenv("OMVS_REFINE_DEBUG_PAIR");
-		if (env && sscanf(env, "%u,%u", &a, &b) != 2) {
-			// a set-but-malformed request must not silently disable the export it asked for
-			VERBOSE("error: OMVS_REFINE_DEBUG_PAIR '%s' does not parse as A,B: pair export disabled", env);
-			a = b = NO_ID;
-		}
-		return std::make_pair(a, b);
-	}();
-	if (pair.first == NO_ID)
-		return false;
-	idxImageA = pair.first;
-	idxImageB = pair.second;
-	return true;
-}
-
-void RefineDebug::ExportGradients(unsigned nScale, unsigned iter, uint32_t numVertices,
-	const Point3f* pos, const Point3f* combined,
-	const Point3f* photo, const float* photoCount,
-	const Point3f* smooth1, const Point3f* smooth2,
-	const uint8_t* boundary)
-{
-	if (Dir().empty())
-		return;
-	ASSERT(numVertices > 0 && pos && combined && photo && photoCount && smooth1 && smooth2 && boundary);
-	const String fileName(Dir()+String::FormatString("refine_grad_s%u_i%u.ply", nScale, iter));
-	PLY ply;
-	if (!ply.write(fileName, 1, gradElemNames, PLY::BINARY_LE)) {
-		VERBOSE("error: failed to export '%s'", fileName.c_str());
-		return;
-	}
-	ply.describe_property(gradElemNames[0], (int)SizeOfArray(gradProps), gradProps);
-	ply.element_count(gradElemNames[0], (int)numVertices);
-	if (!ply.header_complete()) {
-		VERBOSE("error: failed to export '%s'", fileName.c_str());
-		return;
-	}
-	ply.put_element_setup(gradElemNames[0]);
-	GradPlyVertex v;
-	for (uint32_t i=0; i<numVertices; ++i) {
-		v.pos = pos[i];
-		v.combined = combined[i];
-		v.photo = photo[i];
-		v.pnorm = photoCount[i];
-		v.smooth1 = smooth1[i];
-		v.smooth2 = smooth2[i];
-		v.boundary = boundary[i];
-		ply.put_element(&v);
-	}
-}
-
-// write one 32-bit float, little-endian PFM (single channel); verified by
-// reading it back with numpy (bench/refine_parity.py) -- rows are stored
-// bottom-to-top per the PFM spec, hence the reversed loop below.
-static void WritePFM(const String& fileName, const float* data, int width, int height)
-{
-	ASSERT(data && width > 0 && height > 0);
-	std::ofstream f(fileName.c_str(), std::ios::binary);
-	if (!f.is_open()) {
-		VERBOSE("error: failed to export '%s'", fileName.c_str());
-		return;
-	}
-	f << "Pf\n" << width << ' ' << height << "\n-1.0\n";
-	for (int r=height-1; r>=0; --r)
-		f.write((const char*)(data+(size_t)r*width), sizeof(float)*width);
-	// a truncated map (disk full) must not pass as evidence: the consumer is the parity
-	// harness comparing the two backends, and a plausible-looking partial file is worse
-	// than a missing one
-	f.flush();
-	if (!f.good())
-		VERBOSE("error: failed to export '%s' completely", fileName.c_str());
-}
-
-void RefineDebug::ExportPairMap(unsigned nScale, unsigned iter, uint32_t idxImageA, uint32_t idxImageB,
-	const char* name, const float* data, int width, int height)
-{
-	if (Dir().empty())
-		return;
-	WritePFM(Dir()+String::FormatString("pair_%u_%u_s%u_i%u_%s.pfm", idxImageA, idxImageB, nScale, iter, name), data, width, height);
-}
-
-void RefineDebug::ExportPairMask(unsigned nScale, unsigned iter, uint32_t idxImageA, uint32_t idxImageB,
-	const uint8_t* mask, int width, int height)
-{
-	if (Dir().empty())
-		return;
-	ASSERT(mask && width > 0 && height > 0);
-	Image8U img(height, width);
-	uint8_t* pDst = img.getData();
-	for (size_t i=0, n=(size_t)width*height; i<n; ++i)
-		pDst[i] = mask[i] ? 255 : 0;
-	const String fileName(Dir()+String::FormatString("pair_%u_%u_s%u_i%u_mask.png", idxImageA, idxImageB, nScale, iter));
-	if (!img.Save(fileName))
-		VERBOSE("error: failed to export '%s'", fileName.c_str());
-}
 /*----------------------------------------------------------------*/

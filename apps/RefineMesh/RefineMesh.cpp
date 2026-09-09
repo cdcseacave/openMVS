@@ -133,8 +133,8 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("close-holes", boost::program_options::value(&OPT::nCloseHoles)->default_value(30), "close every hole in the input surface spanned by at most this many boundary edges (0 - disabled)")
 		("ensure-edge-size", boost::program_options::value(&OPT::nEnsureEdgeSize)->default_value(1), "ensure edge size and improve vertex valence of the input surface (0 - disabled, 1 - auto, 2 - force)")
 		("max-face-area", boost::program_options::value(&OPT::nMaxFaceArea)->default_value(16), "maximum face area projected in any pair of images that is not subdivided (0 - disabled)")
-		("adaptive-face-size", boost::program_options::value(&OPT::bAdaptiveFaceSize)->default_value(true), "grade the prepared faces per vertex so each one projects to about --max-face-area in the pair that refines it, instead of preparing one world-space density everywhere and relying on the per-scale split to catch the rest; the mesh then carries its faces where the images resolve the surface, so it changes nothing when the whole surface is seen from a constant distance (disable to prepare one density for the whole mesh)")
-		("simplify-tolerance", boost::program_options::value(&OPT::fSimplifyTolerance), "decimate the refined mesh within this reprojection error in every vertex's best view, in pixels of the working resolution, once the refinement ends (default 0.25 - accuracy-neutral, roughly halves the face count; 0 - disabled)")
+		("adaptive-face-size", boost::program_options::value(&OPT::bAdaptiveFaceSize)->default_value(true), "grade the prepared faces per vertex so each one projects to about --max-face-area in the pair that refines it, instead of one world-space density for the whole mesh (a difference only where the camera-to-surface distance varies)")
+		("simplify-tolerance", boost::program_options::value(&OPT::fSimplifyTolerance)->default_value(0.25f), "decimate the refined mesh within this reprojection error, in pixels of the working resolution in the pair that resolves each vertex best, once the refinement ends (accuracy-neutral, roughly halves the face count; 0 - disabled)")
 		("fast", boost::program_options::bool_switch(&OPT::bFast)->default_value(false), "trade accuracy for speed: refine a mesh prepared at twice the default face area and decimate the result within 0.5 pixels (1.3x faster for -0.005 mean F1 and a 2.5x smaller mesh); an explicitly given --max-face-area or --simplify-tolerance wins over it")
 		("scales", boost::program_options::value(&OPT::nScales)->default_value(2), "how many iterations to run mesh optimization on multi-scale images")
 		("scale-step", boost::program_options::value(&OPT::fScaleStep)->default_value(0.5f), "image scale factor used at each mesh optimization step")
@@ -208,17 +208,18 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	// the CLI (this app's own .cfg file included) always wins over the refine-config-file, same as
 	// DensifyPointCloud's --ignore-mask-label over its --dense-config-file
 	OPTREFINE::nIgnoreMaskLabel = nIgnoreMaskLabel;
-	// an option without a CLI default overrides the refine-config-file only when it was given
-	if (OPT::vm.count("simplify-tolerance"))
+	// an option with a CLI default of its own overrides the refine-config-file only when it was
+	// actually given, or the default silently undoes what the file set
+	if (!OPT::vm["simplify-tolerance"].defaulted())
 		OPTREFINE::fSimplifyTolerance = OPT::fSimplifyTolerance;
 	if (!OPT::vm["adaptive-face-size"].defaulted())
 		OPTREFINE::bAdaptiveFaceSize = OPT::bAdaptiveFaceSize;
 	// the fast preset fills in only what the command line did not state itself; both values are
-	// the ones measured in docs/design/MeshRefinement.md 2.7, and neither is a free lunch
+	// the ones measured in docs/design/MeshRefinement.md 2.9, and neither is a free lunch
 	if (OPT::bFast) {
 		if (OPT::vm["max-face-area"].defaulted())
 			OPT::nMaxFaceArea = 32;
-		if (!OPT::vm.count("simplify-tolerance"))
+		if (OPT::vm["simplify-tolerance"].defaulted())
 			OPTREFINE::fSimplifyTolerance = 0.5f;
 		VERBOSE("fast mode: max-face-area %u, simplify-tolerance %g", OPT::nMaxFaceArea, OPTREFINE::fSimplifyTolerance);
 	}
@@ -263,9 +264,9 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	}
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2)
-		DEBUG_EXTRA("OPTREFINE: ignoreMaskLabel=%d imageGradient=%d gateMeanDiff=%g gateVarRatio=%g simplifyTolerance=%g",
-			OPTREFINE::nIgnoreMaskLabel, OPTREFINE::nImageGradient,
-			OPTREFINE::fGateMeanDiff, OPTREFINE::fGateVarRatio, OPTREFINE::fSimplifyTolerance);
+		DEBUG_EXTRA("OPTREFINE: ignoreMaskLabel=%d imageGradient=%d gateMeanDiff=%g gateVarRatio=%g maxEvaluations=%d adaptiveFaceSize=%d simplifyTolerance=%g",
+			OPTREFINE::nIgnoreMaskLabel, OPTREFINE::nImageGradient, OPTREFINE::fGateMeanDiff, OPTREFINE::fGateVarRatio,
+			OPTREFINE::nMaxEvaluations, (int)OPTREFINE::bAdaptiveFaceSize, OPTREFINE::fSimplifyTolerance);
 	#endif
 
 	MVS::Initialize(APPNAME, OPT::nMaxThreads, OPT::nProcessPriority);

@@ -1800,8 +1800,6 @@ bool MeshRefineWindowStatsTest()
 }
 /*----------------------------------------------------------------*/
 
-// Exercise ROI integration with the first point outside the ROI; this used to leave
-// default entries in the spatial-sort index and could reconstruct the wrong points.
 // an n x n grid of unit quads in the plane z = 0, two triangles per quad, for the per-vertex
 // decimation bound Mesh::Clean routes into halfmesh
 static void MeshCleanBuildGrid(unsigned n, Mesh& mesh)
@@ -1852,7 +1850,10 @@ bool MeshCleanPerVertexTest()
 	}
 	return true;
 }
+/*----------------------------------------------------------------*/
 
+// Exercise ROI integration with the first point outside the ROI; this used to leave
+// default entries in the spatial-sort index and could reconstruct the wrong points.
 static bool ROIMeshReconstructionTest(Scene& scene)
 {
 	PointCloud pointcloud(scene.pointcloud);

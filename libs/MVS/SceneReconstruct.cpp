@@ -1439,8 +1439,7 @@ struct UnseenRasterMesh : TRasterMesh<UnseenRasterMesh> {
 // rasterization survives the depth test, or -- the sub-pixel case, a face smaller than a pixel
 // never wins a pixel of its own -- when its centroid projects inside the image in front of the
 // camera at a depth no deeper than the z-buffer there by more than kUnseenDepthTol (an empty
-// z-buffer pixel means nothing stands in front of it). Same semantics as the Python reference
-// bench/mesh_visibility.py.
+// z-buffer pixel means nothing stands in front of it).
 // This deletes the surface the graph-cut invents in the volume no camera ever observed
 // (undersides, vehicle interiors, pockets between wheels): correct as an interpolation, but with
 // no observation behind it, so it only costs precision.
