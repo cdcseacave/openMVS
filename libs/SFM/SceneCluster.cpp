@@ -1029,7 +1029,13 @@ std::vector<Scene> SceneCluster::BuildSubScenesFromClusters(
 	if (outLocalToGlobal)
 		outLocalToGlobal->reserve(clusters.size());
 
-	const unsigned nClusters = (unsigned)clusters.size();
+	// the budget is shared by the clusters that will actually become sub-scenes, so counting them
+	// first: a clustering yielding one real cluster and a crowd of skipped singletons must not
+	// leave the one reconstruction that runs with a single thread
+	unsigned nClusters = 0;
+	for (const IIndexArr& cluster : clusters)
+		if (cluster.size() >= config.minViewsPerCluster)
+			++nClusters;
 	const unsigned nThreadsPerCluster = MAXF(1u, scene.nMaxThreads / MAXF(nClusters, 1u));
 	DEBUG_EXTRA("Allocating %u threads per sub-scene (%u clusters, %u parent threads)",
 		nThreadsPerCluster, nClusters, scene.nMaxThreads);
