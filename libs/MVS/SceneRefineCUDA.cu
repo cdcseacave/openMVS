@@ -32,7 +32,6 @@
 #include "SceneRefineCUDA.inl"
 #include "SceneRefineCommon.h"
 
-#include <cuda_fp16.h>
 #include <float.h>
 
 
@@ -170,6 +169,13 @@ __device__ inline bool faceBBox(const ProjectedFace& pf, const Camera& camera,
 // keeps the first face it rasterises in that cull's (octree-traversal) order, so the two
 // backends can differ only on an exact depth tie: a pixel centre exactly on a shared edge, where
 // either face hands the pixel to the same two vertices.
+// Pass 2 also leaves, per view, one bit per face -- set iff the face wrote at least one pixel
+// -- collected by a warp ballot (no atomics): the photometric accumulation of every
+// pair-direction that has this view as its reference reads them to skip the faces the view does
+// not see before touching them at all, which in a scene of hundreds of views is most of the mesh
+// for every view. The barycentrics are not stored: the accumulation recomputes them (pixelBary,
+// the same arithmetic) where it needs them, in float like the CPU's BaryMap, instead of the
+// half-precision map that used to cost 8 bytes per pixel of every view.
 template <bool RESOLVE>
 __global__ void kernelProjectMesh(
 	const Point3* __restrict__ vertices,
@@ -177,38 +183,41 @@ __global__ void kernelProjectMesh(
 	unsigned long long* __restrict__ projKey,
 	float* __restrict__ depthMap,
 	uint32_t* __restrict__ faceMap,
-	ushort4* __restrict__ baryMap,
+	uint32_t* __restrict__ ownerBits, // RESOLVE only, may be NULL: bit f set iff face f wrote at least one pixel
 	Camera camera,
 	uint32_t numFaces)
 {
 	const int tid = blockIdx.x * blockDim.x + threadIdx.x;
-	if (tid >= (int)numFaces) return;
-
+	// no early return before the ballot at the end: every lane of the warp has to reach it
+	bool owner = false;
 	ProjectedFace pf;
-	if (!projectFace(vertices, faces[tid], camera, pf)) return;
-
 	int ixMin, ixMax, iyMin, iyMax;
-	if (!faceBBox(pf, camera, ixMin, ixMax, iyMin, iyMax)) return;
-
-	const int width = camera.size.x();
-	for (int iy = iyMin; iy <= iyMax; ++iy) {
-		for (int ix = ixMin; ix <= ixMax; ++ix) {
-			float nb0, nb1, nb2, depth;
-			if (!pixelBary(ix, iy, pf, nb0, nb1, nb2, depth)) continue;
-			// depth > 0 (all three z's are), so its bit pattern orders like the float itself
-			const unsigned long long key = ((unsigned long long)__float_as_uint(depth) << 32) | (unsigned)tid;
-			const int pixIdx = iy * width + ix;
-			if (RESOLVE) {
-				if (projKey[pixIdx] != key) continue;
-				depthMap[pixIdx] = depth;
-				faceMap[pixIdx] = (uint32_t)tid;
-				// the three barycentrics in one 8-byte store (three 2-byte ones cost three transactions)
-				baryMap[pixIdx] = make_ushort4(
-					__half_as_ushort(__float2half(nb0)), __half_as_ushort(__float2half(nb1)), __half_as_ushort(__float2half(nb2)), 0);
-			} else {
-				atomicMin(&projKey[pixIdx], key);
+	if (tid < (int)numFaces && projectFace(vertices, faces[tid], camera, pf) && faceBBox(pf, camera, ixMin, ixMax, iyMin, iyMax)) {
+		const int width = camera.size.x();
+		for (int iy = iyMin; iy <= iyMax; ++iy) {
+			for (int ix = ixMin; ix <= ixMax; ++ix) {
+				float nb0, nb1, nb2, depth;
+				if (!pixelBary(ix, iy, pf, nb0, nb1, nb2, depth)) continue;
+				// depth > 0 (all three z's are), so its bit pattern orders like the float itself
+				const unsigned long long key = ((unsigned long long)__float_as_uint(depth) << 32) | (unsigned)tid;
+				const int pixIdx = iy * width + ix;
+				if (RESOLVE) {
+					if (projKey[pixIdx] != key) continue;
+					depthMap[pixIdx] = depth;
+					faceMap[pixIdx] = (uint32_t)tid;
+					owner = true;
+				} else {
+					atomicMin(&projKey[pixIdx], key);
+				}
 			}
 		}
+	}
+	if (RESOLVE && ownerBits) {
+		// one word per warp of 32 consecutive faces, stored by lane 0: the buffer holds
+		// (numFaces+31)/32 words per view, so the warps past the last face store nothing
+		const unsigned ballot = __ballot_sync(0xffffffffu, owner);
+		if ((tid & 31) == 0 && tid < (int)numFaces)
+			ownerBits[tid >> 5] = ballot;
 	}
 }
 
@@ -455,6 +464,7 @@ __global__ void kernelComputeWindowStats(
 	__shared__ float sA[Tile*Tile], sB[Tile*Tile], sW[Tile*Tile];
 	const int x0 = blockIdx.x * Block - Refine::HalfSize;
 	const int y0 = blockIdx.y * Block - Refine::HalfSize;
+	bool any = false; // this thread staged a masked sample
 	for (int i = threadIdx.y * Block + threadIdx.x; i < Tile*Tile; i += Block*Block) {
 		const int gx = x0 + i % Tile, gy = y0 + i / Tile;
 		float a(0.f), b(0.f), w(0.f);
@@ -464,8 +474,25 @@ __global__ void kernelComputeWindowStats(
 			a = readSurfFloat(surfImageA, gx, gy);
 			b = readSurfFloat(surfImageProj, gx, gy);
 			w = 1.f;
+			any = true;
 		}
 		sA[i] = a; sB[i] = b; sW[i] = w;
+	}
+	// a tile without a single masked sample -- the warp reaches none of its pixels, the common
+	// case in a scene of hundreds of views each seeing a small part of the surface -- contributes
+	// nothing: its outputs are the zeros the loops below would produce, written here instead;
+	// the vote is a barrier of its own, so the block leaves together
+	if (!__syncthreads_or(any)) {
+		if (x < width && y < height) {
+			pixelGrad[y * width + x] = 0.f;
+			maskOut[y * width + x] = 0;
+		}
+		if (threadIdx.x == 0 && threadIdx.y == 0) {
+			const int idxBlock = blockIdx.y * gridDim.x + blockIdx.x;
+			blockSums[idxBlock*2 + 0] = 0.f;
+			blockSums[idxBlock*2 + 1] = 0.f;
+		}
+		return;
 	}
 	__syncthreads();
 
@@ -582,18 +609,23 @@ __global__ void kernelReduceBlockSums(
 // fixed sequence), which lets the per-vertex gather run once per ScoreMesh() instead of once
 // per direction.
 //
-// The thread projects its face and walks its clipped bounding box exactly as kernelProjectMesh
-// did, in a fixed row-then-column order, and keeps the pixels whose faceMap entry is this face:
-// faceMap only ever holds ids the rasterizer wrote, and a face this view does not see exits
-// after its three projections. The per-pixel term itself comes from kernelComputeWindowStats,
-// one balanced thread per pixel; here it is only weighted by the barycentrics, so the imbalance
-// between large and small faces costs little.
+// A face this view does not see -- behind the camera, off the image, back-facing or occluded --
+// exits on its owner bit (kernelProjectMesh, pass 2), one coalesced word per warp, before its
+// face or vertices are read. The rest project their face and walk its clipped bounding box
+// exactly as kernelProjectMesh did, keeping the pixels whose faceMap entry is this face (faceMap
+// only ever holds ids the rasterizer wrote); a kept pixel's barycentrics and depth are recomputed
+// from the same projection, the same arithmetic the rasterizer keyed the pixel with, so they are
+// the rasterizer's bit for bit, in a fixed row-then-column order. The per-pixel term itself comes
+// from kernelComputeWindowStats, one balanced thread per pixel; here it is only weighted by the
+// barycentrics. (Eight lanes sharing a face, each taking every eighth pixel of the box with a
+// fixed shuffle tree over their partials, was measured at 49/88 us per launch against 26/64 us
+// for this form on Ignatius at level 1, scales 0/1: on the small boxes most lanes idle, and the
+// extra threads and shuffles cost more than the divergence they remove.)
 __global__ void kernelAccumulateFacePhoto(
 	const Point3* __restrict__ vertices,
 	const Point3u* __restrict__ faces,
-	const float* __restrict__ depthMap,
+	const uint32_t* __restrict__ ownerBits, // this view's, from the rasterizer: bit f set iff face f owns a pixel
 	const uint32_t* __restrict__ faceMap,
-	const ushort4* __restrict__ baryMap,
 	const float* __restrict__ pixelGrad,
 	const uint8_t* __restrict__ mask,
 	float* __restrict__ faceAcc, // 3 per face: Sum over the face's pixels of g_p*b_c, one per corner
@@ -605,12 +637,14 @@ __global__ void kernelAccumulateFacePhoto(
 {
 	const int tid = blockIdx.x * blockDim.x + threadIdx.x;
 	if (tid >= (int)numFaces) return;
+	if (!((ownerBits[tid >> 5] >> (tid & 31)) & 1u)) return;
 
+	// it owns a pixel, so the rasterizer's projection of it succeeded
 	const Point3u face = faces[tid];
 	ProjectedFace pf;
-	int ixMin, ixMax, iyMin, iyMax;
-	if (!projectFace(vertices, face, camA, pf) || !faceBBox(pf, camA, ixMin, ixMax, iyMin, iyMax))
-		return;
+	int ixMin(0), ixMax(-1), iyMin(0), iyMax(-1);
+	const bool seen(projectFace(vertices, face, camA, pf) && faceBBox(pf, camA, ixMin, ixMax, iyMin, iyMax));
+	ASSERT(seen); (void)seen;
 	float sum0 = 0.f, sum1 = 0.f, sum2 = 0.f;
 	float pixels = 0.f, foot = FLT_MAX;
 	const int width = camA.size.x();
@@ -619,18 +653,21 @@ __global__ void kernelAccumulateFacePhoto(
 			const int pixIdx = iy * width + ix;
 			if (faceMap[pixIdx] != (uint32_t)tid || mask[pixIdx] != 1)
 				continue;
-			// this pixel's winning rasterizer key was this face's, so its payload is this face's
-			// perspective-correct depth and barycentrics
+			// this pixel's winning rasterizer key was this face's, computed by pixelBary from
+			// this very projection, so the same call reproduces its perspective-correct
+			// barycentrics and depth
+			float nb0, nb1, nb2, depth;
+			const bool inside(pixelBary(ix, iy, pf, nb0, nb1, nb2, depth));
+			ASSERT(inside); (void)inside;
 			const float g = pixelGrad[pixIdx];
-			const ushort4 bary = baryMap[pixIdx];
-			sum0 += g * __half2float(__ushort_as_half(bary.x));
-			sum1 += g * __half2float(__ushort_as_half(bary.y));
-			sum2 += g * __half2float(__ushort_as_half(bary.z));
+			sum0 += g * nb0;
+			sum1 += g * nb1;
+			sum2 += g * nb2;
 			// per-vertex footprint at camera A, scene units per pixel (Camera::GetFootprintWorld =
 			// depth/focalLength): min over every contributing pixel of every pair-direction,
 			// matching the CPU's min-of-mins (MeshRefine::ComputePhotometricGradient/ThProcessPair);
 			// min is exact and associative, so this half of it is reproducible for free
-			foot = fminf(foot, depthMap[pixIdx] / camA.model.f.x());
+			foot = fminf(foot, depth / camA.model.f.x());
 			pixels += 1.f;
 		}
 	}
@@ -796,17 +833,52 @@ __global__ void kernelComputeFaceNormal(
 
 // H O S T   L A U N C H E R S ////////////////////////////////////////
 
+// 9. FaceHistogram -- 1D over the pixels of one view, after the rasterization: the rasterized
+// area of every face in it, in pixels, exactly the pixel count the host's ListFaceAreas took
+// from the downloaded face map; integer atomics, so the counts are exact whatever the schedule
+__global__ void kernelFaceHistogram(
+	const uint32_t* __restrict__ faceMap,
+	uint32_t* __restrict__ hist,
+	uint32_t numPixels)
+{
+	const uint32_t p = blockIdx.x * blockDim.x + threadIdx.x;
+	if (p >= numPixels) return;
+	const uint32_t f = faceMap[p];
+	if (f != (uint32_t)-1)
+		atomicAdd(&hist[f], 1u);
+}
+
+
+// 10. ReduceFaceAreasPair -- 1D, one thread per face, once per pair: the smaller of the face's
+// two rasterized areas in the pair (a pair resolves a face only as well as its worse view) folded
+// into the largest over the pairs, exactly ReduceFaceAreasOverPairs (SceneRefineCommon.cpp), the
+// truncation to 16 bits included (the host counts in uint16_t)
+__global__ void kernelReduceFaceAreasPair(
+	const uint32_t* __restrict__ histA,
+	const uint32_t* __restrict__ histB,
+	uint16_t* __restrict__ maxAreas,
+	uint32_t numFaces)
+{
+	const uint32_t f = blockIdx.x * blockDim.x + threadIdx.x;
+	if (f >= numFaces) return;
+	const uint16_t a = (uint16_t)histA[f], b = (uint16_t)histB[f];
+	const uint16_t pairArea = a < b ? a : b;
+	if (maxAreas[f] < pairArea)
+		maxAreas[f] = pairArea;
+}
+
+
 void LaunchProjectMesh(
 	const Point3* vertices, const Point3u* faces,
-	unsigned long long* projKey, float* depthMap, uint32_t* faceMap, ushort4* baryMap,
+	unsigned long long* projKey, float* depthMap, uint32_t* faceMap, uint32_t* ownerBits,
 	const Camera& camera, uint32_t numFaces, bool resolve)
 {
 	const int blockSize = 256;
 	const int numBlocks = ((int)numFaces + blockSize - 1) / blockSize;
 	if (resolve)
-		kernelProjectMesh<true><<<numBlocks, blockSize>>>(vertices, faces, projKey, depthMap, faceMap, baryMap, camera, numFaces);
+		kernelProjectMesh<true><<<numBlocks, blockSize>>>(vertices, faces, projKey, depthMap, faceMap, ownerBits, camera, numFaces);
 	else
-		kernelProjectMesh<false><<<numBlocks, blockSize>>>(vertices, faces, projKey, depthMap, faceMap, baryMap, camera, numFaces);
+		kernelProjectMesh<false><<<numBlocks, blockSize>>>(vertices, faces, projKey, depthMap, faceMap, NULL, camera, numFaces);
 }
 
 #ifdef _DEBUG
@@ -854,17 +926,30 @@ void LaunchReduceBlockSums(const float* blockSums, uint32_t numSlots, float* sum
 }
 
 void LaunchAccumulateFacePhoto(
-	const Point3* vertices, const Point3u* faces,
-	const float* depthMap, const uint32_t* faceMap, const ushort4* baryMap,
-	const float* pixelGrad, const uint8_t* mask,
+	const Point3* vertices, const Point3u* faces, const uint32_t* ownerBits,
+	const uint32_t* faceMap, const float* pixelGrad, const uint8_t* mask,
 	float* faceAcc, float* facePixels, float* faceFoot, uint8_t* vertexSeen,
 	const Camera& camA, uint32_t numFaces)
 {
 	const int blockSize = 256;
 	const int numBlocks = ((int)numFaces + blockSize - 1) / blockSize;
 	kernelAccumulateFacePhoto<<<numBlocks, blockSize>>>(
-		vertices, faces, depthMap, faceMap, baryMap, pixelGrad, mask,
+		vertices, faces, ownerBits, faceMap, pixelGrad, mask,
 		faceAcc, facePixels, faceFoot, vertexSeen, camA, numFaces);
+}
+
+void LaunchFaceHistogram(const uint32_t* faceMap, uint32_t* hist, uint32_t numPixels)
+{
+	const int blockSize = 256;
+	const int numBlocks = ((int)numPixels + blockSize - 1) / blockSize;
+	kernelFaceHistogram<<<numBlocks, blockSize>>>(faceMap, hist, numPixels);
+}
+
+void LaunchReduceFaceAreasPair(const uint32_t* histA, const uint32_t* histB, uint16_t* maxAreas, uint32_t numFaces)
+{
+	const int blockSize = 256;
+	const int numBlocks = ((int)numFaces + blockSize - 1) / blockSize;
+	kernelReduceFaceAreasPair<<<numBlocks, blockSize>>>(histA, histB, maxAreas, numFaces);
 }
 
 void LaunchCountSeenVertices(uint8_t* vertexSeen, float* photoCount, uint32_t numVertices)

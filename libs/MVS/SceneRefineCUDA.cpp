@@ -70,18 +70,27 @@ class MeshRefineCUDA {
 public:
 	// store necessary data about a view
 	struct View {
-		Image32F imageHost; // store temporarily the image pixels
-		Image32F imageGradHost[2]; // store temporarily the image x/y derivatives
-		BitMatrix keepMaskHost; // store temporarily the per-view keep-mask (bit set = keep); empty == no mask == keep everything
 		Image8U::Size size;
 		SEACAVE::CUDA::ArrayRT32F image; // float like the CPU's View::image (was half-float; see readSurfFloat in the .cu)
 		SEACAVE::CUDA::ArrayRT32F imageGrad[2]; // x/y derivatives (ComputeRefineImageGradient), sampled by the photometric kernel; kept in float like the CPU's View::imageGrad (half-float cannot hold the sub-6e-5 values a derivative stencil produces on flat regions)
 		SEACAVE::CUDA::MemDevice depthMap;
-		SEACAVE::CUDA::MemDevice faceMap;
-		SEACAVE::CUDA::MemDevice baryMap; // one ushort4 per pixel: the three half barycentrics and a pad, one 8-byte word each way
-		SEACAVE::CUDA::MemDevice keepMask; // one byte per pixel (non-zero = keep), uploaded from keepMaskHost only when non-empty; invalid (unallocated) == keep everything
+		SEACAVE::CUDA::MemDevice faceMap; // the barycentrics are not kept per pixel: kernelAccumulateFacePhoto recomputes them from the face's projection (was a ushort4 per pixel of every view)
+		SEACAVE::CUDA::MemDevice keepMask; // one byte per pixel (non-zero = keep), uploaded from HostView::keepMask only when non-empty; invalid (unallocated) == keep everything
 	};
 	typedef CLISTDEF2(View) ViewsArr;
+	// one view's images at a scale as the host prepares them (PrepareImages) for UploadImages:
+	// the gray image, its gradient stencil, the keep-mask, and the working size and camera that
+	// PrepareRefineImage derives on a COPY of the scene's Image -- applied to the scene's at the
+	// upload, so that a scale can be prepared on a thread while the previous one is still
+	// being refined (PrefetchImages)
+	struct HostView {
+		Image32F image;
+		Image32F imageGrad[2];
+		BitMatrix keepMask; // empty == no mask == keep everything
+		uint32_t width = 0, height = 0;
+		Camera camera;
+	};
+	typedef CLISTDEF2(HostView) HostViewsArr;
 
 	// GPU texture/surface objects per view
 	struct ViewGPU {
@@ -104,11 +113,19 @@ public:
 	bool IsValid() const { return !pairs.IsEmpty(); }
 
 	bool InitKernels();
+	// the images at the given scale: the host half (PrepareImages, unless PrefetchImages() was
+	// started for exactly this scale, whose thread is joined instead) and then their upload
 	bool InitImages(float scale, float sigma=0);
+	// start PrepareImages(scale, sigma) on a thread, for the InitImages() of the next scale
+	void PrefetchImages(float scale, float sigma);
+	bool PrepareImages(float scale, float sigma);
+	bool UploadImages();
 
 	void ListVertexFacesPre();
 	void ListVertexFacesPost();
-	void ListCameraFaces();
+	// upload the current vertices and rasterize the mesh into every view; with bOwnerBits, the
+	// per-view owner bits ScoreMesh()'s accumulation skips the unseen faces by are left too
+	void ListCameraFaces(bool bOwnerBits=false);
 
 	void ListFaceAreas(Mesh::AreaArr& maxAreas);
 	void SubdivideMesh(uint32_t maxArea, float fDecimate=1.f, unsigned nCloseHoles=15, unsigned nEnsureEdgeSize=1);
@@ -127,7 +144,7 @@ public:
 	// stepper finite-looking garbage.
 	bool ScoreMesh(MeshRefineStep::Terms& terms);
 
-	void ProjectMesh(const Camera& camera, const Image8U::Size& size, uint32_t idxImage);
+	void ProjectMesh(const Camera& camera, const Image8U::Size& size, uint32_t idxImage, uint32_t* ownerBits);
 	// one pair-direction: warp B into A, the window statistics with the per-pixel photometric
 	// term, then its accumulation; numSlots counts the window-statistics blocks written so far
 	// into statsBlockSums, which ScoreMesh() reduces once at the end
@@ -142,6 +159,10 @@ public:
 	CUdeviceptr TermsPtr(size_t offset) const { return (CUdeviceptr)terms + sizeof(float)*offset; }
 	// how many pair-directions one ScoreMesh() runs
 	uint32_t NumDirections() const { return (uint32_t)pairs.GetSize() * (nAlternatePair == 0 ? 2u : 1u); }
+	// the owner bits of one view: (numFaces+31)/32 words per view, in image order
+	size_t OwnerWords() const { return ((size_t)scene.mesh.faces.GetSize() + 31) / 32; }
+	CUdeviceptr OwnerBits(uint32_t idxImage) const { return (CUdeviceptr)ownerBits + sizeof(uint32_t)*OwnerWords()*idxImage; }
+	static void* STCALL PrefetchWorker(void* pData);
 
 public:
 	const float weightRegularity; // a scalar regularity weight to balance between photo-consistency and regularization terms
@@ -196,6 +217,20 @@ public:
 	SEACAVE::CUDA::MemDevice vertexFacesSizes;
 	SEACAVE::CUDA::MemDevice vertexFacesPointers;
 	SEACAVE::CUDA::MemDevice vertBoundary; // per-vertex 0/1 boundary flag (shared valence/boundary split, see ListVertexFacesPost())
+	// per view, one bit per face set by the rasterizer iff the face owns a pixel there (see
+	// kernelProjectMesh): in a scene of hundreds of views most faces are unseen by any one view,
+	// and the per-direction accumulation exits on the bit before touching them
+	SEACAVE::CUDA::MemDevice ownerBits;
+	// ListFaceAreas() scratch: two per-view face histograms and the reduced per-face areas
+	SEACAVE::CUDA::MemDevice faceHist;
+	SEACAVE::CUDA::MemDevice faceAreas;
+
+	// the next scale's images, prepared by PrefetchImages()' thread while this scale runs
+	HostViewsArr hostViews;
+	SEACAVE::Thread prefetchThread;
+	float prefetchScale = 0, prefetchSigma = 0;
+	bool prefetchPending = false; // a thread was started and not joined yet
+	bool prefetchResult = false; // what its PrepareImages returned
 };
 
 MeshRefineCUDA::MeshRefineCUDA(Scene& _scene, unsigned _nAlternatePair, float _weightRegularity, unsigned _nResolutionLevel, unsigned _nMinResolution, unsigned nMaxViews)
@@ -227,6 +262,7 @@ MeshRefineCUDA::MeshRefineCUDA(Scene& _scene, unsigned _nAlternatePair, float _w
 }
 MeshRefineCUDA::~MeshRefineCUDA()
 {
+	prefetchThread.join();
 	for (auto& v : viewGPU)
 		v.Release();
 	if (surfImageProjObj) cudaDestroySurfaceObject(surfImageProjObj);
@@ -242,12 +278,14 @@ bool MeshRefineCUDA::InitKernels()
 	return true;
 }
 
-// load and initialize all images at the given scale
-// and compute the gradient for each input image
-// optional: blur them using the given sigma
-bool MeshRefineCUDA::InitImages(float scale, float sigma)
+// the host half of a scale's images, one per valid image: load, gray, blur and resize
+// (PrepareRefineImage), the gradient stencil and the keep-mask, into hostViews. Nothing in the
+// scene's Image changes -- PrepareRefineImage sets the working size and camera on a COPY, which
+// HostView carries to UploadImages() -- so this also runs on the PrefetchImages() thread while
+// the previous scale is still being refined on the caller's
+bool MeshRefineCUDA::PrepareImages(float scale, float sigma)
 {
-	views.Resize(images.GetSize());
+	hostViews.Resize(images.GetSize());
 	#ifdef MESHCUDAOPT_USE_OPENMP
 	bool bAbort(false);
 	#pragma omp parallel for
@@ -259,13 +297,13 @@ bool MeshRefineCUDA::InitImages(float scale, float sigma)
 	#else
 	FOREACH(idxImage, images) {
 	#endif
-		Image& imageData = images[idxImage];
+		const Image& imageData = images[idxImage];
+		HostView& host = hostViews[idxImage];
+		host.image.release();
 		if (!imageData.IsValid())
 			continue;
-		// load and init image
-		View& view = views[idxImage];
-		Image32F& img = view.imageHost;
-		if (!PrepareRefineImage(imageData, scene.platforms, nResolutionLevel, nMinResolution, scale, sigma, img)) {
+		Image imageCopy(imageData);
+		if (!PrepareRefineImage(imageCopy, scene.platforms, nResolutionLevel, nMinResolution, scale, sigma, host.image)) {
 			#ifdef MESHCUDAOPT_USE_OPENMP
 			bAbort = true;
 			#pragma omp flush (bAbort)
@@ -275,17 +313,68 @@ bool MeshRefineCUDA::InitImages(float scale, float sigma)
 			#endif
 		}
 		// mode 3 samples the bilinear interpolant of the image directly (computePhotoPixel's
-		// bilinearGradient) and never reads this precomputed stencil, so computing (and, below,
-		// uploading) it would be wasted work
+		// bilinearGradient) and never reads this precomputed stencil, so computing (and, at the
+		// upload, uploading) it would be wasted work
 		if (OPTREFINE::nImageGradient != 3)
-			ComputeRefineImageGradient(img, view.imageGradHost[0], view.imageGradHost[1]);
+			ComputeRefineImageGradient(host.image, host.imageGrad[0], host.imageGrad[1]);
 		// per-view keep-mask at this scale's working size (the same estimator on both backends)
-		PrepareRefineImageMask(imageData, img.size(), view.keepMaskHost);
+		PrepareRefineImageMask(imageCopy, host.image.size(), host.keepMask);
+		host.width = imageCopy.width;
+		host.height = imageCopy.height;
+		host.camera = imageCopy.camera;
 	}
 	#ifdef MESHCUDAOPT_USE_OPENMP
 	if (bAbort)
 		return false;
 	#endif
+	return true;
+}
+
+void MeshRefineCUDA::PrefetchImages(float scale, float sigma)
+{
+	ASSERT(!prefetchPending);
+	prefetchScale = scale;
+	prefetchSigma = sigma;
+	prefetchResult = false;
+	prefetchPending = prefetchThread.start(PrefetchWorker, this);
+}
+void* STCALL MeshRefineCUDA::PrefetchWorker(void* pData)
+{
+	MeshRefineCUDA& refine = *(MeshRefineCUDA*)pData;
+	#ifdef MESHCUDAOPT_USE_OPENMP
+	// half the cores for this thread's team (the setting is per thread): a full team runs
+	// alongside the refinement of the current scale and starves the thread feeding the GPU of
+	// its time slices -- measured as 100-800 ms host gaps between evaluations on 24 logical CPUs
+	omp_set_num_threads(MAXF(1, omp_get_num_procs()/2));
+	#endif
+	refine.prefetchResult = refine.PrepareImages(refine.prefetchScale, refine.prefetchSigma);
+	return NULL;
+}
+
+// load and initialize all images at the given scale
+// and compute the gradient for each input image
+// optional: blur them using the given sigma
+bool MeshRefineCUDA::InitImages(float scale, float sigma)
+{
+	bool bPrepared(false);
+	if (prefetchPending) {
+		prefetchThread.join();
+		prefetchPending = false;
+		// used only if it was asked for exactly this scale (the caller's loop always does)
+		bPrepared = (prefetchScale == scale && prefetchSigma == sigma && prefetchResult);
+	}
+	if (!bPrepared && !PrepareImages(scale, sigma))
+		return false;
+	return UploadImages();
+}
+
+// the GPU half: the per-view arrays, textures and surfaces at the new working size, the upload
+// of what PrepareImages() left in hostViews (freed as it goes), and the working size and camera
+// it derived applied to the scene's Image
+bool MeshRefineCUDA::UploadImages()
+{
+	ASSERT(hostViews.GetSize() == images.GetSize());
+	views.Resize(images.GetSize());
 	// init GPU memory
 	Image8U::Size maxSize(0,0);
 	// destroy old texture/surface objects before recreating
@@ -313,21 +402,29 @@ bool MeshRefineCUDA::InitImages(float scale, float sigma)
 		return reportRtError(cudaCreateTextureObject(&tex, &resDesc, &texDesc, nullptr), "cudaCreateTextureObject");
 	};
 	FOREACH(idxImage, views) {
-		View& view = views[idxImage];
-		if (view.imageHost.empty())
+		HostView& host = hostViews[idxImage];
+		if (host.image.empty())
 			continue;
+		// what PrepareRefineImage did to its copy of the Image, applied now: the pixels it loaded
+		// (if the scene held any) released, the working size and camera at this scale set
+		Image& imageData = images[idxImage];
+		imageData.ReleaseImage();
+		imageData.width = host.width;
+		imageData.height = host.height;
+		imageData.camera = host.camera;
+		View& view = views[idxImage];
 		Image8U::Size& size(view.size);
-		size = view.imageHost.size();
+		size = host.image.size();
 		reportCudaError(view.image.Reset(size, CUDA_ARRAY3D_SURFACE_LDST));
-		reportCudaError(view.image.SetData(view.imageHost));
-		view.imageHost.release();
+		reportCudaError(view.image.SetData(host.image));
+		host.image.release();
 		// no gradient stencil texture in mode 3 -- see the comment above where it is computed
 		if (OPTREFINE::nImageGradient != 3) {
 			for (int i=0; i<2; ++i) {
-				ASSERT(view.imageGradHost[i].size() == size);
+				ASSERT(host.imageGrad[i].size() == size);
 				reportCudaError(view.imageGrad[i].Reset(size, CUDA_ARRAY3D_SURFACE_LDST));
-				reportCudaError(view.imageGrad[i].SetData(view.imageGradHost[i]));
-				view.imageGradHost[i].release();
+				reportCudaError(view.imageGrad[i].SetData(host.imageGrad[i]));
+				host.imageGrad[i].release();
 				if (!createTexture(view.imageGrad[i], viewGPU[idxImage].texGrad[i]))
 					return false;
 			}
@@ -335,16 +432,15 @@ bool MeshRefineCUDA::InitImages(float scale, float sigma)
 		const size_t area((size_t)size.area());
 		reportCudaError(view.depthMap.Reset(sizeof(float)*area));
 		reportCudaError(view.faceMap.Reset(sizeof(FIndex)*area));
-		reportCudaError(view.baryMap.Reset(sizeof(ushort4)*area));
-		if (view.keepMaskHost.empty()) {
+		if (host.keepMask.empty()) {
 			view.keepMask.Release();
 		} else {
 			// dense byte mask (non-zero = keep) the kernel can index directly; BitMatrix::copyTo()
 			// already does this exact bit-to-byte expansion (255/0)
 			Image8U keepBytes;
-			view.keepMaskHost.copyTo(keepBytes);
+			host.keepMask.copyTo(keepBytes);
 			reportCudaError(view.keepMask.Reset(keepBytes));
-			view.keepMaskHost.release();
+			host.keepMask.release();
 		}
 		if (maxSize.width < size.width)
 			maxSize.width = size.width;
@@ -449,51 +545,82 @@ void MeshRefineCUDA::ListVertexFacesPost()
 	reportCudaError(cuMemsetD8(vertexSeen, 0, numVertices));
 }
 
-// upload the current vertices and rasterize the mesh into every view (depth, face and
-// barycentric maps): the whole mesh each time, the kernel rejecting the faces a view does not
-// see -- see kernelProjectMesh for why no host-side frustum cull shortlists them
-void MeshRefineCUDA::ListCameraFaces()
+// upload the current vertices and rasterize the mesh into every view (depth and face maps, and
+// the per-view owner bits when asked): the whole mesh each time, the kernel rejecting the faces
+// a view does not see -- see kernelProjectMesh for why no host-side frustum cull shortlists them
+void MeshRefineCUDA::ListCameraFaces(bool bOwnerBits)
 {
 	reportCudaError(vertices.Reset(scene.mesh.vertices));
 	FOREACH(idxImage, images) {
 		const Image& imageData = images[idxImage];
 		if (imageData.IsValid())
-			ProjectMesh(imageData.camera, views[idxImage].size, idxImage);
+			ProjectMesh(imageData.camera, views[idxImage].size, idxImage, bOwnerBits ? (uint32_t*)OwnerBits(idxImage) : NULL);
 	}
 }
 
 // compute for each face the one projected area the preparation and the decimation both read:
 // rasterized per view, then reduced over the refinement's own pairs by ReduceFaceAreasOverPairs
-// (the smaller view of a pair, the largest pair); ListCameraFaces() must have run before
+// (the smaller view of a pair, the largest pair); ListCameraFaces() must have run before.
+// All on the GPU: per pair, the rasterized pixel counts of its two views (kernelFaceHistogram
+// over the face maps the rasterization left) and their per-face min folded into the max over
+// the pairs (kernelReduceFaceAreasPair), the pairs walked grouped by their first view so that
+// its histogram is built once per group; only the reduced areas come down. The face map of
+// every view used to (one pageable copy each, 560 MB per projection on a 263-view scene at
+// level 1), followed by a host pass over all their pixels and one over faces x pairs
 void MeshRefineCUDA::ListFaceAreas(Mesh::AreaArr& maxAreas)
 {
 	ASSERT(maxAreas.IsEmpty());
-	// for each image a pair uses, compute the projection area of visible faces
-	Unsigned8Arr usedImages;
-	ListPairImages(pairs, images.GetSize(), usedImages);
-	ViewAreaArr viewAreas(images.GetSize());
-	FOREACH(idxImage, images) {
-		const Image& imageData = images[idxImage];
-		if (!imageData.IsValid() || !usedImages[idxImage])
-			continue;
-		Mesh::AreaArr& areas = viewAreas[idxImage];
-		areas.Resize(scene.mesh.faces.GetSize());
-		areas.Memset(0);
-		// get faceMap from the GPU memory
-		TImage<FIndex> faceMap(imageData.height, imageData.width);
-		views[idxImage].faceMap.GetData(faceMap);
-		// compute area covered by all vertices (incident faces) viewed by this image
-		for (int j=0; j<faceMap.rows; ++j) {
-			for (int i=0; i<faceMap.cols; ++i) {
-				const FIndex idxFace(faceMap(j,i));
-				if (idxFace == NO_ID)
-					continue;
-				++areas[idxFace];
-			}
-		}
+	const FIndex numFaces(scene.mesh.faces.GetSize());
+	reportCudaError(faceHist.Reset(sizeof(uint32_t)*2*(size_t)numFaces));
+	reportCudaError(faceAreas.Reset(sizeof(uint16_t)*numFaces));
+	reportCudaError(cuMemsetD16(faceAreas, 0, numFaces));
+	const CUdeviceptr histA((CUdeviceptr)faceHist), histB((CUdeviceptr)faceHist + sizeof(uint32_t)*numFaces);
+	const auto histogram = [&](uint32_t idxImage, CUdeviceptr hist) {
+		const View& view = views[idxImage];
+		reportCudaError(cuMemsetD32(hist, 0, numFaces));
+		MVS::CUDA::LaunchFaceHistogram((const uint32_t*)(CUdeviceptr)view.faceMap, (uint32_t*)hist, (uint32_t)view.size.area());
+	};
+	std::vector<PairIdx> sortedPairs(pairs.GetData(), pairs.GetData()+pairs.GetSize());
+	std::sort(sortedPairs.begin(), sortedPairs.end(), [](const PairIdx& a, const PairIdx& b) {
+		return a.i != b.i ? a.i < b.i : a.j < b.j;
+	});
+	uint32_t idxImageA(NO_ID);
+	for (const PairIdx& pair: sortedPairs) {
+		ASSERT(pair.i < pair.j);
+		if (pair.i != idxImageA)
+			histogram(idxImageA = pair.i, histA);
+		histogram(pair.j, histB);
+		MVS::CUDA::LaunchReduceFaceAreasPair((const uint32_t*)histA, (const uint32_t*)histB, (uint16_t*)(CUdeviceptr)faceAreas, numFaces);
 	}
-	maxAreas.Resize(scene.mesh.faces.GetSize());
-	ReduceFaceAreasOverPairs(viewAreas, pairs, maxAreas);
+	maxAreas.Resize(numFaces);
+	reportCudaError(faceAreas.GetData(maxAreas));
+	#ifdef _DEBUG
+	// the host reduction over the downloaded face maps, the path this replaced, must agree on
+	// every face
+	{
+		Unsigned8Arr usedImages;
+		ListPairImages(pairs, images.GetSize(), usedImages);
+		ViewAreaArr viewAreas(images.GetSize());
+		FOREACH(idxImage, images) {
+			const Image& imageData = images[idxImage];
+			if (!imageData.IsValid() || !usedImages[idxImage])
+				continue;
+			Mesh::AreaArr& areas = viewAreas[idxImage];
+			areas.Resize(numFaces);
+			areas.Memset(0);
+			TImage<FIndex> faceMap(imageData.height, imageData.width);
+			views[idxImage].faceMap.GetData(faceMap);
+			for (int j=0; j<faceMap.rows; ++j)
+				for (int i=0; i<faceMap.cols; ++i)
+					if (faceMap(j,i) != NO_ID)
+						++areas[faceMap(j,i)];
+		}
+		Mesh::AreaArr hostAreas(numFaces);
+		ReduceFaceAreasOverPairs(viewAreas, pairs, hostAreas);
+		FOREACH(f, maxAreas)
+			ASSERT(maxAreas[f] == hostAreas[f]);
+	}
+	#endif
 }
 
 // the shared preparation (PrepareRefineMesh, SceneRefineCommon.h): decimate, remesh and
@@ -540,7 +667,8 @@ bool MeshRefineCUDA::ScoreMesh(MeshRefineStep::Terms& out)
 	// rasterize the current vertices into every view, then the terms that need nothing else:
 	// the face normals and the two smoothness terms queue up behind the rasterization and run
 	// while the host is still issuing the pairs
-	ListCameraFaces();
+	reportCudaError(ownerBits.Reset(sizeof(uint32_t)*OwnerWords()*images.GetSize()));
+	ListCameraFaces(true);
 	ComputeNormalFaces();
 	const VIndex numVertices(scene.mesh.vertices.GetSize());
 	const TermsLayout layout(numVertices);
@@ -624,7 +752,7 @@ bool MeshRefineCUDA::ScoreMesh(MeshRefineStep::Terms& out)
 
 
 // project mesh to the given camera plane
-void MeshRefineCUDA::ProjectMesh(const Camera& camera, const Image8U::Size& size, uint32_t idxImage)
+void MeshRefineCUDA::ProjectMesh(const Camera& camera, const Image8U::Size& size, uint32_t idxImage, uint32_t* ownerBits)
 {
 	View& view = views[idxImage];
 	ASSERT(projKey.IsValid() && (size_t)size.area() <= projKeyPixels);
@@ -647,7 +775,7 @@ void MeshRefineCUDA::ProjectMesh(const Camera& camera, const Image8U::Size& size
 			(unsigned long long*)(CUdeviceptr)projKey,
 			(float*)(CUdeviceptr)view.depthMap,
 			(uint32_t*)(CUdeviceptr)view.faceMap,
-			(ushort4*)(CUdeviceptr)view.baryMap,
+			ownerBits,
 			cudaCamera, numFaces, pass == 1);
 	#ifdef _DEBUG
 	// every covered pixel must hold the payload of exactly the face that won its key
@@ -701,9 +829,8 @@ void MeshRefineCUDA::ProcessPair(uint32_t idxImageA, uint32_t idxImageB, uint32_
 	MVS::CUDA::LaunchAccumulateFacePhoto(
 		(const MVS::CUDA::Point3*)(CUdeviceptr)vertices,
 		(const MVS::CUDA::Point3u*)(CUdeviceptr)faces,
-		(const float*)(CUdeviceptr)viewA.depthMap,
+		(const uint32_t*)OwnerBits(idxImageA),
 		(const uint32_t*)(CUdeviceptr)viewA.faceMap,
-		(const ushort4*)(CUdeviceptr)viewA.baryMap,
 		(const float*)(CUdeviceptr)pixelGrad,
 		(const uint8_t*)(CUdeviceptr)maskStats,
 		(float*)(CUdeviceptr)faceTerms,
@@ -785,15 +912,19 @@ bool Scene::RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, u
 	if (!refine.IsValid())
 		return false;
 
-	// run the mesh optimization on multiple scales (coarse to fine)
+	// the image scale and blur of every refinement scale (coarse to fine); the sigma multiplier
+	// is tied to MeshRefineStep::StepGrow, see the note there
+	const auto ScaleOf = [&](unsigned s) { return POWI(fScaleStep, nScales-s-1); };
+	const auto SigmaOf = [&](unsigned s) { return 0.09f*POWI(2.f, nScales-s)+0.15f; };
+	// run the mesh optimization on multiple scales
 	for (unsigned nScale=0; nScale<nScales; ++nScale) {
-		// init images
-		const float scale(POWI(fScaleStep, nScales-nScale-1));
-		const float step(POWI(2.f, nScales-nScale));
-		DEBUG_ULTIMATE("Refine mesh at: %.2f image scale", scale);
-		// the sigma multiplier is tied to MeshRefineStep::StepGrow, see the note there
-		if (!refine.InitImages(scale, 0.09f*step+0.15f))
+		// init images; the next scale's are prepared on a thread from here on, while this one's
+		// mesh preparation and refinement run, so its switch pays only the upload
+		DEBUG_ULTIMATE("Refine mesh at: %.2f image scale", ScaleOf(nScale));
+		if (!refine.InitImages(ScaleOf(nScale), SigmaOf(nScale)))
 			return false;
+		if (nScale+1 < nScales)
+			refine.PrefetchImages(ScaleOf(nScale+1), SigmaOf(nScale+1));
 		refine.nScale = nScale;
 
 		// extract array of triangles incident to each vertex

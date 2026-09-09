@@ -48,12 +48,14 @@ namespace CUDA {
 
 // rasterizer over the whole mesh, one thread per face, launched twice: resolve=false does an
 // atomicMin of the (depth, face id) key into projKey (one 64-bit word per pixel, pre-filled with
-// ~0ull); resolve=true lets the thread holding each pixel's winning key write depth/face/bary
-// (faceMap pre-filled with NO_ID, depthMap with 0). In Debug, LaunchCheckProjection then asserts
-// every covered pixel received its payload.
+// ~0ull); resolve=true lets the thread holding each pixel's winning key write depth/face (faceMap
+// pre-filled with NO_ID, depthMap with 0) and, when ownerBits is not NULL, sets bit f of it for
+// every face f that wrote a pixel ((numFaces+31)/32 words, every word written, no clearing
+// needed) -- the bits LaunchAccumulateFacePhoto skips the unseen faces by. In Debug,
+// LaunchCheckProjection then asserts every covered pixel received its payload.
 void LaunchProjectMesh(
 	const Point3* vertices, const Point3u* faces,
-	unsigned long long* projKey, float* depthMap, uint32_t* faceMap, ushort4* baryMap,
+	unsigned long long* projKey, float* depthMap, uint32_t* faceMap, uint32_t* ownerBits,
 	const Camera& camera, uint32_t numFaces, bool resolve);
 
 #ifdef _DEBUG
@@ -96,16 +98,17 @@ uint32_t LaunchComputeWindowStats(
 void LaunchReduceBlockSums(const float* blockSums, uint32_t numSlots, float* sumR, float* sumRZ);
 
 // the photometric accumulation, atomic-free so that the per-vertex sums are bit-reproducible run
-// to run (float addition is not associative). Per pair-direction: one thread per MESH face (not
-// per face of this view -- see kernelAccumulateFacePhoto) folds that face's contributing pixels
-// into its private slots -- faceAcc, 3 floats per face (one per corner: Sum g_p*b_c),
-// facePixels, the contributing pixel count, and faceFoot, the min footprint (only read where
-// facePixels > 0) -- accumulated ACROSS the pair-directions of one ScoreMesh() (cleared by the
-// host once per call), and marks the face's three vertices in vertexSeen.
+// to run (float addition is not associative). Per pair-direction: one thread per MESH face,
+// exiting on the reference view's owner bit (LaunchProjectMesh) unless the face owns a pixel
+// there, folds that face's contributing pixels -- barycentrics and depth recomputed from its
+// projection, see kernelAccumulateFacePhoto -- into its private slots -- faceAcc, 3 floats per
+// face (one per corner: Sum g_p*b_c), facePixels, the contributing pixel count, and faceFoot,
+// the min footprint (only read where facePixels > 0) -- accumulated ACROSS the pair-directions
+// of one ScoreMesh() (cleared by the host once per call), and marks the face's three vertices in
+// vertexSeen.
 void LaunchAccumulateFacePhoto(
-	const Point3* vertices, const Point3u* faces,
-	const float* depthMap, const uint32_t* faceMap, const ushort4* baryMap,
-	const float* pixelGrad, const uint8_t* mask,
+	const Point3* vertices, const Point3u* faces, const uint32_t* ownerBits,
+	const uint32_t* faceMap, const float* pixelGrad, const uint8_t* mask,
 	float* faceAcc, float* facePixels, float* faceFoot, uint8_t* vertexSeen,
 	const Camera& camA, uint32_t numFaces);
 
@@ -133,6 +136,12 @@ void LaunchComputeSmoothnessGradient(
 void LaunchComputeFaceNormal(
 	const Point3* vertices, const Point3u* faces,
 	Point3* normals, uint32_t numFaces);
+// the preparation's projected face areas (MeshRefineCUDA::ListFaceAreas): hist, zeroed by the
+// caller, receives the rasterized pixel count of every face in one view's face map ...
+void LaunchFaceHistogram(const uint32_t* faceMap, uint32_t* hist, uint32_t numPixels);
+// ... and maxAreas, zeroed once by the caller, the largest over the pairs of the smaller of a
+// pair's two counts, truncated to 16 bits like the host's uint16_t counters
+void LaunchReduceFaceAreasPair(const uint32_t* histA, const uint32_t* histB, uint16_t* maxAreas, uint32_t numFaces);
 /*----------------------------------------------------------------*/
 
 } // namespace CUDA
