@@ -171,9 +171,11 @@ The 3x3 grid extraction ensures features aren't concentrated in textured areas w
 Five matching strategies:
 - **VOCABULARY** (recommended): Build a visual vocabulary tree and query each image's ranked similar-image list. The two directed rankings are fused with symmetric reciprocal-rank fusion (each direction contributes `1/(k0+rank)`, so a pair both images retrieve early outranks a pair only one image scores high, and the rank-based fusion is immune to per-query score-scale drift), then only the pairs present in the fused top-K lists of *both* endpoints are kept — mutual agreement suppresses the one-sided, mostly false tail of each retrieval list that wastes matching budget at small `maxPairsPerImage`. Finally the connected components of the selected pair graph are bridged with the best-scoring cross-component pairs, so a sparse selection cannot silently split the view graph. O(N log N) instead of O(N²).
 - **EXHAUSTIVE**: Match all pairs. Only practical for small datasets (<100 images).
-- **SEQUENTIAL**: Match consecutive frames only. For ordered video sequences.
+- **SEQUENTIAL**: Match consecutive frames only, `--match-sequence-overlap` (default 3) images ahead of each. For ordered video sequences.
 - **KNOWN_POSES**: Pick the pairs geometrically, from poses that were imported rather than estimated. Each pair is scored by baseline (normalized by the median nearest-neighbor camera distance, so the score is independent of the units the poses came in) times viewing-direction agreement; pairs whose optical axes diverge by more than 75° are rejected outright. Selection mirrors VOCABULARY: a pair is kept only if each image ranks the other within its own top candidates (mutual agreement), every posed image additionally keeps its 2 nearest posed cameras with *no* angle gating (under occlusion — e.g. an indoor camera turning back at the end of a corridor — all top covisible partners can exceed the gate), and remaining components are bridged by the best-scoring cross pairs. Pair selection itself needs no descriptors and therefore builds no vocabulary tree when every image is posed. If the poses file is incomplete, the vocabulary tree adds pairs touching the unposed images so the reconstruction tail can resect them — **always the vocabulary tree**, even in a `--roma2` run that already carries global descriptors (it used to be able to use those instead; no longer, per the no-crossover rule above). Auto-selected when poses were imported and `--match-mode` was not passed explicitly; falls back to exhaustive if fewer than two images are posed.
 - **RETRIEVAL**: Rank candidate pairs by the RoMa v2 DINOv3+GeM(p=3) global descriptors instead of the vocabulary tree, with the same reciprocal-rank fusion, mutual-agreement and component-bridging selection as VOCABULARY. See RoMa v2 below.
+
+  VOCABULARY and RETRIEVAL also get a sequential prior on top of whatever they rank: the visual ranking alone leaves out a share of the truly overlapping consecutive pairs, exactly the ones that hold a video or hand-held interior's matched graph together end to end, so every image's next `--match-sequence-overlap` (default 3) neighbours in import order are proposed unconditionally alongside its ranked candidates (`PairsMatcher::AddSequentialPairs`; 0 turns it off).
 
   Note that the score deliberately has **no** camera-center cheirality (mutual-frustum) test: in an orbit capture the neighboring camera centers lie tangentially to the view direction, and in a nadir aerial capture perpendicularly to it, so the strongest overlapping pairs are exactly the ones such a test would discard. Baseline is a ranking preference, not a rejection criterion -- the distance at which two views still overlap varies by orders of magnitude between close-range and aerial captures.
 
@@ -207,6 +209,9 @@ Union-find merges matched features across all image pairs into tracks. Filtering
 - Tracks with too few observations
 - Images with spatially clustered tracks (likely degenerate geometry)
 - Images with small triangulation angles
+- Images outside the largest covisibility component, or peeled off it for too few independent covisibility neighbours (`FilterWeaklyConnectedImages`, `Track.h`) -- except one corroborated by two verified pairs to images already kept, agreeing with the model in rotation and baseline direction (chained across rounds, so a whole chain the resection registered from relative poses can be rescued); on by default (`maxCorroborationAngle` 5°, no flag)
+
+See `docs/design/IncrementalReconstruction.md` for the full design of pair selection, the star initializer, the resection and its bundle adjustments, and this filter.
 
 ---
 
@@ -302,9 +307,11 @@ Output: Calibrated poses + sparse point cloud
 
 - **Data protocol**: Keypoints and descriptors are **moved** (not copied) from the global scene into sub-scenes to save memory. Cross-cluster image pairs remain in the global scene for use during alignment. After merge, data is moved back.
 
-- **Star Initialization** (`StarInitializer.h`): Instead of the classic two-view initialization (sensitive to baseline selection), OpenMVS uses a star configuration: the most-connected image becomes the reference, and multiple views are registered simultaneously. This averages over multiple baselines for a more stable initial estimate.
+- **Star Initialization** (`StarInitializer.h`): Instead of the classic two-view initialization (sensitive to baseline selection), OpenMVS uses a star configuration: the most-connected image becomes the reference, and multiple views are registered simultaneously, refining the focal length alone (a star this small cannot also constrain distortion) -- a focal forced with `--focal-length` is left untouched here and refined by the global bundle adjustments instead.
 
-- **Bundle Adjustment** (`BundleAdjustment.h`): Uses Ceres Solver. **Local BA** optimizes a window of cameras + their points with fixed intrinsics (fast, used during resection). **Global BA** optimizes everything including intrinsics (slower, used at end). GPS constraints can be added when EXIF GPS data is available.
+- **Resection** (`Resection.h`, `PoseLink.h`): accepts a pose only when its inliers are a large share of the correspondences (or reach an absolute count regardless of share) and, if weakly supported, agree in rotation with the quorum of the image's verified pairs to already-registered neighbours, not just the single strongest one. When no candidate has enough correspondences, or an iteration registers nothing, it registers the best-supported image straight from such a pair's relative pose instead of PnP.
+
+- **Bundle Adjustment** (`BundleAdjustment.h`, `BundleAdjustmentCostFunctions.h`): Uses Ceres Solver. **Local BA** optimizes a window of cameras + their points with fixed intrinsics (fast, used during resection). **Full/Global BA** refines the main-set intrinsics (focal, k1, k2) by default, `--refine-intrinsics 2` and `minRefineExtIntrs` opening the rest, and adds a robustified relative-pose residual per verified pair (`--ba-pair-sigma`, default 1°) that holds a joint straight where the tracks joining it are few or two-view only. GPS constraints can be added when EXIF GPS data is available.
 
 ---
 
@@ -614,6 +621,7 @@ libs/SFM/
 │ # Reconstruction
 ├── StarInitializer.h/cpp               # Star-config initialization
 ├── Resection.h/cpp                     # Incremental PnP registration
+├── PoseLink.h                          # Pose-link quorum over an image's verified pairs (resection + image filter)
 ├── Triangulation.h/cpp                 # Multi-view triangulation
 ├── BundleAdjustment.h/cpp              # Ceres-based optimization
 ├── BundleAdjustmentCostFunctions.h     # Reprojection error residuals

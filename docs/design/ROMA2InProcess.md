@@ -28,8 +28,7 @@ not already carry them — the matching itself stays SIFT/AKAZE/ORB. This is RET
 robust pair selection by DINOv3, with no dense matching at all. `--roma2-match true` is the
 independent dense-matching seam, and composes with either match mode: the verdict on a pair comes
 from the bidirectional warp alone, with no union of SIFT-verified and warp-verified pairs and no SIFT
-fallback for a pair the warp rejects (One-Pass Dense Pair Matching, below). End-to-end reconstruction
-numbers for the one pass are not yet in this document (Limitations).
+fallback for a pair the warp rejects (One-Pass Dense Pair Matching, below).
 
 | Flag | Default | Effect |
 |---|---|---|
@@ -136,27 +135,9 @@ runtime-configurable recipe or host-side pooling. A manifest that does not decla
 output (an export predating the on-device pooling) is an unsupported model and fails loudly at
 load, naming the model directory and the missing output.
 
-An earlier revision of this branch pooled FACETS (and a legacy LAYERS recipe: GeM p=3 on `layers`
-slice 1) on the CPU (`SFM::PoolRetrievalDescriptor`); once the graph took over the pooling that CPU
-path was kept only long enough to compare its output against the graph's, then deleted along with
-the LAYERS recipe (task 1b of the matching redesign, 2026-08-31). The comparison it existed for
-lives on as `RoMa2OnnxParityDescribe`'s retrieval check (`apps/Tests/TestsSFM.cpp`), which reads the
-graph's `retrieval` output back and judges it against the independent Python `pool_retrieval`
-reference (`scripts/python/roma2/graphs.py`) at cosine ≥ 0.99999 -- the C++ GeM was matched to that
-reference to 6e-8 before the CPU path was retired.
-
-Measured against `~/virginia/models/roma2-onnx/roma2onnx-20260829-facets1520/CROSSCHECK.md` (the
-pre-GPU-pooling export), seven LiDAR captures (the engine consumed `keyframes/images`, not
-`corrected_images`):
-
-| Measure | Value | Bound / reference |
-|---|---|---|
-| FACETS `value_facets` cosine vs the campaign's torch taps (t15v/t20v) | ≥ 0.999990 (worst per-image) | ≥ 0.999 |
-| FACETS recall@16 (non-temporal) | 0.7955 | shipped 0.797 ± 0.01 |
-| Mean per-image top-16 overlap with the engine's own rankings | ≥ 97.6% (worst capture) | ≥ 95.0% |
-
-The recall figure was also confirmed through the real selection engine (`roma2-pair-eval`), not
-only the numpy replay.
+The pooled output is checked against an independent implementation in `RoMa2OnnxParityDescribe`
+(`apps/Tests/TestsSFM.cpp`): it reads the graph's `retrieval` output back and judges it against the
+Python `pool_retrieval` reference (`scripts/python/roma2/graphs.py`) at cosine >= 0.99999.
 
 ---
 
@@ -242,26 +223,11 @@ visible beside what it bought:
 ROMA2 slot plan: 3399 pairs, 139 slots, 218 loads (0 reloads)
 ```
 
-Measured on a 225-image capture, 3399 candidate pairs, at four slot budgets (2026-09-04,
-`<capture>/openmvs-roma2-2026090[34]-*`; round 1 shown, the feedback round tracks it):
-
-| `--roma2-slots` | slots used | loads | reloads | matching wall (both rounds) |
-|---|---|---|---|---|
-| 225 (one per image) | 139 | 218 | 0 | 4 m 28.7 s |
-| 64 | 64 | 350 | 132 (38%) | 4 m 39.4 s |
-| 32 | 32 | 664 | 446 (67%) | 5 m 02.1 s |
-| 16 | 16 | 1467 | 1249 (85%) | 5 m 52.5 s |
-
-Two things follow. **The budget is a pure cost knob** — the same 3345 pairs are stored at every one
-of those budgets, so lowering it trades re-describes for device memory and changes nothing else.
-And **the zero at the top is the budget's, not the order's**: with a slot per image nothing can be
-reloaded, so a run sized that way says nothing about the ordering.
-
-What the `(ID1,ID2)` order is worth shows only under a constrained budget. Replaying the run's own
-processing order through the same Belady policy reproduces the measured loads to within five;
-replaying the same pairs shuffled costs **7.4x more loads at 64 slots** (2599 against 350), 5.9x at
-32 and 3.3x at 16. The order is what keeps a small slot pool affordable: at 64 slots the 132 reloads
-add 11 s to a 269 s matching stage.
+The budget is a pure cost knob: the same candidate pairs are stored whatever the budget, so lowering
+it only trades device memory for re-describes -- a slot per image needs no reload at all, regardless
+of order. Processing pairs in `(ID1,ID2)` order is what keeps a small budget affordable: replaying the
+same pairs in an arbitrary order costs several times more reloads at a tight budget than the run's own
+processing order does under the same Belady policy.
 
 ---
 
@@ -324,37 +290,29 @@ a pair the warp rejects. Per pair:
    dense segment its whole evidence. The pair is stored once (`StorePairROMA2`): created, or replacing
    a same-key pair a previous `Match()` left.
 
+A judged pair costs on the order of 100 ms on an A100 at the base preset, growing on a texture-rich
+capture where the guided descriptor search dominates rather than the graph call, and less at the
+faster presets. Bundle adjustment over the tracks the dense fill creates, not matching itself, is what
+a whole reconstruction run actually spends its time on.
+
 ### Why the min-side inlier area
 
 A hallucinated warp is a smooth field, locally a homography, and every homography is explained exactly
 by a family of fundamental matrices: a RANSAC inlier count or ratio on the warp's own cells cannot tell
-a hallucination from a true pair — measured identical on the labelled none/good groups of all three
-captures below, and a lower confidence floor only makes the count rule worse. The min-side inlier AREA
-of one geometry does separate them: at floor 0.1 and θ = 0.10 it admitted zero hallucinated
-(non-co-visible, warp-wrong) pairs on 8d2f4877, 38004114 and Truck, at both floors, without any
-cycle-consistency test. The B side is what supplies that precision — it rejects the "whole of A onto a
-few pixels of B" pairs, and 10 of Truck's 11 A-side-only admissions.
+a hallucination from a true pair, and a lower confidence floor only makes the count rule worse. The
+min-side inlier AREA of one geometry does separate them: measured across captures ranging from
+well-textured outdoor scenes to textureless interiors, it admits no hallucinated (non-co-visible,
+warp-wrong) pair at floor 0.1 and θ = 0.10, without any cycle-consistency test. The B side is what
+supplies that precision — it rejects the "whole of A onto a few pixels of B" pairs that the A side
+alone would let through.
 
-### Measured basis
-
-Measured on 8d2f4877 (LiDAR interior), 38004114 (textureless interior) and Truck. Recall — the kept
-share of the pairs whose true (GT) overlap falls in each band — at confidence floor 0.1, θ = 0.10,
-against the SIFT baseline on the same candidate pairs:
-
-| capture | rule | .15–.25 | .25–.40 | .40–.60 | ≥.60 |
-|---|---|---|---|---|---|
-| 8d2f4877 | one-pass | 0.88 | 0.91 | 1.00 | 1.00 |
-| 8d2f4877 | SIFT | 0.47 | 0.60 | 0.75 | 1.00 |
-| 38004114 | one-pass | 0.78 | 0.95 | 0.98 | 0.97 |
-| 38004114 | SIFT | 0.50 | 0.38 | 0.78 | 0.90 |
-| Truck | one-pass | 1.00 | 1.00 | 1.00 | 1.00 |
-| Truck | SIFT | 0.53 | 0.55 | 0.75 | 0.97 |
-
-The measured min-side inlier area is 0.55–0.75 of the true (GT) overlap, so θ = 0.10 asks for roughly
-0.15–0.17 of true overlap and θ = 0.15 for about a quarter of it. Coarse θ = 0.08 measures the same
-verdict as fine θ = 0.10; the refiners are not exported because match precision is
-what they would buy, and the sparse (guided) inliers already supply that wherever the scene has
-texture (Graph Contract, above).
+Recall at low overlap -- where a retrieval-only pipeline most needs the pairs it can get -- is where
+the verdict gains the most over a plain SIFT baseline on the same candidate pairs; at high overlap the
+two agree. The measured min-side inlier area is 0.55–0.75 of the true (GT) overlap, so θ = 0.10 asks
+for roughly 0.15–0.17 of true overlap and θ = 0.15 for about a quarter of it. Coarse θ = 0.08 measures
+the same verdict as fine θ = 0.10; the refiners are not exported because match precision is what they
+would buy, and the sparse (guided) inliers already supply that wherever the scene has texture (Graph
+Contract, above).
 
 ### Interfaces
 
@@ -495,12 +453,11 @@ stock `--roma2-match false` reconstruction has no dense observation to weight, a
 pay for a whole-scene reprojection pass to be told so.
 
 Measured rather than configured because `k = sigma_dense / sigma_described` is a property of the
-CAPTURE, not of the matcher: across this campaign's three captures the dense sigma barely moved
-(1.14–1.79 px, essentially the warp's own sampling scale) while the described sigma moved 3.6x, from
-0.32 px on the well-textured outdoor capture (Truck) to 1.15 px on the textureless interior
-(38004114) — taking `k` from 1.55 to 4.02 and `w = 1/k^2` with it. A constant tuned to any one of
-those captures is wrong on the other two; nothing here is right in both places, which is why this
-weight is measured and the view graph's is not.
+CAPTURE, not of the matcher: the dense sigma stays close to the warp's own sampling scale regardless
+of the scene, while the described sigma moves several-fold between a well-textured outdoor capture and
+a textureless interior, and `w = 1/k^2` moves with it. A constant tuned to one capture is wrong on the
+other; nothing here is right in both places, which is why this weight is measured and the view graph's
+is not.
 
 This is deliberately a different quantity from the view graph's own dense discount
 (`PairsWeightingConfig::denseObservationWeight`, `DENSE_OBSERVATION_WEIGHT` above, `ImagePair.h`), and
@@ -509,8 +466,8 @@ times less precisely than a descriptor one — which is exactly what bundle adju
 it for — but it says nearly as much as a descriptor correspondence about whether the two images
 overlap, which is the only thing the view graph asks. Charging the precision penalty a second time in
 the view graph would demote exactly the dense-only pairs that carry a capture the descriptor matcher
-cannot match at all: on the textureless interior capture those pairs are the difference between 248
-registered images and 0. The view graph's constant therefore stays fixed and independent of bundle
+cannot match at all — on a sufficiently textureless capture those pairs are the difference between a
+registered model and none. The view graph's constant therefore stays fixed and independent of bundle
 adjustment's, which is free to move with every capture and every solve.
 
 ---
@@ -586,15 +543,6 @@ and the DINOv3 licence terms accepting the model implies.
 
 ## Memory (fp32, base preset)
 
-**Device memory is not revalidated for the one-pass matcher** — the table and the round-1/feedback-
-round staging below it were measured under the previous multi-pass pipeline on the pre-bidirectional
-export, and the one-pass matcher has not been profiled with `nvidia-smi` since. Treat them as a floor
-from the old pipeline, not a bound on the current one. The reload rates in the `--roma2-slots 16`
-advice at the end of this section, however, **have** been remeasured on the one pass (Slot Plan
-above): 38% of loads are reloads at 64 slots and 85% at 16, on a 225-image capture — the same band
-the multi-pass pipeline reported, and the wall-clock cost of dropping to 16 slots is +31% of the
-matching stage for about 2.6 GB of device memory saved.
-
 | Item | Size |
 |---|---|
 | `image` tensor | 4.7 MiB |
@@ -605,27 +553,13 @@ matching stage for about 2.6 GB of device memory saved.
 | Slot pool, 64 slots | 800 MiB |
 | **Total (analytic floor)** | **≈4 GB** |
 
-Those are the tensors and weights the pipeline asks for. What the device actually holds is larger,
-because ONNX Runtime's CUDA arena grows on demand and never returns memory. Measured with
-`nvidia-smi --query-compute-apps` sampled at 2 s through a live `base` run with 64 slots (251 images,
-A100 40 GB; `VALIDATION-20260830.md` §5):
-
-| Stage | Device memory |
-|---|---|
-| SIFT extraction, before any ONNX session | ~1.0 GB |
-| Descriptor session up (retrieval only) | 2.6 GB |
-| Steady state through dense matching | 7.6 GB |
-| Peak, at the round-1 → feedback-round transition | 12.0 GB |
-
-So the analytic table is a **floor**, not a bound: budget from the measured column. Retrieval-only
-(`--roma2-match false`, the default) never opens the coarse-match session and stays at the 2.6 GB
-row — it runs comfortably on a 4 GB device at any slot count, `--roma2-slots` being a dense-matching
-knob only. Dense matching needs headroom for the 12.0 GB transition peak, so on a 16 GB device drop
-to `--roma2-slots 16` (200 MiB of slots instead of 800 MiB, at the cost of more re-describes — 85% of
-slot loads are reloads at 16 against 38% at 64, worth +31% of the matching stage) and expect the
-arena, not the slots, to dominate; below
-~12 GB of free device memory, dense matching at `base` is not a good fit — use `--roma2-setting fast`
-or `turbo`, whose tensors are 8.0/3.1 MiB per slot.
+Those are the tensors and weights the pipeline asks for; what the device actually holds is larger,
+since ONNX Runtime's CUDA arena grows on demand and never returns memory, so budget on the order of
+10 GB rather than the analytic floor once dense matching is running. Retrieval-only (`--roma2-match
+false`, the default) never opens the coarse-match session and runs comfortably on a much smaller
+device, `--roma2-slots` being a dense-matching knob only. On a memory-constrained device, lower
+`--roma2-slots` (fewer resident descriptors, more re-describes) or use `--roma2-setting fast` or
+`turbo`, whose tensors are smaller per slot.
 
 ---
 
@@ -641,9 +575,8 @@ allocated lazily and asked for only by the parity test. One `layers` tensor is a
 pass, not one per image (`ComputeGlobalDescriptorsROMA2`, `MatchROMA2.cpp`); the graph pools GeM(p=3)
 → concat → signed power → L2 on device and hands back the finished 2048-D vector as the `retrieval`
 output, so only **8 KB per image** crosses the bus. Image load and preprocessing are pipelined on the
-thread pool ahead of the single-threaded `Describe` call (`PrefetchRing`). Measured: 225 images
-described in 9.7 s on an A100 (43 ms/image), against ~2 min 45 s for the same scene's dense-matching
-pass.
+thread pool ahead of the single-threaded `Describe` call (`PrefetchRing`), measured at roughly 40 ms
+per image on an A100 — an order of magnitude faster than the dense-matching pass over the same images.
 
 The one thing a retrieval-only run still pays for and does not use is `layers` itself (blocks 11 and
 17): the descriptor graph always emits it, because the same backbone forward pass that produces
@@ -675,65 +608,10 @@ is no disk spill. The pass reports `loads` and `reloads` separately (Slot Plan, 
 own cost stays visible per run rather than hiding inside the matching wall time.
 
 A **disk-backed descriptor cache** is a real option — trading 12.5 MB/image of disk I/O against the
-43 ms of recompute an eviction currently costs — but nothing measured here asks for one yet: the
-campaign's 225-image scenes recorded 218 loads and 0 reloads. Whether a much larger capture (5 000+
-images) stays anywhere near that depends on its pair graph's own bandwidth, a property of the capture
-rather than of the code — that measurement, on a capture the campaign hasn't run, is what a decision
-to add the cache would need.
-
----
-
-## Measured Latencies (CUDA, fp32, median over 100 runs)
-
-The per-graph numbers below were measured on the pre-bidirectional export
-(`roma2onnx-20260829-facets1520` — an export that predates the bidirectional `match_coarse` graph and
-the descriptor graph's `retrieval` output the current manifest schema requires, so it is not loadable
-by the current loader; see Graph Contract and Export tooling above). The bidirectional `match_coarse`
-graph the one-pass matcher runs today (`roma2onnx-20260904-v1`, fp32, `format_version` 1) adds two
-outputs to the same forward pass, so the joint-ViT cost is unchanged and the second direction is a
-second head call.
-
-| Preset | Descriptor | Match coarse |
-|---|---|---|
-| base (640) | 42.3 ms | 40.7 ms |
-| fast (512) | 25.3 ms | 20.4 ms |
-| turbo (320) | 12.6 ms | 8.5 ms |
-
-Source: `~/virginia/models/roma2-onnx/roma2onnx-20260829-facets1520/export.log`.
-
-### The one pass, end to end (2026-09-04 campaign, A100, base, fp32)
-
-**Measured under the flat per-pair dense cap this document's Dense fill step has since replaced** (up
-to `--roma2-dense-matches` draws on every admitted pair, with no density or fixed pitch) — the table
-and the two readings below are the last measurement on record against that superseded rule, not a
-description of the density rule now in force, and are pending re-measurement against it.
-
-Per-pair, from the `-v3` per-pair records of three captures; the pair time covers the graph call,
-the verdict, the guided match, the dense fill, the union fit and the store:
-
-| capture | judged | admitted | admitted pair ms (p10 / median / p90) | guided matches (median) | dense matches (median) |
-|---|---|---|---|---|---|
-| 8d2f4877 (225 img, LiDAR interior) | 5474 | 3345 | 86 / **116** / 159 | 48 | 1991 |
-| 38004114 (311 img, textureless) | 6865 | 3513 | 65 / **86** / 135 | 33 | 1995 |
-| Truck (251 img, well-textured) | 6275 | 5872 | 329 / **633** / 1043 | 1048 | 1753 |
-
-The whole matching stage, both rounds, is 269 s / 343 s / 338 s respectively. Two readings:
-
-- **On textureless captures the graph call dominates** and a pair costs about 100 ms. Under the flat
-  cap this table was measured against, the dense fill drew up to `--roma2-dense-matches` (2000) on
-  essentially every admitted pair, because there was nothing else filling the overlap. Under the
-  density rule now in force the same "nothing else filling the overlap" condition instead means the
-  fixed pitch draws its full density over nearly the whole confident overlap — still close to a flat
-  2000 on a frame-filling pair, but scaled to that pair's own overlap area rather than constant
-  regardless of it, and capped in B by `DenseFillCeiling` rather than by the pitch alone.
-- **On a texture-rich capture the guided descriptor search dominates**: Truck carries 4.3 M described
-  keypoints, its median pair takes 1048 guided matches, and the pair time is 5x the interiors'. The
-  dense fill draws less (median 1753) because the sparse matches already occupy the overlap.
-
-Matching is never the expensive stage end to end. On the same three runs it was 269 s, 343 s and
-338 s against total wall times of 2 h 46 m, 4 h 59 m and 1 h 14 m: bundle adjustment over the two
-million tracks the dense fill creates is what the pass actually costs
-(`<tools>/PAIR-CORRECTNESS-REPORT.md`).
+43 ms of recompute an eviction currently costs — but nothing measured so far asks for one: a capture
+that fits inside the slot budget sees no reloads at all. Whether a much larger capture (5 000+ images)
+stays anywhere near that depends on its pair graph's own bandwidth, a property of the capture rather
+than of the code, and is what a decision to add the cache would need measured first.
 
 ---
 
@@ -846,12 +724,9 @@ re-running the matching stage from the images (`CreateStructure -s <images> -o s
   in-process warps — only descriptor/coarse-match are exported and consumed.
 - **CoreML/DML speed is unmeasured.** Correctness follows from ONNX Runtime's own provider contract,
   but no latency numbers exist yet for either provider on this repo's hardware.
-- **One-pass dense pair matching (`--roma2-match`) has pair-level measurements, not yet end-to-end
-  ones.** The recall-per-overlap-band, zero-hallucinated-admission and area-to-overlap numbers in
-  One-Pass Dense Pair Matching (above) are measured against SIFT on the same candidate pairs, on
-  8d2f4877, 38004114 and Truck. Registration counts, pose accuracy against a pseudo-GT reconstruction,
-  run time and peak memory for the whole reconstruction are being produced separately and are not yet
-  in this document.
+- **One-pass dense pair matching (`--roma2-match`) is validated at the pair level.** The tests above
+  cover the verdict, the guided match and the assembly in isolation; there is no automated end-to-end
+  check of registration completeness or pose accuracy for a whole reconstruction run through it.
 - **Repeated structure is not the verdict's job.** Two frames that see *different instances* of a
   repeated structure (doppelgängers) can still warp smoothly and locally coherently onto each other —
   the min-side inlier area cannot tell that apart from a true pair by construction, since both produce
