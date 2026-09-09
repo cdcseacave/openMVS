@@ -60,14 +60,15 @@ struct SFM_API ResectionConfig
 	unsigned maxLocalWindow{25};        // Max images in local BA window (0 = all neighbors)
 	unsigned triangulateEvery{0};       // Run triangulation every N registered images (0 = disabled)
 	unsigned localBAEvery{10};          // Run local BA every N registered images (0 = disabled)
-	std::array<unsigned, 3> fullBAEvery{25, 50, 100}; // Run full BA every N registered images (0 = disabled)
+	float fullBAGrowth{0.2f};           // Run full BA once the images registered since the last one reach this
+	                                    // fraction of the count the model had at that last full BA (0 = the
+	                                    // fraction never triggers one, leaving fullBAMinImages as the cadence)
+	unsigned fullBAMinImages{25};       // Floor under fullBAGrowth: never run a full BA before this many images
+	                                    // have registered since the last one, so a small model does not adjust
+	                                    // every few images (0 = full BA never runs inside the loop)
 	unsigned minRefineExtIntrs{100};    // Min number of registered images to refine extended intrinsics in full BA (0 = disabled)
 
 	float ratioCorrespondences{0.3f};   // Min ratio of 2D-3D correspondences to best next image to accept for bundle resection (0 = disabled)
-	float avgInliersRatioForceBA{0.6f}; // Minimum resection average inliers ratio to force full BA (0 = disabled)
-	unsigned minImagesForceBA{3};       // Minimum images registered since the last full BA before a low average inliers
-	                                    // ratio may force one; without it a persistently low ratio forces a full BA after
-	                                    // every single registration (0 = no minimum; the fullBAEvery cadence is unaffected)
 	float maxReprojError{4.f};          // Reprojection error for triangulation and filtering
 	float minAngleThreshold{1.f};       // Minimum triangulation angle (degrees)
 	float multDepthNear{0.05f};         // Near depth threshold multiplier
