@@ -9219,6 +9219,90 @@ bool BundleAdjustmentPairConstraintTest()
 	return true;
 }
 
+// Give every track of a generated scene a dense twin of each of its observations, and add a
+// dense-only copy of every track: the first kind of track holds a described observation the cap
+// may never drop, the second nothing but droppable ones, so a solve over this scene meets both
+// halves of the cap's rule that a track takes two observations into it or none.
+void AddDenseObservations(Scene& scene)
+{
+	for (Image& img : scene.images)
+		img.CloseDescribedKeypoints();
+	TrackArr denseTracks;
+	for (Track& track : scene.tracks) {
+		Track denseTrack(track.position);
+		const unsigned numObservations = track.GetNumInliers();
+		for (unsigned i = 0; i < numObservations; ++i) {
+			const Observation obs = track.observations[i];
+			Image& img = scene.images[obs.imageID];
+			const cv::KeyPoint kp(img.keypoints[obs.featureID]);
+			// the twin the described track takes, then the one its dense-only copy takes
+			for (Observation* denseObs : { &track.observations.AddEmpty(), &denseTrack.observations.AddEmpty() }) {
+				*denseObs = Observation(obs.imageID, (uint32_t)img.keypoints.size());
+				img.keypoints.push_back(kp);
+			}
+		}
+		track.numInliers = (uint8_t)MINF((unsigned)track.observations.size(), 255u);
+		denseTrack.numInliers = (uint8_t)MINF((unsigned)denseTrack.observations.size(), 255u);
+		denseTracks.emplace_back(std::move(denseTrack));
+	}
+	scene.tracks.Join(denseTracks);
+}
+
+bool BADenseObservationCapTest()
+{
+	TD_TIMER_START();
+	// The cap decides which dense observations an image contributes, so what it must not change is
+	// the solution: on a scene whose images carry far more of them than it allows, the capped solve
+	// has to recover the poses the uncapped one recovers. It is also the pass that has to leave no
+	// point in the problem that a single view sees, which no solution comparison would show, so the
+	// scene carries both the tracks the cap has to top back up and the ones it may let go.
+	constexpr double MAX_ROTATION_ERROR = 0.05;   // degrees the cap may add to the uncapped solve's
+	constexpr double MAX_CENTER_ERROR = 0.005;    // units it may add (the arrangement spans ~6)
+	SceneConfig cfg;
+	cfg.numImages = 8;
+	cfg.numPoints = 300;
+	cfg.perturbOptions = SceneConfig::PERTURB_POSES | SceneConfig::PERTURB_POINTS;
+	Scene truth, capped, uncapped;
+	GenerateTestScene(truth, cfg, &capped);
+	{
+		Scene truthAgain;
+		GenerateTestScene(truthAgain, cfg, &uncapped);
+	}
+	AddDenseObservations(capped);
+	AddDenseObservations(uncapped);
+	std::vector<Pose3D> gtPoses;
+	for (const Image& img : truth.images)
+		gtPoses.push_back(img);
+
+	BAConfig config;
+	config.maxDenseObservationsPerImage = 0; // every observation
+	if (!BundleAdjustment::Adjust(uncapped, config)) {
+		VERBOSE("BADenseObservationCapTest FAILED: the uncapped bundle adjustment did not solve the scene");
+		return false;
+	}
+	config.maxDenseObservationsPerImage = 32; // against the ~1200 dense observations an image holds
+	if (!BundleAdjustment::Adjust(capped, config)) {
+		VERBOSE("BADenseObservationCapTest FAILED: the capped bundle adjustment did not solve the scene");
+		return false;
+	}
+	double maxRotationDeg, maxCenter, maxRotationDegUncapped, maxCenterUncapped;
+	WorstPoseError(uncapped, gtPoses, maxRotationDegUncapped, maxCenterUncapped);
+	WorstPoseError(capped, gtPoses, maxRotationDeg, maxCenter);
+	if (maxRotationDeg > maxRotationDegUncapped + MAX_ROTATION_ERROR ||
+		maxCenter > maxCenterUncapped + MAX_CENTER_ERROR) {
+		VERBOSE("BADenseObservationCapTest FAILED: the capped solve left the model %.4f degrees and %.5f units from "
+			"the truth, past the %.4f and %.5f the uncapped one reaches by more than the %.2f degrees and %.3f units "
+			"the cap may cost", maxRotationDeg, maxCenter, maxRotationDegUncapped, maxCenterUncapped,
+			MAX_ROTATION_ERROR, MAX_CENTER_ERROR);
+		return false;
+	}
+	VERBOSE("BADenseObservationCapTest PASSED: capping the dense observations at %u an image leaves the solve %.4f "
+		"degrees and %.5f units from the truth, against %.4f and %.5f uncapped (%s)",
+		config.maxDenseObservationsPerImage, maxRotationDeg, maxCenter,
+		maxRotationDegUncapped, maxCenterUncapped, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 // Test function for rotation estimation
 bool RotationEstimatorTest()
 {

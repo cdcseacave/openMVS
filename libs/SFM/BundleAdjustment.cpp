@@ -557,6 +557,224 @@ inline void AddPinholeIntrinsics(std::unordered_map<const Camera*, DoubleArr>& i
 	ExtractPinholeIntrinsics(static_cast<const PinholeCamera*>(img.pCamera), it.first->second.data());
 }
 
+// Which dense (descriptor-less) observations of an over-cap image a solve keeps.
+//
+// A dense-matched image contributes thousands of warp-sampled observations against a few hundred
+// described ones, and each of them is the less precise measurement of the two (see
+// SelectReprojectionLoss): together they set the cost of the solve while adding little to what it
+// determines. Capping their number per image is what makes that cost bounded, and WHICH of them
+// survive decides whether the cap is free: an even cover of the frame constrains the image's pose
+// as the full set did, while an arbitrary prefix of it would leave whole regions of the image
+// unmeasured and let the pose rotate into them.
+//
+// Empty = every observation is kept (no image is over the cap); otherwise one flag per dense
+// keypoint of every image that carries any, indexed by the keypoint's offset into that image's
+// dense suffix (Image.h) -- an under-cap image gets its flags too, all set, since the pass that
+// holds a track's views together may still have to drop one of them. Described observations are
+// never dropped and never consulted.
+class DenseObservationCap
+{
+public:
+	// Whether the solve keeps the observation of keypoint featureID in image imgID
+	inline bool Keeps(IIndex imgID, const Image& img, uint32_t featureID) const {
+		if (keep.empty())
+			return true;
+		const std::vector<bool>& imgKeep = keep[imgID];
+		if (imgKeep.empty() || !img.IsDenseKeypoint(featureID))
+			return true;
+		ASSERT(featureID >= numDescribed[imgID]);
+		return imgKeep[featureID - numDescribed[imgID]];
+	}
+
+	std::vector<std::vector<bool>> keep; // per image, per dense keypoint
+	std::vector<uint32_t> numDescribed;  // per image, where its dense suffix starts
+};
+
+// Grid cell of a keypoint in an image split into gridSize x gridSize cells
+inline uint32_t DenseObservationCell(const Image& img, const cv::KeyPoint& kp, unsigned gridSize) {
+	const int width = img.pCamera->GetWidth(), height = img.pCamera->GetHeight();
+	if (width <= 0 || height <= 0)
+		return 0; // no image size to spread over: one cell, so the track length alone orders them
+	const unsigned x = MINF((unsigned)MAXF(kp.pt.x*gridSize/width, 0.f), gridSize-1);
+	const unsigned y = MINF((unsigned)MAXF(kp.pt.y*gridSize/height, 0.f), gridSize-1);
+	return y*gridSize + x;
+}
+
+// Decide which dense observations of each over-cap image take part in the solve: bucket the
+// image's dense observations on a sqrt(cap) x sqrt(cap) grid scaled to the image and take them
+// round-robin across the cells until the cap is reached, longest track first inside a cell. The
+// round-robin is what spreads the survivors over the frame; the track length orders them inside a
+// cell because an observation of a point many images see is the one that ties them together.
+//
+// visitTracks(fn) calls fn(track) for every track the solve builds residuals from and
+// inSolve(imageID) answers whether an observation's image takes part: both mirror the residual
+// loop, whose filtering this pre-pass reproduces. Returns how many observations were dropped.
+template <typename TVisitTracks, typename TInSolve>
+uint32_t BuildDenseObservationCap(const Scene& scene, unsigned cap,
+	const TVisitTracks& visitTracks, const TInSolve& inSolve, DenseObservationCap& denseCap)
+{
+	denseCap.keep.clear();
+	denseCap.numDescribed.clear();
+	if (cap == 0)
+		return 0; // uncapped
+	// how many dense observations every image contributes, so that only the images actually over
+	// the cap are given a decision
+	const IIndex numImages = scene.images.size();
+	std::vector<uint32_t> numDense(numImages, 0);
+	const auto forEachDense = [&](const auto& fn) {
+		visitTracks([&](const Track& track) {
+			for (const Observation& obs : track) {
+				if (!inSolve(obs.imageID))
+					continue;
+				const Image& img = scene.images[obs.imageID];
+				if (img.IsDenseKeypoint(obs.featureID))
+					fn(track, obs, img);
+			}
+		});
+	};
+	forEachDense([&](const Track&, const Observation& obs, const Image&) { ++numDense[obs.imageID]; });
+	bool anyOverCap = false;
+	for (IIndex imgID = 0; imgID < numImages && !anyOverCap; ++imgID)
+		anyOverCap = numDense[imgID] > cap;
+	if (!anyOverCap)
+		return 0;
+
+	// gather the candidates of every over-cap image, one sort key per observation:
+	// [cell | inverted track length | dense keypoint index], so sorting it groups an image's
+	// candidates by cell and orders each cell by descending track length, the keypoint index
+	// breaking the ties into one order for a given scene
+	const unsigned gridSize = MAXF((unsigned)CEIL2INT(SQRT((float)cap)), 1u);
+	denseCap.keep.resize(numImages);
+	denseCap.numDescribed.assign(numImages, 0);
+	std::vector<std::vector<uint64_t>> candidates(numImages);
+	FOREACH(imgID, scene.images) {
+		const Image& img = scene.images[imgID];
+		if (!img.HasDenseKeypoints())
+			continue;
+		// every image carrying dense keypoints gets its flags, an under-cap one keeping all of
+		// them: the pass that holds a track's views together must be able to drop any of them
+		denseCap.numDescribed[imgID] = img.NumDescribedKeypoints();
+		denseCap.keep[imgID].assign(img.NumDenseKeypoints(), numDense[imgID] <= cap);
+		if (numDense[imgID] > cap)
+			candidates[imgID].reserve(numDense[imgID]);
+	}
+	forEachDense([&](const Track& track, const Observation& obs, const Image& img) {
+		if (numDense[obs.imageID] <= cap)
+			return; // image under the cap: it keeps everything
+		const uint32_t denseIdx = obs.featureID - denseCap.numDescribed[obs.imageID];
+		const uint64_t cell = DenseObservationCell(img, img.keypoints[obs.featureID], gridSize);
+		const uint64_t invLength = 0xff - MINF(track.GetNumInliers(), 0xffu);
+		candidates[obs.imageID].push_back((cell << 40) | (invLength << 32) | denseIdx);
+	});
+
+	// take them round-robin across the cells until the cap is reached
+	uint32_t numDropped = 0;
+	std::vector<uint32_t> cellStart, active;
+	FOREACH(imgID, scene.images) {
+		std::vector<uint64_t>& imgCandidates = candidates[imgID];
+		if (imgCandidates.empty())
+			continue;
+		std::sort(imgCandidates.begin(), imgCandidates.end());
+		// the sorted candidates of one cell are contiguous; remember where each run starts
+		cellStart.clear();
+		for (size_t i = 0; i < imgCandidates.size(); ++i)
+			if (i == 0 || (imgCandidates[i] >> 40) != (imgCandidates[i-1] >> 40))
+				cellStart.push_back((uint32_t)i);
+		cellStart.push_back((uint32_t)imgCandidates.size()); // sentinel: end of the last run
+		active.resize(cellStart.size()-1);
+		std::iota(active.begin(), active.end(), 0u);
+		std::vector<bool>& imgKeep = denseCap.keep[imgID];
+		unsigned numKept = 0;
+		for (uint32_t round = 0; numKept < cap && !active.empty(); ++round) {
+			size_t numAlive = 0;
+			for (uint32_t cell : active) {
+				const uint32_t begin = cellStart[cell], end = cellStart[cell+1];
+				if (begin + round >= end)
+					continue; // this cell ran out of candidates
+				imgKeep[(uint32_t)imgCandidates[begin + round]] = true;
+				active[numAlive++] = cell;
+				if (++numKept == cap)
+					break;
+			}
+			active.resize(numAlive);
+		}
+		ASSERT(numKept <= imgCandidates.size());
+		numDropped += (uint32_t)imgCandidates.size() - numKept;
+	}
+
+	// A point one view sees is not determined by it, so a track takes two observations into the
+	// solve or none. A track the cap cut that far is a short one -- the round-robin takes the long
+	// tracks first, and a two-view dense track is what it takes last -- and it leaves the solve
+	// rather than sit in it on a single ray, its position standing until the next triangulation
+	// recomputes it from the cameras this solve moved. Where a DESCRIBED observation is the one
+	// left standing the track cannot leave, since the cap never drops those, so it is given a dense
+	// observation back instead.
+	visitTracks([&](const Track& track) {
+		unsigned numInSolve = 0, numKept = 0, numDescribedKept = 0;
+		for (const Observation& obs : track) {
+			if (!inSolve(obs.imageID))
+				continue;
+			const Image& img = scene.images[obs.imageID];
+			++numInSolve;
+			if (!denseCap.Keeps(obs.imageID, img, obs.featureID))
+				continue;
+			++numKept;
+			numDescribedKept += !img.IsDenseKeypoint(obs.featureID);
+		}
+		if (numKept >= 2 || numInSolve < 2)
+			return;
+		if (numDescribedKept > 0) {
+			// give back dropped dense observations until the track is seen twice
+			for (const Observation& obs : track) {
+				if (numKept >= 2)
+					break;
+				if (!inSolve(obs.imageID) || denseCap.Keeps(obs.imageID, scene.images[obs.imageID], obs.featureID))
+					continue;
+				denseCap.keep[obs.imageID][obs.featureID - denseCap.numDescribed[obs.imageID]] = true;
+				++numKept;
+				--numDropped;
+			}
+			return;
+		}
+		// nothing holds the track in the solve: let it go
+		for (const Observation& obs : track) {
+			if (!inSolve(obs.imageID) || !denseCap.Keeps(obs.imageID, scene.images[obs.imageID], obs.featureID))
+				continue;
+			denseCap.keep[obs.imageID][obs.featureID - denseCap.numDescribed[obs.imageID]] = false;
+			++numDropped;
+		}
+	});
+	return numDropped;
+}
+
+// Solve, retrying once with the iterative solver if a sparse solve failed: the sparse
+// factorization of the reduced camera system gives up outright on an ill-conditioned problem,
+// while the iterative solver never factorizes it, so the failure costs a retry rather than the
+// whole adjustment.
+inline void SolveBundle(ceres::Solver::Options& options, ceres::Problem& problem, ceres::Solver::Summary& summary) {
+	ceres::Solve(options, &problem, &summary);
+	if (summary.IsSolutionUsable() || options.linear_solver_type != ceres::SPARSE_SCHUR)
+		return;
+	VERBOSE("warning: the sparse bundle adjustment failed (%s); solving it iteratively", summary.BriefReport().c_str());
+	options.linear_solver_type = ceres::ITERATIVE_SCHUR;
+	options.preconditioner_type = ceres::SCHUR_JACOBI;
+	#if 0 && (CERES_VERSION_MAJOR > 2 || (CERES_VERSION_MAJOR == 2 && CERES_VERSION_MINOR >= 2))
+	// DISABLED: Power Bundle Adjustment (Weber et al., CVPR 2022) via the
+	// SCHUR_POWER_SERIES_EXPANSION preconditioner, gated on a large camera count (the reduced
+	// camera system it is meant to accelerate). Benchmarked against the SCHUR_JACOBI default and
+	// it loses at every scale tested, so it is left off. On an i7-13700KF (16C/24T) / RTX 4070 /
+	// 32GB / Win11, Ceres 2.2.0 + CUDA 13.0: House (83 cameras) ran 1.2-3.9x slower; Tanks&Temples
+	// Courthouse (1106 cameras) ran 1.6-1.7x slower on the 4-5.6M-residual bundles and HUNG for
+	// >81 min on a 6.3M-residual bundle (never converged), while SCHUR_JACOBI completed the whole
+	// reconstruction in ~54 min. CG convergence was erratic (non-monotonic in problem size).
+	// Re-enable/re-tune (e.g. without use_spse_initialization, and past a thousand cameras only)
+	// with a fresh benchmark on a scene with far more cameras than we had available.
+	options.preconditioner_type = ceres::SCHUR_POWER_SERIES_EXPANSION;
+	options.use_spse_initialization = true;
+	#endif
+	ceres::Solve(options, &problem, &summary);
+}
+
 // Pick the (possibly confidence-scaled) loss for the observation of keypoint featureID of img.
 // Sets bDense for the caller's summary. Returns false if the keypoint is below the confidence
 // threshold and the observation should be skipped.
@@ -604,11 +822,10 @@ inline void AddReprojectionResidual(ceres::Problem& problem, ceres::LossFunction
 	switch (img.GetCameraType()) {
 	case CameraType::PINHOLE:
 		problem.AddResidualBlock(
-			#if 0
+			// the hand-written Jacobians of PinholeReprojectionError, an order of magnitude cheaper
+			// to evaluate than differentiating the projection through 22 dual numbers, and equal to
+			// what that differentiation gives (BAPinholeReprojectionJacobianTest)
 			new PinholeReprojectionErrorAnalytic(kp.pt.x, kp.pt.y),
-			#else
-			PinholeReprojectionError::Create(kp.pt.x, kp.pt.y),
-			#endif
 			loss,
 			posePtr,                                  // Pose params
 			intrinsicParams.at(img.pCamera).data(),   // Intrinsic params
@@ -793,18 +1010,15 @@ bool BundleAdjustment::Adjust()
 	const double denseWeight = config.useKeypointConfidence ? 1.0 :
 		EstimateDenseObservationWeight(scene, config, &denseSigmas);
 
-	// Set the SE(3) manifold on every valid pose block (shared instance; Ceres owns it once attached)
-	auto* se3_manifold = CreateSE3PoseManifold();
-	FOREACH(i, scene.images) {
-		if (!scene.images[i].IsValid())
-			continue;
-		#if CERES_VERSION_MAJOR >= 2 && CERES_VERSION_MINOR >= 1
-		problem.AddParameterBlock(poseParams.data() + i * 7, 7, se3_manifold);
-		#else
-		problem.AddParameterBlock(poseParams.data() + i * 7, 7);
-		problem.SetParameterization(poseParams.data() + i * 7, se3_manifold);
-		#endif
-	}
+	// which dense observations each image contributes, decided before the residuals are added
+	DenseObservationCap denseCap;
+	const uint32_t numDenseDropped = BuildDenseObservationCap(scene, config.maxDenseObservationsPerImage,
+		[this](const auto& fn) {
+			for (const Track& track : scene.tracks)
+				if (track.IsInlier())
+					fn(track);
+		},
+		[this](IIndex imgID) { return scene.images[imgID].IsValid(); }, denseCap);
 
 	// Add reprojection residuals
 	uint32_t numReprojResiduals = 0;
@@ -821,6 +1035,8 @@ bool BundleAdjustment::Adjust()
 			if (!img.IsValid())
 				continue;
 			ASSERT(obs.featureID < img.keypoints.size());
+			if (!denseCap.Keeps(imgID, img, obs.featureID))
+				continue; // dense observation the per-image cap left out
 			// Compute weight from keypoint response / size (if enabled), down-weighted on a dense
 			// keypoint (whose position came from the warp, not from the detector)
 			ceres::LossFunction* residual_loss_function;
@@ -849,15 +1065,17 @@ bool BundleAdjustment::Adjust()
 		// in that mode, and what scales a dense residual is that term alone), and a sample the
 		// estimator refused fell back to the constant. Reported at all so that a sigma jumping
 		// between runs shows up here rather than only as a downstream drift.
+		const String capped(numDenseDropped == 0 ? String() :
+			String::FormatString(", %u dense dropped by the per-image cap", numDenseDropped));
 		if (denseSigmas.measured) {
 			DEBUG("Bundle adjustment: %u/%u reprojection residuals are on dense keypoints, weighted %g "
-				"(sigma described %g px over %u obs / dense %g px over %u obs)",
+				"(sigma described %g px over %u obs / dense %g px over %u obs)%s",
 				numDenseResiduals, numReprojResiduals, denseWeight,
 				denseSigmas.sigmaDescribed, (unsigned)denseSigmas.numDescribed,
-				denseSigmas.sigmaDense, (unsigned)denseSigmas.numDense);
+				denseSigmas.sigmaDense, (unsigned)denseSigmas.numDense, capped.c_str());
 		} else {
-			DEBUG("Bundle adjustment: %u/%u reprojection residuals are on dense keypoints, weighted %g",
-				numDenseResiduals, numReprojResiduals, denseWeight);
+			DEBUG("Bundle adjustment: %u/%u reprojection residuals are on dense keypoints, weighted %g%s",
+				numDenseResiduals, numReprojResiduals, denseWeight, capped.c_str());
 		}
 	}
 
@@ -866,6 +1084,26 @@ bool BundleAdjustment::Adjust()
 		[this](IIndex imgID) { return scene.images[imgID].IsValid(); });
 	if (config.IsUsingPairConstraints())
 		DEBUG("Created %u relative-pose residuals from the verified pairs", numPairResiduals);
+
+	// Set the SE(3) manifold on every pose block the residuals actually created (shared instance;
+	// Ceres owns it once attached, so a solve that added none must free it itself). An image no
+	// residual reached is left out of the problem rather than added as a free block: nothing would
+	// determine it, and the reduced camera system it sits in would be singular.
+	auto* se3_manifold = CreateSE3PoseManifold();
+	bool poseManifoldUsed = false;
+	FOREACH(i, scene.images) {
+		double* pose = poseParams.data() + i * 7;
+		if (!scene.images[i].IsValid() || !problem.HasParameterBlock(pose))
+			continue;
+		#if CERES_VERSION_MAJOR >= 2 && CERES_VERSION_MINOR >= 1
+		problem.SetManifold(pose, se3_manifold);
+		#else
+		problem.SetParameterization(pose, se3_manifold);
+		#endif
+		poseManifoldUsed = true;
+	}
+	if (!poseManifoldUsed)
+		delete se3_manifold;
 
 	// Set intrinsic parameter constraints (if refining intrinsics)
 	if (config.IsRefiningIntrinsics() && !intrinsicParams.empty()) {
@@ -1045,24 +1283,24 @@ bool BundleAdjustment::Adjust()
 				bestImgID = i;
 		}
 		if (bestImgID != NO_ID) {
-			problem.SetParameterBlockConstant(poseParams.data() + bestImgID * 7);
+			SetParameterBlockConstantIfPresent(problem, poseParams.data() + bestImgID * 7);
 			DEBUG("Fixed view %u (reference, no GPS)", bestImgID);
 		}
 	}
 
-	// Optionally disable pose/point refinement
+	// Optionally disable pose/point refinement (only for the blocks the residuals created)
 	if (!config.IsRefiningPoses()) {
 		// Disable all pose refinement
 		FOREACH(i, scene.images)
 			if (scene.images[i].IsValid())
-				problem.SetParameterBlockConstant(poseParams.data() + i * 7);
+				SetParameterBlockConstantIfPresent(problem, poseParams.data() + i * 7);
 		DEBUG("Views poses: FIXED");
 	} else if (!config.refinePosesRotation || !config.refinePosesPosition) {
 		// Selectively disable rotation and/or position refinement
 		std::vector<int> constantParams;
 		CollectConstantPoseParams(config, constantParams);
 		FOREACH(i, scene.images)
-			if (scene.images[i].IsValid())
+			if (scene.images[i].IsValid() && problem.HasParameterBlock(poseParams.data() + i * 7))
 				SetPoseSubsetConstant(problem, poseParams.data() + i * 7, constantParams);
 		DEBUG("Views poses: rotation=%s, position=%s",
 		      config.refinePosesRotation ? "OPTIMIZED" : "FIXED",
@@ -1082,28 +1320,14 @@ bool BundleAdjustment::Adjust()
 		options.linear_solver_type = ceres::DENSE_SCHUR;
 		options.preconditioner_type = ceres::IDENTITY; // Not used with DENSE_SCHUR
 	} else {
-		// For large problems, use SPARSE_SCHUR or ITERATIVE_SCHUR
-		// Use ITERATIVE_SCHUR for better numerical stability, especially on macOS Apple Accelerate
-		// SPARSE_SCHUR can fail with "Numeric factorisation failed" on poorly conditioned problems
-		options.linear_solver_type = ceres::ITERATIVE_SCHUR;
-		options.preconditioner_type = ceres::SCHUR_JACOBI; // Robust preconditioner
+		// Past that size the reduced camera system is factorized sparsely rather than densely.
+		// The iterative alternative (ITERATIVE_SCHUR + SCHUR_JACOBI) solves the same system by
+		// conjugate gradients, and how many of those a step costs depends on the conditioning of a
+		// problem the dense observations have thinned -- on the captures measured it ran slower and
+		// far less predictably. A factorization can fail outright where the iterations only converge
+		// slowly, which is what SolveBundle's retry is for.
+		options.linear_solver_type = ceres::SPARSE_SCHUR;
 		options.use_inner_iterations = true; // Improves convergence
-		#if 0 && (CERES_VERSION_MAJOR > 2 || (CERES_VERSION_MAJOR == 2 && CERES_VERSION_MINOR >= 2))
-		// DISABLED: Power Bundle Adjustment (Weber et al., CVPR 2022) via the
-		// SCHUR_POWER_SERIES_EXPANSION preconditioner, gated on a large camera count (the reduced
-		// camera system it is meant to accelerate). Benchmarked against the SCHUR_JACOBI default and
-		// it loses at every scale tested, so it is left off. On an i7-13700KF (16C/24T) / RTX 4070 /
-		// 32GB / Win11, Ceres 2.2.0 + CUDA 13.0: House (83 cameras) ran 1.2-3.9x slower; Tanks&Temples
-		// Courthouse (1106 cameras) ran 1.6-1.7x slower on the 4-5.6M-residual bundles and HUNG for
-		// >81 min on a 6.3M-residual bundle (never converged), while SCHUR_JACOBI completed the whole
-		// reconstruction in ~54 min. CG convergence was erratic (non-monotonic in problem size).
-		// Re-enable/re-tune (e.g. without use_spse_initialization) only with a fresh benchmark on a
-		// scene with far more cameras than we had available.
-		if (scene.status.nCalibratedImages > 1000) {
-			options.preconditioner_type = ceres::SCHUR_POWER_SERIES_EXPANSION;
-			options.use_spse_initialization = true;
-		}
-		#endif
 	}
 	#ifndef _RELEASE
 	options.minimizer_progress_to_stdout = true;
@@ -1118,7 +1342,7 @@ bool BundleAdjustment::Adjust()
 
 	// Solve
 	ceres::Solver::Summary summary;
-	ceres::Solve(options, &problem, &summary);
+	SolveBundle(options, problem, summary);
 	DEBUG("BA Summary: %s", summary.BriefReport().c_str());
 	if (!summary.IsSolutionUsable()) {
 		VERBOSE("error: bundle adjustment failed");
@@ -1218,6 +1442,19 @@ bool BundleAdjustment::AdjustLocal(
 	const double denseWeight = config.useKeypointConfidence ? 1.0 :
 		EstimateDenseObservationWeight(scene, config, &denseSigmas);
 
+	// which dense observations each window image contributes, decided before the residuals are
+	// added and over the window alone: an image is capped on what it brings to THIS solve
+	const auto inWindow = [&localImages, &fixedImages](IIndex imgID) {
+		return localImages.find(imgID) != localImages.end() || fixedImages.find(imgID) != fixedImages.end();
+	};
+	DenseObservationCap denseCap;
+	const uint32_t numDenseDropped = BuildDenseObservationCap(scene, config.maxDenseObservationsPerImage,
+		[this, &activePoints](const auto& fn) {
+			for (const uint32_t pointID : activePoints)
+				fn(scene.tracks[pointID]);
+		},
+		inWindow, denseCap);
+
 	// Add reprojection residuals (only observations from window images: local or fixed)
 	uint32_t numReprojResiduals = 0;
 	uint32_t numDenseResiduals = 0;
@@ -1229,11 +1466,12 @@ bool BundleAdjustment::AdjustLocal(
 		for (const Observation& obs : track) {
 			const IIndex imgID = obs.imageID;
 			// Only consider observations in local or fixed images
-			if (localImages.find(imgID) == localImages.end() &&
-			    fixedImages.find(imgID) == fixedImages.end())
+			if (!inWindow(imgID))
 				continue;
 			const Image& img = scene.images[imgID];
 			ASSERT(obs.featureID < img.keypoints.size());
+			if (!denseCap.Keeps(imgID, img, obs.featureID))
+				continue; // dense observation the per-image cap left out
 			// Compute weight from keypoint response / size (if enabled), down-weighted on a dense
 			// keypoint (whose position came from the warp, not from the detector)
 			ceres::LossFunction* residual_loss_function;
@@ -1254,24 +1492,23 @@ bool BundleAdjustment::AdjustLocal(
 		// the sigmas only where the weight came from them, exactly as in Adjust(): a pinned weight,
 		// the confidence term's 1.0, and a refused sample's fallback constant all print alone rather
 		// than beside two sigmas that do not produce them
+		const String capped(numDenseDropped == 0 ? String() :
+			String::FormatString(", %u dense dropped by the per-image cap", numDenseDropped));
 		if (denseSigmas.measured) {
 			DEBUG("Local bundle adjustment: %u/%u reprojection residuals are on dense keypoints, weighted %g "
-				"(sigma described %g px over %u obs / dense %g px over %u obs)",
+				"(sigma described %g px over %u obs / dense %g px over %u obs)%s",
 				numDenseResiduals, numReprojResiduals, denseWeight,
 				denseSigmas.sigmaDescribed, (unsigned)denseSigmas.numDescribed,
-				denseSigmas.sigmaDense, (unsigned)denseSigmas.numDense);
+				denseSigmas.sigmaDense, (unsigned)denseSigmas.numDense, capped.c_str());
 		} else {
-			DEBUG("Local bundle adjustment: %u/%u reprojection residuals are on dense keypoints, weighted %g",
-				numDenseResiduals, numReprojResiduals, denseWeight);
+			DEBUG("Local bundle adjustment: %u/%u reprojection residuals are on dense keypoints, weighted %g%s",
+				numDenseResiduals, numReprojResiduals, denseWeight, capped.c_str());
 		}
 	}
 
 	// Add relative-pose residuals from the verified pairs joining two window images, the fixed ones
 	// included: a fixed pose block is a constant, so such a residual constrains the free image alone
-	const uint32_t numPairResiduals = AddRelativePoseResiduals(problem, scene, config, poseParams.data(),
-		[&localImages, &fixedImages](IIndex imgID) {
-			return localImages.find(imgID) != localImages.end() || fixedImages.find(imgID) != fixedImages.end();
-		});
+	const uint32_t numPairResiduals = AddRelativePoseResiduals(problem, scene, config, poseParams.data(), inWindow);
 	if (config.IsUsingPairConstraints())
 		DEBUG("Created %u relative-pose residuals from the verified pairs (local BA)", numPairResiduals);
 
@@ -1366,7 +1603,7 @@ bool BundleAdjustment::AdjustLocal(
 	options.function_tolerance = config.functionTolerance;
 
 	ceres::Solver::Summary summary;
-	ceres::Solve(options, &problem, &summary);
+	SolveBundle(options, problem, summary);
 	DEBUG("Local BA Summary: %s", summary.BriefReport().c_str());
 	if (!summary.IsSolutionUsable()) {
 		VERBOSE("error: local bundle adjustment failed");
@@ -1391,188 +1628,86 @@ bool BundleAdjustment::AdjustLocal(
 bool SFM::PinholeReprojectionJacobianTest()
 {
 	TD_TIMER_START();
-	VERBOSE("\n--- Testing PinholeReprojectionErrorAnalytic Jacobians ---");
+	// The analytic and the auto-diff reprojection functors are two derivations of the same
+	// projection, and auto-diff differentiates it exactly, so the two Jacobians must agree to
+	// numerical precision -- not to a finite-difference tolerance. Every parameter is randomized
+	// over many trials with the whole distortion model live (k3, p1, p2 and the rational
+	// denominator k4-k6 all non-zero), since a hand-written derivative goes wrong in the terms a
+	// single hand-picked test case leaves at zero.
+	//
+	// The quaternion columns are the one exception: both functors extend the rotation off the unit
+	// sphere, by different amounts along the radial direction, and Ceres never sees that direction
+	// (the quaternion manifold projects it out), so the auto-diff block is projected onto the
+	// tangent space before the comparison -- which is what the solver differentiates.
+	// "Relative" is per parameter block: the largest entry-wise difference over the largest entry
+	// of the block, so a block whose entries span orders of magnitude is judged on its own scale.
+	constexpr double maxRelativeError = 1e-6;
+	constexpr unsigned numTrials = 256;
+	std::mt19937 rng(20260909u);
+	const auto rnd = [&rng](double lo, double hi) {
+		return std::uniform_real_distribution<double>(lo, hi)(rng);
+	};
+	double worstRelativeError = 0, worstResidualError = 0;
+	for (unsigned trial = 0; trial < numTrials; ++trial) {
+		// random pose
+		double pose[7] = { rnd(-1.0, 1.0), rnd(-1.0, 1.0), rnd(-1.0, 1.0), rnd(-1.0, 1.0),
+			rnd(-3.0, 3.0), rnd(-3.0, 3.0), rnd(-3.0, 3.0) };
+		Eigen::Map<Eigen::Vector4d> quat(pose);
+		if (quat.norm() < 0.1)
+			continue; // too close to zero to normalize into a rotation
+		quat.normalize();
+		// random point in front of the camera, placed through the camera-space point it projects
+		// to, so that the trial is never spent on a point behind it
+		const double pointCamera[3] = { rnd(-4.0, 4.0), rnd(-4.0, 4.0), rnd(1.0, 10.0) };
+		const double quatInverse[4] = { pose[0], -pose[1], -pose[2], -pose[3] };
+		double point[3];
+		ceres::UnitQuaternionRotatePoint(quatInverse, pointCamera, point);
+		point[0] += pose[4]; point[1] += pose[5]; point[2] += pose[6];
+		// random intrinsics: [fx, fy/fx, cx, cy, k1, k2, k3, p1, p2, k4, k5, k6]
+		const double intrinsics[12] = { rnd(400.0, 2000.0), rnd(0.95, 1.05), rnd(300.0, 340.0), rnd(220.0, 260.0),
+			rnd(-0.3, 0.3), rnd(-0.2, 0.2), rnd(-0.1, 0.1), rnd(-0.01, 0.01), rnd(-0.01, 0.01),
+			rnd(-0.2, 0.2), rnd(-0.1, 0.1), rnd(-0.05, 0.05) };
+		const double* parameters[3] = { pose, intrinsics, point };
 
-	// Create synthetic test data
-	const double observed_x = 320.5;
-	const double observed_y = 240.7;
-
-	// Test parameters
-	double pose[7] = {0.1, 0.2, 0.05, 0.97, 1.0, 0.5, 3.0}; // quat + center
-	double intrinsics[12] = {500.0, 1.0, 320.0, 240.0, 0.1, -0.05, 0.01, 0.001, -0.001, 0.0, 0.0, 0.0};
-	double point[3] = {2.0, 1.5, 5.0};
-
-	// Normalize quaternion
-	Eigen::Map<Eigen::Vector4d>(pose).normalize();
-
-	// Evaluate analytic cost function
-	PinholeReprojectionErrorAnalytic analytic_cost(observed_x, observed_y);
-	double analytic_residuals[2];
-	double* analytic_jacobians[3];
-	double analytic_J_pose[2*7];
-	double analytic_J_intrinsics[2*12];
-	double analytic_J_point[2*3];
-	analytic_jacobians[0] = analytic_J_pose;
-	analytic_jacobians[1] = analytic_J_intrinsics;
-	analytic_jacobians[2] = analytic_J_point;
-	const double* params[3] = {pose, intrinsics, point};
-	const double* const* params_const = params;
-	if (!analytic_cost.Evaluate(params_const, analytic_residuals, analytic_jacobians)) {
-		VERBOSE("FAILED: Analytic cost evaluation failed");
-		return false;
-	}
-
-	// Evaluate auto-diff cost function for comparison
-	std::unique_ptr<ceres::CostFunction> autodiff_cost(PinholeReprojectionError::Create(observed_x, observed_y));
-	double autodiff_residuals[2];
-	double* autodiff_jacobians[3];
-	double autodiff_J_pose[2*7];
-	double autodiff_J_intrinsics[2*12];
-	double autodiff_J_point[2*3];
-	autodiff_jacobians[0] = autodiff_J_pose;
-	autodiff_jacobians[1] = autodiff_J_intrinsics;
-	autodiff_jacobians[2] = autodiff_J_point;
-	if (!autodiff_cost->Evaluate(params_const, autodiff_residuals, autodiff_jacobians)) {
-		VERBOSE("FAILED: Auto-diff cost evaluation failed");
-		return false;
-	}
-
-	// Compute numeric Jacobians using finite differences
-	const double epsilon = 1e-8;
-	double numeric_J_pose[2*7];
-	double numeric_J_intrinsics[2*12];
-	double numeric_J_point[2*3];
-
-	// Jacobian w.r.t. pose (7 params)
-	for (int i = 0; i < 7; ++i) {
-		double pose_plus[7], pose_minus[7];
-		std::memcpy(pose_plus, pose, 7 * sizeof(double));
-		std::memcpy(pose_minus, pose, 7 * sizeof(double));
-		pose_plus[i] += epsilon;
-		pose_minus[i] -= epsilon;
-
-		// Renormalize quaternion if perturbing quaternion components
-		if (i < 4) {
-			Eigen::Map<Eigen::Vector4d>(pose_plus).normalize();
-			Eigen::Map<Eigen::Vector4d>(pose_minus).normalize();
+		const double observedX = rnd(0.0, 640.0), observedY = rnd(0.0, 480.0);
+		PinholeReprojectionErrorAnalytic analytic(observedX, observedY);
+		double analyticResiduals[2], analyticPose[2*7], analyticIntrinsics[2*12], analyticPoint[2*3];
+		double* analyticJacobians[3] = { analyticPose, analyticIntrinsics, analyticPoint };
+		std::unique_ptr<ceres::CostFunction> autodiff(PinholeReprojectionError::Create(observedX, observedY));
+		double autodiffResiduals[2], autodiffPose[2*7], autodiffIntrinsics[2*12], autodiffPoint[2*3];
+		double* autodiffJacobians[3] = { autodiffPose, autodiffIntrinsics, autodiffPoint };
+		if (!analytic.Evaluate(parameters, analyticResiduals, analyticJacobians) ||
+			!autodiff->Evaluate(parameters, autodiffResiduals, autodiffJacobians)) {
+			VERBOSE("BAPinholeReprojectionJacobianTest FAILED: cost evaluation failed");
+			return false;
 		}
-
-		double res_plus[2], res_minus[2];
-		const double* params_plus[3] = {pose_plus, intrinsics, point};
-		const double* params_minus[3] = {pose_minus, intrinsics, point};
-		analytic_cost.Evaluate(params_plus, res_plus, nullptr);
-		analytic_cost.Evaluate(params_minus, res_minus, nullptr);
-
-		numeric_J_pose[0*7 + i] = (res_plus[0] - res_minus[0]) / (2.0 * epsilon);
-		numeric_J_pose[1*7 + i] = (res_plus[1] - res_minus[1]) / (2.0 * epsilon);
-	}
-
-	// Jacobian w.r.t. intrinsics (12 params)
-	for (int i = 0; i < 12; ++i) {
-		double intr_plus[12], intr_minus[12];
-		std::memcpy(intr_plus, intrinsics, 12 * sizeof(double));
-		std::memcpy(intr_minus, intrinsics, 12 * sizeof(double));
-		intr_plus[i] += epsilon;
-		intr_minus[i] -= epsilon;
-
-		double res_plus[2], res_minus[2];
-		const double* params_plus[3] = {pose, intr_plus, point};
-		const double* params_minus[3] = {pose, intr_minus, point};
-		analytic_cost.Evaluate(params_plus, res_plus, nullptr);
-		analytic_cost.Evaluate(params_minus, res_minus, nullptr);
-
-		numeric_J_intrinsics[0*12 + i] = (res_plus[0] - res_minus[0]) / (2.0 * epsilon);
-		numeric_J_intrinsics[1*12 + i] = (res_plus[1] - res_minus[1]) / (2.0 * epsilon);
-	}
-
-	// Jacobian w.r.t. point (3 params)
-	for (int i = 0; i < 3; ++i) {
-		double point_plus[3], point_minus[3];
-		std::memcpy(point_plus, point, 3 * sizeof(double));
-		std::memcpy(point_minus, point, 3 * sizeof(double));
-		point_plus[i] += epsilon;
-		point_minus[i] -= epsilon;
-
-		double res_plus[2], res_minus[2];
-		const double* params_plus[3] = {pose, intrinsics, point_plus};
-		const double* params_minus[3] = {pose, intrinsics, point_minus};
-		analytic_cost.Evaluate(params_plus, res_plus, nullptr);
-		analytic_cost.Evaluate(params_minus, res_minus, nullptr);
-
-		numeric_J_point[0*3 + i] = (res_plus[0] - res_minus[0]) / (2.0 * epsilon);
-		numeric_J_point[1*3 + i] = (res_plus[1] - res_minus[1]) / (2.0 * epsilon);
-	}
-
-	// Compare Jacobians (analytic vs numeric vs auto-diff)
-	const double jacobian_tol = 2.2e-5; // Tolerance for manifold-aware numerical differentiation
-	double max_diff_numeric = 0.0;
-	double max_diff_autodiff = 0.0;
-
-	// Check pose Jacobian (2x7)
-	for (int i = 0; i < 2; ++i) {
-		// Project quaternion part of autodiff Jacobian [i*7, i*7+4) onto tangent space
-		// to match manifold-aware derivatives (numeric/analytic)
-		double dot = 0.0;
-		for (int k = 0; k < 4; ++k) dot += autodiff_J_pose[i*7 + k] * pose[k];
-		for (int k = 0; k < 4; ++k) autodiff_J_pose[i*7 + k] -= dot * pose[k];
-
-		for (int j = 0; j < 7; ++j) {
-			const int idx = i*7 + j;
-			const double diff_numeric = ABS(analytic_J_pose[idx] - numeric_J_pose[idx]);
-			const double diff_autodiff = ABS(analytic_J_pose[idx] - autodiff_J_pose[idx]);
-			max_diff_numeric = MAX(max_diff_numeric, diff_numeric);
-			max_diff_autodiff = MAX(max_diff_autodiff, diff_autodiff);
-			if (diff_numeric > jacobian_tol) {
-				VERBOSE("FAILED: Pose Jacobian[%d] mismatch (numeric): analytic=%.6e, numeric=%.6e, diff=%.6e",
-				        idx, analytic_J_pose[idx], numeric_J_pose[idx], diff_numeric);
-				return false;
+		// project the auto-diff quaternion columns onto the manifold's tangent space
+		for (int i = 0; i < 2; ++i) {
+			Eigen::Map<Eigen::Vector4d> jacobianQuat(autodiffPose + i*7);
+			jacobianQuat -= jacobianQuat.dot(quat)*quat;
+		}
+		for (int i = 0; i < 2; ++i)
+			worstResidualError = MAXF(worstResidualError,
+				ABS(analyticResiduals[i] - autodiffResiduals[i])/MAXF(ABS(autodiffResiduals[i]), 1.0));
+		const int blockSizes[3] = { 2*7, 2*12, 2*3 };
+		const char* const blockNames[3] = { "pose", "intrinsics", "point" };
+		for (int block = 0; block < 3; ++block) {
+			double maxDifference = 0, maxValue = 0;
+			for (int i = 0; i < blockSizes[block]; ++i) {
+				maxDifference = MAXF(maxDifference, ABS(analyticJacobians[block][i] - autodiffJacobians[block][i]));
+				maxValue = MAXF(maxValue, MAXF(ABS(analyticJacobians[block][i]), ABS(autodiffJacobians[block][i])));
 			}
-			if (diff_autodiff > jacobian_tol) {
-				VERBOSE("FAILED: Pose Jacobian[%d] mismatch (auto-diff): analytic=%.6e, autodiff=%.6e, diff=%.6e",
-				        idx, analytic_J_pose[idx], autodiff_J_pose[idx], diff_autodiff);
+			const double relativeError = maxValue > 0 ? maxDifference/maxValue : maxDifference;
+			worstRelativeError = MAXF(worstRelativeError, relativeError);
+			if (relativeError > maxRelativeError) {
+				VERBOSE("BAPinholeReprojectionJacobianTest FAILED: trial %u %s Jacobian differs by %g relative (max entry %g)",
+					trial, blockNames[block], relativeError, maxValue);
 				return false;
 			}
 		}
 	}
-
-	// Check intrinsics Jacobian (2x12)
-	for (int i = 0; i < 2*12; ++i) {
-		const double diff_numeric = ABS(analytic_J_intrinsics[i] - numeric_J_intrinsics[i]);
-		const double diff_autodiff = ABS(analytic_J_intrinsics[i] - autodiff_J_intrinsics[i]);
-		max_diff_numeric = MAX(max_diff_numeric, diff_numeric);
-		max_diff_autodiff = MAX(max_diff_autodiff, diff_autodiff);
-		if (diff_numeric > jacobian_tol) {
-			VERBOSE("FAILED: Intrinsics Jacobian[%d] mismatch (numeric): analytic=%.6e, numeric=%.6e, diff=%.6e",
-			        i, analytic_J_intrinsics[i], numeric_J_intrinsics[i], diff_numeric);
-			return false;
-		}
-		if (diff_autodiff > jacobian_tol) {
-			VERBOSE("FAILED: Intrinsics Jacobian[%d] mismatch (auto-diff): analytic=%.6e, autodiff=%.6e, diff=%.6e",
-			        i, analytic_J_intrinsics[i], autodiff_J_intrinsics[i], diff_autodiff);
-			return false;
-		}
-	}
-
-	// Check point Jacobian (2x3)
-	for (int i = 0; i < 2*3; ++i) {
-		const double diff_numeric = ABS(analytic_J_point[i] - numeric_J_point[i]);
-		const double diff_autodiff = ABS(analytic_J_point[i] - autodiff_J_point[i]);
-		max_diff_numeric = MAX(max_diff_numeric, diff_numeric);
-		max_diff_autodiff = MAX(max_diff_autodiff, diff_autodiff);
-		if (diff_numeric > jacobian_tol) {
-			VERBOSE("FAILED: Point Jacobian[%d] mismatch (numeric): analytic=%.6e, numeric=%.6e, diff=%.6e",
-			        i, analytic_J_point[i], numeric_J_point[i], diff_numeric);
-			return false;
-		}
-		if (diff_autodiff > jacobian_tol) {
-			VERBOSE("FAILED: Point Jacobian[%d] mismatch (auto-diff): analytic=%.6e, autodiff=%.6e, diff=%.6e",
-			        i, analytic_J_point[i], autodiff_J_point[i], diff_autodiff);
-			return false;
-		}
-	}
-
-	VERBOSE("PASSED: All Jacobians match within tolerance (numeric max diff=%.2e, auto-diff max diff=%.2e) %s",
-	        max_diff_numeric, max_diff_autodiff, TD_TIMER_GET_FMT().c_str());
+	VERBOSE("BAPinholeReprojectionJacobianTest PASSED: %u trials, worst relative Jacobian difference %.2e, residual %.2e (%s)",
+		numTrials, worstRelativeError, worstResidualError, TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 /*----------------------------------------------------------------*/

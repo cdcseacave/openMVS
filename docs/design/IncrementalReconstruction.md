@@ -76,6 +76,12 @@ that whatever the intrinsics level allows beyond the main set.
 Reprojection residuals fit each track's observations against the camera model, robustified by a Huber
 loss (2 px in the resection's own solves); a dense (warp-sampled) keypoint's residual is discounted
 relative to a described one's (measured, or pinned with `--ba-dense-weight`; see `ROMA2InProcess.md`).
+A dense-matched image carries thousands of those warp-sampled observations against a few hundred
+described ones, and they set what the solve costs while adding little to what it determines, so each
+image contributes at most `maxDenseObservationsPerImage` (1500) of them: the survivors are taken
+round-robin across a grid over the image, longest track first inside a cell, so that they cover the
+frame instead of clustering where the warp was densest, and a track cut below two views gets one
+back. Described observations are never dropped.
 
 Every verified pair whose two images are both in the solve also adds a relative-pose residual
 (`RelativePoseError`): the model's relative rotation against the pair's, and its baseline direction

@@ -160,7 +160,10 @@ bool RoMa2OnnxParityTest();
 // execution provider and the preset it exercises
 bool ROMA2ReconstructTest();
 
-// Test Bundle-Adjustment PinholeReprojectionErrorAnalytic Jacobians against AutoDiff
+// PinholeReprojectionErrorAnalytic's hand-written Jacobians match the ones auto-diff derives from
+// the same projection, over randomized poses, points and full 12-parameter intrinsics (the whole
+// distortion model live, k3/p1/p2 and the rational denominator k4-k6 included); the quaternion
+// columns are compared in the manifold's tangent space, the only place the solver sees them
 bool BAPinholeReprojectionJacobianTest();
 
 // ComputeObservationSigmas recovers the displacement the BULK of a synthetic scene's described and
@@ -185,6 +188,12 @@ bool BAIntrinsicFlagsTest();
 // residuals of the pairs across the joint (BAConfig::relativeRotationSigma /
 // relativeTranslationSigma) put it back, in the global solve and in a local window alike
 bool BundleAdjustmentPairConstraintTest();
+
+// The per-image cap on the dense observations a solve takes does not move the solution: on a scene
+// whose images carry far more of them than the cap allows, and which holds both the tracks the cap
+// must top back up (they carry a described observation it may not drop) and the ones it may let go
+// entirely, the capped solve recovers the poses the uncapped one recovers
+bool BADenseObservationCapTest();
 
 // Small SFM smoke test: build tiny scene and run BundleAdjustment::Adjust
 bool PipelineTest();

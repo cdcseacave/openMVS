@@ -79,6 +79,15 @@ struct SFM_API BAConfig
 	// which answers a different question -- see DENSE_OBSERVATION_WEIGHT in ImagePair.h.
 	double denseObservationWeight = -1.0;
 
+	// Cap on the dense (descriptor-less) observations one image contributes to the solve, 0 = all;
+	// described observations are never dropped. A dense-matched image brings thousands of
+	// warp-sampled observations against a few hundred described ones, each of them the less precise
+	// measurement of the two (see denseObservationWeight): they set the cost of the solve while
+	// adding little to what it determines. What the cap keeps of them covers the frame evenly and
+	// prefers the longer tracks, so the scene stays as well constrained as the residual count it
+	// costs allows (see BuildDenseObservationCap).
+	unsigned maxDenseObservationsPerImage = 1500;
+
 	// Solver parameters
 	unsigned maxIterations = 100;    // Maximum solver iterations
 	float robustThreshold = 2.f;     // Huber loss threshold (pixels, 0 = disabled)
@@ -326,7 +335,7 @@ SFM_API void AngleAxisAndCenterToPose3D(const double* params, Pose3D& pose);
 /*----------------------------------------------------------------*/
 
 
-// Test PinholeReprojectionErrorAnalytic Jacobians using Auto-diff
+// Test PinholeReprojectionErrorAnalytic Jacobians against the auto-diff functor (BAPinholeReprojectionJacobianTest)
 SFM_API bool PinholeReprojectionJacobianTest();
 /*----------------------------------------------------------------*/
 
