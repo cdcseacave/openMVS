@@ -790,7 +790,9 @@ IIndexArr SFM::FilterWeaklyConnectedImages(Scene& scene,
 	std::vector<uint8_t> keptByComponent(scene.images.size(), 0); // the largest-component pass runs more than once
 	unsigned numCorroborated = 0, numKeptTier = 0, numKeptComponent = 0, numKeptPeel = 0, numCorroborationRounds = 0;
 	if (maxCorroborationAngle > 0.f) {
-		constexpr unsigned minPairInliersForCheck = 30;
+		// the pairs the resection registers from carry this many weighted inliers at the least,
+		// and a pair of that strength whose relative pose agrees with the model is evidence
+		constexpr unsigned minCorroborationInliers = 15;
 		std::vector<std::array<unsigned, 3>> entryEdges;
 		BuildCovisEdges(scene, minCovisibilityCount, minInliersPerTrack, entryEdges);
 		DisjointSet<IIndex> entryDS(scene.images.size());
@@ -815,19 +817,27 @@ IIndexArr SFM::FilterWeaklyConnectedImages(Scene& scene,
 			// be the one in need of corroboration; a pair between two settled images, or two unsettled
 			// ones, decides nothing this round.
 			std::vector<unsigned> numWitnesses(scene.images.size(), 0);
+			unsigned numThin = 0, numTried = 0, numRotationOff = 0, numDirectionOff = 0;
 			for (const ImagePair& pair : scene.pairs) {
-				if (!pair.relativePose.has_value() || pair.GetNumFilteredInliers() < minPairInliersForCheck)
+				if (!pair.relativePose.has_value())
 					continue;
+				if (pair.GetNumWeightedInliers() < minCorroborationInliers) {
+					++numThin;
+					continue;
+				}
 				for (unsigned side = 0; side < 2; ++side) {
 					const IIndex imageID = side == 0 ? pair.ID1 : pair.ID2;
 					const IIndex neighborID = side == 0 ? pair.ID2 : pair.ID1;
 					if (settled[imageID] || !settled[neighborID] || !scene.images[imageID].IsValid())
 						continue;
+					++numTried;
 					const Image& image = scene.images[imageID];
 					const Image& neighbor = scene.images[neighborID];
 					const PoseLink link = MakePoseLink(pair, neighborID);
-					if (ComputeAngle(image.R, link.PredictedRotation(neighbor)) < minCosAngle)
+					if (ComputeAngle(image.R, link.PredictedRotation(neighbor)) < minCosAngle) {
+						++numRotationOff;
 						continue; // the pair puts the image at another orientation than the model does
+					}
 					// A near-duplicate viewpoint (the pair's matches triangulate under two degrees) has
 					// no reliable translation direction of its own, so such a pair vouches for the
 					// rotation alone
@@ -835,15 +845,23 @@ IIndexArr SFM::FilterWeaklyConnectedImages(Scene& scene,
 					Point3 modelDirection(image.C - neighbor.C), pairDirection;
 					const REAL baseline = norm(modelDirection);
 					if (!nearDuplicate && baseline > ZEROTOLERANCE<REAL>() && link.PredictedDirection(neighbor, pairDirection) &&
-						pairDirection.dot(modelDirection / baseline) < minCosAngle)
+						pairDirection.dot(modelDirection / baseline) < minCosAngle) {
+						++numDirectionOff;
 						continue; // ... or on another side of its neighbor
+					}
 					++numWitnesses[imageID];
 				}
 			}
 			IIndexArr newlySettled;
-			FOREACH(imgIdx, scene.images)
+			unsigned numSingle = 0;
+			FOREACH(imgIdx, scene.images) {
 				if (numWitnesses[imgIdx] >= 2)
 					newlySettled.push_back(imgIdx);
+				else if (numWitnesses[imgIdx] == 1)
+					++numSingle;
+			}
+			DEBUG_EXTRA("Corroboration round %u: %u pairs to a settled neighbour tried (%u thin pairs skipped), %u off in rotation, %u off in direction; %u images with one witness, %u with two or more",
+				numCorroborationRounds + 1, numTried, numThin, numRotationOff, numDirectionOff, numSingle, (unsigned)newlySettled.size());
 			if (newlySettled.empty())
 				break;
 			for (const IIndex imgIdx : newlySettled) {
