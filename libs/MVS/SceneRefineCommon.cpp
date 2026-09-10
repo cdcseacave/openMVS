@@ -422,8 +422,7 @@ MeshRefineStep::Action MeshRefineStep::Evaluate(const Terms& terms, Mesh::Vertex
 	// proportional to eta, and eta is the bold driver's own state -- a rejection halves it while
 	// an acceptance only grows it by 1.1, so an accept/reject oscillation around a plateau
 	// ratchets eta down by 0.55 per cycle and would otherwise report convergence while the
-	// direction field is still large (measured on Truck: eta collapsed 0.605 -> 0.101 px over
-	// five evaluations and the scale stopped at 0.023 px with S improved by only 0.4%)
+	// direction field is still large
 	if (numAccepted >= MinIters && stats.medianPx*(StepMax/step) < StepStop)
 		return STOP;
 	return APPLY;

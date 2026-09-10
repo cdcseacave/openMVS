@@ -1344,8 +1344,8 @@ static bool RefineStepAlternatingTest()
 // BeginSecondPhase(): a caller starting the second phase of a scale gets a fresh stall count,
 // not one the first phase's tail already primed to STOP after a single evaluation -- but the
 // consecutive-reject streak carries over, so a phase that starts right where the first one gave
-// up on its rejections keeps giving up immediately (resetting the streak too measured -0.0048
-// mean F1 on the T&T set); the budget it returns is 3/7 of the accepted count, never below 3
+// up on its rejections keeps giving up immediately; the budget it returns is 3/7 of the accepted
+// count, never below 3
 static bool RefineStepSecondPhaseTest()
 {
 	typedef MeshRefineStep::GradArr GradArr;

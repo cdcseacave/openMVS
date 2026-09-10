@@ -205,11 +205,11 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	const bool bRefineConfigPresent(!OPT::strRefineConfigFileName.empty() && File::isFile(OPT::strRefineConfigFileName));
 	const bool bValidRefineConfig(OPTREFINE::oConfig.Load(OPT::strRefineConfigFileName));
 	OPTREFINE::update();
-	// the CLI (this app's own .cfg file included) always wins over the refine-config-file, same as
-	// DensifyPointCloud's --ignore-mask-label over its --dense-config-file
-	OPTREFINE::nIgnoreMaskLabel = nIgnoreMaskLabel;
-	// an option with a CLI default of its own overrides the refine-config-file only when it was
-	// actually given, or the default silently undoes what the file set
+	// an option with a CLI default of its own (this app's own .cfg file included) overrides the
+	// refine-config-file only when it was actually given, or the default silently undoes what the
+	// file set
+	if (!OPT::vm["ignore-mask-label"].defaulted())
+		OPTREFINE::nIgnoreMaskLabel = nIgnoreMaskLabel;
 	if (!OPT::vm["simplify-tolerance"].defaulted())
 		OPTREFINE::fSimplifyTolerance = OPT::fSimplifyTolerance;
 	if (!OPT::vm["adaptive-face-size"].defaulted())
@@ -229,8 +229,8 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	}
 	if (bValidRefineConfig) {
 		// SML keeps every key it reads, registered or not, and update() only ever reads the
-		// registered ones -- so a misspelled knob would run the default and measure it as the
-		// arm; a key nobody registered has no declared values
+		// registered ones, so a misspelled knob would silently run the default; a key nobody
+		// registered has no declared values
 		String unknown;
 		for (const auto& item: OPTREFINE::oConfig.GetConfig())
 			if (((const CFGITEM*)item.second.data)->vals.IsEmpty())

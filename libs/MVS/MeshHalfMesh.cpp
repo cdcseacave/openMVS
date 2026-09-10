@@ -33,6 +33,7 @@
 
 #include "Common.h"
 #include "Mesh.h"
+#include <span>
 #include <halfmesh/InteropOpenMVS.h>
 #include <halfmesh/TextureBake.h>
 

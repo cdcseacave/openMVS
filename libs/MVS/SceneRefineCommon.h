@@ -72,7 +72,7 @@ namespace Refine {
 
 // window used to compute local image statistics (mean/variance/ZNCC) during
 // photo-consistency optimization; shared by both backends so a 7x7 window is
-// what each one sees (CUDA used to run its own HalfSize=2, i.e. 5x5)
+// what each one sees
 constexpr int HalfSize = 3;
 constexpr int Border = HalfSize;
 constexpr int WindowSize = HalfSize*2+1;
@@ -482,8 +482,7 @@ public:
 	static constexpr float StepMax = 1.f; // eta never exceeds this, px
 	// StepGrow is tied to the pre-blur sigma the caller passes to InitImages(): sharpening the
 	// images makes the objective more locally rugged, and 1.1 then over-steps it. The two move
-	// together or not at all -- reverting either one alone measures WORSE than reverting both
-	// (design document, the default-parameter sweep)
+	// together or not at all (see the design document)
 	static constexpr float StepGrow = 1.05f; // eta *= this after an accepted evaluation
 	static constexpr float StepShrink = 0.5f; // eta *= this after a rejected one
 	static constexpr float ProgressTol = 1e-3f; // relative decrease of S at or below which an evaluation counts as stalled

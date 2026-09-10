@@ -3,18 +3,17 @@ if(VCPKG_TARGET_IS_WINDOWS)
 endif()
 
 # 0.3.0 carries the mesh-repair, rect-packing and selected-fill work that this
-# port used to apply as patches, so no patch is needed any more.
-# REF is a develop commit and not a tag on purpose: the per-vertex decimation error bound
-# (Simplify(..., vertexMaxError)) and the caller-supplied remesh sizing field
-# (RemeshParams::vertexSizing) -- what --simplify-tolerance and --adaptive-face-size are built
-# on -- are merged upstream but not released, so halfmesh still declares 0.3.0 and its
-# CMakeLists fails the configure if the version below disagrees with it. Point REF at the tag
-# once a release carrying them is cut; bump port-version whenever REF moves.
+# port used to apply as patches, so no patch is needed any more. 0.4.0 releases the
+# per-vertex decimation error bound (Simplify(..., vertexMaxError)) and the caller-supplied
+# remesh sizing field (RemeshParams::vertexSizing) -- what --simplify-tolerance and
+# --adaptive-face-size are built on -- which this port used to reach by pinning a develop
+# commit. halfmesh's CMakeLists fails the configure if the version in vcpkg.json disagrees
+# with the one it declares, so the two move together.
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO cdcseacave/halfmesh
-    REF 90778de1d9b18dccbd39a7df684efb75204265af
-    SHA512 4a17d4e0be93236fbdab4c7971a70b9c829de37e3622f11d36618cd3b2b022ca827d00dc6988eca904bfed0f822d547cb55b7f4b43e53c4721985cd19aa75294
+    REF v${VERSION}
+    SHA512 cbbaaa30a03b0de94c64a6744e95a1d5d0ececcf18db0b54479ef11eb8d0b678f0db052acd2ef7d742110a1ca0c19c69e62f098aa90862f118fd9439d0103966
     HEAD_REF develop
 )
 
