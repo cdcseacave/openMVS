@@ -147,7 +147,7 @@ static float ResolveEdgeLength(halfmesh::Mesh& halfMesh, float edgeLength)
 	return edgeLength > 0.f ? edgeLength : -edgeLength * halfMesh.ComputeMeanEdgeLength();
 }
 
-static void RemeshIsotropic(halfmesh::Mesh& halfMesh, float edgeLength, int iterations)
+static void RemeshIsotropic(halfmesh::Mesh& halfMesh, float edgeLength, int iterations, const FloatArr* vertexSizing)
 {
 	edgeLength = ResolveEdgeLength(halfMesh, edgeLength);
 	if (edgeLength <= 0.f)
@@ -155,6 +155,14 @@ static void RemeshIsotropic(halfmesh::Mesh& halfMesh, float edgeLength, int iter
 	halfmesh::Mesh::RemeshParams params;
 	params.SetEdgeLength(edgeLength);
 	params.iterations = MAXF(iterations, 1);
+	if (vertexSizing) {
+		// halfmesh refuses a wrong-sized field itself, but it cannot know the mesh was
+		// resized by an earlier stage of this same Clean, which is the way to get one
+		if (vertexSizing->size() != halfMesh.vertices.size()) {
+			VERBOSE("error: the remesh sizing field holds %u entries for %u vertices: remeshing uniformly", (unsigned)vertexSizing->size(), (unsigned)halfMesh.vertices.size());
+		} else
+			params.vertexSizing = std::span<const float>(vertexSizing->data(), vertexSizing->size());
+	}
 	halfMesh.RemeshIsotropic(params);
 }
 
@@ -353,14 +361,23 @@ void Mesh::Clean(const CleanParams& params)
 	// halfmesh reads the target by magnitude, so a ratio and an absolute face
 	// count share one field; non-positive is not a target at all and disables the
 	// stage, matching the "0 - auto" the apps resolve before they get here
-	if (params.simplifyTarget > 0.f && params.simplifyTarget != 1.f)
+	if (params.vertexMaxError) {
+		// the per-vertex bound is the decimation's only stopping rule
+		ASSERT(params.simplifyTarget == 1.f);
+		if (params.vertexMaxError->size() != halfMesh.vertices.size()) {
+			VERBOSE("error: the per-vertex error bound holds %u entries for %u vertices: decimation skipped", (unsigned)params.vertexMaxError->size(), (unsigned)halfMesh.vertices.size());
+		} else {
+			halfMesh.Simplify(1.f, 0.f, 0.f, std::span<float>(params.vertexMaxError->data(), params.vertexMaxError->size()));
+			params.vertexMaxError->resize(halfMesh.vertices.size()); // the decimation may have modified the per-vertex error bound
+		}
+	} else if (params.simplifyTarget > 0.f && params.simplifyTarget != 1.f)
 		halfMesh.Simplify(params.simplifyTarget);
 	if (params.maxHoleEdges > 0)
 		halfMesh.CloseHoles(params.maxHoleEdges);
 	if (params.smoothIterations > 0)
 		halfMesh.SmoothTaubin(params.smoothIterations);
 	if (params.edgeLength != 0.f)
-		RemeshIsotropic(halfMesh, params.edgeLength, params.remeshIterations);
+		RemeshIsotropic(halfMesh, params.edgeLength, params.remeshIterations, params.vertexSizing);
 	if (params.finalize) {
 		halfMesh.RemoveDegenerateFaces(10, 1e-10f);
 		halfMesh.RemoveUnreferencedVertices();

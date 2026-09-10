@@ -64,6 +64,8 @@ void Scene::Release()
 	mesh.Release();
 	obb.Reset();
 	transform = Matrix4x4f::IDENTITY;
+	// the images it counts are gone, so it goes back to what the constructor leaves (see Scene.h)
+	nCalibratedImages = 0;
 }
 
 bool Scene::IsValid() const

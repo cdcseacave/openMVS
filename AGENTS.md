@@ -75,10 +75,11 @@ DEBUG_EXTRA("Details");     // Level 1 (verbose)
 VERBOSE("Info: %s", str);   // General logging
 ```
 
-### Error Handling
-- Use `ASSERT(condition)` for impossible or disallowed internal states. Do not add a runtime guard that lets execution continue with an invalid state.
-- If an assertion can be reached, fix the caller or state transition that violated the invariant; do not hide the defect with a fallback.
-- Use runtime validation and return false/NULL only for expected, recoverable failures such as invalid external input or unavailable resources.
+### Error Handling — permanent rules
+- **Every function you write states its contract with `ASSERT`.** Assert what the inputs must be (non-empty images, matching sizes, unit vectors, positive depths, valid indices, initialized state) at the top of the function and at every point where an invariant is relied upon. Functions are designed to work on a particular kind of input; they do not silently accept anything else.
+- **Do not write code paths that "handle" every possible input** for a function designed for a particular one: no fallbacks, no clamping, no `normalized()` at the consumer, no early `return` on a state that should be impossible, no retry loops hoping for a valid value. Such paths hide which producer is broken and remove the diagnostic value of the assert.
+- **Always fix the cause, never the symptom.** When an `ASSERT` fires, trace upstream to the producer that violated the contract and fix that one place; the consumer's `ASSERT` stays — it is the contract. The same applies to crashes, NaNs and wrong results found by tests or benchmarks: find the defect, do not paper over it.
+- Use runtime validation and `return false`/`NULL` only for *expected, recoverable* failures caused by the outside world (a file that does not exist, invalid user input, an unavailable device) — never for internal state.
 - `ASSERT` also communicates its invariant to MSVC Code Analysis; do not add separate analyzer assumptions at call sites.
 
 ### Common Typedefs
@@ -143,8 +144,9 @@ image.Load(fileName);  // loads with correct channel/depth conversion
 image.Save(fileName);  // saves via OpenCV with correct format
 ```
 
-### Headless Debug Mode (`_HEADLESS_DEBUG`)
-- Build flag: `cmake -DOpenMVS_HEADLESS_DEBUG=ON` — controlled via CMake OPTION at CMakeLists.txt:45
+### Headless Debug Mode (`_HEADLESS_DEBUG`) — permanent rule
+- **Every Debug build that an agent runs or tests must define `_HEADLESS_DEBUG`.** Without it a failed `ASSERT` goes to `_CrtDbgReport`: a modal "Microsoft Visual C++ Runtime Library" dialog when a console is attached (the process looks hung, the user has to click it away), or a silent `abort()` (exit code 3, nothing in the `.log`) when stdout is redirected — either way the assertion text is lost. With it the assertion prints `[ASSERT] file:line: expression` to **stderr** and execution continues, so capture stderr (`2> err.txt`) when running Debug binaries.
+- Build flag: `cmake -DOpenMVS_HEADLESS_DEBUG=ON` — controlled via CMake OPTION at CMakeLists.txt:45. It lands in `ConfigLocal.h` for every configuration of that build tree (and stops the apps redirecting cout/cerr), so in a tree that also hosts benchmark RelWithDebInfo binaries define it for the Debug configuration only: append `/D_HEADLESS_DEBUG` to `CMAKE_CXX_FLAGS_DEBUG` and `-D_HEADLESS_DEBUG` (inside `-Xcompiler`) to `CMAKE_CUDA_FLAGS_DEBUG` in that tree's CMake cache and re-run `cmake`.
 - Gating: `ConfigLocal.h.in` template line 71 expands `#cmakedefine _HEADLESS_DEBUG` when the CMake variable is ON
 - Effect: prints `[ASSERT]` to stderr and continues (no modal dialogs, no `_CrtDbgBreak()`); `LogConsole::Open()` short-circuits to leave stdout/stderr on inherited terminal
 - Implementation: `Config.h` lines 277–284 redefine `PRINT_ASSERT_MSG` macro and define `_ASSERT_BREAK()` empty; `Config.h` lines 294–300 skip `_CrtDbgReport()` modal when flag is set; `Log.cpp` line 272 short-circuits redirection

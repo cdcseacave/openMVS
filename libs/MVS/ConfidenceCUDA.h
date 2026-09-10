@@ -24,6 +24,7 @@
 
 #include "ConfidenceRefine.h"
 
+#include <cstdint>
 #include <vector>
 
 namespace MVS {
@@ -61,7 +62,7 @@ struct ConfAdjustRequest {
 	float k00, k11, k02, k12;              // reference camera intrinsics (skew-free)
 	// outputs
 	bool done = false;                     // fused kernels ran and confMap holds the adjusted conf
-	long long computeNS = 0;               // wall time of the fused launch (kernels + transfers)
+	int64_t computeNS = 0;                 // wall time of the fused launch (kernels + transfers)
 };
 
 // Compute the intra-map prior + one-hop multi-view confirmation on the GPU for one reference view,

@@ -207,8 +207,20 @@ public:
 		unsigned maxHoleEdges{0}; // CloseHoles limit (0 - disabled)
 		int smoothIterations{0}; // Smooth iterations (0 - disabled)
 		float edgeLength{0.f}; // isotropic remeshing target edge length: >0 absolute, <0 that multiple of the current mean edge length (0 - disabled)
+		// optional per-vertex target edge length for the remesh, one entry per vertex of
+		// the mesh as the remesh receives it (so no stage that changes the vertex set may
+		// run before it in the same call: pass a decimation as its own Clean). Every entry
+		// must be finite and positive; the remesh grades against it instead of edgeLength,
+		// which still has to be a valid scalar (the field's mean is the natural value)
+		const FloatArr* vertexSizing{NULL};
 		int remeshIterations{3};
 		bool finalize{true}; // end with degenerate-face/unreferenced-vertex removal and non-manifold repair
+		// optional in/out per-vertex collapse-error bound, one entry per vertex of the mesh as the
+		// decimation receives it: an edge collapses only while the mean squared distance of its
+		// collapse point to the planes its merged quadric holds is within the smaller bound of its
+		// endpoints, and the decimation runs until no edge passes (simplifyTarget must then be 1:
+		// the bound is the one stopping rule)
+		FloatArr* vertexMaxError{NULL};
 	};
 	void Clean(const CleanParams& params);
 
