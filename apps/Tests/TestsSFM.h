@@ -360,6 +360,8 @@ bool GlobalAlignmentRotationAveragingExtendedTest();
 bool GlobalAlignmentScaleAveragingExtendedTest();
 bool GlobalAlignmentScaleAveragingFallbackTest();
 bool GlobalAlignmentTranslationAveragingExtendedTest();
+bool RobustAveragingScaleTest();
+bool RobustAveragingTranslationTest();
 bool GlobalAlignmentMergeSingleSceneTest();
 bool GlobalAlignmentTrackMergeDuplicateImageGuardTest();
 bool GlobalAlignmentTrackMerge3DProximityGuardTest();

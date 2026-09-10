@@ -51,13 +51,22 @@ public:
 	 * @brief Estimate global translations from pairwise relative translations
 	 * @param pairwiseTranslations Vector of pairwise translation constraints
 	 * @param numIndices Total number of indices (scenes/images)
+	 * @param fixedIdx Fixed gauge index (NO_ID = auto-select best-connected index)
 	 * @param outTranslations Output vector of global translations (indexed by scene/image ID)
 	 * @return true if estimation successful
 	 */
 	bool EstimateTranslations(
 		const std::vector<TranslationPair>& pairwiseTranslations,
 		const uint32_t numIndices,
+		const uint32_t fixedIdx,
 		std::vector<Point3>& outTranslations);
+
+	bool EstimateTranslations(
+		const std::vector<TranslationPair>& pairwiseTranslations,
+		const uint32_t numIndices,
+		std::vector<Point3>& outTranslations) {
+		return EstimateTranslations(pairwiseTranslations, numIndices, NO_ID, outTranslations);
+	}
 };
 /*----------------------------------------------------------------*/
 

@@ -26,6 +26,7 @@ DEFINE_LOG_NAME(lt, _T("GlbTrsAg"));
 bool GlobalTranslationEstimator::EstimateTranslations(
 	const std::vector<TranslationPair>& pairwiseTranslations,
 	const uint32_t numIndices,
+	const uint32_t fixedIdx,
 	std::vector<Point3>& outTranslations)
 {
 	if (pairwiseTranslations.empty() || numIndices == 0) {
@@ -48,19 +49,21 @@ bool GlobalTranslationEstimator::EstimateTranslations(
 		return false;
 	}
 
-	// Find the best-connected node as exact gauge (fixed to origin)
-	std::unordered_map<uint32_t, float> nodeWeights;
-	nodeWeights.reserve(N);
-	float maxWeight = 0.f;
-	uint32_t gaugeIdx = NO_ID;
-	for (const auto& transPair : pairwiseTranslations) {
-		nodeWeights[transPair.idxA] += transPair.weight;
-		nodeWeights[transPair.idxB] += transPair.weight;
-	}
-	for (const auto& [idx, weight] : nodeWeights) {
-		if (weight > maxWeight) {
-			maxWeight = weight;
-			gaugeIdx = idx;
+	// Find the gauge index: use the fixed index if provided, otherwise find the best-connected node
+	uint32_t gaugeIdx = fixedIdx;
+	if (gaugeIdx == NO_ID) {
+		std::unordered_map<uint32_t, float> nodeWeights;
+		nodeWeights.reserve(N);
+		float maxWeight = 0.f;
+		for (const auto& transPair : pairwiseTranslations) {
+			nodeWeights[transPair.idxA] += transPair.weight;
+			nodeWeights[transPair.idxB] += transPair.weight;
+		}
+		for (const auto& [idx, weight] : nodeWeights) {
+			if (weight > maxWeight) {
+				maxWeight = weight;
+				gaugeIdx = idx;
+			}
 		}
 	}
 	ASSERT(gaugeIdx != NO_ID);

@@ -33,6 +33,7 @@
 #include "../../libs/SFM/GlobalRotationAveraging.h"
 #include "../../libs/SFM/GlobalScaleAveraging.h"
 #include "../../libs/SFM/GlobalTranslationAveraging.h"
+#include "../../libs/SFM/RobustAveraging.h"
 #include "../../libs/SFM/PairsWeighting.h"
 #include "../../libs/SFM/ViewGraphCalibrator.h"
 #include "../../libs/SFM/BundleAdjustment.h"
@@ -11009,6 +11010,83 @@ bool GlobalAlignmentTranslationAveragingExtendedTest()
 	}
 
 	VERBOSE("GlobalAlignmentTranslationAveragingExtendedTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// Five scales on a ring with one wrong chord: the robust averaging must ignore the wrong edge
+bool RobustAveragingScaleTest()
+{
+	TD_TIMER_START();
+	const REAL truth[5] = {1.0, 2.0, 0.5, 4.0, 1.5};
+	std::vector<ScalePair> pairs;
+	for (uint32_t i = 0; i < 5; ++i) {
+		const uint32_t j = (i + 1) % 5;
+		const uint32_t a = MINF(i, j), b = MAXF(i, j);
+		pairs.push_back(ScalePair{a, b, truth[b] / truth[a], 10.f});
+	}
+	pairs.push_back(ScalePair{0u, 2u, truth[2] / truth[0], 10.f});
+	pairs.push_back(ScalePair{1u, 3u, 3.0 * truth[3] / truth[1], 10.f}); // wrong by a factor 3
+	pairs.push_back(ScalePair{2u, 4u, truth[4] / truth[2], 10.f});
+	GlobalScaleEstimator estimator;
+	std::vector<REAL> scales, residuals;
+	const bool solved = RobustAverage(pairs, std::log(REAL(1.05)), 10,
+		[&](const std::vector<ScalePair>& active, std::vector<REAL>& s) { return estimator.EstimateScales(active, 5, 0, s); },
+		[&](size_t i, const std::vector<REAL>& s) { const ScalePair& p = pairs[i]; return std::log(p.scaleRatio) - (std::log(s[p.idxB]) - std::log(s[p.idxA])); },
+		scales, residuals);
+	if (!solved) {
+		VERBOSE("RobustAveragingScaleTest FAILED: solver failed");
+		return false;
+	}
+	for (uint32_t i = 0; i < 5; ++i) {
+		const REAL r = scales[i] / truth[i];
+		if (MAXF(r, REAL(1) / r) > REAL(1.02)) {
+			VERBOSE("RobustAveragingScaleTest FAILED: scale %u off by %.3f", i, r);
+			return false;
+		}
+	}
+	if (residuals[6] < std::log(REAL(2.5)) || residuals[0] > std::log(REAL(1.02))) {
+		VERBOSE("RobustAveragingScaleTest FAILED: log residuals %.3f / %.3f", residuals[6], residuals[0]);
+		return false;
+	}
+	VERBOSE("RobustAveragingScaleTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// Five translations on a ring with one wrong chord
+bool RobustAveragingTranslationTest()
+{
+	TD_TIMER_START();
+	const Point3 truth[5] = {Point3(0,0,0), Point3(1,0,0), Point3(1,1,0), Point3(0,1,0), Point3(0.5,0.5,1)};
+	std::vector<TranslationPair> pairs;
+	for (uint32_t i = 0; i < 5; ++i) {
+		const uint32_t j = (i + 1) % 5;
+		const uint32_t a = MINF(i, j), b = MAXF(i, j);
+		pairs.push_back(TranslationPair{a, b, truth[b] - truth[a], 10.f});
+	}
+	pairs.push_back(TranslationPair{0u, 2u, truth[2] - truth[0], 10.f});
+	pairs.push_back(TranslationPair{1u, 3u, truth[3] - truth[1] + Point3(0.8, 0, 0), 10.f}); // wrong by 0.8
+	GlobalTranslationEstimator estimator;
+	std::vector<Point3> t;
+	std::vector<REAL> residuals;
+	const bool solved = RobustAverage(pairs, REAL(0.05), 10,
+		[&](const std::vector<TranslationPair>& active, std::vector<Point3>& s) { return estimator.EstimateTranslations(active, 5, 0, s); },
+		[&](size_t i, const std::vector<Point3>& s) { const TranslationPair& p = pairs[i]; return norm(s[p.idxB] - s[p.idxA] - p.relativeTranslation); },
+		t, residuals);
+	if (!solved) {
+		VERBOSE("RobustAveragingTranslationTest FAILED: solver failed");
+		return false;
+	}
+	for (uint32_t i = 0; i < 5; ++i) {
+		if (norm(t[i] - truth[i]) > REAL(0.02)) {
+			VERBOSE("RobustAveragingTranslationTest FAILED: node %u off by %.3f", i, norm(t[i] - truth[i]));
+			return false;
+		}
+	}
+	if (residuals[6] < REAL(0.7) || residuals[0] > REAL(0.02)) {
+		VERBOSE("RobustAveragingTranslationTest FAILED: residuals %.3f / %.3f", residuals[6], residuals[0]);
+		return false;
+	}
+	VERBOSE("RobustAveragingTranslationTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 
