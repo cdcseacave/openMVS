@@ -38,96 +38,57 @@ class SFM_API Scene;
  *
  * ── Pipeline overview (merge) ──────────────────────────────────────────────
  *
- * STAGE 1: ESTIMATE RELATIVE SIMILARITIES
- *   For every pair of sub-scenes that share images connected by cross-sub-scene
- *   pairs (pairs left in the global scene after splitting), estimate a 7-DOF
- *   similarity transform (Sim(3): rotation, translation, scale) and store it as
- *   a ScenePair with its inlier count. Both modes start from the same per-sub-scene
- *   observation cache mapping (localImage, feature) to the 3D position of the inlier
- *   track holding that observation, and both walk the same cross-sub-scene matches;
- *   they differ in what they ask of a match. GlobalAlignmentConfig::alignment selects.
+ * STAGE 1: EVIDENCE (PrepareSeamEvidence)
+ *   Which block every image belongs to, which image pairs cross a block boundary, and where
+ *   each block triangulated the observations those pairs match — the raw material every later
+ *   stage reads.
  *
- *   ALIGN_POINTS — similarity from 3D-3D correspondences:
- *   - A match contributes when BOTH its endpoints hit the caches, giving one 3D point
- *     per sub-scene, each in its own local frame.
- *   - EstimateSimilarityTransform fits the Sim(3) by RANSAC, with the inlier distance
- *     a fraction of the destination point cloud's bounding-box diagonal so the
- *     criterion is invariant to each sub-scene's arbitrary units.
- *   - This needs a match whose two endpoints both lie on a track. Dense (warp-sampled)
- *     keypoints are laid out per pair on the target side, so they rarely join a track
- *     there and such a seam can end up with no correspondence at all.
+ * STAGE 2: SEAM CANDIDATES (EstimateSeamCandidates)
+ *   The relative Sim(3) of every adjacent block pair, measured in whichever mode
+ *   GlobalAlignmentConfig::alignment selects. ALIGN_POINTS fits the similarity by RANSAC over
+ *   the matches lying on an inlier track in BOTH blocks. ALIGN_CAMERAS treats one block's
+ *   cameras as a rig and the other's inlier tracks as the points, so a match contributes when
+ *   ONE endpoint lies on a track and a seam stays measurable from either side alone; both
+ *   directions are estimated and both are scored on the union of their correspondences, so the
+ *   two opinions answer to the same evidence. Every camera with enough correspondences votes,
+ *   and a candidate must explain enough of the union, carry the votes of both sides and leave
+ *   the two blocks' cameras unmixed. Directions that agree become one seam refined over their
+ *   inliers; ones that disagree are settled by the camera votes, or both are kept for the graph.
  *
- *   ALIGN_CAMERAS — generalized-camera PnP with scale:
- *   - One sub-scene's cameras are a rig whose internal poses are known in that
- *     sub-scene's frame and at its scale; the other sub-scene's inlier tracks are the
- *     3D points; the cross-sub-scene matches are the rig's observations of them. A
- *     match contributes when ONE endpoint hits the cache — the other endpoint only has
- *     to be a keypoint — so a seam is measurable from either side alone.
- *   - PoseLib's generalized absolute pose with scale (LO-RANSAC over gp4ps, then a
- *     scale-aware refinement) solves the rig pose and the rig-to-points scale together,
- *     from bearing vectors, so any central camera model is handled.
- *   - Both directions are estimated and both are scored on the union of the two directions'
- *     correspondences, so the two opinions are compared on the same evidence. Every camera of
- *     either sub-scene with enough correspondences then votes on each candidate — support,
- *     contradiction or abstention, from its inlier share and how far its inliers spread over
- *     its image — and a candidate must carry the votes of both sides, explain what the other
- *     direction saw, and leave the two sub-scenes' cameras unmixed. Survivors that agree in
- *     rotation and scale become one seam refined over the union of their inliers; survivors
- *     that disagree are settled by the camera votes when one carries clearly more of them, and
- *     otherwise both are kept for the seam graph to decide. A direction whose rig is too
- *     shallow to observe a scale takes the other direction's.
- *   Pairs with too few inliers or low inlier ratio are discarded, in both modes.
+ * STAGE 3: SEAM GRAPH (ClassifySeamGraph)
+ *   A seam is measured from two reconstructions that know nothing of each other, so a wrong one
+ *   cannot be recognized on its own evidence: only the cycles it sits in can indict it. Every
+ *   component is averaged robustly and each candidate keeps the residual of the consensus
+ *   against it — ROBUST when the consensus confirms it, VERIFIED when only its own evidence
+ *   stands behind it, UNDECIDED when the graph cannot tell, REJECTED when a stronger consistent
+ *   path contradicts it.
  *
- * STAGE 2: ROTATION AVERAGING
- *   Extract relative rotations R_ij from each ScenePair and solve for global
- *   rotations R_i using GlobalRotationEstimator (L1-ADMM initialization
- *   followed by IRLS refinement). The rotations are represented as angle-axis
- *   vectors in so(3) and solved via a sparse linear system. This decouples
- *   rotation from scale and translation, which is standard practice because
- *   SO(3) averaging is better conditioned than joint Sim(3) estimation.
+ * STAGE 4: INITIAL BLOCK POSES (ComputeInitialBlockPoses)
+ *   The trusted seams alone carry the blocks: each of their components is averaged about its
+ *   best connected block and becomes one model, numbered by the trusted weight it holds. These
+ *   poses are a starting point, not a verdict.
  *
- * STAGE 3: SCALE AVERAGING
- *   Pairwise scale ratios come directly from each ScenePair's relativeTransform
- *   (no more median-depth computation). Solve the overdetermined system
- *   log(s_j) - log(s_i) = log(s_ij) via least-squares in log-space using
- *   GlobalScaleEstimator. Working in log-space converts the multiplicative
- *   scale group (R+) into an additive linear problem. The gauge freedom is
- *   fixed by setting the first sub-scene's scale to 1.0.
+ * STAGE 5: PLACEMENT (PlaceBlocks, PlaceGroup, AdmitGroup)
+ *   Each model is grown one block at a time, from the block the graph is most sure of. The next
+ *   block tried is the one the admitted blocks support most, and PlaceGroup decides it: it pools
+ *   every correspondence between the block and the model, estimates the pose from that pool both
+ *   ways (the block's cameras on the model's points, the model's cameras on the block's points),
+ *   scores each hypothesis over the whole pool and holds it to four gates — enough of the pool
+ *   explained, the cameras of both sides behind it, the admitted neighbours' own seams agreeing
+ *   with what it implies, and the two sides' cameras left unmixed. A block that passes is
+ *   admitted, the seams that agree with its placement become model seams, and every admitted
+ *   block is then refined jointly over them; a block that fails is deferred and tried again once
+ *   the model has grown. A block is a group of one, so the same routine places a whole model.
  *
- * STAGE 4: TRANSLATION AVERAGING
- *   For each ScenePair, rotate and scale the relative translation t_ij by the
- *   corresponding global rotation and scale to align it to the global frame.
- *   Solve the linear system t_j - t_i = t_ij for all pairs via least-squares
- *   using GlobalTranslationEstimator. The gauge freedom is fixed by pinning
- *   the best-connected sub-scene at the origin.
+ * STAGE 6: THE MERGED MODEL
+ *   The model holding the most images is the one merged with poses. The blocks of every other
+ *   model, and those no model could place, are merged without poses so the post-merge resection
+ *   re-registers their images against the consensus — the same process that would have placed
+ *   them had the cluster boundary not severed their strongest pairs.
  *
- * VALIDATION (between stages 4 and 5)
- *   Each sub-scene pair's measured Sim(3) is composed with the averaged global transforms
- *   of its two end-points; the residual is identity when the edge agrees with the
- *   consensus. The seam the consensus contradicts most is dropped and the averaging redone,
- *   until no residual is past its limit; dropping a seam that bridges the graph also demotes
- *   the smaller side, which has then lost its only link. A sub-scene still dominated by
- *   conflicting incident edge weight is demoted as a last resort: it is merged without its
- *   poses so the post-merge resection re-registers its images against the trusted consensus.
- *   The remaining sub-scenes are then re-averaged and re-validated until the verdict is stable.
- *   A seam graph with no cycle has nothing to validate: the averaging fits every edge exactly.
- *
- *   This validates the sub-scenes against EACH OTHER; whether a single sub-scene is itself
- *   internally sound is not re-litigated here. A cluster holding two blocks joined by a
- *   seam too sparse to observe their relative scale reconstructs at two scales, and that is
- *   a clustering fault: SceneCluster refuses such an interface when merging clusters
- *   (ClusterConfig::minClusterCoupling), splits any cluster that ends up with one anyway
- *   (RefineClustersSplitThinWaist), and reports the spectral-cut coupling of every finished
- *   cluster. If the defect ever reappears, that is where it is detected and fixed — the
- *   merge stage must not compensate for it. Comparing each sub-scene's own two-view
- *   geometry against its own poses was tried here and abandoned: on a 7-scene benchmark it
- *   flagged every scene (11-72% violated pair weight), including ones that registered every
- *   image, because two-view relative poses are unreliable on the low-parallax and
- *   homography-degenerate pairs such captures are full of.
- *
- * STAGE 5: MERGE TRANSFORMED SUB-SCENES
- *   Apply the estimated similarity transforms (s_i * R_i, t_i) to each
- *   sub-scene's cameras and 3D points, then merge into the global scene:
+ * STAGE 7: MERGE TRANSFORMED SUB-SCENES
+ *   Apply the pose of every placed block to its cameras and 3D points, then
+ *   merge into the global scene:
  *
  *   a) Transform: apply Scene::Transform() to each sub-scene.
  *
@@ -182,12 +143,18 @@ class SFM_API Scene;
  *
  * ── Why this design ────────────────────────────────────────────────────────
  *
- * The decoupled rotation → scale → translation estimation is more robust than
- * joint Sim(3) averaging because each subproblem is convex (or nearly so):
- * - Rotation averaging on SO(3) has well-studied convex relaxations (Weiszfeld
- *   on the angular manifold).
- * - Scale averaging in log-space is a linear least-squares problem.
- * - Translation averaging given known rotations and scales is linear.
+ * Averaging places every block at once and therefore believes every seam at once: one wrong
+ * seam moves the blocks around it and the error is spread over the ones that were right. So the
+ * averaged poses are only where the placement starts from, and each block is then admitted on
+ * its own, against a model of blocks already admitted — evidence pooled over every seam to that
+ * model, judged by the cameras of both sides, and answerable to the neighbours it closes a cycle
+ * with. A block whose evidence does not carry it stays out and is merged without poses rather
+ * than dragging the model with it.
+ *
+ * The averaging itself keeps the decoupled rotation → scale → translation order, because each
+ * subproblem is then convex (or nearly so): rotation averaging on SO(3) has well-studied convex
+ * relaxations, scale averaging in log-space is linear least-squares, and translation averaging
+ * given rotations and scales is linear.
  *
  * The union-find track merging reuses the proven BuildTracks pattern but adds
  * 3D-aware guards: since sub-scene tracks already have triangulated positions,
@@ -208,23 +175,6 @@ class SFM_API Scene;
  * - After all sub-scenes are merged, the sub-scene objects can be destroyed
  *   (their data has been moved out).
  */
-
-/**
- * @brief Scene pair connection with relative 7-DOF similarity transform
- *
- * relativeTransform maps points from sub-scene A's local frame to sub-scene B's:
- *     p_B = relativeTransform * p_A = scale * R * p_A + t
- * Its scale field is therefore s_A / s_B (source scale divided by destination scale).
- */
-struct SFM_API ScenePair
-{
-	uint32_t sceneA;              // First sub-scene index
-	uint32_t sceneB;              // Second sub-scene index
-	Transform relativeTransform;  // 7-DOF Sim(3) mapping p_A -> p_B
-	unsigned numInliers;          // RANSAC inlier count (used as averaging weight)
-
-	ScenePair() : sceneA(NO_ID), sceneB(NO_ID), numInliers(0) {}
-};
 
 // One cross-block correspondence: a feature of image A matched to a feature of image B (global image IDs)
 struct SFM_API SeamCorrespondence
@@ -318,6 +268,9 @@ struct SFM_API PlacementHypothesis
 	Transform T;              // group frame -> model
 	Source source{INITIAL};
 	SeamScore score;          // side 0 = the group, side 1 = the model
+	// the admitted neighbours that agree with what it implies, that disagree over a cycle their
+	// own trusted seam closes, and that contradict it
+	unsigned neighbourSupport{0}, neighbourLoop{0}, neighbourContra{0};
 	String failedGate;        // the failed gates, comma-separated; empty when passed
 	bool Passed() const { return failedGate.empty(); }
 };
@@ -333,6 +286,21 @@ struct SFM_API PlacementPool
 	std::vector<uint32_t> observationCandidate;      // parallel: index into candidateIdx (NO_ID for a raw pair without a candidate)
 	std::vector<Point3> groupCentres;                // centres of every group camera in the group frame
 	std::vector<Point3> modelCentres;                // centres of every admitted camera in the model frame
+};
+
+// What the merge did with the blocks it was given: how many were placed and where, which images
+// were left unregistered, and the evidence the verdict rests on
+struct SFM_API MergeReport
+{
+	unsigned numBlocks{0}, numPlaced{0}, numModels{0};
+	unsigned numImagesPlaced{0}, numImagesUnplaced{0};
+	unsigned numRobust{0}, numVerified{0}, numUndecided{0}, numRejected{0}; // candidate classes after the merge
+	IIndexArr unplacedImages;              // global IDs of the images of blocks that were not placed
+	std::vector<SeamCandidate> candidates; // every candidate with its final class (moved out of the merge)
+	std::vector<uint32_t> modelSeams;      // indices into candidates: the seams admitted into the merged model
+	std::vector<BlockPose> poses;          // final pose and state of every block
+	bool camerasRelaxed{false};            // the camera-level relaxation ran
+	float seamErrorBeforeRelax{0.f}, seamErrorAfterRelax{0.f}; // largest model-seam median error in pixels
 };
 
 /**
@@ -366,7 +334,7 @@ struct SFM_API GlobalAlignmentConfig
 	// neighbour check of a placement; the translation limit is the graph's own bar.
 	float maxSimRotationError{3.f};         // degrees
 	float maxSimScaleRatio{1.1f};
-	float maxSimTranslationError{0.05f};    // fraction of the smaller block's local camera-bbox diagonal
+	float maxSimTranslationError{0.05f};    // fraction of the larger block's local camera-bbox diagonal
 	float voteMargin{1.5f};                 // margin by which one candidate beats another on camera votes
 	float maxVoteWeight{30.f};              // cap of a candidate's weight
 	// Seam graph consensus: a candidate the averaged consensus contradicts by more than these is
@@ -395,28 +363,20 @@ public:
 	GlobalAlignment(Scene& scene, const GlobalAlignmentConfig& config);
 
 	/**
-	 * @brief Align and merge sub-scenes into the global scene
-	 * @param subScenes Vector of sub-scenes to align and merge (modified in-place)
-	 * @param localToGlobals Vector of ID mappings from sub-scenes to global scene (parallel to subScenes)
-	 * @return true if all sub-scenes were aligned and merged; false if alignment could not
-	 *         complete, in which case the global scene is populated with the largest intact
-	 *         sub-scene so a good partial reconstruction is never discarded (never left empty)
+	 * @brief Merge the blocks into the global scene
 	 *
-	 * Combines all sub-scenes, handling duplicate cameras/points.
+	 * On return the scene holds the merged model — the poses of the placed blocks and the
+	 * observations of every block, those of the unplaced ones without poses so the post-merge
+	 * resection can recover them — and the report says what was left out and why.
+	 * @param subScenes the blocks to place and merge (consumed)
+	 * @param localToGlobals per block, its local image index -> global image ID
+	 * @return true when at least one block was placed, which leaves the scene holding a
+	 *         reconstruction whatever the seams said
 	 */
-	bool MergeScenes(std::vector<Scene>& subScenes, const std::vector<IIndexArr>& localToGlobals);
-
-	/**
-	 * @brief Measure the relative similarity of every connected sub-scene pair, exactly as
-	 * MergeScenes does before averaging, without merging anything
-	 *
-	 * The first stage on its own: it neither consumes the sub-scenes nor touches the global
-	 * scene, so the alignment can be measured against a known answer.
-	 */
-	bool EstimateSubScenePairs(
-		const std::vector<Scene>& subScenes,
+	bool MergeScenes(
+		std::vector<Scene>& subScenes,
 		const std::vector<IIndexArr>& localToGlobals,
-		std::vector<ScenePair>& scenePairs);
+		MergeReport& report);
 
 	/**
 	 * @brief Fill globalToLocal, blockPairLinks and blockPointMaps from the blocks
@@ -429,7 +389,7 @@ public:
 		const std::vector<IIndexArr>& localToGlobals);
 
 	/**
-	 * @brief Stage 1: measure every adjacent block pair in both directions, in whichever of the
+	 * @brief Stage 2: measure every adjacent block pair in both directions, in whichever of the
 	 * two modes GlobalAlignmentConfig::alignment selects; one or two candidates per pair. Scale
 	 * is recovered directly by both modes, so no separate pairwise scale estimation is needed.
 	 */
@@ -440,11 +400,11 @@ public:
 
 	/**
 	 * @brief The routine of one block pair (a < b): both directions estimated, scored, gated and
-	 * combined; appends 0, 1 or 2 candidates
+	 * combined; appends 0, 1 or 2 candidates, and records the pair when the gates refuse both
 	 */
 	void EstimateSeamPair(
 		const std::vector<Scene>& subScenes, uint32_t a, uint32_t b,
-		std::vector<SeamCandidate>& candidates) const;
+		std::vector<SeamCandidate>& candidates);
 
 	/**
 	 * @brief Both directions' correspondences of one block pair, collected without estimation
@@ -535,7 +495,7 @@ public:
 	 * consensus reaches from the gauge gets its local -> gauge frame transform and model 0, the
 	 * rest keep model NO_ID and state UNPLACED
 	 * @param residuals out: one per edge, the consensus against it (rotation degrees, scale ratio
-	 * >= 1, translation as a fraction of the smaller block's camera footprint); an edge the
+	 * >= 1, translation as a fraction of the larger block's camera footprint); an edge the
 	 * rotation averaging left with its two ends in different frames, and one measuring a scale
 	 * between blocks the metric consensus did not both place, gets an infinite rotation. A seam
 	 * that cannot observe a scale is judged on its rotation alone, and keeps a residual of 1 in
@@ -577,14 +537,16 @@ public:
 	 * camera's own pixels under a Huber loss of maxReprojError. Solving every block at once is what
 	 * lets a seam's two ends move apart: a chain refined pair by pair can only pass its error on.
 	 * @param modelSeams indices into candidates of the seams the model rests on; one whose two
-	 * blocks are not both admitted carries nothing and is skipped
+	 * blocks are not both admitted into this model carries nothing and is skipped
+	 * @param model only the blocks admitted into this model are fitted; another model's blocks
+	 * are in another frame and have nothing to say here
 	 * @param gaugeBlock the block held fixed, whose frame the poses are therefore expressed in
 	 * @param poses in/out: the pose of every block, refined where the seams reach it
 	 */
 	void RefineBlockPoses(
 		const std::vector<SeamCandidate>& candidates,
 		const std::vector<uint32_t>& modelSeams,
-		uint32_t gaugeBlock,
+		uint32_t model, uint32_t gaugeBlock,
 		std::vector<BlockPose>& poses) const;
 
 	/**
@@ -596,11 +558,14 @@ public:
 	 * candidate's transform, not what its cameras saw, and the pool is judged afresh; this is also
 	 * what lets a folded block's two halves contradict each other. A pair no candidate covers at
 	 * all still carries correspondences, and those are collected raw.
+	 * @param model the model the group is being placed in: only the blocks admitted into it are
+	 * the model side, another model's blocks sitting in a frame this one knows nothing about
 	 */
 	void BuildPlacementPool(
 		const std::vector<Scene>& subScenes,
 		const std::vector<SeamCandidate>& candidates,
 		const std::vector<BlockPose>& poses,
+		uint32_t model,
 		const BlockGroup& group,
 		PlacementPool& pool) const;
 
@@ -618,7 +583,71 @@ public:
 		float voteRatio,
 		PlacementHypothesis& h) const;
 
+	/**
+	 * @brief Stage 5: admit the blocks of one model, one at a time, against the ones already in
+	 *
+	 * The model starts at the block the seam graph is most sure of and grows by the block the
+	 * admitted ones support most. A block that cannot be placed is deferred and tried again as
+	 * soon as the model has changed, since what the model could not confirm then it may now.
+	 * @param model the blocks with poses[b].model == model are the ones this run may admit
+	 * @param poses in/out: the stage 4 poses coming in, the admitted blocks' own frames going out
+	 * @param modelSeams out: the seams the model rests on, indices into candidates
+	 * @return the number of admitted blocks, at least one whenever the model holds a block
+	 */
+	unsigned PlaceBlocks(
+		const std::vector<Scene>& subScenes,
+		std::vector<SeamCandidate>& candidates,
+		const std::vector<REAL>& blockExtents,
+		uint32_t model,
+		std::vector<BlockPose>& poses,
+		std::vector<uint32_t>& modelSeams) const;
+
 private:
+	/**
+	 * @brief The one placement routine: one attempt to place `group` against the admitted blocks
+	 * of `model`
+	 *
+	 * Every correspondence between the two sides is pooled, the pose is estimated from that pool
+	 * in both directions and taken from stage 4 as a third opinion, and each hypothesis answers
+	 * to the same four gates: how much of the pool it explains, what the cameras of both sides
+	 * vote, whether the admitted neighbours' own seams agree with what it implies, and whether it
+	 * leaves the two sides' cameras unmixed. A block is a group of one, and a whole model is a
+	 * group too.
+	 * @param winner out: the hypothesis that won, or the best one when none did
+	 * @param reason out: why nothing could be placed, empty on success
+	 * @return true when a hypothesis carried the group
+	 */
+	bool PlaceGroup(
+		const std::vector<Scene>& subScenes,
+		std::vector<SeamCandidate>& candidates,
+		const std::vector<REAL>& blockExtents,
+		uint32_t model,
+		const BlockGroup& group,
+		const std::vector<BlockPose>& poses,
+		PlacementHypothesis& winner,
+		String& reason) const;
+
+	/**
+	 * @brief Take the group into the model at the winning hypothesis
+	 *
+	 * Every block of the group is moved to where the hypothesis puts it, and every candidate
+	 * between the group and the admitted blocks is held against what the placement implies: one
+	 * that agrees becomes a seam the model rests on — an undecided candidate is verified by it —
+	 * and a trusted one that disagrees becomes a model seam carrying its loop discrepancy, so the
+	 * refinement answers for it. An undecided candidate that disagrees is left where it was.
+	 * @return true when a block of the group now has two or more admitted neighbours joined to it
+	 * by model seams, i.e. the admission closed a cycle
+	 */
+	bool AdmitGroup(
+		const std::vector<Scene>& subScenes,
+		std::vector<SeamCandidate>& candidates,
+		const std::vector<REAL>& blockExtents,
+		uint32_t model,
+		const BlockGroup& group,
+		const PlacementHypothesis& winner,
+		std::vector<BlockPose>& poses,
+		std::vector<uint32_t>& modelSeams) const;
+
 	/**
 	 * @brief Refine one A -> B similarity against every reprojection the given observations carry
 	 *
@@ -644,135 +673,19 @@ private:
 	void EstimatePointSeamPair(
 		const std::vector<Scene>& subScenes, uint32_t a, uint32_t b,
 		const std::vector<uint32_t>& pairIndices,
-		std::vector<SeamCandidate>& candidates) const;
+		std::vector<SeamCandidate>& candidates);
 
 	/**
-	 * @brief One ScenePair per candidate its pair verdict settled: an agreement, a winner on the
-	 * camera votes, or a lone survivor. A pair still holding two candidates emits none, so the
-	 * averaging below sees it exactly as it sees a pair whose seam was refused.
-	 */
-	static void CandidatesToScenePairs(
-		const std::vector<SeamCandidate>& candidates,
-		std::vector<ScenePair>& scenePairs);
-
-	/**
-	 * @brief Stage 2: Estimate global rotations from pairwise rotations.
-	 * Robustly rejects rotation-inconsistent pairs and PRUNES them from scenePairs in place, so
-	 * the downstream scale/translation averaging only use rotation-consistent links. Sub-scenes
-	 * the estimator cannot place are left with an INF rotation (caller selects by finiteness).
-	 * @param scenePairs in/out: pruned to the rotation-consistent subset.
-	 */
-	bool EstimateGlobalRotations(
-		std::vector<ScenePair>& scenePairs,
-		const uint32_t numSubScenes,
-		std::vector<Point3d>& globalRotations);
-
-	/**
-	 * @brief Stage 3: Estimate global scales from pairwise scale ratios
-	 * extracted from each ScenePair::relativeTransform.
-	 */
-	bool EstimateGlobalScales(
-		const std::vector<ScenePair>& scenePairs,
-		const uint32_t numSubScenes,
-		std::vector<REAL>& globalScales);
-
-	/**
-	 * @brief Stage 4: Estimate global translations from pairwise translations
-	 */
-	bool EstimateGlobalTranslations(
-		const std::vector<ScenePair>& scenePairs,
-		const std::vector<Point3d>& globalRotations,
-		const std::vector<REAL>& globalScales,
-		const uint32_t numSubScenes,
-		std::vector<Point3>& globalTranslations);
-
-	/**
-	 * @brief Stage 5: Merge transformed sub-scenes into global scene
-	 * @param demoted per-sub-scene flags (from ValidateAlignment): merge without poses when true
+	 * @brief Stage 7: transform the placed blocks by their poses and merge every block in
+	 *
+	 * A block the placement admitted into the merged model comes in with its poses and its 3D
+	 * points; every other block comes in without them, so its images stay unregistered for the
+	 * post-merge resection to recover.
 	 */
 	bool MergeTransformedScenes(
 		std::vector<Scene>& subScenes,
 		const std::vector<IIndexArr>& localToGlobals,
-		const std::vector<Point3d>& globalRotations,
-		const std::vector<REAL>& globalScales,
-		const std::vector<Point3>& globalTranslations,
-		const std::vector<bool>& demoted);
-
-	/**
-	 * @brief Drop the seams the averaged consensus contradicts, re-averaging after each one
-	 *
-	 * A seam is measured from two reconstructions that know nothing of each other, so a wrong one
-	 * cannot be recognized on its own evidence; only the cycles of the seam graph can indict it.
-	 * Each round scores every surviving seam against the averaged global transforms, takes the one
-	 * whose residual exceeds its limit by the largest factor and drops it, then re-averages scale
-	 * and translation over what is left (rotation averaging is already robust, so its result is
-	 * kept). A seam whose removal disconnects the graph is dropped too, but its smaller side has
-	 * then lost its only link to the consensus and is demoted to be rebuilt by resection. The loop
-	 * stops when no seam is past its limit, and cannot run longer than there are seams.
-	 *
-	 * A seam graph with no cycle carries no such evidence at all: the averaging reproduces every
-	 * edge exactly and every residual is zero, whatever the seams claim.
-	 *
-	 * @param scenePairs in/out: pruned to the seams the consensus does not contradict
-	 * @param demoted in/out: gains the sub-scenes a dropped bridge left unlinked
-	 * @return false if re-averaging failed, in which case the alignment cannot complete
-	 */
-	bool PruneConflictingSeams(
-		const std::vector<Scene>& subScenes,
-		std::vector<ScenePair>& scenePairs,
-		const std::vector<Point3d>& globalRotations,
-		std::vector<REAL>& globalScales,
-		std::vector<Point3>& globalTranslations,
-		std::vector<bool>& demoted);
-
-	/**
-	 * @brief Validate the averaged alignment via Sim(3) cycle consistency and decide which
-	 * sub-scenes cannot be trusted with their poses.
-	 *
-	 * Every surviving ScenePair carries a relative Sim(3) measured from 3D-3D correspondences
-	 * between two reconstructions; composing it with the averaged global transforms of its two
-	 * end-points yields a residual that is identity when the edge agrees with the consensus.
-	 * Edges whose residual is too large in scale, rotation or translation are conflicting, and
-	 * the sub-scene most dominated by conflicting incident edge weight is demoted, iteratively
-	 * (a node with a single incident edge is satisfied exactly by the averaging, so it carries
-	 * no cycle evidence and can never be flagged). Sub-scenes left unplaced by rotation
-	 * averaging (mergeMask false) are demoted as well.
-	 *
-	 * Demoted sub-scenes are merged WITHOUT their poses and 3D positions (features, image
-	 * pairs and track observations only), leaving their images unregistered so the post-merge
-	 * resection re-registers them incrementally against the trusted consensus — the same
-	 * process that would have placed them correctly had the cluster boundary not severed
-	 * their strongest pairs.
-	 *
-	 * @return per-sub-scene demotion flags (true = merge without poses)
-	 */
-	std::vector<bool> ValidateAlignment(
-		const std::vector<Scene>& subScenes,
-		const std::vector<bool>& mergeMask,
-		const std::vector<ScenePair>& scenePairs,
-		const std::vector<Point3d>& globalRotations,
-		const std::vector<REAL>& globalScales,
-		const std::vector<Point3>& globalTranslations) const;
-
-	/**
-	 * @brief Re-average the demoted-free sub-set until the validation verdict is stable
-	 *
-	 * Demoting a sub-scene removes its edges, so the scale and translation consensus must be
-	 * recomputed over the survivors and re-validated; rotation averaging is already robust, so
-	 * its result is kept. Demoting can also disconnect the pair graph, while scale/translation
-	 * averaging pin a single gauge node, so every sub-scene outside the largest surviving
-	 * component is demoted too. Each iteration demotes at least one more sub-scene, bounding
-	 * the loop by their number.
-	 *
-	 * @return false if re-averaging failed, in which case the alignment cannot complete
-	 */
-	bool RefineDemotedAlignment(
-		const std::vector<Scene>& subScenes,
-		std::vector<ScenePair>& scenePairs,
-		const std::vector<Point3d>& globalRotations,
-		std::vector<REAL>& globalScales,
-		std::vector<Point3>& globalTranslations,
-		std::vector<bool>& demoted);
+		const std::vector<BlockPose>& poses);
 
 	/**
 	 * @brief Merge a single scene into the global scene
@@ -780,11 +693,11 @@ private:
 	 * Moves keypoints/descriptors back from sub-scene images to the global scene
 	 * (they were moved to sub-scenes during SceneCluster::ExtractSubScene to save memory).
 	 * Also moves image pairs back and remaps track observation IDs.
-	 * When not trusted, camera poses are not copied and all merged tracks are marked
+	 * When not placed, camera poses are not copied and all merged tracks are marked
 	 * non-inlier (numInliers=0): the observations survive for later triangulation, but no
-	 * pose or 3D position from the demoted sub-scene can influence the reconstruction.
+	 * pose or 3D position from the unplaced sub-scene can influence the reconstruction.
 	 */
-	void MergeSingleScene(Scene& subScene, const IIndexArr& localToGlobal, bool trusted);
+	void MergeSingleScene(Scene& subScene, const IIndexArr& localToGlobal, bool placed);
 
 	/**
 	 * @brief Merge tracks from sub-scenes and connect them via cross-sub-scene pairs
@@ -795,18 +708,22 @@ private:
 	 *    using 3D proximity as validation when both sides have triangulated positions
 	 * 3. Assemble final tracks, triangulating any new tracks without 3D positions
 	 *
-	 * Tracks of demoted sub-scenes (all observations in untrusted images) are seeded with
+	 * Tracks of unplaced sub-scenes (all observations in unregistered images) are seeded with
 	 * all their observations but no 3D position, so their structure survives for the
 	 * post-merge resection to re-triangulate.
-	 * @param untrustedImages per-global-image flags marking images of demoted sub-scenes
+	 * @param unplacedImages per-global-image flags marking images of blocks that were not placed
 	 */
-	void MergeTracksWithCrossSubScenePairs(const std::vector<bool>& untrustedImages);
+	void MergeTracksWithCrossSubScenePairs(const std::vector<bool>& unplacedImages);
 
 	// Global image ID -> (sub-scene index, local image index)
 	std::unordered_map<IIndex, std::pair<uint32_t, IIndex>> globalToLocal;
 
 	// Block pair (a < b) -> indices into scene.pairs of its cross pairs
 	std::map<std::pair<uint32_t, uint32_t>, std::vector<uint32_t>> blockPairLinks;
+	// The block pairs whose seam was measured and refused by the gates: their correspondences are
+	// evidence that has already been judged, so a placement must not take them for raw evidence
+	// and re-litigate a verdict the whole pair was weighed for
+	std::set<std::pair<uint32_t, uint32_t>> refusedSeamPairs;
 	// Per block: (local image, feature) -> the position of the inlier track holding that
 	// observation, what the correspondence collection looks each match up in
 	std::vector<std::unordered_map<PairIdx, Point3>> blockPointMaps;

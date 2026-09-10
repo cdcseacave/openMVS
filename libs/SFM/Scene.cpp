@@ -962,7 +962,8 @@ bool Scene::ReconstructHierarchical(const ReconstructionConfig& config, const II
 	} else {
 		// merge sub-scenes, or, if not possible, keep only the largest sub-scene
 		GlobalAlignment globalAlign(*this, config.globalAlignmentCfg);
-		globalAlign.MergeScenes(subScenes, localToGlobals);
+		MergeReport mergeReport;
+		globalAlign.MergeScenes(subScenes, localToGlobals, mergeReport);
 	}
 	DEBUG("Hierarchical reconstruction complete: %u/%u images, %u/%u points (%s)",
 		status.nCalibratedImages, images.size(), status.nTracks, tracks.size(), TD_TIMER_GET_FMT().c_str());

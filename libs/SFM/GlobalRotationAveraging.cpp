@@ -222,16 +222,19 @@ void GlobalRotationEstimator::InitializeFromMaximumSpanningTree(uint32_t numNode
 			if (visited[child])
 				continue;
 			visited[child] = true;
-			// Find the pair
-			const PairIdx pairIdx(MakePairIdx(curr, child));
+			// Find the pair; a caller is free to give it either way round, the direction being
+			// read off the pair itself below
 			const RotationPair* pPair = nullptr;
 			for (const RotationPair& pair : pairwiseRotations) {
-				if (pair.idxA == pairIdx.i && pair.idxB == pairIdx.j) {
+				if ((pair.idxA == curr && pair.idxB == child) ||
+					(pair.idxA == child && pair.idxB == curr)) {
 					pPair = &pair;
 					break;
 				}
 			}
 			ASSERT(pPair != nullptr);
+			if (pPair == nullptr)
+				continue;
 			const Matrix3x3& relR = pPair->relativeRotation;
 			RMatrix Rcurr(estimatedRotations[curr]);
 			if (pPair->idxA == curr) {

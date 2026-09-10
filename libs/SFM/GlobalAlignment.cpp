@@ -77,14 +77,37 @@ static uint32_t FindLargestSubScene(const std::vector<Scene>& subScenes, const s
 	return best;
 }
 
-bool GlobalAlignment::MergeScenes(std::vector<Scene>& subScenes, const std::vector<IIndexArr>& localToGlobals)
+// The diagonal of the box a set of camera centres spans
+static REAL CentresExtent(const std::vector<Point3>& centres)
+{
+	AABB3 bbox(true);
+	for (const Point3& C : centres)
+		bbox.InsertFull(C);
+	return bbox.IsEmpty() ? REAL(0) : (REAL)bbox.GetSize().norm();
+}
+
+// The diagonal of the box a block's cameras span in its own frame -- the unit the translation
+// residuals of its seams are measured in
+static REAL BlockExtent(const Scene& block)
+{
+	std::vector<Point3> centres;
+	for (const Image& img : block.images)
+		if (img.IsValid())
+			centres.emplace_back(img.C);
+	return CentresExtent(centres);
+}
+
+bool GlobalAlignment::MergeScenes(
+	std::vector<Scene>& subScenes, const std::vector<IIndexArr>& localToGlobals, MergeReport& report)
 {
 	TD_TIMER_STARTD();
 
 	ASSERT(!subScenes.empty());
 	ASSERT(subScenes.size() == localToGlobals.size());
-	const uint32_t numSubScenes = (uint32_t)subScenes.size();
-	VERBOSE("Merging %u sub-scenes into global scene", numSubScenes);
+	const uint32_t numBlocks = (uint32_t)subScenes.size();
+	report = MergeReport();
+	report.numBlocks = numBlocks;
+	VERBOSE("Merging %u blocks into the global scene", numBlocks);
 
 	#if GLOBALALIGNMENT_DEBUG
 	// Export sub-scenes before alignment for debugging
@@ -92,127 +115,122 @@ bool GlobalAlignment::MergeScenes(std::vector<Scene>& subScenes, const std::vect
 		subScenes[i].ExportPLY(String::FormatString("subscene_%u.ply", i));
 	#endif
 
-	// Run the staged alignment pipeline; any stage failing breaks out to the fallback below.
-	// Every failure occurs before the merge stage (Stage 5) consumes sub-scenes, so on failure
-	// all sub-scenes are still intact and the fallback can keep the largest one.
-	do {
-		// Stage 1: measure the seam of every connected sub-scene pair (this also fills
-		// globalToLocal, which the merge stage reads)
-		std::vector<SeamCandidate> candidates;
-		if (!EstimateSeamCandidates(subScenes, localToGlobals, candidates)) {
-			VERBOSE("error: failed to estimate relative poses");
-			break;
-		}
-		std::vector<ScenePair> scenePairs;
-		CandidatesToScenePairs(candidates, scenePairs);
-		// Every pair left disputed by its two candidates: nothing places one sub-scene against
-		// another, and copying them in at their own local frames would merge them wrong.
-		if (scenePairs.empty() && numSubScenes > 1) {
-			VERBOSE("error: no sub-scene pair was settled");
-			break;
-		}
+	// the unit every translation the merge judges is read in
+	std::vector<REAL> blockExtents(numBlocks);
+	FOREACH(b, subScenes)
+		blockExtents[b] = BlockExtent(subScenes[b]);
 
-		// A single sub-scene has nothing to align against, so it is copied in as it is
-		if (numSubScenes == 1) {
-			VERBOSE("Single sub-scene, copying directly");
-			MergeSingleScene(subScenes[0], localToGlobals[0], true);
-			DEBUG("Single-scene merge completed (%s)", TD_TIMER_GET_FMT().c_str());
-			return true;
-		}
+	// stages 1 and 2: the evidence, and what every adjacent block pair measures of it
+	std::vector<SeamCandidate> candidates;
+	EstimateSeamCandidates(subScenes, localToGlobals, candidates);
 
-		// Stage 2: Rotation averaging. Robustly rejects rotation-inconsistent sub-scene pairs and
-		// prunes them from scenePairs in place; solves only its largest connected component and
-		// leaves every sub-scene it could not place at Point3::INF.
-		std::vector<Point3d> globalRotations;
-		if (!EstimateGlobalRotations(scenePairs, numSubScenes, globalRotations)) {
-			VERBOSE("error: failed to estimate global rotations");
-			break;
-		}
-
-		// Merge only the sub-scenes the rotation estimator actually placed (finite rotation).
-		// Deriving the merge set directly from the estimator's output is authoritative: it cannot
-		// disagree with what rotation averaging solved (no separately-recomputed component, no
-		// tie-break or filtered-edge mismatch), so an unplaced (INF) rotation can never reach
-		// RMatrix() and inject NaN poses (the crash this guards against). Sub-scenes left at INF
-		// — those with no rotation-consistent link into the solved component — stay unregistered
-		// for the subsequent resection to recover individually.
-		std::vector<bool> mergeMask(numSubScenes, false);
-		unsigned numMergeScenes = 0;
-		for (uint32_t s = 0; s < numSubScenes; ++s)
-			if (globalRotations[s] != Point3::INF) { mergeMask[s] = true; ++numMergeScenes; }
-		if (numMergeScenes == 0) {
-			VERBOSE("error: rotation averaging placed no sub-scenes");
-			break;
-		}
-		if (numMergeScenes < numSubScenes)
-			VERBOSE("Merging the rotation-consistent component: %u/%u sub-scenes (%u unalignable, left for resection)",
-				numMergeScenes, numSubScenes, numSubScenes - numMergeScenes);
-
-		// Keep only pairs internal to the merged (finite-rotation) component, so scale and
-		// translation averaging — whose gauge is fixed to the strongest-weighted node — anchor
-		// inside the kept component rather than in a discarded one (which would leave the kept
-		// component's translation block unconstrained).
-		scenePairs.erase(std::remove_if(scenePairs.begin(), scenePairs.end(),
-			[&mergeMask](const ScenePair& sp) { return !mergeMask[sp.sceneA] || !mergeMask[sp.sceneB]; }),
-			scenePairs.end());
-
-		// Stage 3: Scale averaging (over the rotation-consistent pairs surviving in scenePairs)
-		std::vector<REAL> globalScales;
-		if (!EstimateGlobalScales(scenePairs, numSubScenes, globalScales)) {
-			VERBOSE("error: failed to estimate global scales");
-			break;
-		}
-
-		// Stage 4: Translation averaging (over the rotation-consistent pairs surviving in scenePairs)
-		std::vector<Point3> globalTranslations;
-		if (!EstimateGlobalTranslations(scenePairs, globalRotations, globalScales, numSubScenes, globalTranslations)) {
-			VERBOSE("error: failed to estimate global translations");
-			break;
-		}
-
-		// Stage 4.5: drop the seams the averaged consensus contradicts, re-averaging after each,
-		// then validate what is left and re-average the survivors until the verdict is stable
-		std::vector<bool> demoted(numSubScenes);
-		for (uint32_t s = 0; s < numSubScenes; ++s)
-			demoted[s] = !mergeMask[s];
-		if (!PruneConflictingSeams(subScenes, scenePairs, globalRotations, globalScales, globalTranslations, demoted))
-			break;
-		const unsigned numDemotedBefore = (unsigned)std::count(demoted.begin(), demoted.end(), true);
-		std::vector<bool> keepMask(numSubScenes);
-		for (uint32_t s = 0; s < numSubScenes; ++s)
-			keepMask[s] = !demoted[s];
-		demoted = ValidateAlignment(subScenes, keepMask, scenePairs,
-			globalRotations, globalScales, globalTranslations);
-		if ((unsigned)std::count(demoted.begin(), demoted.end(), true) > numDemotedBefore &&
-			!RefineDemotedAlignment(subScenes, scenePairs, globalRotations, globalScales, globalTranslations, demoted))
-			break;
-
-		// Stage 5: Merge sub-scenes with global transforms (largest connected component only)
-		if (!MergeTransformedScenes(subScenes, localToGlobals, globalRotations, globalScales, globalTranslations, demoted)) {
-			VERBOSE("error: failed to merge transformed scenes");
-			break;
-		}
-
-		#if GLOBALALIGNMENT_DEBUG
-		// Export merged scene for debugging
-		ExportMVS(MAKE_PATH("scene_merged_reconstruction.mvs"), scene);
-		#endif
-
-		DEBUG("Global alignment completed: merged %u/%u sub-scenes (%s)",
-			numSubScenes - (unsigned)std::count(demoted.begin(), demoted.end(), true),
-			numSubScenes, TD_TIMER_GET_FMT().c_str());
+	// a single block has nothing to align against, so it is copied in as it is
+	if (numBlocks == 1) {
+		VERBOSE("Single block, copying directly");
+		MergeSingleScene(subScenes[0], localToGlobals[0], true);
+		report.poses.assign(1, BlockPose());
+		report.poses[0].model = 0;
+		report.poses[0].state = BlockPose::ADMITTED;
+		report.numPlaced = report.numModels = 1;
+		report.numImagesPlaced = scene.status.nCalibratedImages;
+		DEBUG("Single-block merge completed (%s)", TD_TIMER_GET_FMT().c_str());
 		return true;
-	} while (0);
+	}
 
-	// Fallback: alignment could not complete. Keep the largest successfully-reconstructed
-	// sub-scene rather than discarding a good partial reconstruction (downstream BA/resection
-	// then refine it in place). Safe because every failure above precedes sub-scene consumption.
-	const uint32_t bestIdx = FindLargestSubScene(subScenes);
-	VERBOSE("warning: sub-scene merge failed; keeping largest sub-scene %u (%u/%u images)",
-		bestIdx, subScenes[bestIdx].status.nCalibratedImages, (unsigned)subScenes[bestIdx].images.size());
-	scene.Release();
-	scene = std::move(subScenes[bestIdx]);
-	return false;
+	std::vector<BlockPose> poses;
+	std::vector<std::vector<uint32_t>> modelSeams;
+	uint32_t mergedModel = NO_ID;
+	if (!candidates.empty()) {
+		ClassifySeamGraph(blockExtents, candidates);                          // stage 3
+		ComputeInitialBlockPoses(candidates, blockExtents, numBlocks, poses); // stage 4
+		uint32_t numModels = 0;
+		for (const BlockPose& pose : poses)
+			if (pose.model != NO_ID)
+				numModels = MAXF(numModels, pose.model + 1);
+		// stage 5: every model grows on its own, the one holding the most trusted weight first
+		modelSeams.resize(numModels);
+		unsigned mostImages = 0;
+		for (uint32_t m = 0; m < numModels; ++m) {
+			if (PlaceBlocks(subScenes, candidates, blockExtents, m, poses, modelSeams[m]) == 0)
+				continue;
+			++report.numModels;
+			// stage 6: the model carrying the most images is the one the scene is merged at
+			unsigned numImages = 0;
+			FOREACH(b, poses)
+				if (poses[b].state == BlockPose::ADMITTED && poses[b].model == m)
+					numImages += subScenes[b].status.nCalibratedImages;
+			if (mergedModel == NO_ID || numImages > mostImages) {
+				mergedModel = m;
+				mostImages = numImages;
+			}
+		}
+	}
+	// no trusted seam carried a model: the largest block seeds one at its own frame and the
+	// placement grows it on whatever the graph left undecided, so a good partial reconstruction is
+	// never discarded
+	if (mergedModel == NO_ID) {
+		const uint32_t largest = FindLargestSubScene(subScenes);
+		VERBOSE("warning: no trusted seam placed a block; growing a model from block %u (%u/%u images)",
+			largest, subScenes[largest].status.nCalibratedImages, (unsigned)subScenes[largest].images.size());
+		poses.assign(numBlocks, BlockPose());
+		poses[largest].model = mergedModel = 0;
+		modelSeams.assign(1, std::vector<uint32_t>());
+		PlaceBlocks(subScenes, candidates, blockExtents, mergedModel, poses, modelSeams[mergedModel]);
+		report.numModels = 1;
+	}
+
+	// every block outside the merged model is merged without its poses, for the resection to
+	// recover its images against the consensus
+	FOREACH(b, poses) {
+		BlockPose& pose = poses[b];
+		if (pose.state == BlockPose::ADMITTED && pose.model == mergedModel) {
+			++report.numPlaced;
+			continue;
+		}
+		if (pose.state == BlockPose::ADMITTED)
+			pose.reason = "separate component";
+		else if (pose.reason.empty())
+			pose.reason = "no seam";
+		pose.state = BlockPose::UNPLACEABLE;
+		VERBOSE("Block %u not placed: %s", (unsigned)b, pose.reason.c_str());
+	}
+	// what the merge registers, and what it leaves to the resection
+	FOREACH(b, poses) {
+		const bool placed = poses[b].state == BlockPose::ADMITTED;
+		FOREACH(localID, subScenes[b].images) {
+			const IIndex globalID = localToGlobals[b][localID];
+			if (globalID == NO_ID || !subScenes[b].images[localID].IsValid())
+				continue;
+			if (placed)
+				++report.numImagesPlaced;
+			else
+				report.unplacedImages.push_back(globalID);
+		}
+	}
+	report.numImagesUnplaced = report.unplacedImages.size();
+
+	// stage 7: the placed blocks moved into the model frame, and every block merged in
+	MergeTransformedScenes(subScenes, localToGlobals, poses);
+
+	#if GLOBALALIGNMENT_DEBUG
+	// Export merged scene for debugging
+	ExportMVS(MAKE_PATH("scene_merged_reconstruction.mvs"), scene);
+	#endif
+
+	for (const SeamCandidate& c : candidates)
+		switch (c.cls) {
+		case SeamCandidate::ROBUST: ++report.numRobust; break;
+		case SeamCandidate::VERIFIED: ++report.numVerified; break;
+		case SeamCandidate::REJECTED: ++report.numRejected; break;
+		default: ++report.numUndecided; break;
+		}
+	report.modelSeams = std::move(modelSeams[mergedModel]);
+	report.candidates = std::move(candidates);
+	report.poses = std::move(poses);
+	VERBOSE("Merged %u/%u blocks into one model (%u images placed, %u unplaced) (%s)",
+		report.numPlaced, numBlocks, report.numImagesPlaced, report.numImagesUnplaced,
+		TD_TIMER_GET_FMT().c_str());
+	return report.numPlaced >= 1;
 }
 /*----------------------------------------------------------------*/
 
@@ -230,6 +248,19 @@ constexpr unsigned kVoteGridCells = 4;
 constexpr unsigned kRobustRounds = 10;
 // A seam nothing corroborates stands alone only with this many times the tracks a seam needs at all.
 constexpr unsigned kStrongAloneFactor = 4;
+// What an undecided candidate is worth when the placement ranks the blocks waiting to be tried:
+// evidence enough to be looked at, not enough to outrank a trusted seam.
+constexpr float kUndecidedSupportWeight = 0.25f;
+// At most this share of the admitted neighbours that have something to say may contradict a
+// placement: one in three, so a lone neighbour cannot veto and a majority still can.
+constexpr unsigned kNeighbourContraShare = 3;
+
+// A block the model already holds: admitted, and admitted into this model. Another model placed
+// its blocks in a frame this one knows nothing about, so they have no say here.
+bool IsInModel(const std::vector<BlockPose>& poses, uint32_t block, uint32_t model)
+{
+	return poses[block].state == BlockPose::ADMITTED && poses[block].model == model;
+}
 
 // One cross-sub-scene image pair, with the sub-scene each of its two images belongs to already
 // resolved, so feature indices (queryIdx/trainIdx) can be mapped consistently.
@@ -455,25 +486,17 @@ void AppendRigObservations(
 	}
 }
 
-// One direction of the camera alignment. The estimator solves scale * p_rig = R * p_point + t,
-// i.e. it scales the rig's centers into the frame the points live in, so the similarity mapping
-// the point sub-scene into the rig sub-scene is p_rig = (1/scale) * R * p_point + (1/scale) * t.
-// Every correspondence of the direction is appended to `observations`, tagged with which side of
-// the seam it came from, and `inlierMask` grows with them to say which ones the estimator kept: it
-// stays parallel to `observations`, so calling this once per direction leaves one mask over both.
-// The seam is scored on all of them, whichever of the two directions ends up carrying it. Returns 0
-// when the direction yields no usable estimate, the correspondences being appended all the same.
+// One rig against one set of points: the generalized absolute pose with scale of the rig, from
+// bearings alone. The estimator solves scale * p_rig = R * p_point + t, i.e. it scales the rig's
+// centers into the frame the points live in, so the similarity mapping the point frame into the
+// rig frame is p_rig = (1/scale) * R * p_point + (1/scale) * t, which is what comes out in `T`.
+// `inliers` says, per rig camera, which of its correspondences the estimate kept. Returns 0 when
+// the rig yields no usable estimate.
 unsigned EstimateRigAgainstPoints(
-	const RigCorrespondences& rc, const Scene& rigScene,
-	const poselib::RansacOptions& ransac, bool pointsAreA, Transform& T,
-	std::vector<SeamObservation>& observations, std::vector<SeamCorrespondence>& correspondences,
-	std::vector<bool>& inlierMask)
+	const RigCorrespondences& rc, const poselib::RansacOptions& ransac, Transform& T,
+	std::vector<std::vector<char>>& inliers)
 {
-	const size_t first = observations.size();
-	ASSERT(inlierMask.size() == first);
-	AppendRigObservations(rc, rigScene, pointsAreA, observations, correspondences);
-	inlierMask.resize(observations.size(), false);
-
+	inliers.clear();
 	// the scale is observable only from points seen out of at least two distinct rig centers
 	if (rc.cameraExt.size() < 2 || rc.numCorrespondences == 0 || rc.maxError <= 0)
 		return 0;
@@ -486,7 +509,6 @@ unsigned EstimateRigAgainstPoints(
 
 	poselib::CameraPose pose;
 	double scale = 1;
-	std::vector<std::vector<char>> inliers;
 	const poselib::RansacStats stats = poselib::estimate_generalized_absolute_pose_scale_bearings(
 		rc.bearings, rc.points, rc.cameraExt, opt, &pose, &scale, &inliers);
 	if (stats.num_inliers == 0 || !ISFINITE(scale) || scale <= 0)
@@ -495,6 +517,30 @@ unsigned EstimateRigAgainstPoints(
 	T.R = pose.R();
 	T.scale = REAL(1) / scale;
 	T.t = Point3(pose.t[0], pose.t[1], pose.t[2]) * T.scale;
+	return (unsigned)stats.num_inliers;
+}
+
+// One direction of a seam: every correspondence of the direction is appended to `observations`,
+// tagged with which side of the seam it came from, and `inlierMask` grows with them to say which
+// ones the estimator kept: it stays parallel to `observations`, so calling this once per direction
+// leaves one mask over both. The seam is scored on all of them, whichever of the two directions
+// ends up carrying it. Returns 0 when the direction yields no usable estimate, the correspondences
+// being appended all the same.
+unsigned EstimateSeamDirection(
+	const RigCorrespondences& rc, const Scene& rigScene,
+	const poselib::RansacOptions& ransac, bool pointsAreA, Transform& T,
+	std::vector<SeamObservation>& observations, std::vector<SeamCorrespondence>& correspondences,
+	std::vector<bool>& inlierMask)
+{
+	const size_t first = observations.size();
+	ASSERT(inlierMask.size() == first);
+	AppendRigObservations(rc, rigScene, pointsAreA, observations, correspondences);
+	inlierMask.resize(observations.size(), false);
+
+	std::vector<std::vector<char>> inliers;
+	const unsigned numInliers = EstimateRigAgainstPoints(rc, ransac, T, inliers);
+	if (numInliers == 0)
+		return 0;
 
 	// the mask runs in the same order the correspondences were appended in, behind whatever an
 	// earlier direction already left in it
@@ -503,7 +549,34 @@ unsigned EstimateRigAgainstPoints(
 		for (size_t i = 0; i < inliers[r].size(); ++i, ++k)
 			inlierMask[k] = inliers[r][i] != 0;
 	ASSERT(k == inlierMask.size());
-	return (unsigned)stats.num_inliers;
+	return numInliers;
+}
+
+// The rig of one direction of a placement, read straight off the pool: the cameras of the side
+// that observes -- the group's for `forward` false, the model's for true -- against the points of
+// the other, each already in the frame its own side is judged in. What the seam collector reads
+// off two scenes, a placement reads off the pool, so both directions are estimated the same way.
+void PoolRigCorrespondences(const PlacementPool& pool, bool forward, float maxReprojError, RigCorrespondences& rc)
+{
+	rc = RigCorrespondences();
+	std::unordered_map<IIndex, uint32_t> rigIndexOf;
+	for (const SeamObservation& obs : pool.observations) {
+		if (obs.forward != forward)
+			continue;
+		const auto [it, inserted] = rigIndexOf.emplace(obs.rigImage, (uint32_t)rc.cameraExt.size());
+		if (inserted) {
+			rc.cameraExt.emplace_back(obs.R, Point3(obs.R * (-obs.C)));
+			rc.bearings.emplace_back();
+			rc.points.emplace_back();
+			// the angle at which this camera reads the pixel threshold, back out of the rate the
+			// observation carries to convert the other way
+			rc.maxError = MAXF(rc.maxError,
+				obs.pixelPerRadian > 0 ? (double)maxReprojError / obs.pixelPerRadian : 0.0);
+		}
+		rc.bearings[it->second].emplace_back(normalized(obs.bearing));
+		rc.points[it->second].push_back(obs.X);
+		++rc.numCorrespondences;
+	}
 }
 
 // The observations a mask marks as inliers, of one direction (forward 1 or 0) or of both (-1)
@@ -681,10 +754,10 @@ unsigned SeamCandidate::NumObservations(int forward) const
 void GlobalAlignment::RefineBlockPoses(
 	const std::vector<SeamCandidate>& candidates,
 	const std::vector<uint32_t>& modelSeams,
-	const uint32_t gaugeBlock,
+	const uint32_t model, const uint32_t gaugeBlock,
 	std::vector<BlockPose>& poses) const
 {
-	ASSERT(gaugeBlock < poses.size() && poses[gaugeBlock].state == BlockPose::ADMITTED);
+	ASSERT(gaugeBlock < poses.size() && IsInModel(poses, gaugeBlock, model));
 	std::vector<BlockParameters> parameters;
 	parameters.reserve(poses.size());
 	for (const BlockPose& pose : poses)
@@ -697,7 +770,7 @@ void GlobalAlignment::RefineBlockPoses(
 	unsigned numResiduals = 0;
 	for (const uint32_t e : modelSeams) {
 		const SeamCandidate& c = candidates[e];
-		if (poses[c.sceneA].state != BlockPose::ADMITTED || poses[c.sceneB].state != BlockPose::ADMITTED)
+		if (!IsInModel(poses, c.sceneA, model) || !IsInModel(poses, c.sceneB, model))
 			continue;
 		const size_t numScored = MINF(c.observations.size(), c.score.inlierMask.size());
 		for (size_t i = 0; i < numScored; ++i) {
@@ -772,46 +845,8 @@ void GlobalAlignment::RefineSeamTransform(
 		pose.state = BlockPose::ADMITTED;
 	}
 	poses[1].T = T.Invert();
-	RefineBlockPoses({seam}, {0u}, 0, poses);
+	RefineBlockPoses({seam}, {0u}, 0, 0, poses);
 	T = poses[1].T.Invert();
-}
-/*----------------------------------------------------------------*/
-
-bool GlobalAlignment::EstimateSubScenePairs(
-	const std::vector<Scene>& subScenes,
-	const std::vector<IIndexArr>& localToGlobals,
-	std::vector<ScenePair>& scenePairs)
-{
-	std::vector<SeamCandidate> candidates;
-	if (!EstimateSeamCandidates(subScenes, localToGlobals, candidates))
-		return false;
-	CandidatesToScenePairs(candidates, scenePairs);
-	return !scenePairs.empty();
-}
-/*----------------------------------------------------------------*/
-
-void GlobalAlignment::CandidatesToScenePairs(
-	const std::vector<SeamCandidate>& candidates,
-	std::vector<ScenePair>& scenePairs)
-{
-	std::map<std::pair<uint32_t, uint32_t>, unsigned> numPairCandidates;
-	for (const SeamCandidate& c : candidates)
-		++numPairCandidates[std::make_pair(c.sceneA, c.sceneB)];
-	scenePairs.clear();
-	for (const SeamCandidate& c : candidates) {
-		// a pair its two candidates still dispute has no one similarity to offer
-		if (numPairCandidates[std::make_pair(c.sceneA, c.sceneB)] != 1)
-			continue;
-		ScenePair sp;
-		sp.sceneA = c.sceneA;
-		sp.sceneB = c.sceneB;
-		sp.relativeTransform = c.T;
-		sp.numInliers = c.NumInliers();
-		scenePairs.push_back(sp);
-	}
-	std::sort(scenePairs.begin(), scenePairs.end(), [](const ScenePair& a, const ScenePair& b) {
-		return a.sceneA < b.sceneA || (a.sceneA == b.sceneA && a.sceneB < b.sceneB);
-	});
 }
 /*----------------------------------------------------------------*/
 
@@ -842,6 +877,7 @@ void GlobalAlignment::PrepareSeamEvidence(
 
 	// Group the cross-block image pairs by block pair, the pair ordered a < b
 	blockPairLinks.clear();
+	refusedSeamPairs.clear();
 	FOREACH(idx, scene.pairs) {
 		const ImagePair& pair = scene.pairs[idx];
 		if (pair.GetNumWeightedInliers() < config.minCommonTracks)
@@ -1065,6 +1101,7 @@ void GlobalAlignment::BuildPlacementPool(
 	const std::vector<Scene>& subScenes,
 	const std::vector<SeamCandidate>& candidates,
 	const std::vector<BlockPose>& poses,
+	const uint32_t model,
 	const BlockGroup& group,
 	PlacementPool& pool) const
 {
@@ -1072,8 +1109,8 @@ void GlobalAlignment::BuildPlacementPool(
 	pool = PlacementPool();
 	pool.group = group;
 
-	// where every block that has a say sits: a group block in the group frame, an admitted one in
-	// the model frame
+	// where every block that has a say sits: a group block in the group frame, a block this model
+	// has admitted in the model frame
 	std::vector<Transform> frameOf(poses.size());
 	std::vector<bool> inGroup(poses.size(), false), inModel(poses.size(), false);
 	FOREACH(g, group.blocks) {
@@ -1081,7 +1118,7 @@ void GlobalAlignment::BuildPlacementPool(
 		inGroup[group.blocks[g]] = true;
 	}
 	FOREACH(b, poses)
-		if (poses[b].state == BlockPose::ADMITTED && !inGroup[b]) {
+		if (IsInModel(poses, b, model) && !inGroup[b]) {
 			frameOf[b] = poses[b].T;
 			inModel[b] = true;
 		}
@@ -1106,9 +1143,11 @@ void GlobalAlignment::BuildPlacementPool(
 		AppendPoolObservations(c.observations, c.correspondences,
 			blockPair.first, blockPair.second, frameOf, inGroup, slot, pool);
 	}
-	// a pair no candidate covers still carries correspondences, and they are evidence too
+	// a pair no candidate covers still carries correspondences, and they are evidence too --
+	// unless the gates already weighed that pair and refused it
 	for (const auto& [blockPair, links] : blockPairLinks) {
-		if (!JoinsGroupToModel(blockPair.first, blockPair.second) || pairCandidates.count(blockPair))
+		if (!JoinsGroupToModel(blockPair.first, blockPair.second) ||
+			pairCandidates.count(blockPair) || refusedSeamPairs.count(blockPair))
 			continue;
 		std::vector<SeamObservation> observations;
 		std::vector<SeamCorrespondence> correspondences;
@@ -1194,7 +1233,7 @@ bool GlobalAlignment::IsScaleObservable(
 
 void GlobalAlignment::EstimateSeamPair(
 	const std::vector<Scene>& subScenes, uint32_t a, uint32_t b,
-	std::vector<SeamCandidate>& candidates) const
+	std::vector<SeamCandidate>& candidates)
 {
 	ASSERT(a < b && blockPointMaps.size() == subScenes.size());
 	const auto itLinks = blockPairLinks.find(std::make_pair(a, b));
@@ -1220,9 +1259,9 @@ void GlobalAlignment::EstimateSeamPair(
 	const poselib::RansacOptions ransacOptions = SeamRansacOptions();
 	Transform Tseam[2], T_BA;
 	unsigned inliers[2];
-	inliers[0] = EstimateRigAgainstPoints(rc[0], subScenes[b], ransacOptions, true,
+	inliers[0] = EstimateSeamDirection(rc[0], subScenes[b], ransacOptions, true,
 		Tseam[0], observations, correspondences, estimatorMask);
-	inliers[1] = EstimateRigAgainstPoints(rc[1], subScenes[a], ransacOptions, false,
+	inliers[1] = EstimateSeamDirection(rc[1], subScenes[a], ransacOptions, false,
 		T_BA, observations, correspondences, estimatorMask);
 	// the second direction solved B into A, so its inverse is the seam's own A -> B similarity
 	Tseam[1] = T_BA.Invert();
@@ -1282,6 +1321,9 @@ void GlobalAlignment::EstimateSeamPair(
 			DEBUG_ULTIMATE("Seam (%u, %u) %s dropped by %s", a, b, SourceWord(candidate[d].source), failed.c_str());
 	}
 	if (!passed[0] && !passed[1]) {
+		// the gates weighed the whole pair and threw it out: what its cameras saw is not evidence
+		// a placement may pick up again
+		refusedSeamPairs.emplace(a, b);
 		DEBUG_ULTIMATE("Seam (%u, %u) skipped: no direction passed the gates", a, b);
 		return;
 	}
@@ -1348,7 +1390,7 @@ void GlobalAlignment::EstimateSeamPair(
 
 void GlobalAlignment::EstimatePointSeamPair(
 	const std::vector<Scene>& subScenes, uint32_t a, uint32_t b,
-	const std::vector<uint32_t>& pairIndices, std::vector<SeamCandidate>& candidates) const
+	const std::vector<uint32_t>& pairIndices, std::vector<SeamCandidate>& candidates)
 {
 	// Collect 3D-3D correspondences: for each cross-block match whose endpoints both lie on an
 	// existing inlier track, the two 3D positions, each in its own block's local frame.
@@ -1416,6 +1458,7 @@ void GlobalAlignment::EstimatePointSeamPair(
 	const String failed = FailedGates(c.score, c.score.inliers, 0, config.minCameraVoteRatio);
 	LogVotes(String::FormatString("Seam (%u, %u) %s", a, b, SourceWord(c.source)).c_str(), c.score);
 	if (!failed.empty()) {
+		refusedSeamPairs.emplace(a, b);
 		DEBUG_ULTIMATE("Seam (%u, %u) %s dropped by %s", a, b, SourceWord(c.source), failed.c_str());
 		return;
 	}
@@ -1424,154 +1467,9 @@ void GlobalAlignment::EstimatePointSeamPair(
 }
 /*----------------------------------------------------------------*/
 
-bool GlobalAlignment::EstimateGlobalRotations(
-	std::vector<ScenePair>& scenePairs,
-	const uint32_t numSubScenes,
-	std::vector<Point3d>& globalRotations)
-{
-	// Convert scene pairs to rotation pairs (kept 1:1 with scenePairs by index)
-	std::vector<RotationPair> rotationPairs;
-	rotationPairs.reserve(scenePairs.size());
-
-	for (const ScenePair& sp : scenePairs) {
-		RotationPair rp;
-		rp.idxA = sp.sceneA;
-		rp.idxB = sp.sceneB;
-		rp.relativeRotation = sp.relativeTransform.R;
-		rp.weight = (float)sp.numInliers;
-		rotationPairs.push_back(rp);
-	}
-
-	// Use global rotation estimator
-	GlobalRotationEstimatorOptions rotOptions;
-	rotOptions.skipInitialization = false;
-	rotOptions.useWeight = true;
-
-	GlobalRotationEstimator rotEstimator(rotOptions);
-	if (!rotEstimator.EstimateRotations(rotationPairs, numSubScenes, globalRotations)) {
-		VERBOSE("error: rotation averaging failed");
-		return false;
-	}
-
-	// Filter relative rotations inconsistent with global estimates and re-solve
-	const unsigned numFiltered = GlobalRotationEstimator::FilterRelativeRotations(globalRotations, rotationPairs);
-	if (numFiltered > 0) {
-		DEBUG("Re-estimating global rotations after filtering %u pairs", numFiltered);
-		globalRotations.clear();
-		if (!rotEstimator.EstimateRotations(rotationPairs, numSubScenes, globalRotations)) {
-			VERBOSE("error: rotation averaging failed after filtering");
-			return false;
-		}
-	}
-
-	// Prune rotation-inconsistent pairs from scenePairs in place. FilterRelativeRotations zeroes
-	// (does not remove) the weight of pairs whose relative rotation disagrees with the averaged
-	// global rotations, and rotationPairs stays 1:1 with scenePairs, so a single index compaction
-	// keeps only the survivors. Downstream scale/translation averaging then use only these.
-	ASSERT(rotationPairs.size() == scenePairs.size());
-	const unsigned numInputPairs = (unsigned)scenePairs.size();
-	unsigned numKept = 0;
-	FOREACH(i, scenePairs)
-		if (rotationPairs[i].weight > 0)
-			scenePairs[numKept++] = scenePairs[i];
-	scenePairs.resize(numKept);
-
-	DEBUG("Estimated %u global rotations (%u/%u rotation-consistent pairs)",
-		(unsigned)globalRotations.size(), numKept, numInputPairs);
-	return true;
-}
-/*----------------------------------------------------------------*/
-
-bool GlobalAlignment::EstimateGlobalScales(
-	const std::vector<ScenePair>& scenePairs,
-	const uint32_t numSubScenes,
-	std::vector<REAL>& globalScales)
-{
-	// Each relativeTransform satisfies p_B = (s_A/s_B) * R * p_A + t, so its
-	// scale field is s_A/s_B. ScalePair expects the ratio in the opposite
-	// direction (s_B/s_A), hence the reciprocal below.
-	std::vector<ScalePair> scalePairs;
-	scalePairs.reserve(scenePairs.size());
-	for (const ScenePair& sp : scenePairs) {
-		if (sp.relativeTransform.scale <= 0)
-			continue;
-		ScalePair scalePair;
-		scalePair.idxA = sp.sceneA;
-		scalePair.idxB = sp.sceneB;
-		scalePair.scaleRatio = REAL(1) / sp.relativeTransform.scale;
-		scalePair.weight = (float)sp.numInliers;
-		scalePairs.push_back(scalePair);
-	}
-
-	if (scalePairs.empty()) {
-		// No scale information, use unit scales
-		VERBOSE("warning: no scale pairs found, using unit scales");
-		globalScales.resize(numSubScenes, REAL(1));
-		return true;
-	}
-
-	// Estimate global scales
-	GlobalScaleEstimator scaleEstimator;
-	if (!scaleEstimator.EstimateScales(scalePairs, numSubScenes, globalScales)) {
-		VERBOSE("error: scale averaging failed");
-		return false;
-	}
-
-	DEBUG("Estimated %u global scales from %u pairs",
-		(unsigned)globalScales.size(), (unsigned)scalePairs.size());
-	return true;
-}
-/*----------------------------------------------------------------*/
-
-bool GlobalAlignment::EstimateGlobalTranslations(
-	const std::vector<ScenePair>& scenePairs,
-	const std::vector<Point3d>& globalRotations,
-	const std::vector<REAL>& globalScales,
-	const uint32_t numSubScenes,
-	std::vector<Point3>& globalTranslations)
-{
-	// Convert scene pairs to translation pairs
-	std::vector<TranslationPair> translationPairs;
-	translationPairs.reserve(scenePairs.size());
-
-	for (const ScenePair& sp : scenePairs) {
-		// Rotation averaging produces R_i mapping global→local, use transpose for local→global.
-		const RMatrix RA(globalRotations[sp.sceneA]);
-		const REAL sA = globalScales[sp.sceneA];
-
-		// C_{BA}: position of scene B's origin expressed in scene A's local frame.
-		// The relativeTransform satisfies p_B = scale * R * p_A + t (A -> B), so the
-		// inverse maps B's origin (0 in B) to  -(1/scale) * R^T * t  in A.
-		const Transform& T = sp.relativeTransform;
-		const Point3 relT_local = (T.R.t() * T.t) * (-REAL(1) / T.scale);
-
-		// Transform to global frame: t_B - t_A = s_A * R_A^T * C_{BA}
-		const Point3 relT_global = sA * (RA.t() * relT_local);
-
-		TranslationPair tp;
-		tp.idxA = sp.sceneA;
-		tp.idxB = sp.sceneB;
-		tp.relativeTranslation = relT_global;
-		tp.weight = (float)sp.numInliers;
-		translationPairs.push_back(tp);
-	}
-
-	// Estimate global translations
-	GlobalTranslationEstimator translationEstimator;
-	if (!translationEstimator.EstimateTranslations(translationPairs, numSubScenes, globalTranslations)) {
-		VERBOSE("error: translation averaging failed");
-		return false;
-	}
-
-	DEBUG("Estimated %u global translations", (unsigned)globalTranslations.size());
-	return true;
-}
-/*----------------------------------------------------------------*/
-
-// the per-sub-scene local→global Sim(3) the merge applies: rotation averaging
-// produces R_i mapping global→local (same convention as Image.R) while the
-// similarity transform applies local→global, hence the transpose; the validator
-// must construct exactly the transform the merge applies, so both build it here
+// the per-block local→model Sim(3) the averaging produces: it solves R_i mapping model→local
+// (the same convention as Image.R) while the similarity transform applies local→model, hence
+// the transpose
 static SEACAVE::Transform BuildGlobalTransform(const Point3d& rotation, REAL scale, const Point3& translation)
 {
 	SEACAVE::Transform G;
@@ -1581,75 +1479,46 @@ static SEACAVE::Transform BuildGlobalTransform(const Point3d& rotation, REAL sca
 	return G;
 }
 
-// The diagonal of the box a block's cameras span in its own frame -- the unit the translation
-// residuals of its seams are measured in
-static REAL BlockExtent(const Scene& block)
-{
-	AABB3 bbox(true);
-	for (const Image& img : block.images)
-		if (img.IsValid())
-			bbox.InsertFull(img.C);
-	return bbox.IsEmpty() ? REAL(0) : (REAL)bbox.GetSize().norm();
-}
-
-// The transform Stage 5 will apply to every sub-scene still in the merge, and the diagonal of the
-// box its cameras span in its own frame -- the unit the translation residuals are normalized by.
-static void BuildGlobalTransforms(
-	const std::vector<Scene>& subScenes, const std::vector<bool>& skip,
-	const std::vector<Point3d>& globalRotations, const std::vector<REAL>& globalScales,
-	const std::vector<Point3>& globalTranslations,
-	std::vector<Transform>& globalTransforms, std::vector<REAL>& camBoxDiags)
-{
-	const uint32_t numSubScenes = (uint32_t)subScenes.size();
-	globalTransforms.assign(numSubScenes, Transform());
-	camBoxDiags.assign(numSubScenes, REAL(0));
-	for (uint32_t sceneIdx = 0; sceneIdx < numSubScenes; ++sceneIdx) {
-		if (skip[sceneIdx])
-			continue;
-		globalTransforms[sceneIdx] = BuildGlobalTransform(
-			globalRotations[sceneIdx], globalScales[sceneIdx], globalTranslations[sceneIdx]);
-		camBoxDiags[sceneIdx] = BlockExtent(subScenes[sceneIdx]);
-	}
-}
-
-// Sim(3) cycle residual of one measured seam: relativeTransform maps A-local to B-local and G_i maps
-// each local frame to the global frame, so G_B*T_AB and G_A both map A-local to global and
-// E = G_A^-1 * (G_B * T_AB) is the A-frame discrepancy between the measured edge and the averaged
-// consensus (identity when perfectly consistent). Each component is also expressed as a factor of
-// the limit it must stay under, so the three are comparable and the worst seam of a graph is well
-// defined whichever way it is wrong.
+// How far apart two similarities that carry the same frame into the same one are. Each component
+// is also expressed as a factor of the limit it must stay under, so the three are comparable and
+// the worst seam of a graph is well defined whichever way it is wrong.
 struct SeamResidual {
 	REAL scale;       // ratio, >= 1
 	REAL rotation;    // degrees
-	REAL translation; // fraction of the smaller end-point's global camera footprint
+	REAL translation; // fraction of the camera footprint the two frames share
 	REAL excess;      // largest of the three as a factor of its limit; conflicting above 1
+	// the two say the same thing: every component of the discrepancy stays under its own bar
+	bool Agrees() const { return excess <= REAL(1); }
 };
 
-static SeamResidual ComputeSeamResidual(
-	const uint32_t a, const uint32_t b, const Transform& T, const std::vector<Transform>& globalTransforms,
-	const std::vector<REAL>& camBoxDiags, const GlobalAlignmentConfig& config)
+// The one comparison of two transforms, which every rule that asks whether two opinions on the
+// same two frames agree is written in terms of: the discrepancy E = first^-1 * second, read in the
+// frame they both start from, against `extent` -- the camera footprint measured in that same frame.
+static SeamResidual CompareTransforms(
+	const Transform& first, const Transform& second, const REAL extent, const GlobalAlignmentConfig& config)
 {
-	const Transform E = globalTransforms[a].Invert() * (globalTransforms[b] * T);
+	const Transform E = first.Invert() * second;
 	SeamResidual res;
 	res.scale = MAXF(E.scale, REAL(1) / E.scale);
 	res.rotation = R2D(ACOS(ComputeAngle(Matrix3x3(E.R))));
-	// E.t is in A's local frame: express the discrepancy in global units and compare
-	// it against the smaller of the two global camera footprints, so the verdict does
-	// not depend on which endpoint happens to have the lower sub-scene index
-	const REAL diagA = camBoxDiags[a] * globalTransforms[a].scale;
-	const REAL diagB = camBoxDiags[b] * globalTransforms[b].scale;
-	const REAL diag = diagA > 0 && diagB > 0 ? MINF(diagA, diagB) : MAXF(diagA, diagB);
-	res.translation = diag > 0 ? globalTransforms[a].scale * norm(E.t) / diag : REAL(0);
+	res.translation = extent > 0 ? norm(E.t) / extent : REAL(0);
 	res.excess = MAXF(MAXF(res.scale / config.maxSimScaleRatio, res.rotation / config.maxSimRotationError),
 		res.translation / config.maxSimTranslationError);
 	return res;
 }
 
+// Sim(3) cycle residual of one measured seam: T maps A-local to B-local and G_i maps each local
+// frame to the model frame, so G_B*T and G_A both map A-local to the model and their discrepancy
+// is what the seam is off by (identity when perfectly consistent). It is read in A's local frame,
+// against the larger of the two blocks' camera footprints, so the verdict does not depend on which
+// end happens to have the lower block index -- and a block whose cameras sit a millimetre apart,
+// having no footprint of its own that means anything, is judged against the one it is joined to.
 static SeamResidual ComputeSeamResidual(
-	const ScenePair& sp, const std::vector<Transform>& globalTransforms,
-	const std::vector<REAL>& camBoxDiags, const GlobalAlignmentConfig& config)
+	const uint32_t a, const uint32_t b, const Transform& T, const std::vector<Transform>& transforms,
+	const std::vector<REAL>& blockExtents, const GlobalAlignmentConfig& config)
 {
-	return ComputeSeamResidual(sp.sceneA, sp.sceneB, sp.relativeTransform, globalTransforms, camBoxDiags, config);
+	const REAL diag = MAXF(blockExtents[a] * transforms[a].scale, blockExtents[b] * transforms[b].scale);
+	return CompareTransforms(transforms[a], transforms[b] * T, diag / transforms[a].scale, config);
 }
 /*----------------------------------------------------------------*/
 
@@ -1955,7 +1824,10 @@ bool GlobalAlignment::AverageBlockPoses(
 				[&](const std::vector<TranslationPair>& active, std::vector<Point3>& t) { return translationEstimator.EstimateTranslations(active, n, metricGauge, t); },
 				[&](size_t i, const std::vector<Point3>& t) {
 					const TranslationPair& p = translationPairs[i];
-					const REAL extent = MINF(blockExtents[blockOfNode[p.idxA]] * scales[p.idxA], blockExtents[blockOfNode[p.idxB]] * scales[p.idxB]);
+					// the larger of the two footprints, as everything that judges a seam's
+					// translation reads it: a block of two cameras a millimetre apart has none
+					const REAL extent = MAXF(blockExtents[blockOfNode[p.idxA]] * scales[p.idxA],
+						blockExtents[blockOfNode[p.idxB]] * scales[p.idxB]);
 					return extent > 0 ? norm(t[p.idxB] - t[p.idxA] - p.relativeTranslation) / extent : REAL(0);
 				},
 				translations, translationResiduals))
@@ -2117,282 +1989,512 @@ bool GlobalAlignment::ComputeInitialBlockPoses(
 }
 /*----------------------------------------------------------------*/
 
-bool GlobalAlignment::PruneConflictingSeams(
-	const std::vector<Scene>& subScenes,
-	std::vector<ScenePair>& scenePairs,
-	const std::vector<Point3d>& globalRotations,
-	std::vector<REAL>& globalScales,
-	std::vector<Point3>& globalTranslations,
-	std::vector<bool>& demoted)
+// The camera footprint of a group in its own frame: the unit a discrepancy between two placements
+// of that group is read against
+static REAL GroupExtent(const BlockGroup& group, const std::vector<REAL>& blockExtents)
 {
-	const uint32_t numSubScenes = (uint32_t)subScenes.size();
-	// every round drops exactly one seam, so there can be no more rounds than seams
-	const size_t maxRounds = scenePairs.size();
-	for (size_t round = 0; round < maxRounds; ++round) {
-		// a seam graph with no cycle is reproduced exactly by the averaging: every residual is
-		// zero and no seam can be indicted, however wrong it is
-		DisjointSet<uint32_t> ds(numSubScenes);
-		for (const ScenePair& sp : scenePairs)
-			ds.Union(sp.sceneA, sp.sceneB);
-		// only active sub-scenes are ever united, so the root of an active one is active too and
-		// the components are counted by their roots
-		unsigned numNodes = 0, numComponents = 0;
-		for (uint32_t s = 0; s < numSubScenes; ++s)
-			if (!demoted[s]) {
-				++numNodes;
-				if (ds.Find(s) == s)
-					++numComponents;
-			}
-		if (scenePairs.size() + numComponents <= numNodes) {
-			if (round == 0)
-				VERBOSE("Seam graph is a tree: %u seams over %u sub-scenes, no cycle to validate",
-					(unsigned)scenePairs.size(), numNodes);
-			return true;
-		}
+	REAL extent = 0;
+	FOREACH(g, group.blocks)
+		extent = MAXF(extent, blockExtents[group.blocks[g]] * group.frames[g].scale);
+	return extent;
+}
 
-		// score every seam against the consensus and take the one that contradicts it most
-		std::vector<Transform> globalTransforms;
-		std::vector<REAL> camBoxDiags;
-		BuildGlobalTransforms(subScenes, demoted, globalRotations, globalScales, globalTranslations,
-			globalTransforms, camBoxDiags);
-		size_t worst = scenePairs.size();
-		SeamResidual worstRes = {};
-		FOREACH(idx, scenePairs) {
-			const SeamResidual res = ComputeSeamResidual(scenePairs[idx], globalTransforms, camBoxDiags, config);
-			if (res.excess > 1 && (worst == scenePairs.size() || res.excess > worstRes.excess)) {
-				worst = idx;
-				worstRes = res;
-			}
-		}
-		if (worst == scenePairs.size())
-			return true;
+// Where every block sits under one placement: the blocks the model already holds at their model
+// poses, the group's blocks where the hypothesis puts them
+static void PlacementTransforms(
+	const std::vector<BlockPose>& poses, const uint32_t model, const BlockGroup& group,
+	const Transform& T, std::vector<Transform>& transforms)
+{
+	transforms.assign(poses.size(), Transform());
+	FOREACH(b, poses)
+		if (IsInModel(poses, b, model))
+			transforms[b] = poses[b].T;
+	FOREACH(g, group.blocks)
+		transforms[group.blocks[g]] = T * group.frames[g];
+}
 
-		// dropping a seam that is not a bridge only removes evidence; dropping one that is also
-		// cuts a side loose, and a side with no link left to the consensus cannot be placed by it
-		const ScenePair worstPair = scenePairs[worst];
-		DisjointSet<uint32_t> dsCut(numSubScenes);
-		FOREACH(idx, scenePairs)
-			if (idx != worst)
-				dsCut.Union(scenePairs[idx].sceneA, scenePairs[idx].sceneB);
-		const bool bridge = dsCut.Find(worstPair.sceneA) != dsCut.Find(worstPair.sceneB);
-		VERBOSE("Sub-scene pair (%u, %u) contradicts the averaged alignment by %.1fx its limit "
-			"(scale %.1f%%, rotation %.2f deg, translation %.2f%%, weight %u); dropping the seam",
-			worstPair.sceneA, worstPair.sceneB, worstRes.excess, (worstRes.scale - 1) * 100,
-			worstRes.rotation, worstRes.translation * 100, worstPair.numInliers);
-		if (bridge) {
-			const uint32_t rootA = dsCut.Find(worstPair.sceneA), rootB = dsCut.Find(worstPair.sceneB);
-			unsigned imagesA = 0, imagesB = 0;
-			for (uint32_t s = 0; s < numSubScenes; ++s) {
-				if (demoted[s])
-					continue;
-				const uint32_t root = dsCut.Find(s);
-				if (root == rootA)
-					imagesA += subScenes[s].status.nCalibratedImages;
-				else if (root == rootB)
-					imagesB += subScenes[s].status.nCalibratedImages;
-			}
-			const uint32_t losingRoot = imagesA <= imagesB ? rootA : rootB;
-			unsigned numDemoted = 0;
-			for (uint32_t s = 0; s < numSubScenes; ++s)
-				if (!demoted[s] && dsCut.Find(s) == losingRoot) { demoted[s] = true; ++numDemoted; }
-			VERBOSE("Sub-scene pair (%u, %u) was the only link of its side; demoting %u sub-scene(s) "
-				"(%u images) to be rebuilt by resection", worstPair.sceneA, worstPair.sceneB,
-				numDemoted, MINF(imagesA, imagesB));
+// Every candidate joining a block of the group to a block the model has already admitted, with
+// that neighbour. The neighbour check of a placement and the admission that follows it walk
+// exactly these, so both answer to the same seams. A rejected candidate is not among them: the
+// graph has already disowned its transform, and it is only a transform that is asked for here.
+static void ForEachGroupSeam(
+	const std::vector<SeamCandidate>& candidates, const std::vector<BlockPose>& poses,
+	const uint32_t model, const BlockGroup& group,
+	const std::function<void(uint32_t, uint32_t)>& visit)
+{
+	std::vector<bool> inGroup(poses.size(), false);
+	for (const uint32_t g : group.blocks)
+		inGroup[g] = true;
+	FOREACH(i, candidates) {
+		const SeamCandidate& c = candidates[i];
+		if (c.cls == SeamCandidate::REJECTED)
+			continue;
+		for (const uint32_t neighbour : {c.sceneA, c.sceneB}) {
+			const uint32_t own = neighbour == c.sceneA ? c.sceneB : c.sceneA;
+			if (inGroup[own] && !inGroup[neighbour] && IsInModel(poses, neighbour, model))
+				visit((uint32_t)i, neighbour);
 		}
-		scenePairs.erase(scenePairs.begin() + worst);
-		if (bridge)
-			scenePairs.erase(std::remove_if(scenePairs.begin(), scenePairs.end(),
-				[&demoted](const ScenePair& sp) { return demoted[sp.sceneA] || demoted[sp.sceneB]; }),
-				scenePairs.end());
+	}
+}
 
-		// a single survivor defines the gauge by itself; nothing left to average
-		const unsigned numActive = numSubScenes - (unsigned)std::count(demoted.begin(), demoted.end(), true);
-		if (numActive < 2 || scenePairs.empty())
-			return true;
-		globalScales.clear();
-		globalTranslations.clear();
-		if (!EstimateGlobalScales(scenePairs, numSubScenes, globalScales) ||
-			!EstimateGlobalTranslations(scenePairs, globalRotations, globalScales, numSubScenes, globalTranslations)) {
-			VERBOSE("error: failed to re-average scales/translations after dropping a seam");
-			return false;
+// What the admitted neighbours make of a placement: those whose own seams agree with what it
+// implies, those whose trusted seam disagrees -- a cycle the model will have to answer for -- and
+// those that simply contradict it
+struct NeighbourVerdict { unsigned support{0}, loop{0}, contra{0}; };
+
+static NeighbourVerdict CheckNeighbours(
+	const std::vector<SeamCandidate>& candidates, const std::vector<REAL>& blockExtents,
+	const std::vector<BlockPose>& poses, const uint32_t model, const BlockGroup& group,
+	const std::map<uint32_t, unsigned>& numPooled, const Transform& T,
+	const GlobalAlignmentConfig& config)
+{
+	std::vector<Transform> transforms;
+	PlacementTransforms(poses, model, group, T, transforms);
+	// one verdict per neighbour, whatever the number of opinions it holds on the group
+	struct NeighbourSeams { bool agrees{false}, trusted{false}; };
+	std::map<uint32_t, NeighbourSeams> seamsOf;
+	ForEachGroupSeam(candidates, poses, model, group, [&](uint32_t i, uint32_t neighbour) {
+		// a neighbour is only asked about a group it shares enough of the pool with
+		const auto itPooled = numPooled.find(neighbour);
+		if (itPooled == numPooled.end() || itPooled->second < config.minCommonTracks)
+			return;
+		const SeamCandidate& c = candidates[i];
+		const SeamResidual residual = ComputeSeamResidual(
+			c.sceneA, c.sceneB, c.T, transforms, blockExtents, config);
+		NeighbourSeams& seams = seamsOf[neighbour];
+		if (residual.Agrees())
+			seams.agrees = true;
+		else if (c.IsTrusted())
+			seams.trusted = true;
+		DEBUG_ULTIMATE("Placement against block %u: seam (%u, %u) off by %.2f deg, %.1f%%, %.2f%% -> %s",
+			neighbour, c.sceneA, c.sceneB, residual.rotation, (residual.scale - 1) * 100,
+			residual.translation * 100, residual.Agrees() ? "agrees" : "disagrees");
+	});
+	NeighbourVerdict verdict;
+	for (const auto& [neighbour, seams] : seamsOf) {
+		if (seams.agrees)
+			++verdict.support;
+		else if (seams.trusted)
+			++verdict.loop;
+		else
+			++verdict.contra;
+	}
+	return verdict;
+}
+
+// What a block weighs against the blocks the model already holds: its trusted seams to them in
+// full and its undecided ones at a fraction, so a block only undecided evidence reaches is still
+// tried, after every block a trusted seam carries
+static float PooledSupport(
+	const std::vector<SeamCandidate>& candidates, const std::vector<BlockPose>& poses,
+	const uint32_t model, const uint32_t block)
+{
+	float support = 0;
+	for (const SeamCandidate& c : candidates) {
+		const uint32_t other = c.sceneA == block ? c.sceneB : (c.sceneB == block ? c.sceneA : NO_ID);
+		if (other == NO_ID || !IsInModel(poses, other, model))
+			continue;
+		if (c.IsTrusted())
+			support += c.weight;
+		else if (c.cls == SeamCandidate::UNDECIDED)
+			support += kUndecidedSupportWeight * c.weight;
+	}
+	return support;
+}
+
+// The 3D-3D similarity of a group against the blocks the model holds: the tracks both sides
+// triangulated, paired through the cross correspondence they share -- the point mode's own
+// estimate, read off the pool instead of off one block pair. Returns 0 when the evidence does not
+// carry an estimate.
+static unsigned EstimatePoolSimilarity(
+	const PlacementPool& pool, const GlobalAlignmentConfig& config, Transform& T)
+{
+	// a correspondence collected in both directions has its point triangulated in both frames
+	typedef std::tuple<IIndex, IIndex, uint32_t, uint32_t> CorrespondenceKey;
+	const auto KeyOf = [](const SeamCorrespondence& corr) {
+		return std::make_tuple(corr.imageA, corr.imageB, corr.featureA, corr.featureB);
+	};
+	std::map<CorrespondenceKey, Point3> groupPoints;
+	FOREACH(i, pool.observations)
+		if (pool.observations[i].forward)
+			groupPoints.emplace(KeyOf(pool.correspondences[i]), pool.observations[i].X);
+	Point3Arr srcPoints, dstPoints;
+	FOREACH(i, pool.observations) {
+		if (pool.observations[i].forward)
+			continue;
+		const auto it = groupPoints.find(KeyOf(pool.correspondences[i]));
+		if (it == groupPoints.end())
+			continue;
+		srcPoints.emplace_back(it->second);
+		dstPoints.emplace_back(pool.observations[i].X);
+	}
+	if (srcPoints.size() < config.minCommonTracks)
+		return 0;
+	// the same relative inlier distance the point mode measures a seam at
+	AABB3 dstBbox(true);
+	for (const Point3& p : dstPoints)
+		dstBbox.InsertFull(p);
+	const double threshold = config.simInlierThresholdFactor * dstBbox.GetSize().norm();
+	if (!(threshold > 0))
+		return 0;
+	const unsigned numInliers = EstimateSimilarityTransform(
+		srcPoints, dstPoints, T, threshold, true, config.simRansacMaxIters);
+	return numInliers >= config.minCommonTracks &&
+		(double)numInliers >= config.minSimInlierRatio * (double)srcPoints.size() ? numInliers : 0;
+}
+
+// How a placement was read, for the log
+static const char* PlacementWord(PlacementHypothesis::Source source)
+{
+	switch (source) {
+	case PlacementHypothesis::RIG_ON_MODEL: return "group on the model's points";
+	case PlacementHypothesis::MODEL_ON_GROUP: return "model on the group's points";
+	default: return "averaged";
+	}
+}
+/*----------------------------------------------------------------*/
+
+bool GlobalAlignment::PlaceGroup(
+	const std::vector<Scene>& subScenes,
+	std::vector<SeamCandidate>& candidates,
+	const std::vector<REAL>& blockExtents,
+	const uint32_t model,
+	const BlockGroup& group,
+	const std::vector<BlockPose>& poses,
+	PlacementHypothesis& winner,
+	String& reason) const
+{
+	ASSERT(!group.blocks.empty() && group.blocks.size() == group.frames.size());
+	reason.clear();
+	PlacementPool pool;
+	BuildPlacementPool(subScenes, candidates, poses, model, group, pool);
+
+	// the ways the pool can be read, and what the averaging already said; every one of them is
+	// scored over the whole pool below, so they all answer to the same evidence
+	std::vector<PlacementHypothesis> hypotheses;
+	unsigned bestOwnInliers = 0;
+	if (config.alignment == GlobalAlignmentConfig::ALIGN_POINTS) {
+		PlacementHypothesis h;
+		h.source = PlacementHypothesis::RIG_ON_MODEL;
+		bestOwnInliers = EstimatePoolSimilarity(pool, config, h.T);
+		if (bestOwnInliers > 0)
+			hypotheses.emplace_back(h);
+	} else {
+		const poselib::RansacOptions ransacOptions = SeamRansacOptions();
+		RigCorrespondences rc;
+		std::vector<std::vector<char>> inliers;
+		Transform T;
+		// the group's cameras on the model's points: that direction solves the model into the
+		// group's frame, so the seam it measures is its inverse
+		PoolRigCorrespondences(pool, false, config.maxReprojError, rc);
+		unsigned numInliers = EstimateRigAgainstPoints(rc, ransacOptions, T, inliers);
+		if (numInliers > 0) {
+			PlacementHypothesis h;
+			h.source = PlacementHypothesis::RIG_ON_MODEL;
+			h.T = T.Invert();
+			bestOwnInliers = MAXF(bestOwnInliers, numInliers);
+			hypotheses.emplace_back(h);
 		}
+		// the model's cameras on the group's points, which solves the group into the model
+		PoolRigCorrespondences(pool, true, config.maxReprojError, rc);
+		numInliers = EstimateRigAgainstPoints(rc, ransacOptions, T, inliers);
+		if (numInliers > 0) {
+			PlacementHypothesis h;
+			h.source = PlacementHypothesis::MODEL_ON_GROUP;
+			h.T = T;
+			bestOwnInliers = MAXF(bestOwnInliers, numInliers);
+			hypotheses.emplace_back(h);
+		}
+	}
+	// where the averaging put a single block of this model, held to the same gates as the rest
+	if (group.blocks.size() == 1 && poses[group.blocks.front()].model == model) {
+		PlacementHypothesis h;
+		h.source = PlacementHypothesis::INITIAL;
+		h.T = poses[group.blocks.front()].T * group.frames.front().Invert();
+		hypotheses.emplace_back(h);
+	}
+	if (hypotheses.empty()) {
+		reason = "no hypothesis";
+		return false;
+	}
+
+	// how much of the pool each admitted block carries: the bar a neighbour clears before its
+	// opinion is asked for
+	std::map<uint32_t, unsigned> numPooled;
+	for (const SeamObservation& obs : pool.observations) {
+		// the model side holds the camera when the point is the group's, and the point otherwise
+		const auto it = globalToLocal.find(obs.forward ? obs.rigImage : obs.pointImage);
+		if (it != globalToLocal.end())
+			++numPooled[it->second.first];
+	}
+	// a model the group reaches over verified seams alone is held to the stricter vote margin
+	bool anyRobust = false;
+	ForEachGroupSeam(candidates, poses, model, group, [&](uint32_t i, uint32_t) {
+		anyRobust = anyRobust || candidates[i].cls == SeamCandidate::ROBUST;
+	});
+	const float voteRatio = anyRobust ? config.minCameraVoteRatio : config.minCameraVoteRatioVerified;
+
+	const uint32_t firstBlock = group.blocks.front();
+	for (PlacementHypothesis& h : hypotheses) {
+		ScoreHypothesis(subScenes, pool, bestOwnInliers, voteRatio, h);
+		const NeighbourVerdict verdict = CheckNeighbours(
+			candidates, blockExtents, poses, model, group, numPooled, h.T, config);
+		h.neighbourSupport = verdict.support;
+		h.neighbourLoop = verdict.loop;
+		h.neighbourContra = verdict.contra;
+		// the neighbours the model already holds: one behind the placement at least, and no more
+		// than a share of those with something to say against it
+		if (h.Passed() && (verdict.support == 0 || verdict.contra * kNeighbourContraShare >
+				verdict.support + verdict.loop + verdict.contra))
+			h.failedGate = "neighbours";
+		LogVotes(String::FormatString("Placement of block %u, %s",
+			firstBlock, PlacementWord(h.source)).c_str(), h.score);
+		DEBUG_ULTIMATE("Placement of block %u, %s: %u inliers of %u, %u+/%u- neighbours%s%s",
+			firstBlock, PlacementWord(h.source), h.score.inliers, (unsigned)pool.observations.size(),
+			verdict.support, verdict.contra, h.Passed() ? "" : ", dropped by ", h.failedGate.c_str());
+	}
+
+	// the largest vote of the cameras decides between them
+	const auto Votes = [](const PlacementHypothesis& h) { return h.score.support[0] + h.score.support[1]; };
+	std::sort(hypotheses.begin(), hypotheses.end(),
+		[&Votes](const PlacementHypothesis& a, const PlacementHypothesis& b) { return Votes(a) > Votes(b); });
+	const auto itWinner = std::find_if(hypotheses.begin(), hypotheses.end(),
+		[](const PlacementHypothesis& h) { return h.Passed(); });
+	if (itWinner == hypotheses.end()) {
+		// nothing carried the group: the best of them says why
+		winner = hypotheses.front();
+		reason = winner.failedGate;
+		return false;
+	}
+	winner = *itWinner;
+	// the unit two placements are held apart in: the larger of the group's own footprint and the
+	// model's, read in the group frame their discrepancy lives in
+	const REAL extent = MAXF(GroupExtent(group, blockExtents),
+		CentresExtent(pool.modelCentres) / winner.T.scale);
+	const PlacementHypothesis* rival = NULL;
+	for (auto it = itWinner + 1; it != hypotheses.end(); ++it) {
+		if (!it->Passed())
+			continue;
+		if (CompareTransforms(winner.T, it->T, extent, config).Agrees()) {
+			// two readings of one placement: what either of them explains, it explains
+			FOREACH(k, winner.score.inlierMask)
+				if (it->score.inlierMask[k] && !winner.score.inlierMask[k]) {
+					winner.score.inlierMask[k] = true;
+					++winner.score.inliers;
+				}
+		} else if (rival == NULL)
+			rival = &*it;
+	}
+	if (rival != NULL && (float)Votes(winner) < config.voteMargin * (float)Votes(*rival)) {
+		reason = String::FormatString("two placements disagree (%u against %u supporting cameras)",
+			Votes(winner), Votes(*rival));
+		return false;
 	}
 	return true;
 }
 /*----------------------------------------------------------------*/
 
-std::vector<bool> GlobalAlignment::ValidateAlignment(
-	const std::vector<Scene>& subScenes,
-	const std::vector<bool>& mergeMask,
-	const std::vector<ScenePair>& scenePairs,
-	const std::vector<Point3d>& globalRotations,
-	const std::vector<REAL>& globalScales,
-	const std::vector<Point3>& globalTranslations) const
+bool GlobalAlignment::AdmitGroup(
+	MAYBEUNUSED const std::vector<Scene>& subScenes,
+	std::vector<SeamCandidate>& candidates,
+	const std::vector<REAL>& blockExtents,
+	const uint32_t model,
+	const BlockGroup& group,
+	const PlacementHypothesis& winner,
+	std::vector<BlockPose>& poses,
+	std::vector<uint32_t>& modelSeams) const
 {
-	ASSERT(mergeMask.size() == subScenes.size());
-	const uint32_t numSubScenes = (uint32_t)subScenes.size();
-	// sub-scenes rotation averaging could not place have no usable transform
-	std::vector<bool> demoted(numSubScenes);
-	for (uint32_t s = 0; s < numSubScenes; ++s)
-		demoted[s] = !mergeMask[s];
-
-	// Per-sub-scene transform Stage 5 will apply, plus the local camera-bbox diagonal
-	// used to normalize the translation residuals.
-	std::vector<Transform> globalTransforms;
-	std::vector<REAL> camBoxDiags;
-	BuildGlobalTransforms(subScenes, demoted, globalRotations, globalScales, globalTranslations,
-		globalTransforms, camBoxDiags);
-
-	// Sim(3) cycle residual per surviving edge (see ComputeSeamResidual)
-	struct EdgeStat {
-		uint32_t sceneA, sceneB;
-		float weight;
-		bool conflicting;
-	};
-	std::vector<EdgeStat> edges;
-	edges.reserve(scenePairs.size());
-	for (const ScenePair& sp : scenePairs) {
-		ASSERT(!demoted[sp.sceneA] && !demoted[sp.sceneB]);
-		const SeamResidual res = ComputeSeamResidual(sp, globalTransforms, camBoxDiags, config);
-		const unsigned weight = MINF(sp.numInliers, 1000u);
-		VERBOSE("Sub-scene pair (%u, %u) similarity residuals: scale %.1f%%, rotation %.2f deg, translation %.2f%% (weight %u)",
-			sp.sceneA, sp.sceneB, (res.scale - 1) * 100, res.rotation, res.translation * 100, weight);
-		edges.push_back({sp.sceneA, sp.sceneB, (float)weight, res.excess > 1});
+	ASSERT(poses.size() == subScenes.size() && group.blocks.size() == group.frames.size());
+	// the group takes its place
+	FOREACH(g, group.blocks) {
+		BlockPose& pose = poses[group.blocks[g]];
+		pose.T = winner.T * group.frames[g];
+		pose.model = model;
+		pose.state = BlockPose::ADMITTED;
+		pose.reason.clear();
 	}
+	std::vector<Transform> transforms;
+	PlacementTransforms(poses, model, group, winner.T, transforms);
 
-	// Vote out the node most dominated by conflicting cycle evidence, one at a time; a node
-	// with a single incident edge is satisfied exactly by the averaging, so it carries no
-	// cycle evidence and can never be flagged.
-	for (;;) {
-		uint32_t worst = NO_ID;
-		float worstFrac = 0.5f;
-		for (uint32_t s = 0; s < numSubScenes; ++s) {
-			if (demoted[s])
-				continue;
-			float total = 0.f, conflict = 0.f;
-			unsigned numEdges = 0, numConflicting = 0;
-			for (const EdgeStat& e : edges) {
-				if (e.sceneA != s && e.sceneB != s)
-					continue;
-				if (demoted[e.sceneA] || demoted[e.sceneB])
-					continue;
-				++numEdges;
-				total += e.weight;
-				if (e.conflicting) {
-					++numConflicting;
-					conflict += e.weight;
-				}
+	// what every seam between the group and the model makes of where the group landed
+	ForEachGroupSeam(candidates, poses, model, group, [&](uint32_t i, uint32_t) {
+		SeamCandidate& c = candidates[i];
+		const SeamResidual residual = ComputeSeamResidual(
+			c.sceneA, c.sceneB, c.T, transforms, blockExtents, config);
+		c.residualRotation = (float)residual.rotation;
+		c.residualScale = (float)residual.scale;
+		c.residualTranslation = (float)residual.translation;
+		if (residual.Agrees()) {
+			// the placement is the second opinion an undecided candidate never had
+			if (c.cls == SeamCandidate::UNDECIDED) {
+				c.cls = SeamCandidate::VERIFIED;
+				VERBOSE("Seam (%u, %u) verified by placement", c.sceneA, c.sceneB);
 			}
-			if (numEdges < 2 || numConflicting < 2)
-				continue;
-			const float frac = conflict / total;
-			if (frac > worstFrac) {
-				worstFrac = frac;
-				worst = s;
-			}
-		}
-		if (worst == NO_ID)
-			break;
-		VERBOSE("Sub-scene %u misaligned by similarity cycle consistency (%.0f%% conflicting edge weight); demoting to be rebuilt by resection",
-			worst, worstFrac * 100.f);
-		demoted[worst] = true;
-	}
+		} else if (c.IsTrusted()) {
+			// a seam the graph trusts that the placement cannot satisfy: the model rests on it all
+			// the same, so the joint refinement answers for the cycle it closes
+			VERBOSE("Seam (%u, %u) loop discrepancy: %.2f deg, %.1f%%, %.2f%%", c.sceneA, c.sceneB,
+				residual.rotation, (residual.scale - 1) * 100, residual.translation * 100);
+		} else
+			return; // undecided and unconfirmed: it carries nothing into the model
+		modelSeams.push_back(i);
+	});
 
-	// Never demote everything: keep as anchor the largest sub-scene rotation averaging placed
-	// (an unplaced one has no transform to anchor with)
-	if (std::find(demoted.begin(), demoted.end(), false) == demoted.end()) {
-		const uint32_t best = FindLargestSubScene(subScenes, &mergeMask);
-		ASSERT(best != NO_ID); // the caller merges only when at least one sub-scene was placed
-		demoted[best] = false;
-		VERBOSE("warning: all sub-scenes failed validation; keeping sub-scene %u as anchor", best);
+	// a block of the group the model now holds from two sides has closed a cycle
+	std::vector<bool> inGroup(poses.size(), false);
+	for (const uint32_t g : group.blocks)
+		inGroup[g] = true;
+	std::map<uint32_t, std::set<uint32_t>> neighboursOf;
+	for (const uint32_t e : modelSeams) {
+		const SeamCandidate& c = candidates[e];
+		if (inGroup[c.sceneA] != inGroup[c.sceneB])
+			neighboursOf[inGroup[c.sceneA] ? c.sceneA : c.sceneB].insert(
+				inGroup[c.sceneA] ? c.sceneB : c.sceneA);
 	}
-	return demoted;
+	for (const auto& [block, neighbours] : neighboursOf)
+		if (neighbours.size() >= 2)
+			return true;
+	return false;
 }
 /*----------------------------------------------------------------*/
 
-bool GlobalAlignment::RefineDemotedAlignment(
+unsigned GlobalAlignment::PlaceBlocks(
 	const std::vector<Scene>& subScenes,
-	std::vector<ScenePair>& scenePairs,
-	const std::vector<Point3d>& globalRotations,
-	std::vector<REAL>& globalScales,
-	std::vector<Point3>& globalTranslations,
-	std::vector<bool>& demoted)
+	std::vector<SeamCandidate>& candidates,
+	const std::vector<REAL>& blockExtents,
+	const uint32_t model,
+	std::vector<BlockPose>& poses,
+	std::vector<uint32_t>& modelSeams) const
 {
-	const uint32_t numSubScenes = (uint32_t)subScenes.size();
-	for (;;) {
-		// Demoting can disconnect the pair graph, while scale and translation averaging pin a
-		// single gauge node, so keep only the component holding the most calibrated images.
-		DisjointSet<uint32_t> ds(numSubScenes);
-		for (const ScenePair& sp : scenePairs)
-			if (!demoted[sp.sceneA] && !demoted[sp.sceneB])
-				ds.Union(sp.sceneA, sp.sceneB);
-		std::vector<unsigned> componentImages(numSubScenes, 0);
-		for (uint32_t s = 0; s < numSubScenes; ++s)
-			if (!demoted[s])
-				componentImages[ds.Find(s)] += subScenes[s].status.nCalibratedImages;
-		uint32_t bestRoot = NO_ID;
-		for (uint32_t s = 0; s < numSubScenes; ++s) {
-			if (demoted[s])
+	TD_TIMER_STARTD();
+	modelSeams.clear();
+	// the blocks this model may take in: the ones the averaging placed in it, and the ones no
+	// trusted seam reached at all -- an undecided seam is still evidence, and the placement is
+	// what judges it
+	std::vector<uint32_t> eligible;
+	unsigned numOwn = 0;
+	FOREACH(b, poses)
+		if (poses[b].state == BlockPose::UNPLACED && (poses[b].model == model || poses[b].model == NO_ID)) {
+			eligible.push_back((uint32_t)b);
+			if (poses[b].model == model)
+				++numOwn;
+		}
+	if (numOwn == 0)
+		return 0;
+
+	// the model grows from the block the seam graph is most sure of, which has to be one the
+	// averaging could place: it is that pose the model frame is set at
+	uint32_t seed = NO_ID;
+	float seedRobust = 0, seedTrusted = 0;
+	for (const uint32_t b : eligible) {
+		if (poses[b].model != model)
+			continue;
+		float robust = 0, trusted = 0;
+		for (const SeamCandidate& c : candidates) {
+			if (c.sceneA != b && c.sceneB != b)
 				continue;
-			const uint32_t root = ds.Find(s);
-			if (bestRoot == NO_ID || componentImages[root] > componentImages[bestRoot])
-				bestRoot = root;
+			if (c.cls == SeamCandidate::ROBUST)
+				robust += c.weight;
+			if (c.IsTrusted())
+				trusted += c.weight;
 		}
-		for (uint32_t s = 0; s < numSubScenes; ++s)
-			if (!demoted[s] && ds.Find(s) != bestRoot) {
-				VERBOSE("Sub-scene %u disconnected from the merge component; demoting to be rebuilt by resection", s);
-				demoted[s] = true;
-			}
-		scenePairs.erase(std::remove_if(scenePairs.begin(), scenePairs.end(),
-			[&demoted](const ScenePair& sp) { return demoted[sp.sceneA] || demoted[sp.sceneB]; }),
-			scenePairs.end());
-
-		// A single survivor defines the gauge by itself; nothing left to average
-		const unsigned numActive = numSubScenes - (unsigned)std::count(demoted.begin(), demoted.end(), true);
-		if (numActive < 2 || scenePairs.empty())
-			return true;
-
-		globalScales.clear();
-		globalTranslations.clear();
-		if (!EstimateGlobalScales(scenePairs, numSubScenes, globalScales) ||
-			!EstimateGlobalTranslations(scenePairs, globalRotations, globalScales, numSubScenes, globalTranslations)) {
-			VERBOSE("error: failed to re-average scales/translations after demotions");
-			return false;
+		if (seed == NO_ID || robust > seedRobust || (robust == seedRobust &&
+			(trusted > seedTrusted || (trusted == seedTrusted &&
+			 subScenes[b].status.nCalibratedImages > subScenes[seed].status.nCalibratedImages)))) {
+			seed = b;
+			seedRobust = robust;
+			seedTrusted = trusted;
 		}
-
-		std::vector<bool> keepMask(numSubScenes);
-		for (uint32_t s = 0; s < numSubScenes; ++s)
-			keepMask[s] = !demoted[s];
-		std::vector<bool> revalidated = ValidateAlignment(subScenes, keepMask, scenePairs,
-			globalRotations, globalScales, globalTranslations);
-		if (revalidated == demoted)
-			return true;
-		demoted = std::move(revalidated);
 	}
+	BlockGroup group;
+	group.blocks.assign(1, seed);
+	group.frames.assign(1, Transform());
+	PlacementHypothesis start;
+	start.source = PlacementHypothesis::INITIAL;
+	start.T = poses[seed].T;
+	AdmitGroup(subScenes, candidates, blockExtents, model, group, start, poses, modelSeams);
+	unsigned numAdmitted = 1;
+	VERBOSE("Model %u seeded with block %u (%u images)",
+		model, seed, subScenes[seed].status.nCalibratedImages);
+
+	// then one block at a time, the best supported first; a block the model could not take is
+	// deferred and tried again as soon as the model has changed, since what it could not confirm
+	// then it may confirm now
+	std::vector<uint32_t> deferred;
+	bool modelChanged = true;
+	while (true) {
+		uint32_t next = NO_ID;
+		float bestSupport = 0;
+		for (const uint32_t b : eligible) {
+			if (poses[b].state != BlockPose::UNPLACED)
+				continue;
+			const float support = PooledSupport(candidates, poses, model, b);
+			if (support <= 0)
+				continue;
+			if (next == NO_ID || support > bestSupport || (support == bestSupport &&
+				subScenes[b].status.nCalibratedImages > subScenes[next].status.nCalibratedImages)) {
+				next = b;
+				bestSupport = support;
+			}
+		}
+		if (next == NO_ID) {
+			if (deferred.empty() || !modelChanged)
+				break;
+			for (const uint32_t b : deferred)
+				poses[b].state = BlockPose::UNPLACED;
+			deferred.clear();
+			modelChanged = false;
+			continue;
+		}
+		group.blocks.assign(1, next);
+		group.frames.assign(1, Transform());
+		PlacementHypothesis winner;
+		String reason;
+		if (!PlaceGroup(subScenes, candidates, blockExtents, model, group, poses, winner, reason)) {
+			poses[next].state = BlockPose::DEFERRED;
+			poses[next].reason = reason;
+			deferred.push_back(next);
+			DEBUG("Block %u deferred: %s", next, reason.c_str());
+			continue;
+		}
+		AdmitGroup(subScenes, candidates, blockExtents, model, group, winner, poses, modelSeams);
+		++numAdmitted;
+		modelChanged = true;
+		DEBUG("Block %u placed on %u neighbours (%u support, %u loop, %u contradict); "
+			"votes %u+/%u- block, %u+/%u- model; %s", next,
+			winner.neighbourSupport + winner.neighbourLoop + winner.neighbourContra,
+			winner.neighbourSupport, winner.neighbourLoop, winner.neighbourContra,
+			winner.score.support[0], winner.score.contra[0],
+			winner.score.support[1], winner.score.contra[1], PlacementWord(winner.source));
+		// every admitted block fitted again to the seams the model rests on, so a seam's two ends
+		// can move apart instead of passing the error on
+		RefineBlockPoses(candidates, modelSeams, model, seed, poses);
+	}
+
+	VERBOSE("Model %u: %u/%u blocks placed on %u seams (%s)", model, numAdmitted,
+		(unsigned)eligible.size(), (unsigned)modelSeams.size(), TD_TIMER_GET_FMT().c_str());
+	return numAdmitted;
 }
 /*----------------------------------------------------------------*/
-
 
 bool GlobalAlignment::MergeTransformedScenes(
 	std::vector<Scene>& subScenes,
 	const std::vector<IIndexArr>& localToGlobals,
-	const std::vector<Point3d>& globalRotations,
-	const std::vector<REAL>& globalScales,
-	const std::vector<Point3>& globalTranslations,
-	const std::vector<bool>& demoted)
+	const std::vector<BlockPose>& poses)
 {
-	// Transform each trusted sub-scene into the global frame. Demoted sub-scenes are merged
-	// without poses below, so transforming them would be wasted work — and those rotation
-	// averaging left unplaced (always demoted) have unconstrained averaged transforms that
-	// would inject NaN/garbage poses.
+	// A block still admitted is one the merged model took in: stage 6 left every other block
+	// unplaceable, and an unplaced block is merged without poses below, so transforming it would
+	// be wasted work -- and its pose, which no placement ever confirmed, would inject garbage.
+	ASSERT(poses.size() == subScenes.size());
+	std::vector<bool> placed(subScenes.size(), false);
 	FOREACH(sceneIdx, subScenes) {
-		if (demoted[sceneIdx])
+		if (poses[sceneIdx].state != BlockPose::ADMITTED)
 			continue;
+		placed[sceneIdx] = true;
 		Scene& subScene = subScenes[sceneIdx];
 
-		// Apply the similarity transform to the sub-scene
-		subScene.Transform(BuildGlobalTransform(
-			globalRotations[sceneIdx], globalScales[sceneIdx], globalTranslations[sceneIdx]));
+		// Apply the block's own pose to it, bringing it into the model frame
+		subScene.Transform(poses[sceneIdx].T);
 
 		#if GLOBALALIGNMENT_DEBUG
 		// Export aligned sub-scene for debugging
@@ -2400,14 +2502,13 @@ bool GlobalAlignment::MergeTransformedScenes(
 		#endif
 	}
 
-	// Demoted sub-scenes (see ValidateAlignment) are merged without poses, to be rebuilt by
-	// the post-merge resection.
-	std::vector<bool> untrustedImages(scene.images.size(), false);
+	// Unplaced blocks are merged without poses, to be rebuilt by the post-merge resection.
+	std::vector<bool> unplacedImages(scene.images.size(), false);
 	FOREACH(sceneIdx, subScenes)
-		if (demoted[sceneIdx])
+		if (!placed[sceneIdx])
 			for (const IIndex globalID : localToGlobals[sceneIdx])
 				if (globalID != NO_ID && globalID < scene.images.size())
-					untrustedImages[globalID] = true;
+					unplacedImages[globalID] = true;
 
 	// Track per-camera accumulation counts; destination cameras accumulate directly
 	std::unordered_map<Camera*, unsigned> cameraAccumCount;
@@ -2418,11 +2519,10 @@ bool GlobalAlignment::MergeTransformedScenes(
 	FOREACH(sceneIdx, subScenes) {
 		Scene& subScene = subScenes[sceneIdx];
 		const IIndexArr& localToGlobal = localToGlobals[sceneIdx];
-		const bool trusted = !demoted[sceneIdx];
-		if (trusted) {
+		if (placed[sceneIdx]) {
 			++numMerged;
 			// Accumulate intrinsics from sub-scene cameras into destination cameras
-			// (demoted sub-scenes are excluded: their drifted geometry taints intrinsics too)
+			// (unplaced blocks are excluded: their drifted geometry taints intrinsics too)
 			for (IIndex localID = 0; localID < subScene.images.size(); ++localID) {
 				const IIndex globalID = localToGlobal[localID];
 				if (globalID == NO_ID || globalID >= scene.images.size())
@@ -2440,7 +2540,7 @@ bool GlobalAlignment::MergeTransformedScenes(
 		}
 
 		// Merge into global scene
-		MergeSingleScene(subScene, localToGlobal, trusted);
+		MergeSingleScene(subScene, localToGlobal, placed[sceneIdx]);
 	}
 
 	// Finalize intrinsics averaging
@@ -2452,7 +2552,7 @@ bool GlobalAlignment::MergeTransformedScenes(
 	}
 
 	// Merge sub-scene tracks and connect them via cross-sub-scene pairs
-	MergeTracksWithCrossSubScenePairs(untrustedImages);
+	MergeTracksWithCrossSubScenePairs(unplacedImages);
 	FilterTracks(scene, 16.f, 0.5f);
 
 	DEBUG("Merged %u/%u transformed sub-scenes (%u tracks, %u calibrated images)",
@@ -2461,7 +2561,7 @@ bool GlobalAlignment::MergeTransformedScenes(
 }
 /*----------------------------------------------------------------*/
 
-void GlobalAlignment::MergeSingleScene(Scene& subScene, const IIndexArr& localToGlobal, bool trusted)
+void GlobalAlignment::MergeSingleScene(Scene& subScene, const IIndexArr& localToGlobal, bool placed)
 {
 	// Copy image poses and move back keypoints/descriptors
 	// (keypoints/descriptors were moved to sub-scenes during ExtractSubScene to save memory)
@@ -2473,7 +2573,7 @@ void GlobalAlignment::MergeSingleScene(Scene& subScene, const IIndexArr& localTo
 		Image& srcImg = subScene.images[localID];
 		Image& dstImg = scene.images[globalID];
 
-		if (srcImg.IsValid() && trusted) {
+		if (srcImg.IsValid() && placed) {
 			if (!dstImg.IsValid())
 				++scene.status.nCalibratedImages;
 			dstImg.R = srcImg.R;
@@ -2531,8 +2631,8 @@ void GlobalAlignment::MergeSingleScene(Scene& subScene, const IIndexArr& localTo
 			}
 		}
 
-		// Demoted sub-scene: keep the observations but none of the (drifted) 3D trust
-		if (!trusted)
+		// Unplaced block: keep the observations but none of the (drifted) 3D trust
+		if (!placed)
 			dstTrack.numInliers = 0;
 
 		if (!dstTrack.IsValid())
@@ -2548,7 +2648,7 @@ void GlobalAlignment::MergeSingleScene(Scene& subScene, const IIndexArr& localTo
 /*----------------------------------------------------------------*/
 
 
-void GlobalAlignment::MergeTracksWithCrossSubScenePairs(const std::vector<bool>& untrustedImages)
+void GlobalAlignment::MergeTracksWithCrossSubScenePairs(const std::vector<bool>& unplacedImages)
 {
 	// Per-root metadata for union-find: 3D position, inlier count, and the set of images the
 	// track already observes (allocated only for the roots that hold a track, which are a
@@ -2599,13 +2699,13 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs(const std::vector<bool>&
 	for (const Track& track : scene.tracks) {
 		if (!track.IsValid())
 			continue;
-		// Tracks from demoted sub-scenes carry no inlier/3D trust (numInliers=0), but their
+		// Tracks from unplaced blocks carry no inlier/3D trust (numInliers=0), but their
 		// observation structure must survive so the post-merge resection can re-triangulate
 		// them: seed them with all observations and no position.
-		const bool untrustedTrack = !track.IsInlier() &&
-			track.observations[0].imageID < untrustedImages.size() &&
-			untrustedImages[track.observations[0].imageID];
-		const uint32_t numObs = untrustedTrack
+		const bool unplacedTrack = !track.IsInlier() &&
+			track.observations[0].imageID < unplacedImages.size() &&
+			unplacedImages[track.observations[0].imageID];
+		const uint32_t numObs = unplacedTrack
 			? (uint32_t)track.observations.size()
 			: (useOnlyInliers ? (uint32_t)track.numInliers : (uint32_t)track.observations.size());
 		if (numObs < 2)
