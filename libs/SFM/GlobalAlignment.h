@@ -334,7 +334,7 @@ struct SFM_API GlobalAlignmentConfig
 	// neighbour check of a placement; the translation limit is the graph's own bar.
 	float maxSimRotationError{3.f};         // degrees
 	float maxSimScaleRatio{1.1f};
-	float maxSimTranslationError{0.05f};    // fraction of the larger block's local camera-bbox diagonal
+	float maxSimTranslationError{0.05f};    // fraction of the pair's shared camera-bbox diagonal
 	float voteMargin{1.5f};                 // margin by which one candidate beats another on camera votes
 	float maxVoteWeight{30.f};              // cap of a candidate's weight
 	// Seam graph consensus: a candidate the averaged consensus contradicts by more than these is
@@ -495,7 +495,7 @@ public:
 	 * consensus reaches from the gauge gets its local -> gauge frame transform and model 0, the
 	 * rest keep model NO_ID and state UNPLACED
 	 * @param residuals out: one per edge, the consensus against it (rotation degrees, scale ratio
-	 * >= 1, translation as a fraction of the larger block's camera footprint); an edge the
+	 * >= 1, translation as a fraction of the footprint the two blocks share); an edge the
 	 * rotation averaging left with its two ends in different frames, and one measuring a scale
 	 * between blocks the metric consensus did not both place, gets an infinite rotation. A seam
 	 * that cannot observe a scale is judged on its rotation alone, and keeps a residual of 1 in

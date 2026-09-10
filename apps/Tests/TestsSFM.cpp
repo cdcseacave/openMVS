@@ -11855,6 +11855,12 @@ bool RingPlacementTest()
 {
 	TD_TIMER_START();
 	RingSceneConfig cfg{12, 10};
+	// how well a block reaches into the next one is what this measures, so the keypoints are read
+	// more precisely than the generator's default: at 0.3 px every seam of the ring is biased by
+	// about 0.06 degrees the same way -- a track at the edge of a block's arc is fixed by two or
+	// three cameras with a short baseline -- and an open chain of twelve blocks accumulates ~0.6
+	// degrees, so the block that closes the ring is contradicted by the far arm and 11 of the 12
+	// are placed. Closing the ring on the block pose graph is what answers for that.
 	cfg.noisePx = 0.1;
 	Scene scene;
 	std::vector<IIndexArr> blocks;
@@ -11968,11 +11974,18 @@ bool RingInterleavingVetoTest()
 }
 /*----------------------------------------------------------------*/
 
-// One pair, two directions and only one of them right: block 1 keeps a thinned share of its true
-// evidence toward block 0, and its first three cameras are given block 0's structure turned by
-// twenty degrees. The planted evidence then outnumbers the truth in the direction that registers
-// those cameras, so that direction measures a similarity of its own, and only what the two
-// directions explain of each other and what the cameras of both sides vote can tell them apart.
+// One pair, two directions and only one of them right: every camera of block 1 keeps a thinned
+// share of its true evidence toward block 0, and its first three cameras are given block 0's
+// structure turned by twenty degrees on top of it. The planted correspondences then outnumber the
+// true ones in the direction that registers those three cameras, so that direction measures a
+// similarity of its own, and only what the two directions explain of each other and what the
+// cameras of both sides vote can tell them apart.
+//
+// Emptying those three cameras of their true evidence instead -- which would leave them
+// contradicting the honest direction outright -- cannot be done on a ring: the cameras of block 0
+// they are the only partners of would be left holding planted correspondences and nothing else,
+// and four such contradictors out of block 0's ten cameras refuse the honest direction whatever
+// the thinning.
 static bool BuildAmbiguousPair(const RingSceneConfig& cfg, unsigned numClusters, REAL keepFraction,
 	Scene& scene, std::vector<IIndexArr>& blocks, std::vector<Pose3D>& gtPoses,
 	std::vector<Scene>& subScenes, std::vector<IIndexArr>& localToGlobals,
@@ -11985,6 +11998,15 @@ static bool BuildAmbiguousPair(const RingSceneConfig& cfg, unsigned numClusters,
 	const std::vector<IIndexArr> clusters(blocks.begin(), blocks.begin() + numClusters);
 	BuildRingBlocks(cfg, scene, clusters, gtPoses, subScenes, localToGlobals, applied);
 	return true;
+}
+
+// The vote one image cast on a candidate, NULL when it had too few correspondences to vote
+static const CameraVote* FindVote(const SeamScore& score, IIndex image)
+{
+	for (const CameraVote& vote : score.votes)
+		if (vote.image == image)
+			return &vote;
+	return NULL;
 }
 
 bool AmbiguousPairTest()
@@ -12028,6 +12050,35 @@ bool AmbiguousPairTest()
 			return false;
 		}
 		const SeamCandidate& c = cands.front();
+		// what the thinning and the plant left of block 1's cameras: every one of them still carries
+		// a vote, all but the farthest hold the correspondences a vote weighs with, and on the three
+		// the plant sits on more than half of what they hold is false under the direction that
+		// survived, against almost nothing on the seven it left alone
+		unsigned numWeighing = 0;
+		for (unsigned k = 0; k < cfg.camsPerBlock; ++k) {
+			const CameraVote* vote = FindVote(c.score, blocks[1][k]);
+			const bool planted = k < 3;
+			if (vote == NULL || (planted ? vote->inliers * 2 >= vote->correspondences :
+					vote->inliers * 10 < vote->correspondences * 9)) {
+				VERBOSE("AmbiguousPairTest FAILED: camera %u of block 1 kept %u of %u correspondences "
+					"under the surviving seam, and the plant %s sit on it",
+					k, vote == NULL ? 0 : vote->inliers, vote == NULL ? 0 : vote->correspondences,
+					planted ? "does" : "does not");
+				return false;
+			}
+			if (vote->correspondences >= alignCfg.minVoteInliers)
+				++numWeighing;
+		}
+		if (numWeighing + 1 < cfg.camsPerBlock) {
+			VERBOSE("AmbiguousPairTest FAILED: %u of block 1's %u cameras kept the %u correspondences "
+				"a vote weighs with", numWeighing, cfg.camsPerBlock, alignCfg.minVoteInliers);
+			return false;
+		}
+		if (c.score.support[1] != 9 || c.score.contra[1] != 0) {
+			VERBOSE("AmbiguousPairTest FAILED: block 1 voted %u+/%u- on the surviving direction, "
+				"expected 9+/0-", c.score.support[1], c.score.contra[1]);
+			return false;
+		}
 		// what the surviving seam makes of what the other direction saw: a minority, the planted
 		// evidence being the majority there -- which is why that direction lied in the first place
 		if (c.NumInliers(1) * 2 >= c.NumObservations(1)) {
@@ -13025,19 +13076,32 @@ static bool CheckTriangleMerge()
 		VERBOSE("HierarchicalCameraAlignmentTest FAILED: the triangle merge returned false");
 		return false;
 	}
-	// the third sub-scene is the one the doubled seam reaches, and the placement could not take it
+	// The third sub-scene is the one the doubled seam reaches, and the merge leaves it out: the
+	// three seams weigh the same and the wrong one sits on the triangle's only cycle, so the scale
+	// consensus spreads its error evenly and can indict none of them, which leaves the third
+	// sub-scene with one neighbour behind its placement and one against it -- more than the share
+	// of contradicting neighbours a placement is allowed. Its images go to the post-merge
+	// resection, which is what the two right seams were kept for.
 	if (report.numPlaced != 2 || report.poses[2].state != BlockPose::UNPLACEABLE) {
 		VERBOSE("HierarchicalCameraAlignmentTest FAILED: the triangle merge placed %u of %u blocks, "
 			"the sub-scene the wrong seam reaches in state %u",
 			report.numPlaced, report.numBlocks, (unsigned)report.poses[2].state);
 		return false;
 	}
-	// its images stay unregistered, poses no seam could confirm being worse than none; every image
-	// of the two blocks that agree must sit on the truth under the one similarity the merged frame
-	// is free to choose
+	// exactly its images, and no others, are the ones the merge reports unplaced
 	std::vector<bool> unplaced(scene.images.size(), false);
 	for (const IIndex globalID : localToGlobals[2])
 		unplaced[globalID] = true;
+	const std::set<IIndex> reportedUnplaced(report.unplacedImages.begin(), report.unplacedImages.end());
+	const std::set<IIndex> thirdSubScene(localToGlobals[2].begin(), localToGlobals[2].end());
+	if (reportedUnplaced != thirdSubScene) {
+		VERBOSE("HierarchicalCameraAlignmentTest FAILED: the merge reports %u images unplaced, "
+			"the sub-scene the wrong seam reaches holds %u",
+			(unsigned)reportedUnplaced.size(), (unsigned)thirdSubScene.size());
+		return false;
+	}
+	// every image of the two blocks that agree must sit on the truth under the one similarity the
+	// merged frame is free to choose -- the moved cameras among them included, there being none
 	Point3Arr mergedCenters, gtCenters;
 	IIndexArr checked;
 	FOREACH(i, scene.images) {
@@ -13076,15 +13140,6 @@ static bool CheckTriangleMerge()
 		"%.3f%% position and %.4f deg from the truth", checked.size(),
 		report.numImagesUnplaced, (unsigned)perturbedGlobals.size(), maxPos * 100, maxRot);
 	return true;
-}
-
-// The vote one image cast on a candidate, NULL when it had too few correspondences to vote
-static const CameraVote* FindVote(const SeamScore& score, IIndex image)
-{
-	for (const CameraVote& vote : score.votes)
-		if (vote.image == image)
-			return &vote;
-	return NULL;
 }
 
 // Global image ID -> local image index of one sub-scene

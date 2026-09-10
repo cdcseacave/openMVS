@@ -254,6 +254,9 @@ constexpr float kUndecidedSupportWeight = 0.25f;
 // At most this share of the admitted neighbours that have something to say may contradict a
 // placement: one in three, so a lone neighbour cannot veto and a majority still can.
 constexpr unsigned kNeighbourContraShare = 3;
+// The translation unit of a pair is the smaller block's extent, never under this share of the
+// larger's: a block of two cameras a millimetre apart has no footprint of its own to be judged by.
+constexpr float kMinExtentShare = 0.2f;
 
 // A block the model already holds: admitted, and admitted into this model. Another model placed
 // its blocks in a frame this one knows nothing about, so they have no say here.
@@ -1485,11 +1488,19 @@ static SEACAVE::Transform BuildGlobalTransform(const Point3d& rotation, REAL sca
 struct SeamResidual {
 	REAL scale;       // ratio, >= 1
 	REAL rotation;    // degrees
-	REAL translation; // fraction of the camera footprint the two frames share
+	REAL translation; // fraction of the two frames' shared camera footprint (see PairExtent)
 	REAL excess;      // largest of the three as a factor of its limit; conflicting above 1
 	// the two say the same thing: every component of the discrepancy stays under its own bar
 	bool Agrees() const { return excess <= REAL(1); }
 };
+
+// The one unit a translation between two frames is read in, wherever two camera footprints meet:
+// the smaller of the two, since that is the block that can least afford the error, floored at a
+// share of the larger so that a frame with no extent of its own is still judged by something.
+static REAL PairExtent(const REAL first, const REAL second)
+{
+	return MAXF(MINF(first, second), (REAL)kMinExtentShare * MAXF(first, second));
+}
 
 // The one comparison of two transforms, which every rule that asks whether two opinions on the
 // same two frames agree is written in terms of: the discrepancy E = first^-1 * second, read in the
@@ -1510,14 +1521,13 @@ static SeamResidual CompareTransforms(
 // Sim(3) cycle residual of one measured seam: T maps A-local to B-local and G_i maps each local
 // frame to the model frame, so G_B*T and G_A both map A-local to the model and their discrepancy
 // is what the seam is off by (identity when perfectly consistent). It is read in A's local frame,
-// against the larger of the two blocks' camera footprints, so the verdict does not depend on which
-// end happens to have the lower block index -- and a block whose cameras sit a millimetre apart,
-// having no footprint of its own that means anything, is judged against the one it is joined to.
+// against the footprint the two blocks share there, so the verdict does not depend on which end
+// happens to have the lower block index.
 static SeamResidual ComputeSeamResidual(
 	const uint32_t a, const uint32_t b, const Transform& T, const std::vector<Transform>& transforms,
 	const std::vector<REAL>& blockExtents, const GlobalAlignmentConfig& config)
 {
-	const REAL diag = MAXF(blockExtents[a] * transforms[a].scale, blockExtents[b] * transforms[b].scale);
+	const REAL diag = PairExtent(blockExtents[a] * transforms[a].scale, blockExtents[b] * transforms[b].scale);
 	return CompareTransforms(transforms[a], transforms[b] * T, diag / transforms[a].scale, config);
 }
 /*----------------------------------------------------------------*/
@@ -1824,9 +1834,9 @@ bool GlobalAlignment::AverageBlockPoses(
 				[&](const std::vector<TranslationPair>& active, std::vector<Point3>& t) { return translationEstimator.EstimateTranslations(active, n, metricGauge, t); },
 				[&](size_t i, const std::vector<Point3>& t) {
 					const TranslationPair& p = translationPairs[i];
-					// the larger of the two footprints, as everything that judges a seam's
-					// translation reads it: a block of two cameras a millimetre apart has none
-					const REAL extent = MAXF(blockExtents[blockOfNode[p.idxA]] * scales[p.idxA],
+					// the footprint the two blocks share, as everything that judges a seam's
+					// translation reads it
+					const REAL extent = PairExtent(blockExtents[blockOfNode[p.idxA]] * scales[p.idxA],
 						blockExtents[blockOfNode[p.idxB]] * scales[p.idxB]);
 					return extent > 0 ? norm(t[p.idxB] - t[p.idxA] - p.relativeTranslation) / extent : REAL(0);
 				},
@@ -2267,9 +2277,9 @@ bool GlobalAlignment::PlaceGroup(
 		return false;
 	}
 	winner = *itWinner;
-	// the unit two placements are held apart in: the larger of the group's own footprint and the
-	// model's, read in the group frame their discrepancy lives in
-	const REAL extent = MAXF(GroupExtent(group, blockExtents),
+	// the unit two placements are held apart in: the footprint the group and the model share, read
+	// in the group frame their discrepancy lives in
+	const REAL extent = PairExtent(GroupExtent(group, blockExtents),
 		CentresExtent(pool.modelCentres) / winner.T.scale);
 	const PlacementHypothesis* rival = NULL;
 	for (auto it = itWinner + 1; it != hypotheses.end(); ++it) {
@@ -2470,6 +2480,12 @@ unsigned GlobalAlignment::PlaceBlocks(
 		// can move apart instead of passing the error on
 		RefineBlockPoses(candidates, modelSeams, model, seed, poses);
 	}
+
+	// a block this model could not take but no model owns is left where it was found, so the next
+	// model may try it too; it keeps the reason of the last model that looked at it
+	for (const uint32_t b : deferred)
+		if (poses[b].state == BlockPose::DEFERRED && poses[b].model != model)
+			poses[b].state = BlockPose::UNPLACED;
 
 	VERBOSE("Model %u: %u/%u blocks placed on %u seams (%s)", model, numAdmitted,
 		(unsigned)eligible.size(), (unsigned)modelSeams.size(), TD_TIMER_GET_FMT().c_str());
