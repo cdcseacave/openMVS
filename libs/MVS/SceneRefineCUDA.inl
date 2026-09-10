@@ -51,7 +51,7 @@ namespace CUDA {
 // ~0ull); resolve=true lets the thread holding each pixel's winning key write depth/face (faceMap
 // pre-filled with NO_ID, depthMap with 0) and, when ownerBits is not NULL, sets bit f of it for
 // every face f that wrote a pixel ((numFaces+31)/32 words, every word written, no clearing
-// needed) -- the bits LaunchAccumulateFacePhoto skips the unseen faces by. In Debug,
+// needed) -- the bits LaunchCompactOwners packs into the per-view owner lists. In Debug,
 // LaunchCheckProjection then asserts every covered pixel received its payload.
 void LaunchProjectMesh(
 	const Point3* vertices, const Point3u* faces,
@@ -64,6 +64,9 @@ void LaunchCheckProjection(
 	const float* depthMap, const uint32_t* faceMap, int width, int height);
 #endif
 
+// The per-pair-direction launchers below and the two that follow the directions take the
+// stream they are issued on: MeshRefineCUDA::ScoreMesh records them into a CUDA graph.
+
 // keepA/keepB are the per-pixel keep-masks of image A/B (one byte per pixel, non-zero = keep),
 // NULL if disabled -- see kernelImageMeshWarp
 void LaunchImageMeshWarp(
@@ -71,7 +74,8 @@ void LaunchImageMeshWarp(
 	const uint8_t* keepA, const uint8_t* keepB, uint8_t* mask,
 	const Camera& camA, const Camera& camB,
 	cudaTextureObject_t texImageB,
-	cudaSurfaceObject_t surfImageProj);
+	cudaSurfaceObject_t surfImageProj,
+	cudaStream_t stream);
 
 // masked window statistics, rejection gates, ZNCC, its derivative and the pixel's photometric
 // term in one pass: pixelGrad receives g_p, the scalar the covering face's three corners share
@@ -92,29 +96,47 @@ uint32_t LaunchComputeWindowStats(
 	const Point3* normals, const uint32_t* faceMap, const float* depthMap,
 	const Camera& camA, const Camera& camB,
 	cudaTextureObject_t texImageB, cudaTextureObject_t texGradXB, cudaTextureObject_t texGradYB,
-	bool bBilinearGrad, float regScale, float gateMeanDiff, float gateVarRatio, int width, int height);
+	bool bBilinearGrad, float regScale, float gateMeanDiff, float gateVarRatio, int width, int height,
+	cudaStream_t stream);
 
 // sumR/sumRZ receive the sums of the numSlots partials
-void LaunchReduceBlockSums(const float* blockSums, uint32_t numSlots, float* sumR, float* sumRZ);
+void LaunchReduceBlockSums(const float* blockSums, uint32_t numSlots, float* sumR, float* sumRZ, cudaStream_t stream);
+
+// the dense per-view owner lists, once per evaluation after every view is rasterized (see
+// kernelCompactOwners): counts receives per view the popcount of its numWords owner words,
+// offsets (numViews+1 entries) their exclusive prefix sum and, last, the total, and ownerList
+// (sized by the host to that total) every view's owner faces in face order from its offset on
+void LaunchCountOwners(const uint32_t* ownerBits, uint32_t* counts, uint32_t numWords, uint32_t numViews);
+void LaunchScanViewCounts(const uint32_t* counts, uint32_t* offsets, uint32_t numViews);
+void LaunchCompactOwners(const uint32_t* ownerBits, const uint32_t* offsets, uint32_t* ownerList, uint32_t numWords, uint32_t numViews);
+// then every view's slice of listIn reordered into listOut by the image tile (2^tileShiftX x
+// 2^tileShiftY pixels) the face's box starts in, keys being scratch of the same size, with at
+// most maxBuckets tiles in any view (see kernelSortOwnersTile); cameras is one Camera per view
+void LaunchSortOwnersTile(
+	const Point3* vertices, const Point3u* faces, const Camera* cameras,
+	const uint32_t* offsets, const uint32_t* listIn, uint32_t* keys, uint32_t* listOut,
+	int tileShiftX, int tileShiftY, uint32_t maxBuckets, uint32_t numViews);
 
 // the photometric accumulation, atomic-free so that the per-vertex sums are bit-reproducible run
-// to run (float addition is not associative). Per pair-direction: one thread per MESH face,
-// exiting on the reference view's owner bit (LaunchProjectMesh) unless the face owns a pixel
-// there, folds that face's contributing pixels -- barycentrics and depth recomputed from its
+// to run (float addition is not associative). Per pair-direction: one thread per face the
+// reference view idxView OWNS (its slice of ownerList, LaunchSortOwnersTile's list, read from
+// ownerOffsets on the device; numBlocks blocks of AccumulateBlockSize threads stride over it)
+// folds that face's contributing pixels -- barycentrics and depth recomputed from its
 // projection, see kernelAccumulateFacePhoto -- into its private slots -- faceAcc, 3 floats per
 // face (one per corner: Sum g_p*b_c), facePixels, the contributing pixel count, and faceFoot,
 // the min footprint (only read where facePixels > 0) -- accumulated ACROSS the pair-directions
-// of one ScoreMesh() (cleared by the host once per call), and marks the face's three vertices in
-// vertexSeen.
+// of one ScoreMesh() (cleared by the host once per call), and counts the direction once in
+// photoCount for each of the face's three vertices (exactly the CPU's
+// `photoGradNorm[idxVert] += 1.f` per pair-direction) through vertexStamp, one word per vertex
+// the host sets to ~0u once per ScoreMesh() -- direction is this pair-direction's index in it.
+constexpr int AccumulateBlockSize = 128;
 void LaunchAccumulateFacePhoto(
-	const Point3* vertices, const Point3u* faces, const uint32_t* ownerBits,
+	const Point3* vertices, const Point3u* faces,
+	const uint32_t* ownerList, const uint32_t* ownerOffsets, uint32_t idxView,
 	const uint32_t* faceMap, const float* pixelGrad, const uint8_t* mask,
-	float* faceAcc, float* facePixels, float* faceFoot, uint8_t* vertexSeen,
-	const Camera& camA, uint32_t numFaces);
-
-// right after it: one thread per vertex counts this pair-direction in photoCount for every
-// marked vertex and clears the mark (exactly the CPU's `photoGradNorm[idxVert] += 1.f`)
-void LaunchCountSeenVertices(uint8_t* vertexSeen, float* photoCount, uint32_t numVertices);
+	float* faceAcc, float* facePixels, float* faceFoot,
+	uint32_t* vertexStamp, float* photoCount, uint32_t direction,
+	const Camera& camA, uint32_t numBlocks, cudaStream_t stream);
 
 // once per ScoreMesh(), after every pair-direction: one thread per vertex folds its incident
 // faces' slots in the fixed order Mesh::ListIncidentFaces produced (vertFaces/vertFaceSizes/
@@ -124,7 +146,7 @@ void LaunchGatherVertexPhoto(
 	const Point3u* faces, const Point3* normals,
 	const uint32_t* vertFaces, const uint32_t* vertFaceSizes, const uint32_t* vertFacePointers,
 	const float* faceAcc, const float* facePixels, const float* faceFoot,
-	Point3* photoGrad, float* footprint, uint32_t numVertices);
+	Point3* photoGrad, float* footprint, uint32_t numVertices, cudaStream_t stream);
 
 // mode selects the level (0 - level 1, over vertex positions; nonzero - level 2, over
 // smoothGrad1)

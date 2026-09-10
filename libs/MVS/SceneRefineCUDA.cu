@@ -248,7 +248,173 @@ __global__ void kernelCheckProjection(
 #endif
 
 
-// 3. ImageMeshWarp — 2D, texture + 2 surfaces
+// 3. CompactOwners — the dense per-view lists of the faces the rasterizer's owner bits mark,
+// built once per evaluation after every view is rasterized: kernelCountOwners (one block per
+// view) popcounts the view's words, kernelScanViewCounts (one block) turns the counts into the
+// views' offsets into one packed list (numViews+1 entries, the last the total the host sizes
+// the list by), and kernelCompactOwners (one block per view) writes the face ids, in face order.
+// The per-direction accumulation then runs one thread per OWNER face of its reference view
+// instead of one per mesh face exiting on the bit: a view owns a fraction of the faces (a
+// quarter to a third on Ignatius at level 1, where the cameras ring one object; less in a scene
+// of hundreds of views along a path), and the exits left the warps that did reach the pixel
+// loop 4-5 active lanes of 32 (Nsight Compute, Ignatius level 1, both scales: 4.4 threads per
+// warp-instruction, 13 of 20 warp cycles stalled on the scattered loads, compute 27 % and
+// memory 37 % of peak, the kernel 55 % of the GPU time); with the lists, 9.4/7.7 lanes and 2.3x
+// fewer instructions issued.
+// The list order does not touch the result -- a face still reduces its own pixels in raster
+// order into its own slot, and the fold order across directions is the launch order -- and
+// face order is kept because consecutive faces are neighbours on the mesh, so a warp's 32
+// boxes land near one another in the image.
+
+// exclusive prefix sum of one value per thread over the block (blockDim.x a multiple of 32, at
+// most 1024): returns the thread's exclusive prefix and leaves the block total in `total`;
+// warpSums is 32 words of shared memory, free for reuse when this returns
+__device__ inline uint32_t blockScanExclusive(uint32_t v, uint32_t& total, uint32_t* warpSums)
+{
+	const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5, numWarps = blockDim.x >> 5;
+	uint32_t incl = v;
+	#pragma unroll
+	for (int d = 1; d < 32; d <<= 1) {
+		const uint32_t t = __shfl_up_sync(0xffffffffu, incl, d);
+		if (lane >= d) incl += t;
+	}
+	if (lane == 31) warpSums[warp] = incl;
+	__syncthreads();
+	if (warp == 0) {
+		uint32_t s = lane < numWarps ? warpSums[lane] : 0u;
+		#pragma unroll
+		for (int d = 1; d < 32; d <<= 1) {
+			const uint32_t t = __shfl_up_sync(0xffffffffu, s, d);
+			if (lane >= d) s += t;
+		}
+		if (lane < numWarps) warpSums[lane] = s;
+	}
+	__syncthreads();
+	const uint32_t prefix = (warp ? warpSums[warp-1] : 0u) + incl - v;
+	total = warpSums[numWarps-1];
+	__syncthreads();
+	return prefix;
+}
+
+__global__ void kernelCountOwners(
+	const uint32_t* __restrict__ ownerBits, // numWords per view, view-major
+	uint32_t* __restrict__ counts, // 1 per view
+	uint32_t numWords)
+{
+	__shared__ uint32_t warpSums[32];
+	const uint32_t* words = ownerBits + (size_t)blockIdx.x * numWords;
+	uint32_t n = 0;
+	for (uint32_t w = threadIdx.x; w < numWords; w += blockDim.x)
+		n += __popc(words[w]);
+	uint32_t total;
+	blockScanExclusive(n, total, warpSums);
+	if (threadIdx.x == 0)
+		counts[blockIdx.x] = total;
+}
+
+__global__ void kernelScanViewCounts(
+	const uint32_t* __restrict__ counts,
+	uint32_t* __restrict__ offsets, // numViews+1: the exclusive prefix sum of counts, then the total
+	uint32_t numViews)
+{
+	__shared__ uint32_t warpSums[32];
+	uint32_t running = 0;
+	for (uint32_t base = 0; base < numViews; base += blockDim.x) {
+		const uint32_t i = base + threadIdx.x;
+		uint32_t total;
+		const uint32_t prefix = blockScanExclusive(i < numViews ? counts[i] : 0u, total, warpSums);
+		if (i < numViews)
+			offsets[i] = running + prefix;
+		running += total;
+	}
+	if (threadIdx.x == 0)
+		offsets[numViews] = running;
+}
+
+__global__ void kernelCompactOwners(
+	const uint32_t* __restrict__ ownerBits,
+	const uint32_t* __restrict__ offsets,
+	uint32_t* __restrict__ ownerList, // offsets[numViews] entries: every view's owner faces, in face order
+	uint32_t numWords)
+{
+	__shared__ uint32_t warpSums[32];
+	const uint32_t* words = ownerBits + (size_t)blockIdx.x * numWords;
+	uint32_t* list = ownerList + offsets[blockIdx.x];
+	uint32_t running = 0;
+	for (uint32_t base = 0; base < numWords; base += blockDim.x) {
+		const uint32_t w = base + threadIdx.x;
+		uint32_t bits = w < numWords ? words[w] : 0u;
+		uint32_t total;
+		uint32_t pos = running + blockScanExclusive(__popc(bits), total, warpSums);
+		while (bits) {
+			list[pos++] = w*32 + (uint32_t)(__ffs(bits) - 1);
+			bits &= bits - 1;
+		}
+		running += total;
+	}
+	// what kernelCountOwners counted for this view
+	ASSERT(running == offsets[blockIdx.x+1] - offsets[blockIdx.x]);
+}
+
+
+// 4. SortOwnersTile — one block per view, right after the compaction: the view's owner list
+// reordered by the image tile (2^tileShiftX x 2^tileShiftY pixels, row-major) the face's
+// clipped box starts in, so that the 32 lanes of a warp of the accumulation walk boxes a tile
+// or two apart at most. In face order the lanes' boxes were scattered over the image and every
+// load fetched its own lines (Nsight Compute: 4 of 32 bytes of every sector used, L1 hit 52-54 %,
+// 18-21 of 25-28 warp cycles on the long scoreboard even with a chunk's loads in flight). The
+// projection is the accumulation's own (projectFace + faceBBox). A counting sort in shared
+// memory: the bucket histogram, its exclusive scan, and a scatter whose order WITHIN a bucket is
+// the atomics' -- the result does not depend on the list order (see kernelCompactOwners).
+__global__ void kernelSortOwnersTile(
+	const Point3* __restrict__ vertices,
+	const Point3u* __restrict__ faces,
+	const Camera* __restrict__ cameras, // one per view
+	const uint32_t* __restrict__ offsets,
+	const uint32_t* __restrict__ listIn,
+	uint32_t* __restrict__ keys, // scratch, one per list entry
+	uint32_t* __restrict__ listOut,
+	int tileShiftX, int tileShiftY)
+{
+	extern __shared__ uint32_t hist[]; // the view's tile count + 32 words for the scan
+	const Camera camera = cameras[blockIdx.x];
+	const uint32_t off = offsets[blockIdx.x], n = offsets[blockIdx.x+1] - off;
+	const int tilesX = (camera.size.x() + (1 << tileShiftX) - 1) >> tileShiftX;
+	const int numBuckets = tilesX * ((camera.size.y() + (1 << tileShiftY) - 1) >> tileShiftY);
+	uint32_t* warpSums = hist + numBuckets;
+	for (int b = threadIdx.x; b < numBuckets; b += blockDim.x)
+		hist[b] = 0;
+	__syncthreads();
+	for (uint32_t i = threadIdx.x; i < n; i += blockDim.x) {
+		const uint32_t idxFace = listIn[off + i];
+		ProjectedFace pf;
+		int ixMin(0), ixMax(-1), iyMin(0), iyMax(-1);
+		const bool seen(projectFace(vertices, faces[idxFace], camera, pf) && faceBBox(pf, camera, ixMin, ixMax, iyMin, iyMax));
+		ASSERT(seen); (void)seen; // it owns a pixel of this view
+		const uint32_t key = (uint32_t)((iyMin >> tileShiftY) * tilesX + (ixMin >> tileShiftX));
+		keys[off + i] = key;
+		atomicAdd(&hist[key], 1u);
+	}
+	__syncthreads();
+	// exclusive scan: hist[b] becomes the bucket's first position
+	uint32_t running = 0;
+	for (int base = 0; base < numBuckets; base += blockDim.x) {
+		const int b = base + threadIdx.x;
+		uint32_t total;
+		const uint32_t prefix = blockScanExclusive(b < numBuckets ? hist[b] : 0u, total, warpSums);
+		if (b < numBuckets)
+			hist[b] = running + prefix;
+		running += total;
+	}
+	__syncthreads();
+	for (uint32_t i = threadIdx.x; i < n; i += blockDim.x) {
+		const uint32_t pos = atomicAdd(&hist[keys[off + i]], 1u);
+		listOut[off + pos] = listIn[off + i];
+	}
+}
+
+
+// 5. ImageMeshWarp — 2D, texture + 2 surfaces
 __global__ void kernelImageMeshWarp(
 	const float* __restrict__ depthMapA,
 	const float* __restrict__ depthMapB,
@@ -422,7 +588,7 @@ __device__ inline bool computePhotoPixel(
 }
 
 
-// 4. ComputeWindowStats — 2D, one thread per pixel: the six MASKED window sums, the two
+// 6. ComputeWindowStats — 2D, one thread per pixel: the six MASKED window sums, the two
 // rejection gates, ZNCC, its derivative, this pair-direction's reliability sums and the pixel's
 // photometric term, all in one pass over the 7x7 window. Replaces the former five kernels
 // (mean/var/cov/zncc/dzncc) and the six full-image buffers they exchanged. Only successfully
@@ -563,7 +729,7 @@ __global__ void kernelComputeWindowStats(
 }
 
 
-// 5. ReduceBlockSums — a single block, once per ScoreMesh() after every pair-direction: adds
+// 7. ReduceBlockSums — a single block, once per ScoreMesh() after every pair-direction: adds
 // the per-block partials of all of them (each direction's blocks occupy their own slots, in
 // launch order) into the two accumulators S is computed from, in a fixed order (each thread walks
 // a strided, fixed subset of the slots, then a fixed shared-memory tree), so S is the same number
@@ -600,45 +766,50 @@ __global__ void kernelReduceBlockSums(
 }
 
 
-// 6. AccumulateFacePhoto — 1D, one thread per mesh face; the per-pair-direction half of the
-// atomic-free photometric accumulation. Each thread reduces ITS OWN face's pixels into registers
-// and folds them into its private slots, so there is not a single atomic and not a single float
-// sum whose order depends on the schedule -- float addition is not associative, and an atomicAdd
-// scatter gives a different per-vertex gradient on every run. The slots accumulate across the
-// pair-directions of one ScoreMesh() (one writer per face, in launch order, so that too is a
-// fixed sequence), which lets the per-vertex gather run once per ScoreMesh() instead of once
-// per direction.
+// see kernelAccumulateFacePhoto's tail: stamp vertex v with this direction and count it once
+__device__ inline void countDirection(uint32_t* __restrict__ vertexStamp, float* __restrict__ photoCount, uint32_t v, uint32_t direction)
+{
+	if (atomicExch(&vertexStamp[v], direction) != direction)
+		photoCount[v] += 1.f;
+}
+
+// 8. AccumulateFacePhoto — 1D, one thread per face the reference view OWNS (its slice of the
+// list kernelCompactOwners built and kernelSortOwnersTile ordered); the per-pair-direction half
+// of the atomic-free photometric accumulation. Each thread reduces ITS OWN face's pixels into
+// registers and folds them into its private slots, so there is not a single atomic and not a
+// single float sum whose order depends on the schedule -- float addition is not associative,
+// and an atomicAdd scatter gives a different per-vertex gradient on every run. The slots
+// accumulate across the pair-directions of one ScoreMesh() (one writer per face, in launch
+// order, so that too is a fixed sequence), which lets the per-vertex gather run once per
+// ScoreMesh() instead of once per direction.
 //
 // A face this view does not see -- behind the camera, off the image, back-facing or occluded --
-// exits on its owner bit (kernelProjectMesh, pass 2), one coalesced word per warp, before its
-// face or vertices are read. The rest project their face and walk its clipped bounding box
-// exactly as kernelProjectMesh did, keeping the pixels whose faceMap entry is this face (faceMap
-// only ever holds ids the rasterizer wrote); a kept pixel's barycentrics and depth are recomputed
-// from the same projection, the same arithmetic the rasterizer keyed the pixel with, so they are
-// the rasterizer's bit for bit, in a fixed row-then-column order. The per-pixel term itself comes
+// is not in the list (kernelProjectMesh pass 2 left its owner bit clear). The rest project their
+// face and walk its clipped bounding box exactly as kernelProjectMesh did, keeping the pixels
+// whose faceMap entry is this face (faceMap only ever holds ids the rasterizer wrote); a kept
+// pixel's barycentrics and depth are recomputed from the same projection, the same arithmetic
+// the rasterizer keyed the pixel with, so they are the rasterizer's bit for bit, in a fixed
+// row-then-column order. The per-pixel term itself comes
 // from kernelComputeWindowStats, one balanced thread per pixel; here it is only weighted by the
 // barycentrics. (Eight lanes sharing a face, each taking every eighth pixel of the box with a
 // fixed shuffle tree over their partials, was measured at 49/88 us per launch against 26/64 us
 // for this form on Ignatius at level 1, scales 0/1: on the small boxes most lanes idle, and the
 // extra threads and shuffles cost more than the divergence they remove.)
-__global__ void kernelAccumulateFacePhoto(
+__device__ inline void accumulateFacePhoto(
+	uint32_t tid, // the face, one of the reference view's owners
 	const Point3* __restrict__ vertices,
 	const Point3u* __restrict__ faces,
-	const uint32_t* __restrict__ ownerBits, // this view's, from the rasterizer: bit f set iff face f owns a pixel
 	const uint32_t* __restrict__ faceMap,
 	const float* __restrict__ pixelGrad,
 	const uint8_t* __restrict__ mask,
 	float* __restrict__ faceAcc, // 3 per face: Sum over the face's pixels of g_p*b_c, one per corner
 	float* __restrict__ facePixels, // 1 per face: how many pixels contributed (0 = the face contributed nothing)
 	float* __restrict__ faceFoot, // 1 per face: min footprint over the face's pixels; only read where facePixels > 0
-	uint8_t* __restrict__ vertexSeen, // 1 per vertex: set for the corners of a face that contributed (every writer stores the same value, so the race is benign)
-	Camera camA,
-	uint32_t numFaces)
+	uint32_t* __restrict__ vertexStamp, // 1 per vertex: the last direction that reached it (~0u at the start of an evaluation)
+	float* __restrict__ photoCount, // 1 per vertex: how many directions reached it
+	uint32_t direction, // this pair-direction's index within the evaluation
+	const Camera& camA)
 {
-	const int tid = blockIdx.x * blockDim.x + threadIdx.x;
-	if (tid >= (int)numFaces) return;
-	if (!((ownerBits[tid >> 5] >> (tid & 31)) & 1u)) return;
-
 	// it owns a pixel, so the rasterizer's projection of it succeeded
 	const Point3u face = faces[tid];
 	ProjectedFace pf;
@@ -648,27 +819,46 @@ __global__ void kernelAccumulateFacePhoto(
 	float sum0 = 0.f, sum1 = 0.f, sum2 = 0.f;
 	float pixels = 0.f, foot = FLT_MAX;
 	const int width = camA.size.x();
+	// the box row by row, in chunks of RowChunk pixels whose face ids, mask bytes and terms are
+	// loaded together before any is tested, so that a chunk's loads are in flight at once: one
+	// load per pixel between branches paid a full memory round trip per pixel (Nsight Compute:
+	// 21 of 28 warp cycles per instruction on the long scoreboard, the lanes' boxes being
+	// scattered over the image). The pixels are still folded in raster order, so the sums are
+	// the same sequence of float additions
+	constexpr int RowChunk = 4;
 	for (int iy = iyMin; iy <= iyMax; ++iy) {
-		for (int ix = ixMin; ix <= ixMax; ++ix) {
-			const int pixIdx = iy * width + ix;
-			if (faceMap[pixIdx] != (uint32_t)tid || mask[pixIdx] != 1)
-				continue;
-			// this pixel's winning rasterizer key was this face's, computed by pixelBary from
-			// this very projection, so the same call reproduces its perspective-correct
-			// barycentrics and depth
-			float nb0, nb1, nb2, depth;
-			const bool inside(pixelBary(ix, iy, pf, nb0, nb1, nb2, depth));
-			ASSERT(inside); (void)inside;
-			const float g = pixelGrad[pixIdx];
-			sum0 += g * nb0;
-			sum1 += g * nb1;
-			sum2 += g * nb2;
-			// per-vertex footprint at camera A, scene units per pixel (Camera::GetFootprintWorld =
-			// depth/focalLength): min over every contributing pixel of every pair-direction,
-			// matching the CPU's min-of-mins (MeshRefine::ComputePhotometricGradient/ThProcessPair);
-			// min is exact and associative, so this half of it is reproducible for free
-			foot = fminf(foot, depth / camA.model.f.x());
-			pixels += 1.f;
+		for (int ix0 = ixMin; ix0 <= ixMax; ix0 += RowChunk) {
+			const int base = iy * width + ix0;
+			const int n = min(RowChunk, ixMax - ix0 + 1);
+			uint32_t f[RowChunk]; uint8_t m[RowChunk]; float g[RowChunk];
+			#pragma unroll
+			for (int k = 0; k < RowChunk; ++k) {
+				const bool in = k < n;
+				f[k] = in ? faceMap[base + k] : (uint32_t)-1;
+				m[k] = in ? mask[base + k] : (uint8_t)0;
+				g[k] = in ? pixelGrad[base + k] : 0.f;
+			}
+			#pragma unroll
+			for (int k = 0; k < RowChunk; ++k) {
+				if (f[k] != tid || m[k] != 1)
+					continue;
+				// this pixel's winning rasterizer key was this face's, computed by pixelBary
+				// from this very projection, so the same call reproduces its
+				// perspective-correct barycentrics and depth
+				float nb0, nb1, nb2, depth;
+				const bool inside(pixelBary(ix0 + k, iy, pf, nb0, nb1, nb2, depth));
+				ASSERT(inside); (void)inside;
+				sum0 += g[k] * nb0;
+				sum1 += g[k] * nb1;
+				sum2 += g[k] * nb2;
+				// per-vertex footprint at camera A, scene units per pixel
+				// (Camera::GetFootprintWorld = depth/focalLength): min over every contributing
+				// pixel of every pair-direction, matching the CPU's min-of-mins
+				// (MeshRefine::ComputePhotometricGradient/ThProcessPair); min is exact and
+				// associative, so this half of it is reproducible for free
+				foot = fminf(foot, depth / camA.model.f.x());
+				pixels += 1.f;
+			}
 		}
 	}
 	if (pixels == 0.f)
@@ -678,31 +868,45 @@ __global__ void kernelAccumulateFacePhoto(
 	faceAcc[tid*3 + 2] += sum2;
 	facePixels[tid] += pixels;
 	faceFoot[tid] = fminf(faceFoot[tid], foot);
-	vertexSeen[face.x()] = 1;
-	vertexSeen[face.y()] = 1;
-	vertexSeen[face.z()] = 1;
+	// the direction counts once per vertex it reaches (the CPU's `photoGradNorm[idxVert] += 1.f`
+	// per pair-direction): of the faces of the vertex contributing to this direction, exactly
+	// one thread gets the previous stamp back from the exchange and counts, so the count grows
+	// by an integer 1 exactly once per direction whatever the schedule -- reproducible, and no
+	// per-direction kernel over the vertices (one launch in four, host-bound at the coarse
+	// scales) to clear the marks and count them
+	countDirection(vertexStamp, photoCount, face.x(), direction);
+	countDirection(vertexStamp, photoCount, face.y(), direction);
+	countDirection(vertexStamp, photoCount, face.z(), direction);
 }
-
-
-// 7. CountSeenVertices — 1D, one thread per vertex, right after each AccumulateFacePhoto:
-// exactly the CPU's `photoGradNorm[idxVert] += 1.f`, one count per pair-direction that
-// contributed at least one pixel to a face of the vertex; the mark is cleared for the next
-// direction
-__global__ void kernelCountSeenVertices(
-	uint8_t* __restrict__ vertexSeen,
+__global__ void kernelAccumulateFacePhoto(
+	const Point3* __restrict__ vertices,
+	const Point3u* __restrict__ faces,
+	const uint32_t* __restrict__ ownerList, // every view's owner faces (kernelSortOwnersTile)
+	const uint32_t* __restrict__ ownerOffsets, // the views' slices of it, numViews+1 entries
+	uint32_t idxView, // the reference view
+	const uint32_t* __restrict__ faceMap,
+	const float* __restrict__ pixelGrad,
+	const uint8_t* __restrict__ mask,
+	float* __restrict__ faceAcc,
+	float* __restrict__ facePixels,
+	float* __restrict__ faceFoot,
+	uint32_t* __restrict__ vertexStamp,
 	float* __restrict__ photoCount,
-	uint32_t numVertices)
+	uint32_t direction,
+	Camera camA)
 {
-	const int tid = blockIdx.x * blockDim.x + threadIdx.x;
-	if (tid >= (int)numVertices) return;
-	if (vertexSeen[tid]) {
-		photoCount[tid] += 1.f;
-		vertexSeen[tid] = 0;
-	}
+	// the view's slice is read here, not passed: the launch is recorded once per scale into a
+	// graph (MeshRefineCUDA::ScoreMesh) while the slices move with the mesh, so the grid is the
+	// slice's size at the recording with a margin, and the stride loop covers whatever it has
+	// grown to since
+	const uint32_t off = ownerOffsets[idxView], numOwners = ownerOffsets[idxView+1] - off;
+	for (uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x; idx < numOwners; idx += gridDim.x * blockDim.x)
+		accumulateFacePhoto(ownerList[off + idx], vertices, faces, faceMap, pixelGrad, mask,
+			faceAcc, facePixels, faceFoot, vertexStamp, photoCount, direction, camA);
 }
 
 
-// 8. GatherVertexPhoto — 1D, one thread per vertex, once per ScoreMesh() after every
+// 9. GatherVertexPhoto — 1D, one thread per vertex, once per ScoreMesh() after every
 // pair-direction. It walks the vertex's incident faces in the fixed order Mesh::ListIncidentFaces
 // produced (uploaded per scale, see MeshRefineCUDA::ListVertexFacesPost) and folds in each
 // face's slots, so a vertex's sum is a fixed sequence of float additions. The footprint sentinel
@@ -754,7 +958,7 @@ __global__ void kernelGatherVertexPhoto(
 }
 
 
-// 9. ComputeSmoothnessGradient — 1D
+// 10. ComputeSmoothnessGradient — 1D
 __global__ void kernelComputeSmoothnessGradient(
 	const Point3* __restrict__ vertices,
 	const uint32_t* __restrict__ vertVertices,
@@ -810,7 +1014,7 @@ __global__ void kernelComputeSmoothnessGradient(
 }
 
 
-// 10. ComputeFaceNormal — 1D, 1 thread per face
+// 11. ComputeFaceNormal — 1D, 1 thread per face
 __global__ void kernelComputeFaceNormal(
 	const Point3* __restrict__ vertices,
 	const Point3u* __restrict__ faces,
@@ -833,7 +1037,7 @@ __global__ void kernelComputeFaceNormal(
 
 // H O S T   L A U N C H E R S ////////////////////////////////////////
 
-// 9. FaceHistogram -- 1D over the pixels of one view, after the rasterization: the rasterized
+// 12. FaceHistogram -- 1D over the pixels of one view, after the rasterization: the rasterized
 // area of every face in it, in pixels, exactly the pixel count the host's ListFaceAreas took
 // from the downloaded face map; integer atomics, so the counts are exact whatever the schedule
 __global__ void kernelFaceHistogram(
@@ -849,7 +1053,7 @@ __global__ void kernelFaceHistogram(
 }
 
 
-// 10. ReduceFaceAreasPair -- 1D, one thread per face, once per pair: the smaller of the face's
+// 13. ReduceFaceAreasPair -- 1D, one thread per face, once per pair: the smaller of the face's
 // two rasterized areas in the pair (a pair resolves a face only as well as its worse view) folded
 // into the largest over the pairs, exactly ReduceFaceAreasOverPairs (SceneRefineCommon.cpp), the
 // truncation to 16 bits included (the host counts in uint16_t)
@@ -897,11 +1101,12 @@ void LaunchImageMeshWarp(
 	const uint8_t* keepA, const uint8_t* keepB, uint8_t* mask,
 	const Camera& camA, const Camera& camB,
 	cudaTextureObject_t texImageB,
-	cudaSurfaceObject_t surfImageProj)
+	cudaSurfaceObject_t surfImageProj,
+	cudaStream_t stream)
 {
 	const dim3 block(16, 16);
 	const dim3 grid((camA.size.x() + block.x - 1) / block.x, (camA.size.y() + block.y - 1) / block.y);
-	kernelImageMeshWarp<<<grid, block>>>(depthMapA, depthMapB, keepA, keepB, mask, camA, camB, texImageB, surfImageProj);
+	kernelImageMeshWarp<<<grid, block, 0, stream>>>(depthMapA, depthMapB, keepA, keepB, mask, camA, camB, texImageB, surfImageProj);
 }
 
 uint32_t LaunchComputeWindowStats(
@@ -910,32 +1115,59 @@ uint32_t LaunchComputeWindowStats(
 	const Point3* normals, const uint32_t* faceMap, const float* depthMap,
 	const Camera& camA, const Camera& camB,
 	cudaTextureObject_t texImageB, cudaTextureObject_t texGradXB, cudaTextureObject_t texGradYB,
-	bool bBilinearGrad, float regScale, float gateMeanDiff, float gateVarRatio, int width, int height)
+	bool bBilinearGrad, float regScale, float gateMeanDiff, float gateVarRatio, int width, int height,
+	cudaStream_t stream)
 {
 	const dim3 block(16, 16);
 	const dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
-	kernelComputeWindowStats<<<grid, block>>>(mask, maskOut, pixelGrad, blockSums,
+	kernelComputeWindowStats<<<grid, block, 0, stream>>>(mask, maskOut, pixelGrad, blockSums,
 		surfImageA, surfImageProj, normals, faceMap, depthMap, camA, camB,
 		texImageB, texGradXB, texGradYB, bBilinearGrad, regScale, gateMeanDiff, gateVarRatio, width, height);
 	return grid.x*grid.y;
 }
 
-void LaunchReduceBlockSums(const float* blockSums, uint32_t numSlots, float* sumR, float* sumRZ)
+void LaunchReduceBlockSums(const float* blockSums, uint32_t numSlots, float* sumR, float* sumRZ, cudaStream_t stream)
 {
-	kernelReduceBlockSums<<<1, 1024>>>(blockSums, numSlots, sumR, sumRZ);
+	kernelReduceBlockSums<<<1, 1024, 0, stream>>>(blockSums, numSlots, sumR, sumRZ);
+}
+
+void LaunchCountOwners(const uint32_t* ownerBits, uint32_t* counts, uint32_t numWords, uint32_t numViews)
+{
+	kernelCountOwners<<<numViews, 1024>>>(ownerBits, counts, numWords);
+}
+
+void LaunchScanViewCounts(const uint32_t* counts, uint32_t* offsets, uint32_t numViews)
+{
+	kernelScanViewCounts<<<1, 1024>>>(counts, offsets, numViews);
+}
+
+void LaunchCompactOwners(const uint32_t* ownerBits, const uint32_t* offsets, uint32_t* ownerList, uint32_t numWords, uint32_t numViews)
+{
+	kernelCompactOwners<<<numViews, 1024>>>(ownerBits, offsets, ownerList, numWords);
+}
+
+void LaunchSortOwnersTile(
+	const Point3* vertices, const Point3u* faces, const Camera* cameras,
+	const uint32_t* offsets, const uint32_t* listIn, uint32_t* keys, uint32_t* listOut,
+	int tileShiftX, int tileShiftY, uint32_t maxBuckets, uint32_t numViews)
+{
+	ASSERT(maxBuckets <= 8192); // static limit of the dynamic shared memory
+	kernelSortOwnersTile<<<numViews, 1024, sizeof(uint32_t)*(maxBuckets + 32)>>>(
+		vertices, faces, cameras, offsets, listIn, keys, listOut, tileShiftX, tileShiftY);
 }
 
 void LaunchAccumulateFacePhoto(
-	const Point3* vertices, const Point3u* faces, const uint32_t* ownerBits,
+	const Point3* vertices, const Point3u* faces,
+	const uint32_t* ownerList, const uint32_t* ownerOffsets, uint32_t idxView,
 	const uint32_t* faceMap, const float* pixelGrad, const uint8_t* mask,
-	float* faceAcc, float* facePixels, float* faceFoot, uint8_t* vertexSeen,
-	const Camera& camA, uint32_t numFaces)
+	float* faceAcc, float* facePixels, float* faceFoot,
+	uint32_t* vertexStamp, float* photoCount, uint32_t direction,
+	const Camera& camA, uint32_t numBlocks, cudaStream_t stream)
 {
-	const int blockSize = 256;
-	const int numBlocks = ((int)numFaces + blockSize - 1) / blockSize;
-	kernelAccumulateFacePhoto<<<numBlocks, blockSize>>>(
-		vertices, faces, ownerBits, faceMap, pixelGrad, mask,
-		faceAcc, facePixels, faceFoot, vertexSeen, camA, numFaces);
+	// small blocks: a launch is a fraction of the mesh, and the box walks are uneven
+	kernelAccumulateFacePhoto<<<numBlocks, AccumulateBlockSize, 0, stream>>>(
+		vertices, faces, ownerList, ownerOffsets, idxView, faceMap, pixelGrad, mask,
+		faceAcc, facePixels, faceFoot, vertexStamp, photoCount, direction, camA);
 }
 
 void LaunchFaceHistogram(const uint32_t* faceMap, uint32_t* hist, uint32_t numPixels)
@@ -952,22 +1184,15 @@ void LaunchReduceFaceAreasPair(const uint32_t* histA, const uint32_t* histB, uin
 	kernelReduceFaceAreasPair<<<numBlocks, blockSize>>>(histA, histB, maxAreas, numFaces);
 }
 
-void LaunchCountSeenVertices(uint8_t* vertexSeen, float* photoCount, uint32_t numVertices)
-{
-	const int blockSize = 256;
-	const int numBlocks = ((int)numVertices + blockSize - 1) / blockSize;
-	kernelCountSeenVertices<<<numBlocks, blockSize>>>(vertexSeen, photoCount, numVertices);
-}
-
 void LaunchGatherVertexPhoto(
 	const Point3u* faces, const Point3* normals,
 	const uint32_t* vertFaces, const uint32_t* vertFaceSizes, const uint32_t* vertFacePointers,
 	const float* faceAcc, const float* facePixels, const float* faceFoot,
-	Point3* photoGrad, float* footprint, uint32_t numVertices)
+	Point3* photoGrad, float* footprint, uint32_t numVertices, cudaStream_t stream)
 {
 	const int blockSize = 256;
 	const int numBlocks = ((int)numVertices + blockSize - 1) / blockSize;
-	kernelGatherVertexPhoto<<<numBlocks, blockSize>>>(
+	kernelGatherVertexPhoto<<<numBlocks, blockSize, 0, stream>>>(
 		faces, normals, vertFaces, vertFaceSizes, vertFacePointers,
 		faceAcc, facePixels, faceFoot, photoGrad, footprint, numVertices);
 }
