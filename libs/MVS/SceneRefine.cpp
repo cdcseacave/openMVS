@@ -269,7 +269,7 @@ public:
 	const Real weightRegularity; // a scalar regularity weight to balance between photo-consistency and regularization terms
 	Real ratioRigidityElasticity; // a scalar ratio used to compute the regularity gradient as a combination of rigidity and elasticity
 	const unsigned nResolutionLevel; // how many times to scale down the images before mesh optimization
-	const unsigned nMinResolution; // how many times to scale down the images before mesh optimization
+	const unsigned nMinResolution; // do not scale the images below this resolution (longest side, px)
 	unsigned nAlternatePair; // using an image pair alternatively as reference image (0 - both, 1 - alternate, 2 - only left, 3 - only right)
 	unsigned iteration; // current refinement iteration
 
@@ -1603,14 +1603,12 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 			options.minimizer_progress_to_stdout = false;
 			// the Ceres 2.2 defaults: L-BFGS (rank 20, no Oren-Luenberger scaling, which Ceres
 			// documents as harmful where the parameter sensitivities vary as widely as they do
-			// here) with the Wolfe line search. A sweep of every direction and line search the
-			// solver offers, the L-BFGS rank, the scaling and the function tolerance found no
-			// configuration that wins on more than one of three ground-truth scenes (design
-			// document, the Ceres section)
+			// here) with the Wolfe line search; no other direction, line search, rank, scaling or
+			// tolerance wins on more than one ground-truth scene (see the design document)
 			options.line_search_direction_type = ceres::LBFGS;
 			options.line_search_type = ceres::WOLFE;
 			// the stopping rule is the relative function tolerance below; the cap is a safety net,
-			// never reached on any measured scene (the longest scale ran 88 iterations), and an
+			// never reached in practice, and an
 			// L-BFGS iteration costs one energy evaluation whenever the unit step satisfies the
 			// Wolfe conditions, which it does on most of them
 			options.max_num_iterations = 100;

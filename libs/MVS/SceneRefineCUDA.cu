@@ -42,9 +42,8 @@ namespace CUDA {
 
 // D E V I C E   H E L P E R S ////////////////////////////////////////
 
-// read a float pixel from a 32F image surface (the images and the warped image are stored in
-// float exactly like the CPU's Image32F: half floats lose too much in low-variance ZNCC windows
-// and at grazing pixels)
+// read a pixel of a 32F surface (the images are float like the CPU's Image32F: half floats lose
+// too much in low-variance ZNCC windows and at grazing pixels)
 __device__ inline float readSurfFloat(cudaSurfaceObject_t surf, int x, int y) {
 	float v;
 	surf2Dread(&v, surf, x * (int)sizeof(float), y);
@@ -56,17 +55,9 @@ __device__ inline float readSurfFloat(cudaSurfaceObject_t surf, int x, int y) {
 
 // K E R N E L S ////////////////////////////////////////////////////
 
-// Project a face's 3 vertices into the camera; false if a vertex is behind the camera or the
-// face is back-facing (culled). CPU (MeshRefine::RasterMesh::ProjectVertex) accepts a vertex as
-// soon as it is in front of the camera and lets RasterizeTriangleBary clip the triangle to the
-// image -- a face straddling the near-plane itself (as opposed to merely straddling the image
-// border, which both backends handle via bbox clipping) is rare on a coarse refinement mesh, so
-// it is simply dropped here rather than near-plane clipped.
-// The CPU's SEACAVE::EdgeFunction(x0,x1,x2) = (x2-x0).cross(x1-x0) = (x2-x0).x*(x1-x0).y -
-// (x2-x0).y*(x1-x0).x (Util.inl, TPoint2::cross), evaluated with the same four subtractions,
-// two products and one subtraction, every one explicitly rounded so nvcc cannot fuse any of
-// them into an fma: the CPU (MSVC /fp:precise) does not, and the two backends' pixel coverage
-// must agree bit for bit -- see pixelBary.
+// SEACAVE::EdgeFunction (Util.inl): the same subtractions and products in the same order, each
+// explicitly rounded so that nvcc cannot fuse an fma the CPU (/fp:precise) does not; the two
+// backends' pixel coverage has to agree bit for bit (see pixelBary)
 __device__ inline float edgeFunction(const Point2& x0, const Point2& x1, const Point2& x2)
 {
 	const float ax = __fsub_rn(x2.x(), x0.x()), ay = __fsub_rn(x2.y(), x0.y());
@@ -74,17 +65,16 @@ __device__ inline float edgeFunction(const Point2& x0, const Point2& x1, const P
 	return __fsub_rn(__fmul_rn(ax, by), __fmul_rn(ay, bx));
 }
 
-// back-face cull exactly as TImage::RasterizeTriangleBary (CULL=true): a triangle is kept iff
-// its EdgeFunction(p0,p1,p2) > 0 (outward face orientation, y-down pixel coordinates)
+// a face projected into a view, kept iff every vertex is in front of the camera and
+// EdgeFunction(p0,p1,p2) > 0 (front-facing in y-down pixel coordinates), exactly the CPU's
+// RasterMesh::ProjectVertex and TImage::RasterizeTriangleBary(CULL=true); a face straddling
+// the near plane is dropped, not clipped, on both backends
 struct ProjectedFace {
 	float z0, z1, z2;  // camera-space depths of the vertices
 	Point2 p0, p1, p2; // image-space vertices
-	float invArea;     // 1 / EdgeFunction(p0,p1,p2), positive for a kept (front) face
+	float invArea;     // 1 / EdgeFunction(p0,p1,p2)
 };
-// MeshRefine::RasterMesh::ProjectVertex (SceneRefine.cpp): camera-space point, rejected if
-// behind the camera, then its pixel coordinates. The CPU does this in double and casts to
-// float; the float path here gives the same face maps on Tiny pixel for pixel (raw maps of
-// view 3: 0 of 197,624 covered pixels differ), so no double copy of the camera is carried.
+// float where the CPU projects in double and casts: the face maps are still pixel-identical
 __device__ inline bool projectVertex(const Camera& camera, const Point3& X, Point2& pti, float& z)
 {
 	const Point3 Xc = camera.pose.TransformPointW2C(X);
@@ -105,18 +95,11 @@ __device__ inline bool projectFace(const Point3* __restrict__ vertices, const Po
 	return true;
 }
 
-// Perspective-correct barycentric coordinates and depth of pixel (ix,iy) in a projected face;
-// false if the pixel centre is outside the triangle. This is TImage::RasterizeTriangleBary's
-// inclusion test, expression for expression: each barycentric is the edge function of the pixel
-// against the two OTHER vertices times 1/area, rejected as soon as one is negative (the CPU's
-// formulation, so the two backends' coverage decisions are the same arithmetic; on Tiny the
-// resulting face maps are identical to the CPU's pixel for pixel). Then
-// SEACAVE::PerspectiveCorrectBarycentricCoordinates (Util.inl): pb_i = b_i*z_j*z_k, each
-// divided by their sum, and MeshRefine::RasterMesh::ComputeDepth (Mesh.h): the left-to-right
-// blend of the 3 vertex depths. Every operation is an explicit-rounding intrinsic: nvcc may
-// contract a*b+c into an fma differently per kernel (the two rasterizer passes below need the
-// bit-identical depth for the same (ix,iy,face); an earlier per-pixel resolve kernel missed
-// the key by an ulp for that reason) and the CPU (MSVC /fp:precise) does not contract.
+// perspective-correct barycentrics and depth of pixel (ix,iy) in a projected face, false if the
+// pixel centre is outside it: TImage::RasterizeTriangleBary's inclusion test,
+// SEACAVE::PerspectiveCorrectBarycentricCoordinates and RasterMesh::ComputeDepth expression
+// for expression, every operation an explicit-rounding intrinsic so that the rasterizer's two
+// passes and the accumulation compute the identical depth for the same pixel and face
 __device__ inline bool pixelBary(int ix, int iy, const ProjectedFace& pf, float& nb0, float& nb1, float& nb2, float& depth)
 {
 	const Point2 p((float)ix, (float)iy);
@@ -136,16 +119,10 @@ __device__ inline bool pixelBary(int ix, int iy, const ProjectedFace& pf, float&
 	return true;
 }
 
-// The projected face's bounding box with ±0.5 padding, clamped to the shared border margin
-// (Refine::Border, the same margin the per-pixel window-statistics kernels require -- was a
-// hardcoded 5px border); the accepted pixel range is [Border, size-Border) exactly as the CPU's
-// per-pixel test in MeshRefine::RasterMesh::Raster (SceneRefine.cpp), so the inclusive bbox ends
-// at size-Border-1 (an inclusive clamp at size-Border rasterised one extra row/column the CPU
-// rejects, and the warped values it put there leaked into every 7x7 window statistic within
-// HalfSize of it). false if the clipped box is empty. The rasterizer and the face-parallel
-// photometric accumulation share it so that the second visits exactly the pixels the first could
-// have covered -- and, since Border == HalfSize, the photometric kernel's old per-pixel border
-// test is implied by the box rather than repeated.
+// the projected face's bounding box padded by 0.5 px and clamped to [Border, size-Border-1],
+// the pixel range the CPU's RasterMesh::Raster accepts; false if empty. The rasterizer and the
+// accumulation walk the same box, and Border == HalfSize keeps the window kernels' margin
+// implicit in it
 __device__ inline bool faceBBox(const ProjectedFace& pf, const Camera& camera,
 	int& ixMin, int& ixMax, int& iyMin, int& iyMax)
 {
@@ -157,25 +134,16 @@ __device__ inline bool faceBBox(const ProjectedFace& pf, const Camera& camera,
 	return ixMin <= ixMax && iyMin <= iyMax;
 }
 
-// 1. ProjectMesh — 1D, one thread per mesh face, launched twice. Pass 1 (RESOLVE=false):
-// every covered pixel receives one 64-bit key (depth bits << 32 | face id) through a single
-// atomicMin, so the nearest face wins and, at exactly equal depth, the lower face id. Pass 2
-// (RESOLVE=true): the same threads redo the same arithmetic and the one whose key is the pixel's
-// winner writes depth/face/bary -- one writer per pixel, no payload race, hence a deterministic
-// face map. The whole mesh is rasterized into every view: a face behind the camera or off the
-// image costs its thread three projections and an early exit, cheaper than the host-side
-// frustum cull that used to shortlist the faces (an octree over the mesh rebuilt for every
-// evaluation, plus one face-list upload per view, while the GPU sat idle). The CPU's RasterMesh
-// keeps the first face it rasterises in that cull's (octree-traversal) order, so the two
-// backends can differ only on an exact depth tie: a pixel centre exactly on a shared edge, where
-// either face hands the pixel to the same two vertices.
-// Pass 2 also leaves, per view, one bit per face -- set iff the face wrote at least one pixel
-// -- collected by a warp ballot (no atomics): the photometric accumulation of every
-// pair-direction that has this view as its reference reads them to skip the faces the view does
-// not see before touching them at all, which in a scene of hundreds of views is most of the mesh
-// for every view. The barycentrics are not stored: the accumulation recomputes them (pixelBary,
-// the same arithmetic) where it needs them, in float like the CPU's BaryMap, instead of the
-// half-precision map that used to cost 8 bytes per pixel of every view.
+// 1. ProjectMesh — 1D, one thread per face, launched twice per view. Pass 1 (RESOLVE=false)
+// atomicMin's a 64-bit (depth bits << 32 | face id) key into every covered pixel, so the nearest
+// face wins and, at equal depth, the lower id; pass 2 redoes the same arithmetic and the key's
+// owner writes depth and face: one writer per pixel, a deterministic face map (the CPU's can
+// differ only on an exact depth tie on a shared edge, where the pixel goes to the same two
+// vertices either way). The whole mesh goes into every view, the faces it does not see exiting
+// early, cheaper than a host-side frustum cull per evaluation. Pass 2 also ballots, per view,
+// one bit per face set iff the face wrote a pixel: the owner bits the photometric accumulation
+// is restricted to (kernelCompactOwners). The barycentrics are not stored, the accumulation
+// recomputes them with pixelBary.
 template <bool RESOLVE>
 __global__ void kernelProjectMesh(
 	const Point3* __restrict__ vertices,
@@ -223,10 +191,9 @@ __global__ void kernelProjectMesh(
 
 
 #ifdef _DEBUG
-// 2. CheckProjection — 2D, 1 thread per pixel, Debug only, after both ProjectMesh passes: every
-// covered pixel must hold the payload of exactly the face that produced its winning key (the
-// host presets faceMap to NO_ID and depthMap to 0 before pass 2, so a stale value from the
-// previous evaluation cannot satisfy this by accident)
+// 2. CheckProjection — 2D, one thread per pixel, Debug only, after both ProjectMesh passes:
+// every covered pixel holds the payload of the face that won its key (the host presets faceMap
+// to NO_ID and depthMap to 0 before pass 2, so a stale payload cannot pass)
 __global__ void kernelCheckProjection(
 	const unsigned long long* __restrict__ projKey,
 	const float* __restrict__ depthMap,
@@ -248,23 +215,15 @@ __global__ void kernelCheckProjection(
 #endif
 
 
-// 3. CompactOwners — the dense per-view lists of the faces the rasterizer's owner bits mark,
-// built once per evaluation after every view is rasterized: kernelCountOwners (one block per
-// view) popcounts the view's words, kernelScanViewCounts (one block) turns the counts into the
+// 3. CompactOwners — the dense per-view lists of the faces whose owner bit is set, built once
+// per evaluation after every view is rasterized: kernelCountOwners (one block per view)
+// popcounts the view's words, kernelScanViewCounts (one block) prefix-sums the counts into the
 // views' offsets into one packed list (numViews+1 entries, the last the total the host sizes
-// the list by), and kernelCompactOwners (one block per view) writes the face ids, in face order.
-// The per-direction accumulation then runs one thread per OWNER face of its reference view
-// instead of one per mesh face exiting on the bit: a view owns a fraction of the faces (a
-// quarter to a third on Ignatius at level 1, where the cameras ring one object; less in a scene
-// of hundreds of views along a path), and the exits left the warps that did reach the pixel
-// loop 4-5 active lanes of 32 (Nsight Compute, Ignatius level 1, both scales: 4.4 threads per
-// warp-instruction, 13 of 20 warp cycles stalled on the scattered loads, compute 27 % and
-// memory 37 % of peak, the kernel 55 % of the GPU time); with the lists, 9.4/7.7 lanes and 2.3x
-// fewer instructions issued.
-// The list order does not touch the result -- a face still reduces its own pixels in raster
-// order into its own slot, and the fold order across directions is the launch order -- and
-// face order is kept because consecutive faces are neighbours on the mesh, so a warp's 32
-// boxes land near one another in the image.
+// the list by), and kernelCompactOwners (one block per view) writes the face ids in face order.
+// The accumulation then runs one thread per face its reference view owns, a fraction of the
+// mesh, instead of one per face exiting on the bit, which left its warps nearly empty. The list
+// order does not touch the result: a face folds its own pixels, in raster order, into its own
+// slot.
 
 // exclusive prefix sum of one value per thread over the block (blockDim.x a multiple of 32, at
 // most 1024): returns the thread's exclusive prefix and leaves the block total in `total`;
@@ -357,15 +316,11 @@ __global__ void kernelCompactOwners(
 }
 
 
-// 4. SortOwnersTile — one block per view, right after the compaction: the view's owner list
-// reordered by the image tile (2^tileShiftX x 2^tileShiftY pixels, row-major) the face's
-// clipped box starts in, so that the 32 lanes of a warp of the accumulation walk boxes a tile
-// or two apart at most. In face order the lanes' boxes were scattered over the image and every
-// load fetched its own lines (Nsight Compute: 4 of 32 bytes of every sector used, L1 hit 52-54 %,
-// 18-21 of 25-28 warp cycles on the long scoreboard even with a chunk's loads in flight). The
-// projection is the accumulation's own (projectFace + faceBBox). A counting sort in shared
-// memory: the bucket histogram, its exclusive scan, and a scatter whose order WITHIN a bucket is
-// the atomics' -- the result does not depend on the list order (see kernelCompactOwners).
+// 4. SortOwnersTile — one block per view, after the compaction: the view's list reordered by
+// the image tile (2^tileShiftX x 2^tileShiftY pixels, row-major) the face's clipped box starts
+// in, so that the 32 lanes of an accumulation warp walk boxes that share cache lines instead of
+// boxes scattered over the image. A counting sort in shared memory: histogram, exclusive scan,
+// atomic scatter; the order within a tile is the atomics', which the result does not depend on.
 __global__ void kernelSortOwnersTile(
 	const Point3* __restrict__ vertices,
 	const Point3u* __restrict__ faces,
@@ -414,7 +369,8 @@ __global__ void kernelSortOwnersTile(
 }
 
 
-// 5. ImageMeshWarp — 2D, texture + 2 surfaces
+// 5. ImageMeshWarp — 2D, one thread per pixel of A: image B warped into A through the mesh,
+// with the mask of the pixels that made it (the CPU's MeshRefine::ImageMeshWarp)
 __global__ void kernelImageMeshWarp(
 	const float* __restrict__ depthMapA,
 	const float* __restrict__ depthMapB,
@@ -431,13 +387,12 @@ __global__ void kernelImageMeshWarp(
 	if (x >= camA.size.x() || y >= camA.size.y()) return;
 
 	const int pixIdx = y * camA.size.x() + x;
-	// invalid pixels stay 0: kernelComputeWindowStats masks them out of every window sum, so their
-	// value is never read -- the CPU's imageAB is zero-filled for the same reason
+	// a rejected pixel stays 0 like the CPU's zero-filled imageAB: kernelComputeWindowStats
+	// masks it out of every window sum
 	float convergePix = 0.f;
 	uint8_t convergeMask = 0;
 
-	// a masked-out pixel of A never seeds a warp sample, before any back-projection work -- same
-	// test as the CPU's MeshRefine::ImageMeshWarp
+	// a masked-out pixel of A never seeds a sample
 	if (!keepA || keepA[pixIdx]) {
 		const float depthA = depthMapA[pixIdx];
 		if (depthA > 0.f) {
@@ -448,13 +403,10 @@ __global__ void kernelImageMeshWarp(
 			if (pz > 0.f) {
 				const Point2 projB = camB.model.TransformPointC2I(Xc_B);
 				const float xB = projB.x(), yB = projB.y();
-				// B-side border rule shared with the CPU (MeshRefine::IsDepthSimilar): the rounded
-				// nearest tap read below must be inside the Refine::Border margin the per-pixel window
-				// statistics need around it; the bound is one pixel tighter than the tap itself needs
-				// so that any accepted xB/yB rounds into the margin. The test is in FLOAT, before the
-				// int conversion: pz can be positive but arbitrarily small at a grazing projection,
-				// making xB/yB huge, and __float2int_rd saturates to INT_MAX, which an int test would
-				// overflow past; this form rejects huge values and NaN instead of wrapping
+				// the B-side border rule shared with the CPU (MeshRefine::IsDepthSimilar): the
+				// rounded tap read below must lie inside the Refine::Border margin, tested in
+				// float before the int conversion, which saturates on the huge coordinates a
+				// grazing projection produces
 				if (xB >= (float)Refine::Border && yB >= (float)Refine::Border &&
 					xB < (float)(camB.size.x() - Refine::Border - 1) &&
 					yB < (float)(camB.size.y() - Refine::Border - 1)) {
@@ -467,14 +419,12 @@ __global__ void kernelImageMeshWarp(
 					const int k((xB-ixB >= 0.5f ? 1 : 0) + (yB-iyB >= 0.5f ? 2 : 0));
 					const int tapIdxB(idxB + (k & 1) + (k >> 1) * widthB);
 					const float depthB(depthMapB[tapIdxB]);
-					// the same rounded tap read above (shared with the CPU's IsDepthSimilar) also
-					// gates the B-side keep-mask
+					// the same rounded tap gates the B-side keep-mask
 					const bool consistent(depthB > 0.f && depthB*1.0002f >= pz && (!keepB || keepB[tapIdxB]));
 
 					if (consistent) {
-						// +0.5: tex2D with non-normalised coords + linear filtering samples texel
-						// centres at integer+0.5; CPU TImage::sample treats integer coords as pixel
-						// centres, so every tex2D fetch at a CPU-convention coordinate needs this offset
+						// +0.5: tex2D with non-normalised coordinates samples texel centres at
+						// integer+0.5, the CPU's TImage::sample at integers
 						convergePix = tex2D<float>(texImageB, xB + 0.5f, yB + 0.5f);
 						convergeMask = 1;
 					}
@@ -488,8 +438,8 @@ __global__ void kernelImageMeshWarp(
 }
 
 
-// fetch one texel of a float texture at its exact centre (tex2D pixel-centre convention, +0.5),
-// or 0 for a tap outside the image -- the out-of-range rule BilinearGradient below matches
+// one texel of a float texture at its centre, 0 outside the image (the CPU's
+// MeshRefine::BilinearGradient convention)
 __device__ inline float texelOrZero(cudaTextureObject_t tex, int x, int y, int width, int height)
 {
 	if (x < 0 || x >= width || y < 0 || y >= height)
@@ -497,12 +447,9 @@ __device__ inline float texelOrZero(cudaTextureObject_t tex, int x, int y, int w
 	return tex2D<float>(tex, (float)x + 0.5f, (float)y + 0.5f);
 }
 
-// derivative of the bilinear reconstruction of the image texture at (px,py), from four
-// point-sampled texel fetches (never the texture's own linear filtering, which would blend
-// VALUES rather than give the four taps a derivative is built from) -- the same taps, weights
-// and out-of-range convention (a tap outside the image contributes nothing) as the CPU's
-// MeshRefine::BilinearGradient (SceneRefine.cpp), so this is the derivative of the exact value
-// the warp itself samples with the Linear sampler, not of a smoothed stencil estimate of it
+// the derivative of the bilinear interpolant of the image at (px,py) from four point-sampled
+// texels: the same taps, weights and out-of-range rule as the CPU's MeshRefine::BilinearGradient,
+// i.e. the derivative of the value the warp samples, not of a smoothed stencil estimate of it
 __device__ inline void bilinearGradient(cudaTextureObject_t texImage, int width, int height, float px, float py, float& gx, float& gy)
 {
 	const int x0 = __float2int_rd(px), y0 = __float2int_rd(py);
@@ -516,12 +463,11 @@ __device__ inline void bilinearGradient(cudaTextureObject_t texImage, int width,
 }
 
 // the per-pixel half of the photometric gradient: g, the scalar the covering face's three
-// corners share before their barycentrics (the CPU's sg). A PURE FUNCTION OF THE PIXEL: nothing
-// it returns depends on which thread computes it or in what order, which is what lets the
-// face-parallel accumulation be atomic-free and bit-reproducible. The caller has already
-// established that this pixel is inside the valid border, masked in, and covered by the face
-// whose normal it passes in; dz is the pixel's ZNCC derivative. Returns false if the pixel
-// contributes nothing (the surface is seen at a grazing angle).
+// corners share before their barycentrics (the CPU's sg). A pure function of the pixel, which
+// is what lets the face-parallel accumulation be atomic-free and reproducible. The caller has
+// established that the pixel is inside the border, masked in and covered by the face whose
+// normal it passes; dz is the pixel's ZNCC derivative. False if the surface is seen at a grazing
+// angle and the pixel contributes nothing.
 __device__ inline bool computePhotoPixel(
 	int x, int y, float depth, const Point3& normal, float dz,
 	const Camera& camA,
@@ -547,9 +493,7 @@ __device__ inline bool computePhotoPixel(
 	const Point3 Xc_B = camB.pose.TransformPointW2C(X_world);
 	const float pz = Xc_B.z();
 
-	// mask==1 means the warp already ran this exact back-/forward-projection chain for this pixel
-	// and rejected a non-positive depth in B, so pz can only be positive here; the producer is the
-	// warp on both backends (kernelImageMeshWarp above, MeshRefine::ImageMeshWarp on the CPU)
+	// the warp ran this same chain for the pixel and masked it in only for a positive depth in B
 	ASSERT(pz > 0.f);
 	const Point2 projB = camB.model.TransformPointC2I(Xc_B);
 
@@ -562,12 +506,9 @@ __device__ inline bool computePhotoPixel(
 	const Point3 dudX = (KR.row(0).transpose() * pz - KR.row(2).transpose() * p.x()) / pz2;
 	const Point3 dvdX = (KR.row(1).transpose() * pz - KR.row(2).transpose() * p.y()) / pz2;
 
-	// Image derivatives at the projected point: either bilinear samples of the precomputed
-	// gradient images (ComputeRefineImageGradient, the CPU's estimator and sampling exactly;
-	// forward differences of the image texture used to give a per-pixel magnitude that differed
-	// from the CPU by a factor of 0.6-5), or (bBilinearGrad) the derivative of the bilinear
-	// interpolant of the raw image itself, with no precomputed stencil to sample
-	// (+0.5: tex2D pixel-centre convention, see ImageMeshWarp)
+	// image derivatives at the projected point: the precomputed gradient images, sampled
+	// bilinearly like the CPU (+0.5: tex2D pixel-centre convention, see ImageMeshWarp), or the
+	// derivative of the bilinear interpolant of the image itself
 	float dx, dy;
 	if (bBilinearGrad) {
 		bilinearGradient(texImageB, camB.size.x(), camB.size.y(), projB.x(), projB.y(), dx, dy);
@@ -588,16 +529,11 @@ __device__ inline bool computePhotoPixel(
 }
 
 
-// 6. ComputeWindowStats — 2D, one thread per pixel: the six MASKED window sums, the two
-// rejection gates, ZNCC, its derivative, this pair-direction's reliability sums and the pixel's
-// photometric term, all in one pass over the 7x7 window. Replaces the former five kernels
-// (mean/var/cov/zncc/dzncc) and the six full-image buffers they exchanged. Only successfully
-// warped pixels enter the sums, so a window straddling an occlusion boundary is described by the
-// pixels that actually matched instead of by image A's own values (the old unmasked statistics
-// drove ZNCC towards 1 exactly there). Writes maskOut rather than editing mask in place: the
-// window loop of a neighbouring thread is still reading mask. The photometric term used to be
-// computed by the face-parallel accumulation kernel, one thread walking every pixel of its face:
-// a warp there waits for its largest face, while here every pixel is one thread of equal work.
+// 6. ComputeWindowStats — 2D, one thread per pixel: the six masked window sums, the two
+// rejection gates, ZNCC and its derivative, this pair-direction's reliability partials and the
+// pixel's photometric term, in one pass over the 7x7 window. Only warped pixels enter the sums,
+// so a window on an occlusion boundary is described by the pixels that matched. maskOut is a
+// second buffer: the window loops of the neighbouring threads still read mask.
 __global__ void kernelComputeWindowStats(
 	const uint8_t* __restrict__ mask,
 	uint8_t* __restrict__ maskOut, // the pixels that contribute a photometric term
@@ -621,10 +557,8 @@ __global__ void kernelComputeWindowStats(
 	const int x = blockIdx.x * blockDim.x + threadIdx.x;
 	const int y = blockIdx.y * blockDim.y + threadIdx.y;
 
-	// the 7x7 windows of the 16x16 threads of a block overlap heavily, so the (image A, warped
-	// image B, mask) triple of the 22x22 tile they span is staged in shared memory once instead
-	// of being re-read 49 times per thread from global/surface memory -- the naive version cost
-	// 1.4-1.8x the wall of the five separate kernels this one replaces
+	// the 7x7 windows of the block's 16x16 threads overlap, so the (image A, warped B, mask)
+	// triple of the 22x22 tile they span is staged in shared memory once
 	constexpr int Block = 16;
 	constexpr int Tile = Block + 2*Refine::HalfSize;
 	__shared__ float sA[Tile*Tile], sB[Tile*Tile], sW[Tile*Tile];
@@ -634,8 +568,7 @@ __global__ void kernelComputeWindowStats(
 	for (int i = threadIdx.y * Block + threadIdx.x; i < Tile*Tile; i += Block*Block) {
 		const int gx = x0 + i % Tile, gy = y0 + i / Tile;
 		float a(0.f), b(0.f), w(0.f);
-		// invalid samples are staged as zeros so the accumulation below needs no branch: they
-		// contribute nothing to any of the six sums, which is exactly what masking them means
+		// an invalid sample is staged as zeros: it contributes nothing to any of the six sums
 		if (gx >= 0 && gy >= 0 && gx < width && gy < height && mask[gy * width + gx] == 1) {
 			a = readSurfFloat(surfImageA, gx, gy);
 			b = readSurfFloat(surfImageProj, gx, gy);
@@ -644,10 +577,8 @@ __global__ void kernelComputeWindowStats(
 		}
 		sA[i] = a; sB[i] = b; sW[i] = w;
 	}
-	// a tile without a single masked sample -- the warp reaches none of its pixels, the common
-	// case in a scene of hundreds of views each seeing a small part of the surface -- contributes
-	// nothing: its outputs are the zeros the loops below would produce, written here instead;
-	// the vote is a barrier of its own, so the block leaves together
+	// a tile without a single masked sample (most tiles, in a scene of many small views) writes
+	// its zeros and leaves; the vote is a barrier of its own, so the block leaves together
 	if (!__syncthreads_or(any)) {
 		if (x < width && y < height) {
 			pixelGrad[y * width + x] = 0.f;
@@ -662,10 +593,9 @@ __global__ void kernelComputeWindowStats(
 	}
 	__syncthreads();
 
-	// per-thread contribution to this block's reliability sums; stays 0 for every pixel outside
-	// the image (the grid is rounded up to the block size), outside the valid border, unmasked or
-	// gated -- exactly the pixels the CPU's ScoreMesh S skips; no early "return" here so every
-	// thread in the block reaches the reduction below
+	// this thread's contribution to the block's reliability sums: 0 outside the image, the
+	// border, the mask or the gates, exactly the pixels the CPU's ScoreMesh S skips; no early
+	// return, every thread reaches the reduction below
 	float contribR(0.f), contribRZ(0.f);
 	if (x < width && y < height) {
 		const int pixIdx = y * width + x;
@@ -690,9 +620,8 @@ __global__ void kernelComputeWindowStats(
 				Refine::ZnccAndDerivative(s, n, sA[centre], sB[centre], zn, dz, cf);
 				contribR = cf;
 				contribRZ = cf * (1.f - zn);
-				// mask==1 means the rasterizer covered this pixel (the warp seeds nothing where
-				// depthMap is 0), so faceMap holds the covering face; a grazing view of it
-				// contributes to S (above, like the CPU) but no photometric term
+				// mask==1 means the rasterizer covered this pixel, so faceMap holds the covering
+				// face; a grazing view of it contributes to S (like the CPU) but no photometric term
 				const float depth = depthMap[pixIdx];
 				ASSERT(depth > 0.f);
 				if (computePhotoPixel(x, y, depth, normals[faceMap[pixIdx]], dz,
@@ -704,10 +633,9 @@ __global__ void kernelComputeWindowStats(
 		maskOut[pixIdx] = contributes;
 	}
 
-	// shared-memory block reduction (a fixed tree over a fixed thread mapping, so its result does
-	// not depend on the schedule); sized for the 16x16 block LaunchComputeWindowStats always
-	// launches. The block's two partials go to its OWN slot rather than into a global atomicAdd,
-	// and kernelReduceBlockSums below folds the slots in order, so S is reproducible too.
+	// a fixed tree over a fixed thread mapping into the block's OWN slot (sized for the 16x16
+	// block LaunchComputeWindowStats launches), folded in slot order by kernelReduceBlockSums:
+	// no atomics, so S is reproducible
 	__shared__ float sSumR[256];
 	__shared__ float sSumRZ[256];
 	const int tid = threadIdx.y * blockDim.x + threadIdx.x;
@@ -729,11 +657,9 @@ __global__ void kernelComputeWindowStats(
 }
 
 
-// 7. ReduceBlockSums — a single block, once per ScoreMesh() after every pair-direction: adds
-// the per-block partials of all of them (each direction's blocks occupy their own slots, in
-// launch order) into the two accumulators S is computed from, in a fixed order (each thread walks
-// a strided, fixed subset of the slots, then a fixed shared-memory tree), so S is the same number
-// on every run.
+// 7. ReduceBlockSums — one block, once per evaluation after every pair-direction: the per-block
+// partials of all of them (each direction's blocks in their own slots, in launch order) folded
+// into the two sums S is computed from, in a fixed order, so S is the same number on every run
 __global__ void kernelReduceBlockSums(
 	const float* __restrict__ blockSums,
 	uint32_t numSlots,
@@ -766,35 +692,24 @@ __global__ void kernelReduceBlockSums(
 }
 
 
-// see kernelAccumulateFacePhoto's tail: stamp vertex v with this direction and count it once
+// the direction counts once per vertex it reaches (the CPU's photoGradNorm += 1 per
+// pair-direction): of the vertex's faces contributing to this direction, exactly one gets the
+// previous stamp back from the exchange, so the count grows by an integer 1 whatever the schedule
 __device__ inline void countDirection(uint32_t* __restrict__ vertexStamp, float* __restrict__ photoCount, uint32_t v, uint32_t direction)
 {
 	if (atomicExch(&vertexStamp[v], direction) != direction)
 		photoCount[v] += 1.f;
 }
 
-// 8. AccumulateFacePhoto — 1D, one thread per face the reference view OWNS (its slice of the
-// list kernelCompactOwners built and kernelSortOwnersTile ordered); the per-pair-direction half
-// of the atomic-free photometric accumulation. Each thread reduces ITS OWN face's pixels into
-// registers and folds them into its private slots, so there is not a single atomic and not a
-// single float sum whose order depends on the schedule -- float addition is not associative,
-// and an atomicAdd scatter gives a different per-vertex gradient on every run. The slots
-// accumulate across the pair-directions of one ScoreMesh() (one writer per face, in launch
-// order, so that too is a fixed sequence), which lets the per-vertex gather run once per
-// ScoreMesh() instead of once per direction.
-//
-// A face this view does not see -- behind the camera, off the image, back-facing or occluded --
-// is not in the list (kernelProjectMesh pass 2 left its owner bit clear). The rest project their
-// face and walk its clipped bounding box exactly as kernelProjectMesh did, keeping the pixels
-// whose faceMap entry is this face (faceMap only ever holds ids the rasterizer wrote); a kept
-// pixel's barycentrics and depth are recomputed from the same projection, the same arithmetic
-// the rasterizer keyed the pixel with, so they are the rasterizer's bit for bit, in a fixed
-// row-then-column order. The per-pixel term itself comes
-// from kernelComputeWindowStats, one balanced thread per pixel; here it is only weighted by the
-// barycentrics. (Eight lanes sharing a face, each taking every eighth pixel of the box with a
-// fixed shuffle tree over their partials, was measured at 49/88 us per launch against 26/64 us
-// for this form on Ignatius at level 1, scales 0/1: on the small boxes most lanes idle, and the
-// extra threads and shuffles cost more than the divergence they remove.)
+// 8. AccumulateFacePhoto — 1D, one thread per face the reference view owns (its slice of the
+// tile-sorted owner list): the per-pair-direction half of the atomic-free photometric
+// accumulation. The thread reduces its own face's pixels, in raster order, into registers and
+// folds them into the face's private slots, which persist across the directions of one
+// evaluation (one writer per face, in launch order), so no float sum depends on the schedule
+// and the per-vertex gather runs once per evaluation. The face is projected again exactly as
+// the rasterizer did, and a pixel whose faceMap entry is this face gets its barycentrics and
+// depth from the same pixelBary call, bit for bit. The per-pixel term comes from
+// kernelComputeWindowStats; here it is only weighted by the barycentrics.
 __device__ inline void accumulateFacePhoto(
 	uint32_t tid, // the face, one of the reference view's owners
 	const Point3* __restrict__ vertices,
@@ -820,11 +735,8 @@ __device__ inline void accumulateFacePhoto(
 	float pixels = 0.f, foot = FLT_MAX;
 	const int width = camA.size.x();
 	// the box row by row, in chunks of RowChunk pixels whose face ids, mask bytes and terms are
-	// loaded together before any is tested, so that a chunk's loads are in flight at once: one
-	// load per pixel between branches paid a full memory round trip per pixel (Nsight Compute:
-	// 21 of 28 warp cycles per instruction on the long scoreboard, the lanes' boxes being
-	// scattered over the image). The pixels are still folded in raster order, so the sums are
-	// the same sequence of float additions
+	// loaded together before any is tested, so that a chunk's loads are in flight at once; the
+	// pixels are still folded in raster order
 	constexpr int RowChunk = 4;
 	for (int iy = iyMin; iy <= iyMax; ++iy) {
 		for (int ix0 = ixMin; ix0 <= ixMax; ix0 += RowChunk) {
@@ -842,20 +754,16 @@ __device__ inline void accumulateFacePhoto(
 			for (int k = 0; k < RowChunk; ++k) {
 				if (f[k] != tid || m[k] != 1)
 					continue;
-				// this pixel's winning rasterizer key was this face's, computed by pixelBary
-				// from this very projection, so the same call reproduces its
-				// perspective-correct barycentrics and depth
+				// the pixel's winning key was this face's, computed by pixelBary from this very
+				// projection, so the same call reproduces its barycentrics and depth
 				float nb0, nb1, nb2, depth;
 				const bool inside(pixelBary(ix0 + k, iy, pf, nb0, nb1, nb2, depth));
 				ASSERT(inside); (void)inside;
 				sum0 += g[k] * nb0;
 				sum1 += g[k] * nb1;
 				sum2 += g[k] * nb2;
-				// per-vertex footprint at camera A, scene units per pixel
-				// (Camera::GetFootprintWorld = depth/focalLength): min over every contributing
-				// pixel of every pair-direction, matching the CPU's min-of-mins
-				// (MeshRefine::ComputePhotometricGradient/ThProcessPair); min is exact and
-				// associative, so this half of it is reproducible for free
+				// footprint at camera A (Camera::GetFootprintWorld = depth/focalLength), min over
+				// every contributing pixel of every pair-direction like the CPU's min-of-mins
 				foot = fminf(foot, depth / camA.model.f.x());
 				pixels += 1.f;
 			}
@@ -868,12 +776,6 @@ __device__ inline void accumulateFacePhoto(
 	faceAcc[tid*3 + 2] += sum2;
 	facePixels[tid] += pixels;
 	faceFoot[tid] = fminf(faceFoot[tid], foot);
-	// the direction counts once per vertex it reaches (the CPU's `photoGradNorm[idxVert] += 1.f`
-	// per pair-direction): of the faces of the vertex contributing to this direction, exactly
-	// one thread gets the previous stamp back from the exchange and counts, so the count grows
-	// by an integer 1 exactly once per direction whatever the schedule -- reproducible, and no
-	// per-direction kernel over the vertices (one launch in four, host-bound at the coarse
-	// scales) to clear the marks and count them
 	countDirection(vertexStamp, photoCount, face.x(), direction);
 	countDirection(vertexStamp, photoCount, face.y(), direction);
 	countDirection(vertexStamp, photoCount, face.z(), direction);
@@ -896,9 +798,8 @@ __global__ void kernelAccumulateFacePhoto(
 	Camera camA)
 {
 	// the view's slice is read here, not passed: the launch is recorded once per scale into a
-	// graph (MeshRefineCUDA::ScoreMesh) while the slices move with the mesh, so the grid is the
-	// slice's size at the recording with a margin, and the stride loop covers whatever it has
-	// grown to since
+	// graph (MeshRefineCUDA::ScoreMesh) while the slices move with the mesh, so the grid is
+	// sized at the recording with a margin and the stride loop covers whatever the slice holds
 	const uint32_t off = ownerOffsets[idxView], numOwners = ownerOffsets[idxView+1] - off;
 	for (uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x; idx < numOwners; idx += gridDim.x * blockDim.x)
 		accumulateFacePhoto(ownerList[off + idx], vertices, faces, faceMap, pixelGrad, mask,
@@ -906,16 +807,12 @@ __global__ void kernelAccumulateFacePhoto(
 }
 
 
-// 9. GatherVertexPhoto — 1D, one thread per vertex, once per ScoreMesh() after every
-// pair-direction. It walks the vertex's incident faces in the fixed order Mesh::ListIncidentFaces
-// produced (uploaded per scale, see MeshRefineCUDA::ListVertexFacesPost) and folds in each
-// face's slots, so a vertex's sum is a fixed sequence of float additions. The footprint sentinel
-// is resolved here: 0 exactly where no face contributed, which is exactly where no direction
-// counted the vertex (contract: footprint[v] > 0 iff photoCount[v] > 0, matches CPU ScoreMesh).
-//
-// Every corner whose vertex id matches is folded in, not just the first: a degenerate face
-// listing the same vertex twice handed that vertex both corners' shares under the old scatter,
-// and vertexFaces lists such a face only once.
+// 9. GatherVertexPhoto — 1D, one thread per vertex, once per evaluation after every
+// pair-direction: the vertex's incident faces walked in the fixed order Mesh::ListIncidentFaces
+// produced and their slots folded in, a fixed sequence of float additions. Every corner whose
+// vertex id matches counts (a degenerate face may list the vertex twice). The footprint
+// sentinel resolves to 0 exactly where no face contributed, i.e. where no direction counted the
+// vertex (contract: footprint[v] > 0 iff photoCount[v] > 0, like the CPU's ScoreMesh).
 __global__ void kernelGatherVertexPhoto(
 	const Point3u* __restrict__ faces,
 	const Point3* __restrict__ normals,
@@ -941,8 +838,7 @@ __global__ void kernelGatherVertexPhoto(
 		const uint32_t idxFace = vertFaces[ptr + i];
 		const Point3u& face = faces[idxFace];
 		const uint32_t fv[3] = { face.x(), face.y(), face.z() };
-		// the adjacency is the transpose of the face list: a face this vertex is incident to must
-		// name it back, or the two uploads describe different meshes
+		// the adjacency is the transpose of the face list: an incident face must name the vertex
 		ASSERT(fv[0] == (uint32_t)tid || fv[1] == (uint32_t)tid || fv[2] == (uint32_t)tid);
 		if (facePixels[idxFace] == 0.f)
 			continue; // nothing was accumulated, so every other slot of this face is a zero
@@ -958,7 +854,8 @@ __global__ void kernelGatherVertexPhoto(
 }
 
 
-// 10. ComputeSmoothnessGradient — 1D
+// 10. ComputeSmoothnessGradient — 1D, one thread per vertex: (1/N)*sum(neighbors - vertex), the
+// CPU's MeshRefine::ComputeSmoothnessGradient1/2; mode != 0 adds the valence weighting of level 2
 __global__ void kernelComputeSmoothnessGradient(
 	const Point3* __restrict__ vertices,
 	const uint32_t* __restrict__ vertVertices,
@@ -972,11 +869,8 @@ __global__ void kernelComputeSmoothnessGradient(
 	const int tid = blockIdx.x * blockDim.x + threadIdx.x;
 	if (tid >= (int)numVertices) return;
 
-	// a boundary vertex's own gradient is zeroed (matches CPU
-	// MeshRefine::ComputeSmoothnessGradient1/2, SceneRefine.cpp); vertSizes[] always holds the
-	// TRUE valence for every vertex (boundary or not) so that OTHER vertices' valence-weighted
-	// sum below stays correct when one of their neighbours happens to be a boundary vertex, whose
-	// valence the weight term divides by
+	// a boundary vertex's own gradient is zero, but vertSizes[] holds its TRUE valence, which
+	// the valence-weighted sum of its neighbours divides by
 	if (vertBoundary[tid]) {
 		smoothGrad[tid] = Point3::Zero();
 		return;
@@ -989,9 +883,8 @@ __global__ void kernelComputeSmoothnessGradient(
 	}
 	const uint32_t ptr = vertPointers[tid];
 
-	// (1/N)*sum(neighbors - vertex), the CPU's sign convention (ComputeSmoothnessGradient1/2) and
-	// its accumulation of differences rather than of coordinates, which would lose precision to
-	// the subtraction of the centre afterwards; the stepper mixes it with the bi-laplacian by rho
+	// differences rather than coordinates, which would lose precision to the subtraction of the
+	// centre afterwards
 	const float invN = 1.f / (float)numNeighbors;
 	const Point3 center = vertices[tid];
 	Point3 result = Point3::Zero();
@@ -1000,8 +893,7 @@ __global__ void kernelComputeSmoothnessGradient(
 		const uint32_t ni = vertVertices[ptr + i];
 		result += vertices[ni] - center;
 		if (mode != 0) {
-			// Valence-weighted: accumulate 1/(Ni*N) where Ni = TRUE valence of neighbor
-			// (boundary neighbours are included, exactly as CPU's vertexVertices[ni].GetSize());
+			// 1/(Ni*N), Ni the neighbour's true valence (boundary neighbours included); the
 			// adjacency is symmetric, so a neighbour lists this vertex back and Ni >= 1
 			ASSERT(vertSizes[ni] > 0);
 			totalWeight += invN / (float)vertSizes[ni];
@@ -1014,7 +906,7 @@ __global__ void kernelComputeSmoothnessGradient(
 }
 
 
-// 11. ComputeFaceNormal — 1D, 1 thread per face
+// 11. ComputeFaceNormal — 1D, one thread per face
 __global__ void kernelComputeFaceNormal(
 	const Point3* __restrict__ vertices,
 	const Point3u* __restrict__ faces,
@@ -1032,14 +924,10 @@ __global__ void kernelComputeFaceNormal(
 	const Point3 n = e1.cross(e2);
 	normals[tid] = n.normalized();
 }
-/*----------------------------------------------------------------*/
 
 
-// H O S T   L A U N C H E R S ////////////////////////////////////////
-
-// 12. FaceHistogram -- 1D over the pixels of one view, after the rasterization: the rasterized
-// area of every face in it, in pixels, exactly the pixel count the host's ListFaceAreas took
-// from the downloaded face map; integer atomics, so the counts are exact whatever the schedule
+// 12. FaceHistogram — 1D over the pixels of one view's face map: the rasterized area of every
+// face in it, in pixels (integer atomics, exact whatever the schedule)
 __global__ void kernelFaceHistogram(
 	const uint32_t* __restrict__ faceMap,
 	uint32_t* __restrict__ hist,
@@ -1053,10 +941,9 @@ __global__ void kernelFaceHistogram(
 }
 
 
-// 13. ReduceFaceAreasPair -- 1D, one thread per face, once per pair: the smaller of the face's
-// two rasterized areas in the pair (a pair resolves a face only as well as its worse view) folded
-// into the largest over the pairs, exactly ReduceFaceAreasOverPairs (SceneRefineCommon.cpp), the
-// truncation to 16 bits included (the host counts in uint16_t)
+// 13. ReduceFaceAreasPair — 1D, one thread per face, once per pair: the smaller of the face's
+// two rasterized areas in the pair folded into the largest over the pairs, exactly
+// ReduceFaceAreasOverPairs (SceneRefineCommon.cpp), the truncation to 16 bits included
 __global__ void kernelReduceFaceAreasPair(
 	const uint32_t* __restrict__ histA,
 	const uint32_t* __restrict__ histB,
@@ -1070,7 +957,10 @@ __global__ void kernelReduceFaceAreasPair(
 	if (maxAreas[f] < pairArea)
 		maxAreas[f] = pairArea;
 }
+/*----------------------------------------------------------------*/
 
+
+// H O S T   L A U N C H E R S ////////////////////////////////////////
 
 void LaunchProjectMesh(
 	const Point3* vertices, const Point3u* faces,
@@ -1095,6 +985,27 @@ void LaunchCheckProjection(
 	kernelCheckProjection<<<grid, block>>>(projKey, depthMap, faceMap, width, height);
 }
 #endif
+
+void LaunchCountOwners(const uint32_t* ownerBits, uint32_t* counts, uint32_t* offsets, uint32_t numWords, uint32_t numViews)
+{
+	kernelCountOwners<<<numViews, 1024>>>(ownerBits, counts, numWords);
+	kernelScanViewCounts<<<1, 1024>>>(counts, offsets, numViews);
+}
+
+void LaunchCompactOwners(const uint32_t* ownerBits, const uint32_t* offsets, uint32_t* ownerList, uint32_t numWords, uint32_t numViews)
+{
+	kernelCompactOwners<<<numViews, 1024>>>(ownerBits, offsets, ownerList, numWords);
+}
+
+void LaunchSortOwnersTile(
+	const Point3* vertices, const Point3u* faces, const Camera* cameras,
+	const uint32_t* offsets, const uint32_t* listIn, uint32_t* keys, uint32_t* listOut,
+	int tileShiftX, int tileShiftY, uint32_t maxBuckets, uint32_t numViews)
+{
+	ASSERT(maxBuckets <= 8192); // static limit of the dynamic shared memory
+	kernelSortOwnersTile<<<numViews, 1024, sizeof(uint32_t)*(maxBuckets + 32)>>>(
+		vertices, faces, cameras, offsets, listIn, keys, listOut, tileShiftX, tileShiftY);
+}
 
 void LaunchImageMeshWarp(
 	const float* depthMapA, const float* depthMapB,
@@ -1126,62 +1037,26 @@ uint32_t LaunchComputeWindowStats(
 	return grid.x*grid.y;
 }
 
-void LaunchReduceBlockSums(const float* blockSums, uint32_t numSlots, float* sumR, float* sumRZ, cudaStream_t stream)
-{
-	kernelReduceBlockSums<<<1, 1024, 0, stream>>>(blockSums, numSlots, sumR, sumRZ);
-}
-
-void LaunchCountOwners(const uint32_t* ownerBits, uint32_t* counts, uint32_t numWords, uint32_t numViews)
-{
-	kernelCountOwners<<<numViews, 1024>>>(ownerBits, counts, numWords);
-}
-
-void LaunchScanViewCounts(const uint32_t* counts, uint32_t* offsets, uint32_t numViews)
-{
-	kernelScanViewCounts<<<1, 1024>>>(counts, offsets, numViews);
-}
-
-void LaunchCompactOwners(const uint32_t* ownerBits, const uint32_t* offsets, uint32_t* ownerList, uint32_t numWords, uint32_t numViews)
-{
-	kernelCompactOwners<<<numViews, 1024>>>(ownerBits, offsets, ownerList, numWords);
-}
-
-void LaunchSortOwnersTile(
-	const Point3* vertices, const Point3u* faces, const Camera* cameras,
-	const uint32_t* offsets, const uint32_t* listIn, uint32_t* keys, uint32_t* listOut,
-	int tileShiftX, int tileShiftY, uint32_t maxBuckets, uint32_t numViews)
-{
-	ASSERT(maxBuckets <= 8192); // static limit of the dynamic shared memory
-	kernelSortOwnersTile<<<numViews, 1024, sizeof(uint32_t)*(maxBuckets + 32)>>>(
-		vertices, faces, cameras, offsets, listIn, keys, listOut, tileShiftX, tileShiftY);
-}
-
 void LaunchAccumulateFacePhoto(
 	const Point3* vertices, const Point3u* faces,
 	const uint32_t* ownerList, const uint32_t* ownerOffsets, uint32_t idxView,
 	const uint32_t* faceMap, const float* pixelGrad, const uint8_t* mask,
 	float* faceAcc, float* facePixels, float* faceFoot,
 	uint32_t* vertexStamp, float* photoCount, uint32_t direction,
-	const Camera& camA, uint32_t numBlocks, cudaStream_t stream)
+	const Camera& camA, uint32_t numOwners, cudaStream_t stream)
 {
-	// small blocks: a launch is a fraction of the mesh, and the box walks are uneven
-	kernelAccumulateFacePhoto<<<numBlocks, AccumulateBlockSize, 0, stream>>>(
+	// small blocks, the box walks being uneven; the grid covers the slice with a 25 % margin for
+	// the evaluations replaying this launch from the graph
+	constexpr uint32_t blockSize = 128;
+	const uint32_t numBlocks = (numOwners + numOwners/4 + blockSize - 1) / blockSize;
+	kernelAccumulateFacePhoto<<<numBlocks ? numBlocks : 1u, blockSize, 0, stream>>>(
 		vertices, faces, ownerList, ownerOffsets, idxView, faceMap, pixelGrad, mask,
 		faceAcc, facePixels, faceFoot, vertexStamp, photoCount, direction, camA);
 }
 
-void LaunchFaceHistogram(const uint32_t* faceMap, uint32_t* hist, uint32_t numPixels)
+void LaunchReduceBlockSums(const float* blockSums, uint32_t numSlots, float* sumR, float* sumRZ, cudaStream_t stream)
 {
-	const int blockSize = 256;
-	const int numBlocks = ((int)numPixels + blockSize - 1) / blockSize;
-	kernelFaceHistogram<<<numBlocks, blockSize>>>(faceMap, hist, numPixels);
-}
-
-void LaunchReduceFaceAreasPair(const uint32_t* histA, const uint32_t* histB, uint16_t* maxAreas, uint32_t numFaces)
-{
-	const int blockSize = 256;
-	const int numBlocks = ((int)numFaces + blockSize - 1) / blockSize;
-	kernelReduceFaceAreasPair<<<numBlocks, blockSize>>>(histA, histB, maxAreas, numFaces);
+	kernelReduceBlockSums<<<1, 1024, 0, stream>>>(blockSums, numSlots, sumR, sumRZ);
 }
 
 void LaunchGatherVertexPhoto(
@@ -1212,6 +1087,20 @@ void LaunchComputeFaceNormal(
 	const int blockSize = 256;
 	const int numBlocks = ((int)numFaces + blockSize - 1) / blockSize;
 	kernelComputeFaceNormal<<<numBlocks, blockSize>>>(vertices, faces, normals, numFaces);
+}
+
+void LaunchFaceHistogram(const uint32_t* faceMap, uint32_t* hist, uint32_t numPixels)
+{
+	const int blockSize = 256;
+	const int numBlocks = ((int)numPixels + blockSize - 1) / blockSize;
+	kernelFaceHistogram<<<numBlocks, blockSize>>>(faceMap, hist, numPixels);
+}
+
+void LaunchReduceFaceAreasPair(const uint32_t* histA, const uint32_t* histB, uint16_t* maxAreas, uint32_t numFaces)
+{
+	const int blockSize = 256;
+	const int numBlocks = ((int)numFaces + blockSize - 1) / blockSize;
+	kernelReduceFaceAreasPair<<<numBlocks, blockSize>>>(histA, histB, maxAreas, numFaces);
 }
 /*----------------------------------------------------------------*/
 

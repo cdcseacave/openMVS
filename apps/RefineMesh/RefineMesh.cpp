@@ -229,8 +229,8 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	}
 	if (bValidRefineConfig) {
 		// SML keeps every key it reads, registered or not, and update() only ever reads the
-		// registered ones -- so a misspelled knob would run the default and measure it as the
-		// arm; a key nobody registered has no declared values
+		// registered ones, so a misspelled knob would silently run the default; a key nobody
+		// registered has no declared values
 		String unknown;
 		for (const auto& item: OPTREFINE::oConfig.GetConfig())
 			if (((const CFGITEM*)item.second.data)->vals.IsEmpty())

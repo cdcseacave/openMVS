@@ -244,11 +244,12 @@ does, per pixel of A:
    to 0 for a vertex none saw (`footprint[v] > 0` iff `photoGradNorm[v] > 0` on both backends). On
    CPU this merge happens per-pair under a lock at the end of `ThProcessPair`, so summation order —
    and the float result — is not reproducible run to run unless `--max-threads 1`. On CUDA it is
-   **deterministic**: `kernelAccumulateFacePhoto` is face-parallel — one thread per mesh face walks
-   its clipped bounding box in fixed scan order, folding the per-pixel terms the window-statistics
-   kernel left behind (weighted by the barycentrics), the pixel count and the footprint minimum
-   into the face's private slots, which accumulate across the evaluation's pair-directions, no
-   atomics; `kernelCountSeenVertices` absorbs the `photoGradNorm += 1` per direction; and once per
+   **deterministic**: `kernelAccumulateFacePhoto` is face-parallel — one thread per face the
+   reference view owns walks its clipped bounding box in fixed scan order, folding the per-pixel
+   terms the window-statistics kernel left behind (weighted by the barycentrics), the pixel count
+   and the footprint minimum into the face's private slots, which accumulate across the
+   evaluation's pair-directions, no atomics, and counts the direction once per vertex through a
+   per-vertex direction stamp (the `photoGradNorm += 1` per direction); and once per
    evaluation `kernelGatherVertexPhoto` is vertex-parallel, walking each vertex's flattened
    incident-face list (`Mesh::ListIncidentFaces` order) to sum the contribution and resolve the
    sentinel exactly like the CPU's post-loop pass. `photoGrad[v]/photoGradNorm[v]` — the pair-count
@@ -326,177 +327,113 @@ at a boundary neighbour, back-face winding) and was removed from the tree once t
 
 #### 1.6.1 What one CUDA evaluation does, and where its time goes
 
-`MeshRefineCUDA::ScoreMesh` issues everything on the default stream and makes one host round trip,
-at the end: the vertex upload and the rasterization of the whole mesh into every view
-(`kernelProjectMesh` x2 per view, no host frustum cull — see the table above); the face normals and
-both smoothness terms (`kernelComputeFaceNormal`, `kernelComputeSmoothnessGradient` x2, which need
-only the vertices and so run while the host is still issuing the pairs); per pair-direction the
-warp (`kernelImageMeshWarp`), the window statistics with the pixel's photometric term
-(`kernelComputeWindowStats`), the per-face accumulation into slots that persist across the
-directions (`kernelAccumulateFacePhoto`) and the per-vertex direction count
-(`kernelCountSeenVertices`); then one reduction of every direction's block partials into `S`
-(`kernelReduceBlockSums`), one per-vertex gather (`kernelGatherVertexPhoto`) and ONE download of
-all per-vertex terms into a pinned host buffer the stepper reads in place. The stepper and the next
-vertex upload are the only host work between two evaluations.
+`MeshRefineCUDA::ScoreMesh` makes two host round trips, one after the rasterization and one at the
+end:
 
-Measured with Nsight Systems on Herz-Jesu-P8 (RTX 4070, level 1, 8 views, 27 pairs = 54
-pair-directions per evaluation, 81k/157k faces at the two scales), before and after the rework:
+1. The vertex upload and the rasterization of the whole mesh into every view (`kernelProjectMesh`
+   x2 per view, no host frustum cull — see the table above); the second pass also leaves, per view,
+   one *owner bit* per face (a warp ballot), set iff the face wrote a pixel there.
+2. The owner bits packed into dense per-view *owner lists* (`kernelCountOwners`,
+   `kernelScanViewCounts`, `kernelCompactOwners`), each view's slice then counting-sorted by the
+   64x8-pixel image tile the face's clipped box starts in (`kernelSortOwnersTile`). The views'
+   offsets come down here — the one synchronization before the terms — and the list is kept at
+   the largest total so far.
+3. The face normals and both smoothness terms (`kernelComputeFaceNormal`,
+   `kernelComputeSmoothnessGradient` x2), which need only the vertices.
+4. Per pair-direction: the warp (`kernelImageMeshWarp`); the window statistics with the pixel's
+   photometric term (`kernelComputeWindowStats`, one thread per pixel, the block's 22x22 tile
+   staged in shared memory, a tile without a masked sample leaving at once); and the accumulation
+   (`kernelAccumulateFacePhoto`): one thread per face the reference view owns walks the face's
+   clipped box in row chunks, folds its pixels' terms weighted by the barycentrics — recomputed
+   with the rasterizer's own `pixelBary`, bit for bit — into the face's private slots, which
+   persist across the directions, and counts the direction once per vertex through a per-vertex
+   direction stamp (`atomicExch`; an integer count, so reproducible).
+5. One reduction of every direction's block partials into `S` (`kernelReduceBlockSums`), one
+   per-vertex gather over the fixed incident-face order (`kernelGatherVertexPhoto`), and ONE
+   download of all per-vertex terms into a pinned host buffer the stepper reads in place.
 
-| per evaluation | before | after |
+Steps 4 and 5 are thousands of launches whose every argument is a constant of the scale (the
+accumulation reads its view's slice offsets on the device and strides over a grid sized at the
+recording), so they are recorded once per scale — per parity when the pairs alternate — into a CUDA
+graph by stream capture and replayed by one `cudaGraphLaunch` per evaluation (Ignatius: 533
+launches and one graph per evaluation against 11,974 issued one by one, at ~10 us each under
+WDDM, as much as the coarse scale's GPU time). The graphs are dropped when a buffer they
+reference moves (a new scale, a grown list); if a recording fails the directions are issued one
+by one. The rasterization, compaction and memsets stay eager ahead of the graph, the terms
+download behind it. Between two evaluations the host does only the stepper and the next vertex
+upload; the next scale's images are prepared on a thread while the current scale runs
+(`PrefetchImages`, its OpenMP team capped at half the cores so it does not starve the thread
+feeding the GPU), so a scale switch pays only the upload.
+
+Why it is shaped this way:
+
+- **No atomics, fixed orders.** Float addition is not associative, and an `atomicAdd` scatter
+  gives a different per-vertex gradient on every run. Every float sum has one writer and a fixed
+  order: a face reduces its own pixels in raster order, the slots accumulate in launch order, the
+  gather walks `Mesh::ListIncidentFaces`' order, `S` is folded from per-block partials in slot
+  order. The list order and the tile sort never touch the result.
+- **Owner bits and lists.** In a scene of hundreds of views any one view sees a fraction of the
+  mesh, so a face-parallel kernel over the whole mesh per direction is O(faces x views) of early
+  exits that leave the warps nearly empty (Nsight Compute on the accumulation: 4.4 active lanes
+  per warp-instruction, two thirds of the cycles waiting on scattered loads). One thread per owner
+  face, in tile order so that a warp's 32 boxes share cache lines (L1 hit rate 52 -> 78 %), and
+  the box rows loaded in chunks so that a chunk's loads are in flight together, took the
+  accumulation from 139 to 35 us per direction at scale 1 on Ignatius.
+- **No barycentric map.** Barycentrics and depth are recomputed from the face's projection where
+  they are needed, in float like the CPU's `BaryMap`, instead of a half-precision map per pixel of
+  every view: 21 bytes per pixel per view (float image 4, its two gradient textures 8, depth 4,
+  face 4, a keep-mask byte when masks are used) instead of 29.
+- **Projected face areas on the GPU.** The preparation's `ListFaceAreas` counts pixels per face
+  per view (`kernelFaceHistogram`, integer atomics, exact) and folds each pair's min into the max
+  over the pairs (`kernelReduceFaceAreasPair`), the pairs walked grouped by their first view; only
+  the reduced `uint16_t` areas come down, truncated exactly like the host's counters, and a Debug
+  build recomputes the host path and asserts equality on every face. A Debug build also checks
+  the rasterizer's payloads against the keys, and the owner lists against the bits, on every
+  evaluation.
+
+Measured with Nsight Systems on Ignatius at level 1 (263 views of 960x540, 1,430 pairs = 2,860
+pair-directions per evaluation, 125k/281k faces at the two scales), the first CUDA build of this
+branch against the shipped one:
+
+| per evaluation, Ignatius level 1 | first build | shipped |
 |---|---|---|
-| scale 0: GPU span / host gap to the next evaluation | 13.5 ms / 6 ms | 8 ms / 1.2 ms |
-| scale 1: GPU span / host gap to the next evaluation | 39 ms / 11 ms | 23 ms / 2.3 ms |
-| GPU idle inside the span | 5-12 % | 1.5-4.5 % |
-| `kernelAccumulateFacePhoto`, scale 1 | 409 us | 191 us |
-| `kernelComputeWindowStats`, scale 1 (now also the photometric term) | 105 us | 127 us |
-| per-vertex gather | 54 x 46 us | 1 x 61 us |
-| kernel launches / D2H copies / `cuMemFree` per run | 14,870 / 397 / 549 | 11,930 / 90 / 89 |
-| refinement loop, both scales | 1.95 s (51 evaluations) | 1.10 s (50) |
-| `RefineMesh` wall | 8.1 s | 6.9 s |
+| GPU kernels, scale 0 / scale 1 | 276 / 638 ms | 102 / 246 ms |
+| host gap to the next evaluation, scale 0 / scale 1 | 70 / 135 ms | 2-6 / 3-7 ms |
+| `kernelAccumulateFacePhoto`, scale 0 / scale 1 | 55 / 139 us | 15 / 35 us |
+| `kernelComputeWindowStats`, scale 0 / scale 1 | 10 / 24 us | 11 / 25 us |
+| D2H copies per run | 1,351 / 1.68 GB | 41 / 188 MB |
+| scale switch (host image preparation + upload) | 1.17 s + 0.47 s | 0.01 s + 0.44 s |
+| device memory per view | 29 B/px | 21 B/px |
 
-The host gap used to be an octree over the mesh rebuilt for every evaluation to frustum-cull a face
-list per view, plus that list's allocation, upload and free (a `cuMemFree` is an implicit device
-sync), plus five pageable downloads; what is left is the stepper. The largest kernel used to
-compute the photometric term itself, one thread walking every pixel of its face, so a warp waited
-for its largest face; the term now comes from the per-pixel window-statistics kernel and the face
-kernel only weights it by the barycentrics. A cooperating-lanes variant of that kernel (8 lanes per
-face, shuffle-tree reduction, a fixed pixel-to-lane mapping) measured 201 us against the 191 us
-above: the kernel is bound by its scattered face-map/mask/barycentric reads, not by divergence, so
-the simpler one stays. What remains of the 6.9 s is the host-side mesh preparation (§2.10),
-identical on both backends, which is why the end-to-end CPU/CUDA ratio on these small scenes stays
-near 3.5x while the refinement loop alone runs about 15x faster than the CPU's 0.33 s per
-evaluation.
+Walls back to back in one machine state: Ignatius 72.5 s -> 34.5 s, Truck, Barn and Meetingroom
+2.1-2.7x (§2.2); the owner lists and the graph then took another 8-15 % off the four (Ignatius
+35.3 -> 32.3 s), and the host-side mesh preparation shared with the CPU path is now most of what
+is left (Barn: 38 s of 81 s). On Herz-Jesu-P8 (8 views, 54 pair-directions), where none of the
+many-view machinery matters, the refinement loop takes 1.1 s for 50 evaluations and the wall
+6.9 s, 5.4 s of it that preparation: the end-to-end CPU/CUDA ratio on small scenes stays near 3x
+while the loop alone runs about 15x faster than the CPU's 0.33 s per evaluation. What is left of
+a scale-1 evaluation on Ignatius is 246 ms of kernels (accumulation 42 %, window statistics
+29 %, rasterization 19 %, warp 8 %), ~24 ms of host stepper and ~10 ms of transfers, memsets and
+graph launch.
 
-**The many-view regime.** Herz-Jesu-P8 has 8 views and 54 pair-directions per evaluation. A
-Tanks and Temples scene at level 1 has hundreds of small views — Ignatius: 263 views of 960x540,
-1,430 pairs = 2,860 pair-directions per evaluation, 125k/281k faces at the two scales — and there
-every face-parallel kernel is O(faces x views) while any one view sees a fraction of the mesh, and
-everything that touches every view once per scale (image loading, the preparation's projected
-areas) is hundreds of times larger. Measured the same way on Ignatius, per evaluation:
+Measured and rejected, all on Ignatius at level 1: a host-side frustum cull shortlisting the faces
+per view (an octree over the mesh rebuilt for every evaluation cost more host time than the
+rasterizer's early exits cost on the GPU, and the per-view face lists were uploads, allocations
+and frees the GPU waited on); eight lanes sharing a face in the accumulation, each taking every
+eighth pixel of the box with a fixed shuffle tree over the partials (49 / 88 us against 26 / 64
+us at the time: on the small boxes most lanes idle, and the extra threads cost more than the
+divergence they remove); a launch bound forcing the accumulation to 64 registers from 71 (spills,
+2 ms slower per evaluation); 128x16 tiles for the owner sort (1.4-2.6 % slower than 64x8); a
+per-reference-view barycentric scratch (unnecessary once the lists were dense); and a per-pair
+octree or BVH preselection of faces, which would only duplicate what the rasterizer's owner bits
+already give exactly, occlusion included, at 1-2 ms per evaluation.
 
-| per evaluation, Ignatius level 1 | before the rework | after the rework above | many-view rework |
-|---|---|---|---|
-| scale 0: GPU kernels / host gap to the next evaluation | 276 ms / 70 ms | 157 ms / 2-6 ms | 138 ms / 2-6 ms |
-| scale 1: GPU kernels / host gap to the next evaluation | 638 ms / 135 ms | 326 ms / 3-7 ms | 327 ms / 3-7 ms |
-| `kernelAccumulateFacePhoto`, scale 0 / scale 1 | 55 / 139 us | 32 / 61 us | 26 / 64 us |
-| `kernelComputeWindowStats`, scale 0 / scale 1 | 10 / 24 us | 11 / 28 us | 11 / 25 us |
-| D2H copies per run | — | 1,351 / 1.68 GB | 41 / 188 MB |
-| scale switch (host image preparation + upload) | — | 1.17 s + 0.47 s | 0.01 s + 0.44 s |
-| device memory per view | 29 B/px | 29 B/px | 21 B/px |
-| `RefineMesh` wall, 36 evaluations, back to back | 72.5 s | — | 34.5 s |
-
-The many-view rework, all of it in `SceneRefineCUDA.{cpp,cu,inl}`:
-
-- **Owner bits.** The rasterizer's second pass leaves, per view, one bit per face set iff the face
-  wrote a pixel (a warp ballot, no atomics, every word written so nothing is cleared), and the
-  accumulation exits on the bit before reading the face — behind the camera, off the image,
-  back-facing or occluded, most of the mesh for any one view. That is the scale-0 gain; at scale 1
-  it is spent again by the next item.
-- **No barycentric map.** The per-pixel `ushort4` of half barycentrics (8 of the 29 bytes every
-  view held per pixel) is gone: the accumulation recomputes barycentrics and depth from the face's
-  projection with the same `pixelBary` call the rasterizer keyed the pixel with, so they are the
-  rasterizer's bit for bit — in float, as the CPU's `BaryMap` keeps them, where the half map was a
-  deviation from the CPU (Herz-Jesu-P8 CUDA F1 moved from 0.45216 to 0.45110 against the CPU's
-  0.45111, §2.2). The recomputation is ~70 instructions per kept pixel, issued once per
-  bounding-box step for however few lanes of a warp keep a pixel there, which is what keeps the
-  scale-1 kernel at 64 us. Eight lanes sharing a face (each taking every eighth pixel of the box,
-  a fixed shuffle tree over the partials) measured 49 / 88 us against 26 / 64 us and was rejected:
-  on the small boxes most lanes idle and the extra threads cost more than the divergence they
-  remove. If that kernel has to go faster, the way is a per-reference-view `float4` (bary, depth)
-  scratch written once per view from the owner faces, with the pair-directions walked grouped by
-  reference view — one view's map resident instead of every view's.
-- **Projected face areas on the GPU.** The preparation's `ListFaceAreas` used to download every
-  view's face map (263 x 2.1 MB pageable per projection, 1.68 GB per run) and count pixels per
-  face on the host, then min over the pair and max over the pairs on the host too (1,430 pairs x
-  every face). Now `kernelFaceHistogram` counts per view (integer atomics, exact) and
-  `kernelReduceFaceAreasPair` folds each pair, the pairs walked grouped by their first view so its
-  histogram is built once; only the reduced `uint16_t` areas come down, truncated exactly like the
-  host's counters, and a Debug build recomputes the host path and asserts equality on every face.
-  The input mesh's projection went from 3.1 s to 1.9 s of which the remaining part is the host's
-  sampled analytic area (`SampleSeenFaceArea`), shared with the CPU.
-- **The next scale's images on a thread.** `PrefetchImages` starts `PrepareImages` for the next
-  scale (load, gray, blur, resize, gradient stencil, keep-mask, on a copy of each `Image`, since
-  `PrepareRefineImage` sets the working size and camera on the `Image` it is given) as soon as
-  the current scale's are uploaded; the switch joins it and pays only the upload. The thread's
-  OpenMP team is capped at half the cores: a full team alongside the refinement of the current
-  scale starved the thread feeding the GPU of its time slices (100-800 ms host gaps between
-  evaluations on 24 logical CPUs).
-- **Empty tiles.** A window-statistics block whose 22x22 tile holds no masked sample writes its
-  zeros and leaves before the window loops (`__syncthreads_or`): most tiles, in a scene where each
-  image sees a small part of the surface.
-
-What is left per evaluation is the kernels themselves (85 % GPU-busy across the refinement window,
-host gaps of 2-7 ms), and per run the host-side mesh preparation. The end-to-end walls against
-the previous CUDA build, same machine state, are in §2.2.
-
-**The accumulation over owner lists, and the evaluation as a graph (round 3).** Nsight Compute
-on `kernelAccumulateFacePhoto` after the many-view rework (Ignatius level 1, 24 launches per
-scale, `--set full`) said what the timelines could not: 4.4 active lanes per warp-instruction, 13
-of 20 warp cycles per instruction waiting on the scattered face-map/mask/term loads, compute at
-27 % and memory at 37 % of peak. The early exit on the owner bit left the warps that reached the
-pixel loop nearly empty, and every lane's box was somewhere else in the image. The
-per-reference-view scratch the previous paragraph proposed was not needed:
-
-- **Owner lists.** The bits are packed once per evaluation into dense per-view lists —
-  `kernelCountOwners` popcounts each view's words, `kernelScanViewCounts` turns the counts into
-  the views' offsets into one packed list (the offsets come down in the evaluation's one
-  synchronization before the terms, on the rasterization every direction needs anyway), and
-  `kernelCompactOwners` writes the face ids. The accumulation runs one thread per owner face of
-  its reference view: 9.4 / 7.7 lanes, 2.3x fewer instructions issued, 26 / 64 us -> 20 / 48 us
-  at scale 0 / 1. The list order is irrelevant to the result: a face still folds its own pixels in
-  raster order into its own slot, and the fold order across directions is the launch order.
-- **Row chunks.** The box is walked in chunks of four pixels whose face ids, mask bytes and terms
-  are loaded together, so a chunk's loads are in flight at once (the SASS confirms twelve
-  back-to-back predicated loads); 20 / 48 -> 19 / 44 us. The pixels are still folded in raster
-  order.
-- **Tile order.** `kernelSortOwnersTile` reorders each view's slice by the 64x8-pixel image tile
-  the face's clipped box starts in (a counting sort in shared memory; the projection is the
-  accumulation's own; the order within a tile is the atomics' and does not matter), so a warp's
-  32 boxes share cache lines: L1 hit rate 52 -> 78 %, 11-13 lanes; 19 / 44 -> 15 / 35 us for
-  1.1 / 2.1 ms of sorting per evaluation. 128x16 tiles measured 1.4-2.6 % slower per evaluation.
-- **One launch in four gone.** `kernelCountSeenVertices` is folded into the accumulation: a
-  per-vertex direction stamp, `atomicExch` handing exactly one of the vertex's contributing faces
-  the previous stamp, counts the direction once — an integer count, so still reproducible.
-- **The evaluation as a CUDA graph.** With the kernels shrunk, the host was the ceiling at the
-  coarse scale: 9,115 launches at ~10 us each under WDDM, 98 ms of launch API per evaluation for
-  103 ms of kernels. Every argument of the direction loop is a constant of the scale — the
-  accumulation reads its view's slice offsets on the device and strides over a grid sized at the
-  recording — so the loop, the reduction and the gather are recorded once per scale (per parity
-  when the pairs alternate) with stream capture and replayed by one `cudaGraphLaunch` per
-  evaluation: 40 ms to instantiate, ~11 ms of host time per launch. The rasterization,
-  compaction and memsets stay eager on the legacy stream ahead of it, the terms download behind
-  it. If the recording fails the directions are issued one by one as before.
-
-Measured the same way (Ignatius level 1, per evaluation, nsys; the graph's kernels are read from a
-node-level trace, the spans from an untraced one):
-
-| per evaluation, Ignatius level 1 | many-view rework | round 3 |
-|---|---|---|
-| `kernelAccumulateFacePhoto`, scale 0 / scale 1 | 26 / 64 us | 15 / 35 us |
-| GPU kernels, scale 0 / scale 1 | 138 / 327 ms | 102 / 246 ms |
-| kernel launches per evaluation (host) | 11,974 | 533 + 1 graph |
-| evaluation to evaluation (rasterization to rasterization), scale 0 / scale 1 | 160 / 420 ms | 109 / 295 ms |
-| host launch API per run | 9.5 s | 1.1 s |
-| `RefineMesh` wall, back to back, same machine state: Ignatius / Truck / Barn / Meetingroom | 35.3 / 41.5 / 90.1 / 80.4 s | 32.3 / 38.5 / 81.5 / 67.9 s |
-
-The output is byte-identical to the many-view build on Ignatius (36 evaluations), Truck, Barn and
-Meetingroom; the Debug synthetic test is unchanged (CUDA/CPU ratio 1.00027) and the Debug build
-checks the compaction against the bits and the sort against the compaction on every evaluation.
-What is left of a scale-1 evaluation is 246 ms of kernels (accumulation 42 %, window statistics
-29 %, rasterization 19 %, warp 8 %), ~24 ms of host stepper between evaluations (shared with the
-CPU path), and ~10 ms of transfers, memsets and graph launch. A launch bound forcing the
-accumulation to 64 registers (from 71) spilled and measured 2 ms slower per evaluation; a
-per-pair octree or BVH preselection of faces would only duplicate what the rasterizer's owner
-bits already give exactly, occlusion included, at 1-2 ms per evaluation.
-
-**Device memory is the next large-scene limit.** With the per-view footprint at 21 bytes per pixel
-(float image 4, its two gradient textures 8, depth 4, face 4, plus a keep-mask byte when masks
-are used), Ignatius at level 0 (263 views of 1920x1080 at the finest scale) needs about 11 GB and
-did not fit a 12 GB RTX 4070 before this rework either (15.8 GB at 29 B/px): the driver paged and
-a scale-1 evaluation went from 0.4 s to minutes. Courthouse (1,106 images) needs the same at level
-1. Beyond that point the design has to stream views — a resident working set of views, pinned host
-copies, the pair-directions ordered by view, a view re-rasterized when it comes back — which is
-a change of memory architecture, not of kernels.
+**Device memory is the next large-scene limit.** At 21 bytes per pixel per view, Ignatius at
+level 0 (263 views of 1920x1080 at the finest scale) needs about 11 GB and does not fit a 12 GB
+RTX 4070: the driver pages and a scale-1 evaluation goes from 0.3 s to minutes. Courthouse (1,106
+images) needs the same at level 1. Beyond that point the design has to stream views — a resident
+working set of views, pinned host copies, the pair-directions ordered by view, a view
+re-rasterized when it comes back — which is a change of memory architecture, not of kernels.
 
 ### 1.7 Optimization schedule
 
@@ -745,17 +682,16 @@ The evaluation counts no longer match exactly, so the surfaces are compared at s
 stopping points rather than at the same one; F1 tracks the iteration count closely enough (§2.4)
 that this accounts for the gap on its own. Before the GPU rework of §1.6.1 the CUDA build
 reproduced §2.10's shipped combination — the sizing field plus the tightest-pair decimation,
-measured there as an arm — to the fifth decimal (0.45312 / 0.34618); the two reworks moved it
-inside the band through the rasterizer's tie-break, the summation order and the float
-barycentrics the CPU also uses (0.45216 / 0.34638 after the first, the values above after the
-many-view one), so the gap is the CPU's own trajectory and not a regression. Walls are only
+measured there as an arm — to the fifth decimal (0.45312 / 0.34618); the rework moved it inside
+the band through the rasterizer's tie-break, the summation order and the float barycentrics the
+CPU also uses, so the gap is the CPU's own trajectory and not a regression. Walls are only
 comparable within one machine state (the CPU column was measured in a different session); the
 end-to-end speedup on these small scenes is capped by the host-side mesh preparation both
 backends share (5.3 s of the 8.4 s on Herz-Jesu-P8), while the refinement loop itself runs about
 15x faster on the GPU (§1.6.1).
 
-On the many-view scenes, against the previous CUDA build (the round before §1.6.1's rework, the
-same source otherwise), each pair run in the same machine state:
+On the many-view scenes, against the CUDA build before §1.6.1's rework (the same source
+otherwise), each pair run in the same machine state:
 
 | scene | previous CUDA build: F1 / evaluations / wall | this build: F1 / evaluations / wall | wall |
 |---|---|---|---|
