@@ -327,6 +327,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::RobustAveragingTranslationTest())
 				return false;
+			if (!SFM::SeamGraphConsensusTest())
+				return false;
 			if (!SFM::GlobalAlignmentMergeSingleSceneTest())
 				return false;
 			if (!SFM::GlobalAlignmentTrackMergeDuplicateImageGuardTest())

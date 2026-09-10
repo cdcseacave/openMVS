@@ -362,6 +362,7 @@ bool GlobalAlignmentScaleAveragingFallbackTest();
 bool GlobalAlignmentTranslationAveragingExtendedTest();
 bool RobustAveragingScaleTest();
 bool RobustAveragingTranslationTest();
+bool SeamGraphConsensusTest();
 bool GlobalAlignmentMergeSingleSceneTest();
 bool GlobalAlignmentTrackMergeDuplicateImageGuardTest();
 bool GlobalAlignmentTrackMerge3DProximityGuardTest();

@@ -11090,6 +11090,119 @@ bool RobustAveragingTranslationTest()
 	return true;
 }
 
+// Twelve blocks joined in a ring with chords, two wrong seams planted among them and a pair joined
+// to nothing else: the consensus must trust every true seam, reject the wrong ones, verify the pair
+// that stands alone on its own evidence, and place each component in its own frame
+bool SeamGraphConsensusTest()
+{
+	TD_TIMER_START();
+	constexpr uint32_t numRingBlocks = 12, numBlocks = 14;
+	std::mt19937 rng(9137);
+	std::vector<Transform> G(numBlocks);
+	for (Transform& T : G)
+		T = Transform::Random(rng, 180, 10, 0.5);
+	// two blocks share a seam because they overlap, so each block's cameras span a box of the size
+	// of the distance to the blocks it is joined to
+	const std::vector<REAL> extents(numBlocks, REAL(20));
+
+	// a seam is the exact relative similarity of its two blocks, off by a fraction of a degree and
+	// a percent of scale, plus whatever rotation error is planted in it
+	std::uniform_real_distribution<REAL> noiseDist(-1, 1);
+	const auto MakeSeam = [&](uint32_t a, uint32_t b, REAL plantedRotationDeg, float weight) {
+		SeamCandidate c;
+		c.sceneA = MINF(a, b);
+		c.sceneB = MAXF(a, b);
+		c.T = G[c.sceneB].Invert() * G[c.sceneA];
+		Point3 axis(noiseDist(rng), noiseDist(rng), noiseDist(rng));
+		axis *= D2R(plantedRotationDeg + REAL(0.3) * noiseDist(rng)) / norm(axis);
+		RMatrix noiseR;
+		noiseR.SetRotationAxisAngle(axis);
+		c.T.R = RMatrix(noiseR * c.T.R);
+		c.T.scale *= REAL(1) + REAL(0.01) * noiseDist(rng);
+		c.weight = weight;
+		return c;
+	};
+	std::vector<SeamCandidate> candidates;
+	for (uint32_t i = 0; i < numRingBlocks; ++i) {
+		candidates.push_back(MakeSeam(i, (i + 1) % numRingBlocks, 0, 20.f));
+		candidates.push_back(MakeSeam(i, (i + 2) % numRingBlocks, 0, 20.f));
+	}
+	const size_t numTrueSeams = candidates.size();
+	// a chord neither block ever saw, as strong as a true seam and 60 degrees away from the truth
+	candidates.push_back(MakeSeam(2, 8, 60, 20.f));
+	// a second and weaker opinion on a pair a true seam already covers
+	candidates.push_back(MakeSeam(5, 6, 20, 6.f));
+	// a pair joined to nothing else, measured from one side only but on a wide and dense rig
+	SeamCandidate bridge(MakeSeam(12, 13, 0, 20.f));
+	bridge.source = SeamCandidate::RIG_B_ON_A;
+	bridge.oneDirection = true;
+	bridge.score.centres = 3;
+	bridge.observations.assign(200, SeamObservation());
+	for (SeamObservation& obs : bridge.observations)
+		obs.forward = true;
+	bridge.score.inlierMask.assign(bridge.observations.size(), true);
+	bridge.score.inliers = (unsigned)bridge.observations.size();
+	candidates.push_back(std::move(bridge));
+
+	Scene scene;
+	GlobalAlignmentConfig alignCfg;
+	GlobalAlignment alignment(scene, alignCfg);
+	alignment.ClassifySeamGraph(extents, candidates);
+
+	for (size_t i = 0; i < numTrueSeams; ++i) {
+		const SeamCandidate& c = candidates[i];
+		if (c.cls != SeamCandidate::ROBUST) {
+			VERBOSE("SeamGraphConsensusTest FAILED: true seam (%u, %u) is class %u: rotation %.2f deg, scale %.3f, translation %.3f",
+				c.sceneA, c.sceneB, (unsigned)c.cls, c.residualRotation, c.residualScale, c.residualTranslation);
+			return false;
+		}
+	}
+	const SeamCandidate& falseChord = candidates[numTrueSeams];
+	if (falseChord.cls != SeamCandidate::REJECTED || falseChord.residualRotation <= 30.f) {
+		VERBOSE("SeamGraphConsensusTest FAILED: the false chord is class %u with rotation residual %.2f deg",
+			(unsigned)falseChord.cls, falseChord.residualRotation);
+		return false;
+	}
+	const SeamCandidate& wrongDuplicate = candidates[numTrueSeams + 1];
+	if (wrongDuplicate.cls != SeamCandidate::REJECTED) {
+		VERBOSE("SeamGraphConsensusTest FAILED: the wrong duplicate seam is class %u with rotation residual %.2f deg",
+			(unsigned)wrongDuplicate.cls, wrongDuplicate.residualRotation);
+		return false;
+	}
+	const SeamCandidate& loneBridge = candidates.back();
+	if (loneBridge.cls != SeamCandidate::VERIFIED) {
+		VERBOSE("SeamGraphConsensusTest FAILED: the lone bridge is class %u", (unsigned)loneBridge.cls);
+		return false;
+	}
+
+	std::vector<BlockPose> poses;
+	if (!alignment.ComputeInitialBlockPoses(candidates, extents, numBlocks, poses)) {
+		VERBOSE("SeamGraphConsensusTest FAILED: no initial block pose");
+		return false;
+	}
+	for (uint32_t i = 0; i < numBlocks; ++i) {
+		const uint32_t model = i < numRingBlocks ? 0 : 1;
+		if (poses[i].model != model) {
+			VERBOSE("SeamGraphConsensusTest FAILED: block %u is in model %u, expected %u", i, poses[i].model, model);
+			return false;
+		}
+	}
+	for (uint32_t i = 0; i < numRingBlocks; ++i) {
+		const uint32_t j = (i + 1) % numRingBlocks;
+		const Transform estimated = poses[j].T.Invert() * poses[i].T;
+		const Transform truth = G[j].Invert() * G[i];
+		const REAL angle = R2D(ACOS(ComputeAngle(Matrix3x3(estimated.R), Matrix3x3(truth.R))));
+		const REAL scaleRatio = estimated.scale / truth.scale;
+		if (angle > REAL(1) || MAXF(scaleRatio, REAL(1) / scaleRatio) > REAL(1.03)) {
+			VERBOSE("SeamGraphConsensusTest FAILED: blocks (%u, %u) placed %.2f deg and %.1f%% off",
+				i, j, angle, (MAXF(scaleRatio, REAL(1) / scaleRatio) - 1) * 100);
+			return false;
+		}
+	}
+	VERBOSE("SeamGraphConsensusTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 // Test 12: MergeSingleScene roundtrip
 bool GlobalAlignmentMergeSingleSceneTest()
 {

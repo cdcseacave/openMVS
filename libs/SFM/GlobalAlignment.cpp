@@ -9,6 +9,7 @@
 #include "GlobalRotationAveraging.h"
 #include "GlobalScaleAveraging.h"
 #include "GlobalTranslationAveraging.h"
+#include "RobustAveraging.h"
 #include "Resection.h"
 #include "Scene.h"
 #include "SimilarityTransform.h"
@@ -225,6 +226,10 @@ constexpr float kVoteSupportFraction = 0.3f;
 constexpr float kVoteContraFraction = 0.1f;
 // Cells per axis of the image grid a supporting camera's inlier keypoints must spread over.
 constexpr unsigned kVoteGridCells = 4;
+// Reweighting rounds of every averaging of the seam graph.
+constexpr unsigned kRobustRounds = 10;
+// A seam nothing corroborates stands alone only with this many times the tracks a seam needs at all.
+constexpr unsigned kStrongAloneFactor = 4;
 
 // One cross-sub-scene image pair, with the sub-scene each of its two images belongs to already
 // resolved, so feature indices (queryIdx/trainIdx) can be mapped consistently.
@@ -1380,6 +1385,17 @@ static SEACAVE::Transform BuildGlobalTransform(const Point3d& rotation, REAL sca
 	return G;
 }
 
+// The diagonal of the box a block's cameras span in its own frame -- the unit the translation
+// residuals of its seams are measured in
+static REAL BlockExtent(const Scene& block)
+{
+	AABB3 bbox(true);
+	for (const Image& img : block.images)
+		if (img.IsValid())
+			bbox.InsertFull(img.C);
+	return bbox.IsEmpty() ? REAL(0) : (REAL)bbox.GetSize().norm();
+}
+
 // The transform Stage 5 will apply to every sub-scene still in the merge, and the diagonal of the
 // box its cameras span in its own frame -- the unit the translation residuals are normalized by.
 static void BuildGlobalTransforms(
@@ -1396,12 +1412,7 @@ static void BuildGlobalTransforms(
 			continue;
 		globalTransforms[sceneIdx] = BuildGlobalTransform(
 			globalRotations[sceneIdx], globalScales[sceneIdx], globalTranslations[sceneIdx]);
-		AABB3 bbox(true);
-		for (const Image& img : subScenes[sceneIdx].images)
-			if (img.IsValid())
-				bbox.InsertFull(img.C);
-		if (!bbox.IsEmpty())
-			camBoxDiags[sceneIdx] = bbox.GetSize().norm();
+		camBoxDiags[sceneIdx] = BlockExtent(subScenes[sceneIdx]);
 	}
 }
 
@@ -1419,23 +1430,448 @@ struct SeamResidual {
 };
 
 static SeamResidual ComputeSeamResidual(
-	const ScenePair& sp, const std::vector<Transform>& globalTransforms,
+	const uint32_t a, const uint32_t b, const Transform& T, const std::vector<Transform>& globalTransforms,
 	const std::vector<REAL>& camBoxDiags, const GlobalAlignmentConfig& config)
 {
-	const Transform E = globalTransforms[sp.sceneA].Invert() * (globalTransforms[sp.sceneB] * sp.relativeTransform);
+	const Transform E = globalTransforms[a].Invert() * (globalTransforms[b] * T);
 	SeamResidual res;
 	res.scale = MAXF(E.scale, REAL(1) / E.scale);
 	res.rotation = R2D(ACOS(ComputeAngle(Matrix3x3(E.R))));
 	// E.t is in A's local frame: express the discrepancy in global units and compare
 	// it against the smaller of the two global camera footprints, so the verdict does
 	// not depend on which endpoint happens to have the lower sub-scene index
-	const REAL diagA = camBoxDiags[sp.sceneA] * globalTransforms[sp.sceneA].scale;
-	const REAL diagB = camBoxDiags[sp.sceneB] * globalTransforms[sp.sceneB].scale;
+	const REAL diagA = camBoxDiags[a] * globalTransforms[a].scale;
+	const REAL diagB = camBoxDiags[b] * globalTransforms[b].scale;
 	const REAL diag = diagA > 0 && diagB > 0 ? MINF(diagA, diagB) : MAXF(diagA, diagB);
-	res.translation = diag > 0 ? globalTransforms[sp.sceneA].scale * norm(E.t) / diag : REAL(0);
+	res.translation = diag > 0 ? globalTransforms[a].scale * norm(E.t) / diag : REAL(0);
 	res.excess = MAXF(MAXF(res.scale / config.maxSimScaleRatio, res.rotation / config.maxSimRotationError),
 		res.translation / config.maxSimTranslationError);
 	return res;
+}
+
+static SeamResidual ComputeSeamResidual(
+	const ScenePair& sp, const std::vector<Transform>& globalTransforms,
+	const std::vector<REAL>& camBoxDiags, const GlobalAlignmentConfig& config)
+{
+	return ComputeSeamResidual(sp.sceneA, sp.sceneB, sp.relativeTransform, globalTransforms, camBoxDiags, config);
+}
+/*----------------------------------------------------------------*/
+
+// One connected component of a seam graph: the seams that span it, the blocks they join, the block
+// carrying most of their weight -- the gauge its averaging is anchored at -- and the weight it holds
+struct SeamComponent
+{
+	std::vector<uint32_t> edges;
+	uint32_t numBlocks{0};
+	uint32_t gauge{NO_ID};
+	REAL weight{0};
+};
+
+// The connected components the given seams span, the heaviest first
+static void GroupSeamComponents(
+	const std::vector<SeamCandidate>& candidates, const std::vector<uint32_t>& edges,
+	const uint32_t numBlocks, std::vector<SeamComponent>& components)
+{
+	DisjointSet<uint32_t> blockSets(numBlocks);
+	std::vector<REAL> blockWeights(numBlocks, REAL(0));
+	std::vector<bool> touched(numBlocks, false);
+	for (const uint32_t e : edges) {
+		const SeamCandidate& c = candidates[e];
+		blockSets.Union(c.sceneA, c.sceneB);
+		for (const uint32_t block : {c.sceneA, c.sceneB}) {
+			blockWeights[block] += c.weight;
+			touched[block] = true;
+		}
+	}
+	components.clear();
+	std::unordered_map<uint32_t, uint32_t> componentOfRoot;
+	for (uint32_t block = 0; block < numBlocks; ++block) {
+		if (!touched[block])
+			continue;
+		const auto [it, inserted] = componentOfRoot.emplace(blockSets.Find(block), (uint32_t)components.size());
+		if (inserted)
+			components.emplace_back();
+		SeamComponent& component = components[it->second];
+		++component.numBlocks;
+		if (component.gauge == NO_ID || blockWeights[block] > blockWeights[component.gauge])
+			component.gauge = block;
+	}
+	for (const uint32_t e : edges) {
+		const SeamCandidate& c = candidates[e];
+		SeamComponent& component = components[componentOfRoot[blockSets.Find(c.sceneA)]];
+		component.edges.push_back(e);
+		component.weight += c.weight;
+	}
+	std::sort(components.begin(), components.end(),
+		[](const SeamComponent& a, const SeamComponent& b) { return a.weight > b.weight; });
+}
+
+// Whether the accepted seams among the given ones join the two ends of `c` on their own
+static bool SeamEndsJoined(
+	const std::vector<SeamCandidate>& candidates, const std::vector<uint32_t>& edges,
+	const uint32_t numBlocks, const SeamCandidate& c,
+	const std::function<bool(const SeamCandidate&)>& accept)
+{
+	DisjointSet<uint32_t> blockSets(numBlocks);
+	for (const uint32_t e : edges)
+		if (accept(candidates[e]))
+			blockSets.Union(candidates[e].sceneA, candidates[e].sceneB);
+	return blockSets.Find(c.sceneA) == blockSets.Find(c.sceneB);
+}
+
+// The direction a candidate measured on its own: the rig of B over A's points is the forward one
+static int SeamOwnDirection(SeamCandidate::Source source)
+{
+	return source == SeamCandidate::RIG_A_ON_B ? 0 : 1;
+}
+
+// What a seam weighs in an averaging: its own weight, halved when only its own evidence backs it
+static float SeamEdgeWeight(const SeamCandidate& c)
+{
+	return c.cls == SeamCandidate::VERIFIED ? c.weight * 0.5f : c.weight;
+}
+
+// A seam the consensus of its component sits on; one that cannot observe a scale took part in the
+// rotation consensus only and is judged on its rotation alone
+static bool IsSeamConsistent(const SeamCandidate& c, const GlobalAlignmentConfig& config)
+{
+	return c.residualRotation <= config.maxGraphRotationResidual &&
+		(!c.scaleObservable || (c.residualScale <= config.maxGraphScaleResidual &&
+			c.residualTranslation <= config.maxSimTranslationError));
+}
+
+// A seam nothing corroborates is still trusted when the one direction it was measured in saw far
+// more than a seam needs, spread over enough of its rig
+static bool DoesSeamStandAlone(const SeamCandidate& c, const GlobalAlignmentConfig& config)
+{
+	return c.oneDirection && c.score.centres >= config.minSupportingCentres &&
+		c.NumInliers(SeamOwnDirection(c.source)) >= kStrongAloneFactor * config.minCommonTracks;
+}
+
+// What the consensus of a component makes of one of its seams; `reason` is filled when undecided
+static SeamCandidate::Class ClassifySeam(
+	const std::vector<SeamCandidate>& candidates, const SeamComponent& component,
+	const uint32_t numBlocks, const SeamCandidate& c, const GlobalAlignmentConfig& config,
+	const char*& reason)
+{
+	if (c.residualRotation >= FLT_MAX) {
+		reason = "split frame";
+		return SeamCandidate::UNDECIDED;
+	}
+	if (IsSeamConsistent(c, config)) {
+		// only another path between the same two blocks corroborates a seam; a second opinion on
+		// the same pair is not one
+		const bool corroborated = SeamEndsJoined(candidates, component.edges, numBlocks, c,
+			[&c, &config](const SeamCandidate& d) {
+				return IsSeamConsistent(d, config) && (d.sceneA != c.sceneA || d.sceneB != c.sceneB);
+			});
+		if (corroborated)
+			return SeamCandidate::ROBUST;
+		if (c.source == SeamCandidate::UNION || c.source == SeamCandidate::POINTS || DoesSeamStandAlone(c, config))
+			return SeamCandidate::VERIFIED;
+		reason = "bridge, one direction";
+		return SeamCandidate::UNDECIDED;
+	}
+	// a path at least as strong holds the two blocks where this seam does not
+	const bool contradicted = SeamEndsJoined(candidates, component.edges, numBlocks, c,
+		[&c, &config](const SeamCandidate& d) {
+			return IsSeamConsistent(d, config) && d.weight >= c.weight / config.rejectWeightMargin;
+		});
+	if (contradicted)
+		return SeamCandidate::REJECTED;
+	reason = "inconsistent, no strong alternative";
+	return SeamCandidate::UNDECIDED;
+}
+
+// The global rotation of every node the seams reach, and which run of the estimator placed it.
+// The estimator solves the largest sub-component it can and leaves the rest at INF, so it is run
+// again over the seams that stayed inside the nodes it left out, until no run places anything more.
+// Two nodes of different frames are each solved in their own gauge and cannot be compared.
+static bool SolveRotationFrames(
+	const std::vector<RotationPair>& pairs, const uint32_t numNodes,
+	const GlobalRotationEstimatorOptions& options,
+	std::vector<Point3>& rotations, std::vector<uint32_t>& frameOfNode)
+{
+	std::vector<Point3> solved(numNodes, Point3::INF);
+	std::vector<uint32_t> frames(numNodes, NO_ID);
+	std::vector<RotationPair> remaining(pairs);
+	uint32_t numFrames = 0;
+	while (!remaining.empty()) {
+		GlobalRotationEstimator estimator(options);
+		std::vector<Point3> partial;
+		if (!estimator.EstimateRotations(remaining, numNodes, partial))
+			break;
+		bool placedAny = false;
+		for (uint32_t node = 0; node < numNodes; ++node) {
+			if (frames[node] != NO_ID || partial[node] == Point3::INF)
+				continue;
+			solved[node] = partial[node];
+			frames[node] = numFrames;
+			placedAny = true;
+		}
+		if (!placedAny)
+			break;
+		++numFrames;
+		std::vector<RotationPair> unplaced;
+		for (const RotationPair& p : remaining)
+			if (frames[p.idxA] == NO_ID && frames[p.idxB] == NO_ID)
+				unplaced.push_back(p);
+		remaining.swap(unplaced);
+	}
+	if (numFrames == 0)
+		return false;
+	rotations.swap(solved);
+	frameOfNode.swap(frames);
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+bool GlobalAlignment::AverageBlockPoses(
+	const std::vector<SeamCandidate>& candidates,
+	const std::vector<uint32_t>& edges,
+	const std::vector<REAL>& blockExtents,
+	const uint32_t numBlocks, const uint32_t fixedBlock,
+	std::vector<BlockPose>& poses,
+	std::vector<Point3>& residuals) const
+{
+	poses.assign(numBlocks, BlockPose());
+	// a seam whose blocks the averaging does not place is left without a verdict
+	residuals.assign(edges.size(), Point3(REAL(FLT_MAX), REAL(1), REAL(0)));
+	if (edges.empty())
+		return false;
+
+	// the blocks the seams touch, renumbered 0..n-1 for the solvers
+	std::vector<uint32_t> nodeOfBlock(numBlocks, NO_ID), blockOfNode;
+	for (const uint32_t e : edges) {
+		const SeamCandidate& c = candidates[e];
+		for (const uint32_t block : {c.sceneA, c.sceneB})
+			if (nodeOfBlock[block] == NO_ID) {
+				nodeOfBlock[block] = (uint32_t)blockOfNode.size();
+				blockOfNode.push_back(block);
+			}
+	}
+	const uint32_t n = (uint32_t)blockOfNode.size();
+	const uint32_t gauge = nodeOfBlock[fixedBlock];
+	ASSERT(gauge != NO_ID, "the gauge block carries none of the averaged seams");
+	if (gauge == NO_ID)
+		return false;
+
+	// rotations: each seam claims R_B * R_A^T
+	std::vector<RotationPair> rotationPairs;
+	rotationPairs.reserve(edges.size());
+	for (const uint32_t e : edges) {
+		const SeamCandidate& c = candidates[e];
+		rotationPairs.emplace_back(nodeOfBlock[c.sceneA], nodeOfBlock[c.sceneB], Matrix3x3(c.T.R), SeamEdgeWeight(c));
+	}
+	const GlobalRotationEstimatorOptions rotationOptions;
+	std::vector<uint32_t> frameOfNode;
+	std::vector<Point3> rotations;
+	std::vector<REAL> rotationResiduals;
+	if (!RobustAverage(rotationPairs, (REAL)config.maxGraphRotationResidual, kRobustRounds,
+		[&](const std::vector<RotationPair>& active, std::vector<Point3>& rots) {
+			return SolveRotationFrames(active, n, rotationOptions, rots, frameOfNode);
+		},
+		[&](size_t i, const std::vector<Point3>& rots) {
+			const RotationPair& p = rotationPairs[i];
+			if (frameOfNode[p.idxA] == NO_ID || frameOfNode[p.idxA] != frameOfNode[p.idxB])
+				return REAL(FLT_MAX);
+			const RMatrix RA(rots[p.idxA]), RB(rots[p.idxB]);
+			return R2D(ACOS(ComputeAngle(p.relativeRotation, Matrix3x3(RB * RA.t()))));
+		},
+		rotations, rotationResiduals))
+	{
+		VERBOSE("error: rotation averaging over %u seams failed", (unsigned)edges.size());
+		return false;
+	}
+	// every pose comes out in the gauge block's frame, so the rotations must have reached it
+	if (frameOfNode[gauge] == NO_ID)
+		return false;
+
+	// scales: only the seams the rotation consensus keeps, and only those that observe a scale
+	const REAL maxLogScaleResidual = std::log((REAL)config.maxGraphScaleResidual);
+	std::vector<uint32_t> scaleEdges; // positions in `edges`
+	std::vector<ScalePair> scalePairs;
+	FOREACH(k, edges) {
+		const SeamCandidate& c = candidates[edges[k]];
+		if (!c.scaleObservable || c.T.scale <= 0 || rotationResiduals[k] > config.maxGraphRotationResidual)
+			continue;
+		scaleEdges.push_back(k);
+		scalePairs.emplace_back(nodeOfBlock[c.sceneA], nodeOfBlock[c.sceneB], REAL(1) / c.T.scale, SeamEdgeWeight(c));
+	}
+	GlobalScaleEstimator scaleEstimator;
+	std::vector<REAL> scales, scaleResiduals;
+	if (!RobustAverage(scalePairs, maxLogScaleResidual, kRobustRounds,
+		[&](const std::vector<ScalePair>& active, std::vector<REAL>& s) { return scaleEstimator.EstimateScales(active, n, gauge, s); },
+		[&](size_t i, const std::vector<REAL>& s) {
+			const ScalePair& p = scalePairs[i];
+			return std::log(p.scaleRatio) - (std::log(s[p.idxB]) - std::log(s[p.idxA]));
+		},
+		scales, scaleResiduals))
+	{
+		VERBOSE("error: scale averaging over %u seams failed", (unsigned)scalePairs.size());
+		return false;
+	}
+
+	// translations: the seams under both bars, each placing one block's origin in the other's frame
+	std::vector<TranslationPair> translationPairs;
+	std::vector<bool> placed(n, false);
+	placed[gauge] = true;
+	FOREACH(i, scalePairs) {
+		if (scaleResiduals[i] > maxLogScaleResidual)
+			continue;
+		const SeamCandidate& c = candidates[edges[scaleEdges[i]]];
+		const uint32_t a = nodeOfBlock[c.sceneA], b = nodeOfBlock[c.sceneB];
+		// the seam maps A's frame to B's, so B's origin sits at -(1/scale) R^T t in A's frame;
+		// A's own rotation and scale carry that offset into the frame the averaging solves in
+		const Point3 originBinA = (c.T.R.t() * c.T.t) * (-REAL(1) / c.T.scale);
+		translationPairs.emplace_back(a, b, scales[a] * (RMatrix(rotations[a]).t() * originBinA), SeamEdgeWeight(c));
+		placed[a] = placed[b] = true;
+	}
+	GlobalTranslationEstimator translationEstimator;
+	std::vector<Point3> translations;
+	std::vector<REAL> translationResiduals;
+	if (!RobustAverage(translationPairs, (REAL)config.maxSimTranslationError, kRobustRounds,
+		[&](const std::vector<TranslationPair>& active, std::vector<Point3>& t) { return translationEstimator.EstimateTranslations(active, n, gauge, t); },
+		[&](size_t i, const std::vector<Point3>& t) {
+			const TranslationPair& p = translationPairs[i];
+			const REAL extent = MINF(blockExtents[blockOfNode[p.idxA]] * scales[p.idxA], blockExtents[blockOfNode[p.idxB]] * scales[p.idxB]);
+			return extent > 0 ? norm(t[p.idxB] - t[p.idxA] - p.relativeTranslation) / extent : REAL(0);
+		},
+		translations, translationResiduals))
+	{
+		VERBOSE("error: translation averaging over %u seams failed", (unsigned)translationPairs.size());
+		return false;
+	}
+
+	// the pose of every block the three solves agree on, and what that consensus says of each seam
+	std::vector<Transform> transforms(numBlocks);
+	for (uint32_t node = 0; node < n; ++node) {
+		if (!placed[node] || frameOfNode[node] != frameOfNode[gauge])
+			continue;
+		const uint32_t block = blockOfNode[node];
+		transforms[block] = BuildGlobalTransform(rotations[node], scales[node], translations[node]);
+		poses[block].T = transforms[block];
+		poses[block].model = 0;
+	}
+	FOREACH(k, edges) {
+		const SeamCandidate& c = candidates[edges[k]];
+		if (poses[c.sceneA].model == NO_ID || poses[c.sceneB].model == NO_ID)
+			continue;
+		const SeamResidual residual = ComputeSeamResidual(c.sceneA, c.sceneB, c.T, transforms, blockExtents, config);
+		// a seam that cannot observe a scale took part in the rotation consensus only
+		residuals[k] = c.scaleObservable ?
+			Point3(residual.rotation, residual.scale, residual.translation) :
+			Point3(residual.rotation, REAL(1), REAL(0));
+	}
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+void GlobalAlignment::ClassifySeamGraph(
+	const std::vector<REAL>& blockExtents,
+	std::vector<SeamCandidate>& candidates) const
+{
+	TD_TIMER_STARTD();
+	const uint32_t numBlocks = (uint32_t)blockExtents.size();
+	std::vector<uint32_t> allEdges(candidates.size());
+	std::iota(allEdges.begin(), allEdges.end(), 0u);
+	std::vector<SeamComponent> components;
+	GroupSeamComponents(candidates, allEdges, numBlocks, components);
+
+	// every candidate is judged afresh
+	for (SeamCandidate& c : candidates) {
+		c.cls = SeamCandidate::UNCLASSIFIED;
+		c.residualRotation = 0.f;
+		c.residualScale = 1.f;
+		c.residualTranslation = 0.f;
+	}
+	std::vector<BlockPose> poses;
+	std::vector<Point3> residuals;
+	for (const SeamComponent& component : components) {
+		// two blocks hold no cycle: the averaging would reproduce every seam between them exactly,
+		// so their residuals stay at zero and the seams are left to the rules below
+		if (component.numBlocks < 3)
+			continue;
+		// an averaging that fails leaves every one of its seams the infinite rotation residual that
+		// keeps it undecided, so its verdict is copied over either way
+		AverageBlockPoses(candidates, component.edges, blockExtents, numBlocks, component.gauge, poses, residuals);
+		FOREACH(i, component.edges) {
+			SeamCandidate& c = candidates[component.edges[i]];
+			c.residualRotation = (float)residuals[i].x;
+			c.residualScale = (float)residuals[i].y;
+			c.residualTranslation = (float)residuals[i].z;
+		}
+	}
+
+	unsigned numRobust = 0, numVerified = 0, numUndecided = 0, numRejected = 0;
+	for (const SeamComponent& component : components) {
+		for (const uint32_t e : component.edges) {
+			SeamCandidate& c = candidates[e];
+			const char* reason = NULL;
+			c.cls = ClassifySeam(candidates, component, numBlocks, c, config, reason);
+			switch (c.cls) {
+			case SeamCandidate::ROBUST:
+				++numRobust;
+				break;
+			case SeamCandidate::VERIFIED:
+				++numVerified;
+				break;
+			case SeamCandidate::REJECTED:
+				++numRejected;
+				VERBOSE("Seam (%u, %u) rejected by consensus: rotation %.2f deg, scale %.1f%%, translation %.2f%% (weight %.0f)",
+					c.sceneA, c.sceneB, c.residualRotation, (c.residualScale - 1.f) * 100.f,
+					c.residualTranslation * 100.f, c.weight);
+				break;
+			default:
+				++numUndecided;
+				DEBUG("Seam (%u, %u) undecided: %s", c.sceneA, c.sceneB, reason);
+				break;
+			}
+		}
+	}
+	VERBOSE("Seam graph: %u blocks, %u components, %u candidates: %u robust, %u verified, %u undecided, %u rejected (%s)",
+		numBlocks, (unsigned)components.size(), (unsigned)candidates.size(),
+		numRobust, numVerified, numUndecided, numRejected, TD_TIMER_GET_FMT().c_str());
+}
+/*----------------------------------------------------------------*/
+
+bool GlobalAlignment::ComputeInitialBlockPoses(
+	const std::vector<SeamCandidate>& candidates,
+	const std::vector<REAL>& blockExtents,
+	const uint32_t numBlocks,
+	std::vector<BlockPose>& poses) const
+{
+	TD_TIMER_STARTD();
+	std::vector<uint32_t> trustedEdges;
+	FOREACH(i, candidates)
+		if (candidates[i].IsTrusted())
+			trustedEdges.push_back(i);
+	std::vector<SeamComponent> components;
+	GroupSeamComponents(candidates, trustedEdges, numBlocks, components);
+
+	poses.assign(numBlocks, BlockPose());
+	std::vector<BlockPose> componentPoses;
+	std::vector<Point3> residuals;
+	unsigned numPlaced = 0, numModels = 0;
+	FOREACH(k, components) {
+		const SeamComponent& component = components[k];
+		if (!AverageBlockPoses(candidates, component.edges, blockExtents, numBlocks, component.gauge, componentPoses, residuals)) {
+			VERBOSE("warning: the %u blocks joined by %u trusted seams cannot be placed together",
+				component.numBlocks, (unsigned)component.edges.size());
+			continue;
+		}
+		++numModels;
+		for (uint32_t block = 0; block < numBlocks; ++block) {
+			if (componentPoses[block].model == NO_ID)
+				continue;
+			poses[block].T = componentPoses[block].T;
+			poses[block].model = k;
+			++numPlaced;
+		}
+	}
+	VERBOSE("Initial poses: %u blocks placed in %u models (%s)",
+		numPlaced, numModels, TD_TIMER_GET_FMT().c_str());
+	return numPlaced > 0;
 }
 /*----------------------------------------------------------------*/
 

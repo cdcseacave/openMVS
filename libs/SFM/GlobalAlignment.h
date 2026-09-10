@@ -293,6 +293,16 @@ struct SFM_API SeamCandidate
 	bool IsTrusted() const { return cls == ROBUST || cls == VERIFIED; }
 };
 
+// Where one block sits in a model frame, and why it does not sit anywhere
+struct SFM_API BlockPose
+{
+	enum State : uint8_t { UNPLACED, ADMITTED, DEFERRED, SPLIT, UNPLACEABLE };
+	Transform T;             // local -> model frame (valid when state == ADMITTED)
+	uint32_t model{NO_ID};   // model index
+	State state{UNPLACED};
+	String reason;           // for the log, when not admitted
+};
+
 /**
  * @brief Configuration for global alignment
  */
@@ -465,6 +475,59 @@ public:
 	 * @param rigIsB true when that rig is block B's, false when it is block A's
 	 */
 	static void RescaleSeamAboutRig(const Point3& rigCentre, bool rigIsB, REAL scale, Transform& T);
+
+	/**
+	 * @brief Stage 3: what the whole seam graph says about each of its candidates
+	 *
+	 * A seam is measured from two reconstructions that know nothing of each other, so a wrong one
+	 * cannot be recognized on its own evidence; only the cycles it sits in can indict it. Every
+	 * component of the graph is averaged robustly, each candidate keeps the residual of the
+	 * consensus against it, and the class says how far it can be trusted: ROBUST when the consensus
+	 * confirms it, VERIFIED when nothing corroborates it but its own evidence stands alone,
+	 * UNDECIDED when the graph cannot tell, REJECTED when a stronger consistent path contradicts it.
+	 * @param blockExtents blockExtents[i] = diagonal of block i's camera bounding box, in block i's
+	 * own units; its size is the number of blocks
+	 */
+	void ClassifySeamGraph(const std::vector<REAL>& blockExtents, std::vector<SeamCandidate>& candidates) const;
+
+	/**
+	 * @brief Robust rotation, scale and translation averaging of the given seams — the one call site
+	 * of the three global solvers
+	 *
+	 * The graph classes, the initial poses and the block pose graph all place their blocks through
+	 * this one routine, so they all fit the same edges the same way.
+	 * @param edges indices into candidates of the seams to average; the blocks they touch are the
+	 * nodes, and an edge weighs its candidate's weight, halved when the candidate is only VERIFIED
+	 * @param fixedBlock the gauge: the frame every pose comes out in
+	 * @param poses out: numBlocks entries; every block reached gets its local -> gauge frame
+	 * transform and model 0, the rest keep model NO_ID and state UNPLACED
+	 * @param residuals out: one per edge, the consensus against it (rotation degrees, scale ratio
+	 * >= 1, translation as a fraction of the smaller block's camera footprint); an edge the
+	 * rotation averaging left with its two ends in different frames gets an infinite rotation
+	 * @return false when the averaging failed, leaving every block unplaced
+	 */
+	bool AverageBlockPoses(
+		const std::vector<SeamCandidate>& candidates,
+		const std::vector<uint32_t>& edges,
+		const std::vector<REAL>& blockExtents,
+		uint32_t numBlocks, uint32_t fixedBlock,
+		std::vector<BlockPose>& poses,
+		std::vector<Point3>& residuals) const;
+
+	/**
+	 * @brief Stage 4: the pose of every block of every trusted component, each component in its own
+	 * model frame
+	 *
+	 * The trusted seams alone carry the blocks: each of their components is averaged about its
+	 * best connected block and becomes one model, numbered by how much trusted weight it holds.
+	 * Blocks no trusted seam reaches keep model NO_ID. The poses are only a starting point — the
+	 * placement decides which of them are admitted.
+	 */
+	bool ComputeInitialBlockPoses(
+		const std::vector<SeamCandidate>& candidates,
+		const std::vector<REAL>& blockExtents,
+		uint32_t numBlocks,
+		std::vector<BlockPose>& poses) const;
 
 private:
 	/**
