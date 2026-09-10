@@ -456,6 +456,16 @@ public:
 	 */
 	bool IsScaleObservable(const std::vector<Scene>& subScenes, const SeamCandidate& c, bool forward) const;
 
+	/**
+	 * @brief Give a seam the scale its own direction could not observe
+	 *
+	 * Only the scale changes: the rig centre and the point it already sat at across the seam stay
+	 * paired, so the rig keeps its place and everything around it is rescaled about it.
+	 * @param rigCentre centre of the rig whose direction cannot observe a scale, in its own block's frame
+	 * @param rigIsB true when that rig is block B's, false when it is block A's
+	 */
+	static void RescaleSeamAboutRig(const Point3& rigCentre, bool rigIsB, REAL scale, Transform& T);
+
 private:
 	/**
 	 * @brief Build and validate global image -> (sub-scene, local image) mapping

@@ -104,12 +104,17 @@ bool GlobalAlignment::MergeScenes(std::vector<Scene>& subScenes, const std::vect
 		}
 		std::vector<ScenePair> scenePairs;
 		CandidatesToScenePairs(candidates, scenePairs);
+		// Every pair left disputed by its two candidates: nothing places one sub-scene against
+		// another, and copying them in at their own local frames would merge them wrong.
+		if (scenePairs.empty() && numSubScenes > 1) {
+			VERBOSE("error: no sub-scene pair was settled");
+			break;
+		}
 
-		// If only one sub-scene or no connections, just copy directly
-		if (numSubScenes == 1 || scenePairs.empty()) {
-			VERBOSE("Single sub-scene or no connections, copying directly");
-			for (uint32_t sceneIdx = 0; sceneIdx < numSubScenes; ++sceneIdx)
-				MergeSingleScene(subScenes[sceneIdx], localToGlobals[sceneIdx], true);
+		// A single sub-scene has nothing to align against, so it is copied in as it is
+		if (numSubScenes == 1) {
+			VERBOSE("Single sub-scene, copying directly");
+			MergeSingleScene(subScenes[0], localToGlobals[0], true);
 			DEBUG("Single-scene merge completed (%s)", TD_TIMER_GET_FMT().c_str());
 			return true;
 		}
@@ -422,9 +427,10 @@ void AppendRigObservations(
 // i.e. it scales the rig's centers into the frame the points live in, so the similarity mapping
 // the point sub-scene into the rig sub-scene is p_rig = (1/scale) * R * p_point + (1/scale) * t.
 // Every correspondence of the direction is appended to `observations`, tagged with which side of
-// the seam it came from, with `inlierMask` saying which ones the estimator kept: the seam is scored
-// on all of them, whichever of the two directions ends up carrying it. Returns 0 when the direction
-// yields no usable estimate, the correspondences being appended all the same.
+// the seam it came from, and `inlierMask` grows with them to say which ones the estimator kept: it
+// stays parallel to `observations`, so calling this once per direction leaves one mask over both.
+// The seam is scored on all of them, whichever of the two directions ends up carrying it. Returns 0
+// when the direction yields no usable estimate, the correspondences being appended all the same.
 unsigned EstimateRigAgainstPoints(
 	const RigCorrespondences& rc, const Scene& rigScene,
 	const poselib::RansacOptions& ransac, bool pointsAreA, Transform& T,
@@ -432,8 +438,9 @@ unsigned EstimateRigAgainstPoints(
 	std::vector<bool>& inlierMask)
 {
 	const size_t first = observations.size();
+	ASSERT(inlierMask.size() == first);
 	AppendRigObservations(rc, rigScene, pointsAreA, observations, correspondences);
-	inlierMask.assign(observations.size() - first, false);
+	inlierMask.resize(observations.size(), false);
 
 	// the scale is observable only from points seen out of at least two distinct rig centers
 	if (rc.cameraExt.size() < 2 || rc.numCorrespondences == 0 || rc.maxError <= 0)
@@ -457,8 +464,9 @@ unsigned EstimateRigAgainstPoints(
 	T.scale = REAL(1) / scale;
 	T.t = Point3(pose.t[0], pose.t[1], pose.t[2]) * T.scale;
 
-	// the mask runs in the same order the correspondences were appended in
-	size_t k = 0;
+	// the mask runs in the same order the correspondences were appended in, behind whatever an
+	// earlier direction already left in it
+	size_t k = first;
 	for (size_t r = 0; r < inliers.size(); ++r)
 		for (size_t i = 0; i < inliers[r].size(); ++i, ++k)
 			inlierMask[k] = inliers[r][i] != 0;
@@ -624,18 +632,16 @@ void LogSeamCandidate(uint32_t a, uint32_t b, const SeamCandidate& c)
 		c.score.centres, c.scaleObservable ? "observable" : "unobservable", c.weight);
 }
 
-// Give a seam the scale its own direction could not observe, keeping the rig where the seam
-// already put it: the rig centre and its counterpart across the seam stay paired, and only the
-// scale of everything around them changes.
-void RescaleSeamAboutRig(const Point3& rigCentre, bool rigIsB, REAL scale, Transform& T)
+} // namespace
+
+void GlobalAlignment::RescaleSeamAboutRig(const Point3& rigCentre, bool rigIsB, REAL scale, Transform& T)
 {
 	const Point3 pointA(rigIsB ? T.Invert() * rigCentre : rigCentre);
 	const Point3 pointB(rigIsB ? rigCentre : T * rigCentre);
 	T.scale = scale;
 	T.t = pointB - (T.R * pointA) * scale;
 }
-
-} // namespace
+/*----------------------------------------------------------------*/
 
 unsigned SeamCandidate::NumInliers(int forward) const
 {

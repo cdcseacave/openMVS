@@ -12191,7 +12191,29 @@ static bool CheckUnobservableScale(const Transform transforms[2], const Transfor
 			c.scaleObservable ? "scaled" : "unscaled", errScale * 100);
 		return false;
 	}
-	VERBOSE("  shallow rig: scale taken from the other direction, %.2f%% off", errScale * 100);
+
+	// the rule a seam standing on one direction alone takes that scale by: whichever block the rig
+	// belongs to, its centre must keep the point it already sat at across the seam, and nothing but
+	// the scale may change
+	for (unsigned side = 0; side < 2; ++side) {
+		const bool rigIsB = side == 0;
+		const Point3 rigCentre(subScenes[rigIsB ? 1 : 0].images[rigIsB ? keptFirst : 0].C);
+		const Point3 before(rigIsB ? c.T.Invert() * rigCentre : c.T * rigCentre);
+		const REAL scale = c.T.scale * REAL(1.5);
+		Transform rescaled(c.T);
+		GlobalAlignment::RescaleSeamAboutRig(rigCentre, rigIsB, scale, rescaled);
+		const Point3 after(rigIsB ? rescaled.Invert() * rigCentre : rescaled * rigCentre);
+		const REAL moved = norm(after - before) / MAXF(norm(before), REAL(1));
+		const REAL turned = R2D(ACOS(ComputeAngle(Matrix3x3(rescaled.R), Matrix3x3(c.T.R))));
+		if (rescaled.scale != scale || turned > REAL(1e-6) || moved > REAL(1e-9)) {
+			VERBOSE("HierarchicalCameraAlignmentTest FAILED: rescaling about the %s rig moved it by %g, "
+				"turned it by %g deg and left the scale at %g instead of %g",
+				rigIsB ? "B" : "A", moved, turned, rescaled.scale, scale);
+			return false;
+		}
+	}
+	VERBOSE("  shallow rig: scale taken from the other direction, %.2f%% off; rescaling holds the rig in place",
+		errScale * 100);
 	return true;
 }
 
