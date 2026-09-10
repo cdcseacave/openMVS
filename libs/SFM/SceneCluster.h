@@ -143,6 +143,17 @@ public:
 	std::vector<Scene> SplitScene(std::vector<IIndexArr>* outLocalToGlobal = NULL);
 
 	/**
+	 * @brief Split the scene into the given clusters of global image IDs, each cluster one sub-scene
+	 *
+	 * The same memory protocol as SplitScene; clusters under minViewsPerCluster are NOT skipped
+	 * here, so the sub-scenes come out numbered exactly as the given clusters are.
+	 * @param outLocalToGlobal Optional output vector of ID mappings (parallel to returned scenes)
+	 */
+	std::vector<Scene> SplitSceneByClusters(
+		const std::vector<IIndexArr>& clusters,
+		std::vector<IIndexArr>* outLocalToGlobal = NULL);
+
+	/**
 	 * @brief Export cluster GPS positions to PLY file with unique colors per cluster
 	 * @param subScenes Vector of scene clusters
 	 * @param fileName Output PLY file path
@@ -206,10 +217,12 @@ private:
 	// Helper: Rescue small orphaned clusters
 	void RefineClustersRescueOrphans(std::vector<IIndexArr>& clusters);
 
-	// Helper: Create sub-scenes and logging/export from clusters
+	// Helper: Create sub-scenes and logging/export from clusters; clusters smaller than
+	// minViewsPerCluster are left out unless the caller asked for every one of them
 	std::vector<Scene> BuildSubScenesFromClusters(
 		std::vector<IIndexArr>& clusters,
-		std::vector<IIndexArr>* outLocalToGlobal);
+		std::vector<IIndexArr>* outLocalToGlobal,
+		bool skipSmallClusters = true);
 
 private:
 	Scene& scene;                  // Reference to input scene

@@ -303,6 +303,38 @@ struct SFM_API BlockPose
 	String reason;           // for the log, when not admitted
 };
 
+// Blocks placed together: one block (its local frame is the group frame, frames = {identity}) or
+// a model (each block's pose in that model's frame)
+struct SFM_API BlockGroup
+{
+	std::vector<uint32_t> blocks;
+	std::vector<Transform> frames; // block local -> group frame, parallel to blocks
+};
+
+// A hypothesis for the pose of a group in the model frame, scored on a pool of observations
+struct SFM_API PlacementHypothesis
+{
+	enum Source : uint8_t { RIG_ON_MODEL, MODEL_ON_GROUP, INITIAL };
+	Transform T;              // group frame -> model
+	Source source{INITIAL};
+	SeamScore score;          // side 0 = the group, side 1 = the model
+	String failedGate;        // the failed gates, comma-separated; empty when passed
+	bool Passed() const { return failedGate.empty(); }
+};
+
+// Pool of observations between a group and the admitted blocks: the group side in the group frame,
+// the model side in the model frame
+struct SFM_API PlacementPool
+{
+	BlockGroup group;
+	std::vector<uint32_t> candidateIdx;              // candidates contributing (group <-> admitted)
+	std::vector<SeamObservation> observations;       // forward == true: point in the group, camera in the model; false: the reverse
+	std::vector<SeamCorrespondence> correspondences; // parallel to observations
+	std::vector<uint32_t> observationCandidate;      // parallel: index into candidateIdx (NO_ID for a raw pair without a candidate)
+	std::vector<Point3> groupCentres;                // centres of every group camera in the group frame
+	std::vector<Point3> modelCentres;                // centres of every admitted camera in the model frame
+};
+
 /**
  * @brief Configuration for global alignment
  */
@@ -534,7 +566,68 @@ public:
 		uint32_t numBlocks,
 		std::vector<BlockPose>& poses) const;
 
+	/**
+	 * @brief The one refinement of block poses: the admitted blocks fitted jointly to the inlier
+	 * observations of the given model seams
+	 *
+	 * Seven parameters per block — a unit quaternion on its own manifold, a translation and a log
+	 * scale — and one residual per inlier observation: the point is carried from its own block into
+	 * the model frame and back into the block of the camera that saw it, and what that camera then
+	 * predicts is charged against what it observed, as the chord between the two bearings in the
+	 * camera's own pixels under a Huber loss of maxReprojError. Solving every block at once is what
+	 * lets a seam's two ends move apart: a chain refined pair by pair can only pass its error on.
+	 * @param modelSeams indices into candidates of the seams the model rests on; one whose two
+	 * blocks are not both admitted carries nothing and is skipped
+	 * @param gaugeBlock the block held fixed, whose frame the poses are therefore expressed in
+	 * @param poses in/out: the pose of every block, refined where the seams reach it
+	 */
+	void RefineBlockPoses(
+		const std::vector<SeamCandidate>& candidates,
+		const std::vector<uint32_t>& modelSeams,
+		uint32_t gaugeBlock,
+		std::vector<BlockPose>& poses) const;
+
+	/**
+	 * @brief Every correspondence between a group of blocks and the admitted ones, in the two
+	 * frames a placement is judged in
+	 *
+	 * One function for a block and for a model: a block is a group of one. Every candidate of a
+	 * group-to-model pair contributes its evidence, whatever its class — a class discounts a
+	 * candidate's transform, not what its cameras saw, and the pool is judged afresh; this is also
+	 * what lets a folded block's two halves contradict each other. A pair no candidate covers at
+	 * all still carries correspondences, and those are collected raw.
+	 */
+	void BuildPlacementPool(
+		const std::vector<Scene>& subScenes,
+		const std::vector<SeamCandidate>& candidates,
+		const std::vector<BlockPose>& poses,
+		const BlockGroup& group,
+		PlacementPool& pool) const;
+
+	/**
+	 * @brief What the pool says about one placement: ScoreSeam of its transform over every pooled
+	 * observation, then the gates on what came out
+	 * @param bestOwnInliers what the best hypothesis of this group explains, so a placement that
+	 * covers far less of the same evidence is refused
+	 * @param voteRatio the camera-vote margin the model is held to
+	 */
+	void ScoreHypothesis(
+		const std::vector<Scene>& subScenes,
+		const PlacementPool& pool,
+		unsigned bestOwnInliers,
+		float voteRatio,
+		PlacementHypothesis& h) const;
+
 private:
+	/**
+	 * @brief Refine one A -> B similarity against every reprojection the given observations carry
+	 *
+	 * The two-block case of RefineBlockPoses: block A gauges the model at the identity, so the
+	 * seam travels in and out through block B's pose.
+	 */
+	void RefineSeamTransform(
+		const std::vector<SeamObservation>& observations, float maxReprojError, Transform& T) const;
+
 	/**
 	 * @brief Build and validate global image -> (sub-scene, local image) mapping
 	 *

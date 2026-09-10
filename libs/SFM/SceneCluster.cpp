@@ -1019,9 +1019,19 @@ void SceneCluster::RefineClustersRescueOrphans(std::vector<IIndexArr>& clusters)
 	}), clusters.end());
 }
 
+std::vector<Scene> SceneCluster::SplitSceneByClusters(
+	const std::vector<IIndexArr>& clusters,
+	std::vector<IIndexArr>* outLocalToGlobal)
+{
+	// the clusters are given, so there is nothing to partition and no connectivity graph to build
+	std::vector<IIndexArr> given(clusters);
+	return BuildSubScenesFromClusters(given, outLocalToGlobal, false);
+}
+
 std::vector<Scene> SceneCluster::BuildSubScenesFromClusters(
 	std::vector<IIndexArr>& clusters,
-	std::vector<IIndexArr>* outLocalToGlobal)
+	std::vector<IIndexArr>* outLocalToGlobal,
+	const bool skipSmallClusters)
 {
 	IIndex nSkippedViews = 0;
 	std::vector<Scene> subScenes;
@@ -1034,7 +1044,7 @@ std::vector<Scene> SceneCluster::BuildSubScenesFromClusters(
 	// leave the one reconstruction that runs with a single thread
 	unsigned nClusters = 0;
 	for (const IIndexArr& cluster : clusters)
-		if (cluster.size() >= config.minViewsPerCluster)
+		if (!skipSmallClusters || cluster.size() >= config.minViewsPerCluster)
 			++nClusters;
 	const unsigned nThreadsPerCluster = MAXF(1u, scene.nMaxThreads / MAXF(nClusters, 1u));
 	DEBUG_EXTRA("Allocating %u threads per sub-scene (%u clusters, %u parent threads)",
@@ -1056,7 +1066,7 @@ std::vector<Scene> SceneCluster::BuildSubScenesFromClusters(
 		// localID1 < localID2 means also globalID1 < globalID2
 		// so pair ID ordering (ID1 < ID2) is maintained through local-global remapping
 		cluster.Sort();
-		if (cluster.size() < config.minViewsPerCluster) {
+		if (skipSmallClusters && cluster.size() < config.minViewsPerCluster) {
 			DEBUG("warning: skipping small cluster with %u views", (unsigned)cluster.size());
 			nSkippedViews += cluster.size();
 			continue;

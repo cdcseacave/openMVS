@@ -11260,6 +11260,408 @@ bool SeamGraphConsensusTest()
 	return true;
 }
 
+// ===============================================================================
+// A capture walking around a loop: blocks of cameras on a circle looking outward at a cylinder
+// wall. Every merge test builds its scene from these helpers, so a defect one of them reproduces
+// is described by the same handful of numbers.
+// ===============================================================================
+
+struct RingSceneConfig
+{
+	unsigned numBlocks{12}, camsPerBlock{10}, numPoints{3000};
+	REAL cameraRadius{5}, wallRadius{9}, wallHeight{4};
+	REAL driftDegPerBlock{0};    // internal bend of every block (rotation ramp about the ring axis)
+	REAL driftScalePerBlock{0};  // internal scale ramp of every block (centres scaled about the block's first camera)
+	REAL noisePx{0.3};           // keypoint noise
+	uint32_t tinyBlock{NO_ID};   // this block gets two cameras 1 mm apart instead of camsPerBlock
+	uint32_t foldedBlock{NO_ID}; // this block's second half is reconstructed folded by 180 degrees
+	uint32_t seed{7};
+};
+
+// Two images belong to a pair only when this many tracks join them, the bar a real matcher's
+// geometric verification leaves behind
+static constexpr unsigned kRingMinSharedTracks = 20;
+// How far a ring camera may be tilted off the radial direction
+static constexpr REAL kRingTiltDeg = 10;
+
+// Rotation of the world frame about the ring axis (z through the ring centre, the origin) by `deg`
+static SEACAVE::Transform RingRotation(REAL deg)
+{
+	SEACAVE::Transform T;
+	T.R.SetRotationAxisAngle(Point3(0, 0, D2R(deg)));
+	return T;
+}
+
+// One camera of the ring: its centre on the circle at the given angle, moved along the tangent by
+// `tangentOffset`, looking radially outward and tilted up or down by a random angle. The tilt turns
+// the camera about its own right axis and leaves it pointing outward, so how far around the wall a
+// camera reaches -- which decides what two cameras share and therefore where the blocks meet -- is
+// the same for every camera of the ring.
+static Pose3D RingCamera(REAL angle, REAL radius, REAL tangentOffset, std::mt19937& rng)
+{
+	const REAL c = COS(angle), s = SIN(angle);
+	Pose3D pose;
+	pose.C = Point3(radius * c - tangentOffset * s, radius * s + tangentOffset * c, 0);
+	std::uniform_real_distribution<REAL> tiltDist(-kRingTiltDeg, kRingTiltDeg);
+	RMatrix tilt;
+	tilt.SetRotationAxisAngle(Point3(D2R(tiltDist(rng)), 0, 0));
+	// the camera axes as the rows of the world-to-camera rotation: right along the tangent, down
+	// along the ring axis, forward radially outward
+	pose.R = RMatrix(tilt * Matrix3x3(
+		 s, -c,  0,
+		 0,  0, -1,
+		 c,  s,  0));
+	return pose;
+}
+
+static void GenerateRingScene(const RingSceneConfig& cfg, Scene& scene, std::vector<IIndexArr>& blocks, std::vector<Pose3D>& gtPoses)
+{
+	std::mt19937 rng(cfg.seed);
+	scene.cameras.emplace_back(new PinholeCamera(cv::Size(640, 480), REAL(400), REAL(400), REAL(320), REAL(240)));
+
+	// the cameras, block by block, so every block owns a contiguous arc and contiguous global IDs
+	const REAL slotAngle = REAL(2) * REAL(M_PI) / REAL(cfg.numBlocks * cfg.camsPerBlock);
+	blocks.assign(cfg.numBlocks, IIndexArr());
+	const auto AddCamera = [&](uint32_t block, const Pose3D& pose) {
+		blocks[block].push_back((IIndex)scene.images.size());
+		scene.images.emplace_back((IIndex)scene.images.size(), String(), pose, 0, scene.cameras[0]);
+	};
+	for (uint32_t b = 0; b < cfg.numBlocks; ++b) {
+		if (b == cfg.tinyBlock) {
+			// two cameras a millimetre apart at the centre of the block's arc: a rig too short to
+			// observe a scale of its own
+			const REAL angle = slotAngle * (REAL(b * cfg.camsPerBlock) + REAL(cfg.camsPerBlock - 1) / 2);
+			AddCamera(b, RingCamera(angle, cfg.cameraRadius, REAL(-0.0005), rng));
+			AddCamera(b, RingCamera(angle, cfg.cameraRadius, REAL(0.0005), rng));
+			continue;
+		}
+		for (unsigned k = 0; k < cfg.camsPerBlock; ++k)
+			AddCamera(b, RingCamera(slotAngle * REAL(b * cfg.camsPerBlock + k), cfg.cameraRadius, 0, rng));
+	}
+	scene.status.nCalibratedImages = scene.images.size();
+	gtPoses.assign(scene.images.size(), Pose3D());
+	FOREACH(i, scene.images) {
+		gtPoses[i].R = scene.images[i].R;
+		gtPoses[i].C = scene.images[i].C;
+	}
+
+	// the wall the ring looks at, and what every camera sees of it
+	std::uniform_real_distribution<REAL> wallAngleDist(0, REAL(2) * REAL(M_PI));
+	std::uniform_real_distribution<REAL> wallHeightDist(-cfg.wallHeight / 2, cfg.wallHeight / 2);
+	std::normal_distribution<REAL> keypointNoise(0, cfg.noisePx);
+	for (unsigned p = 0; p < cfg.numPoints; ++p) {
+		const REAL a = wallAngleDist(rng);
+		const Point3 X(cfg.wallRadius * COS(a), cfg.wallRadius * SIN(a), wallHeightDist(rng));
+		std::vector<std::pair<IIndex, Point2>> projections;
+		FOREACH(i, scene.images) {
+			const auto [proj, valid] = scene.images[i].ProjectPoint(X);
+			if (valid && Image8U::isInside(proj, scene.images[i].GetSize()))
+				projections.emplace_back(i, proj);
+		}
+		if (projections.size() < 2)
+			continue;
+		Track track(X);
+		for (const auto& [image, proj] : projections) {
+			Image& img = scene.images[image];
+			track.observations.emplace_back(image, (uint32_t)img.keypoints.size());
+			img.keypoints.emplace_back(Point2(proj.x + keypointNoise(rng), proj.y + keypointNoise(rng)), 0.f, 0.f, 10.f);
+		}
+		track.numInliers = (uint8_t)MINF(track.observations.size(), (IIndex)UINT8_MAX);
+		scene.tracks.emplace_back(std::move(track));
+	}
+
+	// a pair per image couple the tracks join often enough, matched through those very tracks
+	std::unordered_map<PairIdx::PairIndex, unsigned> numShared;
+	const auto ForEachTrackPair = [&scene](const std::function<void(const Observation&, const Observation&)>& visit) {
+		for (const Track& track : scene.tracks)
+			FOREACH(i, track.observations)
+				for (IIndex j = i + 1; j < track.observations.size(); ++j)
+					visit(track.observations[i], track.observations[j]);
+	};
+	ForEachTrackPair([&numShared](const Observation& first, const Observation& second) {
+		++numShared[PairIdx(first.imageID, second.imageID).idx];
+	});
+	std::unordered_map<PairIdx::PairIndex, uint32_t> pairOf;
+	for (const auto& [key, num] : numShared) {
+		if (num < kRingMinSharedTracks)
+			continue;
+		const PairIdx images(key);
+		pairOf.emplace(key, (uint32_t)scene.pairs.size());
+		scene.pairs.emplace_back(images.i, images.j);
+	}
+	ForEachTrackPair([&scene, &pairOf](const Observation& first, const Observation& second) {
+		const auto it = pairOf.find(PairIdx(first.imageID, second.imageID).idx);
+		if (it != pairOf.end())
+			scene.pairs[it->second].matches.emplace_back(first.featureID, second.featureID);
+	});
+	for (ImagePair& pair : scene.pairs) {
+		pair.relativePose = scene.images[pair.ID2] / scene.images[pair.ID1];
+		pair.E = ImagePair::ComposeEssentialMatrix(pair.relativePose.value());
+		pair.F = ImagePair::ComposeFundamentalMatrix(pair.E.value(), scene.images[pair.ID1].GetK(), scene.images[pair.ID2].GetK());
+	}
+	scene.status.nTracks = scene.tracks.size();
+	scene.status.nState.set(Scene::Status::STATE::FEATURES_EXTRACTED);
+	scene.status.nState.set(Scene::Status::STATE::MATCHED);
+	ComputePairsWeights(scene);
+}
+
+// A block whose two halves were never seen together: the pairs that would have joined them are
+// dropped before the block is split off, so its reconstruction has nothing tying one to the other
+static void DropFoldPairs(Scene& scene, const IIndexArr& block, unsigned half)
+{
+	std::unordered_map<IIndex, unsigned> localOf;
+	FOREACH(k, block)
+		localOf.emplace(block[k], k);
+	for (uint32_t i = 0; i < scene.pairs.size(); ++i) {
+		const auto it1 = localOf.find(scene.pairs[i].ID1);
+		const auto it2 = localOf.find(scene.pairs[i].ID2);
+		if (it1 != localOf.end() && it2 != localOf.end() && (it1->second < half) != (it2->second < half))
+			scene.pairs.RemoveAtMove(i--);
+	}
+}
+
+// The internal drift of one block: camera k is turned about the ring axis and pushed away from the
+// block's first camera along a ramp, so the block comes out bent and stretched in its own frame
+static void BendRingBlock(const RingSceneConfig& cfg, Scene& sub)
+{
+	if (cfg.driftDegPerBlock == 0 && cfg.driftScalePerBlock == 0)
+		return;
+	const REAL steps = MAXF(REAL(cfg.camsPerBlock) - 1, REAL(1));
+	const Point3 first(sub.images[0].C);
+	FOREACH(k, sub.images) {
+		Image& img = sub.images[k];
+		const REAL ramp = REAL(k) / steps;
+		RMatrix R;
+		R.SetRotationAxisAngle(Point3(0, 0, D2R(cfg.driftDegPerBlock * ramp)));
+		img.R = RMatrix(img.R * R.t());
+		img.C = first + (R * img.C - first) * (REAL(1) + cfg.driftScalePerBlock * ramp);
+	}
+}
+
+// A block reconstructed folded: it holds no track its two halves share, and its second half sits
+// turned by half a turn about the ring axis through the block's own centroid
+static void FoldRingBlock(Scene& sub, unsigned half)
+{
+	for (uint32_t t = sub.tracks.size(); t-- > 0; ) {
+		bool inHalf[2] = {false, false};
+		for (const Observation& obs : sub.tracks[t].observations)
+			inHalf[obs.imageID < half ? 0 : 1] = true;
+		if (inHalf[0] && inHalf[1])
+			sub.tracks.RemoveAtMove(t);
+	}
+	Point3 centroid(Point3::ZERO);
+	for (const Image& img : sub.images)
+		centroid += img.C;
+	centroid /= (REAL)sub.images.size();
+	RMatrix R;
+	R.SetRotationAxisAngle(Point3(0, 0, REAL(M_PI)));
+	for (IIndex k = half; k < sub.images.size(); ++k) {
+		Image& img = sub.images[k];
+		img.R = RMatrix(img.R * R.t());
+		img.C = centroid + R * (img.C - centroid);
+	}
+}
+
+static void BuildRingBlocks(const RingSceneConfig& cfg, Scene& scene, const std::vector<IIndexArr>& blocks,
+	const std::vector<Pose3D>& gtPoses, std::vector<Scene>& subScenes,
+	std::vector<IIndexArr>& localToGlobals, std::vector<SEACAVE::Transform>& applied)
+{
+	if (cfg.foldedBlock != NO_ID)
+		DropFoldPairs(scene, blocks[cfg.foldedBlock], cfg.camsPerBlock / 2);
+
+	localToGlobals.clear();
+	const ClusterConfig clusterCfg;
+	subScenes = SceneCluster(scene, clusterCfg).SplitSceneByClusters(blocks, &localToGlobals);
+
+	std::mt19937 rng(cfg.seed + 1);
+	applied.assign(subScenes.size(), SEACAVE::Transform());
+	FOREACH(b, subScenes) {
+		Scene& sub = subScenes[b];
+		FOREACH(localID, sub.images) {
+			sub.images[localID].R = gtPoses[localToGlobals[b][localID]].R;
+			sub.images[localID].C = gtPoses[localToGlobals[b][localID]].C;
+		}
+		BendRingBlock(cfg, sub);
+		if (b == cfg.foldedBlock)
+			FoldRingBlock(sub, cfg.camsPerBlock / 2);
+		sub.RecomputeCalibratedImages();
+		// the block's own points, from the cameras it ended up with; a rig a millimetre wide has
+		// nothing left once the angle bar is applied, so it is lifted here
+		for (Track& track : sub.tracks)
+			if (track.observations.size() >= 2)
+				TriangulateSkewLLS(track, sub.images, 4.f, 0.f);
+		applied[b] = SEACAVE::Transform::Random(rng, 180, 10, 0.5);
+		sub.Transform(applied[b]);
+	}
+}
+
+// The middle value of a sample, its own numbers left in place
+static REAL Median(std::vector<REAL>& values)
+{
+	ASSERT(!values.empty());
+	std::nth_element(values.begin(), values.begin() + values.size() / 2, values.end());
+	return values[values.size() / 2];
+}
+
+static std::pair<REAL, REAL> RingErrors(const Scene& scene, const std::vector<Pose3D>& gtPoses)
+{
+	Point3Arr centres, gtCentres;
+	IIndexArr registered;
+	FOREACH(i, scene.images)
+		if (scene.images[i].IsValid()) {
+			centres.emplace_back(scene.images[i].C);
+			gtCentres.emplace_back(gtPoses[i].C);
+			registered.push_back(i);
+		}
+	if (registered.empty())
+		return std::make_pair(REAL(FLT_MAX), REAL(FLT_MAX));
+	// the one similarity the merged frame is free to choose, then what every image is off by under it
+	const SEACAVE::Transform T(EstimateSimilarityTransform(centres, gtCentres));
+	// the ring the cameras walked, the unit a position error means anything in
+	REAL diameter = 0;
+	FOREACH(i, gtCentres)
+		for (IIndex j = i + 1; j < gtCentres.size(); ++j)
+			diameter = MAXF(diameter, norm(gtCentres[i] - gtCentres[j]));
+	std::vector<REAL> rotations, positions;
+	FOREACH(k, registered) {
+		positions.push_back(diameter > 0 ? norm(T * centres[k] - gtCentres[k]) / diameter : REAL(0));
+		rotations.push_back(R2D(ACOS(ComputeAngle(
+			Matrix3x3(scene.images[registered[k]].R * T.R.t()), Matrix3x3(gtPoses[registered[k]].R)))));
+	}
+	return std::make_pair(Median(rotations), Median(positions));
+}
+/*----------------------------------------------------------------*/
+
+// Three blocks of one ring, each pushed off where it belongs: the one joint refinement must pull
+// them back onto each other over the inlier observations of the seams alone
+bool BlockJointRefinementTest()
+{
+	TD_TIMER_START();
+	// a block reaches into its neighbour only as far as its own tracks go, and a track needs two of
+	// its own cameras: the ring carries enough cameras that the arc one of them sees spans several
+	const RingSceneConfig cfg{3, 16};
+	Scene scene;
+	std::vector<IIndexArr> blocks;
+	std::vector<Pose3D> gtPoses;
+	GenerateRingScene(cfg, scene, blocks, gtPoses);
+	std::vector<Scene> subScenes;
+	std::vector<IIndexArr> localToGlobals;
+	std::vector<SEACAVE::Transform> applied;
+	BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
+
+	GlobalAlignmentConfig alignCfg;
+	GlobalAlignment alignment(scene, alignCfg);
+	std::vector<SeamCandidate> candidates;
+	if (!alignment.EstimateSeamCandidates(subScenes, localToGlobals, candidates)) {
+		VERBOSE("BlockJointRefinementTest FAILED: the three blocks yielded no seam candidate");
+		return false;
+	}
+	// the chain the model rests on, block 1 in the middle
+	std::vector<uint32_t> modelSeams;
+	FOREACH(i, candidates)
+		if (candidates[i].sceneB == candidates[i].sceneA + 1)
+			modelSeams.push_back(i);
+	if (modelSeams.size() < 2) {
+		VERBOSE("BlockJointRefinementTest FAILED: %u of the two chain seams were measured, out of %u candidates",
+			(unsigned)modelSeams.size(), (unsigned)candidates.size());
+		return false;
+	}
+
+	// block 0's frame is the model frame, so a block's truth is where its own frame sits in it
+	std::vector<BlockPose> poses(cfg.numBlocks);
+	FOREACH(b, poses) {
+		poses[b].T = applied[0] * applied[b].Invert();
+		poses[b].model = 0;
+		poses[b].state = BlockPose::ADMITTED;
+	}
+	const SEACAVE::Transform truth(applied[2] * applied[1].Invert());
+	std::mt19937 rng(31);
+	for (uint32_t b = 1; b < cfg.numBlocks; ++b)
+		poses[b].T = SEACAVE::Transform::Random(rng, 2, 0.1, 0.03) * poses[b].T;
+
+	alignment.RefineBlockPoses(candidates, modelSeams, 0, poses);
+
+	// the two blocks the gauge does not hold, against the similarity that really separates them
+	const SEACAVE::Transform refined(poses[2].T.Invert() * poses[1].T);
+	const REAL angle = R2D(ACOS(ComputeAngle(Matrix3x3(refined.R), Matrix3x3(truth.R))));
+	const REAL scaleRatio = MAXF(refined.scale / truth.scale, truth.scale / refined.scale);
+	if (angle > REAL(0.2) || scaleRatio > REAL(1.005)) {
+		VERBOSE("BlockJointRefinementTest FAILED: blocks 1 and 2 came out %.3f deg and %.2f%% apart",
+			angle, (scaleRatio - 1) * 100);
+		return false;
+	}
+	VERBOSE("BlockJointRefinementTest PASSED: %.3f deg and %.3f%% over %u seams (%s)",
+		angle, (scaleRatio - 1) * 100, (unsigned)modelSeams.size(), TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+// A block carried onto the arc of another one: however well the correspondences can be read, a
+// transform that drops one block's cameras among another's has placed it wrong
+bool InterleavingVetoTest()
+{
+	TD_TIMER_START();
+	const RingSceneConfig cfg{6, 10};
+	Scene scene;
+	std::vector<IIndexArr> blocks;
+	std::vector<Pose3D> gtPoses;
+	GenerateRingScene(cfg, scene, blocks, gtPoses);
+	std::vector<Scene> subScenes;
+	std::vector<IIndexArr> localToGlobals;
+	std::vector<SEACAVE::Transform> applied;
+	BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
+
+	GlobalAlignmentConfig alignCfg;
+	GlobalAlignment alignment(scene, alignCfg);
+	std::vector<SeamCandidate> candidates;
+	if (!alignment.EstimateSeamCandidates(subScenes, localToGlobals, candidates)) {
+		VERBOSE("InterleavingVetoTest FAILED: the ring yielded no seam candidate");
+		return false;
+	}
+
+	// the model holds blocks 0 and 3, two arcs apart; block 1 asks to join it
+	std::vector<BlockPose> poses(cfg.numBlocks);
+	for (const uint32_t b : {0u, 3u}) {
+		poses[b].T = applied[0] * applied[b].Invert();
+		poses[b].model = 0;
+		poses[b].state = BlockPose::ADMITTED;
+	}
+	BlockGroup group;
+	group.blocks.push_back(1);
+	group.frames.emplace_back();
+	PlacementPool pool;
+	alignment.BuildPlacementPool(subScenes, candidates, poses, group, pool);
+	if (pool.candidateIdx.empty() || pool.observations.empty()) {
+		VERBOSE("InterleavingVetoTest FAILED: the pool of block 1 against the model holds %u observations from %u candidates",
+			(unsigned)pool.observations.size(), (unsigned)pool.candidateIdx.size());
+		return false;
+	}
+
+	// where block 1 belongs, and a third of a turn away, which lands its arc on block 3's
+	PlacementHypothesis right, wrong;
+	right.T = applied[0] * applied[1].Invert();
+	wrong.T = applied[0] * RingRotation(120) * applied[1].Invert();
+	alignment.ScoreHypothesis(subScenes, pool, 0, alignCfg.minCameraVoteRatio, right);
+	alignment.ScoreHypothesis(subScenes, pool, 0, alignCfg.minCameraVoteRatio, wrong);
+
+	if (wrong.Passed() || wrong.failedGate.find("interleaving") == String::npos ||
+		wrong.score.ownNeighbourFraction >= 0.5f) {
+		VERBOSE("InterleavingVetoTest FAILED: the turned placement kept %u inliers, %.2f of its cameras next to their own, failing '%s'",
+			wrong.score.inliers, wrong.score.ownNeighbourFraction, wrong.failedGate.c_str());
+		return false;
+	}
+	if (!right.Passed() || right.score.ownNeighbourFraction < alignCfg.minOwnNeighbourFraction) {
+		VERBOSE("InterleavingVetoTest FAILED: the true placement kept %u inliers, %.2f of its cameras next to their own, failing '%s'",
+			right.score.inliers, right.score.ownNeighbourFraction, right.failedGate.c_str());
+		return false;
+	}
+	VERBOSE("InterleavingVetoTest PASSED: %u inliers and %.2f own neighbours against %u and %.2f (%s)",
+		right.score.inliers, right.score.ownNeighbourFraction,
+		wrong.score.inliers, wrong.score.ownNeighbourFraction, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
 // Test 12: MergeSingleScene roundtrip
 bool GlobalAlignmentMergeSingleSceneTest()
 {

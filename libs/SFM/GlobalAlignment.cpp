@@ -265,19 +265,48 @@ void ResolvePairLinks(
 	}
 }
 
-// Reprojection of one seam observation through the A -> B similarity T = (q, t, exp(logScale)).
-// The residual is the chord between the predicted unit bearing and the observed one, converted to
-// pixels by the observing camera's own angular-to-pixel rate, so the Huber loss set at the pixel
-// threshold means the same for every camera in the seam. The chord equals the angular error to
-// first order, stays finite for any central camera model, and grows to 2 radians for a point that
-// ends up behind the camera -- where the offset in the observed bearing's tangent plane, which this
-// replaced, collapses back to zero and reports the worst possible fit as a perfect one.
-struct SeamReprojectionError
+// The seven parameters one block's similarity is solved in: a unit quaternion on its own manifold,
+// a translation, and the scale in the log domain the solver moves linearly in.
+struct BlockParameters
+{
+	double q[4], t[3], logScale;
+
+	explicit BlockParameters(const Transform& T) {
+		Eigen::Matrix3d R;
+		for (int i = 0; i < 3; ++i)
+			for (int j = 0; j < 3; ++j)
+				R(i, j) = T.R(i, j);
+		const Eigen::Quaterniond quat(R);
+		q[0] = quat.w(); q[1] = quat.x(); q[2] = quat.y(); q[3] = quat.z();
+		for (int i = 0; i < 3; ++i)
+			t[i] = T.t[i];
+		logScale = LOGN(T.scale);
+	}
+
+	Transform ToTransform() const {
+		const Eigen::Quaterniond quat(q[0], q[1], q[2], q[3]);
+		Transform T;
+		T.R = Eigen::Matrix3d(quat.normalized().toRotationMatrix());
+		T.t = Point3(t[0], t[1], t[2]);
+		T.scale = EXP(logScale);
+		return T;
+	}
+};
+
+// Reprojection of one seam observation through the two block similarities it ties together: the
+// point is carried from its own block into the model frame, then back into the frame of the block
+// the observing camera belongs to, and predicted in that camera. The residual is the chord between
+// the predicted unit bearing and the observed one, converted to pixels by the observing camera's
+// own angular-to-pixel rate, so the Huber loss set at the pixel threshold means the same for every
+// camera in the model. The chord equals the angular error to first order, stays finite for any
+// central camera model, and grows to 2 radians for a point that ends up behind the camera -- where
+// the offset in the observed bearing's tangent plane, which this replaced, collapses back to zero
+// and reports the worst possible fit as a perfect one.
+struct BlockSeamReprojectionError
 {
 	double X[3], R[9], C[3], b[3], pixelPerRadian;
-	bool forward;
 
-	explicit SeamReprojectionError(const SeamObservation& obs) : forward(obs.forward) {
+	explicit BlockSeamReprojectionError(const SeamObservation& obs) {
 		const Point3 bearing(normalized(obs.bearing));
 		for (int i = 0; i < 3; ++i) {
 			X[i] = obs.X[i];
@@ -290,30 +319,28 @@ struct SeamReprojectionError
 	}
 
 	template <typename T>
-	bool operator()(const T* const q, const T* const t, const T* const logScale, T* residuals) const {
+	bool operator()(
+		const T* const qPoint, const T* const tPoint, const T* const logScalePoint,
+		const T* const qCamera, const T* const tCamera, const T* const logScaleCamera,
+		T* residuals) const
+	{
 		using std::exp;
 		using std::sqrt;
-		const T Xw[3] = {T(X[0]), T(X[1]), T(X[2])};
+		// the point's own block into the model frame: p_model = s * R * X + t
+		const T Xb[3] = {T(X[0]), T(X[1]), T(X[2])};
 		T p[3];
-		if (forward) {
-			// p_B = s * R * X_A + t
-			T Rx[3];
-			ceres::QuaternionRotatePoint(q, Xw, Rx);
-			const T s = exp(logScale[0]);
-			for (int i = 0; i < 3; ++i)
-				p[i] = s * Rx[i] + t[i];
-		} else {
-			// p_A = R^t * (X_B - t) / s
-			const T d[3] = {Xw[0] - t[0], Xw[1] - t[1], Xw[2] - t[2]};
-			const T qInv[4] = {q[0], -q[1], -q[2], -q[3]};
-			T Rd[3];
-			ceres::QuaternionRotatePoint(qInv, d, Rd);
-			const T invS = exp(-logScale[0]);
-			for (int i = 0; i < 3; ++i)
-				p[i] = invS * Rd[i];
-		}
+		ceres::QuaternionRotatePoint(qPoint, Xb, p);
+		const T sPoint = exp(logScalePoint[0]);
+		for (int i = 0; i < 3; ++i)
+			p[i] = sPoint * p[i] + tPoint[i];
+		// the model frame into the observing camera's block: p_block = R^t * (p_model - t) / s
+		const T dModel[3] = {p[0] - tCamera[0], p[1] - tCamera[1], p[2] - tCamera[2]};
+		const T qInv[4] = {qCamera[0], -qCamera[1], -qCamera[2], -qCamera[3]};
+		T pBlock[3];
+		ceres::QuaternionRotatePoint(qInv, dModel, pBlock);
+		const T invScale = exp(-logScaleCamera[0]);
 		// into the observing camera, then onto the unit sphere
-		const T d[3] = {p[0] - T(C[0]), p[1] - T(C[1]), p[2] - T(C[2])};
+		const T d[3] = {invScale * pBlock[0] - T(C[0]), invScale * pBlock[1] - T(C[1]), invScale * pBlock[2] - T(C[2])};
 		T c[3];
 		for (int i = 0; i < 3; ++i)
 			c[i] = T(R[i*3+0]) * d[0] + T(R[i*3+1]) * d[1] + T(R[i*3+2]) * d[2];
@@ -491,51 +518,6 @@ std::vector<SeamObservation> SelectInliers(
 	return inliers;
 }
 
-// Refine one A -> B similarity against every inlier reprojection the two directions produced: A's
-// points into B's cameras through T, B's points into A's cameras through T^-1. Seven parameters
-// (unit quaternion on its manifold, translation, log scale) under a Huber loss set at the pixel
-// threshold, so the seam ends up fitted to what the images saw rather than to either direction's
-// minimal-solver consensus alone.
-void RefineSeamTransform(const std::vector<SeamObservation>& observations, float maxReprojError, Transform& T)
-{
-	if (observations.empty())
-		return;
-	Eigen::Matrix3d R;
-	for (int i = 0; i < 3; ++i)
-		for (int j = 0; j < 3; ++j)
-			R(i, j) = T.R(i, j);
-	const Eigen::Quaterniond quat0(R);
-	double q[4] = {quat0.w(), quat0.x(), quat0.y(), quat0.z()};
-	double t[3] = {T.t[0], T.t[1], T.t[2]};
-	double logScale = LOGN(T.scale);
-
-	ceres::Problem problem;
-	ceres::LossFunction* loss = new ceres::HuberLoss(maxReprojError);
-	for (const SeamObservation& obs : observations)
-		problem.AddResidualBlock(
-			new ceres::AutoDiffCostFunction<SeamReprojectionError, 3, 4, 3, 1>(new SeamReprojectionError(obs)),
-			loss, q, t, &logScale);
-	problem.SetManifold(q, new ceres::QuaternionManifold);
-
-	ceres::Solver::Options options;
-	// eight parameters against thousands of residuals: the normal equations are an 8x8 solve, while
-	// a QR would factorize the whole Jacobian for the same answer
-	options.linear_solver_type = ceres::DENSE_NORMAL_CHOLESKY;
-	options.max_num_iterations = 50;
-	options.function_tolerance = 1e-8;
-	options.logging_type = ceres::SILENT;
-	options.minimizer_progress_to_stdout = false;
-	ceres::Solver::Summary summary;
-	ceres::Solve(options, &problem, &summary);
-	if (!summary.IsSolutionUsable() || !ISFINITE(logScale))
-		return;
-
-	const Eigen::Quaterniond quat(q[0], q[1], q[2], q[3]);
-	T.R = Eigen::Matrix3d(quat.normalized().toRotationMatrix());
-	T.t = Point3(t[0], t[1], t[2]);
-	T.scale = EXP(logScale);
-}
-
 // Error of one seam observation under a candidate A -> B similarity, in the pixel units the
 // threshold is set in: the angle between the predicted and the observed bearing, charged at the
 // observing camera's own angular-to-pixel rate. This is the residual the joint refinement
@@ -599,6 +581,32 @@ Point3 RigCentroid(const std::vector<SeamObservation>& observations, bool forwar
 			++numCentres;
 		}
 	return numCentres > 0 ? centroid / (REAL)numCentres : centroid;
+}
+
+// Move the correspondences of one block pair (a < b) into the two frames a placement is judged in:
+// each side by the frame of the block it belongs to, and the forward flag re-read from the group's
+// point of view, so a pooled observation says only whether the point is the group's or the model's.
+void AppendPoolObservations(
+	const std::vector<SeamObservation>& observations, const std::vector<SeamCorrespondence>& correspondences,
+	uint32_t a, uint32_t b, const std::vector<Transform>& frameOf, const std::vector<bool>& inGroup,
+	uint32_t candidateSlot, PlacementPool& pool)
+{
+	ASSERT(observations.size() == correspondences.size());
+	FOREACH(i, observations) {
+		const SeamObservation& obs = observations[i];
+		// the point belongs to one block of the pair, the camera that saw it to the other
+		const uint32_t pointBlock = obs.forward ? a : b, cameraBlock = obs.forward ? b : a;
+		const Transform& pointFrame = frameOf[pointBlock];
+		const Transform& cameraFrame = frameOf[cameraBlock];
+		SeamObservation moved(obs);
+		moved.X = pointFrame * obs.X;
+		moved.R = RMatrix(obs.R * cameraFrame.R.t());
+		moved.C = cameraFrame * obs.C;
+		moved.forward = inGroup[pointBlock];
+		pool.observations.emplace_back(moved);
+		pool.correspondences.push_back(correspondences[i]);
+		pool.observationCandidate.push_back(candidateSlot);
+	}
 }
 
 // How a candidate was measured, for the log
@@ -667,6 +675,105 @@ unsigned SeamCandidate::NumObservations(int forward) const
 		if (obs.forward == (forward != 0))
 			++num;
 	return num;
+}
+/*----------------------------------------------------------------*/
+
+void GlobalAlignment::RefineBlockPoses(
+	const std::vector<SeamCandidate>& candidates,
+	const std::vector<uint32_t>& modelSeams,
+	const uint32_t gaugeBlock,
+	std::vector<BlockPose>& poses) const
+{
+	ASSERT(gaugeBlock < poses.size() && poses[gaugeBlock].state == BlockPose::ADMITTED);
+	std::vector<BlockParameters> parameters;
+	parameters.reserve(poses.size());
+	for (const BlockPose& pose : poses)
+		parameters.emplace_back(pose.T);
+
+	// one residual per inlier observation of every seam the model rests on, tying the block the
+	// point belongs to to the block of the camera that saw it
+	ceres::Problem problem;
+	ceres::LossFunction* loss = new ceres::HuberLoss(config.maxReprojError);
+	unsigned numResiduals = 0;
+	for (const uint32_t e : modelSeams) {
+		const SeamCandidate& c = candidates[e];
+		if (poses[c.sceneA].state != BlockPose::ADMITTED || poses[c.sceneB].state != BlockPose::ADMITTED)
+			continue;
+		const size_t numScored = MINF(c.observations.size(), c.score.inlierMask.size());
+		for (size_t i = 0; i < numScored; ++i) {
+			if (!c.score.inlierMask[i])
+				continue;
+			const SeamObservation& obs = c.observations[i];
+			BlockParameters& point = parameters[obs.forward ? c.sceneA : c.sceneB];
+			BlockParameters& camera = parameters[obs.forward ? c.sceneB : c.sceneA];
+			problem.AddResidualBlock(
+				new ceres::AutoDiffCostFunction<BlockSeamReprojectionError, 3, 4, 3, 1, 4, 3, 1>(
+					new BlockSeamReprojectionError(obs)),
+				loss, point.q, point.t, &point.logScale, camera.q, camera.t, &camera.logScale);
+			++numResiduals;
+		}
+	}
+	if (numResiduals == 0)
+		return;
+	unsigned numFree = 0;
+	FOREACH(b, parameters) {
+		if (!problem.HasParameterBlock(parameters[b].q))
+			continue;
+		problem.SetManifold(parameters[b].q, new ceres::QuaternionManifold);
+		++numFree;
+	}
+	// the gauge: the model frame is this block's own, so its pose is what everything else moves against
+	if (problem.HasParameterBlock(parameters[gaugeBlock].q)) {
+		problem.SetParameterBlockConstant(parameters[gaugeBlock].q);
+		problem.SetParameterBlockConstant(parameters[gaugeBlock].t);
+		problem.SetParameterBlockConstant(&parameters[gaugeBlock].logScale);
+		--numFree;
+	}
+
+	ceres::Solver::Options options;
+	// seven parameters per block against many thousands of residuals, and every residual touches
+	// only two blocks: the normal equations are sparse and stay small however many blocks there are
+	options.linear_solver_type = ceres::SPARSE_NORMAL_CHOLESKY;
+	options.max_num_iterations = 50;
+	options.function_tolerance = 1e-8;
+	options.logging_type = ceres::SILENT;
+	options.minimizer_progress_to_stdout = false;
+	ceres::Solver::Summary summary;
+	ceres::Solve(options, &problem, &summary);
+	if (!summary.IsSolutionUsable())
+		return;
+
+	FOREACH(b, poses)
+		if (problem.HasParameterBlock(parameters[b].q) && ISFINITE(parameters[b].logScale))
+			poses[b].T = parameters[b].ToTransform();
+	DEBUG_ULTIMATE("Refined %u block poses over %u seam observations: cost %g -> %g",
+		numFree, numResiduals, summary.initial_cost, summary.final_cost);
+}
+/*----------------------------------------------------------------*/
+
+void GlobalAlignment::RefineSeamTransform(
+	const std::vector<SeamObservation>& observations, const float maxReprojError, Transform& T) const
+{
+	// the seam is judged at the same pixel bar the joint refinement charges
+	ASSERT(maxReprojError == config.maxReprojError);
+	if (observations.empty())
+		return;
+	// a model of two blocks: block A gauges it at the identity, so the seam travels in and out
+	// through block B's pose, and every observation given is evidence the fit has to answer for
+	SeamCandidate seam;
+	seam.sceneA = 0;
+	seam.sceneB = 1;
+	seam.observations = observations;
+	seam.score.inlierMask.assign(observations.size(), true);
+	seam.score.inliers = (unsigned)observations.size();
+	std::vector<BlockPose> poses(2);
+	for (BlockPose& pose : poses) {
+		pose.model = 0;
+		pose.state = BlockPose::ADMITTED;
+	}
+	poses[1].T = T.Invert();
+	RefineBlockPoses({seam}, {0u}, 0, poses);
+	T = poses[1].T.Invert();
 }
 /*----------------------------------------------------------------*/
 
@@ -951,6 +1058,95 @@ void GlobalAlignment::ScoreCandidate(const std::vector<Scene>& subScenes, SeamCa
 		[this, blockA](IIndex image) { return globalToLocal.at(image).first == blockA ? 0 : 1; },
 		centresA, centresB, c.score);
 	c.weight = c.score.Weight(config.maxVoteWeight);
+}
+/*----------------------------------------------------------------*/
+
+void GlobalAlignment::BuildPlacementPool(
+	const std::vector<Scene>& subScenes,
+	const std::vector<SeamCandidate>& candidates,
+	const std::vector<BlockPose>& poses,
+	const BlockGroup& group,
+	PlacementPool& pool) const
+{
+	ASSERT(group.blocks.size() == group.frames.size() && poses.size() == subScenes.size());
+	pool = PlacementPool();
+	pool.group = group;
+
+	// where every block that has a say sits: a group block in the group frame, an admitted one in
+	// the model frame
+	std::vector<Transform> frameOf(poses.size());
+	std::vector<bool> inGroup(poses.size(), false), inModel(poses.size(), false);
+	FOREACH(g, group.blocks) {
+		frameOf[group.blocks[g]] = group.frames[g];
+		inGroup[group.blocks[g]] = true;
+	}
+	FOREACH(b, poses)
+		if (poses[b].state == BlockPose::ADMITTED && !inGroup[b]) {
+			frameOf[b] = poses[b].T;
+			inModel[b] = true;
+		}
+	const auto JoinsGroupToModel = [&inGroup, &inModel](uint32_t a, uint32_t b) {
+		return (inGroup[a] && inModel[b]) || (inModel[a] && inGroup[b]);
+	};
+
+	// every candidate of a group-to-model pair contributes what its cameras saw, whatever its class
+	std::map<std::pair<uint32_t, uint32_t>, std::vector<uint32_t>> pairCandidates;
+	FOREACH(i, candidates) {
+		const SeamCandidate& c = candidates[i];
+		if (JoinsGroupToModel(c.sceneA, c.sceneB))
+			pairCandidates[std::make_pair(c.sceneA, c.sceneB)].push_back(i);
+	}
+	for (const auto& [blockPair, indices] : pairCandidates) {
+		// the parallel candidates of a pair were all scored on the same union of both directions,
+		// so that union enters the pool once and every one of them is recorded behind it
+		const uint32_t slot = (uint32_t)pool.candidateIdx.size();
+		for (const uint32_t i : indices)
+			pool.candidateIdx.push_back(i);
+		const SeamCandidate& c = candidates[indices.front()];
+		AppendPoolObservations(c.observations, c.correspondences,
+			blockPair.first, blockPair.second, frameOf, inGroup, slot, pool);
+	}
+	// a pair no candidate covers still carries correspondences, and they are evidence too
+	for (const auto& [blockPair, links] : blockPairLinks) {
+		if (!JoinsGroupToModel(blockPair.first, blockPair.second) || pairCandidates.count(blockPair))
+			continue;
+		std::vector<SeamObservation> observations;
+		std::vector<SeamCorrespondence> correspondences;
+		CollectPairObservations(subScenes, blockPair.first, blockPair.second, observations, correspondences);
+		AppendPoolObservations(observations, correspondences,
+			blockPair.first, blockPair.second, frameOf, inGroup, NO_ID, pool);
+	}
+
+	// the cameras of both sides, each already in the frame its side is judged in
+	FOREACH(b, poses) {
+		if (!inGroup[b] && !inModel[b])
+			continue;
+		std::vector<Point3>& centres = inGroup[b] ? pool.groupCentres : pool.modelCentres;
+		for (const Image& img : subScenes[b].images)
+			if (img.IsValid())
+				centres.emplace_back(frameOf[b] * img.C);
+	}
+	DEBUG_ULTIMATE("Placement pool of %u blocks: %u observations from %u candidates, %u against %u cameras",
+		(unsigned)group.blocks.size(), (unsigned)pool.observations.size(), (unsigned)pool.candidateIdx.size(),
+		(unsigned)pool.groupCentres.size(), (unsigned)pool.modelCentres.size());
+}
+/*----------------------------------------------------------------*/
+
+void GlobalAlignment::ScoreHypothesis(
+	const std::vector<Scene>& subScenes,
+	const PlacementPool& pool,
+	const unsigned bestOwnInliers,
+	const float voteRatio,
+	PlacementHypothesis& h) const
+{
+	// side 0 is the group the hypothesis places, side 1 the model it is placed in
+	const std::vector<uint32_t>& groupBlocks = pool.group.blocks;
+	ScoreSeam(subScenes, pool.observations, pool.correspondences, h.T,
+		[this, &groupBlocks](IIndex image) {
+			return std::find(groupBlocks.begin(), groupBlocks.end(), globalToLocal.at(image).first) != groupBlocks.end() ? 0 : 1;
+		},
+		pool.groupCentres, pool.modelCentres, h.score);
+	h.failedGate = FailedGates(h.score, h.score.inliers, bestOwnInliers, voteRatio);
 }
 /*----------------------------------------------------------------*/
 
