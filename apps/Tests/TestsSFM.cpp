@@ -11517,11 +11517,13 @@ static std::pair<REAL, REAL> RingErrors(const Scene& scene, const std::vector<Po
 		return std::make_pair(REAL(FLT_MAX), REAL(FLT_MAX));
 	// the one similarity the merged frame is free to choose, then what every image is off by under it
 	const SEACAVE::Transform T(EstimateSimilarityTransform(centres, gtCentres));
-	// the ring the cameras walked, the unit a position error means anything in
+	// the diameter of the ring the cameras walked, over every camera of it and not only those that
+	// came back registered: the unit a position error is read in has to be the same whether a merge
+	// placed the whole ring or one arc of it, or the same error reports differently
 	REAL diameter = 0;
-	FOREACH(i, gtCentres)
-		for (IIndex j = i + 1; j < gtCentres.size(); ++j)
-			diameter = MAXF(diameter, norm(gtCentres[i] - gtCentres[j]));
+	FOREACH(i, gtPoses)
+		for (IIndex j = i + 1; j < gtPoses.size(); ++j)
+			diameter = MAXF(diameter, norm(gtPoses[i].C - gtPoses[j].C));
 	std::vector<REAL> rotations, positions;
 	FOREACH(k, registered) {
 		positions.push_back(diameter > 0 ? norm(T * centres[k] - gtCentres[k]) / diameter : REAL(0));

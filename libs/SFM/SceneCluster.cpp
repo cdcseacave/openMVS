@@ -129,20 +129,21 @@ void BucketClusterEdges(const Scene& scene, float minPairWeight,
 }
 
 // Run AnalyzeClusterCoupling on every cluster that will become a sub-scene, numbered exactly
-// as BuildSubScenesFromClusters numbers them (small clusters skipped), so a flag here lines
-// up with the merge-time telemetry of the same sub-scene. This is the health check for the
-// two-scale defect: the merge stage aligns the sub-scenes to each other but cannot tell
-// whether one of them reconstructed at two scales, so the invariant that no sub-scene holds
-// two blocks joined by a seam too sparse to observe their relative scale is verified here,
-// structurally, on the graph that clustering produced.
-void ReportClusterCoupling(const Scene& scene, const std::vector<IIndexArr>& clusters, const ClusterConfig& config)
+// as BuildSubScenesFromClusters numbers them (small clusters skipped unless the caller keeps
+// them), so a flag here lines up with the merge-time telemetry of the same sub-scene. This is
+// the health check for the two-scale defect: the merge stage aligns the sub-scenes to each
+// other but cannot tell whether one of them reconstructed at two scales, so the invariant that
+// no sub-scene holds two blocks joined by a seam too sparse to observe their relative scale is
+// verified here, structurally, on the graph that clustering produced.
+void ReportClusterCoupling(const Scene& scene, const std::vector<IIndexArr>& clusters, const ClusterConfig& config,
+	bool skipSmallClusters)
 {
 	std::vector<int> clusterOf(scene.images.size(), -1);
 	std::vector<uint32_t> localIndex(scene.images.size(), 0);
 	std::vector<unsigned> clusterSize;
 	int subSceneIdx = 0;
 	for (const IIndexArr& cluster : clusters) {
-		if (cluster.size() < config.minViewsPerCluster)
+		if (skipSmallClusters && cluster.size() < config.minViewsPerCluster)
 			continue;
 		uint32_t li = 0;
 		for (IIndex g : cluster) {
@@ -1055,7 +1056,7 @@ std::vector<Scene> SceneCluster::BuildSubScenesFromClusters(
 	// them out below), so this must run before the extraction loop
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2)
-		ReportClusterCoupling(scene, clusters, config);
+		ReportClusterCoupling(scene, clusters, config, skipSmallClusters);
 	#endif
 
 	// which global images each sub-scene took, as ranges: the membership every later stage is
