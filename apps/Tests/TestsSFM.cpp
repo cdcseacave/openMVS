@@ -11092,11 +11092,12 @@ bool RobustAveragingTranslationTest()
 
 // Twelve blocks joined in a ring with chords, two wrong seams planted among them and a pair joined
 // to nothing else: the consensus must trust every true seam, reject the wrong ones, verify the pair
-// that stands alone on its own evidence, and place each component in its own frame
+// that stands alone on its own evidence, leave a pair holding two opinions undecided, judge seams
+// that observe no scale on their rotation alone, and place each component in its own frame
 bool SeamGraphConsensusTest()
 {
 	TD_TIMER_START();
-	constexpr uint32_t numRingBlocks = 12, numBlocks = 14;
+	constexpr uint32_t numRingBlocks = 12, numBlocks = 23;
 	std::mt19937 rng(9137);
 	std::vector<Transform> G(numBlocks);
 	for (Transform& T : G)
@@ -11129,11 +11130,18 @@ bool SeamGraphConsensusTest()
 	}
 	const size_t numTrueSeams = candidates.size();
 	// a chord neither block ever saw, as strong as a true seam and 60 degrees away from the truth
+	const size_t idxFalseChord = candidates.size();
 	candidates.push_back(MakeSeam(2, 8, 60, 20.f));
 	// a second and weaker opinion on a pair a true seam already covers
+	const size_t idxWrongDuplicate = candidates.size();
 	candidates.push_back(MakeSeam(5, 6, 20, 6.f));
+	// two opinions on a pair joined to nothing else: no cycle can tell them apart
+	const size_t idxDisputedPair = candidates.size();
+	candidates.push_back(MakeSeam(12, 13, 0, 20.f));
+	candidates.push_back(MakeSeam(12, 13, 15, 12.f));
 	// a pair joined to nothing else, measured from one side only but on a wide and dense rig
-	SeamCandidate bridge(MakeSeam(12, 13, 0, 20.f));
+	const size_t idxLoneBridge = candidates.size();
+	SeamCandidate bridge(MakeSeam(14, 15, 0, 20.f));
 	bridge.source = SeamCandidate::RIG_B_ON_A;
 	bridge.oneDirection = true;
 	bridge.score.centres = 3;
@@ -11143,6 +11151,21 @@ bool SeamGraphConsensusTest()
 	bridge.score.inlierMask.assign(bridge.observations.size(), true);
 	bridge.score.inliers = (unsigned)bridge.observations.size();
 	candidates.push_back(std::move(bridge));
+	// three blocks whose rigs are too shallow to observe a scale: only their rotations are averaged
+	const size_t idxRotationOnly = candidates.size();
+	for (uint32_t i = 0; i < 3; ++i) {
+		SeamCandidate c(MakeSeam(16 + i, 16 + (i + 1) % 3, 0, 6.f));
+		c.scaleObservable = false;
+		candidates.push_back(std::move(c));
+	}
+	// a chain whose middle seam observes no scale: the two ends share a rotation but no scale and no
+	// position, so only the side the averaging is gauged at can be placed
+	const size_t idxSplitChain = candidates.size();
+	candidates.push_back(MakeSeam(19, 20, 0, 7.f));
+	SeamCandidate rotationOnlyLink(MakeSeam(20, 21, 0, 6.f));
+	rotationOnlyLink.scaleObservable = false;
+	candidates.push_back(std::move(rotationOnlyLink));
+	candidates.push_back(MakeSeam(21, 22, 0, 6.f));
 
 	Scene scene;
 	GlobalAlignmentConfig alignCfg;
@@ -11157,21 +11180,44 @@ bool SeamGraphConsensusTest()
 			return false;
 		}
 	}
-	const SeamCandidate& falseChord = candidates[numTrueSeams];
+	const SeamCandidate& falseChord = candidates[idxFalseChord];
 	if (falseChord.cls != SeamCandidate::REJECTED || falseChord.residualRotation <= 30.f) {
 		VERBOSE("SeamGraphConsensusTest FAILED: the false chord is class %u with rotation residual %.2f deg",
 			(unsigned)falseChord.cls, falseChord.residualRotation);
 		return false;
 	}
-	const SeamCandidate& wrongDuplicate = candidates[numTrueSeams + 1];
+	const SeamCandidate& wrongDuplicate = candidates[idxWrongDuplicate];
 	if (wrongDuplicate.cls != SeamCandidate::REJECTED) {
 		VERBOSE("SeamGraphConsensusTest FAILED: the wrong duplicate seam is class %u with rotation residual %.2f deg",
 			(unsigned)wrongDuplicate.cls, wrongDuplicate.residualRotation);
 		return false;
 	}
-	const SeamCandidate& loneBridge = candidates.back();
+	for (size_t i = idxDisputedPair; i < idxLoneBridge; ++i) {
+		if (candidates[i].cls != SeamCandidate::UNDECIDED) {
+			VERBOSE("SeamGraphConsensusTest FAILED: opinion %u on the isolated pair is class %u",
+				(unsigned)(i - idxDisputedPair), (unsigned)candidates[i].cls);
+			return false;
+		}
+	}
+	const SeamCandidate& loneBridge = candidates[idxLoneBridge];
 	if (loneBridge.cls != SeamCandidate::VERIFIED) {
 		VERBOSE("SeamGraphConsensusTest FAILED: the lone bridge is class %u", (unsigned)loneBridge.cls);
+		return false;
+	}
+	for (size_t i = idxRotationOnly; i < idxSplitChain; ++i) {
+		const SeamCandidate& c = candidates[i];
+		if (c.cls != SeamCandidate::ROBUST || c.residualScale != 1.f || c.residualTranslation != 0.f) {
+			VERBOSE("SeamGraphConsensusTest FAILED: rotation-only seam (%u, %u) is class %u: rotation %.2f deg, scale %.3f, translation %.3f",
+				c.sceneA, c.sceneB, (unsigned)c.cls, c.residualRotation, c.residualScale, c.residualTranslation);
+			return false;
+		}
+	}
+	// the near side of the chain is judged, the far side has no scale or position to be judged by
+	if (!candidates[idxSplitChain].IsTrusted() || !candidates[idxSplitChain + 1].IsTrusted() ||
+		candidates[idxSplitChain + 2].cls != SeamCandidate::UNDECIDED) {
+		VERBOSE("SeamGraphConsensusTest FAILED: the split chain is classified %u, %u, %u",
+			(unsigned)candidates[idxSplitChain].cls, (unsigned)candidates[idxSplitChain + 1].cls,
+			(unsigned)candidates[idxSplitChain + 2].cls);
 		return false;
 	}
 
@@ -11180,10 +11226,21 @@ bool SeamGraphConsensusTest()
 		VERBOSE("SeamGraphConsensusTest FAILED: no initial block pose");
 		return false;
 	}
+	// the models are numbered by the trusted weight they hold: the ring, the lone bridge, the three
+	// blocks with no scale between them (which no averaging can place) and the split chain
+	const auto ExpectedModel = [](uint32_t block) -> uint32_t {
+		if (block < numRingBlocks)
+			return 0;
+		if (block == 14 || block == 15)
+			return 1;
+		if (block == 19 || block == 20)
+			return 3;
+		return NO_ID; // two opinions, no scale of their own, or no metric tie to their gauge
+	};
 	for (uint32_t i = 0; i < numBlocks; ++i) {
-		const uint32_t model = i < numRingBlocks ? 0 : 1;
-		if (poses[i].model != model) {
-			VERBOSE("SeamGraphConsensusTest FAILED: block %u is in model %u, expected %u", i, poses[i].model, model);
+		if (poses[i].model != ExpectedModel(i)) {
+			VERBOSE("SeamGraphConsensusTest FAILED: block %u is in model %u, expected %u",
+				i, poses[i].model, ExpectedModel(i));
 			return false;
 		}
 	}

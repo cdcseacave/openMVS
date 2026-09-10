@@ -498,13 +498,18 @@ public:
 	 * this one routine, so they all fit the same edges the same way.
 	 * @param edges indices into candidates of the seams to average; the blocks they touch are the
 	 * nodes, and an edge weighs its candidate's weight, halved when the candidate is only VERIFIED
-	 * @param fixedBlock the gauge: the frame every pose comes out in
-	 * @param poses out: numBlocks entries; every block reached gets its local -> gauge frame
-	 * transform and model 0, the rest keep model NO_ID and state UNPLACED
+	 * @param fixedBlock the gauge: the frame every pose comes out in, when the seams reach it
+	 * @param poses out: numBlocks entries; every block the rotation, scale and translation
+	 * consensus reaches from the gauge gets its local -> gauge frame transform and model 0, the
+	 * rest keep model NO_ID and state UNPLACED
 	 * @param residuals out: one per edge, the consensus against it (rotation degrees, scale ratio
 	 * >= 1, translation as a fraction of the smaller block's camera footprint); an edge the
-	 * rotation averaging left with its two ends in different frames gets an infinite rotation
-	 * @return false when the averaging failed, leaving every block unplaced
+	 * rotation averaging left with its two ends in different frames, and one measuring a scale
+	 * between blocks the metric consensus did not both place, gets an infinite rotation. A seam
+	 * that cannot observe a scale is judged on its rotation alone, and keeps a residual of 1 in
+	 * scale and 0 in translation.
+	 * @return false when no block could be placed, which a component whose seams observe no scale
+	 * at all always reports even though its rotation residuals are filled in
 	 */
 	bool AverageBlockPoses(
 		const std::vector<SeamCandidate>& candidates,
