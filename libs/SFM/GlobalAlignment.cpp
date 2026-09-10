@@ -91,18 +91,19 @@ bool GlobalAlignment::MergeScenes(std::vector<Scene>& subScenes, const std::vect
 		subScenes[i].ExportPLY(String::FormatString("subscene_%u.ply", i));
 	#endif
 
-	BuildGlobalToLocalMap(localToGlobals);
-
 	// Run the staged alignment pipeline; any stage failing breaks out to the fallback below.
 	// Every failure occurs before the merge stage (Stage 5) consumes sub-scenes, so on failure
 	// all sub-scenes are still intact and the fallback can keep the largest one.
 	do {
-		// Stage 1: Estimate relative poses between connected sub-scenes
-		std::vector<ScenePair> scenePairs;
-		if (!EstimateRelativePoses(subScenes, scenePairs)) {
+		// Stage 1: measure the seam of every connected sub-scene pair (this also fills
+		// globalToLocal, which the merge stage reads)
+		std::vector<SeamCandidate> candidates;
+		if (!EstimateSeamCandidates(subScenes, localToGlobals, candidates)) {
 			VERBOSE("error: failed to estimate relative poses");
 			break;
 		}
+		std::vector<ScenePair> scenePairs;
+		CandidatesToScenePairs(candidates, scenePairs);
 
 		// If only one sub-scene or no connections, just copy directly
 		if (numSubScenes == 1 || scenePairs.empty()) {
@@ -212,25 +213,47 @@ bool GlobalAlignment::MergeScenes(std::vector<Scene>& subScenes, const std::vect
 
 namespace {
 
+// The bars of the seam rules that are not configurable, each with the rule it belongs to.
+// A camera supports a transform only when this share of its correspondences are inliers.
+constexpr float kVoteSupportFraction = 0.3f;
+// A camera contradicts a transform when its inlier share falls under this.
+constexpr float kVoteContraFraction = 0.1f;
+// Cells per axis of the image grid a supporting camera's inlier keypoints must spread over.
+constexpr unsigned kVoteGridCells = 4;
+
 // One cross-sub-scene image pair, with the sub-scene each of its two images belongs to already
 // resolved, so feature indices (queryIdx/trainIdx) can be mapped consistently.
 struct PairLink {
 	const ImagePair* pair;
 	IIndex localIdA;
 	IIndex localIdB;
+	IIndex globalIdA;
+	IIndex globalIdB;
 	bool aIsQuery; // true if pair.ID1 belongs to sub-scene A (i.e. uses queryIdx)
 };
 
-// One reprojection residual of the joint seam refinement: a 3D point of one sub-scene seen by a
-// camera of the other, each expressed in its own sub-scene's frame.
-struct SeamObservation {
-	Point3 X;              // 3D point, in the frame of the sub-scene that triangulated it
-	Matrix3x3 R;           // observing camera rotation, its own sub-scene's world to camera
-	Point3 C;              // observing camera center, in its own sub-scene's frame
-	Point3 bearing;        // observed unit bearing, in the observing camera's frame
-	double pixelPerRadian; // converts an angular residual into the pixel units the loss is set in
-	bool forward;          // true: point in A seen from B (apply T); false: point in B seen from A (apply T^-1)
-};
+// The cross pairs of one sub-scene pair, resolved so that side A is sub-scene `a`
+void ResolvePairLinks(
+	const Scene& scene, const std::unordered_map<IIndex, std::pair<uint32_t, IIndex>>& globalToLocal,
+	const std::vector<uint32_t>& pairIndices, uint32_t a, std::vector<PairLink>& links)
+{
+	links.clear();
+	links.reserve(pairIndices.size());
+	for (uint32_t idx : pairIndices) {
+		const ImagePair& pair = scene.pairs[idx];
+		const auto it1 = globalToLocal.find(pair.ID1);
+		const auto it2 = globalToLocal.find(pair.ID2);
+		ASSERT(it1 != globalToLocal.end() && it2 != globalToLocal.end());
+		PairLink link;
+		link.pair = &pair;
+		link.aIsQuery = it1->second.first == a;
+		link.localIdA = link.aIsQuery ? it1->second.second : it2->second.second;
+		link.localIdB = link.aIsQuery ? it2->second.second : it1->second.second;
+		link.globalIdA = link.aIsQuery ? pair.ID1 : pair.ID2;
+		link.globalIdB = link.aIsQuery ? pair.ID2 : pair.ID1;
+		links.push_back(link);
+	}
+}
 
 // Reprojection of one seam observation through the A -> B similarity T = (q, t, exp(logScale)).
 // The residual is the chord between the predicted unit bearing and the observed one, converted to
@@ -301,6 +324,7 @@ struct RigCorrespondences
 {
 	std::vector<std::vector<poselib::Point3D>> bearings; // per rig camera, unit vectors in that camera's frame
 	std::vector<std::vector<poselib::Point3D>> points;   // per rig camera, points in the other sub-scene's frame
+	std::vector<std::vector<SeamCorrespondence>> matches; // per rig camera, the two images and features behind each
 	std::vector<poselib::CameraPose> cameraExt;          // per rig camera, its pose in the rig sub-scene's frame
 	std::vector<IIndex> localIDs;                        // per rig camera, its image index in the rig sub-scene
 	std::vector<double> pixelPerRadian;                  // per rig camera, its angular-to-pixel rate
@@ -315,7 +339,7 @@ struct RigCorrespondences
 RigCorrespondences CollectRigCorrespondences(
 	const Scene& rigScene, const Scene& pointScene,
 	const std::unordered_map<PairIdx, Point3>& pointObsToTrackPos,
-	const CLISTDEF0IDX(PairLink, uint32_t)& links, bool rigIsB, float maxReprojError)
+	const std::vector<PairLink>& links, bool rigIsB, float maxReprojError)
 {
 	RigCorrespondences rc;
 	std::unordered_map<IIndex, uint32_t> rigIndexOf;
@@ -349,6 +373,7 @@ RigCorrespondences CollectRigCorrespondences(
 				rc.localIDs.push_back(localIdRig);
 				rc.bearings.emplace_back();
 				rc.points.emplace_back();
+				rc.matches.emplace_back();
 				// the angle at which this camera reads the pixel threshold, and the rate that
 				// converts back, so every camera model in the rig is judged at the same pixel error
 				const REAL angular = imgRig.pCamera->PixelErrorToAngular(
@@ -359,22 +384,57 @@ RigCorrespondences CollectRigCorrespondences(
 			const uint32_t r = itRig->second;
 			rc.bearings[r].emplace_back(imgRig.pCamera->UnprojectNormalized(imgRig.keypoints[featureRig].pt));
 			rc.points[r].push_back(it->second);
+			rc.matches[r].push_back(SeamCorrespondence{link.globalIdA, link.globalIdB, featureA, featureB});
 			++rc.numCorrespondences;
 		}
 	}
 	return rc;
 }
 
+// Flatten one direction's correspondences into seam observations, in the order the estimator sees
+// them (grouped per rig camera), with the parallel list of the two images and features behind each.
+void AppendRigObservations(
+	const RigCorrespondences& rc, const Scene& rigScene, bool pointsAreA,
+	std::vector<SeamObservation>& observations, std::vector<SeamCorrespondence>& correspondences)
+{
+	observations.reserve(observations.size() + rc.numCorrespondences);
+	correspondences.reserve(correspondences.size() + rc.numCorrespondences);
+	for (size_t r = 0; r < rc.cameraExt.size(); ++r) {
+		const Image& imgRig = rigScene.images[rc.localIDs[r]];
+		for (size_t i = 0; i < rc.points[r].size(); ++i) {
+			const SeamCorrespondence& match = rc.matches[r][i];
+			SeamObservation obs;
+			obs.X = rc.points[r][i];
+			obs.R = imgRig.R;
+			obs.C = imgRig.C;
+			obs.bearing = rc.bearings[r][i];
+			obs.pixelPerRadian = rc.pixelPerRadian[r];
+			obs.forward = pointsAreA;
+			obs.rigImage = pointsAreA ? match.imageB : match.imageA;
+			obs.pointImage = pointsAreA ? match.imageA : match.imageB;
+			observations.push_back(obs);
+			correspondences.push_back(match);
+		}
+	}
+}
+
 // One direction of the camera alignment. The estimator solves scale * p_rig = R * p_point + t,
 // i.e. it scales the rig's centers into the frame the points live in, so the similarity mapping
 // the point sub-scene into the rig sub-scene is p_rig = (1/scale) * R * p_point + (1/scale) * t.
-// Its inliers are appended to `observations` for the joint refinement, tagged with which side of
-// the seam they came from. Returns 0 when the direction yields no usable estimate.
+// Every correspondence of the direction is appended to `observations`, tagged with which side of
+// the seam it came from, with `inlierMask` saying which ones the estimator kept: the seam is scored
+// on all of them, whichever of the two directions ends up carrying it. Returns 0 when the direction
+// yields no usable estimate, the correspondences being appended all the same.
 unsigned EstimateRigAgainstPoints(
 	const RigCorrespondences& rc, const Scene& rigScene,
-	const poselib::RansacOptions& ransac, bool pointsAreA,
-	Transform& T, std::vector<SeamObservation>& observations)
+	const poselib::RansacOptions& ransac, bool pointsAreA, Transform& T,
+	std::vector<SeamObservation>& observations, std::vector<SeamCorrespondence>& correspondences,
+	std::vector<bool>& inlierMask)
 {
+	const size_t first = observations.size();
+	AppendRigObservations(rc, rigScene, pointsAreA, observations, correspondences);
+	inlierMask.assign(observations.size() - first, false);
+
 	// the scale is observable only from points seen out of at least two distinct rig centers
 	if (rc.cameraExt.size() < 2 || rc.numCorrespondences == 0 || rc.maxError <= 0)
 		return 0;
@@ -397,23 +457,25 @@ unsigned EstimateRigAgainstPoints(
 	T.scale = REAL(1) / scale;
 	T.t = Point3(pose.t[0], pose.t[1], pose.t[2]) * T.scale;
 
-	// keep the inliers as reprojection observations for the joint refinement
-	for (size_t r = 0; r < inliers.size(); ++r) {
-		const Image& imgRig = rigScene.images[rc.localIDs[r]];
-		for (size_t i = 0; i < inliers[r].size(); ++i) {
-			if (!inliers[r][i])
-				continue;
-			SeamObservation obs;
-			obs.X = rc.points[r][i];
-			obs.R = imgRig.R;
-			obs.C = imgRig.C;
-			obs.bearing = rc.bearings[r][i];
-			obs.pixelPerRadian = rc.pixelPerRadian[r];
-			obs.forward = pointsAreA;
-			observations.push_back(obs);
-		}
-	}
+	// the mask runs in the same order the correspondences were appended in
+	size_t k = 0;
+	for (size_t r = 0; r < inliers.size(); ++r)
+		for (size_t i = 0; i < inliers[r].size(); ++i, ++k)
+			inlierMask[k] = inliers[r][i] != 0;
+	ASSERT(k == inlierMask.size());
 	return (unsigned)stats.num_inliers;
+}
+
+// The observations a mask marks as inliers, of one direction (forward 1 or 0) or of both (-1)
+std::vector<SeamObservation> SelectInliers(
+	const std::vector<SeamObservation>& observations, const std::vector<bool>& inlierMask, int forward = -1)
+{
+	ASSERT(observations.size() == inlierMask.size());
+	std::vector<SeamObservation> inliers;
+	for (size_t i = 0; i < observations.size(); ++i)
+		if (inlierMask[i] && (forward < 0 || observations[i].forward == (forward != 0)))
+			inliers.push_back(observations[i]);
+	return inliers;
 }
 
 // Refine one A -> B similarity against every inlier reprojection the two directions produced: A's
@@ -476,366 +538,682 @@ REAL SeamObservationError(const SeamObservation& obs, const Transform& T, const 
 	return obs.pixelPerRadian * ACOS(cosAngle);
 }
 
-// How many of the seam's observations a similarity places within the pixel threshold
-unsigned CountSeamInliers(const std::vector<SeamObservation>& observations, const Transform& T, float maxReprojError)
-{
-	const Transform TInv(T.Invert());
-	unsigned numInliers = 0;
-	for (const SeamObservation& obs : observations)
-		if (SeamObservationError(obs, T, TInv) <= maxReprojError)
-			++numInliers;
-	return numInliers;
-}
-
-// The second opinion on a seam only one direction could measure: take the other direction's
-// correspondences — collected already, they were merely spread over too few rig cameras to solve a
-// scale from — and keep the ones the estimate explains, as observations for the joint refinement.
-// Returns how many of them it explained.
-unsigned CollectExplainedObservations(
-	const RigCorrespondences& rc, const Scene& rigScene, bool pointsAreA,
-	const Transform& T, float maxReprojError, std::vector<SeamObservation>& observations)
-{
-	const Transform TInv(T.Invert());
-	unsigned numExplained = 0;
-	for (size_t r = 0; r < rc.cameraExt.size(); ++r) {
-		const Image& imgRig = rigScene.images[rc.localIDs[r]];
-		for (size_t i = 0; i < rc.points[r].size(); ++i) {
-			SeamObservation obs;
-			obs.X = rc.points[r][i];
-			obs.R = imgRig.R;
-			obs.C = imgRig.C;
-			obs.bearing = rc.bearings[r][i];
-			obs.pixelPerRadian = rc.pixelPerRadian[r];
-			obs.forward = pointsAreA;
-			if (SeamObservationError(obs, T, TInv) > maxReprojError)
-				continue;
-			observations.push_back(obs);
-			++numExplained;
-		}
-	}
-	return numExplained;
-}
-
 // Rig cameras sitting at distinct centres: a rig collapsed onto one point sees no parallax and
-// cannot observe a scale, however many cameras it holds
-unsigned CountDistinctRigCentres(const RigCorrespondences& rc, const Scene& rigScene)
+// cannot observe a scale, however many cameras it holds. The centres belong to one sub-scene, so
+// they are comparable against that sub-scene's own extent.
+unsigned CountDistinctRigCentres(const std::vector<Point3>& rigCentres)
 {
-	AABB3 bbox(true);
-	for (IIndex localID : rc.localIDs)
-		bbox.InsertFull(rigScene.images[localID].C);
-	if (bbox.IsEmpty())
+	if (rigCentres.empty())
 		return 0;
+	// the box the centres span may be flat -- cameras on one circle share a height -- so its
+	// diagonal, not its emptiness, says how far apart two centres have to be to be two
+	AABB3 bbox(true);
+	for (const Point3& C : rigCentres)
+		bbox.InsertFull(C);
 	const REAL eps = MAXF(bbox.GetSize().norm() * REAL(1e-4), std::numeric_limits<REAL>::epsilon());
-	std::vector<Point3> centres;
-	for (IIndex localID : rc.localIDs) {
-		const Point3& C = rigScene.images[localID].C;
+	std::vector<Point3> distinctCentres;
+	for (const Point3& C : rigCentres) {
 		bool distinct = true;
-		for (const Point3& other : centres)
+		for (const Point3& other : distinctCentres)
 			if (norm(C - other) <= eps) { distinct = false; break; }
 		if (distinct)
-			centres.push_back(C);
+			distinctCentres.push_back(C);
 	}
-	return (unsigned)centres.size();
+	return (unsigned)distinctCentres.size();
+}
+
+// The merge stage cannot reach the reconstruction's RANSAC settings, so the camera alignment runs
+// the absolute-pose estimator on the options the resection configures for its own PnP.
+poselib::RansacOptions SeamRansacOptions()
+{
+	const RansacOptions resectionRansac = ResectionConfig().ransac;
+	poselib::RansacOptions ransacOptions;
+	ransacOptions.max_iterations = resectionRansac.max_iterations;
+	ransacOptions.min_iterations = resectionRansac.min_iterations;
+	ransacOptions.success_prob = resectionRansac.confidence;
+	return ransacOptions;
+}
+
+// Mean of the distinct rig camera centres of one direction, in the rig block's own frame
+Point3 RigCentroid(const std::vector<SeamObservation>& observations, bool forward)
+{
+	std::set<IIndex> seen;
+	Point3 centroid(Point3::ZERO);
+	unsigned numCentres = 0;
+	for (const SeamObservation& obs : observations)
+		if (obs.forward == forward && seen.insert(obs.rigImage).second) {
+			centroid += obs.C;
+			++numCentres;
+		}
+	return numCentres > 0 ? centroid / (REAL)numCentres : centroid;
+}
+
+// How a candidate was measured, for the log
+const char* SourceWord(SeamCandidate::Source source)
+{
+	switch (source) {
+	case SeamCandidate::RIG_B_ON_A: return "rig B on A";
+	case SeamCandidate::RIG_A_ON_B: return "rig A on B";
+	case SeamCandidate::POINTS: return "points";
+	default: return "union";
+	}
+}
+
+// Every camera's vote on one transform, the raw material the two vote bars are read from
+void LogVotes(const char* label, const SeamScore& score)
+{
+	for (const CameraVote& vote : score.votes)
+		DEBUG_ULTIMATE("%s camera %u: %u/%u inliers, coverage %.2f, %s",
+			label, vote.image, vote.inliers, vote.correspondences, vote.coverage,
+			vote.vote > 0 ? "support" : (vote.vote < 0 ? "contradict" : "abstain"));
+}
+
+// What one surviving candidate rests on. A candidate measured from one direction reports that
+// direction as its own and the other as the cross one; a union or a 3D-3D candidate, having no
+// single direction, reports the forward one as its own.
+void LogSeamCandidate(uint32_t a, uint32_t b, const SeamCandidate& c)
+{
+	const int ownForward = c.source == SeamCandidate::RIG_A_ON_B ? 0 : 1;
+	const int crossForward = 1 - ownForward;
+	DEBUG("Seam (%u, %u) %s: inliers %u/%u own, %u/%u cross; votes A %u+/%u- B %u+/%u-; "
+		"centres %u; scale %s; weight %.0f",
+		a, b, SourceWord(c.source),
+		c.NumInliers(ownForward), c.NumObservations(ownForward),
+		c.NumInliers(crossForward), c.NumObservations(crossForward),
+		c.score.support[0], c.score.contra[0], c.score.support[1], c.score.contra[1],
+		c.score.centres, c.scaleObservable ? "observable" : "unobservable", c.weight);
+}
+
+// Give a seam the scale its own direction could not observe, keeping the rig where the seam
+// already put it: the rig centre and its counterpart across the seam stay paired, and only the
+// scale of everything around them changes.
+void RescaleSeamAboutRig(const Point3& rigCentre, bool rigIsB, REAL scale, Transform& T)
+{
+	const Point3 pointA(rigIsB ? T.Invert() * rigCentre : rigCentre);
+	const Point3 pointB(rigIsB ? rigCentre : T * rigCentre);
+	T.scale = scale;
+	T.t = pointB - (T.R * pointA) * scale;
 }
 
 } // namespace
+
+unsigned SeamCandidate::NumInliers(int forward) const
+{
+	const size_t numScored = MINF(observations.size(), score.inlierMask.size());
+	unsigned num = 0;
+	for (size_t i = 0; i < numScored; ++i)
+		if (score.inlierMask[i] && (forward < 0 || observations[i].forward == (forward != 0)))
+			++num;
+	return num;
+}
+
+unsigned SeamCandidate::NumObservations(int forward) const
+{
+	if (forward < 0)
+		return (unsigned)observations.size();
+	unsigned num = 0;
+	for (const SeamObservation& obs : observations)
+		if (obs.forward == (forward != 0))
+			++num;
+	return num;
+}
+/*----------------------------------------------------------------*/
 
 bool GlobalAlignment::EstimateSubScenePairs(
 	const std::vector<Scene>& subScenes,
 	const std::vector<IIndexArr>& localToGlobals,
 	std::vector<ScenePair>& scenePairs)
 {
-	BuildGlobalToLocalMap(localToGlobals);
-	return EstimateRelativePoses(subScenes, scenePairs);
+	std::vector<SeamCandidate> candidates;
+	if (!EstimateSeamCandidates(subScenes, localToGlobals, candidates))
+		return false;
+	CandidatesToScenePairs(candidates, scenePairs);
+	return !scenePairs.empty();
 }
 /*----------------------------------------------------------------*/
 
-bool GlobalAlignment::EstimateRelativePoses(
-	const std::vector<Scene>& subScenes,
+void GlobalAlignment::CandidatesToScenePairs(
+	const std::vector<SeamCandidate>& candidates,
 	std::vector<ScenePair>& scenePairs)
 {
-	ASSERT(!globalToLocal.empty());
-	const uint32_t numSubScenes = (uint32_t)subScenes.size();
-	const bool alignCameras = config.alignment == GlobalAlignmentConfig::ALIGN_CAMERAS;
-
-	// Per-sub-scene cache: PairIdx(localImageID, featureID) -> 3D inlier-track position.
-	// Only observations belonging to inlier tracks are indexed; outliers are excluded
-	// because their triangulated positions are unreliable.
-	std::vector<std::unordered_map<PairIdx, Point3>> sceneObsToTrackPos(numSubScenes);
-	for (uint32_t sceneIdx = 0; sceneIdx < numSubScenes; ++sceneIdx) {
-		const Scene& subScene = subScenes[sceneIdx];
-		size_t numInlierObservations = 0;
-		for (const Track& track : subScene.tracks)
-			if (track.IsInlier())
-				numInlierObservations += track.GetNumInliers();
-		auto& obsToTrackPos = sceneObsToTrackPos[sceneIdx];
-		obsToTrackPos.reserve(numInlierObservations);
-		for (const Track& track : subScene.tracks) {
-			if (track.IsInlier())
-				for (const Observation& obs : track)
-					obsToTrackPos.emplace(PairIdx(obs.imageID, obs.featureID), track.position);
-		}
-	}
-
-	// Group cross-sub-scene image pairs by sub-scene pair. Each link remembers which
-	// side of the image pair corresponds to sub-scene A vs B so feature indices
-	// (queryIdx/trainIdx) can be mapped consistently.
-	std::unordered_map<PairIdx, CLISTDEF0IDX(PairLink, uint32_t)> linksByScenePair;
-	linksByScenePair.reserve(numSubScenes * 2);
-	for (const ImagePair& pair : scene.pairs) {
-		if (pair.GetNumWeightedInliers() < config.minCommonTracks)
-			continue;
-		auto it1 = globalToLocal.find(pair.ID1);
-		auto it2 = globalToLocal.find(pair.ID2);
-		if (it1 == globalToLocal.end() || it2 == globalToLocal.end())
-			continue;
-		const uint32_t scene1 = it1->second.first;
-		const uint32_t scene2 = it2->second.first;
-		if (scene1 == scene2)
-			continue;
-		PairLink link;
-		link.pair = &pair;
-		if (scene1 < scene2) {
-			link.localIdA = it1->second.second;
-			link.localIdB = it2->second.second;
-			link.aIsQuery = true;
-		} else {
-			link.localIdA = it2->second.second;
-			link.localIdB = it1->second.second;
-			link.aIsQuery = false;
-		}
-		linksByScenePair[MakePairIdx(scene1, scene2)].emplace_back(link);
-	}
-
-	// the merge stage cannot reach the reconstruction's RANSAC settings, so the camera alignment
-	// runs the absolute-pose estimator on the options the resection configures for its own PnP
-	const RansacOptions resectionRansac = ResectionConfig().ransac;
-	poselib::RansacOptions ransacOptions;
-	ransacOptions.max_iterations = resectionRansac.max_iterations;
-	ransacOptions.min_iterations = resectionRansac.min_iterations;
-	ransacOptions.success_prob = resectionRansac.confidence;
-
+	std::map<std::pair<uint32_t, uint32_t>, unsigned> numPairCandidates;
+	for (const SeamCandidate& c : candidates)
+		++numPairCandidates[std::make_pair(c.sceneA, c.sceneB)];
 	scenePairs.clear();
-	unsigned numEstimated = 0;
-	unsigned numSkippedPairs = 0;
-	for (const auto& [pairIdx, links] : linksByScenePair) {
-		const Scene& subSceneA = subScenes[pairIdx.i];
-		const Scene& subSceneB = subScenes[pairIdx.j];
-		const auto& obsToTrackPosA = sceneObsToTrackPos[pairIdx.i];
-		const auto& obsToTrackPosB = sceneObsToTrackPos[pairIdx.j];
-
-		Transform T;
-		unsigned numInliers = 0, numCorrespondences = 0;
-		if (alignCameras) {
-			// Both directions: B's cameras against A's tracks, and A's cameras against B's. Every
-			// cross pair contributes to at least one of them, which the 3D-3D correspondences
-			// cannot promise on a seam whose target-side keypoints never joined a track.
-			std::vector<SeamObservation> obsAB, obsBA;
-			Transform T_AB, T_BA;
-			const RigCorrespondences rcAB = CollectRigCorrespondences(
-				subSceneB, subSceneA, obsToTrackPosA, links, true, config.maxReprojError);
-			const RigCorrespondences rcBA = CollectRigCorrespondences(
-				subSceneA, subSceneB, obsToTrackPosB, links, false, config.maxReprojError);
-			const unsigned inliersAB = EstimateRigAgainstPoints(rcAB, subSceneB, ransacOptions, true, T_AB, obsAB);
-			const unsigned inliersBA = EstimateRigAgainstPoints(rcBA, subSceneA, ransacOptions, false, T_BA, obsBA);
-
-			// A direction is MEASURED when it produced enough support to connect two sub-scenes.
-			// Whether it may be believed is decided below, against the other direction — never on
-			// its own numbers alone, because the estimator has no way of knowing that the block it
-			// registered so confidently is the wrong one.
-			const bool measuredAB = inliersAB >= config.minCommonTracks;
-			const bool measuredBA = inliersBA >= config.minCommonTracks;
-			DEBUG_ULTIMATE("Sub-scene pair (%u, %u) camera alignment: %u cameras of B on %u points of A -> %u inliers%s; "
-				"%u cameras of A on %u points of B -> %u inliers%s",
-				pairIdx.i, pairIdx.j,
-				(unsigned)rcAB.cameraExt.size(), rcAB.numCorrespondences, inliersAB, measuredAB ? "" : " (unmeasured)",
-				(unsigned)rcBA.cameraExt.size(), rcBA.numCorrespondences, inliersBA, measuredBA ? "" : " (unmeasured)");
-			if (!measuredAB && !measuredBA) {
-				++numSkippedPairs;
-				continue;
-			}
-
-			// T_BA maps B into A, so its inverse is the second opinion on the A -> B similarity
-			const Transform T_BA_inv = measuredBA ? T_BA.Invert() : Transform();
-			String verdict;
-			std::vector<SeamObservation>* seamObs;
-			if (measuredAB && measuredBA) {
-				// two independent measurements of the same seam: they decide it between them,
-				// before any inlier share is looked at. If they disagree the seam is rejected,
-				// never resolved in favour of the better supported one, because a seam accepted
-				// wrong merges a whole block into the wrong place.
-				const REAL errRot = R2D(ACOS(ComputeAngle(Matrix3x3(T_AB.R), Matrix3x3(T_BA_inv.R))));
-				const REAL errScale = MAXF(T_AB.scale / T_BA_inv.scale, T_BA_inv.scale / T_AB.scale);
-				if (errRot > config.maxSimRotationError || errScale > config.maxSimScaleRatio) {
-					DEBUG("warning: sub-scene pair (%u, %u): the two alignment directions disagree by %.2f deg and "
-						"%.1f%% in scale (B rig %u/%u inliers at scale %.4g, A rig %u/%u inliers at scale %.4g); seam rejected",
-						pairIdx.i, pairIdx.j, errRot, (errScale - 1) * 100,
-						inliersAB, rcAB.numCorrespondences, T_AB.scale,
-						inliersBA, rcBA.numCorrespondences, T_BA_inv.scale);
-					++numSkippedPairs;
-					continue;
-				}
-				T = inliersAB >= inliersBA ? T_AB : T_BA_inv;
-				numInliers = inliersAB + inliersBA;
-				numCorrespondences = rcAB.numCorrespondences + rcBA.numCorrespondences;
-				obsAB.insert(obsAB.end(), obsBA.begin(), obsBA.end());
-				seamObs = &obsAB;
-				verdict = String::FormatString("both directions (agreeing to %.2f deg and %.1f%%)",
-					errRot, (errScale - 1) * 100);
-			} else {
-				// Only one direction was measurable, so the seam has no second estimate to be held
-				// against. It must earn the right to stand on the other direction's data instead.
-				const bool forward = measuredAB;
-				const RigCorrespondences& rcOwn = forward ? rcAB : rcBA;
-				const RigCorrespondences& rcRev = forward ? rcBA : rcAB;
-				T = forward ? T_AB : T_BA_inv;
-				numInliers = forward ? inliersAB : inliersBA;
-				numCorrespondences = rcOwn.numCorrespondences;
-				seamObs = forward ? &obsAB : &obsBA;
-				const double ratio = (double)numInliers / (double)MAXF(numCorrespondences, 1u);
-				if (ratio < config.minCameraInlierRatio) {
-					DEBUG_ULTIMATE("Sub-scene pair (%u, %u): skipped: one direction, weak (%s rig alone at %.1f%% of %u correspondences)",
-						pairIdx.i, pairIdx.j, forward ? "B" : "A", ratio * 100, numCorrespondences);
-					++numSkippedPairs;
-					continue;
-				}
-				if (!rcRev.cameraExt.empty()) {
-					// the reverse direction has cameras, just not enough of them to solve a scale
-					// from: its correspondences still say whether this estimate explains them
-					const unsigned explained = CollectExplainedObservations(
-						rcRev, forward ? subSceneA : subSceneB, !forward, T, config.maxReprojError, *seamObs);
-					const double revRatio = (double)explained / (double)MAXF(rcRev.numCorrespondences, 1u);
-					if (explained < config.minCommonTracks || revRatio < ratio / 2) {
-						DEBUG_ULTIMATE("Sub-scene pair (%u, %u): skipped: one direction, weak (%s rig at %.1f%%, explaining only %u/%u the other way)",
-							pairIdx.i, pairIdx.j, forward ? "B" : "A", ratio * 100, explained, rcRev.numCorrespondences);
-						++numSkippedPairs;
-						continue;
-					}
-					verdict = String::FormatString("one direction, verified %u/%u on the other",
-						explained, rcRev.numCorrespondences);
-					numInliers += explained;
-					numCorrespondences += rcRev.numCorrespondences;
-				} else {
-					// nothing to verify against at all: the seam stands only if the one direction
-					// is strong enough that no plausible amount of noise produced it
-					const unsigned numCentres = CountDistinctRigCentres(rcOwn, forward ? subSceneB : subSceneA);
-					if (numCentres < 3 || numInliers < 4 * config.minCommonTracks ||
-						ratio < 2 * config.minCameraInlierRatio) {
-						DEBUG_ULTIMATE("Sub-scene pair (%u, %u): skipped: one direction, weak (%s rig of %u distinct centres, %u inliers at %.1f%%, nothing to verify against)",
-							pairIdx.i, pairIdx.j, forward ? "B" : "A", numCentres, numInliers, ratio * 100);
-						++numSkippedPairs;
-						continue;
-					}
-					verdict = String::FormatString("one direction, unverified, strong (%s rig of %u centres)",
-						forward ? "B" : "A", numCentres);
-				}
-			}
-			// the refinement fits the seam to what the images saw; its effect on the data it was
-			// fitted to is the only measure of it there is on a real capture
-			const unsigned inliersBefore = CountSeamInliers(*seamObs, T, config.maxReprojError);
-			RefineSeamTransform(*seamObs, config.maxReprojError, T);
-			if (!ISFINITE(T.scale) || T.scale <= 0) {
-				DEBUG("warning: sub-scene pair (%u, %u): degenerate similarity; seam rejected", pairIdx.i, pairIdx.j);
-				++numSkippedPairs;
-				continue;
-			}
-			DEBUG_ULTIMATE("Sub-scene pair (%u, %u) Sim(3): scale=%.4g, inliers %u/%u, %s, refinement %u -> %u within %g px",
-				pairIdx.i, pairIdx.j, T.scale, numInliers, numCorrespondences, verdict.c_str(),
-				inliersBefore, CountSeamInliers(*seamObs, T, config.maxReprojError), config.maxReprojError);
-		} else {
-			// Collect 3D-3D correspondences: for each cross-sub-scene match whose
-			// endpoints both lie on an existing inlier track, push the two 3D
-			// positions (each in its own sub-scene's local frame).
-			Point3Arr srcPoints, dstPoints;
-			for (const PairLink& link : links) {
-				ASSERT(link.localIdA < subSceneA.images.size() && link.localIdB < subSceneB.images.size());
-				const Image& imgA = subSceneA.images[link.localIdA];
-				const Image& imgB = subSceneB.images[link.localIdB];
-				if (!imgA.IsValid() || !imgB.IsValid())
-					continue;
-
-				// the track-forming set, not the sparse count: the correspondence search below only
-				// keeps a match whose two endpoints already lie on inlier tracks of the two sub-scenes,
-				// and those tracks were built from this same set -- bounding it by the sparse count
-				// would skip correspondences the tracks prove exist
-				// clamped by the array: the loop dereferences matches[i] before anything inspects the
-				// DMatch, so a count that outran `matches` would be an out-of-bounds read
-				const unsigned numMatches = MINF(link.pair->GetNumTrackFormingMatches(), (unsigned)link.pair->matches.size());
-				for (unsigned i = 0; i < numMatches; ++i) {
-					const DMatch& match = link.pair->matches[i];
-					const uint32_t featureA = link.aIsQuery ? match.queryIdx : match.trainIdx;
-					const uint32_t featureB = link.aIsQuery ? match.trainIdx : match.queryIdx;
-					const auto itA = obsToTrackPosA.find(PairIdx(link.localIdA, featureA));
-					if (itA == obsToTrackPosA.end())
-						continue;
-					const auto itB = obsToTrackPosB.find(PairIdx(link.localIdB, featureB));
-					if (itB == obsToTrackPosB.end())
-						continue;
-					srcPoints.emplace_back(itA->second);
-					dstPoints.emplace_back(itB->second);
-				}
-			}
-
-			if (srcPoints.size() < config.minCommonTracks) {
-				DEBUG_ULTIMATE("Sub-scene pair (%u, %u): skipped (only %u 3D-3D correspondences, need >= %u)",
-					pairIdx.i, pairIdx.j, (unsigned)srcPoints.size(), config.minCommonTracks);
-				++numSkippedPairs;
-				continue;
-			}
-
-			// Characteristic length scale for the RANSAC threshold: a fraction (default 1%) of the
-			// destination point cloud's bounding-box diagonal. Using a relative scale keeps the
-			// criterion invariant to each sub-scene's arbitrary units.
-			AABB3 dstBbox(true);
-			for (const Point3& p : dstPoints)
-				dstBbox.InsertFull(p);
-			if (dstBbox.IsEmpty()) {
-				++numSkippedPairs;
-				continue;
-			}
-			const double threshold = config.simInlierThresholdFactor * dstBbox.GetSize().norm();
-
-			numCorrespondences = (unsigned)srcPoints.size();
-			numInliers = EstimateSimilarityTransform(srcPoints, dstPoints, T, threshold, true, config.simRansacMaxIters);
-			if (numInliers == 0) {
-				DEBUG_ULTIMATE("warning: sub-scene pair (%u, %u): Sim(3) RANSAC failed (%u correspondences)",
-					pairIdx.i, pairIdx.j, numCorrespondences);
-				++numSkippedPairs;
-				continue;
-			}
-			if (numInliers < config.minCommonTracks) {
-				DEBUG_ULTIMATE("warning: sub-scene pair (%u, %u): skipped (too few inliers %u/%u)",
-					pairIdx.i, pairIdx.j, numInliers, numCorrespondences);
-				++numSkippedPairs;
-				continue;
-			}
-			const double inlierRatio = (double)numInliers / (double)numCorrespondences;
-			if (inlierRatio < config.minSimInlierRatio) {
-				DEBUG_ULTIMATE("warning: sub-scene pair (%u, %u): skipped (low inlier ratio %.1f%% = %u/%u)",
-					pairIdx.i, pairIdx.j, inlierRatio * 100.0, numInliers, numCorrespondences);
-				++numSkippedPairs;
-				continue;
-			}
-			DEBUG_ULTIMATE("Sub-scene pair (%u, %u) Sim(3): scale=%.4g, inliers %u/%u (%.1f%%)",
-				pairIdx.i, pairIdx.j, T.scale, numInliers, numCorrespondences, inlierRatio * 100.0);
-		}
-
+	for (const SeamCandidate& c : candidates) {
+		// a pair its two candidates still dispute has no one similarity to offer
+		if (numPairCandidates[std::make_pair(c.sceneA, c.sceneB)] != 1)
+			continue;
 		ScenePair sp;
-		sp.sceneA = pairIdx.i;
-		sp.sceneB = pairIdx.j;
-		sp.relativeTransform = T;
-		sp.numInliers = numInliers;
+		sp.sceneA = c.sceneA;
+		sp.sceneB = c.sceneB;
+		sp.relativeTransform = c.T;
+		sp.numInliers = c.NumInliers();
 		scenePairs.push_back(sp);
-		++numEstimated;
 	}
-
 	std::sort(scenePairs.begin(), scenePairs.end(), [](const ScenePair& a, const ScenePair& b) {
 		return a.sceneA < b.sceneA || (a.sceneA == b.sceneA && a.sceneB < b.sceneB);
 	});
+}
+/*----------------------------------------------------------------*/
 
-	DEBUG("Estimated %u relative Sim(3) transforms between sub-scenes (%u skipped, %s alignment)",
-		numEstimated, numSkippedPairs, alignCameras ? "camera" : "point");
-	return !scenePairs.empty();
+void GlobalAlignment::PrepareSeamEvidence(
+	const std::vector<Scene>& subScenes,
+	const std::vector<IIndexArr>& localToGlobals)
+{
+	BuildGlobalToLocalMap(localToGlobals);
+
+	// Per-block cache: PairIdx(localImageID, featureID) -> 3D inlier-track position. Only
+	// observations belonging to inlier tracks are indexed; outliers are excluded because their
+	// triangulated positions are unreliable.
+	blockPointMaps.clear();
+	blockPointMaps.resize(subScenes.size());
+	FOREACH(blockIdx, subScenes) {
+		const Scene& block = subScenes[blockIdx];
+		size_t numInlierObservations = 0;
+		for (const Track& track : block.tracks)
+			if (track.IsInlier())
+				numInlierObservations += track.GetNumInliers();
+		auto& pointMap = blockPointMaps[blockIdx];
+		pointMap.reserve(numInlierObservations);
+		for (const Track& track : block.tracks)
+			if (track.IsInlier())
+				for (const Observation& obs : track)
+					pointMap.emplace(PairIdx(obs.imageID, obs.featureID), track.position);
+	}
+
+	// Group the cross-block image pairs by block pair, the pair ordered a < b
+	blockPairLinks.clear();
+	FOREACH(idx, scene.pairs) {
+		const ImagePair& pair = scene.pairs[idx];
+		if (pair.GetNumWeightedInliers() < config.minCommonTracks)
+			continue;
+		const auto it1 = globalToLocal.find(pair.ID1);
+		const auto it2 = globalToLocal.find(pair.ID2);
+		if (it1 == globalToLocal.end() || it2 == globalToLocal.end())
+			continue;
+		const uint32_t block1 = it1->second.first, block2 = it2->second.first;
+		if (block1 == block2)
+			continue;
+		blockPairLinks[std::make_pair(MINF(block1, block2), MAXF(block1, block2))].push_back((uint32_t)idx);
+	}
+}
+/*----------------------------------------------------------------*/
+
+bool GlobalAlignment::EstimateSeamCandidates(
+	const std::vector<Scene>& subScenes,
+	const std::vector<IIndexArr>& localToGlobals,
+	std::vector<SeamCandidate>& candidates)
+{
+	TD_TIMER_STARTD();
+	PrepareSeamEvidence(subScenes, localToGlobals);
+
+	candidates.clear();
+	unsigned numAgreed = 0, numDecided = 0, numUndecided = 0, numOneDirection = 0, numSkipped = 0;
+	for (const auto& [blockPair, pairIndices] : blockPairLinks) {
+		const size_t numBefore = candidates.size();
+		EstimateSeamPair(subScenes, blockPair.first, blockPair.second, candidates);
+		// what the pair ended with says how its verdict went
+		switch (candidates.size() - numBefore) {
+		case 0: ++numSkipped; break;
+		case 2: ++numUndecided; break;
+		default:
+			if (candidates.back().oneDirection)
+				++numOneDirection;
+			else if (candidates.back().source == SeamCandidate::RIG_B_ON_A ||
+					 candidates.back().source == SeamCandidate::RIG_A_ON_B)
+				++numDecided;
+			else
+				++numAgreed;
+		}
+	}
+
+	DEBUG("Measured %u seam candidates on %u block pairs (%u agreed, %u decided by votes, %u undecided, "
+		"%u one direction, %u skipped) (%s)",
+		(unsigned)candidates.size(), (unsigned)blockPairLinks.size(),
+		numAgreed, numDecided, numUndecided, numOneDirection, numSkipped, TD_TIMER_GET_FMT().c_str());
+	return !candidates.empty();
+}
+/*----------------------------------------------------------------*/
+
+void GlobalAlignment::CollectPairObservations(
+	const std::vector<Scene>& subScenes, uint32_t a, uint32_t b,
+	std::vector<SeamObservation>& observations,
+	std::vector<SeamCorrespondence>& correspondences) const
+{
+	ASSERT(a < b);
+	observations.clear();
+	correspondences.clear();
+	const auto itLinks = blockPairLinks.find(std::make_pair(a, b));
+	if (itLinks == blockPairLinks.end())
+		return;
+	std::vector<PairLink> links;
+	ResolvePairLinks(scene, globalToLocal, itLinks->second, a, links);
+	// block B's cameras against block A's points, then block A's cameras against block B's
+	AppendRigObservations(CollectRigCorrespondences(
+		subScenes[b], subScenes[a], blockPointMaps[a], links, true, config.maxReprojError),
+		subScenes[b], true, observations, correspondences);
+	AppendRigObservations(CollectRigCorrespondences(
+		subScenes[a], subScenes[b], blockPointMaps[b], links, false, config.maxReprojError),
+		subScenes[a], false, observations, correspondences);
+}
+/*----------------------------------------------------------------*/
+
+void GlobalAlignment::ScoreSeam(
+	const std::vector<Scene>& subScenes,
+	const std::vector<SeamObservation>& observations,
+	const std::vector<SeamCorrespondence>& correspondences,
+	const Transform& T,
+	const std::function<int(IIndex)>& sideOf,
+	const std::vector<Point3>& movingCentres,
+	const std::vector<Point3>& fixedCentres,
+	SeamScore& score) const
+{
+	ASSERT(observations.size() == correspondences.size());
+	score = SeamScore();
+
+	// what the transform explains
+	const Transform TInv(T.Invert());
+	score.inlierMask.assign(observations.size(), false);
+	FOREACH(i, observations)
+		if (SeamObservationError(observations[i], T, TInv) <= config.maxReprojError) {
+			score.inlierMask[i] = true;
+			++score.inliers;
+		}
+
+	// every image the seam touches, in both its roles: the camera whose feature carries the point
+	// witnesses the seam as much as the camera that observed it
+	std::map<IIndex, std::vector<uint32_t>> imageObservations;
+	FOREACH(i, observations) {
+		imageObservations[observations[i].rigImage].push_back((uint32_t)i);
+		imageObservations[observations[i].pointImage].push_back((uint32_t)i);
+	}
+
+	std::map<uint32_t, std::vector<Point3>> supportingCentres; // block -> its supporters' centres
+	for (const auto& [image, indices] : imageObservations) {
+		if (indices.size() < config.minVoteCorrespondences)
+			continue;
+		const auto itLocal = globalToLocal.find(image);
+		ASSERT(itLocal != globalToLocal.end());
+		const Image& img = subScenes[itLocal->second.first].images[itLocal->second.second];
+		if (!img.IsValid())
+			continue;
+		CameraVote vote;
+		vote.image = image;
+		vote.correspondences = (unsigned)indices.size();
+		// how far its inliers spread over its image: a camera whose inliers all sit in one cell
+		// cannot support a transform, a single repeated texture patch buying exactly that
+		std::vector<bool> cells(kVoteGridCells * kVoteGridCells, false);
+		for (uint32_t i : indices) {
+			if (!score.inlierMask[i])
+				continue;
+			++vote.inliers;
+			const SeamCorrespondence& corr = correspondences[i];
+			const uint32_t feature = corr.imageA == image ? corr.featureA : corr.featureB;
+			if (feature >= img.keypoints.size())
+				continue;
+			const cv::Point2f& pt = img.keypoints[feature].pt;
+			const int cellX = CLAMP((int)((float)kVoteGridCells * pt.x / (float)img.pCamera->GetWidth()), 0, (int)kVoteGridCells - 1);
+			const int cellY = CLAMP((int)((float)kVoteGridCells * pt.y / (float)img.pCamera->GetHeight()), 0, (int)kVoteGridCells - 1);
+			cells[cellY * (int)kVoteGridCells + cellX] = true;
+		}
+		vote.coverage = (float)std::count(cells.begin(), cells.end(), true) / (float)cells.size();
+		const float inlierFraction = (float)vote.inliers / (float)vote.correspondences;
+		if (vote.inliers >= config.minVoteInliers && inlierFraction >= kVoteSupportFraction &&
+			vote.coverage >= config.minVoteCoverage)
+			vote.vote = 1;
+		else if (vote.correspondences >= config.minVoteInliers && inlierFraction < kVoteContraFraction)
+			vote.vote = -1;
+		const int side = sideOf(image);
+		ASSERT(side == 0 || side == 1);
+		if (vote.vote > 0) {
+			++score.support[side];
+			supportingCentres[itLocal->second.first].push_back(img.C);
+		} else if (vote.vote < 0)
+			++score.contra[side];
+		score.votes.push_back(vote);
+	}
+	// each block's centres live in that block's own frame, so they are counted per block
+	for (const auto& [block, centres] : supportingCentres)
+		score.centres += CountDistinctRigCentres(centres);
+
+	// a transform that drops one block's cameras among the other's has placed them wrong however
+	// well it explains the correspondences: after a right one, a camera's nearest neighbour is one
+	// of its own. A lone moving camera has no own neighbour to be nearest, and nothing to interleave.
+	if (movingCentres.size() >= 2 && !fixedCentres.empty()) {
+		std::vector<Point3> moved;
+		moved.reserve(movingCentres.size());
+		for (const Point3& C : movingCentres)
+			moved.emplace_back(T * C);
+		unsigned numOwnNeighbours = 0;
+		FOREACH(i, moved) {
+			REAL nearestOwn = std::numeric_limits<REAL>::max(), nearestOther = nearestOwn;
+			FOREACH(j, moved)
+				if (j != i)
+					nearestOwn = MINF(nearestOwn, norm(moved[i] - moved[j]));
+			for (const Point3& C : fixedCentres)
+				nearestOther = MINF(nearestOther, norm(moved[i] - C));
+			if (nearestOwn <= nearestOther)
+				++numOwnNeighbours;
+		}
+		score.ownNeighbourFraction = (float)numOwnNeighbours / (float)moved.size();
+	}
+}
+/*----------------------------------------------------------------*/
+
+String GlobalAlignment::FailedGates(
+	const SeamScore& score, unsigned inliersOther, unsigned bestOther, float voteRatio) const
+{
+	String failed;
+	const auto fail = [&failed](const char* gate) {
+		if (!failed.empty())
+			failed += ", ";
+		failed += gate;
+	};
+	// enough of the union explained, and enough of what the other direction measured on its own
+	if (score.inliers < config.minCommonTracks ||
+		(bestOther > 0 && (float)inliersOther < config.minCrossSupportRatio * (float)bestOther))
+		fail("union support");
+	// the cameras of both sides behind it, out of enough distinct centres
+	if ((float)score.support[0] < voteRatio * (float)score.contra[0] ||
+		(float)score.support[1] < voteRatio * (float)score.contra[1] ||
+		score.centres < config.minSupportingCentres)
+		fail("camera votes");
+	// the two blocks' cameras left unmixed
+	if (score.ownNeighbourFraction < config.minOwnNeighbourFraction)
+		fail("interleaving");
+	return failed;
+}
+/*----------------------------------------------------------------*/
+
+void GlobalAlignment::ScoreCandidate(const std::vector<Scene>& subScenes, SeamCandidate& c) const
+{
+	std::vector<Point3> centresA, centresB;
+	for (const Image& img : subScenes[c.sceneA].images)
+		if (img.IsValid())
+			centresA.emplace_back(img.C);
+	for (const Image& img : subScenes[c.sceneB].images)
+		if (img.IsValid())
+			centresB.emplace_back(img.C);
+	const uint32_t blockA = c.sceneA;
+	ScoreSeam(subScenes, c.observations, c.correspondences, c.T,
+		[this, blockA](IIndex image) { return globalToLocal.at(image).first == blockA ? 0 : 1; },
+		centresA, centresB, c.score);
+	c.weight = c.score.Weight(config.maxVoteWeight);
+}
+/*----------------------------------------------------------------*/
+
+bool GlobalAlignment::IsScaleObservable(
+	const std::vector<Scene>& subScenes, const SeamCandidate& c, bool forward) const
+{
+	// the rig cameras of this direction, and how deep in front of them its inlier points sit
+	const Transform TInv(c.T.Invert());
+	std::set<IIndex> rigImages, rigImagesWithInlier;
+	std::vector<REAL> depths;
+	FOREACH(i, c.observations) {
+		const SeamObservation& obs = c.observations[i];
+		if (obs.forward != forward)
+			continue;
+		rigImages.insert(obs.rigImage);
+		if (i < c.score.inlierMask.size() && c.score.inlierMask[i]) {
+			rigImagesWithInlier.insert(obs.rigImage);
+			depths.push_back(norm((forward ? c.T : TInv) * obs.X - obs.C));
+		}
+	}
+	// the rig cameras that carry the candidate; when fewer than two do, those merely holding an inlier
+	std::set<IIndex> supporting;
+	for (const CameraVote& vote : c.score.votes)
+		if (vote.vote > 0 && rigImages.count(vote.image))
+			supporting.insert(vote.image);
+	const std::set<IIndex>& rig = supporting.size() >= 2 ? supporting : rigImagesWithInlier;
+	if (rig.size() < 2 || depths.empty())
+		return false;
+
+	std::vector<Point3> centres;
+	for (IIndex image : rig) {
+		const auto itLocal = globalToLocal.find(image);
+		ASSERT(itLocal != globalToLocal.end());
+		centres.emplace_back(subScenes[itLocal->second.first].images[itLocal->second.second].C);
+	}
+	REAL spread = 0;
+	FOREACH(i, centres)
+		for (size_t j = i + 1; j < centres.size(); ++j)
+			spread = MAXF(spread, norm(centres[i] - centres[j]));
+	std::nth_element(depths.begin(), depths.begin() + depths.size() / 2, depths.end());
+	const REAL depth = depths[depths.size() / 2];
+	return depth > 0 && spread / depth >= config.minRigSpreadRatio;
+}
+/*----------------------------------------------------------------*/
+
+void GlobalAlignment::EstimateSeamPair(
+	const std::vector<Scene>& subScenes, uint32_t a, uint32_t b,
+	std::vector<SeamCandidate>& candidates) const
+{
+	ASSERT(a < b && blockPointMaps.size() == subScenes.size());
+	const auto itLinks = blockPairLinks.find(std::make_pair(a, b));
+	if (itLinks == blockPairLinks.end())
+		return;
+	if (config.alignment == GlobalAlignmentConfig::ALIGN_POINTS) {
+		EstimatePointSeamPair(subScenes, a, b, itLinks->second, candidates);
+		return;
+	}
+	std::vector<PairLink> links;
+	ResolvePairLinks(scene, globalToLocal, itLinks->second, a, links);
+
+	// Both directions: B's cameras against A's tracks, and A's cameras against B's. Every cross
+	// pair contributes to at least one of them, which the 3D-3D correspondences cannot promise on
+	// a seam whose target-side keypoints never joined a track. Both candidates are then scored on
+	// the union of the two, so the two opinions are held against the same evidence.
+	const RigCorrespondences rc[2] = {
+		CollectRigCorrespondences(subScenes[b], subScenes[a], blockPointMaps[a], links, true, config.maxReprojError),
+		CollectRigCorrespondences(subScenes[a], subScenes[b], blockPointMaps[b], links, false, config.maxReprojError)};
+	std::vector<SeamObservation> observations;
+	std::vector<SeamCorrespondence> correspondences;
+	std::vector<bool> estimatorMask;
+	const poselib::RansacOptions ransacOptions = SeamRansacOptions();
+	Transform Tseam[2], T_BA;
+	unsigned inliers[2];
+	inliers[0] = EstimateRigAgainstPoints(rc[0], subScenes[b], ransacOptions, true,
+		Tseam[0], observations, correspondences, estimatorMask);
+	inliers[1] = EstimateRigAgainstPoints(rc[1], subScenes[a], ransacOptions, false,
+		T_BA, observations, correspondences, estimatorMask);
+	// the second direction solved B into A, so its inverse is the seam's own A -> B similarity
+	Tseam[1] = T_BA.Invert();
+
+	// each direction fitted to the bearings behind its own inliers before the two are compared
+	for (int d = 0; d < 2; ++d)
+		if (inliers[d] >= config.minCommonTracks)
+			RefineSeamTransform(SelectInliers(observations, estimatorMask, d == 0 ? 1 : 0),
+				config.maxReprojError, Tseam[d]);
+	const bool measured[2] = {
+		inliers[0] >= config.minCommonTracks && ISFINITE(Tseam[0].scale) && Tseam[0].scale > 0,
+		inliers[1] >= config.minCommonTracks && ISFINITE(Tseam[1].scale) && Tseam[1].scale > 0};
+	DEBUG_ULTIMATE("Seam (%u, %u): %u cameras of B on %u points of A -> %u inliers%s; "
+		"%u cameras of A on %u points of B -> %u inliers%s",
+		a, b, (unsigned)rc[0].cameraExt.size(), rc[0].numCorrespondences, inliers[0], measured[0] ? "" : " (unmeasured)",
+		(unsigned)rc[1].cameraExt.size(), rc[1].numCorrespondences, inliers[1], measured[1] ? "" : " (unmeasured)");
+	if (!measured[0] && !measured[1]) {
+		DEBUG_ULTIMATE("Seam (%u, %u) skipped: neither direction was measured", a, b);
+		return;
+	}
+
+	// one candidate per measured direction, each scored on the union
+	SeamCandidate candidate[2];
+	for (int d = 0; d < 2; ++d) {
+		if (!measured[d])
+			continue;
+		SeamCandidate& c = candidate[d];
+		c.sceneA = a;
+		c.sceneB = b;
+		c.T = Tseam[d];
+		c.source = d == 0 ? SeamCandidate::RIG_B_ON_A : SeamCandidate::RIG_A_ON_B;
+		c.observations = observations;
+		c.correspondences = correspondences;
+		ScoreCandidate(subScenes, c);
+		c.scaleObservable = IsScaleObservable(subScenes, c, d == 0);
+	}
+
+	// the gates, in one place: what the candidate explains of the union and of what the other
+	// direction measured on its own, what the cameras of both sides vote, and whether it leaves
+	// the two blocks' cameras unmixed
+	bool passed[2] = {false, false};
+	for (int d = 0; d < 2; ++d) {
+		if (!measured[d])
+			continue;
+		const int other = 1 - d;
+		const int otherForward = other == 0 ? 1 : 0;
+		const unsigned bestOther =
+			measured[other] && candidate[other].NumObservations(otherForward) >= config.minCommonTracks ?
+			candidate[other].NumInliers(otherForward) : 0;
+		const String failed = FailedGates(candidate[d].score,
+			candidate[d].NumInliers(otherForward), bestOther, config.minCameraVoteRatio);
+		LogVotes(String::FormatString("Seam (%u, %u) %s", a, b, SourceWord(candidate[d].source)).c_str(),
+			candidate[d].score);
+		if (failed.empty())
+			passed[d] = true;
+		else
+			DEBUG_ULTIMATE("Seam (%u, %u) %s dropped by %s", a, b, SourceWord(candidate[d].source), failed.c_str());
+	}
+	if (!passed[0] && !passed[1]) {
+		DEBUG_ULTIMATE("Seam (%u, %u) skipped: no direction passed the gates", a, b);
+		return;
+	}
+
+	if (passed[0] && passed[1]) {
+		const REAL errRotation = R2D(ACOS(ComputeAngle(Matrix3x3(candidate[0].T.R), Matrix3x3(candidate[1].T.R))));
+		const REAL errScale = MAXF(candidate[0].T.scale / candidate[1].T.scale, candidate[1].T.scale / candidate[0].T.scale);
+		const unsigned support[2] = {
+			candidate[0].score.support[0] + candidate[0].score.support[1],
+			candidate[1].score.support[0] + candidate[1].score.support[1]};
+		const int best = support[0] >= support[1] ? 0 : 1;
+		if (errRotation <= config.maxSimRotationError && errScale <= config.maxSimScaleRatio) {
+			// two measurements of one seam that agree: one candidate, fitted to every bearing the
+			// two directions between them explain
+			SeamCandidate c(candidate[best]);
+			c.source = SeamCandidate::UNION;
+			c.scaleObservable = candidate[0].scaleObservable || candidate[1].scaleObservable;
+			RefineSeamTransform(SelectInliers(c.observations, c.score.inlierMask), config.maxReprojError, c.T);
+			ScoreCandidate(subScenes, c);
+			LogSeamCandidate(a, b, c);
+			candidates.emplace_back(std::move(c));
+			return;
+		}
+		if ((float)support[best] < config.voteMargin * (float)support[1 - best]) {
+			// the two disagree and the cameras are split between them: the seam graph decides
+			DEBUG("Seam (%u, %u) undecided: the two directions disagree by %.2f deg and %.1f%% in scale, "
+				"on %u and %u supporting cameras", a, b, errRotation, (errScale - 1) * 100, support[0], support[1]);
+			for (int d = 0; d < 2; ++d) {
+				LogSeamCandidate(a, b, candidate[d]);
+				candidates.push_back(candidate[d]);
+			}
+			return;
+		}
+		// the cameras settle the disagreement: the direction they are behind takes the seam
+		DEBUG("Seam (%u, %u) %s dropped by the camera votes of the other direction (%u against %u supporting cameras)",
+			a, b, SourceWord(candidate[1 - best].source), support[best], support[1 - best]);
+		SeamCandidate c(candidate[best]);
+		RefineSeamTransform(SelectInliers(c.observations, c.score.inlierMask, best == 0 ? 1 : 0),
+			config.maxReprojError, c.T);
+		ScoreCandidate(subScenes, c);
+		LogSeamCandidate(a, b, c);
+		candidates.emplace_back(std::move(c));
+		return;
+	}
+
+	// one survivor: the pair rests on a single direction, which the seam graph or the placement
+	// has to confirm before it is believed
+	const int d = passed[0] ? 0 : 1;
+	SeamCandidate c(candidate[d]);
+	c.oneDirection = true;
+	RefineSeamTransform(SelectInliers(c.observations, c.score.inlierMask, d == 0 ? 1 : 0),
+		config.maxReprojError, c.T);
+	if (!c.scaleObservable && measured[1 - d]) {
+		// its own rig is too shallow to observe a scale and the other direction measured one:
+		// take it, and leave the rig where the seam already put it
+		c.scaleObservable = true;
+		RescaleSeamAboutRig(RigCentroid(c.observations, d == 0), d == 0, Tseam[1 - d].scale, c.T);
+	}
+	ScoreCandidate(subScenes, c);
+	LogSeamCandidate(a, b, c);
+	candidates.emplace_back(std::move(c));
+}
+/*----------------------------------------------------------------*/
+
+void GlobalAlignment::EstimatePointSeamPair(
+	const std::vector<Scene>& subScenes, uint32_t a, uint32_t b,
+	const std::vector<uint32_t>& pairIndices, std::vector<SeamCandidate>& candidates) const
+{
+	// Collect 3D-3D correspondences: for each cross-block match whose endpoints both lie on an
+	// existing inlier track, the two 3D positions, each in its own block's local frame.
+	std::vector<PairLink> links;
+	ResolvePairLinks(scene, globalToLocal, pairIndices, a, links);
+	const Scene& blockA = subScenes[a];
+	const Scene& blockB = subScenes[b];
+	Point3Arr srcPoints, dstPoints;
+	for (const PairLink& link : links) {
+		ASSERT(link.localIdA < blockA.images.size() && link.localIdB < blockB.images.size());
+		if (!blockA.images[link.localIdA].IsValid() || !blockB.images[link.localIdB].IsValid())
+			continue;
+		// the track-forming set, not the sparse count: the search below only keeps a match whose
+		// two endpoints already lie on inlier tracks of the two blocks, and those tracks were built
+		// from this same set -- bounding it by the sparse count would skip correspondences the
+		// tracks prove exist; clamped by the array because the loop dereferences matches[i] before
+		// anything inspects the DMatch
+		const unsigned numMatches = MINF(link.pair->GetNumTrackFormingMatches(), (unsigned)link.pair->matches.size());
+		for (unsigned i = 0; i < numMatches; ++i) {
+			const DMatch& match = link.pair->matches[i];
+			const uint32_t featureA = link.aIsQuery ? match.queryIdx : match.trainIdx;
+			const uint32_t featureB = link.aIsQuery ? match.trainIdx : match.queryIdx;
+			const auto itA = blockPointMaps[a].find(PairIdx(link.localIdA, featureA));
+			if (itA == blockPointMaps[a].end())
+				continue;
+			const auto itB = blockPointMaps[b].find(PairIdx(link.localIdB, featureB));
+			if (itB == blockPointMaps[b].end())
+				continue;
+			srcPoints.emplace_back(itA->second);
+			dstPoints.emplace_back(itB->second);
+		}
+	}
+	if (srcPoints.size() < config.minCommonTracks) {
+		DEBUG_ULTIMATE("Seam (%u, %u) skipped: only %u 3D-3D correspondences, need >= %u",
+			a, b, (unsigned)srcPoints.size(), config.minCommonTracks);
+		return;
+	}
+
+	// Characteristic length scale for the RANSAC threshold: a fraction (default 1%) of the
+	// destination point cloud's bounding-box diagonal. Using a relative scale keeps the criterion
+	// invariant to each block's arbitrary units.
+	AABB3 dstBbox(true);
+	for (const Point3& p : dstPoints)
+		dstBbox.InsertFull(p);
+	const double threshold = config.simInlierThresholdFactor * dstBbox.GetSize().norm();
+	if (!(threshold > 0))
+		return;
+	SeamCandidate c;
+	c.sceneA = a;
+	c.sceneB = b;
+	c.source = SeamCandidate::POINTS;
+	const unsigned numInliers = EstimateSimilarityTransform(srcPoints, dstPoints, c.T,
+		threshold, true, config.simRansacMaxIters);
+	const double inlierRatio = (double)numInliers / (double)srcPoints.size();
+	if (numInliers < config.minCommonTracks || inlierRatio < config.minSimInlierRatio) {
+		DEBUG_ULTIMATE("Seam (%u, %u) skipped: 3D-3D inliers %u/%u (%.1f%%)",
+			a, b, numInliers, (unsigned)srcPoints.size(), inlierRatio * 100.0);
+		return;
+	}
+
+	// the cameras of both blocks vote on it exactly as they vote on a camera-alignment candidate,
+	// over the same correspondences
+	CollectPairObservations(subScenes, a, b, c.observations, c.correspondences);
+	ScoreCandidate(subScenes, c);
+	const String failed = FailedGates(c.score, c.score.inliers, 0, config.minCameraVoteRatio);
+	LogVotes(String::FormatString("Seam (%u, %u) %s", a, b, SourceWord(c.source)).c_str(), c.score);
+	if (!failed.empty()) {
+		DEBUG_ULTIMATE("Seam (%u, %u) %s dropped by %s", a, b, SourceWord(c.source), failed.c_str());
+		return;
+	}
+	LogSeamCandidate(a, b, c);
+	candidates.emplace_back(std::move(c));
 }
 /*----------------------------------------------------------------*/
 

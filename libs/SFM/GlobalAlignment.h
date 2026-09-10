@@ -66,14 +66,16 @@ class SFM_API Scene;
  *   - PoseLib's generalized absolute pose with scale (LO-RANSAC over gp4ps, then a
  *     scale-aware refinement) solves the rig pose and the rig-to-points scale together,
  *     from bearing vectors, so any central camera model is handled.
- *   - Both directions are estimated, and no seam is accepted on a single opinion. If both
- *     are measured they must agree in rotation and scale, or the seam is rejected: a seam
- *     trusted on the stronger of two conflicting estimates is how a block gets merged upside
- *     down. If only one direction could be measured — the other has too few rig cameras to
- *     observe a scale — its estimate is verified against that other direction's own
- *     correspondences, which it must explain; a direction with no rig camera at all leaves
- *     nothing to verify against, and the seam then stands only on strong evidence. Accepted
- *     directions are refined jointly into one Sim(3) over the union of their inliers.
+ *   - Both directions are estimated and both are scored on the union of the two directions'
+ *     correspondences, so the two opinions are compared on the same evidence. Every camera of
+ *     either sub-scene with enough correspondences then votes on each candidate — support,
+ *     contradiction or abstention, from its inlier share and how far its inliers spread over
+ *     its image — and a candidate must carry the votes of both sides, explain what the other
+ *     direction saw, and leave the two sub-scenes' cameras unmixed. Survivors that agree in
+ *     rotation and scale become one seam refined over the union of their inliers; survivors
+ *     that disagree are settled by the camera votes when one carries clearly more of them, and
+ *     otherwise both are kept for the seam graph to decide. A direction whose rig is too
+ *     shallow to observe a scale takes the other direction's.
  *   Pairs with too few inliers or low inlier ratio are discarded, in both modes.
  *
  * STAGE 2: ROTATION AVERAGING
@@ -224,12 +226,79 @@ struct SFM_API ScenePair
 	ScenePair() : sceneA(NO_ID), sceneB(NO_ID), numInliers(0) {}
 };
 
+// One cross-block correspondence: a feature of image A matched to a feature of image B (global image IDs)
+struct SFM_API SeamCorrespondence
+{
+	IIndex imageA, imageB;
+	uint32_t featureA, featureB;
+};
+
+// One reprojection constraint of a seam: a 3D point of one block observed by a camera of the other
+struct SFM_API SeamObservation
+{
+	Point3 X;            // the point, in the point block's local frame
+	RMatrix R;           // observing camera rotation (world-to-camera), in its own block's local frame
+	Point3 C;            // observing camera centre, in its own block's local frame
+	Point3 bearing;      // observed unit bearing in the camera frame
+	REAL pixelPerRadian; // converts the angular chord to the camera's pixels
+	bool forward;        // true: point in A observed by a camera of B (p_B = T*p_A); false: the reverse
+	IIndex rigImage;     // global ID of the observing camera
+	IIndex pointImage;   // global ID of the camera whose feature the point came from
+};
+
+// The vote of one image on a candidate: its correspondences, the inliers among them, the share of
+// the image grid its inlier keypoints occupy, and the verdict
+struct SFM_API CameraVote
+{
+	IIndex image{NO_ID};
+	unsigned correspondences{0}, inliers{0};
+	float coverage{0.f};
+	int8_t vote{0}; // +1 support, -1 contradiction, 0 abstain
+};
+
+// What the evidence says about one transform: the inlier mask over the observations it was scored
+// on, the vote of every image with enough correspondences, the vote counts per side (0 = A, or the
+// group being placed; 1 = B, or the model), the distinct supporting centres, and the share of the
+// moving cameras whose nearest neighbour is one of their own after the transform. Filled by
+// ScoreSeam only; held by every candidate and every placement hypothesis
+struct SFM_API SeamScore
+{
+	unsigned inliers{0};
+	unsigned support[2]{0, 0}, contra[2]{0, 0};
+	unsigned centres{0};
+	float ownNeighbourFraction{1.f};
+	std::vector<bool> inlierMask;  // parallel to the scored observations
+	std::vector<CameraVote> votes; // one per image with >= minVoteCorrespondences correspondences
+	float Weight(float maxVoteWeight) const { return MINF(float(support[0] + support[1]), maxVoteWeight); }
+};
+
+// A measured Sim(3) between two blocks with the evidence that supports it
+struct SFM_API SeamCandidate
+{
+	enum Source : uint8_t { RIG_B_ON_A, RIG_A_ON_B, UNION, POINTS };
+	enum Class : uint8_t { UNCLASSIFIED, ROBUST, VERIFIED, UNDECIDED, REJECTED };
+	uint32_t sceneA{NO_ID}, sceneB{NO_ID}; // sceneA < sceneB
+	Transform T;                           // p_B = T * p_A
+	Source source{UNION};
+	bool oneDirection{false};              // the pair yielded only this direction
+	bool scaleObservable{true};
+	SeamScore score;                       // T scored on `observations`, side 0 = A, side 1 = B
+	float weight{0.f};                     // score.Weight(maxVoteWeight); floor 1 for a weak closing seam
+	Class cls{UNCLASSIFIED};
+	float residualRotation{0.f}, residualScale{1.f}, residualTranslation{0.f};
+	std::vector<SeamObservation> observations;       // all correspondences of the pair, both directions
+	std::vector<SeamCorrespondence> correspondences; // parallel to observations
+	unsigned NumInliers(int forward = -1) const;     // over all observations, or those with the given forward flag
+	unsigned NumObservations(int forward = -1) const;
+	bool IsTrusted() const { return cls == ROBUST || cls == VERIFIED; }
+};
+
 /**
  * @brief Configuration for global alignment
  */
 struct SFM_API GlobalAlignmentConfig
 {
-	// How the relative Sim(3) of two sub-scenes is measured (see EstimateRelativePoses):
+	// How the relative Sim(3) of two sub-scenes is measured (see EstimateSeamCandidates):
 	enum Alignment : unsigned {
 		ALIGN_POINTS = 0,  // similarity from the 3D-3D correspondences of matches lying on an inlier track in BOTH sub-scenes
 		ALIGN_CAMERAS = 1, // generalized-camera PnP with scale of one sub-scene's cameras against the other's tracks, both directions
@@ -238,26 +307,39 @@ struct SFM_API GlobalAlignmentConfig
 	unsigned minCommonTracks{25};      // minimum tracks to connect sub-scenes
 	bool mergeTrackInliersOnly{true};  // seed union-find with only inlier observations (true) or all observations (false)
 	float maxReprojError{4.f};         // pixels; the camera alignment's reprojection threshold, the resection's own
-	// Cross-sub-scene Sim(3) alignment robustness (see EstimateRelativePoses):
+	// A camera votes on a seam candidate only with this many correspondences, supports it only with
+	// this many inliers spread over this share of its image, and contradicts it when that many
+	// correspondences leave almost no inlier. The three bars are read from the per-camera statistics
+	// the merge logs, which is why every vote is written out at the ultimate verbosity level.
+	unsigned minVoteCorrespondences{10};
+	unsigned minVoteInliers{30};
+	float minVoteCoverage{0.25f};
+	float minCameraVoteRatio{2.f};          // supporters over contradictors per side
+	float minCameraVoteRatioVerified{3.f};  // the same, when the model was built on verified seams only
+	unsigned minSupportingCentres{3};       // distinct supporting rig centres, both sides summed
+	float minCrossSupportRatio{0.5f};       // share of a side's own best candidate a candidate must explain
+	float minRigSpreadRatio{0.03f};         // rig spread over median depth for an observable scale
+	float minOwnNeighbourFraction{0.8f};    // a transform that interleaves the two blocks' cameras is vetoed
+	// The scale and rotation limits gate the two directions of a seam against each other and the
+	// neighbour check of a placement; the translation limit is the graph's own bar.
+	float maxSimRotationError{3.f};         // degrees
+	float maxSimScaleRatio{1.1f};
+	float maxSimTranslationError{0.05f};    // fraction of the smaller block's local camera-bbox diagonal
+	float voteMargin{1.5f};                 // margin by which one candidate beats another on camera votes
+	float maxVoteWeight{30.f};              // cap of a candidate's weight
+	// Seam graph consensus: a candidate the averaged consensus contradicts by more than these is
+	// inconsistent, and is rejected when a consistent alternative path at least this strong exists.
+	float maxGraphRotationResidual{5.f};    // degrees
+	float maxGraphScaleResidual{1.05f};
+	float rejectWeightMargin{1.5f};
+	float maxFoldCutRatio{0.2f};            // a block splits at a cut this thin relative to its own weight
+	unsigned minFoldPartViews{10};          // neither part of a fold split may be smaller
+	float relaxSeamResidualFactor{2.f};     // seam residual past this multiple of the bar relaxes the cameras
+	float intraBlockEdgeWeight{10.f};       // weight of a block's internal edges during that relaxation
+	// 3D-3D estimator (ALIGN_POINTS):
 	double simInlierThresholdFactor{0.01};  // RANSAC inlier distance as a fraction of the destination bbox diagonal
-	double minSimInlierRatio{0.3};          // minimum RANSAC inlier ratio required to accept a sub-scene pair (3D-3D)
-	// The camera alignment has its own bar because the correspondences of a generalized PnP over
-	// dense matches carry more outliers than 3D-3D pairs of triangulated points, so the share a
-	// right seam reaches is lower. It gates only whether a measured direction may stand alone;
-	// two directions that agree are accepted on their agreement, whatever their shares.
-	float minCameraInlierRatio{0.15f};
+	double minSimInlierRatio{0.3};          // minimum RANSAC inlier ratio required to accept a sub-scene pair
 	unsigned simRansacMaxIters{10000};      // RANSAC iteration budget; needed to find low-inlier-ratio models
-	// Merge validation (see PruneConflictingSeams and ValidateAlignment): each surviving sub-scene
-	// pair's measured Sim(3) is composed with the averaged global transforms of its two end-points;
-	// edges whose residual is too large in scale, rotation or translation are conflicting. They are
-	// dropped one at a time, worst first, and once no seam is left conflicting a sub-scene still
-	// dominated by conflicting incident edge weight is demoted and rebuilt by the post-merge
-	// resection instead of being merged with its (misaligned) poses.
-	// The scale and rotation limits also gate the camera alignment's two directions against each
-	// other, before any averaging: a seam whose two estimates disagree by more is rejected outright.
-	float maxSimScaleRatio{1.1f};           // max per-edge scale-residual ratio vs the averaged global transforms
-	float maxSimRotationError{3.f};         // degrees; max per-edge rotation residual vs the averaged global transforms
-	float maxSimTranslationError{0.05f};    // max per-edge translation residual as a fraction of the sub-scene's local camera-bbox diagonal
 };
 
 class SFM_API GlobalAlignment
@@ -294,6 +376,86 @@ public:
 		const std::vector<IIndexArr>& localToGlobals,
 		std::vector<ScenePair>& scenePairs);
 
+	/**
+	 * @brief Fill globalToLocal, blockPairLinks and blockPointMaps from the blocks
+	 *
+	 * EstimateSeamCandidates calls it first, and a caller reaching EstimateSeamPair or
+	 * CollectPairObservations directly must call it first too.
+	 */
+	void PrepareSeamEvidence(
+		const std::vector<Scene>& subScenes,
+		const std::vector<IIndexArr>& localToGlobals);
+
+	/**
+	 * @brief Stage 1: measure every adjacent block pair in both directions, in whichever of the
+	 * two modes GlobalAlignmentConfig::alignment selects; one or two candidates per pair. Scale
+	 * is recovered directly by both modes, so no separate pairwise scale estimation is needed.
+	 */
+	bool EstimateSeamCandidates(
+		const std::vector<Scene>& subScenes,
+		const std::vector<IIndexArr>& localToGlobals,
+		std::vector<SeamCandidate>& candidates);
+
+	/**
+	 * @brief The routine of one block pair (a < b): both directions estimated, scored, gated and
+	 * combined; appends 0, 1 or 2 candidates
+	 */
+	void EstimateSeamPair(
+		const std::vector<Scene>& subScenes, uint32_t a, uint32_t b,
+		std::vector<SeamCandidate>& candidates) const;
+
+	/**
+	 * @brief Both directions' correspondences of one block pair, collected without estimation
+	 *
+	 * The raw evidence of a pair, whether or not it has a candidate; the observations' forward
+	 * flags tell the two directions apart.
+	 */
+	void CollectPairObservations(
+		const std::vector<Scene>& subScenes, uint32_t a, uint32_t b,
+		std::vector<SeamObservation>& observations,
+		std::vector<SeamCorrespondence>& correspondences) const;
+
+	/**
+	 * @brief The scoring core, the one place camera votes and the interleaving fraction are computed
+	 *
+	 * Fills the inlier mask of `observations` under T (an observation's `forward` flag says which
+	 * side holds the point; p_side1 = T * p_side0), the vote of every image with enough
+	 * correspondences, the counts per side (sideOf(image) -> 0 or 1), the distinct supporting
+	 * centres, and the share of `movingCentres`, mapped by T, whose nearest centre among the mapped
+	 * moving centres and `fixedCentres` (side 1's frame) is a moving one.
+	 */
+	void ScoreSeam(
+		const std::vector<Scene>& subScenes,
+		const std::vector<SeamObservation>& observations,
+		const std::vector<SeamCorrespondence>& correspondences,
+		const Transform& T,
+		const std::function<int(IIndex)>& sideOf,
+		const std::vector<Point3>& movingCentres,
+		const std::vector<Point3>& fixedCentres,
+		SeamScore& score) const;
+
+	/**
+	 * @brief The gates on a score, all of them evaluated: union support (inliers >=
+	 * minCommonTracks and, when bestOther > 0, inliersOther >= minCrossSupportRatio * bestOther),
+	 * camera votes (support >= voteRatio * contra on each side, and centres >=
+	 * minSupportingCentres) and interleaving (ownNeighbourFraction >= minOwnNeighbourFraction)
+	 * @return the failed gates, comma-separated ("" when the score passed)
+	 */
+	String FailedGates(const SeamScore& score, unsigned inliersOther, unsigned bestOther, float voteRatio) const;
+
+	/**
+	 * @brief ScoreSeam of c.T on the candidate's own observations: sides A and B, block A's
+	 * camera centres moved by T among block B's
+	 */
+	void ScoreCandidate(const std::vector<Scene>& subScenes, SeamCandidate& c) const;
+
+	/**
+	 * @brief Whether one direction of a scored candidate can observe a scale (forward = true: the
+	 * rig of block B on the points of block A): spread of the supporting rig centres over the
+	 * median inlier depth
+	 */
+	bool IsScaleObservable(const std::vector<Scene>& subScenes, const SeamCandidate& c, bool forward) const;
+
 private:
 	/**
 	 * @brief Build and validate global image -> (sub-scene, local image) mapping
@@ -303,13 +465,23 @@ private:
 	void BuildGlobalToLocalMap(const std::vector<IIndexArr>& localToGlobals);
 
 	/**
-	 * @brief Stage 1: Estimate the relative 7-DOF similarity transform of every pair of
-	 * sub-scenes the cross-sub-scene image pairs connect, in whichever of the two modes
-	 * GlobalAlignmentConfig::alignment selects. Scale is recovered directly by both, so no
-	 * separate pairwise scale estimation is needed downstream.
+	 * @brief The routine of one block pair in point mode: the single candidate the 3D-3D
+	 * similarity of the matches lying on an inlier track in both blocks yields, scored on the
+	 * same correspondences the camera alignment collects so the votes mean the same thing
+	 * @param pairIndices indices into scene.pairs of the pair's cross pairs
 	 */
-	bool EstimateRelativePoses(
-		const std::vector<Scene>& subScenes,
+	void EstimatePointSeamPair(
+		const std::vector<Scene>& subScenes, uint32_t a, uint32_t b,
+		const std::vector<uint32_t>& pairIndices,
+		std::vector<SeamCandidate>& candidates) const;
+
+	/**
+	 * @brief One ScenePair per candidate its pair verdict settled: an agreement, a winner on the
+	 * camera votes, or a lone survivor. A pair still holding two candidates emits none, so the
+	 * averaging below sees it exactly as it sees a pair whose seam was refused.
+	 */
+	static void CandidatesToScenePairs(
+		const std::vector<SeamCandidate>& candidates,
 		std::vector<ScenePair>& scenePairs);
 
 	/**
@@ -461,6 +633,12 @@ private:
 
 	// Global image ID -> (sub-scene index, local image index)
 	std::unordered_map<IIndex, std::pair<uint32_t, IIndex>> globalToLocal;
+
+	// Block pair (a < b) -> indices into scene.pairs of its cross pairs
+	std::map<std::pair<uint32_t, uint32_t>, std::vector<uint32_t>> blockPairLinks;
+	// Per block: (local image, feature) -> the position of the inlier track holding that
+	// observation, what the correspondence collection looks each match up in
+	std::vector<std::unordered_map<PairIdx, Point3>> blockPointMaps;
 
 	Scene& scene; // Reference to input scene
 	const GlobalAlignmentConfig& config; // Global alignment configuration

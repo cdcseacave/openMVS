@@ -11687,8 +11687,34 @@ struct SeamCase {
 
 enum SeamOutcome { SEAM_SETUP_FAILED, SEAM_REJECTED, SEAM_MEASURED };
 
+// Everything the log recorded while it was alive, so a test can assert on what the merge reported.
+// The verbosity is raised for its lifetime, the per-candidate gate reports being written at the
+// ultimate level.
+struct LogCapture
+{
+	String text;
+	int verbosity;
+
+	LogCapture() : verbosity(g_nVerbosityLevel) {
+		g_nVerbosityLevel = 3;
+		GET_LOG().RegisterListener(DELEGATEBINDCLASS(Log::ClbkRecordMsg, &LogCapture::Record, this));
+	}
+	~LogCapture() {
+		GET_LOG().UnregisterListener(DELEGATEBINDCLASS(Log::ClbkRecordMsg, &LogCapture::Record, this));
+		g_nVerbosityLevel = verbosity;
+	}
+	void Record(const String& msg) { text += msg; }
+	unsigned Count(const char* what) const {
+		unsigned num = 0;
+		for (size_t pos = text.find(what); pos != String::npos; pos = text.find(what, pos + 1))
+			++num;
+		return num;
+	}
+};
+
 // Measure the seam of two sub-scenes prepared as above, under one such setup
-static SeamOutcome MeasureSeam(const Transform transforms[2], unsigned alignment, const SeamCase& setup, Transform& T)
+static SeamOutcome MeasureSeam(const Transform transforms[2], unsigned alignment, const SeamCase& setup,
+	Transform& T, SeamCandidate* outCandidate = NULL)
 {
 	Scene scene;
 	std::vector<Scene> subScenes;
@@ -11720,13 +11746,28 @@ static SeamOutcome MeasureSeam(const Transform transforms[2], unsigned alignment
 	GlobalAlignmentConfig alignCfg;
 	alignCfg.alignment = alignment;
 	GlobalAlignment alignment_(scene, alignCfg);
-	std::vector<ScenePair> scenePairs;
-	if (!alignment_.EstimateSubScenePairs(subScenes, localToGlobals, scenePairs) || scenePairs.empty())
+	std::vector<SeamCandidate> candidates;
+	if (!alignment_.EstimateSeamCandidates(subScenes, localToGlobals, candidates) || candidates.empty())
 		return SEAM_REJECTED;
-	if (scenePairs.size() != 1)
+	if (candidates.size() != 1)
 		return SEAM_SETUP_FAILED;
-	T = scenePairs.front().relativeTransform;
+	T = candidates.front().T;
+	if (outCandidate)
+		*outCandidate = candidates.front();
 	return SEAM_MEASURED;
+}
+
+// One direction alone: the candidate must name the direction that measured it, say that it rests
+// on that one alone, and explain enough of the seam
+static bool CheckOneDirectionCandidate(
+	const char* what, const SeamCandidate& c, SeamCandidate::Source source, unsigned minCommonTracks)
+{
+	if (c.source != source || !c.oneDirection || c.NumInliers() < minCommonTracks) {
+		VERBOSE("HierarchicalCameraAlignmentTest FAILED: %s came out as source %u, %s, %u inliers",
+			what, (unsigned)c.source, c.oneDirection ? "one direction" : "two directions", c.NumInliers());
+		return false;
+	}
+	return true;
 }
 
 // Merge two such sub-scenes and check every image came back at the truth, up to the one global
@@ -12010,6 +12051,255 @@ static bool CheckTriangleMerge()
 	return true;
 }
 
+// The vote one image cast on a candidate, NULL when it had too few correspondences to vote
+static const CameraVote* FindVote(const SeamScore& score, IIndex image)
+{
+	for (const CameraVote& vote : score.votes)
+		if (vote.image == image)
+			return &vote;
+	return NULL;
+}
+
+// Global image ID -> local image index of one sub-scene
+static std::unordered_map<IIndex, IIndex> LocalOf(const IIndexArr& localToGlobal)
+{
+	std::unordered_map<IIndex, IIndex> localOf;
+	FOREACH(localID, localToGlobal)
+		if (localToGlobal[localID] != NO_ID)
+			localOf.emplace(localToGlobal[localID], (IIndex)localID);
+	return localOf;
+}
+
+// Keep only `numKept` of one image of sub-scene B's correspondences, taken evenly along its
+// keypoint list, and drop the rest from the candidate
+static void KeepSomeCorrespondences(SeamCandidate& c, IIndex image, unsigned numKept)
+{
+	std::vector<uint32_t> owned;
+	FOREACH(i, c.correspondences)
+		if (c.correspondences[i].imageB == image)
+			owned.push_back((uint32_t)i);
+	if (owned.size() <= numKept)
+		return;
+	std::vector<bool> keep(c.observations.size(), true);
+	for (uint32_t i : owned)
+		keep[i] = false;
+	for (unsigned k = 0; k < numKept; ++k)
+		keep[owned[(size_t)k * owned.size() / numKept]] = true;
+	std::vector<SeamObservation> observations;
+	std::vector<SeamCorrespondence> correspondences;
+	FOREACH(i, c.observations)
+		if (keep[i]) {
+			observations.push_back(c.observations[i]);
+			correspondences.push_back(c.correspondences[i]);
+		}
+	c.observations.swap(observations);
+	c.correspondences.swap(correspondences);
+}
+
+// A sub-scene left with two cameras a millimetre apart: the direction whose rig they are sees no
+// parallax and cannot observe a scale, so the seam has to take one from the other direction.
+static bool CheckUnobservableScale(const Transform transforms[2], const Transform& expected)
+{
+	Scene scene;
+	std::vector<Scene> subScenes;
+	std::vector<IIndexArr> localToGlobals;
+	std::vector<Pose3D> gtPoses;
+	if (!BuildTransformedSubScenes(scene, subScenes, localToGlobals, gtPoses, transforms)) {
+		VERBOSE("HierarchicalCameraAlignmentTest FAILED: could not prepare the sub-scenes for the shallow rig");
+		return false;
+	}
+	// the generated points behind every keypoint, so the camera that moves can be re-projected
+	std::map<PairIdx, Point3> truthPoints;
+	for (const Track& track : scene.tracks)
+		for (const Observation& obs : track.observations)
+			truthPoints.emplace(PairIdx(obs.imageID, obs.featureID), track.position);
+
+	// the two cameras kept are the ones the bridge leans on hardest, so the seam still has
+	// correspondences after the rest of the sub-scene is dropped
+	const std::unordered_map<IIndex, IIndex> localOf0 = LocalOf(localToGlobals[0]);
+	const std::unordered_map<IIndex, IIndex> localOf1 = LocalOf(localToGlobals[1]);
+	std::map<IIndex, unsigned> bridgeWeight;
+	for (const ImagePair& pair : scene.pairs) {
+		const IIndex globalIn1 = localOf1.count(pair.ID1) ? pair.ID1 : (localOf1.count(pair.ID2) ? pair.ID2 : NO_ID);
+		const IIndex globalIn0 = localOf0.count(pair.ID1) ? pair.ID1 : (localOf0.count(pair.ID2) ? pair.ID2 : NO_ID);
+		if (globalIn0 == NO_ID || globalIn1 == NO_ID)
+			continue;
+		bridgeWeight[localOf1.at(globalIn1)] += (unsigned)pair.matches.size();
+	}
+	if (bridgeWeight.size() < 2) {
+		VERBOSE("HierarchicalCameraAlignmentTest FAILED: the bridge runs through %u cameras of sub-scene 1",
+			(unsigned)bridgeWeight.size());
+		return false;
+	}
+	std::vector<std::pair<unsigned, IIndex>> ranked;
+	for (const auto& [localID, weight] : bridgeWeight)
+		ranked.emplace_back(weight, localID);
+	std::sort(ranked.rbegin(), ranked.rend());
+	const IIndex keptFirst = ranked[0].second, keptSecond = ranked[1].second;
+
+	// the second camera a millimetre from the first, seeing the same points from its new place
+	Scene& shallow = subScenes[1];
+	shallow.images[keptSecond].C = shallow.images[keptFirst].C + Point3(0.001, 0, 0);
+	Image& moved = shallow.images[keptSecond];
+	const IIndex movedGlobal = localToGlobals[1][keptSecond];
+	FOREACH(feature, moved.keypoints) {
+		const auto it = truthPoints.find(PairIdx(movedGlobal, (uint32_t)feature));
+		if (it == truthPoints.end())
+			continue;
+		const auto [proj, inFront] = moved.ProjectPoint(transforms[1] * it->second);
+		if (inFront)
+			moved.keypoints[feature].pt = cv::Point2f((float)proj.x, (float)proj.y);
+	}
+	// every other camera of the sub-scene is gone, and so are the observations it carried
+	FOREACH(localID, shallow.images)
+		if (localID != keptFirst && localID != keptSecond)
+			shallow.images[localID].InvalidatePose();
+	shallow.RecomputeCalibratedImages();
+	for (Track& track : shallow.tracks) {
+		ObservationArr kept;
+		for (const Observation& obs : track.observations)
+			if (obs.imageID == keptFirst || obs.imageID == keptSecond)
+				kept.emplace_back(obs);
+		track.observations.Swap(kept);
+		track.numInliers = 0;
+		// the millimetre of baseline is under the two degrees the default floor asks for
+		if (track.observations.size() >= 2)
+			TriangulateSkewLLS(track, shallow.images, 4.f, 0.f);
+	}
+
+	GlobalAlignmentConfig alignCfg;
+	GlobalAlignment merger(scene, alignCfg);
+	merger.PrepareSeamEvidence(subScenes, localToGlobals);
+	std::vector<SeamCandidate> candidates;
+	merger.EstimateSeamPair(subScenes, 0, 1, candidates);
+	if (candidates.size() != 1) {
+		VERBOSE("HierarchicalCameraAlignmentTest FAILED: the shallow rig gave %u candidates",
+			(unsigned)candidates.size());
+		return false;
+	}
+	const SeamCandidate& c = candidates.front();
+	// the direction registering the two-camera sub-scene cannot observe a scale; the other one can
+	if (merger.IsScaleObservable(subScenes, c, true) || !merger.IsScaleObservable(subScenes, c, false)) {
+		VERBOSE("HierarchicalCameraAlignmentTest FAILED: scale observability came out %u and %u, expected 0 and 1",
+			(unsigned)merger.IsScaleObservable(subScenes, c, true),
+			(unsigned)merger.IsScaleObservable(subScenes, c, false));
+		return false;
+	}
+	const REAL errScale = ABS(c.T.scale / expected.scale - REAL(1));
+	if (!c.scaleObservable || errScale > 0.02) {
+		VERBOSE("HierarchicalCameraAlignmentTest FAILED: the shallow-rig seam is %s at %.2f%% off in scale",
+			c.scaleObservable ? "scaled" : "unscaled", errScale * 100);
+		return false;
+	}
+	VERBOSE("  shallow rig: scale taken from the other direction, %.2f%% off", errScale * 100);
+	return true;
+}
+
+// What a camera's vote says about a candidate: too few inliers spread over its image to support,
+// enough of them spread out to support, almost none of them to contradict.
+static bool CheckVoteRule(const Transform transforms[2])
+{
+	Scene scene;
+	std::vector<Scene> subScenes;
+	std::vector<IIndexArr> localToGlobals;
+	std::vector<Pose3D> gtPoses;
+	if (!BuildTransformedSubScenes(scene, subScenes, localToGlobals, gtPoses, transforms)) {
+		VERBOSE("HierarchicalCameraAlignmentTest FAILED: could not prepare the sub-scenes for the vote rule");
+		return false;
+	}
+	GlobalAlignmentConfig alignCfg;
+	GlobalAlignment merger(scene, alignCfg);
+	merger.PrepareSeamEvidence(subScenes, localToGlobals);
+	std::vector<SeamCandidate> candidates;
+	merger.EstimateSeamPair(subScenes, 0, 1, candidates);
+	if (candidates.size() != 1) {
+		VERBOSE("HierarchicalCameraAlignmentTest FAILED: the vote-rule seam gave %u candidates",
+			(unsigned)candidates.size());
+		return false;
+	}
+	const SeamCandidate measured(candidates.front());
+
+	// the cameras of sub-scene 1 that carry the most of the seam
+	const std::unordered_map<IIndex, IIndex> localOf1 = LocalOf(localToGlobals[1]);
+	std::vector<std::pair<unsigned, IIndex>> voters;
+	for (const CameraVote& vote : measured.score.votes)
+		if (localOf1.count(vote.image))
+			voters.emplace_back(vote.inliers, vote.image);
+	std::sort(voters.rbegin(), voters.rend());
+	if (voters.size() < 4 || voters[3].first < alignCfg.minVoteInliers) {
+		VERBOSE("HierarchicalCameraAlignmentTest FAILED: only %u cameras of sub-scene 1 vote on the seam",
+			(unsigned)voters.size());
+		return false;
+	}
+
+	// forty correspondences spread over the image are enough to support
+	{
+		SeamCandidate c(measured);
+		for (unsigned k = 0; k < 3; ++k)
+			KeepSomeCorrespondences(c, voters[k].second, 40);
+		merger.ScoreCandidate(subScenes, c);
+		for (unsigned k = 0; k < 3; ++k) {
+			const CameraVote* vote = FindVote(c.score, voters[k].second);
+			if (vote == NULL || vote->vote != 1) {
+				VERBOSE("HierarchicalCameraAlignmentTest FAILED: camera %u of 40 correspondences voted %d, expected support",
+					voters[k].second, vote == NULL ? 0 : (int)vote->vote);
+				return false;
+			}
+		}
+	}
+
+	// sixty correspondences of which almost none is an inlier contradict
+	{
+		SeamCandidate c(measured);
+		const IIndex image = voters[3].second;
+		KeepSomeCorrespondences(c, image, 60);
+		// the points of all but two of them replaced by another track's, on the same side of the seam
+		std::vector<Point3> elsewhere[2];
+		FOREACH(i, c.observations)
+			if (c.correspondences[i].imageB != image)
+				elsewhere[c.observations[i].forward ? 1 : 0].push_back(c.observations[i].X);
+		unsigned numCorrupted = 0;
+		FOREACH(i, c.observations) {
+			const int side = c.observations[i].forward ? 1 : 0;
+			if (c.correspondences[i].imageB != image || numCorrupted >= 58 || elsewhere[side].empty())
+				continue;
+			c.observations[i].X = elsewhere[side][(i * 7 + 3) % elsewhere[side].size()];
+			++numCorrupted;
+		}
+		merger.ScoreCandidate(subScenes, c);
+		const CameraVote* vote = FindVote(c.score, image);
+		if (vote == NULL || vote->vote != -1) {
+			VERBOSE("HierarchicalCameraAlignmentTest FAILED: camera %u with %u corrupted correspondences voted %d, expected contradiction",
+				image, numCorrupted, vote == NULL ? 0 : (int)vote->vote);
+			return false;
+		}
+	}
+
+	// inliers all crowded into one cell of the image support nothing: the bearings the seam was
+	// collected from do not move, so the camera keeps every one of its inliers
+	{
+		const IIndex image = voters[0].second;
+		Image& img = subScenes[1].images[localOf1.at(image)];
+		std::mt19937 rng(3);
+		std::uniform_real_distribution<float> cellX(0.f, img.pCamera->GetWidth() * 0.25f - 1.f);
+		std::uniform_real_distribution<float> cellY(0.f, img.pCamera->GetHeight() * 0.25f - 1.f);
+		for (const SeamCorrespondence& corr : measured.correspondences)
+			if (corr.imageB == image && corr.featureB < img.keypoints.size())
+				img.keypoints[corr.featureB].pt = cv::Point2f(cellX(rng), cellY(rng));
+		SeamCandidate c(measured);
+		merger.ScoreCandidate(subScenes, c);
+		const CameraVote* vote = FindVote(c.score, image);
+		if (vote == NULL || vote->inliers < alignCfg.minVoteInliers || vote->vote != 0) {
+			VERBOSE("HierarchicalCameraAlignmentTest FAILED: camera %u with %u inliers in one cell voted %d at coverage %.2f, expected abstention",
+				image, vote == NULL ? 0 : vote->inliers, vote == NULL ? 0 : (int)vote->vote,
+				vote == NULL ? 0.f : vote->coverage);
+			return false;
+		}
+	}
+	VERBOSE("  camera votes: crowded inliers abstain, forty spread ones support, corrupted ones contradict");
+	return true;
+}
+
 bool HierarchicalCameraAlignmentTest()
 {
 	TD_TIMER_START();
@@ -12036,20 +12326,37 @@ bool HierarchicalCameraAlignmentTest()
 
 	// each direction on its own, then both together: blinding one sub-scene's tracks leaves the
 	// other sub-scene's cameras as the only rig with anything to register against
+	const GlobalAlignmentConfig defaultCfg;
 	Transform T;
+	SeamCandidate candidate;
 	SeamCase setup;
 	setup.blindScene = 1;
-	if (MeasureSeam(transforms, GlobalAlignmentConfig::ALIGN_CAMERAS, setup, T) != SEAM_MEASURED ||
-		!CheckSeamTransform("cameras of sub-scene 1 on points of sub-scene 0", T, expected, extent))
+	if (MeasureSeam(transforms, GlobalAlignmentConfig::ALIGN_CAMERAS, setup, T, &candidate) != SEAM_MEASURED ||
+		!CheckSeamTransform("cameras of sub-scene 1 on points of sub-scene 0", T, expected, extent) ||
+		!CheckOneDirectionCandidate("cameras of sub-scene 1 on points of sub-scene 0", candidate,
+			SeamCandidate::RIG_B_ON_A, defaultCfg.minCommonTracks))
 		return false;
 	setup.blindScene = 0;
-	if (MeasureSeam(transforms, GlobalAlignmentConfig::ALIGN_CAMERAS, setup, T) != SEAM_MEASURED ||
-		!CheckSeamTransform("cameras of sub-scene 0 on points of sub-scene 1", T, expected, extent))
+	if (MeasureSeam(transforms, GlobalAlignmentConfig::ALIGN_CAMERAS, setup, T, &candidate) != SEAM_MEASURED ||
+		!CheckSeamTransform("cameras of sub-scene 0 on points of sub-scene 1", T, expected, extent) ||
+		!CheckOneDirectionCandidate("cameras of sub-scene 0 on points of sub-scene 1", candidate,
+			SeamCandidate::RIG_A_ON_B, defaultCfg.minCommonTracks))
 		return false;
 	setup.blindScene = NO_ID;
-	if (MeasureSeam(transforms, GlobalAlignmentConfig::ALIGN_CAMERAS, setup, T) != SEAM_MEASURED ||
+	if (MeasureSeam(transforms, GlobalAlignmentConfig::ALIGN_CAMERAS, setup, T, &candidate) != SEAM_MEASURED ||
 		!CheckSeamTransform("both directions, jointly refined", T, expected, extent))
 		return false;
+	// the two directions agree, so the seam is one candidate every voting camera is behind
+	if (candidate.source != SeamCandidate::UNION || !candidate.scaleObservable ||
+		candidate.score.support[0] + candidate.score.support[1] != candidate.score.votes.size() ||
+		candidate.score.contra[0] != 0 || candidate.score.contra[1] != 0) {
+		VERBOSE("HierarchicalCameraAlignmentTest FAILED: the agreed seam came out as source %u, scale %s, "
+			"%u+%u of %u cameras supporting, %u+%u against",
+			(unsigned)candidate.source, candidate.scaleObservable ? "observable" : "unobservable",
+			candidate.score.support[0], candidate.score.support[1], (unsigned)candidate.score.votes.size(),
+			candidate.score.contra[0], candidate.score.contra[1]);
+		return false;
+	}
 
 	// with noise on the observed bearings the two directions no longer agree to the last digit, so
 	// the joint refinement starts away from the answer: it must end closer to it than either
@@ -12088,14 +12395,27 @@ bool HierarchicalCameraAlignmentTest()
 
 	// the two directions made to disagree: sub-scene 1's cameras are moved away from its own points,
 	// so the direction that registers them measures a different similarity than the one that
-	// registers its points, and the seam must be refused rather than resolved in favour of either
+	// registers its points, and neither explains what the other saw
 	SeamCase disagreeing;
 	disagreeing.rescaledPoses = 1;
-	if (MeasureSeam(transforms, GlobalAlignmentConfig::ALIGN_CAMERAS, disagreeing, T) != SEAM_REJECTED) {
-		VERBOSE("HierarchicalCameraAlignmentTest FAILED: the seam of two disagreeing directions was accepted");
-		return false;
+	{
+		LogCapture log;
+		if (MeasureSeam(transforms, GlobalAlignmentConfig::ALIGN_CAMERAS, disagreeing, T) != SEAM_REJECTED) {
+			VERBOSE("HierarchicalCameraAlignmentTest FAILED: the seam of two disagreeing directions was accepted");
+			return false;
+		}
+		const unsigned numDropped = log.Count("union support");
+		if (numDropped < 2) {
+			VERBOSE("HierarchicalCameraAlignmentTest FAILED: %u of the two disagreeing directions were dropped "
+				"for lack of union support", numDropped);
+			return false;
+		}
 	}
-	VERBOSE("  two disagreeing directions: seam rejected");
+	VERBOSE("  two disagreeing directions: both dropped for lack of union support");
+
+	// a sub-scene of two cameras a millimetre apart, and the camera vote itself
+	if (!CheckUnobservableScale(transforms, expected) || !CheckVoteRule(transforms))
+		return false;
 
 	// the whole merge, in both modes, so the flag is exercised end to end
 	if (!CheckMerge(transforms, GlobalAlignmentConfig::ALIGN_CAMERAS, "camera"))
