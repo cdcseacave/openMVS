@@ -212,7 +212,7 @@ extern "C" {
 			}
 		}
 
-		return static_cast<uint64_t>(os->getPos());
+		return static_cast<uint64_t>(os->getPos() - data->start_pos);
 	}
 
 	static uint64_t _tiffisSeekProc(thandle_t fd, uint64_t off, int whence)
@@ -262,13 +262,15 @@ extern "C" {
 	static uint64_t _tiffosSizeProc(thandle_t fd)
 	{
 		tiffos_data	*data = reinterpret_cast<tiffos_data *>(fd);
-		return (uint64_t)data->stream->getSize();
+		const uint64_t size = static_cast<uint64_t>(data->stream->getSize());
+		return (size >= static_cast<uint64_t>(data->start_pos) ? size - static_cast<uint64_t>(data->start_pos) : 0);
 	}
 
 	static uint64_t _tiffisSizeProc(thandle_t fd)
 	{
 		tiffis_data	*data = reinterpret_cast<tiffis_data *>(fd);
-		return (uint64_t)data->stream->getSize();
+		const uint64_t size = static_cast<uint64_t>(data->stream->getSize());
+		return (size >= static_cast<uint64_t>(data->start_pos) ? size - static_cast<uint64_t>(data->start_pos) : 0);
 	}
 
 	static int _tiffosCloseProc(thandle_t fd)
@@ -316,6 +318,8 @@ extern "C" {
 								 _tiffosSizeProc,
 								 _tiffDummyMapProc,
 								 _tiffDummyUnmapProc);
+			if (!tif)
+				delete data;
 		} else {
 			tiffis_data	*data = new tiffis_data;
 			data->stream = reinterpret_cast<ISTREAM*>(fd);
@@ -330,6 +334,8 @@ extern "C" {
 								 _tiffisSizeProc,
 								 _tiffDummyMapProc,
 								 _tiffDummyUnmapProc);
+			if (!tif)
+				delete data;
 		}
 
 		return (tif);
@@ -415,8 +421,25 @@ bool CImageTIFF::ReadHeader()
 			bpp = 8;
 		switch (bpp) {
 		case 8:
-			m_stride = 4;
-			m_format = PF_B8G8R8A8;
+			if (photometric == PHOTOMETRIC_PALETTE) {
+				m_stride = 3;
+				m_format = PF_B8G8R8;
+			} else {
+				switch (ncn) {
+				case 1:
+					m_stride = 1;
+					m_format = PF_GRAY8;
+					break;
+				case 3:
+					m_stride = 3;
+					m_format = PF_B8G8R8;
+					break;
+				default:
+					m_stride = 4;
+					m_format = PF_B8G8R8A8;
+					break;
+				}
+			}
 			break;
 		//case 16:
 		//	m_type = CV_MAKETYPE(CV_16U, photometric > 1 ? 3 : 1);
@@ -446,24 +469,56 @@ bool CImageTIFF::ReadHeader()
 
 bool CImageTIFF::ReadData(void* pData, PIXELFORMAT dataFormat, Size nStride, Size lineWidth)
 {
+	ASSERT(pData != NULL);
+	ASSERT(m_width > 0 && m_height > 0);
+	ASSERT(nStride > 0 && lineWidth >= m_width * nStride);
+
 	if (m_state && m_width && m_height) {
 		TIFF* tif = (TIFF*)m_state;
-		uint32_t tile_width0 = m_width, tile_height0 = 0;
 		int is_tiled = TIFFIsTiled(tif);
-		uint16 photometric;
+		uint16 photometric = 0;
 		TIFFGetField(tif, TIFFTAG_PHOTOMETRIC, &photometric);
 		uint16 bpp = 8, ncn = photometric > 1 ? 3 : 1;
 		TIFFGetField(tif, TIFFTAG_BITSPERSAMPLE, &bpp);
 		TIFFGetField(tif, TIFFTAG_SAMPLESPERPIXEL, &ncn);
-		const int bitsPerByte = 8;
-		int dst_bpp = (int)(1 * bitsPerByte);
-		if (dst_bpp == 8) {
-			char errmsg[1024];
-			if (!TIFFRGBAImageOK(tif, errmsg)) {
-				Close();
-				return false;
+		uint16 planarConfig = PLANARCONFIG_CONTIG;
+		TIFFGetField(tif, TIFFTAG_PLANARCONFIG, &planarConfig);
+
+		if (!is_tiled && planarConfig == PLANARCONFIG_CONTIG && bpp == 8 &&
+			(photometric == PHOTOMETRIC_RGB || photometric == PHOTOMETRIC_MINISBLACK))
+		{
+			uint8_t* pRow = static_cast<uint8_t*>(pData);
+			if (dataFormat == m_format && nStride == m_stride) {
+				for (Size j = 0; j < m_height; ++j, pRow += lineWidth) {
+					if (TIFFReadScanline(tif, pRow, (uint32)j) < 0) {
+						Close();
+						return false;
+					}
+				}
+			} else {
+				CAutoPtrArr<uint8_t> const buffer(new uint8_t[m_lineWidth]);
+				for (Size j = 0; j < m_height; ++j, pRow += lineWidth) {
+					if (TIFFReadScanline(tif, buffer, (uint32)j) < 0) {
+						Close();
+						return false;
+					}
+					if (!FilterFormat(pRow, dataFormat, nStride, buffer, m_format, m_stride, m_width)) {
+						Close();
+						return false;
+					}
+				}
 			}
+			return true;
 		}
+
+		const int dst_bpp = 8;
+		char errmsg[1024];
+		if (!TIFFRGBAImageOK(tif, errmsg)) {
+			Close();
+			return false;
+		}
+
+		uint32_t tile_width0 = m_width, tile_height0 = 0;
 
 		if ((!is_tiled) ||
 			(is_tiled &&
@@ -481,7 +536,7 @@ bool CImageTIFF::ReadData(void* pData, PIXELFORMAT dataFormat, Size nStride, Siz
 				tile_height0 = m_height;
 
 			uint8_t* data = (uint8_t*)pData;
-			if (!is_tiled && tile_height0 == 1 && dataFormat == m_format && nStride == m_stride) {
+			if (!is_tiled && tile_height0 == 1 && dataFormat == PF_B8G8R8A8 && nStride == 4) {
 				// read image directly to the data buffer
 				for (Size j=0; j<m_height; ++j, data+=lineWidth)
 					if (!TIFFReadRGBAStrip(tif, j, (uint32_t*)data)) {
@@ -522,9 +577,9 @@ bool CImageTIFF::ReadData(void* pData, PIXELFORMAT dataFormat, Size nStride, Siz
 							}
 
 							for (uint32_t i = 0; i < tile_height; ++i) {
-								uint8_t* dst = data + x*3 + lineWidth*(tile_height - i - 1);
+								uint8_t* dst = data + x*nStride + lineWidth*(tile_height - i - 1);
 								uint8_t* src = bstart + i*tile_width0*4;
-								if (!FilterFormat(dst, dataFormat, nStride, src, m_format, m_stride, tile_width)) {
+								if (!FilterFormat(dst, dataFormat, nStride, src, PF_B8G8R8A8, 4, tile_width)) {
 									Close();
 									return false;
 								}
@@ -552,16 +607,305 @@ bool CImageTIFF::ReadData(void* pData, PIXELFORMAT dataFormat, Size nStride, Siz
 
 bool CImageTIFF::WriteHeader(PIXELFORMAT imageFormat, Size width, Size height, BYTE numLevels)
 {
-	//TODO: to implement the TIFF encoder
+	ASSERT(m_pStream != NULL);
+	ASSERT(width > 0 && height > 0);
+	ASSERT(numLevels <= 1);
+
+	if (numLevels > 1) {
+		LOG(LT_IMAGE, "error: multi-level TIFF writing is not supported");
+		Close();
+		return false;
+	}
+
+	TIFF* tif = static_cast<TIFF*>(m_state);
+	if (!tif) {
+		tif = TIFFStreamOpen("WriteTIFF", (OSTREAM*)m_pStream);
+		if (!tif) {
+			LOG(LT_IMAGE, "error: unsupported TIFF image");
+			return false;
+		}
+	}
+	m_state = tif;
+
+	uint16 samplesPerPixel = 0;
+	switch (imageFormat) {
+	case PF_A8:
+	case PF_GRAY8:
+		m_stride = 1;
+		m_format = PF_GRAY8;
+		samplesPerPixel = 1;
+		break;
+	case PF_B8G8R8:
+	case PF_R8G8B8:
+		m_stride = 3;
+		m_format = PF_B8G8R8;
+		samplesPerPixel = 3;
+		break;
+	case PF_R8G8B8A8:
+	case PF_A8R8G8B8:
+	case PF_B8G8R8A8:
+	case PF_A8B8G8R8:
+		m_stride = 4;
+		m_format = PF_B8G8R8A8;
+		samplesPerPixel = 4;
+		break;
+	default:
+		LOG(LT_IMAGE, "error: unsupported TIFF image format");
+		Close();
+		return false;
+	}
+
+	m_dataWidth = m_width = width;
+	m_dataHeight = m_height = height;
+	m_numLevels = 1;
+	m_level = 0;
+	m_lineWidth = m_width * m_stride;
+
+	TIFFSetField(tif, TIFFTAG_IMAGEWIDTH, (uint32)m_width);
+	TIFFSetField(tif, TIFFTAG_IMAGELENGTH, (uint32)m_height);
+	TIFFSetField(tif, TIFFTAG_SAMPLESPERPIXEL, samplesPerPixel);
+	TIFFSetField(tif, TIFFTAG_BITSPERSAMPLE, 8);
+	TIFFSetField(tif, TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG);
+	TIFFSetField(tif, TIFFTAG_PHOTOMETRIC, samplesPerPixel > 1 ? PHOTOMETRIC_RGB : PHOTOMETRIC_MINISBLACK);
+	TIFFSetField(tif, TIFFTAG_ORIENTATION, ORIENTATION_TOPLEFT);
+	TIFFSetField(tif, TIFFTAG_ROWSPERSTRIP, TIFFDefaultStripSize(tif, 0));
+	if (samplesPerPixel == 4) {
+		const uint16 extraSamples[1] = { EXTRASAMPLE_UNASSALPHA };
+		TIFFSetField(tif, TIFFTAG_EXTRASAMPLES, 1, extraSamples);
+	}
+
 	return true;
 } // WriteHeader
 /*----------------------------------------------------------------*/
 
 bool CImageTIFF::WriteData(void* pData, PIXELFORMAT dataFormat, Size nStride, Size lineWidth)
 {
-	//TODO: to implement the TIFF encoder
+	ASSERT(pData != NULL);
+	ASSERT(m_width > 0 && m_height > 0);
+	ASSERT(nStride > 0 && lineWidth >= m_width * nStride);
+
+	TIFF* tif = static_cast<TIFF*>(m_state);
+	if (!tif)
+		return false;
+
+	const uint8_t* pRow = static_cast<const uint8_t*>(pData);
+	if (dataFormat == m_format && nStride == m_stride) {
+		for (Size j = 0; j < m_height; ++j, pRow += lineWidth) {
+			if (TIFFWriteScanline(tif, const_cast<uint8_t*>(pRow), (uint32)j) < 0) {
+				Close();
+				return false;
+			}
+		}
+	} else {
+		CAutoPtrArr<uint8_t> const buffer(new uint8_t[m_lineWidth]);
+		for (Size j = 0; j < m_height; ++j, pRow += lineWidth) {
+			if (!FilterFormat(buffer, m_format, m_stride, pRow, dataFormat, nStride, m_width)) {
+				Close();
+				return false;
+			}
+			if (TIFFWriteScanline(tif, buffer, (uint32)j) < 0) {
+				Close();
+				return false;
+			}
+		}
+	}
+
+	if (!TIFFFlush(tif)) {
+		Close();
+		return false;
+	}
 	return true;
 } // WriteData
+/*----------------------------------------------------------------*/
+
+#ifdef _USE_TESTS
+
+bool CImageTIFF::Test(const String& folder)
+{
+	String dir(folder);
+	Util::ensureValidFolderPath(dir);
+
+	// 1) Write and read-back an RGB TIFF with distinct channel values (catching red/blue swaps)
+	{
+		const String fileName(dir + "test_rgb.tif");
+		const Size width = 32, height = 24;
+		const Size stride = 3;
+		std::vector<uint8_t> writeBuffer(width * height * stride);
+		for (Size y = 0; y < height; ++y) {
+			for (Size x = 0; x < width; ++x) {
+				const size_t idx = (y * width + x) * stride;
+				// In OpenCV BGR format (PF_R8G8B8): byte 0 = B, byte 1 = G, byte 2 = R
+				writeBuffer[idx + 0] = uint8_t((200 + x) % 256); // B
+				writeBuffer[idx + 1] = uint8_t((50 + y) % 256);  // G
+				writeBuffer[idx + 2] = uint8_t((10 + x * y) % 256); // R
+			}
+		}
+		// Write using PF_R8G8B8 (OpenCV BGR layout)
+		{
+			CAutoPtr<CImage> pImage(CImage::Create(fileName, CImage::WRITE));
+			if (pImage == NULL ||
+				!pImage->WriteHeader(PF_R8G8B8, width, height, 1) ||
+				!pImage->WriteData(writeBuffer.data(), PF_R8G8B8, stride, width * stride))
+			{
+				VERBOSE("error: CImageTIFF::Test: failed writing RGB TIFF '%s'", fileName.c_str());
+				return false;
+			}
+		}
+		// Read back header and check metadata
+		{
+			CAutoPtr<CImage> pImage(CImage::Create(fileName, CImage::READ));
+			if (pImage == NULL || !pImage->ReadHeader()) {
+				VERBOSE("error: CImageTIFF::Test: failed reading header of '%s'", fileName.c_str());
+				return false;
+			}
+			if (pImage->GetWidth() != width || pImage->GetHeight() != height ||
+				pImage->GetStride() != stride || pImage->GetFormat() != PF_B8G8R8)
+			{
+				VERBOSE("error: CImageTIFF::Test: header mismatch for '%s' (got %ux%u stride %u format %u, expected %ux%u stride %u format %u)",
+					fileName.c_str(), pImage->GetWidth(), pImage->GetHeight(), pImage->GetStride(), (unsigned)pImage->GetFormat(),
+					width, height, stride, (unsigned)PF_B8G8R8);
+				return false;
+			}
+			// Read back data into PF_R8G8B8 (OpenCV BGR layout)
+			std::vector<uint8_t> readBuffer(width * height * stride);
+			if (!pImage->ReadData(readBuffer.data(), PF_R8G8B8, stride, width * stride)) {
+				VERBOSE("error: CImageTIFF::Test: failed reading data of '%s'", fileName.c_str());
+				return false;
+			}
+			for (size_t i = 0; i < writeBuffer.size(); ++i) {
+				if (readBuffer[i] != writeBuffer[i]) {
+					VERBOSE("error: CImageTIFF::Test: pixel mismatch at byte %zu (read %u != written %u); possible channel swap!",
+						i, (unsigned)readBuffer[i], (unsigned)writeBuffer[i]);
+					return false;
+				}
+			}
+		}
+		// Cross-verify with OpenCV cv::imread (if OpenCV was built with TIFF support)
+		{
+			cv::Mat cvImg = cv::imread(fileName.c_str(), cv::IMREAD_COLOR);
+			if (!cvImg.empty() && cvImg.cols == (int)width && cvImg.rows == (int)height) {
+				for (int y = 0; y < (int)height; ++y) {
+					const uint8_t* row = cvImg.ptr<uint8_t>(y);
+					for (int x = 0; x < (int)width; ++x) {
+						const size_t idx = (y * width + x) * stride;
+						if (row[x * 3 + 0] != writeBuffer[idx + 0] ||
+							row[x * 3 + 1] != writeBuffer[idx + 1] ||
+							row[x * 3 + 2] != writeBuffer[idx + 2])
+						{
+							VERBOSE("error: CImageTIFF::Test: OpenCV reading mismatch at (%d,%d)", x, y);
+							return false;
+						}
+					}
+				}
+			}
+		}
+		File::deleteFile(fileName);
+	}
+
+	// 2) Write and read-back a Grayscale TIFF
+	{
+		const String fileName(dir + "test_gray.tif");
+		const Size width = 32, height = 24;
+		const Size stride = 1;
+		std::vector<uint8_t> writeBuffer(width * height);
+		for (size_t i = 0; i < writeBuffer.size(); ++i)
+			writeBuffer[i] = uint8_t((i * 7) % 256);
+		{
+			CAutoPtr<CImage> pImage(CImage::Create(fileName, CImage::WRITE));
+			if (pImage == NULL ||
+				!pImage->WriteHeader(PF_GRAY8, width, height, 1) ||
+				!pImage->WriteData(writeBuffer.data(), PF_GRAY8, stride, width * stride))
+			{
+				VERBOSE("error: CImageTIFF::Test: failed writing Gray TIFF '%s'", fileName.c_str());
+				return false;
+			}
+		}
+		{
+			CAutoPtr<CImage> pImage(CImage::Create(fileName, CImage::READ));
+			if (pImage == NULL || !pImage->ReadHeader()) {
+				VERBOSE("error: CImageTIFF::Test: failed reading Gray header of '%s'", fileName.c_str());
+				return false;
+			}
+			if (pImage->GetWidth() != width || pImage->GetHeight() != height ||
+				pImage->GetStride() != 1 || pImage->GetFormat() != PF_GRAY8)
+			{
+				VERBOSE("error: CImageTIFF::Test: Gray header mismatch for '%s'", fileName.c_str());
+				return false;
+			}
+			std::vector<uint8_t> readBuffer(width * height);
+			if (!pImage->ReadData(readBuffer.data(), PF_GRAY8, 1, width)) {
+				VERBOSE("error: CImageTIFF::Test: failed reading Gray data of '%s'", fileName.c_str());
+				return false;
+			}
+			for (size_t i = 0; i < writeBuffer.size(); ++i) {
+				if (readBuffer[i] != writeBuffer[i]) {
+					VERBOSE("error: CImageTIFF::Test: Gray pixel mismatch at byte %zu", i);
+					return false;
+				}
+			}
+		}
+		File::deleteFile(fileName);
+	}
+
+	// 3) Write and read-back an RGBA TIFF
+	{
+		const String fileName(dir + "test_rgba.tif");
+		const Size width = 32, height = 24;
+		const Size stride = 4;
+		std::vector<uint8_t> writeBuffer(width * height * stride);
+		for (Size y = 0; y < height; ++y) {
+			for (Size x = 0; x < width; ++x) {
+				const size_t idx = (y * width + x) * stride;
+				// In OpenCV BGRA format (PF_R8G8B8A8): byte 0 = B, 1 = G, 2 = R, 3 = A
+				writeBuffer[idx + 0] = uint8_t((180 + x) % 256); // B
+				writeBuffer[idx + 1] = uint8_t((90 + y) % 256);  // G
+				writeBuffer[idx + 2] = uint8_t((30 + x * y) % 256); // R
+				writeBuffer[idx + 3] = uint8_t((240 - x) % 256); // A
+			}
+		}
+		{
+			CAutoPtr<CImage> pImage(CImage::Create(fileName, CImage::WRITE));
+			if (pImage == NULL ||
+				!pImage->WriteHeader(PF_R8G8B8A8, width, height, 1) ||
+				!pImage->WriteData(writeBuffer.data(), PF_R8G8B8A8, stride, width * stride))
+			{
+				VERBOSE("error: CImageTIFF::Test: failed writing RGBA TIFF '%s'", fileName.c_str());
+				return false;
+			}
+		}
+		{
+			CAutoPtr<CImage> pImage(CImage::Create(fileName, CImage::READ));
+			if (pImage == NULL || !pImage->ReadHeader()) {
+				VERBOSE("error: CImageTIFF::Test: failed reading RGBA header of '%s'", fileName.c_str());
+				return false;
+			}
+			if (pImage->GetWidth() != width || pImage->GetHeight() != height ||
+				pImage->GetStride() != 4 || pImage->GetFormat() != PF_B8G8R8A8 ||
+				!pImage->FormatHasAlpha())
+			{
+				VERBOSE("error: CImageTIFF::Test: RGBA header mismatch for '%s'", fileName.c_str());
+				return false;
+			}
+			std::vector<uint8_t> readBuffer(width * height * stride);
+			if (!pImage->ReadData(readBuffer.data(), PF_R8G8B8A8, stride, width * stride)) {
+				VERBOSE("error: CImageTIFF::Test: failed reading RGBA data of '%s'", fileName.c_str());
+				return false;
+			}
+			for (size_t i = 0; i < writeBuffer.size(); ++i) {
+				if (readBuffer[i] != writeBuffer[i]) {
+					VERBOSE("error: CImageTIFF::Test: RGBA pixel mismatch at byte %zu (read %u != written %u)",
+						i, (unsigned)readBuffer[i], (unsigned)writeBuffer[i]);
+					return false;
+				}
+			}
+		}
+		File::deleteFile(fileName);
+	}
+
+	return true;
+} // Test
+
+#endif // _USE_TESTS
 /*----------------------------------------------------------------*/
 
 #endif // _IMAGE_TIFF
