@@ -865,7 +865,6 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 	struct ScaleRatio {
 		uint32_t view;
 		float ratio;
-		inline bool operator<(const ScaleRatio& r) const { return view < r.view; }
 	};
 	CLISTDEF0(ScaleRatio) scaleRatios;
 	if (nMinPointViews > nCalibratedImages)
@@ -930,16 +929,24 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 	if(nPoints > 3)
 		imageData.avgDepth /= nPoints;
 	// the scale of every view: the trimmed mean of its ratios, dropping the lowest and highest 10%
-	// -- at least one each, so a view sharing only a handful of points still loses its outlier
-	scaleRatios.Sort();
+	// -- at least one each, so a view sharing only a handful of points still loses its outlier;
+	// the ratios are first bucketed by view, a counting sort on the per-view counts already known,
+	// so all of it stays linear in the number of shared observations
 	FloatArr ratios;
-	for (size_t i=0; i<scaleRatios.size(); ) {
-		const uint32_t view(scaleRatios[i].view);
-		ratios.Empty();
-		do {
-			ratios.push_back(scaleRatios[i].ratio);
-		} while (++i<scaleRatios.size() && scaleRatios[i].view == view);
-		scores[view].scale = ratios.GetTrimmedMean(0.1f, 0.1f, 1);
+	ratios.resize(scaleRatios.size());
+	UnsignedArr ends(scores.size());
+	unsigned offset(0);
+	FOREACH(v, scores) {
+		ends[v] = offset;
+		offset += scores[v].points;
+	}
+	ASSERT(offset == scaleRatios.size());
+	for (const ScaleRatio& r: scaleRatios)
+		ratios[ends[r.view]++] = r.ratio;
+	FOREACH(v, scores) {
+		Score& score = scores[v];
+		if (score.points)
+			score.scale = FloatArr::GetTrimmedMean(ratios.data()+ends[v]-score.points, ratios.data()+ends[v], 0.1f, 0.1f, 1);
 	}
 
 	// select best neighborViews

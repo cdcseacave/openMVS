@@ -684,28 +684,30 @@ public:
 	// two elements at the center of the requested window are kept instead, so a symmetric trim of
 	// up to 4 elements with minTrim >= 1 gives exactly the median. Robust to outliers at either
 	// end while they are fewer than the trimmed share, and closer to the plain mean than the median
-	// on clean data; linear time, reorders the elements; pNumKept receives how many were averaged
+	// on clean data; linear time, reorders the elements; pNumKept receives how many were averaged;
+	// the static form works on any range [begin, end), e.g. one bucket of a larger array
 	template <typename RTYPE = typename std::conditional<std::is_floating_point<TYPE>::value,TYPE,REAL>::type>
-	inline RTYPE	GetTrimmedMean(float lowRatio, float highRatio, IDX minTrim=0, IDX* pNumKept=NULL)
+	static RTYPE	GetTrimmedMean(TYPE* begin, TYPE* end, float lowRatio, float highRatio, IDX minTrim=0, IDX* pNumKept=NULL)
 	{
-		ASSERT(_size > 0);
+		const IDX size(static_cast<IDX>(end-begin));
+		ASSERT(size > 0);
 		ASSERT(lowRatio >= 0 && highRatio >= 0 && lowRatio+highRatio < 1);
-		const IDX lowTrim(std::min(std::max(static_cast<IDX>(static_cast<double>(_size)*lowRatio), minTrim), _size));
-		const IDX highTrim(std::min(std::max(static_cast<IDX>(static_cast<double>(_size)*highRatio), minTrim), _size));
-		IDX lo(lowTrim), hi(_size-highTrim);
+		const IDX lowTrim(std::min(std::max(static_cast<IDX>(static_cast<double>(size)*lowRatio), minTrim), size));
+		const IDX highTrim(std::min(std::max(static_cast<IDX>(static_cast<double>(size)*highRatio), minTrim), size));
+		IDX lo(lowTrim), hi(size-highTrim);
 		if (lo >= hi) {
 			// nothing left: keep the element, or the two, at the center of the requested window
-			const IDX center2(lowTrim+_size-highTrim); // twice the center rank, in [0, 2*size]
+			const IDX center2(lowTrim+size-highTrim); // twice the center rank, in [0, 2*size]
 			lo = center2 > 0 ? (center2-1)/2 : 0;
-			hi = std::min(center2/2+1, _size);
+			hi = std::min(center2/2+1, size);
 		}
-		TYPE* const first(Begin()+lo);
-		TYPE* const last(Begin()+hi);
+		TYPE* const first(begin+lo);
+		TYPE* const last(begin+hi);
 		// the lo lowest elements go before first, then the highest of the rest from last on
 		if (lo > 0)
-			std::nth_element(Begin(), first, End());
-		if (hi < _size)
-			std::nth_element(first, last, End());
+			std::nth_element(begin, first, end);
+		if (hi < size)
+			std::nth_element(first, last, end);
 		typedef typename std::common_type<RTYPE,double>::type SUMTYPE;
 		SUMTYPE sum(0);
 		for (const TYPE* it=first; it!=last; ++it)
@@ -713,6 +715,11 @@ public:
 		if (pNumKept)
 			*pNumKept = hi-lo;
 		return static_cast<RTYPE>(sum / static_cast<SUMTYPE>(hi-lo));
+	}
+	template <typename RTYPE = typename std::conditional<std::is_floating_point<TYPE>::value,TYPE,REAL>::type>
+	inline RTYPE	GetTrimmedMean(float lowRatio, float highRatio, IDX minTrim=0, IDX* pNumKept=NULL)
+	{
+		return GetTrimmedMean<RTYPE>(Begin(), End(), lowRatio, highRatio, minTrim, pNumKept);
 	}
 
 	inline ArgType	GetMax() const {
