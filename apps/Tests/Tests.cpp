@@ -306,6 +306,14 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::SceneClusterDisconnectedComponentsTest())
 				return false;
+			if (!SFM::SceneClusterTargetSizeTest())
+				return false;
+			if (!SFM::SceneClusterSeamTracksTest())
+				return false;
+			if (!SFM::SceneClusterLeafMergeTest())
+				return false;
+			if (!SFM::SceneClusterSeamRepairTest())
+				return false;
 			if (!SFM::SceneClusterMemoryProtocolTest())
 				return false;
 			if (!SFM::SceneClusterIDRemappingTest())

@@ -10346,6 +10346,7 @@ bool SceneClusterSizeConstraintsTest()
 	const unsigned totalImages = (unsigned)scene.images.size();
 	ClusterConfig clusterCfg;
 	clusterCfg.maxViewsPerCluster = 18;
+	clusterCfg.targetViewsPerCluster = 12;
 	clusterCfg.minViewsPerCluster = 5;
 	clusterCfg.maxOverCapacity = 5;
 
@@ -10422,6 +10423,9 @@ bool SceneClusterDisconnectedComponentsTest()
 			scene.pairs.RemoveAtMove(i);
 		}
 	}
+	// the two groups were never seen together, so no track may span them either: the split rebuilds
+	// them from the pairs that remain
+	scene.tracks.Release();
 
 	ClusterConfig clusterCfg;
 	clusterCfg.maxViewsPerCluster = 15; // Smaller than 20 to force split attempt
@@ -10471,6 +10475,9 @@ bool SceneClusterMemoryProtocolTest()
 	ClusterConfig clusterCfg;
 	clusterCfg.maxViewsPerCluster = 14;
 	clusterCfg.minViewsPerCluster = 5;
+	// the sub-scenes are this fixture, and its handful of points makes every seam look thin to a rule
+	// written for a capture's tracks: no cluster is merged away here for want of strong neighbours
+	clusterCfg.minClusterDegree = 0;
 
 	SceneCluster cluster(scene, clusterCfg);
 	std::vector<IIndexArr> localToGlobals;
@@ -10553,6 +10560,9 @@ bool SceneClusterIDRemappingTest()
 	ClusterConfig clusterCfg;
 	clusterCfg.maxViewsPerCluster = 14;
 	clusterCfg.minViewsPerCluster = 5;
+	// the sub-scenes are this fixture, and its handful of points makes every seam look thin to a rule
+	// written for a capture's tracks: no cluster is merged away here for want of strong neighbours
+	clusterCfg.minClusterDegree = 0;
 
 	SceneCluster cluster(scene, clusterCfg);
 	std::vector<IIndexArr> localToGlobals;
@@ -10673,6 +10683,7 @@ bool SceneClusterSmallClusterRescueTest()
 
 	ClusterConfig clusterCfg;
 	clusterCfg.maxViewsPerCluster = 15;
+	clusterCfg.targetViewsPerCluster = 10;
 	clusterCfg.minViewsPerCluster = 5;
 	clusterCfg.maxOverCapacity = 5;
 
@@ -10740,6 +10751,9 @@ bool GlobalAlignmentBuildGlobalToLocalMapTest()
 	ClusterConfig clusterCfg;
 	clusterCfg.maxViewsPerCluster = 6;
 	clusterCfg.minViewsPerCluster = 3;
+	// the sub-scenes are this fixture, and its handful of points makes every seam look thin to a rule
+	// written for a capture's tracks: no cluster is merged away here for want of strong neighbours
+	clusterCfg.minClusterDegree = 0;
 
 	SceneCluster cluster(scene, clusterCfg);
 	std::vector<IIndexArr> localToGlobals;
@@ -11812,6 +11826,354 @@ static bool CheckRingMerge(const char* test, const MergeReport& rep, const Scene
 }
 /*----------------------------------------------------------------*/
 
+// ===============================================================================
+// Clustering for the merge: cluster sizes aimed at it, and cuts whose seams it can read
+// ===============================================================================
+
+// A chain of images that see the same points as their neighbours: images 0..numImages-1, with
+// `tracksPerStart` tracks starting at every image i and observed by the images i..i+lengthOf(i)-1
+// (clipped at the last image; no track starts at i when lengthOf(i) is 0), a pair between every two
+// images a track joins, matched through those very tracks. The poses and the keypoint positions are
+// dummies: clustering reads the pairs and the tracks alone.
+static void BuildChainScene(unsigned numImages, unsigned tracksPerStart,
+	const std::function<unsigned(unsigned)>& lengthOf, Scene& scene)
+{
+	scene.cameras.emplace_back(new PinholeCamera(cv::Size(640, 480), REAL(400), REAL(400), REAL(320), REAL(240)));
+	for (unsigned i = 0; i < numImages; ++i)
+		scene.images.emplace_back((IIndex)i, String(), Pose3D(), 0, scene.cameras[0]);
+	scene.status.nCalibratedImages = scene.images.size();
+
+	// the tracks, one keypoint per observation, spread over the frame so that every pair carries the
+	// same coverage into the weighting
+	std::mt19937 rng(11);
+	std::uniform_real_distribution<REAL> xDist(10, 630), yDist(10, 470);
+	for (unsigned start = 0; start < numImages; ++start) {
+		const unsigned length = lengthOf(start);
+		if (length == 0)
+			continue;
+		const unsigned last = MINF(start + length, numImages);
+		for (unsigned t = 0; t < tracksPerStart; ++t) {
+			Track track(Point3(0, 0, 1));
+			for (unsigned i = start; i < last; ++i) {
+				Image& img = scene.images[i];
+				track.observations.emplace_back(i, (uint32_t)img.keypoints.size());
+				img.keypoints.emplace_back(Point2(xDist(rng), yDist(rng)), 0.f, 0.f, 10.f);
+			}
+			track.numInliers = (uint8_t)MINF(track.observations.size(), (IIndex)UINT8_MAX);
+			scene.tracks.emplace_back(std::move(track));
+		}
+	}
+
+	// a pair per image couple the tracks join, matched through those tracks
+	std::unordered_map<PairIdx::PairIndex, uint32_t> pairOf;
+	for (const Track& track : scene.tracks) {
+		FOREACH(i, track.observations) {
+			for (IIndex j = i + 1; j < track.observations.size(); ++j) {
+				const Observation& first = track.observations[i];
+				const Observation& second = track.observations[j];
+				const PairIdx images(first.imageID, second.imageID);
+				const auto ret = pairOf.emplace(images.idx, (uint32_t)scene.pairs.size());
+				if (ret.second)
+					scene.pairs.emplace_back(images.i, images.j);
+				scene.pairs[ret.first->second].matches.emplace_back(first.featureID, second.featureID);
+			}
+		}
+	}
+	scene.status.nTracks = scene.tracks.size();
+	scene.status.nState.set(Scene::Status::STATE::FEATURES_EXTRACTED);
+	scene.status.nState.set(Scene::Status::STATE::MATCHED);
+	ComputePairsWeights(scene);
+}
+
+// A neighbour the merge can register a cluster against: the seam carries enough usable tracks, and
+// enough cameras on both sides carry the per-camera vote floor
+static bool IsSeamStrong(const std::pair<SeamTrackStats, SeamTrackStats>& seam, const ClusterConfig& cfg)
+{
+	return seam.first.usable >= cfg.minSeamTracks &&
+		seam.first.CamerasWithAtLeast(cfg.minSeamCameraTracks) >= cfg.minSeamCameras &&
+		seam.second.CamerasWithAtLeast(cfg.minSeamCameraTracks) >= cfg.minSeamCameras;
+}
+
+// Four hundred images walking a whole ring: the sub-scenes must come out sized for the merge -- none
+// under the floor, none over the ceiling and its slack, half of them around the target -- and every
+// two that touch must share a seam the merge can register
+bool SceneClusterTargetSizeTest()
+{
+	TD_TIMER_START();
+
+	const RingSceneConfig cfg{40, 10};
+	Scene scene;
+	std::vector<IIndexArr> blocks;
+	std::vector<Pose3D> gtPoses;
+	GenerateRingScene(cfg, scene, blocks, gtPoses);
+	const unsigned numImages = (unsigned)scene.images.size();
+
+	const ClusterConfig clusterCfg;
+	SceneCluster cluster(scene, clusterCfg);
+	std::vector<IIndexArr> localToGlobals;
+	const std::vector<Scene> subScenes = cluster.SplitScene(&localToGlobals);
+
+	if (subScenes.size() < 3) {
+		VERBOSE("SceneClusterTargetSizeTest FAILED: expected >= 3 sub-scenes, got %u", (unsigned)subScenes.size());
+		return false;
+	}
+	std::vector<REAL> sizes;
+	for (unsigned s = 0; s < subScenes.size(); ++s) {
+		const unsigned size = (unsigned)subScenes[s].images.size();
+		if (size < clusterCfg.minViewsPerCluster || size > clusterCfg.maxViewsPerCluster + clusterCfg.maxOverCapacity) {
+			VERBOSE("SceneClusterTargetSizeTest FAILED: sub-scene %u has %u images, outside [%u, %u]",
+				s, size, clusterCfg.minViewsPerCluster, clusterCfg.maxViewsPerCluster + clusterCfg.maxOverCapacity);
+			return false;
+		}
+		sizes.push_back((REAL)size);
+	}
+	const REAL median = Median(sizes);
+	if (median < 70 || median > 130) {
+		VERBOSE("SceneClusterTargetSizeTest FAILED: median sub-scene size %.0f outside [70, 130]", median);
+		return false;
+	}
+
+	// every image in exactly one sub-scene
+	std::vector<unsigned> numAssignments(numImages, 0);
+	for (const IIndexArr& localToGlobal : localToGlobals)
+		for (IIndex globalID : localToGlobal)
+			++numAssignments[globalID];
+	for (unsigned i = 0; i < numImages; ++i) {
+		if (numAssignments[i] != 1) {
+			VERBOSE("SceneClusterTargetSizeTest FAILED: image %u assigned to %u sub-scenes", i, numAssignments[i]);
+			return false;
+		}
+	}
+
+	// every seam between two sub-scenes usable by the merge
+	const SeamTrackStatsMap seams = cluster.ComputeSeamTrackStats(localToGlobals);
+	for (const auto& [pair, seam] : seams) {
+		if (!IsSeamStrong(seam, clusterCfg)) {
+			VERBOSE("SceneClusterTargetSizeTest FAILED: sub-scenes (%u, %u) share %u seam-usable tracks over %u/%u cameras",
+				pair.first, pair.second, seam.first.usable,
+				seam.first.CamerasWithAtLeast(clusterCfg.minSeamCameraTracks),
+				seam.second.CamerasWithAtLeast(clusterCfg.minSeamCameraTracks));
+			return false;
+		}
+	}
+
+	VERBOSE("SceneClusterTargetSizeTest PASSED: %u images in %u sub-scenes, median %.0f images, %u seams (%s)",
+		numImages, (unsigned)subScenes.size(), median, (unsigned)seams.size(), TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// The seam-usable tracks of a cut, counted as the merge counts them: a track one side triangulates
+// and the other sees, credited to every camera that observed it
+bool SceneClusterSeamTracksTest()
+{
+	TD_TIMER_START();
+
+	const ClusterConfig clusterCfg;
+	std::vector<IIndexArr> clusters(2);
+	for (IIndex i = 0; i < 12; ++i)
+		clusters[i < 6 ? 0 : 1].push_back(i);
+
+	// three-view tracks: only the two starting at 4 and 5 cross the cut between 5 and 6
+	{
+		Scene scene;
+		BuildChainScene(12, 20, [](unsigned i) { return i <= 9 ? 3u : 0u; }, scene);
+		SceneCluster cluster(scene, clusterCfg);
+		const SeamTrackStatsMap seams = cluster.ComputeSeamTrackStats(clusters);
+		if (seams.size() != 1) {
+			VERBOSE("SceneClusterSeamTracksTest FAILED: expected one seam, got %u", (unsigned)seams.size());
+			return false;
+		}
+		const std::pair<SeamTrackStats, SeamTrackStats>& seam = seams.begin()->second;
+		if (seam.first.usable != 40 || seam.second.usable != 40) {
+			VERBOSE("SceneClusterSeamTracksTest FAILED: %u/%u seam-usable tracks, expected 40",
+				seam.first.usable, seam.second.usable);
+			return false;
+		}
+		const std::pair<IIndex, unsigned> expected[4] = {{5, 40}, {4, 20}, {6, 40}, {7, 20}};
+		for (unsigned k = 0; k < 4; ++k) {
+			const SeamTrackStats& stats = k < 2 ? seam.first : seam.second;
+			const auto it = stats.perCamera.find(expected[k].first);
+			if (stats.perCamera.size() != 2 || it == stats.perCamera.end() || it->second != expected[k].second) {
+				VERBOSE("SceneClusterSeamTracksTest FAILED: image %u carries %u seam-usable tracks of %u cameras, expected %u",
+					expected[k].first, it == stats.perCamera.end() ? 0 : it->second,
+					(unsigned)stats.perCamera.size(), expected[k].second);
+				return false;
+			}
+		}
+		if (seam.first.CamerasWithAtLeast(clusterCfg.minSeamCameraTracks) != 1 ||
+			seam.second.CamerasWithAtLeast(clusterCfg.minSeamCameraTracks) != 1) {
+			VERBOSE("SceneClusterSeamTracksTest FAILED: %u/%u cameras at the vote floor, expected 1/1",
+				seam.first.CamerasWithAtLeast(clusterCfg.minSeamCameraTracks),
+				seam.second.CamerasWithAtLeast(clusterCfg.minSeamCameraTracks));
+			return false;
+		}
+	}
+
+	// five-view tracks reach across the cut from further away, and the seam spreads over the cameras
+	// the merge needs
+	{
+		Scene scene;
+		BuildChainScene(12, 20, [](unsigned i) { return i <= 7 ? 5u : 0u; }, scene);
+		SceneCluster cluster(scene, clusterCfg);
+		const SeamTrackStatsMap seams = cluster.ComputeSeamTrackStats(clusters);
+		if (seams.size() != 1) {
+			VERBOSE("SceneClusterSeamTracksTest FAILED: expected one seam, got %u", (unsigned)seams.size());
+			return false;
+		}
+		const std::pair<SeamTrackStats, SeamTrackStats>& seam = seams.begin()->second;
+		const unsigned cameras[2] = {seam.first.CamerasWithAtLeast(clusterCfg.minSeamCameraTracks),
+			seam.second.CamerasWithAtLeast(clusterCfg.minSeamCameraTracks)};
+		if (cameras[0] < clusterCfg.minSeamCameras || cameras[1] < clusterCfg.minSeamCameras) {
+			VERBOSE("SceneClusterSeamTracksTest FAILED: %u/%u cameras at the vote floor, expected >= %u each",
+				cameras[0], cameras[1], clusterCfg.minSeamCameras);
+			return false;
+		}
+	}
+
+	VERBOSE("SceneClusterSeamTracksTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// A tail joined to the rest of the capture by a handful of short tracks: it is big enough to keep,
+// but no seam of it can be registered, so it must not come out as a sub-scene of its own
+bool SceneClusterLeafMergeTest()
+{
+	TD_TIMER_START();
+
+	// images 0..259 a chain of five-view tracks, images 260..304 a tail of the same, and between
+	// them only the three-view tracks starting at 255..259 -- two of which cross the cut
+	Scene scene;
+	BuildChainScene(305, 20, [](unsigned i) { return i >= 255 && i <= 259 ? 3u : 5u; }, scene);
+
+	const ClusterConfig clusterCfg;
+	SceneCluster cluster(scene, clusterCfg);
+	std::vector<IIndexArr> localToGlobals;
+	const std::vector<Scene> subScenes = cluster.SplitScene(&localToGlobals);
+
+	for (unsigned s = 0; s < subScenes.size(); ++s) {
+		if (subScenes[s].images.size() < clusterCfg.minViewsPerCluster) {
+			VERBOSE("SceneClusterLeafMergeTest FAILED: sub-scene %u has %u images < %u",
+				s, (unsigned)subScenes[s].images.size(), clusterCfg.minViewsPerCluster);
+			return false;
+		}
+	}
+
+	// the tail sits with the end of the chain, and that sub-scene reaches back into the chain
+	// proper: a tail left to itself is the block the merge would have to leave unplaced
+	unsigned subSceneOfEnd = NO_ID;
+	for (unsigned s = 0; s < localToGlobals.size(); ++s)
+		for (IIndex globalID : localToGlobals[s])
+			if (globalID == 259)
+				subSceneOfEnd = s;
+	if (subSceneOfEnd == NO_ID) {
+		VERBOSE("SceneClusterLeafMergeTest FAILED: image 259 left out of the sub-scenes");
+		return false;
+	}
+	std::set<IIndex> withEnd(localToGlobals[subSceneOfEnd].begin(), localToGlobals[subSceneOfEnd].end());
+	for (IIndex globalID = 260; globalID < 305; ++globalID) {
+		if (withEnd.count(globalID) == 0) {
+			VERBOSE("SceneClusterLeafMergeTest FAILED: image %u is not in the sub-scene of image 259 (%u images)",
+				globalID, (unsigned)withEnd.size());
+			return false;
+		}
+	}
+	if (withEnd.count(250) == 0) {
+		VERBOSE("SceneClusterLeafMergeTest FAILED: the tail and image 259 are a sub-scene of their own (%u images)",
+			(unsigned)withEnd.size());
+		return false;
+	}
+
+	VERBOSE("SceneClusterLeafMergeTest PASSED: %u sub-scenes, the tail merged into a %u-image one (%s)",
+		(unsigned)subScenes.size(), (unsigned)withEnd.size(), TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// A cut whose seam holds tracks enough but keeps them in too few cameras: moving a boundary image
+// across it hands the tracks that image sees to the other side, which spreads the seam over the
+// cameras the merge needs on both sides
+bool SceneClusterSeamRepairTest()
+{
+	TD_TIMER_START();
+
+	Scene scene;
+	BuildChainScene(12, 30, [](unsigned i) { return i <= 7 ? 5u : 0u; }, scene);
+
+	ClusterConfig clusterCfg;
+	clusterCfg.maxViewsPerCluster = 12;
+	clusterCfg.minViewsPerCluster = 5;
+	clusterCfg.minSeamCameraTracks = 120; // four of the five-view track starts, of thirty tracks each
+	SceneCluster cluster(scene, clusterCfg);
+
+	std::vector<IIndexArr> clusters(2);
+	for (IIndex i : {0, 1, 2, 3, 4, 5, 8})
+		clusters[0].push_back(i);
+	for (IIndex i : {6, 7, 9, 10, 11})
+		clusters[1].push_back(i);
+	const std::vector<IIndexArr> before(clusters);
+
+	const auto SeamCameras = [&cluster, &clusterCfg](const std::vector<IIndexArr>& state, unsigned cameras[2]) {
+		const SeamTrackStatsMap seams = cluster.ComputeSeamTrackStats(state);
+		ASSERT(seams.size() == 1);
+		const std::pair<SeamTrackStats, SeamTrackStats>& seam = seams.begin()->second;
+		cameras[0] = seam.first.CamerasWithAtLeast(clusterCfg.minSeamCameraTracks);
+		cameras[1] = seam.second.CamerasWithAtLeast(clusterCfg.minSeamCameraTracks);
+		return seam.first.usable;
+	};
+	unsigned camerasBefore[2], camerasAfter[2];
+	const unsigned usableBefore = SeamCameras(before, camerasBefore);
+	if (usableBefore < clusterCfg.minSeamTracks ||
+		MINF(camerasBefore[0], camerasBefore[1]) >= clusterCfg.minSeamCameras) {
+		VERBOSE("SceneClusterSeamRepairTest FAILED: the seam is not the thin one to repair: %u tracks over %u/%u cameras",
+			usableBefore, camerasBefore[0], camerasBefore[1]);
+		return false;
+	}
+
+	cluster.RepairClusterSeams(clusters);
+	SeamCameras(clusters, camerasAfter);
+
+	// the two sides carry the merge now, and neither lost cameras doing so
+	if (MINF(camerasAfter[0], camerasAfter[1]) < clusterCfg.minSeamCameras) {
+		VERBOSE("SceneClusterSeamRepairTest FAILED: seam cameras %u/%u -> %u/%u, expected >= %u each",
+			camerasBefore[0], camerasBefore[1], camerasAfter[0], camerasAfter[1], clusterCfg.minSeamCameras);
+		return false;
+	}
+	if (MINF(camerasAfter[0], camerasAfter[1]) < MINF(camerasBefore[0], camerasBefore[1])) {
+		VERBOSE("SceneClusterSeamRepairTest FAILED: the repair took the seam from %u/%u cameras to %u/%u",
+			camerasBefore[0], camerasBefore[1], camerasAfter[0], camerasAfter[1]);
+		return false;
+	}
+
+	// the images are the same ones, moved between the two sides and within their size bounds
+	std::multiset<IIndex> imagesBefore, imagesAfter;
+	unsigned numMoved = 0;
+	for (unsigned c = 0; c < 2; ++c) {
+		imagesBefore.insert(before[c].begin(), before[c].end());
+		imagesAfter.insert(clusters[c].begin(), clusters[c].end());
+		if (clusters[c].size() < clusterCfg.minViewsPerCluster || clusters[c].size() > clusterCfg.maxViewsPerCluster) {
+			VERBOSE("SceneClusterSeamRepairTest FAILED: cluster %u has %u images, outside [%u, %u]",
+				c, (unsigned)clusters[c].size(), clusterCfg.minViewsPerCluster, clusterCfg.maxViewsPerCluster);
+			return false;
+		}
+		const std::set<IIndex> was(before[c].begin(), before[c].end());
+		for (IIndex globalID : clusters[c])
+			if (was.count(globalID) == 0)
+				++numMoved;
+	}
+	if (imagesBefore != imagesAfter) {
+		VERBOSE("SceneClusterSeamRepairTest FAILED: the repair lost or duplicated images");
+		return false;
+	}
+	if (numMoved == 0) {
+		VERBOSE("SceneClusterSeamRepairTest FAILED: no boundary image moved");
+		return false;
+	}
+
+	VERBOSE("SceneClusterSeamRepairTest PASSED: %u images moved, seam cameras %u/%u -> %u/%u (%s)",
+		numMoved, camerasBefore[0], camerasBefore[1], camerasAfter[0], camerasAfter[1], TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
 // Three blocks of one ring, each pushed off where it belongs: the one joint refinement must pull
 // them back onto each other over the inlier observations of the seams alone
 bool BlockJointRefinementTest()
@@ -12828,6 +13190,9 @@ bool GlobalAlignmentMergeSingleSceneTest()
 	ClusterConfig clusterCfg;
 	clusterCfg.maxViewsPerCluster = 6;
 	clusterCfg.minViewsPerCluster = 3;
+	// the sub-scenes are this fixture, and its handful of points makes every seam look thin to a rule
+	// written for a capture's tracks: no cluster is merged away here for want of strong neighbours
+	clusterCfg.minClusterDegree = 0;
 
 	SceneCluster cluster(scene, clusterCfg);
 	std::vector<IIndexArr> localToGlobals;
@@ -13059,6 +13424,9 @@ bool HierarchicalSFMSplitMergeRoundtripTest()
 	ClusterConfig clusterCfg;
 	clusterCfg.maxViewsPerCluster = 14;
 	clusterCfg.minViewsPerCluster = 5;
+	// the sub-scenes are this fixture, and its handful of points makes every seam look thin to a rule
+	// written for a capture's tracks: no cluster is merged away here for want of strong neighbours
+	clusterCfg.minClusterDegree = 0;
 
 	SceneCluster cluster(scene, clusterCfg);
 	std::vector<IIndexArr> localToGlobals;
@@ -13194,6 +13562,9 @@ bool HierarchicalSFMWithRandomTransformTest()
 	ClusterConfig clusterCfg;
 	clusterCfg.maxViewsPerCluster = 12;
 	clusterCfg.minViewsPerCluster = 5;
+	// the sub-scenes are this fixture, and its handful of points makes every seam look thin to a rule
+	// written for a capture's tracks: no cluster is merged away here for want of strong neighbours
+	clusterCfg.minClusterDegree = 0;
 
 	SceneCluster cluster(scene, clusterCfg);
 	std::vector<IIndexArr> localToGlobals;
@@ -13314,6 +13685,9 @@ static bool BuildTransformedSubScenes(
 	ClusterConfig clusterCfg;
 	clusterCfg.maxViewsPerCluster = 14;
 	clusterCfg.minViewsPerCluster = 5;
+	// the sub-scenes are this fixture, and its handful of points makes every seam look thin to a rule
+	// written for a capture's tracks: no cluster is merged away here for want of strong neighbours
+	clusterCfg.minClusterDegree = 0;
 	SceneCluster cluster(scene, clusterCfg);
 	localToGlobals.clear();
 	subScenes = cluster.SplitScene(&localToGlobals);
@@ -13586,6 +13960,9 @@ static bool BuildTriangleSubScenes(
 	ClusterConfig clusterCfg;
 	clusterCfg.maxViewsPerCluster = 14;
 	clusterCfg.minViewsPerCluster = 5;
+	// the sub-scenes are this fixture, and its handful of points makes every seam look thin to a rule
+	// written for a capture's tracks: no cluster is merged away here for want of strong neighbours
+	clusterCfg.minClusterDegree = 0;
 	SceneCluster cluster(scene, clusterCfg);
 	localToGlobals.clear();
 	subScenes = cluster.SplitScene(&localToGlobals);

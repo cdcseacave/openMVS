@@ -49,7 +49,8 @@ class SFM_API Scene;
  *    - Start with each image as its own cluster.
  *    - Repeatedly merge the two clusters connected by the highest-weight edge,
  *      updating edge weights between the merged cluster and its neighbors.
- *    - Stop when every cluster has ≤ maxViewsPerCluster images.
+ *    - A cluster stops growing at targetViewsPerCluster, and takes in more only
+ *      to absorb a cluster under minViewsPerCluster, never past maxViewsPerCluster.
  *    This greedy approach produces clusters that respect the covisibility
  *    structure: images that see many of the same features end up together,
  *    ensuring each sub-scene has strong internal connectivity.
@@ -62,7 +63,12 @@ class SFM_API Scene;
  *       to improve a modularity + balance objective.
  *    c) Split disconnected: if a cluster has disconnected components in the
  *       covisibility graph, split it into separate clusters.
- *    d) Rescue orphans: small clusters that remain after splitting are absorbed
+ *    d) Make the cuts usable by the merge: a cluster whose seams carry too few
+ *       usable tracks, spread over too few cameras, to be registered against its
+ *       neighbors is merged into the neighbor it shares the most with, and a seam
+ *       holding tracks enough but concentrated in too few cameras is widened by
+ *       moving boundary images across it.
+ *    e) Rescue orphans: small clusters that remain after splitting are absorbed
  *       into neighbors.
  *
  * 4. EXTRACT SUB-SCENES
@@ -111,13 +117,49 @@ class SFM_API Scene;
  */
 struct SFM_API ClusterConfig
 {
-	unsigned maxViewsPerCluster{200};  // maximum images per cluster (0 = disable clustering)
-	unsigned minViewsPerCluster{10};   // minimum images per cluster to keep (smaller clusters merged/reassigned)
-	unsigned maxOverCapacity{20};      // maximum extra images a cluster can take over maxViewsPerCluster when absorbing orphans
-	float minPairWeight{3.f};          // minimum composite weight for pair edge
-	float minClusterCoupling{0.05f};   // refuse a merge whose interface weight falls below this fraction of the weaker side's internal weight, and split any final cluster with such an internal seam (0 = disabled)
-	bool useCommunityDetection{false}; // partition by community detection + capacity packing instead of pure aggregative clustering
+	unsigned maxViewsPerCluster{150};    // ceiling; 0 = disable clustering
+	unsigned targetViewsPerCluster{100}; // a cluster stops growing past this unless it absorbs one under the floor
+	unsigned minViewsPerCluster{40};     // floor: smaller clusters are merged into their strongest neighbour
+	unsigned maxOverCapacity{20};        // extra images allowed over the ceiling when absorbing a small cluster
+	unsigned minClusterDegree{2};        // a cluster with fewer strong neighbours is merged into its heaviest one when the result fits (0 = keep every cluster)
+	unsigned minSeamTracks{75};          // seam-usable tracks a cluster pair needs for the neighbour to count as strong
+	unsigned minSeamCameras{3};          // cameras per side with enough seam-usable tracks for the neighbour to count as strong
+	unsigned minSeamCameraTracks{30};    // seam-usable tracks one camera needs to count (the merge's vote floor)
+	float minPairWeight{3.f};            // minimum composite weight for pair edge
+	float minClusterCoupling{0.05f};     // refuse a merge whose interface weight falls below this fraction of the weaker side's internal weight, and split any final cluster with such an internal seam (0 = disabled)
+	bool useCommunityDetection{false};   // partition by community detection + capacity packing instead of pure aggregative clustering
+
+	// The ceiling and the two sizes that follow from it: a cluster aims at two thirds of the
+	// ceiling and is not kept below four fifteenths of it. The single place they are derived, so
+	// the defaults above and a user-given ceiling follow the same rule.
+	void SetMaxViews(unsigned maxViews) {
+		maxViewsPerCluster = maxViews;
+		targetViewsPerCluster = maxViews * 2 / 3;
+		minViewsPerCluster = maxViews * 4 / 15;
+	}
 };
+
+/**
+ * @brief The seam one cluster offers a neighbour, as the merge reads it
+ *
+ * Seam-usable tracks are the tracks with at least two observations in one cluster (it can
+ * triangulate them) and at least one in the other (its camera sees them): the correspondences the
+ * generalized pose estimation of one cluster's cameras against the other's points consumes. A
+ * camera votes in that estimation from either side, so every observation of a usable track counts
+ * for the camera that made it.
+ */
+struct SFM_API SeamTrackStats
+{
+	unsigned usable{0};                             // tracks usable in either direction
+	std::unordered_map<IIndex, unsigned> perCamera; // global image -> its seam-usable tracks toward the other cluster
+
+	// how many cameras of this side carry at least n seam-usable tracks
+	unsigned CamerasWithAtLeast(unsigned n) const;
+};
+
+// The seam of every adjacent cluster pair, read off the global tracks; the key (a, b) with a < b
+// holds the statistics of side a toward b in .first and of side b toward a in .second
+typedef std::map<std::pair<uint32_t, uint32_t>, std::pair<SeamTrackStats, SeamTrackStats>> SeamTrackStatsMap;
 
 /**
  * @brief Scene partitioning using aggregative graph clustering
@@ -152,6 +194,25 @@ public:
 	std::vector<Scene> SplitSceneByClusters(
 		const std::vector<IIndexArr>& clusters,
 		std::vector<IIndexArr>* outLocalToGlobal = NULL);
+
+	/**
+	 * @brief The seam statistics of every adjacent cluster pair, read off the scene tracks
+	 * @param clusters Clusters of global image IDs; an image in no cluster is ignored
+	 */
+	SeamTrackStatsMap ComputeSeamTrackStats(const std::vector<IIndexArr>& clusters) const;
+
+	/**
+	 * @brief Merge away every cluster the merge could not attach: one whose seams carry too few
+	 * usable tracks, or too few cameras reaching the vote floor, to register it against its
+	 * neighbours. It joins the neighbour it shares the most usable tracks with, if the result fits.
+	 */
+	void MergeLeafClusters(std::vector<IIndexArr>& clusters);
+
+	/**
+	 * @brief Move boundary images across a seam that carries tracks enough but holds them in too
+	 * few cameras, until both sides reach the number of cameras the merge needs
+	 */
+	void RepairClusterSeams(std::vector<IIndexArr>& clusters);
 
 	/**
 	 * @brief Export cluster GPS positions to PLY file with unique colors per cluster
@@ -213,6 +274,14 @@ private:
 	// thin-waist clusters that would otherwise reconstruct as two independently scaled
 	// blocks; each half becomes its own sub-scene, realigned by the global Sim(3) merge
 	void RefineClustersSplitThinWaist(std::vector<IIndexArr>& clusters);
+
+	// Helper: the cuts as the merge will see them — merge away the clusters no seam can register,
+	// widen the seams whose tracks sit in too few cameras, and hand whatever that leaves under the
+	// floor back to the floor rule; the tail both clustering methods end through
+	void RefineClustersForSeams(std::vector<IIndexArr>& clusters);
+
+	// Helper: one seam of RepairClusterSeams, between the two given clusters
+	void RepairClusterSeam(std::vector<IIndexArr>& clusters, uint32_t clusterA, uint32_t clusterB);
 
 	// Helper: Rescue small orphaned clusters
 	void RefineClustersRescueOrphans(std::vector<IIndexArr>& clusters);
