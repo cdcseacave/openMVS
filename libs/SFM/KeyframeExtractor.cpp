@@ -412,15 +412,7 @@ static REAL AverageEstimates(DoubleArr& estimates)
 	const double median = estimates.GetMedian();
 	const MeanStdMinMax<double> stats(estimates.data(), estimates.size());
 	// Mean of the focal estimates excluding top/bottom 10% percentiles
-	REAL mean; {
-		const size_t n = estimates.size();
-		const size_t startIdx = n / 10;
-		const size_t endIdx = n - startIdx;
-		const size_t size = endIdx - startIdx;
-		estimates.Sort();
-		const double sum = std::accumulate(estimates.begin()+startIdx, estimates.begin()+endIdx, 0.0);
-		mean = (REAL)(sum / size);
-	}
+	const REAL mean(estimates.GetTrimmedMean<REAL>(0.1f, 0.1f));
 	DEBUG("Focal estimates: median %.2f mean %.2f stddev %.2f range [%.2f,%.2f] n %u",
 			median, stats.GetMean(), stats.GetStdDev(), stats.GetMin(), stats.GetMax(), estimates.size());
 	return mean;

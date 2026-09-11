@@ -2849,20 +2849,22 @@ bool MeshUnseenFacesTest()
 }
 /*----------------------------------------------------------------*/
 
-// a reference camera at the origin and three neighbors a unit behind it, all looking down +Z at a
-// grid of points 10 units away, so every grid point has the footprint ratio 11/10; plus one
-// mis-triangulated point 1e-6 in front of the reference camera center that only neighbor 1 shares,
-// seen from there at depth ~1: a footprint ratio of ~1e6. Everything is scaled by s
+// a reference camera at the origin and four neighbors a unit behind it, all looking down +Z at a
+// grid of points 10 units away, so every grid point has the footprint ratio 11/10; neighbors 1-3
+// see the whole grid, neighbor 4 only its 4 central points. Plus one mis-triangulated point 1e-6 in
+// front of the reference camera center, shared by neighbors 1 and 4 and seen from them at depth ~1:
+// a footprint ratio of ~1e6, 1 of 50 ratios for neighbor 1 and 1 of 5 for neighbor 4 (too few for
+// a 10% trim to drop anything). Everything is scaled by s
 static bool BuildNeighborViewsScaleScene(Scene& scene, REAL s)
 {
 	constexpr uint32_t imgSize(320);
-	static const Point3 camCenters[4] = {Point3(0,0,0), Point3(1,0,-1), Point3(-1,0,-1), Point3(0,1,-1)};
+	static const Point3 camCenters[5] = {Point3(0,0,0), Point3(1,0,-1), Point3(-1,0,-1), Point3(0,1,-1), Point3(0,-1,-1)};
 	Platform& platform = scene.platforms.AddEmpty();
 	Platform::Camera& relCamera = platform.cameras.AddEmpty();
 	relCamera.R = Matrix3x3::IDENTITY;
 	relCamera.C = Point3(0,0,0);
 	relCamera.K = Matrix3x3::IDENTITY; // normalized focal of one image size
-	for (unsigned i=0; i<4; ++i) {
+	for (unsigned i=0; i<5; ++i) {
 		const Point3 C(camCenters[i].x*s, camCenters[i].y*s, camCenters[i].z*s);
 		Platform::Pose& pose = platform.poses.AddEmpty();
 		pose.C = C;
@@ -2883,19 +2885,22 @@ static bool BuildNeighborViewsScaleScene(Scene& scene, REAL s)
 			return false;
 		}
 	}
-	scene.nCalibratedImages = 4;
+	scene.nCalibratedImages = 5;
 	for (int y=-3; y<=3; ++y) {
 		for (int x=-3; x<=3; ++x) {
 			scene.pointcloud.points.emplace_back(Point3f(float(x*0.6*s), float(y*0.6*s), float(10*s)));
 			PointCloud::ViewArr& views = scene.pointcloud.pointViews.emplace_back();
 			for (PointCloud::View v=0; v<4; ++v)
 				views.push_back(v);
+			if ((x == 0 || x == 1) && (y == 0 || y == 1))
+				views.push_back(4);
 		}
 	}
 	scene.pointcloud.points.emplace_back(Point3f(0.f, 0.f, float(1e-6*s)));
 	PointCloud::ViewArr& views = scene.pointcloud.pointViews.emplace_back();
 	views.push_back(0);
 	views.push_back(1);
+	views.push_back(4);
 	return true;
 }
 
@@ -2925,8 +2930,8 @@ bool SelectNeighborViewsScaleTest()
 		std::sort(neighbors.begin(), neighbors.end());
 		if (referenceNeighbors.empty())
 			referenceNeighbors = neighbors;
-		if (neighbors.size() != 3 || neighbors != referenceNeighbors) {
-			VERBOSE("ERROR: SelectNeighborViewsScaleTest picked %u neighbors at scene scale %g, expected the same 3 at every scale!",
+		if (neighbors.size() != 4 || neighbors != referenceNeighbors) {
+			VERBOSE("ERROR: SelectNeighborViewsScaleTest picked %u neighbors at scene scale %g, expected the same 4 at every scale!",
 				(unsigned)neighbors.size(), s);
 			return false;
 		}

@@ -859,13 +859,13 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 	};
 	CLISTDEF0(Score) scores(images.size());
 	scores.Memset(0);
-	// the footprint ratio of every shared observation, per view: a view's scale is their median,
-	// as one mis-triangulated point next to a camera center has a ratio of millions, enough to drag
-	// a mean -- and with it the size the view's image is resampled to -- anywhere
+	// the footprint ratio of every shared observation, per view: a view's scale is their trimmed
+	// mean, as one mis-triangulated point next to a camera center has a ratio of millions, enough
+	// to drag a plain mean -- and with it the size the view's image is resampled to -- anywhere
 	struct ScaleRatio {
 		uint32_t view;
 		float ratio;
-		inline bool operator<(const ScaleRatio& r) const { return view < r.view || (view == r.view && ratio < r.ratio); }
+		inline bool operator<(const ScaleRatio& r) const { return view < r.view; }
 	};
 	CLISTDEF0(ScaleRatio) scaleRatios;
 	if (nMinPointViews > nCalibratedImages)
@@ -929,16 +929,17 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 	}
 	if(nPoints > 3)
 		imageData.avgDepth /= nPoints;
-	// the median scale ratio of every view: sorted by view, then by ratio
+	// the scale of every view: the trimmed mean of its ratios, dropping the lowest and highest 10%
+	// -- at least one each, so a view sharing only a handful of points still loses its outlier
 	scaleRatios.Sort();
+	FloatArr ratios;
 	for (size_t i=0; i<scaleRatios.size(); ) {
 		const uint32_t view(scaleRatios[i].view);
-		size_t j(i+1);
-		while (j<scaleRatios.size() && scaleRatios[j].view == view)
-			++j;
-		const size_t n(j-i), m(i+n/2);
-		scores[view].scale = (n&1) ? scaleRatios[m].ratio : (scaleRatios[m-1].ratio+scaleRatios[m].ratio)*0.5f;
-		i = j;
+		ratios.Empty();
+		do {
+			ratios.push_back(scaleRatios[i].ratio);
+		} while (++i<scaleRatios.size() && scaleRatios[i].view == view);
+		scores[view].scale = ratios.GetTrimmedMean(0.1f, 0.1f, 1);
 	}
 
 	// select best neighborViews
@@ -2503,15 +2504,7 @@ bool Scene::ComputeTowerCylinder(Point2f& centerPoint, float& fRadius, float& fR
 	fRadius = MAXF(0.2f, (fMedianDistance - 1.f) / 3.f);
 	// get the average of top 85 to 95% of the highest distances to center
 	if (!cameraDistancesToMiddle.empty()) {
-		float avgTopDistance(0);
-		cameraDistancesToMiddle.Sort();
-		const size_t topIdx(CEIL2INT(cameraDistancesToMiddle.size() * 0.95f));
-		const size_t botIdx(FLOOR2INT(cameraDistancesToMiddle.size() * 0.85f));
-		for (size_t i = botIdx; i < topIdx; ++i) {
-			avgTopDistance += cameraDistancesToMiddle[i];
-		}
-		avgTopDistance /= topIdx - botIdx;
-		fROIRadius = avgTopDistance;
+		fROIRadius = cameraDistancesToMiddle.GetTrimmedMean(0.85f, 0.05f);
 	} else {
 		fROIRadius = fRadius;
 	}
@@ -2605,13 +2598,8 @@ PointCloud Scene::BuildTowerMesh(const PointCloud& origPointCloud, const Point2f
 				circleRadius = fRadius;
 			} else {
 				if (pDistances.size() > 2) {
-					pDistances.Sort();
-					const size_t topIdx(MINF(pDistances.size() - 1, CEIL2INT<size_t>(pDistances.size() * 0.95f)));
-					const size_t botIdx(MAXF(1u, FLOOR2INT<unsigned>(pDistances.size() * 0.5f)));
-					float avgTopDistance(0);
-					for (size_t i = botIdx; i < topIdx; ++i)
-						avgTopDistance += pDistances[i];
-					avgTopDistance /= topIdx - botIdx;
+					// the average of the top 50 to 95% distances, dropping at least the nearest and the farthest
+					const float avgTopDistance(pDistances.GetTrimmedMean(0.5f, 0.05f, 1));
 					if (avgTopDistance < fROIRadius * 0.8f)
 						circleRadius = avgTopDistance;
 				}

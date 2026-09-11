@@ -678,6 +678,42 @@ public:
 	{
 		return std::accumulate(Begin(), End(), TYPE(0)) / _size;
 	}
+	// trimmed (truncated) mean: the mean of the elements left once the lowest lowRatio and the
+	// highest highRatio fraction of them are dropped, and at least minTrim from each end (a
+	// percentile-window mean when the two ratios differ); if that would drop them all, the one or
+	// two elements at the center of the requested window are kept instead, so a symmetric trim of
+	// up to 4 elements with minTrim >= 1 gives exactly the median. Robust to outliers at either
+	// end while they are fewer than the trimmed share, and closer to the plain mean than the median
+	// on clean data; linear time, reorders the elements; pNumKept receives how many were averaged
+	template <typename RTYPE = typename std::conditional<std::is_floating_point<TYPE>::value,TYPE,REAL>::type>
+	inline RTYPE	GetTrimmedMean(float lowRatio, float highRatio, IDX minTrim=0, IDX* pNumKept=NULL)
+	{
+		ASSERT(_size > 0);
+		ASSERT(lowRatio >= 0 && highRatio >= 0 && lowRatio+highRatio < 1);
+		const IDX lowTrim(std::min(std::max(static_cast<IDX>(static_cast<double>(_size)*lowRatio), minTrim), _size));
+		const IDX highTrim(std::min(std::max(static_cast<IDX>(static_cast<double>(_size)*highRatio), minTrim), _size));
+		IDX lo(lowTrim), hi(_size-highTrim);
+		if (lo >= hi) {
+			// nothing left: keep the element, or the two, at the center of the requested window
+			const IDX center2(lowTrim+_size-highTrim); // twice the center rank, in [0, 2*size]
+			lo = center2 > 0 ? (center2-1)/2 : 0;
+			hi = std::min(center2/2+1, _size);
+		}
+		TYPE* const first(Begin()+lo);
+		TYPE* const last(Begin()+hi);
+		// the lo lowest elements go before first, then the highest of the rest from last on
+		if (lo > 0)
+			std::nth_element(Begin(), first, End());
+		if (hi < _size)
+			std::nth_element(first, last, End());
+		typedef typename std::common_type<RTYPE,double>::type SUMTYPE;
+		SUMTYPE sum(0);
+		for (const TYPE* it=first; it!=last; ++it)
+			sum += static_cast<SUMTYPE>(*it);
+		if (pNumKept)
+			*pNumKept = hi-lo;
+		return static_cast<RTYPE>(sum / static_cast<SUMTYPE>(hi-lo));
+	}
 
 	inline ArgType	GetMax() const {
 		return *std::max_element(Begin(), End());
@@ -1548,6 +1584,44 @@ inline bool cListTest(unsigned iters) {
 		for (size_t i=0; i<arrR.size(); ++i) {
 			const int e = arrR[i];
 			if (arrS[i] != e) {
+				ASSERT("there is a problem" == NULL);
+				return false;
+			}
+		}
+		// GetTrimmedMean against sorting, on a small value range so ties are common
+		{
+			static const float trimRatios[] = {0.f, 0.05f, 0.1f, 0.25f, 0.45f, 0.85f};
+			const size_t n = 1+RAND()%60;
+			const float lowRatio = trimRatios[RAND()%6];
+			float highRatio = RAND()%2 ? lowRatio : trimRatios[RAND()%6];
+			if (lowRatio+highRatio >= 1.f)
+				highRatio = 0.05f;
+			const unsigned minTrim = RAND()%4;
+			cList<int, int, 0> arrT;
+			cList<float, float, 0> arrTF;
+			for (size_t j=0; j<n; ++j) {
+				arrT.Insert(RAND()%50-25);
+				arrTF.Insert(static_cast<float>(arrT.Last()));
+			}
+			cList<int, int, 0> arrM(arrT);
+			std::vector<int> sorted(arrT.Begin(), arrT.End());
+			std::sort(sorted.begin(), sorted.end());
+			const size_t lowTrim = std::min(std::max(static_cast<size_t>(static_cast<double>(n)*lowRatio), static_cast<size_t>(minTrim)), n);
+			const size_t highTrim = std::min(std::max(static_cast<size_t>(static_cast<double>(n)*highRatio), static_cast<size_t>(minTrim)), n);
+			size_t lo = lowTrim, hi = n-highTrim;
+			if (lo >= hi) {
+				const size_t center2 = lowTrim+n-highTrim;
+				lo = center2 > 0 ? (center2-1)/2 : 0;
+				hi = std::min(center2/2+1, n);
+			}
+			double sum = 0;
+			for (size_t j=lo; j<hi; ++j)
+				sum += sorted[j];
+			const double expected = sum/static_cast<double>(hi-lo);
+			size_t numKept = 0;
+			if (arrT.GetTrimmedMean(lowRatio, highRatio, minTrim, &numKept) != expected || numKept != hi-lo ||
+				arrTF.GetTrimmedMean(lowRatio, highRatio, minTrim) != static_cast<float>(expected) ||
+				(lowRatio == highRatio && minTrim >= 1 && n <= 4 && arrM.GetMedian() != expected)) {
 				ASSERT("there is a problem" == NULL);
 				return false;
 			}
