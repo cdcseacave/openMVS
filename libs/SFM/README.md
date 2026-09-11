@@ -133,7 +133,7 @@ Input: Images (or video keyframes)          [+ optional poses file]
 │      ▼        │ │ rotations    │ │Triangulate with the  │
 │Global         │ │ held fixed)  │ │  imported poses      │
 │  Alignment    │ │      │       │ │      │               │
-│(5-stage merge)│ │      ▼       │ │      ▼               │
+│(seams, merge) │ │      ▼       │ │      ▼               │
 │      │        │ │Optional      │ │Finetune BA ->        │
 │      ▼        │ │  final BA    │ │ re-triangulate -> BA │
 │  Final BA     │ │              │ │                      │
@@ -227,7 +227,7 @@ Input: Images + matched pairs (from common front-end)
 │ 1. Scene Clustering                                      │
 │    SceneCluster.h/cpp                                    │
 │    Aggregative clustering on covisibility graph          │
-│    Partition into clusters of ≤200 images                │
+│    Partition into clusters of ≤150 images (default)      │
 │    (if scene ≤ maxViewsPerCluster → 1 cluster = pure    │
 │     incremental reconstruction, no alignment needed)     │
 └─────────────────────────────────────────────────────────┘
@@ -267,26 +267,28 @@ Input: Images + matched pairs (from common front-end)
   │  (skip if only 1 cluster)
   ▼
 ┌─────────────────────────────────────────────────────────┐
-│ 3. Global Alignment -- 5-stage merge                     │
+│ 3. Global Alignment                                       │
 │    GlobalAlignment.h/cpp                                 │
 │                                                          │
-│    a. Estimate relative poses between sub-scene pairs    │
-│       (PoseLib generalized absolute pose from            │
-│        cross-cluster 2D-3D correspondences)              │
+│    a. Measure every adjacent block pair in both          │
+│       directions (3D-3D similarity, or generalized-      │
+│       camera PnP with scale), gated by camera votes       │
 │                        ▼                                 │
-│    b. Rotation averaging (GlobalRotationAveraging.h)     │
-│       MST init → L1-ADMM → IRLS on SO(3)                │
+│    b. Seam graph: robust rotation/scale/translation       │
+│       averaging as the cycle test -- ROBUST / VERIFIED /  │
+│       UNDECIDED / REJECTED                                │
 │                        ▼                                 │
-│    c. Scale averaging (GlobalScaleAveraging.h)           │
-│       Log-space least-squares on pairwise scale ratios   │
+│    c. Initial poses per trusted component, then           │
+│       block-by-block placement against four gates,        │
+│       with loop closure and camera relaxation for what    │
+│       the placement order alone cannot resolve            │
 │                        ▼                                 │
-│    d. Translation averaging (GlobalTranslationAveraging) │
-│       Linear system solve with gauge constraint          │
-│                        ▼                                 │
-│    e. Merge sub-scenes into reference scene              │
-│       Apply similarity transforms to each cluster        │
-│       Average shared camera intrinsics                   │
-│       Merge tracks via union-find + 3D proximity guards  │
+│    d. Merge the model with the most images: apply its     │
+│       similarity transforms, average shared camera        │
+│       intrinsics, merge tracks via union-find + 3D        │
+│       proximity guards (seam-agreed correspondences join   │
+│       by construction); every other block is merged       │
+│       without a pose, for the resection to recover        │
 │                                                          │
 └─────────────────────────────────────────────────────────┘
   │
@@ -303,7 +305,7 @@ Output: Calibrated poses + sparse point cloud
 
 **Key implementation details**:
 
-- **Scene Clustering** (`SceneCluster.h`): Builds a covisibility graph (nodes = images, edges = inlier match counts), then uses bottom-up aggregative clustering. It merges the highest-weight edge at each step until all clusters have ≤ `maxViewsPerCluster` images (default 200). A refinement pass merges small clusters, moves boundary images for better modularity, and splits disconnected components.
+- **Scene Clustering** (`SceneCluster.h`): Builds a covisibility graph (nodes = images, edges = inlier match counts), then uses bottom-up aggregative clustering. It merges the highest-weight edge at each step, aiming for `targetViewsPerCluster` (two thirds of `maxViewsPerCluster`, default 150) and never crossing the ceiling itself. Seven refinement passes then merge small clusters, move boundary images for better modularity and balance, split disconnected or thin-waisted components, and merge away or widen any cluster boundary the merge could not otherwise register against.
 
 - **Data protocol**: Keypoints and descriptors are **moved** (not copied) from the global scene into sub-scenes to save memory. Cross-cluster image pairs remain in the global scene for use during alignment. After merge, data is moved back.
 
@@ -630,7 +632,7 @@ libs/SFM/
 │
 │ # Hierarchical / Global reconstruction
 ├── SceneCluster.h/cpp                  # Aggregative scene clustering
-├── GlobalAlignment.h/cpp               # 5-stage sub-scene merging
+├── GlobalAlignment.h/cpp               # Seam measurement, seam graph, block placement, merging
 ├── GlobalRotationAveraging.h/cpp       # SO(3) rotation averaging
 ├── GlobalScaleAveraging.h/cpp          # Log-space scale averaging
 ├── GlobalTranslationAveraging.h/cpp    # Linear translation solving

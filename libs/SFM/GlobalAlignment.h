@@ -25,185 +25,66 @@ namespace SFM {
 class SFM_API Scene;
 
 /*
- * Hierarchical SfM — Global Alignment and Merge Phase
- * ====================================================
+ * Hierarchical SfM — Global Alignment and Merge
+ * ===============================================
  *
- * After SceneCluster splits the scene and each sub-scene is independently
- * reconstructed (tracks built, star-initialized, images resected, bundle-
- * adjusted), the sub-scenes live in their own arbitrary coordinate systems.
- * This file implements the MERGE phase: estimating the similarity transforms
- * that bring all sub-scenes into a single consistent coordinate system,
- * applying those transforms, and merging everything back into the original
- * global scene.
+ * After SceneCluster splits the scene, each sub-scene ("block" below) is reconstructed
+ * independently and lives in its own arbitrary coordinate system. This file measures how
+ * adjacent blocks relate, decides which measurements can be trusted, places blocks one at a
+ * time into one or more models, and merges the model holding the most images back into the
+ * scene; every block outside it is merged without a pose, for the post-merge resection to
+ * recover. See docs/design/HierarchicalSFM.md for the full design; this is the short version.
  *
- * ── Pipeline overview (merge) ──────────────────────────────────────────────
+ * Measuring a seam: every adjacent block pair is measured in both directions, in whichever mode
+ * GlobalAlignmentConfig::alignment selects. ALIGN_POINTS fits a 3D-3D similarity by RANSAC over
+ * matches lying on an inlier track in BOTH blocks. ALIGN_CAMERAS treats one block's cameras as a
+ * generalized rig against the other's inlier tracks, so a match needs only one endpoint on a
+ * track and a seam stays measurable from either side alone. Every camera with enough
+ * correspondences votes; a candidate must explain enough of the union, carry both sides' votes
+ * and leave the two blocks' cameras unmixed. Agreeing directions are refined into one seam;
+ * disagreeing ones are settled by the votes, or both are kept for the graph.
  *
- * STAGE 1: EVIDENCE (PrepareSeamEvidence)
- *   Which block every image belongs to, which image pairs cross a block boundary, and where
- *   each block triangulated the observations those pairs match — the raw material every later
- *   stage reads.
+ * The seam graph (ClassifySeamGraph) and initial poses (ComputeInitialBlockPoses): a seam
+ * cannot be judged on its own evidence, only by the cycles it sits in, so every component of
+ * three or more blocks is averaged robustly and each candidate keeps the residual of that
+ * consensus — ROBUST when another path corroborates it, VERIFIED when only its own evidence
+ * stands behind it, UNDECIDED when the graph cannot tell, REJECTED when a stronger consistent
+ * path contradicts it. The trusted (ROBUST or VERIFIED) seams alone then carry the blocks: each
+ * of their components is averaged about its best-connected block into one model, numbered by
+ * the trusted weight it holds — a starting point, not a verdict.
  *
- * STAGE 2: SEAM CANDIDATES (EstimateSeamCandidates)
- *   The relative Sim(3) of every adjacent block pair, measured in whichever mode
- *   GlobalAlignmentConfig::alignment selects. ALIGN_POINTS fits the similarity by RANSAC over
- *   the matches lying on an inlier track in BOTH blocks. ALIGN_CAMERAS treats one block's
- *   cameras as a rig and the other's inlier tracks as the points, so a match contributes when
- *   ONE endpoint lies on a track and a seam stays measurable from either side alone; both
- *   directions are estimated and both are scored on the union of their correspondences, so the
- *   two opinions answer to the same evidence. Every camera with enough correspondences votes,
- *   and a candidate must explain enough of the union, carry the votes of both sides and leave
- *   the two blocks' cameras unmixed. Directions that agree become one seam refined over their
- *   inliers; ones that disagree are settled by the camera votes, or both are kept for the graph.
+ * Placement (PlaceBlocks, PlaceGroup, AdmitGroup): each model grows one block at a time, the one
+ * the admitted blocks support most tried next. A block is a group of one, and the same routine
+ * places a whole model too: it pools every correspondence between the group and the model,
+ * estimates the pose from that pool both ways plus any initial pose, scores each hypothesis and
+ * holds it to four gates — enough of the pool explained, both sides' cameras behind it, the
+ * admitted neighbours' own seams agreeing with it, and the two sides' cameras left unmixed. A
+ * group that passes is admitted and every admitted block is refined jointly over the seams the
+ * model rests on; one that fails is deferred and retried once the model has grown.
  *
- * STAGE 3: SEAM GRAPH (ClassifySeamGraph)
- *   A seam is measured from two reconstructions that know nothing of each other, so a wrong one
- *   cannot be recognized on its own evidence: only the cycles it sits in can indict it. Every
- *   component is averaged robustly and each candidate keeps the residual of the consensus
- *   against it — ROBUST when the consensus confirms it, VERIFIED when only its own evidence
- *   stands behind it, UNDECIDED when the graph cannot tell, REJECTED when a stronger consistent
- *   path contradicts it.
+ * Loop closure: a block whose cameras are unmixed and whose neighbours hold nothing against it,
+ * refused only by what it explains or by the votes, is the block a cycle runs through. Taken in
+ * on trust, the model is averaged over its seams so the discrepancy spreads over them, and it is
+ * judged again there (CloseCycleThrough). A pair with correspondences but no seam of its own can
+ * still enter once the model predicts where it lies (VerifyWeakSeams), at a floored weight. A
+ * model whose seams still disagree at the block poses relaxes every placed camera over a pose
+ * graph of them, so the final adjustment starts from seams that meet (RelaxCameras).
  *
- * STAGE 4: INITIAL BLOCK POSES (ComputeInitialBlockPoses)
- *   The trusted seams alone carry the blocks: each of their components is averaged about its
- *   best connected block and becomes one model, numbered by the trusted weight it holds. These
- *   poses are a starting point, not a verdict.
+ * What does not fit: blocks no model took in form models of their own on the trusted seams among
+ * them, placed largest first against the one carrying the most images (PlaceRemainingBlocks). A
+ * block whose own cameras split over a placement is two blocks a cluster boundary never let see
+ * each other, cut along its own thin covisibility seam (SplitFoldedBlock). Every block the merged
+ * model admitted is judged once more against the model it ended up in (RevalidateBlocks). The
+ * model holding the most images is merged with poses; every other block is merged without one,
+ * for the post-merge resection to recover its images against the consensus, reported with why.
  *
- * STAGE 5: PLACEMENT (PlaceBlocks, PlaceGroup, AdmitGroup)
- *   Each model is grown one block at a time, from the block the graph is most sure of. The next
- *   block tried is the one the admitted blocks support most, and PlaceGroup decides it: it pools
- *   every correspondence between the block and the model, estimates the pose from that pool both
- *   ways (the block's cameras on the model's points, the model's cameras on the block's points),
- *   scores each hypothesis over the whole pool and holds it to four gates — enough of the pool
- *   explained, the cameras of both sides behind it, the admitted neighbours' own seams agreeing
- *   with what it implies, and the two sides' cameras left unmixed. A block that passes is
- *   admitted, the seams that agree with its placement become model seams — a trusted one that
- *   disagrees comes in carrying its loop discrepancy — and every admitted block is then refined
- *   jointly over them; a block that fails is deferred and tried again once the model has grown.
- *   A block is a group of one, so the same routine places a whole model.
- *
- *   A block whose cameras are unmixed and whose admitted neighbours hold nothing against it, refused
- *   only by what it explains or by the votes, is the block a cycle runs through: it faces, alone, the
- *   error the model accumulated while it grew the long way round, and no single pose of it can
- *   satisfy both ends. Its own trusted seams being past the bars is what that error looks like from
- *   where it stands, so none of them is asked to agree first. Such a block is taken in on trust, the
- *   model is averaged over its seams so the cycle's discrepancy is spread over them, and the block is
- *   judged again at the pose that averaging gives it — against a model that has absorbed the loop. It
- *   is admitted only if it passes there, every gate included, and the model is restored exactly if it
- *   does not.
- *
- * STAGE 6: THE MERGED MODEL (PlaceRemainingBlocks, SplitFoldedBlock, RevalidateBlocks)
- *   A block no model took in is a reconstruction of its own: the blocks left over form models on
- *   the trusted seams among them — a lone block is a model — and every model is then placed against
- *   the one carrying the most images, as a single group through the same routine that places a
- *   block. A model that goes in brings the seams it rested on with it, one similarity having moved
- *   all of its blocks at once.
- *
- *   A block whose own cameras split in two over a placement — some behind it, as many against it —
- *   is not a block that cannot be placed but two blocks the reconstruction folded into one, its two
- *   halves having never seen each other. Such a block is cut along the thin seam its own covisibility
- *   leaves between the two sides, its parts measure their seams like any other block, and each part
- *   is placed on its own.
- *
- *   Every block the model admitted is finally judged again at the pose it ended up with, against a
- *   model that has since grown around it: one its cameras then contradict is let go, and one whose
- *   cameras split is the fold that only one admitted neighbour hid.
- *
- *   The model holding the most images is the one merged with poses. The blocks of every other
- *   model, and those no model could place, are merged without poses so the post-merge resection
- *   re-registers their images against the consensus — the same process that would have placed
- *   them had the cluster boundary not severed their strongest pairs. The report names every one of
- *   them and why it stayed out.
- *
- * STAGE 7: MERGE TRANSFORMED SUB-SCENES
- *   Apply the pose of every placed block to its cameras and 3D points, then
- *   merge into the global scene:
- *
- *   a) Transform: apply Scene::Transform() to each sub-scene.
- *
- *   b) Intrinsics averaging: accumulate camera intrinsics (focal length,
- *      principal point, distortion coefficients) from all sub-scenes that
- *      share a global camera, then average. Uses the polymorphic
- *      Camera::AccumulateIntrinsics/ScaleIntrinsics interface so each camera
- *      type (PinholeCamera, SphericalCamera) handles its own parameters.
- *
- *   c) MergeSingleScene: for each sub-scene, move keypoints, descriptors,
- *      and image pairs back from the sub-scene to the global scene (reversing
- *      the moves done by SceneCluster::ExtractSubScene). Copy camera poses
- *      from sub-scene images to global images. Remap and append tracks.
- *
- *   d) MergeTracksWithCrossSubScenePairs: the critical step that creates
- *      cross-sub-scene track connectivity. Uses a union-find (disjoint set)
- *      over global feature IDs — the same data structure as BuildTracks:
- *
- *      Phase 1 — Initialize: seed the union-find with each sub-scene's
- *        track observations as pre-formed sets, storing the 3D position and
- *        inlier count at each set's root. By default only INLIER observations
- *        are included (config.mergeTrackInliersOnly = true); setting it to
- *        false includes all observations (outliers may add connectivity but
- *        also noise).
- *
- *      Phase 2 — Connect: first, the kept correspondences of every seam the merged model rests
- *        on are unioned on the duplicate-image guard alone — a seam already agreed with the
- *        placement, so its two ends need no proximity test to join. Then iterate ONLY
- *        cross-sub-scene pairs — pairs whose two images belong to different sub-scenes,
- *        identified via the globalToLocal map. Intra-sub-scene pairs are deliberately skipped:
- *        their tracks were already correctly formed by BuildTracks during
- *        independent sub-scene reconstruction, and re-processing them here
- *        would over-merge tracks (outlier observations removed during
- *        reconstruction can lift the duplicate-image guard that originally
- *        kept them separate), bloating image sets and blocking legitimate
- *        cross-sub-scene connections.
- *        For each inlier match in a connecting pair, attempt to union the
- *        two features' sets. A guarded union rejects the merge if:
- *        - It would create duplicate observations (same image in one track),
- *          which would be geometrically invalid.
- *        - Both sides have triangulated 3D positions that are too far apart
- *          (exceeding a fraction of the scene bounding box diagonal), which
- *          indicates a false feature match.
- *        When the merge succeeds, the 3D positions are averaged weighted by
- *        inlier count, and the inlier count is accumulated.
- *
- *      Phase 3 — Assemble: iterate all features, group by union-find root,
- *        and construct the final track array. Tracks with pre-existing 3D
- *        positions (from merged sub-scene tracks) use the accumulated
- *        position and inlier count. New tracks (from cross-sub-scene pair
- *        features not in any original track) are triangulated via
- *        TriangulateSkewLLS; if triangulation fails, they are kept with
- *        numInliers=0 (excluded from BA until re-triangulation).
- *
- * ── Why this design ────────────────────────────────────────────────────────
- *
- * Averaging places every block at once and therefore believes every seam at once: one wrong
- * seam moves the blocks around it and the error is spread over the ones that were right. So the
- * averaged poses are only where the placement starts from, and each block is then admitted on
- * its own, against a model of blocks already admitted — evidence pooled over every seam to that
- * model, judged by the cameras of both sides, and answerable to the neighbours it closes a cycle
- * with. A block whose evidence does not carry it stays out and is merged without poses rather
- * than dragging the model with it.
- *
- * The averaging itself keeps the decoupled rotation → scale → translation order, because each
- * subproblem is then convex (or nearly so): rotation averaging on SO(3) has well-studied convex
- * relaxations, scale averaging in log-space is linear least-squares, and translation averaging
- * given rotations and scales is linear.
- *
- * The union-find track merging reuses the proven BuildTracks pattern but adds
- * 3D-aware guards: since sub-scene tracks already have triangulated positions,
- * the proximity test catches false feature matches that the standard duplicate-
- * image guard alone would miss (two tracks from non-overlapping sub-scenes can
- * never fail the duplicate-image test, so 3D proximity is the only defense).
- *
- * ── Memory protocol ────────────────────────────────────────────────────────
- *
- * MergeSingleScene reverses the moves done by SceneCluster::ExtractSubScene:
- * - Keypoints and descriptors are MOVED back from sub-scene images to global
- *   images (restoring the global scene's per-image feature data).
- * - Image pairs are MOVED back from sub-scenes to the global scene (restoring
- *   the full pair set, now with both intra-cluster and cross-cluster pairs).
- * - Colors (scene.colors) are released during track reassembly (Phase 3 of
- *   MergeTracksWithCrossSubScenePairs) since track indices change; they must
- *   be rebuilt downstream if needed.
- * - After all sub-scenes are merged, the sub-scene objects can be destroyed
- *   (their data has been moved out).
+ * Merge: transform every placed block, average the intrinsics of a camera shared across blocks,
+ * move keypoints, descriptors and pairs back from every block (reversing
+ * SceneCluster::ExtractSubScene), and merge tracks with a union-find over global feature IDs: the
+ * kept correspondences of every seam the merged model rests on join by construction, cross-block
+ * pairs join under a duplicate-image and a 3D-proximity guard, and intra-block pairs are skipped
+ * — their tracks were already correctly formed, and re-processing them would over-merge tracks
+ * bundle adjustment had correctly separated.
  */
 
 // One cross-block correspondence: a feature of image A matched to a feature of image B (global image IDs)

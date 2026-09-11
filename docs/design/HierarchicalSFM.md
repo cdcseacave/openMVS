@@ -9,18 +9,18 @@ Three phases, orchestrated by `Scene::ReconstructHierarchical()`:
 ```
 Phase 1: SceneCluster::SplitScene()         → partition into sub-scenes
 Phase 2: threadPool.detach_loop(subScenes)  → parallel incremental SFM
-Phase 3: GlobalAlignment::MergeScenes()     → 5-stage alignment + merge
+Phase 3: GlobalAlignment::MergeScenes()     → measure seams, place blocks, merge
 ```
 
 ---
 
 ## Phase 1 — Scene Clustering
 
-**Goal**: partition images into sub-scenes of bounded size (≤ `maxViewsPerCluster`, default 200).
+**Goal**: partition images into sub-scenes of bounded size. `--max-views-per-cluster` sets the ceiling (`ClusterConfig::maxViewsPerCluster`, default 150; 0 disables clustering); `ClusterConfig::SetMaxViews` derives the target a cluster aims at (`targetViewsPerCluster`, two thirds of the ceiling — default 100) and the floor under which a cluster is merged away (`minViewsPerCluster`, four fifteenths of the ceiling — default 40) from that one ceiling, so a user-given `--max-views-per-cluster` and the compiled-in defaults follow the same rule.
 
 ### Covisibility Graph
 
-A weighted undirected graph is built where nodes are images and edge weights are composite pair weights. Edges below `minPairWeight` (3.0) are discarded. The graph is stored in CSR format for compatibility with graph partitioning libraries.
+A weighted undirected graph is built where nodes are images and edge weights are composite pair weights. Edges below `minPairWeight` (3.0) are discarded. The graph is stored in CSR format for compatibility with graph partitioning libraries. If the scene arrives with matches but no tracks, they are built once here so the seam statistics the refinement passes below read have something to read; each sub-scene rebuilds its own tracks again once it is split off.
 
 ### Aggregative Clustering
 
@@ -28,15 +28,20 @@ Bottom-up greedy merging that respects covisibility structure:
 
 1. Initialize each image as a singleton cluster
 2. Build a priority queue of edges sorted by weight (descending)
-3. Pop the highest-weight edge; merge the two clusters if the result stays within the size limit
-4. Periodically rebuild the PQ (every `max(10, maxViewsPerCluster / 10)` merges) to keep edge weights consistent
+3. Pop the highest-weight edge; merge the two clusters unless the merge would cross `maxViewsPerCluster`, would push a cluster already at or past `targetViewsPerCluster` further past it (unless the smaller side is still under `minViewsPerCluster` and has to go somewhere), or would join two clusters both already at or past the floor over an interface thinner than `minClusterCoupling` (0.05, 0 = disabled) of the weaker side's own internal weight
+4. Periodically rebuild the PQ and re-run the local-search pass below (every `max(10, maxViewsPerCluster / 10)` merges) to keep edge weights consistent
 
-### Cluster Refinement (4 passes)
+### Cluster Refinement
 
-1. **MergeSmallClusters** — absorb clusters below `minViewsPerCluster` (10) into the most-connected neighbor, with `maxOverCapacity` (20) slack
-2. **RefineClustersLocalSearch** — up to 20 iterations: move boundary images to whichever cluster maximizes internal connectivity (modularity + balance)
-3. **RefineClustersSplitDisconnected** — split clusters whose images form disconnected components in the covisibility graph
-4. **RefineClustersRescueOrphans** — absorb remaining small orphans into neighbors
+Seven passes tidy the greedy result and make every remaining cluster boundary usable by the merge:
+
+1. **RefineClustersLocalSearch** — up to 20 iterations: move boundary images to whichever cluster maximizes internal connectivity (modularity + balance)
+2. **MergeSmallClusters** — absorb clusters below `minViewsPerCluster` into the most-connected neighbor, with `maxOverCapacity` (20) slack
+3. **RefineClustersBalance** — conservatively move well-connected boundary images out of the largest cluster into smaller neighbors, gated by a minimum affinity ratio, to shorten the critical path of concurrent sub-scene reconstruction
+4. **RefineClustersSplitDisconnected** — split clusters whose images form disconnected components in the covisibility graph
+5. **RefineClustersSplitThinWaist** — split any cluster whose best balanced bipartition is joined below the `minClusterCoupling` seam: the thin-waist clusters that would otherwise reconstruct as two independently scaled blocks
+6. **RefineClustersForSeams** — the cuts as the merge will see them. `MergeLeafClusters` merges away a cluster whose seams the merge could never attach — fewer than `minClusterDegree` (2, capped by the neighbours it actually has) strong neighbours, where a strong neighbour needs a seam of at least `minSeamTracks` (75) seam-usable tracks with, on both sides, at least `minSeamCameras` (3) cameras each carrying `minSeamCameraTracks` (30) of them (`IsStrongSeam`) — into the neighbour it shares the most usable tracks with, as long as the result still fits `maxViewsPerCluster + maxOverCapacity`. `RepairClusterSeams` then widens a seam that carries tracks enough but holds them in too few cameras, moving boundary images across it to raise `min(camerasA, camerasB)` toward `minSeamCameras`. A final `MergeSmallClusters` pass mops up whatever either step left under the floor
+7. **RefineClustersRescueOrphans** — absorb remaining small orphans into neighbors
 
 ### Sub-Scene Extraction
 
@@ -78,80 +83,82 @@ If initialization fails for a sub-scene it is skipped; those images remain uncal
 
 ---
 
-## Phase 3 — Global Alignment (5-Stage Merge)
+## Phase 3 — Global Alignment (seams, consensus, placement, loops)
 
-Each sub-scene lives in its own arbitrary coordinate system. The merge estimates **similarity transforms** (rotation + scale + translation) to bring all sub-scenes into a single frame, using a decoupled approach where each subproblem is (nearly) convex.
+Each sub-scene — a **block** from here on, `GlobalAlignment`'s own word for it — lives in its own arbitrary coordinate system. `GlobalAlignment::MergeScenes` measures how adjacent blocks relate, decides which of those measurements can be trusted, places blocks one at a time into one or more models, and merges the model holding the most images back into the scene; every block outside it is merged without a pose, for the post-merge resection to recover.
 
-### Stage 1 — Relative Similarities
+### Measuring a seam
 
-For every pair of sub-scenes the cross-cluster pairs connect, estimate the 7-DOF similarity `p_B = s·R·p_A + t` that maps one into the other. Two modes measure it; `GlobalAlignmentConfig::alignment` (`--cluster-alignment`) selects. Both start from the same per-sub-scene cache mapping `(localImage, feature)` to the 3D position of the inlier track holding that observation, and both walk the same cross-cluster matches (the track-forming prefix of each pair's `matches`); they differ in what they ask of a match.
+Every pair of blocks the cross-cluster pairs connect is measured in both directions, in whichever mode `GlobalAlignmentConfig::alignment` (`--cluster-alignment`, default `ALIGN_CAMERAS`) selects:
 
-**`ALIGN_POINTS` — similarity from 3D-3D correspondences.** A match contributes when **both** its endpoints hit the cache, giving one 3D point per sub-scene in its own local frame. `EstimateSimilarityTransform` fits the Sim(3) by RANSAC with the inlier distance set to a fraction (`simInlierThresholdFactor`, 1%) of the destination cloud's bounding-box diagonal, so the criterion is invariant to each sub-scene's arbitrary units.
+- **`ALIGN_POINTS`** — a 3D-3D similarity by RANSAC over matches whose two endpoints both hit an inlier-track cache, one per block (`simInlierThresholdFactor` 0.01, a fraction of the destination cloud's bounding-box diagonal; `minSimInlierRatio` 0.3; `simRansacMaxIters` 10000).
+- **`ALIGN_CAMERAS`** (default) — one block's cameras as a generalized rig against the other block's inlier tracks (PoseLib's generalized absolute pose with scale), so a match needs only one endpoint on a track; both directions — B's rig on A's points, A's rig on B's points — are estimated.
 
-This mode needs a match whose two endpoints both lie on a track. Warp-sampled (dense) keypoints are laid out on the source image's grid, so they coincide across that image's pairs and form tracks there, while the target side gets positions warped per pair which never join one. A seam bridged by dense matches alone can therefore end up with no correspondence at all.
+Both modes are judged against the same pixel bar, `maxReprojError` (4px, the resection's own). A direction counts only once its inliers reach `minCommonTracks` (25) and, once the other direction has already counted, explains at least `minCrossSupportRatio` (0.5) of what that other direction explains — the "union support" gate.
 
-**`ALIGN_CAMERAS` — generalized-camera PnP with scale.** One sub-scene's cameras form a rig whose internal poses are known in that sub-scene's frame and at its scale; the other sub-scene's inlier tracks are the 3D points; the cross-cluster matches are the rig's observations of them. A match contributes when **one** endpoint hits the cache — the other only has to be a keypoint — so a seam stays measurable from either side alone.
+Every image with at least `minVoteCorrespondences` (10) correspondences to the seam casts a vote: it supports when its inliers reach `minVoteInliers` (30), spread across at least `minVoteCoverage` (0.25) of a 4×4 image grid, and its own inlier share reaches 0.3; it contradicts when it has at least `minVoteInliers` correspondences and its inlier share falls under 0.1. A direction's "camera votes" gate then asks, on each side, for support at or above `minCameraVoteRatio` (2.0, or `minCameraVoteRatioVerified` 3.0 once the model it is being placed against rests on verified seams only) times contra, and at least `minSupportingCentres` (3) distinct supporting camera centres. A third gate, "interleaving", vetoes a transform that leaves the two blocks' cameras mixed together: after the transform, at least `minOwnNeighbourFraction` (0.8) of the moving cameras must have one of their own as their nearest neighbour rather than one of the other block's.
 
-Correspondences are grouped per rig image (images that received none stay out of the rig), the 2D side entering as unit bearings from `Camera::UnprojectNormalized` so any central camera model works. PoseLib's `estimate_generalized_absolute_pose_scale_bearings` (LO-RANSAC over gp4ps followed by a scale-aware refinement) solves the rig pose and the rig-to-points scale together. It models `Z_k = R_k·(R·X + t) + scale·t_k`, i.e. it scales the rig's centers into the frame the points live in, so the similarity mapping the point sub-scene into the rig sub-scene is `p_rig = (1/scale)·R·p_point + (1/scale)·t`. The threshold is angular: the pixel threshold (`maxReprojError`, 4px, the resection's own) read through each camera's `PixelErrorToAngular`, the rig judged at the widest of them since the estimator scores it against one value. The scale is observable only across distinct rig centers, so a rig of fewer than two cameras is not estimated.
+A direction can measure a scale only when its supporting centres spread, relative to the inliers' median depth, by at least `minRigSpreadRatio` (0.03); one that cannot borrows the scale the other direction measured, rescaling about its own rig's centre so the rig keeps the place it already had.
 
-Both directions are estimated. A direction counts only if its inliers reach `minCommonTracks` and its inlier ratio reaches `minSimInlierRatio`. If both count they must agree — rotation within `maxSimRotationError`, scale ratio within `maxSimScaleRatio` — or the seam is **rejected**, never resolved in favour of the better supported estimate: a seam accepted wrong merges a whole block into the wrong place. Agreeing directions are then refined jointly, with Ceres, into one Sim(3) over the union of both inlier sets: seven parameters (unit quaternion on its manifold, translation, log scale), residuals the reprojection of A's points into B's cameras through `T` and of B's points into A's cameras through `T⁻¹`, under a Huber loss at the pixel threshold. The pair's weight is the sum of both inlier counts. If only one direction counts, it stands alone on its own inliers.
+When both directions pass their gates they must agree — rotation within `maxSimRotationError` (3°) and scale ratio within `maxSimScaleRatio` (1.1) — and are then refined together, with Ceres, into one seam over the union of both inlier sets. Disagreement is settled by the camera vote totals when one direction beats the other by `voteMargin` (1.5) or more; otherwise both directions are kept, unresolved, for the seam graph to judge. A pair with only one measurable direction stands alone, to be confirmed later by the graph or by the placement. A pair every direction's gates refuse leaves no seam at all — unless its own cameras are themselves split over it, in which case it is left for the fold test described under "What does not fit" below.
 
-Output, in both modes: `vector<ScenePair>`, each carrying the full Sim(3) and the inlier count the later averaging weights by.
+Every seam carries a `weight`: the smaller of its total camera support and `maxVoteWeight` (30), the one number every later averaging and ranking reads.
 
-### Stage 2 — Rotation Averaging
+### The seam graph
 
-Extract relative rotations `R_ij` from the scene pairs and solve for global rotations using an L1-ADMM + IRLS pipeline (adapted from GLOMAP):
+A seam is measured between two reconstructions that know nothing of each other, so a wrong one cannot be told from a right one by its own evidence — only the cycles it sits in can. Candidates are grouped into components by the blocks they share; a component of three or more blocks is averaged robustly (rotation, then scale, then translation, reweighting up to `kRobustRounds` (10) times, gauged at its best-connected block), and every candidate keeps the residual of that consensus against it. A seam that cannot observe a scale is judged on rotation alone; the rotation, scale and translation residuals must stay within `maxGraphRotationResidual` (5°), `maxGraphScaleResidual` (1.05) and the graph's own translation bar, `maxSimTranslationError` (0.05). A component of only two blocks holds no cycle at all — the averaging reproduces its seam's own claim exactly, at zero residual — so such a seam is judged by the rules below rather than by a residual that could never fail.
 
-1. **MST initialization**: Kruskal's maximum spanning tree (weights = inlier counts), BFS propagation from highest-degree root. Root fixed to identity (gauge freedom).
-2. **L1-ADMM** (5 iterations): tangent-space linearization `δR_ij ≈ δR_j − δR_i`, sparse linear system, L1 robust loss.
-3. **IRLS refinement** (up to 100 iterations): Geman-McClure weights `w = σ² / (σ² + ε²)²` with `σ = 5°`.
-4. **Filter and re-solve**: remove pairs with angular residual > 12° and re-run.
+Every candidate ends up in one of four classes:
 
-Output: one angle-axis vector per sub-scene.
+- **ROBUST** — consistent with the consensus, and corroborated by another, independent path between the same two blocks that is also consistent.
+- **VERIFIED** — consistent but uncorroborated, and either both directions of it agreed, it came from the 3D-3D estimator, or it stands alone: a one-direction seam with at least `minSupportingCentres` distinct centres whose own inliers reach `kStrongAloneFactor` (4) times `minCommonTracks` — 100 by default.
+- **UNDECIDED** — the averaging could not place both its blocks in one frame; or it is consistent but uncorroborated and not strong enough to stand alone; or it is inconsistent and no alternative path is strong enough to reject it; or it is one of two disagreeing opinions on an otherwise isolated pair of blocks, left for the placement to weigh directly.
+- **REJECTED** — inconsistent with the consensus, and a consistent alternative path between the same two blocks carries at least its weight divided by `rejectWeightMargin` (1.5) — the indirect-path margin that lets a corroborated alternative overrule a wrong seam without letting a merely-present one reject on a technicality.
 
-### Stage 3 — Scale Averaging
+### Initial poses per component
 
-The pairwise scale comes straight out of Stage 1: each `relativeTransform` satisfies `p_B = (s_A/s_B)·R·p_A + t`, so its scale field is `s_A/s_B` and its reciprocal is the ratio `s_B/s_A` the estimator wants. Nothing is re-measured here, and a pair whose scale is not positive is dropped.
+The trusted seams alone — ROBUST or VERIFIED — carry the blocks into a first guess. Each connected component of trusted seams is averaged about its own best-connected block and becomes one model, numbered by how much trusted weight it holds; a block no trusted seam reaches keeps no model at all. These poses are only where the placement starts from — nothing here is admitted yet.
 
-Solve the overdetermined system in log-space by weighted least-squares (SVD), each equation weighted by the pair's inlier count:
+### Placement
 
-```
-log(s_j) − log(s_i) = log(ratio_ij)
-```
+Models grow one at a time, the one holding the most trusted weight first. A model with nothing admitted yet is seeded at the block with the largest ROBUST weight of its own (ties broken by total trusted weight, then by calibrated-image count); a model already holding blocks — grown again after a re-validation — keeps them and the seams it rests on.
 
-Gauge: the fixed node is the sub-scene carrying the most incident pair weight, eliminated from the system rather than penalized, so its scale is exactly 1. With no pairs at all every scale falls back to 1.
+The next block tried is always the one the admitted blocks pool the most support for: a candidate's own weight counts in full, an UNDECIDED one at `kUndecidedSupportWeight` (0.25) of it. A block is a group of one, and the same routine places a whole model as a group too: every correspondence between the group and the model's admitted blocks is pooled (a pair with no candidate, not already refused by the pairwise gates, still contributes its raw correspondences), up to three hypotheses are formed — **H1** the group's cameras posed as a rig against the model's pooled points, **H2** the model's cameras posed against the group's pooled points, **H3** a lone block's own initial pose, when it has one — and each is scored over the whole pool and held to four gates:
 
-### Stage 4 — Translation Averaging
+- **G1 — union support**: the same gate a single seam answers to, now over the pooled observations.
+- **G2 — camera votes**: the same camera-vote gate, at `minCameraVoteRatio` normally or `minCameraVoteRatioVerified` once the model rests on verified seams only.
+- **G3 — neighbours**: the admitted neighbours with something to say must be behind the placement — at least one supports it, and no more than a `kNeighbourContraShare` (3) share (one in three) of those with an opinion contradicts it. A trusted neighbour seam that the placement's own residual would fail counts as a loop vote, not a contradiction — that residual is exactly what a closing cycle looks like.
+- **G4 — interleaving**: the same gate a single seam answers to.
 
-Transform relative translations into the global frame using the now-known rotations and scales:
+Among the hypotheses that pass, the camera votes decide. A block no hypothesis carries is deferred and retried once the model changes — an admission may confirm what it could not before; if the model has gone a full round with no change, the deferred blocks are handed back for another model to try, carrying the reason last recorded against them.
 
-```
-t_j − t_i = s_i · R_i^T · C_ij
-```
+Every admission that does not close a cycle re-fits every admitted block jointly to the observations behind the seams the model rests on: seven free parameters per block (a unit quaternion, a translation, a log scale) and one chord residual per inlier observation, under a Huber loss at `maxReprojError`. An admission that closes a cycle instead averages the whole model over its own seams first, spreading the cycle's discrepancy over it, and only then refines — see "Loop closure" below.
 
-where `C_ij` is the position of scene j's origin in scene i's local frame. Solve independently for X, Y, Z via sparse QR (COLAMDOrdering). Gauge: best-connected node pinned at origin.
+### Loop closure
 
-### Stage 5 — Merge & Track Assembly
+**The block pose graph.** A block whose own cameras the model leaves unmixed and whose admitted neighbours hold nothing against it — refused only by what it explains or by the camera votes, not by interleaving or an outright neighbour contradiction — and joined to two or more admitted blocks by trusted seams is the one a cycle runs through: no single pose of it can answer to every end of the cycle at once. Such a block is taken in on trust at its best hypothesis, the model is averaged over the seams it already rests on plus this block's own trusted ones, which spreads the cycle's discrepancy over the whole loop and moves the block to where its own seams — not its rejected hypothesis — put it, and it is scored again there against the same four gates, the neighbour gate included. It is admitted only if it passes there; the model is restored exactly as it was if it does not.
 
-Apply the composed similarity transform to every sub-scene:
+**A weak closing seam.** A pair of admitted blocks that carries correspondences but has no seam of its own — too thin for its own cameras to vote on — can still be read once the model predicts where it should lie: the pair's correspondences are collected under that prediction, refined over whatever they explain at `kLooseSeamFactor` (3) times `maxReprojError`, and scored like any other candidate, answering to union support and interleaving but not to its own cameras' votes — what stands behind such a seam is the model's own consistency, not the pair's own ability to measure itself. It enters the model at its scored weight, floored at 1 so that a seam no camera could vote on still holds its two blocks together.
 
-```
-p_global = s_i · R_i^T · p_local + t_i
-```
+**Camera relaxation.** Once the merged model is otherwise finished, if its largest model-seam error still exceeds `relaxSeamResidualFactor` (2.0) times `maxReprojError`, every camera of the placed blocks is given a similarity of its own, over a pose graph whose edges are charged under the seam bars themselves (rotation, translation and scale in one robust term): each camera to its `kIntraBlockEdgesPerCamera` (3) strongest covisible cameras within its own block, at `intraBlockEdgeWeight` (10.0), and to the cameras it faces across a seam the model rests on, at that seam's own weight. A block bent inside its own reconstruction has no single rigid pose that can meet every seam at once; this relaxation is what lets it meet them anyway. The relaxed cameras are written back into their own blocks' frames — the block poses themselves are untouched, so what bends is the reconstruction inside each block, never the placement between blocks.
 
-**Intrinsics averaging**: cameras shared across sub-scenes have their intrinsics averaged via the polymorphic `AccumulateIntrinsics / ScaleIntrinsics` interface.
+### What does not fit
 
-**Data reunion**: keypoints, descriptors, and pairs are moved back to the global scene (reversing the split), with all IDs remapped from local to global.
+**Second models.** Blocks no model admitted start over: the trusted seams among just them form their own models, a block no trusted seam reaches becomes a model of one, and each of those is placed exactly like the first. Every resulting model is then placed as a single group against the model already carrying the most images, largest first — the same pool, hypotheses, gates and admission a single block answers to. A model that goes in hands over the seams it rested on, one similarity having carried all of its blocks at once. A model with no pair linking it to the merged model at all is left standing apart.
 
-**Track merging** (union-find over global feature IDs):
+**Folds.** A block whose own cameras split over its best placement — roughly as many voting for it as against — is not a block that failed to place but two blocks a cluster boundary never let see each other. Each camera's vote assigns it a side; a camera that could not vote joins the side its own covisibility connects it to. The cut is accepted only when both sides keep at least `minFoldPartViews` (10) calibrated views, each side is internally connected, and the weight cut between them is no more than `maxFoldCutRatio` (0.2) of the weaker side's own internal weight. The two parts are re-extracted as their own blocks, their seams measured like any other block's, and everything the original, single block had measured is discarded.
 
-1. Seed the union-find with existing sub-scene tracks
-2. Process **only** cross-sub-scene pairs — intra-sub-scene pairs are deliberately skipped to avoid over-merging tracks that BA had correctly separated
-3. Two guards protect each union operation:
-   - **Duplicate-image guard** — a single track cannot observe the same image twice
-   - **3D proximity guard** — merged tracks must have positions within 2% of the scene bounding box diagonal
-4. New cross-pair-only tracks are triangulated via `TriangulateSkewLLS()`
-5. Final `FilterTracks` at 16px reprojection / 0.5° angle threshold
+**Re-validation.** Once the model that ends up merged has taken in everything it can, every block it admitted is judged once more, at the pose it ended up with, against the model as it has since grown: one whose cameras now contradict the grown model is let go, along with the seams it carried; one whose cameras now split is a fold an earlier admitted neighbour had hidden. Blocks let go, and the two parts of anything cut, are offered back to the model to place again.
+
+**Unplaced blocks, reported.** The model holding the most images is the one the scene is merged at. Every block outside it — another model's, or one no model could place — is merged without a pose, so the post-merge resection can recover its images one by one against the consensus, the same recovery any other unregistered image gets: a block a cluster boundary happened to isolate is not different in kind from an image the incremental reconstruction itself failed to register, and forcing it into the model as a whole block, on evidence the gates have already weighed and refused, would risk the model for exactly the images the resection can still try individually. The merge report and the log name every one of them and the reason it stayed out.
+
+### Finish
+
+**Seam inliers by construction.** The kept correspondences of every seam the merged model rests on are collected before the merge and, when the union-find track merge runs, unioned on the duplicate-image guard alone — no 3D-proximity re-test, because a model seam has already agreed with the placement.
+
+**Final bundle adjustment.** `Scene::ReconstructHierarchical` hands the merged scene — placed blocks and all — back to the shared tail of reconstruction: track filtering, re-triangulation, another filter pass, then one global bundle adjustment over the whole scene.
+
+**Resection scope.** After that bundle adjustment, images too weakly connected are dropped and every remaining unregistered image — the ones from blocks the merge left unplaced, alongside any image a sub-scene's own incremental reconstruction never managed to register — is resected against the now-adjusted consensus in the same pass. Nothing about having belonged to an unplaced block routes an image to a different recovery path than any other unregistered image.
 
 ---
 
@@ -183,22 +190,20 @@ Key invariants:
 
 ### Decoupled R → s → t Estimation
 
-Each subproblem is convex (or nearly so) when solved independently: rotation averaging on SO(3) has well-studied convex relaxations, scale averaging in log-space is linear least-squares, and translation averaging given known rotations and scales is a linear system. Joint Sim(3) would require solving a 7-DOF non-convex optimization per pair.
+Every averaging in the merge — the seam graph's consensus, the initial poses, the block pose graph a placement or a loop closure reads — goes through one routine, and that routine solves rotation, then scale, then translation, never all seven parameters of a Sim(3) at once. Each subproblem is convex (or nearly so) on its own: rotation averaging on SO(3) has well-studied convex relaxations, scale averaging in log-space is linear least-squares, and translation averaging given known rotations and scales is a linear system. A joint solve would trade that for a single non-convex 7-DOF optimization per edge.
 
-### Cross-Sub-Scene Pairs Only in Track Merging
+### Why the vote counts cameras, not just inliers
 
-Intra-sub-scene pairs already had their tracks correctly formed during reconstruction. Re-processing them would over-merge tracks: outlier observations removed during BA may have been the reason two features stayed in separate tracks. Cross-sub-scene pairs are the only source of new inter-sub-scene connectivity.
+A transform can rack up inlier correspondences from a single repeated texture patch seen by one camera, or from one image whose keypoints happen to fall on a shared object — evidence that says nothing about whether the *block* agrees, only that one small part of it does. Counting distinct supporting camera centres, and requiring each supporting camera's own inliers to spread across its image rather than cluster in one cell, is what turns "many correspondences agree" into "many independent witnesses agree." The interleaving check adds the complementary case: a transform can explain every correspondence and still be wrong, if it drops one block's cameras inside the other's footprint instead of leaving each block's cameras among their own.
+
+### Why averaging is trusted only over gated seams
+
+A seam's own evidence cannot tell a wrong transform from a right one — both can fit their own correspondences well. What the seam graph adds is a second, independent opinion: a cycle of seams that closes consistently is evidence no single seam carries by itself. But that only works because every edge entering the graph has already passed the pairwise gates in "Measuring a seam" above; the graph is never asked to referee between raw, ungated correspondences, only between measurements that already cleared union support, camera votes and interleaving on their own. A two-block component — no cycle at all — is a case the averaging is structurally unable to judge, and it is left alone rather than given a residual that could never disagree with the seam that produced it.
 
 ### Union-Find with 3D Guards
 
-The union-find pattern from `BuildTracks` is reused for efficiency. The 3D proximity guard (2% of bounding box diagonal) addresses a gap specific to the merge scenario: sub-scene tracks have disjoint image sets by construction, so the duplicate-image guard alone cannot catch false matches between sub-scenes.
+Track merging across blocks reuses the union-find pattern from `BuildTracks`, guarded by 3D proximity: because sub-scene tracks have disjoint image sets by construction, the duplicate-image guard alone cannot catch a false match between two blocks, so merged tracks must also land within a small fraction of the scene's bounding-box diagonal of each other. The one exception is the correspondences behind a seam the merged model actually rests on: those have already been scored, gated and agreed with the placement, so they join on the duplicate-image guard alone — re-running the proximity test on evidence the placement has already vouched for would only risk losing it to noise in the very positions the seam was measured to correct.
 
-### One Seam, Two Directions
+### Why a block the gates refuse is not resected as a block
 
-The camera alignment is asymmetric: it registers one sub-scene's cameras against the other's points, and the two sub-scenes are not interchangeable in it — each side's tracks and each side's camera spread carry different evidence. Running it both ways costs one more estimation per seam and buys two things a single direction cannot: a seam survives when only one side's keypoints ever formed tracks, and when both sides speak they can be made to agree before anything downstream trusts them. Rotation averaging is robust to a wrong edge, but scale and translation averaging are not, and a seam is the joint of a whole block — so disagreement rejects rather than arbitrates.
-
-No seam is accepted on one opinion. A direction that measured a seam alone — the other side had too few rig cameras to observe a scale — is replayed against that other side's correspondences, which it must explain in the same numbers before the seam stands; the observations it explains then join the joint refinement, so the verification pays for itself. A direction facing no rig camera at all leaves nothing to replay against, and the seam then needs strong evidence instead: several rig cameras at distinct centres, a large inlier count and a high share. The inlier share is a bar for a lone direction only — a generalized PnP over dense matches carries more outliers than 3D-3D pairs of triangulated points, so two directions that agree are believed whatever their shares.
-
-What a seam cannot show on its own evidence, the cycles of the seam graph can. After the averaging, the seam whose residual exceeds its limit by the largest factor is dropped and the averaging redone, until none is left past its limit; a seam that bridges the graph is dropped too, but its smaller side has then lost its only link and is demoted to be rebuilt by resection. This runs before the demotion by conflicting edge weight, which cannot fire when both end-points of a wrong seam have other, agreeing edges. A seam graph with no cycle is reproduced exactly by the averaging — every residual is zero whatever the seams claim — and the log says so rather than printing a page of zeros.
-
-The joint refinement scores each observation by the chord between the predicted and the observed bearing rather than by the predicted bearing's offset in the observed one's tangent plane. The two agree to first order, but the tangent-plane offset also vanishes for a point exactly behind the camera, reporting the worst possible fit as a perfect one; the chord grows to 2 radians there.
+A block that no model could place is not a block about which nothing is known — it is one whose evidence the union-support, camera-vote, neighbour and interleaving gates weighed and could not accept as a whole. Forcing it into the merged model anyway, as one rigid unit, would risk everything the model already holds on exactly the evidence that failed to clear the bar. What is not in question is the block's own images: many of them may still carry strong, correct pairs to the consensus that never happened to close a cycle, or were outvoted only because the block as a whole disagreed elsewhere. Merging the block's observations in without a pose and leaving its images to the ordinary post-merge resection lets each of them stand or fall on its own connections to the finished model, instead of the model standing or falling on all of them at once.

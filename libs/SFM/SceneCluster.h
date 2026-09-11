@@ -42,7 +42,10 @@ class SFM_API Scene;
  *    Construct a weighted undirected graph where each node is an image and each
  *    edge weight encodes the number of geometrically verified feature matches
  *    between two images (from image pairs). This graph captures the visual
- *    overlap structure of the dataset.
+ *    overlap structure of the dataset. If the scene arrives with matches but no
+ *    tracks yet, they are built once here, so the seam statistics the refinement
+ *    passes below read have something to read; each sub-scene rebuilds its own
+ *    tracks again once it is split off.
  *
  * 2. AGGREGATIVE CLUSTERING
  *    Partition the graph using bottom-up (agglomerative) clustering:
@@ -51,24 +54,35 @@ class SFM_API Scene;
  *      updating edge weights between the merged cluster and its neighbors.
  *    - A cluster stops growing at targetViewsPerCluster, and takes in more only
  *      to absorb a cluster under minViewsPerCluster, never past maxViewsPerCluster.
+ *    - Two clusters already past the floor do not merge over an interface thinner
+ *      than minClusterCoupling of the weaker side's own internal weight.
  *    This greedy approach produces clusters that respect the covisibility
  *    structure: images that see many of the same features end up together,
  *    ensuring each sub-scene has strong internal connectivity.
  *
  * 3. CLUSTER REFINEMENT
- *    Post-process the clusters to improve quality:
- *    a) Merge small clusters: clusters below minViewsPerCluster are absorbed
+ *    Seven passes tidy the greedy result and make every remaining boundary usable
+ *    by the merge:
+ *    a) Local search: iteratively move boundary images between clusters to
+ *       improve a modularity + balance objective.
+ *    b) Merge small clusters: clusters below minViewsPerCluster are absorbed
  *       into their most-connected neighbor (up to maxOverCapacity slack).
- *    b) Local search: iteratively move or swap boundary images between clusters
- *       to improve a modularity + balance objective.
- *    c) Split disconnected: if a cluster has disconnected components in the
+ *    c) Balance: move well-connected boundary images out of the largest cluster
+ *       into smaller neighbors, gated by a minimum affinity ratio, to shorten the
+ *       critical path of concurrent sub-scene reconstruction.
+ *    d) Split disconnected: if a cluster has disconnected components in the
  *       covisibility graph, split it into separate clusters.
- *    d) Make the cuts usable by the merge: a cluster whose seams carry too few
- *       usable tracks, spread over too few cameras, to be registered against its
- *       neighbors is merged into the neighbor it shares the most with, and a seam
- *       holding tracks enough but concentrated in too few cameras is widened by
- *       moving boundary images across it.
- *    e) Rescue orphans: small clusters that remain after splitting are absorbed
+ *    e) Split thin waists: a cluster whose best balanced bipartition is joined
+ *       below the minClusterCoupling seam is split in two, rather than left to
+ *       reconstruct as two independently scaled blocks.
+ *    f) Make the cuts usable by the merge: a cluster whose seams carry too few
+ *       usable tracks, or hold them in too few cameras, to register it against
+ *       its neighbors (IsStrongSeam, below minClusterDegree strong neighbors) is
+ *       merged into the neighbor it shares the most usable tracks with; a seam
+ *       holding tracks enough but concentrated in too few cameras is then widened
+ *       by moving boundary images across it; a final small-cluster pass mops up
+ *       whatever either step left under the floor.
+ *    g) Rescue orphans: small clusters that remain after splitting are absorbed
  *       into neighbors.
  *
  * 4. EXTRACT SUB-SCENES
