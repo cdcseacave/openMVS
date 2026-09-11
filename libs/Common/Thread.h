@@ -11,9 +11,9 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
+#include <cstdint>
 #ifdef _MSC_VER
 #include <windows.h>
-#include <cstdint>
 #else
 #include <pthread.h>
 #include <sched.h>

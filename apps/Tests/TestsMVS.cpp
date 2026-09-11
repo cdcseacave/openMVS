@@ -2951,7 +2951,7 @@ bool SelectNeighborViewsScaleTest()
 	}
 	const float fMinScale(0.2f), fMaxScale(3.2f);
 	if (!Scene::FilterNeighborViews(neighbors, 0.1f, fMinScale, fMaxScale, D2R(3.f), D2R(45.f), 12) || neighbors.size() != 3) {
-		VERBOSE("ERROR: SelectNeighborViewsScaleTest filter kept %u of 3 neighbors, expected all!", neighbors.size());
+		VERBOSE("ERROR: SelectNeighborViewsScaleTest filter kept %u of 3 neighbors, expected all!", (unsigned)neighbors.size());
 		return false;
 	}
 	const float expectedScales[3] = {fMaxScale, expectedScale, fMinScale};
