@@ -2849,4 +2849,116 @@ bool MeshUnseenFacesTest()
 }
 /*----------------------------------------------------------------*/
 
+// a reference camera at the origin and three neighbors a unit behind it, all looking down +Z at a
+// grid of points 10 units away, so every grid point has the footprint ratio 11/10; plus one
+// mis-triangulated point 1e-6 in front of the reference camera center that only neighbor 1 shares,
+// seen from there at depth ~1: a footprint ratio of ~1e6. Everything is scaled by s
+static bool BuildNeighborViewsScaleScene(Scene& scene, REAL s)
+{
+	constexpr uint32_t imgSize(320);
+	static const Point3 camCenters[4] = {Point3(0,0,0), Point3(1,0,-1), Point3(-1,0,-1), Point3(0,1,-1)};
+	Platform& platform = scene.platforms.AddEmpty();
+	Platform::Camera& relCamera = platform.cameras.AddEmpty();
+	relCamera.R = Matrix3x3::IDENTITY;
+	relCamera.C = Point3(0,0,0);
+	relCamera.K = Matrix3x3::IDENTITY; // normalized focal of one image size
+	for (unsigned i=0; i<4; ++i) {
+		const Point3 C(camCenters[i].x*s, camCenters[i].y*s, camCenters[i].z*s);
+		Platform::Pose& pose = platform.poses.AddEmpty();
+		pose.C = C;
+		pose.R.LookAt(C, Point3(C.x, C.y, C.z+s), Point3(0,1,0));
+		Image& image = scene.images.AddEmpty();
+		image.ID = i;
+		image.platformID = 0;
+		image.cameraID = 0;
+		image.poseID = i;
+		image.width = image.height = imgSize;
+		image.scale = 1.f;
+		image.UpdateCamera(scene.platforms);
+		// the grid center must be in front of every camera and inside its image
+		const Point3 X(image.camera.TransformPointW2C(Point3(0, 0, 10*s)));
+		const Point2 x(image.camera.TransformPointC2I(X));
+		if (X.z <= 0 || !image.camera.IsInside(x, Point2(imgSize, imgSize))) {
+			VERBOSE("ERROR: SelectNeighborViewsScaleTest camera %u does not see the grid center ((%g,%g) depth %g)!", i, x.x, x.y, X.z);
+			return false;
+		}
+	}
+	scene.nCalibratedImages = 4;
+	for (int y=-3; y<=3; ++y) {
+		for (int x=-3; x<=3; ++x) {
+			scene.pointcloud.points.emplace_back(Point3f(float(x*0.6*s), float(y*0.6*s), float(10*s)));
+			PointCloud::ViewArr& views = scene.pointcloud.pointViews.emplace_back();
+			for (PointCloud::View v=0; v<4; ++v)
+				views.push_back(v);
+		}
+	}
+	scene.pointcloud.points.emplace_back(Point3f(0.f, 0.f, float(1e-6*s)));
+	PointCloud::ViewArr& views = scene.pointcloud.pointViews.emplace_back();
+	views.push_back(0);
+	views.push_back(1);
+	return true;
+}
+
+bool SelectNeighborViewsScaleTest()
+{
+	constexpr float expectedScale(1.1f);
+	// the neighbors picked at the first scene scale, sorted by ID: every other scale must match
+	std::vector<std::pair<uint32_t,uint32_t>> referenceNeighbors;
+	for (const REAL s: {REAL(1), REAL(1e-3), REAL(1e6)}) {
+		Scene scene(1);
+		if (!BuildNeighborViewsScaleScene(scene, s))
+			return false;
+		IndexArr points;
+		if (!scene.SelectNeighborViews(0, points)) {
+			VERBOSE("ERROR: SelectNeighborViewsScaleTest found too few neighbors at scene scale %g!", s);
+			return false;
+		}
+		std::vector<std::pair<uint32_t,uint32_t>> neighbors;
+		for (const ViewScore& neighbor: scene.images[0].neighbors) {
+			if (ABS(neighbor.scale-expectedScale) > 1e-3f) {
+				VERBOSE("ERROR: SelectNeighborViewsScaleTest neighbor %u has scale %g at scene scale %g, expected %g!",
+					neighbor.ID, neighbor.scale, s, expectedScale);
+				return false;
+			}
+			neighbors.emplace_back(neighbor.ID, neighbor.points);
+		}
+		std::sort(neighbors.begin(), neighbors.end());
+		if (referenceNeighbors.empty())
+			referenceNeighbors = neighbors;
+		if (neighbors.size() != 3 || neighbors != referenceNeighbors) {
+			VERBOSE("ERROR: SelectNeighborViewsScaleTest picked %u neighbors at scene scale %g, expected the same 3 at every scale!",
+				(unsigned)neighbors.size(), s);
+			return false;
+		}
+	}
+
+	// too few neighbors to drop any: the filter keeps all three, but bounds their scale
+	ViewScoreArr neighbors(3);
+	const float scales[3] = {1e7f, expectedScale, 0.01f};
+	FOREACH(n, neighbors) {
+		ViewScore& neighbor = neighbors[n];
+		neighbor.ID = n+1;
+		neighbor.points = 49;
+		neighbor.scale = scales[n];
+		neighbor.angle = D2R(10.f);
+		neighbor.area = 0.5f;
+		neighbor.score = 1.f;
+	}
+	const float fMinScale(0.2f), fMaxScale(3.2f);
+	if (!Scene::FilterNeighborViews(neighbors, 0.1f, fMinScale, fMaxScale, D2R(3.f), D2R(45.f), 12) || neighbors.size() != 3) {
+		VERBOSE("ERROR: SelectNeighborViewsScaleTest filter kept %u of 3 neighbors, expected all!", neighbors.size());
+		return false;
+	}
+	const float expectedScales[3] = {fMaxScale, expectedScale, fMinScale};
+	FOREACH(n, neighbors) {
+		if (neighbors[n].scale != expectedScales[n]) {
+			VERBOSE("ERROR: SelectNeighborViewsScaleTest filter left neighbor %u with scale %g, expected %g!",
+				neighbors[n].ID, neighbors[n].scale, expectedScales[n]);
+			return false;
+		}
+	}
+	return true;
+}
+/*----------------------------------------------------------------*/
+
 } // namespace MVS

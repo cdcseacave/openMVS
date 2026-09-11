@@ -285,6 +285,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!MVS::MeshUnseenFacesTest())
 				return false;
+			if (!MVS::SelectNeighborViewsScaleTest())
+				return false;
 		}
 		return true;
 	}();

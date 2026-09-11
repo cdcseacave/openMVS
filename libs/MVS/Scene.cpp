@@ -853,12 +853,21 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 	ASSERT(neighbors.empty());
 	struct Score {
 		float score;
-		float avgScale;
+		float scale;
 		float avgAngle;
 		uint32_t points;
 	};
 	CLISTDEF0(Score) scores(images.size());
 	scores.Memset(0);
+	// the footprint ratio of every shared observation, per view: a view's scale is their median,
+	// as one mis-triangulated point next to a camera center has a ratio of millions, enough to drag
+	// a mean -- and with it the size the view's image is resampled to -- anywhere
+	struct ScaleRatio {
+		uint32_t view;
+		float ratio;
+		inline bool operator<(const ScaleRatio& r) const { return view < r.view || (view == r.view && ratio < r.ratio); }
+	};
+	CLISTDEF0(ScaleRatio) scaleRatios;
 	if (nMinPointViews > nCalibratedImages)
 		nMinPointViews = nCalibratedImages;
 	unsigned nPoints = 0;
@@ -902,6 +911,8 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 			const float wAngle(EXP(SQUARE(fAngle-fOptimAngle)*(fAngle<fOptimAngle?sigmaAngleSmall:sigmaAngleLarge)));
 			const float footprint2(imageData2.camera.GetFootprintImage(depth2));
 			const float fScaleRatio(footprint1/footprint2);
+			if (!ISFINITE(fScaleRatio))
+				continue;
 			float wScale;
 			if (fScaleRatio > 1.6f)
 				wScale = SQUARE(1.6f/fScaleRatio);
@@ -911,13 +922,24 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 				wScale = SQUARE(fScaleRatio);
 			Score& score = scores[view];
 			score.score += MAXF(wAngle,0.1f) * wScale * wROI;
-			score.avgScale += fScaleRatio;
+			scaleRatios.push_back(ScaleRatio{view, fScaleRatio});
 			score.avgAngle += fAngle;
 			++score.points;
 		}
 	}
 	if(nPoints > 3)
 		imageData.avgDepth /= nPoints;
+	// the median scale ratio of every view: sorted by view, then by ratio
+	scaleRatios.Sort();
+	for (size_t i=0; i<scaleRatios.size(); ) {
+		const uint32_t view(scaleRatios[i].view);
+		size_t j(i+1);
+		while (j<scaleRatios.size() && scaleRatios[j].view == view)
+			++j;
+		const size_t n(j-i), m(i+n/2);
+		scores[view].scale = (n&1) ? scaleRatios[m].ratio : (scaleRatios[m-1].ratio+scaleRatios[m].ratio)*0.5f;
+		i = j;
+	}
 
 	// select best neighborViews
 	if (neighbors.empty()) {
@@ -957,7 +979,7 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 			ViewScore& neighbor = neighbors.AddEmpty();
 			neighbor.ID = IDB;
 			neighbor.points = score.points;
-			neighbor.scale = score.avgScale/score.points;
+			neighbor.scale = score.scale;
 			neighbor.angle = score.avgAngle/score.points;
 			neighbor.area = area;
 			neighbor.score = score.score*MAXF(area,0.01f);
@@ -1013,6 +1035,10 @@ bool Scene::FilterNeighborViews(ViewScoreArr& neighbors, float fMinArea, float f
 	}
 	if (neighbors.size() > nMaxViews)
 		neighbors.resize(nMaxViews);
+	// a view kept despite an out-of-range scale (too few views to drop any) is still resampled by
+	// it: bound the scale, so no neighbor image is ever resized past what the filter allows
+	for (ViewScore& neighbor: neighbors)
+		neighbor.scale = CLAMP(neighbor.scale, fMinScale, fMaxScale);
 	return !neighbors.empty();
 } // FilterNeighborViews
 /*----------------------------------------------------------------*/
