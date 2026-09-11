@@ -86,6 +86,53 @@ static REAL BlockExtent(const Scene& block)
 	return CentresExtent(centres);
 }
 
+// A block the model already holds: admitted, and admitted into this model. Another model placed
+// its blocks in a frame this one knows nothing about, so they have no say here.
+static bool IsInModel(const std::vector<BlockPose>& poses, uint32_t block, uint32_t model)
+{
+	return poses[block].state == BlockPose::ADMITTED && poses[block].model == model;
+}
+
+// The blocks one model holds, and the block it is gauged at -- the first of them, whose frame the
+// model is therefore expressed in. Any of them serves: every averaging of a model is anchored back
+// at the pose the model already has at its gauge, so the model keeps its frame whichever is chosen.
+static std::vector<uint32_t> ModelBlocks(const std::vector<BlockPose>& poses, const uint32_t model)
+{
+	std::vector<uint32_t> blocks;
+	FOREACH(b, poses)
+		if (IsInModel(poses, b, model))
+			blocks.push_back((uint32_t)b);
+	return blocks;
+}
+
+static uint32_t ModelSeed(const std::vector<BlockPose>& poses, const uint32_t model)
+{
+	FOREACH(b, poses)
+		if (IsInModel(poses, b, model))
+			return (uint32_t)b;
+	return NO_ID;
+}
+
+// The images one model carries: what the models are ranked by, the merge being built on the one
+// that registers the most of the scene
+static unsigned ModelImages(
+	const std::vector<Scene>& subScenes, const std::vector<BlockPose>& poses, const uint32_t model)
+{
+	unsigned numImages = 0;
+	FOREACH(b, poses)
+		if (IsInModel(poses, b, model))
+			numImages += subScenes[b].status.nCalibratedImages;
+	return numImages;
+}
+
+// The one way a block leaves the merge: its images go to the post-merge resection, and the report
+// says what refused it
+static void UnplaceBlock(BlockPose& pose, String reason)
+{
+	pose.state = BlockPose::UNPLACEABLE;
+	pose.reason = std::move(reason);
+}
+
 bool GlobalAlignment::MergeScenes(
 	std::vector<Scene>& subScenes, std::vector<IIndexArr>& localToGlobals, MergeReport& report)
 {
@@ -142,14 +189,19 @@ bool GlobalAlignment::MergeScenes(
 	// stage 6: what every model left over forms models of its own, and every model is placed
 	// against the one carrying the most images, which is the only model left holding blocks
 	PlaceRemainingBlocks(subScenes, localToGlobals, candidates, blockExtents, poses, modelSeams);
+	// the model the scene is merged at: the one carrying the most images, ranked as stage 6 ranked
+	// them, and the only one it has left holding blocks
 	uint32_t mergedModel = NO_ID;
-	std::map<uint32_t, unsigned> imagesOfModel;
-	FOREACH(b, poses)
-		if (poses[b].state == BlockPose::ADMITTED) {
-			const unsigned numImages = (imagesOfModel[poses[b].model] += subScenes[b].status.nCalibratedImages);
-			if (mergedModel == NO_ID || numImages > imagesOfModel[mergedModel])
-				mergedModel = poses[b].model;
+	unsigned mostImages = 0;
+	for (uint32_t m = 0; m < (uint32_t)modelSeams.size(); ++m) {
+		if (ModelBlocks(poses, m).empty())
+			continue;
+		const unsigned numImages = ModelImages(subScenes, poses, m);
+		if (mergedModel == NO_ID || numImages > mostImages) {
+			mergedModel = m;
+			mostImages = numImages;
 		}
+	}
 	// and every block it admitted is judged once more against the model it ended up in; what it
 	// then let go, and the parts of what it cut, are offered to it one last time
 	if (mergedModel != NO_ID && RevalidateBlocks(subScenes, localToGlobals, blockExtents, candidates,
@@ -166,11 +218,10 @@ bool GlobalAlignment::MergeScenes(
 		const bool placed = pose.state == BlockPose::ADMITTED && pose.model == mergedModel;
 		if (placed)
 			++report.numPlaced;
-		else {
-			if (pose.reason.empty())
-				pose.reason = "no seam";
-			pose.state = BlockPose::UNPLACEABLE;
-		}
+		else
+			// a block no placement ever weighed carries no reason of its own, and is left the only
+			// one there is to give it
+			UnplaceBlock(pose, pose.reason.empty() ? String("no seam") : pose.reason);
 		unsigned numImages = 0;
 		FOREACH(localID, subScenes[b].images) {
 			const IIndex globalID = localToGlobals[b][localID];
@@ -243,13 +294,6 @@ constexpr float kMinExtentShare = 0.2f;
 // over them and judged at the bar itself. A model never predicts a pair exactly, and what it is off
 // by is the very thing the seam is there to answer for.
 constexpr unsigned kLooseSeamFactor = 3;
-
-// A block the model already holds: admitted, and admitted into this model. Another model placed
-// its blocks in a frame this one knows nothing about, so they have no say here.
-bool IsInModel(const std::vector<BlockPose>& poses, uint32_t block, uint32_t model)
-{
-	return poses[block].state == BlockPose::ADMITTED && poses[block].model == model;
-}
 
 // One cross-sub-scene image pair, with the sub-scene each of its two images belongs to already
 // resolved, so feature indices (queryIdx/trainIdx) can be mapped consistently.
@@ -1348,13 +1392,20 @@ void GlobalAlignment::EstimateSeamPair(
 		// contradicts itself -- as many of its own cameras behind the seam as against it -- has not
 		// been weighed and found wanting: no one similarity can carry a block that is two blocks,
 		// which is a thing the seam of a pair cannot say and a placement can. Its correspondences
-		// stay the evidence they are.
-		bool blockSplit = false;
-		for (int d = 0; d < 2; ++d)
-			for (int s = 0; s < 2 && measured[d] && failedGates[d] == "camera votes"; ++s)
-				blockSplit = blockSplit ||
+		// stay the evidence they are. Every measured direction has to say that and nothing else: a
+		// direction the gates threw out for a reason of its own is one whose evidence they weighed,
+		// and the pair carries it too.
+		bool blockSplit = true;
+		for (int d = 0; d < 2; ++d) {
+			if (!measured[d])
+				continue;
+			bool sideSplit = false;
+			for (int s = 0; s < 2; ++s)
+				sideSplit = sideSplit ||
 					(candidate[d].score.support[s] >= config.minSupportingCentres &&
 					 candidate[d].score.contra[s] >= config.minSupportingCentres);
+			blockSplit = blockSplit && sideSplit && failedGates[d] == "camera votes";
+		}
 		if (blockSplit) {
 			DEBUG("Seam (%u, %u) skipped: the cameras of one of its two blocks are split over it", a, b);
 			return;
@@ -1658,6 +1709,17 @@ static bool DoesSeamStandAlone(const SeamCandidate& c, const GlobalAlignmentConf
 		c.NumInliers(SeamOwnDirection(c.source)) >= kStrongAloneFactor * config.minCommonTracks;
 }
 
+// What a seam nothing corroborates is worth on its own evidence: verified when the two directions
+// agreed on it, when the points of both blocks measured it, or when the one direction it has stands
+// alone; undecided otherwise. The one rule for a seam no second path can speak for, whether the
+// graph is reading it or a block cut in two has just measured it
+static SeamCandidate::Class ClassifyUncorroboratedSeam(
+	const SeamCandidate& c, const GlobalAlignmentConfig& config)
+{
+	return c.source == SeamCandidate::UNION || c.source == SeamCandidate::POINTS ||
+		DoesSeamStandAlone(c, config) ? SeamCandidate::VERIFIED : SeamCandidate::UNDECIDED;
+}
+
 // What the consensus of a component makes of one of its seams; `reason` is filled when undecided
 static SeamCandidate::Class ClassifySeam(
 	const std::vector<SeamCandidate>& candidates, const SeamComponent& component,
@@ -1677,10 +1739,10 @@ static SeamCandidate::Class ClassifySeam(
 			});
 		if (corroborated)
 			return SeamCandidate::ROBUST;
-		if (c.source == SeamCandidate::UNION || c.source == SeamCandidate::POINTS || DoesSeamStandAlone(c, config))
-			return SeamCandidate::VERIFIED;
-		reason = "bridge, one direction";
-		return SeamCandidate::UNDECIDED;
+		const SeamCandidate::Class alone = ClassifyUncorroboratedSeam(c, config);
+		if (alone == SeamCandidate::UNDECIDED)
+			reason = "bridge, one direction";
+		return alone;
 	}
 	// a path at least as strong holds the two blocks where this seam does not
 	const bool contradicted = SeamEndsJoined(candidates, component.edges, numBlocks, c,
@@ -2266,46 +2328,6 @@ static const char* PlacementWord(PlacementHypothesis::Source source)
 	}
 }
 
-// The blocks one model holds, and the block it is gauged at -- the first of them, whose frame the
-// model is therefore expressed in. Any of them serves: every averaging of a model is anchored back
-// at the pose the model already has at its gauge, so the model keeps its frame whichever is chosen.
-static std::vector<uint32_t> ModelBlocks(const std::vector<BlockPose>& poses, const uint32_t model)
-{
-	std::vector<uint32_t> blocks;
-	FOREACH(b, poses)
-		if (IsInModel(poses, b, model))
-			blocks.push_back((uint32_t)b);
-	return blocks;
-}
-
-static uint32_t ModelSeed(const std::vector<BlockPose>& poses, const uint32_t model)
-{
-	FOREACH(b, poses)
-		if (IsInModel(poses, b, model))
-			return (uint32_t)b;
-	return NO_ID;
-}
-
-// The images one model carries: what the models are ranked by, the merge being built on the one
-// that registers the most of the scene
-static unsigned ModelImages(
-	const std::vector<Scene>& subScenes, const std::vector<BlockPose>& poses, const uint32_t model)
-{
-	unsigned numImages = 0;
-	FOREACH(b, poses)
-		if (IsInModel(poses, b, model))
-			numImages += subScenes[b].status.nCalibratedImages;
-	return numImages;
-}
-
-// The one way a block leaves the merge: its images go to the post-merge resection, and the report
-// says what refused it
-static void UnplaceBlock(BlockPose& pose, String reason)
-{
-	pose.state = BlockPose::UNPLACEABLE;
-	pose.reason = std::move(reason);
-}
-
 // The seams a model rested on through a block it no longer holds: they carry nothing now
 static void DropBlockSeams(
 	const std::vector<SeamCandidate>& candidates, const uint32_t block, std::vector<uint32_t>& modelSeams)
@@ -2856,9 +2878,10 @@ bool GlobalAlignment::SplitFoldedBlock(
 	const PlacementHypothesis& best,
 	std::pair<uint32_t, uint32_t>& parts)
 {
+	// the block's own scene is read by index throughout: the two parts appended below may move the
+	// blocks about, and a reference into them would not survive it
 	ASSERT(subScenes.size() == localToGlobals.size() && subScenes.size() == blockExtents.size());
-	Scene& blockScene = subScenes[block];
-	const IIndex numImages = (IIndex)blockScene.images.size();
+	const IIndex numImages = (IIndex)subScenes[block].images.size();
 
 	// the two sides of the fold, as the block's own cameras voted on the placement
 	std::vector<int> side(numImages, 0);
@@ -2876,7 +2899,7 @@ bool GlobalAlignment::SplitFoldedBlock(
 	// a camera that could not vote goes with the side it shares the most of its own block with,
 	// spreading outward from the cameras that did until nothing more is reached
 	std::vector<std::vector<std::pair<IIndex, float>>> neighbours(numImages);
-	for (const ImagePair& pair : blockScene.pairs) {
+	for (const ImagePair& pair : subScenes[block].pairs) {
 		const float weight = pair.GetCompositeWeight();
 		if (!(weight > 0))
 			continue;
@@ -2905,12 +2928,18 @@ bool GlobalAlignment::SplitFoldedBlock(
 			s = 1;
 
 	// what the cut costs against what holds either side together, and how much of a block each side
-	// is left being
+	// is left being -- counted in the cameras a part would be reconstructed from, an image the block
+	// never registered carrying nothing either way
 	IIndexArr images[2];
-	FOREACH(i, side)
-		images[side[i] > 0 ? 0 : 1].push_back((IIndex)i);
+	unsigned numViews[2] = {0, 0};
+	FOREACH(i, side) {
+		const int s = side[i] > 0 ? 0 : 1;
+		images[s].push_back((IIndex)i);
+		if (subScenes[block].images[i].IsValid())
+			++numViews[s];
+	}
 	float cut = 0, internal[2] = {0.f, 0.f};
-	for (const ImagePair& pair : blockScene.pairs) {
+	for (const ImagePair& pair : subScenes[block].pairs) {
 		const float weight = pair.GetCompositeWeight();
 		if (side[pair.ID1] == side[pair.ID2])
 			internal[side[pair.ID1] > 0 ? 0 : 1] += weight;
@@ -2918,7 +2947,7 @@ bool GlobalAlignment::SplitFoldedBlock(
 			cut += weight;
 	}
 	const char* refused = NULL;
-	if (images[0].size() < config.minFoldPartViews || images[1].size() < config.minFoldPartViews)
+	if (numViews[0] < config.minFoldPartViews || numViews[1] < config.minFoldPartViews)
 		refused = "one of its sides is too small";
 	else if (cut > config.maxFoldCutRatio * MINF(internal[0], internal[1]))
 		refused = "its two sides are not cut apart";
@@ -2926,7 +2955,7 @@ bool GlobalAlignment::SplitFoldedBlock(
 		refused = "one of its sides does not hold together";
 	if (refused != NULL) {
 		DEBUG("Block %u not split (votes %u+/%u-, %u and %u views, cut %.2f of %.2f): %s",
-			block, numVotes[0], numVotes[1], (unsigned)images[0].size(), (unsigned)images[1].size(),
+			block, numVotes[0], numVotes[1], numViews[0], numViews[1],
 			cut, MINF(internal[0], internal[1]), refused);
 		return false;
 	}
@@ -2936,7 +2965,7 @@ bool GlobalAlignment::SplitFoldedBlock(
 	const IIndexArr blockToGlobal(localToGlobals[block]);
 	std::vector<IIndexArr> partToBlock;
 	const ClusterConfig clusterCfg;
-	std::vector<Scene> split = SceneCluster(blockScene, clusterCfg).SplitSceneByClusters(
+	std::vector<Scene> split = SceneCluster(subScenes[block], clusterCfg).SplitSceneByClusters(
 		{images[0], images[1]}, &partToBlock);
 	ASSERT(split.size() == 2 && partToBlock.size() == 2);
 	FOREACH(p, split) {
@@ -2955,10 +2984,8 @@ bool GlobalAlignment::SplitFoldedBlock(
 		if (c.sceneA == block || c.sceneB == block)
 			c.cls = SeamCandidate::REJECTED;
 	// and every pair a part now holds is measured like any other block pair. The graph cannot be
-	// asked again about blocks that did not exist when it spoke, so what comes out is classified on
-	// its own evidence alone, exactly as the graph classifies a seam nothing corroborates: verified
-	// when the two directions agreed on it or one of them saw far more than a seam needs, undecided
-	// otherwise
+	// asked again about blocks that did not exist when it spoke, so what comes out is read by the
+	// one rule it keeps for a seam no second path corroborates
 	std::vector<std::pair<uint32_t, uint32_t>> partPairs;
 	for (const auto& [blockPair, links] : blockPairLinks)
 		if (blockPair.first >= parts.first || blockPair.second >= parts.first)
@@ -2966,11 +2993,8 @@ bool GlobalAlignment::SplitFoldedBlock(
 	const size_t numMeasured = candidates.size();
 	for (const auto& [a, b] : partPairs)
 		EstimateSeamPair(subScenes, a, b, candidates);
-	for (size_t i = numMeasured; i < candidates.size(); ++i) {
-		SeamCandidate& c = candidates[i];
-		c.cls = c.source == SeamCandidate::UNION || c.source == SeamCandidate::POINTS ||
-			DoesSeamStandAlone(c, config) ? SeamCandidate::VERIFIED : SeamCandidate::UNDECIDED;
-	}
+	for (size_t i = numMeasured; i < candidates.size(); ++i)
+		candidates[i].cls = ClassifyUncorroboratedSeam(candidates[i], config);
 
 	VERBOSE("Block %u split into %u and %u (votes %u+/%u-, cut %.2f)",
 		block, parts.first, parts.second, numVotes[0], numVotes[1], cut);
