@@ -100,7 +100,7 @@ public:
 	typedef uint64_t Census; // used to store Census transform
 	typedef TImage<Census> CensusMap; // image of Census transforms
 	typedef Image8U ImageGray; // used to store intensities image
-	STATIC_ASSERT(sizeof(Census)*8 >= numTexels);
+	static_assert(sizeof(Census)*8 >= numTexels);
 	#else
 	typedef WeightedPatchFix<numTexels> WeightedPatch; // pre-computed patch weights
 	typedef Image32F ImageGray; // used to store normalized float intensities image

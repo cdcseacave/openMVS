@@ -514,7 +514,6 @@ public:
 	}
 
 	// Adds a new empty element at the end of the array and pass the arguments to its constructor.
-	#ifdef _SUPPORT_CPP11
 	template <typename... Args>
 	inline TYPE&	AddConstruct(Args&&... args)
 	{
@@ -522,15 +521,6 @@ public:
 			_Grow(_vectorSize + grow);
 		return *(new(_vector + (_size++)) TYPE(std::forward<Args>(args)...));
 	}
-	#else
-	template <typename... Args>
-	inline TYPE&	AddConstruct(Args... args)
-	{
-		if (_vectorSize <= _size)
-			_Grow(_vectorSize + grow);
-		return *(new(_vector + (_size++)) TYPE(args...));
-	}
-	#endif
 
 	inline IDX		InsertEmpty()
 	{
@@ -542,7 +532,6 @@ public:
 	}
 
 	// Adds the new element at the end of the array.
-	#ifdef _SUPPORT_CPP11
 	template <typename T>
 	inline void		Insert(T&& elem)
 	{
@@ -553,19 +542,7 @@ public:
 		else
 			_vector[_size++] = std::forward<T>(elem);
 	}
-	#else
-	inline void		Insert(ARG_TYPE elem)
-	{
-		if (_vectorSize <= _size)
-			_Grow(_vectorSize + grow);
-		if (useConstruct)
-			new(_vector+(_size++)) TYPE(elem);
-		else
-			_vector[_size++] = elem;
-	}
-	#endif
 
-	#ifdef _SUPPORT_CPP11
 	template <typename T>
 	inline void		SetAt(IDX index, T&& elem)
 	{
@@ -573,16 +550,7 @@ public:
 			Resize(index + 1);
 		_vector[index] = std::forward<T>(elem);
 	}
-	#else
-	inline void		SetAt(IDX index, ARG_TYPE elem)
-	{
-		if (_size <= index)
-			Resize(index + 1);
-		_vector[index] = elem;
-	}
-	#endif
 
-	#ifdef _SUPPORT_CPP11
 	template <typename T>
 	inline void		AddAt(IDX index, T&& elem)
 	{
@@ -598,24 +566,7 @@ public:
 			_vector[index] = std::forward<T>(elem);
 		++_size;
 	}
-	#else
-	inline void		AddAt(IDX index, ARG_TYPE elem)
-	{
-		if (index < _size)
-			return InsertAt(index, elem);
-		const IDX newSize = index + 1;
-		if (_vectorSize <= newSize)
-			_Grow(newSize + grow);
-		_ArrayConstruct(_vector+_size, index-_size);
-		if (useConstruct)
-			new(_vector+index) TYPE(elem);
-		else
-			_vector[index] = elem;
-		++_size;
-	}
-	#endif
 
-	#ifdef _SUPPORT_CPP11
 	template <typename T>
 	inline void		InsertAt(IDX index, T&& elem)
 	{
@@ -624,15 +575,6 @@ public:
 		else
 			*AllocateAt(index) = std::forward<T>(elem);
 	}
-	#else
-	inline void		InsertAt(IDX index, ARG_TYPE elem)
-	{
-		if (useConstruct)
-			new(AllocateAt(index)) TYPE(elem);
-		else
-			*AllocateAt(index) = elem;
-	}
-	#endif
 
 	// Same as Insert, but the constructor is not called.
 	inline TYPE*	Allocate()
@@ -751,7 +693,6 @@ public:
 	inline IDX	GetMaxIdx(const Functor& functor) const {
 		return static_cast<IDX>(std::max_element(Begin(), End(), functor) - Begin());
 	}
-	#ifdef _SUPPORT_CPP11
 	inline std::pair<ArgType,ArgType>	GetMinMax() const {
 		const auto minmax(std::minmax_element(Begin(), End()));
 		return std::pair<ArgType,ArgType>(*minmax.first, *minmax.second);
@@ -770,7 +711,6 @@ public:
 		const auto minmax(std::minmax_element(Begin(), End(), functor));
 		return std::make_pair(static_cast<IDX>(minmax.first-Begin()), static_cast<IDX>(minmax.second-Begin()));
 	}
-	#endif
 
 	inline TYPE&	PartialSort(IDX index)
 	{
@@ -791,38 +731,12 @@ public:
 
 	inline	bool	IsSorted() const
 	{
-		#ifdef _SUPPORT_CPP11
 		return std::is_sorted(Begin(), End());
-		#else
-		if (_size < 2)
-			return true;
-		IDX i = _size-1;
-		do {
-			ARG_TYPE elem1 = _vector[i];
-			ARG_TYPE elem0 = _vector[--i];
-			if (elem1 < elem0)
-				return false;
-		} while (i > 0);
-		return true;
-		#endif
 	}
 	template <typename Functor>
 	inline bool		IsSorted(const Functor& functor) const
 	{
-		#ifdef _SUPPORT_CPP11
 		return std::is_sorted(Begin(), End(), functor);
-		#else
-		if (_size < 2)
-			return true;
-		IDX i = _size-1;
-		do {
-			ARG_TYPE elem1 = _vector[i];
-			ARG_TYPE elem0 = _vector[--i];
-			if (functor(elem1, elem0))
-				return false;
-		} while (i > 0);
-		return true;
-		#endif
 	}
 
 	inline std::pair<IDX,bool>	InsertSortUnique(ARG_TYPE elem)
@@ -1497,19 +1411,15 @@ public:
 	typedef const value_type& const_reference;
 	typedef std::vector<Type> VectorType;
 	inline cList(const VectorType& rList) { CopyOf(&rList[0], rList.size()); }
-	#ifdef _SUPPORT_CPP11
 	inline cList(std::initializer_list<Type> l) : _size(0), _vectorSize((size_type)l.size()), _vector(NULL) { ASSERT(l.size()<NO_INDEX); if (_vectorSize == 0) return; _vector = (Type*) operator new[] (static_cast<size_t>(_vectorSize)*sizeof(Type)); const Type* first(l.begin()); do new(_vector + _size++) Type(*first++); while (first!=l.end()); }
-	#endif
 	inline bool empty() const { return IsEmpty(); }
 	inline size_type size() const { return GetSize(); }
 	inline size_type capacity() const { return GetCapacity(); }
 	inline void clear() { Empty(); }
 	inline void insert(const_iterator it, const_reference elem) { InsertAt(it-this->_vector, elem); }
-	#ifdef _SUPPORT_CPP11
 	template <typename... Args>
 	inline reference emplace_back(Args&&... args) { return AddConstruct(std::forward<Args>(args)...); }
 	inline void push_back(value_type&& elem) { AddConstruct(elem); }
-	#endif
 	inline void assign(size_type count, const Type& value) { Empty(); Reserve(count); _ArrayConstruct(_vector, count, value); _size = count; }
 	inline void push_back(const_reference elem) { Insert(elem); }
 	inline void pop_back() { RemoveLast(); }

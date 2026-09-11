@@ -353,7 +353,7 @@ public:
 		// Run matching
 		Image& prevImg = scene.images[prevID];
 		ImagePair& pair = scene.pairs.emplace_back(prevID, currID);
-		MAYBEUNUSED const bool geometryEstimated = MatchFeaturesGeometric(
+		[[maybe_unused]] const bool geometryEstimated = MatchFeaturesGeometric(
 			pairsMatcher,
 			prevImg,
 			currImg,

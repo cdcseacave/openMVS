@@ -140,7 +140,7 @@ inline void TOBB<TYPE,DIMS>::Set(const POINT* pts, size_t n, const POINT& up)
 template <typename TYPE, int DIMS>
 inline void TOBB<TYPE,DIMS>::Set(const POINT* pts, size_t n, const TRIANGLE* tris, size_t s)
 {
-	STATIC_ASSERT(DIMS == 3); // a triangle is only defined by three indices in 3D
+	static_assert(DIMS == 3); // a triangle is only defined by three indices in 3D
 	ASSERT(n >= DIMS);
 
 	// loop over the triangles this time to find the
@@ -206,7 +206,7 @@ inline void TOBB<TYPE,DIMS>::SetRotation(const MATRIX& C)
 template <typename TYPE, int DIMS>
 inline void TOBB<TYPE,DIMS>::SetRotation(const MATRIX& C, int fixedAxis)
 {
-	STATIC_ASSERT(DIMS > 1);
+	static_assert(DIMS > 1);
 	ASSERT(fixedAxis >= 0 && fixedAxis < DIMS);
 	// the free axes, in wrap-around order after the fixed one
 	enum {DIMSF = DIMS-1};
@@ -239,7 +239,7 @@ inline void TOBB<TYPE,DIMS>::SetRotation(const MATRIX& C, int fixedAxis)
 template <typename TYPE, int DIMS>
 inline void TOBB<TYPE,DIMS>::SetRotation(const POINT& upDirection, const POINT* pts, size_t n)
 {
-	STATIC_ASSERT(DIMS > 1);
+	static_assert(DIMS > 1);
 	ASSERT(n > 0);
 	enum {DIMSP = DIMS-1}; // dimension of the hyperplane perpendicular to up
 	typedef Eigen::Matrix<TYPE,DIMSP,1> POINTP;
@@ -400,7 +400,7 @@ inline void TOBB<TYPE,DIMS>::BuildAdd(const POINT& p)
 	m_pos += p;
 	// the count must stay exact for arbitrary n (a float counter saturates at 2^24),
 	// so it lives as an integer in the extents storage, unused during build
-	STATIC_ASSERT(sizeof(POINT) >= sizeof(size_t));
+	static_assert(sizeof(POINT) >= sizeof(size_t));
 	size_t n;
 	memcpy(&n, m_ext.data(), sizeof(n));
 	++n;
@@ -409,7 +409,7 @@ inline void TOBB<TYPE,DIMS>::BuildAdd(const POINT& p)
 template <typename TYPE, int DIMS>
 inline void TOBB<TYPE,DIMS>::BuildEnd()
 {
-	STATIC_ASSERT(sizeof(POINT) >= sizeof(size_t));
+	static_assert(sizeof(POINT) >= sizeof(size_t));
 	size_t n;
 	memcpy(&n, m_ext.data(), sizeof(n));
 	ASSERT(n > 0);

@@ -630,7 +630,7 @@ static float RefineStepExpectedMedian(const MeshRefineStep::Terms& terms)
 static MeshRefineStep::Grad RefineStepExpectedDelta(const MeshRefineStep::Terms& terms, uint32_t v, float step, float median)
 {
 	typedef MeshRefineStep::Grad Grad;
-	MAYBEUNUSED const float footprint(terms.footprint[v]);
+	[[maybe_unused]] const float footprint(terms.footprint[v]);
 	Grad photoDelta(Grad::ZERO);
 	const float scale(MeshRefineStep::Kappa*median);
 	if (terms.photoCount[v] >= 2 && scale > 0) {

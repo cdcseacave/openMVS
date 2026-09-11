@@ -1069,7 +1069,7 @@ void MeshRefine::ComputePhotometricGradient(
 		const Point3 X(g.rayA*REAL(g.depth)+cameraA.C);
 		// project point in second image and
 		// projection Jacobian matrix in the second image of the 3D point on the surface
-		MAYBEUNUSED const float depthB(ProjectVertex(cameraB.P.val, X.ptr(), xB.ptr(), xJac.val));
+		[[maybe_unused]] const float depthB(ProjectVertex(cameraB.P.val, X.ptr(), xB.ptr(), xJac.val));
 		ASSERT(depthB > 0);
 		// compute gradient in image B
 		TMatrix<Real,1,2> gB;

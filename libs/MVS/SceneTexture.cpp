@@ -1221,7 +1221,7 @@ bool MeshTexture::FaceViewSelection(unsigned minCommonCameras, float fOutlierThr
 			// 4) assign images to virtual faces
 			// 5) spread image ID to each mesh face from virtual face
 			FOREACH(idxFace, virtualFaces) {
-				MAYBEUNUSED const Mesh::FIndex idx((Mesh::FIndex)boost::add_vertex(graph));
+				[[maybe_unused]] const Mesh::FIndex idx((Mesh::FIndex)boost::add_vertex(graph));
 				ASSERT(idx == idxFace);
 			}
 			FOREACH(idxVirtualFace, virtualFaces) {
@@ -1327,7 +1327,7 @@ bool MeshTexture::FaceViewSelection(unsigned minCommonCameras, float fOutlierThr
 
 		// create the graph of faces: each vertex is a face and the edges are the edges shared by the faces
 		FOREACH(idxFace, faces) {
-			MAYBEUNUSED const Mesh::FIndex idx((Mesh::FIndex)boost::add_vertex(graph));
+			[[maybe_unused]] const Mesh::FIndex idx((Mesh::FIndex)boost::add_vertex(graph));
 			ASSERT(idx == idxFace);
 		}
 		FOREACH(idxFace, faces) {
@@ -1380,7 +1380,7 @@ bool MeshTexture::FaceViewSelection(unsigned minCommonCameras, float fOutlierThr
 							const FIndex fAdj((FIndex)ei->m_target);
 							if (f < fAdj) { // add edges only once
 								VIndex shared[2];
-								MAYBEUNUSED const bool bShared(scene.mesh.GetEdgeVertices(f, fAdj, shared));
+								[[maybe_unused]] const bool bShared(scene.mesh.GetEdgeVertices(f, fAdj, shared));
 								ASSERT(bShared);
 								const float edgeLength = (float)norm(scene.mesh.vertices[shared[0]] - scene.mesh.vertices[shared[1]]);
 								const float edgeWeight = LBPMinWeight + edgeLength / avgEdgeLength;

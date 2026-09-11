@@ -268,7 +268,6 @@ bool ParseImage(Scene& scene, const String& imagePath, const String& cameraPath,
 // parse scene stored in Polycam format
 bool ParseScene(Scene& scene, const String& scenePath)
 {
-	#if defined(_SUPPORT_CPP17) && (!defined(__GNUC__) || (__GNUC__ > 7))
 	size_t numCorrectedFolders(0), numCorrectedDepthFolders(0), numFolders(0), numDepthFolders(0);
 	for (const auto& file: std::filesystem::directory_iterator(scenePath.c_str())) {
 		if (file.path().stem() == "corrected_cameras" ||
@@ -327,9 +326,6 @@ bool ParseScene(Scene& scene, const String& scenePath)
 		}
 	}
 	return true;
-	#else
-	return false;
-	#endif
 }
 
 } // unnamed namespace

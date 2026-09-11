@@ -592,7 +592,7 @@ void* STCALL DepthMapsData::EndDepthMapTmp(void* arg)
 {
 	DepthEstimator& estimator = *((DepthEstimator*)arg);
 	IDX idx;
-	MAYBEUNUSED const float fOptimAngle(D2R(OPTDENSE::fOptimAngle));
+	[[maybe_unused]] const float fOptimAngle(D2R(OPTDENSE::fOptimAngle));
 	while ((idx=(IDX)Thread::safeInc(estimator.idxPixel)) < estimator.coords.GetSize()) {
 		const ImageRef& x = estimator.coords[idx];
 		ASSERT(estimator.depthMap0(x) >= 0);
@@ -2665,7 +2665,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 			}
 		}
 		ASSERT(!depthData.IsEmpty());
-		MAYBEUNUSED const Image& imageData = *depthData.images.front().pImageData;
+		[[maybe_unused]] const Image& imageData = *depthData.images.front().pImageData;
 		ASSERT(&imageData-scene.images.data() == idxImage);
 		ASSERT(depthData.depthMap.size() == depthData.size && imageData.GetSize() == depthData.size);
 		UseMask& useMask = arrUseMask[idxImage];
