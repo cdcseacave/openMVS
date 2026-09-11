@@ -31,7 +31,7 @@
 
 #include "../../libs/MVS/Common.h"
 #include "../../libs/MVS/Scene.h"
-#include "../../libs/IO/TinyXML2.h"
+#include <tinyxml2.h>
 #include <boost/program_options.hpp>
 
 using namespace MVS;
