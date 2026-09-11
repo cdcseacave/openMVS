@@ -12692,6 +12692,75 @@ bool RingLoopClosureTest()
 }
 /*----------------------------------------------------------------*/
 
+// The same drifting ring with the seam that closes it wrong by three quarters of a degree: the
+// closing pair keeps no true evidence and is measured on planted correspondences alone, so what the
+// graph reads there is a seam nothing can tell from a true one -- its error is the size of the
+// drift the ring already carries, and the cycle residual it leaves stays inside every bar the graph
+// judges by. The block that cycle runs through is taken in on trust and the model is averaged over
+// its seams, which spreads that error over the ring like any other loop discrepancy. Either the
+// block is refused, or the merged model still answers to the truth: absorbing a wrong seam as drift
+// may not move the cameras past what the honest ring is allowed.
+// Turning the wall about the ring axis moves the blocks as well as turning them, and the graph
+// reads that as a translation: a degree and a half leaves the closing seam 7.63% of the pair's
+// footprint out, past the 5% bar, and the graph rejects it outright -- which is the case the ring
+// tests already cover, and leaves nothing trusted to be absorbed
+bool BiasedClosingSeamTest()
+{
+	TD_TIMER_START();
+	RingSceneConfig cfg{12, 10};
+	cfg.driftDegPerBlock = 0.25;
+	cfg.driftScalePerBlock = 0.0025;
+	Scene scene;
+	std::vector<IIndexArr> blocks;
+	std::vector<Pose3D> gtPoses;
+	GenerateRingScene(cfg, scene, blocks, gtPoses);
+	// the closing pair left with nothing of its own, then given block 0's structure turned about the
+	// ring axis: what block 11's cameras then see of block 0 is a consistent seam, and the wrong one
+	const uint32_t closing = cfg.numBlocks - 1;
+	std::vector<unsigned> allCameras(cfg.camsPerBlock);
+	std::iota(allCameras.begin(), allCameras.end(), 0u);
+	DropCrossObservations(scene, blocks, closing, allCameras, 0, 0);
+	const unsigned planted = PlantFalseSeam(scene, blocks, closing, 0, 600, cfg.camsPerBlock, RingRotation(0.75));
+	if (planted < 150) {
+		VERBOSE("BiasedClosingSeamTest FAILED: only %u tracks of block 0 could be planted on block %u",
+			planted, closing);
+		return false;
+	}
+	ComputePairsWeights(scene);
+	std::vector<Scene> subScenes;
+	std::vector<IIndexArr> localToGlobals;
+	std::vector<SEACAVE::Transform> applied;
+	BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
+
+	const GlobalAlignmentConfig alignCfg;
+	GlobalAlignment ga(scene, alignCfg);
+	MergeReport rep;
+	ga.MergeScenes(subScenes, localToGlobals, rep);
+	// what the graph made of the biased seam, for the record: a seam this close to the drift the
+	// ring carries is one no residual can indict
+	uint32_t seam = NO_ID;
+	FOREACH(i, rep.candidates)
+		if (rep.candidates[i].sceneA == 0 && rep.candidates[i].sceneB == closing)
+			seam = (uint32_t)i;
+	const unsigned seamClass = seam == NO_ID ? (unsigned)SeamCandidate::UNCLASSIFIED : (unsigned)rep.candidates[seam].cls;
+	if (rep.numPlaced < cfg.numBlocks) {
+		// the model refused the block the biased seam closes the ring through, which is the other
+		// answer this test allows -- what it may not do is take it in and come out wrong
+		VERBOSE("BiasedClosingSeamTest PASSED: the biased seam (class %u) left %u of %u blocks placed (%s)",
+			seamClass, rep.numPlaced, cfg.numBlocks, TD_TIMER_GET_FMT().c_str());
+		return true;
+	}
+	if (!CheckRingMerge("BiasedClosingSeamTest", rep, scene, gtPoses, cfg.numBlocks, 1, 0.6, 0.005))
+		return false;
+	RunFinalAdjustment(scene);
+	if (!CheckRingMerge("BiasedClosingSeamTest, adjusted", rep, scene, gtPoses, cfg.numBlocks, 1, 0.3, 0.005))
+		return false;
+	VERBOSE("BiasedClosingSeamTest PASSED: the seam planted on %u tracks came out class %u and the whole "
+		"ring still answers to the truth (%s)", planted, seamClass, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
 // The pair that closes a ring, left with two correspondences on each of thirty tracks: no camera of
 // either block is left holding the inliers a vote weighs with, so the seam stage measures the pair
 // and the camera votes drop it, and the blocks arrive as an open chain. The eleven seams that were

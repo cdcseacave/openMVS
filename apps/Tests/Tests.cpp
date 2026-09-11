@@ -353,6 +353,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::RingLoopClosureTest())
 				return false;
+			if (!SFM::BiasedClosingSeamTest())
+				return false;
 			if (!SFM::WeakClosingSeamTest())
 				return false;
 			if (!SFM::SecondModelTest())

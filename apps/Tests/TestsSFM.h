@@ -375,6 +375,7 @@ bool UnobservableScalePairTest();
 bool RingInterleavingVetoTest();
 bool AmbiguousPairTest();
 bool RingLoopClosureTest();
+bool BiasedClosingSeamTest();
 bool WeakClosingSeamTest();
 bool SecondModelTest();
 bool FoldedBlockTest();
