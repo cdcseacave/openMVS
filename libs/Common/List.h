@@ -358,9 +358,12 @@ public:
 	}
 
 	// Set the allocated memory (normally used for types without constructor).
+	// Byte-writing is valid for any trivially copyable type, even one with a user-provided
+	// default constructor; the void* cast tells GCC's -Wclass-memaccess so.
 	inline void		Memset(uint8_t val)
 	{
-		memset(_vector, val, static_cast<size_t>(_size) * sizeof(TYPE));
+		static_assert(std::is_trivially_copyable<TYPE>::value, "Memset requires a trivially copyable type");
+		memset((void*)_vector, val, static_cast<size_t>(_size) * sizeof(TYPE));
 	}
 	inline void		MemsetValue(ARG_TYPE val)
 	{
