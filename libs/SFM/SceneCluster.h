@@ -161,6 +161,12 @@ struct SFM_API SeamTrackStats
 // holds the statistics of side a toward b in .first and of side b toward a in .second
 typedef std::map<std::pair<uint32_t, uint32_t>, std::pair<SeamTrackStats, SeamTrackStats>> SeamTrackStatsMap;
 
+// A neighbour is strong when the seam between the two clusters carries enough usable tracks AND
+// enough cameras on BOTH sides reach the merge's per-camera vote floor: anything less and the merge
+// has no registration between the two, whatever the covisibility graph says about them. The one
+// place this rule is written.
+bool SFM_API IsStrongSeam(const std::pair<SeamTrackStats, SeamTrackStats>& seam, const ClusterConfig& config);
+
 /**
  * @brief Scene partitioning using aggregative graph clustering
  *

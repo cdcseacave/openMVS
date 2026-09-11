@@ -11885,15 +11885,6 @@ static void BuildChainScene(unsigned numImages, unsigned tracksPerStart,
 	ComputePairsWeights(scene);
 }
 
-// A neighbour the merge can register a cluster against: the seam carries enough usable tracks, and
-// enough cameras on both sides carry the per-camera vote floor
-static bool IsSeamStrong(const std::pair<SeamTrackStats, SeamTrackStats>& seam, const ClusterConfig& cfg)
-{
-	return seam.first.usable >= cfg.minSeamTracks &&
-		seam.first.CamerasWithAtLeast(cfg.minSeamCameraTracks) >= cfg.minSeamCameras &&
-		seam.second.CamerasWithAtLeast(cfg.minSeamCameraTracks) >= cfg.minSeamCameras;
-}
-
 // Four hundred images walking a whole ring: the sub-scenes must come out sized for the merge -- none
 // under the floor, none over the ceiling and its slack, half of them around the target -- and every
 // two that touch must share a seam the merge can register
@@ -11945,10 +11936,10 @@ bool SceneClusterTargetSizeTest()
 		}
 	}
 
-	// every seam between two sub-scenes usable by the merge
+	// every seam between two sub-scenes usable by the merge, by the rule the clustering applies
 	const SeamTrackStatsMap seams = cluster.ComputeSeamTrackStats(localToGlobals);
 	for (const auto& [pair, seam] : seams) {
-		if (!IsSeamStrong(seam, clusterCfg)) {
+		if (!IsStrongSeam(seam, clusterCfg)) {
 			VERBOSE("SceneClusterTargetSizeTest FAILED: sub-scenes (%u, %u) share %u seam-usable tracks over %u/%u cameras",
 				pair.first, pair.second, seam.first.usable,
 				seam.first.CamerasWithAtLeast(clusterCfg.minSeamCameraTracks),

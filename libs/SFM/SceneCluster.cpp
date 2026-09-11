@@ -187,12 +187,14 @@ std::vector<int> MapNodesToClusters(const std::vector<IIndexArr>& clusters, IInd
 }
 
 // Append every image of one cluster to another and leave the source empty: the single step both
-// merge passes take, followed by EraseEmptyClusters once the pass is done
-void AbsorbCluster(std::vector<IIndexArr>& clusters, std::vector<int>& nodeToCluster, size_t from, size_t into)
+// merge passes take, followed by EraseEmptyClusters once the pass is done. A caller that keeps an
+// image-to-cluster map passes it in to have it follow the move.
+void AbsorbCluster(std::vector<IIndexArr>& clusters, size_t from, size_t into, std::vector<int>* nodeToCluster = NULL)
 {
 	ASSERT(from != into);
 	for (IIndex u : clusters[from]) {
-		nodeToCluster[u] = (int)into;
+		if (nodeToCluster)
+			(*nodeToCluster)[u] = (int)into;
 		clusters[into].push_back(u);
 	}
 	clusters[from].clear();
@@ -206,17 +208,14 @@ void EraseEmptyClusters(std::vector<IIndexArr>& clusters)
 	}), clusters.end());
 }
 
-// A neighbour is strong when the seam between the two clusters carries enough usable tracks AND
-// enough cameras on BOTH sides reach the merge's per-camera vote floor: anything less and the merge
-// has no registration between the two, whatever the covisibility graph says about them.
-bool IsStrongSeam(const std::pair<SeamTrackStats, SeamTrackStats>& seam, const ClusterConfig& config)
+} // namespace
+
+bool SFM::IsStrongSeam(const std::pair<SeamTrackStats, SeamTrackStats>& seam, const ClusterConfig& config)
 {
 	return seam.first.usable >= config.minSeamTracks &&
 		seam.first.CamerasWithAtLeast(config.minSeamCameraTracks) >= config.minSeamCameras &&
 		seam.second.CamerasWithAtLeast(config.minSeamCameraTracks) >= config.minSeamCameras;
 }
-
-} // namespace
 
 unsigned SeamTrackStats::CamerasWithAtLeast(unsigned n) const
 {
@@ -712,7 +711,7 @@ void SceneCluster::MergeSmallClusters(std::vector<IIndexArr>& clusters)
 			}
 
 			if (best_target != -1) {
-				AbsorbCluster(clusters, nodeToCluster, c, (size_t)best_target);
+				AbsorbCluster(clusters, c, (size_t)best_target, &nodeToCluster);
 				changed = true;
 			}
 		}
@@ -772,7 +771,6 @@ SeamTrackStatsMap SceneCluster::ComputeSeamTrackStats(const std::vector<IIndexAr
 // bar is minClusterDegree capped by the number of neighbours the cluster actually has.
 void SceneCluster::MergeLeafClusters(std::vector<IIndexArr>& clusters)
 {
-	std::vector<int> nodeToCluster = MapNodesToClusters(clusters, scene.images.size());
 	// every round merges each cluster at most once, so the cluster count bounds the rounds
 	for (unsigned round = (unsigned)clusters.size(); round > 0; --round) {
 		const SeamTrackStatsMap stats = ComputeSeamTrackStats(clusters);
@@ -799,28 +797,34 @@ void SceneCluster::MergeLeafClusters(std::vector<IIndexArr>& clusters)
 
 		bool changed = false;
 		std::vector<bool> merged(clusters.size(), false);
+		std::vector<size_t> refused; // the leaves their neighbour has no room for, reported once
 		for (size_t c = 0; c < clusters.size(); ++c) {
 			if (clusters[c].size() < config.minViewsPerCluster || merged[c])
 				continue; // under the floor: the floor rule decides where it goes
 			if (numStrong[c] >= MINF(config.minClusterDegree, numAdjacent[c]))
 				continue; // as many strong seams as this cluster could have
 			const int into = bestNeighbour[c];
-			if (into < 0 || merged[into] ||
-				clusters[c].size() + clusters[into].size() > config.maxViewsPerCluster + config.maxOverCapacity) {
-				VERBOSE("Cluster %u (%u images) has %u strong neighbours and no room to merge",
-					(unsigned)c, (unsigned)clusters[c].size(), numStrong[c]);
+			if (into < 0 || merged[into])
+				continue; // nothing to join, or the neighbour already took one in this round
+			if (clusters[c].size() + clusters[into].size() > config.maxViewsPerCluster + config.maxOverCapacity) {
+				refused.push_back(c);
 				continue;
 			}
 			VERBOSE("Cluster %u (%u images) has %u strong neighbours; merged into cluster %u",
 				(unsigned)c, (unsigned)clusters[c].size(), numStrong[c], (unsigned)into);
-			AbsorbCluster(clusters, nodeToCluster, c, (size_t)into);
+			AbsorbCluster(clusters, c, (size_t)into);
 			merged[c] = merged[into] = true;
 			changed = true;
 		}
-		if (!changed)
+		if (!changed) {
+			// nothing moved, so these clusters are the ones the split ends with and their numbers
+			// are final: a leaf reported here is one that stays unattached
+			for (size_t c : refused)
+				VERBOSE("Cluster %u (%u images) has %u strong neighbours and no room to merge",
+					(unsigned)c, (unsigned)clusters[c].size(), numStrong[c]);
 			break;
+		}
 		EraseEmptyClusters(clusters);
-		nodeToCluster = MapNodesToClusters(clusters, scene.images.size());
 	}
 }
 
@@ -885,8 +889,12 @@ void SceneCluster::RepairClusterSeam(std::vector<IIndexArr>& clusters, uint32_t 
 		}
 	}
 
-	// what one track contributes to the seam under the current sides, added or taken back
+	// What one track contributes to the seam under the current sides, added or taken back. Both the
+	// count below and the per-move recount go through here, so they read the same tracks and a take
+	// back can only ever undo an add of its own.
 	const auto ApplyTrack = [&side](std::pair<SeamTrackStats, SeamTrackStats>& seam, const Track& track, bool add) {
+		if (!track.IsValid())
+			return;
 		const auto Bump = [add](unsigned& value) { if (add) ++value; else --value; };
 		unsigned numObservations[2] = {0, 0};
 		for (const Observation& obs : track.observations)
@@ -906,8 +914,7 @@ void SceneCluster::RepairClusterSeam(std::vector<IIndexArr>& clusters, uint32_t 
 	};
 	std::pair<SeamTrackStats, SeamTrackStats> seam;
 	for (const Track& track : scene.tracks)
-		if (track.IsValid())
-			ApplyTrack(seam, track, true);
+		ApplyTrack(seam, track, true);
 
 	// the seam after moving one image to the other side, its own tracks the only ones re-read
 	const auto StatsAfterMove = [&](IIndex u) {
