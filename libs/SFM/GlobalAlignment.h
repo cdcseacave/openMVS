@@ -81,13 +81,15 @@ class SFM_API Scene;
  *   jointly over them; a block that fails is deferred and tried again once the model has grown.
  *   A block is a group of one, so the same routine places a whole model.
  *
- *   A block whose neighbours are behind it and whose cameras are unmixed, refused only by what it
- *   explains or by the votes, is the block a cycle runs through: it faces, alone, the error the
- *   model accumulated while it grew the long way round, and no single pose of it can satisfy both
- *   ends. Such a block is taken in on trust, the model is averaged over its seams so the cycle's
- *   discrepancy is spread over them, and the block is judged again at the pose that averaging gives
- *   it — against a model that has absorbed the loop. It is admitted only if it passes there, and
- *   the model is restored exactly if it does not.
+ *   A block whose cameras are unmixed and whose admitted neighbours hold nothing against it, refused
+ *   only by what it explains or by the votes, is the block a cycle runs through: it faces, alone, the
+ *   error the model accumulated while it grew the long way round, and no single pose of it can
+ *   satisfy both ends. Its own trusted seams being past the bars is what that error looks like from
+ *   where it stands, so none of them is asked to agree first. Such a block is taken in on trust, the
+ *   model is averaged over its seams so the cycle's discrepancy is spread over them, and the block is
+ *   judged again at the pose that averaging gives it — against a model that has absorbed the loop. It
+ *   is admitted only if it passes there, every gate included, and the model is restored exactly if it
+ *   does not.
  *
  * STAGE 6: THE MERGED MODEL (PlaceRemainingBlocks, SplitFoldedBlock, RevalidateBlocks)
  *   A block no model took in is a reconstruction of its own: the blocks left over form models on
@@ -823,14 +825,19 @@ private:
 	 * @brief The one loop closure at admission: a block the votes refuse, judged again once the
 	 * cycle it closes has been taken into the model
 	 *
-	 * A group whose admitted neighbours are behind it and whose cameras the model leaves unmixed,
-	 * refused only by what it explains or by the cameras, and joined to two or more admitted blocks
-	 * by trusted seams, is the group a cycle runs through: it faces the error the model accumulated
-	 * growing the long way round, and no pose of it can answer to both ends at once. It is taken in
-	 * at its best hypothesis, the model is averaged over its seams and the group's own — which
-	 * spreads that error over the cycle and moves the group to where its seams, not its hypothesis,
-	 * put it — and the pool is read again there and held to the same gates. What the cameras then
-	 * say is what they make of a model that has absorbed the loop.
+	 * A group whose cameras the model leaves unmixed and whose admitted neighbours hold nothing
+	 * against it, refused only by what it explains or by the cameras, and joined to two or more
+	 * admitted blocks by trusted seams, is the group a cycle runs through: it faces the error the
+	 * model accumulated growing the long way round, and no pose of it can answer to both ends at
+	 * once. A neighbour that agrees with it is not asked for — a trusted seam the drift has pushed
+	 * past the bars is a loop discrepancy, and a group small enough carries every one of its seams
+	 * there at once — but a neighbour whose own seam is not trusted and disagrees all the same
+	 * refuses it, nothing then saying the model drifted rather than the group being wrong. It is
+	 * taken in at its best hypothesis, the model is averaged over its seams and the group's own —
+	 * which spreads that error over the cycle and moves the group to where its seams, not its
+	 * hypothesis, put it — and the pool is read again there and held to the same gates, the
+	 * neighbours' included. What the cameras then say is what they make of a model that has
+	 * absorbed the loop.
 	 * @param best in: the hypothesis the placement refused; out: the hypothesis the relaxed model
 	 * carried, when it did
 	 * @param poses, modelSeams in/out: left exactly as they were unless the group is admitted

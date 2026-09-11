@@ -2663,10 +2663,15 @@ bool GlobalAlignment::CloseCycleThrough(
 	String& reason) const
 {
 	closedCycle = false;
-	// only a group its neighbours are behind and whose cameras the model leaves unmixed, refused by
-	// what it explains or by the votes alone, can be facing a cycle instead of failing on its own
+	// only a group whose cameras the model leaves unmixed, refused by what it explains or by the
+	// votes alone and with nothing among the admitted blocks against it, can be facing a cycle
+	// instead of failing on its own. A neighbour that agrees is not asked for: a trusted seam the
+	// model's drift has pushed past the bars is a loop discrepancy, which is the very thing the
+	// averaging spreads, and a group small enough carries every one of its seams there at once. A
+	// neighbour whose own seam is not trusted and disagrees all the same is another matter: nothing
+	// says the model drifted rather than the group being wrong.
 	if (best.Passed() || best.failedGate.find("interleaving") != String::npos ||
-		!NeighboursBehind(best.neighbourSupport, best.neighbourLoop, best.neighbourContra))
+		best.neighbourContra > 0)
 		return false;
 	// and only a group two or more admitted blocks trust: a single seam closes nothing
 	std::vector<uint32_t> tentativeSeams(modelSeams);

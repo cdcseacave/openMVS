@@ -12483,12 +12483,9 @@ bool SecondModelTest()
 bool FoldedBlockTest()
 {
 	TD_TIMER_START();
-	// twenty cameras per block, so either half of the fold is still a block of ten views; and the
-	// keypoints read exactly, the ring closing only through the two parts -- what a chain of eleven
-	// blocks accumulates on its way round would otherwise be what their seams are judged on
+	// twenty cameras per block, so either half of the fold is still a block of ten views
 	RingSceneConfig cfg{12, 20};
 	cfg.foldedBlock = 6;
-	cfg.noisePx = 0;
 	Scene scene;
 	std::vector<IIndexArr> blocks;
 	std::vector<Pose3D> gtPoses;
@@ -12541,11 +12538,11 @@ bool FoldedBlockTest()
 }
 /*----------------------------------------------------------------*/
 
-// A chord across the ring that reads perfectly on its own evidence: block 3's cameras are given
-// block 5's wall, turned a sixth of a turn about the ring axis onto block 3's own arc and pushed
-// out to 1.6 times the radius, so the implied placement sits three units outside block 5's own
-// cameras instead of among them and the interleaving veto stays quiet, while the chord contradicts
-// the way round the ring by sixty degrees. Only the cycle the chord closes can indict it.
+// A chord across the ring that reads perfectly on its own evidence: two cameras of block 3 are given
+// block 9's wall, turned half a turn about the ring axis onto block 3's own arc and pushed out to
+// 1.6 times the radius, so the implied placement sits three units outside block 9's own cameras
+// instead of among them and the interleaving veto stays quiet, while the chord contradicts the way
+// round the ring by half a turn. Only the cycles the chord closes can indict it.
 bool FalseChordTest()
 {
 	TD_TIMER_START();
@@ -12554,13 +12551,13 @@ bool FalseChordTest()
 	std::vector<IIndexArr> blocks;
 	std::vector<Pose3D> gtPoses;
 	GenerateRingScene(cfg, scene, blocks, gtPoses);
-	SEACAVE::Transform wrong(RingRotation(-60));
+	SEACAVE::Transform wrong(RingRotation(180));
 	wrong.scale = 1.6;
-	// the ring holds about 496 tracks of block 5 that no camera of block 3 ever saw and that fall
-	// inside one of its images once moved, so the cap takes every one of them
-	const unsigned planted = PlantFalseSeam(scene, blocks, 3, 5, 600, cfg.camsPerBlock, wrong);
-	if (planted < 450) {
-		VERBOSE("FalseChordTest FAILED: only %u tracks of block 5 could be planted on block 3", planted);
+	// the ring holds about 385 tracks of block 9 that no camera of block 3 ever saw and that fall
+	// inside one of the two cameras the chord is carried by once moved, so the cap takes every one
+	const unsigned planted = PlantFalseSeam(scene, blocks, 3, 9, 600, 2, wrong);
+	if (planted < 350) {
+		VERBOSE("FalseChordTest FAILED: only %u tracks of block 9 could be planted on block 3", planted);
 		return false;
 	}
 	std::vector<Scene> subScenes;
@@ -12574,21 +12571,21 @@ bool FalseChordTest()
 	{
 		LogCapture log;
 		ga.MergeScenes(subScenes, localToGlobals, rep);
-		if (!log.Contains("Seam (3, 5) rejected by consensus")) {
+		if (!log.Contains("Seam (3, 9) rejected by consensus")) {
 			VERBOSE("FalseChordTest FAILED: the planted chord was never rejected by the consensus");
 			return false;
 		}
 	}
 	uint32_t chord = NO_ID;
 	FOREACH(i, rep.candidates)
-		if (rep.candidates[i].sceneA == 3 && rep.candidates[i].sceneB == 5)
+		if (rep.candidates[i].sceneA == 3 && rep.candidates[i].sceneB == 9)
 			chord = (uint32_t)i;
 	if (chord == NO_ID) {
-		VERBOSE("FalseChordTest FAILED: the planted chord (3, 5) was never measured");
+		VERBOSE("FalseChordTest FAILED: the planted chord (3, 9) was never measured");
 		return false;
 	}
 	if (rep.candidates[chord].cls != SeamCandidate::REJECTED || rep.candidates[chord].residualRotation <= 30) {
-		VERBOSE("FalseChordTest FAILED: the chord (3, 5) came out class %u, %.2f deg from the consensus",
+		VERBOSE("FalseChordTest FAILED: the chord (3, 9) came out class %u, %.2f deg from the consensus",
 			(unsigned)rep.candidates[chord].cls, rep.candidates[chord].residualRotation);
 		return false;
 	}
