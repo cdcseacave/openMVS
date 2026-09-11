@@ -413,6 +413,14 @@ macro(optimize_default_compiler_settings)
 	if(NOT CMAKE_CXX_STANDARD OR CMAKE_CXX_STANDARD LESS 17)
 		message(FATAL_ERROR "C++17 or newer is required, not supported by ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
 	endif()
+	# older compilers claim C++17 but ship std::filesystem in a separate library (stdc++fs, c++fs)
+	# or not at all, so they would configure and then fail to build
+	if((CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9) OR
+	   (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9) OR
+	   (CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 11) OR
+	   (MSVC AND MSVC_VERSION LESS 1914))
+		message(FATAL_ERROR "${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION} is too old: GCC 9, Clang 9, Apple Clang 11 or MSVC 19.14 (Visual Studio 2017 15.7) is the minimum")
+	endif()
 	if(CLANG)
 		set(CMAKE_EXE_LINKER_FLAGS "-stdlib=libc++")
 		add_extra_compiler_option(-stdlib=libc++)
