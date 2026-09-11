@@ -629,7 +629,7 @@ bool CImageTIFF::WriteHeader(PIXELFORMAT imageFormat, Size width, Size height, B
 	TIFFSetField(tif, TIFFTAG_ORIENTATION, ORIENTATION_TOPLEFT);
 	TIFFSetField(tif, TIFFTAG_ROWSPERSTRIP, TIFFDefaultStripSize(tif, 0));
 	if (samplesPerPixel == 4) {
-		const uint16 extraSamples[1] = { EXTRASAMPLE_UNASSALPHA };
+		const uint16 extraSamples[1] = { EXTRASAMPLE_ASSOCALPHA };
 		TIFFSetField(tif, TIFFTAG_EXTRASAMPLES, 1, extraSamples);
 	}
 
