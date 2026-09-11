@@ -103,7 +103,7 @@ Extract features (AKAZE/ORB/SIFT/SIFTGPU) -> Match pairs (VOCABULARY/EXHAUSTIVE/
 [Pipeline up to track building]
 -> Cluster scene (aggregative partitioning)
 -> For each cluster: extract sub-scene -> full pipeline
--> Global alignment (5-stage merge) -> Final BA
+-> Global alignment (seam graph + block placement + merge) -> Final BA
 ```
 
 ### Global Reconstruction (`Scene::ReconstructGlobal`)
@@ -206,18 +206,18 @@ Register images one at a time via 2D-3D PnP + RANSAC. Periodic local/global BA.
 
 ### Scene Clustering (`SceneCluster.h`)
 Aggregative clustering on covisibility graph for hierarchical reconstruction.
-- Bottom-up: merge highest-weight edges until clusters <= `maxViewsPerCluster` (200)
-- `maxOverCapacity` (20): allows clusters to exceed `maxViewsPerCluster` when absorbing orphan views that have no other viable cluster
-- Refinement: merge small clusters, local search, split disconnected components
+- Bottom-up: merge highest-weight edges, aiming for `targetViewsPerCluster` (two thirds of `maxViewsPerCluster`, default 150), never past the ceiling itself
+- `maxOverCapacity` (20): extra images allowed over the ceiling when absorbing a small cluster
+- Refinement (seven passes): local search, merge small clusters, balance load across clusters, split disconnected components, split thin-waisted clusters, merge away or widen any cluster boundary the merge could not register against (`IsStrongSeam`), rescue orphans
 - Data split: keypoints/descriptors MOVED (not copied) to sub-scenes
 
 ### Global Alignment (`GlobalAlignment.h`)
-5-stage merge for hierarchical reconstruction:
-1. **Relative similarity transforms**: 7-DOF Sim(3) between sub-scene pairs via RANSAC over 3D-3D point correspondences (`SimilarityTransform.h::EstimateSimilarityTransform`). Correspondences are collected from cross-sub-scene image-pair matches whose endpoints both lie on existing inlier tracks in the two sub-scenes, so the per-sub-scene triangulated points are paired directly — no assumption that the sub-scene rigs share a common scale. `ScenePair` carries the full `Transform` (R, t, scale); downstream stages read scale off `relativeTransform.scale` instead of recomputing it.
-2. **Rotation averaging** (`GlobalRotationAveraging.h`): MST init + L1-ADMM + IRLS on SO(3)
-3. **Scale averaging** (`GlobalScaleAveraging.h`): Log-space least-squares, fed directly from `relativeTransform.scale`
-4. **Translation averaging** (`GlobalTranslationAveraging.h`): Linear system solve
-5. **Merge**: Apply similarity transforms, average shared camera intrinsics, union-find on tracks
+Places each independently reconstructed block ("sub-scene") into a shared frame, block by block, on the evidence its seams to already-placed blocks carry:
+1. **Seam measurement** (`EstimateSeamCandidates`/`EstimateSeamPair`): every adjacent block pair, both directions — 3D-3D similarity (`ALIGN_POINTS`) or generalized-camera PnP with scale, one block's cameras as a rig against the other's tracks (`ALIGN_CAMERAS`, default) — gated by camera votes (`minCommonTracks` 25, `maxReprojError` 4px)
+2. **Seam graph** (`ClassifySeamGraph`): robust rotation/scale/translation averaging as the cycle test that a seam's own evidence cannot provide — ROBUST / VERIFIED / UNDECIDED / REJECTED
+3. **Initial poses** (`ComputeInitialBlockPoses`): the trusted seams alone average each component about its best-connected block
+4. **Placement** (`PlaceBlocks`/`PlaceGroup`/`AdmitGroup`): one block at a time, held to four gates (union support, camera votes, neighbours, interleaving); loop closure (`CloseCycleThrough`) and camera relaxation (`RelaxCameras`) for what the placement order alone cannot resolve
+5. **Merge**: apply the transforms of the model holding the most images, average shared camera intrinsics, union-find the tracks (the correspondences of a seam the merged model rests on join by construction); every other block is merged without a pose, for the resection to recover its images
 
 ### Rotation Averaging (`GlobalRotationAveraging.h`)
 - MST initialization (weighted by match counts)

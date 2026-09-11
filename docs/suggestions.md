@@ -425,7 +425,7 @@ The following five suggestions offer the highest impact relative to implementati
 
 ### B14. Scene Clustering (`libs/SFM/SceneCluster.h`)
 
-**Current Implementation:** Agglomerative clustering on covisibility graph. Refinement: merge small, local search, split disconnected, rescue orphans.
+**Current Implementation:** Agglomerative clustering on covisibility graph, aiming for two thirds of `maxViewsPerCluster`. Refinement: local search, merge small clusters, balance load, split disconnected/thin-waisted components, merge away or widen any cluster boundary the merge could not register against, rescue orphans.
 
 1. **Overlap-Aware Clustering** (Priority: Medium | Complexity: Medium)
    - **What:** Ensure sufficient overlap between adjacent clusters by duplicating boundary images into both clusters.
@@ -434,12 +434,12 @@ The following five suggestions offer the highest impact relative to implementati
 
 ### B15. Global Alignment (`libs/SFM/GlobalAlignment.h`)
 
-**Current Implementation:** 5-stage merge: relative poses, rotation averaging, scale averaging, translation averaging, track merging.
+**Current Implementation:** every adjacent block pair is measured and gated by camera votes, a seam graph classifies each by robust rotation/scale/translation consensus, blocks are then placed one at a time into a model against four gates (with loop closure and camera relaxation for what the placement order alone cannot resolve), and tracks are merged by union-find.
 
-1. **Joint Sim(3) Refinement** (Priority: Medium | Complexity: Medium)
-   - **What:** After the 5-stage decoupled estimation, add a joint Ceres optimization of the full Sim(3) transforms.
-   - **Why:** The decoupled approach (rotation → scale → translation) propagates errors between stages. A joint refinement corrects for this.
-   - **Risk:** Medium — adds computation time proportional to number of sub-scenes.
+1. **Joint Refinement Across Models** (Priority: Medium | Complexity: Medium)
+   - **What:** `RefineBlockPoses` already fits every admitted block of one model jointly, by reprojection, each time a block is added to it; extend that one solve to run across every model's blocks and every trusted seam at once, instead of one model at a time.
+   - **Why:** Models are still placed against each other one at a time (`PlaceModel`), so error a model accumulated while it grew can still bias how it is placed against another already-placed model.
+   - **Risk:** Medium — adds computation time proportional to the number of blocks.
 
 ### B16. Dense Depth Estimation (`libs/MVS/DepthMap.h`, `SceneDensify.cpp`)
 

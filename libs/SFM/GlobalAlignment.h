@@ -84,7 +84,7 @@ class SFM_API Scene;
  * kept correspondences of every seam the merged model rests on join by construction, cross-block
  * pairs join under a duplicate-image and a 3D-proximity guard, and intra-block pairs are skipped
  * — their tracks were already correctly formed, and re-processing them would over-merge tracks
- * bundle adjustment had correctly separated.
+ * that bundle adjustment had correctly separated.
  */
 
 // One cross-block correspondence: a feature of image A matched to a feature of image B (global image IDs)

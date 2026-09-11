@@ -215,11 +215,11 @@ graph TD
     H --> I{Multiple sub-scenes?}
     I -->|no| J[Move single sub-scene back to global]
     I -->|yes| K[GlobalAlignment::MergeScenes<br/>GlobalAlignment.cpp]
-    K --> K1[Stage 1: EstimateRelativePoses<br/>PoseLib generalized PnP]
-    K1 --> K2[Stage 2: EstimateGlobalRotations<br/>GlobalRotationEstimator L1-ADMM + IRLS]
-    K2 --> K3[Stage 3: EstimateGlobalScales<br/>log-space least-squares]
-    K3 --> K4[Stage 4: EstimateGlobalTranslations<br/>linear system]
-    K4 --> K5[Stage 5: MergeTransformedScenes<br/>average intrinsics + union-find tracks]
+    K --> K1[EstimateSeamCandidates<br/>both directions, camera-vote gates]
+    K1 --> K2[ClassifySeamGraph<br/>robust R/s/t consensus: ROBUST/VERIFIED/UNDECIDED/REJECTED]
+    K2 --> K3[ComputeInitialBlockPoses<br/>trusted seams averaged per component]
+    K3 --> K4[PlaceBlocks/PlaceGroup<br/>one block at a time, four gates + loop closure]
+    K4 --> K5[Merge placed blocks<br/>average intrinsics + union-find tracks]
     K5 --> J
     J --> L[Return to Scene::Reconstruct post-BA]
 ```
@@ -229,7 +229,7 @@ graph TD
 **Step 1: Scene Clustering**
 - Function: `SceneCluster::SplitScene()` — `libs/SFM/SceneCluster.cpp`
 - Input: full `scene.images`, `scene.pairs`
-- Processing: aggregative bottom-up clustering on covisibility graph; merges highest-weight edges until clusters <= `maxViewsPerCluster` (200); `maxOverCapacity` (20) allows absorbing orphan views; splits disconnected components; keypoints/descriptors MOVED (not copied) to sub-scenes
+- Processing: aggregative bottom-up clustering on covisibility graph; merges highest-weight edges, aiming for `targetViewsPerCluster` (two thirds of `maxViewsPerCluster`, default 150) and never past the ceiling; seven refinement passes then merge small clusters, balance load, split disconnected/thin-waisted clusters, and merge away or widen any cluster boundary the merge could not register against; keypoints/descriptors MOVED (not copied) to sub-scenes
 - Output: `std::vector<Scene> subScenes`, `std::vector<IIndexArr> localToGlobals`
 - Config: `ClusterConfig::maxViewsPerCluster`, `maxOverCapacity`
 
@@ -255,13 +255,13 @@ graph TD
 - Output: fully calibrated camera poses for all connected images
 - Config: `ResectionConfig::minCorrespondences`, `minInliers`, `localBAEvery`, `fullBAEvery`
 
-**Step 5: Global Alignment Merge (5 stages)**
+**Step 5: Global Alignment Merge**
 - Function: `GlobalAlignment::MergeScenes()` — `libs/SFM/GlobalAlignment.cpp`
-- Stage 1 — Relative Poses: `EstimateRelativePoses()` uses PoseLib generalized absolute pose (multi-camera PnP) between sub-scene pairs sharing cross-cluster image pairs; min `minCommonTracks` (25) inliers
-- Stage 2 — Rotation Averaging: `EstimateGlobalRotations()` → `GlobalRotationEstimator`; MST init (weighted by inliers); L1-ADMM sparse linear system in tangent space; IRLS with Geman-McClure or Half-Norm loss
-- Stage 3 — Scale Averaging: `EstimateGlobalScales()` → `GlobalScaleEstimator`; log-space least-squares: `log(s_j) - log(s_i) = log(s_ij)`; gauge fix: first sub-scene scale = 1.0
-- Stage 4 — Translation Averaging: `EstimateGlobalTranslations()` → `GlobalTranslationEstimator`; linear system `t_j - t_i = t_ij` given fixed rotations and scales
-- Stage 5 — Merge: `MergeTransformedScenes()` applies similarity transforms; averages shared camera intrinsics via `Camera::AccumulateIntrinsics()`/`ScaleIntrinsics()`; moves keypoints/descriptors back; `MergeTracksWithCrossSubScenePairs()` union-find with 3D proximity guard
+- Seam measurement: `EstimateSeamCandidates()`/`EstimateSeamPair()` measure every adjacent block pair in both directions — a 3D-3D similarity (`ALIGN_POINTS`) or a generalized-camera PnP with scale, one block's cameras as a rig against the other's tracks (`ALIGN_CAMERAS`, default) — gated by camera votes; min `minCommonTracks` (25) inliers, `maxReprojError` (4px)
+- Seam graph: `ClassifySeamGraph()` averages each component robustly (rotation, then scale, then translation) as the cycle test a seam's own evidence cannot provide, classing every candidate ROBUST / VERIFIED / UNDECIDED / REJECTED
+- Initial poses: `ComputeInitialBlockPoses()` averages the trusted (ROBUST or VERIFIED) seams of each component about its best-connected block
+- Placement: `PlaceBlocks()`/`PlaceGroup()`/`AdmitGroup()` grow one model at a time, one block at a time, each hypothesis held to four gates (union support, camera votes, neighbours, interleaving); `CloseCycleThrough()` closes loops the placement order alone leaves open, `RelaxCameras()` relaxes individual cameras when the placed model's seams still disagree at the block poses
+- Merge: the model holding the most images is applied — similarity transforms, shared camera intrinsics averaged via `Camera::AccumulateIntrinsics()`/`ScaleIntrinsics()`, keypoints/descriptors moved back, tracks merged by union-find with a 3D-proximity guard (the correspondences of a seam the merged model rests on join by construction, without that guard); every other block is merged without a pose, for the post-merge resection to recover its images
 - Output: merged global scene with all poses and tracks in one coordinate frame
 
 ---
