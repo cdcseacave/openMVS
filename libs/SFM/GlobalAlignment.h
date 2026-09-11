@@ -467,9 +467,12 @@ public:
 	 *
 	 * One function for a block and for a model: a block is a group of one. Every candidate of a
 	 * group-to-model pair contributes its evidence, whatever its class — a class discounts a
-	 * candidate's transform, not what its cameras saw, and the pool is judged afresh; this is also
-	 * what lets a folded block's two halves contradict each other. A pair no candidate covers at
-	 * all still carries correspondences, and those are collected raw.
+	 * candidate's transform, not what its cameras saw, and the pool is judged afresh. A pair no
+	 * candidate covers at all still carries correspondences, and those are collected raw: that is
+	 * what lets a folded block, whose own cameras split over every direction of its seams, reach
+	 * the placement that cuts it. A pair the graph rejected outright — every opinion it holds
+	 * contradicted by a stronger consistent path — carries nothing here, its evidence having been
+	 * weighed already, exactly like a pair the gates refused.
 	 * @param model the model the group is being placed in: only the blocks admitted into it are
 	 * the model side, another model's blocks sitting in a frame this one knows nothing about
 	 */

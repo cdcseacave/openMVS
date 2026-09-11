@@ -794,6 +794,25 @@ void AppendPoolObservations(
 	}
 }
 
+// A pair the seam graph indicted: it holds opinions and every one of them was rejected, which is
+// the graph saying a stronger consistent path contradicts what this pair's cameras saw. Its
+// correspondences are then evidence that has already been weighed, exactly like a pair the gates
+// refused, and no placement may pick them up again. A pair whose two blocks' cameras split over it
+// is not this: it never becomes a candidate at all, and its raw correspondences are what carries a
+// folded block to the placement that cuts it.
+bool IsPairRejected(const std::vector<SeamCandidate>& candidates, const uint32_t a, const uint32_t b)
+{
+	bool any = false;
+	for (const SeamCandidate& c : candidates) {
+		if (c.sceneA != a || c.sceneB != b)
+			continue;
+		if (c.cls != SeamCandidate::REJECTED)
+			return false;
+		any = true;
+	}
+	return any;
+}
+
 // How a candidate was measured, for the log
 const char* SourceWord(SeamCandidate::Source source)
 {
@@ -1271,6 +1290,7 @@ void GlobalAlignment::BuildPlacementPool(
 	};
 
 	// every candidate of a group-to-model pair contributes what its cameras saw, whatever its class
+	// -- unless the graph rejected every opinion the pair holds, which is a verdict on its evidence
 	std::map<std::pair<uint32_t, uint32_t>, std::vector<uint32_t>> pairCandidates;
 	FOREACH(i, candidates) {
 		const SeamCandidate& c = candidates[i];
@@ -1278,6 +1298,8 @@ void GlobalAlignment::BuildPlacementPool(
 			pairCandidates[std::make_pair(c.sceneA, c.sceneB)].push_back(i);
 	}
 	for (const auto& [blockPair, indices] : pairCandidates) {
+		if (IsPairRejected(candidates, blockPair.first, blockPair.second))
+			continue;
 		// the parallel candidates of a pair were all scored on the same union of both directions,
 		// so that union enters the pool once and every one of them is recorded behind it
 		const uint32_t slot = (uint32_t)pool.candidateIdx.size();
@@ -2349,11 +2371,14 @@ static float PooledSupport(
 	// a block no seam of the model reaches may still share correspondences with it: a pair nothing
 	// could be measured on, or one refused because the block itself is folded. The pool reads those
 	// like any other evidence, so the block is tried on them -- at the floor weight a seam no camera
-	// could vote on carries, discounted like everything else the graph has not confirmed
+	// could vote on carries, discounted like everything else the graph has not confirmed. A pair the
+	// gates refused and one the graph rejected outright are not among them: the pool does not read
+	// those either, so a block they are all that reaches has nothing to be tried on
 	for (const auto& [blockPair, links] : blockPairLinks)
 		if (refusedSeamPairs.count(blockPair) == 0 &&
 			((blockPair.first == block && IsInModel(poses, blockPair.second, model)) ||
-			 (blockPair.second == block && IsInModel(poses, blockPair.first, model))))
+			 (blockPair.second == block && IsInModel(poses, blockPair.first, model))) &&
+			!IsPairRejected(candidates, blockPair.first, blockPair.second))
 			return kUndecidedSupportWeight;
 	return 0;
 }
