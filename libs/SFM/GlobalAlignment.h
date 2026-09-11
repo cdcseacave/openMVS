@@ -89,11 +89,28 @@ class SFM_API Scene;
  *   it — against a model that has absorbed the loop. It is admitted only if it passes there, and
  *   the model is restored exactly if it does not.
  *
- * STAGE 6: THE MERGED MODEL
+ * STAGE 6: THE MERGED MODEL (PlaceRemainingBlocks, SplitFoldedBlock, RevalidateBlocks)
+ *   A block no model took in is a reconstruction of its own: the blocks left over form models on
+ *   the trusted seams among them — a lone block is a model — and every model is then placed against
+ *   the one carrying the most images, as a single group through the same routine that places a
+ *   block. A model that goes in brings the seams it rested on with it, one similarity having moved
+ *   all of its blocks at once.
+ *
+ *   A block whose own cameras split in two over a placement — some behind it, as many against it —
+ *   is not a block that cannot be placed but two blocks the reconstruction folded into one, its two
+ *   halves having never seen each other. Such a block is cut along the thin seam its own covisibility
+ *   leaves between the two sides, its parts measure their seams like any other block, and each part
+ *   is placed on its own.
+ *
+ *   Every block the model admitted is finally judged again at the pose it ended up with, against a
+ *   model that has since grown around it: one its cameras then contradict is let go, and one whose
+ *   cameras split is the fold that only one admitted neighbour hid.
+ *
  *   The model holding the most images is the one merged with poses. The blocks of every other
  *   model, and those no model could place, are merged without poses so the post-merge resection
  *   re-registers their images against the consensus — the same process that would have placed
- *   them had the cluster boundary not severed their strongest pairs.
+ *   them had the cluster boundary not severed their strongest pairs. The report names every one of
+ *   them and why it stayed out.
  *
  * STAGE 7: MERGE TRANSFORMED SUB-SCENES
  *   Apply the pose of every placed block to its cameras and 3D points, then
@@ -377,14 +394,15 @@ public:
 	 * On return the scene holds the merged model — the poses of the placed blocks and the
 	 * observations of every block, those of the unplaced ones without poses so the post-merge
 	 * resection can recover them — and the report says what was left out and why.
-	 * @param subScenes the blocks to place and merge (consumed)
-	 * @param localToGlobals per block, its local image index -> global image ID
+	 * @param subScenes the blocks to place and merge (consumed); a block cut along a fold appends
+	 *        its two parts here, and is left holding nothing
+	 * @param localToGlobals per block, its local image index -> global image ID; grows with subScenes
 	 * @return true when at least one block was placed, which leaves the scene holding a
 	 *         reconstruction whatever the seams said
 	 */
 	bool MergeScenes(
 		std::vector<Scene>& subScenes,
-		const std::vector<IIndexArr>& localToGlobals,
+		std::vector<IIndexArr>& localToGlobals,
 		MergeReport& report);
 
 	/**
@@ -598,20 +616,143 @@ public:
 	 * The model starts at the block the seam graph is most sure of and grows by the block the
 	 * admitted ones support most. A block that cannot be placed is deferred and tried again as
 	 * soon as the model has changed, since what the model could not confirm then it may now.
-	 * @param model the blocks with poses[b].model == model are the ones this run may admit
+	 * A block whose own cameras split over its best placement is cut along the fold instead of being
+	 * deferred, which appends its two parts to the blocks and queues them here.
+	 * @param model the blocks with poses[b].model == model are the ones this run may admit; a model
+	 * that already holds blocks keeps them and the seams it rests on, and grows from there
 	 * @param poses in/out: the stage 4 poses coming in, the admitted blocks' own frames going out
 	 * @param modelSeams out: the seams the model rests on, indices into candidates
-	 * @return the number of admitted blocks, at least one whenever the model holds a block
+	 * @return the number of blocks the model holds, at least one whenever it holds a block
 	 */
 	unsigned PlaceBlocks(
+		std::vector<Scene>& subScenes,
+		std::vector<IIndexArr>& localToGlobals,
+		std::vector<SeamCandidate>& candidates,
+		std::vector<REAL>& blockExtents,
+		uint32_t model,
+		std::vector<BlockPose>& poses,
+		std::vector<uint32_t>& modelSeams);
+
+	/**
+	 * @brief Stage 6: the blocks no model took in, and the models themselves, against the largest
+	 *
+	 * What every model's own placement left over is a reconstruction of its own: the trusted seams
+	 * among the blocks outside every model carry them into models of their own — a block none of
+	 * them reaches is a model of one — and each of those grows like any other. Every model is then
+	 * placed against the one carrying the most images, largest first, as a single group: the blocks
+	 * of a model are rigid against each other, so the pose that carries one of them carries all.
+	 * A model that cannot be placed keeps its own frame, and its blocks are left to the resection.
+	 * @param poses in/out: the blocks of the merged model admitted into it, the rest unplaceable
+	 * @param modelSeams in/out: per model, the seams it rests on; a model that goes in hands its
+	 * own over to the model it was placed on
+	 */
+	void PlaceRemainingBlocks(
+		std::vector<Scene>& subScenes,
+		std::vector<IIndexArr>& localToGlobals,
+		std::vector<SeamCandidate>& candidates,
+		std::vector<REAL>& blockExtents,
+		std::vector<BlockPose>& poses,
+		std::vector<std::vector<uint32_t>>& modelSeams);
+
+private:
+	/**
+	 * @brief One model placed on another, as a single group
+	 *
+	 * The blocks of `src` with their poses in its frame are the group, so both models' cameras vote
+	 * on the one similarity that carries all of them, and the admission re-bases every block of
+	 * `src` and promotes the seams that agree. No placement code of its own: the same pool, the same
+	 * hypotheses, the same gates and the same admission a single block answers to.
+	 * @param modelSeams in/out: the seams `dst` rests on, the seams `src` rested on among them
+	 * @param reason out: why the group could not be placed, empty on success
+	 */
+	bool PlaceModel(
 		const std::vector<Scene>& subScenes,
 		std::vector<SeamCandidate>& candidates,
 		const std::vector<REAL>& blockExtents,
+		uint32_t src, uint32_t dst,
+		std::vector<BlockPose>& poses,
+		std::vector<uint32_t>& modelSeams,
+		String& reason) const;
+
+	/**
+	 * @brief The fold test: a block whose own cameras split over a placement cut in two
+	 *
+	 * Cameras that saw nothing of each other can be reconstructed into one block at any pose
+	 * relative to one another, and no single placement of such a block can answer to both halves.
+	 * The two sides of the vote are the two halves, the cameras that could not vote go with the side
+	 * their own covisibility ties them to, and the block comes apart only where its own pairs are
+	 * already almost cut: each side connected on its own, the cut between them thin against what
+	 * holds either side together, and neither side smaller than a block needs to be. The parts are
+	 * appended to the blocks, their pairs measured like any other block's, and the seams of the
+	 * block they came from are disowned.
+	 * @param best the hypothesis whose votes split, the one the placement refused
+	 * @param parts out: the indices of the two new blocks
+	 * @return true when the block was cut, which leaves it holding nothing
+	 */
+	bool SplitFoldedBlock(
+		std::vector<Scene>& subScenes,
+		std::vector<IIndexArr>& localToGlobals,
+		std::vector<REAL>& blockExtents,
+		std::vector<SeamCandidate>& candidates,
+		uint32_t block,
+		const PlacementHypothesis& best,
+		std::pair<uint32_t, uint32_t>& parts);
+
+	/**
+	 * @brief Stage 6: every block of a model judged again, at the pose the model left it at
+	 *
+	 * A block is admitted against the model as it stood then; the model has grown since, and what
+	 * it has taken in since may contradict it. Each admitted block is therefore read once more
+	 * against all the others, at its own pose: one whose cameras split is the fold that a single
+	 * admitted neighbour hid at the time, and is cut; one the cameras contradict is let go, with the
+	 * seams the model rested on through it.
+	 * @return the number of blocks let go or cut, which is what tells the caller to grow the model
+	 * once more over their parts
+	 */
+	unsigned RevalidateBlocks(
+		std::vector<Scene>& subScenes,
+		std::vector<IIndexArr>& localToGlobals,
+		std::vector<REAL>& blockExtents,
+		std::vector<SeamCandidate>& candidates,
 		uint32_t model,
 		std::vector<BlockPose>& poses,
-		std::vector<uint32_t>& modelSeams) const;
+		std::vector<uint32_t>& modelSeams);
 
-private:
+	/**
+	 * @brief The trusted components the given blocks span, each averaged into a model of its own
+	 *
+	 * The one way a set of blocks becomes models: the components of the trusted seams among them,
+	 * each averaged about the block carrying most of their weight and numbered from `firstModel` in
+	 * component order. The stage 4 poses and the models the leftover blocks form both come out of it.
+	 * @param eligible per block, whether it may take part; a seam with an end outside is not a seam
+	 * of this graph
+	 * @param poses in/out: the blocks of every component get their pose and their model
+	 * @return the number of components, i.e. of model numbers consumed
+	 */
+	unsigned AverageTrustedComponents(
+		const std::vector<SeamCandidate>& candidates,
+		const std::vector<REAL>& blockExtents,
+		const std::vector<bool>& eligible,
+		uint32_t firstModel,
+		std::vector<BlockPose>& poses) const;
+
+	/**
+	 * @brief The evidence of the blocks appended past `firstBlock`
+	 *
+	 * What PrepareSeamEvidence builds, for blocks that appeared after it ran: the images they took
+	 * over answer to them now, they get the point map of what they triangulated, and every cross
+	 * pair is read again so a pair that ran to the block they were cut from runs to the part that
+	 * holds its images.
+	 */
+	void ExtendSeamEvidence(
+		const std::vector<Scene>& subScenes,
+		const std::vector<IIndexArr>& localToGlobals,
+		uint32_t firstBlock);
+
+	// The cross-block image pairs grouped by block pair, the pair ordered a < b, as globalToLocal
+	// currently reads them
+	void MapBlockPairLinks();
+
 	/**
 	 * @brief The one placement routine: one attempt to place `group` against the admitted blocks
 	 * of `model`

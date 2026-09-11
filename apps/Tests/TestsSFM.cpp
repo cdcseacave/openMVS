@@ -12370,6 +12370,241 @@ bool WeakClosingSeamTest()
 }
 /*----------------------------------------------------------------*/
 
+// The diagonal of the box a block's cameras span, the unit its seams' translations are judged in
+static std::vector<REAL> RingBlockExtents(const std::vector<Scene>& subScenes)
+{
+	std::vector<REAL> blockExtents(subScenes.size(), REAL(0));
+	FOREACH(b, subScenes) {
+		AABB3 bbox(true);
+		for (const Image& img : subScenes[b].images)
+			if (img.IsValid())
+				bbox.InsertFull(img.C);
+		blockExtents[b] = bbox.IsEmpty() ? REAL(0) : (REAL)bbox.GetSize().norm();
+	}
+	return blockExtents;
+}
+
+// A ring the trusted seams carry in two pieces: the pair (0, 11) is severed outright, and the pair
+// (8, 9) is left a bridge measurable from one direction only and too thin to stand on its own
+// evidence, so blocks 9, 10 and 11 are a component the graph cannot join to the rest. The merge has
+// to place that second model against the large one as a single group, on the very bridge the graph
+// could not settle.
+bool SecondModelTest()
+{
+	TD_TIMER_START();
+	RingSceneConfig cfg{12, 10};
+	cfg.noisePx = 0;
+	Scene scene;
+	std::vector<IIndexArr> blocks;
+	std::vector<Pose3D> gtPoses;
+	GenerateRingScene(cfg, scene, blocks, gtPoses);
+	// the ring cut open between blocks 0 and 11; and of what blocks 8 and 9 share, only block 8's
+	// last three cameras keep anything, of which 48 tracks then keep two observations there and one
+	// on block 9's first three cameras. That leaves the pair 78 correspondences in the direction
+	// "the rig of block 9 on the points of block 8" and none in the other, carried by three cameras
+	// -- two of block 8 and one of block 9 -- so the pair is measured and voted on, while its 78
+	// inliers stay under the four times the tracks a seam needs at all that let one direction stand
+	// alone on its own evidence
+	ThinSeam(scene, blocks, 0, cfg.numBlocks - 1, 0, 0);
+	DropCrossObservations(scene, blocks, 8, {0, 1, 2, 3, 4, 5, 6}, 9, 0);
+	ThinSeam(scene, blocks, 8, 9, 48, 3);
+	std::vector<Scene> subScenes;
+	std::vector<IIndexArr> localToGlobals;
+	std::vector<SEACAVE::Transform> applied;
+	BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
+
+	const GlobalAlignmentConfig alignCfg;
+	// what the merge starts from: one undecided bridge on (8, 9), and nothing at all on (0, 11)
+	{
+		GlobalAlignment alignment(scene, alignCfg);
+		std::vector<SeamCandidate> candidates;
+		alignment.EstimateSeamCandidates(subScenes, localToGlobals, candidates);
+		alignment.ClassifySeamGraph(RingBlockExtents(subScenes), candidates);
+		unsigned numBridges = 0;
+		for (const SeamCandidate& c : candidates) {
+			if (c.sceneA == 0 && c.sceneB == cfg.numBlocks - 1) {
+				VERBOSE("SecondModelTest FAILED: the severed pair (0, %u) still yielded a candidate of class %u",
+					cfg.numBlocks - 1, (unsigned)c.cls);
+				return false;
+			}
+			if (c.sceneA != 8 || c.sceneB != 9)
+				continue;
+			++numBridges;
+			if (c.cls != SeamCandidate::UNDECIDED) {
+				VERBOSE("SecondModelTest FAILED: the bridge (8, 9) came out class %u on %u inliers, expected undecided",
+					(unsigned)c.cls, c.score.inliers);
+				return false;
+			}
+		}
+		if (numBridges != 1) {
+			VERBOSE("SecondModelTest FAILED: the pair (8, 9) yielded %u candidates, expected exactly one", numBridges);
+			return false;
+		}
+	}
+
+	GlobalAlignment ga(scene, alignCfg);
+	MergeReport rep;
+	{
+		LogCapture log;
+		ga.MergeScenes(subScenes, localToGlobals, rep);
+		if (!log.Contains("Model 1 (3 blocks) placed on model 0")) {
+			VERBOSE("SecondModelTest FAILED: the model of blocks 9, 10 and 11 was never placed on the first");
+			return false;
+		}
+	}
+	if (!CheckRingMerge("SecondModelTest", rep, scene, gtPoses, cfg.numBlocks, 1, 0.1, 0.001))
+		return false;
+	// the bridge the graph could not settle is what carried the second model in, and the merged
+	// model rests on it
+	uint32_t bridge = NO_ID;
+	FOREACH(i, rep.candidates)
+		if (rep.candidates[i].sceneA == 8 && rep.candidates[i].sceneB == 9)
+			bridge = (uint32_t)i;
+	if (bridge == NO_ID || rep.candidates[bridge].cls != SeamCandidate::VERIFIED) {
+		VERBOSE("SecondModelTest FAILED: the bridge (8, 9) came out class %u, expected verified by the placement",
+			bridge == NO_ID ? 0u : (unsigned)rep.candidates[bridge].cls);
+		return false;
+	}
+	if (std::find(rep.modelSeams.begin(), rep.modelSeams.end(), bridge) == rep.modelSeams.end()) {
+		VERBOSE("SecondModelTest FAILED: the bridge is not among the %u seams the merged model rests on",
+			(unsigned)rep.modelSeams.size());
+		return false;
+	}
+	VERBOSE("SecondModelTest PASSED: %u blocks in one model, the second model placed on the bridge (8, 9) (%s)",
+		rep.numPlaced, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+// A block reconstructed folded: its two halves never saw each other, and the second sits turned by
+// half a turn in the block's own frame. No pose of the block can answer to both its neighbours, and
+// its own cameras say so -- half of them behind any placement of it, half against it. The merge has
+// to cut it in two along the fold and place each half on its own.
+bool FoldedBlockTest()
+{
+	TD_TIMER_START();
+	// twenty cameras per block, so either half of the fold is still a block of ten views; and the
+	// keypoints read exactly, the ring closing only through the two parts -- what a chain of eleven
+	// blocks accumulates on its way round would otherwise be what their seams are judged on
+	RingSceneConfig cfg{12, 20};
+	cfg.foldedBlock = 6;
+	cfg.noisePx = 0;
+	Scene scene;
+	std::vector<IIndexArr> blocks;
+	std::vector<Pose3D> gtPoses;
+	GenerateRingScene(cfg, scene, blocks, gtPoses);
+	std::vector<Scene> subScenes;
+	std::vector<IIndexArr> localToGlobals;
+	std::vector<SEACAVE::Transform> applied;
+	BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
+
+	const GlobalAlignmentConfig alignCfg;
+	GlobalAlignment ga(scene, alignCfg);
+	MergeReport rep;
+	{
+		LogCapture log;
+		ga.MergeScenes(subScenes, localToGlobals, rep);
+		if (!log.Contains("Block 6 split into 12 and 13")) {
+			VERBOSE("FoldedBlockTest FAILED: the folded block was never cut in two");
+			return false;
+		}
+	}
+	// the block that came apart keeps its place, and its two parts are appended behind it
+	if (rep.poses.size() != cfg.numBlocks + 2) {
+		VERBOSE("FoldedBlockTest FAILED: the merge ended with %u blocks, expected the %u it started with and two parts",
+			(unsigned)rep.poses.size(), cfg.numBlocks);
+		return false;
+	}
+	if (rep.poses[cfg.foldedBlock].state != BlockPose::SPLIT) {
+		VERBOSE("FoldedBlockTest FAILED: block %u came out in state %u, expected split",
+			cfg.foldedBlock, (unsigned)rep.poses[cfg.foldedBlock].state);
+		return false;
+	}
+	for (uint32_t part = cfg.numBlocks; part < (uint32_t)rep.poses.size(); ++part)
+		if (rep.poses[part].state != BlockPose::ADMITTED) {
+			VERBOSE("FoldedBlockTest FAILED: part %u came out in state %u, expected admitted",
+				part, (unsigned)rep.poses[part].state);
+			return false;
+		}
+	// the two parts carry between them every image the folded block held
+	for (const IIndex image : blocks[cfg.foldedBlock])
+		if (!scene.images[image].IsValid()) {
+			VERBOSE("FoldedBlockTest FAILED: image %u of the folded block is not registered", image);
+			return false;
+		}
+	// the eleven whole blocks and the two parts, the block they came from carrying nothing
+	if (!CheckRingMerge("FoldedBlockTest", rep, scene, gtPoses, cfg.numBlocks + 1, 1, 0.1, 0.001))
+		return false;
+	VERBOSE("FoldedBlockTest PASSED: block %u placed as two, %u blocks in one model (%s)",
+		cfg.foldedBlock, rep.numPlaced, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+// A chord across the ring that reads perfectly on its own evidence: block 3's cameras are given
+// block 5's wall, turned a sixth of a turn about the ring axis onto block 3's own arc and pushed
+// out to 1.6 times the radius, so the implied placement sits three units outside block 5's own
+// cameras instead of among them and the interleaving veto stays quiet, while the chord contradicts
+// the way round the ring by sixty degrees. Only the cycle the chord closes can indict it.
+bool FalseChordTest()
+{
+	TD_TIMER_START();
+	const RingSceneConfig cfg{12, 10};
+	Scene scene;
+	std::vector<IIndexArr> blocks;
+	std::vector<Pose3D> gtPoses;
+	GenerateRingScene(cfg, scene, blocks, gtPoses);
+	SEACAVE::Transform wrong(RingRotation(-60));
+	wrong.scale = 1.6;
+	// the ring holds about 496 tracks of block 5 that no camera of block 3 ever saw and that fall
+	// inside one of its images once moved, so the cap takes every one of them
+	const unsigned planted = PlantFalseSeam(scene, blocks, 3, 5, 600, cfg.camsPerBlock, wrong);
+	if (planted < 450) {
+		VERBOSE("FalseChordTest FAILED: only %u tracks of block 5 could be planted on block 3", planted);
+		return false;
+	}
+	std::vector<Scene> subScenes;
+	std::vector<IIndexArr> localToGlobals;
+	std::vector<SEACAVE::Transform> applied;
+	BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
+
+	const GlobalAlignmentConfig alignCfg;
+	GlobalAlignment ga(scene, alignCfg);
+	MergeReport rep;
+	{
+		LogCapture log;
+		ga.MergeScenes(subScenes, localToGlobals, rep);
+		if (!log.Contains("Seam (3, 5) rejected by consensus")) {
+			VERBOSE("FalseChordTest FAILED: the planted chord was never rejected by the consensus");
+			return false;
+		}
+	}
+	uint32_t chord = NO_ID;
+	FOREACH(i, rep.candidates)
+		if (rep.candidates[i].sceneA == 3 && rep.candidates[i].sceneB == 5)
+			chord = (uint32_t)i;
+	if (chord == NO_ID) {
+		VERBOSE("FalseChordTest FAILED: the planted chord (3, 5) was never measured");
+		return false;
+	}
+	if (rep.candidates[chord].cls != SeamCandidate::REJECTED || rep.candidates[chord].residualRotation <= 30) {
+		VERBOSE("FalseChordTest FAILED: the chord (3, 5) came out class %u, %.2f deg from the consensus",
+			(unsigned)rep.candidates[chord].cls, rep.candidates[chord].residualRotation);
+		return false;
+	}
+	if (std::find(rep.modelSeams.begin(), rep.modelSeams.end(), chord) != rep.modelSeams.end()) {
+		VERBOSE("FalseChordTest FAILED: the rejected chord is among the seams the merged model rests on");
+		return false;
+	}
+	if (!CheckRingMerge("FalseChordTest", rep, scene, gtPoses, cfg.numBlocks, 1, 0.1, 0.001))
+		return false;
+	VERBOSE("FalseChordTest PASSED: the chord planted on %u tracks was rejected %.2f deg from the consensus, "
+		"%u blocks placed (%s)", planted, rep.candidates[chord].residualRotation, rep.numPlaced,
+		TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
 // Test 12: MergeSingleScene roundtrip
 bool GlobalAlignmentMergeSingleSceneTest()
 {

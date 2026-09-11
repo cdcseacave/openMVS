@@ -345,6 +345,12 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::WeakClosingSeamTest())
 				return false;
+			if (!SFM::SecondModelTest())
+				return false;
+			if (!SFM::FoldedBlockTest())
+				return false;
+			if (!SFM::FalseChordTest())
+				return false;
 			if (!SFM::GlobalAlignmentMergeSingleSceneTest())
 				return false;
 			if (!SFM::GlobalAlignmentTrackMergeDuplicateImageGuardTest())
