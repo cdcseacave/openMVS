@@ -262,13 +262,15 @@ extern "C" {
 	static uint64_t _tiffosSizeProc(thandle_t fd)
 	{
 		tiffos_data	*data = reinterpret_cast<tiffos_data *>(fd);
-		return (uint64_t)data->stream->getSize();
+		const uint64_t size = static_cast<uint64_t>(data->stream->getSize());
+		return (size >= static_cast<uint64_t>(data->start_pos) ? size - static_cast<uint64_t>(data->start_pos) : 0);
 	}
 
 	static uint64_t _tiffisSizeProc(thandle_t fd)
 	{
 		tiffis_data	*data = reinterpret_cast<tiffis_data *>(fd);
-		return (uint64_t)data->stream->getSize();
+		const uint64_t size = static_cast<uint64_t>(data->stream->getSize());
+		return (size >= static_cast<uint64_t>(data->start_pos) ? size - static_cast<uint64_t>(data->start_pos) : 0);
 	}
 
 	static int _tiffosCloseProc(thandle_t fd)
@@ -467,24 +469,56 @@ bool CImageTIFF::ReadHeader()
 
 bool CImageTIFF::ReadData(void* pData, PIXELFORMAT dataFormat, Size nStride, Size lineWidth)
 {
+	ASSERT(pData != NULL);
+	ASSERT(m_width > 0 && m_height > 0);
+	ASSERT(nStride > 0 && lineWidth >= m_width * nStride);
+
 	if (m_state && m_width && m_height) {
 		TIFF* tif = (TIFF*)m_state;
-		uint32_t tile_width0 = m_width, tile_height0 = 0;
 		int is_tiled = TIFFIsTiled(tif);
-		uint16 photometric;
+		uint16 photometric = 0;
 		TIFFGetField(tif, TIFFTAG_PHOTOMETRIC, &photometric);
 		uint16 bpp = 8, ncn = photometric > 1 ? 3 : 1;
 		TIFFGetField(tif, TIFFTAG_BITSPERSAMPLE, &bpp);
 		TIFFGetField(tif, TIFFTAG_SAMPLESPERPIXEL, &ncn);
-		const int bitsPerByte = 8;
-		int dst_bpp = (int)(1 * bitsPerByte);
-		if (dst_bpp == 8) {
-			char errmsg[1024];
-			if (!TIFFRGBAImageOK(tif, errmsg)) {
-				Close();
-				return false;
+		uint16 planarConfig = PLANARCONFIG_CONTIG;
+		TIFFGetField(tif, TIFFTAG_PLANARCONFIG, &planarConfig);
+
+		if (!is_tiled && planarConfig == PLANARCONFIG_CONTIG && bpp == 8 &&
+			(photometric == PHOTOMETRIC_RGB || photometric == PHOTOMETRIC_MINISBLACK))
+		{
+			uint8_t* pRow = static_cast<uint8_t*>(pData);
+			if (dataFormat == m_format && nStride == m_stride) {
+				for (Size j = 0; j < m_height; ++j, pRow += lineWidth) {
+					if (TIFFReadScanline(tif, pRow, (uint32)j) < 0) {
+						Close();
+						return false;
+					}
+				}
+			} else {
+				CAutoPtrArr<uint8_t> const buffer(new uint8_t[m_lineWidth]);
+				for (Size j = 0; j < m_height; ++j, pRow += lineWidth) {
+					if (TIFFReadScanline(tif, buffer, (uint32)j) < 0) {
+						Close();
+						return false;
+					}
+					if (!FilterFormat(pRow, dataFormat, nStride, buffer, m_format, m_stride, m_width)) {
+						Close();
+						return false;
+					}
+				}
 			}
+			return true;
 		}
+
+		const int dst_bpp = 8;
+		char errmsg[1024];
+		if (!TIFFRGBAImageOK(tif, errmsg)) {
+			Close();
+			return false;
+		}
+
+		uint32_t tile_width0 = m_width, tile_height0 = 0;
 
 		if ((!is_tiled) ||
 			(is_tiled &&
@@ -575,6 +609,13 @@ bool CImageTIFF::WriteHeader(PIXELFORMAT imageFormat, Size width, Size height, B
 {
 	ASSERT(m_pStream != NULL);
 	ASSERT(width > 0 && height > 0);
+	ASSERT(numLevels <= 1);
+
+	if (numLevels > 1) {
+		LOG(LT_IMAGE, "error: multi-level TIFF writing is not supported");
+		Close();
+		return false;
+	}
 
 	TIFF* tif = static_cast<TIFF*>(m_state);
 	if (!tif) {
@@ -616,7 +657,7 @@ bool CImageTIFF::WriteHeader(PIXELFORMAT imageFormat, Size width, Size height, B
 
 	m_dataWidth = m_width = width;
 	m_dataHeight = m_height = height;
-	m_numLevels = numLevels;
+	m_numLevels = 1;
 	m_level = 0;
 	m_lineWidth = m_width * m_stride;
 
@@ -629,7 +670,7 @@ bool CImageTIFF::WriteHeader(PIXELFORMAT imageFormat, Size width, Size height, B
 	TIFFSetField(tif, TIFFTAG_ORIENTATION, ORIENTATION_TOPLEFT);
 	TIFFSetField(tif, TIFFTAG_ROWSPERSTRIP, TIFFDefaultStripSize(tif, 0));
 	if (samplesPerPixel == 4) {
-		const uint16 extraSamples[1] = { EXTRASAMPLE_ASSOCALPHA };
+		const uint16 extraSamples[1] = { EXTRASAMPLE_UNASSALPHA };
 		TIFFSetField(tif, TIFFTAG_EXTRASAMPLES, 1, extraSamples);
 	}
 
@@ -669,7 +710,10 @@ bool CImageTIFF::WriteData(void* pData, PIXELFORMAT dataFormat, Size nStride, Si
 		}
 	}
 
-	TIFFFlush(tif);
+	if (!TIFFFlush(tif)) {
+		Close();
+		return false;
+	}
 	return true;
 } // WriteData
 /*----------------------------------------------------------------*/
@@ -736,23 +780,21 @@ bool CImageTIFF::Test(const String& folder)
 				}
 			}
 		}
-		// Cross-verify with OpenCV cv::imread
+		// Cross-verify with OpenCV cv::imread (if OpenCV was built with TIFF support)
 		{
 			cv::Mat cvImg = cv::imread(fileName.c_str(), cv::IMREAD_COLOR);
-			if (cvImg.empty() || cvImg.cols != (int)width || cvImg.rows != (int)height) {
-				VERBOSE("error: CImageTIFF::Test: OpenCV failed reading TIFF '%s'", fileName.c_str());
-				return false;
-			}
-			for (int y = 0; y < (int)height; ++y) {
-				const uint8_t* row = cvImg.ptr<uint8_t>(y);
-				for (int x = 0; x < (int)width; ++x) {
-					const size_t idx = (y * width + x) * stride;
-					if (row[x * 3 + 0] != writeBuffer[idx + 0] ||
-						row[x * 3 + 1] != writeBuffer[idx + 1] ||
-						row[x * 3 + 2] != writeBuffer[idx + 2])
-					{
-						VERBOSE("error: CImageTIFF::Test: OpenCV reading mismatch at (%d,%d)", x, y);
-						return false;
+			if (!cvImg.empty() && cvImg.cols == (int)width && cvImg.rows == (int)height) {
+				for (int y = 0; y < (int)height; ++y) {
+					const uint8_t* row = cvImg.ptr<uint8_t>(y);
+					for (int x = 0; x < (int)width; ++x) {
+						const size_t idx = (y * width + x) * stride;
+						if (row[x * 3 + 0] != writeBuffer[idx + 0] ||
+							row[x * 3 + 1] != writeBuffer[idx + 1] ||
+							row[x * 3 + 2] != writeBuffer[idx + 2])
+						{
+							VERBOSE("error: CImageTIFF::Test: OpenCV reading mismatch at (%d,%d)", x, y);
+							return false;
+						}
 					}
 				}
 			}

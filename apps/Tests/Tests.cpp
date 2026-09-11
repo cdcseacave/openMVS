@@ -36,6 +36,7 @@
 #include "TestsMath.h"
 #include "TestsSFM.h"
 #include "TestsMVS.h"
+#include "Tests.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -138,9 +139,12 @@ bool UnitTests()
 	#ifdef _IMAGE_TIFF
 	// the TIFF codec's own semantics (header parsing, channel order, read/write roundtrip,
 	// OpenCV compatibility) are tested in libs/IO/ImageTIFF.cpp
-	if (!CImageTIFF::Test(MAKE_PATH("images"))) {
-		VERBOSE("ERROR: CImageTIFF::Test failed!");
-		return false;
+	{
+		const ScopedTempDir tmpDir(_T("ImageTIFF"));
+		if (!tmpDir.IsValid() || !CImageTIFF::Test(tmpDir.Path())) {
+			VERBOSE("ERROR: CImageTIFF::Test failed!");
+			return false;
+		}
 	}
 	#endif
 	VERBOSE("All unit tests passed (%s)", TD_TIMER_GET_FMT().c_str());
