@@ -3518,8 +3518,8 @@ static float LargestSeamError(
 
 // One block moved to where the relaxation put its cameras: each camera's similarity is read back
 // out of the model frame into the block's own, its rotation and centre are what the block stores,
-// and every point follows the camera of its first observation -- the only place the scale a camera
-// picked up can go, a pose having nowhere to keep it.
+// and every point follows the camera of its first inlier observation -- the only place the scale a
+// camera picked up can go, a pose having nowhere to keep it.
 static void MoveBlockCameras(
 	const Transform& blockPose, const std::vector<uint32_t>& nodeOf,
 	const std::vector<BlockParameters>& parameters, Scene& block)
@@ -3539,7 +3539,7 @@ static void MoveBlockCameras(
 		image.C = relaxed.t;
 	}
 	for (Track& track : block.tracks)
-		for (const Observation& obs : track.observations)
+		for (const Observation& obs : track)
 			if (obs.imageID < moved.size() && moved[obs.imageID]) {
 				track.position = deltas[obs.imageID] * track.position;
 				break;
@@ -3569,7 +3569,6 @@ bool GlobalAlignment::RelaxCameras(
 	// one similarity per camera of the placed blocks, starting where its own block pose puts it
 	std::vector<BlockParameters> parameters;
 	std::vector<std::vector<uint32_t>> nodeOf(subScenes.size());
-	uint32_t gauge = NO_ID;
 	FOREACH(b, subScenes) {
 		nodeOf[b].assign(subScenes[b].images.size(), NO_ID);
 		if (!IsInModel(poses, (uint32_t)b, model))
@@ -3578,15 +3577,10 @@ bool GlobalAlignment::RelaxCameras(
 		FOREACH(localID, block.images) {
 			if (!block.images[localID].IsValid())
 				continue;
-			// the gauge: the model frame is the seed block's first camera's own
-			if (gauge == NO_ID && b == seed)
-				gauge = (uint32_t)parameters.size();
 			nodeOf[b][localID] = (uint32_t)parameters.size();
 			parameters.emplace_back(poses[b].T * CameraToBlock(block.images[localID]));
 		}
 	}
-	if (gauge == NO_ID)
-		return false;
 
 	ceres::Problem problem;
 	ceres::LossFunction* loss = new ceres::HuberLoss(1.0);
@@ -3618,7 +3612,11 @@ bool GlobalAlignment::RelaxCameras(
 		for (const ImagePair& pair : block.pairs) {
 			if (nodeOf[b][pair.ID1] == NO_ID || nodeOf[b][pair.ID2] == NO_ID)
 				continue;
+			// a pair the weighting refused carries no evidence that the two cameras see the same
+			// thing, and must not take one of the three places a camera has to give
 			const float weight = pair.GetCompositeWeight();
+			if (!(weight > 0))
+				continue;
 			covisible[pair.ID1].emplace_back(weight, pair.ID2);
 			covisible[pair.ID2].emplace_back(weight, pair.ID1);
 		}
@@ -3648,7 +3646,9 @@ bool GlobalAlignment::RelaxCameras(
 		const SeamCandidate& c = candidates[seamIdx];
 		if (!IsInModel(poses, c.sceneA, model) || !IsInModel(poses, c.sceneB, model))
 			continue;
-		std::unordered_map<IIndex, std::vector<size_t>> observedBy;
+		// ordered, so the edges enter the problem -- and the normal equations sum -- the same way
+		// every run, whatever the standard library does with a hash
+		std::map<IIndex, std::vector<size_t>> observedBy;
 		const size_t numScored = MINF(c.observations.size(), c.score.inlierMask.size());
 		for (size_t i = 0; i < numScored; ++i)
 			if (c.score.inlierMask[i])
@@ -3669,18 +3669,23 @@ bool GlobalAlignment::RelaxCameras(
 				if (itPoint == globalToLocal.end() || nodeOf[itPoint->second.first][itPoint->second.second] == NO_ID)
 					continue;
 				const Scene& pointBlock = subScenes[itPoint->second.first];
+				// an edge across a seam is read in the unit the seam itself is judged in, the
+				// footprint the two blocks share, so one means the same here as at every seam bar
 				if (AddEdge(nodeOf[itPoint->second.first][itPoint->second.second],
 						nodeOf[itRig->second.first][itRig->second.second],
 						CameraMeasurement(pointBlock.images[itPoint->second.second],
 							subScenes[itRig->second.first].images[itRig->second.second],
 							obs.forward ? c.T : TInv),
-						blockExtents[itPoint->second.first], 1.f))
+						PairExtent(blockExtents[itPoint->second.first], blockExtents[itRig->second.first]), 1.f))
 					++numSeamEdges;
 			}
 		}
 	}
-	if (numSeamEdges == 0)
+	if (numSeamEdges == 0) {
+		DEBUG("Cameras not relaxed: the seams left %.1f px apart carry no camera pair to hold",
+			report.seamErrorBeforeRelax);
 		return false;
+	}
 
 	unsigned numCameras = 0;
 	FOREACH(k, parameters) {
@@ -3689,13 +3694,24 @@ bool GlobalAlignment::RelaxCameras(
 		problem.SetManifold(parameters[k].q, new ceres::QuaternionManifold);
 		++numCameras;
 	}
-	// the gauge: the model frame is this camera's own, so its similarity is what everything else
-	// moves against
-	if (problem.HasParameterBlock(parameters[gauge].q)) {
-		problem.SetParameterBlockConstant(parameters[gauge].q);
-		problem.SetParameterBlockConstant(parameters[gauge].t);
-		problem.SetParameterBlockConstant(&parameters[gauge].logScale);
+	// the gauge: the model frame is the seed block's first camera that carries an edge, so its
+	// similarity is what everything else moves against -- a camera no residual reaches anchors
+	// nothing, and leaving the problem with no datum at all is what the solver answers with an
+	// arbitrary one
+	uint32_t gauge = NO_ID;
+	for (IIndex localID = 0; gauge == NO_ID && localID < (IIndex)nodeOf[seed].size(); ++localID) {
+		const uint32_t node = nodeOf[seed][localID];
+		if (node != NO_ID && problem.HasParameterBlock(parameters[node].q))
+			gauge = node;
 	}
+	if (gauge == NO_ID) {
+		DEBUG("Cameras not relaxed: the seams left %.1f px apart reach no camera of the seed block",
+			report.seamErrorBeforeRelax);
+		return false;
+	}
+	problem.SetParameterBlockConstant(parameters[gauge].q);
+	problem.SetParameterBlockConstant(parameters[gauge].t);
+	problem.SetParameterBlockConstant(&parameters[gauge].logScale);
 
 	ceres::Solver::Options options;
 	// seven parameters per camera and two cameras per edge: the normal equations stay as sparse as
@@ -3706,8 +3722,12 @@ bool GlobalAlignment::RelaxCameras(
 	options.minimizer_progress_to_stdout = false;
 	ceres::Solver::Summary summary;
 	ceres::Solve(options, &problem, &summary);
-	if (!summary.IsSolutionUsable())
+	if (!summary.IsSolutionUsable()) {
+		DEBUG("Cameras not relaxed: the graph of %u cameras over %u edges did not solve, "
+			"the seams left %.1f px apart",
+			numCameras, numIntraEdges + numSeamEdges, report.seamErrorBeforeRelax);
 		return false;
+	}
 
 	// the relaxed cameras written back into their blocks' own frames: the block poses stay as the
 	// placement left them, so what the relaxation bent is the reconstruction inside each block

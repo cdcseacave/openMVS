@@ -13200,6 +13200,12 @@ bool BentBlocksRelaxationTest()
 			rigidRep.seamErrorBeforeRelax);
 		return false;
 	}
+	// the whole ring, so the arm the relaxed one is read against covers every camera of it
+	if (rigidRep.numPlaced != cfg.numBlocks) {
+		VERBOSE("BentBlocksRelaxationTest FAILED: %u of %u blocks placed without the relaxation",
+			rigidRep.numPlaced, cfg.numBlocks);
+		return false;
+	}
 	const auto [rigidRotation, rigidPosition] = RingErrors(scene, gtPoses);
 
 	// and the same merge with the bar held down, which hands the model to the relaxation
@@ -13229,7 +13235,12 @@ bool BentBlocksRelaxationTest()
 		return false;
 	}
 	// what the relaxation is worth, before a single adjustment step: the cameras it hands over against
-	// the ones the block poses alone leave behind
+	// the ones the block poses alone leave behind, the two read over the same registered images
+	if (rep.numPlaced != rigidRep.numPlaced) {
+		VERBOSE("BentBlocksRelaxationTest FAILED: %u blocks placed with the relaxation against %u without",
+			rep.numPlaced, rigidRep.numPlaced);
+		return false;
+	}
 	const auto [rotation, position] = RingErrors(relaxedScene, gtPoses);
 	if (rotation >= rigidRotation * REAL(0.75) || position >= rigidPosition * REAL(0.5)) {
 		VERBOSE("BentBlocksRelaxationTest FAILED: the relaxed cameras are %.4f deg and %.4f%% off the truth, "
