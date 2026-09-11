@@ -693,6 +693,7 @@ private:
 	 * @param best in: the hypothesis the placement refused; out: the hypothesis the relaxed model
 	 * carried, when it did
 	 * @param poses, modelSeams in/out: left exactly as they were unless the group is admitted
+	 * @param closedCycle out: what the admission made of the group's seams, as `AdmitGroup` reports it
 	 * @param reason out: the gates the relaxed hypothesis failed, when it was refused
 	 * @return true when the relaxed model carried the group, which `AdmitGroup` has then taken in
 	 */
@@ -705,6 +706,7 @@ private:
 		PlacementHypothesis& best,
 		std::vector<BlockPose>& poses,
 		std::vector<uint32_t>& modelSeams,
+		bool& closedCycle,
 		String& reason) const;
 
 	/**

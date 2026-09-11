@@ -12235,9 +12235,11 @@ bool AmbiguousPairTest()
 
 // A ring whose blocks were each reconstructed bent and stretched: every seam is off the same way,
 // so an open chain of twelve of them ends about three degrees and three percent from where it
-// started. The block that closes the ring is the one block that faces that discrepancy, and it is
-// admitted on the neighbour it agrees with, its other neighbour's evidence set aside; the cycle its
-// seams then close is what the block pose graph spreads the error over
+// started. The block that closes the ring is the one block that faces that discrepancy, and no pose
+// of it can answer to both its neighbours at once -- the cameras of the far one refuse it. It is
+// taken into the model on trust, the model is averaged and refined over the seams it would then
+// rest on, which spreads those three degrees over the cycle, and the block is judged again where
+// that leaves it
 bool RingLoopClosureTest()
 {
 	TD_TIMER_START();
@@ -12303,17 +12305,31 @@ bool WeakClosingSeamTest()
 
 	const GlobalAlignmentConfig alignCfg;
 	const uint32_t closing = cfg.numBlocks - 1;
-	// what the pair is worth on its own evidence: nothing the seam stage can use
+	// what the pair is worth on its own evidence: nothing the seam stage can use, while the seams
+	// that carry its two blocks into the chain are measured as they always were
 	{
 		GlobalAlignment alignment(scene, alignCfg);
 		std::vector<SeamCandidate> candidates;
-		alignment.EstimateSeamCandidates(subScenes, localToGlobals, candidates);
-		for (const SeamCandidate& c : candidates)
+		if (!alignment.EstimateSeamCandidates(subScenes, localToGlobals, candidates)) {
+			VERBOSE("WeakClosingSeamTest FAILED: the thinned ring yielded no seam candidate at all");
+			return false;
+		}
+		bool chained[2] = {false, false};
+		for (const SeamCandidate& c : candidates) {
 			if (c.sceneA == 0 && c.sceneB == closing) {
 				VERBOSE("WeakClosingSeamTest FAILED: the thinned pair (0, %u) yielded a candidate of "
 					"class %u on %u correspondences", closing, (unsigned)c.cls, (unsigned)c.observations.size());
 				return false;
 			}
+			chained[0] = chained[0] || (c.sceneA == 0 && c.sceneB == 1);
+			chained[1] = chained[1] || (c.sceneA == closing - 1 && c.sceneB == closing);
+		}
+		if (!chained[0] || !chained[1]) {
+			VERBOSE("WeakClosingSeamTest FAILED: of the %u candidates measured, the seams (0, 1) and "
+				"(%u, %u) that carry the thinned pair's own blocks are missing",
+				(unsigned)candidates.size(), closing - 1, closing);
+			return false;
+		}
 	}
 
 	GlobalAlignment ga(scene, alignCfg);
@@ -12347,9 +12363,9 @@ bool WeakClosingSeamTest()
 	RunFinalAdjustment(scene);
 	if (!CheckRingMerge("WeakClosingSeamTest, adjusted", rep, scene, gtPoses, cfg.numBlocks, 1, 0.3, 0.005))
 		return false;
-	VERBOSE("WeakClosingSeamTest PASSED: the closing seam kept %u of %u correspondences (%s)",
+	VERBOSE("WeakClosingSeamTest PASSED: the closing seam kept %u of %u correspondences and %s a scale (%s)",
 		rep.candidates[seam].score.inliers, (unsigned)rep.candidates[seam].observations.size(),
-		TD_TIMER_GET_FMT().c_str());
+		rep.candidates[seam].scaleObservable ? "observes" : "cannot observe", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 /*----------------------------------------------------------------*/

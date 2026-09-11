@@ -2499,8 +2499,10 @@ bool GlobalAlignment::CloseCycleThrough(
 	PlacementHypothesis& best,
 	std::vector<BlockPose>& poses,
 	std::vector<uint32_t>& modelSeams,
+	bool& closedCycle,
 	String& reason) const
 {
+	closedCycle = false;
 	// only a group its neighbours are behind and whose cameras the model leaves unmixed, refused by
 	// what it explains or by the votes alone, can be facing a cycle instead of failing on its own
 	if (best.Passed() || best.failedGate.find("interleaving") != String::npos ||
@@ -2532,7 +2534,9 @@ bool GlobalAlignment::CloseCycleThrough(
 	float spread = 0;
 	relaxed.source = PlacementHypothesis::INITIAL;
 	if (AverageModelPoses(candidates, tentativeSeams, blockExtents, model, seed, poses, residuals)) {
-		// what the cycle's discrepancy came down to once the consensus carried it
+		// what the cycle's discrepancy came down to once the consensus carried it, read off the
+		// residuals the averaging returned: writing them into the candidates, which is where
+		// LargestSeamResidual reads a model's, would leave a mark behind on the path that rolls back
 		for (const Point3& residual : residuals)
 			if (residual.x < REAL(FLT_MAX))
 				spread = MAXF(spread, (float)residual.x);
@@ -2574,7 +2578,7 @@ bool GlobalAlignment::CloseCycleThrough(
 	}
 	// the relaxed poses stand, and the group comes in against them like any other
 	best = relaxed;
-	AdmitGroup(subScenes, candidates, blockExtents, model, group, relaxed, poses, modelSeams);
+	closedCycle = AdmitGroup(subScenes, candidates, blockExtents, model, group, relaxed, poses, modelSeams);
 	return true;
 }
 /*----------------------------------------------------------------*/
@@ -2616,6 +2620,9 @@ bool GlobalAlignment::CandidateFromPrediction(
 	}
 	// what such a seam weighs: the cameras behind it, and at least enough to hold its two blocks
 	c.weight = MAXF(1.f, c.score.Weight(config.maxVoteWeight));
+	// and what it may speak for: the scale it carries is the model's own unless one of the two rigs
+	// saw enough parallax to measure one, which is the question a measured seam answers here too
+	c.scaleObservable = IsScaleObservable(subScenes, c, true) || IsScaleObservable(subScenes, c, false);
 	return true;
 }
 /*----------------------------------------------------------------*/
@@ -2767,16 +2774,14 @@ unsigned GlobalAlignment::PlaceBlocks(
 		group.frames.assign(1, Transform());
 		PlacementHypothesis winner;
 		String reason;
-		bool closedCycle;
+		bool closedCycle = false;
 		if (PlaceGroup(subScenes, candidates, blockExtents, model, group, poses, winner, reason))
 			closedCycle = AdmitGroup(
 				subScenes, candidates, blockExtents, model, group, winner, poses, modelSeams);
 		// the block the placement could not carry may be the one a cycle runs through: it is judged
 		// again once the model has taken that cycle in, and comes in with it when it holds there
-		else if (CloseCycleThrough(subScenes, candidates, blockExtents, model, seed, group, winner,
-				poses, modelSeams, reason))
-			closedCycle = true;
-		else {
+		else if (!CloseCycleThrough(subScenes, candidates, blockExtents, model, seed, group, winner,
+				poses, modelSeams, closedCycle, reason)) {
 			poses[next].state = BlockPose::DEFERRED;
 			poses[next].reason = reason;
 			deferred.push_back(next);
