@@ -12553,9 +12553,12 @@ bool AmbiguousPairTest()
 		}
 		const SeamCandidate& c = cands.front();
 		// what the thinning and the plant left of block 1's cameras: every one of them still carries
-		// a vote, all but the farthest hold the correspondences a vote weighs with, and on the three
-		// the plant sits on more than half of what they hold is false under the direction that
-		// survived, against almost nothing on the seven it left alone
+		// a vote, eight of the ten hold the correspondences a vote weighs with, and on the three the
+		// plant sits on more than half of what they hold is false under the direction that survived,
+		// against almost nothing on the seven it left alone. Every count here is per distinct
+		// correspondence: a true match lies on a track in both blocks and is collected in both
+		// directions, and the camera that meets it in both roles counts it once
+		constexpr unsigned minWeighing = 8;
 		unsigned numWeighing = 0;
 		for (unsigned k = 0; k < cfg.camsPerBlock; ++k) {
 			const CameraVote* vote = FindVote(c.score, blocks[1][k]);
@@ -12571,14 +12574,18 @@ bool AmbiguousPairTest()
 			if (vote->correspondences >= alignCfg.minVoteInliers)
 				++numWeighing;
 		}
-		if (numWeighing + 1 < cfg.camsPerBlock) {
+		if (numWeighing < minWeighing) {
 			VERBOSE("AmbiguousPairTest FAILED: %u of block 1's %u cameras kept the %u correspondences "
 				"a vote weighs with", numWeighing, cfg.camsPerBlock, alignCfg.minVoteInliers);
 			return false;
 		}
-		if (c.score.support[1] != 9 || c.score.contra[1] != 0) {
+		// and what they voted: the surviving direction carried by the distinct centres a seam has to
+		// stand on, and not one camera of block 1 behind the direction it beat -- a camera that was
+		// would be counted against this one. The fixture yields 5+/0-
+		if (c.score.support[1] < alignCfg.minSupportingCentres || c.score.contra[1] != 0) {
 			VERBOSE("AmbiguousPairTest FAILED: block 1 voted %u+/%u- on the surviving direction, "
-				"expected 9+/0-", c.score.support[1], c.score.contra[1]);
+				"expected at least %u supporters and no contradictor",
+				c.score.support[1], c.score.contra[1], alignCfg.minSupportingCentres);
 			return false;
 		}
 		// what the surviving seam makes of what the other direction saw: a minority, the planted
@@ -14655,27 +14662,31 @@ static bool CheckVoteRule(const Transform transforms[2])
 		return false;
 	}
 
-	// forty correspondences spread over the image are enough to support
+	// forty correspondences spread over the image are enough to support. The counts a camera votes
+	// with are per distinct match: both blocks hold a track for every one of these, so each is
+	// collected in both directions and the camera that meets it in both roles counts it once --
+	// eighty of the pair's observations are the forty correspondences the rule is written in
 	{
 		SeamCandidate c(measured);
 		for (unsigned k = 0; k < 3; ++k)
-			KeepSomeCorrespondences(c, voters[k].second, 40);
+			KeepSomeCorrespondences(c, voters[k].second, 80);
 		merger.ScoreCandidate(subScenes, c);
 		for (unsigned k = 0; k < 3; ++k) {
 			const CameraVote* vote = FindVote(c.score, voters[k].second);
 			if (vote == NULL || vote->vote != 1) {
-				VERBOSE("HierarchicalCameraAlignmentTest FAILED: camera %u of 40 correspondences voted %d, expected support",
-					voters[k].second, vote == NULL ? 0 : (int)vote->vote);
+				VERBOSE("HierarchicalCameraAlignmentTest FAILED: camera %u of %u correspondences voted %d, expected support",
+					voters[k].second, vote == NULL ? 0 : vote->correspondences, vote == NULL ? 0 : (int)vote->vote);
 				return false;
 			}
 		}
 	}
 
-	// sixty correspondences of which almost none is an inlier contradict
+	// sixty correspondences of which almost none is an inlier contradict -- again a hundred and
+	// twenty of the pair's observations, each match counted once by the camera that holds it
 	{
 		SeamCandidate c(measured);
 		const IIndex image = voters[3].second;
-		KeepSomeCorrespondences(c, image, 60);
+		KeepSomeCorrespondences(c, image, 120);
 		// the points of all but two of them replaced by another track's, on the same side of the seam
 		std::vector<Point3> elsewhere[2];
 		FOREACH(i, c.observations)
@@ -14684,7 +14695,7 @@ static bool CheckVoteRule(const Transform transforms[2])
 		unsigned numCorrupted = 0;
 		FOREACH(i, c.observations) {
 			const int side = c.observations[i].forward ? 1 : 0;
-			if (c.correspondences[i].imageB != image || numCorrupted >= 58 || elsewhere[side].empty())
+			if (c.correspondences[i].imageB != image || numCorrupted >= 116 || elsewhere[side].empty())
 				continue;
 			c.observations[i].X = elsewhere[side][(i * 7 + 3) % elsewhere[side].size()];
 			++numCorrupted;

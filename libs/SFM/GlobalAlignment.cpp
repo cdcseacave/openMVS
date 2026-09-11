@@ -1149,11 +1149,19 @@ void GlobalAlignment::ScoreSeam(
 		}
 
 	// every image the seam touches, in both its roles: the camera whose feature carries the point
-	// witnesses the seam as much as the camera that observed it
+	// witnesses the seam as much as the camera that observed it. A match whose two endpoints both
+	// lie on a track is collected in both directions, and one camera then meets that same match
+	// once in each role -- it is one correspondence either way and counts once, or the bars a vote
+	// answers to are halved on exactly the seams whose tracks are best formed
+	typedef std::tuple<IIndex, uint32_t, IIndex, uint32_t> CorrespondenceKey;
+	std::map<IIndex, std::set<CorrespondenceKey>> countedByImage;
 	std::map<IIndex, std::vector<uint32_t>> imageObservations;
 	FOREACH(i, observations) {
-		imageObservations[observations[i].rigImage].push_back((uint32_t)i);
-		imageObservations[observations[i].pointImage].push_back((uint32_t)i);
+		const SeamCorrespondence& corr = correspondences[i];
+		const CorrespondenceKey key(corr.imageA, corr.featureA, corr.imageB, corr.featureB);
+		for (const IIndex image : {observations[i].rigImage, observations[i].pointImage})
+			if (countedByImage[image].insert(key).second)
+				imageObservations[image].push_back((uint32_t)i);
 	}
 
 	std::map<uint32_t, std::vector<Point3>> supportingCentres; // block -> its supporters' centres
