@@ -853,7 +853,6 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 	ASSERT(neighbors.empty());
 	struct Score {
 		float score;
-		float scale;
 		float avgAngle;
 		uint32_t points;
 	};
@@ -928,10 +927,10 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 	}
 	if(nPoints > 3)
 		imageData.avgDepth /= nPoints;
-	// the scale of every view: the trimmed mean of its ratios, dropping the lowest and highest 10%
-	// -- at least one each, so a view sharing only a handful of points still loses its outlier;
-	// the ratios are first bucketed by view, a counting sort on the per-view counts already known,
-	// so all of it stays linear in the number of shared observations
+	// bucket the ratios by view, a counting sort on the per-view counts already known, so each
+	// neighbor's scale below -- the trimmed mean of its ratios, dropping the lowest and highest 10%,
+	// at least one each so a view sharing only a handful of points still loses its outlier -- stays
+	// linear in the number of shared observations; afterwards ends[v] is one past view v's bucket
 	FloatArr ratios;
 	ratios.resize(scaleRatios.size());
 	UnsignedArr ends(scores.size());
@@ -943,11 +942,6 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 	ASSERT(offset == scaleRatios.size());
 	for (const ScaleRatio& r: scaleRatios)
 		ratios[ends[r.view]++] = r.ratio;
-	FOREACH(v, scores) {
-		Score& score = scores[v];
-		if (score.points)
-			score.scale = FloatArr::GetTrimmedMean(ratios.data()+ends[v]-score.points, ratios.data()+ends[v], 0.1f, 0.1f, 1);
-	}
 
 	// select best neighborViews
 	if (neighbors.empty()) {
@@ -987,7 +981,7 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 			ViewScore& neighbor = neighbors.AddEmpty();
 			neighbor.ID = IDB;
 			neighbor.points = score.points;
-			neighbor.scale = score.scale;
+			neighbor.scale = FloatArr::GetTrimmedMean(ratios.data()+ends[IDB]-score.points, ratios.data()+ends[IDB], 0.1f, 0.1f, 1);
 			neighbor.angle = score.avgAngle/score.points;
 			neighbor.area = area;
 			neighbor.score = score.score*MAXF(area,0.01f);

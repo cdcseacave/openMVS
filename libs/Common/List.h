@@ -690,16 +690,16 @@ public:
 	static RTYPE	GetTrimmedMean(TYPE* begin, TYPE* end, float lowRatio, float highRatio, IDX minTrim=0, IDX* pNumKept=NULL)
 	{
 		const IDX size(static_cast<IDX>(end-begin));
-		ASSERT(size > 0);
+		ASSERT(minTrim < size);
 		ASSERT(lowRatio >= 0 && highRatio >= 0 && lowRatio+highRatio < 1);
-		const IDX lowTrim(std::min(std::max(static_cast<IDX>(static_cast<double>(size)*lowRatio), minTrim), size));
-		const IDX highTrim(std::min(std::max(static_cast<IDX>(static_cast<double>(size)*highRatio), minTrim), size));
+		const IDX lowTrim(MAXF(static_cast<IDX>(static_cast<double>(size)*lowRatio), minTrim));
+		const IDX highTrim(MAXF(static_cast<IDX>(static_cast<double>(size)*highRatio), minTrim));
 		IDX lo(lowTrim), hi(size-highTrim);
 		if (lo >= hi) {
 			// nothing left: keep the element, or the two, at the center of the requested window
-			const IDX center2(lowTrim+size-highTrim); // twice the center rank, in [0, 2*size]
-			lo = center2 > 0 ? (center2-1)/2 : 0;
-			hi = std::min(center2/2+1, size);
+			const IDX center2(lowTrim+size-highTrim); // twice the center rank, in [1, 2*size-2]
+			lo = (center2-1)/2;
+			hi = center2/2+1;
 		}
 		TYPE* const first(begin+lo);
 		TYPE* const last(begin+hi);
@@ -1603,7 +1603,7 @@ inline bool cListTest(unsigned iters) {
 			float highRatio = RAND()%2 ? lowRatio : trimRatios[RAND()%6];
 			if (lowRatio+highRatio >= 1.f)
 				highRatio = 0.05f;
-			const unsigned minTrim = RAND()%4;
+			const unsigned minTrim = static_cast<unsigned>(RAND()%MINF(n, size_t(4))); // must stay below n
 			cList<int, int, 0> arrT;
 			cList<float, float, 0> arrTF;
 			for (size_t j=0; j<n; ++j) {
@@ -1613,13 +1613,13 @@ inline bool cListTest(unsigned iters) {
 			cList<int, int, 0> arrM(arrT);
 			std::vector<int> sorted(arrT.Begin(), arrT.End());
 			std::sort(sorted.begin(), sorted.end());
-			const size_t lowTrim = std::min(std::max(static_cast<size_t>(static_cast<double>(n)*lowRatio), static_cast<size_t>(minTrim)), n);
-			const size_t highTrim = std::min(std::max(static_cast<size_t>(static_cast<double>(n)*highRatio), static_cast<size_t>(minTrim)), n);
+			const size_t lowTrim = MINF(MAXF(static_cast<size_t>(static_cast<double>(n)*lowRatio), static_cast<size_t>(minTrim)), n);
+			const size_t highTrim = MINF(MAXF(static_cast<size_t>(static_cast<double>(n)*highRatio), static_cast<size_t>(minTrim)), n);
 			size_t lo = lowTrim, hi = n-highTrim;
 			if (lo >= hi) {
 				const size_t center2 = lowTrim+n-highTrim;
 				lo = center2 > 0 ? (center2-1)/2 : 0;
-				hi = std::min(center2/2+1, n);
+				hi = MINF(center2/2+1, n);
 			}
 			double sum = 0;
 			for (size_t j=lo; j<hi; ++j)
