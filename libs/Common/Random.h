@@ -31,7 +31,7 @@ FORCEINLINE double randomd() {
 FORCEINLINE long double randomld() {
 	return RANDOM<long double>();
 }
-STATIC_ASSERT(RAND_MAX < 2147483648); // integer randomRange assumes this is capped
+static_assert(RAND_MAX < 2147483648); // integer randomRange assumes this is capped
 template<typename T>
 FORCEINLINE T randomRange(T nMin, T nMax) {
 	ASSERT(nMin <= nMax && nMax-nMin+1 < 8589934596); // not to overflow a uint64_t
@@ -106,7 +106,7 @@ struct Random : std::mt19937 {
 	Random(result_type seed) : generator_type(seed) {}
 
 	// integer randomRange assumes this is capped
-	STATIC_ASSERT(max() < 4294967296);
+	static_assert(max() < 4294967296);
 
 	// returns a uniform random number in the range [0, 1]
 	template<typename T=result_type>

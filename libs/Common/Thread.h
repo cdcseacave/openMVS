@@ -11,13 +11,9 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
+#include <cstdint>
 #ifdef _MSC_VER
 #include <windows.h>
-#ifdef _SUPPORT_CPP11
-#include <cstdint>
-#else
-#include <stdint.h>
-#endif
 #else
 #include <pthread.h>
 #include <sched.h>
@@ -109,13 +105,13 @@ public:
 		return info.dwNumberOfProcessors;
 	}
 
-	STATIC_ASSERT(sizeof(int32_t)==sizeof(LONG));
+	static_assert(sizeof(int32_t)==sizeof(LONG));
 	static inline int32_t safeInc(volatile int32_t& v) { return InterlockedIncrement((volatile LONG*)&v); };
 	static inline int32_t safeDec(volatile int32_t& v) { return InterlockedDecrement((volatile LONG*)&v); };
 	static inline int32_t safeExchange(volatile int32_t& target, int32_t value) { return InterlockedExchange((volatile LONG*)&target, value); };
 	static inline int32_t safeCompareExchange(volatile int32_t& target, int32_t comp, int32_t value) { return InterlockedCompareExchange((volatile LONG*)&target, value, comp); };
 
-	STATIC_ASSERT(sizeof(int64_t)==sizeof(LONGLONG));
+	static_assert(sizeof(int64_t)==sizeof(LONGLONG));
 	static inline int64_t safeInc(volatile int64_t& v) { return InterlockedIncrement64((volatile LONGLONG*)&v); };
 	static inline int64_t safeDec(volatile int64_t& v) { return InterlockedDecrement64((volatile LONGLONG*)&v); };
 	static inline int64_t safeExchange(volatile int64_t& target, int64_t value) { return InterlockedExchange64((volatile LONGLONG*)&target, value); };
@@ -279,7 +275,6 @@ public:
 	inline ThreadPool(size_type nThreads, Thread::FncStart pfnStarter, void* pData=NULL) : _threads(nThreads>0?nThreads:Thread::hardwareConcurrency()) { start(pfnStarter, pData); }
 	inline ~ThreadPool() { join(); }
 
-	#ifdef _SUPPORT_CPP11
 	inline ThreadPool(ThreadPool&& rhs) : _threads(std::forward<Threads>(rhs._threads)) {
 	}
 
@@ -287,7 +282,6 @@ public:
 		_threads.Swap(rhs._threads);
 		return *this;
 	}
-	#endif
 
 	// wait for all running threads to finish and resize threads array
 	void resize(size_type nThreads) {

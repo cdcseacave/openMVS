@@ -168,7 +168,6 @@ mesh.SaveGLTF("model.glb", true);   // Binary glTF
 ## Third-Party Code
 
 - **`json.hpp`**: nlohmann JSON (header-only, MIT license)
-- **`TinyXML2.h/cpp`**: Lightweight XML parser
 
 ## File Organization
 
@@ -188,7 +187,6 @@ libs/IO/
 ├── ImageHEIF.h/cpp     # HEIF/HEIC format, read-only (optional)
 ├── ImageSCI.h/cpp      # Custom OpenMVS format
 ├── json.hpp            # JSON library (third-party, header-only)
-├── TinyXML2.h/cpp      # XML parser (third-party)
 └── CMakeLists.txt      # Build config with optional dependency detection
 ```
 

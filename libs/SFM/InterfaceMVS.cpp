@@ -192,8 +192,8 @@ bool SFM::ImportDepthDataRaw(const String& fileName, String& imageFileName,
 	Image32F& depthMap, Image32F3& normalMap, Image32F& confMap, Image8U4& viewsMap, unsigned flags,
 	bool* pbConfAdjusted)
 {
-	STATIC_ASSERT(sizeof(double) == sizeof(REAL));
-	STATIC_ASSERT(sizeof(uint32_t) == sizeof(IIndex));
+	static_assert(sizeof(double) == sizeof(REAL));
+	static_assert(sizeof(uint32_t) == sizeof(IIndex));
 
 	MVS::DepthDataRaw data;
 	if (!MVS::ImportDepthDataRaw(static_cast<const std::string&>(fileName), data,
@@ -230,8 +230,8 @@ bool SFM::ExportDepthDataRaw(const String& fileName, const String& imageFileName
 	ASSERT(confMap.empty() || depthMap.size() == confMap.size());
 	ASSERT(viewsMap.empty() || depthMap.size() == viewsMap.size());
 	ASSERT(depthMap.width() <= (int)imageSize.width && depthMap.height() <= (int)imageSize.height);
-	STATIC_ASSERT(sizeof(double) == sizeof(REAL));
-	STATIC_ASSERT(sizeof(uint32_t) == sizeof(IIndex));
+	static_assert(sizeof(double) == sizeof(REAL));
+	static_assert(sizeof(uint32_t) == sizeof(IIndex));
 
 	MVS::DepthDataRaw data;
 	data.header.imageWidth = (uint32_t)imageSize.width;

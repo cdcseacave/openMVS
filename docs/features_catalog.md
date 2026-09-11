@@ -755,7 +755,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 
 ### Third-Party Components
 
-- **Files:** `libs/IO/json.hpp`, `libs/IO/TinyXML2.h/.cpp` (glTF comes from the vcpkg `tinygltf` port)
+- **Files:** `libs/IO/json.hpp` (glTF comes from the vcpkg `tinygltf` port, XML from the vcpkg `tinyxml2` port)
 - **Algorithms:** glTF 2.0 binary/ASCII loading (header-only), nlohmann JSON parsing (header-only), XML parsing
 
 ---

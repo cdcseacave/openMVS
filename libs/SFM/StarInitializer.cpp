@@ -189,15 +189,10 @@ bool StarInitializer::EstimateGlobalScale(
 			DoubleArr& ratios = it2.second;
 			if (ratios.size() < 15) // Require minimum common points
 				continue;
-			ratios.Sort();
-			size_t num = ratios.size();
-			size_t start = num / 10;
-			size_t end = num - start;
-			ASSERT(end > start);
-			double sum = std::accumulate(ratios.begin() + start, ratios.begin() + end, 0.0);
-			double numValid = static_cast<double>(end - start);
-			double meanRatio = sum / numValid;
-			scalePairs.emplace_back(pairIdx2, pairIdx1, meanRatio, (float)SQRT(numValid));
+			// mean of the ratios excluding the top/bottom 10%, weighted by how many it averages
+			DoubleArr::IDX numValid;
+			const double meanRatio(ratios.GetTrimmedMean<double>(0.1f, 0.1f, 0, &numValid));
+			scalePairs.emplace_back(pairIdx2, pairIdx1, meanRatio, (float)SQRT(static_cast<double>(numValid)));
 			constrainedPairs.insert(pairIdx1);
 			constrainedPairs.insert(pairIdx2);
 		}

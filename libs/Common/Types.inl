@@ -258,19 +258,11 @@ template <typename TYPE> const TColor<TYPE> TColor<TYPE>::YELLOW	(ColorType<TYPE
 template <typename TYPE> const TColor<TYPE> TColor<TYPE>::MAGENTA	(ColorType<TYPE>::ONE, 0, ColorType<TYPE>::ONE, ColorType<TYPE>::ONE);
 template <typename TYPE> const TColor<TYPE> TColor<TYPE>::CYAN		(0, ColorType<TYPE>::ONE, ColorType<TYPE>::ONE, ColorType<TYPE>::ONE);
 
-#ifdef _SUPPORT_CPP11
 template <typename A>
 inline typename std::enable_if<std::is_array<A>::value, size_t>::type
 SizeOfArray(const A&) {
 	return std::extent<A>::value;
 }
-#else
-template <typename T, size_t N>
-inline size_t
-SizeOfArray(const T(&)[N]) {
-	return N;
-}
-#endif
 
 
 // C L A S S  //////////////////////////////////////////////////////
@@ -1727,7 +1719,7 @@ TPoint3<TYPE> TPoint3<TYPE>::RotateAngleAxis(const TPoint3& pt, const TPoint3& a
 template <typename TYPE, int m, int n>
 inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0)
 {
-	STATIC_ASSERT(channels >= 1);
+	static_assert(channels >= 1);
 	val[0] = v0;
 	for (int i = 1; i < channels; i++)
 		val[i] = TYPE(0);
@@ -1735,7 +1727,7 @@ inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0)
 template <typename TYPE, int m, int n>
 inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0, TYPE v1)
 {
-	STATIC_ASSERT(channels >= 2);
+	static_assert(channels >= 2);
 	val[0] = v0; val[1] = v1;
 	for (int i = 2; i < channels; i++)
 		val[i] = TYPE(0);
@@ -1743,7 +1735,7 @@ inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0, TYPE v1)
 template <typename TYPE, int m, int n>
 inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0, TYPE v1, TYPE v2)
 {
-	STATIC_ASSERT(channels >= 3);
+	static_assert(channels >= 3);
 	val[0] = v0; val[1] = v1; val[2] = v2;
 	for (int i = 3; i < channels; i++)
 		val[i] = TYPE(0);
@@ -1751,7 +1743,7 @@ inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0, TYPE v1, TYPE v2)
 template <typename TYPE, int m, int n>
 inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3)
 {
-	STATIC_ASSERT(channels >= 4);
+	static_assert(channels >= 4);
 	val[0] = v0; val[1] = v1; val[2] = v2; val[3] = v3;
 	for (int i = 4; i < channels; i++)
 		val[i] = TYPE(0);
@@ -1759,7 +1751,7 @@ inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3)
 template <typename TYPE, int m, int n>
 inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3, TYPE v4)
 {
-	STATIC_ASSERT(channels >= 5);
+	static_assert(channels >= 5);
 	val[0] = v0; val[1] = v1; val[2] = v2; val[3] = v3; val[4] = v4;
 	for (int i = 5; i < channels; i++)
 		val[i] = TYPE(0);
@@ -1767,7 +1759,7 @@ inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3, TYPE v4)
 template <typename TYPE, int m, int n>
 inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3, TYPE v4, TYPE v5)
 {
-	STATIC_ASSERT(channels >= 6);
+	static_assert(channels >= 6);
 	val[0] = v0; val[1] = v1; val[2] = v2; val[3] = v3;
 	val[4] = v4; val[5] = v5;
 	for (int i = 6; i < channels; i++)
@@ -1776,7 +1768,7 @@ inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3, TYPE v4, T
 template <typename TYPE, int m, int n>
 inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3, TYPE v4, TYPE v5, TYPE v6)
 {
-	STATIC_ASSERT(channels >= 7);
+	static_assert(channels >= 7);
 	val[0] = v0; val[1] = v1; val[2] = v2; val[3] = v3;
 	val[4] = v4; val[5] = v5; val[6] = v6;
 	for (int i = 7; i < channels; i++)
@@ -1785,7 +1777,7 @@ inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3, TYPE v4, T
 template <typename TYPE, int m, int n>
 inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3, TYPE v4, TYPE v5, TYPE v6, TYPE v7)
 {
-	STATIC_ASSERT(channels >= 8);
+	static_assert(channels >= 8);
 	val[0] = v0; val[1] = v1; val[2] = v2; val[3] = v3;
 	val[4] = v4; val[5] = v5; val[6] = v6; val[7] = v7;
 	for (int i = 8; i < channels; i++)
@@ -1794,7 +1786,7 @@ inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3, TYPE v4, T
 template <typename TYPE, int m, int n>
 inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3, TYPE v4, TYPE v5, TYPE v6, TYPE v7, TYPE v8)
 {
-	STATIC_ASSERT(channels >= 9);
+	static_assert(channels >= 9);
 	val[0] = v0; val[1] = v1; val[2] = v2; val[3] = v3;
 	val[4] = v4; val[5] = v5; val[6] = v6; val[7] = v7;
 	val[8] = v8;
@@ -1804,7 +1796,7 @@ inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3, TYPE v4, T
 template <typename TYPE, int m, int n>
 inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3, TYPE v4, TYPE v5, TYPE v6, TYPE v7, TYPE v8, TYPE v9)
 {
-	STATIC_ASSERT(channels >= 10);
+	static_assert(channels >= 10);
 	val[0] = v0; val[1] = v1; val[2] = v2; val[3] = v3;
 	val[4] = v4; val[5] = v5; val[6] = v6; val[7] = v7;
 	val[8] = v8; val[9] = v9;
@@ -1814,7 +1806,7 @@ inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3, TYPE v4, T
 template <typename TYPE, int m, int n>
 inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3, TYPE v4, TYPE v5, TYPE v6, TYPE v7, TYPE v8, TYPE v9, TYPE v10, TYPE v11)
 {
-	STATIC_ASSERT(channels >= 12);
+	static_assert(channels >= 12);
 	val[0] = v0; val[1] = v1; val[2] = v2; val[3] = v3;
 	val[4] = v4; val[5] = v5; val[6] = v6; val[7] = v7;
 	val[8] = v8; val[9] = v9; val[10] = v10; val[11] = v11;
@@ -1824,7 +1816,7 @@ inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3, TYPE v4, T
 template <typename TYPE, int m, int n>
 inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3, TYPE v4, TYPE v5, TYPE v6, TYPE v7, TYPE v8, TYPE v9, TYPE v10, TYPE v11, TYPE v12, TYPE v13)
 {
-	STATIC_ASSERT(channels == 14);
+	static_assert(channels == 14);
 	val[0] = v0; val[1] = v1; val[2] = v2; val[3] = v3;
 	val[4] = v4; val[5] = v5; val[6] = v6; val[7] = v7;
 	val[8] = v8; val[9] = v9; val[10] = v10; val[11] = v11;
@@ -1835,7 +1827,7 @@ inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3, TYPE v4, T
 template <typename TYPE, int m, int n>
 inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3, TYPE v4, TYPE v5, TYPE v6, TYPE v7, TYPE v8, TYPE v9, TYPE v10, TYPE v11, TYPE v12, TYPE v13, TYPE v14, TYPE v15)
 {
-	STATIC_ASSERT(channels >= 16);
+	static_assert(channels >= 16);
 	val[0] = v0; val[1] = v1; val[2] = v2; val[3] = v3;
 	val[4] = v4; val[5] = v5; val[6] = v6; val[7] = v7;
 	val[8] = v8; val[9] = v9; val[10] = v10; val[11] = v11;
@@ -1872,7 +1864,7 @@ inline bool TMatrix<TYPE,m,n>::IsEqual(const Base& rhs, TYPE eps) const
 template <typename TYPE, int m, int n>
 inline TMatrix<TYPE,n,n-m> TMatrix<TYPE,m,n>::RightNullSpace(int flags /*= 0*/) const
 {
-	STATIC_ASSERT(n > m);
+	static_assert(n > m);
 	const cv::SVD svd(*this, flags|cv::SVD::FULL_UV);
 	// the orthonormal basis of the null space is formed by the columns
 	// of svd.vt such that the corresponding singular values are 0 (n - m or svd.vt.cols - svd.w.rows)

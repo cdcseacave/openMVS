@@ -18,7 +18,7 @@ Build instructions
 Required tools:
 * [CMake](http://www.cmake.org)
 * [git](https://git-scm.com)
-* C/C++ compiler like Visual Studio 2019, GCC or Clang
+* C/C++ compiler with C++17 support: Visual Studio 2019, GCC 9, Clang 9 (Apple Clang 11) or newer
 
 The dependencies can be fetched and built automatically using `vcpkg` on all major platform, by setting the environment variable `VCPKG_ROOT` to point to its path or by using the `cmake` parameter `-DCMAKE_TOOLCHAIN_FILE=[path to vcpkg]/scripts/buildsystems/vcpkg.cmake`.
 

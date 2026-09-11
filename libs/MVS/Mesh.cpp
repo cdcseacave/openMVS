@@ -899,12 +899,12 @@ bool Mesh::LoadOBJ(const String& fileName)
 	}
 
 	// store vertices
-	STATIC_ASSERT(sizeof(ObjModel::Vertex) == sizeof(Vertex));
+	static_assert(sizeof(ObjModel::Vertex) == sizeof(Vertex));
 	ASSERT(model.get_vertices().size() < std::numeric_limits<VIndex>::max());
 	vertices.CopyOf(&model.get_vertices()[0], (VIndex)model.get_vertices().size());
 
 	// store vertex normals
-	STATIC_ASSERT(sizeof(ObjModel::Normal) == sizeof(Normal));
+	static_assert(sizeof(ObjModel::Normal) == sizeof(Normal));
 	ASSERT(model.get_vertices().size() < std::numeric_limits<VIndex>::max());
 	if (!model.get_normals().empty()) {
 		ASSERT(model.get_normals().size() == model.get_vertices().size());
@@ -912,7 +912,7 @@ bool Mesh::LoadOBJ(const String& fileName)
 	}
 
 	// store faces
-	ASSERT_ARE_SAME_TYPE(ObjModel::TexCoord, TexCoord);
+	static_assert(std::is_same_v<ObjModel::TexCoord, TexCoord>);
 	FOREACH(groupIdx, model.get_groups()) {
 		const auto& group = model.get_groups()[groupIdx];
 		ASSERT(group.faces.size() < std::numeric_limits<FIndex>::max());
@@ -1063,11 +1063,11 @@ bool Mesh::SaveOBJ(const String& fileName) const
 	ObjModel model;
 
 	// store vertices
-	STATIC_ASSERT(sizeof(ObjModel::Vertex) == sizeof(Vertex));
+	static_assert(sizeof(ObjModel::Vertex) == sizeof(Vertex));
 	model.get_vertices().insert(model.get_vertices().begin(), vertices.begin(), vertices.end());
 
 	// store vertex normals
-	STATIC_ASSERT(sizeof(ObjModel::Normal) == sizeof(Normal));
+	static_assert(sizeof(ObjModel::Normal) == sizeof(Normal));
 	ASSERT(model.get_vertices().size() < std::numeric_limits<VIndex>::max());
 	if (!vertexNormals.empty()) {
 		ASSERT(vertexNormals.size() == vertices.size());
@@ -1075,7 +1075,7 @@ bool Mesh::SaveOBJ(const String& fileName) const
 	}
 
 	// store face texture coordinates
-	STATIC_ASSERT(sizeof(ObjModel::TexCoord) == sizeof(TexCoord));
+	static_assert(sizeof(ObjModel::TexCoord) == sizeof(TexCoord));
 	if (!faceTexcoords.empty()) {
 		// translate, normalize and flip Y axis of the texture coordinates
 		TexCoordArr normFaceTexcoords;
@@ -1190,7 +1190,7 @@ void Mesh::Subdivide(const AreaArr& maxAreas, uint32_t maxArea)
 	FacetCountMap mapFaces; mapFaces.reserve(12*3);
 	vertices.Reserve(vertices.size()*2);
 	faces.Reserve(faces.size()*3);
-	MAYBEUNUSED const FIndex numFacesOld(faces.size());
+	[[maybe_unused]] const FIndex numFacesOld(faces.size());
 	const uint32_t maxAreaTh(2*maxArea);
 	FOREACH(f, maxAreas) {
 		const AreaArr::Type area(maxAreas[f]);
