@@ -25,14 +25,18 @@ class IO_API CImageTIFF : public CImage
 {
 public:
 	CImageTIFF();
-	virtual ~CImageTIFF();
+	~CImageTIFF() override;
 
-	void		Close();
+	void		Close() override;
 
-	bool		ReadHeader();
-	bool		ReadData(void*, PIXELFORMAT, Size nStride, Size lineWidth);
-	bool		WriteHeader(PIXELFORMAT, Size width, Size height, BYTE numLevels);
-	bool		WriteData(void*, PIXELFORMAT, Size nStride, Size lineWidth);
+	bool		ReadHeader() override;
+	bool		ReadData(void*, PIXELFORMAT, Size nStride, Size lineWidth) override;
+	bool		WriteHeader(PIXELFORMAT, Size width, Size height, BYTE numLevels) override;
+	bool		WriteData(void*, PIXELFORMAT, Size nStride, Size lineWidth) override;
+
+	#ifdef _USE_TESTS
+	static bool	Test(const String& folder);
+	#endif
 
 protected:
 	void*		m_state;
