@@ -369,6 +369,7 @@ bool RingPlacementTest();
 bool UnobservableScaleTest();
 bool RingInterleavingVetoTest();
 bool AmbiguousPairTest();
+bool WeakClosingSeamTest();
 bool GlobalAlignmentMergeSingleSceneTest();
 bool GlobalAlignmentTrackMergeDuplicateImageGuardTest();
 bool GlobalAlignmentTrackMerge3DProximityGuardTest();

@@ -649,6 +649,76 @@ private:
 		std::vector<uint32_t>& modelSeams) const;
 
 	/**
+	 * @brief The blocks of one model averaged over the seams it rests on, then refined jointly
+	 *
+	 * A model grown one block at a time carries the error of every seam it grew through, and that
+	 * error ends at the seam closing the cycle. Averaging the admitted blocks over the model's own
+	 * seams spreads it over the whole cycle, and the joint refinement then reads the observations
+	 * behind those seams again from where the consensus put the blocks.
+	 * @param seed the gauge: the block whose frame the model is expressed in
+	 * @param modelSeams the seams the model rests on, indices into candidates
+	 * @param poses in/out: the admitted blocks of this model, moved to where the consensus puts them
+	 * @return the largest rotation discrepancy (degrees) the model's seams carried before, and carry
+	 * after
+	 */
+	std::pair<float, float> RelaxBlockPoses(
+		const std::vector<Scene>& subScenes,
+		std::vector<SeamCandidate>& candidates,
+		const std::vector<REAL>& blockExtents,
+		uint32_t model, uint32_t seed,
+		const std::vector<uint32_t>& modelSeams,
+		std::vector<BlockPose>& poses) const;
+
+	/**
+	 * @brief The seams the pairs of a model could not measure on their own but the model predicts
+	 *
+	 * Every pair of admitted blocks that carries correspondences but no seam the model rests on is
+	 * read again from where the model puts its two blocks: a pair too thin for its own cameras to
+	 * vote on is still evidence once something else says where it should lie, and the seam it yields
+	 * closes the cycle its blocks sit in. It enters the model at the weight its cameras carry,
+	 * floored so that a seam no camera could vote on still holds the two blocks together.
+	 * @param modelSeams in/out: the verified seams are appended to the ones the model rests on
+	 * @return how many seams were added
+	 */
+	unsigned VerifyWeakSeams(
+		const std::vector<Scene>& subScenes,
+		std::vector<SeamCandidate>& candidates,
+		const std::vector<REAL>& blockExtents,
+		uint32_t model,
+		std::vector<BlockPose>& poses,
+		std::vector<uint32_t>& modelSeams) const;
+
+	/**
+	 * @brief The one way a predicted transform becomes a candidate: the pair's own correspondences
+	 * read under it
+	 *
+	 * No estimator runs here — the prediction is the hypothesis. The pair's raw correspondences are
+	 * collected, those it explains at kLooseSeamFactor times the reprojection bar are what it is
+	 * refined over, and the refined seam is then scored at that bar like any other. It answers to
+	 * the union support and the interleaving veto, but not to its own cameras' votes: what stands
+	 * behind it is the consistency of the model that predicted it, not the pair's ability to measure
+	 * itself.
+	 * @param T the predicted similarity, A -> B
+	 * @param c out: the candidate, filled only when it is returned true
+	 * @return true when the pair still explains enough of itself under the prediction
+	 */
+	bool CandidateFromPrediction(
+		const std::vector<Scene>& subScenes, uint32_t a, uint32_t b,
+		const Transform& T, SeamCandidate& c) const;
+
+	/**
+	 * @brief The tail of a placement: the model relaxed over its seams, the pairs it can now predict
+	 * verified, and the model relaxed again when one of them became a seam
+	 */
+	void CloseModel(
+		const std::vector<Scene>& subScenes,
+		std::vector<SeamCandidate>& candidates,
+		const std::vector<REAL>& blockExtents,
+		uint32_t model, uint32_t seed,
+		std::vector<BlockPose>& poses,
+		std::vector<uint32_t>& modelSeams) const;
+
+	/**
 	 * @brief Refine one A -> B similarity against every reprojection the given observations carry
 	 *
 	 * The two-block case of RefineBlockPoses: block A gauges the model at the identity, so the

@@ -11572,6 +11572,95 @@ static uint64_t FeatureKey(IIndex image, uint32_t feature)
 	return ((uint64_t)image << 32) | (uint64_t)feature;
 }
 
+// The final adjustment of a reconstruction, run on a merged scene: the tracks filtered and
+// re-triangulated from the merged poses, then the one global bundle adjustment
+static void RunFinalAdjustment(Scene& scene)
+{
+	const ReconstructionConfig cfg;
+	FilterTracks(scene, cfg.maxReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
+	TriangulateTracks(scene, true, cfg.maxReprojError, cfg.minAngleThreshold);
+	FilterTracks(scene, cfg.maxReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
+	scene.status.nState.set(Scene::Status::STATE::CALIBRATED);
+	BundleAdjustment::Adjust(scene, BAConfig());
+	FilterTracks(scene, cfg.maxFineReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
+}
+
+// Weaken the direction "cameras of rigBlock on the points of pointBlock": of the tracks observed in
+// both blocks, `keepTracks` keep exactly two pointBlock observations (their first two) and exactly
+// one rigBlock observation (assigned round-robin over the first `rigCameras` cameras of rigBlock
+// that see the point); every other shared track loses all its rigBlock observations; the matches
+// follow the observations. The seam collector makes one correspondence per cross match, so each
+// kept track yields two correspondences in that direction and none in the reverse one (one
+// observation cannot be triangulated in rigBlock). keepTracks = 0 disconnects the pair. Call
+// before BuildRingBlocks
+static void ThinSeam(Scene& scene, const std::vector<IIndexArr>& blocks, uint32_t pointBlock,
+	uint32_t rigBlock, unsigned keepTracks, unsigned rigCameras)
+{
+	const std::set<IIndex> pointImages(blocks[pointBlock].begin(), blocks[pointBlock].end());
+	const std::set<IIndex> rigImages(blocks[rigBlock].begin(), blocks[rigBlock].end());
+	const unsigned numRig = MINF(rigCameras, (unsigned)blocks[rigBlock].size());
+
+	std::set<uint64_t> dropped;
+	unsigned kept = 0, nextCamera = 0;
+	for (Track& track : scene.tracks) {
+		bool seenByPoints = false, seenByRig = false;
+		for (const Observation& obs : track.observations) {
+			seenByPoints = seenByPoints || pointImages.count(obs.imageID) > 0;
+			seenByRig = seenByRig || rigImages.count(obs.imageID) > 0;
+		}
+		if (!seenByPoints || !seenByRig)
+			continue;
+		// the one rig camera this track is left with, taken in turn from those that see it
+		IIndex rigImage = NO_ID;
+		if (kept < keepTracks) {
+			for (unsigned k = 0; k < numRig && rigImage == NO_ID; ++k) {
+				const IIndex image = blocks[rigBlock][(nextCamera + k) % numRig];
+				for (const Observation& obs : track.observations)
+					if (obs.imageID == image) {
+						rigImage = image;
+						break;
+					}
+			}
+			if (rigImage != NO_ID) {
+				++kept;
+				nextCamera = (nextCamera + 1) % numRig;
+			}
+		}
+		// the survivors keep their order, so the inliers the track holds first stay first
+		ObservationArr keptObservations;
+		unsigned keptInliers = 0, numPointObservations = 0;
+		FOREACH(i, track.observations) {
+			const Observation& obs = track.observations[i];
+			const bool isPoint = pointImages.count(obs.imageID) > 0;
+			// every rig observation but the chosen one, and the point observations past the two a
+			// track needs to be triangulated where the seam reads it
+			if ((rigImages.count(obs.imageID) > 0 && obs.imageID != rigImage) ||
+				(isPoint && rigImage != NO_ID && numPointObservations >= 2)) {
+				dropped.insert(FeatureKey(obs.imageID, obs.featureID));
+				continue;
+			}
+			if (isPoint)
+				++numPointObservations;
+			if (i < track.numInliers)
+				++keptInliers;
+			keptObservations.emplace_back(obs);
+		}
+		if (keptObservations.size() == track.observations.size())
+			continue;
+		track.observations = keptObservations;
+		track.numInliers = (uint8_t)keptInliers;
+	}
+	// a match resting on an observation that is gone goes with it
+	for (ImagePair& pair : scene.pairs) {
+		const IIndex ID1 = pair.ID1, ID2 = pair.ID2;
+		pair.matches.erase(std::remove_if(pair.matches.begin(), pair.matches.end(),
+			[&dropped, ID1, ID2](const DMatch& match) {
+				return dropped.count(FeatureKey(ID1, match.queryIdx)) > 0 ||
+					dropped.count(FeatureKey(ID2, match.trainIdx)) > 0;
+			}), pair.matches.end());
+	}
+}
+
 // Plant a false seam: up to `count` tracks of pointBlock no camera of rigBlock ever saw each get
 // ONE new observation, in a camera of rigBlock (round-robin over the first `rigCameras` cameras
 // that see the moved point), of the point moved by `wrong` (a Sim(3) of the world frame); the
@@ -12147,6 +12236,90 @@ bool AmbiguousPairTest()
 			return false;
 	}
 	VERBOSE("AmbiguousPairTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+// The pair that closes a ring, left with two correspondences on each of thirty tracks: no camera of
+// either block is left holding the inliers a vote weighs with, so the seam stage measures the pair
+// and the camera votes drop it, and the blocks arrive as an open chain. The eleven seams that were
+// measured still carry the chain around to within a fraction of a degree of its far end, and what
+// the model then predicts of that pair reads its correspondences well enough to close the ring on
+// them
+bool WeakClosingSeamTest()
+{
+	TD_TIMER_START();
+	RingSceneConfig cfg{12, 10};
+	// the blocks come out slightly bent, so the chain has an error of its own to carry around the
+	// ring, and the keypoints are read more precisely than the generator's default: what the chain
+	// accumulates is what the model is off by when it predicts the closing pair, and only a
+	// prediction within the loose threshold can read that pair's correspondences again. At 0.3 px
+	// every seam is biased by about 0.065 degrees the same way, which over eleven seams leaves the
+	// closing pair 1.05 degrees -- 16 px at its cameras -- from where the model puts it, past the
+	// three times the reprojection bar a prediction is read at; at 0.1 px the same chain arrives
+	// 0.14 degrees out and the pair is read back in full.
+	cfg.driftDegPerBlock = 0.05;
+	cfg.noisePx = 0.1;
+	Scene scene;
+	std::vector<IIndexArr> blocks;
+	std::vector<Pose3D> gtPoses;
+	GenerateRingScene(cfg, scene, blocks, gtPoses);
+	// the closing pair keeps two correspondences on each of thirty tracks, in one direction only
+	ThinSeam(scene, blocks, 0, cfg.numBlocks - 1, 30, cfg.camsPerBlock);
+	std::vector<Scene> subScenes;
+	std::vector<IIndexArr> localToGlobals;
+	std::vector<SEACAVE::Transform> applied;
+	BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
+
+	const GlobalAlignmentConfig alignCfg;
+	const uint32_t closing = cfg.numBlocks - 1;
+	// what the pair is worth on its own evidence: nothing the seam stage can use
+	{
+		GlobalAlignment alignment(scene, alignCfg);
+		std::vector<SeamCandidate> candidates;
+		alignment.EstimateSeamCandidates(subScenes, localToGlobals, candidates);
+		for (const SeamCandidate& c : candidates)
+			if (c.sceneA == 0 && c.sceneB == closing) {
+				VERBOSE("WeakClosingSeamTest FAILED: the thinned pair (0, %u) yielded a candidate of "
+					"class %u on %u correspondences", closing, (unsigned)c.cls, (unsigned)c.observations.size());
+				return false;
+			}
+	}
+
+	GlobalAlignment ga(scene, alignCfg);
+	MergeReport rep;
+	{
+		LogCapture log;
+		ga.MergeScenes(subScenes, localToGlobals, rep);
+		if (!log.Contains("Seam (0, 11) verified after loop closure")) {
+			VERBOSE("WeakClosingSeamTest FAILED: the closing pair was never verified against the model");
+			return false;
+		}
+	}
+	// the seam the model read off its own prediction, and the model resting on it
+	uint32_t seam = NO_ID;
+	FOREACH(i, rep.candidates) {
+		const SeamCandidate& c = rep.candidates[i];
+		if (c.sceneA == 0 && c.sceneB == closing && c.cls == SeamCandidate::VERIFIED)
+			seam = (uint32_t)i;
+	}
+	if (seam == NO_ID) {
+		VERBOSE("WeakClosingSeamTest FAILED: no verified candidate closes the pair (0, %u)", closing);
+		return false;
+	}
+	if (std::find(rep.modelSeams.begin(), rep.modelSeams.end(), seam) == rep.modelSeams.end()) {
+		VERBOSE("WeakClosingSeamTest FAILED: the closing seam is not among the %u seams the model rests on",
+			(unsigned)rep.modelSeams.size());
+		return false;
+	}
+	if (!CheckRingMerge("WeakClosingSeamTest", rep, scene, gtPoses, cfg.numBlocks, 1, 0.6, 0.005))
+		return false;
+	RunFinalAdjustment(scene);
+	if (!CheckRingMerge("WeakClosingSeamTest, adjusted", rep, scene, gtPoses, cfg.numBlocks, 1, 0.3, 0.005))
+		return false;
+	VERBOSE("WeakClosingSeamTest PASSED: the closing seam kept %u of %u correspondences (%s)",
+		rep.candidates[seam].score.inliers, (unsigned)rep.candidates[seam].observations.size(),
+		TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 /*----------------------------------------------------------------*/

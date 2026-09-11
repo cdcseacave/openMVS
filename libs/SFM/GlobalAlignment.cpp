@@ -257,6 +257,10 @@ constexpr unsigned kNeighbourContraShare = 3;
 // The translation unit of a pair is the smaller block's extent, never under this share of the
 // larger's: a block of two cameras a millimetre apart has no footprint of its own to be judged by.
 constexpr float kMinExtentShare = 0.2f;
+// Times maxReprojError: the threshold a predicted seam collects its inliers at, before it is refined
+// over them and judged at the bar itself. A model never predicts a pair exactly, and what it is off
+// by is the very thing the seam is there to answer for.
+constexpr unsigned kLooseSeamFactor = 3;
 
 // A block the model already holds: admitted, and admitted into this model. Another model placed
 // its blocks in a frame this one knows nothing about, so they have no say here.
@@ -2368,6 +2372,177 @@ bool GlobalAlignment::AdmitGroup(
 }
 /*----------------------------------------------------------------*/
 
+// The worst the given seams are off, as the consensus last read them: their largest rotation
+// discrepancy, in degrees
+static float LargestSeamResidual(
+	const std::vector<SeamCandidate>& candidates, const std::vector<uint32_t>& modelSeams)
+{
+	float largest = 0;
+	for (const uint32_t e : modelSeams)
+		largest = MAXF(largest, candidates[e].residualRotation);
+	return largest;
+}
+
+// The pairs of a model that carry correspondences but no seam it rests on: both blocks admitted,
+// cross links between them, and nothing but undecided candidates on them. A pair the graph settled
+// already has its seam, and one it rejected has been weighed and contradicted, so neither is asked
+// again; a pair the gates refused is, since what is asked of it here is not what it can measure on
+// its own but what it makes of where the model puts its two blocks.
+static void CollectWeakPairs(
+	const std::vector<SeamCandidate>& candidates,
+	const std::map<std::pair<uint32_t, uint32_t>, std::vector<uint32_t>>& blockPairLinks,
+	const std::vector<BlockPose>& poses, const uint32_t model,
+	std::vector<std::pair<uint32_t, uint32_t>>& pairs)
+{
+	std::set<std::pair<uint32_t, uint32_t>> settled;
+	for (const SeamCandidate& c : candidates)
+		if (c.cls != SeamCandidate::UNDECIDED)
+			settled.emplace(c.sceneA, c.sceneB);
+	pairs.clear();
+	for (const auto& [blockPair, links] : blockPairLinks)
+		if (IsInModel(poses, blockPair.first, model) && IsInModel(poses, blockPair.second, model) &&
+			settled.count(blockPair) == 0)
+			pairs.push_back(blockPair);
+}
+/*----------------------------------------------------------------*/
+
+std::pair<float, float> GlobalAlignment::RelaxBlockPoses(
+	const std::vector<Scene>& subScenes,
+	std::vector<SeamCandidate>& candidates,
+	const std::vector<REAL>& blockExtents,
+	const uint32_t model, const uint32_t seed,
+	const std::vector<uint32_t>& modelSeams,
+	std::vector<BlockPose>& poses) const
+{
+	ASSERT(poses.size() == subScenes.size());
+	const float before = LargestSeamResidual(candidates, modelSeams);
+
+	// the whole model at once, over the seams it rests on and about the block it is gauged at
+	std::vector<BlockPose> averaged;
+	std::vector<Point3> residuals;
+	if (AverageBlockPoses(candidates, modelSeams, blockExtents,
+		(uint32_t)subScenes.size(), seed, averaged, residuals) && averaged[seed].model != NO_ID)
+	{
+		// the consensus comes out in a frame of its own, and is anchored back where the model
+		// already stands: a block the consensus could not reach then stays in the same frame as
+		// the blocks it moved
+		const Transform frame(poses[seed].T * averaged[seed].T.Invert());
+		FOREACH(b, poses)
+			if (IsInModel(poses, b, model) && averaged[b].model != NO_ID)
+				poses[b].T = frame * averaged[b].T;
+		// what the consensus makes of every seam where it has just put the blocks; one it could not
+		// reach keeps the verdict it had
+		FOREACH(k, modelSeams) {
+			if (residuals[k].x >= REAL(FLT_MAX))
+				continue;
+			SeamCandidate& c = candidates[modelSeams[k]];
+			c.residualRotation = (float)residuals[k].x;
+			c.residualScale = (float)residuals[k].y;
+			c.residualTranslation = (float)residuals[k].z;
+		}
+	}
+	// and the observations behind those seams read again from the poses that came out
+	RefineBlockPoses(candidates, modelSeams, model, seed, poses);
+	return std::make_pair(before, LargestSeamResidual(candidates, modelSeams));
+}
+/*----------------------------------------------------------------*/
+
+bool GlobalAlignment::CandidateFromPrediction(
+	const std::vector<Scene>& subScenes, const uint32_t a, const uint32_t b,
+	const Transform& T, SeamCandidate& c) const
+{
+	ASSERT(a < b);
+	c = SeamCandidate();
+	c.sceneA = a;
+	c.sceneB = b;
+	c.T = T;
+	c.source = SeamCandidate::UNION;
+
+	// the prediction is the hypothesis: the pair's own correspondences are read under it at the
+	// loose threshold, and what it explains there is what it is then fitted to
+	CollectPairObservations(subScenes, a, b, c.observations, c.correspondences);
+	const Transform TInv(T.Invert());
+	std::vector<SeamObservation> inliers;
+	for (const SeamObservation& obs : c.observations)
+		if (SeamObservationError(obs, T, TInv) <= (REAL)kLooseSeamFactor * config.maxReprojError)
+			inliers.push_back(obs);
+	if (inliers.size() < config.minCommonTracks) {
+		DEBUG_ULTIMATE("Seam (%u, %u) predicted: only %u of the pair's %u correspondences read under it",
+			a, b, (unsigned)inliers.size(), (unsigned)c.observations.size());
+		return false;
+	}
+	RefineSeamTransform(inliers, config.maxReprojError, c.T);
+	ScoreCandidate(subScenes, c);
+
+	// the gates it answers to: enough of the pair explained, and the two blocks' cameras left
+	// unmixed. Its own cameras' votes are not among them, a pair this thin having none to cast
+	const String failed = FailedGates(c.score, c.score.inliers, 0, config.minCameraVoteRatio);
+	if (failed.find("union support") != String::npos || failed.find("interleaving") != String::npos) {
+		DEBUG_ULTIMATE("Seam (%u, %u) predicted: %u inliers of the %u correspondences it was fitted to, "
+			"dropped by %s", a, b, c.score.inliers, (unsigned)inliers.size(), failed.c_str());
+		return false;
+	}
+	// what such a seam weighs: the cameras behind it, and at least enough to hold its two blocks
+	c.weight = MAXF(1.f, c.score.Weight(config.maxVoteWeight));
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+unsigned GlobalAlignment::VerifyWeakSeams(
+	const std::vector<Scene>& subScenes,
+	std::vector<SeamCandidate>& candidates,
+	const std::vector<REAL>& blockExtents,
+	const uint32_t model,
+	std::vector<BlockPose>& poses,
+	std::vector<uint32_t>& modelSeams) const
+{
+	std::vector<std::pair<uint32_t, uint32_t>> pairs;
+	CollectWeakPairs(candidates, blockPairLinks, poses, model, pairs);
+	std::vector<Transform> transforms(poses.size());
+	FOREACH(b, poses)
+		if (IsInModel(poses, b, model))
+			transforms[b] = poses[b].T;
+
+	unsigned numVerified = 0;
+	for (const auto& [a, b] : pairs) {
+		SeamCandidate c;
+		if (!CandidateFromPrediction(subScenes, a, b, poses[b].T.Invert() * poses[a].T, c))
+			continue;
+		// the seam the model predicted, read against the model like every other one it rests on
+		const SeamResidual residual = ComputeSeamResidual(a, b, c.T, transforms, blockExtents, config);
+		c.residualRotation = (float)residual.rotation;
+		c.residualScale = (float)residual.scale;
+		c.residualTranslation = (float)residual.translation;
+		c.cls = SeamCandidate::VERIFIED;
+		VERBOSE("Seam (%u, %u) verified after loop closure: %u inliers, %u votes",
+			a, b, c.score.inliers, c.score.support[0] + c.score.support[1]);
+		modelSeams.push_back((uint32_t)candidates.size());
+		candidates.emplace_back(std::move(c));
+		++numVerified;
+	}
+	return numVerified;
+}
+/*----------------------------------------------------------------*/
+
+void GlobalAlignment::CloseModel(
+	const std::vector<Scene>& subScenes,
+	std::vector<SeamCandidate>& candidates,
+	const std::vector<REAL>& blockExtents,
+	const uint32_t model, const uint32_t seed,
+	std::vector<BlockPose>& poses,
+	std::vector<uint32_t>& modelSeams) const
+{
+	std::pair<float, float> residual = RelaxBlockPoses(
+		subScenes, candidates, blockExtents, model, seed, modelSeams, poses);
+	// what the model now predicts of the pairs that could not measure a seam of their own, and the
+	// model relaxed once more over the cycles those close
+	if (VerifyWeakSeams(subScenes, candidates, blockExtents, model, poses, modelSeams) > 0)
+		residual = RelaxBlockPoses(subScenes, candidates, blockExtents, model, seed, modelSeams, poses);
+	DEBUG("Model %u rests on %u seams: largest seam residual %.2f deg before, %.2f deg after",
+		model, (unsigned)modelSeams.size(), residual.first, residual.second);
+}
+/*----------------------------------------------------------------*/
+
 unsigned GlobalAlignment::PlaceBlocks(
 	const std::vector<Scene>& subScenes,
 	std::vector<SeamCandidate>& candidates,
@@ -2467,7 +2642,8 @@ unsigned GlobalAlignment::PlaceBlocks(
 			DEBUG("Block %u deferred: %s", next, reason.c_str());
 			continue;
 		}
-		AdmitGroup(subScenes, candidates, blockExtents, model, group, winner, poses, modelSeams);
+		const bool closedCycle = AdmitGroup(
+			subScenes, candidates, blockExtents, model, group, winner, poses, modelSeams);
 		++numAdmitted;
 		modelChanged = true;
 		DEBUG("Block %u placed on %u neighbours (%u support, %u loop, %u contradict); "
@@ -2476,10 +2652,22 @@ unsigned GlobalAlignment::PlaceBlocks(
 			winner.neighbourSupport, winner.neighbourLoop, winner.neighbourContra,
 			winner.score.support[0], winner.score.contra[0],
 			winner.score.support[1], winner.score.contra[1], PlacementWord(winner.source));
-		// every admitted block fitted again to the seams the model rests on, so a seam's two ends
-		// can move apart instead of passing the error on
-		RefineBlockPoses(candidates, modelSeams, model, seed, poses);
+		if (closedCycle) {
+			// the block joined the model from two sides: the error the chain accumulated is spread
+			// over the cycle it just closed, instead of being left at the seam that closed it
+			const auto [before, after] = RelaxBlockPoses(
+				subScenes, candidates, blockExtents, model, seed, modelSeams, poses);
+			VERBOSE("Loop closed through block %u: largest seam residual %.2f deg before, %.2f deg after",
+				next, before, after);
+		} else
+			// every admitted block fitted again to the seams the model rests on, so a seam's two
+			// ends can move apart instead of passing the error on
+			RefineBlockPoses(candidates, modelSeams, model, seed, poses);
 	}
+
+	// the model as a whole, once it has taken in everything it can: averaged over its own seams, and
+	// over the pairs of it that only the model itself can read
+	CloseModel(subScenes, candidates, blockExtents, model, seed, poses, modelSeams);
 
 	// a block this model could not take but no model owns is left where it was found, so the next
 	// model may try it too; it keeps the reason of the last model that looked at it

@@ -341,6 +341,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::AmbiguousPairTest())
 				return false;
+			if (!SFM::WeakClosingSeamTest())
+				return false;
 			if (!SFM::GlobalAlignmentMergeSingleSceneTest())
 				return false;
 			if (!SFM::GlobalAlignmentTrackMergeDuplicateImageGuardTest())
