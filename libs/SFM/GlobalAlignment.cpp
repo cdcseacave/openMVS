@@ -55,7 +55,7 @@ void GlobalAlignment::BuildGlobalToLocalMap(const std::vector<IIndexArr>& localT
 			const IIndex globalID = mapping[localID];
 			if (globalID == NO_ID)
 				continue;
-			MAYBEUNUSED const auto [it, inserted] = globalToLocal.emplace(globalID, std::make_pair(sceneIdx, localID));
+			[[maybe_unused]] const auto [it, inserted] = globalToLocal.emplace(globalID, std::make_pair(sceneIdx, localID));
 			ASSERT(inserted, "global image %u appears in multiple sub-scenes (%u:%u and %u:%u)",
 				globalID, it->second.first, it->second.second, sceneIdx, localID);
 		}

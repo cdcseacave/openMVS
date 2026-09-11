@@ -29,23 +29,8 @@
 
 // Modify the following defines if you have to target a platform prior to the ones specified below.
 // Refer to MSDN for the latest info on corresponding values for different platforms.
-#if _MSC_VER > 1400
 #ifndef NTDDI_VERSION		// There's now just one symbol to specify the minimum target operating system.
 #define NTDDI_VERSION NTDDI_WIN7 // All the other symbols are set automatically to the appropriate values for the target operating system.
-#endif
-#else
-#ifndef WINVER				// Allow use of features specific to Windows 95 and Windows NT 4 or later.
-#define WINVER 0x0500		// Change this to the appropriate value to target Windows 98 and Windows 2000 or later.
-#endif
-#ifndef _WIN32_WINNT		// Allow use of features specific to Windows NT 4 or later.
-#define _WIN32_WINNT 0x0500	// Change this to the appropriate value to target Windows 98 and Windows 2000 or later.
-#endif
-#ifndef _WIN32_WINDOWS		// Allow use of features specific to Windows 98 or later.
-#define _WIN32_WINDOWS 0x0410 // Change this to the appropriate value to target Windows Me or later.
-#endif
-#ifndef _WIN32_IE			// Allow use of features specific to IE 4.0 or later.
-#define _WIN32_IE 0x0501	// Change this to the appropriate value to target IE 5.0 or later.
-#endif
 #endif
 
 #ifndef VC_EXTRALEAN
@@ -62,7 +47,6 @@
 
 #define _USE_MATH_DEFINES
 
-#if _MSC_VER >= 1400
 #ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS 1
 #endif
@@ -80,7 +64,6 @@
 #endif
 #if 0 && defined(_DEBUG) && !defined(_ITERATOR_DEBUG_LEVEL) // might not build if linking statically to 3rd party libraries
 #define _ITERATOR_DEBUG_LEVEL 1 // disable std iterator debugging even in Debug, as it is very slow
-#endif
 #endif
 
 
@@ -161,14 +144,10 @@
 #endif // _MSC_VER
 
 
-#if __cplusplus >= 201103L || (__clang_major__ >= 4 || (__clang_major__ >= 3 && __clang_minor__ >= 3))
-#define _SUPPORT_CPP11
-#endif
-#if __cplusplus >= 201402L || (__clang_major__ >= 4 || (__clang_major__ >= 3 && __clang_minor__ >= 4))
-#define _SUPPORT_CPP14
-#endif
-#if __cplusplus >= 201703L || __clang_major__ >= 5
-#define _SUPPORT_CPP17
+// C++17 is the minimum; MSVC reports the real standard in _MSVC_LANG, as __cplusplus stays
+// 199711L without /Zc:__cplusplus, which code including these headers may not pass
+#if defined(_MSVC_LANG) ? _MSVC_LANG < 201703L : __cplusplus < 201703L
+#error "OpenMVS requires C++17 or newer"
 #endif
 #if __cplusplus >= 202002L || __clang_major__ >= 10
 #define _SUPPORT_CPP20
@@ -200,11 +179,8 @@
 #	define NOALIAS __declspec(noalias) //applied to a function declaration or definition that returns a pointer type and tells the compiler that the function call does not modify or reference visible global state and only modifies the memory pointed to directly by pointer parameters (first-level indirections)
 #	define RESTRICT  __restrict //applied to a function parameter
 #	define MEMALLOC __declspec(noalias) __declspec(restrict)
-#	define DEPRECATED __declspec(deprecated)
-#	define MAYBEUNUSED
 #	define HOT
 #	define COLD
-#	define THREADLOCAL __declspec(thread)
 #	define FORCEINLINE __forceinline
 #elif defined(__GNUC__) || defined(__clang__)
 #	define ALIGN(n) __attribute__((aligned(n)))
@@ -213,11 +189,8 @@
 #	define NOALIAS
 #	define RESTRICT  __restrict__
 #	define MEMALLOC __attribute__ ((__malloc__))
-#	define DEPRECATED __attribute__ ((__deprecated__))
-#	define MAYBEUNUSED __attribute__ ((unused))
 #	define HOT __attribute__((hot)) __attribute__((optimize("-O3"))) __attribute__((optimize("-ffast-math"))) //optimize for speed, even in debug
 #	define COLD __attribute__((cold)) //optimize for size
-#	define THREADLOCAL __thread
 #	define FORCEINLINE inline //__attribute__((always_inline))
 #else
 #	define ALIGN(n)
@@ -226,17 +199,9 @@
 #	define NOALIAS
 #	define RESTRICT
 #	define MEMALLOC
-#	define DEPRECATED
-#	define MAYBEUNUSED
 #	define HOT
 #	define COLD
-#	define THREADLOCAL __thread
 #	define FORCEINLINE inline
-#endif
-
-#ifdef _SUPPORT_CPP17
-#	undef MAYBEUNUSED
-#	define MAYBEUNUSED [[maybe_unused]]
 #endif
 
 #define SAFE_DELETE(p)		{ if (p!=NULL) { delete (p);     (p)=NULL; } }
@@ -347,28 +312,6 @@ __inline__ static void trap_instruction() { __asm__ volatile("brk #0"); }
 #define TRACE(...)
 
 #endif // _DEBUG
-
-
-namespace SEACAVE_ASSERT
-{
-	template <bool value> struct compile_time_assert;
-	template <> struct compile_time_assert<true> { enum {value=1}; };
-
-	template <typename T, typename U> struct assert_are_same_type;
-	template <typename T> struct assert_are_same_type<T,T> { enum{value=1}; };
-
-	template <typename T, typename U> struct assert_are_not_same_type { enum{value=1}; };
-	template <typename T> struct assert_are_not_same_type<T,T> {};
-}
-
-#define STATIC_ASSERT(expression) \
-	MAYBEUNUSED typedef char CTA##__LINE__[::SEACAVE_ASSERT::compile_time_assert<(bool)(expression)>::value]
-
-#define ASSERT_ARE_SAME_TYPE(type1, type2) \
-	MAYBEUNUSED typedef char AAST##__LINE__[::SEACAVE_ASSERT::assert_are_same_type<type1,type2>::value]
-
-#define ASSERT_ARE_NOT_SAME_TYPE(type1, type2) \
-	MAYBEUNUSED typedef char AANST##__LINE__[::SEACAVE_ASSERT::assert_are_not_same_type<type1,type2>::value]
 /*----------------------------------------------------------------*/
 
 #endif // __SEACAVE_CONFIG_H__

@@ -77,6 +77,12 @@ bool MeshRefineEnergyGradientTest(bool verbose = false);
 // faces a camera actually observes may survive, the nMinViews threshold must separate the side
 // both cameras see from the side only one of them does, and a second pass must remove nothing
 bool MeshUnseenFacesTest();
+
+// test the neighbor-view scale Scene::SelectNeighborViews estimates and FilterNeighborViews bounds:
+// one mis-triangulated point next to the reference camera center must not move it, the scene's
+// unit must change neither the scale nor the neighbors picked, and no neighbor the filter keeps
+// may carry a scale outside its bounds (an image is resampled by it)
+bool SelectNeighborViewsScaleTest();
 /*----------------------------------------------------------------*/
 
 } // namespace MVS

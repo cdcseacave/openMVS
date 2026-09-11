@@ -669,11 +669,7 @@ struct triangle_vhandles_t {
 	vertex_handle_t verts[3];
 	triangle_vhandles_t() {}
 	triangle_vhandles_t(vertex_handle_t _v0, vertex_handle_t _v1, vertex_handle_t _v2)
-		#ifdef _SUPPORT_CPP11
 		: verts{_v0,_v1,_v2} {}
-		#else
-		{ verts[0] = _v0; verts[1] = _v1; verts[2] = _v2; }
-		#endif
 };
 inline triangle_vhandles_t getTriangle(cell_handle_t cell, int i)
 {
@@ -1312,9 +1308,7 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 		// extract surface formed by the facets between inside/outside cells
 		const size_t nEstimatedNumVerts(delaunay.number_of_vertices());
 		std::unordered_map<void*,Mesh::VIndex> mapVertices;
-		#if defined(_MSC_VER) && (_MSC_VER > 1600)
 		mapVertices.reserve(nEstimatedNumVerts);
-		#endif
 		mesh.vertices.Reserve((Mesh::VIndex)nEstimatedNumVerts);
 		mesh.faces.Reserve((Mesh::FIndex)nEstimatedNumVerts*2);
 		// scale-aware webbing gate: every Delaunay vertex IS an input point, so a facet can

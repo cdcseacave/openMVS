@@ -74,7 +74,6 @@ Factory pattern with format auto-detection by file extension.
 
 ## Third-Party Components
 - `json.hpp` - nlohmann JSON (header-only)
-- `TinyXML2.h/cpp` - XML parser
 
 ## Build & Dependencies
 - **Optional deps**: libpng, libjpeg, libtiff, libjxl, exiv2 (EXIF metadata)

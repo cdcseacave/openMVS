@@ -289,7 +289,7 @@ void TOctreeLOD<ITEMARR_TYPE,TYPE,DIMS>::_GetDebugInfo(const Node& node, unsigne
 // Test function for TOctreeLOD (matches OctreeTest pattern from Octree.inl)
 template <typename TYPE, int DIMS>
 inline bool OctreeLODTest(unsigned iters, unsigned maxItems=10000, bool bRandom=true) {
-	STATIC_ASSERT(DIMS > 0 && DIMS <= 3);
+	static_assert(DIMS > 0 && DIMS <= 3);
 	srand(bRandom ? (unsigned)time(NULL) : 0);
 	typedef Eigen::Matrix<TYPE,DIMS,1> POINT_TYPE;
 	typedef CLISTDEF0(POINT_TYPE) TestArr;

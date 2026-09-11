@@ -824,7 +824,7 @@ bool PointCloud::SaveGLTF(const String& fileName, bool bBinary) const
 
 	// setup vertices
 	{
-		STATIC_ASSERT(3 * sizeof(Point::Type) == sizeof(Point)); // PointArr should be continuous
+		static_assert(3 * sizeof(Point::Type) == sizeof(Point)); // PointArr should be continuous
 		const Box box(GetAABB());
 		gltfPrimitive.attributes["POSITION"] = (int)gltfModel.accessors.size();
 		tinygltf::Accessor vertexPositionAccessor;
@@ -847,7 +847,7 @@ bool PointCloud::SaveGLTF(const String& fileName, bool bBinary) const
 
 	// setup colors
 	if (!colors.empty()) {
-		STATIC_ASSERT(3 * sizeof(Color::Type) == sizeof(Color)); // ColorArr should be continuous
+		static_assert(3 * sizeof(Color::Type) == sizeof(Color)); // ColorArr should be continuous
 		gltfPrimitive.attributes["COLOR_0"] = (int)gltfModel.accessors.size();
 		tinygltf::Accessor vertexColorAccessor;
 		vertexColorAccessor.name = "vertexColorAccessor";
@@ -872,7 +872,7 @@ bool PointCloud::SaveGLTF(const String& fileName, bool bBinary) const
 
 	// setup normals
 	if (!normals.empty()) {
-		STATIC_ASSERT(3 * sizeof(Normal::Type) == sizeof(Normal)); // NormalArr should be continuous
+		static_assert(3 * sizeof(Normal::Type) == sizeof(Normal)); // NormalArr should be continuous
 		gltfPrimitive.attributes["NORMAL"] = (int)gltfModel.accessors.size();
 		tinygltf::Accessor vertexNormalAccessor;
 		vertexNormalAccessor.name = "vertexNormalAccessor";

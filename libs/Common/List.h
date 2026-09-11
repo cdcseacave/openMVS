@@ -358,9 +358,12 @@ public:
 	}
 
 	// Set the allocated memory (normally used for types without constructor).
+	// Byte-writing is valid for any trivially copyable type, even one with a user-provided
+	// default constructor; the void* cast tells GCC's -Wclass-memaccess so.
 	inline void		Memset(uint8_t val)
 	{
-		memset(_vector, val, static_cast<size_t>(_size) * sizeof(TYPE));
+		static_assert(std::is_trivially_copyable<TYPE>::value, "Memset requires a trivially copyable type");
+		memset((void*)_vector, val, static_cast<size_t>(_size) * sizeof(TYPE));
 	}
 	inline void		MemsetValue(ARG_TYPE val)
 	{
@@ -511,7 +514,6 @@ public:
 	}
 
 	// Adds a new empty element at the end of the array and pass the arguments to its constructor.
-	#ifdef _SUPPORT_CPP11
 	template <typename... Args>
 	inline TYPE&	AddConstruct(Args&&... args)
 	{
@@ -519,15 +521,6 @@ public:
 			_Grow(_vectorSize + grow);
 		return *(new(_vector + (_size++)) TYPE(std::forward<Args>(args)...));
 	}
-	#else
-	template <typename... Args>
-	inline TYPE&	AddConstruct(Args... args)
-	{
-		if (_vectorSize <= _size)
-			_Grow(_vectorSize + grow);
-		return *(new(_vector + (_size++)) TYPE(args...));
-	}
-	#endif
 
 	inline IDX		InsertEmpty()
 	{
@@ -539,7 +532,6 @@ public:
 	}
 
 	// Adds the new element at the end of the array.
-	#ifdef _SUPPORT_CPP11
 	template <typename T>
 	inline void		Insert(T&& elem)
 	{
@@ -550,19 +542,7 @@ public:
 		else
 			_vector[_size++] = std::forward<T>(elem);
 	}
-	#else
-	inline void		Insert(ARG_TYPE elem)
-	{
-		if (_vectorSize <= _size)
-			_Grow(_vectorSize + grow);
-		if (useConstruct)
-			new(_vector+(_size++)) TYPE(elem);
-		else
-			_vector[_size++] = elem;
-	}
-	#endif
 
-	#ifdef _SUPPORT_CPP11
 	template <typename T>
 	inline void		SetAt(IDX index, T&& elem)
 	{
@@ -570,16 +550,7 @@ public:
 			Resize(index + 1);
 		_vector[index] = std::forward<T>(elem);
 	}
-	#else
-	inline void		SetAt(IDX index, ARG_TYPE elem)
-	{
-		if (_size <= index)
-			Resize(index + 1);
-		_vector[index] = elem;
-	}
-	#endif
 
-	#ifdef _SUPPORT_CPP11
 	template <typename T>
 	inline void		AddAt(IDX index, T&& elem)
 	{
@@ -595,24 +566,7 @@ public:
 			_vector[index] = std::forward<T>(elem);
 		++_size;
 	}
-	#else
-	inline void		AddAt(IDX index, ARG_TYPE elem)
-	{
-		if (index < _size)
-			return InsertAt(index, elem);
-		const IDX newSize = index + 1;
-		if (_vectorSize <= newSize)
-			_Grow(newSize + grow);
-		_ArrayConstruct(_vector+_size, index-_size);
-		if (useConstruct)
-			new(_vector+index) TYPE(elem);
-		else
-			_vector[index] = elem;
-		++_size;
-	}
-	#endif
 
-	#ifdef _SUPPORT_CPP11
 	template <typename T>
 	inline void		InsertAt(IDX index, T&& elem)
 	{
@@ -621,15 +575,6 @@ public:
 		else
 			*AllocateAt(index) = std::forward<T>(elem);
 	}
-	#else
-	inline void		InsertAt(IDX index, ARG_TYPE elem)
-	{
-		if (useConstruct)
-			new(AllocateAt(index)) TYPE(elem);
-		else
-			*AllocateAt(index) = elem;
-	}
-	#endif
 
 	// Same as Insert, but the constructor is not called.
 	inline TYPE*	Allocate()
@@ -733,6 +678,49 @@ public:
 	{
 		return std::accumulate(Begin(), End(), TYPE(0)) / _size;
 	}
+	// trimmed (truncated) mean: the mean of the elements left once the lowest lowRatio and the
+	// highest highRatio fraction of them are dropped, and at least minTrim from each end (a
+	// percentile-window mean when the two ratios differ); if that would drop them all, the one or
+	// two elements at the center of the requested window are kept instead, so a symmetric trim of
+	// up to 4 elements with minTrim >= 1 gives exactly the median. Robust to outliers at either
+	// end while they are fewer than the trimmed share, and closer to the plain mean than the median
+	// on clean data; linear time, reorders the elements; pNumKept receives how many were averaged;
+	// the static form works on any range [begin, end), e.g. one bucket of a larger array
+	template <typename RTYPE = typename std::conditional<std::is_floating_point<TYPE>::value,TYPE,REAL>::type>
+	static RTYPE	GetTrimmedMean(TYPE* begin, TYPE* end, float lowRatio, float highRatio, IDX minTrim=0, IDX* pNumKept=NULL)
+	{
+		const IDX size(static_cast<IDX>(end-begin));
+		ASSERT(minTrim < size);
+		ASSERT(lowRatio >= 0 && highRatio >= 0 && lowRatio+highRatio < 1);
+		const IDX lowTrim(MAXF(static_cast<IDX>(static_cast<double>(size)*lowRatio), minTrim));
+		const IDX highTrim(MAXF(static_cast<IDX>(static_cast<double>(size)*highRatio), minTrim));
+		IDX lo(lowTrim), hi(size-highTrim);
+		if (lo >= hi) {
+			// nothing left: keep the element, or the two, at the center of the requested window
+			const IDX center2(lowTrim+size-highTrim); // twice the center rank, in [1, 2*size-2]
+			lo = (center2-1)/2;
+			hi = center2/2+1;
+		}
+		TYPE* const first(begin+lo);
+		TYPE* const last(begin+hi);
+		// the lo lowest elements go before first, then the highest of the rest from last on
+		if (lo > 0)
+			std::nth_element(begin, first, end);
+		if (hi < size)
+			std::nth_element(first, last, end);
+		typedef typename std::common_type<RTYPE,double>::type SUMTYPE;
+		SUMTYPE sum(0);
+		for (const TYPE* it=first; it!=last; ++it)
+			sum += static_cast<SUMTYPE>(*it);
+		if (pNumKept)
+			*pNumKept = hi-lo;
+		return static_cast<RTYPE>(sum / static_cast<SUMTYPE>(hi-lo));
+	}
+	template <typename RTYPE = typename std::conditional<std::is_floating_point<TYPE>::value,TYPE,REAL>::type>
+	inline RTYPE	GetTrimmedMean(float lowRatio, float highRatio, IDX minTrim=0, IDX* pNumKept=NULL)
+	{
+		return GetTrimmedMean<RTYPE>(Begin(), End(), lowRatio, highRatio, minTrim, pNumKept);
+	}
 
 	inline ArgType	GetMax() const {
 		return *std::max_element(Begin(), End());
@@ -748,7 +736,6 @@ public:
 	inline IDX	GetMaxIdx(const Functor& functor) const {
 		return static_cast<IDX>(std::max_element(Begin(), End(), functor) - Begin());
 	}
-	#ifdef _SUPPORT_CPP11
 	inline std::pair<ArgType,ArgType>	GetMinMax() const {
 		const auto minmax(std::minmax_element(Begin(), End()));
 		return std::pair<ArgType,ArgType>(*minmax.first, *minmax.second);
@@ -767,7 +754,6 @@ public:
 		const auto minmax(std::minmax_element(Begin(), End(), functor));
 		return std::make_pair(static_cast<IDX>(minmax.first-Begin()), static_cast<IDX>(minmax.second-Begin()));
 	}
-	#endif
 
 	inline TYPE&	PartialSort(IDX index)
 	{
@@ -788,38 +774,12 @@ public:
 
 	inline	bool	IsSorted() const
 	{
-		#ifdef _SUPPORT_CPP11
 		return std::is_sorted(Begin(), End());
-		#else
-		if (_size < 2)
-			return true;
-		IDX i = _size-1;
-		do {
-			ARG_TYPE elem1 = _vector[i];
-			ARG_TYPE elem0 = _vector[--i];
-			if (elem1 < elem0)
-				return false;
-		} while (i > 0);
-		return true;
-		#endif
 	}
 	template <typename Functor>
 	inline bool		IsSorted(const Functor& functor) const
 	{
-		#ifdef _SUPPORT_CPP11
 		return std::is_sorted(Begin(), End(), functor);
-		#else
-		if (_size < 2)
-			return true;
-		IDX i = _size-1;
-		do {
-			ARG_TYPE elem1 = _vector[i];
-			ARG_TYPE elem0 = _vector[--i];
-			if (functor(elem1, elem0))
-				return false;
-		} while (i > 0);
-		return true;
-		#endif
 	}
 
 	inline std::pair<IDX,bool>	InsertSortUnique(ARG_TYPE elem)
@@ -1494,19 +1454,15 @@ public:
 	typedef const value_type& const_reference;
 	typedef std::vector<Type> VectorType;
 	inline cList(const VectorType& rList) { CopyOf(&rList[0], rList.size()); }
-	#ifdef _SUPPORT_CPP11
 	inline cList(std::initializer_list<Type> l) : _size(0), _vectorSize((size_type)l.size()), _vector(NULL) { ASSERT(l.size()<NO_INDEX); if (_vectorSize == 0) return; _vector = (Type*) operator new[] (static_cast<size_t>(_vectorSize)*sizeof(Type)); const Type* first(l.begin()); do new(_vector + _size++) Type(*first++); while (first!=l.end()); }
-	#endif
 	inline bool empty() const { return IsEmpty(); }
 	inline size_type size() const { return GetSize(); }
 	inline size_type capacity() const { return GetCapacity(); }
 	inline void clear() { Empty(); }
 	inline void insert(const_iterator it, const_reference elem) { InsertAt(it-this->_vector, elem); }
-	#ifdef _SUPPORT_CPP11
 	template <typename... Args>
 	inline reference emplace_back(Args&&... args) { return AddConstruct(std::forward<Args>(args)...); }
 	inline void push_back(value_type&& elem) { AddConstruct(elem); }
-	#endif
 	inline void assign(size_type count, const Type& value) { Empty(); Reserve(count); _ArrayConstruct(_vector, count, value); _size = count; }
 	inline void push_back(const_reference elem) { Insert(elem); }
 	inline void pop_back() { RemoveLast(); }
@@ -1635,6 +1591,44 @@ inline bool cListTest(unsigned iters) {
 		for (size_t i=0; i<arrR.size(); ++i) {
 			const int e = arrR[i];
 			if (arrS[i] != e) {
+				ASSERT("there is a problem" == NULL);
+				return false;
+			}
+		}
+		// GetTrimmedMean against sorting, on a small value range so ties are common
+		{
+			static const float trimRatios[] = {0.f, 0.05f, 0.1f, 0.25f, 0.45f, 0.85f};
+			const size_t n = 1+RAND()%60;
+			const float lowRatio = trimRatios[RAND()%6];
+			float highRatio = RAND()%2 ? lowRatio : trimRatios[RAND()%6];
+			if (lowRatio+highRatio >= 1.f)
+				highRatio = 0.05f;
+			const unsigned minTrim = static_cast<unsigned>(RAND()%MINF(n, size_t(4))); // must stay below n
+			cList<int, int, 0> arrT;
+			cList<float, float, 0> arrTF;
+			for (size_t j=0; j<n; ++j) {
+				arrT.Insert(RAND()%50-25);
+				arrTF.Insert(static_cast<float>(arrT.Last()));
+			}
+			cList<int, int, 0> arrM(arrT);
+			std::vector<int> sorted(arrT.Begin(), arrT.End());
+			std::sort(sorted.begin(), sorted.end());
+			const size_t lowTrim = MINF(MAXF(static_cast<size_t>(static_cast<double>(n)*lowRatio), static_cast<size_t>(minTrim)), n);
+			const size_t highTrim = MINF(MAXF(static_cast<size_t>(static_cast<double>(n)*highRatio), static_cast<size_t>(minTrim)), n);
+			size_t lo = lowTrim, hi = n-highTrim;
+			if (lo >= hi) {
+				const size_t center2 = lowTrim+n-highTrim;
+				lo = center2 > 0 ? (center2-1)/2 : 0;
+				hi = MINF(center2/2+1, n);
+			}
+			double sum = 0;
+			for (size_t j=lo; j<hi; ++j)
+				sum += sorted[j];
+			const double expected = sum/static_cast<double>(hi-lo);
+			size_t numKept = 0;
+			if (arrT.GetTrimmedMean(lowRatio, highRatio, minTrim, &numKept) != expected || numKept != hi-lo ||
+				arrTF.GetTrimmedMean(lowRatio, highRatio, minTrim) != static_cast<float>(expected) ||
+				(lowRatio == highRatio && minTrim >= 1 && n <= 4 && arrM.GetMedian() != expected)) {
 				ASSERT("there is a problem" == NULL);
 				return false;
 			}

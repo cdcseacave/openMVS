@@ -261,7 +261,6 @@ void RangeToDepthMap(const Image32F& rangeMap, const Camera& camera, DepthMap& d
 //  DEPTH_MIN DEPTH_INTERVAL (DEPTH_NUM DEPTH_MAX)
 bool ParseSceneMVSNet(Scene& scene, const String& strPath)
 {
-	#if defined(_SUPPORT_CPP17) && (!defined(__GNUC__) || (__GNUC__ > 7))
 	IIndex prevPlatformID = NO_ID;
 	for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator((strPath + MVSNET_IMAGES_FOLDER).c_str())) {
 		if (entry.path().extension() != MVSNET_IMAGES_EXT)
@@ -342,10 +341,6 @@ bool ParseSceneMVSNet(Scene& scene, const String& strPath)
 		return false;
 	scene.nCalibratedImages = (unsigned)scene.images.size();
 	return true;
-	#else
-	VERBOSE("error: C++17 is required to parse MVSNet format");
-	return false;
-	#endif // _SUPPORT_CPP17
 }
 
 // RTMV scene format: http://www.cs.umd.edu/~mmeshry/projects/rtmv
@@ -487,16 +482,11 @@ bool ParseSceneRTMV(Scene& scene, const String& strPath)
 	const String strImagePath(strPath + "images/");
 	Util::ensureFolder(strImagePath);
 	std::vector<String> strImageNames;
-	#if defined(_SUPPORT_CPP17) && (!defined(__GNUC__) || (__GNUC__ > 7))
 	for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(strPath.c_str())) {
 		if (entry.path().extension() != RTMV_CAMERAS_EXT)
 			continue;
 		strImageNames.emplace_back(entry.path().stem().string());
 	}
-	#else
-	VERBOSE("error: C++17 is required to parse RTMV format");
-	return false;
-	#endif // _SUPPORT_CPP17
 	IIndex prevPlatformID = NO_ID;
 	scene.images.resize((IIndex)strImageNames.size());
 	scene.platforms.reserve((IIndex)strImageNames.size());
@@ -645,7 +635,6 @@ bool ParseSceneRTMV(Scene& scene, const String& strPath)
 
 bool ParseScene(Scene& scene)
 {
-	#if defined(_SUPPORT_CPP17) && (!defined(__GNUC__) || (__GNUC__ > 7))
 	String strPath(MAKE_PATH_FULL(WORKING_FOLDER_FULL, OPT::strInputFileName));
 	Util::ensureValidFolderPath(strPath);
 	const std::filesystem::path path(static_cast<const std::string&>(strPath));
@@ -668,10 +657,6 @@ bool ParseScene(Scene& scene)
 	case RTMV: return ParseSceneRTMV(scene, strPath);
 	default: return ParseSceneMVSNet(scene, strPath);
 	}
-	#else
-	VERBOSE("error: C++17 is required to parse MVSNet format");
-	return false;
-	#endif // _SUPPORT_CPP17
 }
 
 } // unnamed namespace

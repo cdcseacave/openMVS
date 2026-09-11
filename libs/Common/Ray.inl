@@ -99,7 +99,7 @@ inline TYPE TRay<TYPE,DIMS>::SetFromPointsLen(const POINT& pt0, const POINT& pt1
 template <typename TYPE, int DIMS>
 inline void TRay<TYPE,DIMS>::DeTransform(const MATRIX& _m)
 {
-	STATIC_ASSERT(DIMS == 3);
+	static_assert(DIMS == 3);
 	MATRIX m(_m);
 
 	// invert translation

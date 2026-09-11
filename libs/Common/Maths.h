@@ -289,12 +289,12 @@ constexpr T CUBE(const T& a) {
 }
 template<typename T>
 constexpr T D2R(const T& d) { // degree to radian
-	STATIC_ASSERT(std::is_floating_point<T>::value);
+	static_assert(std::is_floating_point<T>::value);
 	return d * T(PI/180.0);
 }
 template<typename T>
 constexpr T R2D(const T& r) { // radian to degree
-	STATIC_ASSERT(std::is_floating_point<T>::value);
+	static_assert(std::is_floating_point<T>::value);
 	return r * T(180.0/PI);
 }
 template<typename T>
@@ -524,7 +524,7 @@ FORCEINLINE int PopCntSparse(uint64_t bb) {
 template<typename T>
 constexpr int PopCnt(T bb)
 {
-	STATIC_ASSERT(std::is_integral<T>::value && std::is_unsigned<T>::value);
+	static_assert(std::is_integral<T>::value && std::is_unsigned<T>::value);
 	return std::bitset<sizeof(T)*8>(bb).count();
 }
 template<>
@@ -849,11 +849,7 @@ constexpr bool  ISINSIDES(_Tp v,_Tp l0,_Tp l1)	{ return l0 < l1 ? ISINSIDE(v, l0
 template<typename _Tp>
 inline _Tp    CLAMP(_Tp v, _Tp l0, _Tp l1)	{
 	ASSERT(l0<=l1);
-	#ifdef _SUPPORT_CPP17
 	return std::clamp(v, l0, l1);
-	#else
-	return MINF(MAXF(v, l0), l1);
-	#endif
 }
 template<typename _Tp>
 constexpr _Tp   CLAMPS(_Tp v, _Tp l0, _Tp l1)	{ return l0 <= l1 ? CLAMP(v, l0, l1) : CLAMP(v, l1, l0); }
