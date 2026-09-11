@@ -762,20 +762,29 @@ SeamTrackStatsMap SceneCluster::ComputeSeamTrackStats(const std::vector<IIndexAr
 	return stats;
 }
 
-// A cluster the merge could never attach: every seam it has carries too few usable tracks, or has
-// them in too few cameras, to register it against the neighbour. Reconstructed on its own it would
+// A cluster the merge could never attach: the seams it has carry too few usable tracks, or have
+// them in too few cameras, to register it against its neighbours. Reconstructed on its own it would
 // come out as a block the merge has to leave unplaced, so it is joined to the neighbour it shares
 // the most usable tracks with while that still fits inside the capacity slack.
+// A cluster is held to as many strong seams as its position can give it: a cluster with a single
+// neighbour can never have a second strong one, and absorbing it would only leave the absorbing
+// cluster in the same one-sided position — the leaf would move, the chain would not close — so the
+// bar is minClusterDegree capped by the number of neighbours the cluster actually has.
 void SceneCluster::MergeLeafClusters(std::vector<IIndexArr>& clusters)
 {
 	std::vector<int> nodeToCluster = MapNodesToClusters(clusters, scene.images.size());
 	// every round merges each cluster at most once, so the cluster count bounds the rounds
 	for (unsigned round = (unsigned)clusters.size(); round > 0; --round) {
 		const SeamTrackStatsMap stats = ComputeSeamTrackStats(clusters);
-		std::vector<unsigned> numStrong(clusters.size(), 0), bestUsable(clusters.size(), 0);
+		std::vector<unsigned> numStrong(clusters.size(), 0), numAdjacent(clusters.size(), 0),
+			bestUsable(clusters.size(), 0);
 		std::vector<int> bestNeighbour(clusters.size(), -1);
 		for (const auto& [pair, seam] : stats) {
 			const uint32_t sides[2] = {pair.first, pair.second};
+			// every pair the statistics hold shares at least one seam-usable track, which is what
+			// makes the two clusters neighbours at all
+			++numAdjacent[sides[0]];
+			++numAdjacent[sides[1]];
 			if (IsStrongSeam(seam, config)) {
 				++numStrong[sides[0]];
 				++numStrong[sides[1]];
@@ -793,8 +802,8 @@ void SceneCluster::MergeLeafClusters(std::vector<IIndexArr>& clusters)
 		for (size_t c = 0; c < clusters.size(); ++c) {
 			if (clusters[c].size() < config.minViewsPerCluster || merged[c])
 				continue; // under the floor: the floor rule decides where it goes
-			if (numStrong[c] >= config.minClusterDegree)
-				continue;
+			if (numStrong[c] >= MINF(config.minClusterDegree, numAdjacent[c]))
+				continue; // as many strong seams as this cluster could have
 			const int into = bestNeighbour[c];
 			if (into < 0 || merged[into] ||
 				clusters[c].size() + clusters[into].size() > config.maxViewsPerCluster + config.maxOverCapacity) {

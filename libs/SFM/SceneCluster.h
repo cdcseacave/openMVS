@@ -118,10 +118,10 @@ class SFM_API Scene;
 struct SFM_API ClusterConfig
 {
 	unsigned maxViewsPerCluster{150};    // ceiling; 0 = disable clustering
-	unsigned targetViewsPerCluster{100}; // a cluster stops growing past this unless it absorbs one under the floor
+	unsigned targetViewsPerCluster{100}; // a cluster at or past this absorbs nothing more; the one merge that takes it past is the one absorbing a cluster under the floor
 	unsigned minViewsPerCluster{40};     // floor: smaller clusters are merged into their strongest neighbour
 	unsigned maxOverCapacity{20};        // extra images allowed over the ceiling when absorbing a small cluster
-	unsigned minClusterDegree{2};        // a cluster with fewer strong neighbours is merged into its heaviest one when the result fits (0 = keep every cluster)
+	unsigned minClusterDegree{2};        // strong neighbours a cluster is held to, capped by the number it has; below that it is merged into its heaviest one when the result fits (0 = keep every cluster)
 	unsigned minSeamTracks{75};          // seam-usable tracks a cluster pair needs for the neighbour to count as strong
 	unsigned minSeamCameras{3};          // cameras per side with enough seam-usable tracks for the neighbour to count as strong
 	unsigned minSeamCameraTracks{30};    // seam-usable tracks one camera needs to count (the merge's vote floor)

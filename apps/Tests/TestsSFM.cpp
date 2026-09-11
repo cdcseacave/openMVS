@@ -12090,7 +12090,10 @@ bool SceneClusterLeafMergeTest()
 
 // A cut whose seam holds tracks enough but keeps them in too few cameras: moving a boundary image
 // across it hands the tracks that image sees to the other side, which spreads the seam over the
-// cameras the merge needs on both sides
+// cameras the merge needs on both sides. Image 8 stays where the clusters put it, on the far side of
+// the cut from its neighbours, and that is the rule working rather than failing: the tracks it alone
+// carries across the cut are what makes this seam wide, so moving it back would narrow the seam and
+// lower the very count the repair raises.
 bool SceneClusterSeamRepairTest()
 {
 	TD_TIMER_START();
@@ -13424,9 +13427,6 @@ bool HierarchicalSFMSplitMergeRoundtripTest()
 	ClusterConfig clusterCfg;
 	clusterCfg.maxViewsPerCluster = 14;
 	clusterCfg.minViewsPerCluster = 5;
-	// the sub-scenes are this fixture, and its handful of points makes every seam look thin to a rule
-	// written for a capture's tracks: no cluster is merged away here for want of strong neighbours
-	clusterCfg.minClusterDegree = 0;
 
 	SceneCluster cluster(scene, clusterCfg);
 	std::vector<IIndexArr> localToGlobals;
@@ -13685,9 +13685,6 @@ static bool BuildTransformedSubScenes(
 	ClusterConfig clusterCfg;
 	clusterCfg.maxViewsPerCluster = 14;
 	clusterCfg.minViewsPerCluster = 5;
-	// the sub-scenes are this fixture, and its handful of points makes every seam look thin to a rule
-	// written for a capture's tracks: no cluster is merged away here for want of strong neighbours
-	clusterCfg.minClusterDegree = 0;
 	SceneCluster cluster(scene, clusterCfg);
 	localToGlobals.clear();
 	subScenes = cluster.SplitScene(&localToGlobals);
@@ -13960,9 +13957,6 @@ static bool BuildTriangleSubScenes(
 	ClusterConfig clusterCfg;
 	clusterCfg.maxViewsPerCluster = 14;
 	clusterCfg.minViewsPerCluster = 5;
-	// the sub-scenes are this fixture, and its handful of points makes every seam look thin to a rule
-	// written for a capture's tracks: no cluster is merged away here for want of strong neighbours
-	clusterCfg.minClusterDegree = 0;
 	SceneCluster cluster(scene, clusterCfg);
 	localToGlobals.clear();
 	subScenes = cluster.SplitScene(&localToGlobals);
