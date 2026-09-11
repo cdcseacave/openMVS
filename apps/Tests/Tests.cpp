@@ -351,6 +351,10 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::FalseChordTest())
 				return false;
+			if (!SFM::SeamInliersBecomeTracksTest())
+				return false;
+			if (!SFM::UnplacedBlocksReportedTest())
+				return false;
 			if (!SFM::GlobalAlignmentMergeSingleSceneTest())
 				return false;
 			if (!SFM::GlobalAlignmentTrackMergeDuplicateImageGuardTest())

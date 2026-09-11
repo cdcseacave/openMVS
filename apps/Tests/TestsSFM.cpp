@@ -11500,6 +11500,10 @@ static void BuildRingBlocks(const RingSceneConfig& cfg, Scene& scene, const std:
 	const ClusterConfig clusterCfg;
 	subScenes = SceneCluster(scene, clusterCfg).SplitSceneByClusters(blocks, &localToGlobals);
 
+	// the reconstruction hands the merge a scene without tracks; the blocks carry them
+	scene.tracks.Release();
+	scene.status.nTracks = 0;
+
 	// the blocks carry the poses from here on: the global scene is the uncalibrated one a merge
 	// writes its answer into, exactly as the reconstruction hands it over
 	FOREACH(i, scene.images)
@@ -12598,6 +12602,198 @@ bool FalseChordTest()
 	VERBOSE("FalseChordTest PASSED: the chord planted on %u tracks was rejected %.2f deg from the consensus, "
 		"%u blocks placed (%s)", planted, rep.candidates[chord].residualRotation, rep.numPlaced,
 		TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+// The seams the merged model rests on already agree with the placement: every one of their kept
+// correspondences must land its two ends on the same track once the merge is done, not wait on
+// proximity to find each other.
+bool SeamInliersBecomeTracksTest()
+{
+	TD_TIMER_START();
+	const RingSceneConfig cfg{4, 10};
+	Scene scene;
+	std::vector<IIndexArr> blocks;
+	std::vector<Pose3D> gtPoses;
+	GenerateRingScene(cfg, scene, blocks, gtPoses);
+	std::vector<Scene> subScenes;
+	std::vector<IIndexArr> localToGlobals;
+	std::vector<SEACAVE::Transform> applied;
+	BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
+
+	// (global image, feature) -> the sub-scene track it belongs to (block, local track index);
+	// captured now because MergeScenes consumes subScenes
+	std::unordered_map<uint64_t, uint64_t> subTrackOf;
+	FOREACH(b, subScenes)
+		FOREACH(t, subScenes[b].tracks)
+			for (const Observation& obs : subScenes[b].tracks[t].observations) {
+				const IIndex globalID = localToGlobals[b][obs.imageID];
+				subTrackOf.emplace(FeatureKey(globalID, obs.featureID), (((uint64_t)b) << 32) | (uint64_t)t);
+			}
+
+	const GlobalAlignmentConfig alignCfg;
+	GlobalAlignment ga(scene, alignCfg);
+	MergeReport rep;
+	ga.MergeScenes(subScenes, localToGlobals, rep);
+	if (!CheckRingMerge("SeamInliersBecomeTracksTest", rep, scene, gtPoses, cfg.numBlocks, 1, 0.1, 0.001))
+		return false;
+	if (rep.modelSeams.empty()) {
+		VERBOSE("SeamInliersBecomeTracksTest FAILED: the merged model rests on no seam");
+		return false;
+	}
+
+	// which block owns every global image, to tell a track spanning two blocks from one that does not
+	std::vector<uint32_t> blockOf(scene.images.size(), NO_ID);
+	FOREACH(b, blocks)
+		for (const IIndex image : blocks[b])
+			blockOf[image] = (uint32_t)b;
+
+	// (image, feature) -> the track it ended up on, after the merge
+	std::unordered_map<uint64_t, uint32_t> trackOf;
+	FOREACH(t, scene.tracks)
+		for (const Observation& obs : scene.tracks[t].observations)
+			trackOf.emplace(FeatureKey(obs.imageID, obs.featureID), (uint32_t)t);
+
+	unsigned numChecked = 0, numViolations = 0;
+	std::set<std::pair<uint64_t, uint64_t>> distinctTrackPairs;
+	for (const uint32_t seamIdx : rep.modelSeams) {
+		const SeamCandidate& c = rep.candidates[seamIdx];
+		const size_t numScored = MINF(c.correspondences.size(), c.score.inlierMask.size());
+		for (size_t i = 0; i < numScored; ++i) {
+			if (!c.score.inlierMask[i])
+				continue;
+			const SeamCorrespondence& corr = c.correspondences[i];
+			++numChecked;
+			const auto itA = trackOf.find(FeatureKey(corr.imageA, corr.featureA));
+			const auto itB = trackOf.find(FeatureKey(corr.imageB, corr.featureB));
+			if (itA == trackOf.end() || itB == trackOf.end() || itA->second != itB->second)
+				++numViolations;
+			// the pair of sub-scene tracks this correspondence bridges, deduplicated: several raw
+			// matches bridge the same two sub-scene tracks (one per crossing camera pair, up to
+			// r x p of them for r rig and p point cameras on the same 3D point), and the merge only
+			// owes one merged track per distinct pair, not one per match
+			const auto preA = subTrackOf.find(FeatureKey(corr.imageA, corr.featureA));
+			const auto preB = subTrackOf.find(FeatureKey(corr.imageB, corr.featureB));
+			if (preA != subTrackOf.end() && preB != subTrackOf.end())
+				distinctTrackPairs.emplace(MINF(preA->second, preB->second), MAXF(preA->second, preB->second));
+		}
+	}
+	if (numChecked == 0) {
+		VERBOSE("SeamInliersBecomeTracksTest FAILED: the seams the merged model rests on hold no inlier correspondence");
+		return false;
+	}
+	if (numViolations != 0) {
+		VERBOSE("SeamInliersBecomeTracksTest FAILED: %u/%u seam inliers did not land their two ends on the same track",
+			numViolations, numChecked);
+		return false;
+	}
+	if (distinctTrackPairs.empty()) {
+		VERBOSE("SeamInliersBecomeTracksTest FAILED: no seam inlier bridges two sub-scene tracks");
+		return false;
+	}
+
+	// every distinct pair of sub-scene tracks a seam inlier bridges must come out as one track
+	// spanning two blocks; equality is the ideal merge, fewer means the merge collapsed distinct
+	// points into one track
+	unsigned numCrossBlockTracks = 0;
+	for (const Track& track : scene.tracks) {
+		std::set<uint32_t> tracksBlocks;
+		for (const Observation& obs : track.observations)
+			if (obs.imageID < blockOf.size() && blockOf[obs.imageID] != NO_ID)
+				tracksBlocks.insert(blockOf[obs.imageID]);
+		if (tracksBlocks.size() >= 2)
+			++numCrossBlockTracks;
+	}
+	if (numCrossBlockTracks < distinctTrackPairs.size()) {
+		VERBOSE("SeamInliersBecomeTracksTest FAILED: only %u tracks span two blocks, out of %u distinct sub-scene track pairs",
+			numCrossBlockTracks, (unsigned)distinctTrackPairs.size());
+		return false;
+	}
+	VERBOSE("SeamInliersBecomeTracksTest PASSED: %u seam inliers, %u violations, %u distinct sub-scene track pairs, "
+		"%u tracks span two blocks (%s)",
+		numChecked, numViolations, (unsigned)distinctTrackPairs.size(), numCrossBlockTracks, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+// Block 4 of a six-block ring, cut loose from every block before the split (only blocks 3 and 5
+// ever shared tracks with it, so thinning it against the rest is a no-op there): the merge has
+// nothing to place it against, and has to leave it out, name it and its ten images in the report,
+// and keep its own tracks intact for the post-merge resection to pick up.
+bool UnplacedBlocksReportedTest()
+{
+	TD_TIMER_START();
+	const RingSceneConfig cfg{6, 10};
+	Scene scene;
+	std::vector<IIndexArr> blocks;
+	std::vector<Pose3D> gtPoses;
+	GenerateRingScene(cfg, scene, blocks, gtPoses);
+	for (uint32_t b = 0; b < cfg.numBlocks; ++b)
+		if (b != 4)
+			ThinSeam(scene, blocks, b, 4, 0, 0);
+	// the pair weights GenerateRingScene computed are stale once ThinSeam empties a pair's matches;
+	// MapBlockPairLinks reads them, so they need to reflect what is actually left before the split
+	ComputePairsWeights(scene);
+	std::vector<Scene> subScenes;
+	std::vector<IIndexArr> localToGlobals;
+	std::vector<SEACAVE::Transform> applied;
+	BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
+
+	const GlobalAlignmentConfig alignCfg;
+	GlobalAlignment ga(scene, alignCfg);
+	MergeReport rep;
+	{
+		LogCapture log;
+		ga.MergeScenes(subScenes, localToGlobals, rep);
+		if (!log.Contains("Block 4 not placed: no seam (10 images)")) {
+			VERBOSE("UnplacedBlocksReportedTest FAILED: the log does not report block 4 by name");
+			return false;
+		}
+	}
+
+	if (rep.numPlaced != cfg.numBlocks - 1) {
+		VERBOSE("UnplacedBlocksReportedTest FAILED: %u blocks placed, expected %u",
+			rep.numPlaced, cfg.numBlocks - 1);
+		return false;
+	}
+	const std::set<IIndex> expected(blocks[4].begin(), blocks[4].end());
+	const std::set<IIndex> reported(rep.unplacedImages.begin(), rep.unplacedImages.end());
+	if (reported != expected) {
+		VERBOSE("UnplacedBlocksReportedTest FAILED: %u images reported unplaced, expected exactly block 4's %u",
+			(unsigned)reported.size(), (unsigned)expected.size());
+		return false;
+	}
+	for (const IIndex image : blocks[4])
+		if (scene.images[image].IsValid()) {
+			VERBOSE("UnplacedBlocksReportedTest FAILED: block 4's image %u is registered", image);
+			return false;
+		}
+	unsigned numOtherValid = 0;
+	FOREACH(b, blocks)
+		if (b != 4)
+			for (const IIndex image : blocks[b])
+				if (scene.images[image].IsValid())
+					++numOtherValid;
+	if (numOtherValid != scene.images.size() - blocks[4].size()) {
+		VERBOSE("UnplacedBlocksReportedTest FAILED: %u of the other %u images are registered",
+			numOtherValid, (unsigned)(scene.images.size() - blocks[4].size()));
+		return false;
+	}
+	// block 4's own tracks must have survived the merge, observations and all, for the resection
+	// to have something to register every one of its images against
+	std::set<IIndex> block4ImagesWithObs;
+	for (const Track& track : scene.tracks)
+		for (const Observation& obs : track.observations)
+			if (expected.count(obs.imageID))
+				block4ImagesWithObs.insert(obs.imageID);
+	if (block4ImagesWithObs.size() != expected.size()) {
+		VERBOSE("UnplacedBlocksReportedTest FAILED: only %u/%u of block 4's images kept an observation in scene.tracks",
+			(unsigned)block4ImagesWithObs.size(), (unsigned)expected.size());
+		return false;
+	}
+	VERBOSE("UnplacedBlocksReportedTest PASSED: block 4 left out with its %u images, all kept an observation for the resection (%s)",
+		(unsigned)expected.size(), TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 /*----------------------------------------------------------------*/

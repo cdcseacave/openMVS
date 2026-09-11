@@ -964,6 +964,8 @@ bool Scene::ReconstructHierarchical(const ReconstructionConfig& config, const II
 		GlobalAlignment globalAlign(*this, config.globalAlignmentCfg);
 		MergeReport mergeReport;
 		globalAlign.MergeScenes(subScenes, localToGlobals, mergeReport);
+		VERBOSE("Hierarchical merge: %u/%u blocks placed, %u images placed, %u images of unplaced blocks left to the resection",
+			mergeReport.numPlaced, mergeReport.numBlocks, mergeReport.numImagesPlaced, mergeReport.numImagesUnplaced);
 	}
 	DEBUG("Hierarchical reconstruction complete: %u/%u images, %u/%u points (%s)",
 		status.nCalibratedImages, images.size(), status.nTracks, tracks.size(), TD_TIMER_GET_FMT().c_str());

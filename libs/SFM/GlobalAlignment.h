@@ -142,9 +142,11 @@ class SFM_API Scene;
  *        false includes all observations (outliers may add connectivity but
  *        also noise).
  *
- *      Phase 2 — Connect: iterate ONLY cross-sub-scene pairs — pairs whose
- *        two images belong to different sub-scenes, identified via the
- *        globalToLocal map. Intra-sub-scene pairs are deliberately skipped:
+ *      Phase 2 — Connect: first, the kept correspondences of every seam the merged model rests
+ *        on are unioned on the duplicate-image guard alone — a seam already agreed with the
+ *        placement, so its two ends need no proximity test to join. Then iterate ONLY
+ *        cross-sub-scene pairs — pairs whose two images belong to different sub-scenes,
+ *        identified via the globalToLocal map. Intra-sub-scene pairs are deliberately skipped:
  *        their tracks were already correctly formed by BuildTracks during
  *        independent sub-scene reconstruction, and re-processing them here
  *        would over-merge tracks (outlier observations removed during
@@ -960,11 +962,14 @@ private:
 	 * A block the placement admitted into the merged model comes in with its poses and its 3D
 	 * points; every other block comes in without them, so its images stay unregistered for the
 	 * post-merge resection to recover.
+	 * @param seamInliers the kept correspondences of the seams the merged model rests on, passed
+	 * down to MergeTracksWithCrossSubScenePairs so their two ends join tracks by construction
 	 */
 	bool MergeTransformedScenes(
 		std::vector<Scene>& subScenes,
 		const std::vector<IIndexArr>& localToGlobals,
-		const std::vector<BlockPose>& poses);
+		const std::vector<BlockPose>& poses,
+		const std::vector<SeamCorrespondence>& seamInliers);
 
 	/**
 	 * @brief Merge a single scene into the global scene
@@ -983,16 +988,20 @@ private:
 	 *
 	 * Uses a union-find over global feature IDs (same pattern as BuildTracks) to:
 	 * 1. Initialize each sub-scene's tracks as independent sets
-	 * 2. Process cross-sub-scene pairs to connect tracks across boundaries,
+	 * 2. Union every kept correspondence of a seam the merged model rests on: it already agrees
+	 *    with the placement, so its two ends join by construction, on the duplicate-image guard
+	 *    alone
+	 * 3. Process cross-sub-scene pairs to connect tracks across boundaries,
 	 *    using 3D proximity as validation when both sides have triangulated positions
-	 * 3. Assemble final tracks, triangulating any new tracks without 3D positions
+	 * 4. Assemble final tracks, triangulating any new tracks without 3D positions
 	 *
 	 * Tracks of unplaced sub-scenes (all observations in unregistered images) are seeded with
 	 * all their observations but no 3D position, so their structure survives for the
 	 * post-merge resection to re-triangulate.
 	 * @param unplacedImages per-global-image flags marking images of blocks that were not placed
+	 * @param seamInliers the kept correspondences of the seams the merged model rests on
 	 */
-	void MergeTracksWithCrossSubScenePairs(const std::vector<bool>& unplacedImages);
+	void MergeTracksWithCrossSubScenePairs(const std::vector<bool>& unplacedImages, const std::vector<SeamCorrespondence>& seamInliers);
 
 	// Global image ID -> (sub-scene index, local image index)
 	std::unordered_map<IIndex, std::pair<uint32_t, IIndex>> globalToLocal;

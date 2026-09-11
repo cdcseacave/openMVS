@@ -240,9 +240,22 @@ bool GlobalAlignment::MergeScenes(
 	// the models the merge ends with: the one it is built on, every other model's blocks having
 	// been taken into it or left to the resection
 	report.numModels = mergedModel == NO_ID ? 0 : 1;
+	if (mergedModel != NO_ID)
+		report.modelSeams = std::move(modelSeams[mergedModel]);
+
+	// the kept correspondences of every seam the merged model rests on: each one already agrees
+	// with the placement, so its two ends can join their tracks by construction, not by proximity
+	std::vector<SeamCorrespondence> seamInliers;
+	for (const uint32_t seamIdx : report.modelSeams) {
+		const SeamCandidate& c = candidates[seamIdx];
+		const size_t numScored = MINF(c.correspondences.size(), c.score.inlierMask.size());
+		for (size_t i = 0; i < numScored; ++i)
+			if (c.score.inlierMask[i])
+				seamInliers.push_back(c.correspondences[i]);
+	}
 
 	// stage 7: the placed blocks moved into the model frame, and every block merged in
-	MergeTransformedScenes(subScenes, localToGlobals, poses);
+	MergeTransformedScenes(subScenes, localToGlobals, poses, seamInliers);
 
 	#if GLOBALALIGNMENT_DEBUG
 	// Export merged scene for debugging
@@ -256,8 +269,6 @@ bool GlobalAlignment::MergeScenes(
 		case SeamCandidate::REJECTED: ++report.numRejected; break;
 		default: ++report.numUndecided; break;
 		}
-	if (mergedModel != NO_ID)
-		report.modelSeams = std::move(modelSeams[mergedModel]);
 	report.candidates = std::move(candidates);
 	report.poses = std::move(poses);
 	VERBOSE("Merged %u/%u blocks into one model (%u images placed, %u unplaced) (%s)",
@@ -3350,7 +3361,8 @@ void GlobalAlignment::PlaceRemainingBlocks(
 bool GlobalAlignment::MergeTransformedScenes(
 	std::vector<Scene>& subScenes,
 	const std::vector<IIndexArr>& localToGlobals,
-	const std::vector<BlockPose>& poses)
+	const std::vector<BlockPose>& poses,
+	const std::vector<SeamCorrespondence>& seamInliers)
 {
 	// A block still admitted is one the merged model took in: stage 6 left every other block
 	// unplaceable, and an unplaced block is merged without poses below, so transforming it would
@@ -3427,7 +3439,7 @@ bool GlobalAlignment::MergeTransformedScenes(
 	}
 
 	// Merge sub-scene tracks and connect them via cross-sub-scene pairs
-	MergeTracksWithCrossSubScenePairs(unplacedImages);
+	MergeTracksWithCrossSubScenePairs(unplacedImages, seamInliers);
 	FilterTracks(scene, 16.f, 0.5f);
 
 	DEBUG("Merged %u/%u transformed sub-scenes (%u tracks, %u calibrated images)",
@@ -3523,7 +3535,8 @@ void GlobalAlignment::MergeSingleScene(Scene& subScene, const IIndexArr& localTo
 /*----------------------------------------------------------------*/
 
 
-void GlobalAlignment::MergeTracksWithCrossSubScenePairs(const std::vector<bool>& unplacedImages)
+void GlobalAlignment::MergeTracksWithCrossSubScenePairs(
+	const std::vector<bool>& unplacedImages, const std::vector<SeamCorrespondence>& seamInliers)
 {
 	// Per-root metadata for union-find: 3D position, inlier count, and the set of images the
 	// track already observes (allocated only for the roots that hold a track, which are a
@@ -3622,6 +3635,76 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs(const std::vector<bool>&
 	// Compute proximity threshold from scene bounding box
 	const REAL proximityThreshold = bbox.IsEmpty() ? REAL(0) : REAL(0.02) * bbox.GetSize().norm();
 
+	// Cross-sub-scene connectivity: the seam inliers below, then every connecting pair in Phase 2,
+	// share one union-find, one set of root guards, and one summary.
+	unsigned numMerged = 0, numRejectedProximity = 0, numRejectedDupImage = 0, numNewPairTracks = 0;
+	unsigned numCrossScenePairs = 0, numSeamMerged = 0;
+
+	// Ensure root has metadata and feature is counted exactly once;
+	// new features from cross-sub-scene pairs and seam inliers are counted as additional
+	// observations but do NOT increment numInliers (these are unvalidated matches, not verified
+	// inliers)
+	auto AccumulateFeature = [&](uint32_t gid, IIndex imgID) {
+		if (featureCounted[gid])
+			return;
+		featureCounted[gid] = true;
+		RootMeta& meta = rootMeta[ds.Find(gid)];
+		meta.InitImages();
+		meta.images->emplace(imgID);
+	};
+
+	// Guard 1, shared by every union below: reject if merging would create duplicate image
+	// observations (same image twice in one track), which would be geometrically invalid
+	auto NoDuplicateImage = [](const RootMeta& metaDst, const RootMeta& metaSrc) -> bool {
+		for (const IIndex imgID : *metaSrc.images)
+			if (metaDst.images->count(imgID))
+				return false;
+		return true;
+	};
+
+	// The merge itself, shared by every union below once its guards pass: weighted-average 3D
+	// positions, accumulate inlier counts, and merge image sets
+	auto MergeRoots = [](RootMeta& metaDst, RootMeta& metaSrc) {
+		if (metaDst.hasPosition && metaSrc.hasPosition) {
+			const REAL wDst = (REAL)metaDst.numInliers;
+			const REAL wSrc = (REAL)metaSrc.numInliers;
+			metaDst.position = (metaDst.position * wDst + metaSrc.position * wSrc) / (wDst + wSrc);
+		} else if (metaSrc.hasPosition) {
+			metaDst.position = metaSrc.position;
+			metaDst.hasPosition = true;
+		}
+		metaDst.numInliers += metaSrc.numInliers;
+		metaDst.images->insert(metaSrc.images->begin(), metaSrc.images->end());
+		metaSrc.images.reset();
+	};
+
+	// Seam inliers: every kept correspondence of a seam the merged model rests on already agrees
+	// with the placement, so its two ends join their tracks on the duplicate-image guard alone --
+	// no proximity test, since the seam is itself the evidence the two sides are the same point.
+	for (const SeamCorrespondence& corr : seamInliers) {
+		ASSERT(corr.imageA < scene.images.size() && corr.imageB < scene.images.size());
+		ASSERT(corr.featureA < scene.images[corr.imageA].keypoints.size() &&
+			corr.featureB < scene.images[corr.imageB].keypoints.size());
+		const uint32_t gid1 = featureOffsets[corr.imageA] + corr.featureA;
+		const uint32_t gid2 = featureOffsets[corr.imageB] + corr.featureB;
+		AccumulateFeature(gid1, corr.imageA);
+		AccumulateFeature(gid2, corr.imageB);
+		ds.UnionIf(gid1, gid2,
+			[&](uint32_t rootDst, uint32_t rootSrc) -> bool {
+				RootMeta& metaDst = rootMeta[rootDst];
+				RootMeta& metaSrc = rootMeta[rootSrc];
+				ASSERT(metaDst.images && metaSrc.images);
+				if (!NoDuplicateImage(metaDst, metaSrc)) {
+					++numRejectedDupImage;
+					return false;
+				}
+				MergeRoots(metaDst, metaSrc);
+				++numSeamMerged;
+				return true;
+			}
+		);
+	}
+
 	// Phase 2: Process ONLY cross-sub-scene pairs (connecting pairs) to merge
 	// tracks across sub-scene boundaries.
 	//
@@ -3632,21 +3715,6 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs(const std::vector<bool>&
 	// during reconstruction can lift the duplicate-image guard that originally kept
 	// the tracks separate), bloating image sets and blocking legitimate cross-sub-scene
 	// connections via the duplicate-image guard.
-	unsigned numMerged = 0, numRejectedProximity = 0, numRejectedDupImage = 0, numNewPairTracks = 0;
-	unsigned numCrossScenePairs = 0;
-
-	// Ensure root has metadata and feature is counted exactly once;
-	// new features from cross-sub-scene pairs are counted as additional observations
-	// but do NOT increment numInliers (these are unvalidated matches, not verified inliers)
-	auto AccumulateFeature = [&](uint32_t gid, IIndex imgID) {
-		if (featureCounted[gid])
-			return;
-		featureCounted[gid] = true;
-		RootMeta& meta = rootMeta[ds.Find(gid)];
-		meta.InitImages();
-		meta.images->emplace(imgID);
-	};
-
 	for (const ImagePair& pair : scene.pairs) {
 		if (!pair.HasMatches())
 			continue;
@@ -3688,11 +3756,9 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs(const std::vector<bool>&
 					RootMeta& metaSrc = rootMeta[rootSrc];
 					ASSERT(metaDst.images && metaSrc.images);
 					// Guard 1: reject if merging would create duplicate image observations
-					for (const IIndex imgID : *metaSrc.images) {
-						if (metaDst.images->count(imgID)) {
-							++numRejectedDupImage;
-							return false;
-						}
+					if (!NoDuplicateImage(metaDst, metaSrc)) {
+						++numRejectedDupImage;
+						return false;
 					}
 					// Guard 2: if both sides have triangulated 3D positions,
 					// reject if they are too far apart (indicates false match)
@@ -3702,18 +3768,7 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs(const std::vector<bool>&
 							return false;
 						}
 					}
-					// Merge metadata: weighted-average 3D positions, merge image sets
-					if (metaDst.hasPosition && metaSrc.hasPosition) {
-						const REAL wDst = (REAL)metaDst.numInliers;
-						const REAL wSrc = (REAL)metaSrc.numInliers;
-						metaDst.position = (metaDst.position * wDst + metaSrc.position * wSrc) / (wDst + wSrc);
-					} else if (metaSrc.hasPosition) {
-						metaDst.position = metaSrc.position;
-						metaDst.hasPosition = true;
-					}
-					metaDst.numInliers += metaSrc.numInliers;
-					metaDst.images->insert(metaSrc.images->begin(), metaSrc.images->end());
-					metaSrc.images.reset();
+					MergeRoots(metaDst, metaSrc);
 					++numMerged;
 					return true;
 				}
@@ -3767,9 +3822,9 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs(const std::vector<bool>&
 	}
 
 	DEBUG("Track merge: %u/%u tracks, %u cross-sub-scene merges from %u connecting pairs, "
-		"%u new from pairs, %u rejected by proximity, %u rejected by duplicate image",
+		"%u from seam inliers, %u new from pairs, %u rejected by proximity, %u rejected by duplicate image",
 		scene.status.nTracks, scene.tracks.size(), numMerged, numCrossScenePairs,
-		numNewPairTracks, numRejectedProximity, numRejectedDupImage);
+		numSeamMerged, numNewPairTracks, numRejectedProximity, numRejectedDupImage);
 }
 /*----------------------------------------------------------------*/
 

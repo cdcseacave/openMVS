@@ -374,6 +374,8 @@ bool WeakClosingSeamTest();
 bool SecondModelTest();
 bool FoldedBlockTest();
 bool FalseChordTest();
+bool SeamInliersBecomeTracksTest();
+bool UnplacedBlocksReportedTest();
 bool GlobalAlignmentMergeSingleSceneTest();
 bool GlobalAlignmentTrackMergeDuplicateImageGuardTest();
 bool GlobalAlignmentTrackMerge3DProximityGuardTest();
