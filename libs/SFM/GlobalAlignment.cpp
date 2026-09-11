@@ -254,6 +254,13 @@ bool GlobalAlignment::MergeScenes(
 				seamInliers.push_back(c.correspondences[i]);
 	}
 
+	// a model whose seams still disagree where the block poses leave them holds a block bent inside
+	// its own reconstruction, which no pose of it can answer for: every camera of the placed blocks
+	// is then given a similarity of its own, so the merge hands over seams that meet
+	if (mergedModel != NO_ID)
+		RelaxCameras(subScenes, candidates, report.modelSeams, blockExtents,
+			ModelSeed(poses, mergedModel), poses, report);
+
 	// stage 7: the placed blocks moved into the model frame, and every block merged in
 	MergeTransformedScenes(subScenes, localToGlobals, poses, seamInliers);
 
@@ -305,6 +312,10 @@ constexpr float kMinExtentShare = 0.2f;
 // over them and judged at the bar itself. A model never predicts a pair exactly, and what it is off
 // by is the very thing the seam is there to answer for.
 constexpr unsigned kLooseSeamFactor = 3;
+// How many of its own block's cameras each camera is held to when the cameras are relaxed: enough
+// for the block to keep its shape along every direction its covisibility reaches, few enough that
+// the graph stays as sparse as the seams it has to close.
+constexpr unsigned kIntraBlockEdgesPerCamera = 3;
 
 // One cross-sub-scene image pair, with the sub-scene each of its two images belongs to already
 // resolved, so feature indices (queryIdx/trainIdx) can be mapped consistently.
@@ -424,6 +435,63 @@ struct BlockSeamReprojectionError
 			return false;
 		for (int i = 0; i < 3; ++i)
 			residuals[i] = T(pixelPerRadian) * (c[i] / len - T(b[i]));
+		return true;
+	}
+};
+
+// One edge of a camera pose graph: what a measurement between two cameras says against what the
+// two camera similarities imply. The discrepancy E = M^-1 * S_second^-1 * S_first is the identity
+// when the edge is satisfied, and each of its three parts is divided by the bar that part is held
+// to, so a residual of one means the edge is off by exactly as much as a seam is allowed to be off
+// by, whichever of the three ways it is wrong -- which is what lets one robust loss weigh rotation,
+// translation and scale at once. It is read in the first camera's own frame, whose units the
+// translation bar is therefore given in.
+struct CameraGraphError
+{
+	double q[4], t[3], logScale; // M^-1: the second camera's frame -> the first's
+	double rotationWeight, translationWeight, scaleWeight;
+
+	CameraGraphError(const Transform& M, double weight, double rotationBar, double translationBar, double scaleBar) {
+		const BlockParameters inverse(M.Invert());
+		for (int i = 0; i < 4; ++i)
+			q[i] = inverse.q[i];
+		for (int i = 0; i < 3; ++i)
+			t[i] = inverse.t[i];
+		logScale = inverse.logScale;
+		rotationWeight = weight * (180.0 / M_PI) / rotationBar;
+		translationWeight = weight / translationBar;
+		scaleWeight = weight / scaleBar;
+	}
+
+	template <typename T>
+	bool operator()(
+		const T* const qFirst, const T* const tFirst, const T* const logScaleFirst,
+		const T* const qSecond, const T* const tSecond, const T* const logScaleSecond,
+		T* residuals) const
+	{
+		using std::exp;
+		// the first camera's frame into the second's, as the two similarities imply it
+		const T qInv[4] = {qSecond[0], -qSecond[1], -qSecond[2], -qSecond[3]};
+		const T d[3] = {tFirst[0] - tSecond[0], tFirst[1] - tSecond[1], tFirst[2] - tSecond[2]};
+		T qImplied[4], tImplied[3];
+		ceres::QuaternionProduct(qInv, qFirst, qImplied);
+		ceres::QuaternionRotatePoint(qInv, d, tImplied);
+		const T invScale = exp(-logScaleSecond[0]);
+		for (int i = 0; i < 3; ++i)
+			tImplied[i] = invScale * tImplied[i];
+		// and the measurement inverted onto it: what is left over is the discrepancy
+		const T qMeasured[4] = {T(q[0]), T(q[1]), T(q[2]), T(q[3])};
+		T qError[4], tError[3];
+		ceres::QuaternionProduct(qMeasured, qImplied, qError);
+		ceres::QuaternionRotatePoint(qMeasured, tImplied, tError);
+		const T scaleMeasured = exp(T(logScale));
+		T angleAxis[3];
+		ceres::QuaternionToAngleAxis(qError, angleAxis);
+		for (int i = 0; i < 3; ++i) {
+			residuals[i] = T(rotationWeight) * angleAxis[i];
+			residuals[3+i] = T(translationWeight) * (scaleMeasured * tError[i] + T(t[i]));
+		}
+		residuals[6] = T(scaleWeight) * (T(logScale) + logScaleFirst[0] - logScaleSecond[0]);
 		return true;
 	}
 };
@@ -3355,6 +3423,303 @@ void GlobalAlignment::PlaceRemainingBlocks(
 	}
 	DEBUG("Blocks left over placed in %u models against model %u (%s)",
 		(unsigned)models.size(), merged, TD_TIMER_GET_FMT().c_str());
+}
+/*----------------------------------------------------------------*/
+
+// The similarity carrying one camera's own frame into the frame of the block it belongs to: the
+// camera reads that frame through its rotation, and sits where its centre says
+static Transform CameraToBlock(const Image& image)
+{
+	Transform T;
+	T.R = RMatrix(image.R.t());
+	T.t = image.C;
+	return T;
+}
+
+// What one edge of the camera pose graph measures: the first camera's frame into the second's,
+// through the transform between the two blocks they sit in -- the identity when both belong to the
+// same block, and the seam itself when they face each other across one
+static Transform CameraMeasurement(const Image& first, const Image& second, const Transform& blockToBlock)
+{
+	return CameraToBlock(second).Invert() * blockToBlock * CameraToBlock(first);
+}
+
+// Where the blocks the given seams touch hold the points their cameras triangulated, as they now
+// stand: a seam observation carries the geometry its block had when the seam was measured, so this
+// is what it has to be read against once anything has moved the blocks
+static std::vector<std::unordered_map<PairIdx, Point3>> SeamPointMaps(
+	const std::vector<Scene>& subScenes,
+	const std::vector<SeamCandidate>& candidates,
+	const std::vector<uint32_t>& modelSeams)
+{
+	std::vector<std::unordered_map<PairIdx, Point3>> pointMaps(subScenes.size());
+	std::vector<bool> touched(subScenes.size(), false);
+	for (const uint32_t seamIdx : modelSeams) {
+		touched[candidates[seamIdx].sceneA] = true;
+		touched[candidates[seamIdx].sceneB] = true;
+	}
+	FOREACH(b, subScenes)
+		if (touched[b])
+			BuildBlockPointMap(subScenes[b], pointMaps[b]);
+	return pointMaps;
+}
+
+// The worst the seams of one model disagree, as the blocks now stand: per seam, the middle error
+// its inlier observations report at the similarity its two block poses imply, in the pixels the
+// reprojection bar is set in. Every observation is read off the blocks again -- the camera where
+// its block now puts it, the point where the block that triangulated it now holds it -- so the same
+// number measures the seams before a camera relaxation and after it.
+static float LargestSeamError(
+	const std::vector<Scene>& subScenes,
+	const std::vector<SeamCandidate>& candidates,
+	const std::vector<uint32_t>& modelSeams,
+	const std::vector<BlockPose>& poses,
+	const std::unordered_map<IIndex, std::pair<uint32_t, IIndex>>& globalToLocal,
+	const uint32_t model)
+{
+	const std::vector<std::unordered_map<PairIdx, Point3>> pointMaps(
+		SeamPointMaps(subScenes, candidates, modelSeams));
+	float worst = 0.f;
+	for (const uint32_t seamIdx : modelSeams) {
+		const SeamCandidate& c = candidates[seamIdx];
+		if (!IsInModel(poses, c.sceneA, model) || !IsInModel(poses, c.sceneB, model))
+			continue;
+		// the seam the two block poses imply, which is where a rigid placement leaves the pair
+		const Transform T(poses[c.sceneB].T.Invert() * poses[c.sceneA].T);
+		const Transform TInv(T.Invert());
+		std::vector<REAL> errors;
+		const size_t numScored = MINF(MINF(c.observations.size(), c.correspondences.size()), c.score.inlierMask.size());
+		for (size_t i = 0; i < numScored; ++i) {
+			if (!c.score.inlierMask[i])
+				continue;
+			SeamObservation obs(c.observations[i]);
+			const auto itRig = globalToLocal.find(obs.rigImage);
+			const auto itPoint = globalToLocal.find(obs.pointImage);
+			if (itRig == globalToLocal.end() || itPoint == globalToLocal.end())
+				continue;
+			const Image& rig = subScenes[itRig->second.first].images[itRig->second.second];
+			const SeamCorrespondence& corr = c.correspondences[i];
+			const std::unordered_map<PairIdx, Point3>& pointMap = pointMaps[itPoint->second.first];
+			const auto itX = pointMap.find(PairIdx(itPoint->second.second, obs.forward ? corr.featureA : corr.featureB));
+			if (!rig.IsValid() || itX == pointMap.end())
+				continue;
+			obs.R = rig.R;
+			obs.C = rig.C;
+			obs.X = itX->second;
+			errors.push_back(SeamObservationError(obs, T, TInv));
+		}
+		if (errors.empty())
+			continue;
+		std::nth_element(errors.begin(), errors.begin() + errors.size() / 2, errors.end());
+		worst = MAXF(worst, (float)errors[errors.size() / 2]);
+	}
+	return worst;
+}
+
+// One block moved to where the relaxation put its cameras: each camera's similarity is read back
+// out of the model frame into the block's own, its rotation and centre are what the block stores,
+// and every point follows the camera of its first observation -- the only place the scale a camera
+// picked up can go, a pose having nowhere to keep it.
+static void MoveBlockCameras(
+	const Transform& blockPose, const std::vector<uint32_t>& nodeOf,
+	const std::vector<BlockParameters>& parameters, Scene& block)
+{
+	const Transform blockPoseInv(blockPose.Invert());
+	std::vector<Transform> deltas(block.images.size());
+	std::vector<bool> moved(block.images.size(), false);
+	FOREACH(localID, block.images) {
+		const uint32_t node = nodeOf[localID];
+		if (node == NO_ID || !ISFINITE(parameters[node].logScale))
+			continue;
+		Image& image = block.images[localID];
+		const Transform relaxed(blockPoseInv * parameters[node].ToTransform());
+		deltas[localID] = relaxed * CameraToBlock(image).Invert();
+		moved[localID] = true;
+		image.R = RMatrix(relaxed.R.t());
+		image.C = relaxed.t;
+	}
+	for (Track& track : block.tracks)
+		for (const Observation& obs : track.observations)
+			if (obs.imageID < moved.size() && moved[obs.imageID]) {
+				track.position = deltas[obs.imageID] * track.position;
+				break;
+			}
+}
+
+bool GlobalAlignment::RelaxCameras(
+	std::vector<Scene>& subScenes,
+	const std::vector<SeamCandidate>& candidates,
+	const std::vector<uint32_t>& modelSeams,
+	const std::vector<REAL>& blockExtents,
+	const uint32_t seed,
+	std::vector<BlockPose>& poses,
+	MergeReport& report) const
+{
+	ASSERT(poses.size() == subScenes.size());
+	if (seed >= poses.size() || poses[seed].state != BlockPose::ADMITTED)
+		return false;
+	const uint32_t model = poses[seed].model;
+	report.seamErrorBeforeRelax = report.seamErrorAfterRelax =
+		LargestSeamError(subScenes, candidates, modelSeams, poses, globalToLocal, model);
+	// a model whose seams meet where the block poses leave them has nothing to relax: no block of it
+	// is bent by more than the placement has already answered for
+	if (report.seamErrorBeforeRelax <= config.relaxSeamResidualFactor * config.maxReprojError)
+		return false;
+
+	// one similarity per camera of the placed blocks, starting where its own block pose puts it
+	std::vector<BlockParameters> parameters;
+	std::vector<std::vector<uint32_t>> nodeOf(subScenes.size());
+	uint32_t gauge = NO_ID;
+	FOREACH(b, subScenes) {
+		nodeOf[b].assign(subScenes[b].images.size(), NO_ID);
+		if (!IsInModel(poses, (uint32_t)b, model))
+			continue;
+		const Scene& block = subScenes[b];
+		FOREACH(localID, block.images) {
+			if (!block.images[localID].IsValid())
+				continue;
+			// the gauge: the model frame is the seed block's first camera's own
+			if (gauge == NO_ID && b == seed)
+				gauge = (uint32_t)parameters.size();
+			nodeOf[b][localID] = (uint32_t)parameters.size();
+			parameters.emplace_back(poses[b].T * CameraToBlock(block.images[localID]));
+		}
+	}
+	if (gauge == NO_ID)
+		return false;
+
+	ceres::Problem problem;
+	ceres::LossFunction* loss = new ceres::HuberLoss(1.0);
+	const REAL scaleBar = LOGN((REAL)config.maxSimScaleRatio);
+	const auto AddEdge = [&](const uint32_t first, const uint32_t second, const Transform& M,
+		const REAL extent, const float weight) {
+		const REAL translationBar = (REAL)config.maxSimTranslationError * extent;
+		// a block with no footprint of its own gives its translations no unit to be judged in
+		if (!(translationBar > 0))
+			return false;
+		BlockParameters& i = parameters[first];
+		BlockParameters& j = parameters[second];
+		problem.AddResidualBlock(
+			new ceres::AutoDiffCostFunction<CameraGraphError, 7, 4, 3, 1, 4, 3, 1>(
+				new CameraGraphError(M, weight, config.maxSimRotationError, translationBar, scaleBar)),
+			loss, i.q, i.t, &i.logScale, j.q, j.t, &j.logScale);
+		return true;
+	};
+
+	// every camera held to the strongest covisible cameras of its own block: what the block's own
+	// reconstruction says about where its cameras sit relative to each other, which is all that
+	// keeps a block from coming apart once its cameras move one by one
+	unsigned numIntraEdges = 0;
+	FOREACH(b, subScenes) {
+		if (!IsInModel(poses, (uint32_t)b, model))
+			continue;
+		const Scene& block = subScenes[b];
+		std::vector<std::vector<std::pair<float, IIndex>>> covisible(block.images.size());
+		for (const ImagePair& pair : block.pairs) {
+			if (nodeOf[b][pair.ID1] == NO_ID || nodeOf[b][pair.ID2] == NO_ID)
+				continue;
+			const float weight = pair.GetCompositeWeight();
+			covisible[pair.ID1].emplace_back(weight, pair.ID2);
+			covisible[pair.ID2].emplace_back(weight, pair.ID1);
+		}
+		std::set<std::pair<IIndex, IIndex>> edges;
+		for (IIndex localID = 0; localID < (IIndex)covisible.size(); ++localID) {
+			std::vector<std::pair<float, IIndex>>& ranked = covisible[localID];
+			const size_t numKept = MINF(ranked.size(), (size_t)kIntraBlockEdgesPerCamera);
+			std::partial_sort(ranked.begin(), ranked.begin() + numKept, ranked.end(), std::greater<>());
+			for (size_t k = 0; k < numKept; ++k) {
+				// the edge says the same thing read from either end, so it is added once
+				const IIndex other = ranked[k].second;
+				if (!edges.emplace(MINF(localID, other), MAXF(localID, other)).second)
+					continue;
+				if (AddEdge(nodeOf[b][localID], nodeOf[b][other],
+						CameraMeasurement(block.images[localID], block.images[other], Transform()),
+						blockExtents[b], config.intraBlockEdgeWeight))
+					++numIntraEdges;
+			}
+		}
+	}
+
+	// and every camera that observed across a seam held to the cameras whose features it saw, at
+	// the similarity the seam measured between their two blocks: a camera with too little to say
+	// across the seam is not asked, the same bar its vote on the seam answered to
+	unsigned numSeamEdges = 0;
+	for (const uint32_t seamIdx : modelSeams) {
+		const SeamCandidate& c = candidates[seamIdx];
+		if (!IsInModel(poses, c.sceneA, model) || !IsInModel(poses, c.sceneB, model))
+			continue;
+		std::unordered_map<IIndex, std::vector<size_t>> observedBy;
+		const size_t numScored = MINF(c.observations.size(), c.score.inlierMask.size());
+		for (size_t i = 0; i < numScored; ++i)
+			if (c.score.inlierMask[i])
+				observedBy[c.observations[i].rigImage].push_back(i);
+		const Transform TInv(c.T.Invert());
+		for (const auto& [rigImage, observations] : observedBy) {
+			if (observations.size() < config.minVoteCorrespondences)
+				continue;
+			const auto itRig = globalToLocal.find(rigImage);
+			if (itRig == globalToLocal.end() || nodeOf[itRig->second.first][itRig->second.second] == NO_ID)
+				continue;
+			std::set<IIndex> pointImages;
+			for (const size_t i : observations) {
+				const SeamObservation& obs = c.observations[i];
+				if (!pointImages.insert(obs.pointImage).second)
+					continue;
+				const auto itPoint = globalToLocal.find(obs.pointImage);
+				if (itPoint == globalToLocal.end() || nodeOf[itPoint->second.first][itPoint->second.second] == NO_ID)
+					continue;
+				const Scene& pointBlock = subScenes[itPoint->second.first];
+				if (AddEdge(nodeOf[itPoint->second.first][itPoint->second.second],
+						nodeOf[itRig->second.first][itRig->second.second],
+						CameraMeasurement(pointBlock.images[itPoint->second.second],
+							subScenes[itRig->second.first].images[itRig->second.second],
+							obs.forward ? c.T : TInv),
+						blockExtents[itPoint->second.first], 1.f))
+					++numSeamEdges;
+			}
+		}
+	}
+	if (numSeamEdges == 0)
+		return false;
+
+	unsigned numCameras = 0;
+	FOREACH(k, parameters) {
+		if (!problem.HasParameterBlock(parameters[k].q))
+			continue;
+		problem.SetManifold(parameters[k].q, new ceres::QuaternionManifold);
+		++numCameras;
+	}
+	// the gauge: the model frame is this camera's own, so its similarity is what everything else
+	// moves against
+	if (problem.HasParameterBlock(parameters[gauge].q)) {
+		problem.SetParameterBlockConstant(parameters[gauge].q);
+		problem.SetParameterBlockConstant(parameters[gauge].t);
+		problem.SetParameterBlockConstant(&parameters[gauge].logScale);
+	}
+
+	ceres::Solver::Options options;
+	// seven parameters per camera and two cameras per edge: the normal equations stay as sparse as
+	// the covisibility the edges were read off
+	options.linear_solver_type = ceres::SPARSE_NORMAL_CHOLESKY;
+	options.max_num_iterations = 100;
+	options.logging_type = ceres::SILENT;
+	options.minimizer_progress_to_stdout = false;
+	ceres::Solver::Summary summary;
+	ceres::Solve(options, &problem, &summary);
+	if (!summary.IsSolutionUsable())
+		return false;
+
+	// the relaxed cameras written back into their blocks' own frames: the block poses stay as the
+	// placement left them, so what the relaxation bent is the reconstruction inside each block
+	FOREACH(b, subScenes)
+		if (IsInModel(poses, (uint32_t)b, model))
+			MoveBlockCameras(poses[b].T, nodeOf[b], parameters, subScenes[b]);
+	report.seamErrorAfterRelax = LargestSeamError(subScenes, candidates, modelSeams, poses, globalToLocal, model);
+	report.camerasRelaxed = true;
+	VERBOSE("Cameras relaxed: %u cameras, %u intra-block edges, %u seam edges; "
+		"largest seam residual %.1f px -> %.1f px",
+		numCameras, numIntraEdges, numSeamEdges, report.seamErrorBeforeRelax, report.seamErrorAfterRelax);
+	return true;
 }
 /*----------------------------------------------------------------*/
 

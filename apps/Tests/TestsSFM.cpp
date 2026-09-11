@@ -13154,6 +13154,105 @@ bool UnplacedBlocksReportedTest()
 }
 /*----------------------------------------------------------------*/
 
+// Every block of a six-block ring bent inside its own reconstruction, by half a degree of rotation
+// and half a percent of scale along its own cameras. A ring like this the merge closes over the
+// block poses alone: what its seams are left disagreeing by is 0.63 px, well inside the bar that
+// hands a model to the camera relaxation, and a bend big enough to pass that bar is one the
+// placement refuses -- at a degree per block the closing block goes out, and an open chain of blocks
+// has no discrepancy left to carry, every seam being satisfiable in turn. So the bar is held down
+// here, which is the only way to read what the relaxation is worth on a ring: it takes the merged
+// cameras from 0.1374 deg and 0.1063% of the ring off the truth to 0.0487 deg and 0.0216%, and
+// leaves every seam inside the reprojection bar. Where it is worth more is a loop the rigid blocks
+// cannot close at all, which is what the real captures bring and this fixture cannot.
+bool BentBlocksRelaxationTest()
+{
+	TD_TIMER_START();
+	RingSceneConfig cfg{6, 20};
+	cfg.driftDegPerBlock = 0.5;
+	cfg.driftScalePerBlock = 0.005;
+	Scene scene;
+	std::vector<IIndexArr> blocks;
+	std::vector<Pose3D> gtPoses;
+	GenerateRingScene(cfg, scene, blocks, gtPoses);
+	std::vector<Scene> subScenes;
+	std::vector<IIndexArr> localToGlobals;
+	std::vector<SEACAVE::Transform> applied;
+	BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
+
+	// the same blocks again, for the merge that is allowed to relax them
+	Scene relaxedScene(scene);
+	std::vector<Scene> relaxedSubScenes(subScenes);
+	std::vector<IIndexArr> relaxedLocalToGlobals(localToGlobals);
+
+	// the merge as it is configured: the block poses close the ring on their own, and the cameras
+	// are left where the placement put them
+	const GlobalAlignmentConfig rigidCfg;
+	GlobalAlignment rigidGa(scene, rigidCfg);
+	MergeReport rigidRep;
+	rigidGa.MergeScenes(subScenes, localToGlobals, rigidRep);
+	if (rigidRep.camerasRelaxed) {
+		VERBOSE("BentBlocksRelaxationTest FAILED: the cameras were relaxed at %.2f px, under the bar",
+			rigidRep.seamErrorBeforeRelax);
+		return false;
+	}
+	if (rigidRep.seamErrorBeforeRelax >= rigidCfg.relaxSeamResidualFactor * rigidCfg.maxReprojError) {
+		VERBOSE("BentBlocksRelaxationTest FAILED: the block poses left the seams %.2f px apart, at the bar",
+			rigidRep.seamErrorBeforeRelax);
+		return false;
+	}
+	const auto [rigidRotation, rigidPosition] = RingErrors(scene, gtPoses);
+
+	// and the same merge with the bar held down, which hands the model to the relaxation
+	GlobalAlignmentConfig relaxCfg;
+	relaxCfg.relaxSeamResidualFactor = 0.1f;
+	GlobalAlignment relaxedGa(relaxedScene, relaxCfg);
+	MergeReport rep;
+	bool reported;
+	{
+		LogCapture log;
+		relaxedGa.MergeScenes(relaxedSubScenes, relaxedLocalToGlobals, rep);
+		reported = log.Contains("Cameras relaxed");
+	}
+	if (!rep.camerasRelaxed) {
+		VERBOSE("BentBlocksRelaxationTest FAILED: the merge left the bent blocks rigid at %.2f px",
+			rep.seamErrorBeforeRelax);
+		return false;
+	}
+	if (!reported) {
+		VERBOSE("BentBlocksRelaxationTest FAILED: the log does not report the relaxation");
+		return false;
+	}
+	// every seam inside the reprojection bar: a relaxation pulling the wrong way leaves tens of pixels
+	if (rep.seamErrorAfterRelax >= relaxCfg.maxReprojError) {
+		VERBOSE("BentBlocksRelaxationTest FAILED: the seams went %.2f px -> %.2f px, past the reprojection bar",
+			rep.seamErrorBeforeRelax, rep.seamErrorAfterRelax);
+		return false;
+	}
+	// what the relaxation is worth, before a single adjustment step: the cameras it hands over against
+	// the ones the block poses alone leave behind
+	const auto [rotation, position] = RingErrors(relaxedScene, gtPoses);
+	if (rotation >= rigidRotation * REAL(0.75) || position >= rigidPosition * REAL(0.5)) {
+		VERBOSE("BentBlocksRelaxationTest FAILED: the relaxed cameras are %.4f deg and %.4f%% off the truth, "
+			"against the block poses' %.4f deg and %.4f%%",
+			rotation, position * 100, rigidRotation, rigidPosition * 100);
+		return false;
+	}
+
+	// and the starting point it leaves the reconstruction's own final adjustment
+	RunFinalAdjustment(relaxedScene);
+	const auto [adjustedRotation, adjustedPosition] = RingErrors(relaxedScene, gtPoses);
+	if (adjustedRotation >= 0.3) {
+		VERBOSE("BentBlocksRelaxationTest FAILED: the adjusted model is %.4f deg off the truth", adjustedRotation);
+		return false;
+	}
+	VERBOSE("BentBlocksRelaxationTest PASSED: %u blocks, seams %.2f px -> %.2f px, cameras %.4f deg and %.4f%% "
+		"from the truth against %.4f deg and %.4f%% left rigid, %.4f deg and %.4f%% adjusted (%s)",
+		rep.numPlaced, rep.seamErrorBeforeRelax, rep.seamErrorAfterRelax, rotation, position * 100,
+		rigidRotation, rigidPosition * 100, adjustedRotation, adjustedPosition * 100, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
 // Test 12: MergeSingleScene roundtrip
 bool GlobalAlignmentMergeSingleSceneTest()
 {

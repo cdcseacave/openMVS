@@ -380,6 +380,7 @@ bool FoldedBlockTest();
 bool FalseChordTest();
 bool SeamInliersBecomeTracksTest();
 bool UnplacedBlocksReportedTest();
+bool BentBlocksRelaxationTest();
 bool GlobalAlignmentMergeSingleSceneTest();
 bool GlobalAlignmentTrackMergeDuplicateImageGuardTest();
 bool GlobalAlignmentTrackMerge3DProximityGuardTest();

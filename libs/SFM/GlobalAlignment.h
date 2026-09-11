@@ -957,6 +957,36 @@ private:
 		std::vector<SeamCandidate>& candidates);
 
 	/**
+	 * @brief Stage 7: a similarity of its own for every camera of the placed blocks, when the seams
+	 * of the merged model still disagree at the block poses
+	 *
+	 * A block bent inside its own reconstruction has no rigid placement that makes its seams meet:
+	 * wherever it is put, one end of it is off by whatever its own drift accumulated. The seams are
+	 * then closed one camera at a time, over a pose graph of the cameras of the placed blocks: every
+	 * camera is held to the strongest covisible cameras of its own block, at the weight the block's
+	 * own reconstruction deserves, and to the cameras it faces across a seam, at the weight one seam
+	 * carries; each edge is charged against the very bars a seam is judged by, so one robust loss
+	 * weighs rotation, translation and scale at once. The relaxed cameras are written back into
+	 * their blocks' own frames and the block poses stay as the placement left them, so what the
+	 * relaxation bent is the reconstruction inside each block and the final adjustment starts from
+	 * seams that meet.
+	 * @param modelSeams the seams the merged model rests on, indices into candidates
+	 * @param seed a block of the merged model: its first camera is the gauge, and its model is the
+	 * only one relaxed, every other block being left to the resection
+	 * @param poses the block poses, which the relaxation reads and leaves exactly as they are
+	 * @param report out: the largest seam error before and after, and whether it ran
+	 * @return true when it ran
+	 */
+	bool RelaxCameras(
+		std::vector<Scene>& subScenes,
+		const std::vector<SeamCandidate>& candidates,
+		const std::vector<uint32_t>& modelSeams,
+		const std::vector<REAL>& blockExtents,
+		uint32_t seed,
+		std::vector<BlockPose>& poses,
+		MergeReport& report) const;
+
+	/**
 	 * @brief Stage 7: transform the placed blocks by their poses and merge every block in
 	 *
 	 * A block the placement admitted into the merged model comes in with its poses and its 3D
