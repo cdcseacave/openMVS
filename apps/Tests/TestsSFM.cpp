@@ -11917,10 +11917,8 @@ bool InterleavingVetoTest()
 	PlacementHypothesis right, wrong;
 	right.T = applied[0] * applied[1].Invert();
 	wrong.T = applied[0] * RingRotation(120) * applied[1].Invert();
-	// the model holds no neighbour whose own seam either placement leaves unsatisfied, so both
-	// answer for every observation of the pool
-	alignment.ScoreHypothesis(subScenes, pool, 0, alignCfg.minCameraVoteRatio, {}, right);
-	alignment.ScoreHypothesis(subScenes, pool, 0, alignCfg.minCameraVoteRatio, {}, wrong);
+	alignment.ScoreHypothesis(subScenes, pool, 0, alignCfg.minCameraVoteRatio, right);
+	alignment.ScoreHypothesis(subScenes, pool, 0, alignCfg.minCameraVoteRatio, wrong);
 
 	if (wrong.Passed() || wrong.failedGate.find("interleaving") == String::npos ||
 		wrong.score.ownNeighbourFraction >= 0.5f) {
@@ -11946,14 +11944,6 @@ bool RingPlacementTest()
 {
 	TD_TIMER_START();
 	RingSceneConfig cfg{12, 10};
-	// how well a block reaches into the next one is what this measures, so the keypoints are read
-	// more precisely than the generator's default: at 0.3 px every seam of the ring comes out about
-	// 0.06 degrees off and biased the same way -- a track at the edge of a block's arc is
-	// triangulated by two or three cameras a degree apart, and taking those tracks from the truth
-	// instead brings the same seams to 0.01 degrees -- so the ring's two arms meet 0.7 degrees
-	// apart, no placement of the block between them explains both halves of its evidence, and 11 of
-	// the 12 are placed, the merged ring 0.20 degrees off the truth.
-	cfg.noisePx = 0.1;
 	Scene scene;
 	std::vector<IIndexArr> blocks;
 	std::vector<Pose3D> gtPoses;

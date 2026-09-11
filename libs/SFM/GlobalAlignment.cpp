@@ -968,40 +968,24 @@ void GlobalAlignment::ScoreSeam(
 	const std::function<int(IIndex)>& sideOf,
 	const std::vector<Point3>& movingCentres,
 	const std::vector<Point3>& fixedCentres,
-	const std::set<uint32_t>& setAsideBlocks,
 	SeamScore& score) const
 {
 	ASSERT(observations.size() == correspondences.size());
 	score = SeamScore();
 
-	// a correspondence of a block that is set aside is not this transform's to answer for: it is
-	// neither inlier nor outlier, and the cameras at both its ends never see it
-	const auto IsSetAside = [this, &correspondences, &setAsideBlocks](size_t i) {
-		return !setAsideBlocks.empty() &&
-			(setAsideBlocks.count(globalToLocal.at(correspondences[i].imageA).first) > 0 ||
-			 setAsideBlocks.count(globalToLocal.at(correspondences[i].imageB).first) > 0);
-	};
-
 	// what the transform explains
 	const Transform TInv(T.Invert());
 	score.inlierMask.assign(observations.size(), false);
-	FOREACH(i, observations) {
-		if (IsSetAside(i)) {
-			++score.setAside;
-			continue;
-		}
+	FOREACH(i, observations)
 		if (SeamObservationError(observations[i], T, TInv) <= config.maxReprojError) {
 			score.inlierMask[i] = true;
 			++score.inliers;
 		}
-	}
 
 	// every image the seam touches, in both its roles: the camera whose feature carries the point
 	// witnesses the seam as much as the camera that observed it
 	std::map<IIndex, std::vector<uint32_t>> imageObservations;
 	FOREACH(i, observations) {
-		if (IsSetAside(i))
-			continue;
 		imageObservations[observations[i].rigImage].push_back((uint32_t)i);
 		imageObservations[observations[i].pointImage].push_back((uint32_t)i);
 	}
@@ -1113,10 +1097,9 @@ void GlobalAlignment::ScoreCandidate(const std::vector<Scene>& subScenes, SeamCa
 		if (img.IsValid())
 			centresB.emplace_back(img.C);
 	const uint32_t blockA = c.sceneA;
-	// a seam answers for every correspondence of its own pair, so nothing is set aside here
 	ScoreSeam(subScenes, c.observations, c.correspondences, c.T,
 		[this, blockA](IIndex image) { return globalToLocal.at(image).first == blockA ? 0 : 1; },
-		centresA, centresB, {}, c.score);
+		centresA, centresB, c.score);
 	c.weight = c.score.Weight(config.maxVoteWeight);
 }
 /*----------------------------------------------------------------*/
@@ -1200,7 +1183,6 @@ void GlobalAlignment::ScoreHypothesis(
 	const PlacementPool& pool,
 	const unsigned bestOwnInliers,
 	const float voteRatio,
-	const std::set<uint32_t>& setAsideBlocks,
 	PlacementHypothesis& h) const
 {
 	// side 0 is the group the hypothesis places, side 1 the model it is placed in
@@ -1209,7 +1191,7 @@ void GlobalAlignment::ScoreHypothesis(
 		[this, &groupBlocks](IIndex image) {
 			return std::find(groupBlocks.begin(), groupBlocks.end(), globalToLocal.at(image).first) != groupBlocks.end() ? 0 : 1;
 		},
-		pool.groupCentres, pool.modelCentres, setAsideBlocks, h.score);
+		pool.groupCentres, pool.modelCentres, h.score);
 	h.failedGate = FailedGates(h.score, h.score.inliers, bestOwnInliers, voteRatio);
 }
 /*----------------------------------------------------------------*/
@@ -2070,10 +2052,16 @@ static void ForEachGroupSeam(
 }
 
 // What the admitted neighbours make of a placement: those whose own seams agree with what it
-// implies, those whose trusted seam disagrees -- a cycle the model will have to answer for, named
-// so that what they saw can be set aside from what judges the block -- and those that simply
-// contradict it
-struct NeighbourVerdict { unsigned support{0}, contra{0}; std::set<uint32_t> loop; };
+// implies, those whose trusted seam disagrees -- a cycle the model will have to answer for -- and
+// those that simply contradict it
+struct NeighbourVerdict { unsigned support{0}, loop{0}, contra{0}; };
+
+// Whether the admitted neighbours are behind a placement: one of them at least, and no more than a
+// share of those with something to say against it
+static bool NeighboursBehind(const unsigned support, const unsigned loop, const unsigned contra)
+{
+	return support > 0 && contra * kNeighbourContraShare <= support + loop + contra;
+}
 
 static NeighbourVerdict CheckNeighbours(
 	const std::vector<SeamCandidate>& candidates, const std::vector<REAL>& blockExtents,
@@ -2108,11 +2096,40 @@ static NeighbourVerdict CheckNeighbours(
 		if (seams.agrees)
 			++verdict.support;
 		else if (seams.trusted)
-			verdict.loop.insert(neighbour);
+			++verdict.loop;
 		else
 			++verdict.contra;
 	}
 	return verdict;
+}
+
+// How much of a pool each admitted block carries: the bar a neighbour clears before its opinion of
+// a placement is asked for
+static void CountPooledPerBlock(
+	const PlacementPool& pool,
+	const std::unordered_map<IIndex, std::pair<uint32_t, IIndex>>& globalToLocal,
+	std::map<uint32_t, unsigned>& numPooled)
+{
+	numPooled.clear();
+	for (const SeamObservation& obs : pool.observations) {
+		// the model side holds the camera when the point is the group's, and the point otherwise
+		const auto it = globalToLocal.find(obs.forward ? obs.rigImage : obs.pointImage);
+		if (it != globalToLocal.end())
+			++numPooled[it->second.first];
+	}
+}
+
+// The camera-vote margin a placement into this model is held to: a model the group reaches over
+// verified seams alone is the stricter one
+static float ModelVoteRatio(
+	const std::vector<SeamCandidate>& candidates, const std::vector<BlockPose>& poses,
+	const uint32_t model, const BlockGroup& group, const GlobalAlignmentConfig& config)
+{
+	bool anyRobust = false;
+	ForEachGroupSeam(candidates, poses, model, group, [&](uint32_t i, uint32_t) {
+		anyRobust = anyRobust || candidates[i].cls == SeamCandidate::ROBUST;
+	});
+	return anyRobust ? config.minCameraVoteRatio : config.minCameraVoteRatioVerified;
 }
 
 // What a block weighs against the blocks the model already holds: its trusted seams to them in
@@ -2251,45 +2268,27 @@ bool GlobalAlignment::PlaceGroup(
 		return false;
 	}
 
-	// how much of the pool each admitted block carries: the bar a neighbour clears before its
-	// opinion is asked for
+	// how much of the pool each admitted block carries, and the margin the cameras are held to
 	std::map<uint32_t, unsigned> numPooled;
-	for (const SeamObservation& obs : pool.observations) {
-		// the model side holds the camera when the point is the group's, and the point otherwise
-		const auto it = globalToLocal.find(obs.forward ? obs.rigImage : obs.pointImage);
-		if (it != globalToLocal.end())
-			++numPooled[it->second.first];
-	}
-	// a model the group reaches over verified seams alone is held to the stricter vote margin
-	bool anyRobust = false;
-	ForEachGroupSeam(candidates, poses, model, group, [&](uint32_t i, uint32_t) {
-		anyRobust = anyRobust || candidates[i].cls == SeamCandidate::ROBUST;
-	});
-	const float voteRatio = anyRobust ? config.minCameraVoteRatio : config.minCameraVoteRatioVerified;
+	CountPooledPerBlock(pool, globalToLocal, numPooled);
+	const float voteRatio = ModelVoteRatio(candidates, poses, model, group, config);
 
 	const uint32_t firstBlock = group.blocks.front();
 	for (PlacementHypothesis& h : hypotheses) {
-		// what the admitted neighbours make of it comes first: a neighbour whose own trusted seam
-		// this placement cannot satisfy is a cycle the model will answer for, so what its cameras
-		// saw is set aside from the evidence the block itself is judged on -- charging it to the
-		// block would refuse the very block that closes the loop
+		ScoreHypothesis(subScenes, pool, bestOwnInliers, voteRatio, h);
 		const NeighbourVerdict verdict = CheckNeighbours(
 			candidates, blockExtents, poses, model, group, numPooled, h.T, config);
 		h.neighbourSupport = verdict.support;
-		h.loopNeighbours = verdict.loop;
+		h.neighbourLoop = verdict.loop;
 		h.neighbourContra = verdict.contra;
-		ScoreHypothesis(subScenes, pool, bestOwnInliers, voteRatio, h.loopNeighbours, h);
-		// the neighbours the model already holds: one behind the placement at least, and no more
-		// than a share of those with something to say against it
-		if (h.Passed() && (verdict.support == 0 || verdict.contra * kNeighbourContraShare >
-				verdict.support + (unsigned)verdict.loop.size() + verdict.contra))
+		// the neighbours the model already holds have to be behind it
+		if (h.Passed() && !NeighboursBehind(verdict.support, verdict.loop, verdict.contra))
 			h.failedGate = "neighbours";
 		LogVotes(String::FormatString("Placement of block %u, %s",
 			firstBlock, PlacementWord(h.source)).c_str(), h.score);
-		DEBUG_ULTIMATE("Placement of block %u, %s: %u inliers of %u, %u set aside, %u+/%u- neighbours%s%s",
+		DEBUG_ULTIMATE("Placement of block %u, %s: %u inliers of %u, %u+/%u- neighbours%s%s",
 			firstBlock, PlacementWord(h.source), h.score.inliers, (unsigned)pool.observations.size(),
-			h.score.setAside, verdict.support, verdict.contra,
-			h.Passed() ? "" : ", dropped by ", h.failedGate.c_str());
+			verdict.support, verdict.contra, h.Passed() ? "" : ", dropped by ", h.failedGate.c_str());
 	}
 
 	// the largest vote of the cameras decides between them
@@ -2299,8 +2298,15 @@ bool GlobalAlignment::PlaceGroup(
 	const auto itWinner = std::find_if(hypotheses.begin(), hypotheses.end(),
 		[](const PlacementHypothesis& h) { return h.Passed(); });
 	if (itWinner == hypotheses.end()) {
-		// nothing carried the group: the best of them says why
+		// nothing carried the group: the best of them says why, and among them one its admitted
+		// neighbours are behind says it best -- that is the reading the group's own seams support,
+		// and the only one a cycle can still be closed through
 		winner = hypotheses.front();
+		for (const PlacementHypothesis& h : hypotheses)
+			if (NeighboursBehind(h.neighbourSupport, h.neighbourLoop, h.neighbourContra)) {
+				winner = h;
+				break;
+			}
 		reason = winner.failedGate;
 		return false;
 	}
@@ -2430,6 +2436,29 @@ static void CollectWeakPairs(
 }
 /*----------------------------------------------------------------*/
 
+bool GlobalAlignment::AverageModelPoses(
+	const std::vector<SeamCandidate>& candidates,
+	const std::vector<uint32_t>& seams,
+	const std::vector<REAL>& blockExtents,
+	const uint32_t model, const uint32_t seed,
+	std::vector<BlockPose>& poses,
+	std::vector<Point3>& residuals) const
+{
+	std::vector<BlockPose> averaged;
+	if (!AverageBlockPoses(candidates, seams, blockExtents,
+		(uint32_t)poses.size(), seed, averaged, residuals) || averaged[seed].model == NO_ID)
+		return false;
+	// the consensus comes out in a frame of its own, and is anchored back where the model already
+	// stands: a block the consensus could not reach then stays in the same frame as the blocks it
+	// moved
+	const Transform frame(poses[seed].T * averaged[seed].T.Invert());
+	FOREACH(b, poses)
+		if (IsInModel(poses, b, model) && averaged[b].model != NO_ID)
+			poses[b].T = frame * averaged[b].T;
+	return true;
+}
+/*----------------------------------------------------------------*/
+
 std::pair<float, float> GlobalAlignment::RelaxBlockPoses(
 	const std::vector<Scene>& subScenes,
 	std::vector<SeamCandidate>& candidates,
@@ -2442,18 +2471,8 @@ std::pair<float, float> GlobalAlignment::RelaxBlockPoses(
 	const float before = LargestSeamResidual(candidates, modelSeams);
 
 	// the whole model at once, over the seams it rests on and about the block it is gauged at
-	std::vector<BlockPose> averaged;
 	std::vector<Point3> residuals;
-	if (AverageBlockPoses(candidates, modelSeams, blockExtents,
-		(uint32_t)subScenes.size(), seed, averaged, residuals) && averaged[seed].model != NO_ID)
-	{
-		// the consensus comes out in a frame of its own, and is anchored back where the model
-		// already stands: a block the consensus could not reach then stays in the same frame as
-		// the blocks it moved
-		const Transform frame(poses[seed].T * averaged[seed].T.Invert());
-		FOREACH(b, poses)
-			if (IsInModel(poses, b, model) && averaged[b].model != NO_ID)
-				poses[b].T = frame * averaged[b].T;
+	if (AverageModelPoses(candidates, modelSeams, blockExtents, model, seed, poses, residuals)) {
 		// what the consensus makes of every seam where it has just put the blocks; one it could not
 		// reach keeps the verdict it had
 		FOREACH(k, modelSeams) {
@@ -2468,6 +2487,95 @@ std::pair<float, float> GlobalAlignment::RelaxBlockPoses(
 	// and the observations behind those seams read again from the poses that came out
 	RefineBlockPoses(candidates, modelSeams, model, seed, poses);
 	return std::make_pair(before, LargestSeamResidual(candidates, modelSeams));
+}
+/*----------------------------------------------------------------*/
+
+bool GlobalAlignment::CloseCycleThrough(
+	const std::vector<Scene>& subScenes,
+	std::vector<SeamCandidate>& candidates,
+	const std::vector<REAL>& blockExtents,
+	const uint32_t model, const uint32_t seed,
+	const BlockGroup& group,
+	PlacementHypothesis& best,
+	std::vector<BlockPose>& poses,
+	std::vector<uint32_t>& modelSeams,
+	String& reason) const
+{
+	// only a group its neighbours are behind and whose cameras the model leaves unmixed, refused by
+	// what it explains or by the votes alone, can be facing a cycle instead of failing on its own
+	if (best.Passed() || best.failedGate.find("interleaving") != String::npos ||
+		!NeighboursBehind(best.neighbourSupport, best.neighbourLoop, best.neighbourContra))
+		return false;
+	// and only a group two or more admitted blocks trust: a single seam closes nothing
+	std::vector<uint32_t> tentativeSeams(modelSeams);
+	std::set<uint32_t> trustedNeighbours;
+	ForEachGroupSeam(candidates, poses, model, group, [&](uint32_t i, uint32_t neighbour) {
+		if (!candidates[i].IsTrusted())
+			return;
+		tentativeSeams.push_back(i);
+		trustedNeighbours.insert(neighbour);
+	});
+	if (trustedNeighbours.size() < 2)
+		return false;
+
+	// the group taken in on trust, and the model averaged over the seams it would then rest on: the
+	// cycle's discrepancy is spread over them and the group lands where its own seams put it
+	const std::vector<BlockPose> savedPoses(poses);
+	FOREACH(g, group.blocks) {
+		BlockPose& pose = poses[group.blocks[g]];
+		pose.T = best.T * group.frames[g];
+		pose.model = model;
+		pose.state = BlockPose::ADMITTED;
+	}
+	std::vector<Point3> residuals;
+	PlacementHypothesis relaxed;
+	float spread = 0;
+	relaxed.source = PlacementHypothesis::INITIAL;
+	if (AverageModelPoses(candidates, tentativeSeams, blockExtents, model, seed, poses, residuals)) {
+		// what the cycle's discrepancy came down to once the consensus carried it
+		for (const Point3& residual : residuals)
+			if (residual.x < REAL(FLT_MAX))
+				spread = MAXF(spread, (float)residual.x);
+		// the observations behind those seams read again from where the consensus put the blocks:
+		// the cameras are asked a question about pixels, and the averaging answers one about seams
+		RefineBlockPoses(candidates, tentativeSeams, model, seed, poses);
+		// what the pool says of the group where the relaxed model puts it: the same gates, now
+		// answering to a model that has taken the cycle in
+		relaxed.T = poses[group.blocks.front()].T * group.frames.front().Invert();
+		PlacementPool pool;
+		BuildPlacementPool(subScenes, candidates, poses, model, group, pool);
+		std::map<uint32_t, unsigned> numPooled;
+		CountPooledPerBlock(pool, globalToLocal, numPooled);
+		ScoreHypothesis(subScenes, pool, 0, ModelVoteRatio(candidates, poses, model, group, config), relaxed);
+		const NeighbourVerdict verdict = CheckNeighbours(
+			candidates, blockExtents, poses, model, group, numPooled, relaxed.T, config);
+		relaxed.neighbourSupport = verdict.support;
+		relaxed.neighbourLoop = verdict.loop;
+		relaxed.neighbourContra = verdict.contra;
+		if (relaxed.Passed() && !NeighboursBehind(verdict.support, verdict.loop, verdict.contra))
+			relaxed.failedGate = "neighbours";
+		LogVotes(String::FormatString("Placement of block %u, relaxed over its cycle",
+			group.blocks.front()).c_str(), relaxed.score);
+	} else
+		relaxed.failedGate = "cycle averaging";
+	DEBUG("Block %u judged against the model its cycle was spread over (largest seam residual "
+		"%.2f deg): %u inliers of %u, votes %u+/%u- block, %u+/%u- model, %u+/%u- neighbours%s%s",
+		group.blocks.front(), spread,
+		relaxed.score.inliers, (unsigned)relaxed.score.inlierMask.size(),
+		relaxed.score.support[0], relaxed.score.contra[0],
+		relaxed.score.support[1], relaxed.score.contra[1],
+		relaxed.neighbourSupport, relaxed.neighbourContra,
+		relaxed.Passed() ? "" : ", dropped by ", relaxed.failedGate.c_str());
+	if (!relaxed.Passed()) {
+		// nothing was spread that the cameras could then follow: the model is left as it was
+		poses = savedPoses;
+		reason = relaxed.failedGate;
+		return false;
+	}
+	// the relaxed poses stand, and the group comes in against them like any other
+	best = relaxed;
+	AdmitGroup(subScenes, candidates, blockExtents, model, group, relaxed, poses, modelSeams);
+	return true;
 }
 /*----------------------------------------------------------------*/
 
@@ -2659,32 +2767,30 @@ unsigned GlobalAlignment::PlaceBlocks(
 		group.frames.assign(1, Transform());
 		PlacementHypothesis winner;
 		String reason;
-		if (!PlaceGroup(subScenes, candidates, blockExtents, model, group, poses, winner, reason)) {
+		bool closedCycle;
+		if (PlaceGroup(subScenes, candidates, blockExtents, model, group, poses, winner, reason))
+			closedCycle = AdmitGroup(
+				subScenes, candidates, blockExtents, model, group, winner, poses, modelSeams);
+		// the block the placement could not carry may be the one a cycle runs through: it is judged
+		// again once the model has taken that cycle in, and comes in with it when it holds there
+		else if (CloseCycleThrough(subScenes, candidates, blockExtents, model, seed, group, winner,
+				poses, modelSeams, reason))
+			closedCycle = true;
+		else {
 			poses[next].state = BlockPose::DEFERRED;
 			poses[next].reason = reason;
 			deferred.push_back(next);
 			DEBUG("Block %u deferred: %s", next, reason.c_str());
 			continue;
 		}
-		const bool closedCycle = AdmitGroup(
-			subScenes, candidates, blockExtents, model, group, winner, poses, modelSeams);
 		++numAdmitted;
 		modelChanged = true;
-		// what a block placed against a loop discrepancy was not answerable for, named where the
-		// placement is reported: the observations of the neighbours the model still has to settle
-		String setAside;
-		for (const uint32_t neighbour : winner.loopNeighbours)
-			setAside += String::FormatString(setAside.empty() ? "%u" : ", %u", neighbour);
-		if (!setAside.empty())
-			setAside = String::FormatString(" (%u observations of loop neighbour %s set aside)",
-				winner.score.setAside, setAside.c_str());
-		VERBOSE("Block %u placed on %u neighbours (%u support, %u loop, %u contradict); "
-			"votes %u+/%u- block, %u+/%u- model; %s%s", next,
-			winner.neighbourSupport + (unsigned)winner.loopNeighbours.size() + winner.neighbourContra,
-			winner.neighbourSupport, (unsigned)winner.loopNeighbours.size(), winner.neighbourContra,
+		DEBUG("Block %u placed on %u neighbours (%u support, %u loop, %u contradict); "
+			"votes %u+/%u- block, %u+/%u- model; %s", next,
+			winner.neighbourSupport + winner.neighbourLoop + winner.neighbourContra,
+			winner.neighbourSupport, winner.neighbourLoop, winner.neighbourContra,
 			winner.score.support[0], winner.score.contra[0],
-			winner.score.support[1], winner.score.contra[1], PlacementWord(winner.source),
-			setAside.c_str());
+			winner.score.support[1], winner.score.contra[1], PlacementWord(winner.source));
 		if (closedCycle) {
 			// the block joined the model from two sides: the error the chain accumulated is spread
 			// over the cycle it just closed, instead of being left at the seam that closed it
