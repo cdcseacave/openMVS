@@ -324,9 +324,9 @@ constexpr float kVerifiedWeightShare = 0.5f;
 // the bar its own part answers to, so one is a camera edge off by exactly what a seam may be off by.
 constexpr double kCameraGraphHuber = 1.0;
 // The angle two of its rays must open for a track to be triangulated again from the relaxed
-// cameras: the bar the reconstruction triangulates at (ReconstructionConfig::minAngleThreshold), so
-// the relaxation hands the tail the tracks its own filtering would have kept anyway.
-constexpr float kRelaxedTrackMinAngle = 1.5f;
+// cameras: read from the very field the reconstruction triangulates at, so the relaxation hands the
+// tail the tracks its own filtering would have kept anyway and the two cannot drift apart.
+static const float kRelaxedTrackMinAngle = ReconstructionConfig().minAngleThreshold;
 
 // One cross-sub-scene image pair, with the sub-scene each of its two images belongs to already
 // resolved, so feature indices (queryIdx/trainIdx) can be mapped consistently.
@@ -804,23 +804,47 @@ void AppendPoolObservations(
 	}
 }
 
+// One cross-block match, as the two directions that collect it both name it: the two images and the
+// two features, packed so that telling two matches apart costs one comparison of two words
+struct CorrespondenceKey
+{
+	uint64_t a, b; // (image << 32) | feature, side A and side B
+	bool operator==(const CorrespondenceKey& other) const { return a == other.a && b == other.b; }
+};
+struct CorrespondenceKeyHash
+{
+	size_t operator()(const CorrespondenceKey& key) const {
+		return (size_t)(key.a * 0x9E3779B97F4A7C15ULL ^ (key.b + 0x517CC1B727220A95ULL));
+	}
+};
+static CorrespondenceKey KeyOfCorrespondence(const SeamCorrespondence& corr)
+{
+	return CorrespondenceKey{
+		((uint64_t)corr.imageA << 32) | (uint64_t)corr.featureA,
+		((uint64_t)corr.imageB << 32) | (uint64_t)corr.featureB};
+}
+
 // A pair the seam graph indicted: it holds opinions and every one of them was rejected, which is
 // the graph saying a stronger consistent path contradicts what this pair's cameras saw. Its
 // correspondences are then evidence that has already been weighed, exactly like a pair the gates
 // refused, and no placement may pick them up again. A pair whose two blocks' cameras split over it
 // is not this: it never becomes a candidate at all, and its raw correspondences are what carries a
 // folded block to the placement that cuts it.
+bool IsPairRejected(const std::vector<SeamCandidate>& candidates, const std::vector<uint32_t>& indices)
+{
+	for (const uint32_t i : indices)
+		if (candidates[i].cls != SeamCandidate::REJECTED)
+			return false;
+	return !indices.empty();
+}
+// the same question asked by a caller that does not already hold the pair's candidates
 bool IsPairRejected(const std::vector<SeamCandidate>& candidates, const uint32_t a, const uint32_t b)
 {
-	bool any = false;
-	for (const SeamCandidate& c : candidates) {
-		if (c.sceneA != a || c.sceneB != b)
-			continue;
-		if (c.cls != SeamCandidate::REJECTED)
-			return false;
-		any = true;
-	}
-	return any;
+	std::vector<uint32_t> indices;
+	FOREACH(i, candidates)
+		if (candidates[i].sceneA == a && candidates[i].sceneB == b)
+			indices.push_back((uint32_t)i);
+	return IsPairRejected(candidates, indices);
 }
 
 // How a candidate was measured, for the log
@@ -1152,16 +1176,17 @@ void GlobalAlignment::ScoreSeam(
 	// witnesses the seam as much as the camera that observed it. A match whose two endpoints both
 	// lie on a track is collected in both directions, and one camera then meets that same match
 	// once in each role -- it is one correspondence either way and counts once, or the bars a vote
-	// answers to are halved on exactly the seams whose tracks are best formed
-	typedef std::tuple<IIndex, uint32_t, IIndex, uint32_t> CorrespondenceKey;
-	std::map<IIndex, std::set<CorrespondenceKey>> countedByImage;
+	// answers to are halved on exactly the seams whose tracks are best formed. The two collections
+	// of one match name the same two images, so keeping the first of them is what lets both of those
+	// cameras count it once, and one pass over the union does for every camera at once
+	std::unordered_set<CorrespondenceKey, CorrespondenceKeyHash> counted;
+	counted.reserve(observations.size());
 	std::map<IIndex, std::vector<uint32_t>> imageObservations;
 	FOREACH(i, observations) {
-		const SeamCorrespondence& corr = correspondences[i];
-		const CorrespondenceKey key(corr.imageA, corr.featureA, corr.imageB, corr.featureB);
-		for (const IIndex image : {observations[i].rigImage, observations[i].pointImage})
-			if (countedByImage[image].insert(key).second)
-				imageObservations[image].push_back((uint32_t)i);
+		if (!counted.insert(KeyOfCorrespondence(correspondences[i])).second)
+			continue;
+		imageObservations[observations[i].rigImage].push_back((uint32_t)i);
+		imageObservations[observations[i].pointImage].push_back((uint32_t)i);
 	}
 
 	std::map<uint32_t, std::vector<Point3>> supportingCentres; // block -> its supporters' centres
@@ -1316,7 +1341,7 @@ void GlobalAlignment::BuildPlacementPool(
 			pairCandidates[std::make_pair(c.sceneA, c.sceneB)].push_back(i);
 	}
 	for (const auto& [blockPair, indices] : pairCandidates) {
-		if (IsPairRejected(candidates, blockPair.first, blockPair.second))
+		if (IsPairRejected(candidates, indices))
 			continue;
 		// the parallel candidates of a pair were all scored on the same union of both directions,
 		// so that union enters the pool once and every one of them is recorded behind it
@@ -1905,94 +1930,19 @@ static REAL RotationResidual(
 	return R2D(ACOS(ComputeAngle(p.relativeRotation, Matrix3x3(RB * RA.t()))));
 }
 
-// How many of the given seams a solution leaves unexplained, which is how two readings of the same
-// component are told apart
-static unsigned NumInconsistentRotations(
+// What the seams a solution leaves unexplained weigh between them, which is how two readings of the
+// same component are told apart: weight, because everything else the graph decides it decides by
+// weight, and a reading that explains three thin seams does not beat one that explains two heavy
+// ones
+static float InconsistentRotationWeight(
 	const std::vector<RotationPair>& pairs, const std::vector<Point3>& rotations,
 	const std::vector<uint32_t>& frameOfNode, const REAL maxResidual)
 {
-	unsigned numInconsistent = 0;
+	float weight = 0;
 	for (const RotationPair& p : pairs)
 		if (RotationResidual(p, rotations, frameOfNode) > maxResidual)
-			++numInconsistent;
-	return numInconsistent;
-}
-
-// The tree the rotations are carried out along: the heaviest seam that joins two nodes nothing has
-// joined yet, taken in weight order, and never a seam between the two blocks named by `leftOut`.
-// The estimator builds itself the same tree; this one can be told to ignore a seam.
-static void SpanningTreeEdges(
-	const std::vector<RotationPair>& pairs, const uint32_t numNodes,
-	const std::pair<uint32_t, uint32_t>& leftOut, std::vector<size_t>& treeEdges)
-{
-	std::vector<size_t> order(pairs.size());
-	std::iota(order.begin(), order.end(), (size_t)0);
-	// heaviest first, and the order they were given in for equal weights, so the tree is the same
-	// tree every run
-	std::stable_sort(order.begin(), order.end(),
-		[&pairs](size_t i, size_t j) { return pairs[i].weight > pairs[j].weight; });
-	DisjointSet<uint32_t> sets(numNodes);
-	treeEdges.clear();
-	for (const size_t i : order) {
-		const RotationPair& p = pairs[i];
-		if (!(p.weight > 0) ||
-			(MINF(p.idxA, p.idxB) == MINF(leftOut.first, leftOut.second) &&
-			 MAXF(p.idxA, p.idxB) == MAXF(leftOut.first, leftOut.second)) ||
-			sets.Find(p.idxA) == sets.Find(p.idxB))
-			continue;
-		sets.Union(p.idxA, p.idxB);
-		treeEdges.push_back(i);
-	}
-}
-
-// The largest tree of that forest, every node of it carried out from its own root at the identity;
-// every other node is left INF, which is how the estimator is told this run is not about it -- the
-// same one component at a time the estimator's own initialization works in.
-// @return how many nodes were initialized
-static uint32_t InitializeLargestTree(
-	const std::vector<RotationPair>& pairs, const std::vector<size_t>& treeEdges,
-	const uint32_t numNodes, std::vector<Point3>& rotations)
-{
-	std::vector<std::vector<std::pair<uint32_t, size_t>>> adjacency(numNodes); // neighbour, seam
-	for (const size_t i : treeEdges) {
-		adjacency[pairs[i].idxA].emplace_back(pairs[i].idxB, i);
-		adjacency[pairs[i].idxB].emplace_back(pairs[i].idxA, i);
-	}
-	// the trees of the forest, then the largest of them; the lowest node of a tree is its root, so
-	// the same forest always comes out in the same frame
-	DisjointSet<uint32_t> sets(numNodes);
-	for (const size_t i : treeEdges)
-		sets.Union(pairs[i].idxA, pairs[i].idxB);
-	std::vector<uint32_t> treeSize(numNodes, 0);
-	for (uint32_t node = 0; node < numNodes; ++node)
-		if (!adjacency[node].empty())
-			++treeSize[sets.Find(node)];
-	uint32_t root = NO_ID;
-	for (uint32_t node = 0; node < numNodes; ++node)
-		if (!adjacency[node].empty() &&
-			(root == NO_ID || treeSize[sets.Find(node)] > treeSize[sets.Find(root)]))
-			root = node;
-	rotations.assign(numNodes, Point3::INF);
-	if (root == NO_ID)
-		return 0;
-	rotations[root] = Point3::ZERO;
-	std::vector<uint32_t> front{root};
-	uint32_t numInitialized = 0;
-	for (size_t next = 0; next < front.size(); ++next) {
-		const uint32_t node = front[next];
-		++numInitialized;
-		for (const auto& [neighbour, i] : adjacency[node]) {
-			if (rotations[neighbour] != Point3::INF)
-				continue;
-			// the seam reads R_B = R_rel * R_A, whichever of its two ends this node is
-			const RotationPair& p = pairs[i];
-			const RMatrix R(rotations[node]);
-			rotations[neighbour] = RMatrix(p.idxA == node ?
-				p.relativeRotation * R : p.relativeRotation.t() * R).GetRotationAxisAngle();
-			front.push_back(neighbour);
-		}
-	}
-	return numInitialized;
+			weight += p.weight;
+	return weight;
 }
 
 // The global rotation of every node the seams reach, and which run of the estimator placed it.
@@ -2004,12 +1954,17 @@ static uint32_t InitializeLargestTree(
 // enough to enter that tree turns everything the tree reaches through it, and the true seams
 // bridging the two halves are then the ones that look wrong -- the largest residuals sit on them,
 // not on the seam that caused it, so no reading of the solution finds the culprit. Every seam the
-// tree is built through is therefore tried left out of it, and the reading that leaves the fewest
-// seams unexplained is the one kept, ties going to the first. That is at most one extra solve per
-// seam of the tree, and none at all for a component the seams already explain.
+// tree is built through is therefore tried left out of it, and the reading whose unexplained seams
+// weigh least is the one kept, ties going to the first.
+// @param sweepTree try every seam of the tree (the first reading of a component), or only the one
+// `treeLeftOut` carries in (every reading after it): the first sweep costs at most one extra solve
+// per seam of the tree, each one after it at most one, and a component its seams already explain
+// costs none at all
+// @param treeLeftOut in: the seam the previous reading of this component kept out of its tree, or
+// NO_ID; out: the seam this reading kept out
 static bool SolveRotationFrames(
 	const std::vector<RotationPair>& pairs, const uint32_t numNodes,
-	const GlobalRotationEstimatorOptions& options, const REAL maxResidual,
+	const GlobalRotationEstimatorOptions& options, const REAL maxResidual, const bool sweepTree,
 	std::vector<Point3>& rotations, std::vector<uint32_t>& frameOfNode,
 	std::pair<uint32_t, uint32_t>& treeLeftOut)
 {
@@ -2025,13 +1980,12 @@ static bool SolveRotationFrames(
 		while (!remaining.empty()) {
 			GlobalRotationEstimator estimator(options);
 			std::vector<Point3> partial;
-			if (leftOut.first != NO_ID) {
-				std::vector<size_t> treeEdges;
-				SpanningTreeEdges(remaining, numNodes, leftOut, treeEdges);
-				// a run the tree reaches fewer than two nodes of has nothing left to solve
-				if (InitializeLargestTree(remaining, treeEdges, numNodes, partial) < 2)
-					break;
-			}
+			// an empty initialization is the estimator's own tree, which is what a reading that
+			// keeps no seam out asks for
+			if (leftOut.first != NO_ID &&
+				GlobalRotationEstimator::RotationsFromMaximumSpanningTree(
+					numNodes, remaining, leftOut, partial) == NO_ID)
+				break;
 			if (!estimator.EstimateRotations(remaining, numNodes, partial))
 				break;
 			bool placedAny = false;
@@ -2054,30 +2008,37 @@ static bool SolveRotationFrames(
 		return numFrames;
 	};
 
+	const std::pair<uint32_t, uint32_t> previousLeftOut(treeLeftOut);
 	treeLeftOut = std::make_pair(NO_ID, NO_ID);
 	std::vector<Point3> bestRotations;
 	std::vector<uint32_t> bestFrames;
 	if (Solve(treeLeftOut, bestRotations, bestFrames) == 0)
 		return false;
-	unsigned bestInconsistent = NumInconsistentRotations(pairs, bestRotations, bestFrames, maxResidual);
-	if (bestInconsistent > 0) {
-		std::vector<size_t> treeEdges;
-		SpanningTreeEdges(pairs, numNodes, std::make_pair((uint32_t)NO_ID, (uint32_t)NO_ID), treeEdges);
-		for (const size_t e : treeEdges) {
-			const std::pair<uint32_t, uint32_t> leftOut(pairs[e].idxA, pairs[e].idxB);
+	float bestWeight = InconsistentRotationWeight(pairs, bestRotations, bestFrames, maxResidual);
+	if (bestWeight > 0) {
+		// the seams to try left out of the tree: all of them the first time this component is read,
+		// and the one that won then every time after, the weights having moved and not the tree
+		std::vector<std::pair<uint32_t, uint32_t>> leftOuts;
+		if (sweepTree) {
+			std::vector<Point3> ignored;
+			GlobalRotationEstimator::RotationsFromMaximumSpanningTree(
+				numNodes, pairs, std::make_pair((uint32_t)NO_ID, (uint32_t)NO_ID), ignored, &leftOuts);
+		} else if (previousLeftOut.first != NO_ID)
+			leftOuts.push_back(previousLeftOut);
+		for (const std::pair<uint32_t, uint32_t>& leftOut : leftOuts) {
 			std::vector<Point3> retryRotations;
 			std::vector<uint32_t> retryFrames;
 			if (Solve(leftOut, retryRotations, retryFrames) == 0)
 				continue;
-			const unsigned numInconsistent =
-				NumInconsistentRotations(pairs, retryRotations, retryFrames, maxResidual);
-			if (numInconsistent >= bestInconsistent)
+			const float weight =
+				InconsistentRotationWeight(pairs, retryRotations, retryFrames, maxResidual);
+			if (weight >= bestWeight)
 				continue;
-			bestInconsistent = numInconsistent;
+			bestWeight = weight;
 			bestRotations.swap(retryRotations);
 			bestFrames.swap(retryFrames);
 			treeLeftOut = leftOut;
-			if (bestInconsistent == 0)
+			if (!(bestWeight > 0))
 				break; // nothing left for another tree to explain
 		}
 	}
@@ -2129,10 +2090,14 @@ bool GlobalAlignment::AverageBlockPoses(
 	std::vector<Point3> rotations;
 	std::vector<REAL> rotationResiduals;
 	std::pair<uint32_t, uint32_t> treeLeftOut(NO_ID, NO_ID);
+	unsigned rotationRound = 0;
 	if (!RobustAverage(rotationPairs, (REAL)config.maxGraphRotationResidual, kRobustRounds,
 		[&](const std::vector<RotationPair>& active, std::vector<Point3>& rots) {
+			// only the first reading of the component sweeps the whole tree; every reweighted one
+			// after it tries the plain tree and whichever seam the sweep found worth keeping out
 			return SolveRotationFrames(active, n, rotationOptions,
-				(REAL)config.maxGraphRotationResidual, rots, frameOfNode, treeLeftOut);
+				(REAL)config.maxGraphRotationResidual, rotationRound++ == 0,
+				rots, frameOfNode, treeLeftOut);
 		},
 		[&](size_t i, const std::vector<Point3>& rots) {
 			return RotationResidual(rotationPairs[i], rots, frameOfNode);
@@ -2563,20 +2528,17 @@ static float PooledSupport(
 static unsigned EstimatePoolSimilarity(
 	const PlacementPool& pool, const GlobalAlignmentConfig& config, Transform& T)
 {
-	// a correspondence collected in both directions has its point triangulated in both frames
-	typedef std::tuple<IIndex, IIndex, uint32_t, uint32_t> CorrespondenceKey;
-	const auto KeyOf = [](const SeamCorrespondence& corr) {
-		return std::make_tuple(corr.imageA, corr.imageB, corr.featureA, corr.featureB);
-	};
-	std::map<CorrespondenceKey, Point3> groupPoints;
+	// a correspondence collected in both directions has its point triangulated in both frames, and
+	// the two collections of one match are named the one way every count of them is named
+	std::unordered_map<CorrespondenceKey, Point3, CorrespondenceKeyHash> groupPoints;
 	FOREACH(i, pool.observations)
 		if (pool.observations[i].forward)
-			groupPoints.emplace(KeyOf(pool.correspondences[i]), pool.observations[i].X);
+			groupPoints.emplace(KeyOfCorrespondence(pool.correspondences[i]), pool.observations[i].X);
 	Point3Arr srcPoints, dstPoints;
 	FOREACH(i, pool.observations) {
 		if (pool.observations[i].forward)
 			continue;
-		const auto it = groupPoints.find(KeyOf(pool.correspondences[i]));
+		const auto it = groupPoints.find(KeyOfCorrespondence(pool.correspondences[i]));
 		if (it == groupPoints.end())
 			continue;
 		srcPoints.emplace_back(it->second);

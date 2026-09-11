@@ -149,6 +149,26 @@ bool GlobalRotationEstimator::EstimateRotations(
 
 void GlobalRotationEstimator::InitializeFromMaximumSpanningTree(uint32_t numNodes, const std::vector<RotationPair>& pairwiseRotations)
 {
+	std::vector<Point3> rotations;
+	const uint32_t root = RotationsFromMaximumSpanningTree(
+		numNodes, pairwiseRotations, std::make_pair(NO_ID, NO_ID), rotations, NULL);
+	// nothing to initialize from leaves the estimates exactly as they were
+	if (root == NO_ID)
+		return;
+	estimatedRotations = rotations;
+	if (fixedNodeId == NO_ID)
+		fixedNodeId = root;
+}
+
+uint32_t GlobalRotationEstimator::RotationsFromMaximumSpanningTree(
+	uint32_t numNodes, const std::vector<RotationPair>& pairwiseRotations,
+	const std::pair<uint32_t, uint32_t>& excluded,
+	std::vector<Point3>& rotations,
+	std::vector<std::pair<uint32_t, uint32_t>>* treeEdges)
+{
+	if (treeEdges != NULL)
+		treeEdges->clear();
+
 	// Build an undirected weighted graph with all nodes as vertices
 	typedef boost::adjacency_list<boost::vecS, boost::vecS, boost::undirectedS,
 		boost::no_property, boost::property<boost::edge_weight_t, double>> Graph;
@@ -157,10 +177,13 @@ void GlobalRotationEstimator::InitializeFromMaximumSpanningTree(uint32_t numNode
 
 	Graph g(numNodes);
 
-	// Add weighted edges from the valid pairs
+	// Add weighted edges from the valid pairs, skipping the excluded node pair
 	FOREACH(pairIdx, pairwiseRotations) {
 		const RotationPair& pair = pairwiseRotations[pairIdx];
 		if (pair.weight <= 0)
+			continue;
+		if (MINF(pair.idxA, pair.idxB) == MINF(excluded.first, excluded.second) &&
+			MAXF(pair.idxA, pair.idxB) == MAXF(excluded.first, excluded.second))
 			continue;
 		// Maximum Spanning Tree is needed, but Kruskal finds Minimum, so negate weights
 		boost::add_edge(pair.idxA, pair.idxB, -pair.weight, g);
@@ -170,7 +193,7 @@ void GlobalRotationEstimator::InitializeFromMaximumSpanningTree(uint32_t numNode
 	std::vector<unsigned> component(num_vertices(g));
 	const unsigned numComponents = boost::connected_components(g, &component[0]);
 	if (numComponents == 0)
-		return;
+		return NO_ID;
 	std::vector<unsigned> componentSize(numComponents, 0);
 	FOREACH(i, component)
 		++componentSize[component[i]];
@@ -179,7 +202,7 @@ void GlobalRotationEstimator::InitializeFromMaximumSpanningTree(uint32_t numNode
 		if (componentSize[i] > componentSize[largestComponent])
 			largestComponent = i;
 	if (componentSize[largestComponent] < 2)
-		return;
+		return NO_ID;
 
 	// Find the maximum spanning tree
 	// Note: Kruskal finds the MST forest
@@ -195,6 +218,8 @@ void GlobalRotationEstimator::InitializeFromMaximumSpanningTree(uint32_t numNode
 			continue;
 		adj[u].push_back((uint32_t)v);
 		adj[v].push_back((uint32_t)u);
+		if (treeEdges != NULL)
+			treeEdges->emplace_back((uint32_t)u, (uint32_t)v);
 	}
 
 	// Find the root as the node with most connections in the MST
@@ -203,18 +228,16 @@ void GlobalRotationEstimator::InitializeFromMaximumSpanningTree(uint32_t numNode
 		if (root == NO_ID || adj[i].size() > adj[root].size())
 			root = i;
 	ASSERT(root != NO_ID);
-	if (fixedNodeId == NO_ID)
-		fixedNodeId = root;
 
 	// Initialize rotation estimates
-	estimatedRotations.assign(numNodes, Point3::INF);
+	rotations.assign(numNodes, Point3::INF);
 
 	// Use the tree to initialize the global rotations, starting from the root as identity
 	std::queue<uint32_t> q;
 	std::vector<bool> visited(numNodes, false);
 	q.push(root);
 	visited[root] = true;
-	estimatedRotations[root] = Point3::ZERO; // identity rotation in angle-axis
+	rotations[root] = Point3::ZERO; // identity rotation in angle-axis
 	while (!q.empty()) {
 		const uint32_t curr = q.front();
 		q.pop();
@@ -236,21 +259,22 @@ void GlobalRotationEstimator::InitializeFromMaximumSpanningTree(uint32_t numNode
 			if (pPair == nullptr)
 				continue;
 			const Matrix3x3& relR = pPair->relativeRotation;
-			RMatrix Rcurr(estimatedRotations[curr]);
+			RMatrix Rcurr(rotations[curr]);
 			if (pPair->idxA == curr) {
 				// R_child = R_rel * R_curr
 				RMatrix Rchild = relR * Rcurr;
-				estimatedRotations[child] = Rchild.GetRotationAxisAngle();
+				rotations[child] = Rchild.GetRotationAxisAngle();
 			} else {
 				// R_child = R_rel^T * R_curr
 				RMatrix Rchild = relR.t() * Rcurr;
-				estimatedRotations[child] = Rchild.GetRotationAxisAngle();
+				rotations[child] = Rchild.GetRotationAxisAngle();
 			}
 			q.push(child);
 		}
 	}
 
 	DEBUG("Initialized rotations for %d nodes using MST (root: %u)", componentSize[largestComponent], root);
+	return root;
 }
 
 // Set up the linear system for rotation averaging

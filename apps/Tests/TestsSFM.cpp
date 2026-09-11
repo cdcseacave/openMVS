@@ -12710,6 +12710,11 @@ bool RingLoopClosureTest()
 // its seams, which spreads that error over the ring like any other loop discrepancy. Either the
 // block is refused, or the merged model still answers to the truth: absorbing a wrong seam as drift
 // may not move the cameras past what the honest ring is allowed.
+// Which of the two holds, measured: the second. The planted seam comes out ROBUST, the model takes
+// the closing block in, and the whole ring lands 0.1504 deg and 0.2250% of it from the truth
+// against bars of 0.6 deg and 0.5%, and 0.1653 deg and 0.1011% after the final adjustment against
+// 0.3 deg and 0.5% -- the position error at 2.2 times its bar, the tightest margin of the ring
+// tests, which is what a wrong seam absorbed as drift costs.
 // Turning the wall about the ring axis moves the blocks as well as turning them, and the graph
 // reads that as a translation: a degree and a half leaves the closing seam 7.63% of the pair's
 // footprint out, past the 5% bar, and the graph rejects it outright -- which is the case the ring
@@ -12756,17 +12761,21 @@ bool BiasedClosingSeamTest()
 	if (rep.numPlaced < cfg.numBlocks) {
 		// the model refused the block the biased seam closes the ring through, which is the other
 		// answer this test allows -- what it may not do is take it in and come out wrong
-		VERBOSE("BiasedClosingSeamTest PASSED: the biased seam (class %u) left %u of %u blocks placed (%s)",
+		VERBOSE("BiasedClosingSeamTest PASSED, the closing block refused: the biased seam (class %u) "
+			"left %u of %u blocks placed (%s)",
 			seamClass, rep.numPlaced, cfg.numBlocks, TD_TIMER_GET_FMT().c_str());
 		return true;
 	}
+	// the other branch: the block is in, and the two gradings below say what carrying that seam's
+	// error round the ring cost -- both are printed by CheckRingMerge, against the bars it is given
 	if (!CheckRingMerge("BiasedClosingSeamTest", rep, scene, gtPoses, cfg.numBlocks, 1, 0.6, 0.005))
 		return false;
 	RunFinalAdjustment(scene);
 	if (!CheckRingMerge("BiasedClosingSeamTest, adjusted", rep, scene, gtPoses, cfg.numBlocks, 1, 0.3, 0.005))
 		return false;
-	VERBOSE("BiasedClosingSeamTest PASSED: the seam planted on %u tracks came out class %u and the whole "
-		"ring still answers to the truth (%s)", planted, seamClass, TD_TIMER_GET_FMT().c_str());
+	VERBOSE("BiasedClosingSeamTest PASSED, the closing block taken in: the seam planted on %u tracks "
+		"came out class %u and the whole ring still answers to the truth (%s)",
+		planted, seamClass, TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 /*----------------------------------------------------------------*/
@@ -13101,13 +13110,15 @@ bool FalseChordTest()
 }
 /*----------------------------------------------------------------*/
 
-// The same chord, carried by every camera of the block instead of two. A wrong seam ten cameras
-// vote for weighs what a true one weighs, so the rotation averaging carries its rotations out
-// through it ahead of the seams it contradicts: half the ring is turned behind it, and the true
-// seams bridging the two halves are the ones that then look wrong -- the largest residuals sit on
-// them, and the component comes back in two frames with not one seam of it decided. The graph has
-// to recognize a reading it cannot explain and carry the rotations out again with that seam kept
-// out of the tree
+// The same chord, carried by every camera of the block instead of two: 512 tracks over 20
+// supporting cameras, so the wrong seam weighs what a true one weighs and the rotation averaging
+// carries its initialization out through it ahead of the seams it contradicts. What the graph makes
+// of that is this test's subject, and what it makes of it is the right answer on the first reading:
+// the chord is REJECTED 179.94 deg from the consensus, no seam of the component is left undecided
+// (12 robust), the component comes back in one frame, and the ring is placed whole in one model.
+// The leave-one-out reading is the insurance for the case where such a chord turns the half of the
+// component the tree reaches through it and leaves the true seams looking like the wrong ones; it
+// costs nothing here, because there is nothing for it to improve on
 bool HeavyFalseChordTest()
 {
 	TD_TIMER_START();
@@ -13148,8 +13159,9 @@ bool HeavyFalseChordTest()
 			rep.candidates[chord].residualRotation);
 		return false;
 	}
-	// and the ring itself is decided: a component read through the chord comes back split, which
-	// leaves every seam of it undecided and the blocks to be placed on nothing
+	// and the ring itself is decided: a component a wrong seam carried the initialization through
+	// comes back split, which leaves every seam of it undecided and the blocks to be placed on
+	// nothing
 	if (rep.numUndecided != 0) {
 		VERBOSE("HeavyFalseChordTest FAILED: the graph left %u of its seams undecided and %u robust",
 			rep.numUndecided, rep.numRobust);

@@ -101,6 +101,22 @@ public:
 		const uint32_t numNodes,
 		std::vector<Point3>& globalRotations);
 
+	// The one maximum spanning tree of a set of relative rotations, and the global rotations it
+	// carries out from its best connected node at the identity: the initialization this estimator
+	// starts from, exposed so a caller that wants to see the tree, or to keep one pair out of it,
+	// reads the same tree this does.
+	//  - excluded: a node pair the tree may not run between (NO_ID for none)
+	//  - rotations: out, one per node, INF for every node outside the largest component the tree
+	//    reaches; left untouched when nothing could be initialized
+	//  - treeEdges: if not NULL, out: the node pairs that component's tree is built from
+	// Returns the root the rotations are gauged at, NO_ID when nothing could be initialized
+	static uint32_t RotationsFromMaximumSpanningTree(
+		uint32_t numNodes,
+		const std::vector<RotationPair>& pairwiseRotations,
+		const std::pair<uint32_t, uint32_t>& excluded,
+		std::vector<Point3>& rotations,
+		std::vector<std::pair<uint32_t, uint32_t>>* treeEdges = NULL);
+
 	// Filter relative rotations that are inconsistent with current global estimates
 	//  - maxRelativeAngle: maximum allowed angle (degrees) between stored and computed relative rotation
 	// Returns the number of filtered pairs
