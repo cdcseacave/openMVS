@@ -379,6 +379,7 @@ bool WeakClosingSeamTest();
 bool SecondModelTest();
 bool FoldedBlockTest();
 bool FalseChordTest();
+bool HeavyFalseChordTest();
 bool SeamInliersBecomeTracksTest();
 bool UnplacedBlocksReportedTest();
 bool BentBlocksRelaxationTest();

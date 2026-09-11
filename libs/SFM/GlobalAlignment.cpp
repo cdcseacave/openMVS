@@ -1879,45 +1879,196 @@ static uint32_t SolveGauge(const std::vector<Pair>& pairs, const uint32_t prefer
 	return best;
 }
 
+// What one seam is off by against the solved rotations, in degrees: a seam whose two ends came out
+// in different frames was solved in two gauges and cannot be compared at all, which is as wrong as
+// a seam gets
+static REAL RotationResidual(
+	const RotationPair& p, const std::vector<Point3>& rotations, const std::vector<uint32_t>& frameOfNode)
+{
+	if (frameOfNode[p.idxA] == NO_ID || frameOfNode[p.idxA] != frameOfNode[p.idxB])
+		return REAL(FLT_MAX);
+	const RMatrix RA(rotations[p.idxA]), RB(rotations[p.idxB]);
+	return R2D(ACOS(ComputeAngle(p.relativeRotation, Matrix3x3(RB * RA.t()))));
+}
+
+// How many of the given seams a solution leaves unexplained, which is how two readings of the same
+// component are told apart
+static unsigned NumInconsistentRotations(
+	const std::vector<RotationPair>& pairs, const std::vector<Point3>& rotations,
+	const std::vector<uint32_t>& frameOfNode, const REAL maxResidual)
+{
+	unsigned numInconsistent = 0;
+	for (const RotationPair& p : pairs)
+		if (RotationResidual(p, rotations, frameOfNode) > maxResidual)
+			++numInconsistent;
+	return numInconsistent;
+}
+
+// The tree the rotations are carried out along: the heaviest seam that joins two nodes nothing has
+// joined yet, taken in weight order, and never a seam between the two blocks named by `leftOut`.
+// The estimator builds itself the same tree; this one can be told to ignore a seam.
+static void SpanningTreeEdges(
+	const std::vector<RotationPair>& pairs, const uint32_t numNodes,
+	const std::pair<uint32_t, uint32_t>& leftOut, std::vector<size_t>& treeEdges)
+{
+	std::vector<size_t> order(pairs.size());
+	std::iota(order.begin(), order.end(), (size_t)0);
+	// heaviest first, and the order they were given in for equal weights, so the tree is the same
+	// tree every run
+	std::stable_sort(order.begin(), order.end(),
+		[&pairs](size_t i, size_t j) { return pairs[i].weight > pairs[j].weight; });
+	DisjointSet<uint32_t> sets(numNodes);
+	treeEdges.clear();
+	for (const size_t i : order) {
+		const RotationPair& p = pairs[i];
+		if (!(p.weight > 0) ||
+			(MINF(p.idxA, p.idxB) == MINF(leftOut.first, leftOut.second) &&
+			 MAXF(p.idxA, p.idxB) == MAXF(leftOut.first, leftOut.second)) ||
+			sets.Find(p.idxA) == sets.Find(p.idxB))
+			continue;
+		sets.Union(p.idxA, p.idxB);
+		treeEdges.push_back(i);
+	}
+}
+
+// The largest tree of that forest, every node of it carried out from its own root at the identity;
+// every other node is left INF, which is how the estimator is told this run is not about it -- the
+// same one component at a time the estimator's own initialization works in.
+// @return how many nodes were initialized
+static uint32_t InitializeLargestTree(
+	const std::vector<RotationPair>& pairs, const std::vector<size_t>& treeEdges,
+	const uint32_t numNodes, std::vector<Point3>& rotations)
+{
+	std::vector<std::vector<std::pair<uint32_t, size_t>>> adjacency(numNodes); // neighbour, seam
+	for (const size_t i : treeEdges) {
+		adjacency[pairs[i].idxA].emplace_back(pairs[i].idxB, i);
+		adjacency[pairs[i].idxB].emplace_back(pairs[i].idxA, i);
+	}
+	// the trees of the forest, then the largest of them; the lowest node of a tree is its root, so
+	// the same forest always comes out in the same frame
+	DisjointSet<uint32_t> sets(numNodes);
+	for (const size_t i : treeEdges)
+		sets.Union(pairs[i].idxA, pairs[i].idxB);
+	std::vector<uint32_t> treeSize(numNodes, 0);
+	for (uint32_t node = 0; node < numNodes; ++node)
+		if (!adjacency[node].empty())
+			++treeSize[sets.Find(node)];
+	uint32_t root = NO_ID;
+	for (uint32_t node = 0; node < numNodes; ++node)
+		if (!adjacency[node].empty() &&
+			(root == NO_ID || treeSize[sets.Find(node)] > treeSize[sets.Find(root)]))
+			root = node;
+	rotations.assign(numNodes, Point3::INF);
+	if (root == NO_ID)
+		return 0;
+	rotations[root] = Point3::ZERO;
+	std::vector<uint32_t> front{root};
+	uint32_t numInitialized = 0;
+	for (size_t next = 0; next < front.size(); ++next) {
+		const uint32_t node = front[next];
+		++numInitialized;
+		for (const auto& [neighbour, i] : adjacency[node]) {
+			if (rotations[neighbour] != Point3::INF)
+				continue;
+			// the seam reads R_B = R_rel * R_A, whichever of its two ends this node is
+			const RotationPair& p = pairs[i];
+			const RMatrix R(rotations[node]);
+			rotations[neighbour] = RMatrix(p.idxA == node ?
+				p.relativeRotation * R : p.relativeRotation.t() * R).GetRotationAxisAngle();
+			front.push_back(neighbour);
+		}
+	}
+	return numInitialized;
+}
+
 // The global rotation of every node the seams reach, and which run of the estimator placed it.
 // The estimator solves the largest sub-component it can and leaves the rest at INF, so it is run
 // again over the seams that stayed inside the nodes it left out, until no run places anything more.
 // Two nodes of different frames are each solved in their own gauge and cannot be compared.
+//
+// The initialization carries the rotations out along the heaviest seams, so one wrong seam heavy
+// enough to enter that tree turns everything the tree reaches through it, and the true seams
+// bridging the two halves are then the ones that look wrong -- the largest residuals sit on them,
+// not on the seam that caused it, so no reading of the solution finds the culprit. Every seam the
+// tree is built through is therefore tried left out of it, and the reading that leaves the fewest
+// seams unexplained is the one kept, ties going to the first. That is at most one extra solve per
+// seam of the tree, and none at all for a component the seams already explain.
 static bool SolveRotationFrames(
 	const std::vector<RotationPair>& pairs, const uint32_t numNodes,
-	const GlobalRotationEstimatorOptions& options,
-	std::vector<Point3>& rotations, std::vector<uint32_t>& frameOfNode)
+	const GlobalRotationEstimatorOptions& options, const REAL maxResidual,
+	std::vector<Point3>& rotations, std::vector<uint32_t>& frameOfNode,
+	std::pair<uint32_t, uint32_t>& treeLeftOut)
 {
-	std::vector<Point3> solved(numNodes, Point3::INF);
-	std::vector<uint32_t> frames(numNodes, NO_ID);
-	std::vector<RotationPair> remaining(pairs);
-	uint32_t numFrames = 0;
-	while (!remaining.empty()) {
-		GlobalRotationEstimator estimator(options);
-		std::vector<Point3> partial;
-		if (!estimator.EstimateRotations(remaining, numNodes, partial))
-			break;
-		bool placedAny = false;
-		for (uint32_t node = 0; node < numNodes; ++node) {
-			if (frames[node] != NO_ID || partial[node] == Point3::INF)
-				continue;
-			solved[node] = partial[node];
-			frames[node] = numFrames;
-			placedAny = true;
+	// one reading of the component: the estimator run over the seams it can reach, again and again
+	// over what it left behind. `leftOut` names two blocks the initialization tree may not run
+	// between; every seam takes part in the solve itself whatever the tree did with it
+	const auto Solve = [&](const std::pair<uint32_t, uint32_t>& leftOut,
+		std::vector<Point3>& solved, std::vector<uint32_t>& frames) {
+		solved.assign(numNodes, Point3::INF);
+		frames.assign(numNodes, NO_ID);
+		std::vector<RotationPair> remaining(pairs);
+		uint32_t numFrames = 0;
+		while (!remaining.empty()) {
+			GlobalRotationEstimator estimator(options);
+			std::vector<Point3> partial;
+			if (leftOut.first != NO_ID) {
+				std::vector<size_t> treeEdges;
+				SpanningTreeEdges(remaining, numNodes, leftOut, treeEdges);
+				// a run the tree reaches fewer than two nodes of has nothing left to solve
+				if (InitializeLargestTree(remaining, treeEdges, numNodes, partial) < 2)
+					break;
+			}
+			if (!estimator.EstimateRotations(remaining, numNodes, partial))
+				break;
+			bool placedAny = false;
+			for (uint32_t node = 0; node < numNodes; ++node) {
+				if (frames[node] != NO_ID || partial[node] == Point3::INF)
+					continue;
+				solved[node] = partial[node];
+				frames[node] = numFrames;
+				placedAny = true;
+			}
+			if (!placedAny)
+				break;
+			++numFrames;
+			std::vector<RotationPair> unplaced;
+			for (const RotationPair& p : remaining)
+				if (frames[p.idxA] == NO_ID && frames[p.idxB] == NO_ID)
+					unplaced.push_back(p);
+			remaining.swap(unplaced);
 		}
-		if (!placedAny)
-			break;
-		++numFrames;
-		std::vector<RotationPair> unplaced;
-		for (const RotationPair& p : remaining)
-			if (frames[p.idxA] == NO_ID && frames[p.idxB] == NO_ID)
-				unplaced.push_back(p);
-		remaining.swap(unplaced);
-	}
-	if (numFrames == 0)
+		return numFrames;
+	};
+
+	treeLeftOut = std::make_pair(NO_ID, NO_ID);
+	std::vector<Point3> bestRotations;
+	std::vector<uint32_t> bestFrames;
+	if (Solve(treeLeftOut, bestRotations, bestFrames) == 0)
 		return false;
-	rotations.swap(solved);
-	frameOfNode.swap(frames);
+	unsigned bestInconsistent = NumInconsistentRotations(pairs, bestRotations, bestFrames, maxResidual);
+	if (bestInconsistent > 0) {
+		std::vector<size_t> treeEdges;
+		SpanningTreeEdges(pairs, numNodes, std::make_pair((uint32_t)NO_ID, (uint32_t)NO_ID), treeEdges);
+		for (const size_t e : treeEdges) {
+			const std::pair<uint32_t, uint32_t> leftOut(pairs[e].idxA, pairs[e].idxB);
+			std::vector<Point3> retryRotations;
+			std::vector<uint32_t> retryFrames;
+			if (Solve(leftOut, retryRotations, retryFrames) == 0)
+				continue;
+			const unsigned numInconsistent =
+				NumInconsistentRotations(pairs, retryRotations, retryFrames, maxResidual);
+			if (numInconsistent >= bestInconsistent)
+				continue;
+			bestInconsistent = numInconsistent;
+			bestRotations.swap(retryRotations);
+			bestFrames.swap(retryFrames);
+			treeLeftOut = leftOut;
+			if (bestInconsistent == 0)
+				break; // nothing left for another tree to explain
+		}
+	}
+	rotations.swap(bestRotations);
+	frameOfNode.swap(bestFrames);
 	return true;
 }
 /*----------------------------------------------------------------*/
@@ -1963,22 +2114,30 @@ bool GlobalAlignment::AverageBlockPoses(
 	std::vector<uint32_t> frameOfNode;
 	std::vector<Point3> rotations;
 	std::vector<REAL> rotationResiduals;
+	std::pair<uint32_t, uint32_t> treeLeftOut(NO_ID, NO_ID);
 	if (!RobustAverage(rotationPairs, (REAL)config.maxGraphRotationResidual, kRobustRounds,
 		[&](const std::vector<RotationPair>& active, std::vector<Point3>& rots) {
-			return SolveRotationFrames(active, n, rotationOptions, rots, frameOfNode);
+			return SolveRotationFrames(active, n, rotationOptions,
+				(REAL)config.maxGraphRotationResidual, rots, frameOfNode, treeLeftOut);
 		},
 		[&](size_t i, const std::vector<Point3>& rots) {
-			const RotationPair& p = rotationPairs[i];
-			if (frameOfNode[p.idxA] == NO_ID || frameOfNode[p.idxA] != frameOfNode[p.idxB])
-				return REAL(FLT_MAX);
-			const RMatrix RA(rots[p.idxA]), RB(rots[p.idxB]);
-			return R2D(ACOS(ComputeAngle(p.relativeRotation, Matrix3x3(RB * RA.t()))));
+			return RotationResidual(rotationPairs[i], rots, frameOfNode);
 		},
 		rotations, rotationResiduals))
 	{
 		VERBOSE("error: rotation averaging over %u seams failed", (unsigned)edges.size());
 		return false;
 	}
+	// a component that comes back in more than one frame is one the rotations could not carry
+	// across: its seams are then judged apart and the placement has nothing joining the two halves
+	uint32_t numFrames = 0;
+	for (const uint32_t frame : frameOfNode)
+		if (frame != NO_ID)
+			numFrames = MAXF(numFrames, frame + 1);
+	DEBUG("Seam graph: component of %u blocks solved in %u frames", n, numFrames);
+	if (treeLeftOut.first != NO_ID)
+		DEBUG("Seam graph: the rotations were carried out without the seam (%u, %u) in the tree",
+			blockOfNode[treeLeftOut.first], blockOfNode[treeLeftOut.second]);
 	// scales: only the seams the rotation consensus keeps, and only those that observe a scale
 	const REAL maxLogScaleResidual = std::log((REAL)config.maxGraphScaleResidual);
 	std::vector<uint32_t> scaleEdges; // positions in `edges`

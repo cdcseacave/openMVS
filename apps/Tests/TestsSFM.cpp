@@ -13022,6 +13022,74 @@ bool FalseChordTest()
 }
 /*----------------------------------------------------------------*/
 
+// The same chord, carried by every camera of the block instead of two. A wrong seam ten cameras
+// vote for weighs what a true one weighs, so the rotation averaging carries its rotations out
+// through it ahead of the seams it contradicts: half the ring is turned behind it, and the true
+// seams bridging the two halves are the ones that then look wrong -- the largest residuals sit on
+// them, and the component comes back in two frames with not one seam of it decided. The graph has
+// to recognize a reading it cannot explain and carry the rotations out again with that seam kept
+// out of the tree
+bool HeavyFalseChordTest()
+{
+	TD_TIMER_START();
+	const RingSceneConfig cfg{12, 10};
+	Scene scene;
+	std::vector<IIndexArr> blocks;
+	std::vector<Pose3D> gtPoses;
+	GenerateRingScene(cfg, scene, blocks, gtPoses);
+	SEACAVE::Transform wrong(RingRotation(180));
+	wrong.scale = 1.6;
+	// spread over every camera of block 3, so the chord carries the votes of a whole block
+	const unsigned planted = PlantFalseSeam(scene, blocks, 3, 9, 600, cfg.camsPerBlock, wrong);
+	if (planted < 350) {
+		VERBOSE("HeavyFalseChordTest FAILED: only %u tracks of block 9 could be planted on block 3", planted);
+		return false;
+	}
+	std::vector<Scene> subScenes;
+	std::vector<IIndexArr> localToGlobals;
+	std::vector<SEACAVE::Transform> applied;
+	BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
+
+	const GlobalAlignmentConfig alignCfg;
+	GlobalAlignment ga(scene, alignCfg);
+	MergeReport rep;
+	ga.MergeScenes(subScenes, localToGlobals, rep);
+	uint32_t chord = NO_ID;
+	FOREACH(i, rep.candidates)
+		if (rep.candidates[i].sceneA == 3 && rep.candidates[i].sceneB == 9)
+			chord = (uint32_t)i;
+	if (chord == NO_ID) {
+		VERBOSE("HeavyFalseChordTest FAILED: the planted chord (3, 9) was never measured");
+		return false;
+	}
+	if (rep.candidates[chord].cls != SeamCandidate::REJECTED) {
+		VERBOSE("HeavyFalseChordTest FAILED: the chord (3, 9) came out class %u on %u supporting cameras, "
+			"%.2f deg from the consensus", (unsigned)rep.candidates[chord].cls,
+			rep.candidates[chord].score.support[0] + rep.candidates[chord].score.support[1],
+			rep.candidates[chord].residualRotation);
+		return false;
+	}
+	// and the ring itself is decided: a component read through the chord comes back split, which
+	// leaves every seam of it undecided and the blocks to be placed on nothing
+	if (rep.numUndecided != 0) {
+		VERBOSE("HeavyFalseChordTest FAILED: the graph left %u of its seams undecided and %u robust",
+			rep.numUndecided, rep.numRobust);
+		return false;
+	}
+	if (std::find(rep.modelSeams.begin(), rep.modelSeams.end(), chord) != rep.modelSeams.end()) {
+		VERBOSE("HeavyFalseChordTest FAILED: the rejected chord is among the seams the merged model rests on");
+		return false;
+	}
+	if (!CheckRingMerge("HeavyFalseChordTest", rep, scene, gtPoses, cfg.numBlocks, 1, 0.1, 0.001))
+		return false;
+	VERBOSE("HeavyFalseChordTest PASSED: the chord planted on %u tracks over %u cameras was rejected "
+		"%.2f deg from the consensus, %u robust seams, %u blocks placed (%s)",
+		planted, rep.candidates[chord].score.support[0] + rep.candidates[chord].score.support[1],
+		rep.candidates[chord].residualRotation, rep.numRobust, rep.numPlaced, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
 // The seams the merged model rests on already agree with the placement: every one of their kept
 // correspondences must land its two ends on the same track once the merge is done, not wait on
 // proximity to find each other.

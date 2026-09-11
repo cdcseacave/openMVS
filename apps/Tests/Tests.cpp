@@ -361,6 +361,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::FalseChordTest())
 				return false;
+			if (!SFM::HeavyFalseChordTest())
+				return false;
 			if (!SFM::SeamInliersBecomeTracksTest())
 				return false;
 			if (!SFM::UnplacedBlocksReportedTest())
