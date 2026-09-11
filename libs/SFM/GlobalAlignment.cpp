@@ -968,24 +968,40 @@ void GlobalAlignment::ScoreSeam(
 	const std::function<int(IIndex)>& sideOf,
 	const std::vector<Point3>& movingCentres,
 	const std::vector<Point3>& fixedCentres,
+	const std::set<uint32_t>& setAsideBlocks,
 	SeamScore& score) const
 {
 	ASSERT(observations.size() == correspondences.size());
 	score = SeamScore();
 
+	// a correspondence of a block that is set aside is not this transform's to answer for: it is
+	// neither inlier nor outlier, and the cameras at both its ends never see it
+	const auto IsSetAside = [this, &correspondences, &setAsideBlocks](size_t i) {
+		return !setAsideBlocks.empty() &&
+			(setAsideBlocks.count(globalToLocal.at(correspondences[i].imageA).first) > 0 ||
+			 setAsideBlocks.count(globalToLocal.at(correspondences[i].imageB).first) > 0);
+	};
+
 	// what the transform explains
 	const Transform TInv(T.Invert());
 	score.inlierMask.assign(observations.size(), false);
-	FOREACH(i, observations)
+	FOREACH(i, observations) {
+		if (IsSetAside(i)) {
+			++score.setAside;
+			continue;
+		}
 		if (SeamObservationError(observations[i], T, TInv) <= config.maxReprojError) {
 			score.inlierMask[i] = true;
 			++score.inliers;
 		}
+	}
 
 	// every image the seam touches, in both its roles: the camera whose feature carries the point
 	// witnesses the seam as much as the camera that observed it
 	std::map<IIndex, std::vector<uint32_t>> imageObservations;
 	FOREACH(i, observations) {
+		if (IsSetAside(i))
+			continue;
 		imageObservations[observations[i].rigImage].push_back((uint32_t)i);
 		imageObservations[observations[i].pointImage].push_back((uint32_t)i);
 	}
@@ -1097,9 +1113,10 @@ void GlobalAlignment::ScoreCandidate(const std::vector<Scene>& subScenes, SeamCa
 		if (img.IsValid())
 			centresB.emplace_back(img.C);
 	const uint32_t blockA = c.sceneA;
+	// a seam answers for every correspondence of its own pair, so nothing is set aside here
 	ScoreSeam(subScenes, c.observations, c.correspondences, c.T,
 		[this, blockA](IIndex image) { return globalToLocal.at(image).first == blockA ? 0 : 1; },
-		centresA, centresB, c.score);
+		centresA, centresB, {}, c.score);
 	c.weight = c.score.Weight(config.maxVoteWeight);
 }
 /*----------------------------------------------------------------*/
@@ -1183,6 +1200,7 @@ void GlobalAlignment::ScoreHypothesis(
 	const PlacementPool& pool,
 	const unsigned bestOwnInliers,
 	const float voteRatio,
+	const std::set<uint32_t>& setAsideBlocks,
 	PlacementHypothesis& h) const
 {
 	// side 0 is the group the hypothesis places, side 1 the model it is placed in
@@ -1191,7 +1209,7 @@ void GlobalAlignment::ScoreHypothesis(
 		[this, &groupBlocks](IIndex image) {
 			return std::find(groupBlocks.begin(), groupBlocks.end(), globalToLocal.at(image).first) != groupBlocks.end() ? 0 : 1;
 		},
-		pool.groupCentres, pool.modelCentres, h.score);
+		pool.groupCentres, pool.modelCentres, setAsideBlocks, h.score);
 	h.failedGate = FailedGates(h.score, h.score.inliers, bestOwnInliers, voteRatio);
 }
 /*----------------------------------------------------------------*/
@@ -2052,9 +2070,10 @@ static void ForEachGroupSeam(
 }
 
 // What the admitted neighbours make of a placement: those whose own seams agree with what it
-// implies, those whose trusted seam disagrees -- a cycle the model will have to answer for -- and
-// those that simply contradict it
-struct NeighbourVerdict { unsigned support{0}, loop{0}, contra{0}; };
+// implies, those whose trusted seam disagrees -- a cycle the model will have to answer for, named
+// so that what they saw can be set aside from what judges the block -- and those that simply
+// contradict it
+struct NeighbourVerdict { unsigned support{0}, contra{0}; std::set<uint32_t> loop; };
 
 static NeighbourVerdict CheckNeighbours(
 	const std::vector<SeamCandidate>& candidates, const std::vector<REAL>& blockExtents,
@@ -2089,7 +2108,7 @@ static NeighbourVerdict CheckNeighbours(
 		if (seams.agrees)
 			++verdict.support;
 		else if (seams.trusted)
-			++verdict.loop;
+			verdict.loop.insert(neighbour);
 		else
 			++verdict.contra;
 	}
@@ -2250,22 +2269,27 @@ bool GlobalAlignment::PlaceGroup(
 
 	const uint32_t firstBlock = group.blocks.front();
 	for (PlacementHypothesis& h : hypotheses) {
-		ScoreHypothesis(subScenes, pool, bestOwnInliers, voteRatio, h);
+		// what the admitted neighbours make of it comes first: a neighbour whose own trusted seam
+		// this placement cannot satisfy is a cycle the model will answer for, so what its cameras
+		// saw is set aside from the evidence the block itself is judged on -- charging it to the
+		// block would refuse the very block that closes the loop
 		const NeighbourVerdict verdict = CheckNeighbours(
 			candidates, blockExtents, poses, model, group, numPooled, h.T, config);
 		h.neighbourSupport = verdict.support;
-		h.neighbourLoop = verdict.loop;
+		h.loopNeighbours = verdict.loop;
 		h.neighbourContra = verdict.contra;
+		ScoreHypothesis(subScenes, pool, bestOwnInliers, voteRatio, h.loopNeighbours, h);
 		// the neighbours the model already holds: one behind the placement at least, and no more
 		// than a share of those with something to say against it
 		if (h.Passed() && (verdict.support == 0 || verdict.contra * kNeighbourContraShare >
-				verdict.support + verdict.loop + verdict.contra))
+				verdict.support + (unsigned)verdict.loop.size() + verdict.contra))
 			h.failedGate = "neighbours";
 		LogVotes(String::FormatString("Placement of block %u, %s",
 			firstBlock, PlacementWord(h.source)).c_str(), h.score);
-		DEBUG_ULTIMATE("Placement of block %u, %s: %u inliers of %u, %u+/%u- neighbours%s%s",
+		DEBUG_ULTIMATE("Placement of block %u, %s: %u inliers of %u, %u set aside, %u+/%u- neighbours%s%s",
 			firstBlock, PlacementWord(h.source), h.score.inliers, (unsigned)pool.observations.size(),
-			verdict.support, verdict.contra, h.Passed() ? "" : ", dropped by ", h.failedGate.c_str());
+			h.score.setAside, verdict.support, verdict.contra,
+			h.Passed() ? "" : ", dropped by ", h.failedGate.c_str());
 	}
 
 	// the largest vote of the cameras decides between them
@@ -2646,12 +2670,21 @@ unsigned GlobalAlignment::PlaceBlocks(
 			subScenes, candidates, blockExtents, model, group, winner, poses, modelSeams);
 		++numAdmitted;
 		modelChanged = true;
-		DEBUG("Block %u placed on %u neighbours (%u support, %u loop, %u contradict); "
-			"votes %u+/%u- block, %u+/%u- model; %s", next,
-			winner.neighbourSupport + winner.neighbourLoop + winner.neighbourContra,
-			winner.neighbourSupport, winner.neighbourLoop, winner.neighbourContra,
+		// what a block placed against a loop discrepancy was not answerable for, named where the
+		// placement is reported: the observations of the neighbours the model still has to settle
+		String setAside;
+		for (const uint32_t neighbour : winner.loopNeighbours)
+			setAside += String::FormatString(setAside.empty() ? "%u" : ", %u", neighbour);
+		if (!setAside.empty())
+			setAside = String::FormatString(" (%u observations of loop neighbour %s set aside)",
+				winner.score.setAside, setAside.c_str());
+		VERBOSE("Block %u placed on %u neighbours (%u support, %u loop, %u contradict); "
+			"votes %u+/%u- block, %u+/%u- model; %s%s", next,
+			winner.neighbourSupport + (unsigned)winner.loopNeighbours.size() + winner.neighbourContra,
+			winner.neighbourSupport, (unsigned)winner.loopNeighbours.size(), winner.neighbourContra,
 			winner.score.support[0], winner.score.contra[0],
-			winner.score.support[1], winner.score.contra[1], PlacementWord(winner.source));
+			winner.score.support[1], winner.score.contra[1], PlacementWord(winner.source),
+			setAside.c_str());
 		if (closedCycle) {
 			// the block joined the model from two sides: the error the chain accumulated is spread
 			// over the cycle it just closed, instead of being left at the seam that closed it

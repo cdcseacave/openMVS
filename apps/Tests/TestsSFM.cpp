@@ -11917,8 +11917,10 @@ bool InterleavingVetoTest()
 	PlacementHypothesis right, wrong;
 	right.T = applied[0] * applied[1].Invert();
 	wrong.T = applied[0] * RingRotation(120) * applied[1].Invert();
-	alignment.ScoreHypothesis(subScenes, pool, 0, alignCfg.minCameraVoteRatio, right);
-	alignment.ScoreHypothesis(subScenes, pool, 0, alignCfg.minCameraVoteRatio, wrong);
+	// the model holds no neighbour whose own seam either placement leaves unsatisfied, so both
+	// answer for every observation of the pool
+	alignment.ScoreHypothesis(subScenes, pool, 0, alignCfg.minCameraVoteRatio, {}, right);
+	alignment.ScoreHypothesis(subScenes, pool, 0, alignCfg.minCameraVoteRatio, {}, wrong);
 
 	if (wrong.Passed() || wrong.failedGate.find("interleaving") == String::npos ||
 		wrong.score.ownNeighbourFraction >= 0.5f) {
@@ -11945,11 +11947,12 @@ bool RingPlacementTest()
 	TD_TIMER_START();
 	RingSceneConfig cfg{12, 10};
 	// how well a block reaches into the next one is what this measures, so the keypoints are read
-	// more precisely than the generator's default: at 0.3 px every seam of the ring is biased by
-	// about 0.06 degrees the same way -- a track at the edge of a block's arc is fixed by two or
-	// three cameras with a short baseline -- and an open chain of twelve blocks accumulates ~0.6
-	// degrees, so the block that closes the ring is contradicted by the far arm and 11 of the 12
-	// are placed. Closing the ring on the block pose graph is what answers for that.
+	// more precisely than the generator's default: at 0.3 px every seam of the ring comes out about
+	// 0.06 degrees off and biased the same way -- a track at the edge of a block's arc is
+	// triangulated by two or three cameras a degree apart, and taking those tracks from the truth
+	// instead brings the same seams to 0.01 degrees -- so the ring's two arms meet 0.7 degrees
+	// apart, no placement of the block between them explains both halves of its evidence, and 11 of
+	// the 12 are placed, the merged ring 0.20 degrees off the truth.
 	cfg.noisePx = 0.1;
 	Scene scene;
 	std::vector<IIndexArr> blocks;
@@ -12236,6 +12239,43 @@ bool AmbiguousPairTest()
 			return false;
 	}
 	VERBOSE("AmbiguousPairTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+// A ring whose blocks were each reconstructed bent and stretched: every seam is off the same way,
+// so an open chain of twelve of them ends about three degrees and three percent from where it
+// started. The block that closes the ring is the one block that faces that discrepancy, and it is
+// admitted on the neighbour it agrees with, its other neighbour's evidence set aside; the cycle its
+// seams then close is what the block pose graph spreads the error over
+bool RingLoopClosureTest()
+{
+	TD_TIMER_START();
+	RingSceneConfig cfg{12, 10};
+	cfg.driftDegPerBlock = 0.25;
+	cfg.driftScalePerBlock = 0.0025;
+	Scene scene;
+	std::vector<IIndexArr> blocks;
+	std::vector<Pose3D> gtPoses;
+	GenerateRingScene(cfg, scene, blocks, gtPoses);
+	std::vector<Scene> subScenes;
+	std::vector<IIndexArr> localToGlobals;
+	std::vector<SEACAVE::Transform> applied;
+	BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
+
+	GlobalAlignmentConfig alignCfg;
+	GlobalAlignment ga(scene, alignCfg);
+	MergeReport rep;
+	ga.MergeScenes(subScenes, localToGlobals, rep);
+	// what the merge leaves on its own, before a single bundle adjustment step
+	if (!CheckRingMerge("RingLoopClosureTest", rep, scene, gtPoses, cfg.numBlocks, 1, 0.6, 0.005))
+		return false;
+	// and what the reconstruction's own final adjustment then makes of it
+	RunFinalAdjustment(scene);
+	if (!CheckRingMerge("RingLoopClosureTest, adjusted", rep, scene, gtPoses, cfg.numBlocks, 1, 0.3, 0.005))
+		return false;
+	VERBOSE("RingLoopClosureTest PASSED: %u blocks over %u seams (%s)",
+		rep.numPlaced, (unsigned)rep.modelSeams.size(), TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 /*----------------------------------------------------------------*/

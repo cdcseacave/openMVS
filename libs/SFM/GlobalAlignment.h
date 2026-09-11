@@ -73,12 +73,17 @@ class SFM_API Scene;
  *   block tried is the one the admitted blocks support most, and PlaceGroup decides it: it pools
  *   every correspondence between the block and the model, estimates the pose from that pool both
  *   ways (the block's cameras on the model's points, the model's cameras on the block's points),
- *   scores each hypothesis over the whole pool and holds it to four gates — enough of the pool
+ *   scores each hypothesis over the pool and holds it to four gates — enough of the pool
  *   explained, the cameras of both sides behind it, the admitted neighbours' own seams agreeing
- *   with what it implies, and the two sides' cameras left unmixed. A block that passes is
- *   admitted, the seams that agree with its placement become model seams, and every admitted
- *   block is then refined jointly over them; a block that fails is deferred and tried again once
- *   the model has grown. A block is a group of one, so the same routine places a whole model.
+ *   with what it implies, and the two sides' cameras left unmixed. What an admitted neighbour saw
+ *   is set aside from the first two gates when that neighbour's own trusted seam already disagrees
+ *   with the placement: the block that closes a loop is the one block that faces the error the
+ *   model grew with, and charging that error to it would refuse the only block that can close the
+ *   cycle. A block that passes is admitted, the seams that agree with its placement become model
+ *   seams — a trusted one that disagrees comes in carrying its loop discrepancy — and every
+ *   admitted block is then refined jointly over them; a block that fails is deferred and tried
+ *   again once the model has grown. A block is a group of one, so the same routine places a whole
+ *   model.
  *
  * STAGE 6: THE MERGED MODEL
  *   The model holding the most images is the one merged with poses. The blocks of every other
@@ -216,6 +221,7 @@ struct SFM_API SeamScore
 	unsigned inliers{0};
 	unsigned support[2]{0, 0}, contra[2]{0, 0};
 	unsigned centres{0};
+	unsigned setAside{0};          // observations left out of the counts above, neither inlier nor outlier
 	float ownNeighbourFraction{1.f};
 	std::vector<bool> inlierMask;  // parallel to the scored observations
 	std::vector<CameraVote> votes; // one per image with >= minVoteCorrespondences correspondences
@@ -268,9 +274,11 @@ struct SFM_API PlacementHypothesis
 	Transform T;              // group frame -> model
 	Source source{INITIAL};
 	SeamScore score;          // side 0 = the group, side 1 = the model
-	// the admitted neighbours that agree with what it implies, that disagree over a cycle their
-	// own trusted seam closes, and that contradict it
-	unsigned neighbourSupport{0}, neighbourLoop{0}, neighbourContra{0};
+	// the admitted neighbours that agree with what it implies, and those that contradict it
+	unsigned neighbourSupport{0}, neighbourContra{0};
+	// the admitted neighbours whose own trusted seam it cannot satisfy: a cycle the model will have
+	// to answer for, whose pooled observations are therefore set aside from what judges this block
+	std::set<uint32_t> loopNeighbours;
 	String failedGate;        // the failed gates, comma-separated; empty when passed
 	bool Passed() const { return failedGate.empty(); }
 };
@@ -425,6 +433,10 @@ public:
 	 * correspondences, the counts per side (sideOf(image) -> 0 or 1), the distinct supporting
 	 * centres, and the share of `movingCentres`, mapped by T, whose nearest centre among the mapped
 	 * moving centres and `fixedCentres` (side 1's frame) is a moving one.
+	 * @param setAsideBlocks blocks whose observations this transform is not answerable for: every
+	 * correspondence touching one of them is neither inlier nor outlier and no camera counts it
+	 * among its own, which is how a placement is judged without the cameras of a neighbour whose
+	 * own trusted seam it already cannot satisfy. Empty everywhere the whole evidence answers.
 	 */
 	void ScoreSeam(
 		const std::vector<Scene>& subScenes,
@@ -434,6 +446,7 @@ public:
 		const std::function<int(IIndex)>& sideOf,
 		const std::vector<Point3>& movingCentres,
 		const std::vector<Point3>& fixedCentres,
+		const std::set<uint32_t>& setAsideBlocks,
 		SeamScore& score) const;
 
 	/**
@@ -575,12 +588,16 @@ public:
 	 * @param bestOwnInliers what the best hypothesis of this group explains, so a placement that
 	 * covers far less of the same evidence is refused
 	 * @param voteRatio the camera-vote margin the model is held to
+	 * @param setAsideBlocks the admitted blocks whose pooled observations are left out of what
+	 * explains the placement and out of the camera votes: the hypothesis' loop neighbours, whose
+	 * disagreement the model answers for over the cycle rather than charging it to this block
 	 */
 	void ScoreHypothesis(
 		const std::vector<Scene>& subScenes,
 		const PlacementPool& pool,
 		unsigned bestOwnInliers,
 		float voteRatio,
+		const std::set<uint32_t>& setAsideBlocks,
 		PlacementHypothesis& h) const;
 
 	/**
@@ -611,8 +628,10 @@ private:
 	 * in both directions and taken from stage 4 as a third opinion, and each hypothesis answers
 	 * to the same four gates: how much of the pool it explains, what the cameras of both sides
 	 * vote, whether the admitted neighbours' own seams agree with what it implies, and whether it
-	 * leaves the two sides' cameras unmixed. A block is a group of one, and a whole model is a
-	 * group too.
+	 * leaves the two sides' cameras unmixed. The neighbours are asked first, and the pooled
+	 * observations of those whose own trusted seam the hypothesis cannot satisfy are set aside from
+	 * the first two gates: their disagreement is the cycle the model answers for once the block is
+	 * in, not evidence about the block. A block is a group of one, and a whole model is a group too.
 	 * @param winner out: the hypothesis that won, or the best one when none did
 	 * @param reason out: why nothing could be placed, empty on success
 	 * @return true when a hypothesis carried the group
