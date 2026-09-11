@@ -194,7 +194,6 @@ struct SFM_API PlacementPool
 	std::vector<uint32_t> candidateIdx;              // candidates contributing (group <-> admitted)
 	std::vector<SeamObservation> observations;       // forward == true: point in the group, camera in the model; false: the reverse
 	std::vector<SeamCorrespondence> correspondences; // parallel to observations
-	std::vector<uint32_t> observationCandidate;      // parallel: index into candidateIdx (NO_ID for a raw pair without a candidate)
 	std::vector<Point3> groupCentres;                // centres of every group camera in the group frame
 	std::vector<Point3> modelCentres;                // centres of every admitted camera in the model frame
 };
@@ -572,7 +571,9 @@ private:
 	 * already almost cut: each side connected on its own, the cut between them thin against what
 	 * holds either side together, and neither side smaller than a block needs to be. The parts are
 	 * appended to the blocks, their pairs measured like any other block's, and the seams of the
-	 * block they came from are disowned.
+	 * block they came from are disowned. The pairs that ran across the cut stay with the block that
+	 * was cut and never reach the scene again: they are the matches that glued a fold together, and
+	 * the two parts are exactly the cameras they should not have joined.
 	 * @param best the hypothesis whose votes split, the one the placement refused
 	 * @param parts out: the indices of the two new blocks
 	 * @return true when the block was cut, which leaves it holding nothing
@@ -817,10 +818,11 @@ private:
 	 * @brief Refine one A -> B similarity against every reprojection the given observations carry
 	 *
 	 * The two-block case of RefineBlockPoses: block A gauges the model at the identity, so the
-	 * seam travels in and out through block B's pose.
+	 * seam travels in and out through block B's pose, and the fit answers to the same pixel bar
+	 * (GlobalAlignmentConfig::maxReprojError) the joint refinement charges.
 	 */
 	void RefineSeamTransform(
-		const std::vector<SeamObservation>& observations, float maxReprojError, Transform& T) const;
+		const std::vector<SeamObservation>& observations, Transform& T) const;
 
 	/**
 	 * @brief Build and validate global image -> (sub-scene, local image) mapping

@@ -202,8 +202,9 @@ bool GlobalAlignment::MergeScenes(
 			mostImages = numImages;
 		}
 	}
-	// and every block it admitted is judged once more against the model it ended up in; what it
-	// then let go, and the parts of what it cut, are offered to it one last time
+	// and every block it admitted is judged once more against the model it ended up in; a block it
+	// then let go keeps its images out, for the resection to recover one by one, while the parts of
+	// what it cut are offered to it one last time
 	if (mergedModel != NO_ID && RevalidateBlocks(subScenes, localToGlobals, blockExtents, candidates,
 			mergedModel, poses, modelSeams[mergedModel]) > 0)
 		PlaceBlocks(subScenes, localToGlobals, candidates, blockExtents, mergedModel, poses, modelSeams[mergedModel]);
@@ -316,6 +317,16 @@ constexpr unsigned kLooseSeamFactor = 3;
 // for the block to keep its shape along every direction its covisibility reaches, few enough that
 // the graph stays as sparse as the seams it has to close.
 constexpr unsigned kIntraBlockEdgesPerCamera = 3;
+// What a seam weighs in an averaging when nothing but its own evidence stands behind it: half of
+// what a seam another path confirms is worth.
+constexpr float kVerifiedWeightShare = 0.5f;
+// Where the robust loss of the camera relaxation turns: every residual there is already divided by
+// the bar its own part answers to, so one is a camera edge off by exactly what a seam may be off by.
+constexpr double kCameraGraphHuber = 1.0;
+// The angle two of its rays must open for a track to be triangulated again from the relaxed
+// cameras: the bar the reconstruction triangulates at (ReconstructionConfig::minAngleThreshold), so
+// the relaxation hands the tail the tracks its own filtering would have kept anyway.
+constexpr float kRelaxedTrackMinAngle = 1.5f;
 
 // One cross-sub-scene image pair, with the sub-scene each of its two images belongs to already
 // resolved, so feature indices (queryIdx/trainIdx) can be mapped consistently.
@@ -774,7 +785,7 @@ Point3 RigCentroid(const std::vector<SeamObservation>& observations, bool forwar
 void AppendPoolObservations(
 	const std::vector<SeamObservation>& observations, const std::vector<SeamCorrespondence>& correspondences,
 	uint32_t a, uint32_t b, const std::vector<Transform>& frameOf, const std::vector<bool>& inGroup,
-	uint32_t candidateSlot, PlacementPool& pool)
+	PlacementPool& pool)
 {
 	ASSERT(observations.size() == correspondences.size());
 	FOREACH(i, observations) {
@@ -790,7 +801,6 @@ void AppendPoolObservations(
 		moved.forward = inGroup[pointBlock];
 		pool.observations.emplace_back(moved);
 		pool.correspondences.push_back(correspondences[i]);
-		pool.observationCandidate.push_back(candidateSlot);
 	}
 }
 
@@ -973,10 +983,8 @@ void GlobalAlignment::RefineBlockPoses(
 /*----------------------------------------------------------------*/
 
 void GlobalAlignment::RefineSeamTransform(
-	const std::vector<SeamObservation>& observations, const float maxReprojError, Transform& T) const
+	const std::vector<SeamObservation>& observations, Transform& T) const
 {
-	// the seam is judged at the same pixel bar the joint refinement charges
-	ASSERT(maxReprojError == config.maxReprojError);
 	if (observations.empty())
 		return;
 	// a model of two blocks: block A gauges it at the identity, so the seam travels in and out
@@ -1066,7 +1074,7 @@ bool GlobalAlignment::EstimateSeamCandidates(
 	PrepareSeamEvidence(subScenes, localToGlobals);
 
 	candidates.clear();
-	unsigned numAgreed = 0, numDecided = 0, numUndecided = 0, numOneDirection = 0, numSkipped = 0;
+	unsigned numAgreed = 0, numDecided = 0, numUndecided = 0, numOneDirection = 0, numPoints = 0, numSkipped = 0;
 	for (const auto& [blockPair, pairIndices] : blockPairLinks) {
 		const size_t numBefore = candidates.size();
 		EstimateSeamPair(subScenes, blockPair.first, blockPair.second, candidates);
@@ -1080,15 +1088,17 @@ bool GlobalAlignment::EstimateSeamCandidates(
 			else if (candidates.back().source == SeamCandidate::RIG_B_ON_A ||
 					 candidates.back().source == SeamCandidate::RIG_A_ON_B)
 				++numDecided;
-			else
+			else if (candidates.back().source == SeamCandidate::UNION)
 				++numAgreed;
+			else
+				++numPoints;
 		}
 	}
 
 	DEBUG("Measured %u seam candidates on %u block pairs (%u agreed, %u decided by votes, %u undecided, "
-		"%u one direction, %u skipped) (%s)",
+		"%u one direction, %u from points, %u skipped) (%s)",
 		(unsigned)candidates.size(), (unsigned)blockPairLinks.size(),
-		numAgreed, numDecided, numUndecided, numOneDirection, numSkipped, TD_TIMER_GET_FMT().c_str());
+		numAgreed, numDecided, numUndecided, numOneDirection, numPoints, numSkipped, TD_TIMER_GET_FMT().c_str());
 	return !candidates.empty();
 }
 /*----------------------------------------------------------------*/
@@ -1302,12 +1312,11 @@ void GlobalAlignment::BuildPlacementPool(
 			continue;
 		// the parallel candidates of a pair were all scored on the same union of both directions,
 		// so that union enters the pool once and every one of them is recorded behind it
-		const uint32_t slot = (uint32_t)pool.candidateIdx.size();
 		for (const uint32_t i : indices)
 			pool.candidateIdx.push_back(i);
 		const SeamCandidate& c = candidates[indices.front()];
 		AppendPoolObservations(c.observations, c.correspondences,
-			blockPair.first, blockPair.second, frameOf, inGroup, slot, pool);
+			blockPair.first, blockPair.second, frameOf, inGroup, pool);
 	}
 	// a pair no candidate covers still carries correspondences, and they are evidence too --
 	// unless the gates already weighed that pair and refused it
@@ -1319,7 +1328,7 @@ void GlobalAlignment::BuildPlacementPool(
 		std::vector<SeamCorrespondence> correspondences;
 		CollectPairObservations(subScenes, blockPair.first, blockPair.second, observations, correspondences);
 		AppendPoolObservations(observations, correspondences,
-			blockPair.first, blockPair.second, frameOf, inGroup, NO_ID, pool);
+			blockPair.first, blockPair.second, frameOf, inGroup, pool);
 	}
 
 	// the cameras of both sides, each already in the frame its side is judged in
@@ -1435,8 +1444,7 @@ void GlobalAlignment::EstimateSeamPair(
 	// each direction fitted to the bearings behind its own inliers before the two are compared
 	for (int d = 0; d < 2; ++d)
 		if (inliers[d] >= config.minCommonTracks)
-			RefineSeamTransform(SelectInliers(observations, estimatorMask, d == 0 ? 1 : 0),
-				config.maxReprojError, Tseam[d]);
+			RefineSeamTransform(SelectInliers(observations, estimatorMask, d == 0 ? 1 : 0), Tseam[d]);
 	const bool measured[2] = {
 		inliers[0] >= config.minCommonTracks && ISFINITE(Tseam[0].scale) && Tseam[0].scale > 0,
 		inliers[1] >= config.minCommonTracks && ISFINITE(Tseam[1].scale) && Tseam[1].scale > 0};
@@ -1531,7 +1539,7 @@ void GlobalAlignment::EstimateSeamPair(
 			SeamCandidate c(candidate[best]);
 			c.source = SeamCandidate::UNION;
 			c.scaleObservable = candidate[0].scaleObservable || candidate[1].scaleObservable;
-			RefineSeamTransform(SelectInliers(c.observations, c.score.inlierMask), config.maxReprojError, c.T);
+			RefineSeamTransform(SelectInliers(c.observations, c.score.inlierMask), c.T);
 			ScoreCandidate(subScenes, c);
 			LogSeamCandidate(a, b, c);
 			candidates.emplace_back(std::move(c));
@@ -1551,8 +1559,7 @@ void GlobalAlignment::EstimateSeamPair(
 		DEBUG("Seam (%u, %u) %s dropped by the camera votes of the other direction (%u against %u supporting cameras)",
 			a, b, SourceWord(candidate[1 - best].source), support[best], support[1 - best]);
 		SeamCandidate c(candidate[best]);
-		RefineSeamTransform(SelectInliers(c.observations, c.score.inlierMask, best == 0 ? 1 : 0),
-			config.maxReprojError, c.T);
+		RefineSeamTransform(SelectInliers(c.observations, c.score.inlierMask, best == 0 ? 1 : 0), c.T);
 		ScoreCandidate(subScenes, c);
 		LogSeamCandidate(a, b, c);
 		candidates.emplace_back(std::move(c));
@@ -1564,8 +1571,7 @@ void GlobalAlignment::EstimateSeamPair(
 	const int d = passed[0] ? 0 : 1;
 	SeamCandidate c(candidate[d]);
 	c.oneDirection = true;
-	RefineSeamTransform(SelectInliers(c.observations, c.score.inlierMask, d == 0 ? 1 : 0),
-		config.maxReprojError, c.T);
+	RefineSeamTransform(SelectInliers(c.observations, c.score.inlierMask, d == 0 ? 1 : 0), c.T);
 	if (!c.scaleObservable && measured[1 - d] && candidate[1 - d].scaleObservable) {
 		// its own rig is too shallow to observe a scale and the other direction, whose rig is deep
 		// enough to have one, measured it: take that, and leave the rig where the seam already put
@@ -1792,7 +1798,7 @@ static int SeamOwnDirection(SeamCandidate::Source source)
 // What a seam weighs in an averaging: its own weight, halved when only its own evidence backs it
 static float SeamEdgeWeight(const SeamCandidate& c)
 {
-	return c.cls == SeamCandidate::VERIFIED ? c.weight * 0.5f : c.weight;
+	return c.cls == SeamCandidate::VERIFIED ? c.weight * kVerifiedWeightShare : c.weight;
 }
 
 // A seam the consensus of its component sits on; one that cannot observe a scale took part in the
@@ -2593,7 +2599,7 @@ static const char* PlacementWord(PlacementHypothesis::Source source)
 	}
 }
 
-// The seams a model rested on through a block it no longer holds: they carry nothing now
+// The seams a model rested on through a block it let go: they carry nothing now
 static void DropBlockSeams(
 	const std::vector<SeamCandidate>& candidates, const uint32_t block, std::vector<uint32_t>& modelSeams)
 {
@@ -2627,23 +2633,29 @@ static bool VotesSplit(const PlacementHypothesis& best, const GlobalAlignmentCon
 		best.score.contra[0] >= config.minSupportingCentres;
 }
 
-// Whether the given images hold together on the given pairs alone
+// Whether the given images hold together on the given pairs alone, counting only the images that
+// have something to hold on to: an image the block never registered, and one its own weighting left
+// without a single pair, reaches nothing and would refuse every fold it happens to sit in
 static bool IsSideConnected(
 	const std::vector<std::vector<std::pair<IIndex, float>>>& neighbours,
-	const std::vector<int>& side, const IIndexArr& images)
+	const std::vector<int>& side, const std::vector<bool>& holds, const IIndexArr& images)
 {
-	if (images.empty())
+	IIndexArr counted;
+	for (const IIndex image : images)
+		if (holds[image])
+			counted.push_back(image);
+	if (counted.empty())
 		return false;
-	std::set<IIndex> reached{images.front()};
-	std::vector<IIndex> front{images.front()};
+	std::set<IIndex> reached{counted.front()};
+	std::vector<IIndex> front{counted.front()};
 	while (!front.empty()) {
 		const IIndex image = front.back();
 		front.pop_back();
 		for (const auto& [other, weight] : neighbours[image])
-			if (side[other] == side[image] && reached.insert(other).second)
+			if (holds[other] && side[other] == side[image] && reached.insert(other).second)
 				front.push_back(other);
 	}
-	return reached.size() == images.size();
+	return reached.size() == counted.size();
 }
 /*----------------------------------------------------------------*/
 
@@ -2738,9 +2750,12 @@ bool GlobalAlignment::PlaceGroup(
 			verdict.support, verdict.contra, h.Passed() ? "" : ", dropped by ", h.failedGate.c_str());
 	}
 
-	// the largest vote of the cameras decides between them
+	// the largest vote of the cameras decides between them, and where two draw, the order they were
+	// formed in: the group read against the model's points first, the model against the group's
+	// next, the pose the averaging already had last -- a measurement of this pair before one of the
+	// whole graph, and the same winner every run
 	const auto Votes = [](const PlacementHypothesis& h) { return h.score.support[0] + h.score.support[1]; };
-	std::sort(hypotheses.begin(), hypotheses.end(),
+	std::stable_sort(hypotheses.begin(), hypotheses.end(),
 		[&Votes](const PlacementHypothesis& a, const PlacementHypothesis& b) { return Votes(a) > Votes(b); });
 	const auto itWinner = std::find_if(hypotheses.begin(), hypotheses.end(),
 		[](const PlacementHypothesis& h) { return h.Passed(); });
@@ -3059,7 +3074,7 @@ bool GlobalAlignment::CandidateFromPrediction(
 			a, b, (unsigned)inliers.size(), (unsigned)c.observations.size());
 		return false;
 	}
-	RefineSeamTransform(inliers, config.maxReprojError, c.T);
+	RefineSeamTransform(inliers, c.T);
 	ScoreCandidate(subScenes, c);
 
 	// the gates it answers to: enough of the pair explained, and the two blocks' cameras left
@@ -3211,12 +3226,18 @@ bool GlobalAlignment::SplitFoldedBlock(
 		else
 			cut += weight;
 	}
+	// the images whose connectedness answers for the fold: the ones the block registered and its own
+	// weighting left a pair of
+	std::vector<bool> holds(numImages, false);
+	FOREACH(i, holds)
+		holds[i] = subScenes[block].images[i].IsValid() && !neighbours[i].empty();
 	const char* refused = NULL;
 	if (numViews[0] < config.minFoldPartViews || numViews[1] < config.minFoldPartViews)
 		refused = "one of its sides is too small";
 	else if (cut > config.maxFoldCutRatio * MINF(internal[0], internal[1]))
 		refused = "its two sides are not cut apart";
-	else if (!IsSideConnected(neighbours, side, images[0]) || !IsSideConnected(neighbours, side, images[1]))
+	else if (!IsSideConnected(neighbours, side, holds, images[0]) ||
+			 !IsSideConnected(neighbours, side, holds, images[1]))
 		refused = "one of its sides does not hold together";
 	if (refused != NULL) {
 		DEBUG("Block %u not split (votes %u+/%u-, %u and %u views, cut %.2f of %.2f): %s",
@@ -3225,7 +3246,10 @@ bool GlobalAlignment::SplitFoldedBlock(
 		return false;
 	}
 
-	// the block becomes two, each side taking its own images, pairs and points with it
+	// the block becomes two, each side taking its own images, pairs and points with it; the pairs
+	// that ran across the cut stay behind with the block that was cut, and no merge brings them
+	// back to the scene -- they are the matches that glued the fold, and the parts are the cameras
+	// they should never have joined
 	parts = std::make_pair((uint32_t)subScenes.size(), (uint32_t)subScenes.size() + 1);
 	const IIndexArr blockToGlobal(localToGlobals[block]);
 	std::vector<IIndexArr> partToBlock;
@@ -3244,7 +3268,7 @@ bool GlobalAlignment::SplitFoldedBlock(
 	}
 	ExtendSeamEvidence(subScenes, localToGlobals, parts.first);
 
-	// what the block measured was measured for a reconstruction that no longer exists
+	// what the block measured was measured for a reconstruction that was cut in two
 	for (SeamCandidate& c : candidates)
 		if (c.sceneA == block || c.sceneB == block)
 			c.cls = SeamCandidate::REJECTED;
@@ -3705,10 +3729,12 @@ static float LargestSeamError(
 // One block moved to where the relaxation put its cameras: each camera's similarity is read back
 // out of the model frame into the block's own, its rotation and centre are what the block stores,
 // and every point follows the camera of its first inlier observation -- the only place the scale a
-// camera picked up can go, a pose having nowhere to keep it.
+// camera picked up can go, a pose having nowhere to keep it. A track whose observers did not all
+// move the same way is then triangulated again from where they now stand, so the tail's own
+// filtering reads a point its cameras agree on rather than one carried by the first of them.
 static void MoveBlockCameras(
 	const Transform& blockPose, const std::vector<uint32_t>& nodeOf,
-	const std::vector<BlockParameters>& parameters, Scene& block)
+	const std::vector<BlockParameters>& parameters, const float maxReprojError, Scene& block)
 {
 	const Transform blockPoseInv(blockPose.Invert());
 	std::vector<Transform> deltas(block.images.size());
@@ -3724,12 +3750,20 @@ static void MoveBlockCameras(
 		image.R = RMatrix(relaxed.R.t());
 		image.C = relaxed.t;
 	}
-	for (Track& track : block.tracks)
+	for (Track& track : block.tracks) {
+		bool anyMoved = false;
 		for (const Observation& obs : track)
 			if (obs.imageID < moved.size() && moved[obs.imageID]) {
 				track.position = deltas[obs.imageID] * track.position;
+				anyMoved = true;
 				break;
 			}
+		// the cameras that saw it have the last word, so what the tail filters is a point they
+		// agree on and not one the first of them carried; a track they cannot agree on comes back
+		// with too few inliers and is dropped there, like any other the cameras cannot hold
+		if (anyMoved && track.IsValid())
+			TriangulateSkewLLS(track, block.images, maxReprojError, kRelaxedTrackMinAngle);
+	}
 }
 
 bool GlobalAlignment::RelaxCameras(
@@ -3769,7 +3803,7 @@ bool GlobalAlignment::RelaxCameras(
 	}
 
 	ceres::Problem problem;
-	ceres::LossFunction* loss = new ceres::HuberLoss(1.0);
+	ceres::LossFunction* loss = new ceres::HuberLoss(kCameraGraphHuber);
 	const REAL scaleBar = LOGN((REAL)config.maxSimScaleRatio);
 	const auto AddEdge = [&](const uint32_t first, const uint32_t second, const Transform& M,
 		const REAL extent, const float weight) {
@@ -3925,7 +3959,7 @@ bool GlobalAlignment::RelaxCameras(
 	// placement left them, so what the relaxation bent is the reconstruction inside each block
 	FOREACH(b, subScenes)
 		if (IsInModel(poses, (uint32_t)b, model))
-			MoveBlockCameras(poses[b].T, nodeOf[b], parameters, subScenes[b]);
+			MoveBlockCameras(poses[b].T, nodeOf[b], parameters, config.maxReprojError, subScenes[b]);
 	report.seamErrorAfterRelax = LargestSeamError(subScenes, candidates, modelSeams, poses, globalToLocal, model);
 	report.camerasRelaxed = true;
 	VERBOSE("Cameras relaxed: %u cameras, %u intra-block edges, %u seam edges; "

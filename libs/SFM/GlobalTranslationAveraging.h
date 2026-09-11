@@ -42,7 +42,8 @@ struct SFM_API TranslationPair
  *   t_j - t_i = relative_translation_ij
  *
  * The system is solved using Eigen's sparse linear solvers (QR or LU decomposition).
- * Gauge freedom is resolved by pinning the best-connected translation pair.
+ * Gauge freedom is resolved by pinning the node the caller names, and the best-connected
+ * node of the pairs when it names none.
  */
 class SFM_API GlobalTranslationEstimator
 {
