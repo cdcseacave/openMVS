@@ -11314,7 +11314,7 @@ struct RingSceneConfig
 	REAL driftDegPerBlock{0};    // internal bend of every block (rotation ramp about the ring axis)
 	REAL driftScalePerBlock{0};  // internal scale ramp of every block (centres scaled about the block's first camera)
 	REAL noisePx{0.3};           // keypoint noise
-	uint32_t tinyBlock{NO_ID};   // this block gets two cameras 1 mm apart instead of camsPerBlock
+	std::set<uint32_t> tinyBlocks; // these blocks get two cameras 1 mm apart instead of camsPerBlock
 	uint32_t foldedBlock{NO_ID}; // this block's second half is reconstructed folded by 180 degrees
 	uint32_t seed{7};
 };
@@ -11368,7 +11368,7 @@ static void GenerateRingScene(const RingSceneConfig& cfg, Scene& scene, std::vec
 		scene.images.emplace_back((IIndex)scene.images.size(), String(), pose, 0, scene.cameras[0]);
 	};
 	for (uint32_t b = 0; b < cfg.numBlocks; ++b) {
-		if (b == cfg.tinyBlock) {
+		if (cfg.tinyBlocks.count(b) > 0) {
 			// two cameras a millimetre apart at the centre of the block's arc: a rig too short to
 			// observe a scale of its own
 			const REAL angle = slotAngle * (REAL(b * cfg.camsPerBlock) + REAL(cfg.camsPerBlock - 1) / 2);
@@ -12341,8 +12341,9 @@ bool RingPlacementTest()
 bool UnobservableScaleTest()
 {
 	TD_TIMER_START();
+	constexpr uint32_t tiny = 5;
 	RingSceneConfig cfg{12, 10};
-	cfg.tinyBlock = 5;
+	cfg.tinyBlocks = {tiny};
 	cfg.noisePx = 0;
 	Scene scene;
 	std::vector<IIndexArr> blocks;
@@ -12360,13 +12361,72 @@ bool UnobservableScaleTest()
 	// the position bar is what proves the tiny block came out at the ring's own scale
 	if (!CheckRingMerge("UnobservableScaleTest", rep, scene, gtPoses, cfg.numBlocks, 1, 0.1, 0.001))
 		return false;
-	for (const IIndex image : blocks[cfg.tinyBlock])
+	for (const IIndex image : blocks[tiny])
 		if (!scene.images[image].IsValid()) {
 			VERBOSE("UnobservableScaleTest FAILED: image %u of the two-camera block is not registered", image);
 			return false;
 		}
 	VERBOSE("UnobservableScaleTest PASSED: %u blocks placed, both cameras of block %u registered (%s)",
-		rep.numPlaced, cfg.tinyBlock, TD_TIMER_GET_FMT().c_str());
+		rep.numPlaced, tiny, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+// Two blocks of two cameras a millimetre apart, side by side on the ring: neither direction of the
+// seam between them sees any parallax, so that seam observes no scale at all and must say so --
+// a direction borrowing the other's number would carry into the scale averaging a size nothing
+// measured. The two blocks take their size from the seams that reach the rest of the ring instead,
+// and the merge has to come out at the ring's own scale all the same
+bool UnobservableScalePairTest()
+{
+	TD_TIMER_START();
+	constexpr uint32_t tinyA = 5, tinyB = 6;
+	RingSceneConfig cfg{12, 10};
+	cfg.tinyBlocks = {tinyA, tinyB};
+	cfg.noisePx = 0;
+	Scene scene;
+	std::vector<IIndexArr> blocks;
+	std::vector<Pose3D> gtPoses;
+	GenerateRingScene(cfg, scene, blocks, gtPoses);
+	std::vector<Scene> subScenes;
+	std::vector<IIndexArr> localToGlobals;
+	std::vector<SEACAVE::Transform> applied;
+	BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
+
+	GlobalAlignmentConfig alignCfg;
+	GlobalAlignment ga(scene, alignCfg);
+	MergeReport rep;
+	ga.MergeScenes(subScenes, localToGlobals, rep);
+	// the seam between the two shallow rigs, whichever direction it was measured in
+	unsigned numShallowSeams = 0;
+	for (const SeamCandidate& c : rep.candidates) {
+		if (c.sceneA != tinyA || c.sceneB != tinyB)
+			continue;
+		++numShallowSeams;
+		if (c.scaleObservable) {
+			VERBOSE("UnobservableScalePairTest FAILED: the seam (%u, %u) between two rigs a millimetre "
+				"wide claims to observe a scale (%s, class %u)", tinyA, tinyB,
+				c.oneDirection ? "one direction" : "both directions", (unsigned)c.cls);
+			return false;
+		}
+	}
+	if (numShallowSeams == 0) {
+		VERBOSE("UnobservableScalePairTest FAILED: the pair (%u, %u) yielded no candidate to read",
+			tinyA, tinyB);
+		return false;
+	}
+	// and the scale the two blocks came out at, which can only have come from the other seams
+	if (!CheckRingMerge("UnobservableScalePairTest", rep, scene, gtPoses, cfg.numBlocks, 1, 0.1, 0.001))
+		return false;
+	for (const uint32_t b : {tinyA, tinyB})
+		for (const IIndex image : blocks[b])
+			if (!scene.images[image].IsValid()) {
+				VERBOSE("UnobservableScalePairTest FAILED: image %u of the two-camera block %u is not registered",
+					image, b);
+				return false;
+			}
+	VERBOSE("UnobservableScalePairTest PASSED: %u blocks placed, the %u seam(s) between blocks %u and %u "
+		"observe no scale (%s)", rep.numPlaced, numShallowSeams, tinyA, tinyB, TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 /*----------------------------------------------------------------*/
@@ -13161,7 +13221,7 @@ bool UnplacedBlocksReportedTest()
 // placement refuses -- at a degree per block the closing block goes out, and an open chain of blocks
 // has no discrepancy left to carry, every seam being satisfiable in turn. So the bar is held down
 // here, which is the only way to read what the relaxation is worth on a ring: it takes the merged
-// cameras from 0.1374 deg and 0.1063% of the ring off the truth to 0.0487 deg and 0.0216%, and
+// cameras from 0.1374 deg and 0.1063% of the ring off the truth to 0.0484 deg and 0.0216%, and
 // leaves every seam inside the reprojection bar. Where it is worth more is a loop the rigid blocks
 // cannot close at all, which is what the real captures bring and this fixture cannot.
 bool BentBlocksRelaxationTest()

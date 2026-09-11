@@ -1544,9 +1544,11 @@ void GlobalAlignment::EstimateSeamPair(
 	c.oneDirection = true;
 	RefineSeamTransform(SelectInliers(c.observations, c.score.inlierMask, d == 0 ? 1 : 0),
 		config.maxReprojError, c.T);
-	if (!c.scaleObservable && measured[1 - d]) {
-		// its own rig is too shallow to observe a scale and the other direction measured one:
-		// take it, and leave the rig where the seam already put it
+	if (!c.scaleObservable && measured[1 - d] && candidate[1 - d].scaleObservable) {
+		// its own rig is too shallow to observe a scale and the other direction, whose rig is deep
+		// enough to have one, measured it: take that, and leave the rig where the seam already put
+		// it. Two shallow rigs facing each other observe no scale between them at all, and a seam
+		// that says otherwise carries a number nothing measured into the scale averaging
 		c.scaleObservable = true;
 		RescaleSeamAboutRig(RigCentroid(c.observations, d == 0), d == 0, Tseam[1 - d].scale, c.T);
 	}
@@ -3669,14 +3671,20 @@ bool GlobalAlignment::RelaxCameras(
 				if (itPoint == globalToLocal.end() || nodeOf[itPoint->second.first][itPoint->second.second] == NO_ID)
 					continue;
 				const Scene& pointBlock = subScenes[itPoint->second.first];
+				// the similarity carrying the point camera's block into the rig camera's
+				const Transform& pointToRig = obs.forward ? c.T : TInv;
 				// an edge across a seam is read in the unit the seam itself is judged in, the
-				// footprint the two blocks share, so one means the same here as at every seam bar
+				// footprint the two blocks share -- and it is read in the point camera's own frame,
+				// so the rig block's extent enters it in the point block's units: each block is
+				// reconstructed at a scale of its own, and comparing the two raw would hold the
+				// edge to a bar off by whatever that scale is. One then means the same here as at
+				// every seam bar
 				if (AddEdge(nodeOf[itPoint->second.first][itPoint->second.second],
 						nodeOf[itRig->second.first][itRig->second.second],
 						CameraMeasurement(pointBlock.images[itPoint->second.second],
-							subScenes[itRig->second.first].images[itRig->second.second],
-							obs.forward ? c.T : TInv),
-						PairExtent(blockExtents[itPoint->second.first], blockExtents[itRig->second.first]), 1.f))
+							subScenes[itRig->second.first].images[itRig->second.second], pointToRig),
+						PairExtent(blockExtents[itPoint->second.first],
+							blockExtents[itRig->second.first] / pointToRig.scale), 1.f))
 					++numSeamEdges;
 			}
 		}

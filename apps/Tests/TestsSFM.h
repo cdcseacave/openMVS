@@ -371,6 +371,7 @@ bool BlockJointRefinementTest();
 bool InterleavingVetoTest();
 bool RingPlacementTest();
 bool UnobservableScaleTest();
+bool UnobservableScalePairTest();
 bool RingInterleavingVetoTest();
 bool AmbiguousPairTest();
 bool RingLoopClosureTest();

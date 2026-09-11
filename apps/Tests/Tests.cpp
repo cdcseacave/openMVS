@@ -345,6 +345,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::UnobservableScaleTest())
 				return false;
+			if (!SFM::UnobservableScalePairTest())
+				return false;
 			if (!SFM::RingInterleavingVetoTest())
 				return false;
 			if (!SFM::AmbiguousPairTest())
