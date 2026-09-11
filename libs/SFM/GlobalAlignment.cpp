@@ -2016,8 +2016,9 @@ static bool SolveRotationFrames(
 		return false;
 	float bestWeight = InconsistentRotationWeight(pairs, bestRotations, bestFrames, maxResidual);
 	if (bestWeight > 0) {
-		// the seams to try left out of the tree: all of them the first time this component is read,
-		// and the one that won then every time after, the weights having moved and not the tree
+		// the seams to try left out of the tree: every tree seam of the component the first time it
+		// is read, and the one that won then every time after, the weights having moved and not the
+		// tree
 		std::vector<std::pair<uint32_t, uint32_t>> leftOuts;
 		if (sweepTree) {
 			std::vector<Point3> ignored;
@@ -2077,6 +2078,18 @@ bool GlobalAlignment::AverageBlockPoses(
 	ASSERT(gauge != NO_ID, "the gauge block carries none of the averaged seams");
 	if (gauge == NO_ID)
 		return false;
+	// one connected component: the tree the rotations are carried out along reaches only the
+	// component it is rooted in, so seams outside it would take no part in the initialization nor
+	// in the sweep that keeps one of its seams out
+	ASSERT([&]() {
+		DisjointSet<uint32_t> component(n);
+		for (const uint32_t e : edges)
+			component.Union(nodeOfBlock[candidates[e].sceneA], nodeOfBlock[candidates[e].sceneB]);
+		for (uint32_t node = 1; node < n; ++node)
+			if (component.Find(node) != component.Find(0))
+				return false;
+		return true;
+	}(), "the averaged seams span more than one connected component");
 
 	// rotations: each seam claims R_B * R_A^T
 	std::vector<RotationPair> rotationPairs;

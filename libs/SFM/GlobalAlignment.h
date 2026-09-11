@@ -399,8 +399,11 @@ public:
 	 *
 	 * The graph classes, the initial poses and the block pose graph all place their blocks through
 	 * this one routine, so they all fit the same edges the same way.
-	 * @param edges indices into candidates of the seams to average; the blocks they touch are the
-	 * nodes, and an edge weighs its candidate's weight, halved when the candidate is only VERIFIED
+	 * @param edges indices into candidates of the seams of ONE connected component; the blocks they
+	 * touch are the nodes, and an edge weighs its candidate's weight, halved when the candidate is
+	 * only VERIFIED. The rotations are carried out along a tree of the component they span, so a
+	 * second component's seams would take no part in the initialization nor in the sweep that keeps
+	 * one of its seams out
 	 * @param fixedBlock the gauge: the frame every pose comes out in, when the seams reach it
 	 * @param poses out: numBlocks entries; every block the rotation, scale and translation
 	 * consensus reaches from the gauge gets its local -> gauge frame transform and model 0, the
