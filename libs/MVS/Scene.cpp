@@ -1212,8 +1212,11 @@ unsigned Scene::Split(ImagesChunkArr& chunks, float maxArea, int depthMapStep) c
 			const Image& imageData = images[idxImage];
 			if (!imageData.IsValid())
 				continue;
+			const String fileName(ComposeDepthFilePath(imageData.ID, "dmap"));
+			if (!File::access(fileName))
+				continue;
 			DepthData depthData;
-			depthData.Load(ComposeDepthFilePath(imageData.ID, "dmap"), 1);
+			depthData.Load(fileName, 1);
 			if (depthData.IsEmpty())
 				continue;
 			const IIndex numPointsBegin(visibility.size());
