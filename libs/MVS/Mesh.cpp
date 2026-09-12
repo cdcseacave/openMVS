@@ -965,8 +965,10 @@ bool Mesh::Save(const String& fileName, const cList<String>& comments, bool bBin
 		ret = SaveGLTF(fileName, ext == _T(".glb"), bTexLossless);
 	else
 		ret = SavePLY(ext != _T(".ply") ? String(fileName+_T(".ply")) : fileName, comments, bBinary, bTexLossless);
-	if (!ret)
+	if (!ret) {
+		VERBOSE("error: failed saving mesh '%s'", fileName.c_str());
 		return false;
+	}
 	DEBUG_EXTRA("Mesh '%s' saved: %u vertices, %u faces (%s)",
 		Util::getFileNameExt(fileName).c_str(), vertices.size(), faces.size(), TD_TIMER_GET_FMT().c_str());
 	return true;

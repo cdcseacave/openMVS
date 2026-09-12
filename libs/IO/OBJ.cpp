@@ -49,8 +49,10 @@ ObjModel::MaterialLib::MaterialLib()
 bool ObjModel::MaterialLib::Save(const String& prefix, bool texLossless) const
 {
 	std::ofstream out((prefix+".mtl").c_str());
-	if (!out.good())
+	if (!out.good()) {
+		VERBOSE("error: failed creating material file '%s.mtl'", prefix.c_str());
 		return false;
+	}
 
 	const String pathName(Util::getFilePath(prefix));
 	const String name(Util::getFileNameExt(prefix));
@@ -140,8 +142,10 @@ bool ObjModel::Save(const String& fileName, unsigned precision, bool texLossless
 		return false;
 
 	std::ofstream out((prefix + ".obj").c_str());
-	if (!out.good())
+	if (!out.good()) {
+		VERBOSE("error: failed creating obj file '%s.obj'", prefix.c_str());
 		return false;
+	}
 
 	out << "mtllib " << name << ".mtl" << "\n";
 
