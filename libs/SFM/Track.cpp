@@ -545,6 +545,139 @@ static void BuildCovisEdges(const Scene& scene, unsigned minCovisibilityCount,
 	}
 }
 
+// How a verified pair judges the pose the model gives one of its images, seen from the pair's
+// other image: the model agrees with the pair when the relative rotation is within the given
+// angle (a cosine) of the pair's, and so is the direction of the model's baseline. A
+// near-duplicate viewpoint (the pair's matches triangulate under two degrees) has no reliable
+// baseline direction of its own, so such a pair is judged on the rotation alone.
+enum class ModelAgreement { AGREES, ROTATION_OFF, DIRECTION_OFF };
+static ModelAgreement JudgePairAgainstModel(const Scene& scene, const ImagePair& pair,
+	IIndex imageID, IIndex neighborID, REAL minCosAngle)
+{
+	const Image& image = scene.images[imageID];
+	const Image& neighbor = scene.images[neighborID];
+	const PoseLink link = MakePoseLink(pair, neighborID);
+	if (ComputeAngle(image.R, link.PredictedRotation(neighbor)) < minCosAngle)
+		return ModelAgreement::ROTATION_OFF; // the pair puts the image at another orientation than the model does
+	const bool nearDuplicate = pair.meanRayAngle > 0.f && pair.meanRayAngle < D2R(2.f);
+	Point3 modelDirection(image.C - neighbor.C), pairDirection;
+	const REAL baseline = norm(modelDirection);
+	if (!nearDuplicate && baseline > ZEROTOLERANCE<REAL>() && link.PredictedDirection(neighbor, pairDirection) &&
+		pairDirection.dot(modelDirection / baseline) < minCosAngle)
+		return ModelAgreement::DIRECTION_OFF; // ... or on another side of its neighbor
+	return ModelAgreement::AGREES;
+}
+
+// What still joins a component the largest-component pass is about to cut to the component it
+// keeps: the tracks seen on both sides, the strongest image pair among them, and the verified
+// pairs across the cut with the model's agreement on each. Reported for every component of at
+// least minComponentImages images, so a whole block leaving the model is explained, not just
+// counted.
+static void ReportCutComponents(const Scene& scene, DisjointSet<IIndex>& ds, IIndex largestRoot,
+	uint8_t minInliersPerTrack, float maxAgreementAngle, unsigned minComponentImages)
+{
+	struct Junction {
+		unsigned numImages{0}, minID{NO_ID}, maxID{0};
+		unsigned numTracks{0}, numInlierTracks{0};
+		unsigned numPairs{0}, numWeightedInliers{0}, numAgree{0}, numRotationOff{0}, numDirectionOff{0};
+		std::unordered_map<uint64_t, unsigned> sharedTracks; // per image pair across the cut
+	};
+	std::unordered_map<IIndex, Junction> junctions; // by component root
+	std::vector<IIndex> rootOf(scene.images.size(), NO_ID);
+	unsigned numKept = 0;
+	FOREACH(imgIdx, scene.images) {
+		if (!scene.images[imgIdx].IsValid())
+			continue;
+		const IIndex root = rootOf[imgIdx] = ds.Find(imgIdx);
+		if (root == largestRoot) {
+			++numKept;
+			continue;
+		}
+		Junction& j = junctions[root];
+		++j.numImages;
+		j.minID = MINF(j.minID, (unsigned)imgIdx);
+		j.maxID = MAXF(j.maxID, (unsigned)imgIdx);
+	}
+	for (auto it = junctions.begin(); it != junctions.end(); )
+		it = it->second.numImages < minComponentImages ? junctions.erase(it) : std::next(it);
+	if (junctions.empty())
+		return;
+	// the tracks seen on both sides of a cut, inlier or not, and the image pairs the inlier ones join
+	std::vector<IIndex> cutRoots;
+	for (const Track& track : scene.tracks) {
+		if (!track.IsValid())
+			continue;
+		bool keptSide = false;
+		cutRoots.clear();
+		for (const Observation& obs : track.observations) {
+			const IIndex root = rootOf[obs.imageID];
+			if (root == largestRoot)
+				keptSide = true;
+			else if (root != NO_ID && junctions.count(root) && std::find(cutRoots.begin(), cutRoots.end(), root) == cutRoots.end())
+				cutRoots.push_back(root);
+		}
+		if (!keptSide)
+			continue;
+		for (const IIndex root : cutRoots) {
+			Junction& j = junctions[root];
+			++j.numTracks;
+			if (!track.IsInlier(minInliersPerTrack))
+				continue;
+			bool inlierBothSides = false;
+			for (uint8_t a = 0; a < track.numInliers && !inlierBothSides; ++a) {
+				const IIndex ia = track.observations[a].imageID;
+				if (rootOf[ia] != root)
+					continue;
+				for (uint8_t b = 0; b < track.numInliers; ++b) {
+					const IIndex ib = track.observations[b].imageID;
+					if (rootOf[ib] != largestRoot)
+						continue;
+					inlierBothSides = true;
+					++j.sharedTracks[((uint64_t)MINF(ia, ib) << 32) | MAXF(ia, ib)];
+				}
+			}
+			if (inlierBothSides)
+				++j.numInlierTracks;
+		}
+	}
+	const REAL minCosAngle = COS(D2R(REAL(maxAgreementAngle)));
+	for (const ImagePair& pair : scene.pairs) {
+		if (!IsPoseLinkPair(pair))
+			continue;
+		const IIndex r1 = rootOf[pair.ID1], r2 = rootOf[pair.ID2];
+		if (r1 == NO_ID || r2 == NO_ID || (r1 == largestRoot) == (r2 == largestRoot))
+			continue; // both sides kept, or neither
+		const IIndex imageID = r1 == largestRoot ? pair.ID2 : pair.ID1;
+		const IIndex neighborID = r1 == largestRoot ? pair.ID1 : pair.ID2;
+		const auto it = junctions.find(rootOf[imageID]);
+		if (it == junctions.end())
+			continue;
+		Junction& j = it->second;
+		++j.numPairs;
+		j.numWeightedInliers += pair.GetNumWeightedInliers();
+		switch (JudgePairAgainstModel(scene, pair, imageID, neighborID, minCosAngle)) {
+		case ModelAgreement::AGREES: ++j.numAgree; break;
+		case ModelAgreement::ROTATION_OFF: ++j.numRotationOff; break;
+		case ModelAgreement::DIRECTION_OFF: ++j.numDirectionOff; break;
+		}
+	}
+	std::vector<IIndex> roots;
+	for (const auto& [root, j] : junctions)
+		roots.push_back(root);
+	std::sort(roots.begin(), roots.end());
+	for (const IIndex root : roots) {
+		const Junction& j = junctions[root];
+		unsigned strongestPair = 0;
+		for (const auto& [key, count] : j.sharedTracks)
+			strongestPair = MAXF(strongestPair, count);
+		DEBUG_EXTRA("Component of %u images (%u..%u) cut from the kept %u: %u tracks seen on both sides, %u with inliers on both, "
+			"the strongest image pair sharing %u; %u verified pairs across (%u weighted inliers): %u agree with the model, "
+			"%u off in rotation, %u off in direction",
+			j.numImages, j.minID, j.maxID, numKept, j.numTracks, j.numInlierTracks, strongestPair,
+			j.numPairs, j.numWeightedInliers, j.numAgree, j.numRotationOff, j.numDirectionOff);
+	}
+}
+
 } // namespace
 
 
@@ -831,25 +964,11 @@ IIndexArr SFM::FilterWeaklyConnectedImages(Scene& scene,
 					if (settled[imageID] || !settled[neighborID] || !scene.images[imageID].IsValid())
 						continue;
 					++numTried;
-					const Image& image = scene.images[imageID];
-					const Image& neighbor = scene.images[neighborID];
-					const PoseLink link = MakePoseLink(pair, neighborID);
-					if (ComputeAngle(image.R, link.PredictedRotation(neighbor)) < minCosAngle) {
-						++numRotationOff;
-						continue; // the pair puts the image at another orientation than the model does
+					switch (JudgePairAgainstModel(scene, pair, imageID, neighborID, minCosAngle)) {
+					case ModelAgreement::ROTATION_OFF: ++numRotationOff; break;
+					case ModelAgreement::DIRECTION_OFF: ++numDirectionOff; break;
+					case ModelAgreement::AGREES: ++numWitnesses[imageID]; break;
 					}
-					// A near-duplicate viewpoint (the pair's matches triangulate under two degrees) has
-					// no reliable translation direction of its own, so such a pair vouches for the
-					// rotation alone
-					const bool nearDuplicate = pair.meanRayAngle > 0.f && pair.meanRayAngle < D2R(2.f);
-					Point3 modelDirection(image.C - neighbor.C), pairDirection;
-					const REAL baseline = norm(modelDirection);
-					if (!nearDuplicate && baseline > ZEROTOLERANCE<REAL>() && link.PredictedDirection(neighbor, pairDirection) &&
-						pairDirection.dot(modelDirection / baseline) < minCosAngle) {
-						++numDirectionOff;
-						continue; // ... or on another side of its neighbor
-					}
-					++numWitnesses[imageID];
 				}
 			}
 			IIndexArr newlySettled;
@@ -941,7 +1060,7 @@ IIndexArr SFM::FilterWeaklyConnectedImages(Scene& scene,
 	for (const PairIdxCount& edge : edgeWeights)
 		ds.Union(edge.pairIdx.i, edge.pairIdx.j);
 	const auto InvalidateImagesIfNotInLargestComponent =
-		[&scene, &filteredIDs, &ds, &corroborated, &keptByComponent, &numKeptComponent]() {
+		[&scene, &filteredIDs, &ds, &corroborated, &keptByComponent, &numKeptComponent, maxCorroborationAngle]() {
 		const std::unordered_map<IIndex, unsigned> componentSizes = ds.CompressAllPaths().GetComponentSizes();
 		// Largest component root; tie-break to the smaller root ID so the choice is deterministic
 		// regardless of the (unordered) map iteration order.
@@ -952,6 +1071,13 @@ IIndexArr SFM::FilterWeaklyConnectedImages(Scene& scene,
 				maxSize = size;
 				largestComponentRoot = root;
 			}
+		#if TD_VERBOSE != TD_VERBOSE_OFF
+		// a component of a block's size leaving the model is explained, not just counted
+		if (VERBOSITY_LEVEL > 1 && maxCorroborationAngle > 0.f) {
+			constexpr unsigned minReportedComponentImages = 5;
+			ReportCutComponents(scene, ds, largestComponentRoot, minInliersPerTrack, maxCorroborationAngle, minReportedComponentImages);
+		}
+		#endif
 		// Invalidate images not in the largest component, in one batch sweep
 		IIndexArr dropIDs;
 		FOREACH(imgIdx, scene.images) {

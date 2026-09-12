@@ -831,6 +831,12 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	// Filter weakly connected images and resection remaining images into the reconstruction;
 	// what the filter just removed is withheld from that resection, so it is not simply handed
 	// back and removed again
+	#if TD_VERBOSE != TD_VERBOSE_OFF
+	if (VERBOSITY_LEVEL > 2) {
+		// Save the scene the filter judges, so its verdicts can be replayed offline
+		Save(MAKE_PATH("scene_pre_filter.sfm"), cfg.importCfg.archiveType);
+	}
+	#endif
 	const IIndexArr removedIDs = FilterWeaklyConnectedImages(*this);
 	if (status.nCalibratedImages < images.size()) {
 		ResectionConfig resectionCfg = cfg.resectionCfg;
@@ -839,8 +845,13 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 		resectionCfg.DeriveBAConfigs(resectionBaCfg);
 		Resection resection(*this, resectionCfg);
 		resection.ExcludeImages(removedIDs);
-		if (resection.RegisterImages())
+		if (resection.RegisterImages()) {
+			#if TD_VERBOSE != TD_VERBOSE_OFF
+			if (VERBOSITY_LEVEL > 2)
+				Save(MAKE_PATH("scene_pre_final_filter.sfm"), cfg.importCfg.archiveType);
+			#endif
 			FilterWeaklyConnectedImages(*this);
+		}
 	}
 
 	// Align the scene back to the imported prior poses in known-poses mode (preserving the
