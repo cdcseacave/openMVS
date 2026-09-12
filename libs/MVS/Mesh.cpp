@@ -1667,7 +1667,7 @@ void Mesh::SamplePoints(REAL samplingDensity, unsigned mumPointsTheoretic, Point
 				const TexCoord& TO = faceTexcoords[idxTexCoord+0];
 				const TexCoord& TA = faceTexcoords[idxTexCoord+1];
 				const TexCoord& TB = faceTexcoords[idxTexCoord+2];
-				const TexIndex& TI = faceTexindices[idxFace];
+				const TexIndex TI = GetFaceTextureIndex(idxFace);
 				const TexCoord xt(TO + static_cast<TexCoord::Type>(x)*(TA - TO) + static_cast<TexCoord::Type>(y)*(TB - TO));
 				pointcloud.colors.emplace_back(texturesDiffuse[TI].sampleSafe(xt));
 			}
@@ -1833,7 +1833,7 @@ void Mesh::ProjectOrtho(const Camera& camera, DepthMap& depthMap, Image8U3& imag
 				xt  = mesh.faceTexcoords[idxFaceTex+0] * bary[0];
 				xt += mesh.faceTexcoords[idxFaceTex+1] * bary[1];
 				xt += mesh.faceTexcoords[idxFaceTex+2] * bary[2];
-				auto texIdx = mesh.faceTexindices[idxFaceTex / 3];
+				const auto texIdx = mesh.GetFaceTextureIndex(idxFaceTex / 3);
 				image(pt) = mesh.texturesDiffuse[texIdx].sampleSafe(xt);
 			}
 		}
