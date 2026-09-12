@@ -70,6 +70,7 @@ unsigned nMaxThreads;
 int nMaxTextureSize;
 bool bExportTextureLossless;
 bool bVertexColors;
+unsigned nRemoveUnseenFaces;
 String strExportType;
 String strConfigFileName;
 boost::program_options::variables_map vm;
@@ -135,6 +136,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("max-texture-size", boost::program_options::value(&OPT::nMaxTextureSize)->default_value(8192), "maximum texture size, split it in multiple textures of this size if needed (0 - unbounded)")
 		("export-texture-lossless", boost::program_options::value(&OPT::bExportTextureLossless)->default_value(true), "save the texture as PNG (lossless) or JPG (smaller, lossy) when exporting to PLY")
 		("vertex-colors", boost::program_options::value(&OPT::bVertexColors)->default_value(false), "export a PLY mesh with per-vertex colors instead of generating texture atlases")
+		("remove-unseen-faces", boost::program_options::value(&OPT::nRemoveUnseenFaces)->default_value(0), "remove the mesh faces seen by fewer than this many images, rendering the mesh with a z-buffer into every camera (0 - disabled)")
 		;
 
 	// hidden options, allowed both on command line and
@@ -309,6 +311,18 @@ int main(int argc, LPCTSTR* argv)
 		if (VERBOSITY_LEVEL > 3)
 			scene.mesh.Save(baseFileName +_T("_decim")+OPT::strExportType);
 		#endif
+	}
+	// remove the surface no camera ever observed
+	if (OPT::nRemoveUnseenFaces > 0 && !scene.mesh.IsEmpty()) {
+		scene.RemoveUnseenMeshFaces(OPT::nRemoveUnseenFaces, OPT::nResolutionLevel, OPT::nMinResolution);
+		#if TD_VERBOSE != TD_VERBOSE_OFF
+		if (VERBOSITY_LEVEL > 3)
+			scene.mesh.Save(baseFileName + _T("_seen") + OPT::strExportType);
+		#endif
+	}
+	if (scene.mesh.IsEmpty()) {
+		VERBOSE("error: empty mesh after processing");
+		return EXIT_FAILURE;
 	}
 	// fetch list of views to be used for texturing
 	IIndexArr views;

@@ -118,7 +118,7 @@ bool ObjModel::MaterialLib::Load(const String& fileName)
 			ASSERT(numMaterials < materials.size());
 			String& diffuse_name = materials.back().diffuse_name;
 			in >> diffuse_name;
-			diffuse_name = Util::getFilePath(fileName) + diffuse_name;
+			diffuse_name = MAKE_PATH_FULL(Util::getFilePath(fileName), diffuse_name);
 		}
 	}
 	return numMaterials < materials.size();
@@ -190,6 +190,7 @@ bool ObjModel::Save(const String& fileName, unsigned precision, bool texLossless
 bool ObjModel::Load(const String& fileName)
 {
 	ASSERT(vertices.empty() && groups.empty() && material_lib.materials.empty());
+	const String path(Util::getFilePath(fileName));
 	std::ifstream fin(fileName.c_str());
 	String line, keyword;
 	std::istringstream in;
@@ -253,7 +254,7 @@ bool ObjModel::Load(const String& fileName)
 		} else
 		if (keyword == "mtllib") {
 			in >> keyword;
-			if (!material_lib.Load(keyword))
+			if (!material_lib.Load(MAKE_PATH_FULL(path, keyword)))
 				return false;
 		} else
 		if (keyword == "usemtl") {
