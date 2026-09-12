@@ -554,7 +554,7 @@ graph TD
     F -->|no| H[Score edges quality only]
     G --> I[TetraFlow min-cut graph-cut<br/>source=free-space, sink=matter]
     H --> I
-    I --> J[Extract surface from cut facets<br/>webbing gate: drop facets with an edge > maxEdgeScale x median]
+    I --> J[Extract surface from cut facets<br/>webbing gate: local scale + common-view support]
     J --> K[Fix non-manifold: single exhaustive pass]
     K --> L[Mesh::Clean: halfmesh QEM decimation<br/>spurious removal, hole closing, Taubin smoothing]
     L --> M[scene.mesh populated]
@@ -586,8 +586,9 @@ graph TD
 - TetraFlow min-cut solver (`libs/Math/TetraFlow.h`, incremental breadth-first search max-flow on
   one 64-byte node per cell) separates free-space (source) from matter (sink) tetrahedra
 - Cut facets form the extracted surface triangles, minus those the webbing gate drops:
-  `maxEdgeScale` (4) x the median cut-facet longest edge, the gap-spanning surface no observation
-  supports
+  the facet's longest edge must exceed `maxEdgeScale` (4) x the largest median incident-edge
+  length at its three vertices, or exceed 4 x the global cut-facet median while no image observes
+  all three vertices
 - Non-manifold vertices and edges are repaired in a single exhaustive pass (splitting a vertex
   never changes another vertex's incident faces, so no second pass can find more)
 

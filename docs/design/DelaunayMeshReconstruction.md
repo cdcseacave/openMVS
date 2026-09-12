@@ -39,7 +39,7 @@ holes, and smooths.
 |---|---|---|
 | `--adaptive-sigma` | on | per-vertex σ_v = kSigma × median incident Delaunay edge length, clamped to [0.25,4]× the global σ — a universal win across all four T&T scenes and simultaneously the fastest arm (§2) |
 | `--canonical-rescale` | on | rescales the triangulation by a power of two so the median edge lands near 1, where the ray-walk `orientation()` predicate's fixed 1e-12 epsilon is calibrated; provably a no-op inside the band every normal scene lives in, and a correctness fix (not just a speed one) outside it (§6) |
-| `--max-edge-scale` | 4 | drops cut facets whose longest edge exceeds 4× the median cut-facet longest edge — the webbing gate (§4); a universal win, better-or-equal to k=6 on all four scenes, recall untouched |
+| `--max-edge-scale` | 4 | drops a cut facet when its longest edge exceeds 4× its conservative local Delaunay scale, or exceeds 4× the global cut-facet median and no image observes all three vertices; unlike the original global-only gate, this preserves directly supported sparse surfaces (§4) |
 | library `kSigma` | 1.f | matches the CLI's long-standing `--thickness-factor` default of 1; the old library default of 2 loses 0.043-0.146 F1 to this value on every scene (§5) |
 | `--constant-weight` | on | every view votes 1, as it always has. The mesh stage **cannot tell a recalibrated confidence from a plain-NCC one** — `CONF_ADJUSTED` lives in the `.dmap` header and is deliberately not part of the MVS scene, and a point's per-view confidence arrives as a bare float — so consuming whatever the cloud carries would silently collapse the cut on any pre-recalibration cloud (Ignatius −0.214 F1, §5). Only the operator knows the provenance, so consuming the confidence is theirs to ask for: `--constant-weight 0`, and on recalibrated clouds it is worth at most a few thousandths either way (§2) |
 | `Mesh::Clean` smoothing | scale-free Laplacian | replaces `CGAL::PMP::smooth_shape`, whose fixed absolute time step over-smoothed fine meshes by ~20x (§3); the new smoother moves each vertex relative to its own one-ring scale, so it is unit- and resolution-independent |
@@ -95,6 +95,10 @@ default configuration.
 
 ### Webbing-gate k-sweep (raw graph-cut surface, no other change)
 
+The table below records the original **global-median** gate calibration. It improved the four T&T
+scores but was later found to be unsafe on scenes with strong spatial density variation; it is
+historical evidence for retaining a webbing gate, not validation of the old statistic.
+
 | scene | raw (ungated) | k=8 | k=6 | k=4 | input cloud |
 |---|---|---|---|---|---|
 | Ignatius | 0.6986 | 0.7021 | 0.7036 | **0.7048** | 0.7381 |
@@ -104,6 +108,31 @@ default configuration.
 
 k=4 is better-or-equal to k=6 on all four scenes; recall never moves by more than 0.008 at any k.
 Gated raw already beats the input cloud on Barn and Meetingroom before adaptive σ is even added.
+
+### Local-density gate regression fix (2026-09-12)
+
+Herz-Jesu-P8 exposed a completeness regression hidden by that T&T sweep. The global rule compared
+every facet to 4× one scene-wide median: it removed 29,542 facets from an otherwise nearly closed
+cut, producing 26,206 boundary edges and retaining only 270.3 of the ungated surface's 867.4 area
+units. Most rejected facets were simply in the sparse background: 28,688/29,542 had a camera
+common to all three vertices, and only 284 exceeded 4× the largest local Delaunay scale at their
+vertices.
+
+The replacement first compares each facet's longest edge to the largest of the three vertex-local
+scales, each scale the median finite Delaunay-edge length incident to that vertex. Taking the
+largest is deliberately conservative at density transitions. A second branch retains the useful
+part of the old rule for locally coherent sparse webbing: a globally long facet is removed only
+when no image observes all three of its vertices. This common-view set intersection is evaluated
+only for globally suspicious facets and requires no image projection or ray casting.
+
+At the default factor 4 the hybrid removes 1,125 Herz-Jesu facets (287 local-outlier criterion
+hits, 854 no-common-view hits, with overlap), retains 660.9 area units, and leaves 2,237 boundary edges (old global: 270.3 area,
+26,206 boundaries; ungated: 867.4 area, 36 boundaries). On identical 500k GT samples at τ=0.01,
+recall rises from 0.3219 to 0.3977 (local-only 0.4010, ungated 0.4023). On Truck, the hybrid removes
+267,481 facets and scores P/R/F1 0.5833/0.6717/0.6244, versus old-global
+0.6304/0.6715/0.6503 and ungated 0.3800/0.6393/0.4766. The hybrid therefore recovers nearly all
+Herz completeness and most of the Truck precision gain without letting a dense foreground set
+the threshold for a directly observed sparse background.
 
 ### Object-scene stacking (gated k=6 raw surface)
 

@@ -586,8 +586,10 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
   - Camera cells linked to source with weight `kInf`; edge weights: `kf`, `kRel`, `kAbs`, `kQual`
   - TetraFlow min-cut (`libs/Math/TetraFlow.h`) separating free-space from matter: incremental
     breadth-first search max-flow on one 64-byte node per cell (the dual graph is 4-regular)
-  - Surface extraction drops cut facets whose longest edge exceeds `maxEdgeScale` x the median cut
-    facet (the webbing gate, default 4)
+  - Surface extraction drops a cut facet when its longest edge exceeds `maxEdgeScale` x the
+    largest local median incident-Delaunay-edge length at its vertices, or the global cut-facet
+    median when no image observes all three vertices (the density- and support-aware webbing gate,
+    default 4)
   - Single-pass non-manifold repair, then the `Mesh::Clean()` pipeline
 - **Configuration:** a single `ReconstructMeshParams` (`distInsert`, `bUseFreeSpaceSupport`,
   `bUseOnlyROI`, `kSigma`, `kQual`, `kb`, `kf`, `kRel`, `kAbs`, `kOutl`, `kInf`,

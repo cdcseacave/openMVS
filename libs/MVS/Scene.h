@@ -201,12 +201,12 @@ public:
 		// [2^-10, 2^10] are left untouched. This repairs the predicate only - geometry already
 		// quantized away by the float storage of PointCloud::Point needs a load-time fix instead
 		bool bCanonicalRescale;
-		// drop extracted surface facets whose longest edge exceeds this multiple of the median
-		// cut-facet longest edge: every Delaunay vertex is an input point, so a facet can only
-		// stray far from the observed cloud by spanning it with long edges - the "webbing" a
-		// visibility mesh grows across occluded space (under vehicles, behind walls), surface
-		// no observation supports. A ratio of medians, so scene- and scale-independent;
-		// 0 disables the gate. Gating on the facet visibility vote mass instead does
+		// drop extracted surface facets whose longest edge exceeds this multiple of the largest
+		// local scale at its three vertices, where a vertex's scale is the median length of its
+		// incident finite Delaunay edges; also drop globally long facets when no image observes all
+		// three vertices. This adapts to density changes while still rejecting coherent sparse
+		// webbing unsupported by any common observation; 0 disables the gate.
+		// Gating on the facet visibility vote mass instead does
 		// NOT work: most true surface facets are never crossed by any ray either (each ray
 		// needles through 1-2 facets of a vertex umbrella), so no mass threshold separates
 		// webbing from surface

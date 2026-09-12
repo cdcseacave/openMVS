@@ -132,7 +132,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		// single call site can pass the struct and still leave the default path unchanged
 		("adaptive-sigma", boost::program_options::value(&OPT::reconstructParams.bAdaptiveSigma)->default_value(true), "derive the point uncertainty sigma per-vertex from its median incident Delaunay edge length, clamped to [0.25,4] x the global sigma (0 - the single global sigma everywhere)")
 		("canonical-rescale", boost::program_options::value(&OPT::reconstructParams.bCanonicalRescale)->default_value(true), "rescale the triangulation by a power of two so the median Delaunay edge lands near 1, where the ray-walk orientation predicate is calibrated; no-op unless the median edge falls outside [2^-10,2^10]")
-		("max-edge-scale", boost::program_options::value(&OPT::reconstructParams.maxEdgeScale)->default_value(4.f), "drop extracted surface facets whose longest edge exceeds this multiple of the median cut-facet longest edge - the gap-spanning webbing grown across occluded space no observation supports (relative units, scale-independent; 0 - disabled)")
+		("max-edge-scale", boost::program_options::value(&OPT::reconstructParams.maxEdgeScale)->default_value(4.f), "drop extracted surface facets whose longest edge exceeds this multiple of the largest local median Delaunay-edge length at its vertices, or the global median when no image observes all three vertices (relative units; 0 - disabled)")
 		;
 	boost::program_options::options_description config_clean("Clean options");
 	config_clean.add_options()

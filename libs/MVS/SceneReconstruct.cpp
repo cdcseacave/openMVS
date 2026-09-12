@@ -761,6 +761,7 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 	// downstream on the same footing
 	float medianEdge(0);
 	coord_rescale_t rescale;
+	std::vector<float> localScaleVert;
 	{
 		TD_TIMER_STARTD();
 
@@ -1006,8 +1007,10 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 		std::vector<vertex_handle_t> vertexHandles;
 		vertexHandles.reserve(delaunay.number_of_vertices());
 		for (delaunay_t::Vertex_iterator vi=delaunay.vertices_begin(), vie=delaunay.vertices_end(); vi!=vie; ++vi)
-			if (!vi->info().views.IsEmpty())
+			if (!vi->info().views.IsEmpty()) {
+				vi->info().idx = (vert_size_t)vertexHandles.size();
 				vertexHandles.push_back(vi);
+			}
 		const int64_t nVerts((int64_t)vertexHandles.size());
 
 		// per-vertex uncertainty: the global sigma is kSigma times the median length over all
@@ -1016,10 +1019,12 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 		// indexed like vertexHandles, and allocated only by this arm
 		const bool bAdaptiveSigma(params.bAdaptiveSigma);
 		std::vector<float> sigmaVert;
-		if (bAdaptiveSigma) {
+		if (bAdaptiveSigma || params.maxEdgeScale > 0) {
 			TD_TIMER_STARTD();
 			const float sigmaVertMin(sigma*0.25f), sigmaVertMax(sigma*4.f);
-			sigmaVert.resize((size_t)nVerts);
+			localScaleVert.resize((size_t)nVerts);
+			if (bAdaptiveSigma)
+				sigmaVert.resize((size_t)nVerts);
 			#ifdef DELAUNAY_USE_OPENMP
 			#pragma omp parallel
 			{
@@ -1044,12 +1049,16 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 				}
 				// every finite vertex of a 3D triangulation has at least one finite incident edge
 				ASSERT(!edgeDistsSq.IsEmpty());
-				sigmaVert[(size_t)i] = CLAMP(SQRT(edgeDistsSq.GetMedian())*kSigma, sigmaVertMin, sigmaVertMax);
+				const float localScale(SQRT(edgeDistsSq.GetMedian()));
+				localScaleVert[(size_t)i] = localScale;
+				if (bAdaptiveSigma)
+					sigmaVert[(size_t)i] = CLAMP(localScale*kSigma, sigmaVertMin, sigmaVertMax);
 			}
 			#ifdef DELAUNAY_USE_OPENMP
 			} // omp parallel
 			#endif
 			// spread reported in units of the global sigma, so a uniform-scale scene reads ~1
+			if (bAdaptiveSigma) {
 			FloatArr sigmaRatios(0, (FloatArr::IDX)nVerts);
 			const float invSigma(1.f/sigma);
 			float ratioMin(FLT_MAX), ratioMax(0.f);
@@ -1070,6 +1079,7 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 			DEBUG_EXTRA("Adaptive sigma: %lld vertices, sigma_v/sigma min %.3f, median %.3f, max %.3f, clamped low %.2f%%, high %.2f%% (%s)",
 				(long long)nVerts, ratioMin, sigmaRatios.GetMedian(), ratioMax,
 				100.f*(float)nClampedLow/(float)nVerts, 100.f*(float)nClampedHigh/(float)nVerts, TD_TIMER_GET_FMT().c_str());
+			}
 		}
 
 		// compute the weights for each edge
@@ -1311,19 +1321,18 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 		mapVertices.reserve(nEstimatedNumVerts);
 		mesh.vertices.Reserve((Mesh::VIndex)nEstimatedNumVerts);
 		mesh.faces.Reserve((Mesh::FIndex)nEstimatedNumVerts*2);
-		// scale-aware webbing gate: every Delaunay vertex IS an input point, so a facet can
-		// stray far from the observed cloud only by spanning it with long edges - the surface
-		// a visibility mesh grows across occluded space (under vehicles, behind walls) that no
-		// observation supports; measure each cut facet by its longest squared edge and drop
-		// the ones beyond maxEdgeScale x the median cut-facet longest edge (both live in the
-		// working space so canonical rescale cancels, and the ratio is scene-independent)
+		// density- and observation-aware webbing gate: compare every cut facet's longest edge to
+		// the largest local scale at its vertices, using the conservative side of density changes.
+		// A locally coherent sparse sheet can still be unsupported webbing, so globally long facets
+		// additionally require one image common to all three vertices; valid sparse surfaces retain
+		// that direct observation support while gap-spanners between unrelated regions do not.
 		const auto maxFacetEdgeSq([&delaunay](const cell_handle_t& ci, int i) {
 			const auto tri(delaunay.triangle(ci, i));
 			return (float)MAXF3(CGAL::squared_distance(tri[0], tri[1]),
 			                    CGAL::squared_distance(tri[1], tri[2]),
 			                    CGAL::squared_distance(tri[2], tri[0]));
 		});
-		float gateEdgeSq(FLT_MAX);
+		float globalGateEdgeSq(FLT_MAX);
 		if (params.maxEdgeScale > 0) {
 			FloatArr edgesSq(0, nEstimatedNumVerts*2);
 			for (delaunay_t::All_cells_iterator ci=delaunay.all_cells_begin(), ce=delaunay.all_cells_end(); ci!=ce; ++ci) {
@@ -1338,9 +1347,28 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 				}
 			}
 			if (!edgesSq.IsEmpty())
-				gateEdgeSq = edgesSq.GetMedian()*SQUARE(params.maxEdgeScale);
+				globalGateEdgeSq = edgesSq.GetMedian()*SQUARE(params.maxEdgeScale);
 		}
+		const auto hasCommonView = [](const triangle_vhandles_t& tri) {
+			const vert_info_t::view_vec_t& views0(tri.verts[0]->info().views);
+			const vert_info_t::view_vec_t& views1(tri.verts[1]->info().views);
+			const vert_info_t::view_vec_t& views2(tri.verts[2]->info().views);
+			uint32_t i0(0), i1(0), i2(0);
+			while (i0 < views0.size() && i1 < views1.size() && i2 < views2.size()) {
+				const PointCloud::View view0(views0[i0].idxView);
+				const PointCloud::View view1(views1[i1].idxView);
+				const PointCloud::View view2(views2[i2].idxView);
+				if (view0 == view1 && view1 == view2)
+					return true;
+				const PointCloud::View maxView(MAXF3(view0, view1, view2));
+				if (view0 < maxView) ++i0;
+				if (view1 < maxView) ++i1;
+				if (view2 < maxView) ++i2;
+			}
+			return false;
+		};
 		size_t numUnsupportedFaces(0);
+		size_t numLocalOutliers(0), numGlobalUnsupported(0);
 		for (delaunay_t::All_cells_iterator ci=delaunay.all_cells_begin(), ce=delaunay.all_cells_end(); ci!=ce; ++ci) {
 			const cell_size_t ciID(ci->info());
 			for (int i=0; i<4; ++i) {
@@ -1350,12 +1378,25 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 				if (ciID < cjID) continue;
 				const bool ciType(srcSide[ciID]);
 				if (ciType == srcSide[cjID]) continue;
-				if (params.maxEdgeScale > 0 && maxFacetEdgeSq(ci, i) > gateEdgeSq) {
-					++numUnsupportedFaces;
-					continue;
+				const triangle_vhandles_t tri(getTriangle(ci, i));
+				const float facetEdgeSq(maxFacetEdgeSq(ci, i));
+				if (params.maxEdgeScale > 0) {
+					ASSERT(tri.verts[0]->info().idx < localScaleVert.size() && tri.verts[1]->info().idx < localScaleVert.size() && tri.verts[2]->info().idx < localScaleVert.size());
+					const float localScale(MAXF3(
+						localScaleVert[tri.verts[0]->info().idx],
+						localScaleVert[tri.verts[1]->info().idx],
+						localScaleVert[tri.verts[2]->info().idx]));
+					ASSERT(ISFINITE(localScale) && localScale > 0.f);
+					const bool bLocalOutlier(facetEdgeSq > SQUARE(localScale*params.maxEdgeScale));
+					const bool bGlobalUnsupported(facetEdgeSq > globalGateEdgeSq && !hasCommonView(tri));
+					if (bLocalOutlier || bGlobalUnsupported) {
+						if (bLocalOutlier) ++numLocalOutliers;
+						if (bGlobalUnsupported) ++numGlobalUnsupported;
+						++numUnsupportedFaces;
+						continue;
+					}
 				}
 				Mesh::Face& face = mesh.faces.AddEmpty();
-				const triangle_vhandles_t tri(getTriangle(ci, i));
 				for (int v=0; v<3; ++v) {
 					const vertex_handle_t vh(tri.verts[v]);
 					ASSERT(vh->point() == delaunay.triangle(ci,i)[v]);
@@ -1372,7 +1413,8 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 		}
 		delaunay.clear();
 		if (params.maxEdgeScale > 0)
-			DEBUG_EXTRA("Unsupported surface facets removed: %u (longest edge > %g x median)", (unsigned)numUnsupportedFaces, params.maxEdgeScale);
+			DEBUG_EXTRA("Unsupported surface facets removed: %u (criterion hits: %u local outliers, %u globally long without a common view; overlap possible; scale %g)",
+				(unsigned)numUnsupportedFaces, (unsigned)numLocalOutliers, (unsigned)numGlobalUnsupported, params.maxEdgeScale);
 
 		DEBUG_EXTRA("Delaunay tetrahedras graph-cut completed (%g flow): %u vertices, %u faces (%s)", maxflow, mesh.vertices.GetSize(), mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 	}
