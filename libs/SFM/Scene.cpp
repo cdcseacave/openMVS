@@ -826,6 +826,12 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	BAConfig finalBaCfg = cfg.baConfig;
 	SetBAIntrinsicFlags(finalBaCfg, cfg.baIntrinsicFlags);
 	BundleAdjustment::Adjust(*this, finalBaCfg);
+	#if TD_VERBOSE != TD_VERBOSE_OFF
+	if (VERBOSITY_LEVEL > 2) {
+		// Save the adjusted scene before the fine filter thins its tracks, so the two can be told apart offline
+		Save(MAKE_PATH("scene_post_ba.sfm"), cfg.importCfg.archiveType);
+	}
+	#endif
 	FilterTracks(*this, cfg.maxFineReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
 
 	// Filter weakly connected images and resection remaining images into the reconstruction;
