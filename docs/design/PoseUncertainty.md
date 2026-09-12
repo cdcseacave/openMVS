@@ -1,6 +1,6 @@
 # Pose Uncertainty — Per-Image Quality from the BA Covariance
 
-## Overview
+## 1. Purpose and scope
 
 Every bundle adjustment implicitly knows how well each camera is localized: the inverse of the
 Gauss-Newton Hessian at the solution is the covariance of the estimated parameters. This feature
@@ -18,12 +18,12 @@ The primary use case is geo-referenced accuracy: on a GPS-aligned scene refined 
 the reported values are absolute 1-sigma camera-position accuracies in **ENU meters**
 (East/North/Up).
 
----
+## 2. Algorithm as implemented
 
-## The Estimator (`BundleAdjustment::ComputePoseUncertainty`)
+### The estimator — `BundleAdjustment::ComputePoseUncertainty` (`libs/SFM/BundleAdjustment.h/.cpp`)
 
-Computed on the live instance after `Adjust()` succeeded (the solved `ceres::Problem` is kept
-alive). Math adapted from COLMAP's covariance estimator:
+Computed on the live instance after `Adjust()` (or `AdjustLocal()`) succeeded, while the solved
+`ceres::Problem` is still kept alive:
 
 1. Evaluate the sparse Jacobian `J` over `[poses, points]` (intrinsics excluded — the result is
    **conditioned on fixed intrinsics**, adequate for a per-image quality signal).
@@ -33,7 +33,7 @@ alive). Math adapted from COLMAP's covariance estimator:
    no dense inverse; only entries on the factor pattern are computed, which always includes the
    per-pose 6x6 diagonal blocks.
 
-Per image, `PoseUncertainty` stores:
+Per image, `PoseUncertainty` (`libs/SFM/BundleAdjustment.h`) stores:
 
 | Field | Meaning | Units / frame |
 |---|---|---|
@@ -44,9 +44,15 @@ Per image, `PoseUncertainty` stores:
 The pose block is parameterized `[quaternion, C]` with a
 `ProductManifold<QuaternionManifold, EuclideanManifold<3>>`: the position tangent is the **plain
 world-frame camera center**, so `posVar`/`posCov` form a genuine world-frame 3x3 covariance —
-`GetPositionCovariance()` eigen-decomposes directly into an oriented error ellipsoid, with no frame
-change needed. Sentinels: not-computed = `-1` (unregistered image, pose absent/partially fixed);
-gauge datum = exactly `0` on all axes.
+`PoseUncertainty::GetPositionCovariance()` eigen-decomposes directly into an oriented error
+ellipsoid, with no frame change needed. Sentinels: not-computed = `posVar.x < 0` (unregistered
+image, pose absent/partially fixed, `IsValid()` false); gauge datum = exactly `0` on all axes.
+
+A second entry point, `BundleAdjustment::ComputePoseUncertaintyCeres()`, computes the same
+per-image covariance from the same solved problem using `ceres::Covariance` (`DENSE_SVD`) instead
+of the custom Schur + selected-inverse path, with matched conditioning (intrinsics fixed, points
+marginalized, same gauge/datum). It is `O(n^3)` — a validation-only cross-check
+(`GPSPriorPoseUncertaintyTest`, §5), not part of the pipeline.
 
 ### Gauge semantics
 
@@ -60,9 +66,7 @@ A monocular BA has a 7-DOF gauge freedom (similarity). Two regimes:
 - **GPS priors present** (`numGPSResiduals > 0`) — the priors anchor all 7 DOF, so no datum is
   designated and the covariances are **absolute** in the ENU frame.
 
----
-
-## Pipeline Integration (`Scene::Reconstruct`)
+### Pipeline integration — `Scene::Reconstruct`
 
 Gated on `ReconstructionConfig::estimatePoseUncertainty` (set by CreateStructure when
 `--export-pose-quality` is given):
@@ -88,13 +92,11 @@ Residuals are divided by the per-image accuracy metadata (`positionAccuracy` /
 `sqrt(weight · scaleFactor · pixel_scale)` where `pixel_scale = median_depth / median_focal`
 balances the metric GPS terms against the pixel-unit reprojection terms — which is why this BA is
 only meaningful **after** the scene is metric (post-alignment); earlier BAs gate the residuals off
-via the `GEO_ALIGN` state. Enabled by `--gps-position-weight` / `--gps-position-weight-z`
-(default 0 = disabled). Validated for pinhole cameras; spherical scenes use angular reprojection
-residuals the weighting does not account for.
+via the `GEO_ALIGN` state. Enabled by `--gps-position-weight` / `--gps-position-weight-z`.
+Validated for pinhole cameras; spherical scenes use angular reprojection residuals the weighting
+does not account for.
 
----
-
-## The CSV Quality Report (`ExportPoseUncertaintyCSV`)
+### The CSV quality report — `ExportPoseUncertaintyCSV` (`libs/SFM/BundleAdjustment.h/.cpp`)
 
 `CreateStructure --export-pose-quality quality.csv` dumps `Scene::poseUncertainty`, one row per
 image:
@@ -113,8 +115,9 @@ ID,name,valid,datum,sigmaPosX,sigmaPosY,sigmaPosZ,covPosXY,covPosXZ,covPosYZ,sig
   datum-relative).
 - `numObs` (inlier observations) and the a-priori GPS accuracies allow comparing the estimated
   accuracy against the sensor claim.
+- Not-computed entries are written as `-1`; the gauge datum (if any) as all-zero with `datum=1`.
 
-## Viewer Display
+### Viewer display
 
 `Viewer scene.mvs --pose-quality-file quality.csv` matches rows to images by ID and renders a
 translucent shaded-solid **error ellipsoid** at each camera center: axes/orientation from the
@@ -125,10 +128,53 @@ normalized at the 95th-percentile sigma. The surfaces are lit and drawn semi-tra
 ellipsoids remain visible through the shell. Selecting a camera shows its per-axis position and
 rotation sigmas; the gauge datum is labeled "reference".
 
-## Validation
+## 3. Parameters and defaults
 
-- `PipelineTest` (Test 1): covariance present, finite, Cauchy-Schwarz-consistent, exactly one datum.
-- `GPSPriorPoseUncertaintyTest`: GPS-prior BA on a synthetic geo-aligned scene → datum-free
-  (absolute) covariances, no NaNs with missing accuracy metadata, poses within GPS accuracy.
-- `PoseUncertaintyExportTest`: CSV write/re-read, `.mvs` image-ID roundtrip, `Scene::Transform`
-  covariance mapping against a random Sim(3), `.sfm` serialization roundtrip.
+| Parameter | CLI flag | Default | Meaning |
+|---|---|---|---|
+| `estimatePoseUncertainty` | `CreateStructure --export-pose-quality <file>` | disabled | Gates covariance estimation during reconstruction and enables the CSV export |
+| GPS horizontal weight | `--gps-position-weight` | 0 (disabled) | Horizontal weight of GPS position priors in the GPS-prior BA |
+| GPS vertical weight | `--gps-position-weight-z` | 0 (disabled) | Vertical weight of GPS position priors in the GPS-prior BA |
+| horizontal accuracy fallback | `GPSPositionError` | 10 m | Used when EXIF provides no `positionAccuracy` |
+| vertical accuracy fallback | `GPSPositionError` | 20 m | Used when EXIF provides no `positionAccuracyZ` |
+| Viewer input | `Viewer --pose-quality-file <file>` | none | Loads the CSV and enables the uncertainty-ellipsoid display |
+
+## 4. Invariants and constraints
+
+- The covariance must be read before `FilterTracks` runs, since the solved Ceres problem holds
+  raw pointers into the track array that filtering invalidates.
+- `ComputePoseUncertainty()` conditions on fixed intrinsics (intrinsics excluded from the
+  Jacobian); the result is a per-image quality signal, not a full-parameter covariance.
+- Without GPS priors, the global scale mode is gauge-unanchored: variances saturate at the
+  regularization ceiling along that mode, so values compare images to each other but are not
+  absolute accuracies. Only GPS-prior BA (`numGPSResiduals > 0`) yields absolute ENU covariances.
+- `Scene::Transform` must remap `poseUncertainty` (`Cov' = scale² · R · Cov · Rᵀ`) across every
+  similarity transform applied after the covariance was recorded, or the record goes stale
+  relative to the world frame.
+- The GPS-prior BA is only meaningful after the scene is metric (post-`AlignToGPS`); earlier BAs
+  gate `GPSPositionError` residuals off via the `GEO_ALIGN` state.
+- GPS-prior weighting is validated for pinhole cameras only; spherical scenes use angular
+  reprojection residuals that the `pixel_scale` balancing term does not account for.
+- CSV image IDs, not filenames, are the correlation key back to the `.mvs` project.
+
+## 5. Validation of the shipped defaults
+
+none recorded
+
+Correctness (not default-tuning) is exercised by three tests in `apps/Tests/TestsSFM.cpp`:
+`PipelineTest` (covariance present, finite, Cauchy-Schwarz-consistent, exactly one datum),
+`GPSPriorPoseUncertaintyTest` (GPS-prior BA on a synthetic geo-aligned scene: datum-free absolute
+covariances, no NaNs with missing accuracy metadata, poses within GPS accuracy, and agreement with
+the `ComputePoseUncertaintyCeres()` cross-check), and `PoseUncertaintyExportTest` (CSV write/re-read,
+`.mvs` image-ID roundtrip, `Scene::Transform` covariance mapping against a random Sim(3), `.sfm`
+serialization roundtrip).
+
+## 6. Rejected alternatives
+
+none recorded
+
+## 7. Open items
+
+- GPS-prior residual weighting does not account for the angular reprojection residuals used by
+  spherical cameras, so absolute covariances from the GPS-prior BA are not validated for that
+  camera type.

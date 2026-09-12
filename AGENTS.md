@@ -153,6 +153,10 @@ image.Save(fileName);  // saves via OpenCV with correct format
 - Use case: CI/test runners capture all invariant failures in one pass without blocking on popups
 - Production builds (flag OFF): zero code change — byte-identical to baseline
 
+### Design Documents (`docs/design/`) — permanent rule
+- **Each file describes the current design of a method as it exists in the code right now:** purpose and scope, the algorithm as implemented (with file/function references), parameters and defaults, invariants, the validation behind the shipped defaults (one table, current numbers only), rejected alternatives as one-liners, open items.
+- **No change logs, no dated sections, no commit references, no history of how the module got here;** git keeps the history. When the code changes, rewrite the affected section to describe the new state instead of appending an entry.
+
 ### Configuration
 - Build-time config in `ConfigLocal.h` (generated) included in every code file
 - Runtime options via boost::program_options pattern

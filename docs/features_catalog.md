@@ -489,7 +489,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 - **Files:** `libs/MVS/Mesh.h`, `libs/MVS/Mesh.cpp`
 - **Algorithms:**
   - `VertexArr vertices`, `FaceArr faces`, `NormalArr vertexNormals/faceNormals`, `VertexVerticesArr vertexVertices`, `VertexFacesArr vertexFaces`, `FaceFacesArr faceFaces`, `TexCoordArr faceTexcoords`, `Image8U3Arr texturesDiffuse`
-  - `Clean(fDecimate, fSpurious, bRemoveSpikes, nCloseHoles, nSmoothMesh, fEdgeLength, bLastClean)`: CGAL-based pipeline — decimation, spurious removal, spike removal, hole closing, Laplacian smoothing, edge-length enforcement
+  - `Clean(CleanParams)`: halfmesh-delegated pipeline — `RemoveLongEdgeFacesLocal(maxEdgeScale, 3)` local long-edge gate first, then `RemoveLongEdgeFaces`/`RemoveSpuriousComponents(spuriousFactor)` global spurious removal, spike removal, QEM decimation, hole closing, Taubin smoothing, isotropic remeshing
   - `ComputeNormals()`, adjacency structure computation
   - Serialization: PLY, OBJ (with MTL), GLTF
 - **GPU Support:** No
@@ -586,14 +586,15 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
   - Camera cells linked to source with weight `kInf`; edge weights: `kf`, `kRel`, `kAbs`, `kQual`
   - TetraFlow min-cut (`libs/Math/TetraFlow.h`) separating free-space from matter: incremental
     breadth-first search max-flow on one 64-byte node per cell (the dual graph is 4-regular)
-  - Surface extraction drops a cut facet when its longest edge exceeds `maxEdgeScale` x the
-    largest local median incident-Delaunay-edge length at its vertices, or the global cut-facet
-    median when no image observes all three vertices (the density- and support-aware webbing gate,
-    default 4)
+  - Surface extraction takes every cut facet from the graph-cut with no edge-length gate; the
+    webbing cleanup moved to `Mesh::Clean()`'s first stage — halfmesh `RemoveLongEdgeFacesLocal`
+    drops faces whose longest edge exceeds `maxEdgeScale` x the local edge scale (a vertex's
+    scale is the median edge length in its k-ring, a face's scale the max of its three vertices)
   - Single-pass non-manifold repair, then the `Mesh::Clean()` pipeline
 - **Configuration:** a single `ReconstructMeshParams` (`distInsert`, `bUseFreeSpaceSupport`,
   `bUseOnlyROI`, `kSigma`, `kQual`, `kb`, `kf`, `kRel`, `kAbs`, `kOutl`, `kInf`,
-  `bAdaptiveSigma`, `bCanonicalRescale`, `maxEdgeScale`)
+  `bAdaptiveSigma`, `bCanonicalRescale`); the long-edge/spurious cleanup is a `Mesh::CleanParams`
+  option (`maxEdgeScale`) applied by `Mesh::Clean()`, not `ReconstructMeshParams`
 - **Design record:** `docs/design/DelaunayMeshReconstruction.md` (shipped defaults, validated
   numbers, and the registry of ideas that were tried and rejected)
 - **GPU Support:** No
