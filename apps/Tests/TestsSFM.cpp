@@ -11919,8 +11919,10 @@ bool SceneClusterTargetSizeTest()
 		sizes.push_back((REAL)size);
 	}
 	const REAL median = Median(sizes);
-	if (median < 70 || median > 130) {
-		VERBOSE("SceneClusterTargetSizeTest FAILED: median sub-scene size %.0f outside [70, 130]", median);
+	const REAL medianLow = (REAL)clusterCfg.targetViewsPerCluster * REAL(0.7);
+	const REAL medianHigh = (REAL)clusterCfg.targetViewsPerCluster * REAL(1.3);
+	if (median < medianLow || median > medianHigh) {
+		VERBOSE("SceneClusterTargetSizeTest FAILED: median sub-scene size %.0f outside [%.0f, %.0f]", median, medianLow, medianHigh);
 		return false;
 	}
 

@@ -16,7 +16,7 @@ Phase 3: GlobalAlignment::MergeScenes()     → measure seams, place blocks, mer
 
 ## Phase 1 — Scene Clustering
 
-**Goal**: partition images into sub-scenes of bounded size. `--max-views-per-cluster` sets the ceiling (`ClusterConfig::maxViewsPerCluster`, default 150; 0 disables clustering); `ClusterConfig::SetMaxViews` derives the target a cluster aims at (`targetViewsPerCluster`, two thirds of the ceiling — default 100) and the floor under which a cluster is merged away (`minViewsPerCluster`, four fifteenths of the ceiling — default 40) from that one ceiling, so a user-given `--max-views-per-cluster` and the compiled-in defaults follow the same rule.
+**Goal**: partition images into sub-scenes of bounded size. `--max-views-per-cluster` sets the ceiling (`ClusterConfig::maxViewsPerCluster`, default 200; 0 disables clustering); `ClusterConfig::SetMaxViews` derives the target a cluster aims at (`targetViewsPerCluster`, two thirds of the ceiling — default 133) and the floor under which a cluster is merged away (`minViewsPerCluster`, four fifteenths of the ceiling — default 53) from that one ceiling, so a user-given `--max-views-per-cluster` and the compiled-in defaults follow the same rule.
 
 ### Covisibility Graph
 

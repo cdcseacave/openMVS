@@ -249,11 +249,11 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 - **Files:** `libs/SFM/SceneCluster.h`, `libs/SFM/SceneCluster.cpp`
 - **Algorithms:**
   - Agglomerative bottom-up clustering on covisibility graph
-  - Merges highest-weight edges, aiming for `targetViewsPerCluster` (two thirds of `maxViewsPerCluster`, default 150), never past the ceiling
+  - Merges highest-weight edges, aiming for `targetViewsPerCluster` (two thirds of `maxViewsPerCluster`, default 200), never past the ceiling
   - `maxOverCapacity` (20): extra images allowed over the ceiling when absorbing a small cluster
   - Refinement (seven passes): local search, merge small clusters, balance load, split disconnected/thin-waisted components, merge away or widen any cluster boundary the merge could not register against (`IsStrongSeam`), rescue orphans
   - Keypoints/descriptors MOVED (not copied) to sub-scenes
-- **Configuration:** `ClusterConfig` — `maxViewsPerCluster` (150), `maxOverCapacity` (20)
+- **Configuration:** `ClusterConfig` — `maxViewsPerCluster` (200), `maxOverCapacity` (20)
 - **GPU Support:** No
 - **Threading:** Single (clustering); sub-scene reconstruction parallelized via thread pool
 - **Dependencies:** Common, Math (DisjointSet)

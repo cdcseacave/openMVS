@@ -242,7 +242,7 @@ graph TD
 
 - Function: `SceneCluster::SplitScene()` — `libs/SFM/SceneCluster.cpp`
 - Input: full `scene.images`, `scene.pairs`
-- Processing: aggregative bottom-up clustering on covisibility graph; merges highest-weight edges, aiming for `targetViewsPerCluster` (two thirds of `maxViewsPerCluster`, default 150) and never past the ceiling; seven refinement passes then merge small clusters, balance load, split disconnected/thin-waisted clusters, and merge away or widen any cluster boundary the merge could not register against; keypoints/descriptors MOVED (not copied) to sub-scenes
+- Processing: aggregative bottom-up clustering on covisibility graph; merges highest-weight edges, aiming for `targetViewsPerCluster` (two thirds of `maxViewsPerCluster`, default 200) and never past the ceiling; seven refinement passes then merge small clusters, balance load, split disconnected/thin-waisted clusters, and merge away or widen any cluster boundary the merge could not register against; keypoints/descriptors MOVED (not copied) to sub-scenes
 - Output: `std::vector<Scene> subScenes`, `std::vector<IIndexArr> localToGlobals`
 - Config: `ClusterConfig::maxViewsPerCluster`, `maxOverCapacity`
 
