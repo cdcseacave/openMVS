@@ -3797,6 +3797,8 @@ void Scene::DenseReconstructionFilter(void* pData)
 void Scene::PointCloudFilter(int thRemove)
 {
 	TD_TIMER_STARTD();
+	if (pointcloud.normals.IsEmpty() && !pointcloud.IsEmpty() && !images.empty())
+		EstimatePointNormals(images, pointcloud);
 
 	typedef TOctree<PointCloud::PointArr,PointCloud::Point::Type,3,uint32_t> Octree;
 	struct Collector {
@@ -3844,10 +3846,13 @@ void Scene::PointCloudFilter(int thRemove)
 			FOREACHRAWPTR(pIdx, idices, size) {
 				const PointCloud::Index idx(*pIdx);
 				if (coneIntersect.Classify(pointcloud.points[idx], dist) == VISIBLE && !IsDepthSimilar(distance, dist, thSimilar)) {
-					if (dist > distance)
+					if (dist > distance) {
 						visibility[idx] += pointcloud.pointViews[idx].size();
-					else
+					} else {
+						if (!pointcloud.normals.IsEmpty() && cone.ray.m_vDir.dot((PointCloud::Point::EVec&)pointcloud.normals[idx]) > 0.f)
+							continue;
 						visibility[idx] -= weight;
+					}
 				}
 			}
 		}
@@ -3878,12 +3883,16 @@ void Scene::PointCloudFilter(int thRemove)
 	#endif
 		const PointCloud::Point& X = pointcloud.points[idxPoint];
 		const PointCloud::ViewArr& views = pointcloud.pointViews[idxPoint];
+		const PointCloud::Normal* pN = pointcloud.normals.IsEmpty() ? nullptr : &pointcloud.normals[idxPoint];
 		for (PointCloud::View idxView: views) {
 			Collector& collector = collectors[idxView];
 			#ifdef DENSE_USE_OPENMP
 			Lock l(collector.GetCS());
 			#endif
 			collector.Init(idxPoint, X, (int)views.size());
+			// skip views where the point is back-facing or viewed at extreme grazing angle (> 80 deg)
+			if (pN && collector.cone.ray.m_vDir.dot((PointCloud::Point::EVec&)*pN) >= -0.173648f)
+				continue;
 			octree.Collect(collector, collector);
 		}
 		++progress;
