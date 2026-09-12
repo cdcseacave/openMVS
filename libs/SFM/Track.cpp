@@ -545,27 +545,34 @@ static void BuildCovisEdges(const Scene& scene, unsigned minCovisibilityCount,
 	}
 }
 
-// How a verified pair judges the pose the model gives one of its images, seen from the pair's
-// other image: the model agrees with the pair when the relative rotation is within the given
-// angle (a cosine) of the pair's, and so is the direction of the model's baseline. A
-// near-duplicate viewpoint (the pair's matches triangulate under two degrees) has no reliable
-// baseline direction of its own, so such a pair is judged on the rotation alone.
-enum class ModelAgreement { AGREES, ROTATION_OFF, DIRECTION_OFF };
-static ModelAgreement JudgePairAgainstModel(const Scene& scene, const ImagePair& pair,
-	IIndex imageID, IIndex neighborID, REAL minCosAngle)
+// How far the pose the model gives an image lies from what one of its verified pairs measured, seen
+// from the pair's other image: the angle between the relative rotations, and the angle between the
+// direction of the model's baseline and the pair's. A near-duplicate viewpoint (the pair's matches
+// triangulate under two degrees) has no reliable baseline direction of its own, and neither has a
+// pair or a model baseline of no length: such a pair fixes no direction and is judged on the
+// rotation alone.
+struct PairDisagreement {
+	REAL rotation;  // degrees
+	REAL direction; // degrees; negative when the pair fixes no direction
+
+	bool HasDirection() const { return direction >= 0; }
+	// Does the model agree with the pair within the given angle, in degrees?
+	bool Within(float maxAngle) const { return rotation <= maxAngle && (!HasDirection() || direction <= maxAngle); }
+};
+static PairDisagreement MeasurePairAgainstModel(const Scene& scene, const ImagePair& pair, IIndex imageID, IIndex neighborID)
 {
 	const Image& image = scene.images[imageID];
 	const Image& neighbor = scene.images[neighborID];
 	const PoseLink link = MakePoseLink(pair, neighborID);
-	if (ComputeAngle(image.R, link.PredictedRotation(neighbor)) < minCosAngle)
-		return ModelAgreement::ROTATION_OFF; // the pair puts the image at another orientation than the model does
+	PairDisagreement d;
+	d.rotation = R2D(ACOS(MINF(MAXF(ComputeAngle(image.R, link.PredictedRotation(neighbor)), REAL(-1)), REAL(1))));
+	d.direction = -1;
 	const bool nearDuplicate = pair.meanRayAngle > 0.f && pair.meanRayAngle < D2R(2.f);
 	Point3 modelDirection(image.C - neighbor.C), pairDirection;
 	const REAL baseline = norm(modelDirection);
-	if (!nearDuplicate && baseline > ZEROTOLERANCE<REAL>() && link.PredictedDirection(neighbor, pairDirection) &&
-		pairDirection.dot(modelDirection / baseline) < minCosAngle)
-		return ModelAgreement::DIRECTION_OFF; // ... or on another side of its neighbor
-	return ModelAgreement::AGREES;
+	if (!nearDuplicate && baseline > ZEROTOLERANCE<REAL>() && link.PredictedDirection(neighbor, pairDirection))
+		d.direction = R2D(ACOS(MINF(MAXF(pairDirection.dot(modelDirection / baseline), REAL(-1)), REAL(1))));
+	return d;
 }
 
 // What still joins a component the largest-component pass is about to cut to the component it
@@ -581,6 +588,7 @@ static void ReportCutComponents(const Scene& scene, DisjointSet<IIndex>& ds, IIn
 		unsigned numTracks{0}, numInlierTracks{0};
 		unsigned numPairs{0}, numWeightedInliers{0}, numAgree{0}, numRotationOff{0}, numDirectionOff{0};
 		std::unordered_map<uint64_t, unsigned> sharedTracks; // per image pair across the cut
+		FloatArr rotations, directions; // disagreement of every verified pair across the cut, in degrees
 	};
 	std::unordered_map<IIndex, Junction> junctions; // by component root
 	std::vector<IIndex> rootOf(scene.images.size(), NO_ID);
@@ -640,7 +648,6 @@ static void ReportCutComponents(const Scene& scene, DisjointSet<IIndex>& ds, IIn
 				++j.numInlierTracks;
 		}
 	}
-	const REAL minCosAngle = COS(D2R(REAL(maxAgreementAngle)));
 	for (const ImagePair& pair : scene.pairs) {
 		if (!IsPoseLinkPair(pair))
 			continue;
@@ -655,26 +662,32 @@ static void ReportCutComponents(const Scene& scene, DisjointSet<IIndex>& ds, IIn
 		Junction& j = it->second;
 		++j.numPairs;
 		j.numWeightedInliers += pair.GetNumWeightedInliers();
-		switch (JudgePairAgainstModel(scene, pair, imageID, neighborID, minCosAngle)) {
-		case ModelAgreement::AGREES: ++j.numAgree; break;
-		case ModelAgreement::ROTATION_OFF: ++j.numRotationOff; break;
-		case ModelAgreement::DIRECTION_OFF: ++j.numDirectionOff; break;
-		}
+		const PairDisagreement d = MeasurePairAgainstModel(scene, pair, imageID, neighborID);
+		j.rotations.push_back((float)d.rotation);
+		if (d.HasDirection())
+			j.directions.push_back((float)d.direction);
+		if (d.rotation > maxAgreementAngle)
+			++j.numRotationOff;
+		else if (d.HasDirection() && d.direction > maxAgreementAngle)
+			++j.numDirectionOff;
+		else
+			++j.numAgree;
 	}
 	std::vector<IIndex> roots;
 	for (const auto& [root, j] : junctions)
 		roots.push_back(root);
 	std::sort(roots.begin(), roots.end());
 	for (const IIndex root : roots) {
-		const Junction& j = junctions[root];
+		Junction& j = junctions[root]; // GetMedian sorts in place
 		unsigned strongestPair = 0;
 		for (const auto& [key, count] : j.sharedTracks)
 			strongestPair = MAXF(strongestPair, count);
 		DEBUG_EXTRA("Component of %u images (%u..%u) cut from the kept %u: %u tracks seen on both sides, %u with inliers on both, "
 			"the strongest image pair sharing %u; %u verified pairs across (%u weighted inliers): %u agree with the model, "
-			"%u off in rotation, %u off in direction",
+			"%u off in rotation, %u off in direction; median disagreement %.1f deg in rotation, %.1f deg in direction",
 			j.numImages, j.minID, j.maxID, numKept, j.numTracks, j.numInlierTracks, strongestPair,
-			j.numPairs, j.numWeightedInliers, j.numAgree, j.numRotationOff, j.numDirectionOff);
+			j.numPairs, j.numWeightedInliers, j.numAgree, j.numRotationOff, j.numDirectionOff,
+			j.rotations.empty() ? -1.f : j.rotations.GetMedian(), j.directions.empty() ? -1.f : j.directions.GetMedian());
 	}
 }
 
@@ -943,7 +956,6 @@ IIndexArr SFM::FilterWeaklyConnectedImages(Scene& scene,
 		FOREACH(imgIdx, scene.images)
 			settled[imgIdx] = (scene.images[imgIdx].IsValid() && !tierDrop[imgIdx] &&
 				entryDS.Find(imgIdx) == largestRoot) ? 1 : 0;
-		const REAL minCosAngle = COS(D2R(REAL(maxCorroborationAngle)));
 		for (;;) {
 			// One pass over the pairs: count, per not-yet-settled image, the settled neighbours whose
 			// pair agrees with the model about it. Both endpoints of a pair are tried, since either may
@@ -964,11 +976,13 @@ IIndexArr SFM::FilterWeaklyConnectedImages(Scene& scene,
 					if (settled[imageID] || !settled[neighborID] || !scene.images[imageID].IsValid())
 						continue;
 					++numTried;
-					switch (JudgePairAgainstModel(scene, pair, imageID, neighborID, minCosAngle)) {
-					case ModelAgreement::ROTATION_OFF: ++numRotationOff; break;
-					case ModelAgreement::DIRECTION_OFF: ++numDirectionOff; break;
-					case ModelAgreement::AGREES: ++numWitnesses[imageID]; break;
-					}
+					const PairDisagreement d = MeasurePairAgainstModel(scene, pair, imageID, neighborID);
+					if (d.rotation > maxCorroborationAngle)
+						++numRotationOff; // the pair puts the image at another orientation than the model does
+					else if (d.HasDirection() && d.direction > maxCorroborationAngle)
+						++numDirectionOff; // ... or on another side of its neighbor
+					else
+						++numWitnesses[imageID];
 				}
 			}
 			IIndexArr newlySettled;
