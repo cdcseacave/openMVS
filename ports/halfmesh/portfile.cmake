@@ -12,8 +12,9 @@ endif()
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO cdcseacave/halfmesh
-    REF v${VERSION}
-    SHA512 cbbaaa30a03b0de94c64a6744e95a1d5d0ececcf18db0b54479ef11eb8d0b678f0db052acd2ef7d742110a1ca0c19c69e62f098aa90862f118fd9439d0103966
+    # 0.4.0 head; becomes REF v${VERSION} again once the tag is re-cut on the merge of halfmesh PR #6
+    REF 5cc53cd4996d25f2e77373df8b2470a497d1e58d
+    SHA512 b5507e5d93f40af055aa642da2b65b5df24c3c65705514af24a074b1d64a6c5316e4c4068b5e8e824111c795a79cb03956a1dc2d7291bc4716f4341e804c2030
     HEAD_REF develop
 )
 
