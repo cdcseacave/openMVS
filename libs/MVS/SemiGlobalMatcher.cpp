@@ -595,6 +595,7 @@ void SemiGlobalMatcher::Match(const Scene& scene, IIndex idxImage, IIndex numNei
 		}
 		const bool tSGM(!ISEQUAL(scale, REAL(1)));
 		DisparityMap leftDisparityMap, rightDisparityMap; AccumCostMap costMap;
+		bool bValidMatch(true);
 		do {
 			#if 0
 			// export the intermediate disparity-maps
@@ -655,11 +656,17 @@ void SemiGlobalMatcher::Match(const Scene& scene, IIndex idxImage, IIndex numNei
 				const Disparity* const pde = pd+leftDisparityMap.area();
 				do {
 					const Disparity d(*pd);
-					if (range.minDisp > d)
-						range.minDisp = d;
-					if (range.maxDisp < d)
-						range.maxDisp = d;
+					if (d != NO_DISP) {
+						if (range.minDisp > d)
+							range.minDisp = d;
+						if (range.maxDisp < d)
+							range.maxDisp = d;
+					}
 				} while (++pd < pde);
+				if (!range.isValid()) {
+					bValidMatch = false;
+					break;
+				}
 				// set disparity search range to the global min/max range
 				const Disparity numDisp(range.numDisp()+16);
 				const Disparity disp(range.minDisp+range.maxDisp);
@@ -674,14 +681,16 @@ void SemiGlobalMatcher::Match(const Scene& scene, IIndex idxImage, IIndex numNei
 					numCosts += maxNumDisp;
 				}
 			}
+			if (numCosts == 0) {
+				bValidMatch = false;
+				break;
+			}
 			imageCosts.resize(numCosts);
 			imageAccumCosts.resize(numCosts);
 			Match(rightDataLevel, leftDataLevel, rightDisparityMap, costMap);
 			// estimate left-right disparity-map
 			if (tSGM) {
 				numCosts = Disparity2RangeMap(leftDisparityMap, leftMaskMap, bFirstLevel?11:5, bFirstLevel?33:7);
-				imageCosts.resize(numCosts);
-				imageAccumCosts.resize(numCosts);
 			} else {
 				for (PixelData& pixel: imagePixels) {
 					const Disparity maxDisp(-pixel.range.minDisp);
@@ -689,6 +698,12 @@ void SemiGlobalMatcher::Match(const Scene& scene, IIndex idxImage, IIndex numNei
 					pixel.range.maxDisp = maxDisp;
 				}
 			}
+			if (numCosts == 0) {
+				bValidMatch = false;
+				break;
+			}
+			imageCosts.resize(numCosts);
+			imageAccumCosts.resize(numCosts);
 			Match(leftDataLevel, rightDataLevel, leftDisparityMap, costMap);
 			// check disparity-map cross-consistency
 			#if 0
@@ -716,6 +731,8 @@ void SemiGlobalMatcher::Match(const Scene& scene, IIndex idxImage, IIndex numNei
 				ConsistencyCrossCheck(leftDisparityMap, rightDisparityMap);
 			}
 		} while ((scale*=2) < REAL(1)+ZEROTOLERANCE<REAL>());
+		if (!bValidMatch)
+			continue;
 		#if 0
 		// remove speckles
 		if (OPTDENSE::nSpeckleSize > 0)

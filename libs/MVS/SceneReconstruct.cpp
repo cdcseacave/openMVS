@@ -1132,11 +1132,11 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 					f += w;
 				} while (intersect(delaunay, segCamPoint, facets, facets, inter, stats));
 				const bool bCamWalkOK(facets.empty() && inter.type == intersection_t::VERTEX && inter.v1 == vi);
-				ASSERT(bCamWalkOK);
-				if (!bCamWalkOK)
+				if (!bCamWalkOK) {
 					++stats.nCamWalkAborted;
+				}
 				#ifdef DELAUNAY_WEAKSURF
-				if (bUseFreeSpaceSupport) {
+				else if (bUseFreeSpaceSupport) {
 					ASSERT(vert.viewsInfo[v].cell2Cam == NULL);
 					vert.viewsInfo[v].cell2Cam = inter.facet.first;
 				}
@@ -1164,11 +1164,11 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 					f += w;
 				}
 				const bool bEndWalkOK(facets.empty() && inter.type == intersection_t::VERTEX && inter.v1 == vi);
-				ASSERT(bEndWalkOK);
-				if (!bEndWalkOK)
+				if (!bEndWalkOK) {
 					++stats.nEndWalkAborted;
+				}
 				#ifdef DELAUNAY_WEAKSURF
-				if (bUseFreeSpaceSupport) {
+				else if (bUseFreeSpaceSupport) {
 					ASSERT(vert.viewsInfo[v].cell2End == NULL);
 					vert.viewsInfo[v].cell2End = inter.facet.first;
 				}
