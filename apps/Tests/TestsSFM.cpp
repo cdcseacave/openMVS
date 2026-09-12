@@ -12546,11 +12546,11 @@ bool RingInterleavingVetoTest()
 static bool BuildAmbiguousPair(const RingSceneConfig& cfg, unsigned numClusters, REAL keepFraction,
 	Scene& scene, std::vector<IIndexArr>& blocks, std::vector<Pose3D>& gtPoses,
 	std::vector<Scene>& subScenes, std::vector<IIndexArr>& localToGlobals,
-	std::vector<SEACAVE::Transform>& applied)
+	std::vector<SEACAVE::Transform>& applied, REAL turnDeg = 20)
 {
 	GenerateRingScene(cfg, scene, blocks, gtPoses);
 	DropCrossObservations(scene, blocks, 1, {0, 1, 2, 3, 4, 5, 6, 7, 8, 9}, 0, keepFraction);
-	if (PlantFalseSeam(scene, blocks, 1, 0, UINT32_MAX, 3, RingRotation(20)) == 0)
+	if (PlantFalseSeam(scene, blocks, 1, 0, UINT32_MAX, 3, RingRotation(turnDeg)) == 0)
 		return false;
 	const std::vector<IIndexArr> clusters(blocks.begin(), blocks.begin() + numClusters);
 	BuildRingBlocks(cfg, scene, clusters, gtPoses, subScenes, localToGlobals, applied);
@@ -12711,6 +12711,86 @@ bool AmbiguousPairTest()
 			return false;
 	}
 	VERBOSE("AmbiguousPairTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+// The ambiguous pair with none of its true evidence left, and its structure turned the other way,
+// off block 0's arc rather than onto it: the planted direction is the only seam there is, three
+// cameras of block 1 stand behind it, the cameras of block 0 it planted on have nothing to hold
+// against it and it interleaves with none of them, so the gates pass a placement twenty degrees
+// wrong. The verified pairs between the two blocks kept their word, and it is the one thing left
+// that says otherwise
+bool ContradictedPlacementTest()
+{
+	TD_TIMER_START();
+	const RingSceneConfig cfg{12, 10};
+	constexpr REAL PLANTED_TURN = -20; // degrees the planted structure is turned by, away from block 0
+	Scene scene;
+	std::vector<IIndexArr> blocks;
+	std::vector<Pose3D> gtPoses;
+	std::vector<Scene> subScenes;
+	std::vector<IIndexArr> localToGlobals;
+	std::vector<SEACAVE::Transform> applied;
+	// a merge consumes its blocks, so each run below builds the fixture anew
+	const auto Build = [&]() {
+		scene = Scene();
+		if (!BuildAmbiguousPair(cfg, 2, 0, scene, blocks, gtPoses, subScenes, localToGlobals, applied, PLANTED_TURN)) {
+			VERBOSE("ContradictedPlacementTest FAILED: nothing could be planted on block 1's first three cameras");
+			return false;
+		}
+		return true;
+	};
+
+	// with the pairs unread, the planted seam carries block 1 into the model, turned
+	{
+		if (!Build())
+			return false;
+		const SEACAVE::Transform truth(applied[1] * applied[0].Invert());
+		GlobalAlignmentConfig alignCfg;
+		alignCfg.maxPairRotationResidual = 0;
+		GlobalAlignment merger(scene, alignCfg);
+		MergeReport rep;
+		merger.MergeScenes(subScenes, localToGlobals, rep);
+		const SeamCandidate* seam = NULL;
+		for (const SeamCandidate& c : rep.candidates)
+			if (c.sceneA == 0 && c.sceneB == 1)
+				seam = &c;
+		if (seam == NULL || rep.numPlaced != 2) {
+			VERBOSE("ContradictedPlacementTest FAILED: with the pairs unread %u blocks were placed on %s seam, "
+				"so the scene does not pose the problem", rep.numPlaced, seam == NULL ? "no" : "the planted");
+			return false;
+		}
+		const REAL angle = R2D(ACOS(ComputeAngle(Matrix3x3(seam->T.R), Matrix3x3(truth.R))));
+		if (angle < ABS(PLANTED_TURN) / 2) {
+			VERBOSE("ContradictedPlacementTest FAILED: the seam block 1 was placed on is only %.2f deg off the "
+				"truth, so nothing was planted", angle);
+			return false;
+		}
+		VERBOSE("  planted placement: %u blocks placed, seam %.2f deg off the truth", rep.numPlaced, angle);
+	}
+
+	// read, they refuse it: block 1 is left unplaced rather than placed wrong
+	{
+		if (!Build())
+			return false;
+		const GlobalAlignmentConfig alignCfg;
+		GlobalAlignment merger(scene, alignCfg);
+		MergeReport rep;
+		LogCapture log;
+		merger.MergeScenes(subScenes, localToGlobals, rep);
+		if (rep.numPlaced != 1) {
+			VERBOSE("ContradictedPlacementTest FAILED: %u blocks were placed although every verified pair between "
+				"them contradicts the placement", rep.numPlaced);
+			return false;
+		}
+		if (!log.Contains("pair agreement")) {
+			VERBOSE("ContradictedPlacementTest FAILED: block 1 was left out, but not by the pairs' word");
+			return false;
+		}
+	}
+	VERBOSE("ContradictedPlacementTest PASSED: a placement %.0f degrees wrong that passes every vote is refused "
+		"by the verified pairs across it (%s)", (double)ABS(PLANTED_TURN), TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 /*----------------------------------------------------------------*/

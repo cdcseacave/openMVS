@@ -265,7 +265,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
   1. **Seam measurement:** every adjacent block pair, both directions — 3D-3D similarity (`ALIGN_POINTS`) or generalized-camera PnP with scale, one block's cameras as a rig against the other's tracks (`ALIGN_CAMERAS`, default) — gated by camera votes; min `minCommonTracks` (25) inliers
   2. **Seam graph** (`ClassifySeamGraph`): robust rotation/scale/translation averaging as the cycle test a seam's own evidence cannot provide — ROBUST / VERIFIED / UNDECIDED / REJECTED
   3. **Initial poses** (`ComputeInitialBlockPoses`): the trusted seams alone average each component about its best-connected block
-  4. **Placement** (`PlaceBlocks`/`PlaceGroup`/`AdmitGroup`): one block at a time, held to four gates (union support, camera votes, neighbours, interleaving); loop closure and camera relaxation for what the placement order alone cannot resolve
+  4. **Placement** (`PlaceBlocks`/`PlaceGroup`/`AdmitGroup`): one block at a time, held to five gates (union support, camera votes, neighbours, interleaving, and the verified image pairs across the placement agreeing with it by inlier weight, `maxPairRotationResidual` 5 degrees); loop closure and camera relaxation for what the placement order alone cannot resolve
   5. **Merge:** apply the transforms of the model holding the most images; average shared camera intrinsics via `Camera::AccumulateIntrinsics()`/`ScaleIntrinsics()`; union-find on tracks with a 3D-proximity guard (seam-agreed correspondences join by construction); every other block is merged without a pose, for the resection to recover
 - **GPU Support:** No
 - **Threading:** Single (sequential placement)

@@ -186,6 +186,17 @@ struct SFM_API PlacementHypothesis
 	bool Passed() const { return failedGate.empty(); }
 };
 
+// What the verified image pairs across a placement say about it: the inlier weight of the pairs
+// the placement reproduces and of the ones it does not
+struct SFM_API PairAgreement
+{
+	unsigned numPairs{0};
+	float agree{0.f}, disagree{0.f};
+	// Do the agreeing pairs outweigh the disagreeing ones by the given ratio? Nothing read, nothing
+	// held against the placement.
+	bool Holds(float ratio) const { return disagree <= 0.f || agree >= ratio * disagree; }
+};
+
 // Pool of observations between a group and the admitted blocks: the group side in the group frame,
 // the model side in the model frame
 struct SFM_API PlacementPool
@@ -247,6 +258,12 @@ struct SFM_API GlobalAlignmentConfig
 	float maxSimTranslationError{0.05f};    // fraction of the pair's shared camera-bbox diagonal
 	float voteMargin{1.5f};                 // margin by which one candidate beats another on camera votes
 	float maxVoteWeight{30.f};              // cap of a candidate's weight
+	// The verified image pairs across a placement are read against it: a pair of at least
+	// minVoteInliers weighted inliers agrees when the relative rotation and the baseline direction
+	// the placement gives its two images are within this angle of what the pair measured, and a
+	// placement is refused when the inlier weight of the pairs that disagree is not beaten by the
+	// weight of the ones that agree, by the same ratio the camera votes are held to. 0 disables it.
+	float maxPairRotationResidual{5.f};     // degrees
 	// Seam graph consensus: a candidate the averaged consensus contradicts by more than these is
 	// inconsistent, and is rejected when a consistent alternative path at least this strong exists.
 	float maxGraphRotationResidual{5.f};    // degrees
@@ -651,10 +668,11 @@ private:
 	 *
 	 * Every correspondence between the two sides is pooled, the pose is estimated from that pool
 	 * in both directions and taken from stage 4 as a third opinion, and each hypothesis answers
-	 * to the same four gates: how much of the pool it explains, what the cameras of both sides
-	 * vote, whether the admitted neighbours' own seams agree with what it implies, and whether it
-	 * leaves the two sides' cameras unmixed. A block is a group of one, and a whole model is a
-	 * group too.
+	 * to the same five gates: how much of the pool it explains, what the cameras of both sides
+	 * vote, whether the admitted neighbours' own seams agree with what it implies, whether it
+	 * leaves the two sides' cameras unmixed, and whether the verified image pairs across it are
+	 * behind it (MeasurePlacementPairs). A block is a group of one, and a whole model is a group
+	 * too.
 	 * @param winner out: the hypothesis that won, or the best one when none did
 	 * @param reason out: why nothing could be placed, empty on success
 	 * @return true when a hypothesis carried the group
@@ -668,6 +686,23 @@ private:
 		const std::vector<BlockPose>& poses,
 		PlacementHypothesis& winner,
 		String& reason) const;
+
+	/**
+	 * @brief The fifth gate's evidence: the verified pairs between the group's images and the
+	 * admitted images of the model, read against where the transform T (group frame -> model)
+	 * puts the group
+	 *
+	 * A pair of at least minVoteInliers weighted inliers agrees when the relative rotation and the
+	 * baseline direction the placement gives its two images are within maxPairRotationResidual of
+	 * what it measured (PoseLink.h MeasurePairDisagreement), and its weight goes to the side it
+	 * takes. Nothing is read when that angle is 0.
+	 */
+	PairAgreement MeasurePlacementPairs(
+		const std::vector<Scene>& subScenes,
+		uint32_t model,
+		const BlockGroup& group,
+		const Transform& T,
+		const std::vector<BlockPose>& poses) const;
 
 	/**
 	 * @brief Take the group into the model at the winning hypothesis

@@ -218,7 +218,7 @@ graph TD
     K --> K1[EstimateSeamCandidates<br/>both directions, camera-vote gates]
     K1 --> K2[ClassifySeamGraph<br/>robust R/s/t consensus: ROBUST/VERIFIED/UNDECIDED/REJECTED]
     K2 --> K3[ComputeInitialBlockPoses<br/>trusted seams averaged per component]
-    K3 --> K4[PlaceBlocks/PlaceGroup<br/>one block at a time, four gates + loop closure]
+    K3 --> K4[PlaceBlocks/PlaceGroup<br/>one block at a time, five gates + loop closure]
     K4 --> K5[Merge placed blocks<br/>average intrinsics + union-find tracks]
     K5 --> J
     J --> L[Return to Scene::Reconstruct post-BA]
@@ -260,7 +260,7 @@ graph TD
 - Seam measurement: `EstimateSeamCandidates()`/`EstimateSeamPair()` measure every adjacent block pair in both directions — a 3D-3D similarity (`ALIGN_POINTS`) or a generalized-camera PnP with scale, one block's cameras as a rig against the other's tracks (`ALIGN_CAMERAS`, default) — gated by camera votes; min `minCommonTracks` (25) inliers, `maxReprojError` (4px)
 - Seam graph: `ClassifySeamGraph()` averages each component robustly (rotation, then scale, then translation) as the cycle test a seam's own evidence cannot provide, classing every candidate ROBUST / VERIFIED / UNDECIDED / REJECTED
 - Initial poses: `ComputeInitialBlockPoses()` averages the trusted (ROBUST or VERIFIED) seams of each component about its best-connected block
-- Placement: `PlaceBlocks()`/`PlaceGroup()`/`AdmitGroup()` grow one model at a time, one block at a time, each hypothesis held to four gates (union support, camera votes, neighbours, interleaving); `CloseCycleThrough()` closes loops the placement order alone leaves open, `RelaxCameras()` relaxes individual cameras when the placed model's seams still disagree at the block poses
+- Placement: `PlaceBlocks()`/`PlaceGroup()`/`AdmitGroup()` grow one model at a time, one block at a time, each hypothesis held to five gates (union support, camera votes, neighbours, interleaving, and the verified image pairs across the placement agreeing with it by inlier weight); `CloseCycleThrough()` closes loops the placement order alone leaves open, `RelaxCameras()` relaxes individual cameras when the placed model's seams still disagree at the block poses
 - Merge: the model holding the most images is applied — similarity transforms, shared camera intrinsics averaged via `Camera::AccumulateIntrinsics()`/`ScaleIntrinsics()`, keypoints/descriptors moved back, tracks merged by union-find with a 3D-proximity guard (the correspondences of a seam the merged model rests on join by construction, without that guard); every other block is merged without a pose, for the post-merge resection to recover its images
 - Output: merged global scene with all poses and tracks in one coordinate frame
 

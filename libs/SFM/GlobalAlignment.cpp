@@ -9,6 +9,7 @@
 #include "GlobalRotationAveraging.h"
 #include "GlobalScaleAveraging.h"
 #include "GlobalTranslationAveraging.h"
+#include "PoseLink.h"
 #include "RobustAveraging.h"
 #include "Resection.h"
 #include "Scene.h"
@@ -2642,6 +2643,65 @@ static bool IsSideConnected(
 }
 /*----------------------------------------------------------------*/
 
+static Transform CameraToBlock(const Image& image);
+
+PairAgreement GlobalAlignment::MeasurePlacementPairs(
+	const std::vector<Scene>& subScenes,
+	const uint32_t model,
+	const BlockGroup& group,
+	const Transform& T,
+	const std::vector<BlockPose>& poses) const
+{
+	PairAgreement agreement;
+	if (config.maxPairRotationResidual <= 0.f)
+		return agreement;
+	// where every block stands in the model frame: the group's where T puts them, the admitted
+	// ones where the model holds them
+	std::unordered_map<uint32_t, Transform> blockToModel;
+	FOREACH(k, group.blocks)
+		blockToModel[group.blocks[k]] = T * group.frames[k];
+	FOREACH(b, poses)
+		if (poses[b].state == BlockPose::ADMITTED && poses[b].model == model && !blockToModel.count((uint32_t)b))
+			blockToModel[(uint32_t)b] = poses[b].T;
+	const auto InModel = [&subScenes, &blockToModel](const std::pair<uint32_t, IIndex>& local) {
+		const Image& image = subScenes[local.first].images[local.second];
+		const Transform cameraToModel(blockToModel.at(local.first) * CameraToBlock(image));
+		Pose3D pose;
+		pose.R = RMatrix(cameraToModel.R.t());
+		pose.C = cameraToModel.t;
+		return pose;
+	};
+	for (const uint32_t g : group.blocks) {
+		for (const auto& [b, F] : blockToModel) {
+			if (std::find(group.blocks.begin(), group.blocks.end(), b) != group.blocks.end())
+				continue; // a pair inside the group says nothing about its placement
+			const auto it = blockPairLinks.find(std::make_pair(MINF(g, b), MAXF(g, b)));
+			if (it == blockPairLinks.end())
+				continue;
+			for (const uint32_t idx : it->second) {
+				const ImagePair& pair = scene.pairs[idx];
+				if (!IsPoseLinkPair(pair) || pair.GetNumWeightedInliers() < config.minVoteInliers)
+					continue;
+				const std::pair<uint32_t, IIndex>& local1 = globalToLocal.at(pair.ID1);
+				const std::pair<uint32_t, IIndex>& local2 = globalToLocal.at(pair.ID2);
+				if (!subScenes[local1.first].images[local1.second].IsValid() ||
+					!subScenes[local2.first].images[local2.second].IsValid())
+					continue;
+				// the group's image is the one judged, the model's its neighbour
+				const bool firstInGroup = local1.first == g;
+				const PairDisagreement d = MeasurePairDisagreement(pair,
+					InModel(firstInGroup ? local1 : local2), InModel(firstInGroup ? local2 : local1),
+					firstInGroup ? pair.ID2 : pair.ID1);
+				++agreement.numPairs;
+				(d.Within(config.maxPairRotationResidual) ? agreement.agree : agreement.disagree) +=
+					(float)pair.GetNumWeightedInliers();
+			}
+		}
+	}
+	return agreement;
+}
+/*----------------------------------------------------------------*/
+
 bool GlobalAlignment::PlaceGroup(
 	const std::vector<Scene>& subScenes,
 	std::vector<SeamCandidate>& candidates,
@@ -2726,11 +2786,16 @@ bool GlobalAlignment::PlaceGroup(
 		// the neighbours the model already holds have to be behind it
 		if (h.Passed() && !NeighboursBehind(verdict.support, verdict.loop, verdict.contra))
 			h.failedGate = "neighbours";
+		// and so have the verified image pairs across it, by the margin the camera votes are held to
+		const PairAgreement pairs = MeasurePlacementPairs(subScenes, model, group, h.T, poses);
+		if (h.Passed() && !pairs.Holds(voteRatio))
+			h.failedGate = "pair agreement";
 		LogVotes(String::FormatString("Placement of block %u, %s",
 			firstBlock, PlacementWord(h.source)).c_str(), h.score);
-		DEBUG_ULTIMATE("Placement of block %u, %s: %u inliers of %u, %u+/%u- neighbours%s%s",
+		DEBUG_ULTIMATE("Placement of block %u, %s: %u inliers of %u, %u+/%u- neighbours, %u pairs across weighing %.0f for / %.0f against%s%s",
 			firstBlock, PlacementWord(h.source), h.score.inliers, (unsigned)pool.observations.size(),
-			verdict.support, verdict.contra, h.Passed() ? "" : ", dropped by ", h.failedGate.c_str());
+			verdict.support, verdict.contra, pairs.numPairs, pairs.agree, pairs.disagree,
+			h.Passed() ? "" : ", dropped by ", h.failedGate.c_str());
 	}
 
 	// the largest vote of the cameras decides between them, and where two draw, the order they were
@@ -3495,10 +3560,16 @@ unsigned GlobalAlignment::RevalidateBlocks(
 		PlacementHypothesis current;
 		current.source = PlacementHypothesis::INITIAL;
 		current.T = poses[b].T;
-		ScoreHypothesis(subScenes, pool, 0, ModelVoteRatio(candidates, poses, model, group, config), current);
-		// only the cameras unplace a block the model already holds: what it explains of a pool that
-		// has grown around it, and how its cameras sit among the model's, is not what it came in on
-		if (current.failedGate.find("camera votes") == String::npos)
+		const float voteRatio = ModelVoteRatio(candidates, poses, model, group, config);
+		ScoreHypothesis(subScenes, pool, 0, voteRatio, current);
+		// only the cameras and the verified pairs unplace a block the model already holds: what it
+		// explains of a pool that has grown around it, and how its cameras sit among the model's,
+		// is not what it came in on
+		const PairAgreement pairs = MeasurePlacementPairs(subScenes, model, group, current.T, poses);
+		if (!pairs.Holds(voteRatio))
+			current.failedGate += current.failedGate.empty() ? "pair agreement" : ", pair agreement";
+		if (current.failedGate.find("camera votes") == String::npos &&
+			current.failedGate.find("pair agreement") == String::npos)
 			continue;
 		LogVotes(String::FormatString("Block %u judged again", b).c_str(), current.score);
 		DropBlockSeams(candidates, b, modelSeams);
@@ -3511,8 +3582,10 @@ unsigned GlobalAlignment::RevalidateBlocks(
 			QueueSplitParts(b, parts, poses);
 			continue;
 		}
-		UnplaceBlock(poses[b], String::FormatString("contradicted by %u cameras",
-			current.score.contra[0] + current.score.contra[1]));
+		const unsigned numContra = current.score.contra[0] + current.score.contra[1];
+		UnplaceBlock(poses[b], numContra > 0 ?
+			String::FormatString("contradicted by %u cameras", numContra) :
+			String::FormatString("contradicted by the verified pairs (%.0f against, %.0f for)", pairs.disagree, pairs.agree));
 		VERBOSE("Block %u let go by the model that held it: %s", b, poses[b].reason.c_str());
 	}
 	// the model without them, and without the seams it rested on through them

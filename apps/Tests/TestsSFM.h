@@ -380,6 +380,9 @@ bool UnobservableScaleTest();
 bool UnobservableScalePairTest();
 bool RingInterleavingVetoTest();
 bool AmbiguousPairTest();
+// A placement that passes every vote but is contradicted by the verified image pairs across it is
+// refused (GlobalAlignmentConfig::maxPairRotationResidual)
+bool ContradictedPlacementTest();
 bool RingLoopClosureTest();
 bool BiasedClosingSeamTest();
 bool WeakClosingSeamTest();

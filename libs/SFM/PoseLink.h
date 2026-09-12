@@ -67,6 +67,33 @@ inline PoseLink MakePoseLink(const ImagePair& pair, IIndex neighborID)
 		pair.ID1 == neighborID ? pair.relativePose.value() : pair.relativePose->Inverse() };
 }
 
+// How far a verified pair's word about an image sits from the pose a model gives it: the angle
+// between the rotation the pair predicts from the neighbor's pose and the image's own, and the
+// angle between the baseline direction the pair predicts and the one the two centres make. The
+// direction is left unset (negative) when the pair fixes none: a near-duplicate pair (its matches
+// triangulate under two degrees, so its own baseline direction is unreliable), a pair of no
+// baseline, or two centres that coincide; such a pair is judged on the rotation alone.
+struct PairDisagreement
+{
+	REAL rotation;  // degrees
+	REAL direction; // degrees; negative when the pair fixes no direction
+	bool HasDirection() const { return direction >= 0; }
+	bool Within(float maxAngle) const { return rotation <= maxAngle && (!HasDirection() || direction <= maxAngle); }
+};
+inline PairDisagreement MeasurePairDisagreement(const ImagePair& pair, const Pose3D& image, const Pose3D& neighbor, IIndex neighborID)
+{
+	const PoseLink link = MakePoseLink(pair, neighborID);
+	PairDisagreement d;
+	d.rotation = R2D(ACOS(MINF(MAXF(ComputeAngle(image.R, link.PredictedRotation(neighbor)), REAL(-1)), REAL(1))));
+	d.direction = -1;
+	const bool nearDuplicate = pair.meanRayAngle > 0.f && pair.meanRayAngle < D2R(2.f);
+	Point3 modelDirection(image.C - neighbor.C), pairDirection;
+	const REAL baseline = norm(modelDirection);
+	if (!nearDuplicate && baseline > ZEROTOLERANCE<REAL>() && link.PredictedDirection(neighbor, pairDirection))
+		d.direction = R2D(ACOS(MINF(MAXF(pairDirection.dot(modelDirection / baseline), REAL(-1)), REAL(1))));
+	return d;
+}
+
 // Order links by pair strength, ties by the lower neighbor ID so the choice never depends on the
 // order the pairs happen to be stored in
 inline bool IsStrongerLink(const PoseLink& a, const PoseLink& b)

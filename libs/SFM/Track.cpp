@@ -546,33 +546,10 @@ static void BuildCovisEdges(const Scene& scene, unsigned minCovisibilityCount,
 }
 
 // How far the pose the model gives an image lies from what one of its verified pairs measured, seen
-// from the pair's other image: the angle between the relative rotations, and the angle between the
-// direction of the model's baseline and the pair's. A near-duplicate viewpoint (the pair's matches
-// triangulate under two degrees) has no reliable baseline direction of its own, and neither has a
-// pair or a model baseline of no length: such a pair fixes no direction and is judged on the
-// rotation alone.
-struct PairDisagreement {
-	REAL rotation;  // degrees
-	REAL direction; // degrees; negative when the pair fixes no direction
-
-	bool HasDirection() const { return direction >= 0; }
-	// Does the model agree with the pair within the given angle, in degrees?
-	bool Within(float maxAngle) const { return rotation <= maxAngle && (!HasDirection() || direction <= maxAngle); }
-};
+// from the pair's other image (PoseLink.h)
 static PairDisagreement MeasurePairAgainstModel(const Scene& scene, const ImagePair& pair, IIndex imageID, IIndex neighborID)
 {
-	const Image& image = scene.images[imageID];
-	const Image& neighbor = scene.images[neighborID];
-	const PoseLink link = MakePoseLink(pair, neighborID);
-	PairDisagreement d;
-	d.rotation = R2D(ACOS(MINF(MAXF(ComputeAngle(image.R, link.PredictedRotation(neighbor)), REAL(-1)), REAL(1))));
-	d.direction = -1;
-	const bool nearDuplicate = pair.meanRayAngle > 0.f && pair.meanRayAngle < D2R(2.f);
-	Point3 modelDirection(image.C - neighbor.C), pairDirection;
-	const REAL baseline = norm(modelDirection);
-	if (!nearDuplicate && baseline > ZEROTOLERANCE<REAL>() && link.PredictedDirection(neighbor, pairDirection))
-		d.direction = R2D(ACOS(MINF(MAXF(pairDirection.dot(modelDirection / baseline), REAL(-1)), REAL(1))));
-	return d;
+	return MeasurePairDisagreement(pair, scene.images[imageID], scene.images[neighborID], neighborID);
 }
 
 // The verified pairs joining a component the largest-component pass is about to cut to the
