@@ -222,14 +222,24 @@ SFM_API std::pair<float, float> FilterTracks(Scene& scene,
  *                       own merits, or corroborated in an earlier round -- and both the relative
  *                       rotation and the direction of the baseline the model gives are within this
  *                       angle, in degrees, of what each pair measured. Default: 5 (0 disables it).
+ *                       The same angle tells, among the images the largest-component passes cut,
+ *                       the ones the model contradicts from the ones it merely lacks evidence for:
+ *                       a cut component whose verified pairs to the kept images disagree with the
+ *                       pose the model gives it by more inlier weight than agrees is contradicted;
+ *                       one with no such pair, or agreeing ones, is not. Only pairs of the
+ *                       corroboration's inlier strength are read.
  *                       Enabling it pays for a second BuildCovisEdges pass, on the entry-state graph
  *                       rather than the post-tier one the rest of the filter builds -- the two differ
  *                       because InvalidateImages strips observations at the tier verdicts, and
  *                       BuildCovisEdges is the filter's single most expensive step, so this is a
  *                       deliberate cost paid on every default run, not an oversight.
- * @return Array of invalidated image IDs
+ * @return the invalidated image IDs, and among them the ones cut for contradicting the model
  */
-SFM_API IIndexArr FilterWeaklyConnectedImages(Scene& scene,
+struct RemovedImages {
+	IIndexArr all;           // every image the filter invalidated
+	IIndexArr contradicting; // the ones among them whose verified pairs put them elsewhere than the model did
+};
+SFM_API RemovedImages FilterWeaklyConnectedImages(Scene& scene,
 	unsigned minCovisibilityCount = 5,
 	float minObservationArea = 0.15f,
 	float minTriangulationAngle = 1.5f,

@@ -835,22 +835,23 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	FilterTracks(*this, cfg.maxFineReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
 
 	// Filter weakly connected images and resection remaining images into the reconstruction;
-	// what the filter just removed is withheld from that resection, so it is not simply handed
-	// back and removed again
+	// what the filter removed for contradicting the model is withheld from that resection, so it
+	// is not simply handed back and removed again, while what it removed for want of evidence
+	// (no structure, no witness) is tried again once the model has grown
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2) {
 		// Save the scene the filter judges, so its verdicts can be replayed offline
 		Save(MAKE_PATH("scene_pre_filter.sfm"), cfg.importCfg.archiveType);
 	}
 	#endif
-	const IIndexArr removedIDs = FilterWeaklyConnectedImages(*this);
+	const RemovedImages removed = FilterWeaklyConnectedImages(*this);
 	if (status.nCalibratedImages < images.size()) {
 		ResectionConfig resectionCfg = cfg.resectionCfg;
 		BAConfig resectionBaCfg = cfg.baConfig;
 		SetBAIntrinsicFlags(resectionBaCfg, cfg.baIntrinsicFlags);
 		resectionCfg.DeriveBAConfigs(resectionBaCfg);
 		Resection resection(*this, resectionCfg);
-		resection.ExcludeImages(removedIDs);
+		resection.ExcludeImages(removed.contradicting);
 		if (resection.RegisterImages()) {
 			#if TD_VERBOSE != TD_VERBOSE_OFF
 			if (VERBOSITY_LEVEL > 2)

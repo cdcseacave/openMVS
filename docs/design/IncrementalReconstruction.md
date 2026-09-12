@@ -111,9 +111,13 @@ never refines intrinsics, full BA stays at the main set regardless, and only the
 
 ## The image filter
 
-`FilterWeaklyConnectedImages` runs after the shared tail's final bundle adjustment; the images it
-removes are withheld from the resection offered the rest, so a removed image is not just handed back
-and removed again, and the filter runs a second time only when that resection registers something.
+`FilterWeaklyConnectedImages` runs after the shared tail's final bundle adjustment. Of the images it
+removes, the ones cut for contradicting the model -- a cut component whose verified pairs to the kept
+images put it elsewhere than the model did, by more inlier weight than agrees -- are withheld from the
+resection offered the rest, so such an image is not just handed back and removed again; the ones cut
+for want of evidence (no triangulated structure, no witness among the pairs) are offered again, since
+the grown model may hold what they lacked. The filter runs a second time only when that resection
+registers something.
 Two tier verdicts drop an image outright:
 spatial distribution (triangulated points occupy too little of the image, `minObservationArea` 0.15)
 and geometric degeneracy (median triangulation angle too small, `minTriangulationAngle` 1.5 degrees).

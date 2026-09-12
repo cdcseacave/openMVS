@@ -575,28 +575,67 @@ static PairDisagreement MeasurePairAgainstModel(const Scene& scene, const ImageP
 	return d;
 }
 
+// The verified pairs joining a component the largest-component pass is about to cut to the
+// component it keeps, with the model's agreement on each: how many agree with the pose the model
+// gives the cut image and how many put it elsewhere, and the inlier weight on either side. Only
+// pairs of at least minInliers weighted inliers are read, as the corroboration reads them.
+struct CutJunction {
+	unsigned numPairs{0}, numWeightedInliers{0}, numAgree{0}, numRotationOff{0}, numDirectionOff{0};
+	float agreeWeight{0.f}, disagreeWeight{0.f}; // weighted inliers of the pairs on either side
+	FloatArr rotations, directions; // disagreement of every pair across the cut, in degrees
+	bool Contradicts() const { return disagreeWeight > agreeWeight; }
+};
+typedef std::unordered_map<IIndex, CutJunction> CutJunctionMap; // by component root
+
+static CutJunctionMap MeasureCutJunctions(const Scene& scene, const std::vector<IIndex>& rootOf,
+	IIndex largestRoot, float maxAgreementAngle, unsigned minInliers)
+{
+	CutJunctionMap junctions;
+	for (const ImagePair& pair : scene.pairs) {
+		if (!IsPoseLinkPair(pair) || pair.GetNumWeightedInliers() < minInliers)
+			continue;
+		const IIndex r1 = rootOf[pair.ID1], r2 = rootOf[pair.ID2];
+		if (r1 == NO_ID || r2 == NO_ID || (r1 == largestRoot) == (r2 == largestRoot))
+			continue; // both sides kept, or neither
+		const IIndex imageID = r1 == largestRoot ? pair.ID2 : pair.ID1;
+		const IIndex neighborID = r1 == largestRoot ? pair.ID1 : pair.ID2;
+		CutJunction& j = junctions[rootOf[imageID]];
+		++j.numPairs;
+		j.numWeightedInliers += pair.GetNumWeightedInliers();
+		const PairDisagreement d = MeasurePairAgainstModel(scene, pair, imageID, neighborID);
+		j.rotations.push_back((float)d.rotation);
+		if (d.HasDirection())
+			j.directions.push_back((float)d.direction);
+		if (d.rotation > maxAgreementAngle)
+			++j.numRotationOff;
+		else if (d.HasDirection() && d.direction > maxAgreementAngle)
+			++j.numDirectionOff;
+		else
+			++j.numAgree;
+		(d.Within(maxAgreementAngle) ? j.agreeWeight : j.disagreeWeight) += (float)pair.GetNumWeightedInliers();
+	}
+	return junctions;
+}
+
 // What still joins a component the largest-component pass is about to cut to the component it
 // keeps: the tracks seen on both sides, the strongest image pair among them, and the verified
 // pairs across the cut with the model's agreement on each. Reported for every component of at
 // least minComponentImages images, so a whole block leaving the model is explained, not just
 // counted.
-static void ReportCutComponents(const Scene& scene, DisjointSet<IIndex>& ds, IIndex largestRoot,
-	uint8_t minInliersPerTrack, float maxAgreementAngle, unsigned minComponentImages)
+static void ReportCutComponents(const Scene& scene, const std::vector<IIndex>& rootOf, IIndex largestRoot,
+	CutJunctionMap& cutJunctions, uint8_t minInliersPerTrack, unsigned minComponentImages)
 {
 	struct Junction {
 		unsigned numImages{0}, minID{NO_ID}, maxID{0};
 		unsigned numTracks{0}, numInlierTracks{0};
-		unsigned numPairs{0}, numWeightedInliers{0}, numAgree{0}, numRotationOff{0}, numDirectionOff{0};
 		std::unordered_map<uint64_t, unsigned> sharedTracks; // per image pair across the cut
-		FloatArr rotations, directions; // disagreement of every verified pair across the cut, in degrees
 	};
 	std::unordered_map<IIndex, Junction> junctions; // by component root
-	std::vector<IIndex> rootOf(scene.images.size(), NO_ID);
 	unsigned numKept = 0;
 	FOREACH(imgIdx, scene.images) {
-		if (!scene.images[imgIdx].IsValid())
+		const IIndex root = rootOf[imgIdx];
+		if (root == NO_ID)
 			continue;
-		const IIndex root = rootOf[imgIdx] = ds.Find(imgIdx);
 		if (root == largestRoot) {
 			++numKept;
 			continue;
@@ -648,46 +687,23 @@ static void ReportCutComponents(const Scene& scene, DisjointSet<IIndex>& ds, IIn
 				++j.numInlierTracks;
 		}
 	}
-	for (const ImagePair& pair : scene.pairs) {
-		if (!IsPoseLinkPair(pair))
-			continue;
-		const IIndex r1 = rootOf[pair.ID1], r2 = rootOf[pair.ID2];
-		if (r1 == NO_ID || r2 == NO_ID || (r1 == largestRoot) == (r2 == largestRoot))
-			continue; // both sides kept, or neither
-		const IIndex imageID = r1 == largestRoot ? pair.ID2 : pair.ID1;
-		const IIndex neighborID = r1 == largestRoot ? pair.ID1 : pair.ID2;
-		const auto it = junctions.find(rootOf[imageID]);
-		if (it == junctions.end())
-			continue;
-		Junction& j = it->second;
-		++j.numPairs;
-		j.numWeightedInliers += pair.GetNumWeightedInliers();
-		const PairDisagreement d = MeasurePairAgainstModel(scene, pair, imageID, neighborID);
-		j.rotations.push_back((float)d.rotation);
-		if (d.HasDirection())
-			j.directions.push_back((float)d.direction);
-		if (d.rotation > maxAgreementAngle)
-			++j.numRotationOff;
-		else if (d.HasDirection() && d.direction > maxAgreementAngle)
-			++j.numDirectionOff;
-		else
-			++j.numAgree;
-	}
 	std::vector<IIndex> roots;
 	for (const auto& [root, j] : junctions)
 		roots.push_back(root);
 	std::sort(roots.begin(), roots.end());
 	for (const IIndex root : roots) {
-		Junction& j = junctions[root]; // GetMedian sorts in place
+		const Junction& j = junctions[root];
 		unsigned strongestPair = 0;
 		for (const auto& [key, count] : j.sharedTracks)
 			strongestPair = MAXF(strongestPair, count);
+		CutJunction& c = cutJunctions[root]; // GetMedian sorts in place
 		DEBUG_EXTRA("Component of %u images (%u..%u) cut from the kept %u: %u tracks seen on both sides, %u with inliers on both, "
 			"the strongest image pair sharing %u; %u verified pairs across (%u weighted inliers): %u agree with the model, "
-			"%u off in rotation, %u off in direction; median disagreement %.1f deg in rotation, %.1f deg in direction",
+			"%u off in rotation, %u off in direction; median disagreement %.1f deg in rotation, %.1f deg in direction%s",
 			j.numImages, j.minID, j.maxID, numKept, j.numTracks, j.numInlierTracks, strongestPair,
-			j.numPairs, j.numWeightedInliers, j.numAgree, j.numRotationOff, j.numDirectionOff,
-			j.rotations.empty() ? -1.f : j.rotations.GetMedian(), j.directions.empty() ? -1.f : j.directions.GetMedian());
+			c.numPairs, c.numWeightedInliers, c.numAgree, c.numRotationOff, c.numDirectionOff,
+			c.rotations.empty() ? -1.f : c.rotations.GetMedian(), c.directions.empty() ? -1.f : c.directions.GetMedian(),
+			c.Contradicts() ? "; contradicts the model" : "");
 	}
 }
 
@@ -820,7 +836,7 @@ static void ReportCutComponents(const Scene& scene, DisjointSet<IIndex>& ds, IIn
 //     by two-view geometry alone does not have; this is the one rule that reads the two-view evidence
 //     directly.
 //   - 0 disables the rescue, leaving every image to the stages above.
-IIndexArr SFM::FilterWeaklyConnectedImages(Scene& scene,
+RemovedImages SFM::FilterWeaklyConnectedImages(Scene& scene,
 	unsigned minCovisibilityCount,
 	float minObservationArea,
 	float minTriangulationAngle,
@@ -834,12 +850,17 @@ IIndexArr SFM::FilterWeaklyConnectedImages(Scene& scene,
 		PairIdx pairIdx;
 		unsigned count;
 	};
-	IIndexArr filteredIDs;
+	RemovedImages removed;
+	IIndexArr& filteredIDs = removed.all;
+	IIndexArr& contradictingIDs = removed.contradicting;
 
 	// One shared, entry-state CSR of per-image inlier observations: kills the former
 	// O(images x tracks) membership scan that the tier pre-filters ran per image.
 	constexpr int gridSize = 10; // 10x10 grid
 	constexpr uint8_t minInliersPerTrack = 3; // covisibility only counts tracks with >= 3 inliers
+	// a verified pair's word about a pose is read only past this many weighted inliers: below it a
+	// pair says nothing either way
+	constexpr unsigned minCorroborationInliers = 15;
 	ImageObsCSR csr;
 	BuildImageObsCSR(scene, csr);
 
@@ -938,7 +959,6 @@ IIndexArr SFM::FilterWeaklyConnectedImages(Scene& scene,
 	if (maxCorroborationAngle > 0.f) {
 		// the pairs the resection registers from carry this many weighted inliers at the least,
 		// and a pair of that strength whose relative pose agrees with the model is evidence
-		constexpr unsigned minCorroborationInliers = 15;
 		std::vector<std::array<unsigned, 3>> entryEdges;
 		BuildCovisEdges(scene, minCovisibilityCount, minInliersPerTrack, entryEdges);
 		DisjointSet<IIndex> entryDS(scene.images.size());
@@ -1035,7 +1055,7 @@ IIndexArr SFM::FilterWeaklyConnectedImages(Scene& scene,
 		scene.status.nCalibratedImages, scene.images.size(), (unsigned)edgeWeights.size());
 	if (edgeWeights.empty()) {
 		DEBUG("error: no valid image pairs found for clustering");
-		return filteredIDs;
+		return removed;
 	}
 
 	// Pose-consistency edge filter (optional; off unless maxPoseInconsistencyAngle > 0).
@@ -1074,7 +1094,7 @@ IIndexArr SFM::FilterWeaklyConnectedImages(Scene& scene,
 	for (const PairIdxCount& edge : edgeWeights)
 		ds.Union(edge.pairIdx.i, edge.pairIdx.j);
 	const auto InvalidateImagesIfNotInLargestComponent =
-		[&scene, &filteredIDs, &ds, &corroborated, &keptByComponent, &numKeptComponent, maxCorroborationAngle]() {
+		[&scene, &filteredIDs, &contradictingIDs, &ds, &corroborated, &keptByComponent, &numKeptComponent, maxCorroborationAngle]() {
 		const std::unordered_map<IIndex, unsigned> componentSizes = ds.CompressAllPaths().GetComponentSizes();
 		// Largest component root; tie-break to the smaller root ID so the choice is deterministic
 		// regardless of the (unordered) map iteration order.
@@ -1085,17 +1105,27 @@ IIndexArr SFM::FilterWeaklyConnectedImages(Scene& scene,
 				maxSize = size;
 				largestComponentRoot = root;
 			}
+		// what the verified pairs across each cut say about the component leaving: a component
+		// they put elsewhere than the model does is cut for contradicting it, one they say nothing
+		// about is cut for want of evidence
+		std::vector<IIndex> rootOf(scene.images.size(), NO_ID);
+		FOREACH(imgIdx, scene.images)
+			if (scene.images[imgIdx].IsValid())
+				rootOf[imgIdx] = ds.Find(imgIdx);
+		CutJunctionMap cutJunctions;
+		if (maxCorroborationAngle > 0.f)
+			cutJunctions = MeasureCutJunctions(scene, rootOf, largestComponentRoot, maxCorroborationAngle, minCorroborationInliers);
 		#if TD_VERBOSE != TD_VERBOSE_OFF
 		// a component of a block's size leaving the model is explained, not just counted
 		if (VERBOSITY_LEVEL > 1 && maxCorroborationAngle > 0.f) {
 			constexpr unsigned minReportedComponentImages = 5;
-			ReportCutComponents(scene, ds, largestComponentRoot, minInliersPerTrack, maxCorroborationAngle, minReportedComponentImages);
+			ReportCutComponents(scene, rootOf, largestComponentRoot, cutJunctions, minInliersPerTrack, minReportedComponentImages);
 		}
 		#endif
 		// Invalidate images not in the largest component, in one batch sweep
 		IIndexArr dropIDs;
 		FOREACH(imgIdx, scene.images) {
-			if (scene.images[imgIdx].IsValid() && largestComponentRoot != ds.Find(imgIdx)) {
+			if (scene.images[imgIdx].IsValid() && largestComponentRoot != rootOf[imgIdx]) {
 				if (corroborated[imgIdx]) {
 					if (!keptByComponent[imgIdx]) {
 						keptByComponent[imgIdx] = 1;
@@ -1106,6 +1136,9 @@ IIndexArr SFM::FilterWeaklyConnectedImages(Scene& scene,
 				DEBUG_EXTRA("warning: image %u (`%s`) invalidated for not in largest connected component",
 					imgIdx, Util::getFileName(scene.images[imgIdx].fileName).c_str());
 				dropIDs.push_back(imgIdx);
+				const auto it = cutJunctions.find(rootOf[imgIdx]);
+				if (it != cutJunctions.end() && it->second.Contradicts())
+					contradictingIDs.push_back(imgIdx);
 			}
 		}
 		scene.InvalidateImages(dropIDs);
@@ -1125,7 +1158,7 @@ IIndexArr SFM::FilterWeaklyConnectedImages(Scene& scene,
 	}
 	if (edgeWeights.empty()) {
 		DEBUG("error: no edge weights available for clustering");
-		return filteredIDs;
+		return removed;
 	}
 
 	// Step 4: Stable absolute weak-attachment removal (k-core), replacing a former median-MAD
@@ -1274,6 +1307,6 @@ IIndexArr SFM::FilterWeaklyConnectedImages(Scene& scene,
 			numCorroborated, numCorroborationRounds, numKeptTier, numKeptComponent, numKeptPeel);
 	DEBUG("Filtered %u/%u weakly connected images in %s",
 		filteredIDs.size(), scene.status.nCalibratedImages+filteredIDs.size(), TD_TIMER_GET_FMT().c_str());
-	return filteredIDs;
+	return removed;
 }
 /*----------------------------------------------------------------*/

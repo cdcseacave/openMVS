@@ -9057,6 +9057,59 @@ bool CorroboratedImageTest()
 	return true;
 }
 
+// Of the images the filter removes, only the ones whose verified pairs to the kept images
+// contradict the pose the model gives them are named as contradicting; an image removed because
+// nothing vouches for it is not
+bool ContradictingImagesTest()
+{
+	TD_TIMER_START();
+	constexpr REAL CORROBORATION_DISPLACEMENT = 20; // degrees camera 5's stored pose is moved by
+
+	// Camera 5's stored pose moved 20 degrees along the arc contradicts its pairs to cameras 2, 3 and
+	// 4, which the filter keeps, so it is removed as contradicting. Camera 6 loses its second witness
+	// with it and camera 7 loses both of its own: they are removed too, but the one pair camera 6 has
+	// to a kept image (camera 4) agrees with it, and camera 7 has none, so neither is contradicting
+	{
+		std::mt19937 rng(20260908);
+		Scene scene;
+		BuildCorroborationScene(scene, rng);
+		static_cast<Pose3D&>(scene.images[5]) =
+			ResectionArcPose(5 * RESECTION_ARC_STEP + CORROBORATION_DISPLACEMENT);
+		const RemovedImages removed = FilterWeaklyConnectedImages(scene, 5, 0.15f, 1.5f, 2, 0.f, 0.f, 5.f);
+		if (scene.images[5].IsValid() || scene.images[6].IsValid() || scene.images[7].IsValid()) {
+			VERBOSE("ContradictingImagesTest FAILED: cameras 5, 6 and 7 were expected removed (valid: %s), so the "
+				"scene does not pose the problem", ValidImageList(scene).c_str());
+			return false;
+		}
+		if (removed.contradicting.size() != 1 || removed.contradicting[0] != 5) {
+			String list;
+			for (const IIndex id : removed.contradicting)
+				list += String::FormatString(list.empty() ? "%u" : ",%u", id);
+			VERBOSE("ContradictingImagesTest FAILED: camera 5 alone contradicts the model, but the filter named %s "
+				"(removed %u)", list.empty() ? "none" : list.c_str(), removed.all.size());
+			return false;
+		}
+	}
+
+	// With the pairs unread (rescue off), nothing can be told to contradict: every removed image is
+	// one the resection may try again
+	{
+		std::mt19937 rng(20260908);
+		Scene scene;
+		BuildCorroborationScene(scene, rng);
+		const RemovedImages removed = FilterWeaklyConnectedImages(scene, 5, 0.15f, 1.5f, 2, 0.f, 0.f, 0.f);
+		if (!removed.contradicting.empty()) {
+			VERBOSE("ContradictingImagesTest FAILED: %u images were named contradicting although the pairs were "
+				"not read", removed.contradicting.size());
+			return false;
+		}
+	}
+
+	VERBOSE("ContradictingImagesTest PASSED: the one image whose pairs disagree with its pose is named, the two "
+		"removed for lack of a witness are not (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 namespace {
 
 // How thick, in Y, the slab the cross-joint points are drawn from is: they fill the usual 2-unit box

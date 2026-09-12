@@ -319,6 +319,12 @@ bool ResectionAcceptanceTest();
 // into the model; a link the chain cannot corroborate stops it there.
 bool CorroboratedImageTest();
 
+// The image filter tells the images it removed for contradicting the model (their verified pairs to
+// the kept images disagree with the pose the model gives them, by more inlier weight than agrees)
+// apart from the ones it removed for want of evidence: only the former are withheld from the
+// resection that follows, the latter get another chance once the model has grown.
+bool ContradictingImagesTest();
+
 // Test function for rotation estimation
 bool RotationEstimatorTest();
 

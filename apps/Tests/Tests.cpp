@@ -299,6 +299,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::CorroboratedImageTest())
 				return false;
+			if (!SFM::ContradictingImagesTest())
+				return false;
 			// Hierarchical SFM tests - Phase 1: Scene Clustering
 			if (!SFM::SceneClusterSingleClusterTest())
 				return false;
