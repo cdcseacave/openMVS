@@ -354,11 +354,17 @@ int main(int argc, LPCTSTR* argv)
 		OPT::fSplitMaxArea > 0 || OPT::fDecimateMesh < 1 || OPT::nTargetFaceNum > 0 || !OPT::strImportROIFileName.empty()));
 	if (sceneType == Scene::SCENE_NA)
 		return EXIT_FAILURE;
-	if (!OPT::strPointCloudFileName.empty() && (File::isFile(MAKE_PATH_SAFE(OPT::strPointCloudFileName)) ?
-		!scene.pointcloud.Load(MAKE_PATH_SAFE(OPT::strPointCloudFileName)) :
-		!scene.pointcloud.IsValid())) {
-		VERBOSE("error: cannot load point-cloud file");
-		return EXIT_FAILURE;
+	if (!OPT::strPointCloudFileName.empty()) {
+		if (File::isFile(MAKE_PATH_SAFE(OPT::strPointCloudFileName))) {
+			if (!scene.pointcloud.Load(MAKE_PATH_SAFE(OPT::strPointCloudFileName))) {
+				VERBOSE("error: cannot load point-cloud file '%s'", OPT::strPointCloudFileName.c_str());
+				return EXIT_FAILURE;
+			}
+		}
+		if (!scene.pointcloud.IsValid()) {
+			VERBOSE("error: point-cloud has no visibility info (views) required for reconstruction");
+			return EXIT_FAILURE;
+		}
 	}
 	if (!OPT::strMeshFileName.empty() && !scene.mesh.Load(MAKE_PATH_SAFE(OPT::strMeshFileName))) {
 		VERBOSE("error: cannot load mesh file");

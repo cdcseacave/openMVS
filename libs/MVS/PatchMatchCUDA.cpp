@@ -92,15 +92,19 @@ void PatchMatch::Release()
 		return;
 
 	FOREACH(i, cudaImageArrays) {
-		cudaDestroyTextureObject(textureImages[i]);
-		cudaFreeArray(cudaImageArrays[i]);
+		if (cudaImageArrays[i]) {
+			cudaDestroyTextureObject(textureImages[i]);
+			cudaFreeArray(cudaImageArrays[i]);
+		}
 	}
 	cudaImageArrays.clear();
 
 	if (params.bGeomConsistency) {
 		FOREACH(i, cudaDepthArrays) {
-			cudaDestroyTextureObject(textureDepths[i]);
-			cudaFreeArray(cudaDepthArrays[i]);
+			if (cudaDepthArrays[i]) {
+				cudaDestroyTextureObject(textureDepths[i]);
+				cudaFreeArray(cudaDepthArrays[i]);
+			}
 		}
 		cudaDepthArrays.clear();
 	}
@@ -344,11 +348,17 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 			} else
 			if (images[i].size() != image.size()) {
 				// reallocate image CUDA memory
-				cudaDestroyTextureObject(textureImages[i]);
-				cudaFreeArray(cudaImageArrays[i]);
-				if (params.bGeomConsistency && i > 0) {
+				if (cudaImageArrays[i]) {
+					cudaDestroyTextureObject(textureImages[i]);
+					cudaFreeArray(cudaImageArrays[i]);
+					cudaImageArrays[i] = NULL;
+					textureImages[i] = 0;
+				}
+				if (params.bGeomConsistency && i > 0 && cudaDepthArrays[i-1]) {
 					cudaDestroyTextureObject(textureDepths[i-1]);
 					cudaFreeArray(cudaDepthArrays[i-1]);
+					cudaDepthArrays[i-1] = NULL;
+					textureDepths[i-1] = 0;
 				}
 				AllocateImageCUDA(i, image, true, !view.depthMap.empty());
 			} else
@@ -357,6 +367,8 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 				if (cudaDepthArrays[i-1]) {
 					cudaDestroyTextureObject(textureDepths[i-1]);
 					cudaFreeArray(cudaDepthArrays[i-1]);
+					cudaDepthArrays[i-1] = NULL;
+					textureDepths[i-1] = 0;
 				}
 				AllocateImageCUDA(i, image, false, !view.depthMap.empty());
 			}
@@ -376,9 +388,13 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 		}
 		if (params.bGeomConsistency && cudaDepthArrays.size() > numImages - 1) {
 			for (IIndex i = numImages; i < prevNumImages; ++i) {
-				// free image CUDA memory
-				cudaDestroyTextureObject(textureDepths[i-1]);
-				cudaFreeArray(cudaDepthArrays[i-1]);
+				// free depth CUDA memory
+				if (cudaDepthArrays[i-1]) {
+					cudaDestroyTextureObject(textureDepths[i-1]);
+					cudaFreeArray(cudaDepthArrays[i-1]);
+					cudaDepthArrays[i-1] = NULL;
+					textureDepths[i-1] = 0;
+				}
 			}
 			cudaDepthArrays.resize(params.nNumViews);
 			textureDepths.resize(params.nNumViews);
@@ -386,8 +402,12 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 		if (prevNumImages > numImages) {
 			for (IIndex i = numImages; i < prevNumImages; ++i) {
 				// free image CUDA memory
-				cudaDestroyTextureObject(textureImages[i]);
-				cudaFreeArray(cudaImageArrays[i]);
+				if (cudaImageArrays[i]) {
+					cudaDestroyTextureObject(textureImages[i]);
+					cudaFreeArray(cudaImageArrays[i]);
+					cudaImageArrays[i] = NULL;
+					textureImages[i] = 0;
+				}
 			}
 			images.resize(numImages);
 			cameras.resize(numImages);

@@ -737,6 +737,7 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 {
 	using namespace DELAUNAY;
 	ASSERT(!pointcloud.IsEmpty());
+	ASSERT(pointcloud.pointViews.size() == pointcloud.points.size());
 	mesh.Release();
 	const float distInsert(params.distInsert);
 	const bool bUseFreeSpaceSupport(params.bUseFreeSpaceSupport);
