@@ -171,10 +171,17 @@ struct MeshTexture {
 		FIndex idxFace;
 		Image8U mask;
 		bool validFace;
-		const float scaleMaskX, scaleMaskY;
+		float scaleMaskX, scaleMaskY;
 
-		RasterMesh(const Mesh::VertexArr& _vertices, const Camera& _camera, DepthMap& _depthMap, FaceMap& _faceMap, const cv::Size& maskSize)
-			: Base(_vertices, _camera, _depthMap), faceMap(_faceMap), scaleMaskX((float)maskSize.width / _faceMap.cols), scaleMaskY((float)maskSize.height / _faceMap.rows) {}
+		RasterMesh(const Mesh::VertexArr& _vertices, const Camera& _camera, DepthMap& _depthMap, FaceMap& _faceMap)
+			: Base(_vertices, _camera, _depthMap), faceMap(_faceMap), scaleMaskX(0), scaleMaskY(0) {}
+		void SetMask(Image8U&& _mask) {
+			mask = std::move(_mask);
+			if (!mask.empty()) {
+				scaleMaskX = (float)mask.cols / faceMap.cols;
+				scaleMaskY = (float)mask.rows / faceMap.rows;
+			}
+		}
 		inline bool ProjectVertex(const Point3f& pt, int v, Triangle& t) {
 			return (t.ptc[v] = camera.TransformPointW2C(Cast<REAL>(pt))).z > 0 &&
 				depthMap.isInsideWithBorder<float,5>(t.pti[v] = camera.TransformPointC2I(t.ptc[v]));
@@ -190,7 +197,7 @@ struct MeshTexture {
 			Depth& depth = depthMap(pt);
 			if (depth == 0 || depth > z) {
 				depth = z;
-				faceMap(pt) = validFace && (validFace = (mask((int)(pt.y * scaleMaskY), (int)(pt.x * scaleMaskX)) != 0)) ? idxFace : NO_ID;
+				faceMap(pt) = validFace && (validFace = (mask.empty() || mask((int)(pt.y * scaleMaskY), (int)(pt.x * scaleMaskX)) != 0)) ? idxFace : NO_ID;
 			}
 		}
 	};
@@ -659,10 +666,10 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		// project all triangles in this view and keep the closest ones
 		faceMap.create(highResSize);
 		depthMap.create(highResSize);
-		RasterMesh rasterer(vertices, cameraHighRes, depthMap, faceMap, fullSize);
+		RasterMesh rasterer(vertices, cameraHighRes, depthMap, faceMap);
 		RasterMesh::Triangle triangle;
 		RasterMesh::TriangleRasterizer triangleRasterizer(triangle, rasterer);
-		rasterer.mask = ComputeValidityMask(imageData, fullSize, nIgnoreMaskLabel);
+		rasterer.SetMask(ComputeValidityMask(imageData, fullSize, nIgnoreMaskLabel));
 		#if TD_VERBOSE != TD_VERBOSE_OFF
 		if (nIgnoreMaskLabel == -1 && VERBOSITY_LEVEL > 3)
 			SaveImage(rasterer.mask, String::FormatString("umask%04d.png", idxView));
