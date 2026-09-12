@@ -148,9 +148,13 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		return false;
 
 	// initialize optional options
-	Util::ensureValidFolderPath(OPT::strOutputFileName);
-	if (OPT::strOutputFileName.empty())
-		OPT::strOutputFileName = "scene" MVS_EXT;
+	Util::ensureValidPath(OPT::strOutputFileName);
+	if (OPT::strOutputFileName.empty()) {
+		OPT::strOutputFileName = _T("scene") MVS_EXT;
+	} else if (Util::getFileExt(OPT::strOutputFileName).empty() || File::isFolder(OPT::strOutputFileName)) {
+		Util::ensureFolderSlash(OPT::strOutputFileName);
+		OPT::strOutputFileName += _T("scene") MVS_EXT;
+	}
 
 	MVS::Initialize(APPNAME, OPT::nMaxThreads, OPT::nProcessPriority);
 	return true;
@@ -350,7 +354,10 @@ int main(int argc, LPCTSTR* argv)
 		return EXIT_FAILURE;
 
 	// write OpenMVS input data
-	scene.Save(MAKE_PATH_SAFE(OPT::strOutputFileName), (ARCHIVE_TYPE)OPT::nArchiveType);
+	if (!scene.Save(MAKE_PATH_SAFE(OPT::strOutputFileName), (ARCHIVE_TYPE)OPT::nArchiveType)) {
+		VERBOSE("error: cannot save scene to '%s'", OPT::strOutputFileName.c_str());
+		return EXIT_FAILURE;
+	}
 
 	VERBOSE("Exported data: %u platforms, %u cameras, %u poses, %u images (%s)",
 			scene.platforms.size(), scene.images.size(), scene.images.size(), scene.images.size(),
