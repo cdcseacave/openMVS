@@ -497,9 +497,9 @@ bool MeshBipyramidFixtureTest()
 	cam0.camera = Camera(Matrix3x3(200,0,320, 0,200,240, 0,0,1), Matrix3x3(1,0,0, 0,-1,0, 0,0,-1), Point3(0,0,1.5), true);
 	// kSigma = 1/sqrt(10): the median squared finite edge length is 10 (6 edges at length^2=10
 	// vs 3 at length^2=3), so this makes sigma exactly 1.0, matching the appendix's derivation;
-	// the appendix hand-solves the fixture under the single global sigma and the ungated
-	// extraction, so the default per-vertex sigma, canonical rescale (a no-op at this
-	// scale, pinned for determinism) and webbing gate are all pinned off here
+	// the appendix hand-solves the fixture under the single global sigma, so the default
+	// per-vertex sigma and canonical rescale (a no-op at this scale, pinned for determinism)
+	// are both pinned off here
 	Scene::ReconstructMeshParams fixtureParams;
 	fixtureParams.distInsert = 0.f;
 	fixtureParams.bUseFreeSpaceSupport = false;
@@ -507,7 +507,6 @@ bool MeshBipyramidFixtureTest()
 	fixtureParams.kQual = 0.f;
 	fixtureParams.bAdaptiveSigma = false;
 	fixtureParams.bCanonicalRescale = false;
-	fixtureParams.maxEdgeScale = 0.f;
 	if (!sceneA.ReconstructMesh(fixtureParams)) {
 		VERBOSE("ERROR: Fixture-A (bipyramid) reconstruction failed!");
 		return false;
@@ -590,7 +589,6 @@ bool MeshTetraInteriorPointFixtureTest()
 	fixtureParams.kQual = 0.f;
 	fixtureParams.bAdaptiveSigma = false;
 	fixtureParams.bCanonicalRescale = false;
-	fixtureParams.maxEdgeScale = 0.f;
 	if (!sceneB.ReconstructMesh(fixtureParams)) {
 		VERBOSE("ERROR: Fixture-B (tetra + interior point) reconstruction failed!");
 		return false;

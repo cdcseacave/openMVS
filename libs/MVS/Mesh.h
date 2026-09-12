@@ -197,6 +197,9 @@ public:
 	// the whole pipeline above in one pass over a single halfmesh instance,
 	// applied in this declaration order
 	struct CleanParams {
+		// remove faces whose longest edge exceeds this factor times the local edge scale (median
+		// edge length in the 3-ring of the face's vertices), before any other cleaning; 0 disables
+		float maxEdgeScale{0.f};
 		float spuriousFactor{0.f}; // RemoveSpuriousComponents factor (0 - disabled)
 		bool removeSpikes{false};
 		unsigned maxSpikeIterations{100};

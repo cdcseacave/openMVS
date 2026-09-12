@@ -192,7 +192,8 @@ Mesh::FIndex Mesh::RemoveSpuriousComponents(float factor)
 		return 0;
 	const DerivedData derived(*this);
 	halfmesh::Mesh halfMesh = ImportMesh(std::move(*this));
-	const FIndex count = halfMesh.RemoveSpuriousComponents(factor);
+	FIndex count = halfMesh.RemoveLongEdgeFaces(factor);
+	count += halfMesh.RemoveSpuriousComponents(factor);
 	ExportMesh(halfMesh, *this, derived);
 	return count;
 }
@@ -355,8 +356,12 @@ void Mesh::Clean(const CleanParams& params)
 	// one out, no matter how many stages are enabled
 	const DerivedData derived(*this);
 	halfmesh::Mesh halfMesh = ImportMesh(std::move(*this));
-	if (params.spuriousFactor > 0.f)
+	if (params.maxEdgeScale > 0.f)
+		halfMesh.RemoveLongEdgeFacesLocal(params.maxEdgeScale, 3); // 3-ring: the 1-ring median is inflated by the long edges it should catch
+	if (params.spuriousFactor > 0.f) {
+		halfMesh.RemoveLongEdgeFaces(params.spuriousFactor);
 		halfMesh.RemoveSpuriousComponents(params.spuriousFactor);
+	}
 	if (params.removeSpikes)
 		halfMesh.RemoveSpikes(params.maxSpikeIterations);
 	// halfmesh reads the target by magnitude, so a ratio and an absolute face

@@ -201,20 +201,10 @@ public:
 		// [2^-10, 2^10] are left untouched. This repairs the predicate only - geometry already
 		// quantized away by the float storage of PointCloud::Point needs a load-time fix instead
 		bool bCanonicalRescale;
-		// drop extracted surface facets whose longest edge exceeds this multiple of the largest
-		// local scale at its three vertices, where a vertex's scale is the median length of its
-		// incident finite Delaunay edges; also drop globally long facets when no image observes all
-		// three vertices. This adapts to density changes while still rejecting coherent sparse
-		// webbing unsupported by any common observation; 0 disables the gate.
-		// Gating on the facet visibility vote mass instead does
-		// NOT work: most true surface facets are never crossed by any ray either (each ray
-		// needles through 1-2 facets of a vertex umbrella), so no mass threshold separates
-		// webbing from surface
-		float maxEdgeScale;
 		inline ReconstructMeshParams()
 			: distInsert(2.f), bUseFreeSpaceSupport(true), bUseOnlyROI(false),
 			  kSigma(1.f), kQual(1.f), kb(4.f), kf(3.f), kRel(0.1f), kAbs(1000.f), kOutl(400.f), kInf(kInfCapacity),
-			  bAdaptiveSigma(true), bCanonicalRescale(true), maxEdgeScale(4.f) {}
+			  bAdaptiveSigma(true), bCanonicalRescale(true) {}
 	};
 	bool ReconstructMesh(const ReconstructMeshParams& params=ReconstructMeshParams());
 
