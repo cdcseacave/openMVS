@@ -42,7 +42,6 @@ OPTION(OpenMVS_MAX_CUDA_COMPATIBILITY "Build for maximum CUDA device compatibili
 OPTION(OpenMVS_ENABLE_IPO "Whether to enable interprocedural optimization" ON)
 OPTION(OpenMVS_ENABLE_TESTS "Enable test code" ON)
 OPTION(OpenMVS_HEADLESS_DEBUG "Print asserts to stderr and continue; do not redirect cout/cerr or pop modal dialogs (for CI / non-interactive debug runs)" OFF)
-OPTION(OpenMVS_MSVC_FAST_RELEASE "Compile MVS Camera.cpp and Scene.cpp without optimization in MSVC Release builds" OFF)
 
 # Disable CUDA on MacOS
 IF(APPLE)
@@ -180,10 +179,8 @@ if(OpenMVS_ENABLE_IPO)
 	check_ipo_supported(RESULT IPO_SUPPORTED OUTPUT IPO_ERROR)
 	if(IPO_SUPPORTED)
 		# On MSVC, /GL + /LTCG are injected into the global Release flags by
-		# fix_default_compiler_settings() in build/Utils.cmake; do not also set
-		# CMAKE_INTERPROCEDURAL_OPTIMIZATION there, otherwise the per-target
-		# DISABLE_IPO opt-out (/GL- + /LTCG:OFF) becomes inconsistent.
-		# On non-MSVC toolchains we rely on CMake's IPO/LTO mechanism instead.
+		# fix_default_compiler_settings() in build/Utils.cmake;
+		# on the other toolchains we rely on CMake's IPO/LTO mechanism instead.
 		if(NOT MSVC)
 			SET_PROPERTY(GLOBAL PROPERTY CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
 			MESSAGE(STATUS "Interprocedural optimization enabled (CMake IPO/LTO)")

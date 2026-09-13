@@ -87,11 +87,16 @@ struct DepthData {
 
 ## Pipeline Stages
 
-### 1. Scene Loading
+### 1. Scene Loading (`Scene.cpp`, one TU per topic beside it)
 ```cpp
 Scene::Load()                     // Load .mvs, .ply, or interface formats
 Scene::SelectNeighborViews()      // Geometric scoring of view pairs
 ```
+`Scene.cpp` holds lifecycle, Load/Save and the exporters; the other `Scene` methods live in
+topic files so they compile in parallel: `SceneNeighbors.cpp` (view-neighbor selection,
+mesh sampling), `SceneSplit.cpp` (Split/SubScene), `SceneTransform.cpp` (Center/Scale/
+Transform/AlignTo), `SceneROI.cpp` (gravity + ROI estimation), `SceneTower.cpp` (tower
+scenes), `SceneGeometry.cpp` (normals, sparse surface, CropToROI).
 
 ### 2. Dense Depth Estimation (`SceneDensify.cpp`, 98KB)
 ```cpp

@@ -73,44 +73,6 @@ if(_USE_METAL)
 	TARGET_INCLUDE_DIRECTORIES(MVS PRIVATE "${CMAKE_CURRENT_BINARY_DIR}") # generated PatchMatchMetal_msl.h
 endif()
 
-# MSVC scalpel: Camera.cpp and Scene.cpp drag in a template graph (CGAL/Eigen/OpenCV)
-# that can land MSVC's optimizer in a pathological codegen path and take hours on
-# constrained builders.
-#
-# Policy:
-#   * Release       — full /O2 by default. OpenMVS_MSVC_FAST_RELEASE opts these two
-#                     files into /Od for constrained builders such as hosted CI.
-#   * RelWithDebInfo/Debug — /Od for just these two files, keeping dev builds under 30 min.
-#
-# Implementation notes:
-#   * PCH for MVS is built with /O2, so /Od on a TU reusing that PCH triggers warning
-#     C4653 and cl.exe silently snaps the TU back to /O2 — the /Od becomes a no-op.
-#     To actually apply /Od we must also skip the PCH on these files.
-#   * SKIP_PRECOMPILE_HEADERS is set unconditionally (no genex): in Release it means
-#     Camera/Scene re-parse Common.h instead of reusing the PCH (2-3s overhead, dwarfed
-#     by the 10+ min optimizer cost), and in non-Release it enables the /Od override.
-if(MSVC)
-	set_source_files_properties(
-		"${CMAKE_CURRENT_SOURCE_DIR}/Camera.cpp"
-		"${CMAKE_CURRENT_SOURCE_DIR}/Scene.cpp"
-		PROPERTIES
-			COMPILE_OPTIONS "$<$<OR:$<BOOL:${OpenMVS_MSVC_FAST_RELEASE}>,$<NOT:$<CONFIG:Release>>>:/Od>"
-			SKIP_PRECOMPILE_HEADERS ON
-	)
-	if(OpenMVS_MSVC_FAST_RELEASE)
-		message(STATUS "OpenMVS_MSVC_FAST_RELEASE: compiling MVS Camera.cpp and Scene.cpp with /Od")
-	else()
-		message(WARNING "MVS build speed notice:\n"
-		        "  * Release builds compile Camera.cpp and Scene.cpp at full /O2. These two\n"
-		        "    files can dominate Release wall time due to heavy CGAL/Eigen/OpenCV\n"
-		        "    template instantiation.\n"
-		        "  * RelWithDebInfo (and Debug) use /Od for just these two files to keep\n"
-		        "    dev iteration fast; the rest of the project stays at /O2.\n"
-		        "  * To speed up Release at the cost of less-optimized Camera.cpp/Scene.cpp,\n"
-		        "    configure with -DOpenMVS_MSVC_FAST_RELEASE=ON.")
-	endif()
-endif()
-
 # Manually set Common.h as the precompiled header
 IF(CMAKE_VERSION VERSION_GREATER_EQUAL 3.16.0)
 	TARGET_PRECOMPILE_HEADERS(MVS PRIVATE "Common.h")

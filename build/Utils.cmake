@@ -632,21 +632,16 @@ macro(optimize_default_compiler_settings)
 	  # enable __cplusplus
 	  set(BUILD_EXTRA_FLAGS "${BUILD_EXTRA_FLAGS} /Zc:__cplusplus")
 
-	  # Multi-process compilation: spawns one cl.exe child per core to compile TUs of
-	  # a single vcxproj in parallel. Without this, ClCompile runs TUs serially and
-	  # MSBuild's /m parallelism is wasted on projects with many sources (SFM: 31 .cpp,
-	  # MVS: 19, Viewer: 15). Huge win on full project builds.
-	  # NOTE: /MP alone is enough; do NOT combine with /cgthreads>1, as /MP * /cgthreads
-	  # oversubscribes the CPU (e.g. 24 cl.exe * 8 threads on a 16-core box -> thrash).
+	  # compile the sources of one project in parallel (one cl.exe per core)
 	  set(BUILD_EXTRA_FLAGS "${BUILD_EXTRA_FLAGS} /MP")
 
-	  # Bound optimizer time on huge generated functions. Undocumented but widely used
-	  # (Chromium, Unreal). CRITICAL for MVS: without it, cl.exe hangs indefinitely in
-	  # the optimizer on large TUs like Scene.cpp / SceneTexture.cpp / SceneRefine.cpp
-	  # / Camera.cpp (observed with MSVC 14.50 on i7-13700K, 10+ min per TU with no
-	  # progress). No effect at /Od; kicks in only for optimized (Release/RelWithDebInfo)
-	  # builds where cl.exe's optimizer would otherwise spin on pathological inlining.
-	  set(BUILD_EXTRA_FLAGS "${BUILD_EXTRA_FLAGS} /d2ReducedOptimizeHugeFunctions")
+	  # Eigen defines EIGEN_STRONG_INLINE as __forceinline on MSVC only (GCC and Clang get
+	  # plain inline), and MSVC honours __forceinline even at /Od. Every SEACAVE vector and
+	  # matrix type is Eigen-backed, so each expression is expanded into its caller as one
+	  # enormous body that the MSVC back end takes minutes per translation unit on (10-30 min
+	  # for the large MVS sources, 2-7 s with the override). Plain inline lets MSVC apply
+	  # its own inlining heuristics to Eigen, as GCC and Clang always have.
+	  set(BUILD_EXTRA_FLAGS "${BUILD_EXTRA_FLAGS} /DEIGEN_STRONG_INLINE=inline")
 
 	  # Match the 8 MB main-thread stack that Linux and macOS provide by default.
 	  # The /O2-inlined Eigen + CGAL chain in Scene::EstimateROI (covariance PCA,
@@ -933,21 +928,12 @@ function(cxx_library_with_type name folder type cxx_flags)
   endif()
 endfunction()
 
-# cxx_executable_with_flags(name cxx_flags libs [DISABLE_IPO] srcs...)
+# cxx_executable_with_flags(name cxx_flags libs srcs...)
 #
 # creates a named C++ executable that depends on the given libraries and
 # is built from the given source files with the given compiler flags.
-# If DISABLE_IPO is specified, interprocedural optimization is disabled for this target on Windows.
 function(cxx_executable_with_flags name folder cxx_flags libs)
-  set(disable_ipo OFF)
   set(source_files ${ARGN})
-
-  # Check if DISABLE_IPO keyword is present
-  if("DISABLE_IPO" IN_LIST source_files)
-    list(REMOVE_ITEM source_files "DISABLE_IPO")
-    set(disable_ipo ON)
-  endif()
-
   add_executable("${name}" ${source_files})
   if (cxx_flags)
     set_target_properties("${name}" PROPERTIES COMPILE_FLAGS "${cxx_flags}")
@@ -959,19 +945,6 @@ function(cxx_executable_with_flags name folder cxx_flags libs)
   endforeach()
   # Set project folder
   set_target_properties("${name}" PROPERTIES FOLDER "${folder}")
-
-  # Disable IPO and LTO flags for this target if requested (useful for slow builds on Windows).
-  # /GL and /LTCG are appended globally to CMAKE_*_FLAGS_RELEASE in fix_default_compiler_settings(),
-  # NOT to any per-target COMPILE_FLAGS / LINK_FLAGS. Stripping those target properties is a no-op.
-  # Instead we append MSVC's documented negations, which override earlier occurrences (last wins):
-  #   /GL-      disables whole-program optimization at compile time
-  #   /LTCG:OFF disables link-time code generation at link time
-  # Both are per-config (Release only) since the globals only inject /GL and /LTCG in Release.
-  if(disable_ipo AND MSVC)
-    set_property(TARGET "${name}" PROPERTY INTERPROCEDURAL_OPTIMIZATION FALSE)
-    target_compile_options("${name}" PRIVATE $<$<CONFIG:Release>:/GL->)
-    target_link_options("${name}" PRIVATE $<$<CONFIG:Release>:/LTCG:OFF>)
-  endif()
 
   if (MSVC)
     # Check if any of the files listed in source_files has the extension .rc
