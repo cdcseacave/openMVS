@@ -663,7 +663,8 @@ void SemiGlobalMatcher::Match(const Scene& scene, IIndex idxImage, IIndex numNei
 							range.maxDisp = d;
 					}
 				} while (++pd < pde);
-				if (!range.isValid()) {
+				if (range.minDisp > range.maxDisp) {
+					// no valid disparity left by the previous level
 					bValidMatch = false;
 					break;
 				}

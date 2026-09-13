@@ -462,6 +462,10 @@ int main(int argc, LPCTSTR* argv)
 	}
 	if (OPT::thFilterPointCloud < 0) {
 		// filter point-cloud based on camera-point visibility intersections
+		if (!scene.pointcloud.IsValid()) {
+			VERBOSE("error: the point-cloud is empty or has no views, both needed to filter it");
+			return EXIT_FAILURE;
+		}
 		scene.PointCloudFilter(OPT::thFilterPointCloud);
 		const String baseFileName(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName))+_T("_filtered"));
 		scene.Save(baseFileName+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);

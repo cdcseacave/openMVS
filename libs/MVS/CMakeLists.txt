@@ -11,24 +11,12 @@ FIND_PACKAGE(halfmesh CONFIG REQUIRED)
 # vcpkg's tinygltf ships no CMake config, so locate the header by name.
 FIND_PATH(TINYGLTF_INCLUDE_DIR NAMES "tiny_gltf.h" REQUIRED)
 
+# link Ceres through its config target, which carries the compile definitions recent
+# Ceres and glog need; the SFM library requires the same package, so it is always there
 set(CERES_LIBS "")
 if(OpenMVS_USE_CERES)
-	FIND_PACKAGE(Ceres CONFIG QUIET)
-	if(NOT Ceres_FOUND)
-		FIND_PACKAGE(Ceres)
-	endif()
-	if(Ceres_FOUND)
-		if(TARGET Ceres::ceres)
-			set(CERES_LIBS Ceres::ceres)
-		else()
-			include_directories(${CERES_INCLUDE_DIRS})
-			add_definitions(${CERES_DEFINITIONS})
-			set(CERES_LIBS ${CERES_LIBRARIES})
-		endif()
-	else()
-		set(OpenMVS_USE_CERES OFF)
-		message("-- Can't find CERES. Continuing without it.")
-	endif()
+	FIND_PACKAGE(Ceres CONFIG REQUIRED)
+	set(CERES_LIBS Ceres::ceres)
 endif()
 
 # List sources files

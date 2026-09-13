@@ -169,7 +169,7 @@ struct MeshTexture {
 		typedef TRasterMesh<RasterMesh> Base;
 		FaceMap& faceMap;
 		FIndex idxFace;
-		Image8U mask; // valid pixels of the image at its working resolution
+		Image8U mask; // valid pixels of the image at its working resolution (empty: all valid)
 		bool validFace;
 		const float scaleMaskX, scaleMaskY; // working resolution over rendering resolution
 		const int border; // keeps the vertices at least 2 px inside the working image, as GenerateTexture requires

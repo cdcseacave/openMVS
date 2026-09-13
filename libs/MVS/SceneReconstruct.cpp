@@ -352,8 +352,8 @@ struct walk_stats_t {
 	uint64_t nSteps; // facet/edge/vertex steps accepted by intersect()
 	uint64_t nBadEnd; // intersect() gave up with the segment not consumed
 	uint64_t nCamRayDropped; // camera-side walk failed on its first step, the whole ray is discarded
-	uint64_t nCamWalkAborted; // camera-side walk did not end on its own vertex, so cell2Cam is wrong
-	uint64_t nEndWalkAborted; // end-point-side walk did not end on its own vertex, so cell2End is wrong
+	uint64_t nCamWalkAborted; // camera-side walk did not end on its own vertex, so cell2Cam stays unset
+	uint64_t nEndWalkAborted; // end-point-side walk did not end on its own vertex, so cell2End stays unset
 
 	// fold this worker's counts into the shared total, one atomic per field: the accounting must
 	// not serialize the walks, and an unnamed critical section is program-wide, not local to it
@@ -736,8 +736,7 @@ float computePlaneSphereAngle(const delaunay_t& Tr, const facet_t& facet)
 bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 {
 	using namespace DELAUNAY;
-	ASSERT(!pointcloud.IsEmpty());
-	ASSERT(pointcloud.pointViews.size() == pointcloud.points.size());
+	ASSERT(pointcloud.IsValid());
 	mesh.Release();
 	const float distInsert(params.distInsert);
 	const bool bUseFreeSpaceSupport(params.bUseFreeSpaceSupport);
@@ -1133,9 +1132,8 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 					f += w;
 				} while (intersect(delaunay, segCamPoint, facets, facets, inter, stats));
 				const bool bCamWalkOK(facets.empty() && inter.type == intersection_t::VERTEX && inter.v1 == vi);
-				if (!bCamWalkOK) {
-					++stats.nCamWalkAborted;
-				}
+				if (!bCamWalkOK)
+					++stats.nCamWalkAborted; // near-coplanar cells can end the walk off the vertex
 				#ifdef DELAUNAY_WEAKSURF
 				else if (bUseFreeSpaceSupport) {
 					ASSERT(vert.viewsInfo[v].cell2Cam == NULL);
@@ -1165,9 +1163,8 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 					f += w;
 				}
 				const bool bEndWalkOK(facets.empty() && inter.type == intersection_t::VERTEX && inter.v1 == vi);
-				if (!bEndWalkOK) {
+				if (!bEndWalkOK)
 					++stats.nEndWalkAborted;
-				}
 				#ifdef DELAUNAY_WEAKSURF
 				else if (bUseFreeSpaceSupport) {
 					ASSERT(vert.viewsInfo[v].cell2End == NULL);

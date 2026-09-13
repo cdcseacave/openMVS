@@ -68,6 +68,18 @@ namespace {
 std::mutex g_patchMatchCudaMutex;
 cudaEvent_t g_constMemReady = nullptr;
 std::once_flag g_constMemEventInit;
+
+// destroy the texture object and free its CUDA array; a slot is left unallocated
+// when its view has no depth-map, and destroying a null texture object is an error
+void FreeTextureArray(cudaArray_t& array, cudaTextureObject_t& texture)
+{
+	if (array == NULL)
+		return;
+	cudaDestroyTextureObject(texture);
+	cudaFreeArray(array);
+	array = NULL;
+	texture = 0;
+}
 } // anonymous namespace
 
 PatchMatch::PatchMatch()
@@ -91,21 +103,13 @@ void PatchMatch::Release()
 	if (images.empty())
 		return;
 
-	FOREACH(i, cudaImageArrays) {
-		if (cudaImageArrays[i]) {
-			cudaDestroyTextureObject(textureImages[i]);
-			cudaFreeArray(cudaImageArrays[i]);
-		}
-	}
+	FOREACH(i, cudaImageArrays)
+		FreeTextureArray(cudaImageArrays[i], textureImages[i]);
 	cudaImageArrays.clear();
 
 	if (params.bGeomConsistency) {
-		FOREACH(i, cudaDepthArrays) {
-			if (cudaDepthArrays[i]) {
-				cudaDestroyTextureObject(textureDepths[i]);
-				cudaFreeArray(cudaDepthArrays[i]);
-			}
-		}
+		FOREACH(i, cudaDepthArrays)
+			FreeTextureArray(cudaDepthArrays[i], textureDepths[i]);
 		cudaDepthArrays.clear();
 	}
 
@@ -348,28 +352,14 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 			} else
 			if (images[i].size() != image.size()) {
 				// reallocate image CUDA memory
-				if (cudaImageArrays[i]) {
-					cudaDestroyTextureObject(textureImages[i]);
-					cudaFreeArray(cudaImageArrays[i]);
-					cudaImageArrays[i] = NULL;
-					textureImages[i] = 0;
-				}
-				if (params.bGeomConsistency && i > 0 && cudaDepthArrays[i-1]) {
-					cudaDestroyTextureObject(textureDepths[i-1]);
-					cudaFreeArray(cudaDepthArrays[i-1]);
-					cudaDepthArrays[i-1] = NULL;
-					textureDepths[i-1] = 0;
-				}
+				FreeTextureArray(cudaImageArrays[i], textureImages[i]);
+				if (params.bGeomConsistency && i > 0)
+					FreeTextureArray(cudaDepthArrays[i-1], textureDepths[i-1]);
 				AllocateImageCUDA(i, image, true, !view.depthMap.empty());
 			} else
 			if (params.bGeomConsistency && i > 0 && (view.depthMap.empty() != (cudaDepthArrays[i-1] == NULL))) {
 				// reallocate depth CUDA memory
-				if (cudaDepthArrays[i-1]) {
-					cudaDestroyTextureObject(textureDepths[i-1]);
-					cudaFreeArray(cudaDepthArrays[i-1]);
-					cudaDepthArrays[i-1] = NULL;
-					textureDepths[i-1] = 0;
-				}
+				FreeTextureArray(cudaDepthArrays[i-1], textureDepths[i-1]);
 				AllocateImageCUDA(i, image, false, !view.depthMap.empty());
 			}
 			// large images stage through per-instance pinned slot for a truly-async
@@ -387,28 +377,16 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 			cameras[i] = std::move(camera);
 		}
 		if (params.bGeomConsistency && cudaDepthArrays.size() > numImages - 1) {
-			for (IIndex i = numImages; i < prevNumImages; ++i) {
-				// free depth CUDA memory
-				if (cudaDepthArrays[i-1]) {
-					cudaDestroyTextureObject(textureDepths[i-1]);
-					cudaFreeArray(cudaDepthArrays[i-1]);
-					cudaDepthArrays[i-1] = NULL;
-					textureDepths[i-1] = 0;
-				}
-			}
+			// free depth CUDA memory
+			for (IIndex i = numImages; i < prevNumImages; ++i)
+				FreeTextureArray(cudaDepthArrays[i-1], textureDepths[i-1]);
 			cudaDepthArrays.resize(params.nNumViews);
 			textureDepths.resize(params.nNumViews);
 		}
 		if (prevNumImages > numImages) {
-			for (IIndex i = numImages; i < prevNumImages; ++i) {
-				// free image CUDA memory
-				if (cudaImageArrays[i]) {
-					cudaDestroyTextureObject(textureImages[i]);
-					cudaFreeArray(cudaImageArrays[i]);
-					cudaImageArrays[i] = NULL;
-					textureImages[i] = 0;
-				}
-			}
+			// free image CUDA memory
+			for (IIndex i = numImages; i < prevNumImages; ++i)
+				FreeTextureArray(cudaImageArrays[i], textureImages[i]);
 			images.resize(numImages);
 			cameras.resize(numImages);
 			cudaImageArrays.resize(numImages);
