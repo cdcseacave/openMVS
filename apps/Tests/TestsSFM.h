@@ -387,6 +387,10 @@ bool AmbiguousPairTest();
 // A placement that passes every vote but is contradicted by the verified image pairs across it is
 // refused (GlobalAlignmentConfig::maxPairRotationResidual)
 bool ContradictedPlacementTest();
+
+// The verified pairs across a placement decide by inlier weight over all of them, not by counting
+// neighbours: two thin disagreeing pairs cannot outvote twenty-four heavy agreeing ones.
+bool PairAgreementWeightTest();
 bool RingLoopClosureTest();
 bool BiasedClosingSeamTest();
 bool WeakClosingSeamTest();

@@ -12844,6 +12844,35 @@ bool ContradictedPlacementTest()
 		"by the verified pairs across it (%s)", (double)ABS(PLANTED_TURN), TD_TIMER_GET_FMT().c_str());
 	return true;
 }
+
+// What the verified pairs across a placement decide is settled by inlier weight over all of them:
+// a neighbour whose two thin pairs disagree cannot outvote one whose twenty-four heavy pairs agree
+bool PairAgreementWeightTest()
+{
+	TD_TIMER_START();
+	struct Case { float agree, disagree; unsigned numNeighbours, numContra; bool holds; const char* why; };
+	const Case cases[] = {
+		{ 3084.f, 728.f, 2, 1, true, "a neighbour of two thin pairs against one of twenty-four heavy pairs agreeing" },
+		{ 0.f, 708.f, 2, 2, false, "every pair across says otherwise" },
+		{ 369.f, 1066.f, 4, 3, false, "most of the weight says otherwise" },
+		{ 0.f, 0.f, 0, 0, true, "nothing read holds nothing against a placement" },
+	};
+	for (const Case& c : cases) {
+		PairAgreement pairs;
+		pairs.agree = c.agree;
+		pairs.disagree = c.disagree;
+		pairs.numNeighbours = c.numNeighbours;
+		pairs.numContra = c.numContra;
+		if (pairs.Holds() != c.holds) {
+			VERBOSE("PairAgreementWeightTest FAILED: %.0f for / %.0f against over %u neighbours (%u contradicting) was "
+				"%s; %s", c.agree, c.disagree, c.numNeighbours, c.numContra, c.holds ? "refused" : "held", c.why);
+			return false;
+		}
+	}
+	VERBOSE("PairAgreementWeightTest PASSED: the pairs across a placement decide by inlier weight (%s)",
+		TD_TIMER_GET_FMT().c_str());
+	return true;
+}
 /*----------------------------------------------------------------*/
 
 // A ring whose blocks were each reconstructed bent and stretched: every seam is off the same way,

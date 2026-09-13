@@ -357,6 +357,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::ContradictedPlacementTest())
 				return false;
+			if (!SFM::PairAgreementWeightTest())
+				return false;
 			if (!SFM::RingLoopClosureTest())
 				return false;
 			if (!SFM::BiasedClosingSeamTest())

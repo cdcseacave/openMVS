@@ -2799,7 +2799,7 @@ bool GlobalAlignment::PlaceGroup(
 			h.failedGate = "neighbours";
 		// and so have the verified image pairs across it, neighbour by neighbour
 		const PairAgreement pairs = MeasurePlacementPairs(subScenes, model, group, h.T, poses);
-		if (h.Passed() && !pairs.Holds(kNeighbourContraShare))
+		if (h.Passed() && !pairs.Holds())
 			h.failedGate = "pair agreement";
 		LogVotes(String::FormatString("Placement of block %u, %s",
 			firstBlock, PlacementWord(h.source)).c_str(), h.score);
@@ -3577,7 +3577,7 @@ unsigned GlobalAlignment::RevalidateBlocks(
 		// explains of a pool that has grown around it, and how its cameras sit among the model's,
 		// is not what it came in on
 		const PairAgreement pairs = MeasurePlacementPairs(subScenes, model, group, current.T, poses);
-		if (!pairs.Holds(kNeighbourContraShare))
+		if (!pairs.Holds())
 			current.failedGate += current.failedGate.empty() ? "pair agreement" : ", pair agreement";
 		if (current.failedGate.find("camera votes") == String::npos &&
 			current.failedGate.find("pair agreement") == String::npos)
@@ -3596,7 +3596,7 @@ unsigned GlobalAlignment::RevalidateBlocks(
 		const unsigned numContra = current.score.contra[0] + current.score.contra[1];
 		UnplaceBlock(poses[b], numContra > 0 ?
 			String::FormatString("contradicted by %u cameras", numContra) :
-			String::FormatString("contradicted by the verified pairs of %u of %u neighbours", pairs.numContra, pairs.numNeighbours));
+			String::FormatString("contradicted by the verified pairs (%.0f against, %.0f for)", pairs.disagree, pairs.agree));
 		VERBOSE("Block %u let go by the model that held it: %s", b, poses[b].reason.c_str());
 	}
 	// the model without them, and without the seams it rested on through them
