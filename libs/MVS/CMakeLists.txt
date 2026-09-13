@@ -73,42 +73,26 @@ if(_USE_METAL)
 	TARGET_INCLUDE_DIRECTORIES(MVS PRIVATE "${CMAKE_CURRENT_BINARY_DIR}") # generated PatchMatchMetal_msl.h
 endif()
 
-# MSVC scalpel: Camera.cpp and Scene.cpp drag in a template graph (CGAL/Eigen/OpenCV)
-# that can land MSVC's optimizer in a pathological codegen path and take hours on
-# constrained builders.
-#
-# Policy:
-#   * Release       — full /O2 by default. OpenMVS_MSVC_FAST_RELEASE opts these two
-#                     files into /Od for constrained builders such as hosted CI.
-#   * RelWithDebInfo/Debug — /Od for just these two files, keeping dev builds under 30 min.
-#
-# Implementation notes:
-#   * PCH for MVS is built with /O2, so /Od on a TU reusing that PCH triggers warning
-#     C4653 and cl.exe silently snaps the TU back to /O2 — the /Od becomes a no-op.
-#     To actually apply /Od we must also skip the PCH on these files.
-#   * SKIP_PRECOMPILE_HEADERS is set unconditionally (no genex): in Release it means
-#     Camera/Scene re-parse Common.h instead of reusing the PCH (2-3s overhead, dwarfed
-#     by the 10+ min optimizer cost), and in non-Release it enables the /Od override.
+# MSVC scalpel: Eigen marks its internals __forceinline on MSVC, and the small dense
+# decompositions the OBB and camera code call (JacobiSVD behind computeRotationScaling,
+# SelfAdjointEigenSolver behind the OBB fit) get expanded into the calling function as
+# one enormous body that MSVC's back end takes 15-30 minutes on, even at /Od (/Ob1 still
+# honours __forceinline; only /Ob0 or plain "inline" avoids it). Overriding the macro
+# with "inline" for just the translation units that instantiate those decompositions
+# brings their code generation to seconds at full /O2; the decompositions are cold
+# paths (scene transforms, ROI and chunk fitting, camera decomposition), so MSVC's own
+# inlining heuristics are good enough there. The define must precede Eigen's headers,
+# so these files cannot share the precompiled header (re-parsing Common.h costs ~10 s).
 if(MSVC)
 	set_source_files_properties(
 		"${CMAKE_CURRENT_SOURCE_DIR}/Camera.cpp"
-		"${CMAKE_CURRENT_SOURCE_DIR}/Scene.cpp"
+		"${CMAKE_CURRENT_SOURCE_DIR}/SceneROI.cpp"
+		"${CMAKE_CURRENT_SOURCE_DIR}/SceneSplit.cpp"
+		"${CMAKE_CURRENT_SOURCE_DIR}/SceneTransform.cpp"
 		PROPERTIES
-			COMPILE_OPTIONS "$<$<OR:$<BOOL:${OpenMVS_MSVC_FAST_RELEASE}>,$<NOT:$<CONFIG:Release>>>:/Od>"
+			COMPILE_DEFINITIONS "EIGEN_STRONG_INLINE=inline"
 			SKIP_PRECOMPILE_HEADERS ON
 	)
-	if(OpenMVS_MSVC_FAST_RELEASE)
-		message(STATUS "OpenMVS_MSVC_FAST_RELEASE: compiling MVS Camera.cpp and Scene.cpp with /Od")
-	else()
-		message(WARNING "MVS build speed notice:\n"
-		        "  * Release builds compile Camera.cpp and Scene.cpp at full /O2. These two\n"
-		        "    files can dominate Release wall time due to heavy CGAL/Eigen/OpenCV\n"
-		        "    template instantiation.\n"
-		        "  * RelWithDebInfo (and Debug) use /Od for just these two files to keep\n"
-		        "    dev iteration fast; the rest of the project stays at /O2.\n"
-		        "  * To speed up Release at the cost of less-optimized Camera.cpp/Scene.cpp,\n"
-		        "    configure with -DOpenMVS_MSVC_FAST_RELEASE=ON.")
-	endif()
 endif()
 
 # Manually set Common.h as the precompiled header

@@ -435,7 +435,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 
 ### MVS Scene
 
-- **Files:** `libs/MVS/Scene.h`, `libs/MVS/Scene.cpp`
+- **Files:** `libs/MVS/Scene.h`, `libs/MVS/Scene.cpp` (lifecycle, Load/Save, exporters), `libs/MVS/SceneNeighbors.cpp`, `libs/MVS/SceneSplit.cpp`, `libs/MVS/SceneTransform.cpp`, `libs/MVS/SceneROI.cpp`, `libs/MVS/SceneTower.cpp`, `libs/MVS/SceneGeometry.cpp`
 - **Algorithms:** Pipeline orchestration for all MVS stages; `Load()`/`Save()` for `.mvs` binary format (Boost serialization); `SelectNeighborViews()` for geometric view scoring; `SampleMeshWithVisibility()` for depth map initialization from mesh
 - **Key Data:** `PlatformArr platforms`, `ImageArr images`, `PointCloud pointcloud`, `Mesh mesh`, `OBB3f obb`, `Matrix4x4 transform`, `unsigned nCalibratedImages`, `unsigned nMaxThreads`
 - **Configuration:** All downstream pipeline configurations (OPTDENSE, etc.)
