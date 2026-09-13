@@ -556,7 +556,7 @@ graph TD
     H --> I
     I --> J[Extract every cut facet as surface triangle]
     J --> K[Fix non-manifold: single exhaustive pass]
-    K --> L[Mesh::Clean, halfmesh-delegated:<br/>1 long-edge gate RemoveLongEdgeFacesLocal<br/>2 spurious removal 3 spike removal<br/>4 QEM decimation 5 hole closing<br/>6 Taubin smoothing 7 remeshing]
+    K --> L[Mesh::Clean, halfmesh-delegated:<br/>1 capped-face webbing gate RemoveLongEdgeFacesCapped<br/>2 spurious removal 3 spike removal<br/>4 QEM decimation 5 hole closing<br/>6 Taubin smoothing 7 remeshing]
     L --> M[scene.mesh populated]
 ```
 
@@ -593,17 +593,16 @@ graph TD
 **Step 4: Mesh Cleaning**
 
 - `Mesh::Clean()` — `libs/MVS/MeshHalfMesh.cpp`, delegated to the halfmesh library
-- One pass over a single half-edge mesh, in this order: long-edge gate (`maxEdgeScale`, 4) removes
-  faces whose longest edge exceeds the factor times the local edge scale — the median edge length
-  around the face's three vertices — via halfmesh `RemoveLongEdgeFacesLocal()`; this is the check
-  that used to run inside `Scene::ReconstructMesh()` right after facet extraction, now moved here
-  as Clean's first stage so it applies uniformly to any mesh passed in, not only a freshly cut one;
+- One pass over a single half-edge mesh, in this order: the capped-face webbing gate
+  (`maxEdgeScale`, 2) removes faces whose longest edge exceeds the factor times the median longest
+  edge and that have mesh surface close behind or in front of them along their normal, via halfmesh
+  `RemoveLongEdgeFacesCapped()`; it is Clean's first stage so it applies uniformly to any mesh
+  passed in, not only a freshly cut one;
   then spurious-component removal (`fSpurious`), spike removal (`bRemoveSpikes`), QEM decimation
   (`fDecimate`), hole closing (`nCloseHoles`, a maximum hole size in boundary edges), Taubin
   band-pass smoothing (`nSmoothMesh`), isotropic remeshing (`fEdgeLength`), then degenerate-face /
   unreferenced-vertex removal and non-manifold repair
-- `apps/ReconstructMesh --max-edge-scale` now sets the `Clean` option instead of a
-  `ReconstructMeshParams` field
+- `apps/ReconstructMesh --max-edge-scale` sets the `Clean` option
 
 ---
 

@@ -357,7 +357,7 @@ void Mesh::Clean(const CleanParams& params)
 	const DerivedData derived(*this);
 	halfmesh::Mesh halfMesh = ImportMesh(std::move(*this));
 	if (params.maxEdgeScale > 0.f)
-		halfMesh.RemoveLongEdgeFacesLocal(params.maxEdgeScale, 3); // 3-ring: the 1-ring median is inflated by the long edges it should catch
+		halfMesh.RemoveLongEdgeFacesCapped(params.maxEdgeScale);
 	if (params.spuriousFactor > 0.f) {
 		halfMesh.RemoveLongEdgeFaces(params.spuriousFactor);
 		halfMesh.RemoveSpuriousComponents(params.spuriousFactor);

@@ -489,7 +489,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 - **Files:** `libs/MVS/Mesh.h`, `libs/MVS/Mesh.cpp`
 - **Algorithms:**
   - `VertexArr vertices`, `FaceArr faces`, `NormalArr vertexNormals/faceNormals`, `VertexVerticesArr vertexVertices`, `VertexFacesArr vertexFaces`, `FaceFacesArr faceFaces`, `TexCoordArr faceTexcoords`, `Image8U3Arr texturesDiffuse`
-  - `Clean(CleanParams)`: halfmesh-delegated pipeline — `RemoveLongEdgeFacesLocal(maxEdgeScale, 3)` local long-edge gate first, then `RemoveLongEdgeFaces`/`RemoveSpuriousComponents(spuriousFactor)` global spurious removal, spike removal, QEM decimation, hole closing, Taubin smoothing, isotropic remeshing
+  - `Clean(CleanParams)`: halfmesh-delegated pipeline — `RemoveLongEdgeFacesCapped(maxEdgeScale)` capped-face webbing gate first, then `RemoveLongEdgeFaces`/`RemoveSpuriousComponents(spuriousFactor)` global spurious removal, spike removal, QEM decimation, hole closing, Taubin smoothing, isotropic remeshing
   - `ComputeNormals()`, adjacency structure computation
   - Serialization: PLY, OBJ (with MTL), GLTF
 - **GPU Support:** No
@@ -587,9 +587,11 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
   - TetraFlow min-cut (`libs/Math/TetraFlow.h`) separating free-space from matter: incremental
     breadth-first search max-flow on one 64-byte node per cell (the dual graph is 4-regular)
   - Surface extraction takes every cut facet from the graph-cut with no edge-length gate; the
-    webbing cleanup moved to `Mesh::Clean()`'s first stage — halfmesh `RemoveLongEdgeFacesLocal`
-    drops faces whose longest edge exceeds `maxEdgeScale` x the local edge scale (a vertex's
-    scale is the median edge length in its k-ring, a face's scale the max of its three vertices)
+    webbing cleanup is `Mesh::Clean()`'s first stage — halfmesh `RemoveLongEdgeFacesCapped`
+    drops faces whose longest edge exceeds `maxEdgeScale` x the median longest edge and that have
+    mesh surface close behind or in front of them along their normal (probes at 0.5..4 x the
+    longest edge, hit within a 0.35 cone); a coarsely sampled real surface has nothing behind it
+    and survives
   - Single-pass non-manifold repair, then the `Mesh::Clean()` pipeline
 - **Configuration:** a single `ReconstructMeshParams` (`distInsert`, `bUseFreeSpaceSupport`,
   `bUseOnlyROI`, `kSigma`, `kQual`, `kb`, `kf`, `kRel`, `kAbs`, `kOutl`, `kInf`,

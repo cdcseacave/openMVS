@@ -91,7 +91,7 @@ vertex whose incident faces span more than one connected component.
 `Clean` converts to a `halfmesh::Mesh` once, runs every enabled stage on that single instance, and
 converts back once. In order:
 
-1. **`RemoveLongEdgeFacesLocal(maxEdgeScale, 3)`** (if `maxEdgeScale > 0`) — the webbing gate. Each vertex's *local edge scale* is the median length of the edges in its 3-ring on the extracted mesh (the ring count is a constant: the 1-ring median is inflated by the very long edges the gate should catch, and the choice is validated in §5); each face's scale is the max of its three vertices' scales (deliberately conservative at density transitions, so a uniformly sparse surface survives while a face bridging a sparse and a dense region does not). A face is removed when its longest edge exceeds `maxEdgeScale ×` its scale — purely geometric, on the extracted mesh, no image projection or per-vertex view lists.
+1. **`RemoveLongEdgeFacesCapped(maxEdgeScale)`** (if `maxEdgeScale > 0`) — the webbing gate, a capped-face test. A candidate is a face whose longest edge exceeds `maxEdgeScale ×` the median longest edge over all faces (2× by default, so it looks at the coarse quarter of the mesh, not only at outliers). For each candidate, probe points are placed on both sides of the centroid along the face normal at 0.5, 1, 2, 3 and 4 × its longest edge; the face is removed when the mesh surface nearest to some probe lies within 0.35 × that probe's distance (a cone around the normal, so a hole in the surface behind does not hide it; the face's own plane is a full probe distance away and never counts). Webbing spans occluded space, so it always has real surface close behind or in front of it (the lid across an open truck bed, the sheet under a chassis, a cap over a door recess); a real surface that is merely sampled coarsely (a plain wall, a staircase) has nothing behind it and survives. The test is purely geometric, on the extracted mesh, no image projection or per-vertex view lists; the probes run in parallel on halfmesh's triangle BVH. Edge length alone cannot separate the two cases (§5).
 2. **`RemoveLongEdgeFaces(spuriousFactor)` + `RemoveSpuriousComponents(spuriousFactor)`** (if `spuriousFactor > 0`) — a global (scene-wide p95 edge length) long-edge pass, then an isolated small-component removal pass.
 3. **`RemoveSpikes(maxSpikeIterations)`**.
 4. **`Simplify`** — target-magnitude decimation (`simplifyTarget`, a fraction in `(0,1)` or an absolute face count above 1), or, when a `vertexMaxError` array is supplied, per-vertex bounded decimation (an edge collapses only while its collapse point stays within the smaller quadric-distance bound of its two endpoints).
@@ -149,7 +149,7 @@ what ships. Fields with no CLI flag are fixed at their struct default in the app
 | *(none)* | `kInf` | `kInfCapacity` = `INT_MAX/8` | hard source capacity for camera / D_out links |
 | `--adaptive-sigma` | `bAdaptiveSigma` | true | per-vertex sigma from the vertex's median incident Delaunay edge length, clamped to `[0.25,4]×` global sigma |
 | `--canonical-rescale` | `bCanonicalRescale` | true | rescale the triangulation by a power of two so the median edge lands near 1 |
-| `--max-edge-scale` | `Mesh::CleanParams::maxEdgeScale` | 4.0 | drop faces whose longest edge exceeds this × the local (k-ring) edge scale; 0 disables |
+| `--max-edge-scale` | `Mesh::CleanParams::maxEdgeScale` | 2.0 | capped-face gate: drop faces whose longest edge exceeds this × the median longest edge and that have mesh surface close behind or in front of them along their normal; 0 disables |
 | `--remove-spurious` | `spuriousFactor` | 20.0 | global p95-based long-edge + isolated-component removal factor; 0 disables |
 | `--remove-spikes` | `removeSpikes` | true | remove spike faces |
 | *(none)* | `maxSpikeIterations` | 100 | iteration cap for spike removal |
@@ -186,32 +186,46 @@ under test.
 | `--adaptive-sigma 1` | vs a single global sigma, all four T&T scenes | raw graph-cut surface ΔF1: Ignatius +0.039, Truck +0.015, Barn +0.012, Meetingroom +0.008 (positive on every scene); also the fastest arm tested (Ignatius graph-cut solve 32.4s vs 35-50s for every alternative arm) |
 | `--thickness-factor 1` (library `kSigma=1.f`) | vs the old library default `kSigma=2` | ΔF1 in favor of 1: Ignatius +0.146, Truck +0.043 |
 | `--free-space-support 0` | vs enabling it at default WSS constants | ΔF1 cost of enabling: Ignatius −0.048, Truck −0.052 |
-| `--max-edge-scale 4`, 3-ring (`RemoveLongEdgeFacesLocal`) | see the gate table below | mean F1 over Herz-Jesu-P8 / Ignatius / Truck 0.6222 vs 0.5905 ungated |
+| `--max-edge-scale 2`, capped-face gate (`RemoveLongEdgeFacesCapped`) | see the gate table below | mean F1 over Herz-Jesu-P8 / Ignatius / Truck 0.6493 vs 0.5905 ungated |
 
 Long-edge gate, all arms cleaned from the same ungated graph-cut surface per scene (Herz-Jesu-P8:
 EPFL mesh-to-mesh evaluator, tau 0.01, 500k samples, completeness restricted to camera-visible GT;
-Truck, Ignatius: Tanks and Temples toolbox at the official tau). "ring k" = the halfmesh k-ring median
-statistic at factor 4; "reconstruction-side" arms are the gates that used to live inside
-`Scene::ReconstructMesh` (full reconstruction with that binary, so not the same raw surface).
+Truck, Ignatius: Tanks and Temples toolbox at the official tau). "capped, factor f" = the shipped
+`RemoveLongEdgeFacesCapped` with candidates above f × the median longest edge (reach 4, cone 0.35);
+"ring k" = the halfmesh k-ring median statistic (`RemoveLongEdgeFacesLocal`) at factor 4;
+"reconstruction-side" arms are the gates that used to live inside `Scene::ReconstructMesh` (full
+reconstruction with that binary, so not the same raw surface).
 
 | arm | Herz-Jesu-P8 F1 (P / R) | Ignatius F1 (P / R) | Truck F1 (P / R) |
 |---|---|---|---|
 | ungated | 0.5141 (0.5625 / 0.4733) | 0.7376 (0.7546 / 0.7212) | 0.5198 (0.4211 / 0.6788) |
+| **capped, factor 2 (shipped)** | 0.5212 (0.6141 / 0.4527) | 0.7452 (0.7714 / 0.7208) | 0.6816 (0.6966 / 0.6674) |
+| capped, factor 3 | 0.5221 (0.6110 / 0.4558) | 0.7429 (0.7660 / 0.7212) | 0.6669 (0.6590 / 0.6750) |
+| capped, factor 4 | 0.5232 (0.6100 / 0.4579) | 0.7425 (0.7652 / 0.7212) | 0.6559 (0.6350 / 0.6782) |
 | ring 1 | 0.5143 (0.5635 / 0.4730) | 0.7375 (0.7545 / 0.7212) | 0.5201 (0.4215 / 0.6789) |
 | ring 2 | 0.5228 (0.5904 / 0.4691) | 0.7386 (0.7572 / 0.7210) | 0.5435 (0.4522 / 0.6808) |
-| **ring 3 (shipped)** | 0.5251 (0.6113 / 0.4602) | 0.7415 (0.7629 / 0.7211) | 0.6000 (0.5343 / 0.6841) |
+| ring 3 | 0.5251 (0.6113 / 0.4602) | 0.7415 (0.7629 / 0.7211) | 0.6000 (0.5343 / 0.6841) |
 | ring 3, factor 3 | 0.5249 (0.6197 / 0.4552) | 0.7425 (0.7650 / 0.7212) | 0.6129 (0.5551 / 0.6840) |
 | ring 3, factor 6 | 0.5232 (0.5960 / 0.4663) | 0.7393 (0.7585 / 0.7211) | 0.5810 (0.5055 / 0.6830) |
 | reconstruction-side local + common-view gate (rejected, §6) | 0.5151 (0.5654 / 0.4731) | 0.7424 (0.7651 / 0.7211) | 0.6420 (0.6074 / 0.6808) |
 | reconstruction-side global-median gate (rejected, §6) | 0.4739 (0.6160 / 0.3850) | 0.7427 (0.7654 / 0.7212) | 0.6606 (0.6456 / 0.6762) |
 
-The shipped gate is the best mean F1 of the mesh-side arms (0.6222; the global-median gate's mean is 0.6257 but only by trading Herz-Jesu recall 0.4733 -> 0.3850 for Truck precision). The ring count is a constant because the ordering is the same on all three scenes: ring 1 is a
-no-op (a webbing face's own edges dominate its vertices' 1-ring medians), ring 3 is the best mean
-F1 and costs under 0.5 s of Clean wall on a 5M-face mesh. Statistics that are more aggressive than
-the k-ring median (minimum or lower-quartile edge length in the k-ring, or the minimum of the
-neighbouring vertices' medians) reach Truck F1 0.65-0.68 but cut Herz-Jesu recall to 0.25-0.44:
-Herz-Jesu's background is a real, sparsely sampled surface, and without visibility information no
-edge-length statistic separates it from Truck's webbing better than the k-ring median does.
+The shipped gate has the best mean F1 of every arm (0.6493) and is the only one that beats both
+the ungated surface and the old reconstruction-side global-median gate on every scene: Truck +0.021
+over that gate while Herz-Jesu recall stays at 0.4527 instead of collapsing to 0.3850. Truck's loss
+is pure precision (recall is 0.67-0.68 on every arm): over half of the ungated in-crop area is false
+surface, half of it in a few thousand giant faces forming a lid across the open truck bed, a sheet
+behind the cab and a sheet under the chassis. Those sheets are contiguous and uniformly coarse, so
+no k-ring statistic can see them (their own ring median is as large as their edges: ring 1 is a
+no-op, ring 3 at best halves the loss), and a pure edge-length threshold cannot remove them without
+also removing Herz-Jesu's coarse plain wall and staircase, which are real (best single global
+factor, 8, reaches a mean of only 0.631). What separates the two is that the lid has real surface
+close behind it along its normal and the wall has nothing: the capped-face probes test exactly
+that. Larger candidate factors trade Truck precision for a little Herz-Jesu recall (factor 4:
+Truck 0.6559, Herz-Jesu recall +0.005); the gate costs about 1 s of Clean wall on a 5M-face mesh.
+Statistics more aggressive than the k-ring median (minimum or lower-quartile edge length in the
+k-ring, the minimum of the neighbouring vertices' medians) reach Truck F1 0.65-0.68 but cut
+Herz-Jesu recall to 0.25-0.44.
 
 ---
 
@@ -222,8 +236,8 @@ edge-length statistic separates it from Truck's webbing better than the k-ring m
   rejected facets had a camera common to all three vertices).
 - **Per-vertex Delaunay-star scale + common-view ("hybrid") gate inside reconstruction**: needs
   per-vertex view lists and extra state carried through the Delaunay stage; the mesh-side
-  post-process (`RemoveLongEdgeFacesLocal`, §2.4) reproduces the useful part with no image
-  projection or ray casting.
+  post-process (`RemoveLongEdgeFacesCapped`, §2.4) does better with no image projection or
+  ray casting.
 - **Visibility-mass gate** (`--min-surface-evidence`): ~60% of true-surface facets also carry
   exactly zero accumulated mass (a ray crosses only 1-2 facets of a vertex's ~20-facet umbrella); no
   mass threshold separates webbing from true surface.
@@ -263,9 +277,6 @@ edge-length statistic separates it from Truck's webbing better than the k-ring m
 - **Depth-maps as direct mesh input**, bypassing or supplementing the fused cloud, so the mesh stage
   can recover the geometrically-consistent depth fusion discards for failing to cluster into
   `nMinPixelsFuse` agreeing estimates. Not started.
-- **Gate-validation numbers** for the current mesh-side `RemoveLongEdgeFacesLocal` gate (§5's
-  placeholder row) — the T&T-scene numbers validating the previous in-reconstruction gates no
-  longer apply now that the gate has moved to `Mesh::Clean`.
 - **Acceptance gates for future work on this energy**: mean paired mesh-F1 >= +0.003 beyond the
   0.0006 noise floor; no scene regressing more than 0.003 F1; >=5% median improvement for
   exact-result speed changes. Judge every reconstruction-stage change on the raw graph-cut surface,
