@@ -102,11 +102,12 @@ public:
 	// fDecimate is read by magnitude, like Mesh::CleanParams::simplifyTarget: a
 	// fraction in (0,1) keeps that share of the faces, a value above 1 is an
 	// absolute face count, 1 (or anything non-positive) disables the stage
-	void pyCleanMesh(float fDecimate=1.f, float fRemoveSpurious=20.f, bool bRemoveSpikes=true, unsigned nCloseHoles=30, unsigned nSmoothMesh=10, float fEdgeLength=0.f, bool bCrop2ROI=false) {
+	void pyCleanMesh(float fDecimate=1.f, float fRemoveSpurious=20.f, bool bRemoveSpikes=true, unsigned nCloseHoles=30, unsigned nSmoothMesh=10, float fEdgeLength=0.f, bool bCrop2ROI=false, float fMaxEdgeScale=2.f) {
 		if (bCrop2ROI && IsBounded())
 			mesh.RemoveFacesOutside(obb);
 		MVS::Mesh::CleanParams params;
 		params.simplifyTarget = fDecimate;
+		params.maxEdgeScale = fMaxEdgeScale;
 		params.spuriousFactor = fRemoveSpurious;
 		params.removeSpikes = bRemoveSpikes;
 		params.maxHoleEdges = nCloseHoles;
@@ -161,7 +162,6 @@ BOOST_PYTHON_MODULE(pyOpenMVS) {
 		.def_readwrite("infinite_capacity", &MVS::Scene::ReconstructMeshParams::kInf)
 		.def_readwrite("adaptive_sigma", &MVS::Scene::ReconstructMeshParams::bAdaptiveSigma)
 		.def_readwrite("canonical_rescale", &MVS::Scene::ReconstructMeshParams::bCanonicalRescale)
-		.def_readwrite("max_edge_scale", &MVS::Scene::ReconstructMeshParams::maxEdgeScale)
 		;
 
 	class_<Scene, boost::noncopyable, boost::shared_ptr<Scene>>("Scene", init<unsigned>(arg("max_threads")=0))
@@ -176,7 +176,7 @@ BOOST_PYTHON_MODULE(pyOpenMVS) {
 		.def("align_to", &Scene::AlignTo)
 		.def("dense_reconstruction", &Scene::pyDenseReconstruction, (arg("resolution_level")=0, arg("fusion_mode")=0, arg("crop_to_roi")=true, arg("roi_border")=0.f))
 		.def("reconstruct_mesh", &Scene::pyReconstructMesh, (arg("params")=MVS::Scene::ReconstructMeshParams()))
-		.def("clean_mesh", &Scene::pyCleanMesh, (arg("decimate")=1.f, arg("remove_spurious")=20.f, arg("remove_spikes")=true, arg("close_holes")=30, arg("smooth_mesh")=2, arg("edge_length")=0.f, arg("crop_to_roi")=true))
+		.def("clean_mesh", &Scene::pyCleanMesh, (arg("decimate")=1.f, arg("remove_spurious")=20.f, arg("remove_spikes")=true, arg("close_holes")=30, arg("smooth_mesh")=2, arg("edge_length")=0.f, arg("crop_to_roi")=true, arg("max_edge_scale")=2.f))
 		.def("refine_mesh", &Scene::pyRefineMesh, (arg("resolution_level")=0, arg("ensure_edge_size")=1, arg("max_face_area")=32, arg("scales")=2, arg("scale_step")=0.5f, arg("regularity_weight")=0.2f))
 		.def("texture_mesh", &Scene::pyTextureMesh, (arg("resolution_level")=0, arg("empty_color")=0x00FF7F27))
 		.def("compute_leveled_volume", &Scene::ComputeLeveledVolume)

@@ -169,22 +169,18 @@ struct MeshTexture {
 		typedef TRasterMesh<RasterMesh> Base;
 		FaceMap& faceMap;
 		FIndex idxFace;
-		Image8U mask;
+		Image8U mask; // valid pixels of the image at its working resolution
 		bool validFace;
-		float scaleMaskX, scaleMaskY;
+		const float scaleMaskX, scaleMaskY; // working resolution over rendering resolution
+		const int border; // keeps the vertices at least 2 px inside the working image, as GenerateTexture requires
 
-		RasterMesh(const Mesh::VertexArr& _vertices, const Camera& _camera, DepthMap& _depthMap, FaceMap& _faceMap)
-			: Base(_vertices, _camera, _depthMap), faceMap(_faceMap), scaleMaskX(0), scaleMaskY(0) {}
-		void SetMask(Image8U&& _mask) {
-			mask = std::move(_mask);
-			if (!mask.empty()) {
-				scaleMaskX = (float)mask.cols / faceMap.cols;
-				scaleMaskY = (float)mask.rows / faceMap.rows;
-			}
-		}
+		RasterMesh(const Mesh::VertexArr& _vertices, const Camera& _camera, DepthMap& _depthMap, FaceMap& _faceMap, const cv::Size& imageSize)
+			: Base(_vertices, _camera, _depthMap), faceMap(_faceMap),
+			scaleMaskX((float)imageSize.width / _faceMap.cols), scaleMaskY((float)imageSize.height / _faceMap.rows),
+			border(CEIL2INT(3.f / MINF(scaleMaskX, scaleMaskY)) - 1) {}
 		inline bool ProjectVertex(const Point3f& pt, int v, Triangle& t) {
 			return (t.ptc[v] = camera.TransformPointW2C(Cast<REAL>(pt))).z > 0 &&
-				depthMap.isInsideWithBorder<float,5>(t.pti[v] = camera.TransformPointC2I(t.ptc[v]));
+				depthMap.isInsideWithBorder(t.pti[v] = camera.TransformPointC2I(t.ptc[v]), border);
 		}
 		inline void Clear() {
 			Base::Clear();
@@ -523,19 +519,21 @@ static Image8U DetectInvalidImageRegions(const Image8U3& image)
 	return mask;
 }
 
-// compute the mask of the valid pixels of the given image, at the given resolution;
+// compute the mask of the valid pixels of the given image, at the resolution of its loaded pixels;
 // nIgnoreMaskLabel selects the source of the mask: the label to ignore in the mask stored
 // with the image (>= 0), the regions invalidated by the lens undistortion (-1), or none (-2);
 // the returned mask is set to zero for invalid pixels, and is empty if masking is disabled
-static Image8U ComputeValidityMask(const Image& imageData, const cv::Size& size, int nIgnoreMaskLabel)
+static Image8U ComputeValidityMask(const Image& imageData, int nIgnoreMaskLabel)
 {
+	ASSERT(!imageData.image.empty());
 	Image8U mask;
 	if (nIgnoreMaskLabel >= 0) {
 		BitMatrix bmask;
-		DepthEstimator::ImportIgnoreMask(imageData, size, (uint8_t)nIgnoreMaskLabel, bmask, &mask);
+		DepthEstimator::ImportIgnoreMask(imageData, imageData.image.size(), (uint8_t)nIgnoreMaskLabel, bmask, &mask);
 	} else if (nIgnoreMaskLabel == -1) {
 		mask = DetectInvalidImageRegions(imageData.image);
 	}
+	ASSERT(mask.empty() || mask.size() == imageData.image.size());
 	return mask;
 }
 
@@ -666,10 +664,10 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		// project all triangles in this view and keep the closest ones
 		faceMap.create(highResSize);
 		depthMap.create(highResSize);
-		RasterMesh rasterer(vertices, cameraHighRes, depthMap, faceMap);
+		RasterMesh rasterer(vertices, cameraHighRes, depthMap, faceMap, imageData.image.size());
 		RasterMesh::Triangle triangle;
 		RasterMesh::TriangleRasterizer triangleRasterizer(triangle, rasterer);
-		rasterer.SetMask(ComputeValidityMask(imageData, fullSize, nIgnoreMaskLabel));
+		rasterer.mask = ComputeValidityMask(imageData, nIgnoreMaskLabel);
 		#if TD_VERBOSE != TD_VERBOSE_OFF
 		if (nIgnoreMaskLabel == -1 && VERBOSITY_LEVEL > 3)
 			SaveImage(rasterer.mask, String::FormatString("umask%04d.png", idxView));
@@ -2559,7 +2557,7 @@ bool Scene::ComputeVertexColors(unsigned nResolutionLevel, unsigned nMinResoluti
 	for (const auto& [idxView, faces]: viewFaces) {
 		Image& imageData = images[idxView];
 		ASSERT(!imageData.image.empty()); // loaded by FaceViewSelection
-		const Image8U mask(ComputeValidityMask(imageData, imageData.image.size(), nIgnoreMaskLabel));
+		const Image8U mask(ComputeValidityMask(imageData, nIgnoreMaskLabel));
 		for (const FIndex idxFace: faces) {
 			const Face& face = mesh.faces[idxFace];
 			const float weight(MAXF((float)mesh.ComputeArea(idxFace), 1e-6f));

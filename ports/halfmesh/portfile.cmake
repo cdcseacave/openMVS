@@ -2,18 +2,13 @@ if(VCPKG_TARGET_IS_WINDOWS)
     vcpkg_check_linkage(ONLY_STATIC_LIBRARY)
 endif()
 
-# 0.3.0 carries the mesh-repair, rect-packing and selected-fill work that this
-# port used to apply as patches, so no patch is needed any more. 0.4.0 releases the
-# per-vertex decimation error bound (Simplify(..., vertexMaxError)) and the caller-supplied
-# remesh sizing field (RemeshParams::vertexSizing) -- what --simplify-tolerance and
-# --adaptive-face-size are built on -- which this port used to reach by pinning a develop
-# commit. halfmesh's CMakeLists fails the configure if the version in vcpkg.json disagrees
+# halfmesh's CMakeLists fails the configure if the version in vcpkg.json disagrees
 # with the one it declares, so the two move together.
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO cdcseacave/halfmesh
     REF v${VERSION}
-    SHA512 cbbaaa30a03b0de94c64a6744e95a1d5d0ececcf18db0b54479ef11eb8d0b678f0db052acd2ef7d742110a1ca0c19c69e62f098aa90862f118fd9439d0103966
+    SHA512 975a5962020dd89c9f4983cc6b9398eaf0095963d4d9d0b7088332e93d958d10a4563034d063cd0266ea5ff6636a9f3904f14061f675a07d296ba0c56ad73d2a
     HEAD_REF develop
 )
 

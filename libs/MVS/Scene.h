@@ -201,20 +201,10 @@ public:
 		// [2^-10, 2^10] are left untouched. This repairs the predicate only - geometry already
 		// quantized away by the float storage of PointCloud::Point needs a load-time fix instead
 		bool bCanonicalRescale;
-		// drop extracted surface facets whose longest edge exceeds this multiple of the median
-		// cut-facet longest edge: every Delaunay vertex is an input point, so a facet can only
-		// stray far from the observed cloud by spanning it with long edges - the "webbing" a
-		// visibility mesh grows across occluded space (under vehicles, behind walls), surface
-		// no observation supports. A ratio of medians, so scene- and scale-independent;
-		// 0 disables the gate. Gating on the facet visibility vote mass instead does
-		// NOT work: most true surface facets are never crossed by any ray either (each ray
-		// needles through 1-2 facets of a vertex umbrella), so no mass threshold separates
-		// webbing from surface
-		float maxEdgeScale;
 		inline ReconstructMeshParams()
 			: distInsert(2.f), bUseFreeSpaceSupport(true), bUseOnlyROI(false),
 			  kSigma(1.f), kQual(1.f), kb(4.f), kf(3.f), kRel(0.1f), kAbs(1000.f), kOutl(400.f), kInf(kInfCapacity),
-			  bAdaptiveSigma(true), bCanonicalRescale(true), maxEdgeScale(4.f) {}
+			  bAdaptiveSigma(true), bCanonicalRescale(true) {}
 	};
 	bool ReconstructMesh(const ReconstructMeshParams& params=ReconstructMeshParams());
 

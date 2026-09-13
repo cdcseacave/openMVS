@@ -554,9 +554,9 @@ graph TD
     F -->|no| H[Score edges quality only]
     G --> I[TetraFlow min-cut graph-cut<br/>source=free-space, sink=matter]
     H --> I
-    I --> J[Extract surface from cut facets<br/>webbing gate: drop facets with an edge > maxEdgeScale x median]
+    I --> J[Extract every cut facet as surface triangle]
     J --> K[Fix non-manifold: single exhaustive pass]
-    K --> L[Mesh::Clean: halfmesh QEM decimation<br/>spurious removal, hole closing, Taubin smoothing]
+    K --> L[Mesh::Clean, halfmesh-delegated:<br/>1 capped-face webbing gate RemoveLongEdgeFacesCapped<br/>2 spurious removal 3 spike removal<br/>4 QEM decimation 5 hole closing<br/>6 Taubin smoothing 7 remeshing]
     L --> M[scene.mesh populated]
 ```
 
@@ -585,16 +585,24 @@ graph TD
 
 - TetraFlow min-cut solver (`libs/Math/TetraFlow.h`, incremental breadth-first search max-flow on
   one 64-byte node per cell) separates free-space (source) from matter (sink) tetrahedra
-- Cut facets form the extracted surface triangles, minus those the webbing gate drops:
-  `maxEdgeScale` (4) x the median cut-facet longest edge, the gap-spanning surface no observation
-  supports
+- Every cut facet becomes an extracted surface triangle — no edge-length gate runs at this stage
+  any more
 - Non-manifold vertices and edges are repaired in a single exhaustive pass (splitting a vertex
   never changes another vertex's incident faces, so no second pass can find more)
 
 **Step 4: Mesh Cleaning**
 
 - `Mesh::Clean()` — `libs/MVS/MeshHalfMesh.cpp`, delegated to the halfmesh library
-- One pass over a single half-edge mesh: spurious-component removal (`fSpurious`), spike removal (`bRemoveSpikes`), QEM decimation (`fDecimate`), hole closing (`nCloseHoles`, a maximum hole size in boundary edges), Taubin band-pass smoothing (`nSmoothMesh`), isotropic remeshing (`fEdgeLength`), then degenerate-face / unreferenced-vertex removal and non-manifold repair
+- One pass over a single half-edge mesh, in this order: the capped-face webbing gate
+  (`maxEdgeScale`, 2) removes faces whose longest edge exceeds the factor times the median longest
+  edge and that have mesh surface close behind or in front of them along their normal, via halfmesh
+  `RemoveLongEdgeFacesCapped()`; it is Clean's first stage so it applies uniformly to any mesh
+  passed in, not only a freshly cut one;
+  then spurious-component removal (`fSpurious`), spike removal (`bRemoveSpikes`), QEM decimation
+  (`fDecimate`), hole closing (`nCloseHoles`, a maximum hole size in boundary edges), Taubin
+  band-pass smoothing (`nSmoothMesh`), isotropic remeshing (`fEdgeLength`), then degenerate-face /
+  unreferenced-vertex removal and non-manifold repair
+- `apps/ReconstructMesh --max-edge-scale` sets the `Clean` option
 
 ---
 
