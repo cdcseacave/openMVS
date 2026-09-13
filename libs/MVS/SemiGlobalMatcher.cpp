@@ -1153,23 +1153,26 @@ void SemiGlobalMatcher::Match(const ViewData& leftImage, const ViewData& rightIm
 		WaitThreadWorkers(threads.size());
 		}
 		if (numDirs == 4) {
+		// each pair of diagonal sweeps runs concurrently and is waited for as one, after
+		// both blocks queuing it have closed, so the pixel counters must outlive them
+		volatile Thread::safe_t idxPixels[2];
 		{ // width-right-down
 		auto pixels = [&](int x) {
 			ImageRef u(x,0);
 			ACCUM_PIXELS(++u.x < sizeValid.width && ++u.y < sizeValid.height);
 		};
-		volatile Thread::safe_t idxPixel(-1);
+		idxPixels[0] = -1;
 		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumInc(sizeValid.width, idxPixel, pixels));
+			threads.AddEvent(new EVTPixelAccumInc(sizeValid.width, idxPixels[0], pixels));
 		}
 		{ // height-right-down
 		auto pixels = [&](int y) {
 			ImageRef u(0,y);
 			ACCUM_PIXELS(++u.x < sizeValid.width && ++u.y < sizeValid.height);
 		};
-		volatile Thread::safe_t idxPixel(0);
+		idxPixels[1] = 0;
 		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumInc(sizeValid.height, idxPixel, pixels));
+			threads.AddEvent(new EVTPixelAccumInc(sizeValid.height, idxPixels[1], pixels));
 		}
 		WaitThreadWorkers(threads.size()*2);
 		{ // width-left-down
@@ -1177,18 +1180,18 @@ void SemiGlobalMatcher::Match(const ViewData& leftImage, const ViewData& rightIm
 			ImageRef u(x,0);
 			ACCUM_PIXELS(--u.x >= 0  && ++u.y < sizeValid.height);
 		};
-		volatile Thread::safe_t idxPixel(-1);
+		idxPixels[0] = -1;
 		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumInc(sizeValid.width-1, idxPixel, pixels));
+			threads.AddEvent(new EVTPixelAccumInc(sizeValid.width-1, idxPixels[0], pixels));
 		}
 		{ // height-left-down
 		auto pixels = [&](int y) {
 			ImageRef u(sizeValid.width-1,y);
 			ACCUM_PIXELS(--u.x >= 0 && ++u.y < sizeValid.height);
 		};
-		volatile Thread::safe_t idxPixel(-1);
+		idxPixels[1] = -1;
 		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumInc(sizeValid.height, idxPixel, pixels));
+			threads.AddEvent(new EVTPixelAccumInc(sizeValid.height, idxPixels[1], pixels));
 		}
 		WaitThreadWorkers(threads.size()*2);
 		{ // width-right-up
@@ -1196,18 +1199,18 @@ void SemiGlobalMatcher::Match(const ViewData& leftImage, const ViewData& rightIm
 			ImageRef u(x,sizeValid.height-1);
 			ACCUM_PIXELS(++u.x < sizeValid.width && --u.y >= 0);
 		};
-		volatile Thread::safe_t idxPixel(0);
+		idxPixels[0] = 0;
 		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumInc(sizeValid.width, idxPixel, pixels));
+			threads.AddEvent(new EVTPixelAccumInc(sizeValid.width, idxPixels[0], pixels));
 		}
 		{ // height-right-up
 		auto pixels = [&](int y) {
 			ImageRef u(0,y);
 			ACCUM_PIXELS(++u.x < sizeValid.width && --u.y >= 0);
 		};
-		volatile Thread::safe_t idxPixel(sizeValid.height);
+		idxPixels[1] = sizeValid.height;
 		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumDec(idxPixel, pixels));
+			threads.AddEvent(new EVTPixelAccumDec(idxPixels[1], pixels));
 		}
 		WaitThreadWorkers(threads.size()*2);
 		{ // width-left-up
@@ -1215,18 +1218,18 @@ void SemiGlobalMatcher::Match(const ViewData& leftImage, const ViewData& rightIm
 			ImageRef u(x,sizeValid.height-1);
 			ACCUM_PIXELS(--u.x >= 0 && --u.y >= 0);
 		};
-		volatile Thread::safe_t idxPixel(sizeValid.width);
+		idxPixels[0] = sizeValid.width;
 		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumDec(idxPixel, pixels));
+			threads.AddEvent(new EVTPixelAccumDec(idxPixels[0], pixels));
 		}
 		{ // height-left-up
 		auto pixels = [&](int y) {
 			ImageRef u(sizeValid.width-1,y);
 			ACCUM_PIXELS(--u.x >= 0 && --u.y >= 0);
 		};
-		volatile Thread::safe_t idxPixel(sizeValid.height-1);
+		idxPixels[1] = sizeValid.height-1;
 		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumDec(idxPixel, pixels));
+			threads.AddEvent(new EVTPixelAccumDec(idxPixels[1], pixels));
 		}
 		WaitThreadWorkers(threads.size()*2);
 		}
