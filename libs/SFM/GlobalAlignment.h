@@ -187,14 +187,16 @@ struct SFM_API PlacementHypothesis
 };
 
 // What the verified image pairs across a placement say about it: the inlier weight of the pairs
-// the placement reproduces and of the ones it does not
+// the placement reproduces and of the ones it does not, and the admitted neighbours' verdicts --
+// a neighbour whose pairs to the group weigh more against the placement than for it contradicts it
 struct SFM_API PairAgreement
 {
 	unsigned numPairs{0};
 	float agree{0.f}, disagree{0.f};
-	// Do the agreeing pairs outweigh the disagreeing ones by the given ratio? Nothing read, nothing
-	// held against the placement.
-	bool Holds(float ratio) const { return disagree <= 0.f || agree >= ratio * disagree; }
+	unsigned numNeighbours{0}, numContra{0}; // admitted blocks with pairs read, and those contradicting
+	// Are the neighbours behind the placement: no more than one in contraShare of the ones with
+	// pairs to read contradict it? Nothing read, nothing held against it.
+	bool Holds(unsigned contraShare) const { return numContra * contraShare <= numNeighbours; }
 };
 
 // Pool of observations between a group and the admitted blocks: the group side in the group frame,
@@ -260,9 +262,9 @@ struct SFM_API GlobalAlignmentConfig
 	float maxVoteWeight{30.f};              // cap of a candidate's weight
 	// The verified image pairs across a placement are read against it: a pair of at least
 	// minVoteInliers weighted inliers agrees when the relative rotation and the baseline direction
-	// the placement gives its two images are within this angle of what the pair measured, and a
-	// placement is refused when the inlier weight of the pairs that disagree is not beaten by the
-	// weight of the ones that agree, by the same ratio the camera votes are held to. 0 disables it.
+	// the placement gives its two images are within this angle of what the pair measured. Each
+	// admitted neighbour's pairs give one verdict by inlier weight, and a placement is refused
+	// when more neighbours contradict it than the neighbour gate allows. 0 disables it.
 	float maxPairRotationResidual{5.f};     // degrees
 	// Seam graph consensus: a candidate the averaged consensus contradicts by more than these is
 	// inconsistent, and is rejected when a consistent alternative path at least this strong exists.
