@@ -73,28 +73,6 @@ if(_USE_METAL)
 	TARGET_INCLUDE_DIRECTORIES(MVS PRIVATE "${CMAKE_CURRENT_BINARY_DIR}") # generated PatchMatchMetal_msl.h
 endif()
 
-# MSVC scalpel: Eigen marks its internals __forceinline on MSVC, and the small dense
-# decompositions the OBB and camera code call (JacobiSVD behind computeRotationScaling,
-# SelfAdjointEigenSolver behind the OBB fit) get expanded into the calling function as
-# one enormous body that MSVC's back end takes 15-30 minutes on, even at /Od (/Ob1 still
-# honours __forceinline; only /Ob0 or plain "inline" avoids it). Overriding the macro
-# with "inline" for just the translation units that instantiate those decompositions
-# brings their code generation to seconds at full /O2; the decompositions are cold
-# paths (scene transforms, ROI and chunk fitting, camera decomposition), so MSVC's own
-# inlining heuristics are good enough there. The define must precede Eigen's headers,
-# so these files cannot share the precompiled header (re-parsing Common.h costs ~10 s).
-if(MSVC)
-	set_source_files_properties(
-		"${CMAKE_CURRENT_SOURCE_DIR}/Camera.cpp"
-		"${CMAKE_CURRENT_SOURCE_DIR}/SceneROI.cpp"
-		"${CMAKE_CURRENT_SOURCE_DIR}/SceneSplit.cpp"
-		"${CMAKE_CURRENT_SOURCE_DIR}/SceneTransform.cpp"
-		PROPERTIES
-			COMPILE_DEFINITIONS "EIGEN_STRONG_INLINE=inline"
-			SKIP_PRECOMPILE_HEADERS ON
-	)
-endif()
-
 # Manually set Common.h as the precompiled header
 IF(CMAKE_VERSION VERSION_GREATER_EQUAL 3.16.0)
 	TARGET_PRECOMPILE_HEADERS(MVS PRIVATE "Common.h")

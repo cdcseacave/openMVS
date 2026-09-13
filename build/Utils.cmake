@@ -648,6 +648,18 @@ macro(optimize_default_compiler_settings)
 	  # builds where cl.exe's optimizer would otherwise spin on pathological inlining.
 	  set(BUILD_EXTRA_FLAGS "${BUILD_EXTRA_FLAGS} /d2ReducedOptimizeHugeFunctions")
 
+	  # Eigen defines EIGEN_STRONG_INLINE as __forceinline on MSVC only (GCC and Clang get
+	  # plain inline), and /Ob1 honours __forceinline even at /Od. Every SEACAVE vector and
+	  # matrix type is Eigen-backed, so each expression (a 3x3 product, a JacobiSVD behind
+	  # an OBB transform) is expanded into its caller as one enormous body that MSVC's
+	  # back end takes minutes on: measured per translation unit, SceneTexture.cpp 711 s,
+	  # SceneRefine.cpp 709 s, SceneTower.cpp 412 s, SceneTransform.cpp 1732 s (at /Od),
+	  # against 2-7 s each with the macro overridden to inline, and the same override is
+	  # why the other platforms build the whole project in minutes. Floating-point mode,
+	  # OpenMP and /Ob2 make no difference. With plain inline MSVC applies its own
+	  # inlining heuristics to Eigen, as GCC and Clang always have.
+	  set(BUILD_EXTRA_FLAGS "${BUILD_EXTRA_FLAGS} /DEIGEN_STRONG_INLINE=inline")
+
 	  # Match the 8 MB main-thread stack that Linux and macOS provide by default.
 	  # The /O2-inlined Eigen + CGAL chain in Scene::EstimateROI (covariance PCA,
 	  # Eigen::SelfAdjointEigenSolver, AABB::Insert over thousands of rotated
