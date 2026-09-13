@@ -1,689 +1,287 @@
 # Delaunay Mesh Reconstruction
 
-Consolidated record of the Delaunay-visibility mesh reconstruction effort
-(`Scene::ReconstructMesh`, `libs/MVS/SceneReconstruct.cpp`, cleaning in `libs/MVS/Mesh.cpp`).
-This document is the single source of truth for: what ships today and why, the validated
-before/after numbers, and a registry of every idea that was tried and rejected — read the
-registry (§5) before re-proposing any of them, the mechanism that killed each one is recorded
-there. The phase-by-phase task list and per-slice experimental log that produced this record
-have been superseded and removed; `git log` / prior commits carry the full history if a
-derivation needs to be re-checked.
+## 1. Purpose and scope
 
-Effort dates: 2026-08-18 to 2026-08-23. Two adjacent tracks were scoped during this effort and
-are not implemented: depth-maps as direct mesh input (bypassing the fused cloud), and
-dense-fusion re-baselining. Their staged implementation plans have been removed along with the
-rest of this effort's intermediate planning; the measurements and refuted attributions that
-motivated them survive in §5, §6 and §8, which is everything a future attempt needs to restart
-without re-deriving anything.
+`Scene::ReconstructMesh` (`libs/MVS/SceneReconstruct.cpp`) builds a watertight mesh from a dense,
+view-annotated point cloud: it triangulates the points with CGAL Delaunay, accumulates a
+Labatut/Pons/Keriven visibility energy on the tetrahedralization, solves an s-t min-cut, and
+extracts the cut boundary as the mesh surface. `Mesh::Clean` (`libs/MVS/MeshHalfMesh.cpp`, delegating
+to the `halfmesh` library) then repairs and simplifies that raw surface — this is where the
+long-edge ("webbing") gate lives.
 
-**Adjudication note.** Every mesh-F1 number recorded before 2026-08-21 was scored through a
-mesh-cleaning smoother bug that crushed scores by 20-50 points of F1 on fine-resolution scenes
-(§3). Verdicts and effect sizes from that period are unreliable — several signs flipped once the
-bug was fixed and everything was re-scored (§5). This document reports only the corrected,
-re-evaluated numbers; do not resurrect a pre-2026-08-21 number from git history as evidence.
+Scope: the reconstruction and cleaning stages driven by `apps/ReconstructMesh/ReconstructMesh.cpp`.
+`RefineMesh` (shape refinement against images) and `TextureMesh` are separate pipeline stages with
+their own design documents and are out of scope here.
 
 ---
 
-## 1. The algorithm as shipped
+## 2. Algorithm as implemented
 
-`ReconstructMesh` builds a Delaunay tetrahedralization of the input point cloud, accumulates a
-Labatut/Pons/Keriven visibility energy on its cells and facets (camera-to-point soft-visibility
-votes, a σ-shifted `D_in` unary, a β-skeleton quality term, and an optional free-space-support
-(WSS) classifier for weakly-observed surfaces), solves an s-t min-cut (TetraFlow, §5), and extracts the
-cut boundary as the mesh surface. `Mesh::Clean` then removes long/spurious/spike faces, closes
-holes, and smooths.
+### 2.1 Point insertion / visibility weighting (`SceneReconstruct.cpp:Scene::ReconstructMesh`)
 
-### Current defaults, and why
+Points are inserted into a CGAL Delaunay triangulation in spatial-sort order. If
+`distInsert > 0`, a candidate point is merged into the nearest existing vertex instead of inserted
+as its own vertex when, in every one of its views, it projects within `distInsert` pixels of that
+vertex at a similar depth; `distInsert = 0` inserts every point. Each vertex accumulates the union
+of the views that contributed to it (`vert_info_t::InsertViews`); a view's vote weight is 1 unless
+the point cloud carries `pointWeights`, in which case the weight is that view's per-view confidence
+— the `ReconstructMesh` app implements `--constant-weight` by releasing `pointcloud.pointWeights`
+before calling into the library, so the library itself has no such switch.
 
-| Default | Value | One-line reason |
-|---|---|---|
-| `--adaptive-sigma` | on | per-vertex σ_v = kSigma × median incident Delaunay edge length, clamped to [0.25,4]× the global σ — a universal win across all four T&T scenes and simultaneously the fastest arm (§2) |
-| `--canonical-rescale` | on | rescales the triangulation by a power of two so the median edge lands near 1, where the ray-walk `orientation()` predicate's fixed 1e-12 epsilon is calibrated; provably a no-op inside the band every normal scene lives in, and a correctness fix (not just a speed one) outside it (§6) |
-| `--max-edge-scale` | 4 | drops cut facets whose longest edge exceeds 4× the median cut-facet longest edge — the webbing gate (§4); a universal win, better-or-equal to k=6 on all four scenes, recall untouched |
-| library `kSigma` | 1.f | matches the CLI's long-standing `--thickness-factor` default of 1; the old library default of 2 loses 0.043-0.146 F1 to this value on every scene (§5) |
-| `--constant-weight` | on | every view votes 1, as it always has. The mesh stage **cannot tell a recalibrated confidence from a plain-NCC one** — `CONF_ADJUSTED` lives in the `.dmap` header and is deliberately not part of the MVS scene, and a point's per-view confidence arrives as a bare float — so consuming whatever the cloud carries would silently collapse the cut on any pre-recalibration cloud (Ignatius −0.214 F1, §5). Only the operator knows the provenance, so consuming the confidence is theirs to ask for: `--constant-weight 0`, and on recalibrated clouds it is worth at most a few thousandths either way (§2) |
-| `Mesh::Clean` smoothing | scale-free Laplacian | replaces `CGAL::PMP::smooth_shape`, whose fixed absolute time step over-smoothed fine meshes by ~20x (§3); the new smoother moves each vertex relative to its own one-ring scale, so it is unit- and resolution-independent |
+**Scale.** `medianEdge`, the median length over all finite Delaunay edges, is measured once and
+used two ways:
+- **Canonical rescale** (`bCanonicalRescale`, `coord_rescale_t`): if `medianEdge` falls outside
+  `[2^-10, 2^10]`, the whole triangulation is rescaled in place by a power of two so it lands near
+  1. The ray-walk `orientation()` predicate tests an *unnormalized* determinant (grows as edge
+  length cubed) against a fixed absolute epsilon, so it is only calibrated near unit scale; a
+  power-of-two factor is exact in IEEE arithmetic (mantissa untouched) and CGAL's exact predicates
+  are scale-invariant, so nothing is retriangulated. Only the extracted mesh vertices are mapped
+  back to world space.
+- **Sigma**: `sigma = medianEdge * kSigma` is the visibility fall-off / positional-uncertainty
+  radius. With `bAdaptiveSigma` on, each vertex gets its own `sigma_v = kSigma × median incident
+  finite-Delaunay-edge length`, clamped to `[0.25, 4] × sigma` — CGAL's
+  `finite_incident_edges_threadsafe` is required here under OpenMP (the plain traversal races on
+  shared TDS marker state against the ray-walk threads).
 
-### Opt-ins, and when to reach for them
+**Camera hard constraints (D_out).** For every image, the cell containing the camera is located;
+if that cell is infinite (the common case — cameras usually sit outside the sparse cloud's convex
+hull), every hull-adjacent infinite cell that is both camera-facing and inside the camera's
+frustum (`fetchCellFacets`) gets `SourceCapacity = kInf`, forcing it to the free (source) side.
 
-- **`--constant-weight 0`** (weighted votes): consume the per-view confidence as the vote weight.
-  Reach for it **only when you know the cloud's confidence was recalibrated** by the densifier
-  (`--postprocess-dmaps`, default on): on such clouds it is parity-or-slightly-better on three of
-  four scenes and −0.0065 on the fourth (§2), while on an un-recalibrated cloud, whose confidence
-  mass sits at 0.3-0.7, it shrinks every data-term capacity against the unit-vote calibration of
-  the graph-cut constants and collapses the cut (§5). The library needs no switch for the
-  weightless case — a point-cloud carrying no confidence votes 1 per view by construction.
-- **`--free-space-support`**: the long-standing upstream WSS classifier for weakly-supported
-  surfaces (e.g. thin/textureless walls with few crossing rays); default off — it costs ~0.05
-  F1 on the two dense object scenes tested (§5), so reach for it only on a genuinely
-  weak-surface use case, not as a general-purpose accuracy lever.
+**Per-point votes (D_in).** For each (vertex, view) pair, a ray is walked from the camera to the
+point; every facet it crosses accumulates `w = alpha_vis * (1 - exp(-dist² / (2·sigma_v²)))` on
+its directed arc (the camera-side crossing). The walk continues past the point to
+`point + sigma_v · direction`; facets crossed there accumulate the same weight on the *mirrored*
+facet (`delaunay.mirror_facet`, the arc away from the camera), and the end cell's `SinkCapacity`
+gets `+= alpha_vis` unconditionally, independent of the fall-off.
+
+**Optional free-space support (WSS, `bUseFreeSpaceSupport`).** For each (vertex, view), the
+maximum crossed weight `beta` towards the camera (window `kf · sigma_v`) and the mean of the
+extreme crossed weights `gamma` past the point (window `kb · sigma_v`) are computed. When
+`gamma/beta < kRel`, `beta - gamma > kAbs` and `gamma < kOutl`, the point is an interface point
+and the end cell's `SinkCapacity` is multiplied by `beta - gamma`. A cell whose `t` is exactly 0
+(never reached by a D_in vote) stays 0 — this no-op is intentional: enforcing on cells no
+visibility vote ever reached would let the classifier plant surface priors in unobserved free
+space.
+
+### 2.2 Graph-cut (solver)
+
+`libs/Math/TetraFlow.h:TetraFlow` is the sole max-flow solver (`typedef SEACAVE::TetraFlow
+maxflow_t`) — an incremental breadth-first-search solver (Goldberg et al., ESA 2011) specialized
+for the 4-regular Delaunay cell graph: one node per cell, `NodeID = uint32_t`, construction writes
+directly into the solver's own node storage (`EdgeCapacity`/`SourceCapacity`/`SinkCapacity`/
+`LinkEdge`), no separate per-cell weight array. Before linking, each internal facet's arc
+capacities get a quality term added on both sides —
+`q = (1 - min(computePlaneSphereAngle(f), computePlaneSphereAngle(mirror(f)))) * kQual`, the
+cosine of the angle between the facet's plane and its two incident cells' circumscribed spheres, a
+β-skeleton-style regularizer favoring round, well-formed cells. Sink capacities are clamped to
+`maxCap = FLT_MAX * 1e-4` before `ComputeMaxFlow()`; `IsNodeOnSrcSide` gives the per-cell side,
+after which the solver is released (it is the reconstruction's memory peak).
+
+### 2.3 Surface extraction
+
+A face is emitted for every internal facet whose two adjacent cells land on opposite sides of the
+cut — that is the entire rule. **There is no edge-length or other geometric gate inside
+`Scene::ReconstructMesh`**: every cut facet becomes a mesh face, including arbitrarily long ones
+spanning occluded ("webbing") space. `Mesh::FixNonManifold` runs once afterwards to split any
+vertex whose incident faces span more than one connected component.
+
+### 2.4 The Clean stage and the long-edge gate (`MeshHalfMesh.cpp:Mesh::Clean`)
+
+`Clean` converts to a `halfmesh::Mesh` once, runs every enabled stage on that single instance, and
+converts back once. In order:
+
+1. **`RemoveLongEdgeFacesCapped(maxEdgeScale)`** (if `maxEdgeScale > 0`) — the webbing gate, a capped-face test. A candidate is a face whose longest edge exceeds `maxEdgeScale ×` the median longest edge over all faces (2× by default, so it looks at the coarse quarter of the mesh, not only at outliers). For each candidate, probe points are placed on both sides of the centroid along the face normal at 0.5, 1, 2, 3 and 4 × its longest edge; the face is removed when the mesh surface nearest to some probe lies within 0.35 × that probe's distance (a cone around the normal, so a hole in the surface behind does not hide it; the face's own plane is a full probe distance away and never counts). Webbing spans occluded space, so it always has real surface close behind or in front of it (the lid across an open truck bed, the sheet under a chassis, a cap over a door recess); a real surface that is merely sampled coarsely (a plain wall, a staircase) has nothing behind it and survives. The test is purely geometric, on the extracted mesh, no image projection or per-vertex view lists; the probes run in parallel on halfmesh's triangle BVH. Edge length alone cannot separate the two cases (§5).
+2. **`RemoveLongEdgeFaces(spuriousFactor)` + `RemoveSpuriousComponents(spuriousFactor)`** (if `spuriousFactor > 0`) — a global (scene-wide p95 edge length) long-edge pass, then an isolated small-component removal pass.
+3. **`RemoveSpikes(maxSpikeIterations)`**.
+4. **`Simplify`** — target-magnitude decimation (`simplifyTarget`, a fraction in `(0,1)` or an absolute face count above 1), or, when a `vertexMaxError` array is supplied, per-vertex bounded decimation (an edge collapses only while its collapse point stays within the smaller quadric-distance bound of its two endpoints).
+5. **`CloseHoles(maxHoleEdges)`**.
+6. **`SmoothTaubin(smoothIterations)`** — λ/μ band-pass smoothing (λ=0.65, μ=−0.69 inside halfmesh); scale-free, and being a band-pass rather than a low-pass filter it removes high-frequency noise at ≈zero volume loss instead of shrinking the surface toward one-ring centroids.
+7. **`RemeshIsotropic`** (if `edgeLength != 0`) — absolute or mean-relative target edge length, optionally graded by a per-vertex `vertexSizing` field.
+8. **Finalize** (if `finalize`, default on): degenerate-face removal, unreferenced-vertex removal, non-manifold repair.
+
+### 2.5 Regression fixtures (`apps/Tests/TestsMVS.cpp`, run by `Tests.exe 0`)
+
+Two hand-derived synthetic scenes lock cut *topology* (vertex/face counts, which named vertices
+survive) rather than internal per-cell flow values, which are not observable through the public
+API; both are reconstructed with `bAdaptiveSigma = false`, `bCanonicalRescale = false`,
+`bUseFreeSpaceSupport = false`, `kQual = 0`, `distInsert = 0` (single global-sigma, ungated), not
+the shipped app defaults. A regression that relocates a vote onto the wrong cell or flips a
+`mirror_facet` arc fails one of them.
+
+- **`MeshBipyramidFixtureTest`** — 2 finite tetrahedra sharing one facet, 1 camera, 1 contributing
+  point (equilateral triangle A/B/C at `z=0`, apexes D and E on the z-axis, camera above looking at
+  E). Asserts exactly 1 face, 3 vertices: two of {A,B,C} plus E, never D — the D_in vote the
+  camera's ray deposits behind the point (past E) must survive on the correct mirrored cell.
+- **`MeshTetraInteriorPointFixtureTest`** — 4 tetrahedra around one interior point P inside a hull
+  of 4 outer vertices, 2 cameras. Asserts an **empty** mesh: every cell reachable from P's votes
+  ends up on the same (free) side by the solver's own tie-break on zero-capacity nodes, not by any
+  error in `mirror_facet` — see the in-code comment on `ReportFixtureSolverTieBreak` for the full
+  reachability argument; this is a solver-behavior fixture, not a `mirror_facet` correctness proof.
+
+Other reconstruction-stage coverage in the same file: `EmptyROIMeshGuardTest` /
+`TooFewPointsMeshGuardTest` (degenerate-input guards fail cleanly, §4), `UnitWeightsFallbackTest`
+(empty vs. explicit all-1 `pointWeights` must agree within 1% of face count),
+`PointWeightsArchiveRoundTripTest` (`pointWeights` round-trips through the interface archive),
+`MeshCleanPerVertexTest` (per-vertex decimation bound routes correctly into halfmesh).
 
 ---
 
-## 2. Validated results
+## 3. Parameters and defaults
 
-**Scoring protocol.** Frozen `scene_dense.mvs` per scene (identical geometry/views/confidence
-across all variants compared), raw graph-cut surface (pre-`Mesh::Clean`) with the
-`--max-edge-scale` gate applied, in-crop 10M-sample area-uniform mesh sampling (seeded), scored
-against ground truth by the official Tanks-and-Temples evaluation toolbox at each scene's
-official τ. Noise floor (paired identical baseline runs, 4 scenes): **max |ΔF1| = 0.0006**. Every
-number below is a mean over ≥1 run at that noise floor; §5 entries with per-run spread say so.
+`distInsert` and `bUseFreeSpaceSupport` are the two fields where the `ReconstructMeshParams`
+constructor's own default differs from the `ReconstructMesh` app's CLI default; the CLI default is
+what ships. Fields with no CLI flag are fixed at their struct default in the app.
 
-### Recommended default vs originally shipped vs input cloud
-
-| scene | originally shipped | adaptive-σ + gate k=4 | input cloud |
+| CLI option | Struct field | Default | Meaning |
 |---|---|---|---|
-| Ignatius | 0.3295 | **0.7427** | 0.7381 |
-| Truck | 0.3569 | **0.6611** | 0.7060 |
-| Barn | 0.5576 | **0.6257** | 0.5988 |
-| Meetingroom | 0.3379 | **0.4036** | 0.3225 |
-
-Three of four scenes now score above their input cloud (Barn, Ignatius, Meetingroom); Truck
-reaches 94% of its cloud's F1. Versus the originally shipped defaults, the recommended
-configuration gains +0.07 to +0.41 F1 per scene — all of that gain is the compounded effect of
-fixing the smoother (§4) plus adopting adaptive σ and the webbing gate, not any single change in
-isolation.
-
-**End-to-end validation of the flipped binary** (2026-08-23, on these same frozen
-pre-recalibration clouds): the raw surface reproduces the table above — Ignatius 0.7441, Truck
-0.6614, Barn 0.6258, Meetingroom 0.3974 (the small Meetingroom delta is the in-recon k=4 gate vs
-the offline k=6 scoring of the campaign arm) — and the full pipeline including `Mesh::Clean`
-delivers Ignatius 0.7358, Truck 0.6604, Barn **0.6360**, Meetingroom **0.4037**: the clean now
-trades a little recall for precision on the object scenes and outright improves both τ=10mm
-scenes. These runs used unit votes on pre-recalibration clouds, which is exactly the shipped
-default configuration.
-
-### Webbing-gate k-sweep (raw graph-cut surface, no other change)
-
-| scene | raw (ungated) | k=8 | k=6 | k=4 | input cloud |
-|---|---|---|---|---|---|
-| Ignatius | 0.6986 | 0.7021 | 0.7036 | **0.7048** | 0.7381 |
-| Truck | 0.4835 | 0.6202 | 0.6298 | **0.6441** | 0.7060 |
-| Barn | 0.5704 | — | 0.6069 | **0.6144** | 0.5988 |
-| Meetingroom | 0.2185 | — | 0.3959 | **0.3961** | 0.3225 |
-
-k=4 is better-or-equal to k=6 on all four scenes; recall never moves by more than 0.008 at any k.
-Gated raw already beats the input cloud on Barn and Meetingroom before adaptive σ is even added.
-
-### Object-scene stacking (gated k=6 raw surface)
-
-| config | Ignatius | Truck | Barn | Meetingroom |
-|---|---|---|---|---|
-| gated baseline | 0.7036 | 0.6298 | 0.6069 | 0.3959 |
-| adaptive-σ | 0.7427 | 0.6451 | 0.6191 | 0.4036 |
-| adaptive + weighted + co-scale | **0.7497** | **0.6558** | 0.5989 | 0.3848 |
-| + conf-shrink 0.5 (triple stack) | 0.7492 | 0.6579 | — | — |
-
-The weighted+co-scale stack adds a further +0.007/+0.011 over adaptive alone on the two object
-scenes, but regresses both planar scenes (Barn −0.020, Meetingroom −0.019) — on these old
-plain-NCC clouds the weighted votes are an object-scene tool, not a default (§5). The co-scale
-and conf-shrink flags used by these rows were removed after the recalibrated-cloud campaign
-below; the rows stay as the record of what the stack bought on old clouds.
-
-### Speed
-
-Adaptive σ is not just the most accurate arm, it is also the fastest: Ignatius graph-cut solve
-32.4s vs 35-50s for every other single arm tested; Truck 65.5s, on par with the conf-shrink arm.
-The weighted-vote arms pay 1.5-3x more solve time (Ignatius weighted+co-scale 108s). Free-space
-support carves fastest on Truck (42.5s) but loses 0.05 F1, so the speed is not worth taking.
-
-### Recalibrated-confidence clouds (2026-08-23)
-
-The CUDA densifier's integrated confidence recalibration (default `--postprocess-dmaps 4`)
-right-shifts the admitted-pixel confidence histogram (most mass ≥ 0.7) and roughly doubles the
-fusion yield; the four scenes were re-densified with it and the full arm matrix re-run on the new
-clouds (raw gated surface, same protocol as above):
-
-| scene | cloud | defaults (weight-1) | W | Wq | Sh | ShOnly | WqSh |
-|---|---|---|---|---|---|---|---|
-| Ignatius | 0.7715 | 0.7608 | 0.7597 | 0.7614 | 0.7615 | 0.7557 | 0.7607 |
-| Truck | 0.7175 | 0.6578 | 0.6593 | **0.6608** | 0.6566 | 0.6501 | 0.6598 |
-| Barn | 0.6416 | 0.6226 | 0.6260 | **0.6264** | 0.6185 | 0.6134 | 0.6219 |
-| Meetingroom | 0.4368 | 0.4380 | 0.4315 | 0.4359 | 0.4350 | 0.4327 | **0.4381** |
-
-W = the per-view confidence as vote weight (`--constant-weight 0`); Wq = W +
-quality co-scale (kQual scaled by the mean consumed confidence); Sh = confidence sigma shrink 0.5
-(σ_v *= 1 − 0.5·conf_v, votes kept at 1); ShOnly = Sh + `--adaptive-sigma 0`; WqSh = Wq + Sh.
-The Wq, Sh, ShOnly and WqSh arms no longer exist in the code — see the decision below.
-
-What the grid says, arm by arm:
-
-- **The weights themselves** (W − weight-1): −0.0011/+0.0015/+0.0034/−0.0065 — within a few
-  thousandths either way, scene-dependent in sign. The old collapse is gone: recalibrated
-  weights sit near 1, so the energy stays in the regime its constants are tuned for (§5).
-- **Co-scale on top of the weights** (Wq − W): +0.0017/+0.0015/+0.0004/+0.0044 — consistent in
-  sign but mean +0.0020, below the +0.003 acceptance gate of §8.
-- **Sigma shrink**: at or below the weight-1 baseline on 3/4 scenes stacked, below on 4/4 alone.
-
-**Decision (2026-08-23):** every layer tried on top of the bare confidence weights — the quality
-co-scale, the confidence sigma shrink, the unit-votes-with-retained-weights switch the shrink
-needed, and the combinations — lands within noise of simply using the confidence as the vote
-weight, and the bare weights are themselves within noise of weight 1 on these clouds. Nothing here
-earns a second code path, so `--quality-co-scale`, `--sigma-conf-shrink`,
-`ReconstructMeshParams::bQualityCoScale`, `sigmaConfShrink` and `bConstantVotes` were **removed**
-and the library's `Scene::ReconstructMesh` is back to the form it had before the confidence
-campaign: one path, in which a vote carries the point's per-view confidence if the cloud has one
-and 1 if it does not.
-
-The **app default stays `--constant-weight 1`** — the votes are unit and the weight-1 result is
-bit-identical to before — because nothing in the scene records whether a confidence has been
-recalibrated (§1), and these deltas are only within noise on clouds where it has been. Consuming
-the confidence is an informed opt-in, not a default the pipeline can pick on its own.
-
-Meetingroom is the first scene whose mesh beats its own input cloud on the new clouds (0.4380 vs
-0.4368); the other three meshes sit below their much-improved clouds, which absorbed most of the
-recalibration's value directly (cloud F1 +0.033/+0.012/+0.043/+0.114 vs the frozen references).
+| `-d, --min-point-distance` | `ReconstructMeshParams::distInsert` | 1.5 (CLI); 2.f (struct) | max pixel distance, in every view, for two points to merge into one Delaunay vertex; 0 inserts every point |
+| `--integrate-only-roi` | `bUseOnlyROI` | false | triangulate only points inside the scene ROI |
+| `--constant-weight` | *(app-level; releases `pointcloud.pointWeights`)* | true | vote weight per view: 1 if true, else the point's per-view confidence |
+| `-f, --free-space-support` | `bUseFreeSpaceSupport` | false (CLI); true (struct) | enforce the WSS t-edge multiplier for weakly-observed interface points |
+| `--thickness-factor` | `kSigma` | 1.0 | multiplier on the visibility fall-off / uncertainty radius sigma |
+| `--quality-factor` | `kQual` | 1.0 | multiplier on the plane/circumsphere-angle quality term added to each facet's arc capacity |
+| *(none)* | `kb` | 4.0 | WSS backward (past-point) search window, in units of sigma |
+| *(none)* | `kf` | 3.0 | WSS forward (camera-side) search window, in units of sigma |
+| *(none)* | `kRel` | 0.1 | WSS interface test: `gamma/beta` must be below this |
+| *(none)* | `kAbs` | 1000.0 | WSS interface test: `beta - gamma` must exceed this |
+| *(none)* | `kOutl` | 400.0 | WSS interface test: `gamma` must be below this |
+| *(none)* | `kInf` | `kInfCapacity` = `INT_MAX/8` | hard source capacity for camera / D_out links |
+| `--adaptive-sigma` | `bAdaptiveSigma` | true | per-vertex sigma from the vertex's median incident Delaunay edge length, clamped to `[0.25,4]×` global sigma |
+| `--canonical-rescale` | `bCanonicalRescale` | true | rescale the triangulation by a power of two so the median edge lands near 1 |
+| `--max-edge-scale` | `Mesh::CleanParams::maxEdgeScale` | 2.0 | capped-face gate: drop faces whose longest edge exceeds this × the median longest edge and that have mesh surface close behind or in front of them along their normal; 0 disables |
+| `--remove-spurious` | `spuriousFactor` | 20.0 | global p95-based long-edge + isolated-component removal factor; 0 disables |
+| `--remove-spikes` | `removeSpikes` | true | remove spike faces |
+| *(none)* | `maxSpikeIterations` | 100 | iteration cap for spike removal |
+| `--decimate` / `--target-face-num` | `simplifyTarget` | 1.0 / 0 | fraction of faces to keep in `(0,1)`, or an absolute face count above 1; 1 disables |
+| `--close-holes` | `maxHoleEdges` | 30 | close boundary loops spanned by at most this many edges; 0 disables |
+| `--smooth` | `smoothIterations` | 10 | Taubin band-pass smoothing iterations; 0 disables |
+| `--edge-length` | `edgeLength` | 0 | isotropic remesh target edge length (absolute, or negative × current mean); 0 disables |
+| *(none)* | `remeshIterations` | 3 | isotropic remesh iteration count |
+| *(none)* | `finalize` | true | degenerate-face/unreferenced-vertex removal + non-manifold repair, run after every other stage |
 
 ---
 
-## 3. Why every earlier number was wrong
+## 4. Invariants and constraints
 
-The mesh stage appeared to *destroy* fidelity relative to its input cloud (e.g. Ignatius cloud
-0.77 -> mesh 0.34) in every measurement since the VCG-to-CGAL cleaning switch landed in March
-2026. The cause was never the graph-cut estimation — it was `Mesh::Clean`'s smoothing step.
-
-**Root cause** (commit `c99883fc`, "mesh: remove VCG and use CGAL for cleaning"): VCG's
-scale-free Laplacian smoothing was replaced by CGAL `PMP::smooth_shape` — implicit mean-curvature
-flow with a fixed absolute time step of 1e-3. That constant has units of *squared scene length*:
-it was evidently tuned against ~3cm-edge meshes (0.03² ≈ 1e-3) and over-smooths by roughly 20x on
-Ignatius' ~7mm-edge statue mesh, or on any metric-scale fine-resolution scene — and a single
-global time constant cannot fit a mixed-resolution mesh (fine statue + coarse background) at any
-setting.
-
-**The dose-response is airtight** (Ignatius, official eval):
-
-| stage | F1 |
-|---|---|
-| input cloud | 0.7381 |
-| raw graph-cut mesh (pre-clean) | 0.6986 |
-| after full Clean minus smooth (`--smooth 0`) | 0.6986 |
-| after 1 smooth iteration (old MCF) | 0.4645 |
-| after 2 smooth iterations = shipped default | 0.3295 |
-
-Every non-smooth clean step combined — long-edge removal, component removal, spike removal,
-hole-closing — costs exactly nothing (0.6986 → 0.6986). The two MCF smoothing iterations produce
-the entire collapse, with a clean monotone dose-response, and the cleaned mesh loses 21% of its
-in-crop surface area to MCF shrinkage.
-
-**Fix**: `Mesh::Clean` smooths with a scale-free one-ring filter — each vertex moves relative to
-its own one-ring, so the result is unit- and resolution-independent. Landed as commit `c6446c3c`
-(uniform Laplacian, λ=0.5, borders fixed); the webbing gate (§4) followed separately as
-`67c94292`. The halfmesh migration later replaced that step with Taubin λ|μ band-pass smoothing
-(`SmoothTaubin`, λ=0.65 / μ=−0.69), which is scale-free in the same way but is a band-pass rather
-than a low-pass, so it removes high-frequency noise at ≈zero volume loss instead of shrinking the
-surface toward its one-ring centroids. Post-fix, the shipped default
-(smooth=2) lands at or above the raw mesh on both object scenes (Ignatius −0.0026 vs raw with
-precision up 0.699→0.718; Truck +0.018 vs raw) and clearly above the previously shipped result on
-all four scenes (Barn +0.035, Meetingroom +0.027, the latter now above its own input cloud).
-
-**Consequence for this record**: any mesh-F1 number from before 2026-08-21 in git history —
-including every A/B verdict this effort produced during Phases 0-5.3 — was scored through the
-broken smoother. Effect sizes are unreliable and several signs are wrong (§5 lists every case
-where the corrected number reverses or dominates the old one). Do not cite a pre-2026-08-21
-mesh-F1 number as evidence for anything.
+- `orientation()` tests an **unnormalized determinant against a fixed absolute epsilon (1e-12)**; the determinant grows as edge-length cubed, so a scene whose median edge sits far from ~1 scene unit either collapses every ray-walk step to COPLANAR (too small) or loses robustness to float noise near true degeneracies (too large). This is why `--canonical-rescale` exists, and the rescale must precede camera-cell location, not just triangulation. `finite_incident_edges_threadsafe` is **required** under OpenMP for the adaptive-sigma fill — the plain (non-threadsafe) traversal writes shared TDS marker state and races against the ray-walk threads reading the same cells.
+- The WSS `t==0` no-op (a cell no D_in vote ever reached keeps `t=0` even if a later WSS enforcement would otherwise multiply it) is **structurally protective**, not a bug: enforcing on such cells would let the classifier plant surface priors in deep, unobserved free space.
+- **NaN bypasses the sink-capacity clamp**: `if (t > maxCap) t = maxCap;` — any comparison against NaN is false, so a NaN weight (traced source: `computePlaneSphereAngle`'s facet-normal normalization on a zero-area facet) reaches the solver unclamped; `+inf`, by contrast, *is* correctly clamped. `TetraFlow::NodeID` is `uint32_t`: the graph-cut is limited to 2^31-1 cells (~330M points).
+- Camera D_out is realized as hard `kInf` source links on **every** frustum-visible hull-adjacent infinite cell, not just the camera's own located cell — on 360-degree or inward-facing captures this annihilates every D_in vote whose sigma-shifted end cell exits the convex hull, which is why OpenMVS meshes stay open at the hull boundary regardless of evidence. Intentional, unaddressed.
+- `PointCloud::Point` storage is `float`, which quantizes UTM-magnitude scenes to ~6cm before triangulation runs; the canonical rescale cannot repair geometry storage has already destroyed — the open fix is load-time centering (§7), not a mesh-stage change.
+- `Mesh::SamplePoints` must use the **fixed-seed overload** in any benchmark; the `random_device`-seeded default is noise-only and not reproducible. PatchMatch depth estimation is itself unseeded, so point count (and mesh F1) is noisy at the several-percent level between densifications of the same build and flags — any reconstruction or Clean A/B must run on one frozen `scene_dense.mvs`, never on two separate densifications.
+- Mesh-stage cost scales with vertex count and memory is the binding limit: peak RSS runs roughly ~1.95 kB per Delaunay vertex (~313 B per cell at ~6.3-6.4 cells/vertex); wall time is super-linear in points on scenes with high point redundancy. Any change that pushes completeness needs a cost argument alongside it.
 
 ---
 
-## 4. The webbing gate
+## 5. Validation of the shipped defaults
 
-**Webbing**: the visibility cut stretches surface across occluded space it has no evidence
-about — under vehicles, behind interior walls, anywhere the camera ring cannot see. These facets
-carry zero visibility votes and are uncarvable by construction, since no ray reaches occluded
-space to begin with. Truck is the diagnostic case: raw mesh recall is healthy (0.686, ≈ its
-cloud) but precision is 0.373 — 10% of faces sit more than 30mm from any input point (p99 305mm)
-and carry 41% of the in-crop sampled area. The default `--remove-spurious 20` cannot touch them;
-its threshold resolves to ~10 meters on these meshes.
+Every row is a controlled A/B: both arms run the same pipeline and differ only in the default
+under test.
 
-**First attempt, REFUTED — visibility-mass gate.** The obvious estimation-side signal is the
-α_vis crossing mass each facet accumulates during the visibility walk (webbing should be
-mass-zero — no ray enters occluded space). Implemented as `--min-surface-evidence` and
-benchmarked:
-
-| arm | facets removed | P | R | F1 |
-|---|---|---|---|---|
-| Truck raw (no gate) | — | 0.3733 | 0.6860 | 0.4835 |
-| Truck mass < 1e-6 | 2.99M / 4.97M | 0.3850 | 0.5701 | 0.4596 |
-| Truck mass < 0.05 | 3.01M / 4.97M | 0.3836 | 0.5669 | 0.4576 |
-| Ignatius raw (no gate) | — | 0.6992 | 0.6980 | 0.6986 |
-| Ignatius mass < 1e-6 | 2.54M / 4.11M | 0.6876 | 0.6175 | 0.6507 |
-| Ignatius mass < 0.05 | 2.57M / 4.11M | 0.6849 | 0.6078 | 0.6440 |
-
-It does not work: ~60% of cut facets carry mass exactly zero on *both* scenes, including most of
-Ignatius' true statue surface, which has essentially no webbing. Mechanism: each ray is a 1D
-needle through the tetrahedralization — it crosses only 1-2 facets of a vertex's ~20-facet
-umbrella, so vote mass lives on a sparse subset of the real surface. No mass threshold separates
-webbing (zero) from true surface (also mostly zero). Recall collapses, precision barely moves.
-Removed from code.
-
-**Shipped gate — `--max-edge-scale`.** Every Delaunay vertex IS an input point, so a facet can
-only stray far from the observed cloud by spanning it with long edges — a purely geometric
-signal, and it works. Drops extracted cut facets whose longest edge exceeds k× the median
-cut-facet longest edge (medians computed in the triangulation's working space so the canonical
-rescale cancels out — ratio of medians, scale-free). Calibration: Truck's raw median max-edge is
-17.9mm, so k=6 (107mm) drops 9.2% of faces, matching an offline 100mm-threshold prototype
-(9.7%); Ignatius' median is 42mm (background-dominated), so the same k=6 (254mm) sits far above
-the ~7mm statue facets and removes only true gap-spanners. See §2 for the k-sweep table — k=4 is
-better-or-equal to k=6 on all four scenes, recall untouched in every case. Landed as commit
-`67c94292`.
-
----
-
-## 5. Failed and rejected ideas — do not retry without new evidence
-
-Every entry below was benchmarked on the honest post-2026-08-21 metric (§2's protocol) unless
-marked otherwise. Numbers are Δ vs that scene's gated baseline.
-
-**Grazing-incidence down-weighting** (`--grazing-floor` / `--grazing-exponent`). Scaled each
-crossed-facet vote by `max(floor, |cos(ray, facet_normal)|^exp)`. Old (broken-smoother) numbers
-suggested a small object-scene win; re-evaluated it is harmful everywhere: Ignatius −0.048, Truck
-−0.027 at floor 0.2. The apparent old gain was entirely an artifact of the broken smoother.
-**REMOVED from code.**
-
-**WSS enforcement semantics** (`--wss-semantics paper|add|max`, vs the shipped `product`).
-`paper` (ISRN-2014's literal sum-then-multiply) turns out to be ≡ `product` on dense clouds — a
-single multiplication at the absolute α scale the classifier fires at is already effectively
-infinite, so the two forms produce near-identical cuts (Ignatius/Meetingroom byte-identical face
-counts). `add` (`t += kw·εabs`) collapses Ignatius 0.272→0.045 because the structural `t==0`
-no-op — base t deposited at ~1σ behind the point, enforcement targeting the ~4σ walk-end cell,
-usually a different cell — is *protective*, not a defect: it keeps the classifier from planting
-surface priors in deep free space. **Never "fix" the t==0 no-op.** `max` still costs Ignatius
-−0.046 for the same reason (it still fires on t==0 cells). **REMOVED from code**; the shipped
-per-firing `product` is the only enforcement behavior again.
-
-**Footprint-based σ** (`--footprint-sigma`, per-pixel range/focal as an alternative σ_v source
-to adaptive). Proven ≡ the confidence sigma shrink (since removed too, see below) in effect on
-every scene tested (within noise on all four: 0.5574/0.5569, 0.3382/0.3380, 0.3384/0.3385,
-0.3599/0.3605) — two independent implementations of the same physical signal (near/well-observed
-→ tighter σ). Loses to adaptive σ as a base (Barn −0.0073) and runs up to 2.3x slower on some
-scenes (Ignatius 229s vs ~98s for the confidence arms). **REMOVED from code.** The σ_v design space has exactly two independent
-signals — *physical* (confidence ≡ footprint) and *sampling-density* (median incident edge) —
-and in the `1 − s·conf` shrink formulation they do not stack (see next entry).
-
-**Confidence sigma shrink** (`--sigma-conf-shrink s`: σ_v *= 1 − s·conf_v with conf_v the mean
-per-view confidence merged into the vertex, votes kept at 1 through a `bConstantVotes` switch
-that retained the weights for σ only). Alone (adaptive σ off) it was real on old clouds: +0.018
-on Ignatius vs the gated baseline. Stacked on adaptive σ: ±0.002, scene-inconsistent — the two
-draw on the same information and do not stack. On recalibrated clouds it is at or below the
-weight-1 baseline on 3/4 scenes stacked (Ign 0.7615, Truck 0.6566, Barn 0.6185, MR 0.4350 vs
-0.7608/0.6578/0.6226/0.4380) and below on 4/4 alone (0.7557/0.6501/0.6134/0.4327). **REMOVED
-from code** together with `bConstantVotes`, which existed only to serve it.
-
-**Weighted votes on old plain-NCC clouds** (`--constant-weight 0` before the densifier's
-confidence recalibration). The Ignatius cut collapses to 241k faces (F1 0.4898, −0.214 vs
-baseline); Truck −0.011. Mechanism: every data-term capacity shrinks by the mean point
-confidence (~0.3-0.7) while the quality term `q` and the camera `kInf` constraints keep their
-unit-vote calibration, so the cut collapses inward toward the smoothness term. On recalibrated
-clouds (weights near 1) the collapse is gone and the weighted votes sit within a few thousandths
-of weight 1 on every scene (§2). Since nothing in the scene distinguishes the two kinds of cloud,
-this entry is the reason consuming the confidence stays an opt-in the operator asks for (§1).
-
-**Quality co-scale** (`--quality-co-scale`: `kQual *= mean consumed confidence`, the calibration
-identity that rehabilitates the collapse above — scale-invariant min-cut, so shrinking every data
-capacity by the mean weight and the quality term by the same factor leaves the cut where unit
-votes would put it). On old plain-NCC clouds, weighted + co-scale on adaptive σ gives Ignatius
-0.7497 (cloud +0.012), Truck 0.6558 — but Barn −0.020, Meetingroom −0.019. On recalibrated
-clouds it is +0.0017/+0.0015/+0.0004/+0.0044 over the bare weights — consistent in sign, mean
-+0.0020, below the §8 gate, and the bare weights are themselves within noise of weight 1. It was
-briefly default-on, gated to fire only when the votes consumed the weights (the first version
-keyed on weights *present*, which combined with the shrink's retained-but-unused weights would
-have shrunk `kQual` against unit votes — the collapse inverted). **REMOVED from code**: a second
-path that buys two thousandths is not worth carrying; if weights ever sit far from 1 again, the
-fix belongs in the densifier's calibration, not in a mesh-side rescale.
-
-**kAbs/kOutl proportional rescale** (WSS absolute-scale constants swept 0.5x-4x together, under
-`--free-space-support 1`). All 9 rows land below the no-fss baseline; the preferred direction is
-scene-inconsistent (outdoor scenes prefer 0.5x, indoor prefers 4x). Mechanism: 43-88% of firings
-saturate the t-edge at *every* setting tested — the product-semantics enforcement is effectively
-a binary cell-nuke, and the constants only choose *which* cells get nuked, never *how hard*.
-**Rejected**; the fix (if any) is in the enforcement semantics, not the constants, and every
-semantics alternative was independently rejected above.
-
-**Solver swap, EIBFS vs the bundled IBFS.** Speed-neutral on the real 22.7M-node Truck graph:
-EIBFS-I-NR solve 27.1-27.7s vs IBFS 26.2-27.0s, interleaved runs. The stronger sibling (EIBFS-I)
-crashes at scale (access violation in `augmentExcesses`, reproducible, independent of index
-width). No license-clean *and* faster drop-in existed: the fastest candidates (EIBFS-I) carry the
-TAU "research purposes only" license, same restriction class as the then in-tree IBFS; the only
-truly open alternative (Boost's Boykov-Kolmogorov) is the paper's slowest serial tier.
-
-**Solver: TetraFlow replaces IBFS (2026-08).** What a drop-in could not deliver, specializing the
-data structure did: `libs/Math/TetraFlow.h` is an independent implementation of the same
-incremental breadth-first search algorithm (Goldberg et al., ESA 2011) for the 4-regular cell
-graph — one 64-byte node per cell holding its four arcs and its complete tree state, 32-bit ids,
-and batched settlement of the source side of the augmentations (one tree-arc traversal per growth
-pass instead of one per path). Solver only, on ball / room / Truck / Courthouse (1.5M / 6.5M /
-8.0M / 18.4M cells): solve 0.70 / 6.9 / 6.3 / 17.0 s vs IBFS 1.27+0.22 / 12.0+0.9 / 11.0+1.1 /
-27.0+2.6 s (solve + init), solver memory 99 / 423 / 530 / 1248 MB vs 293 / 1236 / 1518 / 3509 MB.
-The `ReconstructMesh` graph-cut stage: 1.9 / 11.9 / 31.4 s vs 2.6 / 17.5 / 42.2 s (ball / room /
-Courthouse), raw meshes byte-identical. The whole-process peak drops less than the solver does
-(3.4 vs 5.5 GiB on Courthouse) because the CGAL triangulation, ~1.9 GiB there, stays resident
-through the cut (3.1 GiB once the weights live in the solver nodes, see below). Verified under
-ASan/UBSan on ~900k random graphs against an exact reference solver and the cut certificates, and
-on the real graphs above (side sets byte-identical to IBFS); `apps/Tests/TestsMath.cpp` keeps a
-reference-checked unit test. Boost license, no third-party code.
-
-**Cell numbering.** The solver's node id is the cell id, so the order in which the cells are
-numbered decides the memory locality of the graph-cut and of the per-cell weights the ray-walks
-touch. Any numbering is valid; a spatially coherent one is an optional optimization worth ~5% of
-the graph-cut stage, so it has to be nearly free to compute. Solve time on the four graphs above
-(best of 3): the CGAL container order is 12-16% slower than a breadth-first numbering over the
-cell adjacency, a random numbering 30-40% slower, and a Hilbert curve through the cell centroids
-is 0 / 9 / 5.5 / 5% faster than the breadth-first one (Morton: 3 / 7 / -0.5 / 5.5%). The curve
-puts 63% of the arcs within 1 KB of their node (BFS: 17%, container: 17%), yet the gain stays
-modest because after the breadth-first numbering a growth pass already works out of the L2/L3
-(Truck, `perf`: L1 misses -6%, dTLB misses -40%, IPC 0.58 -> 0.65); what remains is the
-dependent-load chains of the tree walks and the branchy adoption logic, which no numbering
-shortens. The numbering is not free, though: sorting the cell centroids along the curve costs
-0.3 / 1.6 / 2.0 / 4.4 s on ball / room / Truck / Courthouse against a graph-cut gain of
-0.15 / 0.8 / 1.1 / 2.9 s (plus ~1 s of weighting on Courthouse), i.e. end-to-end the Hilbert
-numbering was a wash (-1% on Courthouse, noise elsewhere). Ordering the points does not solve it
-either: they are already inserted in CGAL's BRIO/Hilbert order (`spatial_sort`), but the cell
-container order comes out scattered anyway because every insertion reuses the slots of the cells
-it destroys; a pure Hilbert insertion order (no BRIO rounds) does improve the container order
-(graph-cut -7%) but slows the insertion itself by 12-15%, a net loss. What works is deriving the
-numbering from the insertion order without geometry: the vertex container is never compacted, so
-its order *is* the space-filling curve, and the cells are numbered by the last inserted of their
-vertices with a counting sort, O(cells + vertices) — 0.05 / 0.2 / 0.3 / 0.55 s, the same graph-cut
-time as the centroid sort (Truck 11.3 vs 11.2 s, room 10.85 vs 10.8-11.3 s, Courthouse 27.5 vs
-27.3 s) and the best end-to-end time of every numbering tried (`graphcut-nodeweights-{hilbert,
-vertexorder,container}-r*` and `graphcut-pointorder-*` under the dataset folders). Same flow and
-surface counts as any other numbering; equal-cost cut ties resolve by node order, so a handful of
-triangles differ.
-
-**Weights in the solver nodes (2026-08).** The visibility weights were gathered in a
-24-byte-per-cell array and copied into the solver at graph-build time, so the process peak was the
-build phase: triangulation + weights + solver nodes. The solver now offers, beside the classic
-`AddNode`/`AddEdge` construction, a slot-addressed one (`EdgeCapacity(n, slot)` /
-`SourceCapacity(n)` / `SinkCapacity(n)` accumulators, `LinkEdge(u, slotU, v, slotV)`, `Release()`),
-and the ray-walks accumulate straight into the nodes — slot i of a cell is its facet i, the
-free-space-support reads the same fields, the facet quality term and the sink clamp are applied by
-the linking pass that used to build the graph. The insertion buffers (points, indices) and the
-numbering keys are released before the solver is allocated, and the solver is released right after
-the cut with one side bit per cell kept for the extraction. Raw meshes byte-identical on ball /
-Truck / room / Courthouse. A/B against the same tree without it (same vertex-order numbering, best
-of 3, `graphcut-ab-{current,nodeweights}-r*`): peak RSS 0.35 -> 0.32 / 1.51 -> 1.37 / 1.23 -> 1.10 /
-3.45 -> 3.12 GiB (-8..-10%; IBFS: 0.51 / — / 1.95 / 5.50 GiB, i.e. 1.6-1.8x), graph-cut stage
-1.9 -> 1.7 / 12.3 -> 10.9 / 11.7 -> 10.4 / 30.0 -> 27.0 s (-10%, the copy into the solver is gone),
-weighting unchanged within noise, whole run -1..-5%. The Courthouse profile now reads
-triangulation 1.94 + nodes 1.10 + 0.08 GiB through weighting and cut, 2.0 GiB during the
-extraction; what is left is the triangulation itself (CGAL cells and vertices are ~85% of the
-base). The classic construction is untouched in cost: a standalone benchmark built against both
-headers gives the same peak and solve times within noise on the four exported graphs
-(`graphcut-export/bench-oldapi-*.log`). `ReconstructMesh` calls `TetraFlow` directly; the `MaxFlow`
-facade and the Boost Boykov-Kolmogorov fallback behind it (several times slower, never selected)
-went with the weight array.
-
-**Free-space-support default-on.** Costs −0.048 (Ignatius) to −0.052 (Truck) at default constants
-even after every recalibration/semantics attempt above failed to rescue it. **Stays available**
-(long-standing upstream feature) for genuinely weakly-supported-surface use cases; **default
-off.**
-
-**Thickness-factor 2 / old library `kSigma`=2.** Strictly worse than kSigma=1 on every scene:
-Ignatius −0.146, Truck −0.043. **Library default corrected to 1.f**, matching the CLI's
-long-standing `--thickness-factor` default.
-
-**Carve-only rays from unfused pixels** (`DensifyPointCloud --export-unfused-file` →
-`ReconstructMesh --carve-rays-file`). *Unfused pixels* are valid depth estimates fusion discards
-whole-cluster: they passed the per-pixel confidence gate but their cluster failed the keep-rule
-(`nMinPixelsFuse` ≥ 5 agreeing estimates, `nMinViewsFuse` ≥ 2 distinct views, or the
-free-space-violation guard on prior-rescued points). The mass is large and much of it is *good*:
-fusion admits only 48 % (Ignatius) / 56 % (Truck) / 30 % (Meetingroom) of the valid depths in the
-reference maps, and every scene discards 9-10 M pixels at confidence ≥ 0.7 — geometrically
-consistent depth that merely failed to gather cross-view corroboration. Because the *position* of
-such a pixel is exactly what fusion could not verify, the experiment consumed only its
-*free-space* evidence: the densifier exported the confident dropped pixels (conf ≥ 0.5, stride
-decimation to ≤ 8 M records) and the mesh stage walked each camera→point segment adding the
-distance-weighted α_vis like a real vertex's ray, inserting nothing and casting no s/t term.
-Result: best scene (Truck) +0.0033 under the pre-fix energy — below the +0.003-beyond-noise
-default-flip gate — and the rays cannot reach occluded webbing by construction (a ray that could
-reach the webbing region would have produced a fused point there), so the webbing gate (§4)
-supersedes the purpose this was built for. **Removed from code** (export, sidecar format and
-replay; it lives in git history) — the durable lesson is not the sidecar but the split it proved:
-position evidence and visibility evidence can be decoupled, a vertex-free ray walk costs
-1.6-3.3 us (§6), and the right place to recover the good unfused pixels is fusion itself (§8
-"Depth-maps as direct mesh input", and the fusion improvement plan).
-
-**Visibility-mass gate** (`--min-surface-evidence`). See §4 for the full mechanism and dose
-table. **Removed from code.**
-
-**No-decimation control** (`--min-point-distance 0`, inserting all 5.2M points instead of the
-decimated set). Scores *worse*: 0.6764 raw vs the decimated 0.6986, at 4.4x the graph-cut cost.
-`--min-point-distance` decimation is exonerated — it was never the source of any fidelity loss.
-
-**"The old and new input clouds differ by configuration."** The gap between the pre- and
-post-recalibration clouds (cloud F1 +0.010 to +0.114, points x1.6-3.2) was first attributed to a
-`Densify.ini` in the working folder overriding the defaults, to the fusion reprojection threshold
-and to the PatchMatch geometric weight. All three are wrong, and the corrections are worth keeping
-because each is a trap on its own: **a `Densify.ini` sitting in the working folder is never read**
-— the densifier loads a config only when `--dense-config-file` names one, and the scene with the
-most extreme old-cloud profile has no `Densify.ini` at all; and the reprojection-threshold and
-geometric-weight changes are **not on develop**, they live only on an unmerged branch, so both
-families ran the same values. Nor was it the neighbor selector, the resolution, the view count,
-the ROI or the tower mode — all identical. The families differ by **the binary**: the confidence
-recalibration and the fusion prior rescue, both defaults since #1292.
-
-**The WSS admission ladder.** Never implemented — it was gated on the weighted votes proving a
-*win* as a default, which the old-cloud ablation rejected outright and the recalibrated-cloud
-campaign did not revive (the weights are consumed by default now only because they are within
-noise of unit votes, §2). Void.
-
----
-
-## 6. Durable engineering constraints and known limitations
-
-- `orientation()` tests an **unnormalized determinant against a fixed absolute epsilon (1e-12)**;
-  the determinant grows as edge-length cubed, so scenes whose median edge sits far from ~1 scene
-  unit either silently collapse to COPLANAR at every ray-walk step (too small) or lose robustness
-  to float noise near true degeneracies (too large). This is the entire reason
-  `--canonical-rescale` exists.
-- The rescale **must precede camera-cell location**, not just triangulation — at tiny scale every
-  facet reads COPLANAR and every camera ray dies before it starts (verified: the 1e-6 control
-  dropped all 72542/72542 rays, producing an empty mesh). The epsilon is not behaviorally free at
-  either extreme either: the 1e6 control loses 7 vertices to float-noise near-degeneracies even
-  though it does not collapse outright.
-- CGAL's `finite_incident_edges_threadsafe` is **required** under OpenMP for the adaptive-σ fill —
-  the plain (non-threadsafe) traversal writes shared TDS marker state and races against the
-  ray-walk threads reading the same cells.
-- The WSS `t==0` no-op (base t at ~1σ behind a point, enforcement targeting the ~4σ walk-end
-  cell) is **structurally protective**, not a bug — see §5's `add`/`max` entries for what breaks
-  when it is "fixed".
-- **NaN passes the `maxCap` clamp** at `AddNode` (`std::min` returns its first argument when the
-  comparison is false, so `MINF(NaN, maxCap)` is NaN, not `maxCap`) — the traced entry point is
-  `normalized()` on a zero-area facet. Overflow to `+inf`, by contrast, *is* correctly clamped.
-  TetraFlow addresses cells with 32-bit ids: the graph-cut is limited to 2^31-1 cells (~330M points).
-- Camera `D_out` is realized as hard `kInf` s-links on **every** frustum-visible hull-adjacent
-  infinite cell, not just the sensor's own cell — on 360-degree or inward-facing captures this
-  annihilates every `D_in` vote whose σ-shifted end cell exits the convex hull, which is why
-  OpenMVS meshes stay open at the hull boundary regardless of evidence. Documented, intentional,
-  **unaddressed** — no fix mandated.
-- `PointCloud::Point` storage is `float`, which quantizes UTM-magnitude scenes to ~6cm — mesh-time
-  rescale cannot repair geometry already destroyed by storage before triangulation runs. The open
-  fix is **load-time centering** (§8), not a mesh-stage change.
-- The bad-end walk counter (surfaced as a `DEBUG_EXTRA` warning whenever non-zero) is the
-  **regression alarm** for the walk invariants the canonical rescale protects. The fuller
-  per-stage accounting (WSS `t==0`/saturation rates, step caps, walk tallies) served the closed
-  WSS investigation and was removed with it (git history) — re-instrument first, judge by
-  counters, when revisiting this energy.
-- `Mesh::SamplePoints` must use the **fixed-seed overload** in any benchmark; the legacy
-  `random_device`-seeded default is noise-only and not reproducible.
-- **Mesh-stage cost scales with the vertex count, and memory is the binding limit**: measured
-  consistently across three T&T scenes, peak RSS is ~1.95 kB per Delaunay vertex (~313 B per cell
-  at 6.3-6.4 cells/vertex) and insertion costs 3.5-7.6 us per input point, of which
-  `--min-point-distance 1.5` keeps 48-65 % as vertices; a vertex-free ray walk costs 1.6-3.3 us
-  (measured on the removed carve-replay path, §5). A 10 M
-  point cloud therefore lands at 10-13 GB peak. Wall time is **superlinear** in points on the
-  scenes with the most redundancy: Meetingroom at 3.2x the points cost 6.1x the reconstruction
-  wall (triangulation 14.0->76.1 s, weighting 25.7->210.4 s, graph-cut 24.2->143.3 s). Any change
-  that pushes completeness has to be paired with a cost argument.
-- **Point count is noisy at the several-percent level between runs of the same build and flags**
-  (identical June runs: Barn 7.75/7.48/7.70 M, Meetingroom 3.53/3.56/3.11 M - 14 % spread), because
-  PatchMatch is unseeded. Any fusion A/B must therefore run on **frozen `.dmap` files**, never on
-  two separate densifications, or it measures the RNG. Mesh A/Bs have the matching rule: one frozen
-  `scene_dense.mvs`, and the seeded sampler above.
-
----
-
-## 7. Fixture appendix
-
-Fixtures A and B below back live regression tests in `apps/Tests/TestsMVS.cpp`
-(`MeshBipyramidFixtureTest`/`MeshTetraInteriorPointFixtureTest`, run by `Tests.exe 0` since they
-need no dataset) and lock the cut topology of two hand-derived synthetic scenes — a
-regression that drops or relocates the orphaned `D_in` vote, or flips a `mirror_facet` arc, will
-fail these tests. Further hand-solvable fixture ideas (for the quality term, the free-space-support
-triple test, and the WSS enforcement arithmetic) were designed during this effort but never wired
-into the test suite; their specs live in git history if needed later.
-
-### Common harness notes
-
-Apply to both fixtures below:
-
-* Build the `Scene` in memory: `scene.pointcloud.points/pointViews/pointWeights` +
-  `scene.images` with valid `Camera` (`camera.C`, `camera.P`, `imageData.width/height`,
-  `imageData.ID`), then call `scene.ReconstructMesh(params)` with a `ReconstructMeshParams`
-  carrying `distInsert=0.f`, `bUseFreeSpaceSupport=false`, `bUseOnlyROI=false`,
-  `kSigma=<below>`, `kQual=0.f`, `bAdaptiveSigma=false`, `bCanonicalRescale=false` and
-  `maxEdgeScale=0.f`; every reconstruction knob lives in that struct, there are no positional
-  arguments left.
-  * `distInsert = 0` ⇒ the "insert all points" branch, no vertex merging.
-  * `bUseFreeSpaceSupport = false` ⇒ the WSS block is skipped, so `t` is not multiplied.
-  * `kQual = 0` ⇒ `q ≡ 0`, so arc capacity == `f` exactly.
-  * `bAdaptiveSigma=false`, `bCanonicalRescale=false`, `maxEdgeScale=0` — both fixtures are
-    hand-solved under the single global sigma and the ungated extraction, and the shipped
-    defaults differ.
-* `pointWeights` left empty ⇒ every `α_vis = 1`.
-* **Do not assume CGAL cell indices.** Identify cells by `delaunay.locate(<interior probe
-  point>)` and facets by `cell->index(vertexHandleOf(X))`; identify vertices by
-  `delaunay.nearest_vertex(point_t(...))`. Both fixtures are Delaunay-unique, so the
-  combinatorics are stable, but the numbering is not.
-* Cameras must look at the scene with a wide FOV: `width = height = 640`,
-  `K = [200 0 320; 0 200 240; 0 0 1]`, `R` as stated, `C` as stated. Any FOV containing the
-  whole point set works — the frustum only gates infinite cells.
-* Tolerance: `1e-6` absolute on `edge_cap_t` (float) comparisons.
-
-### Fixture A — "bipyramid": 2 finite tetrahedra, 1 camera, 1 contributing point
-
-**Points** (all 5 inserted; each has `pointViews = {0}`):
-
-| name | coordinates |
-|---|---|
-| A | `( 1.0,  0.0,               0.0)` |
-| B | `(-0.5,  0.8660254037844386, 0.0)` |
-| C | `(-0.5, -0.8660254037844386, 0.0)` |
-| D | `( 0.0,  0.0,               3.0)` |
-| E | `( 0.0,  0.0,              -3.0)` |
-
-`A,B,C` = equilateral triangle, circumradius 1, in the plane `z = 0`, centred on the z-axis.
-
-**Camera 0**: `C = (0, 0, 1.5)`, looking along −z (any pose whose frustum contains the whole
-bipyramid).
-
-**Delaunay uniqueness (verified numerically)**: circumsphere(A,B,C,D) centre `(0,0,4/3)`,
-r=`5/3`; `|E−centre| = 4.333 > r`. Circumsphere(A,B,C,E) centre `(0,0,−4/3)`, r=`5/3`;
-`|D−centre| = 4.333 > r`. So the triangulation is exactly `T_up = {A,B,C,D}`,
-`T_dn = {A,B,C,E}` sharing facet `ABC`, plus 6 infinite cells.
-
-**σ**: finite edges are `AB,BC,CA` (len²=3, ×3) and `AD,BD,CD,AE,BE,CE` (len²=10, ×6); 9 values
-⇒ median = 10. Pass `kSigma = 0.31622776601683794` (=1/√10) ⇒ σ = 1.0 exactly.
-
-**Ray inventory**: rays to A, B, C, D each hit a vertex of the camera's own cell `T_up` on the
-first `intersect` call ⇒ zero contribution, no `t`. The ray to E crosses facet `ABC` at its
-centroid, enters `T_dn`, terminates at vertex E.
-
-**Expected state (α=1, kQual=0)**:
-
-| quantity | expected |
-|---|---|
-| `infoCells[T_up].f[T_up->index(D)]` | `0.9888910034617577` (= `1 − e^{−4.5}`, d=3) |
-| every other `f[·]` | `0.0` |
-| `infoCells[T_up].s` | `kInf` |
-| `s` of every other cell (incl. all 6 infinite) | `0.0` |
-| `Σ_cells t` | `1.0` |
-| the single cell with `t != 0` | infinite, incident to vertex E |
-| arc `T_up → T_dn` capacity | `0.9888910034617577` |
-| arc `T_dn → T_up` capacity | `0.0` |
-
-**What this proves**: the free→full capacity for a camera-side crossing sits on the arc
-`T_up → T_dn` (along the ray), the reverse arc is exactly zero; the weight is
-`α(1−e^{−d²/2σ²})` with d measured from **P = E** (d=3), not from the camera (d=1.5, which
-would give a visibly different 0.6753475); the finite-camera-cell branch stamps exactly one
-cell.
-
-### Fixture B — "tetra + interior point": `mirror_facet` and the σ-shifted `D_in`
-
-**Points** (all 5 inserted). Let `s3 = 1.7320508075688772`.
-
-| name | coordinates | `pointViews` |
+| Default | Comparison | Result |
 |---|---|---|
-| P  | `( 0.0, 0.0, 0.0)` | `{0}` |
-| V0 | `( 1.5, 0.5, 6.0)` | `{1}` |
-| V1 | `( 4.0, 0.0, -2.0)` | `{0}` |
-| V2 | `(-2.0,  2*s3, -2.0)` | `{0}` |
-| V3 | `(-2.0, -2*s3, -2.0)` | `{0}` |
+| Solver = TetraFlow | vs the previous IBFS, on ball/room/Truck/Courthouse (1.5M/6.5M/8.0M/18.4M cells) | solve 0.70/6.9/6.3/17.0s vs IBFS 1.27+0.22/12.0+0.9/11.0+1.1/27.0+2.6s (solve+init); peak solver memory 99/423/530/1248MB vs 293/1236/1518/3509MB; raw meshes byte-identical (ASan/UBSan-checked against an exact reference solver; `apps/Tests/TestsMath.cpp` keeps a reference-checked unit test) |
+| `--canonical-rescale 1` | scene forced to 1e-6 / 1e6 of the calibrated band | at 1e-6, all 72542/72542 camera rays are dropped (every walk step reads COPLANAR), producing an empty mesh; at 1e6, 7 vertices are lost to float-noise near-degeneracies — the rescale is a correctness fix, not only a speed one |
+| `--adaptive-sigma 1` | vs a single global sigma, all four T&T scenes | raw graph-cut surface ΔF1: Ignatius +0.039, Truck +0.015, Barn +0.012, Meetingroom +0.008 (positive on every scene); also the fastest arm tested (Ignatius graph-cut solve 32.4s vs 35-50s for every alternative arm) |
+| `--thickness-factor 1` (library `kSigma=1.f`) | vs the old library default `kSigma=2` | ΔF1 in favor of 1: Ignatius +0.146, Truck +0.043 |
+| `--free-space-support 0` | vs enabling it at default WSS constants | ΔF1 cost of enabling: Ignatius −0.048, Truck −0.052 |
+| `--max-edge-scale 2`, capped-face gate (`RemoveLongEdgeFacesCapped`) | see the gate table below | mean F1 over Herz-Jesu-P8 / Ignatius / Truck 0.6493 vs 0.5905 ungated |
 
-**Camera 0**: `C = (0, 0, -10)`, looking +z, wide FOV. **Camera 1**: `C = (1.5, 0.5, 26)`,
-looking −z, wide FOV (exists only so V0 has a view whose ray provably contributes nothing).
+Long-edge gate, all arms cleaned from the same ungated graph-cut surface per scene (Herz-Jesu-P8:
+EPFL mesh-to-mesh evaluator, tau 0.01, 500k samples, completeness restricted to camera-visible GT;
+Truck, Ignatius: Tanks and Temples toolbox at the official tau). "capped, factor f" = the shipped
+`RemoveLongEdgeFacesCapped` with candidates above f × the median longest edge (reach 4, cone 0.35);
+"ring k" = the halfmesh k-ring median statistic (`RemoveLongEdgeFacesLocal`) at factor 4;
+"reconstruction-side" arms are the gates that used to live inside `Scene::ReconstructMesh` (full
+reconstruction with that binary, so not the same raw surface).
 
-**Triangulation**: P is strictly inside tetra `V0V1V2V3` ⇒ a unique star-of-P triangulation:
-`Ca={P,V1,V2,V3}`, `Cb={P,V0,V2,V3}`, `Cc={P,V0,V1,V3}`, `Cd={P,V0,V1,V2}`, plus 4 infinite
-cells over the hull facets.
+| arm | Herz-Jesu-P8 F1 (P / R) | Ignatius F1 (P / R) | Truck F1 (P / R) |
+|---|---|---|---|
+| ungated | 0.5141 (0.5625 / 0.4733) | 0.7376 (0.7546 / 0.7212) | 0.5198 (0.4211 / 0.6788) |
+| **capped, factor 2 (shipped)** | 0.5212 (0.6141 / 0.4527) | 0.7452 (0.7714 / 0.7208) | 0.6816 (0.6966 / 0.6674) |
+| capped, factor 3 | 0.5221 (0.6110 / 0.4558) | 0.7429 (0.7660 / 0.7212) | 0.6669 (0.6590 / 0.6750) |
+| capped, factor 4 | 0.5232 (0.6100 / 0.4579) | 0.7425 (0.7652 / 0.7212) | 0.6559 (0.6350 / 0.6782) |
+| ring 1 | 0.5143 (0.5635 / 0.4730) | 0.7375 (0.7545 / 0.7212) | 0.5201 (0.4215 / 0.6789) |
+| ring 2 | 0.5228 (0.5904 / 0.4691) | 0.7386 (0.7572 / 0.7210) | 0.5435 (0.4522 / 0.6808) |
+| ring 3 | 0.5251 (0.6113 / 0.4602) | 0.7415 (0.7629 / 0.7211) | 0.6000 (0.5343 / 0.6841) |
+| ring 3, factor 3 | 0.5249 (0.6197 / 0.4552) | 0.7425 (0.7650 / 0.7212) | 0.6129 (0.5551 / 0.6840) |
+| ring 3, factor 6 | 0.5232 (0.5960 / 0.4663) | 0.7393 (0.7585 / 0.7211) | 0.5810 (0.5055 / 0.6830) |
+| reconstruction-side local + common-view gate (rejected, §6) | 0.5151 (0.5654 / 0.4731) | 0.7424 (0.7651 / 0.7211) | 0.6420 (0.6074 / 0.6808) |
+| reconstruction-side global-median gate (rejected, §6) | 0.4739 (0.6160 / 0.3850) | 0.7427 (0.7654 / 0.7212) | 0.6606 (0.6456 / 0.6762) |
 
-**σ**: 10 finite edge lengths² sorted, median = 48 ⇒ `kSigma = 0.5773502691896258` (=1/√3) ⇒
-σ = 4.0 exactly.
-
-**Ray inventory**: V1/V2/V3 from camera 0 and V0 from camera 1 all hit their own vertex on the
-first `intersect` call ⇒ no contribution. P from camera 0 is the only contributing ray: walk 1
-crosses hull facet V1V2V3 at its centroid (d₁=2.0), enters Ca, terminates at P; walk 2's end
-point `P + 4·(0,0,1) = (0,0,4)` is outside the hull, so the +z ray from P enters `Cb` and exits
-through facet V0V2V3 at a strictly-interior point (d₂ = 18/7 = 2.5714285714285716).
-
-**Expected state (α=1, kQual=0)**:
-
-| quantity | expected |
-|---|---|
-| `infoCells[infCell(V1V2V3)].f[·]` for facet V1V2V3 | `0.11750309741540454` (=`1−e^{−0.125}`, d=2) |
-| `infoCells[Cb].f[Cb->index(vP)]` (facet V0V2V3) | `0.18668163487015432` (=`1−e^{−(18/7)²/32}`, d=18/7) |
-| `infoCells[Ca].f[Ca->index(vP)]` (mirror of V1V2V3) | `0.0` |
-| `infoCells[infCell(V0V2V3)].f[·]` (mirror) | `0.0` |
-| every other `f[·]` | `0.0` |
-| `s` of Ca,Cb,Cc,Cd (all finite) | `0.0` |
-| `s` of all 4 infinite cells | `kInf` |
-| `Σ_cells t` | `1.0` |
-| the single cell with `t != 0` | infinite, contains `(0,0,4)` |
-
-**What this proves**: the behind-the-point crossing is deposited through `mirror_facet` on the
-arc away from the camera (`Cb → infCell(V0V2V3)`), reverse arc exactly zero — if `mirror_facet`
-were dropped, `0.18668163` would land on the wrong cell and the test fails; both distances (2
-and 18/7) are measured from P, not the camera; `t` lands undecayed on the cell at `P + σ·dir`
-and nowhere else; all infinite cells are hard-stamped while the 4 finite cells are untouched.
+The shipped gate has the best mean F1 of every arm (0.6493) and is the only one that beats both
+the ungated surface and the old reconstruction-side global-median gate on every scene: Truck +0.021
+over that gate while Herz-Jesu recall stays at 0.4527 instead of collapsing to 0.3850. Truck's loss
+is pure precision (recall is 0.67-0.68 on every arm): over half of the ungated in-crop area is false
+surface, half of it in a few thousand giant faces forming a lid across the open truck bed, a sheet
+behind the cab and a sheet under the chassis. Those sheets are contiguous and uniformly coarse, so
+no k-ring statistic can see them (their own ring median is as large as their edges: ring 1 is a
+no-op, ring 3 at best halves the loss), and a pure edge-length threshold cannot remove them without
+also removing Herz-Jesu's coarse plain wall and staircase, which are real (best single global
+factor, 8, reaches a mean of only 0.631). What separates the two is that the lid has real surface
+close behind it along its normal and the wall has nothing: the capped-face probes test exactly
+that. Larger candidate factors trade Truck precision for a little Herz-Jesu recall (factor 4:
+Truck 0.6559, Herz-Jesu recall +0.005); the gate costs about 1 s of Clean wall on a 5M-face mesh.
+Statistics more aggressive than the k-ring median (minimum or lower-quartile edge length in the
+k-ring, the minimum of the neighbouring vertices' medians) reach Truck F1 0.65-0.68 but cut
+Herz-Jesu recall to 0.25-0.44.
 
 ---
 
-## 8. Open items
+## 6. Rejected alternatives
+
+- **Global-median cut-facet gate inside reconstruction**: one scene-wide median edge length removes
+  directly-observed sparse background along with true webbing (Herz-Jesu recall collapse; most
+  rejected facets had a camera common to all three vertices).
+- **Per-vertex Delaunay-star scale + common-view ("hybrid") gate inside reconstruction**: needs
+  per-vertex view lists and extra state carried through the Delaunay stage; the mesh-side
+  post-process (`RemoveLongEdgeFacesCapped`, §2.4) does better with no image projection or
+  ray casting.
+- **Visibility-mass gate** (`--min-surface-evidence`): ~60% of true-surface facets also carry
+  exactly zero accumulated mass (a ray crosses only 1-2 facets of a vertex's ~20-facet umbrella); no
+  mass threshold separates webbing from true surface.
+- **Grazing-incidence down-weighting**: harmful once measured on the corrected smoother; the
+  apparent old gain was an artifact of a since-fixed smoothing bug.
+- **WSS enforcement semantics variants** (`add`, `max` vs the shipped `product`): `add` and `max`
+  both break the protective `t==0` no-op by firing on cells no vote ever reached; `paper` is
+  ≡ `product` on dense clouds, so it buys nothing.
+- **Footprint-based sigma** (per-pixel range/focal as an alternative sigma_v source): physically the
+  same signal as the confidence-based entries below (within noise on every scene tested) and
+  slower.
+- **Confidence sigma shrink** (`sigma_v *= 1 - s·conf_v`): does not stack with adaptive sigma (same
+  underlying information); at or below the weight-1 baseline on recalibrated clouds.
+- **Weighted votes as an unconditional default**: every data-term capacity shrinks by the mean point
+  confidence while the quality term and camera hard constraints keep unit-vote calibration,
+  collapsing the cut on un-recalibrated clouds. Stays an explicit opt-in (`--constant-weight 0`).
+- **Quality co-scale** (`kQual *= mean consumed confidence`, meant to rehabilitate the item above):
+  within noise of the bare weighted-vote result; not worth a second code path.
+- **kAbs/kOutl proportional rescale**: the product-semantics WSS enforcement saturates the t-edge at
+  nearly every setting tested regardless of the constants, so a rescale only changes *which* cells
+  get nuked, never *how hard*.
+- **EIBFS solver** (vs the then-bundled IBFS): speed-neutral on real graphs and crashes at scale;
+  carries a research-only license.
+- **Carve-only rays from unfused pixels** (`--carve-rays-file`): below the default-flip acceptance
+  gate, and by construction cannot reach true webbing (a ray that could reach it would have produced
+  a fused point there).
+- **No-decimation control** (`--min-point-distance 0`): worse F1 at several times the graph-cut
+  cost; decimation is not a source of fidelity loss.
+
+---
+
+## 7. Open items
 
 - **Load-time centering** for float-quantized large-coordinate point clouds (~6cm quantization at
-  UTM magnitude, §6) — an import-side fix touching all pipelines (Interface importers /
-  CreateStructure), not a mesh-stage change. Not started.
-- **Depth-maps as direct mesh input**, bypassing or supplementing the fused cloud. Not started;
-  what motivates it is that fusion discards most of the evidence it is given — of the valid depths
-  in the reference maps it admits 48 % (Ignatius), 56 % (Truck) and 30 % (Meetingroom), i.e. it
-  drops 44-70 %, and every scene throws away 9-10 M pixels at confidence ≥ 0.7. The dropped mass
-  splits in two: everything below confidence 0.1 (the `1 - fNCCThresholdKeep` cut, 24-35 % of
-  pixels) and, almost all of the remainder, geometrically consistent depth that simply failed to
-  cluster into `nMinPixelsFuse` ≥ 5 pixels. The removed carve-replay prototype (§5) proved that
-  insertion and ray-walking decouple cleanly — it walked rays for points that were not vertices at
-  all, at 1.6-3.3 us per ray — so the shape of such a change is decimated vertices plus dense
-  rays, and the costs in §6 bound what it may insert.
-- **Fusion re-baselining.** Done (August 2026), recorded in `docs/design/DepthMapFusion.md`:
-  the bench's pre-#1292 reference clouds were stale artifacts, re-frozen rather than adopted, and
-  the one lever that survived the campaign — the fusion reprojection-error threshold 1.2 → 1.0 —
-  is now the default.
-- **Acceptance gates for future work on this energy**: mean paired mesh-F1 ≥ +0.003 beyond the
-  0.0006 noise floor; no scene regressing more than 0.003 F1; ≥5% median improvement for
-  exact-result speed changes. Judge every change on the **raw+gated surface** (§2's protocol),
-  never on the cleaned mesh — that is exactly the measurement mistake this whole effort had to
-  recover from (§3).
-- Other standing guardrails from the executed plan, still binding: confidence enters the
-  visibility data term only — never `kQual`/circumsphere quality, camera hard constraints, or a
-  second generic per-cell unary; no generic k-NN/smoothing prefilters by default (they erase thin
-  structure); the max-flow solver is TetraFlow (§5's solver entries have the numbers); `RefineMesh` is out
-  of scope here and has its own design document; face count is not a completeness metric —
-  score by F1 on ground truth.
+  UTM magnitude, §4) — an import-side fix touching every pipeline that produces a `PointCloud`
+  (Interface importers, `CreateStructure`), not a mesh-stage change. Not started.
+- **Depth-maps as direct mesh input**, bypassing or supplementing the fused cloud, so the mesh stage
+  can recover the geometrically-consistent depth fusion discards for failing to cluster into
+  `nMinPixelsFuse` agreeing estimates. Not started.
+- **Acceptance gates for future work on this energy**: mean paired mesh-F1 >= +0.003 beyond the
+  0.0006 noise floor; no scene regressing more than 0.003 F1; >=5% median improvement for
+  exact-result speed changes. Judge every reconstruction-stage change on the raw graph-cut surface,
+  never on the cleaned mesh.
+- Standing guardrails: confidence enters the visibility data term only — never `kQual`/circumsphere
+  quality, camera hard constraints, or a second generic per-cell unary; no generic k-NN/smoothing
+  prefilters by default (they erase thin structure); face count is not a completeness metric — score
+  by F1 on ground truth.

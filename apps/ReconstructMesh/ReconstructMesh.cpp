@@ -62,6 +62,7 @@ bool bUseConstantWeight;
 Scene::ReconstructMeshParams reconstructParams;
 float fDecimateMesh;
 unsigned nTargetFaceNum;
+float fMaxEdgeScale;
 float fRemoveSpurious;
 bool bRemoveSpikes;
 unsigned nCloseHoles;
@@ -132,12 +133,12 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		// single call site can pass the struct and still leave the default path unchanged
 		("adaptive-sigma", boost::program_options::value(&OPT::reconstructParams.bAdaptiveSigma)->default_value(true), "derive the point uncertainty sigma per-vertex from its median incident Delaunay edge length, clamped to [0.25,4] x the global sigma (0 - the single global sigma everywhere)")
 		("canonical-rescale", boost::program_options::value(&OPT::reconstructParams.bCanonicalRescale)->default_value(true), "rescale the triangulation by a power of two so the median Delaunay edge lands near 1, where the ray-walk orientation predicate is calibrated; no-op unless the median edge falls outside [2^-10,2^10]")
-		("max-edge-scale", boost::program_options::value(&OPT::reconstructParams.maxEdgeScale)->default_value(4.f), "drop extracted surface facets whose longest edge exceeds this multiple of the median cut-facet longest edge - the gap-spanning webbing grown across occluded space no observation supports (relative units, scale-independent; 0 - disabled)")
 		;
 	boost::program_options::options_description config_clean("Clean options");
 	config_clean.add_options()
 		("decimate", boost::program_options::value(&OPT::fDecimateMesh)->default_value(1.f), "decimation factor in range (0..1] to be applied to the reconstructed surface (1 - disabled)")
 		("target-face-num", boost::program_options::value(&OPT::nTargetFaceNum)->default_value(0), "target number of faces to be applied to the reconstructed surface. (0 - disabled)")
+		("max-edge-scale", boost::program_options::value(&OPT::fMaxEdgeScale)->default_value(2.f), "remove faces whose longest edge exceeds this factor times the median longest edge and that have mesh surface close behind or in front of them along their normal (a lid over a cavity), before any other cleaning (0 - disabled)")
 		("remove-spurious", boost::program_options::value(&OPT::fRemoveSpurious)->default_value(20.f), "spurious factor for removing faces with too long edges or isolated components (0 - disabled)")
 		("remove-spikes", boost::program_options::value(&OPT::bRemoveSpikes)->default_value(true), "flag controlling the removal of spike faces")
 		("close-holes", boost::program_options::value(&OPT::nCloseHoles)->default_value(30), "close every hole in the reconstructed surface spanned by at most this many boundary edges (0 - disabled)")
@@ -202,8 +203,8 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	if (OPT::strInputFileName.empty())
 		return false;
 	OPT::strExportType = OPT::strExportType.ToLower() == _T("obj") ? _T(".obj") : _T(".ply");
-	if (OPT::reconstructParams.maxEdgeScale < 0.f) {
-		VERBOSE("error: invalid max edge scale %g (expected >= 0, 0 disables the gate)", OPT::reconstructParams.maxEdgeScale);
+	if (OPT::fMaxEdgeScale < 0.f) {
+		VERBOSE("error: invalid max edge scale %g (expected >= 0, 0 disables the gate)", OPT::fMaxEdgeScale);
 		return false;
 	}
 
@@ -480,6 +481,7 @@ int main(int argc, LPCTSTR* argv)
 		const float fDecimate(OPT::nTargetFaceNum ? static_cast<float>(OPT::nTargetFaceNum) : OPT::fDecimateMesh);
 		Mesh::CleanParams cleanParams;
 		cleanParams.simplifyTarget = fDecimate;
+		cleanParams.maxEdgeScale = OPT::fMaxEdgeScale;
 		cleanParams.spuriousFactor = OPT::fRemoveSpurious;
 		cleanParams.removeSpikes = OPT::bRemoveSpikes;
 		cleanParams.maxHoleEdges = OPT::nCloseHoles;
