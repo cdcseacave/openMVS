@@ -26,6 +26,9 @@ DensifyPointCloud scene_000n.mvs --dense-config-file Densify.ini
 
 This script helps to automate the process of calling DensifyPointCloud/ReconstructMesh on all sub-scenes.
 
+Each sub-scene is reconstructed independently: the meshes of adjacent sub-scenes are cropped to
+their bounding boxes and are not stitched, so their boundaries can have gaps or unmatched vertices.
+
 usage: MvsScalablePipeline.py openMVS_module input_scene <options>
 
 ex: DensifyPointCloud scene_XXXX.mvs --number-views-fuse 2
