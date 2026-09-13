@@ -585,7 +585,7 @@ static CutJunctionMap MeasureCutJunctions(const Scene& scene, const std::vector<
 			j.directions.push_back((float)d.direction);
 		if (d.rotation > maxAgreementAngle)
 			++j.numRotationOff;
-		else if (d.HasDirection() && d.direction > maxAgreementAngle)
+		else if (d.HasDirection() && d.direction > d.DirectionTolerance(maxAgreementAngle))
 			++j.numDirectionOff;
 		else
 			++j.numAgree;
@@ -976,7 +976,7 @@ RemovedImages SFM::FilterWeaklyConnectedImages(Scene& scene,
 					const PairDisagreement d = MeasurePairAgainstModel(scene, pair, imageID, neighborID);
 					if (d.rotation > maxCorroborationAngle)
 						++numRotationOff; // the pair puts the image at another orientation than the model does
-					else if (d.HasDirection() && d.direction > maxCorroborationAngle)
+					else if (d.HasDirection() && d.direction > d.DirectionTolerance(maxCorroborationAngle))
 						++numDirectionOff; // ... or on another side of its neighbor
 					else
 						++numWitnesses[imageID];

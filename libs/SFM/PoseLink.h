@@ -73,12 +73,23 @@ inline PoseLink MakePoseLink(const ImagePair& pair, IIndex neighborID)
 // direction is left unset (negative) when the pair fixes none: a near-duplicate pair (its matches
 // triangulate under two degrees, so its own baseline direction is unreliable), a pair of no
 // baseline, or two centres that coincide; such a pair is judged on the rotation alone.
+// The direction is held to the tolerance as seen from the structure the pair triangulates, not
+// from the neighbor: a pose off by the tolerance angle as seen from that structure, which sits at
+// about baseline / rayAngle, swings the baseline direction by atan(tan(tolerance) / rayAngle), so
+// a pair of nearly parallel rays forgives a wide direction error and a wide-baseline pair little.
+// A pair of unknown ray angle is held to the plain tolerance.
 struct PairDisagreement
 {
 	REAL rotation;  // degrees
 	REAL direction; // degrees; negative when the pair fixes no direction
+	REAL rayAngle;  // radians, the pair's median triangulation angle; 0 when unknown
 	bool HasDirection() const { return direction >= 0; }
-	bool Within(float maxAngle) const { return rotation <= maxAngle && (!HasDirection() || direction <= maxAngle); }
+	REAL DirectionTolerance(float maxAngle) const {
+		return rayAngle > 0 ? R2D(ATAN(TAN(D2R(REAL(maxAngle))) / rayAngle)) : REAL(maxAngle);
+	}
+	bool Within(float maxAngle) const {
+		return rotation <= maxAngle && (!HasDirection() || direction <= DirectionTolerance(maxAngle));
+	}
 };
 inline PairDisagreement MeasurePairDisagreement(const ImagePair& pair, const Pose3D& image, const Pose3D& neighbor, IIndex neighborID)
 {
@@ -86,6 +97,7 @@ inline PairDisagreement MeasurePairDisagreement(const ImagePair& pair, const Pos
 	PairDisagreement d;
 	d.rotation = R2D(ACOS(MINF(MAXF(ComputeAngle(image.R, link.PredictedRotation(neighbor)), REAL(-1)), REAL(1))));
 	d.direction = -1;
+	d.rayAngle = ISFINITE(pair.meanRayAngle) && pair.meanRayAngle > 0.f ? REAL(pair.meanRayAngle) : REAL(0);
 	const bool nearDuplicate = pair.meanRayAngle > 0.f && pair.meanRayAngle < D2R(2.f);
 	Point3 modelDirection(image.C - neighbor.C), pairDirection;
 	const REAL baseline = norm(modelDirection);

@@ -325,6 +325,10 @@ bool CorroboratedImageTest();
 // resection that follows, the latter get another chance once the model has grown.
 bool ContradictingImagesTest();
 
+// A pair's baseline direction is held to the rotation tolerance as seen from the structure the pair
+// triangulates: a near-parallel pair forgives a wide direction error, a wide-baseline pair little.
+bool PairDirectionToleranceTest();
+
 // Test function for rotation estimation
 bool RotationEstimatorTest();
 

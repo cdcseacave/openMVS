@@ -39,6 +39,7 @@
 #include "../../libs/SFM/BundleAdjustment.h"
 #include "../../libs/SFM/SceneCluster.h"
 #include "../../libs/SFM/GlobalAlignment.h"
+#include "../../libs/SFM/PoseLink.h"
 #include "../../libs/SFM/MatchGeometric.h"
 #include "../../libs/SFM/RoMa2Matcher.h"
 #include "../../libs/SFM/SphereCubeMap.h"
@@ -9107,6 +9108,56 @@ bool ContradictingImagesTest()
 
 	VERBOSE("ContradictingImagesTest PASSED: the one image whose pairs disagree with its pose is named, the two "
 		"removed for lack of a witness are not (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// The baseline direction a pair predicts is held to the same tolerance as the rotation, measured from
+// the structure the pair triangulates rather than from the neighbour: a pose off by the tolerance as
+// seen from that structure swings the direction by atan(tan(tolerance) / rayAngle), so a pair of
+// nearly parallel rays forgives a wide direction error and a wide-baseline pair forgives little
+bool PairDirectionToleranceTest()
+{
+	TD_TIMER_START();
+	constexpr float MAX_ANGLE = 5.f;      // degrees, the rotation tolerance
+	constexpr REAL DIRECTION_OFF = 0.14;  // sideways shift of a unit baseline: about 8 degrees
+
+	Pose3D neighbour;
+	neighbour.R = Matrix3x3::IDENTITY;
+	neighbour.C = Point3(0, 0, 0);
+	Pose3D image(neighbour);
+	image.C = Point3(1, 0, 0);
+	ImagePair pair(0, 1);
+	pair.relativePose = image / neighbour;
+	pair.weightedInliers = 100.f;
+	pair.weightSpatial = 1.f;
+	pair.weightConnectivity = 1.f;
+	Pose3D placed(image);
+	placed.C = Point3(1, DIRECTION_OFF, 0);
+
+	struct Case { float rayAngleDeg; bool within; const char* why; };
+	const Case cases[] = {
+		{ 4.f, true, "a pair whose rays are 4 degrees apart cannot place its image nearer than 50 degrees of direction" },
+		{ 60.f, false, "a pair whose rays are 60 degrees apart fixes the direction to about the rotation tolerance" },
+		{ 0.f, false, "a pair of unknown ray angle is held to the plain tolerance" },
+	};
+	for (const Case& c : cases) {
+		pair.meanRayAngle = (float)D2R(c.rayAngleDeg);
+		const PairDisagreement d = MeasurePairDisagreement(pair, placed, neighbour, 0);
+		if (d.rotation > 1e-3 || !d.HasDirection() || ABS(d.direction - R2D(ATAN(DIRECTION_OFF))) > 0.1) {
+			VERBOSE("PairDirectionToleranceTest FAILED: the pair measures %.2f degrees of rotation and %.2f of direction "
+				"against a pose shifted by %.2f of its baseline", d.rotation, d.direction, DIRECTION_OFF);
+			return false;
+		}
+		if (d.Within(MAX_ANGLE) != c.within) {
+			VERBOSE("PairDirectionToleranceTest FAILED: at a ray angle of %.0f degrees the %.2f-degree direction error "
+				"was %s the %.0f-degree tolerance; %s", c.rayAngleDeg, d.direction, c.within ? "held against" : "forgiven by",
+				MAX_ANGLE, c.why);
+			return false;
+		}
+	}
+
+	VERBOSE("PairDirectionToleranceTest PASSED: the direction tolerance follows the pair's ray angle (%s)",
+		TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 

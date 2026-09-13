@@ -133,7 +133,10 @@ relative pose alone does not have -- its tracks are two-view, with no covisibili
 Corroboration (`maxCorroborationAngle`, default 5 degrees) rescues such an image when at least two
 verified pairs, each carrying 15 or more weighted inliers, join it to images already settled -- settled
 starting as whatever the tier verdicts and the largest component keep on their own merits -- and each
-pair's model rotation and baseline direction agree with what it measured, within that angle. A
+pair's model rotation and baseline direction agree with what it measured. The rotation is held to
+that angle; the baseline direction to the same angle as seen from the structure the pair triangulates,
+`atan(tan(angle) / rayAngle)` for the pair's median triangulation angle, since a pose that far off as
+seen from the structure swings a short baseline's direction much further than a long one's. A
 near-duplicate pair, whose rays triangulate under 2 degrees, is judged on rotation alone. Settled grows
 a round at a time as newly corroborated images become witnesses for the next round, rescuing a chain of
 relative-pose registrations as far as it reaches back -- but never from an image its own round is still
