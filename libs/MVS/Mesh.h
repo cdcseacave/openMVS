@@ -201,7 +201,7 @@ public:
 		// that cap a cavity, i.e. have mesh surface close behind or in front of them along their
 		// normal, before any other cleaning; a coarsely sampled real surface has nothing behind
 		// it and survives; 0 disables
-		float maxEdgeScale{0.f};
+		float maxEdgeScale{2.f};
 		float spuriousFactor{0.f}; // RemoveSpuriousComponents factor (0 - disabled)
 		bool removeSpikes{false};
 		unsigned maxSpikeIterations{100};
