@@ -15081,6 +15081,44 @@ static bool CheckVoteRule(const Transform transforms[2])
 		}
 	}
 
+	// the same sixty correspondences merely imprecise -- every point pushed off along the camera's
+	// image plane by about twice the bar, past it but within the loose one -- abstain rather than
+	// contradict: a camera a few pixels off is imprecise, one whose correspondences miss even the
+	// loose bar is placed elsewhere
+	{
+		SeamCandidate c(measured);
+		const IIndex image = voters[3].second;
+		KeepSomeCorrespondences(c, image, 120);
+		const Image& img = subScenes[1].images[localOf1.at(image)];
+		const Transform TInv(c.T.Invert());
+		unsigned numDisplaced = 0;
+		FOREACH(i, c.observations) {
+			if (c.correspondences[i].imageB != image)
+				continue;
+			// the point in the camera's own frame, moved sideways by what reprojects to about
+			// twice the bar at its depth, then put back into the frame it is stored in
+			SeamObservation& obs = c.observations[i];
+			const Point3 X((obs.forward ? c.T : TInv) * obs.X);
+			const Point3 d(obs.R * (X - obs.C));
+			const REAL depth = d.z;
+			if (depth <= 0)
+				continue;
+			const REAL shift = 2.0 * alignCfg.maxReprojError * depth / img.pCamera->GetFocalLength();
+			const Point3 moved(X + obs.R.t() * Point3(shift, 0, 0));
+			obs.X = (obs.forward ? TInv : c.T) * moved;
+			++numDisplaced;
+		}
+		merger.ScoreCandidate(subScenes, c);
+		const CameraVote* vote = FindVote(c.score, image);
+		if (vote == NULL || vote->vote != 0 || vote->inliers * 10 > vote->correspondences) {
+			VERBOSE("HierarchicalCameraAlignmentTest FAILED: camera %u with %u correspondences displaced by twice the bar "
+				"voted %d with %u/%u inliers, expected abstention on almost none",
+				image, numDisplaced, vote == NULL ? 0 : (int)vote->vote, vote == NULL ? 0 : vote->inliers,
+				vote == NULL ? 0 : vote->correspondences);
+			return false;
+		}
+	}
+
 	// inliers all crowded into one cell of the image support nothing: the bearings the seam was
 	// collected from do not move, so the camera keeps every one of its inliers
 	{
@@ -15102,7 +15140,7 @@ static bool CheckVoteRule(const Transform transforms[2])
 			return false;
 		}
 	}
-	VERBOSE("  camera votes: crowded inliers abstain, forty spread ones support, corrupted ones contradict");
+	VERBOSE("  camera votes: crowded inliers abstain, forty spread ones support, corrupted ones contradict, displaced ones abstain");
 	return true;
 }
 

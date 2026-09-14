@@ -293,8 +293,14 @@ namespace {
 // The bars of the seam rules that are not configurable, each with the rule it belongs to.
 // A camera supports a transform only when this share of its correspondences are inliers.
 constexpr float kVoteSupportFraction = 0.3f;
-// A camera contradicts a transform when its inlier share falls under this.
+// A camera contradicts a transform when its inlier share falls under this ...
 constexpr float kVoteContraFraction = 0.1f;
+// ... and fewer than this share of its correspondences fall within kLooseSeamFactor times the bar:
+// a camera merely imprecise -- the edge of a right block a few pixels off, or dense correspondences
+// scattered about the bar -- misses the bar and not the loose one; a camera placed elsewhere
+// misses both. On Alameda the cameras this told apart sat at a median 6-12 px off a right
+// placement, against 40-2400 px for the cameras of a bent block or a false seam.
+constexpr float kVoteContraLooseFraction = 0.5f;
 // Cells per axis of the image grid a supporting camera's inlier keypoints must spread over.
 constexpr unsigned kVoteGridCells = 4;
 // Reweighting rounds of every averaging of the seam graph.
@@ -1234,10 +1240,12 @@ void GlobalAlignment::ScoreSeam(
 		std::nth_element(cameraErrors.begin(), cameraErrors.begin() + cameraErrors.size() / 2, cameraErrors.end());
 		vote.medianError = (float)MINF(cameraErrors[cameraErrors.size() / 2], (REAL)1e6);
 		const float inlierFraction = (float)vote.inliers / (float)vote.correspondences;
+		const float looseFraction = (float)vote.looseInliers / (float)vote.correspondences;
 		if (vote.inliers >= config.minVoteInliers && inlierFraction >= kVoteSupportFraction &&
 			vote.coverage >= config.minVoteCoverage)
 			vote.vote = 1;
-		else if (vote.correspondences >= config.minVoteInliers && inlierFraction < kVoteContraFraction)
+		else if (vote.correspondences >= config.minVoteInliers && inlierFraction < kVoteContraFraction &&
+			looseFraction < kVoteContraLooseFraction)
 			vote.vote = -1;
 		const int side = sideOf(image);
 		ASSERT(side == 0 || side == 1);
@@ -2817,10 +2825,11 @@ bool GlobalAlignment::PlaceGroup(
 			h.failedGate = "pair agreement";
 		LogVotes(String::FormatString("Placement of block %u, %s",
 			firstBlock, PlacementWord(h.source)).c_str(), h.score);
-		DEBUG_ULTIMATE("Placement of block %u, %s: %u inliers of %u, %u+/%u- neighbours, %u pairs across weighing %.0f for / %.0f against, %u of %u neighbours contradicting%s%s",
+		DEBUG_ULTIMATE("Placement of block %u, %s: %u inliers of %u, %u+/%u- neighbours, %u pairs across weighing %.0f for / %.0f against, %u of %u neighbours contradicting, own-neighbour %.2f%s%s",
 			firstBlock, PlacementWord(h.source), h.score.inliers, (unsigned)pool.observations.size(),
 			verdict.support, verdict.contra, pairs.numPairs, pairs.agree, pairs.disagree,
-			pairs.numContra, pairs.numNeighbours, h.Passed() ? "" : ", dropped by ", h.failedGate.c_str());
+			pairs.numContra, pairs.numNeighbours, h.score.ownNeighbourFraction,
+			h.Passed() ? "" : ", dropped by ", h.failedGate.c_str());
 	}
 
 	// the largest vote of the cameras decides between them, and where two draw, the order they were
