@@ -346,7 +346,8 @@ int main(int argc, LPCTSTR* argv)
 		}
 		if (!scene.mesh.TransferTexture(newMesh, Mesh::DEFAULT_TEXTURE_BORDER, OPT::nTextureSize, faceSubsetIndices))
 			return EXIT_FAILURE;
-		newMesh.Save(baseFileName + OPT::strExportType);
+		if (!newMesh.Save(baseFileName + OPT::strExportType))
+			return EXIT_FAILURE;
 		VERBOSE("Texture transfered (%s)", TD_TIMER_GET_FMT().c_str());
 		return EXIT_SUCCESS;
 	}

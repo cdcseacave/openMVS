@@ -385,8 +385,7 @@ int main(int argc, LPCTSTR* argv)
 			scene.mesh.RemoveFacesOutside(scene.obb);
 			VERBOSE("Mesh trimmed to ROI: %u vertices and %u faces removed (%s)",
 				numVertices-scene.mesh.vertices.size(), numFaces-scene.mesh.faces.size(), TD_TIMER_GET_FMT().c_str());
-			scene.mesh.Save(baseFileName+OPT::strExportType);
-			return EXIT_SUCCESS;
+			return scene.mesh.Save(baseFileName+OPT::strExportType) ? EXIT_SUCCESS : EXIT_FAILURE;
 		}
 	}
 
@@ -401,7 +400,8 @@ int main(int argc, LPCTSTR* argv)
 			return EXIT_FAILURE;
 		// save mesh
 		const String fileName(MAKE_PATH_SAFE(OPT::strOutputFileName));
-		scene.mesh.Save(fileName);
+		if (!scene.mesh.Save(fileName))
+			return EXIT_FAILURE;
 		#if TD_VERBOSE != TD_VERBOSE_OFF
 		if (VERBOSITY_LEVEL > 2)
 			scene.ExportCamerasMLP(baseFileName+_T(".mlp"), fileName);

@@ -3847,12 +3847,20 @@ void Scene::PointCloudFilter(int thRemove)
 			Real dist;
 			FOREACHRAWPTR(pIdx, idices, size) {
 				const PointCloud::Index idx(*pIdx);
-				if (coneIntersect.Classify(pointcloud.points[idx], dist) == VISIBLE && !IsDepthSimilar(distance, dist, thSimilar)) {
-					if (dist > distance)
-						visibility[idx] += pointcloud.pointViews[idx].size();
-					else if (cone.ray.m_vDir.dot((const PointCloud::Normal::EVec&)pointcloud.normals[idx]) <= 0)
-						visibility[idx] -= weight; // only a surface facing the camera occludes the point
-				}
+				if (coneIntersect.Classify(pointcloud.points[idx], dist) != VISIBLE || IsDepthSimilar(distance, dist, thSimilar))
+					continue;
+				int delta;
+				if (dist > distance)
+					delta = (int)pointcloud.pointViews[idx].size();
+				else if (cone.ray.m_vDir.dot((const PointCloud::Normal::EVec&)pointcloud.normals[idx]) <= 0)
+					delta = -weight; // only a surface facing the camera occludes the point
+				else
+					continue;
+				// the caller locks only this view's collector, other views update the same points
+				#ifdef DENSE_USE_OPENMP
+				#pragma omp atomic
+				#endif
+				visibility[idx] += delta;
 			}
 		}
 	};

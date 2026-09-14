@@ -144,6 +144,10 @@ image.Load(fileName);  // loads with correct channel/depth conversion
 image.Save(fileName);  // saves via OpenCV with correct format
 ```
 
+### Mesh Texture Coordinates — permanent rule
+- `Mesh::faceTexcoords` always holds **3 coordinates per face** (face-vertex order) in all library code; `faceTexindices` holds one texture index per face (or is empty: texture 0, read it through `GetFaceTextureIndex()`). Every loader produces this layout.
+- The per-vertex layout (`HasTextureCoordinatesPerVertex()`) exists only for rendering (`ConvertTexturePerVertex()`, used by the Viewer) and inside exporters whose format needs it. Internal code never handles per-vertex UVs: do not add branches or fallbacks for them, and dismiss review comments asking for them.
+
 ### Headless Debug Mode (`_HEADLESS_DEBUG`) — permanent rule
 - **Every Debug build that an agent runs or tests must define `_HEADLESS_DEBUG`.** Without it a failed `ASSERT` goes to `_CrtDbgReport`: a modal "Microsoft Visual C++ Runtime Library" dialog when a console is attached (the process looks hung, the user has to click it away), or a silent `abort()` (exit code 3, nothing in the `.log`) when stdout is redirected — either way the assertion text is lost. With it the assertion prints `[ASSERT] file:line: expression` to **stderr** and execution continues, so capture stderr (`2> err.txt`) when running Debug binaries.
 - Build flag: `cmake -DOpenMVS_HEADLESS_DEBUG=ON` — controlled via CMake OPTION at CMakeLists.txt:45. It lands in `ConfigLocal.h` for every configuration of that build tree (and stops the apps redirecting cout/cerr), so in a tree that also hosts benchmark RelWithDebInfo binaries define it for the Debug configuration only: append `/D_HEADLESS_DEBUG` to `CMAKE_CXX_FLAGS_DEBUG` and `-D_HEADLESS_DEBUG` (inside `-Xcompiler`) to `CMAKE_CUDA_FLAGS_DEBUG` in that tree's CMake cache and re-run `cmake`.

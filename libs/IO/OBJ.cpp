@@ -96,10 +96,11 @@ bool ObjModel::MaterialLib::Save(const String& prefix, bool texLossless) const
 		#endif
 	}
 	#ifdef OBJ_USE_OPENMP
-	return bSuccess;
-	#else
-	return true;
+	if (!bSuccess)
+		return false;
 	#endif
+	// a full disk shows only once the buffered records are flushed
+	return out.flush().good();
 }
 
 bool ObjModel::MaterialLib::Load(const String& fileName)
@@ -188,7 +189,7 @@ bool ObjModel::Save(const String& fileName, unsigned precision, bool texLossless
 			out << "\n";
 		}
 	}
-	return true;
+	return out.flush().good();
 }
 
 bool ObjModel::Load(const String& fileName)

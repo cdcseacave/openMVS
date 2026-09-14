@@ -142,7 +142,10 @@ public:
 
 	NormalArr faceNormals; // for each face, the normal to it (optional)
 	FaceFacesArr faceFaces; // for each face, the list of adjacent faces, NO_ID for border edges (optional)
-	TexCoordArr faceTexcoords; // for each face, the texture-coordinates corresponding to its vertices, 3x num faces OR for each vertex (optional)
+	// texture-coordinates are always stored per face internally: 3 per face, in face-vertex order;
+	// the per-vertex layout (one per vertex) is produced only by ConvertTexturePerVertex() for
+	// rendering and inside exporters that need it, so library code never has to handle it
+	TexCoordArr faceTexcoords; // for each face, the texture-coordinates corresponding to its vertices (optional)
 	TexIndexArr faceTexindices; // for each face, the corresponding index of the texture (optional)
 
 	Image8U3Arr texturesDiffuse; // textures containing the diffuse color (optional)

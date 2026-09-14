@@ -999,7 +999,8 @@ bool Mesh::SavePLY(const String& fileName, const cList<String>& comments, bool b
 		FOREACH(texId, texturesDiffuse) {
 		    const String textureFileName(Util::getFileFullName(fileName) + std::to_string((unsigned)texId).c_str() + (bTexLossless?_T(".png"):_T(".jpg")));
 		    ply.append_comment((_T("TextureFile ")+Util::getFileNameExt(textureFileName)).c_str());
-		    texturesDiffuse[texId].Save(textureFileName);
+		    if (!texturesDiffuse[texId].Save(textureFileName))
+		        return false;
 		}
 	}
 
@@ -1473,7 +1474,9 @@ void Mesh::RemoveVertices(VertexIdxArr& vertexRemove, bool bUpdateLists)
 		RemoveFaces(facesRemove);
 }
 
-// convert textured mesh to store texture coordinates per vertex instead of per face
+// convert textured mesh to store texture coordinates per vertex instead of per face,
+// splitting vertices shared by faces with different coordinates; for rendering only,
+// the result is not a valid input for the library code (see faceTexcoords)
 void Mesh::ConvertTexturePerVertex(Mesh& mesh) const
 {
 	ASSERT(HasTexture());
