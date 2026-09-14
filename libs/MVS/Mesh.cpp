@@ -1945,25 +1945,61 @@ bool Mesh::Split(FacesChunkArr& chunks, float maxArea)
 } // Split
 /*----------------------------------------------------------------*/
 
-// extract the sub-mesh corresponding to the given chunk of faces
+// extract the sub-mesh corresponding to the given chunk of faces, keeping only the
+// vertices and textures it references, with every per-vertex and per-face attribute
 Mesh Mesh::SubMesh(const FaceIdxArr& chunk) const
 {
 	ASSERT(!chunk.empty());
+	ASSERT(vertexNormals.empty() || vertexNormals.size() == vertices.size());
+	ASSERT(vertexColors.empty() || vertexColors.size() == vertices.size());
+	ASSERT(faceNormals.empty() || faceNormals.size() == faces.size());
+	ASSERT(faceTexindices.empty() || faceTexindices.size() == faces.size());
+	ASSERT(faceTexcoords.empty() || faceTexcoords.size() == faces.size()*3);
 	Mesh mesh;
-	mesh.vertices = vertices;
 	mesh.faces.reserve(chunk.size());
-	if (!faceTexcoords.empty())
-		mesh.faceTexcoords.reserve(chunk.size()*3);
+	VertexIdxArr mapVertices(vertices.size());
+	mapVertices.Memset(0xff);
+	UnsignedArr mapTextures(texturesDiffuse.size());
+	mapTextures.Memset(0xff);
 	for (FIndex idxFace: chunk) {
-		mesh.faces.emplace_back(faces[idxFace]);
-		if (!faceTexcoords.empty()) {
-			const TexCoord* tri = faceTexcoords.data()+idxFace*3;
-			for (int i = 0; i < 3; ++i)
-				mesh.faceTexcoords.emplace_back(tri[i]);
+		ASSERT(idxFace < faces.size());
+		const Face& face = faces[idxFace];
+		Face& subFace = mesh.faces.AddEmpty();
+		for (int i=0; i<3; ++i) {
+			const VIndex idxVertex(face[i]);
+			VIndex& idxSubVertex = mapVertices[idxVertex];
+			if (idxSubVertex == NO_ID) {
+				idxSubVertex = mesh.vertices.size();
+				mesh.vertices.emplace_back(vertices[idxVertex]);
+				if (!vertexNormals.empty())
+					mesh.vertexNormals.emplace_back(vertexNormals[idxVertex]);
+				if (!vertexColors.empty())
+					mesh.vertexColors.emplace_back(vertexColors[idxVertex]);
+			}
+			subFace[i] = idxSubVertex;
+		}
+		if (!faceNormals.empty())
+			mesh.faceNormals.emplace_back(faceNormals[idxFace]);
+		if (!faceTexcoords.empty())
+			mesh.faceTexcoords.Join(faceTexcoords.data()+idxFace*3, 3);
+		if (!faceTexindices.empty()) {
+			const TexIndex idxTexture(faceTexindices[idxFace]);
+			if (texturesDiffuse.empty()) {
+				mesh.faceTexindices.emplace_back(idxTexture);
+				continue;
+			}
+			ASSERT(idxTexture < texturesDiffuse.size());
+			unsigned& idxSubTexture = mapTextures[idxTexture];
+			if (idxSubTexture == NO_ID) {
+				idxSubTexture = mesh.texturesDiffuse.size();
+				mesh.texturesDiffuse.emplace_back(texturesDiffuse[idxTexture]);
+			}
+			mesh.faceTexindices.emplace_back((TexIndex)idxSubTexture);
 		}
 	}
-	// no ListIncidentFaces() here: both calls below build their own adjacency
-	mesh.RemoveUnreferencedVertices();
+	if (faceTexindices.empty() && !texturesDiffuse.empty())
+		mesh.texturesDiffuse.emplace_back(texturesDiffuse.front()); // every face maps to the first texture
+	// the vertices are already compact; the halfmesh-backed repair carries the attributes through
 	mesh.FixNonManifold();
 	return mesh;
 } // SubMesh
@@ -1990,8 +2026,12 @@ std::vector<Mesh> Mesh::SplitMeshPerTextureBlob(FaceIdxArr* mapFaceSubsetIndices
 				chunk.push_back(idxFace);
 			}
 		}
+		if (chunk.empty()) {
+			submeshes.emplace_back(); // unused texture, e.g. after cropping
+			continue;
+		}
 		Mesh submesh = SubMesh(chunk);
-		submesh.texturesDiffuse.emplace_back(texturesDiffuse[texId]);
+		ASSERT(submesh.texturesDiffuse.size() == 1);
 		submeshes.emplace_back(std::move(submesh));
 	}
 	return submeshes;

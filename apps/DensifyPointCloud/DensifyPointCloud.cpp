@@ -457,7 +457,14 @@ int main(int argc, LPCTSTR* argv)
 		// split the scene in sub-scenes by maximum sampling area
 		Scene::ImagesChunkArr chunks;
 		scene.Split(chunks, OPT::fMaxSubsceneArea);
-		scene.ExportChunks(chunks, GET_PATH_FULL(OPT::strOutputFileName), (ARCHIVE_TYPE)OPT::nArchiveType);
+		if (chunks.empty()) {
+			VERBOSE("error: no sub-scene to export");
+			return EXIT_FAILURE;
+		}
+		if (!scene.ExportChunks(chunks, GET_PATH_FULL(OPT::strOutputFileName), (ARCHIVE_TYPE)OPT::nArchiveType)) {
+			VERBOSE("error: can not export the sub-scenes");
+			return EXIT_FAILURE;
+		}
 		return EXIT_SUCCESS;
 	}
 	if (OPT::thFilterPointCloud < 0) {
