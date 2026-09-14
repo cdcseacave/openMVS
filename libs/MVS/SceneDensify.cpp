@@ -3541,14 +3541,15 @@ void Scene::DenseReconstructionEstimate(void* pData)
 				// extract depth-map using Patch-Match algorithm
 				data.depthMaps.EstimateDepthMap(data.images[evtImage.idxImage], data.nEstimationGeometricIter);
 			} else {
-				// extract disparity-maps using SGM algorithm
-				if (data.nFusionMode == -1) {
-					data.sgm.Match(*this, data.images[evtImage.idxImage], OPTDENSE::nNumViews);
-				} else {
-					// fuse existing disparity-maps
+				// extract the disparity-maps of the pairs this image forms with its neighbors using the SGM
+				// algorithm, skipping the pairs already estimated (from an image processed earlier or a previous run)
+				data.sgm.Match(*this, data.images[evtImage.idxImage], OPTDENSE::nNumViews);
+				if (data.nFusionMode == -2) {
+					// fuse them into the depth-map of this image; Fuse() visits the same neighbors as Match();
+					// a depth one pair alone estimates is kept too, as the depth-map fusion checks it across views
 					const IIndex idx(data.images[evtImage.idxImage]);
 					DepthData& depthData(data.depthMaps.arrDepthData[idx]);
-					data.sgm.Fuse(*this, data.images[evtImage.idxImage], OPTDENSE::nNumViews, 2, depthData.depthMap, depthData.confMap);
+					data.sgm.Fuse(*this, data.images[evtImage.idxImage], OPTDENSE::nNumViews, 1, depthData.depthMap, depthData.confMap);
 					if (OPTDENSE::nEstimateNormals == 2)
 						EstimateNormalMap(depthData.images.front().camera.K, depthData.depthMap, depthData.normalMap);
 					depthData.dMin = ZEROTOLERANCE<float>(); depthData.dMax = FLT_MAX;

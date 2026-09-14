@@ -168,6 +168,8 @@ public:
 
 protected:
 	void Match(const ViewData& leftImage, const ViewData& rightImage, DisparityMap& disparityMap, AccumCostMap& costMap);
+	static Range DepthRange2Disparity(const Matrix3x3& H, const Matrix4x4& Q, REAL scale, const MaskMap& maskMap, Depth dMin, Depth dMax);
+	Index Range2RangeMap(const MaskMap& maskMap, const Range& range);
 	Index Disparity2RangeMap(const DisparityMap& disparityMap, const MaskMap& maskMap, Disparity minNumDisp=3, Disparity minNumDispInvalid=16);
 	#if SGM_SIMILARITY == SGM_SIMILARITY_CENSUS
 	static void CensusTransform(const Image8U& imageGray, CensusMap& imageCensus);
@@ -182,8 +184,10 @@ protected:
 	void DisplayState(const cv::Size& size) const;
 	#endif
 
+	// confidence in [0,1] of an accumulated cost, on the scale of the NCC score the depth-map fusion
+	// thresholds: one minus the mean matching cost per aggregation path (2*numDirs paths of up to 255)
+	static float AccumCost2Confidence(float cost) { return MAXF(0.f, 1.f - cost/(2*numDirs*255)); }
 	static CLISTDEF0IDX(AccumCost,int) GenerateP2s(AccumCost P2, float P2alpha, float P2beta);
-	static void Depth2DisparityMap(const DepthMap&, const Matrix3x3& invH, const Matrix4x4& invQ, Disparity subpixelSteps, DisparityMap&);
 	static void Disparity2DepthMap(const DisparityMap&, const AccumCostMap&, const Matrix3x3& H, const Matrix4x4& Q, Disparity subpixelSteps, DepthMap&, ConfidenceMap&);
 	static bool ProjectDisparity2DepthMap(const DisparityMap&, const AccumCostMap&, const Matrix4x4& Q, Disparity subpixelSteps, DepthMap&, DepthRangeMap&, ConfidenceMap&);
 

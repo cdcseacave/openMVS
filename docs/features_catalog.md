@@ -558,12 +558,14 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 
 - **Files:** `libs/MVS/SemiGlobalMatcher.h`, `libs/MVS/SemiGlobalMatcher.cpp`
 - **Algorithms:**
-  - Semi-Global Matching (SGM) for depth refinement after PatchMatch
-  - Cost aggregation over `numDirs` (4 default, up to 8) directions
+  - Semi-Global Matching (SGM) densification, an alternative to PatchMatch (`--fusion-mode -2`, `-1` exports the disparity-maps only)
+  - Hierarchical (tSGM) pair matching: the coarsest level searches the disparity range spanned by the sparse depth range, finer levels search around the previous estimate
+  - Cost aggregation along 8 paths (`numDirs`=4, each swept both ways)
   - Dynamic programming along each direction
-  - Winner-Take-All disparity selection
+  - Winner-Take-All disparity selection, left-right cross-check, sub-pixel refinement
+  - Per-image depth-map as the largest cluster of agreeing pair depths, then the standard depth-map fusion
 - **GPU Support:** No
-- **Threading:** OpenMP
+- **Threading:** own worker-thread pool (`SemiGlobalMatcher::CreateThreads`)
 - **Dependencies:** OpenCV, Common
 
 ---

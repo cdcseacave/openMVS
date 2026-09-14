@@ -465,8 +465,7 @@ graph TD
     B14 -->|yes| B15[Geometric iteration:<br/>use neighbor depths to refine]
     B15 --> B16
     B14 -->|no| B16[EVTOptimizeDepthMap<br/>RemoveSmallSegments + GapInterpolation]
-    B16 --> B17[Optional: SGM refinement<br/>SemiGlobalMatcher]
-    B17 --> B18[EVTSaveDepthMap -> .dmap file]
+    B16 --> B18[EVTSaveDepthMap -> .dmap file]
     B18 --> C{nFusionMode}
     C -->|ABS==1| D[Return depth maps only]
     C -->|FUSE_NOFILTER| E[MergeDepthMaps<br/>simple merge, no consistency]
@@ -907,7 +906,8 @@ dMin, dMax: float           — depth range from SFM sparse points
 | Ceres BA | `_USE_CERES` | enabled | Non-linear optimization |
 | SiftGPU | `_USE_SIFTGPU` | disabled | GPU SIFT feature extraction |
 | OpenMP | `_USE_OPENMP` | enabled | Multi-threaded image loops |
-| SGM refinement | `OPTDENSE::nEstimationGeometricIters > 0` | 1 | Geometry-consistent depth |
+| Geometric-consistency iterations | `OPTDENSE::nEstimationGeometricIters > 0` | 1 | Geometry-consistent depth |
+| SGM densification | `--fusion-mode -2` (`-1` disparity-maps only) | off (PatchMatch) | CPU pairwise SGM instead of PatchMatch |
 | Global vs Hierarchical | `ReconstructionConfig::useGlobalSolver` | false (hierarchical) | SFM solver selection |
 | GPS Alignment | `ReconstructionConfig::thAlignGPS > 0` + GPS in EXIF | enabled | ENU coordinate frame |
 
@@ -936,7 +936,7 @@ dMin, dMax: float           — depth range from SFM sparse points
 | `libs/MVS/SceneDensify.cpp` | Dense depth estimation |
 | `libs/MVS/DepthMap.cpp` | CPU PatchMatch |
 | `libs/MVS/PatchMatchCUDA.cu` | GPU PatchMatch |
-| `libs/MVS/SemiGlobalMatcher.cpp` | SGM depth refinement |
+| `libs/MVS/SemiGlobalMatcher.cpp` | SGM densification (`--fusion-mode -2`) |
 | `libs/MVS/SceneReconstruct.cpp` | Mesh reconstruction |
 | `libs/MVS/Mesh.cpp` | Mesh container, I/O, projection, sampling |
 | `libs/MVS/MeshHalfMesh.cpp` | Generic mesh processing, delegated to halfmesh |

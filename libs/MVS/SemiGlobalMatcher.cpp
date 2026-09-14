@@ -550,17 +550,23 @@ void SemiGlobalMatcher::Match(const Scene& scene, IIndex idxImage, IIndex numNei
 		if (File::isPresent((pairName+".dimap").c_str()) || File::isPresent(MAKE_PATH(String::FormatString("%04u_%04u.dimap", rightImage.ID, leftImage.ID))))
 			continue;
 		TD_TIMER_STARTD();
-		IndexArr points;
+		Depth dMin(FLT_MAX), dMax(0);
 		Matrix3x3 H; Matrix4x4 Q;
 		ViewData leftData, rightData;
 		MaskMap leftMaskMap, rightMaskMap; {
-		// fetch pairs of corresponding image points
+		// fetch pairs of corresponding image points and the depth range seen by the left image
 		//TODO: use precomputed points from SelectViews()
 		Point3fArr leftPoints, rightPoints;
 		FOREACH(idxPoint, scene.pointcloud.points) {
 			const PointCloud::ViewArr& views = scene.pointcloud.pointViews[idxPoint];
 			if (views.FindFirst(idxImage) != PointCloud::ViewArr::NO_INDEX) {
-				points.push_back((uint32_t)idxPoint);
+				const Depth depth((Depth)leftImage.camera.PointDepth(scene.pointcloud.points[idxPoint]));
+				if (depth > 0) {
+					if (dMin > depth)
+						dMin = depth;
+					if (dMax < depth)
+						dMax = depth;
+				}
 				if (views.FindFirst(neighbor.ID) != PointCloud::ViewArr::NO_INDEX) {
 					const Point3 X(scene.pointcloud.points[idxPoint]);
 					leftPoints.emplace_back(leftImage.camera.TransformPointW2I3(X));
@@ -569,9 +575,10 @@ void SemiGlobalMatcher::Match(const Scene& scene, IIndex idxImage, IIndex numNei
 			}
 		}
 		// stereo-rectify image pair
-		if (!Image::StereoRectifyImages(leftImage, rightImage, leftPoints, rightPoints, leftData.imageColor, rightData.imageColor, leftMaskMap, rightMaskMap, H, Q))
+		if (dMin >= dMax || !Image::StereoRectifyImages(leftImage, rightImage, leftPoints, rightPoints, leftData.imageColor, rightData.imageColor, leftMaskMap, rightMaskMap, H, Q))
 			continue;
 		ASSERT(leftData.imageColor.size() == rightData.imageColor.size());
+		dMin *= 0.9f; dMax *= 1.1f;
 		}
 		#ifdef _USE_FILTER_DEMO
 		// run openCV implementation
@@ -593,7 +600,6 @@ void SemiGlobalMatcher::Match(const Scene& scene, IIndex idxImage, IIndex numNei
 			Image8U::computeMaxResolution(leftData.imageGray.width(), leftData.imageGray.height(), resolutionLevel, minResolution);
 			scale = REAL(1)/MAXF(2,POWI(2,resolutionLevel));
 		}
-		const bool tSGM(!ISEQUAL(scale, REAL(1)));
 		DisparityMap leftDisparityMap, rightDisparityMap; AccumCostMap costMap;
 		bool bValidMatch(true);
 		do {
@@ -612,31 +618,22 @@ void SemiGlobalMatcher::Match(const Scene& scene, IIndex idxImage, IIndex numNei
 			const cv::Size size(leftDataLevel.imageGray.size());
 			const cv::Size sizeValid(size.width-2*halfWindowSizeX, size.height-2*halfWindowSizeY);
 			const bool bFirstLevel(leftDisparityMap.empty());
+			Range range;
 			if (bFirstLevel) {
-				// initialize the disparity-map with a rough estimate based on the sparse point-cloud
-				//TODO: remove DepthData::ViewData dependency
-				Image leftImageLevel(leftImage.GetImage(scene.platforms, scale*0.5, false));
-				DepthData::ViewData image;
-				image.pImageData = &leftImageLevel; // used only for avgDepth
-				image.image.create(leftImageLevel.GetSize());
-				image.camera = leftImageLevel.camera;
-				DepthMap depthMap;
-				Depth dMin, dMax;
-				TriangulatePoints2DepthMap(image.camera, image.image.size(), scene.pointcloud, points, depthMap,
-					dMin, dMax, image.pImageData->avgDepth);
-				points.Release();
-				Matrix3x3 H2(H); Matrix4x4 Q2(Q);
-				Image::ScaleStereoRectification(H2, Q2, scale*0.5);
-				const cv::Size sizeHalf(Image8U::computeResize(size, 0.5));
-				const cv::Size sizeValidHalf(sizeHalf.width-2*halfWindowSizeX, sizeHalf.height-2*halfWindowSizeY);
-				leftDisparityMap.create(sizeValidHalf);
-				Depth2DisparityMap(depthMap, H2.inv(), Q2.inv(), 1, leftDisparityMap);
 				// resize masks
 				cv::resize(leftMaskMap, leftMaskMap, size, 0, 0, cv::INTER_NEAREST);
 				cv::resize(rightMaskMap, rightMaskMap, size, 0, 0, cv::INTER_NEAREST);
 				const cv::Rect ROI(halfWindowSizeX,halfWindowSizeY, sizeValid.width,sizeValid.height);
 				leftMaskMap(ROI).copyTo(leftMaskMap);
 				rightMaskMap(ROI).copyTo(rightMaskMap);
+				// the first (coarsest) level searches every disparity the depth range of the left image spans,
+				// so no region depends on the sparse points being dense or right; the next levels search
+				// only around the disparities estimated by the previous one
+				range = DepthRange2Disparity(H, Q, scale, leftMaskMap, dMin, dMax);
+				if (!range.isValid()) {
+					bValidMatch = false;
+					break;
+				}
 			} else {
 				// upscale masks
 				UpscaleMask(leftMaskMap, sizeValid);
@@ -644,43 +641,12 @@ void SemiGlobalMatcher::Match(const Scene& scene, IIndex idxImage, IIndex numNei
 			}
 			// estimate right-left disparity-map
 			Index numCosts;
-			if (tSGM) {
+			if (bFirstLevel) {
+				numCosts = Range2RangeMap(rightMaskMap, Range{(Disparity)-range.maxDisp, (Disparity)-range.minDisp});
+			} else {
 				// upscale the disparity-map from the previous level
 				FlipDirection(leftDisparityMap, rightDisparityMap);
-				numCosts = Disparity2RangeMap(rightDisparityMap, rightMaskMap, bFirstLevel?11:5, bFirstLevel?33:7);
-			} else {
-				// extract global min and max disparities
-				Range range{std::numeric_limits<Disparity>::max(), std::numeric_limits<Disparity>::min()};
-				ASSERT(leftDisparityMap.isContinuous());
-				const Disparity* pd = leftDisparityMap.ptr<const Disparity>();
-				const Disparity* const pde = pd+leftDisparityMap.area();
-				do {
-					const Disparity d(*pd);
-					if (d != NO_DISP) {
-						if (range.minDisp > d)
-							range.minDisp = d;
-						if (range.maxDisp < d)
-							range.maxDisp = d;
-					}
-				} while (++pd < pde);
-				if (range.minDisp > range.maxDisp) {
-					// no valid disparity left by the previous level
-					bValidMatch = false;
-					break;
-				}
-				// set disparity search range to the global min/max range
-				const Disparity numDisp(range.numDisp()+16);
-				const Disparity disp(range.minDisp+range.maxDisp);
-				range.minDisp = disp-numDisp;
-				range.maxDisp = disp+numDisp;
-				maxNumDisp = range.numDisp();
-				numCosts = 0;
-				imagePixels.resize(sizeValid.area());
-				for (PixelData& pixel: imagePixels) {
-					pixel.range = range;
-					pixel.idx = numCosts;
-					numCosts += maxNumDisp;
-				}
+				numCosts = Disparity2RangeMap(rightDisparityMap, rightMaskMap, 5, 7);
 			}
 			if (numCosts == 0) {
 				bValidMatch = false;
@@ -690,15 +656,10 @@ void SemiGlobalMatcher::Match(const Scene& scene, IIndex idxImage, IIndex numNei
 			imageAccumCosts.resize(numCosts);
 			Match(rightDataLevel, leftDataLevel, rightDisparityMap, costMap);
 			// estimate left-right disparity-map
-			if (tSGM) {
-				numCosts = Disparity2RangeMap(leftDisparityMap, leftMaskMap, bFirstLevel?11:5, bFirstLevel?33:7);
-			} else {
-				for (PixelData& pixel: imagePixels) {
-					const Disparity maxDisp(-pixel.range.minDisp);
-					pixel.range.minDisp = -pixel.range.maxDisp;
-					pixel.range.maxDisp = maxDisp;
-				}
-			}
+			if (bFirstLevel)
+				numCosts = Range2RangeMap(leftMaskMap, range);
+			else
+				numCosts = Disparity2RangeMap(leftDisparityMap, leftMaskMap, 5, 7);
 			if (numCosts == 0) {
 				bValidMatch = false;
 				break;
@@ -745,8 +706,12 @@ void SemiGlobalMatcher::Match(const Scene& scene, IIndex idxImage, IIndex numNei
 		// export disparity-map for the left image
 		DEBUG_EXTRA("Disparity-map for images %3u and %3u: %dx%d (%s)", leftImage.ID, rightImage.ID,
 			leftImage.width, leftImage.height, TD_TIMER_GET_FMT().c_str());
-		ExportPointCloud(pairName+".ply", leftImage, leftDisparityMap, Q, subpixelSteps);
-		ExportDisparityMap(pairName+".png", leftDisparityMap);
+		#if TD_VERBOSE != TD_VERBOSE_OFF
+		if (VERBOSITY_LEVEL > 2) {
+			ExportPointCloud(pairName+".ply", leftImage, leftDisparityMap, Q, subpixelSteps);
+			ExportDisparityMap(pairName+".png", leftDisparityMap);
+		}
+		#endif
 		ExportDisparityDataRawFull(pairName+".dimap", leftDisparityMap, costMap, leftImage.GetSize(), H, Q, subpixelSteps);
 		#else
 		// convert disparity-map to final depth-map for the left image
@@ -1051,28 +1016,27 @@ void SemiGlobalMatcher::Match(const ViewData& leftImage, const ViewData& rightIm
 			for (int idxDisp=0; idxDisp<numDisp; ++idxDisp)
 				accums[idxDisp] += (Ls[idxDisp] = costs[idxDisp]+P2);
 		} else {
-			// accumulate cost as L(d)=C(d)+min(Lp(d)+V(d,dp))-min(Lp)
+			// accumulate cost as L(d)=C(d)+min(Lp(dp)+V(d,dp))-min(Lp)
 			// where V(d,dp) is:
 			//  0  if d=dp
 			//  P1 if |d-dp|=1
 			//  P2 if |d-dp|>1
+			// as P2>=P1, the P2 term is min(Lp)+P2 over all dp, so each L(d) is computed in constant time
+			ASSERT(P2 >= P1);
 			AccumCost minLp(std::numeric_limits<AccumCost>::max());
 			for (const AccumCost *L=Lp.L+(minDisp-Lp.R.minDisp), *endL=L+(maxDisp-minDisp); L<endL; ++L)
 				Compute::MINS(minLp, *L);
+			const AccumCost minLpP2(minLp+P2);
 			for (Disparity d=Ls.R.minDisp; d<Ls.R.maxDisp; ++d) {
 				const int idxDisp(d-Ls.R.minDisp);
-				AccumCost& L = Ls[idxDisp];
-				L = std::numeric_limits<AccumCost>::max();
-				for (Disparity dp=minDisp; dp<maxDisp; ++dp) {
-					const int idxDispp(dp-Lp.R.minDisp);
-					if (dp == d)
-						Compute::MINS(L, Lp[idxDispp]);
-					else if (dp == d-1 || dp == d+1)
-						Compute::MINS(L, Lp[idxDispp]+P1);
-					else
-						Compute::MINS(L, Lp[idxDispp]+P2);
-				}
-				accums[idxDisp] += (L = costs[idxDisp]+L-minLp);
+				AccumCost L(minLpP2);
+				if (d >= minDisp && d < maxDisp)
+					Compute::MINS(L, Lp[d-Lp.R.minDisp]);
+				if (d > minDisp && d <= maxDisp)
+					Compute::MINS(L, Lp[d-1-Lp.R.minDisp]+P1);
+				if (d+1 >= minDisp && d+1 < maxDisp)
+					Compute::MINS(L, Lp[d+1-Lp.R.minDisp]+P1);
+				accums[idxDisp] += (Ls[idxDisp] = costs[idxDisp]+L-minLp);
 			}
 		}
 	};
@@ -1378,6 +1342,64 @@ void SemiGlobalMatcher::CensusTransform(const Image8U& imageGray, CensusMap& ima
 			pixel(-1, r, c);
 }
 #endif
+
+// Compute the left-to-right disparity range spanned by the depth range [dMin,dMax] of the left image
+// over the valid pixels of the rectified pair scaled by the given factor
+SemiGlobalMatcher::Range SemiGlobalMatcher::DepthRange2Disparity(const Matrix3x3& H, const Matrix4x4& Q, REAL scale, const MaskMap& maskMap, Depth dMin, Depth dMax)
+{
+	Matrix3x3 Hs(H); Matrix4x4 Qs(Q);
+	Image::ScaleStereoRectification(Hs, Qs, scale);
+	const Matrix3x3 invH(Hs.inv());
+	const Matrix4x4 invQ(Qs.inv());
+	float minDisp(FLT_MAX), maxDisp(-FLT_MAX);
+	const int step(4);
+	for (int r=0; r<maskMap.rows; r+=step) {
+		for (int c=0; c<maskMap.cols; c+=step) {
+			if (maskMap(r,c) == INVALID)
+				continue;
+			const ImageRef x(c+halfWindowSizeX,r+halfWindowSizeY); Point2f u;
+			ProjectVertex_3x3_2_2(invH.val, x.ptr(), u.ptr());
+			for (const Depth depth: {dMin, dMax}) {
+				float disparity;
+				if (!Image::Depth2Disparity(invQ, u, depth, disparity))
+					continue;
+				if (minDisp > disparity)
+					minDisp = disparity;
+				if (maxDisp < disparity)
+					maxDisp = disparity;
+			}
+		}
+	}
+	if (minDisp > maxDisp)
+		return Range{NO_DISP, NO_DISP};
+	// a margin covers the pixels between the samples; no match can shift a pixel by more than the image width
+	const int width(maskMap.width());
+	return Range{
+		(Disparity)MAXF(FLOOR2INT(minDisp)-step, -width),
+		(Disparity)MINF(CEIL2INT(maxDisp)+step+1, width)
+	};
+}
+
+// Setup pixel-map searching the same disparity range for all pixels valid in the mask-map;
+// return the total size of the disparities searched
+SemiGlobalMatcher::Index SemiGlobalMatcher::Range2RangeMap(const MaskMap& maskMap, const Range& range)
+{
+	ASSERT(range.isValid() && maskMap.isContinuous());
+	imagePixels.resize(maskMap.area());
+	maxNumDisp = range.numDisp();
+	Index numCosts(0);
+	FOREACH(idx, imagePixels) {
+		PixelData& pixel = imagePixels[idx];
+		pixel.idx = numCosts;
+		if (maskMap(idx) == INVALID) {
+			pixel.range = Range{NO_DISP,NO_DISP};
+			continue;
+		}
+		pixel.range = range;
+		numCosts += maxNumDisp;
+	}
+	return numCosts;
+}
 
 // Compute search range from the given disparity-map and setup pixel-map at twice the scale;
 // the validity mask-map is considered as well and upscaled in the same time;
@@ -1869,31 +1891,6 @@ void SemiGlobalMatcher::DisplayState(const cv::Size& size) const
 }
 #endif
 
-// Compute the disparity-map for the rectified image from the given depth-map of the un-rectified image;
-// the disparity map needs to be already constructed at the desired size (valid size, excluding the border)
-void SemiGlobalMatcher::Depth2DisparityMap(const DepthMap& depthMap, const Matrix3x3& invH, const Matrix4x4& invQ, Disparity subpixelSteps, DisparityMap& disparityMap)
-{
-	auto pixel = [&](int, int r, int c) {
-		const ImageRef x(c+halfWindowSizeX,r+halfWindowSizeY); Point2f u;
-		ProjectVertex_3x3_2_2(invH.val, x.ptr(), u.ptr());
-		float depth, disparity;
-		if (!depthMap.sampleSafe(depth, u, [](Depth d) { return d > 0; }) || !Image::Depth2Disparity(invQ, u, depth, disparity))
-			disparityMap(r,c) = NO_DISP;
-		else
-			disparityMap(r,c) = (Disparity)ROUND2INT(disparity*subpixelSteps);
-	};
-	ASSERT(threads.IsEmpty());
-	if (!threads.empty()) {
-		volatile Thread::safe_t idxPixel(-1);
-		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelProcess(disparityMap.size(), idxPixel, pixel));
-		WaitThreadWorkers(threads.size());
-	} else
-	for (int r=0; r<disparityMap.rows; ++r)
-		for (int c=0; c<disparityMap.cols; ++c)
-			pixel(-1, r, c);
-}
-
 // Compute the depth-map for the un-rectified image from the given disparity-map of the rectified image
 void SemiGlobalMatcher::Disparity2DepthMap(const DisparityMap& disparityMap, const AccumCostMap& costMap, const Matrix3x3& H, const Matrix4x4& Q, Disparity subpixelSteps, DepthMap& depthMap, ConfidenceMap& confMap)
 {
@@ -1917,7 +1914,7 @@ void SemiGlobalMatcher::Disparity2DepthMap(const DisparityMap& disparityMap, con
 			float cost;
 			costMap.sampleSafe(cost, u, [](AccumCost c) { return c != NO_ACCUMCOST; });
 			depthMap(x) = Image::Disparity2Depth(Q, u, disparity/subpixelSteps);
-			confMap(x) = 1.f/(cost+1);
+			confMap(x) = AccumCost2Confidence(cost);
 		};
 		ASSERT(threads.IsEmpty());
 		if (!threads.empty()) {
@@ -1999,7 +1996,7 @@ bool SemiGlobalMatcher::ProjectDisparity2DepthMap(const DisparityMap& disparityM
 				Image::Disparity2Depth(Q, dx, (float)(disparityCenter+1))
 			);
 			ASSERT(ISINSIDE(depth, depthRange.x, depthRange.y));
-			const float cost(costMap.empty()?0.f:1.f/(costMap(r,c)+1));
+			const float cost(costMap.empty()?0.f:AccumCost2Confidence(costMap(r,c)));
 			const ImageRef x(FLOOR2INT(u));
 			u.x -= 0.5f; u.y -= 0.5f;
 			for (int i=-1; i<=1; ++i) {

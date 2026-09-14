@@ -451,10 +451,10 @@ The following five suggestions offer the highest impact relative to implementati
    - **Reference:** Xu & Tao (2019, CVPR) — Planar Prior Assisted PatchMatch.
    - **Risk:** Medium.
 
-2. **SGM 8-Direction Accumulation** (Priority: Medium | Complexity: Low)
-   - **What:** Change `SemiGlobalMatcher::numDirs` default from 4 to 8.
-   - **Why:** 8 directions eliminate streak artifacts in the depth map at approximately 2× the computational cost. This is the standard SGM configuration.
-   - **Risk:** Low — only affects runtime.
+2. **SGM Coverage and Depth Precision** (Priority: Medium | Complexity: Medium)
+   - **What:** Refine the SGM depth-maps (`--fusion-mode -2`) before fusion, e.g. by seeding a PatchMatch pass with them, or add slanted-window matching costs.
+   - **Why:** SGM (8 aggregation paths, quarter-pixel disparities) fits fronto-parallel windows on one rectified pair; on the EPFL scenes its precision is close to PatchMatch's but its recall is 3-4x lower at tau and about half at 4 tau: wide-baseline pairs cover little of each view and a quarter pixel is already ~8 mm of depth there.
+   - **Risk:** Low — the SGM mode is opt-in.
 
 3. **Confidence-Guided Iteration Count** (Priority: Medium | Complexity: Low)
    - **What:** Allocate more PatchMatch iterations to low-confidence pixels instead of uniform counts for all pixels.
@@ -642,7 +642,7 @@ Ranked by impact-to-effort ratio:
 | 5 | Fisheye Camera Models | A4 | High | Medium | Unblocks GoPro/drone/robotics use cases entirely |
 | 6 | Monocular Depth Priors for MVS | A3 | High | Medium | Significant quality gain in textureless/reflective regions |
 | 7 | DEGENSAC/MAGSAC++ | B2.1 | High | Medium | Robustness on planar scenes with no quality trade-off |
-| 8 | SGM 8-Direction Accumulation | B16.2 | Medium | Low | One-line change, eliminates visible depth streaks |
+| 8 | SGM Coverage and Depth Precision | B16.2 | Medium | Medium | Closes part of the SGM gap to PatchMatch |
 | 9 | Triangulate After Each Registration | B7.3 | Medium | Low | More complete reconstruction, low effort |
 | 10 | `FindPair` O(1) Lookup | B28.1 | Medium | Low | Performance improvement, minimal risk |
 
