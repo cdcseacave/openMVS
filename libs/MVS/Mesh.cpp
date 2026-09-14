@@ -1952,7 +1952,7 @@ Mesh Mesh::SubMesh(const FaceIdxArr& chunk) const
 	ASSERT(vertexColors.empty() || vertexColors.size() == vertices.size());
 	ASSERT(faceNormals.empty() || faceNormals.size() == faces.size());
 	ASSERT(faceTexindices.empty() || faceTexindices.size() == faces.size());
-	const bool bTexcoordsPerVertex(HasTextureCoordinatesPerVertex());
+	ASSERT(faceTexcoords.empty() || faceTexcoords.size() == faces.size()*3);
 	Mesh mesh;
 	mesh.faces.reserve(chunk.size());
 	VertexIdxArr mapVertices(vertices.size());
@@ -1973,14 +1973,12 @@ Mesh Mesh::SubMesh(const FaceIdxArr& chunk) const
 					mesh.vertexNormals.emplace_back(vertexNormals[idxVertex]);
 				if (!vertexColors.empty())
 					mesh.vertexColors.emplace_back(vertexColors[idxVertex]);
-				if (bTexcoordsPerVertex)
-					mesh.faceTexcoords.emplace_back(faceTexcoords[idxVertex]);
 			}
 			subFace[i] = idxSubVertex;
 		}
 		if (!faceNormals.empty())
 			mesh.faceNormals.emplace_back(faceNormals[idxFace]);
-		if (!faceTexcoords.empty() && !bTexcoordsPerVertex)
+		if (!faceTexcoords.empty())
 			mesh.faceTexcoords.Join(faceTexcoords.data()+idxFace*3, 3);
 		if (!faceTexindices.empty()) {
 			const TexIndex idxTexture(faceTexindices[idxFace]);
