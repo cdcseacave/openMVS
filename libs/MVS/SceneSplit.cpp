@@ -62,6 +62,7 @@ DEFINE_LOG_NAME(lt, _T("Scene   "));
 unsigned Scene::Split(ImagesChunkArr& chunks, float maxArea, int depthMapStep) const
 {
 	TD_TIMER_STARTD();
+	ASSERT(depthMapStep > 0);
 	// gather samples from all depth-maps
 	const float areaScale(0.01f);
 	typedef cList<Point3f::EVec,const Point3f::EVec&,0,4096,uint32_t> Samples;
@@ -71,18 +72,22 @@ unsigned Scene::Split(ImagesChunkArr& chunks, float maxArea, int depthMapStep) c
 	IIndexArr visibility(0, (IIndex)areas.capacity());
 	Unsigned32Arr imageAreas(images.size()); {
 		Samples samples(0, (uint32_t)areas.capacity());
+		unsigned numDepthMapsMissing(0);
 		FOREACH(idxImage, images) {
 			const Image& imageData = images[idxImage];
 			if (!imageData.IsValid())
 				continue;
+			// an image can lack a depth-map (e.g. featureless views): count it instead of logging each one
+			const String fileName(ComposeDepthFilePath(imageData.ID, "dmap"));
 			DepthData depthData;
-			depthData.Load(ComposeDepthFilePath(imageData.ID, "dmap"), 1);
-			if (depthData.IsEmpty())
+			if (!File::access(fileName) || !depthData.Load(fileName, 1) || depthData.IsEmpty()) {
+				++numDepthMapsMissing;
 				continue;
+			}
 			const IIndex numPointsBegin(visibility.size());
 			const Camera camera(imageData.GetCamera(platforms, depthData.depthMap.size()));
-			for (int r=(depthData.depthMap.rows%depthMapStep)/2; r<depthData.depthMap.rows; r++) {
-				for (int c=(depthData.depthMap.cols%depthMapStep)/2; c<depthData.depthMap.cols; c++) {
+			for (int r=(depthData.depthMap.rows%depthMapStep)/2; r<depthData.depthMap.rows; r+=depthMapStep) {
+				for (int c=(depthData.depthMap.cols%depthMapStep)/2; c<depthData.depthMap.cols; c+=depthMapStep) {
 					const Depth depth = depthData.depthMap(r,c);
 					if (depth <= 0)
 						continue;
@@ -96,6 +101,12 @@ unsigned Scene::Split(ImagesChunkArr& chunks, float maxArea, int depthMapStep) c
 			}
 			imageAreas[idxImage] = visibility.size()-numPointsBegin;
 		}
+		if (numDepthMapsMissing > 0)
+			VERBOSE("warning: %u depth-maps missing or empty, ignored by the scene split", numDepthMapsMissing);
+		if (samples.empty()) {
+			VERBOSE("error: no depth-map samples to split the scene by");
+			return 0;
+		}
 		const AABB3f aabb(IsBounded() ? obb.GetAABB() : [&samples]() {
 			#if 0
 			return AABB3f(samples.data(), samples.size());
@@ -103,7 +114,7 @@ unsigned Scene::Split(ImagesChunkArr& chunks, float maxArea, int depthMapStep) c
 			// try to find a dominant plane, and set the bounding-box center on the plane bottom
 			OBB3f obbSamples(samples.data(), samples.size());
 			obbSamples.m_ext(0) *= 2;
-			#if 1
+			#if 0 || defined(_DEBUG)
 			// dump box for visualization
 			OBB3f::POINT pts[8];
 			obbSamples.GetCorners(pts);
@@ -223,6 +234,15 @@ unsigned Scene::Split(ImagesChunkArr& chunks, float maxArea, int depthMapStep) c
 		}
 	}
 	#endif
+	// drop the chunks left without images by the pruning above
+	unsigned numEmptyChunks(0);
+	RFOREACH(c, chunks) {
+		if (!chunks[c].images.empty())
+			continue;
+		chunks.RemoveAt(c);
+		chunkInserter.imagesAreas.RemoveAt(c);
+		++numEmptyChunks;
+	}
 	#if 1
 	// merge small chunks into larger chunk neighbors
 	// TODO: better manage the bounding-box merge
@@ -274,9 +294,12 @@ unsigned Scene::Split(ImagesChunkArr& chunks, float maxArea, int depthMapStep) c
 			if (chunk.aabb.IsEmpty()) {
 				DEBUG_ULTIMATE("warning: chunk bounding box is empty");
 				chunks.RemoveAt(c);
+				++numEmptyChunks;
 			}
 		}
 	}
+	if (numEmptyChunks > 0)
+		VERBOSE("warning: %u empty chunks removed by the scene split", numEmptyChunks);
 	DEBUG_EXTRA("Scene split (%g max-area): %u chunks (%s)", maxArea, chunks.size(), TD_TIMER_GET_FMT().c_str());
 	#if 0 || defined(_DEBUG)
 	// dump chunks for visualization
@@ -297,8 +320,10 @@ bool Scene::ExportChunks(const ImagesChunkArr& chunks, const String& path, ARCHI
 		const ImagesChunk& chunk = chunks[chunkID];
 		IIndexArr idxImages(chunk.images.begin(), chunk.images.end(), true);
 		Scene subset = SubScene(idxImages);
-		// set scene ROI
+		// set scene ROI and keep only the mesh inside it
 		subset.obb.Set(OBB3f::MATRIX::Identity(), chunk.aabb.ptMin, chunk.aabb.ptMax);
+		if (!subset.mesh.IsEmpty())
+			subset.mesh.RemoveFacesOutside(subset.obb);
 		// serialize out the current state
 		if (!subset.Save(String::FormatString("%s" PATH_SEPARATOR_STR "scene_%04u.mvs", path.c_str(), chunkID), type))
 			return false;
@@ -312,8 +337,14 @@ bool Scene::ExportChunks(const ImagesChunkArr& chunks, const String& path, ARCHI
 Scene Scene::SubScene(const IIndexArr& idxImages) const
 {
 	ASSERT(!idxImages.empty());
+	// nothing to drop if every calibrated image is kept
+	const auto isValid([](const Image& image) { return image.IsValid(); });
+	if (std::count_if(images.begin(), images.end(), isValid) ==
+		std::count_if(idxImages.begin(), idxImages.end(), [&](IIndex idxImage) { return isValid(images[idxImage]); }))
+		return *this;
 	Scene subScene(nMaxThreads);
 	subScene.obb = obb;
+	subScene.transform = transform;
 	subScene.nCalibratedImages = 0;
 	// export images and poses
 	std::unordered_map<IIndex,IIndex> mapImages;
@@ -344,15 +375,11 @@ Scene Scene::SubScene(const IIndexArr& idxImages) const
 			subImage.ID = idxImage;
 		subImage.platformID = platformCameraIt.first->second.i;
 		subImage.cameraID = platformCameraIt.first->second.j;
-		if (!image.IsValid())
-			continue;
 		subImage.poseID = subPlatform.poses.size();
 		subPlatform.poses.emplace_back(platform.poses[image.poseID]);
 		++subScene.nCalibratedImages;
 	}
 	ASSERT(!mapImages.empty());
-	if (mapImages.size() < 2 || subScene.nCalibratedImages == nCalibratedImages)
-		return *this;
 	// remap image neighbors
 	for (Image& image: subScene.images) {
 		ASSERT(image.IsValid());
