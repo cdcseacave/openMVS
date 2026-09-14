@@ -859,13 +859,15 @@ const char* SourceWord(SeamCandidate::Source source)
 	}
 }
 
-// Every camera's vote on one transform, the raw material the two vote bars are read from
+// Every camera's vote on one transform, the raw material the two vote bars are read from, with how
+// far the camera's correspondences sit from it: their median error and the share within the loose bar
 void LogVotes(const char* label, const SeamScore& score)
 {
 	for (const CameraVote& vote : score.votes)
-		DEBUG_ULTIMATE("%s camera %u: %u/%u inliers, coverage %.2f, %s",
+		DEBUG_ULTIMATE("%s camera %u: %u/%u inliers, coverage %.2f, %s (median %.1f px, %u within %ux)",
 			label, vote.image, vote.inliers, vote.correspondences, vote.coverage,
-			vote.vote > 0 ? "support" : (vote.vote < 0 ? "contradict" : "abstain"));
+			vote.vote > 0 ? "support" : (vote.vote < 0 ? "contradict" : "abstain"),
+			vote.medianError, vote.looseInliers, kLooseSeamFactor);
 }
 
 // What one surviving candidate rests on. A candidate measured from one direction reports that
@@ -1164,14 +1166,19 @@ void GlobalAlignment::ScoreSeam(
 	ASSERT(observations.size() == correspondences.size());
 	score = SeamScore();
 
-	// what the transform explains
+	// what the transform explains; every error is kept for the votes below to read how far off
+	// each camera's correspondences sit, beyond whether they pass the bar
 	const Transform TInv(T.Invert());
 	score.inlierMask.assign(observations.size(), false);
-	FOREACH(i, observations)
-		if (SeamObservationError(observations[i], T, TInv) <= config.maxReprojError) {
+	std::vector<REAL> errors(observations.size());
+	FOREACH(i, observations) {
+		errors[i] = SeamObservationError(observations[i], T, TInv);
+		if (errors[i] <= config.maxReprojError) {
 			score.inlierMask[i] = true;
 			++score.inliers;
 		}
+	}
+	const REAL looseBar = (REAL)kLooseSeamFactor * config.maxReprojError;
 
 	// every image the seam touches, in both its roles: the camera whose feature carries the point
 	// witnesses the seam as much as the camera that observed it. A match whose two endpoints both
@@ -1205,7 +1212,12 @@ void GlobalAlignment::ScoreSeam(
 		// how far its inliers spread over its image: a camera whose inliers all sit in one cell
 		// cannot support a transform, a single repeated texture patch buying exactly that
 		std::vector<bool> cells(kVoteGridCells * kVoteGridCells, false);
+		std::vector<REAL> cameraErrors;
+		cameraErrors.reserve(indices.size());
 		for (uint32_t i : indices) {
+			cameraErrors.push_back(errors[i]);
+			if (errors[i] <= looseBar)
+				++vote.looseInliers;
 			if (!score.inlierMask[i])
 				continue;
 			++vote.inliers;
@@ -1219,6 +1231,8 @@ void GlobalAlignment::ScoreSeam(
 			cells[cellY * (int)kVoteGridCells + cellX] = true;
 		}
 		vote.coverage = (float)std::count(cells.begin(), cells.end(), true) / (float)cells.size();
+		std::nth_element(cameraErrors.begin(), cameraErrors.begin() + cameraErrors.size() / 2, cameraErrors.end());
+		vote.medianError = (float)MINF(cameraErrors[cameraErrors.size() / 2], (REAL)1e6);
 		const float inlierFraction = (float)vote.inliers / (float)vote.correspondences;
 		if (vote.inliers >= config.minVoteInliers && inlierFraction >= kVoteSupportFraction &&
 			vote.coverage >= config.minVoteCoverage)
