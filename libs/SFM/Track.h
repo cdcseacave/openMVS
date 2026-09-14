@@ -171,13 +171,17 @@ SFM_API void ComputeObservationSigmas(const Scene& scene,
  * @param minAngleDegrees Minimum required angle between any two observations in degrees
  * @param multDepthNear Multiplier for near depth threshold based on median depth (0 disabled)
  * @param multDepthFar Multiplier for far depth threshold based on median depth (0 disabled)
+ * @param denseReprojErrorFactor Multiple of maxReprojErrorPixels a dense (warp-sampled) observation
+ *                               is held to: the less precise measurement answers to a looser bar
+ *                               (1 = the same bar as a described observation)
  * @return mean reprojection error in pixels (first) and degrees (second)
  */
 SFM_API std::pair<float, float> FilterTracks(Scene& scene,
 	float maxReprojErrorPixels = 3.f,
 	float minAngleDegrees = 2.f,
 	float multDepthNear = 0.05f,
-	float multDepthFar = 20.f);
+	float multDepthFar = 20.f,
+	float denseReprojErrorFactor = 1.f);
 
 /**
  * @brief Filter weakly connected images and cluster the remainder based on covisibility

@@ -382,7 +382,7 @@ IIndex Resection::RegisterFromRelativePoses(const IIndexScores& unregistered)
 		static_cast<Pose3D&>(img) = Pose3D(R, C);
 		// Its two-view tracks with the registered images can now be triangulated, which is what gives
 		// the next selection the 2D-3D correspondences it was missing
-		TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold);
+		TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold, config.denseReprojErrorFactor);
 		DEBUG("Image %u registered from the relative pose to image %u (quorum %u of %u links, %s, baseline %s)",
 			imageID, rays.front().neighborID, (unsigned)quorum.links.size(), (unsigned)imageLinks.size(), path,
 			String::FormatString("%g", norm(C - scene.images[rays.front().neighborID].C)).c_str());
@@ -471,12 +471,12 @@ bool Resection::RegisterImages()
 			// inlier prefix the BA iterates, then re-triangulate only the tracks left without a valid
 			// position (real outliers and never-triangulated tracks): a track that merely gained a newly
 			// valid view keeps the position the previous BA refined instead of being reset to a linear solve
-			FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
-			TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold);
+			FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar, config.denseReprojErrorFactor);
+			TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold, config.denseReprojErrorFactor);
 			const bool refineExtended = config.minRefineExtIntrs > 0 &&
 				scene.status.nCalibratedImages + registeredCount >= config.minRefineExtIntrs;
 			BundleAdjustment::Adjust(scene, refineExtended ? config.extendedBAConfig : config.fullBAConfig);
-			FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+			FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar, config.denseReprojErrorFactor);
 			lastRegistered.clear();
 			avgInliersRatio.Clear();
 			sinceFullBA = 0;
@@ -486,11 +486,11 @@ bool Resection::RegisterImages()
 		}
 		if (config.localBAEvery > 0 && lastRegistered.size() >= config.localBAEvery) {
 			// Local BA every N registered images
-			TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold);
+			TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold, config.denseReprojErrorFactor);
 			const IIndexArr fixedViewIDs = BuildLocalWindow(lastRegistered);
 			ASSERT(!fixedViewIDs.empty());
 			BundleAdjustment::AdjustLocal(scene, lastRegistered, fixedViewIDs, config.localBAConfig);
-			FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+			FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar, config.denseReprojErrorFactor);
 			lastRegistered.clear();
 			return true;
 		}
@@ -553,8 +553,8 @@ bool Resection::RegisterImages()
 				break; // restart selection of next images
 			} else if (n+1 == nextIDs.size() || (config.triangulateEvery > 0 && (lastRegistered.size() % config.triangulateEvery) == 0)) {
 				// Update scene with new points every N registered images
-				TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold);
-				FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+				TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold, config.denseReprojErrorFactor);
+				FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar, config.denseReprojErrorFactor);
 				break; // restart selection of next images
 			}
 		}
@@ -567,10 +567,10 @@ bool Resection::RegisterImages()
 	// Full BA to close the resection, unless the last one scheduled inside the loop already
 	// covers every image registered since (nothing left for a further adjustment to refine)
 	if (sinceFullBA > 0) {
-		TriangulateTracks(scene, false, config.maxReprojError, config.minAngleThreshold);
+		TriangulateTracks(scene, false, config.maxReprojError, config.minAngleThreshold, config.denseReprojErrorFactor);
 		config.extendedBAConfig.maxIterations = 100;
 		BundleAdjustment::Adjust(scene, config.extendedBAConfig);
-		FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+		FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar, config.denseReprojErrorFactor);
 	}
 
 	// Update scene status

@@ -317,6 +317,11 @@ bool ResectionAcceptanceTest();
 // against them, instead of the scene being clustered and rebuilt from its matches once more.
 bool ReconstructResumeTest();
 
+// A dense (warp-sampled) observation is the less precise measurement, so the track filter and the
+// triangulation hold it to its own multiple of the reprojection bar a described one answers to
+// (FilterTracks / TriangulateTracks denseReprojErrorFactor).
+bool DenseReprojectionBarTest();
+
 // The image filter judges an image by its triangulated structure, which an image joined to the
 // model by two-view geometry alone does not have. Such an image stays registered when two verified
 // pairs to distinct settled images agree with the pose the model gives it, in the relative rotation

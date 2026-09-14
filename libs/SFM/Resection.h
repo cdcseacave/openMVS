@@ -75,6 +75,10 @@ struct SFM_API ResectionConfig
 	                                      // above (a fraction of avgInliersRatioForceBA, not an absolute ratio;
 	                                      // 1 = no distinction)
 	float maxReprojError{4.f};          // Reprojection error for triangulation and filtering
+	float denseReprojErrorFactor{1.f};  // Multiple of maxReprojError a dense (warp-sampled) observation is held to by
+	                                    // the triangulation and the filtering: the dense measurement is the less
+	                                    // precise one (its error grows with the image size, the warp being computed
+	                                    // at a fixed resolution), so it answers to a looser bar (1 = the same bar)
 	float minAngleThreshold{1.f};       // Minimum triangulation angle (degrees)
 	float multDepthNear{0.05f};         // Near depth threshold multiplier
 	float multDepthFar{20.f};           // Far depth threshold multiplier

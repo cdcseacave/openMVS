@@ -74,6 +74,11 @@ the main-set intrinsics (focal, k1, k2, as far as `--refine-intrinsics` allows t
 `minRefineExtIntrs` (100) images are registered, and after that whatever the intrinsics level allows
 beyond the main set.
 
+Between the adjustments, the tracks are triangulated and filtered against `maxReprojError` (4 px) and
+`minAngleThreshold`. A dense (warp-sampled) observation is held to `denseReprojErrorFactor` times that
+bar: the warp is computed at a fixed resolution, so a dense keypoint's pixel error grows with the image
+size where a detected keypoint's does not (1 holds both kinds to the same bar).
+
 ## Bundle adjustment
 
 Reprojection residuals fit each track's observations against the camera model, robustified by a Huber

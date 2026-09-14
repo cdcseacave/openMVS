@@ -8974,6 +8974,81 @@ bool ReconstructResumeTest()
 	return true;
 }
 
+bool DenseReprojectionBarTest()
+{
+	TD_TIMER_START();
+	std::mt19937 rng(20260914);
+
+	// Seven posed cameras of the arc share 30 exact tracks, plus two tracks whose observation in the
+	// last image is 7 pixels off: a described keypoint carries one, a dense keypoint the other. The
+	// displacement is vertical, across the plane of the arc, the direction the other six views
+	// constrain tightly: a least-squares triangulation then leaves most of it in the displaced view
+	// (about six sevenths, between the 4-pixel bar and twice it), where a displacement along the arc
+	// would be traded for depth and spread over every view.
+	constexpr unsigned numViews = 7;
+	constexpr float displacement = 7.f;
+	Scene scene;
+	BuildResectionArc(scene, numViews);
+	const std::vector<IIndex> allViews{0, 1, 2, 3, 4, 5, 6};
+	AddResectionTracks(scene, allViews, 30, rng);
+	if (!AddResectionTrack(scene, Point3(0.2, 0.1, -0.3), allViews)) {
+		VERBOSE("DenseReprojectionBarTest FAILED: the described track does not project inside every image");
+		return false;
+	}
+	const size_t idxDescribed = scene.tracks.size() - 1;
+	Image& lastImage = scene.images[numViews - 1];
+	lastImage.CloseDescribedKeypoints(); // every keypoint the last image gains from here on is dense
+	if (!AddResectionTrack(scene, Point3(-0.3, 0.2, 0.1), allViews)) {
+		VERBOSE("DenseReprojectionBarTest FAILED: the dense track does not project inside every image");
+		return false;
+	}
+	const size_t idxDense = scene.tracks.size() - 1;
+	for (const size_t idx : {idxDescribed, idxDense}) {
+		const Observation& obs = scene.tracks[idx].observations.back();
+		ASSERT(obs.imageID == numViews - 1);
+		lastImage.keypoints[obs.featureID].pt.y += displacement;
+	}
+	if (lastImage.IsDenseKeypoint(scene.tracks[idxDescribed].observations.back().featureID) ||
+		!lastImage.IsDenseKeypoint(scene.tracks[idxDense].observations.back().featureID)) {
+		VERBOSE("DenseReprojectionBarTest FAILED: the two displaced keypoints are not one described and one dense");
+		return false;
+	}
+	const auto Check = [&scene, idxDescribed, idxDense](const char* stage, unsigned expectedDescribed, unsigned expectedDense) {
+		if (scene.tracks[idxDescribed].numInliers != expectedDescribed || scene.tracks[idxDense].numInliers != expectedDense) {
+			VERBOSE("DenseReprojectionBarTest FAILED: %s kept %u/%u observations of the described track and %u/%u of "
+				"the dense one, expected %u and %u", stage, scene.tracks[idxDescribed].numInliers, numViews,
+				scene.tracks[idxDense].numInliers, numViews, expectedDescribed, expectedDense);
+			return false;
+		}
+		return true;
+	};
+
+	// At a 4-pixel bar with the dense observations held to twice that, the filter keeps the dense
+	// observation and drops the described one; held to the same bar, it drops both
+	FilterTracks(scene, 4.f, 1.f, 0.f, 0.f, 2.f);
+	if (!Check("the filter, with dense observations held to twice the 4-pixel bar,", numViews - 1, numViews))
+		return false;
+	FilterTracks(scene, 4.f, 1.f, 0.f, 0.f, 1.f);
+	if (!Check("the filter, at a 4-pixel bar for both kinds,", numViews - 1, numViews - 1))
+		return false;
+
+	// The triangulation reads the two bars the same way
+	for (Track& track : scene.tracks)
+		track.position = Point3(0, 0, 0);
+	TriangulateTracks(scene, false, 4.f, 1.f, 2.f);
+	if (!Check("the triangulation, with dense observations held to twice the 4-pixel bar,", numViews - 1, numViews))
+		return false;
+	for (Track& track : scene.tracks)
+		track.position = Point3(0, 0, 0);
+	TriangulateTracks(scene, false, 4.f, 1.f, 1.f);
+	if (!Check("the triangulation, at a 4-pixel bar for both kinds,", numViews - 1, numViews - 1))
+		return false;
+
+	VERBOSE("DenseReprojectionBarTest PASSED: the track filter and the triangulation hold a dense observation to its "
+		"own multiple of the reprojection bar (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 namespace {
 
 // A verified pair as the image filter reads one: on top of what the resection needs (the ground

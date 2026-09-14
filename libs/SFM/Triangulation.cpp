@@ -17,9 +17,11 @@ unsigned SFM::TriangulateDLT(
 	const ImageArr& images,
 	float reprojThreshold,
 	float minAngleThreshold,
-	unsigned minInliers)
+	unsigned minInliers,
+	float denseReprojErrorFactor)
 {
 	ASSERT(track.IsValid());
+	const float denseReprojThreshold = reprojThreshold * denseReprojErrorFactor;
 
 	// Collect camera poses and 2D normalized points
 	std::vector<PMatrix> projMatrices;
@@ -78,13 +80,13 @@ unsigned SFM::TriangulateDLT(
 		const Observation& obs = track.observations[obsIdx];
 		const Image& img = images[obs.imageID];
 		mapIndices[obsIdx] = obsIdx;
-		// Check reprojection error
+		// Check reprojection error, a dense observation against its own looser threshold
 		const auto [proj, valid] = img.ProjectPoint(track.position);
 		if (!valid)
 			continue;
 		const cv::KeyPoint& kp = img.keypoints[obs.featureID];
 		const float error = norm(Cast<float>(proj) - kp.pt);
-		if (error > reprojThreshold)
+		if (error > (img.IsDenseKeypoint(obs.featureID) ? denseReprojThreshold : reprojThreshold))
 			continue;
 		// This is an inlier observation, move it to the front
 		if (track.numInliers < obsIdx) {
@@ -133,9 +135,11 @@ unsigned SFM::TriangulateSkewLLS(
 	const ImageArr& images,
 	float reprojThreshold,
 	float minAngleThreshold,
-	unsigned minInliers)
+	unsigned minInliers,
+	float denseReprojErrorFactor)
 {
 	ASSERT(track.IsValid());
+	const float denseReprojThreshold = reprojThreshold * denseReprojErrorFactor;
 
 	// Collect normalized directions in camera space and R, t from each camera.
 	// Invariant throughout: cams[j] corresponds to track.observations[j].
@@ -184,8 +188,8 @@ unsigned SFM::TriangulateSkewLLS(
 	track.position = A.jacobiSvd(Eigen::ComputeThinU | Eigen::ComputeThinV).solve(bvec);
 	ASSERT(ISFINITE(track.position));
 
-	// Validate by cheirality and reprojection,
-	// moving inliers to the front of both cams and observations
+	// Validate by cheirality and reprojection, a dense observation against its own looser
+	// threshold, moving inliers to the front of both cams and observations
 	track.numInliers = 0;
 	FOREACH(obsIdx, cams) {
 		const Observation& obs = track.observations[obsIdx];
@@ -195,7 +199,7 @@ unsigned SFM::TriangulateSkewLLS(
 			continue;
 		const cv::KeyPoint& kp = img.keypoints[obs.featureID];
 		const float error = norm(Cast<float>(proj) - kp.pt);
-		if (error > reprojThreshold)
+		if (error > (img.IsDenseKeypoint(obs.featureID) ? denseReprojThreshold : reprojThreshold))
 			continue;
 		// This is an inlier observation, move it to the front
 		if (track.numInliers < obsIdx) {
@@ -232,7 +236,8 @@ unsigned SFM::TriangulateTracks(
 	Scene& scene,
 	bool outliersOnly,
 	float reprojThreshold,
-	float minAngleThreshold)
+	float minAngleThreshold,
+	float denseReprojErrorFactor)
 {
 	TD_TIMER_STARTD();
 	ASSERT(!scene.tracks.empty());
@@ -258,7 +263,7 @@ unsigned SFM::TriangulateTracks(
 			++numInvalids;
 			continue;
 		}
-		unsigned nInliers = TriangulateSkewLLS(track, scene.images, reprojThreshold, minAngleThreshold, minInliers);
+		unsigned nInliers = TriangulateSkewLLS(track, scene.images, reprojThreshold, minAngleThreshold, minInliers, denseReprojErrorFactor);
 		if (nInliers < minInliers)
 			continue;
 		numInliersObservations += nInliers;
