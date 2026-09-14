@@ -54,7 +54,10 @@ class MVS_API Scene;
 
 namespace STEREO {
 
-// An implementation of the popular Semi-Global Matching (SGM) algorithm.
+// An implementation of the popular Semi-Global Matching (SGM) algorithm, run hierarchically (tSGM):
+// each rectified image pair is matched coarse to fine, every level searching per pixel only around
+// the disparities estimated by the previous one; the pair disparity-maps of an image are then fused
+// into its depth-map.
 class MVS_API SemiGlobalMatcher
 {
 public:
@@ -146,7 +149,7 @@ public:
 	typedef TImage<DepthRange> DepthRangeMap;
 
 public:
-	SemiGlobalMatcher(SgmSubpixelMode subpixelMode=SUBPIXEL_LC_BLEND, Disparity subpixelSteps=4, AccumCost P1=3, AccumCost P2=4, float P2alpha=14, float P2beta=38);
+	SemiGlobalMatcher(SgmSubpixelMode subpixelMode=SUBPIXEL_LC_BLEND, Disparity subpixelSteps=4, AccumCost P1=18, AccumCost P2=24, float P2alpha=14, float P2beta=38);
 	~SemiGlobalMatcher();
 
 	void Match(const Scene& scene, IIndex idxImage, IIndex numNeighbors, unsigned minResolution=320);
@@ -170,25 +173,20 @@ protected:
 	void Match(const ViewData& leftImage, const ViewData& rightImage, DisparityMap& disparityMap, AccumCostMap& costMap);
 	static Range DepthRange2Disparity(const Matrix3x3& H, const Matrix4x4& Q, REAL scale, const MaskMap& maskMap, Depth dMin, Depth dMax);
 	Index Range2RangeMap(const MaskMap& maskMap, const Range& range);
-	Index Disparity2RangeMap(const DisparityMap& disparityMap, const MaskMap& maskMap, Disparity minNumDisp=3, Disparity minNumDispInvalid=16);
+	Index Disparity2RangeMap(const DisparityMap& disparityMap, const MaskMap& maskMap);
 	#if SGM_SIMILARITY == SGM_SIMILARITY_CENSUS
 	static void CensusTransform(const Image8U& imageGray, CensusMap& imageCensus);
 	#endif
 	static void ConsistencyCrossCheck(DisparityMap& l2r, const DisparityMap& r2l, Disparity thCross=1);
-	static void FilterByCost(DisparityMap&, const AccumCostMap&, AccumCost th);
 	static void ExtractMask(const DisparityMap&, MaskMap&, int thValid=3);
 	static void FlipDirection(const DisparityMap& l2r, DisparityMap& r2l);
 	static void UpscaleMask(MaskMap& maskMap, const cv::Size& size2x);
 	void RefineDisparityMap(DisparityMap& disparityMap) const;
-	#ifndef _RELEASE
-	void DisplayState(const cv::Size& size) const;
-	#endif
 
 	// confidence in [0,1] of an accumulated cost, on the scale of the NCC score the depth-map fusion
 	// thresholds: one minus the mean matching cost per aggregation path (2*numDirs paths of up to 255)
 	static float AccumCost2Confidence(float cost) { return MAXF(0.f, 1.f - cost/(2*numDirs*255)); }
 	static CLISTDEF0IDX(AccumCost,int) GenerateP2s(AccumCost P2, float P2alpha, float P2beta);
-	static void Disparity2DepthMap(const DisparityMap&, const AccumCostMap&, const Matrix3x3& H, const Matrix4x4& Q, Disparity subpixelSteps, DepthMap&, ConfidenceMap&);
 	static bool ProjectDisparity2DepthMap(const DisparityMap&, const AccumCostMap&, const Matrix4x4& Q, Disparity subpixelSteps, DepthMap&, DepthRangeMap&, ConfidenceMap&);
 
 protected:

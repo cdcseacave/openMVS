@@ -3546,7 +3546,7 @@ void Scene::DenseReconstructionEstimate(void* pData)
 				data.sgm.Match(*this, data.images[evtImage.idxImage], OPTDENSE::nNumViews);
 				if (data.nFusionMode == -2) {
 					// fuse them into the depth-map of this image; Fuse() visits the same neighbors as Match();
-					// a depth one pair alone estimates is kept too, as the depth-map fusion checks it across views
+					// a depth estimated by a single pair is kept too, the depth-map fusion checks it across views
 					const IIndex idx(data.images[evtImage.idxImage]);
 					DepthData& depthData(data.depthMaps.arrDepthData[idx]);
 					data.sgm.Fuse(*this, data.images[evtImage.idxImage], OPTDENSE::nNumViews, 1, depthData.depthMap, depthData.confMap);

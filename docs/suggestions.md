@@ -453,7 +453,7 @@ The following five suggestions offer the highest impact relative to implementati
 
 2. **SGM Coverage and Depth Precision** (Priority: Medium | Complexity: Medium)
    - **What:** Refine the SGM depth-maps (`--fusion-mode -2`) before fusion, e.g. by seeding a PatchMatch pass with them, or add slanted-window matching costs.
-   - **Why:** SGM (8 aggregation paths, quarter-pixel disparities) fits fronto-parallel windows on one rectified pair; on the EPFL scenes its precision is close to PatchMatch's but its recall is 3-4x lower at tau and about half at 4 tau: wide-baseline pairs cover little of each view and a quarter pixel is already ~8 mm of depth there.
+   - **Why:** SGM fits fronto-parallel 7x7 windows on a single rectified pair; on the EPFL scenes its F-score is 0.33/0.26 vs PatchMatch's 0.40/0.27 (Herz-Jesu-P8/fountain-P11) — precision is close to PatchMatch's but recall is lower (0.22 vs 0.28 on Herz-Jesu-P8), limited by slanted surfaces, wide baselines and the quarter-pixel disparity quantization.
    - **Risk:** Low — the SGM mode is opt-in.
 
 3. **Confidence-Guided Iteration Count** (Priority: Medium | Complexity: Low)
