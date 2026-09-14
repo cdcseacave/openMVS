@@ -800,16 +800,20 @@ bool SFM::AssemblePairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA,
 		}
 	}
 
-	// 3) classify both kinds of correspondence against the kept geometry, each at its own precision:
-	// a descriptor correspondence is sub-pixel and is held to the matcher's own epipolar error, a
-	// warp cell can only claim half a cell
+	// 3) classify both kinds of correspondence against the kept geometry: a descriptor correspondence
+	// is sub-pixel and is held to the matcher's own epipolar error; a warp cell is held to a multiple
+	// of that same bar (ROMA2Config::denseEpipolarErrorFactor), since a correspondence admitted at the
+	// half cell the coarse warp can claim pollutes every track it enters downstream -- unless the
+	// factor is 0, which leaves it the half cell
 	const MatchConfig& cfg = pairsMatcher.GetConfig();
 	// maxEpipolarError 0 turns the RANSAC verification off scene-wide (MatchConfig), and with it the
 	// sparse epipolar test: in that configuration every guided match stands, exactly as the
 	// descriptor path keeps its matches unverified
 	const bool bVerifySparse = cfg.maxEpipolarError > 0.f;
 	const SampsonTest sparseTest(imgA, imgB, pair, cfg.maxEpipolarError);
-	const SampsonTest denseTest(imgA, imgB, pair, WarpTolerance(sizeA, sizeB, warpSize));
+	const float denseTolerance = (bVerifySparse && config.denseEpipolarErrorFactor > 0.f) ?
+		cfg.maxEpipolarError * config.denseEpipolarErrorFactor : WarpTolerance(sizeA, sizeB, warpSize);
+	const SampsonTest denseTest(imgA, imgB, pair, denseTolerance);
 	ASSERT(sparseTest.IsValid() == denseTest.IsValid());
 	pair.matches.clear();
 	pair.matches.reserve(guided.size());

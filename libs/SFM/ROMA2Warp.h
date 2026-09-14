@@ -102,10 +102,13 @@ inline bool IsWarpCellEligible(float conf, const Point2f& normCoord, float minCo
 }
 
 // Half a warp cell in image pixels: the accuracy a coarse-warp correspondence can claim, and the
-// epipolar tolerance every test on warp cells uses -- the verdict's Sampson test on both sides of
-// the pair (JudgePairROMA2) and the dense segment's classification (AssemblePairROMA2). A function
-// of the two image sizes and the warp grid rather than a setting, because it is not a precision the
-// user chooses but the one the grid has: measured at 2 px on the 640/160 grid.
+// epipolar tolerance the tests that judge the warp itself use -- the verdict's fit and Sampson test
+// on both sides of the pair (JudgePairROMA2) and the union fit of a pair's evidence
+// (AssemblePairROMA2). A function of the two image sizes and the warp grid rather than a setting,
+// because it is not a precision the user chooses but the one the grid has: measured at 2 px on the
+// 640/160 grid. The dense segment a pair stores is classified more tightly, at a multiple of the
+// matcher's own epipolar bar (ROMA2Config::denseEpipolarErrorFactor), since what this tolerance
+// admits pollutes the tracks downstream; the factor at 0 falls back to this tolerance.
 inline float WarpTolerance(const cv::Size& sizeA, const cv::Size& sizeB, int warpSize) {
 	return 0.5f * (float)MAXF(MAXF(sizeA.width, sizeA.height), MAXF(sizeB.width, sizeB.height)) / (float)warpSize;
 }

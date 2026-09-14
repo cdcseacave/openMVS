@@ -284,7 +284,11 @@ a pair the warp rejects. Per pair:
    compact overlap touching more buckets than the ceiling allows, is nearly all of them.
 5. **One geometry for the pair** (`AssemblePairROMA2`). `PairsMatcher::GeometricFilter` runs once more
    on guided ∪ dense; the guided matches within the matcher's own epipolar tolerance become the pair's
-   sparse (descriptor) evidence, the dense correspondences within the warp tolerance its dense segment.
+   sparse (descriptor) evidence, the dense correspondences within `denseEpipolarErrorFactor` (1) times
+   that same tolerance its dense segment. The coarse warp lands a correspondence several pixels off on
+   a full-resolution frame (a median of 6 px on 2789 px images, against 1 px for a detected keypoint),
+   and one admitted at the half cell the warp can claim (8.7 px there) pollutes every track it enters;
+   a factor of 0 keeps the half-cell warp tolerance instead.
    When the union fit fails, the verdict's own geometry stands and classification runs against it
    instead — an admitted pair is always stored, and a pair with zero sparse inliers is dense-only, its
    dense segment its whole evidence. The pair is stored once (`StorePairROMA2`): created, or replacing
@@ -356,9 +360,10 @@ bool MatchPairsROMA2(PairsMatcher&, RoMa2Onnx&, const PairIdxArr& candidatePairs
 
 `PairsMatcher::GeometricFilter` gains a `(const Image&, const Image&, ImagePair&, float
 maxEpipolarError)` overload; the existing three-argument form forwards `config.maxEpipolarError`. The
-warp tolerance the verdict and the dense segment both classify against is half a warp cell in image
-pixels (`WarpTolerance`, `ROMA2Warp.h`) — a function of the two image sizes and the grid, not a
-setting.
+warp tolerance the verdict classifies against, and the union fit of a pair's evidence is estimated at,
+is half a warp cell in image pixels (`WarpTolerance`, `ROMA2Warp.h`) — a function of the two image
+sizes and the grid, not a setting; the dense segment itself is held to `denseEpipolarErrorFactor`
+times the matcher's epipolar bar (see above).
 
 ### Per-pair log and summary
 
@@ -415,8 +420,9 @@ stored.
 | `--roma2-min-overlap` | 0.10 | min-side inlier area; ≈ 0.15–0.17 true overlap; 0.15 ≈ a quarter of the frame |
 | `--roma2-dense-matches` | 2000 | dense correspondences per full frame of uncovered overlap (density, not a cap per pair) |
 | guided disc | 2 warp cells | fixed |
-| warp tolerance | half a warp cell | fixed, in image pixels |
+| warp tolerance | half a warp cell | fixed, in image pixels; the verdict and the union fit |
 | sparse tolerance | `MatchConfig::maxEpipolarError` | the matcher's own |
+| dense tolerance | `denseEpipolarErrorFactor` (1) × the sparse one | the dense segment's classification; 0 = the warp tolerance |
 
 ### Known limit
 

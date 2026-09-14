@@ -2542,6 +2542,52 @@ bool ROMA2AssemblyTest()
 		return false;
 	}
 
+	// a verdict whose every fourth cell lands 3 px across the epipolar lines in B, the imprecision
+	// of a coarse warp: held to the pair's own epipolar bar (1.5 px here, denseEpipolarErrorFactor 1)
+	// the dense segment keeps only the exact cells, while on the half-cell bar (factor 0: 5 px on
+	// this 640 px frame and 64-cell grid) the displaced cells stay in it too
+	{
+		PairVerdict verdictOff(verdict);
+		const float acrossLen = SQRT(0.1f*0.1f + 0.4f*0.4f);
+		const Point2f across(-0.1f/acrossLen*3.f, 0.4f/acrossLen*3.f); // perpendicular to the baseline (0.4, 0.1)
+		for (size_t k = 0; k < verdictOff.inliersB.size(); k += 4)
+			verdictOff.inliersB[k] = Point2f(verdictOff.inliersB[k].x + across.x, verdictOff.inliersB[k].y + across.y);
+		MatchConfig matchCfgTight(matchCfg);
+		matchCfgTight.maxEpipolarError = 1.5f;
+		PairsMatcher matcherTight(scene, matchCfgTight);
+		const auto CountKept = [&](float factor, unsigned& numKept, unsigned& numKeptDisplaced) {
+			ROMA2Config configBar(config);
+			configBar.denseEpipolarErrorFactor = factor;
+			ImagePair pairOff(0, 1);
+			ArmVerdictGeometry(pairOff, poseVerdict);
+			DenseMatches denseOff;
+			if (!AssemblePairROMA2(matcherTight, imgA, imgB, verdictOff, std::vector<DMatch>(), configBar, cells, pairOff, denseOff))
+				return false;
+			numKept = (unsigned)denseOff.pointsA.size();
+			numKeptDisplaced = 0;
+			FOREACH(k, denseOff.pointsA) {
+				Point2f ptB;
+				if (!ROMA2WedgeCorrespondence(imgA, imgB, denseOff.pointsA[k], ptB))
+					return false;
+				if (SQRT(SQUARE(denseOff.pointsB[k].x - ptB.x) + SQUARE(denseOff.pointsB[k].y - ptB.y)) > 1.5f)
+					++numKeptDisplaced;
+			}
+			return true;
+		};
+		unsigned keptBar, keptBarDisplaced, keptCell, keptCellDisplaced;
+		if (!CountKept(1.f, keptBar, keptBarDisplaced) || !CountKept(0.f, keptCell, keptCellDisplaced)) {
+			VERBOSE("ROMA2AssemblyTest FAILED: the pair whose every fourth cell is displaced was not assembled");
+			return false;
+		}
+		if (keptBarDisplaced != 0 || keptCellDisplaced == 0 || keptBar >= keptCell) {
+			VERBOSE("ROMA2AssemblyTest FAILED: the dense segment keeps %u cells (%u displaced) on the epipolar bar and "
+				"%u (%u displaced) on the half-cell one", keptBar, keptBarDisplaced, keptCell, keptCellDisplaced);
+			return false;
+		}
+		DEBUG("ROMA2AssemblyTest: the dense segment keeps %u of %u cells on the epipolar bar, none of the %u displaced "
+			"the half-cell bar keeps", keptBar, keptCell, keptCellDisplaced);
+	}
+
 	// a fill too small for a fit of its own (under the estimator's 8 correspondences): the verdict's
 	// geometry stands, unchanged, and the pair is stored on it. The inlier areas stay the parent
 	// verdict's -- only the SAMPLE of inlier cells shrinks here, to drive the union fit below the

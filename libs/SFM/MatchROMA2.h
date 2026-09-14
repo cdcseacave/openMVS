@@ -57,6 +57,12 @@ struct SFM_API ROMA2Config {
 	// pair. A pair's draw is that density over the part of its overlap its guided matches did not
 	// already cover (DenseFillGridSide sets the pitch that makes it so), capped by DenseFillCeiling.
 	unsigned denseMatchesPerFrame = 2000;
+	// Multiple of MatchConfig::maxEpipolarError a dense correspondence is held to when the pair's
+	// geometry classifies it: the coarse warp lands a correspondence several pixels off on a
+	// full-resolution image, and a correspondence admitted at half a warp cell (8.7 px on a 2789 px
+	// frame with the 160-cell grid) pollutes every track it enters, so the dense segment answers to
+	// the same bar the sparse matches do. 0 = half a warp cell, the accuracy the grid itself claims.
+	float denseEpipolarErrorFactor = 1.f;
 	unsigned slotBudget = 64;      // image descriptors kept resident on the device
 	bool useGPU = true;            // allow the GPU execution providers
 
@@ -150,8 +156,9 @@ struct SFM_API DenseMatches {
 // maxEpipolarError on temporary Image copies whose keypoints are those correspondences; then classify
 // against pair.F: the guided matches within the
 // matcher's maxEpipolarError are the sparse segment (`pair.matches[0, numFilteredInliers)`, the pair's
-// descriptor evidence), the dense correspondences within WarpTolerance are the dense segment (returned
-// in `dense`, appended by StorePairROMA2 after the pair exists). When the union fit fails (too few
+// descriptor evidence), the dense correspondences within config.denseEpipolarErrorFactor times that
+// same bar (WarpTolerance when the factor is 0) are the dense segment (returned in `dense`, appended
+// by StorePairROMA2 after the pair exists). When the union fit fails (too few
 // inliers at the sparse tolerance, or the branch's strict filters), the verdict's geometry stands:
 // the classification runs against it instead, so an admitted pair is always stored -- a pair with
 // zero sparse inliers is a dense-only pair, its dense segment its whole evidence.
