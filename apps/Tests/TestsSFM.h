@@ -311,6 +311,13 @@ bool ResectionRelativePoseFallbackTest();
 // several cannot speak for the image (ResectionConfig::maxRelativeRotationError).
 bool ResectionAcceptanceTest();
 
+// The resection's inlier bar admits a correspondence measured with the precision of a warp-sampled
+// (dense) keypoint on a full-resolution image, several pixels off its projection, and not only one
+// measured with a detected keypoint's: an image seen through such correspondences alone reaches a
+// nearly complete inlier share, the share the resection reads its model's health from, where a 4 px
+// bar counts barely half of them (ResectionConfig::ransac.threshold).
+bool ResectionInlierBarTest();
+
 // A scene saved part-way through the reconstruction -- after the hierarchical merge, with the
 // placed blocks posed and the images of the unplaced ones still to register -- given back as the
 // source resumes where it stopped: its poses are kept and the remaining images are resected

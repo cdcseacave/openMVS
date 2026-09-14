@@ -42,7 +42,16 @@ safely.
 
 Candidates are the unregistered images with the most 2D-3D correspondences to the model, plus every
 image within `ratioCorrespondences` (0.3) of the best of them (`SelectNextImages`), solved by
-bearing-vector PnP (PoseLib RANSAC). A pose is accepted only when credible: `minInliers` (12) inliers
+bearing-vector PnP (PoseLib RANSAC) with an inlier bar of `ransac.threshold` (8 px, twice
+`maxReprojError`). The bar is set for the dense (warp-sampled) correspondences, which land several
+pixels off on a full-resolution image (a median of 6 px, against 1 px for a detected keypoint) and make
+up most of the correspondences of an image seen through dense matches: at 4 px a third of them counted
+as inliers on a healthy model, so the average inlier ratio below stayed under its bar and forced a full
+bundle adjustment after nearly every registration (154 over 514 images, against 10 at 8 px, the poses
+coming out the same), and a minority of them could vote in a pose degrees off. The adjustments that
+follow are robust to the outliers the wider bar admits and the track filter removes them, so the
+filter's own bar stays at 4 px; 6 px is the bar to try once the dense matching gets more precise. A pose
+is accepted only when credible: `minInliers` (12) inliers
 at least, and `minInlierRatio` (0.25) of the correspondences, unless the inlier count alone reaches
 `minInliersAbsolute` (100) -- a small consensus inside a large set can agree on a pose the image never
 had. A weakly supported pose (inlier share under half) is cross-checked against the rotation its

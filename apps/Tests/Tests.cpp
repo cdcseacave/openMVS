@@ -297,6 +297,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::ResectionAcceptanceTest())
 				return false;
+			if (!SFM::ResectionInlierBarTest())
+				return false;
 			if (!SFM::ReconstructResumeTest())
 				return false;
 			if (!SFM::DenseReprojectionBarTest())

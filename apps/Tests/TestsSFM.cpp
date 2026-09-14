@@ -8904,6 +8904,68 @@ bool ResectionAcceptanceTest()
 	return true;
 }
 
+bool ResectionInlierBarTest()
+{
+	TD_TIMER_START();
+
+	// Image 4 observes 100 tracks, each at its true projection displaced by up to 7 px in a random
+	// direction: the precision of warp-sampled (dense) correspondences on a full-resolution image
+	// (their median error over a reconstructed scene is 6 px), not that of detected keypoints. The
+	// inlier share such an image reaches is what the bar decides, and it is what the resection reads
+	// its model's health from (avgInliersRatioForceBA): under the default bar nearly every one of
+	// these correspondences is an inlier, under a 4 px bar barely half of them are
+	constexpr REAL MAX_WARP_OFFSET = 7;
+	constexpr unsigned NUM_CORRESPONDENCES = 100;
+	const auto registerImage = [](const ResectionConfig& config) {
+		std::mt19937 rng(20260914);
+		Scene scene;
+		BuildResectionArc(scene, 5);
+		AddResectionTracks(scene, {0, 1, 2, 3}, 150, rng);
+		Image& img = scene.images[4];
+		std::uniform_real_distribution<REAL> direction(0, 2 * PI), magnitude(0, MAX_WARP_OFFSET);
+		for (unsigned i = 0; i < NUM_CORRESPONDENCES; ++i) {
+			Track& track = scene.tracks[i];
+			const auto [proj, valid] = img.ProjectPoint(track.position);
+			ASSERT(valid && Image8U::isInside(proj, img.GetSize()));
+			const REAL angle = direction(rng), offset = magnitude(rng);
+			track.observations.emplace_back(IIndex(4), (uint32_t)img.keypoints.size());
+			img.keypoints.emplace_back(cv::Point2f((float)(proj.x + offset * COS(angle)),
+				(float)(proj.y + offset * SIN(angle))), 1.f);
+		}
+		img.InvalidatePose();
+		scene.status.nCalibratedImages = 4;
+		TriangulateTracks(scene, false, 4.f, 1.f);
+		Resection resection(scene, config);
+		const auto [numInliers, numPoints, numDescribed] = resection.RegisterImage(IIndex(4));
+		return std::make_pair(numInliers, numPoints);
+	};
+
+	const auto [inliersDefault, pointsDefault] = registerImage(ResectionConfig());
+	DEBUG("ResectionInlierBarTest: %u/%u inliers under the default bar", inliersDefault, pointsDefault);
+	if (pointsDefault != NUM_CORRESPONDENCES || inliersDefault < NUM_CORRESPONDENCES * 9 / 10) {
+		VERBOSE("ResectionInlierBarTest FAILED: only %u of %u correspondences within %g px, the precision of a "
+			"warp-sampled one, are inliers under the default bar", inliersDefault, pointsDefault, MAX_WARP_OFFSET);
+		return false;
+	}
+
+	// The same image under a 4 px bar, the precision of a detected keypoint: what makes the default
+	// bar the reason the inlier share above is what it is
+	ResectionConfig config4px;
+	config4px.ransac.threshold = 4.0;
+	const auto [inliers4px, points4px] = registerImage(config4px);
+	DEBUG("ResectionInlierBarTest: %u/%u inliers under a 4 px bar", inliers4px, points4px);
+	if (inliers4px >= NUM_CORRESPONDENCES * 3 / 4) {
+		VERBOSE("ResectionInlierBarTest FAILED: a 4 px bar counts %u of %u of those correspondences as inliers too, "
+			"so the default bar is not what the inlier share rests on", inliers4px, points4px);
+		return false;
+	}
+
+	VERBOSE("ResectionInlierBarTest PASSED: %u of %u correspondences within %g px are inliers under the default bar "
+		"and %u under a 4 px one (%s)", inliersDefault, pointsDefault, MAX_WARP_OFFSET, inliers4px,
+		TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 bool ReconstructResumeTest()
 {
 	TD_TIMER_START();

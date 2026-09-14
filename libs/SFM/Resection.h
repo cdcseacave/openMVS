@@ -91,8 +91,19 @@ struct SFM_API ResectionConfig
 	                                     // images are registered, and for the final solve
 
 	ResectionConfig() {
-		// Robust absolute pose estimation
-		ransac.threshold = 4.0;
+		// Robust absolute pose estimation. The inlier bar is set for the dense (warp-sampled)
+		// correspondences, not only for the detected keypoints: the warp is computed at a fixed
+		// resolution, so on a full-resolution image a dense correspondence lands several pixels off
+		// (a median of 6 px over a reconstructed scene, against 1 px for a detected one), and the
+		// correspondences of an image seen through dense matches are mostly dense. At a 4 px bar the
+		// resection saw a third of such an image's correspondences as inliers on a healthy model,
+		// which kept the average inlier ratio under avgInliersRatioForceBA and forced a full bundle
+		// adjustment after nearly every registration (154 of them over 514 images, against 10 at 8 px,
+		// the poses coming out the same); it also let a minority of the correspondences vote a pose
+		// in that was degrees off. The bundle adjustments that follow are robust to the outliers the
+		// wider bar admits and the track filter removes them afterwards, so maxReprojError stays at 4.
+		// Once the dense matching gets more precise, 6 px is the bar to try.
+		ransac.threshold = 8.0;
 		ransac.confidence = 0.999;
 		ransac.max_iterations = 100000;
 		ransac.min_iterations = 1000;
@@ -173,6 +184,14 @@ public:
 	 */
 	void ExcludeImages(const IIndexArr& imageIDs);
 
+	/**
+	 * @brief Estimate the pose of one unregistered image from its 2D-3D correspondences to the
+	 * model's inlier tracks, and set it on the image when it is accepted
+	 * @return numInliers (0 when no pose was accepted), numPoints (2D-3D correspondences tried) and
+	 * numDescribed (of those, the share carrying a descriptor rather than being dense/warp-sampled)
+	 */
+	std::tuple<unsigned, unsigned, unsigned> RegisterImage(IIndex imageID);
+
 private:
 	Scene& scene;
 	ResectionConfig config;
@@ -181,9 +200,6 @@ private:
 	using IIndexScores = std::unordered_map<IIndex,unsigned>;
 
 	IIndexArr SelectNextImages(IIndexScores& unregistered) const;
-	// Returns numInliers, numPoints (2D-3D correspondences tried) and numDescribed (of those, the
-	// share carrying a descriptor rather than being dense/warp-sampled)
-	std::tuple<unsigned, unsigned, unsigned> RegisterImage(IIndex imageID);
 
 	/**
 	 * @brief Set the pose of one unregistered image from its relative poses to registered images
