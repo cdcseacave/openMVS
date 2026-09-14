@@ -283,6 +283,13 @@ instead of the images folder**. No code change needed:
   immediately.
 - For pure reconstruction debugging, omit `--export-mvs` and `--extract-colors` to skip
   the slow undistortion / MVS export / color-sampling tail.
+- To iterate on what follows the hierarchical merge alone (final adjustment, image filter,
+  resection of the images of the unplaced blocks), feed back `scene_post_merge.sfm`, which a
+  `-v 3` run writes right after the merge: a loaded scene that already has posed images
+  (`status.nCalibratedImages > 0`) is not clustered and rebuilt, `Scene::Reconstruct` resumes
+  it at the final adjustment. The same run also writes every reconstructed sub-scene as
+  `scene_block_<i>.sfm` (local image indices, before the merge moves it), so a block the
+  merge refused can be evaluated on its own against a reference.
 - This turns a ~full pipeline run into just the reconstruction (e.g. on Tanks&Temples
   Courthouse, 1106 imgs: skips ~33s features + several min matching).
 - To capture extra debug state mid-pipeline, temporarily add a `Save(MAKE_PATH("dbg.sfm"))`

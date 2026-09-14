@@ -311,6 +311,12 @@ bool ResectionRelativePoseFallbackTest();
 // several cannot speak for the image (ResectionConfig::maxRelativeRotationError).
 bool ResectionAcceptanceTest();
 
+// A scene saved part-way through the reconstruction -- after the hierarchical merge, with the
+// placed blocks posed and the images of the unplaced ones still to register -- given back as the
+// source resumes where it stopped: its poses are kept and the remaining images are resected
+// against them, instead of the scene being clustered and rebuilt from its matches once more.
+bool ReconstructResumeTest();
+
 // The image filter judges an image by its triangulated structure, which an image joined to the
 // model by two-view geometry alone does not have. Such an image stays registered when two verified
 // pairs to distinct settled images agree with the pose the model gives it, in the relative rotation

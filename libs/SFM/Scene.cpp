@@ -747,7 +747,6 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 		VERBOSE("Focal length forced at %g px: kept by the star initializer, refined by bundle adjustment", cfg.importCfg.focalLength);
 	}
 
-	#if 1
 	if (!source.empty()) {
 		// Start a new reconstruction from the source list or folder of images
 		// or load existing scene if source is pointing to a SFM file
@@ -776,47 +775,61 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	// PairsMatcher pairsMatcher(*this, config.matchCfg);
 	// pairsMatcher.ComputeRelativePoses(false, false);
 
-	// Extract image features
-	if (!ExtractFeatures(cfg.featuresCfg))
-		return false;
-
-	// Match image pairs
-	if (!MatchPairs(cfg.matchCfg, cfg.roma2Cfg, cfg.viewgraphCfg, cfg.exportRetrievalCSV))
-		return false;
-
-	// export the pairs/retrieval-rankings CSV diagnostics right after matching, before any
-	// reconstruction step (clustering, weak-image filtering, resection) can drop pairs or
-	// leave images unregistered; covers both the match-images-only run and a full reconstruction,
-	// and is immediately followed by the triplet disambiguation of the view graph
-	seedViews = ExportMatchingCSVsAndFilterPairs(*this, cfg);
-
-	if (cfg.matchImagesOnly) {
-		// a frames.json imported with an AUTO convention must be resolved before the scene
-		// is persisted, otherwise possibly-flipped poses are saved with no record of the
-		// ambiguity and every later consumer inherits reversed optical axes
-		if (cfg.HasKnownPoses() && !ResolveFramesConvention(*this,
-				cfg.importCfg.framesConvention, cfg.importCfg.importPosesFile))
+	// A scene saved part-way through the reconstruction -- after the hierarchical merge, with the
+	// placed blocks posed and the images of the unplaced ones still to register -- resumes where it
+	// stopped: its matching and its merge are behind it, and clustering it once more would rebuild
+	// it from its matches and throw away the poses it carries
+	if (status.nCalibratedImages > 0) {
+		VERBOSE("Resuming the reconstruction of a scene with %u/%u images posed: the remaining images are registered by resection",
+			status.nCalibratedImages, images.size());
+	} else {
+		// Extract image features
+		if (!ExtractFeatures(cfg.featuresCfg))
 			return false;
-		VERBOSE("Image pairs matched only as per configuration, reconstruction skipped");
-		return true;
-	}
 
-	#if TD_VERBOSE != TD_VERBOSE_OFF
-	if (VERBOSITY_LEVEL > 2) {
-		// Save intermediate scene after matching for debugging
-		Save(MAKE_PATH("scene_pre_reconstruction.sfm"), cfg.importCfg.archiveType);
-	}
-	#endif
-	#else
-	// Shortcut features and matching by directly loading a pre-reconstruction scene (for debugging)
-	Load(MAKE_PATH("scene_pre_reconstruction.sfm"));
-	#endif
+		// Match image pairs
+		if (!MatchPairs(cfg.matchCfg, cfg.roma2Cfg, cfg.viewgraphCfg, cfg.exportRetrievalCSV))
+			return false;
 
-	// Run reconstruction method
-	if (cfg.HasKnownPoses() ? !ReconstructKnownPoses(cfg)
-	    : cfg.useGlobalSolver ? !ReconstructGlobal(cfg)
-	                             : !ReconstructHierarchical(cfg, seedViews))
-		return false;
+		// export the pairs/retrieval-rankings CSV diagnostics right after matching, before any
+		// reconstruction step (clustering, weak-image filtering, resection) can drop pairs or
+		// leave images unregistered; covers both the match-images-only run and a full reconstruction,
+		// and is immediately followed by the triplet disambiguation of the view graph
+		seedViews = ExportMatchingCSVsAndFilterPairs(*this, cfg);
+
+		if (cfg.matchImagesOnly) {
+			// a frames.json imported with an AUTO convention must be resolved before the scene
+			// is persisted, otherwise possibly-flipped poses are saved with no record of the
+			// ambiguity and every later consumer inherits reversed optical axes
+			if (cfg.HasKnownPoses() && !ResolveFramesConvention(*this,
+					cfg.importCfg.framesConvention, cfg.importCfg.importPosesFile))
+				return false;
+			VERBOSE("Image pairs matched only as per configuration, reconstruction skipped");
+			return true;
+		}
+
+		#if TD_VERBOSE != TD_VERBOSE_OFF
+		if (VERBOSITY_LEVEL > 2) {
+			// Save intermediate scene after matching for debugging
+			Save(MAKE_PATH("scene_pre_reconstruction.sfm"), cfg.importCfg.archiveType);
+		}
+		#endif
+
+		// Run reconstruction method
+		if (cfg.HasKnownPoses() ? !ReconstructKnownPoses(cfg)
+		    : cfg.useGlobalSolver ? !ReconstructGlobal(cfg)
+		                             : !ReconstructHierarchical(cfg, seedViews))
+			return false;
+
+		#if TD_VERBOSE != TD_VERBOSE_OFF
+		if (VERBOSITY_LEVEL > 2) {
+			// Save the reconstruction as the merge leaves it, the placed blocks posed and the images
+			// of the unplaced ones waiting for the resection: given back as the source, it resumes
+			// from here (see above), so what follows can be run on its own
+			Save(MAKE_PATH("scene_post_merge.sfm"), cfg.importCfg.archiveType);
+		}
+		#endif
+	}
 
 	// Final global bundle adjustment
 	FilterTracks(*this, cfg.maxReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
@@ -961,6 +974,12 @@ bool Scene::ReconstructHierarchical(const ReconstructionConfig& config, const II
 		// The resection already closes with a full adjustment of this sub-scene; only the
 		// tracks it leaves behind need settling before the sub-scenes are merged
 		FilterTracks(subScene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+		#if TD_VERBOSE != TD_VERBOSE_OFF
+		if (VERBOSITY_LEVEL > 2 && subScenes.size() > 1) {
+			// Save the reconstructed sub-scene, so a block the merge refuses can be judged on its own
+			subScene.Save(MAKE_PATH(String::FormatString("scene_block_%u.sfm", i)), config.importCfg.archiveType);
+		}
+		#endif
 	});
 	threadPool.wait();
 	#if 0

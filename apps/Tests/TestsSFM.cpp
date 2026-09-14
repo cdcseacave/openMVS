@@ -8904,6 +8904,76 @@ bool ResectionAcceptanceTest()
 	return true;
 }
 
+bool ReconstructResumeTest()
+{
+	TD_TIMER_START();
+	const ScopedTempDir tmpDir(_T("ReconstructResumeTest"));
+	if (!tmpDir.IsValid())
+		return false;
+	std::mt19937 rng(20260914);
+
+	// The scene the hierarchical merge leaves behind: four posed images sharing 150 tracks, and
+	// three images without a pose, each observing 120 tracks together with the two images before
+	// it, so each can be resected once those are posed. Matched and featured, but not calibrated.
+	Scene scene(2);
+	BuildResectionArc(scene, 7);
+	std::vector<Pose3D> gtPoses;
+	for (const Image& img : scene.images)
+		gtPoses.push_back(static_cast<const Pose3D&>(img));
+	AddResectionTracks(scene, {0, 1, 2, 3}, 150, rng);
+	AddResectionTracks(scene, {2, 3, 4}, 120, rng);
+	AddResectionTracks(scene, {3, 4, 5}, 120, rng);
+	AddResectionTracks(scene, {4, 5, 6}, 120, rng);
+	for (IIndex i = 0; i + 1 < 7; ++i)
+		AddResectionPair(scene, i, i + 1, 300);
+	for (IIndex i = 0; i + 2 < 7; ++i)
+		AddResectionPair(scene, i, i + 2, 200);
+	for (IIndex imageID = 4; imageID < 7; ++imageID)
+		scene.images[imageID].InvalidatePose();
+	scene.status.nCalibratedImages = 4;
+	scene.status.nState.set(Scene::Status::STATE::FEATURES_EXTRACTED);
+	scene.status.nState.set(Scene::Status::STATE::MATCHED);
+	TriangulateTracks(scene, false, 4.f, 1.f);
+	const String sfmPath = tmpDir(_T("post_merge.sfm"));
+	if (!scene.Save(sfmPath)) {
+		VERBOSE("ReconstructResumeTest FAILED: cannot save the partly reconstructed scene '%s'", sfmPath.c_str());
+		return false;
+	}
+
+	// Given back as the source, the saved scene is completed from where it stopped: the four poses
+	// it carries are kept, and the three images without one are registered against them
+	Scene resumed(2);
+	ReconstructionConfig cfg;
+	if (!resumed.Reconstruct(sfmPath, cfg)) {
+		VERBOSE("ReconstructResumeTest FAILED: the reconstruction of the partly reconstructed scene failed");
+		return false;
+	}
+	if (!resumed.status.nState.isSet(Scene::Status::STATE::CALIBRATED) || resumed.status.nCalibratedImages != 7) {
+		VERBOSE("ReconstructResumeTest FAILED: %u/7 images calibrated, calibrated state %s",
+			resumed.status.nCalibratedImages, resumed.status.nState.isSet(Scene::Status::STATE::CALIBRATED) ? "set" : "not set");
+		return false;
+	}
+	FOREACH(imageID, resumed.images) {
+		const Image& img = resumed.images[imageID];
+		if (!img.HasPose()) {
+			VERBOSE("ReconstructResumeTest FAILED: image %u has no pose after the resumed reconstruction", imageID);
+			return false;
+		}
+		// the saved poses fix the frame, so every pose is comparable to the truth directly
+		const double rotationError = RotationErrorDeg(img.R, gtPoses[imageID].R);
+		const double centreError = norm(img.C - gtPoses[imageID].C) / RESECTION_ARC_EXTENT;
+		if (rotationError > 0.1 || centreError > 0.01) {
+			VERBOSE("ReconstructResumeTest FAILED: image %u is %.3f degrees and %.2f%% of the scene extent from its "
+				"true pose, so the saved poses were not kept", imageID, rotationError, centreError * 100.0);
+			return false;
+		}
+	}
+
+	VERBOSE("ReconstructResumeTest PASSED: a partly reconstructed scene given back as the source keeps its poses "
+		"and registers the rest of its images (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 namespace {
 
 // A verified pair as the image filter reads one: on top of what the resection needs (the ground
