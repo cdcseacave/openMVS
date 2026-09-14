@@ -3,23 +3,25 @@
 ## 1. Purpose and scope
 
 `STEREO::SemiGlobalMatcher` (`libs/MVS/SemiGlobalMatcher.h/.cpp`) is the CPU alternative to
-PatchMatch for dense depth estimation, selected with `DensifyPointCloud --fusion-mode -2`
-(`-1` only estimates and exports the pair disparity-maps). Per image, every selected neighbor view
-is stereo-rectified with it and the pair is matched coarse to fine with Semi-Global Matching; the
-pair disparity-maps are then fused into the image's depth-map, which enters the standard
-depth-map pipeline (optional optimization, then the depth-map fusion of `DepthMapFusion.md`)
-exactly as a PatchMatch depth-map would.
+PatchMatch for dense depth estimation, selected with `DensifyPointCloud --fusion-mode -2`. Each
+image is matched against all its selected neighbor views at once with a hierarchical Semi-Global
+Matching over inverse-depth samples (`MatchMultiView`); the resulting depth-map and confidence-map
+enter the standard depth-map pipeline (optional optimization, then the depth-map fusion of
+`DepthMapFusion.md`) exactly as a PatchMatch depth-map would. `--fusion-mode -1` instead exports
+the disparity-maps of the rectified image pairs (`Match`, `.dimap` files), a standalone stereo
+product nothing in the pipeline reads back.
 
 The implementation follows two papers: the cost aggregation is the memory-efficient variant of
 *Semi-Global Matching* (H. Hirschmüller, PAMI 2008; *Memory Efficient Semi-Global Matching*,
 Hirschmüller, Buder, Ernst, ISPRS 2012) and the coarse-to-fine scheme is tSGM from *SURE:
 Photogrammetric surface reconstruction from imagery* (M. Rothermel, K. Wenzel, D. Fritsch,
-N. Haala, 2012). The driver is `Scene::DenseReconstruction` in `libs/MVS/SceneDensify.cpp`
-(`nFusionMode < 0`), which creates the matcher's worker threads, calls `Match` then `Fuse` per
-image, and hands the depth-map on.
+N. Haala, 2012). The multi-view cost is a plane sweep in the reference view in the spirit of
+Collins (CVPR 1996) and Gallup et al. (CVPR 2007), with the plane slanted per pixel. The driver is
+`Scene::DenseReconstruction` in `libs/MVS/SceneDensify.cpp` (`nFusionMode < 0`), which creates the
+matcher's worker threads and calls `MatchMultiView` (or `Match`) per image.
 
-Scope: everything from the rectified pair to the per-image depth-map and confidence-map. The
-view selection (`Scene::SelectNeighborViews`), the rectification (`Image::StereoRectifyImages`)
+Scope: everything from the posed images to the per-image depth-map and confidence-map. The view
+selection (`Scene::SelectNeighborViews`), the pair rectification (`Image::StereoRectifyImages`)
 and the downstream depth-map fusion are shared with PatchMatch and documented elsewhere.
 
 ---
@@ -42,141 +44,129 @@ kept for the sub-pixel step.
 tSGM keeps the algorithm but runs it on an image pyramid: the coarsest level searches the whole
 disparity range, every finer level searches per pixel only a small range around the disparities
 the previous level found in the pixel's neighborhood. The range is narrow (a few disparities) where
-the previous level is valid and consistent, wider where it is invalid, so the work at full
-resolution is a small constant per pixel instead of the whole range, and the aggregation at each
-level is regularized by the level below. The per-pixel ranges are what makes the cost and
-aggregation buffers variable-length: every pixel owns a slice `[idx, idx+numDisp)` of a flat cost
-array (`PixelData`), and the path recursion intersects the ranges of consecutive pixels.
+the previous level is valid, wider where it is invalid, so the work at full resolution is a small
+constant per pixel instead of the whole range, and the aggregation at each level is regularized by
+the level below. The per-pixel ranges make the cost and aggregation buffers variable-length: every
+pixel owns a slice `[idx, idx+numDisp)` of a flat cost array (`PixelData`), and the path recursion
+intersects the ranges of consecutive pixels.
 
-### 2.2 Per-image driver (`SemiGlobalMatcher::Match(scene, ...)`)
+The multi-view matcher reuses this machinery unchanged by making its "disparities" inverse-depth
+samples: along the viewing ray, the projection of a point into another view moves almost linearly
+with inverse depth, as the disparity of a rectified pair does.
 
-For image `L`:
+### 2.2 Multi-view depth estimation (`MatchMultiView`, `--fusion-mode -2`)
 
-1. The sparse points seen by `L` give its depth range `[0.9·dMin, 1.1·dMax]` and the list of
-   points shared with each neighbor. An image without points is skipped.
-2. Neighbors are visited in score order, the same subset PatchMatch uses (`nNumViews` at most,
-   score at least `max(fViewMinScoreRatio·best, fViewMinScore)`). A pair whose `.dimap` exists in
-   either direction (from a previous run or from the neighbor having been processed earlier) is
-   skipped: a pair is matched once and used by both images.
-3. The pair is stereo-rectified around the projections of its shared points
-   (`Image::StereoRectifyImages` returns the rectified color images, the validity masks and the
-   rectification homography `H` and reprojection matrix `Q`). The gray images are float in [0,1].
-4. The pyramid depth is chosen so that the coarsest level is at least `minResolution` (320) pixels
-   wide and at most half the rectified size.
-5. The level loop of §2.3 runs, then the sub-pixel refinement (§2.6), then the left disparity-map,
-   its aggregated cost, `H`, `Q` and the sub-pixel step are written to `<L>_<R>.dimap`.
+For the reference image:
+
+1. **Depth range.** The sparse points seen by the image give `[0.9·dMin, 1.1·dMax]`
+   (`SparseDepthRange`); an image without points gets an empty depth-map.
+2. **Neighbor views.** The same subset PatchMatch uses (`nNumViews` at most, score at least
+   `max(fViewMinScoreRatio·best, fViewMinScore)`), capped at 32. For each, the relative pose gives,
+   at every pyramid level, `x_k ~ A·x + invz·b` with `A = K_k·R·K_ref⁻¹` and `b = K_k·t`: the
+   projection into view `k` of the reference pixel `x` at inverse depth `invz`.
+3. **Inverse-depth samples.** Uniform in inverse depth from `1/dMax`, with the step at full
+   resolution set so that one step moves the projection by one pixel in the neighbor where it moves
+   the most (measured at the image center and mid depth); every other neighbor moves less. At a
+   pyramid level of scale `s` the step is `step0/s`, so index `d` at one level is index `2d` at
+   the next, exactly as a disparity. The count is capped so that the quarter-pixel sub-pixel
+   indices fit in `int16`.
+4. **Pyramid.** The coarsest level is the largest power-of-two reduction that keeps the image at
+   least `minResolution` (320) pixels wide, and at least a halving. Each level resizes the
+   reference color and gray images and every neighbor's gray image (`INTER_AREA`) and rescales the
+   intrinsics.
+5. **Level loop** (§2.3), then the sub-pixel refinement (§2.6) and the conversion of every valid
+   index to a depth and a confidence.
 
 ### 2.3 Level loop
 
-At every level both directions are matched, right-to-left first, then left-to-right, each with its
-own per-pixel range map. What differs is how the ranges are set:
+- **Coarsest level.** Every pixel of the valid region (the level minus the 7x7 border) searches the
+  whole sample range (`Range2RangeMap` without the per-column clamp of the rectified case).
+- **Finer levels.** Before the new level overwrites it, the previous level's map gives each pixel a
+  slope (`FitSlopes`: the least-squares plane through the valid indices of its 7x7 neighborhood,
+  at least 6 of them, slope clamped to ±4 indices per pixel, zero otherwise). Its ranges come from
+  `Disparity2RangeMap` exactly as for a pair: the valid indices of a 7x7 window (41x41 if the pixel
+  itself is invalid) give a median and a min/max; the range at twice the scale spans them around
+  twice the median, at least 5 samples wide, capped at 32 (64 for invalid pixels); fewer than 3
+  valid indices leave the pixel unsearched.
+- **Filtering.** There is no second disparity-map to cross-check against. Only the coarsest level
+  is speckle-filtered (`cv::filterSpeckles`, `nSpeckleSize` pixels, 5 samples), so a wrong
+  isolated region does not seed the ranges of the finer levels; the depth-map fusion later discards
+  the depths no other view confirms.
 
-- **Coarsest level.** The masks are resized to the level and cropped by the half window.
-  `DepthRange2Disparity` projects every 4th valid pixel back through the level's `H⁻¹` and
-  converts the two depth bounds to disparities through `Q⁻¹`; the span of all samples, widened by
-  the sampling step and clamped to ±width, is the global range. `Range2RangeMap` gives every valid
-  pixel that range clamped per column to the disparities keeping the patch inside the other image;
-  the right image searches the negated range.
-- **Finer levels.** The masks are upscaled 2x (`UpscaleMask`, offset by the half window so the
-  valid areas of the two levels coincide). The cross-checked left map of the previous level is
-  flipped into a right map (`FlipDirection`: each valid `d` writes `-d` into the three right pixels
-  around `c+d`) and each direction's range map is built by `Disparity2RangeMap`: for every
-  previous-level pixel, the valid disparities in a 7x7 window (41x41 if the pixel itself is
-  invalid) give a median and a min/max; the range at twice the scale is `[2·min, 2·max]` around
-  `2·median`, at least 5 disparities wide and capped at 32 (64 for invalid pixels) by keeping the
-  part around the median. Fewer than 3 valid disparities in the window, or an invalid mask, leave
-  the pixel unsearched. Pixel `(r,c)` of the previous level covers the 2x2 block at
-  `(2r+halfWindowSizeY, 2c+halfWindowSizeX)` of the new one.
+### 2.4 Matching cost
 
-After both directions are matched, the left map is cross-checked against the right one
-(`ConsistencyCrossCheck`: `|dL + dR(c+dL)| ≤ 1`, else invalid). The coarsest level is filtered
-harder because it fixes the validity masks of every finer level: the right map is cross-checked
-too, both maps are speckle-filtered (`cv::filterSpeckles`, `nSpeckleSize` pixels, 5 disparities)
-and `ExtractMask` removes from each mask the border regions of every row that hold fewer than 3
-valid disparities. A level without a single searchable disparity in either direction abandons the
-pair.
+For a pixel and sample, each neighbor view contributes a WZNCC cost, and the sample's cost is the
+mean of the two lowest neighbor costs, so a view that is occluded at the pixel, or does not see it,
+does not veto the right depth.
 
-### 2.4 Matching cost (`Match(left, right, ...)`, first block)
+- **Window.** 7x7 with bilateral weights from the reference color image,
+  `exp(-|ΔBGR|²/(2·(0.3·255)²) - (Δx²+Δy²)/(2·(0.4·7)²))`, sampled at every other texel (the
+  16 texels at offsets ±1, ±3), with the weighted, mean-removed reference patch precomputed once per
+  pixel (`InitWeightedPatch`).
+- **Slanted warp.** Over a plane, inverse depth is affine in the pixel coordinates, so the
+  neighbor position of texel `δ` is `h0 + A·δ + b·(g·δ)·step`, with `h0 = A·x + invz·b` and `g`
+  the pixel's slope from the previous level (zero at the coarsest level). The slant costs three
+  multiply-adds per texel.
+- **Sampling.** Bilinear on the neighbor's gray image; a neighbor whose warped patch corners are
+  not all inside its image, or behind it, is skipped for that sample (the patch is convex under
+  the homography, so its corners bound it).
+- **Score.** `ncc = Σw·(I_k-mean)·(I_ref-mean) / sqrt(var_ref·var_k)`, cost
+  `round((1-min(ncc,1))·255)`, 255 for `ncc ≤ 0`. The variance product has no regularization
+  term: the gray images are in [0,1], so the product is of order 1e-5 for textured patches and any
+  epsilon large enough to matter drowns the NCC of every patch. A product at or below 1e-16 is a
+  textureless patch and costs 255, as does a sample no neighbor sees.
 
-Default `SGM_SIMILARITY_WZNCC`: weighted zero-mean NCC over a 7x7 window. For each left pixel the
-window weights are bilateral, `exp(-|ΔBGR|²/(2·(0.3·255)²) - (Δx²+Δy²)/(2·(0.4·7)²))` from the
-left color image, and the weighted, mean-removed left patch is precomputed once. For every
-disparity of the pixel's range the right patch at `(c+d, r)` is read row by row (the patch rows are
-always inside the image; a patch whose columns fall outside costs 255) and
+### 2.5 Aggregation and winner-take-all (`Aggregate`)
 
-    ncc  = Σ w·(I_R - mean_w(I_R))·(I_L - mean_w(I_L)) / sqrt(var_w(I_L)·var_w(I_R))
-    cost = ncc ≤ 0 ? 255 : round((1 - min(ncc,1))·255)
+Shared with the pair matcher. The aggregated costs are `uint16`, one slice per pixel, zeroed
+before the sweep. The 8 paths are 4 direction pairs: each path family is a set of independent
+lines dispatched to the thread pool, each line walking its pixels with two rolling buffers (the
+previous and current pixel's `L` slice and range). The single-threaded path runs the classic two
+raster passes with 4 directions each.
 
-The variance product has no regularization term: the gray images are in [0,1], so the product is
-of order 1e-5 for textured patches, and any epsilon large enough to matter drowns the NCC of every
-patch. A patch with a variance product at or below 1e-16 is textureless and costs 255.
+Per pixel step, with `Lp` the previous pixel's slice over range `Rp` and `Ls` the current one over
+`Rs`: `P2` is adaptive, `P2·(1 + 14·exp(-ΔI²/(2·38²)))` with `ΔI` the gray difference along the
+path in 0..255 (256-entry table), so the large-jump penalty is 15x stronger inside flat regions
+than across edges; `P1` is constant. If the ranges do not intersect, `L(d) = C(d) + P2`; otherwise
+`L(d) = C(d) + min(Lp(d), Lp(d±1)+P1, minLp+P2) - minLp` with `minLp` over the intersection. The
+sum of the 8 paths is the aggregated cost; winner-take-all takes its minimum, whose value is the
+pixel's cost (`AccumCostMap`).
 
-`SGM_SIMILARITY_CENSUS` (compile-time alternative): 7x9 Census transform on 8-bit gray, cost is
-4x the Hamming distance.
+### 2.6 Sub-pixel refinement and depth
 
-### 2.5 Aggregation and winner-take-all
+After the finest level only (`RefineDisparityMap`), on the aggregated costs of the winner and its
+two neighbors: the smaller cost difference over the larger is mapped by the selected fit
+(`SUBPIXEL_LC_BLEND`, a blend of the linear and cosine fits) to an offset in (-0.5, 0.5), with a
+two-value estimate at the range ends, and stored in quarter-sample units (`subpixelSteps = 4`).
+The depth is `1/(invzMin + d·step0/4)`; the confidence is `1 - cost/(8·255)`, one minus the mean
+cost per path, in [0,1] like PatchMatch's NCC-based confidence, so the fusion gate
+`1 - fNCCThresholdKeep` applies unchanged. The driver then estimates the normal-map when
+`nEstimateNormals == 2` (the default) and resets the image's depth bounds.
 
-The aggregated costs are `uint16`, one slice per pixel like the costs, zeroed before the sweep.
-The 8 paths are 4 direction pairs: every path family is a set of independent lines (columns for
-the vertical paths, rows for the horizontal, columns plus rows for the diagonals) dispatched to
-the thread pool; each line walks its pixels with two rolling `LineData` buffers (previous and
-current pixel's `L` slice and range). The single-threaded path (`nMaxThreads == 1`) runs the
-classic two raster passes, forward with 4 directions then backward with the 4 opposite ones,
-keeping one line of state per direction.
+### 2.7 Pair disparity export (`Match`, `--fusion-mode -1`)
 
-Per pixel step (`pixelAccum`), with `Lp` the previous pixel's slice over its range `Rp` and `Ls`
-the current slice over `Rs`:
-
-- `P2` is adaptive: `P2·(1 + 14·exp(-ΔI²/(2·38²)))`, `ΔI` the gray difference along the path in
-  0..255 (a table of 256 values, `GenerateP2s`), so the large-jump penalty is 15x stronger inside
-  flat regions than across edges. `P1` is constant.
-- If `Rp` and `Rs` do not intersect, `L(d) = C(d) + P2` over `Rs` (no previous information).
-- Otherwise `minLp` is the minimum of `Lp` over the intersection and
-  `L(d) = C(d) + min(Lp(d), Lp(d-1)+P1, Lp(d+1)+P1, minLp+P2) - minLp`, each neighbor term only
-  where `d`, `d±1` fall in the intersection.
-
-The sum of the 8 paths is the pixel's aggregated cost; winner-take-all picks the minimum over the
-range, and its value is kept as the pixel's cost (`AccumCostMap`).
-
-### 2.6 Sub-pixel refinement (`RefineDisparityMap`)
-
-Only after the finest level, on the aggregated cost of the winning disparity and its two
-neighbors: the smaller of the two cost differences, normalized by the larger, is mapped by the
-selected fit (`SUBPIXEL_LC_BLEND` by default, a blend of the linear and cosine fits) to an offset in
-(-0.5, 0.5); at the range ends a two-value estimate is used. The result is stored as an `int16`
-disparity in quarter-pixel units (`subpixelSteps = 4`).
-
-### 2.7 Pair fusion into the image depth-map (`Fuse`)
-
-For image `L`, every neighbor of the same subset as `Match` is loaded from its `.dimap`. A pair
-matched from the neighbor's side is reused by remapping `Q` with the relative pose,
-`Q' = P·K_R⁻¹·Q`, so the same disparity projects into `L`.
-
-`ProjectDisparity2DepthMap` turns a pair disparity-map into a depth-map in the un-rectified
-image: each disparity gives a depth and an image position `u` through `Q`; the depth is trusted
-in the depth interval of `d∓1` disparity (`DepthRange`); the sample is scattered to its up to 4
-nearest pixels, kept per quadrant when closer than the previous sample (overlap border 0.75 px).
-Per pixel, the closest of the 4 samples (within 0.75 px) is the center and every sample within 2%
-of its depth is averaged with its range and confidence, weighted by distance. The confidence is
-`1 - cost/(8·255)`: one minus the mean cost per path, in [0,1] like PatchMatch's NCC-based
-confidence, so the downstream gates (`1 - fNCCThresholdKeep`) apply unchanged.
-
-The pair depth-maps are then clustered per pixel, rows in parallel: a depth joins every cluster
-whose current range contains it (the cluster range shrinks to the intersection), else starts a
-new one; the largest cluster's depths and confidences are averaged. A single pair suffices
-(`minViews = 1`): a depth seen by one pair is still cross-checked across images by the depth-map
-fusion. The driver then estimates the normal-map from the depth-map when `nEstimateNormals == 2`
-and resets the image's depth bounds.
+For each neighbor in the same subset, unless the pair's `.dimap` exists in either direction: the
+pair is stereo-rectified around the projections of the sparse points it shares, and matched coarse
+to fine in both directions with the same cost (dense 7x7 window, fronto-parallel), aggregation and
+sub-pixel refinement. The coarsest level searches the disparity span of the image's depth range
+over the valid pixels (`DepthRange2Disparity`), clamped per column to keep the patch inside the
+other image; the finer levels use `Disparity2RangeMap` on the flipped (`FlipDirection`)
+cross-checked map. Every level cross-checks the left map against the right one
+(`|dL + dR(c+dL)| ≤ 1`); the coarsest level also cross-checks the right one, speckle-filters both
+and trims the rows' border regions with fewer than 3 valid disparities from the masks
+(`ExtractMask`). The left disparity-map, its cost, `H`, `Q` and the sub-pixel step are written to
+`<L>_<R>.dimap`; `ImportPointCloud` turns such a file into a point cloud.
 
 ### 2.8 Threading and memory
 
 The matcher owns a static `EventThreadPool` of `nMaxThreads` workers (created by
 `DenseDepthMapData` for the SGM fusion modes) and a semaphore; every phase queues one job per
-worker that pulls line or pixel indices from a shared atomic counter, and waits for all of them.
-The densification loop estimates one image at a time, so the pool is the only parallelism. The
-per-level buffers are `imagePixels` (16 bytes per pixel), `imageCosts` (1 byte per pixel and
-disparity) and `imageAccumCosts` (2 bytes per pixel and disparity); the coarsest level, searching
-the full range, dominates memory but at a quarter of the pixels or less.
+worker pulling line or pixel indices from a shared atomic counter, and waits for them. The
+densification loop estimates one image at a time, so the pool is the only parallelism. The per-level
+buffers are `imagePixels` (16 bytes per pixel), `imageCosts` (1 byte per pixel and sample) and
+`imageAccumCosts` (2 bytes per pixel and sample); the coarsest level, searching the full range,
+dominates both memory and time. The multi-view matcher also holds the gray images of the
+neighbors at full and current resolution.
 
 ---
 
@@ -185,142 +175,126 @@ the full range, dominates memory but at a quarter of the pixels or less.
 | parameter | where | default | meaning |
 |---|---|---|---|
 | `--fusion-mode` | app | `0` | `-2` SGM densification, `-1` export the pair `.dimap` only |
-| `nNumViews`, `fViewMinScore(Ratio)` | `OPTDENSE` | shared with PatchMatch | neighbor subset matched and fused |
-| `minResolution` | `Match` | 320 | minimum width of the coarsest level; the top level is never the full resolution |
+| `nNumViews`, `fViewMinScore(Ratio)` | `OPTDENSE` | shared with PatchMatch | neighbor views matched |
+| `minResolution` | `MatchMultiView`, `Match` | 320 | minimum width of the coarsest level |
 | window | header | 7x7 (`halfWindowSize` 3) | WZNCC patch; Census uses 7x9 |
-| `P1`, `P2` | ctor | 18, 24 | smoothness penalties on the 0-255 cost scale |
+| `texelStep` | `MatchMultiView` | 2 | multi-view window sampled at 16 of 49 texels |
+| `numBestViews` | `MatchMultiView` | 2 | neighbor costs averaged per sample |
+| slope fit | `FitSlopes` | 7x7, at least 6 valid, ±4 | slant of the multi-view window |
+| `P1`, `P2` | ctor | 9, 12 | smoothness penalties on the 0-255 cost scale |
 | `P2alpha`, `P2beta` | ctor | 14, 38 | `P2·(1+alpha·exp(-ΔI²/(2·beta²)))` |
 | `subpixelMode`, `subpixelSteps` | ctor | `LC_BLEND`, 4 | sub-pixel fit and quantization |
-| `thCross` | `ConsistencyCrossCheck` | 1 | left/right consistency tolerance in disparities |
-| `nSpeckleSize` | `OPTDENSE` | 100 | speckle filter at the coarsest level only |
-| `thValid` | `ExtractMask` | 3 | valid disparities that end a masked border region |
+| `nSpeckleSize` | `OPTDENSE` | 100 | speckle filter at the coarsest level |
 | neighborhood, caps, floor | `Disparity2RangeMap` | 7x7 / 41x41, 32 / 64, 5 | per-pixel range from the previous level |
-| depth range | `Match` | 0.9x / 1.1x of the sparse depths | disparity range of the coarsest level |
-| trust range | `ProjectDisparity2DepthMap` | ±1 disparity | interval two pair depths must share to cluster |
-| `minViews` | `Fuse` call | 1 | pairs a cluster needs |
+| depth range | `SparseDepthRange` | 0.9x / 1.1x of the sparse depths | samples of the coarsest level |
+| `thCross`, `thValid` | pair export | 1, 3 | cross-check tolerance, border-trim threshold |
 
 The constructor defaults are the only ones; `DenseDepthMapData` constructs the matcher without
-arguments.
+arguments, so the pair export uses the same penalties.
 
 ---
 
 ## 4. Invariants and constraints
 
-- A `.dimap` is written once per unordered pair and read by both images; `Fuse` visits the same
-  neighbor subset as `Match`, so a missing file is a warning, not an expected state.
 - Every disparity-map, cost-map and mask of a level is the level size minus the 7x7 border; the
-  exported `.dimap` restores the border (`ExportDisparityDataRawFull`) so its size is the rectified
-  image's.
+  multi-view depth-map is written at the full image size with that border left empty, and the
+  exported `.dimap` restores the border (`ExportDisparityDataRawFull`).
 - Range maps: `pixel.idx` slices are contiguous in raster order and `maxNumDisp` bounds every
   slice, which sizes the rolling line buffers of the aggregation.
 - `P2 ≥ P1` for every `ΔI`, required by the constant-time recursion.
-- The right-to-left direction is always matched first so the left match can use the cost buffers
-  sized for it; both directions resize the buffers to their own total.
-- The gray image type follows the similarity: float [0,1] for WZNCC (the variance threshold
-  1e-16 and the `ΔI·255` lookup depend on it), 8-bit for Census.
+- The inverse-depth index doubles from one level to the next because its origin is fixed at
+  `1/dMax` and its step halves; `Disparity2RangeMap` and `FitSlopes` rely on it (a slope in indices
+  per pixel is the same number at both levels).
+- The multi-view neighbor list is reserved before it is filled: its images hold pointers into
+  themselves and must not be relocated.
+- The gray image type follows the similarity: float [0,1] for WZNCC (the variance threshold 1e-16
+  and the `ΔI·255` lookup depend on it), 8-bit for Census; the multi-view matcher requires WZNCC.
 
 ---
 
 ## 5. Validation of the shipped defaults
 
-Two EPFL ground-truth scenes, `--resolution-level 1`, F-score of the dense point-cloud against
+Three EPFL ground-truth scenes, `--resolution-level 1`, F-score of the dense point-cloud against
 the laser-scanned ground truth at the scene's tolerance (visibility-restricted completeness, the
-`bench/eval_mesh2mesh.py` metric); walls on a 24-thread workstation.
+`bench/eval_mesh2mesh.py` metric); walls on a 24-thread workstation, PatchMatch with the default
+geometric iterations.
 
-| scene | SGM before the rework | SGM now | PatchMatch CUDA | PatchMatch CPU |
+| scene | pair SGM + pair fusion | multi-view SGM | PatchMatch CPU | PatchMatch CUDA |
 |---|---|---|---|---|
-| Herz-Jesu-P8, τ 1 cm | F 0.13, 64 s | F 0.33, 33 s | F 0.40, 6 s | F 0.40, 85 s |
-| fountain-P11, τ 0.5 cm | F 0.11, 111 s | F 0.26, 63 s | F 0.25, 9 s | F 0.27, 150 s |
+| Herz-Jesu-P8 (8 views, τ 1 cm) | F 0.332, 33 s | **F 0.375, 25 s** | F 0.402, 85 s | F 0.403, 6 s |
+| fountain-P11 (11 views, τ 0.5 cm) | F 0.253, 65 s | **F 0.254, 37 s** | F 0.268, 150 s | F 0.252, 9 s |
+| Herz-Jesu-P25 (25 views, τ 1 cm) | F 0.466, 145 s | **F 0.500, 120 s** | | F 0.609, 21 s |
 
-SGM's precision matches PatchMatch's; the gap is recall (0.22 vs 0.28 on Herz-Jesu-P8). The
-rework found the cause of the earlier recall in the cost, not in the range limitation: a
+Multi-view SGM matches PatchMatch's precision on Herz-Jesu-P8 (0.692 vs 0.697) and gains recall
+on every scene over the pair version (0.258 vs 0.223, 0.170 vs 0.167, 0.389 vs 0.353); on
+fountain-P11 it ties at the scene's tight tolerance and leads at 2τ and 4τ (F 0.532 vs 0.497,
+0.739 vs 0.711). At the depth-map level, before fusion, it fills 96% of the pixels, and its
+confidence separates good depths from bad ones: the lowest two deciles are 3-12% precise at τ,
+the others 40-65%. The remaining gap to PatchMatch is recall and widens with the number of views
+(Herz-Jesu-P25).
+
+The pair matcher's poor recall before this design had a separate cause in the cost: a
 regularization epsilon of 1e-3 under the square root of the variance product, three orders of
-magnitude above the product itself for [0,1] intensities, pushed nearly every NCC toward zero,
-made the winner-take-all ambiguous and let the cross-check discard two thirds of the pixels at
-every level. Removing it alone took Herz-Jesu-P8 from 0.13 to 0.31; the penalties (3/4 to 18/24)
-and the symmetric ±1 trust range gave the rest. The numbers in §6 are F on Herz-Jesu-P8 unless
-stated, run-to-run noise ±0.002.
+magnitude above the product itself for [0,1] intensities, pushed nearly every NCC toward zero; its
+removal took the pair version on Herz-Jesu-P8 from F 0.13 to 0.31, the penalties and the pair
+fusion's trust range to 0.33. Run-to-run noise of every arm is about ±0.002 F.
 
 ---
 
 ## 6. Rejected alternatives
 
-- **Seeding the coarsest level from the sparse cloud** (the original design: the sparse points'
-  disparities define per-pixel ranges and a mask at the top level). With the random virtual cloud
-  of a cameras-only scene it loses a third of the F-score (0.21 vs 0.31: its mask discards 70% of
-  the image). With a real SfM cloud from the ground-truth poses it equals the full-range search
-  (0.1247 vs 0.1258, both offset by the 1.6 cm the bundle adjustment moved the poses) for 10% less
-  time. Removed: the full-range top level is robust to the sparse cloud's density.
-- **Texture-scaled epsilon** in the NCC (1.6e-7): 0.289, worse than none.
+All numbers are F on Herz-Jesu-P8 unless stated; noise ±0.002.
+
+**Architecture**
+- **Pair matching and pair fusion** (the previous `-2`): every neighbor rectified and matched
+  alone, cross-checked, and the pair depth-maps clustered per pixel by overlapping trust ranges.
+  Beaten or tied on all three scenes by the multi-view matcher (§5), and slower, since each pair
+  is matched in both directions. The per-pair filters were measured before it was dropped, all
+  within noise: cross-check tolerance 2 at any level (0.330-0.331), keeping cross-check failures
+  with a clear minimum (0.331), a uniqueness filter on the best-to-second cost ratio at 0.05 and
+  0.1 (0.330), the ratio as confidence (0.331), searching the pixels with nothing known around them
+  over the whole previous range (0.331), no border trimming of the masks (0.333). The pair
+  matcher's recall is not lost in its filters.
+- **Seeding the coarsest level from the sparse cloud** (per-pixel ranges and a mask from the
+  sparse points' disparities): with the random virtual cloud of a cameras-only scene it loses a
+  third of the F-score (its mask discards 70% of the image); with a real SfM cloud it equals the
+  full-range search for 10% less time. The full-range coarsest level is robust to the cloud.
+
+**Multi-view cost and filtering**
+- **Neighbor costs averaged:** best 1 0.335, best 2 0.354, best 3 0.350, best 5 0.328 (all
+  fronto-parallel); best 3 on fountain-P11 0.249 vs 0.252.
+- **Uniqueness filter** (best-to-second aggregated cost ratio): 0.03 0.348, 0.08 0.345 vs 0.350.
+- **Confidence gate** before fusion: 0.4 0.374, 0.6 0.366 vs 0.375; fountain-P11 0.249, 0.248 vs
+  0.252. Precision rises, recall falls more.
+- **Slanted aggregation** (shifting the previous pixel's costs along each path by the index change
+  the slope predicts): 0.371 vs 0.375; fountain-P11 0.248 vs 0.252.
+- **Dense window at the finest level, parabola or linear sub-pixel fit:** 0.376, and 0.255, 0.254,
+  0.253 on fountain-P11: within noise, and the dense window is 40% slower.
+- **Slope fit window** 5x5 vs 7x7: 0.375 vs 0.376.
+- **Penalties:** x0.25 0.354, x0.5 0.357, x1 (18/24) 0.354, x2 0.339 (fronto-parallel); with the
+  slant 18/24 0.369 vs 9/12 0.375.
+
+**Pair matcher (still the `-1` export)**
+- **Texture-scaled epsilon** in the NCC (1.6e-7): 0.289 vs 0.31.
 - **Coarser top level** (160 px): -0.011 F for -20% time.
 - **Census cost**: 0.295 vs 0.331, 12% faster; kept as a compile-time option.
-- **Sub-pixel steps 8 or 16** and a **speckle filter after the finest level**: within noise.
-- **Penalty scale**: x1 0.308, x4 0.317, x6 0.319, x8 0.321, x12 0.330 on Herz-Jesu-P8, but
-  x12 loses on fountain-P11 (0.247 vs 0.256 at x4-x6); x6 is the compromise.
-- **Trust range**: the earlier asymmetric `[floor(d)-1, floor(d)+1]` 0.308, ±0.5 0.315, ±1
-  0.320, ±1.5 0.328 on Herz-Jesu-P8 but flat to negative on fountain-P11; ±1 shipped.
+- **Sub-pixel steps 8 or 16**, a **speckle filter after the finest level**: within noise.
 
 ---
 
 ## 7. Future work
 
-Ordered by expected gain; the first item on recall is an architecture change, the ones after it
-are cheap experiments on the current code. Measure on both EPFL scenes first, then a Tanks and
-Temples scene.
+Ordered by expected gain on recall, the gap to PatchMatch.
 
-**Recall**
-
-1. **Aggregate the neighbors before the winner-take-all.** Today every pair is matched alone,
-   cross-checked alone and only then fused, so a pixel occluded or textureless in one pair is
-   dropped by that pair and survives only if another pair sees it clearly; the per-pair
-   winner-take-all also has no multi-view evidence to resolve an ambiguous minimum. Building one
-   cost volume in the reference view instead, over per-pixel depth (or inverse-depth) samples,
-   summing the WZNCC of every neighbor at each sample (with the per-view minimum or a robust mean
-   so an occluded view does not veto), and running the 8-path aggregation and the winner-take-all
-   once, gives every pixel the support of all its views, removes the rectification resampling, and
-   yields one depth with a true multi-view confidence. The coarse-to-fine range logic carries over
-   unchanged in depth samples. This is the change most likely to close the recall gap to
-   PatchMatch, which already scores its candidates against all views.
-2. **Confidence from the cost curve, not the cost.** `1 - cost/(8·255)` separates textured from
-   textureless pixels, not correct from wrong ones, so the downstream gate keeps bad textured
-   estimates and drops good flat ones. A peak-ratio (second-best over best aggregated cost) or
-   the left/right disparity residual as confidence would let the fusion keep more of the valid
-   pixels and reject more outliers; it also improves precision through the same gate.
-3. **Recover instead of discard at the finest level.** The 1-disparity cross-check at every level
-   removes slanted-surface pixels whose right-to-left match lands one pixel off; a cross-check
-   tolerance scaled to the level (coarse pixels span 4-8 image pixels) and, at the finest level, a
-   sub-pixel cross-check after the refinement would keep them. Pixels the check still removes but
-   whose aggregated cost has a clear minimum could be kept at low confidence for the fusion to
-   decide.
-4. **Masks that only shrink.** `ExtractMask` and the speckle filter at the coarsest level fix the
-   valid region for good, and a pixel with fewer than 3 valid neighbors in its window is never
-   searched again. Letting invalid interior pixels keep the wide range at every level (masking
-   only the rectification border) is a one-line experiment.
-5. **More pairs per image.** The pair count is PatchMatch's `nNumViews`; SGM's cost is linear in
-   it and recall should grow with the union of the pairs. Sweep it.
-
-**Precision**
-
-6. **Plane-fit refinement of the fused depth-map.** The quarter-pixel quantization is not the
-   limit (finer steps measured as noise); the fronto-parallel 7x7 window is. A few PatchMatch
-   iterations initialized from the SGM depth (the estimator already exists; it needs a prior
-   depth-map input) would add normals and sub-quantization depth at a fraction of a full
-   PatchMatch run, and would also make SGM a fast initialization for PatchMatch.
-7. **Confidence-weighted pair fusion.** The largest cluster is a plain average; weighting each
-   pair depth by its confidence and by the width of its trust range (a wide baseline pair is more
-   precise in depth) should tighten the fused depth.
-8. **Normals for the depth-map fusion.** The SGM depth-maps carry no normals unless
-   `nEstimateNormals == 2`; estimating them by default lets the fusion's normal checks apply.
-
-**Speed**
-
-9. **Vectorize the aggregation** over the disparity slice (`uint16` lanes, as OpenCV SGBM and
-   libSGM do); the ranges vary per pixel but the recursion is over the intersection, which is a
-   contiguous slice. The aggregation is about half of `Match`; 3-5x on it is realistic.
-10. **Vectorize the cost inner loop** (7 floats per row, one masked lane) and skip the per-disparity
-    right-patch mean by carrying row sums along the disparity sweep.
-11. **CUDA port** of cost and aggregation, the classic GPU SGM, which would put the SGM mode next
-    to PatchMatch CUDA in wall time.
-12. **Parallel `ProjectDisparity2DepthMap`**: the scatter into the 4 quadrant buffers is
-    single-threaded (~0.6 s per image); row bands with private buffers remove it from the critical
-    path.
+1. **Depth-map refinement seeded by SGM.** A few PatchMatch iterations starting from the SGM depth
+   and normals would add per-pixel slanted planes and view selection, and a geometric-consistency
+   pass against the neighbors' depth-maps, which is where PatchMatch's recall advantage grows with
+   the number of views. It also makes SGM a fast initializer for PatchMatch.
+2. **Per-pixel view selection.** The best-two mean picks views per sample; choosing the views per
+   pixel from the coarser level's per-view costs (as ACMM does) would stop an occluder that matches
+   a wrong sample well from being chosen there.
+3. **Photometric sub-pixel refinement.** The fit on aggregated costs is the accuracy limit at tight
+   tolerances (fountain-P11 at 0.5 cm); a local continuous search of the multi-view cost around the
+   winner, on the dense window, would recover it.
+4. **Speed.** SIMD over the disparity slice in the aggregation and over the texels in the cost; a
+   CUDA port of both, which would put the SGM mode next to PatchMatch CUDA in wall time.

@@ -451,9 +451,9 @@ The following five suggestions offer the highest impact relative to implementati
    - **Reference:** Xu & Tao (2019, CVPR) — Planar Prior Assisted PatchMatch.
    - **Risk:** Medium.
 
-2. **SGM Coverage and Depth Precision** (Priority: Medium | Complexity: Medium)
-   - **What:** Refine the SGM depth-maps (`--fusion-mode -2`) before fusion, e.g. by seeding a PatchMatch pass with them, or add slanted-window matching costs.
-   - **Why:** SGM fits fronto-parallel 7x7 windows on a single rectified pair; on the EPFL scenes its F-score is 0.33/0.26 vs PatchMatch's 0.40/0.27 (Herz-Jesu-P8/fountain-P11) — precision is close to PatchMatch's but recall is lower (0.22 vs 0.28 on Herz-Jesu-P8), limited by slanted surfaces, wide baselines and the quarter-pixel disparity quantization.
+2. **SGM Depth-Map Refinement and Speed** (Priority: Medium | Complexity: Medium)
+   - **What:** Seed a few PatchMatch iterations (with geometric consistency against the neighbors' depth-maps) from the multi-view SGM depth and normals (`--fusion-mode -2`); add per-pixel view selection from the coarser level's per-view costs instead of the best-two mean; add a photometric sub-pixel refinement pass; port the aggregation and cost to SIMD/CUDA.
+   - **Why:** SGM's precision is close to PatchMatch's but its recall is lower and the gap widens with the number of views (F-score 0.375/0.254/0.500 vs PatchMatch's 0.40/0.27/0.61 on Herz-Jesu-P8/fountain-P11/Herz-Jesu-P25); it is CPU-only and already faster than PatchMatch there.
    - **Risk:** Low — the SGM mode is opt-in.
 
 3. **Confidence-Guided Iteration Count** (Priority: Medium | Complexity: Low)
@@ -642,7 +642,7 @@ Ranked by impact-to-effort ratio:
 | 5 | Fisheye Camera Models | A4 | High | Medium | Unblocks GoPro/drone/robotics use cases entirely |
 | 6 | Monocular Depth Priors for MVS | A3 | High | Medium | Significant quality gain in textureless/reflective regions |
 | 7 | DEGENSAC/MAGSAC++ | B2.1 | High | Medium | Robustness on planar scenes with no quality trade-off |
-| 8 | SGM Coverage and Depth Precision | B16.2 | Medium | Medium | Closes part of the SGM gap to PatchMatch |
+| 8 | SGM Depth-Map Refinement and Speed | B16.2 | Medium | Medium | Closes part of the SGM gap to PatchMatch |
 | 9 | Triangulate After Each Registration | B7.3 | Medium | Low | More complete reconstruction, low effort |
 | 10 | `FindPair` O(1) Lookup | B28.1 | Medium | Low | Performance improvement, minimal risk |
 

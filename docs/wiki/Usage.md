@@ -248,13 +248,13 @@ Two options are worth knowing about:
 <details>
 <summary><strong>Dense Point-Cloud Reconstruction using Semi-Global Matching (optional)</strong></summary>
 
-Alternatively, the dense reconstruction module can estimate a dense point-cloud using Semi-Global Matching (SGM) on the CPU: it estimates a disparity-map for each valid image pair, fuses the pairs of each image into its depth-map, and fuses the depth-maps into the final point-cloud:
+Alternatively, the dense reconstruction module can estimate a dense point-cloud using Semi-Global Matching (SGM) on the CPU: it matches each image against all its neighbor views at once to estimate its depth-map, then fuses the depth-maps into the final point-cloud:
 
 ```
 DensifyPointCloud scene.mvs --fusion-mode -2
 ```
 
-`--fusion-mode -1` only estimates and exports the disparity-maps (`.dimap`); a later `--fusion-mode -2` run reuses them.
+`--fusion-mode -1` instead exports the disparity-maps of the rectified image pairs (`.dimap`).
 
 </details>
 

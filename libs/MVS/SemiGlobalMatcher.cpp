@@ -145,6 +145,31 @@ CLISTDEF0IDX(SemiGlobalMatcher::AccumCost,int) SemiGlobalMatcher::GenerateP2s(Ac
 }
 
 
+// Depth range of the sparse points seen by the image, widened by 10% on both sides;
+// optionally collect those points; return false if the image sees no point in front of it
+static bool SparseDepthRange(const Scene& scene, IIndex idxImage, Depth& dMin, Depth& dMax, IndexArr* points=NULL)
+{
+	const Camera& camera = scene.images[idxImage].camera;
+	dMin = FLT_MAX; dMax = 0;
+	FOREACH(idxPoint, scene.pointcloud.points) {
+		if (scene.pointcloud.pointViews[idxPoint].FindFirst(idxImage) == PointCloud::ViewArr::NO_INDEX)
+			continue;
+		const Depth depth((Depth)camera.PointDepth(scene.pointcloud.points[idxPoint]));
+		if (depth <= 0)
+			continue;
+		if (dMin > depth)
+			dMin = depth;
+		if (dMax < depth)
+			dMax = depth;
+		if (points)
+			points->push_back((uint32_t)idxPoint);
+	}
+	if (dMin >= dMax)
+		return false;
+	dMin *= 0.9f; dMax *= 1.1f;
+	return true;
+}
+
 // Compute SGM stereo for this image and each of the neighbor views:
 //  - minResolution is the resolution of the top of the pyramid for tSGM;
 //    can be 0 to force the standard SGM algorithm
@@ -153,23 +178,10 @@ void SemiGlobalMatcher::Match(const Scene& scene, IIndex idxImage, IIndex numNei
 	const Image& leftImage = scene.images[idxImage];
 	// the points seen by the left image bound its depth range, and hence the disparities searched
 	// by the coarsest level, and locate the region each pair has in common
-	Depth dMin(FLT_MAX), dMax(0);
+	Depth dMin, dMax;
 	IndexArr points;
-	FOREACH(idxPoint, scene.pointcloud.points) {
-		if (scene.pointcloud.pointViews[idxPoint].FindFirst(idxImage) == PointCloud::ViewArr::NO_INDEX)
-			continue;
-		const Depth depth((Depth)leftImage.camera.PointDepth(scene.pointcloud.points[idxPoint]));
-		if (depth <= 0)
-			continue;
-		if (dMin > depth)
-			dMin = depth;
-		if (dMax < depth)
-			dMax = depth;
-		points.push_back((uint32_t)idxPoint);
-	}
-	if (dMin >= dMax)
+	if (!SparseDepthRange(scene, idxImage, dMin, dMax, &points))
 		return;
-	dMin *= 0.9f; dMax *= 1.1f;
 	const float fMinScore(MAXF(leftImage.neighbors.front().score*OPTDENSE::fViewMinScoreRatio, OPTDENSE::fViewMinScore));
 	FOREACH(idxNeighbor, leftImage.neighbors) {
 		const ViewScore& neighbor = leftImage.neighbors[idxNeighbor];
@@ -289,137 +301,353 @@ void SemiGlobalMatcher::Match(const Scene& scene, IIndex idxImage, IIndex numNei
 	}
 }
 
-void SemiGlobalMatcher::Fuse(const Scene& scene, IIndex idxImage, IIndex numNeighbors, unsigned minViews, DepthMap& depthMap, ConfidenceMap& confMap)
+// bilinear sample of a float image at a position with at least one pixel to its right and below
+static inline float SampleBilinear(const Image32F& image, float x, float y)
 {
+	const int x0((int)x), y0((int)y);
+	const float fx(x-(float)x0), fy(y-(float)y0);
+	const float* p0(image.ptr<const float>(y0)+x0);
+	const float* p1(image.ptr<const float>(y0+1)+x0);
+	return (p0[0]+(p0[1]-p0[0])*fx)*(1.f-fy) + (p1[0]+(p1[1]-p1[0])*fx)*fy;
+}
+
+// Estimate the depth-map of an image by matching it against all its neighbor views at once:
+//  - the disparities are inverse-depth samples, uniform and spaced such that one step moves the
+//    projection by at most one pixel in every neighbor view, so the coarse-to-fine ranges, the
+//    aggregation and the sub-pixel refinement of a rectified pair apply unchanged
+//  - the cost of a pixel and sample is the mean of its two best neighbor costs, so a neighbor that
+//    does not see the pixel or sees it occluded does not veto it; a neighbor cost is the WZNCC of the
+//    reference patch and the neighbor patch warped by the plane through the sample
+//  - that plane has the slant of the surface estimated by the previous level (inverse depth is
+//    affine in the pixel coordinates over a plane); it is fronto-parallel at the coarsest level
+void SemiGlobalMatcher::MatchMultiView(const Scene& scene, IIndex idxImage, IIndex numNeighbors, DepthMap& depthMap, ConfidenceMap& confMap, unsigned minResolution)
+{
+	const Image& refImage = scene.images[idxImage];
+	const cv::Size imageSize(refImage.image.size());
+	depthMap.create(imageSize); depthMap.memset(0);
+	confMap.create(imageSize); confMap.memset(0);
+	#if SGM_SIMILARITY == SGM_SIMILARITY_CENSUS
+	ASSERT("the multi-view matching needs the WZNCC similarity" == NULL);
+	#else
+	enum { maxViews = 32 }; // neighbor views matched at most
+	enum { numBestViews = 2 }; // neighbor costs averaged per sample
+	enum { texelStep = 2 }; // every other texel of the patch is matched, as accurate as all of them
+	enum { rowTexels = halfWindowSizeX*2/texelStep+1, levelTexels = (halfWindowSizeY*2/texelStep+1)*rowTexels };
 	TD_TIMER_STARTD();
-	const Image& leftImage = scene.images[idxImage];
-	const float fMinScore(MAXF(leftImage.neighbors.front().score*OPTDENSE::fViewMinScoreRatio, OPTDENSE::fViewMinScore));
-	struct PairData {
-		DepthMap depthMap;
-		DepthRangeMap depthRangeMap;
-		ConfidenceMap confMap;
-		PairData(const cv::Size& size) : depthMap(size) {}
+	// the points seen by the image bound its depth range
+	Depth dMin, dMax;
+	if (!SparseDepthRange(scene, idxImage, dMin, dMax))
+		return;
+	const float invzMin(1.f/dMax), invzMax(1.f/dMin);
+	// neighbor views: x_k ~ A*x + invz*b maps the reference pixel x at inverse depth invz into view k
+	struct NeighborView {
+		const Image* image;
+		cv::Matx33d R; cv::Vec3d t; // pose relative to the reference camera
+		ImageGray grayFull, gray; // full resolution and current level intensities
+		Point3f A[3], b; // A stored by columns, at the current level
+		Point3f offsets[levelTexels]; // A*(j,i,0) for each matched texel
+		float width1, height1; // largest valid sampling position
+		void SetLevel(const cv::Matx33d& invKref, const cv::Matx33d& K) {
+			const cv::Matx33d _A(K * R * invKref);
+			const cv::Vec3d _b(K * t);
+			for (int j=0; j<3; ++j)
+				A[j] = Point3f((float)_A(0,j), (float)_A(1,j), (float)_A(2,j));
+			b = Point3f((float)_b[0], (float)_b[1], (float)_b[2]);
+			int n(0);
+			for (int i=-halfWindowSizeY; i<=halfWindowSizeY; i+=texelStep)
+				for (int j=-halfWindowSizeX; j<=halfWindowSizeX; j+=texelStep)
+					offsets[n++] = A[0]*(float)j + A[1]*(float)i;
+			width1 = (float)gray.width()-1.001f;
+			height1 = (float)gray.height()-1.001f;
+		}
+		bool IsInside(const Point3f& h) const {
+			if (h.z <= 0)
+				return false;
+			const float x(h.x/h.z), y(h.y/h.z);
+			return x >= 0 && y >= 0 && x < width1 && y < height1;
+		}
 	};
-	// load and put in same space all disparity-maps containing this view
-	CLISTDEFIDX(PairData,IIndex) pairs;
-	pairs.reserve(numNeighbors);
-	FOREACH(idxNeighbor, leftImage.neighbors) {
-		const ViewScore& neighbor = leftImage.neighbors[idxNeighbor];
-		// exclude neighbors that over the limit or too small score
+	CLISTDEFIDX(NeighborView,IIndex) views;
+	views.reserve(maxViews); // never relocated, as the images hold pointers into themselves
+	const float fMinScore(MAXF(refImage.neighbors.front().score*OPTDENSE::fViewMinScoreRatio, OPTDENSE::fViewMinScore));
+	FOREACH(idxNeighbor, refImage.neighbors) {
+		const ViewScore& neighbor = refImage.neighbors[idxNeighbor];
 		ASSERT(scene.images[neighbor.ID].IsValid());
-		if ((numNeighbors && idxNeighbor >= numNeighbors) ||
-			(neighbor.score < fMinScore))
+		if ((numNeighbors && idxNeighbor >= numNeighbors) || neighbor.score < fMinScore || views.size() >= maxViews)
 			break;
-		// check if the disparity-map was estimated for this images pair
-		const Image& rightImage = scene.images[neighbor.ID];
-		Disparity subpixelSteps;
-		cv::Size imageSize; Matrix3x3 H; Matrix4x4 Q;
-		DisparityMap disparityMap; AccumCostMap costMap;
-		if (!ImportDisparityDataRawFull(MAKE_PATH(String::FormatString("%04u_%04u.dimap", leftImage.ID, rightImage.ID)), disparityMap, costMap, imageSize, H, Q, subpixelSteps)) {
-			if (!ImportDisparityDataRawFull(MAKE_PATH(String::FormatString("%04u_%04u.dimap", rightImage.ID, leftImage.ID)), disparityMap, costMap, imageSize, H, Q, subpixelSteps)) {
-				DEBUG("warning: no disparity-data file found for image pair (%u,%u)", leftImage.ID, rightImage.ID);
-				continue;
-			}
-			// adapt Q to project the 3D point from right into the left-image
-			RMatrix poseR;
-			CMatrix poseC;
-			ComputeRelativePose(rightImage.camera.R, rightImage.camera.C, leftImage.camera.R, leftImage.camera.C, poseR, poseC);
-			Matrix4x4 P(Matrix4x4::IDENTITY);
-			#if defined(__GNUC__) || defined(__clang__)
-			#pragma GCC diagnostic push
-			#pragma GCC diagnostic ignored "-Wstrict-aliasing"
-			#endif
-			AssembleProjectionMatrix(leftImage.camera.K, poseR, poseC, reinterpret_cast<PMatrix&>(P));
-			#if defined(__GNUC__) || defined(__clang__)
-			#pragma GCC diagnostic pop
-			#endif
-			Matrix4x4 invK(Matrix4x4::IDENTITY);
-			cv::Mat(rightImage.camera.GetInvK()).copyTo(cv::Mat(4,4,cv::DataType<Matrix4x4::Type>::type,invK.val)(cv::Rect(0,0,3,3)));
-			Q = P*invK*Q;
-		}
-		// convert disparity-map to final depth-map for the left image
-		PairData& pair = pairs.emplace_back(leftImage.image.size());
-		if (!ProjectDisparity2DepthMap(disparityMap, costMap, Q, subpixelSteps, pair.depthMap, pair.depthRangeMap, pair.confMap)) {
-			pairs.RemoveLast();
-			continue;
-		}
-		#if TD_VERBOSE != TD_VERBOSE_OFF
-		// save pair depth-map
-		if (VERBOSITY_LEVEL > 3) {
-			const String pairName(MAKE_PATH(String::FormatString("depth%04u_%04u", leftImage.ID, rightImage.ID)));
-			ExportDepthMap(pairName+".png", pair.depthMap);
-			MVS::ExportPointCloud(pairName+".ply", leftImage, pair.depthMap, NormalMap());
-		}
-		#endif
+		NeighborView& view = views.emplace_back();
+		view.image = &scene.images[neighbor.ID];
+		const cv::Matx33d R(view.image->camera.R);
+		const cv::Point3d dC(refImage.camera.C - view.image->camera.C);
+		view.R = R * cv::Matx33d(refImage.camera.R).t();
+		view.t = R * cv::Vec3d(dC.x, dC.y, dC.z);
+		view.image->image.toGray(view.grayFull, cv::COLOR_BGR2GRAY, true, true);
 	}
-	// fuse available depth-maps such that for each pixel set its depth as the average of the largest cluster of agreeing depths;
-	// pixel depths values agree if their trust regions overlap
-	depthMap.create(leftImage.image.size()); confMap.create(depthMap.size());
-	auto row = [&](int r) {
-		struct Cluster {
-			IIndexArr views;
-			DepthRange range;
-		};
-		CLISTDEFIDX(Cluster,IIndex) clusters(0, pairs.size());
-		for (int c=0; c<depthMap.cols; ++c) {
-			Depth& depth = depthMap(r,c); depth = 0;
-			float& conf = confMap(r,c); conf = 0;
-			clusters.Empty();
-			FOREACH(p, pairs) {
-				const PairData& pair = pairs[p];
-				const Depth pairDepth(pair.depthMap(r,c));
-				if (pairDepth <= 0)
-					continue;
-				const DepthRange& range(pair.depthRangeMap(r,c));
-				unsigned numClusters(0);
-				for (Cluster& cluster: clusters) {
-					if (!ISINSIDE(pairDepth, cluster.range.x, cluster.range.y))
-						continue;
-					cluster.views.push_back(p);
-					if (cluster.range.x < range.x)
-						cluster.range.x = range.x;
-					if (cluster.range.y > range.y)
-						cluster.range.y = range.y;
-					++numClusters;
+	if (views.empty())
+		return;
+	// inverse-depth step at full resolution: one pixel of motion along the epipolar line of the
+	// neighbor where the projection moves the most, measured at the image center and mid depth
+	float step0(0); {
+		const cv::Matx33d invKref(MVS::Camera::InvK(refImage.camera.K));
+		const Point3f x((float)imageSize.width*0.5f, (float)imageSize.height*0.5f, 1.f);
+		const float invzMid((invzMin+invzMax)*0.5f);
+		float maxMotion(0);
+		for (NeighborView& view: views) {
+			view.gray = view.grayFull;
+			view.SetLevel(invKref, cv::Matx33d(view.image->camera.K));
+			const Point3f h(view.A[0]*x.x + view.A[1]*x.y + view.A[2] + view.b*invzMid);
+			if (h.z <= 0)
+				continue;
+			const float motion((float)norm(Point2f(view.b.x*h.z-h.x*view.b.z, view.b.y*h.z-h.y*view.b.z))/SQUARE(h.z));
+			if (maxMotion < motion)
+				maxMotion = motion;
+		}
+		if (maxMotion <= 0)
+			return;
+		step0 = 1.f/maxMotion;
+	}
+	int numDisp0(CEIL2INT((invzMax-invzMin)/step0)+1);
+	const int maxNumDisp0(std::numeric_limits<Disparity>::max()/subpixelSteps-64);
+	if (numDisp0 > maxNumDisp0) {
+		step0 = (invzMax-invzMin)/(maxNumDisp0-1);
+		numDisp0 = maxNumDisp0;
+	}
+	// compute scale used for the top level
+	ViewData refData;
+	refData.imageColor = refImage.image;
+	refImage.image.toGray(refData.imageGray, cv::COLOR_BGR2GRAY, true, true);
+	REAL scale(1);
+	if (minResolution) {
+		unsigned resolutionLevel(8);
+		Image8U::computeMaxResolution(imageSize.width, imageSize.height, resolutionLevel, minResolution);
+		scale = REAL(1)/MAXF(2,POWI(2,resolutionLevel));
+	}
+	// match coarse to fine, as a rectified pair
+	DisparityMap disparityMap; AccumCostMap costMap; MaskMap maskMap;
+	SlopeMap slopeMap;
+	do {
+		const ViewData refLevel(refData.GetImage(scale));
+		const cv::Size size(refLevel.imageGray.size());
+		const cv::Size sizeValid(size.width-2*halfWindowSizeX, size.height-2*halfWindowSizeY);
+		const bool bFirstLevel(disparityMap.empty());
+		const cv::Matx33d invKref(MVS::Camera::InvK(refImage.camera.GetScaledK(imageSize, size)));
+		for (NeighborView& view: views) {
+			if (ISEQUAL(scale, REAL(1)))
+				view.gray = view.grayFull;
+			else
+				cv::resize(view.grayFull, view.gray, cv::Size(), scale, scale, cv::INTER_AREA);
+			view.SetLevel(invKref, cv::Matx33d(view.image->camera.GetScaledK(view.image->image.size(), view.gray.size())));
+		}
+		const float step((float)(step0/scale));
+		Index numCosts;
+		if (bFirstLevel) {
+			maskMap.create(sizeValid);
+			maskMap.setTo(VALID);
+			numCosts = Range2RangeMap(maskMap, Range{0, (Disparity)(CEIL2INT(numDisp0*scale)+1)}, false);
+		} else {
+			FitSlopes(disparityMap, slopeMap);
+			UpscaleMask(maskMap, sizeValid);
+			numCosts = Disparity2RangeMap(disparityMap, maskMap);
+		}
+		if (numCosts == 0)
+			return;
+		imageCosts.resize(numCosts);
+		imageAccumCosts.resize(numCosts);
+		auto pixel = [&](int idx, int r, int c) {
+			const PixelData& pixel = imagePixels[idx];
+			if (!pixel.range.isValid())
+				return;
+			const ImageRef u(c+halfWindowSizeX,r+halfWindowSizeY);
+			WeightedPatch w;
+			InitWeightedPatch(refLevel, u, w, texelStep);
+			// inverse-depth change of each texel along the slanted plane
+			float slant[levelTexels];
+			const Point2f slope(slopeMap.empty() ? Point2f(0,0) :
+				Point2f(slopeMap(CLAMP((r-halfWindowSizeY)/2, 0, slopeMap.rows-1), CLAMP((c-halfWindowSizeX)/2, 0, slopeMap.cols-1))*step));
+			for (int i=-halfWindowSizeY, n=0; i<=halfWindowSizeY; i+=texelStep)
+				for (int j=-halfWindowSizeX; j<=halfWindowSizeX; j+=texelStep)
+					slant[n++] = slope.x*(float)j + slope.y*(float)i;
+			Point3f hx[maxViews];
+			FOREACH(k, views)
+				hx[k] = views[k].A[0]*(float)u.x + views[k].A[1]*(float)u.y + views[k].A[2];
+			Cost* costs = imageCosts.data()+pixel.idx;
+			for (int d=pixel.range.minDisp; d<pixel.range.maxDisp; ++d) {
+				const float invz(invzMin+(float)d*step);
+				float viewCosts[maxViews];
+				int numViewCosts(0);
+				if (invz > 0) {
+					FOREACH(k, views) {
+						const NeighborView& view = views[k];
+						const Point3f h0(hx[k] + view.b*invz);
+						// the warped patch is inside the image if its corners are
+						if (!view.IsInside(h0+view.offsets[0]+view.b*slant[0]) ||
+							!view.IsInside(h0+view.offsets[rowTexels-1]+view.b*slant[rowTexels-1]) ||
+							!view.IsInside(h0+view.offsets[levelTexels-rowTexels]+view.b*slant[levelTexels-rowTexels]) ||
+							!view.IsInside(h0+view.offsets[levelTexels-1]+view.b*slant[levelTexels-1]))
+							continue;
+						float sum(0), sumSq(0), nom(0);
+						for (int n=0; n<levelTexels; ++n) {
+							const Point3f h(h0+view.offsets[n]+view.b*slant[n]);
+							const float f(SampleBilinear(view.gray, h.x/h.z, h.y/h.z));
+							const WeightedPatch::Pixel& pw = w.weights[n];
+							const float fw(f*pw.weight);
+							sum += fw;
+							sumSq += f*fw;
+							nom += f*pw.tempWeight;
+						}
+						const float normSq1(sumSq-SQUARE(sum)/w.sumWeights);
+						const float nrmSq(w.normSq0*normSq1);
+						const float ncc(nrmSq <= 1e-16f ? 0.f : nom/SQRT(nrmSq));
+						const float cost(ncc <= 0 ? 255.f : (1.f-MINF(ncc,1.f))*255.f);
+						// keep the view costs sorted
+						int i(numViewCosts++);
+						for (; i > 0 && viewCosts[i-1] > cost; --i)
+							viewCosts[i] = viewCosts[i-1];
+						viewCosts[i] = cost;
+					}
 				}
-				if (numClusters == 0)
-					clusters.emplace_back(Cluster{IIndexArr{p}, range});
+				if (numViewCosts == 0) {
+					*costs++ = 255;
+					continue;
+				}
+				const int numViews(MINF(numViewCosts, (int)numBestViews));
+				float cost(0);
+				for (int i=0; i<numViews; ++i)
+					cost += viewCosts[i];
+				*costs++ = (Cost)ROUND2INT(cost/numViews);
 			}
-			if (clusters.empty())
+		};
+		ASSERT(threads.IsEmpty());
+		if (!threads.empty()) {
+			volatile Thread::safe_t idxPixel(-1);
+			FOREACH(i, threads)
+				threads.AddEvent(new EVTPixelProcess(sizeValid, idxPixel, pixel));
+			WaitThreadWorkers(threads.size());
+		} else
+		for (int r=0; r<sizeValid.height; ++r)
+			for (int c=0; c<sizeValid.width; ++c)
+				pixel(r*sizeValid.width+c, r, c);
+		Aggregate(refLevel.imageGray, disparityMap, costMap);
+		// with no second disparity-map to cross-check against, only the speckles of the coarsest level
+		// are removed; the depth-map fusion discards the depths the other views do not confirm
+		if (bFirstLevel)
+			cv::filterSpeckles(disparityMap, NO_DISP, OPTDENSE::nSpeckleSize, 5);
+	} while ((scale*=2) < REAL(1)+ZEROTOLERANCE<REAL>());
+	// sub-pixel refinement and conversion to depth
+	RefineDisparityMap(disparityMap);
+	unsigned numDepths(0);
+	for (int r=0; r<disparityMap.rows; ++r) {
+		for (int c=0; c<disparityMap.cols; ++c) {
+			const Disparity d(disparityMap(r,c));
+			if (d == NO_DISP)
 				continue;
-			const Cluster& cluster = clusters.GetMax([](const Cluster& i, const Cluster& j) { return i.views.size() < j.views.size(); });
-			if (cluster.views.size() < minViews)
+			const float invz(invzMin+(float)d*step0/subpixelSteps);
+			if (invz <= 0)
 				continue;
-			for (IIndex p: cluster.views) {
-				const PairData& pair = pairs[p];
-				depth += pair.depthMap(r,c);
-				conf += pair.confMap(r,c);
+			depthMap(r+halfWindowSizeY,c+halfWindowSizeX) = 1.f/invz;
+			confMap(r+halfWindowSizeY,c+halfWindowSizeX) = AccumCost2Confidence(costMap(r,c));
+			++numDepths;
+		}
+	}
+	DEBUG_EXTRA("Depth-map for image %3u estimated from %u views: %u depths (%s)",
+		refImage.ID, views.size(), numDepths, TD_TIMER_GET_FMT().c_str());
+	#endif
+}
+
+// Estimate the disparity change per pixel of the surface around each pixel, as the slope of the plane
+// fit to the valid disparities of its 7x7 neighborhood; zero where too few are valid
+void SemiGlobalMatcher::FitSlopes(const DisparityMap& disparityMap, SlopeMap& slopeMap)
+{
+	const int halfWindow(3), minValid(6);
+	const float maxSlope(4.f);
+	slopeMap.create(disparityMap.size());
+	auto row = [&](int r) {
+		for (int c=0; c<disparityMap.cols; ++c) {
+			Point2f& slope = slopeMap(r,c);
+			slope = Point2f(0,0);
+			if (disparityMap(r,c) == NO_DISP)
+				continue;
+			float n(0), sx(0), sy(0), sd(0), sxx(0), syy(0), sxy(0), sxd(0), syd(0);
+			for (int i=MAXF(r-halfWindow,0), ie=MINF(r+halfWindow,disparityMap.rows-1); i<=ie; ++i) {
+				for (int j=MAXF(c-halfWindow,0), je=MINF(c+halfWindow,disparityMap.cols-1); j<=je; ++j) {
+					const Disparity d(disparityMap(i,j));
+					if (d == NO_DISP)
+						continue;
+					const float x((float)(j-c)), y((float)(i-r)), v((float)d);
+					n += 1; sx += x; sy += y; sd += v;
+					sxx += x*x; syy += y*y; sxy += x*y; sxd += x*v; syd += y*v;
+				}
 			}
-			depth /= cluster.views.size();
-			conf /= cluster.views.size();
+			if (n < minValid)
+				continue;
+			// least-squares plane through the centered samples
+			const float cxx(sxx-sx*sx/n), cyy(syy-sy*sy/n), cxy(sxy-sx*sy/n);
+			const float cxd(sxd-sx*sd/n), cyd(syd-sy*sd/n);
+			const float det(cxx*cyy-cxy*cxy);
+			if (det <= 1e-3f*n*n)
+				continue;
+			slope.x = CLAMP((cyy*cxd-cxy*cyd)/det, -maxSlope, maxSlope);
+			slope.y = CLAMP((cxx*cyd-cxy*cxd)/det, -maxSlope, maxSlope);
 		}
 	};
 	ASSERT(threads.IsEmpty());
 	if (!threads.empty()) {
 		volatile Thread::safe_t idxPixel(-1);
 		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumInc(depthMap.rows, idxPixel, row));
+			threads.AddEvent(new EVTPixelAccumInc(disparityMap.rows, idxPixel, row));
 		WaitThreadWorkers(threads.size());
 	} else
-	for (int r=0; r<depthMap.rows; ++r)
+	for (int r=0; r<disparityMap.rows; ++r)
 		row(r);
-	DEBUG_EXTRA("Depth-map for image %3u fused: %dx%d (%s)", leftImage.ID,
-		depthMap.width(), depthMap.height(), TD_TIMER_GET_FMT().c_str());
-	#if TD_VERBOSE != TD_VERBOSE_OFF
-	// save depth-map
-	if (VERBOSITY_LEVEL > 2) {
-		const String fileName(MAKE_PATH(String::FormatString("depth%04u", leftImage.ID)));
-		ExportDepthMap(fileName+".png", depthMap);
-		MVS::ExportPointCloud(fileName+".ply", leftImage, depthMap, NormalMap());
-	}
-	#endif
 }
 
+#if SGM_SIMILARITY != SGM_SIMILARITY_CENSUS
+// Compute the bilateral weights of the patch centered at u and its weighted zero-mean intensities,
+// over every texelStep-th texel of each row and column
+void SemiGlobalMatcher::InitWeightedPatch(const ViewData& image, const ImageRef& u, WeightedPatch& w, int texelStep)
+{
+	struct Compute {
+		static float NormL1Sq(const Pixel8U& a, const Pixel8U& b) {
+			return float(
+				SQUARE(unsigned(a[0]<b[0] ? b[0]-a[0] : a[0]-b[0])) +
+				SQUARE(unsigned(a[1]<b[1] ? b[1]-a[1] : a[1]-b[1])) +
+				SQUARE(unsigned(a[2]<b[2] ? b[2]-a[2] : a[2]-b[2])));
+		}
+		static float WeightColor(const Image8U3& image, const Pixel8U& center, const ImageRef& x) {
+			static const float sigmaColor(-1.f/(2.f*SQUARE(0.3f*255)));
+			return Compute::NormL1Sq(image(x), center) * sigmaColor;
+		}
+		static float WeightSpatial(int x, int y) {
+			static const float sigmaSpatial(-1.f/(2.f*SQUARE(0.4f*MAXF<int>(windowSizeX,windowSizeY))));
+			return float(SQUARE(x) + SQUARE(y)) * sigmaSpatial;
+		}
+	};
+	w.normSq0 = 0;
+	w.sumWeights = 0;
+	int n = 0;
+	const Pixel8U& colCenter = image.imageColor(u);
+	for (int i=-halfWindowSizeY; i<=halfWindowSizeY; i+=texelStep) {
+		for (int j=-halfWindowSizeX; j<=halfWindowSizeX; j+=texelStep) {
+			const ImageRef x(u.x+j,u.y+i);
+			WeightedPatch::Pixel& pw = w.weights[n++];
+			w.normSq0 +=
+				(pw.tempWeight = image.imageGray(x)) *
+				(pw.weight = EXP(Compute::WeightColor(image.imageColor, colCenter, x)+Compute::WeightSpatial(j,i)));
+			w.sumWeights += pw.weight;
+		}
+	}
+	ASSERT(texelStep != 1 || n == numTexels);
+	const int numTexelsInit(n);
+	const float tm(w.normSq0/w.sumWeights);
+	w.normSq0 = 0;
+	n = 0;
+	do {
+		WeightedPatch::Pixel& pw = w.weights[n];
+		const float t(pw.tempWeight - tm);
+		w.normSq0 += (pw.tempWeight = pw.weight * t) * t;
+	} while (++n < numTexelsInit);
+}
+#endif
 
 // Compute SGM stereo on the images
 void SemiGlobalMatcher::Match(const ViewData& leftImage, const ViewData& rightImage, DisparityMap& disparityMap, AccumCostMap& costMap)
@@ -455,51 +683,9 @@ void SemiGlobalMatcher::Match(const ViewData& leftImage, const ViewData& rightIm
 			*costs++ = Compute::HammingDistance(lc, rc)*4;
 		}
 		#else
-		struct Compute {
-			static float NormL1Sq(const Pixel8U& a, const Pixel8U& b) {
-				// |(a-b)| L1 norm of (a-b) when types are byte
-				return float(
-					SQUARE(unsigned(a[0]<b[0] ? b[0]-a[0] : a[0]-b[0])) +
-					SQUARE(unsigned(a[1]<b[1] ? b[1]-a[1] : a[1]-b[1])) +
-					SQUARE(unsigned(a[2]<b[2] ? b[2]-a[2] : a[2]-b[2])));
-			}
-			static float WeightColor(const Image8U3& image, const Pixel8U& center, const ImageRef& x) {
-				// color weight [0..1]
-				static const float sigmaColor(-1.f/(2.f*SQUARE(0.3f*255)));
-				return Compute::NormL1Sq(image(x), center) * sigmaColor;
-			}
-			static float WeightSpatial(int x, int y) {
-				// spatial weight [0..1]
-				static const float sigmaSpatial(-1.f/(2.f*SQUARE(0.4f*MAXF<int>(windowSizeX,windowSizeY))));
-				return float(SQUARE(x) + SQUARE(y)) * sigmaSpatial;
-			}
-		};
 		const ImageRef u(c+halfWindowSizeX,r+halfWindowSizeY);
-		// initialize pixel patch weights
 		WeightedPatch w;
-		w.normSq0 = 0;
-		w.sumWeights = 0;
-		int n = 0;
-		const Pixel8U& colCenter = leftImage.imageColor(u);
-		for (int i=-halfWindowSizeY; i<=halfWindowSizeY; ++i) {
-			for (int j=-halfWindowSizeX; j<=halfWindowSizeX; ++j) {
-				const ImageRef x(u.x+j,u.y+i);
-				WeightedPatch::Pixel& pw = w.weights[n++];
-				w.normSq0 +=
-					(pw.tempWeight = leftImage.imageGray(x)) *
-					(pw.weight = EXP(Compute::WeightColor(leftImage.imageColor, colCenter, x)+Compute::WeightSpatial(j,i)));
-				w.sumWeights += pw.weight;
-			}
-		}
-		ASSERT(n == numTexels);
-		const float tm(w.normSq0/w.sumWeights);
-		w.normSq0 = 0;
-		n = 0;
-		do {
-			WeightedPatch::Pixel& pw = w.weights[n];
-			const float t(pw.tempWeight - tm);
-			w.normSq0 += (pw.tempWeight = pw.weight * t) * t;
-		} while (++n < numTexels);
+		InitWeightedPatch(leftImage, u, w);
 		// compute pixel cost
 		Cost* costs = imageCosts.data()+pixel.idx;
 		const int width(rightImage.imageGray.width());
@@ -542,6 +728,13 @@ void SemiGlobalMatcher::Match(const ViewData& leftImage, const ViewData& rightIm
 		for (int c=0; c<sizeValid.width; ++c)
 			pixel(r*sizeValid.width+c, r, c);
 	}
+	Aggregate(leftImage.imageGray, disparityMap, costMap);
+}
+
+// Aggregate the pixel costs along the paths and select the best disparity of each pixel
+void SemiGlobalMatcher::Aggregate(const ImageGray& imageGray, DisparityMap& disparityMap, AccumCostMap& costMap)
+{
+	const cv::Size sizeValid(imageGray.width()-2*halfWindowSizeX, imageGray.height()-2*halfWindowSizeY);
 
 	// accumulate costs
 	{
@@ -620,6 +813,7 @@ void SemiGlobalMatcher::Match(const ViewData& leftImage, const ViewData& rightIm
 			const LineData& operator() (int i) const { return *lines[i]; }
 			LineData& operator() (int i) { return *lines[i]; }
 		};
+		// u walks the valid region, whose pixels sit half a window inside the image
 		#define ACCUM_PIXELS(cond) \
 			AccumLines lines(maxNumDisp); \
 			ImageGray::Type Ip(Igray); \
@@ -633,7 +827,7 @@ void SemiGlobalMatcher::Match(const ViewData& leftImage, const ViewData& rightIm
 				const LineData& Lp = lines(0); \
 				LineData& Ls = lines(1); \
 				Ls.R = pixel.range; \
-				const ImageGray::Type I(leftImage.imageGray(u)); \
+				const ImageGray::Type I(imageGray(u.y+halfWindowSizeY,u.x+halfWindowSizeX)); \
 				pixelAccum(costs, Lp, Ls, accums, I-Ip); \
 				Ip = I; \
 				lines.NextLine(); \
@@ -704,7 +898,7 @@ void SemiGlobalMatcher::Match(const ViewData& leftImage, const ViewData& rightIm
 		{ // width-left-down
 		auto pixels = [&](int x) {
 			ImageRef u(x,0);
-			ACCUM_PIXELS(--u.x >= 0  && ++u.y < sizeValid.height);
+			ACCUM_PIXELS(--u.x >= 0 && ++u.y < sizeValid.height);
 		};
 		idxPixels[0] = -1;
 		FOREACH(i, threads)
@@ -795,6 +989,7 @@ void SemiGlobalMatcher::Match(const ViewData& leftImage, const ViewData& rightIm
 		LineData& operator() (int idxDir, int r, int c) { return lines[idxDir][r][c]; }
 	};
 	AccumLines lines(maxNumDisp);
+	// (r,c) walks the valid region, whose pixels sit half a window inside the image
 	#define ACCUM_PIXELS(dx, dy, _x) \
 		const int idx(r*sizeValid.width+c); \
 		const PixelData& pixel = imagePixels[idx]; \
@@ -808,7 +1003,8 @@ void SemiGlobalMatcher::Match(const ViewData& leftImage, const ViewData& rightIm
 			LineData& Ls = lines(idxDir,1,_x); \
 			Ls.R = pixel.range; \
 			const ImageRef xp(c+dx, r+dy); \
-			const ImageGray::Type DI(leftImage.imageGray(r,c)-(leftImage.imageGray.isInside(xp)?leftImage.imageGray(xp):Igray)); \
+			const bool bInside(xp.x >= 0 && xp.y >= 0 && xp.x < sizeValid.width && xp.y < sizeValid.height); \
+			const ImageGray::Type DI(imageGray(r+halfWindowSizeY,c+halfWindowSizeX)-(bInside?imageGray(xp.y+halfWindowSizeY,xp.x+halfWindowSizeX):Igray)); \
 			pixelAccum(costs, Lp, Ls, accums, DI); \
 		}
 	lines.Init(sizeValid.width);
@@ -936,9 +1132,10 @@ SemiGlobalMatcher::Range SemiGlobalMatcher::DepthRange2Disparity(const Matrix3x3
 	};
 }
 
-// Setup pixel-map searching the same disparity range for all pixels valid in the mask-map;
-// return the total size of the disparities searched
-SemiGlobalMatcher::Index SemiGlobalMatcher::Range2RangeMap(const MaskMap& maskMap, const Range& range)
+// Setup pixel-map searching the same disparity range for all pixels valid in the mask-map,
+// clamped per column to the disparities keeping the matched patch inside the other rectified image
+// if requested; return the total size of the disparities searched
+SemiGlobalMatcher::Index SemiGlobalMatcher::Range2RangeMap(const MaskMap& maskMap, const Range& range, bool bClampToWidth)
 {
 	ASSERT(range.isValid() && maskMap.isContinuous());
 	const int width(maskMap.width());
@@ -949,8 +1146,7 @@ SemiGlobalMatcher::Index SemiGlobalMatcher::Range2RangeMap(const MaskMap& maskMa
 		for (int c=0; c<width; ++c, ++idx) {
 			PixelData& pixel = imagePixels[idx];
 			pixel.idx = numCosts;
-			// only the disparities keeping the matched patch inside the other image are searched
-			pixel.range = Range{MAXF(range.minDisp, (Disparity)-c), MINF(range.maxDisp, (Disparity)(width-c))};
+			pixel.range = bClampToWidth ? Range{MAXF(range.minDisp, (Disparity)-c), MINF(range.maxDisp, (Disparity)(width-c))} : range;
 			if (maskMap(idx) == INVALID || !pixel.range.isValid()) {
 				pixel.range = Range{NO_DISP,NO_DISP};
 				continue;
@@ -1341,126 +1537,6 @@ void SemiGlobalMatcher::RefineDisparityMap(DisparityMap& disparityMap) const
 	for (int r=0; r<disparityMap.rows; ++r)
 		for (int c=0; c<disparityMap.cols; ++c)
 			pixel(r*disparityMap.cols+c);
-}
-
-
-// Compute the depth-map for the un-rectified image from the given disparity-map of the rectified image
-// by projecting the point-cloud to the image and setting the pixel depth as the average of the closest 4 points;
-// return false if the disparity map is completely empty
-bool SemiGlobalMatcher::ProjectDisparity2DepthMap(const DisparityMap& disparityMap, const AccumCostMap& costMap, const Matrix4x4& Q, Disparity subpixelSteps, DepthMap& depthMap, DepthRangeMap& depthRangeMap, ConfidenceMap& confMap)
-{
-	ASSERT(costMap.empty() || costMap.size() == disparityMap.size());
-	ASSERT(!depthMap.empty());
-	ASSERT(confMap.empty() || confMap.size() == depthMap.size());
-
-	// store 4 depths per pixel, the closest one from each side, ordered as:
-	//  - left, right, top, bottom (x pointing right and y pointing down)
-	// with a small overlap border
-	const float overlapBorder(0.5f+0.25f);
-	struct DepthData {
-		Image32F distMap;
-		DepthMap depthMap;
-		DepthRangeMap depthRangeMap;
-		ConfidenceMap confMap;
-		void Init(const cv::Size& size) {
-			distMap.create(size);
-			depthMap.create(size);
-			depthRangeMap.create(size);
-			confMap.create(size);
-			depthMap.memset(0);
-		}
-	} depthDatas[4];
-	for (int i=0; i<4; ++i)
-		depthDatas[i].Init(depthMap.size());
-	for (int r=0; r<disparityMap.rows; ++r) {
-		for (int c=0; c<disparityMap.cols; ++c) {
-			const Disparity disparityInt(disparityMap(r,c));
-			if (disparityInt == NO_DISP)
-				continue;
-			const float disparity((float)disparityInt/subpixelSteps);
-			Point2f u, v;
-			const ImageRef dx(c+halfWindowSizeX,r+halfWindowSizeY);
-			const Depth depth(Image::Disparity2Depth(Q, dx, disparity, u));
-			if (depth <= 0)
-				continue;
-			// the depth is trusted within one disparity of the estimate
-			const DepthRange depthRange(
-				Image::Disparity2Depth(Q, dx, disparity-1.f),
-				Image::Disparity2Depth(Q, dx, disparity+1.f)
-			);
-			ASSERT(ISINSIDE(depth, depthRange.x, depthRange.y));
-			const float cost(costMap.empty()?0.f:AccumCost2Confidence(costMap(r,c)));
-			const ImageRef x(FLOOR2INT(u));
-			u.x -= 0.5f; u.y -= 0.5f;
-			for (int i=-1; i<=1; ++i) {
-				for (int j=-1; j<=1; ++j) {
-					const ImageRef nx(x.x+j,x.y+i);
-					if (!depthMap.isInside(nx))
-						continue;
-					const Point2f dist((float)nx.x-u.x,(float)nx.y-u.y);
-					const Point2f absDist(ABS(dist));
-					if (absDist.x > overlapBorder || absDist.y > overlapBorder)
-						continue;
-					const int idx((dist.x<0?1:0)+(dist.y<0?2:0));
-					DepthData& depthData = depthDatas[idx];
-					const float deistSq(normSq(dist));
-					float& ndeistSq = depthData.distMap(nx);
-					Depth& ndepth = depthData.depthMap(nx);
-					if (ndepth > 0 && ndeistSq <= deistSq)
-						continue;
-					ndeistSq = deistSq;
-					ndepth = depth;
-					depthData.depthRangeMap(nx) = depthRange;
-					depthData.confMap(nx) = cost;
-				}
-			}
-		}
-	}
-	typedef TAccumulator<Vec4f> ValueAccumulator;
-	depthRangeMap.create(depthMap.size());
-	confMap.create(depthMap.size());
-	const float thDist(SQUARE(0.75f));
-	const Depth thDepth(0.02f);
-	unsigned numDepths(0);
-	for (int r=0; r<depthMap.rows; ++r) {
-		for (int c=0; c<depthMap.cols; ++c) {
-			float distCenter(std::numeric_limits<float>::max());
-			Depth depthCenter;
-			for (int i=0; i<4; ++i) {
-				const DepthData& depthData = depthDatas[i];
-				const Depth depth(depthData.depthMap(r,c));
-				if (depth <= 0)
-					continue;
-				const float dist(depthData.distMap(r,c));
-				if (distCenter > dist) {
-					distCenter = dist;
-					depthCenter = depth;
-				}
-			}
-			if (distCenter > thDist) {
-				depthMap(r,c) = Depth(0);
-				continue;
-			}
-			ValueAccumulator acc;
-			for (int i=0; i<4; ++i) {
-				const DepthData& depthData = depthDatas[i];
-				const Depth depth(depthData.depthMap(r,c));
-				if (depth <= 0 || !IsDepthSimilar(depthCenter, depth, thDepth))
-					continue;
-				const DepthRange& depthRange(depthData.depthRangeMap(r,c));
-				acc.Add(Vec4f((float)depth,depthRange.x,depthRange.y,depthData.confMap(r,c)), SQRT(depthData.distMap(r,c)));
-			}
-			ASSERT(!acc.IsEmpty());
-			const Vec4f value(acc.Normalized());
-			depthMap(r,c) = value(0);
-			depthRangeMap(r,c) = DepthRange(value(1),value(2));
-			confMap(r,c) = value(3);
-			++numDepths;
-		}
-	}
-	if (costMap.empty())
-		confMap.release();
-	return numDepths > 0;
 }
 
 
