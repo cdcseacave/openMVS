@@ -564,6 +564,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
   - Hierarchical scheme: image pyramid (top level at least 320 px wide); the coarsest level searches, per pixel, the whole disparity range spanned by the sparse-point depth range of the image (clamped per column); finer levels search only around the previous level's estimate (7x7 neighborhood if valid, 41x41 otherwise, 5 to 32/64 disparities). Both directions are matched at every level; only the coarsest level is cross-checked, speckle-filtered (`--speckle-size`) and sets the validity masks for the finer levels
   - Cost aggregation along 8 paths (P1=18, P2=24 scaled up to 15x in flat regions), Winner-Take-All, sub-pixel refinement (LC-blend, quarter-pixel disparities stored as int16)
   - Pair fusion into the image depth-map: each pair disparity-map is projected to the un-rectified image; per pixel, the depths whose trust ranges overlap are clustered and the largest cluster is averaged (one pair suffices since the depth-map fusion cross-checks views); confidence = 1 - cost/(8*255), the same [0,1] scale as PatchMatch's NCC score
+- **Design record:** `docs/design/SemiGlobalMatching.md` (algorithm as implemented, validated defaults, rejected alternatives, future work)
 - **GPU Support:** No
 - **Threading:** own worker-thread pool (`SemiGlobalMatcher::CreateThreads`)
 - **Dependencies:** OpenCV, Common
