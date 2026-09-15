@@ -169,7 +169,7 @@ struct MeshTexture {
 		typedef TRasterMesh<RasterMesh> Base;
 		FaceMap& faceMap;
 		FIndex idxFace;
-		Image8U mask; // valid pixels of the image at its working resolution
+		Image8U mask; // valid pixels of the image at its working resolution (empty: all valid)
 		bool validFace;
 		const float scaleMaskX, scaleMaskY; // working resolution over rendering resolution
 		const int border; // keeps the vertices at least 2 px inside the working image, as GenerateTexture requires
@@ -193,7 +193,7 @@ struct MeshTexture {
 			Depth& depth = depthMap(pt);
 			if (depth == 0 || depth > z) {
 				depth = z;
-				faceMap(pt) = validFace && (validFace = (mask((int)(pt.y * scaleMaskY), (int)(pt.x * scaleMaskX)) != 0)) ? idxFace : NO_ID;
+				faceMap(pt) = validFace && (validFace = (mask.empty() || mask((int)(pt.y * scaleMaskY), (int)(pt.x * scaleMaskX)) != 0)) ? idxFace : NO_ID;
 			}
 		}
 	};
@@ -701,7 +701,7 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		for (int j=0; j<faceMap.rows; ++j) {
 			for (int i=0; i<faceMap.cols; ++i) {
 				const FIndex& idxFace = faceMap(j,i);
-				ASSERT((idxFace == NO_ID && depthMap(j,i) == 0) || (idxFace != NO_ID && depthMap(j,i) > 0));
+				ASSERT(idxFace == NO_ID || depthMap(j,i) > 0);
 				if (idxFace == NO_ID)
 					continue;
 				FaceDataArr& faceDatas = facesDatas[idxFace];

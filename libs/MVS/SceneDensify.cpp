@@ -3541,14 +3541,15 @@ void Scene::DenseReconstructionEstimate(void* pData)
 				// extract depth-map using Patch-Match algorithm
 				data.depthMaps.EstimateDepthMap(data.images[evtImage.idxImage], data.nEstimationGeometricIter);
 			} else {
-				// extract disparity-maps using SGM algorithm
-				if (data.nFusionMode == -1) {
-					data.sgm.Match(*this, data.images[evtImage.idxImage], OPTDENSE::nNumViews);
-				} else {
-					// fuse existing disparity-maps
+				// extract the disparity-maps of the pairs this image forms with its neighbors using the SGM
+				// algorithm, skipping the pairs already estimated (from an image processed earlier or a previous run)
+				data.sgm.Match(*this, data.images[evtImage.idxImage], OPTDENSE::nNumViews);
+				if (data.nFusionMode == -2) {
+					// fuse them into the depth-map of this image; Fuse() visits the same neighbors as Match();
+					// a depth estimated by a single pair is kept too, the depth-map fusion checks it across views
 					const IIndex idx(data.images[evtImage.idxImage]);
 					DepthData& depthData(data.depthMaps.arrDepthData[idx]);
-					data.sgm.Fuse(*this, data.images[evtImage.idxImage], OPTDENSE::nNumViews, 2, depthData.depthMap, depthData.confMap);
+					data.sgm.Fuse(*this, data.images[evtImage.idxImage], OPTDENSE::nNumViews, 1, depthData.depthMap, depthData.confMap);
 					if (OPTDENSE::nEstimateNormals == 2)
 						EstimateNormalMap(depthData.images.front().camera.K, depthData.depthMap, depthData.normalMap);
 					depthData.dMin = ZEROTOLERANCE<float>(); depthData.dMax = FLT_MAX;
@@ -3797,6 +3798,10 @@ void Scene::DenseReconstructionFilter(void* pData)
 void Scene::PointCloudFilter(int thRemove)
 {
 	TD_TIMER_STARTD();
+	ASSERT(pointcloud.IsValid());
+	// the normals let the visibility checks skip grazing views and back-facing occluders
+	if (pointcloud.normals.empty())
+		EstimatePointNormals(images, pointcloud);
 
 	typedef TOctree<PointCloud::PointArr,PointCloud::Point::Type,3,uint32_t> Octree;
 	struct Collector {
@@ -3843,12 +3848,20 @@ void Scene::PointCloudFilter(int thRemove)
 			Real dist;
 			FOREACHRAWPTR(pIdx, idices, size) {
 				const PointCloud::Index idx(*pIdx);
-				if (coneIntersect.Classify(pointcloud.points[idx], dist) == VISIBLE && !IsDepthSimilar(distance, dist, thSimilar)) {
-					if (dist > distance)
-						visibility[idx] += pointcloud.pointViews[idx].size();
-					else
-						visibility[idx] -= weight;
-				}
+				if (coneIntersect.Classify(pointcloud.points[idx], dist) != VISIBLE || IsDepthSimilar(distance, dist, thSimilar))
+					continue;
+				int delta;
+				if (dist > distance)
+					delta = (int)pointcloud.pointViews[idx].size();
+				else if (cone.ray.m_vDir.dot((const PointCloud::Normal::EVec&)pointcloud.normals[idx]) <= 0)
+					delta = -weight; // only a surface facing the camera occludes the point
+				else
+					continue;
+				// the caller locks only this view's collector, other views update the same points
+				#ifdef DENSE_USE_OPENMP
+				#pragma omp atomic
+				#endif
+				visibility[idx] += delta;
 			}
 		}
 	};
@@ -3878,12 +3891,16 @@ void Scene::PointCloudFilter(int thRemove)
 	#endif
 		const PointCloud::Point& X = pointcloud.points[idxPoint];
 		const PointCloud::ViewArr& views = pointcloud.pointViews[idxPoint];
+		const PointCloud::Normal::EVec& N = (const PointCloud::Normal::EVec&)pointcloud.normals[idxPoint];
 		for (PointCloud::View idxView: views) {
 			Collector& collector = collectors[idxView];
 			#ifdef DENSE_USE_OPENMP
 			Lock l(collector.GetCS());
 			#endif
 			collector.Init(idxPoint, X, (int)views.size());
+			// skip the views seeing the point from behind or at a grazing angle (over 80 deg off its normal)
+			if (collector.cone.ray.m_vDir.dot(N) > -0.173648f)
+				continue;
 			octree.Collect(collector, collector);
 		}
 		++progress;

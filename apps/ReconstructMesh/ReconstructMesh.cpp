@@ -355,10 +355,9 @@ int main(int argc, LPCTSTR* argv)
 		OPT::fSplitMaxArea > 0 || OPT::fDecimateMesh < 1 || OPT::nTargetFaceNum > 0 || !OPT::strImportROIFileName.empty()));
 	if (sceneType == Scene::SCENE_NA)
 		return EXIT_FAILURE;
-	if (!OPT::strPointCloudFileName.empty() && (File::isFile(MAKE_PATH_SAFE(OPT::strPointCloudFileName)) ?
-		!scene.pointcloud.Load(MAKE_PATH_SAFE(OPT::strPointCloudFileName)) :
-		!scene.pointcloud.IsValid())) {
-		VERBOSE("error: cannot load point-cloud file");
+	if (!OPT::strPointCloudFileName.empty() && File::isFile(MAKE_PATH_SAFE(OPT::strPointCloudFileName)) &&
+		!scene.pointcloud.Load(MAKE_PATH_SAFE(OPT::strPointCloudFileName))) {
+		VERBOSE("error: cannot load point-cloud file '%s'", OPT::strPointCloudFileName.c_str());
 		return EXIT_FAILURE;
 	}
 	if (!OPT::strMeshFileName.empty() && !scene.mesh.Load(MAKE_PATH_SAFE(OPT::strMeshFileName))) {
@@ -386,8 +385,7 @@ int main(int argc, LPCTSTR* argv)
 			scene.mesh.RemoveFacesOutside(scene.obb);
 			VERBOSE("Mesh trimmed to ROI: %u vertices and %u faces removed (%s)",
 				numVertices-scene.mesh.vertices.size(), numFaces-scene.mesh.faces.size(), TD_TIMER_GET_FMT().c_str());
-			scene.mesh.Save(baseFileName+OPT::strExportType);
-			return EXIT_SUCCESS;
+			return scene.mesh.Save(baseFileName+OPT::strExportType) ? EXIT_SUCCESS : EXIT_FAILURE;
 		}
 	}
 
@@ -402,7 +400,8 @@ int main(int argc, LPCTSTR* argv)
 			return EXIT_FAILURE;
 		// save mesh
 		const String fileName(MAKE_PATH_SAFE(OPT::strOutputFileName));
-		scene.mesh.Save(fileName);
+		if (!scene.mesh.Save(fileName))
+			return EXIT_FAILURE;
 		#if TD_VERBOSE != TD_VERBOSE_OFF
 		if (VERBOSITY_LEVEL > 2)
 			scene.ExportCamerasMLP(baseFileName+_T(".mlp"), fileName);
@@ -414,6 +413,10 @@ int main(int argc, LPCTSTR* argv)
 		else if (OPT::fBorderROI < 0)
 			scene.obb.Enlarge(-OPT::fBorderROI);
 		if (OPT::strMeshFileName.empty() && scene.mesh.IsEmpty()) {
+			if (!scene.pointcloud.IsValid()) {
+				VERBOSE("error: the point-cloud is empty or has no views, both needed to reconstruct the mesh");
+				return EXIT_FAILURE;
+			}
 			// reset image resolution to the original size and
 			// make sure the image neighbors are initialized before deleting the point-cloud
 			#ifdef RECMESH_USE_OPENMP
@@ -495,7 +498,8 @@ int main(int argc, LPCTSTR* argv)
 			scene.RemoveUnseenMeshFaces(OPT::nRemoveUnseenFaces);
 
 		// save the final mesh
-		scene.mesh.Save(baseFileName+OPT::strExportType);
+		if (!scene.mesh.Save(baseFileName+OPT::strExportType))
+			return EXIT_FAILURE;
 		#if TD_VERBOSE != TD_VERBOSE_OFF
 		if (VERBOSITY_LEVEL > 2)
 			scene.ExportCamerasMLP(baseFileName+_T(".mlp"), baseFileName+OPT::strExportType);

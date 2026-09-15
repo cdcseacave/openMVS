@@ -66,7 +66,7 @@ pixel can therefore be consumed more than once across the run.
 | CLI option | struct field | default | meaning |
 |---|---|---|---|
 | `--fusion-filter` | `OPTDENSE::nFuseFilter` | `2` | `0` merge, `1` fuse, `2` dense-fuse |
-| `--fusion-mode` | `OPTDENSE::nFusionMode` (app-local) | `0` | `-2` fuse disparity-maps, `-1` export disparity-maps only, `0` depth-maps & fusion, `1` export depth-maps only |
+| `--fusion-mode` | `OPTDENSE::nFusionMode` (app-local) | `0` | `-2` SGM disparity-maps & fusion, `-1` export SGM disparity-maps only, `0` depth-maps & fusion, `1` export depth-maps only |
 | `--number-views-fuse` | `OPTDENSE::nMinViewsFuse` | `2` | minimum distinct views for a cluster to be kept (`<2` degrades keeping to merge-like behaviour) |
 | *(config file only)* | `OPTDENSE::nMaxViewsFuse` | `32` | maximum neighbour depth-maps cached and walked per reference |
 | *(config file only)* | `OPTDENSE::nMinPixelsFuse` | `5` | minimum joined pixels for a cluster to be kept |

@@ -965,8 +965,10 @@ bool Mesh::Save(const String& fileName, const cList<String>& comments, bool bBin
 		ret = SaveGLTF(fileName, ext == _T(".glb"), bTexLossless);
 	else
 		ret = SavePLY(ext != _T(".ply") ? String(fileName+_T(".ply")) : fileName, comments, bBinary, bTexLossless);
-	if (!ret)
+	if (!ret) {
+		VERBOSE("error: failed saving mesh '%s'", fileName.c_str());
 		return false;
+	}
 	DEBUG_EXTRA("Mesh '%s' saved: %u vertices, %u faces (%s)",
 		Util::getFileNameExt(fileName).c_str(), vertices.size(), faces.size(), TD_TIMER_GET_FMT().c_str());
 	return true;
@@ -997,7 +999,8 @@ bool Mesh::SavePLY(const String& fileName, const cList<String>& comments, bool b
 		FOREACH(texId, texturesDiffuse) {
 		    const String textureFileName(Util::getFileFullName(fileName) + std::to_string((unsigned)texId).c_str() + (bTexLossless?_T(".png"):_T(".jpg")));
 		    ply.append_comment((_T("TextureFile ")+Util::getFileNameExt(textureFileName)).c_str());
-		    texturesDiffuse[texId].Save(textureFileName);
+		    if (!texturesDiffuse[texId].Save(textureFileName))
+		        return false;
 		}
 	}
 
@@ -1471,7 +1474,9 @@ void Mesh::RemoveVertices(VertexIdxArr& vertexRemove, bool bUpdateLists)
 		RemoveFaces(facesRemove);
 }
 
-// convert textured mesh to store texture coordinates per vertex instead of per face
+// convert textured mesh to store texture coordinates per vertex instead of per face,
+// splitting vertices shared by faces with different coordinates; for rendering only,
+// the result is not a valid input for the library code (see faceTexcoords)
 void Mesh::ConvertTexturePerVertex(Mesh& mesh) const
 {
 	ASSERT(HasTexture());
@@ -1665,7 +1670,7 @@ void Mesh::SamplePoints(REAL samplingDensity, unsigned mumPointsTheoretic, Point
 				const TexCoord& TO = faceTexcoords[idxTexCoord+0];
 				const TexCoord& TA = faceTexcoords[idxTexCoord+1];
 				const TexCoord& TB = faceTexcoords[idxTexCoord+2];
-				const TexIndex& TI = faceTexindices[idxFace];
+				const TexIndex TI = GetFaceTextureIndex(idxFace);
 				const TexCoord xt(TO + static_cast<TexCoord::Type>(x)*(TA - TO) + static_cast<TexCoord::Type>(y)*(TB - TO));
 				pointcloud.colors.emplace_back(texturesDiffuse[TI].sampleSafe(xt));
 			}
@@ -1831,7 +1836,7 @@ void Mesh::ProjectOrtho(const Camera& camera, DepthMap& depthMap, Image8U3& imag
 				xt  = mesh.faceTexcoords[idxFaceTex+0] * bary[0];
 				xt += mesh.faceTexcoords[idxFaceTex+1] * bary[1];
 				xt += mesh.faceTexcoords[idxFaceTex+2] * bary[2];
-				auto texIdx = mesh.faceTexindices[idxFaceTex / 3];
+				const auto texIdx = mesh.GetFaceTextureIndex(idxFaceTex / 3);
 				image(pt) = mesh.texturesDiffuse[texIdx].sampleSafe(xt);
 			}
 		}

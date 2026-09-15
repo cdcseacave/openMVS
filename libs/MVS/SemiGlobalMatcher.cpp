@@ -40,9 +40,6 @@ using namespace STEREO;
 
 // D E F I N E S ///////////////////////////////////////////////////
 
-// uncomment to enable OpenCV filter demo
-//#define _USE_FILTER_DEMO
-
 #pragma push_macro("VERBOSE")
 #undef VERBOSE
 #define VERBOSE(...) LOG(lt, __VA_ARGS__)
@@ -52,390 +49,8 @@ using namespace STEREO;
 
 DEFINE_LOG_NAME(lt, _T("SemGblMt"));
 
-#ifdef _USE_FILTER_DEMO
-#include "opencv2/ximgproc/disparity_filter.hpp"
-
-const String keys =
-"{help h usage ? |        | print this message                                                }"
-"{GT             |None    | optional ground-truth disparity (MPI-Sintel or Middlebury format) }"
-"{dst_path       |None    | optional path to save the resulting filtered disparity map        }"
-"{dst_raw_path   |None    | optional path to save raw disparity map before filtering          }"
-"{algorithm      |bm      | stereo matching method (bm or sgbm)                               }"
-"{filter         |wls_conf| used post-filtering (wls_conf or wls_no_conf)                     }"
-"{no-display     |        | don't display results                                             }"
-"{no-downscale   |        | force stereo matching on full-sized views to improve quality      }"
-"{dst_conf_path  |None    | optional path to save the confidence map used in filtering        }"
-"{vis_mult       |1.0     | coefficient used to scale disparity map visualizations            }"
-"{max_disparity  |160     | parameter of stereo matching                                      }"
-"{window_size    |-1      | parameter of stereo matching                                      }"
-"{wls_lambda     |8000.0  | parameter of post-filtering                                       }"
-"{wls_sigma      |1.5     | parameter of post-filtering                                       }"
-;
-
-cv::Rect computeROI(cv::Size2i src_sz, cv::Ptr<cv::StereoMatcher> matcher_instance)
-{
-	int min_disparity = matcher_instance->getMinDisparity();
-	int num_disparities = matcher_instance->getNumDisparities();
-	int block_size = matcher_instance->getBlockSize();
-
-	int bs2 = block_size/2;
-	int minD = min_disparity, maxD = min_disparity + num_disparities - 1;
-
-	int xmin = maxD + bs2;
-	int xmax = src_sz.width + minD - bs2;
-	int ymin = bs2;
-	int ymax = src_sz.height - bs2;
-
-	return cv::Rect(xmin, ymin, xmax - xmin, ymax - ymin);
-}
-
-int disparityFiltering(cv::Mat left, cv::Mat right, int argc, const LPCSTR* argv)
-{
-	cv::CommandLineParser parser(argc,argv,keys);
-	parser.about("Disparity Filtering Demo");
-	if(parser.has("help"))
-	{
-		parser.printMessage();
-		return 0;
-	}
-
-	String GT_path = parser.get<String>("GT");
-	String dst_path = parser.get<String>("dst_path");
-	String dst_raw_path = parser.get<String>("dst_raw_path");
-	String dst_conf_path = parser.get<String>("dst_conf_path");
-	String algo = parser.get<String>("algorithm");
-	String filter = parser.get<String>("filter");
-	bool no_display = parser.has("no-display");
-	bool no_downscale = parser.has("no-downscale");
-	int max_disp = parser.get<int>("max_disparity");
-	double lambda = parser.get<double>("wls_lambda");
-	double sigma  = parser.get<double>("wls_sigma");
-	double vis_mult = parser.get<double>("vis_mult");
-
-	int wsize;
-	if(parser.get<int>("window_size")>=0) //user provided window_size value
-		wsize = parser.get<int>("window_size");
-	else
-	{
-		if(algo=="sgbm")
-			wsize = 3; //default window size for SGBM
-		else if(!no_downscale && algo=="bm" && filter=="wls_conf")
-			wsize = 7; //default window size for BM on downscaled views (downscaling is performed only for wls_conf)
-		else
-			wsize = 15; //default window size for BM on full-sized views
-	}
-	if(!parser.check())
-	{
-		parser.printErrors();
-		return -1;
-	}
-
-	cv::Mat GT_disp;
-	bool noGT(cv::ximgproc::readGT(GT_path,GT_disp)!=0);
-
-	cv::Mat left_for_matcher, right_for_matcher;
-	cv::Mat left_disp,right_disp;
-	cv::Mat filtered_disp;
-	cv::Mat conf_map(left.rows,left.cols,CV_8U);
-	conf_map = cv::Scalar(255);
-	cv::Rect ROI;
-	cv::Ptr<cv::ximgproc::DisparityWLSFilter> wls_filter;
-	double matching_time, filtering_time;
-	if(max_disp<=0 || max_disp%16!=0)
-	{
-		std::cout<<"Incorrect max_disparity value: it should be positive and divisible by 16";
-		return -1;
-	}
-	if(wsize<=0 || wsize%2!=1)
-	{
-		std::cout<<"Incorrect window_size value: it should be positive and odd";
-		return -1;
-	}
-	if(filter=="wls_conf") // filtering with confidence (significantly better quality than wls_no_conf)
-	{
-		if(!no_downscale)
-		{
-			// downscale the views to speed-up the matching stage, as we will need to compute both left
-			// and right disparity maps for confidence map computation
-			//! [downscale]
-			max_disp/=2;
-			if(max_disp%16!=0)
-				max_disp += 16-(max_disp%16);
-			resize(left ,left_for_matcher ,cv::Size(),0.5,0.5, cv::INTER_LINEAR_EXACT);
-			resize(right,right_for_matcher,cv::Size(),0.5,0.5, cv::INTER_LINEAR_EXACT);
-			//! [downscale]
-		}
-		else
-		{
-			left_for_matcher  = left.clone();
-			right_for_matcher = right.clone();
-		}
-
-		if(algo=="bm")
-		{
-			//! [matching]
-			cv::Ptr<cv::StereoBM> left_matcher = cv::StereoBM::create(max_disp,wsize);
-			wls_filter = cv::ximgproc::createDisparityWLSFilter(left_matcher);
-			cv::Ptr<cv::StereoMatcher> right_matcher = cv::ximgproc::createRightMatcher(left_matcher);
-
-			cvtColor(left_for_matcher,  left_for_matcher,  cv::COLOR_BGR2GRAY);
-			cvtColor(right_for_matcher, right_for_matcher, cv::COLOR_BGR2GRAY);
-
-			matching_time = (double)cv::getTickCount();
-			left_matcher-> compute(left_for_matcher, right_for_matcher,left_disp);
-			right_matcher->compute(right_for_matcher,left_for_matcher, right_disp);
-			matching_time = ((double)cv::getTickCount() - matching_time)/cv::getTickFrequency();
-			//! [matching]
-		}
-		else if(algo=="sgbm")
-		{
-			cv::Ptr<cv::StereoSGBM> left_matcher  = cv::StereoSGBM::create(-max_disp/2+1,max_disp,wsize);
-			left_matcher->setP1(24*wsize*wsize);
-			left_matcher->setP2(96*wsize*wsize);
-			left_matcher->setPreFilterCap(63);
-			left_matcher->setMode(cv::StereoSGBM::MODE_SGBM_3WAY);
-			wls_filter = cv::ximgproc::createDisparityWLSFilter(left_matcher);
-			cv::Ptr<cv::StereoMatcher> right_matcher = cv::ximgproc::createRightMatcher(left_matcher);
-
-			matching_time = (double)cv::getTickCount();
-			left_matcher-> compute(left_for_matcher, right_for_matcher,left_disp);
-			right_matcher->compute(right_for_matcher,left_for_matcher, right_disp);
-			matching_time = ((double)cv::getTickCount() - matching_time)/cv::getTickFrequency();
-		}
-		else
-		{
-			std::cout<<"Unsupported algorithm";
-			return -1;
-		}
-
-		//! [filtering]
-		wls_filter->setLambda(lambda);
-		wls_filter->setSigmaColor(sigma);
-		filtering_time = (double)cv::getTickCount();
-		wls_filter->filter(left_disp,left,filtered_disp,right_disp);
-		filtering_time = ((double)cv::getTickCount() - filtering_time)/cv::getTickFrequency();
-		//! [filtering]
-		conf_map = wls_filter->getConfidenceMap();
-
-		// Get the ROI that was used in the last filter call:
-		ROI = wls_filter->getROI();
-		if(!no_downscale)
-		{
-			// upscale raw disparity and ROI back for a proper comparison:
-			resize(left_disp,left_disp,cv::Size(),2.0,2.0,cv::INTER_LINEAR_EXACT);
-			left_disp = left_disp*2.0;
-			ROI = cv::Rect(ROI.x*2,ROI.y*2,ROI.width*2,ROI.height*2);
-		}
-	}
-	else if(filter=="wls_no_conf")
-	{
-		/* There is no convenience function for the case of filtering with no confidence, so we
-		will need to set the ROI and matcher parameters manually */
-
-		left_for_matcher  = left.clone();
-		right_for_matcher = right.clone();
-
-		if(algo=="bm")
-		{
-			cv::Ptr<cv::StereoBM> matcher  = cv::StereoBM::create(max_disp,wsize);
-			matcher->setTextureThreshold(0);
-			matcher->setUniquenessRatio(0);
-			cvtColor(left_for_matcher,  left_for_matcher, cv::COLOR_BGR2GRAY);
-			cvtColor(right_for_matcher, right_for_matcher, cv::COLOR_BGR2GRAY);
-			ROI = computeROI(left_for_matcher.size(),matcher);
-			wls_filter = cv::ximgproc::createDisparityWLSFilterGeneric(false);
-			wls_filter->setDepthDiscontinuityRadius((int)ceil(0.33*wsize));
-
-			matching_time = (double)cv::getTickCount();
-			matcher->compute(left_for_matcher,right_for_matcher,left_disp);
-			matching_time = ((double)cv::getTickCount() - matching_time)/cv::getTickFrequency();
-		}
-		else if(algo=="sgbm")
-		{
-			cv::Ptr<cv::StereoSGBM> matcher  = cv::StereoSGBM::create(0,max_disp,wsize);
-			matcher->setUniquenessRatio(0);
-			matcher->setDisp12MaxDiff(1000000);
-			matcher->setSpeckleWindowSize(0);
-			matcher->setP1(24*wsize*wsize);
-			matcher->setP2(96*wsize*wsize);
-			matcher->setMode(cv::StereoSGBM::MODE_SGBM_3WAY);
-			ROI = computeROI(left_for_matcher.size(),matcher);
-			wls_filter = cv::ximgproc::createDisparityWLSFilterGeneric(false);
-			wls_filter->setDepthDiscontinuityRadius((int)ceil(0.5*wsize));
-
-			matching_time = (double)cv::getTickCount();
-			matcher->compute(left_for_matcher,right_for_matcher,left_disp);
-			matching_time = ((double)cv::getTickCount() - matching_time)/cv::getTickFrequency();
-		}
-		else
-		{
-			std::cout<<"Unsupported algorithm";
-			return -1;
-		}
-
-		wls_filter->setLambda(lambda);
-		wls_filter->setSigmaColor(sigma);
-		filtering_time = (double)cv::getTickCount();
-		wls_filter->filter(left_disp,left,filtered_disp,cv::Mat(),ROI);
-		filtering_time = ((double)cv::getTickCount() - filtering_time)/cv::getTickFrequency();
-	}
-	else
-	{
-		std::cout<<"Unsupported filter";
-		return -1;
-	}
-
-	//collect and print all the stats:
-	std::cout.precision(2);
-	std::cout<<"Matching time:  "<<matching_time<<"s"<<std::endl;
-	std::cout<<"Filtering time: "<<filtering_time<<"s"<<std::endl;
-	std::cout<<std::endl;
-
-	double MSE_before,percent_bad_before,MSE_after,percent_bad_after;
-	if(!noGT)
-	{
-		MSE_before = cv::ximgproc::computeMSE(GT_disp,left_disp,ROI);
-		percent_bad_before = cv::ximgproc::computeBadPixelPercent(GT_disp,left_disp,ROI);
-		MSE_after = cv::ximgproc::computeMSE(GT_disp,filtered_disp,ROI);
-		percent_bad_after = cv::ximgproc::computeBadPixelPercent(GT_disp,filtered_disp,ROI);
-
-		std::cout.precision(5);
-		std::cout<<"MSE before filtering: "<<MSE_before<<std::endl;
-		std::cout<<"MSE after filtering:  "<<MSE_after<<std::endl;
-		std::cout<<std::endl;
-		std::cout.precision(3);
-		std::cout<<"Percent of bad pixels before filtering: "<<percent_bad_before<<std::endl;
-		std::cout<<"Percent of bad pixels after filtering:  "<<percent_bad_after<<std::endl;
-	}
-
-	if(dst_path!="None")
-	{
-		cv::Mat filtered_disp_vis;
-		cv::ximgproc::getDisparityVis(filtered_disp,filtered_disp_vis,vis_mult);
-		SaveImage(filtered_disp_vis, dst_path);
-	}
-	if(dst_raw_path!="None")
-	{
-		cv::Mat raw_disp_vis;
-		cv::ximgproc::getDisparityVis(left_disp,raw_disp_vis,vis_mult);
-		SaveImage(raw_disp_vis, dst_raw_path);
-	}
-	if(dst_conf_path!="None")
-	{
-		SaveImage(conf_map, dst_conf_path);
-	}
-
-	if(!no_display)
-	{
-		cv::namedWindow("left", cv::WINDOW_AUTOSIZE);
-		cv::imshow("left", left);
-		cv::namedWindow("right", cv::WINDOW_AUTOSIZE);
-		cv::imshow("right", right);
-
-		if(!noGT)
-		{
-			cv::Mat GT_disp_vis;
-			cv::ximgproc::getDisparityVis(GT_disp,GT_disp_vis,vis_mult);
-			cv::namedWindow("ground-truth disparity", cv::WINDOW_AUTOSIZE);
-			cv::imshow("ground-truth disparity", GT_disp_vis);
-		}
-
-		//! [visualization]
-		cv::Mat raw_disp_vis;
-		cv::ximgproc::getDisparityVis(left_disp,raw_disp_vis,vis_mult);
-		cv::namedWindow("raw disparity", cv::WINDOW_AUTOSIZE);
-		cv::imshow("raw disparity", raw_disp_vis);
-		cv::Mat filtered_disp_vis;
-		cv::ximgproc::getDisparityVis(filtered_disp,filtered_disp_vis,vis_mult);
-		cv::namedWindow("filtered disparity", cv::WINDOW_AUTOSIZE);
-		cv::imshow("filtered disparity", filtered_disp_vis);
-		cv::waitKey();
-		//! [visualization]
-	}
-
-	return 0;
-}
-#endif
-/*----------------------------------------------------------------*/
 
 
-// apply a gradient like filter
-void PrefilterXSobel(const cv::Mat& src, cv::Mat& dst, int ftzero=31)
-{
-	const int OFS = 256 * 4, TABSZ = OFS * 2 + 256;
-	uint8_t tab[TABSZ];
-	for (int x = 0; x < TABSZ; x++)
-		tab[x] = (uint8_t)(x - OFS < -ftzero ? 0 : x - OFS > ftzero ? ftzero * 2 : x - OFS + ftzero);
-	uint8_t val0 = tab[0 + OFS];
-
-	#ifdef _USE_SSE
-	volatile bool useSIMD = cv::checkHardwareSupport(CV_CPU_SSE2);
-	#endif
-
-	ASSERT(src.type() == CV_8U);
-	const cv::Size size(src.size());
-	dst.create(size, src.type());
-	int y;
-	for (y = 0; y < size.height - 1; y += 2) {
-		const uint8_t* srow1 = src.ptr<uint8_t>(y);
-		const uint8_t* srow0 = y > 0 ? srow1 - src.step : size.height > 1 ? srow1 + src.step : srow1;
-		const uint8_t* srow2 = y < size.height - 1 ? srow1 + src.step : size.height > 1 ? srow1 - src.step : srow1;
-		const uint8_t* srow3 = y < size.height - 2 ? srow1 + src.step * 2 : srow1;
-		uint8_t* dptr0 = dst.ptr<uint8_t>(y);
-		uint8_t* dptr1 = dptr0 + dst.step;
-
-		dptr0[0] = dptr0[size.width - 1] = dptr1[0] = dptr1[size.width - 1] = val0;
-		int x = 1;
-
-		#ifdef _USE_SSE
-		if (useSIMD) {
-			__m128i z = _mm_setzero_si128(), ftz = _mm_set1_epi16((short)ftzero);
-			__m128i ftz2 = _mm_set1_epi8(cv::saturate_cast<uint8_t>(ftzero * 2));
-			for (; x <= size.width - 9; x += 8) {
-				__m128i c0 = _mm_unpacklo_epi8(_mm_loadl_epi64((__m128i*)(srow0 + x - 1)), z);
-				__m128i c1 = _mm_unpacklo_epi8(_mm_loadl_epi64((__m128i*)(srow1 + x - 1)), z);
-				__m128i d0 = _mm_unpacklo_epi8(_mm_loadl_epi64((__m128i*)(srow0 + x + 1)), z);
-				__m128i d1 = _mm_unpacklo_epi8(_mm_loadl_epi64((__m128i*)(srow1 + x + 1)), z);
-
-				d0 = _mm_sub_epi16(d0, c0);
-				d1 = _mm_sub_epi16(d1, c1);
-
-				__m128i c2 = _mm_unpacklo_epi8(_mm_loadl_epi64((__m128i*)(srow2 + x - 1)), z);
-				__m128i c3 = _mm_unpacklo_epi8(_mm_loadl_epi64((__m128i*)(srow3 + x - 1)), z);
-				__m128i d2 = _mm_unpacklo_epi8(_mm_loadl_epi64((__m128i*)(srow2 + x + 1)), z);
-				__m128i d3 = _mm_unpacklo_epi8(_mm_loadl_epi64((__m128i*)(srow3 + x + 1)), z);
-
-				d2 = _mm_sub_epi16(d2, c2);
-				d3 = _mm_sub_epi16(d3, c3);
-
-				__m128i v0 = _mm_add_epi16(d0, _mm_add_epi16(d2, _mm_add_epi16(d1, d1)));
-				__m128i v1 = _mm_add_epi16(d1, _mm_add_epi16(d3, _mm_add_epi16(d2, d2)));
-				v0 = _mm_packus_epi16(_mm_add_epi16(v0, ftz), _mm_add_epi16(v1, ftz));
-				v0 = _mm_min_epu8(v0, ftz2);
-
-				_mm_storel_epi64((__m128i*)(dptr0 + x), v0);
-				_mm_storel_epi64((__m128i*)(dptr1 + x), _mm_unpackhi_epi64(v0, v0));
-			}
-		}
-		#endif
-
-		for (; x < size.width - 1; x++) {
-			int d0 = srow0[x + 1] - srow0[x - 1], d1 = srow1[x + 1] - srow1[x - 1],
-				d2 = srow2[x + 1] - srow2[x - 1], d3 = srow3[x + 1] - srow3[x - 1];
-			int v0 = tab[d0 + d1 * 2 + d2 + OFS];
-			int v1 = tab[d1 + d2 * 2 + d3 + OFS];
-			dptr0[x] = (uint8_t)v0;
-			dptr1[x] = (uint8_t)v1;
-		}
-	}
-
-	for (; y < size.height; y++) {
-		uint8_t* dptr = dst.ptr<uint8_t>(y);
-		for (int x = 0; x < size.width; x++)
-			dptr[x] = val0;
-	}
-}
-/*----------------------------------------------------------------*/
 
 
 
@@ -502,8 +117,8 @@ public:
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-// - P1 and P2s are algorithm constants very similar to those from the original SGM algorithm;
-//   they are set to defaults according to the patch size
+// - P1 and P2s are the smoothness penalties of the original SGM algorithm, on the scale of the
+//   matching cost (0-255 per pixel and disparity)
 // - alpha & beta form the final P2 as P2*(1+alpha*e^(-DI^2/(2*beta^2)))
 //   where DI is the difference in image intensity I(x)-I(x_prev) in [0,255] range
 // - subpixelSteps represents how much sub-pixel accuracy is searched/stored;
@@ -536,6 +151,25 @@ CLISTDEF0IDX(SemiGlobalMatcher::AccumCost,int) SemiGlobalMatcher::GenerateP2s(Ac
 void SemiGlobalMatcher::Match(const Scene& scene, IIndex idxImage, IIndex numNeighbors, unsigned minResolution)
 {
 	const Image& leftImage = scene.images[idxImage];
+	// the points seen by the left image bound its depth range, and hence the disparities searched
+	// by the coarsest level, and locate the region each pair has in common
+	Depth dMin(FLT_MAX), dMax(0);
+	IndexArr points;
+	FOREACH(idxPoint, scene.pointcloud.points) {
+		if (scene.pointcloud.pointViews[idxPoint].FindFirst(idxImage) == PointCloud::ViewArr::NO_INDEX)
+			continue;
+		const Depth depth((Depth)leftImage.camera.PointDepth(scene.pointcloud.points[idxPoint]));
+		if (depth <= 0)
+			continue;
+		if (dMin > depth)
+			dMin = depth;
+		if (dMax < depth)
+			dMax = depth;
+		points.push_back((uint32_t)idxPoint);
+	}
+	if (dMin >= dMax)
+		return;
+	dMin *= 0.9f; dMax *= 1.1f;
 	const float fMinScore(MAXF(leftImage.neighbors.front().score*OPTDENSE::fViewMinScoreRatio, OPTDENSE::fViewMinScore));
 	FOREACH(idxNeighbor, leftImage.neighbors) {
 		const ViewScore& neighbor = leftImage.neighbors[idxNeighbor];
@@ -550,34 +184,22 @@ void SemiGlobalMatcher::Match(const Scene& scene, IIndex idxImage, IIndex numNei
 		if (File::isPresent((pairName+".dimap").c_str()) || File::isPresent(MAKE_PATH(String::FormatString("%04u_%04u.dimap", rightImage.ID, leftImage.ID))))
 			continue;
 		TD_TIMER_STARTD();
-		IndexArr points;
 		Matrix3x3 H; Matrix4x4 Q;
 		ViewData leftData, rightData;
 		MaskMap leftMaskMap, rightMaskMap; {
-		// fetch pairs of corresponding image points
-		//TODO: use precomputed points from SelectViews()
+		// stereo-rectify the image pair around the projections of the points it has in common
 		Point3fArr leftPoints, rightPoints;
-		FOREACH(idxPoint, scene.pointcloud.points) {
-			const PointCloud::ViewArr& views = scene.pointcloud.pointViews[idxPoint];
-			if (views.FindFirst(idxImage) != PointCloud::ViewArr::NO_INDEX) {
-				points.push_back((uint32_t)idxPoint);
-				if (views.FindFirst(neighbor.ID) != PointCloud::ViewArr::NO_INDEX) {
-					const Point3 X(scene.pointcloud.points[idxPoint]);
-					leftPoints.emplace_back(leftImage.camera.TransformPointW2I3(X));
-					rightPoints.emplace_back(rightImage.camera.TransformPointW2I3(X));
-				}
-			}
+		for (uint32_t idxPoint: points) {
+			if (scene.pointcloud.pointViews[idxPoint].FindFirst(neighbor.ID) == PointCloud::ViewArr::NO_INDEX)
+				continue;
+			const Point3 X(scene.pointcloud.points[idxPoint]);
+			leftPoints.emplace_back(leftImage.camera.TransformPointW2I3(X));
+			rightPoints.emplace_back(rightImage.camera.TransformPointW2I3(X));
 		}
-		// stereo-rectify image pair
-		if (!Image::StereoRectifyImages(leftImage, rightImage, leftPoints, rightPoints, leftData.imageColor, rightData.imageColor, leftMaskMap, rightMaskMap, H, Q))
+		if (leftPoints.empty() || !Image::StereoRectifyImages(leftImage, rightImage, leftPoints, rightPoints, leftData.imageColor, rightData.imageColor, leftMaskMap, rightMaskMap, H, Q))
 			continue;
 		ASSERT(leftData.imageColor.size() == rightData.imageColor.size());
 		}
-		#ifdef _USE_FILTER_DEMO
-		// run openCV implementation
-		const LPCSTR argv[] = {"disparityFiltering", "-algorithm=sgbm", "-max_disparity=160", "-no-downscale"};
-		disparityFiltering(leftData.imageColor, rightData.imageColor, (int)SizeOfArray(argv), argv);
-		#endif
 		// color to gray conversion
 		#if SGM_SIMILARITY == SGM_SIMILARITY_CENSUS
 		leftData.imageColor.toGray(leftData.imageGray, cv::COLOR_BGR2GRAY, false, true);
@@ -593,153 +215,77 @@ void SemiGlobalMatcher::Match(const Scene& scene, IIndex idxImage, IIndex numNei
 			Image8U::computeMaxResolution(leftData.imageGray.width(), leftData.imageGray.height(), resolutionLevel, minResolution);
 			scale = REAL(1)/MAXF(2,POWI(2,resolutionLevel));
 		}
-		const bool tSGM(!ISEQUAL(scale, REAL(1)));
+		// match the pair coarse to fine: the coarsest level searches every disparity the depth range
+		// of the left image spans, the finer ones only around the disparities of the previous level
 		DisparityMap leftDisparityMap, rightDisparityMap; AccumCostMap costMap;
+		bool bValidMatch(true);
 		do {
-			#if 0
-			// export the intermediate disparity-maps
-			if (!leftDisparityMap.empty()) {
-				const REAL _scale(scale*0.5);
-				Matrix3x3 _H(H); Matrix4x4 _Q(Q);
-				Image::ScaleStereoRectification(_H, _Q, _scale);
-				ExportDisparityDataRawFull(String::FormatString("%s_%d.dimap", pairName.c_str(), LOG2I(ROUND2INT<unsigned>(REAL(1)/_scale))), leftDisparityMap, costMap, Image8U::computeResize(leftImage.GetSize(), _scale), H, _Q, 1);
-			}
-			#endif
 			// initialize
 			const ViewData leftDataLevel(leftData.GetImage(scale));
 			const ViewData rightDataLevel(rightData.GetImage(scale));
 			const cv::Size size(leftDataLevel.imageGray.size());
 			const cv::Size sizeValid(size.width-2*halfWindowSizeX, size.height-2*halfWindowSizeY);
 			const bool bFirstLevel(leftDisparityMap.empty());
+			Range range;
+			Index numCosts;
 			if (bFirstLevel) {
-				// initialize the disparity-map with a rough estimate based on the sparse point-cloud
-				//TODO: remove DepthData::ViewData dependency
-				Image leftImageLevel(leftImage.GetImage(scene.platforms, scale*0.5, false));
-				DepthData::ViewData image;
-				image.pImageData = &leftImageLevel; // used only for avgDepth
-				image.image.create(leftImageLevel.GetSize());
-				image.camera = leftImageLevel.camera;
-				DepthMap depthMap;
-				Depth dMin, dMax;
-				TriangulatePoints2DepthMap(image.camera, image.image.size(), scene.pointcloud, points, depthMap,
-					dMin, dMax, image.pImageData->avgDepth);
-				points.Release();
-				Matrix3x3 H2(H); Matrix4x4 Q2(Q);
-				Image::ScaleStereoRectification(H2, Q2, scale*0.5);
-				const cv::Size sizeHalf(Image8U::computeResize(size, 0.5));
-				const cv::Size sizeValidHalf(sizeHalf.width-2*halfWindowSizeX, sizeHalf.height-2*halfWindowSizeY);
-				leftDisparityMap.create(sizeValidHalf);
-				Depth2DisparityMap(depthMap, H2.inv(), Q2.inv(), 1, leftDisparityMap);
 				// resize masks
 				cv::resize(leftMaskMap, leftMaskMap, size, 0, 0, cv::INTER_NEAREST);
 				cv::resize(rightMaskMap, rightMaskMap, size, 0, 0, cv::INTER_NEAREST);
 				const cv::Rect ROI(halfWindowSizeX,halfWindowSizeY, sizeValid.width,sizeValid.height);
 				leftMaskMap(ROI).copyTo(leftMaskMap);
 				rightMaskMap(ROI).copyTo(rightMaskMap);
+				range = DepthRange2Disparity(H, Q, scale, leftMaskMap, dMin, dMax);
+				numCosts = range.isValid() ? Range2RangeMap(rightMaskMap, Range{(Disparity)-range.maxDisp, (Disparity)-range.minDisp}) : 0;
 			} else {
-				// upscale masks
+				// upscale the masks and the disparity-map from the previous level
 				UpscaleMask(leftMaskMap, sizeValid);
 				UpscaleMask(rightMaskMap, sizeValid);
+				FlipDirection(leftDisparityMap, rightDisparityMap);
+				numCosts = Disparity2RangeMap(rightDisparityMap, rightMaskMap);
 			}
 			// estimate right-left disparity-map
-			Index numCosts;
-			if (tSGM) {
-				// upscale the disparity-map from the previous level
-				FlipDirection(leftDisparityMap, rightDisparityMap);
-				numCosts = Disparity2RangeMap(rightDisparityMap, rightMaskMap, bFirstLevel?11:5, bFirstLevel?33:7);
-			} else {
-				// extract global min and max disparities
-				Range range{std::numeric_limits<Disparity>::max(), std::numeric_limits<Disparity>::min()};
-				ASSERT(leftDisparityMap.isContinuous());
-				const Disparity* pd = leftDisparityMap.ptr<const Disparity>();
-				const Disparity* const pde = pd+leftDisparityMap.area();
-				do {
-					const Disparity d(*pd);
-					if (range.minDisp > d)
-						range.minDisp = d;
-					if (range.maxDisp < d)
-						range.maxDisp = d;
-				} while (++pd < pde);
-				// set disparity search range to the global min/max range
-				const Disparity numDisp(range.numDisp()+16);
-				const Disparity disp(range.minDisp+range.maxDisp);
-				range.minDisp = disp-numDisp;
-				range.maxDisp = disp+numDisp;
-				maxNumDisp = range.numDisp();
-				numCosts = 0;
-				imagePixels.resize(sizeValid.area());
-				for (PixelData& pixel: imagePixels) {
-					pixel.range = range;
-					pixel.idx = numCosts;
-					numCosts += maxNumDisp;
-				}
+			if (numCosts == 0) {
+				bValidMatch = false;
+				break;
 			}
 			imageCosts.resize(numCosts);
 			imageAccumCosts.resize(numCosts);
 			Match(rightDataLevel, leftDataLevel, rightDisparityMap, costMap);
 			// estimate left-right disparity-map
-			if (tSGM) {
-				numCosts = Disparity2RangeMap(leftDisparityMap, leftMaskMap, bFirstLevel?11:5, bFirstLevel?33:7);
-				imageCosts.resize(numCosts);
-				imageAccumCosts.resize(numCosts);
-			} else {
-				for (PixelData& pixel: imagePixels) {
-					const Disparity maxDisp(-pixel.range.minDisp);
-					pixel.range.minDisp = -pixel.range.maxDisp;
-					pixel.range.maxDisp = maxDisp;
-				}
+			numCosts = bFirstLevel ? Range2RangeMap(leftMaskMap, range) : Disparity2RangeMap(leftDisparityMap, leftMaskMap);
+			if (numCosts == 0) {
+				bValidMatch = false;
+				break;
 			}
+			imageCosts.resize(numCosts);
+			imageAccumCosts.resize(numCosts);
 			Match(leftDataLevel, rightDataLevel, leftDisparityMap, costMap);
 			// check disparity-map cross-consistency
-			#if 0
-			if (ISEQUAL(scale, REAL(1))) {
-				cv::Ptr<cv::ximgproc::DisparityWLSFilter> filter = cv::ximgproc::createDisparityWLSFilterGeneric(true);
-				const cv::Rect rcValid(halfWindowSizeX,halfWindowSizeY, sizeValid.width,sizeValid.height);
-				Image32F leftDisparityMap32F, rightDisparityMap32F, filtered32F;
-				leftDisparityMap.convertTo(leftDisparityMap32F, CV_32F, 16);
-				rightDisparityMap.convertTo(rightDisparityMap32F, CV_32F, 16);
-				filter->filter(leftDisparityMap32F, leftData.imageColor(rcValid), filtered32F, rightDisparityMap32F);
-				filtered32F.convertTo(leftDisparityMap, CV_16S, 1.0/16, 0.5);
-			} else
-			#endif
+			ConsistencyCrossCheck(leftDisparityMap, rightDisparityMap);
 			if (bFirstLevel) {
-				// perform a rigorous filtering of the estimated disparity maps in order to
-				// estimate the common region or interest and set the validity masks
-				ConsistencyCrossCheck(leftDisparityMap, rightDisparityMap);
+				// filter the coarsest disparity-maps rigorously, as they set the validity masks of the next levels
 				ConsistencyCrossCheck(rightDisparityMap, leftDisparityMap);
 				cv::filterSpeckles(leftDisparityMap, NO_DISP, OPTDENSE::nSpeckleSize, 5);
 				cv::filterSpeckles(rightDisparityMap, NO_DISP, OPTDENSE::nSpeckleSize, 5);
 				ExtractMask(leftDisparityMap, leftMaskMap);
 				ExtractMask(rightDisparityMap, rightMaskMap);
-			} else {
-				// simply run a left-right consistency check
-				ConsistencyCrossCheck(leftDisparityMap, rightDisparityMap);
 			}
 		} while ((scale*=2) < REAL(1)+ZEROTOLERANCE<REAL>());
-		#if 0
-		// remove speckles
-		if (OPTDENSE::nSpeckleSize > 0)
-			cv::filterSpeckles(leftDisparityMap, NO_DISP, OPTDENSE::nSpeckleSize, 5);
-		#endif
+		if (!bValidMatch)
+			continue;
 		// sub-pixel disparity-map estimation
 		RefineDisparityMap(leftDisparityMap);
-		#if 1
 		// export disparity-map for the left image
 		DEBUG_EXTRA("Disparity-map for images %3u and %3u: %dx%d (%s)", leftImage.ID, rightImage.ID,
 			leftImage.width, leftImage.height, TD_TIMER_GET_FMT().c_str());
-		ExportPointCloud(pairName+".ply", leftImage, leftDisparityMap, Q, subpixelSteps);
-		ExportDisparityMap(pairName+".png", leftDisparityMap);
-		ExportDisparityDataRawFull(pairName+".dimap", leftDisparityMap, costMap, leftImage.GetSize(), H, Q, subpixelSteps);
-		#else
-		// convert disparity-map to final depth-map for the left image
-		DepthMap depthMap(leftImage.image.size()); ConfidenceMap confMap;
-		Disparity2DepthMap(leftDisparityMap, costMap, H, Q, subpixelSteps, depthMap, confMap);
-		DEBUG_EXTRA("Depth-map for images %3u and %3u: %dx%d (%s)", leftImage.ID, rightImage.ID,
-			depthMap.width(), depthMap.height(), TD_TIMER_GET_FMT().c_str());
-		ExportDepthMap(pairName+".png", depthMap);
-		MVS::ExportPointCloud(pairName+".ply", leftImage, depthMap, NormalMap());
-		ExportDepthDataRaw(pairName+".dmap", leftImage.name, IIndexArr{leftImage.ID,rightImage.ID}, leftImage.GetSize(), leftImage.camera.K, leftImage.camera.R, leftImage.camera.C, 0, FLT_MAX, depthMap, NormalMap(), confMap);
+		#if TD_VERBOSE != TD_VERBOSE_OFF
+		if (VERBOSITY_LEVEL > 2) {
+			ExportPointCloud(pairName+".ply", leftImage, leftDisparityMap, Q, subpixelSteps);
+			ExportDisparityMap(pairName+".png", leftDisparityMap);
+		}
 		#endif
+		ExportDisparityDataRawFull(pairName+".dimap", leftDisparityMap, costMap, leftImage.GetSize(), H, Q, subpixelSteps);
 	}
 }
 
@@ -809,22 +355,25 @@ void SemiGlobalMatcher::Fuse(const Scene& scene, IIndex idxImage, IIndex numNeig
 	// fuse available depth-maps such that for each pixel set its depth as the average of the largest cluster of agreeing depths;
 	// pixel depths values agree if their trust regions overlap
 	depthMap.create(leftImage.image.size()); confMap.create(depthMap.size());
-	for (int r=0; r<depthMap.rows; ++r) {
+	auto row = [&](int r) {
+		struct Cluster {
+			IIndexArr views;
+			DepthRange range;
+		};
+		CLISTDEFIDX(Cluster,IIndex) clusters(0, pairs.size());
 		for (int c=0; c<depthMap.cols; ++c) {
-			struct Cluster {
-				IIndexArr views;
-				DepthRange range;
-			};
-			CLISTDEFIDX(Cluster,IIndex) clusters(0, pairs.size());
+			Depth& depth = depthMap(r,c); depth = 0;
+			float& conf = confMap(r,c); conf = 0;
+			clusters.Empty();
 			FOREACH(p, pairs) {
 				const PairData& pair = pairs[p];
-				const Depth depth(pair.depthMap(r,c));
-				if (depth <= 0)
+				const Depth pairDepth(pair.depthMap(r,c));
+				if (pairDepth <= 0)
 					continue;
 				const DepthRange& range(pair.depthRangeMap(r,c));
 				unsigned numClusters(0);
 				for (Cluster& cluster: clusters) {
-					if (!ISINSIDE(depth, cluster.range.x, cluster.range.y))
+					if (!ISINSIDE(pairDepth, cluster.range.x, cluster.range.y))
 						continue;
 					cluster.views.push_back(p);
 					if (cluster.range.x < range.x)
@@ -836,30 +385,29 @@ void SemiGlobalMatcher::Fuse(const Scene& scene, IIndex idxImage, IIndex numNeig
 				if (numClusters == 0)
 					clusters.emplace_back(Cluster{IIndexArr{p}, range});
 			}
-			if (clusters.empty()) {
-				depthMap(r,c) = Depth(0);
-				confMap(r,c) = float(0);
+			if (clusters.empty())
 				continue;
-			}
 			const Cluster& cluster = clusters.GetMax([](const Cluster& i, const Cluster& j) { return i.views.size() < j.views.size(); });
-			if (cluster.views.size() < minViews) {
-				depthMap(r,c) = Depth(0);
-				confMap(r,c) = float(0);
+			if (cluster.views.size() < minViews)
 				continue;
-			}
-			Depth& depth = depthMap(r,c); depth = 0;
-			float& conf = confMap(r,c); conf = 0;
-			unsigned numDepths(0);
 			for (IIndex p: cluster.views) {
 				const PairData& pair = pairs[p];
 				depth += pair.depthMap(r,c);
 				conf += pair.confMap(r,c);
-				++numDepths;
 			}
-			depth /= numDepths;
-			conf /= numDepths;
+			depth /= cluster.views.size();
+			conf /= cluster.views.size();
 		}
-	}
+	};
+	ASSERT(threads.IsEmpty());
+	if (!threads.empty()) {
+		volatile Thread::safe_t idxPixel(-1);
+		FOREACH(i, threads)
+			threads.AddEvent(new EVTPixelAccumInc(depthMap.rows, idxPixel, row));
+		WaitThreadWorkers(threads.size());
+	} else
+	for (int r=0; r<depthMap.rows; ++r)
+		row(r);
 	DEBUG_EXTRA("Depth-map for image %3u fused: %dx%d (%s)", leftImage.ID,
 		depthMap.width(), depthMap.height(), TD_TIMER_GET_FMT().c_str());
 	#if TD_VERBOSE != TD_VERBOSE_OFF
@@ -880,15 +428,9 @@ void SemiGlobalMatcher::Match(const ViewData& leftImage, const ViewData& rightIm
 	const cv::Size sizeValid(size.width-2*halfWindowSizeX, size.height-2*halfWindowSizeY);
 	ASSERT(leftImage.imageColor.size() == size);
 
-	#if 0 && !defined(_RELEASE)
-	// display search info (average disparity and range)
-	DisplayState(sizeValid);
-	#endif
-
 	// compute costs
 	{
 	ASSERT(!imageCosts.empty());
-	const float eps(1e-3f); // used suppress the effect of noise in untextured regions
 	auto pixel = [&](int idx, int r, int c) {
 		// ignore pixel if not valid
 		const PixelData& pixel = imagePixels[idx];
@@ -960,29 +502,32 @@ void SemiGlobalMatcher::Match(const ViewData& leftImage, const ViewData& rightIm
 		} while (++n < numTexels);
 		// compute pixel cost
 		Cost* costs = imageCosts.data()+pixel.idx;
+		const int width(rightImage.imageGray.width());
 		for (int d=pixel.range.minDisp; d<pixel.range.maxDisp; ++d) {
+			// the patch rows are always inside the image, only its columns can fall outside
+			const int x0(u.x+d-halfWindowSizeX);
+			if (x0 < 0 || x0+windowSizeX > width) {
+				*costs++ = 255;
+				continue;
+			}
 			float sum(0), sumSq(0), nom(0);
-			for (int i=-halfWindowSizeY, n=0; i<=halfWindowSizeY; ++i) {
-				for (int j=-halfWindowSizeX; j<=halfWindowSizeX; ++j) {
-					const ImageRef x(u.x+j+d,u.y+i);
-					if (!rightImage.imageGray.isInside(x)) {
-						*costs++ = 255;
-						goto NEXT_COST;
-					}
-					const float f(rightImage.imageGray(x));
-					const WeightedPatch::Pixel& pw = w.weights[n++];
-					const float fw(f*pw.weight);
+			const WeightedPatch::Pixel* pw = w.weights;
+			for (int i=-halfWindowSizeY; i<=halfWindowSizeY; ++i) {
+				const ImageGray::Type* row = rightImage.imageGray.ptr<const ImageGray::Type>(u.y+i, x0);
+				for (int j=0; j<windowSizeX; ++j, ++pw) {
+					const float f(row[j]);
+					const float fw(f*pw->weight);
 					sum += fw;
 					sumSq += f*fw;
-					nom += f*pw.tempWeight;
+					nom += f*pw->tempWeight;
 				}
 			}
-			{
+			// the intensities are normalized to [0,1], so a texture-less patch has a variance
+			// far below any regularization that leaves the textured ones untouched
 			const float normSq1(sumSq-SQUARE(sum)/w.sumWeights);
-			const float ncc(nom/SQRT(w.normSq0*normSq1+eps));
+			const float nrmSq(w.normSq0*normSq1);
+			const float ncc(nrmSq <= 1e-16f ? 0.f : nom/SQRT(nrmSq));
 			*costs++ = (ncc <= 0 ? Cost(255) : (Cost)ROUND2INT((1.f-MINF(ncc,1.f))*255.f));
-			}
-			NEXT_COST:;
 		}
 		#endif
 	};
@@ -1033,28 +578,27 @@ void SemiGlobalMatcher::Match(const ViewData& leftImage, const ViewData& rightIm
 			for (int idxDisp=0; idxDisp<numDisp; ++idxDisp)
 				accums[idxDisp] += (Ls[idxDisp] = costs[idxDisp]+P2);
 		} else {
-			// accumulate cost as L(d)=C(d)+min(Lp(d)+V(d,dp))-min(Lp)
+			// accumulate cost as L(d)=C(d)+min(Lp(dp)+V(d,dp))-min(Lp)
 			// where V(d,dp) is:
 			//  0  if d=dp
 			//  P1 if |d-dp|=1
 			//  P2 if |d-dp|>1
+			// as P2>=P1, the P2 term is min(Lp)+P2 over all dp, so each L(d) is computed in constant time
+			ASSERT(P2 >= P1);
 			AccumCost minLp(std::numeric_limits<AccumCost>::max());
 			for (const AccumCost *L=Lp.L+(minDisp-Lp.R.minDisp), *endL=L+(maxDisp-minDisp); L<endL; ++L)
 				Compute::MINS(minLp, *L);
+			const AccumCost minLpP2(minLp+P2);
 			for (Disparity d=Ls.R.minDisp; d<Ls.R.maxDisp; ++d) {
 				const int idxDisp(d-Ls.R.minDisp);
-				AccumCost& L = Ls[idxDisp];
-				L = std::numeric_limits<AccumCost>::max();
-				for (Disparity dp=minDisp; dp<maxDisp; ++dp) {
-					const int idxDispp(dp-Lp.R.minDisp);
-					if (dp == d)
-						Compute::MINS(L, Lp[idxDispp]);
-					else if (dp == d-1 || dp == d+1)
-						Compute::MINS(L, Lp[idxDispp]+P1);
-					else
-						Compute::MINS(L, Lp[idxDispp]+P2);
-				}
-				accums[idxDisp] += (L = costs[idxDisp]+L-minLp);
+				AccumCost L(minLpP2);
+				if (d >= minDisp && d < maxDisp)
+					Compute::MINS(L, Lp[d-Lp.R.minDisp]);
+				if (d > minDisp && d <= maxDisp)
+					Compute::MINS(L, Lp[d-1-Lp.R.minDisp]+P1);
+				if (d+1 >= minDisp && d+1 < maxDisp)
+					Compute::MINS(L, Lp[d+1-Lp.R.minDisp]+P1);
+				accums[idxDisp] += (Ls[idxDisp] = costs[idxDisp]+L-minLp);
 			}
 		}
 	};
@@ -1135,23 +679,26 @@ void SemiGlobalMatcher::Match(const ViewData& leftImage, const ViewData& rightIm
 		WaitThreadWorkers(threads.size());
 		}
 		if (numDirs == 4) {
+		// each pair of diagonal sweeps runs concurrently and is waited for as one, after
+		// both blocks queuing it have closed, so the pixel counters must outlive them
+		volatile Thread::safe_t idxPixels[2];
 		{ // width-right-down
 		auto pixels = [&](int x) {
 			ImageRef u(x,0);
 			ACCUM_PIXELS(++u.x < sizeValid.width && ++u.y < sizeValid.height);
 		};
-		volatile Thread::safe_t idxPixel(-1);
+		idxPixels[0] = -1;
 		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumInc(sizeValid.width, idxPixel, pixels));
+			threads.AddEvent(new EVTPixelAccumInc(sizeValid.width, idxPixels[0], pixels));
 		}
 		{ // height-right-down
 		auto pixels = [&](int y) {
 			ImageRef u(0,y);
 			ACCUM_PIXELS(++u.x < sizeValid.width && ++u.y < sizeValid.height);
 		};
-		volatile Thread::safe_t idxPixel(0);
+		idxPixels[1] = 0;
 		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumInc(sizeValid.height, idxPixel, pixels));
+			threads.AddEvent(new EVTPixelAccumInc(sizeValid.height, idxPixels[1], pixels));
 		}
 		WaitThreadWorkers(threads.size()*2);
 		{ // width-left-down
@@ -1159,18 +706,18 @@ void SemiGlobalMatcher::Match(const ViewData& leftImage, const ViewData& rightIm
 			ImageRef u(x,0);
 			ACCUM_PIXELS(--u.x >= 0  && ++u.y < sizeValid.height);
 		};
-		volatile Thread::safe_t idxPixel(-1);
+		idxPixels[0] = -1;
 		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumInc(sizeValid.width-1, idxPixel, pixels));
+			threads.AddEvent(new EVTPixelAccumInc(sizeValid.width-1, idxPixels[0], pixels));
 		}
 		{ // height-left-down
 		auto pixels = [&](int y) {
 			ImageRef u(sizeValid.width-1,y);
 			ACCUM_PIXELS(--u.x >= 0 && ++u.y < sizeValid.height);
 		};
-		volatile Thread::safe_t idxPixel(-1);
+		idxPixels[1] = -1;
 		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumInc(sizeValid.height, idxPixel, pixels));
+			threads.AddEvent(new EVTPixelAccumInc(sizeValid.height, idxPixels[1], pixels));
 		}
 		WaitThreadWorkers(threads.size()*2);
 		{ // width-right-up
@@ -1178,18 +725,18 @@ void SemiGlobalMatcher::Match(const ViewData& leftImage, const ViewData& rightIm
 			ImageRef u(x,sizeValid.height-1);
 			ACCUM_PIXELS(++u.x < sizeValid.width && --u.y >= 0);
 		};
-		volatile Thread::safe_t idxPixel(0);
+		idxPixels[0] = 0;
 		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumInc(sizeValid.width, idxPixel, pixels));
+			threads.AddEvent(new EVTPixelAccumInc(sizeValid.width, idxPixels[0], pixels));
 		}
 		{ // height-right-up
 		auto pixels = [&](int y) {
 			ImageRef u(0,y);
 			ACCUM_PIXELS(++u.x < sizeValid.width && --u.y >= 0);
 		};
-		volatile Thread::safe_t idxPixel(sizeValid.height);
+		idxPixels[1] = sizeValid.height;
 		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumDec(idxPixel, pixels));
+			threads.AddEvent(new EVTPixelAccumDec(idxPixels[1], pixels));
 		}
 		WaitThreadWorkers(threads.size()*2);
 		{ // width-left-up
@@ -1197,18 +744,18 @@ void SemiGlobalMatcher::Match(const ViewData& leftImage, const ViewData& rightIm
 			ImageRef u(x,sizeValid.height-1);
 			ACCUM_PIXELS(--u.x >= 0 && --u.y >= 0);
 		};
-		volatile Thread::safe_t idxPixel(sizeValid.width);
+		idxPixels[0] = sizeValid.width;
 		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumDec(idxPixel, pixels));
+			threads.AddEvent(new EVTPixelAccumDec(idxPixels[0], pixels));
 		}
 		{ // height-left-up
 		auto pixels = [&](int y) {
 			ImageRef u(sizeValid.width-1,y);
 			ACCUM_PIXELS(--u.x >= 0 && --u.y >= 0);
 		};
-		volatile Thread::safe_t idxPixel(sizeValid.height-1);
+		idxPixels[1] = sizeValid.height-1;
 		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumDec(idxPixel, pixels));
+			threads.AddEvent(new EVTPixelAccumDec(idxPixels[1], pixels));
 		}
 		WaitThreadWorkers(threads.size()*2);
 		}
@@ -1324,13 +871,7 @@ void SemiGlobalMatcher::CensusTransform(const Image8U& imageGray, CensusMap& ima
 	const cv::Size sizeValid(size.width-2*halfWindowSizeX, size.height-2*halfWindowSizeY);
 	imageCensus.create(sizeValid);
 
-	#if 0
-	// pre-process input image to easy CENSUS task
-	ImageGray image;
-	PrefilterXSobel(imageGray, image);
-	#else
 	const Image8U& image = imageGray;
-	#endif
 
 	auto pixel = [&](int, int r, int c) {
 		const ImageRef u(c+halfWindowSizeX, r+halfWindowSizeY);
@@ -1358,100 +899,151 @@ void SemiGlobalMatcher::CensusTransform(const Image8U& imageGray, CensusMap& ima
 }
 #endif
 
-// Compute search range from the given disparity-map and setup pixel-map at twice the scale;
-// the validity mask-map is considered as well and upscaled in the same time;
+// Compute the left-to-right disparity range spanned by the depth range [dMin,dMax] of the left image
+// over the valid pixels of the rectified pair scaled by the given factor
+SemiGlobalMatcher::Range SemiGlobalMatcher::DepthRange2Disparity(const Matrix3x3& H, const Matrix4x4& Q, REAL scale, const MaskMap& maskMap, Depth dMin, Depth dMax)
+{
+	Matrix3x3 Hs(H); Matrix4x4 Qs(Q);
+	Image::ScaleStereoRectification(Hs, Qs, scale);
+	const Matrix3x3 invH(Hs.inv());
+	const Matrix4x4 invQ(Qs.inv());
+	float minDisp(FLT_MAX), maxDisp(-FLT_MAX);
+	const int step(4);
+	for (int r=0; r<maskMap.rows; r+=step) {
+		for (int c=0; c<maskMap.cols; c+=step) {
+			if (maskMap(r,c) == INVALID)
+				continue;
+			const ImageRef x(c+halfWindowSizeX,r+halfWindowSizeY); Point2f u;
+			ProjectVertex_3x3_2_2(invH.val, x.ptr(), u.ptr());
+			for (const Depth depth: {dMin, dMax}) {
+				float disparity;
+				if (!Image::Depth2Disparity(invQ, u, depth, disparity))
+					continue;
+				if (minDisp > disparity)
+					minDisp = disparity;
+				if (maxDisp < disparity)
+					maxDisp = disparity;
+			}
+		}
+	}
+	if (minDisp > maxDisp)
+		return Range{NO_DISP, NO_DISP};
+	// a margin covers the pixels between the samples; no match can shift a pixel by more than the image width
+	const int width(maskMap.width());
+	return Range{
+		(Disparity)MAXF(FLOOR2INT(minDisp)-step, -width),
+		(Disparity)MINF(CEIL2INT(maxDisp)+step+1, width)
+	};
+}
+
+// Setup pixel-map searching the same disparity range for all pixels valid in the mask-map;
 // return the total size of the disparities searched
-SemiGlobalMatcher::Index SemiGlobalMatcher::Disparity2RangeMap(const DisparityMap& disparityMap, const MaskMap& maskMap, Disparity minNumDisp, Disparity minNumDispInvalid)
+SemiGlobalMatcher::Index SemiGlobalMatcher::Range2RangeMap(const MaskMap& maskMap, const Range& range)
+{
+	ASSERT(range.isValid() && maskMap.isContinuous());
+	const int width(maskMap.width());
+	imagePixels.resize(maskMap.area());
+	maxNumDisp = 0;
+	Index numCosts(0);
+	for (int r=0, idx=0; r<maskMap.rows; ++r) {
+		for (int c=0; c<width; ++c, ++idx) {
+			PixelData& pixel = imagePixels[idx];
+			pixel.idx = numCosts;
+			// only the disparities keeping the matched patch inside the other image are searched
+			pixel.range = Range{MAXF(range.minDisp, (Disparity)-c), MINF(range.maxDisp, (Disparity)(width-c))};
+			if (maskMap(idx) == INVALID || !pixel.range.isValid()) {
+				pixel.range = Range{NO_DISP,NO_DISP};
+				continue;
+			}
+			const Disparity numDisp(pixel.range.numDisp());
+			numCosts += numDisp;
+			if (maxNumDisp < numDisp)
+				maxNumDisp = numDisp;
+		}
+	}
+	return numCosts;
+}
+
+// Setup the pixel-map at twice the scale of the given disparity-map, each pixel searching around
+// the disparities estimated at the previous level in its neighborhood (7x7 if its own disparity is
+// valid, 41x41 otherwise), and none where the (already upscaled) mask-map is invalid;
+// return the total size of the disparities searched
+SemiGlobalMatcher::Index SemiGlobalMatcher::Disparity2RangeMap(const DisparityMap& disparityMap, const MaskMap& maskMap)
 {
 	ASSERT(!disparityMap.empty() && disparityMap.width()<maskMap.width() && disparityMap.height()<maskMap.height());
 	const cv::Size size2x(maskMap.size());
+
+	// compute the search range of each pixel of the previous level
+	const Disparity minNumDisp(5);
+	CLISTDEF0IDX(Range,int) rangeMap(disparityMap.area());
+	auto row = [&](int r) {
+		CLISTDEF0IDX(Disparity,Disparity) disps(0, 41*41);
+		const Mask* pm(maskMap.ptr<const Mask>(r*2+halfWindowSizeY, halfWindowSizeX));
+		Range* ranges(rangeMap.data()+r*disparityMap.cols);
+		for (int c=0; c<disparityMap.cols; ++c, pm+=2) {
+			Range& range = ranges[c];
+			if (*pm == INVALID) {
+				range = Range{NO_DISP,NO_DISP};
+				continue;
+			}
+			const bool bInvalid(disparityMap(r,c) == NO_DISP);
+			const int hw(bInvalid ? 20 : 3);
+			disps.Empty();
+			for (int i=MAXF(r-hw,0), ie=MINF(r+hw,disparityMap.rows-1); i<=ie; ++i) {
+				for (int j=MAXF(c-hw,0), je=MINF(c+hw,disparityMap.cols-1); j<=je; ++j) {
+					const Disparity d(disparityMap(i,j));
+					if (d != NO_DISP)
+						disps.push_back(d);
+				}
+			}
+			if (disps.size() < 3) {
+				// nothing known around this pixel
+				range = Range{NO_DISP,NO_DISP};
+				continue;
+			}
+			const Disparity disp(disps.GetMedian<Disparity>()*2);
+			const auto minmax(disps.GetMinMax());
+			Disparity numDisp((minmax.second-minmax.first)*2);
+			const Disparity capNumDisp(bInvalid ? 64 : 32);
+			if (numDisp > capNumDisp) {
+				// too wide, keep the part of the range around the median
+				range.minDisp = disp-(capNumDisp*(disp-minmax.first*2)+1)/numDisp;
+				range.maxDisp = disp+(capNumDisp*(minmax.second*2+1-disp)+1)/numDisp;
+			} else {
+				if (numDisp < minNumDisp)
+					numDisp = minNumDisp;
+				range.minDisp = disp-numDisp/2;
+				range.maxDisp = disp+(numDisp+1)/2;
+			}
+		}
+	};
+	ASSERT(threads.IsEmpty());
+	if (!threads.empty()) {
+		volatile Thread::safe_t idxPixel(-1);
+		FOREACH(i, threads)
+			threads.AddEvent(new EVTPixelAccumInc(disparityMap.rows, idxPixel, row));
+		WaitThreadWorkers(threads.size());
+	} else
+	for (int r=0; r<disparityMap.rows; ++r)
+		row(r);
+
+	// setup the pixel-map at twice the scale: pixel (r,c) of the previous level covers the 2x2 block
+	// at (2r+halfWindowSizeY,2c+halfWindowSizeX), the border pixels copy the closest block
 	imagePixels.resize(size2x.area());
 	Index numCosts(0);
 	maxNumDisp = 0;
-	CLISTDEF0IDX(Disparity,Disparity) disps(31*31);
-	for (int r=0; r<disparityMap.rows; ++r) {
-		const int r2(r == 0 ? 0 : r*2+halfWindowSizeY);
-		ASSERT(r2 < size2x.height);
-		const int offset(r2*size2x.width);
-		int c2e(halfWindowSizeX);
-		const Mask* pm(maskMap.ptr<const Mask>(r*2+halfWindowSizeY, halfWindowSizeX));
-		for (int c=0, c2=0; c<disparityMap.cols; ++c, pm+=2) {
-			Disparity numDisp; Range range;
-			if (*pm == INVALID) {
-				// set empty range
-				range = Range{NO_DISP,NO_DISP};
-				numDisp = 0;
-			} else {
-				// set range based on the estimates around this location
-				const bool bInvalid(disparityMap(r,c) == NO_DISP);
-				// search range around 41x41 or 7x7 window
-				disps.Empty();
-				const int hw(bInvalid ? 20 : 3);
-				for (int i=-hw; i<=hw; ++i) {
-					for (int j=-hw; j<=hw; ++j) {
-						const ImageRef u(c+j,r+i);
-						if (disparityMap.isInside(u)) {
-							const Disparity d(disparityMap(u));
-							if (d != NO_DISP)
-								disps.push_back(d);
-						}
-					}
-				}
-				// set search range
-				if (disps.size() < 3) {
-					range.maxDisp = MINF((Disparity)(disparityMap.width()*2/3), minNumDispInvalid);
-					range.minDisp = -range.maxDisp;
-					numDisp = range.numDisp();
-				} else {
-					const Disparity disp(disps.GetMedian<Disparity>()*2);
-					const auto minmax(disps.GetMinMax());
-					numDisp = (minmax.second-minmax.first)*2;
-					if (numDisp < minNumDisp) {
-						numDisp = minNumDisp;
-						range.minDisp = disp-numDisp/2;
-						range.maxDisp = disp+(numDisp+1)/2;
-					} else {
-						const Disparity maxNumDisp(bInvalid ? 64 : 32);
-						if (numDisp > maxNumDisp) {
-							range.minDisp = disp-(maxNumDisp*(disp-minmax.first*2)+1)/numDisp;
-							range.maxDisp = disp+(maxNumDisp*(minmax.second*2+1-disp)+1)/numDisp;
-							numDisp = range.numDisp();
-						} else {
-							range.minDisp = disp-numDisp/2;
-							range.maxDisp = disp+(numDisp+1)/2;
-						}
-					}
-				}
-				ASSERT(range.numDisp() == numDisp);
-				if (maxNumDisp < numDisp)
-					maxNumDisp = numDisp;
-			}
-			c2e += 2;
-			do {
-				ASSERT(c2 < size2x.width);
-				PixelData& pixel = imagePixels[offset+c2];
-				pixel.range = range;
-				pixel.idx = numCosts;
-				numCosts += numDisp;
-			} while (++c2 < c2e);
-		}
-		ASSERT(c2e < size2x.width);
-		do {
-			const PixelData& pixel = imagePixels[offset+c2e-1];
-			PixelData& _pixel = imagePixels[offset+c2e];
-			_pixel.range = pixel.range;
-			_pixel.idx = numCosts;
-			numCosts += pixel.range.numDisp();
-		} while (++c2e < size2x.width);
-		const int _offsete((r+1 == disparityMap.rows ? size2x.height : r*2+halfWindowSizeY+2)*size2x.width);
-		for (int _offset=offset+size2x.width; _offset<_offsete; _offset+=size2x.width) {
-			for (int c2=0; c2<size2x.width; ++c2) {
-				const PixelData& pixel = imagePixels[offset+c2];
-				PixelData& _pixel = imagePixels[_offset+c2];
-				_pixel.range = pixel.range;
-				_pixel.idx = numCosts;
-				numCosts += pixel.range.numDisp();
-			}
+	for (int r2=0, idx=0; r2<size2x.height; ++r2) {
+		const Range* ranges(rangeMap.data()+CLAMP((r2-halfWindowSizeY)/2, 0, disparityMap.rows-1)*disparityMap.cols);
+		for (int c2=0; c2<size2x.width; ++c2, ++idx) {
+			PixelData& pixel = imagePixels[idx];
+			pixel.range = ranges[CLAMP((c2-halfWindowSizeX)/2, 0, disparityMap.cols-1)];
+			pixel.idx = numCosts;
+			if (!pixel.range.isValid())
+				continue;
+			const Disparity numDisp(pixel.range.numDisp());
+			numCosts += numDisp;
+			if (maxNumDisp < numDisp)
+				maxNumDisp = numDisp;
 		}
 	}
 	return numCosts;
@@ -1499,31 +1091,6 @@ void SemiGlobalMatcher::ConsistencyCrossCheck(DisparityMap& l2r, const Disparity
 	} else
 	for (int r=0; r<l2r.rows; ++r)
 		for (int c=0; c<l2r.cols; ++c)
-			pixel(-1, r, c);
-}
-
-// Discard disparities that have a high similarity score
-void SemiGlobalMatcher::FilterByCost(DisparityMap& disparityMap, const AccumCostMap& costMap, AccumCost th)
-{
-	ASSERT(th > 0);
-	ASSERT(!disparityMap.empty() && disparityMap.size() == costMap.size());
-
-	auto pixel = [&](int, int r, int c) {
-		Disparity& d = disparityMap(r,c);
-		if (d == NO_DISP)
-			return;
-		if (costMap(r,c) > th)
-			d = NO_DISP;
-	};
-	ASSERT(threads.IsEmpty());
-	if (!threads.empty()) {
-		volatile Thread::safe_t idxPixel(-1);
-		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelProcess(disparityMap.size(), idxPixel, pixel));
-		WaitThreadWorkers(threads.size());
-	} else
-	for (int r=0; r<disparityMap.rows; ++r)
-		for (int c=0; c<disparityMap.cols; ++c)
 			pixel(-1, r, c);
 }
 
@@ -1587,54 +1154,6 @@ void SemiGlobalMatcher::ExtractMask(const DisparityMap& disparityMap, MaskMap& m
 	}
 
 	#undef MASK_PIXEL
-
-	#if 0
-	#define MASK_PIXEL() \
-		Mask& m = maskMap(r,c); \
-		if (m == INVALID) \
-			continue; \
-		if (disparityMap(r,c) != NO_DISP) \
-			break; \
-		m = INVALID
-
-	// top-bottom direction
-	{
-	auto pixel = [&](int c) {
-		for (int r=0; r<disparityMap.rows; ++r) {
-			MASK_PIXEL();
-		}
-	};
-	ASSERT(threads.IsEmpty());
-	if (!threads.empty()) {
-		volatile Thread::safe_t idxPixel(-1);
-		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumInc(disparityMap.width(), idxPixel, pixel));
-		WaitThreadWorkers(threads.size());
-	} else
-	for (int c=0; c<disparityMap.cols; ++c)
-		pixel(c);
-	}
-
-	// bottom-top direction
-	{
-	auto pixel = [&](int c) {
-		for (int r=disparityMap.rows; --r>=0; ) {
-			MASK_PIXEL();
-		}
-	};
-	ASSERT(threads.IsEmpty());
-	if (!threads.empty()) {
-		volatile Thread::safe_t idxPixel(-1);
-		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumInc(disparityMap.width(), idxPixel, pixel));
-		WaitThreadWorkers(threads.size());
-	} else
-	for (int c=0; c<disparityMap.cols; ++c)
-		pixel(c);
-	}
-
-	#undef MASK_PIXEL
-	#endif
 }
 
 // Translate disparity-map between left-to-right and right-to-left stereo pair
@@ -1825,114 +1344,6 @@ void SemiGlobalMatcher::RefineDisparityMap(DisparityMap& disparityMap) const
 }
 
 
-#ifndef _RELEASE
-// extract disparity and range from the pixel-map
-void SemiGlobalMatcher::DisplayState(const cv::Size& size) const
-{
-	Image8U disparity(size);
-	Image8U range(size);
-	for (int idx=0; idx<size.area(); ++idx) {
-		const PixelData& pixel = imagePixels[idx];
-		disparity(idx) = (uint8_t)(CLAMP(pixel.range.avgDisp(), Disparity(-128), Disparity(127))+Disparity(128));
-		range(idx) = (uint8_t)CLAMP(pixel.range.numDisp(), Disparity(0), Disparity(255));
-	}
-
-	disparity.Show("Disparity", -1, false);
-	range.Show("Range", -1, false);
-
-	char c = 'a';
-	while (std::tolower(c) != 'q')
-		c = cv::waitKey();
-
-	cv::destroyAllWindows();
-}
-#endif
-
-// Compute the disparity-map for the rectified image from the given depth-map of the un-rectified image;
-// the disparity map needs to be already constructed at the desired size (valid size, excluding the border)
-void SemiGlobalMatcher::Depth2DisparityMap(const DepthMap& depthMap, const Matrix3x3& invH, const Matrix4x4& invQ, Disparity subpixelSteps, DisparityMap& disparityMap)
-{
-	auto pixel = [&](int, int r, int c) {
-		const ImageRef x(c+halfWindowSizeX,r+halfWindowSizeY); Point2f u;
-		ProjectVertex_3x3_2_2(invH.val, x.ptr(), u.ptr());
-		float depth, disparity;
-		if (!depthMap.sampleSafe(depth, u, [](Depth d) { return d > 0; }) || !Image::Depth2Disparity(invQ, u, depth, disparity))
-			disparityMap(r,c) = NO_DISP;
-		else
-			disparityMap(r,c) = (Disparity)ROUND2INT(disparity*subpixelSteps);
-	};
-	ASSERT(threads.IsEmpty());
-	if (!threads.empty()) {
-		volatile Thread::safe_t idxPixel(-1);
-		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelProcess(disparityMap.size(), idxPixel, pixel));
-		WaitThreadWorkers(threads.size());
-	} else
-	for (int r=0; r<disparityMap.rows; ++r)
-		for (int c=0; c<disparityMap.cols; ++c)
-			pixel(-1, r, c);
-}
-
-// Compute the depth-map for the un-rectified image from the given disparity-map of the rectified image
-void SemiGlobalMatcher::Disparity2DepthMap(const DisparityMap& disparityMap, const AccumCostMap& costMap, const Matrix3x3& H, const Matrix4x4& Q, Disparity subpixelSteps, DepthMap& depthMap, ConfidenceMap& confMap)
-{
-	ASSERT(costMap.empty() || costMap.size() == disparityMap.size());
-	ASSERT(!depthMap.empty());
-	ASSERT(confMap.empty() || confMap.size() == depthMap.size());
-
-	if (!costMap.empty()) {
-		confMap.create(depthMap.size());
-		auto pixel = [&](int, int r, int c) {
-			const ImageRef x(c,r); Point2f u;
-			ProjectVertex_3x3_2_2(H.val, x.ptr(), u.ptr());
-			u.x -= (float)halfWindowSizeX;
-			u.y -= (float)halfWindowSizeY;
-			float disparity;
-			if (!disparityMap.sampleSafe(disparity, u, [](Disparity d) { return d != NO_DISP; })) {
-				depthMap(x) = 0;
-				confMap(x) = 0;
-				return;
-			}
-			float cost;
-			costMap.sampleSafe(cost, u, [](AccumCost c) { return c != NO_ACCUMCOST; });
-			depthMap(x) = Image::Disparity2Depth(Q, u, disparity/subpixelSteps);
-			confMap(x) = 1.f/(cost+1);
-		};
-		ASSERT(threads.IsEmpty());
-		if (!threads.empty()) {
-			volatile Thread::safe_t idxPixel(-1);
-			FOREACH(i, threads)
-				threads.AddEvent(new EVTPixelProcess(depthMap.size(), idxPixel, pixel));
-			WaitThreadWorkers(threads.size());
-		} else
-		for (int r=0; r<depthMap.rows; ++r)
-			for (int c=0; c<depthMap.cols; ++c)
-				pixel(-1, r, c);
-	} else {
-		auto pixel = [&](int, int r, int c) {
-			const ImageRef x(c,r); Point2f u;
-			ProjectVertex_3x3_2_2(H.val, x.ptr(), u.ptr());
-			u.x -= (float)halfWindowSizeX;
-			u.y -= (float)halfWindowSizeY;
-			float disparity;
-			if (!disparityMap.sampleSafe(disparity, u, [](Disparity d) { return d != NO_DISP; }))
-				depthMap(x) = 0;
-			else
-				depthMap(x) = Image::Disparity2Depth(Q, u, disparity/subpixelSteps);
-		};
-		ASSERT(threads.IsEmpty());
-		if (!threads.empty()) {
-			volatile Thread::safe_t idxPixel(-1);
-			FOREACH(i, threads)
-				threads.AddEvent(new EVTPixelProcess(depthMap.size(), idxPixel, pixel));
-			WaitThreadWorkers(threads.size());
-		} else
-		for (int r=0; r<depthMap.rows; ++r)
-			for (int c=0; c<depthMap.cols; ++c)
-				pixel(-1, r, c);
-	}
-}
-
 // Compute the depth-map for the un-rectified image from the given disparity-map of the rectified image
 // by projecting the point-cloud to the image and setting the pixel depth as the average of the closest 4 points;
 // return false if the disparity map is completely empty
@@ -1972,13 +1383,13 @@ bool SemiGlobalMatcher::ProjectDisparity2DepthMap(const DisparityMap& disparityM
 			const Depth depth(Image::Disparity2Depth(Q, dx, disparity, u));
 			if (depth <= 0)
 				continue;
-			const Disparity disparityCenter((Disparity)FLOOR2INT(disparity));
+			// the depth is trusted within one disparity of the estimate
 			const DepthRange depthRange(
-				Image::Disparity2Depth(Q, dx, (float)(disparityCenter-1)),
-				Image::Disparity2Depth(Q, dx, (float)(disparityCenter+1))
+				Image::Disparity2Depth(Q, dx, disparity-1.f),
+				Image::Disparity2Depth(Q, dx, disparity+1.f)
 			);
 			ASSERT(ISINSIDE(depth, depthRange.x, depthRange.y));
-			const float cost(costMap.empty()?0.f:1.f/(costMap(r,c)+1));
+			const float cost(costMap.empty()?0.f:AccumCost2Confidence(costMap(r,c)));
 			const ImageRef x(FLOOR2INT(u));
 			u.x -= 0.5f; u.y -= 0.5f;
 			for (int i=-1; i<=1; ++i) {

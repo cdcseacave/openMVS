@@ -11,16 +11,12 @@ FIND_PACKAGE(halfmesh CONFIG REQUIRED)
 # vcpkg's tinygltf ships no CMake config, so locate the header by name.
 FIND_PATH(TINYGLTF_INCLUDE_DIR NAMES "tiny_gltf.h" REQUIRED)
 
+# link Ceres through its config target, which carries the compile definitions recent
+# Ceres and glog need; the SFM library requires the same package, so it is always there
 set(CERES_LIBS "")
 if(OpenMVS_USE_CERES)
-	FIND_PACKAGE(Ceres)
-	if(CERES_FOUND)
-		include_directories(${CERES_INCLUDE_DIRS})
-		add_definitions(${CERES_DEFINITIONS})
-	else()
-		set(OpenMVS_USE_CERES OFF)
-		message("-- Can't find CERES. Continuing without it.")
-	endif()
+	FIND_PACKAGE(Ceres CONFIG REQUIRED)
+	set(CERES_LIBS Ceres::ceres)
 endif()
 
 # List sources files
@@ -79,7 +75,7 @@ IF(CMAKE_VERSION VERSION_GREATER_EQUAL 3.16.0)
 endif()
 
 # Link its dependencies
-TARGET_LINK_LIBRARIES(MVS PUBLIC Common Math IO CGAL::CGAL halfmesh::halfmesh ${CERES_LIBRARIES})
+TARGET_LINK_LIBRARIES(MVS PUBLIC Common Math IO CGAL::CGAL halfmesh::halfmesh ${CERES_LIBS})
 
 if(_USE_BOOST_PYTHON)
 	# SFM-side wrapper lives in libs/SFM/PythonWrapper.cpp; compile it into the

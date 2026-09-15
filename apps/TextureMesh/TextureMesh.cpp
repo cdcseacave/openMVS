@@ -344,7 +344,8 @@ int main(int argc, LPCTSTR* argv)
 	}
 
 	// save the final mesh
-	scene.mesh.Save(baseFileName+OPT::strExportType, cList<String>(), true, OPT::bExportTextureLossless);
+	if (!scene.mesh.Save(baseFileName+OPT::strExportType, cList<String>(), true, OPT::bExportTextureLossless))
+		return EXIT_FAILURE;
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2)
 		scene.ExportCamerasMLP(baseFileName+_T(".mlp"), baseFileName+OPT::strExportType);

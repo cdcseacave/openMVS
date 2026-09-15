@@ -63,6 +63,7 @@ float fEpsNoiseRotation;
 float fPlaneThreshold;
 float fSampleMesh;
 unsigned nMaxResolution;
+unsigned nTextureSize;
 unsigned nRemoveUnseenFaces;
 unsigned nUpAxis;
 unsigned nNormalizeCoordinates;
@@ -130,6 +131,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("plane-threshold", boost::program_options::value(&OPT::fPlaneThreshold)->default_value(0.f), "threshold used to estimate the ground plane (<0 - disabled, 0 - auto, >0 - desired threshold)")
 		("sample-mesh", boost::program_options::value(&OPT::fSampleMesh)->default_value(-300000.f), "uniformly samples points on a mesh (0 - disabled, <0 - number of points, >0 - sample density per square unit)")
 		("max-resolution", boost::program_options::value(&OPT::nMaxResolution)->default_value(0), "make sure image resolution are not not larger than this (0 - disabled)")
+		("max-texture-size", boost::program_options::value(&OPT::nTextureSize)->default_value(Mesh::DEFAULT_TEXTURE_SIZE), "size of the texture pages baked by the texture transfer when the target mesh has no texture of its own")
 		("remove-unseen-faces", boost::program_options::value(&OPT::nRemoveUnseenFaces)->default_value(0), "remove the mesh faces seen by fewer than this many images, rendering the mesh with a z-buffer into every camera of the scene (0 - disabled)")
 		("up-axis", boost::program_options::value(&OPT::nUpAxis)->default_value(2), "scene axis considered to point upwards when computing the volume (0 - x, 1 - y, 2 - z)")
 		("normalize-coordinates", boost::program_options::value(&OPT::nNormalizeCoordinates)->default_value(0), "normalize scene coordinates and output the inverse transform to file (0 - disabled, 1 - center, 2 - center & scale, 3 - invert internal transform)")
@@ -342,9 +344,10 @@ int main(int argc, LPCTSTR* argv)
 				faceSubsetIndices.emplace_back(index.From<Mesh::FIndex>());
 			}
 		}
-		if (!scene.mesh.TransferTexture(newMesh, Mesh::DEFAULT_TEXTURE_BORDER, Mesh::DEFAULT_TEXTURE_SIZE, faceSubsetIndices))
+		if (!scene.mesh.TransferTexture(newMesh, Mesh::DEFAULT_TEXTURE_BORDER, OPT::nTextureSize, faceSubsetIndices))
 			return EXIT_FAILURE;
-		newMesh.Save(baseFileName + OPT::strExportType);
+		if (!newMesh.Save(baseFileName + OPT::strExportType))
+			return EXIT_FAILURE;
 		VERBOSE("Texture transfered (%s)", TD_TIMER_GET_FMT().c_str());
 		return EXIT_SUCCESS;
 	}

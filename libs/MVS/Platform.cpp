@@ -43,6 +43,7 @@ using namespace MVS;
 // return the normalized absolute camera pose
 Platform::Camera Platform::GetCamera(uint32_t cameraID, uint32_t poseID) const
 {
+	ASSERT(cameraID < cameras.size() && poseID < poses.size());
 	const Camera& camera = cameras[cameraID];
 	const Pose& pose = poses[poseID];
 	// add the relative camera pose to the platform
