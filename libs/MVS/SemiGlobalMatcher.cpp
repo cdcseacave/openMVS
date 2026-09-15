@@ -877,6 +877,18 @@ void SemiGlobalMatcher::Match(const ViewData& leftImage, const ViewData& rightIm
 	Aggregate(leftImage.imageGray, disparityMap, costMap);
 }
 
+// accumulate the costs of n consecutive disparities whose three previous costs Lp[-1..1] all exist
+static void AccumulateInterior(const SemiGlobalMatcher::AccumCost* RESTRICT Lp, const SemiGlobalMatcher::Cost* RESTRICT costs,
+	SemiGlobalMatcher::AccumCost* RESTRICT Ls, SemiGlobalMatcher::AccumCost* RESTRICT accums, int n,
+	SemiGlobalMatcher::AccumCost minLp, SemiGlobalMatcher::AccumCost P1, SemiGlobalMatcher::AccumCost minLpP2)
+{
+	typedef SemiGlobalMatcher::AccumCost AccumCost;
+	for (int i=0; i<n; ++i) {
+		const AccumCost L(std::min(std::min(Lp[i], minLpP2), (AccumCost)(std::min(Lp[i-1], Lp[i+1])+P1)));
+		accums[i] += (Ls[i] = (AccumCost)(costs[i]+L-minLp));
+	}
+}
+
 // Aggregate the pixel costs along the paths and select the best disparity of each pixel
 void SemiGlobalMatcher::Aggregate(const ImageGray& imageGray, DisparityMap& disparityMap, AccumCostMap& costMap)
 {
@@ -928,7 +940,7 @@ void SemiGlobalMatcher::Aggregate(const ImageGray& imageGray, DisparityMap& disp
 			for (const AccumCost *L=Lp.L+(minDisp-Lp.R.minDisp), *endL=L+(maxDisp-minDisp); L<endL; ++L)
 				Compute::MINS(minLp, *L);
 			const AccumCost minLpP2(minLp+P2);
-			for (Disparity d=Ls.R.minDisp; d<Ls.R.maxDisp; ++d) {
+			const auto accum = [&](Disparity d) {
 				const int idxDisp(d-Ls.R.minDisp);
 				AccumCost L(minLpP2);
 				if (d >= minDisp && d < maxDisp)
@@ -938,7 +950,18 @@ void SemiGlobalMatcher::Aggregate(const ImageGray& imageGray, DisparityMap& disp
 				if (d+1 >= minDisp && d+1 < maxDisp)
 					Compute::MINS(L, Lp[d+1-Lp.R.minDisp]+P1);
 				accums[idxDisp] += (Ls[idxDisp] = costs[idxDisp]+L-minLp);
+			};
+			// the disparities with all three previous costs are accumulated without branches
+			const Disparity beginIn(MAXF(Ls.R.minDisp, (Disparity)(minDisp+1))), endIn(MINF(Ls.R.maxDisp, (Disparity)(maxDisp-1)));
+			Disparity d(Ls.R.minDisp);
+			for (; d<beginIn && d<Ls.R.maxDisp; ++d)
+				accum(d);
+			if (d < endIn) {
+				AccumulateInterior(Lp.L+(d-Lp.R.minDisp), costs+(d-Ls.R.minDisp), Ls.L+(d-Ls.R.minDisp), accums+(d-Ls.R.minDisp), endIn-d, minLp, P1, minLpP2);
+				d = endIn;
 			}
+			for (; d<Ls.R.maxDisp; ++d)
+				accum(d);
 		}
 	};
 	ASSERT(threads.IsEmpty());

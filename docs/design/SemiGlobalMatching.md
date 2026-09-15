@@ -135,9 +135,11 @@ Per pixel step, with `Lp` the previous pixel's slice over range `Rp` and `Ls` th
 `Rs`: `P2` is adaptive, `P2·(1 + 14·exp(-ΔI²/(2·38²)))` with `ΔI` the gray difference along the
 path in 0..255 (256-entry table), so the large-jump penalty is 15x stronger inside flat regions
 than across edges; `P1` is constant. If the ranges do not intersect, `L(d) = C(d) + P2`; otherwise
-`L(d) = C(d) + min(Lp(d), Lp(d±1)+P1, minLp+P2) - minLp` with `minLp` over the intersection. The
-sum of the 8 paths is the aggregated cost; winner-take-all takes its minimum, whose value is the
-pixel's cost (`AccumCostMap`).
+`L(d) = C(d) + min(Lp(d), Lp(d±1)+P1, minLp+P2) - minLp` with `minLp` over the intersection; the
+samples inside the intersection whose two neighbors are in it too, most of them, run without
+branches (`AccumulateInterior`), the others test which of the three exist. The sum of the 8 paths
+is the aggregated cost; winner-take-all takes its minimum, whose value is the pixel's cost
+(`AccumCostMap`).
 
 ### 2.6 Sub-pixel refinement and depth
 
@@ -238,20 +240,20 @@ arguments, so the pair export uses the same penalties.
 
 Three EPFL ground-truth scenes, `--resolution-level 1`, F-score of the dense point-cloud against
 the laser-scanned ground truth at the scene's tolerance (visibility-restricted completeness, the
-`bench/eval_mesh2mesh.py` metric); walls on a 24-thread workstation, PatchMatch with the default
-geometric iterations. The scenes have cameras only: their virtual point-cloud, and hence the depth
+`bench/eval_mesh2mesh.py` metric); walls on a 24-thread workstation (multi-view SGM on its 16
+performance-core threads), PatchMatch with the default geometric iterations. The scenes have cameras only: their virtual point-cloud, and hence the depth
 ranges, is seeded, so a run is reproducible to the byte and every difference between arms is real.
 
 | scene | pair SGM + pair fusion | multi-view SGM | PatchMatch CPU | PatchMatch CUDA |
 |---|---|---|---|---|
 | Herz-Jesu-P8 (8 views, τ 1 cm) | F 0.332, 33 s | **F 0.372, 31 s** | F 0.402, 85 s | F 0.403, 6 s |
-| fountain-P11 (11 views, τ 0.5 cm) | F 0.253, 65 s | **F 0.260, 46 s** | F 0.268, 150 s | F 0.252, 9 s |
-| Herz-Jesu-P25 (25 views, τ 1 cm) | F 0.466, 145 s | **F 0.503, 130 s** | | F 0.609, 21 s |
+| fountain-P11 (11 views, τ 0.5 cm) | F 0.253, 65 s | **F 0.259, 46 s** | F 0.268, 150 s | F 0.252, 9 s |
+| Herz-Jesu-P25 (25 views, τ 1 cm) | F 0.466, 145 s | **F 0.503, 125 s** | | F 0.609, 21 s |
 
 Multi-view SGM matches PatchMatch's precision on Herz-Jesu-P8 (0.699 vs 0.697) and gains recall
 on every scene over the pair version (0.254 vs 0.223, 0.173 vs 0.167, 0.389 vs 0.353); on
 fountain-P11 it leads it at every tolerance, most at 2τ and 4τ (F 0.540 vs 0.497, 0.741 vs 0.711).
-The sub-pixel search on the matching cost (§2.6) accounts for 0.007 of the F-score on
+The sub-pixel search on the matching cost (§2.6) accounts for 0.006 and 0.007 of the F-score on
 fountain-P11 and Herz-Jesu-P25 (0.253 and 0.496 without it) and for 20% of the time; it raises the
 precision on all three scenes (by 0.005, 0.020, 0.017) and the F-score at 2τ (0.588 vs 0.580,
 0.540 vs 0.532, 0.710 vs 0.701), but costs 0.003 at τ on Herz-Jesu-P8 (0.376 without it), where
@@ -338,4 +340,5 @@ Ordered by expected gain on recall, the gap to PatchMatch.
    the number of views. It also makes SGM a fast initializer for PatchMatch.
 2. **Speed.** A CUDA port of the cost, the aggregation and the refinement, which would put the SGM
    mode next to PatchMatch CUDA in wall time. On the CPU the matching cost is vectorized (§2.4);
-   the aggregation works on 16-bit costs, for which Eigen has no SIMD packets.
+   the aggregation works on 16-bit costs, for which Eigen has no SIMD packets and which MSVC does
+   not auto-vectorize even branch-free, so vectorizing it takes intrinsics or 32-bit line buffers.
