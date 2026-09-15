@@ -186,6 +186,8 @@ bool Scene::EstimateNeighborViewsPointCloud(unsigned maxResolution)
 {
 	constexpr Depth minPercentDepthPerturb(0.3f);
 	constexpr Depth maxPercentDepthPerturb(1.3f);
+	// fixed seed: the same cameras give the same virtual point-cloud, hence the same depth ranges
+	Random rnd(0);
 	const auto ProjectGridToImage = [&](IIndex idI, IIndex idJ, Depth depth) {
 		const Depth minDepthPerturb(depth * minPercentDepthPerturb);
 		const Depth maxDepthPerturb(depth * maxPercentDepthPerturb);
@@ -196,7 +198,7 @@ bool Scene::EstimateNeighborViewsPointCloud(unsigned maxResolution)
 		for (unsigned r = 0; r < maxResolution; ++r) {
 			for (unsigned c = 0; c < maxResolution; ++c) {
 				const Point2f x(c*stepW + stepW/2, r*stepH + stepH/2);
-				const Depth depthPerturb(randomRange(minDepthPerturb, maxDepthPerturb));
+				const Depth depthPerturb(rnd.randomRange(minDepthPerturb, maxDepthPerturb));
 				const Point3 X(imageData.camera.TransformPointI2W(Point3(x.x, x.y, depthPerturb)));
 				const Point3 X2(imageData2.camera.TransformPointW2C(X));
 				if (X2.z < 0)
