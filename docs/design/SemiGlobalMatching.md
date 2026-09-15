@@ -138,10 +138,13 @@ After the finest level only (`RefineDisparityMap`), on the aggregated costs of t
 two neighbors: the smaller cost difference over the larger is mapped by the selected fit
 (`SUBPIXEL_LC_BLEND`, a blend of the linear and cosine fits) to an offset in (-0.5, 0.5), with a
 two-value estimate at the range ends, and stored in quarter-sample units (`subpixelSteps = 4`).
-The depth is `1/(invzMin + d·step0/4)`; the confidence is `1 - cost/(8·255)`, one minus the mean
-cost per path, in [0,1] like PatchMatch's NCC-based confidence, so the fusion gate
-`1 - fNCCThresholdKeep` applies unchanged. The driver then estimates the normal-map when
-`nEstimateNormals == 2` (the default) and resets the image's depth bounds.
+The depth is `1/(invzMin + d·step0/4)`. The confidence (`PeakRatioConfidence`) measures how
+unique the winner is: with `best` its aggregated cost and `second` the lowest one among the
+samples not adjacent to it, it is `sqrt(1 - best/second)`, zero if there is no such sample (a
+finer level searches at least 5) or both are zero. The square root puts the ratio on the scale of
+PatchMatch's NCC-based confidence, so the fusion gate `1 - fNCCThresholdKeep` applies unchanged
+and drops 2% of the depths. The driver then estimates the normal-map when `nEstimateNormals == 2`
+(the default) and resets the image's depth bounds.
 
 ### 2.7 Pair disparity export (`Match`, `--fusion-mode -1`)
 
@@ -221,17 +224,18 @@ geometric iterations.
 
 | scene | pair SGM + pair fusion | multi-view SGM | PatchMatch CPU | PatchMatch CUDA |
 |---|---|---|---|---|
-| Herz-Jesu-P8 (8 views, τ 1 cm) | F 0.332, 33 s | **F 0.375, 25 s** | F 0.402, 85 s | F 0.403, 6 s |
-| fountain-P11 (11 views, τ 0.5 cm) | F 0.253, 65 s | **F 0.254, 37 s** | F 0.268, 150 s | F 0.252, 9 s |
-| Herz-Jesu-P25 (25 views, τ 1 cm) | F 0.466, 145 s | **F 0.500, 120 s** | | F 0.609, 21 s |
+| Herz-Jesu-P8 (8 views, τ 1 cm) | F 0.332, 33 s | **F 0.376, 27 s** | F 0.402, 85 s | F 0.403, 6 s |
+| fountain-P11 (11 views, τ 0.5 cm) | F 0.253, 65 s | **F 0.253, 39 s** | F 0.268, 150 s | F 0.252, 9 s |
+| Herz-Jesu-P25 (25 views, τ 1 cm) | F 0.466, 145 s | **F 0.496, 115 s** | | F 0.609, 21 s |
 
-Multi-view SGM matches PatchMatch's precision on Herz-Jesu-P8 (0.692 vs 0.697) and gains recall
-on every scene over the pair version (0.258 vs 0.223, 0.170 vs 0.167, 0.389 vs 0.353); on
+Multi-view SGM matches PatchMatch's precision on Herz-Jesu-P8 (0.693 vs 0.697) and gains recall
+on every scene over the pair version (0.258 vs 0.223, 0.170 vs 0.167, 0.386 vs 0.353); on
 fountain-P11 it ties at the scene's tight tolerance and leads at 2τ and 4τ (F 0.532 vs 0.497,
-0.739 vs 0.711). At the depth-map level, before fusion, it fills 96% of the pixels, and its
-confidence separates good depths from bad ones: the lowest two deciles are 3-12% precise at τ,
-the others 40-65%. The remaining gap to PatchMatch is recall and widens with the number of views
-(Herz-Jesu-P25).
+0.738 vs 0.711). At the depth-map level, before fusion, it fills 96% of the pixels, and its
+confidence separates good depths from bad ones: on Herz-Jesu-P8 the lowest two deciles are 6-11%
+precise at τ, the others 23-62% (ROC-AUC of the confidence predicting a depth within τ: 0.71, and
+0.68 on fountain-P11). The remaining gap to PatchMatch is recall and widens with the number of
+views (Herz-Jesu-P25).
 
 The pair matcher's poor recall before this design had a separate cause in the cost: a
 regularization epsilon of 1e-3 under the square root of the variance product, three orders of
@@ -266,6 +270,12 @@ All numbers are F on Herz-Jesu-P8 unless stated; noise ±0.002.
 - **Uniqueness filter** (best-to-second aggregated cost ratio): 0.03 0.348, 0.08 0.345 vs 0.350.
 - **Confidence gate** before fusion: 0.4 0.374, 0.6 0.366 vs 0.375; fountain-P11 0.249, 0.248 vs
   0.252. Precision rises, recall falls more.
+- **Confidence from the cost:** `1 - cost/(8·255)`, one minus the mean cost per path, ranks the
+  depths as well as the peak ratio (ROC-AUC 0.718 vs 0.714 on Herz-Jesu-P8, 0.676 vs 0.679 on
+  fountain-P11) and gives the same F-score (0.375/0.253/0.499 vs 0.376/0.253/0.496 on the three
+  scenes), but measures texture, not uniqueness: its top decile is less precise than the middle
+  ones. The peak ratio without the square root puts 15-18% of the depths under the fusion gate
+  (0.368/0.247/0.488), four times the ratio 0.374.
 - **Slanted aggregation** (shifting the previous pixel's costs along each path by the index change
   the slope predicts): 0.371 vs 0.375; fountain-P11 0.248 vs 0.252.
 - **Dense window at the finest level, parabola or linear sub-pixel fit:** 0.376, and 0.255, 0.254,

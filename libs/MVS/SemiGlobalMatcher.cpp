@@ -545,7 +545,7 @@ void SemiGlobalMatcher::MatchMultiView(const Scene& scene, IIndex idxImage, IInd
 			if (invz <= 0)
 				continue;
 			depthMap(r+halfWindowSizeY,c+halfWindowSizeX) = 1.f/invz;
-			confMap(r+halfWindowSizeY,c+halfWindowSizeX) = AccumCost2Confidence(costMap(r,c));
+			confMap(r+halfWindowSizeY,c+halfWindowSizeX) = PeakRatioConfidence(r*disparityMap.cols+c);
 			++numDepths;
 		}
 	}
@@ -1537,6 +1537,26 @@ void SemiGlobalMatcher::RefineDisparityMap(DisparityMap& disparityMap) const
 	for (int r=0; r<disparityMap.rows; ++r)
 		for (int c=0; c<disparityMap.cols; ++c)
 			pixel(r*disparityMap.cols+c);
+}
+
+// Confidence in [0,1] of the disparity the winner-take-all selects for a pixel: how much lower its
+// accumulated cost is than the lowest one of the disparities not adjacent to it (the second peak), as
+// the square root of one minus their ratio, which puts it on the scale of the matching score the
+// fusion gate 1-fNCCThresholdKeep expects; zero if no such disparity was searched or both costs are zero
+float SemiGlobalMatcher::PeakRatioConfidence(Index idxPixel) const
+{
+	const PixelData& pixel = imagePixels[idxPixel];
+	ASSERT(pixel.range.isValid());
+	const AccumCost* accums = imageAccumCosts.cdata()+pixel.idx;
+	const int numDisp(pixel.range.numDisp());
+	const int best((int)(std::min_element(accums, accums+numDisp)-accums));
+	AccumCost second(NO_ACCUMCOST);
+	for (int d=0; d<numDisp; ++d)
+		if ((d < best-1 || d > best+1) && second > accums[d])
+			second = accums[d];
+	if (second == NO_ACCUMCOST || second == 0)
+		return 0.f;
+	return SQRT(1.f-(float)accums[best]/(float)second);
 }
 
 

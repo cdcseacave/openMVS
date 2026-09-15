@@ -187,9 +187,7 @@ protected:
 	void RefineDisparityMap(DisparityMap& disparityMap) const;
 	static void FitSlopes(const DisparityMap& disparityMap, SlopeMap& slopeMap);
 
-	// confidence in [0,1] of an accumulated cost, on the scale of the NCC score the depth-map fusion
-	// thresholds: one minus the mean matching cost per aggregation path (2*numDirs paths of up to 255)
-	static float AccumCost2Confidence(float cost) { return MAXF(0.f, 1.f - cost/(2*numDirs*255)); }
+	float PeakRatioConfidence(Index idxPixel) const;
 	static CLISTDEF0IDX(AccumCost,int) GenerateP2s(AccumCost P2, float P2alpha, float P2beta);
 
 protected:
