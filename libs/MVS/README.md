@@ -154,7 +154,7 @@ This is where the heavy computation happens. For each reference image:
 1. **Select neighbor views** with good stereo geometry (baseline, overlap, angle)
 2. **Initialize depth estimates** randomly across the image
 3. **PatchMatch iteration**: For each pixel, check if neighbors' depth/normal produce a better NCC (Normalized Cross-Correlation) score, then randomly perturb to explore
-4. **Optional SGM pass**: Semi-Global Matching refines depth using path-based optimization with penalties for depth discontinuities
+4. **Alternative: Semi-Global Matching** (`--fusion-mode -2`): a CPU depth-map estimator to PatchMatch, multi-view hierarchical SGM over inverse-depth samples
 5. **Confidence filtering**: Check multi-view consistency -- a depth is only accepted if multiple views agree
 
 All depth maps are then **fused** into a single dense point cloud by projecting each confident pixel into 3D and merging nearby points.
