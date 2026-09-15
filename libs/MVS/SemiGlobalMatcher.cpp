@@ -346,6 +346,7 @@ void SemiGlobalMatcher::MatchMultiView(const Scene& scene, IIndex idxImage, IInd
 		ImageGray grayFull, gray; // full resolution and current level intensities
 		Point3f A[3], b; // A stored by columns, at the current level
 		Point3f offsets[levelTexels]; // A*(j,i,0) for each matched texel
+		Point3f offsetsDense[numTexels]; // A*(j,i,0) for each texel of the window
 		float width1, height1; // largest valid sampling position
 		void SetLevel(const cv::Matx33d& invKref, const cv::Matx33d& K) {
 			const cv::Matx33d _A(K * R * invKref);
@@ -357,6 +358,10 @@ void SemiGlobalMatcher::MatchMultiView(const Scene& scene, IIndex idxImage, IInd
 			for (int i=-halfWindowSizeY; i<=halfWindowSizeY; i+=texelStep)
 				for (int j=-halfWindowSizeX; j<=halfWindowSizeX; j+=texelStep)
 					offsets[n++] = A[0]*(float)j + A[1]*(float)i;
+			n = 0;
+			for (int i=-halfWindowSizeY; i<=halfWindowSizeY; ++i)
+				for (int j=-halfWindowSizeX; j<=halfWindowSizeX; ++j)
+					offsetsDense[n++] = A[0]*(float)j + A[1]*(float)i;
 			width1 = (float)gray.width()-1.001f;
 			height1 = (float)gray.height()-1.001f;
 		}
@@ -425,6 +430,41 @@ void SemiGlobalMatcher::MatchMultiView(const Scene& scene, IIndex idxImage, IInd
 	// match coarse to fine, as a rectified pair
 	DisparityMap disparityMap; AccumCostMap costMap; MaskMap maskMap;
 	SlopeMap slopeMap;
+	float step(0); // inverse-depth step of the current level
+	// inverse-depth change along the slanted plane of each texel, over every tStep-th texel
+	auto texelSlant = [&](int r, int c, int tStep, float* slant) {
+		const Point2f slope(slopeMap.empty() ? Point2f(0,0) :
+			Point2f(slopeMap(CLAMP((r-halfWindowSizeY)/2, 0, slopeMap.rows-1), CLAMP((c-halfWindowSizeX)/2, 0, slopeMap.cols-1))*step));
+		for (int i=-halfWindowSizeY, n=0; i<=halfWindowSizeY; i+=tStep)
+			for (int j=-halfWindowSizeX; j<=halfWindowSizeX; j+=tStep)
+				slant[n++] = slope.x*(float)j + slope.y*(float)i;
+	};
+	// cost in [0,255] of the reference patch against the neighbor patch warped by the plane through h0,
+	// over the matched or all texels, or -1 if the warped patch is not inside the neighbor image
+	auto viewCost = [](const NeighborView& view, const WeightedPatch& w, const Point3f& h0, const float* slant, bool bDense) -> float {
+		const Point3f* offsets(bDense ? view.offsetsDense : view.offsets);
+		const int nRow(bDense ? (int)windowSizeX : (int)rowTexels), nTexels(bDense ? (int)numTexels : (int)levelTexels);
+		// the warped patch is inside the image if its corners are
+		if (!view.IsInside(h0+offsets[0]+view.b*slant[0]) ||
+			!view.IsInside(h0+offsets[nRow-1]+view.b*slant[nRow-1]) ||
+			!view.IsInside(h0+offsets[nTexels-nRow]+view.b*slant[nTexels-nRow]) ||
+			!view.IsInside(h0+offsets[nTexels-1]+view.b*slant[nTexels-1]))
+			return -1.f;
+		float sum(0), sumSq(0), nom(0);
+		for (int n=0; n<nTexels; ++n) {
+			const Point3f h(h0+offsets[n]+view.b*slant[n]);
+			const float f(SampleBilinear(view.gray, h.x/h.z, h.y/h.z));
+			const WeightedPatch::Pixel& pw = w.weights[n];
+			const float fw(f*pw.weight);
+			sum += fw;
+			sumSq += f*fw;
+			nom += f*pw.tempWeight;
+		}
+		const float normSq1(sumSq-SQUARE(sum)/w.sumWeights);
+		const float nrmSq(w.normSq0*normSq1);
+		const float ncc(nrmSq <= 1e-16f ? 0.f : nom/SQRT(nrmSq));
+		return ncc <= 0 ? 255.f : (1.f-MINF(ncc,1.f))*255.f;
+	};
 	do {
 		const ViewData refLevel(refData.GetImage(scale));
 		const cv::Size size(refLevel.imageGray.size());
@@ -438,7 +478,7 @@ void SemiGlobalMatcher::MatchMultiView(const Scene& scene, IIndex idxImage, IInd
 				cv::resize(view.grayFull, view.gray, cv::Size(), scale, scale, cv::INTER_AREA);
 			view.SetLevel(invKref, cv::Matx33d(view.image->camera.GetScaledK(view.image->image.size(), view.gray.size())));
 		}
-		const float step((float)(step0/scale));
+		step = (float)(step0/scale);
 		Index numCosts;
 		if (bFirstLevel) {
 			maskMap.create(sizeValid);
@@ -460,13 +500,8 @@ void SemiGlobalMatcher::MatchMultiView(const Scene& scene, IIndex idxImage, IInd
 			const ImageRef u(c+halfWindowSizeX,r+halfWindowSizeY);
 			WeightedPatch w;
 			InitWeightedPatch(refLevel, u, w, texelStep);
-			// inverse-depth change of each texel along the slanted plane
 			float slant[levelTexels];
-			const Point2f slope(slopeMap.empty() ? Point2f(0,0) :
-				Point2f(slopeMap(CLAMP((r-halfWindowSizeY)/2, 0, slopeMap.rows-1), CLAMP((c-halfWindowSizeX)/2, 0, slopeMap.cols-1))*step));
-			for (int i=-halfWindowSizeY, n=0; i<=halfWindowSizeY; i+=texelStep)
-				for (int j=-halfWindowSizeX; j<=halfWindowSizeX; j+=texelStep)
-					slant[n++] = slope.x*(float)j + slope.y*(float)i;
+			texelSlant(r, c, texelStep, slant);
 			Point3f hx[maxViews];
 			FOREACH(k, views)
 				hx[k] = views[k].A[0]*(float)u.x + views[k].A[1]*(float)u.y + views[k].A[2];
@@ -477,28 +512,9 @@ void SemiGlobalMatcher::MatchMultiView(const Scene& scene, IIndex idxImage, IInd
 				int numViewCosts(0);
 				if (invz > 0) {
 					FOREACH(k, views) {
-						const NeighborView& view = views[k];
-						const Point3f h0(hx[k] + view.b*invz);
-						// the warped patch is inside the image if its corners are
-						if (!view.IsInside(h0+view.offsets[0]+view.b*slant[0]) ||
-							!view.IsInside(h0+view.offsets[rowTexels-1]+view.b*slant[rowTexels-1]) ||
-							!view.IsInside(h0+view.offsets[levelTexels-rowTexels]+view.b*slant[levelTexels-rowTexels]) ||
-							!view.IsInside(h0+view.offsets[levelTexels-1]+view.b*slant[levelTexels-1]))
+						const float cost(viewCost(views[k], w, hx[k] + views[k].b*invz, slant, false));
+						if (cost < 0)
 							continue;
-						float sum(0), sumSq(0), nom(0);
-						for (int n=0; n<levelTexels; ++n) {
-							const Point3f h(h0+view.offsets[n]+view.b*slant[n]);
-							const float f(SampleBilinear(view.gray, h.x/h.z, h.y/h.z));
-							const WeightedPatch::Pixel& pw = w.weights[n];
-							const float fw(f*pw.weight);
-							sum += fw;
-							sumSq += f*fw;
-							nom += f*pw.tempWeight;
-						}
-						const float normSq1(sumSq-SQUARE(sum)/w.sumWeights);
-						const float nrmSq(w.normSq0*normSq1);
-						const float ncc(nrmSq <= 1e-16f ? 0.f : nom/SQRT(nrmSq));
-						const float cost(ncc <= 0 ? 255.f : (1.f-MINF(ncc,1.f))*255.f);
 						// keep the view costs sorted
 						int i(numViewCosts++);
 						for (; i > 0 && viewCosts[i-1] > cost; --i)
@@ -533,24 +549,96 @@ void SemiGlobalMatcher::MatchMultiView(const Scene& scene, IIndex idxImage, IInd
 		if (bFirstLevel)
 			cv::filterSpeckles(disparityMap, NO_DISP, OPTDENSE::nSpeckleSize, 5);
 	} while ((scale*=2) < REAL(1)+ZEROTOLERANCE<REAL>());
-	// sub-pixel refinement and conversion to depth
+	// sub-pixel refinement, first on the aggregated costs, then on the matching cost itself:
+	// the index t of a pixel moves to the minimum of the parabola through the costs at t and t±delta,
+	// over the whole window and the two views matching best at the first estimate, for two iterations
+	// halving delta, as long as the costs are convex around t and the move does not raise its cost
 	RefineDisparityMap(disparityMap);
-	unsigned numDepths(0);
-	for (int r=0; r<disparityMap.rows; ++r) {
-		for (int c=0; c<disparityMap.cols; ++c) {
-			const Disparity d(disparityMap(r,c));
-			if (d == NO_DISP)
-				continue;
-			const float invz(invzMin+(float)d*step0/subpixelSteps);
+	ASSERT(step == step0);
+	auto refineIndex = [&](int r, int c, float t) -> float {
+		const ImageRef u(c+halfWindowSizeX,r+halfWindowSizeY);
+		WeightedPatch w;
+		InitWeightedPatch(refData, u, w);
+		float slant[numTexels];
+		texelSlant(r, c, 1, slant);
+		Point3f hx[maxViews];
+		FOREACH(k, views)
+			hx[k] = views[k].A[0]*(float)u.x + views[k].A[1]*(float)u.y + views[k].A[2];
+		IIndex best[numBestViews]; int numBest(0); {
+			const float invz(invzMin+t*step);
 			if (invz <= 0)
-				continue;
-			depthMap(r+halfWindowSizeY,c+halfWindowSizeX) = 1.f/invz;
-			confMap(r+halfWindowSizeY,c+halfWindowSizeX) = PeakRatioConfidence(r*disparityMap.cols+c);
-			++numDepths;
+				return t;
+			float bestCosts[numBestViews];
+			FOREACH(k, views) {
+				const float cost(viewCost(views[k], w, hx[k] + views[k].b*invz, slant, true));
+				if (cost < 0)
+					continue;
+				// keep the lowest costs sorted
+				int i(numBest);
+				if (numBest < (int)numBestViews)
+					++numBest;
+				else if (cost >= bestCosts[--i])
+					continue;
+				for (; i > 0 && bestCosts[i-1] > cost; --i) {
+					bestCosts[i] = bestCosts[i-1]; best[i] = best[i-1];
+				}
+				bestCosts[i] = cost; best[i] = k;
+			}
 		}
-	}
+		if (numBest == 0)
+			return t;
+		const auto cost = [&](float ti) -> float {
+			const float invz(invzMin+ti*step);
+			if (invz <= 0)
+				return -1.f;
+			float sum(0);
+			for (int i=0; i<numBest; ++i) {
+				const NeighborView& view = views[best[i]];
+				const float cost(viewCost(view, w, hx[best[i]] + view.b*invz, slant, true));
+				if (cost < 0)
+					return -1.f;
+				sum += cost;
+			}
+			return sum/numBest;
+		};
+		float f(cost(t)), delta(0.5f);
+		if (f < 0)
+			return t;
+		for (int iter=0; iter<2; ++iter, delta*=0.5f) {
+			const float fm(cost(t-delta)), fp(cost(t+delta));
+			const float den(fm-2*f+fp);
+			if (fm < 0 || fp < 0 || den <= 0)
+				break;
+			const float tn(t+CLAMP(delta*(fm-fp)/(2*den), -delta, delta));
+			const float fn(cost(tn));
+			if (fn >= 0 && fn <= f) {
+				t = tn; f = fn;
+			}
+		}
+		return t;
+	};
+	auto pixel = [&](int idx, int r, int c) {
+		const Disparity d(disparityMap(idx));
+		if (d == NO_DISP)
+			return;
+		const float invz(invzMin+refineIndex(r, c, (float)d/subpixelSteps)*step);
+		if (invz <= 0)
+			return;
+		depthMap(r+halfWindowSizeY,c+halfWindowSizeX) = 1.f/invz;
+		confMap(r+halfWindowSizeY,c+halfWindowSizeX) = PeakRatioConfidence(idx);
+	};
+	ASSERT(threads.IsEmpty());
+	if (!threads.empty()) {
+		volatile Thread::safe_t idxPixel(-1);
+		FOREACH(i, threads)
+			threads.AddEvent(new EVTPixelProcess(disparityMap.size(), idxPixel, pixel));
+		WaitThreadWorkers(threads.size());
+	} else
+	for (int r=0; r<disparityMap.rows; ++r)
+		for (int c=0; c<disparityMap.cols; ++c)
+			pixel(r*disparityMap.cols+c, r, c);
 	DEBUG_EXTRA("Depth-map for image %3u estimated from %u views: %u depths (%s)",
-		refImage.ID, views.size(), numDepths, TD_TIMER_GET_FMT().c_str());
+		refImage.ID, views.size(), cv::countNonZero(depthMap), TD_TIMER_GET_FMT().c_str());
 	#endif
 }
 

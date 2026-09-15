@@ -134,11 +134,21 @@ pixel's cost (`AccumCostMap`).
 
 ### 2.6 Sub-pixel refinement and depth
 
-After the finest level only (`RefineDisparityMap`), on the aggregated costs of the winner and its
-two neighbors: the smaller cost difference over the larger is mapped by the selected fit
-(`SUBPIXEL_LC_BLEND`, a blend of the linear and cosine fits) to an offset in (-0.5, 0.5), with a
-two-value estimate at the range ends, and stored in quarter-sample units (`subpixelSteps = 4`).
-The depth is `1/(invzMin + d·step0/4)`. The confidence (`PeakRatioConfidence`) measures how
+After the finest level only, in two steps.
+
+1. **On the aggregated costs** (`RefineDisparityMap`), of the winner and its two neighbors: the
+   smaller cost difference over the larger is mapped by the selected fit (`SUBPIXEL_LC_BLEND`, a
+   blend of the linear and cosine fits) to an offset in (-0.5, 0.5), with a two-value estimate at
+   the range ends, and stored in quarter-sample units (`subpixelSteps = 4`).
+2. **On the matching cost.** The aggregated costs are integer, quantized to a quarter sample and
+   smoothed along the paths, which limits the accuracy at tight tolerances. From that estimate `t`,
+   the cost of the whole 7x7 window (all 49 texels, float, unrounded) against the two views that
+   match best at `t` is evaluated at `t` and `t ± δ`; `t` moves to the minimum of the parabola
+   through the three, clamped to `±δ`, if its cost there is not higher. Two iterations, `δ` 0.5
+   then 0.25 samples; the search stops where the three costs are not convex or a view does not see
+   the window. The same two views are kept for every evaluation so that the curve is of one cost.
+
+The depth is `1/(invzMin + t·step0)`, unquantized. The confidence (`PeakRatioConfidence`) measures how
 unique the winner is: with `best` its aggregated cost and `second` the lowest one among the
 samples not adjacent to it, it is `sqrt(1 - best/second)`, zero if there is no such sample (a
 finer level searches at least 5) or both are zero. The square root puts the ratio on the scale of
@@ -187,6 +197,7 @@ neighbors at full and current resolution.
 | `P1`, `P2` | ctor | 9, 12 | smoothness penalties on the 0-255 cost scale |
 | `P2alpha`, `P2beta` | ctor | 14, 38 | `P2·(1+alpha·exp(-ΔI²/(2·beta²)))` |
 | `subpixelMode`, `subpixelSteps` | ctor | `LC_BLEND`, 4 | sub-pixel fit and quantization |
+| cost refinement | `MatchMultiView` | 2 iterations, `δ` 0.5, 49 texels, best 2 views | sub-pixel search on the matching cost |
 | `nSpeckleSize` | `OPTDENSE` | 100 | speckle filter at the coarsest level |
 | neighborhood, caps, floor | `Disparity2RangeMap` | 7x7 / 41x41, 32 / 64, 5 | per-pixel range from the previous level |
 | depth range | `SparseDepthRange` | 0.9x / 1.1x of the sparse depths | samples of the coarsest level |
@@ -220,18 +231,23 @@ arguments, so the pair export uses the same penalties.
 Three EPFL ground-truth scenes, `--resolution-level 1`, F-score of the dense point-cloud against
 the laser-scanned ground truth at the scene's tolerance (visibility-restricted completeness, the
 `bench/eval_mesh2mesh.py` metric); walls on a 24-thread workstation, PatchMatch with the default
-geometric iterations.
+geometric iterations. The scenes have cameras only: their virtual point-cloud, and hence the depth
+ranges, is seeded, so a run is reproducible to the byte and every difference between arms is real.
 
 | scene | pair SGM + pair fusion | multi-view SGM | PatchMatch CPU | PatchMatch CUDA |
 |---|---|---|---|---|
-| Herz-Jesu-P8 (8 views, τ 1 cm) | F 0.332, 33 s | **F 0.376, 27 s** | F 0.402, 85 s | F 0.403, 6 s |
-| fountain-P11 (11 views, τ 0.5 cm) | F 0.253, 65 s | **F 0.253, 39 s** | F 0.268, 150 s | F 0.252, 9 s |
-| Herz-Jesu-P25 (25 views, τ 1 cm) | F 0.466, 145 s | **F 0.496, 115 s** | | F 0.609, 21 s |
+| Herz-Jesu-P8 (8 views, τ 1 cm) | F 0.332, 33 s | **F 0.372, 31 s** | F 0.402, 85 s | F 0.403, 6 s |
+| fountain-P11 (11 views, τ 0.5 cm) | F 0.253, 65 s | **F 0.260, 46 s** | F 0.268, 150 s | F 0.252, 9 s |
+| Herz-Jesu-P25 (25 views, τ 1 cm) | F 0.466, 145 s | **F 0.503, 130 s** | | F 0.609, 21 s |
 
-Multi-view SGM matches PatchMatch's precision on Herz-Jesu-P8 (0.693 vs 0.697) and gains recall
-on every scene over the pair version (0.258 vs 0.223, 0.170 vs 0.167, 0.386 vs 0.353); on
-fountain-P11 it ties at the scene's tight tolerance and leads at 2τ and 4τ (F 0.532 vs 0.497,
-0.738 vs 0.711). At the depth-map level, before fusion, it fills 96% of the pixels, and its
+Multi-view SGM matches PatchMatch's precision on Herz-Jesu-P8 (0.699 vs 0.697) and gains recall
+on every scene over the pair version (0.254 vs 0.223, 0.173 vs 0.167, 0.389 vs 0.353); on
+fountain-P11 it leads it at every tolerance, most at 2τ and 4τ (F 0.540 vs 0.497, 0.741 vs 0.711).
+The sub-pixel search on the matching cost (§2.6) accounts for 0.007 of the F-score on
+fountain-P11 and Herz-Jesu-P25 (0.253 and 0.496 without it) and for 20% of the time; it raises the
+precision on all three scenes (by 0.005, 0.020, 0.017) and the F-score at 2τ (0.588 vs 0.580,
+0.540 vs 0.532, 0.710 vs 0.701), but costs 0.003 at τ on Herz-Jesu-P8 (0.376 without it), where
+the fusion merges the now closer depths into 2% fewer points. At the depth-map level, before fusion, it fills 96% of the pixels, and its
 confidence separates good depths from bad ones: on Herz-Jesu-P8 the lowest two deciles are 6-11%
 precise at τ, the others 23-62% (ROC-AUC of the confidence predicting a depth within τ: 0.71, and
 0.68 on fountain-P11). The remaining gap to PatchMatch is recall and widens with the number of
@@ -241,13 +257,14 @@ The pair matcher's poor recall before this design had a separate cause in the co
 regularization epsilon of 1e-3 under the square root of the variance product, three orders of
 magnitude above the product itself for [0,1] intensities, pushed nearly every NCC toward zero; its
 removal took the pair version on Herz-Jesu-P8 from F 0.13 to 0.31, the penalties and the pair
-fusion's trust range to 0.33. Run-to-run noise of every arm is about ±0.002 F.
+fusion's trust range to 0.33.
 
 ---
 
 ## 6. Rejected alternatives
 
-All numbers are F on Herz-Jesu-P8 unless stated; noise ±0.002.
+All numbers are F on Herz-Jesu-P8 unless stated. Most were measured before the virtual point-cloud
+was seeded and carry about ±0.002 of run-to-run noise.
 
 **Architecture**
 - **Pair matching and pair fusion** (the previous `-2`): every neighbor rectified and matched
@@ -281,6 +298,17 @@ All numbers are F on Herz-Jesu-P8 unless stated; noise ±0.002.
 - **Dense window at the finest level, parabola or linear sub-pixel fit:** 0.376, and 0.255, 0.254,
   0.253 on fountain-P11: within noise, and the dense window is 40% slower.
 - **Slope fit window** 5x5 vs 7x7: 0.375 vs 0.376.
+- **Per-pixel view selection** (ACMM-like: after each level but the finest, every view's cost at
+  the pixel's winner, averaged over the valid pixels of a 5x5 window, selects the views the next
+  level matches the pixel against): the best 2 views fixed per pixel 0.369, the best 3 0.366; the
+  mean of every view under cost 128 0.350 (under 80, 0.357); the best-two mean per sample among
+  the views under 128 0.374 (under 100, 0.373; 1x1 window 0.374, 9x9 0.376), vs 0.374-0.376. The
+  best-two mean per sample already drops the views that are occluded at a sample, and a set fixed
+  per pixel from a coarser winner is wrong wherever that winner is.
+- **Photometric refinement variants:** on the 16 matched texels instead of the whole window 0.369,
+  and 0.257 on fountain-P11, vs 0.372 and 0.260; one iteration 0.373 and 0.259; three 0.372 and
+  0.260; stepping `δ` toward the lower side where the costs are not convex, instead of stopping,
+  the same as stopping.
 - **Penalties:** x0.25 0.354, x0.5 0.357, x1 (18/24) 0.354, x2 0.339 (fronto-parallel); with the
   slant 18/24 0.369 vs 9/12 0.375.
 
@@ -300,11 +328,5 @@ Ordered by expected gain on recall, the gap to PatchMatch.
    and normals would add per-pixel slanted planes and view selection, and a geometric-consistency
    pass against the neighbors' depth-maps, which is where PatchMatch's recall advantage grows with
    the number of views. It also makes SGM a fast initializer for PatchMatch.
-2. **Per-pixel view selection.** The best-two mean picks views per sample; choosing the views per
-   pixel from the coarser level's per-view costs (as ACMM does) would stop an occluder that matches
-   a wrong sample well from being chosen there.
-3. **Photometric sub-pixel refinement.** The fit on aggregated costs is the accuracy limit at tight
-   tolerances (fountain-P11 at 0.5 cm); a local continuous search of the multi-view cost around the
-   winner, on the dense window, would recover it.
-4. **Speed.** SIMD over the disparity slice in the aggregation and over the texels in the cost; a
+2. **Speed.** SIMD over the disparity slice in the aggregation and over the texels in the cost; a
    CUDA port of both, which would put the SGM mode next to PatchMatch CUDA in wall time.
