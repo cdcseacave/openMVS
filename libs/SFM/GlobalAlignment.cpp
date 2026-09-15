@@ -1165,8 +1165,6 @@ void GlobalAlignment::ScoreSeam(
 	const std::vector<SeamCorrespondence>& correspondences,
 	const Transform& T,
 	const std::function<int(IIndex)>& sideOf,
-	const std::vector<Point3>& movingCentres,
-	const std::vector<Point3>& fixedCentres,
 	SeamScore& score) const
 {
 	ASSERT(observations.size() == correspondences.size());
@@ -1259,28 +1257,6 @@ void GlobalAlignment::ScoreSeam(
 	// each block's centres live in that block's own frame, so they are counted per block
 	for (const auto& [block, centres] : supportingCentres)
 		score.centres += CountDistinctRigCentres(centres);
-
-	// a transform that drops one block's cameras among the other's has placed them wrong however
-	// well it explains the correspondences: after a right one, a camera's nearest neighbour is one
-	// of its own. A lone moving camera has no own neighbour to be nearest, and nothing to interleave.
-	if (movingCentres.size() >= 2 && !fixedCentres.empty()) {
-		std::vector<Point3> moved;
-		moved.reserve(movingCentres.size());
-		for (const Point3& C : movingCentres)
-			moved.emplace_back(T * C);
-		unsigned numOwnNeighbours = 0;
-		FOREACH(i, moved) {
-			REAL nearestOwn = std::numeric_limits<REAL>::max(), nearestOther = nearestOwn;
-			FOREACH(j, moved)
-				if (j != i)
-					nearestOwn = MINF(nearestOwn, norm(moved[i] - moved[j]));
-			for (const Point3& C : fixedCentres)
-				nearestOther = MINF(nearestOther, norm(moved[i] - C));
-			if (nearestOwn <= nearestOther)
-				++numOwnNeighbours;
-		}
-		score.ownNeighbourFraction = (float)numOwnNeighbours / (float)moved.size();
-	}
 }
 /*----------------------------------------------------------------*/
 
@@ -1302,26 +1278,16 @@ String GlobalAlignment::FailedGates(
 		(float)score.support[1] < voteRatio * (float)score.contra[1] ||
 		score.centres < config.minSupportingCentres)
 		fail("camera votes");
-	// the two blocks' cameras left unmixed
-	if (score.ownNeighbourFraction < config.minOwnNeighbourFraction)
-		fail("interleaving");
 	return failed;
 }
 /*----------------------------------------------------------------*/
 
 void GlobalAlignment::ScoreCandidate(const std::vector<Scene>& subScenes, SeamCandidate& c) const
 {
-	std::vector<Point3> centresA, centresB;
-	for (const Image& img : subScenes[c.sceneA].images)
-		if (img.IsValid())
-			centresA.emplace_back(img.C);
-	for (const Image& img : subScenes[c.sceneB].images)
-		if (img.IsValid())
-			centresB.emplace_back(img.C);
 	const uint32_t blockA = c.sceneA;
 	ScoreSeam(subScenes, c.observations, c.correspondences, c.T,
 		[this, blockA](IIndex image) { return globalToLocal.at(image).first == blockA ? 0 : 1; },
-		centresA, centresB, c.score);
+		c.score);
 	c.weight = c.score.Weight(config.maxVoteWeight);
 }
 /*----------------------------------------------------------------*/
@@ -1387,18 +1353,18 @@ void GlobalAlignment::BuildPlacementPool(
 			blockPair.first, blockPair.second, frameOf, inGroup, pool);
 	}
 
-	// the cameras of both sides, each already in the frame its side is judged in
+	// the model's cameras in the model frame: the footprint two placements of the group are told
+	// apart in
 	FOREACH(b, poses) {
-		if (!inGroup[b] && !inModel[b])
+		if (!inModel[b])
 			continue;
-		std::vector<Point3>& centres = inGroup[b] ? pool.groupCentres : pool.modelCentres;
 		for (const Image& img : subScenes[b].images)
 			if (img.IsValid())
-				centres.emplace_back(frameOf[b] * img.C);
+				pool.modelCentres.emplace_back(frameOf[b] * img.C);
 	}
-	DEBUG_ULTIMATE("Placement pool of %u blocks: %u observations from %u candidates, %u against %u cameras",
+	DEBUG_ULTIMATE("Placement pool of %u blocks: %u observations from %u candidates against %u cameras",
 		(unsigned)group.blocks.size(), (unsigned)pool.observations.size(), (unsigned)pool.candidateIdx.size(),
-		(unsigned)pool.groupCentres.size(), (unsigned)pool.modelCentres.size());
+		(unsigned)pool.modelCentres.size());
 }
 /*----------------------------------------------------------------*/
 
@@ -1415,7 +1381,7 @@ void GlobalAlignment::ScoreHypothesis(
 		[this, &groupBlocks](IIndex image) {
 			return std::find(groupBlocks.begin(), groupBlocks.end(), globalToLocal.at(image).first) != groupBlocks.end() ? 0 : 1;
 		},
-		pool.groupCentres, pool.modelCentres, h.score);
+		h.score);
 	h.failedGate = FailedGates(h.score, h.score.inliers, bestOwnInliers, voteRatio);
 }
 /*----------------------------------------------------------------*/
@@ -2825,10 +2791,10 @@ bool GlobalAlignment::PlaceGroup(
 			h.failedGate = "pair agreement";
 		LogVotes(String::FormatString("Placement of block %u, %s",
 			firstBlock, PlacementWord(h.source)).c_str(), h.score);
-		DEBUG_ULTIMATE("Placement of block %u, %s: %u inliers of %u, %u+/%u- neighbours, %u pairs across weighing %.0f for / %.0f against, %u of %u neighbours contradicting, own-neighbour %.2f%s%s",
+		DEBUG_ULTIMATE("Placement of block %u, %s: %u inliers of %u, %u+/%u- neighbours, %u pairs across weighing %.0f for / %.0f against, %u of %u neighbours contradicting%s%s",
 			firstBlock, PlacementWord(h.source), h.score.inliers, (unsigned)pool.observations.size(),
 			verdict.support, verdict.contra, pairs.numPairs, pairs.agree, pairs.disagree,
-			pairs.numContra, pairs.numNeighbours, h.score.ownNeighbourFraction,
+			pairs.numContra, pairs.numNeighbours,
 			h.Passed() ? "" : ", dropped by ", h.failedGate.c_str());
 	}
 
@@ -3047,15 +3013,14 @@ bool GlobalAlignment::CloseCycleThrough(
 	String& reason) const
 {
 	closedCycle = false;
-	// only a group whose cameras the model leaves unmixed, refused by what it explains or by the
-	// votes alone and with nothing among the admitted blocks against it, can be facing a cycle
-	// instead of failing on its own. A neighbour that agrees is not asked for: a trusted seam the
-	// model's drift has pushed past the bars is a loop discrepancy, which is the very thing the
-	// averaging spreads, and a group small enough carries every one of its seams there at once. A
-	// neighbour whose own seam is not trusted and disagrees all the same is another matter: nothing
-	// says the model drifted rather than the group being wrong.
-	if (best.Passed() || best.failedGate.find("interleaving") != String::npos ||
-		best.neighbourContra > 0)
+	// only a group refused by what it explains or by the votes alone, with nothing among the
+	// admitted blocks against it, can be facing a cycle instead of failing on its own. A neighbour
+	// that agrees is not asked for: a trusted seam the model's drift has pushed past the bars is a
+	// loop discrepancy, which is the very thing the averaging spreads, and a group small enough
+	// carries every one of its seams there at once. A neighbour whose own seam is not trusted and
+	// disagrees all the same is another matter: nothing says the model drifted rather than the
+	// group being wrong.
+	if (best.Passed() || best.neighbourContra > 0)
 		return false;
 	// and only a group two or more admitted blocks trust: a single seam closes nothing
 	std::vector<uint32_t> tentativeSeams(modelSeams);
@@ -3159,10 +3124,10 @@ bool GlobalAlignment::CandidateFromPrediction(
 	RefineSeamTransform(inliers, c.T);
 	ScoreCandidate(subScenes, c);
 
-	// the gates it answers to: enough of the pair explained, and the two blocks' cameras left
-	// unmixed. Its own cameras' votes are not among them, a pair this thin having none to cast
+	// the one gate it answers to: enough of the pair explained. Its own cameras' votes are not
+	// asked, a pair this thin having none to cast
 	const String failed = FailedGates(c.score, c.score.inliers, 0, config.minCameraVoteRatio);
-	if (failed.find("union support") != String::npos || failed.find("interleaving") != String::npos) {
+	if (failed.find("union support") != String::npos) {
 		DEBUG_ULTIMATE("Seam (%u, %u) predicted: %u inliers of the %u correspondences it was fitted to, "
 			"dropped by %s", a, b, c.score.inliers, (unsigned)inliers.size(), failed.c_str());
 		return false;

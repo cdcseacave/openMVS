@@ -12591,72 +12591,6 @@ bool BlockJointRefinementTest()
 }
 /*----------------------------------------------------------------*/
 
-// A block carried onto the arc of another one: however well the correspondences can be read, a
-// transform that drops one block's cameras among another's has placed it wrong
-bool InterleavingVetoTest()
-{
-	TD_TIMER_START();
-	const RingSceneConfig cfg{6, 10};
-	Scene scene;
-	std::vector<IIndexArr> blocks;
-	std::vector<Pose3D> gtPoses;
-	GenerateRingScene(cfg, scene, blocks, gtPoses);
-	std::vector<Scene> subScenes;
-	std::vector<IIndexArr> localToGlobals;
-	std::vector<SEACAVE::Transform> applied;
-	BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
-
-	GlobalAlignmentConfig alignCfg;
-	GlobalAlignment alignment(scene, alignCfg);
-	std::vector<SeamCandidate> candidates;
-	if (!alignment.EstimateSeamCandidates(subScenes, localToGlobals, candidates)) {
-		VERBOSE("InterleavingVetoTest FAILED: the ring yielded no seam candidate");
-		return false;
-	}
-
-	// the model holds blocks 0 and 3, two arcs apart; block 1 asks to join it
-	std::vector<BlockPose> poses(cfg.numBlocks);
-	for (const uint32_t b : {0u, 3u}) {
-		poses[b].T = applied[0] * applied[b].Invert();
-		poses[b].model = 0;
-		poses[b].state = BlockPose::ADMITTED;
-	}
-	BlockGroup group;
-	group.blocks.push_back(1);
-	group.frames.emplace_back();
-	PlacementPool pool;
-	alignment.BuildPlacementPool(subScenes, candidates, poses, 0, group, pool);
-	if (pool.candidateIdx.empty() || pool.observations.empty()) {
-		VERBOSE("InterleavingVetoTest FAILED: the pool of block 1 against the model holds %u observations from %u candidates",
-			(unsigned)pool.observations.size(), (unsigned)pool.candidateIdx.size());
-		return false;
-	}
-
-	// where block 1 belongs, and a third of a turn away, which lands its arc on block 3's
-	PlacementHypothesis right, wrong;
-	right.T = applied[0] * applied[1].Invert();
-	wrong.T = applied[0] * RingRotation(120) * applied[1].Invert();
-	alignment.ScoreHypothesis(subScenes, pool, 0, alignCfg.minCameraVoteRatio, right);
-	alignment.ScoreHypothesis(subScenes, pool, 0, alignCfg.minCameraVoteRatio, wrong);
-
-	if (wrong.Passed() || wrong.failedGate.find("interleaving") == String::npos ||
-		wrong.score.ownNeighbourFraction >= 0.5f) {
-		VERBOSE("InterleavingVetoTest FAILED: the turned placement kept %u inliers, %.2f of its cameras next to their own, failing '%s'",
-			wrong.score.inliers, wrong.score.ownNeighbourFraction, wrong.failedGate.c_str());
-		return false;
-	}
-	if (!right.Passed() || right.score.ownNeighbourFraction < alignCfg.minOwnNeighbourFraction) {
-		VERBOSE("InterleavingVetoTest FAILED: the true placement kept %u inliers, %.2f of its cameras next to their own, failing '%s'",
-			right.score.inliers, right.score.ownNeighbourFraction, right.failedGate.c_str());
-		return false;
-	}
-	VERBOSE("InterleavingVetoTest PASSED: %u inliers and %.2f own neighbours against %u and %.2f (%s)",
-		right.score.inliers, right.score.ownNeighbourFraction,
-		wrong.score.inliers, wrong.score.ownNeighbourFraction, TD_TIMER_GET_FMT().c_str());
-	return true;
-}
-/*----------------------------------------------------------------*/
-
 // A whole ring, block by block: every block arrives in its own frame and the placement has to take
 // all of them into one model, on the evidence of the seams alone
 bool RingPlacementTest()
@@ -12786,51 +12720,6 @@ bool UnobservableScalePairTest()
 			}
 	VERBOSE("UnobservableScalePairTest PASSED: %u blocks placed, the %u seam(s) between blocks %u and %u "
 		"observe no scale (%s)", rep.numPlaced, numShallowSeams, tinyA, tinyB, TD_TIMER_GET_FMT().c_str());
-	return true;
-}
-/*----------------------------------------------------------------*/
-
-// A block whose cameras were made to see another block's wall as if they stood on its arc: the
-// seam reads well and is still wrong, and only the cameras it interleaves say so
-bool RingInterleavingVetoTest()
-{
-	TD_TIMER_START();
-	const RingSceneConfig cfg{6, 10};
-	Scene scene;
-	std::vector<IIndexArr> blocks;
-	std::vector<Pose3D> gtPoses;
-	GenerateRingScene(cfg, scene, blocks, gtPoses);
-	// block 1's cameras given block 3's points, turned onto block 3's arc
-	const unsigned planted = PlantFalseSeam(scene, blocks, 1, 3, 600, cfg.camsPerBlock, RingRotation(-120));
-	if (planted < 600) {
-		VERBOSE("RingInterleavingVetoTest FAILED: only %u tracks of block 3 could be planted on block 1", planted);
-		return false;
-	}
-	std::vector<Scene> subScenes;
-	std::vector<IIndexArr> localToGlobals;
-	std::vector<SEACAVE::Transform> applied;
-	BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
-
-	GlobalAlignmentConfig alignCfg;
-	GlobalAlignment ga(scene, alignCfg);
-	MergeReport rep;
-	{
-		LogCapture log;
-		ga.MergeScenes(subScenes, localToGlobals, rep);
-		if (!log.Contains("Seam (1, 3) rig A on B dropped by interleaving")) {
-			VERBOSE("RingInterleavingVetoTest FAILED: the planted seam was not dropped by the interleaving veto");
-			return false;
-		}
-	}
-	for (const SeamCandidate& c : rep.candidates)
-		if (c.sceneA == 1 && c.sceneB == 3) {
-			VERBOSE("RingInterleavingVetoTest FAILED: the planted seam survived as class %u", (unsigned)c.cls);
-			return false;
-		}
-	if (!CheckRingMerge("RingInterleavingVetoTest", rep, scene, gtPoses, cfg.numBlocks, 1, 0.1, 0.001))
-		return false;
-	VERBOSE("RingInterleavingVetoTest PASSED: %u planted tracks vetoed, %u blocks placed (%s)",
-		planted, rep.numPlaced, TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 /*----------------------------------------------------------------*/
@@ -13022,9 +12911,8 @@ bool AmbiguousPairTest()
 // The ambiguous pair with none of its true evidence left, and its structure turned the other way,
 // off block 0's arc rather than onto it: the planted direction is the only seam there is, three
 // cameras of block 1 stand behind it, the cameras of block 0 it planted on have nothing to hold
-// against it and it interleaves with none of them, so the gates pass a placement twenty degrees
-// wrong. The verified pairs between the two blocks kept their word, and it is the one thing left
-// that says otherwise
+// against it, so the gates pass a placement twenty degrees wrong. The verified pairs between the
+// two blocks kept their word, and it is the one thing left that says otherwise
 bool ContradictedPlacementTest()
 {
 	TD_TIMER_START();
@@ -13517,8 +13405,8 @@ bool FoldedBlockTest()
 // A chord across the ring that reads perfectly on its own evidence: two cameras of block 3 are given
 // block 9's wall, turned half a turn about the ring axis onto block 3's own arc and pushed out to
 // 1.6 times the radius, so the implied placement sits three units outside block 9's own cameras
-// instead of among them and the interleaving veto stays quiet, while the chord contradicts the way
-// round the ring by half a turn. Only the cycles the chord closes can indict it.
+// instead of among them, while the chord contradicts the way round the ring by half a turn. Only
+// the cycles the chord closes can indict it.
 bool FalseChordTest()
 {
 	TD_TIMER_START();

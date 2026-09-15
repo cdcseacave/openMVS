@@ -396,11 +396,9 @@ bool RobustAveragingScaleTest();
 bool RobustAveragingTranslationTest();
 bool SeamGraphConsensusTest();
 bool BlockJointRefinementTest();
-bool InterleavingVetoTest();
 bool RingPlacementTest();
 bool UnobservableScaleTest();
 bool UnobservableScalePairTest();
-bool RingInterleavingVetoTest();
 bool AmbiguousPairTest();
 // A placement that passes every vote but is contradicted by the verified image pairs across it is
 // refused (GlobalAlignmentConfig::maxPairRotationResidual)

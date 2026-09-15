@@ -216,7 +216,7 @@ Places each independently reconstructed block ("sub-scene") into a shared frame,
 1. **Seam measurement** (`EstimateSeamCandidates`/`EstimateSeamPair`): every adjacent block pair, both directions — 3D-3D similarity (`ALIGN_POINTS`) or generalized-camera PnP with scale, one block's cameras as a rig against the other's tracks (`ALIGN_CAMERAS`, default) — gated by camera votes (`minCommonTracks` 25, `maxReprojError` 4px)
 2. **Seam graph** (`ClassifySeamGraph`): robust rotation/scale/translation averaging as the cycle test that a seam's own evidence cannot provide — ROBUST / VERIFIED / UNDECIDED / REJECTED
 3. **Initial poses** (`ComputeInitialBlockPoses`): the trusted seams alone average each component about its best-connected block
-4. **Placement** (`PlaceBlocks`/`PlaceGroup`/`AdmitGroup`): one block at a time, held to four gates (union support, camera votes, neighbours, interleaving); loop closure (`CloseCycleThrough`) and camera relaxation (`RelaxCameras`) for what the placement order alone cannot resolve
+4. **Placement** (`PlaceBlocks`/`PlaceGroup`/`AdmitGroup`): one block at a time, held to four gates (union support, camera votes, neighbours, pair agreement); loop closure (`CloseCycleThrough`) and camera relaxation (`RelaxCameras`) for what the placement order alone cannot resolve
 5. **Merge**: apply the transforms of the model holding the most images, average shared camera intrinsics, union-find the tracks (the correspondences of a seam the merged model rests on join by construction); every other block is merged without a pose, for the resection to recover its images
 
 ### Rotation Averaging (`GlobalRotationAveraging.h`)

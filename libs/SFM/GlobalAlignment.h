@@ -58,12 +58,12 @@ class SFM_API Scene;
  * places a whole model too: it pools every correspondence between the group and the model,
  * estimates the pose from that pool both ways plus any initial pose, scores each hypothesis and
  * holds it to four gates — enough of the pool explained, both sides' cameras behind it, the
- * admitted neighbours' own seams agreeing with it, and the two sides' cameras left unmixed. A
- * group that passes is admitted and every admitted block is refined jointly over the seams the
- * model rests on; one that fails is deferred and retried once the model has grown.
+ * admitted neighbours' own seams agreeing with it, and the verified image pairs across it behind
+ * it. A group that passes is admitted and every admitted block is refined jointly over the seams
+ * the model rests on; one that fails is deferred and retried once the model has grown.
  *
- * Loop closure: a block whose cameras are unmixed and whose neighbours hold nothing against it,
- * refused only by what it explains or by the votes, is the block a cycle runs through. Taken in
+ * Loop closure: a block whose neighbours hold nothing against it, refused only by what it
+ * explains or by the votes, is the block a cycle runs through. Taken in
  * on trust, the model is averaged over its seams so the discrepancy spreads over them, and it is
  * judged again there (CloseCycleThrough). A pair with correspondences but no seam of its own can
  * still enter once the model predicts where it lies (VerifyWeakSeams), at a floored weight. A
@@ -124,15 +124,13 @@ struct SFM_API CameraVote
 
 // What the evidence says about one transform: the inlier mask over the observations it was scored
 // on, the vote of every image with enough correspondences, the vote counts per side (0 = A, or the
-// group being placed; 1 = B, or the model), the distinct supporting centres, and the share of the
-// moving cameras whose nearest neighbour is one of their own after the transform. Filled by
-// ScoreSeam only; held by every candidate and every placement hypothesis
+// group being placed; 1 = B, or the model) and the distinct supporting centres. Filled by ScoreSeam
+// only; held by every candidate and every placement hypothesis
 struct SFM_API SeamScore
 {
 	unsigned inliers{0};
 	unsigned support[2]{0, 0}, contra[2]{0, 0};
 	unsigned centres{0};
-	float ownNeighbourFraction{1.f};
 	std::vector<bool> inlierMask;  // parallel to the scored observations
 	std::vector<CameraVote> votes; // one per image with >= minVoteCorrespondences correspondences
 	float Weight(float maxVoteWeight) const { return MINF(float(support[0] + support[1]), maxVoteWeight); }
@@ -214,7 +212,6 @@ struct SFM_API PlacementPool
 	std::vector<uint32_t> candidateIdx;              // candidates contributing (group <-> admitted)
 	std::vector<SeamObservation> observations;       // forward == true: point in the group, camera in the model; false: the reverse
 	std::vector<SeamCorrespondence> correspondences; // parallel to observations
-	std::vector<Point3> groupCentres;                // centres of every group camera in the group frame
 	std::vector<Point3> modelCentres;                // centres of every admitted camera in the model frame
 };
 
@@ -259,7 +256,6 @@ struct SFM_API GlobalAlignmentConfig
 	unsigned minSupportingCentres{3};       // distinct supporting rig centres, both sides summed
 	float minCrossSupportRatio{0.5f};       // share of a side's own best candidate a candidate must explain
 	float minRigSpreadRatio{0.03f};         // rig spread over median depth for an observable scale
-	float minOwnNeighbourFraction{0.8f};    // a transform that interleaves the two blocks' cameras is vetoed
 	// The scale and rotation limits gate the two directions of a seam against each other and the
 	// neighbour check of a placement; the translation limit is the graph's own bar.
 	float maxSimRotationError{3.f};         // degrees
@@ -354,13 +350,12 @@ public:
 		std::vector<SeamCorrespondence>& correspondences) const;
 
 	/**
-	 * @brief The scoring core, the one place camera votes and the interleaving fraction are computed
+	 * @brief The scoring core, the one place camera votes are computed
 	 *
 	 * Fills the inlier mask of `observations` under T (an observation's `forward` flag says which
 	 * side holds the point; p_side1 = T * p_side0), the vote of every image with enough
-	 * correspondences, the counts per side (sideOf(image) -> 0 or 1), the distinct supporting
-	 * centres, and the share of `movingCentres`, mapped by T, whose nearest centre among the mapped
-	 * moving centres and `fixedCentres` (side 1's frame) is a moving one.
+	 * correspondences, the counts per side (sideOf(image) -> 0 or 1) and the distinct supporting
+	 * centres.
 	 */
 	void ScoreSeam(
 		const std::vector<Scene>& subScenes,
@@ -368,22 +363,18 @@ public:
 		const std::vector<SeamCorrespondence>& correspondences,
 		const Transform& T,
 		const std::function<int(IIndex)>& sideOf,
-		const std::vector<Point3>& movingCentres,
-		const std::vector<Point3>& fixedCentres,
 		SeamScore& score) const;
 
 	/**
-	 * @brief The gates on a score, all of them evaluated: union support (inliers >=
-	 * minCommonTracks and, when bestOther > 0, inliersOther >= minCrossSupportRatio * bestOther),
-	 * camera votes (support >= voteRatio * contra on each side, and centres >=
-	 * minSupportingCentres) and interleaving (ownNeighbourFraction >= minOwnNeighbourFraction)
+	 * @brief The gates on a score, both evaluated: union support (inliers >= minCommonTracks
+	 * and, when bestOther > 0, inliersOther >= minCrossSupportRatio * bestOther) and camera votes
+	 * (support >= voteRatio * contra on each side, and centres >= minSupportingCentres)
 	 * @return the failed gates, comma-separated ("" when the score passed)
 	 */
 	String FailedGates(const SeamScore& score, unsigned inliersOther, unsigned bestOther, float voteRatio) const;
 
 	/**
-	 * @brief ScoreSeam of c.T on the candidate's own observations: sides A and B, block A's
-	 * camera centres moved by T among block B's
+	 * @brief ScoreSeam of c.T on the candidate's own observations, sides A and B
 	 */
 	void ScoreCandidate(const std::vector<Scene>& subScenes, SeamCandidate& c) const;
 
@@ -676,11 +667,10 @@ private:
 	 *
 	 * Every correspondence between the two sides is pooled, the pose is estimated from that pool
 	 * in both directions and taken from stage 4 as a third opinion, and each hypothesis answers
-	 * to the same five gates: how much of the pool it explains, what the cameras of both sides
-	 * vote, whether the admitted neighbours' own seams agree with what it implies, whether it
-	 * leaves the two sides' cameras unmixed, and whether the verified image pairs across it are
-	 * behind it (MeasurePlacementPairs). A block is a group of one, and a whole model is a group
-	 * too.
+	 * to the same four gates: how much of the pool it explains, what the cameras of both sides
+	 * vote, whether the admitted neighbours' own seams agree with what it implies, and whether the
+	 * verified image pairs across it are behind it (MeasurePlacementPairs). A block is a group of
+	 * one, and a whole model is a group too.
 	 * @param winner out: the hypothesis that won, or the best one when none did
 	 * @param reason out: why nothing could be placed, empty on success
 	 * @return true when a hypothesis carried the group
@@ -837,9 +827,8 @@ private:
 	 * No estimator runs here — the prediction is the hypothesis. The pair's raw correspondences are
 	 * collected, those it explains at kLooseSeamFactor times the reprojection bar are what it is
 	 * refined over, and the refined seam is then scored at that bar like any other. It answers to
-	 * the union support and the interleaving veto, but not to its own cameras' votes: what stands
-	 * behind it is the consistency of the model that predicted it, not the pair's ability to measure
-	 * itself.
+	 * the union support, but not to its own cameras' votes: what stands behind it is the
+	 * consistency of the model that predicted it, not the pair's ability to measure itself.
 	 * @param T the predicted similarity, A -> B
 	 * @param c out: the candidate, filled only when it is returned true
 	 * @return true when the pair still explains enough of itself under the prediction
