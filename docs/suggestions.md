@@ -452,8 +452,8 @@ The following five suggestions offer the highest impact relative to implementati
    - **Risk:** Medium.
 
 2. **SGM Depth-Map Refinement and Speed** (Priority: Medium | Complexity: Medium)
-   - **What:** Seed a few PatchMatch iterations (with geometric consistency against the neighbors' depth-maps) from the multi-view SGM depth and normals (`--fusion-mode -2`); add per-pixel view selection from the coarser level's per-view costs instead of the best-two mean; add a photometric sub-pixel refinement pass; port the aggregation and cost to SIMD/CUDA.
-   - **Why:** SGM's precision is close to PatchMatch's but its recall is lower and the gap widens with the number of views (F-score 0.375/0.254/0.500 vs PatchMatch's 0.40/0.27/0.61 on Herz-Jesu-P8/fountain-P11/Herz-Jesu-P25); it is CPU-only and already faster than PatchMatch there.
+   - **What:** Seed a few PatchMatch iterations (with per-pixel view selection and geometric consistency against the neighbors' depth-maps) from the multi-view SGM depth and normals (`--fusion-mode -2`); port the cost, aggregation and refinement to CUDA.
+   - **Why:** SGM's precision is close to PatchMatch's but its recall is lower and the gap widens with the number of views (F-score 0.372/0.259/0.503 vs PatchMatch's 0.40/0.27/0.61 on Herz-Jesu-P8/fountain-P11/Herz-Jesu-P25); it is CPU-only and already faster than PatchMatch there. Per-pixel view selection inside SGM itself was measured and rejected (design record §6).
    - **Risk:** Low — the SGM mode is opt-in.
 
 3. **Confidence-Guided Iteration Count** (Priority: Medium | Complexity: Low)

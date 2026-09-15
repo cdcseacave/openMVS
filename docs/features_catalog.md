@@ -562,11 +562,12 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
   - Per image, all selected neighbor views are matched at once (`MatchMultiView`): the "disparities" are uniform inverse-depth samples, one step being at most one pixel of motion in the neighbor that moves the most; the resulting depth-map goes directly to the standard depth-map fusion
   - Matching cost: for each pixel and sample, the mean of the two lowest neighbor WZNCC costs (occluded or out-of-view neighbors do not veto), on a 7x7 bilateral-weighted window sampled at 16 of its 49 texels and warped by the surface slant estimated at the previous pyramid level (fronto-parallel at the coarsest level); the pair export can use a Census cost instead, a compile-time option (`SGM_SIMILARITY`)
   - Hierarchical scheme: image pyramid (top level at least 320 px wide); the coarsest level searches, per pixel, the whole inverse-depth range spanned by the sparse-point depth range of the image; finer levels search only around the previous level's estimate (7x7 neighborhood if valid, 41x41 otherwise, 5 to 32/64 samples). With no second map to cross-check against, only the coarsest level is speckle-filtered (`--speckle-size`); the depth-map fusion discards the depths the other views do not confirm
-  - Cost aggregation along 8 paths (P1=9, P2=12 scaled up to 15x in flat regions), Winner-Take-All, sub-pixel refinement (LC-blend, quarter-sample steps stored as int16); confidence = 1 - cost/(8*255), the same [0,1] scale as PatchMatch's NCC score
+  - Cost aggregation along 8 paths (P1=9, P2=12 scaled up to 15x in flat regions), Winner-Take-All, sub-pixel fit on the aggregated costs (LC-blend, quarter-sample steps stored as int16), then a parabola search of the matching cost itself over the whole window and the two best views; confidence = sqrt(1 - best/second) of the aggregated costs (peak ratio, second = best non-adjacent sample), on the [0,1] scale of PatchMatch's NCC score
+  - Matching-cost kernel on Eigen arrays (SIMD over the texels), with the samples at which a view sees the warped patch found once per pixel and view as an inverse-depth interval
 - **Design record:** `docs/design/SemiGlobalMatching.md` (algorithm as implemented, validated defaults, rejected alternatives, future work)
 - **GPU Support:** No
 - **Threading:** own worker-thread pool (`SemiGlobalMatcher::CreateThreads`)
-- **Dependencies:** OpenCV, Common
+- **Dependencies:** OpenCV, Eigen, Common
 
 ---
 
