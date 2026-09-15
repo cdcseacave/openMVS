@@ -105,16 +105,23 @@ does not veto the right depth.
   pixel (`InitWeightedPatch`).
 - **Slanted warp.** Over a plane, inverse depth is affine in the pixel coordinates, so the
   neighbor position of texel `δ` is `h0 + A·δ + b·(g·δ)·step`, with `h0 = A·x + invz·b` and `g`
-  the pixel's slope from the previous level (zero at the coarsest level). The slant costs three
-  multiply-adds per texel.
-- **Sampling.** Bilinear on the neighbor's gray image; a neighbor whose warped patch corners are
-  not all inside its image, or behind it, is skipped for that sample (the patch is convex under
-  the homography, so its corners bound it).
+  the pixel's slope from the previous level (zero at the coarsest level). The part that does not
+  depend on the sample, `A·δ + b·(g·δ)·step`, is computed once per pixel and view.
+- **Visibility.** The patch is convex under the homography, so its corners bound it, and each
+  corner's position is affine in `invz`: being in front of the view and inside its image is a set
+  of linear inequalities in `invz`, which give per pixel and view one interval of inverse depths
+  (`InsideRange`). A view is skipped for the samples outside its interval, with no per-sample test.
+- **Sampling.** Bilinear on the neighbor's gray image.
 - **Score.** `ncc = Σw·(I_k-mean)·(I_ref-mean) / sqrt(var_ref·var_k)`, cost
   `round((1-min(ncc,1))·255)`, 255 for `ncc ≤ 0`. The variance product has no regularization
   term: the gray images are in [0,1], so the product is of order 1e-5 for textured patches and any
   epsilon large enough to matter drowns the NCC of every patch. A product at or below 1e-16 is a
   textureless patch and costs 255, as does a sample no neighbor sees.
+- **Kernel** (`TexelsCost`). The texels are structures of arrays (`Eigen::Array<float,N,1>`, N 16
+  or 49), so the projection, the bilinear weights and the three weighted sums run on SIMD lanes;
+  only the four taps of each texel are gathered one texel at a time, interpolated in the same
+  loop. Against the scalar per-texel code this and the visibility interval cut the depth-map
+  estimation time by 36-37% on the three scenes of §5.
 
 ### 2.5 Aggregation and winner-take-all (`Aggregate`)
 
@@ -179,7 +186,8 @@ densification loop estimates one image at a time, so the pool is the only parall
 buffers are `imagePixels` (16 bytes per pixel), `imageCosts` (1 byte per pixel and sample) and
 `imageAccumCosts` (2 bytes per pixel and sample); the coarsest level, searching the full range,
 dominates both memory and time. The multi-view matcher also holds the gray images of the
-neighbors at full and current resolution.
+neighbors at full and current resolution. On Herz-Jesu-P8 the matching cost takes 65% of the
+estimation time, the photometric refinement 20% and the aggregation 12%.
 
 ---
 
@@ -328,5 +336,6 @@ Ordered by expected gain on recall, the gap to PatchMatch.
    and normals would add per-pixel slanted planes and view selection, and a geometric-consistency
    pass against the neighbors' depth-maps, which is where PatchMatch's recall advantage grows with
    the number of views. It also makes SGM a fast initializer for PatchMatch.
-2. **Speed.** SIMD over the disparity slice in the aggregation and over the texels in the cost; a
-   CUDA port of both, which would put the SGM mode next to PatchMatch CUDA in wall time.
+2. **Speed.** A CUDA port of the cost, the aggregation and the refinement, which would put the SGM
+   mode next to PatchMatch CUDA in wall time. On the CPU the matching cost is vectorized (§2.4);
+   the aggregation works on 16-bit costs, for which Eigen has no SIMD packets.

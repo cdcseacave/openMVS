@@ -301,14 +301,84 @@ void SemiGlobalMatcher::Match(const Scene& scene, IIndex idxImage, IIndex numNei
 	}
 }
 
-// bilinear sample of a float image at a position with at least one pixel to its right and below
-static inline float SampleBilinear(const Image32F& image, float x, float y)
+// the R x R texels of a patch as structures of arrays, so the per-texel arithmetic of the matching
+// cost runs on SIMD lanes: their projective positions in a neighbor view relative to the patch
+// center, and the weights of the reference patch (see InitWeightedPatch)
+template <int R>
+struct TexelPositions {
+	enum { N = R*R };
+	typedef Eigen::Array<float,N,1,Eigen::DontAlign> Texels;
+	Texels x, y, z;
+	// the positions over the plane whose inverse depth changes by slant at each texel, from these
+	// positions over the fronto-parallel plane and the view's inverse-depth direction b
+	void Warp(const TexelPositions& offsets, const Point3f& b, const Texels& slant) {
+		x = offsets.x + b.x*slant;
+		y = offsets.y + b.y*slant;
+		z = offsets.z + b.z*slant;
+	}
+	// the open interval of inverse depths invz at which the patch at the positions hx+b*invz+these is
+	// in front of the view and inside [0,width1)x[0,height1): the patch is convex under the homography,
+	// so its corners bound it, and every bound on a corner is linear in invz
+	std::pair<float,float> InsideRange(const Point3f& hx, const Point3f& b, float width1, float height1) const {
+		float lo(-FLT_MAX), hi(FLT_MAX);
+		const auto bound = [&](float alpha, float beta) { // alpha+beta*invz > 0
+			if (beta > 0)
+				lo = MAXF(lo, -alpha/beta);
+			else if (beta < 0)
+				hi = MINF(hi, -alpha/beta);
+			else if (alpha <= 0)
+				hi = -FLT_MAX;
+		};
+		for (const int n: {0, R-1, N-R, N-1}) {
+			const Point3f h(hx.x+x[n], hx.y+y[n], hx.z+z[n]);
+			bound(h.z, b.z);
+			bound(h.x, b.x);
+			bound(h.y, b.y);
+			bound(width1*h.z-h.x, width1*b.z-b.x);
+			bound(height1*h.z-h.y, height1*b.z-b.y);
+		}
+		return {lo, hi};
+	}
+};
+template <int R>
+struct TexelPatch {
+	enum { N = R*R };
+	Eigen::Array<float,N,1> weights, tempWeights;
+	float sumWeights, normSq0;
+	template <typename WeightedPatch>
+	explicit TexelPatch(const WeightedPatch& w) : sumWeights(w.sumWeights), normSq0(w.normSq0) {
+		for (int n=0; n<N; ++n) {
+			weights[n] = w.weights[n].weight;
+			tempWeights[n] = w.weights[n].tempWeight;
+		}
+	}
+};
+
+// WZNCC cost in [0,255] of a reference patch against a gray image sampled bilinearly at the projective
+// positions h0+warp of its texels, which must be in front of the view and inside it (InsideRange)
+template <int R>
+static float TexelsCost(const Image32F& gray, const TexelPositions<R>& warp, const Point3f& h0, const TexelPatch<R>& ref)
 {
-	const int x0((int)x), y0((int)y);
-	const float fx(x-(float)x0), fy(y-(float)y0);
-	const float* p0(image.ptr<const float>(y0)+x0);
-	const float* p1(image.ptr<const float>(y0+1)+x0);
-	return (p0[0]+(p0[1]-p0[0])*fx)*(1.f-fy) + (p1[0]+(p1[1]-p1[0])*fx)*fy;
+	enum { N = R*R };
+	typedef Eigen::Array<float,N,1> Texels;
+	const Texels iz((warp.z+h0.z).inverse());
+	const Texels u((warp.x+h0.x)*iz), v((warp.y+h0.y)*iz);
+	const Eigen::Array<int,N,1> iu(u.template cast<int>()), iv(v.template cast<int>());
+	const Texels fu(u-iu.template cast<float>()), fv(v-iv.template cast<float>());
+	Texels f;
+	const size_t stride(gray.step1());
+	const float* const data(gray.ptr<const float>());
+	for (int n=0; n<N; ++n) {
+		const float* const p(data+(size_t)iv[n]*stride+iu[n]);
+		const float top(p[0]+(p[1]-p[0])*fu[n]), bottom(p[stride]+(p[stride+1]-p[stride])*fu[n]);
+		f[n] = top+(bottom-top)*fv[n];
+	}
+	const Texels fw(f*ref.weights);
+	const float sum(fw.sum()), sumSq((f*fw).sum()), nom((f*ref.tempWeights).sum());
+	const float normSq1(sumSq-SQUARE(sum)/ref.sumWeights);
+	const float nrmSq(ref.normSq0*normSq1);
+	const float ncc(nrmSq <= 1e-16f ? 0.f : nom/SQRT(nrmSq));
+	return ncc <= 0 ? 255.f : (1.f-MINF(ncc,1.f))*255.f;
 }
 
 // Estimate the depth-map of an image by matching it against all its neighbor views at once:
@@ -332,7 +402,8 @@ void SemiGlobalMatcher::MatchMultiView(const Scene& scene, IIndex idxImage, IInd
 	enum { maxViews = 32 }; // neighbor views matched at most
 	enum { numBestViews = 2 }; // neighbor costs averaged per sample
 	enum { texelStep = 2 }; // every other texel of the patch is matched, as accurate as all of them
-	enum { rowTexels = halfWindowSizeX*2/texelStep+1, levelTexels = (halfWindowSizeY*2/texelStep+1)*rowTexels };
+	enum { rowTexels = halfWindowSizeX*2/texelStep+1 };
+	static_assert(halfWindowSizeX == halfWindowSizeY, "the texels form a square patch");
 	TD_TIMER_STARTD();
 	// the points seen by the image bound its depth range
 	Depth dMin, dMax;
@@ -345,8 +416,8 @@ void SemiGlobalMatcher::MatchMultiView(const Scene& scene, IIndex idxImage, IInd
 		cv::Matx33d R; cv::Vec3d t; // pose relative to the reference camera
 		ImageGray grayFull, gray; // full resolution and current level intensities
 		Point3f A[3], b; // A stored by columns, at the current level
-		Point3f offsets[levelTexels]; // A*(j,i,0) for each matched texel
-		Point3f offsetsDense[numTexels]; // A*(j,i,0) for each texel of the window
+		TexelPositions<rowTexels> offsets; // A*(j,i,0) for each matched texel
+		TexelPositions<windowSizeX> offsetsDense; // A*(j,i,0) for each texel of the window
 		float width1, height1; // largest valid sampling position
 		void SetLevel(const cv::Matx33d& invKref, const cv::Matx33d& K) {
 			const cv::Matx33d _A(K * R * invKref);
@@ -354,22 +425,19 @@ void SemiGlobalMatcher::MatchMultiView(const Scene& scene, IIndex idxImage, IInd
 			for (int j=0; j<3; ++j)
 				A[j] = Point3f((float)_A(0,j), (float)_A(1,j), (float)_A(2,j));
 			b = Point3f((float)_b[0], (float)_b[1], (float)_b[2]);
-			int n(0);
-			for (int i=-halfWindowSizeY; i<=halfWindowSizeY; i+=texelStep)
-				for (int j=-halfWindowSizeX; j<=halfWindowSizeX; j+=texelStep)
-					offsets[n++] = A[0]*(float)j + A[1]*(float)i;
-			n = 0;
-			for (int i=-halfWindowSizeY; i<=halfWindowSizeY; ++i)
-				for (int j=-halfWindowSizeX; j<=halfWindowSizeX; ++j)
-					offsetsDense[n++] = A[0]*(float)j + A[1]*(float)i;
+			const auto setOffsets = [this](auto& offsets, int tStep) {
+				int n(0);
+				for (int i=-halfWindowSizeY; i<=halfWindowSizeY; i+=tStep) {
+					for (int j=-halfWindowSizeX; j<=halfWindowSizeX; j+=tStep, ++n) {
+						const Point3f o(A[0]*(float)j + A[1]*(float)i);
+						offsets.x[n] = o.x; offsets.y[n] = o.y; offsets.z[n] = o.z;
+					}
+				}
+			};
+			setOffsets(offsets, texelStep);
+			setOffsets(offsetsDense, 1);
 			width1 = (float)gray.width()-1.001f;
 			height1 = (float)gray.height()-1.001f;
-		}
-		bool IsInside(const Point3f& h) const {
-			if (h.z <= 0)
-				return false;
-			const float x(h.x/h.z), y(h.y/h.z);
-			return x >= 0 && y >= 0 && x < width1 && y < height1;
 		}
 	};
 	CLISTDEFIDX(NeighborView,IIndex) views;
@@ -439,32 +507,6 @@ void SemiGlobalMatcher::MatchMultiView(const Scene& scene, IIndex idxImage, IInd
 			for (int j=-halfWindowSizeX; j<=halfWindowSizeX; j+=tStep)
 				slant[n++] = slope.x*(float)j + slope.y*(float)i;
 	};
-	// cost in [0,255] of the reference patch against the neighbor patch warped by the plane through h0,
-	// over the matched or all texels, or -1 if the warped patch is not inside the neighbor image
-	auto viewCost = [](const NeighborView& view, const WeightedPatch& w, const Point3f& h0, const float* slant, bool bDense) -> float {
-		const Point3f* offsets(bDense ? view.offsetsDense : view.offsets);
-		const int nRow(bDense ? (int)windowSizeX : (int)rowTexels), nTexels(bDense ? (int)numTexels : (int)levelTexels);
-		// the warped patch is inside the image if its corners are
-		if (!view.IsInside(h0+offsets[0]+view.b*slant[0]) ||
-			!view.IsInside(h0+offsets[nRow-1]+view.b*slant[nRow-1]) ||
-			!view.IsInside(h0+offsets[nTexels-nRow]+view.b*slant[nTexels-nRow]) ||
-			!view.IsInside(h0+offsets[nTexels-1]+view.b*slant[nTexels-1]))
-			return -1.f;
-		float sum(0), sumSq(0), nom(0);
-		for (int n=0; n<nTexels; ++n) {
-			const Point3f h(h0+offsets[n]+view.b*slant[n]);
-			const float f(SampleBilinear(view.gray, h.x/h.z, h.y/h.z));
-			const WeightedPatch::Pixel& pw = w.weights[n];
-			const float fw(f*pw.weight);
-			sum += fw;
-			sumSq += f*fw;
-			nom += f*pw.tempWeight;
-		}
-		const float normSq1(sumSq-SQUARE(sum)/w.sumWeights);
-		const float nrmSq(w.normSq0*normSq1);
-		const float ncc(nrmSq <= 1e-16f ? 0.f : nom/SQRT(nrmSq));
-		return ncc <= 0 ? 255.f : (1.f-MINF(ncc,1.f))*255.f;
-	};
 	do {
 		const ViewData refLevel(refData.GetImage(scale));
 		const cv::Size size(refLevel.imageGray.size());
@@ -500,11 +542,18 @@ void SemiGlobalMatcher::MatchMultiView(const Scene& scene, IIndex idxImage, IInd
 			const ImageRef u(c+halfWindowSizeX,r+halfWindowSizeY);
 			WeightedPatch w;
 			InitWeightedPatch(refLevel, u, w, texelStep);
-			float slant[levelTexels];
-			texelSlant(r, c, texelStep, slant);
+			const TexelPatch<rowTexels> ref(w);
+			TexelPositions<rowTexels>::Texels slant;
+			texelSlant(r, c, texelStep, slant.data());
 			Point3f hx[maxViews];
-			FOREACH(k, views)
-				hx[k] = views[k].A[0]*(float)u.x + views[k].A[1]*(float)u.y + views[k].A[2];
+			TexelPositions<rowTexels> warps[maxViews];
+			std::pair<float,float> inside[maxViews];
+			FOREACH(k, views) {
+				const NeighborView& view = views[k];
+				hx[k] = view.A[0]*(float)u.x + view.A[1]*(float)u.y + view.A[2];
+				warps[k].Warp(view.offsets, view.b, slant);
+				inside[k] = warps[k].InsideRange(hx[k], view.b, view.width1, view.height1);
+			}
 			Cost* costs = imageCosts.data()+pixel.idx;
 			for (int d=pixel.range.minDisp; d<pixel.range.maxDisp; ++d) {
 				const float invz(invzMin+(float)d*step);
@@ -512,9 +561,10 @@ void SemiGlobalMatcher::MatchMultiView(const Scene& scene, IIndex idxImage, IInd
 				int numViewCosts(0);
 				if (invz > 0) {
 					FOREACH(k, views) {
-						const float cost(viewCost(views[k], w, hx[k] + views[k].b*invz, slant, false));
-						if (cost < 0)
+						if (invz <= inside[k].first || invz >= inside[k].second)
 							continue;
+						const NeighborView& view = views[k];
+						const float cost(TexelsCost(view.gray, warps[k], hx[k] + view.b*invz, ref));
 						// keep the view costs sorted
 						int i(numViewCosts++);
 						for (; i > 0 && viewCosts[i-1] > cost; --i)
@@ -559,20 +609,28 @@ void SemiGlobalMatcher::MatchMultiView(const Scene& scene, IIndex idxImage, IInd
 		const ImageRef u(c+halfWindowSizeX,r+halfWindowSizeY);
 		WeightedPatch w;
 		InitWeightedPatch(refData, u, w);
-		float slant[numTexels];
-		texelSlant(r, c, 1, slant);
+		const TexelPatch<windowSizeX> ref(w);
+		TexelPositions<windowSizeX>::Texels slant;
+		texelSlant(r, c, 1, slant.data());
 		Point3f hx[maxViews];
-		FOREACH(k, views)
-			hx[k] = views[k].A[0]*(float)u.x + views[k].A[1]*(float)u.y + views[k].A[2];
+		TexelPositions<windowSizeX> warps[maxViews];
+		std::pair<float,float> inside[maxViews];
+		FOREACH(k, views) {
+			const NeighborView& view = views[k];
+			hx[k] = view.A[0]*(float)u.x + view.A[1]*(float)u.y + view.A[2];
+			warps[k].Warp(view.offsetsDense, view.b, slant);
+			inside[k] = warps[k].InsideRange(hx[k], view.b, view.width1, view.height1);
+		}
 		IIndex best[numBestViews]; int numBest(0); {
 			const float invz(invzMin+t*step);
 			if (invz <= 0)
 				return t;
 			float bestCosts[numBestViews];
 			FOREACH(k, views) {
-				const float cost(viewCost(views[k], w, hx[k] + views[k].b*invz, slant, true));
-				if (cost < 0)
+				if (invz <= inside[k].first || invz >= inside[k].second)
 					continue;
+				const NeighborView& view = views[k];
+				const float cost(TexelsCost(view.gray, warps[k], hx[k] + view.b*invz, ref));
 				// keep the lowest costs sorted
 				int i(numBest);
 				if (numBest < (int)numBestViews)
@@ -593,11 +651,11 @@ void SemiGlobalMatcher::MatchMultiView(const Scene& scene, IIndex idxImage, IInd
 				return -1.f;
 			float sum(0);
 			for (int i=0; i<numBest; ++i) {
-				const NeighborView& view = views[best[i]];
-				const float cost(viewCost(view, w, hx[best[i]] + view.b*invz, slant, true));
-				if (cost < 0)
+				const IIndex k(best[i]);
+				if (invz <= inside[k].first || invz >= inside[k].second)
 					return -1.f;
-				sum += cost;
+				const NeighborView& view = views[k];
+				sum += TexelsCost(view.gray, warps[k], hx[k] + view.b*invz, ref);
 			}
 			return sum/numBest;
 		};
