@@ -265,6 +265,20 @@ precise at τ, the others 23-62% (ROC-AUC of the confidence predicting a depth w
 0.68 on fountain-P11). The remaining gap to PatchMatch is recall and widens with the number of
 views (Herz-Jesu-P25).
 
+On the Tanks and Temples training scenes (the Metashape poses and sparse cloud,
+`--resolution-level 1 --number-views 12`, official evaluator), against PatchMatch CUDA's
+recorded F-score at the same settings:
+
+| scene | multi-view SGM | PatchMatch CUDA |
+|---|---|---|
+| Truck (251 images, τ 5 mm) | F 0.652 (P 0.579, R 0.747), 11 min | F 0.722 (P 0.679, R 0.771), 2-4 min |
+| Barn (410 images, τ 1 cm) | F 0.517 (P 0.460, R 0.589), 31 min | F 0.648 (P 0.577, R 0.739), 2-4 min |
+
+The gap is wider than on the EPFL scenes, and on Truck it is mostly precision. The multi-view
+matcher writes a depth at nearly every pixel it searches (all of them on Truck) and leaves the
+depth-map fusion's cross-view check as the only filter, where PatchMatch also removes, in its
+geometric-consistency iterations, the depths its neighbors' depth-maps contradict (§7).
+
 The pair matcher's poor recall before this design had a separate cause in the cost: a
 regularization epsilon of 1e-3 under the square root of the variance product, three orders of
 magnitude above the product itself for [0,1] intensities, pushed nearly every NCC toward zero; its
@@ -339,7 +353,8 @@ Ordered by expected gain on recall, the gap to PatchMatch.
 1. **Depth-map refinement seeded by SGM.** A few PatchMatch iterations starting from the SGM depth
    and normals would add per-pixel slanted planes and view selection, and a geometric-consistency
    pass against the neighbors' depth-maps, which is where PatchMatch's recall advantage grows with
-   the number of views. It also makes SGM a fast initializer for PatchMatch.
+   the number of views and its precision advantage on the large scenes comes from. It also makes
+   SGM a fast initializer for PatchMatch.
 2. **Speed.** A CUDA port of the cost, the aggregation and the refinement, which would put the SGM
    mode next to PatchMatch CUDA in wall time. On the CPU the matching cost is vectorized (§2.4);
    the aggregation works on 16-bit costs, for which Eigen has no SIMD packets and which MSVC does
