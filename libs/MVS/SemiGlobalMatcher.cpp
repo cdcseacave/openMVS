@@ -989,8 +989,12 @@ void SemiGlobalMatcher::Aggregate(const ImageGray& imageGray, DisparityMap& disp
 			do { \
 				const int idx(u.y*sizeValid.width+u.x); \
 				const PixelData& pixel = imagePixels[idx]; \
-				if (!pixel.range.isValid()) \
+				if (!pixel.range.isValid()) { \
+					/* the path restarts after an unsearched pixel */ \
+					lines(0).R = Range{0,0}; \
+					Ip = Igray; \
 					continue; \
+				} \
 				const Cost* costs = imageCosts.cdata()+pixel.idx; \
 				AccumCost* accums = imageAccumCosts.data()+pixel.idx; \
 				const LineData& Lp = lines(0); \
@@ -1162,8 +1166,12 @@ void SemiGlobalMatcher::Aggregate(const ImageGray& imageGray, DisparityMap& disp
 	#define ACCUM_PIXELS(dx, dy, _x) \
 		const int idx(r*sizeValid.width+c); \
 		const PixelData& pixel = imagePixels[idx]; \
-		if (!pixel.range.isValid()) \
+		if (!pixel.range.isValid()) { \
+			/* the paths restart after an unsearched pixel */ \
+			for (int idxDir=0; idxDir<numDirs; ++idxDir) \
+				lines(idxDir,1,_x).R = Range{0,0}; \
 			continue; \
+		} \
 		const Cost* costs = imageCosts.cdata()+pixel.idx; \
 		AccumCost* accums = imageAccumCosts.data()+pixel.idx; \
 		for (int idxDir=0; idxDir<numDirs; ++idxDir) { \

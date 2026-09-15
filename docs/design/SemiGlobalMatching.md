@@ -129,7 +129,8 @@ Shared with the pair matcher. The aggregated costs are `uint16`, one slice per p
 before the sweep. The 8 paths are 4 direction pairs: each path family is a set of independent
 lines dispatched to the thread pool, each line walking its pixels with two rolling buffers (the
 previous and current pixel's `L` slice and range). The single-threaded path runs the classic two
-raster passes with 4 directions each.
+raster passes with 4 directions each. A path starts at the border of the valid region and restarts
+after every unsearched pixel, with an empty previous range.
 
 Per pixel step, with `Lp` the previous pixel's slice over range `Rp` and `Ls` the current one over
 `Rs`: `P2` is adaptive, `P2·(1 + 14·exp(-ΔI²/(2·38²)))` with `ΔI` the gray difference along the
@@ -241,8 +242,9 @@ arguments, so the pair export uses the same penalties.
 Three EPFL ground-truth scenes, `--resolution-level 1`, F-score of the dense point-cloud against
 the laser-scanned ground truth at the scene's tolerance (visibility-restricted completeness, the
 `bench/eval_mesh2mesh.py` metric); walls on a 24-thread workstation (multi-view SGM on its 16
-performance-core threads), PatchMatch with the default geometric iterations. The scenes have cameras only: their virtual point-cloud, and hence the depth
-ranges, is seeded, so a run is reproducible to the byte and every difference between arms is real.
+performance-core threads), PatchMatch with the default geometric iterations. The scenes have
+cameras only: their virtual point-cloud, and hence the depth ranges, is seeded, so a run is
+reproducible to the byte and every difference between arms is real.
 
 | scene | pair SGM + pair fusion | multi-view SGM | PatchMatch CPU | PatchMatch CUDA |
 |---|---|---|---|---|
@@ -257,8 +259,8 @@ The sub-pixel search on the matching cost (§2.6) accounts for 0.006 and 0.007 o
 fountain-P11 and Herz-Jesu-P25 (0.253 and 0.496 without it) and for 20% of the time; it raises the
 precision on all three scenes (by 0.005, 0.020, 0.017) and the F-score at 2τ (0.588 vs 0.580,
 0.540 vs 0.532, 0.710 vs 0.701), but costs 0.003 at τ on Herz-Jesu-P8 (0.376 without it), where
-the fusion merges the now closer depths into 2% fewer points. At the depth-map level, before fusion, it fills 96% of the pixels, and its
-confidence separates good depths from bad ones: on Herz-Jesu-P8 the lowest two deciles are 6-11%
+the fusion merges the now closer depths into 2% fewer points. At the depth-map level, before
+fusion, it fills 96% of the pixels, and its confidence separates good depths from bad ones: on Herz-Jesu-P8 the lowest two deciles are 6-11%
 precise at τ, the others 23-62% (ROC-AUC of the confidence predicting a depth within τ: 0.71, and
 0.68 on fountain-P11). The remaining gap to PatchMatch is recall and widens with the number of
 views (Herz-Jesu-P25).
