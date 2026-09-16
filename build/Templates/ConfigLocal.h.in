@@ -75,6 +75,9 @@
 // Headless debug mode (no modal dialogs, ASSERT prints to stderr, no LogConsole redirection)
 #cmakedefine _HEADLESS_DEBUG
 
+// Fixed seed for every random-number generator, so that a release run is reproducible too
+#cmakedefine _USE_DETERMINISTIC_RANDOM
+
 // In-source library test entry points, called by the Tests application
 #cmakedefine _USE_TESTS
 

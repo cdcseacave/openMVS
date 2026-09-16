@@ -443,7 +443,7 @@ DepthEstimator::DepthEstimator(
 	#endif
 	const MapRefArr& _coords)
 	:
-	#ifndef _RELEASE
+	#ifdef _USE_DETERMINISTIC_RANDOM
 	rnd(SEACAVE::Random::default_seed),
 	#endif
 	idxPixel(_idx),

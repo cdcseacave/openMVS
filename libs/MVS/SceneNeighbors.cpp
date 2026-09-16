@@ -186,6 +186,8 @@ bool Scene::EstimateNeighborViewsPointCloud(unsigned maxResolution)
 {
 	constexpr Depth minPercentDepthPerturb(0.3f);
 	constexpr Depth maxPercentDepthPerturb(1.3f);
+	// the random depth makes the cloud, and hence the depth ranges the depth-map estimation derives
+	// from it, differ from run to run; configure with OpenMVS_DETERMINISTIC_RANDOM=ON to fix the seed
 	const auto ProjectGridToImage = [&](IIndex idI, IIndex idJ, Depth depth) {
 		const Depth minDepthPerturb(depth * minPercentDepthPerturb);
 		const Depth maxDepthPerturb(depth * maxPercentDepthPerturb);
