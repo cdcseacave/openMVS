@@ -215,8 +215,8 @@ size_t SFM::MatchFeaturesGuided(
 	// Step 2: the ratio test inside the region, where a rival exists: the winner has to beat the
 	// closest rival there by the matcher's ratio, strictly, like every other ratio test in the
 	// matcher -- two candidates as close as each other along the line is the very ambiguity this
-	// test exists to refuse. Keypoints outside the region take no part: the geometry says the match
-	// is not there.
+	// test exists to refuse. A winner that passes it, or has no rival to pass, then answers to the
+	// reference outside the region as search.outsideReference asks (Step 3).
 	// Both sides here are TRUE descriptor norms (DescriptorDistance recomputes them), so this test
 	// enforces d0/d1 < matchRatio, while PairsMatcher::MatchFeatures applies the same constant to
 	// FLANN's SQUARED L2 distances and so enforces d0/d1 < sqrt(matchRatio): at the same setting the
@@ -225,21 +225,30 @@ size_t SFM::MatchFeaturesGuided(
 	const float matchRatio = pairsMatcher.GetConfig().matchRatio;
 	enum : uint8_t { REFUSED, ACCEPTED, UNDECIDED };
 	std::vector<uint8_t> verdicts(winners.size(), UNDECIDED);
-	std::vector<size_t> lone; // winners with no rival in their region, decided by the outside reference
+	std::vector<size_t> lone; // winners still to be decided by the outside reference
 	FOREACH(q, winners) {
 		const Winner& winner = winners[q];
-		if (winner.rivalDistance >= 0.f)
-			verdicts[q] = winner.distance < matchRatio*winner.rivalDistance ? ACCEPTED : REFUSED;
-		else if (!search.loneOutsideReference)
+		if (winner.rivalDistance >= 0.f) {
+			if (!(winner.distance < matchRatio*winner.rivalDistance)) {
+				verdicts[q] = REFUSED;
+				continue;
+			}
+			if (search.outsideReference != GuidedSearch::OUTSIDE_ALL) {
+				verdicts[q] = ACCEPTED; // its rival was all it had to answer to
+				continue;
+			}
+		} else if (search.outsideReference == GuidedSearch::OUTSIDE_NONE) {
 			verdicts[q] = ACCEPTED; // alone in its region, and asked to stand
-		else
-			lone.push_back(q);
+			continue;
+		}
+		lone.push_back(q);
 	}
 
-	// Step 3: a winner alone in its region, when asked to, has to beat the closest described
-	// keypoint of imgB OUTSIDE it by the same ratio -- what refuses a lone impostor where the true
-	// keypoint was never detected. The thread's own descriptor matcher answers all of them in one
-	// batched query over the whole described prefix of imgB, k = K_NN, exactly as
+	// Step 3: the reference outside the region -- for every winner still standing (OUTSIDE_ALL), or
+	// for a winner alone in its region (OUTSIDE_LONE): it has to beat the closest described keypoint
+	// of imgB OUTSIDE the region by the same ratio, what refuses an impostor where the true keypoint
+	// was never detected (see MatchGeometric.h). The thread's own descriptor matcher answers all of
+	// them in one batched query over the whole described prefix of imgB, k = K_NN, exactly as
 	// PairsMatcher::MatchFeatures runs its own (k = 2) one.
 	if (!lone.empty()) {
 		cv::Mat queryDescriptors((int)lone.size(), imgA.descriptors.cols, imgA.descriptors.type());

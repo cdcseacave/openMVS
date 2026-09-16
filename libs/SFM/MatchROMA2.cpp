@@ -1011,7 +1011,7 @@ bool SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, const Pa
 			search.length = config.guidedBandLengthCells*cell;
 			search.F = pair.F;
 			search.sameFeatureDistance = config.guidedSameFeatureDistance;
-			search.loneOutsideReference = config.guidedLoneOutsideReference;
+			search.outsideReference = (uint8_t)MINF(config.guidedOutsideReference, 2u);
 			if (config.guidedBandResidualFactor > 0.f && pair.F.has_value()) {
 				// the adaptive half-width: the residuals of the verdict's inlier cells under the
 				// pair's geometry, in pixels, against the matcher's own epipolar bar as the floor

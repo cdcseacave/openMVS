@@ -79,11 +79,14 @@ struct SFM_API ROMA2Config {
 	// the band's length -- a pair whose images the fitted geometry explains poorly (distortion, a
 	// wrong focal) gets a wider band, one it explains well a narrower one. 0 = the fixed half-width.
 	float guidedBandResidualFactor = 0.f;
-	// A winner with no rival inside its band has nothing to beat there; with this on it must still
-	// beat the closest keypoint OUTSIDE the band by the matcher's ratio, the reference every winner
-	// answered to before the band -- what refuses a lone impostor where the true keypoint was never
-	// detected; off accepts it.
-	bool guidedLoneOutsideReference = true;
+	// Which winners must also beat the closest keypoint OUTSIDE the band by the matcher's ratio, the
+	// reference every winner answered to before the band (GuidedSearch::OutsideReference): 2 every
+	// winner, 1 only a winner with no rival inside its band, 0 none. The outside reference is what
+	// refuses an impostor where the true keypoint was never detected: a random winner among the few
+	// keypoints of a band beats the band's second best by the ratio a third of the time, and never the
+	// best of the image's thousands -- on alameda the band's own ratio alone admitted 33M matches SIFT
+	// does not have, at twice the epipolar error of the common ones (see MatchGeometric.h).
+	unsigned guidedOutsideReference = 2;
 	// A rival within this distance (pixels) of the winner is the same feature described twice (a
 	// scale or orientation duplicate) and does not count as a rival in the ratio test.
 	float guidedSameFeatureDistance = 3.f;

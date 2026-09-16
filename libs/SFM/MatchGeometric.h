@@ -28,7 +28,13 @@ struct SFM_API GuidedSearch {
 	float halfWidth = 0.f;           // half-width of the band across the line, imgB pixels; <= 0 searches the disc
 	std::optional<Matrix3x3> F;      // x_B^T F x_A = 0 in pixels, the line's source; absent searches the disc
 	float sameFeatureDistance = 3.f; // a rival this close to the winner is the same feature described twice, not a rival
-	bool loneOutsideReference = true; // a winner with no rival in its band must beat the closest keypoint outside it by the ratio
+	// Which winners must also beat the closest described keypoint OUTSIDE the region by the ratio
+	enum OutsideReference : uint8_t {
+		OUTSIDE_NONE = 0, // none: a winner alone in its region stands, one with a rival answers to the rival alone
+		OUTSIDE_LONE = 1, // a winner alone in its region, which has no rival to answer to
+		OUTSIDE_ALL  = 2  // every winner, on top of the ratio against its rival
+	};
+	uint8_t outsideReference = OUTSIDE_ALL;
 };
 
 // The adaptive half-width of the band (ROMA2Config::guidedBandResidualFactor): `factor` times the
@@ -60,10 +66,16 @@ SFM_API float GuidedBandHalfWidth(std::vector<float> residuals, float factor, fl
  * so this is where it is caught. Keypoints outside the region take no part: the geometry says the
  * match is not there.
  *
- * A winner ALONE in its region has no rival to beat. With search.loneOutsideReference it must then
- * beat the closest described keypoint of imgB OUTSIDE the region by the same ratio -- the reference
- * every winner answered to before the band, and what refuses a lone impostor where the true keypoint
- * was never detected in imgB; without it the lone winner stands. The outside distance comes from the
+ * The reference OUTSIDE the region (search.outsideReference): a winner must also beat the closest
+ * described keypoint of imgB outside its region by the same ratio -- every winner (OUTSIDE_ALL), the
+ * reference every winner answered to before the band; or only a winner alone in its region, which
+ * has no rival to answer to (OUTSIDE_LONE); or none (OUTSIDE_NONE), a lone winner standing as it is.
+ * The outside reference is what refuses an impostor where the true keypoint was never detected in
+ * imgB: the winner is then a random keypoint of the region, one of a handful, and a handful's second
+ * best is beaten by the ratio a third of the time, where the best of imgB's thousands is not (on
+ * alameda, the region's ratio alone let through 33M matches SIFT does not have, at a median Sampson
+ * error twice that of the common ones, against 4.3M with the outside reference as well). The outside
+ * distance comes from the
  * thread's own descriptor matcher: the K_NN = 8 nearest neighbours of the query over all of imgB's
  * described descriptors (approximate when that matcher is a FLANN index, which is the default), the
  * first of them not in the region is "best outside"; when all K_NN are in the region the K_NN-th
@@ -95,8 +107,8 @@ SFM_API float GuidedBandHalfWidth(std::vector<float> residuals, float factor, fl
  * @param trackStatus   Status per prediction (1 = valid, 0 = invalid); an untracked keypoint has no
  *                      disc to search and is skipped.
  * @param search        The search region (GuidedSearch): the band's length and half-width in imgB's
- *                      pixels, the geometry its line comes from, the same-feature distance and whether
- *                      a lone winner answers to the outside reference.
+ *                      pixels, the geometry its line comes from, the same-feature distance and which
+ *                      winners answer to the outside reference.
  * @param threadIdx     Index of the calling thread, selecting its private descriptor matcher inside
  *                      pairsMatcher; must be in [0, PairsMatcher::GetNumMatchers()), and concurrent
  *                      calls must pass distinct indices.

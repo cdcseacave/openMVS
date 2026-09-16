@@ -2289,7 +2289,7 @@ bool ROMA2GuidedMatchTest()
 	search.length = 2.f*(float)MAXF(width, height)/160.f;
 	search.halfWidth = 0.5f*(float)MAXF(width, height)/160.f;
 	search.sameFeatureDistance = 3.f;
-	search.loneOutsideReference = true;
+	search.outsideReference = GuidedSearch::OUTSIDE_ALL;
 
 	MatchConfig matchCfg;
 	matchCfg.descriptorsAreBinary = true;
@@ -2369,18 +2369,22 @@ bool ROMA2GuidedBandTest()
 	// on that same row, so every epipolar line is horizontal and "along" is x, "across" is y; the
 	// prediction of query i is its own position plus one fixed offset, the band is centred on it
 	const Point2f offset(20.f, 10.f);
-	const float positionsA[4][2] = { {100.f, 100.f}, {200.f, 100.f}, {300.f, 100.f}, {400.f, 100.f} };
+	const float positionsA[6][2] = { {100.f, 100.f}, {200.f, 100.f}, {300.f, 100.f}, {400.f, 100.f}, {500.f, 100.f}, {600.f, 100.f} };
 	for (const auto& pt : positionsA)
 		imgA.keypoints.emplace_back(pt[0], pt[1], 10.f);
 	// imgB, per query: 0) its true match at the prediction, an impostor 5 px ACROSS the line (inside
 	// the two-cell disc, outside the half-cell band) and a rival 5 px ALONG it; 1) its true match and
 	// an equal-descriptor rival 6 px along the line; 2) its true match and a same-feature duplicate
-	// 2 px along; 3) its true match alone, with a lookalike far away; then distractors
-	const float positionsB[14][2] = {
+	// 2 px along; 3) its true match alone, with a lookalike far away; 4) its true match, a rival 6 px
+	// along the line and a lookalike far away; 5) its true match and a rival 6 px along the line, no
+	// lookalike anywhere; then distractors
+	const float positionsB[19][2] = {
 		{120.f, 110.f}, {120.f, 115.f}, {125.f, 110.f},
 		{220.f, 110.f}, {226.f, 110.f},
 		{320.f, 110.f}, {322.f, 110.f},
 		{420.f, 110.f}, {500.f, 300.f},
+		{520.f, 110.f}, {526.f, 110.f}, {300.f, 400.f},
+		{620.f, 110.f}, {626.f, 110.f},
 		{ 60.f, 300.f}, {160.f, 320.f}, {260.f, 340.f}, {360.f, 360.f}, {380.f,  40.f}
 	};
 	for (const auto& pt : positionsB)
@@ -2398,7 +2402,7 @@ bool ROMA2GuidedBandTest()
 	for (int r = 0; r < imgB.descriptors.rows; ++r)
 		for (int b = 0; b < descBytes; ++b)
 			imgB.descriptors.at<uint8_t>(r, b) = (uint8_t)(rng() & 0xFF);
-	const int copyDescriptor[8][2] = { {0,0}, {0,1}, {1,3}, {1,4}, {2,5}, {2,6}, {3,7}, {3,8} }; // {query of A, keypoint of B}
+	const int copyDescriptor[11][2] = { {0,0}, {0,1}, {1,3}, {1,4}, {2,5}, {2,6}, {3,7}, {3,8}, {4,9}, {4,11}, {5,12} }; // {query of A, keypoint of B}
 	for (const auto& copy : copyDescriptor)
 		imgA.descriptors.row(copy[0]).copyTo(imgB.descriptors.row(copy[1]));
 	imgB.descriptors.at<uint8_t>(0, 0) ^= 0x01; // the true match of query 0: Hamming distance 1
@@ -2429,7 +2433,7 @@ bool ROMA2GuidedBandTest()
 	search.halfWidth = 0.5f*(float)MAXF(width, height)/160.f;
 	search.F = Fundamental(2000.f, 100.f); // the epipole far off the frame: every band is horizontal
 	search.sameFeatureDistance = 3.f;
-	search.loneOutsideReference = true;
+	search.outsideReference = GuidedSearch::OUTSIDE_LONE;
 
 	const auto Report = [](const char* what, const std::vector<DMatch>& matches) {
 		VERBOSE("ROMA2GuidedBandTest FAILED: %s (%u matches)", what, (unsigned)matches.size());
@@ -2437,40 +2441,60 @@ bool ROMA2GuidedBandTest()
 			VERBOSE("ROMA2GuidedBandTest:   match %u: (%u,%u)", k, matches[k].queryIdx, matches[k].trainIdx);
 	};
 
+	// With the outside reference asked of lone winners only:
 	// query 0 matches its true keypoint: the closer impostor is off the line and never a candidate.
 	// query 1 is refused: its rival on the line is exactly as close, the match is ambiguous.
 	// query 2 matches, electing the smaller index of its two same-feature duplicates.
 	// query 3 is refused: alone in its band, it has to beat the far lookalike and cannot.
+	// query 4 matches: its rival is random, and its far lookalike is never looked at.
+	// query 5 matches: its rival is random.
 	std::vector<DMatch> matches;
-	if (MatchFeaturesGuided(matcher, imgA, imgB, trackedB, trackStatus, search, 0, matches) != 2 ||
-		matches.size() != 2 ||
+	if (MatchFeaturesGuided(matcher, imgA, imgB, trackedB, trackStatus, search, 0, matches) != 4 ||
+		matches.size() != 4 ||
 		matches[0].queryIdx != 0 || matches[0].trainIdx != 0 ||
-		matches[1].queryIdx != 2 || matches[1].trainIdx != 5) {
-		Report("band: expected (0,0) and (2,5)", matches);
+		matches[1].queryIdx != 2 || matches[1].trainIdx != 5 ||
+		matches[2].queryIdx != 4 || matches[2].trainIdx != 9 ||
+		matches[3].queryIdx != 5 || matches[3].trainIdx != 12) {
+		Report("band, outside reference for lone winners: expected (0,0), (2,5), (4,9) and (5,12)", matches);
 		return false;
 	}
 
-	// a winner alone in its band stands when the outside reference is not asked for
-	search.loneOutsideReference = false;
-	std::vector<DMatch> loneMatches;
-	if (MatchFeaturesGuided(matcher, imgA, imgB, trackedB, trackStatus, search, 0, loneMatches) != 3 ||
-		loneMatches.size() != 3 ||
-		loneMatches[2].queryIdx != 3 || loneMatches[2].trainIdx != 7) {
-		Report("lone candidate accepted: expected (0,0), (2,5) and (3,7)", loneMatches);
+	// with no outside reference a winner alone in its band stands too
+	search.outsideReference = GuidedSearch::OUTSIDE_NONE;
+	std::vector<DMatch> noneMatches;
+	if (MatchFeaturesGuided(matcher, imgA, imgB, trackedB, trackStatus, search, 0, noneMatches) != 5 ||
+		noneMatches.size() != 5 ||
+		noneMatches[2].queryIdx != 3 || noneMatches[2].trainIdx != 7) {
+		Report("band, no outside reference: expected (0,0), (2,5), (3,7), (4,9) and (5,12)", noneMatches);
 		return false;
 	}
-	search.loneOutsideReference = true;
+
+	// with the outside reference asked of every winner, a lookalike anywhere outside the band refuses
+	// the match whatever the rival inside it said: query 0 (its impostor is off the band, and closer),
+	// query 3 and query 4 go; query 2 and query 5, whose closest outside keypoint is random, stay
+	search.outsideReference = GuidedSearch::OUTSIDE_ALL;
+	std::vector<DMatch> allMatches;
+	if (MatchFeaturesGuided(matcher, imgA, imgB, trackedB, trackStatus, search, 0, allMatches) != 2 ||
+		allMatches.size() != 2 ||
+		allMatches[0].queryIdx != 2 || allMatches[0].trainIdx != 5 ||
+		allMatches[1].queryIdx != 5 || allMatches[1].trainIdx != 12) {
+		Report("band, outside reference for every winner: expected (2,5) and (5,12)", allMatches);
+		return false;
+	}
+	search.outsideReference = GuidedSearch::OUTSIDE_LONE;
 
 	// without a geometry the search is the disc: query 0's impostor is a candidate again and wins
 	// (its true match becomes the in-disc rival the impostor beats by the ratio); everything else is
 	// as with the band, the disc holding the same keypoints along the line
 	search.F.reset();
 	std::vector<DMatch> discMatches;
-	if (MatchFeaturesGuided(matcher, imgA, imgB, trackedB, trackStatus, search, 0, discMatches) != 2 ||
-		discMatches.size() != 2 ||
+	if (MatchFeaturesGuided(matcher, imgA, imgB, trackedB, trackStatus, search, 0, discMatches) != 4 ||
+		discMatches.size() != 4 ||
 		discMatches[0].queryIdx != 0 || discMatches[0].trainIdx != 1 ||
-		discMatches[1].queryIdx != 2 || discMatches[1].trainIdx != 5) {
-		Report("disc: expected (0,1) and (2,5)", discMatches);
+		discMatches[1].queryIdx != 2 || discMatches[1].trainIdx != 5 ||
+		discMatches[2].queryIdx != 4 || discMatches[2].trainIdx != 9 ||
+		discMatches[3].queryIdx != 5 || discMatches[3].trainIdx != 12) {
+		Report("disc: expected (0,1), (2,5), (4,9) and (5,12)", discMatches);
 		return false;
 	}
 
@@ -2479,11 +2503,11 @@ bool ROMA2GuidedBandTest()
 	// (the impostor wins), and leaves the other queries' bands as they were
 	search.F = Fundamental(130.f, 100.f);
 	std::vector<DMatch> epipoleMatches;
-	if (MatchFeaturesGuided(matcher, imgA, imgB, trackedB, trackStatus, search, 0, epipoleMatches) != 2 ||
-		epipoleMatches.size() != 2 ||
+	if (MatchFeaturesGuided(matcher, imgA, imgB, trackedB, trackStatus, search, 0, epipoleMatches) != 4 ||
+		epipoleMatches.size() != 4 ||
 		epipoleMatches[0].queryIdx != 0 || epipoleMatches[0].trainIdx != 1 ||
 		epipoleMatches[1].queryIdx != 2 || epipoleMatches[1].trainIdx != 5) {
-		Report("near the epipole: expected (0,1) and (2,5)", epipoleMatches);
+		Report("near the epipole: expected (0,1), (2,5), (4,9) and (5,12)", epipoleMatches);
 		return false;
 	}
 

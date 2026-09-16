@@ -85,9 +85,9 @@ bool ROMA2GuidedMatchTest();
 
 // The epipolar band of the guided sparse matching (GuidedSearch): a rival off the epipolar line is
 // no candidate, an equally close rival on it refuses the match, a same-feature duplicate is no
-// rival, a winner alone in its band answers to the outside reference only when asked, the search is
-// the disc without a geometry or near the epipole, and the adaptive half-width is the clamped
-// multiple of the median residual (GuidedBandHalfWidth)
+// rival, the outside reference is asked of no winner, of lone winners or of every winner as
+// configured, the search is the disc without a geometry or near the epipole, and the adaptive
+// half-width is the clamped multiple of the median residual (GuidedBandHalfWidth)
 bool ROMA2GuidedBandTest();
 
 // Pair assembly and storage (AssemblePairROMA2, StorePairROMA2): the union of the guided matches

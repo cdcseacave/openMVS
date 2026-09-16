@@ -252,8 +252,9 @@ a pair the warp rejects. Per pair:
    it (`GuidedSearch`; the disc of two cells without a geometry or within two lengths of the epipole).
    The winner is the best descriptor distance in the band, accepted iff it beats the closest rival in
    the band by the matcher's ratio, a rival being any candidate farther than
-   `guidedSameFeatureDistance` (3 px) from it; a winner alone in its band must beat the closest
-   keypoint OUTSIDE it instead (`guidedLoneOutsideReference`). The half-width is fixed
+   `guidedSameFeatureDistance` (3 px) from it, AND beat the closest keypoint OUTSIDE the band by the
+   same ratio (`guidedOutsideReference` 2: every winner; 1: only a winner with no rival in its band;
+   0: none). The half-width is fixed
    (`guidedBandHalfWidthCells`) or, with `guidedBandResidualFactor` > 0, that multiple of the median
    residual of the verdict's inlier cells under the pair's geometry. This is where appearance
    (descriptor agreement) enters, and the only place it does; see "Why the band" below.
@@ -341,8 +342,13 @@ its direction from the geometry and its position from the warp, so it survives t
 verdict fitted with -- an imprecise focal or principal point, unmodelled distortion -- the prediction
 being in the image's own pixels and the direction off by a few degrees at most; half a cell wide it
 holds a quarter of the disc's rivals, and the ratio against the closest rival INSIDE it is what refuses
-the along-line neighbour. What still gets through, a component holding one image twice, is the track
-builder's to resolve (`BuildTracks`).
+the along-line neighbour. The reference OUTSIDE the band stays, for every winner: measured with it asked
+of lone winners only, the band admitted 32.7M matches SIFT does not have on the shared pairs (947 per
+pair, against 91 with the disc) at a median Sampson error of 1.07 px under the SIFT poses (0.54 with
+the disc), because where the true keypoint was never detected the winner is a random one of the band's
+handful, and a handful's second best is beaten by the ratio a third of the time where the best of the
+image's thousands never is. What still gets through, a component holding one image twice, is the
+track builder's to resolve (`BuildTracks`).
 
 ### Interfaces
 
@@ -447,7 +453,7 @@ stored.
 | `--roma2-dense-matches` | 2000 | dense correspondences per full frame of uncovered overlap (density, not a cap per pair) |
 | guided band length | 2 warp cells | `guidedBandLengthCells`, either way along the epipolar line from the prediction |
 | guided band half-width | half a warp cell | `guidedBandHalfWidthCells`; `guidedBandResidualFactor` (0) > 0 makes it that multiple of the verdict's median residual instead, floored at the sparse tolerance, capped at the length |
-| lone winner | outside reference | `guidedLoneOutsideReference`: a winner with no rival in its band beats the closest keypoint outside it, or stands when off |
+| outside reference | every winner | `guidedOutsideReference`: 2 every winner also beats the closest keypoint outside its band by the ratio, 1 only a winner with no rival in its band, 0 none |
 | same feature | 3 px | `guidedSameFeatureDistance`: a rival this close to the winner is its own duplicate, not a rival |
 | warp tolerance | half a warp cell | fixed, in image pixels; the verdict and the union fit |
 | sparse tolerance | `MatchConfig::maxEpipolarError` | the matcher's own |
@@ -678,8 +684,8 @@ than of the code, and is what a decision to add the cache would need measured fi
   failure the same-feature rule removes), and the output is deterministic across runs.
 - **`ROMA2GuidedBandTest`** (synthetic, no model needed) — the epipolar band (`GuidedSearch`): an
   impostor off the line is no candidate and the true match wins, an equally close rival on the line
-  refuses the match, a same-feature duplicate is no rival, a winner alone in its band stands or answers
-  to the outside reference as configured, the search is the disc without a geometry or within two
+  refuses the match, a same-feature duplicate is no rival, the outside reference is asked of no winner,
+  of lone winners or of every winner as configured, the search is the disc without a geometry or within two
   lengths of the epipole, and the adaptive half-width (`GuidedBandHalfWidth`) is the clamped multiple
   of the median residual.
 - **`ROMA2AssemblyTest`** (synthetic, no model needed) — pair assembly and storage
