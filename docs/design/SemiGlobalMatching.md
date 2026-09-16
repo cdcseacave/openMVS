@@ -246,14 +246,16 @@ Three EPFL ground-truth scenes, `--resolution-level 1`, F-score of the dense poi
 the laser-scanned ground truth at the scene's tolerance (visibility-restricted completeness, the
 `bench/eval_mesh2mesh.py` metric); walls on a 24-thread workstation (multi-view SGM on its 16
 performance-core threads), PatchMatch with the default geometric iterations. The scenes have
-cameras only: their virtual point-cloud, and hence the depth ranges, is seeded, so an SGM run is
-reproducible to the byte and every difference between its arms is real. PatchMatch still perturbs
-its initial depths and normals from an unseeded generator in Release, so its column is one run.
+cameras only, so their virtual point-cloud, and hence the depth ranges every arm derives, comes out
+of a random-number generator: the numbers were measured from a build configured with
+`-DOpenMVS_DETERMINISTIC_RANDOM=ON`, which seeds it and every other generator fixed, so an SGM run
+is reproducible to the byte and every difference between the arms is real. A release build without
+it draws a different cloud on every run, moving the SGM F-scores by about ±0.002.
 
 | scene | pair SGM + pair fusion | multi-view SGM | PatchMatch CPU | PatchMatch CUDA |
 |---|---|---|---|---|
-| Herz-Jesu-P8 (8 views, τ 1 cm) | F 0.332, 33 s | **F 0.372, 31 s** | F 0.402, 85 s | F 0.403, 6 s |
-| fountain-P11 (11 views, τ 0.5 cm) | F 0.253, 65 s | **F 0.259, 46 s** | F 0.268, 150 s | F 0.252, 9 s |
+| Herz-Jesu-P8 (8 views, τ 1 cm) | F 0.332, 33 s | **F 0.373, 31 s** | F 0.402, 85 s | F 0.403, 6 s |
+| fountain-P11 (11 views, τ 0.5 cm) | F 0.253, 65 s | **F 0.260, 46 s** | F 0.268, 150 s | F 0.252, 9 s |
 | Herz-Jesu-P25 (25 views, τ 1 cm) | F 0.466, 145 s | **F 0.503, 125 s** | | F 0.609, 21 s |
 
 Multi-view SGM matches PatchMatch's precision on Herz-Jesu-P8 (0.699 vs 0.697) and gains recall
@@ -293,8 +295,8 @@ fusion's trust range to 0.33.
 
 ## 6. Rejected alternatives
 
-All numbers are F on Herz-Jesu-P8 unless stated. Most were measured before the virtual point-cloud
-was seeded and carry about ±0.002 of run-to-run noise.
+All numbers are F on Herz-Jesu-P8 unless stated. Most were measured before the generators could be
+seeded (§5) and carry about ±0.002 of run-to-run noise.
 
 **Architecture**
 - **Pair matching and pair fusion** (the previous `-2`): every neighbor rectified and matched
