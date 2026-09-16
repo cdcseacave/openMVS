@@ -77,7 +77,7 @@ public:
 		Disparity maxDisp;
 		Disparity avgDisp() const { return (minDisp+maxDisp)>>1; }
 		Disparity numDisp() const { return maxDisp-minDisp; }
-		Disparity isValid() const { return minDisp<maxDisp; }
+		bool isValid() const { return minDisp<maxDisp; }
 	};
 	struct PixelData {
 		Index idx; // index to pixel costs/accumulated-costs data

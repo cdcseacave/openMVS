@@ -74,10 +74,12 @@ public:
 	volatile Thread::safe_t& idxPixel;
 	const FncPixel fncPixel;
 	bool Run(void*) override {
-		const int numPixels(size.area());
-		int idx;
-		while ((idx=(int)Thread::safeInc(idxPixel)) < numPixels)
-			fncPixel(idx, idx/size.width, idx%size.width);
+		int r;
+		while ((r=(int)Thread::safeInc(idxPixel)) < size.height) {
+			int idx(r*size.width);
+			for (int c=0; c<size.width; ++c, ++idx)
+				fncPixel(idx, r, c);
+		}
 		return true;
 	}
 	EVTPixelProcess(cv::Size s, volatile Thread::safe_t& idx, FncPixel f) : Event(EVT_JOB), size(s), idxPixel(idx), fncPixel(f) {}
@@ -175,7 +177,9 @@ static bool SparseDepthRange(const Scene& scene, IIndex idxImage, Depth& dMin, D
 //    can be 0 to force the standard SGM algorithm
 void SemiGlobalMatcher::Match(const Scene& scene, IIndex idxImage, IIndex numNeighbors, unsigned minResolution)
 {
+	ASSERT(idxImage < scene.images.size());
 	const Image& leftImage = scene.images[idxImage];
+	ASSERT(leftImage.IsValid());
 	// the points seen by the left image bound its depth range, and hence the disparities searched
 	// by the coarsest level, and locate the region each pair has in common
 	Depth dMin, dMax;
@@ -343,7 +347,7 @@ struct TexelPositions {
 template <int R>
 struct TexelPatch {
 	enum { N = R*R };
-	Eigen::Array<float,N,1> weights, tempWeights;
+	Eigen::Array<float,N,1,Eigen::DontAlign> weights, tempWeights;
 	float sumWeights, normSq0;
 	template <typename WeightedPatch>
 	explicit TexelPatch(const WeightedPatch& w) : sumWeights(w.sumWeights), normSq0(w.normSq0) {
@@ -360,10 +364,10 @@ template <int R>
 static float TexelsCost(const Image32F& gray, const TexelPositions<R>& warp, const Point3f& h0, const TexelPatch<R>& ref)
 {
 	enum { N = R*R };
-	typedef Eigen::Array<float,N,1> Texels;
+	typedef Eigen::Array<float,N,1,Eigen::DontAlign> Texels;
 	const Texels iz((warp.z+h0.z).inverse());
 	const Texels u((warp.x+h0.x)*iz), v((warp.y+h0.y)*iz);
-	const Eigen::Array<int,N,1> iu(u.template cast<int>()), iv(v.template cast<int>());
+	const Eigen::Array<int,N,1,Eigen::DontAlign> iu(u.template cast<int>()), iv(v.template cast<int>());
 	const Texels fu(u-iu.template cast<float>()), fv(v-iv.template cast<float>());
 	Texels f;
 	const size_t stride(gray.step1());
@@ -392,7 +396,9 @@ static float TexelsCost(const Image32F& gray, const TexelPositions<R>& warp, con
 //    affine in the pixel coordinates over a plane); it is fronto-parallel at the coarsest level
 void SemiGlobalMatcher::MatchMultiView(const Scene& scene, IIndex idxImage, IIndex numNeighbors, DepthMap& depthMap, ConfidenceMap& confMap, unsigned minResolution)
 {
+	ASSERT(idxImage < scene.images.size());
 	const Image& refImage = scene.images[idxImage];
+	ASSERT(refImage.IsValid() && !refImage.image.empty());
 	const cv::Size imageSize(refImage.image.size());
 	depthMap.create(imageSize); depthMap.memset(0);
 	confMap.create(imageSize); confMap.memset(0);
@@ -557,7 +563,7 @@ void SemiGlobalMatcher::MatchMultiView(const Scene& scene, IIndex idxImage, IInd
 			Cost* costs = imageCosts.data()+pixel.idx;
 			for (int d=pixel.range.minDisp; d<pixel.range.maxDisp; ++d) {
 				const float invz(invzMin+(float)d*step);
-				float viewCosts[maxViews];
+				float viewCosts[numBestViews];
 				int numViewCosts(0);
 				if (invz > 0) {
 					FOREACH(k, views) {
@@ -565,8 +571,12 @@ void SemiGlobalMatcher::MatchMultiView(const Scene& scene, IIndex idxImage, IInd
 							continue;
 						const NeighborView& view = views[k];
 						const float cost(TexelsCost(view.gray, warps[k], hx[k] + view.b*invz, ref));
-						// keep the view costs sorted
-						int i(numViewCosts++);
+						// keep the lowest costs sorted
+						int i(numViewCosts);
+						if (numViewCosts < (int)numBestViews)
+							++numViewCosts;
+						else if (cost >= viewCosts[--i])
+							continue;
 						for (; i > 0 && viewCosts[i-1] > cost; --i)
 							viewCosts[i] = viewCosts[i-1];
 						viewCosts[i] = cost;
@@ -576,11 +586,10 @@ void SemiGlobalMatcher::MatchMultiView(const Scene& scene, IIndex idxImage, IInd
 					*costs++ = 255;
 					continue;
 				}
-				const int numViews(MINF(numViewCosts, (int)numBestViews));
 				float cost(0);
-				for (int i=0; i<numViews; ++i)
+				for (int i=0; i<numViewCosts; ++i)
 					cost += viewCosts[i];
-				*costs++ = (Cost)ROUND2INT(cost/numViews);
+				*costs++ = (Cost)ROUND2INT(cost/numViewCosts);
 			}
 		};
 		ASSERT(threads.IsEmpty());
@@ -621,11 +630,10 @@ void SemiGlobalMatcher::MatchMultiView(const Scene& scene, IIndex idxImage, IInd
 			warps[k].Warp(view.offsetsDense, view.b, slant);
 			inside[k] = warps[k].InsideRange(hx[k], view.b, view.width1, view.height1);
 		}
-		IIndex best[numBestViews]; int numBest(0); {
+		IIndex best[numBestViews]; float bestCosts[numBestViews]; int numBest(0); {
 			const float invz(invzMin+t*step);
 			if (invz <= 0)
 				return t;
-			float bestCosts[numBestViews];
 			FOREACH(k, views) {
 				if (invz <= inside[k].first || invz >= inside[k].second)
 					continue;
@@ -645,6 +653,10 @@ void SemiGlobalMatcher::MatchMultiView(const Scene& scene, IIndex idxImage, IInd
 		}
 		if (numBest == 0)
 			return t;
+		float f(0);
+		for (int i=0; i<numBest; ++i)
+			f += bestCosts[i];
+		f /= numBest;
 		const auto cost = [&](float ti) -> float {
 			const float invz(invzMin+ti*step);
 			if (invz <= 0)
@@ -659,9 +671,7 @@ void SemiGlobalMatcher::MatchMultiView(const Scene& scene, IIndex idxImage, IInd
 			}
 			return sum/numBest;
 		};
-		float f(cost(t)), delta(0.5f);
-		if (f < 0)
-			return t;
+		float delta(0.5f);
 		for (int iter=0; iter<2; ++iter, delta*=0.5f) {
 			const float fm(cost(t-delta)), fp(cost(t+delta));
 			const float den(fm-2*f+fp);
@@ -696,7 +706,7 @@ void SemiGlobalMatcher::MatchMultiView(const Scene& scene, IIndex idxImage, IInd
 		for (int c=0; c<disparityMap.cols; ++c)
 			pixel(r*disparityMap.cols+c, r, c);
 	DEBUG_EXTRA("Depth-map for image %3u estimated from %u views: %u depths (%s)",
-		refImage.ID, views.size(), cv::countNonZero(depthMap), TD_TIMER_GET_FMT().c_str());
+		refImage.ID, views.size(), (unsigned)cv::countNonZero(depthMap), TD_TIMER_GET_FMT().c_str());
 	#endif
 }
 
@@ -715,8 +725,9 @@ void SemiGlobalMatcher::FitSlopes(const DisparityMap& disparityMap, SlopeMap& sl
 				continue;
 			float n(0), sx(0), sy(0), sd(0), sxx(0), syy(0), sxy(0), sxd(0), syd(0);
 			for (int i=MAXF(r-halfWindow,0), ie=MINF(r+halfWindow,disparityMap.rows-1); i<=ie; ++i) {
+				const Disparity* const rowDisp = disparityMap.ptr<const Disparity>(i);
 				for (int j=MAXF(c-halfWindow,0), je=MINF(c+halfWindow,disparityMap.cols-1); j<=je; ++j) {
-					const Disparity d(disparityMap(i,j));
+					const Disparity d(rowDisp[j]);
 					if (d == NO_DISP)
 						continue;
 					const float x((float)(j-c)), y((float)(i-r)), v((float)d);
@@ -753,17 +764,17 @@ void SemiGlobalMatcher::FitSlopes(const DisparityMap& disparityMap, SlopeMap& sl
 void SemiGlobalMatcher::InitWeightedPatch(const ViewData& image, const ImageRef& u, WeightedPatch& w, int texelStep)
 {
 	struct Compute {
-		static float NormL1Sq(const Pixel8U& a, const Pixel8U& b) {
+		static inline float ColorDiffSq(const Pixel8U& a, const Pixel8U& b) {
 			return float(
-				SQUARE(unsigned(a[0]<b[0] ? b[0]-a[0] : a[0]-b[0])) +
-				SQUARE(unsigned(a[1]<b[1] ? b[1]-a[1] : a[1]-b[1])) +
-				SQUARE(unsigned(a[2]<b[2] ? b[2]-a[2] : a[2]-b[2])));
+				SQUARE(int(a[0]) - int(b[0])) +
+				SQUARE(int(a[1]) - int(b[1])) +
+				SQUARE(int(a[2]) - int(b[2])));
 		}
-		static float WeightColor(const Image8U3& image, const Pixel8U& center, const ImageRef& x) {
+		static inline float WeightColor(const Pixel8U& a, const Pixel8U& center) {
 			static const float sigmaColor(-1.f/(2.f*SQUARE(0.3f*255)));
-			return Compute::NormL1Sq(image(x), center) * sigmaColor;
+			return ColorDiffSq(a, center) * sigmaColor;
 		}
-		static float WeightSpatial(int x, int y) {
+		static inline float WeightSpatial(int x, int y) {
 			static const float sigmaSpatial(-1.f/(2.f*SQUARE(0.4f*MAXF<int>(windowSizeX,windowSizeY))));
 			return float(SQUARE(x) + SQUARE(y)) * sigmaSpatial;
 		}
@@ -773,12 +784,13 @@ void SemiGlobalMatcher::InitWeightedPatch(const ViewData& image, const ImageRef&
 	int n = 0;
 	const Pixel8U& colCenter = image.imageColor(u);
 	for (int i=-halfWindowSizeY; i<=halfWindowSizeY; i+=texelStep) {
+		const Pixel8U* const rowColor = image.imageColor.ptr<const Pixel8U>(u.y+i);
+		const ImageGray::Type* const rowGray = image.imageGray.ptr<const ImageGray::Type>(u.y+i);
 		for (int j=-halfWindowSizeX; j<=halfWindowSizeX; j+=texelStep) {
-			const ImageRef x(u.x+j,u.y+i);
 			WeightedPatch::Pixel& pw = w.weights[n++];
 			w.normSq0 +=
-				(pw.tempWeight = image.imageGray(x)) *
-				(pw.weight = EXP(Compute::WeightColor(image.imageColor, colCenter, x)+Compute::WeightSpatial(j,i)));
+				(pw.tempWeight = rowGray[u.x+j]) *
+				(pw.weight = EXP(Compute::WeightColor(rowColor[u.x+j], colCenter)+Compute::WeightSpatial(j,i)));
 			w.sumWeights += pw.weight;
 		}
 	}
@@ -918,7 +930,7 @@ void SemiGlobalMatcher::Aggregate(const ImageGray& imageGray, DisparityMap& disp
 		#if SGM_SIMILARITY == SGM_SIMILARITY_CENSUS
 		const AccumCost P2(P2s[DI]);
 		#else
-		const AccumCost P2(P2s[ABS(ROUND2INT(255.f*DI))]);
+		const AccumCost P2(P2s[MINF(ROUND2INT(255.f*ABS(DI)), 255)]);
 		#endif
 		const Disparity minDisp(MAXF(Lp.R.minDisp, Ls.R.minDisp));
 		const Disparity maxDisp(MINF(Lp.R.maxDisp, Ls.R.maxDisp));
@@ -1218,15 +1230,19 @@ void SemiGlobalMatcher::Aggregate(const ImageGray& imageGray, DisparityMap& disp
 			disparityMap(idx) = pixel.range.minDisp+(Disparity)(bestAccum-accums);
 			costMap(idx) = *bestAccum;
 		} else {
-			disparityMap(idx) = pixel.range.minDisp;
+			disparityMap(idx) = NO_DISP;
 			costMap(idx) = NO_ACCUMCOST;
 		}
 	};
 	ASSERT(threads.IsEmpty());
 	if (!threads.empty()) {
+		auto row = [&](int r) {
+			for (int c=0; c<sizeValid.width; ++c)
+				pixel(r*sizeValid.width+c);
+		};
 		volatile Thread::safe_t idxPixel(-1);
 		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumInc(sizeValid.area(), idxPixel, pixel));
+			threads.AddEvent(new EVTPixelAccumInc(sizeValid.height, idxPixel, row));
 		WaitThreadWorkers(threads.size());
 	} else
 	for (int r=0; r<sizeValid.height; ++r)
@@ -1706,9 +1722,13 @@ void SemiGlobalMatcher::RefineDisparityMap(DisparityMap& disparityMap) const
 	};
 	ASSERT(threads.IsEmpty());
 	if (!threads.empty()) {
+		auto row = [&](int r) {
+			for (int c=0; c<disparityMap.cols; ++c)
+				pixel(r*disparityMap.cols+c);
+		};
 		volatile Thread::safe_t idxPixel(-1);
 		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumInc(disparityMap.size().area(), idxPixel, pixel));
+			threads.AddEvent(new EVTPixelAccumInc(disparityMap.rows, idxPixel, row));
 		WaitThreadWorkers(threads.size());
 	} else
 	for (int r=0; r<disparityMap.rows; ++r)
