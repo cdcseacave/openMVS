@@ -247,10 +247,16 @@ a pair the warp rejects. Per pair:
    --roma2-min-overlap`; a rejected pair is dropped — no SIFT matching, no second chance in this round.
 3. **Guided sparse matching** (`MatchFeaturesGuided`, `MatchGeometric.h`). The described keypoints of A
    are tracked into B through the warp (`TrackKeypointsByWarp`); for each, the candidates are B's
-   described keypoints inside a disc of two warp cells around the prediction, and the winner is the
-   best descriptor distance in the disc, accepted iff it beats the best descriptor distance OUTSIDE
-   the disc by the matcher's ratio. This is where appearance (descriptor agreement) enters, and the
-   only place it does.
+   described keypoints inside a band along the keypoint's epipolar line under the verdict's geometry,
+   centred on the prediction: two warp cells either way along the line, half a cell either way across
+   it (`GuidedSearch`; the disc of two cells without a geometry or within two lengths of the epipole).
+   The winner is the best descriptor distance in the band, accepted iff it beats the closest rival in
+   the band by the matcher's ratio, a rival being any candidate farther than
+   `guidedSameFeatureDistance` (3 px) from it; a winner alone in its band must beat the closest
+   keypoint OUTSIDE it instead (`guidedLoneOutsideReference`). The half-width is fixed
+   (`guidedBandHalfWidthCells`) or, with `guidedBandResidualFactor` > 0, that multiple of the median
+   residual of the verdict's inlier cells under the pair's geometry. This is where appearance
+   (descriptor agreement) enters, and the only place it does; see "Why the band" below.
 4. **Dense fill** (`SampleWarpComplementary`). `--roma2-dense-matches` (2000, `denseMatchesPerFrame`)
    is a DENSITY — correspondences per FULL FRAME of overlap, not a count per pair. `DenseFillGridSide`
    turns that density into a fixed bucket pitch, `ceil(sqrt(density))` clamped to the warp side, over
@@ -317,6 +323,26 @@ for roughly 0.15–0.17 of true overlap and θ = 0.15 for about a quarter of it.
 the same verdict as fine θ = 0.10; the refiners are not exported because match precision is what they
 would buy, and the sparse (guided) inliers already supply that wherever the scene has texture (Graph
 Contract, above).
+
+### Why the band
+
+The guided search was a disc of two warp cells around the prediction, and the ratio a winner had to
+pass was taken against the best keypoint OUTSIDE it, so that a scale duplicate inside the disc could not
+defeat a true match the way it defeats SIFT's own ratio test. Measured on alameda against the SIFT arm
+on the same 30249 pairs (`guided_vs_sift.py`, `guided_tracks_probe.py` and `conflict_geometry_probe.py`
+in the release-campaign tools), that disc found a third more matches per pair than SIFT and lost
+almost none of SIFT's, but 13.3% of the components of three or more matched keypoints then held one
+image twice, against 5.3% for the matches SIFT has too. A disc of 35 px on a 2789 px frame holds 26
+rivals on average; the wrong one sits 3-35 px from the right one ALONG the epipolar line (52% within
+10 degrees of it, median 7.5), where the 4 px epipolar test cannot see it, and the outside reference
+never looked at it. A further 6.7% of the winners that passed the ratio were then refused by the
+epipolar test: an impostor OFF the line had taken the disc from the true candidate. The band takes only
+its direction from the geometry and its position from the warp, so it survives the intrinsics the
+verdict fitted with -- an imprecise focal or principal point, unmodelled distortion -- the prediction
+being in the image's own pixels and the direction off by a few degrees at most; half a cell wide it
+holds a quarter of the disc's rivals, and the ratio against the closest rival INSIDE it is what refuses
+the along-line neighbour. What still gets through, a component holding one image twice, is the track
+builder's to resolve (`BuildTracks`).
 
 ### Interfaces
 
@@ -419,7 +445,10 @@ stored.
 | `--roma2-min-confidence` | 0.1 | cell floor for the verdict, the tracking and the dense fill |
 | `--roma2-min-overlap` | 0.10 | min-side inlier area; ≈ 0.15–0.17 true overlap; 0.15 ≈ a quarter of the frame |
 | `--roma2-dense-matches` | 2000 | dense correspondences per full frame of uncovered overlap (density, not a cap per pair) |
-| guided disc | 2 warp cells | fixed |
+| guided band length | 2 warp cells | `guidedBandLengthCells`, either way along the epipolar line from the prediction |
+| guided band half-width | half a warp cell | `guidedBandHalfWidthCells`; `guidedBandResidualFactor` (0) > 0 makes it that multiple of the verdict's median residual instead, floored at the sparse tolerance, capped at the length |
+| lone winner | outside reference | `guidedLoneOutsideReference`: a winner with no rival in its band beats the closest keypoint outside it, or stands when off |
+| same feature | 3 px | `guidedSameFeatureDistance`: a rival this close to the winner is its own duplicate, not a rival |
 | warp tolerance | half a warp cell | fixed, in image pixels; the verdict and the union fit |
 | sparse tolerance | `MatchConfig::maxEpipolarError` | the matcher's own |
 | dense tolerance | `denseEpipolarErrorFactor` (1) × the sparse one | the dense segment's classification; 0 = the warp tolerance |
@@ -643,10 +672,16 @@ than of the code, and is what a decision to add the cache would need measured fi
   homography of A's grid, unrelated to the cameras — is rejected although it is locally coherent),
   and the `minOverlap = 0` degenerate case that admits everything.
 - **`ROMA2GuidedMatchTest`** (synthetic descriptors, no model needed) — guided sparse matching
-  (`MatchFeaturesGuided`): a lookalike descriptor outside the disc is rejected, a keypoint whose only
-  close descriptor is inside the disc is accepted, a scale-duplicate descriptor *inside* the disc does
-  not block acceptance (the ratio-test failure the outside-the-disc rule removes), and the output is
-  deterministic across runs.
+  (`MatchFeaturesGuided`) without a geometry, the disc: a keypoint alone in its disc whose lookalike
+  sits outside it is refused by the outside reference, one whose only close descriptor is inside is
+  accepted, a scale-duplicate descriptor *inside* the disc does not block acceptance (the ratio-test
+  failure the same-feature rule removes), and the output is deterministic across runs.
+- **`ROMA2GuidedBandTest`** (synthetic, no model needed) — the epipolar band (`GuidedSearch`): an
+  impostor off the line is no candidate and the true match wins, an equally close rival on the line
+  refuses the match, a same-feature duplicate is no rival, a winner alone in its band stands or answers
+  to the outside reference as configured, the search is the disc without a geometry or within two
+  lengths of the epipole, and the adaptive half-width (`GuidedBandHalfWidth`) is the clamped multiple
+  of the median residual.
 - **`ROMA2AssemblyTest`** (synthetic, no model needed) — pair assembly and storage
   (`AssemblePairROMA2`, `StorePairROMA2`): the union fit's sparse/dense segments and single relative
   pose on an exact geometry, the dense-only fallback when the guided set is empty (the verdict's own

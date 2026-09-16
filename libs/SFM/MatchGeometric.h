@@ -22,6 +22,22 @@
 
 namespace SFM {
 
+// Where the guided match of one described keypoint of imgA looks for its match in imgB
+struct SFM_API GuidedSearch {
+	float length = 0.f;              // half-length of the band along the epipolar line, imgB pixels; the radius of the disc searched without a line
+	float halfWidth = 0.f;           // half-width of the band across the line, imgB pixels; <= 0 searches the disc
+	std::optional<Matrix3x3> F;      // x_B^T F x_A = 0 in pixels, the line's source; absent searches the disc
+	float sameFeatureDistance = 3.f; // a rival this close to the winner is the same feature described twice, not a rival
+	bool loneOutsideReference = true; // a winner with no rival in its band must beat the closest keypoint outside it by the ratio
+};
+
+// The adaptive half-width of the band (ROMA2Config::guidedBandResidualFactor): `factor` times the
+// median of the given epipolar residuals -- the verdict's inlier cells under the pair's geometry, in
+// pixels -- held between minHalfWidth (the matcher's epipolar bar) and maxHalfWidth (the band's
+// length); no residual at all gives the floor. The vector is taken by value because the median is
+// found in place.
+SFM_API float GuidedBandHalfWidth(std::vector<float> residuals, float factor, float minHalfWidth, float maxHalfWidth);
+
 /**
  * @brief Guided sparse matching of one admitted image pair, under the warp that admitted it.
  *
@@ -30,23 +46,36 @@ namespace SFM {
  * keypoints of the two images are the same point.
  *
  * For each described keypoint i of imgA the warp tracked (trackStatus[i] == 1, prediction
- * trackedB[i] in imgB's pixels), the candidates are imgB's described keypoints within discRadius of
- * the prediction; the winner is the candidate with the smallest descriptor distance, accepted iff it
- * beats the descriptor distance of the best keypoint of imgB OUTSIDE the disc by the matcher's ratio
- * (MatchConfig::matchRatio). The outside distance comes from the thread's own descriptor matcher:
- * the K_NN = 8 nearest neighbours of the query over all of imgB's described descriptors (approximate
- * when that matcher is a FLANN index, which is the default), the first of them not in the disc is
- * "best outside"; when all K_NN are in the disc the K_NN-th distance stands in -- every keypoint
- * outside the disc is at least that far, so the test can only get stricter -- unless those K_NN are
- * the whole of imgB, in which case there is no outside and the winner stands. A keypoint with no
- * candidate, or whose winner fails the test, yields no match.
+ * trackedB[i] in imgB's pixels), the candidates are imgB's described keypoints inside the query's
+ * search region (GuidedSearch): a band along the keypoint's epipolar line under search.F, centred on
+ * the prediction, search.length either way along the line and search.halfWidth either way across it
+ * -- or the disc of radius search.length around the prediction when there is no line to follow (no F,
+ * a half-width of 0, or a prediction within two lengths of imgB's epipole, where every direction is
+ * equally wrong). The winner is the candidate with the smallest descriptor distance. It is accepted
+ * iff it beats its closest rival inside the region by the matcher's ratio (MatchConfig::matchRatio),
+ * a rival being any other candidate farther than search.sameFeatureDistance from it: a scale or
+ * orientation duplicate of the winner, sitting on top of it, is the same feature described twice and
+ * counts for nothing, while a second keypoint along the line as close in appearance as the winner
+ * makes the match ambiguous and refuses it -- the epipolar test downstream cannot see that neighbour,
+ * so this is where it is caught. Keypoints outside the region take no part: the geometry says the
+ * match is not there.
  *
- * The ratio is taken against the best keypoint OUTSIDE the disc, and not against the second best
- * overall, because the warp already says where the match is. A scale or orientation duplicate of the
- * true match sitting on top of it -- the classic reason a correct match fails the plain ratio test,
- * which sees two near-identical distances and rejects both -- is inside the disc and no longer
- * defeats it, while a lookalike anywhere else in imgB still does: appearance must agree with the
- * warp, not merely exist somewhere in the other image.
+ * A winner ALONE in its region has no rival to beat. With search.loneOutsideReference it must then
+ * beat the closest described keypoint of imgB OUTSIDE the region by the same ratio -- the reference
+ * every winner answered to before the band, and what refuses a lone impostor where the true keypoint
+ * was never detected in imgB; without it the lone winner stands. The outside distance comes from the
+ * thread's own descriptor matcher: the K_NN = 8 nearest neighbours of the query over all of imgB's
+ * described descriptors (approximate when that matcher is a FLANN index, which is the default), the
+ * first of them not in the region is "best outside"; when all K_NN are in the region the K_NN-th
+ * distance stands in -- every keypoint outside is at least that far, so the test can only get
+ * stricter -- unless those K_NN are the whole of imgB, in which case there is no outside and the
+ * winner stands. A keypoint with no candidate, or whose winner fails its test, yields no match.
+ *
+ * The band is centred on the WARP's prediction and takes only its direction from the geometry: the
+ * prediction lives in imgB's own pixels, so an imprecise focal or principal point, or lens distortion
+ * the fitted geometry does not model, turns the band by a few degrees and moves it not at all; the
+ * half-width covers the warp's own across-line error (2.3 px median on a 2789 px frame with the
+ * 160-cell grid, against 5.8 px in 2D), the length its along-line one.
  *
  * No geometry is estimated or applied here, no train-side collision is resolved and there is no
  * descriptor-only fallback: geometry is the verdict's business (JudgePairROMA2) and the final fit's
@@ -65,13 +94,14 @@ namespace SFM {
  *                      order and size as that prefix (TrackKeypointsByWarp's own convention).
  * @param trackStatus   Status per prediction (1 = valid, 0 = invalid); an untracked keypoint has no
  *                      disc to search and is skipped.
- * @param discRadius    Radius of the search disc around a prediction, in imgB's pixels: two warp
- *                      cells, 2 * MAXF(imgB.width, imgB.height) / warpSize.
+ * @param search        The search region (GuidedSearch): the band's length and half-width in imgB's
+ *                      pixels, the geometry its line comes from, the same-feature distance and whether
+ *                      a lone winner answers to the outside reference.
  * @param threadIdx     Index of the calling thread, selecting its private descriptor matcher inside
  *                      pairsMatcher; must be in [0, PairsMatcher::GetNumMatchers()), and concurrent
  *                      calls must pass distinct indices.
  * @param matches       Out: the selected matches (queryIdx = i, trainIdx = j), cleared first and
- *                      filled in increasing queryIdx; a tie inside a disc goes to the smaller
+ *                      filled in increasing queryIdx; a tie inside a region goes to the smaller
  *                      trainIdx, so the result is decided by the inputs alone and not by the order
  *                      the candidates happened to be collected in.
  * @return the number of selected matches.
@@ -82,7 +112,7 @@ SFM_API size_t MatchFeaturesGuided(
 	const Image& imgB,
 	const std::vector<Point2f>& trackedB,
 	const std::vector<uchar>& trackStatus,
-	float discRadius,
+	const GuidedSearch& search,
 	unsigned threadIdx,
 	std::vector<DMatch>& matches);
 /*----------------------------------------------------------------*/

@@ -77,11 +77,18 @@ bool ROMA2DenseFillCeilingTest();
 // and minOverlap 0 admits the first two
 bool ROMA2VerdictTest();
 
-// Guided sparse matching (MatchFeaturesGuided): the ratio taken against the best descriptor OUTSIDE
-// the search disc rejects a keypoint whose lookalike sits elsewhere in the other image, accepts one
-// whose only close descriptor is inside the disc, and is no longer defeated by a scale duplicate
-// inside it; the same inputs give the same matches, in the same order
+// Guided sparse matching (MatchFeaturesGuided) without a geometry, the disc: a keypoint alone in
+// its disc whose lookalike sits elsewhere in the other image is refused by the outside reference,
+// one whose only close descriptor is inside the disc is accepted, and a scale duplicate inside it is
+// no rival; the same inputs give the same matches, in the same order
 bool ROMA2GuidedMatchTest();
+
+// The epipolar band of the guided sparse matching (GuidedSearch): a rival off the epipolar line is
+// no candidate, an equally close rival on it refuses the match, a same-feature duplicate is no
+// rival, a winner alone in its band answers to the outside reference only when asked, the search is
+// the disc without a geometry or near the epipole, and the adaptive half-width is the clamped
+// multiple of the median residual (GuidedBandHalfWidth)
+bool ROMA2GuidedBandTest();
 
 // Pair assembly and storage (AssemblePairROMA2, StorePairROMA2): the union of the guided matches
 // and the dense fill is fitted once and splits into the pair's sparse and dense segments under one

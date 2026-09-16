@@ -514,6 +514,26 @@ public:
 		return num*num <= toleranceSq*den;
 	}
 
+	// the distance itself, in the units of M's space (pixels through F, radians through E), for the
+	// residual statistics the band's adaptive half-width reads (GuidedBandHalfWidth); the degenerate
+	// case scores as far
+	inline double Distance(const Point2f& ptA, const Point2f& ptB) const {
+		ASSERT(IsValid());
+		Eigen::Vector3d a, b;
+		if (bFundamental) {
+			a = Eigen::Vector3d(ptA.x, ptA.y, 1.0);
+			b = Eigen::Vector3d(ptB.x, ptB.y, 1.0);
+		} else {
+			a = camA->UnprojectNormalized(Cast<REAL>(ptA));
+			b = camB->UnprojectNormalized(Cast<REAL>(ptB));
+		}
+		const Eigen::Vector3d Ma(M*a), Mtb(M.transpose()*b);
+		const double den = Ma.x()*Ma.x() + Ma.y()*Ma.y() + Mtb.x()*Mtb.x() + Mtb.y()*Mtb.y();
+		if (den < 1e-14)
+			return std::numeric_limits<double>::max();
+		return std::abs(b.dot(Ma))/std::sqrt(den);
+	}
+
 private:
 	CameraPtr camA, camB;   // only read for the bearings of the E path
 	Eigen::Matrix3d M;      // F in pixels, or E on unit bearings
@@ -955,6 +975,7 @@ bool SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, const Pa
 	};
 	std::vector<AssembledPair> results(pairs.size());
 	std::atomic<unsigned> numJudged{0}, numAdmitted{0};
+	std::atomic<int64_t> guidedTicks{0}; // the guided sparse matching's own clock, summed over the pool's threads
 	const int warpSize = roma2.WarpSize();
 	WarpPassStats stats;
 	if (!ForEachWarpROMA2(pairsMatcher, roma2, pairs, config.slotBudget, _T("Dense match image pairs"),
@@ -978,25 +999,46 @@ bool SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, const Pa
 			}
 			++numAdmitted;
 			// the guided sparse matching: the warp tracks A's described keypoints into B, and the
-			// descriptor match is restricted to a disc of two warp cells around each prediction.
-			// This is where appearance enters, and the only place it does.
+			// descriptor match is restricted to a band along each keypoint's epipolar line under the
+			// verdict's geometry, centred on its prediction (GuidedSearch). This is where appearance
+			// enters, and the only place it does.
 			std::vector<Point2f> trackedA, trackedB;
 			std::vector<uchar> trackStatus;
 			TrackKeypointsByWarp(imgA, imgB, warps.ab.warp, warps.ab.confidence, config.minConfidence,
 				trackedA, trackedB, trackStatus);
-			const float discRadius = 2.f*(float)MAXF(imgB.GetWidth(), imgB.GetHeight())/(float)warpSize;
+			GuidedSearch search;
+			const float cell = (float)MAXF(imgB.GetWidth(), imgB.GetHeight())/(float)warpSize;
+			search.length = config.guidedBandLengthCells*cell;
+			search.F = pair.F;
+			search.sameFeatureDistance = config.guidedSameFeatureDistance;
+			search.loneOutsideReference = config.guidedLoneOutsideReference;
+			if (config.guidedBandResidualFactor > 0.f && pair.F.has_value()) {
+				// the adaptive half-width: the residuals of the verdict's inlier cells under the
+				// pair's geometry, in pixels, against the matcher's own epipolar bar as the floor
+				const SampsonTest residual(imgA, imgB, pair, WarpTolerance(imgA.GetSize(), imgB.GetSize(), warpSize));
+				std::vector<float> residuals;
+				residuals.reserve(verdict.inliersA.size());
+				FOREACH(k, verdict.inliersA)
+					residuals.push_back((float)residual.Distance(verdict.inliersA[k], verdict.inliersB[k]));
+				search.halfWidth = GuidedBandHalfWidth(std::move(residuals), config.guidedBandResidualFactor,
+					pairsMatcher.GetConfig().maxEpipolarError, search.length);
+			} else {
+				search.halfWidth = config.guidedBandHalfWidthCells*cell;
+			}
 			std::vector<DMatch> guided;
-			MatchFeaturesGuided(pairsMatcher, imgA, imgB, trackedB, trackStatus, discRadius, threadIdx, guided);
+			const SEACAVE::Timer::SysType guidedStart = SEACAVE::Timer::GetSysTime();
+			MatchFeaturesGuided(pairsMatcher, imgA, imgB, trackedB, trackStatus, search, threadIdx, guided);
+			guidedTicks += SEACAVE::Timer::GetSysTime() - guidedStart;
 			AssembledPair& result = results[p];
 			result.bAssembled = AssemblePairROMA2(pairsMatcher, imgA, imgB, verdict, guided, config,
 				warpSize, pair, result.dense);
 			const unsigned numSparse = result.bAssembled ? pair.GetNumFilteredInliers() : 0u;
 			if (result.bAssembled)
 				result.pair = std::move(pair);
-			DEBUG_ULTIMATE("ROMA2 pair %u-%u: conf %.4f %.4f inl %.4f %.4f ADMIT cap %u grid %d guided %u sparse %u dense %u %ums",
+			DEBUG_ULTIMATE("ROMA2 pair %u-%u: conf %.4f %.4f inl %.4f %.4f ADMIT cap %u grid %d band %.1f guided %u sparse %u dense %u %ums",
 				pairIdx.i, pairIdx.j, verdict.confidentAreaA, verdict.confidentAreaB,
 				verdict.inlierAreaA, verdict.inlierAreaB, DenseFillCeiling(config, verdict),
-				DenseFillGridSide(config.denseMatchesPerFrame, warpSize), (unsigned)guided.size(), numSparse,
+				DenseFillGridSide(config.denseMatchesPerFrame, warpSize), search.halfWidth, (unsigned)guided.size(), numSparse,
 				(unsigned)result.dense.pointsA.size(), bTimePair ?
 				(unsigned)SEACAVE::Timer::SysTime2TimeMs(SEACAVE::Timer::GetSysTime() - pairTimeStart) : 0u);
 		}, stats))
@@ -1017,11 +1059,12 @@ bool SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, const Pa
 		++numStored;
 	}
 	DEBUG("ROMA2 one pass: %u candidates, %u judged, %u admitted, %u stored, %u dense-only; "
-		"%u slots, %u loads, %u reloads; %u already stored, %u unprepared, %u failed loads, %u failed matches, %u dense matches (%s)",
+		"%u slots, %u loads, %u reloads; %u already stored, %u unprepared, %u failed loads, %u failed matches, %u dense matches; "
+		"guided matching %.1fs of thread time (%s)",
 		candidatePairs.size(), numJudged.load(), numAdmitted.load(), numStored, numDenseOnly,
 		stats.numSlots, (unsigned)stats.numLoads, (unsigned)stats.numReloads,
 		numAlreadyStored, numUnprepared, stats.numFailedLoads, stats.numFailedMatches, (unsigned)numDenseMatches,
-		TD_TIMER_GET_FMT().c_str());
+		(double)SEACAVE::Timer::SysTime2TimeMs(guidedTicks.load())/1000.0, TD_TIMER_GET_FMT().c_str());
 	return true;
 #else // _USE_ONNXRUNTIME
 	// unreachable: RoMa2Onnx::IsAvailable() is false in this build, so Scene::MatchPairs never

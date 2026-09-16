@@ -63,6 +63,30 @@ struct SFM_API ROMA2Config {
 	// frame with the 160-cell grid) pollutes every track it enters, so the dense segment answers to
 	// the same bar the sparse matches do. 0 = half a warp cell, the accuracy the grid itself claims.
 	float denseEpipolarErrorFactor = 1.f;
+	// The guided sparse match of an admitted pair looks for each described keypoint of A along its
+	// epipolar line in B, in a band centred on the warp's prediction (GuidedSearch, MatchGeometric.h):
+	// guidedBandLengthCells warp cells either way along the line -- the coarse warp's along-line
+	// error, 5.8 px median and 13.4 px at the 90th percentile in 2D on a 2789 px frame with the
+	// 160-cell grid -- and guidedBandHalfWidthCells either way across it, the across-line error,
+	// 2.3 px median there. The band is centred on the prediction, which lives in B's own pixels, so an
+	// imprecise focal or principal point and lens distortion, none of which the geometry the verdict
+	// fitted models, enter only as a rotation of the band by a few degrees. A half-width of 0 searches
+	// the disc of the length's radius, the search before the band.
+	float guidedBandLengthCells = 2.f;
+	float guidedBandHalfWidthCells = 0.5f;
+	// > 0: the half-width is instead this multiple of the median epipolar residual of the verdict's
+	// inlier cells under the pair's geometry, floored at MatchConfig::maxEpipolarError and capped at
+	// the band's length -- a pair whose images the fitted geometry explains poorly (distortion, a
+	// wrong focal) gets a wider band, one it explains well a narrower one. 0 = the fixed half-width.
+	float guidedBandResidualFactor = 0.f;
+	// A winner with no rival inside its band has nothing to beat there; with this on it must still
+	// beat the closest keypoint OUTSIDE the band by the matcher's ratio, the reference every winner
+	// answered to before the band -- what refuses a lone impostor where the true keypoint was never
+	// detected; off accepts it.
+	bool guidedLoneOutsideReference = true;
+	// A rival within this distance (pixels) of the winner is the same feature described twice (a
+	// scale or orientation duplicate) and does not count as a rival in the ratio test.
+	float guidedSameFeatureDistance = 3.f;
 	unsigned slotBudget = 64;      // image descriptors kept resident on the device
 	bool useGPU = true;            // allow the GPU execution providers
 

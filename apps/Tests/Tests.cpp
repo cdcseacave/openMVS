@@ -239,6 +239,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::ROMA2GuidedMatchTest())
 				return false;
+			if (!SFM::ROMA2GuidedBandTest())
+				return false;
 			if (!SFM::ROMA2AssemblyTest())
 				return false;
 			if (!SFM::DenseKeypointBoundaryTest())
