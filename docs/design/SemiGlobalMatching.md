@@ -246,8 +246,9 @@ Three EPFL ground-truth scenes, `--resolution-level 1`, F-score of the dense poi
 the laser-scanned ground truth at the scene's tolerance (visibility-restricted completeness, the
 `bench/eval_mesh2mesh.py` metric); walls on a 24-thread workstation (multi-view SGM on its 16
 performance-core threads), PatchMatch with the default geometric iterations. The scenes have
-cameras only: their virtual point-cloud, and hence the depth ranges, is seeded, so a run is
-reproducible to the byte and every difference between arms is real.
+cameras only: their virtual point-cloud, and hence the depth ranges, is seeded, so an SGM run is
+reproducible to the byte and every difference between its arms is real. PatchMatch still perturbs
+its initial depths and normals from an unseeded generator in Release, so its column is one run.
 
 | scene | pair SGM + pair fusion | multi-view SGM | PatchMatch CPU | PatchMatch CUDA |
 |---|---|---|---|---|
