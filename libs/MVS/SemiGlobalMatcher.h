@@ -152,7 +152,7 @@ public:
 	~SemiGlobalMatcher();
 
 	void Match(const Scene& scene, IIndex idxImage, IIndex numNeighbors, unsigned minResolution=320);
-	void MatchMultiView(const Scene& scene, IIndex idxImage, IIndex numNeighbors, DepthMap& depthMap, ConfidenceMap& confMap, unsigned minResolution=320);
+	void MatchMultiView(const Scene& scene, IIndex idxImage, IIndex numNeighbors, DepthData& depthData, unsigned minResolution=320);
 
 	static void CreateThreads(unsigned nMaxThreads=1);
 	static void DestroyThreads();

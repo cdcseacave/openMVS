@@ -3544,7 +3544,7 @@ void Scene::DenseReconstructionEstimate(void* pData)
 				// extract the depth-map by matching the image against all its neighbor views at once using the SGM algorithm
 				const IIndex idx(data.images[evtImage.idxImage]);
 				DepthData& depthData(data.depthMaps.arrDepthData[idx]);
-				data.sgm.MatchMultiView(*this, idx, OPTDENSE::nNumViews, depthData.depthMap, depthData.confMap);
+				data.sgm.MatchMultiView(*this, idx, OPTDENSE::nNumViews, depthData);
 				if (OPTDENSE::nEstimateNormals == 2)
 					EstimateNormalMap(depthData.images.front().camera.K, depthData.depthMap, depthData.normalMap);
 				depthData.dMin = ZEROTOLERANCE<float>(); depthData.dMax = FLT_MAX;

@@ -397,12 +397,14 @@ static float TexelsCost(const Image32F& gray, const TexelPositions<R>& warp, con
 //    reference patch and the neighbor patch warped by the plane through the sample
 //  - that plane has the slant of the surface estimated by the previous level (inverse depth is
 //    affine in the pixel coordinates over a plane); it is fronto-parallel at the coarsest level
-void SemiGlobalMatcher::MatchMultiView(const Scene& scene, IIndex idxImage, IIndex numNeighbors, DepthMap& depthMap, ConfidenceMap& confMap, unsigned minResolution)
+void SemiGlobalMatcher::MatchMultiView(const Scene& scene, IIndex idxImage, IIndex numNeighbors, DepthData& depthData, unsigned minResolution)
 {
 	ASSERT(idxImage < scene.images.size());
 	const Image& refImage = scene.images[idxImage];
 	ASSERT(refImage.IsValid() && !refImage.image.empty());
 	const cv::Size imageSize(refImage.image.size());
+	DepthMap& depthMap = depthData.depthMap;
+	ConfidenceMap& confMap = depthData.confMap;
 	depthMap.create(imageSize); depthMap.memset(0);
 	confMap.create(imageSize); confMap.memset(0);
 	#if SGM_SIMILARITY == SGM_SIMILARITY_CENSUS
@@ -449,11 +451,14 @@ void SemiGlobalMatcher::MatchMultiView(const Scene& scene, IIndex idxImage, IInd
 			height1 = (float)gray.height()-1.001f;
 		}
 	};
+	// the neighbors already selected for this depth-map, the same set the fusion confirms it against
+	if (depthData.neighbors.empty())
+		return;
 	CLISTDEFIDX(NeighborView,IIndex) views;
 	views.reserve(maxViews); // never relocated, as the images hold pointers into themselves
-	const float fMinScore(MAXF(refImage.neighbors.front().score*OPTDENSE::fViewMinScoreRatio, OPTDENSE::fViewMinScore));
-	FOREACH(idxNeighbor, refImage.neighbors) {
-		const ViewScore& neighbor = refImage.neighbors[idxNeighbor];
+	const float fMinScore(MAXF(depthData.neighbors.front().score*OPTDENSE::fViewMinScoreRatio, OPTDENSE::fViewMinScore));
+	FOREACH(idxNeighbor, depthData.neighbors) {
+		const ViewScore& neighbor = depthData.neighbors[idxNeighbor];
 		ASSERT(scene.images[neighbor.ID].IsValid());
 		if ((numNeighbors && idxNeighbor >= numNeighbors) || neighbor.score < fMinScore || views.size() >= maxViews)
 			break;

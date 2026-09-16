@@ -60,8 +60,9 @@ For the reference image:
 
 1. **Depth range.** The sparse points seen by the image give `[0.9·dMin, 1.1·dMax]`
    (`SparseDepthRange`); an image without points gets an empty depth-map.
-2. **Neighbor views.** The same subset PatchMatch uses (`nNumViews` at most, score at least
-   `max(fViewMinScoreRatio·best, fViewMinScore)`), capped at 32. For each, the relative pose gives,
+2. **Neighbor views.** The subset selected for this depth-map (`DepthData::neighbors`, the one the
+   fusion later confirms it against), `nNumViews` at most and score at least
+   `max(fViewMinScoreRatio·best, fViewMinScore)`, capped at 32. For each, the relative pose gives,
    at every pyramid level, `x_k ~ A·x + invz·b` with `A = K_k·R·K_ref⁻¹` and `b = K_k·t`: the
    projection into view `k` of the reference pixel `x` at inverse depth `invz`.
 3. **Inverse-depth samples.** Uniform in inverse depth from `1/dMax`, with the step at full
