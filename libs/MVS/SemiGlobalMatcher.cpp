@@ -169,7 +169,7 @@ static bool SparseDepthRange(const Scene& scene, IIndex idxImage, Depth& dMin, D
 		if (points)
 			points->push_back((uint32_t)idxPoint);
 	}
-	if (dMin >= dMax)
+	if (dMax <= 0)
 		return false;
 	dMin *= 0.9f; dMax *= 1.1f;
 	return true;
@@ -408,7 +408,7 @@ void SemiGlobalMatcher::MatchMultiView(const Scene& scene, IIndex idxImage, IInd
 	depthMap.create(imageSize); depthMap.memset(0);
 	confMap.create(imageSize); confMap.memset(0);
 	#if SGM_SIMILARITY == SGM_SIMILARITY_CENSUS
-	ASSERT("the multi-view matching needs the WZNCC similarity" == NULL);
+	VERBOSE("error: the multi-view matching needs the WZNCC similarity");
 	#else
 	enum { maxViews = 32 }; // neighbor views matched at most
 	enum { numBestViews = 2 }; // neighbor costs averaged per sample

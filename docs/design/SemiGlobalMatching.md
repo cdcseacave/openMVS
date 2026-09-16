@@ -59,7 +59,7 @@ with inverse depth, as the disparity of a rectified pair does.
 For the reference image:
 
 1. **Depth range.** The sparse points seen by the image give `[0.9·dMin, 1.1·dMax]`
-   (`SparseDepthRange`); an image without points gets an empty depth-map.
+   (`SparseDepthRange`); an image that sees no point in front of it gets an empty depth-map.
 2. **Neighbor views.** The subset selected for this depth-map (`DepthData::neighbors`, the one the
    fusion later confirms it against), `nNumViews` at most and score at least
    `max(fViewMinScoreRatio·best, fViewMinScore)`, capped at 32. For each, the relative pose gives,
