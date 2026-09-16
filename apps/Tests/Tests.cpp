@@ -204,6 +204,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::AlignToGPSDegenerateTest())
 				return false;
+			if (!SFM::GroundControlPointTest())
+				return false;
 			if (!SFM::PairsWeightingTest())
 				return false;
 			if (!SFM::ViewGraphCalibratorTest())

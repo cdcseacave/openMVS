@@ -2501,6 +2501,130 @@ bool AlignToGPSDegenerateTest()
 /*----------------------------------------------------------------*/
 
 
+bool GroundControlPointTest()
+{
+	VERBOSE("\n=== GroundControlPointTest ===");
+
+	// Parser contract: columns may be reordered, image extensions are ignored for matching,
+	// and control points with fewer than two distinct image observations are discarded.
+	{
+		const ScopedTempDir tmpDir(_T("GroundControlPointTest"));
+		if (!tmpDir.IsValid())
+			return false;
+		ImageArr images;
+		images.emplace_back(0, "/images/a.tif");
+		images.emplace_back(1, "/images/b.tif");
+		images.emplace_back(2, "/images/c.tif");
+		const String csvPath = tmpDir(_T("gcps.csv"));
+		{
+			std::ofstream os(csvPath);
+			os << "image_file_name,gcp_label,y,x,elev,y_map,x_map,elev_acc,y_map_acc,x_map_acc\n";
+			os << "a.tif,P1,20,10,300,200,100,3,2,1\n";
+			os << "b.tif,P1,22,12,300,200,100,3,2,1\n";
+			os << "a.tif,P2,40,30,600,500,400,1,1,1\n"; // discarded singleton
+		}
+		GroundControlPointArr gcps;
+		if (ImportGroundControlPointsCSV(csvPath, images, gcps) != 1 ||
+			gcps[0].label != "P1" || gcps[0].observations.GetSize() != 2 ||
+			norm(gcps[0].position-Point3(100, 200, 300)) > REAL(1e-6) ||
+			norm(gcps[0].accuracy-Point3(1, 2, 3)) > REAL(1e-6))
+		{
+			VERBOSE("GroundControlPointTest FAILED: CSV import mismatch");
+			return false;
+		}
+	}
+
+	Scene sceneGT, scene;
+	SceneConfig cfg;
+	cfg.numImages = 6;
+	cfg.numPoints = 120;
+	cfg.poseMode = SceneConfig::RANDOM_POSES;
+	GenerateTestScene(sceneGT, cfg, &scene);
+	for (IIndex trackID = 0; trackID < 12; ++trackID) {
+		const Track& track = sceneGT.tracks[trackID];
+		if (track.GetNumObservations() < 2)
+			continue;
+		GroundControlPoint& gcp = scene.gcps.emplace_back();
+		gcp.label = String::FormatString("GCP%u", trackID);
+		gcp.position = track.position;
+		gcp.accuracy = Point3(0.02, 0.02, 0.03);
+		for (const Observation& trackObs : track.observations) {
+			const cv::KeyPoint& kp = sceneGT.images[trackObs.imageID].keypoints[trackObs.featureID];
+			gcp.observations.emplace_back(GroundControlPoint::Observation{trackObs.imageID, kp.pt});
+		}
+	}
+	if (scene.gcps.GetSize() < 6) {
+		VERBOSE("GroundControlPointTest FAILED: insufficient synthetic GCPs");
+		return false;
+	}
+	// A gross survey-coordinate outlier must be rejected by alignment and excluded from BA.
+	scene.gcps.back().position += Point3(100, -80, 120);
+
+	std::mt19937 rng(73);
+	scene.Transform(Transform::Random(rng));
+	if (!scene.AlignToGCP(REAL(0.01)) ||
+		!scene.status.nState.isSet(Scene::Status::STATE::GCP_ALIGN) ||
+		scene.status.nState.isSet(Scene::Status::STATE::GEO_ALIGN))
+	{
+		VERBOSE("GroundControlPointTest FAILED: map-frame alignment failed or set the GPS frame flag");
+		return false;
+	}
+	unsigned numGCPInliers = 0;
+	for (const GroundControlPoint& gcp : scene.gcps)
+		numGCPInliers += gcp.isInlier;
+	if (numGCPInliers != scene.gcps.GetSize()-1 || scene.gcps.back().isInlier) {
+		VERBOSE("GroundControlPointTest FAILED: RANSAC outlier was retained for bundle adjustment");
+		return false;
+	}
+	double alignmentError = 0;
+	FOREACH(i, scene.images)
+		alignmentError += norm(scene.images[i].C-sceneGT.images[i].C);
+	alignmentError /= scene.images.size();
+	if (alignmentError > 1e-3) {
+		VERBOSE("GroundControlPointTest FAILED: mean aligned camera error %.6g", alignmentError);
+		return false;
+	}
+
+	Point3Arr surveyedPositions;
+	for (const GroundControlPoint& gcp : scene.gcps)
+		surveyedPositions.push_back(gcp.position);
+	FOREACH(i, scene.images)
+		scene.images[i].C += Point3(0.03*(i+1), -0.02*(i+1), 0.01*(i+1));
+	BAConfig baCfg;
+	baCfg.useGCPConstraints = true;
+	baCfg.gcpPositionWeight = 1.0;
+	baCfg.maxIterations = 30;
+	BundleAdjustment ba(scene, baCfg);
+	if (!ba.Adjust()) {
+		VERBOSE("GroundControlPointTest FAILED: constrained BA failed");
+		return false;
+	}
+	FOREACH(i, scene.gcps) {
+		if (norm(scene.gcps[i].position-surveyedPositions[i]) > REAL(1e-12)) {
+			VERBOSE("GroundControlPointTest FAILED: surveyed GCP %u was modified", i);
+			return false;
+		}
+	}
+	const PoseUncertaintyArr uncertainty = ba.ComputePoseUncertainty();
+	if (uncertainty.size() != scene.images.size()) {
+		VERBOSE("GroundControlPointTest FAILED: absolute pose covariance was not computed");
+		return false;
+	}
+	FOREACH(i, uncertainty) {
+		if (!uncertainty[i].IsValid() ||
+			(uncertainty[i].MaxRotationVariance() == 0.f && uncertainty[i].MaxPositionVariance() == 0.f))
+		{
+			VERBOSE("GroundControlPointTest FAILED: pose %u is invalid or incorrectly marked as a datum", i);
+			return false;
+		}
+	}
+
+	VERBOSE("GroundControlPointTest PASSED");
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+
 // Small SFM smoke test: build tiny scene and run BundleAdjustment::Adjust
 bool PipelineTest()
 {
