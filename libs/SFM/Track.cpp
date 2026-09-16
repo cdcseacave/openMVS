@@ -79,8 +79,13 @@ void SFM::BuildTracks(Scene& scene, float minPairWeight)
 	};
 
 	// 2. Merge observations from image pairs
-	// Ideally the pairs are pre-filtered to only include inlier matches
-	// and sorted by weight (most reliable first) to maximize track quality.
+	// The pairs arrive sorted by composite weight, decreasing: ComputePairsWeights (PairsWeighting.cpp,
+	// step 5) sorts scene.pairs at the end of every weighting, and matching, the triplet filter and the
+	// dense supplement each end in one. So when two links of one keypoint conflict below, the link of
+	// the heavier pair has arrived first and stands, and the veto drops the lighter pair's. The weight
+	// says nothing about which of a pair's links is the wrong one: on alameda this order keeps the
+	// right keypoint in 68% of the conflicts a triangulation can judge and the wrong one in 22%, the
+	// same as the export's order gives.
 	unsigned numPairsProcessed = 0;
 	// An infused pair is judged on the same composite weight as every other pair, its dense matches
 	// counted at the dense observation weight (GetNumWeightedInliers) rather than at 1 or at 0: a
