@@ -468,19 +468,29 @@ void SemiGlobalMatcher::MatchMultiView(const Scene& scene, IIndex idxImage, IInd
 	if (views.empty())
 		return;
 	// inverse-depth step at full resolution: one pixel of motion along the epipolar line of the
-	// neighbor where the projection moves the most, measured at the image center and mid depth
+	// neighbor where the projection moves the most, at mid depth; the motion is sampled over a 3x3
+	// grid covering the image and reduced by its median, as it vanishes at the epipole, which a pair
+	// moving along its optical axis has at the image center: measured there alone it reports none
 	float step0(0); {
 		const cv::Matx33d invKref(MVS::Camera::InvK(refImage.camera.K));
-		const Point3f x((float)imageSize.width*0.5f, (float)imageSize.height*0.5f, 1.f);
 		const float invzMid((invzMin+invzMax)*0.5f);
 		float maxMotion(0);
 		for (NeighborView& view: views) {
 			view.gray = view.grayFull;
 			view.SetLevel(invKref, cv::Matx33d(view.image->camera.K));
-			const Point3f h(view.A[0]*x.x + view.A[1]*x.y + view.A[2] + view.b*invzMid);
-			if (h.z <= 0)
+			CLISTDEF0IDX(float,int) motions(0, 9);
+			for (int i=0; i<3; ++i) {
+				for (int j=0; j<3; ++j) {
+					const Point2f x((float)imageSize.width*(0.05f+0.45f*(float)j), (float)imageSize.height*(0.05f+0.45f*(float)i));
+					const Point3f h(view.A[0]*x.x + view.A[1]*x.y + view.A[2] + view.b*invzMid);
+					if (h.z <= 0)
+						continue;
+					motions.push_back((float)norm(Point2f(view.b.x*h.z-h.x*view.b.z, view.b.y*h.z-h.y*view.b.z))/SQUARE(h.z));
+				}
+			}
+			if (motions.empty())
 				continue;
-			const float motion((float)norm(Point2f(view.b.x*h.z-h.x*view.b.z, view.b.y*h.z-h.y*view.b.z))/SQUARE(h.z));
+			const float motion(motions.GetMedian());
 			if (maxMotion < motion)
 				maxMotion = motion;
 		}

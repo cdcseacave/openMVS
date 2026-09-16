@@ -66,7 +66,9 @@ For the reference image:
    projection into view `k` of the reference pixel `x` at inverse depth `invz`.
 3. **Inverse-depth samples.** Uniform in inverse depth from `1/dMax`, with the step at full
    resolution set so that one step moves the projection by one pixel in the neighbor where it moves
-   the most (measured at the image center and mid depth); every other neighbor moves less. At a
+   the most at mid depth; every other neighbor moves less. The motion is sampled over a 3x3 grid
+   covering the image and reduced by its median: it vanishes at the epipole, which a pair moving
+   along its optical axis has at the image center, so measured there alone it reports none. At a
    pyramid level of scale `s` the step is `step0/s`, so index `d` at one level is index `2d` at
    the next, exactly as a disparity. The count is capped so that the quarter-pixel sub-pixel
    indices fit in `int16`.
