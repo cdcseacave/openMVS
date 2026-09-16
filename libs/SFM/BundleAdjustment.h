@@ -48,6 +48,8 @@ struct SFM_API BAConfig
 	double gpsPositionWeight = 0.0;     // Horizontal GPS constraint weight
 	double gpsPositionWeightZ = 0.0;    // Vertical GPS constraint weight
 	double gpsWeightScaleFactor = 1.0;  // Manual scaling override for GPS weights
+	bool useGCPConstraints = false;     // Use imported GCP observations as BA constraints
+	double gcpPositionWeight = 1.0;     // GCP coordinate-prior weight (0 disables constraints)
 
 	// Angular reprojection error with keypoint confidence weighting
 	bool useKeypointConfidence = false; // Weight observations by keypoint response and size
@@ -252,8 +254,10 @@ private:
 	// local) so its storage outlives the solve: the intrinsic blocks stay valid when
 	// ComputePoseUncertainty()/ComputePoseUncertaintyCeres() later re-evaluate the problem.
 	std::unordered_map<const Camera*, DoubleArr> intrinsicParams;
+	std::vector<std::array<double, 3>> gcpParams; // GCP latent points; retained for covariance evaluation
 	UnsignedArr numReprojResidualsPerImage;  // per-image reprojection-residual count (gauge/datum selection)
 	uint32_t numGPSResiduals = 0;            // GPS priors in the problem: they anchor the gauge (no datum)
+	uint32_t numPositionPriorResiduals = 0;  // all absolute position priors (GPS + GCP)
 };
 /*----------------------------------------------------------------*/
 

@@ -457,6 +457,40 @@ struct GPSPositionError {
 };
 /*----------------------------------------------------------------*/
 
+struct GCPPositionError {
+	GCPPositionError(
+		double x, double y, double z,
+		double accuracy_x, double accuracy_y, double accuracy_z,
+		double weight)
+		: x_(x), y_(y), z_(z),
+		  accuracy_x_(MAXF(accuracy_x, 1e-6)),
+		  accuracy_y_(MAXF(accuracy_y, 1e-6)),
+		  accuracy_z_(MAXF(accuracy_z, 1e-6)),
+		  weight_(weight) {}
+
+	template <typename T>
+	bool operator()(const T* const point, T* residuals) const {
+		residuals[0] = T(weight_) * (point[0] - T(x_)) / T(accuracy_x_);
+		residuals[1] = T(weight_) * (point[1] - T(y_)) / T(accuracy_y_);
+		residuals[2] = T(weight_) * (point[2] - T(z_)) / T(accuracy_z_);
+		return true;
+	}
+
+	static ceres::CostFunction* Create(
+		double x, double y, double z,
+		double accuracy_x, double accuracy_y, double accuracy_z,
+		double weight)
+	{
+		return new ceres::AutoDiffCostFunction<GCPPositionError, 3, 3>(
+			new GCPPositionError(x, y, z, accuracy_x, accuracy_y, accuracy_z, weight));
+	}
+
+	const double x_, y_, z_;
+	const double accuracy_x_, accuracy_y_, accuracy_z_;
+	const double weight_;
+};
+/*----------------------------------------------------------------*/
+
 } // namespace SFM
 
 #endif // _SFM_BUNDLEADJUSTMENT_COSTFUNCTIONS_H_

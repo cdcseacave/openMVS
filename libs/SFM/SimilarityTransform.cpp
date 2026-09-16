@@ -105,8 +105,11 @@ unsigned SFM::EstimateSimilarityTransform(
 	double threshold,
 	bool refine,
 	size_t maxIters,
-	double confidence)
+	double confidence,
+	std::vector<size_t>* pInliers)
 {
+	if (pInliers)
+		pInliers->clear();
 	const size_t n = srcPoints.size();
 	if (n != dstPoints.size() || n < 3) {
 		VERBOSE("error: invalid correspondences (src: %u, dst: %u)",
@@ -130,8 +133,7 @@ unsigned SFM::EstimateSimilarityTransform(
 		}
 		DEBUG_EXTRA("Similarity-transform RANSAC found %u inliers (%.2f%%)", (unsigned)inliers.size(), 100.0f * inliers.size() / n);
 
-		// Refine using inliers (disable RANSAC to avoid recursion);
-		// pass nullptr so the recursive call does not overwrite our inlier count.
+		// Refine using inliers (disable RANSAC to avoid recursion).
 		Point3Arr srcInliers, dstInliers;
 		srcInliers.reserve(inliers.size());
 		dstInliers.reserve(inliers.size());
@@ -139,7 +141,12 @@ unsigned SFM::EstimateSimilarityTransform(
 			srcInliers.push_back(srcPoints[idx]);
 			dstInliers.push_back(dstPoints[idx]);
 		}
-		return EstimateSimilarityTransform(srcInliers, dstInliers, transform, 0.0, refine && inliers.size() < n);
+		if (EstimateSimilarityTransform(srcInliers, dstInliers, transform, 0.0,
+			refine && inliers.size() < n) == 0)
+			return 0;
+		if (pInliers)
+			*pInliers = std::move(inliers);
+		return static_cast<unsigned>(srcInliers.size());
 	}
 
 	transform = EstimateSimilarityTransform(srcPoints, dstPoints);
@@ -203,6 +210,10 @@ unsigned SFM::EstimateSimilarityTransform(
 		transform.scale = params[7];
 		DEBUG_EXTRA("Refined transform: scale %.3g, translation %.3g, rotation %.3g, cost %.4g -> %.4g",
 			transform.scale, norm(transform.t), FrobeniusNorm(transform.R), summary.initial_cost, summary.final_cost);
+	}
+	if (pInliers) {
+		pInliers->resize(n);
+		std::iota(pInliers->begin(), pInliers->end(), size_t(0));
 	}
 	return n;
 }
