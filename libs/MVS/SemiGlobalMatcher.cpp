@@ -84,34 +84,37 @@ public:
 	}
 	EVTPixelProcess(cv::Size s, volatile Thread::safe_t& idx, FncPixel f) : Event(EVT_JOB), size(s), idxPixel(idx), fncPixel(f) {}
 };
-class EVTPixelAccumInc : public Event
+// process the lines of an image, one job per line: a row, a column, or the
+// pixels an aggregation path visits from one border pixel
+class EVTLineProcess : public Event
 {
 public:
-	typedef std::function<void (int)> FncPixel;
-	const int numPixels;
-	volatile Thread::safe_t& idxPixel;
-	const FncPixel fncPixel;
+	typedef std::function<void (int)> FncLine;
+	const int numLines;
+	volatile Thread::safe_t& idxLine;
+	const FncLine fncLine;
 	bool Run(void*) override {
-		int idx;
-		while ((idx=(int)Thread::safeInc(idxPixel)) < numPixels)
-			fncPixel(idx);
+		int line;
+		while ((line=(int)Thread::safeInc(idxLine)) < numLines)
+			fncLine(line);
 		return true;
 	}
-	EVTPixelAccumInc(int s, volatile Thread::safe_t& idx, FncPixel f) : Event(EVT_JOB), numPixels(s), idxPixel(idx), fncPixel(f) {}
+	EVTLineProcess(int n, volatile Thread::safe_t& idx, FncLine f) : Event(EVT_JOB), numLines(n), idxLine(idx), fncLine(f) {}
 };
-class EVTPixelAccumDec : public Event
+// the same, walking the lines the other way, down a counter the previous jobs left at the last line
+class EVTLineProcessDec : public Event
 {
 public:
-	typedef std::function<void (int)> FncPixel;
-	volatile Thread::safe_t& idxPixel;
-	const FncPixel fncPixel;
+	typedef std::function<void (int)> FncLine;
+	volatile Thread::safe_t& idxLine;
+	const FncLine fncLine;
 	bool Run(void*) override {
-		int idx;
-		while ((idx=(int)Thread::safeDec(idxPixel)) >= 0)
-			fncPixel(idx);
+		int line;
+		while ((line=(int)Thread::safeDec(idxLine)) >= 0)
+			fncLine(line);
 		return true;
 	}
-	EVTPixelAccumDec(volatile Thread::safe_t& idx, FncPixel f) : Event(EVT_JOB), idxPixel(idx), fncPixel(f) {}
+	EVTLineProcessDec(volatile Thread::safe_t& idx, FncLine f) : Event(EVT_JOB), idxLine(idx), fncLine(f) {}
 };
 /*----------------------------------------------------------------*/
 
@@ -749,9 +752,9 @@ void SemiGlobalMatcher::FitSlopes(const DisparityMap& disparityMap, SlopeMap& sl
 	};
 	ASSERT(threads.IsEmpty());
 	if (!threads.empty()) {
-		volatile Thread::safe_t idxPixel(-1);
+		volatile Thread::safe_t idxLine(-1);
 		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumInc(disparityMap.rows, idxPixel, row));
+			threads.AddEvent(new EVTLineProcess(disparityMap.rows, idxLine, row));
 		WaitThreadWorkers(threads.size());
 	} else
 	for (int r=0; r<disparityMap.rows; ++r)
@@ -930,7 +933,10 @@ void SemiGlobalMatcher::Aggregate(const ImageGray& imageGray, DisparityMap& disp
 		#if SGM_SIMILARITY == SGM_SIMILARITY_CENSUS
 		const AccumCost P2(P2s[DI]);
 		#else
-		const AccumCost P2(P2s[MINF(ROUND2INT(255.f*ABS(DI)), 255)]);
+		// the intensities are normalized, so the difference indexes the table directly
+		const int dI(ROUND2INT(255.f*ABS(DI)));
+		ASSERT(dI < P2s.size());
+		const AccumCost P2(P2s[dI]);
 		#endif
 		const Disparity minDisp(MAXF(Lp.R.minDisp, Ls.R.minDisp));
 		const Disparity maxDisp(MINF(Lp.R.maxDisp, Ls.R.maxDisp));
@@ -1018,123 +1024,123 @@ void SemiGlobalMatcher::Aggregate(const ImageGray& imageGray, DisparityMap& disp
 				lines.NextLine(); \
 			} while (cond)
 		{ // width-down
-		auto pixels = [&](int x) {
+		auto path = [&](int x) {
 			ImageRef u(x,0);
 			ACCUM_PIXELS(++u.y < sizeValid.height);
 		};
-		volatile Thread::safe_t idxPixel(-1);
+		volatile Thread::safe_t idxLine(-1);
 		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumInc(sizeValid.width, idxPixel, pixels));
+			threads.AddEvent(new EVTLineProcess(sizeValid.width, idxLine, path));
 		WaitThreadWorkers(threads.size());
 		}
 		{ // height-right
-		auto pixels = [&](int y) {
+		auto path = [&](int y) {
 			ImageRef u(0,y);
 			ACCUM_PIXELS(++u.x < sizeValid.width);
 		};
-		volatile Thread::safe_t idxPixel(-1);
+		volatile Thread::safe_t idxLine(-1);
 		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumInc(sizeValid.height, idxPixel, pixels));
+			threads.AddEvent(new EVTLineProcess(sizeValid.height, idxLine, path));
 		WaitThreadWorkers(threads.size());
 		}
 		{ // width-up
-		auto pixels = [&](int x) {
+		auto path = [&](int x) {
 			ImageRef u(x,sizeValid.height-1);
 			ACCUM_PIXELS(--u.y >= 0);
 		};
-		volatile Thread::safe_t idxPixel(-1);
+		volatile Thread::safe_t idxLine(-1);
 		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumInc(sizeValid.width, idxPixel, pixels));
+			threads.AddEvent(new EVTLineProcess(sizeValid.width, idxLine, path));
 		WaitThreadWorkers(threads.size());
 		}
 		{ // height-left
-		auto pixels = [&](int y) {
+		auto path = [&](int y) {
 			ImageRef u(sizeValid.width-1,y);
 			ACCUM_PIXELS(--u.x >= 0);
 		};
-		volatile Thread::safe_t idxPixel(-1);
+		volatile Thread::safe_t idxLine(-1);
 		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumInc(sizeValid.height, idxPixel, pixels));
+			threads.AddEvent(new EVTLineProcess(sizeValid.height, idxLine, path));
 		WaitThreadWorkers(threads.size());
 		}
 		if (numDirs == 4) {
 		// each pair of diagonal sweeps runs concurrently and is waited for as one, after
-		// both blocks queuing it have closed, so the pixel counters must outlive them
-		volatile Thread::safe_t idxPixels[2];
+		// both blocks queuing it have closed, so the line counters must outlive them
+		volatile Thread::safe_t idxLines[2];
 		{ // width-right-down
-		auto pixels = [&](int x) {
+		auto path = [&](int x) {
 			ImageRef u(x,0);
 			ACCUM_PIXELS(++u.x < sizeValid.width && ++u.y < sizeValid.height);
 		};
-		idxPixels[0] = -1;
+		idxLines[0] = -1;
 		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumInc(sizeValid.width, idxPixels[0], pixels));
+			threads.AddEvent(new EVTLineProcess(sizeValid.width, idxLines[0], path));
 		}
 		{ // height-right-down
-		auto pixels = [&](int y) {
+		auto path = [&](int y) {
 			ImageRef u(0,y);
 			ACCUM_PIXELS(++u.x < sizeValid.width && ++u.y < sizeValid.height);
 		};
-		idxPixels[1] = 0;
+		idxLines[1] = 0;
 		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumInc(sizeValid.height, idxPixels[1], pixels));
+			threads.AddEvent(new EVTLineProcess(sizeValid.height, idxLines[1], path));
 		}
 		WaitThreadWorkers(threads.size()*2);
 		{ // width-left-down
-		auto pixels = [&](int x) {
+		auto path = [&](int x) {
 			ImageRef u(x,0);
 			ACCUM_PIXELS(--u.x >= 0 && ++u.y < sizeValid.height);
 		};
-		idxPixels[0] = -1;
+		idxLines[0] = -1;
 		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumInc(sizeValid.width-1, idxPixels[0], pixels));
+			threads.AddEvent(new EVTLineProcess(sizeValid.width-1, idxLines[0], path));
 		}
 		{ // height-left-down
-		auto pixels = [&](int y) {
+		auto path = [&](int y) {
 			ImageRef u(sizeValid.width-1,y);
 			ACCUM_PIXELS(--u.x >= 0 && ++u.y < sizeValid.height);
 		};
-		idxPixels[1] = -1;
+		idxLines[1] = -1;
 		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumInc(sizeValid.height, idxPixels[1], pixels));
+			threads.AddEvent(new EVTLineProcess(sizeValid.height, idxLines[1], path));
 		}
 		WaitThreadWorkers(threads.size()*2);
 		{ // width-right-up
-		auto pixels = [&](int x) {
+		auto path = [&](int x) {
 			ImageRef u(x,sizeValid.height-1);
 			ACCUM_PIXELS(++u.x < sizeValid.width && --u.y >= 0);
 		};
-		idxPixels[0] = 0;
+		idxLines[0] = 0;
 		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumInc(sizeValid.width, idxPixels[0], pixels));
+			threads.AddEvent(new EVTLineProcess(sizeValid.width, idxLines[0], path));
 		}
 		{ // height-right-up
-		auto pixels = [&](int y) {
+		auto path = [&](int y) {
 			ImageRef u(0,y);
 			ACCUM_PIXELS(++u.x < sizeValid.width && --u.y >= 0);
 		};
-		idxPixels[1] = sizeValid.height;
+		idxLines[1] = sizeValid.height;
 		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumDec(idxPixels[1], pixels));
+			threads.AddEvent(new EVTLineProcessDec(idxLines[1], path));
 		}
 		WaitThreadWorkers(threads.size()*2);
 		{ // width-left-up
-		auto pixels = [&](int x) {
+		auto path = [&](int x) {
 			ImageRef u(x,sizeValid.height-1);
 			ACCUM_PIXELS(--u.x >= 0 && --u.y >= 0);
 		};
-		idxPixels[0] = sizeValid.width;
+		idxLines[0] = sizeValid.width;
 		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumDec(idxPixels[0], pixels));
+			threads.AddEvent(new EVTLineProcessDec(idxLines[0], path));
 		}
 		{ // height-left-up
-		auto pixels = [&](int y) {
+		auto path = [&](int y) {
 			ImageRef u(sizeValid.width-1,y);
 			ACCUM_PIXELS(--u.x >= 0 && --u.y >= 0);
 		};
-		idxPixels[1] = sizeValid.height-1;
+		idxLines[1] = sizeValid.height-1;
 		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumDec(idxPixels[1], pixels));
+			threads.AddEvent(new EVTLineProcessDec(idxLines[1], path));
 		}
 		WaitThreadWorkers(threads.size()*2);
 		}
@@ -1230,6 +1236,7 @@ void SemiGlobalMatcher::Aggregate(const ImageGray& imageGray, DisparityMap& disp
 			disparityMap(idx) = pixel.range.minDisp+(Disparity)(bestAccum-accums);
 			costMap(idx) = *bestAccum;
 		} else {
+			// no disparity was searched for this pixel
 			disparityMap(idx) = NO_DISP;
 			costMap(idx) = NO_ACCUMCOST;
 		}
@@ -1240,9 +1247,9 @@ void SemiGlobalMatcher::Aggregate(const ImageGray& imageGray, DisparityMap& disp
 			for (int c=0; c<sizeValid.width; ++c)
 				pixel(r*sizeValid.width+c);
 		};
-		volatile Thread::safe_t idxPixel(-1);
+		volatile Thread::safe_t idxLine(-1);
 		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumInc(sizeValid.height, idxPixel, row));
+			threads.AddEvent(new EVTLineProcess(sizeValid.height, idxLine, row));
 		WaitThreadWorkers(threads.size());
 	} else
 	for (int r=0; r<sizeValid.height; ++r)
@@ -1408,9 +1415,9 @@ SemiGlobalMatcher::Index SemiGlobalMatcher::Disparity2RangeMap(const DisparityMa
 	};
 	ASSERT(threads.IsEmpty());
 	if (!threads.empty()) {
-		volatile Thread::safe_t idxPixel(-1);
+		volatile Thread::safe_t idxLine(-1);
 		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumInc(disparityMap.rows, idxPixel, row));
+			threads.AddEvent(new EVTLineProcess(disparityMap.rows, idxLine, row));
 		WaitThreadWorkers(threads.size());
 	} else
 	for (int r=0; r<disparityMap.rows; ++r)
@@ -1506,7 +1513,7 @@ void SemiGlobalMatcher::ExtractMask(const DisparityMap& disparityMap, MaskMap& m
 
 	// left-right direction
 	{
-	auto pixel = [&](int r) {
+	auto row = [&](int r) {
 		int numValid(0);
 		for (int c=0; c<disparityMap.cols; ++c) {
 			MASK_PIXEL();
@@ -1514,18 +1521,18 @@ void SemiGlobalMatcher::ExtractMask(const DisparityMap& disparityMap, MaskMap& m
 	};
 	ASSERT(threads.IsEmpty());
 	if (!threads.empty()) {
-		volatile Thread::safe_t idxPixel(-1);
+		volatile Thread::safe_t idxLine(-1);
 		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumInc(disparityMap.height(), idxPixel, pixel));
+			threads.AddEvent(new EVTLineProcess(disparityMap.height(), idxLine, row));
 		WaitThreadWorkers(threads.size());
 	} else
 	for (int r=0; r<disparityMap.rows; ++r)
-		pixel(r);
+		row(r);
 	}
 
 	// right-left direction
 	{
-	auto pixel = [&](int r) {
+	auto row = [&](int r) {
 		int numValid(0);
 		for (int c=disparityMap.cols; --c>=0; ) {
 			MASK_PIXEL();
@@ -1533,13 +1540,13 @@ void SemiGlobalMatcher::ExtractMask(const DisparityMap& disparityMap, MaskMap& m
 	};
 	ASSERT(threads.IsEmpty());
 	if (!threads.empty()) {
-		volatile Thread::safe_t idxPixel(-1);
+		volatile Thread::safe_t idxLine(-1);
 		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumInc(disparityMap.height(), idxPixel, pixel));
+			threads.AddEvent(new EVTLineProcess(disparityMap.height(), idxLine, row));
 		WaitThreadWorkers(threads.size());
 	} else
 	for (int r=0; r<disparityMap.rows; ++r)
-		pixel(r);
+		row(r);
 	}
 
 	#undef MASK_PIXEL
@@ -1557,7 +1564,7 @@ void SemiGlobalMatcher::FlipDirection(const DisparityMap& l2r, DisparityMap& r2l
 		r2l.create(l2r.size());
 	r2l.setTo(NO_DISP);
 
-	auto pixel = [&](int r) {
+	auto row = [&](int r) {
 		for (int c=0; c<l2r.cols; ++c) {
 			const Disparity d = l2r(r,c);
 			if (d == NO_DISP)
@@ -1569,13 +1576,13 @@ void SemiGlobalMatcher::FlipDirection(const DisparityMap& l2r, DisparityMap& r2l
 	};
 	ASSERT(threads.IsEmpty());
 	if (!threads.empty()) {
-		volatile Thread::safe_t idxPixel(-1);
+		volatile Thread::safe_t idxLine(-1);
 		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumInc(l2r.rows, idxPixel, pixel));
+			threads.AddEvent(new EVTLineProcess(l2r.rows, idxLine, row));
 		WaitThreadWorkers(threads.size());
 	} else
 	for (int r=0; r<l2r.rows; ++r)
-		pixel(r);
+		row(r);
 }
 
 // Translate disparity-map between left-to-right and right-to-left stereo pair
@@ -1726,9 +1733,9 @@ void SemiGlobalMatcher::RefineDisparityMap(DisparityMap& disparityMap) const
 			for (int c=0; c<disparityMap.cols; ++c)
 				pixel(r*disparityMap.cols+c);
 		};
-		volatile Thread::safe_t idxPixel(-1);
+		volatile Thread::safe_t idxLine(-1);
 		FOREACH(i, threads)
-			threads.AddEvent(new EVTPixelAccumInc(disparityMap.rows, idxPixel, row));
+			threads.AddEvent(new EVTLineProcess(disparityMap.rows, idxLine, row));
 		WaitThreadWorkers(threads.size());
 	} else
 	for (int r=0; r<disparityMap.rows; ++r)
