@@ -949,7 +949,7 @@ bool Scene::ReconstructHierarchical(const ReconstructionConfig& config, const II
 		DEBUG("Reconstructing sub-scene %u with %u images...", i, subScene.images.size());
 
 		// Build tracks
-		BuildTracks(subScene, config.minPairWeight);
+		BuildTracks(subScene, config.minPairWeight, config.trackConflictCfg);
 
 		// Initialize with star initializer; thread the scene's configured BA settings into its
 		// mini bundle adjustments instead of using the compiled-in BAConfig defaults
@@ -1038,7 +1038,7 @@ bool Scene::ReconstructGlobal(const ReconstructionConfig& config)
 	// CompareScenes(*this, MAKE_PATH("rscene_init.mvs"));
 
 	// Build tracks
-	BuildTracks(*this, config.minPairWeight);
+	BuildTracks(*this, config.minPairWeight, config.trackConflictCfg);
 
 	// 2. Global Positioning
 	GlobalPositionerOptions posOptions;
@@ -1134,7 +1134,7 @@ bool Scene::ReconstructKnownPoses(const ReconstructionConfig& config)
 	// approximate (and the intrinsics may still come from EXIF), so triangulate with a
 	// permissive reprojection threshold - the accurate-pose threshold would reject most of
 	// the correct tracks before the bundle adjustment ever gets a chance to fix the geometry
-	BuildTracks(*this, config.minPairWeight);
+	BuildTracks(*this, config.minPairWeight, config.trackConflictCfg);
 	if (tracks.empty()) {
 		VERBOSE("error: no tracks could be built from the matched pairs");
 		return false;

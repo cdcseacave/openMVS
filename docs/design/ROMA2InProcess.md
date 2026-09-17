@@ -348,7 +348,11 @@ pair, against 91 with the disc) at a median Sampson error of 1.07 px under the S
 the disc), because where the true keypoint was never detected the winner is a random one of the band's
 handful, and a handful's second best is beaten by the ratio a third of the time where the best of the
 image's thousands never is. What still gets through, a component holding one image twice, is the
-track builder's to resolve (`BuildTracks`).
+track builder's to resolve (`BuildTracks`, `TrackConflictConfig`): the least-supported link on the
+path between the two keypoints is cut, two keypoints within 3 px are one feature, and the pair-order
+veto stays as the fallback. Measured offline on the alameda band runs against the SIFT arm's poses,
+the veto keeps the wrong keypoint in 22% of the judgeable conflicts and the cut with the merge in
+17%, on every matching variant alike.
 
 ### Interfaces
 

@@ -2551,6 +2551,183 @@ bool ROMA2GuidedBandTest()
 // not, a pair with no guided match at all is still assembled as a dense-only pair, a fill too small
 // to fit leaves the verdict's geometry untouched, and the store appends the dense keypoints past
 // each image's described prefix with indices that depend only on what the images already carry
+bool BuildTracksConflictTest()
+{
+	TD_TIMER_START();
+
+	// A scene of one-keypoint images (image A gets two) with weighted pairs holding one match each;
+	// the pairs are appended in decreasing weight, the order BuildTracks receives them in, and
+	// given with ID1 < ID2, the order ImagePair keeps (its constructor swaps the IDs, not the match).
+	struct Link { IIndex ID1, ID2; int q, t; float weight; };
+	const auto Build = [](const std::vector<std::vector<Point2f>>& keypoints, const std::vector<Link>& links, Scene& scene) {
+		FOREACH(i, keypoints) {
+			Image& img = scene.images.emplace_back((IIndex)i, String::FormatString("%u.jpg", i));
+			for (const Point2f& pt : keypoints[i])
+				img.keypoints.emplace_back(pt.x, pt.y, 3.f, -1.f, 0.1f);
+		}
+		for (const Link& link : links) {
+			ASSERT(link.ID1 < link.ID2);
+			ImagePair& pair = scene.pairs.emplace_back(link.ID1, link.ID2);
+			pair.matches.emplace_back(link.q, link.t);
+			pair.numFilteredInliers = 1;
+			// W = numInliers * cbrt(weightSpatial * weightConnectivity * (0.5 + weightTriplet))
+			pair.weightConnectivity = 1.f;
+			pair.weightTriplet = 0.5f;
+			pair.weightSpatial = POWI(link.weight, 3);
+			ASSERT(ISEQUAL(pair.GetCompositeWeight(), link.weight));
+		}
+	};
+	// the tracks as sorted lists of (image, feature), sorted
+	typedef std::vector<std::vector<std::pair<IIndex, uint32_t>>> Tracks;
+	const auto TracksOf = [](const Scene& scene) {
+		Tracks tracks;
+		for (const Track& track : scene.tracks) {
+			std::vector<std::pair<IIndex, uint32_t>> obs;
+			for (const Observation& o : track.observations)
+				obs.emplace_back(o.imageID, o.featureID);
+			std::sort(obs.begin(), obs.end());
+			tracks.push_back(obs);
+		}
+		std::sort(tracks.begin(), tracks.end());
+		return tracks;
+	};
+	const auto Report = [](const char* what, const Tracks& tracks) {
+		VERBOSE("BuildTracksConflictTest FAILED: %s (%u tracks)", what, (unsigned)tracks.size());
+		FOREACH(k, tracks) {
+			String s;
+			for (const auto& [img, feat] : tracks[k])
+				s += String::FormatString(" (%u,%u)", img, feat);
+			VERBOSE("BuildTracksConflictTest:   track %u:%s", k, s.c_str());
+		}
+	};
+
+	// Image A holds a1 (keypoint 0) and a2 (keypoint 1), far apart; B, C, D one keypoint each.
+	// The links, heaviest first: a2-c (6), b-c (5), a1-b (4), a1-d (4), b-d (4). The plain union
+	// joins all five keypoints and image A is in twice. The triangle a1-b-d corroborates a1-b, the
+	// chain b-c-a2 has no triangle: on the path a1-b-c-a2 the least-supported links are b-c and c-a2
+	// (no triangle), the lighter of them b-c is cut, and b stays with the corroborated side.
+	const std::vector<std::vector<Point2f>> keypointsA = {
+		{Point2f(10.f, 10.f), Point2f(100.f, 100.f)}, {Point2f(20.f, 20.f)}, {Point2f(30.f, 30.f)}, {Point2f(40.f, 40.f)}};
+	const std::vector<Link> linksA = {
+		{0, 2, 1, 0, 6.f}, {1, 2, 0, 0, 5.f}, {0, 1, 0, 0, 4.f}, {0, 3, 0, 0, 4.f}, {1, 3, 0, 0, 4.f}};
+	const Tracks cutA = {{{0, 0}, {1, 0}, {3, 0}}, {{0, 1}, {2, 0}}};
+	// the veto in pair order takes a2-c and b-c first, then refuses a1-b and b-d: b stays with a2
+	const Tracks vetoA = {{{0, 0}, {3, 0}}, {{0, 1}, {1, 0}, {2, 0}}};
+	{
+		Scene scene;
+		Build(keypointsA, linksA, scene);
+		BuildTracks(scene, 0.f);
+		if (TracksOf(scene) != cutA) {
+			Report("the cut keeps b on the corroborated side", TracksOf(scene));
+			return false;
+		}
+	}
+	{
+		Scene scene;
+		Build(keypointsA, linksA, scene);
+		TrackConflictConfig conflict;
+		conflict.cut = false;
+		BuildTracks(scene, 0.f, conflict);
+		if (TracksOf(scene) != vetoA) {
+			Report("without the cut the veto keeps the first arrival", TracksOf(scene));
+			return false;
+		}
+	}
+	{
+		Scene scene;
+		Build(keypointsA, linksA, scene);
+		TrackConflictConfig conflict;
+		conflict.maxComponentSize = 4; // five keypoints: too large for the cut
+		BuildTracks(scene, 0.f, conflict);
+		if (TracksOf(scene) != vetoA) {
+			Report("a component above the size bar takes the veto", TracksOf(scene));
+			return false;
+		}
+	}
+
+	// a1 and a2 two pixels apart, linked a1-b, a2-c, b-c: one feature seen twice. Within the merge
+	// distance the component is one track and a1, first of two equally linked keypoints, stands
+	// for image A; with the merge off the conflict is cut: all links equally unsupported and
+	// weighted, the earliest, a1-b, goes, and a1 alone is no track.
+	const std::vector<std::vector<Point2f>> keypointsB = {
+		{Point2f(10.f, 10.f), Point2f(12.f, 10.f)}, {Point2f(20.f, 20.f)}, {Point2f(30.f, 30.f)}};
+	const std::vector<Link> linksB = {{0, 1, 0, 0, 3.f}, {0, 2, 1, 0, 3.f}, {1, 2, 0, 0, 3.f}};
+	{
+		Scene scene;
+		Build(keypointsB, linksB, scene);
+		BuildTracks(scene, 0.f);
+		const Tracks expected = {{{0, 0}, {1, 0}, {2, 0}}};
+		if (TracksOf(scene) != expected) {
+			Report("two keypoints within the merge distance are one feature", TracksOf(scene));
+			return false;
+		}
+	}
+	{
+		Scene scene;
+		Build(keypointsB, linksB, scene);
+		TrackConflictConfig conflict;
+		conflict.mergeDistance = 0.f;
+		BuildTracks(scene, 0.f, conflict);
+		const Tracks expected = {{{0, 1}, {1, 0}, {2, 0}}};
+		if (TracksOf(scene) != expected) {
+			Report("with the merge off the near duplicates are cut apart", TracksOf(scene));
+			return false;
+		}
+	}
+	{
+		Scene scene;
+		Build(keypointsB, linksB, scene);
+		TrackConflictConfig conflict;
+		conflict.cut = false;
+		BuildTracks(scene, 0.f, conflict);
+		const Tracks expected = {{{0, 0}, {1, 0}, {2, 0}}};
+		if (TracksOf(scene) != expected) {
+			Report("the veto merges two keypoints within the merge distance too", TracksOf(scene));
+			return false;
+		}
+	}
+
+	// Three keypoints of image A: a1 and a2 (keypoints 0, 1) 2.9 px apart, a3 (keypoint 2) 2.9 px
+	// from a1 and 5.8 from a2. The links, heaviest first: a3-b, a1-c, a2-d, c-d, b-c. The veto
+	// merges a1 and a2 through c-d, then refuses b-c: a3 is one feature with a1 but not with a2.
+	// The cut sees the same three in one component, and b-c, unsupported and lightest on the path
+	// from a3 to a2, goes. Either way a1, the first of two equally linked, stands for A.
+	const std::vector<std::vector<Point2f>> keypointsD = {
+		{Point2f(10.f, 10.f), Point2f(12.9f, 10.f), Point2f(7.1f, 10.f)}, {Point2f(20.f, 20.f)}, {Point2f(30.f, 30.f)}, {Point2f(40.f, 40.f)}};
+	const std::vector<Link> linksD = {
+		{0, 1, 2, 0, 6.f}, {0, 2, 0, 0, 5.f}, {0, 3, 1, 0, 5.f}, {2, 3, 0, 0, 4.f}, {1, 2, 0, 0, 3.f}};
+	const Tracks tracksD = {{{0, 0}, {2, 0}, {3, 0}}, {{0, 2}, {1, 0}}};
+	for (const bool cut : {true, false}) {
+		Scene scene;
+		Build(keypointsD, linksD, scene);
+		TrackConflictConfig conflict;
+		conflict.cut = cut;
+		BuildTracks(scene, 0.f, conflict);
+		if (TracksOf(scene) != tracksD) {
+			Report(cut ? "the cut merges one feature and not its far neighbour" : "the veto merges one feature and not its far neighbour", TracksOf(scene));
+			return false;
+		}
+	}
+
+	// a chain a-b-c without a conflict is one track of three, under either rule
+	const std::vector<std::vector<Point2f>> keypointsC = {{Point2f(10.f, 10.f)}, {Point2f(20.f, 20.f)}, {Point2f(30.f, 30.f)}};
+	const std::vector<Link> linksC = {{0, 1, 0, 0, 3.f}, {1, 2, 0, 0, 3.f}};
+	{
+		Scene scene;
+		Build(keypointsC, linksC, scene);
+		BuildTracks(scene, 0.f);
+		const Tracks expected = {{{0, 0}, {1, 0}, {2, 0}}};
+		if (TracksOf(scene) != expected) {
+			Report("a conflict-free chain is one track", TracksOf(scene));
+			return false;
+		}
+	}
+
+	VERBOSE("BuildTracksConflictTest passed: %s", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+
 bool ROMA2AssemblyTest()
 {
 	TD_TIMER_START();

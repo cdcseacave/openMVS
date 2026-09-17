@@ -39,7 +39,257 @@ float Track::ComputeMinAngleBetweenRays(const ImageArr& images) const
 	return ACOS(minCosAngle);
 }
 
-void SFM::BuildTracks(Scene& scene, float minPairWeight)
+namespace {
+
+// A component of the plain union of the matches that holds one image twice, settled on its own
+// links (see BuildTracks): the links are made local, the conflict is cut or vetoed, and the pieces
+// left are the component's tracks.
+class ConflictedComponent
+{
+public:
+	struct Link {
+		uint32_t a, b;  // the two keypoints: global feature IDs given, local indices once localized
+		uint32_t order; // position among the track-forming matches, in pair order
+		float weight;   // the pair's composite weight
+	};
+
+	// Take the links of one component; nodeInfo(globalID, image, position) describes a keypoint.
+	template <typename Iterator, typename NodeInfo>
+	void Set(Iterator first, Iterator last, NodeInfo nodeInfo) {
+		links.clear();
+		nodes.clear();
+		for (Iterator it = first; it != last; ++it) {
+			links.push_back({it->a, it->b, it->order, it->weight});
+			nodes.push_back(it->a);
+			nodes.push_back(it->b);
+		}
+		std::sort(nodes.begin(), nodes.end());
+		nodes.erase(std::unique(nodes.begin(), nodes.end()), nodes.end());
+		for (Link& link : links) {
+			link.a = Local(link.a);
+			link.b = Local(link.b);
+		}
+		images.resize(nodes.size());
+		positions.resize(nodes.size());
+		FOREACH(n, nodes)
+			nodeInfo(nodes[n], images[n], positions[n]);
+		standing.assign(links.size(), true);
+		adjacency.assign(nodes.size(), {});
+		FOREACH(e, links) {
+			adjacency[links[e].a].emplace_back(links[e].b, (uint32_t)e);
+			adjacency[links[e].b].emplace_back(links[e].a, (uint32_t)e);
+		}
+	}
+
+	size_t NumNodes() const { return nodes.size(); }
+
+	// Cut, while two keypoints of one image share a piece without being one feature (within
+	// mergeDist2; negative merges nothing), the least-supported link on the shortest path between
+	// them: the fewest triangles through it, then the lighter pair, then the later link. The
+	// support is counted once, on the component as it arrived: a triangle is evidence whether or
+	// not one of its links has since been cut. Returns the number of links cut.
+	unsigned Cut(float mergeDist2) {
+		// the triangles through each link: the common neighbours of its two keypoints
+		std::vector<unsigned> support(links.size(), 0);
+		std::vector<uint32_t> mark(nodes.size(), NO_ID);
+		FOREACH(e, links) {
+			for (const auto& [n, l] : adjacency[links[e].a])
+				mark[n] = (uint32_t)e;
+			for (const auto& [n, l] : adjacency[links[e].b])
+				if (mark[n] == e)
+					++support[e];
+		}
+		unsigned numCut = 0;
+		std::vector<uint32_t> via(nodes.size()); // the link a keypoint was reached through
+		std::vector<uint32_t> queue;
+		while (true) {
+			LabelPieces();
+			const auto [x1, x2] = FirstConflict(mergeDist2);
+			if (x1 == NO_ID)
+				break;
+			// the shortest path from x1 to x2 over the standing links
+			std::fill(via.begin(), via.end(), NO_ID);
+			queue.assign(1, x1);
+			via[x1] = (uint32_t)links.size(); // reached, through no link
+			for (size_t i = 0; i < queue.size() && via[x2] == NO_ID; ++i)
+				for (const auto& [n, l] : adjacency[queue[i]])
+					if (standing[l] && via[n] == NO_ID) {
+						via[n] = l;
+						queue.push_back(n);
+					}
+			ASSERT(via[x2] != NO_ID); // the two are one piece
+			if (via[x2] == NO_ID)
+				break;
+			// the least-supported link on it
+			uint32_t cut = NO_ID;
+			for (uint32_t n = x2; n != x1; ) {
+				const uint32_t l = via[n];
+				if (cut == NO_ID || support[l] < support[cut] || (support[l] == support[cut] &&
+					(links[l].weight < links[cut].weight || (links[l].weight == links[cut].weight && links[l].order < links[cut].order))))
+					cut = l;
+				n = links[l].a == n ? links[l].b : links[l].a;
+			}
+			standing[cut] = false;
+			++numCut;
+		}
+		return numCut;
+	}
+
+	// Union the links in order, refusing one that would bring an image in twice unless the two
+	// keypoints are one feature (within mergeDist2; negative merges nothing): the rule of the
+	// union veto. Returns the number of links vetoed.
+	unsigned Veto(float mergeDist2) {
+		DisjointSet<uint32_t> ds(nodes.size());
+		// the keypoints of every set, sorted by image
+		std::vector<std::vector<uint32_t>> members(nodes.size());
+		FOREACH(n, nodes)
+			members[n].assign(1, (uint32_t)n);
+		const auto ByImage = [this](uint32_t n1, uint32_t n2) { return images[n1] < images[n2]; };
+		unsigned numVetoed = 0;
+		std::vector<uint32_t> merged;
+		FOREACH(e, links) {
+			const uint32_t r1 = ds.Find(links[e].a), r2 = ds.Find(links[e].b);
+			if (r1 == r2)
+				continue;
+			// every image the two sets share has to be one feature across them: every keypoint of
+			// it in one set within the merge distance of every one in the other (a set holds
+			// several of one image only when they were merged as one feature before)
+			bool oneFeature = true;
+			const auto& m1 = members[r1];
+			const auto& m2 = members[r2];
+			for (size_t i1 = 0, i2 = 0; oneFeature && i1 < m1.size() && i2 < m2.size(); ) {
+				if (images[m1[i1]] < images[m2[i2]]) { ++i1; continue; }
+				if (images[m2[i2]] < images[m1[i1]]) { ++i2; continue; }
+				size_t j1 = i1, j2 = i2;
+				while (j1 < m1.size() && images[m1[j1]] == images[m1[i1]]) ++j1;
+				while (j2 < m2.size() && images[m2[j2]] == images[m2[i2]]) ++j2;
+				for (size_t k1 = i1; oneFeature && k1 < j1; ++k1)
+					for (size_t k2 = i2; oneFeature && k2 < j2; ++k2)
+						oneFeature = mergeDist2 >= 0.f && Distance2(m1[k1], m2[k2]) <= mergeDist2;
+				i1 = j1;
+				i2 = j2;
+			}
+			if (!oneFeature) {
+				standing[e] = false;
+				++numVetoed;
+				continue;
+			}
+			ds.Union(r1, r2);
+			const uint32_t r = ds.Find(r1);
+			merged.resize(members[r1].size() + members[r2].size());
+			std::merge(members[r1].begin(), members[r1].end(), members[r2].begin(), members[r2].end(), merged.begin(), ByImage);
+			members[r == r1 ? r2 : r1].clear();
+			members[r].swap(merged);
+		}
+		return numVetoed;
+	}
+
+	// The pieces the standing links leave are the tracks, numbered from nextTrackID; where a piece
+	// still holds one image twice (one feature detected twice) the keypoint with more standing
+	// links stands for the image, the first at a tie, and the others get no track. Returns the
+	// number of keypoints so dropped.
+	unsigned Assign(uint32_t& nextTrackID, std::vector<uint32_t>& trackOf) {
+		const unsigned numPieces = LabelPieces();
+		FOREACH(n, nodes)
+			trackOf[nodes[n]] = nextTrackID + piece[n];
+		nextTrackID += numPieces;
+		unsigned numDropped = 0;
+		SortByPieceAndImage();
+		for (size_t i = 0, j; i < order.size(); i = j) {
+			for (j = i + 1; j < order.size() && SamePieceAndImage(order[i], order[j]); ++j) ;
+			uint32_t winner = order[i];
+			for (size_t k = i + 1; k < j; ++k)
+				if (degree[order[k]] > degree[winner] || (degree[order[k]] == degree[winner] && order[k] < winner))
+					winner = order[k];
+			for (size_t k = i; k < j; ++k)
+				if (order[k] != winner) {
+					trackOf[nodes[order[k]]] = NO_ID;
+					++numDropped;
+				}
+		}
+		return numDropped;
+	}
+
+private:
+	uint32_t Local(uint32_t globalID) const {
+		return (uint32_t)(std::lower_bound(nodes.begin(), nodes.end(), globalID) - nodes.begin());
+	}
+	float Distance2(uint32_t n1, uint32_t n2) const {
+		const Point2f d = positions[n1] - positions[n2];
+		return d.x*d.x + d.y*d.y;
+	}
+	// label the pieces the standing links leave, and count them on every keypoint
+	unsigned LabelPieces() {
+		piece.assign(nodes.size(), NO_ID);
+		degree.assign(nodes.size(), 0);
+		unsigned numPieces = 0;
+		std::vector<uint32_t> stack;
+		FOREACH(n, nodes) {
+			if (piece[n] != NO_ID)
+				continue;
+			piece[n] = numPieces;
+			stack.assign(1, (uint32_t)n);
+			while (!stack.empty()) {
+				const uint32_t x = stack.back();
+				stack.pop_back();
+				for (const auto& [y, l] : adjacency[x]) {
+					if (!standing[l])
+						continue;
+					++degree[x];
+					if (piece[y] == NO_ID) {
+						piece[y] = numPieces;
+						stack.push_back(y);
+					}
+				}
+			}
+			++numPieces;
+		}
+		return numPieces;
+	}
+	void SortByPieceAndImage() {
+		order.resize(nodes.size());
+		std::iota(order.begin(), order.end(), 0u);
+		std::sort(order.begin(), order.end(), [this](uint32_t n1, uint32_t n2) {
+			return piece[n1] < piece[n2] || (piece[n1] == piece[n2] && images[n1] < images[n2]);
+		});
+	}
+	bool SamePieceAndImage(uint32_t n1, uint32_t n2) const {
+		return piece[n1] == piece[n2] && images[n1] == images[n2];
+	}
+	// the two keypoints farthest apart of the first piece and image holding two that are not one
+	// feature, or NO_ID when every piece is a track
+	std::pair<uint32_t, uint32_t> FirstConflict(float mergeDist2) {
+		SortByPieceAndImage();
+		for (size_t i = 0, j; i < order.size(); i = j) {
+			for (j = i + 1; j < order.size() && SamePieceAndImage(order[i], order[j]); ++j) ;
+			std::pair<uint32_t, uint32_t> farthest(NO_ID, NO_ID);
+			float farthestDist2 = mergeDist2;
+			for (size_t k = i; k < j; ++k)
+				for (size_t m = k + 1; m < j; ++m)
+					if (const float dist2 = Distance2(order[k], order[m]); dist2 > farthestDist2) {
+						farthestDist2 = dist2;
+						farthest = {order[k], order[m]};
+					}
+			if (farthest.first != NO_ID)
+				return farthest;
+		}
+		return {NO_ID, NO_ID};
+	}
+
+	std::vector<uint32_t> nodes;     // the keypoints, as global feature IDs, sorted
+	std::vector<IIndex> images;      // their images
+	std::vector<Point2f> positions;  // their positions
+	std::vector<Link> links;         // the links, localized
+	std::vector<bool> standing;      // the links not cut or vetoed
+	std::vector<std::vector<std::pair<uint32_t, uint32_t>>> adjacency; // keypoint -> (neighbour, link)
+	std::vector<uint32_t> piece;     // the piece of every keypoint over the standing links
+	std::vector<unsigned> degree;    // the standing links of every keypoint
+	std::vector<uint32_t> order;     // the keypoints sorted by piece and image
+};
+
+} // namespace
+
+void SFM::BuildTracks(Scene& scene, float minPairWeight, const TrackConflictConfig& conflict)
 {
 	TD_TIMER_STARTD();
 	scene.tracks.Release();
@@ -58,105 +308,136 @@ void SFM::BuildTracks(Scene& scene, float minPairWeight)
 		return;
 	}
 
-	using ImageCount = std::unordered_map<IIndex, uint16_t>;
-	std::vector<std::unique_ptr<ImageCount>> trackImages(globalID);
-	std::vector<bool> featureCounted(globalID, false);
-	DisjointSet<uint32_t> ds(globalID);
-
-	// Ensure the root set has a map and that this feature's image is counted once
-	auto AccumulateFeature = [&](uint32_t gid) {
-		if (featureCounted[gid])
-			return;
-		const uint32_t root = ds.Find(gid);
-		if (!trackImages[root])
-			trackImages[root] = std::make_unique<ImageCount>();
-		// Given a global feature ID, find its image ID via featureOffsets
-		auto it = std::upper_bound(featureOffsets.begin(), featureOffsets.end(), gid);
+	// the image of a global feature ID, and the position of the keypoint
+	const auto NodeInfo = [&](uint32_t gid, IIndex& imgID, Point2f& position) {
+		const auto it = std::upper_bound(featureOffsets.begin(), featureOffsets.end(), gid);
 		ASSERT(it != featureOffsets.begin());
-		const IIndex imgID = static_cast<IIndex>(it - featureOffsets.begin() - 1);
-		++((*trackImages[root])[imgID]);
-		featureCounted[gid] = true;
+		imgID = static_cast<IIndex>(it - featureOffsets.begin() - 1);
+		position = scene.images[imgID].keypoints[gid - featureOffsets[imgID]].pt;
 	};
 
-	// 2. Merge observations from image pairs
-	// The pairs arrive sorted by composite weight, decreasing: ComputePairsWeights (PairsWeighting.cpp,
-	// step 5) sorts scene.pairs at the end of every weighting, and matching, the triplet filter and the
-	// dense supplement each end in one. So when two links of one keypoint conflict below, the link of
-	// the heavier pair has arrived first and stands, and the veto drops the lighter pair's. The weight
-	// says nothing about which of a pair's links is the wrong one: on alameda this order keeps the
-	// right keypoint in 68% of the conflicts a triangulation can judge and the wrong one in 22%, the
-	// same as the export's order gives.
-	unsigned numPairsProcessed = 0;
+	// 2. The pairs the tracks are built from: those with matches above the weight bar, in the order
+	// they arrive, which is decreasing composite weight: ComputePairsWeights (PairsWeighting.cpp,
+	// step 5) sorts scene.pairs at the end of every weighting, and matching, the triplet filter and
+	// the dense supplement each end in one.
 	// An infused pair is judged on the same composite weight as every other pair, its dense matches
 	// counted at the dense observation weight (GetNumWeightedInliers) rather than at 1 or at 0: a
 	// coverage fill-in is evidence, but not sub-pixel evidence. One that still falls under
 	// minPairWeight is a correct drop -- but correct-and-uncounted is how the last silent defect
 	// stayed silent, so split the skip count by supplemented vs not rather than reporting one number.
+	std::vector<uint32_t> usedPairs;
 	unsigned numPairsSkippedWeightSupplemented = 0, numPairsSkippedWeightNotSupplemented = 0;
-	for (const ImagePair& pair : scene.pairs) {
+	FOREACH(p, scene.pairs) {
+		const ImagePair& pair = scene.pairs[p];
 		if (!pair.HasMatches())
 			continue;
 		if (minPairWeight >= 0 && pair.GetCompositeWeight() <= minPairWeight) {
 			++(pair.GetNumDenseInliers() > 0 ? numPairsSkippedWeightSupplemented : numPairsSkippedWeightNotSupplemented);
 			continue;
 		}
-		// Only the track-forming matches contribute to tracks: the pair's verified sparse inliers
-		// plus its dense supplement, and nothing past them -- what follows are RANSAC inliers the
-		// strict filter deliberately rejected. Not GetNumFilteredInliers(), which is the sparse
-		// count alone: with the supplement outside it a loop bounded by it would union no dense
-		// match at all and dense supplementation would silently do nothing.
-		const uint32_t offset1 = featureOffsets[pair.ID1];
-		const uint32_t offset2 = featureOffsets[pair.ID2];
-		// clamped by the array itself: the loop dereferences matches[i] and only inspects the
-		// DMatch on the next line, so a count that outran `matches` would be read out of bounds
-		// before either assertion below could look at it (ImagePair's accessors assert the
-		// arithmetic in Debug; this keeps release builds in range too)
-		FOREACHRAW(i, MINF(pair.GetNumTrackFormingMatches(), (unsigned)pair.matches.size())) {
-			const DMatch& m = pair.matches[i];
-			ASSERT(m.queryIdx < scene.images[pair.ID1].keypoints.size());
-			ASSERT(m.trainIdx < scene.images[pair.ID2].keypoints.size());
-			const uint32_t id1 = offset1 + m.queryIdx;
-			const uint32_t id2 = offset2 + m.trainIdx;
-			// Make sure current features are accounted in their roots before testing overlap
-			AccumulateFeature(id1);
-			AccumulateFeature(id2);
-			// Attempt to union the two features
-			ds.UnionIf(id1, id2,
-				// Combined guard+merge: veto if same image repeats; otherwise merge metadata
-				[&](uint32_t rootDst, uint32_t rootSrc) {
-					auto& mapDst = trackImages[rootDst];
-					auto& mapSrc = trackImages[rootSrc];
-					ASSERT(mapDst && mapSrc);
-					for (const auto& kv : *mapSrc)
-						if (mapDst->find(kv.first) != mapDst->end())
-							return false; // duplicate image, reject union
-					for (const auto& kv : *mapSrc)
-						(*mapDst)[kv.first] += kv.second;
-					mapSrc.reset();
-					return true;
-				}
-			);
-		}
-		++numPairsProcessed;
+		usedPairs.push_back(p);
 	}
 	DEBUG("Pairs skipped below minPairWeight %g: %u supplemented, %u not supplemented",
 		minPairWeight, numPairsSkippedWeightSupplemented, numPairsSkippedWeightNotSupplemented);
+	// Their track-forming matches, as links between global feature IDs, in that order. Only the
+	// track-forming matches contribute to tracks: the pair's verified sparse inliers plus its dense
+	// supplement, and nothing past them -- what follows are RANSAC inliers the strict filter
+	// deliberately rejected. Not GetNumFilteredInliers(), which is the sparse count alone: with the
+	// supplement outside it a loop bounded by it would union no dense match at all and dense
+	// supplementation would silently do nothing.
+	const auto ForEachLink = [&](auto&& fn) {
+		for (uint32_t p : usedPairs) {
+			const ImagePair& pair = scene.pairs[p];
+			const uint32_t offset1 = featureOffsets[pair.ID1];
+			const uint32_t offset2 = featureOffsets[pair.ID2];
+			// clamped by the array itself: the loop dereferences matches[i] and only inspects the
+			// DMatch on the next line, so a count that outran `matches` would be read out of bounds
+			// before either assertion below could look at it (ImagePair's accessors assert the
+			// arithmetic in Debug; this keeps release builds in range too)
+			FOREACHRAW(i, MINF(pair.GetNumTrackFormingMatches(), (unsigned)pair.matches.size())) {
+				const DMatch& m = pair.matches[i];
+				ASSERT(m.queryIdx < scene.images[pair.ID1].keypoints.size());
+				ASSERT(m.trainIdx < scene.images[pair.ID2].keypoints.size());
+				fn(offset1 + m.queryIdx, offset2 + m.trainIdx, pair);
+			}
+		}
+	};
 
-	// 3. Group observations by track representative
-	// Map: rootGlobalID -> list of observations
-	std::map<uint32_t, ObservationArr> tracks;
-	// Iterate all features to find their roots
-	for (uint32_t imgID = 0; imgID < scene.images.size(); ++imgID) {
-		const Image& img = scene.images[imgID];
-		const uint32_t offset = featureOffsets[imgID];
-		for (uint32_t fid = 0; fid < img.keypoints.size(); ++fid) {
-			const uint32_t gid = offset + fid;
-			const uint32_t root = ds.Find(gid);
-			tracks[root].emplace_back(imgID, fid);
+	// 3. Union every link, plain: a component is every keypoint the matches connect, right or wrong.
+	// A component holding one image twice is not a track -- one of its links is wrong, or the two
+	// keypoints are one feature detected twice -- and is settled on its own links in step 4; the
+	// wrong link is found by what the other links say about it, not by which pair arrived first.
+	DisjointSet<uint32_t> ds(globalID);
+	ForEachLink([&](uint32_t id1, uint32_t id2, const ImagePair&) { ds.Union(id1, id2); });
+	// the track of every feature: its component, until step 4 settles the conflicted ones
+	std::vector<uint32_t> trackOf(globalID);
+	std::vector<bool> conflicted(globalID, false); // by the component's root
+	{
+		// the features arrive image by image, so a root that sees the same image twice in a row
+		// holds two of its keypoints
+		std::vector<uint32_t> rootImage(globalID, NO_ID);
+		for (uint32_t imgID = 0; imgID < scene.images.size(); ++imgID) {
+			for (uint32_t gid = featureOffsets[imgID]; gid < featureOffsets[imgID+1]; ++gid) {
+				const uint32_t root = ds.Find(gid);
+				trackOf[gid] = root;
+				if (rootImage[root] == imgID)
+					conflicted[root] = true;
+				else
+					rootImage[root] = imgID;
+			}
 		}
 	}
 
-	// 4. Filter tracks (minimum 2 views) and add to scene
+	// 4. Settle every conflicted component on its own links (ConflictedComponent): the cut of the
+	// least-supported link on the path between the two keypoints, which keeps the side the
+	// triangles corroborate, or the veto of the union in pair order, which keeps whichever link
+	// arrived first, when the cut is off or the component is too large for it; either way two
+	// keypoints of one image within the merge distance are one feature and stay one track.
+	// On alameda (1734 images, 12.7M links) the veto keeps the wrong keypoint in 22% of the
+	// conflicts a triangulation can judge, the cut with the merge in 17%.
+	unsigned numConflicted = 0, numCut = 0, numVetoed = 0, numLarge = 0, numMerged = 0;
+	if (std::find(conflicted.begin(), conflicted.end(), true) != conflicted.end()) {
+		struct Edge { uint32_t root, a, b, order; float weight; };
+		std::vector<Edge> edges;
+		uint32_t order = 0;
+		ForEachLink([&](uint32_t id1, uint32_t id2, const ImagePair& pair) {
+			const uint32_t root = ds.Find(id1);
+			if (conflicted[root])
+				edges.push_back({root, id1, id2, order, pair.GetCompositeWeight()});
+			++order;
+		});
+		std::sort(edges.begin(), edges.end(), [](const Edge& e1, const Edge& e2) {
+			return e1.root < e2.root || (e1.root == e2.root && e1.order < e2.order);
+		});
+		const float mergeDist2 = conflict.mergeDistance > 0.f ? SQUARE(conflict.mergeDistance) : -1.f;
+		uint32_t nextTrackID = globalID; // past every root, so the new tracks clash with none
+		ConflictedComponent component;
+		for (size_t i = 0, j; i < edges.size(); i = j) {
+			for (j = i + 1; j < edges.size() && edges[j].root == edges[i].root; ++j) ;
+			component.Set(edges.begin() + i, edges.begin() + j, NodeInfo);
+			++numConflicted;
+			if (conflict.cut && component.NumNodes() <= conflict.maxComponentSize) {
+				numCut += component.Cut(mergeDist2);
+			} else {
+				numLarge += conflict.cut;
+				numVetoed += component.Veto(mergeDist2);
+			}
+			numMerged += component.Assign(nextTrackID, trackOf);
+		}
+	}
+	DEBUG("Components holding an image twice: %u of %u features; %u links cut, %u vetoed (%u components above %u keypoints), %u keypoints merged",
+		numConflicted, globalID, numCut, numVetoed, numLarge, conflict.maxComponentSize, numMerged);
+
+	// 5. Group observations by track
+	std::map<uint32_t, ObservationArr> tracks;
+	for (uint32_t imgID = 0; imgID < scene.images.size(); ++imgID) {
+		const uint32_t offset = featureOffsets[imgID];
+		for (uint32_t gid = offset; gid < featureOffsets[imgID+1]; ++gid)
+			if (trackOf[gid] != NO_ID)
+				tracks[trackOf[gid]].emplace_back(imgID, gid - offset);
+	}
+
+	// 6. Filter tracks (minimum 2 views) and add to scene
 	scene.tracks.reserve(tracks.size() / 2); // heuristic reservation
 	uint32_t numObservations = 0;
 	for (auto& [root, observations] : tracks) {
@@ -172,7 +453,7 @@ void SFM::BuildTracks(Scene& scene, float minPairWeight)
 		numObservations += observations.size();
 	}
 	DEBUG("Built %u tracks from %u observations and %u pairs (avg %.2f views/track) in %s",
-	    scene.tracks.size(), globalID, numPairsProcessed,
+	    scene.tracks.size(), globalID, (unsigned)usedPairs.size(),
 	    numObservations / (float)MAXF(scene.tracks.size(), 1u), TD_TIMER_GET_FMT().c_str());
 
 	// Dense track-length histogram, on a scene that was dense-supplemented. Reported as a
@@ -220,7 +501,7 @@ void SFM::BuildTracks(Scene& scene, float minPairWeight)
 		}
 		const Image& img1 = scene.images[pair.ID1];
 		const Image& img2 = scene.images[pair.ID2];
-		// exactly the matches step 2 above dereferences, so the bound must be the same one --
+		// exactly the matches ForEachLink above dereferences, so the bound must be the same one --
 		// clamped by the array for the same reason it is there
 		FOREACHRAW(i, MINF(pair.GetNumTrackFormingMatches(), (unsigned)pair.matches.size())) {
 			const DMatch& m = pair.matches[i];

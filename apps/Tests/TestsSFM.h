@@ -90,6 +90,13 @@ bool ROMA2GuidedMatchTest();
 // half-width is the clamped multiple of the median residual (GuidedBandHalfWidth)
 bool ROMA2GuidedBandTest();
 
+// The track builder on a component holding one image twice (BuildTracks, TrackConflictConfig): the
+// cut removes the least-supported link on the path between the two keypoints and keeps the
+// corroborated side where the pair-order veto keeps whichever arrived first, two keypoints within
+// the merge distance are one feature and the one with more links stays, a component above the size
+// bar takes the veto, the cut can be switched off, and a conflict-free scene is untouched
+bool BuildTracksConflictTest();
+
 // Pair assembly and storage (AssemblePairROMA2, StorePairROMA2): the union of the guided matches
 // and the dense fill is fitted once and splits into the pair's sparse and dense segments under one
 // relative pose, a pair with no guided match is still assembled as a dense-only pair, a fill too

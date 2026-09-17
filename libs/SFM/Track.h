@@ -112,6 +112,25 @@ typedef SEACAVE::cList<Track, const Track&, 2, 256, uint32_t> TrackArr;
 
 
 /**
+ * @brief How BuildTracks settles a component of matched keypoints that holds one image twice
+ *
+ * The matches of a scene link keypoints into connected components, and a component holding two
+ * keypoints of one image is not a track: one of its links is wrong, or the two keypoints are one
+ * feature detected twice. See BuildTracks for the rules.
+ */
+struct SFM_API TrackConflictConfig {
+	// cut the least-supported link on the path between the two keypoints, keeping the side the
+	// triangles corroborate; false keeps the veto of the union in pair order, where whichever link
+	// arrived first stands
+	bool cut = true;
+	// two keypoints of one image this close (pixels) are one feature: the component stays one
+	// track and the keypoint with more links stands for the image (0 disables)
+	float mergeDistance = 3.f;
+	// a component of more keypoints than this takes the veto whatever `cut` says
+	unsigned maxComponentSize = 5000;
+};
+
+/**
  * @brief Build 3D point tracks from 2D feature matches
  *
  * Creates tracks by merging observations connected through pair matches.
@@ -119,8 +138,9 @@ typedef SEACAVE::cList<Track, const Track&, 2, 256, uint32_t> TrackArr;
  * Stores results in scene.tracks (each Track contains its observations).
  *
  * @param minPairWeight minimum weight for a pair to be used in creating tracks (-1 = disabled)
+ * @param conflict how a component holding one image twice is settled (TrackConflictConfig)
  */
-SFM_API void BuildTracks(Scene& scene, float minPairWeight = 0);
+SFM_API void BuildTracks(Scene& scene, float minPairWeight = 0, const TrackConflictConfig& conflict = TrackConflictConfig());
 
 /**
  * @brief Compute mean reprojection error for inlier tracks

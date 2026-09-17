@@ -89,6 +89,7 @@ struct SFM_API ReconstructionConfig {
 
 	// Tracks parameters
 	float minPairWeight{3.f}; // minimum weight for a pair to be used in creating tracks (0 = disabled)
+	TrackConflictConfig trackConflictCfg; // how a component holding one image twice is settled
 	float maxReprojError{4.f}; // Reprojection error for coarse triangulation and filtering
 	float maxFineReprojError{2.f}; // Reprojection error for fine triangulation and filtering
 	float minAngleThreshold{1.5f}; // Minimum triangulation angle (degrees)

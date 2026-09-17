@@ -67,6 +67,14 @@ class Track {
     uint8_t numInliers;           // First N observations are inliers (max 255)
 };
 ```
+`BuildTracks` unions the track-forming matches of every pair above `minPairWeight` plainly, then
+settles each component holding one image twice on its own links (`TrackConflictConfig`,
+`ReconstructionConfig::trackConflictCfg`, mirrored in `ClusterConfig`): the least-supported link
+(fewest triangles, then the lighter pair) on the path between the two keypoints is cut until every
+piece is a track (`cut`, default), or the union is vetoed in pair order (`cut` false, and always for
+a component above `maxComponentSize`, 5000); two keypoints of one image within `mergeDistance`
+(3 px) are one feature, the one with more links stands for the image. On alameda the veto keeps the
+wrong keypoint in 22% of the judgeable conflicts, the cut in 17%.
 
 ### ImagePair (`ImagePair.h`)
 ```cpp

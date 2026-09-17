@@ -320,7 +320,7 @@ std::vector<Scene> SceneCluster::SplitScene(std::vector<IIndexArr>* outLocalToGl
 	// the seams are measured on the tracks, so a scene that arrives with only matches gets them
 	// here; every sub-scene rebuilds its own tracks after the split
 	if (scene.tracks.empty())
-		BuildTracks(scene, config.minPairWeight);
+		BuildTracks(scene, config.minPairWeight, config.trackConflictCfg);
 
 	BuildConnectivityGraph();
 

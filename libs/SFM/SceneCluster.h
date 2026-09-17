@@ -11,6 +11,7 @@
 // I N C L U D E S /////////////////////////////////////////////////
 
 #include "Camera.h"
+#include "Track.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -140,6 +141,7 @@ struct SFM_API ClusterConfig
 	unsigned minSeamCameras{3};          // cameras per side with enough seam-usable tracks for the neighbour to count as strong
 	unsigned minSeamCameraTracks{30};    // seam-usable tracks one camera needs to count (the merge's vote floor)
 	float minPairWeight{3.f};            // minimum composite weight for pair edge
+	TrackConflictConfig trackConflictCfg; // how a component holding one image twice is settled when the tracks are built here
 	float minClusterCoupling{0.05f};     // refuse a merge whose interface weight falls below this fraction of the weaker side's internal weight, and split any final cluster with such an internal seam (0 = disabled)
 	bool useCommunityDetection{false};   // partition by community detection + capacity packing instead of pure aggregative clustering
 
