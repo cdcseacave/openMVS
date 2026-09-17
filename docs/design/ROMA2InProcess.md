@@ -20,8 +20,8 @@ CreateStructure --roma2 ...                     Scene::MatchPairs
 ```
 
 **Two independent seams, neither one `--roma2`'s default effect.** `--roma2` on its own has nothing
-to do — `CreateStructure` rejects it unless `--roma2-match true`, `--match-mode 4` (RETRIEVAL) or
-`--export-retrieval-csv` also asks for something the model can produce. `--match-mode 4` is the
+to do — `CreateStructure` rejects it unless `--roma2-match true` or `--match-mode 4` (RETRIEVAL)
+asks for something the model can produce. `--match-mode 4` is the
 retrieval seam: it ranks candidate pairs by the DINOv3+GeM(p=3) 2048-D global descriptors instead of
 the vocabulary tree, and needs `--roma2 true` only to compute those descriptors when the scene does
 not already carry them — the matching itself stays SIFT/AKAZE/ORB. This is RETRIEVAL's headline use:
@@ -41,16 +41,15 @@ fallback for a pair the warp rejects (One-Pass Dense Pair Matching, below).
 | `--roma2-min-confidence F` | `0.1` | confidence at which a warp cell takes part in the verdict, the keypoint tracking and the dense fill |
 | `--roma2-min-overlap F` | `0.10` | verdict: the pair is admitted iff min(inlier area A, inlier area B) ≥ F |
 | `--roma2-dense-matches N` | `2000` | dense correspondences per FULL FRAME of overlap (a density, not a per-pair count) |
-| `--export-retrieval-csv F` | — | per-image retrieval rankings (needs `--roma2 true`) |
 
 Which mode ranks candidate pairs how is a property of `--match-mode` alone, with no crossover: `1`
 VOCABULARY always ranks with the SIFT/AKAZE vocabulary tree, `4` RETRIEVAL always ranks with the
 global descriptors above. Neither can substitute itself into the other.
 
-`--export-retrieval-csv` and `--export-pairs-csv` are both written by `Scene::Reconstruct()` right
-after pair matching (`ReconstructionConfig::exportRetrievalCSV`/`exportPairsCSV`), before any
-reconstruction step (largest-connected-component clustering, weak-image filtering, resection) can
-drop pairs or leave images unregistered — the CSVs describe the matched scene, not whatever
+`--export-pairs-csv` is written by `Scene::Reconstruct()` right after pair matching
+(`ReconstructionConfig::exportPairsCSV`), before any reconstruction step
+(largest-connected-component clustering, weak-image filtering, resection) can drop pairs or leave
+images unregistered — the CSV describes the matched scene, not whatever
 reconstruction happened to keep. A failed export only logs a warning and never fails the
 reconstruction, whose primary output is the scene itself.
 
@@ -78,7 +77,7 @@ verdict, pair assembly and storage, `MatchPairsROMA2`, `ROMA2Config`), `libs/SFM
 types, coordinate conventions, keypoint tracking, the coverage and complementary draws, dense append),
 `libs/SFM/MatchGeometric.h/cpp` (guided sparse matching, `MatchFeaturesGuided`),
 `libs/SFM/GlobalDescriptors.h/cpp` (cosine retrieval index over the graph-pooled descriptors). CLI:
-`apps/CreateStructure/CreateStructure.cpp` (`--roma2*`, `--export-retrieval-csv`).
+`apps/CreateStructure/CreateStructure.cpp` (`--roma2*`).
 
 ---
 
@@ -106,22 +105,15 @@ which the sparse inliers already supply wherever the scene has texture (One-Pass
 below), and the export cost is the same argument it always was (the `local_corr` CUDA extension,
 VGG19-BN fine features, `grid_sample`). No depth maps are produced by the in-process warps.
 
-### Export tooling and provenance
+### Export tooling
 
 Graphs are produced by `scripts/python/roma2/export.sh` (wraps `export.py onnx|check|manifest` and
-`parity.py`), run inside the polyml export project environment (`uv run --project ~/polyml/romav2
---with onnxruntime-gpu==1.23.2`). `RoMa2OnnxParityTest`'s reference dumps (`*.reference`,
-`save_reference`) and parity check cover all four `match_coarse` outputs.
-
-Exported model sets live on the shared volume, one directory per export, referenced by
-`--roma2-model` or `$OPENMVS_ROMA2_MODEL_PATH`. The manifest schema is unreleased and carries no
-compatibility duty, so its `format_version` counter was reset to **1** for the bidirectional,
-`retrieval`-carrying schema described above, rather than continuing to climb (nothing outside this
-branch has ever consumed the higher numbers the counter briefly reached during development). An
-export predating that reset is not what the current loader means by `format_version` 1, whatever
-integer its own manifest happens to declare. `RoMa2Manifest::Load` accepts exactly `format_version`
-1, naming the version it saw and rejecting everything else. The `.onnx` + `.onnx.data` + `.json` set
-is byte-portable across OSs (external data is resolved relative to the model path on every platform).
+`parity.py`). `RoMa2OnnxParityTest`'s reference dumps (`*.reference`, `save_reference`) and parity
+check cover all four `match_coarse` outputs. The manifest declares `format_version` 1, the
+bidirectional, `retrieval`-carrying schema described above; `RoMa2Manifest::Load` accepts exactly
+that version, naming the version it saw and rejecting everything else. The `.onnx` + `.onnx.data` +
+`.json` set is byte-portable across OSs (external data is resolved relative to the model path on
+every platform).
 
 ---
 
@@ -153,18 +145,18 @@ matching pass (13 GB per 1000 images at base) — the matching pass re-describes
 Whether any pass actually needs the model is decided entirely by the caller, not by `ROMA2Config`
 itself: the config cannot see the match mode, so it exposes no "is this in process enabled" query
 of its own. `Scene::MatchPairs` computes that itself: `needsDescriptors` (the match mode is
-RETRIEVAL, or `--export-retrieval-csv` was requested, and the scene does not already carry global
-descriptors) and `needsWarps` (`roma2Cfg.useMatching`) — the model loads only when at least one of
+RETRIEVAL and the scene does not already carry global descriptors) and `needsWarps`
+(`roma2Cfg.useMatching`) — the model loads only when at least one of
 the two is true. A requested-but-unavailable model is always an error, never a silent fallback
 to the vocabulary tree — `Scene::MatchPairs` checks this before loading anything, by name, and is
 the only place that can, since only it knows whether the scene already carries global descriptors.
 `CreateStructure` gives the same hint earlier, before any feature extraction runs, wherever it can
 be sure without seeing the scene: unconditionally that `--roma2` has nothing to do at all without
-`--roma2-match true`, `--match-mode 4` (RETRIEVAL) or `--export-retrieval-csv`, and unconditionally
-that `--roma2-match true` needs a resolvable model (the dense pass always needs it, regardless of
-what the scene already carries). It deliberately does not require a model for `--match-mode 4` or
-`--export-retrieval-csv` alone, since a scene loaded from disk may already carry the descriptors
-they need and then require no model at all — `Scene::MatchPairs`' own check covers that case.
+`--roma2-match true` or `--match-mode 4` (RETRIEVAL), and unconditionally that `--roma2-match true`
+needs a resolvable model (the dense pass always needs it, regardless of what the scene already
+carries). It deliberately does not require a model for `--match-mode 4` alone, since a scene loaded
+from disk may already carry the descriptors it needs and then require no model at all —
+`Scene::MatchPairs`' own check covers that case.
 
 ---
 
@@ -253,11 +245,8 @@ a pair the warp rejects. Per pair:
    The winner is the best descriptor distance in the band, accepted iff it beats the closest rival in
    the band by the matcher's ratio, a rival being any candidate farther than
    `guidedSameFeatureDistance` (3 px) from it, AND beat the closest keypoint OUTSIDE the band by the
-   same ratio (`guidedOutsideReference` 2: every winner; 1: only a winner with no rival in its band;
-   0: none). The half-width is fixed
-   (`guidedBandHalfWidthCells`) or, with `guidedBandResidualFactor` > 0, that multiple of the median
-   residual of the verdict's inlier cells under the pair's geometry. This is where appearance
-   (descriptor agreement) enters, and the only place it does; see "Why the band" below.
+   same ratio. This is where appearance (descriptor agreement) enters, and the only place it does;
+   see "Why the band" below.
 4. **Dense fill** (`SampleWarpComplementary`). `--roma2-dense-matches` (2000, `denseMatchesPerFrame`)
    is a DENSITY — correspondences per FULL FRAME of overlap, not a count per pair. `DenseFillGridSide`
    turns that density into a fixed bucket pitch, `ceil(sqrt(density))` clamped to the warp side, over
@@ -328,31 +317,22 @@ Contract, above).
 ### Why the band
 
 The guided search was a disc of two warp cells around the prediction, and the ratio a winner had to
-pass was taken against the best keypoint OUTSIDE it, so that a scale duplicate inside the disc could not
-defeat a true match the way it defeats SIFT's own ratio test. Measured on alameda against the SIFT arm
-on the same 30249 pairs (`guided_vs_sift.py`, `guided_tracks_probe.py` and `conflict_geometry_probe.py`
-in the release-campaign tools), that disc found a third more matches per pair than SIFT and lost
-almost none of SIFT's, but 13.3% of the components of three or more matched keypoints then held one
-image twice, against 5.3% for the matches SIFT has too. A disc of 35 px on a 2789 px frame holds 26
-rivals on average; the wrong one sits 3-35 px from the right one ALONG the epipolar line (52% within
-10 degrees of it, median 7.5), where the 4 px epipolar test cannot see it, and the outside reference
-never looked at it. A further 6.7% of the winners that passed the ratio were then refused by the
-epipolar test: an impostor OFF the line had taken the disc from the true candidate. The band takes only
-its direction from the geometry and its position from the warp, so it survives the intrinsics the
-verdict fitted with -- an imprecise focal or principal point, unmodelled distortion -- the prediction
-being in the image's own pixels and the direction off by a few degrees at most; half a cell wide it
-holds a quarter of the disc's rivals, and the ratio against the closest rival INSIDE it is what refuses
-the along-line neighbour. The reference OUTSIDE the band stays, for every winner: measured with it asked
-of lone winners only, the band admitted 32.7M matches SIFT does not have on the shared pairs (947 per
-pair, against 91 with the disc) at a median Sampson error of 1.07 px under the SIFT poses (0.54 with
-the disc), because where the true keypoint was never detected the winner is a random one of the band's
-handful, and a handful's second best is beaten by the ratio a third of the time where the best of the
-image's thousands never is. What still gets through, a component holding one image twice, is the
-track builder's to resolve (`BuildTracks`, `TrackConflictConfig`): the least-supported link on the
-path between the two keypoints is cut, two keypoints within 3 px are one feature, and the pair-order
-veto stays as the fallback. Measured offline on the alameda band runs against the SIFT arm's poses,
-the veto keeps the wrong keypoint in 22% of the judgeable conflicts and the cut with the merge in
-17%, on every matching variant alike.
+pass was taken against the best keypoint OUTSIDE it, so that a scale duplicate inside the disc could
+not defeat a true match the way it defeats SIFT's own ratio test. The disc's rivals sit ALONG the
+epipolar line, where the epipolar test cannot see them, and an impostor OFF the line can take the
+disc from the true candidate. The band takes only its direction from the geometry and its position
+from the warp, so it survives the intrinsics the verdict fitted with -- an imprecise focal or
+principal point, unmodelled distortion -- the prediction being in the image's own pixels and the
+direction off by a few degrees at most; half a cell wide it holds a quarter of the disc's rivals,
+and the ratio against the closest rival INSIDE it is what refuses the along-line neighbour. The
+reference OUTSIDE the band stays, for every winner: where the true keypoint was never detected the
+winner is a random one of the band's handful, and a handful's second best is beaten by the ratio a
+third of the time where the best of the image's thousands never is. What still gets through, a
+component holding one image twice, is the track builder's to resolve (`BuildTracks`,
+`TrackConflictConfig`): the least-supported link on the path between the two keypoints is cut, two
+keypoints within 3 px are one feature, and the pair-order veto stays as the fallback. The
+measurements behind each of these choices, and the variants they retired, are in
+`docs/design/ExperimentRecord.md`.
 
 ### Interfaces
 
@@ -456,12 +436,12 @@ stored.
 | `--roma2-min-overlap` | 0.10 | min-side inlier area; ≈ 0.15–0.17 true overlap; 0.15 ≈ a quarter of the frame |
 | `--roma2-dense-matches` | 2000 | dense correspondences per full frame of uncovered overlap (density, not a cap per pair) |
 | guided band length | 2 warp cells | `guidedBandLengthCells`, either way along the epipolar line from the prediction |
-| guided band half-width | half a warp cell | `guidedBandHalfWidthCells`; `guidedBandResidualFactor` (0) > 0 makes it that multiple of the verdict's median residual instead, floored at the sparse tolerance, capped at the length |
-| outside reference | every winner | `guidedOutsideReference`: 2 every winner also beats the closest keypoint outside its band by the ratio, 1 only a winner with no rival in its band, 0 none |
+| guided band half-width | half a warp cell | `guidedBandHalfWidthCells`, either way across the line |
+| outside reference | every winner | every winner also beats the closest keypoint outside its band by the ratio |
 | same feature | 3 px | `guidedSameFeatureDistance`: a rival this close to the winner is its own duplicate, not a rival |
 | warp tolerance | half a warp cell | fixed, in image pixels; the verdict and the union fit |
 | sparse tolerance | `MatchConfig::maxEpipolarError` | the matcher's own |
-| dense tolerance | `denseEpipolarErrorFactor` (1) × the sparse one | the dense segment's classification; 0 = the warp tolerance |
+| dense tolerance | `denseEpipolarErrorFactor` (1) × the sparse one | the dense segment's classification |
 
 ### Known limit
 
@@ -652,11 +632,9 @@ budget never evicts, and an eviction costs a **43 ms re-describe**, not a correc
 is no disk spill. The pass reports `loads` and `reloads` separately (Slot Plan, above), so the cache's
 own cost stays visible per run rather than hiding inside the matching wall time.
 
-A **disk-backed descriptor cache** is a real option — trading 12.5 MB/image of disk I/O against the
-43 ms of recompute an eviction currently costs — but nothing measured so far asks for one: a capture
-that fits inside the slot budget sees no reloads at all. Whether a much larger capture (5 000+ images)
-stays anywhere near that depends on its pair graph's own bandwidth, a property of the capture rather
-than of the code, and is what a decision to add the cache would need measured first.
+A disk-backed descriptor cache (12.5 MB/image of disk I/O against the 43 ms an eviction costs to
+recompute) is an option nothing measured so far asks for: a capture that fits inside the slot budget
+sees no reloads at all.
 
 ---
 
@@ -688,10 +666,9 @@ than of the code, and is what a decision to add the cache would need measured fi
   failure the same-feature rule removes), and the output is deterministic across runs.
 - **`ROMA2GuidedBandTest`** (synthetic, no model needed) — the epipolar band (`GuidedSearch`): an
   impostor off the line is no candidate and the true match wins, an equally close rival on the line
-  refuses the match, a same-feature duplicate is no rival, the outside reference is asked of no winner,
-  of lone winners or of every winner as configured, the search is the disc without a geometry or within two
-  lengths of the epipole, and the adaptive half-width (`GuidedBandHalfWidth`) is the clamped multiple
-  of the median residual.
+  refuses the match, a same-feature duplicate is no rival, every winner answers to the reference
+  outside its band, and the search is the disc without a geometry or within two lengths of the
+  epipole.
 - **`ROMA2AssemblyTest`** (synthetic, no model needed) — pair assembly and storage
   (`AssemblePairROMA2`, `StorePairROMA2`): the union fit's sparse/dense segments and single relative
   pose on an exact geometry, the dense-only fallback when the guided set is empty (the verdict's own
@@ -712,7 +689,7 @@ than of the code, and is what a decision to add the cache would need measured fi
 - **`GlobalDescriptorsQueryTest`** — always runs, no model needed: the cosine ranking over
   `Image::globalDescriptor` and its deterministic tie order, the `PairsMatcher::QueryRetrieval`
   dispatch that ranks candidate pairs through the descriptors instead of the vocabulary tree, the
-  `--export-retrieval-csv` rankings export, the `.sfm` round-trip of the descriptors, and both
+  `.sfm` round-trip of the descriptors, and both
   host-side pooling recipes against the export script's fixtures.
 - **`RetrievalModeTest`** — the `RETRIEVAL` match mode: candidate selection ranks purely by the global
   descriptors with no `--roma2-match` opt-in needed, agrees pair-for-pair with `VOCABULARY` once that
@@ -786,8 +763,3 @@ re-running the matching stage from the images (`CreateStructure -s <images> -o s
 - **Essential-matrix degeneracy on planar, small-baseline pairs** (Known limit, One-Pass Dense Pair
   Matching, above) — unchanged from the SIFT path: the warp can be right while the pose is not, and
   `PairsMatcher` has no homography branch to fall back on.
-- **`--export-retrieval-csv` forces the describe pass under any match mode**, including
-  `EXHAUSTIVE`/`SEQUENTIAL`/`VOCABULARY`/`KNOWN_POSES`, where no retrieval ranking is otherwise needed
-  for pair selection — asking for the per-image rankings is asking for the global descriptors that
-  produce them, so `Scene::MatchPairs` computes and stores them (`Image::globalDescriptor`) regardless
-  of mode. This costs the describe pass but not the (lazy) match-graph load.
