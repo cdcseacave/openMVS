@@ -865,15 +865,15 @@ const char* SourceWord(SeamCandidate::Source source)
 	}
 }
 
-// Every camera's vote on one transform, the raw material the two vote bars are read from, with how
-// far the camera's correspondences sit from it: their median error and the share within the loose bar
+// Every camera's vote on one transform, the raw material the two vote bars are read from, with the
+// share of its correspondences within the loose bar
 void LogVotes(const char* label, const SeamScore& score)
 {
 	for (const CameraVote& vote : score.votes)
-		DEBUG_ULTIMATE("%s camera %u: %u/%u inliers, coverage %.2f, %s (median %.1f px, %u within %ux)",
+		DEBUG_ULTIMATE("%s camera %u: %u/%u inliers, coverage %.2f, %s (%u within %ux)",
 			label, vote.image, vote.inliers, vote.correspondences, vote.coverage,
 			vote.vote > 0 ? "support" : (vote.vote < 0 ? "contradict" : "abstain"),
-			vote.medianError, vote.looseInliers, kLooseSeamFactor);
+			vote.looseInliers, kLooseSeamFactor);
 }
 
 // What one surviving candidate rests on. A candidate measured from one direction reports that
@@ -1216,10 +1216,7 @@ void GlobalAlignment::ScoreSeam(
 		// how far its inliers spread over its image: a camera whose inliers all sit in one cell
 		// cannot support a transform, a single repeated texture patch buying exactly that
 		std::vector<bool> cells(kVoteGridCells * kVoteGridCells, false);
-		std::vector<REAL> cameraErrors;
-		cameraErrors.reserve(indices.size());
 		for (uint32_t i : indices) {
-			cameraErrors.push_back(errors[i]);
 			if (errors[i] <= looseBar)
 				++vote.looseInliers;
 			if (!score.inlierMask[i])
@@ -1235,8 +1232,6 @@ void GlobalAlignment::ScoreSeam(
 			cells[cellY * (int)kVoteGridCells + cellX] = true;
 		}
 		vote.coverage = (float)std::count(cells.begin(), cells.end(), true) / (float)cells.size();
-		std::nth_element(cameraErrors.begin(), cameraErrors.begin() + cameraErrors.size() / 2, cameraErrors.end());
-		vote.medianError = (float)MINF(cameraErrors[cameraErrors.size() / 2], (REAL)1e6);
 		const float inlierFraction = (float)vote.inliers / (float)vote.correspondences;
 		const float looseFraction = (float)vote.looseInliers / (float)vote.correspondences;
 		if (vote.inliers >= config.minVoteInliers && inlierFraction >= kVoteSupportFraction &&

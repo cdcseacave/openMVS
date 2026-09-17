@@ -90,40 +90,4 @@ std::vector<std::pair<uint32_t, float>> GlobalDescriptors::Query(IIndex idx, uns
 /*----------------------------------------------------------------*/
 
 
-bool SFM::ExportRetrievalRankingsCSV(const Scene& scene, const String& fileName, unsigned maxRank)
-{
-	GlobalDescriptors index;
-	if (!index.Build(scene))
-		return false;
-	std::ofstream ofs(fileName);
-	if (!ofs.is_open()) {
-		VERBOSE("error: cannot open file '%s' for writing", fileName.c_str());
-		return false;
-	}
-	// the rows name both endpoints by image ID and by image-file stem
-	std::unordered_map<IIndex, IIndex> idxFromID;   // image ID -> scene image index
-	idxFromID.reserve(scene.images.size());
-	FOREACH(i, scene.images)
-		idxFromID.emplace(scene.images[i].ID, i);
-	ofs << "idxA,idxB,similarity,imageA,imageB\n";
-	unsigned numRows = 0;
-	FOREACH(i, scene.images) {
-		const String stemA = Util::getFileName(scene.images[i].fileName);
-		for (const auto& [imageID, similarity] : index.Query(i, maxRank)) {
-			const auto it = idxFromID.find(imageID);
-			ASSERT(it != idxFromID.end());
-			// idxA/idxB carry image IDs, as polycpp's retrieval_rankings.csv does; on an
-			// unfiltered scene those are also the positional indices in scene.images
-			ofs << scene.images[i].ID << "," << imageID << "," << similarity << ","
-				<< stemA << "," << Util::getFileName(scene.images[it->second].fileName) << "\n";
-			++numRows;
-		}
-	}
-	ofs.close();
-	VERBOSE("Exported the top-%u retrieval rankings of %u images (%u rows) to '%s'",
-		maxRank, scene.images.size(), numRows, fileName.c_str());
-	return true;
-}
-/*----------------------------------------------------------------*/
-
 #pragma pop_macro("VERBOSE")

@@ -456,37 +456,6 @@ void SFM::BuildTracks(Scene& scene, float minPairWeight, const TrackConflictConf
 	    scene.tracks.size(), globalID, (unsigned)usedPairs.size(),
 	    numObservations / (float)MAXF(scene.tracks.size(), 1u), TD_TIMER_GET_FMT().c_str());
 
-	// Dense track-length histogram, on a scene that was dense-supplemented. Reported as a
-	// distribution rather than summarized as a mean in either direction: a length above 2 is the
-	// product of the exact-position reuse PairsMatcher::FilterRedundantKeypoints performs between
-	// pairs sharing an image, so a histogram sitting entirely at 2 means that reuse never fired,
-	// which is itself a finding (and the expected output with --release-descriptors false, where the
-	// filter does not run at all). A track is dense-only when every one of its observations is a
-	// dense keypoint, mixed when it carries both kinds.
-	if (std::any_of(scene.images.begin(), scene.images.end(), [](const Image& img) { return img.HasDenseKeypoints(); })) {
-		unsigned hist[5] = {0, 0, 0, 0, 0}; // dense-only lengths 2, 3, 4, 5-9, 10+
-		unsigned numDenseOnly = 0, numMixed = 0;
-		size_t numDenseObservations = 0;
-		for (const Track& track : scene.tracks) {
-			unsigned numDense = 0;
-			for (const Observation& obs : track.observations)
-				numDense += scene.images[obs.imageID].IsDenseKeypoint(obs.featureID);
-			numDenseObservations += numDense;
-			if (numDense == 0)
-				continue;
-			if (numDense < track.observations.size()) {
-				++numMixed;
-				continue;
-			}
-			++numDenseOnly;
-			const size_t length = track.observations.size();
-			++hist[length <= 4 ? length - 2 : (length <= 9 ? 3 : 4)];
-		}
-		DEBUG("Dense track lengths: %u at 2, %u at 3, %u at 4, %u at 5-9, %u at 10+ "
-			"(%u dense-only tracks, %u mixed, %zu dense observations of %u)",
-			hist[0], hist[1], hist[2], hist[3], hist[4], numDenseOnly, numMixed,
-			numDenseObservations, numObservations);
-	}
 
 	#ifndef _RELEASE
 	VERBOSE("Performing additional track consistency checks...");
@@ -840,13 +809,11 @@ static PairDisagreement MeasurePairAgainstModel(const Scene& scene, const ImageP
 }
 
 // The verified pairs joining a component the largest-component pass is about to cut to the
-// component it keeps, with the model's agreement on each: how many agree with the pose the model
-// gives the cut image and how many put it elsewhere, and the inlier weight on either side. Only
-// pairs of at least minInliers weighted inliers are read, as the corroboration reads them.
+// component it keeps, with the model's agreement on each: the inlier weight of the pairs that agree
+// with the pose the model gives the cut image and of those that put it elsewhere. Only pairs of at
+// least minInliers weighted inliers are read, as the corroboration reads them.
 struct CutJunction {
-	unsigned numPairs{0}, numWeightedInliers{0}, numAgree{0}, numRotationOff{0}, numDirectionOff{0};
 	float agreeWeight{0.f}, disagreeWeight{0.f}; // weighted inliers of the pairs on either side
-	FloatArr rotations, directions; // disagreement of every pair across the cut, in degrees
 	bool Contradicts() const { return disagreeWeight > agreeWeight; }
 };
 typedef std::unordered_map<IIndex, CutJunction> CutJunctionMap; // by component root
@@ -864,112 +831,12 @@ static CutJunctionMap MeasureCutJunctions(const Scene& scene, const std::vector<
 		const IIndex imageID = r1 == largestRoot ? pair.ID2 : pair.ID1;
 		const IIndex neighborID = r1 == largestRoot ? pair.ID1 : pair.ID2;
 		CutJunction& j = junctions[rootOf[imageID]];
-		++j.numPairs;
-		j.numWeightedInliers += pair.GetNumWeightedInliers();
 		const PairDisagreement d = MeasurePairAgainstModel(scene, pair, imageID, neighborID);
-		j.rotations.push_back((float)d.rotation);
-		if (d.HasDirection())
-			j.directions.push_back((float)d.direction);
-		if (d.rotation > maxAgreementAngle)
-			++j.numRotationOff;
-		else if (d.HasDirection() && d.direction > d.DirectionTolerance(maxAgreementAngle))
-			++j.numDirectionOff;
-		else
-			++j.numAgree;
 		(d.Within(maxAgreementAngle) ? j.agreeWeight : j.disagreeWeight) += (float)pair.GetNumWeightedInliers();
 	}
 	return junctions;
 }
 
-// What still joins a component the largest-component pass is about to cut to the component it
-// keeps: the tracks seen on both sides, the strongest image pair among them, and the verified
-// pairs across the cut with the model's agreement on each. Reported for every component of at
-// least minComponentImages images, so a whole block leaving the model is explained, not just
-// counted.
-static void ReportCutComponents(const Scene& scene, const std::vector<IIndex>& rootOf, IIndex largestRoot,
-	CutJunctionMap& cutJunctions, uint8_t minInliersPerTrack, unsigned minComponentImages)
-{
-	struct Junction {
-		unsigned numImages{0}, minID{NO_ID}, maxID{0};
-		unsigned numTracks{0}, numInlierTracks{0};
-		std::unordered_map<uint64_t, unsigned> sharedTracks; // per image pair across the cut
-	};
-	std::unordered_map<IIndex, Junction> junctions; // by component root
-	unsigned numKept = 0;
-	FOREACH(imgIdx, scene.images) {
-		const IIndex root = rootOf[imgIdx];
-		if (root == NO_ID)
-			continue;
-		if (root == largestRoot) {
-			++numKept;
-			continue;
-		}
-		Junction& j = junctions[root];
-		++j.numImages;
-		j.minID = MINF(j.minID, (unsigned)imgIdx);
-		j.maxID = MAXF(j.maxID, (unsigned)imgIdx);
-	}
-	for (auto it = junctions.begin(); it != junctions.end(); )
-		it = it->second.numImages < minComponentImages ? junctions.erase(it) : std::next(it);
-	if (junctions.empty())
-		return;
-	// the tracks seen on both sides of a cut, inlier or not, and the image pairs the inlier ones join
-	std::vector<IIndex> cutRoots;
-	for (const Track& track : scene.tracks) {
-		if (!track.IsValid())
-			continue;
-		bool keptSide = false;
-		cutRoots.clear();
-		for (const Observation& obs : track.observations) {
-			const IIndex root = rootOf[obs.imageID];
-			if (root == largestRoot)
-				keptSide = true;
-			else if (root != NO_ID && junctions.count(root) && std::find(cutRoots.begin(), cutRoots.end(), root) == cutRoots.end())
-				cutRoots.push_back(root);
-		}
-		if (!keptSide)
-			continue;
-		for (const IIndex root : cutRoots) {
-			Junction& j = junctions[root];
-			++j.numTracks;
-			if (!track.IsInlier(minInliersPerTrack))
-				continue;
-			bool inlierBothSides = false;
-			for (uint8_t a = 0; a < track.numInliers && !inlierBothSides; ++a) {
-				const IIndex ia = track.observations[a].imageID;
-				if (rootOf[ia] != root)
-					continue;
-				for (uint8_t b = 0; b < track.numInliers; ++b) {
-					const IIndex ib = track.observations[b].imageID;
-					if (rootOf[ib] != largestRoot)
-						continue;
-					inlierBothSides = true;
-					++j.sharedTracks[((uint64_t)MINF(ia, ib) << 32) | MAXF(ia, ib)];
-				}
-			}
-			if (inlierBothSides)
-				++j.numInlierTracks;
-		}
-	}
-	std::vector<IIndex> roots;
-	for (const auto& [root, j] : junctions)
-		roots.push_back(root);
-	std::sort(roots.begin(), roots.end());
-	for (const IIndex root : roots) {
-		const Junction& j = junctions[root];
-		unsigned strongestPair = 0;
-		for (const auto& [key, count] : j.sharedTracks)
-			strongestPair = MAXF(strongestPair, count);
-		CutJunction& c = cutJunctions[root]; // GetMedian sorts in place
-		DEBUG_EXTRA("Component of %u images (%u..%u) cut from the kept %u: %u tracks seen on both sides, %u with inliers on both, "
-			"the strongest image pair sharing %u; %u verified pairs across (%u weighted inliers): %u agree with the model, "
-			"%u off in rotation, %u off in direction; median disagreement %.1f deg in rotation, %.1f deg in direction%s",
-			j.numImages, j.minID, j.maxID, numKept, j.numTracks, j.numInlierTracks, strongestPair,
-			c.numPairs, c.numWeightedInliers, c.numAgree, c.numRotationOff, c.numDirectionOff,
-			c.rotations.empty() ? -1.f : c.rotations.GetMedian(), c.directions.empty() ? -1.f : c.directions.GetMedian(),
-			c.Contradicts() ? "; contradicts the model" : "");
-	}
-}
 
 } // namespace
 
@@ -1379,13 +1246,6 @@ RemovedImages SFM::FilterWeaklyConnectedImages(Scene& scene,
 		CutJunctionMap cutJunctions;
 		if (maxCorroborationAngle > 0.f)
 			cutJunctions = MeasureCutJunctions(scene, rootOf, largestComponentRoot, maxCorroborationAngle, minCorroborationInliers);
-		#if TD_VERBOSE != TD_VERBOSE_OFF
-		// a component of a block's size leaving the model is explained, not just counted
-		if (VERBOSITY_LEVEL > 1 && maxCorroborationAngle > 0.f) {
-			constexpr unsigned minReportedComponentImages = 5;
-			ReportCutComponents(scene, rootOf, largestComponentRoot, cutJunctions, minInliersPerTrack, minReportedComponentImages);
-		}
-		#endif
 		// Invalidate images not in the largest component, in one batch sweep
 		IIndexArr dropIDs;
 		FOREACH(imgIdx, scene.images) {

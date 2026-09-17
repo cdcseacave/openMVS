@@ -187,12 +187,6 @@ static bool ExportToMVSFile(const Scene& scene, const std::string& fileName,
 	return SFM::ExportMVS(MAKE_PATH_SAFE(fileName), scene, config);
 }
 
-// Export the global-descriptor retrieval rankings of a described scene to a CSV file.
-static bool ExportRetrievalRankingsCSVFile(const Scene& scene, const std::string& fileName,
-                                           unsigned maxRank = 50) {
-	return SFM::ExportRetrievalRankingsCSV(scene, MAKE_PATH_SAFE(fileName), maxRank);
-}
-
 // The camera-triplet disambiguation scores of a matched scene (ViewGraphTriplets.h) as a dict:
 // "scores" holds one float per scene pair, in scene.pairs order, -1 marking an unscored pair;
 // "tau" is the threshold derived from min_score (the scores themselves do not depend on it); the
@@ -343,7 +337,6 @@ void RegisterBindings()
 		.def_readwrite("match_cfg", &SFM::ReconstructionConfig::matchCfg)
 		.def_readwrite("match_images_only", &SFM::ReconstructionConfig::matchImagesOnly)
 		.DEF_STR_RW("export_pairs_csv", &SFM::ReconstructionConfig::exportPairsCSV)
-		.DEF_STR_RW("export_retrieval_csv", &SFM::ReconstructionConfig::exportRetrievalCSV)
 		.def_readwrite("triplet_filter_cfg", &SFM::ReconstructionConfig::tripletFilterCfg)
 		.def_readwrite("viewgraph_cfg", &SFM::ReconstructionConfig::viewgraphCfg)
 		.def_readwrite("min_pair_weight", &SFM::ReconstructionConfig::minPairWeight)
@@ -401,10 +394,6 @@ void RegisterBindings()
 	// Free function: convenience SFM->MVS bridge via .mvs file.
 	def("export_sfm_to_mvs", &ExportToMVSFile,
 			(arg("scene"), arg("file_path"), arg("config")=SFM::ExportMVSConfig()));
-
-	// Free function: the global-descriptor retrieval rankings of a described scene, as CSV.
-	def("export_retrieval_rankings_csv", &ExportRetrievalRankingsCSVFile,
-			(arg("scene"), arg("file_name"), arg("max_rank")=50u));
 
 	// Free function: the camera-triplet disambiguation scores of a matched scene.
 	def("compute_triplet_scores", &ComputeTripletScoresDict,

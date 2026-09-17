@@ -85,9 +85,8 @@ bool ROMA2GuidedMatchTest();
 
 // The epipolar band of the guided sparse matching (GuidedSearch): a rival off the epipolar line is
 // no candidate, an equally close rival on it refuses the match, a same-feature duplicate is no
-// rival, the outside reference is asked of no winner, of lone winners or of every winner as
-// configured, the search is the disc without a geometry or near the epipole, and the adaptive
-// half-width is the clamped multiple of the median residual (GuidedBandHalfWidth)
+// rival, every winner answers to the reference outside its band, and the search is the disc
+// without a geometry or near the epipole
 bool ROMA2GuidedBandTest();
 
 // The track builder on a component holding one image twice (BuildTracks, TrackConflictConfig): the
@@ -331,12 +330,6 @@ bool ResectionAcceptanceTest();
 // nearly complete inlier share, the share the resection reads its model's health from, where a 4 px
 // bar counts barely half of them (ResectionConfig::ransac.threshold).
 bool ResectionInlierBarTest();
-
-// A scene saved part-way through the reconstruction -- after the hierarchical merge, with the
-// placed blocks posed and the images of the unplaced ones still to register -- given back as the
-// source resumes where it stopped: its poses are kept and the remaining images are resected
-// against them, instead of the scene being clustered and rebuilt from its matches once more.
-bool ReconstructResumeTest();
 
 // A dense (warp-sampled) observation is the less precise measurement, so the track filter and the
 // triangulation hold it to its own multiple of the reprojection bar a described one answers to

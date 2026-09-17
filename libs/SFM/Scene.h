@@ -75,13 +75,12 @@ struct SFM_API ReconstructionConfig {
 	MatchConfig matchCfg;
 	bool matchImagesOnly{false}; // only match image pairs and save scene without reconstruction
 
-	// Diagnostics CSVs written right after pair matching, before any reconstruction step can
-	// drop images or pairs (empty = no export)
+	// The pairs CSV written right after pair matching, before any reconstruction step can drop
+	// images or pairs (empty = no export)
 	String exportPairsCSV;
-	String exportRetrievalCSV;
 
-	// Triplet-based view-graph disambiguation, applied right after those CSVs are written, so
-	// they still describe the whole matched graph and carry the score of every pair
+	// Triplet-based view-graph disambiguation, applied right after that CSV is written, so it
+	// still describes the whole matched graph and carries the score of every pair
 	TripletFilterConfig tripletFilterCfg;
 
 	// View graph calibration parameters
@@ -293,12 +292,9 @@ public:
 	 * @param config Matching configuration
 	 * @param roma2Cfg In-process ROMAv2 configuration
 	 * @param vgConfig View-graph calibration configuration
-	 * @param exportRetrievalCSV Non-empty iff the caller is about to export the retrieval-rankings
-	 * CSV (ReconstructionConfig::exportRetrievalCSV): the only reason, besides RETRIEVAL mode
-	 * itself, this stage needs the global descriptors
 	 * @return true if matching completed successfully
 	 */
-	bool MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg = ROMA2Config(), const ViewGraphCalibratorConfig& vgConfig = ViewGraphCalibratorConfig(), const String& exportRetrievalCSV = String());
+	bool MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg = ROMA2Config(), const ViewGraphCalibratorConfig& vgConfig = ViewGraphCalibratorConfig());
 
 	/**
 	 * @brief Describe every image with the in-process ROMAv2 model and pool the result into

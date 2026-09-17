@@ -18,7 +18,7 @@ using namespace SFM;
 namespace {
 
 // How many nearest neighbours MatchFeaturesGuided fetches per query to find the best keypoint
-// outside the search region, for a winner alone in it. The region can only hold the true match and,
+// outside the search region. The region can only hold the true match and,
 // at most, a handful of its scale/orientation duplicates, so the closest keypoint outside it is within
 // a short list of the query's nearest neighbours; a list of this length answers that with one batched
 // query, instead of an index over the complement of the region, which is a different set for every
@@ -26,21 +26,6 @@ namespace {
 constexpr int K_NN = 8;
 
 } // unnamed namespace
-
-
-// S T R U C T S ///////////////////////////////////////////////////
-
-float SFM::GuidedBandHalfWidth(std::vector<float> residuals, float factor, float minHalfWidth, float maxHalfWidth)
-{
-	ASSERT(factor > 0.f && minHalfWidth <= maxHalfWidth);
-	if (residuals.empty())
-		return minHalfWidth; // nothing measured: the floor is all that can be claimed
-	// the upper median, in place: the caller handed the vector over
-	const size_t mid = residuals.size()/2;
-	std::nth_element(residuals.begin(), residuals.begin()+mid, residuals.end());
-	return CLAMP(factor*residuals[mid], minHalfWidth, maxHalfWidth);
-}
-/*----------------------------------------------------------------*/
 
 
 size_t SFM::MatchFeaturesGuided(
@@ -60,9 +45,8 @@ size_t SFM::MatchFeaturesGuided(
 	ASSERT(search.length > 0);
 	// the per-thread matchers are built with the configured cross-check, and a cross-checking
 	// BFMatcher refuses any k > 1 (cv::batchDistance asserts K == 1), so the batched query below
-	// would throw; the guided path has no use for it anyway -- the ratio inside the band and, for a
-	// winner alone in it, the reference outside are what keep a match honest here, not a train-side
-	// collision
+	// would throw; the guided path has no use for it anyway -- the ratio inside the band and the
+	// reference outside it are what keep a match honest here, not a train-side collision
 	ASSERT(!pairsMatcher.GetConfig().crossCheck);
 	const uint32_t numDescribedA = imgA.NumDescribedKeypoints();
 	const uint32_t numDescribedB = imgB.NumDescribedKeypoints();
@@ -216,7 +200,7 @@ size_t SFM::MatchFeaturesGuided(
 	// closest rival there by the matcher's ratio, strictly, like every other ratio test in the
 	// matcher -- two candidates as close as each other along the line is the very ambiguity this
 	// test exists to refuse. A winner that passes it, or has no rival to pass, then answers to the
-	// reference outside the region as search.outsideReference asks (Step 3).
+	// reference outside the region (Step 3).
 	// Both sides here are TRUE descriptor norms (DescriptorDistance recomputes them), so this test
 	// enforces d0/d1 < matchRatio, while PairsMatcher::MatchFeatures applies the same constant to
 	// FLANN's SQUARED L2 distances and so enforces d0/d1 < sqrt(matchRatio): at the same setting the
@@ -225,35 +209,24 @@ size_t SFM::MatchFeaturesGuided(
 	const float matchRatio = pairsMatcher.GetConfig().matchRatio;
 	enum : uint8_t { REFUSED, ACCEPTED, UNDECIDED };
 	std::vector<uint8_t> verdicts(winners.size(), UNDECIDED);
-	std::vector<size_t> lone; // winners still to be decided by the outside reference
+	std::vector<size_t> standing; // winners past their rival, still to answer to the outside reference
 	FOREACH(q, winners) {
 		const Winner& winner = winners[q];
-		if (winner.rivalDistance >= 0.f) {
-			if (!(winner.distance < matchRatio*winner.rivalDistance)) {
-				verdicts[q] = REFUSED;
-				continue;
-			}
-			if (search.outsideReference != GuidedSearch::OUTSIDE_ALL) {
-				verdicts[q] = ACCEPTED; // its rival was all it had to answer to
-				continue;
-			}
-		} else if (search.outsideReference == GuidedSearch::OUTSIDE_NONE) {
-			verdicts[q] = ACCEPTED; // alone in its region, and asked to stand
-			continue;
-		}
-		lone.push_back(q);
+		if (winner.rivalDistance >= 0.f && !(winner.distance < matchRatio*winner.rivalDistance))
+			verdicts[q] = REFUSED;
+		else
+			standing.push_back(q);
 	}
 
-	// Step 3: the reference outside the region -- for every winner still standing (OUTSIDE_ALL), or
-	// for a winner alone in its region (OUTSIDE_LONE): it has to beat the closest described keypoint
-	// of imgB OUTSIDE the region by the same ratio, what refuses an impostor where the true keypoint
-	// was never detected (see MatchGeometric.h). The thread's own descriptor matcher answers all of
-	// them in one batched query over the whole described prefix of imgB, k = K_NN, exactly as
-	// PairsMatcher::MatchFeatures runs its own (k = 2) one.
-	if (!lone.empty()) {
-		cv::Mat queryDescriptors((int)lone.size(), imgA.descriptors.cols, imgA.descriptors.type());
-		FOREACH(k, lone)
-			imgA.descriptors.row((int)winners[lone[k]].queryIdx).copyTo(queryDescriptors.row((int)k));
+	// Step 3: the reference outside the region: every winner still standing has to beat the closest
+	// described keypoint of imgB OUTSIDE the region by the same ratio, what refuses an impostor where
+	// the true keypoint was never detected (see MatchGeometric.h). The thread's own descriptor matcher
+	// answers all of them in one batched query over the whole described prefix of imgB, k = K_NN,
+	// exactly as PairsMatcher::MatchFeatures runs its own (k = 2) one.
+	if (!standing.empty()) {
+		cv::Mat queryDescriptors((int)standing.size(), imgA.descriptors.cols, imgA.descriptors.type());
+		FOREACH(k, standing)
+			imgA.descriptors.row((int)winners[standing[k]].queryIdx).copyTo(queryDescriptors.row((int)k));
 		std::vector<std::vector<cv::DMatch>> knnMatches;
 		cv::DescriptorMatcher& matcher = pairsMatcher.GetMatcher(threadIdx);
 		if (pairsMatcher.GetConfig().descriptorsAreBinary) {
@@ -269,12 +242,12 @@ size_t SFM::MatchFeaturesGuided(
 		// returns fewer (an empty train set) is excluded by the numDescribedB == 0 early return
 		// above. Asserted rather than handled, so the return value below means only how many
 		// matches this pass accepted
-		ASSERT(knnMatches.size() == lone.size());
-		FOREACH(k, lone) {
-			const Winner& winner = winners[lone[k]];
+		ASSERT(knnMatches.size() == standing.size());
+		FOREACH(k, standing) {
+			const Winner& winner = winners[standing[k]];
 			const std::vector<cv::DMatch>& neighbours = knnMatches[k];
 			if (neighbours.empty()) {
-				verdicts[lone[k]] = REFUSED; // no reference distance, so nothing this match could be shown to beat
+				verdicts[standing[k]] = REFUSED; // no reference distance, so nothing this match could be shown to beat
 				continue;
 			}
 			// the neighbours come back sorted by distance, so the first one outside the region is
@@ -298,7 +271,7 @@ size_t SFM::MatchFeaturesGuided(
 				// otherwise the K_NN-th distance stands in -- every keypoint outside the region is
 				// at least that far away, so the test can only get stricter, never looser
 				if (neighbours.size() == (size_t)numDescribedB) {
-					verdicts[lone[k]] = ACCEPTED;
+					verdicts[standing[k]] = ACCEPTED;
 					continue;
 				}
 				outsideDistance = DescriptorDistance(winner.queryIdx, (uint32_t)neighbours.back().trainIdx);
@@ -307,7 +280,7 @@ size_t SFM::MatchFeaturesGuided(
 			// very thing this test exists to reject, and equal descriptors (the same feature
 			// described twice, in two different places of imgB) make that tie a real case rather
 			// than a floating-point curiosity
-			verdicts[lone[k]] = winner.distance < matchRatio*outsideDistance ? ACCEPTED : REFUSED;
+			verdicts[standing[k]] = winner.distance < matchRatio*outsideDistance ? ACCEPTED : REFUSED;
 		}
 	}
 

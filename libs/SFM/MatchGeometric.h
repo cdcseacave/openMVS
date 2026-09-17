@@ -28,21 +28,7 @@ struct SFM_API GuidedSearch {
 	float halfWidth = 0.f;           // half-width of the band across the line, imgB pixels; <= 0 searches the disc
 	std::optional<Matrix3x3> F;      // x_B^T F x_A = 0 in pixels, the line's source; absent searches the disc
 	float sameFeatureDistance = 3.f; // a rival this close to the winner is the same feature described twice, not a rival
-	// Which winners must also beat the closest described keypoint OUTSIDE the region by the ratio
-	enum OutsideReference : uint8_t {
-		OUTSIDE_NONE = 0, // none: a winner alone in its region stands, one with a rival answers to the rival alone
-		OUTSIDE_LONE = 1, // a winner alone in its region, which has no rival to answer to
-		OUTSIDE_ALL  = 2  // every winner, on top of the ratio against its rival
-	};
-	uint8_t outsideReference = OUTSIDE_ALL;
 };
-
-// The adaptive half-width of the band (ROMA2Config::guidedBandResidualFactor): `factor` times the
-// median of the given epipolar residuals -- the verdict's inlier cells under the pair's geometry, in
-// pixels -- held between minHalfWidth (the matcher's epipolar bar) and maxHalfWidth (the band's
-// length); no residual at all gives the floor. The vector is taken by value because the median is
-// found in place.
-SFM_API float GuidedBandHalfWidth(std::vector<float> residuals, float factor, float minHalfWidth, float maxHalfWidth);
 
 /**
  * @brief Guided sparse matching of one admitted image pair, under the warp that admitted it.
@@ -63,19 +49,14 @@ SFM_API float GuidedBandHalfWidth(std::vector<float> residuals, float factor, fl
  * orientation duplicate of the winner, sitting on top of it, is the same feature described twice and
  * counts for nothing, while a second keypoint along the line as close in appearance as the winner
  * makes the match ambiguous and refuses it -- the epipolar test downstream cannot see that neighbour,
- * so this is where it is caught. Keypoints outside the region take no part: the geometry says the
- * match is not there.
+ * so this is where it is caught. Keypoints outside the region are never candidates: the geometry
+ * says the match is not there.
  *
- * The reference OUTSIDE the region (search.outsideReference): a winner must also beat the closest
- * described keypoint of imgB outside its region by the same ratio -- every winner (OUTSIDE_ALL), the
- * reference every winner answered to before the band; or only a winner alone in its region, which
- * has no rival to answer to (OUTSIDE_LONE); or none (OUTSIDE_NONE), a lone winner standing as it is.
- * The outside reference is what refuses an impostor where the true keypoint was never detected in
- * imgB: the winner is then a random keypoint of the region, one of a handful, and a handful's second
- * best is beaten by the ratio a third of the time, where the best of imgB's thousands is not (on
- * alameda, the region's ratio alone let through 33M matches SIFT does not have, at a median Sampson
- * error twice that of the common ones, against 4.3M with the outside reference as well). The outside
- * distance comes from the
+ * The reference OUTSIDE the region: every winner must also beat the closest described keypoint of
+ * imgB outside its region by the same ratio. That reference is what refuses an impostor where the
+ * true keypoint was never detected in imgB: the winner is then a random keypoint of the region, one
+ * of a handful, and a handful's second best is beaten by the ratio a third of the time, where the
+ * best of imgB's thousands is not. The outside distance comes from the
  * thread's own descriptor matcher: the K_NN = 8 nearest neighbours of the query over all of imgB's
  * described descriptors (approximate when that matcher is a FLANN index, which is the default), the
  * first of them not in the region is "best outside"; when all K_NN are in the region the K_NN-th
@@ -107,8 +88,7 @@ SFM_API float GuidedBandHalfWidth(std::vector<float> residuals, float factor, fl
  * @param trackStatus   Status per prediction (1 = valid, 0 = invalid); an untracked keypoint has no
  *                      disc to search and is skipped.
  * @param search        The search region (GuidedSearch): the band's length and half-width in imgB's
- *                      pixels, the geometry its line comes from, the same-feature distance and which
- *                      winners answer to the outside reference.
+ *                      pixels, the geometry its line comes from and the same-feature distance.
  * @param threadIdx     Index of the calling thread, selecting its private descriptor matcher inside
  *                      pairsMatcher; must be in [0, PairsMatcher::GetNumMatchers()), and concurrent
  *                      calls must pass distinct indices.

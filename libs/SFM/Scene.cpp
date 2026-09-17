@@ -570,7 +570,7 @@ bool Scene::ExtractFeatures(const FeatureExtractionConfig& config)
 	return true;
 }
 
-bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, const ViewGraphCalibratorConfig& vgConfig, const String& exportRetrievalCSV)
+bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, const ViewGraphCalibratorConfig& vgConfig)
 {
 	// In-process ROMA2: one loaded model serves the retrieval descriptors and the dense
 	// matching; it lives for this call only (design decision 7). Declared before
@@ -580,11 +580,8 @@ bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, c
 	RoMa2Onnx roma2;
 	PairsMatcher pairsMatcher(*this, config);
 
-	// Which passes this run needs. Only the caller can answer the first one: the config cannot see
-	// the match mode, and RETRIEVAL is what makes the global descriptors necessary -- exporting the
-	// retrieval CSV right after this call (Scene::Reconstruct) needs them too, mode aside.
-	const bool wantsDescriptors = (config.mode == MatchConfig::RETRIEVAL || !exportRetrievalCSV.empty());
-	const bool needsDescriptors = wantsDescriptors && !status.nState.isSet(Status::STATE::GLOBAL_DESCRIPTORS);
+	// Which passes this run needs: RETRIEVAL is what makes the global descriptors necessary
+	const bool needsDescriptors = config.mode == MatchConfig::RETRIEVAL && !status.nState.isSet(Status::STATE::GLOBAL_DESCRIPTORS);
 	const bool needsWarps = roma2Cfg.useMatching;
 
 	const String modelPath(roma2Cfg.ResolveModelPath());
@@ -607,7 +604,7 @@ bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, c
 		}
 		if (needsDescriptors && !ComputeGlobalDescriptors(roma2))
 			return false;
-	} else if (roma2Cfg.enabled && wantsDescriptors && !status.nState.isSet(Status::STATE::MATCHED)) {
+	} else if (roma2Cfg.enabled && config.mode == MatchConfig::RETRIEVAL && !status.nState.isSet(Status::STATE::MATCHED)) {
 		// descriptors are wanted and already stored, and no warps are needed either: retrieval over
 		// an earlier run's descriptors ranks the pairs straight from Image::globalDescriptor
 		// (PairsMatcher::QueryRetrieval) and never enters a session, so loading 1.2 GB of graph
@@ -677,11 +674,10 @@ bool Scene::ComputeGlobalDescriptors(RoMa2Onnx& roma2)
 }
 
 namespace {
-// Export the pairs/retrieval-rankings CSV diagnostics of a matched scene
-// (ReconstructionConfig::exportPairsCSV / exportRetrievalCSV, when non-empty) right after
-// Scene::Reconstruct() finishes pair matching, before any later reconstruction step
+// Export the pairs CSV of a matched scene (ReconstructionConfig::exportPairsCSV, when non-empty)
+// right after Scene::Reconstruct() finishes pair matching, before any later reconstruction step
 // (largest-connected-component clustering, weak-image filtering, resection) can drop pairs or
-// leave images unregistered. A failed export only logs a warning: both files are diagnostics and
+// leave images unregistered. A failed export only logs a warning: the file is a diagnostic and
 // must never cost the caller the reconstructed scene itself -- not a member of
 // Scene since it has an implicit precondition (must run right after matching) that makes it
 // unsuitable as public API, and it has no callers outside Reconstruct().
@@ -691,14 +687,11 @@ void ExportMatchingCSVs(const Scene& scene, const ReconstructionConfig& config)
 		!PairsMatcher::ExportPairsCSV(scene, config.exportPairsCSV, config.minPairWeight,
 			config.tripletFilterCfg.minYield, config.matchCfg.weightingCfg.gridSize))
 		VERBOSE("warning: failed to export image pairs to CSV file '%s'", config.exportPairsCSV.c_str());
-	if (!config.exportRetrievalCSV.empty() &&
-		!ExportRetrievalRankingsCSV(scene, config.exportRetrievalCSV, 50))
-		VERBOSE("warning: failed to export retrieval rankings to CSV file '%s'", config.exportRetrievalCSV.c_str());
 }
 
-// Export the matching diagnostics of a freshly matched scene, then disambiguate its view graph
-// with the camera-triplet filter (ViewGraphTriplets.h): the CSVs describe the whole matched graph,
-// each pair with its triplet score, the pairs the filter removes included. Returns the images of
+// Export the pairs CSV of a freshly matched scene, then disambiguate its view graph with the
+// camera-triplet filter (ViewGraphTriplets.h): the CSV describes the whole matched graph, each
+// pair with its triplet score, the pairs the filter removes included. Returns the images of
 // the largest piece the filter's ceiling leaves, the reconstruction's seed views; empty without
 // the filter.
 IIndexArr ExportMatchingCSVsAndFilterPairs(Scene& scene, const ReconstructionConfig& config)
@@ -770,66 +763,44 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 		}
 	}
 
-	// ImportCOLMAP(MAKE_PATH("colmap/scene_init.glmp"), *this);
-	// ImportCOLMAP(MAKE_PATH("colmap/scene_init.glmp"), *this, false, false);
-	// PairsMatcher pairsMatcher(*this, config.matchCfg);
-	// pairsMatcher.ComputeRelativePoses(false, false);
+	// Extract image features
+	if (!ExtractFeatures(cfg.featuresCfg))
+		return false;
 
-	// A scene saved part-way through the reconstruction -- after the hierarchical merge, with the
-	// placed blocks posed and the images of the unplaced ones still to register -- resumes where it
-	// stopped: its matching and its merge are behind it, and clustering it once more would rebuild
-	// it from its matches and throw away the poses it carries
-	if (status.nCalibratedImages > 0) {
-		VERBOSE("Resuming the reconstruction of a scene with %u/%u images posed: the remaining images are registered by resection",
-			status.nCalibratedImages, images.size());
-	} else {
-		// Extract image features
-		if (!ExtractFeatures(cfg.featuresCfg))
+	// Match image pairs
+	if (!MatchPairs(cfg.matchCfg, cfg.roma2Cfg, cfg.viewgraphCfg))
+		return false;
+
+	// export the pairs CSV right after matching, before any reconstruction step (clustering,
+	// weak-image filtering, resection) can drop pairs or leave images unregistered; covers both
+	// the match-images-only run and a full reconstruction, and is immediately followed by the
+	// triplet disambiguation of the view graph
+	seedViews = ExportMatchingCSVsAndFilterPairs(*this, cfg);
+
+	if (cfg.matchImagesOnly) {
+		// a frames.json imported with an AUTO convention must be resolved before the scene
+		// is persisted, otherwise possibly-flipped poses are saved with no record of the
+		// ambiguity and every later consumer inherits reversed optical axes
+		if (cfg.HasKnownPoses() && !ResolveFramesConvention(*this,
+				cfg.importCfg.framesConvention, cfg.importCfg.importPosesFile))
 			return false;
-
-		// Match image pairs
-		if (!MatchPairs(cfg.matchCfg, cfg.roma2Cfg, cfg.viewgraphCfg, cfg.exportRetrievalCSV))
-			return false;
-
-		// export the pairs/retrieval-rankings CSV diagnostics right after matching, before any
-		// reconstruction step (clustering, weak-image filtering, resection) can drop pairs or
-		// leave images unregistered; covers both the match-images-only run and a full reconstruction,
-		// and is immediately followed by the triplet disambiguation of the view graph
-		seedViews = ExportMatchingCSVsAndFilterPairs(*this, cfg);
-
-		if (cfg.matchImagesOnly) {
-			// a frames.json imported with an AUTO convention must be resolved before the scene
-			// is persisted, otherwise possibly-flipped poses are saved with no record of the
-			// ambiguity and every later consumer inherits reversed optical axes
-			if (cfg.HasKnownPoses() && !ResolveFramesConvention(*this,
-					cfg.importCfg.framesConvention, cfg.importCfg.importPosesFile))
-				return false;
-			VERBOSE("Image pairs matched only as per configuration, reconstruction skipped");
-			return true;
-		}
-
-		#if TD_VERBOSE != TD_VERBOSE_OFF
-		if (VERBOSITY_LEVEL > 2) {
-			// Save intermediate scene after matching for debugging
-			Save(MAKE_PATH("scene_pre_reconstruction.sfm"), cfg.importCfg.archiveType);
-		}
-		#endif
-
-		// Run reconstruction method
-		if (cfg.HasKnownPoses() ? !ReconstructKnownPoses(cfg)
-		    : cfg.useGlobalSolver ? !ReconstructGlobal(cfg)
-		                             : !ReconstructHierarchical(cfg, seedViews))
-			return false;
-
-		#if TD_VERBOSE != TD_VERBOSE_OFF
-		if (VERBOSITY_LEVEL > 2) {
-			// Save the reconstruction as the merge leaves it, the placed blocks posed and the images
-			// of the unplaced ones waiting for the resection: given back as the source, it resumes
-			// from here (see above), so what follows can be run on its own
-			Save(MAKE_PATH("scene_post_merge.sfm"), cfg.importCfg.archiveType);
-		}
-		#endif
+		VERBOSE("Image pairs matched only as per configuration, reconstruction skipped");
+		return true;
 	}
+
+	#if TD_VERBOSE != TD_VERBOSE_OFF
+	if (VERBOSITY_LEVEL > 2) {
+		// Save intermediate scene after matching for debugging
+		Save(MAKE_PATH("scene_pre_reconstruction.sfm"), cfg.importCfg.archiveType);
+	}
+	#endif
+
+	// Run reconstruction method
+	if (cfg.HasKnownPoses() ? !ReconstructKnownPoses(cfg)
+	    : cfg.useGlobalSolver ? !ReconstructGlobal(cfg)
+	                             : !ReconstructHierarchical(cfg, seedViews))
+		return false;
+
 
 	// Final global bundle adjustment
 	FilterTracks(*this, cfg.maxReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar, cfg.resectionCfg.denseReprojErrorFactor);
@@ -839,24 +810,12 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	BAConfig finalBaCfg = cfg.baConfig;
 	SetBAIntrinsicFlags(finalBaCfg, cfg.baIntrinsicFlags);
 	BundleAdjustment::Adjust(*this, finalBaCfg);
-	#if TD_VERBOSE != TD_VERBOSE_OFF
-	if (VERBOSITY_LEVEL > 2) {
-		// Save the adjusted scene before the fine filter thins its tracks, so the two can be told apart offline
-		Save(MAKE_PATH("scene_post_ba.sfm"), cfg.importCfg.archiveType);
-	}
-	#endif
 	FilterTracks(*this, cfg.maxFineReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar, cfg.resectionCfg.denseReprojErrorFactor);
 
 	// Filter weakly connected images and resection remaining images into the reconstruction;
 	// what the filter removed for contradicting the model is withheld from that resection, so it
 	// is not simply handed back and removed again, while what it removed for want of evidence
 	// (no structure, no witness) is tried again once the model has grown
-	#if TD_VERBOSE != TD_VERBOSE_OFF
-	if (VERBOSITY_LEVEL > 2) {
-		// Save the scene the filter judges, so its verdicts can be replayed offline
-		Save(MAKE_PATH("scene_pre_filter.sfm"), cfg.importCfg.archiveType);
-	}
-	#endif
 	const RemovedImages removed = FilterWeaklyConnectedImages(*this);
 	if (status.nCalibratedImages < images.size()) {
 		ResectionConfig resectionCfg = cfg.resectionCfg;
@@ -865,13 +824,8 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 		resectionCfg.DeriveBAConfigs(resectionBaCfg);
 		Resection resection(*this, resectionCfg);
 		resection.ExcludeImages(removed.contradicting);
-		if (resection.RegisterImages()) {
-			#if TD_VERBOSE != TD_VERBOSE_OFF
-			if (VERBOSITY_LEVEL > 2)
-				Save(MAKE_PATH("scene_pre_final_filter.sfm"), cfg.importCfg.archiveType);
-			#endif
+		if (resection.RegisterImages())
 			FilterWeaklyConnectedImages(*this);
-		}
 	}
 
 	// Align the scene back to the imported prior poses in known-poses mode (preserving the
@@ -935,7 +889,6 @@ bool Scene::ReconstructHierarchical(const ReconstructionConfig& config, const II
 	// 1. Cluster scene if necessary
 	std::vector<Scene> subScenes;
 	std::vector<IIndexArr> localToGlobals;
-	#if 1
 	if (config.clusterCfg.maxViewsPerCluster > 0 && images.size() > config.clusterCfg.maxViewsPerCluster) {
 		SceneCluster clusterer(*this, config.clusterCfg);
 		subScenes = clusterer.SplitScene(&localToGlobals);
@@ -974,24 +927,8 @@ bool Scene::ReconstructHierarchical(const ReconstructionConfig& config, const II
 		// The resection already closes with a full adjustment of this sub-scene; only the
 		// tracks it leaves behind need settling before the sub-scenes are merged
 		FilterTracks(subScene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar, config.resectionCfg.denseReprojErrorFactor);
-		#if TD_VERBOSE != TD_VERBOSE_OFF
-		if (VERBOSITY_LEVEL > 2 && subScenes.size() > 1) {
-			// Save the reconstructed sub-scene, so a block the merge refuses can be judged on its own
-			subScene.Save(MAKE_PATH(String::FormatString("scene_block_%u.sfm", i)), config.importCfg.archiveType);
-		}
-		#endif
 	});
 	threadPool.wait();
-	#if 0
-	SerializeSave(*this, MAKE_PATH("scene_pre_hierarchical_scene.sfm"), config.importCfg.archiveType);
-	SerializeSave(subScenes, MAKE_PATH("scene_pre_hierarchical_reconstruction.sfm"), config.importCfg.archiveType);
-	SerializeSave(localToGlobals, MAKE_PATH("scene_pre_hierarchical_local_to_globals.sfm"), config.importCfg.archiveType);
-	#endif
-	#else
-	SerializeLoad(*this, MAKE_PATH("scene_pre_hierarchical_scene.sfm"), config.importCfg.archiveType);
-	SerializeLoad(subScenes, MAKE_PATH("scene_pre_hierarchical_reconstruction.sfm"), config.importCfg.archiveType);
-	SerializeLoad(localToGlobals, MAKE_PATH("scene_pre_hierarchical_local_to_globals.sfm"), config.importCfg.archiveType);
-	#endif
 
 	// 3. Merge/align sub-scenes (simple merge + final BA)
 	if (subScenes.size() == 1) {

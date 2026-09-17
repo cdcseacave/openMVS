@@ -514,25 +514,6 @@ public:
 		return num*num <= toleranceSq*den;
 	}
 
-	// the distance itself, in the units of M's space (pixels through F, radians through E), for the
-	// residual statistics the band's adaptive half-width reads (GuidedBandHalfWidth); the degenerate
-	// case scores as far
-	inline double Distance(const Point2f& ptA, const Point2f& ptB) const {
-		ASSERT(IsValid());
-		Eigen::Vector3d a, b;
-		if (bFundamental) {
-			a = Eigen::Vector3d(ptA.x, ptA.y, 1.0);
-			b = Eigen::Vector3d(ptB.x, ptB.y, 1.0);
-		} else {
-			a = camA->UnprojectNormalized(Cast<REAL>(ptA));
-			b = camB->UnprojectNormalized(Cast<REAL>(ptB));
-		}
-		const Eigen::Vector3d Ma(M*a), Mtb(M.transpose()*b);
-		const double den = Ma.x()*Ma.x() + Ma.y()*Ma.y() + Mtb.x()*Mtb.x() + Mtb.y()*Mtb.y();
-		if (den < 1e-14)
-			return std::numeric_limits<double>::max();
-		return std::abs(b.dot(Ma))/std::sqrt(den);
-	}
 
 private:
 	CameraPtr camA, camB;   // only read for the bearings of the E path
@@ -823,15 +804,14 @@ bool SFM::AssemblePairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA,
 	// 3) classify both kinds of correspondence against the kept geometry: a descriptor correspondence
 	// is sub-pixel and is held to the matcher's own epipolar error; a warp cell is held to a multiple
 	// of that same bar (ROMA2Config::denseEpipolarErrorFactor), since a correspondence admitted at the
-	// half cell the coarse warp can claim pollutes every track it enters downstream -- unless the
-	// factor is 0, which leaves it the half cell
+	// half cell the coarse warp can claim pollutes every track it enters downstream
 	const MatchConfig& cfg = pairsMatcher.GetConfig();
 	// maxEpipolarError 0 turns the RANSAC verification off scene-wide (MatchConfig), and with it the
 	// sparse epipolar test: in that configuration every guided match stands, exactly as the
 	// descriptor path keeps its matches unverified
 	const bool bVerifySparse = cfg.maxEpipolarError > 0.f;
 	const SampsonTest sparseTest(imgA, imgB, pair, cfg.maxEpipolarError);
-	const float denseTolerance = (bVerifySparse && config.denseEpipolarErrorFactor > 0.f) ?
+	const float denseTolerance = bVerifySparse ?
 		cfg.maxEpipolarError * config.denseEpipolarErrorFactor : WarpTolerance(sizeA, sizeB, warpSize);
 	const SampsonTest denseTest(imgA, imgB, pair, denseTolerance);
 	ASSERT(sparseTest.IsValid() == denseTest.IsValid());
@@ -975,16 +955,10 @@ bool SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, const Pa
 	};
 	std::vector<AssembledPair> results(pairs.size());
 	std::atomic<unsigned> numJudged{0}, numAdmitted{0};
-	std::atomic<int64_t> guidedTicks{0}; // the guided sparse matching's own clock, summed over the pool's threads
 	const int warpSize = roma2.WarpSize();
 	WarpPassStats stats;
 	if (!ForEachWarpROMA2(pairsMatcher, roma2, pairs, config.slotBudget, _T("Dense match image pairs"),
 		[&](size_t p, const PairIdx& pairIdx, PairWarps& warps, unsigned threadIdx) {
-			// this pair's own clock, named apart from the pass's TD_TIMER_STARTD() one (a nested
-			// TD_TIMER_START() would redeclare that timer's local) and wound up only when the record
-			// below will actually print, so a run below verbosity 3 never pays for it
-			const bool bTimePair = VERBOSITY_LEVEL > 2;
-			const SEACAVE::Timer::SysType pairTimeStart = bTimePair ? SEACAVE::Timer::GetSysTime() : 0;
 			const Image& imgA = scene.images[pairIdx.i];
 			const Image& imgB = scene.images[pairIdx.j];
 			ImagePair pair(pairIdx.i, pairIdx.j);
@@ -1011,36 +985,20 @@ bool SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, const Pa
 			search.length = config.guidedBandLengthCells*cell;
 			search.F = pair.F;
 			search.sameFeatureDistance = config.guidedSameFeatureDistance;
-			search.outsideReference = (uint8_t)MINF(config.guidedOutsideReference, 2u);
-			if (config.guidedBandResidualFactor > 0.f && pair.F.has_value()) {
-				// the adaptive half-width: the residuals of the verdict's inlier cells under the
-				// pair's geometry, in pixels, against the matcher's own epipolar bar as the floor
-				const SampsonTest residual(imgA, imgB, pair, WarpTolerance(imgA.GetSize(), imgB.GetSize(), warpSize));
-				std::vector<float> residuals;
-				residuals.reserve(verdict.inliersA.size());
-				FOREACH(k, verdict.inliersA)
-					residuals.push_back((float)residual.Distance(verdict.inliersA[k], verdict.inliersB[k]));
-				search.halfWidth = GuidedBandHalfWidth(std::move(residuals), config.guidedBandResidualFactor,
-					pairsMatcher.GetConfig().maxEpipolarError, search.length);
-			} else {
-				search.halfWidth = config.guidedBandHalfWidthCells*cell;
-			}
+			search.halfWidth = config.guidedBandHalfWidthCells*cell;
 			std::vector<DMatch> guided;
-			const SEACAVE::Timer::SysType guidedStart = SEACAVE::Timer::GetSysTime();
 			MatchFeaturesGuided(pairsMatcher, imgA, imgB, trackedB, trackStatus, search, threadIdx, guided);
-			guidedTicks += SEACAVE::Timer::GetSysTime() - guidedStart;
 			AssembledPair& result = results[p];
 			result.bAssembled = AssemblePairROMA2(pairsMatcher, imgA, imgB, verdict, guided, config,
 				warpSize, pair, result.dense);
 			const unsigned numSparse = result.bAssembled ? pair.GetNumFilteredInliers() : 0u;
 			if (result.bAssembled)
 				result.pair = std::move(pair);
-			DEBUG_ULTIMATE("ROMA2 pair %u-%u: conf %.4f %.4f inl %.4f %.4f ADMIT cap %u grid %d band %.1f guided %u sparse %u dense %u %ums",
+			DEBUG_ULTIMATE("ROMA2 pair %u-%u: conf %.4f %.4f inl %.4f %.4f ADMIT cap %u grid %d band %.1f guided %u sparse %u dense %u",
 				pairIdx.i, pairIdx.j, verdict.confidentAreaA, verdict.confidentAreaB,
 				verdict.inlierAreaA, verdict.inlierAreaB, DenseFillCeiling(config, verdict),
 				DenseFillGridSide(config.denseMatchesPerFrame, warpSize), search.halfWidth, (unsigned)guided.size(), numSparse,
-				(unsigned)result.dense.pointsA.size(), bTimePair ?
-				(unsigned)SEACAVE::Timer::SysTime2TimeMs(SEACAVE::Timer::GetSysTime() - pairTimeStart) : 0u);
+				(unsigned)result.dense.pointsA.size());
 		}, stats))
 		return false; // the slot pool could not be allocated: nothing was warped, and the round fails
 
@@ -1059,12 +1017,11 @@ bool SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, const Pa
 		++numStored;
 	}
 	DEBUG("ROMA2 one pass: %u candidates, %u judged, %u admitted, %u stored, %u dense-only; "
-		"%u slots, %u loads, %u reloads; %u already stored, %u unprepared, %u failed loads, %u failed matches, %u dense matches; "
-		"guided matching %.1fs of thread time (%s)",
+		"%u slots, %u loads, %u reloads; %u already stored, %u unprepared, %u failed loads, %u failed matches, %u dense matches (%s)",
 		candidatePairs.size(), numJudged.load(), numAdmitted.load(), numStored, numDenseOnly,
 		stats.numSlots, (unsigned)stats.numLoads, (unsigned)stats.numReloads,
 		numAlreadyStored, numUnprepared, stats.numFailedLoads, stats.numFailedMatches, (unsigned)numDenseMatches,
-		(double)SEACAVE::Timer::SysTime2TimeMs(guidedTicks.load())/1000.0, TD_TIMER_GET_FMT().c_str());
+		TD_TIMER_GET_FMT().c_str());
 	return true;
 #else // _USE_ONNXRUNTIME
 	// unreachable: RoMa2Onnx::IsAvailable() is false in this build, so Scene::MatchPairs never

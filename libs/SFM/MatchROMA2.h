@@ -61,7 +61,7 @@ struct SFM_API ROMA2Config {
 	// geometry classifies it: the coarse warp lands a correspondence several pixels off on a
 	// full-resolution image, and a correspondence admitted at half a warp cell (8.7 px on a 2789 px
 	// frame with the 160-cell grid) pollutes every track it enters, so the dense segment answers to
-	// the same bar the sparse matches do. 0 = half a warp cell, the accuracy the grid itself claims.
+	// the same bar the sparse matches do.
 	float denseEpipolarErrorFactor = 1.f;
 	// The guided sparse match of an admitted pair looks for each described keypoint of A along its
 	// epipolar line in B, in a band centred on the warp's prediction (GuidedSearch, MatchGeometric.h):
@@ -71,22 +71,11 @@ struct SFM_API ROMA2Config {
 	// 2.3 px median there. The band is centred on the prediction, which lives in B's own pixels, so an
 	// imprecise focal or principal point and lens distortion, none of which the geometry the verdict
 	// fitted models, enter only as a rotation of the band by a few degrees. A half-width of 0 searches
-	// the disc of the length's radius, the search before the band.
+	// the disc of the length's radius. Every winner must also beat the closest keypoint OUTSIDE the
+	// band by the matcher's ratio, the reference that refuses an impostor where the true keypoint was
+	// never detected (see MatchGeometric.h).
 	float guidedBandLengthCells = 2.f;
 	float guidedBandHalfWidthCells = 0.5f;
-	// > 0: the half-width is instead this multiple of the median epipolar residual of the verdict's
-	// inlier cells under the pair's geometry, floored at MatchConfig::maxEpipolarError and capped at
-	// the band's length -- a pair whose images the fitted geometry explains poorly (distortion, a
-	// wrong focal) gets a wider band, one it explains well a narrower one. 0 = the fixed half-width.
-	float guidedBandResidualFactor = 0.f;
-	// Which winners must also beat the closest keypoint OUTSIDE the band by the matcher's ratio, the
-	// reference every winner answered to before the band (GuidedSearch::OutsideReference): 2 every
-	// winner, 1 only a winner with no rival inside its band, 0 none. The outside reference is what
-	// refuses an impostor where the true keypoint was never detected: a random winner among the few
-	// keypoints of a band beats the band's second best by the ratio a third of the time, and never the
-	// best of the image's thousands -- on alameda the band's own ratio alone admitted 33M matches SIFT
-	// does not have, at twice the epipolar error of the common ones (see MatchGeometric.h).
-	unsigned guidedOutsideReference = 2;
 	// A rival within this distance (pixels) of the winner is the same feature described twice (a
 	// scale or orientation duplicate) and does not count as a rival in the ratio test.
 	float guidedSameFeatureDistance = 3.f;

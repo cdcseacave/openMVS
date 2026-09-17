@@ -58,7 +58,6 @@ String strExportPoseQuality;
 String strImportOpenMVGDir;
 String strExportOpenMVGDir;
 String strExportPairsCSV;
-String strExportRetrievalCSV;
 String strCompareMVS;
 int matchMode;
 unsigned importPosesMode;
@@ -163,7 +162,6 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("import-openmvg-dir", boost::program_options::value<std::string>(&OPT::strImportOpenMVGDir), "import OpenMVG features from directory (optional)")
 		("export-openmvg-dir", boost::program_options::value<std::string>(&OPT::strExportOpenMVGDir), "export OpenMVG features to directory (optional)")
 		("export-pairs-csv", boost::program_options::value<std::string>(&OPT::strExportPairsCSV), "export image pairs to CSV file (written right after matching, before reconstruction) (optional)")
-		("export-retrieval-csv", boost::program_options::value<std::string>(&OPT::strExportRetrievalCSV), "export the per-image global-descriptor retrieval rankings to CSV file (written right after matching, before reconstruction) (optional)")
 		("compare-mvs", boost::program_options::value<std::string>(&OPT::strCompareMVS), "compare reconstruction against ground-truth MVS file (optional)")
 		("filter-triplets", boost::program_options::value<bool>(&OPT::bFilterTriplets)->default_value(TripletFilterConfig().enabled), "disambiguate the matched view graph with the camera-triplet filter (Manam & Govindu, CVPR 2024): a pair is scored by how its coverage-discounted inlier count compares with the strongest pair of every triangle it belongs to; by default only pairs joining pieces the paper's threshold keeps apart go, and of those only what the graph can spare (see --triplet-keep-pairs), so a scene without repeated structure loses nothing; with --triplet-cut every pair below the threshold goes")
 		("triplet-cut", boost::program_options::value<bool>(&OPT::bTripletCut)->default_value(TripletFilterConfig().cut), "camera-triplet filter: the cutting rule -- every pair scoring below the threshold goes, the smaller face of a symmetric building is cut off (--triplet-second-face-score), otherwise below a threshold that shatters the graph the strictest one joining the pieces applies; unfolds a symmetric building, halves the registrations of an interior")
@@ -279,11 +277,6 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	Util::ensureValidFolderPath(OPT::strImportOpenMVGDir);
 	Util::ensureValidFolderPath(OPT::strExportOpenMVGDir);
 	Util::ensureValidPath(OPT::strExportPairsCSV);
-	Util::ensureValidPath(OPT::strExportRetrievalCSV);
-	if (!OPT::strExportRetrievalCSV.empty() && !OPT::bROMA2) {
-		LOG("error: --export-retrieval-csv needs --roma2 true");
-		return false;
-	}
 	Util::ensureValidPath(OPT::strCompareMVS);
 	if (OPT::fTripletMinScore < 0.f || OPT::fTripletMinScore > 1.f) {
 		LOG("error: --triplet-min-score is the paper's minimum edge score m, it must be in [0,1] (got %g)", OPT::fTripletMinScore);
@@ -328,7 +321,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		LOG("error: --roma2-match needs --roma2 true (the one pass is the ROMAv2 warp)");
 		return false;
 	}
-	if (OPT::bROMA2 && !OPT::bROMA2Match && OPT::matchMode != static_cast<int>(MatchConfig::RETRIEVAL) && OPT::strExportRetrievalCSV.empty()) {
+	if (OPT::bROMA2 && !OPT::bROMA2Match && OPT::matchMode != static_cast<int>(MatchConfig::RETRIEVAL)) {
 		// the match mode decides whether the scene needs describing (Scene::MatchPairs' own
 		// wantsDescriptors), and --roma2-match and --export-retrieval-csv are the only other
 		// consumers of the model -- with none of the three, --roma2 has nothing to load a model
@@ -419,7 +412,6 @@ int main(int argc, LPCTSTR* argv)
 	cfg.matchImagesOnly = OPT::matchImagesOnly;
 	// written by Scene::Reconstruct() right after pair matching (see ReconstructionConfig)
 	cfg.exportPairsCSV = OPT::strExportPairsCSV.empty() ? String() : MAKE_PATH_SAFE(OPT::strExportPairsCSV);
-	cfg.exportRetrievalCSV = OPT::strExportRetrievalCSV.empty() ? String() : MAKE_PATH_SAFE(OPT::strExportRetrievalCSV);
 	// applied by Scene::Reconstruct() right after those exports, so they still list every matched pair
 	cfg.tripletFilterCfg.enabled = OPT::bFilterTriplets;
 	cfg.tripletFilterCfg.cut = OPT::bTripletCut;
@@ -494,8 +486,8 @@ int main(int argc, LPCTSTR* argv)
 	// the run and lose the primary outputs (the scene and the MVS export below)
 	if (!OPT::strExportPoseQuality.empty() && !ExportPoseUncertaintyCSV(MAKE_PATH_SAFE(OPT::strExportPoseQuality), scene))
 		VERBOSE("warning: failed to export pose quality report to CSV file %s", OPT::strExportPoseQuality.c_str());
-	// note: --export-pairs-csv / --export-retrieval-csv are written by Scene::Reconstruct()
-	// right after pair matching (see ReconstructionConfig::exportPairsCSV/exportRetrievalCSV),
+	// note: --export-pairs-csv is written by Scene::Reconstruct()
+	// right after pair matching (see ReconstructionConfig::exportPairsCSV),
 	// not here, so they describe the matched scene rather than whatever reconstruction kept
 	// Export MVS scene
 	if (!OPT::strOutputFileNameMVS.empty()) {

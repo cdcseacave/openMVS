@@ -2289,7 +2289,6 @@ bool ROMA2GuidedMatchTest()
 	search.length = 2.f*(float)MAXF(width, height)/160.f;
 	search.halfWidth = 0.5f*(float)MAXF(width, height)/160.f;
 	search.sameFeatureDistance = 3.f;
-	search.outsideReference = GuidedSearch::OUTSIDE_ALL;
 
 	MatchConfig matchCfg;
 	matchCfg.descriptorsAreBinary = true;
@@ -2347,8 +2346,8 @@ bool ROMA2GuidedMatchTest()
 // The epipolar band of the guided sparse matching: the search region is a band along the epipolar
 // line of the query, centred on the warp's prediction, a rival off the line no longer takes the
 // disc from the true match, an ambiguous rival ON the line refuses the match, a same-feature
-// duplicate does not count as a rival, a winner alone in its band answers to the outside reference
-// only when asked, and the search falls back to the disc without a geometry or near the epipole.
+// duplicate does not count as a rival, every winner answers to the reference outside its band, and
+// the search falls back to the disc without a geometry or near the epipole.
 bool ROMA2GuidedBandTest()
 {
 	TD_TIMER_START();
@@ -2433,68 +2432,40 @@ bool ROMA2GuidedBandTest()
 	search.halfWidth = 0.5f*(float)MAXF(width, height)/160.f;
 	search.F = Fundamental(2000.f, 100.f); // the epipole far off the frame: every band is horizontal
 	search.sameFeatureDistance = 3.f;
-	search.outsideReference = GuidedSearch::OUTSIDE_LONE;
-
 	const auto Report = [](const char* what, const std::vector<DMatch>& matches) {
 		VERBOSE("ROMA2GuidedBandTest FAILED: %s (%u matches)", what, (unsigned)matches.size());
 		FOREACH(k, matches)
 			VERBOSE("ROMA2GuidedBandTest:   match %u: (%u,%u)", k, matches[k].queryIdx, matches[k].trainIdx);
 	};
 
-	// With the outside reference asked of lone winners only:
-	// query 0 matches its true keypoint: the closer impostor is off the line and never a candidate.
+	// query 0 is refused: its impostor sits off the line, never a candidate, but closer in appearance
+	// than its true match, and the reference outside the band sees it.
 	// query 1 is refused: its rival on the line is exactly as close, the match is ambiguous.
-	// query 2 matches, electing the smaller index of its two same-feature duplicates.
+	// query 2 matches, electing the smaller index of its two same-feature duplicates; its closest
+	// keypoint outside the band is random.
 	// query 3 is refused: alone in its band, it has to beat the far lookalike and cannot.
-	// query 4 matches: its rival is random, and its far lookalike is never looked at.
-	// query 5 matches: its rival is random.
+	// query 4 is refused: past its random rival, it has to beat the far lookalike and cannot.
+	// query 5 matches: its rival and its closest keypoint outside the band are random.
 	std::vector<DMatch> matches;
-	if (MatchFeaturesGuided(matcher, imgA, imgB, trackedB, trackStatus, search, 0, matches) != 4 ||
-		matches.size() != 4 ||
-		matches[0].queryIdx != 0 || matches[0].trainIdx != 0 ||
-		matches[1].queryIdx != 2 || matches[1].trainIdx != 5 ||
-		matches[2].queryIdx != 4 || matches[2].trainIdx != 9 ||
-		matches[3].queryIdx != 5 || matches[3].trainIdx != 12) {
-		Report("band, outside reference for lone winners: expected (0,0), (2,5), (4,9) and (5,12)", matches);
+	if (MatchFeaturesGuided(matcher, imgA, imgB, trackedB, trackStatus, search, 0, matches) != 2 ||
+		matches.size() != 2 ||
+		matches[0].queryIdx != 2 || matches[0].trainIdx != 5 ||
+		matches[1].queryIdx != 5 || matches[1].trainIdx != 12) {
+		Report("band: expected (2,5) and (5,12)", matches);
 		return false;
 	}
-
-	// with no outside reference a winner alone in its band stands too
-	search.outsideReference = GuidedSearch::OUTSIDE_NONE;
-	std::vector<DMatch> noneMatches;
-	if (MatchFeaturesGuided(matcher, imgA, imgB, trackedB, trackStatus, search, 0, noneMatches) != 5 ||
-		noneMatches.size() != 5 ||
-		noneMatches[2].queryIdx != 3 || noneMatches[2].trainIdx != 7) {
-		Report("band, no outside reference: expected (0,0), (2,5), (3,7), (4,9) and (5,12)", noneMatches);
-		return false;
-	}
-
-	// with the outside reference asked of every winner, a lookalike anywhere outside the band refuses
-	// the match whatever the rival inside it said: query 0 (its impostor is off the band, and closer),
-	// query 3 and query 4 go; query 2 and query 5, whose closest outside keypoint is random, stay
-	search.outsideReference = GuidedSearch::OUTSIDE_ALL;
-	std::vector<DMatch> allMatches;
-	if (MatchFeaturesGuided(matcher, imgA, imgB, trackedB, trackStatus, search, 0, allMatches) != 2 ||
-		allMatches.size() != 2 ||
-		allMatches[0].queryIdx != 2 || allMatches[0].trainIdx != 5 ||
-		allMatches[1].queryIdx != 5 || allMatches[1].trainIdx != 12) {
-		Report("band, outside reference for every winner: expected (2,5) and (5,12)", allMatches);
-		return false;
-	}
-	search.outsideReference = GuidedSearch::OUTSIDE_LONE;
 
 	// without a geometry the search is the disc: query 0's impostor is a candidate again and wins
 	// (its true match becomes the in-disc rival the impostor beats by the ratio); everything else is
 	// as with the band, the disc holding the same keypoints along the line
 	search.F.reset();
 	std::vector<DMatch> discMatches;
-	if (MatchFeaturesGuided(matcher, imgA, imgB, trackedB, trackStatus, search, 0, discMatches) != 4 ||
-		discMatches.size() != 4 ||
+	if (MatchFeaturesGuided(matcher, imgA, imgB, trackedB, trackStatus, search, 0, discMatches) != 3 ||
+		discMatches.size() != 3 ||
 		discMatches[0].queryIdx != 0 || discMatches[0].trainIdx != 1 ||
 		discMatches[1].queryIdx != 2 || discMatches[1].trainIdx != 5 ||
-		discMatches[2].queryIdx != 4 || discMatches[2].trainIdx != 9 ||
-		discMatches[3].queryIdx != 5 || discMatches[3].trainIdx != 12) {
-		Report("disc: expected (0,1), (2,5), (4,9) and (5,12)", discMatches);
+		discMatches[2].queryIdx != 5 || discMatches[2].trainIdx != 12) {
+		Report("disc: expected (0,1), (2,5) and (5,12)", discMatches);
 		return false;
 	}
 
@@ -2503,11 +2474,11 @@ bool ROMA2GuidedBandTest()
 	// (the impostor wins), and leaves the other queries' bands as they were
 	search.F = Fundamental(130.f, 100.f);
 	std::vector<DMatch> epipoleMatches;
-	if (MatchFeaturesGuided(matcher, imgA, imgB, trackedB, trackStatus, search, 0, epipoleMatches) != 4 ||
-		epipoleMatches.size() != 4 ||
+	if (MatchFeaturesGuided(matcher, imgA, imgB, trackedB, trackStatus, search, 0, epipoleMatches) != 3 ||
+		epipoleMatches.size() != 3 ||
 		epipoleMatches[0].queryIdx != 0 || epipoleMatches[0].trainIdx != 1 ||
 		epipoleMatches[1].queryIdx != 2 || epipoleMatches[1].trainIdx != 5) {
-		Report("near the epipole: expected (0,1), (2,5), (4,9) and (5,12)", epipoleMatches);
+		Report("near the epipole: expected (0,1), (2,5) and (5,12)", epipoleMatches);
 		return false;
 	}
 
@@ -2527,19 +2498,6 @@ bool ROMA2GuidedBandTest()
 			return false;
 		}
 
-	// the adaptive half-width: a multiple of the median epipolar residual of the verdict's inlier
-	// cells, never under the floor, never over the band's length; no residual at all gives the floor
-	if (!ISEQUAL(GuidedBandHalfWidth(std::vector<float>{1.f, 2.f, 3.f, 4.f, 100.f}, 3.f, 4.f, 8.f), 8.f) ||
-		!ISEQUAL(GuidedBandHalfWidth(std::vector<float>{0.5f, 0.5f, 0.5f}, 3.f, 4.f, 8.f), 4.f) ||
-		!ISEQUAL(GuidedBandHalfWidth(std::vector<float>{1.f, 2.f, 3.f, 4.f}, 2.f, 1.f, 8.f), 6.f) ||
-		!ISEQUAL(GuidedBandHalfWidth(std::vector<float>(), 3.f, 4.f, 8.f), 4.f)) {
-		VERBOSE("ROMA2GuidedBandTest FAILED: adaptive half-width %g %g %g %g, expected 8 4 6 4",
-			GuidedBandHalfWidth(std::vector<float>{1.f, 2.f, 3.f, 4.f, 100.f}, 3.f, 4.f, 8.f),
-			GuidedBandHalfWidth(std::vector<float>{0.5f, 0.5f, 0.5f}, 3.f, 4.f, 8.f),
-			GuidedBandHalfWidth(std::vector<float>{1.f, 2.f, 3.f, 4.f}, 2.f, 1.f, 8.f),
-			GuidedBandHalfWidth(std::vector<float>(), 3.f, 4.f, 8.f));
-		return false;
-	}
 
 	VERBOSE("ROMA2GuidedBandTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
@@ -2927,8 +2885,7 @@ bool ROMA2AssemblyTest()
 
 	// a verdict whose every fourth cell lands 3 px across the epipolar lines in B, the imprecision
 	// of a coarse warp: held to the pair's own epipolar bar (1.5 px here, denseEpipolarErrorFactor 1)
-	// the dense segment keeps only the exact cells, while on the half-cell bar (factor 0: 5 px on
-	// this 640 px frame and 64-cell grid) the displaced cells stay in it too
+	// the dense segment keeps only the exact cells
 	{
 		PairVerdict verdictOff(verdict);
 		const float acrossLen = SQRT(0.1f*0.1f + 0.4f*0.4f);
@@ -2957,18 +2914,18 @@ bool ROMA2AssemblyTest()
 			}
 			return true;
 		};
-		unsigned keptBar, keptBarDisplaced, keptCell, keptCellDisplaced;
-		if (!CountKept(1.f, keptBar, keptBarDisplaced) || !CountKept(0.f, keptCell, keptCellDisplaced)) {
+		unsigned keptBar, keptBarDisplaced;
+		if (!CountKept(1.f, keptBar, keptBarDisplaced)) {
 			VERBOSE("ROMA2AssemblyTest FAILED: the pair whose every fourth cell is displaced was not assembled");
 			return false;
 		}
-		if (keptBarDisplaced != 0 || keptCellDisplaced == 0 || keptBar >= keptCell) {
-			VERBOSE("ROMA2AssemblyTest FAILED: the dense segment keeps %u cells (%u displaced) on the epipolar bar and "
-				"%u (%u displaced) on the half-cell one", keptBar, keptBarDisplaced, keptCell, keptCellDisplaced);
+		if (keptBar == 0 || keptBarDisplaced != 0 || keptBar > verdictOff.inliersB.size() - verdictOff.inliersB.size()/4) {
+			VERBOSE("ROMA2AssemblyTest FAILED: the dense segment keeps %u cells (%u displaced) of %u on the epipolar bar",
+				keptBar, keptBarDisplaced, (unsigned)verdictOff.inliersB.size());
 			return false;
 		}
-		DEBUG("ROMA2AssemblyTest: the dense segment keeps %u of %u cells on the epipolar bar, none of the %u displaced "
-			"the half-cell bar keeps", keptBar, keptCell, keptCellDisplaced);
+		DEBUG("ROMA2AssemblyTest: the dense segment keeps %u of %u cells on the epipolar bar, none of the displaced",
+			keptBar, (unsigned)verdictOff.inliersB.size());
 	}
 
 	// a fill too small for a fit of its own (under the estimator's 8 correspondences): the verdict's
@@ -3894,11 +3851,9 @@ bool GlobalDescriptorsQueryTest()
 		return false;
 	}
 
-	// the rankings export and the .sfm round-trip of the descriptors
+	// the .sfm round-trip of the descriptors
 	ScopedTempDir tmp("GlobalDescriptorsQueryTest");
 	if (!tmp.IsValid())
-		return false;
-	if (!ExportRetrievalRankingsCSV(scene, tmp("retrieval.csv"), 3))
 		return false;
 	if (!scene.Save(tmp("scene.sfm")))
 		return false;
@@ -4460,7 +4415,7 @@ static ROMA2PairSummaries SummarizePairs(const Scene& scene)
 // is set, matching every candidate pair in the one dense pass INSTEAD of the descriptor batch --
 // the verdict on its bidirectional warp, the guided sparse matching of what the verdict admits,
 // the dense fill and the store. Checks the global retrieval descriptors the describe pass stores
-// and that EXHAUSTIVE matching still connects and geometrically verifies every pair, and hands the
+// and that RETRIEVAL matching (every pair, on four images) connects and geometrically verifies every pair, and hands the
 // matched pairs back so the caller can compare whole runs against each other. The caller varies
 // nThreads and slotBudget so that both the describe pass's prefetch ring (MINF(2*nThreads, 8)
 // buffers) and the dense pass's slot pool have to reuse a buffer/slot mid-pass at least once
@@ -4524,7 +4479,7 @@ static bool ROMA2ReconstructScene(Scene& scene, const String& setting, const Str
 	}
 
 	MatchConfig matchCfg;
-	matchCfg.mode = MatchConfig::EXHAUSTIVE;
+	matchCfg.mode = MatchConfig::RETRIEVAL; // the describe pass and the dense pass, one model load
 	matchCfg.DefaultsForFeatureType(featuresCfg.detectorType);
 	matchCfg.viewGraphCalibrationEnabled = bViewGraphCalibration;
 
@@ -4534,13 +4489,10 @@ static bool ROMA2ReconstructScene(Scene& scene, const String& setting, const Str
 	roma2Cfg.provider = provider;
 	roma2Cfg.useMatching = bUseMatching;
 	roma2Cfg.slotBudget = slotBudget;
-	// MatchPairs now runs the describe pass only for RETRIEVAL mode or an actual
-	// --export-retrieval-csv request (the match mode decides the describe pass), not merely
-	// because ROMA2 is enabled; this test exercises both of ROMA2's passes together in one
-	// model load regardless of EXHAUSTIVE mode below, so it forces the describe pass the same
-	// way --export-retrieval-csv would -- MatchPairs only checks this path for emptiness, it
-	// is never opened here
-	if (!scene.MatchPairs(matchCfg, roma2Cfg, ViewGraphCalibratorConfig(), String(_T("unused.csv")))) {
+	// MatchPairs runs the describe pass for RETRIEVAL mode alone (the match mode decides it), not
+	// merely because ROMA2 is enabled; on four images the retrieval proposes every pair, so this
+	// test exercises both of ROMA2's passes together in one model load over the whole graph
+	if (!scene.MatchPairs(matchCfg, roma2Cfg, ViewGraphCalibratorConfig())) {
 		VERBOSE("ROMA2ReconstructTest FAILED: MatchPairs failed");
 		return false;
 	}
@@ -4622,7 +4574,7 @@ static bool ROMA2ReconstructScene(Scene& scene, const String& setting, const Str
 }
 #endif // _USE_ONNXRUNTIME
 
-// ROMA2 reconstruct test: runs the whole import/AKAZE/EXHAUSTIVE pipeline of ReconstructTest
+// ROMA2 reconstruct test: runs the whole import/AKAZE/RETRIEVAL pipeline of ReconstructTest
 // with the in-process ROMAv2 model attached, and checks both of its passes -- the describe pass
 // (per-image global retrieval descriptors, 2048-D, the graph's own on-device pooling) and the ONE
 // PASS that replaces the descriptor batch outright when --roma2-match is on: every candidate pair
@@ -9395,75 +9347,6 @@ bool ResectionInlierBarTest()
 	return true;
 }
 
-bool ReconstructResumeTest()
-{
-	TD_TIMER_START();
-	const ScopedTempDir tmpDir(_T("ReconstructResumeTest"));
-	if (!tmpDir.IsValid())
-		return false;
-	std::mt19937 rng(20260914);
-
-	// The scene the hierarchical merge leaves behind: four posed images sharing 150 tracks, and
-	// three images without a pose, each observing 120 tracks together with the two images before
-	// it, so each can be resected once those are posed. Matched and featured, but not calibrated.
-	Scene scene(2);
-	BuildResectionArc(scene, 7);
-	std::vector<Pose3D> gtPoses;
-	for (const Image& img : scene.images)
-		gtPoses.push_back(static_cast<const Pose3D&>(img));
-	AddResectionTracks(scene, {0, 1, 2, 3}, 150, rng);
-	AddResectionTracks(scene, {2, 3, 4}, 120, rng);
-	AddResectionTracks(scene, {3, 4, 5}, 120, rng);
-	AddResectionTracks(scene, {4, 5, 6}, 120, rng);
-	for (IIndex i = 0; i + 1 < 7; ++i)
-		AddResectionPair(scene, i, i + 1, 300);
-	for (IIndex i = 0; i + 2 < 7; ++i)
-		AddResectionPair(scene, i, i + 2, 200);
-	for (IIndex imageID = 4; imageID < 7; ++imageID)
-		scene.images[imageID].InvalidatePose();
-	scene.status.nCalibratedImages = 4;
-	scene.status.nState.set(Scene::Status::STATE::FEATURES_EXTRACTED);
-	scene.status.nState.set(Scene::Status::STATE::MATCHED);
-	TriangulateTracks(scene, false, 4.f, 1.f);
-	const String sfmPath = tmpDir(_T("post_merge.sfm"));
-	if (!scene.Save(sfmPath)) {
-		VERBOSE("ReconstructResumeTest FAILED: cannot save the partly reconstructed scene '%s'", sfmPath.c_str());
-		return false;
-	}
-
-	// Given back as the source, the saved scene is completed from where it stopped: the four poses
-	// it carries are kept, and the three images without one are registered against them
-	Scene resumed(2);
-	ReconstructionConfig cfg;
-	if (!resumed.Reconstruct(sfmPath, cfg)) {
-		VERBOSE("ReconstructResumeTest FAILED: the reconstruction of the partly reconstructed scene failed");
-		return false;
-	}
-	if (!resumed.status.nState.isSet(Scene::Status::STATE::CALIBRATED) || resumed.status.nCalibratedImages != 7) {
-		VERBOSE("ReconstructResumeTest FAILED: %u/7 images calibrated, calibrated state %s",
-			resumed.status.nCalibratedImages, resumed.status.nState.isSet(Scene::Status::STATE::CALIBRATED) ? "set" : "not set");
-		return false;
-	}
-	FOREACH(imageID, resumed.images) {
-		const Image& img = resumed.images[imageID];
-		if (!img.HasPose()) {
-			VERBOSE("ReconstructResumeTest FAILED: image %u has no pose after the resumed reconstruction", imageID);
-			return false;
-		}
-		// the saved poses fix the frame, so every pose is comparable to the truth directly
-		const double rotationError = RotationErrorDeg(img.R, gtPoses[imageID].R);
-		const double centreError = norm(img.C - gtPoses[imageID].C) / RESECTION_ARC_EXTENT;
-		if (rotationError > 0.1 || centreError > 0.01) {
-			VERBOSE("ReconstructResumeTest FAILED: image %u is %.3f degrees and %.2f%% of the scene extent from its "
-				"true pose, so the saved poses were not kept", imageID, rotationError, centreError * 100.0);
-			return false;
-		}
-	}
-
-	VERBOSE("ReconstructResumeTest PASSED: a partly reconstructed scene given back as the source keeps its poses "
-		"and registers the rest of its images (%s)", TD_TIMER_GET_FMT().c_str());
-	return true;
-}
 
 bool DenseReprojectionBarTest()
 {

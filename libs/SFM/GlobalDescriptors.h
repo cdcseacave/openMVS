@@ -73,14 +73,6 @@ private:
 };
 /*----------------------------------------------------------------*/
 
-// Export the global-descriptor retrieval rankings of a scene to a CSV file:
-// header `idxA,idxB,similarity,imageA,imageB`, one row per retrieved candidate, ordered by
-// increasing query image, then by decreasing similarity, then by increasing candidate image;
-// maxRank is the number of candidates kept per image.
-// Returns false if the index cannot be built or the file cannot be written.
-SFM_API bool ExportRetrievalRankingsCSV(const Scene& scene, const String& fileName, unsigned maxRank = 50);
-/*----------------------------------------------------------------*/
-
 } // namespace SFM
 
 #endif // _SFM_GLOBALDESCRIPTORS_H_

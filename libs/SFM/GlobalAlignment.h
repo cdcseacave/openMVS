@@ -113,10 +113,9 @@ struct SFM_API CameraVote
 {
 	IIndex image{NO_ID};
 	unsigned correspondences{0}, inliers{0};
-	// how far the camera's correspondences sit from the transform beyond the inlier count: the
-	// median of their reprojection errors (pixels) and how many fall within kLooseSeamFactor times
-	// the bar -- a camera merely imprecise reads differently here from one placed elsewhere
-	float medianError{0.f};
+	// how far the camera's correspondences sit from the transform beyond the inlier count: how
+	// many fall within kLooseSeamFactor times the bar -- a camera merely imprecise reads differently
+	// here from one placed elsewhere
 	unsigned looseInliers{0};
 	float coverage{0.f};
 	int8_t vote{0}; // +1 support, -1 contradiction, 0 abstain
