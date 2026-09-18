@@ -235,13 +235,13 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 	pose.R = camPose.R();
 	pose.SetT(camPose.t);
 
-	// A weakly supported pose is cross-checked against the image's verified pairs to already
-	// registered images; a well supported one is trusted over pairs that may themselves be wrong.
-	// The witness is the quorum of those pairs -- the largest group agreeing on a rotation -- not
-	// the strongest one of them, which speaks falsely whenever that single neighbor is itself
-	// misplaced. When the pairs contradict one another they are no witness at all, so the pose is
-	// left to the other acceptance rules and the disagreement is reported.
-	if (inlierRatio < config.wellSupportedInlierRatio &&
+	// Every pose is cross-checked against the image's verified pairs to already registered images
+	// unless its inlier share is above wellSupportedInlierRatio, which the default (1) never
+	// allows. The witness is the quorum of those pairs -- the largest group agreeing on a
+	// rotation -- not the strongest one of them, which speaks falsely whenever that single
+	// neighbor is itself misplaced. When the pairs contradict one another they are no witness at
+	// all, so the pose is left to the other acceptance rules and the disagreement is reported.
+	if (inlierRatio <= config.wellSupportedInlierRatio &&
 		(config.minRegisteredEvidence > 0.f || config.maxRelativeRotationError > 0.f || config.maxLinkDirectionError > 0.f)) {
 		// registered where the evidence is: an image most of whose pair weight lies in images the
 		// model does not hold yet is registered by the few pairs it does hold, and its community then

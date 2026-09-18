@@ -52,13 +52,13 @@ struct SFM_API ResectionConfig
 	                                    // largest group of those pairs agreeing on a rotation within this same angle,
 	                                    // so that one pair among several cannot speak for the image;
 	                                    // checked for every pose unless wellSupportedInlierRatio is lowered, which
-	                                    // exempts a pose whose inlier share reaches it, trusting it over its pairs.
+	                                    // exempts a pose whose inlier share is above it, trusting it over its pairs.
 	                                    // Also the angle within which the relative-pose fallback groups an image's
 	                                    // links (0 = disabled)
-	float wellSupportedInlierRatio{1.f}; // Inlier share from which a pose would be trusted over its verified pairs; 1 = no
-	                                    // pose is. On alameda a 54% share (87/162) put a pose 1.9 degrees off, taking the
-	                                    // 15 images it seeded with it; every right registration passes the three checks
-	                                    // (quorum within 7.7 of the 15-degree bar; one direction deferral of 1538).
+	float wellSupportedInlierRatio{1.f}; // Inlier share above which a pose is trusted over its verified pairs; 1 = no pose
+	                                    // is. On alameda a 54% share (87/162) put a pose 1.9 degrees off, taking the 15
+	                                    // images it seeded with it; every right registration passes the three checks
+	                                    // (quorum within 7.7 of the 15-degree bar; one direction refusal of 1538).
 	float maxLinkDirectionError{3.f};   // Maximum angle (degrees) between the baseline direction a verified pair to a
 	                                    // registered image predicts and the one the estimated centre makes with that
 	                                    // neighbour, as seen from the structure the pair triangulates: a pair of
