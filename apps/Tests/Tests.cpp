@@ -191,6 +191,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::PairsWeightingTest())
 				return false;
+			if (!SFM::PairsWeightingDenseCapTest())
+				return false;
 			if (!SFM::ViewGraphCalibratorTest())
 				return false;
 			if (!SFM::BAPinholeReprojectionJacobianTest())

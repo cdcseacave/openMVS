@@ -10293,6 +10293,65 @@ bool PairsWeightingTest()
 }
 
 
+// A pair's evidence counts its dense inliers only up to the cap: with 10 sparse and 400 dense
+// inliers the pair is 10 + 0.25*100 = 35 weighted inliers at a cap of 100, and 110 with the cap
+// lifted, so a flood of dense matches over a wide baseline cannot outweigh the descriptor evidence
+// of the pairs around it, while a dense-only pair keeps 25 weighted inliers of evidence
+bool PairsWeightingDenseCapTest()
+{
+	TD_TIMER_START();
+	constexpr unsigned NUM_SPARSE = 10, NUM_DENSE = 400;
+
+	const auto BuildScene = [](Scene& scene) {
+		scene.cameras.emplace_back(new PinholeCamera(cv::Size(100, 100), REAL(100), REAL(100), REAL(50), REAL(50)));
+		for (IIndex k = 0; k < 2; ++k) {
+			Image& im = scene.images.emplace_back(k, String::FormatString("%u.jpg", k));
+			im.cameraID = 0;
+			im.pCamera = scene.cameras[0];
+			// keypoints spread over the frame so the pair covers it (the weighting reads the pair's
+			// partition, not the images' described boundary, so none is set here)
+			for (unsigned i = 0; i < NUM_SPARSE + NUM_DENSE; ++i)
+				im.keypoints.emplace_back(cv::Point2f(5.f + (i % 20) * 4.5f, 5.f + ((i / 20) % 20) * 4.5f), 3.f);
+		}
+		ImagePair& pair = scene.pairs.emplace_back(0u, 1u);
+		for (uint32_t i = 0; i < NUM_SPARSE + NUM_DENSE; ++i)
+			pair.matches.emplace_back(i, i);
+		pair.numFilteredInliers = NUM_SPARSE;
+		pair.numDenseInliers = NUM_DENSE;
+		pair.meanRayAngle = (float)D2R(15.f); // the angle the baseline weight rates best
+	};
+
+	struct Case { unsigned cap; unsigned expectedWeightedInliers; };
+	const Case cases[] = {
+		{ 100u, NUM_SPARSE + 25u },                      // 0.25 * min(400, 100)
+		{ 1000u, NUM_SPARSE + NUM_DENSE / 4u },          // the cap above the count: every dense inlier counts
+	};
+	float compositeAtCap[2];
+	for (unsigned c = 0; c < 2; ++c) {
+		Scene scene;
+		BuildScene(scene);
+		PairsWeightingConfig cfg;
+		cfg.denseInlierCap = cases[c].cap;
+		ComputePairsWeights(scene, cfg);
+		const ImagePair& pair = scene.pairs[0];
+		if (pair.GetNumWeightedInliers() != cases[c].expectedWeightedInliers) {
+			VERBOSE("PairsWeightingDenseCapTest FAILED: %u sparse + %u dense inliers weigh %u at a dense cap of %u, expected %u",
+				NUM_SPARSE, NUM_DENSE, pair.GetNumWeightedInliers(), cases[c].cap, cases[c].expectedWeightedInliers);
+			return false;
+		}
+		compositeAtCap[c] = pair.GetCompositeWeight();
+	}
+	if (!(compositeAtCap[0] > 0.f && compositeAtCap[0] < compositeAtCap[1])) {
+		VERBOSE("PairsWeightingDenseCapTest FAILED: the composite weight is %.2f capped and %.2f uncapped; the capped "
+			"pair must stay valid and weigh less", compositeAtCap[0], compositeAtCap[1]);
+		return false;
+	}
+
+	VERBOSE("PairsWeightingDenseCapTest PASSED: the dense inliers count as evidence up to the cap (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+
 // View graph calibrator test: Refine focal length using view graph optimization
 bool ViewGraphCalibratorTest()
 {

@@ -69,6 +69,16 @@ struct SFM_API PairsWeightingConfig
     // because no measurement has ever asked for it, and is deliberately held fixed at
     // DENSE_OBSERVATION_WEIGHT while the bundle adjustment weight moves.
     float denseObservationWeight = (float)DENSE_OBSERVATION_WEIGHT;
+    // How many DENSE inliers of a pair count as evidence at all: the dense fill samples a warp, so
+    // a wide, imprecise overlap can yield hundreds of dense matches over a handful of descriptor
+    // ones, and uncapped they would let such a pair outweigh, in the clustering and in every view
+    // graph decision, the pairs around it that descriptors verified. Capped, a dense-only pair
+    // keeps denseObservationWeight * denseInlierCap weighted inliers -- enough to weigh in the
+    // tens among dense-only neighbours at a normal ray angle, so a textureless interior that only
+    // dense matches link stays linked -- while a pair with descriptor evidence is ranked by it.
+    // The value comes from the 2026-09-18 study of an outdoor (alameda) and an indoor
+    // (OfficeBadLoop) matched scene (docs/design/ExperimentRecord.md).
+    unsigned denseInlierCap = 100;
 };
 
 // The fraction of a gridSize x gridSize grid over the image that the pair's track-forming matches

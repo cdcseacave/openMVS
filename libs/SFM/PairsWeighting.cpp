@@ -115,8 +115,10 @@ void SFM::ComputePairsWeights(Scene& scene, const PairsWeightingConfig& config, 
 		// of GetCompositeWeight() downstream are exactly its readers. A pair with no matches at all
 		// carries no partition to read a dense count out of (the weight below is 0 for it anyway),
 		// so it keeps the "never computed" value and the accessor answers from its counts alone.
+		// The dense count enters discounted and capped: past denseInlierCap, further warp samples
+		// add no more evidence.
 		pair.weightedInliers = pair.HasMatches() ?
-			(float)pair.GetNumFilteredInliers() + config.denseObservationWeight*(float)pair.GetNumDenseInliers() : -1.f;
+			(float)pair.GetNumFilteredInliers() + config.denseObservationWeight*(float)MINF(pair.GetNumDenseInliers(), config.denseInlierCap) : -1.f;
 		pair.weightSpatial = ComputeIntrinsicWeight(pair, scene.images[pair.ID1], scene.images[pair.ID2], config.gridSize, config.minInliers);
 		// A pair whose evidence ROUNDS AWAY carries none: with a small enough minInliers the floor
 		// above admits a pair of two dense matches, whose discounted evidence is 0.25*2 = 0.5 -> 0,

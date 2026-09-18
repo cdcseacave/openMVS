@@ -366,6 +366,11 @@ bool TranslationEstimatorTest();
 // Pairs weighting test
 bool PairsWeightingTest();
 
+// A pair's dense inliers count as evidence only up to PairsWeightingConfig::denseInlierCap: the
+// descriptor matches of the pairs around it stay the heavier evidence however many warp samples a
+// wide, imprecise overlap yields, while a dense-only pair keeps a quarter of the cap as evidence
+bool PairsWeightingDenseCapTest();
+
 // PairsMatcher sequential mode test
 bool PairMatcherTest();
 
