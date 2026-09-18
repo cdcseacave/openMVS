@@ -398,6 +398,12 @@ bool SceneClusterMemoryProtocolTest();
 bool SceneClusterIDRemappingTest();
 bool SceneClusterSmallClusterRescueTest();
 
+// A community under the floor is held to the same coupling test as an established cluster: the
+// greedy merge does not absorb it over an interface carrying less than minClusterCoupling of its
+// own internal weight, and the small-cluster pass then places it with the neighbour it shares the
+// most weight with (ClusterConfig::minClusterCoupling)
+bool SceneClusterSubFloorCouplingTest();
+
 // Phase 3: Global Alignment tests
 bool GlobalAlignmentBuildGlobalToLocalMapTest();
 bool GlobalAlignmentRotationAveragingExtendedTest();

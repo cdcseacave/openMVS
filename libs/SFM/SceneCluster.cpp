@@ -392,8 +392,14 @@ std::vector<Scene> SceneCluster::SplitSceneAggregativeClustering(std::vector<IIn
 // sizes, so many individually weak pairs eventually top the queue even when they
 // represent only a few percent of either side's internal cohesion; reconstructing
 // across such a sparse interface lets scale drift accumulate unobserved, hence
-// mature clusters are only merged when the interface carries at least
-// minClusterCoupling of the weaker side's internal weight. Any thin seam that still
+// every merge is held to at least minClusterCoupling of the weaker side's internal
+// weight, whatever either side's size. The target-size rule below has one
+// exception: a cluster already at the target still takes in a cluster under the
+// floor, because that cluster has to go somewhere; without the same coupling bar
+// on that merge, the community would be handed to whichever cluster with room
+// happened to top the queue, over an interface far thinner than its own cohesion —
+// the coupling test has to hold for exactly the merge the size rule exempts. A
+// singleton has no internal weight, so it always passes. Any thin seam that still
 // slips through — including one that only emerges as a cluster accretes from both
 // sides — is caught after the fact by RefineClustersSplitThinWaist. A refusal is
 // not permanent: the edge is re-pushed whenever either side changes.
@@ -459,10 +465,14 @@ void SceneCluster::GreedyMergeClusters(std::vector<IIndexArr>& clusters, bool pe
 		if (clusters[u].size() + clusters[v].size() > config.targetViewsPerCluster &&
 			(MINF(clusters[u].size(), clusters[v].size()) >= config.minViewsPerCluster ||
 			 MAXF(clusters[u].size(), clusters[v].size()) > config.targetViewsPerCluster)) continue;
+		// the coupling test holds for every merge, a community under the floor included: it is
+		// held to its own cohesion, so a singleton (no internal weight) joins freely while a tight
+		// small community is not absorbed over a thin interface by whichever cluster happens to
+		// have room, and MergeSmallClusters later places it with the neighbour it shares the most
+		// weight with
 		if (config.minClusterCoupling > 0 &&
-			MINF(clusters[u].size(), clusters[v].size()) >= config.minViewsPerCluster &&
 			(float)e.weight < config.minClusterCoupling * (float)MINF(wint[u], wint[v]))
-			continue; // two established communities joined only by a sparse interface
+			continue; // two communities joined only by a sparse interface
 
 		for (IIndex node : clusters[v]) {
 			nodeToCluster[node] = u;

@@ -55,8 +55,9 @@ class SFM_API Scene;
  *      updating edge weights between the merged cluster and its neighbors.
  *    - A cluster stops growing at targetViewsPerCluster, and takes in more only
  *      to absorb a cluster under minViewsPerCluster, never past maxViewsPerCluster.
- *    - Two clusters already past the floor do not merge over an interface thinner
- *      than minClusterCoupling of the weaker side's own internal weight.
+ *    - Two clusters do not merge over an interface thinner than minClusterCoupling
+ *      of the weaker side's own internal weight, whatever their sizes; a singleton
+ *      has none and joins freely.
  *    This greedy approach produces clusters that respect the covisibility
  *    structure: images that see many of the same features end up together,
  *    ensuring each sub-scene has strong internal connectivity.
@@ -142,7 +143,7 @@ struct SFM_API ClusterConfig
 	unsigned minSeamCameraTracks{30};    // seam-usable tracks one camera needs to count (the merge's vote floor)
 	float minPairWeight{3.f};            // minimum composite weight for pair edge
 	TrackConflictConfig trackConflictCfg; // how a component holding one image twice is settled when the tracks are built here
-	float minClusterCoupling{0.05f};     // refuse a merge whose interface weight falls below this fraction of the weaker side's internal weight, and split any final cluster with such an internal seam (0 = disabled)
+	float minClusterCoupling{0.05f};     // refuse a merge whose interface weight falls below this fraction of the weaker side's internal weight, whatever either side's size, and split any final cluster with such an internal seam (0 = disabled)
 	bool useCommunityDetection{false};   // partition by community detection + capacity packing instead of pure aggregative clustering
 
 	// The ceiling and the two sizes that follow from it: a cluster aims at two thirds of the

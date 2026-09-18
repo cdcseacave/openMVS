@@ -11400,6 +11400,83 @@ bool SceneClusterSmallClusterRescueTest()
 		(unsigned)subScenes.size(), TD_TIMER_GET_FMT().c_str());
 	return true;
 }
+
+// Two established clusters and a small, cohesive community: A holds 10 images at the target and B
+// 11, one past it; W's 4 images are joined to one another by 6 pairs of weight 50, to B by four
+// pairs of weight 20 and to A by a single pair of weight 4. The greedy merge cannot give W to B
+// (B is past the target), and used to give it to A over that one pair because the coupling test
+// skipped a side under the floor. The interface to A is 40 in the graph's integer weights against
+// W's own 3000, far under minClusterCoupling, so W stays apart and the small-cluster pass then
+// puts it with B, the neighbour it shares the most weight with.
+bool SceneClusterSubFloorCouplingTest()
+{
+	TD_TIMER_START();
+
+	Scene scene;
+	SceneConfig cfg;
+	cfg.numImages = 25;
+	cfg.numPoints = 0;
+	cfg.generatePairs = false;
+	cfg.generateDescriptors = false;
+	cfg.poseMode = SceneConfig::CIRCULAR_ARRANGEMENT;
+	cfg.rotationAngleStep = 360.0 / 25;
+	GenerateTestScene(scene, cfg);
+	scene.pairs.clear();
+	scene.tracks.clear();
+
+	// a pair whose composite weight is exactly the given number: unit quality factors, triplet 0.5
+	const auto AddPair = [&scene](IIndex a, IIndex b, float weight) {
+		ImagePair pair(a, b);
+		pair.weightedInliers = weight;
+		pair.weightSpatial = 1.f;
+		pair.weightConnectivity = 1.f;
+		pair.weightTriplet = 0.5f;
+		scene.pairs.emplace_back(std::move(pair));
+	};
+	// A = [0,10): a hub at 0 and a chain, so the greedy assembles it one image at a time
+	for (IIndex k = 1; k < 10; ++k) AddPair(0, k, 200.f);
+	for (IIndex k = 1; k + 1 < 10; ++k) AddPair(k, k + 1, 100.f);
+	// B = [10,21): the same shape around a hub at 10, one image more than the target
+	for (IIndex k = 11; k < 21; ++k) AddPair(10, k, 200.f);
+	for (IIndex k = 11; k + 1 < 21; ++k) AddPair(k, k + 1, 100.f);
+	// W = [21,25): every pair among them
+	for (IIndex a = 21; a < 25; ++a) for (IIndex b = a + 1; b < 25; ++b) AddPair(a, b, 50.f);
+	// W's interfaces
+	for (IIndex k = 0; k < 4; ++k) AddPair(IIndex(21 + k), IIndex(10 + k), 20.f);
+	AddPair(21, 9, 4.f);
+
+	ClusterConfig clusterCfg;
+	clusterCfg.maxViewsPerCluster = 15;
+	clusterCfg.targetViewsPerCluster = 10;
+	clusterCfg.minViewsPerCluster = 5;
+	clusterCfg.maxOverCapacity = 5;
+	clusterCfg.minClusterDegree = 0; // no tracks here, so the seam rules would merge every leaf away
+
+	SceneCluster cluster(scene, clusterCfg);
+	std::vector<IIndexArr> localToGlobals;
+	std::vector<Scene> subScenes = cluster.SplitScene(&localToGlobals);
+
+	std::vector<int> subSceneOf(25, -1);
+	FOREACH(s, localToGlobals)
+		for (IIndex gid : localToGlobals[s])
+			subSceneOf[gid] = (int)s;
+	for (IIndex w = 21; w < 25; ++w) {
+		if (subSceneOf[w] < 0 || subSceneOf[w] != subSceneOf[10] || subSceneOf[w] == subSceneOf[0]) {
+			VERBOSE("SceneClusterSubFloorCouplingTest FAILED: image %u landed in sub-scene %d while B's hub is in %d and A's in %d; "
+				"a community joined to a cluster by a pair carrying a fraction of its own cohesion must not be absorbed by it",
+				w, subSceneOf[w], subSceneOf[10], subSceneOf[0]);
+			return false;
+		}
+	}
+	if (subSceneOf[0] == subSceneOf[10]) {
+		VERBOSE("SceneClusterSubFloorCouplingTest FAILED: A and B ended in one sub-scene, so the fixture does not exercise the merge");
+		return false;
+	}
+
+	VERBOSE("SceneClusterSubFloorCouplingTest PASSED: the community under the floor went to the cluster it shares its weight with, "
+		"not to the one a thin pair joined it to (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
 /*----------------------------------------------------------------*/
 
 
