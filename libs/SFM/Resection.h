@@ -51,9 +51,21 @@ struct SFM_API ResectionConfig
 	                                    // quorum of the verified pairs to already registered images composes -- the
 	                                    // largest group of those pairs agreeing on a rotation within this same angle,
 	                                    // so that one pair among several cannot speak for the image;
-	                                    // checked only for a pose whose inlier share is below half, so that a well
-	                                    // supported pose overrules pairs that may themselves be wrong. Also the angle
-	                                    // within which the relative-pose fallback groups an image's links (0 = disabled)
+	                                    // checked only for a pose whose inlier share is below wellSupportedInlierRatio,
+	                                    // so that a well supported pose overrules pairs that may themselves be wrong.
+	                                    // Also the angle within which the relative-pose fallback groups an image's
+	                                    // links (0 = disabled)
+	float wellSupportedInlierRatio{0.5f}; // Inlier share from which a pose is trusted over the image's verified pairs to
+	                                    // registered images: the link checks below (rotation, direction, evidence
+	                                    // share) apply only under it, since the pairs may themselves be wrong
+	float maxLinkDirectionError{5.f};   // Maximum angle (degrees) between the baseline direction a verified pair to a
+	                                    // registered image predicts and the one the estimated centre makes with that
+	                                    // neighbour, as seen from the structure the pair triangulates: a pair of
+	                                    // nearly parallel rays forgives a wide direction error and a near-duplicate
+	                                    // pair (rays under 2 degrees) fixes no direction, since its translation is
+	                                    // unreliable. A weakly supported pose is refused when the quorum links that
+	                                    // contradict the direction outweigh the ones that agree (0 = disabled). The
+	                                    // same angle the image filter uses as maxCorroborationAngle
 	bool relativePoseFallback{true};    // Register one image from its relative poses to registered images when no image
 	                                    // reaches minCorrespondences, or every candidate that did failed to register,
 	                                    // instead of stopping there

@@ -229,13 +229,20 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 		return {0, n, numDescribed};
 	}
 
-	// Cross-check the estimated rotation against the one the image's verified pairs to already
-	// registered images compose: a weakly supported pose that contradicts them is a misregistration,
-	// while a well supported one is trusted over pairs that may themselves be wrong. The witness is
-	// the quorum of those pairs, not the strongest one of them, which speaks falsely whenever that
-	// single neighbor is itself misplaced. When the pairs contradict one another they are no witness
-	// at all, so the pose is left to the other acceptance rules and the disagreement is reported.
-	if (config.maxRelativeRotationError > 0.f && inlierRatio < 0.5f) {
+	// the pose the estimator found, in the model's own frame: the checks below weigh it against the
+	// image's links before the image is given it
+	Pose3D pose;
+	pose.R = camPose.R();
+	pose.SetT(camPose.t);
+
+	// A weakly supported pose is cross-checked against the image's verified pairs to already
+	// registered images; a well supported one is trusted over pairs that may themselves be wrong.
+	// The witness is the quorum of those pairs -- the largest group agreeing on a rotation -- not
+	// the strongest one of them, which speaks falsely whenever that single neighbor is itself
+	// misplaced. When the pairs contradict one another they are no witness at all, so the pose is
+	// left to the other acceptance rules and the disagreement is reported.
+	if (inlierRatio < config.wellSupportedInlierRatio &&
+		(config.maxRelativeRotationError > 0.f || config.maxLinkDirectionError > 0.f)) {
 		std::vector<PoseLink> links;
 		CollectPoseLinks(scene, imageID, links);
 		const PoseLinkQuorum quorum = ComputePoseLinkQuorum(links, config.maxRelativeRotationError, NeighborPose(scene));
@@ -243,21 +250,40 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 			DEBUG("the pairs of image %u to its registered neighbours disagree by up to %.1f degrees",
 				imageID, quorum.maxDisagreement);
 		} else if (!quorum.links.empty()) {
-			RMatrix poseR;
-			poseR = camPose.R();
-			const double angle = R2D(ACOS(ComputeAngle(poseR, quorum.R)));
-			if (angle > config.maxRelativeRotationError) {
-				DEBUG("warning: rejected the pose of image %u: %u/%u inliers (%.1f%%) and %.1f degrees away from the "
-					"rotation its quorum of %u of %u pairs composes (strongest to image %u)", imageID, numInliers, n,
-					inlierRatio * 100.f, angle, (unsigned)quorum.links.size(), (unsigned)links.size(),
-					quorum.links.front().neighborID);
-				return {0, n, numDescribed};
+			// the rotation the quorum composes
+			if (config.maxRelativeRotationError > 0.f) {
+				const double angle = R2D(ACOS(ComputeAngle(pose.R, quorum.R)));
+				if (angle > config.maxRelativeRotationError) {
+					DEBUG("warning: rejected the pose of image %u: %u/%u inliers (%.1f%%) and %.1f degrees away from the "
+						"rotation its quorum of %u of %u pairs composes (strongest to image %u)", imageID, numInliers, n,
+						inlierRatio * 100.f, angle, (unsigned)quorum.links.size(), (unsigned)links.size(),
+						quorum.links.front().neighborID);
+					return {0, n, numDescribed};
+				}
+			}
+			// the baseline direction each quorum link predicts: each is held to the tolerance its own
+			// ray angle allows, and the pose is refused only when the links that contradict it
+			// outweigh the ones that agree, so one misplaced neighbour cannot refuse a right pose
+			if (config.maxLinkDirectionError > 0.f) {
+				unsigned agreeing = 0, disagreeing = 0;
+				for (const PoseLink& link : quorum.links) {
+					const PairDisagreement d = link.Measure(pose, scene.images[link.neighborID]);
+					if (!d.HasDirection())
+						continue;
+					(d.direction <= d.DirectionTolerance(config.maxLinkDirectionError) ? agreeing : disagreeing) += link.numInliers;
+				}
+				if (disagreeing > agreeing) {
+					DEBUG("warning: rejected the pose of image %u: %u/%u inliers (%.1f%%) and its centre lies in a direction "
+						"the pairs carrying %u of its quorum's %u weighted inliers contradict (strongest to image %u)",
+						imageID, numInliers, n, inlierRatio * 100.f, disagreeing, agreeing + disagreeing,
+						quorum.links.front().neighborID);
+					return {0, n, numDescribed};
+				}
 			}
 		}
 	}
 
-	img.R = camPose.R();
-	img.SetT(camPose.t);
+	static_cast<Pose3D&>(img) = pose;
 	return {numInliers, n, numDescribed};
 }
 

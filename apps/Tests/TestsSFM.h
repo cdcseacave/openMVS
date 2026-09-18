@@ -321,8 +321,17 @@ bool ResectionRelativePoseFallbackTest();
 // correspondences agree with it (ResectionConfig::minInlierRatio / minInliersAbsolute), and a
 // weakly supported one also agrees with the rotation the quorum of its verified pairs to registered
 // images composes -- the largest group of them agreeing on one rotation, so that one pair among
-// several cannot speak for the image (ResectionConfig::maxRelativeRotationError).
+// several cannot speak for the image (ResectionConfig::maxRelativeRotationError) -- and with the
+// baseline direction that quorum predicts (ResectionConfig::maxLinkDirectionError); each of the
+// three alone keeps this misregistration out, and with all three off it enters the model.
 bool ResectionAcceptanceTest();
+
+// A weakly supported pose must also agree with the baseline direction its verified pairs to
+// registered images predict: it is refused when the quorum links that contradict the direction
+// carry more weighted inliers than the ones that agree (ResectionConfig::maxLinkDirectionError),
+// each link's tolerance growing as its ray angle shrinks, so a near-duplicate pair fixes no
+// direction and a small-baseline pair forgives a wide error (PoseLink.h PairDisagreement)
+bool ResectionLinkDirectionTest();
 
 // The resection's inlier bar admits a correspondence measured with the precision of a warp-sampled
 // (dense) keypoint on a full-resolution image, several pixels off its projection, and not only one

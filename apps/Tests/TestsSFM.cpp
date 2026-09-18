@@ -9122,6 +9122,26 @@ void BuildResectionAcceptanceScene(Scene& scene, Pose3D& truePose, std::mt19937&
 	TriangulateTracks(scene, false, 4.f, 1.f);
 }
 
+// The given image's correspondences with the first numTrue + numNoise tracks of the scene: the
+// first numTrue at the projections the image's own pose gives and the rest at random pixels, so the
+// pose an estimator recovers from them is the image's own on a numTrue / (numTrue + numNoise) share
+void AddResectionCorrespondences(Scene& scene, IIndex imageID, unsigned numTrue, unsigned numNoise, std::mt19937& rng)
+{
+	Image& img = scene.images[imageID];
+	std::uniform_real_distribution<float> pixelX(10.f, 630.f), pixelY(10.f, 470.f);
+	for (unsigned i = 0; i < numTrue + numNoise; ++i) {
+		Track& track = scene.tracks[i];
+		cv::Point2f pt(pixelX(rng), pixelY(rng));
+		if (i < numTrue) {
+			const auto [proj, valid] = img.ProjectPoint(track.position);
+			ASSERT(valid && Image8U::isInside(proj, img.GetSize()));
+			pt = cv::Point2f((float)proj.x, (float)proj.y);
+		}
+		track.observations.emplace_back(imageID, (uint32_t)img.keypoints.size());
+		img.keypoints.emplace_back(pt, 1.f);
+	}
+}
+
 // The five-camera scene of the acceptance test's quorum case: images 0-3 registered with 150
 // triangulated tracks, image 4 unregistered and observing the first 100 of them -- 40 at the
 // projections its own pose gives and 60 at random pixels, so the pose an estimator recovers is
@@ -9139,29 +9159,59 @@ void BuildResectionQuorumScene(Scene& scene, Pose3D& truePose, bool corroboratin
 	truePose = static_cast<const Pose3D&>(scene.images[4]);
 	AddResectionTracks(scene, {0, 1, 2, 3}, 150, rng);
 
-	Image& img = scene.images[4];
-	std::uniform_real_distribution<float> pixelX(10.f, 630.f), pixelY(10.f, 470.f);
-	for (unsigned i = 0; i < RESECTION_TRUE_CORRESPONDENCES + RESECTION_NOISE_CORRESPONDENCES; ++i) {
-		Track& track = scene.tracks[i];
-		cv::Point2f pt(pixelX(rng), pixelY(rng));
-		if (i < RESECTION_TRUE_CORRESPONDENCES) {
-			const auto [proj, valid] = img.ProjectPoint(track.position);
-			ASSERT(valid && Image8U::isInside(proj, img.GetSize()));
-			pt = cv::Point2f((float)proj.x, (float)proj.y);
-		}
-		track.observations.emplace_back(IIndex(4), (uint32_t)img.keypoints.size());
-		img.keypoints.emplace_back(pt, 1.f);
-	}
+	AddResectionCorrespondences(scene, 4, RESECTION_TRUE_CORRESPONDENCES, RESECTION_NOISE_CORRESPONDENCES, rng);
 
 	AddResectionPair(scene, 3, 4, 400); // strongest, and to the image displaced below
 	if (corroboratingPairs) {
 		AddResectionPair(scene, 2, 4, 300);
 		AddResectionPair(scene, 1, 4, 250);
 	}
-	img.InvalidatePose();
+	scene.images[4].InvalidatePose();
 	scene.status.nCalibratedImages = 4;
 	TriangulateTracks(scene, false, 4.f, 1.f);
 	static_cast<Pose3D&>(scene.images[3]) = ResectionArcPose(3 * RESECTION_ARC_STEP + RESECTION_DISPLACEMENT);
+}
+
+
+// The five-camera scene of the direction case: images 0-3 registered with 150 triangulated tracks
+// and correctly posed, image 4 unregistered and observing the first 100 of them, 40 at the
+// projections its own pose gives and 60 at random pixels, so the recovered pose is image 4's true
+// one on a 40% inlier share, low enough for the link checks to apply. Its three pairs carry the
+// true relative rotations; the strongest numTurned of them have their relative translation turned
+// RESECTION_DIRECTION_TURN degrees away, the shape of a pair whose translation is wrong, and every
+// pair reports the given ray angle, which is what sets how much direction error a pair may forgive.
+constexpr REAL RESECTION_DIRECTION_TURN = 40; // degrees
+
+void BuildResectionDirectionScene(Scene& scene, Pose3D& truePose, unsigned numTurned, REAL rayAngleDegrees, std::mt19937& rng)
+{
+	BuildResectionArc(scene, 5);
+	truePose = static_cast<const Pose3D&>(scene.images[4]);
+	AddResectionTracks(scene, {0, 1, 2, 3}, 150, rng);
+	AddResectionCorrespondences(scene, 4, RESECTION_TRUE_CORRESPONDENCES, RESECTION_NOISE_CORRESPONDENCES, rng);
+
+	AddResectionPair(scene, 3, 4, 400);
+	AddResectionPair(scene, 2, 4, 300);
+	AddResectionPair(scene, 1, 4, 250);
+	// turn the relative translation of the strongest numTurned pairs by RESECTION_DIRECTION_TURN
+	// degrees, keeping its length and the rotation: a unit vector perpendicular to the translation
+	// mixes into it with the sine of the angle
+	for (unsigned k = 0; k < numTurned; ++k) {
+		ImagePair& pair = scene.pairs[scene.pairs.size() - 3 + k];
+		Point3& C = pair.relativePose->C;
+		const REAL length = norm(C);
+		ASSERT(length > 0);
+		const Point3 dir(C / length);
+		Point3 perp(dir.cross(Point3(0, 1, 0)));
+		if (norm(perp) < 1e-6) perp = dir.cross(Point3(1, 0, 0));
+		perp /= norm(perp);
+		const REAL turn = D2R(RESECTION_DIRECTION_TURN);
+		C = (dir * COS(turn) + perp * SIN(turn)) * length;
+	}
+	for (size_t k = scene.pairs.size() - 3; k < scene.pairs.size(); ++k)
+		scene.pairs[k].meanRayAngle = (float)D2R(rayAngleDegrees);
+	scene.images[4].InvalidatePose();
+	scene.status.nCalibratedImages = 4;
+	TriangulateTracks(scene, false, 4.f, 1.f);
 }
 
 } // namespace
@@ -9189,8 +9239,9 @@ bool ResectionAcceptanceTest()
 		}
 	}
 
-	// Both rules off: the same pose is accepted, and it is the wrong one -- which is what makes the
-	// rules above and below the reason the image does not enter the model
+	// Every acceptance rule off -- the inlier share, the rotation the pairs compose and the direction
+	// they predict: the same pose is accepted, and it is the wrong one -- which is what makes the
+	// rules the reason the image does not enter the model
 	{
 		std::mt19937 rng(20260908);
 		Scene scene;
@@ -9200,16 +9251,17 @@ bool ResectionAcceptanceTest()
 		config.relativePoseFallback = false;
 		config.minInlierRatio = 0.f;
 		config.maxRelativeRotationError = 180.f;
+		config.maxLinkDirectionError = 0.f;
 		Resection resection(scene, config);
 		resection.RegisterImages();
 		if (!scene.images[4].HasPose()) {
-			VERBOSE("ResectionAcceptanceTest FAILED: the pose was refused with both acceptance rules off");
+			VERBOSE("ResectionAcceptanceTest FAILED: the pose was refused with every acceptance rule off");
 			return false;
 		}
 		const double rotErr = RotationErrorDeg(scene.images[4].R, truePose.R);
-		DEBUG("ResectionAcceptanceTest: with both rules off the image registers %.2f deg off the truth", rotErr);
+		DEBUG("ResectionAcceptanceTest: with every rule off the image registers %.2f deg off the truth", rotErr);
 		if (rotErr <= 15.0) {
-			VERBOSE("ResectionAcceptanceTest FAILED: the pose accepted with both rules off is only %.2f deg off the "
+			VERBOSE("ResectionAcceptanceTest FAILED: the pose accepted with every rule off is only %.2f deg off the "
 				"truth, so it is not the misregistration the rules are meant to stop", rotErr);
 			return false;
 		}
@@ -9280,8 +9332,54 @@ bool ResectionAcceptanceTest()
 	}
 
 	VERBOSE("ResectionAcceptanceTest PASSED: a pose supported by a fifth of its correspondences is refused, by the "
-		"inlier share and by the rotation its pairs compose alike, and a pose two of three pairs agree with is "
-		"accepted over the strongest pair's objection (%s)", TD_TIMER_GET_FMT().c_str());
+		"inlier share, by the rotation its pairs compose and by the direction they predict alike, and a pose two of "
+		"three pairs agree with is accepted over the strongest pair's objection (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+bool ResectionLinkDirectionTest()
+{
+	TD_TIMER_START();
+
+	struct Case {
+		unsigned numTurned; REAL rayAngleDeg; float maxLinkDirectionError; bool accepted; const char* why;
+	};
+	const Case cases[] = {
+		{ 1, 20, 5.f, true,  "one turned pair of three: the two agreeing ones outweigh it, so a single misplaced neighbour cannot refuse a right pose" },
+		{ 2, 20, 5.f, false, "two turned pairs of three: the links that contradict the direction outweigh the one that agrees" },
+		{ 2, 20, 0.f, true,  "the same two turned pairs with the direction check off: the pose is accepted, so the check is what refused it" },
+		{ 2, 1,  5.f, true,  "near-duplicate pairs (rays 1 degree apart) fix no direction at all: their translation is unreliable, so they are judged on the rotation alone" },
+		{ 2, 4,  5.f, true,  "pairs whose rays are 4 degrees apart forgive a 40-degree direction error: as seen from their structure that is within the tolerance" },
+	};
+	for (const Case& c : cases) {
+		std::mt19937 rng(20260918);
+		Scene scene;
+		Pose3D truePose;
+		BuildResectionDirectionScene(scene, truePose, c.numTurned, c.rayAngleDeg, rng);
+		ResectionConfig config;
+		config.relativePoseFallback = false; // the acceptance of a resected pose alone
+		config.maxLinkDirectionError = c.maxLinkDirectionError;
+		Resection resection(scene, config);
+		resection.RegisterImages();
+		const bool accepted = scene.images[4].HasPose();
+		if (accepted != c.accepted) {
+			VERBOSE("ResectionLinkDirectionTest FAILED: with %u of 3 pairs turned %.0f degrees at a ray angle of %.0f degrees and a "
+				"direction tolerance of %.0f degrees the pose was %s; %s", c.numTurned, RESECTION_DIRECTION_TURN, c.rayAngleDeg,
+				c.maxLinkDirectionError, accepted ? "accepted" : "refused", c.why);
+			return false;
+		}
+		if (accepted) {
+			const double rotErr = RotationErrorDeg(scene.images[4].R, truePose.R);
+			if (rotErr > 1.0) {
+				VERBOSE("ResectionLinkDirectionTest FAILED: the accepted pose is %.2f deg off the truth", rotErr);
+				return false;
+			}
+		}
+	}
+
+	VERBOSE("ResectionLinkDirectionTest PASSED: a weakly supported pose is refused when the links that contradict its baseline "
+		"direction outweigh the ones that agree, and small-baseline links forgive what their ray angle cannot fix (%s)",
+		TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 

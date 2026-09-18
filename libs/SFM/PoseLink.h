@@ -21,52 +21,6 @@
 
 namespace SFM {
 
-// A verified pair (a known relative pose and a valid weight) joining an image to another one, with
-// the pair's relative pose turned around so that
-//   pose(image) = relPose * pose(neighbor)
-// holds whichever side of the pair the neighbor is on. ImagePair stores the relative pose as the
-// transform from ID1 to ID2, so it is used as it is when the neighbor is ID1 and inverted when the
-// neighbor is ID2 -- the same turn-around the star initializer applies around its reference view.
-struct PoseLink
-{
-	IIndex neighborID;   // image on the other side of the pair
-	unsigned numInliers; // weighted inliers of the pair
-	Pose3D relPose;      // transform from the neighbor's frame to the image's frame
-
-	// The absolute rotation this link predicts for the image, given its neighbor's own rotation
-	RMatrix PredictedRotation(const Pose3D& neighborPose) const {
-		return RMatrix(relPose.R * neighborPose.R);
-	}
-
-	// World-frame unit direction from the neighbor's center towards the image's center: relPose.C is
-	// R_neighbor * (C_image - C_neighbor), so rotating it back into the world frame gives that
-	// direction, while its length is the pair's own (usually arbitrary) scale. False when the pair
-	// has no baseline at all, in which case it fixes no direction.
-	bool PredictedDirection(const Pose3D& neighborPose, Point3& direction) const {
-		direction = neighborPose.R.t() * relPose.C;
-		const REAL length = norm(direction);
-		if (length <= ZEROTOLERANCE<REAL>())
-			return false;
-		direction /= length;
-		return true;
-	}
-};
-/*----------------------------------------------------------------*/
-
-// Does this pair join its two images with a usable relative pose?
-inline bool IsPoseLinkPair(const ImagePair& pair)
-{
-	return pair.relativePose.has_value() && pair.HasValidWeight();
-}
-
-// The link the given pair makes, seen from the image on the other side of the given neighbor
-inline PoseLink MakePoseLink(const ImagePair& pair, IIndex neighborID)
-{
-	ASSERT(pair.relativePose.has_value() && (pair.ID1 == neighborID || pair.ID2 == neighborID));
-	return PoseLink{ neighborID, pair.GetNumWeightedInliers(),
-		pair.ID1 == neighborID ? pair.relativePose.value() : pair.relativePose->Inverse() };
-}
-
 // How far a verified pair's word about an image sits from the pose a model gives it: the angle
 // between the rotation the pair predicts from the neighbor's pose and the image's own, and the
 // angle between the baseline direction the pair predicts and the one the two centres make. The
@@ -91,19 +45,78 @@ struct PairDisagreement
 		return rotation <= maxAngle && (!HasDirection() || direction <= DirectionTolerance(maxAngle));
 	}
 };
+/*----------------------------------------------------------------*/
+
+// A verified pair (a known relative pose and a valid weight) joining an image to another one, with
+// the pair's relative pose turned around so that
+//   pose(image) = relPose * pose(neighbor)
+// holds whichever side of the pair the neighbor is on. ImagePair stores the relative pose as the
+// transform from ID1 to ID2, so it is used as it is when the neighbor is ID1 and inverted when the
+// neighbor is ID2 -- the same turn-around the star initializer applies around its reference view.
+struct PoseLink
+{
+	IIndex neighborID;   // image on the other side of the pair
+	unsigned numInliers; // weighted inliers of the pair
+	Pose3D relPose;      // transform from the neighbor's frame to the image's frame
+	float rayAngle;      // the pair's median triangulation angle, radians; 0 when unknown
+
+	// The absolute rotation this link predicts for the image, given its neighbor's own rotation
+	RMatrix PredictedRotation(const Pose3D& neighborPose) const {
+		return RMatrix(relPose.R * neighborPose.R);
+	}
+
+	// World-frame unit direction from the neighbor's center towards the image's center: relPose.C is
+	// R_neighbor * (C_image - C_neighbor), so rotating it back into the world frame gives that
+	// direction, while its length is the pair's own (usually arbitrary) scale. False when the pair
+	// has no baseline at all, in which case it fixes no direction.
+	bool PredictedDirection(const Pose3D& neighborPose, Point3& direction) const {
+		direction = neighborPose.R.t() * relPose.C;
+		const REAL length = norm(direction);
+		if (length <= ZEROTOLERANCE<REAL>())
+			return false;
+		direction /= length;
+		return true;
+	}
+
+	// How far a pose given to the image sits from what this link measured: the angle between the
+	// rotation the link predicts from the neighbor's pose and the image's own, and the angle
+	// between the baseline direction the link predicts and the one the two centres make (see
+	// PairDisagreement for when the direction is left unset and how it is held to a tolerance)
+	PairDisagreement Measure(const Pose3D& image, const Pose3D& neighbor) const {
+		PairDisagreement d;
+		d.rotation = R2D(ACOS(MINF(MAXF(ComputeAngle(image.R, PredictedRotation(neighbor)), REAL(-1)), REAL(1))));
+		d.direction = -1;
+		d.rayAngle = rayAngle > 0.f ? REAL(rayAngle) : REAL(0);
+		const bool nearDuplicate = rayAngle > 0.f && rayAngle < D2R(2.f);
+		Point3 modelDirection(image.C - neighbor.C), linkDirection;
+		const REAL baseline = norm(modelDirection);
+		if (!nearDuplicate && baseline > ZEROTOLERANCE<REAL>() && PredictedDirection(neighbor, linkDirection))
+			d.direction = R2D(ACOS(MINF(MAXF(linkDirection.dot(modelDirection / baseline), REAL(-1)), REAL(1))));
+		return d;
+	}
+};
+/*----------------------------------------------------------------*/
+
+// Does this pair join its two images with a usable relative pose?
+inline bool IsPoseLinkPair(const ImagePair& pair)
+{
+	return pair.relativePose.has_value() && pair.HasValidWeight();
+}
+
+// The link the given pair makes, seen from the image on the other side of the given neighbor
+inline PoseLink MakePoseLink(const ImagePair& pair, IIndex neighborID)
+{
+	ASSERT(pair.relativePose.has_value() && (pair.ID1 == neighborID || pair.ID2 == neighborID));
+	return PoseLink{ neighborID, pair.GetNumWeightedInliers(),
+		pair.ID1 == neighborID ? pair.relativePose.value() : pair.relativePose->Inverse(),
+		ISFINITE(pair.meanRayAngle) && pair.meanRayAngle > 0.f ? pair.meanRayAngle : 0.f };
+}
+
+// How far a verified pair's word about an image sits from the pose a model gives it, measured on
+// the link the pair makes (PoseLink::Measure)
 inline PairDisagreement MeasurePairDisagreement(const ImagePair& pair, const Pose3D& image, const Pose3D& neighbor, IIndex neighborID)
 {
-	const PoseLink link = MakePoseLink(pair, neighborID);
-	PairDisagreement d;
-	d.rotation = R2D(ACOS(MINF(MAXF(ComputeAngle(image.R, link.PredictedRotation(neighbor)), REAL(-1)), REAL(1))));
-	d.direction = -1;
-	d.rayAngle = ISFINITE(pair.meanRayAngle) && pair.meanRayAngle > 0.f ? REAL(pair.meanRayAngle) : REAL(0);
-	const bool nearDuplicate = pair.meanRayAngle > 0.f && pair.meanRayAngle < D2R(2.f);
-	Point3 modelDirection(image.C - neighbor.C), pairDirection;
-	const REAL baseline = norm(modelDirection);
-	if (!nearDuplicate && baseline > ZEROTOLERANCE<REAL>() && link.PredictedDirection(neighbor, pairDirection))
-		d.direction = R2D(ACOS(MINF(MAXF(pairDirection.dot(modelDirection / baseline), REAL(-1)), REAL(1))));
-	return d;
+	return MakePoseLink(pair, neighborID).Measure(image, neighbor);
 }
 
 // Order links by pair strength, ties by the lower neighbor ID so the choice never depends on the
