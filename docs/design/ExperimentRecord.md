@@ -190,4 +190,16 @@ own -- so discounting it could only have refused a right dense-only registration
 capture, the case the cap and the two link checks exist to protect, without catching any of the
 three.
 
+**The first validation, the 0.5 gate exempting the wrong registrations** (reconstruction from
+already matched scenes, 2026-09-18). On alameda a pose registered at a 54% inlier share -- image
+581, 87 of 162 correspondences -- landed 1.9 degrees off and took the 15 images registered from its
+structure off with it; on the indoor capture a run of 20 tail registrations (images 84-103) landed
+10.7 units off in centre with no check catching it. Both slipped through because the 0.5 gate
+exempted them as well supported, so the gate default moved to 1. The same validation confirmed the
+clustering change -- alameda block 9 is the 133-image body, and the seven-image appendage now sits
+with its real neighbours at 0.04-0.056 degrees -- lost no image either baseline registered (alameda
+1734/1734 and 1733/1733; indoor 1183 registered against 1159), and improved the indoor rotation
+error against the ARKit poses (median 2.04 -> 1.46 degrees, 47% -> 76% within 2 degrees), with the
+dense inlier cap not yet applied: those arms loaded already weighted scenes.
+
 The validation on alameda and an indoor capture is recorded below once complete.

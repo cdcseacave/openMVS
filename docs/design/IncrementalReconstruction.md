@@ -40,33 +40,35 @@ safely.
 
 ## The resection
 
-Candidates are the unregistered images with the most 2D-3D correspondences to the model, plus every
-image within `ratioCorrespondences` (0.3) of the best of them (`SelectNextImages`), solved by
-bearing-vector PnP (PoseLib RANSAC) with an inlier bar of `ransac.threshold` (8 px, twice
-`maxReprojError`). The bar is set for the dense (warp-sampled) correspondences, which land several
-pixels off on a full-resolution image (a median of 6 px, against 1 px for a detected keypoint) and make
-up most of the correspondences of an image seen through dense matches: at 4 px a third of them counted
-as inliers on a healthy model, so the average inlier ratio below stayed under its bar and forced a full
-bundle adjustment after nearly every registration (154 over 514 images, against 10 at 8 px, the poses
-coming out the same), and a minority of them could vote in a pose degrees off. The adjustments that
-follow are robust to the outliers the wider bar admits and the track filter removes them, so the
-filter's own bar stays at 4 px; 6 px is the bar to try once the dense matching gets more precise. A pose
-is accepted only when credible: `minInliers` (12) inliers
-at least, and `minInlierRatio` (0.25) of the correspondences, unless the inlier count alone reaches
-`minInliersAbsolute` (100) -- a small consensus inside a large set can agree on a pose the image never
-had. A weakly supported pose (inlier share under half) is cross-checked against the rotation its
-verified pairs to registered images predict -- not the single strongest pair, misleading if that
-neighbour is misplaced, but the quorum: the largest group, among the strongest few links, agreeing
-within `maxRelativeRotationError` (15 degrees) of one another (`PoseLink.h`). A pose further than that
-from the quorum's rotation is rejected; contradictory links (no two agree) are left to the other rules.
-The same quorum's links are also weighed on the baseline direction they predict (`maxLinkDirectionError`,
-3 degrees): each link's own tolerance grows with its ray angle (`atan(tan(3°)/rayAngle)`), so a
-wide-baseline pair forgives little disagreement and a near-duplicate one (rays under 2 degrees, its own
-baseline unreliable) fixes no direction and is left out of the count; the pose is refused only when the
-links whose direction disagrees outweigh, by weighted inliers, the ones that agree, so one misplaced
-neighbour cannot refuse it alone.
+Candidates are the unregistered images with the most 2D-3D correspondences to the model, plus every image
+within `ratioCorrespondences` (0.3) of the best of them (`SelectNextImages`), solved by bearing-vector
+PnP (PoseLib RANSAC) with an inlier bar of `ransac.threshold` (8 px, twice `maxReprojError`). The bar is
+set for the dense (warp-sampled) correspondences, which land several pixels off on a full-resolution
+image (a median of 6 px, against 1 px for a detected keypoint) and make up most of the correspondences of
+an image seen through dense matches: at 4 px a third of them counted as inliers on a healthy model, so
+the average inlier ratio below stayed under its bar and forced a full bundle adjustment after nearly
+every registration (154 over 514 images, against 10 at 8 px, the poses coming out the same), and a
+minority of them could vote in a pose degrees off. The adjustments that follow are robust to the outliers
+the wider bar admits and the track filter removes them, so the filter's own bar stays at 4 px; 6 px is
+the bar to try once the dense matching gets more precise. A pose is accepted only when credible:
+`minInliers` (12) inliers at least, and `minInlierRatio` (0.25) of the correspondences, unless the inlier
+count alone reaches `minInliersAbsolute` (100) -- a small consensus inside a large set can agree on a
+pose the image never had. Every pose (`wellSupportedInlierRatio` 1; lowering it exempts a well-supported
+pose) is cross-checked against the rotation its verified pairs to registered images predict -- not the
+single strongest pair, misleading if that neighbour is misplaced, but the quorum: the largest group,
+among the strongest few links, agreeing within `maxRelativeRotationError` (15 degrees) of one another
+(`PoseLink.h`). A pose further than that from the quorum's rotation is rejected; contradictory links (no
+two agree) are left to the other rules. On alameda a pose registered with a 54% inlier share (87 of 162
+correspondences) was 1.9 degrees off, and the 15 images registered from its structure landed 1.9 degrees
+off with it, while every right registration of the scene passes the quorum by a wide margin (never more
+than 7.7 degrees against the 15-degree bar). The same quorum's links are also weighed on the baseline
+direction they predict (`maxLinkDirectionError`, 3 degrees): each link's own tolerance grows with its ray
+angle (`atan(tan(3°)/rayAngle)`), so a wide-baseline pair forgives little disagreement and a
+near-duplicate one (rays under 2 degrees, its own baseline unreliable) fixes no direction and is left out
+of the count; the pose is refused only when the links whose direction disagrees outweigh, by weighted
+inliers, the ones that agree, so one misplaced neighbour cannot refuse it alone.
 
-Before either link check runs, the same weakly supported pose first has to be registered where its
+Before either link check runs, every pose first has to be registered where its
 evidence actually is: `minRegisteredEvidence` (0.1) requires the composite weight of the image's pairs
 into already-registered images to reach a tenth of the registered share of the scene's images, out of the
 weight of all its pairs -- a bar that rises as the model fills in, so an image is not hung off the model
