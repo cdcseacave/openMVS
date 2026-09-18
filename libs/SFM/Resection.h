@@ -66,6 +66,14 @@ struct SFM_API ResectionConfig
 	                                    // unreliable. A weakly supported pose is refused when the quorum links that
 	                                    // contradict the direction outweigh the ones that agree (0 = disabled). The
 	                                    // same angle the image filter uses as maxCorroborationAngle
+	float minRegisteredEvidence{0.1f};  // A weakly supported pose is accepted only when the composite weight of the image's
+	                                    // pairs to registered images is at least this share of all its pairs' weight,
+	                                    // scaled by the fraction of the scene's images that are registered: early on
+	                                    // most evidence is expected to lie ahead, late on an image whose evidence is
+	                                    // almost all in unregistered images belongs to a part the model barely
+	                                    // touches, and registering it there registers it where its evidence is not.
+	                                    // Also holds for the relative-pose fallback. A refused image is retried as its
+	                                    // neighbours come in (0 = disabled)
 	bool relativePoseFallback{true};    // Register one image from its relative poses to registered images when no image
 	                                    // reaches minCorrespondences, or every candidate that did failed to register,
 	                                    // instead of stopping there
@@ -225,6 +233,11 @@ private:
 	 * @return ID of the image that was registered, NO_ID when none could be
 	 */
 	IIndex RegisterFromRelativePoses(const IIndexScores& unregistered);
+
+	// Composite weight of the image's valid pairs to registered images as a share of that of all its valid pairs; 1 for an image with no valid pair
+	float RegisteredEvidenceShare(IIndex imageID) const;
+	// Share of the scene's images holding a camera that are registered
+	float RegisteredImagesFraction() const;
 
 	IIndexArr BuildLocalWindow(const IIndexArr& imageIDs) const;
 };

@@ -9214,6 +9214,31 @@ void BuildResectionDirectionScene(Scene& scene, Pose3D& truePose, unsigned numTu
 	TriangulateTracks(scene, false, 4.f, 1.f);
 }
 
+// The arc scene of the evidence case: numImages cameras, images 0-3 registered with 150
+// triangulated tracks, image 4 unregistered with the 40 true and 60 random correspondences of the
+// direction case (or none at all, for the relative-pose fallback), joined to registered image 3
+// by a pair of 20 weighted inliers (two such pairs, to images 3 and 2, in the fallback case) and to
+// unregistered image 5 by one of 1000: its evidence lies almost entirely in an image the model does
+// not hold yet. Images 5 and beyond are unregistered.
+void BuildResectionEvidenceScene(Scene& scene, Pose3D& truePose, unsigned numImages, bool withCorrespondences, std::mt19937& rng)
+{
+	ASSERT(numImages >= 6);
+	BuildResectionArc(scene, numImages);
+	truePose = static_cast<const Pose3D&>(scene.images[4]);
+	AddResectionTracks(scene, {0, 1, 2, 3}, 150, rng);
+
+	if (withCorrespondences)
+		AddResectionCorrespondences(scene, 4, RESECTION_TRUE_CORRESPONDENCES, RESECTION_NOISE_CORRESPONDENCES, rng);
+	AddResectionPair(scene, 3, 4, 20);
+	if (!withCorrespondences)
+		AddResectionPair(scene, 2, 4, 20); // a second registered link, so the fallback can place a centre where two rays meet
+	AddResectionPair(scene, 4, 5, 1000);
+	for (IIndex i = 4; i < numImages; ++i)
+		scene.images[i].InvalidatePose();
+	scene.status.nCalibratedImages = 4;
+	TriangulateTracks(scene, false, 4.f, 1.f);
+}
+
 } // namespace
 
 bool ResectionAcceptanceTest()
@@ -9379,6 +9404,75 @@ bool ResectionLinkDirectionTest()
 
 	VERBOSE("ResectionLinkDirectionTest PASSED: a weakly supported pose is refused when the links that contradict its baseline "
 		"direction outweigh the ones that agree, and small-baseline links forgive what their ray angle cannot fix (%s)",
+		TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+bool ResectionEvidenceShareTest()
+{
+	TD_TIMER_START();
+
+	// Image 4 holds 2% of its evidence in registered images. With 4 of 6 images registered the bar
+	// is 10% of two thirds, so the pose is refused; with the rule off it is accepted and right,
+	// so the rule is what refused it; with image 5 registered the whole evidence is in the model
+	// and the pose is accepted; with 4 of 40 images registered the bar is 1% and the pose is
+	// accepted: early in a reconstruction most evidence is expected to lie ahead.
+	struct Case { unsigned numImages; bool registerImage5; float minRegisteredEvidence; bool accepted; const char* why; };
+	const Case cases[] = {
+		{ 6, false, 0.1f, false, "2% of the evidence in registered images against a bar of 6.7%" },
+		{ 6, false, 0.f,  true,  "the same scene with the rule off" },
+		{ 6, true,  0.1f, true,  "the same scene with the strong neighbour registered" },
+		{ 40, false, 0.1f, true, "4 of 40 images registered: the bar is 1%" },
+	};
+	for (const Case& c : cases) {
+		std::mt19937 rng(20260918);
+		Scene scene;
+		Pose3D truePose;
+		BuildResectionEvidenceScene(scene, truePose, c.numImages, true, rng);
+		if (c.registerImage5) {
+			static_cast<Pose3D&>(scene.images[5]) = ResectionArcPose(5 * RESECTION_ARC_STEP);
+			scene.status.nCalibratedImages = 5;
+		}
+		ResectionConfig config;
+		config.relativePoseFallback = false;
+		config.minRegisteredEvidence = c.minRegisteredEvidence;
+		Resection resection(scene, config);
+		resection.RegisterImages();
+		const bool accepted = scene.images[4].HasPose();
+		if (accepted != c.accepted) {
+			VERBOSE("ResectionEvidenceShareTest FAILED: with %u images, image 5 %s and a bar of %.2f the pose was %s; %s",
+				c.numImages, c.registerImage5 ? "registered" : "unregistered", c.minRegisteredEvidence,
+				accepted ? "accepted" : "refused", c.why);
+			return false;
+		}
+		if (accepted && RotationErrorDeg(scene.images[4].R, truePose.R) > 1.0) {
+			VERBOSE("ResectionEvidenceShareTest FAILED: the accepted pose is %.2f deg off the truth",
+				RotationErrorDeg(scene.images[4].R, truePose.R));
+			return false;
+		}
+	}
+
+	// The relative-pose fallback holds the same bar: image 4 without correspondences is a fallback
+	// candidate through its pairs to images 3 and 2 (3.8% of its evidence, under the 6.7% bar), and
+	// is skipped at the default bar, registered from the two rays with it off
+	for (const bool ruleOn : { true, false }) {
+		std::mt19937 rng(20260918);
+		Scene scene;
+		Pose3D truePose;
+		BuildResectionEvidenceScene(scene, truePose, 6, false, rng);
+		ResectionConfig config;
+		config.minRegisteredEvidence = ruleOn ? 0.1f : 0.f;
+		Resection resection(scene, config);
+		resection.RegisterImages();
+		if (scene.images[4].HasPose() == ruleOn) {
+			VERBOSE("ResectionEvidenceShareTest FAILED: the relative-pose fallback %s image 4 with the evidence bar %s",
+				scene.images[4].HasPose() ? "registered" : "skipped", ruleOn ? "on" : "off");
+			return false;
+		}
+	}
+
+	VERBOSE("ResectionEvidenceShareTest PASSED: a weakly supported pose is registered only where its evidence is, the bar "
+		"scaled by how much of the scene is registered, in the resection and in its relative-pose fallback alike (%s)",
 		TD_TIMER_GET_FMT().c_str());
 	return true;
 }

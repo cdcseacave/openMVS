@@ -305,6 +305,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::ResectionLinkDirectionTest())
 				return false;
+			if (!SFM::ResectionEvidenceShareTest())
+				return false;
 			if (!SFM::ResectionInlierBarTest())
 				return false;
 			if (!SFM::DenseReprojectionBarTest())

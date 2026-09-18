@@ -242,7 +242,20 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 	// misplaced. When the pairs contradict one another they are no witness at all, so the pose is
 	// left to the other acceptance rules and the disagreement is reported.
 	if (inlierRatio < config.wellSupportedInlierRatio &&
-		(config.maxRelativeRotationError > 0.f || config.maxLinkDirectionError > 0.f)) {
+		(config.minRegisteredEvidence > 0.f || config.maxRelativeRotationError > 0.f || config.maxLinkDirectionError > 0.f)) {
+		// registered where the evidence is: an image most of whose pair weight lies in images the
+		// model does not hold yet is registered by the few pairs it does hold, and its community then
+		// hangs off the model through them
+		if (config.minRegisteredEvidence > 0.f) {
+			const float share = RegisteredEvidenceShare(imageID);
+			const float bar = config.minRegisteredEvidence * RegisteredImagesFraction();
+			if (share < bar) {
+				DEBUG("warning: deferred the pose of image %u: %u/%u inliers (%.1f%%) and only %.1f%% of its pair weight lies in "
+					"registered images, under the %.1f%% the registered share of the scene asks", imageID, numInliers, n,
+					inlierRatio * 100.f, share * 100.f, bar * 100.f);
+				return {0, n, numDescribed};
+			}
+		}
 		std::vector<PoseLink> links;
 		CollectPoseLinks(scene, imageID, links);
 		const PoseLinkQuorum quorum = ComputePoseLinkQuorum(links, config.maxRelativeRotationError, NeighborPose(scene));
@@ -326,6 +339,15 @@ IIndex Resection::RegisterFromRelativePoses(const IIndexScores& unregistered)
 		candidates.resize(maxCandidates);
 
 	for (const IIndex imageID : candidates) {
+		if (config.minRegisteredEvidence > 0.f) {
+			const float share = RegisteredEvidenceShare(imageID);
+			const float bar = config.minRegisteredEvidence * RegisteredImagesFraction();
+			if (share < bar) {
+				DEBUG("warning: cannot register image %u from its relative poses: only %.1f%% of its pair weight lies in "
+					"registered images, under the %.1f%% the registered share of the scene asks", imageID, share * 100.f, bar * 100.f);
+				continue;
+			}
+		}
 		std::vector<PoseLink>& imageLinks = links[imageID];
 		std::sort(imageLinks.begin(), imageLinks.end(), IsStrongerLink);
 
@@ -415,6 +437,35 @@ IIndex Resection::RegisterFromRelativePoses(const IIndexScores& unregistered)
 		return imageID;
 	}
 	return NO_ID;
+}
+
+float Resection::RegisteredEvidenceShare(IIndex imageID) const
+{
+	float registered = 0.f, total = 0.f;
+	for (const ImagePair& pair : scene.pairs) {
+		if (pair.ID1 != imageID && pair.ID2 != imageID)
+			continue;
+		const float weight = pair.GetCompositeWeight();
+		if (weight <= 0.f)
+			continue;
+		total += weight;
+		if (scene.images[pair.ID1 == imageID ? pair.ID2 : pair.ID1].HasPose())
+			registered += weight;
+	}
+	return total > 0.f ? registered / total : 1.f;
+}
+
+float Resection::RegisteredImagesFraction() const
+{
+	unsigned numImages = 0, numRegistered = 0;
+	for (const Image& img : scene.images) {
+		if (!img.HasCamera())
+			continue;
+		++numImages;
+		if (img.HasPose())
+			++numRegistered;
+	}
+	return numImages > 0 ? numRegistered / (float)numImages : 0.f;
 }
 
 IIndexArr Resection::BuildLocalWindow(const IIndexArr& imageIDs) const

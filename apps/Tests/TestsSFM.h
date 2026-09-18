@@ -333,6 +333,12 @@ bool ResectionAcceptanceTest();
 // direction and a small-baseline pair forgives a wide error (PoseLink.h PairDisagreement)
 bool ResectionLinkDirectionTest();
 
+// A weakly supported pose is registered only where the image's evidence is: the composite weight
+// of its pairs to registered images must be a share of all its pairs' weight at least
+// minRegisteredEvidence times the fraction of the scene's images that are registered, in the
+// resection and in its relative-pose fallback alike (ResectionConfig::minRegisteredEvidence)
+bool ResectionEvidenceShareTest();
+
 // The resection's inlier bar admits a correspondence measured with the precision of a warp-sampled
 // (dense) keypoint on a full-resolution image, several pixels off its projection, and not only one
 // measured with a detected keypoint's: an image seen through such correspondences alone reaches a
