@@ -51,26 +51,27 @@ struct SFM_API ResectionConfig
 	                                    // quorum of the verified pairs to already registered images composes -- the
 	                                    // largest group of those pairs agreeing on a rotation within this same angle,
 	                                    // so that one pair among several cannot speak for the image;
-	                                    // checked only for a pose whose inlier share is below wellSupportedInlierRatio,
-	                                    // so that a well supported pose overrules pairs that may themselves be wrong.
+	                                    // checked for every pose unless wellSupportedInlierRatio is lowered, which
+	                                    // exempts a pose whose inlier share reaches it, trusting it over its pairs.
 	                                    // Also the angle within which the relative-pose fallback groups an image's
 	                                    // links (0 = disabled)
-	float wellSupportedInlierRatio{0.5f}; // Inlier share from which a pose is trusted over the image's verified pairs to
-	                                    // registered images: the link checks below (rotation, direction, evidence
-	                                    // share) apply only under it, since the pairs may themselves be wrong
+	float wellSupportedInlierRatio{1.f}; // Inlier share from which a pose would be trusted over its verified pairs; 1 = no
+	                                    // pose is. On alameda a 54% share (87/162) put a pose 1.9 degrees off, taking the
+	                                    // 15 images it seeded with it; every right registration passes the three checks
+	                                    // (quorum within 7.7 of the 15-degree bar; one direction deferral of 1538).
 	float maxLinkDirectionError{3.f};   // Maximum angle (degrees) between the baseline direction a verified pair to a
 	                                    // registered image predicts and the one the estimated centre makes with that
 	                                    // neighbour, as seen from the structure the pair triangulates: a pair of
 	                                    // nearly parallel rays forgives a wide direction error and a near-duplicate
 	                                    // pair (rays under 2 degrees) fixes no direction, since its translation is
-	                                    // unreliable. A weakly supported pose is refused when the quorum links that
+	                                    // unreliable. A pose is refused when the quorum links that
 	                                    // contradict the direction outweigh the ones that agree (0 = disabled).
 	                                    // Of 1538 right alameda registrations only one is refused at 3 degrees, and
 	                                    // barely (28.3 vs a 28.3-degree tolerance); the one misregistration on record
 	                                    // (image 581, 29.1 degrees off at an 8.9-degree ray angle, 18.7-degree
 	                                    // tolerance) is refused, where 5 degrees would have given it 29.5 and passed
 	                                    // it.
-	float minRegisteredEvidence{0.1f};  // A weakly supported pose is accepted only when the composite weight of the image's
+	float minRegisteredEvidence{0.1f};  // A pose is accepted only when the composite weight of the image's
 	                                    // pairs to registered images is at least this share of all its pairs' weight,
 	                                    // scaled by the fraction of the scene's images that are registered: early on
 	                                    // most evidence is expected to lie ahead, late on an image whose evidence is
