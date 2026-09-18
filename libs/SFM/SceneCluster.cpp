@@ -23,11 +23,12 @@ namespace {
 
 // Creation-time connectivity self-check for a single finished cluster.
 //
-// The greedy merge refuses to join two mature clusters across an interface
-// carrying less than minClusterCoupling of the weaker side's internal weight, so
-// that no sub-scene contains two blocks joined only by a sparse seam (such a seam
-// lets scale drift accumulate unobserved and reconstructs as two independently
-// scaled blocks — the two-scale bug the merge-time split then has to repair).
+// The greedy merge holds every merge to the same test: it refuses to join two
+// clusters across an interface carrying less than minClusterCoupling of the weaker
+// side's internal weight, so that no sub-scene contains two blocks joined only by a
+// sparse seam (such a seam lets scale drift accumulate unobserved and reconstructs
+// as two independently scaled blocks — the two-scale bug the merge-time split then
+// has to repair).
 // This routine verifies that invariant on the FINAL clusters: it finds each
 // cluster's best balanced bipartition (the spectral / Fiedler cut of its internal
 // covisibility graph) and expresses the interface as the same coupling ratio the

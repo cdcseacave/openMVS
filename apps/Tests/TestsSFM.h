@@ -328,15 +328,18 @@ bool ResectionAcceptanceTest();
 
 // A weakly supported pose must also agree with the baseline direction its verified pairs to
 // registered images predict: it is refused when the quorum links that contradict the direction
-// carry more weighted inliers than the ones that agree (ResectionConfig::maxLinkDirectionError),
-// each link's tolerance growing as its ray angle shrinks, so a near-duplicate pair fixes no
-// direction and a small-baseline pair forgives a wide error (PoseLink.h PairDisagreement)
+// carry more weighted inliers than the ones that agree (ResectionConfig::maxLinkDirectionError) --
+// the weight they carry and not their number, so the strongest link alone outweighs two weak ones
+// that agree -- each link's tolerance growing as its ray angle shrinks, so a near-duplicate pair
+// fixes no direction and a small-baseline pair forgives a wide error (PoseLink.h PairDisagreement)
 bool ResectionLinkDirectionTest();
 
 // A weakly supported pose is registered only where the image's evidence is: the composite weight
 // of its pairs to registered images must be a share of all its pairs' weight at least
 // minRegisteredEvidence times the fraction of the scene's images that are registered, in the
-// resection and in its relative-pose fallback alike (ResectionConfig::minRegisteredEvidence)
+// resection and in its relative-pose fallback alike (ResectionConfig::minRegisteredEvidence); the
+// deferral that follows reports no correspondences, so it enters no measure of the model's health,
+// and the deferred image takes none of the fallback's candidate slots
 bool ResectionEvidenceShareTest();
 
 // The resection's inlier bar admits a correspondence measured with the precision of a warp-sampled

@@ -253,7 +253,10 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 				DEBUG("warning: deferred the pose of image %u: %u/%u inliers (%.1f%%) and only %.1f%% of its pair weight lies in "
 					"registered images, under the %.1f%% the registered share of the scene asks", imageID, numInliers, n,
 					inlierRatio * 100.f, share * 100.f, bar * 100.f);
-				return {0, n, numDescribed};
+				// a deferral reports no correspondences: it says nothing about how well the model fits this
+				// image, only that its evidence is elsewhere for now, so it must stay out of the average
+				// inlier ratio the caller reads the model's health from, and force no bundle adjustment
+				return {0, 0, numDescribed};
 			}
 		}
 		std::vector<PoseLink> links;
@@ -277,6 +280,7 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 			// the baseline direction each quorum link predicts: each is held to the tolerance its own
 			// ray angle allows, and the pose is refused only when the links that contradict it
 			// outweigh the ones that agree, so one misplaced neighbour cannot refuse a right pose
+			// that other links vouch for
 			if (config.maxLinkDirectionError > 0.f) {
 				unsigned agreeing = 0, disagreeing = 0;
 				for (const PoseLink& link : quorum.links) {
@@ -287,7 +291,8 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 				}
 				if (disagreeing > agreeing) {
 					DEBUG("warning: rejected the pose of image %u: %u/%u inliers (%.1f%%) and its centre lies in a direction "
-						"the pairs carrying %u of its quorum's %u weighted inliers contradict (strongest to image %u)",
+						"the pairs carrying %u of the %u weighted inliers of the quorum links that fix one contradict "
+						"(strongest to image %u)",
 						imageID, numInliers, n, inlierRatio * 100.f, disagreeing, agreeing + disagreeing,
 						quorum.links.front().neighborID);
 					return {0, n, numDescribed};
@@ -317,12 +322,26 @@ IIndex Resection::RegisterFromRelativePoses(const IIndexScores& unregistered)
 		links[imageID].push_back(MakePoseLink(pair, registered1 ? pair.ID1 : pair.ID2));
 	}
 
-	// Candidates, ranked by the total inliers their links carry, ties to the lower image ID
+	// Candidates, ranked by the total inliers their links carry, ties to the lower image ID. An image
+	// most of whose pair weight lies in images the model does not hold yet is no candidate at all:
+	// the few links it does hold to the model are often the strongest of any image left, so leaving
+	// it in the ranking and turning it away further down would let a handful of such images take
+	// every slot below and end the resection with registrable images still in hand.
+	const float evidenceBar = config.minRegisteredEvidence * RegisteredImagesFraction();
 	std::vector<IIndex> candidates;
 	candidates.reserve(links.size());
 	std::unordered_map<IIndex, unsigned> scores;
 	scores.reserve(links.size());
 	for (const auto& it : links) {
+		if (config.minRegisteredEvidence > 0.f) {
+			const float share = RegisteredEvidenceShare(it.first);
+			if (share < evidenceBar) {
+				DEBUG("warning: cannot register image %u from its relative poses: only %.1f%% of its pair weight lies in "
+					"registered images, under the %.1f%% the registered share of the scene asks", it.first, share * 100.f,
+					evidenceBar * 100.f);
+				continue;
+			}
+		}
 		unsigned score = 0;
 		for (const PoseLink& link : it.second)
 			score += link.numInliers;
@@ -339,15 +358,6 @@ IIndex Resection::RegisterFromRelativePoses(const IIndexScores& unregistered)
 		candidates.resize(maxCandidates);
 
 	for (const IIndex imageID : candidates) {
-		if (config.minRegisteredEvidence > 0.f) {
-			const float share = RegisteredEvidenceShare(imageID);
-			const float bar = config.minRegisteredEvidence * RegisteredImagesFraction();
-			if (share < bar) {
-				DEBUG("warning: cannot register image %u from its relative poses: only %.1f%% of its pair weight lies in "
-					"registered images, under the %.1f%% the registered share of the scene asks", imageID, share * 100.f, bar * 100.f);
-				continue;
-			}
-		}
 		std::vector<PoseLink>& imageLinks = links[imageID];
 		std::sort(imageLinks.begin(), imageLinks.end(), IsStrongerLink);
 

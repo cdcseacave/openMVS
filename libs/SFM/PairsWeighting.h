@@ -79,7 +79,8 @@ struct SFM_API PairsWeightingConfig
     // On an indoor RoMa2 scene (OfficeBadLoop, 4037 images) a cap of 300 keeps 99.2% of the dense-mostly pairs
     // with good coverage and triplet support above the clustering bar of 3 (66.5% at 100, 93.4% at 200), cutting
     // off no image; on an outdoor scene (alameda) it still drops the three wide-baseline dense-heavy pairs that
-    // misplaced a seven-image community (5.4/3.8/1.3 uncapped to 2.5/2.4/0.9).
+    // misplaced a seven-image community (5.4/3.8/1.3 uncapped to 2.5/2.4/0.9). 0 does not disable the cap but
+    // makes a dense match count for nothing, zeroing a dense-only pair; to lift it, set it above any dense count.
     unsigned denseInlierCap = 300;
 };
 

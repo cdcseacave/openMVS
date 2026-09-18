@@ -9172,26 +9172,28 @@ void BuildResectionQuorumScene(Scene& scene, Pose3D& truePose, bool corroboratin
 	static_cast<Pose3D&>(scene.images[3]) = ResectionArcPose(3 * RESECTION_ARC_STEP + RESECTION_DISPLACEMENT);
 }
 
-
 // The five-camera scene of the direction case: images 0-3 registered with 150 triangulated tracks
 // and correctly posed, image 4 unregistered and observing the first 100 of them, 40 at the
 // projections its own pose gives and 60 at random pixels, so the recovered pose is image 4's true
 // one on a 40% inlier share, low enough for the link checks to apply. Its three pairs carry the
-// true relative rotations; the strongest numTurned of them have their relative translation turned
-// RESECTION_DIRECTION_TURN degrees away, the shape of a pair whose translation is wrong, and every
-// pair reports the given ray angle, which is what sets how much direction error a pair may forgive.
+// true relative rotations and the given weighted inliers, strongest first; the strongest numTurned
+// of them have their relative translation turned RESECTION_DIRECTION_TURN degrees away, the shape of
+// a pair whose translation is wrong, and every pair reports the given ray angle, which is what sets
+// how much direction error a pair may forgive.
 constexpr REAL RESECTION_DIRECTION_TURN = 40; // degrees
 
-void BuildResectionDirectionScene(Scene& scene, Pose3D& truePose, unsigned numTurned, REAL rayAngleDegrees, std::mt19937& rng)
+void BuildResectionDirectionScene(Scene& scene, Pose3D& truePose, unsigned numTurned, REAL rayAngleDegrees, std::mt19937& rng,
+	const std::array<unsigned, 3>& pairWeights = {400, 300, 250})
 {
+	ASSERT(numTurned <= 3);
 	BuildResectionArc(scene, 5);
 	truePose = static_cast<const Pose3D&>(scene.images[4]);
 	AddResectionTracks(scene, {0, 1, 2, 3}, 150, rng);
 	AddResectionCorrespondences(scene, 4, RESECTION_TRUE_CORRESPONDENCES, RESECTION_NOISE_CORRESPONDENCES, rng);
 
-	AddResectionPair(scene, 3, 4, 400);
-	AddResectionPair(scene, 2, 4, 300);
-	AddResectionPair(scene, 1, 4, 250);
+	AddResectionPair(scene, 3, 4, pairWeights[0]);
+	AddResectionPair(scene, 2, 4, pairWeights[1]);
+	AddResectionPair(scene, 1, 4, pairWeights[2]);
 	// turn the relative translation of the strongest numTurned pairs by RESECTION_DIRECTION_TURN
 	// degrees, keeping its length and the rotation: a unit vector perpendicular to the translation
 	// mixes into it with the sine of the angle
@@ -9234,6 +9236,32 @@ void BuildResectionEvidenceScene(Scene& scene, Pose3D& truePose, unsigned numIma
 		AddResectionPair(scene, 2, 4, 20); // a second registered link, so the fallback can place a centre where two rays meet
 	AddResectionPair(scene, 4, 5, 1000);
 	for (IIndex i = 4; i < numImages; ++i)
+		scene.images[i].InvalidatePose();
+	scene.status.nCalibratedImages = 4;
+	TriangulateTracks(scene, false, 4.f, 1.f);
+}
+
+// The nine-camera arc of the candidate-slot case: images 0-3 registered with 150 triangulated
+// tracks, images 4-8 unregistered and holding no correspondence at all, so only the relative-pose
+// fallback can place any of them. Images 4, 5, 6 and 8 are a community of their own, every pair
+// inside it carrying 1000 weighted inliers, and each of 4, 5 and 6 holds one pair of 100 to
+// registered image 3: those links to the model are the strongest any unregistered image has, so
+// they rank first, while 3.2% of each image's evidence lies in the model. Image 7 holds two pairs
+// of 20, to registered images 2 and 3, which rank it last, hold all of its evidence and cast the
+// two rays that place its centre.
+void BuildResectionCandidateSlotsScene(Scene& scene, std::mt19937& rng)
+{
+	BuildResectionArc(scene, 9);
+	AddResectionTracks(scene, {0, 1, 2, 3}, 150, rng);
+	for (IIndex i = 4; i <= 6; ++i)
+		AddResectionPair(scene, 3, i, 100);
+	constexpr IIndex community[] = {4, 5, 6, 8};
+	for (unsigned a = 0; a + 1 < 4; ++a)
+		for (unsigned b = a + 1; b < 4; ++b)
+			AddResectionPair(scene, community[a], community[b], 1000);
+	AddResectionPair(scene, 2, 7, 20);
+	AddResectionPair(scene, 3, 7, 20);
+	for (IIndex i = 4; i < 9; ++i)
 		scene.images[i].InvalidatePose();
 	scene.status.nCalibratedImages = 4;
 	TriangulateTracks(scene, false, 4.f, 1.f);
@@ -9402,8 +9430,29 @@ bool ResectionLinkDirectionTest()
 		}
 	}
 
+	// What outweighs what is read in weighted inliers, not in links: with the strongest of the three
+	// pairs turned and the two that agree weakened to 150 each, a count of the links would accept the
+	// pose two to one, while the 400 inliers that contradict the direction outweigh the 300 that
+	// agree and it is refused
+	{
+		std::mt19937 rng(20260918);
+		Scene scene;
+		Pose3D truePose;
+		BuildResectionDirectionScene(scene, truePose, 1, 20, rng, {400, 150, 150});
+		ResectionConfig config;
+		config.relativePoseFallback = false;
+		Resection resection(scene, config);
+		resection.RegisterImages();
+		if (scene.images[4].HasPose()) {
+			VERBOSE("ResectionLinkDirectionTest FAILED: the pose was accepted although the one turned pair carries 400 of the "
+				"700 weighted inliers that fix a direction, which the two agreeing links would have outvoted by count alone");
+			return false;
+		}
+	}
+
 	VERBOSE("ResectionLinkDirectionTest PASSED: a weakly supported pose is refused when the links that contradict its baseline "
-		"direction outweigh the ones that agree, and small-baseline links forgive what their ray angle cannot fix (%s)",
+		"direction outweigh, in weighted inliers and not in links, the ones that agree, and small-baseline links forgive what "
+		"their ray angle cannot fix (%s)",
 		TD_TIMER_GET_FMT().c_str());
 	return true;
 }
@@ -9411,6 +9460,23 @@ bool ResectionLinkDirectionTest()
 bool ResectionEvidenceShareTest()
 {
 	TD_TIMER_START();
+
+	// The deferral itself reports no correspondences: it says nothing about how well the model fits
+	// the image, only that its evidence is elsewhere for now, so it must enter no health average
+	{
+		std::mt19937 rng(20260918);
+		Scene scene;
+		Pose3D truePose;
+		BuildResectionEvidenceScene(scene, truePose, 6, true, rng);
+		Resection resection(scene, ResectionConfig());
+		const auto [numInliers, numPoints, numDescribed] = resection.RegisterImage(IIndex(4));
+		if (numInliers != 0 || numPoints != 0) {
+			VERBOSE("ResectionEvidenceShareTest FAILED: the deferral of image 4 reported %u inliers of %u correspondences "
+				"(%u described), which the resection would read as a measurement of its model's health",
+				numInliers, numPoints, numDescribed);
+			return false;
+		}
+	}
 
 	// Image 4 holds 2% of its evidence in registered images. With 4 of 6 images registered the bar
 	// is 10% of two thirds, so the pose is refused; with the rule off it is accepted and right,
@@ -9471,8 +9537,28 @@ bool ResectionEvidenceShareTest()
 		}
 	}
 
+	// An image under the bar is no candidate of the fallback at all: images 4, 5 and 6 hold the
+	// strongest links to the model and 3.2% of their evidence in it, and ranked ahead of image 7 they
+	// would take every candidate slot and end the resection with image 7 -- all of whose evidence is
+	// registered, and which its two rays place -- still unregistered
+	{
+		std::mt19937 rng(20260918);
+		Scene scene;
+		BuildResectionCandidateSlotsScene(scene, rng);
+		Resection resection(scene, ResectionConfig());
+		resection.RegisterImages();
+		if (!scene.images[7].HasPose() || scene.images[4].HasPose() || scene.images[5].HasPose() || scene.images[6].HasPose()) {
+			VERBOSE("ResectionEvidenceShareTest FAILED: the relative-pose fallback left image 7 %s and images 4/5/6 %s/%s/%s; "
+				"the images under the bar must not take the candidate slots of the one whose evidence is registered",
+				scene.images[7].HasPose() ? "registered" : "unregistered", scene.images[4].HasPose() ? "registered" : "unregistered",
+				scene.images[5].HasPose() ? "registered" : "unregistered", scene.images[6].HasPose() ? "registered" : "unregistered");
+			return false;
+		}
+	}
+
 	VERBOSE("ResectionEvidenceShareTest PASSED: a weakly supported pose is registered only where its evidence is, the bar "
-		"scaled by how much of the scene is registered, in the resection and in its relative-pose fallback alike (%s)",
+		"scaled by how much of the scene is registered, in the resection and in its relative-pose fallback alike; the "
+		"deferral reports no correspondences, so it enters no health average, and takes no candidate slot of the fallback (%s)",
 		TD_TIMER_GET_FMT().c_str());
 	return true;
 }

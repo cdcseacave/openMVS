@@ -65,18 +65,23 @@ struct SFM_API ResectionConfig
 	                                    // pair (rays under 2 degrees) fixes no direction, since its translation is
 	                                    // unreliable. A weakly supported pose is refused when the quorum links that
 	                                    // contradict the direction outweigh the ones that agree (0 = disabled).
-	                                    // Of 1538 right alameda registrations only one is refused at 3 degrees, and barely (28.3 vs
-	                                    // a 28.3-degree tolerance); the one misregistration on record (image 581, 29.1 degrees off
-	                                    // at an 8.9-degree ray angle, 18.7-degree tolerance) is refused, where 5 degrees would have
-	                                    // given it 29.5 and passed it.
+	                                    // Of 1538 right alameda registrations only one is refused at 3 degrees, and
+	                                    // barely (28.3 vs a 28.3-degree tolerance); the one misregistration on record
+	                                    // (image 581, 29.1 degrees off at an 8.9-degree ray angle, 18.7-degree
+	                                    // tolerance) is refused, where 5 degrees would have given it 29.5 and passed
+	                                    // it.
 	float minRegisteredEvidence{0.1f};  // A weakly supported pose is accepted only when the composite weight of the image's
 	                                    // pairs to registered images is at least this share of all its pairs' weight,
 	                                    // scaled by the fraction of the scene's images that are registered: early on
 	                                    // most evidence is expected to lie ahead, late on an image whose evidence is
 	                                    // almost all in unregistered images belongs to a part the model barely
 	                                    // touches, and registering it there registers it where its evidence is not.
-	                                    // Also holds for the relative-pose fallback. A refused image is retried as its
-	                                    // neighbours come in (0 = disabled)
+	                                    // Also holds for the relative-pose fallback. A deferred image is retried as its
+	                                    // neighbours come in, but a round in which every candidate is deferred and the
+	                                    // fallback finds no image either ends this sub-scene's resection: only the
+	                                    // whole-scene pass that follows the merge sees the image again, with its
+	                                    // neighbours registered, and a community that stays unregistered as a whole is
+	                                    // left out (0 = disabled)
 	bool relativePoseFallback{true};    // Register one image from its relative poses to registered images when no image
 	                                    // reaches minCorrespondences, or every candidate that did failed to register,
 	                                    // instead of stopping there
@@ -237,7 +242,10 @@ private:
 	 */
 	IIndex RegisterFromRelativePoses(const IIndexScores& unregistered);
 
-	// Composite weight of the image's valid pairs to registered images as a share of that of all its valid pairs; 1 for an image with no valid pair
+	// Composite weight of the image's valid pairs to registered images as a share of that of all its
+	// valid pairs; 1 for an image with no valid pair. A pair to an image the caller withheld
+	// (ExcludeImages) stays in the denominator: the model rejected that evidence rather than gaining
+	// it, and the share is read against everything the image has
 	float RegisteredEvidenceShare(IIndex imageID) const;
 	// Share of the scene's images holding a camera that are registered
 	float RegisteredImagesFraction() const;
