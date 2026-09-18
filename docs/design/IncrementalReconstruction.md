@@ -73,7 +73,11 @@ weight of all its pairs -- a bar that rises as the model fills in, so an image i
 by the few pairs it happens to have when most of its evidence still lies beyond the model's edge. An
 image that misses the bar is not refused outright, only deferred -- retried once more of its neighbours
 have registered, or picked up by the tail pass, which sees every pair; the relative-pose fallback holds
-the same bar before it registers an image from a single link.
+the same bar, and an image under it is not even ranked among the fallback's candidates, so a handful of
+deferred images cannot take every slot from one whose evidence is registered. A round in which every
+candidate is deferred and the fallback finds no image either ends this sub-scene's resection there:
+only the whole-scene pass that follows the merge sees those images again, with their neighbours
+registered, and a community that stays unregistered as a whole is left out.
 
 When no image reaches `minCorrespondences` (15), or an iteration's candidates all fail to register,
 the resection falls back to relative poses (`relativePoseFallback`, on by default): an image still
@@ -180,7 +184,8 @@ deciding, so a chain cannot lift itself in.
 | `--ba-pair-sigma F` | `1` | relative-pose residual rotation sigma, in degrees (the baseline direction at twice that; 0 disables the residuals) |
 
 The resection's acceptance parameters (`minInlierRatio`, `minInliersAbsolute`,
-`maxRelativeRotationError`, `relativePoseFallback`) and the image filter's corroboration bar
+`maxRelativeRotationError`, `wellSupportedInlierRatio`, `maxLinkDirectionError`,
+`minRegisteredEvidence`, `relativePoseFallback`) and the image filter's corroboration bar
 (`maxCorroborationAngle`, its inlier floor) have no flags; their defaults live in `ResectionConfig` and
 the `FilterWeaklyConnectedImages` call in `Scene.cpp`.
 

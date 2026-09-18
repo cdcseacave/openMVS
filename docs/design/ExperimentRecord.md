@@ -177,7 +177,9 @@ uncapped to 2.5/2.4/0.9), where no cap leaves two of the three standing. 300 is 
 tested caps (50/100/150/200/300) that clears both bars at once. For the direction tolerance, of
 alameda's 1538 right registrations only one is refused at 3 degrees, and barely (28.3 degrees
 against a 28.3-degree tolerance); the one misregistration on record, image 581, is refused at 3
-degrees and passes at 5.
+degrees and passes at 5. The two counts above come from two replays of the trace -- the second
+recorded every registration against its own links -- which is why they differ by one: 1537 right of
+1541 accepted in the trace above, 1538 right registrations here.
 
 **A dense-discounted count waiver, not adopted.** A version of the `minInliersAbsolute` waiver that
 counted a dense inlier for less than a described one, the way the pair evidence and the bundle
