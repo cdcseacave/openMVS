@@ -76,9 +76,11 @@ struct SFM_API PairsWeightingConfig
     // keeps denseObservationWeight * denseInlierCap weighted inliers -- enough to weigh in the
     // tens among dense-only neighbours at a normal ray angle, so a textureless interior that only
     // dense matches link stays linked -- while a pair with descriptor evidence is ranked by it.
-    // The value comes from the 2026-09-18 study of an outdoor (alameda) and an indoor
-    // (OfficeBadLoop) matched scene (docs/design/ExperimentRecord.md).
-    unsigned denseInlierCap = 100;
+    // On an indoor RoMa2 scene (OfficeBadLoop, 4037 images) a cap of 300 keeps 99.2% of the dense-mostly pairs
+    // with good coverage and triplet support above the clustering bar of 3 (66.5% at 100, 93.4% at 200), cutting
+    // off no image; on an outdoor scene (alameda) it still drops the three wide-baseline dense-heavy pairs that
+    // misplaced a seven-image community (5.4/3.8/1.3 uncapped to 2.5/2.4/0.9).
+    unsigned denseInlierCap = 300;
 };
 
 // The fraction of a gridSize x gridSize grid over the image that the pair's track-forming matches

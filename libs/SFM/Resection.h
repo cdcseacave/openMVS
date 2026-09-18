@@ -58,14 +58,17 @@ struct SFM_API ResectionConfig
 	float wellSupportedInlierRatio{0.5f}; // Inlier share from which a pose is trusted over the image's verified pairs to
 	                                    // registered images: the link checks below (rotation, direction, evidence
 	                                    // share) apply only under it, since the pairs may themselves be wrong
-	float maxLinkDirectionError{5.f};   // Maximum angle (degrees) between the baseline direction a verified pair to a
+	float maxLinkDirectionError{3.f};   // Maximum angle (degrees) between the baseline direction a verified pair to a
 	                                    // registered image predicts and the one the estimated centre makes with that
 	                                    // neighbour, as seen from the structure the pair triangulates: a pair of
 	                                    // nearly parallel rays forgives a wide direction error and a near-duplicate
 	                                    // pair (rays under 2 degrees) fixes no direction, since its translation is
 	                                    // unreliable. A weakly supported pose is refused when the quorum links that
-	                                    // contradict the direction outweigh the ones that agree (0 = disabled). The
-	                                    // same angle the image filter uses as maxCorroborationAngle
+	                                    // contradict the direction outweigh the ones that agree (0 = disabled).
+	                                    // Of 1538 right alameda registrations only one is refused at 3 degrees, and barely (28.3 vs
+	                                    // a 28.3-degree tolerance); the one misregistration on record (image 581, 29.1 degrees off
+	                                    // at an 8.9-degree ray angle, 18.7-degree tolerance) is refused, where 5 degrees would have
+	                                    // given it 29.5 and passed it.
 	float minRegisteredEvidence{0.1f};  // A weakly supported pose is accepted only when the composite weight of the image's
 	                                    // pairs to registered images is at least this share of all its pairs' weight,
 	                                    // scaled by the fraction of the scene's images that are registered: early on
