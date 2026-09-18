@@ -20,7 +20,7 @@ Phase 3: GlobalAlignment::MergeScenes()     → measure seams, place blocks, mer
 
 ### Covisibility Graph
 
-A weighted undirected graph is built where nodes are images and edge weights are composite pair weights. Edges below `minPairWeight` (3.0) are discarded. The graph is stored in CSR format for compatibility with graph partitioning libraries. If the scene arrives with matches but no tracks, they are built once here so the seam statistics the refinement passes below read have something to read; each sub-scene rebuilds its own tracks again once it is split off.
+A weighted undirected graph is built where nodes are images and edge weights are composite pair weights. Edges below `minPairWeight` (3.0) are discarded. The evidence behind that weight counts a pair's dense inliers only up to `denseInlierCap` (300, `PairsWeightingConfig`): a wide, imprecise dense-only overlap samples a warp into hundreds of matches, and uncapped it would outweigh the descriptor-verified pairs around it in this graph; capped, a dense-only pair still keeps a quarter of the cap (the discount every dense match carries in this graph) as evidence, enough to hold a textureless interior together while a pair with descriptor evidence is ranked by it. The graph is stored in CSR format for compatibility with graph partitioning libraries. If the scene arrives with matches but no tracks, they are built once here so the seam statistics the refinement passes below read have something to read; each sub-scene rebuilds its own tracks again once it is split off.
 
 ### Aggregative Clustering
 
@@ -28,7 +28,7 @@ Bottom-up greedy merging that respects covisibility structure:
 
 1. Initialize each image as a singleton cluster
 2. Build a priority queue of edges sorted by weight (descending)
-3. Pop the highest-weight edge; merge the two clusters unless the merge would cross `maxViewsPerCluster`, or would push the combined size past `targetViewsPerCluster` — except when the smaller side is still under `minViewsPerCluster` and has to go somewhere, and even then only while the larger side has not itself already exceeded `targetViewsPerCluster` — or would join two clusters both already at or past the floor over an interface thinner than `minClusterCoupling` (0.05, 0 = disabled) of the weaker side's own internal weight
+3. Pop the highest-weight edge; merge the two clusters unless the merge would cross `maxViewsPerCluster`, or would push the combined size past `targetViewsPerCluster` — except when the smaller side is still under `minViewsPerCluster` and has to go somewhere, and even then only while the larger side has not itself already exceeded `targetViewsPerCluster` — or would cross an interface thinner than `minClusterCoupling` (0.05, 0 = disabled) of the weaker side's own internal weight. The coupling test holds for that target-size exception too, not only once both sides are already past the floor: a community under the floor is exactly the case a thin interface can hand to whichever oversized cluster happens to have room, over neighbours it is far more attached to. A singleton has no internal weight to be thin against, so it always passes
 4. Periodically rebuild the PQ and re-run the local-search pass below (every `max(10, maxViewsPerCluster / 10)` merges) to keep edge weights consistent
 
 ### Cluster Refinement
@@ -36,7 +36,7 @@ Bottom-up greedy merging that respects covisibility structure:
 Seven passes tidy the greedy result and make every remaining cluster boundary usable by the merge:
 
 1. **RefineClustersLocalSearch** — up to 20 iterations: move boundary images to whichever cluster maximizes internal connectivity (modularity + balance)
-2. **MergeSmallClusters** — absorb clusters below `minViewsPerCluster` into the most-connected neighbor, with `maxOverCapacity` (20) slack
+2. **MergeSmallClusters** — absorb clusters below `minViewsPerCluster` into the most-connected neighbor, with `maxOverCapacity` (20) slack; a community the coupling test refused during the greedy merge lands here too, placed by connection strength rather than by whichever cluster still had room
 3. **RefineClustersBalance** — conservatively move well-connected boundary images out of the largest cluster into smaller neighbors, gated by a minimum affinity ratio, to shorten the critical path of concurrent sub-scene reconstruction
 4. **RefineClustersSplitDisconnected** — split clusters whose images form disconnected components in the covisibility graph
 5. **RefineClustersSplitThinWaist** — split any cluster whose best balanced bipartition is joined below the `minClusterCoupling` seam: the thin-waist clusters that would otherwise reconstruct as two independently scaled blocks

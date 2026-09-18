@@ -59,6 +59,21 @@ verified pairs to registered images predict -- not the single strongest pair, mi
 neighbour is misplaced, but the quorum: the largest group, among the strongest few links, agreeing
 within `maxRelativeRotationError` (15 degrees) of one another (`PoseLink.h`). A pose further than that
 from the quorum's rotation is rejected; contradictory links (no two agree) are left to the other rules.
+The same quorum's links are also weighed on the baseline direction they predict (`maxLinkDirectionError`,
+3 degrees): each link's own tolerance grows with its ray angle (`atan(tan(3°)/rayAngle)`), so a
+wide-baseline pair forgives little disagreement and a near-duplicate one (rays under 2 degrees, its own
+baseline unreliable) fixes no direction and is left out of the count; the pose is refused only when the
+links whose direction disagrees outweigh, by weighted inliers, the ones that agree, so one misplaced
+neighbour cannot refuse it alone.
+
+Before either link check runs, the same weakly supported pose first has to be registered where its
+evidence actually is: `minRegisteredEvidence` (0.1) requires the composite weight of the image's pairs
+into already-registered images to reach a tenth of the registered share of the scene's images, out of the
+weight of all its pairs -- a bar that rises as the model fills in, so an image is not hung off the model
+by the few pairs it happens to have when most of its evidence still lies beyond the model's edge. An
+image that misses the bar is not refused outright, only deferred -- retried once more of its neighbours
+have registered, or picked up by the tail pass, which sees every pair; the relative-pose fallback holds
+the same bar before it registers an image from a single link.
 
 When no image reaches `minCorrespondences` (15), or an iteration's candidates all fail to register,
 the resection falls back to relative poses (`relativePoseFallback`, on by default): an image still
@@ -181,3 +196,10 @@ pose-consistency cut are the tools for that, not this document's own defaults, w
 graph is largely correct. And the pair residuals mostly restate evidence the reprojection residuals
 already carry where a joint is well tracked; pushing `--ba-pair-sigma` much below a degree only fights
 the tracks for control of a joint neither side has reason to distrust.
+
+A pose whose evidence is wrong but agrees with itself passes every check above: on alameda, image 1733
+registers from four pairs of 28-124 sparse matches whose relative rotations agree with each other within
+2.9 degrees, all 2.6-4.6 degrees off the reference -- biased in the same direction, not scattered, so no
+quorum or link-majority rule can tell it from right evidence. The dense fill made those same pairs'
+geometry better, not worse: the same pairs matched with SIFT alone land 7-29 degrees off the reference,
+and SIFT could not keep the image registered at all. Documented, not fixed.

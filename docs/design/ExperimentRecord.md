@@ -119,3 +119,73 @@ graph (fdf705b) and removed with its fixtures at 68bf9f0 (2026-08-31).
   the image filter's cuts (3834399, 85ccdbb; the junction measurement deciding which cut images
   contradict the model stays); the median reprojection error kept on a camera's vote for the log
   (e405745; the loose-bar count deciding a contradiction stays).
+
+## Dense evidence in the clustering and the resection (2026-09-17/18)
+
+**The block 9 appendage** (fb-cut clustering, 2026-09-17). Seven images (534, 586-591) landed in
+block 9 instead of with their real neighbours. Image 534 registered there on 9 sparse matches spread
+across three wide-baseline, dense-heavy pairs to images 501/502/496 (dense counts 597/464/428, ray
+angles around 77 degrees), and the other six images hung off it through descriptor-verified pairs
+afterward. The three pairs are real overlaps RoMa2 alone sees at that obliquity, not wrong matches --
+their relative poses agree with the reference to 1-2 degrees -- but 1-2 degrees over their baseline
+at 77 degrees obliquity is 10-20x the error of the pairs around them, and SIFT verifies none of the
+three at all. The clustering put the appendage exactly where it registered: at the end of the greedy
+merge the seven images were their own community (internal weight 7722), refused merges into their
+real neighbours (blocks 6 and 11, interfaces at 27-53% of that weight) because those clusters were
+already past the target size, then accepted into block 9's body over an interface of 9.2 -- 0.12% of
+its own internal weight, far under the 386 (5% of 7722) the coupling test now asks of every merge --
+because a cluster at the target was allowed to absorb a community under the floor without the
+coupling test the same merge would otherwise have to clear.
+
+**Whole-scene dense weight, refuted as the lever** (dw003/dw001 arms, same fb-cut matched scene and
+merge, 2026-09-17). Pinning the bundle adjustment's dense observation weight instead of measuring it
+per solve (0.08-0.16 measured) moved the whole-scene accuracy only a little either way: against
+fb-cut's 0.0479/0.0865 degrees median/p90 rotation error (12 of 13 blocks placed at the merge, 1734
+registered), 0.03 gives 0.0481/0.0873 with only 11 of 13 blocks placed and 0.01 gives 0.0476/0.0858
+with 12 of 13. The appendage's seven images are right in every arm, resected after block 9's own
+refusal; image 1733 (below) is untouched by the weight at any setting. The weight was not the block
+9 lever.
+
+**The registration trace, every attempt against the image's own links** (1543 registrations
+replayed with a trace, 1537 right of 1541 accepted; alameda). The three wrong registrations against
+the right ones:
+
+| registration | inlier share | quorum angle (links agreeing) | weight to registered, best / sum, as a share of all | direction error to strongest link |
+|---|---|---|---|---|
+| 534, block 9 | 0.26 | 1.75° (3 of 3) | 5.4, 10.5; 1.5% / 0.6% | 0.6° |
+| 581, block 11 | 0.45 | 3.34° (4 of 6, disagreeing 79.6°) | 145, 498; 24% / 9% | 29.1° |
+| 1733, block 6 (last image) | 0.36 | 2.21° (4 of 4, agreeing within 2.9°) | 61, 172; 100% / 100% | 1.6° |
+| the 1537 right ones | p5 0.42 | p90 0.41°, p99 1.12°, max 7.74°; disagreement p99 4.0° | sum share p1 6.7%, p5 20% | p99 5.1°, max 28.3° |
+
+534 failed on evidence share alone (0.6% of its pair weight lies in registered images, against a p1
+of 6.7% among the right ones): its quorum agrees and its pose is only 0.6 degrees from the direction
+its strongest link predicts, but that link is one of three pairs carrying 9 sparse matches in total.
+581 failed on direction: one of its six pairs to registered images is itself wrong, so its links
+disagree with each other by 79.6 degrees and its pose lands 29.1 degrees from the one its strongest
+link predicts, at a ray angle whose tolerance (3 degrees at the shipped default) is 18.7 degrees --
+under 5 degrees the same tolerance is 29.5 degrees and would have passed it, a 0.37-degree margin.
+1733 fails neither check (documented as a limitation in `IncrementalReconstruction.md`): its four pairs agree
+with each other and with its pose to within a few degrees, and all of that agreement is 2.6-4.6
+degrees off the reference.
+
+**The dense cap and the direction tolerance, calibrated** (OfficeBadLoop and alameda, 2026-09-18). On
+OfficeBadLoop (4037 images, RoMa2 matched, 23 graph components) a cap of 300 keeps 99.2% of the
+healthy dense-mostly pairs (good coverage, triplet support) above the clustering bar of 3 -- 66.5%
+at a cap of 100, 93.4% at 200 -- cutting off no image and leaving the component count unchanged; on
+alameda the same cap still drops all three of the appendage's pairs under the bar (5.4/3.8/1.3
+uncapped to 2.5/2.4/0.9), where no cap leaves two of the three standing. 300 is the smallest of the
+tested caps (50/100/150/200/300) that clears both bars at once. For the direction tolerance, of
+alameda's 1538 right registrations only one is refused at 3 degrees, and barely (28.3 degrees
+against a 28.3-degree tolerance); the one misregistration on record, image 581, is refused at 3
+degrees and passes at 5.
+
+**A dense-discounted count waiver, not adopted.** A version of the `minInliersAbsolute` waiver that
+counted a dense inlier for less than a described one, the way the pair evidence and the bundle
+adjustment already do, was considered alongside the evidence-share and direction checks and not
+built: none of the three wrong registrations needed the waiver to pass in the first place -- 534's
+inlier share was 26%, 581's 45%, 1733's 36%, each already above the 25% `minInlierRatio` bar on its
+own -- so discounting it could only have refused a right dense-only registration in a textureless
+capture, the case the cap and the two link checks exist to protect, without catching any of the
+three.
+
+The validation on alameda and an indoor capture is recorded below once complete.
