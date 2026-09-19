@@ -202,4 +202,68 @@ with its real neighbours at 0.04-0.056 degrees -- lost no image either baseline 
 error against the ARKit poses (median 2.04 -> 1.46 degrees, 47% -> 76% within 2 degrees), with the
 dense inlier cap not yet applied: those arms loaded already weighted scenes.
 
-The validation on alameda and an indoor capture is recorded below once complete.
+**The validation with the cap in the pair weights** (2026-09-18/19). Both captures were re-matched
+by the new binaries (run `openmvs-release-20260918-evidence-match-roma2` under alameda and under
+chris-house-indoor-medium), then reconstructed on the capped scene at the 0.5 gate
+(`openmvs-release-20260918-evidence-full-roma2`) and at gate 1
+(`openmvs-release-20260918-evidence-final-roma2`). On alameda gate 1 registers 1734/1734, all 14
+blocks placed, nothing left to the resection: 581 falls from the baseline's 1.8838 degrees to
+0.0851, the seven-image appendage (534, 586-591) sits beside 592-594 at 0.0430-0.0583, and the
+maximum centre error drops from the baseline's 0.4102 to 0.0317 -- the 0.41 alias gone. The price:
+two newly-over-0.5 images, 1457 and 1458 (both 0.62), and a rotation-median creep of +0.0035
+degrees over 65% of the images. On chris-house-indoor-medium gate 1 registers 1266/1267 against the
+baseline's 1159 (`openmvs-release-20260918-baseline-roma2`), rotation median 2.04 to 1.21, but 55
+images (1193, 1213-1266) land 11.8-14.9 in centre -- 71-89% of the diagonal -- and 52 images the
+baseline had right are lost; the gate-0.5 run on the same scene is worse still, 104 images (0-103)
+near 10.4 centre and a rotation p90 of 50.992 degrees, cut back to 55 by gate 1's checks.
+
+**The indoor failure is the cap, not the resection rules.** The same rules on the uncapped scene
+keep the tail at 6.66 degrees / 0.212 centre (the replay run,
+`openmvs-release-20260918-evidence-roma2`, gate 0.5, no pair weight recomputed); the capped scene
+breaks it, to 65.9 / 12.6 at gate 1 and 103.6 / 0.69 at gate 0.5. The mechanism, in
+`libs/SFM/PairsWeighting.cpp:218-255`: the capped weighted inlier count enters the connectivity
+term (`weightConnectivity`) as a pair's share of its two images' own maximum, and again in the
+inlier-ratio boost, as that same capped count over the pair's uncapped match total. Where adjacent
+pairs carry 1000-1700 dense matches, a cap of 300 flattens them to nearly the same evidence --
+1214-1215's weight falls 55.20 to 4.06 -- while a thin, wrong long link, 1210-1218 (4 sparse, 329
+dense, 13.5 degrees off the ARKit relative rotation), rises 12.60 to 15.41, because the node maxima
+it normalises against collapse under the same cap. The clustering puts 1217-1266 into a block with
+945-1048 (sub-scene 9 of the gate-1 run), and that block's own reconstruction attaches the tail
+through one resection -- image 1224 at 524/1949 = 26.9% inliers, above every floor, unflagged by
+any check. Comparing the same matching with and without the cap (the gate-1 run against the
+baseline `openmvs-release-20260918-baseline-roma2`), 313 of the 879 pairs under the clustering bar
+are cut by the cap alone, 305 of them (97.4%) within 5 degrees of the ARKit relative rotation, two
+the only direct link between consecutive keyframes; the cap was calibrated on OfficeBadLoop by the
+share of dense-mostly pairs surviving that bar, blind to the ordering of a node's links.
+
+**The rules without the cap, at gate 1** (2026-09-19, run
+`openmvs-release-20260919-nocap-gate1-roma2` under both captures, the baselines' own matched scenes
+reconstructed by the shipping binary). On alameda it registers 1694 of 1734, every one right:
+centre error maxes at 0.0321, only image 1733 -- the branch's documented limitation -- sits over
+0.5 degrees, and 534, 586-591 land at 0.042-0.056 beside 592-594 in block 6. The 40 unregistered
+(541-571, 581-585, 1652-1655) are one weight community of sub-scene 11 whose interface to the rest
+is 1.9% of its own internal weight (2 784.5 of 149 426.1), so no image of it ever clears the
+registered-evidence share the bar asks, in the block or in the whole-scene pass; 39 of the 40 were
+images the baseline registered right (0.027-0.114 degrees), the fortieth is 581, which the baseline
+had wrong. On chris-house-indoor-medium the same run registers all 1267, losing nothing the
+baseline had right, with the best local relative rotation (p90 0.79) and translation-direction (p90
+10.3) of any run here; 108 of the gain are images 0-107, the stretch the baseline refused outright,
+and only seven images sit beyond 5% of the capture diagonal, none beyond 25% (the capped gate-1
+run: 184 and 55) -- the seven are 1212-1218, the orientation bump the baseline also carries, from
+77 pairs themselves a median of 91 degrees wrong against the ARKit reference. The "within 2
+degrees" count, 494 against the capped run's 769, is an artefact of the similarity fit against the
+drifting reference (61.0% of images admitted to that fit in the capped run, 99.4% here), not a
+measure of correctness.
+
+**Where this leaves the defaults.** The branch ships the dense inlier cap at 300 as approved; the
+record above shows that value regresses a textureless interior, and that the coupling test with the
+every-pose resection rules alone meet the correctness goal on both captures, at the price of the
+40-image community left unregistered on alameda. The choice between no cap, a cap relative to a
+node's own evidence, or a cap applied after the connectivity normalisation instead of before it, is
+open. Two further levers: the coupling test that gates the clustering's greedy merge is applied to
+each merge and never once to the community it finally produces -- the finished indoor community
+(1217-1266 against 945-1048) scores 0.0436 against the 0.05 floor, refusable had it been measured
+once as a whole; and the creation-time coupling check warns without acting -- indoor sub-scene 9
+passed it at a spectral cut coupling of 0.055 and reconstructed its tail roughly 56 degrees off the
+body it is otherwise sound within, in effect two orientations glued together by one registration
+nothing challenged.
