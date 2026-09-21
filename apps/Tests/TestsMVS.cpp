@@ -1848,6 +1848,58 @@ bool MeshCleanPerVertexTest()
 			return false;
 		}
 	}
+	// the grid above is uniform, so the webbing gate is a no-op on it and the bound survives
+	// whatever runs before it. Give the gate a lid to remove and the two-pass contract is what
+	// gets tested: the gate as its own Clean, the bound measured after it on the vertices the
+	// decimation receives, and the decimation still honouring it.
+	{
+		Mesh mesh;
+		MeshCleanBuildGrid(16, mesh);
+		const size_t numVertsGrid(mesh.vertices.size());
+		// the gate probes at 0.5x..reach x the face's longest edge and calls a face capped when
+		// some probe finds surface within cone(0.35) x that probe's distance, so a lid only trips
+		// it while its height sits inside [0.325, 0.675] x its own span: a 4x4 lid (longest edge
+		// 4*sqrt(2)) is centred in that window at height 0.5*4*sqrt(2). Its longest edge also has
+		// to clear 2x the median longest edge, which the grid pins at sqrt(2).
+		constexpr float lidSpan(4.f), lidHeight(lidSpan*(float)M_SQRT2/2);
+		const Mesh::VIndex lid0((Mesh::VIndex)mesh.vertices.size());
+		mesh.vertices.emplace_back(0.f, 0.f, lidHeight);
+		mesh.vertices.emplace_back(lidSpan, 0.f, lidHeight);
+		mesh.vertices.emplace_back(lidSpan, lidSpan, lidHeight);
+		mesh.faces.emplace_back(lid0, lid0+1, lid0+2);
+		const size_t numFaces(mesh.faces.size());
+		Mesh::CleanParams gateParams;
+		gateParams.maxEdgeScale = 2.f;
+		mesh.Clean(gateParams);
+		if (mesh.faces.size() >= numFaces || mesh.vertices.size() == numVertsGrid + 3) {
+			VERBOSE("ERROR: MeshCleanPerVertexTest webbing gate removed nothing: %u -> %u faces, %u -> %u vertices!",
+				(unsigned)numFaces, mesh.faces.size(), (unsigned)(numVertsGrid+3), mesh.vertices.size());
+			return false;
+		}
+		// the field is measured on the mesh the decimation receives, never before the gate
+		const size_t numFacesGated(mesh.faces.size());
+		FloatArr bounds(mesh.vertices.size());
+		FOREACH(v, mesh.vertices)
+			bounds[v] = mesh.vertices[v].x < 8.f ? -1.f : 1e6f;
+		size_t lockedFaces0(0), lockedFaces1(0);
+		const auto CountLocked = [](const Mesh& m, size_t& faces) {
+			faces = 0;
+			for (const Mesh::Face& f: m.faces)
+				if (m.vertices[f[0]].x < 8.f && m.vertices[f[1]].x < 8.f && m.vertices[f[2]].x < 8.f)
+					++faces;
+		};
+		CountLocked(mesh, lockedFaces0);
+		Mesh::CleanParams params;
+		params.simplifyTarget = 1.f;
+		params.vertexMaxError = &bounds;
+		mesh.Clean(params);
+		CountLocked(mesh, lockedFaces1);
+		if (!(mesh.faces.size() < numFacesGated) || lockedFaces1 != lockedFaces0) {
+			VERBOSE("ERROR: MeshCleanPerVertexTest two-pass bound: %u -> %u faces, locked %u -> %u faces!",
+				(unsigned)numFacesGated, mesh.faces.size(), (unsigned)lockedFaces0, (unsigned)lockedFaces1);
+			return false;
+		}
+	}
 	return true;
 }
 /*----------------------------------------------------------------*/
@@ -2144,6 +2196,7 @@ bool PipelineTest(bool forceCPU, bool verbose)
 		return false;
 	constexpr float decimate = 0.7f;
 	Mesh::CleanParams cleanParams;
+	cleanParams.maxEdgeScale = 2.f; // drop cavity-capping faces first
 	cleanParams.simplifyTarget = decimate;
 	cleanParams.spuriousFactor = 10.f;
 	cleanParams.removeSpikes = true;

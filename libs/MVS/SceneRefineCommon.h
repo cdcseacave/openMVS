@@ -248,6 +248,9 @@ MVS_API void SeenAreasToPixelFactors(const Mesh& mesh, const Mesh::AreaArr& seen
 // call this once the refinement ends
 MVS_API void SimplifyMeshWithinTolerance(Mesh& mesh, const FloatArr& pixelFactors, float tolerancePx);
 
+// the refine pipeline's webbing gate, matching ReconstructMesh's --max-edge-scale default
+constexpr float REFINE_MAX_EDGE_SCALE(2.f);
+
 // the preparation's projection log line: faces seen, their sampled analytic mean area and the
 // percentiles of their rasterized areas
 MVS_API void LogFaceAreas(const char* stage, const Mesh::AreaArr& maxAreas, float meanSeenArea, const String& elapsed);
@@ -321,6 +324,29 @@ float SampleSeenFaceArea(const REFINE& refine, const Mesh::AreaArr& maxAreas, si
 	return num ? (float)(sum/(double)num) : 0.f;
 }
 
+// the post-refinement decimation, for both backends: drop the webbing, then measure the per-vertex
+// pixel factors on the mesh the decimation receives and collapse within tolerancePx. The tolerance
+// is a reprojection error, so it reads projected areas through ListFaceAreas exactly as the
+// preparation's split rule does, and never keeps a face no refinement pair can see
+template<class REFINE>
+void SimplifyRefinedMesh(REFINE& refine, float tolerancePx)
+{
+	Mesh& mesh = refine.scene.mesh;
+	// the webbing gate is its own pass: it changes the vertex set, so the bound below has to be
+	// measured after it, on the vertices the decimation receives
+	Mesh::CleanParams gateParams;
+	gateParams.maxEdgeScale = REFINE_MAX_EDGE_SCALE;
+	mesh.Clean(gateParams);
+	refine.ListVertexFacesPre(); // the gate changed the face array the CUDA backend caches
+	refine.ListCameraFaces();
+	Mesh::AreaArr seenAreas;
+	refine.ListFaceAreas(seenAreas);
+	FloatArr pixelFactors;
+	SeenAreasToPixelFactors(mesh, seenAreas, pixelFactors);
+	SimplifyMeshWithinTolerance(mesh, pixelFactors, tolerancePx);
+	refine.ListVertexFacesPre();
+}
+
 // the mesh preparation both backends run at the start of every scale (their SubdivideMesh()
 // forwards here). The first scale decimates the input mesh straight to the density the
 // refinement wants -- a mean tightest-pair projected area of half the face cap, in pixels of that
@@ -341,6 +367,7 @@ void PrepareRefineMesh(REFINE& refine, uint32_t maxArea, float fDecimate, unsign
 	constexpr float fEdgeLength(-1.f); // the remesh band sits on the current mean edge
 	const auto cleanMesh = [&](float simplifyTarget, float edgeLength) {
 		Mesh::CleanParams params;
+		params.maxEdgeScale = REFINE_MAX_EDGE_SCALE;
 		params.simplifyTarget = simplifyTarget;
 		params.maxHoleEdges = nCloseHoles;
 		params.edgeLength = edgeLength;
@@ -365,7 +392,13 @@ void PrepareRefineMesh(REFINE& refine, uint32_t maxArea, float fDecimate, unsign
 	// covers in its tightest pair, then remeshes against the field that measurement implies
 	const bool bSizingField(OPTREFINE::bAdaptiveFaceSize && maxArea > 0 && fDecimate <= 0.f);
 	const auto remeshToField = [&]() {
-		// the decimation changed the face array, and the CUDA backend keeps its own copy of it:
+		// its own pass: it changes the vertex set, so the sizing field below has to be measured
+		// after it, on the vertices the remesh receives
+		TD_TIMER_STARTD();
+		Mesh::CleanParams params;
+		params.maxEdgeScale = REFINE_MAX_EDGE_SCALE;
+		mesh.Clean(params);
+		// the gate and the decimation changed the face array, and the CUDA backend keeps its own copy:
 		// ListCameraFaces() re-uploads only the vertices, so the faces have to be re-listed first
 		refine.ListVertexFacesPre();
 		Mesh::AreaArr seenAreas;
@@ -373,8 +406,7 @@ void PrepareRefineMesh(REFINE& refine, uint32_t maxArea, float fDecimate, unsign
 		refine.ListCameraFaces();
 		refine.ListFaceAreas(seenAreas);
 		SeenAreasToEdgeTargets(mesh, seenAreas, (float)maxArea*0.5f, targets);
-		TD_TIMER_STARTD();
-		Mesh::CleanParams params;
+		params.maxEdgeScale = 0;
 		params.simplifyTarget = 1.f;
 		params.edgeLength = targets.GetMean(); // the scalar the remesh still validates
 		params.remeshIterations = 10;

@@ -155,10 +155,6 @@ public:
 	void ListCameraFaces();
 
 	void ListFaceAreas(Mesh::AreaArr& maxAreas);
-	void SubdivideMesh(uint32_t maxArea, float fDecimate=1.f, unsigned nCloseHoles=15, unsigned nEnsureEdgeSize=1);
-	// decimate the refined mesh within the given reprojection tolerance, measured in the
-	// projected areas ListFaceAreas() reports (px at the working resolution)
-	void SimplifyMesh(float tolerancePx);
 
 	// score the mesh and fill in every per-vertex term; `gradients` receives the combined
 	// photometric+smoothness gradient as one Point3d per vertex and may be NULL, in which case
@@ -578,30 +574,6 @@ void MeshRefine::ListFaceAreas(Mesh::AreaArr& maxAreas)
 	maxAreas.Resize(faces.GetSize());
 	ReduceFaceAreasOverPairs(viewAreas, pairs, maxAreas);
 }
-
-// the shared preparation (PrepareRefineMesh, SceneRefineCommon.h): decimate, remesh and
-// subdivide so that no face projects larger than the area cap in both images of a pair
-void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nCloseHoles, unsigned nEnsureEdgeSize)
-{
-	PrepareRefineMesh(*this, maxArea, fDecimate, nCloseHoles, nEnsureEdgeSize);
-}
-
-
-void MeshRefine::SimplifyMesh(float tolerancePx)
-{
-	// the tolerance is a reprojection error, so it is measured in the same projected areas the
-	// preparation splits against -- every other reading of "how big is this face on screen" in
-	// this file goes through ListFaceAreas, and a decimation that used a different one would
-	// keep faces no pair of the refinement can see
-	ListCameraFaces();
-	Mesh::AreaArr seenAreas;
-	ListFaceAreas(seenAreas);
-	FloatArr pixelFactors;
-	SeenAreasToPixelFactors(scene.mesh, seenAreas, pixelFactors);
-	SimplifyMeshWithinTolerance(scene.mesh, pixelFactors, tolerancePx);
-	ListVertexFacesPre();
-}
-
 
 // score mesh using photo-consistency
 // and compute vertices gradient using analytical method
@@ -1541,7 +1513,7 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 		refine.ListVertexFacesPre();
 
 		// automatic mesh subdivision
-		refine.SubdivideMesh(nMaxFaceArea, nScale == 0 ? fDecimateMesh : 1.f, nCloseHoles, nEnsureEdgeSize);
+		PrepareRefineMesh(refine, nMaxFaceArea, nScale == 0 ? fDecimateMesh : 1.f, nCloseHoles, nEnsureEdgeSize);
 
 		// extract array of triangle normals
 		refine.ListVertexFacesPost();
@@ -1820,7 +1792,7 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 	// the deliverable: the refined surface within a reprojection tolerance, not every face the
 	// preparation needed (the same pass on both backends)
 	if (OPTREFINE::fSimplifyTolerance > 0)
-		refine.SimplifyMesh(OPTREFINE::fSimplifyTolerance);
+		SimplifyRefinedMesh(refine, OPTREFINE::fSimplifyTolerance);
 
 	return true;
 } // RefineMesh
