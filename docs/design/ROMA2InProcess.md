@@ -470,7 +470,7 @@ resolved fresh at the head of every solve (`EstimateDenseObservationWeight`, `Bu
 since a reconstruction runs fifty or more of them and the scene the estimate is measured on keeps
 growing. `w` is clamped to `[0.01, 1]` — a dense correspondence is never a MORE precise measurement
 than a described one, and never worth nothing to a textureless region that has no other evidence — and
-falls back to the fixed `DENSE_OBSERVATION_WEIGHT` (0.25, `ImagePair.h`) when either population is
+falls back to the fixed `DENSE_OBSERVATION_WEIGHT` (0.25, `BundleAdjustment.h`) when either population is
 under 100 observations or either sigma is zero, the honest answer for an early incremental step whose
 scene is a handful of tracks and for a scene that fits itself exactly. The same constant answers a
 scene carrying no dense keypoints at all, which the estimator recognises before walking anything: the
@@ -484,8 +484,9 @@ a textureless interior, and `w = 1/k^2` moves with it. A constant tuned to one c
 other; nothing here is right in both places, which is why this weight is measured and the view graph's
 is not.
 
-This is deliberately a different quantity from the view graph's own dense discount
-(`PairsWeightingConfig::denseObservationWeight`, `DENSE_OBSERVATION_WEIGHT` above, `ImagePair.h`), and
+This is deliberately a different quantity from the view graph's own dense evidence
+(`PairsWeightingConfig::denseFrameInliers`; `BundleAdjustment.h`'s `DENSE_OBSERVATION_WEIGHT` above is
+the bundle adjustment's fallback alone), and
 bundle adjustment's measured weight does not reach it. A warp correspondence localizes a point several
 times less precisely than a descriptor one — which is exactly what bundle adjustment's weight charges
 it for — but it says nearly as much as a descriptor correspondence about whether the two images
@@ -688,8 +689,8 @@ sees no reloads at all.
   on a pair carrying a dense segment, `FilterMatches`' mean ray angle and the intrinsic weight's grid
   occupancy are both measured over the whole track-forming set (sparse + dense), the minimum-support
   floor reads that same set so a pair under the sparse-only bar still counts, and
-  `GetNumWeightedInliers()` discounts the dense share by `DENSE_OBSERVATION_WEIGHT` rather than
-  dropping or fully counting it.
+  `GetNumWeightedInliers()` scales the dense share to the matcher's frame target
+  (`PairsWeightingConfig::denseFrameInliers`) rather than dropping or fully counting it.
 - **`GlobalDescriptorsQueryTest`** — always runs, no model needed: the cosine ranking over
   `Image::globalDescriptor` and its deterministic tie order, the `PairsMatcher::QueryRetrieval`
   dispatch that ranks candidate pairs through the descriptors instead of the vocabulary tree, the
