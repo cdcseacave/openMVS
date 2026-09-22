@@ -318,7 +318,8 @@ private:
 	void RefineClustersRescueOrphans(std::vector<IIndexArr>& clusters);
 
 	// Helper: Create sub-scenes and logging/export from clusters; clusters smaller than
-	// minViewsPerCluster are left out unless the caller asked for every one of them
+	// minViewsPerCluster are left out unless the caller asked for every one of them, except a
+	// community that stands alone (IsStandaloneCommunity), which becomes a sub-scene at any size
 	std::vector<Scene> BuildSubScenesFromClusters(
 		std::vector<IIndexArr>& clusters,
 		std::vector<IIndexArr>* outLocalToGlobal,

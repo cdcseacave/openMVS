@@ -429,6 +429,10 @@ bool SceneClusterSubFloorCouplingTest();
 // before when it does not (SceneCluster::IsStandaloneCommunity)
 bool SceneClusterStandaloneCommunityTest();
 
+// A cluster under the floor that IS coupled to a neighbour but that no neighbour has room for stays
+// where it is; it must not come out as a sub-scene whatever position it holds in the cluster order
+bool SceneClusterCoupledOrphanSkippedTest();
+
 // Phase 3: Global Alignment tests
 bool GlobalAlignmentBuildGlobalToLocalMapTest();
 bool GlobalAlignmentRotationAveragingExtendedTest();

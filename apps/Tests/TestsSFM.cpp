@@ -11899,6 +11899,100 @@ bool SceneClusterStandaloneCommunityTest()
 }
 /*----------------------------------------------------------------*/
 
+// A and B as in the standalone-community fixture but both filled to the cap with no slack
+// (maxOverCapacity 0): A = [0,11) around hub 0, B = [11,22) around hub 11. W = [22,26) is joined to
+// one another by six pairs of weight 50 (3000 in the graph's integer weights, so the hub/chain
+// edges that assemble A and B settle first) and to B by two pairs of weight 30 (600, well past
+// minClusterCoupling of W's own cohesion: solidly coupled, not a standalone community), with 80
+// tracks seen by W's 22, 23, 24 and B's 11, 12, 13 giving that pair a strong seam by the merge's own
+// bars. Neither the small-cluster pass nor the orphan rescue can place W (B is already at the cap),
+// so W must come out of the split as no sub-scene at all -- it used to come out as a third one
+// whenever B's cluster had already been extracted by the time the sub-scene builder looked at W
+// again, because the coupling test it re-ran then no longer saw the interface to B and read the
+// same strong seam as if no neighbour were coupled to it.
+bool SceneClusterCoupledOrphanSkippedTest()
+{
+	TD_TIMER_START();
+
+	Scene scene;
+	SceneConfig cfg;
+	cfg.numImages = 26;
+	cfg.numPoints = 0;
+	cfg.generatePairs = false;
+	cfg.generateDescriptors = false;
+	cfg.poseMode = SceneConfig::CIRCULAR_ARRANGEMENT;
+	cfg.rotationAngleStep = 360.0 / 26;
+	GenerateTestScene(scene, cfg);
+	scene.pairs.clear();
+	scene.tracks.clear();
+
+	// a pair whose composite weight is exactly the given number: unit quality factors, triplet 0.5
+	const auto AddPair = [&scene](IIndex a, IIndex b, float weight) {
+		ImagePair pair(a, b);
+		pair.weightedInliers = weight;
+		pair.weightSpatial = 1.f;
+		pair.weightConnectivity = 1.f;
+		pair.weightTriplet = 0.5f;
+		scene.pairs.emplace_back(std::move(pair));
+	};
+	// A = [0,11): a hub at 0 and a chain, so the greedy assembles it one image at a time
+	for (IIndex k = 1; k < 11; ++k) AddPair(0, k, 200.f);
+	for (IIndex k = 1; k + 1 < 11; ++k) AddPair(k, k + 1, 100.f);
+	// B = [11,22): the same shape around a hub at 11
+	for (IIndex k = 12; k < 22; ++k) AddPair(11, k, 200.f);
+	for (IIndex k = 12; k + 1 < 22; ++k) AddPair(k, k + 1, 100.f);
+	// W = [22,26): every pair among them, and two pairs into B lighter than the hub/chain edges so
+	// A and B assemble first, but well above the coupling floor
+	for (IIndex a = 22; a < 26; ++a) for (IIndex b = a + 1; b < 26; ++b) AddPair(a, b, 50.f);
+	AddPair(22, 11, 30.f);
+	AddPair(23, 12, 30.f);
+
+	// 80 tracks each seen by W's 22, 23, 24 and B's 11, 12, 13: seam-usable on both sides, well past
+	// the merge's strong-seam bars (75 tracks, 3 cameras a side with >= 30)
+	for (uint32_t t = 0; t < 80; ++t) {
+		Track& track = scene.tracks.emplace_back();
+		for (uint32_t img : {22u, 23u, 24u, 11u, 12u, 13u})
+			track.observations.emplace_back(img, t);
+		track.numInliers = (uint8_t)track.observations.size();
+	}
+
+	ClusterConfig clusterCfg;
+	clusterCfg.maxViewsPerCluster = 11;
+	clusterCfg.targetViewsPerCluster = 10;
+	clusterCfg.minViewsPerCluster = 5;
+	clusterCfg.maxOverCapacity = 0;
+
+	SceneCluster cluster(scene, clusterCfg);
+	std::vector<IIndexArr> localToGlobals;
+	std::vector<Scene> subScenes = cluster.SplitScene(&localToGlobals);
+
+	std::vector<int> subSceneOf(26, -1);
+	FOREACH(s, localToGlobals)
+		for (IIndex gid : localToGlobals[s])
+			subSceneOf[gid] = (int)s;
+
+	if (subSceneOf[0] < 0 || subSceneOf[11] < 0 || subSceneOf[0] == subSceneOf[11]) {
+		VERBOSE("SceneClusterCoupledOrphanSkippedTest FAILED: A and B must be two sub-scenes (%d, %d), the fixture does not exercise the floor rule otherwise", subSceneOf[0], subSceneOf[11]);
+		return false;
+	}
+	const int wScene = subSceneOf[22];
+	for (IIndex w = 23; w < 26; ++w) {
+		if (subSceneOf[w] != wScene) {
+			VERBOSE("SceneClusterCoupledOrphanSkippedTest FAILED: W was split, image %u in sub-scene %d and 22 in %d", w, subSceneOf[w], wScene);
+			return false;
+		}
+	}
+	if (wScene != -1) {
+		VERBOSE("SceneClusterCoupledOrphanSkippedTest FAILED: W came out as sub-scene %d although it is coupled to B (sub-scene %d) and B has no room for it; a coupled cluster under the floor must be skipped, not mistaken for a standalone community",
+			wScene, subSceneOf[11]);
+		return false;
+	}
+
+	VERBOSE("SceneClusterCoupledOrphanSkippedTest PASSED: a coupled cluster under the floor that no neighbour can take is skipped whatever its place in the order (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
 
 // ===============================================================================
 // Phase 3: Global Alignment Tests
