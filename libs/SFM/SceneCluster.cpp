@@ -689,6 +689,53 @@ void SceneCluster::SplitOversizedCommunity(const IIndexArr& community, float gam
 	SplitOversizedCommunity(b, gamma, out);
 }
 
+// A cluster under the floor that no neighbour is coupled to -- its heaviest interface carries less
+// than minClusterCoupling of its own internal weight, the test every greedy merge refused it by --
+// yet that the merge could place, having the strong seams IsStrongSeam asks, as many as its track
+// neighbours allow (the bar MergeLeafClusters holds every cluster above the floor to). Absorbed into
+// the neighbour it shares the most weight with, as the small-cluster pass does with every cluster
+// under the floor, such a community lands inside a block whose reconstruction starts elsewhere and
+// reaches it only through single resections across that thin interface, which the evidence share
+// the resection asks of every pose refuses one by one: on alameda a 40-image loop-closure community,
+// sparse-rich inside and joined to the rest by 1.9% of its internal weight, stayed unregistered to
+// the end that way. Kept as its own sub-scene it reconstructs on its own cohesion and enters through
+// the merge's placement of the whole block over every seam track at once. A community the merge
+// could not place either is absorbed as before: a block left unplaced would only hand the same
+// images to the whole-scene resection.
+bool SceneCluster::IsStandaloneCommunity(const std::vector<IIndexArr>& clusters, size_t c, const SeamTrackStatsMap& seamStats) const
+{
+	ASSERT(c < clusters.size() && !clusters[c].empty());
+	if (config.minClusterCoupling <= 0.f || clusters[c].size() >= config.minViewsPerCluster)
+		return false;
+	const std::vector<int> nodeToCluster = MapNodesToClusters(clusters, scene.images.size());
+	int64_t internal = 0;
+	std::unordered_map<int, int64_t> interface;
+	for (IIndex u : clusters[c]) {
+		for (int i = xadj[u]; i < xadj[u+1]; ++i) {
+			const int cv = nodeToCluster[adjncy[i]];
+			if (cv == (int)c)
+				internal += adjwgt[i]; // each internal edge seen from both endpoints
+			else if (cv >= 0)
+				interface[cv] += adjwgt[i];
+		}
+	}
+	internal /= 2;
+	int64_t heaviest = 0;
+	for (const auto& p : interface)
+		heaviest = MAXF(heaviest, p.second);
+	if ((float)heaviest >= config.minClusterCoupling * (float)internal)
+		return false; // coupled to a neighbour: the small-cluster pass places it there
+	unsigned numStrong = 0, numAdjacent = 0;
+	for (const auto& [pair, seam] : seamStats) {
+		if (pair.first != (uint32_t)c && pair.second != (uint32_t)c)
+			continue;
+		++numAdjacent; // shares at least one seam-usable track with that cluster
+		if (IsStrongSeam(seam, config))
+			++numStrong;
+	}
+	return numAdjacent > 0 && numStrong >= MINF(config.minClusterDegree, numAdjacent);
+}
+
 void SceneCluster::MergeSmallClusters(std::vector<IIndexArr>& clusters)
 {
 	std::vector<int> nodeToCluster = MapNodesToClusters(clusters, scene.images.size());
@@ -696,8 +743,10 @@ void SceneCluster::MergeSmallClusters(std::vector<IIndexArr>& clusters)
 	bool changed = true;
 	while (changed) {
 		changed = false;
+		const SeamTrackStatsMap seamStats = ComputeSeamTrackStats(clusters);
 		for (size_t c = 0; c < clusters.size(); ++c) {
 			if (clusters[c].size() == 0 || clusters[c].size() >= config.minViewsPerCluster) continue;
+			if (IsStandaloneCommunity(clusters, c, seamStats)) continue; // its own sub-scene, placed by the merge
 
 			std::unordered_map<int, int> cluster_weights;
 			for (IIndex u : clusters[c]) {
@@ -1311,9 +1360,11 @@ void SceneCluster::RefineClustersRescueOrphans(std::vector<IIndexArr>& clusters)
 			nodeToCluster[u] = (int)c;
 		}
 	}
+	const SeamTrackStatsMap seamStats = ComputeSeamTrackStats(clusters);
 
 	for (size_t c = 0; c < clusters.size(); ++c) {
 		if (clusters[c].empty() || clusters[c].size() >= config.minViewsPerCluster) continue;
+		if (IsStandaloneCommunity(clusters, c, seamStats)) continue; // stands alone: not dismantled
 
 		// This cluster is still too small, try to reassign its nodes individually
 		IIndexArr nodes = clusters[c];
@@ -1376,13 +1427,20 @@ std::vector<Scene> SceneCluster::BuildSubScenesFromClusters(
 	if (outLocalToGlobal)
 		outLocalToGlobal->reserve(clusters.size());
 
+	// a cluster under the floor is skipped, except a community that stands alone (see IsStandaloneCommunity)
+	const SeamTrackStatsMap seamStats = skipSmallClusters ? ComputeSeamTrackStats(clusters) : SeamTrackStatsMap();
+	const auto IsSubScene = [&](size_t c) {
+		return !skipSmallClusters || clusters[c].size() >= config.minViewsPerCluster || IsStandaloneCommunity(clusters, c, seamStats);
+	};
+
 	// the budget is shared by the clusters that will actually become sub-scenes, so counting them
 	// first: a clustering yielding one real cluster and a crowd of skipped singletons must not
 	// leave the one reconstruction that runs with a single thread
 	unsigned nClusters = 0;
-	for (const IIndexArr& cluster : clusters)
-		if (!skipSmallClusters || cluster.size() >= config.minViewsPerCluster)
-			++nClusters;
+	for (size_t c = 0; c < clusters.size(); ++c) {
+		if (clusters[c].empty()) continue;
+		if (IsSubScene(c)) ++nClusters;
+	}
 	const unsigned nThreadsPerCluster = MAXF(1u, scene.nMaxThreads / MAXF(nClusters, 1u));
 	DEBUG_EXTRA("Allocating %u threads per sub-scene (%u clusters, %u parent threads)",
 		nThreadsPerCluster, nClusters, scene.nMaxThreads);
@@ -1398,12 +1456,14 @@ std::vector<Scene> SceneCluster::BuildSubScenesFromClusters(
 	// which global images each sub-scene took, as ranges: the membership every later stage is
 	// reported against, so a block that comes out wrong can be traced back to the split
 	std::vector<String> memberships;
-	for (IIndexArr& cluster : clusters) {
+	for (size_t c = 0; c < clusters.size(); ++c) {
+		if (clusters[c].empty()) continue;
+		IIndexArr& cluster = clusters[c];
 		// Sort by global ID so that local IDs preserve global ordering:
 		// localID1 < localID2 means also globalID1 < globalID2
 		// so pair ID ordering (ID1 < ID2) is maintained through local-global remapping
 		cluster.Sort();
-		if (skipSmallClusters && cluster.size() < config.minViewsPerCluster) {
+		if (!IsSubScene(c)) {
 			DEBUG("warning: skipping small cluster with %u views", (unsigned)cluster.size());
 			nSkippedViews += cluster.size();
 			continue;

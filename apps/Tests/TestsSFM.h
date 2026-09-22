@@ -424,6 +424,11 @@ bool SceneClusterSmallClusterRescueTest();
 // most weight with (ClusterConfig::minClusterCoupling)
 bool SceneClusterSubFloorCouplingTest();
 
+// A small, cohesive community no neighbour is coupled to stands alone as its own sub-scene when it
+// has the strong seams the merge places a block by, and is absorbed into its heaviest neighbour as
+// before when it does not (SceneCluster::IsStandaloneCommunity)
+bool SceneClusterStandaloneCommunityTest();
+
 // Phase 3: Global Alignment tests
 bool GlobalAlignmentBuildGlobalToLocalMapTest();
 bool GlobalAlignmentRotationAveragingExtendedTest();

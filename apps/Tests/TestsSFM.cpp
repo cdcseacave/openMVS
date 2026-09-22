@@ -11802,6 +11802,103 @@ bool SceneClusterSubFloorCouplingTest()
 }
 /*----------------------------------------------------------------*/
 
+// A small, cohesive community no neighbour is coupled to stands alone when the merge could place
+// it, and is absorbed as before when it could not. A (10 images at the target) and B (11) as in the
+// sub-floor coupling fixture; W's 4 images are joined to one another by 6 pairs of weight 50 (3000
+// in the graph's integer weights) and to the rest by one pair of 6 to B and one of 4 to A: its
+// heaviest interface, 60, is 2% of its own cohesion, so the greedy merge refuses it everywhere.
+// With 80 tracks seen by three W cameras and three B cameras -- a strong seam by the merge's own
+// bars (75 tracks, 3 cameras a side with 30) -- W is a sub-scene of its own; with no tracks it goes
+// to B, the neighbour it shares the most weight with, as every cluster under the floor used to.
+bool SceneClusterStandaloneCommunityTest()
+{
+	TD_TIMER_START();
+
+	const auto BuildScene = [](Scene& scene, bool withSeamTracks) {
+		SceneConfig cfg;
+		cfg.numImages = 25;
+		cfg.numPoints = 0;
+		cfg.generatePairs = false;
+		cfg.generateDescriptors = false;
+		cfg.poseMode = SceneConfig::CIRCULAR_ARRANGEMENT;
+		cfg.rotationAngleStep = 360.0 / 25;
+		GenerateTestScene(scene, cfg);
+		scene.pairs.clear();
+		scene.tracks.clear();
+		// a pair whose composite weight is exactly the given number: unit quality factors, triplet 0.5
+		const auto AddPair = [&scene](IIndex a, IIndex b, float weight) {
+			ImagePair pair(a, b);
+			pair.weightedInliers = weight;
+			pair.weightSpatial = 1.f;
+			pair.weightConnectivity = 1.f;
+			pair.weightTriplet = 0.5f;
+			scene.pairs.emplace_back(std::move(pair));
+		};
+		// A = [0,10): a hub at 0 and a chain; B = [10,21): the same around a hub at 10
+		for (IIndex k = 1; k < 10; ++k) AddPair(0, k, 200.f);
+		for (IIndex k = 1; k + 1 < 10; ++k) AddPair(k, k + 1, 100.f);
+		for (IIndex k = 11; k < 21; ++k) AddPair(10, k, 200.f);
+		for (IIndex k = 11; k + 1 < 21; ++k) AddPair(k, k + 1, 100.f);
+		// W = [21,25): every pair among them, and two thin pairs out
+		for (IIndex a = 21; a < 25; ++a) for (IIndex b = a + 1; b < 25; ++b) AddPair(a, b, 50.f);
+		AddPair(21, 10, 6.f);
+		AddPair(21, 9, 4.f);
+		if (withSeamTracks) {
+			// 80 tracks each seen by W's 21, 22, 23 and B's 10, 11, 12: seam-usable on both sides,
+			// 80 >= 75 tracks, three cameras a side with >= 30 (SplitScene builds tracks only when
+			// the scene has none, so these are the seam's)
+			for (uint32_t t = 0; t < 80; ++t) {
+				Track& track = scene.tracks.emplace_back();
+				for (uint32_t img : {21u, 22u, 23u, 10u, 11u, 12u})
+					track.observations.emplace_back(img, t);
+				track.numInliers = (uint8_t)track.observations.size();
+			}
+		}
+	};
+
+	for (unsigned c = 0; c < 2; ++c) {
+		const bool withSeamTracks = c == 0;
+		Scene scene;
+		BuildScene(scene, withSeamTracks);
+		ClusterConfig clusterCfg;
+		clusterCfg.maxViewsPerCluster = 15;
+		clusterCfg.targetViewsPerCluster = 10;
+		clusterCfg.minViewsPerCluster = 5;
+		clusterCfg.maxOverCapacity = 5;
+		SceneCluster cluster(scene, clusterCfg);
+		std::vector<IIndexArr> localToGlobals;
+		std::vector<Scene> subScenes = cluster.SplitScene(&localToGlobals);
+
+		std::vector<int> subSceneOf(25, -1);
+		FOREACH(s, localToGlobals)
+			for (IIndex gid : localToGlobals[s])
+				subSceneOf[gid] = (int)s;
+		if (subSceneOf[0] < 0 || subSceneOf[10] < 0 || subSceneOf[0] == subSceneOf[10]) {
+			VERBOSE("SceneClusterStandaloneCommunityTest FAILED: A and B must be two sub-scenes (%d, %d), the fixture does not exercise the small-cluster pass otherwise", subSceneOf[0], subSceneOf[10]);
+			return false;
+		}
+		for (IIndex w = 22; w < 25; ++w) {
+			if (subSceneOf[w] != subSceneOf[21]) {
+				VERBOSE("SceneClusterStandaloneCommunityTest FAILED: W was split, image %u in sub-scene %d and 21 in %d", w, subSceneOf[w], subSceneOf[21]);
+				return false;
+			}
+		}
+		if (withSeamTracks) {
+			if (subSceneOf[21] < 0 || subSceneOf[21] == subSceneOf[10] || subSceneOf[21] == subSceneOf[0]) {
+				VERBOSE("SceneClusterStandaloneCommunityTest FAILED: W landed in sub-scene %d (B's hub in %d, A's in %d) although no neighbour is coupled to it and its seam to B is strong; it must stand alone", subSceneOf[21], subSceneOf[10], subSceneOf[0]);
+				return false;
+			}
+		} else if (subSceneOf[21] != subSceneOf[10]) {
+			VERBOSE("SceneClusterStandaloneCommunityTest FAILED: W landed in sub-scene %d while B's hub is in %d; with no seam tracks the merge could not place it, so it goes to the neighbour it shares the most weight with", subSceneOf[21], subSceneOf[10]);
+			return false;
+		}
+	}
+
+	VERBOSE("SceneClusterStandaloneCommunityTest PASSED: a community no neighbour is coupled to stands alone when it has a strong seam, and is absorbed when it has none (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
 
 // ===============================================================================
 // Phase 3: Global Alignment Tests

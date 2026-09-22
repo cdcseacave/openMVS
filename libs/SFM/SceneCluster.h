@@ -68,7 +68,11 @@ class SFM_API Scene;
  *    a) Local search: iteratively move boundary images between clusters to
  *       improve a modularity + balance objective.
  *    b) Merge small clusters: clusters below minViewsPerCluster are absorbed
- *       into their most-connected neighbor (up to maxOverCapacity slack).
+ *       into their most-connected neighbor (up to maxOverCapacity slack), except
+ *       a community no neighbour is coupled to (its heaviest interface under the
+ *       minClusterCoupling seam) that has the strong seams the merge places a
+ *       block by: it stays its own sub-scene, reconstructs on its own cohesion
+ *       and enters through the merge.
  *    c) Balance: move well-connected boundary images out of the largest cluster
  *       into smaller neighbors, gated by a minimum affinity ratio, to shorten the
  *       critical path of concurrent sub-scene reconstruction.
@@ -279,6 +283,10 @@ private:
 
 	// Helper: Merge small clusters with neighbors
 	void MergeSmallClusters(std::vector<IIndexArr>& clusters);
+
+	// a cluster under the floor that no neighbour is coupled to but that the merge could place: kept
+	// as its own sub-scene by the small-cluster pass, the orphan rescue and the sub-scene builder
+	bool IsStandaloneCommunity(const std::vector<IIndexArr>& clusters, size_t c, const SeamTrackStatsMap& seamStats) const;
 
 	// Helper: Refine clusters using local search (move/swap nodes for modularity + balance)
 	void RefineClustersLocalSearch(std::vector<IIndexArr>& clusters);

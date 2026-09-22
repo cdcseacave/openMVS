@@ -340,6 +340,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::SceneClusterSubFloorCouplingTest())
 				return false;
+			if (!SFM::SceneClusterStandaloneCommunityTest())
+				return false;
 			// Hierarchical SFM tests - Phase 3: Global Alignment
 			if (!SFM::GlobalAlignmentBuildGlobalToLocalMapTest())
 				return false;
