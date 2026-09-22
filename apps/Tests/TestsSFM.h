@@ -113,9 +113,10 @@ bool DenseKeypointBoundaryTest();
 // Dense supplementation is real evidence, not noise to filter around: on a supplemented pair,
 // FilterMatches' meanRayAngle and ComputeIntrinsicWeight's grid occupancy are both measured over the
 // whole track-forming set (sparse + dense), the minimum-support floor reads that same set so a pair
-// under the sparse-only bar still counts, and GetNumWeightedInliers() discounts the dense share by
-// DENSE_OBSERVATION_WEIGHT rather than dropping or fully counting it. A degenerate all-dense baseline
-// is still demoted, because the angle term finally has something to measure.
+// under the sparse-only bar still counts, and GetNumWeightedInliers() scales the dense share to the
+// matcher's frame target (PairsWeightingConfig::denseFrameInliers) rather than dropping or fully
+// counting it. A degenerate all-dense baseline is still demoted, because the angle term finally has
+// something to measure.
 bool SupplementEvidenceIsolationTest();
 
 // Global-descriptor retrieval test: cosine ranking of the per-image global descriptors and its
@@ -387,7 +388,7 @@ bool PairsWeightingTest();
 // A pair's dense inliers count as evidence only up to PairsWeightingConfig::denseInlierCap: the
 // descriptor matches of the pairs around it stay the heavier evidence however many warp samples a
 // wide, imprecise overlap yields, while a dense-only pair keeps a quarter of the cap as evidence
-bool PairsWeightingDenseCapTest();
+bool PairsWeightingDenseFrameEvidenceTest();
 
 // PairsMatcher sequential mode test
 bool PairMatcherTest();

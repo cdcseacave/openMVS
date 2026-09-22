@@ -403,6 +403,7 @@ int main(int argc, LPCTSTR* argv)
 	cfg.roma2Cfg.minConfidence = OPT::fROMA2MinConfidence;
 	cfg.roma2Cfg.minOverlap = OPT::fROMA2MinOverlap;
 	cfg.roma2Cfg.denseMatchesPerFrame = OPT::nROMA2DenseMatches;
+	cfg.matchCfg.weightingCfg.denseMatchesPerFrame = OPT::nROMA2DenseMatches; // the pair evidence is anchored to the same frame target the matcher draws
 	cfg.roma2Cfg.slotBudget = OPT::nROMA2Slots;
 	cfg.roma2Cfg.provider = OPT::strROMA2Provider;
 	#ifdef _USE_CUDA
@@ -427,8 +428,8 @@ int main(int argc, LPCTSTR* argv)
 	cfg.baConfig.gpsPositionWeight = OPT::gpsPositionWeight;
 	cfg.baConfig.gpsPositionWeightZ = OPT::gpsPositionWeightZ;
 	// bundle adjustment's own weight, an override on the per-solve measurement -- NOT the view
-	// graph's dense discount (PairsWeightingConfig::denseObservationWeight), which is a different
-	// quantity and keeps its own constant
+	// graph's dense evidence (PairsWeightingConfig::denseFrameInliers), a different quantity with
+	// its own number
 	cfg.baConfig.denseObservationWeight = OPT::baDenseWeight;
 	// one budget over every keypoint kind, and the size from which a solve is subject to it; every
 	// derived BA configuration copies cfg.baConfig, so both reach all of them

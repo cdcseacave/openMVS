@@ -101,6 +101,11 @@ float ComputeIntrinsicWeight(ImagePair& pair, const Image& img1, const Image& im
 void SFM::ComputePairsWeights(Scene& scene, const PairsWeightingConfig& config, IIndexArr* pComponents) {
 	TD_TIMER_STARTD();
 
+	ASSERT(config.denseMatchesPerFrame > 0);
+	// what one dense inlier is worth as evidence: the share of a whole frame's draw it is, times what
+	// a whole frame is worth
+	const float denseScale = config.denseFrameInliers / (float)config.denseMatchesPerFrame;
+
 	// 1. Compute Intrinsic Weights (Parallelizable)
 	// This depends only on the pair itself
 	#ifdef PAIRSWEIGHTING_USE_OPENMP
@@ -115,18 +120,18 @@ void SFM::ComputePairsWeights(Scene& scene, const PairsWeightingConfig& config, 
 		// of GetCompositeWeight() downstream are exactly its readers. A pair with no matches at all
 		// carries no partition to read a dense count out of (the weight below is 0 for it anyway),
 		// so it keeps the "never computed" value and the accessor answers from its counts alone.
-		// The dense count enters discounted and capped: past denseInlierCap, further warp samples
-		// add no more evidence.
+		// The dense count enters at denseScale: proportional to the matcher's frame target, so a
+		// node's dense-only links keep their order while a whole dense frame stays a bounded evidence.
 		pair.weightedInliers = pair.HasMatches() ?
-			(float)pair.GetNumFilteredInliers() + config.denseObservationWeight*(float)MINF(pair.GetNumDenseInliers(), config.denseInlierCap) : -1.f;
+			(float)pair.GetNumFilteredInliers() + denseScale*(float)pair.GetNumDenseInliers() : -1.f;
 		pair.weightSpatial = ComputeIntrinsicWeight(pair, scene.images[pair.ID1], scene.images[pair.ID2], config.gridSize, config.minInliers);
 		// A pair whose evidence ROUNDS AWAY carries none: with a small enough minInliers the floor
-		// above admits a pair of two dense matches, whose discounted evidence is 0.25*2 = 0.5 -> 0,
-		// and a zero magnitude is a zero composite weight however good the quality factors are. Give
-		// it the same answer the floor gives instead, here, once: every later step of this pass and
-		// every consumer downstream reads "no weight" off weightSpatial, and the connectivity step
-		// below in particular divides by a per-node maximum this pair would otherwise be excluded
-		// from while still being asked for its own share of it.
+		// above admits a pair of a few dense matches, whose evidence at the frame scale (25 of 2000
+		// each) is well under a half and rounds to 0, and a zero magnitude is a zero composite weight
+		// however good the quality factors are. Give it the same answer the floor gives instead, here,
+		// once: every later step of this pass and every consumer downstream reads "no weight" off
+		// weightSpatial, and the connectivity step below in particular divides by a per-node maximum
+		// this pair would otherwise be excluded from while still being asked for its own share of it.
 		if (pair.GetNumWeightedInliers() == 0)
 			pair.weightSpatial = 0.f;
 	}
@@ -249,7 +254,11 @@ void SFM::ComputePairsWeights(Scene& scene, const PairsWeightingConfig& config, 
 		const float max2 = (float)maxNodeWeight[pair.ID2];
 		pair.weightConnectivity = MINF(SQRT((w * w) / (max1 * max2)), 1.f);
 		// Boost by inlier ratio
-		const float inliersRatio = w / (float)pair.GetNumMatches();
+		// the ratio compares like with like: the dense matches enter the match count at the same
+		// scale they enter the evidence, otherwise a dense-only pair of nothing but inliers would
+		// look like a pair of almost none and its boost would collapse
+		const float weightedMatches = (float)(pair.GetNumMatches() - pair.GetNumDenseInliers()) + denseScale*(float)pair.GetNumDenseInliers();
+		const float inliersRatio = w / weightedMatches;
 		const float wInliersRatio = MINF((1.f - EXP(SQUARE(inliersRatio) * ratioSigma)) * 2.f, 1.f);
 		pair.weightConnectivity *= wInliersRatio;
 	}

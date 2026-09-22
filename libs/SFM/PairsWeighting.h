@@ -11,7 +11,7 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
-#include "ImagePair.h" // DENSE_OBSERVATION_WEIGHT, the view graph's own (fixed) dense discount
+#include "ImagePair.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -61,27 +61,27 @@ struct SFM_API PairsWeightingConfig
     float sigmaInlierPerMatches = 0.6f; // expected inlier vs. number of matches ratio (0.6 - AKAZE/ORB, 0.77 - SIFT)
     float tripletSaturation = 5.f; // saturation point for triplet weighting
     float maxAngleTripletDegrees = 5.f; // maximum allowed rotation error (degrees) for triplet consistency
-    // What one DENSE (ROMAv2 warp sampled) match is worth as pair evidence, relative to the 1.0 a
-    // descriptor match carries: this pass is the one that holds it, and it writes the discounted
-    // count every view-graph consumer then reads off the pair (ImagePair::GetNumWeightedInliers).
-    // Not the same quantity as BAConfig::denseObservationWeight, which is measured per solve off
-    // the scene's own residuals (EstimateDenseObservationWeight) -- this one has no CLI flag
-    // because no measurement has ever asked for it, and is deliberately held fixed at
-    // DENSE_OBSERVATION_WEIGHT while the bundle adjustment weight moves.
-    float denseObservationWeight = (float)DENSE_OBSERVATION_WEIGHT;
-    // How many DENSE inliers of a pair count as evidence at all: the dense fill samples a warp, so
-    // a wide, imprecise overlap can yield hundreds of dense matches over a handful of descriptor
-    // ones, and uncapped they would let such a pair outweigh, in the clustering and in every view
-    // graph decision, the pairs around it that descriptors verified. Capped, a dense-only pair
-    // keeps denseObservationWeight * denseInlierCap weighted inliers -- enough to weigh in the
-    // tens among dense-only neighbours at a normal ray angle, so a textureless interior that only
-    // dense matches link stays linked -- while a pair with descriptor evidence is ranked by it.
-    // On an indoor RoMa2 scene (OfficeBadLoop, 4037 images) a cap of 300 keeps 99.2% of the dense-mostly pairs
-    // with good coverage and triplet support above the clustering bar of 3 (66.5% at 100, 93.4% at 200), cutting
-    // off no image; on an outdoor scene (alameda) it still drops the three wide-baseline dense-heavy pairs that
-    // misplaced a seven-image community (5.4/3.8/1.3 uncapped to 2.5/2.4/0.9). 0 does not disable the cap but
-    // makes a dense match count for nothing, zeroing a dense-only pair; to lift it, set it above any dense count.
-    unsigned denseInlierCap = 300;
+    // What a pair's DENSE (ROMAv2 warp sampled, descriptor-less) inliers are worth as EVIDENCE that
+    // two images see the same thing, anchored to the matcher's own frame: a pair whose dense inliers
+    // fill one whole frame's draw (denseMatchesPerFrame of them) counts them as this many descriptor
+    // inliers, and a pair with fewer counts proportionally fewer, so the evidence of two dense-only
+    // pairs of one image stays in the ratio of their dense counts. Proportional rather than capped: a
+    // static cap (300 dense inliers at a quarter each) flattened every link of an image whose pairs
+    // all exceeded it, and through the connectivity term's per-image maximum a textureless interior
+    // with 1000-1700 dense matches per adjacent pair had a near and a far link weigh the same and a
+    // 13-degree-wrong far link outrank the right adjacent one (indoor capture chris-house, 55 images
+    // placed 12-15 units off). At 25 a whole dense frame is a modest descriptor pair: on the same
+    // capture's matching the clustering graph keeps every adjacent pair and every image, a wrong
+    // 50-image revisit community falls from 0.056 to 0.022 of coupling, and on alameda the three
+    // wide-baseline dense-heavy pairs that once glued a seven-image community to the wrong block
+    // fall from 5.4/3.8/1.3 to 0.4/0.2/0.1, well under the clustering bar of 3. This is the view
+    // graph's own number and nothing else's: bundle adjustment weighs a dense OBSERVATION by the
+    // precision it measures per solve (BAConfig::denseObservationWeight, DENSE_OBSERVATION_WEIGHT as
+    // its fallback), a different question whose answer once happened to share the value 0.25.
+    float denseFrameInliers = 25.f;
+    // The matcher's dense draw per frame the number above is anchored to. The application hands it
+    // the value it gives the matcher (ROMA2Config::denseMatchesPerFrame); the default is that config's.
+    unsigned denseMatchesPerFrame = 2000;
 };
 
 // The fraction of a gridSize x gridSize grid over the image that the pair's track-forming matches

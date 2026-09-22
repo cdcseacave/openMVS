@@ -191,7 +191,7 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::PairsWeightingTest())
 				return false;
-			if (!SFM::PairsWeightingDenseCapTest())
+			if (!SFM::PairsWeightingDenseFrameEvidenceTest())
 				return false;
 			if (!SFM::ViewGraphCalibratorTest())
 				return false;

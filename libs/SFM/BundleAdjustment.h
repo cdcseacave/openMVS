@@ -10,7 +10,7 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
-#include "ImagePair.h" // DENSE_OBSERVATION_WEIGHT, shared with the view-graph weighting
+#include "ImagePair.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -25,6 +25,16 @@ namespace SFM {
 // forward declarations to avoid circular includes
 class SFM_API Pose3D;
 class SFM_API Scene;
+
+// The weight of one DENSE (ROMAv2 warp sampled) observation in bundle adjustment when it cannot be
+// measured: EstimateDenseObservationWeight's fallback for a scene with no dense keypoints, a
+// population too small to give a sigma, or a sigma of exactly zero. The measured weight is 1/k^2 for
+// k the ratio of the dense to the described reprojection sigma, taken at the head of every solve,
+// because a warp correspondence localizes a point several times less precisely than a descriptor
+// one. Not the view graph's number: what a dense match is worth as evidence that two images overlap
+// is PairsWeightingConfig::denseFrameInliers, a different question whose answer once happened to
+// share this value.
+constexpr double DENSE_OBSERVATION_WEIGHT = 0.25;
 
 /**
  * @brief Configuration for bundle adjustment
@@ -75,8 +85,8 @@ struct SFM_API BAConfig
 	// it follows the KEYPOINT rather than the match that created it (see SelectReprojectionLoss).
 	// Ignored when useKeypointConfidence is set: that term expresses the same thing by another
 	// route, and only one of the two may apply.
-	// This is NOT the view graph's dense discount (PairsWeightingConfig::denseObservationWeight),
-	// which answers a different question -- see DENSE_OBSERVATION_WEIGHT in ImagePair.h.
+	// This is NOT the view graph's dense evidence (PairsWeightingConfig::denseFrameInliers),
+	// which answers a different question -- see DENSE_OBSERVATION_WEIGHT above.
 	double denseObservationWeight = -1.0;
 
 	// The most observations one image contributes to a solve, of any keypoint kind, 0 = all. What a

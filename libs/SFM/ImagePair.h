@@ -47,31 +47,6 @@ struct SFM_API DMatch
 	#endif
 };
 
-// How much one DENSE (ROMAv2 warp sampled, descriptor-less) match is worth as EVIDENCE that two
-// images see the same thing, relative to the 1.0 a descriptor match carries: the view graph's own
-// discount, read into PairsWeightingConfig::denseObservationWeight and consumed everywhere through
-// ImagePair::GetNumWeightedInliers (ComputePairsWeights is the one pass that writes it).
-//
-// The count that discount applies to is itself capped (PairsWeightingConfig::denseInlierCap): the
-// discount says what one dense match is worth, the cap how many of them a single pair may bring to
-// bear.
-//
-// Bundle adjustment borrows this same constant, but only as EstimateDenseObservationWeight's
-// fallback -- a scene with no dense keypoints at all, a population too small to give a sigma, or a
-// sigma of exactly zero: its real per-observation weight is MEASURED at the head of every solve, off
-// the scene's own dense-vs-described reprojection sigmas (BundleAdjustment.cpp), because that is a
-// different question with a different answer. A warp correspondence localizes a point several times
-// less precisely than a descriptor one -- which is exactly what bundle adjustment charges it for --
-// but it says nearly as much about whether the two images overlap. Charging the precision penalty
-// twice would demote exactly the pairs that carry a capture the descriptor matcher cannot match at
-// all: for a textureless interior capture, those dense-only pairs can be the difference between
-// images registering at all and not registering.
-//
-// So this stays a fixed constant deliberately: nothing has asked the view graph's number to be
-// measured, and coupling it to bundle adjustment's moving one would re-couple two answers that must
-// stay independent.
-constexpr double DENSE_OBSERVATION_WEIGHT = 0.25;
-
 // ImagePair stores data for two images: matches, relative pose, etc.
 class SFM_API ImagePair
 {
@@ -95,9 +70,10 @@ public:
 	// GetNumFilteredInliers() is the first segment only: the pair's DESCRIPTOR evidence, which is what
 	// the estimation bars (minMatches, the strict filter's own return) and the diagnostics that report
 	// "how many correspondences did the descriptor matcher verify" mean. What the view graph ranks on
-	// is GetNumWeightedInliers(), sparse + w * dense: the supplement is real evidence about the pair,
-	// discounted for the precision of a warp-sampled position rather than ignored. What forms tracks
-	// is the union of the first two segments, GetNumTrackFormingMatches().
+	// is GetNumWeightedInliers(), sparse + dense scaled to the matcher's frame target: the supplement
+	// is real evidence about the pair, weighed as a share of a whole frame's draw rather than ignored
+	// or counted as descriptor evidence. What forms tracks is the union of the first two segments,
+	// GetNumTrackFormingMatches().
 	int numFilteredInliers; // number of inliers after filtering (cheirality, angle, epipole), as the first N of `matches`
 	int numDenseInliers;    // number of dense supplement matches, stored right after those
 
@@ -128,14 +104,14 @@ public:
 	float weightConnectivity; // Extrinsic: local connectivity strength (0-1)
 	float weightTriplet;      // Extrinsic: cycle consistency support (0-1)
 	// The pair's INLIER EVIDENCE as everything that ranks the view graph reads it (through
-	// GetNumWeightedInliers): its sparse inliers plus its dense supplement discounted and capped,
-	// sparse + w * min(dense, cap). Written by ComputePairsWeights, the one pass that holds the
-	// view graph's own dense discount and cap (PairsWeightingConfig::denseObservationWeight and
-	// ::denseInlierCap, DENSE_OBSERVATION_WEIGHT above); -1 until it has run, and the accessor then
-	// answers with the sparse count -- which is the pre-supplement answer, and is what every
-	// consumer running before the weighting pass (the matcher's own replace and skip tests) has
-	// always used. Cleared by every writer that changes the partition it summarises -- the four
-	// reset paths below, AppendDenseMatches, and FilterRedundantKeypoints' recount -- so a stale
+	// GetNumWeightedInliers): its sparse inliers plus its dense supplement scaled to the matcher's
+	// frame target, sparse + frameInliers/matchesPerFrame * dense. Written by ComputePairsWeights,
+	// the one pass that holds the view graph's own dense scale
+	// (PairsWeightingConfig::denseFrameInliers and ::denseMatchesPerFrame); -1 until it has run, and
+	// the accessor then answers with the sparse count -- which is the pre-supplement answer, and is
+	// what every consumer running before the weighting pass (the matcher's own replace and skip
+	// tests) has always used. Cleared by every writer that changes the partition it summarises -- the
+	// four reset paths below, AppendDenseMatches, and FilterRedundantKeypoints' recount -- so a stale
 	// value can never be read as a fresh one.
 	// Stored rather than computed on the fly because GetCompositeWeight() and its ~15 callers have
 	// no access to a configuration, and a second hard-coded copy of the weight would be a second

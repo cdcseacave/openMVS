@@ -3695,13 +3695,15 @@ bool SupplementEvidenceIsolationTest()
 			weighted.weightSpatial, expectedSpatial, occupiedTrackForming, occupiedSparse);
 		return false;
 	}
-	// The MAGNITUDE the area score multiplies is where the supplement is discounted instead of
-	// ignored: the pair's evidence is 5 sparse + 0.25 x 15 dense = 8.75, so a coverage-maximising
-	// draw cannot re-rank the graph by sheer count, and a dense-only pair is still not a zero.
-	if (ABS(weighted.weightedInliers - 8.75f) > 1e-5f || weighted.GetNumWeightedInliers() != 9 ||
+	// The MAGNITUDE the area score multiplies is where the supplement is scaled instead of
+	// ignored: the pair's evidence is 5 sparse + 25/2000 x 15 dense = 5.1875 at the default frame
+	// scale, more than the sparse count alone and far less than the twenty a full count would
+	// give, so a coverage-maximising draw cannot re-rank the graph by sheer count, and a
+	// dense-only pair is still not a zero.
+	if (ABS(weighted.weightedInliers - 5.1875f) > 1e-5f || weighted.GetNumWeightedInliers() != 5 ||
 		weighted.GetNumFilteredInliers() != 5) {
 		VERBOSE("SupplementEvidenceIsolationTest FAILED: the pair's evidence is %.4f (%u rounded) with %u sparse, "
-			"expected 5 + 0.25 x 15 = 8.75 (9)",
+			"expected 5 + 25/2000 x 15 = 5.1875 (5)",
 			weighted.weightedInliers, weighted.GetNumWeightedInliers(), weighted.GetNumFilteredInliers());
 		return false;
 	}
@@ -3711,7 +3713,7 @@ bool SupplementEvidenceIsolationTest()
 	// dense used to be structurally unable to reach it: no sparse match meant no meanRayAngle, and
 	// ComputeAngleBaselineWeight scores an unmeasured baseline at its MAXIMUM. Two dense-only pairs
 	// built through AppendDenseMatches -- the path the matcher uses -- differing in NOTHING but the
-	// depth of what they see: the same twenty image positions, so the grid occupancy and hence the
+	// depth of what they see: the same eighty image positions, so the grid occupancy and hence the
 	// area score are identical by construction, and the same 1-unit baseline. The far one must come
 	// out strictly weaker, and strictly below the area score it would have carried with an
 	// unmeasured baseline.
@@ -3725,13 +3727,15 @@ bool SupplementEvidenceIsolationTest()
 			denseScene.images.emplace_back((IIndex)k, String::FormatString("dns%u.jpg", k), pose, 0, denseScene.cameras[0]);
 		}
 		denseScene.status.nCalibratedImages = denseScene.images.size();
-		// twenty points spread over the frame at a fixed DEPTH: a pixel of image 0 back-projected to
-		// the bearing that reaches that depth, so the A-side positions are the same whatever the depth
+		// eighty points spread over the frame at a fixed DEPTH: one weighted inlier at the default
+		// frame scale (twenty would be a quarter and round away as no evidence, and a real dense-only
+		// pair carries hundreds): a pixel of image 0 back-projected to the bearing that reaches that
+		// depth, so the A-side positions are the same whatever the depth
 		std::vector<Point2f> pointsA, pointsB;
 		std::vector<float> confidences;
-		for (unsigned gy = 0; gy < 4; ++gy) {
-			for (unsigned gx = 0; gx < 5; ++gx) {
-				const Point2f ptA(200.f + 90.f*(float)gx, 60.f + 120.f*(float)gy);
+		for (unsigned gy = 0; gy < 8; ++gy) {
+			for (unsigned gx = 0; gx < 10; ++gx) {
+				const Point2f ptA(200.f + 40.f*(float)gx, 60.f + 50.f*(float)gy);
 				const Point3 bearing = denseScene.cameras[0]->UnprojectNormalized(Cast<REAL>(ptA));
 				const Point3 X = camCenters[0] + bearing*(depth/bearing.z);
 				const auto [proj, valid] = denseScene.images[1].ProjectPoint(X);
@@ -10571,61 +10575,102 @@ bool PairsWeightingTest()
 }
 
 
-// A pair's evidence counts its dense inliers only up to the cap: with 10 sparse and 400 dense
-// inliers the pair is 10 + 0.25*100 = 35 weighted inliers at a cap of 100, and 110 with the cap
-// lifted, so a flood of dense matches over a wide baseline cannot outweigh the descriptor evidence
-// of the pairs around it, while a dense-only pair keeps 25 weighted inliers of evidence
-bool PairsWeightingDenseCapTest()
+// A pair's dense inliers count as evidence in proportion to the matcher's frame target, not up to
+// a cap: 10 sparse and 400 dense inliers weigh 10 + 25 * 400/2000 = 15 at the default of 25 frame
+// inliers, and 110 at 500, the weight the old discount of a quarter per dense inlier gave. Two
+// dense-only pairs of one image keep their order (1600 dense outweighs 400 -- a cap flattened them
+// to the same weight), and the connectivity's inlier ratio counts the dense matches at the same
+// scale as the evidence, so a dense-only pair of nothing but inliers gets the boost of a sparse-only
+// pair of nothing but inliers instead of collapsing against its raw match count.
+bool PairsWeightingDenseFrameEvidenceTest()
 {
 	TD_TIMER_START();
 	constexpr unsigned NUM_SPARSE = 10, NUM_DENSE = 400;
 
-	const auto BuildScene = [](Scene& scene) {
+	// numImages images of numKeypoints keypoints spread over the frame (the weighting reads the
+	// pair's partition, not the images' described boundary, so none is set)
+	const auto BuildImages = [](Scene& scene, IIndex numImages, unsigned numKeypoints) {
 		scene.cameras.emplace_back(new PinholeCamera(cv::Size(100, 100), REAL(100), REAL(100), REAL(50), REAL(50)));
-		for (IIndex k = 0; k < 2; ++k) {
+		for (IIndex k = 0; k < numImages; ++k) {
 			Image& im = scene.images.emplace_back(k, String::FormatString("%u.jpg", k));
 			im.cameraID = 0;
 			im.pCamera = scene.cameras[0];
-			// keypoints spread over the frame so the pair covers it (the weighting reads the pair's
-			// partition, not the images' described boundary, so none is set here)
-			for (unsigned i = 0; i < NUM_SPARSE + NUM_DENSE; ++i)
+			for (unsigned i = 0; i < numKeypoints; ++i)
 				im.keypoints.emplace_back(cv::Point2f(5.f + (i % 20) * 4.5f, 5.f + ((i / 20) % 20) * 4.5f), 3.f);
 		}
-		ImagePair& pair = scene.pairs.emplace_back(0u, 1u);
-		for (uint32_t i = 0; i < NUM_SPARSE + NUM_DENSE; ++i)
+	};
+	// a pair of numSparse descriptor inliers followed by numDense dense ones, every match an inlier
+	const auto AddPair = [](Scene& scene, IIndex a, IIndex b, unsigned numSparse, unsigned numDense) {
+		ImagePair& pair = scene.pairs.emplace_back(a, b);
+		for (uint32_t i = 0; i < numSparse + numDense; ++i)
 			pair.matches.emplace_back(i, i);
-		pair.numFilteredInliers = NUM_SPARSE;
-		pair.numDenseInliers = NUM_DENSE;
+		pair.numFilteredInliers = (int)numSparse;
+		pair.numDenseInliers = (int)numDense;
 		pair.meanRayAngle = (float)D2R(15.f); // the angle the baseline weight rates best
 	};
 
-	struct Case { unsigned cap; unsigned expectedWeightedInliers; };
+	// 1. the magnitude: proportional to the frame target
+	struct Case { float frameInliers; unsigned expectedWeightedInliers; };
 	const Case cases[] = {
-		{ 100u, NUM_SPARSE + 25u },                      // 0.25 * min(400, 100)
-		{ 1000u, NUM_SPARSE + NUM_DENSE / 4u },          // the cap above the count: every dense inlier counts
+		{ 25.f, NUM_SPARSE + 5u },                       // 25 * 400/2000
+		{ 500.f, NUM_SPARSE + NUM_DENSE / 4u },          // a quarter per dense inlier: the old discount
 	};
-	float compositeAtCap[2];
+	float compositeAt[2];
 	for (unsigned c = 0; c < 2; ++c) {
 		Scene scene;
-		BuildScene(scene);
+		BuildImages(scene, 2, NUM_SPARSE + NUM_DENSE);
+		AddPair(scene, 0, 1, NUM_SPARSE, NUM_DENSE);
 		PairsWeightingConfig cfg;
-		cfg.denseInlierCap = cases[c].cap;
+		cfg.denseFrameInliers = cases[c].frameInliers;
+		cfg.denseMatchesPerFrame = 2000;
 		ComputePairsWeights(scene, cfg);
 		const ImagePair& pair = scene.pairs[0];
 		if (pair.GetNumWeightedInliers() != cases[c].expectedWeightedInliers) {
-			VERBOSE("PairsWeightingDenseCapTest FAILED: %u sparse + %u dense inliers weigh %u at a dense cap of %u, expected %u",
-				NUM_SPARSE, NUM_DENSE, pair.GetNumWeightedInliers(), cases[c].cap, cases[c].expectedWeightedInliers);
+			VERBOSE("PairsWeightingDenseFrameEvidenceTest FAILED: %u sparse + %u dense inliers weigh %u at %.0f frame inliers, expected %u",
+				NUM_SPARSE, NUM_DENSE, pair.GetNumWeightedInliers(), cases[c].frameInliers, cases[c].expectedWeightedInliers);
 			return false;
 		}
-		compositeAtCap[c] = pair.GetCompositeWeight();
+		compositeAt[c] = pair.GetCompositeWeight();
 	}
-	if (!(compositeAtCap[0] > 0.f && compositeAtCap[0] < compositeAtCap[1])) {
-		VERBOSE("PairsWeightingDenseCapTest FAILED: the composite weight is %.2f capped and %.2f uncapped; the capped "
-			"pair must stay valid and weigh less", compositeAtCap[0], compositeAtCap[1]);
+	if (!(compositeAt[0] > 0.f && compositeAt[0] < compositeAt[1])) {
+		VERBOSE("PairsWeightingDenseFrameEvidenceTest FAILED: the composite weight is %.2f at 25 frame inliers and %.2f at 500; "
+			"the scaled pair must stay valid and weigh less", compositeAt[0], compositeAt[1]);
 		return false;
 	}
 
-	VERBOSE("PairsWeightingDenseCapTest PASSED: the dense inliers count as evidence up to the cap (%s)", TD_TIMER_GET_FMT().c_str());
+	// 2. the order: image 0 sees image 1 through 1600 dense-only inliers and image 2 through 400
+	{
+		Scene scene;
+		BuildImages(scene, 3, 1600);
+		AddPair(scene, 0, 1, 0, 1600);
+		AddPair(scene, 0, 2, 0, 400);
+		ComputePairsWeights(scene, PairsWeightingConfig());
+		const float w01 = scene.pairs[0].GetCompositeWeight(), w02 = scene.pairs[1].GetCompositeWeight();
+		if (!(w02 > 0.f && w01 > w02)) {
+			VERBOSE("PairsWeightingDenseFrameEvidenceTest FAILED: 1600 dense-only inliers weigh %.2f against %.2f for 400; "
+				"the stronger dense-only pair of an image must outweigh the weaker one", w01, w02);
+			return false;
+		}
+	}
+
+	// 3. the inlier ratio: a sparse-only pair and a dense-only pair, each of nothing but inliers and
+	// each its images' only pair, carry the same connectivity weight (1: the whole share of the node
+	// maximum, the whole boost)
+	{
+		Scene scene;
+		BuildImages(scene, 4, 2000);
+		AddPair(scene, 0, 1, 100, 0);
+		AddPair(scene, 2, 3, 0, 2000);
+		ComputePairsWeights(scene, PairsWeightingConfig());
+		const float cSparse = scene.pairs[0].weightConnectivity, cDense = scene.pairs[1].weightConnectivity;
+		if (!ISEQUAL(cSparse, cDense) || !ISEQUAL(cSparse, 1.f)) {
+			VERBOSE("PairsWeightingDenseFrameEvidenceTest FAILED: connectivity %.4f for the sparse-only pair and %.4f for the dense-only one; "
+				"both are all inliers and their images' only pair, so both must be 1", cSparse, cDense);
+			return false;
+		}
+	}
+
+	VERBOSE("PairsWeightingDenseFrameEvidenceTest PASSED: dense inliers count in proportion to the matcher's frame target, in order, with a consistent inlier ratio (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 
