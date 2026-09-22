@@ -256,14 +256,59 @@ drifting reference (61.0% of images admitted to that fit in the capped run, 99.4
 measure of correctness.
 
 **Where this leaves the defaults.** The branch ships the dense inlier cap at 300 as approved; the
-record above shows that value regresses a textureless interior, and that the coupling test with the
-every-pose resection rules alone meet the correctness goal on both captures, at the price of the
-40-image community left unregistered on alameda. The choice between no cap, a cap relative to a
-node's own evidence, or a cap applied after the connectivity normalisation instead of before it, is
-open. Two further levers: the coupling test that gates the clustering's greedy merge is applied to
-each merge and never once to the community it finally produces -- the finished indoor community
-(1217-1266 against 945-1048) scores 0.0436 against the 0.05 floor, refusable had it been measured
-once as a whole; and the creation-time coupling check warns without acting -- indoor sub-scene 9
-passed it at a spectral cut coupling of 0.055 and reconstructed its tail roughly 56 degrees off the
-body it is otherwise sound within, in effect two orientations glued together by one registration
-nothing challenged.
+record above shows that value regresses a textureless interior, and that the coupling test with
+the every-pose resection rules alone meet the correctness goal on both captures, at the price of
+the 40-image community left unregistered on alameda. The frame-anchored proportional evidence was
+measured next. Two further levers: the coupling test that gates the clustering's greedy merge is
+applied to each merge and never once to the community it finally produces -- the finished indoor
+community (1217-1266 against 945-1048) scores 0.0436 against the 0.05 floor, refusable had it
+been measured once as a whole; and the creation-time coupling check warns without acting --
+indoor sub-scene 9 passed it at a spectral cut coupling of 0.055 and reconstructed its tail
+roughly 56 degrees off the body it is otherwise sound within, in effect two orientations glued
+together by one registration nothing challenged.
+
+**The frame-anchored dense evidence and the standalone community (2026-09-22).** A pair's dense
+inliers now count as evidence in proportion to the matcher's frame target -- weightedInliers =
+sparseInliers + (denseFrameInliers / denseMatchesPerFrame) x denseInliers, 25 of 2000 -- in place
+of the cap of 300 dense inliers at a quarter each (88bda6d), because the cap flattened every link
+of an image whose pairs all exceeded it: on a textureless interior a near and a far link then
+weighed the same and a wrong far link could outrank the right adjacent one. A cluster under
+`minViewsPerCluster` whose heaviest interface sits under `minClusterCoupling` of its internal
+weight, and that carries the strong seams `IsStrongSeam` asks, now reconstructs as its own
+sub-scene and enters through the merge instead of being absorbed by the small-cluster pass or
+dismantled by the orphan rescue (`SceneCluster::IsStandaloneCommunity`, a37df20). Both were
+measured by reconstruction alone, on matched scenes whose pair weights a development-only build
+(never committed) recomputed on load: alameda on the band-fb matching and on the 2026-09-18
+matching, the indoor capture, and the two fold captures at 150 views per cluster on SIFT
+matchings, where the weighting change is inert and the comparison runs against baselines built
+from the weighting commit alone. alameda registers 1693 of 1734 on both matchings, the same 41
+images left out (541-571, 581-585, 1652-1656); nothing among the 1693 sits wrong -- the largest
+centre error is 0.22% of the diagonal -- but image 1458 crosses 0.5 degrees at 1.107 (1457 and
+1458 on the other matching, at 0.592 and 0.668). The 41-image community clusters as its own
+sub-scene and reconstructs 41/41 at 77 103 tracks and 1.51 px, but the merge forms no hypothesis
+for it: its crossing pairs above the clustering bar of 3 fall from 21 under the stored weights to
+7, the fourteen lost ones the dense-heavy pairs the frame target demoted (544-1657, 0 sparse /
+296 dense, among them), leaving a placement pool of 239 observations and 0 candidates against
+54 724 - 1 638 307 observations and 3-6 candidates for every other block of the same run. Indoor
+keeps everything the baseline had (1265 against 1159) and its local relative rotation p90 (0.8012
+against the 0.825 bar), but centre p90 is 1.2197 against 0.26 and the wrong tail body grows from
+7 images to 21 (1214-1234), carried onto the misregistered revisit once the clustering cut
+1218-1266 into a sub-scene of its own that the merge also could not place. House4Levels loses the
+weighting-alone baseline's 220-image fold (0 images over 30 degrees, 647/664 within 2) but
+registers only 664 against its 867, a body sharing no image with it; HouseBadDrift registers 1424
+against the baseline's 1239 -- 1236 of them the baseline's own images -- but gains a 111-image
+fold at 167.94-179.73 degrees, 35 of them right in the baseline, from two blocks the merge
+declined (camera votes, pair agreement) that the whole-scene resection placed afterward. The
+alameda failure traces to two bars that count different things: `IsStrongSeam` measures the
+whole-scene track graph, where six crossing pairs chain into 1142 seam-usable tracks over 14/22
+cameras and clears the predicate; the merge instead resolves the crossing pairs themselves
+against two independently reconstructed blocks and finds 4 and 12 cameras split by camera vote,
+so the predicate's bar and the merge's bar are not the same bar. Where the boundary keeps more
+crossing pairs -- alameda's other standalone community, sub-scene 8, with 242 above the bar --
+the merge places it on two neighbours at 7+/0- and 32+/6- votes and its images come out right.
+Neither change meets its gates as measured: alameda's community stays unregistered, indoor's
+wrong body grows, and the fold captures move in opposite directions through the same door, the
+whole-scene resection, with no block of either capture placed against a contradicting neighbour.
+The defaults ship as committed -- 25 of 2000, the standalone predicate on -- and two levers stay
+open: the value of `denseFrameInliers`, which the design itself names as one to fine-tune, and a
+predicate seam bar that counts what the merge counts instead of the whole-scene track graph.
