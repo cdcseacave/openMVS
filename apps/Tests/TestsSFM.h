@@ -385,9 +385,10 @@ bool TranslationEstimatorTest();
 // Pairs weighting test
 bool PairsWeightingTest();
 
-// A pair's dense inliers count as evidence only up to PairsWeightingConfig::denseInlierCap: the
-// descriptor matches of the pairs around it stay the heavier evidence however many warp samples a
-// wide, imprecise overlap yields, while a dense-only pair keeps a quarter of the cap as evidence
+// A pair's dense inliers count as evidence in proportion to the matcher's frame target
+// (PairsWeightingConfig::denseFrameInliers over denseMatchesPerFrame): two dense-only pairs of one
+// image keep the order of their counts, a whole dense frame is a modest descriptor pair's evidence,
+// and the connectivity's inlier ratio counts the dense matches at the same scale
 bool PairsWeightingDenseFrameEvidenceTest();
 
 // PairsMatcher sequential mode test

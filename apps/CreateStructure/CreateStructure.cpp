@@ -312,6 +312,10 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		LOG("error: --roma2-slots must be at least the 2 slots a pair needs (got %u)", OPT::nROMA2Slots);
 		return false;
 	}
+	if (OPT::nROMA2DenseMatches < 1) {
+		LOG("error: --roma2-dense-matches is the dense fill's draw per full frame of overlap and the frame the pair evidence is anchored to, it must be at least 1 (got %u)", OPT::nROMA2DenseMatches);
+		return false;
+	}
 	if (OPT::bROMA2Match && !OPT::bROMA2) {
 		// design decision 10 -- a requested-but-unavailable backend never silently degrades: the one
 		// pass IS the matching round when it runs, and without --roma2 the enabled flag
