@@ -2501,6 +2501,9 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	const auto FusePoint = [&](IIndex ID, const ImageRef& x, unsigned fuseDepth) -> void {
 		const auto lambda = [&](IIndex ID, const ImageRef& x, unsigned fuseDepth, const auto& FusePointImpl) -> void {
 			const DepthData& depthData = arrDepthData[ID];
+			// the depth-map can be evicted from the cache after this neighbor was selected
+			if (depthData.IsEmpty())
+				return;
 			if (!Image8U::isInside(x, depthData.size))
 				return;
 			// ignore pixel if not estimated
