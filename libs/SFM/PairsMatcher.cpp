@@ -582,6 +582,41 @@ bool PairsMatcher::GeometricFilter(
 }
 
 
+bool PairsMatcher::RefineRelativePose(
+	const Image& img1,
+	const Image& img2,
+	ImagePair& pair,
+	const std::vector<double>& weights) const
+{
+	ASSERT(pair.relativePose.has_value());
+	ASSERT(weights.size() == pair.matches.size());
+	if (SelectGeometryBranch(config, img1, img2) != GeometryBranch::ESSENTIAL)
+		return false;
+	const Camera& cam1 = *img1.pCamera;
+	const Camera& cam2 = *img2.pCamera;
+	std::vector<poselib::Point3D> bearings1, bearings2;
+	bearings1.reserve(pair.matches.size());
+	bearings2.reserve(pair.matches.size());
+	for (const DMatch& m : pair.matches) {
+		bearings1.emplace_back(cam1.UnprojectNormalized(Cast<REAL>(img1.keypoints[m.queryIdx].pt)));
+		bearings2.emplace_back(cam2.UnprojectNormalized(Cast<REAL>(img2.keypoints[m.trainIdx].pt)));
+	}
+	// the loss of the estimator's own polish (estimate_relative_pose_bearings): its tolerance is the
+	// angular equivalent of the pixel bar GeometricFilter verifies with, as a unit-norm Sampson residual
+	poselib::BundleOptions bundle;
+	bundle.loss_scale = std::sin(0.5 * (cam1.PixelErrorToAngular(config.maxEpipolarError) + cam2.PixelErrorToAngular(config.maxEpipolarError)));
+	poselib::CameraPose pose(pair.relativePose->R, pair.relativePose->GetT());
+	poselib::refine_relpose_bearing(bearings1, bearings2, &pose, bundle, weights);
+	Pose3D& rel = pair.relativePose.value();
+	rel.R = pose.R();
+	rel.SetT(pose.t);
+	pair.E = ImagePair::ComposeEssentialMatrix(rel);
+	if (cam1.GetType() == CameraType::PINHOLE && cam2.GetType() == CameraType::PINHOLE)
+		pair.F = ImagePair::ComposeFundamentalMatrix(pair.E.value(), cam1.GetK(), cam2.GetK());
+	return true;
+}
+
+
 bool PairsMatcher::DecomposeFundamentalToPose(const Image& img1, const Image& img2, ImagePair& pair) const
 {
 	ASSERT(pair.ID1 == img1.ID);

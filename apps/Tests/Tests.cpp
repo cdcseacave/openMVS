@@ -247,6 +247,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::ROMA2AssemblyTest())
 				return false;
+			if (!SFM::ROMA2DenseFitWeightTest())
+				return false;
 			if (!SFM::DenseKeypointBoundaryTest())
 				return false;
 			if (!SFM::SupplementEvidenceIsolationTest())

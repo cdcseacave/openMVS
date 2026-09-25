@@ -791,6 +791,16 @@ bool SFM::AssemblePairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA,
 		ImagePair fit(pair.ID1, pair.ID2);
 		MakeFitImages(pointsA, pointsB, imgACopy, imgBCopy, fit);
 		if (pairsMatcher.GeometricFilter(imgACopy, imgBCopy, fit)) {
+			// the polish that closes the fit, again over the fit's inliers but with each dense
+			// correspondence at ROMA2Config::denseFitWeight: the union found the pose, the sparse
+			// matches set it wherever they are many (MakeFitImages numbers the guided matches first)
+			if (fit.relativePose.has_value()) {
+				std::vector<double> weights;
+				weights.reserve(fit.matches.size());
+				for (const DMatch& match : fit.matches)
+					weights.push_back(match.queryIdx < guided.size() ? 1.0 : (double)config.denseFitWeight);
+				pairsMatcher.RefineRelativePose(imgACopy, imgBCopy, fit, weights);
+			}
 			// straight from `fit` rather than recomposed here: GeometricFilter ran the branch's own
 			// estimator and left F/E in that branch's own convention (on SHARED_FOCAL it composes F
 			// from the RANSAC-estimated focal, not from the camera's nominal K), so recomposing

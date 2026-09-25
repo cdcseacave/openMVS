@@ -3082,6 +3082,89 @@ bool ROMA2AssemblyTest()
 	return true;
 }
 
+// The pair's relative pose leans on its sparse matches: the dense fill of an assembled pair is
+// displaced 2 px across the epipolar lines everywhere, the systematic error of a coarse warp, while
+// the guided matches are exact. Both kinds pass the 4 px bar and the union fit follows the far more
+// numerous dense matches; the weighted refinement that closes the assembly gives each dense
+// correspondence ROMA2Config::denseFitWeight against a sparse one's 1 and brings the pose back to the
+// sparse matches, where the same assembly with the dense matches at full weight stays on the bias.
+bool ROMA2DenseFitWeightTest()
+{
+	TD_TIMER_START();
+
+	Scene scene;
+	MakeROMA2WedgeScene(scene);
+	Image& imgA = scene.images[0];
+	Image& imgB = scene.images[1];
+	const Pose3D poseGT(imgB / imgA);
+	const int cells = 64;
+	const int rx0 = 14, rx1 = 50, ry0 = 13, ry1 = 47;
+	// across the epipolar lines, which run along the baseline direction (0.4, 0.1) here
+	const Point2f across(normalized(Point2f(-0.1f, 0.4f)));
+	const float bias = 2.f;
+	PairVerdict verdict;
+	verdict.admitted = true;
+	std::vector<Point2f> exactB;
+	for (int y = ry0; y < ry1; ++y) {
+		for (int x = rx0; x < rx1; ++x) {
+			const Point2f ptA(CoordFromTo(Point2f((float)x, (float)y), cv::Size(cells, cells), imgA.GetSize()));
+			Point2f ptB;
+			if (!ROMA2WedgeCorrespondence(imgA, imgB, ptA, ptB))
+				continue;
+			verdict.inliersA.push_back(ptA);
+			verdict.inliersB.push_back(ptB + across*bias);
+			verdict.confidences.push_back(0.5f);
+			exactB.push_back(ptB);
+		}
+	}
+	verdict.confidentAreaA = verdict.confidentAreaB = verdict.inlierAreaA = verdict.inlierAreaB =
+		(float)verdict.inliersA.size()/(float)(cells*cells);
+	// 60 exact guided matches spread over the region
+	std::vector<DMatch> guided;
+	for (size_t k = 0; k < verdict.inliersA.size() && guided.size() < 60; k += 20) {
+		const uint32_t idx = (uint32_t)imgA.keypoints.size();
+		imgA.keypoints.emplace_back(verdict.inliersA[k].x, verdict.inliersA[k].y, 10.f);
+		imgB.keypoints.emplace_back(exactB[k].x, exactB[k].y, 10.f);
+		guided.emplace_back(idx, idx);
+	}
+	MatchConfig matchCfg;
+	PairsMatcher matcher(scene, matchCfg);
+	const auto Assemble = [&](float denseFitWeight, REAL& angleErr, size_t& numDense) {
+		ROMA2Config config;
+		config.denseFitWeight = denseFitWeight;
+		ImagePair pair(0, 1);
+		pair.relativePose = poseGT;
+		pair.E = ImagePair::ComposeEssentialMatrix(poseGT);
+		pair.F = ImagePair::ComposeFundamentalMatrix(pair.E.value(), imgA.GetK(), imgB.GetK());
+		DenseMatches dense;
+		if (!AssemblePairROMA2(matcher, imgA, imgB, verdict, guided, config, cells, pair, dense) || !pair.relativePose.has_value())
+			return false;
+		angleErr = R2D(ACOS(ComputeAngle(pair.relativePose->R, poseGT.R)));
+		numDense = dense.pointsA.size();
+		return true;
+	};
+	REAL errFull, errWeighted;
+	size_t numDenseFull, numDenseWeighted;
+	if (!Assemble(1.f, errFull, numDenseFull) || !Assemble(ROMA2Config().denseFitWeight, errWeighted, numDenseWeighted)) {
+		VERBOSE("ROMA2DenseFitWeightTest FAILED: the biased pair was not assembled with a relative pose");
+		return false;
+	}
+	// the premise: the dense matches outnumber the sparse ones and at full weight pull the pose
+	if (numDenseFull < 4*guided.size() || errFull < REAL(0.05)) {
+		VERBOSE("ROMA2DenseFitWeightTest FAILED: premise not met: %u dense against %u sparse, %.4f deg at full weight",
+			(unsigned)numDenseFull, (unsigned)guided.size(), errFull);
+		return false;
+	}
+	if (errWeighted > REAL(0.25)*errFull) {
+		VERBOSE("ROMA2DenseFitWeightTest FAILED: the weighted refinement leaves the pose %.4f deg off, %.4f deg at full weight",
+			errWeighted, errFull);
+		return false;
+	}
+	VERBOSE("ROMA2DenseFitWeightTest PASSED: %.4f deg off with the dense matches at full weight, %.4f deg at %g (%u dense, %u sparse) (%s)",
+		errFull, errWeighted, ROMA2Config().denseFitWeight, (unsigned)numDenseWeighted, (unsigned)guided.size(), TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 // The described/dense keypoint boundary: the stored
 // count is what survives a descriptor release and an .sfm round-trip of an image whose
 // keypoints.size() > descriptors.rows -- the two arrays serialize independently, so nothing else

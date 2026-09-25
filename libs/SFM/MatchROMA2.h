@@ -63,6 +63,17 @@ struct SFM_API ROMA2Config {
 	// frame with the 160-cell grid) pollutes every track it enters, so the dense segment answers to
 	// the same bar the sparse matches do.
 	float denseEpipolarErrorFactor = 1.f;
+	// Weight of a dense correspondence against a sparse one's 1 in the refinement that closes the
+	// pair's relative pose: the robust fit runs on guided u dense, whose depth breaks the degeneracy
+	// of a near-planar sparse set, and the final polish over its inliers lets the sub-pixel sparse
+	// matches set the pose wherever they are many. One dense correspondence is a coarse warp sample
+	// whose error its neighbours share, so it is worth little on its own, and a constant weight makes
+	// the dense share of the fit fall as the pair's sparse inliers grow. Measured against the
+	// reference poses of 1400 pairs per capture (relpose_weighting_probe): median / p90 relative
+	// rotation error 0.30 / 1.10 deg on alameda and 0.73 / 3.08 deg indoor at weight 1, 0.15 / 0.74
+	// and 0.65 / 2.36 deg at this weight, which the sparse-only fit (0.17 / 1.83, 0.81 / 12.3) does not
+	// reach either; 0 drops the dense matches from the polish and brings the sparse-only tail back.
+	float denseFitWeight = 0.003f;
 	// The guided sparse match of an admitted pair looks for each described keypoint of A along its
 	// epipolar line in B, in a band centred on the warp's prediction (GuidedSearch, MatchGeometric.h):
 	// guidedBandLengthCells warp cells either way along the line -- the coarse warp's along-line

@@ -198,6 +198,16 @@ public:
 		ImagePair& pair,
 		float maxEpipolarError) const;
 
+	// Polish the calibrated relative pose of a verified pair over its matches with one weight per
+	// match, the estimator's own final refinement (the robust loss at the epipolar tolerance), and
+	// recompose E and F from the result. Only the calibrated branch carries a pose the bearings of
+	// the two cameras can refine; a pair of another branch is left as it is and false returned.
+	bool RefineRelativePose(
+		const Image& img1,
+		const Image& img2,
+		ImagePair& pair,
+		const std::vector<double>& weights) const;
+
 	// Decompose F into E and relative-pose
 	// note: if intrinsics are not accurate, the decomposition will result in very few filtered inliers
 	bool DecomposeFundamentalToPose(

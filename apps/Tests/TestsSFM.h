@@ -104,6 +104,11 @@ bool BuildTracksConflictTest();
 // a pair's rejected tail rather than past it
 bool ROMA2AssemblyTest();
 
+// The weighted refinement that closes a pair's assembly: with the dense fill displaced 2 px across
+// the epipolar lines and the guided matches exact, the pose follows the sparse matches at
+// ROMA2Config::denseFitWeight and the dense bias at full weight
+bool ROMA2DenseFitWeightTest();
+
 // The described/dense keypoint boundary: an image whose keypoints.size() > descriptors.rows keeps
 // its stored described-keypoint count across a descriptor release and an .sfm round-trip, the
 // index tests read it, and PairsMatcher::FilterRedundantKeypoints moves it through the same remap
