@@ -26,6 +26,7 @@
 #include <cmath>
 #include <vector>
 
+#include "Common/Config.h" // ASSERT for ConfidenceRefine.h: this unit does not include Common.h
 #include "ConfidenceRefine.h"
 #include "ConfidenceCUDA.h"
 

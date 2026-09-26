@@ -4,8 +4,7 @@
  * Shared, dependency-free per-pixel math for the fusion-faithful confidence recalibration, callable
  * from BOTH the CPU sweep (SceneDensify.cpp: AdjustConfidenceSweep / ComputeIntraMapPrior) and the
  * CUDA kernel (ConfidenceCUDA.cu). Everything here is plain scalar float on POD types -- NO OpenCV /
- * TImage / cv::Matx, only the ASSERT macros of Config.h -- so the same header compiles under the host
- * C++ compiler and under nvcc.
+ * TImage / cv::Matx -- so the same header compiles under the host C++ compiler and under nvcc.
  *
  * Parity contract: on the HOST path these inlines reproduce the exact operations (and, for the
  * transcendental, the exact double-precision std::exp) of the pre-refactor CPU code, so refactoring
@@ -15,7 +14,6 @@
 #ifndef _MVS_CONFIDENCEREFINE_H_
 #define _MVS_CONFIDENCEREFINE_H_
 
-#include "../Common/Config.h"
 #include <cmath>
 
 #if defined(__CUDACC__)
