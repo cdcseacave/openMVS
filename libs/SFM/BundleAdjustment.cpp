@@ -890,6 +890,28 @@ inline bool SelectReprojectionLoss(const BAConfig& config, double denseObservati
 	return true;
 }
 
+// The dense weight each image's dense residuals carry: denseObservationWeight scaled by N / (N + n),
+// N = config.denseHalfWeightObservations and n the image's described observations in the scene's
+// inlier tracks, counted over the whole scene so that a local window weighs an image as the global
+// solve does; the same weight for every image when N is 0.
+inline std::vector<double> DenseWeightPerImage(const Scene& scene, const BAConfig& config, double denseObservationWeight) {
+	std::vector<double> weights(scene.images.size(), denseObservationWeight);
+	if (config.denseHalfWeightObservations == 0)
+		return weights;
+	std::vector<unsigned> numDescribed(scene.images.size(), 0u);
+	for (const Track& track : scene.tracks) {
+		if (!track.IsInlier())
+			continue;
+		for (const Observation& obs : track)
+			if (!scene.images[obs.imageID].IsDenseKeypoint(obs.featureID))
+				++numDescribed[obs.imageID];
+	}
+	const double halfWeight = (double)config.denseHalfWeightObservations;
+	FOREACH(i, weights)
+		weights[i] *= halfWeight / (halfWeight + (double)numDescribed[i]);
+	return weights;
+}
+
 // Add a reprojection residual for keypoint kp of img, wiring its pose and point blocks (and,
 // for pinhole cameras, the shared intrinsic block from intrinsicParams).
 inline void AddReprojectionResidual(ceres::Problem& problem, ceres::LossFunction* loss,
@@ -1085,6 +1107,7 @@ bool BundleAdjustment::Adjust()
 	DenseObservationSigmas denseSigmas; // what that weight was measured on, for the report below
 	const double denseWeight = config.useKeypointConfidence ? 1.0 :
 		EstimateDenseObservationWeight(scene, config, &denseSigmas);
+	const std::vector<double> denseWeights = DenseWeightPerImage(scene, config, denseWeight);
 
 	// how many observations each image contributes, decided before the residuals are added; whether
 	// the budget applies at all is a property of the scene, not of this one solve (see
@@ -1122,7 +1145,7 @@ bool BundleAdjustment::Adjust()
 			// keypoint (whose position came from the warp, not from the detector)
 			ceres::LossFunction* residual_loss_function;
 			bool bDense = false;
-			if (!SelectReprojectionLoss(config, denseWeight, img, obs.featureID, loss_function, residual_loss_function, bDense)) {
+			if (!SelectReprojectionLoss(config, denseWeights[imgID], img, obs.featureID, loss_function, residual_loss_function, bDense)) {
 				++numSkippedLowConfidence;
 				continue; // skip low-confidence keypoints
 			}
@@ -1520,6 +1543,7 @@ bool BundleAdjustment::AdjustLocal(
 	DenseObservationSigmas denseSigmas; // what that weight was measured on, for the report below
 	const double denseWeight = config.useKeypointConfidence ? 1.0 :
 		EstimateDenseObservationWeight(scene, config, &denseSigmas);
+	const std::vector<double> denseWeights = DenseWeightPerImage(scene, config, denseWeight);
 
 	// how many observations each window image contributes, decided before the residuals are added
 	// and over the window alone: an image is capped on what it brings to THIS solve. Whether the
@@ -1563,7 +1587,7 @@ bool BundleAdjustment::AdjustLocal(
 			// keypoint (whose position came from the warp, not from the detector)
 			ceres::LossFunction* residual_loss_function;
 			bool bDense = false;
-			if (!SelectReprojectionLoss(config, denseWeight, img, obs.featureID, loss_function, residual_loss_function, bDense))
+			if (!SelectReprojectionLoss(config, denseWeights[imgID], img, obs.featureID, loss_function, residual_loss_function, bDense))
 				continue; // skip low-confidence keypoints
 			AddReprojectionResidual(problem, residual_loss_function, img, img.keypoints[obs.featureID],
 				poseParams.data() + imgID * 7, track.position.ptr(), intrinsicParams);

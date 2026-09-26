@@ -89,6 +89,19 @@ struct SFM_API BAConfig
 	// which answers a different question -- see DENSE_OBSERVATION_WEIGHT above.
 	double denseObservationWeight = -1.0;
 
+	// Described observations at which an image's dense residuals weigh half the dense weight above:
+	// each dense residual of an image weighs N / (N + n) of it, n the image's described observations
+	// in the scene's inlier tracks, 0 = the same dense weight for every image. An image with hundreds
+	// of detections already has its pose fixed by them, and the warp samples of its matchings, a
+	// coarser measurement whose errors neighbouring samples share, can only pull it; an image with
+	// few detections keeps most of its dense say. Measured against the uniform weight on five indoor
+	// and two outdoor captures: an indoor capture's 82 misplaced images are left out instead (e00da096,
+	// 0 wrong of 105), a tail that lands 10-34 images wrong from run to run lands 17 wrong in every
+	// run (2678a364), the long indoor capture stays at 42-66 wrong against 56-66, rotation medians
+	// fall by up to 14% and the outdoor captures do not move; 100 matches it on the small captures
+	// but let the long one misplace a 117-image block in one of three runs.
+	unsigned denseHalfWeightObservations = 300;
+
 	// The most observations one image contributes to a solve, of any keypoint kind, 0 = all. What a
 	// bundle adjustment costs is the number of observations it fits, and one image can bring
 	// thousands of them -- warp samples where it was matched densely, detections where it was not --

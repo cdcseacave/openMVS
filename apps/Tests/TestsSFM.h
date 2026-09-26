@@ -215,6 +215,10 @@ bool BundleAdjustmentPairConstraintTest();
 // the solve fits every observation
 bool BAObservationCapTest();
 
+// An image rich in described observations weighs its dense ones less: a bias shared by every dense
+// keypoint of one such image moves the model at most half as far as under a uniform dense weight
+bool BADenseWeightPerImageTest();
+
 // Small SFM smoke test: build tiny scene and run BundleAdjustment::Adjust
 bool PipelineTest();
 

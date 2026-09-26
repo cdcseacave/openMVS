@@ -10371,6 +10371,61 @@ bool BAObservationCapTest()
 	return true;
 }
 
+// An image whose described observations fix its pose on their own hears its dense ones less: each
+// dense residual of an image weighs BAConfig::denseHalfWeightObservations / (that + the image's
+// described observations) of the dense weight, so warp samples that share a bias pull an image rich
+// in detections far less than a uniform dense weight lets them
+bool BADenseWeightPerImageTest()
+{
+	TD_TIMER_START();
+	constexpr IIndex BIASED_IMAGE = 3;       // the image whose dense keypoints are all shifted
+	constexpr float DENSE_BIAS = 2.f;        // pixels every dense keypoint of that image is shifted by
+	constexpr double MIN_UNIFORM_ERROR = 0.02; // degrees the bias must cost under a uniform dense weight
+	constexpr double MAX_ERROR_RATIO = 0.5;  // the per-image weight must at least halve that error
+	SceneConfig cfg;
+	cfg.numImages = 8;
+	cfg.numPoints = 1000;
+	double rotationError[2];
+	for (const bool perImage : {false, true}) {
+		Scene truth, scene;
+		GenerateTestScene(truth, cfg, &scene);
+		AddDenseObservations(scene);
+		Image& img = scene.images[BIASED_IMAGE];
+		for (size_t k = img.NumDescribedKeypoints(); k < img.keypoints.size(); ++k)
+			img.keypoints[k].pt.x += DENSE_BIAS;
+		BAConfig config;
+		config.denseObservationWeight = 0.25; // pinned, so both solves weigh a dense residual alike
+		config.relativeRotationSigma = config.relativeTranslationSigma = 0.f; // the reprojections alone
+		config.denseHalfWeightObservations = perImage ? 300u : 0u;
+		if (!BundleAdjustment::Adjust(scene, config)) {
+			VERBOSE("BADenseWeightPerImageTest FAILED: the bundle adjustment did not solve the scene (%s dense weight)",
+				perImage ? "per-image" : "uniform");
+			return false;
+		}
+		std::vector<Pose3D> gtPoses;
+		for (const Image& gt : truth.images)
+			gtPoses.push_back(gt);
+		double maxCenter;
+		WorstPoseError(scene, gtPoses, rotationError[perImage], maxCenter);
+	}
+	if (rotationError[0] < MIN_UNIFORM_ERROR) {
+		VERBOSE("BADenseWeightPerImageTest FAILED: a %.0f-pixel bias on the dense keypoints of image %u costs only "
+			"%.4f degrees under a uniform dense weight, so the scene does not pose the problem",
+			(double)DENSE_BIAS, BIASED_IMAGE, rotationError[0]);
+		return false;
+	}
+	if (rotationError[1] > MAX_ERROR_RATIO * rotationError[0]) {
+		VERBOSE("BADenseWeightPerImageTest FAILED: the per-image dense weight leaves the model %.4f degrees from the "
+			"truth against %.4f under a uniform one, more than %.0f%% of it", rotationError[1], rotationError[0],
+			100.0 * MAX_ERROR_RATIO);
+		return false;
+	}
+	VERBOSE("BADenseWeightPerImageTest PASSED: a %.0f-pixel bias on the dense keypoints of a detection-rich image "
+		"leaves the model %.4f degrees from the truth under a per-image dense weight against %.4f under a uniform one "
+		"(%s)", (double)DENSE_BIAS, rotationError[1], rotationError[0], TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 // Test function for rotation estimation
 bool RotationEstimatorTest()
 {
