@@ -42,26 +42,19 @@ constexpr float CONF_FLOOR      = 0.03f; // anti-cascade floor (times photometri
 constexpr float VIOLATION_W     = 2.0f;  // posterior-denominator weight of the free-space-violation count
 constexpr float VIOLATION_MARGIN= 2.0f;  // how far behind our depth (in units of thDepth) a neighbor's
                                          // own depth must lie to count as a violation vs. mere occlusion
-// ---- confirmation tolerances ----
-// A confirmation is evidence that the depth is CORRECT, so its tolerances are set by the estimation
-// noise, not by fusion's clustering thresholds (which only decide how finely agreeing pixels are
-// merged into points): measured against laser ground truth on four Tanks-and-Temples scenes, correct
-// depths disagree with their neighbors by a RELATIVE depth that is constant across triangulation
-// angles (median 0.06-0.15%, 90th percentile 0.3-1%), and a 0.25-0.5% Gaussian width ranks correct
-// vs wrong pixels best on every scene. The forward-backward reprojection residual is not an
-// independent test: along the epipolar line it is the same depth error scaled by f*sin(angle), and
-// across it only pixel rounding, so a fixed-pixel reprojection gate merely discards the
-// wide-baseline confirmations. What the triangulation angle does carry is how INDEPENDENT a
-// confirmation is: a narrow-baseline neighbor sees nearly the same image content and shares the
-// reference's mistakes, so its vote is weighted by min(1, sin(angle)/CONFIRM_SIN_ANGLE).
+// ---- confirmation tolerances (derivation: docs/design/DepthMapConfidence.md) ----
+// A confirmation is evidence that the depth is CORRECT, so its tolerances follow the estimation
+// noise, not fusion's clustering thresholds: correct depths disagree across views by a RELATIVE depth
+// that is constant over triangulation angles (p90 0.3-1% on T&T), so G1 is a relative-depth Gaussian,
+// and a pixel reprojection test would only repeat it scaled by f*sin(angle). The angle measures
+// instead how INDEPENDENT a vote is (a narrow-baseline neighbor shares the reference's mistakes):
+// G2 weighs it by min(1, sin(angle)/CONFIRM_SIN_ANGLE).
 constexpr float CONFIRM_DEPTH   = 0.005f;      // relative depth width of a confirmation (G1), also the
-                                               // free-space margin unit and the intra-map prior band unit
+                                               // unit of the free-space margin and of the prior band
 constexpr float CONFIRM_SIN_ANGLE = 0.34202014f; // sin(20 deg): triangulation angle of a full vote
 // fusion's seed/join floor on the RECALIBRATED confidence (a raw photometric confidence keeps the
-// estimation's own 1 - fNCCThresholdKeep): below it a depth may not even seed a point. Fusion's
-// contradiction guard already removes the disputed low-confidence clusters, so the floor only has to
-// cut the hopeless ones; 0.07 is the best mean F1 on four Tanks-and-Temples scenes (0.10 and 0.05
-// each lose up to 0.003 on one of them).
+// estimation's 1 - fNCCThresholdKeep); fusion's contradiction guard removes the disputed clusters,
+// so the floor only cuts the hopeless ones (0.07: best mean F1 on four T&T scenes)
 constexpr float FUSE_MIN_CONF   = 0.07f;
 
 // single-precision snapshot of the shape constants above + the gate thresholds, uploaded to the
@@ -70,7 +63,7 @@ struct Params {
 	// posterior / gate shape (the constants above)
 	float s, tau, kPrior, w0, confFloor;
 	// gate thresholds (G3, the normal gate, needs none here: it is a continuous dot-product weight)
-	float minConfidence;   // 1 - fNCCThresholdKeep  (G4), shared with fusion's seed/join confidence floor
+	float minConfidence;   // 1 - fNCCThresholdKeep (G4): the estimation's floor on the photometric confidence
 	float thDepth;         // CONFIRM_DEPTH (G1)
 	// free-space violation
 	float lambdaViol, violMargin;
@@ -78,7 +71,7 @@ struct Params {
 	float epsConf;
 };
 
-// fill the shape constants; the caller sets the runtime gate thresholds
+// fill the constants; the caller sets minConfidence and epsConf
 CR_HD void InitParamsShape(Params& p) {
 	p.s = PRIOR_STRENGTH;
 	p.tau = CONFIRM_TAU;
@@ -135,10 +128,10 @@ CR_HD float SoftDepthW(float qz, float dN, float thDepth) {
 CR_HD float AngleW(float x, float y, float z, float cx, float cy, float cz) {
 	const float ax = y*cz - z*cy, ay = z*cx - x*cz, az = x*cy - y*cx;
 	const float dx = x - cx, dy = y - cy, dz = z - cz;
-	const float den = sqrtf((x*x + y*y + z*z) * (dx*dx + dy*dy + dz*dz));
-	if (!(den > 0.f))
+	const float den2 = (x*x + y*y + z*z) * (dx*dx + dy*dy + dz*dz);
+	if (!(den2 > 0.f))
 		return 0.f;
-	const float w = sqrtf(ax*ax + ay*ay + az*az) / (den * CONFIRM_SIN_ANGLE);
+	const float w = sqrtf((ax*ax + ay*ay + az*az) / den2) * (1.f / CONFIRM_SIN_ANGLE);
 	return w < 1.f ? w : 1.f;
 }
 // GATE 4: smoothstep on the neighbor confidence around minConfidence

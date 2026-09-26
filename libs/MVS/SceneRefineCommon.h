@@ -347,8 +347,7 @@ void SimplifyRefinedMesh(REFINE& refine, float tolerancePx)
 	refine.ListVertexFacesPre();
 }
 
-// the mesh preparation both backends run at the start of every scale (their SubdivideMesh()
-// forwards here). The first scale decimates the input mesh straight to the density the
+// the mesh preparation both backends run at the start of every scale. The first scale decimates the input mesh straight to the density the
 // refinement wants -- a mean tightest-pair projected area of half the face cap, in pixels of that
 // scale's working resolution (8 px^2 at the default cap of 16: twice the cap once the finest scale
 // doubles the resolution, so its 1-to-4 split of every face above the cap lands the mesh at the

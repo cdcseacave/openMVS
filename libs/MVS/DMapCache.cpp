@@ -96,8 +96,12 @@ bool DMapCache::UseImage(IIndex idxImage) const {
 	const String fileName(ComposeDepthFilePath(arrDepthData[idxImage].GetView().GetID(), "dmap"));
 	while (!std::filesystem::is_regular_file(static_cast<const std::string&>(fileName)))
 		std::this_thread::sleep_for(std::chrono::milliseconds(100));
-	arrDepthData[idxImage].Load(fileName, loadFlags);
-	ASSERT(!arrDepthData[idxImage].IsEmpty());
+	if (!arrDepthData[idxImage].Load(fileName, loadFlags)) {
+		// corrupt or truncated file: leave the map empty and uncached, callers test IsEmpty()
+		arrDepthData[idxImage].Release();
+		VERBOSE("error: depth-map '%s' could not be loaded", fileName.c_str());
+		return false;
+	}
 	if (pImages) {
 		// decode the image at the resolution its depth-map was estimated at, which
 		// is the one Image::width/height were left at when the scene was prepared;

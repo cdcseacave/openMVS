@@ -38,12 +38,12 @@ conf      = clamp01(posterior · gate · photo)
 if Kf ≥ 1: conf = max(conf, CONF_FLOOR · confPhoto)        // anti-cascade floor
 ```
 
-- **`pGeo` — intra-map geometric prior** (`DepthMapsData::ComputeIntraMapPrior`,
-  `SceneDensify.cpp:1183`): fits a local depth plane to the 3x3 neighbourhood of each pixel
-  (depth-similar neighbours only), scores the pixel by the plane-fit residual (`Pplane`), an
-  inlier-count soft quorum (`gate`, ~4 inliers), and — when a normal map is available — the
-  agreement between the plane-implied normal and the estimated normal (`Pnorm`). A correct surface
-  is locally coherent in both; a photometric mismatch usually is not.
+- **`pGeo` — intra-map geometric prior** (`DepthMapsData::ComputeIntraMapPrior`): fits a local
+  depth plane to the 3x3 neighbourhood of each pixel (depth-similar neighbours only), scores the
+  pixel by the plane-fit residual (`Pplane`), an inlier-count soft quorum (`gate`, ~4 inliers), and
+  — when a normal map is available — the agreement between the plane-implied normal and the
+  estimated normal (`Pnorm`). A correct surface is locally coherent in both; a photometric mismatch
+  usually is not.
 - **`Kf`, `Pconf` — multi-view confirmation**: the pixel is projected into each selected neighbour
   view and scored against that view's own depth/normal/confidence through four continuous weights —
   `SoftDepthW` (Gaussian relative-depth agreement at the estimation noise, gate 1), `AngleW`
@@ -56,10 +56,12 @@ if Kf ≥ 1: conf = max(conf, CONF_FLOOR · confPhoto)        // anti-cascade fl
   passes through where the point claims to be — direct negative evidence, diluting the posterior's
   denominator.
 
-`ConfRefine::Params` (`ConfidenceRefine.h`) carries the shape constants, the calibrated confirmation
-tolerances (`thDepth = CONFIRM_DEPTH`, also the unit of the free-space margin and of the prior's
-plane-fit band) and the one threshold shared with fusion, its confidence floor `minConfidence =
-1 − fNCCThresholdKeep`.
+`ConfRefine::Params` (`ConfidenceRefine.h`, built once by `MakeConfRefineParams` for both the CPU
+sweep and the CUDA kernel) carries the shape constants, the calibrated confirmation tolerance
+(`thDepth = CONFIRM_DEPTH`, also the unit of the free-space margin and of the prior's plane-fit band)
+and gate 4's centre `minConfidence = 1 − fNCCThresholdKeep`, the estimation's floor on the neighbours'
+photometric confidence. Fusion applies its own floor to the recalibrated result
+(`ConfRefine::FUSE_MIN_CONF`, see `DepthMapFusion.md`).
 
 **Why the confirmation tolerances are not fusion's.** A confirmation is evidence that the depth is
 correct; fusion's join thresholds decide how finely agreeing pixels merge into points, and a pixel
@@ -78,11 +80,11 @@ Tanks-and-Temples scenes (projecting sampled pixels into every neighbour depth-m
   pixels better than any residual gate.
 
 Per-pixel confirmation AUC (correct vs wrong pixel), Meetingroom / Caterpillar / Truck / Church:
-depth 1% × reprojection 1 px (previous) 0.770 / 0.800 / 0.765 / 0.845; depth 0.5% only
-0.810 / 0.848 / 0.791 / 0.885; depth 0.5% × `AngleW` (current) 0.835 / 0.861 / 0.809 / 0.906.
-Tying the gates to fusion's thresholds also made the confidence *scale* follow them: tightening
-fusion to 0.6 px / 0.5% left the ranking unchanged (AUC 0.726 both) but halved the median confidence,
-so fusion's fixed floor dropped 27% of the admitted pixels, 37% of them correct.
+fusion's join gates (depth 1% × reprojection 1 px) 0.770 / 0.800 / 0.765 / 0.845; depth 0.5% only
+0.810 / 0.848 / 0.791 / 0.885; depth 0.5% × `AngleW` (shipped) 0.835 / 0.861 / 0.809 / 0.906.
+Gates tied to fusion's thresholds also make the confidence *scale* follow them: tightening fusion to
+0.6 px / 0.5% left the ranking unchanged (AUC 0.726 both) but halved the median confidence, so a
+fixed fusion floor dropped 27% of the admitted pixels, 37% of them correct.
 
 ### Raw-neighbour-confidence invariant
 
@@ -95,9 +97,9 @@ is a function of raw neighbour confidences only. This is enforced structurally:
 - **Fused / epilogue**: neighbour normal/confidence maps are loaded by `InitViews` only on the last
   geometric-consistency iteration (`loadDepthMaps == 2`) into `DepthData::images[].confMap`, the
   *previous* iteration's snapshot; if that snapshot's own dmap already carries `CONF_ADJUSTED`,
-  `InitViews` drops it instead of loading it (`SceneDensify.cpp:438-445`), so a re-run over
-  already-adjusted dmaps cannot feed adjusted values back in as evidence — the neighbour then gates
-  as "no confidence" (neutral), matching `ConfNeighborHost::conf == null`.
+  `InitViews` drops it instead of loading it, so a re-run over already-adjusted dmaps cannot feed
+  adjusted values back in as evidence — the neighbour then gates as "no confidence" (neutral),
+  matching `ConfNeighborHost::conf == null`.
 - **Standalone**: `AdjustConfidence(DepthData&, const IIndexArr&)` reads neighbours from the shared
   `arrDepthData[]`, which other references may be concurrently adjusting; the result is parked in
   `DepthData::confMapAdjusted` and only swapped into `confMap` by the `EVT_ADJUSTDEPTHMAP` handler
@@ -112,7 +114,7 @@ is a function of raw neighbour confidences only. This is enforced structurally:
 `OPTDENSE::nOptimize` (`--postprocess-dmaps`) bits: `1` `REMOVE_SPECKLES`, `2` `FILL_GAPS`, `4`
 `ADJUST_CONFIDENCE_AUTO` (default), `8` `ADJUST_CONFIDENCE` (force on). `Scene::ComputeDepthMaps`
 resolves `AUTO` once per call, once the estimation backend is known
-(`SceneDensify.cpp:3218-3242`), to `ADJUST_CONFIDENCE` only when **all** of: a CUDA PatchMatch pool
+(`SceneDensify.cpp`), to `ADJUST_CONFIDENCE` only when **all** of: a CUDA PatchMatch pool
 exists, `OPTDENSE::bEstimateConfidenceCUDA` is true, `nFusionMode >= 0`, and
 `nEstimationGeometricIters > 0` — otherwise it resolves to off. The resolution is scoped to that
 call (restored on return), so a later `DenseReconstruction` in the same process re-resolves `AUTO`
@@ -120,7 +122,7 @@ for its own backend. Metal and CPU-only builds therefore always resolve `AUTO` t
 
 When `ADJUST_CONFIDENCE` is set (auto-resolved or forced), three paths exist, tried in this order:
 
-1. **Fused in-estimation** (`PatchMatch::EstimateDepthMap`, `PatchMatchCUDA.cpp:462-490`): fires
+1. **Fused in-estimation** (`PatchMatch::EstimateDepthMap`, `PatchMatchCUDA.cpp`): fires
    only when `scaleNumber == 0`, `params.bGeomConsistency`, this is the last geometric-consistency
    iteration, and `nOptimize & OPTIMIZE` (speckle/gap filters) is **not** set — those filters run
    after estimation and would change the depth the confidence was computed from, so the fused path
@@ -136,7 +138,7 @@ When `ADJUST_CONFIDENCE` is set (auto-resolved or forced), three paths exist, tr
 3. **Standalone CPU sweep** (`DepthMapsData::AdjustConfidence(DepthData&, const IIndexArr&)`,
    `--postprocess-dmaps 8`, CPU/Metal estimation, `--geometric-iters 0`, or re-adjusting already-saved
    dmaps): its own phase (`EVT_FILTERDEPTHMAP` / `EVT_ADJUSTDEPTHMAP`), using up to 8 neighbours per
-   reference (`numMaxNeighbors` in `SceneDensify.cpp:3722`) through a phase-lifetime `DMapCache`
+   reference (`numMaxNeighbors` in `SceneDensify.cpp`) through a phase-lifetime `DMapCache`
    (`g_pAdjustDMapCache`) shared across the whole phase.
 
 Within one reference view, a fallback chain applies: fused → epilogue GPU
@@ -157,7 +159,7 @@ checks it before trusting a neighbour's confidence (see above).
 |---|---|---|---|
 | `--postprocess-dmaps` | `OPTDENSE::nOptimize` | `4` (`ADJUST_CONFIDENCE_AUTO`) | `0` disabled, `1` remove-speckles, `2` fill-gaps, `4` auto (on for CUDA estimation, off otherwise), `8` force on |
 | *(dense config file only)* | `OPTDENSE::bEstimateConfidenceCUDA` | `true` | when CUDA estimates, run the recalibration on the GPU; `0` forces the CPU sweep |
-| — (shared with fusion) | `OPTDENSE::fNCCThresholdKeep` | `0.9` | `minConfidence = 1 − this` is gate 4's centre and the fusion keep threshold |
+| *(dense config file only)* | `OPTDENSE::fNCCThresholdKeep` | `0.9` | `minConfidence = 1 − this` is gate 4's centre (the estimation's photometric floor) |
 | — (compile-time) | `ConfRefine::CONFIRM_DEPTH` | `0.005` | gate 1 relative-depth width; unit of the free-space margin and the prior's plane-fit band |
 | — (compile-time) | `ConfRefine::CONFIRM_SIN_ANGLE` | `sin 20°` | gate 2: triangulation angle of a full vote |
 | — (compile-time) | `ConfRefine::PRIOR_STRENGTH` | `2.0` | intra-map prior weight, as Beta pseudo-counts |
@@ -171,7 +173,8 @@ checks it before trusting a neighbour's confidence (see above).
 The compile-time constants live in `ConfidenceRefine.h` and are deliberately not runtime knobs: they
 are one jointly ground-truth-calibrated operating point (BlendedMVS + ETH3D, 28 scene-levels, full-grid
 sweep) — one global setting won on every scene-level, and moving one without re-sweeping the others
-degrades the result. Only `fNCCThresholdKeep` stays runtime, because it is fusion's own floor.
+degrades the result. Only `fNCCThresholdKeep` stays runtime, because it is the estimation's own
+floor.
 
 ## 4. Invariants and constraints
 
@@ -190,8 +193,9 @@ degrades the result. Only `fNCCThresholdKeep` stays runtime, because it is fusio
 - The recalibration never reads fusion's join thresholds (`fDepthDiffThreshold`,
   `fDepthReprojectionErrorThreshold`): changing how finely fusion clusters must not move the
   confidence scale that fusion's floor is applied to.
-- The CPU and GPU paths share the exact same per-pixel math (`ConfidenceRefine.h`, compiled under
-  both the host compiler and `nvcc`); the GPU path differs only in using single-precision `expf`.
+- The CPU and GPU paths share the exact same per-pixel math and parameter snapshot
+  (`ConfidenceRefine.h`, compiled under both the host compiler and `nvcc`); the GPU path differs only
+  in using single-precision `expf`.
 
 ## 5. Validation of the shipped defaults
 
@@ -214,25 +218,24 @@ point and the ROC improve (see §7 open items).
 
 ## 6. Rejected alternatives
 
-- **Hard pass/fail gates** — loses the majority of the achievable ROC gain; continuous weights are
-  the dominant lever.
-- **Exposing the shape constants as CLI/config knobs** — they are one jointly-calibrated operating
-  point, not seven independent dials; moving one without re-sweeping the others degrades it.
-- **`CONF_FLOOR = 0.5`** — the sweep favoured a much smaller floor on ROC-flatness grounds; a value
-  that high does not test the floor's actual job of protecting genuinely-confirmed few-view inliers.
-- **Integrated (in-estimation) CPU mode as the always-on default** — ties or loses against the
-  standalone phase's greater thread parallelism on CPU; only wins on the GPU, where the kernels are
-  nearly free.
-- **Raising `nPatchMatchCUDAInstances` to feed the inline sweep** — memory-bandwidth bound, so more
-  workers barely reduce sweep cost while oversubscribing the GPU slows raw estimation.
-- **A test-only determinism hash in neighbour-view selection** — reverted; randomness there is
-  statistically fine and a bench concern, not something shipped code should carry as a crutch.
-- **Exporting the estimator's geometric-consistency score as a fourth confidence feature** — a
-  transient local already folded into the NCC score; plumbing a new per-pixel buffer through both
-  the CPU estimator and PatchMatchCUDA was judged not worth it.
-- **Monocular-foundation-model pseudo-GT (and mono-model completeness judges) for tuning** — retired
-  once real GT was available: the pseudo-GT's own error floor was one to two orders of magnitude
-  larger than the effects being tuned.
+- **Hard pass/fail gates** — lose most of the achievable ROC gain; continuous weights are the lever.
+- **Confirmation gates on fusion's join thresholds, or any fixed-pixel reprojection gate** — the
+  residual repeats the depth error scaled by `f·sin θ`, so it drops wide-baseline confirmations, and
+  the confidence scale then moves with fusion's settings (§2).
+- **Per-image depth widths from an estimated noise scale** — the scale is estimable (correlation
+  0.77–0.97 with ground truth) but does not beat the fixed 0.5%.
+- **Shape constants as CLI/config knobs** — one jointly calibrated operating point; moving one
+  without re-sweeping the others degrades it.
+- **`CONF_FLOOR = 0.5`** — too high to test the floor's real job (protecting confirmed few-view
+  inliers); the sweep favoured a small floor.
+- **The integrated CPU mode as default** — ties or loses against the standalone phase's thread
+  parallelism; only the GPU makes it nearly free.
+- **More `nPatchMatchCUDAInstances` to feed the inline sweep** — bandwidth-bound; oversubscribing
+  the GPU slows estimation.
+- **The estimator's geometric-consistency score as a confidence feature** — already folded into the
+  NCC score; not worth a new per-pixel buffer through both estimators.
+- **Monocular-model pseudo-GT for tuning** — its error floor was one to two orders of magnitude above
+  the effects being tuned.
 
 ## 7. Open items
 

@@ -71,7 +71,7 @@ Each scale re-inits images (`InitImages`, one worker per view, `MeshRefine::ThIn
 shared `PrepareRefineImage` (`SceneRefineCommon.cpp`) loads, gray-converts, Gaussian-blurs at the
 scale's `sigma` and resizes; `ComputeRefineImageGradient` builds the per-view derivative image both
 backends read (skipped when `OPTREFINE::nImageGradient == 3`, which samples the bilinear
-interpolant directly instead); `PrepareRefineImageMask` builds the per-view keep-mask. `SubdivideMesh`
+interpolant directly instead); `PrepareRefineImageMask` builds the per-view keep-mask. `PrepareRefineMesh`
 then runs the shared mesh preparation (§2.3), and `ListVertexFacesPost` lists incident/boundary
 vertices before the optimization phase (§2.7) runs.
 

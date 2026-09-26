@@ -71,7 +71,8 @@ public:
 	void SkipMemoryCheckIdxImage(IIndex idxImage = NO_ID) { skipMemoryCheckIdxImage = idxImage; }
 
 	// ensure the depth-data is loaded and mark it as recently used:
-	// return true if the image was loaded from disk
+	// return true if the image was loaded from disk; a file that fails to load leaves the
+	// depth-data empty (IsEmpty()) and out of the cache
 	bool UseImage(IIndex idxImage) const;
 
 	// get the image indices loaded in cache.

@@ -31,7 +31,7 @@ namespace MVS {
 namespace CUDA {
 
 // Host-side descriptor for one confirming neighbor view: the fused single-precision projection
-// transforms (row-major 3x3 A/Rrel + 3-vector b, plus the neighbor centre cn, built exactly as the CPU NeighborProj) plus
+// transforms (row-major 3x3 A/Rrel, 3-vectors b/cn, built exactly as the CPU NeighborProj) plus
 // HOST pointers to that neighbor's depth/conf/normal maps (row-major, contiguous). conf/normal may
 // be null (treated as "no confidence" / "no normal gate", matching the CPU).
 struct ConfNeighborHost {

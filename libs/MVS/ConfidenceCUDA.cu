@@ -187,6 +187,8 @@ __global__ void SweepKernel(RefAcc ref, const float* priorMap, int W, int H,
 		if (!SampleDepthBilinearDev(np, px, py, p.thDepth, dN))
 			dN = dNn;
 		const float wD = ConfRefine::SoftDepthW(qz, dN, p.thDepth);
+		if (wD <= 0.05f)
+			continue; // every other weight is <= 1: the vote is already negligible
 		const float wR = ConfRefine::AngleW(xr, yr, depthRef, np.cn[0], np.cn[1], np.cn[2]);
 		float wN = 1.f;
 		if (hasNormalGate) {
