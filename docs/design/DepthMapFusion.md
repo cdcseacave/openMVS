@@ -22,8 +22,14 @@ record in `DelaunayMeshReconstruction.md`.
 `DepthMapsData::DenseFuseDepthMaps` fuses depth-maps one at a time, each
 chosen with `FetchBestNextDMapIndex` as the not-yet-fused map with the
 most neighbours already resident in the depth-map cache (ties broken toward fewer total neighbours),
-so the cache is reused rather than thrashed; the cache (`DMapCache`) is sized from free RAM via
-`GetAvailableMemory` and resized every `numDMapsReserveFusion` (10) maps. A depth-map file that fails
+so the cache is reused rather than thrashed. The estimation's GPU pools are released before fusion
+starts (their pinned host buffers are most of the estimation's resident memory), and the cache
+(`DMapCache`) is re-budgeted after every fused map (`FusionCacheSetup::Budget`): the memory free at
+that moment, minus the safety margin and what the next map may add to the point-cloud
+(`FusionMemoryReserve`: twice the last map's points, plus the per-point arrays' next growth), capped
+at four working sets (`FusionWorkingSet`: the reference and `nMaxViewsFuse` neighbours) and never
+below one. The cache thus shrinks as the cloud grows instead of taking the memory the cloud and other
+processes need; the colour images stay resident when they fit in the free memory. A depth-map file that fails
 to load (corrupt or truncated) is logged and left out: as a reference it is skipped, as a neighbour it
 is never walked into. For the chosen reference map:
 
@@ -112,10 +118,11 @@ precision for completeness and is off by default.
 - **Point position is always the plain median of member 3D locations**; weights are stored per view
   for downstream consumers (mesh visibility weighting, the Interface's `Vertex::View::confidence`)
   and never used to average the position itself.
-- **The output depends on free RAM**: the reference order follows the cache contents
-  (`FetchBestNextDMapIndex`) and the cache is sized from free RAM, so a run under different memory
-  pressure consumes pixels in a different order and fuses a slightly different cloud (within the
-  0.003 F1 repeat spread); never compare fusion outputs produced beside another memory-heavy job.
+- **The output depends on the cache size**: the reference order follows the cache contents
+  (`FetchBestNextDMapIndex`), so a different cache consumes pixels in a different order and fuses a
+  slightly different cloud (within the 0.003 F1 repeat spread). With free memory above the cap the
+  cache size is fixed by the scene; below it, never compare fusion outputs produced beside another
+  memory-heavy job.
   Every neighbour of the current reference stays resident while it is fused: eviction is
   least-recently-used and stops at the reference, which is touched before its neighbours.
 - **The join thresholds are fusion's alone.** The confidence recalibration measures whether a depth
@@ -176,12 +183,16 @@ End-to-end check of the shipped defaults (`--resolution-level 0 --number-views 2
 then `ReconstructMesh` at defaults, every product realigned), against the same flags at the previous
 defaults:
 
-| scene | cloud F1 | mesh F1 | previous cloud / mesh |
-|---|---|---|---|
-| Truck | 0.7625 | 0.6901 | 0.7420 / 0.6816 |
-| Meetingroom | 0.5516 | 0.5068 | 0.5318 / 0.5043 |
+| scene | cloud F1 | mesh F1 | previous cloud / mesh | densify | fusion | peak private |
+|---|---|---|---|---|---|---|
+| Truck | 0.7627 | 0.6870 | 0.7420 / 0.6816 | 12m14s | 4m40s | 15.1 GB |
+| Meetingroom | 0.5513 | 0.5070 | 0.5318 / 0.5043 | 16m52s | 5m51s | 15.4 GB |
 
-Both clouds reproduce the re-fused grid values above within 0.0003.
+Both clouds reproduce the re-fused grid values above within 0.0003. Against a cache budgeted once
+from all free memory with the GPU pools kept alive, the per-map budget cuts fusion from 6m10s / 7m06s
+(Truck / Meetingroom), starts it at 4–5 GB private instead of ~9 GB and ends it at 15 GB instead
+of 18–20 GB, for cloud F1 within 0.0003 and mesh F1 within 0.003 (the cache size changes the
+fusion order, §4).
 
 ## 6. Rejected alternatives
 
@@ -202,11 +213,16 @@ Both clouds reproduce the re-fused grid values above within 0.0003.
 - **Corroboration by already-fused agreeing pixels** — passes the cloud gate but inflates the point
   count past the mesh memory/wall bounds.
 - **Re-probing the 4-neighbours of a failed join** — too little depth recoverable to pay for it.
+- **A fusion cache taking all free memory** — no faster than four working sets (5m27s vs 5m26s,
+  Meetingroom) while leaving the machine 2.7 GB instead of 4.1 GB; two working sets route the colour
+  images through the cache and slow fusion by 8%.
 
 ## 7. Open items
 
-- The fused cloud depends on free RAM through the reference order (§4); an order independent of the
-  cache contents would make runs reproducible across machines at some cost in cache reuse.
+- The fused cloud depends on the cache size through the reference order (§4); an order independent
+  of the cache contents would make runs reproducible under any memory pressure.
+- The point-cloud itself is the largest fusion allocation (about 250 B per point, most of it the two
+  per-point view and weight lists); a flat views/weights layout would cut it roughly in half.
 - `nMaxViewsFuse` (32) exceeds the estimation neighbourhood (`nMaxViews`, 12): the flood-fill can
   reach views that never contributed to estimation, and whether that interacts with the prior rescue
   is unexamined.

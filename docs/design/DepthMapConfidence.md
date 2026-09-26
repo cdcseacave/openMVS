@@ -234,6 +234,9 @@ point and the ROC improve (see §7 open items).
   the GPU slows estimation.
 - **The estimator's geometric-consistency score as a confidence feature** — already folded into the
   NCC score; not worth a new per-pixel buffer through both estimators.
+- **A pass-wide decoded cache of the neighbours' maps for `InitViews`** — cuts process reads 81–85%
+  (Meetingroom R0) with no gain in wall time: the OS file cache already
+  serves ~93% of those reads, and the decoded copy duplicates it, adding 2 GB peak and more disk reads.
 - **Monocular-model pseudo-GT for tuning** — its error floor was one to two orders of magnitude above
   the effects being tuned.
 

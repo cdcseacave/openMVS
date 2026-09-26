@@ -2001,36 +2001,46 @@ void DepthMapsData::MergeDepthMaps(PointCloud& pointcloud, bool bEstimateColor, 
 /*----------------------------------------------------------------*/
 
 
-// compute available memory to be used for depth-data caching
-// - numDMapsReserveFusion: maximum number of depth-maps for which to reserve memory for fusion
-size_t GetAvailableMemory(const DepthDataArr& arrDepthData, const BoolArr& fusedDMaps, IIndex numDMapsReserveFusion, size_t currentCacheMemory = 0)
+// the fusion's depth-map cache budget, re-evaluated after every fused depth-map from the memory
+// free at that moment (the cache's own included): `reserve`, what the point-cloud may still grow by
+// before the next re-evaluation, and the safety margin stay free, the rest may cache depth-maps,
+// never less than `minMemory`, what one reference needs with its neighbors
+size_t FusionCacheBudget(size_t cacheMemory, size_t reserve, size_t minMemory)
 {
-	size_t resolution(0);
-	IIndex numDMaps(0);
-	FOREACH(idxImage, arrDepthData) {
-		const DepthData& depthData = arrDepthData[idxImage];
-		if (!depthData.IsValid())
-			continue;
-		if (fusedDMaps[idxImage])
-			continue;
-		resolution += depthData.size.area();
-		if (++numDMaps >= numDMapsReserveFusion)
-			break;
-	}
-	if (numDMaps == 0)
-		return 0;
 	const Util::MemoryInfo memInfo(Util::GetMemoryInfo());
-	const size_t neededPointCloudMemory(ROUND2INT<size_t>(resolution * (1/*depth*/+1/*color*/+3/*normal*/+1/*confidence*/) * 4/*bytes*/ * 0.35/*unique pixels per depth-map*/));
-	const size_t freeMemory(currentCacheMemory + memInfo.freePhysical);
-	const size_t safetyMemory(ComputeSafetyMemory(memInfo));
-	const size_t neededMemory(neededPointCloudMemory + safetyMemory);
-	const size_t minDMapsMemory(resolution / numDMaps * 8/*min dmaps in memory*/ * ((1/*depth*/ + 3/*normal*/ + 1/*confidence*/) * 4/*bytes*/ + 3/*color bytes*/));
-	if (freeMemory < neededMemory) {
-		DEBUG("warning: not enough memory to cache depth-maps (%luMB needed, %luMB available)", neededMemory/1024/1024, freeMemory/1024/1024);
-		return MINF(currentCacheMemory, minDMapsMemory);
+	const size_t freeMemory(cacheMemory + memInfo.freePhysical);
+	const size_t keepMemory(reserve + ComputeSafetyMemory(memInfo));
+	if (freeMemory < keepMemory + minMemory) {
+		DEBUG_EXTRA("warning: not enough memory to cache depth-maps (%luMB needed, %luMB available)", (keepMemory + minMemory)>>20, freeMemory>>20);
+		return minMemory;
 	}
-	return freeMemory - neededMemory;
-} // GetAvailableMemory
+	return freeMemory - keepMemory;
+} // FusionCacheBudget
+
+// bytes one point takes in the point-cloud's per-point arrays
+size_t PointArraysBytes(const PointCloud& pointcloud)
+{
+	return sizeof(PointCloud::Point) + sizeof(PointCloud::ViewArr) + sizeof(PointCloud::WeightArr) +
+		(pointcloud.normals.capacity() ? sizeof(PointCloud::Normal) : 0) +
+		(pointcloud.colors.capacity() ? sizeof(PointCloud::Color) : 0);
+}
+
+// what the point-cloud may grow by while the next depth-map is fused: twice what the points the last
+// one added occupy (array elements plus the heap blocks of their view and weight lists), plus the new
+// storage of the per-point arrays when they are about to grow (a cList grows by half, and the old
+// storage is released only once copied)
+size_t FusionMemoryReserve(const PointCloud& pointcloud, PointCloud::Index firstNewPoint)
+{
+	constexpr size_t heapBlock(16); // header of a small heap allocation
+	const size_t numNew(pointcloud.points.size() - firstNewPoint);
+	size_t added(numNew * (PointArraysBytes(pointcloud) + 2*heapBlock));
+	for (PointCloud::Index i=firstNewPoint; i<pointcloud.points.size(); ++i)
+		added += pointcloud.pointViews[i].size() * (sizeof(PointCloud::View) + sizeof(PointCloud::Weight));
+	size_t reserve(2*added);
+	if (pointcloud.points.size() + 2*numNew > pointcloud.points.capacity())
+		reserve += (pointcloud.points.capacity() + pointcloud.points.capacity()/2) * PointArraysBytes(pointcloud);
+	return reserve;
+} // FusionMemoryReserve
 
 // decode the pixels of every image with a depth-map to fuse, for the steps that
 // need all of them at once instead of the few a cache can hold; the images without
@@ -2059,6 +2069,23 @@ bool LoadAllImages(ImageArr& images, const DepthDataArr& arrDepthData)
 	return bSuccess;
 } // LoadAllImages
 
+// the memory the fusion cache needs at once: the depth-map being fused and its neighbors
+size_t FusionWorkingSet(const DepthDataArr& arrDepthData)
+{
+	size_t resolution(0);
+	IIndex numDMaps(0);
+	for (const DepthData& depthData: arrDepthData) {
+		if (!depthData.IsValid())
+			continue;
+		resolution += (size_t)depthData.size.area();
+		++numDMaps;
+	}
+	if (numDMaps == 0)
+		return 0;
+	return resolution / numDMaps * (MINF(OPTDENSE::nMaxViewsFuse, numDMaps) + 1) *
+		(1/*depth*/ + 3/*normal*/ + 1/*confidence*/) * 4/*bytes*/;
+}
+
 // decide how the fused colors reach the image pixels, which the depth-map
 // estimation no longer leaves resident:
 // - when the pixels of every image fit next to the depth-maps the cache has to
@@ -2069,25 +2096,16 @@ bool LoadAllImages(ImageArr& images, const DepthDataArr& arrDepthData)
 // - otherwise hand the images to the cache, which loads and releases them
 //   together with the depth-data, bounding what a scene with far more images
 //   than fit can use.
-// Returns the images for the cache to manage, or NULL once they are resident,
-// taking what they occupy out of the cache budget.
-ImageArr* PrepareFusionImages(const DepthDataArr& arrDepthData, ImageArr& images, size_t& cacheMemory)
+// Returns the images for the cache to manage, or NULL once they are resident.
+ImageArr* PrepareFusionImages(const DepthDataArr& arrDepthData, ImageArr& images, size_t cacheMemory, size_t workingSet)
 {
-	size_t allColors(0), resolution(0);
-	IIndex numDMaps(0);
-	FOREACH(idxImage, arrDepthData) {
-		if (!arrDepthData[idxImage].IsValid())
-			continue;
-		const Image& imageData = images[idxImage];
-		allColors += (size_t)imageData.GetSize().area() * sizeof(Pixel8U);
-		resolution += (size_t)arrDepthData[idxImage].size.area();
-		++numDMaps;
-	}
-	if (numDMaps == 0)
+	size_t allColors(0);
+	FOREACH(idxImage, arrDepthData)
+		if (arrDepthData[idxImage].IsValid())
+			allColors += (size_t)images[idxImage].GetSize().area() * sizeof(Pixel8U);
+	if (allColors == 0)
 		return NULL;
 	// the cache still has to hold the depth-map being fused and its neighbors
-	const size_t workingSet(resolution / numDMaps *
-		(MINF(OPTDENSE::nMaxViewsFuse, numDMaps) + 1) * (1/*depth*/ + 3/*normal*/ + 1/*confidence*/) * 4/*bytes*/);
 	if (allColors + workingSet > cacheMemory) {
 		VERBOSE("Fused colors sampled through the depth-map cache: %luMB of images do not fit in %luMB",
 			allColors/1024/1024, cacheMemory/1024/1024);
@@ -2095,20 +2113,29 @@ ImageArr* PrepareFusionImages(const DepthDataArr& arrDepthData, ImageArr& images
 	}
 	if (!LoadAllImages(images, arrDepthData))
 		VERBOSE("warning: some images could not be decoded; the points they see stay uncolored");
-	cacheMemory -= allColors;
 	return NULL;
 } // PrepareFusionImages
 
 // budget the memory a fusion pass may use and decide where the fused colors come
 // from: images left resident (pCachedImages NULL) or managed by the depth-map cache
 struct FusionCacheSetup {
-	size_t cacheMemory;
-	ImageArr* pCachedImages;
-	FusionCacheSetup(const DepthDataArr& arrDepthData, const BoolArr& fusedDMaps, IIndex numDMapsReserveFusion, ImageArr& images, bool bEstimateColor)
+	const size_t minMemory; // the working set: the depth-map being fused and its neighbors
+	const size_t maxMemory; // past a few working sets a larger cache saves no reads, it only takes
+	                        // the memory other processes and the point-cloud need
+	ImageArr* const pCachedImages;
+	const size_t cacheMemory; // the initial budget, taken once the colors are resident
+	FusionCacheSetup(const DepthDataArr& arrDepthData, ImageArr& images, bool bEstimateColor)
 		:
-		cacheMemory(GetAvailableMemory(arrDepthData, fusedDMaps, numDMapsReserveFusion)),
-		pCachedImages(bEstimateColor ? PrepareFusionImages(arrDepthData, images, cacheMemory) : NULL)
+		minMemory(FusionWorkingSet(arrDepthData)),
+		maxMemory(minMemory * 4),
+		// the colors stay resident when they fit in the memory free now, not only under the cap
+		pCachedImages(bEstimateColor ? PrepareFusionImages(arrDepthData, images, FusionCacheBudget(0, 0, minMemory), minMemory) : NULL),
+		cacheMemory(Budget(0, 0))
 	{
+	}
+	// the cache budget for the memory free now, `usedMemory` being what the cache holds already
+	size_t Budget(size_t usedMemory, size_t reserve) const {
+		return MINF(FusionCacheBudget(usedMemory, reserve, minMemory), maxMemory);
 	}
 };
 
@@ -2169,7 +2196,6 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 	// fuse all depth-maps, processing the best connected images first
 	const unsigned nMinViewsFuse(MINF(OPTDENSE::nMinViewsFuse, arrDepthData.size()));
 	const float normalError(COS(D2R(OPTDENSE::fNormalDiffThreshold)));
-	const IIndex numDMapsReserveFusion(10);
 	CLISTDEF0(Depth*) invalidDepths(0, 32);
 	size_t nDepths(0);
 	typedef TImage<cuint32_t> DepthIndex;
@@ -2191,7 +2217,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 	GET_LOGCONSOLE().Pause();
 	BoolArr fusedDMaps(arrDepthData.size());
 	fusedDMaps.Memset(0);
-	const FusionCacheSetup cacheSetup(arrDepthData, fusedDMaps, numDMapsReserveFusion, scene.images, bEstimateColor);
+	const FusionCacheSetup cacheSetup(arrDepthData, scene.images, bEstimateColor);
 	DMapCache cacheDMaps(arrDepthData, depthDataLoadFlags, cacheSetup.cacheMemory, cacheSetup.pCachedImages);
 	unsigned totalNumImageNeighborsInCache = 0, totalNumImagesInCache = 0;
 	IIndex numDMapsFused = 0;
@@ -2362,10 +2388,9 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 		DEBUG_ULTIMATE("Depth-map for reference image %3u fused using %u depth-maps: %u new points, %u/%u cached images (%s)",
 			idxImage, depthData.images.size()-1, pointcloud.points.size()-nNumPointsPrev, numImageNeighborsInCache, numImagesInCache, TD_TIMER_GET_FMT().c_str());
 		progress.display(numDMapsFused);
-		// ensure enough memory is available for the next depth-maps chunk
+		// shrink the cache as the point-cloud grows, so it never takes the memory the next points need
 		cacheDMaps.SkipMemoryCheckIdxImage();
-		if (numDMapsFused % numDMapsReserveFusion == 0)
-			cacheDMaps.SetMaxMemory(GetAvailableMemory(arrDepthData, fusedDMaps, numDMapsReserveFusion, cacheDMaps.GetUsedMemory()));
+		cacheDMaps.SetMaxMemory(cacheSetup.Budget(cacheDMaps.GetUsedMemory(), FusionMemoryReserve(pointcloud, nNumPointsPrev)));
 	}
 	GET_LOGCONSOLE().Play();
 	progress.close();
@@ -2424,7 +2449,6 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	// while a recalibrated one (fusion-survival evidence, see AdjustConfidence) has its own floor
 	const float minConfidenceRaw(1.f - OPTDENSE::fNCCThresholdKeep);
 	const float maxReprojErrorSq(SQUARE(OPTDENSE::fDepthReprojectionErrorThreshold));
-	const IIndex numDMapsReserveFusion(10);
 	const bool bEstimateNormal(true); // always estimate normals as they are needed for the fusion
 	size_t nDepths(0);
 	UseMaskArr arrUseMask(arrDepthData.size());
@@ -2447,7 +2471,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	GET_LOGCONSOLE().Pause();
 	BoolArr fusedDMaps(arrDepthData.size());
 	fusedDMaps.Memset(0);
-	const FusionCacheSetup cacheSetup(arrDepthData, fusedDMaps, numDMapsReserveFusion, scene.images, bEstimateColor);
+	const FusionCacheSetup cacheSetup(arrDepthData, scene.images, bEstimateColor);
 	DMapCache cacheDMaps(arrDepthData, depthDataLoadFlags, cacheSetup.cacheMemory, cacheSetup.pCachedImages);
 	unsigned totalNumImageNeighborsInCache = 0, totalNumImagesInCache = 0;
 	BoolArr neighbors(arrDepthData.size());
@@ -2719,10 +2743,9 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 		DEBUG_ULTIMATE("Depth-map for reference image %3u fused using %u depth-maps: %u new points, %u/%u cached images (%s)",
 			idxImage, depthData.images.size() - 1, pointcloud.points.size() - nNumPointsPrev, numImageNeighborsInCache, numImagesInCache, TD_TIMER_GET_FMT().c_str());
 		progress.display(numDMapsFused);
-		// ensure enough memory is available for the next depth-maps chunk
+		// shrink the cache as the point-cloud grows, so it never takes the memory the next points need
 		cacheDMaps.SkipMemoryCheckIdxImage();
-		if (numDMapsFused % numDMapsReserveFusion == 0)
-			cacheDMaps.SetMaxMemory(GetAvailableMemory(arrDepthData, fusedDMaps, numDMapsReserveFusion, cacheDMaps.GetUsedMemory()));
+		cacheDMaps.SetMaxMemory(cacheSetup.Budget(cacheDMaps.GetUsedMemory(), FusionMemoryReserve(pointcloud, nNumPointsPrev)));
 	}
 	GET_LOGCONSOLE().Play();
 	progress.close();
@@ -3398,6 +3421,14 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 			g_confPriorComputeNS.load()/1e9, (g_confAdjustComputeNS.load()-g_confPriorComputeNS.load())/1e9,
 			numDMapReads, (unsigned long long)(peakCacheMemory>>20));
 	}
+	// the estimation is done: hand the GPU pools' pinned staging and device buffers back before the
+	// fusion budgets its depth-map cache from the free memory
+	#ifdef _USE_CUDA
+	data.depthMaps.pmCUDAPool.clear();
+	#endif
+	#ifdef _USE_METAL
+	data.depthMaps.pmMetalPool.clear();
+	#endif
 	return true;
 } // ComputeDepthMaps
 /*----------------------------------------------------------------*/
