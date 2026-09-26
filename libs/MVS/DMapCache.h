@@ -87,9 +87,6 @@ public:
 	// get the current memory usage (in bytes)
 	size_t GetUsedMemory() const { return usedMemory; }
 
-	// counters tracking how well the cache served its uses so far
-	// (numMisses = depth-maps fetched from disk)
-	const CacheHitStats& GetHitStats() const { return hitStats; }
 
 private:
 	// eject the least recently used images if the cache size is above max-limit

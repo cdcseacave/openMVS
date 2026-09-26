@@ -37,7 +37,6 @@
 #include "DMapCache.h"
 #include "ConfidenceRefine.h"
 #include "ConfidenceCUDA.h"
-#include <atomic>
 
 using namespace MVS;
 
@@ -676,10 +675,6 @@ DepthData DepthMapsData::ScaleDepthData(const DepthData& inputDeptData, float sc
 // In order to ensure some smoothness while locally estimating each pixel, a bonus is added to the NCC score if the estimate for this pixel is close to the estimates for the neighbor pixels.
 // Optionally, the occluded pixels can be detected by extending the described iterations to the target image and removing the estimates that do not have similar values in both views.
 // - nGeometricIter: current geometric-consistent estimation iteration (-1 - normal patch-match)
-// (definitions moved up from the adjust-confidence section so the fused in-estimation
-// recalibration below can account its compute time into the same integrated-timing report)
-static std::atomic<int64_t> g_confAdjustComputeNS(0);
-static std::atomic<int64_t> g_confPriorComputeNS(0);
 #ifdef _USE_CUDA
 // defined alongside AdjustConfidenceCUDA below
 static bool BuildConfNeighborHosts(const DepthData& depthDataRef, std::vector<MVS::CUDA::ConfNeighborHost>& hn);
@@ -717,16 +712,14 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 			BuildConfNeighborHosts(depthData, confRequest.neighbors)) {
 			const Camera& cameraRef = depthData.GetView().camera;
 			const Matrix3x3f Kf(cameraRef.K);
-			confRequest.k00 = Kf(0,0); confRequest.k11 = Kf(1,1);
-			confRequest.k02 = Kf(0,2); confRequest.k12 = Kf(1,2);
+			confRequest.fx = Kf(0,0); confRequest.fy = Kf(1,1);
+			confRequest.cx = Kf(0,2); confRequest.cy = Kf(1,2);
 			confRequest.params = MakeConfRefineParams();
 			pConfRequest = &confRequest;
 		}
 		pmCUDAPool[s_slot]->EstimateDepthMap(depthData, pConfRequest);
-		if (pConfRequest) {
-			g_confAdjustComputeNS.fetch_add(confRequest.computeNS, std::memory_order_relaxed);
+		if (pConfRequest)
 			depthData.bConfAdjusted = confRequest.done;
-		}
 		return true;
 	}
 	#endif // _USE_CUDA
@@ -1341,8 +1334,6 @@ const ConfidenceMap& DepthMapsData::GetIntraMapPrior(DepthData& depthData, bool 
 //   on the few GPU-dispatch workers; a separate full-resolution pass costing roughly as much as a
 //   fusion pass, which is why it is off by default on the CPU.
 // ----------------------------------------------------------------------------
-// (the g_confAdjustComputeNS / g_confPriorComputeNS accumulators are defined above
-// DepthMapsData::EstimateDepthMap so the fused in-estimation recalibration reports into them too)
 
 // phase-lifetime depth-map cache for the adjust-confidence phase: the phase runs one worker per
 // reference image, each pulling up to 8 neighbors, so a naive per-reference IncRef/DecRef would
@@ -1578,14 +1569,11 @@ bool DepthMapsData::AdjustConfidenceCUDA(DepthData& depthDataRef)
 
 	const Matrix3x3f Kf(cameraRef.K);
 	ConfidenceMap newConfMap(depthMapRef.size());
-	const std::chrono::steady_clock::time_point t0(std::chrono::steady_clock::now());
 	const bool ok(MVS::CUDA::RunConfidenceCUDA(W, H,
 		depthMapRef.ptr<float>(), normalMapRef.empty() ? NULL : normalMapRef.ptr<float>(), confMapRef.ptr<float>(),
 		Kf(0,0), Kf(1,1), Kf(0,2), Kf(1,2),
 		hn.data(), (int)hn.size(), p,
 		newConfMap.ptr<float>()));
-	g_confAdjustComputeNS.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(
-		std::chrono::steady_clock::now() - t0).count(), std::memory_order_relaxed);
 	if (!ok)
 		return false;
 	depthDataRef.confMap = std::move(newConfMap);
@@ -1632,10 +1620,7 @@ static bool AdjustConfidenceSweep(DepthMapsData& depthMapsData, DepthData& depth
 
 	// intra-map geometric prior (once per map); bParallel=false -- this call runs inside one of
 	// nMaxThreads already-parallel pool-worker threads (see GetIntraMapPrior's declaration comment)
-	const std::chrono::steady_clock::time_point timeAdjustStart(std::chrono::steady_clock::now());
 	const ConfidenceMap& priorMap = depthMapsData.GetIntraMapPrior(depthDataRef, false);
-	g_confPriorComputeNS.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(
-		std::chrono::steady_clock::now() - timeAdjustStart).count(), std::memory_order_relaxed);
 
 	ConfidenceMap newConfMap(depthMapRef.size());
 
@@ -1854,8 +1839,6 @@ static bool AdjustConfidenceSweep(DepthMapsData& depthMapsData, DepthData& depth
 			#endif
 		}
 	}
-	g_confAdjustComputeNS.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(
-		std::chrono::steady_clock::now() - timeAdjustStart).count(), std::memory_order_relaxed);
 	if (bDeferSwap) {
 		// store the recalibrated confidence-map in memory; the EVT_ADJUSTDEPTHMAP handler swaps it
 		// into confMap only after every reference using this image as a neighbor has finished
@@ -3276,10 +3259,6 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		if (!data.depthMaps.pmMetalPool.empty() && OPTDENSE::nEstimationGeometricIters)
 			data.depthMaps.ReinitMetalPoolForGeom();
 		#endif // _USE_METAL
-		// reset the shared confidence-compute accumulators so the post-loop timing line reports only
-		// the integrated last-iteration recalibration (the standalone phase resets them itself)
-		g_confAdjustComputeNS.store(0);
-		g_confPriorComputeNS.store(0);
 		while (++data.nEstimationGeometricIter < (int)OPTDENSE::nEstimationGeometricIters) {
 			// initialize the queue of images to be geometric processed
 			if (data.nEstimationGeometricIter+1 == (int)OPTDENSE::nEstimationGeometricIters)
@@ -3317,17 +3296,6 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 			}
 		}
 		data.nEstimationGeometricIter = -1;
-		// integrated confidence recalibration timing (GPU kernel+transfer, or the CPU sweep): the
-		// accumulator was zeroed before the geometric loop, so this is the last-iteration cost only
-		const auto confNS(g_confAdjustComputeNS.load());
-		if (confNS > 0 && data.images.GetSize() > 0) {
-			bool bGPU(false);
-			#ifdef _USE_CUDA
-			bGPU = !data.depthMaps.pmCUDAPool.empty() && OPTDENSE::bEstimateConfidenceCUDA;
-			#endif
-			VERBOSE("Integrated confidence recalibration (%s): %.0fms total, %.2fms/map avg over %u depth-maps",
-				bGPU ? "GPU" : "CPU", (double)confNS*1e-6, (double)confNS*1e-6/data.images.GetSize(), data.images.GetSize());
-		}
 	}
 	// nothing reads the images any more, so give the memory they occupy back to
 	// the depth-map caches of the filtering and the fusion that follow
@@ -3353,8 +3321,6 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 	} else
 	if ((OPTDENSE::nOptimize & OPTDENSE::ADJUST_CONFIDENCE) != 0) {
 		TD_TIMER_STARTD();
-		g_confAdjustComputeNS.store(0);
-		g_confPriorComputeNS.store(0);
 		// initialize the queue of depth-maps to be filtered
 		data.sem.Clear();
 		data.idxImage = data.images.GetSize();
@@ -3407,19 +3373,12 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 			DenseReconstructionFilter((void*)&data);
 		}
 		GET_LOGCONSOLE().Play();
-		const uint32_t numDMapReads(cacheDMaps.GetHitStats().numMisses);
-		// with the unlimited budget nothing is ever ejected, so the final resident size IS the peak
-		const size_t peakCacheMemory(cacheDMaps.GetUsedMemory());
 		cacheDMaps.ClearCache();
 		g_pAdjustDMapCache = NULL;
 		if (!data.events.IsEmpty())
 			return false;
 		data.progress.Release();
-		VERBOSE("Confidence-maps adjusted: %u depth-maps (%s; %.3gs prior+confirmation compute, %.2fms/map avg; %.3gs prior / %.3gs confirmation; %u dmap disk reads via cache, %lluMB peak cache memory)",
-			data.images.GetSize(), TD_TIMER_GET_FMT().c_str(),
-			g_confAdjustComputeNS.load()/1e9, g_confAdjustComputeNS.load()/1e6/(double)MAXF(data.images.GetSize(),1u),
-			g_confPriorComputeNS.load()/1e9, (g_confAdjustComputeNS.load()-g_confPriorComputeNS.load())/1e9,
-			numDMapReads, (unsigned long long)(peakCacheMemory>>20));
+		VERBOSE("Confidence-maps adjusted: %u depth-maps (%s)", data.images.GetSize(), TD_TIMER_GET_FMT().c_str());
 	}
 	// the estimation is done: hand the GPU pools' pinned staging and device buffers back before the
 	// fusion budgets its depth-map cache from the free memory

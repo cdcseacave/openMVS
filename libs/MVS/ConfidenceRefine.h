@@ -124,13 +124,12 @@ CR_HD float SoftDepthW(float qz, float dN, float thDepth) {
 }
 // GATE 2: independence of the confirmation, from the triangulation angle at the point: X is the
 // point in the reference camera frame (reference centre at the origin), (cx,cy,cz) the neighbor's
-// centre in the same frame; sin(angle) = |X x (X-C)| / (|X| |X-C|) = |X x C| / (|X| |X-C|)
+// centre in the same frame; sin(angle) = |X x (X-C)| / (|X| |X-C|) = |X x C| / (|X| |X-C|).
+// X lies in front of both cameras (the callers skip a non-positive depth in either), so X != 0, C
 CR_HD float AngleW(float x, float y, float z, float cx, float cy, float cz) {
 	const float ax = y*cz - z*cy, ay = z*cx - x*cz, az = x*cy - y*cx;
 	const float dx = x - cx, dy = y - cy, dz = z - cz;
 	const float den2 = (x*x + y*y + z*z) * (dx*dx + dy*dy + dz*dz);
-	if (!(den2 > 0.f))
-		return 0.f;
 	const float w = sqrtf((ax*ax + ay*ay + az*az) / den2) * (1.f / CONFIRM_SIN_ANGLE);
 	return w < 1.f ? w : 1.f;
 }
@@ -183,11 +182,11 @@ CR_HD bool DepthPlaneFit(const DepthAcc& dm, int cx, int cy, float& w, float& wx
 // surface normal implied by a depth gradient (camera-facing, normalized) -- mirrors
 // DepthGradientEstimator::NormalFromGradient (K assumed skew-free). Returned NOT necessarily used on
 // the CPU (which keeps its own copy for byte-identity); provided for the device kernel.
-CR_HD F3 NormalFromGrad(float k00, float k11, float k02, float k12, int x, int y, float d, float dx, float dy) {
+CR_HD F3 NormalFromGrad(float fx, float fy, float cx, float cy, int x, int y, float d, float dx, float dy) {
 	F3 nrm;
-	nrm.x = k00 * dx;
-	nrm.y = k11 * dy;
-	nrm.z = (k02 - (float)x) * dx + (k12 - (float)y) * dy - d;
+	nrm.x = fx * dx;
+	nrm.y = fy * dy;
+	nrm.z = (cx - (float)x) * dx + (cy - (float)y) * dy - d;
 	const float inv = 1.f / sqrtf(nrm.x * nrm.x + nrm.y * nrm.y + nrm.z * nrm.z);
 	nrm.x *= inv; nrm.y *= inv; nrm.z *= inv;
 	return nrm;

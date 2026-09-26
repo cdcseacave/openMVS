@@ -111,7 +111,7 @@ __device__ __forceinline__ bool SampleDepthBilinearDev(const DevNeighbor& np,
 
 // ---- intra-map geometric prior (mirrors DepthMapsData::ComputeIntraMapPrior) ----
 template <typename RefAcc>
-__global__ void PriorKernel(RefAcc ref, int W, int H, float k00, float k11, float k02, float k12,
+__global__ void PriorKernel(RefAcc ref, int W, int H, float fx, float fy, float cx, float cy,
                             float band, float invKmin,
                             float* priorOut) {
 	const int c = blockIdx.x*blockDim.x + threadIdx.x;
@@ -140,7 +140,7 @@ __global__ void PriorKernel(RefAcc ref, int W, int H, float k00, float k11, floa
 	const float gate = 1.f - ConfRefine::CRexp(-(float)nInl * invKmin);
 	float Pnorm = 1.f;
 	if (ref.HasNormal()) {
-		const F3 nGrad = ConfRefine::NormalFromGrad(k00, k11, k02, k12, c, r, w, wx, wy);
+		const F3 nGrad = ConfRefine::NormalFromGrad(fx, fy, cx, cy, c, r, w, wx, wy);
 		const F3 sn = ref.Normal(idx);
 		Pnorm = fmaxf(0.f, nGrad.x*sn.x + nGrad.y*sn.y + nGrad.z*sn.z);
 	}
@@ -151,7 +151,7 @@ __global__ void PriorKernel(RefAcc ref, int W, int H, float k00, float k11, floa
 // ---- one-hop multi-view confirmation (mirrors AdjustConfidenceSweep) ----
 template <typename RefAcc>
 __global__ void SweepKernel(RefAcc ref, const float* priorMap, int W, int H,
-                            float k00, float k11, float k02, float k12,
+                            float fx, float fy, float cx, float cy,
                             const DevNeighbor* neigh, int nNeigh, Params p,
                             float* confOut) {
 	const int c = blockIdx.x*blockDim.x + threadIdx.x;
@@ -168,7 +168,7 @@ __global__ void SweepKernel(RefAcc ref, const float* priorMap, int W, int H,
 	int V = 0;
 	const float ud = (float)c * depthRef, vd = (float)r * depthRef;
 	// the point in the reference camera frame (triangulation angle, GATE 2)
-	const float xr = ((float)c - k02) / k00 * depthRef, yr = ((float)r - k12) / k11 * depthRef;
+	const float xr = ((float)c - cx) / fx * depthRef, yr = ((float)r - cy) / fy * depthRef;
 	for (int k = 0; k < nNeigh; ++k) {
 		const DevNeighbor np = neigh[k];
 		const float qz = np.A[6]*ud + np.A[7]*vd + np.A[8]*depthRef + np.b[2];
@@ -222,7 +222,7 @@ namespace { struct DevBag { std::vector<void*> v; ~DevBag(){ for (void* p : v) c
 template <typename RefAcc>
 static bool LaunchConfidenceKernels(
 	int W, int H, const RefAcc& ref,
-	float k00, float k11, float k02, float k12,
+	float fx, float fy, float cx, float cy,
 	const ConfNeighborHost* neighbors, int nNeighbors,
 	const Params& params,
 	cudaStream_t stream, DevBag& bag, float* confOut)
@@ -278,9 +278,9 @@ static bool LaunchConfidenceKernels(
 	const float invKmin = 1.f/4.f;
 
 	PriorKernel<RefAcc><<<grid, block, 0, stream>>>(ref, W, H,
-		k00, k11, k02, k12, band, invKmin, dPrior);
+		fx, fy, cx, cy, band, invKmin, dPrior);
 	SweepKernel<RefAcc><<<grid, block, 0, stream>>>(ref, dPrior,
-		W, H, k00, k11, k02, k12, dNeigh, nNeighbors, params, dConf);
+		W, H, fx, fy, cx, cy, dNeigh, nNeighbors, params, dConf);
 	// reject a failed kernel launch BEFORE queueing the download
 	if (cudaGetLastError() != cudaSuccess) return false;
 
@@ -298,7 +298,7 @@ static bool LaunchConfidenceKernels(
 bool RunConfidenceCUDA(
 	int W, int H,
 	const float* refDepth, const float* refNormal, const float* refConf,
-	float k00, float k11, float k02, float k12,
+	float fx, float fy, float cx, float cy,
 	const ConfNeighborHost* neighbors, int nNeighbors,
 	const Params& params,
 	float* confOut)
@@ -332,14 +332,14 @@ bool RunConfidenceCUDA(
 	if (refNormal && !up(dRefNormal, refNormal, nPix*3*sizeof(float))) return false;
 
 	const RefLinearAcc ref{dRefDepth, dRefNormal, dRefConf, W, H};
-	return LaunchConfidenceKernels(W, H, ref, k00, k11, k02, k12,
+	return LaunchConfidenceKernels(W, H, ref, fx, fy, cx, cy,
 		neighbors, nNeighbors, params, stream, bag, confOut);
 }
 
 bool RunConfidenceFusedCUDA(
 	int W, int H,
 	const void* devDepthNormals, const float* devCosts,
-	float k00, float k11, float k02, float k12,
+	float fx, float fy, float cx, float cy,
 	const ConfNeighborHost* neighbors, int nNeighbors,
 	const Params& params,
 	void* stream, float* confOut)
@@ -348,7 +348,7 @@ bool RunConfidenceFusedCUDA(
 	DevBag bag;
 	// Point4 is 4 contiguous floats (x,y,z = normal, w = depth), 16-byte aligned by cudaMalloc
 	const RefPackedAcc ref{reinterpret_cast<const float4*>(devDepthNormals), devCosts, W, H};
-	return LaunchConfidenceKernels(W, H, ref, k00, k11, k02, k12,
+	return LaunchConfidenceKernels(W, H, ref, fx, fy, cx, cy,
 		neighbors, nNeighbors, params,
 		(cudaStream_t)stream, bag, confOut);
 }

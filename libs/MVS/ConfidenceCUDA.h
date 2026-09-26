@@ -60,10 +60,9 @@ struct ConfNeighborHost {
 struct ConfAdjustRequest {
 	std::vector<ConfNeighborHost> neighbors;
 	ConfRefine::Params params;             // single-precision OPTDENSE snapshot
-	float k00, k11, k02, k12;              // reference camera intrinsics (skew-free)
+	float fx, fy, cx, cy;                  // reference camera intrinsics (skew-free)
 	// outputs
 	bool done = false;                     // fused kernels ran and confMap holds the adjusted conf
-	int64_t computeNS = 0;                 // wall time of the fused launch (kernels + transfers)
 };
 
 // Compute the intra-map prior + one-hop multi-view confirmation on the GPU for one reference view,
@@ -73,7 +72,7 @@ struct ConfAdjustRequest {
 bool RunConfidenceCUDA(
 	int W, int H,
 	const float* refDepth, const float* refNormal /*3*W*H or null*/, const float* refConf,
-	float k00, float k11, float k02, float k12,           // reference camera intrinsics (skew-free)
+	float fx, float fy, float cx, float cy,
 	const ConfNeighborHost* neighbors, int nNeighbors,
 	const ConfRefine::Params& params,
 	float* confOut);
@@ -89,7 +88,7 @@ bool RunConfidenceCUDA(
 bool RunConfidenceFusedCUDA(
 	int W, int H,
 	const void* devDepthNormals, const float* devCosts,
-	float k00, float k11, float k02, float k12,
+	float fx, float fy, float cx, float cy,
 	const ConfNeighborHost* neighbors, int nNeighbors,
 	const ConfRefine::Params& params,
 	void* stream,
