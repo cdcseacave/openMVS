@@ -6,6 +6,29 @@ reconstructed and scored here** - Truck (tau 5 mm), Ignatius (3 mm), Barn (10 mm
 (5 mm), Meetingroom (10 mm) and Church (25 mm). Poses are frozen Metashape poses throughout, so
 these numbers isolate the dense pipeline; our own SfM is a separate arm.
 
+## Recommended settings
+
+Best configuration found for the mean F1 over the six scenes, current code, every product
+re-aligned to the ground truth by the official evaluator (Courthouse, the seventh training scene with
+ground truth, did not densify at `--resolution-level 0` on a 32 GB machine, §7):
+
+| product | command | mean F1 |
+|---|---|---|
+| **point cloud** | `DensifyPointCloud --resolution-level 0 --number-views 24` | **0.7145** |
+| **mesh** | the same densify, then `ReconstructMesh` at defaults | **0.6607** |
+
+- **Densify:** `--number-views 24` is the only flag to add; every other fusion and confidence
+  parameter is already at its best value by default (`--fusion-reprojection-threshold 0.6`,
+  `--fusion-prior-weight 4` with the contradiction guard, the recalibrated confidence floor). It is
+  the one knob that never loses on any scene (§2). `--number-views 16` is the cheaper setting: most
+  of the gain for a third of the extra time (§3).
+- **Mesh:** no `ReconstructMesh` parameter beats its defaults (§4); the mesh uses the same densify
+  as the cloud.
+- **Refinement:** `RefineMesh` at defaults added +0.0070 mean F1 at the previous densify defaults
+  (§5, not re-measured since); its value is mostly an 8-20x smaller mesh.
+- **Submit the point cloud** when the score is the goal: it leads the mesh by 0.054 mean F1 and skips
+  both the mesh and the refinement stages (§6).
+
 ## 1. How the benchmark scores
 
 The official `python_toolbox` evaluator voxel-downsamples **both** the reconstruction and the ground
@@ -83,13 +106,16 @@ DensifyPointCloud --resolution-level 0 --number-views 24
 
 | scene | tau | P | R | **F1** | vs the same flag at the previous defaults |
 |---|---|---|---|---|---|
-| Truck | 5 mm | 0.7160 | 0.8153 | **0.7624** | +0.0204 |
-| Ignatius | 3 mm | 0.8427 | 0.9589 | **0.8970** | +0.0147 |
-| Barn | 10 mm | 0.6460 | 0.8567 | **0.7366** | +0.0288 |
-| Caterpillar | 5 mm | 0.5622 | 0.8399 | **0.6736** | +0.0371 |
-| Meetingroom | 10 mm | 0.6300 | 0.4903 | **0.5515** | +0.0197 |
-| Church | 25 mm | 0.7120 | 0.6289 | **0.6678** | +0.0096 |
-| **mean** | | | | **0.7148** | **+0.0217** |
+| Truck | 5 mm | 0.7167 | 0.8151 | **0.7627** | +0.0207 |
+| Ignatius | 3 mm | 0.8430 | 0.9585 | **0.8970** | +0.0147 |
+| Barn | 10 mm | 0.6452 | 0.8565 | **0.7359** | +0.0281 |
+| Caterpillar | 5 mm | 0.5624 | 0.8398 | **0.6737** | +0.0372 |
+| Meetingroom | 10 mm | 0.6307 | 0.4897 | **0.5513** | +0.0195 |
+| Church | 25 mm | 0.7096 | 0.6284 | **0.6665** | +0.0083 |
+| **mean** | | | | **0.7145** | **+0.0214** |
+
+Full densify per scene (mean 17.3 min); re-fusing one set of depth-maps per scene at these defaults
+gives 0.7148, within the 0.003 repeat spread.
 
 The gain over the previous defaults is fusion's contradiction guard, the angle-weighted confidence
 recalibration and the 0.6 px join threshold (`docs/design/DepthMapFusion.md` §5); it comes almost
@@ -110,16 +136,21 @@ ignores it - it changed the cloud by 5 points out of 34.8 M), `--sub-resolution-
 
 ## 4. Mesh mode
 
-Same densify as section 3, `ReconstructMesh` at defaults, measured end-to-end on two scenes of
-opposite slack (six-scene mean with the same flag at the previous defaults: 0.6542).
+Same densify as section 3 (the same run), `ReconstructMesh` at defaults:
 
-| scene | P | R | **F1** | faces | in-crop faces | recon | previous defaults |
-|---|---|---|---|---|---|---|---|
-| Truck | 0.6915 | 0.6887 | **0.6901** | 11.05 M | 7.00 M | 535 s | 0.6816 |
-| Meetingroom | 0.6428 | 0.4183 | **0.5068** | 12.08 M | 12.02 M | 490 s | 0.5043 |
+| scene | P | R | **F1** | faces | in-crop faces | recon |
+|---|---|---|---|---|---|---|
+| Truck | 0.6882 | 0.6858 | **0.6870** | 11.09 M | 7.03 M | 450 s |
+| Ignatius | 0.8864 | 0.8665 | **0.8763** | 9.74 M | 2.16 M | 635 s |
+| Barn | 0.6565 | 0.6796 | **0.6678** | 20.66 M | 10.38 M | 889 s |
+| Caterpillar | 0.4545 | 0.7307 | **0.5605** | 11.44 M | 6.82 M | 404 s |
+| Meetingroom | 0.6431 | 0.4184 | **0.5070** | 11.99 M | 11.93 M | 408 s |
+| Church | 0.7788 | 0.5813 | **0.6657** | 15.61 M | 15.61 M | 595 s |
+| **mean** | | | **0.6607** | | | 564 s |
 
-The mesh keeps a smaller share of the cloud gain (+0.009 and +0.003 against +0.020 each): it is
-recall-bound, and the cloud gain is precision.
+The six-scene mean at the same flag and the previous defaults was 0.6542, so the mesh keeps a
+smaller share of the cloud gain (+0.0065 against +0.0214): it is recall-bound, and the cloud gain is
+precision.
 
 The mesh stage itself is not a lever: ten `ReconstructMesh` knobs swept over one frozen cloud all
 land within +-0.004 except `--free-space-support 1` at **-0.0398**. `--smooth 0` was the one apparent
@@ -154,7 +185,7 @@ Six-scene mean F1 at `--resolution-level 0` (all rows but the first at the previ
 
 | config | cloud | mesh | mesh + refine |
 |---|---|---|---|
-| **`--number-views 24`, shipped defaults** | **0.7148** | - | - |
+| **`--number-views 24`, shipped defaults** | **0.7145** | **0.6607** | - |
 | `default_r0` | 0.6708 | 0.6327 | 0.6483 |
 | `--number-views 24` | 0.6931 | 0.6542 | 0.6612 |
 | `--number-views 16` | 0.6892 | 0.6481 | 0.6527 |
@@ -165,9 +196,9 @@ margin over `x_max` is a clear +0.0097; in mesh (+0.0033) and refine (+0.0023) t
 within the 0.003 repeat spread, and `c_v24` wins on simplicity - `x_max` also disables ROI
 estimation, cropping and tower mode, which have consequences beyond F1.
 
-**Point-cloud mode wins outright** (0.6931 vs 0.6612 at the previous defaults, and the shipped
-defaults widen the cloud's lead further), and is by far the cheapest: it skips both the
-mesh and the refinement stage. Build a mesh only where a surface is required rather than a point set.
+**Point-cloud mode wins outright** (0.7145 vs 0.6607 for the mesh at the shipped defaults; 0.6931 vs
+0.6612 with refinement at the previous ones), and is by far the cheapest: it skips both the mesh and
+the refinement stage. Build a mesh only where a surface is required rather than a point set.
 
 ## 7. Scenes that do not run here
 

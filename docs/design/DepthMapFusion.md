@@ -49,10 +49,10 @@ is never walked into. For the chosen reference map:
    continues from it into *its* neighbours, bounded by `nMaxFuseDepth` and `nMaxPointsFuse`. A
    neighbour whose own measured depth lies more than `VIOLATION_MARGIN·fDepthDiffThreshold` behind
    the cluster's reprojected point (`ConfRefine::VIOLATION_MARGIN`, shared with the confidence
-   recalibration) fails the join and is recorded as a free-space violation for that distinct view
-   (`fusedViolViews`, deduplicated) instead of merely being skipped; a neighbour that passes the depth
-   and reprojection gates but fails the normal gate is likewise recorded as a normal contradiction
-   (`fusedNormViews`, deduplicated): it sees the same place and disputes the surface there.
+   recalibration) fails the join and is recorded as a contradicting view (`fusedContraViews`,
+   deduplicated) instead of merely being skipped; a neighbour that passes the depth and reprojection
+   gates but fails the normal gate is recorded there too, and as a normal contradiction
+   (`fusedNormViews`): it sees the same place and disputes the surface there.
 3. **Keeping.** The cluster becomes a point when it has at least `nMinPixelsFuse` pixels *and*
    `nMinViewsFuse` distinct views (both clamped by the map count). Both minimums accept fractional
    "virtual" support, `fFusePriorWeight` times the seed's intra-map prior
@@ -61,7 +61,7 @@ is never walked into. For the chosen reference map:
    surface that too few views happened to confirm. A point kept *only* thanks to that support is
    "rescued". The **contradiction guard** (`nFuseViolationMax`, `< 0` disables it) then separates a
    lack of evidence from evidence against the point: a rescued point may be contradicted by at most
-   `nFuseViolationMax` distinct views, free-space violations and normal contradictions together, and
+   `nFuseViolationMax` distinct views (a view contradicting in both ways counts once), and
    a point kept on real support alone is dropped when its normal contradictions outnumber its
    supporting views.
 4. **Emitting.** The point's position is the component-wise median of its members' 3D locations —

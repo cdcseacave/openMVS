@@ -72,7 +72,8 @@ public:
 
 	// ensure the depth-data is loaded and mark it as recently used:
 	// return true if the image was loaded from disk; a file that fails to load leaves the
-	// depth-data empty (IsEmpty()) and out of the cache
+	// depth-data empty (IsEmpty()) and out of the cache. Thread-safe for distinct images; the
+	// load runs unlocked, so concurrent calls for the SAME image must be serialized by the caller
 	bool UseImage(IIndex idxImage) const;
 
 	// get the image indices loaded in cache.

@@ -675,10 +675,19 @@ DepthData DepthMapsData::ScaleDepthData(const DepthData& inputDeptData, float sc
 // In order to ensure some smoothness while locally estimating each pixel, a bonus is added to the NCC score if the estimate for this pixel is close to the estimates for the neighbor pixels.
 // Optionally, the occluded pixels can be detected by extending the described iterations to the target image and removing the estimates that do not have similar values in both views.
 // - nGeometricIter: current geometric-consistent estimation iteration (-1 - normal patch-match)
+// single-precision parameter snapshot, shared by the CPU sweep and the CUDA kernel; epsConf is the
+// half-width of the soft GATE-4 smoothstep around minConfidence (MAXF guards fNCCThresholdKeep==1)
+static ConfRefine::Params MakeConfRefineParams()
+{
+	ConfRefine::Params p;
+	p.minConfidence = 1.f - OPTDENSE::fNCCThresholdKeep;
+	ConfRefine::InitParamsShape(p);
+	p.epsConf = MAXF(0.5f*p.minConfidence, 1e-6f);
+	return p;
+}
 #ifdef _USE_CUDA
 // defined alongside AdjustConfidenceCUDA below
 static bool BuildConfNeighborHosts(const DepthData& depthDataRef, std::vector<MVS::CUDA::ConfNeighborHost>& hn);
-static ConfRefine::Params MakeConfRefineParams();
 #endif // _USE_CUDA
 bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 {
@@ -1522,17 +1531,6 @@ static bool BuildConfNeighborHosts(const DepthData& depthDataRef, std::vector<MV
 		hn.push_back(d);
 	}
 	return true;
-}
-
-// single-precision parameter snapshot, shared by the CPU sweep and the CUDA kernel; epsConf is the
-// half-width of the soft GATE-4 smoothstep around minConfidence (MAXF guards fNCCThresholdKeep==1)
-static ConfRefine::Params MakeConfRefineParams()
-{
-	ConfRefine::Params p;
-	p.minConfidence = 1.f - OPTDENSE::fNCCThresholdKeep;
-	ConfRefine::InitParamsShape(p);
-	p.epsConf = MAXF(0.5f*p.minConfidence, 1e-6f);
-	return p;
 }
 
 // GPU counterpart of the integrated AdjustConfidence(DepthData&) above -- the SAME neighbor
@@ -2466,12 +2464,13 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	Point3d fusedNormal;
 	Pixel32F fusedColor;
 	// contradiction guard of the keep-rule (see OPTDENSE::nFuseViolationMax): the DISTINCT views that
-	// contradict the point being accumulated -- fusedViolViews see a surface well behind it (free-space
-	// violation), fusedNormViews agree with its depth and reprojection but dispute its normal. Unlike a
-	// view with no usable pixel (out of frame, empty, low confidence, consumed), both are evidence
-	// against the point. Deduplicated because the flood-fill can re-reach a view through several
-	// parents before its useMask is set; reset alongside fusedViews
-	PointCloud::ViewArr fusedViolViews, fusedNormViews;
+	// contradict the point being accumulated -- fusedContraViews see a surface well behind it
+	// (free-space violation) or agree with its depth and reprojection but dispute its normal, the
+	// latter also listed in fusedNormViews. Unlike a view with no usable pixel (out of frame, empty,
+	// low confidence, consumed), both are evidence against the point. Deduplicated because the
+	// flood-fill can re-reach a view through several parents before its useMask is set, and one view
+	// can contradict in both ways through different probes; reset alongside fusedViews
+	PointCloud::ViewArr fusedContraViews, fusedNormViews;
 	// the pixels the cluster currently being accumulated consumed, one entry per join: the list a
 	// DROPPED cluster walks to hand them back (bFuseRecycleDropped). In lockstep with fusedPoints,
 	// hence bounded by nMaxPointsFuse too, and reset alongside fusedViews et al.
@@ -2510,7 +2509,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 					// (depthProj>0: the point is in front of the view), so its ray passes through it;
 					// same test as the recalibration's, at fusion's own depth tolerance
 					if (depthProj > Depth(0) && depth > depthProj * (1.f + ConfRefine::VIOLATION_MARGIN * OPTDENSE::fDepthDiffThreshold))
-						fusedViolViews.InsertSortUnique(ID);
+						fusedContraViews.InsertSortUnique(ID);
 					return;
 				}
 				// check reprojection error of the reference point in the current view
@@ -2522,6 +2521,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 				ASSERT(ISEQUAL(norm(normal), 1.f, 1e-2f), "Norm = ", norm(normal));
 				if (refNormal.dot(normal) < normalError) {
 					fusedNormViews.InsertSortUnique(ID);
+					fusedContraViews.InsertSortUnique(ID);
 					return;
 				}
 			} else {
@@ -2675,7 +2675,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 					const bool rescued = fusedPoints[0].size() < OPTDENSE::nMinPixelsFuse ||
 										  fusedViews.size() < nMinViewsFuse;
 					if (OPTDENSE::nFuseViolationMax < 0 || (rescued ?
-						fusedViolViews.size() + fusedNormViews.size() <= (unsigned)OPTDENSE::nFuseViolationMax :
+						fusedContraViews.size() <= (unsigned)OPTDENSE::nFuseViolationMax :
 						fusedNormViews.size() <= fusedViews.size())) {
 						bClusterKept = true;
 						// create the corresponding 3D point
@@ -2716,7 +2716,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 					fusedWeights.clear();
 					fusedNormal = Point3d::ZERO;
 					fusedColor = Pixel32F::BLACK;
-					fusedViolViews.clear();
+					fusedContraViews.clear();
 					fusedNormViews.clear();
 				}
 			}
