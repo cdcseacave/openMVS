@@ -25,9 +25,6 @@
 namespace MVS {
 namespace ConfRefine {
 
-// plain float triple (a device-safe stand-in for Normal/Point3f)
-struct F3 { float x, y, z; };
-
 // ---- posterior shape constants ----
 // Calibrated jointly against ground-truth depth (BlendedMVS + ETH3D, 28 scene-levels) by sweeping the
 // whole grid and scoring the inlier/outlier ROC of the resulting confidence. One global setting won on
@@ -179,19 +176,6 @@ CR_HD bool DepthPlaneFit(const DepthAcc& dm, int cx, int cy, float& w, float& wx
 	wx = ((float)whyy * wgx - (float)whxy * wgy) * invDet;
 	wy = ((float)(-whxy) * wgx + (float)whxx * wgy) * invDet;
 	return true;
-}
-
-// surface normal implied by a depth gradient (camera-facing, normalized) -- mirrors
-// DepthGradientEstimator::NormalFromGradient (K assumed skew-free). Returned NOT necessarily used on
-// the CPU (which keeps its own copy for byte-identity); provided for the device kernel.
-CR_HD F3 NormalFromGrad(float fx, float fy, float cx, float cy, int x, int y, float d, float dx, float dy) {
-	F3 nrm;
-	nrm.x = fx * dx;
-	nrm.y = fy * dy;
-	nrm.z = (cx - (float)x) * dx + (cy - (float)y) * dy - d;
-	const float inv = 1.f / sqrtf(nrm.x * nrm.x + nrm.y * nrm.y + nrm.z * nrm.z);
-	nrm.x *= inv; nrm.y *= inv; nrm.z *= inv;
-	return nrm;
 }
 
 } // namespace ConfRefine

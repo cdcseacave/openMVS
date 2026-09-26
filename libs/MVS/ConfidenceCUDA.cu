@@ -26,7 +26,7 @@
 #include <cmath>
 #include <vector>
 
-#include "Common/Config.h" // ASSERT for ConfidenceRefine.h: this unit does not include Common.h
+#include "CUDA/Maths.h"
 #include "ConfidenceRefine.h"
 #include "ConfidenceCUDA.h"
 
@@ -34,7 +34,15 @@ namespace MVS {
 namespace CUDA {
 
 using ConfRefine::Params;
-using ConfRefine::F3;
+typedef Eigen::Map<const Point3> ConstPoint3Map;
+typedef Eigen::Map<const Eigen::Matrix<float,3,3,Eigen::RowMajor>> ConstMatrix3Map;
+
+// surface normal implied by a depth gradient (camera-facing, normalized): the device copy of
+// DepthGradientEstimator::NormalFromGradient (K assumed skew-free)
+__device__ __forceinline__ Point3 NormalFromGrad(float fx, float fy, float cx, float cy, int x, int y, float d, float dx, float dy) {
+	const Point3 n(fx*dx, fy*dy, (cx - (float)x)*dx + (cy - (float)y)*dy - d);
+	return n * (1.f / n.norm());
+}
 
 // device-resident neighbor descriptor (fused transforms + device map pointers)
 struct DevNeighbor {
@@ -71,7 +79,7 @@ struct RefLinearAcc {
 	int W, H;
 	__device__ __forceinline__ float Depth(int idx) const { return depth[idx]; }
 	__device__ __forceinline__ int HasNormal() const { return normal != nullptr; }
-	__device__ __forceinline__ F3 Normal(int idx) const { return F3{normal[idx*3+0], normal[idx*3+1], normal[idx*3+2]}; }
+	__device__ __forceinline__ Point3 Normal(int idx) const { return ConstPoint3Map(normal + idx*3); }
 	__device__ __forceinline__ float Conf(int idx) const { return conf[idx]; }
 	__device__ __forceinline__ float operator()(int x, int y) const { return depth[y*W + x]; }
 	__device__ __forceinline__ bool inside(int x, int y) const { return x >= 0 && x < W && y >= 0 && y < H; }
@@ -86,7 +94,7 @@ struct RefPackedAcc {
 	int W, H;
 	__device__ __forceinline__ float Depth(int idx) const { return dn[idx].w; }
 	__device__ __forceinline__ int HasNormal() const { return 1; }
-	__device__ __forceinline__ F3 Normal(int idx) const { const float4 v = dn[idx]; return F3{v.x, v.y, v.z}; }
+	__device__ __forceinline__ Point3 Normal(int idx) const { const float4 v = dn[idx]; return Point3(v.x, v.y, v.z); }
 	__device__ __forceinline__ float Conf(int idx) const { const float c = cost[idx]; return c >= 1.f ? 0.f : 1.f - c; }
 	__device__ __forceinline__ float operator()(int x, int y) const { return dn[y*W + x].w; }
 	__device__ __forceinline__ bool inside(int x, int y) const { return x >= 0 && x < W && y >= 0 && y < H; }
@@ -141,9 +149,7 @@ __global__ void PriorKernel(RefAcc ref, int W, int H, float fx, float fy, float 
 	const float gate = 1.f - ConfRefine::CRexp(-(float)nInl * invKmin);
 	float Pnorm = 1.f;
 	if (ref.HasNormal()) {
-		const F3 nGrad = ConfRefine::NormalFromGrad(fx, fy, cx, cy, c, r, w, wx, wy);
-		const F3 sn = ref.Normal(idx);
-		Pnorm = fmaxf(0.f, nGrad.x*sn.x + nGrad.y*sn.y + nGrad.z*sn.z);
+		Pnorm = fmaxf(0.f, NormalFromGrad(fx, fy, cx, cy, c, r, w, wx, wy).dot(ref.Normal(idx)));
 	}
 	float pr = Pplane * Pnorm * gate;
 	priorOut[idx] = pr < 0.f ? 0.f : (pr > 1.f ? 1.f : pr);
@@ -161,9 +167,8 @@ __global__ void SweepKernel(RefAcc ref, const float* priorMap, int W, int H,
 	const int idx = r*W + c;
 	const float depthRef = ref.Depth(idx);
 	if (depthRef <= 0.f) { confOut[idx] = 0.f; return; }
-	float rnx = 0.f, rny = 0.f, rnz = 0.f;
 	const int hasRefNormal = ref.HasNormal();
-	if (hasRefNormal) { const F3 rn = ref.Normal(idx); rnx = rn.x; rny = rn.y; rnz = rn.z; }
+	const Point3 rn(hasRefNormal ? ref.Normal(idx) : Point3::Zero());
 
 	float K = 0.f, Pconf = 0.f;
 	int V = 0;
@@ -193,11 +198,8 @@ __global__ void SweepKernel(RefAcc ref, const float* priorMap, int W, int H,
 		const float wR = ConfRefine::AngleW(xr, yr, depthRef, np.cn[0], np.cn[1], np.cn[2]);
 		float wN = 1.f;
 		if (hasNormalGate) {
-			const float nx = np.Rrel[0]*rnx + np.Rrel[1]*rny + np.Rrel[2]*rnz;
-			const float ny = np.Rrel[3]*rnx + np.Rrel[4]*rny + np.Rrel[5]*rnz;
-			const float nz = np.Rrel[6]*rnx + np.Rrel[7]*rny + np.Rrel[8]*rnz;
-			const float mnx = np.normal[(yN*np.width+xN)*3+0], mny = np.normal[(yN*np.width+xN)*3+1], mnz = np.normal[(yN*np.width+xN)*3+2];
-			wN = fmaxf(0.f, nx*mnx + ny*mny + nz*mnz);
+			// the reference normal rotated into the neighbor camera, against the neighbor's own normal
+			wN = fmaxf(0.f, (ConstMatrix3Map(np.Rrel) * rn).dot(ConstPoint3Map(np.normal + (yN*np.width+xN)*3)));
 		}
 		const float cN = np.conf ? np.conf[yN*np.width + xN] : 1.f;
 		const float wC = ConfRefine::SoftConfW(cN, p.minConfidence, p.epsConf);
