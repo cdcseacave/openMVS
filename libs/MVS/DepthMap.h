@@ -147,16 +147,15 @@ extern MVS_API float fNCCThresholdKeep;
 // The posterior's shape constants are NOT exposed: they are a single jointly ground-truth-calibrated
 // operating point living in ConfidenceRefine.h (see the note there).
 // DenseFuseDepthMaps: weight of the intra-map prior as virtual view/pixel support to keep few-view
-// inliers (0 disables). Default 3 favors completeness (GT bench: +6.5pp mean completeness for
-// +0.17pp gross outliers vs 0) -- right for the usual pipeline where mesh reconstruction follows and
-// cleans the extra outliers; prefer 2 when the dense point-cloud IS the final output (+2.6pp for
-// +0.07pp, within the per-scene outlier budget on 26/28 GT scene-levels vs 17/28 at 3).
+// inliers (0 disables). The rescue is only granted to points no view contradicts (see
+// nFuseViolationMax), which is what makes the generous default 4 pay off on both completeness- and
+// accuracy-bound scenes.
 extern MVS_API float fFusePriorWeight;
-// free-space-violation (FSV) guard on fusion-RESCUED points only (points kept solely thanks to
-// fFusePriorWeight's virtual support -- see DenseFuseDepthMaps), counted during fusion's own join
-// gate. -1 disables the guard: fully inert, byte-identical to fusion without it. Default 0 (strict)
-// rejects any rescued point contradicted by >=1 free-space ray; N allows <=N such violations.
-// Non-rescued points are never affected.
+// contradiction guard of fusion's keep-rule, counted during fusion's own join gate from DISTINCT views:
+// a point RESCUED by fFusePriorWeight's virtual support may be contradicted by at most N views, either
+// seeing behind it (free-space violation) or agreeing with its depth but disputing its normal; a point
+// kept on real support alone is dropped when the views disputing its normal outnumber its supporting
+// views. Default 0; -1 disables the guard entirely (byte-identical to fusion without it).
 extern MVS_API int nFuseViolationMax;
 // DenseFuseDepthMaps: hand the pixels of a cluster the keep-rule dropped back to the pool, so that a
 // later seed or probe can still use them -- a pixel is otherwise marked consumed for good, so one

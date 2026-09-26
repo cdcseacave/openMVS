@@ -37,7 +37,8 @@ using ConfRefine::F3;
 
 // device-resident neighbor descriptor (fused transforms + device map pointers)
 struct DevNeighbor {
-	float A[9], b[3], Ai[9], bi[3], Rrel[9];
+	float A[9], b[3], Rrel[9];
+	float cn[3];                     // neighbor centre in the reference camera frame
 	const float* depth;              // null when texDepth is used instead
 	const float* conf;               // null -> no confidence (cN = 1)
 	const float* normal;             // null -> no normal gate
@@ -150,6 +151,7 @@ __global__ void PriorKernel(RefAcc ref, int W, int H, float k00, float k11, floa
 // ---- one-hop multi-view confirmation (mirrors AdjustConfidenceSweep) ----
 template <typename RefAcc>
 __global__ void SweepKernel(RefAcc ref, const float* priorMap, int W, int H,
+                            float k00, float k11, float k02, float k12,
                             const DevNeighbor* neigh, int nNeigh, Params p,
                             float* confOut) {
 	const int c = blockIdx.x*blockDim.x + threadIdx.x;
@@ -165,6 +167,8 @@ __global__ void SweepKernel(RefAcc ref, const float* priorMap, int W, int H,
 	float K = 0.f, Pconf = 0.f;
 	int V = 0;
 	const float ud = (float)c * depthRef, vd = (float)r * depthRef;
+	// the point in the reference camera frame (triangulation angle, GATE 2)
+	const float xr = ((float)c - k02) / k00 * depthRef, yr = ((float)r - k12) / k11 * depthRef;
 	for (int k = 0; k < nNeigh; ++k) {
 		const DevNeighbor np = neigh[k];
 		const float qz = np.A[6]*ud + np.A[7]*vd + np.A[8]*depthRef + np.b[2];
@@ -183,15 +187,7 @@ __global__ void SweepKernel(RefAcc ref, const float* priorMap, int W, int H,
 		if (!SampleDepthBilinearDev(np, px, py, p.thDepth, dN))
 			dN = dNn;
 		const float wD = ConfRefine::SoftDepthW(qz, dN, p.thDepth);
-		const float un = (float)xN*dN, vn = (float)yN*dN;
-		const float qrz = np.Ai[6]*un + np.Ai[7]*vn + np.Ai[8]*dN + np.bi[2];
-		float wR = 0.f;
-		if (qrz > 0.f) {
-			const float qrx = np.Ai[0]*un + np.Ai[1]*vn + np.Ai[2]*dN + np.bi[0];
-			const float qry = np.Ai[3]*un + np.Ai[4]*vn + np.Ai[5]*dN + np.bi[1];
-			const float du = qrx/qrz - (float)c, dv = qry/qrz - (float)r;
-			wR = ConfRefine::SoftReprojW(du, dv, p.thReproj);
-		}
+		const float wR = ConfRefine::AngleW(xr, yr, depthRef, np.cn[0], np.cn[1], np.cn[2]);
 		float wN = 1.f;
 		if (hasNormalGate) {
 			const float nx = np.Rrel[0]*rnx + np.Rrel[1]*rny + np.Rrel[2]*rnz;
@@ -251,8 +247,8 @@ static bool LaunchConfidenceKernels(
 		const ConfNeighborHost& s = neighbors[k];
 		const size_t np = (size_t)s.width * (size_t)s.height;
 		DevNeighbor d;
-		for (int i = 0; i < 9; ++i) { d.A[i]=s.A[i]; d.Ai[i]=s.Ai[i]; d.Rrel[i]=s.Rrel[i]; }
-		for (int i = 0; i < 3; ++i) { d.b[i]=s.b[i]; d.bi[i]=s.bi[i]; }
+		for (int i = 0; i < 9; ++i) { d.A[i]=s.A[i]; d.Rrel[i]=s.Rrel[i]; }
+		for (int i = 0; i < 3; ++i) { d.b[i]=s.b[i]; d.cn[i]=s.cn[i]; }
 		d.width = s.width; d.height = s.height;
 		// fused path with a valid resident texture: read depth via tex2D, skip the largest upload
 		d.texDepth = (cudaTextureObject_t)s.texDepth;
@@ -282,7 +278,7 @@ static bool LaunchConfidenceKernels(
 	PriorKernel<RefAcc><<<grid, block, 0, stream>>>(ref, W, H,
 		k00, k11, k02, k12, band, invKmin, dPrior);
 	SweepKernel<RefAcc><<<grid, block, 0, stream>>>(ref, dPrior,
-		W, H, dNeigh, nNeighbors, params, dConf);
+		W, H, k00, k11, k02, k12, dNeigh, nNeighbors, params, dConf);
 	// reject a failed kernel launch BEFORE queueing the download
 	if (cudaGetLastError() != cudaSuccess) return false;
 

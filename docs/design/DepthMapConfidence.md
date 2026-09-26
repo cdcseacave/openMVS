@@ -46,20 +46,43 @@ if Kf ≥ 1: conf = max(conf, CONF_FLOOR · confPhoto)        // anti-cascade fl
   is locally coherent in both; a photometric mismatch usually is not.
 - **`Kf`, `Pconf` — multi-view confirmation**: the pixel is projected into each selected neighbour
   view and scored against that view's own depth/normal/confidence through four continuous weights —
-  `SoftDepthW` (Gaussian relative-depth agreement, gate 1), `SoftReprojW` (forward-backward
-  reprojection residual, gate 2), a plain normal dot product (gate 3), `SoftConfW` (smoothstep on
-  the neighbour's own confidence around `minConfidence`, gate 4). Each neighbour contributes a
-  fractional vote (`Kf += w`, `Pconf += w·cN`), so agreement degrades smoothly instead of a hard
-  cliff.
+  `SoftDepthW` (Gaussian relative-depth agreement at the estimation noise, gate 1), `AngleW`
+  (independence of the vote, `min(1, sin θ / sin 20°)` of the triangulation angle θ, gate 2), a plain
+  normal dot product (gate 3), `SoftConfW` (smoothstep on the neighbour's own confidence around
+  `minConfidence`, gate 4). Each neighbour contributes a fractional vote (`Kf += w`,
+  `Pconf += w·cN`), so agreement degrades smoothly instead of a hard cliff.
 - **`V` — free-space violations**: when a neighbour's own measured depth lies more than
   `VIOLATION_MARGIN·thDepth` behind the point along the same ray, that neighbour's line of sight
   passes through where the point claims to be — direct negative evidence, diluting the posterior's
   denominator.
 
-`ConfRefine::Params` (`ConfidenceRefine.h`) carries the shape constants plus the runtime gate
-thresholds shared with fusion (`minConfidence = 1 − fNCCThresholdKeep`, `thReproj =
-fDepthReprojectionErrorThreshold`, `thDepth = fDepthDiffThreshold`), so the recalibrated confidence
-predicts what `DenseFuseDepthMaps` will actually accept.
+`ConfRefine::Params` (`ConfidenceRefine.h`) carries the shape constants, the calibrated confirmation
+tolerances (`thDepth = CONFIRM_DEPTH`, also the unit of the free-space margin and of the prior's
+plane-fit band) and the one threshold shared with fusion, its confidence floor `minConfidence =
+1 − fNCCThresholdKeep`.
+
+**Why the confirmation tolerances are not fusion's.** A confirmation is evidence that the depth is
+correct; fusion's join thresholds decide how finely agreeing pixels merge into points, and a pixel
+that fails to join one cluster can still seed its own. Measured against laser ground truth on four
+Tanks-and-Temples scenes (projecting sampled pixels into every neighbour depth-map):
+
+- correct depths disagree with their neighbours by a *relative* depth that is constant across
+  triangulation angles (median 0.06–0.15%, 90th percentile 0.3–1%), so a relative depth tolerance
+  is the right form, and a 0.25–0.5% width ranks correct against wrong pixels best on every scene;
+- the forward-backward reprojection residual is no independent test: along the epipolar line it is
+  the same depth error scaled by `f·sin θ` (a correct pixel shows 0.4 px at θ < 3° and 1.4–2.8 px
+  beyond 20°), across it only pixel rounding (0.25 px at every angle). A fixed-pixel gate on it
+  therefore discards the most informative, wide-baseline confirmations;
+- what θ does carry is independence: a narrow-baseline neighbour sees nearly the same image content
+  and shares the reference's mistakes, so weighting votes by `sin θ` separates correct from wrong
+  pixels better than any residual gate.
+
+Per-pixel confirmation AUC (correct vs wrong pixel), Meetingroom / Caterpillar / Truck / Church:
+depth 1% × reprojection 1 px (previous) 0.770 / 0.800 / 0.765 / 0.845; depth 0.5% only
+0.810 / 0.848 / 0.791 / 0.885; depth 0.5% × `AngleW` (current) 0.835 / 0.861 / 0.809 / 0.906.
+Tying the gates to fusion's thresholds also made the confidence *scale* follow them: tightening
+fusion to 0.6 px / 0.5% left the ranking unchanged (AUC 0.726 both) but halved the median confidence,
+so fusion's fixed floor dropped 27% of the admitted pixels, 37% of them correct.
 
 ### Raw-neighbour-confidence invariant
 
@@ -135,8 +158,8 @@ checks it before trusting a neighbour's confidence (see above).
 | `--postprocess-dmaps` | `OPTDENSE::nOptimize` | `4` (`ADJUST_CONFIDENCE_AUTO`) | `0` disabled, `1` remove-speckles, `2` fill-gaps, `4` auto (on for CUDA estimation, off otherwise), `8` force on |
 | *(dense config file only)* | `OPTDENSE::bEstimateConfidenceCUDA` | `true` | when CUDA estimates, run the recalibration on the GPU; `0` forces the CPU sweep |
 | — (shared with fusion) | `OPTDENSE::fNCCThresholdKeep` | `0.9` | `minConfidence = 1 − this` is gate 4's centre and the fusion keep threshold |
-| `--fusion-reprojection-threshold` | `OPTDENSE::fDepthReprojectionErrorThreshold` | `1.0` | gate 2 (`thReproj`) divisor; also fusion's join gate |
-| `--fusion-depth-diff-threshold` | `OPTDENSE::fDepthDiffThreshold` | `0.01` | gate 1 / plane-fit band (`thDepth`) divisor; also fusion's join gate |
+| — (compile-time) | `ConfRefine::CONFIRM_DEPTH` | `0.005` | gate 1 relative-depth width; unit of the free-space margin and the prior's plane-fit band |
+| — (compile-time) | `ConfRefine::CONFIRM_SIN_ANGLE` | `sin 20°` | gate 2: triangulation angle of a full vote |
 | — (compile-time) | `ConfRefine::PRIOR_STRENGTH` | `2.0` | intra-map prior weight, as Beta pseudo-counts |
 | — (compile-time) | `ConfRefine::CONFIRM_TAU` | `1.5` | softness of the confirmation gate |
 | — (compile-time) | `ConfRefine::PRIOR_GATE` | `0.3` | prior's share of the gate when no neighbour confirms |
@@ -148,8 +171,7 @@ checks it before trusting a neighbour's confidence (see above).
 The compile-time constants live in `ConfidenceRefine.h` and are deliberately not runtime knobs: they
 are one jointly ground-truth-calibrated operating point (BlendedMVS + ETH3D, 28 scene-levels, full-grid
 sweep) — one global setting won on every scene-level, and moving one without re-sweeping the others
-degrades the result. The gate *thresholds* (`fNCCThresholdKeep`, `fDepthReprojectionErrorThreshold`,
-`fDepthDiffThreshold`) stay runtime because fusion shares them.
+degrades the result. Only `fNCCThresholdKeep` stays runtime, because it is fusion's own floor.
 
 ## 4. Invariants and constraints
 
@@ -165,10 +187,9 @@ degrades the result. The gate *thresholds* (`fNCCThresholdKeep`, `fDepthReprojec
   which use every neighbour `InitViews` loaded for geometric consistency.
 - **CONF_ADJUSTED is sticky and cross-process**: once set, no path re-adjusts that view's confidence
   again, in this run or a later one loading the same dmap.
-- Gate thresholds are clamped away from zero (`MAXF(x, 1e-6f)`) before use as divisors, both on the
-  CPU (`AdjustConfidenceSweep`) and in the GPU parameter snapshot (`MakeConfRefineParams`), so a
-  degenerate `fDepthDiffThreshold == 0` or `fDepthReprojectionErrorThreshold == 0` cannot produce a
-  divide-by-zero.
+- The recalibration never reads fusion's join thresholds (`fDepthDiffThreshold`,
+  `fDepthReprojectionErrorThreshold`): changing how finely fusion clusters must not move the
+  confidence scale that fusion's floor is applied to.
 - The CPU and GPU paths share the exact same per-pixel math (`ConfidenceRefine.h`, compiled under
   both the host compiler and `nvcc`); the GPU path differs only in using single-precision `expf`.
 

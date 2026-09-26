@@ -114,7 +114,7 @@ public:
 		bool removeDepthMaps{false};
 		bool postprocess{false};
 		int fusionMode{0};
-		float fDepthReprojectionErrorThreshold{1.0f};
+		float fDepthReprojectionErrorThreshold{0.6f};
 		bool cropToROI{true};
 		float borderROI{0.f};
 		float sampleMeshNeighbors{0.f};

@@ -1,9 +1,10 @@
 # Tanks & Temples: tuned parameters
 
 Best-performing OpenMVS configurations on the Tanks & Temples *training* set, and the measurements
-behind them. Screening runs on **Truck (tau 5 mm), Ignatius (3 mm) and Barn (10 mm)** - three scenes
-spanning the tolerance range - at `--resolution-level 0`. Poses are frozen Metashape poses
-throughout, so these numbers isolate the dense pipeline; our own SfM is a separate arm.
+behind them. Screening runs at `--resolution-level 0` on the **six training scenes that can be
+reconstructed and scored here** - Truck (tau 5 mm), Ignatius (3 mm), Barn (10 mm), Caterpillar
+(5 mm), Meetingroom (10 mm) and Church (25 mm). Poses are frozen Metashape poses throughout, so
+these numbers isolate the dense pipeline; our own SfM is a separate arm.
 
 ## 1. How the benchmark scores
 
@@ -13,116 +14,172 @@ area-weighted, and raw point density above ~4 samples per tau/2 surface cell buy
 sampled inside the official crop volume only; sampling the whole mesh spends the budget on background
 the evaluator discards.
 
-Repeat-eval noise with a frozen scene->GT transform is ~1e-4, so deltas above ~0.002 are real.
+Every arm is aligned to the ground truth by the evaluator's own ICP, every run - a matrix refined
+against one cloud would score later arms in a frame fitted to a different product, and per-arm ICP is
+what the leaderboard does anyway. Two noise floors follow, and they are not the same number:
 
-## 2. Recall is saturated; precision is the binding constraint
+| repeat | spread | what it covers |
+|---|---|---|
+| re-score one fixed cloud | **0.0001** | the evaluator's ICP alone |
+| re-run the whole cell | **0.002 - 0.003** | densify included; fusion output depends on free RAM |
 
-This is the single fact that determines every recommendation below. At the shipped defaults the
-cloud already recalls **0.90 mean** (0.97 on Ignatius) while precision sits at **0.65**:
+**Rank configurations against the 0.003 figure, not the 0.0001 one.** For reference, freezing the
+alignment instead of refining it per run shifts F1 by only +0.0005 (Truck/`default_r0`: 0.7399 frozen
+vs 0.7404/0.7405 realigned).
 
-| `default_r0` cloud | precision | recall | F1 |
+## 2. The governing mechanism: where a scene sits on its own P/R curve
+
+Every recommendation below follows from one fact. The scenes do **not** share a precision/recall
+balance, and a knob's value depends entirely on which side of it a scene is on:
+
+| `default_r0` cloud | P | R | slack (R - P) |
 |---|---|---|---|
-| Truck | 0.6507 | 0.8573 | 0.7399 |
-| Ignatius | 0.7427 | 0.9695 | 0.8411 |
-| Barn | 0.5643 | 0.8680 | 0.6840 |
-| **mean** | **0.6526** | **0.8983** | **0.7550** |
+| Caterpillar | 0.5009 | 0.8651 | +0.3642 |
+| Barn | 0.5643 | 0.8680 | +0.3037 |
+| Ignatius | 0.7427 | 0.9695 | +0.2268 |
+| Truck | 0.6507 | 0.8573 | +0.2066 |
+| **Church** | 0.6229 | 0.6178 | **-0.0051** |
+| **Meetingroom** | 0.5414 | 0.4728 | **-0.0686** |
 
-There is almost no recall left to win, so every parameter that buys completeness with precision
-loses F1. Measured on the same three scenes, `--fusion-recycle-dropped 1` (+9.4 M points) costs
--0.0104 and `--fusion-prior-weight 4` (+17.1 M points) costs -0.0145. The winning direction is the
-opposite one: **fewer, cleaner points**.
+Correlating each knob's per-scene gain against that slack separates the knobs into three kinds:
 
-A related corollary, tested directly: a noisier but more complete cloud does **not** make a better
-mesh. Across 19 densify configurations the mesh F1 tracks the cloud F1 at **r = +0.97**, while point
-count correlates with mesh F1 at **r = -0.58**. The best cloud is also the best mesh input.
+| knob | mean dF1 | r(slack, dF1) | worst scene | kind |
+|---|---|---|---|---|
+| `--number-views 24` | **+0.0223** | -0.50 | **+0.0020** | better estimate |
+| `--number-views 16` | **+0.0182** | -0.49 | **+0.0024** | better estimate |
+| `x_max` (9 flags stacked) | +0.0126 | **+0.97** | -0.0624 | filter |
+| `--fusion-reprojection-threshold 0.6` | +0.0058 | +0.88 | -0.0063 | filter |
+| `--fusion-depth-diff-threshold 0.005` | +0.0003 | **+0.98** | -0.0116 | filter |
+| `--fusion-prior-weight 0` | -0.0000 | +0.93 | -0.0373 | filter |
+| `--fusion-recycle-dropped 1` | -0.0085 | **-0.93** | -0.0247 | completeness |
+| `--fusion-prior-weight 4` | -0.0110 | -0.91 | -0.0314 | completeness |
+
+**Filtering knobs have r ~ +0.9.** They discard points, which is pure profit only where recall is
+surplus; they relocate a scene along its own P/R curve rather than reconstructing anything better.
+**Completeness knobs are their mirror image at r ~ -0.9** and lose on average. Either kind is a bet
+on the scene.
+
+**`--number-views` is neither.** It changes the point count in *opposite directions* depending on the
+scene - Truck -21 %, Ignatius -12 %, Barn -5 %, Caterpillar -6 %, but Meetingroom **+26 %** and
+Church **+12 %** - and the two scenes where it adds points are exactly the two recall-bound ones. More
+neighbour views make the depth estimate more reliable, so it removes false surface where there was
+surplus and recovers real surface where there was a deficit. That is why it raises P and R together
+(Meetingroom: P 0.5414 -> 0.5449, R 0.4728 -> 0.5193) and why it is the only knob that never loses on
+any scene.
+
+Screening on scenes that share a slack sign is therefore actively misleading: on Truck/Ignatius/Barn
+alone the stacked filter `x_max` ranks **1st of 16**; over six scenes it ranks **5th** and is worse
+than the shipped defaults on the two scenes that were missing.
 
 ## 3. Point-cloud mode
 
 ```
-DensifyPointCloud --resolution-level 0 --number-views 16 --fusion-prior-weight 0 \
-                  --fusion-reprojection-threshold 0.6 --fusion-depth-diff-threshold 0.005 \
-                  --estimate-roi 0 --crop-to-roi 0 --tower-mode 0
+DensifyPointCloud --resolution-level 0 --number-views 24
 ```
 
-| scene | tau | P | R | **F1** | points | vs default | densify |
+| scene | tau | P | R | **F1** | vs default | points | densify |
 |---|---|---|---|---|---|---|---|
-| Truck | 5 mm | 0.7343 | 0.7912 | **0.7617** | 22.3 M | +0.0218 | 564 s |
-| Ignatius | 3 mm | 0.8548 | 0.9207 | **0.8865** | 17.8 M | +0.0454 | 445 s |
-| Barn | 10 mm | 0.6682 | 0.7691 | **0.7151** | 27.3 M | +0.0311 | 661 s |
-| **mean** | | **0.7524** | **0.8270** | **0.7878** | | **+0.0328** | |
+| Truck | 5 mm | 0.6741 | 0.8252 | **0.7420** | +0.0021 | 27.5 M | 683 s |
+| Ignatius | 3 mm | 0.8220 | 0.9521 | **0.8823** | +0.0412 | 29.1 M | 711 s |
+| Barn | 10 mm | 0.5952 | 0.8729 | **0.7078** | +0.0238 | 46.1 M | 985 s |
+| Caterpillar | 5 mm | 0.5035 | 0.8651 | **0.6365** | +0.0020 | 34.2 M | 1009 s |
+| Meetingroom | 10 mm | 0.5449 | 0.5193 | **0.5318** | +0.0270 | 29.8 M | 867 s |
+| Church | 25 mm | 0.6703 | 0.6465 | **0.6582** | +0.0378 | 48.9 M | 1356 s |
+| **mean** | | | | **0.6931** | **+0.0223** | | |
 
-It reaches a higher F1 with **36 % fewer points** than the default (22.3 M vs 34.8 M on Truck) and is
-no slower. Precision rises 0.10 for 0.07 of recall.
+`--number-views 16` is the better default and 24 the "score is all that matters" setting: 16 gets
+**82 % of the gain for 35 % of the extra densify time**.
 
-Per-knob contribution, measured one at a time against `default_r0`:
+| config | mean densify | vs default | mean dF1 | worst scene |
+|---|---|---|---|---|
+| `default_r0` | 10.1 min | 1.00x | - | - |
+| **`--number-views 16`** | 11.9 min | 1.18x | +0.0182 | +0.0024 |
+| **`--number-views 24`** | 15.3 min | 1.51x | +0.0223 | +0.0020 |
 
-| knob | dF1 cloud | note |
-|---|---|---|
-| `--number-views 16` | +0.0173 | strongest single knob; 12 gives +0.0094, 24 only +0.0224 for +40 % densify time |
-| `--fusion-prior-weight 0` | +0.0092 | monotonic: 4 -> -0.0145, 3 (default) -> 0, 2 -> +0.0070, <=1 -> +0.0092 |
-| `--fusion-reprojection-threshold 0.6` | +0.0079 | 0.8 gives +0.0039 |
-| `--fusion-depth-diff-threshold 0.005` | +0.0034 | |
-| ROI/tower off | +0.0014 | |
+Everything else is a no-op or a bet. Genuine no-ops: `--number-views-fuse 3` (the dense-fuse path
+ignores it - it changed the cloud by 5 points out of 34.8 M), `--sub-resolution-levels 3` (clamped by
+`--min-resolution 640`), `--geometric-iters 4`, ROI/tower off (+0.0008).
 
 `--fusion-prior-weight` **1 is byte-identical to 0**: the fusion keep-rule is
 `fusedViews.size() + weight*prior >= nMinViewsFuse(2)`, so with `prior < 1` a weight of 1 can never
-rescue a one-view cluster. Its shipped default of 3 is documented as favouring completeness "when a
-mesh reconstruction step follows"; on this benchmark that costs F1 in **both** modes.
-
-No-ops worth knowing: `--number-views-fuse 3` (the dense-fuse path ignores it - it changed the cloud
-by 5 points out of 34.8 M), `--sub-resolution-levels 3` (clamped by `--min-resolution 640`),
-`--geometric-iters 4`.
+rescue a one-view cluster. Its shipped default of 3 sits between the two ends and is close to optimal
+*on average* (pw0 -0.0000, pw4 -0.0110); the earlier verdict that 3 is "the wrong default" held only
+on recall-rich scenes.
 
 ## 4. Mesh mode
 
-Same densify as section 3. `--smooth 0` is the only `ReconstructMesh` knob that pays, and only when
-the mesh is the final product: after `RefineMesh` the two settings tie, and stock smoothing gets
-there with ~30 % fewer faces.
+Same densify as section 3, `ReconstructMesh` at defaults.
 
-**Mesh only** (`ReconstructMesh --smooth 0`, no refinement):
-
-| scene | P | R | **F1** | vertices | faces | in-crop faces | in-crop area |
+| scene | **F1** | vs default | vertices | faces | in-crop faces | in-crop area | recon |
 |---|---|---|---|---|---|---|---|
-| Truck | 0.7168 | 0.7129 | **0.7148** | 4.35 M | 8.63 M | 5.55 M | 212.3 |
-| Ignatius | 0.8532 | 0.8649 | **0.8590** | 3.34 M | 6.64 M | 1.40 M | 95.0 |
-| Barn | 0.6370 | 0.7027 | **0.6683** | 6.81 M | 13.54 M | 7.20 M | 1566.0 |
-| **mean** | **0.7357** | **0.7602** | **0.7474** | | | | |
+| Truck | **0.6816** | +0.0007 | 5.42 M | 10.76 M | 7.07 M | 195.9 | 467 s |
+| Ignatius | **0.8690** | +0.0092 | 4.59 M | 9.09 M | 2.10 M | 79.2 | 529 s |
+| Barn | **0.6672** | +0.0401 | 10.46 M | 20.82 M | 11.54 M | 1409.2 | 861 s |
+| Caterpillar | **0.5482** | +0.0137 | 6.13 M | 12.13 M | 7.29 M | 1433.4 | 492 s |
+| Meetingroom | **0.5043** | +0.0296 | 6.84 M | 13.39 M | 13.32 M | 2042.3 | 619 s |
+| Church | **0.6547** | +0.0355 | 8.94 M | 17.61 M | 17.60 M | 9031.5 | 831 s |
+| **mean** | **0.6542** | **+0.0215** | | | | | |
 
-Taubin smoothing shrinks the surface - in-crop area falls from 212.3 to 181.6 on Truck - and the
-lost area is recall (+0.0050 F1 for `--smooth 0`). Nine other `ReconstructMesh` knobs were swept over
-one frozen cloud and all land within +-0.004, except `--free-space-support 1` at **-0.0398**.
+The mesh stage itself is not a lever: ten `ReconstructMesh` knobs swept over one frozen cloud all
+land within +-0.004 except `--free-space-support 1` at **-0.0398**. `--smooth 0` was the one apparent
+gain (+0.0082 on three scenes) but it is a recall bet of the same kind as section 2's filters, and it
+collapses refinement (-0.0423 mean); stock smoothing is the safe setting.
 
-**Mesh + refinement** (`ReconstructMesh` and `RefineMesh` both at defaults):
+The mesh **damps** whatever the cloud does, which is why a cloud bet looks safer here than it is: on
+Meetingroom `x_max` costs -0.0624 of cloud F1 but only -0.0021 of mesh F1. Damping a loss is not
+avoiding it - `c_v24`, which never takes the bet, still wins the arm.
 
-| scene | P | R | **F1** | vertices | faces | refine |
-|---|---|---|---|---|---|---|
-| Truck | - | - | **0.7185** | 0.18 M | 0.31 M | ~9 min |
-| Ignatius | - | - | **0.8612** | 0.26 M | 0.48 M | ~13 min |
-| Barn | - | - | **0.6965** | 0.84 M | 1.57 M | ~50 min |
-| **mean** | **0.7714** | **0.7467** | **0.7587** | | | |
+## 5. Mesh + refinement
 
-Refinement adds **+0.0163** over the mesh it receives and cuts the face count by ~20x (the 0.25 px
-simplify tolerance). Adding `--smooth 0` on top scores 0.7590 - the same within the 0.002 noise floor
-- but keeps 0.45 M faces on Truck instead of 0.31 M, so stock smoothing is the better trade once
-refinement runs.
+`RefineMesh` at defaults on the section 4 mesh.
 
-The mesh stage is not where the gains are: switching the *cloud* from `default_r0` to `x_max` is worth
-+0.0198 on mesh F1 with stock mesh parameters, more than any mesh knob.
+| scene | **F1** | vs its own mesh | vertices | faces | refine |
+|---|---|---|---|---|---|
+| Truck | **0.7019** | +0.0203 | 0.22 M | 0.39 M | 522 s |
+| Ignatius | **0.8646** | -0.0044 | 0.28 M | 0.49 M | 770 s |
+| Barn | **0.6976** | +0.0304 | 0.89 M | 1.65 M | 1910 s |
+| Caterpillar | **0.5496** | +0.0014 | 0.60 M | 1.09 M | 1950 s |
+| Meetingroom | **0.4990** | -0.0053 | 0.97 M | 1.61 M | 1887 s |
+| Church | **0.6545** | -0.0002 | 0.96 M | 1.66 M | 4584 s |
+| **mean** | **0.6612** | **+0.0070** | | | |
 
-## 5. Summary and which mode to submit
+Refinement's value is mostly **size**, not score: it cuts the face count by 8-20x (the 0.25 px
+simplify tolerance) for +0.0070 mean F1, and on three of six scenes it is neutral or slightly
+negative. Run it when a compact surface is the product, not to chase F1.
 
-3-scene mean F1 at `--resolution-level 0`:
+## 6. Summary and which mode to submit
+
+Six-scene mean F1 at `--resolution-level 0`:
 
 | config | cloud | mesh | mesh + refine |
 |---|---|---|---|
-| `default_r0` (shipped defaults) | 0.7550 | 0.7226 | 0.7463 |
-| `c_v24` (`--number-views 24` only) | 0.7774 | 0.7393 | 0.7547 |
-| **`x_max`** (section 3) | **0.7878** | 0.7424 | **0.7587** |
-| `x_max` + `--smooth 0` | - | **0.7474** | 0.7590 |
+| `default_r0` (shipped defaults) | 0.6708 | 0.6327 | 0.6483 |
+| **`--number-views 24`** | **0.6931** | **0.6542** | **0.6612** |
+| `--number-views 16` | 0.6892 | 0.6481 | 0.6527 |
+| `x_max` (9 stacked filter flags) | 0.6834 | 0.6509 | 0.6589 |
 
-**Point-cloud mode wins outright, 0.7878 vs 0.7587**, and is by far the cheapest: it skips both the
-mesh and the refinement stage. Submit a mesh only where a surface is required rather than a point
-set, and then run refinement - it is worth +0.0163 and shrinks the result ~20x.
+**`--number-views 24` wins every arm**, and it is one flag against `x_max`'s nine. In cloud mode the
+margin over `x_max` is a clear +0.0097; in mesh (+0.0033) and refine (+0.0023) the two are level
+within the 0.003 repeat spread, and `c_v24` wins on simplicity - `x_max` also disables ROI
+estimation, cropping and tower mode, which have consequences beyond F1.
 
-Every arm gains from the same densify parameters, so there is no separate "cloud-tuned" and
-"mesh-tuned" configuration to maintain.
+**Point-cloud mode wins outright, 0.6931 vs 0.6612**, and is by far the cheapest: it skips both the
+mesh and the refinement stage. Build a mesh only where a surface is required rather than a point set.
+
+## 7. Scenes that do not run here
+
+- **Courthouse** (1106 images) cannot densify at `--resolution-level 0` on a 32 GB machine:
+  `DensifyPointCloud` dies with `0xC0000005` after ~38 min in fusion, the log repeating
+  "not enough memory to cache depth-maps (2772MB needed, ~1.2GB available)" - an out-of-memory
+  condition surfacing as an access violation rather than a clean failure. It scores at
+  `--resolution-level 1` (cloud 0.4939 at defaults).
+- **Church** needed a dataset repair first. The toolbox pairs the reconstruction's camera trajectory
+  with `Church_COLMAP_SfM.log` index-by-index, but that log has 644 poses while the Metashape project
+  here aligned only the 507 images present, so alignment raised `unequal length 507 != 644`. The 507
+  are a named subset - `metashape.xml` records each pose's original `images/000NNN.jpg`, so reference
+  entry NNN-1 is its counterpart. `bench/tnt_church_reference.py` writes that subset over the
+  reference log (the shipped file is kept as `Church_COLMAP_SfM.orig.log`); the pairing is confirmed
+  by a 0.988 RANSAC fitness. Because only 507 of 644 images are reconstructed, Church's absolute F1
+  is pessimistic - its *ranking* of configurations is unaffected, since every config sees the same
+  images.
+- **Palace** has no ground truth in this dataset copy.

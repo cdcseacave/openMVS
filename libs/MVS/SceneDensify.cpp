@@ -1187,10 +1187,9 @@ void DepthMapsData::ComputeIntraMapPrior(const DepthData& depthData, ConfidenceM
 	const bool bHasNormal(!normalMap.empty());
 	const Matrix3x3f K(depthData.GetView().camera.K);
 	const DepthGradientEstimator est(K, depthMap);
-	// relative planarity band; the threshold is clamped away from 0 exactly like the GPU prior's
-	// (MakeConfRefineParams' thDepth, from which PriorKernel derives its band) so the two paths
-	// stay in parity even at the degenerate fDepthDiffThreshold==0 setting
-	const float band(MAXF(OPTDENSE::fDepthDiffThreshold, 1e-6f) * 3.f);
+	// relative planarity band, in units of the calibrated depth noise (the GPU PriorKernel derives
+	// the same band from Params::thDepth == CONFIRM_DEPTH)
+	const float band(ConfRefine::CONFIRM_DEPTH * 3.f);
 	const float invKmin(1.f / 4.f);                                // soft planar quorum (~4 inliers)
 	priorMap.create(depthMap.size());
 	priorMap.memset(0);
@@ -1274,11 +1273,14 @@ const ConfidenceMap& DepthMapsData::GetIntraMapPrior(DepthData& depthData, bool 
 //
 // (A) MULTI-VIEW confirmation count K  -- one-hop, O(neighbors), the inter-map evidence:
 //     back-project the pixel to its 3D point X, project X into each neighbor depth-map and
-//     test the neighbor's own estimate against the EXACT four DenseFuse gates --
-//       G1 depth-similarity, G2 forward-backward reprojection, G3 normal agreement,
-//       G4 neighbor min-confidence. Every neighbor passing all four is a genuine confirmation
-//     (++K) and contributes its confidence to Pconf. K is thus a faithful per-pixel proxy for
-//     "how many views would confirm this point during fusion".
+//     weigh the neighbor's own estimate as evidence that the depth is correct --
+//       G1 depth agreement at the estimation noise (ConfRefine::CONFIRM_DEPTH), G2 independence
+//       of the vote from the triangulation angle, G3 normal agreement, G4 neighbor
+//       min-confidence (fusion's seed/join floor). Each neighbor adds the product of these
+//       weights to K and its weighted confidence to Pconf. The tolerances are the depth noise's,
+//       not fusion's clustering thresholds: a pixel that does not join one cluster can still seed
+//       its own, so gating confirmations at fusion's join tolerance would only shrink the
+//       confidence scale under fusion's fixed floor (see CONFIRM_DEPTH).
 //
 // (B) INTRA-MAP geometric prior pGeo (ComputeIntraMapPrior, once per map, O(pixels)):
 //     how well the pixel fits the local surface defined by its own 3x3 neighborhood (small
@@ -1369,9 +1371,8 @@ static DMapCache* g_pAdjustDMapCache(NULL);
 struct NeighborProj {
 	Matrix3x3f A;    // Kn*Rn*Rr^T*Kr^-1 : ref (u*d,v*d,d) h-coords -> nbr h-coords (q.z = nbr cam depth)
 	Point3f    b;    // Kn*Rn*(Cr-Cn)
-	Matrix3x3f Ai;   // Kr*Rr*Rn^T*Kn^-1 : nbr (u*d,v*d,d) h-coords -> ref h-coords (qr.z = ref cam depth)
-	Point3f    bi;   // Kr*Rr*(Cn-Cr)
 	Matrix3x3f Rrel; // Rn*Rr^T : rotates a ref-camera-space normal directly into the nbr camera space
+	Point3f    cn;   // Rr*(Cn-Cr) : nbr centre in the ref camera frame (triangulation angle, GATE 2)
 	const DepthMap* depthMap;
 	const ConfidenceMap* confMap;
 	const NormalMap* normalMap;
@@ -1432,9 +1433,8 @@ bool DepthMapsData::AdjustConfidence(DepthData& depthDataRef, const IIndexArr& i
 			NeighborProj& np = neighborProjs.AddEmpty();
 			np.A = Matrix3x3f(cameraN.K*Rrel*invKr);
 			np.b = Point3f(cameraN.K*cameraN.R*(cameraRef.C-cameraN.C));
-			np.Ai = Matrix3x3f(cameraRef.K*Rrel.t()*invKn);
-			np.bi = Point3f(cameraRef.K*cameraRef.R*(cameraN.C-cameraRef.C));
 			np.Rrel = Matrix3x3f(Rrel);
+			np.cn = Point3f(cameraRef.R*(cameraN.C-cameraRef.C));
 			np.depthMap = &depthDataN.depthMap;
 			np.confMap = &depthDataN.confMap;
 			np.normalMap = &depthDataN.normalMap;
@@ -1477,9 +1477,8 @@ bool DepthMapsData::AdjustConfidence(DepthData& depthDataRef)
 			NeighborProj& np = neighborProjs.AddEmpty();
 			np.A = Matrix3x3f(cameraN.K*Rrel*invKr);
 			np.b = Point3f(cameraN.K*cameraN.R*(cameraRef.C-cameraN.C));
-			np.Ai = Matrix3x3f(cameraRef.K*Rrel.t()*invKn);
-			np.bi = Point3f(cameraRef.K*cameraRef.R*(cameraN.C-cameraRef.C));
 			np.Rrel = Matrix3x3f(Rrel);
+			np.cn = Point3f(cameraRef.R*(cameraN.C-cameraRef.C));
 			np.depthMap = &viewN.depthMap;
 			np.confMap = &viewN.confMap;
 			np.normalMap = &viewN.normalMap;
@@ -1517,13 +1516,12 @@ static bool BuildConfNeighborHosts(const DepthData& depthDataRef, std::vector<MV
 		const Matrix3x3 Rrel(cameraN.R*cameraRef.R.t()); // ref-cam -> nbr-cam rotation
 		const Matrix3x3f A(cameraN.K*Rrel*invKr);
 		const Point3f b(cameraN.K*cameraN.R*(cameraRef.C-cameraN.C));
-		const Matrix3x3f Ai(cameraRef.K*Rrel.t()*invKn);
-		const Point3f bi(cameraRef.K*cameraRef.R*(cameraN.C-cameraRef.C));
 		const Matrix3x3f Rrelf(Rrel);
 		MVS::CUDA::ConfNeighborHost d;
-		for (int r=0;r<3;++r) for (int c=0;c<3;++c) { d.A[r*3+c]=A(r,c); d.Ai[r*3+c]=Ai(r,c); d.Rrel[r*3+c]=Rrelf(r,c); }
+		for (int r=0;r<3;++r) for (int c=0;c<3;++c) { d.A[r*3+c]=A(r,c); d.Rrel[r*3+c]=Rrelf(r,c); }
 		d.b[0]=b.x; d.b[1]=b.y; d.b[2]=b.z;
-		d.bi[0]=bi.x; d.bi[1]=bi.y; d.bi[2]=bi.z;
+		const Point3f cn(cameraRef.R*(cameraN.C-cameraRef.C));
+		d.cn[0]=cn.x; d.cn[1]=cn.y; d.cn[2]=cn.z;
 		d.depth = viewN.depthMap.ptr<float>();
 		d.conf = viewN.confMap.empty() ? NULL : viewN.confMap.ptr<float>();
 		d.normal = viewN.normalMap.empty() ? NULL : viewN.normalMap.ptr<float>();
@@ -1540,9 +1538,6 @@ static ConfRefine::Params MakeConfRefineParams()
 {
 	ConfRefine::Params p;
 	p.minConfidence = 1.f - OPTDENSE::fNCCThresholdKeep;
-	// soft-gate divisors clamped away from 0, mirroring AdjustConfidenceSweep (see the note there)
-	p.thReproj = MAXF(OPTDENSE::fDepthReprojectionErrorThreshold, 1e-6f);
-	p.thDepth = MAXF(OPTDENSE::fDepthDiffThreshold, 1e-6f);
 	ConfRefine::InitParamsShape(p);
 	p.epsConf = MAXF(0.5f*p.minConfidence, 1e-6f);
 	return p;
@@ -1625,13 +1620,12 @@ static bool AdjustConfidenceSweep(DepthMapsData& depthMapsData, DepthData& depth
 	const ConfidenceMap& confMapRef = depthDataRef.confMap;
 	const bool bHasRefNormal(!normalMapRef.empty());
 
-	// confirmation gates reused verbatim from DenseFuseDepthMaps; the two thresholds are divisors
-	// of the soft gates below, so they are clamped away from 0: a 0 threshold keeps its
-	// "reject everything" meaning while the divisions stay finite instead of producing NaN
-	// (which would otherwise pass every subsequent comparison-based rejection)
+	// confirmation tolerances: the calibrated ConfRefine constants (see CONFIRM_DEPTH), NOT fusion's
+	// clustering thresholds; only the confidence floor is shared with fusion
 	const float minConfidence(1.f - OPTDENSE::fNCCThresholdKeep);
-	const float thReproj(MAXF(OPTDENSE::fDepthReprojectionErrorThreshold, 1e-6f));
-	const Depth thDepth(MAXF(OPTDENSE::fDepthDiffThreshold, 1e-6f));
+	const Depth thDepth(ConfRefine::CONFIRM_DEPTH);
+	const Matrix3x3f Kref(depthDataRef.GetView().camera.K);
+	const float invFx(1.f/Kref(0,0)), invFy(1.f/Kref(1,1)), cx(Kref(0,2)), cy(Kref(1,2));
 	// soft GATE-4 transition half-width: the confirmation gate replaces a hard cN<minConfidence
 	// rejection with a smoothstep centered on minConfidence, so a low-confidence neighbor down-weights
 	// BOTH K and Pconf (a modest fraction of minConfidence; MAXF guards fNCCThresholdKeep==1 =>
@@ -1642,7 +1636,7 @@ static bool AdjustConfidenceSweep(DepthMapsData& depthMapsData, DepthData& depth
 	// identical closed form
 	ConfRefine::Params crp;
 	ConfRefine::InitParamsShape(crp);
-	crp.minConfidence = minConfidence; crp.thReproj = thReproj; crp.thDepth = (float)thDepth;
+	crp.minConfidence = minConfidence;
 	crp.epsConf = epsConf;
 	const float violMargin(crp.violMargin);
 
@@ -1687,10 +1681,6 @@ static bool AdjustConfidenceSweep(DepthMapsData& depthMapsData, DepthData& depth
 		const float A10(np.A(1,0)), A11(np.A(1,1)), A12(np.A(1,2));
 		const float A20(np.A(2,0)), A21(np.A(2,1)), A22(np.A(2,2));
 		const float b0(np.b.x), b1(np.b.y), b2(np.b.z);
-		const float Ai00(np.Ai(0,0)), Ai01(np.Ai(0,1)), Ai02(np.Ai(0,2));
-		const float Ai10(np.Ai(1,0)), Ai11(np.Ai(1,1)), Ai12(np.Ai(1,2));
-		const float Ai20(np.Ai(2,0)), Ai21(np.Ai(2,1)), Ai22(np.Ai(2,2));
-		const float bi0(np.bi.x), bi1(np.bi.y), bi2(np.bi.z);
 		// the sweep is bound by the projection stage (transform+divide+round+bounds, executed for
 		// EVERY pixel x neighbor candidate, hits and misses alike -- measured at ~80% of the sweep):
 		// stage A projects a WHOLE ROW into flat buffers, 4 columns per iteration with SSE where
@@ -1788,7 +1778,8 @@ static bool AdjustConfidenceSweep(DepthMapsData& depthMapsData, DepthData& depth
 			for (; c<cols; ++c)
 				Project(c);
 			// ---- stage B: gates ----
-			// The confirmation gates G1/G2/G3 are continuous weights wD/wR/wN in [0,1]; their product w
+			// The confirmation gates G1/G2/G3 are continuous weights wD/wR/wN in [0,1] (wR: the vote's
+			// triangulation-angle independence); their product w
 			// contributes a FRACTIONAL confirmation (K += w) and a w-weighted confidence (Pconf += w*cN).
 			// Free-space-violation bookkeeping stays HARD and is evaluated on the nearest sample: V counts
 			// discrete violating views, so softening it would blur the occluded/violating distinction.
@@ -1819,17 +1810,9 @@ static bool AdjustConfidenceSweep(DepthMapsData& depthMapsData, DepthData& depth
 					dN = dNNearest; // straddles a depth edge, or out of bounds: fall back to nearest
 				// GATE 1: Gaussian depth agreement, same relative-depth convention as IsDepthSimilar
 				const float wD(expf(-SQUARE((qz-dN)/(0.5f*thDepth*qz))));
-				// GATE 2: forward-backward reprojection residual, same formula as the depth gate's
-				// (same neighbor pixel location x) with the (possibly bilinear) dN swapped in
-				const float un((float)x.x*dN), vn((float)x.y*dN);
-				const float qrz(Ai20*un + Ai21*vn + Ai22*dN + bi2);
-				float wR(0.f);
-				if (qrz > 0) {
-					const float qrx(Ai00*un + Ai01*vn + Ai02*dN + bi0);
-					const float qry(Ai10*un + Ai11*vn + Ai12*dN + bi1);
-					const float du(qrx/qrz - (float)c), dv(qry/qrz - rd);
-					wR = expf(-(du*du+dv*dv)/SQUARE(0.5f*thReproj));
-				}
+				// GATE 2: independence of the confirmation, from the triangulation angle at the point
+				const float wR(ConfRefine::AngleW(((float)c-cx)*invFx*depthRef, (rd-cy)*invFy*depthRef, depthRef,
+					np.cn.x, np.cn.y, np.cn.z));
 				// GATE 3: normal agreement cosine; neutral (1) when no normal maps are available
 				float wN(1.f);
 				if (bNormalGate) {
@@ -2447,7 +2430,10 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	// fuse all depth-maps, processing the best connected images first
 	const unsigned nMinViewsFuse(MINF(OPTDENSE::nMinViewsFuse, arrDepthData.size()));
 	const float normalError(COS(D2R(OPTDENSE::fNormalDiffThreshold)));
-	const float minConfidence(1.f - OPTDENSE::fNCCThresholdKeep);
+	// seed/join confidence floor, on the scale the map's confidence is expressed in: a raw
+	// photometric confidence (1 - matching cost) is cut where the estimation cuts the cost itself,
+	// while a recalibrated one (fusion-survival evidence, see AdjustConfidence) has its own floor
+	const float minConfidenceRaw(1.f - OPTDENSE::fNCCThresholdKeep);
 	const float maxReprojErrorSq(SQUARE(OPTDENSE::fDepthReprojectionErrorThreshold));
 	const IIndex numDMapsReserveFusion(10);
 	const bool bEstimateNormal(true); // always estimate normals as they are needed for the fusion
@@ -2493,6 +2479,12 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	// keep-rule for points RESCUED by virtualSupport (see OPTDENSE::nFuseViolationMax); reset
 	// alongside fusedViews et al.
 	PointCloud::ViewArr fusedViolViews;
+	// normal-contradiction set -- the DISTINCT view IDs whose own estimate agrees with the point in
+	// depth and reprojection but fails the normal gate: such a view sees the same place and disagrees
+	// about the surface there, direct evidence against the point, unlike a view that merely has no
+	// usable pixel for it (out of frame, empty, low confidence or already consumed). Deduplicated like
+	// fusedViolViews and consulted by the keep-rule's contradiction guard; reset alongside fusedViews.
+	PointCloud::ViewArr fusedNormViews;
 	// the pixels the cluster currently being accumulated consumed, one entry per join: the list a
 	// DROPPED cluster walks to hand them back (bFuseRecycleDropped). In lockstep with fusedPoints,
 	// hence bounded by nMaxPointsFuse too, and reset alongside fusedViews et al.
@@ -2515,7 +2507,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 				return;
 			// ignore pixel if not confident
 			const float conf(depthData.confMap.empty() ? 1.f : depthData.confMap(x));
-			if (conf < minConfidence)
+			if (conf < (depthData.bConfAdjusted ? ConfRefine::FUSE_MIN_CONF : minConfidenceRaw))
 				return;
 			const DepthData::ViewData& image = depthData.GetView();
 			// if the fusion depth is greater than zero, the initial reference pixel
@@ -2546,8 +2538,10 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 				// check if normals agree
 				normal = image.camera.R.t() * Cast<REAL>(depthData.normalMap(x));
 				ASSERT(ISEQUAL(norm(normal), 1.f, 1e-2f), "Norm = ", norm(normal));
-				if (refNormal.dot(normal) < normalError)
+				if (refNormal.dot(normal) < normalError) {
+					fusedNormViews.InsertSortUnique(ID);
 					return;
+				}
 			} else {
 				normal = image.camera.R.t() * Cast<REAL>(depthData.normalMap(x));
 				ASSERT(ISEQUAL(norm(normal), 1.f, 1e-2f), "Norm = ", norm(normal));
@@ -2689,15 +2683,20 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 				if (!fusedViews.empty() &&
 					(float)fusedPoints[0].size() + virtualSupport >= (float)OPTDENSE::nMinPixelsFuse &&
 					(float)fusedViews.size() + virtualSupport >= (float)nMinViewsFuse) {
-					// a point that passes ONLY thanks to virtualSupport (i.e. would have FAILED the
-					// keep-rule at virtualSupport==0) is "rescued"; nFuseViolationMax additionally
-					// requires such a point to be seen from behind by at most that many DISTINCT views
-					// (fusedViolViews, populated above by the join gate). A NON-rescued point (already
-					// meeting both thresholds on real support alone) is never subject to this guard;
-					// nFuseViolationMax<0 disables it entirely.
+					// contradiction guard (nFuseViolationMax<0 disables it entirely): a point that passes
+					// ONLY thanks to virtualSupport (i.e. would have FAILED the keep-rule at
+					// virtualSupport==0) is "rescued" and may be contradicted by at most
+					// nFuseViolationMax DISTINCT views, counting both the views that see behind it
+					// (fusedViolViews) and those that dispute its normal (fusedNormViews): a weakly
+					// supported point is only worth keeping when its missing support is a lack of
+					// evidence, not evidence against it. A NON-rescued point (already meeting both
+					// thresholds on real support alone) is dropped only when the views disputing its
+					// normal outnumber the views supporting it
 					const bool rescued = fusedPoints[0].size() < OPTDENSE::nMinPixelsFuse ||
 										  fusedViews.size() < nMinViewsFuse;
-					if (!rescued || OPTDENSE::nFuseViolationMax < 0 || fusedViolViews.size() <= (unsigned)OPTDENSE::nFuseViolationMax) {
+					if (OPTDENSE::nFuseViolationMax < 0 || (rescued ?
+						fusedViolViews.size() + fusedNormViews.size() <= (unsigned)OPTDENSE::nFuseViolationMax :
+						fusedNormViews.size() <= fusedViews.size())) {
 						bClusterKept = true;
 						// create the corresponding 3D point
 						pointcloud.points.emplace_back(
@@ -2738,6 +2737,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 					fusedNormal = Point3d::ZERO;
 					fusedColor = Pixel32F::BLACK;
 					fusedViolViews.clear();
+					fusedNormViews.clear();
 				}
 			}
 		}
