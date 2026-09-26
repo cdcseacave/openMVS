@@ -30,7 +30,7 @@ namespace SEACAVE {
 template<typename T>
 HOST_DEVICE inline T DepthSimilarity(T d0, T d1) {
 	ASSERT(d0 > 0);
-	return (d0 > d1 ? d0 - d1 : d1 - d0) / d0;
+	return Eigen::numext::abs(d0 - d1) / d0;
 }
 template<typename T>
 HOST_DEVICE inline bool IsDepthSimilar(T d0, T d1, T threshold=T(0.01)) {
