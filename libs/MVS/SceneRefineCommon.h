@@ -39,9 +39,9 @@
 // energy evaluation into one step -- one implementation, no CUDA twin to drift.
 //
 // Include rules:
-//  - Everything above the "#ifndef __CUDACC__" guard below (the REFINE_HD macro, the MVS::Refine
-//    constants and the window/ZNCC math) is compiled by nvcc as part of SceneRefineCUDA.cu's
-//    device code, so it must never drag in OpenCV or SEACAVE types -- plain float/int only.
+//  - Everything above the "#ifndef __CUDACC__" guard below (the MVS::Refine constants and the
+//    HOST_DEVICE window/ZNCC math) is compiled by nvcc as part of SceneRefineCUDA.cu's device
+//    code, so it must never drag in OpenCV or SEACAVE types -- plain float/int only.
 //  - Everything below the guard is host-only. Like DepthMap.h/OPTDENSE, it relies on the
 //    including translation unit having already done `#include "Common.h"` (for
 //    MVS_API/DECOPT_SPACE) before this header.
@@ -56,12 +56,6 @@
 
 
 // D E F I N E S ///////////////////////////////////////////////////
-
-#ifdef __CUDACC__
-#define REFINE_HD __host__ __device__
-#else
-#define REFINE_HD
-#endif
 
 
 // S T R U C T S ///////////////////////////////////////////////////
@@ -95,14 +89,14 @@ constexpr int MinWindowCount = 25;
 // reliability saturates on the scale of ReliabilityVarOffset
 constexpr float VarFloor = 1e-4f;
 constexpr float ReliabilityVarOffset = 0.0015f;
-REFINE_HD inline float ZnccReliability(float varA, float varB)
+HOST_DEVICE inline float ZnccReliability(float varA, float varB)
 {
 	const float minVar(varA < varB ? varA : varB);
 	return minVar/(minVar+ReliabilityVarOffset);
 }
 // derivative of ZnccReliability with respect to varB: non-zero only where B's window is the
 // less textured of the two and above the floor (the floor makes the weight a constant there)
-REFINE_HD inline float ZnccReliabilityDerivativeVarB(float varA, float varB)
+HOST_DEVICE inline float ZnccReliabilityDerivativeVarB(float varA, float varB)
 {
 	if (!(varB < varA) || !(varB > VarFloor))
 		return 0.f;
@@ -126,7 +120,7 @@ struct WindowStats {
 // wrong) gradient is worse than not steering it.
 // n is the number of valid samples, sA/sB/sAA/sBB/sAB their masked sums; gates <= 0 disable.
 // Returns false if the pixel must be rejected; stats must not be read then.
-REFINE_HD inline bool WindowStatsFromSums(float n, float sA, float sB, float sAA, float sBB, float sAB,
+HOST_DEVICE inline bool WindowStatsFromSums(float n, float sA, float sB, float sAA, float sBB, float sAB,
 	float gateMeanDiff, float gateVarRatio, WindowStats& s)
 {
 	if (n < (float)MinWindowCount)
@@ -152,7 +146,7 @@ REFINE_HD inline bool WindowStatsFromSums(float n, float sA, float sB, float sAA
 // The WindowArea/n factor restores the magnitude a full window would have produced, so a
 // partially valid window is not silently down-weighted on top of already being rejected below
 // MinWindowCount; it is exactly 1 when every pixel of the window is valid.
-REFINE_HD inline void ZnccAndDerivative(const WindowStats& s, float n, float pixA, float pixB,
+HOST_DEVICE inline void ZnccAndDerivative(const WindowStats& s, float n, float pixA, float pixB,
 	float& zncc, float& dzncc, float& conf)
 {
 	const float invSqrtVAVB(1.f/sqrtf(s.varA*s.varB));

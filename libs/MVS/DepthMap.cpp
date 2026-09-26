@@ -37,7 +37,6 @@
 #define OPTCONFIG_API MVS_API
 #include "DepthMap.h"
 #include "Mesh.h"
-#include "ConfidenceRefine.h"
 #include "../Common/AutoEstimator.h"
 // CGAL: depth-map initialization
 #include <CGAL/Simple_cartesian.h>
@@ -462,6 +461,8 @@ DepthEstimator::DepthEstimator(
 	image0Sum(_image0Sum),
 	#endif
 	coords(_coords), size(_depthData0.images.First().image.size()),
+	focal((float)image0.camera.K(0,0), (float)image0.camera.K(1,1)),
+	principal((float)image0.camera.K(0,2), (float)image0.camera.K(1,2)),
 	dMin(_depthData0.dMin), dMax(_depthData0.dMax),
 	dMinSqr(SQRT(_depthData0.dMin)), dMaxSqr(SQRT(_depthData0.dMax)),
 	dir(nIter%2 ? RB2LT : LT2RB),
@@ -919,48 +920,8 @@ void DepthEstimator::ProcessPixel(IDX idx)
 // interpolate given pixel's estimate to the current position
 Depth DepthEstimator::InterpolatePixel(const ImageRef& nx, Depth depth, const Normal& normal) const
 {
-	ASSERT(depth > 0 && normal.dot(image0.camera.TransformPointI2C(Cast<REAL>(nx))) <= 0);
-	Depth depthNew;
-	#if 1
-	// compute as intersection of the lines
-	// {(x1, y1), (x2, y2)} from neighbor's 3D point towards normal direction
-	// and
-	// {(0, 0), (x4, 1)} from camera center towards current pixel direction
-	// in the x or y plane
-	if (x0.x == nx.x) {
-		const float nx1((float)(((REAL)x0.y - image0.camera.K(1,2)) / image0.camera.K(1,1)));
-		const float denom(normal.z + nx1 * normal.y);
-		if (ISZERO(denom))
-			return depth;
-		const float x1((float)(((REAL)nx.y - image0.camera.K(1,2)) / image0.camera.K(1,1)));
-		const float nom(depth * (normal.z + x1 * normal.y));
-		depthNew = nom / denom;
-	}
-	else {
-		ASSERT(x0.y == nx.y);
-		const float nx1((float)(((REAL)x0.x - image0.camera.K(0,2)) / image0.camera.K(0,0)));
-		const float denom(normal.z + nx1 * normal.x);
-		if (ISZERO(denom))
-			return depth;
-		const float x1((float)(((REAL)nx.x - image0.camera.K(0,2)) / image0.camera.K(0,0)));
-		const float nom(depth * (normal.z + x1 * normal.x));
-		depthNew = nom / denom;
-	}
-	#else
-	// compute as the ray - plane intersection
-	{
-		#if 0
-		const Plane plane(Cast<REAL>(normal), image0.camera.TransformPointI2C(Point3(nx, depth)));
-		const Ray3 ray(Point3::ZERO, normalized(X0));
-		depthNew = (Depth)ray.Intersects(plane).z();
-		#else
-		const Point3 planeN(normal);
-		const REAL planeD(planeN.dot(image0.camera.TransformPointI2C(Point3(nx, depth))));
-		depthNew = (Depth)(planeD / planeN.dot(X0));
-		#endif
-	}
-	#endif
-	return ISINSIDE(depthNew,dMin,dMax) ? depthNew : depth;
+	ASSERT(normal.dot(image0.camera.TransformPointI2C(Cast<REAL>(nx))) <= 0);
+	return InterpolatePlaneDepth(focal, principal, x0, nx, depth, normal, dMin, dMax);
 }
 
 #if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
@@ -1697,44 +1658,20 @@ void MVS::EstimatePointNormals(const ImageArr& images, PointCloud& pointcloud, i
 } // EstimatePointNormals
 /*----------------------------------------------------------------*/
 
-bool DepthGradientEstimator::DepthGradient(const ImageRef& ir, Point3f& ws) const
-{
-	// least-squares plane fit shared verbatim with the CUDA confidence prior kernel
-	// (ConfRefine::DepthPlaneFit); a tiny accessor adapts this TImage to the plain (x,y) interface
-	// the shared template expects. Byte-identical to the previous hand-written loop.
-	struct Acc {
-		const DepthMap& dm;
-		inline float operator()(int x, int y) const { return dm(ImageRef(x, y)); }
-		inline bool inside(int x, int y) const { return dm.isInside(ImageRef(x, y)); }
-	} acc{depthMap};
-	float w, wx, wy;
-	if (!ConfRefine::DepthPlaneFit(acc, ir.x, ir.y, w, wx, wy))
-		return false;
-	ws[0] = w; ws[1] = wx; ws[2] = wy;
-	return true;
-}
-
-Normal DepthGradientEstimator::NormalFromGradient(int x, int y, Depth d, Depth dx, Depth dy) const
-{
-	ASSERT(ISZERO(K(0,1)));
-	return normalized(Normal(
-		K(0,0)*dx,
-		K(1,1)*dy,
-		(K(0,2)-float(x))*dx+(K(1,2)-float(y))*dy-d
-	));
-}
-
 bool MVS::EstimateNormalMap(const Matrix3x3f& K, const DepthMap& depthMap, NormalMap& normalMap)
 {
+	ASSERT(ISZERO(K(0,1)));
 	normalMap.create(depthMap.size());
-	const DepthGradientEstimator est(K, depthMap);
+	const Eigen::Vector2f focal(K(0,0), K(1,1)), principal(K(0,2), K(1,2));
 	for (int r=0; r<normalMap.rows; ++r) {
 		for (int c=0; c<normalMap.cols; ++c) {
-			// calculates depth gradient at x
+			// the normal of the depth plane fitted at x
 			Normal& n = normalMap(r,c);
-			Point3f ws;
-			if (est.DepthGradient(ImageRef(c,r), ws))
-				n = est.NormalFromGradient(c, r, ws[0], ws[1], ws[2]);
+			const ImageRef x(c,r);
+			Depth depth;
+			Eigen::Vector2f gradient;
+			if (FitDepthGradient(depthMap, x, depth, gradient))
+				n = NormalFromDepthGradient(focal, principal, x, depth, gradient);
 			else
 				n = Normal::ZERO;
 			ASSERT(normalMap(r,c).dot(K.inv()*Point3f(float(c),float(r),1.f)) <= 0);

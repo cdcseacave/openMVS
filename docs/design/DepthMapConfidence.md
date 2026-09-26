@@ -13,7 +13,8 @@ The recalibration (`OPTDENSE::ADJUST_CONFIDENCE`) replaces the photometric score
 that predicts whether a depth will survive fusion as an inlier, combining an intra-map plane-fit
 prior with continuous multi-view confirmation and a free-space-violation penalty.
 
-**Code.** `libs/MVS/ConfidenceRefine.h` (shared host/device per-pixel math), `libs/MVS/ConfidenceCUDA.{h,cu}`
+**Code.** `libs/MVS/ConfidenceRefine.h` (shared host/device per-pixel math), `libs/Common/DepthGeometry.h`
+(the depth-plane fit and its normal, shared with depth-map estimation), `libs/MVS/ConfidenceCUDA.{h,cu}`
 (GPU kernels + launchers), `libs/MVS/SceneDensify.cpp` (`DepthMapsData::ComputeIntraMapPrior`,
 `GetIntraMapPrior`, `AdjustConfidence` (two overloads), `AdjustConfidenceCUDA`,
 `AdjustConfidenceSweep`), `libs/MVS/PatchMatchCUDA.cpp` (fused launch inside
@@ -39,7 +40,8 @@ if Kf ≥ 1: conf = max(conf, CONF_FLOOR · confPhoto)        // anti-cascade fl
 ```
 
 - **`pGeo` — intra-map geometric prior** (`DepthMapsData::ComputeIntraMapPrior`): fits a local
-  depth plane to the 3x3 neighbourhood of each pixel (depth-similar neighbours only), scores the
+  depth plane to the 3x3 neighbourhood of each pixel (depth-similar neighbours only,
+  `FitDepthGradient`; its normal is `NormalFromDepthGradient`), scores the
   pixel by the plane-fit residual (`Pplane`), an inlier-count soft quorum (`gate`, ~4 inliers), and
   — when a normal map is available — the agreement between the plane-implied normal and the
   estimated normal (`Pnorm`). A correct surface is locally coherent in both; a photometric mismatch
@@ -194,8 +196,8 @@ floor.
   `fDepthReprojectionErrorThreshold`): changing how finely fusion clusters must not move the
   confidence scale that fusion's floor is applied to.
 - The CPU and GPU paths share the exact same per-pixel math and parameter snapshot
-  (`ConfidenceRefine.h`, compiled under both the host compiler and `nvcc`); the GPU path differs only
-  in using single-precision `expf`.
+  (`ConfidenceRefine.h` and `Common/DepthGeometry.h`, compiled under both the host compiler and
+  `nvcc`); the GPU path differs only in using single-precision `expf`.
 
 ## 5. Validation of the shipped defaults
 

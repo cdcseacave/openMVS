@@ -1780,6 +1780,7 @@ template<typename TYPE> inline String cvMat2String(const TPoint3<TYPE>& pt, LPCS
 #include "../Math/LMFit/lmmin.h"
 #include "Types.inl"
 #include "Util.inl"
+#include "DepthGeometry.h"
 #include "Rotation.h"
 #include "Sphere.h"
 #include "AABB.h"

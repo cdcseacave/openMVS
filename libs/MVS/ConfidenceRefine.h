@@ -16,12 +16,6 @@
 
 #include <cmath>
 
-#if defined(__CUDACC__)
-	#define CR_HD __host__ __device__ __forceinline__
-#else
-	#define CR_HD inline
-#endif
-
 namespace MVS {
 namespace ConfRefine {
 
@@ -69,7 +63,7 @@ struct Params {
 };
 
 // fill the constants; the caller sets minConfidence and epsConf
-CR_HD void InitParamsShape(Params& p) {
+HOST_DEVICE inline void InitParamsShape(Params& p) {
 	p.s = PRIOR_STRENGTH;
 	p.tau = CONFIRM_TAU;
 	p.kPrior = PRIOR_GATE;
@@ -80,15 +74,9 @@ CR_HD void InitParamsShape(Params& p) {
 	p.thDepth = CONFIRM_DEPTH;
 }
 
-// mirror of SEACAVE::DepthSimilarity/IsDepthSimilar: ABS(d0-d1)/d0 < thr (d0 > 0 assumed). The
-// division (not thr*d0) is deliberate -- it reproduces DepthSimilarity byte-for-byte on the host.
-CR_HD bool IsDepthSimilarF(float d0, float d1, float thr) {
-	return fabsf(d0 - d1) / d0 < thr;
-}
-
 // exp helper: double std::exp on the host (byte-identical to the CPU EXP<float> = float(std::exp(double))),
 // single-precision expf on the device.
-CR_HD float CRexp(float a) {
+HOST_DEVICE inline float CRexp(float a) {
 #if defined(__CUDA_ARCH__)
 	return expf(a);
 #else
@@ -96,12 +84,12 @@ CR_HD float CRexp(float a) {
 #endif
 }
 
-CR_HD float CRclamp01(float v) { return v < 0.f ? 0.f : (v > 1.f ? 1.f : v); }
+HOST_DEVICE inline float CRclamp01(float v) { return v < 0.f ? 0.f : (v > 1.f ? 1.f : v); }
 
 // ---- final per-pixel posterior -> confidence (mirrors SceneDensify.cpp AdjustConfidenceSweep) ----
 // Kf: the accumulated soft confirmation weight. Pconf: weighted sum of confirming neighbor confidences.
 // V: free-space-violation count. pGeo: intra-map prior. confPhoto: own NCC conf.
-CR_HD float Posterior(float confPhoto, float pGeo, float Kf, float Pconf, float V, const Params& p) {
+HOST_DEVICE inline float Posterior(float confPhoto, float pGeo, float Kf, float Pconf, float V, const Params& p) {
 	const float gate = 1.f - CRexp(-(Kf + p.kPrior * pGeo) / p.tau);
 	const float posterior = (p.s * pGeo + Pconf) / (p.s + Pconf + p.lambdaViol * V);
 	const float photoFactor = p.w0 + (1.f - p.w0) * confPhoto;
@@ -115,7 +103,7 @@ CR_HD float Posterior(float confPhoto, float pGeo, float Kf, float Pconf, float 
 
 // ---- soft-gate continuous weights, all in [0,1] ----
 // GATE 1: Gaussian relative-depth agreement
-CR_HD float SoftDepthW(float qz, float dN, float thDepth) {
+HOST_DEVICE inline float SoftDepthW(float qz, float dN, float thDepth) {
 	const float t = (qz - dN) / (0.5f * thDepth * qz);
 	return CRexp(-t * t);
 }
@@ -124,7 +112,7 @@ CR_HD float SoftDepthW(float qz, float dN, float thDepth) {
 // centre in the same frame; sin(angle) = |X x (X-C)| / (|X| |X-C|) = |X x C| / (|X| |X-C|).
 // X must lie in front of both cameras (the callers skip a non-positive depth in either), so it is
 // neither camera centre and the denominator is positive
-CR_HD float AngleW(float x, float y, float z, float cx, float cy, float cz) {
+HOST_DEVICE inline float AngleW(float x, float y, float z, float cx, float cy, float cz) {
 	const float ax = y*cz - z*cy, ay = z*cx - x*cz, az = x*cy - y*cx;
 	const float dx = x - cx, dy = y - cy, dz = z - cz;
 	const float den2 = (x*x + y*y + z*z) * (dx*dx + dy*dy + dz*dz);
@@ -133,49 +121,10 @@ CR_HD float AngleW(float x, float y, float z, float cx, float cy, float cz) {
 	return w < 1.f ? w : 1.f;
 }
 // GATE 4: smoothstep on the neighbor confidence around minConfidence
-CR_HD float SoftConfW(float cN, float minConfidence, float epsConf) {
+HOST_DEVICE inline float SoftConfW(float cN, float minConfidence, float epsConf) {
 	float t = (cN - (minConfidence - epsConf)) * (0.5f / epsConf);
 	t = CRclamp01(t);
 	return t * t * (3.f - 2.f * t);
-}
-
-// ---- intra-map geometric prior: local first-order depth-plane least-squares fit ----
-// Templated on a depth accessor providing `float operator()(int x,int y) const` and
-// `bool inside(int x,int y) const`, so the SAME fit runs on a host TImage and a device float*.
-// Byte-identical to DepthGradientEstimator::DepthGradient: fills w (center depth) + (wx,wy) gradient;
-// returns false if the center is invalid, <3 depth-similar neighbors, or the 2x2 normal system is singular.
-template <typename DepthAcc>
-CR_HD bool DepthPlaneFit(const DepthAcc& dm, int cx, int cy, float& w, float& wx, float& wy) {
-	w = dm(cx, cy);
-	if (w <= 0.f)
-		return false;
-	int whxx = 0, whxy = 0, whyy = 0;
-	float wgx = 0.f, wgy = 0.f;
-	int n = 0;
-	for (int y = -1; y <= 1; ++y) {
-		for (int x = -1; x <= 1; ++x) {
-			if (x == 0 && y == 0)
-				continue;
-			const int px = cx + x, py = cy + y;
-			if (!dm.inside(px, py))
-				continue;
-			const float wi = dm(px, py);
-			if (!(wi > 0.f && IsDepthSimilarF(w, wi, 0.03f)))   // DepthGradientEstimator::IsDepthValid
-				continue;
-			whxx += x * x; whxy += x * y; whyy += y * y;
-			wgx += (wi - w) * (float)x; wgy += (wi - w) * (float)y;
-			++n;
-		}
-	}
-	if (n < 3)
-		return false;
-	const int det = whxx * whyy - whxy * whxy;
-	if (det == 0)
-		return false;
-	const float invDet = 1.f / (float)det;
-	wx = ((float)whyy * wgx - (float)whxy * wgy) * invDet;
-	wy = ((float)(-whxy) * wgx + (float)whxx * wgy) * invDet;
-	return true;
 }
 
 } // namespace ConfRefine

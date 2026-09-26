@@ -1188,7 +1188,8 @@ void DepthMapsData::ComputeIntraMapPrior(const DepthData& depthData, ConfidenceM
 	const NormalMap& normalMap = depthData.normalMap;
 	const bool bHasNormal(!normalMap.empty());
 	const Matrix3x3f K(depthData.GetView().camera.K);
-	const DepthGradientEstimator est(K, depthMap);
+	ASSERT(ISZERO(K(0,1)));
+	const Eigen::Vector2f focal(K(0,0), K(1,1)), principal(K(0,2), K(1,2));
 	// relative planarity band, in units of the calibrated depth noise (the GPU PriorKernel derives
 	// the same band from Params::thDepth == CONFIRM_DEPTH)
 	const float band(ConfRefine::CONFIRM_DEPTH * 3.f);
@@ -1200,14 +1201,13 @@ void DepthMapsData::ComputeIntraMapPrior(const DepthData& depthData, ConfidenceM
 	#endif
 	for (int r=0; r<depthMap.rows; ++r) {
 		for (int c=0; c<depthMap.cols; ++c) {
-			const Depth w(depthMap(r,c));
-			if (w <= 0)
-				continue;
 			// fit a slope-aware local depth plane using only depth-similar neighbors
-			Point3f ws;
-			if (!est.DepthGradient(ImageRef(c,r), ws))
-				continue;                                          // not on a locally coherent surface
-			const float wx(ws[1]), wy(ws[2]);
+			const ImageRef pos(c,r);
+			Depth w;
+			Eigen::Vector2f gradient;
+			if (!FitDepthGradient(depthMap, pos, w, gradient))
+				continue;                                          // no depth, or not on a locally coherent surface
+			const float wx(gradient.x()), wy(gradient.y());
 			// slope-aware planarity + inlier quorum over the 3x3 window:
 			// count neighbors whose depth matches the fitted plane prediction (not just the center depth)
 			int nInl(0);
@@ -1235,7 +1235,7 @@ void DepthMapsData::ComputeIntraMapPrior(const DepthData& depthData, ConfidenceM
 			// is unconstrained and disagrees with the geometry-implied gradient normal => Pnorm collapses.
 			float Pnorm(1.f);
 			if (bHasNormal) {
-				const Normal nGrad(est.NormalFromGradient(c, r, w, wx, wy));
+				const Normal nGrad(NormalFromDepthGradient(focal, principal, pos, w, gradient));
 				Pnorm = MAXF(0.f, nGrad.dot(normalMap(r,c)));
 			}
 			priorMap(r,c) = CLAMP(Pplane*Pnorm*gate, 0.f, 1.f);
