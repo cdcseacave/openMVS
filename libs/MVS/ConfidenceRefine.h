@@ -4,7 +4,8 @@
  * Shared, dependency-free per-pixel math for the fusion-faithful confidence recalibration, callable
  * from BOTH the CPU sweep (SceneDensify.cpp: AdjustConfidenceSweep / ComputeIntraMapPrior) and the
  * CUDA kernel (ConfidenceCUDA.cu). Everything here is plain scalar float on POD types -- NO OpenCV /
- * TImage / cv::Matx -- so the same header compiles under the host C++ compiler and under nvcc.
+ * TImage / cv::Matx, only the ASSERT macros of Config.h -- so the same header compiles under the host
+ * C++ compiler and under nvcc.
  *
  * Parity contract: on the HOST path these inlines reproduce the exact operations (and, for the
  * transcendental, the exact double-precision std::exp) of the pre-refactor CPU code, so refactoring
@@ -14,6 +15,7 @@
 #ifndef _MVS_CONFIDENCEREFINE_H_
 #define _MVS_CONFIDENCEREFINE_H_
 
+#include "../Common/Config.h"
 #include <cmath>
 
 #if defined(__CUDACC__)
@@ -125,11 +127,13 @@ CR_HD float SoftDepthW(float qz, float dN, float thDepth) {
 // GATE 2: independence of the confirmation, from the triangulation angle at the point: X is the
 // point in the reference camera frame (reference centre at the origin), (cx,cy,cz) the neighbor's
 // centre in the same frame; sin(angle) = |X x (X-C)| / (|X| |X-C|) = |X x C| / (|X| |X-C|).
-// X lies in front of both cameras (the callers skip a non-positive depth in either), so X != 0, C
+// X must lie in front of both cameras (the callers skip a non-positive depth in either), so it is
+// neither camera centre and the denominator is positive
 CR_HD float AngleW(float x, float y, float z, float cx, float cy, float cz) {
 	const float ax = y*cz - z*cy, ay = z*cx - x*cz, az = x*cy - y*cx;
 	const float dx = x - cx, dy = y - cy, dz = z - cz;
 	const float den2 = (x*x + y*y + z*z) * (dx*dx + dy*dy + dz*dz);
+	ASSERT(den2 > 0.f);
 	const float w = sqrtf((ax*ax + ay*ay + az*az) / den2) * (1.f / CONFIRM_SIN_ANGLE);
 	return w < 1.f ? w : 1.f;
 }

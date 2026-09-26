@@ -26,9 +26,10 @@ so the cache is reused rather than thrashed. The estimation's GPU pools are rele
 starts (their pinned host buffers are most of the estimation's resident memory), and the cache
 (`DMapCache`) is re-budgeted after every fused map (`FusionCacheSetup::Budget`): the memory free at
 that moment, minus the safety margin and what the next map may add to the point-cloud
-(`FusionMemoryReserve`: twice the last map's points, plus the per-point arrays' next growth), capped
-at four working sets (`FusionWorkingSet`: the reference and `nMaxViewsFuse` neighbours) and never
-below one. The cache thus shrinks as the cloud grows instead of taking the memory the cloud and other
+(`FusionMemoryReserve`: twice the last map's points, plus the peak of the per-point arrays'
+reallocations), capped at four working sets (`FusionWorkingSet`: the reference and `nMaxViewsFuse`
+neighbours) and never below one; reaching that floor is logged once, since the generous reserve
+makes it cost re-reads rather than memory. The cache thus shrinks as the cloud grows instead of taking the memory the cloud and other
 processes need; the colour images stay resident when they fit in the free memory. A depth-map file that fails
 to load (corrupt or truncated) is logged and left out: as a reference it is skipped, as a neighbour it
 is never walked into. For the chosen reference map:

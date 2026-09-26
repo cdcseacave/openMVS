@@ -202,10 +202,11 @@ the refinement stage. Build a mesh only where a surface is required rather than 
 
 ## 7. Scenes that do not run here
 
-- **Courthouse** (1106 images) cannot densify at `--resolution-level 0` on a 32 GB machine:
-  `DensifyPointCloud` dies with `0xC0000005` after ~38 min in fusion, the log repeating
-  "not enough memory to cache depth-maps (2772MB needed, ~1.2GB available)" - an out-of-memory
-  condition surfacing as an access violation rather than a clean failure. It scores at
+- **Courthouse** (1106 images) did not densify at `--resolution-level 0` on a 32 GB machine with
+  the previous fusion memory handling (a depth-map cache sized once from the free memory, nothing
+  reserved for the growing point cloud, the GPU pools kept alive): `DensifyPointCloud` died with
+  `0xC0000005` after ~38 min in fusion, an out-of-memory condition surfacing as an access violation
+  rather than a clean failure. It has not been re-run with the per-map budget. It scores at
   `--resolution-level 1` (cloud 0.4939 at defaults).
 - **Church** needed a dataset repair first. The toolbox pairs the reconstruction's camera trajectory
   with `Church_COLMAP_SfM.log` index-by-index, but that log has 644 poses while the Metashape project

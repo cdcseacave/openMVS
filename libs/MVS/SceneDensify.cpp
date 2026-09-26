@@ -1982,22 +1982,6 @@ void DepthMapsData::MergeDepthMaps(PointCloud& pointcloud, bool bEstimateColor, 
 /*----------------------------------------------------------------*/
 
 
-// the fusion's depth-map cache budget, re-evaluated after every fused depth-map from the memory
-// free at that moment (the cache's own included): `reserve`, what the point-cloud may still grow by
-// before the next re-evaluation, and the safety margin stay free, the rest may cache depth-maps,
-// never less than `minMemory`, what one reference needs with its neighbors
-size_t FusionCacheBudget(size_t cacheMemory, size_t reserve, size_t minMemory)
-{
-	const Util::MemoryInfo memInfo(Util::GetMemoryInfo());
-	const size_t freeMemory(cacheMemory + memInfo.freePhysical);
-	const size_t keepMemory(reserve + ComputeSafetyMemory(memInfo));
-	if (freeMemory < keepMemory + minMemory) {
-		DEBUG_EXTRA("warning: not enough memory to cache depth-maps (%luMB needed, %luMB available)", (keepMemory + minMemory)>>20, freeMemory>>20);
-		return minMemory;
-	}
-	return freeMemory - keepMemory;
-} // FusionCacheBudget
-
 // bytes one point takes in the point-cloud's per-point arrays
 size_t PointArraysBytes(const PointCloud& pointcloud)
 {
@@ -2007,9 +1991,9 @@ size_t PointArraysBytes(const PointCloud& pointcloud)
 }
 
 // what the point-cloud may grow by while the next depth-map is fused: twice what the points the last
-// one added occupy (array elements plus the heap blocks of their view and weight lists), plus the new
-// storage of the per-point arrays when they are about to grow (a cList grows by half, and the old
-// storage is released only once copied)
+// one added occupy (array elements plus the heap blocks of their view and weight lists), plus the
+// peak of the per-point arrays' reallocations that many points trigger: a cList grows by half per
+// step and frees the old storage only once copied, so the peak is the last two buffers of the chain
 size_t FusionMemoryReserve(const PointCloud& pointcloud, PointCloud::Index firstNewPoint)
 {
 	constexpr size_t heapBlock(16); // header of a small heap allocation
@@ -2018,8 +2002,16 @@ size_t FusionMemoryReserve(const PointCloud& pointcloud, PointCloud::Index first
 	for (PointCloud::Index i=firstNewPoint; i<pointcloud.points.size(); ++i)
 		added += pointcloud.pointViews[i].size() * (sizeof(PointCloud::View) + sizeof(PointCloud::Weight));
 	size_t reserve(2*added);
-	if (pointcloud.points.size() + 2*numNew > pointcloud.points.capacity())
-		reserve += (pointcloud.points.capacity() + pointcloud.points.capacity()/2) * PointArraysBytes(pointcloud);
+	const size_t capacity(pointcloud.points.capacity()), needed(pointcloud.points.size() + 2*numNew);
+	if (needed > capacity) {
+		size_t prevCapacity(capacity), newCapacity(capacity);
+		while (newCapacity < needed) {
+			prevCapacity = newCapacity;
+			newCapacity += MAXF(newCapacity/2, (size_t)1);
+		}
+		// the current storage is already allocated, so only what the chain adds on top of it
+		reserve += (newCapacity + prevCapacity - capacity) * PointArraysBytes(pointcloud);
+	}
 	return reserve;
 } // FusionMemoryReserve
 
@@ -2103,6 +2095,7 @@ struct FusionCacheSetup {
 	const size_t minMemory; // the working set: the depth-map being fused and its neighbors
 	const size_t maxMemory; // past a few working sets a larger cache saves no reads, it only takes
 	                        // the memory other processes and the point-cloud need
+	mutable bool bLowMemoryReported{false};
 	ImageArr* const pCachedImages;
 	const size_t cacheMemory; // the initial budget, taken once the colors are resident
 	FusionCacheSetup(const DepthDataArr& arrDepthData, ImageArr& images, bool bEstimateColor)
@@ -2110,13 +2103,30 @@ struct FusionCacheSetup {
 		minMemory(FusionWorkingSet(arrDepthData)),
 		maxMemory(minMemory * 4),
 		// the colors stay resident when they fit in the memory free now, not only under the cap
-		pCachedImages(bEstimateColor ? PrepareFusionImages(arrDepthData, images, FusionCacheBudget(0, 0, minMemory), minMemory) : NULL),
+		pCachedImages(bEstimateColor ? PrepareFusionImages(arrDepthData, images, Available(0, 0), minMemory) : NULL),
 		cacheMemory(Budget(0, 0))
 	{
 	}
-	// the cache budget for the memory free now, `usedMemory` being what the cache holds already
+	// the memory the cache may take now, from what is free (the cache's own `usedMemory` included):
+	// `reserve`, what the point-cloud may still grow by before the next re-evaluation, and the safety
+	// margin stay free; never less than the working set. The reserve is a generous estimate, so a
+	// tight budget only costs re-reads: it is reported once, not failed
+	size_t Available(size_t usedMemory, size_t reserve) const {
+		const Util::MemoryInfo memInfo(Util::GetMemoryInfo());
+		const size_t freeMemory(usedMemory + memInfo.freePhysical);
+		const size_t keepMemory(reserve + ComputeSafetyMemory(memInfo));
+		if (freeMemory >= keepMemory + minMemory)
+			return freeMemory - keepMemory;
+		if (!bLowMemoryReported) {
+			VERBOSE("warning: low memory, the depth-map cache is reduced to one working set (%luMB needed, %luMB available)",
+				(keepMemory + minMemory)>>20, freeMemory>>20);
+			bLowMemoryReported = true;
+		}
+		return minMemory;
+	}
+	// the cache budget for the memory free now, capped at a few working sets
 	size_t Budget(size_t usedMemory, size_t reserve) const {
-		return MINF(FusionCacheBudget(usedMemory, reserve, minMemory), maxMemory);
+		return MINF(Available(usedMemory, reserve), maxMemory);
 	}
 };
 
