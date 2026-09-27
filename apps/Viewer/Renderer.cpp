@@ -254,6 +254,7 @@ void Renderer::UploadPointClouds(const Scene& sceneController, float normalLengt
 		range.layerID = layer.id;
 		range.offset = pointCount;
 		range.count = pointcloud.points.size();
+		range.confidenceWindow = layer.pointConfidence.ShaderWindow();
 		if (pointcloud.normals.size() == pointcloud.points.size()) {
 			range.normalOffset = pointNormalCount;
 			range.normalCount = pointcloud.normals.size() * 2;
@@ -264,7 +265,7 @@ void Renderer::UploadPointClouds(const Scene& sceneController, float normalLengt
 	}
 	if (pointCount) {
 		pointCloudVBO->AllocateBuffer(pointCount * 3 * sizeof(float));
-		pointCloudColorVBO->AllocateBuffer(pointCount * 3 * sizeof(float));
+		pointCloudColorVBO->AllocateBuffer(pointCount * 4 * sizeof(uint8_t));
 		if (pointNormalCount)
 			pointCloudNormalsVBO->AllocateBuffer(pointNormalCount * 3 * sizeof(float));
 		size_t pointOffset = 0;
@@ -275,24 +276,19 @@ void Renderer::UploadPointClouds(const Scene& sceneController, float normalLengt
 			const MVS::PointCloud& pointcloud = layer.scene.pointcloud;
 			pointCloudVBO->SetSubData(pointcloud.points[0].ptr(), pointcloud.points.size() * 3, pointOffset * 3);
 
-			std::vector<float> colors;
-			colors.reserve(pointcloud.points.size() * 3);
-			if (layer.usePointSolidColor) {
-				for (size_t i = 0; i < pointcloud.points.size(); ++i) {
-					colors.push_back(layer.pointColor.x);
-					colors.push_back(layer.pointColor.y);
-					colors.push_back(layer.pointColor.z);
-				}
-			} else if (pointcloud.colors.size() == pointcloud.points.size()) {
-				for (const Pixel8U& color : pointcloud.colors) {
-					colors.push_back(color.r / 255.f);
-					colors.push_back(color.g / 255.f);
-					colors.push_back(color.b / 255.f);
-				}
-			} else {
-				colors.resize(pointcloud.points.size() * 3, 1.f);
+			// RGBA bytes: the point color and, in alpha, its quantized confidence
+			const bool hasColors = !layer.usePointSolidColor && pointcloud.colors.size() == pointcloud.points.size();
+			const Pixel8U solidColor = layer.usePointSolidColor ?
+				Pixel32F(layer.pointColor.x*255.f, layer.pointColor.y*255.f, layer.pointColor.z*255.f).cast<uint8_t>() : Pixel8U::WHITE;
+			const bool hasConfidence = layer.HasPointConfidence();
+			std::vector<uint8_t> colors(pointcloud.points.size() * 4);
+			FOREACH(i, pointcloud.points) {
+				const Pixel8U& color = hasColors ? pointcloud.colors[i] : solidColor;
+				uint8_t* const rgba = colors.data() + i * 4;
+				rgba[0] = color.r; rgba[1] = color.g; rgba[2] = color.b;
+				rgba[3] = hasConfidence ? layer.pointConfidence.Quantize(PointConfidenceFilter::Confidence(pointcloud.pointWeights[i])) : uint8_t(0);
 			}
-			pointCloudColorVBO->SetSubData(colors, pointOffset * 3);
+			pointCloudColorVBO->SetSubData(colors, pointOffset * 4);
 
 			if (pointcloud.normals.size() == pointcloud.points.size()) {
 				std::vector<float> normalLines;
@@ -314,6 +310,13 @@ void Renderer::UploadPointClouds(const Scene& sceneController, float normalLengt
 		}
 		ASSERT(pointOffset == pointCount && normalOffset == pointNormalCount);
 	}
+}
+
+void Renderer::SetPointConfidence(uint32_t layerID, const PointConfidenceFilter& filter)
+{
+	for (LayerIndexRange& range : pointLayerRanges)
+		if (range.layerID == layerID)
+			range.confidenceWindow = filter.ShaderWindow();
 }
 
 void Renderer::UploadMeshes(const Scene& sceneController)
@@ -634,9 +637,9 @@ void Renderer::SetupPointCloudBuffers() {
 	pointCloudVBO->Bind();
 	pointCloudVAO->EnableAttribute(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
 
-	// Color attribute (location 1)
+	// Color + quantized confidence attribute (location 1): normalized RGBA bytes
 	pointCloudColorVBO->Bind();
-	pointCloudVAO->EnableAttribute(1, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+	pointCloudVAO->EnableAttribute(1, 4, GL_UNSIGNED_BYTE, GL_TRUE, 4 * sizeof(uint8_t), (void*)0);
 
 	pointCloudVAO->Unbind();
 }
@@ -1483,12 +1486,12 @@ void Renderer::RenderPointCloud(const Window& window) {
 
 	pointCloudVAO->Bind();
 
-	if (layerPassFilter.empty()) {
-		GL_CHECK(glDrawArrays(GL_POINTS, 0, pointCount));
-	} else {
-		for (const LayerIndexRange& range : pointLayerRanges)
-			if (IsLayerInPass(range.layerID))
-				GL_CHECK(glDrawArrays(GL_POINTS, (GLint)range.offset, (GLsizei)range.count));
+	// one draw per layer, each with its own confidence window
+	for (const LayerIndexRange& range : pointLayerRanges) {
+		if (!IsLayerInPass(range.layerID))
+			continue;
+		pointCloudShader->SetVector2("confidenceWindow", range.confidenceWindow);
+		GL_CHECK(glDrawArrays(GL_POINTS, (GLint)range.offset, (GLsizei)range.count));
 	}
 
 	pointCloudVAO->Unbind();
@@ -2309,12 +2312,11 @@ Renderer::PickResult Renderer::PickPrimitiveAt(const Point2f& screenPos, int rad
 		pickerPointsShader->Use();
 		pickerPointsShader->SetUInt("uBaseID", baseFace);
 		pointCloudVAO->Bind();
-		if (window.compareMode) {
-			for (const LayerIndexRange& range : pointLayerRanges)
-				if (layerAtCursor(range.layerID))
-					GL_CHECK(glDrawArrays(GL_POINTS, (GLint)range.offset, (GLsizei)range.count));
-		} else {
-			GL_CHECK(glDrawArrays(GL_POINTS, 0, pointCount));
+		for (const LayerIndexRange& range : pointLayerRanges) {
+			if (window.compareMode && !layerAtCursor(range.layerID))
+				continue;
+			pickerPointsShader->SetVector2("confidenceWindow", range.confidenceWindow);
+			GL_CHECK(glDrawArrays(GL_POINTS, (GLint)range.offset, (GLsizei)range.count));
 		}
 		pointCloudVAO->Unbind();
 	}

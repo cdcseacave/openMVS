@@ -73,6 +73,7 @@ public:
 		AABB3f bounds{true};
 		Point3f sceneSize{0, 0, 0};
 		float sceneDistance{1.f};
+		PointConfidenceFilter pointConfidence; // range set by RefreshLayerState
 
 		Layer() = default;
 		Layer(const Layer&) = delete;
@@ -81,6 +82,7 @@ public:
 		Layer& operator=(Layer&&) noexcept = default;
 
 		bool IsOpen() const { return scene.IsValid() || !scene.IsEmpty(); }
+		bool HasPointConfidence() const { return !scene.pointcloud.pointWeights.empty(); }
 	};
 	using LayerArr = std::vector<Layer>;
 

@@ -97,6 +97,60 @@ inline Eigen::Matrix4d TransL2W(const Eigen::Matrix3d& R, const Eigen::Vector3d&
 }
 /*----------------------------------------------------------------*/
 
+// confidence filter of a point-cloud layer: a point's confidence (the largest of its view weights,
+// the depth-map confidence for a .dmap cloud) is quantized to 8 bits over the cloud's range -- the
+// byte the renderer keeps in the alpha of the point color -- and only the points whose quantized
+// confidence is inside the [levelMin, levelMax] window are shown ([0, 255] shows every point)
+struct PointConfidenceFilter {
+	float minConf{0.f}, maxConf{0.f}; // confidence range over the cloud
+	uint8_t levelMin{0}, levelMax{255}; // shown window of quantized confidence
+
+	bool IsAll() const { return levelMin == 0 && levelMax == 255; }
+
+	static float Confidence(const MVS::PointCloud::WeightArr& weights) {
+		ASSERT(!weights.empty());
+		float conf(weights.front());
+		for (const MVS::PointCloud::Weight w: weights)
+			conf = MAXF(conf, w);
+		return conf;
+	}
+	uint8_t Quantize(float conf) const {
+		ASSERT(conf >= minConf && conf <= maxConf);
+		return maxConf > minConf ? (uint8_t)ROUND2INT((conf-minConf)*255.f/(maxConf-minConf)) : uint8_t(0);
+	}
+	float Dequantize(uint8_t q) const { return minConf + q*(maxConf-minConf)/255.f; }
+	bool IsShown(const MVS::PointCloud& pointcloud, MVS::PointCloud::Index idx) const {
+		if (IsAll())
+			return true;
+		const uint8_t q(Quantize(Confidence(pointcloud.pointWeights[idx])));
+		return q >= levelMin && q <= levelMax;
+	}
+	// the window as the shader compares it against the normalized confidence byte:
+	// widened by half a step, so the end levels include every point
+	Eigen::Vector2f ShaderWindow() const { return Eigen::Vector2f((levelMin-0.5f)/255.f, (levelMax+0.5f)/255.f); }
+	// set the range of the given cloud, keeping the threshold values of the previous range, if any
+	// (an open end stays open)
+	void Reset(const MVS::PointCloud& pointcloud) {
+		const bool bRemap(maxConf > minConf);
+		const float thresholdMin(Dequantize(levelMin)), thresholdMax(Dequantize(levelMax));
+		minConf = maxConf = 0.f;
+		if (!pointcloud.pointWeights.empty()) {
+			ASSERT(pointcloud.pointWeights.size() == pointcloud.points.size());
+			minConf = FLT_MAX; maxConf = -FLT_MAX;
+			for (const MVS::PointCloud::WeightArr& weights: pointcloud.pointWeights) {
+				const float conf(Confidence(weights));
+				minConf = MINF(minConf, conf);
+				maxConf = MAXF(maxConf, conf);
+			}
+		}
+		if (bRemap && levelMin != 0)
+			levelMin = Quantize(CLAMP(thresholdMin, minConf, maxConf));
+		if (bRemap && levelMax != 255)
+			levelMax = Quantize(CLAMP(thresholdMax, minConf, maxConf));
+	}
+};
+/*----------------------------------------------------------------*/
+
 } // namespace MVS
 
 #endif // _VIEWER_COMMON_H_

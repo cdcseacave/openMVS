@@ -2760,7 +2760,8 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 
 DenseDepthMapData::DenseDepthMapData(Scene& _scene, int _nFusionMode, float _fSampleMeshNeighbors) :
 	scene(_scene), depthMaps(_scene), idxImage(0), sem(1), nEstimationGeometricIter(-1),
-	nFusionMode(_nFusionMode), fSampleMeshNeighbors(_fSampleMeshNeighbors), nClosing(0), nDenseWorkers(2u)
+	nFusionMode(_nFusionMode), fSampleMeshNeighbors(_fSampleMeshNeighbors), nClosing(0),
+	nConfAdjustedGPU(0), nConfAdjustedCPU(0), nConfAdjustFailed(0), nDenseWorkers(2u)
 {
 	if (nFusionMode < 0) {
 		STEREO::SemiGlobalMatcher::CreateThreads(scene.nMaxThreads);
@@ -3326,8 +3327,14 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		#endif
 		);
 	if (bIntegratedConfRan) {
-		VERBOSE("skipping the postprocess confidence-adjust phase (--postprocess-dmaps 8): the adaptive "
-			"confidence was already recalibrated during the last geometric-consistency iteration");
+		if (data.nConfAdjustedCPU)
+			VERBOSE("Confidence-maps adjusted: %u depth-maps (%u on GPU, %u on CPU)",
+				(unsigned)(data.nConfAdjustedGPU+data.nConfAdjustedCPU), (unsigned)data.nConfAdjustedGPU, (unsigned)data.nConfAdjustedCPU);
+		else
+			VERBOSE("Confidence-maps adjusted: %u depth-maps (GPU)", (unsigned)data.nConfAdjustedGPU);
+		if (data.nConfAdjustFailed)
+			VERBOSE("warning: confidence adjustment failed for %u depth-maps; they keep the photometric confidence",
+				(unsigned)data.nConfAdjustFailed);
 	} else
 	if ((OPTDENSE::nOptimize & OPTDENSE::ADJUST_CONFIDENCE) != 0) {
 		TD_TIMER_STARTD();
@@ -3580,23 +3587,34 @@ void Scene::DenseReconstructionEstimate(void* pData)
 			// epilogue too would recalibrate an already-recalibrated confidence a second time
 			if ((OPTDENSE::nOptimize & OPTDENSE::ADJUST_CONFIDENCE) && data.nEstimationGeometricIter >= 0 &&
 				data.nEstimationGeometricIter+1 == (int)OPTDENSE::nEstimationGeometricIters &&
-				!depthData.depthMap.empty() && !depthData.bConfAdjusted) {
-				bool bDone(false);
-				#ifdef _USE_CUDA
-				// GPU is the default when CUDA did the estimation (bEstimateConfidenceCUDA); on any CUDA
-				// error AdjustConfidenceCUDA returns false and we fall back to the CPU sweep below
-				const bool bTryGPU(!data.depthMaps.pmCUDAPool.empty() && OPTDENSE::bEstimateConfidenceCUDA);
-				if (bTryGPU)
-					bDone = data.depthMaps.AdjustConfidenceCUDA(depthData);
-				#else
-				const bool bTryGPU(false);
-				#endif
-				// CPU integrated sweep, used here only as the GPU-error fallback
-				if (!bDone && bTryGPU)
-					bDone = data.depthMaps.AdjustConfidence(depthData);
-				// the saved dmap then carries the CONF_ADJUSTED flag (cross-process double-adjust guard)
-				if (bDone)
-					depthData.bConfAdjusted = true;
+				!depthData.depthMap.empty()) {
+				if (depthData.bConfAdjusted) {
+					// already recalibrated by the fused in-estimation GPU sweep
+					Thread::safeInc(data.nConfAdjustedGPU);
+				} else {
+					bool bDoneGPU(false), bDoneCPU(false);
+					#ifdef _USE_CUDA
+					// GPU is the default when CUDA did the estimation (bEstimateConfidenceCUDA); on any CUDA
+					// error AdjustConfidenceCUDA returns false and we fall back to the CPU sweep below
+					const bool bTryGPU(!data.depthMaps.pmCUDAPool.empty() && OPTDENSE::bEstimateConfidenceCUDA);
+					if (bTryGPU)
+						bDoneGPU = data.depthMaps.AdjustConfidenceCUDA(depthData);
+					#else
+					const bool bTryGPU(false);
+					#endif
+					// CPU integrated sweep, used here only as the GPU-error fallback
+					if (!bDoneGPU && bTryGPU)
+						bDoneCPU = data.depthMaps.AdjustConfidence(depthData);
+					// the saved dmap then carries the CONF_ADJUSTED flag (cross-process double-adjust guard)
+					if (bDoneGPU || bDoneCPU)
+						depthData.bConfAdjusted = true;
+					if (bDoneGPU)
+						Thread::safeInc(data.nConfAdjustedGPU);
+					else if (bDoneCPU)
+						Thread::safeInc(data.nConfAdjustedCPU);
+					else if (bTryGPU)
+						Thread::safeInc(data.nConfAdjustFailed);
+				}
 			}
 			#if TD_VERBOSE != TD_VERBOSE_OFF
 			// save depth map as image

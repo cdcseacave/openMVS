@@ -391,7 +391,7 @@ bool SelectionController::isPointInSelection(const Point3f& worldPoint,
 	return false;
 }
 
-void SelectionController::classifyPointCloud(const MVS::PointCloud& pointcloud, const Camera& camera) {
+void SelectionController::classifyPointCloud(const MVS::PointCloud& pointcloud, const Camera& camera, const PointConfidenceFilter& confFilter) {
 	// If no current selection path, nothing to classify
 	if (selectionPath.empty())
 		return;
@@ -405,8 +405,10 @@ void SelectionController::classifyPointCloud(const MVS::PointCloud& pointcloud, 
 	currentSelection.reserve(pointcloud.points.size());
 
 	// Classify points in current selection
-	for (const auto& point : pointcloud.points)
-		currentSelection.push_back(isPointInSelection(point, selectionPath, currentMode, camera));
+	FOREACH(i, pointcloud.points)
+		currentSelection.push_back(
+			confFilter.IsShown(pointcloud, i) &&
+			isPointInSelection(pointcloud.points[i], selectionPath, currentMode, camera));
 
 	// Apply the operation based on modifier keys
 	SelectionOperation operation = OP_REPLACE;

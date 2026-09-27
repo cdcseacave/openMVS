@@ -58,6 +58,7 @@ UI::UI()
 	, showSelectionControls(false)
 	, showRenderSettings(false)
 	, showBoundingBoxControls(false)
+	, showPointConfidenceFilter(true)
 	, showConsoleOverlay(true)
 	, showPerformanceOverlay(true)
 	, showWorkflowOverlay(true)
@@ -350,6 +351,7 @@ void UI::ShowMainMenuBar(Window& window) {
 			ImGui::MenuItem("Selection Dialog", "Shift+S", &showSelectionDialog);
 			ImGui::MenuItem("Render Settings", "Shift+R", &showRenderSettings);
 			ImGui::MenuItem("Bounding Box", "Shift+B", &showBoundingBoxControls);
+			ImGui::MenuItem("Point Confidence", nullptr, &showPointConfidenceFilter);
 			ImGui::MenuItem("Layers", nullptr, &showLayersPanel);
 			ImGui::Separator();
 			ImGui::MenuItem("Console", nullptr, &showConsoleOverlay);
@@ -862,6 +864,54 @@ void UI::ShowRenderSettings(Window& window) {
 		ShowRenderingControls(window);
 		ShowPointCloudControls(window);
 		ShowMeshControls(window);
+	}
+	ImGui::End();
+}
+
+void UI::ShowPointConfidenceFilter(Window& window) {
+	if (!showPointConfidenceFilter) return;
+	Scene::Layer* layer = window.GetScene().GetActiveLayer();
+	if (layer == NULL || !layer->HasPointConfidence())
+		return;
+
+	ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x - 350, 110), ImGuiCond_FirstUseEver);
+	ImGui::SetNextWindowSize(ImVec2(340, 0), ImGuiCond_FirstUseEver);
+	if (ImGui::Begin("Point Confidence", &showPointConfidenceFilter)) {
+		PointConfidenceFilter& filter = layer->pointConfidence;
+		ImGui::Text("Layer: %s", layer->label.c_str());
+		// the thresholds snap to the 256 levels the renderer stores the confidence in;
+		// moving one past the other drags it along, so the window never inverts
+		uint8_t levelMin = filter.levelMin, levelMax = filter.levelMax;
+		float threshold = filter.Dequantize(levelMin);
+		if (ImGui::SliderFloat("Min", &threshold, filter.minConf, filter.maxConf, "%.3f")) {
+			levelMin = filter.Quantize(CLAMP(threshold, filter.minConf, filter.maxConf));
+			levelMax = MAXF(levelMax, levelMin);
+		}
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Hide the points with\na lower confidence");
+		threshold = filter.Dequantize(levelMax);
+		if (ImGui::SliderFloat("Max", &threshold, filter.minConf, filter.maxConf, "%.3f")) {
+			levelMax = filter.Quantize(CLAMP(threshold, filter.minConf, filter.maxConf));
+			levelMin = MINF(levelMin, levelMax);
+		}
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Hide the points with\na higher confidence");
+		ImGui::Text("Range: %.3f .. %.3f", filter.minConf, filter.maxConf);
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Point confidence:\n"
+				"- .dmap: depth-map confidence\n"
+				"- fused cloud: best view confidence");
+		ImGui::SameLine();
+		if (ImGui::SmallButton("Reset")) {
+			levelMin = 0;
+			levelMax = 255;
+		}
+		if (levelMin != filter.levelMin || levelMax != filter.levelMax) {
+			filter.levelMin = levelMin;
+			filter.levelMax = levelMax;
+			window.GetRenderer().SetPointConfidence(layer->id, filter);
+			window.RequestRedraw();
+		}
 	}
 	ImGui::End();
 }
@@ -2820,6 +2870,10 @@ void UI::HandleGlobalKeys(Window& window) {
 		}
 		if (showBoundingBoxControls) {
 			showBoundingBoxControls = false;
+			return;
+		}
+		if (showPointConfidenceFilter && window.GetScene().GetActiveLayer() != NULL && window.GetScene().GetActiveLayer()->HasPointConfidence()) {
+			showPointConfidenceFilter = false;
 			return;
 		}
 		if (showDensifyWorkflow) {

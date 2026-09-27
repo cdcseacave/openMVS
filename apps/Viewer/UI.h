@@ -50,6 +50,7 @@ private:
 	bool showSelectionControls;
 	bool showRenderSettings;
 	bool showBoundingBoxControls;
+	bool showPointConfidenceFilter; // shown only while the active layer's point-cloud carries confidence
 	bool showConsoleOverlay;
 	bool showPerformanceOverlay;
 	bool showWorkflowOverlay;
@@ -106,6 +107,7 @@ public:
 	void ShowSelectionControls(Window& window);
 	void ShowRenderSettings(Window& window);
 	void ShowBoundingBoxControls(Window& window);
+	void ShowPointConfidenceFilter(Window& window);
 	void ShowLayersPanel(Window& window);
 	void ShowCompareDivider(Window& window); // A|B split view divider (draggable) + side labels
 	void ShowConsoleOverlay(Window& window);

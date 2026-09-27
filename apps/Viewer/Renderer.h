@@ -70,7 +70,7 @@ private:
 	std::unique_ptr<Shader> pointCloudShader;
 	std::unique_ptr<Shader> pointCloudNormalsShader;
 	std::unique_ptr<VAO> pointCloudVAO;
-	std::unique_ptr<VBO> pointCloudVBO, pointCloudColorVBO;
+	std::unique_ptr<VBO> pointCloudVBO, pointCloudColorVBO; // positions (3 floats), RGB + quantized confidence (4 bytes)
 	std::unique_ptr<VAO> pointCloudNormalsVAO;
 	std::unique_ptr<VBO> pointCloudNormalsVBO;
 	size_t pointCount;
@@ -87,6 +87,7 @@ private:
 		size_t count{0};
 		size_t normalOffset{0}; // normal-line vertex sub-range (points only)
 		size_t normalCount{0};
+		Eigen::Vector2f confidenceWindow{-1.f, 2.f}; // points only: PointConfidenceFilter::ShaderWindow()
 	};
 	std::vector<LayerIndexRange> pointLayerRanges;
 	// Compare split view: scene passes draw only these layers (empty = draw all)
@@ -202,6 +203,7 @@ public:
 	// Data upload
 	void UploadLayers(const Scene& sceneController, const Window& window);
 	void UploadPointClouds(const Scene& sceneController, float normalLength);
+	void SetPointConfidence(uint32_t layerID, const PointConfidenceFilter& filter); // no re-upload: the window is a uniform
 	void UploadCameras(const Window& window);
 	void UploadUncertaintyEllipsoids(const Window& window);
 	void UploadSelection(const Window& window);
