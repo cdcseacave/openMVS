@@ -19,17 +19,27 @@ record in `DelaunayMeshReconstruction.md`.
 
 ## 2. Algorithm as implemented
 
-`DepthMapsData::DenseFuseDepthMaps` (`SceneDensify.cpp:2440`) fuses depth-maps one at a time, each
-chosen with `FetchBestNextDMapIndex` (`SceneDensify.cpp:2147`) as the not-yet-fused map with the
+`DepthMapsData::DenseFuseDepthMaps` fuses depth-maps one at a time, each
+chosen with `FetchBestNextDMapIndex` as the not-yet-fused map with the
 most neighbours already resident in the depth-map cache (ties broken toward fewer total neighbours),
-so the cache is reused rather than thrashed; the cache (`DMapCache`) is sized from free RAM via
-`GetAvailableMemory` and resized every `numDMapsReserveFusion` (10) maps. For the chosen reference
-map:
+so the cache is reused rather than thrashed. The estimation's GPU pools are released before fusion
+starts (their pinned host buffers are most of the estimation's resident memory), and the cache
+(`DMapCache`) is re-budgeted after every fused map (`FusionCacheSetup::Budget`): the memory free at
+that moment, minus the safety margin and what the next map may add to the point-cloud
+(`FusionMemoryReserve`: twice the last map's points, plus the peak of the per-point arrays'
+reallocations), capped at four working sets (`FusionWorkingSet`: the reference and `nMaxViewsFuse`
+neighbours) and never below one; reaching that floor is logged once, since the generous reserve
+makes it cost re-reads rather than memory. The cache thus shrinks as the cloud grows instead of taking the memory the cloud and other
+processes need; the colour images stay resident when they fit in the free memory. A depth-map file that fails
+to load (corrupt or truncated) is logged and left out: as a reference it is skipped, as a neighbour it
+is never walked into. For the chosen reference map:
 
-1. **Seeding.** Every pixel is visited once, in raster order, via the `FusePoint` lambda
-   (`SceneDensify.cpp:2501`). A pixel with no depth, with confidence below `1 − fNCCThresholdKeep`,
-   or already consumed by an earlier cluster (`useMask`) is skipped; otherwise it seeds a new
-   cluster and becomes its reference point and normal.
+1. **Seeding.** Every pixel is visited once, in raster order, via the `FusePoint` lambda.
+   A pixel with no depth, already consumed by an earlier cluster (`useMask`), or below the confidence
+   floor is skipped; otherwise it seeds a new cluster and becomes its reference point and normal. The
+   floor follows the scale of the map's confidence: `ConfRefine::FUSE_MIN_CONF` (0.07) on a
+   recalibrated map (`DepthData::bConfAdjusted`), the estimation's own `1 − fNCCThresholdKeep` on a
+   raw photometric one.
 2. **Growing.** `FusePoint` walks the view-neighbourhood graph depth-first: each member projects
    into its neighbour views, and the pixel it lands on joins the cluster if it agrees with the
    cluster's *reference* point (not the neighbour the walk arrived from, so a cluster cannot drift
@@ -40,16 +50,21 @@ map:
    continues from it into *its* neighbours, bounded by `nMaxFuseDepth` and `nMaxPointsFuse`. A
    neighbour whose own measured depth lies more than `VIOLATION_MARGIN·fDepthDiffThreshold` behind
    the cluster's reprojected point (`ConfRefine::VIOLATION_MARGIN`, shared with the confidence
-   recalibration) fails the join and is recorded as a free-space violation for that distinct view
-   (`fusedViolViews`, deduplicated) instead of merely being skipped.
+   recalibration) fails the join and is recorded as a contradicting view (`fusedContraViews`,
+   deduplicated) instead of merely being skipped; a neighbour that passes the depth and reprojection
+   gates but fails the normal gate is recorded there too, and as a normal contradiction
+   (`fusedNormViews`): it sees the same place and disputes the surface there.
 3. **Keeping.** The cluster becomes a point when it has at least `nMinPixelsFuse` pixels *and*
    `nMinViewsFuse` distinct views (both clamped by the map count). Both minimums accept fractional
    "virtual" support, `fFusePriorWeight` times the seed's intra-map prior
    (`DepthMapsData::GetIntraMapPrior`/`ComputeIntraMapPrior`, the same prior the confidence
    recalibration uses — see `DepthMapConfidence.md`), which keeps an inlier lying on a coherent
    surface that too few views happened to confirm. A point kept *only* thanks to that support is
-   "rescued", and must additionally have at most `nFuseViolationMax` distinct free-space-violating
-   views (`nFuseViolationMax < 0` disables the guard; non-rescued points are never subject to it).
+   "rescued". The **contradiction guard** (`nFuseViolationMax`, `< 0` disables it) then separates a
+   lack of evidence from evidence against the point: a rescued point may be contradicted by at most
+   `nFuseViolationMax` distinct views (a view contradicting in both ways counts once), and
+   a point kept on real support alone is dropped when its normal contradictions outnumber its
+   supporting views.
 4. **Emitting.** The point's position is the component-wise median of its members' 3D locations —
    robust to a single bad join, and the reason weights never enter the position. Its views are the
    distinct views of its members, each weighted by that view's confidence, combined with `max` (not
@@ -72,19 +87,19 @@ pixel can therefore be consumed more than once across the run.
 | *(config file only)* | `OPTDENSE::nMinPixelsFuse` | `5` | minimum joined pixels for a cluster to be kept |
 | *(config file only)* | `OPTDENSE::nMaxPointsFuse` | `1000` | maximum pixels fused into a single point |
 | *(config file only)* | `OPTDENSE::nMaxFuseDepth` | `100` | maximum recursion depth of the graph walk |
-| `--fusion-depth-diff-threshold,t` | `OPTDENSE::fDepthDiffThreshold` | `0.01` | max relative depth difference to join (also the confidence recalibration's `thDepth`) |
-| `--fusion-reprojection-threshold,d` | `OPTDENSE::fDepthReprojectionErrorThreshold` | `1.0` | max lateral reprojection error, in pixels, to join (also the confidence recalibration's `thReproj`) |
+| `--fusion-depth-diff-threshold,t` | `OPTDENSE::fDepthDiffThreshold` | `0.01` | max relative depth difference to join |
+| `--fusion-reprojection-threshold,d` | `OPTDENSE::fDepthReprojectionErrorThreshold` | `0.6` | max lateral reprojection error, in pixels, to join |
 | *(config file only)* | `OPTDENSE::fNormalDiffThreshold` | `25` (degrees) | max normal disagreement to join |
-| *(config file only)* | `OPTDENSE::fNCCThresholdKeep` | `0.9` | `1 − this` is the minimum confidence to seed/join a pixel |
-| `--fusion-prior-weight` | `OPTDENSE::fFusePriorWeight` | `3.0` | intra-map-prior virtual support weight (`0` disables the rescue) |
-| *(config file only)* | `OPTDENSE::nFuseViolationMax` | `0` | max distinct free-space-violating views tolerated on a rescued point (`<0` disables the guard) |
+| *(config file only)* | `OPTDENSE::fNCCThresholdKeep` | `0.9` | `1 − this` is the minimum confidence to seed/join a pixel of a raw (not recalibrated) map |
+| — (compile-time) | `ConfRefine::FUSE_MIN_CONF` | `0.07` | minimum confidence to seed/join a pixel of a recalibrated map |
+| `--fusion-prior-weight` | `OPTDENSE::fFusePriorWeight` | `4.0` | intra-map-prior virtual support weight (`0` disables the rescue) |
+| *(config file only)* | `OPTDENSE::nFuseViolationMax` | `0` | contradiction guard: max distinct contradicting views on a rescued point; also enables dropping supported points outvoted by normal contradictions (`<0` disables the guard) |
 | `--fusion-recycle-dropped` | `OPTDENSE::bFuseRecycleDropped` | `false` | hand a dropped cluster's pixels back to the pool instead of losing them for good |
 
-`--fusion-prior-weight 3` favours completeness and suits the default pipeline, where mesh
-reconstruction follows and cleans the few extra outliers; `--fusion-prior-weight 2` trades some
-completeness for fewer outliers when the dense point cloud itself is the final output.
-`--fusion-recycle-dropped` trades precision for completeness the same way and is off by default for
-the same reason.
+The generous prior weight is safe only together with the contradiction guard: the rescue then
+admits exactly the weakly supported points that nothing disputes, which are as accurate as fully
+supported ones, while the guard removes the disputed ones. `--fusion-recycle-dropped` trades
+precision for completeness and is off by default.
 
 ## 4. Invariants and constraints
 
@@ -92,9 +107,11 @@ the same reason.
   from** — this is what keeps a cluster from drifting away from its seed one join at a time.
 - **A pixel belongs to at most one cluster at a time** (`useMask`); with `bFuseRecycleDropped` off, a
   consumed pixel is locked away for good even if its cluster is later dropped.
-- **The rescue guard (`nFuseViolationMax`) only ever applies to rescued points** — a cluster that
-  already meets `nMinPixelsFuse`/`nMinViewsFuse` on real support alone is never rejected for
-  free-space violations.
+- **Only evidence against a point can remove it; missing evidence never does** — the contradiction
+  guard counts views that saw the place and disagreed (free-space violations, normal contradictions),
+  never views that were out of frame, empty, low-confidence or already consumed. A cluster meeting
+  `nMinPixelsFuse`/`nMinViewsFuse` on real support is never rejected for free-space violations, only
+  when normal contradictions outnumber its supporting views.
 - **The virtual-support rescue can never fabricate a point from nothing**: it only ever tops up a
   cluster that has at least one real seed pixel (`!fusedViews.empty()` guard); with
   `fFusePriorWeight == 0` the prior is not even computed for fusion (`bUsePrior` false) and output is
@@ -102,67 +119,113 @@ the same reason.
 - **Point position is always the plain median of member 3D locations**; weights are stored per view
   for downstream consumers (mesh visibility weighting, the Interface's `Vertex::View::confidence`)
   and never used to average the position itself.
-- **Fusion degrades silently under memory pressure**: `DenseFuseDepthMaps` budgets its neighbour
-  cache from free RAM and skips caching any neighbour that does not fit, logging `warning: not
-  enough memory to cache depth-maps` — a starved run fuses a measurably different (smaller) cloud, so
-  fusion must never run concurrently with another memory-heavy job when its output is being compared.
-- `fDepthReprojectionErrorThreshold` and `fDepthDiffThreshold` are shared verbatim with the confidence
-  recalibration's gate thresholds (`ConfRefine::Params::thReproj`/`thDepth`) by design, so the
-  recalibrated confidence predicts what fusion will accept.
+- **The output depends on the cache size**: the reference order follows the cache contents
+  (`FetchBestNextDMapIndex`), so a different cache consumes pixels in a different order and fuses a
+  slightly different cloud (within the 0.003 F1 repeat spread). With free memory above the cap the
+  cache size is fixed by the scene; below it, never compare fusion outputs produced beside another
+  memory-heavy job.
+  Every neighbour of the current reference stays resident while it is fused: eviction is
+  least-recently-used and stops at the reference, which is touched before its neighbours.
+- **The join thresholds are fusion's alone.** The confidence recalibration measures whether a depth
+  is correct, with tolerances calibrated to the estimation noise (`ConfRefine::CONFIRM_DEPTH`,
+  `DepthMapConfidence.md`), which is also the unit of the intra-map prior's plane-fit band; fusion's
+  floor on the recalibrated confidence is its own `FUSE_MIN_CONF`. Changing the join thresholds
+  therefore refines the clustering without moving the confidence scale that floor is applied to.
 
 ## 5. Validation of the shipped defaults
 
-`fDepthReprojectionErrorThreshold = 1.0` (current default) vs. the previous default `1.2`, fusion-only
-on frozen depth-maps (`--geometric-iters 0`, so only the constant under test changes), Tanks-and-Temples
-training scenes, everything else at today's defaults:
+### Join thresholds
 
-| scene | P / R / F1 at 1.2 | P / R / F1 at 1.0 (shipped) | ΔF1 | points |
+Full `DensifyPointCloud --number-views 24` at resolution levels 1 and 0 with the current code, one
+depth-map set per scene and level, re-fused at each threshold pair (`--geometric-iters 0`; the
+confidence recalibration does not read these thresholds, so one estimation serves the whole grid),
+official Tanks-and-Temples evaluator re-aligning every cloud:
+
+| scene | R1: 1.0 px / 1% | R1: 0.6 px / 1% | R0: 1.0 px / 1% | R0: 0.6 px / 1% |
 |---|---|---|---|---|
-| Barn | 0.5746 / 0.7263 / 0.6416 | 0.5770 / 0.7394 / 0.6482 | +0.0066 | +9.3% |
-| Ignatius | 0.7081 / 0.8472 / 0.7714 | 0.7087 / 0.8566 / 0.7757 | +0.0043 | +8.5% |
-| Meetingroom | 0.5072 / 0.3838 / 0.4370 | 0.5130 / 0.3909 / 0.4437 | +0.0067 | +5.9% |
-| Truck | 0.6761 / 0.7644 / 0.7176 | 0.6790 / 0.7713 / 0.7222 | +0.0046 | +10.9% |
+| Meetingroom | 0.4515 | 0.4763 | 0.5399 | 0.5515 |
+| Caterpillar | 0.6159 | 0.6366 | 0.6725 | 0.6736 |
+| Truck | 0.7283 | 0.7444 | 0.7587 | 0.7624 |
+| Church | 0.6166 | 0.6290 | 0.6615 | 0.6678 |
+| Ignatius | 0.8047 | 0.8197 | 0.8941 | 0.8970 |
+| Barn | 0.6526 | 0.6829 | 0.7264 | 0.7366 |
+| mean | 0.6449 | **0.6648** | 0.7089 | **0.7148** |
 
-Mean ΔF1 +0.0055, precision and recall both up on every scene; the raw-mesh F1 after
-`ReconstructMesh` moves within ±0.0013, inside the ~0.0006 mesh noise floor — the tighter tolerance
-does not starve clusters, it splits over-merged ones into distinct, better-placed points, and the
-mesh step absorbs the extra points without cost. Benchmark protocol: `DensifyPointCloud
---resolution-level 1 --number-views 12 --estimate-roi 0 --crop-to-roi 0 --tower-mode 0` on Barn /
-Ignatius / Meetingroom / Truck, scored against the laser ground truth with a frozen per-scene
-alignment transform.
+`fDepthReprojectionErrorThreshold = 0.6` wins on every scene at both levels. Fusion's reprojection
+gate compares the seed's projection with the rounded pixel the walk landed on, so it sees pixel
+rounding plus the drift of multi-hop joins; 0.6 px keeps the joins that land near the seed's own
+projection. A relative depth difference of 0.5% instead of 1% is neutral at R1 (mean 0.6632 with
+0.6 px, 0.6450 with 1.0 px) and slightly worse at R0 (0.7118, 0.7063), so `fDepthDiffThreshold` stays
+0.01: correct depths disagree by 0.3–1% at the 90th percentile, and a tighter join splits their
+clusters without improving placement.
+
+### Contradiction guard and `fFusePriorWeight = 4`
+
+Fusion-only on frozen `--resolution-level 0 --number-views 24` depth-maps, official Tanks-and-Temples
+evaluator re-aligning every cloud; baseline = the previous defaults (prior weight 3, guard on
+free-space violations of rescued points only). Ignatius and Barn were held out of the analysis that
+chose the rule:
+
+| scene | cloud F1 before | cloud F1 with the guard | ΔF1 |
+|---|---|---|---|
+| Meetingroom | 0.5306 | 0.5419 | +0.011 |
+| Truck | 0.7434 | 0.7591 | +0.016 |
+| Church | 0.6583 | 0.6617 | +0.003 |
+| Caterpillar | 0.6344 | 0.6679 | +0.034 |
+| Ignatius | 0.8867 | 0.8943 | +0.008 |
+| Barn | 0.7055 | 0.7250 | +0.020 |
+
+Mean ΔF1 +0.015, every scene up. The rule was found by dumping every fusion cluster with the
+outcome of each probed view and replaying keep-rules against the ground truth: weakly supported
+clusters that no view contradicts are as accurate as fully supported ones on every scene, those
+with normal contradictions are not.
+
+End-to-end check of the shipped defaults (`--resolution-level 0 --number-views 24`, full densify
+then `ReconstructMesh` at defaults, every product realigned), against the same flags at the previous
+defaults:
+
+| scene | cloud F1 | mesh F1 | previous cloud / mesh | densify | fusion | peak private |
+|---|---|---|---|---|---|---|
+| Truck | 0.7627 | 0.6870 | 0.7420 / 0.6816 | 12m14s | 4m40s | 15.1 GB |
+| Meetingroom | 0.5513 | 0.5070 | 0.5318 / 0.5043 | 16m52s | 5m51s | 15.4 GB |
+
+Both clouds reproduce the re-fused grid values above within 0.0003. Against a cache budgeted once
+from all free memory with the GPU pools kept alive, the per-map budget cuts fusion from 6m10s / 7m06s
+(Truck / Meetingroom), starts it at 4–5 GB private instead of ~9 GB and ends it at 15 GB instead
+of 18–20 GB, for cloud F1 within 0.0003 and mesh F1 within 0.003 (the cache size changes the
+fusion order, §4).
 
 ## 6. Rejected alternatives
 
-- **`fFusePriorWeight` at 0 / 2 / 4 / 6** (default 3) — 0/2 give up completeness the rescue is meant
-  to buy; 4 passes the cloud F1 gate but the mesh step rejects it (raw-mesh F1 down, mesh memory
-  +12…40%).
-- **`nMinPixelsFuse` 3 or 4** (default 5) — dominated by tuning `fFusePriorWeight` instead at every
-  dose tried.
-- **`fNCCThresholdKeep` 0.85 or 0.95** (default 0.9) — inert on cloud F1.
-- **`nFuseViolationMax` −1 / 1 / 2** (default 0) — inert; the guard touches only 0.1–0.25% of valid
-  depths at any of these settings.
-- **The same free-space guard applied to non-rescued clusters** — inert.
-- **Denying the prior rescue to any cluster containing a `--fusion-recycle-dropped` pixel** — removes
-  that option's precision loss but cuts its recall gain by the same factor; recycled pixels pay their
-  way only through the rescue, not independently of it.
-- **Seeding clusters in descending-confidence order instead of raster order** — regressed cloud F1 on
-  every scene tried, and worsened the recycle-dropped option when combined with it.
-- **Corroboration** (probes landing on an already-fused pixel that agrees with the cluster count
-  toward the keep-rule) — a moderate weight passes the cloud F1 gate but adds enough points that the
-  mesh cost bounds (memory/wall) are exceeded.
-- **Re-probing the 4-neighbours of a failed join** — instrumentation showed too little of the valid
-  depth was recoverable this way to justify building it.
-- **Reducing `ReconstructMesh --min-point-distance`** — a mesh-memory/wall trade, not a fusion change;
-  left at its own default.
+- **A global `fFusePriorWeight` without the contradiction guard** — 0 wins on accuracy-bound scenes,
+  4 on completeness-bound ones; any single value loses up to 0.035 F1 somewhere.
+- **Adapting the prior weight locally** (image texture, ground sample distance, 3D density of
+  supported points, supported share of the tile/image) — none transfers across scenes
+  (leave-one-scene-out ≤ +0.0045 mean F1 against +0.0088 for the normal-contradiction count).
+- **A stricter normal-contradiction ratio (0.75)** — same mean, moves gain between scenes and puts
+  Church below the unguarded baseline.
+- **Join depth tolerance 0.5%** — neutral at R1, −0.003 at R0 (§5): it splits clusters of correct
+  depths without improving placement.
+- **`nMinPixelsFuse` 3–4, `fNCCThresholdKeep` 0.85/0.95, `nFuseViolationMax` 1–2, the free-space
+  guard on supported points** — dominated by the prior weight or inert.
+- **Recycled pixels denied the rescue** — removes `--fusion-recycle-dropped`'s precision loss and its
+  recall gain alike.
+- **Seeding in descending-confidence order** — lower F1 on every scene tried.
+- **Corroboration by already-fused agreeing pixels** — passes the cloud gate but inflates the point
+  count past the mesh memory/wall bounds.
+- **Re-probing the 4-neighbours of a failed join** — too little depth recoverable to pay for it.
+- **A fusion cache taking all free memory** — no faster than four working sets (5m27s vs 5m26s,
+  Meetingroom) while leaving the machine 2.7 GB instead of 4.1 GB; two working sets route the colour
+  images through the cache and slow fusion by 8%.
 
 ## 7. Open items
 
-- Fusion degrades silently under memory pressure (§4): a neighbour that does not fit the cache is
-  skipped with a warning rather than the run blocking or failing. Making the output independent of
-  free RAM at run time (block until loadable, or fail loudly) is unimplemented.
-- `nMaxViewsFuse` (32) is well above the typical estimation neighbourhood (`nMaxViews`, default 12):
-  the flood-fill can reach views that never contributed to estimation, and whether that interacts
-  with the prior rescue is unexamined.
-- Mesh wall time has been observed to grow superlinearly with fused point count on at least one
-  scene; a profile is needed before pushing fusion completeness further without a matching mesh-side
-  check.
+- The fused cloud depends on the cache size through the reference order (§4); an order independent
+  of the cache contents would make runs reproducible under any memory pressure.
+- The point-cloud itself is the largest fusion allocation (about 250 B per point, most of it the two
+  per-point view and weight lists); a flat views/weights layout would cut it roughly in half.
+- `nMaxViewsFuse` (32) exceeds the estimation neighbourhood (`nMaxViews`, 12): the flood-fill can
+  reach views that never contributed to estimation, and whether that interacts with the prior rescue
+  is unexamined.
+- Mesh wall time grows superlinearly with the fused point count on at least one scene; profile it
+  before pushing fusion completeness further.

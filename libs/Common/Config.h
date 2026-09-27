@@ -213,6 +213,13 @@
 #	define FORCEINLINE inline
 #endif
 
+// function callable from both host code and CUDA device code
+#ifdef __CUDACC__
+#	define HOST_DEVICE __host__ __device__
+#else
+#	define HOST_DEVICE
+#endif
+
 #define SAFE_DELETE(p)		{ if (p!=NULL) { delete (p);     (p)=NULL; } }
 #define SAFE_DELETE_ARR(p)	{ if (p!=NULL) { delete [] (p);  (p)=NULL; } }
 #define SAFE_FREE(p)		{ if (p!=NULL) { free(p);        (p)=NULL; } }

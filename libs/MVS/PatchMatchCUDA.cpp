@@ -475,15 +475,12 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 					n.width == images[n.srcImage].cols && n.height == images[n.srcImage].rows)
 					n.texDepth = (unsigned long long)textureDepths[n.srcImage-1];
 			}
-			const std::chrono::steady_clock::time_point t0(std::chrono::steady_clock::now());
 			bFusedConfDone = RunConfidenceFusedCUDA(size.width, size.height,
 				cudaDepthNormalEstimates, cudaDepthNormalCosts,
-				pConfRequest->k00, pConfRequest->k11, pConfRequest->k02, pConfRequest->k12,
+				pConfRequest->fx, pConfRequest->fy, pConfRequest->cx, pConfRequest->cy,
 				pConfRequest->neighbors.data(), (int)pConfRequest->neighbors.size(),
 				pConfRequest->params,
 				(void*)cudaStream, depthData.confMap.ptr<float>());
-			pConfRequest->computeNS += std::chrono::duration_cast<std::chrono::nanoseconds>(
-				std::chrono::steady_clock::now() - t0).count();
 			pConfRequest->done = bFusedConfDone;
 		}
 

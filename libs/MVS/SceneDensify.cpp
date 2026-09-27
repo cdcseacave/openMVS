@@ -37,7 +37,6 @@
 #include "DMapCache.h"
 #include "ConfidenceRefine.h"
 #include "ConfidenceCUDA.h"
-#include <atomic>
 
 using namespace MVS;
 
@@ -676,14 +675,19 @@ DepthData DepthMapsData::ScaleDepthData(const DepthData& inputDeptData, float sc
 // In order to ensure some smoothness while locally estimating each pixel, a bonus is added to the NCC score if the estimate for this pixel is close to the estimates for the neighbor pixels.
 // Optionally, the occluded pixels can be detected by extending the described iterations to the target image and removing the estimates that do not have similar values in both views.
 // - nGeometricIter: current geometric-consistent estimation iteration (-1 - normal patch-match)
-// (definitions moved up from the adjust-confidence section so the fused in-estimation
-// recalibration below can account its compute time into the same integrated-timing report)
-static std::atomic<int64_t> g_confAdjustComputeNS(0);
-static std::atomic<int64_t> g_confPriorComputeNS(0);
+// single-precision parameter snapshot, shared by the CPU sweep and the CUDA kernel; epsConf is the
+// half-width of the soft GATE-4 smoothstep around minConfidence (MAXF guards fNCCThresholdKeep==1)
+static ConfRefine::Params MakeConfRefineParams()
+{
+	ConfRefine::Params p;
+	p.minConfidence = 1.f - OPTDENSE::fNCCThresholdKeep;
+	ConfRefine::InitParamsShape(p);
+	p.epsConf = MAXF(0.5f*p.minConfidence, 1e-6f);
+	return p;
+}
 #ifdef _USE_CUDA
 // defined alongside AdjustConfidenceCUDA below
 static bool BuildConfNeighborHosts(const DepthData& depthDataRef, std::vector<MVS::CUDA::ConfNeighborHost>& hn);
-static ConfRefine::Params MakeConfRefineParams();
 #endif // _USE_CUDA
 bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 {
@@ -717,16 +721,14 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 			BuildConfNeighborHosts(depthData, confRequest.neighbors)) {
 			const Camera& cameraRef = depthData.GetView().camera;
 			const Matrix3x3f Kf(cameraRef.K);
-			confRequest.k00 = Kf(0,0); confRequest.k11 = Kf(1,1);
-			confRequest.k02 = Kf(0,2); confRequest.k12 = Kf(1,2);
+			confRequest.fx = Kf(0,0); confRequest.fy = Kf(1,1);
+			confRequest.cx = Kf(0,2); confRequest.cy = Kf(1,2);
 			confRequest.params = MakeConfRefineParams();
 			pConfRequest = &confRequest;
 		}
 		pmCUDAPool[s_slot]->EstimateDepthMap(depthData, pConfRequest);
-		if (pConfRequest) {
-			g_confAdjustComputeNS.fetch_add(confRequest.computeNS, std::memory_order_relaxed);
+		if (pConfRequest)
 			depthData.bConfAdjusted = confRequest.done;
-		}
 		return true;
 	}
 	#endif // _USE_CUDA
@@ -1186,11 +1188,11 @@ void DepthMapsData::ComputeIntraMapPrior(const DepthData& depthData, ConfidenceM
 	const NormalMap& normalMap = depthData.normalMap;
 	const bool bHasNormal(!normalMap.empty());
 	const Matrix3x3f K(depthData.GetView().camera.K);
-	const DepthGradientEstimator est(K, depthMap);
-	// relative planarity band; the threshold is clamped away from 0 exactly like the GPU prior's
-	// (MakeConfRefineParams' thDepth, from which PriorKernel derives its band) so the two paths
-	// stay in parity even at the degenerate fDepthDiffThreshold==0 setting
-	const float band(MAXF(OPTDENSE::fDepthDiffThreshold, 1e-6f) * 3.f);
+	ASSERT(ISZERO(K(0,1)));
+	const Eigen::Vector2f focal(K(0,0), K(1,1)), principal(K(0,2), K(1,2));
+	// relative planarity band, in units of the calibrated depth noise (the GPU PriorKernel derives
+	// the same band from Params::thDepth == CONFIRM_DEPTH)
+	const float band(ConfRefine::CONFIRM_DEPTH * 3.f);
 	const float invKmin(1.f / 4.f);                                // soft planar quorum (~4 inliers)
 	priorMap.create(depthMap.size());
 	priorMap.memset(0);
@@ -1199,14 +1201,13 @@ void DepthMapsData::ComputeIntraMapPrior(const DepthData& depthData, ConfidenceM
 	#endif
 	for (int r=0; r<depthMap.rows; ++r) {
 		for (int c=0; c<depthMap.cols; ++c) {
-			const Depth w(depthMap(r,c));
-			if (w <= 0)
-				continue;
 			// fit a slope-aware local depth plane using only depth-similar neighbors
-			Point3f ws;
-			if (!est.DepthGradient(ImageRef(c,r), ws))
-				continue;                                          // not on a locally coherent surface
-			const float wx(ws[1]), wy(ws[2]);
+			const ImageRef pos(c,r);
+			Depth w;
+			Eigen::Vector2f gradient;
+			if (!FitDepthGradient(depthMap, pos, w, gradient))
+				continue;                                          // no depth, or not on a locally coherent surface
+			const float wx(gradient.x()), wy(gradient.y());
 			// slope-aware planarity + inlier quorum over the 3x3 window:
 			// count neighbors whose depth matches the fitted plane prediction (not just the center depth)
 			int nInl(0);
@@ -1234,7 +1235,7 @@ void DepthMapsData::ComputeIntraMapPrior(const DepthData& depthData, ConfidenceM
 			// is unconstrained and disagrees with the geometry-implied gradient normal => Pnorm collapses.
 			float Pnorm(1.f);
 			if (bHasNormal) {
-				const Normal nGrad(est.NormalFromGradient(c, r, w, wx, wy));
+				const Normal nGrad(NormalFromDepthGradient(focal, principal, pos, w, gradient));
 				Pnorm = MAXF(0.f, nGrad.dot(normalMap(r,c)));
 			}
 			priorMap(r,c) = CLAMP(Pplane*Pnorm*gate, 0.f, 1.f);
@@ -1274,11 +1275,14 @@ const ConfidenceMap& DepthMapsData::GetIntraMapPrior(DepthData& depthData, bool 
 //
 // (A) MULTI-VIEW confirmation count K  -- one-hop, O(neighbors), the inter-map evidence:
 //     back-project the pixel to its 3D point X, project X into each neighbor depth-map and
-//     test the neighbor's own estimate against the EXACT four DenseFuse gates --
-//       G1 depth-similarity, G2 forward-backward reprojection, G3 normal agreement,
-//       G4 neighbor min-confidence. Every neighbor passing all four is a genuine confirmation
-//     (++K) and contributes its confidence to Pconf. K is thus a faithful per-pixel proxy for
-//     "how many views would confirm this point during fusion".
+//     weigh the neighbor's own estimate as evidence that the depth is correct --
+//       G1 depth agreement at the estimation noise (ConfRefine::CONFIRM_DEPTH), G2 independence
+//       of the vote from the triangulation angle, G3 normal agreement, G4 neighbor
+//       min-confidence (the estimation's photometric floor). Each neighbor adds the product of these
+//       weights to K and its weighted confidence to Pconf. The tolerances are the depth noise's,
+//       not fusion's clustering thresholds: a pixel that does not join one cluster can still seed
+//       its own, so gating confirmations at fusion's join tolerance would only shrink the
+//       confidence scale under fusion's fixed floor (see CONFIRM_DEPTH).
 //
 // (B) INTRA-MAP geometric prior pGeo (ComputeIntraMapPrior, once per map, O(pixels)):
 //     how well the pixel fits the local surface defined by its own 3x3 neighborhood (small
@@ -1339,8 +1343,6 @@ const ConfidenceMap& DepthMapsData::GetIntraMapPrior(DepthData& depthData, bool 
 //   on the few GPU-dispatch workers; a separate full-resolution pass costing roughly as much as a
 //   fusion pass, which is why it is off by default on the CPU.
 // ----------------------------------------------------------------------------
-// (the g_confAdjustComputeNS / g_confPriorComputeNS accumulators are defined above
-// DepthMapsData::EstimateDepthMap so the fused in-estimation recalibration reports into them too)
 
 // phase-lifetime depth-map cache for the adjust-confidence phase: the phase runs one worker per
 // reference image, each pulling up to 8 neighbors, so a naive per-reference IncRef/DecRef would
@@ -1369,9 +1371,8 @@ static DMapCache* g_pAdjustDMapCache(NULL);
 struct NeighborProj {
 	Matrix3x3f A;    // Kn*Rn*Rr^T*Kr^-1 : ref (u*d,v*d,d) h-coords -> nbr h-coords (q.z = nbr cam depth)
 	Point3f    b;    // Kn*Rn*(Cr-Cn)
-	Matrix3x3f Ai;   // Kr*Rr*Rn^T*Kn^-1 : nbr (u*d,v*d,d) h-coords -> ref h-coords (qr.z = ref cam depth)
-	Point3f    bi;   // Kr*Rr*(Cn-Cr)
 	Matrix3x3f Rrel; // Rn*Rr^T : rotates a ref-camera-space normal directly into the nbr camera space
+	Point3f    cn;   // Rr*(Cn-Cr) : nbr centre in the ref camera frame (triangulation angle, GATE 2)
 	const DepthMap* depthMap;
 	const ConfidenceMap* confMap;
 	const NormalMap* normalMap;
@@ -1432,9 +1433,8 @@ bool DepthMapsData::AdjustConfidence(DepthData& depthDataRef, const IIndexArr& i
 			NeighborProj& np = neighborProjs.AddEmpty();
 			np.A = Matrix3x3f(cameraN.K*Rrel*invKr);
 			np.b = Point3f(cameraN.K*cameraN.R*(cameraRef.C-cameraN.C));
-			np.Ai = Matrix3x3f(cameraRef.K*Rrel.t()*invKn);
-			np.bi = Point3f(cameraRef.K*cameraRef.R*(cameraN.C-cameraRef.C));
 			np.Rrel = Matrix3x3f(Rrel);
+			np.cn = Point3f(cameraRef.R*(cameraN.C-cameraRef.C));
 			np.depthMap = &depthDataN.depthMap;
 			np.confMap = &depthDataN.confMap;
 			np.normalMap = &depthDataN.normalMap;
@@ -1477,9 +1477,8 @@ bool DepthMapsData::AdjustConfidence(DepthData& depthDataRef)
 			NeighborProj& np = neighborProjs.AddEmpty();
 			np.A = Matrix3x3f(cameraN.K*Rrel*invKr);
 			np.b = Point3f(cameraN.K*cameraN.R*(cameraRef.C-cameraN.C));
-			np.Ai = Matrix3x3f(cameraRef.K*Rrel.t()*invKn);
-			np.bi = Point3f(cameraRef.K*cameraRef.R*(cameraN.C-cameraRef.C));
 			np.Rrel = Matrix3x3f(Rrel);
+			np.cn = Point3f(cameraRef.R*(cameraN.C-cameraRef.C));
 			np.depthMap = &viewN.depthMap;
 			np.confMap = &viewN.confMap;
 			np.normalMap = &viewN.normalMap;
@@ -1517,13 +1516,12 @@ static bool BuildConfNeighborHosts(const DepthData& depthDataRef, std::vector<MV
 		const Matrix3x3 Rrel(cameraN.R*cameraRef.R.t()); // ref-cam -> nbr-cam rotation
 		const Matrix3x3f A(cameraN.K*Rrel*invKr);
 		const Point3f b(cameraN.K*cameraN.R*(cameraRef.C-cameraN.C));
-		const Matrix3x3f Ai(cameraRef.K*Rrel.t()*invKn);
-		const Point3f bi(cameraRef.K*cameraRef.R*(cameraN.C-cameraRef.C));
 		const Matrix3x3f Rrelf(Rrel);
 		MVS::CUDA::ConfNeighborHost d;
-		for (int r=0;r<3;++r) for (int c=0;c<3;++c) { d.A[r*3+c]=A(r,c); d.Ai[r*3+c]=Ai(r,c); d.Rrel[r*3+c]=Rrelf(r,c); }
+		for (int r=0;r<3;++r) for (int c=0;c<3;++c) { d.A[r*3+c]=A(r,c); d.Rrel[r*3+c]=Rrelf(r,c); }
 		d.b[0]=b.x; d.b[1]=b.y; d.b[2]=b.z;
-		d.bi[0]=bi.x; d.bi[1]=bi.y; d.bi[2]=bi.z;
+		const Point3f cn(cameraRef.R*(cameraN.C-cameraRef.C));
+		d.cn[0]=cn.x; d.cn[1]=cn.y; d.cn[2]=cn.z;
 		d.depth = viewN.depthMap.ptr<float>();
 		d.conf = viewN.confMap.empty() ? NULL : viewN.confMap.ptr<float>();
 		d.normal = viewN.normalMap.empty() ? NULL : viewN.normalMap.ptr<float>();
@@ -1533,19 +1531,6 @@ static bool BuildConfNeighborHosts(const DepthData& depthDataRef, std::vector<MV
 		hn.push_back(d);
 	}
 	return true;
-}
-
-// single-precision parameter snapshot, identical to AdjustConfidenceSweep's setup
-static ConfRefine::Params MakeConfRefineParams()
-{
-	ConfRefine::Params p;
-	p.minConfidence = 1.f - OPTDENSE::fNCCThresholdKeep;
-	// soft-gate divisors clamped away from 0, mirroring AdjustConfidenceSweep (see the note there)
-	p.thReproj = MAXF(OPTDENSE::fDepthReprojectionErrorThreshold, 1e-6f);
-	p.thDepth = MAXF(OPTDENSE::fDepthDiffThreshold, 1e-6f);
-	ConfRefine::InitParamsShape(p);
-	p.epsConf = MAXF(0.5f*p.minConfidence, 1e-6f);
-	return p;
 }
 
 // GPU counterpart of the integrated AdjustConfidence(DepthData&) above -- the SAME neighbor
@@ -1582,14 +1567,11 @@ bool DepthMapsData::AdjustConfidenceCUDA(DepthData& depthDataRef)
 
 	const Matrix3x3f Kf(cameraRef.K);
 	ConfidenceMap newConfMap(depthMapRef.size());
-	const std::chrono::steady_clock::time_point t0(std::chrono::steady_clock::now());
 	const bool ok(MVS::CUDA::RunConfidenceCUDA(W, H,
 		depthMapRef.ptr<float>(), normalMapRef.empty() ? NULL : normalMapRef.ptr<float>(), confMapRef.ptr<float>(),
 		Kf(0,0), Kf(1,1), Kf(0,2), Kf(1,2),
 		hn.data(), (int)hn.size(), p,
 		newConfMap.ptr<float>()));
-	g_confAdjustComputeNS.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(
-		std::chrono::steady_clock::now() - t0).count(), std::memory_order_relaxed);
 	if (!ok)
 		return false;
 	depthDataRef.confMap = std::move(newConfMap);
@@ -1625,33 +1607,18 @@ static bool AdjustConfidenceSweep(DepthMapsData& depthMapsData, DepthData& depth
 	const ConfidenceMap& confMapRef = depthDataRef.confMap;
 	const bool bHasRefNormal(!normalMapRef.empty());
 
-	// confirmation gates reused verbatim from DenseFuseDepthMaps; the two thresholds are divisors
-	// of the soft gates below, so they are clamped away from 0: a 0 threshold keeps its
-	// "reject everything" meaning while the divisions stay finite instead of producing NaN
-	// (which would otherwise pass every subsequent comparison-based rejection)
-	const float minConfidence(1.f - OPTDENSE::fNCCThresholdKeep);
-	const float thReproj(MAXF(OPTDENSE::fDepthReprojectionErrorThreshold, 1e-6f));
-	const Depth thDepth(MAXF(OPTDENSE::fDepthDiffThreshold, 1e-6f));
-	// soft GATE-4 transition half-width: the confirmation gate replaces a hard cN<minConfidence
-	// rejection with a smoothstep centered on minConfidence, so a low-confidence neighbor down-weights
-	// BOTH K and Pconf (a modest fraction of minConfidence; MAXF guards fNCCThresholdKeep==1 =>
-	// minConfidence==0)
-	const float epsConf(MAXF(0.5f*minConfidence, 1e-6f));
-	// single-precision parameter snapshot shared with the CUDA confidence kernel; the final
-	// per-pixel posterior below is routed through ConfRefine::Posterior so CPU and GPU evaluate the
-	// identical closed form
-	ConfRefine::Params crp;
-	ConfRefine::InitParamsShape(crp);
-	crp.minConfidence = minConfidence; crp.thReproj = thReproj; crp.thDepth = (float)thDepth;
-	crp.epsConf = epsConf;
-	const float violMargin(crp.violMargin);
+	// the parameter snapshot the CUDA kernel receives, and the same gate/posterior helpers, so CPU and
+	// GPU evaluate the identical closed form; the confirmation tolerances are the calibrated
+	// ConfRefine constants (see CONFIRM_DEPTH), NOT fusion's clustering thresholds
+	const ConfRefine::Params crp(MakeConfRefineParams());
+	const float minConfidence(crp.minConfidence), epsConf(crp.epsConf), violMargin(crp.violMargin);
+	const Depth thDepth(crp.thDepth);
+	const Matrix3x3f Kref(imageRef.camera.K);
+	const float invFx(1.f/Kref(0,0)), invFy(1.f/Kref(1,1)), cx(Kref(0,2)), cy(Kref(1,2));
 
 	// intra-map geometric prior (once per map); bParallel=false -- this call runs inside one of
 	// nMaxThreads already-parallel pool-worker threads (see GetIntraMapPrior's declaration comment)
-	const std::chrono::steady_clock::time_point timeAdjustStart(std::chrono::steady_clock::now());
 	const ConfidenceMap& priorMap = depthMapsData.GetIntraMapPrior(depthDataRef, false);
-	g_confPriorComputeNS.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(
-		std::chrono::steady_clock::now() - timeAdjustStart).count(), std::memory_order_relaxed);
 
 	ConfidenceMap newConfMap(depthMapRef.size());
 
@@ -1687,10 +1654,6 @@ static bool AdjustConfidenceSweep(DepthMapsData& depthMapsData, DepthData& depth
 		const float A10(np.A(1,0)), A11(np.A(1,1)), A12(np.A(1,2));
 		const float A20(np.A(2,0)), A21(np.A(2,1)), A22(np.A(2,2));
 		const float b0(np.b.x), b1(np.b.y), b2(np.b.z);
-		const float Ai00(np.Ai(0,0)), Ai01(np.Ai(0,1)), Ai02(np.Ai(0,2));
-		const float Ai10(np.Ai(1,0)), Ai11(np.Ai(1,1)), Ai12(np.Ai(1,2));
-		const float Ai20(np.Ai(2,0)), Ai21(np.Ai(2,1)), Ai22(np.Ai(2,2));
-		const float bi0(np.bi.x), bi1(np.bi.y), bi2(np.bi.z);
 		// the sweep is bound by the projection stage (transform+divide+round+bounds, executed for
 		// EVERY pixel x neighbor candidate, hits and misses alike -- measured at ~80% of the sweep):
 		// stage A projects a WHOLE ROW into flat buffers, 4 columns per iteration with SSE where
@@ -1788,7 +1751,8 @@ static bool AdjustConfidenceSweep(DepthMapsData& depthMapsData, DepthData& depth
 			for (; c<cols; ++c)
 				Project(c);
 			// ---- stage B: gates ----
-			// The confirmation gates G1/G2/G3 are continuous weights wD/wR/wN in [0,1]; their product w
+			// The confirmation gates G1/G2/G3 are continuous weights wD/wR/wN in [0,1] (wR: the vote's
+			// triangulation-angle independence); their product w
 			// contributes a FRACTIONAL confirmation (K += w) and a w-weighted confidence (Pconf += w*cN).
 			// Free-space-violation bookkeeping stays HARD and is evaluated on the nearest sample: V counts
 			// discrete violating views, so softening it would blur the occluded/violating distinction.
@@ -1817,19 +1781,14 @@ static bool AdjustConfidenceSweep(DepthMapsData& depthMapsData, DepthData& depth
 				Depth dN;
 				if (!SampleDepthBilinear(depthMapN, px, py, thDepth, dN))
 					dN = dNNearest; // straddles a depth edge, or out of bounds: fall back to nearest
-				// GATE 1: Gaussian depth agreement, same relative-depth convention as IsDepthSimilar
-				const float wD(expf(-SQUARE((qz-dN)/(0.5f*thDepth*qz))));
-				// GATE 2: forward-backward reprojection residual, same formula as the depth gate's
-				// (same neighbor pixel location x) with the (possibly bilinear) dN swapped in
-				const float un((float)x.x*dN), vn((float)x.y*dN);
-				const float qrz(Ai20*un + Ai21*vn + Ai22*dN + bi2);
-				float wR(0.f);
-				if (qrz > 0) {
-					const float qrx(Ai00*un + Ai01*vn + Ai02*dN + bi0);
-					const float qry(Ai10*un + Ai11*vn + Ai12*dN + bi1);
-					const float du(qrx/qrz - (float)c), dv(qry/qrz - rd);
-					wR = expf(-(du*du+dv*dv)/SQUARE(0.5f*thReproj));
-				}
+				// GATE 1: Gaussian depth agreement, same relative-depth convention as IsDepthSimilar;
+				// every other weight is <= 1, so a negligible wD already decides the vote
+				const float wD(ConfRefine::SoftDepthW(qz, (float)dN, thDepth));
+				if (wD <= 0.05f)
+					continue;
+				// GATE 2: independence of the confirmation, from the triangulation angle at the point
+				const float wR(ConfRefine::AngleW(((float)c-cx)*invFx*depthRef, (rd-cy)*invFy*depthRef, depthRef,
+					np.cn.x, np.cn.y, np.cn.z));
 				// GATE 3: normal agreement cosine; neutral (1) when no normal maps are available
 				float wN(1.f);
 				if (bNormalGate) {
@@ -1841,9 +1800,7 @@ static bool AdjustConfidenceSweep(DepthMapsData& depthMapsData, DepthData& depth
 				// but low-confidence neighbor cannot push K>=1 and trip the anti-cascade floor, which is
 				// reserved for genuinely min-confidence-passing pixels. cN==1 when no conf map => wC==1.
 				const float cN(bHasConf ? (*np.confMap)(x) : 1.f);
-				const float tC(CLAMP((cN - (minConfidence - epsConf))*(0.5f/epsConf), 0.f, 1.f));
-				const float wC(tC*tC*(3.f - 2.f*tC));
-				const float w(wD*wR*wN*wC);
+				const float w(wD*wR*wN*ConfRefine::SoftConfW(cN, minConfidence, epsConf));
 				if (w <= 0.05f)
 					continue; // negligible joint agreement: does not contribute
 				countMap(r,c) += w;
@@ -1880,8 +1837,6 @@ static bool AdjustConfidenceSweep(DepthMapsData& depthMapsData, DepthData& depth
 			#endif
 		}
 	}
-	g_confAdjustComputeNS.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(
-		std::chrono::steady_clock::now() - timeAdjustStart).count(), std::memory_order_relaxed);
 	if (bDeferSwap) {
 		// store the recalibrated confidence-map in memory; the EVT_ADJUSTDEPTHMAP handler swaps it
 		// into confMap only after every reference using this image as a neighbor has finished
@@ -1922,13 +1877,8 @@ void DepthMapsData::EstimateNormalMaps()
 		const String fileName(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap"));
 		const bool bEmpty(depthData.IsEmpty());
 		if (bEmpty && !depthData.Load(fileName)) {
-			#ifdef DENSE_USE_OPENMP
-			bAbort = true;
-			#pragma omp flush (bAbort)
+			depthData.Release(); // unreadable file: skipped here as it is by the fusion
 			continue;
-			#else
-			return;
-			#endif
 		}
 		ASSERT(!depthData.IsEmpty());
 		ASSERT(!scene.images[idxImage].neighbors.empty());
@@ -2032,36 +1982,38 @@ void DepthMapsData::MergeDepthMaps(PointCloud& pointcloud, bool bEstimateColor, 
 /*----------------------------------------------------------------*/
 
 
-// compute available memory to be used for depth-data caching
-// - numDMapsReserveFusion: maximum number of depth-maps for which to reserve memory for fusion
-size_t GetAvailableMemory(const DepthDataArr& arrDepthData, const BoolArr& fusedDMaps, IIndex numDMapsReserveFusion, size_t currentCacheMemory = 0)
+// bytes one point takes in the point-cloud's per-point arrays
+size_t PointArraysBytes(const PointCloud& pointcloud)
 {
-	size_t resolution(0);
-	IIndex numDMaps(0);
-	FOREACH(idxImage, arrDepthData) {
-		const DepthData& depthData = arrDepthData[idxImage];
-		if (!depthData.IsValid())
-			continue;
-		if (fusedDMaps[idxImage])
-			continue;
-		resolution += depthData.size.area();
-		if (++numDMaps >= numDMapsReserveFusion)
-			break;
+	return sizeof(PointCloud::Point) + sizeof(PointCloud::ViewArr) + sizeof(PointCloud::WeightArr) +
+		(pointcloud.normals.capacity() ? sizeof(PointCloud::Normal) : 0) +
+		(pointcloud.colors.capacity() ? sizeof(PointCloud::Color) : 0);
+}
+
+// what the point-cloud may grow by while the next depth-map is fused: twice what the points the last
+// one added occupy (array elements plus the heap blocks of their view and weight lists), plus the
+// peak of the per-point arrays' reallocations that many points trigger: a cList grows by half per
+// step and frees the old storage only once copied, so the peak is the last two buffers of the chain
+size_t FusionMemoryReserve(const PointCloud& pointcloud, PointCloud::Index firstNewPoint)
+{
+	constexpr size_t heapBlock(16); // header of a small heap allocation
+	const size_t numNew(pointcloud.points.size() - firstNewPoint);
+	size_t added(numNew * (PointArraysBytes(pointcloud) + 2*heapBlock));
+	for (PointCloud::Index i=firstNewPoint; i<pointcloud.points.size(); ++i)
+		added += pointcloud.pointViews[i].size() * (sizeof(PointCloud::View) + sizeof(PointCloud::Weight));
+	size_t reserve(2*added);
+	const size_t capacity(pointcloud.points.capacity()), needed(pointcloud.points.size() + 2*numNew);
+	if (needed > capacity) {
+		size_t prevCapacity(capacity), newCapacity(capacity);
+		while (newCapacity < needed) {
+			prevCapacity = newCapacity;
+			newCapacity += MAXF(newCapacity/2, (size_t)1);
+		}
+		// the current storage is already allocated, so only what the chain adds on top of it
+		reserve += (newCapacity + prevCapacity - capacity) * PointArraysBytes(pointcloud);
 	}
-	if (numDMaps == 0)
-		return 0;
-	const Util::MemoryInfo memInfo(Util::GetMemoryInfo());
-	const size_t neededPointCloudMemory(ROUND2INT<size_t>(resolution * (1/*depth*/+1/*color*/+3/*normal*/+1/*confidence*/) * 4/*bytes*/ * 0.35/*unique pixels per depth-map*/));
-	const size_t freeMemory(currentCacheMemory + memInfo.freePhysical);
-	const size_t safetyMemory(ComputeSafetyMemory(memInfo));
-	const size_t neededMemory(neededPointCloudMemory + safetyMemory);
-	const size_t minDMapsMemory(resolution / numDMaps * 8/*min dmaps in memory*/ * ((1/*depth*/ + 3/*normal*/ + 1/*confidence*/) * 4/*bytes*/ + 3/*color bytes*/));
-	if (freeMemory < neededMemory) {
-		DEBUG("warning: not enough memory to cache depth-maps (%luMB needed, %luMB available)", neededMemory/1024/1024, freeMemory/1024/1024);
-		return MINF(currentCacheMemory, minDMapsMemory);
-	}
-	return freeMemory - neededMemory;
-} // GetAvailableMemory
+	return reserve;
+} // FusionMemoryReserve
 
 // decode the pixels of every image with a depth-map to fuse, for the steps that
 // need all of them at once instead of the few a cache can hold; the images without
@@ -2090,6 +2042,23 @@ bool LoadAllImages(ImageArr& images, const DepthDataArr& arrDepthData)
 	return bSuccess;
 } // LoadAllImages
 
+// the memory the fusion cache needs at once: the depth-map being fused and its neighbors
+size_t FusionWorkingSet(const DepthDataArr& arrDepthData)
+{
+	size_t resolution(0);
+	IIndex numDMaps(0);
+	for (const DepthData& depthData: arrDepthData) {
+		if (!depthData.IsValid())
+			continue;
+		resolution += (size_t)depthData.size.area();
+		++numDMaps;
+	}
+	if (numDMaps == 0)
+		return 0;
+	return resolution / numDMaps * (MINF(OPTDENSE::nMaxViewsFuse, numDMaps) + 1) *
+		(1/*depth*/ + 3/*normal*/ + 1/*confidence*/) * 4/*bytes*/;
+}
+
 // decide how the fused colors reach the image pixels, which the depth-map
 // estimation no longer leaves resident:
 // - when the pixels of every image fit next to the depth-maps the cache has to
@@ -2100,25 +2069,16 @@ bool LoadAllImages(ImageArr& images, const DepthDataArr& arrDepthData)
 // - otherwise hand the images to the cache, which loads and releases them
 //   together with the depth-data, bounding what a scene with far more images
 //   than fit can use.
-// Returns the images for the cache to manage, or NULL once they are resident,
-// taking what they occupy out of the cache budget.
-ImageArr* PrepareFusionImages(const DepthDataArr& arrDepthData, ImageArr& images, size_t& cacheMemory)
+// Returns the images for the cache to manage, or NULL once they are resident.
+ImageArr* PrepareFusionImages(const DepthDataArr& arrDepthData, ImageArr& images, size_t cacheMemory, size_t workingSet)
 {
-	size_t allColors(0), resolution(0);
-	IIndex numDMaps(0);
-	FOREACH(idxImage, arrDepthData) {
-		if (!arrDepthData[idxImage].IsValid())
-			continue;
-		const Image& imageData = images[idxImage];
-		allColors += (size_t)imageData.GetSize().area() * sizeof(Pixel8U);
-		resolution += (size_t)arrDepthData[idxImage].size.area();
-		++numDMaps;
-	}
-	if (numDMaps == 0)
+	size_t allColors(0);
+	FOREACH(idxImage, arrDepthData)
+		if (arrDepthData[idxImage].IsValid())
+			allColors += (size_t)images[idxImage].GetSize().area() * sizeof(Pixel8U);
+	if (allColors == 0)
 		return NULL;
 	// the cache still has to hold the depth-map being fused and its neighbors
-	const size_t workingSet(resolution / numDMaps *
-		(MINF(OPTDENSE::nMaxViewsFuse, numDMaps) + 1) * (1/*depth*/ + 3/*normal*/ + 1/*confidence*/) * 4/*bytes*/);
 	if (allColors + workingSet > cacheMemory) {
 		VERBOSE("Fused colors sampled through the depth-map cache: %luMB of images do not fit in %luMB",
 			allColors/1024/1024, cacheMemory/1024/1024);
@@ -2126,20 +2086,47 @@ ImageArr* PrepareFusionImages(const DepthDataArr& arrDepthData, ImageArr& images
 	}
 	if (!LoadAllImages(images, arrDepthData))
 		VERBOSE("warning: some images could not be decoded; the points they see stay uncolored");
-	cacheMemory -= allColors;
 	return NULL;
 } // PrepareFusionImages
 
 // budget the memory a fusion pass may use and decide where the fused colors come
 // from: images left resident (pCachedImages NULL) or managed by the depth-map cache
 struct FusionCacheSetup {
-	size_t cacheMemory;
-	ImageArr* pCachedImages;
-	FusionCacheSetup(const DepthDataArr& arrDepthData, const BoolArr& fusedDMaps, IIndex numDMapsReserveFusion, ImageArr& images, bool bEstimateColor)
+	const size_t minMemory; // the working set: the depth-map being fused and its neighbors
+	const size_t maxMemory; // past a few working sets a larger cache saves no reads, it only takes
+	                        // the memory other processes and the point-cloud need
+	mutable bool bLowMemoryReported{false};
+	ImageArr* const pCachedImages;
+	const size_t cacheMemory; // the initial budget, taken once the colors are resident
+	FusionCacheSetup(const DepthDataArr& arrDepthData, ImageArr& images, bool bEstimateColor)
 		:
-		cacheMemory(GetAvailableMemory(arrDepthData, fusedDMaps, numDMapsReserveFusion)),
-		pCachedImages(bEstimateColor ? PrepareFusionImages(arrDepthData, images, cacheMemory) : NULL)
+		minMemory(FusionWorkingSet(arrDepthData)),
+		maxMemory(minMemory * 4),
+		// the colors stay resident when they fit in the memory free now, not only under the cap
+		pCachedImages(bEstimateColor ? PrepareFusionImages(arrDepthData, images, Available(0, 0), minMemory) : NULL),
+		cacheMemory(Budget(0, 0))
 	{
+	}
+	// the memory the cache may take now, from what is free (the cache's own `usedMemory` included):
+	// `reserve`, what the point-cloud may still grow by before the next re-evaluation, and the safety
+	// margin stay free; never less than the working set. The reserve is a generous estimate, so a
+	// tight budget only costs re-reads: it is reported once, not failed
+	size_t Available(size_t usedMemory, size_t reserve) const {
+		const Util::MemoryInfo memInfo(Util::GetMemoryInfo());
+		const size_t freeMemory(usedMemory + memInfo.freePhysical);
+		const size_t keepMemory(reserve + ComputeSafetyMemory(memInfo));
+		if (freeMemory >= keepMemory + minMemory)
+			return freeMemory - keepMemory;
+		if (!bLowMemoryReported) {
+			VERBOSE("warning: low memory, the depth-map cache is reduced to one working set (%luMB needed, %luMB available)",
+				(keepMemory + minMemory)>>20, freeMemory>>20);
+			bLowMemoryReported = true;
+		}
+		return minMemory;
+	}
+	// the cache budget for the memory free now, capped at a few working sets
+	size_t Budget(size_t usedMemory, size_t reserve) const {
+		return MINF(Available(usedMemory, reserve), maxMemory);
 	}
 };
 
@@ -2200,7 +2187,6 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 	// fuse all depth-maps, processing the best connected images first
 	const unsigned nMinViewsFuse(MINF(OPTDENSE::nMinViewsFuse, arrDepthData.size()));
 	const float normalError(COS(D2R(OPTDENSE::fNormalDiffThreshold)));
-	const IIndex numDMapsReserveFusion(10);
 	CLISTDEF0(Depth*) invalidDepths(0, 32);
 	size_t nDepths(0);
 	typedef TImage<cuint32_t> DepthIndex;
@@ -2222,7 +2208,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 	GET_LOGCONSOLE().Pause();
 	BoolArr fusedDMaps(arrDepthData.size());
 	fusedDMaps.Memset(0);
-	const FusionCacheSetup cacheSetup(arrDepthData, fusedDMaps, numDMapsReserveFusion, scene.images, bEstimateColor);
+	const FusionCacheSetup cacheSetup(arrDepthData, scene.images, bEstimateColor);
 	DMapCache cacheDMaps(arrDepthData, depthDataLoadFlags, cacheSetup.cacheMemory, cacheSetup.pCachedImages);
 	unsigned totalNumImageNeighborsInCache = 0, totalNumImagesInCache = 0;
 	IIndex numDMapsFused = 0;
@@ -2236,10 +2222,13 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 		totalNumImagesInCache += numImagesInCache;
 		// fuse depth-map
 		cacheDMaps.UseImage(idxImage);
-		cacheDMaps.SkipMemoryCheckIdxImage(idxImage);
 		const DepthData& depthData(arrDepthData[idxImage]);
 		ASSERT(depthData.GetView().GetLocalID(scene.images) == idxImage);
-		ASSERT(!depthData.IsEmpty());
+		if (depthData.IsEmpty()) {
+			fusedDMaps[idxImage] = true; // unreadable depth-map file (logged by the cache): nothing to fuse
+			continue;
+		}
+		cacheDMaps.SkipMemoryCheckIdxImage(idxImage);
 		if (bEstimateNormal && depthData.normalMap.empty())
 			EstimateNormalMaps();
 		ASSERT(!depthData.images.empty() && !depthData.neighbors.empty());
@@ -2390,10 +2379,9 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 		DEBUG_ULTIMATE("Depth-map for reference image %3u fused using %u depth-maps: %u new points, %u/%u cached images (%s)",
 			idxImage, depthData.images.size()-1, pointcloud.points.size()-nNumPointsPrev, numImageNeighborsInCache, numImagesInCache, TD_TIMER_GET_FMT().c_str());
 		progress.display(numDMapsFused);
-		// ensure enough memory is available for the next depth-maps chunk
+		// shrink the cache as the point-cloud grows, so it never takes the memory the next points need
 		cacheDMaps.SkipMemoryCheckIdxImage();
-		if (numDMapsFused % numDMapsReserveFusion == 0)
-			cacheDMaps.SetMaxMemory(GetAvailableMemory(arrDepthData, fusedDMaps, numDMapsReserveFusion, cacheDMaps.GetUsedMemory()));
+		cacheDMaps.SetMaxMemory(cacheSetup.Budget(cacheDMaps.GetUsedMemory(), FusionMemoryReserve(pointcloud, nNumPointsPrev)));
 	}
 	GET_LOGCONSOLE().Play();
 	progress.close();
@@ -2447,9 +2435,11 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	// fuse all depth-maps, processing the best connected images first
 	const unsigned nMinViewsFuse(MINF(OPTDENSE::nMinViewsFuse, arrDepthData.size()));
 	const float normalError(COS(D2R(OPTDENSE::fNormalDiffThreshold)));
-	const float minConfidence(1.f - OPTDENSE::fNCCThresholdKeep);
+	// seed/join confidence floor, on the scale the map's confidence is expressed in: a raw
+	// photometric confidence (1 - matching cost) is cut where the estimation cuts the cost itself,
+	// while a recalibrated one (fusion-survival evidence, see AdjustConfidence) has its own floor
+	const float minConfidenceRaw(1.f - OPTDENSE::fNCCThresholdKeep);
 	const float maxReprojErrorSq(SQUARE(OPTDENSE::fDepthReprojectionErrorThreshold));
-	const IIndex numDMapsReserveFusion(10);
 	const bool bEstimateNormal(true); // always estimate normals as they are needed for the fusion
 	size_t nDepths(0);
 	UseMaskArr arrUseMask(arrDepthData.size());
@@ -2472,7 +2462,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	GET_LOGCONSOLE().Pause();
 	BoolArr fusedDMaps(arrDepthData.size());
 	fusedDMaps.Memset(0);
-	const FusionCacheSetup cacheSetup(arrDepthData, fusedDMaps, numDMapsReserveFusion, scene.images, bEstimateColor);
+	const FusionCacheSetup cacheSetup(arrDepthData, scene.images, bEstimateColor);
 	DMapCache cacheDMaps(arrDepthData, depthDataLoadFlags, cacheSetup.cacheMemory, cacheSetup.pCachedImages);
 	unsigned totalNumImageNeighborsInCache = 0, totalNumImagesInCache = 0;
 	BoolArr neighbors(arrDepthData.size());
@@ -2483,16 +2473,14 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	FloatArr fusedWeights;
 	Point3d fusedNormal;
 	Pixel32F fusedColor;
-	// free-space-violation (FSV) guard -- the set of DISTINCT view IDs that, for the point
-	// currently being accumulated, were rejected by the join gate below BECAUSE their own measured
-	// depth lies well behind the point (same classification as the AdjustConfidenceSweep
-	// violMap). Deduplicated the same way fusedViews dedups observing views (InsertSortUnique), so V
-	// counts "how many distinct views see behind this point" and is per-view-bounded like the sweep's
-	// V -- the flood-fill can reach one neighbor view via several parent paths before its useMask is
-	// set, so a plain per-probe counter would over-count a single view. Only consulted at the
-	// keep-rule for points RESCUED by virtualSupport (see OPTDENSE::nFuseViolationMax); reset
-	// alongside fusedViews et al.
-	PointCloud::ViewArr fusedViolViews;
+	// contradiction guard of the keep-rule (see OPTDENSE::nFuseViolationMax): the DISTINCT views that
+	// contradict the point being accumulated -- fusedContraViews see a surface well behind it
+	// (free-space violation) or agree with its depth and reprojection but dispute its normal, the
+	// latter also listed in fusedNormViews. Unlike a view with no usable pixel (out of frame, empty,
+	// low confidence, consumed), both are evidence against the point. Deduplicated because the
+	// flood-fill can re-reach a view through several parents before its useMask is set, and one view
+	// can contradict in both ways through different probes; reset alongside fusedViews
+	PointCloud::ViewArr fusedContraViews, fusedNormViews;
 	// the pixels the cluster currently being accumulated consumed, one entry per join: the list a
 	// DROPPED cluster walks to hand them back (bFuseRecycleDropped). In lockstep with fusedPoints,
 	// hence bounded by nMaxPointsFuse too, and reset alongside fusedViews et al.
@@ -2515,7 +2503,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 				return;
 			// ignore pixel if not confident
 			const float conf(depthData.confMap.empty() ? 1.f : depthData.confMap(x));
-			if (conf < minConfidence)
+			if (conf < (depthData.bConfAdjusted ? ConfRefine::FUSE_MIN_CONF : minConfidenceRaw))
 				return;
 			const DepthData::ViewData& image = depthData.GetView();
 			// if the fusion depth is greater than zero, the initial reference pixel
@@ -2527,16 +2515,11 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 				// check if depth agrees with current depth
 				ASSERT(depthProj > Depth(0) || !IsDepthSimilar(depth, depthProj, OPTDENSE::fDepthDiffThreshold));
 				if (!IsDepthSimilar(depth, depthProj, OPTDENSE::fDepthDiffThreshold)) {
-					// classify why the join gate failed, SAME free-space-violation (FSV)
-					// test as the AdjustConfidenceSweep (violMap): `depth` is this view's OWN
-					// measured depth at x, `depthProj` is our accumulating point reprojected into
-					// this view -- if this view's ray sees a surface well BEHIND our point instead
-					// of agreeing with it, that is negative evidence the point is real (only
-					// meaningful when depthProj>0, i.e. the point is actually in front of this view).
-					// Record the DISTINCT view ID (InsertSortUnique) so V counts violating views, not
-					// probes -- one view can be re-reached before its useMask is set.
+					// free-space violation: this view's OWN depth at x lies well BEHIND the point
+					// (depthProj>0: the point is in front of the view), so its ray passes through it;
+					// same test as the recalibration's, at fusion's own depth tolerance
 					if (depthProj > Depth(0) && depth > depthProj * (1.f + ConfRefine::VIOLATION_MARGIN * OPTDENSE::fDepthDiffThreshold))
-						fusedViolViews.InsertSortUnique(ID);
+						fusedContraViews.InsertSortUnique(ID);
 					return;
 				}
 				// check reprojection error of the reference point in the current view
@@ -2546,8 +2529,11 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 				// check if normals agree
 				normal = image.camera.R.t() * Cast<REAL>(depthData.normalMap(x));
 				ASSERT(ISEQUAL(norm(normal), 1.f, 1e-2f), "Norm = ", norm(normal));
-				if (refNormal.dot(normal) < normalError)
+				if (refNormal.dot(normal) < normalError) {
+					fusedNormViews.InsertSortUnique(ID);
+					fusedContraViews.InsertSortUnique(ID);
 					return;
+				}
 			} else {
 				normal = image.camera.R.t() * Cast<REAL>(depthData.normalMap(x));
 				ASSERT(ISEQUAL(norm(normal), 1.f, 1e-2f), "Norm = ", norm(normal));
@@ -2619,10 +2605,13 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 		++numDMapsFused;
 		// fuse depth-map
 		cacheDMaps.UseImage(idxImage);
-		cacheDMaps.SkipMemoryCheckIdxImage(idxImage);
 		DepthData& depthData(arrDepthData[idxImage]); // non-const: GetIntraMapPrior caches into depthData.priorMap
 		ASSERT(depthData.GetView().GetLocalID(scene.images) == idxImage);
-		ASSERT(!depthData.IsEmpty());
+		if (depthData.IsEmpty()) {
+			fusedDMaps[idxImage] = true; // unreadable depth-map file (logged by the cache): nothing to fuse
+			continue;
+		}
+		cacheDMaps.SkipMemoryCheckIdxImage(idxImage);
 		if (bEstimateNormal && depthData.normalMap.empty())
 			EstimateNormalMaps();
 		if (bUsePrior)
@@ -2689,15 +2678,15 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 				if (!fusedViews.empty() &&
 					(float)fusedPoints[0].size() + virtualSupport >= (float)OPTDENSE::nMinPixelsFuse &&
 					(float)fusedViews.size() + virtualSupport >= (float)nMinViewsFuse) {
-					// a point that passes ONLY thanks to virtualSupport (i.e. would have FAILED the
-					// keep-rule at virtualSupport==0) is "rescued"; nFuseViolationMax additionally
-					// requires such a point to be seen from behind by at most that many DISTINCT views
-					// (fusedViolViews, populated above by the join gate). A NON-rescued point (already
-					// meeting both thresholds on real support alone) is never subject to this guard;
-					// nFuseViolationMax<0 disables it entirely.
+					// contradiction guard (nFuseViolationMax<0 disables it): a point kept ONLY thanks to
+					// virtualSupport is "rescued", worth keeping only when its missing support is a lack of
+					// evidence, so at most nFuseViolationMax views may contradict it; a point kept on real
+					// support is dropped only when the views disputing its normal outnumber its own views
 					const bool rescued = fusedPoints[0].size() < OPTDENSE::nMinPixelsFuse ||
 										  fusedViews.size() < nMinViewsFuse;
-					if (!rescued || OPTDENSE::nFuseViolationMax < 0 || fusedViolViews.size() <= (unsigned)OPTDENSE::nFuseViolationMax) {
+					if (OPTDENSE::nFuseViolationMax < 0 || (rescued ?
+						fusedContraViews.size() <= (unsigned)OPTDENSE::nFuseViolationMax :
+						fusedNormViews.size() <= fusedViews.size())) {
 						bClusterKept = true;
 						// create the corresponding 3D point
 						pointcloud.points.emplace_back(
@@ -2737,7 +2726,8 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 					fusedWeights.clear();
 					fusedNormal = Point3d::ZERO;
 					fusedColor = Pixel32F::BLACK;
-					fusedViolViews.clear();
+					fusedContraViews.clear();
+					fusedNormViews.clear();
 				}
 			}
 		}
@@ -2746,10 +2736,9 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 		DEBUG_ULTIMATE("Depth-map for reference image %3u fused using %u depth-maps: %u new points, %u/%u cached images (%s)",
 			idxImage, depthData.images.size() - 1, pointcloud.points.size() - nNumPointsPrev, numImageNeighborsInCache, numImagesInCache, TD_TIMER_GET_FMT().c_str());
 		progress.display(numDMapsFused);
-		// ensure enough memory is available for the next depth-maps chunk
+		// shrink the cache as the point-cloud grows, so it never takes the memory the next points need
 		cacheDMaps.SkipMemoryCheckIdxImage();
-		if (numDMapsFused % numDMapsReserveFusion == 0)
-			cacheDMaps.SetMaxMemory(GetAvailableMemory(arrDepthData, fusedDMaps, numDMapsReserveFusion, cacheDMaps.GetUsedMemory()));
+		cacheDMaps.SetMaxMemory(cacheSetup.Budget(cacheDMaps.GetUsedMemory(), FusionMemoryReserve(pointcloud, nNumPointsPrev)));
 	}
 	GET_LOGCONSOLE().Play();
 	progress.close();
@@ -3280,10 +3269,6 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		if (!data.depthMaps.pmMetalPool.empty() && OPTDENSE::nEstimationGeometricIters)
 			data.depthMaps.ReinitMetalPoolForGeom();
 		#endif // _USE_METAL
-		// reset the shared confidence-compute accumulators so the post-loop timing line reports only
-		// the integrated last-iteration recalibration (the standalone phase resets them itself)
-		g_confAdjustComputeNS.store(0);
-		g_confPriorComputeNS.store(0);
 		while (++data.nEstimationGeometricIter < (int)OPTDENSE::nEstimationGeometricIters) {
 			// initialize the queue of images to be geometric processed
 			if (data.nEstimationGeometricIter+1 == (int)OPTDENSE::nEstimationGeometricIters)
@@ -3321,17 +3306,6 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 			}
 		}
 		data.nEstimationGeometricIter = -1;
-		// integrated confidence recalibration timing (GPU kernel+transfer, or the CPU sweep): the
-		// accumulator was zeroed before the geometric loop, so this is the last-iteration cost only
-		const auto confNS(g_confAdjustComputeNS.load());
-		if (confNS > 0 && data.images.GetSize() > 0) {
-			bool bGPU(false);
-			#ifdef _USE_CUDA
-			bGPU = !data.depthMaps.pmCUDAPool.empty() && OPTDENSE::bEstimateConfidenceCUDA;
-			#endif
-			VERBOSE("Integrated confidence recalibration (%s): %.0fms total, %.2fms/map avg over %u depth-maps",
-				bGPU ? "GPU" : "CPU", (double)confNS*1e-6, (double)confNS*1e-6/data.images.GetSize(), data.images.GetSize());
-		}
 	}
 	// nothing reads the images any more, so give the memory they occupy back to
 	// the depth-map caches of the filtering and the fusion that follow
@@ -3357,8 +3331,6 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 	} else
 	if ((OPTDENSE::nOptimize & OPTDENSE::ADJUST_CONFIDENCE) != 0) {
 		TD_TIMER_STARTD();
-		g_confAdjustComputeNS.store(0);
-		g_confPriorComputeNS.store(0);
 		// initialize the queue of depth-maps to be filtered
 		data.sem.Clear();
 		data.idxImage = data.images.GetSize();
@@ -3411,20 +3383,21 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 			DenseReconstructionFilter((void*)&data);
 		}
 		GET_LOGCONSOLE().Play();
-		const uint32_t numDMapReads(cacheDMaps.GetHitStats().numMisses);
-		// with the unlimited budget nothing is ever ejected, so the final resident size IS the peak
-		const size_t peakCacheMemory(cacheDMaps.GetUsedMemory());
 		cacheDMaps.ClearCache();
 		g_pAdjustDMapCache = NULL;
 		if (!data.events.IsEmpty())
 			return false;
 		data.progress.Release();
-		VERBOSE("Confidence-maps adjusted: %u depth-maps (%s; %.3gs prior+confirmation compute, %.2fms/map avg; %.3gs prior / %.3gs confirmation; %u dmap disk reads via cache, %lluMB peak cache memory)",
-			data.images.GetSize(), TD_TIMER_GET_FMT().c_str(),
-			g_confAdjustComputeNS.load()/1e9, g_confAdjustComputeNS.load()/1e6/(double)MAXF(data.images.GetSize(),1u),
-			g_confPriorComputeNS.load()/1e9, (g_confAdjustComputeNS.load()-g_confPriorComputeNS.load())/1e9,
-			numDMapReads, (unsigned long long)(peakCacheMemory>>20));
+		VERBOSE("Confidence-maps adjusted: %u depth-maps (%s)", data.images.GetSize(), TD_TIMER_GET_FMT().c_str());
 	}
+	// the estimation is done: hand the GPU pools' pinned staging and device buffers back before the
+	// fusion budgets its depth-map cache from the free memory
+	#ifdef _USE_CUDA
+	data.depthMaps.pmCUDAPool.clear();
+	#endif
+	#ifdef _USE_METAL
+	data.depthMaps.pmMetalPool.clear();
+	#endif
 	return true;
 } // ComputeDepthMaps
 /*----------------------------------------------------------------*/

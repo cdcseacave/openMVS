@@ -212,6 +212,7 @@ public:
 
 		// Clean mesh
 		MVS::Mesh::CleanParams cleanParams;
+		cleanParams.maxEdgeScale = 2.f; // drop cavity-capping faces first
 		cleanParams.simplifyTarget = decimate;
 		cleanParams.spuriousFactor = options.removeSpurious;
 		cleanParams.removeSpikes = options.removeSpikes;
@@ -264,6 +265,7 @@ public:
 		if (decimate <= 0.f)
 			decimate = 1.f;
 		MVS::Mesh::CleanParams cleanParams;
+		cleanParams.maxEdgeScale = 2.f; // drop cavity-capping faces first
 		cleanParams.simplifyTarget = decimate;
 		cleanParams.maxHoleEdges = options.closeHoles;
 		mvsScene.mesh.Clean(cleanParams);

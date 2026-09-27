@@ -37,7 +37,6 @@
 #define OPTCONFIG_API MVS_API
 #include "DepthMap.h"
 #include "Mesh.h"
-#include "ConfidenceRefine.h"
 #include "../Common/AutoEstimator.h"
 // CGAL: depth-map initialization
 #include <CGAL/Simple_cartesian.h>
@@ -101,8 +100,8 @@ MDEFVAR_OPTDENSE_float(fOptimAngle, "Optim Angle", "Optimal angle for computing 
 MDEFVAR_OPTDENSE_float(fMaxAngle, "Max Angle", "Max angle for accepting the depth triangulation", "65.0")
 MDEFVAR_OPTDENSE_float(fWeightPointInsideROI, "Weight Point Inside ROI", "weight a point inside ROI when estimating the neighbor views (0 - ignore ROI, <1 - weight more ROI points, 1 - consider only ROI points)", "0.7")
 MDEFVAR_OPTDENSE_float(fDescriptorMinMagnitudeThreshold, "Descriptor Min Magnitude Threshold", "minimum patch texture variance accepted when matching two patches (0 - disabled)", "0.02") // 0.02: pixels with patch texture variance below 0.0004 (0.02^2) will be removed from depthmap; 0.12: patch texture variance below 0.02 (0.12^2) is considered texture-less
-MDEFVAR_OPTDENSE_float(fDepthReprojectionErrorThreshold, "Depth Reprojection Error Threshold", "maximum relative difference between measured and depth projected pixel", "1.0")
-MDEFVAR_OPTDENSE_float(fDepthDiffThreshold, "Depth Diff Threshold", "maximum variance allowed for the depths during fusion", "0.01")
+MDEFVAR_OPTDENSE_float(fDepthReprojectionErrorThreshold, "Depth Reprojection Error Threshold", "fusion: maximum distance, in pixels, between a joining pixel and the fused point's projection", "0.6")
+MDEFVAR_OPTDENSE_float(fDepthDiffThreshold, "Depth Diff Threshold", "fusion: maximum relative depth difference between a joining pixel and the fused point (also the depth-map speckle and gap filters' agreement tolerance)", "0.01")
 MDEFVAR_OPTDENSE_float(fNormalDiffThreshold, "Normal Diff Threshold", "maximum variance allowed for the normal during fusion (degrees)", "25")
 MDEFVAR_OPTDENSE_float(fPairwiseMul, "Pairwise Mul", "pairwise cost scale to match the unary cost", "0.3")
 MDEFVAR_OPTDENSE_float(fOptimizerEps, "Optimizer Eps", "MRF optimizer stop epsilon", "0.001")
@@ -115,8 +114,8 @@ DEFVAR_OPTDENSE_uint32(nFuseFilter, "Fuse Filter", "how to fuse the depth-maps i
 MDEFVAR_OPTDENSE_uint32(nEstimateColors, "Estimate Colors", "should we estimate the colors for the dense point-cloud?", "2", "0", "1")
 MDEFVAR_OPTDENSE_uint32(nEstimateNormals, "Estimate Normals", "should we estimate the normals for the dense point-cloud?", "2", "0", "1")
 MDEFVAR_OPTDENSE_float(fNCCThresholdKeep, "NCC Threshold Keep", "Maximum 1-NCC score accepted for a match", "0.9", "0.5")
-MDEFVAR_OPTDENSE_float(fFusePriorWeight, "Fuse Prior Weight", "fusion: weight of the intra-map geometric prior as virtual view/pixel support, to keep inliers on a coherent surface seen by too few views/pixels (0 disables); default 3 favors completeness and suits the usual pipeline where mesh reconstruction follows and cleans the few extra outliers, use 2 when the dense point-cloud is the final output (fewer outliers, slightly lower completeness)", "3.0")
-MDEFVAR_OPTDENSE_int32(nFuseViolationMax, "Fuse Violation Max", "fusion: max free-space-violating neighbor views allowed on a point rescued only by Fuse Prior Weight's virtual support (same free-space-violation test as the confidence recalibration); non-rescued points are never affected (-1 disables the guard, byte-identical to pre-guard fusion; 0 - strict/default, drop rescued points contradicted by any free-space ray)", "0")
+MDEFVAR_OPTDENSE_float(fFusePriorWeight, "Fuse Prior Weight", "fusion: weight of the intra-map geometric prior as virtual view/pixel support, to keep inliers on a coherent surface seen by too few views/pixels, granted only to points no view contradicts (0 disables)", "4.0")
+MDEFVAR_OPTDENSE_int32(nFuseViolationMax, "Fuse Violation Max", "fusion: contradiction guard; max distinct views contradicting a point rescued only by Fuse Prior Weight's virtual support (seeing behind it, or agreeing in depth but disputing its normal), while a point kept on real support is dropped when the views disputing its normal outnumber its supporting views (-1 disables the guard, 0 - default)", "0")
 MDEFVAR_OPTDENSE_bool(bFuseRecycleDropped, "Fuse Recycle Dropped", "dense-fuse: when the keep-rule drops a cluster, hand its pixels back to the pool so a later seed or probe can still use them (a pixel is otherwise consumed for good, and one doomed cluster locks away every pixel a later cluster needed); trades precision for completeness, off by default", "0")
 DEFVAR_OPTDENSE_bool(bEstimateConfidenceCUDA, "Estimate Confidence CUDA", "when CUDA is available and used for depth-map estimation, run the ADJUST_CONFIDENCE recalibration on the GPU integrated into the last geometric-consistency iteration (1), or force the CPU version anyway (0); no effect when estimation runs on the CPU", "1")
 DEFVAR_OPTDENSE_uint32(nEstimationIters, "Estimation Iters", "Number of patch-match iterations", "3")
@@ -462,6 +461,8 @@ DepthEstimator::DepthEstimator(
 	image0Sum(_image0Sum),
 	#endif
 	coords(_coords), size(_depthData0.images.First().image.size()),
+	focal((float)image0.camera.K(0,0), (float)image0.camera.K(1,1)),
+	principal((float)image0.camera.K(0,2), (float)image0.camera.K(1,2)),
 	dMin(_depthData0.dMin), dMax(_depthData0.dMax),
 	dMinSqr(SQRT(_depthData0.dMin)), dMaxSqr(SQRT(_depthData0.dMax)),
 	dir(nIter%2 ? RB2LT : LT2RB),
@@ -919,48 +920,8 @@ void DepthEstimator::ProcessPixel(IDX idx)
 // interpolate given pixel's estimate to the current position
 Depth DepthEstimator::InterpolatePixel(const ImageRef& nx, Depth depth, const Normal& normal) const
 {
-	ASSERT(depth > 0 && normal.dot(image0.camera.TransformPointI2C(Cast<REAL>(nx))) <= 0);
-	Depth depthNew;
-	#if 1
-	// compute as intersection of the lines
-	// {(x1, y1), (x2, y2)} from neighbor's 3D point towards normal direction
-	// and
-	// {(0, 0), (x4, 1)} from camera center towards current pixel direction
-	// in the x or y plane
-	if (x0.x == nx.x) {
-		const float nx1((float)(((REAL)x0.y - image0.camera.K(1,2)) / image0.camera.K(1,1)));
-		const float denom(normal.z + nx1 * normal.y);
-		if (ISZERO(denom))
-			return depth;
-		const float x1((float)(((REAL)nx.y - image0.camera.K(1,2)) / image0.camera.K(1,1)));
-		const float nom(depth * (normal.z + x1 * normal.y));
-		depthNew = nom / denom;
-	}
-	else {
-		ASSERT(x0.y == nx.y);
-		const float nx1((float)(((REAL)x0.x - image0.camera.K(0,2)) / image0.camera.K(0,0)));
-		const float denom(normal.z + nx1 * normal.x);
-		if (ISZERO(denom))
-			return depth;
-		const float x1((float)(((REAL)nx.x - image0.camera.K(0,2)) / image0.camera.K(0,0)));
-		const float nom(depth * (normal.z + x1 * normal.x));
-		depthNew = nom / denom;
-	}
-	#else
-	// compute as the ray - plane intersection
-	{
-		#if 0
-		const Plane plane(Cast<REAL>(normal), image0.camera.TransformPointI2C(Point3(nx, depth)));
-		const Ray3 ray(Point3::ZERO, normalized(X0));
-		depthNew = (Depth)ray.Intersects(plane).z();
-		#else
-		const Point3 planeN(normal);
-		const REAL planeD(planeN.dot(image0.camera.TransformPointI2C(Point3(nx, depth))));
-		depthNew = (Depth)(planeD / planeN.dot(X0));
-		#endif
-	}
-	#endif
-	return ISINSIDE(depthNew,dMin,dMax) ? depthNew : depth;
+	ASSERT(normal.dot(image0.camera.TransformPointI2C(Cast<REAL>(nx))) <= 0);
+	return InterpolatePlaneDepth(focal, principal, x0, nx, depth, normal, dMin, dMax);
 }
 
 #if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
@@ -1697,44 +1658,20 @@ void MVS::EstimatePointNormals(const ImageArr& images, PointCloud& pointcloud, i
 } // EstimatePointNormals
 /*----------------------------------------------------------------*/
 
-bool DepthGradientEstimator::DepthGradient(const ImageRef& ir, Point3f& ws) const
-{
-	// least-squares plane fit shared verbatim with the CUDA confidence prior kernel
-	// (ConfRefine::DepthPlaneFit); a tiny accessor adapts this TImage to the plain (x,y) interface
-	// the shared template expects. Byte-identical to the previous hand-written loop.
-	struct Acc {
-		const DepthMap& dm;
-		inline float operator()(int x, int y) const { return dm(ImageRef(x, y)); }
-		inline bool inside(int x, int y) const { return dm.isInside(ImageRef(x, y)); }
-	} acc{depthMap};
-	float w, wx, wy;
-	if (!ConfRefine::DepthPlaneFit(acc, ir.x, ir.y, w, wx, wy))
-		return false;
-	ws[0] = w; ws[1] = wx; ws[2] = wy;
-	return true;
-}
-
-Normal DepthGradientEstimator::NormalFromGradient(int x, int y, Depth d, Depth dx, Depth dy) const
-{
-	ASSERT(ISZERO(K(0,1)));
-	return normalized(Normal(
-		K(0,0)*dx,
-		K(1,1)*dy,
-		(K(0,2)-float(x))*dx+(K(1,2)-float(y))*dy-d
-	));
-}
-
 bool MVS::EstimateNormalMap(const Matrix3x3f& K, const DepthMap& depthMap, NormalMap& normalMap)
 {
+	ASSERT(ISZERO(K(0,1)));
 	normalMap.create(depthMap.size());
-	const DepthGradientEstimator est(K, depthMap);
+	const Eigen::Vector2f focal(K(0,0), K(1,1)), principal(K(0,2), K(1,2));
 	for (int r=0; r<normalMap.rows; ++r) {
 		for (int c=0; c<normalMap.cols; ++c) {
-			// calculates depth gradient at x
+			// the normal of the depth plane fitted at x
 			Normal& n = normalMap(r,c);
-			Point3f ws;
-			if (est.DepthGradient(ImageRef(c,r), ws))
-				n = est.NormalFromGradient(c, r, ws[0], ws[1], ws[2]);
+			const ImageRef x(c,r);
+			Depth depth;
+			Eigen::Vector2f gradient;
+			if (FitDepthGradient(depthMap, x, depth, gradient))
+				n = NormalFromDepthGradient(focal, principal, x, depth, gradient);
 			else
 				n = Normal::ZERO;
 			ASSERT(normalMap(r,c).dot(K.inv()*Point3f(float(c),float(r),1.f)) <= 0);

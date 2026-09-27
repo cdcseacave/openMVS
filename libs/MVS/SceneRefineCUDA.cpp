@@ -125,10 +125,6 @@ public:
 	void ListCameraFaces(bool bOwnerBits=false);
 
 	void ListFaceAreas(Mesh::AreaArr& maxAreas);
-	void SubdivideMesh(uint32_t maxArea, float fDecimate=1.f, unsigned nCloseHoles=15, unsigned nEnsureEdgeSize=1);
-	// decimate the refined mesh within the given reprojection tolerance, measured in the
-	// projected areas ListFaceAreas() reports (px at the working resolution)
-	void SimplifyMesh(float tolerancePx);
 
 	void ComputeNormalFaces();
 
@@ -672,28 +668,6 @@ void MeshRefineCUDA::ListFaceAreas(Mesh::AreaArr& maxAreas)
 	#endif
 }
 
-// the shared preparation (PrepareRefineMesh, SceneRefineCommon.h): decimate, remesh and
-// subdivide so that no face projects larger than the area cap in both images of a pair
-void MeshRefineCUDA::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nCloseHoles, unsigned nEnsureEdgeSize)
-{
-	PrepareRefineMesh(*this, maxArea, fDecimate, nCloseHoles, nEnsureEdgeSize);
-}
-
-
-void MeshRefineCUDA::SimplifyMesh(float tolerancePx)
-{
-	// the tolerance is a reprojection error, so it is measured in the same projected areas the
-	// preparation splits against (ListFaceAreas): a decimation that used a different measure
-	// would keep faces no pair of the refinement can see
-	ListCameraFaces();
-	Mesh::AreaArr seenAreas;
-	ListFaceAreas(seenAreas);
-	FloatArr pixelFactors;
-	SeenAreasToPixelFactors(scene.mesh, seenAreas, pixelFactors);
-	SimplifyMeshWithinTolerance(scene.mesh, pixelFactors, tolerancePx);
-	ListVertexFacesPre();
-}
-
 // compute face normals
 void MeshRefineCUDA::ComputeNormalFaces()
 {
@@ -1056,7 +1030,7 @@ bool Scene::RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, u
 		refine.ListVertexFacesPre();
 
 		// automatic mesh subdivision
-		refine.SubdivideMesh(nMaxFaceArea, nScale == 0 ? fDecimateMesh : 1.f, nCloseHoles, nEnsureEdgeSize);
+		PrepareRefineMesh(refine, nMaxFaceArea, nScale == 0 ? fDecimateMesh : 1.f, nCloseHoles, nEnsureEdgeSize);
 
 		// extract array of triangle normals
 		refine.ListVertexFacesPost();
@@ -1167,7 +1141,7 @@ bool Scene::RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, u
 
 	// the deliverable: the refined surface within a reprojection tolerance (the same pass as the CPU)
 	if (OPTREFINE::fSimplifyTolerance > 0)
-		refine.SimplifyMesh(OPTREFINE::fSimplifyTolerance);
+		SimplifyRefinedMesh(refine, OPTREFINE::fSimplifyTolerance);
 
 	return true;
 } // RefineMeshCUDA

@@ -39,9 +39,9 @@
 // energy evaluation into one step -- one implementation, no CUDA twin to drift.
 //
 // Include rules:
-//  - Everything above the "#ifndef __CUDACC__" guard below (the REFINE_HD macro, the MVS::Refine
-//    constants and the window/ZNCC math) is compiled by nvcc as part of SceneRefineCUDA.cu's
-//    device code, so it must never drag in OpenCV or SEACAVE types -- plain float/int only.
+//  - Everything above the "#ifndef __CUDACC__" guard below (the MVS::Refine constants and the
+//    HOST_DEVICE window/ZNCC math) is compiled by nvcc as part of SceneRefineCUDA.cu's device
+//    code, so it must never drag in OpenCV or SEACAVE types -- plain float/int only.
 //  - Everything below the guard is host-only. Like DepthMap.h/OPTDENSE, it relies on the
 //    including translation unit having already done `#include "Common.h"` (for
 //    MVS_API/DECOPT_SPACE) before this header.
@@ -56,12 +56,6 @@
 
 
 // D E F I N E S ///////////////////////////////////////////////////
-
-#ifdef __CUDACC__
-#define REFINE_HD __host__ __device__
-#else
-#define REFINE_HD
-#endif
 
 
 // S T R U C T S ///////////////////////////////////////////////////
@@ -95,14 +89,14 @@ constexpr int MinWindowCount = 25;
 // reliability saturates on the scale of ReliabilityVarOffset
 constexpr float VarFloor = 1e-4f;
 constexpr float ReliabilityVarOffset = 0.0015f;
-REFINE_HD inline float ZnccReliability(float varA, float varB)
+HOST_DEVICE inline float ZnccReliability(float varA, float varB)
 {
 	const float minVar(varA < varB ? varA : varB);
 	return minVar/(minVar+ReliabilityVarOffset);
 }
 // derivative of ZnccReliability with respect to varB: non-zero only where B's window is the
 // less textured of the two and above the floor (the floor makes the weight a constant there)
-REFINE_HD inline float ZnccReliabilityDerivativeVarB(float varA, float varB)
+HOST_DEVICE inline float ZnccReliabilityDerivativeVarB(float varA, float varB)
 {
 	if (!(varB < varA) || !(varB > VarFloor))
 		return 0.f;
@@ -126,7 +120,7 @@ struct WindowStats {
 // wrong) gradient is worse than not steering it.
 // n is the number of valid samples, sA/sB/sAA/sBB/sAB their masked sums; gates <= 0 disable.
 // Returns false if the pixel must be rejected; stats must not be read then.
-REFINE_HD inline bool WindowStatsFromSums(float n, float sA, float sB, float sAA, float sBB, float sAB,
+HOST_DEVICE inline bool WindowStatsFromSums(float n, float sA, float sB, float sAA, float sBB, float sAB,
 	float gateMeanDiff, float gateVarRatio, WindowStats& s)
 {
 	if (n < (float)MinWindowCount)
@@ -152,7 +146,7 @@ REFINE_HD inline bool WindowStatsFromSums(float n, float sA, float sB, float sAA
 // The WindowArea/n factor restores the magnitude a full window would have produced, so a
 // partially valid window is not silently down-weighted on top of already being rejected below
 // MinWindowCount; it is exactly 1 when every pixel of the window is valid.
-REFINE_HD inline void ZnccAndDerivative(const WindowStats& s, float n, float pixA, float pixB,
+HOST_DEVICE inline void ZnccAndDerivative(const WindowStats& s, float n, float pixA, float pixB,
 	float& zncc, float& dzncc, float& conf)
 {
 	const float invSqrtVAVB(1.f/sqrtf(s.varA*s.varB));
@@ -248,6 +242,9 @@ MVS_API void SeenAreasToPixelFactors(const Mesh& mesh, const Mesh::AreaArr& seen
 // call this once the refinement ends
 MVS_API void SimplifyMeshWithinTolerance(Mesh& mesh, const FloatArr& pixelFactors, float tolerancePx);
 
+// the refine pipeline's webbing gate, matching ReconstructMesh's --max-edge-scale default
+constexpr float REFINE_MAX_EDGE_SCALE(2.f);
+
 // the preparation's projection log line: faces seen, their sampled analytic mean area and the
 // percentiles of their rasterized areas
 MVS_API void LogFaceAreas(const char* stage, const Mesh::AreaArr& maxAreas, float meanSeenArea, const String& elapsed);
@@ -321,8 +318,30 @@ float SampleSeenFaceArea(const REFINE& refine, const Mesh::AreaArr& maxAreas, si
 	return num ? (float)(sum/(double)num) : 0.f;
 }
 
-// the mesh preparation both backends run at the start of every scale (their SubdivideMesh()
-// forwards here). The first scale decimates the input mesh straight to the density the
+// the post-refinement decimation, for both backends: drop the webbing, then measure the per-vertex
+// pixel factors on the mesh the decimation receives and collapse within tolerancePx. The tolerance
+// is a reprojection error, so it reads projected areas through ListFaceAreas exactly as the
+// preparation's split rule does, and never keeps a face no refinement pair can see
+template<class REFINE>
+void SimplifyRefinedMesh(REFINE& refine, float tolerancePx)
+{
+	Mesh& mesh = refine.scene.mesh;
+	// the webbing gate is its own pass: it changes the vertex set, so the bound below has to be
+	// measured after it, on the vertices the decimation receives
+	Mesh::CleanParams gateParams;
+	gateParams.maxEdgeScale = REFINE_MAX_EDGE_SCALE;
+	mesh.Clean(gateParams);
+	refine.ListVertexFacesPre(); // the gate changed the face array the CUDA backend caches
+	refine.ListCameraFaces();
+	Mesh::AreaArr seenAreas;
+	refine.ListFaceAreas(seenAreas);
+	FloatArr pixelFactors;
+	SeenAreasToPixelFactors(mesh, seenAreas, pixelFactors);
+	SimplifyMeshWithinTolerance(mesh, pixelFactors, tolerancePx);
+	refine.ListVertexFacesPre();
+}
+
+// the mesh preparation both backends run at the start of every scale. The first scale decimates the input mesh straight to the density the
 // refinement wants -- a mean tightest-pair projected area of half the face cap, in pixels of that
 // scale's working resolution (8 px^2 at the default cap of 16: twice the cap once the finest scale
 // doubles the resolution, so its 1-to-4 split of every face above the cap lands the mesh at the
@@ -341,6 +360,7 @@ void PrepareRefineMesh(REFINE& refine, uint32_t maxArea, float fDecimate, unsign
 	constexpr float fEdgeLength(-1.f); // the remesh band sits on the current mean edge
 	const auto cleanMesh = [&](float simplifyTarget, float edgeLength) {
 		Mesh::CleanParams params;
+		params.maxEdgeScale = REFINE_MAX_EDGE_SCALE;
 		params.simplifyTarget = simplifyTarget;
 		params.maxHoleEdges = nCloseHoles;
 		params.edgeLength = edgeLength;
@@ -365,7 +385,13 @@ void PrepareRefineMesh(REFINE& refine, uint32_t maxArea, float fDecimate, unsign
 	// covers in its tightest pair, then remeshes against the field that measurement implies
 	const bool bSizingField(OPTREFINE::bAdaptiveFaceSize && maxArea > 0 && fDecimate <= 0.f);
 	const auto remeshToField = [&]() {
-		// the decimation changed the face array, and the CUDA backend keeps its own copy of it:
+		// its own pass: it changes the vertex set, so the sizing field below has to be measured
+		// after it, on the vertices the remesh receives
+		TD_TIMER_STARTD();
+		Mesh::CleanParams params;
+		params.maxEdgeScale = REFINE_MAX_EDGE_SCALE;
+		mesh.Clean(params);
+		// the gate and the decimation changed the face array, and the CUDA backend keeps its own copy:
 		// ListCameraFaces() re-uploads only the vertices, so the faces have to be re-listed first
 		refine.ListVertexFacesPre();
 		Mesh::AreaArr seenAreas;
@@ -373,8 +399,7 @@ void PrepareRefineMesh(REFINE& refine, uint32_t maxArea, float fDecimate, unsign
 		refine.ListCameraFaces();
 		refine.ListFaceAreas(seenAreas);
 		SeenAreasToEdgeTargets(mesh, seenAreas, (float)maxArea*0.5f, targets);
-		TD_TIMER_STARTD();
-		Mesh::CleanParams params;
+		params.maxEdgeScale = 0;
 		params.simplifyTarget = 1.f;
 		params.edgeLength = targets.GetMean(); // the scalar the remesh still validates
 		params.remeshIterations = 10;

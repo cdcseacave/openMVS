@@ -351,6 +351,15 @@ void Mesh::Clean(const CleanParams& params)
 {
 	if (vertices.empty() || faces.empty())
 		return;
+	// a per-vertex field is indexed by the vertices its own stage receives, so no earlier stage
+	// may change the vertex set - and that includes growing it: removing a face can split a
+	// vertex into two fans, which appends. Such stages belong in their own call, with the field
+	// measured afterwards on the mesh this one receives
+	ASSERT(!params.vertexMaxError ||
+		   (params.maxEdgeScale == 0.f && params.spuriousFactor == 0.f && !params.removeSpikes));
+	ASSERT(!params.vertexSizing ||
+		   (params.maxEdgeScale == 0.f && params.spuriousFactor == 0.f && !params.removeSpikes &&
+			params.vertexMaxError == NULL && params.simplifyTarget == 1.f && params.maxHoleEdges == 0));
 	TD_TIMER_STARTD();
 	// the whole pipeline runs on a single halfmesh instance: one conversion in,
 	// one out, no matter how many stages are enabled

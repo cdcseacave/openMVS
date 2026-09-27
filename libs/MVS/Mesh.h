@@ -203,8 +203,9 @@ public:
 		// remove long-edged faces (longest edge above this factor times the median longest edge)
 		// that cap a cavity, i.e. have mesh surface close behind or in front of them along their
 		// normal, before any other cleaning; a coarsely sampled real surface has nothing behind
-		// it and survives; 0 disables
-		float maxEdgeScale{2.f};
+		// it and survives; 0 disables (the default: it changes the vertex set, so it cannot share
+		// a call with the per-vertex fields below)
+		float maxEdgeScale{0.f};
 		float spuriousFactor{0.f}; // RemoveSpuriousComponents factor (0 - disabled)
 		bool removeSpikes{false};
 		unsigned maxSpikeIterations{100};

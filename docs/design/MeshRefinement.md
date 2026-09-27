@@ -71,14 +71,14 @@ Each scale re-inits images (`InitImages`, one worker per view, `MeshRefine::ThIn
 shared `PrepareRefineImage` (`SceneRefineCommon.cpp`) loads, gray-converts, Gaussian-blurs at the
 scale's `sigma` and resizes; `ComputeRefineImageGradient` builds the per-view derivative image both
 backends read (skipped when `OPTREFINE::nImageGradient == 3`, which samples the bilinear
-interpolant directly instead); `PrepareRefineImageMask` builds the per-view keep-mask. `SubdivideMesh`
+interpolant directly instead); `PrepareRefineImageMask` builds the per-view keep-mask. `PrepareRefineMesh`
 then runs the shared mesh preparation (§2.3), and `ListVertexFacesPost` lists incident/boundary
 vertices before the optimization phase (§2.7) runs.
 
 ### 2.3 Mesh preparation
 
-`MeshRefine::SubdivideMesh`/`MeshRefineCUDA::SubdivideMesh` both forward to the template
-`MVS::PrepareRefineMesh` (`SceneRefineCommon.h`), so the two backends cannot drift here.
+Both backends call the template `MVS::PrepareRefineMesh` (`SceneRefineCommon.h`) directly, so they
+cannot drift here.
 
 At the first scale (`fDecimate == 0`, the `--decimate` auto default) the mesh is projected into
 every camera (`ListCameraFaces`, `ListFaceAreas`) to get, per face, its *tightest-pair area*: the
@@ -95,8 +95,10 @@ With `--adaptive-face-size` (default on) the density-setting remesh instead grad
 target: after the plain decimation, the mesh is re-projected once more and every face states its own
 scale (`SeenAreasToEdgeTargets`: a face covering `seenArea` pixels for its world area implies a world
 area of `area*targetArea/seenArea` for the target pixel count, `targetArea` = half `--max-face-area`;
-a vertex averages the equilateral edge length of its incident seen faces). That field is passed to
-`Mesh::Clean` as `CleanParams::vertexSizing`, in its own call, separate from the decimation (§4 #4).
+a vertex averages the equilateral edge length of its incident seen faces). The webbing gate
+(`CleanParams::maxEdgeScale`, §4 #4) runs as its own `Mesh::Clean` pass *before* that re-projection,
+so the field is indexed by the vertices the remesh receives; the field itself is then passed to
+`Mesh::Clean` as `CleanParams::vertexSizing`, again in its own call.
 On a surface seen from roughly constant camera-to-surface distance the field is flat and this reduces
 to the uniform remesh.
 
@@ -232,8 +234,9 @@ CUDA refuses `--planar-vertex-ratio > 0` at the entry with an error rather than 
 
 ### 2.8 Post-refinement simplification
 
-When `OPTREFINE::fSimplifyTolerance > 0` (default 0.25 px), both backends end with
-`MeshRefine::SimplifyMesh`/`MeshRefineCUDA::SimplifyMesh`: re-project the final mesh
+When `OPTREFINE::fSimplifyTolerance > 0` (default 0.25 px), both backends end with the template
+`MVS::SimplifyRefinedMesh`: drop the cavity-capping faces in their own `Mesh::Clean` pass
+(`CleanParams::maxEdgeScale`, §4 #4), re-project the final mesh
 (`ListCameraFaces`, `ListFaceAreas`), convert the same tightest-pair seen areas to per-vertex pixels-
 per-scene-unit (`SeenAreasToPixelFactors`), then decimate within that reprojection tolerance
 (`SimplifyMeshWithinTolerance`, `Mesh::Clean` with a per-vertex `vertexMaxError` bound derived by
@@ -336,9 +339,12 @@ runs (`MeshRefineCUDA::PrefetchImages`), so a scale switch pays only the vertex/
 3. **Visibility has no scene-unit tolerance.** The relative test `depth*1.0002 >= z` (§2.6) is
    invariant under uniform scene rescale by construction; there is no absolute-distance visibility
    parameter.
-4. **`CleanParams::vertexSizing` must not follow a vertex-set-changing stage in the same `Mesh::Clean`
-   call.** The sizing field is indexed by vertex, so a decimation that changes the vertex count has
-   to be its own, earlier `Clean` call (§2.3).
+4. **A per-vertex field of `Mesh::Clean` must not follow a vertex-set-changing stage in the same
+   call.** `vertexSizing` and `vertexMaxError` are indexed by the vertices their own stage receives,
+   and the webbing gate, the spurious filter and the spike filter all change that set - removing a
+   face can even *grow* it, by splitting a vertex into two fans. Those stages take their own,
+   earlier `Clean` call and the field is measured after them (§2.3, §2.8); `Mesh::Clean` asserts
+   this. `maxEdgeScale` therefore defaults to 0, like every other stage.
 5. **`w * MeshRefineStep::StepMax <= 1` is required** (explicit-flow stability of the stepper's
    explicit update), enforced at the entry of `Scene::RefineMesh`/`RefineMeshCUDA`; the Ceres arm is
    exempt (a line search has no such bound).
@@ -381,6 +387,18 @@ one `RefineMesh` run per cell, CPU/CUDA as noted.
 
 ## 6. Rejected alternatives
 
+- Keeping the per-vertex field valid by disabling the webbing gate at the two consumers: measured
+  on T&T at R0, the gate is worth +0.0067 F1 on Truck and +0.0029 on Ignatius (-0.0035 on Barn), so
+  dropping it trades away a real gain and silently changes `TextureMesh`, the Viewer and the
+  preparation's decimation as well.
+- Carrying the field across the gate instead, either as a transported per-vertex channel in halfmesh
+  or by having halfmesh return its removed/split vertex lists for the caller to replay: both only
+  propagate an approximation. The field is measured from the images, so a vertex the gate splits
+  would inherit a copied value rather than the one a re-projection gives. Measuring it after the
+  gate is cheaper (both consumers already project at that point) and exact.
+- Reordering the stages inside `Mesh::Clean` so the field consumers run first: the gate is defined to
+  run before any other cleaning, and its median-longest-edge statistic is meaningless once a
+  decimation has changed the edge distribution.
 - Per-vertex normalized, unit-clamped photometric direction: clamping flattens the gradient
   distribution and loses on every scene tested.
 - Retuning the regularity weight to rescue the per-vertex clamp: still loses; the arm does best with

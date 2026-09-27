@@ -4,8 +4,8 @@
  * GPU port of the fusion-faithful confidence recalibration. Two kernels, one thread per reference
  * pixel:
  *   PriorKernel  -- the intra-map geometric prior (ComputeIntraMapPrior): a local depth-plane fit
- *                   (shared ConfRefine::DepthPlaneFit) + slope-aware planarity/quorum + gradient-vs-
- *                   stored-normal agreement.
+ *                   (shared FitDepthGradient, Common/DepthGeometry.h) + slope-aware planarity/quorum
+ *                   + gradient-vs-stored-normal agreement.
  *   SweepKernel  -- one-hop multi-view confirmation (AdjustConfidenceSweep): project the pixel into
  *                   each neighbor, apply the 4 soft gates (+ FSV), accumulate K/Pconf/V,
  *                   then the shared ConfRefine::Posterior.
@@ -26,6 +26,8 @@
 #include <cmath>
 #include <vector>
 
+#include "CUDA/Camera.h"
+#include "Common/DepthGeometry.h"
 #include "ConfidenceRefine.h"
 #include "ConfidenceCUDA.h"
 
@@ -33,11 +35,13 @@ namespace MVS {
 namespace CUDA {
 
 using ConfRefine::Params;
-using ConfRefine::F3;
+typedef Eigen::Map<const Point3> ConstPoint3Map;
+typedef Eigen::Map<const Eigen::Matrix<float,3,3,Eigen::RowMajor>> ConstMatrix3Map;
 
 // device-resident neighbor descriptor (fused transforms + device map pointers)
 struct DevNeighbor {
-	float A[9], b[3], Ai[9], bi[3], Rrel[9];
+	float A[9], b[3], Rrel[9];
+	float cn[3];                     // neighbor centre in the reference camera frame
 	const float* depth;              // null when texDepth is used instead
 	const float* conf;               // null -> no confidence (cN = 1)
 	const float* normal;             // null -> no normal gate
@@ -58,21 +62,20 @@ __device__ __forceinline__ float NbDepthAt(const DevNeighbor& np, int x, int y) 
 }
 
 // ---- reference-map accessors (kernel template parameter) ----
-// Both expose: Depth(idx), HasNormal(), Normal(idx), Conf(idx) plus the operator()(x,y)/inside(x,y)
-// depth interface ConfRefine::DepthPlaneFit expects from its accessor argument.
+// Both expose: Depth(idx), HasNormal(), Normal(idx), Conf(idx) plus the (row,col) depth access and
+// rows/cols members FitDepthGradient expects from a depth-map.
 
 // standalone path: reference maps uploaded from host as linear buffers
 struct RefLinearAcc {
 	const float* depth;
 	const float* normal;   // interleaved x,y,z, or null
 	const float* conf;
-	int W, H;
+	int cols, rows;
 	__device__ __forceinline__ float Depth(int idx) const { return depth[idx]; }
 	__device__ __forceinline__ int HasNormal() const { return normal != nullptr; }
-	__device__ __forceinline__ F3 Normal(int idx) const { return F3{normal[idx*3+0], normal[idx*3+1], normal[idx*3+2]}; }
+	__device__ __forceinline__ Point3 Normal(int idx) const { return ConstPoint3Map(normal + idx*3); }
 	__device__ __forceinline__ float Conf(int idx) const { return conf[idx]; }
-	__device__ __forceinline__ float operator()(int x, int y) const { return depth[y*W + x]; }
-	__device__ __forceinline__ bool inside(int x, int y) const { return x >= 0 && x < W && y >= 0 && y < H; }
+	__device__ __forceinline__ float operator()(int r, int c) const { return depth[r*cols + c]; }
 };
 
 // fused path: reference read straight from PatchMatch's resident buffers -- Point4 per pixel
@@ -81,13 +84,12 @@ struct RefLinearAcc {
 struct RefPackedAcc {
 	const float4* dn;
 	const float* cost;
-	int W, H;
+	int cols, rows;
 	__device__ __forceinline__ float Depth(int idx) const { return dn[idx].w; }
 	__device__ __forceinline__ int HasNormal() const { return 1; }
-	__device__ __forceinline__ F3 Normal(int idx) const { const float4 v = dn[idx]; return F3{v.x, v.y, v.z}; }
+	__device__ __forceinline__ Point3 Normal(int idx) const { const float4 v = dn[idx]; return Point3(v.x, v.y, v.z); }
 	__device__ __forceinline__ float Conf(int idx) const { const float c = cost[idx]; return c >= 1.f ? 0.f : 1.f - c; }
-	__device__ __forceinline__ float operator()(int x, int y) const { return dn[y*W + x].w; }
-	__device__ __forceinline__ bool inside(int x, int y) const { return x >= 0 && x < W && y >= 0 && y < H; }
+	__device__ __forceinline__ float operator()(int r, int c) const { return dn[r*cols + c].w; }
 };
 
 // device port of SceneDensify.cpp SampleDepthBilinear (edge-aware; false -> caller uses nearest).
@@ -102,7 +104,7 @@ __device__ __forceinline__ bool SampleDepthBilinearDev(const DevNeighbor& np,
 	if (d00 <= 0.f || d01 <= 0.f || d10 <= 0.f || d11 <= 0.f) return false;
 	const float dmin = fminf(fminf(d00, d01), fminf(d10, d11));
 	const float dmax = fmaxf(fmaxf(d00, d01), fmaxf(d10, d11));
-	if (!ConfRefine::IsDepthSimilarF(dmin, dmax, thDepth)) return false;
+	if (!SEACAVE::IsDepthSimilar(dmin, dmax, thDepth)) return false;
 	const float wx = px - (float)x0, wy = py - (float)y0;
 	d = (d00*(1.f-wx) + d01*wx)*(1.f-wy) + (d10*(1.f-wx) + d11*wx)*wy;
 	return true;
@@ -110,26 +112,27 @@ __device__ __forceinline__ bool SampleDepthBilinearDev(const DevNeighbor& np,
 
 // ---- intra-map geometric prior (mirrors DepthMapsData::ComputeIntraMapPrior) ----
 template <typename RefAcc>
-__global__ void PriorKernel(RefAcc ref, int W, int H, float k00, float k11, float k02, float k12,
+__global__ void PriorKernel(RefAcc ref, LinearCameraModel camera,
                             float band, float invKmin,
                             float* priorOut) {
 	const int c = blockIdx.x*blockDim.x + threadIdx.x;
 	const int r = blockIdx.y*blockDim.y + threadIdx.y;
-	if (c >= W || r >= H) return;
-	const int idx = r*W + c;
+	if (c >= ref.cols || r >= ref.rows) return;
+	const int idx = r*ref.cols + c;
 	priorOut[idx] = 0.f;
-	float w, wx, wy;
-	if (!ConfRefine::DepthPlaneFit(ref, c, r, w, wx, wy))
+	const Point2i pos(c, r);
+	float w; Point2 grad;
+	if (!SEACAVE::FitDepthGradient(ref, pos, w, grad))
 		return;
 	int nInl = 0; float sumE2 = 0.f;
 	for (int y = -1; y <= 1; ++y) {
-		const int rr = r + y; if (rr < 0 || rr >= H) continue;
+		const int rr = r + y; if (rr < 0 || rr >= ref.rows) continue;
 		for (int x = -1; x <= 1; ++x) {
 			if (x == 0 && y == 0) continue;
-			const int cc = c + x; if (cc < 0 || cc >= W) continue;
-			const float dN = ref(cc, rr);
+			const int cc = c + x; if (cc < 0 || cc >= ref.cols) continue;
+			const float dN = ref(rr, cc);
 			if (dN <= 0.f) continue;
-			const float dpred = w + wx*(float)x + wy*(float)y;
+			const float dpred = w + grad.x()*(float)x + grad.y()*(float)y;
 			const float e = fabsf(dN - dpred) / w;
 			if (e < band) { ++nInl; const float en = e/band; sumE2 += en*en; }
 		}
@@ -139,9 +142,7 @@ __global__ void PriorKernel(RefAcc ref, int W, int H, float k00, float k11, floa
 	const float gate = 1.f - ConfRefine::CRexp(-(float)nInl * invKmin);
 	float Pnorm = 1.f;
 	if (ref.HasNormal()) {
-		const F3 nGrad = ConfRefine::NormalFromGrad(k00, k11, k02, k12, c, r, w, wx, wy);
-		const F3 sn = ref.Normal(idx);
-		Pnorm = fmaxf(0.f, nGrad.x*sn.x + nGrad.y*sn.y + nGrad.z*sn.z);
+		Pnorm = fmaxf(0.f, SEACAVE::NormalFromDepthGradient(camera.f, camera.p, pos, w, grad).dot(ref.Normal(idx)));
 	}
 	float pr = Pplane * Pnorm * gate;
 	priorOut[idx] = pr < 0.f ? 0.f : (pr > 1.f ? 1.f : pr);
@@ -149,22 +150,23 @@ __global__ void PriorKernel(RefAcc ref, int W, int H, float k00, float k11, floa
 
 // ---- one-hop multi-view confirmation (mirrors AdjustConfidenceSweep) ----
 template <typename RefAcc>
-__global__ void SweepKernel(RefAcc ref, const float* priorMap, int W, int H,
+__global__ void SweepKernel(RefAcc ref, const float* priorMap, LinearCameraModel camera,
                             const DevNeighbor* neigh, int nNeigh, Params p,
                             float* confOut) {
 	const int c = blockIdx.x*blockDim.x + threadIdx.x;
 	const int r = blockIdx.y*blockDim.y + threadIdx.y;
-	if (c >= W || r >= H) return;
-	const int idx = r*W + c;
+	if (c >= ref.cols || r >= ref.rows) return;
+	const int idx = r*ref.cols + c;
 	const float depthRef = ref.Depth(idx);
 	if (depthRef <= 0.f) { confOut[idx] = 0.f; return; }
-	float rnx = 0.f, rny = 0.f, rnz = 0.f;
 	const int hasRefNormal = ref.HasNormal();
-	if (hasRefNormal) { const F3 rn = ref.Normal(idx); rnx = rn.x; rny = rn.y; rnz = rn.z; }
+	const Point3 rn(hasRefNormal ? ref.Normal(idx) : Point3::Zero());
 
 	float K = 0.f, Pconf = 0.f;
 	int V = 0;
 	const float ud = (float)c * depthRef, vd = (float)r * depthRef;
+	// the point in the reference camera frame (triangulation angle, GATE 2)
+	const float xr = ((float)c - camera.p.x()) / camera.f.x() * depthRef, yr = ((float)r - camera.p.y()) / camera.f.y() * depthRef;
 	for (int k = 0; k < nNeigh; ++k) {
 		const DevNeighbor np = neigh[k];
 		const float qz = np.A[6]*ud + np.A[7]*vd + np.A[8]*depthRef + np.b[2];
@@ -177,28 +179,19 @@ __global__ void SweepKernel(RefAcc ref, const float* priorMap, int W, int H,
 		const float dNn = NbDepthAt(np, xN, yN);
 		if (dNn <= 0.f) continue;
 		const bool hasNormalGate = (hasRefNormal && np.normal != nullptr);
-		const bool gDepthNearest = ConfRefine::IsDepthSimilarF(dNn, qz, p.thDepth);
+		const bool gDepthNearest = SEACAVE::IsDepthSimilar(dNn, qz, p.thDepth);
 		if (!gDepthNearest && dNn > qz*(1.f + p.violMargin*p.thDepth)) ++V;
 		float dN;
 		if (!SampleDepthBilinearDev(np, px, py, p.thDepth, dN))
 			dN = dNn;
 		const float wD = ConfRefine::SoftDepthW(qz, dN, p.thDepth);
-		const float un = (float)xN*dN, vn = (float)yN*dN;
-		const float qrz = np.Ai[6]*un + np.Ai[7]*vn + np.Ai[8]*dN + np.bi[2];
-		float wR = 0.f;
-		if (qrz > 0.f) {
-			const float qrx = np.Ai[0]*un + np.Ai[1]*vn + np.Ai[2]*dN + np.bi[0];
-			const float qry = np.Ai[3]*un + np.Ai[4]*vn + np.Ai[5]*dN + np.bi[1];
-			const float du = qrx/qrz - (float)c, dv = qry/qrz - (float)r;
-			wR = ConfRefine::SoftReprojW(du, dv, p.thReproj);
-		}
+		if (wD <= 0.05f)
+			continue; // every other weight is <= 1: the vote is already negligible
+		const float wR = ConfRefine::AngleW(xr, yr, depthRef, np.cn[0], np.cn[1], np.cn[2]);
 		float wN = 1.f;
 		if (hasNormalGate) {
-			const float nx = np.Rrel[0]*rnx + np.Rrel[1]*rny + np.Rrel[2]*rnz;
-			const float ny = np.Rrel[3]*rnx + np.Rrel[4]*rny + np.Rrel[5]*rnz;
-			const float nz = np.Rrel[6]*rnx + np.Rrel[7]*rny + np.Rrel[8]*rnz;
-			const float mnx = np.normal[(yN*np.width+xN)*3+0], mny = np.normal[(yN*np.width+xN)*3+1], mnz = np.normal[(yN*np.width+xN)*3+2];
-			wN = fmaxf(0.f, nx*mnx + ny*mny + nz*mnz);
+			// the reference normal rotated into the neighbor camera, against the neighbor's own normal
+			wN = fmaxf(0.f, (ConstMatrix3Map(np.Rrel) * rn).dot(ConstPoint3Map(np.normal + (yN*np.width+xN)*3)));
 		}
 		const float cN = np.conf ? np.conf[yN*np.width + xN] : 1.f;
 		const float wC = ConfRefine::SoftConfW(cN, p.minConfidence, p.epsConf);
@@ -224,7 +217,7 @@ namespace { struct DevBag { std::vector<void*> v; ~DevBag(){ for (void* p : v) c
 template <typename RefAcc>
 static bool LaunchConfidenceKernels(
 	int W, int H, const RefAcc& ref,
-	float k00, float k11, float k02, float k12,
+	float fx, float fy, float cx, float cy,
 	const ConfNeighborHost* neighbors, int nNeighbors,
 	const Params& params,
 	cudaStream_t stream, DevBag& bag, float* confOut)
@@ -251,8 +244,8 @@ static bool LaunchConfidenceKernels(
 		const ConfNeighborHost& s = neighbors[k];
 		const size_t np = (size_t)s.width * (size_t)s.height;
 		DevNeighbor d;
-		for (int i = 0; i < 9; ++i) { d.A[i]=s.A[i]; d.Ai[i]=s.Ai[i]; d.Rrel[i]=s.Rrel[i]; }
-		for (int i = 0; i < 3; ++i) { d.b[i]=s.b[i]; d.bi[i]=s.bi[i]; }
+		for (int i = 0; i < 9; ++i) { d.A[i]=s.A[i]; d.Rrel[i]=s.Rrel[i]; }
+		for (int i = 0; i < 3; ++i) { d.b[i]=s.b[i]; d.cn[i]=s.cn[i]; }
 		d.width = s.width; d.height = s.height;
 		// fused path with a valid resident texture: read depth via tex2D, skip the largest upload
 		d.texDepth = (cudaTextureObject_t)s.texDepth;
@@ -279,10 +272,9 @@ static bool LaunchConfidenceKernels(
 	const float band = params.thDepth * 3.f;
 	const float invKmin = 1.f/4.f;
 
-	PriorKernel<RefAcc><<<grid, block, 0, stream>>>(ref, W, H,
-		k00, k11, k02, k12, band, invKmin, dPrior);
-	SweepKernel<RefAcc><<<grid, block, 0, stream>>>(ref, dPrior,
-		W, H, dNeigh, nNeighbors, params, dConf);
+	const LinearCameraModel camera(fx, fy, cx, cy);
+	PriorKernel<RefAcc><<<grid, block, 0, stream>>>(ref, camera, band, invKmin, dPrior);
+	SweepKernel<RefAcc><<<grid, block, 0, stream>>>(ref, dPrior, camera, dNeigh, nNeighbors, params, dConf);
 	// reject a failed kernel launch BEFORE queueing the download
 	if (cudaGetLastError() != cudaSuccess) return false;
 
@@ -300,7 +292,7 @@ static bool LaunchConfidenceKernels(
 bool RunConfidenceCUDA(
 	int W, int H,
 	const float* refDepth, const float* refNormal, const float* refConf,
-	float k00, float k11, float k02, float k12,
+	float fx, float fy, float cx, float cy,
 	const ConfNeighborHost* neighbors, int nNeighbors,
 	const Params& params,
 	float* confOut)
@@ -334,14 +326,14 @@ bool RunConfidenceCUDA(
 	if (refNormal && !up(dRefNormal, refNormal, nPix*3*sizeof(float))) return false;
 
 	const RefLinearAcc ref{dRefDepth, dRefNormal, dRefConf, W, H};
-	return LaunchConfidenceKernels(W, H, ref, k00, k11, k02, k12,
+	return LaunchConfidenceKernels(W, H, ref, fx, fy, cx, cy,
 		neighbors, nNeighbors, params, stream, bag, confOut);
 }
 
 bool RunConfidenceFusedCUDA(
 	int W, int H,
 	const void* devDepthNormals, const float* devCosts,
-	float k00, float k11, float k02, float k12,
+	float fx, float fy, float cx, float cy,
 	const ConfNeighborHost* neighbors, int nNeighbors,
 	const Params& params,
 	void* stream, float* confOut)
@@ -350,7 +342,7 @@ bool RunConfidenceFusedCUDA(
 	DevBag bag;
 	// Point4 is 4 contiguous floats (x,y,z = normal, w = depth), 16-byte aligned by cudaMalloc
 	const RefPackedAcc ref{reinterpret_cast<const float4*>(devDepthNormals), devCosts, W, H};
-	return LaunchConfidenceKernels(W, H, ref, k00, k11, k02, k12,
+	return LaunchConfidenceKernels(W, H, ref, fx, fy, cx, cy,
 		neighbors, nNeighbors, params,
 		(cudaStream_t)stream, bag, confOut);
 }

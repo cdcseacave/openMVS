@@ -304,6 +304,7 @@ int main(int argc, LPCTSTR* argv)
 	if (OPT::fDecimateMesh < 1.f) {
 		ASSERT(OPT::fDecimateMesh > 0.f);
 		Mesh::CleanParams cleanParams;
+		cleanParams.maxEdgeScale = 2.f; // drop cavity-capping faces first
 		cleanParams.simplifyTarget = OPT::fDecimateMesh;
 		cleanParams.maxHoleEdges = OPT::nCloseHoles;
 		scene.mesh.Clean(cleanParams);
