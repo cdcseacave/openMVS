@@ -119,7 +119,7 @@ bool ImageCache::DecodeImage(const Image& imageData, Image32F& imageGray) {
 	// bring the image to the resolution the depth-maps are estimated at;
 	// Image::GetSize() is the size ReloadImage() resolved when it read the header
 	if (imageColor.size() != imageData.GetSize())
-		cv::resize(imageColor, imageColor, imageData.GetSize(), 0, 0, cv::INTER_AREA);
+		Image::ResizeUniform(imageColor, imageColor, imageData.GetSize(), cv::INTER_AREA);
 	imageColor.toGray(imageGray, cv::COLOR_BGR2GRAY, true);
 	return true;
 }

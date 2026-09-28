@@ -136,8 +136,10 @@ public:
 			}
 			ASSERT(scale < 1);
 			ViewData scaledView;
-			cv::resize(imageColor, scaledView.imageColor, cv::Size(), scale, scale, cv::INTER_AREA);
-			cv::resize(imageGray, scaledView.imageGray, cv::Size(), scale, scale, cv::INTER_AREA);
+			// resize to an explicit size: the levels scale K per axis (GetScaledK(size, newSize)),
+			// and so does OpenCV only when given the size instead of the factor
+			cv::resize(imageColor, scaledView.imageColor, Image8U::computeResize(imageColor.size(), scale), 0, 0, cv::INTER_AREA);
+			cv::resize(imageGray, scaledView.imageGray, Image8U::computeResize(imageGray.size(), scale), 0, 0, cv::INTER_AREA);
 			#if SGM_SIMILARITY == SGM_SIMILARITY_CENSUS
 			CensusTransform(scaledView.imageGray, scaledView.imageCensus);
 			#endif

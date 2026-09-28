@@ -53,6 +53,10 @@ bool MeshRefineWindowStatsTest();
 // which is locked by a negative bound
 bool MeshCleanPerVertexTest();
 
+// test that every image resize paired with a camera (Image::ResizeImage/GetImage, the neighbor
+// scaling and the depth-estimation pyramid) moves the pixels exactly as the camera's K is scaled
+bool ImageResizeCameraTest();
+
 // test the Delaunay mesh cut on the two hand-solved synthetic fixtures
 // (docs/design/DelaunayMeshReconstruction.md, Appendix)
 bool MeshBipyramidFixtureTest();

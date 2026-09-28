@@ -92,6 +92,10 @@ public:
 	bool ReloadImageAtPreparedResolution(bool bLoadPixels=true) { return ReloadImage(MAXF(width, height), bLoadPixels); }
 	void ReleaseImage();
 	float ResizeImage(unsigned nMaxResolution=0);
+	// resize a raster on an image grid to its uniform size (see TImage::computeResize) with one factor on
+	// both axes, so the pixel mapping matches the K GetCamera() returns for that size; resizing
+	// straight to the size maps each axis by its own rounded ratio, up to half a pixel off
+	static void ResizeUniform(cv::InputArray src, cv::OutputArray dst, const cv::Size& size, int interpolation);
 	unsigned RecomputeMaxResolution(unsigned& level, unsigned minImageSize, unsigned maxImageSize=INT_MAX) const;
 
 	Image GetImage(const PlatformArr& platforms, double scale, bool bUseImage=true) const;

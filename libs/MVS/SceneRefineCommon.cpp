@@ -104,7 +104,8 @@ bool MVS::PrepareRefineImage(Image& imageData, const PlatformArr& platforms,
 	if (sigma > 0)
 		cv::GaussianBlur(gray, gray, cv::Size(), sigma);
 	if (scale < 1.0) {
-		cv::resize(gray, gray, cv::Size(), scale, scale, cv::INTER_AREA);
+		// the camera comes from UpdateCamera() below, so scale on its uniform grid
+		Image::ResizeUniform(gray, gray, Image8U::computeResize(gray.size(), scale), cv::INTER_AREA);
 		imageData.width = gray.width(); imageData.height = gray.height();
 	}
 	imageData.UpdateCamera(platforms);
@@ -118,7 +119,7 @@ void MVS::PrepareRefineImageMask(const Image& imageData, const cv::Size& size, B
 	keepMask.release();
 	if (OPTREFINE::nIgnoreMaskLabel < 0)
 		return;
-	DepthEstimator::ImportKeepMask(imageData, size, (uint8_t)OPTREFINE::nIgnoreMaskLabel, keepMask);
+	DepthEstimator::ImportIgnoreMask(imageData, size, (uint8_t)OPTREFINE::nIgnoreMaskLabel, keepMask);
 }
 
 // the largest finite value of a per-vertex field, the stand-in for the vertices no view saw
