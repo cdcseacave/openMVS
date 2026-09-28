@@ -63,13 +63,13 @@ public:
 	void Bind() const;
 	void Unbind() const;
 
+	// the typed data functions take counts and offsets in elements of T, never in bytes
+	// (only AllocateBuffer takes a byte size)
 	template<typename T>
 	void SetData(const std::vector<T>& data, GLenum usage = GL_STATIC_DRAW);
 
 	template<typename T>
 	void SetData(const T* data, size_t count, GLenum usage = GL_STATIC_DRAW);
-
-	void SetData(const void* data, size_t size, GLenum usage = GL_STATIC_DRAW);
 
 	// Buffer allocation and sub-data functions for multi-mesh support
 	void AllocateBuffer(size_t size, GLenum usage = GL_STATIC_DRAW);
@@ -79,8 +79,6 @@ public:
 
 	template<typename T>
 	void SetSubData(const T* data, size_t count, size_t offset);
-
-	void SetSubData(const void* data, size_t size, size_t offset);
 
 	// Read back buffer data
 	template<typename T>

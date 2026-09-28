@@ -905,7 +905,7 @@ void Renderer::SetupGizmoBuffers() {
 	// Upload combined geometry
 	gizmoVBO->SetData(vertices);
 	gizmoEBO->Bind();
-	gizmoEBO->SetData(indices.data(), indices.size() * sizeof(uint32_t), GL_STATIC_DRAW);
+	gizmoEBO->SetData(indices);
 
 	gizmoVAO->Unbind();
 }

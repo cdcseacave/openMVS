@@ -65,11 +65,6 @@ void VBO::SetData(const T* data, size_t count, GLenum usage) {
 	GL_CHECK(glBufferData(target, count * sizeof(T), data, usage));
 }
 
-void VBO::SetData(const void* data, size_t size, GLenum usage) {
-	Bind();
-	GL_CHECK(glBufferData(target, size, data, usage));
-}
-
 void VBO::AllocateBuffer(size_t size, GLenum usage) {
 	Bind();
 	GL_CHECK(glBufferData(target, size, nullptr, usage));
@@ -84,11 +79,6 @@ template<typename T>
 void VBO::SetSubData(const T* data, size_t count, size_t offset) {
 	Bind();
 	GL_CHECK(glBufferSubData(target, offset * sizeof(T), count * sizeof(T), data));
-}
-
-void VBO::SetSubData(const void* data, size_t size, size_t offset) {
-	Bind();
-	GL_CHECK(glBufferSubData(target, offset, size, data));
 }
 
 // Readback implementations
