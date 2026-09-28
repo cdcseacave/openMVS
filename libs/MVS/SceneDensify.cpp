@@ -645,20 +645,25 @@ DepthData DepthMapsData::ScaleDepthData(const DepthData& inputDeptData, float sc
 	FOREACH (idxView, rescaledDepthData.images) {
 		DepthData::ViewData& viewData = rescaledDepthData.images[idxView];
 		ASSERT(viewData.depthMap.empty() || viewData.image.size() == viewData.depthMap.size());
-		cv::resize(viewData.image, viewData.image, cv::Size(), scale, scale, cv::INTER_AREA);
-		viewData.camera = viewData.pImageData->camera;
-		viewData.camera.K = viewData.camera.GetScaledK(viewData.pImageData->GetSize(), viewData.image.size());
+		// the pyramid scales K per axis (GetScaledK(size, newSize)), as its estimates are upsampled
+		// back to explicit sizes: resize to an explicit size too, so OpenCV maps each axis by
+		// newSize/size, and scale this view's own camera, the one of its (possibly neighbor-scaled)
+		// input image
+		const cv::Size size(viewData.image.size());
+		const cv::Size scaledSize(Image8U::computeResize(size, scale));
+		cv::resize(viewData.image, viewData.image, scaledSize, 0, 0, cv::INTER_AREA);
+		viewData.camera = viewData.camera.GetScaled(size, scaledSize);
 		if (!viewData.depthMap.empty()) {
-			cv::resize(viewData.depthMap, viewData.depthMap, viewData.image.size(), 0, 0, cv::INTER_AREA);
-			viewData.cameraDepthMap = viewData.pImageData->camera;
-			viewData.cameraDepthMap.K = viewData.cameraDepthMap.GetScaledK(viewData.pImageData->GetSize(), viewData.image.size());
+			cv::resize(viewData.depthMap, viewData.depthMap, scaledSize, 0, 0, cv::INTER_AREA);
+			viewData.cameraDepthMap = viewData.cameraDepthMap.GetScaled(size, scaledSize);
 		}
 		viewData.Init(rescaledDepthData.images[0].camera);
 	}
+	// the reference maps are on the grid of the reference image
 	if (!rescaledDepthData.depthMap.empty())
-		cv::resize(rescaledDepthData.depthMap, rescaledDepthData.depthMap, cv::Size(), scale, scale, cv::INTER_NEAREST);
+		cv::resize(rescaledDepthData.depthMap, rescaledDepthData.depthMap, rescaledDepthData.images.front().image.size(), 0, 0, cv::INTER_NEAREST);
 	if (!rescaledDepthData.normalMap.empty())
-		cv::resize(rescaledDepthData.normalMap, rescaledDepthData.normalMap, cv::Size(), scale, scale, cv::INTER_NEAREST);
+		cv::resize(rescaledDepthData.normalMap, rescaledDepthData.normalMap, rescaledDepthData.images.front().image.size(), 0, 0, cv::INTER_NEAREST);
 	return rescaledDepthData;
 }
 
