@@ -169,9 +169,9 @@ PoseUncertaintyArr BundleAdjustment::ComputePoseUncertainty()
 		return PoseUncertaintyArr();
 	// If BA did not fix the gauge, choose the best-connected pose as the datum and exclude it
 	// from the covariance system, removing the 6-DOF rotation+translation gauge null space
-	// (residual scale DOF is absorbed by damping). GPS priors already anchor the gauge, so in
-	// that case every pose stays in the system and the covariances are absolute (ENU).
-	if (datumIDs.empty() && numGPSResiduals == 0) {
+	// (residual scale DOF is absorbed by damping). Absolute position priors already anchor the
+	// gauge, so every pose stays in the system and the covariances use the active prior frame.
+	if (datumIDs.empty() && numPositionPriorResiduals == 0) {
 		size_t best = 0;
 		for (size_t k = 1; k < poses.size(); ++k)
 			if (numReprojResidualsPerImage[poses[k].imageID] > numReprojResidualsPerImage[poses[best].imageID])
@@ -184,6 +184,12 @@ PoseUncertaintyArr BundleAdjustment::ComputePoseUncertainty()
 	std::vector<const double*> points;
 	for (const Track& track : scene.tracks) {
 		const double* xyz = track.position.ptr();
+		if (problem->HasParameterBlock(const_cast<double*>(xyz)) &&
+		    !problem->IsParameterBlockConstant(const_cast<double*>(xyz)))
+			points.push_back(xyz);
+	}
+	for (const auto& params : gcpParams) {
+		const double* xyz = params.data();
 		if (problem->HasParameterBlock(const_cast<double*>(xyz)) &&
 		    !problem->IsParameterBlockConstant(const_cast<double*>(xyz)))
 			points.push_back(xyz);
@@ -232,11 +238,11 @@ PoseUncertaintyArr BundleAdjustment::ComputePoseUncertainty()
 		S = Haa - reduced;
 	}
 
-	// With no GPS priors the reduced system still carries the 1-DOF global-scale gauge (the
-	// rotation+translation gauge was already removed by excluding the datum pose above), so
-	// bound the conditioning to give that scale mode a finite variance. GPS-anchored systems
+	// With no absolute position priors the reduced system still carries the 1-DOF global-scale
+	// gauge (rotation+translation were removed by excluding the datum pose above), so
+	// bound the conditioning to give that scale mode a finite variance. Prior-anchored systems
 	// are full rank and use the exact (unbounded-precision) selected inverse.
-	const double condFloorRel = (numGPSResiduals == 0) ? 1e-9 : 0.0;
+	const double condFloorRel = (numPositionPriorResiduals == 0) ? 1e-9 : 0.0;
 	Eigen::SparseMatrix<double> Z;
 	Eigen::PermutationMatrix<Eigen::Dynamic> perm;
 	if (!ComputeSelectedInverse(S, Z, perm, condFloorRel)) {
@@ -301,11 +307,11 @@ PoseUncertaintyArr BundleAdjustment::ComputePoseUncertaintyCeres()
 	}
 	if (poses.size() < 2)
 		return PoseUncertaintyArr();
-	// Match ComputePoseUncertainty()'s gauge handling: with no GPS priors and no BA-fixed pose,
+	// Match ComputePoseUncertainty()'s gauge handling: with no absolute priors and no BA-fixed pose,
 	// hold the best-connected pose constant so the reduced system is (all but the scale mode)
 	// full rank; DENSE_SVD's null-space thresholding absorbs the residual gauge freedom.
 	std::vector<double*> tempFixed;
-	if (datumIDs.empty() && numGPSResiduals == 0) {
+	if (datumIDs.empty() && numPositionPriorResiduals == 0) {
 		size_t best = 0;
 		for (size_t k = 1; k < poses.size(); ++k)
 			if (numReprojResidualsPerImage[poses[k].imageID] > numReprojResidualsPerImage[poses[best].imageID])
@@ -653,6 +659,8 @@ bool BundleAdjustment::Adjust()
 
 	// Add reprojection residuals
 	uint32_t numReprojResiduals = 0;
+	uint32_t numGCPReprojResiduals = 0;
+	uint32_t numGCPPriorResiduals = 0;
 	uint32_t numSkippedLowConfidence = 0;
 	numReprojResidualsPerImage.resize(scene.images.size());
 	numReprojResidualsPerImage.Memset(0);
@@ -678,6 +686,69 @@ bool BundleAdjustment::Adjust()
 			++numReprojResiduals;
 		}
 	}
+
+	gcpParams.clear();
+	if (config.useGCPConstraints && config.gcpPositionWeight > 0 && !scene.gcps.empty()) {
+		gcpParams.reserve(scene.gcps.size());
+		for (const GroundControlPoint& gcp : scene.gcps) {
+			if (!gcp.isInlier || gcp.observations.GetSize() < 2)
+				continue;
+			std::vector<const GroundControlPoint::Observation*> validObservations;
+			validObservations.reserve(gcp.observations.GetSize());
+			for (const GroundControlPoint::Observation& obs : gcp.observations) {
+				if (obs.imageID >= scene.images.GetSize())
+					continue;
+				const Image& img = scene.images[obs.imageID];
+				if (!img.IsValid())
+					continue;
+				validObservations.push_back(&obs);
+			}
+			if (validObservations.size() < 2)
+				continue;
+
+			gcpParams.push_back({gcp.position.x, gcp.position.y, gcp.position.z});
+			auto& params = gcpParams.back();
+
+			problem.AddResidualBlock(
+				GCPPositionError::Create(
+					gcp.position.x, gcp.position.y, gcp.position.z,
+					gcp.accuracy.x, gcp.accuracy.y, gcp.accuracy.z,
+					config.gcpPositionWeight),
+				nullptr,
+				params.data());
+			++numGCPPriorResiduals;
+
+			for (const GroundControlPoint::Observation* pObs : validObservations) {
+				const GroundControlPoint::Observation& obs = *pObs;
+				const Image& img = scene.images[obs.imageID];
+				switch (img.GetCameraType()) {
+				case CameraType::PINHOLE: {
+					DoubleArr& intr = intrinsicParams.at(img.pCamera);
+					ceres::CostFunction* cost_function = PinholeReprojectionError::Create(obs.point.x, obs.point.y);
+					problem.AddResidualBlock(
+						cost_function,
+						loss_function,
+						poseParams.data() + obs.imageID * 7,
+						intr.data(),
+						params.data());
+				} break;
+				case CameraType::SPHERICAL: {
+					ceres::CostFunction* cost_function = SphericalAngularReprojectionError::Create(
+						obs.point.x, obs.point.y, img.pCamera->GetWidth(), img.pCamera->GetHeight());
+					problem.AddResidualBlock(
+						cost_function,
+						loss_function,
+						poseParams.data() + obs.imageID * 7,
+						params.data());
+				} break;
+				}
+				++numGCPReprojResiduals;
+			}
+		}
+		DEBUG("Added %u GCP reprojection residuals and %u GCP coordinate priors",
+			numGCPReprojResiduals, numGCPPriorResiduals);
+	}
+
 	if (config.useKeypointConfidence) {
 		DEBUG_EXTRA("Created %u reprojection residuals (%u skipped low-confidence)",
 		    numReprojResiduals, numSkippedLowConfidence);
@@ -850,9 +921,10 @@ bool BundleAdjustment::Adjust()
 		DEBUG("Added %u GPS position constraints (origin: lat=%.6f°, lon=%.6f°, alt=%.1fm)",
 			numGPSResiduals, lat0, lon0, alt0);
 	}
+	numPositionPriorResiduals = numGPSResiduals + numGCPPriorResiduals;
 
-	// Fix best connected camera (gauge freedom) - unless we have GPS constraints
-	if (numGPSResiduals == 0) {
+	// Fix best connected camera (gauge freedom) unless absolute priors already anchor the scene.
+	if (numGPSResiduals == 0 && numGCPPriorResiduals == 0) {
 		IIndex bestImgID = NO_ID;
 		FOREACH(i, scene.images) {
 			if (!scene.images[i].IsValid())
@@ -862,7 +934,7 @@ bool BundleAdjustment::Adjust()
 		}
 		if (bestImgID != NO_ID) {
 			problem.SetParameterBlockConstant(poseParams.data() + bestImgID * 7);
-			DEBUG("Fixed view %u (reference, no GPS)", bestImgID);
+			DEBUG("Fixed view %u (reference, no absolute position priors)", bestImgID);
 		}
 	}
 
@@ -959,8 +1031,9 @@ bool BundleAdjustment::Adjust()
 		DEBUG("Updated intrinsics for %u cameras", (unsigned)intrinsicParams.size());
 	}
 
-	DEBUG("Bundle adjustment complete: %u reprojection residuals, %u GPS residuals, %.4g -> %.4g cost (%s)",
-	    numReprojResiduals, numGPSResiduals, summary.initial_cost, summary.final_cost, TD_TIMER_GET_FMT().c_str());
+	DEBUG("Bundle adjustment complete: %u reprojection residuals, %u GPS residuals, %u GCP reprojection residuals, %u GCP priors, %.4g -> %.4g cost (%s)",
+		numReprojResiduals, numGPSResiduals, numGCPReprojResiduals, numGCPPriorResiduals,
+		summary.initial_cost, summary.final_cost, TD_TIMER_GET_FMT().c_str());
 
 	// Report average reprojection errors
 	ComputeTracksMeanReprojectionError(scene);
@@ -973,6 +1046,8 @@ bool BundleAdjustment::AdjustLocal(
 {
 	TD_TIMER_STARTD();
 	numGPSResiduals = 0; // local BA adds no GPS priors
+	numPositionPriorResiduals = 0;
+	gcpParams.clear();
 
 	// 1. Set local window
 	ASSERT(!viewIDs.empty());
