@@ -369,7 +369,9 @@ void Mesh::Clean(const CleanParams& params)
 		// a narrower cone than halfmesh's 0.35: a face at height h above a crossing surface (the
 		// ground under a wall, a column beside it) reads as capped once h < cone x reach x its
 		// longest edge, which punches holes along every concave crease, while a real lid is hit
-		// head-on by the probe at its depth and is still caught by the narrower cone
+		// head-on by the probe at its depth and is still caught by the narrower cone;
+		// reach 2 (halfmesh: 4) leaves the fewest crease holes and looks best, while the most
+		// accurate is reach 5 (mean F1 0.6467 vs 0.6394, it still catches lids far above a surface)
 		halfMesh.RemoveLongEdgeFacesCapped(params.maxEdgeScale, 2.f, 0.2f);
 	}
 	if (params.spuriousFactor > 0.f) {
