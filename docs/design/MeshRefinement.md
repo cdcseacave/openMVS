@@ -33,7 +33,8 @@ stage.
 `apps/RefineMesh/RefineMesh.cpp:main` loads the scene, optionally attaches per-image masks
 (`--mask-path`, `--ignore-mask-label`), loads (or requires) the input mesh, and picks a backend via
 `SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs)` (true for an empty `--gpu-device`,
-`-2`, `cpu` or `none`; false for `-1` = best GPU or `>=0` = device id list). Refinement mutates the
+`-2`, `cpu` or `none`; false for `-1` = best GPU or `>=0` = device id list). `--gpu-device` defaults
+to `-1`, so a CUDA build refines on the best GPU unless the CPU is requested. Refinement mutates the
 mesh in place, so `main` snapshots `scene.mesh.vertices`/`faces` before a CUDA attempt; if
 `Scene::RefineMeshCUDA` returns `false`, it restores the snapshot and runs `Scene::RefineMesh` (CPU)
 on the original input.
