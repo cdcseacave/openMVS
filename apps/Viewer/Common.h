@@ -122,6 +122,8 @@ struct PointConfidenceFilter {
 	bool IsShown(const MVS::PointCloud& pointcloud, MVS::PointCloud::Index idx) const {
 		if (IsAll())
 			return true;
+		// a narrowed window exists only over a cloud with confidence (Reset widens it otherwise)
+		ASSERT(pointcloud.pointWeights.size() == pointcloud.points.size());
 		const uint8_t q(Quantize(Confidence(pointcloud.pointWeights[idx])));
 		return q >= levelMin && q <= levelMax;
 	}
@@ -129,19 +131,20 @@ struct PointConfidenceFilter {
 	// widened by half a step, so the end levels include every point
 	Eigen::Vector2f ShaderWindow() const { return Eigen::Vector2f((levelMin-0.5f)/255.f, (levelMax+0.5f)/255.f); }
 	// set the range of the given cloud, keeping the threshold values of the previous range, if any
-	// (an open end stays open)
+	// (an open end stays open); a cloud without confidence shows every point
 	void Reset(const MVS::PointCloud& pointcloud) {
+		if (pointcloud.pointWeights.empty()) {
+			*this = PointConfidenceFilter();
+			return;
+		}
+		ASSERT(pointcloud.pointWeights.size() == pointcloud.points.size());
 		const bool bRemap(maxConf > minConf);
 		const float thresholdMin(Dequantize(levelMin)), thresholdMax(Dequantize(levelMax));
-		minConf = maxConf = 0.f;
-		if (!pointcloud.pointWeights.empty()) {
-			ASSERT(pointcloud.pointWeights.size() == pointcloud.points.size());
-			minConf = FLT_MAX; maxConf = -FLT_MAX;
-			for (const MVS::PointCloud::WeightArr& weights: pointcloud.pointWeights) {
-				const float conf(Confidence(weights));
-				minConf = MINF(minConf, conf);
-				maxConf = MAXF(maxConf, conf);
-			}
+		minConf = FLT_MAX; maxConf = -FLT_MAX;
+		for (const MVS::PointCloud::WeightArr& weights: pointcloud.pointWeights) {
+			const float conf(Confidence(weights));
+			minConf = MINF(minConf, conf);
+			maxConf = MAXF(maxConf, conf);
 		}
 		if (bRemap && levelMin != 0)
 			levelMin = Quantize(CLAMP(thresholdMin, minConf, maxConf));

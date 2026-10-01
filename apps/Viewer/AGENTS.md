@@ -184,7 +184,7 @@ ImGui with docking support, GLFW/OpenGL3 backends, persistent `.ini` settings.
 
 ### Panels
 - Layers (visibility/solo/active, compare off/swipe/split with A|B sides and camera sync, align-to-active), scene info, camera controls, selection controls, render settings
-- Point Confidence (open by default, shown only while the active layer's cloud has `pointWeights`, e.g. a `.dmap`): `Layer::pointConfidence` (`PointConfidenceFilter`, `Common.h`) quantizes each point's confidence (largest view weight) to 8 bits over the cloud's range; the byte rides in the alpha of the RGBA8 point color (no extra VRAM) and the [min, max] window of levels is a per-layer uniform (`confidenceWindow`) of `pointcloud.vert`/`picker_points.vert`, so moving the slider uploads nothing and point indices never change; box/lasso selection applies the same test
+- Point Confidence (open by default, shown only while the active layer's cloud has `pointWeights`, e.g. a `.dmap`): `Layer::pointConfidence` (`PointConfidenceFilter`, `Common.h`) quantizes each point's confidence (largest view weight) to 8 bits over the cloud's range; the byte rides in the alpha of the RGBA8 point color (no extra VRAM) and the [min, max] window of levels is a per-layer uniform (`confidenceWindow`) of `pointcloud.vert`/`picker_points.vert`/`pointcloudnormals.vert` (the normal lines carry the byte in the w of their vertices)/`geometryselection.vert` (selected points stay hidden), so moving the slider uploads nothing and point indices never change; box/lasso selection applies the same test; a cloud without confidence resets the window to show every point
 - Console overlay (log output), performance overlay (frame stats)
 - Viewport overlay, selection overlay
 

@@ -267,7 +267,7 @@ void Renderer::UploadPointClouds(const Scene& sceneController, float normalLengt
 		pointCloudVBO->AllocateBuffer(pointCount * 3 * sizeof(float));
 		pointCloudColorVBO->AllocateBuffer(pointCount * 4 * sizeof(uint8_t));
 		if (pointNormalCount)
-			pointCloudNormalsVBO->AllocateBuffer(pointNormalCount * 3 * sizeof(float));
+			pointCloudNormalsVBO->AllocateBuffer(pointNormalCount * 4 * sizeof(float));
 		size_t pointOffset = 0;
 		size_t normalOffset = 0;
 		for (const Scene::Layer& layer : sceneController.GetLayers()) {
@@ -291,19 +291,23 @@ void Renderer::UploadPointClouds(const Scene& sceneController, float normalLengt
 			pointCloudColorVBO->SetSubData(colors, pointOffset * 4);
 
 			if (pointcloud.normals.size() == pointcloud.points.size()) {
+				// both line ends carry the point's quantized confidence, normalized like the color alpha
 				std::vector<float> normalLines;
-				normalLines.reserve(pointcloud.normals.size() * 6);
+				normalLines.reserve(pointcloud.normals.size() * 8);
 				for (size_t i = 0; i < pointcloud.points.size(); ++i) {
 					const MVS::PointCloud::Point& point = pointcloud.points[i];
 					const MVS::PointCloud::Normal& normal = pointcloud.normals[i];
+					const float conf = colors[i * 4 + 3] / 255.f;
 					normalLines.push_back(point.x);
 					normalLines.push_back(point.y);
 					normalLines.push_back(point.z);
+					normalLines.push_back(conf);
 					normalLines.push_back(point.x + normal.x * normalLength);
 					normalLines.push_back(point.y + normal.y * normalLength);
 					normalLines.push_back(point.z + normal.z * normalLength);
+					normalLines.push_back(conf);
 				}
-				pointCloudNormalsVBO->SetSubData(normalLines, normalOffset * 3);
+				pointCloudNormalsVBO->SetSubData(normalLines, normalOffset * 4);
 				normalOffset += pointcloud.normals.size() * 2;
 			}
 			pointOffset += pointcloud.points.size();
@@ -650,9 +654,9 @@ void Renderer::SetupPointCloudNormalsBuffers() {
 
 	pointCloudNormalsVAO->Bind();
 
-	// Position attribute (location 0) - contains both start and end points of normal lines
+	// Position + quantized confidence attribute (location 0) - both start and end points of normal lines
 	pointCloudNormalsVBO->Bind();
-	pointCloudNormalsVAO->EnableAttribute(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+	pointCloudNormalsVAO->EnableAttribute(0, 4, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
 
 	pointCloudNormalsVAO->Unbind();
 }
@@ -1508,12 +1512,12 @@ void Renderer::RenderPointCloudNormals(const Window& window) {
 
 	pointCloudNormalsVAO->Bind();
 
-	if (layerPassFilter.empty()) {
-		GL_CHECK(glDrawArrays(GL_LINES, 0, pointNormalCount));
-	} else {
-		for (const LayerIndexRange& range : pointLayerRanges)
-			if (range.normalCount > 0 && IsLayerInPass(range.layerID))
-				GL_CHECK(glDrawArrays(GL_LINES, (GLint)range.normalOffset, (GLsizei)range.normalCount));
+	// one draw per layer, each with its own confidence window
+	for (const LayerIndexRange& range : pointLayerRanges) {
+		if (range.normalCount == 0 || !IsLayerInPass(range.layerID))
+			continue;
+		pointCloudNormalsShader->SetVector2("confidenceWindow", range.confidenceWindow);
+		GL_CHECK(glDrawArrays(GL_LINES, (GLint)range.normalOffset, (GLsizei)range.normalCount));
 	}
 
 	pointCloudNormalsVAO->Unbind();
@@ -1676,6 +1680,9 @@ void Renderer::RenderSelection(const Window& window) {
 		// Set highlight size and color for points (red)
 		geometrySelectionShader->SetVector3("highlightColor", Eigen::Vector3f(1.f, 0.f, 0.f));
 		geometrySelectionShader->SetFloat("pointSize", window.pointSize * 3.f);
+		// a point hidden by the confidence filter stays hidden while selected
+		if (pointRange != nullptr)
+			geometrySelectionShader->SetVector2("confidenceWindow", pointRange->confidenceWindow);
 
 		// We need access to the actual point cloud data to extract selected point
 		pointCloudVAO->Bind();
@@ -2141,6 +2148,9 @@ void Renderer::RenderSelectedGeometry(const Window& window) {
 		// set highlight size and color for points (red)
 		geometrySelectionShader->SetVector3("highlightColor", Eigen::Vector3f(1.f, 0.f, 0.f));
 		geometrySelectionShader->SetFloat("pointSize", window.pointSize * 2.5f);
+		// a point hidden by the confidence filter stays hidden while selected
+		if (pointRange != nullptr)
+			geometrySelectionShader->SetVector2("confidenceWindow", pointRange->confidenceWindow);
 		// render each selected point individually using glDrawArrays with offset
 		pointCloudVAO->Bind();
 		for (const auto& pointIdx : selectedPointIndices) {
@@ -2156,6 +2166,8 @@ void Renderer::RenderSelectedGeometry(const Window& window) {
 	if (window.showMesh && !selectedFaceIndices.empty() && !meshFaceCounts.empty()) {
 		// set highlight color for faces (red)
 		geometrySelectionShader->SetVector3("highlightColor", Eigen::Vector3f(1.f, 0.f, 0.f));
+		// faces have no confidence: their attribute alpha is 1, inside the all-points window
+		geometrySelectionShader->SetVector2("confidenceWindow", PointConfidenceFilter().ShaderWindow());
 		// render as wireframe overlay to show selection
 		GL_CHECK(glPolygonMode(GL_FRONT_AND_BACK, GL_LINE));
 		// enable polygon offset to render selection on top of existing mesh
