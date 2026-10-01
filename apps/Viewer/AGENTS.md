@@ -174,7 +174,7 @@ Three selection shapes: BOX (rectangular), LASSO (free-form polygon), CIRCLE. Th
 
 **Multi-select**: SelectionController classifies the active visible layer's point cloud points and mesh triangles against the 2D selection region. Results are stored as active-layer-local indices in `Window::selectionIdx`.
 
-**Actions on selection**: `Scene::RemoveSelectedGeometry()` deletes selected points/triangles. `Scene::SetROIFromSelection()` sets region-of-interest from selection. `Scene::CropToPoints()` extracts sub-scene from selected points.
+**Actions on selection**: `Scene::RemoveSelectedGeometry()` deletes selected triangles and the selected points the confidence filter shows (a point selected before the window was narrowed stays selected but hidden, and is kept). `Scene::SetROIFromSelection()` sets region-of-interest from selection. `Scene::CropToPoints()` extracts sub-scene from selected points.
 
 **Index mapping**: `Scene::ImageIdxMVS2Viewer()` converts between active-layer MVS image indices and Viewer-local image indices (which skip invalid images).
 
