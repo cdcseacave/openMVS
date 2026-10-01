@@ -1904,6 +1904,140 @@ bool MeshCleanPerVertexTest()
 }
 /*----------------------------------------------------------------*/
 
+// render a smooth blob at the given pixel positions (the pixel center convention of the cameras:
+// integer coordinates) into a float image
+static void ResizeTestRenderBlobs(const std::vector<Point2>& centers, double sigma, Image32F& image)
+{
+	image.memset(0);
+	const int radius(CEIL2INT(5*sigma));
+	for (const Point2& c: centers) {
+		for (int r=MAXF(0, FLOOR2INT(c.y)-radius), re=MINF(image.rows-1, FLOOR2INT(c.y)+radius); r<=re; ++r)
+			for (int x=MAXF(0, FLOOR2INT(c.x)-radius), xe=MINF(image.cols-1, FLOOR2INT(c.x)+radius); x<=xe; ++x)
+				image(r,x) += (float)std::exp(-(SQUARE(x-c.x)+SQUARE(r-c.y))/(2*SQUARE(sigma)));
+	}
+}
+// largest distance between where the camera projects each point and the intensity centroid of the
+// blob the resized raster carries there
+static double ResizeTestMaxError(const Camera& camera, const std::vector<Point3>& points, const Image32F& image, double sigma)
+{
+	const int radius(CEIL2INT(5*sigma)+1);
+	double maxError(0);
+	for (const Point3& X: points) {
+		const Point2 x(camera.TransformPointW2I(X));
+		double sw(0), sx(0), sy(0);
+		for (int r=MAXF(0, ROUND2INT(x.y)-radius), re=MINF(image.rows-1, ROUND2INT(x.y)+radius); r<=re; ++r)
+			for (int c=MAXF(0, ROUND2INT(x.x)-radius), ce=MINF(image.cols-1, ROUND2INT(x.x)+radius); c<=ce; ++c) {
+				const double w(image(r,c));
+				sw += w; sx += w*c; sy += w*r;
+			}
+		ASSERT(sw > 0);
+		maxError = MAXF(maxError, norm(Point2(sx/sw, sy/sw) - x));
+	}
+	return maxError;
+}
+// every image resize the pipeline pairs with a camera must move the pixels exactly as that camera's K
+// is scaled: a point must project, through the camera of the resized view, onto the spot the resize
+// actually moved it to. A 1957x1091 view (odd sides, so rounded sizes and scale factors disagree)
+// with an off-center principal point carries smooth blobs at the projections of known points; each
+// resize path is run and every blob is located by its intensity centroid
+bool ImageResizeCameraTest()
+{
+	constexpr int width(1957), height(1091);
+	constexpr double sigma(4.0), maxError(0.05);
+	PlatformArr platforms;
+	{
+		KMatrix K(KMatrix::IDENTITY);
+		K(0,0) = 1163.5; K(1,1) = 1156.2; K(0,2) = 980.9; K(1,2) = 542.8;
+		Platform& platform = platforms.emplace_back();
+		platform.cameras.emplace_back(ScaleK(K, REAL(1)/Camera::GetNormalizationScale(width, height)), RMatrix::IDENTITY, CMatrix::ZERO);
+		Platform::Pose& pose = platform.poses.emplace_back();
+		pose.R = RMatrix::IDENTITY;
+		pose.C = CMatrix::ZERO;
+	}
+	Image image;
+	image.platformID = image.cameraID = image.poseID = image.ID = 0;
+	image.width = width; image.height = height; image.scale = 1;
+	image.UpdateCamera(platforms);
+	// a grid of points covering the view up to near its borders, where the errors are largest
+	std::vector<Point3> points;
+	std::vector<Point2> centers;
+	for (int i=0; i<5; ++i)
+		for (int j=0; j<7; ++j) {
+			const Point2 x(40.3+j*(width-80.)/6, 40.7+i*(height-80.)/4);
+			centers.emplace_back(x);
+			points.emplace_back(image.camera.TransformPointI2W(Point3(x.x, x.y, 5.0)));
+		}
+	Image32F gray(cv::Size(width, height));
+	ResizeTestRenderBlobs(centers, sigma, gray);
+	// the color image the loaders carry, with the blobs in every channel
+	const auto ToColor = [&gray](Image8U3& color) {
+		cv::Mat color32F;
+		cv::merge(std::vector<cv::Mat>(3, cv::Mat(gray*250.f)), color32F);
+		color32F.convertTo(color, CV_8UC3);
+	};
+	const auto Check = [&](const char* what, const Camera& camera, const Image32F& raster, double scale) {
+		const double error(ResizeTestMaxError(camera, points, raster, sigma*scale));
+		if (error > maxError) {
+			VERBOSE("ERROR: ImageResizeCameraTest %s (%dx%d -> %dx%d): blobs %.3f px off their projections!",
+				what, width, height, raster.cols, raster.rows, error);
+			return false;
+		}
+		return true;
+	};
+	if (!Check("full resolution", image.camera, gray, 1.0))
+		return false;
+	// Image::ResizeImage + UpdateCamera: an image loaded at a lower resolution
+	for (unsigned maxResolution: {978u, 640u}) {
+		Image scaled(image);
+		ToColor(scaled.image);
+		scaled.ResizeImage(maxResolution);
+		scaled.UpdateCamera(platforms);
+		Image32F raster;
+		scaled.image.toGray(raster, cv::COLOR_BGR2GRAY, true);
+		if (!Check("ResizeImage", scaled.camera, raster, (double)maxResolution/width))
+			return false;
+	}
+	// Image::GetImage
+	{
+		Image full(image);
+		ToColor(full.image);
+		const Image scaled(full.GetImage(platforms, 0.5));
+		Image32F raster;
+		scaled.image.toGray(raster, cv::COLOR_BGR2GRAY, true);
+		if (!Check("GetImage", scaled.camera, raster, 0.5))
+			return false;
+	}
+	// a neighbor view scaled to match the reference resolution (DepthMapsData::InitViews)
+	constexpr float neighborScale(0.73f);
+	Image32F neighborGray;
+	if (!DepthData::ViewData::ScaleImage(gray, neighborGray, neighborScale))
+		return false;
+	const Camera neighborCamera(image.GetCamera(platforms, neighborGray.size()));
+	if (image.GetCamera(platforms, Image8U::computeResize(image.GetSize(), neighborScale)).K != neighborCamera.K) {
+		VERBOSE("ERROR: ImageResizeCameraTest the neighbor camera differs with and without its pixels!");
+		return false;
+	}
+	if (!Check("neighbor ScaleImage", neighborCamera, neighborGray, neighborScale))
+		return false;
+	// the multi-resolution pyramid of the depth estimation (DepthMapsData::ScaleDepthData), on the
+	// reference view and on a neighbor already scaled onto its uniform grid
+	DepthData depthData;
+	{
+		DepthData::ViewData& ref = depthData.images.emplace_back();
+		ref.pImageData = &image; ref.scale = 1; ref.camera = image.camera; ref.image = gray;
+		DepthData::ViewData& neighbor = depthData.images.emplace_back();
+		neighbor.pImageData = &image; neighbor.scale = neighborScale; neighbor.camera = neighborCamera; neighbor.image = neighborGray;
+	}
+	for (float scale: {0.5f, 0.25f}) {
+		const DepthData scaled(DepthMapsData::ScaleDepthData(depthData, scale));
+		if (!Check("ScaleDepthData reference", scaled.images[0].camera, scaled.images[0].image, scale) ||
+			!Check("ScaleDepthData neighbor", scaled.images[1].camera, scaled.images[1].image, scale*neighborScale))
+			return false;
+	}
+	return true;
+}
+/*----------------------------------------------------------------*/
+
 // Exercise ROI integration with the first point outside the ROI; this used to leave
 // default entries in the spatial-sort index and could reconstruct the wrong points.
 static bool ROIMeshReconstructionTest(Scene& scene)

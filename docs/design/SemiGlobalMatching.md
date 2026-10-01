@@ -75,8 +75,9 @@ For the reference image:
    indices fit in `int16`.
 4. **Pyramid.** The coarsest level is the largest power-of-two reduction that keeps the image at
    least `minResolution` (320) pixels wide, and at least a halving. Each level resizes the
-   reference color and gray images and every neighbor's gray image (`INTER_AREA`) and rescales the
-   intrinsics.
+   reference color and gray images and every neighbor's gray image (`INTER_AREA`) to the level's
+   explicit size, so OpenCV maps each axis by its own `newSize/size` ratio, and rescales the
+   intrinsics by the same per-axis ratios (`GetScaledK(size, newSize)`).
 5. **Level loop** (§2.3), then the sub-pixel refinement (§2.6) and the conversion of every valid
    index to a depth and a confidence.
 

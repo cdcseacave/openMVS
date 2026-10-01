@@ -306,10 +306,10 @@ class StepsStore:
              ["scene_dense.mvs", "-p", "scene_dense.ply", "-w", "\"%mvs_dir%\""]],
             ["Refine the mesh",              # 20
              os.path.join(OPENMVS_BIN, "RefineMesh"),
-             ["scene_dense.mvs", "-m", "scene_dense_mesh.ply", "-o", "scene_dense_mesh_refine.mvs", "--scales", "1", "-w", "\"%mvs_dir%\""]],
+             ["scene_dense.mvs", "-m", "scene_dense_mesh.ply", "-o", "scene_dense_mesh_refined.mvs", "--scales", "1", "-w", "\"%mvs_dir%\""]],
             ["Texture the mesh",             # 21
              os.path.join(OPENMVS_BIN, "TextureMesh"),
-             ["scene_dense.mvs", "-m", "scene_dense_mesh_refine.ply", "--decimate", "0.5", "-w", "\"%mvs_dir%\""]],
+             ["scene_dense.mvs", "-m", "scene_dense_mesh_refined.ply", "--decimate", "0.5", "-w", "\"%mvs_dir%\""]],
             ["Estimate disparity-maps",      # 22
              os.path.join(OPENMVS_BIN, "DensifyPointCloud"),
              ["scene.mvs", "--dense-config-file", "Densify.ini", "--fusion-mode", "-1", "-w", "\"%mvs_dir%\""]],
@@ -517,8 +517,8 @@ if 4 in CONF.steps:    # GeometricFilter
 if 21 in CONF.steps:    # TextureMesh
     if 20 not in CONF.steps:  # RefineMesh
         # RefineMesh step is not run, use ReconstructMesh output
-        STEPS.replace_opt(21, "scene_dense_mesh_refine.ply", "scene_dense_mesh.ply")
-        STEPS.replace_opt(21, "scene_dense_mesh_refine_texture.mvs", "scene_dense_mesh_texture.mvs")
+        STEPS.replace_opt(21, "scene_dense_mesh_refined.ply", "scene_dense_mesh.ply")
+        STEPS.replace_opt(21, "scene_dense_mesh_refined_texture.mvs", "scene_dense_mesh_texture.mvs")
 
 for cstep in CONF.steps:
     printout("#%i. %s" % (cstep, STEPS[cstep].info), effect=INVERSE)

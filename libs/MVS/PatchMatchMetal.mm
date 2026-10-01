@@ -282,8 +282,8 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData)
 				if (!dmSrc.empty()) {
 					DepthMap dmap = dmSrc;
 					const Image8U::Size nsz = dd.images[i].image.size();
-					if (dmap.size() != nsz)
-						cv::resize(dmap, dmap, nsz, 0, 0, cv::INTER_LINEAR);
+					if (dmap.size() != nsz) // a neighbor image scaled onto its uniform grid
+						MVS::Image::ResizeUniform(dmap, dmap, nsz, cv::INTER_LINEAR);
 					MTLTextureDescriptor* dtd = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR32Float
 						width:dmap.cols height:dmap.rows mipmapped:NO];
 					dtd.usage = MTLTextureUsageShaderRead;

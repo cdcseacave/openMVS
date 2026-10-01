@@ -1,7 +1,9 @@
 R"glsl(
 #version 330 core
 
-layout (location = 0) in vec3 aPos;
+layout (location = 0) in vec4 aPos; // xyz line end, w quantized confidence of its point
+
+uniform vec2 confidenceWindow; // normals of points with a confidence outside [x, y] are hidden
 
 // Uniform Block for ViewProjection
 layout (std140) uniform ViewProjection {
@@ -13,6 +15,7 @@ layout (std140) uniform ViewProjection {
 };
 
 void main() {
-    gl_Position = viewProjection * vec4(aPos, 1.0);
+    // a hidden line has both ends moved outside the clip volume, so it is culled
+    gl_Position = aPos.w >= confidenceWindow.x && aPos.w <= confidenceWindow.y ? viewProjection * vec4(aPos.xyz, 1.0) : vec4(2.0, 2.0, 2.0, 1.0);
 }
 )glsl"

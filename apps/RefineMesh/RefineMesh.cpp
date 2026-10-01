@@ -113,7 +113,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 			), "verbosity level")
 		#endif
 		#ifdef _USE_CUDA
-		("gpu-device", boost::program_options::value<std::string>(&SEACAVE::CUDA::desiredDeviceIDs)->default_value(""), "GPU device(s) for mesh refinement (-1 best GPU, -2/cpu/empty CPU, >=0 comma-separated IDs)")
+		("gpu-device", boost::program_options::value<std::string>(&SEACAVE::CUDA::desiredDeviceIDs)->default_value("-1"), "GPU device(s) for mesh refinement (-1 best GPU, -2/cpu/empty CPU, >=0 comma-separated IDs)")
 		#endif
 		;
 
@@ -195,8 +195,13 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	Util::ensureValidPath(OPT::strOutputFileName);
 	if (OPT::strMeshFileName.empty() && (ARCHIVE_TYPE)OPT::nArchiveType == ARCHIVE_MVS)
 		OPT::strMeshFileName = Util::getFileFullName(OPT::strInputFileName) + _T(".ply");
-	if (OPT::strOutputFileName.empty())
-		OPT::strOutputFileName = Util::getFileFullName(OPT::strInputFileName) + _T("_refine.mvs");
+	if (OPT::strOutputFileName.empty()) {
+		// append this stage to the name of the mesh it refines (scene_dense_mesh -> scene_dense_mesh_refined),
+		// or to the input scene's when the mesh comes with the scene
+		OPT::strOutputFileName = (OPT::strMeshFileName.empty() ?
+			Util::getFileFullName(OPT::strInputFileName) :
+			Util::getFilePath(OPT::strInputFileName) + Util::getFileName(OPT::strMeshFileName)) + _T("_refined.mvs");
+	}
 
 	// init refine options
 	if (!OPT::strRefineConfigFileName.empty())

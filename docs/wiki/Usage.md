@@ -286,7 +286,7 @@ The obtained mesh:
 The mesh obtained either from the sparse or dense point-cloud can be further refined to recover all fine details or even bigger missing parts. Next the rough mesh obtained only from the sparse point-cloud is refined:
 
 ```
-RefineMesh scene.mvs -m scene_mesh.ply -o scene_mesh_refine.mvs
+RefineMesh scene.mvs -m scene_mesh.ply -o scene_mesh_refined.mvs
 ```
 
 The mesh before and after refinement:
@@ -297,7 +297,7 @@ The mesh before and after refinement:
 Similarly, the rough mesh obtained from the dense point-cloud can be refined:
 
 ```
-RefineMesh scene_dense.mvs -m scene_dense_mesh.ply -o scene_dense_mesh_refine.mvs --scales 1 --max-face-area 16
+RefineMesh scene_dense.mvs -m scene_dense_mesh.ply -o scene_dense_mesh_refined.mvs --scales 1 --max-face-area 16
 ```
 
 The mesh before and after refinement:
@@ -312,7 +312,7 @@ The mesh before and after refinement:
 The mesh obtained in the previous steps is used as the input of the mesh texturing module:
 
 ```
-TextureMesh scene_dense.mvs -m scene_dense_mesh_refine.ply -o scene_dense_mesh_refine_texture.mvs
+TextureMesh scene_dense.mvs -m scene_dense_mesh_refined.ply -o scene_dense_mesh_refined_texture.mvs
 ```
 
 The obtained mesh plus texture:
@@ -329,8 +329,8 @@ Note that the triangles textured in orange (default) are not visible in any of t
 Each of the above commands also writes a `PLY` file that can be used with many third-party tools. The `Viewer` can additionally export the loaded `MVS` projects to `PLY`, `OBJ` or `glTF` (`.glb`). For batch / scripted export — including web-ready formats — use the `TransformScene` app:
 
 ```
-TransformScene scene_dense_mesh_refine_texture.mvs --convert 1 --export-type glb     # → .glb
-TransformScene scene_dense_mesh_refine_texture.mvs --convert 1 --export-type gltf    # → .gltf (text + bin sidecars)
+TransformScene scene_dense_mesh_refined_texture.mvs --convert 1 --export-type glb     # → .glb
+TransformScene scene_dense_mesh_refined_texture.mvs --convert 1 --export-type gltf    # → .gltf (text + bin sidecars)
 TransformScene scene_dense.mvs                     --convert 1 --export-type potree  # → folder of Potree 2.0 tiles
 ```
 

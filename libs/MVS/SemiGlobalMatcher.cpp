@@ -541,7 +541,7 @@ void SemiGlobalMatcher::MatchMultiView(const Scene& scene, IIndex idxImage, IInd
 			if (ISEQUAL(scale, REAL(1)))
 				view.gray = view.grayFull;
 			else
-				cv::resize(view.grayFull, view.gray, cv::Size(), scale, scale, cv::INTER_AREA);
+				cv::resize(view.grayFull, view.gray, Image8U::computeResize(view.grayFull.size(), scale), 0, 0, cv::INTER_AREA); // explicit size: K is scaled per axis
 			view.SetLevel(invKref, cv::Matx33d(view.image->camera.GetScaledK(view.image->image.size(), view.gray.size())));
 		}
 		step = (float)(step0/scale);

@@ -219,7 +219,7 @@ bool Window::Initialize(const cv::Size& size, const String& windowTitle, Scene& 
 		if (!scene.HasBackgroundWork() && activeLayer != NULL && activeLayer->visible && selectionController->hasSelectionPath()) {
 			// Automatically classify geometry when selection is finished
 			if (!scene.GetScene().pointcloud.IsEmpty() && showPointCloud)
-				selectionController->classifyPointCloud(scene.GetScene().pointcloud, camera);
+				selectionController->classifyPointCloud(scene.GetScene().pointcloud, camera, activeLayer->pointConfidence);
 			if (!scene.GetScene().mesh.IsEmpty() && showMesh)
 				selectionController->classifyMesh(scene.GetScene().mesh, camera);
 			RequestRedraw();
@@ -532,6 +532,7 @@ void Window::Render() {
 			ui->ShowSelectionControls(*this);
 			ui->ShowRenderSettings(*this);
 			ui->ShowBoundingBoxControls(*this);
+			ui->ShowPointConfidenceFilter(*this);
 			ui->ShowWorkflowWindows(*this);
 		}
 	}

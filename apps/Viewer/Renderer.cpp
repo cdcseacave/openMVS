@@ -254,6 +254,7 @@ void Renderer::UploadPointClouds(const Scene& sceneController, float normalLengt
 		range.layerID = layer.id;
 		range.offset = pointCount;
 		range.count = pointcloud.points.size();
+		range.confidenceWindow = layer.pointConfidence.ShaderWindow();
 		if (pointcloud.normals.size() == pointcloud.points.size()) {
 			range.normalOffset = pointNormalCount;
 			range.normalCount = pointcloud.normals.size() * 2;
@@ -264,9 +265,9 @@ void Renderer::UploadPointClouds(const Scene& sceneController, float normalLengt
 	}
 	if (pointCount) {
 		pointCloudVBO->AllocateBuffer(pointCount * 3 * sizeof(float));
-		pointCloudColorVBO->AllocateBuffer(pointCount * 3 * sizeof(float));
+		pointCloudColorVBO->AllocateBuffer(pointCount * 4 * sizeof(uint8_t));
 		if (pointNormalCount)
-			pointCloudNormalsVBO->AllocateBuffer(pointNormalCount * 3 * sizeof(float));
+			pointCloudNormalsVBO->AllocateBuffer(pointNormalCount * 4 * sizeof(float));
 		size_t pointOffset = 0;
 		size_t normalOffset = 0;
 		for (const Scene::Layer& layer : sceneController.GetLayers()) {
@@ -275,45 +276,51 @@ void Renderer::UploadPointClouds(const Scene& sceneController, float normalLengt
 			const MVS::PointCloud& pointcloud = layer.scene.pointcloud;
 			pointCloudVBO->SetSubData(pointcloud.points[0].ptr(), pointcloud.points.size() * 3, pointOffset * 3);
 
-			std::vector<float> colors;
-			colors.reserve(pointcloud.points.size() * 3);
-			if (layer.usePointSolidColor) {
-				for (size_t i = 0; i < pointcloud.points.size(); ++i) {
-					colors.push_back(layer.pointColor.x);
-					colors.push_back(layer.pointColor.y);
-					colors.push_back(layer.pointColor.z);
-				}
-			} else if (pointcloud.colors.size() == pointcloud.points.size()) {
-				for (const Pixel8U& color : pointcloud.colors) {
-					colors.push_back(color.r / 255.f);
-					colors.push_back(color.g / 255.f);
-					colors.push_back(color.b / 255.f);
-				}
-			} else {
-				colors.resize(pointcloud.points.size() * 3, 1.f);
+			// RGBA bytes: the point color and, in alpha, its quantized confidence
+			const bool hasColors = !layer.usePointSolidColor && pointcloud.colors.size() == pointcloud.points.size();
+			const Pixel8U solidColor = layer.usePointSolidColor ?
+				Pixel32F(layer.pointColor.x*255.f, layer.pointColor.y*255.f, layer.pointColor.z*255.f).cast<uint8_t>() : Pixel8U::WHITE;
+			const bool hasConfidence = layer.HasPointConfidence();
+			std::vector<uint8_t> colors(pointcloud.points.size() * 4);
+			FOREACH(i, pointcloud.points) {
+				const Pixel8U& color = hasColors ? pointcloud.colors[i] : solidColor;
+				uint8_t* const rgba = colors.data() + i * 4;
+				rgba[0] = color.r; rgba[1] = color.g; rgba[2] = color.b;
+				rgba[3] = hasConfidence ? layer.pointConfidence.Quantize(PointConfidenceFilter::Confidence(pointcloud.pointWeights[i])) : uint8_t(0);
 			}
-			pointCloudColorVBO->SetSubData(colors, pointOffset * 3);
+			pointCloudColorVBO->SetSubData(colors, pointOffset * 4);
 
 			if (pointcloud.normals.size() == pointcloud.points.size()) {
+				// both line ends carry the point's quantized confidence, normalized like the color alpha
 				std::vector<float> normalLines;
-				normalLines.reserve(pointcloud.normals.size() * 6);
+				normalLines.reserve(pointcloud.normals.size() * 8);
 				for (size_t i = 0; i < pointcloud.points.size(); ++i) {
 					const MVS::PointCloud::Point& point = pointcloud.points[i];
 					const MVS::PointCloud::Normal& normal = pointcloud.normals[i];
+					const float conf = colors[i * 4 + 3] / 255.f;
 					normalLines.push_back(point.x);
 					normalLines.push_back(point.y);
 					normalLines.push_back(point.z);
+					normalLines.push_back(conf);
 					normalLines.push_back(point.x + normal.x * normalLength);
 					normalLines.push_back(point.y + normal.y * normalLength);
 					normalLines.push_back(point.z + normal.z * normalLength);
+					normalLines.push_back(conf);
 				}
-				pointCloudNormalsVBO->SetSubData(normalLines, normalOffset * 3);
+				pointCloudNormalsVBO->SetSubData(normalLines, normalOffset * 4);
 				normalOffset += pointcloud.normals.size() * 2;
 			}
 			pointOffset += pointcloud.points.size();
 		}
 		ASSERT(pointOffset == pointCount && normalOffset == pointNormalCount);
 	}
+}
+
+void Renderer::SetPointConfidence(uint32_t layerID, const PointConfidenceFilter& filter)
+{
+	for (LayerIndexRange& range : pointLayerRanges)
+		if (range.layerID == layerID)
+			range.confidenceWindow = filter.ShaderWindow();
 }
 
 void Renderer::UploadMeshes(const Scene& sceneController)
@@ -634,9 +641,9 @@ void Renderer::SetupPointCloudBuffers() {
 	pointCloudVBO->Bind();
 	pointCloudVAO->EnableAttribute(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
 
-	// Color attribute (location 1)
+	// Color + quantized confidence attribute (location 1): normalized RGBA bytes
 	pointCloudColorVBO->Bind();
-	pointCloudVAO->EnableAttribute(1, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+	pointCloudVAO->EnableAttribute(1, 4, GL_UNSIGNED_BYTE, GL_TRUE, 4 * sizeof(uint8_t), (void*)0);
 
 	pointCloudVAO->Unbind();
 }
@@ -647,9 +654,9 @@ void Renderer::SetupPointCloudNormalsBuffers() {
 
 	pointCloudNormalsVAO->Bind();
 
-	// Position attribute (location 0) - contains both start and end points of normal lines
+	// Position + quantized confidence attribute (location 0) - both start and end points of normal lines
 	pointCloudNormalsVBO->Bind();
-	pointCloudNormalsVAO->EnableAttribute(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+	pointCloudNormalsVAO->EnableAttribute(0, 4, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
 
 	pointCloudNormalsVAO->Unbind();
 }
@@ -902,7 +909,7 @@ void Renderer::SetupGizmoBuffers() {
 	// Upload combined geometry
 	gizmoVBO->SetData(vertices);
 	gizmoEBO->Bind();
-	gizmoEBO->SetData(indices.data(), indices.size() * sizeof(uint32_t), GL_STATIC_DRAW);
+	gizmoEBO->SetData(indices);
 
 	gizmoVAO->Unbind();
 }
@@ -1483,12 +1490,12 @@ void Renderer::RenderPointCloud(const Window& window) {
 
 	pointCloudVAO->Bind();
 
-	if (layerPassFilter.empty()) {
-		GL_CHECK(glDrawArrays(GL_POINTS, 0, pointCount));
-	} else {
-		for (const LayerIndexRange& range : pointLayerRanges)
-			if (IsLayerInPass(range.layerID))
-				GL_CHECK(glDrawArrays(GL_POINTS, (GLint)range.offset, (GLsizei)range.count));
+	// one draw per layer, each with its own confidence window
+	for (const LayerIndexRange& range : pointLayerRanges) {
+		if (!IsLayerInPass(range.layerID))
+			continue;
+		pointCloudShader->SetVector2("confidenceWindow", range.confidenceWindow);
+		GL_CHECK(glDrawArrays(GL_POINTS, (GLint)range.offset, (GLsizei)range.count));
 	}
 
 	pointCloudVAO->Unbind();
@@ -1505,12 +1512,12 @@ void Renderer::RenderPointCloudNormals(const Window& window) {
 
 	pointCloudNormalsVAO->Bind();
 
-	if (layerPassFilter.empty()) {
-		GL_CHECK(glDrawArrays(GL_LINES, 0, pointNormalCount));
-	} else {
-		for (const LayerIndexRange& range : pointLayerRanges)
-			if (range.normalCount > 0 && IsLayerInPass(range.layerID))
-				GL_CHECK(glDrawArrays(GL_LINES, (GLint)range.normalOffset, (GLsizei)range.normalCount));
+	// one draw per layer, each with its own confidence window
+	for (const LayerIndexRange& range : pointLayerRanges) {
+		if (range.normalCount == 0 || !IsLayerInPass(range.layerID))
+			continue;
+		pointCloudNormalsShader->SetVector2("confidenceWindow", range.confidenceWindow);
+		GL_CHECK(glDrawArrays(GL_LINES, (GLint)range.normalOffset, (GLsizei)range.normalCount));
 	}
 
 	pointCloudNormalsVAO->Unbind();
@@ -1673,6 +1680,9 @@ void Renderer::RenderSelection(const Window& window) {
 		// Set highlight size and color for points (red)
 		geometrySelectionShader->SetVector3("highlightColor", Eigen::Vector3f(1.f, 0.f, 0.f));
 		geometrySelectionShader->SetFloat("pointSize", window.pointSize * 3.f);
+		// a point hidden by the confidence filter stays hidden while selected
+		if (pointRange != nullptr)
+			geometrySelectionShader->SetVector2("confidenceWindow", pointRange->confidenceWindow);
 
 		// We need access to the actual point cloud data to extract selected point
 		pointCloudVAO->Bind();
@@ -2138,6 +2148,9 @@ void Renderer::RenderSelectedGeometry(const Window& window) {
 		// set highlight size and color for points (red)
 		geometrySelectionShader->SetVector3("highlightColor", Eigen::Vector3f(1.f, 0.f, 0.f));
 		geometrySelectionShader->SetFloat("pointSize", window.pointSize * 2.5f);
+		// a point hidden by the confidence filter stays hidden while selected
+		if (pointRange != nullptr)
+			geometrySelectionShader->SetVector2("confidenceWindow", pointRange->confidenceWindow);
 		// render each selected point individually using glDrawArrays with offset
 		pointCloudVAO->Bind();
 		for (const auto& pointIdx : selectedPointIndices) {
@@ -2153,6 +2166,8 @@ void Renderer::RenderSelectedGeometry(const Window& window) {
 	if (window.showMesh && !selectedFaceIndices.empty() && !meshFaceCounts.empty()) {
 		// set highlight color for faces (red)
 		geometrySelectionShader->SetVector3("highlightColor", Eigen::Vector3f(1.f, 0.f, 0.f));
+		// faces have no confidence: their attribute alpha is 1, inside the all-points window
+		geometrySelectionShader->SetVector2("confidenceWindow", PointConfidenceFilter().ShaderWindow());
 		// render as wireframe overlay to show selection
 		GL_CHECK(glPolygonMode(GL_FRONT_AND_BACK, GL_LINE));
 		// enable polygon offset to render selection on top of existing mesh
@@ -2309,12 +2324,11 @@ Renderer::PickResult Renderer::PickPrimitiveAt(const Point2f& screenPos, int rad
 		pickerPointsShader->Use();
 		pickerPointsShader->SetUInt("uBaseID", baseFace);
 		pointCloudVAO->Bind();
-		if (window.compareMode) {
-			for (const LayerIndexRange& range : pointLayerRanges)
-				if (layerAtCursor(range.layerID))
-					GL_CHECK(glDrawArrays(GL_POINTS, (GLint)range.offset, (GLsizei)range.count));
-		} else {
-			GL_CHECK(glDrawArrays(GL_POINTS, 0, pointCount));
+		for (const LayerIndexRange& range : pointLayerRanges) {
+			if (window.compareMode && !layerAtCursor(range.layerID))
+				continue;
+			pickerPointsShader->SetVector2("confidenceWindow", range.confidenceWindow);
+			GL_CHECK(glDrawArrays(GL_POINTS, (GLint)range.offset, (GLsizei)range.count));
 		}
 		pointCloudVAO->Unbind();
 	}

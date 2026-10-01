@@ -250,7 +250,8 @@ struct MVS_API DepthData {
 		static bool ScaleImage(const IMAGE& image, IMAGE& imageScaled, float scale) {
 			if (!NeedScaleImage(scale))
 				return false;
-			cv::resize(image, imageScaled, cv::Size(), scale, scale, scale>1?cv::INTER_CUBIC:cv::INTER_AREA);
+			// the camera of the scaled view comes from GetCamera(), so scale on its uniform grid
+			Image::ResizeUniform(image, imageScaled, Image8U::computeResize(image.size(), scale), scale>1?cv::INTER_CUBIC:cv::INTER_AREA);
 			return true;
 		}
 	};
@@ -533,13 +534,11 @@ struct MVS_API DepthEstimator {
 		ASSERT(ISEQUAL(norm(normal), 1.f, 1e-2f), "Norm = ", norm(normal));
 	}
 
+	// the mask stored in the scene, else the file next to the image, resized into a local buffer (the
+	// Image is never touched, so it is safe to call concurrently for the same Image and across scales);
+	// bmask gets the keep-mask (bit set = keep), or pMask the mask != label if given; returns false
+	// and leaves both untouched if there is no mask to load
 	static bool ImportIgnoreMask(const Image&, const cv::Size&, uint8_t nIgnoreMaskLabel, BitMatrix&, Image8U* =NULL);
-	// non-mutating counterpart of ImportIgnoreMask: resizes the mask (the one stored in the scene,
-	// else the file next to the image, loaded fresh) into a local buffer instead of image0.mask,
-	// so it is safe to call concurrently for the same Image or repeatedly across scales. Returns
-	// the keep-mask (bit set = keep), nearest-neighbour resized to size, in bmask; leaves bmask
-	// untouched (empty == keep everything) and returns false if there is no mask to load.
-	static bool ImportKeepMask(const Image& image0, const cv::Size& size, uint8_t nIgnoreMaskLabel, BitMatrix& bmask);
 	static void MapMatrix2ZigzagIdx(const cv::Size& size, DepthEstimator::MapRefArr& coords, const BitMatrix& mask, int rawStride=16);
 
 	const float smoothBonusDepth, smoothBonusNormal;

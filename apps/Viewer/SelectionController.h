@@ -112,7 +112,8 @@ public:
 	void setSelectedPoints(const MVS::PointCloud::IndexArr& indices, size_t totalPointCount, bool replace = true);
 
 	// Geometry classification - called by Scene to classify points/faces
-	void classifyPointCloud(const MVS::PointCloud& pointcloud, const Camera& camera);
+	// points hidden by the confidence filter are never selected
+	void classifyPointCloud(const MVS::PointCloud& pointcloud, const Camera& camera, const PointConfidenceFilter& confFilter);
 	void classifyMesh(const MVS::Mesh& mesh, const Camera& camera);
 
 	// Selection results access

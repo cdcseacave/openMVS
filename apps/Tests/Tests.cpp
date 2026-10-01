@@ -125,6 +125,10 @@ bool UnitTests()
 		VERBOSE("ERROR: MeshCleanPerVertexTest failed!");
 		return false;
 	}
+	if (!MVS::ImageResizeCameraTest()) {
+		VERBOSE("ERROR: ImageResizeCameraTest failed!");
+		return false;
+	}
 	#ifdef _IMAGE_HEIF
 	// the reader's own semantics are tested next to the reader, in libs/IO/ImageHEIF.cpp
 	if (!CImageHEIF::Test(MAKE_PATH("images"))) {

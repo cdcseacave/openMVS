@@ -33,14 +33,18 @@ stage.
 `apps/RefineMesh/RefineMesh.cpp:main` loads the scene, optionally attaches per-image masks
 (`--mask-path`, `--ignore-mask-label`), loads (or requires) the input mesh, and picks a backend via
 `SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs)` (true for an empty `--gpu-device`,
-`-2`, `cpu` or `none`; false for `-1` = best GPU or `>=0` = device id list). Refinement mutates the
+`-2`, `cpu` or `none`; false for `-1` = best GPU or `>=0` = device id list). `--gpu-device` defaults
+to `-1`, so a CUDA build refines on the best GPU unless the CPU is requested. Refinement mutates the
 mesh in place, so `main` snapshots `scene.mesh.vertices`/`faces` before a CUDA attempt; if
 `Scene::RefineMeshCUDA` returns `false`, it restores the snapshot and runs `Scene::RefineMesh` (CPU)
 on the original input.
 
 `--mesh-file/-m` defaults to `<input-file-without-extension>.ply` only when the archive type is
 `ARCHIVE_MVS`; with a `.mvs` input that resolves to the dense point cloud's `.ply`, not a mesh, and
-refinement fails with "empty initial mesh" — `-m` must be given explicitly in that case. The refined
+refinement fails with "empty initial mesh" — `-m` must be given explicitly in that case.
+`--output-file/-o` defaults to the input mesh's name with `_refined.mvs` appended, in the input
+scene's folder (`scene_dense.mvs -m scene_dense_mesh.ply` -> `scene_dense_mesh_refined.mvs`), or to the
+input scene's name with the same suffix when the mesh comes with the scene. The refined
 mesh is always written to `<out-stem><export-type>` (default `.ply`); the `.mvs` sidecar is written
 only when the archive type isn't `ARCHIVE_MVS` or the input wasn't `Scene::SCENE_INTERFACE`.
 

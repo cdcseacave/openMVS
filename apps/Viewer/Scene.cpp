@@ -633,6 +633,7 @@ void Scene::RefreshLayerState(Layer& layer, bool rebuildImages)
 	else
 		layer.sceneSize = Point3f(bounds.GetSize().cast<float>());
 	layer.sceneDistance = layer.images.empty() ? 1.f : scene.ComputeDistanceCameras2Scene(0.1f, true);
+	layer.pointConfidence.Reset(scene.pointcloud);
 	if (layer.label.empty()) {
 		layer.label = Util::getFileNameExt(layer.sceneName);
 	}
@@ -2109,8 +2110,12 @@ void Scene::RemoveSelectedGeometry() {
 
 	// Classify geometry based on current selection
 	if (!scene.pointcloud.IsEmpty()) {
-		// Get selected point indices
-		MVS::PointCloud::IndexArr selectedIndices = selectionController.getSelectedPointIndices();
+		// Get selected point indices, keeping only the points the confidence filter shows
+		// (a point selected before the window was narrowed stays selected, but hidden)
+		MVS::PointCloud::IndexArr selectedIndices;
+		for (MVS::PointCloud::Index idx : selectionController.getSelectedPointIndices())
+			if (layer->pointConfidence.IsShown(scene.pointcloud, idx))
+				selectedIndices.push_back(idx);
 		if (!selectedIndices.empty()) {
 			// Remove selected points
 			bDirtyScene = true;

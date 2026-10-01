@@ -369,8 +369,8 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 			if (params.bGeomConsistency && i > 0 && !view.depthMap.empty()) {
 				// set previously computed depth-map
 				DepthMap depthMap(view.depthMap);
-				if (depthMap.size() != image.size())
-					cv::resize(depthMap, depthMap, image.size(), 0, 0, cv::INTER_LINEAR);
+				if (depthMap.size() != image.size()) // a neighbor image scaled onto its uniform grid
+					MVS::Image::ResizeUniform(depthMap, depthMap, image.size(), cv::INTER_LINEAR);
 				StagedUploadCvMat(cudaDepthArrays[i-1], depthMap, hostDepthPriorStaging, hostDepthPriorStagingArea, (size_t)(i-1));
 			}
 			images[i] = std::move(image);
