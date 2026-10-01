@@ -41,7 +41,10 @@ on the original input.
 
 `--mesh-file/-m` defaults to `<input-file-without-extension>.ply` only when the archive type is
 `ARCHIVE_MVS`; with a `.mvs` input that resolves to the dense point cloud's `.ply`, not a mesh, and
-refinement fails with "empty initial mesh" — `-m` must be given explicitly in that case. The refined
+refinement fails with "empty initial mesh" — `-m` must be given explicitly in that case.
+`--output-file/-o` defaults to the input mesh's name with `_refined.mvs` appended, in the input
+scene's folder (`scene_dense.mvs -m scene_dense_mesh.ply` -> `scene_dense_mesh_refined.mvs`), or to the
+input scene's name with the same suffix when the mesh comes with the scene. The refined
 mesh is always written to `<out-stem><export-type>` (default `.ply`); the `.mvs` sidecar is written
 only when the archive type isn't `ARCHIVE_MVS` or the input wasn't `Scene::SCENE_INTERFACE`.
 

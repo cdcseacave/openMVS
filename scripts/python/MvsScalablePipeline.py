@@ -143,7 +143,7 @@ PARSER.add_argument('passthrough', nargs=argparse.REMAINDER, help="Option to be 
 PARSER.parse_args(namespace=CONF)  # store args in the ConfContainer
 
 suffix = os.path.basename(CONF.input_scene).replace('scene_XXXX','')
-CONF.input_scene = CONF.input_scene.replace('_dense','').replace('_mesh','').replace('_refine','').replace('_texture','')
+CONF.input_scene = CONF.input_scene.replace('_dense','').replace('_mesh','').replace('_refined','').replace('_texture','')
 
 # Absolute path for input directory
 if len(CONF.input_scene) < 10 or CONF.input_scene[-9:] != '_XXXX.mvs':
@@ -153,7 +153,7 @@ match CONF.openMVS_module:
   case 'ReconstructMesh':
     moduleSuffix = '_mesh.mvs'
   case 'RefineMesh':
-    moduleSuffix = '_refine.mvs'
+    moduleSuffix = '_refined.mvs'
   case 'TextureMesh':
     moduleSuffix = '_texture.mvs'
   case _:
