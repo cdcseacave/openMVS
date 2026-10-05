@@ -3545,6 +3545,10 @@ unsigned GlobalAlignment::RevalidateBlocks(
 	for (const uint32_t b : admitted) {
 		if (!IsInModel(poses, b, model))
 			continue; // let go while another block of the model was being judged
+		// a block the others were let go around has nothing left to be judged against: the votes of
+		// an empty pool refuse anything, and would leave the model holding no block at all
+		if (ModelBlocks(poses, model).size() < 2)
+			break;
 		// the block against every other block the model holds, at the pose the model left it at
 		BlockGroup group;
 		group.blocks.assign(1, b);
@@ -3578,8 +3582,9 @@ unsigned GlobalAlignment::RevalidateBlocks(
 		}
 		const unsigned numContra = current.score.contra[0] + current.score.contra[1];
 		UnplaceBlock(poses[b], numContra > 0 ?
-			String::FormatString("contradicted by %u cameras", numContra) :
-			String::FormatString("contradicted by the verified pairs (%.0f against, %.0f for)", pairs.disagree, pairs.agree));
+			String::FormatString("contradicted by %u cameras", numContra) : !pairs.Holds() ?
+			String::FormatString("contradicted by the verified pairs (%.0f against, %.0f for)", pairs.disagree, pairs.agree) :
+			String::FormatString("supported by %u camera centres, under the %u asked", current.score.centres, config.minSupportingCentres));
 		VERBOSE("Block %u let go by the model that held it: %s", b, poses[b].reason.c_str());
 	}
 	// the model without them, and without the seams it rested on through them

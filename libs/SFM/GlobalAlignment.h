@@ -559,6 +559,26 @@ public:
 		std::vector<BlockPose>& poses,
 		std::vector<std::vector<uint32_t>>& modelSeams);
 
+	/**
+	 * @brief Stage 6: every block of a model judged again, at the pose the model left it at
+	 *
+	 * A block is admitted against the model as it stood then; the model has grown since, and what
+	 * it has taken in since may contradict it. Each admitted block is therefore read once more
+	 * against all the others, at its own pose: one whose cameras split is the fold that a single
+	 * admitted neighbour hid at the time, and is cut; one the cameras contradict is let go, with the
+	 * seams the model rested on through it.
+	 * @return the number of blocks let go or cut, which is what tells the caller to grow the model
+	 * once more over their parts
+	 */
+	unsigned RevalidateBlocks(
+		std::vector<Scene>& subScenes,
+		std::vector<IIndexArr>& localToGlobals,
+		std::vector<REAL>& blockExtents,
+		std::vector<SeamCandidate>& candidates,
+		uint32_t model,
+		std::vector<BlockPose>& poses,
+		std::vector<uint32_t>& modelSeams);
+
 private:
 	/**
 	 * @brief One model placed on another, as a single group
@@ -604,26 +624,6 @@ private:
 		uint32_t block,
 		const PlacementHypothesis& best,
 		std::pair<uint32_t, uint32_t>& parts);
-
-	/**
-	 * @brief Stage 6: every block of a model judged again, at the pose the model left it at
-	 *
-	 * A block is admitted against the model as it stood then; the model has grown since, and what
-	 * it has taken in since may contradict it. Each admitted block is therefore read once more
-	 * against all the others, at its own pose: one whose cameras split is the fold that a single
-	 * admitted neighbour hid at the time, and is cut; one the cameras contradict is let go, with the
-	 * seams the model rested on through it.
-	 * @return the number of blocks let go or cut, which is what tells the caller to grow the model
-	 * once more over their parts
-	 */
-	unsigned RevalidateBlocks(
-		std::vector<Scene>& subScenes,
-		std::vector<IIndexArr>& localToGlobals,
-		std::vector<REAL>& blockExtents,
-		std::vector<SeamCandidate>& candidates,
-		uint32_t model,
-		std::vector<BlockPose>& poses,
-		std::vector<uint32_t>& modelSeams);
 
 	/**
 	 * @brief The trusted components the given blocks span, each averaged into a model of its own

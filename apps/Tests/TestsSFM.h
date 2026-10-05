@@ -472,6 +472,8 @@ bool FalseChordTest();
 bool HeavyFalseChordTest();
 bool SeamInliersBecomeTracksTest();
 bool UnplacedBlocksReportedTest();
+// Judged again, a model of two contradicting blocks lets one go and keeps the other
+bool RevalidationKeepsOneBlockTest();
 bool BentBlocksRelaxationTest();
 bool GlobalAlignmentMergeSingleSceneTest();
 bool GlobalAlignmentTrackMergeDuplicateImageGuardTest();

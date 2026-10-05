@@ -397,6 +397,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::UnplacedBlocksReportedTest())
 				return false;
+			if (!SFM::RevalidationKeepsOneBlockTest())
+				return false;
 			if (!SFM::BentBlocksRelaxationTest())
 				return false;
 			if (!SFM::GlobalAlignmentMergeSingleSceneTest())

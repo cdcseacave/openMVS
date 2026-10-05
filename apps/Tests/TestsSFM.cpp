@@ -14702,6 +14702,72 @@ bool SeamInliersBecomeTracksTest()
 }
 /*----------------------------------------------------------------*/
 
+// Two blocks of one model that contradict each other: block 1 sits twenty degrees off where its seam
+// to block 0 puts it. Judged again, the model may let one of them go, never both: the block that
+// remains has no other block left to be judged against, and a merged model left holding nothing
+// leaves the whole scene to a resection with no pose to start from
+bool RevalidationKeepsOneBlockTest()
+{
+	TD_TIMER_START();
+	constexpr REAL WRONG_TURN = 20; // degrees block 1 is turned away from where its seam puts it
+	const RingSceneConfig cfg{3, 16};
+	Scene scene;
+	std::vector<IIndexArr> blocks;
+	std::vector<Pose3D> gtPoses;
+	GenerateRingScene(cfg, scene, blocks, gtPoses);
+	std::vector<Scene> subScenes;
+	std::vector<IIndexArr> localToGlobals;
+	std::vector<SEACAVE::Transform> applied;
+	BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
+
+	const GlobalAlignmentConfig alignCfg;
+	GlobalAlignment alignment(scene, alignCfg);
+	std::vector<SeamCandidate> candidates;
+	if (!alignment.EstimateSeamCandidates(subScenes, localToGlobals, candidates)) {
+		VERBOSE("RevalidationKeepsOneBlockTest FAILED: the three blocks yielded no seam candidate");
+		return false;
+	}
+	std::vector<REAL> blockExtents(RingBlockExtents(subScenes));
+	alignment.ClassifySeamGraph(blockExtents, candidates);
+	std::vector<uint32_t> modelSeams;
+	FOREACH(i, candidates)
+		if (candidates[i].sceneA == 0 && candidates[i].sceneB == 1)
+			modelSeams.push_back(i);
+	if (modelSeams.empty()) {
+		VERBOSE("RevalidationKeepsOneBlockTest FAILED: no seam was measured between blocks 0 and 1");
+		return false;
+	}
+
+	// the model holds blocks 0 and 1, block 1 turned off its true pose; block 2 is outside it
+	std::vector<BlockPose> poses(cfg.numBlocks);
+	for (uint32_t b = 0; b < 2; ++b) {
+		poses[b].T = applied[0] * applied[b].Invert();
+		poses[b].model = 0;
+		poses[b].state = BlockPose::ADMITTED;
+	}
+	poses[1].T = RingRotation(WRONG_TURN) * poses[1].T;
+	const unsigned numLetGo = alignment.RevalidateBlocks(
+		subScenes, localToGlobals, blockExtents, candidates, 0, poses, modelSeams);
+	unsigned numHeld = 0;
+	for (const BlockPose& pose : poses)
+		if (pose.state == BlockPose::ADMITTED && pose.model == 0)
+			++numHeld;
+	if (numLetGo == 0) {
+		VERBOSE("RevalidationKeepsOneBlockTest FAILED: the model kept both blocks although they are %.0f deg apart, "
+			"so the scene does not pose the problem", (double)WRONG_TURN);
+		return false;
+	}
+	if (numHeld != 1) {
+		VERBOSE("RevalidationKeepsOneBlockTest FAILED: %u blocks let go and %u of the two left in the model",
+			numLetGo, numHeld);
+		return false;
+	}
+	VERBOSE("RevalidationKeepsOneBlockTest PASSED: of two blocks %.0f deg apart one is let go and one kept (%s)",
+		(double)WRONG_TURN, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
 // Block 4 of a six-block ring, cut loose from every block before the split (only blocks 3 and 5
 // ever shared tracks with it, so thinning it against the rest is a no-op there): the merge has
 // nothing to place it against, and has to leave it out, name it and its ten images in the report,
