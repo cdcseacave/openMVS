@@ -100,7 +100,17 @@ struct SFM_API BAConfig
 	// run (2678a364), the long indoor capture stays at 42-66 wrong against 56-66, rotation medians
 	// fall by up to 14% and the outdoor captures do not move; 100 matches it on the small captures
 	// but let the long one misplace a 117-image block in one of three runs.
-	unsigned denseHalfWeightObservations = 300;
+	// Off by default: on the eleven captures whose reference poses were verified (the two
+	// indoor captures above whose references were broken left out, five interiors and a third
+	// outdoor capture added; the chaotic ones at three thread counts), 300 against the same dense
+	// weight for every image leaves 55 images wrong where 39 were and 5132 right where 5178 were,
+	// its worst run 54 wrong where 18 was (one of three runs of a 269-image interior misplaces 54),
+	// and the 46-image tail of a 148-image capture it leaves out in every run (102 right against
+	// 102-136); it lowers the rotation medians by 5%, a precision the extra wrong images do not
+	// pay for. Holding the weight it gives an image at 0.01 or more brings the wrong images back to
+	// 48 and the right ones to 5184, and at 0.01 or less to 54 and 5175 with the rotation medians
+	// 10% lower, but neither beats the same weight for every image on the wrong images.
+	unsigned denseHalfWeightObservations = 0;
 
 	// The most observations one image contributes to a solve, of any keypoint kind, 0 = all. What a
 	// bundle adjustment costs is the number of observations it fits, and one image can bring
