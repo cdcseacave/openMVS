@@ -125,7 +125,10 @@ per pixel of A:
    sample. A sample is kept only if the visibility test accepts (§2.6) and B's own keep-mask accepts
    the same rounded tap. Rejected/invalid pixels are zero-filled, not seeded with a copy of A.
 2. **Masked local window statistics, 7x7 (`Refine::HalfSize=3`, `SceneRefineCommon.h`).**
-   `ComputeWindowStats` reduces six masked box-filtered sums (over valid pixels only) through
+   `ComputeWindowStats` reduces six masked box-filtered sums (over valid pixels only; on the CPU
+   built per band of 64 rows plus the window halo, so each concurrent pair-direction holds six
+   band-sized buffers instead of six full images, and a gate rejection leaves the mask only after
+   the next band has summed its halo rows) through
    `Refine::WindowStatsFromSums`: rejects a pixel if its window holds fewer than
    `Refine::MinWindowCount` (25) valid samples, floors both variances at `Refine::VarFloor` (1e-4),
    and rejects a pixel pair whose means differ by more than `OPTREFINE::fGateMeanDiff` (default 0.4)

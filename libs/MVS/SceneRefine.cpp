@@ -858,29 +858,12 @@ MeshRefine::PairScore MeshRefine::ComputeWindowStats(
 	// the six window sums, each accumulated over the VALID pixels only: the products are zeroed
 	// wherever the warp failed, so an unwarped pixel contributes nothing instead of contributing
 	// image A's own value (which is what the old imageA.copyTo(imageAB) + unmasked integral
-	// images did, driving ZNCC towards 1 exactly at the occlusion boundaries that need it least)
-	DEC_Image(float, m);
-	DEC_Image(float, pA); DEC_Image(float, pB);
-	DEC_Image(float, pAA); DEC_Image(float, pBB); DEC_Image(float, pAB);
-	m.create(mask.size());
-	for (int r=0; r<mask.rows; ++r)
-		for (int c=0; c<mask.cols; ++c)
-			m(r,c) = mask(r,c) ? 1.f : 0.f;
-	cv::multiply(imageA, m, pA);
-	cv::multiply(imageB, m, pB);
-	cv::multiply(pA, imageA, pAA);
-	cv::multiply(pB, imageB, pBB);
-	cv::multiply(pA, imageB, pAB);
+	// images did, driving ZNCC towards 1 exactly at the occlusion boundaries that need it least).
+	// They are computed over bands of rows (each with its HalfSize halo), so a pair needs six
+	// band-sized buffers instead of six full images: the window of a band row reads only rows of
+	// the band, and the concurrent pairs of a refinement otherwise multiply the full-image size
 	const cv::Size ksize(Refine::WindowSize, Refine::WindowSize);
 	const cv::Point anchor(-1,-1);
-	// every pixel visited below is at least HalfSize from the image edge, so the border mode
-	// never actually contributes; normalize=false gives the raw window sums
-	cv::boxFilter(m, m, -1, ksize, anchor, false, cv::BORDER_CONSTANT);
-	cv::boxFilter(pA, pA, -1, ksize, anchor, false, cv::BORDER_CONSTANT);
-	cv::boxFilter(pB, pB, -1, ksize, anchor, false, cv::BORDER_CONSTANT);
-	cv::boxFilter(pAA, pAA, -1, ksize, anchor, false, cv::BORDER_CONSTANT);
-	cv::boxFilter(pBB, pBB, -1, ksize, anchor, false, cv::BORDER_CONSTANT);
-	cv::boxFilter(pAB, pAB, -1, ksize, anchor, false, cv::BORDER_CONSTANT);
 	const int RowsEnd(mask.rows-HalfSize);
 	const int ColsEnd(mask.cols-HalfSize);
 	const float gateMeanDiff(OPTREFINE::fGateMeanDiff);
@@ -899,59 +882,97 @@ MeshRefine::PairScore MeshRefine::ComputeWindowStats(
 	}
 	float sumRZ(0), sumR(0);
 	double energyRZ(0);
-	for (int r=HalfSize; r<RowsEnd; ++r) {
-		for (int c=HalfSize; c<ColsEnd; ++c) {
-			if (!mask(r,c))
-				continue;
-			const float n(m(r,c));
-			Refine::WindowStats s;
-			if (!Refine::WindowStatsFromSums(n, pA(r,c), pB(r,c), pAA(r,c), pBB(r,c), pAB(r,c), gateMeanDiff, gateVarRatio, s)) {
-				// a rejected pixel scores nothing, but its VALUE still enters the window sums of
-				// every neighbour that was not rejected -- the sums above were taken over the warp
-				// mask, before any of this. The stepper only ever reads the mask as "pixels that
-				// scored", so it drops them; the energy mode has to keep them, or the derivative
-				// with respect to those pixels is missing from the gradient of an energy that
-				// really does depend on them. Their own q entries below stay zero, which is what
-				// keeps them out of the score
-				if (!bExactDerivative)
-					mask.unset(r,c);
-				continue;
-			}
-			float zncc, dzncc, conf;
-			Refine::ZnccAndDerivative(s, n, imageA(r,c), imageB(r,c), zncc, dzncc, conf);
-			imageDZNCC(r,c) = dzncc;
-			sumRZ += conf*(1.f-zncc);
-			sumR += conf;
-			if (bExactDerivative) {
-				energyRZ += (double)conf*(double)(1.f-zncc);
-				// d/dB_p of window c's own ZNCC is
-				//   (1/n_c)[ (A_p-muA_c)/(sigmaA sigmaB)_c - ZNCC_c (B_p-muB_c)/sigmaB_c^2 ]
-				// so the four sums below, box-filtered over the windows containing p, are the only
-				// per-window quantities the exact derivative needs. The per-window 1/n_c is folded
-				// in here rather than divided out once at p, so a window whose valid count differs
-				// from its neighbours' (the mask border) is still weighted exactly right
-				const float rn(conf/n);
-				const float wAB(rn/sqrtf(s.varA*s.varB));
-				const float wZ(rn*zncc/s.varB);
-				q1(r,c) = wAB;
-				q2(r,c) = wAB*s.muA;
-				q3(r,c) = wZ;
-				q4(r,c) = wZ*s.muB;
-				// the reliability weight itself depends on the warped image through varB when
-				// B's window is the less textured one: d conf/d varB times d varB/d B_p =
-				// (2/n)(B_p - muB), so the window's term conf (1-ZNCC) also contributes
-				// (1-ZNCC) conf' (2/n) (B_p - muB) at every pixel it contains -- two more sums,
-				// the factor of B_p and its muB multiple. Without them the gradient was blind to
-				// the energy's reward for flattening the warped image where the match is poor
-				const float dconf(Refine::ZnccReliabilityDerivativeVarB(s.varA, s.varB));
-				if (dconf > 0) {
-					const float q((1.f-zncc)*dconf*2.f/n);
-					q5(r,c) = q;
-					q6(r,c) = q*s.muB;
+	DEC_Image(float, m);
+	DEC_Image(float, pA); DEC_Image(float, pB);
+	DEC_Image(float, pAA); DEC_Image(float, pBB); DEC_Image(float, pAB);
+	// the rejected pixels leave the mask only after the next band built its sums: its halo rows are
+	// this band's last ones, and the sums are taken over the warp mask as it was before any rejection
+	std::vector<ImageRef> rejected, rejectedBand;
+	constexpr int BandRows(64);
+	for (int r0=HalfSize; r0<RowsEnd; r0+=BandRows) {
+		const int r1(MINF(r0+BandRows, RowsEnd));
+		const int b0(r0-HalfSize); // band row 0, with the halo of the window above
+		const cv::Rect band(0, b0, mask.cols, r1+HalfSize-b0);
+		const Image32F bandA(imageA(band)), bandB(imageB(band));
+		m.create(band.size());
+		for (int r=0; r<band.height; ++r)
+			for (int c=0; c<band.width; ++c)
+				m(r,c) = mask(b0+r,c) ? 1.f : 0.f;
+		for (const ImageRef& x: rejected)
+			mask.unset(x.y, x.x);
+		rejected.swap(rejectedBand);
+		rejectedBand.clear();
+		cv::multiply(bandA, m, pA);
+		cv::multiply(bandB, m, pB);
+		cv::multiply(pA, bandA, pAA);
+		cv::multiply(pB, bandB, pBB);
+		cv::multiply(pA, bandB, pAB);
+		// every pixel visited below is at least HalfSize from the band edge, so the border mode
+		// never actually contributes; normalize=false gives the raw window sums
+		cv::boxFilter(m, m, -1, ksize, anchor, false, cv::BORDER_CONSTANT);
+		cv::boxFilter(pA, pA, -1, ksize, anchor, false, cv::BORDER_CONSTANT);
+		cv::boxFilter(pB, pB, -1, ksize, anchor, false, cv::BORDER_CONSTANT);
+		cv::boxFilter(pAA, pAA, -1, ksize, anchor, false, cv::BORDER_CONSTANT);
+		cv::boxFilter(pBB, pBB, -1, ksize, anchor, false, cv::BORDER_CONSTANT);
+		cv::boxFilter(pAB, pAB, -1, ksize, anchor, false, cv::BORDER_CONSTANT);
+		for (int r=r0; r<r1; ++r) {
+			for (int c=HalfSize; c<ColsEnd; ++c) {
+				if (!mask(r,c))
+					continue;
+				const float n(m(r-b0,c));
+				Refine::WindowStats s;
+				if (!Refine::WindowStatsFromSums(n, pA(r-b0,c), pB(r-b0,c), pAA(r-b0,c), pBB(r-b0,c), pAB(r-b0,c), gateMeanDiff, gateVarRatio, s)) {
+					// a rejected pixel scores nothing, but its VALUE still enters the window sums of
+					// every neighbour that was not rejected -- the sums above were taken over the warp
+					// mask, before any of this. The stepper only ever reads the mask as "pixels that
+					// scored", so it drops them; the energy mode has to keep them, or the derivative
+					// with respect to those pixels is missing from the gradient of an energy that
+					// really does depend on them. Their own q entries below stay zero, which is what
+					// keeps them out of the score
+					if (!bExactDerivative)
+						rejectedBand.emplace_back(c, r);
+					continue;
+				}
+				float zncc, dzncc, conf;
+				Refine::ZnccAndDerivative(s, n, imageA(r,c), imageB(r,c), zncc, dzncc, conf);
+				imageDZNCC(r,c) = dzncc;
+				sumRZ += conf*(1.f-zncc);
+				sumR += conf;
+				if (bExactDerivative) {
+					energyRZ += (double)conf*(double)(1.f-zncc);
+					// d/dB_p of window c's own ZNCC is
+					//   (1/n_c)[ (A_p-muA_c)/(sigmaA sigmaB)_c - ZNCC_c (B_p-muB_c)/sigmaB_c^2 ]
+					// so the four sums below, box-filtered over the windows containing p, are the only
+					// per-window quantities the exact derivative needs. The per-window 1/n_c is folded
+					// in here rather than divided out once at p, so a window whose valid count differs
+					// from its neighbours' (the mask border) is still weighted exactly right
+					const float rn(conf/n);
+					const float wAB(rn/sqrtf(s.varA*s.varB));
+					const float wZ(rn*zncc/s.varB);
+					q1(r,c) = wAB;
+					q2(r,c) = wAB*s.muA;
+					q3(r,c) = wZ;
+					q4(r,c) = wZ*s.muB;
+					// the reliability weight itself depends on the warped image through varB when
+					// B's window is the less textured one: d conf/d varB times d varB/d B_p =
+					// (2/n)(B_p - muB), so the window's term conf (1-ZNCC) also contributes
+					// (1-ZNCC) conf' (2/n) (B_p - muB) at every pixel it contains -- two more sums,
+					// the factor of B_p and its muB multiple. Without them the gradient was blind to
+					// the energy's reward for flattening the warped image where the match is poor
+					const float dconf(Refine::ZnccReliabilityDerivativeVarB(s.varA, s.varB));
+					if (dconf > 0) {
+						const float q((1.f-zncc)*dconf*2.f/n);
+						q5(r,c) = q;
+						q6(r,c) = q*s.muB;
+					}
 				}
 			}
 		}
 	}
+	for (const ImageRef& x: rejected)
+		mask.unset(x.y, x.x);
+	for (const ImageRef& x: rejectedBand)
+		mask.unset(x.y, x.x);
 	DST_Image(m);
 	DST_Image(pA); DST_Image(pB);
 	DST_Image(pAA); DST_Image(pBB); DST_Image(pAB);
