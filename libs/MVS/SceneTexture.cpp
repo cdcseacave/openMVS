@@ -186,7 +186,10 @@ struct MeshTexture {
 			Base::Clear();
 			faceMap.memset((uint8_t)NO_ID);
 		}
+		uint32_t* projArea = nullptr; // when set, counts every pixel the face covers, occluded or not
 		void Raster(const ImageRef& pt, const Triangle& t, const Point3f& bary) {
+			if (projArea)
+				++*projArea;
 			const Point3f pbary(PerspectiveCorrectBarycentricCoordinates(t, bary));
 			const Depth z(ComputeDepth(t, pbary));
 			ASSERT(z > Depth(0));
@@ -585,14 +588,11 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 	}
 	facesDatas.resize(faces.size());
 	Util::Progress progress(_T("Initialized views"), views.size());
-	typedef float real;
-	TImage<real> imageGradMag;
-	TImage<real>::EMat mGrad[2];
 	FaceMap faceMap;
 	DepthMap depthMap;
 	#ifdef TEXOPT_USE_OPENMP
 	bool bAbort(false);
-	#pragma omp parallel for private(imageGradMag, mGrad, faceMap, depthMap)
+	#pragma omp parallel for private(faceMap, depthMap)
 	for (int_t idx=0; idx<(int_t)views.size(); ++idx) {
 		#pragma omp flush (bAbort)
 		if (bAbort) {
@@ -632,33 +632,11 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 			#endif
 		}
 		imageData.UpdateCamera(scene.platforms);
-		// compute gradient magnitude
-		imageData.image.toGray(imageGradMag, cv::COLOR_BGR2GRAY, true);
-		cv::Mat grad[2];
-		mGrad[0].resize(imageGradMag.rows, imageGradMag.cols);
-		grad[0] = cv::Mat(imageGradMag.rows, imageGradMag.cols, cv::DataType<real>::type, (void*)mGrad[0].data());
-		mGrad[1].resize(imageGradMag.rows, imageGradMag.cols);
-		grad[1] = cv::Mat(imageGradMag.rows, imageGradMag.cols, cv::DataType<real>::type, (void*)mGrad[1].data());
-		#if 1
-		cv::Sobel(imageGradMag, grad[0], cv::DataType<real>::type, 1, 0, 3, 1.0/8.0);
-		cv::Sobel(imageGradMag, grad[1], cv::DataType<real>::type, 0, 1, 3, 1.0/8.0);
-		#elif 1
-		const TMatrix<real,3,5> kernel(CreateDerivativeKernel3x5());
-		cv::filter2D(imageGradMag, grad[0], cv::DataType<real>::type, kernel);
-		cv::filter2D(imageGradMag, grad[1], cv::DataType<real>::type, kernel.t());
-		#else
-		const TMatrix<real,5,7> kernel(CreateDerivativeKernel5x7());
-		cv::filter2D(imageGradMag, grad[0], cv::DataType<real>::type, kernel);
-		cv::filter2D(imageGradMag, grad[1], cv::DataType<real>::type, kernel.t());
-		#endif
-		(TImage<real>::EMatMap)imageGradMag = (mGrad[0].cwiseAbs2()+mGrad[1].cwiseAbs2()).cwiseSqrt();
-		// apply some blur on the gradient to lower noise/glossiness effects onto face-quality score
-		cv::GaussianBlur(imageGradMag, imageGradMag, cv::Size(15, 15), 0, 0, cv::BORDER_DEFAULT);
 		// select faces inside view frustum
 		Mesh::FaceIdxArr cameraFaces;
 		Mesh::FacesInserter inserter(cameraFaces);
-		// rendered at the full image resolution: a finer raster only multiplies the per-thread
-		// face/depth maps (8 bytes per raster pixel), measured to leave the texture quality unchanged
+		// rendered at the full image resolution: the visible-pixel count is the texture resolution a
+		// view offers the face, and a finer raster only multiplies the per-thread face/depth maps
 		const cv::Size highResSize(fullSize);
 		const Camera cameraHighRes(imageData.GetCamera(scene.platforms, highResSize));
 		const TFrustum<float,5> frustum(Matrix3x4f(cameraHighRes.P), (float)highResSize.width, (float)highResSize.height);
@@ -675,29 +653,28 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 			SaveImage(rasterer.mask, String::FormatString("umask%04d.png", idxView));
 		#endif
 		rasterer.Clear();
+		CLISTDEF0IDX(uint32_t,FIndex) projAreas(faces.size());
+		projAreas.Memset(0);
 		for (FIndex idxFace : cameraFaces) {
 			rasterer.validFace = true;
 			const Face& facet = faces[idxFace];
 			rasterer.idxFace = idxFace;
+			rasterer.projArea = &projAreas[idxFace];
 			rasterer.Project(facet, triangleRasterizer);
+			rasterer.projArea = nullptr;
 			if (!rasterer.validFace)
 				rasterer.Project(facet, triangleRasterizer);
 		}
 		// compute the projection area of visible faces
-		#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
 		CLISTDEF0IDX(uint32_t,FIndex) areas(faces.size());
 		areas.Memset(0);
-		#endif
 
 		#ifdef TEXOPT_USE_OPENMP
 		#pragma omp critical
 		#endif
 		{
-		// faceQuality is influenced by :
-		// + area: the higher the area the more gradient scores will be added to the face quality
-		// + sharpness: sharper image or image resolution or how close is to the face will result in higher gradient on the same face
-		//				ON GLOSS IMAGES it happens to have a high volatile sharpness depending on how the light reflects under different angles
-		// + angle: low angle increases the surface area
+		// the face quality in a view is the number of its pixels the view sees: the resolution the
+		// texture gets from it, which already falls with the distance and the viewing angle
 		const float scaleWeightX((float)imageData.width / highResSize.width);
 		const float scaleWeightY((float)imageData.height / highResSize.height);
 		for (int j=0; j<faceMap.rows; ++j) {
@@ -709,16 +686,11 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 				FaceDataArr& faceDatas = facesDatas[idxFace];
 				const int imgY((int)(j*scaleWeightY));
 				const int imgX((int)(i*scaleWeightX));
-				#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
-				uint32_t& area = areas[idxFace];
-				if (area++ == 0) {
-				#else
-				if (faceDatas.empty() || faceDatas.back().idxView != idxView) {
-				#endif
+				if (areas[idxFace]++ == 0) {
 					// create new face-data
 					FaceData& faceData = faceDatas.emplace_back();
 					faceData.idxView = idxView;
-					faceData.quality = imageGradMag(imgY,imgX);
+					faceData.quality = 1.f;
 					#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
 					faceData.color = imageData.image(imgY,imgX);
 					#endif
@@ -727,25 +699,24 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 					ASSERT(!faceDatas.empty());
 					FaceData& faceData = faceDatas.back();
 					ASSERT(faceData.idxView == idxView);
-					faceData.quality += imageGradMag(imgY,imgX);
+					faceData.quality += 1.f;
 					#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
 					faceData.color += Color(imageData.image(imgY,imgX));
 					#endif
 				}
 			}
 		}
-		// adjust face quality with camera angle relative to face normal
-		// tries to increase chances of a camera with perpendicular view on the surface (smoothened normals) to be selected
-		FOREACH(idxFace, facesDatas) {
-			FaceDataArr& faceDatas = facesDatas[idxFace];
-			if (faceDatas.empty() || faceDatas.back().idxView != idxView)
+		// a view that sees only part of a face would copy the occluder into the face's texture:
+		// below 90% of the face's projection (and more than a couple of pixels missing) it keeps
+		// a tenth of its quality, so it wins only where nothing sees the face whole
+		for (FIndex idxFace: cameraFaces) {
+			const uint32_t visible(areas[idxFace]);
+			if (visible == 0)
 				continue;
-			const Face& f = faces[idxFace];
-			const Vertex faceCenter((vertices[f[0]] + vertices[f[1]] + vertices[f[2]]) / 3.f);
-			const Point3f camDir(Cast<Mesh::Type>(imageData.camera.C) - faceCenter);
-			const Normal& faceNormal = scene.mesh.faceNormals[idxFace];
-			const float cosFaceCam(MAXF(0.001f, ComputeAngle(camDir.ptr(), faceNormal.ptr())));
-			faceDatas.back().quality *= SQUARE(cosFaceCam);
+			const uint32_t projected(projAreas[idxFace]);
+			ASSERT(visible <= projected);
+			if (visible < 0.9f*projected && projected-visible > 2)
+				facesDatas[idxFace].back().quality *= 0.1f;
 		}
 		#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
 		FOREACH(idxFace, areas) {
@@ -1246,20 +1217,6 @@ bool MeshTexture::FaceViewSelection(unsigned minCommonCameras, float fOutlierThr
 			ASSERT((Mesh::FIndex)boost::num_vertices(graph) == virtualFaces.size());
 			// assign the best view to each face
 			labels.resize(faces.size()); {
-				// normalize quality values
-				float maxQuality(0);
-				for (const FaceDataArr& faceDatas: virtualFacesDatas) {
-					for (const FaceData& faceData: faceDatas)
-						if (maxQuality < faceData.quality)
-							maxQuality = faceData.quality;
-				}
-				Histogram32F hist(std::make_pair(0.f, maxQuality), 1000);
-				for (const FaceDataArr& faceDatas: virtualFacesDatas) {
-					for (const FaceData& faceData: faceDatas)
-						hist.Add(faceData.quality);
-				}
-				const float normQuality(hist.GetApproximatePermille(0.95f));
-
 				#if TEXOPT_INFERENCE == TEXOPT_INFERENCE_LBP
 				// initialize inference structures
 				const LBPInference::EnergyType MaxEnergy(fRatioDataSmoothness*LBPMaxEnergy);
@@ -1302,10 +1259,17 @@ bool MeshTexture::FaceViewSelection(unsigned minCommonCameras, float fOutlierThr
 						inference.SetDataCost(Label(0), f, MaxEnergy * (faceWeight + LBPMinWeight));
 						continue;
 					}
+					// each face is scored relative to its own best view, whose cost is zero; a view below
+					// a fifth of that is not a candidate at all
+					float maxFaceQuality(0);
+					for (const FaceData& faceData: faceDatas)
+						maxFaceQuality = MAXF(maxFaceQuality, faceData.quality);
+					ASSERT(maxFaceQuality > 0);
 					for (const FaceData& faceData: faceDatas) {
+						if (faceData.quality < 0.2f*maxFaceQuality)
+							continue;
 						const Label label((Label)faceData.idxView+1);
-						const float normalizedQuality(faceData.quality>=normQuality ? 1.f : faceData.quality/normQuality);
-						const float dataCost((1.f-normalizedQuality)*MaxEnergy * faceWeight);
+						const float dataCost((1.f-faceData.quality/maxFaceQuality)*MaxEnergy * faceWeight);
 						inference.SetDataCost(label, f, dataCost);
 					}
 				}
@@ -1360,20 +1324,6 @@ bool MeshTexture::FaceViewSelection(unsigned minCommonCameras, float fOutlierThr
 		if (!bUseVirtualFaces) {
 			// assign the best view to each face
 			labels.resize(faces.size()); {
-				// normalize quality values
-				float maxQuality(0);
-				for (const FaceDataArr& faceDatas: facesDatas) {
-					for (const FaceData& faceData: faceDatas)
-						if (maxQuality < faceData.quality)
-							maxQuality = faceData.quality;
-				}
-				Histogram32F hist(std::make_pair(0.f, maxQuality), 1000);
-				for (const FaceDataArr& faceDatas: facesDatas) {
-					for (const FaceData& faceData: faceDatas)
-						hist.Add(faceData.quality);
-				}
-				const float normQuality(hist.GetApproximatePermille(0.95f));
-
 				#if TEXOPT_INFERENCE == TEXOPT_INFERENCE_LBP
 				// initialize inference structures
 				const LBPInference::EnergyType MaxEnergy(fRatioDataSmoothness*LBPMaxEnergy);
@@ -1406,10 +1356,17 @@ bool MeshTexture::FaceViewSelection(unsigned minCommonCameras, float fOutlierThr
 						inference.SetDataCost(Label(0), f, MaxEnergy * (faceWeight + LBPMinWeight));
 						continue;
 					}
+					// each face is scored relative to its own best view, whose cost is zero; a view below
+					// a fifth of that is not a candidate at all
+					float maxFaceQuality(0);
+					for (const FaceData& faceData: faceDatas)
+						maxFaceQuality = MAXF(maxFaceQuality, faceData.quality);
+					ASSERT(maxFaceQuality > 0);
 					for (const FaceData& faceData: faceDatas) {
+						if (faceData.quality < 0.2f*maxFaceQuality)
+							continue;
 						const Label label((Label)faceData.idxView+1);
-						const float normalizedQuality(faceData.quality>=normQuality ? 1.f : faceData.quality/normQuality);
-						const float dataCost((1.f-normalizedQuality)*MaxEnergy * faceWeight);
+						const float dataCost((1.f-faceData.quality/maxFaceQuality)*MaxEnergy * faceWeight);
 						inference.SetDataCost(label, f, dataCost);
 					}
 				}
