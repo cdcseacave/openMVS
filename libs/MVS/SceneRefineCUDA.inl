@@ -94,16 +94,17 @@ void LaunchImageMeshWarp(
 // share before their barycentrics, and maskOut (a second buffer, the window loops still read
 // mask) the pixels that contribute one. blockSums receives this pair-direction's per-block
 // partials of the two reliability sums S is reduced from, 2 floats per 16x16 block from slot 0
-// of the passed pointer on; returns the number of blocks written. texImageB is sampled directly
-// when bBilinearGrad asks for the derivative of the bilinear interpolant instead of the
-// precomputed stencil textures (OPTREFINE::nImageGradient == 3, texGradXB/texGradYB unused).
+// of the passed pointer on; returns the number of blocks written. gradMode is
+// OPTREFINE::nImageGradient: texImageB is differenced directly for the central difference (1) and
+// the derivative of the bilinear interpolant (3); texGradXB/texGradYB, the precomputed stencil
+// textures, exist and are read only for the stencils that do not commute with the sampling (0, 2).
 uint32_t LaunchComputeWindowStats(
 	const uint8_t* mask, uint8_t* maskOut, float* pixelGrad, float* blockSums,
 	cudaSurfaceObject_t surfImageA, cudaSurfaceObject_t surfImageProj,
 	const Point3* normals, const uint32_t* faceMap, const float* depthMap,
 	const Camera& camA, const Camera& camB,
 	cudaTextureObject_t texImageB, cudaTextureObject_t texGradXB, cudaTextureObject_t texGradYB,
-	bool bBilinearGrad, float regScale, float gateMeanDiff, float gateVarRatio, int width, int height,
+	int gradMode, float regScale, float gateMeanDiff, float gateVarRatio, int width, int height,
 	cudaStream_t stream);
 
 // the atomic-free photometric accumulation of one pair-direction: one thread per face the

@@ -143,7 +143,11 @@ per pixel of A:
    converts the image-space gradient into a 3D-consistent one.
 4. **Image gradient stencil.** Selected by `OPTREFINE::nImageGradient` (default 1, central
    differences; 0 = separable 3x5; 2 = Sobel-3; 3 = the derivative of the bilinear interpolant the
-   warp itself samples, computed on demand instead of from a precomputed stencil image).
+   warp itself samples). Modes 1 and 3 are computed at the sample from image B itself
+   (`MeshRefine::CentralGradient`/`BilinearGradient`, CUDA `computePhotoPixel`): a linear stencil
+   commutes with the bilinear interpolation, so differencing the image sampled one pixel either
+   side equals sampling the precomputed stencil image. Only the stencils that do not commute (0, 2)
+   build and keep per-view gradient images.
 5. **Per-vertex accumulation.** `photoGrad[v]` sums `sg` over every touching pixel; `photoGradNorm[v]`
    (`c_v`) counts pair-directions that touched `v`, once per direction, not per pixel;
    `footprint[v]` (`depthA/focalA`) is min-reduced over every contributing pixel/direction, resolved
@@ -275,7 +279,8 @@ the analytic gradient against a numerical one and is exercised by the test suite
 ### 2.10 CPU/CUDA: what is shared vs what legitimately differs
 
 Identical by construction: the shared scalar header (`SceneRefineCommon.h`), the 7x7 window, the
-visibility test, the image-gradient stencil (built once, host-side, shared by both), the rasterizer
+visibility test, the image-gradient stencil (sampled from the image for modes 1/3, built once
+host-side for 0/2), the rasterizer
 convention (front faces only, perspective-correct barycentric coordinates), and the stepper
 (`MeshRefineStep`, one implementation, §2.7). What legitimately differs:
 
@@ -544,7 +549,8 @@ one `RefineMesh` run per cell, CPU/CUDA as noted.
 5. **The Ceres arm stays opt-in.** It reaches a lower energy than the stepper but never a better F1
    on the scenes it was tested against (§2.9), so it remains a research/reference arm rather than a
    default.
-6. **CUDA device memory scales with resident view count** (roughly 21 bytes/pixel/view: image,
-   gradient textures, depth, face id, optional mask). A very large or very high-resolution scene can
+6. **CUDA device memory scales with resident view count** (roughly 13 bytes/pixel/view at the
+   default stencil: image, depth, face id, optional mask; 21 with the stencil modes 0/2, which add
+   two float gradient textures). A very large or very high-resolution scene can
    exceed a single GPU's memory at the finest scale; the fix is to stream views in and out of
    residency, which is unimplemented.

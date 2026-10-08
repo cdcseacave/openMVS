@@ -472,10 +472,10 @@ __device__ inline bool computePhotoPixel(
 	int x, int y, float depth, const Point3& normal, float dz,
 	const Camera& camA,
 	const Camera& camB,
-	cudaTextureObject_t texImageB, // sampled directly in bilinear-derivative mode (nImageGradient == 3)
-	cudaTextureObject_t texGradXB, // precomputed stencil (ComputeRefineImageGradient); unused in that mode
+	cudaTextureObject_t texImageB, // sampled directly by the central (1) and bilinear-derivative (3) modes
+	cudaTextureObject_t texGradXB, // precomputed stencil (ComputeRefineImageGradient), modes 0 and 2 only
 	cudaTextureObject_t texGradYB,
-	bool bBilinearGrad,
+	int gradMode,
 	float regScale,
 	float& g)
 {
@@ -506,11 +506,17 @@ __device__ inline bool computePhotoPixel(
 	const Point3 dudX = (KR.row(0).transpose() * pz - KR.row(2).transpose() * p.x()) / pz2;
 	const Point3 dvdX = (KR.row(1).transpose() * pz - KR.row(2).transpose() * p.y()) / pz2;
 
-	// image derivatives at the projected point: the precomputed gradient images, sampled
-	// bilinearly like the CPU (+0.5: tex2D pixel-centre convention, see ImageMeshWarp), or the
-	// derivative of the bilinear interpolant of the image itself
+	// image derivatives at the projected point (+0.5: tex2D pixel-centre convention, see
+	// ImageMeshWarp): the central difference of the image sampled one pixel either side (it commutes
+	// with the bilinear filtering, so it equals sampling the stencil image, which is not stored),
+	// the derivative of the bilinear interpolant of the image itself, or the precomputed stencil
+	// images of the modes that do not commute, sampled bilinearly like the CPU
 	float dx, dy;
-	if (bBilinearGrad) {
+	if (gradMode == 1) {
+		const float u(projB.x() + 0.5f), v(projB.y() + 0.5f);
+		dx = 0.5f*(tex2D<float>(texImageB, u + 1.f, v) - tex2D<float>(texImageB, u - 1.f, v));
+		dy = 0.5f*(tex2D<float>(texImageB, u, v + 1.f) - tex2D<float>(texImageB, u, v - 1.f));
+	} else if (gradMode == 3) {
 		bilinearGradient(texImageB, camB.size.x(), camB.size.y(), projB.x(), projB.y(), dx, dy);
 	} else {
 		dx = tex2D<float>(texGradXB, projB.x() + 0.5f, projB.y() + 0.5f);
@@ -549,7 +555,7 @@ __global__ void kernelComputeWindowStats(
 	cudaTextureObject_t texImageB,
 	cudaTextureObject_t texGradXB,
 	cudaTextureObject_t texGradYB,
-	bool bBilinearGrad,
+	int gradMode,
 	float regScale,
 	float gateMeanDiff, float gateVarRatio,
 	int width, int height)
@@ -625,7 +631,7 @@ __global__ void kernelComputeWindowStats(
 				const float depth = depthMap[pixIdx];
 				ASSERT(depth > 0.f);
 				if (computePhotoPixel(x, y, depth, normals[faceMap[pixIdx]], dz,
-						camA, camB, texImageB, texGradXB, texGradYB, bBilinearGrad, regScale, g))
+						camA, camB, texImageB, texGradXB, texGradYB, gradMode, regScale, g))
 					contributes = 1;
 			}
 		}
@@ -1026,14 +1032,14 @@ uint32_t LaunchComputeWindowStats(
 	const Point3* normals, const uint32_t* faceMap, const float* depthMap,
 	const Camera& camA, const Camera& camB,
 	cudaTextureObject_t texImageB, cudaTextureObject_t texGradXB, cudaTextureObject_t texGradYB,
-	bool bBilinearGrad, float regScale, float gateMeanDiff, float gateVarRatio, int width, int height,
+	int gradMode, float regScale, float gateMeanDiff, float gateVarRatio, int width, int height,
 	cudaStream_t stream)
 {
 	const dim3 block(16, 16);
 	const dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
 	kernelComputeWindowStats<<<grid, block, 0, stream>>>(mask, maskOut, pixelGrad, blockSums,
 		surfImageA, surfImageProj, normals, faceMap, depthMap, camA, camB,
-		texImageB, texGradXB, texGradYB, bBilinearGrad, regScale, gateMeanDiff, gateVarRatio, width, height);
+		texImageB, texGradXB, texGradYB, gradMode, regScale, gateMeanDiff, gateVarRatio, width, height);
 	return grid.x*grid.y;
 }
 

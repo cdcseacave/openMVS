@@ -69,7 +69,7 @@ public:
 	struct View {
 		Image8U::Size size;
 		SEACAVE::CUDA::ArrayRT32F image; // float like the CPU's View::image (see readSurfFloat in the .cu)
-		SEACAVE::CUDA::ArrayRT32F imageGrad[2]; // x/y derivatives (ComputeRefineImageGradient), float like the CPU's View::imageGrad: a derivative stencil produces values a half cannot hold
+		SEACAVE::CUDA::ArrayRT32F imageGrad[2]; // x/y derivatives (ComputeRefineImageGradient), stencil modes 0 and 2 only, float like the CPU's View::imageGrad: a derivative stencil produces values a half cannot hold
 		SEACAVE::CUDA::MemDevice depthMap;
 		SEACAVE::CUDA::MemDevice faceMap; // no barycentrics per pixel: kernelAccumulateFacePhoto recomputes them from the face's projection
 		SEACAVE::CUDA::MemDevice keepMask; // one byte per pixel (non-zero = keep), uploaded from HostView::keepMask only when non-empty; invalid (unallocated) == keep everything
@@ -345,9 +345,10 @@ bool MeshRefineCUDA::PrepareImages(float scale, float sigma)
 			return false;
 			#endif
 		}
-		// mode 3 samples the bilinear interpolant of the image directly (computePhotoPixel's
-		// bilinearGradient) and never reads a precomputed stencil
-		if (OPTREFINE::nImageGradient != 3)
+		// only the stencils that do not commute with the bilinear sampling are precomputed: mode 1's
+		// central difference and mode 3's bilinear derivative are taken from the image at the sample
+		// (computePhotoPixel)
+		if (OPTREFINE::nImageGradient == 0 || OPTREFINE::nImageGradient == 2)
 			ComputeRefineImageGradient(host.image, host.imageGrad[0], host.imageGrad[1]);
 		// per-view keep-mask at this scale's working size (the same estimator on both backends)
 		PrepareRefineImageMask(imageCopy, host.image.size(), host.keepMask);
@@ -451,8 +452,8 @@ bool MeshRefineCUDA::UploadImages()
 		reportCudaError(view.image.Reset(size, CUDA_ARRAY3D_SURFACE_LDST));
 		reportCudaError(view.image.SetData(host.image));
 		host.image.release();
-		// no gradient stencil texture in mode 3 (see PrepareImages)
-		if (OPTREFINE::nImageGradient != 3) {
+		// gradient stencil textures only for modes 0 and 2 (see PrepareImages)
+		if (OPTREFINE::nImageGradient == 0 || OPTREFINE::nImageGradient == 2) {
 			for (int i=0; i<2; ++i) {
 				ASSERT(host.imageGrad[i].size() == size);
 				reportCudaError(view.imageGrad[i].Reset(size, CUDA_ARRAY3D_SURFACE_LDST));
@@ -920,7 +921,7 @@ void MeshRefineCUDA::ProcessPair(uint32_t idxImageA, uint32_t idxImageB, uint32_
 		(const float*)(CUdeviceptr)viewA.depthMap,
 		cudaCamA, cudaCamB,
 		viewGPU[idxImageB].texObj, viewGPU[idxImageB].texGrad[0], viewGPU[idxImageB].texGrad[1],
-		OPTREFINE::nImageGradient == 3, RegularizationScale,
+		OPTREFINE::nImageGradient, RegularizationScale,
 		OPTREFINE::fGateMeanDiff, OPTREFINE::fGateVarRatio,
 		viewA.size.width, viewA.size.height, stream);
 	// the atomic-free accumulation over the faces view A owns, in tile order (see

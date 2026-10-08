@@ -88,7 +88,7 @@ public:
 		typedef TPoint2<float> Grad;
 		typedef TImage<Grad> ImageGrad;
 		Image32F image; // image pixels
-		ImageGrad imageGrad; // image pixel gradients
+		ImageGrad imageGrad; // image pixel gradients, only for the stencils that do not commute with the bilinear sampling (OPTREFINE::nImageGradient 0 and 2)
 		FaceMap faceMap; // remember for each pixel what face projects there
 		DepthMap depthMap; // depth-map
 		BaryMap baryMap; // barycentric coordinates
@@ -221,6 +221,10 @@ public:
 	// the warp itself reads image B with -- so it is the derivative of the value the energy
 	// actually scored, not of a smoothed estimate of it
 	static void BilinearGradient(const Image32F& image, const Point2f& pt, Real& gx, Real& gy);
+	// central-difference derivative (OPTREFINE::nImageGradient 1) of the bilinear sample at `pt`:
+	// a linear stencil commutes with the bilinear interpolation, so differencing the image sampled
+	// one pixel either side equals sampling the precomputed stencil image, without storing it
+	static void CentralGradient(const Image32F& image, const Point2f& pt, Real& gx, Real& gy);
 	// bExactDerivative: take the B-side image derivative from BilinearGradient above instead of
 	// the precomputed stencil map viewB.imageGrad -- true in the energy mode (bEnergyMode) and
 	// whenever OPTREFINE::nImageGradient == 3 asks for it on the stepper path too. The stencil is
@@ -988,6 +992,18 @@ void MeshRefine::BilinearGradient(const Image32F& image, const Point2f& pt, Real
 	gy = (Real(1)-dx)*(v10-v00) + dx*(v11-v01);
 }
 
+void MeshRefine::CentralGradient(const Image32F& image, const Point2f& pt, Real& gx, Real& gy)
+{
+	typedef Sampler::Linear<float> Sampler;
+	const Sampler sampler;
+	ASSERT((image.isInsideWithBorder<float,2>(pt)));
+	const auto At = [&](float dx, float dy) -> Real {
+		return (Real)image.sample<Sampler,float>(sampler, Point2f(pt.x+dx, pt.y+dy));
+	};
+	gx = (At(1,0) - At(-1,0)) * Real(0.5);
+	gy = (At(0,1) - At(0,-1)) * Real(0.5);
+}
+
 // compute the photometric gradient for all vertices seen by an image pair
 void MeshRefine::ComputePhotometricGradient(
 	const Mesh::FaceArr& faces, const Mesh::NormalArr& normals,
@@ -998,8 +1014,9 @@ void MeshRefine::ComputePhotometricGradient(
 	const BitMatrix& mask(maps.mask);
 	ASSERT(faces.GetSize() == normals.GetSize() && !faces.IsEmpty());
 	ASSERT(depthMapA.size() == mask.size() && faceMapA.size() == mask.size() && baryMapA.size() == mask.size() && maps.dzncc.size() == mask.size() && !mask.empty());
-	// imageGrad is only built when it is actually read (ThInitImage skips it in mode 3)
-	ASSERT(!viewB.image.empty() && (bExactDerivative || viewB.image.size() == viewB.imageGrad.size()));
+	// imageGrad is only built when it is actually read (ThInitImage builds it for modes 0 and 2)
+	const bool bStencilImage(!bExactDerivative && OPTREFINE::nImageGradient != 1);
+	ASSERT(!viewB.image.empty() && (!bStencilImage || viewB.image.size() == viewB.imageGrad.size()));
 	const int RowsEnd(mask.rows-HalfSize);
 	const int ColsEnd(mask.cols-HalfSize);
 	typedef Sampler::Linear<View::Grad::Type> Sampler;
@@ -1047,6 +1064,8 @@ void MeshRefine::ComputePhotometricGradient(
 		TMatrix<Real,1,2> gB;
 		if (bExactDerivative)
 			BilinearGradient(viewB.image, xB, gB(0), gB(1));
+		else if (!bStencilImage)
+			CentralGradient(viewB.image, xB, gB(0), gB(1));
 		else
 			gB = viewB.imageGrad.sample<Sampler,View::Grad>(sampler, xB);
 		return (gB*(xJac*(const TMatrix<Real,3,1>&)g.dA))(0);
@@ -1213,10 +1232,11 @@ void MeshRefine::ThInitImage(uint32_t idxImage, Real scale, Real sigma)
 	Image32F& img = view.image;
 	if (!PrepareRefineImage(imageData, scene.platforms, nResolutionLevel, nMinResolution, scale, sigma, img))
 		ABORT("can not load image");
-	// compute image gradient (the same estimator on both backends); mode 3 samples the bilinear
-	// interpolant of the image directly (ComputePhotometricGradient's BilinearGradient) and never
-	// reads this precomputed stencil, so building it here would be wasted work
-	if (OPTREFINE::nImageGradient != 3) {
+	// compute image gradient (the same estimator on both backends) only for the stencils that must
+	// be precomputed: mode 3 samples the bilinear interpolant of the image directly
+	// (ComputePhotometricGradient's BilinearGradient), and mode 1's central difference commutes
+	// with the bilinear sampling, so it is taken from the image at the sample (CentralGradient)
+	if (OPTREFINE::nImageGradient == 0 || OPTREFINE::nImageGradient == 2) {
 		Image32F grad[2];
 		ComputeRefineImageGradient(img, grad[0], grad[1]);
 		cv::merge(grad, 2, view.imageGrad);
