@@ -893,22 +893,27 @@ inline bool SelectReprojectionLoss(const BAConfig& config, double denseObservati
 // The dense weight each image's dense residuals carry: denseObservationWeight scaled by N / (N + n),
 // N = config.denseHalfWeightObservations and n the image's described observations in the scene's
 // inlier tracks, counted over the whole scene so that a local window weighs an image as the global
-// solve does; the same weight for every image when N is 0.
+// solve does (the same weight for every image when N is 0), and held to
+// config.maxDenseObservationWeight when that is set.
 inline std::vector<double> DenseWeightPerImage(const Scene& scene, const BAConfig& config, double denseObservationWeight) {
+	ASSERT(config.maxDenseObservationWeight >= 0.0);
 	std::vector<double> weights(scene.images.size(), denseObservationWeight);
-	if (config.denseHalfWeightObservations == 0)
-		return weights;
-	std::vector<unsigned> numDescribed(scene.images.size(), 0u);
-	for (const Track& track : scene.tracks) {
-		if (!track.IsInlier())
-			continue;
-		for (const Observation& obs : track)
-			if (!scene.images[obs.imageID].IsDenseKeypoint(obs.featureID))
-				++numDescribed[obs.imageID];
+	if (config.denseHalfWeightObservations > 0) {
+		std::vector<unsigned> numDescribed(scene.images.size(), 0u);
+		for (const Track& track : scene.tracks) {
+			if (!track.IsInlier())
+				continue;
+			for (const Observation& obs : track)
+				if (!scene.images[obs.imageID].IsDenseKeypoint(obs.featureID))
+					++numDescribed[obs.imageID];
+		}
+		const double halfWeight = (double)config.denseHalfWeightObservations;
+		FOREACH(i, weights)
+			weights[i] *= halfWeight / (halfWeight + (double)numDescribed[i]);
 	}
-	const double halfWeight = (double)config.denseHalfWeightObservations;
-	FOREACH(i, weights)
-		weights[i] *= halfWeight / (halfWeight + (double)numDescribed[i]);
+	if (config.maxDenseObservationWeight > 0.0)
+		for (double& weight : weights)
+			weight = MINF(weight, config.maxDenseObservationWeight);
 	return weights;
 }
 

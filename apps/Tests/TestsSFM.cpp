@@ -10397,6 +10397,7 @@ bool BADenseWeightPerImageTest()
 		config.denseObservationWeight = 0.25; // pinned, so both solves weigh a dense residual alike
 		config.relativeRotationSigma = config.relativeTranslationSigma = 0.f; // the reprojections alone
 		config.denseHalfWeightObservations = perImage ? 300u : 0u;
+		config.maxDenseObservationWeight = 0.0; // the scaling alone, held to no ceiling
 		if (!BundleAdjustment::Adjust(scene, config)) {
 			VERBOSE("BADenseWeightPerImageTest FAILED: the bundle adjustment did not solve the scene (%s dense weight)",
 				perImage ? "per-image" : "uniform");
@@ -10423,6 +10424,63 @@ bool BADenseWeightPerImageTest()
 	VERBOSE("BADenseWeightPerImageTest PASSED: a %.0f-pixel bias on the dense keypoints of a detection-rich image "
 		"leaves the model %.4f degrees from the truth under a per-image dense weight against %.4f under a uniform one "
 		"(%s)", (double)DENSE_BIAS, rotationError[1], rotationError[0], TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// No image's dense residuals weigh more than BAConfig::maxDenseObservationWeight: warp samples that
+// share a bias pull the model at the dense weight the scene measured, and held to the ceiling they
+// pull it far less
+bool BADenseWeightCeilingTest()
+{
+	TD_TIMER_START();
+	constexpr IIndex BIASED_IMAGE = 3;       // the image whose dense keypoints are all shifted
+	constexpr float DENSE_BIAS = 2.f;        // pixels every dense keypoint of that image is shifted by
+	constexpr double DENSE_WEIGHT = 0.25;    // the dense weight both solves start from, over the ceiling
+	constexpr double CEILING = 0.01;         // the ceiling the second solve holds every image to
+	constexpr double MIN_UNCAPPED_ERROR = 0.02; // degrees the bias must cost without a ceiling
+	constexpr double MAX_ERROR_RATIO = 0.5;  // the ceiling must at least halve that error
+	SceneConfig cfg;
+	cfg.numImages = 8;
+	cfg.numPoints = 1000;
+	double rotationError[2];
+	for (const bool capped : {false, true}) {
+		Scene truth, scene;
+		GenerateTestScene(truth, cfg, &scene);
+		AddDenseObservations(scene);
+		Image& img = scene.images[BIASED_IMAGE];
+		for (size_t k = img.NumDescribedKeypoints(); k < img.keypoints.size(); ++k)
+			img.keypoints[k].pt.x += DENSE_BIAS;
+		BAConfig config;
+		config.denseObservationWeight = DENSE_WEIGHT; // pinned, so both solves start from the same weight
+		config.relativeRotationSigma = config.relativeTranslationSigma = 0.f; // the reprojections alone
+		config.denseHalfWeightObservations = 0u; // the same weight for every image: the ceiling alone
+		config.maxDenseObservationWeight = capped ? CEILING : 0.0;
+		if (!BundleAdjustment::Adjust(scene, config)) {
+			VERBOSE("BADenseWeightCeilingTest FAILED: the bundle adjustment did not solve the scene (%s)",
+				capped ? "with the ceiling" : "without a ceiling");
+			return false;
+		}
+		std::vector<Pose3D> gtPoses;
+		for (const Image& gt : truth.images)
+			gtPoses.push_back(gt);
+		double maxCenter;
+		WorstPoseError(scene, gtPoses, rotationError[capped], maxCenter);
+	}
+	if (rotationError[0] < MIN_UNCAPPED_ERROR) {
+		VERBOSE("BADenseWeightCeilingTest FAILED: a %.0f-pixel bias on the dense keypoints of image %u costs only "
+			"%.4f degrees at dense weight %g, so the scene does not pose the problem",
+			(double)DENSE_BIAS, BIASED_IMAGE, rotationError[0], DENSE_WEIGHT);
+		return false;
+	}
+	if (rotationError[1] > MAX_ERROR_RATIO * rotationError[0]) {
+		VERBOSE("BADenseWeightCeilingTest FAILED: held to %g the dense weight leaves the model %.4f degrees from the "
+			"truth against %.4f at %g, more than %.0f%% of it", CEILING, rotationError[1], rotationError[0],
+			DENSE_WEIGHT, 100.0 * MAX_ERROR_RATIO);
+		return false;
+	}
+	VERBOSE("BADenseWeightCeilingTest PASSED: a %.0f-pixel bias on the dense keypoints of one image leaves the model "
+		"%.4f degrees from the truth with the dense weight held to %g against %.4f at %g (%s)", (double)DENSE_BIAS,
+		rotationError[1], CEILING, rotationError[0], DENSE_WEIGHT, TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 

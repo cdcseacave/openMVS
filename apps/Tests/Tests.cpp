@@ -209,6 +209,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::BADenseWeightPerImageTest())
 				return false;
+			if (!SFM::BADenseWeightCeilingTest())
+				return false;
 			if (!SFM::RotationEstimatorTest())
 				return false;
 			if (!SFM::ScaleEstimatorTest())

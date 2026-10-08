@@ -219,6 +219,10 @@ bool BAObservationCapTest();
 // keypoint of one such image moves the model at most half as far as under a uniform dense weight
 bool BADenseWeightPerImageTest();
 
+// No image's dense residuals weigh more than BAConfig::maxDenseObservationWeight: a bias shared by
+// every dense keypoint of one image moves the model at most half as far as at the measured weight
+bool BADenseWeightCeilingTest();
+
 // Small SFM smoke test: build tiny scene and run BundleAdjustment::Adjust
 bool PipelineTest();
 

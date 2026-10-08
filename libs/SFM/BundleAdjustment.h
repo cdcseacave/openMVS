@@ -94,23 +94,21 @@ struct SFM_API BAConfig
 	// in the scene's inlier tracks, 0 = the same dense weight for every image. An image with hundreds
 	// of detections already has its pose fixed by them, and the warp samples of its matchings, a
 	// coarser measurement whose errors neighbouring samples share, can only pull it; an image with
-	// few detections keeps most of its dense say. Measured against the uniform weight on five indoor
-	// and two outdoor captures: an indoor capture's 82 misplaced images are left out instead (e00da096,
-	// 0 wrong of 105), a tail that lands 10-34 images wrong from run to run lands 17 wrong in every
-	// run (2678a364), the long indoor capture stays at 42-66 wrong against 56-66, rotation medians
-	// fall by up to 14% and the outdoor captures do not move; 100 matches it on the small captures
-	// but let the long one misplace a 117-image block in one of three runs.
-	// Off by default: on the eleven captures whose reference poses were verified (the two
-	// indoor captures above whose references were broken left out, five interiors and a third
-	// outdoor capture added; the chaotic ones at three thread counts), 300 against the same dense
-	// weight for every image leaves 55 images wrong where 39 were and 5132 right where 5178 were,
-	// its worst run 54 wrong where 18 was (one of three runs of a 269-image interior misplaces 54),
-	// and the 46-image tail of a 148-image capture it leaves out in every run (102 right against
-	// 102-136); it lowers the rotation medians by 5%, a precision the extra wrong images do not
-	// pay for. Holding the weight it gives an image at 0.01 or more brings the wrong images back to
-	// 48 and the right ones to 5184, and at 0.01 or less to 54 and 5175 with the rotation medians
-	// 10% lower, but neither beats the same weight for every image on the wrong images.
-	unsigned denseHalfWeightObservations = 0;
+	// few detections keeps most of its dense say. Ships with maxDenseObservationWeight below: alone,
+	// on the eleven captures whose reference poses were verified, it left more images wrong than the
+	// same dense weight for every image (55 against 39).
+	unsigned denseHalfWeightObservations = 300;
+
+	// The most an image's dense residual weighs, after the scaling above, 0 = no ceiling. The weight
+	// the scene measures (0.06-0.15 on the captures) puts the warp samples, whose errors neighbouring
+	// samples share, well above what they are worth against the detections, so nearly every image is
+	// held to the ceiling and only one rich in detections goes below it. Measured on the eleven
+	// captures (three runs of each, 12/8/16 threads), with the scaling above against the same dense
+	// weight for every image: completeness/accuracy F1 +0.009 [+0.002, +0.017] (95%, paired bootstrap
+	// over images and runs), the gain in accuracy, no capture worse; an interior's real failure
+	// (15 images) is avoided in 4 of 6 runs against none of 9, and a tail that enters the model on
+	// a guessed baseline lands wrong in 6 of 9 runs with the ceiling as without it.
+	double maxDenseObservationWeight = 0.01;
 
 	// The most observations one image contributes to a solve, of any keypoint kind, 0 = all. What a
 	// bundle adjustment costs is the number of observations it fits, and one image can bring
