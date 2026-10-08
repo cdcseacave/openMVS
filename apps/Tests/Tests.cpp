@@ -315,6 +315,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::ResectionInlierBarTest())
 				return false;
+			if (!SFM::ResectionDenseFitWeightTest())
+				return false;
 			if (!SFM::DenseReprojectionBarTest())
 				return false;
 			if (!SFM::CorroboratedImageTest())

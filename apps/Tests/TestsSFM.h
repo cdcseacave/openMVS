@@ -363,6 +363,12 @@ bool ResectionEvidenceShareTest();
 // bar counts barely half of them (ResectionConfig::ransac.threshold).
 bool ResectionInlierBarTest();
 
+// The polish that closes an image's absolute pose weighs each dense (warp-sampled) correspondence at
+// ResectionConfig::denseFitWeight against a described one's 1: dense correspondences that share a
+// systematic error and outnumber the described ones pull the pose of the robust fit over all of
+// them, and the weighted polish brings it back to the described ones.
+bool ResectionDenseFitWeightTest();
+
 // A dense (warp-sampled) observation is the less precise measurement, so the track filter and the
 // triangulation hold it to its own multiple of the reprojection bar a described one answers to
 // (FilterTracks / TriangulateTracks denseReprojErrorFactor).

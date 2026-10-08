@@ -56,6 +56,35 @@ inline REAL MedianValue(std::vector<REAL>& values)
 	return values[mid];
 }
 
+// Polish an absolute pose over its inliers with each dense correspondence at denseWeight against a
+// described one's 1, through the estimator's own final refinement (estimate_absolute_pose_bearings:
+// the same loss at the same chord-distance tolerance). Uniform weights would leave that refinement's
+// pose where it is, so an inlier set of a single kind is left alone.
+void PolishAbsolutePose(const std::vector<poselib::Point3D>& bearings, const std::vector<poselib::Point3D>& points3D,
+	const std::vector<char>& dense, const std::vector<char>& inliers, const poselib::AbsolutePoseOptions& opt,
+	float denseWeight, poselib::CameraPose& pose)
+{
+	ASSERT(denseWeight >= 0.f && denseWeight <= 1.f);
+	ASSERT(bearings.size() == points3D.size() && bearings.size() == dense.size() && bearings.size() == inliers.size());
+	std::vector<poselib::Point3D> bearingsInliers, pointsInliers;
+	std::vector<double> weights;
+	size_t numDense = 0;
+	FOREACH(k, bearings) {
+		if (!inliers[k])
+			continue;
+		bearingsInliers.push_back(bearings[k]);
+		pointsInliers.push_back(points3D[k]);
+		weights.push_back(dense[k] ? (double)denseWeight : 1.0);
+		if (dense[k])
+			++numDense;
+	}
+	if (numDense == 0 || numDense == weights.size())
+		return;
+	poselib::BundleOptions bundle = opt.bundle;
+	bundle.loss_scale = 2.0 * std::sin(0.5 * opt.max_error);
+	poselib::bundle_adjust_bearing(bearingsInliers, pointsInliers, &pose, bundle, weights);
+}
+
 // Median distance between the given registered image's center and the centers of the registered
 // neighbors its own quorum holds -- the ones that agree about how it is oriented, so a neighbor the
 // rest contradict does not set the scale. Falls back to the median over every registered pair in the
@@ -176,6 +205,7 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 	// hemisphere information (sign(z)) for spherical cameras.
 	std::vector<poselib::Point3D> bearings;
 	std::vector<poselib::Point3D> points3D;
+	std::vector<char> dense;
 	unsigned numDescribed = 0;
 	for (const Track& track : scene.tracks) {
 		if (!track.IsInlier())
@@ -185,7 +215,8 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 				const Point2 kp = img.keypoints[obs.featureID].pt;
 				bearings.emplace_back(img.pCamera->UnprojectNormalized(kp));
 				points3D.push_back(track.position);
-				if (!img.IsDenseKeypoint(obs.featureID))
+				dense.push_back(img.IsDenseKeypoint(obs.featureID));
+				if (!dense.back())
 					++numDescribed;
 				break;
 			}
@@ -228,6 +259,13 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 			imageID, numInliers, n, inlierRatio * 100.f, config.minInlierRatio * 100.f);
 		return {0, n, numDescribed};
 	}
+
+	// the polish that closes the fit, again over its inliers but with each dense correspondence at
+	// ResectionConfig::denseFitWeight: the robust fit over every correspondence found the pose, and the
+	// described ones, sub-pixel where a dense one is a coarse warp sample whose error its neighbours
+	// share, set it wherever they are many
+	if (config.denseFitWeight != 1.f)
+		PolishAbsolutePose(bearings, points3D, dense, inliers, opt, config.denseFitWeight, camPose);
 
 	// the pose the estimator found, in the model's own frame: the checks below weigh it against the
 	// image's links before the image is given it

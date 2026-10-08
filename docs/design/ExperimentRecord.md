@@ -312,3 +312,41 @@ whole-scene resection, with no block of either capture placed against a contradi
 The defaults ship as committed -- 25 of 2000, the standalone predicate on -- and two levers stay
 open: the value of `denseFrameInliers`, which the design itself names as one to fine-tune, and a
 predicate seam bar that counts what the merge counts instead of the whole-scene track graph.
+
+## The weight of the dense matches against the described ones (2026-09-25 to 2026-10-08)
+
+Proposals of the dense-match audit, measured on the eleven captures whose reference poses were
+verified (Truck, alameda, Playground, four lidar and five Polycam interiors; the chaotic ones at
+12, 8 and 16 threads). From 2026-10-07 every run is read with a continuous score against two or
+three references per capture (completeness, accuracy over a ladder of thresholds from the
+references' own disagreement to 5 degrees / 5%, and their F1; poor input frames and images the
+references dispute left out), compared by a paired bootstrap over images and runs with the run
+variance of a repeated reconstruction added; the tools and logs live in
+`openmvs-release-20260908-tools` (`pose_score.py`, `score_compare.py`,
+`pose-score-validation-20261007.md`). What ships: the pair-pose polish (`ROMA2Config::denseFitWeight`
+0.003, 6b9d9b8), the per-image dense weight (`BAConfig::denseHalfWeightObservations` 300, 2263823)
+held to `BAConfig::maxDenseObservationWeight` 0.01, and, off by default, the same polish for an
+absolute pose (`ResectionConfig::denseFitWeight`). Retired:
+
+- **The per-image dense weight without a ceiling** (2263823 to 329d972). 55 wrong images against
+  P1's 39 and a 46-image tail left out in every run; with the ceiling it beats P1 (F1 +0.006).
+- **The per-image weight held at 0.01 or more** (a floor): a tie with P1 (+0.004 [-0.002, +0.010]).
+- **The absolute-pose polish on by default** (0.003): a tie with the head (+0.0015 [-0.006, +0.010],
+  better on Truck and one interior, worse on none), measured before the ceiling; kept, off.
+- **P3, a thinner dense fill** where SIFT already matched: (a) a smooth keep rate 1/(1+n/n0) is worse
+  (F1 -0.029 on the head; one interior loses 31% of its images), (b) no dense samples in a coarse
+  16x16 cell holding SIFT matches ties (+0.000). Neither earns its gate.
+- **P4, SIFT-first resection** (the PnP on described correspondences first): catastrophic on the long
+  indoor capture (600 of 1267 images wrong).
+- **P5, a coverage term on SIFT** in the pair weights: no gain on any capture, and right images lost
+  on a lidar one.
+- **P6, dense-only pairs gated by triangle closure**: hurts the long indoor capture at every bar
+  (0.2-0.4: 144-184 wrong against 56-66).
+- **P8, a per-observation uncertainty in the bundle adjustment** (a sigma per keypoint kind
+  re-estimated every solve, with and without a correlation inflation per image and kind, or times
+  the per-image factor): ties with P1 and P2 at best (-0.006 to -0.001); the correlation variants
+  misplace 131-154 images of an interior in single runs.
+
+The development patches of every retired variant are kept beside their snapshots under
+`openmvs-roma2-20260901-task6-tools/bin-*` (`dev.patch`).
+

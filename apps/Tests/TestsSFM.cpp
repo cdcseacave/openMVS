@@ -9713,6 +9713,77 @@ bool ResectionInlierBarTest()
 }
 
 
+// Image 4 observes 300 tracks: 40 through described keypoints at their exact projections and 260
+// through dense ones displaced 2.5 px the same way, the systematic error a coarse warp leaves on
+// its samples. Every correspondence lies within the inlier bar, so the robust fit over all of them
+// follows the far more numerous dense ones and turns the camera by most of the shift; the polish
+// that closes the fit gives each dense correspondence ResectionConfig::denseFitWeight against a
+// described one's 1 and brings the pose back to the described ones, where the same fit with the
+// dense correspondences at full weight stays on the bias.
+bool ResectionDenseFitWeightTest()
+{
+	TD_TIMER_START();
+
+	constexpr unsigned NUM_TRACKS = 300, NUM_DESCRIBED = 40;
+	const Point2 bias(2.5, 0);
+	const auto registerImage = [&](const ResectionConfig& config, double& rotationError, double& centreError, unsigned& numInliers) {
+		std::mt19937 rng(20261005);
+		Scene scene;
+		BuildResectionArc(scene, 5);
+		AddResectionTracks(scene, {0, 1, 2, 3}, NUM_TRACKS, rng);
+		Image& img = scene.images[4];
+		const Pose3D truePose(img);
+		for (unsigned i = 0; i < NUM_TRACKS; ++i) {
+			if (i == NUM_DESCRIBED)
+				img.CloseDescribedKeypoints();
+			Track& track = scene.tracks[i];
+			const auto [proj, valid] = img.ProjectPoint(track.position);
+			ASSERT(valid && Image8U::isInside(proj, img.GetSize()));
+			const Point2 pt(i < NUM_DESCRIBED ? proj : Point2(proj + bias));
+			track.observations.emplace_back(IIndex(4), (uint32_t)img.keypoints.size());
+			img.keypoints.emplace_back(cv::Point2f((float)pt.x, (float)pt.y), 1.f);
+		}
+		ASSERT(img.NumDescribedKeypoints() == NUM_DESCRIBED && img.IsDenseKeypoint(NUM_DESCRIBED));
+		img.InvalidatePose();
+		scene.status.nCalibratedImages = 4;
+		TriangulateTracks(scene, false, 4.f, 1.f);
+		Resection resection(scene, config);
+		numInliers = std::get<0>(resection.RegisterImage(IIndex(4)));
+		if (!img.HasPose())
+			return false;
+		rotationError = RotationErrorDeg(img.R, truePose.R);
+		centreError = norm(Point3(img.C - truePose.C));
+		return true;
+	};
+
+	constexpr float DENSE_FIT_WEIGHT = 0.003f; // the polish's weight of a dense correspondence, as measured
+	ResectionConfig configFull, configWeighted;
+	configFull.denseFitWeight = 1.f;
+	configWeighted.denseFitWeight = DENSE_FIT_WEIGHT;
+	double rotFull, cenFull, rotWeighted, cenWeighted;
+	unsigned inliersFull, inliersWeighted;
+	if (!registerImage(configFull, rotFull, cenFull, inliersFull) || !registerImage(configWeighted, rotWeighted, cenWeighted, inliersWeighted)) {
+		VERBOSE("ResectionDenseFitWeightTest FAILED: image 4 was not registered");
+		return false;
+	}
+	// the premise: every correspondence is an inlier, and at full weight the dense ones pull the pose
+	if (inliersFull != NUM_TRACKS || inliersWeighted != NUM_TRACKS || rotFull < 0.1) {
+		VERBOSE("ResectionDenseFitWeightTest FAILED: premise not met: %u and %u of %u inliers, %.4f deg off at full weight",
+			inliersFull, inliersWeighted, NUM_TRACKS, rotFull);
+		return false;
+	}
+	if (rotWeighted > 0.25*rotFull || cenWeighted > 0.25*cenFull) {
+		VERBOSE("ResectionDenseFitWeightTest FAILED: the weighted polish leaves the pose %.4f deg / %.4g off, %.4f deg / %.4g "
+			"at full weight", rotWeighted, cenWeighted, rotFull, cenFull);
+		return false;
+	}
+	VERBOSE("ResectionDenseFitWeightTest PASSED: %.4f deg / %.4g off with the dense correspondences at full weight, "
+		"%.4f deg / %.4g at %g (%u dense, %u described) (%s)", rotFull, cenFull, rotWeighted, cenWeighted,
+		DENSE_FIT_WEIGHT, NUM_TRACKS - NUM_DESCRIBED, NUM_DESCRIBED, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+
 bool DenseReprojectionBarTest()
 {
 	TD_TIMER_START();

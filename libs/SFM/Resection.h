@@ -103,6 +103,15 @@ struct SFM_API ResectionConfig
 	                                      // lower. Normalizes each registration's ratio before it feeds the average
 	                                      // above (a fraction of avgInliersRatioForceBA, not an absolute ratio;
 	                                      // 1 = no distinction)
+	float denseFitWeight{1.f};          // Weight of a dense (warp-sampled) correspondence against a described one's 1 in
+	                                    // the polish that closes an image's absolute pose: the robust fit runs on every
+	                                    // correspondence, and the polish over its inliers lets the described ones,
+	                                    // sub-pixel where a dense one is a coarse warp sample whose error its neighbours
+	                                    // share, set the pose wherever they are many -- what ROMA2Config::denseFitWeight
+	                                    // does for a pair's relative pose (1 = no polish, 0 = the described ones alone).
+	                                    // Off: at 0.003 it tied the head on the eleven verified captures (F1 +0.0015
+	                                    // [-0.006, +0.010], better on two, worse on none) before the dense weight ceiling
+	                                    // of the bundle adjustment shipped, and was not measured with it
 	float maxReprojError{4.f};          // Reprojection error for triangulation and filtering
 	float denseReprojErrorFactor{1.f};  // Multiple of maxReprojError a dense (warp-sampled) observation is held to by
 	                                    // the triangulation and the filtering: the dense measurement is the less
