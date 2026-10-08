@@ -2243,6 +2243,51 @@ static void SplitPatchesSpatially(
 }
 #endif
 
+// replace the pixels outside `covered` by a smooth extension of the covered ones: average the
+// covered pixels down a 2x2 box pyramid (push), then fill each level's empty pixels from the
+// coarser level (pull); covered pixels are never modified
+static void PushPullFill(Image8U3& image, const Image8U& covered)
+{
+	ASSERT(image.size() == covered.size() && !image.empty());
+	typedef cv::Vec4f Acc; // weighted color sum + weight
+	std::vector<cv::Mat_<Acc>> levels(1);
+	levels[0].create(image.size());
+	for (int r=0; r<image.rows; ++r)
+		for (int c=0; c<image.cols; ++c) {
+			const Pixel8U& p = image(r,c);
+			levels[0](r,c) = covered(r,c) ? Acc(p.b, p.g, p.r, 1.f) : Acc(0,0,0,0);
+		}
+	while (levels.back().rows > 1 || levels.back().cols > 1) {
+		const cv::Mat_<Acc>& fine = levels.back();
+		cv::Mat_<Acc> coarse((fine.rows+1)/2, (fine.cols+1)/2, Acc(0,0,0,0));
+		for (int r=0; r<fine.rows; ++r)
+			for (int c=0; c<fine.cols; ++c)
+				coarse(r/2,c/2) += fine(r,c);
+		levels.emplace_back(std::move(coarse));
+	}
+	// pull: a level's empty pixel takes its parent's normalized color
+	for (int l=(int)levels.size()-2; l>=0; --l) {
+		cv::Mat_<Acc>& fine = levels[l];
+		const cv::Mat_<Acc>& coarse = levels[l+1];
+		for (int r=0; r<fine.rows; ++r)
+			for (int c=0; c<fine.cols; ++c) {
+				Acc& a = fine(r,c);
+				if (a[3] > 0) {
+					a *= 1.f/a[3];
+					continue;
+				}
+				const Acc& p = coarse(r/2,c/2);
+				a = p[3] > 0 ? Acc(p[0]/p[3], p[1]/p[3], p[2]/p[3], 1.f) : Acc(0,0,0,0);
+			}
+	}
+	for (int r=0; r<image.rows; ++r)
+		for (int c=0; c<image.cols; ++c)
+			if (!covered(r,c)) {
+				const Acc& a = levels[0](r,c);
+				image(r,c) = Pixel8U((uint8_t)CLAMP(ROUND2INT(a[2]),0,255), (uint8_t)CLAMP(ROUND2INT(a[1]),0,255), (uint8_t)CLAMP(ROUND2INT(a[0]),0,255));
+			}
+}
+
 bool MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, Pixel8U colEmpty, float fSharpnessWeight, int maxTextureSize)
 {
 	// project patches in the corresponding view and compute texture-coordinates and bounding-box
@@ -2441,6 +2486,24 @@ bool MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 				}
 			}
 		}
+		{
+			// fill the texels no patch covers from the patches around them (push-pull over a box
+			// pyramid of the covered texels), so a mipmapped lookup near a patch border averages
+			// in its own surroundings instead of the empty colour (which now only the unseen faces'
+			// patch holds)
+			#ifdef TEXOPT_USE_OPENMP
+			#pragma omp parallel for schedule(dynamic)
+			for (int_t i=0; i<(int_t)placedRects.size(); ++i) {
+				const TexIndex idxTexture((TexIndex)i);
+			#else
+			FOREACH(idxTexture, placedRects) {
+			#endif
+				Image8U covered(texturesDiffuse[idxTexture].size(), (uint8_t)0);
+				for (const PatchRect& placed: placedRects[idxTexture])
+					covered(placed.rect).setTo(255);
+				PushPullFill(texturesDiffuse[idxTexture], covered);
+			}
+		}
 		if (texturesDiffuse.size() == 1)
 			faceTexindices.Release();
 		// apply some sharpening
@@ -2479,7 +2542,12 @@ bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsi
 		TD_TIMER_STARTD();
 		if (!texture.GenerateTexture(bGlobalSeamLeveling, bLocalSeamLeveling, nTextureSizeMultiple, colEmpty, fSharpnessWeight, maxTextureSize))
 			return false;
-		DEBUG_EXTRA("Generating texture atlas and image completed: %u patches, %u image size, %u textures (%s)", texture.texturePatches.size(), mesh.texturesDiffuse[0].width(), mesh.texturesDiffuse.size(), TD_TIMER_GET_FMT().c_str());
+		#if TD_VERBOSE != TD_VERBOSE_OFF
+		size_t patchPixels(0);
+		for (const MeshTexture::TexturePatch& texturePatch: texture.texturePatches)
+			patchPixels += (size_t)texturePatch.rect.area();
+		#endif
+		DEBUG_EXTRA("Generating texture atlas and image completed: %u patches (%.2f MPixels), %u image size, %u textures (%s)", texture.texturePatches.size(), (double)patchPixels/(1024*1024), mesh.texturesDiffuse[0].width(), mesh.texturesDiffuse.size(), TD_TIMER_GET_FMT().c_str());
 	}
 
 	return true;
