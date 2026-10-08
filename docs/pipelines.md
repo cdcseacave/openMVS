@@ -745,7 +745,7 @@ graph TD
 
 **Step 5: Sharpness Enhancement**
 
-- `fSharpnessWeight` (0.5): unsharp masking applied to final texture atlas
+- `fSharpnessWeight` (0, disabled): optional unsharp masking applied to the final texture atlas
 - `colEmpty`: fill color for untextured regions (default orange RGB 255,127,39)
 
 ---

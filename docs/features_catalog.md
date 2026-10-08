@@ -647,7 +647,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
   - `GenerateTexture()`: rasterizes face UVs into atlas
   - `bGlobalSeamLeveling` (default true): linear system to equalize mean intensity at seam boundaries
   - `bLocalSeamLeveling` (default true): Poisson blending along patch boundary strips
-  - `fSharpnessWeight` (0.5): unsharp masking post-processing
+  - `fSharpnessWeight` (0, disabled): optional unsharp masking post-processing
   - `nIgnoreMaskLabel`: excludes masked regions
   - `colEmpty` (orange RGB 255,127,39): fill for untextured regions
 - **Configuration:** `nResolutionLevel`, `fOutlierThreshold`, `fRatioDataSmoothness`, `bGlobalSeamLeveling`, `bLocalSeamLeveling`, `fSharpnessWeight`, `nIgnoreMaskLabel`, `minCommonCameras`
