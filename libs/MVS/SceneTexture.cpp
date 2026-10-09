@@ -1142,9 +1142,12 @@ bool MeshTexture::FaceViewSelection(unsigned minCommonCameras, float fOutlierThr
 		#endif
 
 		// list all views for each face
-		FaceDataViewArr facesDatas;
-		if (!ListCameraFaces(facesDatas, fOutlierThreshold, nIgnoreMaskLabel, views))
-			return false;
+		FaceDataViewArr facesDatas; {
+			TD_TIMER_STARTD();
+			if (!ListCameraFaces(facesDatas, fOutlierThreshold, nIgnoreMaskLabel, views))
+				return false;
+			DEBUG_EXTRA("	face-view data listed (%s)", TD_TIMER_GET_FMT().c_str());
+		}
 
 		// create faces graph
 		typedef boost::adjacency_list<boost::vecS, boost::vecS, boost::undirectedS> Graph;
@@ -1222,7 +1225,7 @@ bool MeshTexture::FaceViewSelection(unsigned minCommonCameras, float fOutlierThr
 				const LBPInference::EnergyType MaxEnergy(fRatioDataSmoothness*LBPMaxEnergy);
 				LBPInference inference; {
 					inference.SetNumNodes(virtualFaces.size());
-					inference.SetSmoothCost(SmoothnessPotts);
+					inference.SetSmoothCostPotts(SmoothnessPotts, LBPMaxEnergy);
 					EdgeOutIter ei, eie;
 					FOREACH(f, virtualFaces) {
 						for (boost::tie(ei, eie) = boost::out_edges(f, graph); ei != eie; ++ei) {
@@ -1276,7 +1279,11 @@ bool MeshTexture::FaceViewSelection(unsigned minCommonCameras, float fOutlierThr
 
 				// assign the optimal view (label) to each face
 				// (label 0 is reserved as undefined)
-				inference.Optimize();
+				{
+					TD_TIMER_STARTD();
+					inference.Optimize();
+					DEBUG_EXTRA("	view labeling optimized (%s)", TD_TIMER_GET_FMT().c_str());
+				}
 
 				// extract resulting labeling
 				LabelArr virtualLabels(virtualFaces.size());
@@ -1329,7 +1336,7 @@ bool MeshTexture::FaceViewSelection(unsigned minCommonCameras, float fOutlierThr
 				const LBPInference::EnergyType MaxEnergy(fRatioDataSmoothness*LBPMaxEnergy);
 				LBPInference inference; {
 					inference.SetNumNodes(faces.size());
-					inference.SetSmoothCost(SmoothnessPotts);
+					inference.SetSmoothCostPotts(SmoothnessPotts, LBPMaxEnergy);
 					EdgeOutIter ei, eie;
 					FOREACH(f, faces) {
 						for (boost::tie(ei, eie) = boost::out_edges(f, graph); ei != eie; ++ei) {
@@ -1373,7 +1380,11 @@ bool MeshTexture::FaceViewSelection(unsigned minCommonCameras, float fOutlierThr
 
 				// assign the optimal view (label) to each face
 				// (label 0 is reserved as undefined)
-				inference.Optimize();
+				{
+					TD_TIMER_STARTD();
+					inference.Optimize();
+					DEBUG_EXTRA("	view labeling optimized (%s)", TD_TIMER_GET_FMT().c_str());
+				}
 
 				// extract resulting labeling
 				labels.Memset(0xFF);

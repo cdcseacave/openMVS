@@ -69,6 +69,9 @@ protected:
 	std::vector<DirectedEdge> edges;
 	std::vector<Node> nodes;
 	FncSmoothCost fncSmoothCost;
+	// >= 0 when fncSmoothCost is the Potts model with this cost (0 for two equal labels other than
+	// label 0, pottsCost otherwise): the messages then take O(labels) instead of O(labels^2)
+	EnergyType pottsCost = -1;
 
 public:
 	LBPInference() {}
@@ -113,6 +116,13 @@ public:
 
 	inline void SetSmoothCost(FncSmoothCost func) {
 		fncSmoothCost = func;
+		pottsCost = -1;
+	}
+	// func must be the Potts model of the given cost (see pottsCost)
+	inline void SetSmoothCostPotts(FncSmoothCost func, EnergyType cost) {
+		ASSERT(cost >= 0 && func(0, 0, 1, 1) == 0 && func(0, 0, 1, 2) == cost && func(0, 0, 0, 0) == cost);
+		fncSmoothCost = func;
+		pottsCost = cost;
 	}
 
 	EnergyType ComputeEnergy() const {
@@ -141,6 +151,48 @@ public:
 				DirectedEdge& edge = edges[edgeID];
 				const std::vector<LabelID>& labels1 = nodes[edge.nodeID1].labels;
 				const std::vector<LabelID>& labels2 = nodes[edge.nodeID2].labels;
+				if (pottsCost >= 0) {
+					// Potts: the energy of sending label k is the same for every receiving label but
+					// k's own, which costs the smoothness less; with E0/E1 the energies of k at
+					// smoothness 0/pottsCost (summed in the generic loop's order, so the messages
+					// are bit-identical), the message of label j is min(E0[k=j], min_k E1[k]):
+					// E0[k] <= E1[k] makes the excluded E1[k=j] irrelevant
+					const Node& node1 = nodes[edge.nodeID1];
+					thread_local std::vector<EnergyType> e0, e1;
+					e0.resize(labels1.size());
+					e1.resize(labels1.size());
+					EnergyType minE1(std::numeric_limits<EnergyType>::max());
+					for (size_t k = 0; k < labels1.size(); ++k) {
+						EnergyType energy0(node1.dataCosts[k] + EnergyType(0) * edge.weight);
+						EnergyType energy1(node1.dataCosts[k] + pottsCost * edge.weight);
+						for (EdgeID idxIncomingEdge: node1.incomingEdges) {
+							const DirectedEdge& pre_edge = edges[idxIncomingEdge];
+							if (pre_edge.nodeID1 == edge.nodeID2)
+								continue;
+							energy0 += pre_edge.oldMsgs[k];
+							energy1 += pre_edge.oldMsgs[k];
+						}
+						e0[k] = energy0;
+						e1[k] = energy1;
+						if (minE1 > energy1)
+							minE1 = energy1;
+					}
+					for (size_t j = 0; j < labels2.size(); ++j) {
+						const LabelID label2(labels2[j]);
+						EnergyType minEnergy(minE1);
+						if (label2 != 0) {
+							for (size_t k = 0; k < labels1.size(); ++k) {
+								if (labels1[k] == label2) {
+									if (minEnergy > e0[k])
+										minEnergy = e0[k];
+									break;
+								}
+							}
+						}
+						edge.newMsgs[j] = minEnergy;
+					}
+					continue;
+				}
 				for (size_t j = 0; j < labels2.size(); ++j) {
 					const LabelID label2(labels2[j]);
 					EnergyType minEnergy(std::numeric_limits<EnergyType>::max());
