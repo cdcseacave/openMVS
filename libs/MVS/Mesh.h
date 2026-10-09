@@ -178,14 +178,10 @@ public:
 
 	void SmoothNormalFaces(float fMaxGradient=25.f, float fOriginalWeight=0.5f, unsigned nIterations=3);
 
-	void GetEdgeFaces(VIndex, VIndex, FaceIdxArr&) const;
-	void GetFaceFaces(FIndex, FaceIdxArr&) const;
 	bool GetEdgeVertices(FIndex, FIndex, uint32_t vs0[2], uint32_t vs1[2]) const;
 	bool GetEdgeVertices(FIndex, FIndex, VIndex vs[2]) const;
 	bool GetEdgeOrientation(FIndex, VIndex, VIndex) const;
-	FIndex GetEdgeAdjacentFace(FIndex, VIndex, VIndex) const;
 	void GetAdjVertices(VIndex, VertexIdxArr&) const;
-	void GetAdjVertexFaces(VIndex, VIndex, FaceIdxArr&) const;
 
 	// generic mesh processing, all delegated to the halfmesh library
 	unsigned FixNonManifold(float magDisplacementDuplicateVertices=0.01f, VertexIdxArr* duplicatedVertices=NULL);
@@ -280,7 +276,7 @@ public:
 	// seed==NO_ID: seed the RNG from std::random_device (non-deterministic)
 	void SamplePoints(unsigned numberOfPoints, PointCloud&, uint32_t seed=NO_ID) const;
 	void SamplePoints(REAL samplingDensity, PointCloud&, uint32_t seed=NO_ID) const;
-	void SamplePoints(REAL samplingDensity, unsigned mumPointsTheoretic, PointCloud&, uint32_t seed=NO_ID) const;
+	void SamplePoints(REAL samplingDensity, unsigned numPointsExpected, PointCloud&, uint32_t seed=NO_ID) const;
 
 	void Project(const Camera& camera, DepthMap& depthMap) const;
 	void Project(const Camera& camera, DepthMap& depthMap, Image8U3& image) const;

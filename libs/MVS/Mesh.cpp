@@ -347,9 +347,7 @@ void Mesh::ComputeNormalFaces()
 		faceNormals[idxFace] = normalized(FaceNormal(faces[idxFace]));
 }
 
-// compute normal for all vertices
-#if 1
-// computes the vertex normal as the area weighted face normals average
+// compute the normal of every vertex as the area weighted average of its face normals
 void Mesh::ComputeNormalVertices()
 {
 	vertexNormals.resize(vertices.size());
@@ -366,41 +364,6 @@ void Mesh::ComputeNormalVertices()
 	for (Normal& vertexNormal: vertexNormals)
 		normalize(vertexNormal);
 }
-#else
-// computes the vertex normal as an angle weighted average
-// (the vertex first ring of faces and the face normals are used)
-//
-// The normal of a vertex v computed as a weighted sum f the incident face normals.
-// The weight is simply the angle of the involved wedge. Described in:
-// G. Thurmer, C. A. Wuthrich "Computing vertex normals from polygonal facets", Journal of Graphics Tools, 1998
-void Mesh::ComputeNormalVertices()
-{
-	ASSERT(!faceNormals.empty());
-	vertexNormals.resize(vertices.size());
-	vertexNormals.Memset(0);
-	FOREACH(idxFace, faces) {
-		const Face& face = faces[idxFace];
-		const Normal& t = faceNormals[idxFace];
-		const Vertex& v0 = vertices[face[0]];
-		const Vertex& v1 = vertices[face[1]];
-		const Vertex& v2 = vertices[face[2]];
-		const Normal e0(normalized(v1-v0));
-		const Normal e1(normalized(v2-v1));
-		const Normal e2(normalized(v0-v2));
-		vertexNormals[face[0]] += t*ACOS(-ComputeAngleN(e0.ptr(), e2.ptr()));
-		vertexNormals[face[1]] += t*ACOS(-ComputeAngleN(e0.ptr(), e1.ptr()));
-		vertexNormals[face[2]] += t*ACOS(-ComputeAngleN(e1.ptr(), e2.ptr()));
-	}
-			// no neighbour within the gradient (an isolated face, or one on a crease sharper than it on
-			// every side) keeps its own normal: the zero sum has no direction to blend in
-			if (sumNeighborNormals == Normal::ZERO) {
-				newFaceNormals[idxFace] = originalNormal;
-				continue;
-			}
-	for (Normal& vertexNormal: vertexNormals)
-		normalize(vertexNormal);
-}
-#endif
 
 // Smoothen the normals for each face
 //  - fMaxGradient: maximum angle (in degrees) difference between neighbor normals that is
@@ -428,6 +391,12 @@ void Mesh::SmoothNormalFaces(float fMaxGradient, float fOriginalWeight, unsigned
 				if (ComputeAngleN(originalNormal.ptr(), neighborNormal.ptr()) >= cosMaxGradient)
 					sumNeighborNormals += neighborNormal;
 			}
+			// no neighbour within the gradient (an isolated face, or one on a crease sharper than it on
+			// every side) keeps its own normal: the zero sum has no direction to blend in
+			if (sumNeighborNormals == Normal::ZERO) {
+				newFaceNormals[idxFace] = originalNormal;
+				continue;
+			}
 			const Normal avgNeighborsNormal = normalized(sumNeighborNormals);
 			const Normal newFaceNormal = normalized(originalNormal * fOriginalWeight + avgNeighborsNormal * (1.f - fOriginalWeight));
 			newFaceNormals[idxFace] = newFaceNormal;
@@ -437,40 +406,6 @@ void Mesh::SmoothNormalFaces(float fMaxGradient, float fOriginalWeight, unsigned
 }
 /*----------------------------------------------------------------*/
 
-
-void Mesh::GetEdgeFaces(VIndex v0, VIndex v1, FaceIdxArr& afaces) const
-{
-	const FaceIdxArr& faces0 = vertexFaces[v0];
-	const FaceIdxArr& faces1 = vertexFaces[v1];
-	std::unordered_set<FIndex> setFaces1(faces1.begin(), faces1.end());
-	for (FIndex idxFace: faces0) {
-		if (setFaces1.find(idxFace) != setFaces1.end())
-			afaces.Insert(idxFace);
-	}
-}
-
-void Mesh::GetFaceFaces(FIndex f, FaceIdxArr& afaces) const
-{
-	const Face& face = faces[f];
-	const FaceIdxArr& faces0 = vertexFaces[face[0]];
-	const FaceIdxArr& faces1 = vertexFaces[face[1]];
-	const FaceIdxArr& faces2 = vertexFaces[face[2]];
-	std::unordered_set<FIndex> setFaces(faces1.begin(), faces1.end());
-	for (FIndex idxFace: faces0) {
-		if (f != idxFace && setFaces.find(idxFace) != setFaces.end())
-			afaces.InsertSortUnique(idxFace);
-	}
-	for (FIndex idxFace: faces2) {
-		if (f != idxFace && setFaces.find(idxFace) != setFaces.end())
-			afaces.InsertSortUnique(idxFace);
-	}
-	setFaces.clear();
-	setFaces.insert(faces2.begin(), faces2.end());
-	for (FIndex idxFace: faces0) {
-		if (f != idxFace && setFaces.find(idxFace) != setFaces.end())
-			afaces.InsertSortUnique(idxFace);
-	}
-}
 
 bool Mesh::GetEdgeVertices(FIndex f0, FIndex f1, uint32_t* vs0, uint32_t* vs1) const
 {
@@ -513,38 +448,6 @@ bool Mesh::GetEdgeOrientation(FIndex idxFace, VIndex iV0, VIndex iV1) const
 	return face[(i0+1)%3] == iV1;
 }
 
-// find the adjacent face for the given face edge;
-// return NO_ID if no adjacent faces exist OR
-// more than one adjacent face exist OR
-// the edge have opposite orientations in each face
-Mesh::FIndex Mesh::GetEdgeAdjacentFace(FIndex idxFace, VIndex iV0, VIndex iV1) const
-{
-	// iterate over all faces containing the first vertex
-	ASSERT(vertexFaces.size() == vertices.size());
-	const bool edgeOrientation = GetEdgeOrientation(idxFace, iV0, iV1);
-	FIndex idxFaceAdj = NO_ID;
-	for (FIndex iF: vertexFaces[iV0]) {
-		// if this adjacent face is not the analyzed face
-		if (iF != idxFace) {
-			// iterate over all face vertices
-			const Face& face = faces[iF];
-			for (int i = 0; i < 3; ++i) {
-				// if the face vertex is the second vertex
-				if (face[i] == iV1) {
-					// check if there are more than two adjacent faces (manifold constraint)
-					if (idxFaceAdj != NO_ID)
-						return NO_ID;
-					// check if edge vertices ordering is opposite in the two faces (manifold constraint)
-					if (GetEdgeOrientation(iF, iV0, iV1) == edgeOrientation)
-						return NO_ID;
-					idxFaceAdj = iF;
-				}
-			}
-		}
-	}
-	return idxFaceAdj;
-}
-
 void Mesh::GetAdjVertices(VIndex v, VertexIdxArr& indices) const
 {
 	ASSERT(vertexFaces.size() == vertices.size());
@@ -560,17 +463,6 @@ void Mesh::GetAdjVertices(VIndex v, VertexIdxArr& indices) const
 	}
 }
 
-void Mesh::GetAdjVertexFaces(VIndex idxVCenter, VIndex idxVAdj, FaceIdxArr& indices) const
-{
-	ASSERT(vertexFaces.size() == vertices.size());
-	const FaceIdxArr& idxFaces = vertexFaces[idxVCenter];
-	for (FIndex idxFace: idxFaces) {
-		const Face& face = faces[idxFace];
-		ASSERT(FindVertex(face, idxVCenter) != NO_ID);
-		if (FindVertex(face, idxVAdj) != NO_ID)
-			indices.emplace_back(idxFace);
-	}
-}
 /*----------------------------------------------------------------*/
 
 /*----------------------------------------------------------------*/
@@ -1166,193 +1058,6 @@ bool Mesh::Save(const VertexArr& vertices, const String& fileName, bool bBinary)
 /*----------------------------------------------------------------*/
 
 
-// subdivide mesh faces if its projection area
-// is bigger than the given number of pixels
-void Mesh::Subdivide(const AreaArr& maxAreas, uint32_t maxArea)
-{
-	ASSERT(vertexFaces.size() == vertices.size());
-
-	// each face that needs to split, remember for each edge the new vertex index
-	// (each new vertex index corresponds to the edge opposed to the existing vertex index)
-	struct SplitFace {
-		VIndex idxVert[3];
-		bool bSplit;
-		enum {NO_VERT = (VIndex)-1};
-		inline SplitFace() : bSplit(false) { memset(idxVert, 0xFF, sizeof(VIndex)*3); }
-		static VIndex FindSharedEdge(const Face& f, const Face& a) {
-			for (int i=0; i<2; ++i) {
-				const VIndex v(f[i]);
-				if (v != a[0] && v != a[1] && v != a[2])
-					return i;
-			}
-			ASSERT(f[2] != a[0] && f[2] != a[1] && f[2] != a[2]);
-			return 2;
-		}
-	};
-	typedef std::unordered_map<FIndex,SplitFace> FacetSplitMap;
-
-	// used to find adjacent face
-	typedef Mesh::FacetCountMap FacetCountMap;
-
-	// for each image, compute the projection area of visible faces
-	FacetSplitMap mapSplits; mapSplits.reserve(faces.size());
-	FacetCountMap mapFaces; mapFaces.reserve(12*3);
-	vertices.Reserve(vertices.size()*2);
-	faces.Reserve(faces.size()*3);
-	[[maybe_unused]] const FIndex numFacesOld(faces.size());
-	const uint32_t maxAreaTh(2*maxArea);
-	FOREACH(f, maxAreas) {
-		const AreaArr::Type area(maxAreas[f]);
-		if (area <= maxAreaTh)
-			continue;
-		// split face in four triangles
-		// by adding a new vertex at the middle of each edge
-		faces.ReserveExtra(4);
-		Face& newface = faces.AddEmpty(); // defined by the three new vertices
-		const Face& face = faces[(FIndex)f];
-		SplitFace& split = mapSplits[(FIndex)f];
-		for (int i=0; i<3; ++i) {
-			// if the current edge was already split, used the existing vertex
-			if (split.idxVert[i] != SplitFace::NO_VERT) {
-				newface[i] = split.idxVert[i];
-				continue;
-			}
-			// create a new vertex at the middle of the current edge
-			// (current edge is the opposite edge to the current vertex index)
-			split.idxVert[i] = newface[i] = vertices.size();
-			vertices.emplace_back((vertices[face[(i+1)%3]]+vertices[face[(i+2)%3]])*0.5f);
-		}
-		// create the last three faces, defined by one old and two new vertices
-		for (int i=0; i<3; ++i) {
-			Face& nf = faces.AddEmpty();
-			nf[0] = face[i];
-			nf[1] = newface[(i+2)%3];
-			nf[2] = newface[(i+1)%3];
-		}
-		split.bSplit = true;
-		// find all three adjacent faces and inform them of the split
-		ASSERT(mapFaces.empty());
-		for (int i=0; i<3; ++i) {
-			const Mesh::FaceIdxArr& vf = vertexFaces[face[i]];
-			FOREACHPTR(pFace, vf)
-				++mapFaces[*pFace].count;
-		}
-		for (const auto& fc: mapFaces) {
-			ASSERT(fc.second.count <= 2 || (fc.second.count == 3 && fc.first == f));
-			if (fc.second.count != 2)
-				continue;
-			if (fc.first < f && maxAreas[fc.first] > maxAreaTh) {
-				// already fully split, nothing to do
-				ASSERT(mapSplits[fc.first].idxVert[SplitFace::FindSharedEdge(faces[fc.first], face)] == newface[SplitFace::FindSharedEdge(face, faces[fc.first])]);
-				continue;
-			}
-			const VIndex idxVertex(newface[SplitFace::FindSharedEdge(face, faces[fc.first])]);
-			VIndex& idxSplit = mapSplits[fc.first].idxVert[SplitFace::FindSharedEdge(faces[fc.first], face)];
-			ASSERT(idxSplit == SplitFace::NO_VERT || idxSplit == idxVertex);
-			idxSplit = idxVertex;
-		}
-		mapFaces.clear();
-	}
-
-	// add all faces partially split
-	int indices[3];
-	for (const auto& s: mapSplits) {
-		const SplitFace& split = s.second;
-		if (split.bSplit)
-			continue;
-		int count(0);
-		for (int i=0; i<3; ++i) {
-			if (split.idxVert[i] != SplitFace::NO_VERT)
-				indices[count++] = i;
-		}
-		ASSERT(count > 0);
-		faces.ReserveExtra(4);
-		const Face& face = faces[s.first];
-		switch (count) {
-		case 1: {
-			// one edge is split; create two triangles
-			const int i(indices[0]);
-			Face& nf0 = faces.AddEmpty();
-			nf0[0] = split.idxVert[i];
-			nf0[1] = face[(i+2)%3];
-			nf0[2] = face[i];
-			Face& nf1 = faces.AddEmpty();
-			nf1[0] = split.idxVert[i];
-			nf1[1] = face[i];
-			nf1[2] = face[(i+1)%3];
-			break; }
-		case 2: {
-			// two edges are split; create three triangles
-			const int i0(indices[0]);
-			const int i1(indices[1]);
-			Face& nf0 = faces.AddEmpty();
-			Face& nf1 = faces.AddEmpty();
-			Face& nf2 = faces.AddEmpty();
-			if (i0==0) {
-				if (i1==1) {
-					nf0[0] = split.idxVert[1];
-					nf0[1] = split.idxVert[0];
-					nf0[2] = face[2];
-					nf1[0] = face[0];
-					nf1[1] = face[1];
-					nf1[2] = split.idxVert[0];
-					nf2[0] = face[0];
-					nf2[1] = split.idxVert[0];
-					nf2[2] = split.idxVert[1];
-				} else {
-					nf0[0] = split.idxVert[2];
-					nf0[1] = face[1];
-					nf0[2] = split.idxVert[0];
-					nf1[0] = face[0];
-					nf1[1] = split.idxVert[2];
-					nf1[2] = face[2];
-					nf2[0] = split.idxVert[2];
-					nf2[1] = split.idxVert[0];
-					nf2[2] = face[2];
-				}
-			} else {
-				ASSERT(i0==1 && i1==2);
-				nf0[0] = face[0];
-				nf0[1] = split.idxVert[2];
-				nf0[2] = split.idxVert[1];
-				nf1[0] = split.idxVert[1];
-				nf1[1] = face[1];
-				nf1[2] = face[2];
-				nf2[0] = split.idxVert[2];
-				nf2[1] = face[1];
-				nf2[2] = split.idxVert[1];
-			}
-			break; }
-		case 3: {
-			// all three edges are split; create four triangles
-			// create the new triangle in the middle
-			Face& newface = faces.AddEmpty();
-			newface[0] = split.idxVert[0];
-			newface[1] = split.idxVert[1];
-			newface[2] = split.idxVert[2];
-			// create the last three faces, defined by one old and two new vertices
-			for (int i=0; i<3; ++i) {
-				Face& nf = faces.AddEmpty();
-				nf[0] = face[i];
-				nf[1] = newface[(i+2)%3];
-				nf[2] = newface[(i+1)%3];
-			}
-			break; }
-		}
-	}
-
-	// remove all faces that split; RemoveAt() swaps the last face into the freed slot,
-	// which is only safe while every face swapped in is a NEW one (index >= numFacesOld),
-	// i.e. while more faces were added than are removed - guaranteed by the >= 2 new faces
-	// per split face (the old form derived the initial size from capacity()/3, which is
-	// wrong as soon as the array was shrunk before the call, e.g. by decimation)
-	ASSERT(mapSplits.empty() || faces.size()-numFacesOld > mapSplits.size());
-	for (const auto& s: mapSplits)
-		faces.RemoveAt(s.first);
-}
-/*----------------------------------------------------------------*/
-
-
 // crop mesh such that none of its faces is touching or outside the given bounding-box
 void Mesh::RemoveFacesOutside(const OBB3f& obb) {
 	ASSERT(obb.IsValid());
@@ -1615,73 +1320,6 @@ void Mesh::SamplePoints(REAL samplingDensity, PointCloud& pointcloud, uint32_t s
 	const REAL area(ComputeArea());
 	const unsigned theoreticNumberOfPoints(CEIL2INT<unsigned>(area * samplingDensity));
 	return SamplePoints(samplingDensity, theoreticNumberOfPoints, pointcloud, seed);
-}
-void Mesh::SamplePoints(REAL samplingDensity, unsigned mumPointsTheoretic, PointCloud& pointcloud, uint32_t seed) const
-{
-	ASSERT(!IsEmpty());
-	pointcloud.Release();
-	if (mumPointsTheoretic > 0) {
-		pointcloud.points.reserve(mumPointsTheoretic);
-		if (HasTexture())
-			pointcloud.colors.reserve(mumPointsTheoretic);
-	}
-
-	// for each triangle
-	std::mt19937 rnd(seed == NO_ID ? (std::random_device())() : seed);
-	std::uniform_real_distribution<REAL> dist(0,1);
-	FOREACH(idxFace, faces) {
-		const Face& face = faces[idxFace];
-
-		// vertices (OAB)
-		const Vertex& O = vertices[face[0]];
-		const Vertex& A = vertices[face[1]];
-		const Vertex& B = vertices[face[2]];
-
-		// edges (OA and OB)
-		const Vertex u(A - O);
-		const Vertex v(B - O);
-
-		// compute triangle area
-		const REAL area(norm(u.cross(v)) * REAL(0.5));
-
-		// deduce the number of points to generate on this face
-		const REAL fPointsToAdd(area*samplingDensity);
-		unsigned pointsToAdd(static_cast<unsigned>(fPointsToAdd));
-
-		// take care of the remaining fractional part;
-		// add a point with the same probability as its (relative) area
-		const REAL fracPart(fPointsToAdd - static_cast<REAL>(pointsToAdd));
-		if (dist(rnd) <= fracPart)
-			pointsToAdd++;
-
-		for (unsigned i = 0; i < pointsToAdd; ++i) {
-			// generate random points as in:
-			// "Generating random points in triangles", Greg Turk;
-			// in A. S. Glassner, editor, Graphics Gems, pages 24-28. Academic Press, 1990
-			REAL x(dist(rnd));
-			REAL y(dist(rnd));
-
-			// test if the generated point lies on the right side of (AB)
-			if (x + y > REAL(1)) {
-				x = REAL(1) - x;
-				y = REAL(1) - y;
-			}
-
-			// compute position
-			pointcloud.points.emplace_back(O + static_cast<Vertex::Type>(x)*u + static_cast<Vertex::Type>(y)*v);
-
-			if (HasTexture()) {
-				// compute color
-				const FIndex idxTexCoord(idxFace*3);
-				const TexCoord& TO = faceTexcoords[idxTexCoord+0];
-				const TexCoord& TA = faceTexcoords[idxTexCoord+1];
-				const TexCoord& TB = faceTexcoords[idxTexCoord+2];
-				const TexIndex TI = GetFaceTextureIndex(idxFace);
-				const TexCoord xt(TO + static_cast<TexCoord::Type>(x)*(TA - TO) + static_cast<TexCoord::Type>(y)*(TB - TO));
-				pointcloud.colors.emplace_back(texturesDiffuse[TI].sampleSafe(xt));
-			}
-		}
-	}
 }
 /*----------------------------------------------------------------*/
 

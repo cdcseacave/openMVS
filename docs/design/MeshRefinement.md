@@ -106,7 +106,8 @@ so the field is indexed by the vertices the remesh receives; the field itself is
 On a surface seen from roughly constant camera-to-surface distance the field is flat and this reduces
 to the uniform remesh.
 
-Every scale then subdivides: `Mesh::Subdivide(maxAreas, maxArea)` splits 1-to-4 every face whose
+Every scale then subdivides: `Mesh::Subdivide(maxAreas, maxArea)` (`halfmesh::Mesh::SubdivideFaces`, red-green
+closure on the neighbours) splits 1-to-4 every face whose
 tightest-pair projected area exceeds `--max-face-area` (default 16 px² at that scale's resolution),
 and, when `--ensure-edge-size > 1` (force mode), the edge-band remesh above also runs after the
 split on every scale, not only the first.

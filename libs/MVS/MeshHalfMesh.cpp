@@ -33,6 +33,8 @@
 
 #include "Common.h"
 #include "Mesh.h"
+#include "PointCloud.h"
+#include <random>
 #include <span>
 #include <halfmesh/InteropOpenMVS.h>
 #include <halfmesh/TextureBake.h>
@@ -132,8 +134,6 @@ static void ExportMesh(halfmesh::Mesh& halfMesh, Mesh& mesh, const DerivedData& 
 		mesh.ListBoundaryVertices();
 	if (scaffoldVertexFaces)
 		mesh.vertexFaces.Release();
-	// faceNormals first: the active ComputeNormalVertices() derives them from the
-	// faces directly, but the angle-weighted variant behind it reads faceNormals
 	if (derived.faceNormals)
 		mesh.ComputeNormalFaces();
 	if (derived.vertexNormals && mesh.vertexNormals.empty())
@@ -232,6 +232,45 @@ unsigned Mesh::CloseHoles(unsigned maxHoleEdges)
 	const unsigned count = halfMesh.CloseHoles(maxHoleEdges);
 	ExportMesh(halfMesh, *this, derived);
 	return count;
+}
+
+// subdivide the faces whose projection area is bigger than twice the given number of pixels:
+// 1-to-4 at their edge midpoints, their neighbours closed by 2- and 3-way splits
+void Mesh::Subdivide(const AreaArr& maxAreas, uint32_t maxArea)
+{
+	ASSERT(maxAreas.size() == faces.size());
+	std::vector<bool> selected(faces.size());
+	const uint32_t maxAreaTh(2*maxArea);
+	FOREACH(f, maxAreas)
+		selected[f] = maxAreas[f] > maxAreaTh;
+	if (std::find(selected.begin(), selected.end(), true) == selected.end())
+		return;
+	const DerivedData derived(*this);
+	halfmesh::Mesh halfMesh = ImportMesh(std::move(*this));
+	halfMesh.SubdivideFaces(selected);
+	ExportMesh(halfMesh, *this, derived);
+}
+
+// area-uniform random sampling of the surface (halfmesh::Mesh::SamplePoints), colored from the
+// texture if the mesh has one; numPointsExpected only reserves
+void Mesh::SamplePoints(REAL samplingDensity, unsigned numPointsExpected, PointCloud& pointcloud, uint32_t seed) const
+{
+	ASSERT(!IsEmpty());
+	pointcloud.Release();
+	const halfmesh::Mesh halfMesh(ImportMesh(*this));
+	std::vector<halfmesh::Mesh::Vertex> points;
+	std::vector<halfmesh::Pixel> colors;
+	points.reserve(numPointsExpected);
+	halfMesh.SamplePoints(samplingDensity, seed == NO_ID ? (std::random_device())() : seed, points, HasTexture() ? &colors : NULL);
+	pointcloud.points.resize((PointCloud::Index)points.size());
+	static_assert(sizeof(PointCloud::Point) == sizeof(halfmesh::Mesh::Vertex), "point layouts must match");
+	if (!points.empty())
+		memcpy(pointcloud.points.data(), points.data(), sizeof(PointCloud::Point)*points.size());
+	if (!colors.empty()) {
+		pointcloud.colors.resize((PointCloud::Index)colors.size());
+		static_assert(sizeof(PointCloud::Color) == sizeof(halfmesh::Pixel), "color layouts must match");
+		memcpy(pointcloud.colors.data(), colors.data(), sizeof(PointCloud::Color)*colors.size());
+	}
 }
 
 void Mesh::Smooth(int iterations)
