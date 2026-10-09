@@ -112,45 +112,8 @@ Mesh& Mesh::Swap(Mesh& rhs)
 	std::swap(texturesDiffuse, rhs.texturesDiffuse);
 	return *this;
 } // Swap
-// combine this mesh with the given mesh, without removing duplicate vertices
-Mesh& Mesh::Join(const Mesh& mesh)
-{
-	ASSERT(!HasTexture() && !mesh.HasTexture());
-	if (mesh.IsEmpty())
-		return *this;
-	vertexVertices.Release();
-	vertexFaces.Release();
-	vertexBoundary.Release();
-	faceFaces.Release();
-	if (IsEmpty()) {
-		*this = mesh;
-		return *this;
-	}
-	const VIndex offsetV(vertices.size());
-	vertices.Join(mesh.vertices);
-	vertexNormals.Join(mesh.vertexNormals);
-	vertexColors.Join(mesh.vertexColors);
-	faces.ReserveExtra(mesh.faces.size());
-	for (const Face& face: mesh.faces)
-		faces.emplace_back(face.x+offsetV, face.y+offsetV, face.z+offsetV);
-	faceNormals.Join(mesh.faceNormals);
-	return *this;
-}
 /*----------------------------------------------------------------*/
 
-
-bool Mesh::IsWatertight()
-{
-	if (vertexBoundary.empty()) {
-		if (vertexFaces.empty())
-			ListIncidentFaces();
-		ListBoundaryVertices();
-	}
-	for (const bool b : vertexBoundary)
-		if (b)
-			return false;
-	return true;
-}
 
 // compute the axis-aligned bounding-box of the mesh
 Mesh::Box Mesh::GetAABB() const
@@ -778,74 +741,6 @@ bool Mesh::LoadPLY(const String& fileName)
 	}
 	return true;
 }
-// import the mesh as a OBJ file
-bool Mesh::LoadOBJ(const String& fileName)
-{
-	ASSERT(!fileName.empty());
-	Release();
-
-	// open and parse OBJ file
-	ObjModel model;
-	if (!model.Load(fileName)) {
-		DEBUG_EXTRA("error: invalid OBJ file");
-		return false;
-	}
-
-	if (model.get_vertices().empty() || model.get_groups().empty()) {
-		DEBUG_EXTRA("error: invalid mesh file");
-		return false;
-	}
-
-	// store vertices
-	static_assert(sizeof(ObjModel::Vertex) == sizeof(Vertex));
-	ASSERT(model.get_vertices().size() < std::numeric_limits<VIndex>::max());
-	vertices.CopyOf(&model.get_vertices()[0], (VIndex)model.get_vertices().size());
-
-	// store vertex normals
-	static_assert(sizeof(ObjModel::Normal) == sizeof(Normal));
-	ASSERT(model.get_vertices().size() < std::numeric_limits<VIndex>::max());
-	if (!model.get_normals().empty()) {
-		ASSERT(model.get_normals().size() == model.get_vertices().size());
-		vertexNormals.CopyOf(&model.get_normals()[0], (VIndex)model.get_normals().size());
-	}
-
-	// store faces
-	static_assert(std::is_same_v<ObjModel::TexCoord, TexCoord>);
-	FOREACH(groupIdx, model.get_groups()) {
-		const auto& group = model.get_groups()[groupIdx];
-		ASSERT(group.faces.size() < std::numeric_limits<FIndex>::max());
-		faces.reserve((FIndex)group.faces.size());
-		for (const ObjModel::Face& f: group.faces) {
-			ASSERT(f.vertices[0] != NO_ID);
-			faces.emplace_back(f.vertices[0], f.vertices[1], f.vertices[2]);
-			if (f.texcoords[0] != NO_ID) {
-				for (int i=0; i<3; ++i)
-					faceTexcoords.emplace_back(model.get_texcoords()[f.texcoords[i]]);
-				faceTexindices.emplace_back((TexIndex)groupIdx);
-			}
-			if (f.normals[0] != NO_ID) {
-				Normal& n = faceNormals.emplace_back(Normal::ZERO);
-				for (int i=0; i<3; ++i)
-					n += normalized(model.get_normals()[f.normals[i]]);
-				normalize(n);
-			}
-		}
-		// store texture
-		ObjModel::MaterialLib::Material* pMaterial(model.GetMaterial(group.material_name));
-		if (pMaterial && pMaterial->LoadDiffuseMap())
-			texturesDiffuse.emplace_back(pMaterial->diffuse_map);
-	}
-
-	// flip Y axis, unnormalize and translate back texture coordinates
-	if (!faceTexcoords.empty()) {
-		if (texturesDiffuse.size() <= 1)
-			faceTexindices.Release();
-		TexCoordArr unnormFaceTexcoords;
-		FaceTexcoordsUnnormalize(unnormFaceTexcoords, true);
-		faceTexcoords.Swap(unnormFaceTexcoords);
-	}
-	return true;
-} // Load
 /*----------------------------------------------------------------*/
 
 // export the mesh to the given file
@@ -857,7 +752,7 @@ bool Mesh::Save(const String& fileName, const cList<String>& comments, bool bBin
 	const String ext(Util::getFileExt(fileName).ToLower());
 	bool ret;
 	if (ext == _T(".obj"))
-		ret = SaveOBJ(fileName);
+		ret = SaveOBJ(fileName, bTexLossless);
 	else
 	if (ext == _T(".gltf") || ext == _T(".glb"))
 		ret = SaveGLTF(fileName, ext == _T(".glb"), bTexLossless);
@@ -954,79 +849,18 @@ bool Mesh::SavePLY(const String& fileName, const cList<String>& comments, bool b
 
 	return true;
 }
-// export the mesh as a OBJ file
-bool Mesh::SaveOBJ(const String& fileName) const
-{
-	ASSERT(!fileName.empty());
-	Util::ensureFolder(fileName);
-
-	// create the OBJ model
-	ObjModel model;
-
-	// store vertices
-	static_assert(sizeof(ObjModel::Vertex) == sizeof(Vertex));
-	model.get_vertices().insert(model.get_vertices().begin(), vertices.begin(), vertices.end());
-
-	// store vertex normals
-	static_assert(sizeof(ObjModel::Normal) == sizeof(Normal));
-	ASSERT(model.get_vertices().size() < std::numeric_limits<VIndex>::max());
-	if (!vertexNormals.empty()) {
-		ASSERT(vertexNormals.size() == vertices.size());
-		model.get_normals().insert(model.get_normals().begin(), vertexNormals.begin(), vertexNormals.end());
-	}
-
-	// store face texture coordinates
-	static_assert(sizeof(ObjModel::TexCoord) == sizeof(TexCoord));
-	if (!faceTexcoords.empty()) {
-		// translate, normalize and flip Y axis of the texture coordinates
-		TexCoordArr normFaceTexcoords;
-		FaceTexcoordsNormalize(normFaceTexcoords, true);
-		ASSERT(normFaceTexcoords.size() == faces.size()*3);
-		model.get_texcoords().insert(model.get_texcoords().begin(), normFaceTexcoords.begin(), normFaceTexcoords.end());
-	}
-
-	// store faces
-	TexIndex idxTexture(0);
-	do {
-		ObjModel::Group& group = model.AddGroup(HasTexture() ? String::FormatString("material_%02u", idxTexture) : String(""));
-		group.faces.reserve(texturesDiffuse.empty() ? faces.size() : faces.size()/texturesDiffuse.size());
-		FOREACH(idxFace, faces) {
-			if (!faceTexindices.empty() && faceTexindices[idxFace] != idxTexture)
-				continue;
-			const Face& face = faces[idxFace];
-			ObjModel::Face f;
-			memset(&f, 0xFF, sizeof(ObjModel::Face));
-			for (int i=0; i<3; ++i) {
-				f.vertices[i] = face[i];
-				if (!faceTexcoords.empty())
-					f.texcoords[i] = idxFace*3+i;
-				if (!vertexNormals.empty())
-					f.normals[i] = face[i];
-			}
-			group.faces.emplace_back(f);
-		}
-
-		// store texture
-		if (HasTexture()) {
-			ObjModel::MaterialLib::Material* pMaterial(model.GetMaterial(group.material_name));
-			ASSERT(pMaterial != NULL);
-			pMaterial->diffuse_map = texturesDiffuse[idxTexture];
-		}
-	} while (++idxTexture < texturesDiffuse.size());
-
-	return model.Save(fileName);
-} // Save
-/*----------------------------------------------------------------*/
-
 bool Mesh::Save(const FacesChunkArr& chunks, const String& fileName, const cList<String>& comments, bool bBinary) const
 {
 	if (chunks.size() < 2)
 		return Save(fileName, comments, bBinary);
-	FOREACH(i, chunks) {
-		const Mesh mesh(SubMesh(chunks[i].faces));
-		if (!mesh.Save(Util::insertBeforeFileExt(fileName, String::FormatString("_chunk%02u", i)), comments, bBinary))
+	std::vector<FaceIdxArr> faceChunks;
+	faceChunks.reserve(chunks.size());
+	for (const FaceChunk& chunk: chunks)
+		faceChunks.emplace_back(chunk.faces);
+	const std::vector<Mesh> meshes(SubMeshes(faceChunks));
+	FOREACH(i, chunks)
+		if (!meshes[i].Save(Util::insertBeforeFileExt(fileName, String::FormatString("_chunk%02u", i)), comments, bBinary))
 			return false;
-	}
 	return true;
 }
 
@@ -1288,16 +1122,6 @@ REAL Mesh::ComputeArea() const
 	for (const Face& face: faces)
 		area += ComputeTriangleArea(vertices[face[0]], vertices[face[1]], vertices[face[2]]);
 	return area;
-}
-
-// computes the signed volume of the domain bounded by the mesh surface
-// (note: valid only for closed and orientable manifolds)
-REAL Mesh::ComputeVolume() const
-{
-	REAL volume(0);
-	for (const Face& face: faces)
-		volume += ComputeTriangleVolume(vertices[face[0]], vertices[face[1]], vertices[face[2]]);
-	return volume;
 }
 /*----------------------------------------------------------------*/
 
@@ -1592,66 +1416,6 @@ bool Mesh::Split(FacesChunkArr& chunks, float maxArea)
 } // Split
 /*----------------------------------------------------------------*/
 
-// extract the sub-mesh corresponding to the given chunk of faces, keeping only the
-// vertices and textures it references, with every per-vertex and per-face attribute
-Mesh Mesh::SubMesh(const FaceIdxArr& chunk) const
-{
-	ASSERT(!chunk.empty());
-	ASSERT(vertexNormals.empty() || vertexNormals.size() == vertices.size());
-	ASSERT(vertexColors.empty() || vertexColors.size() == vertices.size());
-	ASSERT(faceNormals.empty() || faceNormals.size() == faces.size());
-	ASSERT(faceTexindices.empty() || faceTexindices.size() == faces.size());
-	ASSERT(faceTexcoords.empty() || faceTexcoords.size() == faces.size()*3);
-	Mesh mesh;
-	mesh.faces.reserve(chunk.size());
-	VertexIdxArr mapVertices(vertices.size());
-	mapVertices.Memset(0xff);
-	UnsignedArr mapTextures(texturesDiffuse.size());
-	mapTextures.Memset(0xff);
-	for (FIndex idxFace: chunk) {
-		ASSERT(idxFace < faces.size());
-		const Face& face = faces[idxFace];
-		Face& subFace = mesh.faces.AddEmpty();
-		for (int i=0; i<3; ++i) {
-			const VIndex idxVertex(face[i]);
-			VIndex& idxSubVertex = mapVertices[idxVertex];
-			if (idxSubVertex == NO_ID) {
-				idxSubVertex = mesh.vertices.size();
-				mesh.vertices.emplace_back(vertices[idxVertex]);
-				if (!vertexNormals.empty())
-					mesh.vertexNormals.emplace_back(vertexNormals[idxVertex]);
-				if (!vertexColors.empty())
-					mesh.vertexColors.emplace_back(vertexColors[idxVertex]);
-			}
-			subFace[i] = idxSubVertex;
-		}
-		if (!faceNormals.empty())
-			mesh.faceNormals.emplace_back(faceNormals[idxFace]);
-		if (!faceTexcoords.empty())
-			mesh.faceTexcoords.Join(faceTexcoords.data()+idxFace*3, 3);
-		if (!faceTexindices.empty()) {
-			const TexIndex idxTexture(faceTexindices[idxFace]);
-			if (texturesDiffuse.empty()) {
-				mesh.faceTexindices.emplace_back(idxTexture);
-				continue;
-			}
-			ASSERT(idxTexture < texturesDiffuse.size());
-			unsigned& idxSubTexture = mapTextures[idxTexture];
-			if (idxSubTexture == NO_ID) {
-				idxSubTexture = mesh.texturesDiffuse.size();
-				mesh.texturesDiffuse.emplace_back(texturesDiffuse[idxTexture]);
-			}
-			mesh.faceTexindices.emplace_back((TexIndex)idxSubTexture);
-		}
-	}
-	if (faceTexindices.empty() && !texturesDiffuse.empty())
-		mesh.texturesDiffuse.emplace_back(texturesDiffuse.front()); // every face maps to the first texture
-	// the vertices are already compact; the halfmesh-backed repair carries the attributes through
-	mesh.FixNonManifold();
-	return mesh;
-} // SubMesh
-/*----------------------------------------------------------------*/
-
 // extract one sub-mesh for each texture, i.e. for each value of faceTexindices:
 //  - mapFaceSubsetIndices: if not null, for each face of the original mesh,
 //    contains the index of the face in the corresponding sub-mesh
@@ -1662,25 +1426,16 @@ std::vector<Mesh> Mesh::SplitMeshPerTextureBlob(FaceIdxArr* mapFaceSubsetIndices
 	if (mapFaceSubsetIndices)
 		mapFaceSubsetIndices->resize(faces.size());
 	ASSERT(faceTexindices.size() == faces.size());
-	std::vector<Mesh> submeshes;
-	submeshes.reserve(texturesDiffuse.size());
-	FOREACH(texId, texturesDiffuse) {
-		FaceIdxArr chunk;
-		FOREACH(idxFace, faceTexindices) {
-			if (faceTexindices[idxFace] == texId) {
-				if (mapFaceSubsetIndices)
-					(*mapFaceSubsetIndices)[idxFace] = chunk.size();
-				chunk.push_back(idxFace);
-			}
-		}
-		if (chunk.empty()) {
-			submeshes.emplace_back(); // unused texture, e.g. after cropping
-			continue;
-		}
-		Mesh submesh = SubMesh(chunk);
-		ASSERT(submesh.texturesDiffuse.size() == 1);
-		submeshes.emplace_back(std::move(submesh));
+	std::vector<FaceIdxArr> chunks(texturesDiffuse.size());
+	FOREACH(idxFace, faceTexindices) {
+		FaceIdxArr& chunk = chunks[faceTexindices[idxFace]];
+		if (mapFaceSubsetIndices)
+			(*mapFaceSubsetIndices)[idxFace] = chunk.size();
+		chunk.push_back(idxFace);
 	}
+	// an unused texture, e.g. after cropping, gets an empty mesh
+	std::vector<Mesh> submeshes(SubMeshes(chunks));
+	ASSERT(std::all_of(submeshes.begin(), submeshes.end(), [](const Mesh& submesh) { return submesh.IsEmpty() || submesh.texturesDiffuse.size() == 1; }));
 	return submeshes;
 }
 

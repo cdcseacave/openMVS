@@ -1,6 +1,6 @@
 # IO Library
 
-File format I/O subsystem for OpenMVS. Handles reading and writing of 3D geometry formats (PLY, OBJ, glTF) and image formats (BMP, TGA, DDS, PNG, JPEG, TIFF, JpegXL). Used by MVS library for point cloud, mesh, and texture serialization.
+File format I/O subsystem for OpenMVS. Handles reading and writing of 3D geometry formats (PLY, glTF) and image formats (BMP, TGA, DDS, PNG, JPEG, TIFF, JpegXL). Used by MVS library for point cloud, mesh, and texture serialization.
 
 ## Geometry Formats
 
@@ -19,17 +19,6 @@ Full-featured PLY polygon format parser/writer. Primary format for point clouds 
 **Data types:** Int8/16/32, Uint8/16/32, Float32/64. Properties can be scalar or list (variable-length arrays).
 
 **Property combine rules** (for mesh operations): `AVERAGE_RULE`, `MAJORITY_RULE`, `MINIMUM_RULE`, `MAXIMUM_RULE`, `SAME_RULE`, `RANDOM_RULE`.
-
-### OBJ (`OBJ.h`, `OBJ.cpp`)
-Wavefront OBJ with material library support.
-
-**Key types:**
-- `ObjModel` - Main container with vertices, texcoords, normals, groups
-- `ObjModel::MaterialLib` - Material definitions with diffuse textures
-- `ObjModel::Face` - Triangle with vertex/texcoord/normal indices
-- `ObjModel::Group` - Faces grouped by material
-
-**Methods:** `Load(fileName)`, `Save(fileName, precision, texLossless)`, `AddGroup()`, `GetMaterial()`
 
 ### glTF (`tiny_gltf.h`, from vcpkg)
 Header-only third-party library for binary (.glb) and ASCII (.gltf) 3D format. Not vendored here - it comes from the `tinygltf` port, and halfmesh compiles the single `TINYGLTF_IMPLEMENTATION` unit.
@@ -68,7 +57,7 @@ Factory pattern with format auto-detection by file extension.
 
 **PointCloud I/O:** `LoadPLY()`, `SavePLY(fileName, bViews, bLegacyTypes, bBinary)`, `LoadGLTF()`, `SaveGLTF()`
 
-**Mesh I/O:** `LoadPLY()`, `LoadOBJ()`, `SavePLY(fileName, comments, bBinary, bTexLossless)`, `SaveOBJ()`. `Mesh::LoadGLTF()` / `Mesh::SaveGLTF(fileName, bBinary, bTexLossless)` are thin wrappers in `MVS/MeshHalfMesh.cpp` over halfmesh's codec, which owns the only `TINYGLTF_IMPLEMENTATION` in the build; only `PointCloud` still drives tinygltf directly.
+**Mesh I/O:** `LoadPLY()`, `SavePLY(fileName, comments, bBinary, bTexLossless)` use this library's PLY codec. OBJ and glTF are halfmesh's: `Mesh::LoadOBJ()` / `SaveOBJ(fileName, bTexLossless)` and `Mesh::LoadGLTF()` / `SaveGLTF(fileName, bBinary, bTexLossless)` are thin wrappers in `MVS/MeshHalfMesh.cpp` (halfmesh owns the only `TINYGLTF_IMPLEMENTATION` in the build; only `PointCloud` still drives tinygltf directly).
 
 **Texture storage:** Embedded in PLY comments as `TextureFile <filename>`, saved separately as PNG/JPEG.
 

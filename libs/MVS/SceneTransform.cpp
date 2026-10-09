@@ -300,6 +300,13 @@ REAL Scene::ComputeLeveledVolume(float planeThreshold, float sampleMesh, unsigne
 		const Point3 translation(rotation*-Cast<REAL>(Point3f(groundPlane.ProjectPoint(mesh.GetCenter()))));
 		const REAL scale(1);
 		Transform(rotation, translation, scale);
+		// the ground plane is now the plane through the origin facing up: every face
+		// counts the prism down to it, so the surface's open boundary need not lie
+		// exactly on the plane, and a part below the ground counts as cut
+		REAL fill, cut;
+		const REAL volume(mesh.ComputeVolume(Planef(Point3f::EVec(up), 0.f), fill, cut));
+		VERBOSE("Volume above the ground plane %g, below it %g", fill, -cut);
+		return volume;
 	}
 	return mesh.ComputeVolume();
 }

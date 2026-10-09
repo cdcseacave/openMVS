@@ -90,6 +90,21 @@ static halfmesh::Mesh ImportMesh(Mesh&& mesh)
 	return halfMesh;
 }
 
+// Geometry-only import, for the read-only queries that never look at the
+// attributes: the vertex and face layouts match, so each is a single copy.
+static halfmesh::Mesh ImportGeometry(const Mesh& mesh)
+{
+	static_assert(sizeof(Mesh::Vertex) == sizeof(halfmesh::Mesh::Vertex) && sizeof(Mesh::Face) == sizeof(halfmesh::Mesh::Face), "vertex and face layouts must match");
+	halfmesh::Mesh halfMesh;
+	halfMesh.vertices.resize(mesh.vertices.size());
+	halfMesh.faces.resize(mesh.faces.size());
+	if (!mesh.vertices.empty())
+		memcpy(halfMesh.vertices.data(), mesh.vertices.data(), sizeof(Mesh::Vertex)*mesh.vertices.size());
+	if (!mesh.faces.empty())
+		memcpy(halfMesh.faces.data(), mesh.faces.data(), sizeof(Mesh::Face)*mesh.faces.size());
+	return halfMesh;
+}
+
 // halfmesh's contract for the optional per-element arrays is "empty or exactly
 // sized"; drop whatever an operation left inconsistent with the new topology.
 static void SanitizeAttributes(halfmesh::Mesh& halfMesh)
@@ -271,6 +286,67 @@ void Mesh::SamplePoints(REAL samplingDensity, unsigned numPointsExpected, PointC
 		static_assert(sizeof(PointCloud::Color) == sizeof(halfmesh::Pixel), "color layouts must match");
 		memcpy(pointcloud.colors.data(), colors.data(), sizeof(PointCloud::Color)*colors.size());
 	}
+}
+
+// append the given mesh; the adjacency caches are dropped, as the conversion releases them
+Mesh& Mesh::Join(const Mesh& mesh)
+{
+	if (mesh.IsEmpty())
+		return *this;
+	halfmesh::Mesh halfMesh;
+	halfmesh::ConvertMesh(std::move(*this), halfMesh);
+	halfmesh::Mesh other;
+	halfmesh::ConvertMesh(mesh, other);
+	halfMesh.Join(other);
+	halfmesh::ConvertMesh(std::move(halfMesh), *this);
+	return *this;
+}
+
+bool Mesh::IsWatertight() const
+{
+	return ImportGeometry(*this).IsWatertight();
+}
+
+REAL Mesh::ComputeVolume() const
+{
+	return ImportGeometry(*this).ComputeVolume();
+}
+
+REAL Mesh::ComputeVolume(const Planef& plane, REAL& above, REAL& below) const
+{
+	ASSERT(ISEQUAL(plane.m_vN.norm(), 1.f));
+	const Eigen::Vector3d normal(plane.m_vN.cast<double>());
+	const halfmesh::Mesh::PlaneVolume volume(ImportGeometry(*this).ComputeVolume(
+		halfmesh::Mesh::Plane(normal.normalized(), (double)plane.m_fD)));
+	above = volume.above;
+	below = volume.below;
+	return above + below;
+}
+
+Mesh Mesh::SubMesh(const FaceIdxArr& faces) const
+{
+	ASSERT(!faces.empty());
+	return std::move(SubMeshes({faces}).front());
+}
+
+std::vector<Mesh> Mesh::SubMeshes(const std::vector<FaceIdxArr>& chunks) const
+{
+	ASSERT(vertexNormals.empty() || vertexNormals.size() == vertices.size());
+	ASSERT(vertexColors.empty() || vertexColors.size() == vertices.size());
+	ASSERT(faceNormals.empty() || faceNormals.size() == faces.size());
+	ASSERT(faceTexindices.empty() || faceTexindices.size() == faces.size());
+	// face normals are carried, not recomputed: SubMesh does not move a vertex
+	halfmesh::Mesh halfMesh;
+	halfmesh::ConvertMesh(*this, halfMesh);
+	std::vector<Mesh> meshes(chunks.size());
+	FOREACH(i, chunks) {
+		if (chunks[i].empty())
+			continue;
+		halfmesh::ConvertMesh(halfMesh.SubMesh(std::span<const FIndex>(chunks[i].data(), chunks[i].size())), meshes[i]);
+		// the vertices are already compact; the halfmesh-backed repair carries the attributes through
+		meshes[i].FixNonManifold();
+	}
+	return meshes;
 }
 
 void Mesh::Smooth(int iterations)
@@ -521,7 +597,7 @@ Mesh::VIndex Mesh::RemoveUnreferencedVertices()
 bool Mesh::LoadGLTF(const String& fileName)
 {
 	ASSERT(!fileName.empty());
-	Release(); // as LoadPLY/LoadOBJ do, so a failed Load() never leaves the old mesh
+	Release(); // as LoadPLY does, so a failed Load() never leaves the old mesh
 	halfmesh::Mesh halfMesh;
 	if (!halfMesh.LoadGLTF(fileName))
 		return false;
@@ -548,4 +624,29 @@ bool Mesh::SaveGLTF(const String& fileName, bool bBinary, bool bTexLossless) con
 	return halfMesh.SaveGLTF(fileName, bBinary,
 		bTexLossless ? halfmesh::Mesh::ImageFormat::PNG : halfmesh::Mesh::ImageFormat::JPG,
 		false);
+}
+
+// Wavefront OBJ import/export, by halfmesh's codec: streamed parallel parsing with
+// exact float conversion, polygons triangulated, every index form, materials with
+// map_Kd (a material without a loadable map keeps its Kd as a one-texel texture);
+// written in the shortest text that reads back to the same float, so a Save ->
+// Load cycle is bit-exact. Both meshes hold faceTexcoords in absolute pixels.
+bool Mesh::LoadOBJ(const String& fileName)
+{
+	ASSERT(!fileName.empty());
+	Release();
+	halfmesh::Mesh halfMesh;
+	if (!halfMesh.LoadOBJ(fileName))
+		return false;
+	halfmesh::ConvertMesh(std::move(halfMesh), *this);
+	return true;
+}
+
+bool Mesh::SaveOBJ(const String& fileName, bool bTexLossless) const
+{
+	ASSERT(!fileName.empty());
+	Util::ensureFolder(fileName);
+	halfmesh::Mesh halfMesh;
+	halfmesh::ConvertMesh(*this, halfMesh);
+	return halfMesh.SaveOBJ(fileName, bTexLossless ? halfmesh::Mesh::ImageFormat::PNG : halfmesh::Mesh::ImageFormat::JPG);
 }

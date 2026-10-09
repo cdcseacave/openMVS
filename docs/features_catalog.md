@@ -752,8 +752,8 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 
 ### OBJ Format
 
-- **Files:** `libs/IO/OBJ.h`, `libs/IO/OBJ.cpp`
-- **Algorithms:** Wavefront OBJ with material library (MTL); `ObjModel` container with vertices, texcoords, normals, material groups
+- **Files:** `libs/MVS/MeshHalfMesh.cpp` (`Mesh::LoadOBJ` / `Mesh::SaveOBJ`), implemented by halfmesh
+- **Algorithms:** Wavefront OBJ with material library (MTL): streamed blocks parsed in parallel, correctly rounded floats written in their shortest round-trip form, every index form, polygons triangulated, a material without a loadable map kept as a one-texel texture of its Kd
 
 ### Image Formats
 

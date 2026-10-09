@@ -156,9 +156,13 @@ public:
 	void ReleaseComputable();
 	void EmptyExtra();
 	Mesh& Swap(Mesh&);
+	// append the given mesh (halfmesh::Mesh::Join): nothing is welded, and an
+	// attribute (colors, normals, texture) survives only when both meshes carry it
 	Mesh& Join(const Mesh&);
 	bool IsEmpty() const { return vertices.empty(); }
-	bool IsWatertight();
+	// every edge shared by exactly two faces traversing it in opposite directions
+	// (halfmesh::Mesh::IsWatertight): the surface bounds a volume
+	bool IsWatertight() const;
 	bool HasTexture() const { return HasTextureCoordinates() && !texturesDiffuse.empty(); }
 	bool HasTextureCoordinates() const { ASSERT(faceTexcoords.empty() || faces.size()*3 == faceTexcoords.size() || vertices.size() == faceTexcoords.size()); return !faceTexcoords.empty(); }
 	bool HasTextureCoordinatesPerVertex() const { return !faceTexcoords.empty() && vertices.size() == faceTexcoords.size(); }
@@ -271,7 +275,11 @@ public:
 	Vertex ComputeCentroid(FIndex) const;
 	Type ComputeArea(FIndex) const;
 	REAL ComputeArea() const;
+	// signed volume enclosed by a watertight surface (halfmesh::Mesh::ComputeVolume)
 	REAL ComputeVolume() const;
+	// volume between the surface and the given plane, measured along its normal and
+	// split into the parts above and below it; returns their sum
+	REAL ComputeVolume(const Planef& plane, REAL& above, REAL& below) const;
 
 	// seed==NO_ID: seed the RNG from std::random_device (non-deterministic)
 	void SamplePoints(unsigned numberOfPoints, PointCloud&, uint32_t seed=NO_ID) const;
@@ -286,7 +294,11 @@ public:
 	void ProjectOrthoTopDown(unsigned resolution, Image8U3& image, Image8U& mask, Point3& center) const;
 
 	bool Split(FacesChunkArr&, float maxArea);
+	// the given faces with the vertices, attributes and textures they use
+	// (halfmesh::Mesh::SubMesh), made manifold; SubMeshes converts the mesh once
+	// for all the chunks
 	Mesh SubMesh(const FaceIdxArr& faces) const;
+	std::vector<Mesh> SubMeshes(const std::vector<FaceIdxArr>& chunks) const;
 
 	static constexpr unsigned DEFAULT_TEXTURE_BORDER = 3;
 	static constexpr unsigned DEFAULT_TEXTURE_SIZE = 4096;
@@ -320,7 +332,7 @@ protected:
 	bool LoadGLTF(const String& fileName);
 
 	bool SavePLY(const String& fileName, const cList<String>& comments=cList<String>(), bool bBinary=true, bool bTexLossless=true) const;
-	bool SaveOBJ(const String& fileName) const;
+	bool SaveOBJ(const String& fileName, bool bTexLossless=true) const;
 	// bTexLossless selects PNG over JPEG for the diffuse textures, which are
 	// written beside the file, same as SavePLY
 	bool SaveGLTF(const String& fileName, bool bBinary=true, bool bTexLossless=true) const;

@@ -90,7 +90,6 @@
 #include "ImageHEIF.h"
 #endif
 #include "PLY.h"
-#include "OBJ.h"
 /*----------------------------------------------------------------*/
 
 #endif // __IO_COMMON_H__

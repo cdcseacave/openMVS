@@ -6,7 +6,7 @@ The IO library handles all file format reading and writing in OpenMVS -- both 3D
 
 ### The library is a format abstraction layer
 
-You rarely interact with IO directly. Instead, the MVS library's `PointCloud`, `Mesh`, and `Scene` classes call into IO when you do `LoadPLY()`, `SaveOBJ()`, etc. Understanding IO matters when you need to add a new format, debug file loading issues, or extend what's stored in an existing format.
+You rarely interact with IO directly. Instead, the MVS library's `PointCloud`, `Mesh`, and `Scene` classes call into IO when you do `LoadPLY()`, `SavePLY()`, etc. (OBJ and glTF meshes go through the halfmesh library instead, see `MVS/MeshHalfMesh.cpp`) Understanding IO matters when you need to add a new format, debug file loading issues, or extend what's stored in an existing format.
 
 ### PLY is the primary 3D format
 
@@ -68,21 +68,9 @@ comment TextureFile texture_1.jpg
 
 **Property combine rules**: When merging mesh data, properties can be combined using rules like `AVERAGE_RULE`, `MAJORITY_RULE`, `MINIMUM_RULE`, etc.
 
-### OBJ (`OBJ.h`, `OBJ.cpp`)
+### OBJ (halfmesh)
 
-Wavefront OBJ support with full material library (.mtl) handling:
-
-- **`ObjModel`**: Container with vertices, texture coordinates, normals, and face groups
-- **`MaterialLib`**: Material definitions including diffuse textures
-- **Groups**: Faces are organized by material name
-
-Textures are saved as separate image files (PNG for lossless, JPEG for lossy) and referenced from the .mtl file.
-
-```cpp
-ObjModel model;
-model.Load("mesh.obj");      // Loads .obj + .mtl + texture images
-model.Save("output.obj", 6); // 6 decimal places for vertex precision
-```
+Wavefront OBJ is not implemented here: `Mesh::LoadOBJ()` / `Mesh::SaveOBJ()` delegate to halfmesh's codec (streamed parallel parsing with exact float conversion, polygons triangulated, MTL materials; written in the shortest text that reads back to the same float). Textures are saved beside the file as PNG (lossless) or JPEG and referenced from the .mtl file.
 
 ### glTF (`tiny_gltf.h`, from vcpkg)
 
@@ -159,7 +147,7 @@ pointCloud.SavePLY("dense.ply", /*bViews=*/true, /*bLegacy=*/false, /*bBinary=*/
 **Mesh** (in MVS lib):
 ```cpp
 mesh.LoadPLY("mesh.ply");
-mesh.SaveOBJ("textured.obj");       // Creates .obj + .mtl + textures
+mesh.Save("textured.obj");          // Creates .obj + .mtl + textures (halfmesh)
 mesh.SaveGLTF("model.glb", true);   // Binary glTF
 ```
 
@@ -175,7 +163,6 @@ mesh.SaveGLTF("model.glb", true);   // Binary glTF
 libs/IO/
 ├── Common.h/cpp        # Library entry point, conditional includes
 ├── PLY.h/cpp           # PLY parser/writer (~2000+ lines)
-├── OBJ.h/cpp           # Wavefront OBJ with materials
 ├── Image.h/cpp         # CImage base class + factory
 ├── ImageBMP.h/cpp      # BMP format
 ├── ImageTGA.h/cpp      # TGA format (with RLE)

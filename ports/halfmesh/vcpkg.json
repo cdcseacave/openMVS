@@ -8,6 +8,7 @@
   "dependencies": [
     "bshoshany-thread-pool",
     "eigen3",
+    "fast-float",
     {
       "name": "opencv4",
       "default-features": false,

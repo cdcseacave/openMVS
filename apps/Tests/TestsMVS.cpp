@@ -250,6 +250,63 @@ bool MeshHalfMeshProcessingTest()
 		{0, 2, 3}, {0, 3, 4}, {0, 4, 5}, {0, 5, 2},
 		{1, 3, 2}, {1, 4, 3}, {1, 5, 4}, {1, 2, 5}
 	};
+	// the queries and editors halfmesh implements: the unit octahedron bounds 4/3,
+	// split evenly by z=0; its top half alone is open, and closes against z=0 to 2/3
+	{
+		const Mesh& closed(octahedron);
+		REAL above, below;
+		if (!closed.IsWatertight() || !ISEQUAL(closed.ComputeVolume(), REAL(4)/3) ||
+			!ISEQUAL(closed.ComputeVolume(Planef(Planef::VECTOR(0, 0, 1), 0.f), above, below), REAL(4)/3) ||
+			!ISEQUAL(above, REAL(2)/3) || !ISEQUAL(below, REAL(2)/3)) {
+			VERBOSE("ERROR: HalfMesh bridge measured the octahedron's volume wrong!");
+			return false;
+		}
+		Mesh::FaceIdxArr top;
+		for (Mesh::FIndex idxFace: {0u, 1u, 2u, 3u})
+			top.emplace_back(idxFace);
+		const Mesh pyramid(closed.SubMesh(top));
+		if (pyramid.vertices.size() != 5 || pyramid.faces.size() != 4 || pyramid.IsWatertight() ||
+			!ISEQUAL(pyramid.ComputeVolume(Planef(Planef::VECTOR(0, 0, 1), 0.f), above, below), REAL(2)/3)) {
+			VERBOSE("ERROR: HalfMesh bridge extracted the octahedron's top wrong!");
+			return false;
+		}
+		Mesh twice(closed);
+		Mesh shifted(closed);
+		for (Mesh::Vertex& X: shifted.vertices)
+			X.x += 3.f;
+		twice.Join(shifted);
+		if (twice.vertices.size() != 12 || twice.faces.size() != 16 || !twice.IsWatertight() || !ISEQUAL(twice.ComputeVolume(), REAL(8)/3)) {
+			VERBOSE("ERROR: HalfMesh bridge joined two meshes wrong!");
+			return false;
+		}
+		Mesh textured(twice);
+		textured.faceTexcoords.resize(textured.faces.size()*3);
+		textured.faceTexcoords.Memset(0);
+		textured.faceTexindices.resize(textured.faces.size());
+		FOREACH(idxFace, textured.faceTexindices)
+			textured.faceTexindices[idxFace] = idxFace < 8 ? 0 : 1;
+		textured.texturesDiffuse.emplace_back(1, 1);
+		textured.texturesDiffuse.emplace_back(2, 2);
+		Mesh::FaceIdxArr mapFaceSubsetIndices;
+		const std::vector<Mesh> perTexture(textured.SplitMeshPerTextureBlob(&mapFaceSubsetIndices));
+		if (perTexture.size() != 2 || perTexture[0].faces.size() != 8 || perTexture[1].faces.size() != 8 ||
+			perTexture[1].texturesDiffuse.size() != 1 || perTexture[1].texturesDiffuse[0].width() != 2 ||
+			!perTexture[1].faceTexindices.empty() || mapFaceSubsetIndices[9] != 1) {
+			VERBOSE("ERROR: HalfMesh bridge split the mesh per texture wrong!");
+			return false;
+		}
+		const ScopedTempDir tmpDir(_T("MeshHalfMeshBridgeTest"));
+		if (!tmpDir.IsValid())
+			return false;
+		const String fileName(tmpDir(_T("octahedron.obj")));
+		Mesh loaded;
+		if (!twice.Save(fileName) || !loaded.Load(fileName) || loaded.vertices.size() != twice.vertices.size() ||
+			memcmp(loaded.vertices.data(), twice.vertices.data(), twice.vertices.GetDataSize()) != 0 ||
+			memcmp(loaded.faces.data(), twice.faces.data(), twice.faces.GetDataSize()) != 0) {
+			VERBOSE("ERROR: HalfMesh bridge OBJ round trip is not exact!");
+			return false;
+		}
+	}
 	Mesh::VertexIdxArr verticesRemove;
 	verticesRemove.emplace_back(0);
 	if (octahedron.RemoveVerticesAndFill(verticesRemove) != 1 || !octahedron.IsWatertight()) {
