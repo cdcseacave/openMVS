@@ -847,16 +847,15 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 			if (!rasterer.validFace)
 				rasterer.Project(facet, triangleRasterizer);
 		}
-		// compute the projection area of visible faces
+		// count the visible pixels of each face (and sum their colors) in this thread; only the faces
+		// the view sees are then appended to the shared face-data, inside the critical section. The
+		// face quality in a view is the number of its pixels the view sees: the resolution the texture
+		// gets from it, which already falls with the distance and the viewing angle
 		CLISTDEF0IDX(uint32_t,FIndex) areas(faces.size());
 		areas.Memset(0);
-
-		#ifdef TEXOPT_USE_OPENMP
-		#pragma omp critical
+		#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
+		CLISTDEF0IDX(Color,FIndex) colors(faces.size()); // read only where areas > 0
 		#endif
-		{
-		// the face quality in a view is the number of its pixels the view sees: the resolution the
-		// texture gets from it, which already falls with the distance and the viewing angle
 		const float scaleWeightX((float)imageData.width / highResSize.width);
 		const float scaleWeightY((float)imageData.height / highResSize.height);
 		for (int j=0; j<faceMap.rows; ++j) {
@@ -865,50 +864,38 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 				ASSERT(idxFace == NO_ID || depthMap(j,i) > 0);
 				if (idxFace == NO_ID)
 					continue;
-				FaceDataArr& faceDatas = facesDatas[idxFace];
-				const int imgY((int)(j*scaleWeightY));
-				const int imgX((int)(i*scaleWeightX));
-				if (areas[idxFace]++ == 0) {
-					// create new face-data
-					FaceData& faceData = faceDatas.emplace_back();
-					faceData.idxView = idxView;
-					faceData.quality = 1.f;
-					#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
-					faceData.color = imageData.image(imgY,imgX);
-					#endif
-				} else {
-					// update face-data
-					ASSERT(!faceDatas.empty());
-					FaceData& faceData = faceDatas.back();
-					ASSERT(faceData.idxView == idxView);
-					faceData.quality += 1.f;
-					#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
-					faceData.color += Color(imageData.image(imgY,imgX));
-					#endif
-				}
+				#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
+				const Color color(imageData.image((int)(j*scaleWeightY),(int)(i*scaleWeightX)));
+				if (areas[idxFace]++ == 0)
+					colors[idxFace] = color;
+				else
+					colors[idxFace] += color;
+				#else
+				++areas[idxFace];
+				#endif
 			}
 		}
-		// a view that sees only part of a face would copy the occluder into the face's texture:
-		// below 90% of the face's projection (and more than a couple of pixels missing) it keeps
-		// a tenth of its quality, so it wins only where nothing sees the face whole
+		#ifdef TEXOPT_USE_OPENMP
+		#pragma omp critical
+		#endif
 		for (FIndex idxFace: cameraFaces) {
 			const uint32_t visible(areas[idxFace]);
 			if (visible == 0)
 				continue;
+			areas[idxFace] = 0; // a face listed twice is appended once
+			FaceData& faceData = facesDatas[idxFace].emplace_back();
+			faceData.idxView = idxView;
+			faceData.quality = (float)visible;
+			// a view that sees only part of a face would copy the occluder into the face's texture:
+			// below 90% of the face's projection (and more than a couple of pixels missing) it keeps
+			// a tenth of its quality, so it wins only where nothing sees the face whole
 			const uint32_t projected(projAreas[idxFace]);
 			ASSERT(visible <= projected);
 			if (visible < 0.9f*projected && projected-visible > 2)
-				facesDatas[idxFace].back().quality *= 0.1f;
-		}
-		#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
-		FOREACH(idxFace, areas) {
-			const uint32_t& area = areas[idxFace];
-			if (area > 0) {
-				Color& color = facesDatas[idxFace].back().color;
-				color = RGB2YCBCR(Color(color * (1.f/(float)area)));
-			}
-		}
-		#endif
+				faceData.quality *= 0.1f;
+			#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
+			faceData.color = RGB2YCBCR(Color(colors[idxFace] * (1.f/(float)visible)));
+			#endif
 		}
 		++progress;
 	}
