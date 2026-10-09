@@ -524,6 +524,7 @@ void MeshRefine::ListVertexFacesPost()
 // extract array of faces viewed by each image
 void MeshRefine::ListCameraFaces()
 {
+	ASSERT(views.size() == images.size()); // InitImages() prepared the views
 	// extract array of faces viewed by each camera
 	typedef CLISTDEF2(Mesh::FaceIdxArr) CameraFacesArr;
 	CameraFacesArr arrCameraFaces(images.GetSize()); {
@@ -1489,12 +1490,12 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 					   unsigned nScales, float fScaleStep,
 					   unsigned nAlternatePair, float fRegularityWeight, float fRatioRigidityElasticity, float fThPlanarVertex, bool bUseCeres)
 {
+	// no scale refines nothing: the mesh is returned as it came in (the post-refinement
+	// simplification reads the views a scale prepares, so without one it has nothing to run on)
+	if (nScales == 0)
+		return true;
 	// the externally controlled knobs are validated here, at the entry point every caller goes
 	// through: their ASSERT twins inside the stepper are contracts, not input checks
-	if (nScales == 0) {
-		VERBOSE("error: --scales must be at least 1");
-		return false;
-	}
 	if (bUseCeres) {
 		#ifndef MESHOPT_CERES
 		VERBOSE("error: this build does not include the Ceres optimizer");

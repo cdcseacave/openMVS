@@ -603,6 +603,7 @@ void MeshRefineCUDA::ListVertexFacesPost()
 // a view does not see (see kernelProjectMesh)
 void MeshRefineCUDA::ListCameraFaces(bool bOwnerBits)
 {
+	ASSERT(views.size() == images.size()); // InitImages() prepared the views
 	reportCudaError(vertices.Reset(scene.mesh.vertices));
 	FOREACH(idxImage, images) {
 		const Image& imageData = images[idxImage];
@@ -1009,12 +1010,12 @@ bool Scene::RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, u
 						   unsigned nScales, float fScaleStep, unsigned nAlternatePair, float fRegularityWeight, float fRatioRigidityElasticity,
 						   float fThPlanarVertex)
 {
+	// no scale refines nothing: the mesh is returned as it came in (the post-refinement
+	// simplification reads the views a scale prepares, so without one it has nothing to run on)
+	if (nScales == 0)
+		return true;
 	// the externally controlled knobs, validated exactly like the CPU path (Scene::RefineMesh):
 	// their ASSERT twins inside the shared stepper are contracts, not input checks
-	if (nScales == 0) {
-		VERBOSE("error: --scales must be at least 1");
-		return false;
-	}
 	if (!(fRegularityWeight >= 0 && fRegularityWeight*MeshRefineStep::StepMax <= 1.f)) {
 		VERBOSE("error: --regularity-weight %g is outside [0, %g]: one full step of the"
 			" regularization term must not amplify the Laplacian it is applied to"

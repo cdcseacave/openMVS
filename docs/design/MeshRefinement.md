@@ -316,7 +316,7 @@ runs (`MeshRefineCUDA::PrefetchImages`), so a scale switch pays only the vertex/
 | `--adaptive-face-size` | `OPTREFINE::bAdaptiveFaceSize` | `true` | per-vertex sizing field instead of one scalar density |
 | `--simplify-tolerance` | `OPTREFINE::fSimplifyTolerance` | `0.25` (px) | post-refinement decimation tolerance; `0` disables it |
 | `--fast` | preset | `false` | fills unset `--max-face-area 32`/`--simplify-tolerance 0.5` |
-| `--scales` | `OPT::nScales` | `2` | coarse-to-fine passes |
+| `--scales` | `OPT::nScales` | `2` | coarse-to-fine passes (0 returns the input mesh unchanged) |
 | `--scale-step` | `OPT::fScaleStep` | `0.5` | per-scale image scale factor |
 | `--alternate-pair` | `OPT::nAlternatePair` | `0` (both) | `1` alternate, `2` left only, `3` right only |
 | `--regularity-weight` | `OPT::fRegularityWeight` (`w`) | `0.2` | photo-consistency vs. regularization balance |
