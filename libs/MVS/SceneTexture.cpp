@@ -100,8 +100,8 @@ using namespace MVS;
 //    that is a contiguous slice of the spatial sort — inherently spatially coherent.
 //
 // 3. TRIAL PACKING & SHRINKING:
-//    The batch is verified by trial bin packing using the exact same packer and heuristic
-//    that the actual packing loop will use. If the trial fails (the area estimate was too
+//    The batch is verified by trial packing of the patch rectangles (which bound the footprints
+//    the pages are then packed with, see PackTexturePagesMasks). If the trial fails (the area estimate was too
 //    optimistic), the batch is shrunk by removing ~10% of patches from the end — the spatial
 //    border toward the next region. This is repeated until the trial succeeds.
 //
@@ -233,6 +233,7 @@ struct MeshTexture {
 	struct PatchRect {
 		cv::Rect rect;
 		uint32_t patchIdx;
+		bool transposed = false; // the patch is stored transposed (set by the footprint packer)
 	};
 	using PatchRectArr = std::vector<PatchRect>;
 
@@ -275,54 +276,235 @@ struct MeshTexture {
 		std::vector<PatchRectArr> pages;
 	};
 
-	// Apply OpenMVS's texture strategy through halfmesh's packer: grow one square
-	// page until it holds as much as it can, and when the hard maximum stops the
-	// growth, open another page estimated for whatever is left. Every page gets
-	// its own estimate, so nTextureSizeMultiple applies to all of them.
-	static bool PackTexturePages(
-		const PatchRectArr& patches, int multiple, int maxTextureSize, PackedTexturePages& packed)
+	// a page dimension: up to the multiple, or to a power of two
+	static int RoundTextureSize(int size, int multiple) {
+		ASSERT(size > 0);
+		if (multiple > 0)
+			return (size + multiple - 1) / multiple * multiple;
+		int pow2(1);
+		while (pow2 < size)
+			pow2 *= 2;
+		return pow2;
+	}
+
+	// the texels a patch needs in the atlas: the pixels its faces cover plus the border bilinear and
+	// mipmapped lookups read around them; packed on a grid of MaskBlock x MaskBlock pixel blocks, each
+	// block row of the footprint described by the block columns it spans
+	static constexpr int MaskBlock = 4;
+	struct PatchMask {
+		Image8U mask; // the patch rectangle; non-zero on the footprint
+		struct Profile {
+			int cols; // block columns
+			std::vector<int> start, end; // per block row: the block columns [start,end) it spans (start >= end: empty)
+			std::vector<int> rowOrder; // the non-empty block rows, longest span first
+			uint64_t area; // blocks covered by the spans
+		} profiles[2]; // as in the image, and transposed
+	};
+	static void ComputeMaskProfile(const Image8U& mask, PatchMask::Profile& profile) {
+		const int rows((mask.rows + MaskBlock - 1) / MaskBlock);
+		profile.cols = (mask.cols + MaskBlock - 1) / MaskBlock;
+		profile.start.assign(rows, profile.cols);
+		profile.end.assign(rows, 0);
+		for (int r=0; r<mask.rows; ++r) {
+			const uint8_t* const row(mask.ptr<uint8_t>(r));
+			int c(0);
+			while (c < mask.cols && !row[c])
+				++c;
+			if (c == mask.cols)
+				continue;
+			int e(mask.cols);
+			while (!row[e-1])
+				--e;
+			const int br(r / MaskBlock);
+			profile.start[br] = MINF(profile.start[br], c / MaskBlock);
+			profile.end[br] = MAXF(profile.end[br], (e + MaskBlock - 1) / MaskBlock);
+		}
+		profile.rowOrder.clear();
+		profile.area = 0;
+		for (int br=0; br<rows; ++br) {
+			if (profile.start[br] >= profile.end[br])
+				continue;
+			profile.rowOrder.emplace_back(br);
+			profile.area += profile.end[br] - profile.start[br];
+		}
+		ASSERT(profile.area > 0);
+		std::sort(profile.rowOrder.begin(), profile.rowOrder.end(), [&profile](int a, int b) {
+			return profile.end[a]-profile.start[a] > profile.end[b]-profile.start[b];
+		});
+	}
+
+	// bottom-left first-fit packing of the footprints into a page of the given width: each block row of
+	// the page keeps its free block-column intervals; in the given order, each patch, in whichever
+	// orientation goes lower, takes the lowest row, then the leftmost column, where every one of its
+	// row spans lies in a free interval of the page row it falls on; patches that would pass maxHeight
+	// are left over
+	static void PackMasksFirstFit(const std::vector<PatchMask>& masks, const std::vector<uint32_t>& order,
+		int width, int maxHeight, PatchRectArr& page, std::vector<uint32_t>& leftover)
 	{
-		PatchRectArr remaining(patches);
-		while (!remaining.empty()) {
-			const std::vector<cv::Rect> rects(ExtractRects(remaining));
-			int textureSize = EstimateTextureSize(rects, multiple);
-			if (maxTextureSize > 0)
-				textureSize = MINF(textureSize, maxTextureSize);
-			halfmesh::RectPackParams params;
-			params.pageSize = cv::Size(textureSize, textureSize);
-			params.mode = halfmesh::RectPackMode::GrowSinglePage;
-			params.maxPageSize = maxTextureSize > 0
-				? cv::Size(maxTextureSize, maxTextureSize)
-				: cv::Size();
-			params.padding = 0;
-			params.allowRotation = true;
-			std::vector<halfmesh::RectPlacement> placements;
-			const halfmesh::RectPackResult result(
-				halfmesh::PackRectangles(rects, params, placements));
-			// halfmesh reports what did not fit rather than silently enlarging the
-			// atlas past the cap, so leftovers are expected and open the next page.
-			PatchRectArr page, leftover;
-			page.reserve(result.numPacked);
-			leftover.reserve(remaining.size() - result.numPacked);
-			for (size_t i = 0; i < remaining.size(); ++i) {
-				if (placements[i].packed && placements[i].page == 0)
-					page.emplace_back(PatchRect{placements[i].rect, remaining[i].patchIdx});
-				else
-					leftover.emplace_back(remaining[i]);
+		const int W(width / MaskBlock), H(maxHeight / MaskBlock);
+		ASSERT(W > 0 && H > 0);
+		typedef std::pair<int,int> Interval; // [first,second)
+		typedef std::vector<Interval> Intervals;
+		std::vector<Intervals> freeRows(H, Intervals{Interval(0, W)});
+		std::vector<int> maxFree(H, W); // longest free interval of each page row
+		Intervals feasible, next;
+		// per footprint size (block columns, rows): the row below which the last search for that size
+		// found no place; space is only ever taken, so a footprint of the same size starts there
+		std::unordered_map<PairIdx,int> cursors;
+		for (const uint32_t idxPatch: order) {
+			const PatchMask& patchMask = masks[idxPatch];
+			int bestX(0), bestY(std::numeric_limits<int>::max()), bestO(-1);
+			for (int o=0; o<2; ++o) {
+				const PatchMask::Profile& p = patchMask.profiles[o];
+				const int rows((int)p.start.size());
+				if (p.cols > W)
+					continue;
+				const int r0(p.rowOrder.front()), len0(p.end[r0]-p.start[r0]);
+				int& cursor = cursors[PairIdx((uint32_t)p.cols, (uint32_t)rows)];
+				int y(cursor);
+				for (; y+rows<=H && y<bestY; ++y) {
+					if (maxFree[y+r0] < len0)
+						continue;
+					// cheap rejection first: a row whose longest free interval is shorter than its span
+					bool bFits(true);
+					for (const int r: p.rowOrder)
+						if (maxFree[y+r] < p.end[r]-p.start[r]) {
+							bFits = false;
+							break;
+						}
+					if (!bFits)
+						continue;
+					// the columns the patch can start at: for each of its rows, those that put the row's
+					// span inside a free interval of the page row, intersected over the rows
+					feasible.assign(1, Interval(0, W-p.cols+1));
+					for (const int r: p.rowOrder) {
+						const int start(p.start[r]), end(p.end[r]), len(end-start);
+						const Intervals& freeRow = freeRows[y+r];
+						next.clear();
+						for (const Interval& g: feasible) {
+							// the free intervals that can hold the span for some x in g
+							auto it(std::lower_bound(freeRow.cbegin(), freeRow.cend(), g.first+end,
+								[](const Interval& gap, int v) { return gap.second < v; }));
+							for (; it != freeRow.cend() && it->first <= g.second-1+start; ++it) {
+								if (it->second-it->first < len)
+									continue;
+								const Interval common(MAXF(g.first, it->first-start), MINF(g.second, it->second-end+1));
+								if (common.first < common.second)
+									next.emplace_back(common);
+							}
+						}
+						feasible.swap(next);
+						if (feasible.empty())
+							break;
+					}
+					if (!feasible.empty()) {
+						bestX = feasible.front().first; bestY = y; bestO = o;
+						break;
+					}
+				}
+				cursor = y;
 			}
-			// A page that took nothing cannot make progress, so this is where the
-			// loop has to stop rather than spin: it means one patch does not fit even
-			// a full-size page. Checked on what was actually taken, not on the
-			// reported count, so termination does not rest on GrowSinglePage
-			// emitting exactly one page.
-			if (page.empty()) {
+			if (bestO < 0) {
+				leftover.emplace_back(idxPatch);
+				continue;
+			}
+			// occupy the spans
+			const PatchMask::Profile& p = patchMask.profiles[bestO];
+			for (const int r: p.rowOrder) {
+				Intervals& freeRow = freeRows[bestY+r];
+				const Interval span(bestX+p.start[r], bestX+p.end[r]);
+				const auto it(std::lower_bound(freeRow.begin(), freeRow.end(), span.second,
+					[](const Interval& gap, int v) { return gap.second < v; }));
+				ASSERT(it != freeRow.end() && it->first <= span.first && span.second <= it->second);
+				const Interval gap(*it);
+				if (gap.first < span.first && span.second < gap.second) {
+					it->second = span.first;
+					freeRow.insert(it+1, Interval(span.second, gap.second));
+				} else if (gap.first < span.first) {
+					it->second = span.first;
+				} else if (span.second < gap.second) {
+					it->first = span.second;
+				} else {
+					freeRow.erase(it);
+				}
+				if (gap.second-gap.first == maxFree[bestY+r]) {
+					int longest(0);
+					for (const Interval& f: freeRow)
+						longest = MAXF(longest, f.second-f.first);
+					maxFree[bestY+r] = longest;
+				}
+			}
+			const cv::Size size(bestO ? cv::Size(patchMask.mask.rows, patchMask.mask.cols) : patchMask.mask.size());
+			page.emplace_back(PatchRect{cv::Rect(cv::Point(bestX*MaskBlock, bestY*MaskBlock), size), idxPatch, bestO == 1});
+		}
+	}
+
+	// pack the patch footprints into pages: each page takes the width (a page size around the square
+	// root of the footprint area: half, equal or double) that leaves the fewest patches over and then
+	// the smallest page, cropped to the extent the patches use
+	static bool PackTexturePagesMasks(
+		const PatchRectArr& patches, const std::vector<PatchMask>& masks, int multiple, int maxTextureSize, PackedTexturePages& packed)
+	{
+		std::vector<uint32_t> remaining;
+		remaining.reserve(patches.size());
+		for (const PatchRect& patch: patches)
+			remaining.emplace_back(patch.patchIdx);
+		std::sort(remaining.begin(), remaining.end(), [&masks](uint32_t a, uint32_t b) {
+			return masks[a].profiles[0].area > masks[b].profiles[0].area;
+		});
+		while (!remaining.empty()) {
+			uint64_t area(0);
+			int minWidth(0);
+			for (const uint32_t idxPatch: remaining) {
+				const PatchMask& patchMask = masks[idxPatch];
+				area += patchMask.profiles[0].area * (MaskBlock*MaskBlock);
+				minWidth = MAXF(minWidth, MINF(patchMask.mask.cols, patchMask.mask.rows));
+			}
+			int side(RoundTextureSize(MAXF(CEIL2INT(SQRT((double)area)), 1), multiple));
+			if (maxTextureSize > 0)
+				side = MINF(side, maxTextureSize);
+			const int maxHeight(maxTextureSize > 0 ? maxTextureSize : side*4);
+			std::vector<int> widths;
+			for (const int w: {side/2, side, side*2}) {
+				int width(MAXF(RoundTextureSize(MAXF(w, 1), multiple), RoundTextureSize(minWidth, multiple)));
+				if (maxTextureSize > 0)
+					width = MINF(width, maxTextureSize);
+				if (std::find(widths.begin(), widths.end(), width) == widths.end())
+					widths.emplace_back(width);
+			}
+			PatchRectArr bestPage;
+			std::vector<uint32_t> bestLeftover;
+			cv::Size bestSize;
+			for (const int width: widths) {
+				if (!bestPage.empty() && bestLeftover.empty() &&
+					bestSize.area() <= (int64_t)width * RoundTextureSize(MAXF((int)((area + width - 1) / width), 1), multiple))
+					continue; // this width cannot make a smaller page
+				PatchRectArr page;
+				std::vector<uint32_t> leftover;
+				PackMasksFirstFit(masks, remaining, width, maxHeight, page, leftover);
+				if (page.empty())
+					continue;
+				cv::Size extent(0, 0);
+				for (const PatchRect& placed: page) {
+					extent.width = MAXF(extent.width, placed.rect.br().x);
+					extent.height = MAXF(extent.height, placed.rect.br().y);
+				}
+				const cv::Size size(MINF(RoundTextureSize(extent.width, multiple), width), MINF(RoundTextureSize(extent.height, multiple), maxHeight));
+				if (bestPage.empty() || leftover.size() < bestLeftover.size() ||
+					(leftover.size() == bestLeftover.size() && size.area() < bestSize.area())) {
+					bestPage.swap(page);
+					bestLeftover.swap(leftover);
+					bestSize = size;
+				}
+			}
+			if (bestPage.empty()) {
 				VERBOSE("error: the maximum texture size chosen cannot fit a patch: %u texture patches do not fit a %dx%d page",
-					(unsigned)remaining.size(), textureSize, textureSize);
+					(unsigned)remaining.size(), maxTextureSize, maxTextureSize);
 				return false;
 			}
-			packed.pageSizes.emplace_back(result.pageSize);
-			packed.pages.emplace_back(std::move(page));
-			remaining = std::move(leftover);
+			packed.pageSizes.emplace_back(bestSize);
+			packed.pages.emplace_back(std::move(bestPage));
+			remaining.swap(bestLeftover);
 		}
 		return true;
 	}
@@ -2434,6 +2616,42 @@ bool MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 			spatialGroups.emplace_back();
 		spatialGroups.back().emplace_back(PatchRect{texturePatches.back().rect, numValidPatches});
 
+		// the footprint of each patch: its faces rasterized in the patch rectangle (and the pixels holding
+		// their corners, for slivers no pixel centre falls in), dilated by the border
+		std::vector<PatchMask> masks(texturePatches.size()); {
+			#ifdef TEXOPT_USE_OPENMP
+			#pragma omp parallel for schedule(dynamic)
+			for (int_t i=0; i<(int_t)texturePatches.size(); ++i) {
+			#else
+			FOREACH(i, texturePatches) {
+			#endif
+				const TexturePatch& texturePatch = texturePatches[(uint32_t)i];
+				PatchMask& patchMask = masks[(size_t)i];
+				if (texturePatch.label == NO_ID) {
+					patchMask.mask.create(texturePatch.rect.size());
+					patchMask.mask.setTo(255);
+				} else {
+					Image8U mask(texturePatch.rect.size(), (uint8_t)0);
+					struct RasterMask {
+						Image8U& image;
+						inline void operator()(const ImageRef& pt) {
+							if (image.isInside(pt))
+								image(pt) = 255;
+						}
+					} data{mask};
+					for (const FIndex idxFace: texturePatch.faces) {
+						const TexCoord* tri = faceTexcoords.data()+idxFace*3;
+						Image8U::RasterizeTriangle(tri[0], tri[1], tri[2], data);
+						for (int v=0; v<3; ++v)
+							data(ImageRef(FLOOR2INT(tri[v].x), FLOOR2INT(tri[v].y)));
+					}
+					cv::dilate(mask, patchMask.mask, cv::getStructuringElement(cv::MORPH_RECT, cv::Size(border*2+1, border*2+1)));
+				}
+				ComputeMaskProfile(patchMask.mask, patchMask.profiles[0]);
+				ComputeMaskProfile(Image8U(patchMask.mask.t()), patchMask.profiles[1]);
+			}
+		}
+
 		// pack patches: one pack per texture file
 		std::vector<PatchRectArr> placedRects; {
 			for (const PatchRectArr& patches : spatialGroups) {
@@ -2441,7 +2659,7 @@ bool MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 					continue;
 				TD_TIMER_STARTD();
 				PackedTexturePages packed;
-				if (!PackTexturePages(patches, nTextureSizeMultiple, maxTextureSize, packed))
+				if (!PackTexturePagesMasks(patches, masks, nTextureSizeMultiple, maxTextureSize, packed))
 					return false;
 				ASSERT(packed.pages.size() == packed.pageSizes.size());
 				FOREACH(p, packed.pages) {
@@ -2450,8 +2668,8 @@ bool MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 					texturesDiffuse.emplace_back(pageSize.height, pageSize.width)
 						.setTo(cv::Scalar(colEmpty.b, colEmpty.g, colEmpty.r));
 				}
-				DEBUG_ULTIMATE("\tpacking texture completed: %u patches, %u texture-size, %u textures (%s)",
-					(unsigned)patches.size(), (unsigned)packed.pageSizes.front().width,
+				DEBUG_ULTIMATE("\tpacking texture completed: %u patches, %ux%u texture-size, %u textures (%s)",
+					(unsigned)patches.size(), (unsigned)packed.pageSizes.front().width, (unsigned)packed.pageSizes.front().height,
 					(unsigned)packed.pages.size(), TD_TIMER_GET_FMT().c_str());
 			}
 		}
@@ -2466,21 +2684,28 @@ bool MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 		FOREACH(idxTexture, placedRects) {
 			FOREACH(idxPlacedPatch, placedRects[idxTexture]) {
 		#endif
-				const TexturePatch& texturePatch = texturePatches[placedRects[idxTexture][idxPlacedPatch].patchIdx];
-				const cv::Rect& rect = placedRects[idxTexture][idxPlacedPatch].rect;
+				const PatchRect& placed = placedRects[idxTexture][idxPlacedPatch];
+				const TexturePatch& texturePatch = texturePatches[placed.patchIdx];
+				const cv::Rect& rect = placed.rect;
 				// copy patch image
 				ASSERT((rect.width == texturePatch.rect.width && rect.height == texturePatch.rect.height) ||
 					(rect.height == texturePatch.rect.width && rect.width == texturePatch.rect.height));
+				ASSERT(rect.width == (placed.transposed ? texturePatch.rect.height : texturePatch.rect.width));
 				int x(0), y(1);
+				if (placed.transposed) {
+					x = 1; y = 0;
+				}
 				if (texturePatch.label != NO_ID) {
 					const Image& imageData = images[texturePatch.label];
 					cv::Mat patch(imageData.image(texturePatch.rect));
-					if (rect.width != texturePatch.rect.width) {
+					// copy only the footprint: footprints never overlap, their rectangles do
+					const Image8U& mask = masks[placed.patchIdx].mask;
+					if (placed.transposed) {
 						// flip patch and texture-coordinates
-						patch = patch.t();
-						x = 1; y = 0;
+						cv::Mat(patch.t()).copyTo(texturesDiffuse[idxTexture](rect), cv::Mat(mask.t()));
+					} else {
+						patch.copyTo(texturesDiffuse[idxTexture](rect), mask);
 					}
-					patch.copyTo(texturesDiffuse[idxTexture](rect));
 				}
 				// compute final texture coordinates
 				const TexCoord offset(rect.tl());
@@ -2510,8 +2735,10 @@ bool MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 			FOREACH(idxTexture, placedRects) {
 			#endif
 				Image8U covered(texturesDiffuse[idxTexture].size(), (uint8_t)0);
-				for (const PatchRect& placed: placedRects[idxTexture])
-					covered(placed.rect).setTo(255);
+				for (const PatchRect& placed: placedRects[idxTexture]) {
+					const Image8U& mask = masks[placed.patchIdx].mask;
+					covered(placed.rect).setTo(255, placed.transposed ? cv::Mat(mask.t()) : cv::Mat(mask));
+				}
 				PushPullFill(texturesDiffuse[idxTexture], covered);
 			}
 		}
@@ -2554,11 +2781,13 @@ bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsi
 		if (!texture.GenerateTexture(bGlobalSeamLeveling, bLocalSeamLeveling, nTextureSizeMultiple, colEmpty, fSharpnessWeight, maxTextureSize))
 			return false;
 		#if TD_VERBOSE != TD_VERBOSE_OFF
-		size_t patchPixels(0);
+		size_t patchPixels(0), texturePixels(0);
 		for (const MeshTexture::TexturePatch& texturePatch: texture.texturePatches)
 			patchPixels += (size_t)texturePatch.rect.area();
+		for (const Image8U3& textureDiffuse: mesh.texturesDiffuse)
+			texturePixels += (size_t)textureDiffuse.area();
 		#endif
-		DEBUG_EXTRA("Generating texture atlas and image completed: %u patches (%.2f MPixels), %u image size, %u textures (%s)", texture.texturePatches.size(), (double)patchPixels/(1024*1024), mesh.texturesDiffuse[0].width(), mesh.texturesDiffuse.size(), TD_TIMER_GET_FMT().c_str());
+		DEBUG_EXTRA("Generating texture atlas and image completed: %u patches (%.2f MPixels), %ux%u image size, %u textures (%.2f MPixels) (%s)", texture.texturePatches.size(), (double)patchPixels/(1024*1024), mesh.texturesDiffuse[0].width(), mesh.texturesDiffuse[0].height(), mesh.texturesDiffuse.size(), (double)texturePixels/(1024*1024), TD_TIMER_GET_FMT().c_str());
 	}
 
 	return true;

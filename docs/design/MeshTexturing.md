@@ -68,13 +68,26 @@ patch, textured with `--empty-color`.
 
 ### 2.4 Atlas
 
-- Patches are grouped spatially (`SplitPatchesSpatially`) and each group is packed by halfmesh's
-  skyline packer (`PackTexturePages`, rotation allowed, no padding) into square pages grown to fit,
-  at most `--max-texture-size` (default 8192); a group that does not fit opens another page.
-- The patch pixels are copied into the pages; texels no patch covers are filled by push-pull over a
-  box pyramid of the covered texels (`PushPullFill`), so a mipmapped lookup near a patch border
-  averages its own surroundings instead of the empty colour (which only the unseen faces' patch
-  keeps).
+- Patches are grouped spatially (`SplitPatchesSpatially`: sorted along the longest axis of their
+  centroids, cut where a trial rectangle packing stops fitting one `--max-texture-size` page).
+- Each patch is packed by its **footprint**, not its rectangle: its faces rasterized in the patch
+  rectangle (plus the pixels holding their corners) dilated by the 2 px border, described per row of
+  4x4-pixel blocks by the block columns it spans (`PatchMask`, `ComputeMaskProfile`, for the patch as
+  is and transposed).
+- `PackMasksFirstFit`: bottom-left first fit on the block grid. Every page row keeps its free
+  intervals; the patches, largest footprint first, each take the lowest row and then the leftmost
+  column where all their row spans lie in free intervals, in whichever orientation lands lower. The
+  search for a footprint starts at the row where the last search for a footprint of the same block
+  size stopped (space is only ever taken, so nothing below it fits that size).
+- `PackTexturePagesMasks`: the page width is tried at half, one and two times the rounded square root
+  of the footprint area; the width leaving the fewest patches over, then the smallest page, wins
+  (a width that cannot beat the best page is skipped). The page is cropped to the extent its
+  patches use, each dimension rounded up to a power of two (or `--texture-size-multiple`), so pages
+  need not be square; patches over the `--max-texture-size` height open another page.
+- Only the footprint pixels are copied into the page (rectangles overlap, footprints do not); the
+  other texels are filled by push-pull over a box pyramid of the footprints (`PushPullFill`), so a
+  mipmapped lookup near a patch border averages its own surroundings instead of the empty colour
+  (which only the unseen faces' patch keeps).
 - `--sharpness-weight` > 0 applies an unsharp mask (sigma 1.5) to the pages; disabled by default.
 
 ### 2.5 Vertex colours (`ComputeVertexColors`, `--vertex-colors`)
@@ -122,6 +135,16 @@ unseen are excluded for every arm).
 
 TextureMesh peak RAM (HJ25 hold-out): 2.5-3.0 GB vs 5.8 GB with the 2x raster.
 
+| atlas (hold-out runs) | HJ8 | F11 | HJ25 | Ignatius |
+|---|---|---|---|---|
+| square pages of patch rectangles | 64 MT | 64 MT | 64 MT | 64 MT |
+| footprint packing (current) | 32 MT | 32 MT | 32 MT | 32 MT |
+| triangle fill, current | 0.34 | 0.36 | 0.57 | 0.26 |
+| Acute3D fill, same mesh | 0.33 | 0.36 | 0.39 | - |
+
+Same PSNR at full resolution, +0.01..+0.03 dB at mip 3; the atlas stage takes the same time
+(HJ25 9.0 s vs 9.3 s, Ignatius 8.7 s vs 7.8 s).
+
 ## 6. Rejected alternatives
 
 - Gradient-magnitude data term (blurred Sobel x cos^2, global 95th-percentile normalization):
@@ -133,11 +156,14 @@ TextureMesh peak RAM (HJ25 hold-out): 2.5-3.0 GB vs 5.8 GB with the 2x raster.
 - Merging same-view patches whose rectangles overlap (not only contained ones): -4% patch pixels but
   the page size never changed and the atlas stage was 20% slower.
 - Unsharp mask by default: lowered PSNR and SSIM on every scene.
+- Horizon ("Tetris") packing of the footprints: 44-58% of the page used, no smaller page than rectangles.
+- 1 px footprint border: footprint area -2..-5% (the block grid dominates), no page smaller, mip 3 -0.01..-0.04 dB.
+- 2x2-pixel blocks: footprint area -3..-14%, no page smaller on any scene, atlas stage +0.5..+1.7 s.
 
 ## 7. Open items
 
-- Atlas fill: triangles cover only 13-28% of the page texels (rectangle packing of irregular patches,
-  power-of-two square pages); Acute3D packs exact patch masks for 33-56%.
+- Atlas fill: what the power-of-two rounding of the page dimensions leaves empty (a page is 50-90%
+  used); `--texture-size-multiple` rounds finer.
 - The images stay loaded from view selection to atlas generation; peak RAM still grows with the view
   count (the face/depth rasters are per thread).
 - Faces no view sees get the empty colour; a colour diffused from the neighbouring faces would be
