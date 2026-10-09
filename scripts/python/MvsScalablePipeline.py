@@ -8,11 +8,10 @@ the fist step is to compute all depth maps without fusion:
 
 DensifyPointCloud scene.mvs --fusion-mode 1
 
-Next split the scene in sub-scenes using the area parameter, which is related to the inverse of GSD;
-it is a bit non intuitive, but normally it should remain constant for a desired memory limit;
-for example you can use the bellow value to limit memory usage to ~16GB:
+Next split the scene in sub-scenes whose depth-map fusion and mesh reconstruction each fit a memory
+budget, in GB (a negative value uses the physical memory minus 15%):
 
-DensifyPointCloud scene.mvs --sub-scene-area 660000
+DensifyPointCloud scene.mvs --sub-scene-memory 16
 
 disable depth-maps re-filtering by creating a file Densify.ini with just this line:
 
@@ -26,8 +25,11 @@ DensifyPointCloud scene_000n.mvs --dense-config-file Densify.ini
 
 This script helps to automate the process of calling DensifyPointCloud/ReconstructMesh on all sub-scenes.
 
-Each sub-scene is reconstructed independently: the meshes of adjacent sub-scenes are cropped to
-their bounding boxes and are not stitched, so their boundaries can have gaps or unmatched vertices.
+Each sub-scene is reconstructed independently; MvsMergeChunks.py then keeps of each sub-scene mesh
+the faces whose centroid lies in its own box and concatenates them into one mesh (the boundaries are
+not stitched, so they can have gaps or unmatched vertices):
+
+MvsMergeChunks.py scene_XXXX.mvs scene_XXXX_mesh.ply merged_mesh.ply
 
 usage: MvsScalablePipeline.py openMVS_module input_scene <options>
 
