@@ -117,7 +117,7 @@ public:
 		AABB3f aabb;
 	};
 	typedef cList<ImagesChunk,const ImagesChunk&,2,16,uint32_t> ImagesChunkArr;
-	unsigned Split(ImagesChunkArr& chunks, float maxMemory, int depthMapStep=8) const;
+	bool Split(ImagesChunkArr& chunks, float maxMemory, int depthMapStep=8) const;
 	bool ExportChunks(const ImagesChunkArr& chunks, const String& path, ARCHIVE_TYPE type=ARCHIVE_DEFAULT) const;
 
 	// Transform scene

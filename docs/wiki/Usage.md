@@ -161,6 +161,8 @@ Per-step options can be appended with `--<step-number> <key> <value>` (drop the 
 python MvgMvsPipeline.py <images_folder> <output_folder> --preset SEQUENTIAL --1 p HIGH n 8 --2 n ANNL2
 ```
 
+The dense steps 18-21 split a scene that does not fit this machine's memory into sub-scenes (see [Large Scenes](#large-scenes)); `--sub-scene-memory off` disables the split, a number of GB sets the budget.
+
 For the full step / preset / passthrough reference, invoke `-h`:
 
 ```
@@ -320,6 +322,45 @@ The obtained mesh plus texture:
 ![textured mesh](https://github.com/cdcseacave/openMVS_sample/blob/master/scene_dense_mesh_refine_texture.jpg)
 
 Note that the triangles textured in orange (default) are not visible in any of the input images, and can be colored differently or removed.
+
+</details>
+
+<a name="large-scenes"></a>
+<details>
+<summary><strong>Large Scenes: split into sub-scenes that fit this machine</strong></summary>
+
+A scene with many images or a large dense point-cloud can need more memory for the depth-map fusion, the mesh reconstruction and the refinement than the machine has. [`MvsScalablePipeline.py`](https://github.com/cdcseacave/openMVS/blob/master/scripts/python/MvsScalablePipeline.py) runs the whole dense chain — point-cloud, mesh, refined mesh and texture — and splits the scene only when it has to:
+
+```
+python MvsScalablePipeline.py scene.mvs
+```
+
+1. the depth-maps of the whole scene are estimated (`DensifyPointCloud --fusion-mode 1`);
+2. the memory each stage needs is predicted from the depth-maps (`DensifyPointCloud --sub-scene-memory`): if the scene fits the memory available on this machine (less a 10% reserve, at least 2 GB), it is reconstructed whole, exactly as by the modules themselves; otherwise it is cut into boxes that each fit, written as `subscenes/scene_XXXX.mvs`;
+3. every box is fused, meshed and refined on its own, one after the other;
+4. the box point-clouds and meshes are merged ([`MvsMergeChunks.py`](https://github.com/cdcseacave/openMVS/blob/master/scripts/python/MvsMergeChunks.py): each box keeps what lies inside it) and the merged mesh is textured with all the images.
+
+The results have the usual names: `scene_dense.ply`, `scene_dense_mesh.ply`, `scene_dense_mesh_refined.ply` and `scene_dense_mesh_refined_texture.mvs` (+ `.ply` and texture images).
+
+Options:
+
+| option | meaning |
+|---|---|
+| `--memory auto\|off\|GB` | memory budget per sub-scene: `auto` (default) fits this machine, `off` never splits, a number of GB sets the budget, e.g. to leave room for other programs |
+| `--steps densify,mesh,refine,texture` | the stages to run (default all) |
+| `--densify "..."`, `--mesh "..."`, `--refine "..."`, `--texture "..."` | extra options for that module, e.g. `--densify "--resolution-level 0 --number-views 24"` |
+| `--resume` | skip a stage whose output exists already (continue an interrupted run) |
+| `--bin <folder>` | the OpenMVS binaries, if they are not in `PATH` |
+
+`MvgMvsPipeline.py` runs its dense steps (18-21) through this script by default; `--sub-scene-memory off` restores the plain module calls, and a number of GB sets the budget.
+
+The sub-scenes are not stitched: the merged mesh can show small seams where two boxes meet, so a scene that fits is never split. The split itself can also be run by hand, on depth-maps computed with `--fusion-mode 1`:
+
+```
+DensifyPointCloud scene.mvs --sub-scene-memory -1 -o subscenes/scene.mvs
+```
+
+where `-1` fits this machine and a positive value is a budget in GB. The algorithm, its memory model and its validation are described in [design/SceneSplit.md](https://github.com/cdcseacave/openMVS/blob/master/docs/design/SceneSplit.md).
 
 </details>
 

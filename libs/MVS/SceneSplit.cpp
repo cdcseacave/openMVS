@@ -82,8 +82,9 @@ struct SplitCost {
 // same predicted memory, just under the budget (the octree area split used before produced
 // sub-scenes from nearly empty to over the limit, with no relation between its area and the memory a
 // stage needs). The images of a sub-scene are those whose samples fall in its box, minus the ones
-// contributing little to it.
-unsigned Scene::Split(ImagesChunkArr& chunks, float maxMemory, int depthMapStep) const
+// contributing little to it. Returns false if no depth-map gives a sample; chunks stays empty if the
+// whole scene fits.
+bool Scene::Split(ImagesChunkArr& chunks, float maxMemory, int depthMapStep) const
 {
 	TD_TIMER_STARTD();
 	ASSERT(depthMapStep > 0 && maxMemory > 0);
@@ -125,7 +126,7 @@ unsigned Scene::Split(ImagesChunkArr& chunks, float maxMemory, int depthMapStep)
 			VERBOSE("warning: %u depth-maps missing or empty, ignored by the scene split", numDepthMapsMissing);
 		if (samples.empty()) {
 			VERBOSE("error: no depth-map samples to split the scene by");
-			return 0;
+			return false;
 		}
 	}
 	const double pointsPerSample(SQUARE(depthMapStep)*SplitPointsPerDepth);
@@ -249,8 +250,10 @@ unsigned Scene::Split(ImagesChunkArr& chunks, float maxMemory, int depthMapStep)
 			(unsigned)chunkImages.size(), (unsigned)leaves[l].idxs.size(), costs[l]);
 	}
 	if (chunks.size() < 2) {
+		// the whole scene fits: no sub-scene
 		chunks.Empty();
-		return 0;
+		VERBOSE("Scene fits in %.1fGB (predicted %.1fGB): not split", maxMemory, *std::max_element(costs.begin(), costs.end()));
+		return true;
 	}
 	// remove images already completely contained by a larger chunk
 	{
@@ -287,7 +290,7 @@ unsigned Scene::Split(ImagesChunkArr& chunks, float maxMemory, int depthMapStep)
 		if (chunks[c].images.empty())
 			chunks.RemoveAt(c);
 	DEBUG_EXTRA("Scene split (%gGB max-memory): %u chunks (%s)", maxMemory, chunks.size(), TD_TIMER_GET_FMT().c_str());
-	return chunks.size();
+	return true;
 } // Split
 
 // split the scene in sub-scenes according to the given chunks array, and save them to disk

@@ -4,10 +4,13 @@
 
 A scene too large for one machine's memory is reconstructed in sub-scenes: the depth-maps are
 computed for the whole scene, the scene is then cut into boxes whose depth-map fusion and mesh
-reconstruction each fit a memory budget, every box is fused and meshed on its own, and the box meshes
-are merged. Library code: `Scene::Split` and `Scene::ExportChunks` (`libs/MVS/SceneSplit.cpp`); CLI:
-`DensifyPointCloud --sub-scene-memory <GB>` (after `--fusion-mode 1`); driver and merge:
-`scripts/python/MvsScalablePipeline.py`, `scripts/python/MvsMergeChunks.py`.
+reconstruction each fit a memory budget, every box is fused, meshed and refined on its own, the box
+point-clouds and meshes are merged, and the merged mesh is textured from all the images. A scene that
+fits the budget is not split and goes through the same modules as an unsplit run. Library code:
+`Scene::Split` and `Scene::ExportChunks` (`libs/MVS/SceneSplit.cpp`); CLI: `DensifyPointCloud
+--sub-scene-memory` (after `--fusion-mode 1`); driver and merge: `scripts/python/MvsScalablePipeline.py`
+(also run by `MvgMvsPipeline.py` for its steps 18-21, `--sub-scene-memory auto` by default),
+`scripts/python/MvsMergeChunks.py`.
 
 ## 2. Algorithm as implemented
 
@@ -35,18 +38,39 @@ An image belongs to a box if it has samples there and its share of its own sampl
 least 30% of the best share any image has in that box. An image whose samples fall >90% in a box with
 more images is then removed from the smaller box.
 
-### 2.5 Export and merge
-`ExportChunks` writes `scene_XXXX.mvs` per box with the box as the sub-scene ROI.
+### 2.5 Budget
+`--sub-scene-memory <0` (the driver's `auto`) fits the machine at the time of the split: the physical
+memory available (`Util::GetMemoryInfo().freePhysical`, page cache included on every OS: `MemAvailable`
+on Linux) less a reserve of 10% of the total and at least 2 GB, for the rest of the system and the
+error of the cost model. `Split` returns false if no depth-map gives a sample, and leaves the chunk list
+empty when the largest predicted stage of the whole scene fits: `DensifyPointCloud` then exports
+nothing and exits successfully.
+
+### 2.6 Export and merge
+`ExportChunks` writes `scene_XXXX.mvs` per box with the box as the sub-scene ROI; each sub-scene is
+fused with `--geometric-iters 0` (the depth-maps exist, only the fusion runs; on a whole scene that
+fits, the result is byte-identical to an unsplit run's on the same depth-maps) and its point-cloud is
+cropped to the box.
 `ReconstructMesh --roi-border` can grow the ROI to reconstruct with context across the boundary.
-`MvsMergeChunks.py scene_XXXX.mvs scene_XXXX_mesh.ply merged.ply` keeps of each sub-scene mesh the
-faces whose centroid lies in its box (half-open on the upper side, so a boundary face goes to exactly
-one box) and concatenates them (geometry only, no stitching).
+`MvsMergeChunks.py scene_XXXX.mvs scene_XXXX_<suffix>.ply merged.ply` keeps of each sub-scene mesh the
+faces whose centroid lies in its box, of each point-cloud the points inside it (half-open on the upper
+side, so a boundary element goes to exactly one box), and concatenates them with all their vertex
+properties, the per-point view lists included (no stitching, no texture coordinates).
+
+### 2.7 Driver
+`MvsScalablePipeline.py scene.mvs [--memory auto|off|GB]` runs in the scene's folder: depth-maps
+(`--fusion-mode 1`), split into `subscenes/`, then per sub-scene `DensifyPointCloud`, `ReconstructMesh`,
+`RefineMesh`, the merges into `scene_dense.ply`, `scene_dense_mesh.ply`, `scene_dense_mesh_refined.ply`,
+and `TextureMesh scene.mvs -m scene_dense_mesh_refined.ply`. Unsplit (`--memory off`, or a scene that
+fits) it runs the four modules on the whole scene. Extra module options go through `--densify`,
+`--mesh`, `--refine`, `--texture`; `--steps` selects stages, `--resume` skips existing outputs.
 
 ## 3. Parameters
 
 | option | default | meaning |
 |---|---|---|
-| `--sub-scene-memory` | 0 | budget per sub-scene in GB (0 disables, < 0 uses 85% of the physical memory) |
+| `DensifyPointCloud --sub-scene-memory` | 0 | budget per sub-scene in GB (0 disables, < 0 fits this machine, §2.5) |
+| `MvsScalablePipeline.py --memory`, `MvgMvsPipeline.py --sub-scene-memory` | auto | auto, off or GB |
 
 Fixed: sample step 8 px, cost constants above, image contribution 0.3, containment 0.9.
 
@@ -72,6 +96,18 @@ T&T Church (507 views, 50M points), same depth-maps, fusion `--number-views 24`,
 The area split's boxes spread 1.6-2.4x in load (max/median) with near-empty boxes next to over-full
 ones, and no area value maps to a memory budget.
 
+EPFL Herz-Jesu-P8 through `MvsScalablePipeline.py` (`--refine "--scales 1"`), refined mesh F1 (1 cm):
+
+| run | sub-scenes | wall | F1 (P / R) |
+|---|---|---|---|
+| `--memory off` | 1 | 2m02 | 0.5225 (0.5729 / 0.4803) |
+| `auto` (10.3 GB budget, scene predicted 4.2 GB) | 1, not split | 1m58 | 0.5218 (0.5715 / 0.4800) |
+| `--memory 4.2` (forced) | 2 | 1m51 | 0.5133 (0.5600 / 0.4738) |
+
+The `auto` row differs from `off` only by the CUDA depth-map estimation, which is not bit-reproducible
+between runs: re-fusing the `off` run's own depth-maps with `--geometric-iters 0` reproduces its point-cloud
+byte for byte. The forced split of an 8-view scene costs 0.009 F1 at the seam.
+
 ## 6. Rejected alternatives
 
 - Octree area split (sampling area as a proxy of memory): see §5.
@@ -81,4 +117,6 @@ ones, and no area value maps to a memory budget.
 
 - The fusion keeps a depth-map cache sized from the free memory, so its measured peak follows the
   machine as much as the box; the mesh stage, at ~3 GB for a 12 GB fusion box, is far from its budget.
-- No cost term for `RefineMesh`/`TextureMesh` per box, and no textured merge.
+- No cost term for `RefineMesh` per box (it runs on the box mesh with the box's images) and none for
+  `TextureMesh`, which runs once on the merged mesh with all the images.
+- The boundaries are not stitched: the merged mesh has seams where two boxes meet.
