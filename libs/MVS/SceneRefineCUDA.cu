@@ -119,6 +119,21 @@ __device__ inline bool pixelBary(int ix, int iy, const ProjectedFace& pf, float&
 	return true;
 }
 
+// the depth the rasterizer gave pixel (ix,iy) of the face that won it: the same projection and
+// pixelBary (the depth the rasterizer computed, up to how nvcc contracts the projection in
+// another kernel); no depth map is stored per view
+__device__ inline float pixelDepth(const Point3* __restrict__ vertices, const Point3u* __restrict__ faces,
+	uint32_t idxFace, const Camera& camera, int ix, int iy)
+{
+	ProjectedFace pf;
+	const bool seen(projectFace(vertices, faces[idxFace], camera, pf));
+	ASSERT(seen); (void)seen;
+	float nb0, nb1, nb2, depth;
+	const bool inside(pixelBary(ix, iy, pf, nb0, nb1, nb2, depth));
+	ASSERT(inside); (void)inside;
+	return depth;
+}
+
 // the projected face's bounding box padded by 0.5 px and clamped to [Border, size-Border-1],
 // the pixel range the CPU's RasterMesh::Raster accepts; false if empty. The rasterizer and the
 // accumulation walk the same box, and Border == HalfSize keeps the window kernels' margin
@@ -137,7 +152,7 @@ __device__ inline bool faceBBox(const ProjectedFace& pf, const Camera& camera,
 // 1. ProjectMesh — 1D, one thread per face, launched twice per view. Pass 1 (RESOLVE=false)
 // atomicMin's a 64-bit (depth bits << 32 | face id) key into every covered pixel, so the nearest
 // face wins and, at equal depth, the lower id; pass 2 redoes the same arithmetic and the key's
-// owner writes depth and face: one writer per pixel, a deterministic face map (the CPU's can
+// owner writes its face (the depth is recomputed where needed, see pixelDepth): one writer per pixel, a deterministic face map (the CPU's can
 // differ only on an exact depth tie on a shared edge, where the pixel goes to the same two
 // vertices either way). The whole mesh goes into every view, the faces it does not see exiting
 // early, cheaper than a host-side frustum cull per evaluation. Pass 2 also ballots, per view,
@@ -149,7 +164,6 @@ __global__ void kernelProjectMesh(
 	const Point3* __restrict__ vertices,
 	const Point3u* __restrict__ faces,
 	unsigned long long* __restrict__ projKey,
-	float* __restrict__ depthMap,
 	uint32_t* __restrict__ faceMap,
 	uint32_t* __restrict__ ownerBits, // RESOLVE only, may be NULL: bit f set iff face f wrote at least one pixel
 	Camera camera,
@@ -171,7 +185,6 @@ __global__ void kernelProjectMesh(
 				const int pixIdx = iy * width + ix;
 				if (RESOLVE) {
 					if (projKey[pixIdx] != key) continue;
-					depthMap[pixIdx] = depth;
 					faceMap[pixIdx] = (uint32_t)tid;
 					owner = true;
 				} else {
@@ -190,14 +203,36 @@ __global__ void kernelProjectMesh(
 }
 
 
+// 1b. FaceDepth — 2D, one thread per pixel, once per accumulation group: the reference view's
+// depth map (0 where uncovered) recomputed from its face map, for its pair-directions' warps and
+// window statistics
+__global__ void kernelFaceDepth(
+	const Point3* __restrict__ vertices,
+	const Point3u* __restrict__ faces,
+	const uint32_t* __restrict__ faceMap,
+	float* __restrict__ depthMap,
+	Camera camera)
+{
+	const int x = blockIdx.x * blockDim.x + threadIdx.x;
+	const int y = blockIdx.y * blockDim.y + threadIdx.y;
+	if (x >= camera.size.x() || y >= camera.size.y()) return;
+	const int pixIdx = y * camera.size.x() + x;
+	const uint32_t idxFace = faceMap[pixIdx];
+	depthMap[pixIdx] = idxFace == (uint32_t)-1 ? 0.f : pixelDepth(vertices, faces, idxFace, camera, x, y);
+}
+
+
 #ifdef _DEBUG
 // 2. CheckProjection — 2D, one thread per pixel, Debug only, after both ProjectMesh passes:
-// every covered pixel holds the payload of the face that won its key (the host presets faceMap
-// to NO_ID and depthMap to 0 before pass 2, so a stale payload cannot pass)
+// every covered pixel holds the face that won its key, whose recomputed depth is the key's up to
+// the float contraction of another kernel (the host presets faceMap to NO_ID before pass 2, so a
+// stale payload cannot pass)
 __global__ void kernelCheckProjection(
+	const Point3* __restrict__ vertices,
+	const Point3u* __restrict__ faces,
 	const unsigned long long* __restrict__ projKey,
-	const float* __restrict__ depthMap,
 	const uint32_t* __restrict__ faceMap,
+	Camera camera,
 	int width, int height)
 {
 	const int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -209,7 +244,8 @@ __global__ void kernelCheckProjection(
 	if (key == ~0ull) {
 		ASSERT(faceMap[pixIdx] == (uint32_t)-1);
 	} else {
-		ASSERT(faceMap[pixIdx] == (uint32_t)key && __float_as_uint(depthMap[pixIdx]) == (unsigned)(key >> 32));
+		ASSERT(faceMap[pixIdx] == (uint32_t)key &&
+			fabsf(pixelDepth(vertices, faces, faceMap[pixIdx], camera, x, y) - __uint_as_float((unsigned)(key >> 32))) <= 1e-5f*__uint_as_float((unsigned)(key >> 32)));
 	}
 }
 #endif
@@ -372,8 +408,10 @@ __global__ void kernelSortOwnersTile(
 // 5. ImageMeshWarp — 2D, one thread per pixel of A: image B warped into A through the mesh,
 // with the mask of the pixels that made it (the CPU's MeshRefine::ImageMeshWarp)
 __global__ void kernelImageMeshWarp(
+	const Point3* __restrict__ vertices,
+	const Point3u* __restrict__ faces,
 	const float* __restrict__ depthMapA,
-	const float* __restrict__ depthMapB,
+	const uint32_t* __restrict__ faceMapB,
 	const uint8_t* __restrict__ keepA, // per-pixel keep-mask of image A, NULL if disabled (keep everything)
 	const uint8_t* __restrict__ keepB, // per-pixel keep-mask of image B, NULL if disabled (keep everything)
 	uint8_t* __restrict__ mask,
@@ -418,9 +456,11 @@ __global__ void kernelImageMeshWarp(
 					const int idxB = iyB * widthB + ixB;
 					const int k((xB-ixB >= 0.5f ? 1 : 0) + (yB-iyB >= 0.5f ? 2 : 0));
 					const int tapIdxB(idxB + (k & 1) + (k >> 1) * widthB);
-					const float depthB(depthMapB[tapIdxB]);
+					const uint32_t idxFaceB(faceMapB[tapIdxB]);
 					// the same rounded tap gates the B-side keep-mask
-					const bool consistent(depthB > 0.f && depthB*1.0002f >= pz && (!keepB || keepB[tapIdxB]));
+					const bool consistent(idxFaceB != (uint32_t)-1 &&
+						pixelDepth(vertices, faces, idxFaceB, camB, ixB + (k & 1), iyB + (k >> 1))*1.0002f >= pz &&
+						(!keepB || keepB[tapIdxB]));
 
 					if (consistent) {
 						// +0.5: tex2D with non-normalised coordinates samples texel centres at
@@ -983,25 +1023,26 @@ __global__ void kernelReduceFaceAreasPair(
 
 void LaunchProjectMesh(
 	const Point3* vertices, const Point3u* faces,
-	unsigned long long* projKey, float* depthMap, uint32_t* faceMap, uint32_t* ownerBits,
+	unsigned long long* projKey, uint32_t* faceMap, uint32_t* ownerBits,
 	const Camera& camera, uint32_t numFaces, bool resolve)
 {
 	const int blockSize = 256;
 	const int numBlocks = ((int)numFaces + blockSize - 1) / blockSize;
 	if (resolve)
-		kernelProjectMesh<true><<<numBlocks, blockSize>>>(vertices, faces, projKey, depthMap, faceMap, ownerBits, camera, numFaces);
+		kernelProjectMesh<true><<<numBlocks, blockSize>>>(vertices, faces, projKey, faceMap, ownerBits, camera, numFaces);
 	else
-		kernelProjectMesh<false><<<numBlocks, blockSize>>>(vertices, faces, projKey, depthMap, faceMap, NULL, camera, numFaces);
+		kernelProjectMesh<false><<<numBlocks, blockSize>>>(vertices, faces, projKey, faceMap, NULL, camera, numFaces);
 }
 
 #ifdef _DEBUG
 void LaunchCheckProjection(
-	const unsigned long long* projKey,
-	const float* depthMap, const uint32_t* faceMap, int width, int height)
+	const Point3* vertices, const Point3u* faces,
+	const unsigned long long* projKey, const uint32_t* faceMap,
+	const Camera& camera, int width, int height)
 {
 	const dim3 block(16, 16);
 	const dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
-	kernelCheckProjection<<<grid, block>>>(projKey, depthMap, faceMap, width, height);
+	kernelCheckProjection<<<grid, block>>>(vertices, faces, projKey, faceMap, camera, width, height);
 }
 #endif
 
@@ -1026,8 +1067,18 @@ void LaunchSortOwnersTile(
 		vertices, faces, cameras, offsets, listIn, keys, listOut, tileShiftX, tileShiftY);
 }
 
+void LaunchFaceDepth(
+	const Point3* vertices, const Point3u* faces, const uint32_t* faceMap, float* depthMap,
+	const Camera& camera, cudaStream_t stream)
+{
+	const dim3 block(16, 16);
+	const dim3 grid((camera.size.x() + block.x - 1) / block.x, (camera.size.y() + block.y - 1) / block.y);
+	kernelFaceDepth<<<grid, block, 0, stream>>>(vertices, faces, faceMap, depthMap, camera);
+}
+
 void LaunchImageMeshWarp(
-	const float* depthMapA, const float* depthMapB,
+	const Point3* vertices, const Point3u* faces,
+	const float* depthMapA, const uint32_t* faceMapB,
 	const uint8_t* keepA, const uint8_t* keepB, uint8_t* mask,
 	const Camera& camA, const Camera& camB,
 	cudaTextureObject_t texImageB,
@@ -1036,7 +1087,7 @@ void LaunchImageMeshWarp(
 {
 	const dim3 block(16, 16);
 	const dim3 grid((camA.size.x() + block.x - 1) / block.x, (camA.size.y() + block.y - 1) / block.y);
-	kernelImageMeshWarp<<<grid, block, 0, stream>>>(depthMapA, depthMapB, keepA, keepB, mask, camA, camB, texImageB, surfImageProj);
+	kernelImageMeshWarp<<<grid, block, 0, stream>>>(vertices, faces, depthMapA, faceMapB, keepA, keepB, mask, camA, camB, texImageB, surfImageProj);
 }
 
 uint32_t LaunchComputeWindowStats(

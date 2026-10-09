@@ -552,8 +552,11 @@ one `RefineMesh` run per cell, CPU/CUDA as noted.
 5. **The Ceres arm stays opt-in.** It reaches a lower energy than the stepper but never a better F1
    on the scenes it was tested against (§2.9), so it remains a research/reference arm rather than a
    default.
-6. **CUDA device memory scales with resident view count** (roughly 13 bytes/pixel/view at the
-   default stencil: image, depth, face id, optional mask; 21 with the stencil modes 0/2, which add
-   two float gradient textures). A very large or very high-resolution scene can
-   exceed a single GPU's memory at the finest scale; the fix is to stream views in and out of
-   residency, which is unimplemented.
+6. **CUDA device memory scales with resident view count** (roughly 9 bytes/pixel/view at the
+   default stencil: image and face id, optional mask; 17 with the stencil modes 0/2, which add
+   two float gradient textures). No depth map is kept per view: the reference view's is
+   recomputed from its face map once per accumulation group (`kernelFaceDepth`), the partner's
+   depth at the warp tap from its face (`pixelDepth`), byte-identical output, Truck (251 x 2 MP)
+   8.85 -> 6.86 GB at +2% wall. A very large or very high-resolution scene can still exceed a
+   single GPU's memory at the finest scale; the fix is to stream views in and out of residency,
+   which is unimplemented.

@@ -50,19 +50,20 @@ namespace CUDA {
 
 // the rasterizer over the whole mesh, launched twice per view: resolve=false does an atomicMin
 // of the (depth, face id) key into projKey (one 64-bit word per pixel, pre-filled with ~0ull);
-// resolve=true lets the thread holding each pixel's winning key write depth/face (faceMap
-// pre-filled with NO_ID, depthMap with 0) and, when ownerBits is not NULL, sets bit f of it for
+// resolve=true lets the thread holding each pixel's winning key write its face (faceMap
+// pre-filled with NO_ID; no depth is stored, the kernels recompute it from the face) and, when ownerBits is not NULL, sets bit f of it for
 // every face f that wrote a pixel ((numFaces+31)/32 words, every word written)
 void LaunchProjectMesh(
 	const Point3* vertices, const Point3u* faces,
-	unsigned long long* projKey, float* depthMap, uint32_t* faceMap, uint32_t* ownerBits,
+	unsigned long long* projKey, uint32_t* faceMap, uint32_t* ownerBits,
 	const Camera& camera, uint32_t numFaces, bool resolve);
 
 #ifdef _DEBUG
 // after both passes: every covered pixel received its payload
 void LaunchCheckProjection(
-	const unsigned long long* projKey,
-	const float* depthMap, const uint32_t* faceMap, int width, int height);
+	const Point3* vertices, const Point3u* faces,
+	const unsigned long long* projKey, const uint32_t* faceMap,
+	const Camera& camera, int width, int height);
 #endif
 
 // the dense per-view owner lists, once per evaluation after every view is rasterized: counts
@@ -79,10 +80,18 @@ void LaunchSortOwnersTile(
 	const uint32_t* offsets, const uint32_t* listIn, uint32_t* keys, uint32_t* listOut,
 	int tileShiftX, int tileShiftY, uint32_t maxBuckets, uint32_t numViews);
 
-// image B warped into A through the mesh, and mask, the pixels that made it; keepA/keepB are
+// the depth map of a view (0 where uncovered) recomputed from its face map (pixelDepth: the
+// depth the rasterizer computed), once per accumulation group for the reference view
+void LaunchFaceDepth(
+	const Point3* vertices, const Point3u* faces, const uint32_t* faceMap, float* depthMap,
+	const Camera& camera, cudaStream_t stream);
+
+// image B warped into A through the mesh, and mask, the pixels that made it; depthMapA is A's
+// depth map (LaunchFaceDepth), B's depth at the tap is recomputed from faceMapB; keepA/keepB are
 // the per-pixel keep-masks (one byte per pixel, non-zero = keep), NULL if disabled
 void LaunchImageMeshWarp(
-	const float* depthMapA, const float* depthMapB,
+	const Point3* vertices, const Point3u* faces,
+	const float* depthMapA, const uint32_t* faceMapB,
 	const uint8_t* keepA, const uint8_t* keepB, uint8_t* mask,
 	const Camera& camA, const Camera& camB,
 	cudaTextureObject_t texImageB,

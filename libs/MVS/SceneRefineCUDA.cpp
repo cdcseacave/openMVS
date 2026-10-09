@@ -70,7 +70,6 @@ public:
 		Image8U::Size size;
 		SEACAVE::CUDA::ArrayRT32F image; // float like the CPU's View::image (see readSurfFloat in the .cu)
 		SEACAVE::CUDA::ArrayRT32F imageGrad[2]; // x/y derivatives (ComputeRefineImageGradient), stencil modes 0 and 2 only, float like the CPU's View::imageGrad: a derivative stencil produces values a half cannot hold
-		SEACAVE::CUDA::MemDevice depthMap;
 		SEACAVE::CUDA::MemDevice faceMap; // no barycentrics per pixel: kernelAccumulateFacePhoto recomputes them from the face's projection
 		SEACAVE::CUDA::MemDevice keepMask; // one byte per pixel (non-zero = keep), uploaded from HostView::keepMask only when non-empty; invalid (unallocated) == keep everything
 	};
@@ -193,6 +192,7 @@ public:
 	SEACAVE::CUDA::MemDevice projKey; // rasterizer scratch, one (depth,face) 64-bit key per pixel of the largest view
 	size_t projKeyPixels = 0; // pixels projKey was allocated for (ProjectMesh asserts every view fits)
 	SEACAVE::CUDA::ArrayRT32F imageAB; // warped image B in A, float like the CPU's imageAB
+	SEACAVE::CUDA::MemDevice depthA; // per pixel of the largest view: the depth map of the reference view of the current accumulation group (kernelFaceDepth)
 	SEACAVE::CUDA::MemDevice gradSum; // per pixel of the largest view: g_p, the photometric term the covering face's corners share, summed over the reference view's pair-directions (kernelComputeWindowStats)
 	SEACAVE::CUDA::MemDevice statsBlockSums; // 2 floats per window-statistics block of every pair-direction of one ScoreMesh(): the partials S is folded from, in slot order
 	// the raw per-vertex terms of one evaluation in ONE device buffer, so that a single download
@@ -468,7 +468,6 @@ bool MeshRefineCUDA::UploadImages()
 			}
 		}
 		const size_t area((size_t)size.area());
-		reportCudaError(view.depthMap.Reset(sizeof(float)*area));
 		reportCudaError(view.faceMap.Reset(sizeof(FIndex)*area));
 		if (host.keepMask.empty()) {
 			view.keepMask.Release();
@@ -508,6 +507,7 @@ bool MeshRefineCUDA::UploadImages()
 	maxTileBuckets = tileBuckets();
 	reportCudaError(imageAB.Reset(maxSize, CUDA_ARRAY3D_SURFACE_LDST));
 	reportCudaError(gradSum.Reset(sizeof(float)*area));
+	reportCudaError(depthA.Reset(sizeof(float)*area));
 	// one slot per 16x16 block of the window-statistics grid per pair-direction; the largest
 	// view's width and height need not come from the same view, so this is an upper bound
 	{
@@ -804,6 +804,12 @@ bool MeshRefineCUDA::ScoreMesh(MeshRefineStep::Terms& out)
 			const size_t area((size_t)views[idxImageA].size.area());
 			reportCudaError(cuMemsetD32Async(gradSum, 0, area, stream));
 			reportCudaError(cuMemsetD32Async(dirBits, 0, area, stream));
+			MVS::CUDA::LaunchFaceDepth(
+				(const MVS::CUDA::Point3*)(CUdeviceptr)vertices,
+				(const MVS::CUDA::Point3u*)(CUdeviceptr)faces,
+				(const uint32_t*)(CUdeviceptr)views[idxImageA].faceMap,
+				(float*)(CUdeviceptr)depthA,
+				MakeCUDACamera(images[idxImageA].camera, views[idxImageA].size), stream);
 			for (uint32_t bit=0; bit<32 && d<directions.size() && directions[d].i == idxImageA; ++bit, ++d)
 				ProcessPair(idxImageA, directions[d].j, numSlots, 1u << bit);
 			AccumulateView(idxImageA, group++);
@@ -880,28 +886,28 @@ void MeshRefineCUDA::ProjectMesh(const Camera& camera, const Image8U::Size& size
 	// pass 1 needs every pixel key at "no face yet" = ~0ull (larger than any real (depth,face) key)
 	reportCudaError(cuMemsetD32(projKey, 0xFFFFFFFFu, 2*(size_t)size.area()));
 	// pass 1 elects per pixel the nearest face (the lower id on a depth tie), pass 2 lets the
-	// winner write its payload; both maps are preset so that no pixel carries this view's
-	// previous evaluation forward: faceMap to NO_ID, depthMap to 0 (uncovered downstream)
+	// winner write its face; the map is preset to NO_ID (uncovered downstream) so that no pixel
+	// carries this view's previous evaluation forward. No depth map is kept: the kernels that need
+	// a pixel's depth recompute it from its face (pixelDepth), the rasterizer's up to float contraction
 	const MVS::CUDA::Camera cudaCamera(MakeCUDACamera(camera, size));
 	const FIndex numFaces(scene.mesh.faces.GetSize());
 	reportCudaError(cuMemsetD32(view.faceMap, NO_ID, size.area()));
-	reportCudaError(cuMemsetD32(view.depthMap, 0, size.area()));
 	for (int pass=0; pass<2; ++pass)
 		MVS::CUDA::LaunchProjectMesh(
 			(const MVS::CUDA::Point3*)(CUdeviceptr)vertices,
 			(const MVS::CUDA::Point3u*)(CUdeviceptr)faces,
 			(unsigned long long*)(CUdeviceptr)projKey,
-			(float*)(CUdeviceptr)view.depthMap,
 			(uint32_t*)(CUdeviceptr)view.faceMap,
 			ownerBits,
 			cudaCamera, numFaces, pass == 1);
 	#ifdef _DEBUG
 	// every covered pixel must hold the payload of exactly the face that won its key
 	MVS::CUDA::LaunchCheckProjection(
+		(const MVS::CUDA::Point3*)(CUdeviceptr)vertices,
+		(const MVS::CUDA::Point3u*)(CUdeviceptr)faces,
 		(const unsigned long long*)(CUdeviceptr)projKey,
-		(const float*)(CUdeviceptr)view.depthMap,
 		(const uint32_t*)(CUdeviceptr)view.faceMap,
-		size.width, size.height);
+		cudaCamera, size.width, size.height);
 	#endif
 }
 
@@ -916,8 +922,10 @@ void MeshRefineCUDA::ProcessPair(uint32_t idxImageA, uint32_t idxImageB, uint32_
 	const MVS::CUDA::Camera cudaCamB(MakeCUDACamera(imageDataB.camera, viewB.size));
 	// warp imageB to imageA using the mesh
 	MVS::CUDA::LaunchImageMeshWarp(
-		(const float*)(CUdeviceptr)viewA.depthMap,
-		(const float*)(CUdeviceptr)viewB.depthMap,
+		(const MVS::CUDA::Point3*)(CUdeviceptr)vertices,
+		(const MVS::CUDA::Point3u*)(CUdeviceptr)faces,
+		(const float*)(CUdeviceptr)depthA,
+		(const uint32_t*)(CUdeviceptr)viewB.faceMap,
 		viewA.keepMask.IsValid() ? (const uint8_t*)(CUdeviceptr)viewA.keepMask : NULL,
 		viewB.keepMask.IsValid() ? (const uint8_t*)(CUdeviceptr)viewB.keepMask : NULL,
 		(uint8_t*)(CUdeviceptr)mask,
@@ -934,7 +942,7 @@ void MeshRefineCUDA::ProcessPair(uint32_t idxImageA, uint32_t idxImageB, uint32_
 		viewGPU[idxImageA].surfObj, surfImageProjObj,
 		(const MVS::CUDA::Point3*)(CUdeviceptr)faceNormals,
 		(const uint32_t*)(CUdeviceptr)viewA.faceMap,
-		(const float*)(CUdeviceptr)viewA.depthMap,
+		(const float*)(CUdeviceptr)depthA,
 		cudaCamA, cudaCamB,
 		viewGPU[idxImageB].texObj, viewGPU[idxImageB].texGrad[0], viewGPU[idxImageB].texGrad[1],
 		OPTREFINE::nImageGradient, RegularizationScale,
