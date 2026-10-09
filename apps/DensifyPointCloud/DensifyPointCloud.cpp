@@ -542,9 +542,10 @@ int main(int argc, LPCTSTR* argv)
 				VERBOSE("Removed all image neighbors");
 		}
 		TD_TIMER_START();
-		if (!scene.DenseReconstruction(OPT::nFusionMode, OPT::bCrop2ROI, OPT::fBorderROI, OPT::fSampleMeshNeighbors)) {
-			if (ABS(OPT::nFusionMode) != 1)
-				return EXIT_FAILURE;
+		if (!scene.DenseReconstruction(OPT::nFusionMode, OPT::bCrop2ROI, OPT::fBorderROI, OPT::fSampleMeshNeighbors))
+			return EXIT_FAILURE;
+		if (ABS(OPT::nFusionMode) == 1) {
+			// only the depth-maps were asked for: the scene's point-cloud is not a dense one to save
 			VERBOSE("Depth-maps estimated (%s)", TD_TIMER_GET_FMT().c_str());
 			return EXIT_SUCCESS;
 		}
