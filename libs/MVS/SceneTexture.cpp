@@ -1545,7 +1545,10 @@ bool MeshTexture::FaceViewSelection(unsigned minCommonCameras, float fOutlierThr
 						const float dataCost((1.f-faceData.quality/maxFaceQuality)*MaxEnergy * faceWeight);
 						inference.SetDataCost(label, f, dataCost);
 					}
+					// the face's views are in the inference now: their memory goes to it
+					facesDatas[f].Release();
 				}
+				facesDatas.Release();
 
 				// assign the optimal view (label) to each face
 				// (label 0 is reserved as undefined)

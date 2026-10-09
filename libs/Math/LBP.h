@@ -53,9 +53,8 @@ protected:
 		NodeID nodeID1;
 		NodeID nodeID2;
 		EnergyType weight;
-		std::vector<EnergyType> newMsgs;
-		std::vector<EnergyType> oldMsgs;
-		inline DirectedEdge(NodeID _nodeID1, NodeID _nodeID2, EnergyType _weight) : nodeID1(_nodeID1), nodeID2(_nodeID2), weight(_weight) {}
+		size_t msgs; // offset of its messages, one per label of nodeID2, in oldMsgs/newMsgs
+		inline DirectedEdge(NodeID _nodeID1, NodeID _nodeID2, EnergyType _weight) : nodeID1(_nodeID1), nodeID2(_nodeID2), weight(_weight), msgs(0) {}
 	};
 
 	struct Node {
@@ -68,6 +67,9 @@ protected:
 
 	std::vector<DirectedEdge> edges;
 	std::vector<Node> nodes;
+	// the messages of every directed edge in two flat buffers (one value per label of its target
+	// node), allocated once the labels are final, at the first optimization
+	std::vector<EnergyType> oldMsgs, newMsgs;
 	FncSmoothCost fncSmoothCost;
 	// >= 0 when fncSmoothCost is the Potts model with this cost (0 for two equal labels other than
 	// label 0, pottsCost otherwise): the messages then take O(labels) instead of O(labels^2)
@@ -100,11 +102,7 @@ public:
 			node.label = label;
 			node.dataCost = dataCost;
 		}
-		for (EdgeID edgeID: node.incomingEdges) {
-			DirectedEdge& incomingEdge = edges[edgeID];
-			incomingEdge.oldMsgs.push_back(0);
-			incomingEdge.newMsgs.push_back(0);
-		}
+		ASSERT(oldMsgs.empty()); // the labels are fixed once the optimization started
 	}
 	inline void SetDataCost(LabelID label, const DataCost& cost) {
 		SetDataCost(label, cost.nodeID, cost.cost);
@@ -143,6 +141,15 @@ public:
 	}
 
 	void Optimize(unsigned num_iterations) {
+		if (oldMsgs.empty()) {
+			size_t numMsgs(0);
+			for (DirectedEdge& edge: edges) {
+				edge.msgs = numMsgs;
+				numMsgs += nodes[edge.nodeID2].labels.size();
+			}
+			oldMsgs.assign(numMsgs, EnergyType(0));
+			newMsgs.assign(numMsgs, EnergyType(0));
+		}
 		for (unsigned i = 0; i < num_iterations; ++i) {
 			#ifdef LBP_USE_OPENMP
 			#pragma omp parallel for
@@ -169,8 +176,8 @@ public:
 							const DirectedEdge& pre_edge = edges[idxIncomingEdge];
 							if (pre_edge.nodeID1 == edge.nodeID2)
 								continue;
-							energy0 += pre_edge.oldMsgs[k];
-							energy1 += pre_edge.oldMsgs[k];
+							energy0 += oldMsgs[pre_edge.msgs+k];
+							energy1 += oldMsgs[pre_edge.msgs+k];
 						}
 						e0[k] = energy0;
 						e1[k] = energy1;
@@ -189,7 +196,7 @@ public:
 								}
 							}
 						}
-						edge.newMsgs[j] = minEnergy;
+						newMsgs[edge.msgs+j] = minEnergy;
 					}
 					continue;
 				}
@@ -203,26 +210,28 @@ public:
 							const DirectedEdge& pre_edge = edges[idxIncomingEdge];
 							if (pre_edge.nodeID1 == edge.nodeID2)
 								continue;
-							energy += pre_edge.oldMsgs[k];
+							energy += oldMsgs[pre_edge.msgs+k];
 						}
 						if (minEnergy > energy)
 							minEnergy = energy;
 					}
-					edge.newMsgs[j] = minEnergy;
+					newMsgs[edge.msgs+j] = minEnergy;
 				}
 			}
+			newMsgs.swap(oldMsgs);
 			#ifdef LBP_USE_OPENMP
 			#pragma omp parallel for
 			#endif
 			for (int_t edgeID = 0; edgeID < (int_t)edges.size(); ++edgeID) {
-				DirectedEdge& edge = edges[edgeID];
-				edge.newMsgs.swap(edge.oldMsgs);
+				const DirectedEdge& edge = edges[edgeID];
+				EnergyType* const msgs(oldMsgs.data()+edge.msgs);
+				const size_t numLabels(nodes[edge.nodeID2].labels.size());
 				EnergyType minMsg(std::numeric_limits<EnergyType>::max());
-				for (EnergyType msg: edge.oldMsgs)
-					if (minMsg > msg)
-						minMsg = msg;
-				for (EnergyType& msg: edge.oldMsgs)
-					msg -= minMsg;
+				for (size_t j = 0; j < numLabels; ++j)
+					if (minMsg > msgs[j])
+						minMsg = msgs[j];
+				for (size_t j = 0; j < numLabels; ++j)
+					msgs[j] -= minMsg;
 			}
 		}
 		#ifdef LBP_USE_OPENMP
@@ -234,7 +243,7 @@ public:
 			for (size_t j = 0; j < node.labels.size(); ++j) {
 				EnergyType energy(node.dataCosts[j]);
 				for (EdgeID idxIncomingEdge: node.incomingEdges)
-					energy += edges[idxIncomingEdge].oldMsgs[j];
+					energy += oldMsgs[edges[idxIncomingEdge].msgs+j];
 				if (minEnergy > energy) {
 					minEnergy = energy;
 					node.label = node.labels[j];

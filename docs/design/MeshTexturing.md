@@ -47,6 +47,9 @@ belief propagation (`Math/LBP.h`):
   the sender's energy for a label is one of two values (same label: smoothness 0, otherwise the Potts
   cost), so the message of receiver label j is min(E0[j], min_k E1[k]); the energies are summed in the
   generic loop's order, so the messages are bit-identical to the O(labels^2) loop.
+- The messages of all directed edges live in two flat buffers allocated when the optimization
+  starts; each face's view list is released as soon as its data costs are in the inference, so
+  the labeling never holds both (Ignatius peak 3.87 -> 3.44 GB, Truck 2.95 -> 2.73 GB, 4-5% faster).
 - `--virtual-face-images` > 0 runs the same labeling on virtual faces (coplanar groups of faces
   sharing at least that many views) instead of individual faces.
 
@@ -164,7 +167,8 @@ Same PSNR at full resolution, +0.01..+0.03 dB at mip 3; the atlas stage takes th
 
 - Atlas fill: what the power-of-two rounding of the page dimensions leaves empty (a page is 50-90%
   used); `--texture-size-multiple` rounds finer.
-- The images stay loaded from view selection to atlas generation; peak RAM still grows with the view
-  count (the face/depth rasters are per thread).
+- The images stay loaded from view selection to atlas generation (every image textures some patch on
+  the scenes measured); the peak is now the face-view listing (images, per-thread face/depth rasters
+  and the growing face-view lists).
 - Faces no view sees get the empty colour; a colour diffused from the neighbouring faces would be
   closer to the surface's appearance.
