@@ -391,6 +391,12 @@ void Mesh::ComputeNormalVertices()
 		vertexNormals[face[1]] += t*ACOS(-ComputeAngleN(e0.ptr(), e1.ptr()));
 		vertexNormals[face[2]] += t*ACOS(-ComputeAngleN(e1.ptr(), e2.ptr()));
 	}
+			// no neighbour within the gradient (an isolated face, or one on a crease sharper than it on
+			// every side) keeps its own normal: the zero sum has no direction to blend in
+			if (sumNeighborNormals == Normal::ZERO) {
+				newFaceNormals[idxFace] = originalNormal;
+				continue;
+			}
 	for (Normal& vertexNormal: vertexNormals)
 		normalize(vertexNormal);
 }
