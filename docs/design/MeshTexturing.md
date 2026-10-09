@@ -22,7 +22,9 @@ For every view (in parallel, one view per thread):
    invalid for the view. Every pixel a face covers is also counted before the depth test
    (`RasterMesh::projArea`), occluded or not.
 3. The **quality** of a face in the view is the number of its visible pixels: the texture resolution
-   the view offers it, which already falls with distance and obliqueness.
+   the view offers it, which already falls with distance and obliqueness. The pixels are counted
+   (and their colours summed) per thread; only the faces the view sees are appended to the shared
+   face-view lists, inside the one critical section.
 4. A view that sees under 90% of the face's projection, with more than 2 pixels missing, keeps a
    tenth of that quality: it would copy the occluder into the face's texture, so it is chosen only
    where nothing sees the face whole.
@@ -41,6 +43,10 @@ belief propagation (`Math/LBP.h`):
 - **Smoothness**: Potts (0 for equal labels, `LBPMaxEnergy` otherwise), weighted per edge by
   `0.5 + edgeLength/avgEdgeLength`.
 - `MaxEnergy = --cost-smoothness-ratio` (default 0.1) sets the data/smoothness balance.
+- The Potts model lets each LBP message be computed in O(labels) (`LBPInference::SetSmoothCostPotts`):
+  the sender's energy for a label is one of two values (same label: smoothness 0, otherwise the Potts
+  cost), so the message of receiver label j is min(E0[j], min_k E1[k]); the energies are summed in the
+  generic loop's order, so the messages are bit-identical to the O(labels^2) loop.
 - `--virtual-face-images` > 0 runs the same labeling on virtual faces (coplanar groups of faces
   sharing at least that many views) instead of individual faces.
 
