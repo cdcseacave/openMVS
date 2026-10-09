@@ -853,9 +853,23 @@ Util::MemoryInfo Util::GetMemoryInfo()
 		ASSERT(false);
 		return MemoryInfo();
 	}
+	// the free memory is what a new allocation gets without swapping, the reclaimable page cache
+	// included: the kernel's MemAvailable estimate (Linux 3.14+), not sysinfo's freeram, which
+	// leaves the cache out and reads near zero on any machine that has been reading files
+	size_t freeMemory((size_t)info.freeram*(size_t)info.mem_unit);
+	if (FILE* meminfo = fopen("/proc/meminfo", "r")) {
+		char line[256];
+		unsigned long long kb;
+		while (fgets(line, sizeof(line), meminfo))
+			if (sscanf(line, "MemAvailable: %llu kB", &kb) == 1) {
+				freeMemory = (size_t)kb*1024;
+				break;
+			}
+		fclose(meminfo);
+	}
 	return MemoryInfo(
 		(size_t)info.totalram*(size_t)info.mem_unit,
-		(size_t)info.freeram*(size_t)info.mem_unit,
+		freeMemory,
 		(size_t)info.totalswap*(size_t)info.mem_unit,
 		(size_t)info.freeswap*(size_t)info.mem_unit
 	);
