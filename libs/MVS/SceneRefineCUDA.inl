@@ -90,16 +90,17 @@ void LaunchImageMeshWarp(
 	cudaStream_t stream);
 
 // the masked window statistics, rejection gates, ZNCC, its derivative and the pixel's
-// photometric term in one pass: pixelGrad receives g_p, the scalar the covering face's corners
-// share before their barycentrics, and maskOut (a second buffer, the window loops still read
-// mask) the pixels that contribute one. blockSums receives this pair-direction's per-block
+// photometric term in one pass: a pixel that contributes one adds g_p, the scalar the covering
+// face's corners share before their barycentrics, to gradSum and sets dirBit in dirBits (the
+// reference view's sums over its pair-directions, cleared by the host before the first one,
+// read by LaunchAccumulateFacePhoto after the last). blockSums receives this pair-direction's per-block
 // partials of the two reliability sums S is reduced from, 2 floats per 16x16 block from slot 0
 // of the passed pointer on; returns the number of blocks written. gradMode is
 // OPTREFINE::nImageGradient: texImageB is differenced directly for the central difference (1) and
 // the derivative of the bilinear interpolant (3); texGradXB/texGradYB, the precomputed stencil
 // textures, exist and are read only for the stencils that do not commute with the sampling (0, 2).
 uint32_t LaunchComputeWindowStats(
-	const uint8_t* mask, uint8_t* maskOut, float* pixelGrad, float* blockSums,
+	const uint8_t* mask, float* gradSum, uint32_t* dirBits, uint32_t dirBit, float* blockSums,
 	cudaSurfaceObject_t surfImageA, cudaSurfaceObject_t surfImageProj,
 	const Point3* normals, const uint32_t* faceMap, const float* depthMap,
 	const Camera& camA, const Camera& camB,
@@ -107,20 +108,22 @@ uint32_t LaunchComputeWindowStats(
 	int gradMode, float regScale, float gateMeanDiff, float gateVarRatio, int width, int height,
 	cudaStream_t stream);
 
-// the atomic-free photometric accumulation of one pair-direction: one thread per face the
-// reference view idxView owns (its slice of ownerList, read from ownerOffsets on the device;
-// numOwners sizes the grid, with a margin, for the evaluations that replay the launch) folds
-// its contributing pixels into its private slots, faceAcc (3 floats per face, one per corner:
-// Sum g_p*b_c), facePixels (the contributing pixel count) and faceFoot (the min footprint, read
-// only where facePixels > 0), accumulated across the directions of one evaluation (cleared by
-// the host once per evaluation), and counts the direction once per vertex in photoCount through
-// vertexStamp (one word per vertex, set to ~0u by the host once per evaluation)
+// the atomic-free photometric accumulation of one reference view's pair-directions (up to 32,
+// one bit each): one thread per face the reference view idxView owns (its slice of ownerList,
+// read from ownerOffsets on the device; numOwners sizes the grid, with a margin, for the
+// evaluations that replay the launch) folds its contributing pixels (gradSum: their terms summed
+// over the directions; dirBits: the directions they contribute to) into its private slots,
+// faceAcc (3 floats per face, one per corner: Sum g_p*b_c), facePixels (the contributing
+// (pixel, direction) count) and faceFoot (the min footprint, read only where facePixels > 0),
+// accumulated across the groups of one evaluation (cleared by the host once per evaluation), and
+// counts each direction once per vertex in photoCount through vertexStamp (one 64-bit word per
+// vertex: the group and its directions seen, set to ~0 by the host once per evaluation)
 void LaunchAccumulateFacePhoto(
 	const Point3* vertices, const Point3u* faces,
 	const uint32_t* ownerList, const uint32_t* ownerOffsets, uint32_t idxView,
-	const uint32_t* faceMap, const float* pixelGrad, const uint8_t* mask,
+	const uint32_t* faceMap, const float* gradSum, const uint32_t* dirBits,
 	float* faceAcc, float* facePixels, float* faceFoot,
-	uint32_t* vertexStamp, float* photoCount, uint32_t direction,
+	unsigned long long* vertexStamp, float* photoCount, uint32_t group,
 	const Camera& camA, uint32_t numOwners, cudaStream_t stream);
 
 // once per evaluation after every pair-direction: sumR/sumRZ receive the sums of the numSlots

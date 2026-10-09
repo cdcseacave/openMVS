@@ -538,12 +538,14 @@ __device__ inline bool computePhotoPixel(
 // 6. ComputeWindowStats — 2D, one thread per pixel: the six masked window sums, the two
 // rejection gates, ZNCC and its derivative, this pair-direction's reliability partials and the
 // pixel's photometric term, in one pass over the 7x7 window. Only warped pixels enter the sums,
-// so a window on an occlusion boundary is described by the pixels that matched. maskOut is a
-// second buffer: the window loops of the neighbouring threads still read mask.
+// so a window on an occlusion boundary is described by the pixels that matched. A contributing
+// pixel adds its term to the reference view's per-pixel sum over its pair-directions and sets
+// this direction's bit, for the one accumulation per reference view (kernelAccumulateFacePhoto).
 __global__ void kernelComputeWindowStats(
 	const uint8_t* __restrict__ mask,
-	uint8_t* __restrict__ maskOut, // the pixels that contribute a photometric term
-	float* __restrict__ pixelGrad, // their term g (computePhotoPixel), 0 elsewhere
+	float* __restrict__ gradSum, // the contributing pixels' terms g (computePhotoPixel), summed over the view's directions
+	uint32_t* __restrict__ dirBits, // per pixel, the bits of the view's directions it contributes to
+	uint32_t dirBit, // this direction's bit
 	float* __restrict__ blockSums, // 2 floats per block: this block's reliability partials
 	cudaSurfaceObject_t surfImageA,
 	cudaSurfaceObject_t surfImageProj,
@@ -586,10 +588,6 @@ __global__ void kernelComputeWindowStats(
 	// a tile without a single masked sample (most tiles, in a scene of many small views) writes
 	// its zeros and leaves; the vote is a barrier of its own, so the block leaves together
 	if (!__syncthreads_or(any)) {
-		if (x < width && y < height) {
-			pixelGrad[y * width + x] = 0.f;
-			maskOut[y * width + x] = 0;
-		}
 		if (threadIdx.x == 0 && threadIdx.y == 0) {
 			const int idxBlock = blockIdx.y * gridDim.x + blockIdx.x;
 			blockSums[idxBlock*2 + 0] = 0.f;
@@ -606,7 +604,7 @@ __global__ void kernelComputeWindowStats(
 	if (x < width && y < height) {
 		const int pixIdx = y * width + x;
 		float g(0.f);
-		uint8_t contributes(0);
+		bool contributes(false);
 		if (x >= Refine::HalfSize && y >= Refine::HalfSize &&
 			x < width - Refine::HalfSize && y < height - Refine::HalfSize && mask[pixIdx] == 1)
 		{
@@ -632,11 +630,13 @@ __global__ void kernelComputeWindowStats(
 				ASSERT(depth > 0.f);
 				if (computePhotoPixel(x, y, depth, normals[faceMap[pixIdx]], dz,
 						camA, camB, texImageB, texGradXB, texGradYB, gradMode, regScale, g))
-					contributes = 1;
+					contributes = true;
 			}
 		}
-		pixelGrad[pixIdx] = g;
-		maskOut[pixIdx] = contributes;
+		if (contributes) {
+			gradSum[pixIdx] += g;
+			dirBits[pixIdx] |= dirBit;
+		}
 	}
 
 	// a fixed tree over a fixed thread mapping into the block's OWN slot (sized for the 16x16
@@ -698,18 +698,29 @@ __global__ void kernelReduceBlockSums(
 }
 
 
-// the direction counts once per vertex it reaches (the CPU's photoGradNorm += 1 per
-// pair-direction): of the vertex's faces contributing to this direction, exactly one gets the
-// previous stamp back from the exchange, so the count grows by an integer 1 whatever the schedule
-__device__ inline void countDirection(uint32_t* __restrict__ vertexStamp, float* __restrict__ photoCount, uint32_t v, uint32_t direction)
+// each direction counts once per vertex it reaches (the CPU's photoGradNorm += 1 per
+// pair-direction): the vertex's stamp holds the accumulation group (high word) and the bits of
+// its directions that already reached the vertex (low word); a face adds the bits it brings that
+// are new, so the count grows by the number of distinct directions whatever the schedule (integer
+// float additions, exact in any order)
+__device__ inline void countDirections(unsigned long long* __restrict__ vertexStamp, float* __restrict__ photoCount, uint32_t v, uint32_t group, uint32_t bits)
 {
-	if (atomicExch(&vertexStamp[v], direction) != direction)
-		photoCount[v] += 1.f;
+	unsigned long long old = vertexStamp[v], assumed;
+	uint32_t added;
+	do {
+		assumed = old;
+		const uint32_t oldBits = (uint32_t)(assumed >> 32) == group ? (uint32_t)assumed : 0u;
+		added = bits & ~oldBits;
+		if (added == 0)
+			return;
+		old = atomicCAS(&vertexStamp[v], assumed, ((unsigned long long)group << 32) | (oldBits | bits));
+	} while (old != assumed);
+	atomicAdd(&photoCount[v], (float)__popc(added));
 }
 
 // 8. AccumulateFacePhoto — 1D, one thread per face the reference view owns (its slice of the
-// tile-sorted owner list): the per-pair-direction half of the atomic-free photometric
-// accumulation. The thread reduces its own face's pixels, in raster order, into registers and
+// tile-sorted owner list), once per reference view after all its pair-directions: the per-view
+// half of the atomic-free photometric accumulation. The thread reduces its own face's pixels, in raster order, into registers and
 // folds them into the face's private slots, which persist across the directions of one
 // evaluation (one writer per face, in launch order), so no float sum depends on the schedule
 // and the per-vertex gather runs once per evaluation. The face is projected again exactly as
@@ -721,14 +732,14 @@ __device__ inline void accumulateFacePhoto(
 	const Point3* __restrict__ vertices,
 	const Point3u* __restrict__ faces,
 	const uint32_t* __restrict__ faceMap,
-	const float* __restrict__ pixelGrad,
-	const uint8_t* __restrict__ mask,
-	float* __restrict__ faceAcc, // 3 per face: Sum over the face's pixels of g_p*b_c, one per corner
-	float* __restrict__ facePixels, // 1 per face: how many pixels contributed (0 = the face contributed nothing)
+	const float* __restrict__ gradSum,
+	const uint32_t* __restrict__ dirBits,
+	float* __restrict__ faceAcc, // 3 per face: Sum over the face's pixels and directions of g_p*b_c, one per corner
+	float* __restrict__ facePixels, // 1 per face: how many (pixel, direction) terms contributed (0 = the face contributed nothing)
 	float* __restrict__ faceFoot, // 1 per face: min footprint over the face's pixels; only read where facePixels > 0
-	uint32_t* __restrict__ vertexStamp, // 1 per vertex: the last direction that reached it (~0u at the start of an evaluation)
+	unsigned long long* __restrict__ vertexStamp, // 1 per vertex: the group and directions that reached it (~0 at the start of an evaluation)
 	float* __restrict__ photoCount, // 1 per vertex: how many directions reached it
-	uint32_t direction, // this pair-direction's index within the evaluation
+	uint32_t group, // this accumulation's index within the evaluation
 	const Camera& camA)
 {
 	// it owns a pixel, so the rasterizer's projection of it succeeded
@@ -739,6 +750,7 @@ __device__ inline void accumulateFacePhoto(
 	ASSERT(seen); (void)seen;
 	float sum0 = 0.f, sum1 = 0.f, sum2 = 0.f;
 	float pixels = 0.f, foot = FLT_MAX;
+	uint32_t faceBits = 0u;
 	const int width = camA.size.x();
 	// the box row by row, in chunks of RowChunk pixels whose face ids, mask bytes and terms are
 	// loaded together before any is tested, so that a chunk's loads are in flight at once; the
@@ -748,17 +760,17 @@ __device__ inline void accumulateFacePhoto(
 		for (int ix0 = ixMin; ix0 <= ixMax; ix0 += RowChunk) {
 			const int base = iy * width + ix0;
 			const int n = min(RowChunk, ixMax - ix0 + 1);
-			uint32_t f[RowChunk]; uint8_t m[RowChunk]; float g[RowChunk];
+			uint32_t f[RowChunk]; uint32_t m[RowChunk]; float g[RowChunk];
 			#pragma unroll
 			for (int k = 0; k < RowChunk; ++k) {
 				const bool in = k < n;
 				f[k] = in ? faceMap[base + k] : (uint32_t)-1;
-				m[k] = in ? mask[base + k] : (uint8_t)0;
-				g[k] = in ? pixelGrad[base + k] : 0.f;
+				m[k] = in ? dirBits[base + k] : 0u;
+				g[k] = in ? gradSum[base + k] : 0.f;
 			}
 			#pragma unroll
 			for (int k = 0; k < RowChunk; ++k) {
-				if (f[k] != tid || m[k] != 1)
+				if (f[k] != tid || m[k] == 0u)
 					continue;
 				// the pixel's winning key was this face's, computed by pixelBary from this very
 				// projection, so the same call reproduces its barycentrics and depth
@@ -771,7 +783,8 @@ __device__ inline void accumulateFacePhoto(
 				// footprint at camera A (Camera::GetFootprintWorld = depth/focalLength), min over
 				// every contributing pixel of every pair-direction like the CPU's min-of-mins
 				foot = fminf(foot, depth / camA.model.f.x());
-				pixels += 1.f;
+				pixels += (float)__popc(m[k]);
+				faceBits |= m[k];
 			}
 		}
 	}
@@ -782,9 +795,9 @@ __device__ inline void accumulateFacePhoto(
 	faceAcc[tid*3 + 2] += sum2;
 	facePixels[tid] += pixels;
 	faceFoot[tid] = fminf(faceFoot[tid], foot);
-	countDirection(vertexStamp, photoCount, face.x(), direction);
-	countDirection(vertexStamp, photoCount, face.y(), direction);
-	countDirection(vertexStamp, photoCount, face.z(), direction);
+	countDirections(vertexStamp, photoCount, face.x(), group, faceBits);
+	countDirections(vertexStamp, photoCount, face.y(), group, faceBits);
+	countDirections(vertexStamp, photoCount, face.z(), group, faceBits);
 }
 __global__ void kernelAccumulateFacePhoto(
 	const Point3* __restrict__ vertices,
@@ -793,14 +806,14 @@ __global__ void kernelAccumulateFacePhoto(
 	const uint32_t* __restrict__ ownerOffsets, // the views' slices of it, numViews+1 entries
 	uint32_t idxView, // the reference view
 	const uint32_t* __restrict__ faceMap,
-	const float* __restrict__ pixelGrad,
-	const uint8_t* __restrict__ mask,
+	const float* __restrict__ gradSum,
+	const uint32_t* __restrict__ dirBits,
 	float* __restrict__ faceAcc,
 	float* __restrict__ facePixels,
 	float* __restrict__ faceFoot,
-	uint32_t* __restrict__ vertexStamp,
+	unsigned long long* __restrict__ vertexStamp,
 	float* __restrict__ photoCount,
-	uint32_t direction,
+	uint32_t group,
 	Camera camA)
 {
 	// the view's slice is read here, not passed: the launch is recorded once per scale into a
@@ -808,8 +821,8 @@ __global__ void kernelAccumulateFacePhoto(
 	// sized at the recording with a margin and the stride loop covers whatever the slice holds
 	const uint32_t off = ownerOffsets[idxView], numOwners = ownerOffsets[idxView+1] - off;
 	for (uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x; idx < numOwners; idx += gridDim.x * blockDim.x)
-		accumulateFacePhoto(ownerList[off + idx], vertices, faces, faceMap, pixelGrad, mask,
-			faceAcc, facePixels, faceFoot, vertexStamp, photoCount, direction, camA);
+		accumulateFacePhoto(ownerList[off + idx], vertices, faces, faceMap, gradSum, dirBits,
+			faceAcc, facePixels, faceFoot, vertexStamp, photoCount, group, camA);
 }
 
 
@@ -1027,7 +1040,7 @@ void LaunchImageMeshWarp(
 }
 
 uint32_t LaunchComputeWindowStats(
-	const uint8_t* mask, uint8_t* maskOut, float* pixelGrad, float* blockSums,
+	const uint8_t* mask, float* gradSum, uint32_t* dirBits, uint32_t dirBit, float* blockSums,
 	cudaSurfaceObject_t surfImageA, cudaSurfaceObject_t surfImageProj,
 	const Point3* normals, const uint32_t* faceMap, const float* depthMap,
 	const Camera& camA, const Camera& camB,
@@ -1037,7 +1050,7 @@ uint32_t LaunchComputeWindowStats(
 {
 	const dim3 block(16, 16);
 	const dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
-	kernelComputeWindowStats<<<grid, block, 0, stream>>>(mask, maskOut, pixelGrad, blockSums,
+	kernelComputeWindowStats<<<grid, block, 0, stream>>>(mask, gradSum, dirBits, dirBit, blockSums,
 		surfImageA, surfImageProj, normals, faceMap, depthMap, camA, camB,
 		texImageB, texGradXB, texGradYB, gradMode, regScale, gateMeanDiff, gateVarRatio, width, height);
 	return grid.x*grid.y;
@@ -1046,9 +1059,9 @@ uint32_t LaunchComputeWindowStats(
 void LaunchAccumulateFacePhoto(
 	const Point3* vertices, const Point3u* faces,
 	const uint32_t* ownerList, const uint32_t* ownerOffsets, uint32_t idxView,
-	const uint32_t* faceMap, const float* pixelGrad, const uint8_t* mask,
+	const uint32_t* faceMap, const float* gradSum, const uint32_t* dirBits,
 	float* faceAcc, float* facePixels, float* faceFoot,
-	uint32_t* vertexStamp, float* photoCount, uint32_t direction,
+	unsigned long long* vertexStamp, float* photoCount, uint32_t group,
 	const Camera& camA, uint32_t numOwners, cudaStream_t stream)
 {
 	// small blocks, the box walks being uneven; the grid covers the slice with a 25 % margin for
@@ -1056,8 +1069,8 @@ void LaunchAccumulateFacePhoto(
 	constexpr uint32_t blockSize = 128;
 	const uint32_t numBlocks = (numOwners + numOwners/4 + blockSize - 1) / blockSize;
 	kernelAccumulateFacePhoto<<<numBlocks ? numBlocks : 1u, blockSize, 0, stream>>>(
-		vertices, faces, ownerList, ownerOffsets, idxView, faceMap, pixelGrad, mask,
-		faceAcc, facePixels, faceFoot, vertexStamp, photoCount, direction, camA);
+		vertices, faces, ownerList, ownerOffsets, idxView, faceMap, gradSum, dirBits,
+		faceAcc, facePixels, faceFoot, vertexStamp, photoCount, group, camA);
 }
 
 void LaunchReduceBlockSums(const float* blockSums, uint32_t numSlots, float* sumR, float* sumRZ, cudaStream_t stream)

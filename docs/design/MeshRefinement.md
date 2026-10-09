@@ -291,7 +291,7 @@ convention (front faces only, perspective-correct barycentric coordinates), and 
 |---|---|---|
 | Camera projection precision | double (`Camera::TransformPointW2C`) | float (`MVS::CUDA::Camera`) |
 | Rasterizer input | an octree-frustum-culled face list per camera, rebuilt every evaluation | the whole mesh into every view; the kernel rejects what a view does not see |
-| Photometric accumulation order | per-pair, under a lock, in thread-completion order — not bit-reproducible run to run unless `--max-threads 1` | face-parallel accumulate + vertex-parallel gather over a fixed order — bit-reproducible |
+| Photometric accumulation order | per-pair, under a lock, in thread-completion order — not bit-reproducible run to run unless `--max-threads 1` | the pair-directions grouped by reference view: each adds its per-pixel terms into the view's pixel sums (with one bit per direction, up to 32), then one face-parallel accumulation per view (a vertex counts the distinct direction bits its faces bring, through a 64-bit group/bits stamp) + vertex-parallel gather over a fixed order — bit-reproducible; one accumulation per view instead of per direction: per-evaluation time −20..−52% (F11, HJ25, Truck), same F1 |
 | Planar-vertex removal (§2.7) | implemented | refused at the entry (loud error); caller falls back to CPU |
 | Ceres arm (§2.9) | implemented | refused at the entry, same fallback |
 | Float reassociation | `cv::boxFilter`/`filter2D`, no FMA | explicit-rounding intrinsics so nvcc cannot silently fuse an FMA the CPU wouldn't; residual disagreement ~0.1-2% per vertex at the tail |
