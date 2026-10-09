@@ -8,7 +8,7 @@ vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO cdcseacave/halfmesh
     REF v${VERSION}
-    SHA512 d6096ffeb71e5375e08d00f8eb808a4d04323b38d01214160e608d5bf0a538269d0fc6ac1824c03fe45ecbfcf3a61083e308af31cc17c2db6f17088306b1b34f
+    SHA512 0
     HEAD_REF develop
 )
 
