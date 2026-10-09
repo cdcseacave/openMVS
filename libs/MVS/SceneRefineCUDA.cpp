@@ -1011,6 +1011,10 @@ bool Scene::RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, u
 {
 	// the externally controlled knobs, validated exactly like the CPU path (Scene::RefineMesh):
 	// their ASSERT twins inside the shared stepper are contracts, not input checks
+	if (nScales == 0) {
+		VERBOSE("error: --scales must be at least 1");
+		return false;
+	}
 	if (!(fRegularityWeight >= 0 && fRegularityWeight*MeshRefineStep::StepMax <= 1.f)) {
 		VERBOSE("error: --regularity-weight %g is outside [0, %g]: one full step of the"
 			" regularization term must not amplify the Laplacian it is applied to"

@@ -1491,6 +1491,10 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 {
 	// the externally controlled knobs are validated here, at the entry point every caller goes
 	// through: their ASSERT twins inside the stepper are contracts, not input checks
+	if (nScales == 0) {
+		VERBOSE("error: --scales must be at least 1");
+		return false;
+	}
 	if (bUseCeres) {
 		#ifndef MESHOPT_CERES
 		VERBOSE("error: this build does not include the Ceres optimizer");
