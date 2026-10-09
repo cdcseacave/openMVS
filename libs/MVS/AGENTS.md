@@ -131,7 +131,7 @@ Key params: `nResolutionLevel`, `fDecimateMesh`, `nCloseHoles`, `fRegularityWeig
 ```cpp
 Scene::TextureMesh(nResolutionLevel, ...)
 ```
-Project faces to images -> compute blending weights -> spatial patch grouping -> atlas packing (each patch's footprint, its rasterized faces plus a 2 px border, packed bottom-left first-fit on a 4x4-pixel block grid, either orientation; pages cropped to the extent used, so not necessarily square; `halfmesh::PackRectangles` only sizes the spatial page groups) -> global seam leveling -> local seam blending.
+Project faces to images -> compute blending weights -> spatial patch grouping -> atlas packing (each patch's footprint, its rasterized faces plus a 2 px border, packed by `halfmesh::PackFootprints`, bottom-left first-fit on a 4x4-pixel block grid, either orientation; pages cropped to the extent used, so not necessarily square; `halfmesh::PackRectangles` only sizes the spatial page groups) -> global seam leveling -> local seam blending.
 
 `Scene::ComputeVertexColors(...)` shares the same view selection, but instead of building an atlas it samples each vertex in the views texturing the faces around it and stores the weighted average in `mesh.vertexColors`; it releases each image as soon as its faces are consumed.
 

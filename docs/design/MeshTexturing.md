@@ -74,19 +74,17 @@ patch, textured with `--empty-color`.
 - Patches are grouped spatially (`SplitPatchesSpatially`: sorted along the longest axis of their
   centroids, cut where a trial rectangle packing stops fitting one `--max-texture-size` page).
 - Each patch is packed by its **footprint**, not its rectangle: its faces rasterized in the patch
-  rectangle (plus the pixels holding their corners) dilated by the 2 px border, described per row of
-  4x4-pixel blocks by the block columns it spans (`PatchMask`, `ComputeMaskProfile`, for the patch as
-  is and transposed).
-- `PackMasksFirstFit`: bottom-left first fit on the block grid. Every page row keeps its free
-  intervals; the patches, largest footprint first, each take the lowest row and then the leftmost
-  column where all their row spans lie in free intervals, in whichever orientation lands lower. The
-  search for a footprint starts at the row where the last search for a footprint of the same block
-  size stopped (space is only ever taken, so nothing below it fits that size).
-- `PackTexturePagesMasks`: the page width is tried at half, one and two times the rounded square root
-  of the footprint area; the width leaving the fewest patches over, then the smallest page, wins
-  (a width that cannot beat the best page is skipped). The page is cropped to the extent its
-  patches use, each dimension rounded up to a power of two (or `--texture-size-multiple`), so pages
-  need not be square; patches over the `--max-texture-size` height open another page.
+  rectangle (plus the pixels holding their corners) dilated by the 2 px border, packed by
+  `halfmesh::PackFootprints` (`PackTexturePagesMasks`): bottom-left first fit on a 4x4-pixel block
+  grid, each block row of a footprint described by the block columns it spans; every page row keeps
+  its free intervals, and the patches, largest footprint first, each take the lowest row and then the
+  leftmost column where all their row spans lie in free intervals, as they are or turned 90° counter-
+  clockwise, whichever lands lower (a rotated patch is copied with `cv::rotate` and its pixel (x,y)
+  maps to (y, w-1-x)). The page width is tried at half, one and two times the rounded square root of
+  the footprint area; the width leaving the fewest patches over, then the smallest page, wins. The
+  page is cropped to the extent its patches use, each dimension rounded up to a power of two (or
+  `--texture-size-multiple`), so pages need not be square; patches over the `--max-texture-size`
+  height open another page.
 - Only the footprint pixels are copied into the page (rectangles overlap, footprints do not); the
   other texels are filled by push-pull over a box pyramid of the footprints (`PushPullFill`), so a
   mipmapped lookup near a patch border averages its own surroundings instead of the empty colour
