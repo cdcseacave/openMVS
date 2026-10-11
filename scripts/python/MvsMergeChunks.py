@@ -146,7 +146,7 @@ def main():
   if not files:
     sys.exit('no sub-scene file matches %s' % pattern)
   name_re = re.compile(re.escape(os.path.basename(pattern)).replace('XXXX', r'(\d{4})') + '$')
-  props, vertex_bytes, all_faces, offset, is_mesh = None, [], [], 0, None
+  boxes = []
   for path in files:
     match = name_re.match(os.path.basename(path))
     if not match:
@@ -155,8 +155,17 @@ def main():
     obb = loadMVSInterface(scene).get('obb')
     if obb is None:
       sys.exit('%s: the sub-scene has no region of interest' % scene)
-    rot = np.asarray(obb['rot'], np.float64).reshape(3, 3)
-    lo, hi = np.asarray(obb['pt_min'], np.float64), np.asarray(obb['pt_max'], np.float64)
+    boxes.append((path, np.asarray(obb['rot'], np.float64).reshape(3, 3),
+                  np.asarray(obb['pt_min'], np.float64), np.asarray(obb['pt_max'], np.float64)))
+  # the boxes tile the scene's box: a shared face goes to the box above it (half-open upper side),
+  # and the scene box's own upper faces, shared with no box, stay closed
+  top = np.max([hi for _, _, _, hi in boxes], axis=0)
+
+  def inside(local, lo, hi):
+    return np.all((local >= lo) & np.where(hi >= top, local <= hi, local < hi), axis=1)
+
+  props, vertex_bytes, all_faces, offset, is_mesh = None, [], [], 0, None
+  for path, rot, lo, hi in boxes:
     vertices, faces = read_ply(path)
     if is_mesh is None:
       is_mesh, props = faces is not None, vertices.props
@@ -168,7 +177,7 @@ def main():
     if faces is None:
       # a point belongs to the box it lies in
       local = xyz @ rot.T
-      keep = np.all((local >= lo) & (local < hi), axis=1)
+      keep = inside(local, lo, hi)
       data, num = vertices.select(keep)
       vertex_bytes.append(data)
       offset += num
@@ -176,7 +185,7 @@ def main():
       continue
     # a face belongs to the box its centroid lies in
     centroids = xyz[faces].mean(axis=1) @ rot.T
-    keep = np.all((centroids >= lo) & (centroids < hi), axis=1)
+    keep = inside(centroids, lo, hi)
     faces = faces[keep]
     used = np.unique(faces)
     remap = np.full(vertices.count, -1, np.int64)
@@ -187,7 +196,7 @@ def main():
     print('%s: %d of %d faces kept' % (os.path.basename(path), int(keep.sum()), len(keep)))
   faces = np.concatenate(all_faces).astype(np.uint32) if is_mesh else None
   write_ply(args.output_ply, props, offset, vertex_bytes, faces)
-  print('merged %d sub-scenes: %d vertices%s -> %s' % (len(files), offset,
+  print('merged %d sub-scenes: %d vertices%s -> %s' % (len(boxes), offset,
         ', %d faces' % len(faces) if is_mesh else '', args.output_ply))
 
 

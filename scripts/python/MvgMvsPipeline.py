@@ -543,9 +543,11 @@ def step_options(cstep):
 
 
 # steps 18-21 run through MvsScalablePipeline.py unless the split is off: a scene that fits this
-# machine is reconstructed exactly as by the steps themselves, a larger one in sub-scenes
+# machine is reconstructed exactly as by the steps themselves, a larger one in sub-scenes (the later
+# steps alone reuse the sub-scenes step 18 wrote)
 SCALABLE_STEPS = {18: 'densify', 19: 'mesh', 20: 'refine', 21: 'texture'}
-if CONF.sub_scene_memory != 'off' and 18 in CONF.steps:
+scalable = [s for s in CONF.steps if s in SCALABLE_STEPS]
+if CONF.sub_scene_memory != 'off' and scalable:
     def scalable_options(cstep):
         """a step's options without the scene, the files and the folder the driver sets itself"""
         opts, kept = step_options(cstep)[1:], []
@@ -555,7 +557,6 @@ if CONF.sub_scene_memory != 'off' and 18 in CONF.steps:
             else:
                 kept.append(opts.pop(0))
         return ' '.join(kept)
-    scalable = [s for s in CONF.steps if s in SCALABLE_STEPS]
     cmdline = [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'MvsScalablePipeline.py'),
                os.path.join(CONF.mvs_dir, 'scene.mvs'), '--bin', OPENMVS_BIN, '--memory', CONF.sub_scene_memory,
                '--steps', ','.join(SCALABLE_STEPS[s] for s in scalable)]
@@ -568,10 +569,10 @@ else:
 for cstep in CONF.steps:
     printout("#%i. %s" % (cstep, STEPS[cstep].info), effect=INVERSE)
 
-    if cstep == 18 and cmdline:
+    if cmdline and cstep == scalable[0]:
         print('Cmd: ' + ' '.join(cmdline))
         if not DEBUG and subprocess.run(cmdline).returncode != 0:
-            sys.exit('\nProcess failed at step 18 (scalable dense reconstruction)')
+            sys.exit('\nProcess failed at step %i (scalable dense reconstruction)' % cstep)
         continue
 
     # Step 15 (COLMAP model_aligner): only request GPS/ENU alignment when the

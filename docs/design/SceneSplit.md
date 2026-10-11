@@ -28,10 +28,12 @@ The predicted peak of a box is the larger of the two stages:
 
 ### 2.3 Partition
 Balanced recursive bisection of the samples into K parts: a box allotted K parts is cut on the
-longest axis of its samples' extent at the sample quantile floor(K/2)/K, so every leaf holds the same
-number of samples. K starts at the count the points alone need and grows until the largest leaf's
-predicted cost fits `maxMemory`; when four more parts stop lowering the largest leaf by 1%, the best
-K so far is kept with a warning (the depth-maps an image brings put a floor under a box's cost).
+longest axis of its samples' extent at the sample quantile floor(K/2)/K, so every leaf holds the
+same number of samples. K starts at a lower bound, the count at which a leaf's share of the points
+fits either stage with no depth-map at all, and grows by one until the largest leaf's predicted cost
+fits `maxMemory`; when four more parts stop lowering the largest leaf by 1%, the best K so far is
+kept with a warning (the depth-maps an image brings put a floor under a box's cost, and no split
+goes below it).
 
 ### 2.4 Images of a box
 An image belongs to a box if it has samples there and its share of its own samples in the box is at
@@ -42,9 +44,9 @@ more images is then removed from the smaller box.
 `--sub-scene-memory <0` (the driver's `auto`) fits the machine at the time of the split: the physical
 memory available (`Util::GetMemoryInfo().freePhysical`, page cache included on every OS: `MemAvailable`
 on Linux) less a reserve of 10% of the total and at least 2 GB, for the rest of the system and the
-error of the cost model. `Split` returns false if no depth-map gives a sample, and leaves the chunk list
-empty when the largest predicted stage of the whole scene fits: `DensifyPointCloud` then exports
-nothing and exits successfully.
+error of the cost model. `Split` returns false if the budget is not above a sub-scene's fixed cost (3.8
+GB) or no depth-map gives a sample, and leaves the chunk list empty when the largest predicted stage of
+the whole scene fits: `DensifyPointCloud` then exports nothing and exits successfully.
 
 ### 2.6 Export and merge
 `ExportChunks` writes `scene_XXXX.mvs` per box with the box as the sub-scene ROI; each sub-scene is
@@ -54,8 +56,9 @@ cropped to the box.
 `ReconstructMesh --roi-border` can grow the ROI to reconstruct with context across the boundary.
 `MvsMergeChunks.py scene_XXXX.mvs scene_XXXX_<suffix>.ply merged.ply` keeps of each sub-scene mesh the
 faces whose centroid lies in its box, of each point-cloud the points inside it (half-open on the upper
-side, so a boundary element goes to exactly one box), and concatenates them with all their vertex
-properties, the per-point view lists included (no stitching, no texture coordinates).
+side, closed on the scene box's own upper faces, so a boundary element goes to exactly one box), and
+concatenates them with all their vertex properties, the per-point view lists included (no stitching, no
+texture coordinates).
 
 ### 2.7 Driver
 `MvsScalablePipeline.py scene.mvs [--memory auto|off|GB]` runs in the scene's folder: depth-maps
@@ -63,7 +66,9 @@ properties, the per-point view lists included (no stitching, no texture coordina
 `RefineMesh`, the merges into `scene_dense.ply`, `scene_dense_mesh.ply`, `scene_dense_mesh_refined.ply`,
 and `TextureMesh scene.mvs -m scene_dense_mesh_refined.ply`. Unsplit (`--memory off`, or a scene that
 fits) it runs the four modules on the whole scene. Extra module options go through `--densify`,
-`--mesh`, `--refine`, `--texture`; `--steps` selects stages, `--resume` skips existing outputs.
+`--mesh`, `--refine`, `--texture`; `--steps` selects stages (without `densify`, the sub-scenes an
+earlier run wrote are reused, and only the products of the selected stages are merged), `--resume`
+skips existing outputs.
 
 ## 3. Parameters
 

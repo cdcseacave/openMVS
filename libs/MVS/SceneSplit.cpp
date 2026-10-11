@@ -78,16 +78,20 @@ struct SplitCost {
 // recursively into K parts of equal size, a box allotted K parts being split on its longest axis at
 // the sample quantile floor(K/2)/K, and K is the smallest count whose largest sub-scene is predicted
 // to fit (the depth-maps a sub-scene's images bring do not shrink with its box, so the count is
-// searched, starting from the one the points alone need). Every sub-scene so ends with nearly the
+// searched, starting from a lower bound). Every sub-scene so ends with nearly the
 // same predicted memory, just under the budget (the octree area split used before produced
 // sub-scenes from nearly empty to over the limit, with no relation between its area and the memory a
 // stage needs). The images of a sub-scene are those whose samples fall in its box, minus the ones
-// contributing little to it. Returns false if no depth-map gives a sample; chunks stays empty if the
-// whole scene fits.
+// contributing little to it. Returns false if the budget is below a sub-scene's fixed cost or no
+// depth-map gives a sample; chunks stays empty if the whole scene fits.
 bool Scene::Split(ImagesChunkArr& chunks, float maxMemory, int depthMapStep) const
 {
 	TD_TIMER_STARTD();
 	ASSERT(depthMapStep > 0 && maxMemory > 0);
+	if (maxMemory <= MAXF(SplitCost::FixedFusion, SplitCost::FixedMesh)) {
+		VERBOSE("error: a sub-scene needs more than %gGB, the budget is %gGB", MAXF(SplitCost::FixedFusion, SplitCost::FixedMesh), maxMemory);
+		return false;
+	}
 	// gather samples from all depth-maps
 	typedef uint32_t SIdx;
 	std::vector<Point3f> samples;
@@ -208,9 +212,12 @@ bool Scene::Split(ImagesChunkArr& chunks, float maxMemory, int depthMapStep) con
 		}
 		return leaves;
 	};
-	// the smallest part count whose largest sub-scene fits; the points alone give the first guess
-	const float pointsMemory(SplitCost::PerPointFusion*float(samples.size()*pointsPerSample*1e-6));
-	int numParts(MAXF(1, CEIL2INT(pointsMemory/MAXF(maxMemory-SplitCost::FixedFusion, 0.1f))));
+	// the smallest part count whose largest sub-scene fits, searched from a lower bound: the leaves
+	// share the points equally, and both stages' cost grows with them (the depth-maps only add)
+	const double mpoints(double(samples.size())*pointsPerSample*1e-6);
+	int numParts(MAXF(1, MAXF(
+		CEIL2INT(SplitCost::PerPointFusion*mpoints/(maxMemory-SplitCost::FixedFusion)),
+		CEIL2INT(SplitCost::PerVertexMesh*SplitVerticesPerPoint*mpoints/(maxMemory-SplitCost::FixedMesh)))));
 	std::vector<Leaf> leaves;
 	std::vector<float> costs;
 	float bestMax(FLT_MAX);

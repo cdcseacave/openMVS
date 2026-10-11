@@ -19,7 +19,8 @@ The results are scene_dense.ply, scene_dense_mesh.ply, scene_dense_mesh_refined.
 scene_dense_mesh_refined_texture.mvs/.ply (+ textures).
 
   --memory auto|off|<GB>   the budget per sub-scene (default auto: fit this machine; off: no split)
-  --steps                  which of densify,mesh,refine,texture to run (default all)
+  --steps                  which of densify,mesh,refine,texture to run (default all); without densify,
+                           the sub-scenes an earlier run split the scene into are reused
   --densify/--mesh/--refine/--texture "<options>"   extra options passed to that module
   --resume                 skip a step whose output exists already
   --bin <folder>           the OpenMVS binaries (default: searched in PATH)
@@ -95,18 +96,22 @@ def main():
     run([exe, '-w', work, '-i', inp, '-o', out, *opts, *extra[step]], os.path.splitext(out)[0] + '.ply')
 
   def reconstruct_scene(base):
-    """mesh and refine one (sub-)scene whose dense point-cloud is <base>_dense.mvs; returns the final mesh"""
+    """densify, mesh and refine one (sub-)scene, as the selected steps say"""
+    if 'densify' in steps:
+      module(densify, 'densify', base + '.mvs', base + '_dense.mvs', *fuse)
     mesh = base + '_dense_mesh'
     if 'mesh' in steps:
       module(reconstruct, 'mesh', base + '_dense.mvs', mesh + '.mvs')
     if 'refine' in steps:
       module(refine, 'refine', base + '_dense.mvs', mesh + '_refined.mvs', '-m', mesh + '.ply')
-      mesh += '_refined'
-    return mesh
 
+  def subscenes():
+    return sorted(glob.glob(os.path.join(work, SUBSCENES, 'scene_[0-9][0-9][0-9][0-9].mvs')))
+
+  # the sub-scenes: split now, or else the ones an earlier run split the scene into
   chunks = []
-  if memory != 0 and 'densify' in steps:
-    if not (args.resume and glob.glob(os.path.join(work, SUBSCENES, 'scene_[0-9][0-9][0-9][0-9].mvs'))):
+  if memory != 0:
+    if 'densify' in steps and not (args.resume and subscenes()):
       # the depth-maps of the whole scene, then the split they predict the memory of
       run([densify, '-w', work, '-i', stem + '.mvs', '--fusion-mode', '1', *extra['densify']])
       os.makedirs(os.path.join(work, SUBSCENES), exist_ok=True)
@@ -114,12 +119,12 @@ def main():
         os.remove(old)  # a previous split's boxes: their number can differ
       run([densify, '-w', work, '-i', stem + '.mvs', '-o', os.path.join(SUBSCENES, 'scene.mvs'),
            '--sub-scene-memory', str(memory)])
-    chunks = sorted(glob.glob(os.path.join(work, SUBSCENES, 'scene_[0-9][0-9][0-9][0-9].mvs')))
-    if args.dry_run:
+    chunks = subscenes()
+    if args.dry_run and 'densify' in steps:
       chunks = [os.path.join(work, SUBSCENES, 'scene_0000.mvs'), os.path.join(work, SUBSCENES, 'scene_0001.mvs')]
     if len(chunks) > 1:
       print('# %d sub-scenes' % len(chunks), flush=True)
-    else:
+    elif 'densify' in steps:
       print('# the scene fits the memory budget: not split', flush=True)
       if not args.dry_run and not os.listdir(os.path.join(work, SUBSCENES)):
         os.rmdir(os.path.join(work, SUBSCENES))
@@ -127,24 +132,19 @@ def main():
   fuse = ['--geometric-iters', '0'] if memory != 0 else []
 
   if len(chunks) <= 1:
-    if 'densify' in steps:
-      module(densify, 'densify', stem + '.mvs', stem + '_dense.mvs', *fuse)
-    mesh = reconstruct_scene(stem)
+    reconstruct_scene(stem)
   else:
-    meshes = None
     for chunk in chunks:
-      base = os.path.join(SUBSCENES, os.path.splitext(os.path.basename(chunk))[0])
-      module(densify, 'densify', base + '.mvs', base + '_dense.mvs', *fuse)
-      meshes = reconstruct_scene(base)
+      reconstruct_scene(os.path.join(SUBSCENES, os.path.splitext(os.path.basename(chunk))[0]))
+    # merge what this run wrote
     merge = [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'MvsMergeChunks.py'),
              os.path.join(SUBSCENES, 'scene_XXXX.mvs')]
-    run([*merge, os.path.join(SUBSCENES, 'scene_XXXX_dense.ply'), stem + '_dense.ply'], stem + '_dense.ply')
-    suffix = os.path.basename(meshes)[len('scene_0000'):]
-    for name in sorted({'_dense_mesh', suffix}) if 'mesh' in steps else ():
-      run([*merge, os.path.join(SUBSCENES, 'scene_XXXX' + name + '.ply'), stem + name + '.ply'], stem + name + '.ply')
-    mesh = stem + suffix
+    for step, name in (('densify', '_dense'), ('mesh', '_dense_mesh'), ('refine', '_dense_mesh_refined')):
+      if step in steps:
+        run([*merge, os.path.join(SUBSCENES, 'scene_XXXX' + name + '.ply'), stem + name + '.ply'], stem + name + '.ply')
   if 'texture' in steps:
-    # the merged mesh is textured from all the images
+    # the (merged) mesh is textured from all the images: the refined one when this run refines
+    mesh = stem + ('_dense_mesh_refined' if 'refine' in steps else '_dense_mesh')
     module(texture, 'texture', stem + '.mvs' if len(chunks) > 1 else stem + '_dense.mvs', mesh + '_texture.mvs',
            '-m', mesh + '.ply')
 

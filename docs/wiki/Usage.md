@@ -347,7 +347,7 @@ Options:
 | option | meaning |
 |---|---|
 | `--memory auto\|off\|GB` | memory budget per sub-scene: `auto` (default) fits this machine, `off` never splits, a number of GB sets the budget, e.g. to leave room for other programs |
-| `--steps densify,mesh,refine,texture` | the stages to run (default all) |
+| `--steps densify,mesh,refine,texture` | the stages to run (default all); without `densify`, the sub-scenes an earlier run wrote are reused |
 | `--densify "..."`, `--mesh "..."`, `--refine "..."`, `--texture "..."` | extra options for that module, e.g. `--densify "--resolution-level 0 --number-views 24"` |
 | `--resume` | skip a stage whose output exists already (continue an interrupted run) |
 | `--bin <folder>` | the OpenMVS binaries, if they are not in `PATH` |
