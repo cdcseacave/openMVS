@@ -279,6 +279,16 @@ bool MeshHalfMeshProcessingTest()
 			VERBOSE("ERROR: HalfMesh bridge joined two meshes wrong!");
 			return false;
 		}
+		// the viewer merges its layers into an empty mesh: the first keeps its colors
+		Mesh colored(shifted);
+		colored.vertexColors.resize(colored.vertices.size());
+		colored.vertexColors.Memset(255);
+		Mesh merged;
+		merged.Join(colored);
+		if (merged.faces.size() != colored.faces.size() || merged.vertexColors.size() != colored.vertices.size()) {
+			VERBOSE("ERROR: HalfMesh bridge joining onto an empty mesh dropped its attributes!");
+			return false;
+		}
 		Mesh textured(twice);
 		textured.faceTexcoords.resize(textured.faces.size()*3);
 		textured.faceTexcoords.Memset(0);
@@ -304,6 +314,19 @@ bool MeshHalfMeshProcessingTest()
 			memcmp(loaded.vertices.data(), twice.vertices.data(), twice.vertices.GetDataSize()) != 0 ||
 			memcmp(loaded.faces.data(), twice.faces.data(), twice.faces.GetDataSize()) != 0) {
 			VERBOSE("ERROR: HalfMesh bridge OBJ round trip is not exact!");
+			return false;
+		}
+		// a PLY face naming a texture its file does not list is refused at load
+		const String badFileName(tmpDir(_T("texnumber.ply")));
+		std::ofstream(badFileName.c_str()) << "ply\nformat ascii 1.0\ncomment TextureFile a.png\ncomment TextureFile b.png\n"
+			"element vertex 3\nproperty float x\nproperty float y\nproperty float z\nelement face 1\n"
+			"property list uchar uint vertex_indices\nproperty list uchar float texcoord\nproperty int texnumber\nend_header\n"
+			"0 0 0\n1 0 0\n0 1 0\n3 0 1 2 6 0 0 1 0 0 1 2\n";
+		Image8U3 pixel(1, 1);
+		pixel.memset(0);
+		Mesh badTexture;
+		if (!pixel.Save(tmpDir(_T("a.png"))) || !pixel.Save(tmpDir(_T("b.png"))) || badTexture.Load(badFileName)) {
+			VERBOSE("ERROR: a PLY face texture index past the texture files was accepted!");
 			return false;
 		}
 	}

@@ -305,7 +305,7 @@ REAL Scene::ComputeLeveledVolume(float planeThreshold, float sampleMesh, unsigne
 		// exactly on the plane, and a part below the ground counts as cut
 		REAL fill, cut;
 		const REAL volume(mesh.ComputeVolume(Planef(Point3f::EVec(up), 0.f), fill, cut));
-		VERBOSE("Volume above the ground plane %g, below it %g", fill, -cut);
+		VERBOSE("Volume above the ground plane %g, below it %g", fill, cut);
 		return volume;
 	}
 	return mesh.ComputeVolume();

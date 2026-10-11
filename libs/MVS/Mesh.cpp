@@ -730,6 +730,10 @@ bool Mesh::LoadPLY(const String& fileName)
 				}
 				if (texturesDiffuse.size() <= 1)
 					faceTexindices.Release();
+				else if (std::any_of(faceTexindices.begin(), faceTexindices.end(), [this](TexIndex idx) { return idx >= texturesDiffuse.size(); })) {
+					DEBUG_EXTRA("error: invalid mesh file (face texture index without a texture file)");
+					return false;
+				}
 				// flip Y axis, unnormalize and translate back texture coordinates
 				TexCoordArr unnormFaceTexcoords;
 				FaceTexcoordsUnnormalize(unnormFaceTexcoords, true);
@@ -1428,6 +1432,7 @@ std::vector<Mesh> Mesh::SplitMeshPerTextureBlob(FaceIdxArr* mapFaceSubsetIndices
 	ASSERT(faceTexindices.size() == faces.size());
 	std::vector<FaceIdxArr> chunks(texturesDiffuse.size());
 	FOREACH(idxFace, faceTexindices) {
+		ASSERT(faceTexindices[idxFace] < texturesDiffuse.size());
 		FaceIdxArr& chunk = chunks[faceTexindices[idxFace]];
 		if (mapFaceSubsetIndices)
 			(*mapFaceSubsetIndices)[idxFace] = chunk.size();

@@ -157,7 +157,8 @@ public:
 	void EmptyExtra();
 	Mesh& Swap(Mesh&);
 	// append the given mesh (halfmesh::Mesh::Join): nothing is welded, and an
-	// attribute (colors, normals, texture) survives only when both meshes carry it
+	// attribute (colors, normals, texture) survives only when both meshes carry it;
+	// an empty mesh takes the given one whole, attributes included
 	Mesh& Join(const Mesh&);
 	bool IsEmpty() const { return vertices.empty(); }
 	// every edge shared by exactly two faces traversing it in opposite directions
