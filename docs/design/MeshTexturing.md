@@ -123,16 +123,22 @@ candidate cut-off 0.2, LBP min edge weight 0.5, global leveling lambda 0.1.
 
 ## 5. Validation of the shipped defaults
 
-Same-input bench `bench/cmp_a3d.py` (stages T/X) with `bench/eval_texture.py`: the refined mesh of each
-scene textured with every 4th view left out, the textured mesh ray-cast into the held-out cameras
-and compared with the photos (T&T: only the surface inside the evaluation crop; faces a run leaves
-unseen are excluded for every arm).
+Hold-out bench `bench/eval_texture.py`: the refined mesh of each scene textured with every 4th view
+left out, the textured mesh ray-cast into the held-out cameras and compared with the photos (T&T:
+only the surface inside the evaluation crop; faces a run leaves unseen are excluded for every arm).
 
 | hold-out PSNR / SSIM | HJ8 | F11 | HJ25 | Ignatius |
 |---|---|---|---|---|
 | previous defaults (gradient data term, 2x raster, sharpening 0.5) | 25.84 / .9088 | 28.25 / .9332 | 24.15 / .8811 | 16.81 / .7234 |
 | current defaults | 26.55 / .9222 | 28.80 / .9451 | 24.52 / .8989 | 17.47 / .7527 |
-| Acute3D FinishMesh, same mesh and views | 26.29 / .9223 | 28.99 / .9448 | 23.84 / .8902 | 16.38 / .7060 |
+
+Why the current defaults win: the visible-pixel count is the texture resolution a view actually
+delivers, so it ranks views by distance and obliqueness without a separate gradient or angle term.
+Scoring each face against its own best view, instead of one global normalization, gives that view
+cost 0 on every seen face, so a face that every view sees poorly still gets its best view rather
+than whatever the smoothness term prefers. The partial-visibility penalty stops a view
+that sees most of a face from copying the occluder into the rest of it. The raster runs at the
+resolution the texture is sampled from; the 2x raster only raised the peak RAM (below).
 
 TextureMesh peak RAM (HJ25 hold-out): 2.5-3.0 GB vs 5.8 GB with the 2x raster.
 
@@ -141,10 +147,11 @@ TextureMesh peak RAM (HJ25 hold-out): 2.5-3.0 GB vs 5.8 GB with the 2x raster.
 | square pages of patch rectangles | 64 MT | 64 MT | 64 MT | 64 MT |
 | footprint packing (current) | 32 MT | 32 MT | 32 MT | 32 MT |
 | triangle fill, current | 0.34 | 0.36 | 0.57 | 0.26 |
-| Acute3D fill, same mesh | 0.33 | 0.36 | 0.39 | - |
 
-Same PSNR at full resolution, +0.01..+0.03 dB at mip 3; the atlas stage takes the same time
-(HJ25 9.0 s vs 9.3 s, Ignatius 8.7 s vs 7.8 s).
+Footprints halve the atlas because a patch's bounding rectangle is mostly empty for any patch that is
+not a compact blob, and footprints may interlock where rectangles may not. Same PSNR at full
+resolution, +0.01..+0.03 dB at mip 3 (push-pull fill instead of the empty colour around the
+patches); the atlas stage takes the same time (HJ25 9.0 s vs 9.3 s, Ignatius 8.7 s vs 7.8 s).
 
 ## 6. Rejected alternatives
 
@@ -152,8 +159,7 @@ Same PSNR at full resolution, +0.01..+0.03 dB at mip 3; the atlas stage takes th
   replaced, see §5; each of its replacements' parts alone measured worse except the partial-visibility
   penalty.
 - Crease-aware seam cost (edge weight x (1+n_a.n_b)/2): HJ8 -0.08 dB.
-- Multiplicative, ratio-gated global seam leveling in log-RGB (Acute3D's gain model): HJ8 +0.05,
-  F11 -0.09, HJ25 -0.2 dB.
+- Multiplicative, ratio-gated global seam leveling in log-RGB: HJ8 +0.05, F11 -0.09, HJ25 -0.2 dB.
 - Merging same-view patches whose rectangles overlap (not only contained ones): -4% patch pixels but
   the page size never changed and the atlas stage was 20% slower.
 - Unsharp mask by default: lowered PSNR and SSIM on every scene.

@@ -473,8 +473,8 @@ one `RefineMesh` run per cell, CPU/CUDA as noted.
   do-less effect.
 - Per-vertex step cap in pixels (halved at every direction reversal): loses at every cap tried — the
   global median normalizer already sets the stride.
-- The reference's fixed schedule (fixed evaluations per level, no rejection): loses, same failure
-  mode as the fixed-step control arm.
+- A fixed schedule (fixed evaluations per level, no rejection): loses, same failure mode as the
+  fixed-step control arm — without rejection a bad step is kept and the next scale starts from it.
 - Swapping the umbrella term for the bi-Laplacian wherever the photometric pull opposes it: inert at
   the default weight, mixed and net-negative at higher weights.
 - Pixel-graded isotropic remesh at every scale in place of the 1-to-4 split: worse than the split at
@@ -516,9 +516,8 @@ one `RefineMesh` run per cell, CPU/CUDA as noted.
 - The old `--fast` built on `--max-views 4` instead of `--max-face-area`: a smaller view budget only
   removes per-pixel work, a coarser face cap removes per-pixel and mesh-preparation work together —
   the face-area version is `--fast` now.
-- The reference's tie-point-track pair vote, reimplemented in full (cell voting, angle weighting,
-  transitive-redundancy top-K): too few pairs under-constrain the surface; loses even against a
-  matched-view-budget control.
+- The full tie-point-track pair vote (cell voting, angle weighting, transitive-redundancy top-K):
+  too few pairs under-constrain the surface; loses even against a matched-view-budget control.
 - Tightest-pair reduction taken as the median or mean over the pairs that see a face, instead of the
   max: not a different rule so much as a ~5x rescale of what the face-area cap means; no evidence
   strong enough to redefine the cap around it.
