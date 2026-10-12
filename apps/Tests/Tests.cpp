@@ -93,6 +93,10 @@ bool UnitTests()
 		VERBOSE("ERROR: TestTetraFlow failed!");
 		return false;
 	}
+	if (!SEACAVE::TestLBPPotts()) {
+		VERBOSE("ERROR: TestLBPPotts failed!");
+		return false;
+	}
 	if (Util::toString(L"\x00A9\U0001F600") != "\xC2\xA9\xF0\x9F\x98\x80") {
 		VERBOSE("ERROR: wide string UTF-8 conversion failed!");
 		return false;

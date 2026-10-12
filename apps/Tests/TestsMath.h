@@ -40,6 +40,10 @@ namespace SEACAVE {
 // test the TetraFlow max-flow solver on random graphs with at most four arcs per node
 // against an exact reference solver and the min-cut certificate
 bool TestTetraFlow();
+
+// test the Potts message path of the loopy belief propagation against the generic one on random
+// graphs whose nodes have random, partly shared label sets: the labels and energies must match exactly
+bool TestLBPPotts();
 /*----------------------------------------------------------------*/
 
 } // namespace SEACAVE

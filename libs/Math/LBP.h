@@ -163,13 +163,20 @@ public:
 					// k's own, which costs the smoothness less; with E0/E1 the energies of k at
 					// smoothness 0/pottsCost (summed in the generic loop's order, so the messages
 					// are bit-identical), the message of label j is min(E0[k=j], min_k E1[k]):
-					// E0[k] <= E1[k] makes the excluded E1[k=j] irrelevant
+					// E0[k] <= E1[k] makes the excluded E1[k=j] irrelevant; the k of label j is
+					// found in a table indexed by label (1 + k, 0 for a label node1 lacks)
 					const Node& node1 = nodes[edge.nodeID1];
 					thread_local std::vector<EnergyType> e0, e1;
+					thread_local std::vector<uint32_t> labelSlots;
 					e0.resize(labels1.size());
 					e1.resize(labels1.size());
 					EnergyType minE1(std::numeric_limits<EnergyType>::max());
 					for (size_t k = 0; k < labels1.size(); ++k) {
+						const LabelID label1(labels1[k]);
+						if (labelSlots.size() <= label1)
+							labelSlots.resize(label1+1, 0);
+						ASSERT(labelSlots[label1] == 0); // a node's labels are distinct
+						labelSlots[label1] = uint32_t(k+1);
 						EnergyType energy0(node1.dataCosts[k] + EnergyType(0) * edge.weight);
 						EnergyType energy1(node1.dataCosts[k] + pottsCost * edge.weight);
 						for (EdgeID idxIncomingEdge: node1.incomingEdges) {
@@ -187,17 +194,15 @@ public:
 					for (size_t j = 0; j < labels2.size(); ++j) {
 						const LabelID label2(labels2[j]);
 						EnergyType minEnergy(minE1);
-						if (label2 != 0) {
-							for (size_t k = 0; k < labels1.size(); ++k) {
-								if (labels1[k] == label2) {
-									if (minEnergy > e0[k])
-										minEnergy = e0[k];
-									break;
-								}
-							}
+						if (label2 != 0 && label2 < labelSlots.size() && labelSlots[label2] != 0) {
+							const EnergyType energy0(e0[labelSlots[label2]-1]);
+							if (minEnergy > energy0)
+								minEnergy = energy0;
 						}
 						newMsgs[edge.msgs+j] = minEnergy;
 					}
+					for (const LabelID label1: labels1)
+						labelSlots[label1] = 0;
 					continue;
 				}
 				for (size_t j = 0; j < labels2.size(); ++j) {
