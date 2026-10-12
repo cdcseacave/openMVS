@@ -350,3 +350,23 @@ absolute pose (`ResectionConfig::denseFitWeight`). Retired:
 The development patches of every retired variant are kept beside their snapshots under
 `openmvs-roma2-20260901-task6-tools/bin-*` (`dev.patch`).
 
+
+## The image that lands a block turned under a symmetric roof (2026-10-09 to 2026-10-12)
+
+On a Polycam interior of 730 images, a walking pan of 16 images under a four-fold symmetric pyramid
+roof registered a quarter turn off in two runs of three and was left out in the third. Its first
+image entered ahead of its right neighbours: next-best-view counts its visible points, which the
+cross-face pairs (6.3% of the graph, a quarter or a half turn off) supplied, and every registered
+partner it had was across the roof, so the rotation quorum agreed with the wrong pose; it cleared
+the evidence share (`ResectionConfig::minRegisteredEvidence` 0.1 times the registered fraction) by
+1.11-1.12 times, where 99% of right first registrations clear 1.31. What ships is the spanning-tree
+rotation check (`ReconstructionConfig::maxTreeRotationResidual`, 6642add). Retired:
+
+- **A stricter evidence share** (`minRegisteredEvidence` 0.15, dev build on 68a1cd7): it only moves
+  the entry point. At 8 threads the block enters through its last image instead, at 2.28 times the
+  bar, and lands turned again (F1 0.9615 against 0.9759 and 0.9761 at 12 and 16 threads); Truck and
+  alameda do not move.
+- **The strongest registered link as a gate** (the ratio of an image's strongest pair to registered
+  images over its strongest pair overall) and **a model-against-pair contradiction count**: neither
+  separates the wrong entries, since right images of four other captures hold strong pairs 20-50
+  degrees off a right model.
