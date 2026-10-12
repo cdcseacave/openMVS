@@ -21,7 +21,8 @@ scene_dense_mesh_refined_texture.mvs/.ply (+ textures).
   --memory auto|off|<GB>   the budget per sub-scene (default auto: fit this machine; off: no split)
   --steps                  which of densify,mesh,refine,texture to run (default all); without densify,
                            the sub-scenes an earlier run split the scene into are reused
-  --densify/--mesh/--refine/--texture "<options>"   extra options passed to that module
+  --densify/--mesh/--refine/--texture "<options>"   extra options passed to that module, split as a POSIX
+                           shell does (a Windows path goes in single quotes, or its backslashes are lost)
   --resume                 skip a step whose output exists already
   --bin <folder>           the OpenMVS binaries (default: searched in PATH)
 """
@@ -114,9 +115,10 @@ def main():
     if 'densify' in steps and not (args.resume and subscenes()):
       # the depth-maps of the whole scene, then the split they predict the memory of
       run([densify, '-w', work, '-i', stem + '.mvs', '--fusion-mode', '1', *extra['densify']])
-      os.makedirs(os.path.join(work, SUBSCENES), exist_ok=True)
-      for old in glob.glob(os.path.join(work, SUBSCENES, 'scene_[0-9][0-9][0-9][0-9].mvs')):
-        os.remove(old)  # a previous split's boxes: their number can differ
+      if not args.dry_run:
+        os.makedirs(os.path.join(work, SUBSCENES), exist_ok=True)
+        for old in subscenes():
+          os.remove(old)  # a previous split's boxes: their number can differ
       run([densify, '-w', work, '-i', stem + '.mvs', '-o', os.path.join(SUBSCENES, 'scene.mvs'),
            '--sub-scene-memory', str(memory)])
     chunks = subscenes()
@@ -138,7 +140,7 @@ def main():
       reconstruct_scene(os.path.join(SUBSCENES, os.path.splitext(os.path.basename(chunk))[0]))
     # merge what this run wrote
     merge = [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'MvsMergeChunks.py'),
-             os.path.join(SUBSCENES, 'scene_XXXX.mvs')]
+             '--scene', stem + '.mvs', os.path.join(SUBSCENES, 'scene_XXXX.mvs')]
     for step, name in (('densify', '_dense'), ('mesh', '_dense_mesh'), ('refine', '_dense_mesh_refined')):
       if step in steps:
         run([*merge, os.path.join(SUBSCENES, 'scene_XXXX' + name + '.ply'), stem + name + '.ply'], stem + name + '.ply')

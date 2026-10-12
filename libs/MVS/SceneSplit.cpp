@@ -92,12 +92,14 @@ bool Scene::Split(ImagesChunkArr& chunks, float maxMemory, int depthMapStep) con
 		VERBOSE("error: a sub-scene needs more than %gGB, the budget is %gGB", MAXF(SplitCost::FixedFusion, SplitCost::FixedMesh), maxMemory);
 		return false;
 	}
-	// gather samples from all depth-maps
+	// gather samples from all depth-maps: the ones in the scene ROI place the image, all of them
+	// measure its depth-map, loaded whole by the fusion
 	typedef uint32_t SIdx;
 	std::vector<Point3f> samples;
 	IIndexArr visibility;
-	Unsigned32Arr imageSamples(images.size());
+	Unsigned32Arr imageSamples(images.size()), imageDepths(images.size());
 	imageSamples.Memset(0);
+	imageDepths.Memset(0);
 	{
 		unsigned numDepthMapsMissing(0);
 		FOREACH(idxImage, images) {
@@ -117,6 +119,7 @@ bool Scene::Split(ImagesChunkArr& chunks, float maxMemory, int depthMapStep) con
 					const Depth depth = depthData.depthMap(r,c);
 					if (depth <= 0)
 						continue;
+					++imageDepths[idxImage];
 					const Point3f X(Cast<float>(camera.TransformPointI2W(Point3(c,r,depth))));
 					if (IsBounded() && !obb.Intersects(X))
 						continue;
@@ -151,13 +154,13 @@ bool Scene::Split(ImagesChunkArr& chunks, float maxMemory, int depthMapStep) con
 			if (counts[idxImage] && (float)counts[idxImage]/(float)imageSamples[idxImage] >= minImageContributionRatio*maxRatio)
 				chunkImages.push_back(idxImage);
 	};
-	// the predicted memory of a box: its images' depth-maps and its points
+	// the predicted memory of a box: its images' whole depth-maps and its points
 	const double depthsPerSample(SQUARE(depthMapStep));
 	const auto BoxCost = [&](const std::vector<SIdx>& idxs, IIndexArr& chunkImages) -> float {
 		BoxImages(idxs, chunkImages);
 		double depths(0);
 		for (const IIndex idxImage: chunkImages)
-			depths += imageSamples[idxImage]*depthsPerSample;
+			depths += imageDepths[idxImage]*depthsPerSample;
 		return SplitCost::Predict(depths, idxs.size()*pointsPerSample);
 	};
 	// balanced recursive bisection into numParts boxes

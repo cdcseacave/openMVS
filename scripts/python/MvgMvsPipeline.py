@@ -97,6 +97,7 @@ Created by @FlachyJoe
 """
 
 import os
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -546,32 +547,31 @@ def step_options(cstep):
 # machine is reconstructed exactly as by the steps themselves, a larger one in sub-scenes (the later
 # steps alone reuse the sub-scenes step 18 wrote)
 SCALABLE_STEPS = {18: 'densify', 19: 'mesh', 20: 'refine', 21: 'texture'}
-scalable = [s for s in CONF.steps if s in SCALABLE_STEPS]
-if CONF.sub_scene_memory != 'off' and scalable:
+scalable = [s for s in CONF.steps if s in SCALABLE_STEPS] if CONF.sub_scene_memory != 'off' else []
+if scalable:
     def scalable_options(cstep):
-        """a step's options without the scene, the files and the folder the driver sets itself"""
+        """a step's options without the scene, the files and the folder the driver sets itself, quoted
+        so the driver splits them back into the same arguments"""
         opts, kept = step_options(cstep)[1:], []
         while opts:
             if opts[0] in ('-w', '-m', '-o', '-p', '-i'):
                 opts = opts[2:]
             else:
                 kept.append(opts.pop(0))
-        return ' '.join(kept)
-    cmdline = [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'MvsScalablePipeline.py'),
-               os.path.join(CONF.mvs_dir, 'scene.mvs'), '--bin', OPENMVS_BIN, '--memory', CONF.sub_scene_memory,
-               '--steps', ','.join(SCALABLE_STEPS[s] for s in scalable)]
+        return shlex.join(kept)
+    scalable_cmdline = [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'MvsScalablePipeline.py'),
+                        os.path.join(CONF.mvs_dir, 'scene.mvs'), '--bin', OPENMVS_BIN, '--memory', CONF.sub_scene_memory,
+                        '--steps', ','.join(SCALABLE_STEPS[s] for s in scalable)]
     for s in scalable:
-        cmdline += ['--' + SCALABLE_STEPS[s], scalable_options(s)]
+        scalable_cmdline += ['--' + SCALABLE_STEPS[s], scalable_options(s)]
     CONF.steps = [s for s in CONF.steps if s not in scalable[1:]]
-else:
-    cmdline = None
 
 for cstep in CONF.steps:
     printout("#%i. %s" % (cstep, STEPS[cstep].info), effect=INVERSE)
 
-    if cmdline and cstep == scalable[0]:
-        print('Cmd: ' + ' '.join(cmdline))
-        if not DEBUG and subprocess.run(cmdline).returncode != 0:
+    if scalable and cstep == scalable[0]:
+        print('Cmd: ' + ' '.join(scalable_cmdline))
+        if not DEBUG and subprocess.run(scalable_cmdline).returncode != 0:
             sys.exit('\nProcess failed at step %i (scalable dense reconstruction)' % cstep)
         continue
 

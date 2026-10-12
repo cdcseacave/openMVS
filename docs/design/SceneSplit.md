@@ -16,13 +16,15 @@ fits the budget is not split and goes through the same modules as an unsplit run
 
 ### 2.1 Samples
 Every `depthMapStep`-th pixel (default 8) of every depth-map is back-projected; samples outside the
-scene ROI (when set) are dropped. Each sample remembers its image; each image counts its samples.
+scene ROI (when set) are dropped. Each sample remembers its image; each image counts its samples in
+the ROI, which place it (§2.4), and all its valid ones, which measure its depth-map (§2.2).
 
 ### 2.2 Cost model (`SplitCost::Predict`)
 The predicted peak of a box is the larger of the two stages:
-- fusion: `3.8 + 0.026 * Mdepths + 0.18 * Mpoints` GB, where `Mdepths` is the millions of depth-map
-  pixels of the box's images (all of them: an image brings its whole map, not only the part in the
-  box) and `Mpoints` the fused points, `0.05` per depth-map pixel in the box (`SplitPointsPerDepth`);
+- fusion: `3.8 + 0.026 * Mdepths + 0.18 * Mpoints` GB, where `Mdepths` is the millions of valid
+  depth-map pixels of the box's images (all of them: the fusion loads an image's whole map, not only
+  the part in the box or in the scene ROI) and `Mpoints` the fused points, `0.05` per depth-map pixel
+  in the box (`SplitPointsPerDepth`);
 - Delaunay mesh: `1.7 + 1.0 * 0.35 * Mpoints` GB (`SplitVerticesPerPoint` = 0.35 Delaunay vertices per
   fused point after the 1.5 px merge).
 
@@ -54,11 +56,14 @@ fused with `--geometric-iters 0` (the depth-maps exist, only the fusion runs; on
 fits, the result is byte-identical to an unsplit run's on the same depth-maps) and its point-cloud is
 cropped to the box.
 `ReconstructMesh --roi-border` can grow the ROI to reconstruct with context across the boundary.
-`MvsMergeChunks.py scene_XXXX.mvs scene_XXXX_<suffix>.ply merged.ply` keeps of each sub-scene mesh the
-faces whose centroid lies in its box, of each point-cloud the points inside it (half-open on the upper
-side, closed on the scene box's own upper faces, so a boundary element goes to exactly one box), and
-concatenates them with all their vertex properties, the per-point view lists included (no stitching, no
-texture coordinates).
+`MvsMergeChunks.py [--scene scene.mvs] scene_XXXX.mvs scene_XXXX_<suffix>.ply merged.ply` keeps of each
+sub-scene mesh the faces whose centroid lies in its box, of each point-cloud the points inside it
+(half-open on the upper side, closed on the scene box's own upper faces, so a boundary element goes to
+exactly one box), and concatenates them with all their vertex properties in any order, the per-point
+view lists included, renumbered from the sub-scene's images to the scene's (matched by image ID; no
+stitching, no texture coordinates). The inputs are the sub-scenes there are, each needing its product;
+they are read one at a time and the result streamed to disk, so the merge needs the memory of the
+largest sub-scene, not of the scene.
 
 ### 2.7 Driver
 `MvsScalablePipeline.py scene.mvs [--memory auto|off|GB]` runs in the scene's folder: depth-maps
