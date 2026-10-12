@@ -19,7 +19,7 @@ Every `depthMapStep`-th pixel (default 8) of every depth-map is back-projected; 
 scene ROI (when set) are dropped. Each sample remembers its image; each image counts its samples in
 the ROI, which place it (§2.4), and all its valid ones, which measure its depth-map (§2.2).
 
-### 2.2 Cost model (`SplitCost::Predict`)
+### 2.2 Cost model (`Scene::PredictSubsceneMemory`)
 The predicted peak of a box is the larger of the two stages:
 - fusion: `3.8 + 0.026 * Mdepths + 0.18 * Mpoints` GB, where `Mdepths` is the millions of valid
   depth-map pixels of the box's images (all of them: the fusion loads an image's whole map, not only
@@ -46,12 +46,15 @@ more images is then removed from the smaller box.
 `--sub-scene-memory <0` (the driver's `auto`) fits the machine at the time of the split: the physical
 memory available (`Util::GetMemoryInfo().freePhysical`, page cache included on every OS: `MemAvailable`
 on Linux) less a reserve of 10% of the total and at least 2 GB, for the rest of the system and the
-error of the cost model. `Split` returns false if the budget is not above a sub-scene's fixed cost (3.8
-GB) or no depth-map gives a sample, and leaves the chunk list empty when the largest predicted stage of
-the whole scene fits: `DensifyPointCloud` then exports nothing and exits successfully.
+error of the cost model. `Split` returns 0 if the budget is not above a sub-scene's fixed cost (3.8
+GB) or no depth-map gives a sample, and otherwise the predicted peak of its largest sub-scene. It leaves
+the chunk list empty, the peak then being the whole scene's, when the whole scene fits (or no split
+lowers it, with a warning): `DensifyPointCloud` then exports nothing, creates no folder and exits
+successfully.
 
 ### 2.6 Export and merge
-`ExportChunks` writes `scene_XXXX.mvs` per box with the box as the sub-scene ROI; each sub-scene is
+`ExportChunks` creates the output folder and writes `scene_XXXX.mvs` per box in it, with the box as the
+sub-scene ROI; each sub-scene is
 fused with `--geometric-iters 0` (the depth-maps exist, only the fusion runs; on a whole scene that
 fits, the result is byte-identical to an unsplit run's on the same depth-maps) and its point-cloud is
 cropped to the box.
@@ -87,12 +90,19 @@ Fixed: sample step 8 px, cost constants above, image contribution 0.3, containme
 ## 4. Invariants
 
 - Every leaf box is non-empty and the boxes tile the root box (ROI or sample extent) without overlap.
-- `maxMemory > 0`, `depthMapStep > 0` (asserted).
+- `maxMemory > 0`, `depthMapStep > 0`, an empty chunk list on entry (asserted); `ExportChunks` gets a
+  non-empty one.
 
 ## 5. Validation
 
 Constants fitted on measured peak commit of fusion-only `DensifyPointCloud` and `ReconstructMesh`
 runs on T&T and EPFL scenes (median relative error 14% fusion, 4% mesh).
+
+`Tests.exe 2` (`SceneSplitTest`, on the pipeline test's depth-maps): the scene stays whole in a large
+budget; with a ROI slab holding a quarter of the samples the prediction keeps at least the whole
+depth-maps' term of the images seeing it, and stays below the unbounded scene's; a budget a tenth of
+the way from the fixed cost to the scene's peak splits it in three, exported with their boxes into a
+folder `ExportChunks` creates.
 
 T&T Church (507 views, 50M points), same depth-maps, fusion `--number-views 24`, default
 `ReconstructMesh`, merged with `MvsMergeChunks.py`:

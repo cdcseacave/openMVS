@@ -2162,6 +2162,98 @@ static bool ROIMeshReconstructionTest(Scene& scene)
 }
 /*----------------------------------------------------------------*/
 
+// The scene split on the pipeline's depth-maps: a scene ROI must not shrink the predicted memory of
+// the depth-maps (the fusion loads each one whole), a scene that fits stays whole, and a split one
+// exports its sub-scenes, each with its box as ROI, into a folder created for them.
+static bool SceneSplitTest(Scene& scene)
+{
+	const OBB3f initialOBB(scene.obb);
+	scene.obb.Reset();
+	Scene::ImagesChunkArr chunks;
+	const float wholePeak(scene.Split(chunks, 1000.f));
+	if (wholePeak <= 0 || !chunks.empty()) {
+		VERBOSE("ERROR: SceneSplitTest: the scene (predicted %gGB) does not stay whole in 1000GB (%u sub-scenes)!", wholePeak, chunks.size());
+		return false;
+	}
+	// the ROI: a slab across the middle third of the cloud's longest axis
+	const AABB3f aabb(scene.pointcloud.GetAABB(0.02f, 0.98f));
+	const Point3f size(aabb.GetSize());
+	const int axis(size[0] >= size[1] && size[0] >= size[2] ? 0 : (size[1] >= size[2] ? 1 : 2));
+	AABB3f slab(aabb);
+	slab.ptMin[axis] = aabb.ptMin[axis] + size[axis]/3;
+	slab.ptMax[axis] = aabb.ptMin[axis] + size[axis]*2/3;
+	scene.obb.Set(OBB3f::MATRIX::Identity(), slab.ptMin, slab.ptMax);
+	// all the valid depth-map pixels of the images seeing the slab, and the share of the samples in it
+	double numDepths(0);
+	size_t numSamples(0), numSamplesROI(0);
+	for (const Image& imageData: scene.images) {
+		if (!imageData.IsValid())
+			continue;
+		DepthData depthData;
+		if (!depthData.Load(ComposeDepthFilePath(imageData.ID, "dmap"), HeaderDepthDataRaw::HAS_DEPTH)) {
+			VERBOSE("ERROR: SceneSplitTest: the depth-map of image %u can not be loaded!", imageData.ID);
+			return false;
+		}
+		const Camera camera(imageData.GetCamera(scene.platforms, depthData.depthMap.size()));
+		size_t numValid(0), numInROI(0);
+		for (int r=0; r<depthData.depthMap.rows; ++r) {
+			for (int c=0; c<depthData.depthMap.cols; ++c) {
+				const Depth depth(depthData.depthMap(r,c));
+				if (depth <= 0)
+					continue;
+				++numValid;
+				if (r%8 || c%8)
+					continue;
+				++numSamples;
+				if (scene.obb.Intersects(Cast<float>(camera.TransformPointI2W(Point3(c,r,depth)))))
+					++numInROI;
+			}
+		}
+		numSamplesROI += numInROI;
+		if (numInROI)
+			numDepths += numValid;
+	}
+	// below 2/3 of the samples in the ROI, a depth term shrunk to them falls under the bound below
+	if (numSamplesROI == 0 || numSamplesROI*3 > numSamples*2) {
+		VERBOSE("ERROR: SceneSplitTest: the test ROI holds %u of %u depth-map samples!", numSamplesROI, numSamples);
+		return false;
+	}
+	// the split samples every 8th pixel: 10% margin on the whole maps' count
+	const float roiPeak(scene.Split(chunks, 1000.f));
+	const float depthsPeak(Scene::PredictSubsceneMemory(0.9*numDepths, 0));
+	if (roiPeak <= 0 || !chunks.empty() || roiPeak < depthsPeak || roiPeak > wholePeak) {
+		VERBOSE("ERROR: SceneSplitTest: with the ROI the scene is predicted %gGB, the whole depth-maps of its images alone %gGB, the scene without ROI %gGB!", roiPeak, depthsPeak, wholePeak);
+		return false;
+	}
+	// a budget a tenth of the way from a sub-scene's fixed cost to the scene's peak: the points
+	// alone need three parts
+	scene.obb.Reset();
+	const float fixedCost(Scene::PredictSubsceneMemory(0, 0));
+	if (scene.Split(chunks, fixedCost + (wholePeak-fixedCost)*0.1f) <= 0 || chunks.size() < 2) {
+		VERBOSE("ERROR: SceneSplitTest: a budget of %gGB split the scene in %u sub-scenes!", fixedCost + (wholePeak-fixedCost)*0.1f, chunks.size());
+		return false;
+	}
+	const ScopedTempDir tmpDir(_T("SceneSplitTest"));
+	if (!tmpDir.IsValid())
+		return false;
+	const String folder(tmpDir(_T("subscenes")));
+	if (!scene.ExportChunks(chunks, folder)) {
+		VERBOSE("ERROR: SceneSplitTest: the %u sub-scenes can not be exported to the new folder '%s'!", chunks.size(), folder.c_str());
+		return false;
+	}
+	FOREACH(c, chunks) {
+		Scene subScene;
+		if (subScene.Load(folder + String::FormatString("/scene_%04u.mvs", c)) == Scene::SCENE_NA ||
+			!subScene.IsBounded() || subScene.images.size() != chunks[c].images.size()) {
+			VERBOSE("ERROR: SceneSplitTest: sub-scene %u is not saved with its %u images and its box!", c, (unsigned)chunks[c].images.size());
+			return false;
+		}
+	}
+	scene.obb = initialOBB;
+	return true;
+}
+/*----------------------------------------------------------------*/
+
 // A region-of-interest that intersects none of the dense points must
 // fail cleanly through the "no points available" guard, not silently fall back to using
 // every point
@@ -2363,7 +2455,8 @@ bool PipelineTest(bool forceCPU, bool verbose)
 		return false;
 	}
 	OPTDENSE::init();
-	OPTDENSE::bRemoveDmaps = true;
+	// the depth-maps stay on disk for the scene split test, removed after it (below)
+	OPTDENSE::bRemoveDmaps = false;
 	// every DEFVAR_OPTION starts at zero and only init()/update() install the declared defaults,
 	// so the refiner's configuration space needs the same treatment as OPTDENSE
 	OPTREFINE::init();
@@ -2384,9 +2477,22 @@ bool PipelineTest(bool forceCPU, bool verbose)
 	// asked for the weighted path with --constant-weight 0.
 	// Measured (GPU adjust-ON / CPU adjust-OFF): recon faces 52.9k / 71.4k,
 	// cleaned faces 37.0k / 49.8k, quality 50.4 / 52.2.
-	if (!scene.DenseReconstruction() || scene.pointcloud.GetSize() < 50000u) {
-		VERBOSE("ERROR: TestDataset failed estimating dense point-cloud (%u points)!", scene.pointcloud.GetSize());
-		return false;
+	{
+		// the depth-maps are removed once the scene split test is done, whatever its outcome
+		struct DepthMapsRemover {
+			const Scene& scene;
+			~DepthMapsRemover() {
+				for (const Image& imageData: scene.images)
+					if (imageData.IsValid())
+						File::deleteFile(ComposeDepthFilePath(imageData.ID, "dmap"));
+			}
+		} const depthMapsRemover{scene};
+		if (!scene.DenseReconstruction() || scene.pointcloud.GetSize() < 50000u) {
+			VERBOSE("ERROR: TestDataset failed estimating dense point-cloud (%u points)!", scene.pointcloud.GetSize());
+			return false;
+		}
+		if (!SceneSplitTest(scene))
+			return false;
 	}
 	if (verbose)
 		scene.pointcloud.Save(MAKE_PATH("scene_dense.ply"));

@@ -65,13 +65,19 @@ constexpr float SplitVerticesPerPoint = 0.35f;
 struct SplitCost {
 	static constexpr float FixedFusion = 3.8f, PerDepthFusion = 0.026f, PerPointFusion = 0.18f; // GB, GB per million
 	static constexpr float FixedMesh = 1.7f, PerVertexMesh = 1.0f; // GB, GB per million vertices
-	static float Predict(double depths, double points) {
-		const float mdepths(float(depths*1e-6)), mpoints(float(points*1e-6));
-		return MAXF(FixedFusion + PerDepthFusion*mdepths + PerPointFusion*mpoints,
-			FixedMesh + PerVertexMesh*SplitVerticesPerPoint*mpoints);
-	}
 };
 } // namespace
+
+// the predicted peak memory, in GB, of the depth-map fusion and the mesh reconstruction of a
+// (sub-)scene whose images' depth-maps hold numDepths valid pixels and whose fusion gives numPoints
+// points: the larger of the two stages
+float Scene::PredictSubsceneMemory(double numDepths, double numPoints)
+{
+	ASSERT(numDepths >= 0 && numPoints >= 0);
+	const float mdepths(float(numDepths*1e-6)), mpoints(float(numPoints*1e-6));
+	return MAXF(SplitCost::FixedFusion + SplitCost::PerDepthFusion*mdepths + SplitCost::PerPointFusion*mpoints,
+		SplitCost::FixedMesh + SplitCost::PerVertexMesh*SplitVerticesPerPoint*mpoints);
+}
 
 // split the scene in sub-scenes such that the depth-map fusion and the mesh reconstruction of each
 // fit in maxMemory GB: the depth-map samples (every depthMapStep-th pixel of every depth-map) are cut
@@ -82,15 +88,17 @@ struct SplitCost {
 // same predicted memory, just under the budget (the octree area split used before produced
 // sub-scenes from nearly empty to over the limit, with no relation between its area and the memory a
 // stage needs). The images of a sub-scene are those whose samples fall in its box, minus the ones
-// contributing little to it. Returns false if the budget is below a sub-scene's fixed cost or no
-// depth-map gives a sample; chunks stays empty if the whole scene fits.
-bool Scene::Split(ImagesChunkArr& chunks, float maxMemory, int depthMapStep) const
+// contributing little to it. Returns the predicted peak memory of the largest sub-scene, of the whole
+// scene if chunks stays empty (it fits, or no split lowers it), or 0 if the budget is below a
+// sub-scene's fixed cost or no depth-map gives a sample.
+float Scene::Split(ImagesChunkArr& chunks, float maxMemory, int depthMapStep) const
 {
 	TD_TIMER_STARTD();
-	ASSERT(depthMapStep > 0 && maxMemory > 0);
-	if (maxMemory <= MAXF(SplitCost::FixedFusion, SplitCost::FixedMesh)) {
-		VERBOSE("error: a sub-scene needs more than %gGB, the budget is %gGB", MAXF(SplitCost::FixedFusion, SplitCost::FixedMesh), maxMemory);
-		return false;
+	ASSERT(depthMapStep > 0 && maxMemory > 0 && chunks.empty());
+	const float fixedCost(PredictSubsceneMemory(0, 0));
+	if (maxMemory <= fixedCost) {
+		VERBOSE("error: a sub-scene needs more than %gGB, the budget is %gGB", fixedCost, maxMemory);
+		return 0;
 	}
 	// gather samples from all depth-maps: the ones in the scene ROI place the image, all of them
 	// measure its depth-map, loaded whole by the fusion
@@ -133,7 +141,7 @@ bool Scene::Split(ImagesChunkArr& chunks, float maxMemory, int depthMapStep) con
 			VERBOSE("warning: %u depth-maps missing or empty, ignored by the scene split", numDepthMapsMissing);
 		if (samples.empty()) {
 			VERBOSE("error: no depth-map samples to split the scene by");
-			return false;
+			return 0;
 		}
 	}
 	const double pointsPerSample(SQUARE(depthMapStep)*SplitPointsPerDepth);
@@ -161,7 +169,7 @@ bool Scene::Split(ImagesChunkArr& chunks, float maxMemory, int depthMapStep) con
 		double depths(0);
 		for (const IIndex idxImage: chunkImages)
 			depths += imageDepths[idxImage]*depthsPerSample;
-		return SplitCost::Predict(depths, idxs.size()*pointsPerSample);
+		return PredictSubsceneMemory(depths, idxs.size()*pointsPerSample);
 	};
 	// balanced recursive bisection into numParts boxes
 	struct Leaf { std::vector<SIdx> idxs; AABB3f aabb; };
@@ -259,11 +267,13 @@ bool Scene::Split(ImagesChunkArr& chunks, float maxMemory, int depthMapStep) con
 		DEBUG_EXTRA("\tsub-scene %u: %u images, %u samples, predicted %.1fGB", chunks.size()-1,
 			(unsigned)chunkImages.size(), (unsigned)leaves[l].idxs.size(), costs[l]);
 	}
+	const float peakCost(*std::max_element(costs.begin(), costs.end()));
 	if (chunks.size() < 2) {
-		// the whole scene fits: no sub-scene
+		// one box: the whole scene fits, or no split lowers it (warned above)
 		chunks.Empty();
-		VERBOSE("Scene fits in %.1fGB (predicted %.1fGB): not split", maxMemory, *std::max_element(costs.begin(), costs.end()));
-		return true;
+		if (peakCost <= maxMemory)
+			VERBOSE("Scene fits in %.1fGB (predicted %.1fGB): not split", maxMemory, peakCost);
+		return peakCost;
 	}
 	// remove images already completely contained by a larger chunk
 	{
@@ -300,12 +310,16 @@ bool Scene::Split(ImagesChunkArr& chunks, float maxMemory, int depthMapStep) con
 		if (chunks[c].images.empty())
 			chunks.RemoveAt(c);
 	DEBUG_EXTRA("Scene split (%gGB max-memory): %u chunks (%s)", maxMemory, chunks.size(), TD_TIMER_GET_FMT().c_str());
-	return true;
+	return peakCost;
 } // Split
 
-// split the scene in sub-scenes according to the given chunks array, and save them to disk
+// save the sub-scenes of a split scene (Split gave chunks) as scene_XXXX.mvs in the folder path,
+// created here: a scene that is not split gets no folder
 bool Scene::ExportChunks(const ImagesChunkArr& chunks, const String& path, ARCHIVE_TYPE type) const
 {
+	ASSERT(!chunks.empty());
+	String folder(path);
+	Util::ensureFolder(Util::ensureFolderSlash(folder));
 	FOREACH(chunkID, chunks) {
 		const ImagesChunk& chunk = chunks[chunkID];
 		IIndexArr idxImages(chunk.images.begin(), chunk.images.end(), true);
@@ -315,7 +329,7 @@ bool Scene::ExportChunks(const ImagesChunkArr& chunks, const String& path, ARCHI
 		if (!subset.mesh.IsEmpty())
 			subset.mesh.RemoveFacesOutside(subset.obb);
 		// serialize out the current state
-		if (!subset.Save(String::FormatString("%s" PATH_SEPARATOR_STR "scene_%04u.mvs", path.c_str(), chunkID), type))
+		if (!subset.Save(folder + String::FormatString("scene_%04u.mvs", chunkID), type))
 			return false;
 	}
 	return true;

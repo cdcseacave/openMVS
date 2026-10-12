@@ -470,7 +470,7 @@ int main(int argc, LPCTSTR* argv)
 			VERBOSE("Sub-scene memory budget: %.1fGB (%.1fGB available of %.1fGB)", maxMemory, (double)memInfo.freePhysical/GB, (double)memInfo.totalPhysical/GB);
 		}
 		Scene::ImagesChunkArr chunks;
-		if (!scene.Split(chunks, maxMemory))
+		if (scene.Split(chunks, maxMemory) <= 0)
 			return EXIT_FAILURE;
 		if (chunks.empty())
 			return EXIT_SUCCESS; // the whole scene fits: no sub-scene to export
