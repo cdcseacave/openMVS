@@ -89,12 +89,11 @@ ENDIF()
 #   CMake files in this project can refer to the root source directory
 #   as ${OpenMVS_SOURCE_DIR} and to the root binary directory as
 #   ${OpenMVS_BINARY_DIR}.
-PROJECT(OpenMVS LANGUAGES CXX)
-
 SET(OpenMVS_MAJOR_VERSION 2)
 SET(OpenMVS_MINOR_VERSION 4)
 SET(OpenMVS_PATCH_VERSION 0)
 SET(OpenMVS_VERSION ${OpenMVS_MAJOR_VERSION}.${OpenMVS_MINOR_VERSION}.${OpenMVS_PATCH_VERSION})
+PROJECT(OpenMVS VERSION ${OpenMVS_VERSION} LANGUAGES CXX)
 
 # Disable SSE on unsupported platforms
 IF(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm|ARM|aarch64|AARCH64)")
