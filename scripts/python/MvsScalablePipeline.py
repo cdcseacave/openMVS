@@ -49,7 +49,7 @@ def find_bin(folder, name):
 def main():
   parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
   parser.add_argument('scene', help='the input scene (.mvs), with its images')
-  parser.add_argument('--memory', default='auto', help='memory budget per sub-scene: auto, off or GB (default auto)')
+  parser.add_argument('--memory', default='auto', type=str.lower, help='memory budget per sub-scene: auto, off or GB (default auto)')
   parser.add_argument('--steps', default=','.join(STEPS), help='steps to run, among %s' % ','.join(STEPS))
   for step in STEPS:
     parser.add_argument('--' + step, default='', metavar='OPTIONS', help='extra options of the %s module' % step)
@@ -145,8 +145,10 @@ def main():
       if step in steps:
         run([*merge, os.path.join(SUBSCENES, 'scene_XXXX' + name + '.ply'), stem + name + '.ply'], stem + name + '.ply')
   if 'texture' in steps:
-    # the (merged) mesh is textured from all the images: the refined one when this run refines
-    mesh = stem + ('_dense_mesh_refined' if 'refine' in steps else '_dense_mesh')
+    # the (merged) mesh is textured from all the images: the refined one when this run refines, the unrefined
+    # one when it only (re)builds the mesh, else (neither) the refined one if it exists
+    refined = 'refine' in steps or ('mesh' not in steps and os.path.exists(os.path.join(work, stem + '_dense_mesh_refined.ply')))
+    mesh = stem + ('_dense_mesh_refined' if refined else '_dense_mesh')
     module(texture, 'texture', stem + '.mvs' if len(chunks) > 1 else stem + '_dense.mvs', mesh + '_texture.mvs',
            '-m', mesh + '.ply')
 

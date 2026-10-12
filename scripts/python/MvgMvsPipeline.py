@@ -433,7 +433,7 @@ PARSER.add_argument('--preset',
                     help="steps list preset in\n" +
                     " \n".join([k + " = " + str(PRESET[k]) for k in PRESET]) +
                     " \ndefault : " + PRESET_DEFAULT)
-PARSER.add_argument('--sub-scene-memory', default='auto',
+PARSER.add_argument('--sub-scene-memory', default='auto', type=str.lower,
                     help="steps 18-21 split the scene in sub-scenes that each fit this memory budget\n"
                     "(MvsScalablePipeline.py): auto - fit this machine (default), off - no split, or GB")
 
@@ -519,8 +519,9 @@ if 4 in CONF.steps:    # GeometricFilter
         STEPS[4].opt.extend(["-g", "e"])
 
 if 21 in CONF.steps:    # TextureMesh
-    if 20 not in CONF.steps:  # RefineMesh
-        # RefineMesh step is not run, use ReconstructMesh output
+    # the refined mesh when this run refines, the unrefined one when it only (re)builds the mesh,
+    # else (neither) the refined one if it exists
+    if 20 not in CONF.steps and (19 in CONF.steps or not os.path.exists(os.path.join(CONF.mvs_dir, "scene_dense_mesh_refined.ply"))):
         STEPS.replace_opt(21, "scene_dense_mesh_refined.ply", "scene_dense_mesh.ply")
         STEPS.replace_opt(21, "scene_dense_mesh_refined_texture.mvs", "scene_dense_mesh_texture.mvs")
 
@@ -534,7 +535,7 @@ def step_options(cstep):
             opt[o] = '-' + opt[o]
         opt[o] = '-' + opt[o]
     # Remove STEPS[cstep].opt options now defined in opt
-    for anOpt in STEPS[cstep].opt:
+    for anOpt in list(STEPS[cstep].opt):
         if anOpt in opt:
             idx = STEPS[cstep].opt.index(anOpt)
             if DEBUG:

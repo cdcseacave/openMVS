@@ -168,8 +168,10 @@ def read_ply(path):
   if [e[0] for e in elems] not in (['vertex'], ['vertex', 'face']):
     raise ValueError('%s: a vertex element and optionally a face element expected' % path)
   vertices = Vertices(elems[0][2], data, elems[0][1])
-  if len(elems) == 1 or elems[1][1] == 0:
-    return vertices, None
+  if len(elems) == 1:
+    return vertices, None  # no face element: a point-cloud (a mesh with 0 faces is still a mesh)
+  if elems[1][1] == 0:
+    return vertices, np.empty((0, 3), np.uint32)
   t = elems[1][2][0].split()
   if len(elems[1][2]) != 1 or t[1] != 'list' or t[4] != 'vertex_indices':
     raise ValueError('%s: faces with only vertex_indices expected' % path)
@@ -183,6 +185,13 @@ def read_ply(path):
 def image_ids(scene):
   """the ID of each image of a scene (its index when it has none)"""
   return [img['id'] if img.get('id', NO_ID) != NO_ID else i for i, img in enumerate(scene['images'])]
+
+
+def load_scene(path):
+  data = loadMVSInterface(path)
+  if data is None:
+    sys.exit('%s: can not load the scene' % path)
+  return data
 
 
 def main():
@@ -206,7 +215,7 @@ def main():
     path = os.path.abspath(args.input_plys).replace('XXXX', match.group(1))
     if not os.path.isfile(path):
       sys.exit('%s: missing, the sub-scene %s has no such product' % (path, scene))
-    data = loadMVSInterface(scene)
+    data = load_scene(scene)
     obb = data.get('obb')
     if obb is None:
       sys.exit('%s: the sub-scene has no region of interest' % scene)
@@ -240,7 +249,7 @@ def main():
             if not args.scene:
               sys.exit('%s: the points carry their views, --scene must give the scene the sub-scenes were '
                        'split from' % path)
-            scene_index = {i: idx for idx, i in enumerate(image_ids(loadMVSInterface(args.scene)))}
+            scene_index = {i: idx for idx, i in enumerate(image_ids(load_scene(args.scene)))}
           missing = [i for i in ids if i not in scene_index]
           if missing:
             sys.exit('%s: the sub-scene image ID %d is not in %s' % (path, missing[0], args.scene))
