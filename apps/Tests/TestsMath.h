@@ -42,7 +42,7 @@ namespace SEACAVE {
 bool TestTetraFlow();
 
 // test the Potts message path of the loopy belief propagation against the generic one on random
-// graphs whose nodes have random, partly shared label sets: the labels and energies must match exactly
+// graphs whose nodes have random, partly shared label sets: the labels must match after every iteration
 bool TestLBPPotts();
 /*----------------------------------------------------------------*/
 

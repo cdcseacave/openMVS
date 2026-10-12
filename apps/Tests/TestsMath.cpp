@@ -257,6 +257,8 @@ bool TestLBPPotts()
 				potts.SetDataCost(labels[k], n, cost);
 			}
 		}
+		// the labels, not the energies: the energy follows from the labels, and ComputeEnergy's
+		// OpenMP reduction sums in no fixed order
 		for (unsigned i = 0; i < 6; ++i) {
 			generic.Optimize(1);
 			potts.Optimize(1);
@@ -265,10 +267,6 @@ bool TestLBPPotts()
 					VERBOSE("error: LBP iteration %d/%u: node %u has label %u by the Potts path, %u by the generic one", iter, i, n, potts.GetLabel(n), generic.GetLabel(n));
 					return false;
 				}
-			}
-			if (generic.ComputeEnergy() != potts.ComputeEnergy()) {
-				VERBOSE("error: LBP iteration %d/%u: energy %g by the Potts path, %g by the generic one", iter, i, potts.ComputeEnergy(), generic.ComputeEnergy());
-				return false;
 			}
 		}
 	}
