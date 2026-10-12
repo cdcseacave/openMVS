@@ -10,6 +10,7 @@
 #include "Common.h"
 #include "GlobalRotationAveraging.h"
 #include "Scene.h"
+#include "PairsWeighting.h"
 #include "../Math/LeastAbsoluteDeviationSolver.h"
 #include <boost/graph/adjacency_list.hpp>
 #include <boost/graph/connected_components.hpp>
@@ -589,6 +590,79 @@ unsigned GlobalRotationEstimator::FilterRelativeRotations(const std::vector<Poin
 	DEBUG("Filtered %u/%u relative rotations with angle > %.2f degrees (max weight %.2f)",
 		numInvalidPairs, numPairs, maxRelativeAngle, maxInvalidWeight);
 	return numInvalidPairs;
+}
+/*----------------------------------------------------------------*/
+
+unsigned SFM::FilterPairsByTreeRotations(Scene& scene, REAL maxResidual, const PairsWeightingConfig& weightingCfg)
+{
+	ASSERT(maxResidual >= 0);
+	if (maxResidual <= 0)
+		return 0;
+	TD_TIMER_STARTD();
+	// the pairs the tree is built from, each with the scene pair it stands for
+	std::vector<RotationPair> rotationPairs;
+	IIndexArr scenePairs;
+	FOREACH(idxPair, scene.pairs) {
+		const ImagePair& pair = scene.pairs[idxPair];
+		if (!pair.relativePose.has_value() || !pair.HasValidWeight())
+			continue;
+		rotationPairs.emplace_back(pair.ID1, pair.ID2, pair.relativePose->R, pair.GetCompositeWeight());
+		scenePairs.push_back((IIndex)idxPair);
+	}
+	// the tree reaches the largest component of the pairs given; its pairs are judged and set
+	// aside, and the next tree spans the largest component of what is left, until no component
+	// of two images remains
+	const REAL minCosAngle = COS(D2R(maxResidual));
+	std::vector<bool> removed(scene.pairs.size(), false);
+	unsigned numJudged = 0, numRemoved = 0;
+	float maxRemovedWeight = 0.f;
+	std::vector<Point3> rotations;
+	while (!rotationPairs.empty()) {
+		if (GlobalRotationEstimator::RotationsFromMaximumSpanningTree(scene.images.size(), rotationPairs,
+				std::make_pair(NO_ID, NO_ID), rotations) == NO_ID)
+			break;
+		std::vector<RotationPair> leftPairs;
+		IIndexArr leftScenePairs;
+		FOREACH(r, rotationPairs) {
+			const RotationPair& pair = rotationPairs[r];
+			// a pair joins the two images of one component, so both or neither are reached
+			if (rotations[pair.idxA] == Point3::INF) {
+				ASSERT(rotations[pair.idxB] == Point3::INF);
+				leftPairs.push_back(pair);
+				leftScenePairs.push_back(scenePairs[r]);
+				continue;
+			}
+			ASSERT(rotations[pair.idxB] != Point3::INF);
+			++numJudged;
+			const Matrix3x3 treeR = RMatrix(rotations[pair.idxB]) * RMatrix(rotations[pair.idxA]).t();
+			if (ComputeAngle(pair.relativeRotation, treeR) >= minCosAngle)
+				continue;
+			removed[scenePairs[r]] = true;
+			maxRemovedWeight = MAXF(maxRemovedWeight, pair.weight);
+			++numRemoved;
+		}
+		rotationPairs.swap(leftPairs);
+		scenePairs.swap(leftScenePairs);
+	}
+	VERBOSE("Tree rotation check: removed %u/%u pairs more than %g degrees from the rotations of their maximum spanning tree (heaviest %.1f)",
+		numRemoved, numJudged, maxResidual, maxRemovedWeight);
+	if (numRemoved == 0)
+		return 0;
+	// remove the scene pairs, compacting in one pass
+	const unsigned numPairs = scene.pairs.size();
+	unsigned numKept = 0;
+	for (unsigned idxPair = 0; idxPair < numPairs; ++idxPair) {
+		if (removed[idxPair])
+			continue;
+		if (numKept != idxPair)
+			scene.pairs[numKept] = std::move(scene.pairs[idxPair]);
+		++numKept;
+	}
+	ASSERT(numPairs - numKept == numRemoved);
+	scene.pairs.RemoveLast(numRemoved);
+	ComputePairsWeights(scene, weightingCfg);
+	DEBUG("Filtered the view graph by its maximum spanning tree's rotations: %u pairs removed (%s)", numRemoved, TD_TIMER_GET_FMT().c_str());
+	return numRemoved;
 }
 /*----------------------------------------------------------------*/
 

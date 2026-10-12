@@ -690,8 +690,9 @@ void ExportMatchingCSVs(const Scene& scene, const ReconstructionConfig& config)
 }
 
 // Export the pairs CSV of a freshly matched scene, then disambiguate its view graph with the
-// camera-triplet filter (ViewGraphTriplets.h): the CSV describes the whole matched graph, each
-// pair with its triplet score, the pairs the filter removes included. Returns the images of
+// camera-triplet filter (ViewGraphTriplets.h) and the spanning-tree rotation check
+// (FilterPairsByTreeRotations): the CSV describes the whole matched graph, each pair with its
+// triplet score, the pairs the filters remove included. Returns the images of
 // the largest piece the filter's ceiling leaves, the reconstruction's seed views; empty without
 // the filter.
 IIndexArr ExportMatchingCSVsAndFilterPairs(Scene& scene, const ReconstructionConfig& config)
@@ -699,6 +700,7 @@ IIndexArr ExportMatchingCSVsAndFilterPairs(Scene& scene, const ReconstructionCon
 	ExportMatchingCSVs(scene, config);
 	IIndexArr seedViews;
 	FilterPairsByTriplets(scene, config.tripletFilterCfg, config.matchCfg.weightingCfg, &seedViews);
+	FilterPairsByTreeRotations(scene, config.maxTreeRotationResidual, config.matchCfg.weightingCfg);
 	return seedViews;
 }
 

@@ -10624,6 +10624,62 @@ bool RotationEstimatorTest()
 	return true;
 }
 
+// A pair whose rotation is a quarter turn off, the cross-face pair of a four-fold symmetric
+// building, is found against the rotations its graph's strongest pairs compose and removed before
+// any track is built from it; a weak pair a few tens of degrees off, a loop's drift, stays.
+bool SpanningTreeRotationFilterTest()
+{
+	TD_TIMER_START();
+	Scene sceneGT, scene;
+	SceneConfig cfg;
+	cfg.numImages = 16;
+	cfg.numPoints = 200;
+	cfg.rotationAngleStep = 16.0;
+	cfg.generatePairs = true;
+	GenerateTestScene(sceneGT, cfg, &scene);
+	ComputePairsWeights(scene);
+	constexpr REAL maxResidual = 70; // degrees, ReconstructionConfig::maxTreeRotationResidual
+	const RMatrix quarterTurn(Point3(0, D2R(REAL(90)), 0));
+	const RMatrix drift(Point3(0, D2R(REAL(40)), 0));
+	const std::set<std::pair<IIndex,IIndex>> crossFace{{0,8}, {1,9}, {3,12}, {5,14}};
+	const std::pair<IIndex,IIndex> drifting(2, 11);
+	const size_t numPairs = scene.pairs.size();
+	for (ImagePair& pair : scene.pairs) {
+		const std::pair<IIndex,IIndex> ids(pair.ID1, pair.ID2);
+		const bool isCrossFace = crossFace.count(ids) != 0;
+		if (!isCrossFace && ids != drifting)
+			continue;
+		// weak, as the cross-face pairs of the captures are: far from every tree edge's weight
+		pair.weightSpatial *= 1e-3f;
+		pair.relativePose->R = (isCrossFace ? quarterTurn : drift) * pair.relativePose->R;
+	}
+	// off: nothing is judged
+	if (FilterPairsByTreeRotations(scene, 0, PairsWeightingConfig()) != 0 || scene.pairs.size() != numPairs) {
+		VERBOSE("ERROR: SpanningTreeRotationFilterTest: the check off removed pairs");
+		return false;
+	}
+	const unsigned removed = FilterPairsByTreeRotations(scene, maxResidual, PairsWeightingConfig());
+	std::set<std::pair<IIndex,IIndex>> kept;
+	for (const ImagePair& pair : scene.pairs)
+		kept.emplace(pair.ID1, pair.ID2);
+	if (removed != crossFace.size() || scene.pairs.size() != numPairs - crossFace.size()) {
+		VERBOSE("ERROR: SpanningTreeRotationFilterTest: removed %u pairs, expected %zu", removed, crossFace.size());
+		return false;
+	}
+	for (const auto& ids : crossFace)
+		if (kept.count(ids)) {
+			VERBOSE("ERROR: SpanningTreeRotationFilterTest: cross-face pair (%u,%u) kept", ids.first, ids.second);
+			return false;
+		}
+	if (!kept.count(drifting)) {
+		VERBOSE("ERROR: SpanningTreeRotationFilterTest: the drifting pair under the bar was removed");
+		return false;
+	}
+	VERBOSE("SpanningTreeRotationFilterTest passed: %u cross-face pairs removed, %zu kept (%s)",
+		removed, scene.pairs.size(), TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 bool ScaleEstimatorTest()
 {
 	TD_TIMER_START();

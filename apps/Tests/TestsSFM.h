@@ -395,6 +395,9 @@ bool PairDirectionToleranceTest();
 // Test function for rotation estimation
 bool RotationEstimatorTest();
 
+// A quarter-turn pair is removed against its graph's maximum spanning tree, a drifting one kept
+bool SpanningTreeRotationFilterTest();
+
 // Test function for global scale estimation
 bool ScaleEstimatorTest();
 

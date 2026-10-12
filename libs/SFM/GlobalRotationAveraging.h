@@ -26,6 +26,7 @@ namespace SFM {
 // Forward declarations
 class SFM_API Scene;
 class SFM_API Image;
+struct SFM_API PairsWeightingConfig;
 
 // Pairwise relative rotation
 struct SFM_API RotationPair
@@ -176,6 +177,13 @@ private:
 	uint32_t fixedNodeId;
 };
 /*----------------------------------------------------------------*/
+
+// Remove every pair whose relative rotation is more than maxResidual degrees from the one its
+// graph's strongest pairs compose: the maximum spanning tree of the pairs holding a relative pose,
+// by composite weight, carries a rotation to every image of each component it spans, and a pair
+// off the tree is the cycle it closes with it. The pair weights are recomputed when anything was
+// removed. 0 disables the check. Returns the number of removed pairs.
+unsigned SFM_API FilterPairsByTreeRotations(Scene& scene, REAL maxResidual, const PairsWeightingConfig& weightingCfg);
 
 } // namespace SFM
 
