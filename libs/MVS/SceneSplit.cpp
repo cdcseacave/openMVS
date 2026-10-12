@@ -181,7 +181,7 @@ float Scene::Split(ImagesChunkArr& chunks, float maxMemory, int depthMapStep) co
 			rootBox.InsertFull(X);
 	}
 	const auto Partition = [&](int numParts) {
-		struct Node { std::vector<SIdx> idxs; AABB3f aabb; int numParts; };
+		struct Node { std::vector<SIdx> idxs; AABB3f aabb; int numParts{0}; };
 		std::vector<Leaf> leaves;
 		std::vector<Node> stack(1);
 		stack.front().idxs.resize(samples.size());
@@ -275,7 +275,8 @@ float Scene::Split(ImagesChunkArr& chunks, float maxMemory, int depthMapStep) co
 			VERBOSE("Scene fits in %.1fGB (predicted %.1fGB): not split", maxMemory, peakCost);
 		return peakCost;
 	}
-	// remove images already completely contained by a larger chunk
+	// remove images already completely contained by a larger chunk, unless that empties a chunk:
+	// the budget is met without this, and a chunk dropped would leave its box unreconstructed
 	{
 		std::vector<Unsigned32Arr> chunkCounts(chunks.size());
 		// per chunk, how many of each image's samples fall in its box
@@ -290,25 +291,25 @@ float Scene::Split(ImagesChunkArr& chunks, float maxMemory, int depthMapStep) co
 					++chunkCounts[c][visibility[i]];
 		const float minImageContributionRatioLargerChunk(0.9f);
 		FOREACH(cSmall, chunks) {
-			ImagesChunk& chunkSmall = chunks[cSmall];
+			std::unordered_set<IIndex> keptImages(chunks[cSmall].images);
 			FOREACH(cLarge, chunks) {
 				const ImagesChunk& chunkLarge = chunks[cLarge];
-				if (chunkLarge.images.size() <= chunkSmall.images.size())
+				if (chunkLarge.images.size() <= keptImages.size())
 					continue;
-				for (auto it = chunkSmall.images.begin(); it != chunkSmall.images.end(); ) {
+				for (auto it = keptImages.begin(); it != keptImages.end(); ) {
 					const IIndex idxImage(*it);
 					if (chunkCounts[cSmall][idxImage] < chunkCounts[cLarge][idxImage] &&
 						static_cast<float>(chunkCounts[cLarge][idxImage])/static_cast<float>(imageSamples[idxImage]) > minImageContributionRatioLargerChunk)
-						it = chunkSmall.images.erase(it);
+						it = keptImages.erase(it);
 					else
 						++it;
 				}
 			}
+			if (!keptImages.empty())
+				chunks[cSmall].images.swap(keptImages);
 		}
 	}
-	RFOREACH(c, chunks)
-		if (chunks[c].images.empty())
-			chunks.RemoveAt(c);
+	ASSERT(std::none_of(chunks.begin(), chunks.end(), [](const ImagesChunk& chunk) { return chunk.images.empty(); }));
 	DEBUG_EXTRA("Scene split (%gGB max-memory): %u chunks (%s)", maxMemory, chunks.size(), TD_TIMER_GET_FMT().c_str());
 	return peakCost;
 } // Split
