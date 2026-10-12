@@ -227,6 +227,12 @@ struct SFM_API MergeReport
 	std::vector<BlockPose> poses;          // final pose and state of every block
 	bool camerasRelaxed{false};            // the camera-level relaxation ran
 	float seamErrorBeforeRelax{0.f}, seamErrorAfterRelax{0.f}; // largest model-seam median error in pixels
+
+	// whether the merge placed at least minShare of a scene of numImages images
+	bool PlacesShare(float minShare, unsigned numImages) const {
+		ASSERT(minShare >= 0.f && minShare <= 1.f);
+		return (float)numImagesPlaced >= minShare * (float)numImages;
+	}
 };
 
 /**

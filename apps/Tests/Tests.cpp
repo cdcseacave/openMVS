@@ -416,6 +416,8 @@ int main(int argc, LPCTSTR* argv)
 			if (!SFM::HierarchicalCameraAlignmentTest())
 				return false;
 			// Hierarchical SFM tests - End-to-End
+			if (!SFM::MergePlacedShareTest())
+				return false;
 			if (!SFM::HierarchicalSFMSplitMergeRoundtripTest())
 				return false;
 			if (!SFM::HierarchicalSFMWithRandomTransformTest())
