@@ -403,8 +403,11 @@ macro(optimize_default_compiler_settings)
 	set(BUILD_EXTRA_EXE_LINKER_FLAGS_RELEASE "")
 	set(BUILD_EXTRA_EXE_LINKER_FLAGS_DEBUG "")
 
-	# use the newest C++ standard the compiler supports; C++17 is the minimum
-	foreach(CXX_STD 23 20 17)
+	# C++20, the standard halfmesh is built with (C++17 is the minimum): both instantiate
+	# BS::thread_pool, whose layout depends on the standard (std::move_only_function from
+	# C++23 on), so a newer one here gives two definitions of the same class across the
+	# library boundary, and on Linux the executable's copy is called on halfmesh's pools
+	foreach(CXX_STD 20 17)
 		if("cxx_std_${CXX_STD}" IN_LIST CMAKE_CXX_COMPILE_FEATURES)
 			set(CMAKE_CXX_STANDARD ${CXX_STD})
 			break()
