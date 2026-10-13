@@ -84,27 +84,119 @@ bool MeshVertexColorsPLYTest()
 	return true;
 }
 
-bool MeshLoadMalformedPLYTest()
+// the PLY codec: exact binary and ascii round trips of every kind of property, a big-endian file of
+// other types with a property and an element the loader skips, and malformed files refused
+bool PLYCodecTest()
 {
-	const ScopedTempDir tmpDir(_T("MeshLoadMalformedPLYTest"));
+	const ScopedTempDir tmpDir(_T("PLYCodecTest"));
 	if (!tmpDir.IsValid())
 		return false;
-	// a well-formed header for one triangle with a variable-length vertex-index list
-	const LPCSTR header =
-		"ply\nformat ascii 1.0\n"
-		"element vertex 3\nproperty float x\nproperty float y\nproperty float z\n"
-		"element face 1\nproperty list uchar int vertex_indices\nend_header\n"
-		"0 0 0\n1 0 0\n0 1 0\n";
-	// a face list count larger than the indices on the line, or large enough to overflow the
-	// 32-bit allocation size, must be refused at load rather than crash the process
-	for (const LPCSTR faceLine: {"9 0 1 2\n", "1073741825 0 1 2\n"}) {
-		const String fileName(tmpDir(_T("malformed.ply")));
-		std::ofstream(fileName.c_str()) << header << faceLine;
-		Mesh mesh;
-		if (mesh.Load(fileName)) {
-			VERBOSE("ERROR: a PLY face with an out-of-range list count was accepted!");
+
+	// a point-cloud with every attribute, and reals no short decimal carries
+	PointCloud pc;
+	pc.points = {{0.1f, -1e-7f, 12345.678f}, {FLT_MAX, -FLT_MIN, 3.f}, {1.f/3.f, 2.f, -0.5f}};
+	pc.colors = {Pixel8U::RED, Pixel8U::GREEN, Pixel8U::BLUE};
+	pc.normals = {{0.f, 0.f, 1.f}, {0.6f, 0.8f, 0.f}, {1.f, 0.f, 0.f}};
+	pc.pointViews = {{0, 3}, {1}, {2, 4, 5}};
+	pc.pointWeights = {{0.5f, 0.25f}, {1.f}, {0.1f, 0.2f, 0.3f}};
+	pc.labels = {1, 2, 3};
+	for (int format = 0; format < 3; ++format) {
+		const bool bBinary(format != 1), bLegacyTypes(format == 2);
+		const String fileName(tmpDir(String::FormatString("pointcloud%d.ply", format)));
+		PointCloud loaded;
+		if (!pc.Save(fileName, true, bLegacyTypes, bBinary) || !loaded.Load(fileName) ||
+			loaded.points != pc.points || loaded.colors != pc.colors || loaded.normals != pc.normals ||
+			loaded.pointViews != pc.pointViews || loaded.pointWeights != pc.pointWeights || loaded.labels != pc.labels) {
+			VERBOSE("ERROR: PLY point-cloud round trip (%s) is not exact!", bBinary ? (bLegacyTypes ? "binary, legacy types" : "binary") : "ascii");
 			return false;
 		}
+	}
+
+	// a mesh without faces still saves as a mesh: its face element is written, empty, which is how
+	// the sub-scene merge (MvsMergeChunks.py) tells it from a point-cloud
+	{
+		const String fileName(tmpDir(_T("nofaces.ply")));
+		Mesh mesh;
+		mesh.vertices = {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}};
+		const std::string expected(std::string("ply\nformat binary_little_endian 1.0\nelement vertex 3\n"
+			"property float32 x\nproperty float32 y\nproperty float32 z\nelement face 0\nend_header\n") +
+			std::string(reinterpret_cast<const char*>(mesh.vertices.data()), mesh.vertices.GetDataSize()));
+		bool bExact(mesh.Save(fileName));
+		if (bExact) {
+			std::ifstream file(fileName.c_str(), std::ios::binary);
+			bExact = std::string((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>()) == expected;
+		}
+		if (!bExact) {
+			VERBOSE("ERROR: a mesh without faces did not save as a PLY mesh with an empty face element!");
+			return false;
+		}
+	}
+
+	// a big-endian mesh of doubles, with a vertex property and an element the loader skips,
+	// and its triangle as an int-counted "vertex_index" list
+	{
+		std::string body;
+		const auto Put = [&body](auto v) {
+			char bytes[sizeof(v)];
+			memcpy(bytes, &v, sizeof(v));
+			std::reverse(bytes, bytes+sizeof(v));
+			body.append(bytes, sizeof(v));
+		};
+		const double coords[3][3] = {{0.5, 1.25, -2.0}, {1e10, -3.5, 0.0}, {0.1, 0.2, 0.3}};
+		for (const auto& c: coords) {
+			Put(c[0]); Put(c[1]); Put(c[2]);
+			Put(7.f); // quality
+		}
+		Put(uint8_t(2)); Put(int32_t(5)); Put(int32_t(6)); // material ids
+		Put(int32_t(3)); Put(uint32_t(2)); Put(uint32_t(0)); Put(uint32_t(1)); // face
+		const String fileName(tmpDir(_T("bigendian.ply")));
+		std::ofstream(fileName.c_str(), std::ios::binary) << "ply\nformat binary_big_endian 1.0\n"
+			"element vertex 3\nproperty double x\nproperty double y\nproperty double z\nproperty float quality\n"
+			"element material 1\nproperty list uchar int ids\n"
+			"element face 1\nproperty list int uint vertex_index\nend_header\n" << body;
+		Mesh mesh;
+		bool bExact(mesh.Load(fileName) && mesh.vertices.size() == 3 && mesh.faces.size() == 1 && mesh.faces[0] == Mesh::Face(2, 0, 1));
+		for (int v = 0; bExact && v < 3; ++v)
+			bExact = mesh.vertices[v] == Mesh::Vertex((float)coords[v][0], (float)coords[v][1], (float)coords[v][2]);
+		if (!bExact) {
+			VERBOSE("ERROR: a big-endian PLY mesh did not load exactly!");
+			return false;
+		}
+	}
+
+	// malformed files are refused rather than crashed on: a face count the file cannot hold or that
+	// overflows the allocation size, a quad, and a header claiming more vertices than the file holds
+	const LPCSTR asciiHeader =
+		"ply\nformat ascii 1.0\n"
+		"element vertex 3\nproperty float x\nproperty float y\nproperty float z\n"
+		"element face 1\nproperty list uint int vertex_indices\nend_header\n"
+		"0 0 0\n1 0 0\n0 1 0\n";
+	const auto WriteBinary = [&tmpDir](int numVertices, uint8_t count, std::initializer_list<uint32_t> indices) {
+		std::string body(3*3*sizeof(float), '\0');
+		body += static_cast<char>(count);
+		for (const uint32_t idx: indices)
+			body.append(reinterpret_cast<const char*>(&idx), sizeof(uint32_t));
+		const String fileName(tmpDir(_T("malformed.ply")));
+		std::ofstream(fileName.c_str(), std::ios::binary) << "ply\nformat binary_little_endian 1.0\nelement vertex " << numVertices <<
+			"\nproperty float x\nproperty float y\nproperty float z\nelement face 1\nproperty list uchar uint vertex_indices\nend_header\n" << body;
+		return fileName;
+	};
+	Mesh mesh;
+	if (!mesh.Load(WriteBinary(3, 3, {0, 1, 2}))) {
+		VERBOSE("ERROR: a well-formed binary PLY triangle was refused!");
+		return false;
+	}
+	for (const LPCSTR faceLine: {"9 0 1 2\n", "1073741825 0 1 2\n", "4 0 1 2 0\n"}) {
+		const String fileName(tmpDir(_T("malformed.ply")));
+		std::ofstream(fileName.c_str()) << asciiHeader << faceLine;
+		if (mesh.Load(fileName)) {
+			VERBOSE("ERROR: the ascii PLY face '%.*s' was accepted!", (int)strlen(faceLine)-1, faceLine);
+			return false;
+		}
+	}
+	if (mesh.Load(WriteBinary(3, 255, {0, 1, 2})) || mesh.Load(WriteBinary(3, 4, {0, 1, 2, 0})) || mesh.Load(WriteBinary(1000, 3, {0, 1, 2}))) {
+		VERBOSE("ERROR: a malformed binary PLY was accepted!");
+		return false;
 	}
 	return true;
 }

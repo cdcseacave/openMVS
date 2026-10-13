@@ -5,20 +5,17 @@ File format I/O subsystem for OpenMVS. Handles reading and writing of 3D geometr
 ## Geometry Formats
 
 ### PLY (`PLY.h`, `PLY.cpp`)
-Full-featured PLY polygon format parser/writer. Primary format for point clouds and meshes.
+PLY reader/writer, the primary format for point clouds and meshes. Values go straight between the file and the caller's arrays through `PLY::Binding`s (property name + memory of the first record's value + stride), so there is no per-record structure and no per-scalar dispatch.
 
-**Key methods:**
-- `read(path)` / `write(path, numElems, elemNames, fileType, numComments)` - File I/O
-- `element_count()`, `describe_element()`, `describe_property()` - Header setup
-- `get_element(void*)` / `put_element(void*)` - Read/write individual elements
-- `find_element()`, `find_property()` - Query schema
-- `append_comment()`, `get_comments()` - Metadata
+**Reading:** `Open(path)` parses the header (and refuses element counts the file is too short to hold, so callers may size arrays by them); `GetElements()` / `Element::FindProperty()` / `Element::HasProperties()` describe the file; `ReadElement(idx, bindings)` reads one element, in file order, skipping unbound properties and unread elements and converting each value to the bound type. It returns false on a missing bound property, a fixed-size list of another size, or a truncated/malformed file — never throws or exits. `GetComments()` holds the header comments.
 
-**File types:** `PLY::ASCII`, `PLY::BINARY_BE`, `PLY::BINARY_LE` (little-endian binary preferred)
+**Writing:** `AddComment()`, `AddElement(name, count, bindings)` in file order, then `Save(path, type, legacyTypeNames)`; the bound memory must stay valid until `Save`.
 
-**Data types:** Int8/16/32, Uint8/16/32, Float32/64. Properties can be scalar or list (variable-length arrays).
+**Bindings:** `PLY::Scalar(name, &arr[0].x, stride[, fileType])`, `PLY::List(name, &faces[0].x, numItems, stride)` (fixed-size list), `PLY::Lists(name, containerOfContainers)` (any size per record).
 
-**Property combine rules** (for mesh operations): `AVERAGE_RULE`, `MAJORITY_RULE`, `MINIMUM_RULE`, `MAXIMUM_RULE`, `SAME_RULE`, `RANDOM_RULE`.
+**File types:** `PLY::BINARY_LE` (default), `PLY::ASCII` (exact text for reals), `PLY::BINARY_BE` (read only).
+
+**Data types:** Int8/16/32, Uint8/16/32, Float32/64 (also read under their legacy names: char, uchar, short, int, float, double...).
 
 ### glTF (`tiny_gltf.h`, from vcpkg)
 Header-only third-party library for binary (.glb) and ASCII (.gltf) 3D format. Not vendored here - it comes from the `tinygltf` port, and halfmesh compiles the single `TINYGLTF_IMPLEMENTATION` unit.

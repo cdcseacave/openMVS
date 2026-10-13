@@ -105,8 +105,8 @@ bool UnitTests()
 		VERBOSE("ERROR: MeshVertexColorsPLYTest failed!");
 		return false;
 	}
-	if (!MVS::MeshLoadMalformedPLYTest()) {
-		VERBOSE("ERROR: MeshLoadMalformedPLYTest failed!");
+	if (!MVS::PLYCodecTest()) {
+		VERBOSE("ERROR: PLYCodecTest failed!");
 		return false;
 	}
 	if (!MVS::MeshBipyramidFixtureTest()) {

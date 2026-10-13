@@ -747,8 +747,8 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 ### PLY Format
 
 - **Files:** `libs/IO/PLY.h`, `libs/IO/PLY.cpp`
-- **Algorithms:** Full PLY polygon format parser/writer; supports ASCII and binary (little/big-endian); property combine rules: AVERAGE, MAJORITY, MINIMUM, MAXIMUM, SAME, RANDOM
-- **File types:** `PLY::ASCII`, `PLY::BINARY_BE`, `PLY::BINARY_LE`
+- **Algorithms:** PLY reader/writer bound directly to the caller's arrays (property name + first value + stride): fixed-size runs at fixed offsets, adjacent copies merged, whole-element block transfer when the file layout matches memory; values converted to the bound type; fixed-size lists (triangles) and variable-size lists (point views); malformed files refused with a message, element counts checked against the file size; ASCII reals written in their shortest exact form
+- **File types:** `PLY::BINARY_LE` (default), `PLY::ASCII`, `PLY::BINARY_BE` (read only)
 
 ### OBJ Format
 

@@ -15,15 +15,13 @@ While multiple formats are supported, PLY (Polygon File Format) is the workhorse
 - Triangle meshes (with optional textures)
 - Intermediate pipeline outputs
 
-PLY files are typically saved in **little-endian binary** (`PLY::BINARY_LE`) for performance. ASCII mode is available for debugging.
+PLY files are saved in **little-endian binary** (`PLY::BINARY_LE`) by default; ASCII is available for debugging and writes every real exactly (the shortest text that reads back to the same value). Big-endian files are read, not written.
 
 ## 3D Geometry Formats
 
 ### PLY (`PLY.h`, `PLY.cpp`)
 
-The PLY parser is a full implementation of the PLY specification. Key concepts:
-
-**Elements and Properties**: A PLY file is organized into elements (like "vertex" or "face"), each with typed properties:
+**Elements and Properties**: A PLY file is organized into elements (like "vertex" or "face"), each a table of records whose columns are typed properties — scalars, or lists of scalars preceded by their count:
 ```
 element vertex 1000
 property float x
@@ -36,37 +34,46 @@ element face 500
 property list uchar int vertex_indices
 ```
 
-**Reading pattern**:
+**Bindings**: values are read straight into, and written straight from, the caller's arrays. A `PLY::Binding` names a property and gives the memory of its value in the first record plus the stride to the next record (struct-of-arrays and array-of-structs layouts both work):
+- `PLY::Scalar(name, &arr[0].x, stride)` — a scalar; on write an optional file type (e.g. `PLY::Int32` for a `uint8_t` in memory)
+- `PLY::List(name, &faces[0].x, 3, stride)` — a list of a fixed number of items (reading a record of any other size fails: a quad is refused, not misread)
+- `PLY::Lists(name, lists)` — a list of any size per record, kept in a container of containers (`lists[i].resize/data/size`)
+
+**Reading pattern** (elements are read in file order; the ones not read, and the unbound properties, are skipped; values are converted from the file's type to the bound type):
 ```cpp
 PLY ply;
-if (!ply.read(fileName))
+if (!ply.Open(fileName))
     return false;
-
-// Find and read vertex element
-if (ply.find_element("vertex")) {
-    ply.describe_element("vertex", vertexCount);
-    // Set up property handlers...
-    for (int i = 0; i < vertexCount; i++)
-        ply.get_element(&vertex);
+for (size_t e = 0; e < ply.GetElements().size(); ++e) {
+    const PLY::Element& elem = ply.GetElements()[e];
+    if (elem.name != "vertex")
+        continue;
+    points.resize(elem.count);  // safe: Open() refuses counts the file is too short to hold
+    PLY::Bindings bindings{PLY::Scalar("x", &points[0].x, sizeof(Point)), /* y, z */};
+    if (elem.HasProperties({"nx", "ny", "nz"}))
+        /* resize normals, add their bindings */;
+    if (!ply.ReadElement(e, bindings))
+        return false;  // missing bound property, list of another size, truncated file...
 }
 ```
 
-**Writing pattern**:
+**Writing pattern** (describe the elements in file order, then save; the bound memory must stay valid until `Save`):
 ```cpp
 PLY ply;
-ply.write(fileName, numElements, elementNames, PLY::BINARY_LE, 0);
-// Describe properties, then header_complete()
-for (auto& v : vertices)
-    ply.put_element(&v);
+ply.AddComment("TextureFile texture_0.png");
+ply.AddElement("vertex", vertices.size(), {
+    PLY::Scalar("x", &vertices[0].x, sizeof(Vertex)), /* y, z */});
+ply.AddElement("face", faces.size(), {PLY::List("vertex_indices", &faces[0].x, 3, sizeof(Face))});
+return ply.Save(fileName);  // PLY::BINARY_LE by default; legacy type names ("float", "uchar") on request
 ```
+
+**Speed**: a record is processed as runs of fixed-size properties at fixed offsets; adjacent plain copies (x, y, z into a `Point3f`) merge into one copy; an element whose records are laid out exactly as in memory (vertex x/y/z into a vertex array) is read or written in one block, straight between the file and the array.
 
 **Comments**: PLY comments store metadata. OpenMVS uses them for texture file references:
 ```
 comment TextureFile texture_0.png
 comment TextureFile texture_1.jpg
 ```
-
-**Property combine rules**: When merging mesh data, properties can be combined using rules like `AVERAGE_RULE`, `MAJORITY_RULE`, `MINIMUM_RULE`, etc.
 
 ### OBJ (halfmesh)
 
@@ -162,7 +169,7 @@ mesh.SaveGLTF("model.glb", true);   // Binary glTF
 ```
 libs/IO/
 ├── Common.h/cpp        # Library entry point, conditional includes
-├── PLY.h/cpp           # PLY parser/writer (~2000+ lines)
+├── PLY.h/cpp           # PLY reader/writer bound to the caller's arrays
 ├── Image.h/cpp         # CImage base class + factory
 ├── ImageBMP.h/cpp      # BMP format
 ├── ImageTGA.h/cpp      # TGA format (with RLE)

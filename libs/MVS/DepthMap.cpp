@@ -1907,124 +1907,51 @@ bool MVS::ExportPointCloud(const String& fileName, const Image& imageData, const
 {
 	ASSERT(!depthMap.empty());
 	const Camera& P0 = imageData.camera;
-	// count the valid depths, both to size the write buffer and to avoid
-	// creating an empty file for a depth-map without any valid depth
+	// the 3D point of every valid depth, with its color and normal
 	const size_t nPoints((size_t)cv::countNonZero(depthMap));
-	if (nPoints == 0)
-		return false;
-	if (normalMap.empty()) {
-		// vertex definition
-		struct Vertex {
-			float x,y,z;
-			uint8_t r,g,b;
-		};
-		// list of property information for a vertex
-		static PLY::PlyProperty vert_props[] = {
-			{"x", PLY::Float32, PLY::Float32, offsetof(Vertex,x), 0, 0, 0, 0},
-			{"y", PLY::Float32, PLY::Float32, offsetof(Vertex,y), 0, 0, 0, 0},
-			{"z", PLY::Float32, PLY::Float32, offsetof(Vertex,z), 0, 0, 0, 0},
-			{"red", PLY::Uint8, PLY::Uint8, offsetof(Vertex,r), 0, 0, 0, 0},
-			{"green", PLY::Uint8, PLY::Uint8, offsetof(Vertex,g), 0, 0, 0, 0},
-			{"blue", PLY::Uint8, PLY::Uint8, offsetof(Vertex,b), 0, 0, 0, 0},
-		};
-		// list of the kinds of elements in the PLY
-		static const char* elem_names[] = {
-			"vertex"
-		};
-
-		// create PLY object
-		ASSERT(!fileName.IsEmpty());
-		Util::ensureFolder(fileName);
-		const size_t bufferSize(PLY::ComputeMemBufferSize(nPoints, sizeof(float)*3 + sizeof(uint8_t)*3));
-		PLY ply;
-		if (!ply.write(fileName, 1, elem_names, PLY::BINARY_LE, bufferSize))
-			return false;
-
-		// describe what properties go into the vertex elements
-		ply.describe_property("vertex", 6, vert_props);
-
-		// export the array of 3D points
-		Vertex vertex;
-		const Point2f scaleImage(static_cast<float>(depthMap.cols)/imageData.image.cols, static_cast<float>(depthMap.rows)/imageData.image.rows);
-		for (int j=0; j<depthMap.rows; ++j) {
-			for (int i=0; i<depthMap.cols; ++i) {
-				const Depth& depth = depthMap(j,i);
-				ASSERT(depth >= 0);
-				if (depth <= 0)
-					continue;
-				const Point3f X(P0.TransformPointI2W(Point3(i,j,depth)));
-				vertex.x = X.x; vertex.y = X.y; vertex.z = X.z;
-				const Pixel8U c(imageData.image.empty() ? Pixel8U::WHITE : imageData.image(ROUND2INT(scaleImage.y*j),ROUND2INT(scaleImage.x*i)));
-				vertex.r = c.r; vertex.g = c.g; vertex.b = c.b;
-				ply.put_element(&vertex);
+	std::vector<Point3f> points, normals;
+	std::vector<Pixel8U> colors;
+	points.reserve(nPoints);
+	colors.reserve(nPoints);
+	if (!normalMap.empty())
+		normals.reserve(nPoints);
+	const Point2f scaleImage(static_cast<float>(depthMap.cols)/imageData.image.cols, static_cast<float>(depthMap.rows)/imageData.image.rows);
+	for (int j=0; j<depthMap.rows; ++j) {
+		for (int i=0; i<depthMap.cols; ++i) {
+			const Depth& depth = depthMap(j,i);
+			ASSERT(depth >= 0);
+			if (depth <= 0)
+				continue;
+			points.emplace_back(P0.TransformPointI2W(Point3(i,j,depth)));
+			if (normalMap.empty()) {
+				colors.emplace_back(imageData.image.empty() ? Pixel8U::WHITE : imageData.image(ROUND2INT(scaleImage.y*j),ROUND2INT(scaleImage.x*i)));
+			} else {
+				normals.emplace_back(P0.R.t() * Cast<REAL>(normalMap(j,i)));
+				colors.emplace_back(imageData.image.empty() ? Pixel8U::WHITE : imageData.image(j,i));
 			}
 		}
-		if (ply.get_current_element_count() == 0)
-			return false;
-
-		// write to file
-		if (!ply.header_complete())
-			return false;
-	} else {
-		// vertex definition
-		struct Vertex {
-			float x,y,z;
-			float nx,ny,nz;
-			uint8_t r,g,b;
-		};
-		// list of property information for a vertex
-		static PLY::PlyProperty vert_props[] = {
-			{"x", PLY::Float32, PLY::Float32, offsetof(Vertex,x), 0, 0, 0, 0},
-			{"y", PLY::Float32, PLY::Float32, offsetof(Vertex,y), 0, 0, 0, 0},
-			{"z", PLY::Float32, PLY::Float32, offsetof(Vertex,z), 0, 0, 0, 0},
-			{"nx", PLY::Float32, PLY::Float32, offsetof(Vertex,nx), 0, 0, 0, 0},
-			{"ny", PLY::Float32, PLY::Float32, offsetof(Vertex,ny), 0, 0, 0, 0},
-			{"nz", PLY::Float32, PLY::Float32, offsetof(Vertex,nz), 0, 0, 0, 0},
-			{"red", PLY::Uint8, PLY::Uint8, offsetof(Vertex,r), 0, 0, 0, 0},
-			{"green", PLY::Uint8, PLY::Uint8, offsetof(Vertex,g), 0, 0, 0, 0},
-			{"blue", PLY::Uint8, PLY::Uint8, offsetof(Vertex,b), 0, 0, 0, 0},
-		};
-		// list of the kinds of elements in the PLY
-		static const char* elem_names[] = {
-			"vertex"
-		};
-
-		// create PLY object
-		ASSERT(!fileName.IsEmpty());
-		Util::ensureFolder(fileName);
-		const size_t bufferSize(PLY::ComputeMemBufferSize(nPoints, sizeof(float)*6 + sizeof(uint8_t)*3));
-		PLY ply;
-		if (!ply.write(fileName, 1, elem_names, PLY::BINARY_LE, bufferSize))
-			return false;
-
-		// describe what properties go into the vertex elements
-		ply.describe_property("vertex", 9, vert_props);
-
-		// export the array of 3D points
-		Vertex vertex;
-		for (int j=0; j<depthMap.rows; ++j) {
-			for (int i=0; i<depthMap.cols; ++i) {
-				const Depth& depth = depthMap(j,i);
-				ASSERT(depth >= 0);
-				if (depth <= 0)
-					continue;
-				const Point3f X(P0.TransformPointI2W(Point3(i,j,depth)));
-				vertex.x = X.x; vertex.y = X.y; vertex.z = X.z;
-				const Point3f N(P0.R.t() * Cast<REAL>(normalMap(j,i)));
-				vertex.nx = N.x; vertex.ny = N.y; vertex.nz = N.z;
-				const Pixel8U c(imageData.image.empty() ? Pixel8U::WHITE : imageData.image(j, i));
-				vertex.r = c.r; vertex.g = c.g; vertex.b = c.b;
-				ply.put_element(&vertex);
-			}
-		}
-		if (ply.get_current_element_count() == 0)
-			return false;
-
-		// write to file
-		if (!ply.header_complete())
-			return false;
 	}
-	return true;
+	// a depth-map without any valid depth creates no file
+	if (points.empty())
+		return false;
+
+	ASSERT(!fileName.IsEmpty());
+	Util::ensureFolder(fileName);
+	PLY::Bindings bindings{
+		PLY::Scalar("x", &points[0].x, sizeof(Point3f)),
+		PLY::Scalar("y", &points[0].y, sizeof(Point3f)),
+		PLY::Scalar("z", &points[0].z, sizeof(Point3f))};
+	if (!normals.empty()) {
+		bindings.push_back(PLY::Scalar("nx", &normals[0].x, sizeof(Point3f)));
+		bindings.push_back(PLY::Scalar("ny", &normals[0].y, sizeof(Point3f)));
+		bindings.push_back(PLY::Scalar("nz", &normals[0].z, sizeof(Point3f)));
+	}
+	bindings.push_back(PLY::Scalar("red", &colors[0].r, sizeof(Pixel8U)));
+	bindings.push_back(PLY::Scalar("green", &colors[0].g, sizeof(Pixel8U)));
+	bindings.push_back(PLY::Scalar("blue", &colors[0].b, sizeof(Pixel8U)));
+	PLY ply;
+	ply.AddElement("vertex", points.size(), std::move(bindings));
+	return ply.Save(fileName);
 } // ExportPointCloud
 /*----------------------------------------------------------------*/
 
