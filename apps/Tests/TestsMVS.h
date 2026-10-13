@@ -39,6 +39,7 @@ namespace MVS {
 
 // test vertex-colored PLY export and geometry reload
 bool MeshVertexColorsPLYTest();
+bool MeshLoadMalformedPLYTest();
 bool MeshHalfMeshProcessingTest();
 
 // test the pixel-unit bold-driver optimizer (MeshRefineStep, SceneRefineCommon.h) against

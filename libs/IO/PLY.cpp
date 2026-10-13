@@ -8,6 +8,8 @@
 #include "Common.h"
 #include "PLY.h"
 
+#include <stdexcept>
+
 using namespace SEACAVE;
 
 
@@ -21,7 +23,9 @@ using namespace SEACAVE;
 #define OTHER_PROP       0
 #define NAMED_PROP       1
 
-#define abort_ply(...)   { VERBOSE(__VA_ARGS__); exit(-1); }
+// a malformed file or a misused writer aborts the current read/write; the reader entry points
+// (Mesh/PointCloud::LoadPLY) catch it and return false rather than letting it kill the process
+#define abort_ply(...)   { VERBOSE(__VA_ARGS__); throw std::runtime_error("PLY error"); }
 
 
 // S T R U C T S ///////////////////////////////////////////////////

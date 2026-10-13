@@ -84,6 +84,31 @@ bool MeshVertexColorsPLYTest()
 	return true;
 }
 
+bool MeshLoadMalformedPLYTest()
+{
+	const ScopedTempDir tmpDir(_T("MeshLoadMalformedPLYTest"));
+	if (!tmpDir.IsValid())
+		return false;
+	// a well-formed header for one triangle with a variable-length vertex-index list
+	const LPCSTR header =
+		"ply\nformat ascii 1.0\n"
+		"element vertex 3\nproperty float x\nproperty float y\nproperty float z\n"
+		"element face 1\nproperty list uchar int vertex_indices\nend_header\n"
+		"0 0 0\n1 0 0\n0 1 0\n";
+	// a face list count larger than the indices on the line, or large enough to overflow the
+	// 32-bit allocation size, must be refused at load rather than crash the process
+	for (const LPCSTR faceLine: {"9 0 1 2\n", "1073741825 0 1 2\n"}) {
+		const String fileName(tmpDir(_T("malformed.ply")));
+		std::ofstream(fileName.c_str()) << header << faceLine;
+		Mesh mesh;
+		if (mesh.Load(fileName)) {
+			VERBOSE("ERROR: a PLY face with an out-of-range list count was accepted!");
+			return false;
+		}
+	}
+	return true;
+}
+
 bool MeshHalfMeshProcessingTest()
 {
 	Mesh mesh;

@@ -425,7 +425,7 @@ bool PointCloud::Load(const String& fileName)
 
 // import the point-cloud as a PLY file
 bool PointCloud::LoadPLY(const String& fileName)
-{
+try {
 	ASSERT(!fileName.empty());
 	Release();
 
@@ -471,6 +471,11 @@ bool PointCloud::LoadPLY(const String& fileName)
 		return false;
 	}
 	return true;
+} catch (const std::exception& e) {
+	// a malformed PLY aborts the reader; fail the load instead of the process
+	DEBUG_EXTRA("error: invalid PLY file (%s)", e.what());
+	Release();
+	return false;
 }
 
 namespace {
