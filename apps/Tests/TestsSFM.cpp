@@ -3429,16 +3429,34 @@ Matrix3x3 LensTestRotation(Point3 axis, REAL deg)
 // the true focal and centre, trust them and have NO lens, and every pair is verified through that
 // pinhole exactly as the matching verifies it (PairsMatcher::GeometricFilter at the default
 // MatchConfig); a pair that fails is not stored. A stored pair weighs its inlier count (unit quality
-// factors, triplet 0.5). truePoses receives each stored pair's true relative pose (x2 = R x1 + t).
+// factors, triplet 0.5). truePoses receives each stored pair's true relative pose (x2 = R x1 + t),
+// keyed by the pair's image IDs: neither the order the pairs are built in (a pair that fails leaves a
+// gap) nor their position in scene.pairs (ComputePairsWeights sorts them) names a pair.
+// Every draw is made from the raw output of the std::mt19937, whose sequence the standard fixes, and
+// not through std::uniform_real_distribution or std::normal_distribution, whose algorithms are each
+// standard library's own: so that every platform the suite runs on draws the same scene, to the
+// rounding of its own log and cos. Each draw is a statement of its own, since C++ leaves the order in
+// which a call's arguments are evaluated unspecified.
 void BuildLensTestScene(Scene& scene, const std::vector<LensTestCamera>& cameras,
-	const std::vector<LensTestPairs>& pairs, unsigned seed, std::vector<Pose3D>& truePoses,
+	const std::vector<LensTestPairs>& pairs, unsigned seed, std::unordered_map<PairIdx, Pose3D>& truePoses,
 	REAL noisePx = LENS_TEST_NOISE_PX, REAL outlierShare = LENS_TEST_OUTLIER_SHARE)
 {
 	std::mt19937 rng(seed);
-	std::uniform_real_distribution<double> unit(0.0, 1.0);
-	std::normal_distribution<double> gauss(0.0, 1.0);
-	const auto Uniform = [&](double a, double b) { return a + (b - a)*unit(rng); };
-	const auto Sign = [&]() { return unit(rng) < 0.5 ? -1.0 : 1.0; };
+	// a uniform in [0, 1) at a double's precision: the top 27 bits of one output and the top 26 of the
+	// next, a 53-bit integer scaled by 2^-53
+	const auto Unit = [&]() {
+		const uint64_t high = rng() >> 5;
+		const uint64_t low = rng() >> 6;
+		return std::ldexp((double)((high << 26) | low), -53);
+	};
+	const auto Uniform = [&](double a, double b) { return a + (b - a)*Unit(); };
+	const auto Sign = [&]() { return Unit() < 0.5 ? -1.0 : 1.0; };
+	// a standard normal by Box-Muller, its first uniform taken in (0, 1] so that its log is finite
+	const auto Gauss = [&]() {
+		const double u1 = 1.0 - Unit();
+		const double u2 = Unit();
+		return SQRT(-2.0*std::log(u1))*COS(2.0*M_PI*u2);
+	};
 	std::vector<PinholeCamera> truth;
 	for (const LensTestCamera& c : cameras) {
 		PinholeCamera* const camera = new PinholeCamera(cv::Size(c.width, c.height),
@@ -3458,15 +3476,30 @@ void BuildLensTestScene(Scene& scene, const std::vector<LensTestCamera>& cameras
 		const PinholeCamera& trueB = truth[spec.cameraB];
 		for (unsigned n = 0; n < spec.count; ++n) {
 			// the first view turned a little about a random axis at the origin, the second placed by the motion
-			const Matrix3x3 R1(LensTestRotation(Point3(gauss(rng), gauss(rng), gauss(rng)), Uniform(0, 5)));
+			const double axisX = Gauss();
+			const double axisY = Gauss();
+			const double axisZ = Gauss();
+			const double angle = Uniform(0, 5);
+			const Matrix3x3 R1(LensTestRotation(Point3(axisX, axisY, axisZ), angle));
 			Matrix3x3 Rrel;
 			Point3 Crel;
 			if (spec.motion == LensTestMotion::TURN) {
-				Rrel = LensTestRotation(Point3(0.2*gauss(rng), 1, 0.2*gauss(rng)), Sign()*Uniform(10, 30));
-				Crel = Point3(Sign()*Uniform(0.2, 0.8), 0.05*gauss(rng), 0.1*gauss(rng));
+				const double tiltX = 0.2*Gauss();
+				const double tiltZ = 0.2*Gauss();
+				const double turnSign = Sign();
+				const double turn = Uniform(10, 30);
+				const double sideSign = Sign();
+				const double side = Uniform(0.2, 0.8);
+				const double rise = 0.05*Gauss();
+				const double advance = 0.1*Gauss();
+				Rrel = LensTestRotation(Point3(tiltX, 1, tiltZ), turnSign*turn);
+				Crel = Point3(sideSign*side, rise, advance);
 			} else {
-				Rrel = LensTestRotation(Point3(0, 0, 1), Sign()*Uniform(6, 10));
-				Crel = Point3(0, 0, Uniform(0.5, 1.5));
+				const double rollSign = Sign();
+				const double roll = Uniform(6, 10);
+				const double advance = Uniform(0.5, 1.5);
+				Rrel = LensTestRotation(Point3(0, 0, 1), rollSign*roll);
+				Crel = Point3(0, 0, advance);
 			}
 			Pose3D pose1, pose2;
 			pose1.R = R1;
@@ -3478,18 +3511,27 @@ void BuildLensTestScene(Scene& scene, const std::vector<LensTestCamera>& cameras
 			std::vector<Point2f> xA, xB;
 			for (unsigned attempt = 0; attempt < LENS_TEST_ATTEMPTS && xA.size() < LENS_TEST_POINTS; ++attempt) {
 				const double z = Uniform(3, 15);
-				const Point3 Xc(Uniform(-0.75, 0.75)*spread*z, Uniform(-0.45, 0.45)*spread*z, z);
+				const double x = Uniform(-0.75, 0.75)*spread*z;
+				const double y = Uniform(-0.45, 0.45)*spread*z;
+				const Point3 Xc(x, y, z);
 				const Point3 X(pose1.R.t()*Xc + pose1.C);
 				const auto [pA, okA] = trueA.Project(pose1.R*(X - pose1.C));
 				const auto [pB, okB] = trueB.Project(pose2.R*(X - pose2.C));
 				if (!okA || !okB || !Inside(trueA, pA) || !Inside(trueB, pB))
 					continue;
-				xA.emplace_back((float)(pA.x + noisePx*gauss(rng)), (float)(pA.y + noisePx*gauss(rng)));
-				xB.emplace_back((float)(pB.x + noisePx*gauss(rng)), (float)(pB.y + noisePx*gauss(rng)));
+				const double noiseAx = noisePx*Gauss();
+				const double noiseAy = noisePx*Gauss();
+				const double noiseBx = noisePx*Gauss();
+				const double noiseBy = noisePx*Gauss();
+				xA.emplace_back((float)(pA.x + noiseAx), (float)(pA.y + noiseAy));
+				xB.emplace_back((float)(pB.x + noiseBx), (float)(pB.y + noiseBy));
 			}
 			const size_t numOutliers = (size_t)(outlierShare*(REAL)xA.size());
-			for (size_t k = 0; k < numOutliers; ++k)
-				xB[k] = Point2f((float)Uniform(0, trueB.size.width - 1), (float)Uniform(0, trueB.size.height - 1));
+			for (size_t k = 0; k < numOutliers; ++k) {
+				const double x = Uniform(0, trueB.size.width - 1);
+				const double y = Uniform(0, trueB.size.height - 1);
+				xB[k] = Point2f((float)x, (float)y);
+			}
 			// two images of their own, with no pose: the fit reads the pairs alone
 			const IIndex id1 = (IIndex)scene.images.size(), id2 = id1 + 1;
 			scene.images.emplace_back(id1, String::FormatString("%u.jpg", id1), Pose3D(), (IIndex)spec.cameraA, scene.cameras[spec.cameraA]);
@@ -3508,8 +3550,8 @@ void BuildLensTestScene(Scene& scene, const std::vector<LensTestCamera>& cameras
 				continue;
 			pair.weightSpatial = pair.weightConnectivity = 1.f;
 			pair.weightTriplet = 0.5f;
+			truePoses.emplace(PairIdx(pair.ID1, pair.ID2), pose2 / pose1);
 			scene.pairs.emplace_back(std::move(pair));
-			truePoses.push_back(pose2 / pose1);
 		}
 	}
 }
@@ -3552,7 +3594,7 @@ bool LensFitRecoveryTest()
 	TD_TIMER_START();
 	{
 		Scene scene;
-		std::vector<Pose3D> truePoses;
+		std::unordered_map<PairIdx, Pose3D> truePoses;
 		BuildLensTestScene(scene, {LENS_TEST_A}, {{0, 0, LensTestMotion::TURN, 40}}, 7, truePoses);
 		const LensFitReport report = FitLensesFromPairs(scene, MatchConfig());
 		const LensFitOutcome& outcome = report.cameras[0];
@@ -3574,7 +3616,7 @@ bool LensFitRecoveryTest()
 	}
 	{
 		Scene scene;
-		std::vector<Pose3D> truePoses;
+		std::unordered_map<PairIdx, Pose3D> truePoses;
 		BuildLensTestScene(scene, {LENS_TEST_A, LENS_TEST_B}, {{0, 1, LensTestMotion::TURN, 40}}, 11, truePoses);
 		const LensFitReport report = FitLensesFromPairs(scene, MatchConfig());
 		if (report.cameras[0].status != LensFitOutcome::FITTED || report.cameras[1].status != LensFitOutcome::FITTED) {
@@ -3615,7 +3657,7 @@ bool LensFitRefusalTest()
 	};
 	for (const Variant& variant : variants) {
 		Scene scene;
-		std::vector<Pose3D> truePoses;
+		std::unordered_map<PairIdx, Pose3D> truePoses;
 		BuildLensTestScene(scene, {variant.camera}, {{0, 0, variant.motion, 30}}, 13, truePoses, variant.noisePx, variant.outlierShare);
 		const MatchConfig config;
 		const LensFitReport report = FitLensesFromPairs(scene, config);
@@ -3664,7 +3706,7 @@ bool LensFitMinimumPairsTest()
 	};
 	for (const Variant& variant : variants) {
 		Scene scene;
-		std::vector<Pose3D> truePoses;
+		std::unordered_map<PairIdx, Pose3D> truePoses;
 		BuildLensTestScene(scene, {LENS_TEST_A, LENS_TEST_B},
 			{{0, 0, LensTestMotion::TURN, 30}, {0, 1, LensTestMotion::TURN, variant.numCross}}, 17, truePoses);
 		PinholeCamera& cameraB = *static_cast<PinholeCamera*>(scene.cameras[1]);
@@ -4117,7 +4159,7 @@ bool LensFitStageTest()
 {
 	TD_TIMER_START();
 	Scene scene;
-	std::vector<Pose3D> truePoses;
+	std::unordered_map<PairIdx, Pose3D> truePoses;
 	BuildLensTestScene(scene, {LENS_TEST_A}, {{0, 0, LensTestMotion::TURN, 40}}, 23, truePoses);
 	const auto Errors = [&](std::vector<REAL>& rotation, std::vector<REAL>& direction) {
 		rotation.clear();
@@ -4126,10 +4168,10 @@ bool LensFitStageTest()
 			const ImagePair& pair = scene.pairs[i];
 			if (!pair.relativePose.has_value())
 				return false;
-			// ComputeRelativePoses recomputes the pair weights, which sorts scene.pairs by weight: the
-			// array position no longer matches truePoses' build order, the pair's own image IDs (2n,
-			// 2n+1 for the n-th pair BuildLensTestScene built) still do
-			const Pose3D& truePose = truePoses[pair.ID1/2];
+			// a pair's truth is named by its images: ComputeRelativePoses recomputes the pair weights,
+			// which sorts scene.pairs by weight, and BuildLensTestScene stores only the pairs its
+			// verification passes
+			const Pose3D& truePose = truePoses.at(PairIdx(pair.ID1, pair.ID2));
 			rotation.push_back(R2D(ACOS(ComputeAngle(pair.relativePose->R, truePose.R))));
 			direction.push_back(R2D(ACOS(CLAMP(normalized(pair.relativePose->GetT()).dot(normalized(truePose.GetT())), REAL(-1), REAL(1)))));
 		}

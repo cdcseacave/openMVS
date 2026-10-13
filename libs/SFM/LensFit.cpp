@@ -623,14 +623,19 @@ LensFitReport SFM::FitLensesFromPairs(Scene& scene, const MatchConfig& config)
 			p.cam2 = FitIndexOf(c2);
 			p.R0 = pair.relativePose->R;
 			p.t0 = normalized(pair.relativePose->GetT());
-			// lensFitMatchesPerPair of its sparse inliers, drawn by a generator seeded from the pair's
-			// IDs, so that the same pair always contributes the same ones
+			// lensFitMatchesPerPair of its sparse inliers, drawn by a partial Fisher-Yates shuffle from a
+			// generator seeded from the pair's IDs, so that the same pair always contributes the same
+			// ones, on every platform: each index is the engine's raw output, whose sequence the standard
+			// fixes, modulo the inliers left to draw from (std::uniform_int_distribution's algorithm is
+			// each standard library's own); the modulo favours some values by at most n/2^64 for n left,
+			// under 1e-15 for a few thousand inliers
 			const unsigned numSparse = pair.GetNumFilteredInliers();
+			ASSERT(numSparse >= config.lensFitMatchesPerPair); // an eligible pair holds that many
 			std::vector<uint32_t> draw(numSparse);
 			std::iota(draw.begin(), draw.end(), 0u);
 			std::mt19937_64 rng(PairIdx(pair.ID1, pair.ID2).idx);
 			for (unsigned i = 0; i < config.lensFitMatchesPerPair; ++i)
-				std::swap(draw[i], draw[std::uniform_int_distribution<uint32_t>(i, numSparse - 1)(rng)]);
+				std::swap(draw[i], draw[i + rng() % (numSparse - i)]);
 			const Image& img1 = scene.images[pair.ID1];
 			const Image& img2 = scene.images[pair.ID2];
 			FitCamera& f1 = cameras[p.cam1];

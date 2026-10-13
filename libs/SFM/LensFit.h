@@ -59,7 +59,8 @@ struct SFM_API MatchConfig;
  * What goes in: every verified pair with a pose that turns MatchConfig::lensFitMinRotation to
  * lensFitMaxRotation and holds lensFitMatchesPerPair sparse inliers, between two fitted or held
  * cameras, heaviest first by composite weight until every fitted camera has lensFitMaxPairs; from
- * each, lensFitMatchesPerPair of its sparse inliers, drawn by a generator seeded from the pair's IDs.
+ * each, lensFitMatchesPerPair of its sparse inliers, drawn by a generator seeded from the pair's IDs,
+ * the same on every platform.
  * A fitted camera with fewer than lensFitMinPairs eligible pairs leaves with its pairs.
  * The loss: the first-order distance of each match's two measured, distorted pixels to the pair's
  * epipolar constraint, each side through its own lens and focal (the constraint's gradient through
