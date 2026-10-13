@@ -41,6 +41,7 @@
 #include "../../libs/SFM/GlobalAlignment.h"
 #include "../../libs/SFM/PoseLink.h"
 #include "../../libs/SFM/MatchGeometric.h"
+#include "../../libs/SFM/LensFit.h"
 #include "../../libs/SFM/RoMa2Matcher.h"
 #include "../../libs/SFM/SphereCubeMap.h"
 #include "../../libs/SFM/InterfaceMVS.h"
@@ -3365,6 +3366,337 @@ bool MatchGeometricLensTest()
 	}
 	VERBOSE("MatchGeometricLensTest PASSED: %u corner correspondences matched through the lens, up to %.1f px off the pixel epipolar lines (%s)",
 		numCornersMatched, worst, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+namespace {
+
+// One synthetic camera of the lens fit's scenes: its frame, focal and TRUE lens
+struct LensTestCamera {
+	int width, height;
+	REAL focal, k1, k2;
+};
+// A: a strong barrel lens, 164 px at the corner (Playground's is 72 px); B: another device, a mild
+// pincushion of 22 px; P: A's frame without a lens -- the cameras the prototype's synthetic scenes
+// were drawn with (lens_fit_synthetic.py), whose measurements set the bars below
+const LensTestCamera LENS_TEST_A{1920, 1080, REAL(1400), REAL(-0.20), REAL(0.05)};
+const LensTestCamera LENS_TEST_B{1280, 960, REAL(900), REAL(0.06), REAL(-0.03)};
+const LensTestCamera LENS_TEST_P{1920, 1080, REAL(1400), REAL(0), REAL(0)};
+
+enum class LensTestMotion {
+	TURN,   // the second view turns 10-30 deg about a near-vertical axis and moves 0.2-0.8 sideways: the lens shows
+	FORWARD // it moves 0.5-1.5 along the optical axis rolling 6-10 deg about it: the lens moves points along the epipolar lines, and hides
+};
+struct LensTestPairs {
+	unsigned cameraA, cameraB; // indices into the cameras given to BuildLensTestScene
+	LensTestMotion motion;
+	unsigned count;
+};
+constexpr unsigned LENS_TEST_POINTS = 400;                   // correspondences a pair is drawn with, before its verification
+constexpr unsigned LENS_TEST_ATTEMPTS = 40*LENS_TEST_POINTS; // points tried for them
+constexpr REAL LENS_TEST_NOISE_PX = REAL(0.5);               // Gaussian noise of every measured position, pixels
+constexpr REAL LENS_TEST_OUTLIER_SHARE = REAL(0.05);         // share of a pair's second-view positions replaced by random ones
+constexpr unsigned LENS_TEST_RADII = 64;                     // radii the displacement curves are compared at
+constexpr REAL LENS_TEST_REACH_PERCENTILE = REAL(0.99);      // a camera's reach: this quantile of its matched keypoints' radii
+// the bars: within the reach of its matches a lens is recovered to 1.5 px (the prototype, 30 pairs of
+// camera A: 0.84 median, 1.48 p90 over 10 scenes), except the strong lens fitted from cross pairs
+// alone, whose second unknown lens leaves 3.35 median, 3.80 p90 in the prototype: 5 px for it
+constexpr REAL LENS_TEST_MAX_ERROR_PX = REAL(1.5);
+constexpr REAL LENS_TEST_CROSS_MAX_ERROR_PX = REAL(5);
+
+// A rotation of `deg` degrees about `axis` (normalized here), Rodrigues
+Matrix3x3 LensTestRotation(Point3 axis, REAL deg)
+{
+	axis = normalized(axis);
+	const REAL a = D2R(deg), c = COS(a), s = SIN(a), t = REAL(1) - c;
+	return Matrix3x3(
+		t*axis.x*axis.x + c,        t*axis.x*axis.y - s*axis.z, t*axis.x*axis.z + s*axis.y,
+		t*axis.x*axis.y + s*axis.z, t*axis.y*axis.y + c,        t*axis.y*axis.z - s*axis.x,
+		t*axis.x*axis.z - s*axis.y, t*axis.y*axis.z + s*axis.x, t*axis.z*axis.z + c);
+}
+
+// A synthetic capture whose lenses only its pairs can tell: for every entry of `pairs`, `count`
+// two-view setups of their own (two images each), LENS_TEST_POINTS points 3-15 m in front of the
+// first view projected into both through the TRUE lenses, with `noisePx` of Gaussian noise and
+// `outlierShare` of the second view's positions replaced by random ones. The scene's cameras carry
+// the true focal and centre, trust them and have NO lens, and every pair is verified through that
+// pinhole exactly as the matching verifies it (PairsMatcher::GeometricFilter at the default
+// MatchConfig); a pair that fails is not stored. A stored pair weighs its inlier count (unit quality
+// factors, triplet 0.5). truePoses receives each stored pair's true relative pose (x2 = R x1 + t).
+void BuildLensTestScene(Scene& scene, const std::vector<LensTestCamera>& cameras,
+	const std::vector<LensTestPairs>& pairs, unsigned seed, std::vector<Pose3D>& truePoses,
+	REAL noisePx = LENS_TEST_NOISE_PX, REAL outlierShare = LENS_TEST_OUTLIER_SHARE)
+{
+	std::mt19937 rng(seed);
+	std::uniform_real_distribution<double> unit(0.0, 1.0);
+	std::normal_distribution<double> gauss(0.0, 1.0);
+	const auto Uniform = [&](double a, double b) { return a + (b - a)*unit(rng); };
+	const auto Sign = [&]() { return unit(rng) < 0.5 ? -1.0 : 1.0; };
+	std::vector<PinholeCamera> truth;
+	for (const LensTestCamera& c : cameras) {
+		PinholeCamera* const camera = new PinholeCamera(cv::Size(c.width, c.height),
+			c.focal, c.focal, REAL(c.width - 1)/2, REAL(c.height - 1)/2);
+		camera->trustIntrinsics = true;
+		scene.cameras.emplace_back(camera);
+		truth.push_back(*camera);
+		truth.back().SetDistortion(c.k1, c.k2, 0, 0);
+	}
+	const auto Inside = [](const PinholeCamera& camera, const Point2& x) {
+		return x.x >= 0 && x.y >= 0 && x.x <= camera.size.width - 1 && x.y <= camera.size.height - 1;
+	};
+	MatchConfig matchCfg;
+	PairsMatcher matcher(scene, matchCfg);
+	for (const LensTestPairs& spec : pairs) {
+		const PinholeCamera& trueA = truth[spec.cameraA];
+		const PinholeCamera& trueB = truth[spec.cameraB];
+		for (unsigned n = 0; n < spec.count; ++n) {
+			// the first view turned a little about a random axis at the origin, the second placed by the motion
+			const Matrix3x3 R1(LensTestRotation(Point3(gauss(rng), gauss(rng), gauss(rng)), Uniform(0, 5)));
+			Matrix3x3 Rrel;
+			Point3 Crel;
+			if (spec.motion == LensTestMotion::TURN) {
+				Rrel = LensTestRotation(Point3(0.2*gauss(rng), 1, 0.2*gauss(rng)), Sign()*Uniform(10, 30));
+				Crel = Point3(Sign()*Uniform(0.2, 0.8), 0.05*gauss(rng), 0.1*gauss(rng));
+			} else {
+				Rrel = LensTestRotation(Point3(0, 0, 1), Sign()*Uniform(6, 10));
+				Crel = Point3(0, 0, Uniform(0.5, 1.5));
+			}
+			Pose3D pose1, pose2;
+			pose1.R = R1;
+			pose1.C = Point3(0, 0, 0);
+			pose2.R = Rrel*R1;
+			pose2.C = R1.t()*Crel;
+			// the points, through the first view's frustum, and their projections through the true lenses
+			const double spread = (double)trueA.size.width/trueA.fx/1.3;
+			std::vector<Point2f> xA, xB;
+			for (unsigned attempt = 0; attempt < LENS_TEST_ATTEMPTS && xA.size() < LENS_TEST_POINTS; ++attempt) {
+				const double z = Uniform(3, 15);
+				const Point3 Xc(Uniform(-0.75, 0.75)*spread*z, Uniform(-0.45, 0.45)*spread*z, z);
+				const Point3 X(pose1.R.t()*Xc + pose1.C);
+				const auto [pA, okA] = trueA.Project(pose1.R*(X - pose1.C));
+				const auto [pB, okB] = trueB.Project(pose2.R*(X - pose2.C));
+				if (!okA || !okB || !Inside(trueA, pA) || !Inside(trueB, pB))
+					continue;
+				xA.emplace_back((float)(pA.x + noisePx*gauss(rng)), (float)(pA.y + noisePx*gauss(rng)));
+				xB.emplace_back((float)(pB.x + noisePx*gauss(rng)), (float)(pB.y + noisePx*gauss(rng)));
+			}
+			const size_t numOutliers = (size_t)(outlierShare*(REAL)xA.size());
+			for (size_t k = 0; k < numOutliers; ++k)
+				xB[k] = Point2f((float)Uniform(0, trueB.size.width - 1), (float)Uniform(0, trueB.size.height - 1));
+			// two images of their own, with no pose: the fit reads the pairs alone
+			const IIndex id1 = (IIndex)scene.images.size(), id2 = id1 + 1;
+			scene.images.emplace_back(id1, String::FormatString("%u.jpg", id1), Pose3D(), (IIndex)spec.cameraA, scene.cameras[spec.cameraA]);
+			scene.images.emplace_back(id2, String::FormatString("%u.jpg", id2), Pose3D(), (IIndex)spec.cameraB, scene.cameras[spec.cameraB]);
+			Image& img1 = scene.images[id1];
+			Image& img2 = scene.images[id2];
+			img1.InvalidatePose();
+			img2.InvalidatePose();
+			ImagePair pair(id1, id2);
+			FOREACH(k, xA) {
+				img1.keypoints.emplace_back(xA[k].x, xA[k].y, 1.f);
+				img2.keypoints.emplace_back(xB[k].x, xB[k].y, 1.f);
+				pair.matches.emplace_back((uint32_t)k, (uint32_t)k);
+			}
+			if (!matcher.GeometricFilter(img1, img2, pair))
+				continue;
+			pair.weightSpatial = pair.weightConnectivity = 1.f;
+			pair.weightTriplet = 0.5f;
+			scene.pairs.emplace_back(std::move(pair));
+			truePoses.push_back(pose2 / pose1);
+		}
+	}
+}
+
+// The worst difference, pixels, between a fitted and a true lens's undistortion displacement over
+// the radii a camera's matched keypoints reach (their LENS_TEST_REACH_PERCENTILE quantile), at
+// LENS_TEST_RADII radii from the centre
+REAL LensCurveError(const Scene& scene, unsigned idxCamera, const LensTestCamera& lens)
+{
+	const PinholeCamera& camera = *static_cast<const PinholeCamera*>(scene.cameras[idxCamera]);
+	std::vector<REAL> radii;
+	for (const ImagePair& pair : scene.pairs) {
+		for (unsigned k = 0; k < pair.GetNumFilteredInliers(); ++k) {
+			const DMatch& m = pair.matches[k];
+			for (const auto& [imageID, featureID] : {std::make_pair(pair.ID1, m.queryIdx), std::make_pair(pair.ID2, m.trainIdx)})
+				if (scene.images[imageID].pCamera == scene.cameras[idxCamera])
+					radii.push_back(norm(Point2(scene.images[imageID].keypoints[featureID].pt.x - camera.cx,
+						scene.images[imageID].keypoints[featureID].pt.y - camera.cy)));
+		}
+	}
+	ASSERT(!radii.empty());
+	std::sort(radii.begin(), radii.end());
+	const REAL reach = radii[(size_t)(LENS_TEST_REACH_PERCENTILE*(radii.size() - 1))];
+	REAL worst = 0;
+	for (unsigned i = 0; i <= LENS_TEST_RADII; ++i) {
+		const REAL r = reach*i/LENS_TEST_RADII;
+		worst = MAXF(worst, ABS(LensDisplacement(lens.focal, camera.k1, camera.k2, r) - LensDisplacement(lens.focal, lens.k1, lens.k2, r)));
+	}
+	return worst;
+}
+
+} // namespace
+
+// The lens fit from pairs recovers the lenses that rendered them: one camera from 40 pairs that turn
+// and move, to LENS_TEST_MAX_ERROR_PX over the radii its matches reach, the lens set on the camera;
+// two cameras with different lenses joined only by 40 cross pairs, each fitted, the weak lens to
+// LENS_TEST_MAX_ERROR_PX and the strong one to LENS_TEST_CROSS_MAX_ERROR_PX
+bool LensFitRecoveryTest()
+{
+	TD_TIMER_START();
+	{
+		Scene scene;
+		std::vector<Pose3D> truePoses;
+		BuildLensTestScene(scene, {LENS_TEST_A}, {{0, 0, LensTestMotion::TURN, 40}}, 7, truePoses);
+		const LensFitReport report = FitLensesFromPairs(scene, MatchConfig());
+		const LensFitOutcome& outcome = report.cameras[0];
+		const PinholeCamera& camera = *static_cast<const PinholeCamera*>(scene.cameras[0]);
+		if (outcome.status != LensFitOutcome::FITTED || camera.k1 != outcome.k1 || camera.k2 != outcome.k2 ||
+			camera.k3 != 0 || camera.p1 != 0 || camera.p2 != 0) {
+			VERBOSE("LensFitRecoveryTest FAILED: one camera, status %u, lens %g %g on the camera, median %.3f -> %.3f px over %u pairs",
+				(unsigned)outcome.status, camera.k1, camera.k2, outcome.medianBefore, outcome.medianAfter, outcome.numPairs);
+			return false;
+		}
+		const REAL error = LensCurveError(scene, 0, LENS_TEST_A);
+		if (error > LENS_TEST_MAX_ERROR_PX) {
+			VERBOSE("LensFitRecoveryTest FAILED: one camera, the fitted lens (%g, %g) is %.2f px off the true one within its matches' reach",
+				camera.k1, camera.k2, error);
+			return false;
+		}
+		VERBOSE("LensFitRecoveryTest: one camera, k1 %.4f k2 %.4f (true -0.20 0.05), %.2f px off within reach, median %.3f -> %.3f px, %.1f s",
+			camera.k1, camera.k2, error, outcome.medianBefore, outcome.medianAfter, report.seconds);
+	}
+	{
+		Scene scene;
+		std::vector<Pose3D> truePoses;
+		BuildLensTestScene(scene, {LENS_TEST_A, LENS_TEST_B}, {{0, 1, LensTestMotion::TURN, 40}}, 11, truePoses);
+		const LensFitReport report = FitLensesFromPairs(scene, MatchConfig());
+		if (report.cameras[0].status != LensFitOutcome::FITTED || report.cameras[1].status != LensFitOutcome::FITTED) {
+			VERBOSE("LensFitRecoveryTest FAILED: two cameras, statuses %u %u", (unsigned)report.cameras[0].status, (unsigned)report.cameras[1].status);
+			return false;
+		}
+		const REAL errorA = LensCurveError(scene, 0, LENS_TEST_A), errorB = LensCurveError(scene, 1, LENS_TEST_B);
+		if (errorA > LENS_TEST_CROSS_MAX_ERROR_PX || errorB > LENS_TEST_MAX_ERROR_PX) {
+			VERBOSE("LensFitRecoveryTest FAILED: two cameras joined by cross pairs only, %.2f and %.2f px off the true lenses within reach", errorA, errorB);
+			return false;
+		}
+		VERBOSE("LensFitRecoveryTest: two cameras from cross pairs only, %.2f and %.2f px off within reach", errorA, errorB);
+	}
+	VERBOSE("LensFitRecoveryTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// The lens fit refuses what no lens explains: pairs of a camera without a lens (its median error does
+// not fall), forward pairs that hide a strong lens (the acceptance refuses rather than keep a lens the
+// pairs cannot tell, folding or not), and exact positions (the error is float rounding); every
+// refused camera is left without a lens
+bool LensFitRefusalTest()
+{
+	TD_TIMER_START();
+	struct Variant {
+		const char* name;
+		LensTestCamera camera;
+		LensTestMotion motion;
+		REAL noisePx, outlierShare;
+	};
+	const Variant variants[] = {
+		{"no lens", LENS_TEST_P, LensTestMotion::TURN, LENS_TEST_NOISE_PX, LENS_TEST_OUTLIER_SHARE},
+		{"forward pairs", LENS_TEST_A, LensTestMotion::FORWARD, LENS_TEST_NOISE_PX, LENS_TEST_OUTLIER_SHARE},
+		{"no noise", LENS_TEST_P, LensTestMotion::TURN, REAL(0), REAL(0)},
+	};
+	for (const Variant& variant : variants) {
+		Scene scene;
+		std::vector<Pose3D> truePoses;
+		BuildLensTestScene(scene, {variant.camera}, {{0, 0, variant.motion, 30}}, 13, truePoses, variant.noisePx, variant.outlierShare);
+		const MatchConfig config;
+		const LensFitReport report = FitLensesFromPairs(scene, config);
+		const LensFitOutcome& outcome = report.cameras[0];
+		if (outcome.numEligiblePairs < config.lensFitMinPairs) {
+			VERBOSE("LensFitRefusalTest FAILED: %s, only %u eligible pairs, the fixture does not reach the fit", variant.name, outcome.numEligiblePairs);
+			return false;
+		}
+		if ((outcome.status != LensFitOutcome::NO_ERROR_DROP && outcome.status != LensFitOutcome::FOLDS) || scene.cameras[0]->HasDistortion()) {
+			VERBOSE("LensFitRefusalTest FAILED: %s, status %u, lens %g %g kept, median %.4f -> %.4f px",
+				variant.name, (unsigned)outcome.status, outcome.k1, outcome.k2, outcome.medianBefore, outcome.medianAfter);
+			return false;
+		}
+		VERBOSE("LensFitRefusalTest: %s refused (status %u), median %.4f -> %.4f px", variant.name, (unsigned)outcome.status, outcome.medianBefore, outcome.medianAfter);
+	}
+	VERBOSE("LensFitRefusalTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// A camera the fit cannot hold leaves it with every pair it has: one under the minimum of eligible
+// pairs, one whose given lens has terms past k1 and k2, and one whose focal is not trusted are each
+// left as they are, and the camera they pair with is fitted from its own pairs alone (those of the 30
+// it is built with that pass the fit's per-pair bars), to LENS_TEST_MAX_ERROR_PX
+bool LensFitMinimumPairsTest()
+{
+	TD_TIMER_START();
+	struct Variant {
+		enum class Kind {
+			CROSS_UNDER_MINIMUM, // camera B as built, with too few cross pairs to be fitted
+			FULLER_LENS,         // camera B given a lens with a tangential term besides k1, k2
+			UNTRUSTED            // camera B's focal not trusted
+		};
+		const char* name;
+		Kind kind;
+		unsigned numCross;
+		LensFitOutcome::Status expected;
+	};
+	const Variant variants[] = {
+		{"under the minimum", Variant::Kind::CROSS_UNDER_MINIMUM, 10, LensFitOutcome::TOO_FEW_PAIRS},
+		{"a fuller given lens", Variant::Kind::FULLER_LENS, 30, LensFitOutcome::EXCLUDED},
+		{"an untrusted focal", Variant::Kind::UNTRUSTED, 30, LensFitOutcome::EXCLUDED},
+	};
+	for (const Variant& variant : variants) {
+		Scene scene;
+		std::vector<Pose3D> truePoses;
+		BuildLensTestScene(scene, {LENS_TEST_A, LENS_TEST_B},
+			{{0, 0, LensTestMotion::TURN, 30}, {0, 1, LensTestMotion::TURN, variant.numCross}}, 17, truePoses);
+		PinholeCamera& cameraB = *static_cast<PinholeCamera*>(scene.cameras[1]);
+		if (variant.kind == Variant::Kind::FULLER_LENS)
+			cameraB.SetDistortion(LENS_TEST_B.k1, LENS_TEST_B.k2, REAL(1e-4), 0);
+		else if (variant.kind == Variant::Kind::UNTRUSTED)
+			cameraB.trustIntrinsics = false;
+		const REAL k1B = cameraB.k1, k2B = cameraB.k2, p1B = cameraB.p1;
+		// camera A's own pairs the fit can read: the pinhole verification leaves some of the 30 under
+		// MatchConfig::lensFitMatchesPerPair sparse inliers through the strong lens
+		const MatchConfig config;
+		unsigned numOwnPairs = 0;
+		for (const ImagePair& pair : scene.pairs) {
+			if (scene.images[pair.ID1].pCamera != scene.cameras[0] || scene.images[pair.ID2].pCamera != scene.cameras[0] ||
+				!pair.relativePose.has_value() || !pair.HasValidWeight() || pair.GetNumFilteredInliers() < config.lensFitMatchesPerPair)
+				continue;
+			const REAL angle = R2D(ACOS(ComputeAngle(pair.relativePose->R)));
+			if (angle >= config.lensFitMinRotation && angle <= config.lensFitMaxRotation)
+				++numOwnPairs;
+		}
+		if (numOwnPairs < config.lensFitMinPairs) {
+			VERBOSE("LensFitMinimumPairsTest FAILED: %s, camera A has only %u eligible pairs of its own, the fixture does not reach the fit", variant.name, numOwnPairs);
+			return false;
+		}
+		const LensFitReport report = FitLensesFromPairs(scene, config);
+		const LensFitOutcome& a = report.cameras[0];
+		const LensFitOutcome& b = report.cameras[1];
+		if (b.status != variant.expected || cameraB.k1 != k1B || cameraB.k2 != k2B || cameraB.p1 != p1B) {
+			VERBOSE("LensFitMinimumPairsTest FAILED: %s, camera B status %u (expected %u), lens %g %g %g",
+				variant.name, (unsigned)b.status, (unsigned)variant.expected, cameraB.k1, cameraB.k2, cameraB.p1);
+			return false;
+		}
+		if (a.status != LensFitOutcome::FITTED || a.numPairs != numOwnPairs) {
+			VERBOSE("LensFitMinimumPairsTest FAILED: %s, camera A status %u over %u pairs, expected fitted over its own %u",
+				variant.name, (unsigned)a.status, a.numPairs, numOwnPairs);
+			return false;
+		}
+		const REAL error = LensCurveError(scene, 0, LENS_TEST_A);
+		if (error > LENS_TEST_MAX_ERROR_PX) {
+			VERBOSE("LensFitMinimumPairsTest FAILED: %s, camera A %.2f px off its true lens within reach", variant.name, error);
+			return false;
+		}
+		VERBOSE("LensFitMinimumPairsTest: %s, camera B left out (status %u), camera A fitted over its own %u pairs, k1 %.4f k2 %.4f, %.2f px off within reach",
+			variant.name, (unsigned)b.status, a.numPairs, a.k1, a.k2, error);
+	}
+	VERBOSE("LensFitMinimumPairsTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 

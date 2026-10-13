@@ -98,6 +98,17 @@ struct SFM_API MatchConfig
 	bool descriptorsAreBinary = true;
 
 	bool viewGraphCalibrationEnabled = true;  // Enable view graph calibration
+	// The radial lens fit from pairs (LensFit.h), run after the view-graph calibration on every
+	// pinhole camera that has no lens and trusts its focal; no command-line flag
+	bool lensFitEnabled = true;            // fit the lens of every camera that has none
+	unsigned lensFitMaxPairs = 150;        // pairs a camera's fit reads at most, heaviest first
+	unsigned lensFitMinPairs = 20;         // eligible pairs a camera needs to be fitted: drawn from the prototype's pairs, fits stop failing at 8-10, 20 leaves a margin
+	unsigned lensFitMatchesPerPair = 200;  // verified sparse matches each pair contributes, and the least an eligible pair holds
+	float lensFitMinRotation = 5.f;        // degrees: a pair turning less moves its points too little across the frame for the lens to show
+	float lensFitMaxRotation = 45.f;       // degrees: a pair turning more is usually a loop or cross view covering little of the frame
+	float lensFitLossScale = 1.f;          // pixels: the soft L1 scale of the Sampson error, quadratic below it and linear above
+	float lensFitMinErrorDrop = 0.10f;     // the median error must fall this fraction below the poses' own refinement at the starting lens for the lens to be kept
+	unsigned lensFitRounds = 3;            // re-estimations of every pair's pose through the fitted lens, each followed by the joint fit again
 	bool useCUDA = true; // use CUDA for SiftMatchGPU if available (otherwise OpenGL)
 
 	// Pairs weighting parameters

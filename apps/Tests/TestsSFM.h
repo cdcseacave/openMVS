@@ -120,6 +120,22 @@ bool ROMA2LensInlierTest();
 // more than the bar the match is held to
 bool MatchGeometricLensTest();
 
+// The lens fit from pairs (FitLensesFromPairs) recovers the lenses that rendered them: one camera
+// from 40 pairs that turn and move, to 1.5 px over the radii its matches reach, the lens set on the
+// camera; two cameras with different lenses joined only by 40 cross pairs, each fitted, the weak lens
+// to 1.5 px and the strong one to 5 px
+bool LensFitRecoveryTest();
+
+// The lens fit refuses what no lens explains: pairs of a camera without a lens, forward pairs that
+// hide a strong lens, and exact positions whose error is float rounding; every refused camera is left
+// without a lens
+bool LensFitRefusalTest();
+
+// A camera the lens fit cannot hold leaves it with every pair it has: one under the minimum of
+// eligible pairs, one whose given lens has terms past k1 and k2, and one whose focal is not trusted
+// are each left as they are, and the camera they pair with is fitted from its own pairs alone
+bool LensFitMinimumPairsTest();
+
 // The described/dense keypoint boundary: an image whose keypoints.size() > descriptors.rows keeps
 // its stored described-keypoint count across a descriptor release and an .sfm round-trip, the
 // index tests read it, and PairsMatcher::FilterRedundantKeypoints moves it through the same remap

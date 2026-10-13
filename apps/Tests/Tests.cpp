@@ -291,6 +291,12 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::MatchGeometricLensTest())
 				return false;
+			if (!SFM::LensFitRecoveryTest())
+				return false;
+			if (!SFM::LensFitRefusalTest())
+				return false;
+			if (!SFM::LensFitMinimumPairsTest())
+				return false;
 			if (!SFM::CubeMapFaceRenderTest())
 				return false;
 			if (!SFM::CubeMapBridgeGeometryTest())
