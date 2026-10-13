@@ -4090,6 +4090,75 @@ bool ROMA2ReverifyLensTest()
 	return true;
 }
 
+// The lens stage of the matching (FitLensesAndReverifyPairs): on 40 pairs of camera A verified through
+// the pinhole, whose rotations come out degrees off, the lens is fitted and set and every pair verified
+// again through it lands within LENS_STAGE_MAX_ROTATION_DEG of its true rotation and, in the median,
+// LENS_STAGE_MAX_DIRECTION_DEG of its true baseline direction; a second run, the camera now carrying
+// its lens, holds it and fits nothing
+constexpr REAL LENS_STAGE_MAX_ROTATION_DEG = REAL(0.5);
+constexpr REAL LENS_STAGE_MAX_DIRECTION_DEG = REAL(0.5);
+constexpr REAL LENS_STAGE_MIN_PINHOLE_ERROR_DEG = REAL(1); // the fixture: the pinhole's median rotation error must reach this
+bool LensFitStageTest()
+{
+	TD_TIMER_START();
+	Scene scene;
+	std::vector<Pose3D> truePoses;
+	BuildLensTestScene(scene, {LENS_TEST_A}, {{0, 0, LensTestMotion::TURN, 40}}, 23, truePoses);
+	const auto Errors = [&](std::vector<REAL>& rotation, std::vector<REAL>& direction) {
+		rotation.clear();
+		direction.clear();
+		FOREACH(i, scene.pairs) {
+			const ImagePair& pair = scene.pairs[i];
+			if (!pair.relativePose.has_value())
+				return false;
+			// ComputeRelativePoses recomputes the pair weights, which sorts scene.pairs by weight: the
+			// array position no longer matches truePoses' build order, the pair's own image IDs (2n,
+			// 2n+1 for the n-th pair BuildLensTestScene built) still do
+			const Pose3D& truePose = truePoses[pair.ID1/2];
+			rotation.push_back(R2D(ACOS(ComputeAngle(pair.relativePose->R, truePose.R))));
+			direction.push_back(R2D(ACOS(CLAMP(normalized(pair.relativePose->GetT()).dot(normalized(truePose.GetT())), REAL(-1), REAL(1)))));
+		}
+		return true;
+	};
+	const auto Median = [](std::vector<REAL> values) {
+		std::nth_element(values.begin(), values.begin() + values.size()/2, values.end());
+		return values[values.size()/2];
+	};
+	std::vector<REAL> rotation, direction;
+	if (!Errors(rotation, direction) || Median(rotation) < LENS_STAGE_MIN_PINHOLE_ERROR_DEG) {
+		VERBOSE("LensFitStageTest FAILED: through the pinhole the pairs are only %.2f deg off (median), the fixture does not exercise the lens",
+			rotation.empty() ? 0.0 : Median(rotation));
+		return false;
+	}
+	const REAL pinholeRotation = Median(rotation), pinholeDirection = Median(direction);
+	MatchConfig config;
+	PairsMatcher matcher(scene, config);
+	const LensFitReport report = FitLensesAndReverifyPairs(matcher);
+	if (report.cameras[0].status != LensFitOutcome::FITTED || !scene.cameras[0]->HasDistortion()) {
+		VERBOSE("LensFitStageTest FAILED: the lens was not fitted (status %u)", (unsigned)report.cameras[0].status);
+		return false;
+	}
+	if (!Errors(rotation, direction)) {
+		VERBOSE("LensFitStageTest FAILED: a pair lost its pose when verified again through the lens");
+		return false;
+	}
+	const REAL worstRotation = *std::max_element(rotation.begin(), rotation.end());
+	const REAL medianDirection = Median(direction);
+	if (worstRotation > LENS_STAGE_MAX_ROTATION_DEG || medianDirection > LENS_STAGE_MAX_DIRECTION_DEG) {
+		VERBOSE("LensFitStageTest FAILED: through the fitted lens the pairs are up to %.2f deg off in rotation, %.2f deg in baseline direction (median)",
+			worstRotation, medianDirection);
+		return false;
+	}
+	const LensFitReport again = FitLensesAndReverifyPairs(matcher);
+	if (again.cameras[0].status != LensFitOutcome::HELD || !again.FittedCameras().empty()) {
+		VERBOSE("LensFitStageTest FAILED: a second run fitted the camera again (status %u)", (unsigned)again.cameras[0].status);
+		return false;
+	}
+	VERBOSE("LensFitStageTest PASSED: rotation median %.2f -> worst %.2f deg, baseline direction median %.2f -> %.2f deg (%s)",
+		pinholeRotation, worstRotation, pinholeDirection, medianDirection, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 // The described/dense keypoint boundary: the stored
 // count is what survives a descriptor release and an .sfm round-trip of an image whose
 // keypoints.size() > descriptors.rows -- the two arrays serialize independently, so nothing else

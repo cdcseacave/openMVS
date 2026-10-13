@@ -118,6 +118,13 @@ struct SFM_API LensFitReport {
 // is left as it is). The pairs themselves are not changed.
 SFM_API LensFitReport FitLensesFromPairs(Scene& scene, const MatchConfig& config);
 
+// The lens stage of the matching: FitLensesFromPairs, then every pair of a fitted camera verified
+// again through its lens (PairsMatcher::ComputeRelativePoses: a descriptor pair through
+// GeometricFilter, its outliers rejoining the candidates; a RoMa2 pair through ReverifyPairROMA2,
+// its sparse and dense segments kept apart), which also recomputes the pair weights. Logs every
+// camera's outcome and the pairs' inliers before and after.
+SFM_API LensFitReport FitLensesAndReverifyPairs(PairsMatcher& pairsMatcher);
+
 } // namespace SFM
 
 #endif // _SFM_LENSFIT_H_

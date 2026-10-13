@@ -93,7 +93,7 @@ class ImagePair {
 ### Incremental Reconstruction (`Scene::Reconstruct`)
 ```
 Extract features (AKAZE/ORB/SIFT/SIFTGPU) -> Match pairs (VOCABULARY/EXHAUSTIVE/SEQUENTIAL/KNOWN_POSES)
--> Geometric verification (E/F/H + RANSAC) -> View graph calibration (focal estimation)
+-> Geometric verification (E/F/H + RANSAC) -> View graph calibration (focal estimation) -> Lens fit from pairs (k1, k2 of every camera with none; its pairs verified again through it)
 -> Build tracks (union-find) -> Filter tracks + weak images
 -> Star initialization (reference view) -> Resect remaining images (incremental)
 -> Bundle adjustment (global + local)
@@ -235,6 +235,19 @@ Places each independently reconstructed block ("sub-scene") into a shared frame,
 
 ### View Graph Calibration (`ViewGraphCalibrator.h`)
 Global focal length estimation across all image pairs. Uses Fetzer method with robust loss.
+
+### Lens Fit From Pairs (`LensFit.h`)
+Right after the view-graph calibration, `FitLensesAndReverifyPairs` fits the radial lens (k1, k2) of
+every pinhole camera that has none and trusts its focal, from its verified pairs (`FitLensesFromPairs`):
+the heaviest `MatchConfig::lensFitMaxPairs` (150) that turn 5-45 deg, 200 sparse inliers each, the
+Sampson error in measured pixels under soft L1 at 1 px, each pair's 5-dof pose eliminated, three
+rounds of each pose re-estimated through the lens. A lens is kept when it is one to one past the image
+corner (1.05x) and lowers the median error 10% below the poses' own refinement; a camera under 20
+eligible pairs, spherical, untrusted, or with a given lens past k1, k2 is left as it is. Every pair of a
+fitted camera is then verified again through `PairsMatcher::ComputeRelativePoses` (a RoMa2 pair
+through `ReverifyPairROMA2`). The bundle adjustments refine k1, k2 from the fitted lens. No
+command-line flag; `MatchConfig::lensFitEnabled` turns it off. A lens given with `--k1/--k2` or
+imported is held, and a resumed scene's fitted lens counts as given.
 
 ### Relative Pose Refinement (`RelativePoseRefine.h`)
 Joint refinement of focal length + distortion (k1, k2) with relative pose via Ceres.

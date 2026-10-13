@@ -111,6 +111,7 @@ Input: Images (or video keyframes)          [+ optional poses file]
 │                       Sequential/Known-Poses)            │
 │  3. Geometric Verification (RANSAC: E/F/H matrices)      │
 │  4. View Graph Calibration (focal length estimation)     │
+│  4b. Lens fit from pairs (k1, k2 per camera)            │
 │  5. Track Building (union-find on matches)               │
 │  6. Track & Image Filtering (outliers, weak views)       │
 │                                                          │
@@ -202,6 +203,10 @@ RETRIEVAL ranks candidate pairs using the descriptor graph's own on-device pooli
 #### 3. View Graph Calibration (`ViewGraphCalibrator.h`)
 
 If camera intrinsics aren't fully trusted (no EXIF or imprecise calibration), this stage estimates focal lengths globally across all image pairs using the Fetzer method.
+
+#### 3b. Lens fit from pairs (`LensFit.h`)
+
+Right after the view-graph calibration, `FitLensesAndReverifyPairs` fits the radial lens (k1, k2) of every pinhole camera that has none and trusts its focal, from its heaviest verified pairs (`FitLensesFromPairs`): up to 150 that turn 5-45 deg with 200 sparse inliers each, the Sampson error under soft L1, each pair's pose eliminated and re-estimated through the lens for up to three rounds. A lens is kept only when it stays one to one past the image corner and lowers the median error 10% below the poses' own refinement; every pair of a fitted camera is then verified again through it. No command-line flag; `MatchConfig::lensFitEnabled` (on by default) turns it off, and a camera's already-fitted or given lens is held as is.
 
 #### 4. Track Building & Filtering (`Track.h`)
 
@@ -628,6 +633,7 @@ libs/SFM/
 ├── BundleAdjustment.h/cpp              # Ceres-based optimization
 ├── BundleAdjustmentCostFunctions.h     # Reprojection error residuals
 ├── ViewGraphCalibrator.h/cpp           # Global focal estimation
+├── LensFit.h/cpp                       # Radial lens of each camera from its verified pairs
 ├── RelativePoseRefine.h/cpp            # Two-view calibration refinement
 │
 │ # Hierarchical / Global reconstruction

@@ -687,6 +687,61 @@ LensFitReport SFM::FitLensesFromPairs(Scene& scene, const MatchConfig& config)
 	report.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
 	return report;
 }
+
+LensFitReport SFM::FitLensesAndReverifyPairs(PairsMatcher& pairsMatcher)
+{
+	TD_TIMER_START();
+	Scene& scene = pairsMatcher.GetScene();
+	const MatchConfig& config = pairsMatcher.GetConfig();
+	const LensFitReport report = FitLensesFromPairs(scene, config);
+	FOREACH(c, report.cameras) {
+		const LensFitOutcome& outcome = report.cameras[c];
+		switch (outcome.status) {
+		case LensFitOutcome::FITTED:
+			VERBOSE("Lens fitted to camera %u from %u pairs: k1 %.4f, k2 %.4f (%.1f px at the corner), median error %.3f -> %.3f px",
+				(unsigned)c, outcome.numPairs, outcome.k1, outcome.k2, outcome.cornerDisplacement, outcome.medianBefore, outcome.medianAfter);
+			break;
+		case LensFitOutcome::FOLDS:
+		case LensFitOutcome::NO_ERROR_DROP:
+			VERBOSE("Lens of camera %u not kept (%s): k1 %.4f, k2 %.4f from %u pairs, median error %.3f -> %.3f px",
+				(unsigned)c, outcome.status == LensFitOutcome::FOLDS ? "it folds before the image corner" : "the fit does not lower the median error enough",
+				outcome.k1, outcome.k2, outcome.numPairs, outcome.medianBefore, outcome.medianAfter);
+			break;
+		case LensFitOutcome::TOO_FEW_PAIRS:
+			DEBUG("Lens of camera %u not fitted: %u eligible pairs, %u needed", (unsigned)c, outcome.numEligiblePairs, config.lensFitMinPairs);
+			break;
+		default:
+			break;
+		}
+	}
+	const std::unordered_set<CameraPtr> fitted(report.FittedCameras());
+	if (fitted.empty())
+		return report;
+	// the inliers of the pairs a fitted camera holds, before and after they are verified again
+	const auto Totals = [&](size_t& numSparse, size_t& numDense) {
+		unsigned numPairs = 0;
+		numSparse = numDense = 0;
+		for (const ImagePair& pair : scene.pairs) {
+			if (!fitted.count(scene.images[pair.ID1].pCamera) && !fitted.count(scene.images[pair.ID2].pCamera))
+				continue;
+			++numPairs;
+			numSparse += pair.GetNumFilteredInliers();
+			numDense += pair.GetNumDenseInliers();
+		}
+		return numPairs;
+	};
+	size_t sparseBefore, denseBefore, sparseAfter, denseAfter;
+	const unsigned numPairs = Totals(sparseBefore, denseBefore);
+	pairsMatcher.ComputeRelativePoses(true, false, fitted);
+	Totals(sparseAfter, denseAfter);
+	String rounds;
+	for (unsigned n : report.reestimatedPoses)
+		rounds += String::FormatString(rounds.empty() ? "%u" : ",%u", n);
+	VERBOSE("Lens fit: %u of %u cameras fitted in %.1f s, poses re-estimated %s; %u pairs verified again through their lens: sparse inliers %zu -> %zu, dense %zu -> %zu (%s)",
+		(unsigned)fitted.size(), (unsigned)report.cameras.size(), report.seconds, rounds.empty() ? "-" : rounds.c_str(),
+		numPairs, sparseBefore, sparseAfter, denseBefore, denseAfter, TD_TIMER_GET_FMT().c_str());
+	return report;
+}
 /*----------------------------------------------------------------*/
 
 #pragma pop_macro("VERBOSE")

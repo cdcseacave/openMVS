@@ -23,6 +23,7 @@
 #include "InterfaceMVS.h"
 #include "ImportCOLMAP.h"
 #include "RoMa2Matcher.h"
+#include "LensFit.h"
 
 #include <TinyEXIF.h>
 #include <unordered_set>
@@ -651,6 +652,14 @@ bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, c
 		if (!calibrator.GetUpdatedCameras().empty())
 			pairsMatcher.ComputeRelativePoses(true, false, calibrator.GetUpdatedCameras());
 	}
+
+	// The radial lens of every camera that has none, fitted from its verified pairs, then every pair
+	// of a fitted camera verified again through it (LensFit.h): after the calibration, whose focal the
+	// fit holds, and before anything reads the pairs' geometry (the pairs export, the triplet and
+	// tree-rotation filters, the clustering, every reconstruction stage). A scene resumed already
+	// matched carries the lens it was fitted, which makes it given: nothing is fitted again.
+	if (config.lensFitEnabled)
+		FitLensesAndReverifyPairs(pairsMatcher);
 	return true;
 }
 

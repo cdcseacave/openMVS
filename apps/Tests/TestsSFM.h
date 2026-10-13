@@ -153,6 +153,13 @@ bool ROMA2ReverifyPartitionTest();
 // bar let through off the true geometry are dropped while the true ones stay
 bool ROMA2ReverifyLensTest();
 
+// The lens stage of the matching (FitLensesAndReverifyPairs): on 40 pairs of one camera verified
+// through the pinhole, whose rotations come out degrees off the truth, the lens is fitted and set and
+// every pair verified again through it lands within half a degree of its true rotation and, in the
+// median, half a degree of its true baseline direction; a second run, the camera now carrying its
+// lens, holds it and fits nothing
+bool LensFitStageTest();
+
 // The described/dense keypoint boundary: an image whose keypoints.size() > descriptors.rows keeps
 // its stored described-keypoint count across a descriptor release and an .sfm round-trip, the
 // index tests read it, and PairsMatcher::FilterRedundantKeypoints moves it through the same remap
