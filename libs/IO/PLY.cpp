@@ -1117,6 +1117,12 @@ void PLY::ascii_get_element(uint8_t* elem_ptr)
 			// allocate space for an array of items and store a ptr to the array
 			const int list_count(ValueType2Type<int>(val, prop->count_external));
 			char** store_array = (char**)(elem_data + prop->offset);
+			// the list items are the remaining words on the line: reject a count that is
+			// negative or overruns them, which also keeps the allocation below bounded by
+			// the real input (a crafted huge count would otherwise overflow item_size*list_count
+			// into a tiny buffer and then read past the end of the words array)
+			if (list_count < 0 || list_count > nwords - which_word)
+				abort_ply("error: get_element: list count out of range");
 			if (list_count == 0) {
 				if (store_it)
 					*store_array = NULL;
@@ -1124,7 +1130,7 @@ void PLY::ascii_get_element(uint8_t* elem_ptr)
 				const int item_size(ply_type_size[prop->internal_type]);
 
 				if (store_it) {
-					item_ptr = new char[item_size * list_count];
+					item_ptr = new char[(size_t)item_size * (size_t)list_count];
 					item = item_ptr;
 					*store_array = item_ptr;
 				}
@@ -1208,12 +1214,20 @@ void PLY::binary_get_element(uint8_t* elem_ptr)
 			const int list_count(ValueType2Type<int>(val, prop->count_external));
 			const int item_size(ply_type_size[prop->internal_type]);
 			char** store_array = (char**)(elem_data + prop->offset);
+			// each item occupies ply_type_size[external_type] bytes in the file: reject a count
+			// that is negative or cannot be backed by the bytes left, which also keeps the
+			// allocation bounded (a crafted huge count would otherwise overflow item_size*list_count
+			// into a tiny buffer that the read loop then writes far past)
+			const size_f_t fileSize(istream->getSize());
+			if (list_count < 0 ||
+				(fileSize != SIZE_NA && (size_f_t)ply_type_size[prop->external_type] * list_count > fileSize - istream->getPos()))
+				abort_ply("error: get_element: list count out of range");
 			if (list_count == 0) {
 				if (store_it)
 					*store_array = NULL;
 			} else {
 				if (store_it) {
-					item_ptr = new char[item_size * list_count];
+					item_ptr = new char[(size_t)item_size * (size_t)list_count];
 					item = item_ptr;
 					*store_array = item_ptr;
 				}
@@ -1230,6 +1244,9 @@ void PLY::binary_get_element(uint8_t* elem_ptr)
 		} else if (prop->is_list == STRING) { // string
 			int len;
 			istream->read(&len, sizeof(int));
+			const size_f_t fileSize(istream->getSize());
+			if (len < 0 || (fileSize != SIZE_NA && (size_f_t)len > fileSize - istream->getPos()))
+				abort_ply("error: get_element: string length out of range");
 			char *str = new char[len];
 			istream->read(str, len);
 			if (store_it) {
@@ -1280,9 +1297,9 @@ returns a list of words from the line, or NULL if end-of-file
 ******************************************************************************/
 char** PLY::get_words(STRISTREAM& sfp, int* nwords, std::string* orig_line)
 {
-	const int BIG_STRING = 4096;
-	char str[BIG_STRING];
-	char str_copy[BIG_STRING];
+	const int BIG_STRING = (int)sizeof(line_words);
+	char* const str = line_words; // a member, so the word pointers we return outlive this call
+	char str_copy[sizeof(line_words)];
 
 	int max_words = 10;
 	int num_words = 0;

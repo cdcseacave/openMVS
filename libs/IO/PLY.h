@@ -315,6 +315,10 @@ protected:
 	SEACAVE::MemFile* mfp;            // mem-file pointer (optional)
 	const char* const* write_type_names; // names of scalar types to be used for writing (new types by default)
 
+	// line buffer reused by get_words(); the returned word pointers point into it,
+	// so it must outlive the call and stays valid until the next get_words() call
+	char line_words[4096];
+
 	static const char* const type_names[9]; // names of scalar types 
 	static const char* const old_type_names[9]; // old names of types for backward compatibility 
 	static const int ply_type_size[9];
