@@ -297,6 +297,10 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::LensFitMinimumPairsTest())
 				return false;
+			if (!SFM::ROMA2ReverifyPartitionTest())
+				return false;
+			if (!SFM::ROMA2ReverifyLensTest())
+				return false;
 			if (!SFM::CubeMapFaceRenderTest())
 				return false;
 			if (!SFM::CubeMapBridgeGeometryTest())

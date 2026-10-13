@@ -290,6 +290,22 @@ a pair the warp rejects. Per pair:
    dense segment its whole evidence. The pair is stored once (`StorePairROMA2`): created, or replacing
    a same-key pair a previous `Match()` left.
 
+The fit and the classification that close the assembly (5, above) are one function,
+`FitAndClassifyPairROMA2`, run there on the fresh draw. When a camera changes after matching (a focal
+the view-graph calibration moved, a lens fitted from the pairs), `PairsMatcher::ComputeRelativePoses`
+verifies every pair of that camera again, and a pair the one pass matched (it carries a dense
+segment, or one of its images carries dense keypoints) goes through `ReverifyPairROMA2` instead of
+`GeometricFilter`: its stored sparse candidates (the sparse segment, any RANSAC inlier a strict
+filter rejected, and the outliers) are classified again and its dense segment with them, kept apart,
+by `FitAndClassifyPairROMA2` from the geometry the pair holds; a match with a dense end is a dense
+candidate wherever the pair holds it, since a pair invalidated after its fill was stored (left under
+the minimum of matches by the redundant-keypoint filter) holds its dense matches among its outliers.
+A match an earlier geometry refused can come back, and a dense sample that now fails is dropped, its
+keypoints left in the images. `GeometricFilter` over all of a pair's matches held the dense samples
+to the descriptor estimator at full weight and kept one that failed as an outlier, and with the
+strict filter off it folded the dense segment into the sparse one (the strict filter's pass,
+`ImagePair::FilterMatches`, re-derives the dense segment from the keypoints).
+
 A judged pair costs on the order of 100 ms on an A100 at the base preset, growing on a texture-rich
 capture where the guided descriptor search dominates rather than the graph call, and less at the
 faster presets. Bundle adjustment over the tracks the dense fill creates, not matching itself, is what
@@ -366,6 +382,16 @@ struct DenseMatches { std::vector<Point2f> pointsA, pointsB; std::vector<float> 
 bool AssemblePairROMA2(const PairsMatcher&, const Image& imgA, const Image& imgB,
     const PairVerdict& verdict, const std::vector<DMatch>& guided, const ROMA2Config& config,
     int warpSize, ImagePair& pair, DenseMatches& dense);
+
+// the fit and the classification AssemblePairROMA2 runs, shared with the re-verification
+void FitAndClassifyPairROMA2(const PairsMatcher&, const Image& imgA, const Image& imgB,
+    const std::vector<DMatch>& sparse, const std::vector<Point2f>& densePointsA,
+    const std::vector<Point2f>& densePointsB, const ROMA2Config& config, float denseTolerance,
+    ImagePair& pair, std::vector<uint8_t>& denseKept);
+
+// a stored pair verified again through its cameras as they are now (PairsMatcher::ComputeRelativePoses)
+void ReverifyPairROMA2(const PairsMatcher&, const Image& imgA, const Image& imgB,
+    const ROMA2Config& config, ImagePair& pair);
 
 void StorePairROMA2(Scene&, std::unordered_map<PairIdx::PairIndex, IIndex>& pairIndexMap,
     ImagePair&& pair, const DenseMatches& dense, int warpSize);
@@ -679,6 +705,19 @@ sees no reloads at all.
   pose on an exact geometry, the dense-only fallback when the guided set is empty (the verdict's own
   geometry stands), and reproducible keypoint indices when a store appends past an image's described
   prefix.
+- **`ROMA2ReverifyPartitionTest`** (synthetic, no model needed) — the re-verification a camera's
+  change sets off (`PairsMatcher::ComputeRelativePoses`, `ReverifyPairROMA2`) keeps a pair's
+  partition: on the wedge of `ROMA2AssemblyTest`, with nothing about the cameras changed, the pair
+  comes back with the same sparse inliers, the same dense segment of dense keypoints and the same
+  outliers, a pair whose fill drew nothing comes back well formed, and so does a pair invalidated
+  after its fill was stored, its dense matches back in the dense segment, with the matcher's strict
+  filter and without it. Under the default configuration, with the dense fill displaced 2 px across
+  the epipolar lines (as `ROMA2DenseFitWeightTest` builds it), the re-verified pose follows the sparse
+  matches, where `GeometricFilter` over all of the pair's matches at full weight follows the bias.
+- **`ROMA2ReverifyLensTest`** (synthetic, no model needed) — a pair classified at matching through
+  the pinhole geometry of its true pose and verified again once its camera knows its lens: the corner
+  matches the pinhole rejected come back as sparse inliers, and the dense samples off the true
+  geometry are dropped while the true ones stay.
 - **`DenseKeypointBoundaryTest`** (`apps/Tests/TestsSFM.cpp`) — always runs, no model needed: the
   stored described-keypoint count surviving a descriptor release and an `.sfm` round-trip of an image
   whose `keypoints.size() > descriptors.rows`, `SelectTopKeypoints` staying inside the prefix, and

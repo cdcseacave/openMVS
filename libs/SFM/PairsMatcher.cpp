@@ -654,6 +654,15 @@ bool PairsMatcher::DecomposeFundamentalToPose(const Image& img1, const Image& im
 	return true;
 }
 
+// Whether a pair was matched by the RoMa2 one pass: it carries a dense segment, or either image
+// carries dense keypoints. The one pass is their only producer, and a scene it matched holds no
+// descriptor-matched pair (there is no union of the two), so such a pair is re-verified the way it
+// was assembled; a pair whose fill drew nothing in a scene of descriptor pairs cannot exist.
+static bool IsDenseMatchedPair(const ImagePair& pair, const Image& img1, const Image& img2)
+{
+	return pair.GetNumDenseInliers() > 0 || img1.HasDenseKeypoints() || img2.HasDenseKeypoints();
+}
+
 unsigned PairsMatcher::ComputeRelativePoses(bool onlyTrustedIntrinsics, bool onlyComputeIfMissing, const std::unordered_set<CameraPtr>& updatedCameras)
 {
 	TD_TIMER_STARTD();
@@ -661,6 +670,7 @@ unsigned PairsMatcher::ComputeRelativePoses(bool onlyTrustedIntrinsics, bool onl
 	std::atomic<size_t> numMatches{0};
 	std::atomic<size_t> numInliers{0};
 	std::atomic<size_t> numFilteredInliers{0};
+	std::atomic<size_t> numDenseInliers{0};
 
 	cv::setNumThreads(1); // temporary turn off multi-threading for OpenCV functions
 	scene.threadPool.detach_loop(0u, scene.pairs.size(), [&](unsigned i) {
@@ -673,18 +683,28 @@ unsigned PairsMatcher::ComputeRelativePoses(bool onlyTrustedIntrinsics, bool onl
 			return;
 		if (!updatedCameras.empty() && updatedCameras.count(img1.pCamera) == 0 && updatedCameras.count(img2.pCamera) == 0)
 			return;
-		// Recompute relative pose with the new intrinsics
-		GeometricFilter(img1, img2, pair);
+		// Recompute relative pose with the new intrinsics: a pair the RoMa2 one pass matched through
+		// the fit and classification it was assembled with, which keep its sparse and dense segments
+		// apart (GeometricFilter over all its matches holds the dense samples to the descriptor
+		// estimator at full weight, keeps one that fails as an outlier, and without the strict filter
+		// folds the dense segment into the sparse one); every other pair through the estimator it was
+		// verified with, its outliers rejoining
+		if (IsDenseMatchedPair(pair, img1, img2))
+			ReverifyPairROMA2(*this, img1, img2, roma2Cfg, pair);
+		else
+			GeometricFilter(img1, img2, pair);
 		numMatches += pair.GetNumMatches();
 		numInliers += pair.GetNumInliers();
 		numFilteredInliers += pair.GetNumFilteredInliers();
+		numDenseInliers += pair.GetNumDenseInliers();
 		++numPairsUpdated;
 	});
 	scene.threadPool.wait();
 	cv::setNumThreads(scene.nMaxThreads);
 
-	DEBUG("Relative pose updated for %u/%u pairs: %zu matches, %zu inliers, %zu filtered inliers (%s)",
-		numPairsUpdated.load(), scene.pairs.size(), numMatches.load(), numInliers.load(), numFilteredInliers.load(), TD_TIMER_GET_FMT().c_str());
+	DEBUG("Relative pose updated for %u/%u pairs: %zu matches, %zu inliers, %zu filtered inliers, %zu dense inliers (%s)",
+		numPairsUpdated.load(), scene.pairs.size(), numMatches.load(), numInliers.load(), numFilteredInliers.load(),
+		numDenseInliers.load(), TD_TIMER_GET_FMT().c_str());
 	if (numPairsUpdated.load()) {
 		// Recompute pair weights
 		ComputePairsWeights(scene, config.weightingCfg);

@@ -136,6 +136,21 @@ bool LensFitRefusalTest();
 // are each left as they are, and the camera they pair with is fitted from its own pairs alone
 bool LensFitMinimumPairsTest();
 
+// The re-verification a camera's change sets off (PairsMatcher::ComputeRelativePoses) keeps a RoMa2
+// pair's partition: on the wedge, with nothing about the cameras changed, the pair comes back with
+// the same sparse inliers, the same dense segment of dense keypoints and the same outliers, a pair
+// whose dense fill drew nothing comes back well formed too, and so does a pair invalidated after its
+// fill was stored, its dense matches back in the dense segment, with the matcher's strict filter and
+// without it; under the default configuration, with the dense fill biased across the epipolar lines,
+// the re-verified pose follows the sparse matches where GeometricFilter at full weight follows the bias
+bool ROMA2ReverifyPartitionTest();
+
+// A RoMa2 pair matched through the pinhole and re-verified once its camera knows its lens
+// (ReverifyPairROMA2): with the pinhole geometry of the true pose kept at matching, the guided matches
+// at the corners the pinhole rejected come back as sparse inliers, and the dense samples the pinhole
+// bar let through off the true geometry are dropped while the true ones stay
+bool ROMA2ReverifyLensTest();
+
 // The described/dense keypoint boundary: an image whose keypoints.size() > descriptors.rows keeps
 // its stored described-keypoint count across a descriptor release and an .sfm round-trip, the
 // index tests read it, and PairsMatcher::FilterRedundantKeypoints moves it through the same remap

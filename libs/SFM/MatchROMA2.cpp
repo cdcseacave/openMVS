@@ -773,80 +773,14 @@ bool SFM::AssemblePairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA,
 			occupiedA, dense.pointsA, dense.pointsB, dense.confidences);
 	}
 
-	// 2) ONE geometry for the pair, fitted on guided u dense through the matcher's own estimator at
-	// its own threshold: the sparse correspondences are sub-pixel where texture exists and the dense
-	// ones carry the parts of the overlap they left empty, so the union is the best-conditioned
-	// evidence the pair has. On failure the verdict's geometry stands, unchanged -- an admitted pair
-	// is always stored, and a pair holding one fit's pose next to another fit's matrices would
-	// describe two geometries as one, which is why all three members move together or none do.
-	const size_t numTotal = guided.size() + dense.pointsA.size();
-	if (numTotal >= 8) {
-		std::vector<Point2f> pointsA, pointsB;
-		pointsA.reserve(numTotal);
-		pointsB.reserve(numTotal);
-		for (const DMatch& match : guided) {
-			pointsA.push_back(imgA.keypoints[match.queryIdx].pt);
-			pointsB.push_back(imgB.keypoints[match.trainIdx].pt);
-		}
-		pointsA.insert(pointsA.end(), dense.pointsA.begin(), dense.pointsA.end());
-		pointsB.insert(pointsB.end(), dense.pointsB.begin(), dense.pointsB.end());
-		Image imgACopy(imgA.ID, imgA.fileName, Pose3D(), imgA.cameraID, imgA.pCamera);
-		Image imgBCopy(imgB.ID, imgB.fileName, Pose3D(), imgB.cameraID, imgB.pCamera);
-		ImagePair fit(pair.ID1, pair.ID2);
-		MakeFitImages(pointsA, pointsB, imgACopy, imgBCopy, fit);
-		if (pairsMatcher.GeometricFilter(imgACopy, imgBCopy, fit)) {
-			// the polish that closes the fit, again over the fit's inliers but with each dense
-			// correspondence at ROMA2Config::denseFitWeight: the union found the pose, the sparse
-			// matches set it wherever they are many (MakeFitImages numbers the guided matches first)
-			if (fit.relativePose.has_value()) {
-				std::vector<double> weights;
-				weights.reserve(fit.matches.size());
-				for (const DMatch& match : fit.matches)
-					weights.push_back(match.queryIdx < guided.size() ? 1.0 : (double)config.denseFitWeight);
-				pairsMatcher.RefineRelativePose(imgACopy, imgBCopy, fit, weights);
-			}
-			// straight from `fit` rather than recomposed here: GeometricFilter ran the branch's own
-			// estimator and left F/E in that branch's own convention (on SHARED_FOCAL it composes F
-			// from the RANSAC-estimated focal, not from the camera's nominal K), so recomposing
-			// would silently disagree with the pose it just fitted
-			pair.F = fit.F;
-			pair.E = fit.E;
-			pair.relativePose = fit.relativePose;
-		}
-	}
-
-	// 3) classify both kinds of correspondence against the kept geometry: a descriptor correspondence
-	// is sub-pixel and is held to the matcher's own epipolar error; a warp cell is held to a multiple
-	// of that same bar (ROMA2Config::denseEpipolarErrorFactor), since a correspondence admitted at the
-	// half cell the coarse warp can claim pollutes every track it enters downstream
-	const MatchConfig& cfg = pairsMatcher.GetConfig();
-	// maxEpipolarError 0 turns the RANSAC verification off scene-wide (MatchConfig), and with it the
-	// sparse epipolar test: in that configuration every guided match stands, exactly as the
-	// descriptor path keeps its matches unverified
-	const bool bVerifySparse = cfg.maxEpipolarError > 0.f;
-	const SampsonTest sparseTest(imgA, imgB, pair, cfg.maxEpipolarError);
-	const float denseTolerance = bVerifySparse ?
-		cfg.maxEpipolarError * config.denseEpipolarErrorFactor : WarpTolerance(sizeA, sizeB, warpSize);
-	const SampsonTest denseTest(imgA, imgB, pair, denseTolerance);
-	ASSERT(sparseTest.IsValid() == denseTest.IsValid());
-	pair.matches.clear();
-	pair.matches.reserve(guided.size());
-	pair.outlierMatches.clear();
-	for (const DMatch& match : guided) {
-		if (!bVerifySparse || !sparseTest.IsValid() ||
-			sparseTest(imgA.keypoints[match.queryIdx].pt, imgB.keypoints[match.trainIdx].pt))
-			pair.matches.push_back(match);
-		else
-			pair.outlierMatches.push_back(match);
-	}
-	// the sparse segment is materialised here rather than left at -1: the dense segment goes right
-	// after it (ImagePair's partition), and StorePairROMA2 appends it as soon as the pair exists
-	pair.numFilteredInliers = (int)pair.matches.size();
-	pair.numDenseInliers = 0;
-	pair.weightedInliers = -1.f;
+	// 2) the one geometry and the classification of both kinds of correspondence
+	// (FitAndClassifyPairROMA2); the warp's half cell is the dense bar when the verification is off
+	std::vector<uint8_t> denseKept;
+	FitAndClassifyPairROMA2(pairsMatcher, imgA, imgB, guided, dense.pointsA, dense.pointsB, config,
+		WarpTolerance(sizeA, sizeB, warpSize), pair, denseKept);
 	size_t numDenseKept = 0;
-	for (size_t k = 0; k < dense.pointsA.size(); ++k) {
-		if (denseTest.IsValid() && !denseTest(dense.pointsA[k], dense.pointsB[k]))
+	FOREACH(k, dense.pointsA) {
+		if (!denseKept[k])
 			continue;
 		dense.pointsA[numDenseKept] = dense.pointsA[k];
 		dense.pointsB[numDenseKept] = dense.pointsB[k];
@@ -862,6 +796,138 @@ bool SFM::AssemblePairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA,
 	if (pair.relativePose.has_value() && !pair.matches.empty())
 		pair.meanRayAngle = pair.ComputeMeanRayAngle(imgA, imgB);
 	return !pair.matches.empty() || numDenseKept > 0;
+}
+
+void SFM::FitAndClassifyPairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
+	const std::vector<DMatch>& sparse, const std::vector<Point2f>& densePointsA, const std::vector<Point2f>& densePointsB,
+	const ROMA2Config& config, float denseTolerance, ImagePair& pair, std::vector<uint8_t>& denseKept)
+{
+	ASSERT(pair.matches.empty() && pair.outlierMatches.empty());
+	ASSERT(densePointsA.size() == densePointsB.size());
+	// ONE geometry for the pair, fitted on sparse u dense through the matcher's own estimator at its
+	// own threshold: the sparse correspondences are sub-pixel where texture exists and the dense ones
+	// carry the parts of the overlap they left empty, so the union is the best-conditioned evidence
+	// the pair has. On failure the geometry the pair arrived with stands, unchanged (the verdict's at
+	// matching, the pair's own at re-verification) -- an admitted pair is always stored, and a pair
+	// holding one fit's pose next to another fit's matrices would describe two geometries as one,
+	// which is why all three members move together or none do.
+	const size_t numTotal = sparse.size() + densePointsA.size();
+	if (numTotal >= 8) {
+		std::vector<Point2f> pointsA, pointsB;
+		pointsA.reserve(numTotal);
+		pointsB.reserve(numTotal);
+		for (const DMatch& match : sparse) {
+			pointsA.push_back(imgA.keypoints[match.queryIdx].pt);
+			pointsB.push_back(imgB.keypoints[match.trainIdx].pt);
+		}
+		pointsA.insert(pointsA.end(), densePointsA.begin(), densePointsA.end());
+		pointsB.insert(pointsB.end(), densePointsB.begin(), densePointsB.end());
+		Image imgACopy(imgA.ID, imgA.fileName, Pose3D(), imgA.cameraID, imgA.pCamera);
+		Image imgBCopy(imgB.ID, imgB.fileName, Pose3D(), imgB.cameraID, imgB.pCamera);
+		ImagePair fit(pair.ID1, pair.ID2);
+		MakeFitImages(pointsA, pointsB, imgACopy, imgBCopy, fit);
+		if (pairsMatcher.GeometricFilter(imgACopy, imgBCopy, fit)) {
+			// the polish that closes the fit, again over the fit's inliers but with each dense
+			// correspondence at ROMA2Config::denseFitWeight: the union found the pose, the sparse
+			// matches set it wherever they are many (MakeFitImages numbers the sparse matches first)
+			if (fit.relativePose.has_value()) {
+				std::vector<double> weights;
+				weights.reserve(fit.matches.size());
+				for (const DMatch& match : fit.matches)
+					weights.push_back(match.queryIdx < sparse.size() ? 1.0 : (double)config.denseFitWeight);
+				pairsMatcher.RefineRelativePose(imgACopy, imgBCopy, fit, weights);
+			}
+			// straight from `fit` rather than recomposed here: GeometricFilter ran the branch's own
+			// estimator and left F/E in that branch's own convention (on SHARED_FOCAL it composes F
+			// from the RANSAC-estimated focal, not from the camera's nominal K), so recomposing
+			// would silently disagree with the pose it just fitted
+			pair.F = fit.F;
+			pair.E = fit.E;
+			pair.relativePose = fit.relativePose;
+		}
+	}
+
+	// classify both kinds of correspondence against the kept geometry: a descriptor correspondence
+	// is sub-pixel and is held to the matcher's own epipolar error; a warp cell is held to a multiple
+	// of that same bar (ROMA2Config::denseEpipolarErrorFactor), since a correspondence admitted at the
+	// half cell the coarse warp can claim pollutes every track it enters downstream
+	const MatchConfig& cfg = pairsMatcher.GetConfig();
+	// maxEpipolarError 0 turns the RANSAC verification off scene-wide (MatchConfig), and with it the
+	// sparse epipolar test: in that configuration every sparse match stands, exactly as the
+	// descriptor path keeps its matches unverified
+	const bool bVerifySparse = cfg.maxEpipolarError > 0.f;
+	const SampsonTest sparseTest(imgA, imgB, pair, cfg.maxEpipolarError);
+	const float denseBar = bVerifySparse ? cfg.maxEpipolarError*config.denseEpipolarErrorFactor : denseTolerance;
+	const SampsonTest denseTest(imgA, imgB, pair, denseBar);
+	ASSERT(sparseTest.IsValid() == denseTest.IsValid());
+	pair.matches.reserve(sparse.size());
+	for (const DMatch& match : sparse) {
+		if (!bVerifySparse || !sparseTest.IsValid() ||
+			sparseTest(imgA.keypoints[match.queryIdx].pt, imgB.keypoints[match.trainIdx].pt))
+			pair.matches.push_back(match);
+		else
+			pair.outlierMatches.push_back(match);
+	}
+	// the sparse segment is materialised here rather than left at -1: the dense segment goes right
+	// after it (ImagePair's partition), and StorePairROMA2 appends it as soon as the pair exists
+	pair.numFilteredInliers = (int)pair.matches.size();
+	pair.numDenseInliers = 0;
+	pair.weightedInliers = -1.f;
+	// a dense correspondence stands unless the geometry measures it past its bar, which is the
+	// verification's own whenever it is on (a factor of 0 included); with the verification off and no
+	// tolerance given (re-verification, where the warp the matching's fallback bar comes from is
+	// gone) there is no bar, and every one stands
+	denseKept.assign(densePointsA.size(), 1);
+	if ((bVerifySparse || denseTolerance > 0.f) && denseTest.IsValid())
+		FOREACH(k, densePointsA)
+			denseKept[k] = denseTest(densePointsA[k], densePointsB[k]) ? 1 : 0;
+}
+
+void SFM::ReverifyPairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
+	const ROMA2Config& config, ImagePair& pair)
+{
+	ASSERT(pair.ID1 == imgA.ID && pair.ID2 == imgB.ID);
+	const unsigned numSparse = pair.GetNumFilteredInliers(), numDense = pair.GetNumDenseInliers();
+	// the dense candidates: the dense segment, as stored (a sample the matching dropped is gone), and
+	// after it every other match with a dense end -- a pair invalidated after its fill was stored
+	// (FilterRedundantKeypoints, left under the minimum of matches) holds its dense matches among its
+	// outliers, and a dense correspondence answers to the dense bar wherever the pair keeps it
+	std::vector<DMatch> denseMatches(pair.matches.begin() + numSparse, pair.matches.begin() + numSparse + numDense);
+	// the sparse candidates: every other match, described at both ends -- the sparse inliers, any
+	// RANSAC inlier a strict filter rejected, and the outliers, so that a match an earlier geometry
+	// refused can come back -- in (A, B) keypoint order, the order the guided pass hands them out in
+	std::vector<DMatch> sparse;
+	sparse.reserve(pair.GetNumMatches() - numDense);
+	const auto Route = [&](std::vector<DMatch>::const_iterator first, std::vector<DMatch>::const_iterator last) {
+		for (; first != last; ++first)
+			(imgA.IsDenseKeypoint(first->queryIdx) || imgB.IsDenseKeypoint(first->trainIdx) ? denseMatches : sparse).push_back(*first);
+	};
+	Route(pair.matches.cbegin(), pair.matches.cbegin() + numSparse);
+	Route(pair.matches.cbegin() + numSparse + numDense, pair.matches.cend());
+	Route(pair.outlierMatches.cbegin(), pair.outlierMatches.cend());
+	std::sort(sparse.begin(), sparse.end(), [](const DMatch& a, const DMatch& b) {
+		return a.queryIdx < b.queryIdx || (a.queryIdx == b.queryIdx && a.trainIdx < b.trainIdx);
+	});
+	std::vector<Point2f> densePointsA, densePointsB;
+	densePointsA.reserve(denseMatches.size());
+	densePointsB.reserve(denseMatches.size());
+	for (const DMatch& m : denseMatches) {
+		densePointsA.push_back(imgA.keypoints[m.queryIdx].pt);
+		densePointsB.push_back(imgB.keypoints[m.trainIdx].pt);
+	}
+	// the geometry stays: it stands if the fit fails
+	pair.ResetMatches();
+	std::vector<uint8_t> denseKept;
+	FitAndClassifyPairROMA2(pairsMatcher, imgA, imgB, sparse, densePointsA, densePointsB, config, 0.f, pair, denseKept);
+	// the dense segment: the stored dense matches that passed, right after the sparse inliers; a dense
+	// match that failed is dropped, its keypoints left in the images
+	FOREACH(k, denseMatches)
+		if (denseKept[k])
+			pair.matches.push_back(denseMatches[k]);
+	pair.numDenseInliers = (int)(pair.matches.size() - (size_t)pair.numFilteredInliers);
+	pair.weightedInliers = -1.f;
+	if (pair.relativePose.has_value() && pair.GetNumTrackFormingMatches() > 0)
+		pair.meanRayAngle = pair.ComputeMeanRayAngle(imgA, imgB);
 }
 
 void SFM::StorePairROMA2(Scene& scene, std::unordered_map<PairIdx::PairIndex, IIndex>& pairIndexMap,

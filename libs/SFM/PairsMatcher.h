@@ -231,6 +231,8 @@ public:
 	//  - updatedCameras: if non-empty, only pairs involving these cameras are updated.
 	//  - onlyTrustedIntrinsics: if true, only updates pairs where both cameras have trusted intrinsics.
 	//  - onlyComputeIfMissing: if true, only computes relative pose for pairs missing it.
+	// A pair the RoMa2 one pass matched is re-verified by ReverifyPairROMA2, keeping its sparse and
+	// dense segments apart; any other pair by GeometricFilter.
 	// Returns number of pairs updated.
 	unsigned ComputeRelativePoses(bool onlyTrustedIntrinsics = true, bool onlyComputeIfMissing = true, const std::unordered_set<CameraPtr>& updatedCameras = {});
 
