@@ -3405,10 +3405,11 @@ constexpr REAL LENS_TEST_NOISE_PX = REAL(0.5);               // Gaussian noise o
 constexpr REAL LENS_TEST_OUTLIER_SHARE = REAL(0.05);         // share of a pair's second-view positions replaced by random ones
 constexpr unsigned LENS_TEST_RADII = 64;                     // radii the displacement curves are compared at
 constexpr REAL LENS_TEST_REACH_PERCENTILE = REAL(0.99);      // a camera's reach: this quantile of its matched keypoints' radii
-// the bars: within the reach of its matches a lens is recovered to 1.5 px (the prototype, 30 pairs of
-// camera A: 0.84 median, 1.48 p90 over 10 scenes), except the strong lens fitted from cross pairs
-// alone, whose second unknown lens leaves 3.35 median, 3.80 p90 in the prototype: 5 px for it
-constexpr REAL LENS_TEST_MAX_ERROR_PX = REAL(1.5);
+// the bars: within the reach of its matches a lens is recovered to 2 px (over 30 seeds of these scenes
+// the 90th percentile is 1.25 px for one camera, 1.69 px for one beside a held lens; 2 px is 1.2% of the
+// 164 px lens and far under a fit that fails, 3.4 px and more), except the strong lens fitted from cross
+// pairs alone, whose second unknown lens leaves 3.35 median, 3.80 p90 in the prototype: 5 px for it
+constexpr REAL LENS_TEST_MAX_ERROR_PX = REAL(2);
 constexpr REAL LENS_TEST_CROSS_MAX_ERROR_PX = REAL(5);
 
 // A rotation of `deg` degrees about `axis` (normalized here), Rodrigues
