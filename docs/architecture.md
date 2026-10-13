@@ -478,7 +478,7 @@ CUDA kernels run on the GPU while the CPU pipeline continues. GPU synchronizatio
 | Extension | Library | Description |
 |-----------|---------|-------------|
 | `.ply` | `libs/IO/PLY` | Point clouds and meshes (ASCII or binary LE/BE) |
-| `.obj` | `libs/IO/OBJ` | Mesh with MTL material library and separate texture images |
+| `.obj` | `libs/MVS/MeshHalfMesh.cpp` via halfmesh | Mesh with MTL material library and separate texture images |
 | `.gltf` / `.glb` | `libs/MVS/PointCloud.cpp` (point clouds), `libs/MVS/MeshHalfMesh.cpp` via halfmesh (meshes) | Binary/ASCII 3D format; textures written beside the file |
 
 ### Interface Formats (Import/Export)

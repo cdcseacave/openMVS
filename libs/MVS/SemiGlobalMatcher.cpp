@@ -1963,52 +1963,14 @@ bool SemiGlobalMatcher::ExportDisparityMap(const String& fileName, const Dispari
 	return DisparityMap2Image(disparityMap, minDisparity, maxDisparity).Save(fileName);
 } // ExportDisparityMap
 
-
 // export point-cloud
 bool SemiGlobalMatcher::ExportPointCloud(const String& fileName, const Image& imageData, const DisparityMap& disparityMap, const Matrix4x4& Q, Disparity subpixelSteps)
 {
 	ASSERT(!disparityMap.empty());
 
-	// vertex definition
-	struct Vertex {
-		float x,y,z;
-		uint8_t r,g,b;
-	};
-	// list of property information for a vertex
-	static PLY::PlyProperty vert_props[] = {
-		{"x", PLY::Float32, PLY::Float32, offsetof(Vertex,x), 0, 0, 0, 0},
-		{"y", PLY::Float32, PLY::Float32, offsetof(Vertex,y), 0, 0, 0, 0},
-		{"z", PLY::Float32, PLY::Float32, offsetof(Vertex,z), 0, 0, 0, 0},
-		{"red", PLY::Uint8, PLY::Uint8, offsetof(Vertex,r), 0, 0, 0, 0},
-		{"green", PLY::Uint8, PLY::Uint8, offsetof(Vertex,g), 0, 0, 0, 0},
-		{"blue", PLY::Uint8, PLY::Uint8, offsetof(Vertex,b), 0, 0, 0, 0},
-	};
-	// list of the kinds of elements in the PLY
-	static const char* elem_names[] = {
-		"vertex"
-	};
-
-	// count the valid disparities, both to size the write buffer and to avoid
-	// creating an empty file for a disparity-map without any valid disparity
-	const Disparity* const disparities = disparityMap.ptr<const Disparity>();
-	const size_t nPoints((size_t)std::count_if(disparities, disparities+disparityMap.area(),
-		[](Disparity disparity) { return disparity != NO_DISP; }));
-	if (nPoints == 0)
-		return false;
-
-	// create PLY object
-	ASSERT(!fileName.empty());
-	Util::ensureFolder(fileName);
-	const size_t memBufferSize(PLY::ComputeMemBufferSize(nPoints, sizeof(float)*3 + sizeof(uint8_t)*3));
-	PLY ply;
-	if (!ply.write(fileName, 1, elem_names, PLY::BINARY_LE, memBufferSize))
-		return false;
-
-	// describe what properties go into the vertex elements
-	ply.describe_property("vertex", 6, vert_props);
-
-	// export the array of 3D points
-	Vertex vertex;
+	// the 3D point of every valid disparity, with its color
+	std::vector<Point3f> points;
+	std::vector<Pixel8U> colors;
 	for (int r=0; r<disparityMap.rows; ++r) {
 		for (int c=0; c<disparityMap.cols; ++c) {
 			const Disparity& disparity = disparityMap(r,c);
@@ -2020,18 +1982,25 @@ bool SemiGlobalMatcher::ExportPointCloud(const String& fileName, const Image& im
 				continue;
 			if (!imageData.image.isInsideWithBorder<float,1>(u))
 				continue;
-			const Point3f X(imageData.camera.TransformPointI2W(Point3(u,depth)));
-			vertex.x = X.x; vertex.y = X.y; vertex.z = X.z;
-			const Pixel8U C(imageData.image.empty() ? Pixel8U::WHITE : imageData.image.sample(u));
-			vertex.r = C.r; vertex.g = C.g; vertex.b = C.b;
-			ply.put_element(&vertex);
+			points.emplace_back(imageData.camera.TransformPointI2W(Point3(u,depth)));
+			colors.emplace_back(imageData.image.empty() ? Pixel8U::WHITE : imageData.image.sample(u));
 		}
 	}
-	if (ply.get_current_element_count() == 0)
+	// a disparity-map without any valid disparity creates no file
+	if (points.empty())
 		return false;
 
-	// write to file
-	return ply.header_complete();
+	ASSERT(!fileName.empty());
+	Util::ensureFolder(fileName);
+	PLY ply;
+	ply.AddElement("vertex", points.size(), {
+		PLY::Scalar("x", &points[0].x, sizeof(Point3f)),
+		PLY::Scalar("y", &points[0].y, sizeof(Point3f)),
+		PLY::Scalar("z", &points[0].z, sizeof(Point3f)),
+		PLY::Scalar("red", &colors[0].r, sizeof(Pixel8U)),
+		PLY::Scalar("green", &colors[0].g, sizeof(Pixel8U)),
+		PLY::Scalar("blue", &colors[0].b, sizeof(Pixel8U))});
+	return ply.Save(fileName);
 } // ExportPointCloud
 
 // imports a DIMAP file and converts it to point-cloud

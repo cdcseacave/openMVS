@@ -1096,34 +1096,6 @@ bool SceneCluster::ExportClusterPositions(
 	double lat0, lon0, alt0;
 	ECEFToWGS84(centerECEF.x, centerECEF.y, centerECEF.z, lat0, lon0, alt0);
 
-	// Define vertex structure for PLY export
-	struct Vertex {
-		Point3f p; // GPS position (longitude, latitude, altitude)
-		Pixel8U c; // color (cluster ID)
-	};
-	// Define PLY properties
-	static const PLY::PlyProperty props[] = {
-		{"x",     PLY::Float32, PLY::Float32, offsetof(Vertex, p.x), 0, 0, 0, 0},
-		{"y",     PLY::Float32, PLY::Float32, offsetof(Vertex, p.y), 0, 0, 0, 0},
-		{"z",     PLY::Float32, PLY::Float32, offsetof(Vertex, p.z), 0, 0, 0, 0},
-		{"red",   PLY::Uint8,   PLY::Uint8,   offsetof(Vertex, c.r), 0, 0, 0, 0},
-		{"green", PLY::Uint8,   PLY::Uint8,   offsetof(Vertex, c.g), 0, 0, 0, 0},
-		{"blue",  PLY::Uint8,   PLY::Uint8,   offsetof(Vertex, c.b), 0, 0, 0, 0}
-	};
-	// list of the kinds of elements in the PLY
-	static const char* elem_names[] = {
-		"vertex"
-	};
-
-	// Create PLY file
-	PLY ply;
-	if (!ply.write(fileName, 1, elem_names, PLY::BINARY_LE))
-		return false;
-	ply.describe_property("vertex", 6, props);
-	ply.element_count("vertex", ecefPositions.size());
-	if (!ply.header_complete())
-		return false;
-
 	// Generate unique color per cluster
 	auto GenerateClusterColor = [](size_t clusterID, size_t numClusters) -> Pixel8U {
 		if (numClusters == 1)
@@ -1138,9 +1110,12 @@ bool SceneCluster::ExportClusterPositions(
 		return rgb.cast<uint8_t>();
 	};
 
-	// Write vertices
+	// the ENU position (east, north, up, about the centroid) of each image, in the color of its cluster
+	std::vector<Point3f> positions;
+	std::vector<Pixel8U> colors;
 	unsigned vertexCount = 0;
-	Vertex vertex;
+	positions.reserve(ecefPositions.size());
+	colors.reserve(ecefPositions.size());
 	FOREACH(clusterID, subScenes) {
 		const Scene& scene = subScenes[clusterID];
 		const Pixel8U clusterColor = GenerateClusterColor(clusterID, subScenes.size());
@@ -1148,17 +1123,22 @@ bool SceneCluster::ExportClusterPositions(
 			if (!img.View::metadata.HasGPS())
 				continue;
 			const Point3d& ecef = ecefPositions[vertexCount++];
-			// Convert ECEF to ENU (centered at centroid)
 			double e, n, u;
 			ECEFToENU(ecef.x, ecef.y, ecef.z, centerECEF.x, centerECEF.y, centerECEF.z, lat0, lon0, e, n, u);
-			// Store ENU position (east, north, up)
-			vertex.p.x = static_cast<float>(e);
-			vertex.p.y = static_cast<float>(n);
-			vertex.p.z = static_cast<float>(u);
-			vertex.c = clusterColor;
-			ply.put_element(&vertex);
+			positions.emplace_back(static_cast<float>(e), static_cast<float>(n), static_cast<float>(u));
+			colors.emplace_back(clusterColor);
 		}
 	}
+	PLY ply;
+	ply.AddElement("vertex", positions.size(), {
+		PLY::Scalar("x", &positions[0].x, sizeof(Point3f)),
+		PLY::Scalar("y", &positions[0].y, sizeof(Point3f)),
+		PLY::Scalar("z", &positions[0].z, sizeof(Point3f)),
+		PLY::Scalar("red", &colors[0].r, sizeof(Pixel8U)),
+		PLY::Scalar("green", &colors[0].g, sizeof(Pixel8U)),
+		PLY::Scalar("blue", &colors[0].b, sizeof(Pixel8U))});
+	if (!ply.Save(fileName))
+		return false;
 
 	VERBOSE("Exported %u GPS positions corresponding to %u clusters to '%s'",
 		(unsigned)ecefPositions.size(), (unsigned)subScenes.size(), fileName.c_str());

@@ -39,6 +39,8 @@ namespace MVS {
 
 // test vertex-colored PLY export and geometry reload
 bool MeshVertexColorsPLYTest();
+// test the PLY codec: exact binary/ascii round trips, big-endian input, skipped data, malformed files
+bool PLYCodecTest();
 bool MeshHalfMeshProcessingTest();
 
 // test the pixel-unit bold-driver optimizer (MeshRefineStep, SceneRefineCommon.h) against

@@ -1486,97 +1486,41 @@ void Scene::PrecomputeTrackBasedNeighbors(std::vector<ViewScoreArr>& neighbors) 
 // Export tracks and optionally image positions to PLY format
 bool Scene::ExportPLY(const String& fileName, bool bExportImages, bool bInliersOnly, bool bBinary) const
 {
-	// Count tracks to export
-	uint32_t numTracks = 0;
-	if (bInliersOnly) {
-		for (const Track& track : tracks)
-			if (track.IsInlier())
-				numTracks++;
-	} else {
-		numTracks = (uint32_t)tracks.size();
+	// the tracks, in their color (white if none), then the camera centers in yellow
+	std::vector<Point3f> positions;
+	std::vector<Pixel8U> positionColors;
+	FOREACH(trackID, tracks) {
+		const Track& track = tracks[trackID];
+		if (bInliersOnly && !track.IsInlier())
+			continue;
+		positions.emplace_back(Cast<float>(track.position));
+		positionColors.emplace_back(!colors.empty() ? colors[trackID] : Pixel8U::WHITE);
 	}
+	const uint32_t numTracks((uint32_t)positions.size());
 	if (numTracks == 0) {
 		DEBUG("warning: no tracks to export");
 		return false;
 	}
-
-	// Count calibrated images to export
-	uint32_t numImages = 0;
-	if (bExportImages) {
-		for (const Image& image : images)
-			if (image.HasPose())
-				numImages++;
-	}
-
-	const uint32_t numVertices = numTracks + numImages;
-
-	// Define vertex structure for PLY export
-	struct Vertex {
-		Point3f p; // 3D position
-		Pixel8U c; // color
-	};
-
-	// Define PLY properties
-	static const PLY::PlyProperty props[] = {
-		{"x",     PLY::Float32, PLY::Float32, offsetof(Vertex, p.x), 0, 0, 0, 0},
-		{"y",     PLY::Float32, PLY::Float32, offsetof(Vertex, p.y), 0, 0, 0, 0},
-		{"z",     PLY::Float32, PLY::Float32, offsetof(Vertex, p.z), 0, 0, 0, 0},
-		{"red",   PLY::Uint8,   PLY::Uint8,   offsetof(Vertex, c.r), 0, 0, 0, 0},
-		{"green", PLY::Uint8,   PLY::Uint8,   offsetof(Vertex, c.g), 0, 0, 0, 0},
-		{"blue",  PLY::Uint8,   PLY::Uint8,   offsetof(Vertex, c.b), 0, 0, 0, 0}
-	};
-
-	// Element names
-	static const char* elem_names[] = {
-		"vertex"
-	};
-
-	// Create PLY file
-	PLY ply;
-	if (!ply.write(fileName, 1, elem_names, bBinary ? PLY::BINARY_LE : PLY::ASCII))
-		return false;
-
-	// Describe properties
-	ply.describe_property("vertex", 6, props);
-	ply.element_count("vertex", numVertices);
-
-	// Write header
-	if (!ply.header_complete())
-		return false;
-
-	// Export tracks
-	Vertex vertex;
-	FOREACH(trackID, tracks) {
-		const Track& track = tracks[trackID];
-
-		// Skip outliers if requested
-		if (bInliersOnly && !track.IsInlier())
-			continue;
-
-		// Set position
-		vertex.p = Cast<float>(track.position);
-
-		// Set color (use color from colors array if available, otherwise white)
-		vertex.c = !colors.empty() ? colors[trackID] : Pixel8U::WHITE;
-
-		ply.put_element(&vertex);
-	}
-
-	// Export image positions
 	if (bExportImages) {
 		for (const Image& image : images) {
 			if (!image.HasPose())
 				continue;
-
-			// Set position to camera center
-			vertex.p = Cast<float>(image.C);
-
-			// Use a distinct color for cameras (yellow)
-			vertex.c = Pixel8U(255, 255, 0);
-
-			ply.put_element(&vertex);
+			positions.emplace_back(Cast<float>(image.C));
+			positionColors.emplace_back(Pixel8U(255, 255, 0));
 		}
 	}
+	const uint32_t numImages((uint32_t)positions.size() - numTracks);
+
+	PLY ply;
+	ply.AddElement("vertex", positions.size(), {
+		PLY::Scalar("x", &positions[0].x, sizeof(Point3f)),
+		PLY::Scalar("y", &positions[0].y, sizeof(Point3f)),
+		PLY::Scalar("z", &positions[0].z, sizeof(Point3f)),
+		PLY::Scalar("red", &positionColors[0].r, sizeof(Pixel8U)),
+		PLY::Scalar("green", &positionColors[0].g, sizeof(Pixel8U)),
+		PLY::Scalar("blue", &positionColors[0].b, sizeof(Pixel8U))});
+	if (!ply.Save(fileName, bBinary ? PLY::BINARY_LE : PLY::ASCII))
+		return false;
 
 	VERBOSE("Exported %u tracks%s%s to '%s'",
 		numTracks,

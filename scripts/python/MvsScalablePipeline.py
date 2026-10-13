@@ -1,183 +1,158 @@
 #!/usr/bin/python3
 # -*- encoding: utf-8 -*-
 """
-This script helps with OpenMVS scalable pipeline.
+Dense reconstruction of a scene of any size: depth-maps, point-cloud, mesh, refined mesh and texture,
+with the scene split in sub-scenes that each fit this machine's memory.
 
-Starting from a SfM solution stored into a MVS project accompanied by the undistorted images,
-the fist step is to compute all depth maps without fusion:
+  MvsScalablePipeline.py scene.mvs
 
-DensifyPointCloud scene.mvs --fusion-mode 1
+runs, in the folder of scene.mvs:
+  1. DensifyPointCloud --fusion-mode 1: the depth-maps of the whole scene;
+  2. DensifyPointCloud --sub-scene-memory: the scene cut into boxes whose depth-map fusion and mesh
+     reconstruction each fit the memory budget (by default what this machine has available, less a
+     reserve), written as subscenes/scene_XXXX.mvs;
+  3. per sub-scene: DensifyPointCloud (fusion of the existing depth-maps), ReconstructMesh, RefineMesh;
+  4. MvsMergeChunks.py: the sub-scene point-clouds and meshes merged, each keeping what lies in its box;
+  5. TextureMesh on the merged mesh, with all the images.
+A scene that fits in one box is reconstructed whole, exactly as by calling the modules one by one.
+The results are scene_dense.ply, scene_dense_mesh.ply, scene_dense_mesh_refined.ply and
+scene_dense_mesh_refined_texture.mvs/.ply (+ textures).
 
-Next split the scene in sub-scenes using the area parameter, which is related to the inverse of GSD;
-it is a bit non intuitive, but normally it should remain constant for a desired memory limit;
-for example you can use the bellow value to limit memory usage to ~16GB:
-
-DensifyPointCloud scene.mvs --sub-scene-area 660000
-
-disable depth-maps re-filtering by creating a file Densify.ini with just this line:
-
-Optimize = 0
-
-and call fusion on each of the sub-scenes like:
-
-DensifyPointCloud scene_0000.mvs --dense-config-file Densify.ini
-............
-DensifyPointCloud scene_000n.mvs --dense-config-file Densify.ini
-
-This script helps to automate the process of calling DensifyPointCloud/ReconstructMesh on all sub-scenes.
-
-Each sub-scene is reconstructed independently: the meshes of adjacent sub-scenes are cropped to
-their bounding boxes and are not stitched, so their boundaries can have gaps or unmatched vertices.
-
-usage: MvsScalablePipeline.py openMVS_module input_scene <options>
-
-ex: DensifyPointCloud scene_XXXX.mvs --number-views-fuse 2
+  --memory auto|off|<GB>   the budget per sub-scene (default auto: fit this machine; off: no split)
+  --steps                  which of densify,mesh,refine,texture to run (default all); without densify,
+                           the sub-scenes an earlier run split the scene into are reused
+  --densify/--mesh/--refine/--texture "<options>"   extra options passed to that module, split as a POSIX
+                           shell does (a Windows path goes in single quotes, or its backslashes are lost)
+  --resume                 skip a step whose output exists already
+  --bin <folder>           the OpenMVS binaries (default: searched in PATH)
 """
 
-import os
-import subprocess
-import sys
 import argparse
 import glob
+import os
+import shlex
+import shutil
+import subprocess
+import sys
 
-DEBUG = False
-
-if sys.platform.startswith('win'):
-    PATH_DELIM = ';'
-    FOLDER_DELIM = '\\'
-else:
-    PATH_DELIM = ':'
-    FOLDER_DELIM = '/'
+STEPS = ('densify', 'mesh', 'refine', 'texture')
+SUBSCENES = 'subscenes'
 
 
-def whereis(afile):
-    """
-    return directory in which afile is, None if not found. Look in PATH
-    """
-    if sys.platform.startswith('win'):
-        cmd = "where"
-    else:
-        cmd = "which"
+def find_bin(folder, name):
+  exe = shutil.which(name, path=folder) if folder else shutil.which(name)
+  if not exe:
+    sys.exit('error: %s not found%s' % (name, ' in ' + folder if folder else ' in PATH (use --bin)'))
+  return exe
+
+
+def main():
+  parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+  parser.add_argument('scene', help='the input scene (.mvs), with its images')
+  parser.add_argument('--memory', default='auto', type=str.lower, help='memory budget per sub-scene: auto, off or GB (default auto)')
+  parser.add_argument('--steps', default=','.join(STEPS), help='steps to run, among %s' % ','.join(STEPS))
+  for step in STEPS:
+    parser.add_argument('--' + step, default='', metavar='OPTIONS', help='extra options of the %s module, split as a POSIX shell does '
+                        '(single-quote a Windows path, or its backslashes are dropped)' % step)
+  parser.add_argument('--resume', action='store_true', help='skip a step whose output exists already')
+  parser.add_argument('--bin', default=None, help='folder of the OpenMVS binaries (default: PATH)')
+  parser.add_argument('--dry-run', action='store_true', help='print the commands without running them')
+  args = parser.parse_args()
+
+  steps = [s for s in args.steps.split(',') if s]
+  for s in steps:
+    if s not in STEPS:
+      sys.exit('error: unknown step %s' % s)
+  if args.memory == 'auto':
+    memory = -1.0
+  elif args.memory == 'off':
+    memory = 0.0
+  else:
     try:
-        ret = subprocess.run([cmd, afile], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=True)
-        return os.path.split(ret.stdout.decode())[0]
-    except subprocess.CalledProcessError:
-        return None
+      memory = float(args.memory)
+    except ValueError:
+      sys.exit('error: --memory must be auto, off or a number of GB')
+    if memory <= 0:
+      sys.exit('error: --memory must be positive')
+  scene = os.path.abspath(args.scene)
+  if not os.path.isfile(scene):
+    sys.exit('error: %s does not exist' % scene)
+  work = os.path.dirname(scene)
+  stem = os.path.splitext(os.path.basename(scene))[0]
+  extra = {s: shlex.split(getattr(args, s)) for s in STEPS}
+  densify, reconstruct, refine, texture = (find_bin(args.bin, m) for m in
+                                            ('DensifyPointCloud', 'ReconstructMesh', 'RefineMesh', 'TextureMesh'))
+
+  def run(cmd, output=None):
+    """run one module in the scene folder (OpenMVS resolves every path relative to -w)"""
+    if args.resume and output and os.path.exists(os.path.join(work, output)):
+      print('# skip (exists): %s' % output, flush=True)
+      return
+    print('# ' + ' '.join(cmd), flush=True)
+    if args.dry_run:
+      return
+    if subprocess.run(cmd, cwd=work).returncode != 0:
+      sys.exit('error: %s failed' % os.path.basename(cmd[0]))
+
+  def module(exe, step, inp, out, *opts):
+    run([exe, '-w', work, '-i', inp, '-o', out, *opts, *extra[step]], os.path.splitext(out)[0] + '.ply')
+
+  def reconstruct_scene(base):
+    """densify, mesh and refine one (sub-)scene, as the selected steps say"""
+    if 'densify' in steps:
+      module(densify, 'densify', base + '.mvs', base + '_dense.mvs', *fuse)
+    mesh = base + '_dense_mesh'
+    if 'mesh' in steps:
+      module(reconstruct, 'mesh', base + '_dense.mvs', mesh + '.mvs')
+    if 'refine' in steps:
+      module(refine, 'refine', base + '_dense.mvs', mesh + '_refined.mvs', '-m', mesh + '.ply')
+
+  def subscenes():
+    return sorted(glob.glob(os.path.join(work, SUBSCENES, 'scene_[0-9][0-9][0-9][0-9].mvs')))
+
+  # the sub-scenes: split now, or else the ones an earlier run split the scene into
+  chunks = []
+  if memory != 0:
+    if 'densify' in steps and not (args.resume and subscenes()):
+      # the depth-maps of the whole scene, then the split they predict the memory of
+      run([densify, '-w', work, '-i', stem + '.mvs', '--fusion-mode', '1', *extra['densify']])
+      if not args.dry_run:
+        os.makedirs(os.path.join(work, SUBSCENES), exist_ok=True)
+        for old in subscenes():
+          os.remove(old)  # a previous split's boxes: their number can differ
+      run([densify, '-w', work, '-i', stem + '.mvs', '-o', os.path.join(SUBSCENES, 'scene.mvs'),
+           '--sub-scene-memory', str(memory)])
+    chunks = subscenes()
+    if args.dry_run and 'densify' in steps:
+      chunks = [os.path.join(work, SUBSCENES, 'scene_0000.mvs'), os.path.join(work, SUBSCENES, 'scene_0001.mvs')]
+    if len(chunks) > 1:
+      print('# %d sub-scenes' % len(chunks), flush=True)
+    elif 'densify' in steps:
+      print('# the scene fits the memory budget: not split', flush=True)
+      if not args.dry_run and not os.listdir(os.path.join(work, SUBSCENES)):
+        os.rmdir(os.path.join(work, SUBSCENES))
+  # the existing depth-maps are only fused (no geometric pass over them again)
+  fuse = ['--geometric-iters', '0'] if memory != 0 else []
+
+  if len(chunks) <= 1:
+    reconstruct_scene(stem)
+  else:
+    for chunk in chunks:
+      reconstruct_scene(os.path.join(SUBSCENES, os.path.splitext(os.path.basename(chunk))[0]))
+    # merge what this run wrote
+    merge = [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'MvsMergeChunks.py'),
+             '--scene', stem + '.mvs', os.path.join(SUBSCENES, 'scene_XXXX.mvs')]
+    for step, name in (('densify', '_dense'), ('mesh', '_dense_mesh'), ('refine', '_dense_mesh_refined')):
+      if step in steps:
+        run([*merge, os.path.join(SUBSCENES, 'scene_XXXX' + name + '.ply'), stem + name + '.ply'], stem + name + '.ply')
+  if 'texture' in steps:
+    # the (merged) mesh is textured from all the images: the refined one when this run refines, the unrefined
+    # one when it only (re)builds the mesh, else (neither) the refined one if it exists
+    refined = 'refine' in steps or ('mesh' not in steps and os.path.exists(os.path.join(work, stem + '_dense_mesh_refined.ply')))
+    mesh = stem + ('_dense_mesh_refined' if refined else '_dense_mesh')
+    module(texture, 'texture', stem + '.mvs' if len(chunks) > 1 else stem + '_dense.mvs', mesh + '_texture.mvs',
+           '-m', mesh + '.ply')
 
 
-def find(afile):
-    """
-    As whereis look only for executable on linux, this find look for all file type
-    """
-    for d in os.environ['PATH'].split(PATH_DELIM):
-        if os.path.isfile(os.path.join(d, afile)):
-            return d
-    return None
-
-# Try to find openMVS binaries in PATH
-OPENMVS_BIN = whereis("ReconstructMesh")
-
-# Ask user for openMVS directory if not found
-if not OPENMVS_BIN:
-    OPENMVS_BIN = input("openMVS binary folder?\n")
-
-
-# HELPERS for terminal colors
-BLACK, RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN, WHITE = range(8)
-NO_EFFECT, BOLD, UNDERLINE, BLINK, INVERSE, HIDDEN = (0, 1, 4, 5, 7, 8)
-
-
-# from Python cookbook, #475186
-def has_colours(stream):
-    '''
-    Return stream colours capability
-    '''
-    if not hasattr(stream, "isatty"):
-        return False
-    if not stream.isatty():
-        return False  # auto color only on TTYs
-    try:
-        import curses
-        curses.setupterm()
-        return curses.tigetnum("colors") > 2
-    except Exception:
-        # guess false in case of error
-        return False
-
-HAS_COLOURS = has_colours(sys.stdout)
-
-
-def printout(text, colour=WHITE, background=BLACK, effect=NO_EFFECT):
-    """
-    print() with colour
-    """
-    if HAS_COLOURS:
-        seq = "\x1b[%d;%d;%dm" % (effect, 30+colour, 40+background) + text + "\x1b[0m"
-        sys.stdout.write(seq+'\n')
-    else:
-        sys.stdout.write(text+'\n')
-
-
-# store config and data in
-class ConfContainer:
-    """
-    Container for all the config variables
-    """
-    def __init__(self):
-        pass
-
-CONF = ConfContainer()
-
-# ARGS
-PARSER = argparse.ArgumentParser(
-    formatter_class=argparse.RawTextHelpFormatter,
-    description="Scalable MVS reconstruction with these steps:\n" +
-    "MvsScalablePipeline.py openMVS_module input_scene <options>\n"
-)
-PARSER.add_argument('openMVS_module',
-                    help="the OpenMVS module to use: DensifyPointCloud, ReconstructMesh, etc.")
-PARSER.add_argument('input_scene',
-                    help="the scene name reg to process: scene_XXXX.mvs")
-PARSER.add_argument('passthrough', nargs=argparse.REMAINDER, help="Option to be passed to command lines")
-
-PARSER.parse_args(namespace=CONF)  # store args in the ConfContainer
-
-suffix = os.path.basename(CONF.input_scene).replace('scene_XXXX','')
-CONF.input_scene = CONF.input_scene.replace('_dense','').replace('_mesh','').replace('_refined','').replace('_texture','')
-
-# Absolute path for input directory
-if len(CONF.input_scene) < 10 or CONF.input_scene[-9:] != '_XXXX.mvs':
-    sys.exit("%s: invalid scene name" % CONF.input_scene)
-
-match CONF.openMVS_module:
-  case 'ReconstructMesh':
-    moduleSuffix = '_mesh.mvs'
-  case 'RefineMesh':
-    moduleSuffix = '_refined.mvs'
-  case 'TextureMesh':
-    moduleSuffix = '_texture.mvs'
-  case _:
-    moduleSuffix = '_dense.mvs'
-
-printout("# Module {} start #".format(CONF.openMVS_module), colour=RED, effect=BOLD)
-for scene_name in glob.glob(os.path.abspath(os.path.join(os.path.dirname(CONF.input_scene), 'scene_[0-9][0-9][0-9][0-9]'+suffix))):
-  if os.path.exists(os.path.splitext(scene_name)[0] + moduleSuffix) == False:
-    printout("# Process: %s" % os.path.basename(scene_name), colour=GREEN, effect=NO_EFFECT)
-
-    # create a commandline for the current step
-    cmdline = [os.path.join(OPENMVS_BIN, CONF.openMVS_module), scene_name] + CONF.passthrough
-    print('Cmd: ' + ' '.join(cmdline))
-
-    if not DEBUG:
-        # Launch the current step
-        try:
-            pStep = subprocess.Popen(cmdline)
-            pStep.wait()
-            if pStep.returncode != 0:
-                printout("# Warning: step failed", colour=RED, effect=BOLD)
-        except KeyboardInterrupt:
-            sys.exit('\nProcess canceled by user, all files remains')
-    else:
-        print('\t'.join(cmdline))
-
-printout("# Module {} end #".format(CONF.openMVS_module), colour=RED, effect=BOLD)
+if __name__ == '__main__':
+  main()

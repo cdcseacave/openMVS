@@ -60,7 +60,7 @@ String strExportDMAPSPathName;
 String strDenseConfigFileName;
 String strExportDepthMapsName;
 String strMaskPath;
-float fMaxSubsceneArea;
+float fMaxSubsceneMemory;
 float fSampleMesh;
 uint32_t nSampleMeshSeed;
 float fSampleMeshNeighbors;
@@ -171,7 +171,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("estimate-normals", boost::program_options::value(&nEstimateNormals)->default_value(2), "estimate the normals for the dense point-cloud (0 - disabled, 1 - final, 2 - estimate)")
 		("estimate-scale", boost::program_options::value(&OPT::fEstimateScale)->default_value(0.f), "estimate the point-scale for the dense point-cloud (scale multiplier, 0 - disabled)")
 		("estimate-segmentation", boost::program_options::value(&OPT::nEstimateSegmentation)->default_value(0), "estimate segmentation of the dense point-cloud based on the image segmentation masks; num views to agree (0 - disabled, <0 - only segmentation)")
-		("sub-scene-area", boost::program_options::value(&OPT::fMaxSubsceneArea)->default_value(0.f), "split the scene in sub-scenes such that each sub-scene surface does not exceed the given maximum sampling area (0 - disabled)")
+		("sub-scene-memory", boost::program_options::value(&OPT::fMaxSubsceneMemory)->default_value(0.f), "split the scene in sub-scenes whose depth-map fusion and mesh reconstruction each fit this much memory, in GB (0 - disabled, <0 - fit this machine: the physical memory available now, less a reserve of 10% of the total and at least 2GB)")
 		("sample-mesh", boost::program_options::value(&OPT::fSampleMesh)->default_value(0.f), "uniformly samples points on a mesh (0 - disabled, <0 - number of points, >0 - sample density per square unit)")
 		("sample-mesh-seed", boost::program_options::value(&OPT::nSampleMeshSeed)->default_value(NO_ID), "seed used to initialize the RNG for mesh sampling, for reproducible results (default - seed from a random device)")
 		("fusion-mode", boost::program_options::value(&OPT::nFusionMode)->default_value(0), "depth-maps fusion mode (-2 - SGM depth-maps & fusion, -1 - export SGM pair disparity-maps only, 0 - depth-maps & fusion, 1 - export depth-maps only)")
@@ -453,14 +453,27 @@ int main(int argc, LPCTSTR* argv)
 		VERBOSE("Mesh projection completed: %u depth-maps (%s)", scene.images.size(), TD_TIMER_GET_FMT().c_str());
 		return EXIT_SUCCESS;
 	}
-	if (OPT::fMaxSubsceneArea > 0) {
-		// split the scene in sub-scenes by maximum sampling area
-		Scene::ImagesChunkArr chunks;
-		scene.Split(chunks, OPT::fMaxSubsceneArea);
-		if (chunks.empty()) {
-			VERBOSE("error: no sub-scene to export");
-			return EXIT_FAILURE;
+	if (OPT::fMaxSubsceneMemory != 0) {
+		// split the scene in sub-scenes by the memory their processing needs
+		float maxMemory(OPT::fMaxSubsceneMemory);
+		if (maxMemory < 0) {
+			// fit this machine: what is available now, less a reserve for the rest of the system and
+			// the error of the cost model (the fusion's depth-map cache grows into the free memory)
+			const Util::MemoryInfo memInfo(Util::GetMemoryInfo());
+			constexpr double GB(1024.0*1024.0*1024.0);
+			const double reserve(MAXF(0.1*(double)memInfo.totalPhysical, 2.0*GB));
+			maxMemory = (float)(((double)memInfo.freePhysical - reserve)/GB);
+			if (maxMemory < 1.f) {
+				VERBOSE("error: %.1fGB of physical memory available, too little to split the scene", (double)memInfo.freePhysical/GB);
+				return EXIT_FAILURE;
+			}
+			VERBOSE("Sub-scene memory budget: %.1fGB (%.1fGB available of %.1fGB)", maxMemory, (double)memInfo.freePhysical/GB, (double)memInfo.totalPhysical/GB);
 		}
+		Scene::ImagesChunkArr chunks;
+		if (scene.Split(chunks, maxMemory) <= 0)
+			return EXIT_FAILURE;
+		if (chunks.empty())
+			return EXIT_SUCCESS; // the whole scene fits: no sub-scene to export
 		if (!scene.ExportChunks(chunks, GET_PATH_FULL(OPT::strOutputFileName), (ARCHIVE_TYPE)OPT::nArchiveType)) {
 			VERBOSE("error: can not export the sub-scenes");
 			return EXIT_FAILURE;
@@ -540,9 +553,10 @@ int main(int argc, LPCTSTR* argv)
 				VERBOSE("Removed all image neighbors");
 		}
 		TD_TIMER_START();
-		if (!scene.DenseReconstruction(OPT::nFusionMode, OPT::bCrop2ROI, OPT::fBorderROI, OPT::fSampleMeshNeighbors)) {
-			if (ABS(OPT::nFusionMode) != 1)
-				return EXIT_FAILURE;
+		if (!scene.DenseReconstruction(OPT::nFusionMode, OPT::bCrop2ROI, OPT::fBorderROI, OPT::fSampleMeshNeighbors))
+			return EXIT_FAILURE;
+		if (ABS(OPT::nFusionMode) == 1) {
+			// only the depth-maps were asked for: the scene's point-cloud is not a dense one to save
 			VERBOSE("Depth-maps estimated (%s)", TD_TIMER_GET_FMT().c_str());
 			return EXIT_SUCCESS;
 		}

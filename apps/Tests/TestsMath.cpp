@@ -31,6 +31,7 @@
 
 #include "../../libs/Math/Common.h"
 #include "../../libs/Math/TetraFlow.h"
+#include "../../libs/Math/LBP.h"
 #include "Tests.h"
 #include "TestsMath.h"
 
@@ -214,6 +215,60 @@ bool TestTetraFlow()
 		}
 		if (iter % 50 == 49)
 			solver.Release(); // exercises the reuse after a full release
+	}
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+namespace {
+LBPInference::EnergyType STCALL TestSmoothnessPotts(LBPInference::NodeID, LBPInference::NodeID, LBPInference::LabelID l1, LBPInference::LabelID l2) {
+	return l1 == l2 && l1 != 0 ? LBPInference::EnergyType(0) : LBPInference::EnergyType(1);
+}
+} // namespace
+
+bool TestLBPPotts()
+{
+	std::mt19937 rng(20261012u);
+	std::uniform_real_distribution<float> unit(0.f, 1.f);
+	for (int iter = 0; iter < 50; ++iter) {
+		// a ring of nodes plus random chords; each node a random label subset, in random order, label 0 included at times
+		const unsigned numNodes(2 + rng() % 200), numLabels(1 + rng() % 40);
+		LBPInference generic(numNodes), potts(numNodes);
+		generic.SetSmoothCost(TestSmoothnessPotts);
+		potts.SetSmoothCostPotts(TestSmoothnessPotts, 1);
+		for (unsigned n = 0; n < numNodes; ++n) {
+			const unsigned m((n + 1) % numNodes), c(rng() % numNodes);
+			const float weight(0.1f + unit(rng));
+			generic.SetNeighbors(n, m, weight);
+			potts.SetNeighbors(n, m, weight);
+			if (c != n && c != m && rng() % 3 == 0) {
+				generic.SetNeighbors(n, c, weight);
+				potts.SetNeighbors(n, c, weight);
+			}
+		}
+		std::vector<LBPInference::LabelID> labels(numLabels+1);
+		std::iota(labels.begin(), labels.end(), LBPInference::LabelID(0));
+		for (unsigned n = 0; n < numNodes; ++n) {
+			std::shuffle(labels.begin(), labels.end(), rng);
+			const unsigned count(1 + rng() % (numLabels+1));
+			for (unsigned k = 0; k < count; ++k) {
+				const float cost(2.f * unit(rng));
+				generic.SetDataCost(labels[k], n, cost);
+				potts.SetDataCost(labels[k], n, cost);
+			}
+		}
+		// the labels, not the energies: the energy follows from the labels, and ComputeEnergy's
+		// OpenMP reduction sums in no fixed order
+		for (unsigned i = 0; i < 6; ++i) {
+			generic.Optimize(1);
+			potts.Optimize(1);
+			for (unsigned n = 0; n < numNodes; ++n) {
+				if (generic.GetLabel(n) != potts.GetLabel(n)) {
+					VERBOSE("error: LBP iteration %d/%u: node %u has label %u by the Potts path, %u by the generic one", iter, i, n, potts.GetLabel(n), generic.GetLabel(n));
+					return false;
+				}
+			}
+		}
 	}
 	return true;
 }

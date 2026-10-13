@@ -156,9 +156,14 @@ public:
 	void ReleaseComputable();
 	void EmptyExtra();
 	Mesh& Swap(Mesh&);
+	// append the given mesh (halfmesh::Mesh::Join): nothing is welded, and an
+	// attribute (colors, normals, texture) survives only when both meshes carry it;
+	// an empty mesh takes the given one whole, attributes included
 	Mesh& Join(const Mesh&);
 	bool IsEmpty() const { return vertices.empty(); }
-	bool IsWatertight();
+	// every edge shared by exactly two faces traversing it in opposite directions
+	// (halfmesh::Mesh::IsWatertight): the surface bounds a volume
+	bool IsWatertight() const;
 	bool HasTexture() const { return HasTextureCoordinates() && !texturesDiffuse.empty(); }
 	bool HasTextureCoordinates() const { ASSERT(faceTexcoords.empty() || faces.size()*3 == faceTexcoords.size() || vertices.size() == faceTexcoords.size()); return !faceTexcoords.empty(); }
 	bool HasTextureCoordinatesPerVertex() const { return !faceTexcoords.empty() && vertices.size() == faceTexcoords.size(); }
@@ -178,14 +183,10 @@ public:
 
 	void SmoothNormalFaces(float fMaxGradient=25.f, float fOriginalWeight=0.5f, unsigned nIterations=3);
 
-	void GetEdgeFaces(VIndex, VIndex, FaceIdxArr&) const;
-	void GetFaceFaces(FIndex, FaceIdxArr&) const;
 	bool GetEdgeVertices(FIndex, FIndex, uint32_t vs0[2], uint32_t vs1[2]) const;
 	bool GetEdgeVertices(FIndex, FIndex, VIndex vs[2]) const;
 	bool GetEdgeOrientation(FIndex, VIndex, VIndex) const;
-	FIndex GetEdgeAdjacentFace(FIndex, VIndex, VIndex) const;
 	void GetAdjVertices(VIndex, VertexIdxArr&) const;
-	void GetAdjVertexFaces(VIndex, VIndex, FaceIdxArr&) const;
 
 	// generic mesh processing, all delegated to the halfmesh library
 	unsigned FixNonManifold(float magDisplacementDuplicateVertices=0.01f, VertexIdxArr* duplicatedVertices=NULL);
@@ -275,12 +276,16 @@ public:
 	Vertex ComputeCentroid(FIndex) const;
 	Type ComputeArea(FIndex) const;
 	REAL ComputeArea() const;
+	// signed volume enclosed by a watertight surface (halfmesh::Mesh::ComputeVolume)
 	REAL ComputeVolume() const;
+	// volume between the surface and the given plane, measured along its normal and
+	// split into the parts above and below it; returns their sum
+	REAL ComputeVolume(const Planef& plane, REAL& above, REAL& below) const;
 
 	// seed==NO_ID: seed the RNG from std::random_device (non-deterministic)
 	void SamplePoints(unsigned numberOfPoints, PointCloud&, uint32_t seed=NO_ID) const;
 	void SamplePoints(REAL samplingDensity, PointCloud&, uint32_t seed=NO_ID) const;
-	void SamplePoints(REAL samplingDensity, unsigned mumPointsTheoretic, PointCloud&, uint32_t seed=NO_ID) const;
+	void SamplePoints(REAL samplingDensity, unsigned numPointsExpected, PointCloud&, uint32_t seed=NO_ID) const;
 
 	void Project(const Camera& camera, DepthMap& depthMap) const;
 	void Project(const Camera& camera, DepthMap& depthMap, Image8U3& image) const;
@@ -290,7 +295,11 @@ public:
 	void ProjectOrthoTopDown(unsigned resolution, Image8U3& image, Image8U& mask, Point3& center) const;
 
 	bool Split(FacesChunkArr&, float maxArea);
+	// the given faces with the vertices, attributes and textures they use
+	// (halfmesh::Mesh::SubMesh), made manifold; SubMeshes converts the mesh once
+	// for all the chunks
 	Mesh SubMesh(const FaceIdxArr& faces) const;
+	std::vector<Mesh> SubMeshes(const std::vector<FaceIdxArr>& chunks) const;
 
 	static constexpr unsigned DEFAULT_TEXTURE_BORDER = 3;
 	static constexpr unsigned DEFAULT_TEXTURE_SIZE = 4096;
@@ -324,7 +333,7 @@ protected:
 	bool LoadGLTF(const String& fileName);
 
 	bool SavePLY(const String& fileName, const cList<String>& comments=cList<String>(), bool bBinary=true, bool bTexLossless=true) const;
-	bool SaveOBJ(const String& fileName) const;
+	bool SaveOBJ(const String& fileName, bool bTexLossless=true) const;
 	// bTexLossless selects PNG over JPEG for the diffuse textures, which are
 	// written beside the file, same as SavePLY
 	bool SaveGLTF(const String& fileName, bool bBinary=true, bool bTexLossless=true) const;

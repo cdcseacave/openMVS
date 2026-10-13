@@ -29,7 +29,7 @@
 *      containing it.
 */
 
-// Sub-scene extraction: Split (image chunks by area and resolution), ExportChunks, SubScene.
+// Sub-scene extraction: Split (image chunks fitting a memory budget), ExportChunks, SubScene.
 
 #include "Common.h"
 #include "Scene.h"
@@ -50,28 +50,65 @@ using namespace MVS;
 DEFINE_LOG_NAME(lt, _T("Scene   "));
 
 
-// split the scene in sub-scenes such that each sub-scene surface does not exceed the given
-// maximum sampling area; the area is composed of overlapping samples from different cameras
-// taking into account the footprint of each sample (pixels/unit-length, GSD inverse),
-// including overlapping samples;
-// the indirect goals this method tries to achieve are:
-//  - limit the maximum number of images in each sub-scene such that the depth-map fusion
-//    can load all sub-scene's depth-maps into memory at once
-//  - limit in the same time maximum accumulated images resolution (total number of pixels)
-//    per sub-scene in order to allow all images to be loaded and processed during mesh refinement
-unsigned Scene::Split(ImagesChunkArr& chunks, float maxArea, int depthMapStep) const
+// Memory a sub-scene needs to be processed, predicted from what each stage holds; the constants are
+// fitted on measured peak commit (fusion-only DensifyPointCloud and ReconstructMesh runs on T&T and
+// EPFL scenes, median relative error 14% and 4%; checked on the sub-scenes of a 12 GB split of T&T
+// Church: fusion predicted -6..+12% of the measured 10.4-12.0 GB, mesh 3 GB):
+//  - the depth-map fusion holds the depth-maps of the sub-scene's images (every valid pixel of their
+//    maps, not only the ones in its box) and the fused points;
+//  - the Delaunay reconstruction holds the tetrahedralization of the points left by the 1.5 px merge.
+// A sampled depth-map pixel becomes SplitPointsPerDepth fused points (0.034-0.076 measured on T&T
+// scenes and sub-scenes), and a fused point SplitVerticesPerPoint Delaunay vertices (0.24-0.37).
+namespace {
+constexpr float SplitPointsPerDepth = 0.05f;
+constexpr float SplitVerticesPerPoint = 0.35f;
+struct SplitCost {
+	static constexpr float FixedFusion = 3.8f, PerDepthFusion = 0.026f, PerPointFusion = 0.18f; // GB, GB per million
+	static constexpr float FixedMesh = 1.7f, PerVertexMesh = 1.0f; // GB, GB per million vertices
+};
+} // namespace
+
+// the predicted peak memory, in GB, of the depth-map fusion and the mesh reconstruction of a
+// (sub-)scene whose images' depth-maps hold numDepths valid pixels and whose fusion gives numPoints
+// points: the larger of the two stages
+float Scene::PredictSubsceneMemory(double numDepths, double numPoints)
+{
+	ASSERT(numDepths >= 0 && numPoints >= 0);
+	const float mdepths(float(numDepths*1e-6)), mpoints(float(numPoints*1e-6));
+	return MAXF(SplitCost::FixedFusion + SplitCost::PerDepthFusion*mdepths + SplitCost::PerPointFusion*mpoints,
+		SplitCost::FixedMesh + SplitCost::PerVertexMesh*SplitVerticesPerPoint*mpoints);
+}
+
+// split the scene in sub-scenes such that the depth-map fusion and the mesh reconstruction of each
+// fit in maxMemory GB: the depth-map samples (every depthMapStep-th pixel of every depth-map) are cut
+// recursively into K parts of equal size, a box allotted K parts being split on its longest axis at
+// the sample quantile floor(K/2)/K, and K is the smallest count whose largest sub-scene is predicted
+// to fit (the depth-maps a sub-scene's images bring do not shrink with its box, so the count is
+// searched, starting from a lower bound). Every sub-scene so ends with nearly the
+// same predicted memory, just under the budget (the octree area split used before produced
+// sub-scenes from nearly empty to over the limit, with no relation between its area and the memory a
+// stage needs). The images of a sub-scene are those whose samples fall in its box, minus the ones
+// contributing little to it. Returns the predicted peak memory of the largest sub-scene, of the whole
+// scene if chunks stays empty (it fits, or no split lowers it), or 0 if the budget is below a
+// sub-scene's fixed cost or no depth-map gives a sample.
+float Scene::Split(ImagesChunkArr& chunks, float maxMemory, int depthMapStep) const
 {
 	TD_TIMER_STARTD();
-	ASSERT(depthMapStep > 0);
-	// gather samples from all depth-maps
-	const float areaScale(0.01f);
-	typedef cList<Point3f::EVec,const Point3f::EVec&,0,4096,uint32_t> Samples;
-	typedef TOctree<Samples,float,3> Octree;
-	Octree octree;
-	FloatArr areas(0, images.size()*4192);
-	IIndexArr visibility(0, (IIndex)areas.capacity());
-	Unsigned32Arr imageAreas(images.size()); {
-		Samples samples(0, (uint32_t)areas.capacity());
+	ASSERT(depthMapStep > 0 && maxMemory > 0 && chunks.empty());
+	const float fixedCost(PredictSubsceneMemory(0, 0));
+	if (maxMemory <= fixedCost) {
+		VERBOSE("error: a sub-scene needs more than %gGB, the budget is %gGB", fixedCost, maxMemory);
+		return 0;
+	}
+	// gather samples from all depth-maps: the ones in the scene ROI place the image, all of them
+	// measure its depth-map, loaded whole by the fusion
+	typedef uint32_t SIdx;
+	std::vector<Point3f> samples;
+	IIndexArr visibility;
+	Unsigned32Arr imageSamples(images.size()), imageDepths(images.size());
+	imageSamples.Memset(0);
+	imageDepths.Memset(0);
+	{
 		unsigned numDepthMapsMissing(0);
 		FOREACH(idxImage, images) {
 			const Image& imageData = images[idxImage];
@@ -84,22 +121,21 @@ unsigned Scene::Split(ImagesChunkArr& chunks, float maxArea, int depthMapStep) c
 				++numDepthMapsMissing;
 				continue;
 			}
-			const IIndex numPointsBegin(visibility.size());
 			const Camera camera(imageData.GetCamera(platforms, depthData.depthMap.size()));
 			for (int r=(depthData.depthMap.rows%depthMapStep)/2; r<depthData.depthMap.rows; r+=depthMapStep) {
 				for (int c=(depthData.depthMap.cols%depthMapStep)/2; c<depthData.depthMap.cols; c+=depthMapStep) {
 					const Depth depth = depthData.depthMap(r,c);
 					if (depth <= 0)
 						continue;
+					++imageDepths[idxImage];
 					const Point3f X(Cast<float>(camera.TransformPointI2W(Point3(c,r,depth))));
 					if (IsBounded() && !obb.Intersects(X))
 						continue;
-					areas.emplace_back(camera.GetFootprintImage(X)*areaScale);
 					visibility.emplace_back(idxImage);
 					samples.emplace_back(X);
+					++imageSamples[idxImage];
 				}
 			}
-			imageAreas[idxImage] = visibility.size()-numPointsBegin;
 		}
 		if (numDepthMapsMissing > 0)
 			VERBOSE("warning: %u depth-maps missing or empty, ignored by the scene split", numDepthMapsMissing);
@@ -107,215 +143,184 @@ unsigned Scene::Split(ImagesChunkArr& chunks, float maxArea, int depthMapStep) c
 			VERBOSE("error: no depth-map samples to split the scene by");
 			return 0;
 		}
-		const AABB3f aabb(IsBounded() ? obb.GetAABB() : [&samples]() {
-			#if 0
-			return AABB3f(samples.data(), samples.size());
-			#else
-			// try to find a dominant plane, and set the bounding-box center on the plane bottom
-			OBB3f obbSamples(samples.data(), samples.size());
-			obbSamples.m_ext(0) *= 2;
-			#if 0 || defined(_DEBUG)
-			// dump box for visualization
-			OBB3f::POINT pts[8];
-			obbSamples.GetCorners(pts);
-			PointCloud pc;
-			for (int i=0; i<8; ++i)
-				pc.points.emplace_back(pts[i]);
-			pc.Save(MAKE_PATH("scene_obb.ply"));
-			#endif
-			return obbSamples.GetAABB();
-			#endif
-		}());
-		octree.Insert(samples, aabb, [](Octree::IDX_TYPE size, Octree::Type /*radius*/) {
-			return size > 128;
-		});
-		#if 0 && !defined(_RELEASE)
-		Octree::DEBUGINFO_TYPE info;
-		octree.GetDebugInfo(&info);
-		Octree::LogDebugInfo(info);
-		#endif
-		octree.ResetItems();
 	}
-	struct AreaInserter {
-		const FloatArr& areas;
-		float area;
-		inline void operator() (const Octree::IDX_TYPE* indices, Octree::SIZE_TYPE size) {
-			FOREACHRAWPTR(pIdx, indices, size)
-				area += areas[*pIdx];
-		}
-		inline float PopArea() {
-			const float a(area);
-			area = 0;
-			return a;
-		}
-	} areaEstimator{areas, 0.f};
-	struct ChunkInserter {
-		const IIndex numImages;
-		const Octree& octree;
-		const IIndexArr& visibility;
-		ImagesChunkArr& chunks;
-		CLISTDEF2(Unsigned32Arr) imagesAreas;
-		void operator() (const Octree::CELL_TYPE& parentCell, Octree::Type parentRadius, const UnsignedArr& children) {
-			ASSERT(!children.empty());
-			ImagesChunk& chunk = chunks.AddEmpty();
-			Unsigned32Arr& imageAreas = imagesAreas.AddEmpty();
-			imageAreas.resize(numImages);
-			imageAreas.Memset(0);
-			struct Inserter {
-				const IIndexArr& visibility;
-				std::unordered_set<IIndex>& images;
-				Unsigned32Arr& imageAreas;
-				inline void operator() (const Octree::IDX_TYPE* indices, Octree::SIZE_TYPE size) {
-					FOREACHRAWPTR(pIdx, indices, size) {
-						const IIndex idxImage(visibility[*pIdx]);
-						images.emplace(idxImage);
-						++imageAreas[idxImage];
-					}
-				}
-			} inserter{visibility, chunk.images, imageAreas};
-			if (children.size() == 1) {
-				octree.CollectCells(parentCell.GetChild(children.front()), inserter);
-				chunk.aabb = parentCell.GetChildAabb(children.front(), parentRadius);
-			} else {
-				chunk.aabb.Reset();
-				for (unsigned c: children) {
-					octree.CollectCells(parentCell.GetChild(c), inserter);
-					chunk.aabb.Insert(parentCell.GetChildAabb(c, parentRadius));
-				}
-			}
-			if (chunk.images.empty()) {
-				chunks.RemoveLast();
-				imagesAreas.RemoveLast();
-			}
-		}
-	} chunkInserter{images.size(), octree, visibility, chunks};
-	octree.SplitVolume(maxArea, areaEstimator, chunkInserter);
-	if (chunks.size() < 2)
-		return 0;
-	// remove images with very little contribution
-	const float minImageContributionRatio(0.3f);
-	FOREACH(c, chunks) {
-		ImagesChunk& chunk = chunks[c];
-		const Unsigned32Arr& chunkImageAreas = chunkInserter.imagesAreas[c];
-		float maxAreaRatio = 0;
-		for (const IIndex idxImage : chunk.images) {
-			const float areaRatio(static_cast<float>(chunkImageAreas[idxImage])/static_cast<float>(imageAreas[idxImage]));
-			if (maxAreaRatio < areaRatio)
-				maxAreaRatio = areaRatio;
-		}
-		const float minImageContributionRatioChunk(maxAreaRatio * minImageContributionRatio);
-		for (auto it = chunk.images.begin(); it != chunk.images.end(); ) {
-			const IIndex idxImage(*it);
-			if (static_cast<float>(chunkImageAreas[idxImage])/static_cast<float>(imageAreas[idxImage]) < minImageContributionRatioChunk)
-				it = chunk.images.erase(it);
-			else
-				++it;
-		}
-	}
-	#if 1
-	// remove images already completely contained by a larger chunk
-	const float minImageContributionRatioLargerChunk(0.9f);
-	FOREACH(cSmall, chunks) {
-		ImagesChunk& chunkSmall = chunks[cSmall];
-		const Unsigned32Arr& chunkSmallImageAreas = chunkInserter.imagesAreas[cSmall];
-		FOREACH(cLarge, chunks) {
-			const ImagesChunk& chunkLarge = chunks[cLarge];
-			if (chunkLarge.images.size() <= chunkSmall.images.size())
-				continue;
-			const Unsigned32Arr& chunkLargeImageAreas = chunkInserter.imagesAreas[cLarge];
-			for (auto it = chunkSmall.images.begin(); it != chunkSmall.images.end(); ) {
-				const IIndex idxImage(*it);
-				if (chunkSmallImageAreas[idxImage] < chunkLargeImageAreas[idxImage] &&
-					static_cast<float>(chunkLargeImageAreas[idxImage])/static_cast<float>(imageAreas[idxImage]) > minImageContributionRatioLargerChunk)
-					it = chunkSmall.images.erase(it);
-				else
-					++it;
-			}
-		}
-	}
-	#endif
-	// drop the chunks left without images by the pruning above
-	unsigned numEmptyChunks(0);
-	RFOREACH(c, chunks) {
-		if (!chunks[c].images.empty())
-			continue;
-		chunks.RemoveAt(c);
-		chunkInserter.imagesAreas.RemoveAt(c);
-		++numEmptyChunks;
-	}
-	#if 1
-	// merge small chunks into larger chunk neighbors
-	// TODO: better manage the bounding-box merge
-	const unsigned minNumImagesPerChunk(4);
-	RFOREACH(cSmall, chunks) {
-		ImagesChunk& chunkSmall = chunks[cSmall];
-		if (chunkSmall.images.size() > minNumImagesPerChunk)
-			continue;
-		// find the chunk having the most images in common
-		IIndex idxBestChunk;
-		unsigned numLargestCommonImages(0);
-		FOREACH(cLarge, chunks) {
-			if (cSmall == cLarge)
-				continue;
-			const ImagesChunk& chunkLarge = chunks[cLarge];
-			unsigned numCommonImages(0);
-			for (const IIndex idxImage: chunkSmall.images)
-				if (chunkLarge.images.find(idxImage) != chunkLarge.images.end())
-					++numCommonImages;
-			if (numCommonImages == 0)
-				continue;
-			if (numLargestCommonImages < numCommonImages ||
-				(numLargestCommonImages == numCommonImages && chunks[idxBestChunk].images.size() < chunkLarge.images.size()))
-			{
-				numLargestCommonImages = numCommonImages;
-				idxBestChunk = cLarge;
-			}
-		}
-		if (numLargestCommonImages == 0) {
-			DEBUG_ULTIMATE("warning: small chunk can not be merged (%u chunk, %u images)",
-				cSmall, chunkSmall.images.size());
-			continue;
-		}
-		// merge the small chunk and remove it
-		ImagesChunk& chunkLarge = chunks[idxBestChunk];
-		DEBUG_ULTIMATE("Small chunk merged: %u chunk (%u images) -> %u chunk (%u images)",
-			cSmall, chunkSmall.images.size(), idxBestChunk, chunkLarge.images.size());
-		chunkLarge.aabb.Insert(chunkSmall.aabb);
-		chunkLarge.images.insert(chunkSmall.images.begin(), chunkSmall.images.end());
-		chunks.RemoveAt(cSmall);
-	}
-	#endif
+	const double pointsPerSample(SQUARE(depthMapStep)*SplitPointsPerDepth);
+	// the images of a box: every image with samples in it, minus the ones whose share of their own
+	// samples falling in the box is below 30% of the best share an image has there
+	constexpr float minImageContributionRatio(0.3f);
+	Unsigned32Arr counts(images.size());
+	const auto BoxImages = [&](const std::vector<SIdx>& idxs, IIndexArr& chunkImages) {
+		counts.Memset(0);
+		for (const SIdx i: idxs)
+			++counts[visibility[i]];
+		float maxRatio(0);
+		FOREACH(idxImage, counts)
+			if (counts[idxImage])
+				maxRatio = MAXF(maxRatio, (float)counts[idxImage]/(float)imageSamples[idxImage]);
+		chunkImages.clear();
+		FOREACH(idxImage, counts)
+			if (counts[idxImage] && (float)counts[idxImage]/(float)imageSamples[idxImage] >= minImageContributionRatio*maxRatio)
+				chunkImages.push_back(idxImage);
+	};
+	// the predicted memory of a box: its images' whole depth-maps and its points
+	const double depthsPerSample(SQUARE(depthMapStep));
+	const auto BoxCost = [&](const std::vector<SIdx>& idxs, IIndexArr& chunkImages) -> float {
+		BoxImages(idxs, chunkImages);
+		double depths(0);
+		for (const IIndex idxImage: chunkImages)
+			depths += imageDepths[idxImage]*depthsPerSample;
+		return PredictSubsceneMemory(depths, idxs.size()*pointsPerSample);
+	};
+	// balanced recursive bisection into numParts boxes
+	struct Leaf { std::vector<SIdx> idxs; AABB3f aabb; };
+	AABB3f rootBox(true);
 	if (IsBounded()) {
-		// make sure the chunks bounding box do not exceed the scene bounding box
-		const AABB3f aabb(obb.GetAABB());
-		RFOREACH(c, chunks) {
-			ImagesChunk& chunk = chunks[c];
-			chunk.aabb.BoundBy(aabb);
-			if (chunk.aabb.IsEmpty()) {
-				DEBUG_ULTIMATE("warning: chunk bounding box is empty");
-				chunks.RemoveAt(c);
-				++numEmptyChunks;
+		rootBox = obb.GetAABB();
+	} else {
+		for (const Point3f& X: samples)
+			rootBox.InsertFull(X);
+	}
+	const auto Partition = [&](int numParts) {
+		struct Node { std::vector<SIdx> idxs; AABB3f aabb; int numParts{0}; };
+		std::vector<Leaf> leaves;
+		std::vector<Node> stack(1);
+		stack.front().idxs.resize(samples.size());
+		std::iota(stack.front().idxs.begin(), stack.front().idxs.end(), SIdx(0));
+		stack.front().aabb = rootBox;
+		stack.front().numParts = numParts;
+		while (!stack.empty()) {
+			Node node(std::move(stack.back()));
+			stack.pop_back();
+			ASSERT(node.numParts >= 1 && !node.idxs.empty());
+			if (node.numParts == 1 || node.idxs.size() < 2) {
+				leaves.push_back(Leaf{std::move(node.idxs), node.aabb});
+				continue;
 			}
+			// cut the longest axis of the samples' extent at the quantile giving each side its share
+			AABB3f extent(true);
+			for (const SIdx i: node.idxs)
+				extent.InsertFull(samples[i]);
+			int axis(0);
+			const Point3f size(extent.GetSize());
+			if (size[1] > size[axis]) axis = 1;
+			if (size[2] > size[axis]) axis = 2;
+			const int numPartsLeft(node.numParts/2);
+			const size_t numLeft(MAXF(size_t(1), node.idxs.size()*(size_t)numPartsLeft/(size_t)node.numParts));
+			std::nth_element(node.idxs.begin(), node.idxs.begin()+numLeft, node.idxs.end(), [&](SIdx a, SIdx b) {
+				return samples[a][axis] < samples[b][axis];
+			});
+			const float cutAt(samples[node.idxs[numLeft]][axis]);
+			Node left, right;
+			left.idxs.assign(node.idxs.begin(), node.idxs.begin()+numLeft);
+			right.idxs.assign(node.idxs.begin()+numLeft, node.idxs.end());
+			left.aabb = right.aabb = node.aabb;
+			left.aabb.ptMax[axis] = right.aabb.ptMin[axis] = cutAt;
+			left.numParts = numPartsLeft;
+			right.numParts = node.numParts-numPartsLeft;
+			node.idxs = {};
+			stack.emplace_back(std::move(right));
+			stack.emplace_back(std::move(left));
+		}
+		return leaves;
+	};
+	// the smallest part count whose largest sub-scene fits, searched from a lower bound: the leaves
+	// share the points equally, and both stages' cost grows with them (the depth-maps only add)
+	const double mpoints(double(samples.size())*pointsPerSample*1e-6);
+	int numParts(MAXF(1, MAXF(
+		CEIL2INT(SplitCost::PerPointFusion*mpoints/(maxMemory-SplitCost::FixedFusion)),
+		CEIL2INT(SplitCost::PerVertexMesh*SplitVerticesPerPoint*mpoints/(maxMemory-SplitCost::FixedMesh)))));
+	std::vector<Leaf> leaves;
+	std::vector<float> costs;
+	float bestMax(FLT_MAX);
+	int bestParts(numParts), numStalled(0);
+	IIndexArr chunkImages;
+	while (true) {
+		leaves = Partition(numParts);
+		costs.resize(leaves.size());
+		float maxCost(0);
+		for (size_t l=0; l<leaves.size(); ++l)
+			maxCost = MAXF(maxCost, costs[l] = BoxCost(leaves[l].idxs, chunkImages));
+		if (maxCost <= maxMemory)
+			break;
+		// the image depth-maps can put a floor under the sub-scene size: stop when more parts
+		// stopped lowering the largest one
+		if (maxCost < bestMax*0.99f) {
+			bestMax = maxCost;
+			bestParts = numParts;
+			numStalled = 0;
+		} else if (++numStalled >= 4) {
+			VERBOSE("warning: no split fits %gGB, the smallest sub-scene peak reached is %.1fGB (%d sub-scenes)", maxMemory, bestMax, bestParts);
+			leaves = Partition(numParts = bestParts);
+			for (size_t l=0; l<leaves.size(); ++l)
+				costs[l] = BoxCost(leaves[l].idxs, chunkImages);
+			break;
+		}
+		++numParts;
+	}
+	for (size_t l=0; l<leaves.size(); ++l) {
+		BoxImages(leaves[l].idxs, chunkImages);
+		if (chunkImages.empty())
+			continue;
+		ImagesChunk& chunk = chunks.AddEmpty();
+		chunk.images.insert(chunkImages.begin(), chunkImages.end());
+		chunk.aabb = leaves[l].aabb;
+		DEBUG_EXTRA("\tsub-scene %u: %u images, %u samples, predicted %.1fGB", chunks.size()-1,
+			(unsigned)chunkImages.size(), (unsigned)leaves[l].idxs.size(), costs[l]);
+	}
+	const float peakCost(*std::max_element(costs.begin(), costs.end()));
+	if (chunks.size() < 2) {
+		// one box: the whole scene fits, or no split lowers it (warned above)
+		chunks.Empty();
+		if (peakCost <= maxMemory)
+			VERBOSE("Scene fits in %.1fGB (predicted %.1fGB): not split", maxMemory, peakCost);
+		return peakCost;
+	}
+	// remove images already completely contained by a larger chunk, unless that empties a chunk:
+	// the budget is met without this, and a chunk dropped would leave its box unreconstructed
+	{
+		std::vector<Unsigned32Arr> chunkCounts(chunks.size());
+		// per chunk, how many of each image's samples fall in its box
+		FOREACH(c, chunks) {
+			Unsigned32Arr& cc = chunkCounts[c];
+			cc.resize(images.size());
+			cc.Memset(0);
+		}
+		for (size_t i=0; i<samples.size(); ++i)
+			FOREACH(c, chunks)
+				if (chunks[c].aabb.Intersects(samples[i]))
+					++chunkCounts[c][visibility[i]];
+		const float minImageContributionRatioLargerChunk(0.9f);
+		FOREACH(cSmall, chunks) {
+			std::unordered_set<IIndex> keptImages(chunks[cSmall].images);
+			FOREACH(cLarge, chunks) {
+				const ImagesChunk& chunkLarge = chunks[cLarge];
+				if (chunkLarge.images.size() <= keptImages.size())
+					continue;
+				for (auto it = keptImages.begin(); it != keptImages.end(); ) {
+					const IIndex idxImage(*it);
+					if (chunkCounts[cSmall][idxImage] < chunkCounts[cLarge][idxImage] &&
+						static_cast<float>(chunkCounts[cLarge][idxImage])/static_cast<float>(imageSamples[idxImage]) > minImageContributionRatioLargerChunk)
+						it = keptImages.erase(it);
+					else
+						++it;
+				}
+			}
+			if (!keptImages.empty())
+				chunks[cSmall].images.swap(keptImages);
 		}
 	}
-	if (numEmptyChunks > 0)
-		VERBOSE("warning: %u empty chunks removed by the scene split", numEmptyChunks);
-	DEBUG_EXTRA("Scene split (%g max-area): %u chunks (%s)", maxArea, chunks.size(), TD_TIMER_GET_FMT().c_str());
-	#if 0 || defined(_DEBUG)
-	// dump chunks for visualization
-	FOREACH(c, chunks) {
-		const ImagesChunk& chunk = chunks[c];
-		PointCloud pc = pointcloud;
-		pc.RemovePointsOutside(OBB3f(OBB3f::MATRIX::Identity(), chunk.aabb.ptMin, chunk.aabb.ptMax));
-		pc.Save(String::FormatString(MAKE_PATH("scene_%04u.ply"), c));
-	}
-	#endif
-	return chunks.size();
+	ASSERT(std::none_of(chunks.begin(), chunks.end(), [](const ImagesChunk& chunk) { return chunk.images.empty(); }));
+	DEBUG_EXTRA("Scene split (%gGB max-memory): %u chunks (%s)", maxMemory, chunks.size(), TD_TIMER_GET_FMT().c_str());
+	return peakCost;
 } // Split
 
-// split the scene in sub-scenes according to the given chunks array, and save them to disk
+// save the sub-scenes of a split scene (Split gave chunks) as scene_XXXX.mvs in the folder path,
+// created here: a scene that is not split gets no folder
 bool Scene::ExportChunks(const ImagesChunkArr& chunks, const String& path, ARCHIVE_TYPE type) const
 {
+	ASSERT(!chunks.empty());
+	String folder(path);
+	Util::ensureFolder(Util::ensureFolderSlash(folder));
 	FOREACH(chunkID, chunks) {
 		const ImagesChunk& chunk = chunks[chunkID];
 		IIndexArr idxImages(chunk.images.begin(), chunk.images.end(), true);
@@ -325,7 +330,7 @@ bool Scene::ExportChunks(const ImagesChunkArr& chunks, const String& path, ARCHI
 		if (!subset.mesh.IsEmpty())
 			subset.mesh.RemoveFacesOutside(subset.obb);
 		// serialize out the current state
-		if (!subset.Save(String::FormatString("%s" PATH_SEPARATOR_STR "scene_%04u.mvs", path.c_str(), chunkID), type))
+		if (!subset.Save(folder + String::FormatString("scene_%04u.mvs", chunkID), type))
 			return false;
 	}
 	return true;

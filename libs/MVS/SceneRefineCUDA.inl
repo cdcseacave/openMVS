@@ -50,19 +50,20 @@ namespace CUDA {
 
 // the rasterizer over the whole mesh, launched twice per view: resolve=false does an atomicMin
 // of the (depth, face id) key into projKey (one 64-bit word per pixel, pre-filled with ~0ull);
-// resolve=true lets the thread holding each pixel's winning key write depth/face (faceMap
-// pre-filled with NO_ID, depthMap with 0) and, when ownerBits is not NULL, sets bit f of it for
+// resolve=true lets the thread holding each pixel's winning key write its face (faceMap
+// pre-filled with NO_ID; no depth is stored, the kernels recompute it from the face) and, when ownerBits is not NULL, sets bit f of it for
 // every face f that wrote a pixel ((numFaces+31)/32 words, every word written)
 void LaunchProjectMesh(
 	const Point3* vertices, const Point3u* faces,
-	unsigned long long* projKey, float* depthMap, uint32_t* faceMap, uint32_t* ownerBits,
+	unsigned long long* projKey, uint32_t* faceMap, uint32_t* ownerBits,
 	const Camera& camera, uint32_t numFaces, bool resolve);
 
 #ifdef _DEBUG
 // after both passes: every covered pixel received its payload
 void LaunchCheckProjection(
-	const unsigned long long* projKey,
-	const float* depthMap, const uint32_t* faceMap, int width, int height);
+	const Point3* vertices, const Point3u* faces,
+	const unsigned long long* projKey, const uint32_t* faceMap,
+	const Camera& camera, int width, int height);
 #endif
 
 // the dense per-view owner lists, once per evaluation after every view is rasterized: counts
@@ -79,10 +80,18 @@ void LaunchSortOwnersTile(
 	const uint32_t* offsets, const uint32_t* listIn, uint32_t* keys, uint32_t* listOut,
 	int tileShiftX, int tileShiftY, uint32_t maxBuckets, uint32_t numViews);
 
-// image B warped into A through the mesh, and mask, the pixels that made it; keepA/keepB are
+// the depth map of a view (0 where uncovered) recomputed from its face map (pixelDepth: the
+// depth the rasterizer computed), once per accumulation group for the reference view
+void LaunchFaceDepth(
+	const Point3* vertices, const Point3u* faces, const uint32_t* faceMap, float* depthMap,
+	const Camera& camera, cudaStream_t stream);
+
+// image B warped into A through the mesh, and mask, the pixels that made it; depthMapA is A's
+// depth map (LaunchFaceDepth), B's depth at the tap is recomputed from faceMapB; keepA/keepB are
 // the per-pixel keep-masks (one byte per pixel, non-zero = keep), NULL if disabled
 void LaunchImageMeshWarp(
-	const float* depthMapA, const float* depthMapB,
+	const Point3* vertices, const Point3u* faces,
+	const float* depthMapA, const uint32_t* faceMapB,
 	const uint8_t* keepA, const uint8_t* keepB, uint8_t* mask,
 	const Camera& camA, const Camera& camB,
 	cudaTextureObject_t texImageB,
@@ -90,36 +99,40 @@ void LaunchImageMeshWarp(
 	cudaStream_t stream);
 
 // the masked window statistics, rejection gates, ZNCC, its derivative and the pixel's
-// photometric term in one pass: pixelGrad receives g_p, the scalar the covering face's corners
-// share before their barycentrics, and maskOut (a second buffer, the window loops still read
-// mask) the pixels that contribute one. blockSums receives this pair-direction's per-block
+// photometric term in one pass: a pixel that contributes one adds g_p, the scalar the covering
+// face's corners share before their barycentrics, to gradSum and sets dirBit in dirBits (the
+// reference view's sums over its pair-directions, cleared by the host before the first one,
+// read by LaunchAccumulateFacePhoto after the last). blockSums receives this pair-direction's per-block
 // partials of the two reliability sums S is reduced from, 2 floats per 16x16 block from slot 0
-// of the passed pointer on; returns the number of blocks written. texImageB is sampled directly
-// when bBilinearGrad asks for the derivative of the bilinear interpolant instead of the
-// precomputed stencil textures (OPTREFINE::nImageGradient == 3, texGradXB/texGradYB unused).
+// of the passed pointer on; returns the number of blocks written. gradMode is
+// OPTREFINE::nImageGradient: texImageB is differenced directly for the central difference (1) and
+// the derivative of the bilinear interpolant (3); texGradXB/texGradYB, the precomputed stencil
+// textures, exist and are read only for the stencils that do not commute with the sampling (0, 2).
 uint32_t LaunchComputeWindowStats(
-	const uint8_t* mask, uint8_t* maskOut, float* pixelGrad, float* blockSums,
+	const uint8_t* mask, float* gradSum, uint32_t* dirBits, uint32_t dirBit, float* blockSums,
 	cudaSurfaceObject_t surfImageA, cudaSurfaceObject_t surfImageProj,
 	const Point3* normals, const uint32_t* faceMap, const float* depthMap,
 	const Camera& camA, const Camera& camB,
 	cudaTextureObject_t texImageB, cudaTextureObject_t texGradXB, cudaTextureObject_t texGradYB,
-	bool bBilinearGrad, float regScale, float gateMeanDiff, float gateVarRatio, int width, int height,
+	int gradMode, float regScale, float gateMeanDiff, float gateVarRatio, int width, int height,
 	cudaStream_t stream);
 
-// the atomic-free photometric accumulation of one pair-direction: one thread per face the
-// reference view idxView owns (its slice of ownerList, read from ownerOffsets on the device;
-// numOwners sizes the grid, with a margin, for the evaluations that replay the launch) folds
-// its contributing pixels into its private slots, faceAcc (3 floats per face, one per corner:
-// Sum g_p*b_c), facePixels (the contributing pixel count) and faceFoot (the min footprint, read
-// only where facePixels > 0), accumulated across the directions of one evaluation (cleared by
-// the host once per evaluation), and counts the direction once per vertex in photoCount through
-// vertexStamp (one word per vertex, set to ~0u by the host once per evaluation)
+// the atomic-free photometric accumulation of one reference view's pair-directions (up to 32,
+// one bit each): one thread per face the reference view idxView owns (its slice of ownerList,
+// read from ownerOffsets on the device; numOwners sizes the grid, with a margin, for the
+// evaluations that replay the launch) folds its contributing pixels (gradSum: their terms summed
+// over the directions; dirBits: the directions they contribute to) into its private slots,
+// faceAcc (3 floats per face, one per corner: Sum g_p*b_c), facePixels (the contributing
+// (pixel, direction) count) and faceFoot (the min footprint, read only where facePixels > 0),
+// accumulated across the groups of one evaluation (cleared by the host once per evaluation), and
+// counts each direction once per vertex in photoCount through vertexStamp (one 64-bit word per
+// vertex: the group and its directions seen, set to ~0 by the host once per evaluation)
 void LaunchAccumulateFacePhoto(
 	const Point3* vertices, const Point3u* faces,
 	const uint32_t* ownerList, const uint32_t* ownerOffsets, uint32_t idxView,
-	const uint32_t* faceMap, const float* pixelGrad, const uint8_t* mask,
+	const uint32_t* faceMap, const float* gradSum, const uint32_t* dirBits,
 	float* faceAcc, float* facePixels, float* faceFoot,
-	uint32_t* vertexStamp, float* photoCount, uint32_t direction,
+	unsigned long long* vertexStamp, float* photoCount, uint32_t group,
 	const Camera& camA, uint32_t numOwners, cudaStream_t stream);
 
 // once per evaluation after every pair-direction: sumR/sumRZ receive the sums of the numSlots

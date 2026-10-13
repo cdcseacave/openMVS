@@ -106,7 +106,8 @@ so the field is indexed by the vertices the remesh receives; the field itself is
 On a surface seen from roughly constant camera-to-surface distance the field is flat and this reduces
 to the uniform remesh.
 
-Every scale then subdivides: `Mesh::Subdivide(maxAreas, maxArea)` splits 1-to-4 every face whose
+Every scale then subdivides: `Mesh::Subdivide(maxAreas, maxArea)` (`halfmesh::Mesh::SubdivideFaces`, red-green
+closure on the neighbours) splits 1-to-4 every face whose
 tightest-pair projected area exceeds `--max-face-area` (default 16 px² at that scale's resolution),
 and, when `--ensure-edge-size > 1` (force mode), the edge-band remesh above also runs after the
 split on every scale, not only the first.
@@ -125,7 +126,10 @@ per pixel of A:
    sample. A sample is kept only if the visibility test accepts (§2.6) and B's own keep-mask accepts
    the same rounded tap. Rejected/invalid pixels are zero-filled, not seeded with a copy of A.
 2. **Masked local window statistics, 7x7 (`Refine::HalfSize=3`, `SceneRefineCommon.h`).**
-   `ComputeWindowStats` reduces six masked box-filtered sums (over valid pixels only) through
+   `ComputeWindowStats` reduces six masked box-filtered sums (over valid pixels only; on the CPU
+   built per band of 64 rows plus the window halo, so each concurrent pair-direction holds six
+   band-sized buffers instead of six full images, and a gate rejection leaves the mask only after
+   the next band has summed its halo rows) through
    `Refine::WindowStatsFromSums`: rejects a pixel if its window holds fewer than
    `Refine::MinWindowCount` (25) valid samples, floors both variances at `Refine::VarFloor` (1e-4),
    and rejects a pixel pair whose means differ by more than `OPTREFINE::fGateMeanDiff` (default 0.4)
@@ -143,7 +147,11 @@ per pixel of A:
    converts the image-space gradient into a 3D-consistent one.
 4. **Image gradient stencil.** Selected by `OPTREFINE::nImageGradient` (default 1, central
    differences; 0 = separable 3x5; 2 = Sobel-3; 3 = the derivative of the bilinear interpolant the
-   warp itself samples, computed on demand instead of from a precomputed stencil image).
+   warp itself samples). Modes 1 and 3 are computed at the sample from image B itself
+   (`MeshRefine::CentralGradient`/`BilinearGradient`, CUDA `computePhotoPixel`): a linear stencil
+   commutes with the bilinear interpolation, so differencing the image sampled one pixel either
+   side equals sampling the precomputed stencil image. Only the stencils that do not commute (0, 2)
+   build and keep per-view gradient images.
 5. **Per-vertex accumulation.** `photoGrad[v]` sums `sg` over every touching pixel; `photoGradNorm[v]`
    (`c_v`) counts pair-directions that touched `v`, once per direction, not per pixel;
    `footprint[v]` (`depthA/focalA`) is min-reduced over every contributing pixel/direction, resolved
@@ -275,7 +283,8 @@ the analytic gradient against a numerical one and is exercised by the test suite
 ### 2.10 CPU/CUDA: what is shared vs what legitimately differs
 
 Identical by construction: the shared scalar header (`SceneRefineCommon.h`), the 7x7 window, the
-visibility test, the image-gradient stencil (built once, host-side, shared by both), the rasterizer
+visibility test, the image-gradient stencil (sampled from the image for modes 1/3, built once
+host-side for 0/2), the rasterizer
 convention (front faces only, perspective-correct barycentric coordinates), and the stepper
 (`MeshRefineStep`, one implementation, §2.7). What legitimately differs:
 
@@ -283,7 +292,7 @@ convention (front faces only, perspective-correct barycentric coordinates), and 
 |---|---|---|
 | Camera projection precision | double (`Camera::TransformPointW2C`) | float (`MVS::CUDA::Camera`) |
 | Rasterizer input | an octree-frustum-culled face list per camera, rebuilt every evaluation | the whole mesh into every view; the kernel rejects what a view does not see |
-| Photometric accumulation order | per-pair, under a lock, in thread-completion order — not bit-reproducible run to run unless `--max-threads 1` | face-parallel accumulate + vertex-parallel gather over a fixed order — bit-reproducible |
+| Photometric accumulation order | per-pair, under a lock, in thread-completion order — not bit-reproducible run to run unless `--max-threads 1` | the pair-directions grouped by reference view: each adds its per-pixel terms into the view's pixel sums (with one bit per direction, up to 32), then one face-parallel accumulation per view (a vertex counts the distinct direction bits its faces bring, through a 64-bit group/bits stamp) + vertex-parallel gather over a fixed order — bit-reproducible; one accumulation per view instead of per direction: per-evaluation time −20..−52% (F11, HJ25, Truck), same F1 |
 | Planar-vertex removal (§2.7) | implemented | refused at the entry (loud error); caller falls back to CPU |
 | Ceres arm (§2.9) | implemented | refused at the entry, same fallback |
 | Float reassociation | `cv::boxFilter`/`filter2D`, no FMA | explicit-rounding intrinsics so nvcc cannot silently fuse an FMA the CPU wouldn't; residual disagreement ~0.1-2% per vertex at the tail |
@@ -308,7 +317,7 @@ runs (`MeshRefineCUDA::PrefetchImages`), so a scale switch pays only the vertex/
 | `--adaptive-face-size` | `OPTREFINE::bAdaptiveFaceSize` | `true` | per-vertex sizing field instead of one scalar density |
 | `--simplify-tolerance` | `OPTREFINE::fSimplifyTolerance` | `0.25` (px) | post-refinement decimation tolerance; `0` disables it |
 | `--fast` | preset | `false` | fills unset `--max-face-area 32`/`--simplify-tolerance 0.5` |
-| `--scales` | `OPT::nScales` | `2` | coarse-to-fine passes |
+| `--scales` | `OPT::nScales` | `2` | coarse-to-fine passes (0 returns the input mesh unchanged) |
 | `--scale-step` | `OPT::fScaleStep` | `0.5` | per-scale image scale factor |
 | `--alternate-pair` | `OPT::nAlternatePair` | `0` (both) | `1` alternate, `2` left only, `3` right only |
 | `--regularity-weight` | `OPT::fRegularityWeight` (`w`) | `0.2` | photo-consistency vs. regularization balance |
@@ -464,8 +473,8 @@ one `RefineMesh` run per cell, CPU/CUDA as noted.
   do-less effect.
 - Per-vertex step cap in pixels (halved at every direction reversal): loses at every cap tried — the
   global median normalizer already sets the stride.
-- The reference's fixed schedule (fixed evaluations per level, no rejection): loses, same failure
-  mode as the fixed-step control arm.
+- A fixed schedule (fixed evaluations per level, no rejection): loses, same failure mode as the
+  fixed-step control arm — without rejection a bad step is kept and the next scale starts from it.
 - Swapping the umbrella term for the bi-Laplacian wherever the photometric pull opposes it: inert at
   the default weight, mixed and net-negative at higher weights.
 - Pixel-graded isotropic remesh at every scale in place of the 1-to-4 split: worse than the split at
@@ -507,9 +516,8 @@ one `RefineMesh` run per cell, CPU/CUDA as noted.
 - The old `--fast` built on `--max-views 4` instead of `--max-face-area`: a smaller view budget only
   removes per-pixel work, a coarser face cap removes per-pixel and mesh-preparation work together —
   the face-area version is `--fast` now.
-- The reference's tie-point-track pair vote, reimplemented in full (cell voting, angle weighting,
-  transitive-redundancy top-K): too few pairs under-constrain the surface; loses even against a
-  matched-view-budget control.
+- The full tie-point-track pair vote (cell voting, angle weighting, transitive-redundancy top-K):
+  too few pairs under-constrain the surface; loses even against a matched-view-budget control.
 - Tightest-pair reduction taken as the median or mean over the pairs that see a face, instead of the
   max: not a different rule so much as a ~5x rescale of what the face-area cap means; no evidence
   strong enough to redefine the cap around it.
@@ -544,7 +552,11 @@ one `RefineMesh` run per cell, CPU/CUDA as noted.
 5. **The Ceres arm stays opt-in.** It reaches a lower energy than the stepper but never a better F1
    on the scenes it was tested against (§2.9), so it remains a research/reference arm rather than a
    default.
-6. **CUDA device memory scales with resident view count** (roughly 21 bytes/pixel/view: image,
-   gradient textures, depth, face id, optional mask). A very large or very high-resolution scene can
-   exceed a single GPU's memory at the finest scale; the fix is to stream views in and out of
-   residency, which is unimplemented.
+6. **CUDA device memory scales with resident view count** (roughly 9 bytes/pixel/view at the
+   default stencil: image and face id, optional mask; 17 with the stencil modes 0/2, which add
+   two float gradient textures). No depth map is kept per view: the reference view's is
+   recomputed from its face map once per accumulation group (`kernelFaceDepth`), the partner's
+   depth at the warp tap from its face (`pixelDepth`), byte-identical output, Truck (251 x 2 MP)
+   8.85 -> 6.86 GB at +2% wall. A very large or very high-resolution scene can still exceed a
+   single GPU's memory at the finest scale; the fix is to stream views in and out of residency,
+   which is unimplemented.

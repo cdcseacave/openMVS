@@ -5,31 +5,27 @@
 // Distributed under the Boost Software License, Version 1.0
 // (See http://www.boost.org/LICENSE_1_0.txt)
 //
-// PLY polygon files parser.
-// (originally by Greg Turk, heavily modified by cDc@seacave)
-// 
-// A PLY file contains a single polygonal _object_.
-// 
-// An object is composed of lists of _elements_.  Typical elements are
-// vertices, faces, edges and materials.
-// 
-// Each type of element for a given object has one or more _properties_
-// associated with the element type.  For instance, a vertex element may
-// have as properties three floating-point values x,y,z and three unsigned
-// chars for red, green and blue.
-
+// PLY reader and writer.
+//
+// A PLY file holds a sequence of elements (vertex, face, ...); each element is a table of
+// records whose columns are its properties: scalars, or lists of scalars preceded by their
+// count. The values are read straight into, and written straight from, the caller's arrays:
+// a Binding names a property and gives the memory of its value in the first record and the
+// stride to the next record, so no intermediate record structure is involved.
+//
+// Reading:
+//   PLY ply;
+//   if (!ply.Open(fileName)) ...
+//   for (size_t e = 0; e < ply.GetElements().size(); ++e)    // elements are read in file order,
+//       if (ply.GetElements()[e].name == "vertex")            // the ones not read are skipped
+//           ok = ply.ReadElement(e, {PLY::Scalar("x", &points[0].x, sizeof(Point)), ...});
+// Writing:
+//   PLY ply;
+//   ply.AddElement("vertex", points.size(), {PLY::Scalar("x", &points[0].x, sizeof(Point)), ...});
+//   ok = ply.Save(fileName);
 
 #ifndef __SEACAVE_PLY_H__
 #define __SEACAVE_PLY_H__
-
-
-// I N C L U D E S /////////////////////////////////////////////////
-
-
-// D E F I N E S ///////////////////////////////////////////////////
-
-#define PLY_OKAY   0                  // ply routine worked okay 
-#define PLY_ERROR -1                  // error in ply routine 
 
 
 // S T R U C T S ///////////////////////////////////////////////////
@@ -37,288 +33,148 @@
 class IO_API PLY
 {
 public:
-	// scalar data types supported by PLY format
 	enum FileType {
-		ASCII     = 1,                // ascii PLY file
-		BINARY_BE = 2,                // binary PLY file, big endian
-		BINARY_LE = 3,                // binary PLY file, little endian
+		ASCII,
+		BINARY_LE,
+		BINARY_BE, // read only
 	};
-	enum DataType {
-		StartType = 0,
-		Int8      = 1,
-		Int16     = 2,
-		Int32     = 3,
-		Uint8     = 4,
-		Uint16    = 5,
-		Uint32    = 6,
-		Float32   = 7,
-		Float64   = 8,
-		EndType   = 9,
-	};
-	enum ListType {
-		SCALAR    = 0,
-		LIST      = 1,
-		STRING    = 2,
-	};
-	enum RuleType {
-		AVERAGE_RULE  = 1,
-		MAJORITY_RULE = 2,
-		MINIMUM_RULE  = 3,
-		MAXIMUM_RULE  = 4,
-		SAME_RULE     = 5,
-		RANDOM_RULE   = 6,
+	enum DataType : uint8_t {
+		NoType, Int8, Int16, Int32, Uint8, Uint16, Uint32, Float32, Float64
 	};
 
-	// description of a property
-	struct PlyProperty {
-		std::string name;             // property name 
-		int external_type;            // file's data type 
-		int internal_type;            // program's data type 
-		int offset;                   // offset bytes of prop in a struct 
-
-		int is_list;                  // 0 = scalar, 1 = list, 2 = char string 
-		int count_external;           // file's count type 
-		int count_internal;           // program's count type 
-		int count_offset;             // offset byte for list count 
-	};
-
-	// description of an element
-	struct PlyElement {
-		std::string name;             // element name 
-		int num;                      // number of elements in this object 
-		int size;                     // size of element (bytes) or -1 if variable 
-		std::vector<PlyProperty*> props;// list of properties in the file 
-		std::vector<char> store_prop; // flags: property wanted by user? 
-		int other_offset;             // offset to un-asked-for props, or -1 if none
-		int other_size;               // size of other_props structure 
-	};
-
-	// describes other properties in an element
-	struct PlyOtherProp {
-		std::string name;             // element name 
-		int size;                     // size of other_props 
-		std::vector<PlyProperty*> props;// list of properties in other_props 
-	};
-
-	// for storing other_props for an other element
-	struct OtherData {
-		void* other_props;
-	};
-
-	// data for one "other" element
-	struct OtherElem {
-		std::string elem_name;        // names of other elements 
-		int elem_count;               // count of instances of each element 
-		OtherData** other_data;       // actual property data for the elements 
-		PlyOtherProp* other_props;    // description of the property data 
-	};
-
-	// "other" elements, not interpreted by user
-	struct PlyOtherElems {
-		std::vector<OtherElem> other_list;// list of data for other elements 
-	};
-
-	// rules for combining "other" properties
-	struct PlyPropRules {
-		PlyElement* elem;             // element whose rules we are making 
-		int* rule_list;               // types of rules (AVERAGE_PLY, MAJORITY_PLY, etc.) 
-		uint32_t max_props;           // maximum number of properties we have room for now 
-		std::vector<void*> props;     // list of properties we're combining 
-		std::vector<float> weights;   // list of weights of the properties 
-	};
-
-	struct PlyRuleList {
-		LPCSTR name;                  // name of the rule 
-		char* element;                // name of element that rule applies to 
-		char* property;               // name of property that rule applies to 
-		struct PlyRuleList* next;     // pointer for linked list of rules 
-	};
-
-	// property propagation rules
-	struct RuleName {
-		int code;
+	// a property as declared in the file header
+	struct Property {
 		std::string name;
+		DataType type;      // type of the scalar, or of the list items
+		DataType countType; // NoType for a scalar, else the type of the list count
+		bool IsList() const { return countType != NoType; }
 	};
-
-protected:
-	struct ValueType {
-		union {
-			int8_t i8;
-			int16_t i16;
-			int32_t i32;
-			uint8_t u8;
-			uint16_t u16;
-			uint32_t u32;
-			float f;
-			double d;
-		};
-	};
-
-public:
-	PLY();
-	~PLY();
-
-	bool read(LPCSTR);
-	bool read(SEACAVE::ISTREAM*);
-	bool write(LPCSTR, int, LPCSTR*, int, size_t memBufferSize=0);
-	bool write(SEACAVE::OSTREAM*, int, LPCSTR*, int, size_t memBufferSize=0);
-	void release();
-
-	// largest memory buffer write() is allowed to allocate before streaming to disk instead
-	static constexpr size_t MAX_MEM_BUFFER_SIZE = 64u*1024u*1024u;
-	// size of the memory buffer holding the given elements, or 0 to stream them directly to disk;
-	// the returned size is only a hint, as the buffer grows on demand
-	static size_t ComputeMemBufferSize(size_t numElems, size_t elemSize) {
-		ASSERT(elemSize > 0);
-		return numElems <= MAX_MEM_BUFFER_SIZE/elemSize ? numElems*elemSize : 0;
-	}
-
-	void set_legacy_type_names();
-
-	void get_info(float*, int*);
-
-	void append_comment(const char*);
-	void append_obj_info(const char*);
-	void copy_comments(const PLY&);
-	void copy_obj_info(const PLY&);
-	std::vector<std::string>& get_comments();
-	std::vector<std::string>& get_obj_info();
-
-	void describe_property(const char*, const PlyProperty&);
-	void describe_property(const char*, int nprops, const PlyProperty*);
-	void get_property(const char*, PlyProperty*);
-	void get_element(void*);
-
-	PlyOtherElems* get_other_element();
-
-	int get_element_list(std::vector<std::string>&) const;
-	void setup_property(const PlyProperty&);
-	LPCSTR setup_element_read(int, int*);
-	PlyOtherProp* get_other_properties(int);
-
-	int get_elements_count() const { return (int)elems.size(); }
-	int get_current_element_count() const { return which_elem->num; }
-	void element_count(const char*, int);
-	void describe_element(const char*, int);
-	void describe_property(const PlyProperty&);
-	void describe_other_properties(PlyOtherProp*, int);
-	void describe_other_elements( PlyOtherElems*);
-	void get_element_setup(const char*, int, PlyProperty*);
-	int get_element_description(const char*, std::vector<PlyProperty*>&) const;
-	void element_layout(const char*, int, int, PlyProperty*);
-
-	bool header_complete();
-	void put_element_setup(const char*);
-	void put_element(const void*);
-	void put_other_elements();
-
-	PlyPropRules* init_rule(const char*);
-	void modify_rule(PlyPropRules*, const char*, int);
-	void start_props(PlyPropRules*);
-	void weight_props(float, void*);
-	void* get_new_props();
-	void set_prop_rules(PlyRuleList*);
-	PlyRuleList* append_prop_rule(PlyRuleList*, const char*, const char*);
-
-	// find an element in a ply's list 
-	PlyElement* find_element(const char*) const;
-	// find a property in an element's list 
-	int find_property(PlyElement*, const char*) const;
-
-	static inline bool equal_strings(const char* s1, const char* s2) { return _tcscmp(s1, s2) == 0; }
-
-protected:
-	// write to a file the word describing a PLY file data type 
-	void write_scalar_type(int);
-
-	// read a line from a file and break it up into separate words 
-	typedef SEACAVE::TokenInputStream<false> STRISTREAM;
-	char** get_words(STRISTREAM&, int*, std::string*);
-
-	// write an item to a file 
-	void write_binary_item(const ValueType&, int, int);
-	void write_ascii_item(const ValueType&, int, int);
-
-	// return the value of a stored item 
-	static void get_stored_item(const void*, int, ValueType&);
-
-	// get binary or ascii item and store it according to ptr and type 
-	void get_binary_item(int, ValueType&);
-	static void get_ascii_item(const char*, int, ValueType&);
-
-	// store a value into where a pointer and a type specify 
-	static void store_item(void*, int, const ValueType&, int);
-
-	// add information to a PLY file descriptor 
-	void add_element(const char**, int);
-	void add_property(const char**, int);
-	void add_comment(const char*);
-	void add_obj_info(const char*);
-
-	// get a bunch of elements from a file 
-	void ascii_get_element(uint8_t*);
-	void binary_get_element(uint8_t*);
-
-	void setup_other_props(PlyElement*);
-	PlyOtherProp* get_other_properties(PlyElement*, int);
-	PlyOtherProp* get_other_properties(const char*, int);
-
-	int matches_rule_name(const char*);
-	int get_prop_type(const char*);
-
-	// copy a property 
-	static void copy_property(PlyProperty&, const PlyProperty&);
-
-	// return the value as T stored in val as type 
-	template <typename T>
-	static inline T ValueType2Type(const ValueType& val, int type) {
-		switch (type) {
-		case Int8:
-			return (T)val.i8;
-		case Int16:
-			return (T)val.i16;
-		case Int32:
-			return (T)val.i32;
-		case Uint8:
-			return (T)val.u8;
-		case Uint16:
-			return (T)val.u16;
-		case Uint32:
-			return (T)val.u32;
-		case Float32:
-			return (T)val.f;
-		case Float64:
-			return (T)val.d;
+	// an element as declared in the file header
+	struct Element {
+		std::string name;
+		size_t count;       // number of records
+		std::vector<Property> props;
+		const Property* FindProperty(const char* name) const {
+			for (const Property& prop: props)
+				if (prop.name == name)
+					return &prop;
+			return NULL;
 		}
-		ASSERT("error: bad type" == NULL);
-		return T(0);
+		bool HasProperties(std::initializer_list<const char*> names) const {
+			for (const char* name: names)
+				if (FindProperty(name) == NULL)
+					return false;
+			return true;
+		}
+	};
+
+	// the memory a property is read into or written from
+	struct Binding {
+		typedef void (*SetList)(void* lists, size_t idx, uint32_t numItems, const void* items);
+		typedef uint32_t (*GetList)(const void* lists, size_t idx, const void*& items);
+		const char* name;
+		DataType type;      // type in memory of the scalar, or of the list items
+		DataType fileType;  // writing: type in the file of the scalar, or of the list items
+		DataType countType; // NoType for a scalar; writing a list: type in the file of its count
+		uint32_t numItems;  // fixed-size list: items per record (reading any other count fails); 0: variable-size list
+		void* data;         // scalar or fixed-size list: the value(s) of the first record; variable-size list: the lists
+		size_t stride;      // scalar or fixed-size list: bytes from one record's value(s) to the next record's
+		SetList setList;    // variable-size list, reading: stores the items of record idx (packed, possibly unaligned)
+		GetList getList;    // variable-size list, writing: returns the items of record idx
+	};
+	typedef std::vector<Binding> Bindings;
+
+	template <typename T>
+	static constexpr DataType TypeOf() {
+		if constexpr (std::is_same<T,int8_t>::value) return Int8;
+		else if constexpr (std::is_same<T,int16_t>::value) return Int16;
+		else if constexpr (std::is_same<T,int32_t>::value) return Int32;
+		else if constexpr (std::is_same<T,uint8_t>::value) return Uint8;
+		else if constexpr (std::is_same<T,uint16_t>::value) return Uint16;
+		else if constexpr (std::is_same<T,uint32_t>::value) return Uint32;
+		else if constexpr (std::is_same<T,float>::value) return Float32;
+		else if constexpr (std::is_same<T,double>::value) return Float64;
+		else static_assert(sizeof(T) == 0, "type not supported by PLY");
+	}
+	// a scalar property: its value is at first for record 0, then every stride bytes;
+	// fileType is the type written in the file (reading converts from the file's type)
+	template <typename T>
+	static Binding Scalar(const char* name, const T* first, size_t stride, DataType fileType=TypeOf<T>()) {
+		return Binding{name, TypeOf<T>(), fileType, NoType, 0, const_cast<T*>(first), stride, NULL, NULL};
+	}
+	// a list property of numItems items per record, stored contiguously from first for record 0, then every stride bytes
+	template <typename T>
+	static Binding List(const char* name, const T* first, uint32_t numItems, size_t stride, DataType countType=Uint8) {
+		ASSERT(numItems > 0);
+		return Binding{name, TypeOf<T>(), TypeOf<T>(), countType, numItems, const_cast<T*>(first), stride, NULL, NULL};
+	}
+	// a list property of any size per record, kept in lists[idx] (a container with resize(), data() and size());
+	// writing: countType must hold the size of every list
+	template <typename ARR>
+	static Binding Lists(const char* name, const ARR& lists, DataType countType=Uint8) {
+		typedef typename std::decay<decltype(*lists[0].data())>::type T;
+		return Binding{name, TypeOf<T>(), TypeOf<T>(), countType, 0, const_cast<ARR*>(&lists), 0, &SetItems<ARR,T>, &GetItems<ARR,T>};
 	}
 
+	// reading: parse the header; the elements are then read in file order
+	bool Open(const std::string& fileName);
+	const std::vector<Element>& GetElements() const { return elements; }
+	const std::vector<std::string>& GetComments() const { return comments; }
+	// read every record of element idx into the bound memory, skipping the properties not bound and
+	// any earlier element not read; fails on a bound property the element lacks, on a fixed-size list
+	// of another size and on a truncated or malformed file
+	bool ReadElement(size_t idx, const Bindings& bindings);
+
+	// writing: describe the elements in file order (their memory must stay valid until Save;
+	// an element without records may bind NULL, or declare no property at all)
+	void AddComment(const std::string& comment) { comments.emplace_back(comment); }
+	void AddElement(const char* name, size_t count, Bindings bindings);
+	bool Save(const std::string& fileName, FileType type=BINARY_LE, bool legacyTypeNames=false) const;
+
 protected:
-	// description of PLY file
-	std::string filename;             // file name 
-	int file_type;                    // ascii or binary 
-	float version;                    // version number of file 
-	std::vector<PlyElement*> elems;   // list of elements 
-	std::vector<std::string> comments;// list of comments 
-	std::vector<std::string> obj_info;// list of object info items 
-	PlyElement* which_elem;           // element we're currently reading or writing 
-	PlyOtherElems* other_elems;       // "other" elements from a PLY file 
-	PlyPropRules* current_rules;      // current propagation rules 
-	PlyRuleList* rule_list;           // rule list from user 
-	std::vector<double> vals;         // rule list from user 
+	struct Column;
 
-	union {
-		SEACAVE::ISTREAM* istream;    // input file pointer
-		SEACAVE::OSTREAM* ostream;    // output file pointer
+	template <typename ARR, typename T>
+	static void SetItems(void* lists, size_t idx, uint32_t numItems, const void* items) {
+		auto& list = (*static_cast<ARR*>(lists))[static_cast<decltype(std::declval<ARR&>().size())>(idx)];
+		list.resize(numItems);
+		if (numItems)
+			memcpy(list.data(), items, sizeof(T)*numItems);
+	}
+	template <typename ARR, typename T>
+	static uint32_t GetItems(const void* lists, size_t idx, const void*& items) {
+		const auto& list = (*static_cast<const ARR*>(lists))[static_cast<decltype(std::declval<const ARR&>().size())>(idx)];
+		items = list.data();
+		return static_cast<uint32_t>(list.size());
+	}
+
+	bool Fill(size_t numBytes);
+	bool ReadLine(std::string& line);
+	bool ParseHeader();
+	bool ReadBinary(const Element&, std::vector<Column>&);
+	bool ReadAscii(const Element&, std::vector<Column>&);
+	bool SkipBlanks();
+	bool NextToken(const char*& token, size_t& len);
+	bool EndLine();
+
+	// reading
+	SEACAVE::File file;
+	std::vector<uint8_t> buffer;    // read-ahead buffer: the unread bytes are [bufferPos, bufferEnd)
+	size_t bufferPos = 0, bufferEnd = 0;
+	SEACAVE::size_f_t fileLeft = 0; // bytes of the file not yet in the buffer
+	FileType fileType = BINARY_LE;
+	size_t nextElement = 0;         // first element not read yet
+	std::vector<Element> elements;
+	std::vector<std::string> comments;
+
+	// writing
+	struct OutElement {
+		std::string name;
+		size_t count;
+		Bindings bindings;
 	};
-	SEACAVE::MemFile* mfp;            // mem-file pointer (optional)
-	const char* const* write_type_names; // names of scalar types to be used for writing (new types by default)
-
-	static const char* const type_names[9]; // names of scalar types 
-	static const char* const old_type_names[9]; // old names of types for backward compatibility 
-	static const int ply_type_size[9];
-	static const RuleName rule_name_list[7];
+	std::vector<OutElement> outElements;
 };
+/*----------------------------------------------------------------*/
 
 #endif // __SEACAVE_PLY_H__

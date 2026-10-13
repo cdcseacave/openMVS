@@ -97,6 +97,7 @@ Created by @FlachyJoe
 """
 
 import os
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -432,6 +433,9 @@ PARSER.add_argument('--preset',
                     help="steps list preset in\n" +
                     " \n".join([k + " = " + str(PRESET[k]) for k in PRESET]) +
                     " \ndefault : " + PRESET_DEFAULT)
+PARSER.add_argument('--sub-scene-memory', default='auto', type=str.lower,
+                    help="steps 18-21 split the scene in sub-scenes that each fit this memory budget\n"
+                    "(MvsScalablePipeline.py): auto - fit this machine (default), off - no split, or GB")
 
 GROUP = PARSER.add_argument_group('Passthrough', description="Option to be passed to command lines (remove - in front of option names)\nex. --1 p ULTRA to use the ULTRA preset in openMVG_main_ComputeFeatures\nFor example, running the script as follows,\nMvgMvsPipeline.py input_dir output_dir --1 p HIGH n 8 --3 n ANNL2\nwhere --1 refer to openMVG_main_ComputeFeatures, p refers to\ndescriberPreset option which HIGH was chosen, and n refers to\nnumThreads which 8 was used. --3 refer to second step (openMVG_main_ComputeMatches),\nn refers to nearest_matching_method option which ANNL2 was chosen\n\nCOLMAP with ALIKED + LightGlue (requires colmap >= 3.14):\nMvgMvsPipeline.py images_dir out_dir --preset COLMAP_MVS \\\n  --12 FeatureExtraction.type ALIKED_N16ROT AlikedExtraction.max_num_features 4096 \\\n  --13 FeatureMatching.type ALIKED_LIGHTGLUE\nAppend FeatureExtraction.use_gpu 0 / FeatureMatching.use_gpu 0 to fall back\nto the CPU ONNX provider if onnxruntime can't load its CUDA provider.\nExtractor types: SIFT, ALIKED_N16ROT, ALIKED_N32.\nMatcher types: SIFT_BRUTEFORCE, SIFT_LIGHTGLUE, ALIKED_BRUTEFORCE, ALIKED_LIGHTGLUE.")
 for n in range(STEPS.length()):
@@ -515,13 +519,62 @@ if 4 in CONF.steps:    # GeometricFilter
         STEPS[4].opt.extend(["-g", "e"])
 
 if 21 in CONF.steps:    # TextureMesh
-    if 20 not in CONF.steps:  # RefineMesh
-        # RefineMesh step is not run, use ReconstructMesh output
+    # the refined mesh when this run refines, the unrefined one when it only (re)builds the mesh,
+    # else (neither) the refined one if it exists
+    if 20 not in CONF.steps and (19 in CONF.steps or not os.path.exists(os.path.join(CONF.mvs_dir, "scene_dense_mesh_refined.ply"))):
         STEPS.replace_opt(21, "scene_dense_mesh_refined.ply", "scene_dense_mesh.ply")
         STEPS.replace_opt(21, "scene_dense_mesh_refined_texture.mvs", "scene_dense_mesh_texture.mvs")
 
+def step_options(cstep):
+    """the options of a step: its defaults, overridden by the passthrough ones"""
+    # Retrieve "passthrough" commandline options
+    opt = list(getattr(CONF, str(cstep)) or [])
+    # add - sign to short options and -- to long ones
+    for o in range(0, len(opt), 2):
+        if len(opt[o]) > 1:
+            opt[o] = '-' + opt[o]
+        opt[o] = '-' + opt[o]
+    # Remove STEPS[cstep].opt options now defined in opt
+    for anOpt in list(STEPS[cstep].opt):
+        if anOpt in opt:
+            idx = STEPS[cstep].opt.index(anOpt)
+            if DEBUG:
+                print('#\tRemove ' + str(anOpt) + ' from defaults options at id ' + str(idx))
+            del STEPS[cstep].opt[idx:idx+2]
+    return STEPS[cstep].opt + opt
+
+
+# steps 18-21 run through MvsScalablePipeline.py unless the split is off: a scene that fits this
+# machine is reconstructed exactly as by the steps themselves, a larger one in sub-scenes (the later
+# steps alone reuse the sub-scenes step 18 wrote)
+SCALABLE_STEPS = {18: 'densify', 19: 'mesh', 20: 'refine', 21: 'texture'}
+scalable = [s for s in CONF.steps if s in SCALABLE_STEPS] if CONF.sub_scene_memory != 'off' else []
+if scalable:
+    def scalable_options(cstep):
+        """a step's options without the scene, the files and the folder the driver sets itself, quoted
+        so the driver splits them back into the same arguments"""
+        opts, kept = step_options(cstep)[1:], []
+        while opts:
+            if opts[0] in ('-w', '-m', '-o', '-p', '-i'):
+                opts = opts[2:]
+            else:
+                kept.append(opts.pop(0))
+        return shlex.join(kept)
+    scalable_cmdline = [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'MvsScalablePipeline.py'),
+                        os.path.join(CONF.mvs_dir, 'scene.mvs'), '--bin', OPENMVS_BIN, '--memory', CONF.sub_scene_memory,
+                        '--steps', ','.join(SCALABLE_STEPS[s] for s in scalable)]
+    for s in scalable:
+        scalable_cmdline += ['--' + SCALABLE_STEPS[s], scalable_options(s)]
+    CONF.steps = [s for s in CONF.steps if s not in scalable[1:]]
+
 for cstep in CONF.steps:
     printout("#%i. %s" % (cstep, STEPS[cstep].info), effect=INVERSE)
+
+    if scalable and cstep == scalable[0]:
+        print('Cmd: ' + ' '.join(scalable_cmdline))
+        if not DEBUG and subprocess.run(scalable_cmdline).returncode != 0:
+            sys.exit('\nProcess failed at step %i (scalable dense reconstruction)' % cstep)
+        continue
 
     # Step 15 (COLMAP model_aligner): only request GPS/ENU alignment when the
     # database actually has enough WGS84 pose priors, otherwise drop straight to
@@ -543,27 +596,8 @@ for cstep in CONF.steps:
         else:
             printout("# %d GPS pose priors found — aligning scene to ENU/WGS84" % n_gps, effect=INVERSE)
 
-    # Retrieve "passthrough" commandline options
-    opt = getattr(CONF, str(cstep))
-    if opt:
-        # add - sign to short options and -- to long ones
-        for o in range(0, len(opt), 2):
-            if len(opt[o]) > 1:
-                opt[o] = '-' + opt[o]
-            opt[o] = '-' + opt[o]
-    else:
-        opt = []
-
-    # Remove STEPS[cstep].opt options now defined in opt
-    for anOpt in STEPS[cstep].opt:
-        if anOpt in opt:
-            idx = STEPS[cstep].opt.index(anOpt)
-            if DEBUG:
-                print('#\tRemove ' + str(anOpt) + ' from defaults options at id ' + str(idx))
-            del STEPS[cstep].opt[idx:idx+2]
-
     # create a commandline for the current step
-    cmdline = [STEPS[cstep].cmd] + STEPS[cstep].opt + opt
+    cmdline = [STEPS[cstep].cmd] + step_options(cstep)
     print('Cmd: ' + ' '.join(cmdline))
 
     if not DEBUG:
@@ -577,7 +611,7 @@ for cstep in CONF.steps:
                 printout("# Retry COLMAP model-aligner step using plane alignment instead of GPS", effect=INVERSE)
                 STEPS.replace_opt(15, "--ref_is_gps=1", "--ref_is_gps=0")
                 STEPS.replace_opt(15, "--alignment_type=enu", "--alignment_type=plane")
-                cmdline = [STEPS[cstep].cmd] + STEPS[cstep].opt + opt
+                cmdline = [STEPS[cstep].cmd] + step_options(cstep)
                 print('Cmd: ' + ' '.join(cmdline))
                 try:
                     if subprocess.run(cmdline, check=True).returncode != 0:
