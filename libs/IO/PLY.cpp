@@ -25,7 +25,8 @@ constexpr size_t BUFFER_SIZE = 4u<<20;    // read-ahead and write buffer
 constexpr size_t MAX_IO_CHUNK = 1u<<30;   // largest single file read/write (Win32 takes 32-bit sizes)
 constexpr size_t MAX_HEADER_LINE = 1u<<20;
 
-inline bool IsSpace(uint8_t c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
+inline bool IsBlank(uint8_t c) { return c == ' ' || c == '\t' || c == '\r'; }
+inline bool IsSpace(uint8_t c) { return IsBlank(c) || c == '\n'; }
 inline bool IsInteger(PLY::DataType t) { return t >= PLY::Int8 && t <= PLY::Uint32; }
 
 PLY::DataType ParseType(const std::string& name) {
@@ -677,17 +678,29 @@ bool PLY::ReadBinary(const Element& elem, std::vector<Column>& columns)
 	return true;
 }
 
-bool PLY::NextToken(const char*& token, size_t& len)
+// an ascii record is one line: skip the blanks before its next value; false at the end of the file
+bool PLY::SkipBlanks()
 {
 	for (;;) {
-		while (bufferPos < bufferEnd && IsSpace(buffer[bufferPos]))
+		while (bufferPos < bufferEnd && IsBlank(buffer[bufferPos]))
 			++bufferPos;
+		if (bufferPos < bufferEnd)
+			return true;
+		if (!Fill(1))
+			return false;
+	}
+}
+
+// the next value of the record; false at the end of its line
+bool PLY::NextToken(const char*& token, size_t& len)
+{
+	if (!SkipBlanks() || buffer[bufferPos] == '\n')
+		return false;
+	for (;;) {
 		size_t end(bufferPos);
 		while (end < bufferEnd && !IsSpace(buffer[end]))
 			++end;
 		if (end < bufferEnd || fileLeft == 0) {
-			if (end == bufferPos)
-				return false;
 			token = reinterpret_cast<const char*>(buffer.data()+bufferPos);
 			len = end-bufferPos;
 			bufferPos = end;
@@ -697,6 +710,12 @@ bool PLY::NextToken(const char*& token, size_t& len)
 		if (!Fill(bufferEnd-bufferPos+1))
 			return false;
 	}
+}
+
+// the record is complete: only blanks may follow it on its line (the last line may lack its newline)
+bool PLY::EndLine()
+{
+	return !SkipBlanks() || buffer[bufferPos++] == '\n';
 }
 
 bool PLY::ReadAscii(const Element& elem, std::vector<Column>& columns)
@@ -770,6 +789,8 @@ bool PLY::ReadAscii(const Element& elem, std::vector<Column>& columns)
 				b->setList(b->data, i, count, src);
 			}
 		}
+		if (!EndLine())
+			return false;
 	}
 	return true;
 }

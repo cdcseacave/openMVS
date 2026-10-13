@@ -108,11 +108,20 @@ public:
 		ASSERT(numItems > 0);
 		return Binding{name, TypeOf<T>(), TypeOf<T>(), countType, numItems, const_cast<T*>(first), stride, NULL, NULL};
 	}
-	// a list property of any size per record, kept in lists[idx] (a container with resize(), data() and size())
+	// a list property of any size per record, kept in lists[idx] (a container with resize(), data() and size());
+	// writing: countType must hold the size of the longest list (see CountTypeOf)
 	template <typename ARR>
 	static Binding Lists(const char* name, const ARR& lists, DataType countType=Uint8) {
 		typedef typename std::decay<decltype(*lists[0].data())>::type T;
 		return Binding{name, TypeOf<T>(), TypeOf<T>(), countType, 0, const_cast<ARR*>(&lists), 0, &SetItems<ARR,T>, &GetItems<ARR,T>};
+	}
+	// the smallest count type holding the size of the longest of lists
+	template <typename ARR>
+	static DataType CountTypeOf(const ARR& lists) {
+		size_t maxSize(0);
+		for (const auto& list: lists)
+			maxSize = std::max(maxSize, (size_t)list.size());
+		return maxSize <= UINT8_MAX ? Uint8 : maxSize <= UINT16_MAX ? Uint16 : Uint32;
 	}
 
 	PLY();
@@ -156,7 +165,9 @@ protected:
 	bool ParseHeader();
 	bool ReadBinary(const Element&, std::vector<Column>&);
 	bool ReadAscii(const Element&, std::vector<Column>&);
+	bool SkipBlanks();
 	bool NextToken(const char*& token, size_t& len);
+	bool EndLine();
 
 protected:
 	// reading

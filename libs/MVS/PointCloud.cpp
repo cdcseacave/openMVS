@@ -705,12 +705,13 @@ bool PointCloud::SavePLY(const String& fileName, bool bViews, bool bLegacyTypes,
 		bindings.push_back(PLY::Scalar("nz", &normals[0].z, sizeof(Normal)));
 	}
 	if (bViews) {
+		const PLY::DataType countType(PLY::CountTypeOf(pointViews));
 		if (!pointViews.empty())
-			bindings.push_back(PLY::Lists("view_indices", pointViews));
+			bindings.push_back(PLY::Lists("view_indices", pointViews, countType));
 		if (!pointWeights.empty()) {
 			ASSERT(std::equal(pointWeights.begin(), pointWeights.end(), pointViews.begin(), pointViews.end(),
 				[](const WeightArr& weights, const ViewArr& views) { return weights.size() == views.size(); }));
-			bindings.push_back(PLY::Lists("view_weights", pointWeights));
+			bindings.push_back(PLY::Lists("view_weights", pointWeights, countType));
 		}
 		if (!labels.empty())
 			bindings.push_back(PLY::Scalar("label", &labels[0], sizeof(Label)));

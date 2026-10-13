@@ -15,7 +15,7 @@ While multiple formats are supported, PLY (Polygon File Format) is the workhorse
 - Triangle meshes (with optional textures)
 - Intermediate pipeline outputs
 
-PLY files are saved in **little-endian binary** (`PLY::BINARY_LE`) by default; ASCII is available for debugging and writes every real exactly (the shortest text that reads back to the same value). Big-endian files are read, not written.
+PLY files are saved in **little-endian binary** (`PLY::BINARY_LE`) by default; ASCII is available for debugging and writes every real exactly (the shortest text that reads back to the same value); an ASCII record is one line, and a line holding fewer or more values than its record is refused. Big-endian files are read, not written.
 
 ## 3D Geometry Formats
 
@@ -37,7 +37,7 @@ property list uchar int vertex_indices
 **Bindings**: values are read straight into, and written straight from, the caller's arrays. A `PLY::Binding` names a property and gives the memory of its value in the first record plus the stride to the next record (struct-of-arrays and array-of-structs layouts both work):
 - `PLY::Scalar(name, &arr[0].x, stride)` — a scalar; on write an optional file type (e.g. `PLY::Int32` for a `uint8_t` in memory)
 - `PLY::List(name, &faces[0].x, 3, stride)` — a list of a fixed number of items (reading a record of any other size fails: a quad is refused, not misread)
-- `PLY::Lists(name, lists)` — a list of any size per record, kept in a container of containers (`lists[i].resize/data/size`)
+- `PLY::Lists(name, lists[, countType])` — a list of any size per record, kept in a container of containers (`lists[i].resize/data/size`); when writing, the count type (`Uint8` by default) must hold the longest list: `PLY::CountTypeOf(lists)` gives the smallest that does
 
 **Reading pattern** (elements are read in file order; the ones not read, and the unbound properties, are skipped; values are converted from the file's type to the bound type):
 ```cpp

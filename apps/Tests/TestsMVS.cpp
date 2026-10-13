@@ -92,13 +92,20 @@ bool PLYCodecTest()
 	if (!tmpDir.IsValid())
 		return false;
 
-	// a point-cloud with every attribute, and reals no short decimal carries
+	// a point-cloud with every attribute, reals no short decimal carries, and a point seen by more
+	// views than a uint8 list count holds
 	PointCloud pc;
 	pc.points = {{0.1f, -1e-7f, 12345.678f}, {FLT_MAX, -FLT_MIN, 3.f}, {1.f/3.f, 2.f, -0.5f}};
 	pc.colors = {Pixel8U::RED, Pixel8U::GREEN, Pixel8U::BLUE};
 	pc.normals = {{0.f, 0.f, 1.f}, {0.6f, 0.8f, 0.f}, {1.f, 0.f, 0.f}};
-	pc.pointViews = {{0, 3}, {1}, {2, 4, 5}};
-	pc.pointWeights = {{0.5f, 0.25f}, {1.f}, {0.1f, 0.2f, 0.3f}};
+	PointCloud::ViewArr manyViews(300);
+	PointCloud::WeightArr manyWeights(300);
+	FOREACH(v, manyViews) {
+		manyViews[v] = v;
+		manyWeights[v] = 1.f/(v+1);
+	}
+	pc.pointViews = {manyViews, {1}, {2, 4, 5}};
+	pc.pointWeights = {manyWeights, {1.f}, {0.1f, 0.2f, 0.3f}};
 	pc.labels = {1, 2, 3};
 	for (int format = 0; format < 3; ++format) {
 		const bool bBinary(format != 1), bLegacyTypes(format == 2);
@@ -165,12 +172,18 @@ bool PLYCodecTest()
 	}
 
 	// malformed files are refused rather than crashed on: a face count the file cannot hold or that
-	// overflows the allocation size, a quad, and a header claiming more vertices than the file holds
+	// overflows the allocation size, a quad, an ascii record short of a value or with one too many
+	// (each record is one line), and a header claiming more vertices than the file holds
 	const LPCSTR asciiHeader =
 		"ply\nformat ascii 1.0\n"
 		"element vertex 3\nproperty float x\nproperty float y\nproperty float z\n"
-		"element face 1\nproperty list uint int vertex_indices\nend_header\n"
+		"element face 2\nproperty list uint int vertex_indices\nend_header\n"
 		"0 0 0\n1 0 0\n0 1 0\n";
+	const auto WriteAscii = [&tmpDir, asciiHeader](LPCSTR faceLines) {
+		const String fileName(tmpDir(_T("malformed.ply")));
+		std::ofstream(fileName.c_str(), std::ios::binary) << asciiHeader << faceLines;
+		return fileName;
+	};
 	const auto WriteBinary = [&tmpDir](int numVertices, uint8_t count, std::initializer_list<uint32_t> indices) {
 		std::string body(3*3*sizeof(float), '\0');
 		body += static_cast<char>(count);
@@ -186,11 +199,16 @@ bool PLYCodecTest()
 		VERBOSE("ERROR: a well-formed binary PLY triangle was refused!");
 		return false;
 	}
-	for (const LPCSTR faceLine: {"9 0 1 2\n", "1073741825 0 1 2\n", "4 0 1 2 0\n"}) {
-		const String fileName(tmpDir(_T("malformed.ply")));
-		std::ofstream(fileName.c_str()) << asciiHeader << faceLine;
-		if (mesh.Load(fileName)) {
-			VERBOSE("ERROR: the ascii PLY face '%.*s' was accepted!", (int)strlen(faceLine)-1, faceLine);
+	if (!mesh.Load(WriteAscii("3 0 1 2\r\n 3 2 1 0 ")) || mesh.faces != Mesh::FaceArr{{0, 1, 2}, {2, 1, 0}}) {
+		VERBOSE("ERROR: well-formed ascii PLY triangles did not load!");
+		return false;
+	}
+	for (const LPCSTR faceLines: {"9 0 1 2\n3 0 1 2\n", "1073741825 0 1 2\n3 0 1 2\n", "4 0 1 2 0\n3 0 1 2\n",
+		"3 0 1\n2 3 0 1 2\n", "3 0 1 2\n3 2 1 0 7\n"}) {
+		if (mesh.Load(WriteAscii(faceLines))) {
+			std::string lines(faceLines);
+			std::replace(lines.begin(), lines.end(), '\n', '|');
+			VERBOSE("ERROR: the ascii PLY faces '%s' were accepted!", lines.c_str());
 			return false;
 		}
 	}

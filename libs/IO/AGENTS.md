@@ -11,9 +11,9 @@ PLY reader/writer, the primary format for point clouds and meshes. Values go str
 
 **Writing:** `AddComment()`, `AddElement(name, count, bindings)` in file order, then `Save(path, type, legacyTypeNames)`; the bound memory must stay valid until `Save`.
 
-**Bindings:** `PLY::Scalar(name, &arr[0].x, stride[, fileType])`, `PLY::List(name, &faces[0].x, numItems, stride)` (fixed-size list), `PLY::Lists(name, containerOfContainers)` (any size per record).
+**Bindings:** `PLY::Scalar(name, &arr[0].x, stride[, fileType])`, `PLY::List(name, &faces[0].x, numItems, stride)` (fixed-size list), `PLY::Lists(name, containerOfContainers[, countType])` (any size per record; writing, the count type must hold the longest list: `PLY::CountTypeOf(lists)`).
 
-**File types:** `PLY::BINARY_LE` (default), `PLY::ASCII` (exact text for reals), `PLY::BINARY_BE` (read only).
+**File types:** `PLY::BINARY_LE` (default), `PLY::ASCII` (exact text for reals; one record per line, enforced on read), `PLY::BINARY_BE` (read only).
 
 **Data types:** Int8/16/32, Uint8/16/32, Float32/64 (also read under their legacy names: char, uchar, short, int, float, double...).
 
