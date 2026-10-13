@@ -188,8 +188,9 @@ struct SFM_API DenseMatches {
 // (too few inliers at the sparse tolerance, or the branch's strict filters), the verdict's geometry
 // stands: the classification runs against it instead, so an admitted pair is always stored -- a pair
 // with zero sparse inliers is a dense-only pair, its dense segment its whole evidence.
-// `pair` must arrive carrying the verdict's geometry and no matches, and `guided` in increasing
-// queryIdx (MatchFeaturesGuided's own order), which is the order the sparse segment keeps.
+// `pair` must arrive carrying the verdict's geometry (F or E, asserted) and no matches, and `guided`
+// in increasing queryIdx (MatchFeaturesGuided's own order), which is the order the sparse segment
+// keeps.
 // Returns true when the pair carries at least one correspondence of either kind.
 SFM_API bool AssemblePairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
 	const PairVerdict& verdict, const std::vector<DMatch>& guided, const ROMA2Config& config, int warpSize,
@@ -202,27 +203,32 @@ SFM_API bool AssemblePairROMA2(const PairsMatcher& pairsMatcher, const Image& im
 // PairsMatcher::RefineRelativePose with each dense correspondence at config.denseFitWeight; when that
 // fails the geometry `pair` arrives with stands. Then the classification against the kept geometry
 // (through E on the bearings when a camera has a lens, else the pixel F): a sparse correspondence
-// within maxEpipolarError is an inlier, the others outliers (all inliers when maxEpipolarError is 0);
-// a dense one within config.denseEpipolarErrorFactor times that bar is kept (within denseTolerance
-// when maxEpipolarError is 0, every one when denseTolerance is 0 too).
-// `pair` must arrive with a geometry and no matches; on return pair.matches holds the sparse inliers
-// in the order of `sparse`, pair.outlierMatches the rest, numFilteredInliers their count and
-// numDenseInliers 0 -- the dense segment is the caller's to materialise -- and denseKept one flag per
-// dense correspondence.
-SFM_API void FitAndClassifyPairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
+// within maxEpipolarError is an inlier, the others outliers (all inliers when maxEpipolarError is 0,
+// or when `pair` holds no geometry at all); a dense one within config.denseEpipolarErrorFactor times
+// that bar is kept (within denseTolerance when maxEpipolarError is 0, every one when denseTolerance
+// is 0 too).
+// `pair` must arrive with no matches; on return pair.matches holds the sparse inliers in the order
+// of `sparse`, pair.outlierMatches the rest, numFilteredInliers their count and numDenseInliers 0 --
+// the dense segment is the caller's to materialise -- and denseKept one flag per dense correspondence.
+// Returns whether the union fit succeeded: when it did not, the classification ran against the
+// geometry `pair` arrived with, which the assembly keeps (the verdict's) and the re-verification
+// refuses.
+SFM_API bool FitAndClassifyPairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
 	const std::vector<DMatch>& sparse, const std::vector<Point2f>& densePointsA, const std::vector<Point2f>& densePointsB,
 	const ROMA2Config& config, float denseTolerance, ImagePair& pair, std::vector<uint8_t>& denseKept);
 
 // Re-verify a stored RoMa2 pair through its cameras as they are now (a lens fitted, a focal
 // calibrated), the way it was assembled: its sparse candidates -- the sparse segment, any RANSAC
 // inlier a strict filter rejected, and the outliers -- and its dense segment go through
-// FitAndClassifyPairROMA2 from the geometry the pair holds; a match with a dense end outside the
-// dense segment (a pair invalidated after its fill was stored holds its dense matches among its
+// FitAndClassifyPairROMA2, on a geometry fitted to them afresh; a match with a dense end outside
+// the dense segment (a pair invalidated after its fill was stored holds its dense matches among its
 // outliers) is a dense candidate too. The pair comes back partitioned as at matching, [sparse
 // inliers | kept dense], every other sparse candidate an outlier; a dense match that fails is
 // dropped (its keypoints stay in the images), the weight is left to be recomputed
-// (weightedInliers -1) and the ray angle is measured again. A pair left with no correspondence
-// keeps no matches.
+// (weightedInliers -1) and the ray angle is measured again. A pair whose re-fit fails (too few
+// candidates, or too few inliers for the estimator) is invalidated, as GeometricFilter leaves a pair
+// it cannot verify: its geometry reset, every candidate, sparse and dense, an outlier, and no
+// partition (numFilteredInliers -1, numDenseInliers 0).
 SFM_API void ReverifyPairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
 	const ROMA2Config& config, ImagePair& pair);
 

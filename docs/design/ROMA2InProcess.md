@@ -283,8 +283,9 @@ a pair the warp rejects. Per pair:
    sparse (descriptor) evidence, the dense correspondences within `denseEpipolarErrorFactor` (1) times
    that same tolerance its dense segment. The coarse warp lands a correspondence several pixels off on
    a full-resolution frame (a median of 6 px on 2789 px images, against 1 px for a detected keypoint),
-   and one admitted at the half cell the warp can claim (8.7 px there) pollutes every track it enters;
-   a factor of 0 keeps the half-cell warp tolerance instead.
+   and one admitted at the half cell the warp can claim (8.7 px there) pollutes every track it enters.
+   The half-cell warp tolerance is the dense bar only when the verification is off (`maxEpipolarError`
+   0); with it on, a factor of 0 holds the dense correspondences to a zero tolerance, which keeps none.
    When the union fit fails, the verdict's own geometry stands and classification runs against it
    instead — an admitted pair is always stored, and a pair with zero sparse inliers is dense-only, its
    dense segment its whole evidence. The pair is stored once (`StorePairROMA2`): created, or replacing
@@ -297,14 +298,17 @@ verifies every pair of that camera again, and a pair the one pass matched (it ca
 segment, or one of its images carries dense keypoints) goes through `ReverifyPairROMA2` instead of
 `GeometricFilter`: its stored sparse candidates (the sparse segment, any RANSAC inlier a strict
 filter rejected, and the outliers) are classified again and its dense segment with them, kept apart,
-by `FitAndClassifyPairROMA2` from the geometry the pair holds; a match with a dense end is a dense
-candidate wherever the pair holds it, since a pair invalidated after its fill was stored (left under
-the minimum of matches by the redundant-keypoint filter) holds its dense matches among its outliers.
-A match an earlier geometry refused can come back, and a dense sample that now fails is dropped, its
-keypoints left in the images. `GeometricFilter` over all of a pair's matches held the dense samples
-to the descriptor estimator at full weight and kept one that failed as an outlier, and with the
-strict filter off it folded the dense segment into the sparse one (the strict filter's pass,
-`ImagePair::FilterMatches`, re-derives the dense segment from the keypoints).
+by `FitAndClassifyPairROMA2`, on a geometry fitted to them afresh; a match with a dense end is a
+dense candidate wherever the pair holds it, since a pair invalidated after its fill was stored (left
+under the minimum of matches by the redundant-keypoint filter) holds its dense matches among its
+outliers. A match an earlier geometry refused can come back, and a dense sample that now fails is
+dropped, its keypoints left in the images. A pair whose re-fit fails (too few candidates, or too few
+inliers for the estimator) is invalidated, as `GeometricFilter` leaves a pair it cannot verify: its
+geometry reset and every candidate, sparse and dense, an outlier. `GeometricFilter` over all of a
+pair's matches held the dense samples to the descriptor estimator at full weight and kept one that
+failed as an outlier, and with the strict filter off it folded the dense segment into the sparse one
+(the strict filter's pass, `ImagePair::FilterMatches`, re-derives the dense segment from the
+keypoints).
 
 A judged pair costs on the order of 100 ms on an A100 at the base preset, growing on a texture-rich
 capture where the guided descriptor search dominates rather than the graph call, and less at the
@@ -383,8 +387,9 @@ bool AssemblePairROMA2(const PairsMatcher&, const Image& imgA, const Image& imgB
     const PairVerdict& verdict, const std::vector<DMatch>& guided, const ROMA2Config& config,
     int warpSize, ImagePair& pair, DenseMatches& dense);
 
-// the fit and the classification AssemblePairROMA2 runs, shared with the re-verification
-void FitAndClassifyPairROMA2(const PairsMatcher&, const Image& imgA, const Image& imgB,
+// the fit and the classification AssemblePairROMA2 runs, shared with the re-verification; true when
+// the union fit succeeded
+bool FitAndClassifyPairROMA2(const PairsMatcher&, const Image& imgA, const Image& imgB,
     const std::vector<DMatch>& sparse, const std::vector<Point2f>& densePointsA,
     const std::vector<Point2f>& densePointsB, const ROMA2Config& config, float denseTolerance,
     ImagePair& pair, std::vector<uint8_t>& denseKept);
@@ -709,11 +714,14 @@ sees no reloads at all.
   change sets off (`PairsMatcher::ComputeRelativePoses`, `ReverifyPairROMA2`) keeps a pair's
   partition: on the wedge of `ROMA2AssemblyTest`, with nothing about the cameras changed, the pair
   comes back with the same sparse inliers, the same dense segment of dense keypoints and the same
-  outliers, a pair whose fill drew nothing comes back well formed, and so does a pair invalidated
-  after its fill was stored, its dense matches back in the dense segment, with the matcher's strict
-  filter and without it. Under the default configuration, with the dense fill displaced 2 px across
-  the epipolar lines (as `ROMA2DenseFitWeightTest` builds it), the re-verified pose follows the sparse
-  matches, where `GeometricFilter` over all of the pair's matches at full weight follows the bias.
+  outliers, a pair whose fill drew nothing comes back well formed, and so does a pair whose matches
+  all sit among its outliers, its dense matches back in the dense segment, while a pair the re-fit
+  refuses (stored without a geometry, as a scene an earlier build saved can hold one, or under the
+  minimum of matches with its geometry kept, as the redundant-keypoint filter leaves one) comes back
+  invalidated, with the matcher's strict filter and without it. Under the default configuration, with
+  the dense fill displaced 2 px across the epipolar lines (as `ROMA2DenseFitWeightTest` builds it),
+  the re-verified pose follows the sparse matches, where `GeometricFilter` over all of the pair's
+  matches at full weight follows the bias.
 - **`ROMA2ReverifyLensTest`** (synthetic, no model needed) — a pair classified at matching through
   the pinhole geometry of its true pose and verified again once its camera knows its lens: the corner
   matches the pinhole rejected come back as sparse inliers, and the dense samples off the true

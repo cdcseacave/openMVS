@@ -3786,29 +3786,37 @@ constexpr REAL ROMA2_REVERIFY_MAX_ERROR_SHARE = REAL(0.25);
 // calibration runs on every camera it changed and the lens stage on every camera it fitted) keeps a
 // RoMa2 pair's partition: on the wedge, with nothing about the cameras changed, the pair comes back
 // with the same sparse inliers, the same dense segment of dense keypoints, and the same outliers; a
-// pair whose dense fill drew nothing comes back well formed too, and so does a pair invalidated after
-// its fill was stored (as FilterRedundantKeypoints leaves one under the minimum of matches, every
-// match an outlier), its dense matches back in the dense segment. Both with the matcher's strict
-// filter and without it: with it, GeometricFilter's own partition tells the dense matches apart by
-// their keypoints (ImagePair::FilterMatches), without it nothing does, and GeometricFilter over all
-// of a pair's matches folds the dense segment into the sparse one. Under the default configuration
-// the change shows in the pose: with the dense fill displaced ROMA2_REVERIFY_DENSE_BIAS px across the
-// epipolar lines, the re-verified pose follows the sparse matches (the denseFitWeight polish), where
-// GeometricFilter over all of the pair's matches at full weight follows the bias
+// pair whose dense fill drew nothing comes back well formed too, and so does a pair whose matches all
+// sit among its outliers, re-verified from them, its dense matches back in the dense segment. A pair
+// the re-fit refuses comes back invalidated, as GeometricFilter leaves a pair it cannot verify (no
+// geometry, every match an outlier): one stored without a geometry, as a scene saved by an earlier
+// build holds a pair GeometricFilter could not verify, and one under the minimum of matches, as
+// FilterRedundantKeypoints leaves it (every match an outlier, the geometry kept). Both with the
+// matcher's strict filter and without it: with it, GeometricFilter's own partition tells the dense
+// matches apart by their keypoints (ImagePair::FilterMatches), without it nothing does, and
+// GeometricFilter over all of a pair's matches folds the dense segment into the sparse one and leaves
+// the sparse count unmaterialised (-1), which the re-verification materialises. Under the default
+// configuration the change shows in the pose: with the dense fill displaced ROMA2_REVERIFY_DENSE_BIAS
+// px across the epipolar lines, the re-verified pose follows the sparse matches (the denseFitWeight
+// polish), where GeometricFilter over all of the pair's matches at full weight follows the bias
 bool ROMA2ReverifyPartitionTest()
 {
 	TD_TIMER_START();
 	constexpr int cells = 64;
 	enum class Stored {
-		DENSE,       // the pair as stored, its dense segment past its sparse inliers
-		NO_DENSE,    // a pair whose fill drew nothing, in a scene the one pass matched
-		INVALIDATED  // the pair as stored, then every match made an outlier
+		DENSE,         // the pair as stored, its dense segment past its sparse inliers
+		NO_DENSE,      // a pair whose fill drew nothing, in a scene the one pass matched
+		OUTLIERS,      // the pair as stored, then every match moved among its outliers
+		NO_GEOMETRY,   // every match an outlier and no geometry, re-verified where the re-fit is refused
+		UNDER_MINIMUM  // every match an outlier, the geometry kept, re-verified where the re-fit is refused
 	};
 	for (const bool strictFilter : {true, false}) {
-		for (const Stored stored : {Stored::DENSE, Stored::NO_DENSE, Stored::INVALIDATED}) {
+		for (const Stored stored : {Stored::DENSE, Stored::NO_DENSE, Stored::OUTLIERS, Stored::NO_GEOMETRY, Stored::UNDER_MINIMUM}) {
 			const bool withDense = stored != Stored::NO_DENSE;
 			const char* const name = stored == Stored::DENSE ? "dense" :
-				stored == Stored::NO_DENSE ? "no dense segment" : "invalidated";
+				stored == Stored::NO_DENSE ? "no dense segment" :
+				stored == Stored::OUTLIERS ? "every match an outlier" :
+				stored == Stored::NO_GEOMETRY ? "no geometry" : "under the minimum";
 			Scene scene;
 			MakeROMA2WedgeScene(scene);
 			MatchConfig matchCfg;
@@ -3838,9 +3846,38 @@ bool ROMA2ReverifyPartitionTest()
 					numSparse, numDense, (unsigned)numOutliers);
 				return false;
 			}
-			if (stored == Stored::INVALIDATED)
-				pair.InvalidateMatches(); // its dense matches now among its outliers, and no partition
-			matcher.ComputeRelativePoses(true, false, {scene.cameras[0]});
+			const unsigned numCandidates = pair.GetNumMatches();
+			// a pair the re-fit must refuse is verified again on a matcher whose estimator asks for more
+			// inliers than the pair has candidates
+			const bool bRefused = stored == Stored::NO_GEOMETRY || stored == Stored::UNDER_MINIMUM;
+			MatchConfig matchCfgAgain(matchCfg);
+			if (bRefused)
+				matchCfgAgain.minMatches = numCandidates + 1;
+			PairsMatcher matcherAgain(scene, matchCfgAgain);
+			matcherAgain.SetROMA2(NULL, config);
+			if (stored == Stored::NO_GEOMETRY) {
+				// as a scene saved by an earlier build holds a pair GeometricFilter could not verify, and a
+				// resumed scene verifies again every pair without a pose
+				pair.ResetGeometry();
+				pair.InvalidateMatches();
+				matcherAgain.ComputeRelativePoses();
+			} else {
+				if (stored != Stored::DENSE && stored != Stored::NO_DENSE)
+					pair.InvalidateMatches(); // its dense matches now among its outliers, the geometry kept
+				matcherAgain.ComputeRelativePoses(true, false, {scene.cameras[0]});
+			}
+			if (bRefused) {
+				// invalidated, as GeometricFilter leaves a pair it cannot verify
+				if (pair.HasMatches() || pair.outlierMatches.size() != numCandidates || pair.numFilteredInliers != -1 ||
+					pair.GetNumDenseInliers() != 0 || pair.HasGeometricVerification()) {
+					VERBOSE("ROMA2ReverifyPartitionTest FAILED: %s, %s, re-verified to %u sparse, %u dense, %u outliers of the %u matches, %s geometry, where the refused re-fit leaves it invalidated",
+						name, strictFilter ? "strict filter" : "no strict filter",
+						pair.GetNumFilteredInliers(), pair.GetNumDenseInliers(), (unsigned)pair.outlierMatches.size(),
+						numCandidates, pair.HasGeometricVerification() ? "with a" : "no");
+					return false;
+				}
+				continue;
+			}
 			if (pair.GetNumFilteredInliers() != numSparse || pair.GetNumDenseInliers() != numDense ||
 				pair.outlierMatches.size() != numOutliers || !HasROMA2Partition(scene, pair) || !pair.relativePose.has_value()) {
 				VERBOSE("ROMA2ReverifyPartitionTest FAILED: %s, %s, re-verified to %u sparse, %u dense, %u outliers (from %u, %u, %u), partition %s",
@@ -3848,6 +3885,19 @@ bool ROMA2ReverifyPartitionTest()
 					pair.GetNumFilteredInliers(), pair.GetNumDenseInliers(),
 					(unsigned)pair.outlierMatches.size(), numSparse, numDense, (unsigned)numOutliers,
 					HasROMA2Partition(scene, pair) ? "kept" : "broken");
+				return false;
+			}
+			// the partition the re-verification leaves: the sparse count materialised, which GeometricFilter
+			// without the strict filter leaves at -1, and nothing past the track-forming matches
+			if (pair.numFilteredInliers < 0) {
+				VERBOSE("ROMA2ReverifyPartitionTest FAILED: %s, %s, re-verified with the sparse count unmaterialised",
+					name, strictFilter ? "strict filter" : "no strict filter");
+				return false;
+			}
+			if (pair.matches.size() != pair.GetNumTrackFormingMatches()) {
+				VERBOSE("ROMA2ReverifyPartitionTest FAILED: %s, %s, re-verified with %u matches past the track-forming ones",
+					name, strictFilter ? "strict filter" : "no strict filter",
+					(unsigned)pair.matches.size() - pair.GetNumTrackFormingMatches());
 				return false;
 			}
 		}
@@ -3908,6 +3958,14 @@ bool ROMA2ReverifyPartitionTest()
 // through off the true geometry (placed on the pinhole epipolar line, LENS_REVERIFY_WRONG_SHIFT px or
 // more from the true position) are dropped while the true dense samples stay
 constexpr double LENS_REVERIFY_WRONG_SHIFT = 8.0;
+// a dense sample within this share of the corner radius of the centre is a central one: the lens
+// moves it about 2 px at most there (LENS_INLIER_K1), so the pinhole and the true geometry agree on it
+constexpr REAL LENS_REVERIFY_CENTRAL_SHARE = REAL(0.4);
+// where a dense sample is drawn from its keypoint of A, in pixels along each axis: a central one
+// between the grid points, a corner one toward the image corner, where the lens bends the pinhole
+// epipolar line the most and inside the LENS_INLIER_MARGIN the keypoints keep from the edges
+constexpr REAL LENS_REVERIFY_CENTRAL_OFFSET = REAL(12);
+constexpr REAL LENS_REVERIFY_CORNER_OFFSET = REAL(6);
 bool ROMA2ReverifyLensTest()
 {
 	TD_TIMER_START();
@@ -3952,13 +4010,19 @@ bool ROMA2ReverifyLensTest()
 		return false;
 	}
 	// the dense segment as a pinhole bar leaves it: true samples between the central grid points, and
-	// at the corners samples moved onto the pinhole epipolar line, off the true position
+	// at the corners samples drawn toward the image corner and moved onto the pinhole epipolar line,
+	// off the true position
 	DenseMatches dense;
 	unsigned numTrueDense = 0;
 	FOREACH(i, imgA.keypoints) {
 		const Point2f& kA = imgA.keypoints[i].pt;
 		const bool corner = std::find(corners.begin(), corners.end(), (uint32_t)i) != corners.end();
-		const Point2 ptA(kA.x + 12, kA.y + 12);
+		const Point2 ptA(corner ?
+			Point2(kA.x + (kA.x < camera.cx ? -LENS_REVERIFY_CORNER_OFFSET : LENS_REVERIFY_CORNER_OFFSET),
+			       kA.y + (kA.y < camera.cy ? -LENS_REVERIFY_CORNER_OFFSET : LENS_REVERIFY_CORNER_OFFSET)) :
+			Point2(kA.x + LENS_REVERIFY_CENTRAL_OFFSET, kA.y + LENS_REVERIFY_CENTRAL_OFFSET));
+		if (!Image8U::isInside(Point2f((float)ptA.x, (float)ptA.y), imgA.GetSize()))
+			continue; // off the edge of A
 		const Point3 X(truth.Unproject(ptA)*REAL(5)); // camera A at the origin unrotated
 		const auto [ptBtrue, valid] = truth.Project(imgB.R*(X - imgB.C));
 		if (!valid || !Image8U::isInside(Point2f((float)ptBtrue.x, (float)ptBtrue.y), imgB.GetSize()))
@@ -3973,7 +4037,7 @@ bool ROMA2ReverifyLensTest()
 			if (norm(moved - ptB) < LENS_REVERIFY_WRONG_SHIFT)
 				continue;
 			ptB = moved;
-		} else if (norm(Point2(ptA.x - camera.cx, ptA.y - camera.cy)) < 0.4*norm(Point2(camera.cx, camera.cy))) {
+		} else if (norm(Point2(ptA.x - camera.cx, ptA.y - camera.cy)) < LENS_REVERIFY_CENTRAL_SHARE*norm(Point2(camera.cx, camera.cy))) {
 			++numTrueDense;
 		} else {
 			continue; // neither central nor a corner: left out
@@ -3993,9 +4057,19 @@ bool ROMA2ReverifyLensTest()
 	camera.SetDistortion(LENS_INLIER_K1, 0, 0, 0);
 	matcher.ComputeRelativePoses(true, false, {scene.cameras[0]});
 	const ImagePair& stored = scene.pairs[0];
-	if (!stored.outlierMatches.empty() || stored.GetNumFilteredInliers() != guided.size()) {
-		VERBOSE("ROMA2ReverifyLensTest FAILED: %u of the %u true matches are inliers through the lens, %u still rejected",
-			stored.GetNumFilteredInliers(), (unsigned)guided.size(), (unsigned)stored.outlierMatches.size());
+	if (stored.GetNumFilteredInliers() != guided.size()) {
+		VERBOSE("ROMA2ReverifyLensTest FAILED: %u of the %u true matches are sparse inliers through the lens",
+			stored.GetNumFilteredInliers(), (unsigned)guided.size());
+		return false;
+	}
+	if (!stored.outlierMatches.empty()) {
+		VERBOSE("ROMA2ReverifyLensTest FAILED: %u matches are still outliers through the lens, where every true match is an inlier and every wrong dense sample dropped",
+			(unsigned)stored.outlierMatches.size());
+		return false;
+	}
+	if (stored.matches.size() != stored.GetNumTrackFormingMatches()) {
+		VERBOSE("ROMA2ReverifyLensTest FAILED: %u matches past the track-forming ones",
+			(unsigned)stored.matches.size() - stored.GetNumTrackFormingMatches());
 		return false;
 	}
 	if (stored.GetNumDenseInliers() != numTrueDense || !HasROMA2Partition(scene, stored)) {
@@ -4006,7 +4080,7 @@ bool ROMA2ReverifyLensTest()
 	for (unsigned k = 0; k < stored.GetNumDenseInliers(); ++k) {
 		const DMatch& m = stored.matches[stored.GetNumFilteredInliers() + k];
 		const Point2f& ptA = imgA.keypoints[m.queryIdx].pt;
-		if (norm(Point2(ptA.x - camera.cx, ptA.y - camera.cy)) >= 0.4*norm(Point2(camera.cx, camera.cy))) {
+		if (norm(Point2(ptA.x - camera.cx, ptA.y - camera.cy)) >= LENS_REVERIFY_CENTRAL_SHARE*norm(Point2(camera.cx, camera.cy))) {
 			VERBOSE("ROMA2ReverifyLensTest FAILED: a dense sample off the true geometry was kept at (%.1f, %.1f)", ptA.x, ptA.y);
 			return false;
 		}

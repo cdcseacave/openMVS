@@ -748,6 +748,7 @@ bool SFM::AssemblePairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA,
 {
 	ASSERT(verdict.admitted);
 	ASSERT(pair.matches.empty() && pair.GetNumDenseInliers() == 0);
+	ASSERT(pair.F.has_value() || pair.E.has_value()); // the verdict's geometry, the fallback of the union fit
 	ASSERT(warpSize > 0);
 	dense = DenseMatches();
 	const cv::Size sizeA(imgA.GetSize()), sizeB(imgB.GetSize());
@@ -774,7 +775,8 @@ bool SFM::AssemblePairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA,
 	}
 
 	// 2) the one geometry and the classification of both kinds of correspondence
-	// (FitAndClassifyPairROMA2); the warp's half cell is the dense bar when the verification is off
+	// (FitAndClassifyPairROMA2); the warp's half cell is the dense bar when the verification is off,
+	// and when the union fit fails the classification ran against the verdict's geometry, which stands
 	std::vector<uint8_t> denseKept;
 	FitAndClassifyPairROMA2(pairsMatcher, imgA, imgB, guided, dense.pointsA, dense.pointsB, config,
 		WarpTolerance(sizeA, sizeB, warpSize), pair, denseKept);
@@ -798,7 +800,7 @@ bool SFM::AssemblePairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA,
 	return !pair.matches.empty() || numDenseKept > 0;
 }
 
-void SFM::FitAndClassifyPairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
+bool SFM::FitAndClassifyPairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
 	const std::vector<DMatch>& sparse, const std::vector<Point2f>& densePointsA, const std::vector<Point2f>& densePointsB,
 	const ROMA2Config& config, float denseTolerance, ImagePair& pair, std::vector<uint8_t>& denseKept)
 {
@@ -807,10 +809,12 @@ void SFM::FitAndClassifyPairROMA2(const PairsMatcher& pairsMatcher, const Image&
 	// ONE geometry for the pair, fitted on sparse u dense through the matcher's own estimator at its
 	// own threshold: the sparse correspondences are sub-pixel where texture exists and the dense ones
 	// carry the parts of the overlap they left empty, so the union is the best-conditioned evidence
-	// the pair has. On failure the geometry the pair arrived with stands, unchanged (the verdict's at
-	// matching, the pair's own at re-verification) -- an admitted pair is always stored, and a pair
-	// holding one fit's pose next to another fit's matrices would describe two geometries as one,
-	// which is why all three members move together or none do.
+	// the pair has. On failure the geometry the pair arrived with stays, unchanged, and the caller
+	// decides whether it may stand: at matching it is the verdict's and stands, an admitted pair is
+	// always stored; at re-verification it does not, a pair no fit stands behind is invalidated. A
+	// pair holding one fit's pose next to another fit's matrices would describe two geometries as
+	// one, which is why all three members move together or none do.
+	bool bFitted = false;
 	const size_t numTotal = sparse.size() + densePointsA.size();
 	if (numTotal >= 8) {
 		std::vector<Point2f> pointsA, pointsB;
@@ -844,6 +848,7 @@ void SFM::FitAndClassifyPairROMA2(const PairsMatcher& pairsMatcher, const Image&
 			pair.F = fit.F;
 			pair.E = fit.E;
 			pair.relativePose = fit.relativePose;
+			bFitted = true;
 		}
 	}
 
@@ -881,6 +886,7 @@ void SFM::FitAndClassifyPairROMA2(const PairsMatcher& pairsMatcher, const Image&
 	if ((bVerifySparse || denseTolerance > 0.f) && denseTest.IsValid())
 		FOREACH(k, densePointsA)
 			denseKept[k] = denseTest(densePointsA[k], densePointsB[k]) ? 1 : 0;
+	return bFitted;
 }
 
 void SFM::ReverifyPairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
@@ -915,10 +921,19 @@ void SFM::ReverifyPairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA,
 		densePointsA.push_back(imgA.keypoints[m.queryIdx].pt);
 		densePointsB.push_back(imgB.keypoints[m.trainIdx].pt);
 	}
-	// the geometry stays: it stands if the fit fails
 	pair.ResetMatches();
 	std::vector<uint8_t> denseKept;
-	FitAndClassifyPairROMA2(pairsMatcher, imgA, imgB, sparse, densePointsA, densePointsB, config, 0.f, pair, denseKept);
+	if (!FitAndClassifyPairROMA2(pairsMatcher, imgA, imgB, sparse, densePointsA, densePointsB, config, 0.f, pair, denseKept)) {
+		// no geometry explains the candidates any more (too few of them, or too few inliers for the
+		// estimator): the pair is invalidated, as GeometricFilter leaves a pair it cannot verify -- no
+		// geometry, every candidate an outlier and no partition -- rather than classified against a
+		// geometry no fit stands behind, the stored one or none at all, which would admit every one
+		pair.ResetMatches();
+		pair.ResetGeometry();
+		pair.outlierMatches = std::move(sparse);
+		pair.outlierMatches.insert(pair.outlierMatches.end(), denseMatches.begin(), denseMatches.end());
+		return;
+	}
 	// the dense segment: the stored dense matches that passed, right after the sparse inliers; a dense
 	// match that failed is dropped, its keypoints left in the images
 	FOREACH(k, denseMatches)
