@@ -50,9 +50,10 @@ using namespace SFM;
 #define VERBOSE(...) LOG(lt, __VA_ARGS__)
 
 // A lens is held one to one this far past the farthest radius its camera's matches reach while it is
-// fitted, and past the image corner to be kept: right at the farthest match the fit can walk into a
-// lens that folds just beyond it, where the undistortion stops having one answer and the cost stops
-// being smooth (the prototype stalled at 1.13 px where the right lens gives 0.48 without it)
+// fitted, and past the image corner to be kept, or, given, to be held: right at the farthest match
+// the fit can walk into a lens that folds just beyond it, where the undistortion stops having one
+// answer and the cost stops being smooth (the prototype stalled at 1.13 px where the right lens gives
+// 0.48 without it)
 constexpr REAL LENS_VALID_MARGIN = REAL(1.05);
 // Newton iterations of the undistortion inside the fit, on the radius from r_u = r_d: a fixed count,
 // so that the automatic derivatives of every residual run through the same iterations; it converges
@@ -128,6 +129,16 @@ void TangentBasis(const Point3& t, Point3& e1, Point3& e2)
 	e2 = t.cross(e1);
 }
 
+// The normalized radius of a pinhole camera's image corner farthest from its principal point
+double CornerRadius(const PinholeCamera& pinhole)
+{
+	double radius = 0;
+	for (const Point2d& corner : {Point2d(0, 0), Point2d(pinhole.size.width - 1, 0),
+		Point2d(0, pinhole.size.height - 1), Point2d(pinhole.size.width - 1, pinhole.size.height - 1)})
+		radius = MAXF(radius, norm(Point2d((corner.x - pinhole.cx)/pinhole.fx, (corner.y - pinhole.cy)/pinhole.fy)));
+	return radius;
+}
+
 // One match of one pair: the first-order distance of its two measured, distorted pixels to the pair's
 // epipolar constraint u2^T [t]x R u1 = 0, each side through its own lens and focal -- the gradient of
 // the constraint with respect to each measured pixel passes through the inverse of that side's lens
@@ -137,7 +148,8 @@ void TangentBasis(const Point3& t, Point3& e1, Point3& e2)
 // A side's lens is a parameter block where it is fitted, else a constant held here.
 // A fitted lens that is not one to one out to its valid radius (the farthest normalized radius its
 // camera's matches reach, times LENS_VALID_MARGIN) makes the evaluation fail, which Ceres answers by
-// shrinking its trust region; a held side (valid radius 0) is not tested.
+// shrinking its trust region; a held side (valid radius 0) is not tested: its lens is one to one past
+// its image corner, or the camera would not have been held.
 struct LensSampsonError {
 	Point2d m1, m2;            // the measured points, normalized by their camera's focal and centre (distorted)
 	Point2d f1, f2;            // each side's focal (fx, fy), to bring the gradient back to pixels
@@ -352,9 +364,9 @@ bool RefineJointly(std::vector<FitPair>& pairs, std::vector<FitCamera>& cameras,
 }
 
 // The median absolute Sampson error of every fit camera's matches at the current bases and lenses,
-// pixels; a match between two cameras counts for both. A camera with an error that is not finite (a
-// held lens folding within the matches' reach, where undistortion has no answer) gets a NaN median:
-// it fails every comparison of the verdict, which therefore refuses its lens.
+// pixels; a match between two cameras counts for both. A camera with an error that is not finite (an
+// undistortion with no answer, which the roles and the fit's valid radius keep every lens clear of)
+// gets a NaN median: it fails every comparison of the verdict, which therefore refuses its lens.
 std::vector<double> MedianErrors(const std::vector<FitPair>& pairs, const std::vector<FitCamera>& cameras)
 {
 	std::vector<std::vector<double>> errors(cameras.size());
@@ -503,6 +515,8 @@ LensFitReport SFM::FitLensesFromPairs(Scene& scene, const MatchConfig& config)
 		}
 		if (pinhole.k3 != 0 || pinhole.p1 != 0 || pinhole.p2 != 0 || pinhole.HasAdditionalDistortion())
 			continue; // a lens the fit's model cannot hold, which held as k1, k2 alone would bias the cameras it pairs with
+		if (!IsLensOneToOne(pinhole.k1, pinhole.k2, LENS_VALID_MARGIN*CornerRadius(pinhole)))
+			continue; // a lens that folds within its frame: past the fold its undistortion has no answer, and held it would send its pairs' errors, and the fit of every camera it pairs with, astray
 		roles[c] = Role::HOLD;
 		outcome.status = LensFitOutcome::HELD;
 		outcome.k1 = pinhole.k1;
@@ -590,10 +604,7 @@ LensFitReport SFM::FitLensesFromPairs(Scene& scene, const MatchConfig& config)
 				f.focal = Point2d(pinhole.fx, pinhole.fy);
 				f.centre = Point2d(pinhole.cx, pinhole.cy);
 				f.reach = 0;
-				f.corner = 0;
-				for (const Point2d& corner : {Point2d(0, 0), Point2d(pinhole.size.width - 1, 0),
-					Point2d(0, pinhole.size.height - 1), Point2d(pinhole.size.width - 1, pinhole.size.height - 1)})
-					f.corner = MAXF(f.corner, norm(Point2d((corner.x - f.centre.x)/f.focal.x, (corner.y - f.centre.y)/f.focal.y)));
+				f.corner = CornerRadius(pinhole);
 				fitIndex[c] = (int)cameras.size();
 				cameras.push_back(f);
 			}

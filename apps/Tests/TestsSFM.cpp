@@ -3386,6 +3386,9 @@ const LensTestCamera LENS_TEST_P{1920, 1080, REAL(1400), REAL(0), REAL(0)};
 // leave the poses alone an error at the level of float rounding, which a fitted lens can still lower
 // by more than MatchConfig::lensFitMinErrorDrop, and for which no lens may be kept
 const LensTestCamera LENS_TEST_FAINT{1920, 1080, REAL(1400), REAL(-1.5e-6), REAL(0)};
+// A given k1 (k2 0) that folds camera B's lens at 0.41 of its focal from the centre, 365 px, well inside
+// its frame (its corner lies at 0.89): past the fold its undistortion has no answer
+constexpr REAL LENS_TEST_FOLDING_K1 = REAL(-0.9);
 
 enum class LensTestMotion {
 	TURN,   // the second view turns 10-30 deg about a near-vertical axis and moves 0.2-0.8 sideways: the lens shows
@@ -3634,9 +3637,10 @@ bool LensFitRefusalTest()
 }
 
 // A camera the fit cannot hold leaves it with every pair it has: one under the minimum of eligible
-// pairs, one whose given lens has terms past k1 and k2, and one whose focal is not trusted are each
-// left as they are, and the camera they pair with is fitted from its own pairs alone (those of the 30
-// it is built with that pass the fit's per-pair bars), to LENS_TEST_MAX_ERROR_PX
+// pairs, one whose given lens has terms past k1 and k2, one whose focal is not trusted and one whose
+// given lens folds within its frame are each left as they are, and the camera they pair with is fitted
+// from its own pairs alone (those of the 30 it is built with that pass the fit's per-pair bars), to
+// LENS_TEST_MAX_ERROR_PX
 bool LensFitMinimumPairsTest()
 {
 	TD_TIMER_START();
@@ -3644,6 +3648,7 @@ bool LensFitMinimumPairsTest()
 		enum class Kind {
 			CROSS_UNDER_MINIMUM, // camera B as built, with too few cross pairs to be fitted
 			FULLER_LENS,         // camera B given a lens with a tangential term besides k1, k2
+			FOLDING_LENS,        // camera B given a k1, k2 lens that folds within its frame
 			UNTRUSTED            // camera B's focal not trusted
 		};
 		const char* name;
@@ -3654,6 +3659,7 @@ bool LensFitMinimumPairsTest()
 	const Variant variants[] = {
 		{"under the minimum", Variant::Kind::CROSS_UNDER_MINIMUM, 10, LensFitOutcome::TOO_FEW_PAIRS},
 		{"a fuller given lens", Variant::Kind::FULLER_LENS, 30, LensFitOutcome::EXCLUDED},
+		{"a given lens that folds", Variant::Kind::FOLDING_LENS, 30, LensFitOutcome::EXCLUDED},
 		{"an untrusted focal", Variant::Kind::UNTRUSTED, 30, LensFitOutcome::EXCLUDED},
 	};
 	for (const Variant& variant : variants) {
@@ -3662,10 +3668,19 @@ bool LensFitMinimumPairsTest()
 		BuildLensTestScene(scene, {LENS_TEST_A, LENS_TEST_B},
 			{{0, 0, LensTestMotion::TURN, 30}, {0, 1, LensTestMotion::TURN, variant.numCross}}, 17, truePoses);
 		PinholeCamera& cameraB = *static_cast<PinholeCamera*>(scene.cameras[1]);
-		if (variant.kind == Variant::Kind::FULLER_LENS)
+		switch (variant.kind) {
+		case Variant::Kind::FULLER_LENS:
 			cameraB.SetDistortion(LENS_TEST_B.k1, LENS_TEST_B.k2, REAL(1e-4), 0);
-		else if (variant.kind == Variant::Kind::UNTRUSTED)
+			break;
+		case Variant::Kind::FOLDING_LENS:
+			cameraB.SetDistortion(LENS_TEST_FOLDING_K1, 0, 0, 0);
+			break;
+		case Variant::Kind::UNTRUSTED:
 			cameraB.trustIntrinsics = false;
+			break;
+		default:
+			break;
+		}
 		const REAL k1B = cameraB.k1, k2B = cameraB.k2, p1B = cameraB.p1;
 		// camera A's own pairs the fit can read: the pinhole verification leaves some of the 30 under
 		// MatchConfig::lensFitMatchesPerPair sparse inliers through the strong lens
@@ -3687,8 +3702,8 @@ bool LensFitMinimumPairsTest()
 		const LensFitOutcome& a = report.cameras[0];
 		const LensFitOutcome& b = report.cameras[1];
 		if (b.status != variant.expected || cameraB.k1 != k1B || cameraB.k2 != k2B || cameraB.p1 != p1B) {
-			VERBOSE("LensFitMinimumPairsTest FAILED: %s, camera B status %u (expected %u), lens %g %g %g",
-				variant.name, (unsigned)b.status, (unsigned)variant.expected, cameraB.k1, cameraB.k2, cameraB.p1);
+			VERBOSE("LensFitMinimumPairsTest FAILED: %s, camera B status %u (expected %u), lens %g %g %g; camera A status %u over %u pairs",
+				variant.name, (unsigned)b.status, (unsigned)variant.expected, cameraB.k1, cameraB.k2, cameraB.p1, (unsigned)a.status, a.numPairs);
 			return false;
 		}
 		if (a.status != LensFitOutcome::FITTED || a.numPairs != numOwnPairs) {

@@ -52,9 +52,10 @@ struct SFM_API MatchConfig;
  * pair's relative pose; focal and principal point are held.
  *
  * Which cameras: a pinhole camera that trusts its focal and has no lens is fitted; one whose lens is
- * given as k1, k2 alone is held, its pairs informing the others; anything else (spherical, focal not
- * trusted, a given lens with more terms) leaves the fit with all its pairs, since held at a wrong
- * lens it would bias every camera it pairs with.
+ * given as k1, k2 alone, one to one past its image corner, is held, its pairs informing the others;
+ * anything else (spherical, focal not trusted, a given lens with more terms, or one that folds within
+ * the frame, where its undistortion has no answer) leaves the fit with all its pairs, since held at a
+ * wrong lens it would bias every camera it pairs with.
  * What goes in: every verified pair with a pose that turns MatchConfig::lensFitMinRotation to
  * lensFitMaxRotation and holds lensFitMatchesPerPair sparse inliers, between two fitted or held
  * cameras, heaviest first by composite weight until every fitted camera has lensFitMaxPairs; from
@@ -84,7 +85,7 @@ SFM_API bool IsLensOneToOne(REAL k1, REAL k2, REAL radius);
 // What the fit decided for one camera
 struct SFM_API LensFitOutcome {
 	enum Status : uint8_t {
-		EXCLUDED = 0,  // not part of the fit: spherical, focal not trusted, or a given lens with terms past k1, k2
+		EXCLUDED = 0,  // not part of the fit: spherical, focal not trusted, or a given lens with terms past k1, k2 or that folds within the frame
 		HELD,          // its lens is given as k1, k2 alone and held, its pairs informing the others
 		TOO_FEW_PAIRS, // not fitted: fewer eligible pairs than MatchConfig::lensFitMinPairs
 		FOLDS,         // refused: the fitted lens is not one to one out to the image corner

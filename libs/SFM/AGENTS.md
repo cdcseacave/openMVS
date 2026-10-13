@@ -243,7 +243,8 @@ the heaviest `MatchConfig::lensFitMaxPairs` (150) that turn 5-45 deg, 200 sparse
 Sampson error in measured pixels under soft L1 at 1 px, each pair's 5-dof pose eliminated, three
 rounds of each pose re-estimated through the lens. A lens is kept when it is one to one past the image
 corner (1.05x) and lowers the median error 10% below the poses' own refinement; a camera under 20
-eligible pairs, spherical, untrusted, or with a given lens past k1, k2 is left as it is. Every pair of a
+eligible pairs, spherical, untrusted, or with a given lens past k1, k2 or that folds within the frame
+(not one to one out to 1.05x its corner) is left as it is, its pairs out of the fit. Every pair of a
 fitted camera is then verified again through `PairsMatcher::ComputeRelativePoses` (a RoMa2 pair
 through `ReverifyPairROMA2`). The bundle adjustments refine k1, k2 from the fitted lens. No
 command-line flag; `MatchConfig::lensFitEnabled` turns it off. A lens given with `--k1/--k2` or
