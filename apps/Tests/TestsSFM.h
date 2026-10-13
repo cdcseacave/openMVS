@@ -134,7 +134,8 @@ bool LensFitRefusalTest();
 // A camera the lens fit cannot hold leaves it with every pair it has: one under the minimum of
 // eligible pairs, one whose given lens has terms past k1 and k2, one whose focal is not trusted and
 // one whose given lens folds within its frame are each left as they are, and the camera they pair
-// with is fitted from its own pairs alone
+// with is fitted from its own pairs alone; a camera given its true lens as k1, k2 alone is held, and
+// its cross pairs, either camera first, inform the fitted camera
 bool LensFitMinimumPairsTest();
 
 // The re-verification a camera's change sets off (PairsMatcher::ComputeRelativePoses) keeps a RoMa2
