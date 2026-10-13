@@ -68,8 +68,8 @@ struct SFM_API MatchConfig;
  * so the reduced system holds 2 unknowns per fitted camera); each pair's pose re-estimated by RANSAC
  * through the fitted lens and kept where it explains the pair better, then the joint fit again, for up
  * to lensFitRounds rounds; a lens is kept when it stays one to one past the image corner and its
- * median error falls lensFitMinErrorDrop below the baseline. A refused camera keeps no lens, and the
- * others are fitted again without its pairs.
+ * median error falls lensFitMinErrorDrop below the baseline, and a fit the solver cannot complete
+ * keeps none. A refused camera keeps no lens, and the others are fitted again without its pairs.
  */
 
 // The undistortion displacement of a radial lens (k1, k2 on coordinates normalized by `focal`) at the
@@ -88,17 +88,19 @@ struct SFM_API LensFitOutcome {
 		HELD,          // its lens is given as k1, k2 alone and held, its pairs informing the others
 		TOO_FEW_PAIRS, // not fitted: fewer eligible pairs than MatchConfig::lensFitMinPairs
 		FOLDS,         // refused: the fitted lens is not one to one out to the image corner
-		NO_ERROR_DROP, // refused: its median error fell less than MatchConfig::lensFitMinErrorDrop
+		NO_ERROR_DROP, // refused: its median error fell less than MatchConfig::lensFitMinErrorDrop, or the solver failed on its fit
 		FITTED         // the lens was kept and set on the camera
 	};
 	CameraPtr pCamera = NULL;
 	Status status = EXCLUDED;
+	// the lens, numPairs, the medians and cornerDisplacement describe the last fit that judged the
+	// camera, and are 0 where none did (EXCLUDED, TOO_FEW_PAIRS; a HELD camera has its given lens)
 	REAL k1 = 0, k2 = 0;           // the lens fitted (FITTED, FOLDS, NO_ERROR_DROP) or given (HELD)
 	unsigned numEligiblePairs = 0; // pairs that could inform it when last counted
 	unsigned numPairs = 0;         // pairs of the last fit it took part in
 	double medianBefore = 0;       // median Sampson error with the poses alone refined at the starting lens, pixels
 	double medianAfter = 0;        // the same after the joint fit, pixels
-	double cornerDisplacement = 0; // LensDisplacement of the fitted lens at the image corner, pixels
+	double cornerDisplacement = 0; // LensDisplacement of the fitted lens at the image corner, pixels; 0 for a lens that folds before it (FOLDS), where undistortion has no answer
 };
 
 // What the fit did

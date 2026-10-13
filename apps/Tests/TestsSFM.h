@@ -127,8 +127,8 @@ bool MatchGeometricLensTest();
 bool LensFitRecoveryTest();
 
 // The lens fit refuses what no lens explains: pairs of a camera without a lens, forward pairs that
-// hide a strong lens, and exact positions whose error is float rounding; every refused camera is left
-// without a lens
+// hide a strong lens, and exact positions whose error is float rounding, without a lens or through one
+// too faint to matter (1e-3 px at the corner); every refused camera is left without a lens
 bool LensFitRefusalTest();
 
 // A camera the lens fit cannot hold leaves it with every pair it has: one under the minimum of

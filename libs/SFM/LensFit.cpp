@@ -45,6 +45,10 @@ using namespace SFM;
 
 // D E F I N E S ///////////////////////////////////////////////////
 
+#pragma push_macro("VERBOSE")
+#undef VERBOSE
+#define VERBOSE(...) LOG(lt, __VA_ARGS__)
+
 // A lens is held one to one this far past the farthest radius its camera's matches reach while it is
 // fitted, and past the image corner to be kept: right at the farthest match the fit can walk into a
 // lens that folds just beyond it, where the undistortion stops having one answer and the cost stops
@@ -70,9 +74,15 @@ constexpr double LENS_MIN_MEDIAN_ERROR = 0.01;
 // Added to the squared gradient of a match's epipolar constraint, which vanishes only on the epipole,
 // so that its distance stays finite there
 constexpr double LENS_MIN_GRADIENT_SQ = 1e-30;
+// The |t.x| of a unit baseline direction t (the cosine of its angle to the x axis) above which the x
+// axis is too close to t to build the tangent basis from, their cross product short and poorly
+// conditioned, so the y axis is used
+constexpr double LENS_TANGENT_MAX_COS_X = 0.9;
 
 
 // S T R U C T S ///////////////////////////////////////////////////
+
+DEFINE_LOG_NAME(lt, _T("LensFit "));
 
 namespace {
 
@@ -113,7 +123,7 @@ void InverseLensJacobianTimes(const T& k1, const T& k2, const T* u, const T* v, 
 // An orthonormal basis of the plane orthogonal to the unit vector t
 void TangentBasis(const Point3& t, Point3& e1, Point3& e2)
 {
-	const Point3 a(ABS(t.x) < 0.9 ? Point3(1, 0, 0) : Point3(0, 1, 0));
+	const Point3 a(ABS(t.x) < LENS_TANGENT_MAX_COS_X ? Point3(1, 0, 0) : Point3(0, 1, 0));
 	e1 = normalized(t.cross(a));
 	e2 = t.cross(e1);
 }
@@ -299,8 +309,10 @@ void RefinePosesAlone(std::vector<FitPair>& pairs, const std::vector<FitCamera>&
 
 // The lenses of the fitted cameras and every pair's pose together, from the pairs' bases, each pair's
 // 5 pose numbers eliminated first (they touch only their own pair's residuals), so the reduced
-// system holds 2 unknowns per fitted camera; the bases then move to the solution
-void RefineJointly(std::vector<FitPair>& pairs, std::vector<FitCamera>& cameras, double lossScale, unsigned numThreads)
+// system holds 2 unknowns per fitted camera; the bases then move to the solution.
+// Returns whether the solver reached a usable solution; where it did not, no lens or pose of the fit
+// may be judged.
+bool RefineJointly(std::vector<FitPair>& pairs, std::vector<FitCamera>& cameras, double lossScale, unsigned numThreads)
 {
 	ceres::Problem problem;
 	ceres::LossFunction* const loss = new ceres::SoftLOneLoss(lossScale);
@@ -333,12 +345,16 @@ void RefineJointly(std::vector<FitPair>& pairs, std::vector<FitCamera>& cameras,
 	options.logging_type = ceres::SILENT;
 	ceres::Solver::Summary summary;
 	ceres::Solve(options, &problem, &summary);
+	DEBUG_EXTRA("Lens fit over %u pairs: %s", (unsigned)pairs.size(), summary.BriefReport().c_str());
 	FOREACH(i, pairs)
 		Rebase(pairs[i], poses[i].data());
+	return summary.IsSolutionUsable();
 }
 
 // The median absolute Sampson error of every fit camera's matches at the current bases and lenses,
-// pixels; a match between two cameras counts for both
+// pixels; a match between two cameras counts for both. A camera with an error that is not finite (a
+// held lens folding within the matches' reach, where undistortion has no answer) gets a NaN median:
+// it fails every comparison of the verdict, which therefore refuses its lens.
 std::vector<double> MedianErrors(const std::vector<FitPair>& pairs, const std::vector<FitCamera>& cameras)
 {
 	std::vector<std::vector<double>> errors(cameras.size());
@@ -355,6 +371,10 @@ std::vector<double> MedianErrors(const std::vector<FitPair>& pairs, const std::v
 		std::vector<double>& e = errors[c];
 		if (e.empty())
 			continue;
+		if (std::any_of(e.begin(), e.end(), [](double v) { return !ISFINITE(v); })) {
+			medians[c] = std::numeric_limits<double>::quiet_NaN();
+			continue;
+		}
 		std::nth_element(e.begin(), e.begin() + e.size()/2, e.end());
 		medians[c] = e[e.size()/2];
 	}
@@ -451,13 +471,23 @@ bool SFM::IsLensOneToOne(REAL k1, REAL k2, REAL radius)
 
 LensFitReport SFM::FitLensesFromPairs(Scene& scene, const MatchConfig& config)
 {
+	// a fitted camera reads at least one pair and every pair at least one match; the rotation band
+	// is not empty, the error drop is a fraction, and the loss has a scale
+	ASSERT(config.lensFitMinPairs >= 1 && config.lensFitMaxPairs >= 1 && config.lensFitMatchesPerPair >= 1);
+	ASSERT(config.lensFitMinRotation <= config.lensFitMaxRotation);
+	ASSERT(config.lensFitMinErrorDrop >= 0 && config.lensFitMinErrorDrop < 1);
+	ASSERT(config.lensFitLossScale > 0);
 	const auto start = std::chrono::steady_clock::now();
 	LensFitReport report;
 	const unsigned numCameras = (unsigned)scene.cameras.size();
 	report.cameras.resize(numCameras);
 	// what every camera is to the fit
-	enum Role : uint8_t { FREE, HELD, OUT };
-	std::vector<Role> roles(numCameras, OUT);
+	enum class Role : uint8_t {
+		FIT,  // its lens is fitted
+		HOLD, // its given lens is held, its pairs informing the fitted ones
+		LEAVE // it takes no part, nor do its pairs
+	};
+	std::vector<Role> roles(numCameras, Role::LEAVE);
 	std::unordered_map<CameraPtr, unsigned> cameraIndex;
 	FOREACH(c, scene.cameras) {
 		const CameraPtr pCamera = scene.cameras[c];
@@ -468,12 +498,12 @@ LensFitReport SFM::FitLensesFromPairs(Scene& scene, const MatchConfig& config)
 			continue;
 		const PinholeCamera& pinhole = *static_cast<const PinholeCamera*>(pCamera);
 		if (!pinhole.HasDistortion() && !pinhole.HasAdditionalDistortion()) {
-			roles[c] = FREE;
+			roles[c] = Role::FIT;
 			continue;
 		}
 		if (pinhole.k3 != 0 || pinhole.p1 != 0 || pinhole.p2 != 0 || pinhole.HasAdditionalDistortion())
 			continue; // a lens the fit's model cannot hold, which held as k1, k2 alone would bias the cameras it pairs with
-		roles[c] = HELD;
+		roles[c] = Role::HOLD;
 		outcome.status = LensFitOutcome::HELD;
 		outcome.k1 = pinhole.k1;
 		outcome.k2 = pinhole.k2;
@@ -506,39 +536,44 @@ LensFitReport SFM::FitLensesFromPairs(Scene& scene, const MatchConfig& config)
 			std::vector<unsigned> counts(numCameras, 0);
 			for (IIndex idxPair : candidates) {
 				const auto [c1, c2] = CamerasOf(scene.pairs[idxPair]);
-				if (roles[c1] == OUT || roles[c2] == OUT || (roles[c1] != FREE && roles[c2] != FREE))
+				if (roles[c1] == Role::LEAVE || roles[c2] == Role::LEAVE || (roles[c1] != Role::FIT && roles[c2] != Role::FIT))
 					continue;
 				eligible.push_back(idxPair);
-				if (roles[c1] == FREE)
+				if (roles[c1] == Role::FIT)
 					++counts[c1];
-				if (c2 != c1 && roles[c2] == FREE)
+				if (c2 != c1 && roles[c2] == Role::FIT)
 					++counts[c2];
 			}
 			for (unsigned c = 0; c < numCameras; ++c) {
-				if (roles[c] != FREE)
+				if (roles[c] != Role::FIT)
 					continue;
-				report.cameras[c].numEligiblePairs = counts[c];
+				LensFitOutcome& outcome = report.cameras[c];
+				outcome.numEligiblePairs = counts[c];
 				if (counts[c] < config.lensFitMinPairs) {
-					roles[c] = OUT;
-					report.cameras[c].status = LensFitOutcome::TOO_FEW_PAIRS;
+					roles[c] = Role::LEAVE;
+					outcome.status = LensFitOutcome::TOO_FEW_PAIRS;
+					// what an earlier fit found for it no longer stands
+					outcome.k1 = outcome.k2 = 0;
+					outcome.numPairs = 0;
+					outcome.medianBefore = outcome.medianAfter = outcome.cornerDisplacement = 0;
 					changed = true;
 				}
 			}
 		}
-		if (std::none_of(roles.begin(), roles.end(), [](Role r) { return r == FREE; }))
+		if (std::none_of(roles.begin(), roles.end(), [](Role r) { return r == Role::FIT; }))
 			break;
 		// heaviest first, until every fitted camera has its pairs; a pair between two counts for both
 		std::vector<unsigned> numSelected(numCameras, 0);
 		std::vector<IIndex> selected;
 		for (IIndex idxPair : eligible) {
 			const auto [c1, c2] = CamerasOf(scene.pairs[idxPair]);
-			if (!(roles[c1] == FREE && numSelected[c1] < config.lensFitMaxPairs) &&
-				!(roles[c2] == FREE && numSelected[c2] < config.lensFitMaxPairs))
+			if (!(roles[c1] == Role::FIT && numSelected[c1] < config.lensFitMaxPairs) &&
+				!(roles[c2] == Role::FIT && numSelected[c2] < config.lensFitMaxPairs))
 				continue;
 			selected.push_back(idxPair);
-			if (roles[c1] == FREE)
+			if (roles[c1] == Role::FIT)
 				++numSelected[c1];
-			if (c2 != c1 && roles[c2] == FREE)
+			if (c2 != c1 && roles[c2] == Role::FIT)
 				++numSelected[c2];
 		}
 		// the fit's cameras, in the order the selected pairs first name them
@@ -549,7 +584,7 @@ LensFitReport SFM::FitLensesFromPairs(Scene& scene, const MatchConfig& config)
 				const PinholeCamera& pinhole = *static_cast<const PinholeCamera*>(scene.cameras[c]);
 				FitCamera f;
 				f.idxScene = c;
-				f.free = roles[c] == FREE;
+				f.free = roles[c] == Role::FIT;
 				f.lens[0] = f.free ? 0.0 : (double)pinhole.k1;
 				f.lens[1] = f.free ? 0.0 : (double)pinhole.k2;
 				f.focal = Point2d(pinhole.fx, pinhole.fy);
@@ -604,18 +639,19 @@ LensFitReport SFM::FitLensesFromPairs(Scene& scene, const MatchConfig& config)
 		std::vector<FitPair> baseline(pairs);
 		RefinePosesAlone(baseline, cameras, config.lensFitLossScale);
 		const std::vector<double> mediansBefore(MedianErrors(baseline, cameras));
-		RefineJointly(pairs, cameras, config.lensFitLossScale, scene.nMaxThreads);
+		bool solved = RefineJointly(pairs, cameras, config.lensFitLossScale, scene.nMaxThreads);
 		report.reestimatedPoses.clear();
-		for (unsigned round = 0; round < config.lensFitRounds; ++round) {
+		for (unsigned round = 0; solved && round < config.lensFitRounds; ++round) {
 			const unsigned numReplaced = ReestimatePoses(pairs, cameras, config.lensFitLossScale);
 			report.reestimatedPoses.push_back(numReplaced);
 			if (numReplaced == 0)
 				break;
-			RefineJointly(pairs, cameras, config.lensFitLossScale, scene.nMaxThreads);
+			solved = RefineJointly(pairs, cameras, config.lensFitLossScale, scene.nMaxThreads);
 		}
 		const std::vector<double> mediansAfter(MedianErrors(pairs, cameras));
 		// the verdict on every fitted camera; a refused one keeps no lens and leaves, and the others
-		// are fitted again without its pairs
+		// are fitted again without its pairs; a fit the solver could not complete is not judged, and
+		// refuses every camera it fits
 		bool anyRefused = false;
 		FOREACH(f, cameras) {
 			const FitCamera& fc = cameras[f];
@@ -627,18 +663,19 @@ LensFitReport SFM::FitLensesFromPairs(Scene& scene, const MatchConfig& config)
 			outcome.numPairs = numSelected[fc.idxScene];
 			outcome.medianBefore = mediansBefore[f];
 			outcome.medianAfter = mediansAfter[f];
+			const bool oneToOne = IsLensOneToOne(outcome.k1, outcome.k2, LENS_VALID_MARGIN*(REAL)fc.corner);
+			// the undistortion of the corner has an answer only through a lens one to one out to it
 			const REAL focal = REAL(0.5)*(REAL)(fc.focal.x + fc.focal.y);
-			outcome.cornerDisplacement = LensDisplacement(focal, outcome.k1, outcome.k2, (REAL)fc.corner*focal);
-			if (!IsLensOneToOne(outcome.k1, outcome.k2, LENS_VALID_MARGIN*(REAL)fc.corner))
-				outcome.status = LensFitOutcome::FOLDS;
-			else if (mediansBefore[f] < LENS_MIN_MEDIAN_ERROR ||
-				mediansAfter[f] > (1.0 - (double)config.lensFitMinErrorDrop)*mediansBefore[f])
-				outcome.status = LensFitOutcome::NO_ERROR_DROP;
-			else {
+			outcome.cornerDisplacement = oneToOne ? LensDisplacement(focal, outcome.k1, outcome.k2, (REAL)fc.corner*focal) : REAL(0);
+			// kept only when every bar holds, written so that a NaN median, which fails every
+			// comparison, refuses the lens
+			if (solved && oneToOne && mediansBefore[f] >= LENS_MIN_MEDIAN_ERROR &&
+				mediansAfter[f] <= (1.0 - (double)config.lensFitMinErrorDrop)*mediansBefore[f]) {
 				outcome.status = LensFitOutcome::FITTED;
 				continue;
 			}
-			roles[fc.idxScene] = OUT;
+			outcome.status = (solved && !oneToOne) ? LensFitOutcome::FOLDS : LensFitOutcome::NO_ERROR_DROP;
+			roles[fc.idxScene] = Role::LEAVE;
 			anyRefused = true;
 		}
 		if (!anyRefused)
@@ -651,3 +688,5 @@ LensFitReport SFM::FitLensesFromPairs(Scene& scene, const MatchConfig& config)
 	return report;
 }
 /*----------------------------------------------------------------*/
+
+#pragma pop_macro("VERBOSE")

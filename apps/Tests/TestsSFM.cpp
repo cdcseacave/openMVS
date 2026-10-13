@@ -3382,6 +3382,10 @@ struct LensTestCamera {
 const LensTestCamera LENS_TEST_A{1920, 1080, REAL(1400), REAL(-0.20), REAL(0.05)};
 const LensTestCamera LENS_TEST_B{1280, 960, REAL(900), REAL(0.06), REAL(-0.03)};
 const LensTestCamera LENS_TEST_P{1920, 1080, REAL(1400), REAL(0), REAL(0)};
+// A's frame through a lens too faint to matter, 1e-3 px at the corner: exact positions through it
+// leave the poses alone an error at the level of float rounding, which a fitted lens can still lower
+// by more than MatchConfig::lensFitMinErrorDrop, and for which no lens may be kept
+const LensTestCamera LENS_TEST_FAINT{1920, 1080, REAL(1400), REAL(-1.5e-6), REAL(0)};
 
 enum class LensTestMotion {
 	TURN,   // the second view turns 10-30 deg about a near-vertical axis and moves 0.2-0.8 sideways: the lens shows
@@ -3587,8 +3591,9 @@ bool LensFitRecoveryTest()
 
 // The lens fit refuses what no lens explains: pairs of a camera without a lens (its median error does
 // not fall), forward pairs that hide a strong lens (the acceptance refuses rather than keep a lens the
-// pairs cannot tell, folding or not), and exact positions (the error is float rounding); every
-// refused camera is left without a lens
+// pairs cannot tell, folding or not), and exact positions (the error is float rounding), without a
+// lens or through one too faint to matter, which the error drop alone would keep; every refused
+// camera is left without a lens
 bool LensFitRefusalTest()
 {
 	TD_TIMER_START();
@@ -3597,11 +3602,13 @@ bool LensFitRefusalTest()
 		LensTestCamera camera;
 		LensTestMotion motion;
 		REAL noisePx, outlierShare;
+		bool mayFold; // refused as FOLDS is right too, not only as NO_ERROR_DROP
 	};
 	const Variant variants[] = {
-		{"no lens", LENS_TEST_P, LensTestMotion::TURN, LENS_TEST_NOISE_PX, LENS_TEST_OUTLIER_SHARE},
-		{"forward pairs", LENS_TEST_A, LensTestMotion::FORWARD, LENS_TEST_NOISE_PX, LENS_TEST_OUTLIER_SHARE},
-		{"no noise", LENS_TEST_P, LensTestMotion::TURN, REAL(0), REAL(0)},
+		{"no lens", LENS_TEST_P, LensTestMotion::TURN, LENS_TEST_NOISE_PX, LENS_TEST_OUTLIER_SHARE, false},
+		{"forward pairs", LENS_TEST_A, LensTestMotion::FORWARD, LENS_TEST_NOISE_PX, LENS_TEST_OUTLIER_SHARE, true},
+		{"no noise", LENS_TEST_P, LensTestMotion::TURN, REAL(0), REAL(0), false},
+		{"a faint lens", LENS_TEST_FAINT, LensTestMotion::TURN, REAL(0), REAL(0), false},
 	};
 	for (const Variant& variant : variants) {
 		Scene scene;
@@ -3614,12 +3621,13 @@ bool LensFitRefusalTest()
 			VERBOSE("LensFitRefusalTest FAILED: %s, only %u eligible pairs, the fixture does not reach the fit", variant.name, outcome.numEligiblePairs);
 			return false;
 		}
-		if ((outcome.status != LensFitOutcome::NO_ERROR_DROP && outcome.status != LensFitOutcome::FOLDS) || scene.cameras[0]->HasDistortion()) {
-			VERBOSE("LensFitRefusalTest FAILED: %s, status %u, lens %g %g kept, median %.4f -> %.4f px",
+		if ((outcome.status != LensFitOutcome::NO_ERROR_DROP && !(variant.mayFold && outcome.status == LensFitOutcome::FOLDS)) ||
+			scene.cameras[0]->HasDistortion()) {
+			VERBOSE("LensFitRefusalTest FAILED: %s, status %u, lens %g %g kept, median %.4g -> %.4g px",
 				variant.name, (unsigned)outcome.status, outcome.k1, outcome.k2, outcome.medianBefore, outcome.medianAfter);
 			return false;
 		}
-		VERBOSE("LensFitRefusalTest: %s refused (status %u), median %.4f -> %.4f px", variant.name, (unsigned)outcome.status, outcome.medianBefore, outcome.medianAfter);
+		VERBOSE("LensFitRefusalTest: %s refused (status %u), median %.4g -> %.4g px", variant.name, (unsigned)outcome.status, outcome.medianBefore, outcome.medianAfter);
 	}
 	VERBOSE("LensFitRefusalTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
