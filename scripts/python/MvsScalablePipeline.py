@@ -52,7 +52,8 @@ def main():
   parser.add_argument('--memory', default='auto', type=str.lower, help='memory budget per sub-scene: auto, off or GB (default auto)')
   parser.add_argument('--steps', default=','.join(STEPS), help='steps to run, among %s' % ','.join(STEPS))
   for step in STEPS:
-    parser.add_argument('--' + step, default='', metavar='OPTIONS', help='extra options of the %s module' % step)
+    parser.add_argument('--' + step, default='', metavar='OPTIONS', help='extra options of the %s module, split as a POSIX shell does '
+                        '(single-quote a Windows path, or its backslashes are dropped)' % step)
   parser.add_argument('--resume', action='store_true', help='skip a step whose output exists already')
   parser.add_argument('--bin', default=None, help='folder of the OpenMVS binaries (default: PATH)')
   parser.add_argument('--dry-run', action='store_true', help='print the commands without running them')

@@ -1915,7 +1915,10 @@ bool MVS::ExportPointCloud(const String& fileName, const Image& imageData, const
 	colors.reserve(nPoints);
 	if (!normalMap.empty())
 		normals.reserve(nPoints);
-	const Point2f scaleImage(static_cast<float>(depthMap.cols)/imageData.image.cols, static_cast<float>(depthMap.rows)/imageData.image.rows);
+	ASSERT(normalMap.empty() || normalMap.size() == depthMap.size());
+	// a depth pixel takes the color of the image pixel containing its center, whatever the image resolution
+	const Point2f scaleImage(imageData.image.empty() ? Point2f(0,0) :
+		Point2f(static_cast<float>(imageData.image.cols)/depthMap.cols, static_cast<float>(imageData.image.rows)/depthMap.rows));
 	for (int j=0; j<depthMap.rows; ++j) {
 		for (int i=0; i<depthMap.cols; ++i) {
 			const Depth& depth = depthMap(j,i);
@@ -1923,12 +1926,10 @@ bool MVS::ExportPointCloud(const String& fileName, const Image& imageData, const
 			if (depth <= 0)
 				continue;
 			points.emplace_back(P0.TransformPointI2W(Point3(i,j,depth)));
-			if (normalMap.empty()) {
-				colors.emplace_back(imageData.image.empty() ? Pixel8U::WHITE : imageData.image(ROUND2INT(scaleImage.y*j),ROUND2INT(scaleImage.x*i)));
-			} else {
+			if (!normalMap.empty())
 				normals.emplace_back(P0.R.t() * Cast<REAL>(normalMap(j,i)));
-				colors.emplace_back(imageData.image.empty() ? Pixel8U::WHITE : imageData.image(j,i));
-			}
+			colors.emplace_back(imageData.image.empty() ? Pixel8U::WHITE :
+				imageData.image(FLOOR2INT(scaleImage.y*(j+0.5f)), FLOOR2INT(scaleImage.x*(i+0.5f))));
 		}
 	}
 	// a depth-map without any valid depth creates no file

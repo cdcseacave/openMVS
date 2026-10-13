@@ -614,8 +614,12 @@ bool Mesh::LoadPLY(const String& fileName)
 		// load the texture
 		for (const std::string& comment: ply.GetComments()) {
 			if (_tcsncmp(comment.c_str(), _T("TextureFile "), 12) == 0) {
-				const String textureFileName(comment.substr(12));
-				texturesDiffuse.emplace_back().Load(Util::getFilePath(fileName)+textureFileName);
+				const String textureFileName(Util::getFilePath(fileName)+String(comment.substr(12)));
+				if (!texturesDiffuse.emplace_back().Load(textureFileName)) {
+					VERBOSE("error: failed loading the mesh texture '%s'", textureFileName.c_str());
+					Release();
+					return false;
+				}
 			}
 		}
 		if (texturesDiffuse.size() <= 1)

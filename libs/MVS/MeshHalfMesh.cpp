@@ -314,10 +314,9 @@ REAL Mesh::ComputeVolume() const
 
 REAL Mesh::ComputeVolume(const Planef& plane, REAL& above, REAL& below) const
 {
-	ASSERT(ISEQUAL(plane.m_vN.norm(), 1.f));
-	const Eigen::Vector3d normal(plane.m_vN.cast<double>());
+	ASSERT(ABS(plane.m_vN.norm()-1.f) < 1e-6f); // halfmesh's tolerance on the unit normal
 	const halfmesh::Mesh::PlaneVolume volume(ImportGeometry(*this).ComputeVolume(
-		halfmesh::Mesh::Plane(normal.normalized(), (double)plane.m_fD)));
+		halfmesh::Mesh::Plane(plane.m_vN.cast<double>(), (double)plane.m_fD)));
 	above = volume.above;
 	below = volume.below;
 	return above + below;

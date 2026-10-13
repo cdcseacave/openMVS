@@ -514,6 +514,9 @@ bool PLY::ReadElement(size_t idx, const Bindings& bindings)
 		col->binding = &b;
 		col->convert = Converter(col->prop->type, b.type, fileType == BINARY_BE);
 	}
+	// an empty element has no data, and its bindings may point nowhere
+	if (elem.count == 0)
+		return true;
 	if (fileType == ASCII ? ReadAscii(elem, columns) : ReadBinary(elem, columns))
 		return true;
 	VERBOSE("error: invalid PLY element '%s'", elem.name.c_str());

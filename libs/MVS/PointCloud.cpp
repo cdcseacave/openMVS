@@ -1104,6 +1104,7 @@ bool PointCloud::SaveWithScale(const String& fileName, const ImageArr& images, f
 {
 	if (points.empty())
 		return false;
+	ASSERT(pointViews.size() == points.size() && (pointWeights.empty() || pointWeights.size() == points.size()));
 
 	TD_TIMER_STARTD();
 
