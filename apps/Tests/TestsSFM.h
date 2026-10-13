@@ -556,8 +556,6 @@ bool GlobalAlignmentTrackMerge3DProximityGuardTest();
 bool HierarchicalCameraAlignmentTest();
 
 // End-to-end hierarchical SFM tests
-// A hierarchical merge is kept only when it places the configured share of the scene's images
-bool MergePlacedShareTest();
 bool HierarchicalSFMSplitMergeRoundtripTest();
 bool HierarchicalSFMWithRandomTransformTest();
 /*----------------------------------------------------------------*/

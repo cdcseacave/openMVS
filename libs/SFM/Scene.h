@@ -103,12 +103,6 @@ struct SFM_API ReconstructionConfig {
 
 	// Clustering parameters
 	ClusterConfig clusterCfg;
-	// The least share of the scene's images the hierarchical merge must place: a merge that places
-	// fewer is discarded and the whole scene reconstructed in one pass, as without clustering, rather
-	// than resected one image at a time onto the few blocks it kept (Playground: one block of three,
-	// 128 of 307 images, the rest resected onto it scores F1 0.856-0.968 over six runs, one pass
-	// 0.974-0.976 over three; 0 = keep every merge)
-	float minMergedShare{0.5f};
 
 	// Initialization parameters
 	StarInitConfig initCfg;

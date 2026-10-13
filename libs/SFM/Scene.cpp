@@ -897,14 +897,10 @@ bool Scene::ReconstructHierarchical(const ReconstructionConfig& config, const II
 
 	TD_TIMER_STARTD();
 
-	// 1. Cluster scene if necessary; a clustered scene is kept as it is before the split, for the one
-	// pass a merge that places too little of it falls back on
+	// 1. Cluster scene if necessary
 	std::vector<Scene> subScenes;
 	std::vector<IIndexArr> localToGlobals;
-	Scene whole(nMaxThreads);
 	if (config.clusterCfg.maxViewsPerCluster > 0 && images.size() > config.clusterCfg.maxViewsPerCluster) {
-		if (config.minMergedShare > 0)
-			whole = *this;
 		SceneCluster clusterer(*this, config.clusterCfg);
 		subScenes = clusterer.SplitScene(&localToGlobals);
 	} else {
@@ -912,7 +908,7 @@ bool Scene::ReconstructHierarchical(const ReconstructionConfig& config, const II
 	}
 
 	// 2. Reconstruct each sub-scene in parallel
-	const auto reconstructSubScene = [&](IIndex i) {
+	threadPool.detach_loop(IIndex(0), (IIndex)subScenes.size(), [&](IIndex i) {
 		Scene& subScene = subScenes[i];
 		DEBUG("Reconstructing sub-scene %u with %u images...", i, subScene.images.size());
 
@@ -942,8 +938,7 @@ bool Scene::ReconstructHierarchical(const ReconstructionConfig& config, const II
 		// The resection already closes with a full adjustment of this sub-scene; only the
 		// tracks it leaves behind need settling before the sub-scenes are merged
 		FilterTracks(subScene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar, config.resectionCfg.denseReprojErrorFactor);
-	};
-	threadPool.detach_loop(IIndex(0), (IIndex)subScenes.size(), reconstructSubScene);
+	});
 	threadPool.wait();
 
 	// 3. Merge/align sub-scenes (simple merge + final BA)
@@ -956,16 +951,6 @@ bool Scene::ReconstructHierarchical(const ReconstructionConfig& config, const II
 		globalAlign.MergeScenes(subScenes, localToGlobals, mergeReport);
 		VERBOSE("Hierarchical merge: %u/%u blocks placed, %u images placed, %u images of unplaced blocks left to the resection",
 			mergeReport.numPlaced, mergeReport.numBlocks, mergeReport.numImagesPlaced, mergeReport.numImagesUnplaced);
-		if (!mergeReport.PlacesShare(config.minMergedShare, images.size())) {
-			VERBOSE("Hierarchical merge placed %u of %u images, under %g of the scene: the scene is reconstructed in one pass instead",
-				mergeReport.numImagesPlaced, images.size(), config.minMergedShare);
-			subScenes.clear();
-			localToGlobals.clear();
-			subScenes.emplace_back(std::move(whole));
-			threadPool.detach_loop(IIndex(0), IIndex(1), reconstructSubScene);
-			threadPool.wait();
-			*this = std::move(subScenes[0]);
-		}
 	}
 	DEBUG("Hierarchical reconstruction complete: %u/%u images, %u/%u points (%s)",
 		status.nCalibratedImages, images.size(), status.nTracks, tracks.size(), TD_TIMER_GET_FMT().c_str());

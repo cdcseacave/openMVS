@@ -16539,35 +16539,6 @@ bool GlobalAlignmentTrackMerge3DProximityGuardTest()
 // ===============================================================================
 
 // Test 15: Full split → GT reconstruct → merge roundtrip
-// A hierarchical merge is kept when it places at least the configured share of the scene's images
-// (ReconstructionConfig::minMergedShare): Playground's merge, one block of 128 of 307 images, is not.
-bool MergePlacedShareTest()
-{
-	MergeReport report;
-	constexpr unsigned numImages = 307;
-	constexpr float minShare = 0.5f; // ReconstructionConfig::minMergedShare
-	struct Case { unsigned placed; float share; bool kept; };
-	const Case cases[] = {
-		{128, minShare, false}, // one block of three: the scene goes to one pass
-		{153, minShare, false}, // just under half
-		{154, minShare, true},  // just over half
-		{307, minShare, true},  // every block placed
-		{0, 0.f, true},         // off: every merge is kept
-		{307, 1.f, true},
-		{306, 1.f, false},
-	};
-	for (const Case& c : cases) {
-		report.numImagesPlaced = c.placed;
-		if (report.PlacesShare(c.share, numImages) != c.kept) {
-			VERBOSE("ERROR: MergePlacedShareTest: %u/%u placed at share %g %s, expected %s", c.placed, numImages, c.share,
-				c.kept ? "discarded" : "kept", c.kept ? "kept" : "discarded");
-			return false;
-		}
-	}
-	VERBOSE("MergePlacedShareTest passed");
-	return true;
-}
-
 bool HierarchicalSFMSplitMergeRoundtripTest()
 {
 	TD_TIMER_START();
