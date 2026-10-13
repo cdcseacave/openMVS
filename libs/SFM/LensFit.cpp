@@ -59,8 +59,10 @@ constexpr REAL LENS_VALID_MARGIN = REAL(1.05);
 // so that the automatic derivatives of every residual run through the same iterations; it converges
 // wherever the lens is one to one out to the point, which LENS_VALID_MARGIN keeps true
 constexpr int LENS_UNDISTORT_ITERATIONS = 10;
-// Levenberg-Marquardt iterations of one fit; the prototype's converged within 40
-constexpr int LENS_FIT_MAX_ITERATIONS = 60;
+// Levenberg-Marquardt iterations of one fit, a bound well past what the fits take: Playground's first
+// joint fit converged in 40, the first of a synthetic scene of the strong lens (164 px at the corner)
+// in 69
+constexpr int LENS_FIT_MAX_ITERATIONS = 200;
 // The inlier bar, pixels at each side's focal, of a pair's pose re-estimated through the fitted lens:
 // its matches were verified at MatchConfig::maxEpipolarError already, so this only has to tell the
 // pose that explains them from a reversed or turned one the pinhole left (the prototype's bar)
