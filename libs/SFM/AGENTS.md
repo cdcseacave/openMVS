@@ -246,9 +246,12 @@ corner (1.05x) and lowers the median error 10% below the poses' own refinement; 
 eligible pairs, spherical, untrusted, or with a given lens past k1, k2 or that folds within the frame
 (not one to one out to 1.05x its corner) is left as it is, its pairs out of the fit. Every pair of a
 fitted camera is then verified again through `PairsMatcher::ComputeRelativePoses` (a RoMa2 pair
-through `ReverifyPairROMA2`). The bundle adjustments refine k1, k2 from the fitted lens. No
-command-line flag; `MatchConfig::lensFitEnabled` turns it off. A lens given with `--k1/--k2` or
-imported is held, and a resumed scene's fitted lens counts as given.
+through `ReverifyPairROMA2`), and the summary line counts the pairs that verification invalidated.
+The bundle adjustments refine k1, k2 from the fitted lens. No command-line flag;
+`MatchConfig::lensFitEnabled` turns it off. A lens given with `--k1/--k2` or imported is held, and a
+resumed scene's fitted lens counts as given; a resumed scene fits again every camera that still has
+no lens (refused, under the pair minimum, or matched by an older build), so a camera refused beside
+one fitted the first time, now held, can be kept.
 
 ### Relative Pose Refinement (`RelativePoseRefine.h`)
 Joint refinement of focal length + distortion (k1, k2) with relative pose via Ceres.

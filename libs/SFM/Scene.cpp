@@ -657,7 +657,10 @@ bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, c
 	// of a fitted camera verified again through it (LensFit.h): after the calibration, whose focal the
 	// fit holds, and before anything reads the pairs' geometry (the pairs export, the triplet and
 	// tree-rotation filters, the clustering, every reconstruction stage). A scene resumed already
-	// matched carries the lens it was fitted, which makes it given: nothing is fitted again.
+	// matched carries the lens it was fitted, which makes it given: that camera is not fitted again.
+	// A camera that still has no lens -- refused, under the minimum of pairs, or matched by a build
+	// without the fit -- is fitted again: alone it is judged on the same pairs again, but beside a
+	// camera fitted the first time, now held at its lens, a camera refused then can be kept.
 	if (config.lensFitEnabled)
 		FitLensesAndReverifyPairs(pairsMatcher);
 	return true;

@@ -123,7 +123,8 @@ SFM_API LensFitReport FitLensesFromPairs(Scene& scene, const MatchConfig& config
 // again through its lens (PairsMatcher::ComputeRelativePoses: a descriptor pair through
 // GeometricFilter, its outliers rejoining the candidates; a RoMa2 pair through ReverifyPairROMA2,
 // its sparse and dense segments kept apart), which also recomputes the pair weights. Logs every
-// camera's outcome and the pairs' inliers before and after.
+// camera's outcome, the pairs' inliers before and after, and how many of the pairs that formed tracks
+// the verification invalidated.
 SFM_API LensFitReport FitLensesAndReverifyPairs(PairsMatcher& pairsMatcher);
 
 } // namespace SFM

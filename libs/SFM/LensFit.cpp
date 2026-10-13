@@ -730,29 +730,38 @@ LensFitReport SFM::FitLensesAndReverifyPairs(PairsMatcher& pairsMatcher)
 	const std::unordered_set<CameraPtr> fitted(report.FittedCameras());
 	if (fitted.empty())
 		return report;
-	// the inliers of the pairs a fitted camera holds, before and after they are verified again
-	const auto Totals = [&](size_t& numSparse, size_t& numDense) {
+	// the inliers of the pairs a fitted camera holds, before and after they are verified again, and
+	// the pairs among them that form tracks, named by their images since the weights recomputed after
+	// sort scene.pairs again
+	const auto Totals = [&](size_t& numSparse, size_t& numDense, std::unordered_set<PairIdx>& forming) {
 		unsigned numPairs = 0;
 		numSparse = numDense = 0;
+		forming.clear();
 		for (const ImagePair& pair : scene.pairs) {
 			if (!fitted.count(scene.images[pair.ID1].pCamera) && !fitted.count(scene.images[pair.ID2].pCamera))
 				continue;
 			++numPairs;
 			numSparse += pair.GetNumFilteredInliers();
 			numDense += pair.GetNumDenseInliers();
+			if (pair.GetNumTrackFormingMatches() > 0)
+				forming.emplace(pair.ID1, pair.ID2);
 		}
 		return numPairs;
 	};
 	size_t sparseBefore, denseBefore, sparseAfter, denseAfter;
-	const unsigned numPairs = Totals(sparseBefore, denseBefore);
+	std::unordered_set<PairIdx> formingBefore, formingAfter;
+	const unsigned numPairs = Totals(sparseBefore, denseBefore, formingBefore);
 	pairsMatcher.ComputeRelativePoses(true, false, fitted);
-	Totals(sparseAfter, denseAfter);
+	Totals(sparseAfter, denseAfter, formingAfter);
+	// the pairs the verification through the lens invalidated: track-forming matches before, none after
+	const unsigned numInvalidated = (unsigned)std::count_if(formingBefore.begin(), formingBefore.end(),
+		[&](const PairIdx& pair) { return formingAfter.count(pair) == 0; });
 	String rounds;
 	for (unsigned n : report.reestimatedPoses)
 		rounds += String::FormatString(rounds.empty() ? "%u" : ",%u", n);
-	VERBOSE("Lens fit: %u of %u cameras fitted in %.1f s, poses re-estimated %s; %u pairs verified again through their lens: sparse inliers %zu -> %zu, dense %zu -> %zu (%s)",
+	VERBOSE("Lens fit: %u of %u cameras fitted in %.1f s, poses re-estimated %s; %u pairs verified again through their lens: sparse inliers %zu -> %zu, dense %zu -> %zu; %u pairs invalidated (%s)",
 		(unsigned)fitted.size(), (unsigned)report.cameras.size(), report.seconds, rounds.empty() ? "-" : rounds.c_str(),
-		numPairs, sparseBefore, sparseAfter, denseBefore, denseAfter, TD_TIMER_GET_FMT().c_str());
+		numPairs, sparseBefore, sparseAfter, denseBefore, denseAfter, numInvalidated, TD_TIMER_GET_FMT().c_str());
 	return report;
 }
 /*----------------------------------------------------------------*/
