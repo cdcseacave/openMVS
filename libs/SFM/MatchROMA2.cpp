@@ -461,13 +461,15 @@ size_t CollectEligibleCells(const WarpMaps& maps, const cv::Size& sizeSrc, const
 }
 
 // One correspondence measured against the geometry a fit produced: the first-order (Sampson)
-// distance, compared against a tolerance. Through F where the fit produced one -- in pixels, the
-// units WarpTolerance and MatchConfig::maxEpipolarError are both expressed in -- and otherwise
-// through E on calibrated bearings, with the pixel tolerance converted per camera exactly as
-// PairsMatcher::GeometricFilter converts its own. The second path is not a fallback but the same
-// test in the other space: F is not geometrically meaningful on a spherical or mixed pair
-// (SphericalCamera::GetK is the identity, so GeometricFilter leaves F unset), and such a pair has
-// to be judged rather than silently rejected for want of a matrix.
+// distance, compared against a tolerance. Through F where the fit produced one and neither camera
+// has a lens -- in pixels, the units WarpTolerance and MatchConfig::maxEpipolarError are both
+// expressed in -- and otherwise through E on calibrated bearings, with the pixel tolerance converted
+// per camera exactly as PairsMatcher::GeometricFilter converts its own. F is composed from E and K
+// alone: a straight epipolar line in pixels, which a lens bends, so that F puts a right match near a
+// corner tens of pixels off; a bearing goes through the lens (UnprojectNormalized undistorts first),
+// so E measures it where it is. F is not geometrically meaningful on a spherical or mixed pair either
+// (SphericalCamera::GetK is the identity, so GeometricFilter leaves F unset), and such a pair has to
+// be judged rather than silently rejected for want of a matrix.
 // The convention is the matcher's own throughout: F maps a point of the FIRST image to its epipolar
 // line in the second (PairsMatcher::GeometricFilter composes it that way, MatchGeometric reads it
 // that way), so a correspondence is always given as (A side, B side).
@@ -475,7 +477,9 @@ class SampsonTest
 {
 public:
 	SampsonTest(const Image& imgA, const Image& imgB, const ImagePair& pair, float tolerance)
-		: camA(imgA.pCamera), camB(imgB.pCamera), bFundamental(pair.F.has_value())
+		: camA(imgA.pCamera), camB(imgB.pCamera),
+		  bFundamental(pair.F.has_value() &&
+			!(pair.E.has_value() && (imgA.pCamera->HasDistortion() || imgB.pCamera->HasDistortion())))
 	{
 		if (bFundamental) {
 			M = pair.F.value();

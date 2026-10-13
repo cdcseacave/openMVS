@@ -109,6 +109,17 @@ bool ROMA2AssemblyTest();
 // ROMA2Config::denseFitWeight and the dense bias at full weight
 bool ROMA2DenseFitWeightTest();
 
+// The inlier tests of a RoMa2 pair through a lens (SampsonTest): on two views through a barrel lens
+// the camera knows, every guided match on the true geometry is a sparse inlier, the corner ones
+// included, while the pixel fundamental matrix of the same geometry, composed without the lens, puts
+// the corner ones past the matcher's epipolar bar
+bool ROMA2LensInlierTest();
+
+// The keyframe extractor's geometric match through a lens (MatchFeaturesGeometric): every corner
+// correspondence of the same two views is matched, though the pixel F's epipolar line misses it by
+// more than the bar the match is held to
+bool MatchGeometricLensTest();
+
 // The described/dense keypoint boundary: an image whose keypoints.size() > descriptors.rows keeps
 // its stored described-keypoint count across a descriptor release and an .sfm round-trip, the
 // index tests read it, and PairsMatcher::FilterRedundantKeypoints moves it through the same remap

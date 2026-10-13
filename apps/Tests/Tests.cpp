@@ -255,6 +255,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::ROMA2DenseFitWeightTest())
 				return false;
+			if (!SFM::ROMA2LensInlierTest())
+				return false;
 			if (!SFM::DenseKeypointBoundaryTest())
 				return false;
 			if (!SFM::SupplementEvidenceIsolationTest())
@@ -286,6 +288,8 @@ int main(int argc, LPCTSTR* argv)
 			if (!SFM::PairsMatcherSphericalTest())
 				return false;
 			if (!SFM::MatchGeometricSphericalTest())
+				return false;
+			if (!SFM::MatchGeometricLensTest())
 				return false;
 			if (!SFM::CubeMapFaceRenderTest())
 				return false;

@@ -399,18 +399,19 @@ bool SFM::MatchFeaturesGeometric(
 			pair.matches.push_back(candidates[0]);
 	};
 
-	// Branch on pair.F availability. PairsMatcher::GeometricFilter only sets
-	// pair.F when BOTH cameras are pinhole — for spherical or mixed pairs
-	// the fundamental matrix is not geometrically meaningful (SphericalCamera::GetK
-	// returns IDENTITY), and pair.F is left empty. We dispatch:
-	//   - F present  -> pinhole pixel-space epipolar line distance (unchanged)
-	//   - F absent   -> bearing-space Sampson-on-sphere residual with an
-	//                   angular threshold derived per-camera from epipolarThreshold.
-	// For pinhole bearings the Sampson-on-sphere formula reduces exactly to the
-	// pinhole Sampson form (up to linear scaling), so the two paths agree on
-	// pinhole inputs up to the unit of the threshold. Keeping the F path
-	// separate preserves zero-regression on all pinhole tests.
-	if (pair.F.has_value()) {
+	// Branch on the geometry the bearings can be measured against. PairsMatcher::GeometricFilter
+	// sets pair.F only when BOTH cameras are pinhole -- for spherical or mixed pairs the fundamental
+	// matrix is not geometrically meaningful (SphericalCamera::GetK returns IDENTITY) -- and F is
+	// composed from E and K alone, a straight epipolar line in pixels that a lens bends. We dispatch:
+	//   - F present, no lens on either camera -> pixel-space epipolar line distance (unchanged)
+	//   - otherwise, E present                -> bearing-space Sampson-on-sphere residual (the
+	//     bearings go through the lens) with an angular threshold derived per camera from
+	//     epipolarThreshold.
+	// For pinhole bearings the Sampson-on-sphere formula reduces exactly to the pinhole Sampson
+	// form (up to linear scaling), so the two paths agree on lens-free pinhole inputs up to the unit
+	// of the threshold. Keeping the F path separate preserves zero-regression on all pinhole tests.
+	const bool bLens = img1.pCamera->HasDistortion() || img2.pCamera->HasDistortion();
+	if (pair.F.has_value() && !(bLens && pair.E.has_value())) {
 		const Matrix3x3f F = pair.F.value();
 		for (uint32_t i = 0; i < numDescribed1; ++i) {
 			const Point2f& pt1 = img1.keypoints[i].pt;
@@ -447,7 +448,7 @@ bool SFM::MatchFeaturesGeometric(
 			SelectAndAppendBest(candidates, (size_t)i);
 		}
 	} else if (pair.E.has_value()) {
-		// Spherical / mixed path: E-matrix + bearing vectors.
+		// Spherical, mixed or lens path: E-matrix + bearing vectors.
 		// Convert the pixel epipolar threshold to a symmetric angular threshold
 		// (same averaging convention as PairsMatcher::GeometricFilter). The
 		// Sampson-on-sphere residual is radians-scaled in the small-error limit,

@@ -3165,6 +3165,209 @@ bool ROMA2DenseFitWeightTest()
 	return true;
 }
 
+// The two-view fixture of the inlier tests through a lens: a 640x480 camera at f 400 with a barrel
+// lens it knows (LENS_INLIER_K1: 44 px at the corner), and a second view turned
+// LENS_INLIER_YAW_DEG about the vertical and moved 0.3 sideways, so that a point near the edge of
+// one image lands near the centre of the other and the lens displaces it differently in each --
+// what bends the epipolar line. The points sit on a 16x12 grid of the first image at depths 4-7;
+// each one whose exact projection lands at least LENS_INLIER_MARGIN px inside the second image is
+// kept, as one keypoint in each image under the same index.
+constexpr REAL LENS_INLIER_K1 = REAL(-0.08);
+constexpr REAL LENS_INLIER_YAW_DEG = REAL(15);
+constexpr int LENS_INLIER_MARGIN = 8;
+// a keypoint of the first image this far out of its corner radius counts as a corner match
+constexpr REAL LENS_INLIER_CORNER_SHARE = REAL(0.75);
+// the epipolar bar the keyframe matcher is called with in the test below, pixels
+constexpr float LENS_INLIER_GEOMETRIC_BAR = 2.f;
+
+static void MakeLensInlierScene(Scene& scene)
+{
+	const int width = 640, height = 480;
+	PinholeCamera* const camera = new PinholeCamera(cv::Size(width, height),
+		REAL(400), REAL(400), REAL(width - 1)/2, REAL(height - 1)/2);
+	camera->trustIntrinsics = true;
+	camera->SetDistortion(LENS_INLIER_K1, 0, 0, 0);
+	scene.cameras.emplace_back(camera);
+	const REAL yaw = D2R(LENS_INLIER_YAW_DEG);
+	Pose3D poseA, poseB;
+	poseA.R = Matrix3x3::IDENTITY;
+	poseA.C = Point3(0, 0, 0);
+	poseB.R = Matrix3x3(COS(yaw), 0, -SIN(yaw), 0, 1, 0, SIN(yaw), 0, COS(yaw));
+	poseB.C = Point3(REAL(0.3), 0, 0);
+	scene.images.emplace_back((IIndex)0, String("0.jpg"), poseA, (IIndex)0, scene.cameras[0]);
+	scene.images.emplace_back((IIndex)1, String("1.jpg"), poseB, (IIndex)0, scene.cameras[0]);
+	Image& imgA = scene.images[0];
+	Image& imgB = scene.images[1];
+	constexpr int gridX = 16, gridY = 12;
+	for (int gy = 0; gy < gridY; ++gy) {
+		for (int gx = 0; gx < gridX; ++gx) {
+			const Point2 ptA(
+				LENS_INLIER_MARGIN + gx*REAL(width - 1 - 2*LENS_INLIER_MARGIN)/(gridX - 1),
+				LENS_INLIER_MARGIN + gy*REAL(height - 1 - 2*LENS_INLIER_MARGIN)/(gridY - 1));
+			// camera A sits at the origin unrotated: its ray, which Unproject leaves at z = 1, scaled to the depth
+			const REAL depth = REAL(4) + REAL((gx*5 + gy*3) % 7)*REAL(0.5);
+			const Point3 X(imgA.Ray(ptA)*depth);
+			const auto [ptB, valid] = imgB.ProjectPoint(X);
+			if (!valid ||
+				ptB.x < LENS_INLIER_MARGIN || ptB.x > width - 1 - LENS_INLIER_MARGIN ||
+				ptB.y < LENS_INLIER_MARGIN || ptB.y > height - 1 - LENS_INLIER_MARGIN)
+				continue;
+			imgA.keypoints.emplace_back((float)ptA.x, (float)ptA.y, 10.f);
+			imgB.keypoints.emplace_back((float)ptB.x, (float)ptB.y, 10.f);
+		}
+	}
+}
+
+// the keypoints of the first image of MakeLensInlierScene that lie in its corners
+static std::vector<uint32_t> LensInlierCorners(const Image& img)
+{
+	const PinholeCamera& camera = *static_cast<const PinholeCamera*>(img.pCamera);
+	const REAL cornerRadius = norm(Point2(camera.cx, camera.cy));
+	std::vector<uint32_t> corners;
+	FOREACH(i, img.keypoints)
+		if (norm(Point2(img.keypoints[i].pt.x - camera.cx, img.keypoints[i].pt.y - camera.cy)) >= LENS_INLIER_CORNER_SHARE*cornerRadius)
+			corners.push_back((uint32_t)i);
+	return corners;
+}
+
+// The pixel Sampson distance of a correspondence to a fundamental matrix, x2^T F x1 over its gradient
+static double PixelSampsonDistance(const Matrix3x3& F, const Point2f& ptA, const Point2f& ptB)
+{
+	const Eigen::Matrix3d M = F; // implicit TMatrix<double,3,3> -> Eigen::Matrix3d, as MatchGeometric.cpp reads E
+	const Eigen::Vector3d a(ptA.x, ptA.y, 1.0), b(ptB.x, ptB.y, 1.0);
+	const Eigen::Vector3d Ma(M*a), Mtb(M.transpose()*b);
+	return ABS(b.dot(Ma))/SQRT(Ma.x()*Ma.x() + Ma.y()*Ma.y() + Mtb.x()*Mtb.x() + Mtb.y()*Mtb.y());
+}
+
+// The inlier tests of a RoMa2 pair through a lens (SampsonTest): on two views through a barrel lens
+// the camera knows, every guided match on the true geometry is a sparse inlier, the corner ones
+// included, while the pixel fundamental matrix of the same geometry, composed without the lens,
+// puts the corner ones past the matcher's epipolar bar
+bool ROMA2LensInlierTest()
+{
+	TD_TIMER_START();
+	Scene scene;
+	MakeLensInlierScene(scene);
+	Image& imgA = scene.images[0];
+	Image& imgB = scene.images[1];
+	const std::vector<uint32_t> corners(LensInlierCorners(imgA));
+	if (corners.size() < 4) {
+		VERBOSE("ROMA2LensInlierTest FAILED: only %u correspondences in A's corners, the fixture does not reach the lens", (unsigned)corners.size());
+		return false;
+	}
+	std::vector<DMatch> guided;
+	FOREACH(i, imgA.keypoints)
+		guided.emplace_back((uint32_t)i, (uint32_t)i);
+	MatchConfig matchCfg;
+	PairsMatcher matcher(scene, matchCfg);
+	ROMA2Config config;
+	// an admitted pair with no inlier cells: no dense fill, the guided matches alone are fitted and classified
+	PairVerdict verdict;
+	verdict.admitted = true;
+	ImagePair pair(0, 1);
+	const Pose3D poseGT(imgB / imgA);
+	pair.relativePose = poseGT;
+	pair.E = ImagePair::ComposeEssentialMatrix(poseGT);
+	pair.F = ImagePair::ComposeFundamentalMatrix(pair.E.value(), imgA.GetK(), imgB.GetK());
+	DenseMatches dense;
+	constexpr int warpSize = 64;
+	if (!AssemblePairROMA2(matcher, imgA, imgB, verdict, guided, config, warpSize, pair, dense)) {
+		VERBOSE("ROMA2LensInlierTest FAILED: the pair was not assembled");
+		return false;
+	}
+	if (!pair.outlierMatches.empty() || pair.GetNumFilteredInliers() != guided.size()) {
+		VERBOSE("ROMA2LensInlierTest FAILED: %u of the %u matches on the true geometry are inliers, %u rejected",
+			pair.GetNumFilteredInliers(), (unsigned)guided.size(), (unsigned)pair.outlierMatches.size());
+		return false;
+	}
+	double worst = 0;
+	for (uint32_t i : corners)
+		worst = MAXF(worst, PixelSampsonDistance(pair.F.value(), imgA.keypoints[i].pt, imgB.keypoints[i].pt));
+	if (worst <= (double)matchCfg.maxEpipolarError) {
+		VERBOSE("ROMA2LensInlierTest FAILED: the corner matches lie within %.2f px of the pixel F, the fixture does not bend the epipolar lines past the %.1f px bar",
+			worst, matchCfg.maxEpipolarError);
+		return false;
+	}
+	VERBOSE("ROMA2LensInlierTest PASSED: %u corner matches kept through the lens, up to %.1f px off the pixel F (%s)",
+		(unsigned)corners.size(), worst, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// The keyframe extractor's geometric match through a lens (MatchFeaturesGeometric): on the same two
+// views, with exact tracked guesses and a unique descriptor per correspondence, every corner
+// correspondence is matched, while its pixel distance to the epipolar line of the pixel F exceeds
+// the bar the match is held to
+bool MatchGeometricLensTest()
+{
+	TD_TIMER_START();
+	Scene scene;
+	MakeLensInlierScene(scene);
+	Image& imgA = scene.images[0];
+	Image& imgB = scene.images[1];
+	const std::vector<uint32_t> corners(LensInlierCorners(imgA));
+	if (corners.size() < 4) {
+		VERBOSE("MatchGeometricLensTest FAILED: only %u correspondences in A's corners", (unsigned)corners.size());
+		return false;
+	}
+	const int numPoints = (int)imgA.keypoints.size();
+	constexpr int descBytes = 32;
+	imgA.descriptors.create(numPoints, descBytes, CV_8U);
+	imgB.descriptors.create(numPoints, descBytes, CV_8U);
+	for (int i = 0; i < numPoints; ++i) {
+		std::mt19937 descRng(0x5EEDu ^ (unsigned)i);
+		for (int b = 0; b < descBytes; ++b) {
+			const uint8_t byte = (uint8_t)(descRng() & 0xFF);
+			imgA.descriptors.at<uint8_t>(i, b) = byte;
+			imgB.descriptors.at<uint8_t>(i, b) = byte;
+		}
+	}
+	std::vector<Point2f> tracked1(numPoints), tracked2(numPoints);
+	std::vector<uchar> trackStatus(numPoints, 1);
+	for (int i = 0; i < numPoints; ++i) {
+		tracked1[i] = imgA.keypoints[i].pt;
+		tracked2[i] = imgB.keypoints[i].pt;
+	}
+	MatchConfig matchCfg;
+	matchCfg.minMatches = 30;
+	matchCfg.maxEpipolarError = 4.f;
+	matchCfg.matchRatio = 0.9f;
+	matchCfg.descriptorsAreBinary = true;
+	matchCfg.minTriangulationAngle = 0.f;
+	matchCfg.reprojThreshold = 0.f;
+	matchCfg.epipoleFilterThreshold = 0.f;
+	PairsMatcher matcher(scene, matchCfg);
+	ImagePair pair(0, 1);
+	if (!MatchFeaturesGeometric(matcher, imgA, imgB, tracked1, tracked2, trackStatus, pair, LENS_INLIER_GEOMETRIC_BAR)) {
+		VERBOSE("MatchGeometricLensTest FAILED: no geometry was estimated");
+		return false;
+	}
+	std::unordered_set<uint32_t> matched;
+	for (const DMatch& m : pair.matches)
+		if (m.queryIdx == m.trainIdx)
+			matched.insert(m.queryIdx);
+	unsigned numCornersMatched = 0;
+	double worst = 0;
+	for (uint32_t i : corners) {
+		numCornersMatched += (unsigned)matched.count(i);
+		const Point2f& ptA = imgA.keypoints[i].pt;
+		const Point2f& ptB = imgB.keypoints[i].pt;
+		const Eigen::Matrix3d F = pair.F.value();
+		const Eigen::Vector3d line(F*Eigen::Vector3d(ptA.x, ptA.y, 1.0));
+		worst = MAXF(worst, ABS(line.x()*ptB.x + line.y()*ptB.y + line.z())/SQRT(line.x()*line.x() + line.y()*line.y()));
+	}
+	if (numCornersMatched != corners.size()) {
+		VERBOSE("MatchGeometricLensTest FAILED: %u of the %u corner correspondences matched", numCornersMatched, (unsigned)corners.size());
+		return false;
+	}
+	if (worst <= (double)LENS_INLIER_GEOMETRIC_BAR) {
+		VERBOSE("MatchGeometricLensTest FAILED: the corner correspondences lie within %.2f px of the pixel epipolar lines, the fixture does not exercise the lens", worst);
+		return false;
+	}
+	VERBOSE("MatchGeometricLensTest PASSED: %u corner correspondences matched through the lens, up to %.1f px off the pixel epipolar lines (%s)",
+		numCornersMatched, worst, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 // The described/dense keypoint boundary: the stored
 // count is what survives a descriptor release and an .sfm round-trip of an image whose
 // keypoints.size() > descriptors.rows -- the two arrays serialize independently, so nothing else
