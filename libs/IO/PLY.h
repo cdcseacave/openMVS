@@ -109,27 +109,15 @@ public:
 		return Binding{name, TypeOf<T>(), TypeOf<T>(), countType, numItems, const_cast<T*>(first), stride, NULL, NULL};
 	}
 	// a list property of any size per record, kept in lists[idx] (a container with resize(), data() and size());
-	// writing: countType must hold the size of the longest list (see CountTypeOf)
+	// writing: countType must hold the size of every list
 	template <typename ARR>
 	static Binding Lists(const char* name, const ARR& lists, DataType countType=Uint8) {
 		typedef typename std::decay<decltype(*lists[0].data())>::type T;
 		return Binding{name, TypeOf<T>(), TypeOf<T>(), countType, 0, const_cast<ARR*>(&lists), 0, &SetItems<ARR,T>, &GetItems<ARR,T>};
 	}
-	// the smallest count type holding the size of the longest of lists
-	template <typename ARR>
-	static DataType CountTypeOf(const ARR& lists) {
-		size_t maxSize(0);
-		for (const auto& list: lists)
-			maxSize = std::max(maxSize, (size_t)list.size());
-		return maxSize <= UINT8_MAX ? Uint8 : maxSize <= UINT16_MAX ? Uint16 : Uint32;
-	}
-
-	PLY();
-	~PLY();
 
 	// reading: parse the header; the elements are then read in file order
 	bool Open(const std::string& fileName);
-	FileType GetFileType() const { return fileType; }
 	const std::vector<Element>& GetElements() const { return elements; }
 	const std::vector<std::string>& GetComments() const { return comments; }
 	// read every record of element idx into the bound memory, skipping the properties not bound and
@@ -169,14 +157,13 @@ protected:
 	bool NextToken(const char*& token, size_t& len);
 	bool EndLine();
 
-protected:
 	// reading
 	SEACAVE::File file;
 	std::vector<uint8_t> buffer;    // read-ahead buffer: the unread bytes are [bufferPos, bufferEnd)
-	size_t bufferPos, bufferEnd;
-	SEACAVE::size_f_t fileLeft;     // bytes of the file not yet in the buffer
-	FileType fileType;
-	size_t nextElement;             // first element not read yet
+	size_t bufferPos = 0, bufferEnd = 0;
+	SEACAVE::size_f_t fileLeft = 0; // bytes of the file not yet in the buffer
+	FileType fileType = BINARY_LE;
+	size_t nextElement = 0;         // first element not read yet
 	std::vector<Element> elements;
 	std::vector<std::string> comments;
 

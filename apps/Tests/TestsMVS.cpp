@@ -92,20 +92,13 @@ bool PLYCodecTest()
 	if (!tmpDir.IsValid())
 		return false;
 
-	// a point-cloud with every attribute, reals no short decimal carries, and a point seen by more
-	// views than a uint8 list count holds
+	// a point-cloud with every attribute, and reals no short decimal carries
 	PointCloud pc;
 	pc.points = {{0.1f, -1e-7f, 12345.678f}, {FLT_MAX, -FLT_MIN, 3.f}, {1.f/3.f, 2.f, -0.5f}};
 	pc.colors = {Pixel8U::RED, Pixel8U::GREEN, Pixel8U::BLUE};
 	pc.normals = {{0.f, 0.f, 1.f}, {0.6f, 0.8f, 0.f}, {1.f, 0.f, 0.f}};
-	PointCloud::ViewArr manyViews(300);
-	PointCloud::WeightArr manyWeights(300);
-	FOREACH(v, manyViews) {
-		manyViews[v] = v;
-		manyWeights[v] = 1.f/(v+1);
-	}
-	pc.pointViews = {manyViews, {1}, {2, 4, 5}};
-	pc.pointWeights = {manyWeights, {1.f}, {0.1f, 0.2f, 0.3f}};
+	pc.pointViews = {{0, 3}, {1}, {2, 4, 5}};
+	pc.pointWeights = {{0.5f, 0.25f}, {1.f}, {0.1f, 0.2f, 0.3f}};
 	pc.labels = {1, 2, 3};
 	for (int format = 0; format < 3; ++format) {
 		const bool bBinary(format != 1), bLegacyTypes(format == 2);
@@ -173,7 +166,8 @@ bool PLYCodecTest()
 
 	// malformed files are refused rather than crashed on: a face count the file cannot hold or that
 	// overflows the allocation size, a quad, an ascii record short of a value or with one too many
-	// (each record is one line), and a header claiming more vertices than the file holds
+	// (each record is one line), a header claiming more vertices than the file holds, and a face
+	// indexing past the vertices
 	const LPCSTR asciiHeader =
 		"ply\nformat ascii 1.0\n"
 		"element vertex 3\nproperty float x\nproperty float y\nproperty float z\n"
@@ -212,7 +206,8 @@ bool PLYCodecTest()
 			return false;
 		}
 	}
-	if (mesh.Load(WriteBinary(3, 255, {0, 1, 2})) || mesh.Load(WriteBinary(3, 4, {0, 1, 2, 0})) || mesh.Load(WriteBinary(1000, 3, {0, 1, 2}))) {
+	if (mesh.Load(WriteBinary(3, 255, {0, 1, 2})) || mesh.Load(WriteBinary(3, 4, {0, 1, 2, 0})) || mesh.Load(WriteBinary(1000, 3, {0, 1, 2})) ||
+		mesh.Load(WriteBinary(3, 3, {0, 1, 3}))) {
 		VERBOSE("ERROR: a malformed binary PLY was accepted!");
 		return false;
 	}

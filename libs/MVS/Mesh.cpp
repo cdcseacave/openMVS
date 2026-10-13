@@ -605,6 +605,11 @@ bool Mesh::LoadPLY(const String& fileName)
 			return false;
 		}
 	}
+	if (*std::max_element(&faces[0].x, &faces[0].x+faces.size()*3) >= vertices.size()) {
+		DEBUG_EXTRA("error: invalid mesh file (face vertex index out of range)");
+		Release();
+		return false;
+	}
 	if (!faceTexcoords.empty()) {
 		// load the texture
 		for (const std::string& comment: ply.GetComments()) {

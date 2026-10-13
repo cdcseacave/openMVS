@@ -24,6 +24,7 @@ constexpr uint32_t typeSizes[] = {0, 1, 2, 4, 1, 2, 4, 4, 8};
 constexpr size_t BUFFER_SIZE = 4u<<20;    // read-ahead and write buffer
 constexpr size_t MAX_IO_CHUNK = 1u<<30;   // largest single file read/write (Win32 takes 32-bit sizes)
 constexpr size_t MAX_HEADER_LINE = 1u<<20;
+constexpr size_t MAX_TOKEN = 64;          // longest ascii value
 
 inline bool IsBlank(uint8_t c) { return c == ' ' || c == '\t' || c == '\r'; }
 inline bool IsSpace(uint8_t c) { return IsBlank(c) || c == '\n'; }
@@ -234,7 +235,7 @@ std::vector<OutField> PrepareFields(const PLY::Bindings& bindings) {
 }
 
 // the largest list count the integer type t holds
-uint64_t MaxCount(PLY::DataType t) {
+inline uint64_t MaxCount(PLY::DataType t) {
 	return Dispatch(t, [](auto v) -> uint64_t { return (uint64_t)std::numeric_limits<decltype(v)>::max(); });
 }
 
@@ -334,17 +335,6 @@ struct PLY::Column {
 	uint32_t itemSize;      // list: bytes in the file of an item
 	ConvertFn convert;      // file to memory type, NULL: the bytes are copied
 };
-
-
-PLY::PLY()
-	:
-	bufferPos(0), bufferEnd(0), fileLeft(0), fileType(BINARY_LE), nextElement(0)
-{
-}
-
-PLY::~PLY()
-{
-}
 
 
 /*************/
@@ -499,11 +489,7 @@ bool PLY::ParseHeader()
 
 bool PLY::ReadElement(size_t idx, const Bindings& bindings)
 {
-	ASSERT(idx < elements.size());
-	if (idx < nextElement) {
-		ASSERT("PLY elements are read in file order" == NULL);
-		return false;
-	}
+	ASSERT(idx < elements.size() && idx >= nextElement); // elements are read in file order
 	// skip the elements before it
 	while (nextElement < idx)
 		if (!ReadElement(nextElement, Bindings()))
@@ -707,7 +693,7 @@ bool PLY::NextToken(const char*& token, size_t& len)
 			return true;
 		}
 		// the token may continue past the buffer
-		if (!Fill(bufferEnd-bufferPos+1))
+		if (bufferEnd-bufferPos >= MAX_TOKEN || !Fill(bufferEnd-bufferPos+1))
 			return false;
 	}
 }
@@ -724,7 +710,7 @@ bool PLY::ReadAscii(const Element& elem, std::vector<Column>& columns)
 	const auto ParseValue = [this](DataType t, uint8_t* v) {
 		const char* token;
 		size_t len;
-		char text[64];
+		char text[MAX_TOKEN];
 		if (!NextToken(token, len) || len >= sizeof(text))
 			return false;
 		memcpy(text, token, len);
@@ -742,7 +728,7 @@ bool PLY::ReadAscii(const Element& elem, std::vector<Column>& columns)
 				x = static_cast<long long>(strtod(text, &end)); // an integer written as a real
 			Dispatch(t, [v, x](auto y) { y = static_cast<decltype(y)>(x); memcpy(v, &y, sizeof(y)); });
 		}
-		return end != text;
+		return end == text+len;
 	};
 	uint8_t value[8];
 	std::vector<uint8_t> values, items;

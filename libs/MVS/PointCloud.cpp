@@ -689,6 +689,8 @@ bool PointCloud::SavePLY(const String& fileName, bool bViews, bool bLegacyTypes,
 	if (IsEmpty())
 		return false;
 	ASSERT(!fileName.empty());
+	ASSERT((colors.empty() || colors.size() == points.size()) && (normals.empty() || normals.size() == points.size()));
+	ASSERT(!bViews || ((pointViews.empty() || pointViews.size() == points.size()) && (labels.empty() || labels.size() == points.size())));
 	Util::ensureFolder(fileName);
 	PLY::Bindings bindings{
 		PLY::Scalar("x", &points[0].x, sizeof(Point)),
@@ -705,13 +707,14 @@ bool PointCloud::SavePLY(const String& fileName, bool bViews, bool bLegacyTypes,
 		bindings.push_back(PLY::Scalar("nz", &normals[0].z, sizeof(Normal)));
 	}
 	if (bViews) {
-		const PLY::DataType countType(PLY::CountTypeOf(pointViews));
+		// the view lists are counted by a uint8
+		ASSERT(std::all_of(pointViews.begin(), pointViews.end(), [](const ViewArr& views) { return views.size() <= UINT8_MAX; }));
 		if (!pointViews.empty())
-			bindings.push_back(PLY::Lists("view_indices", pointViews, countType));
+			bindings.push_back(PLY::Lists("view_indices", pointViews));
 		if (!pointWeights.empty()) {
 			ASSERT(std::equal(pointWeights.begin(), pointWeights.end(), pointViews.begin(), pointViews.end(),
 				[](const WeightArr& weights, const ViewArr& views) { return weights.size() == views.size(); }));
-			bindings.push_back(PLY::Lists("view_weights", pointWeights, countType));
+			bindings.push_back(PLY::Lists("view_weights", pointWeights));
 		}
 		if (!labels.empty())
 			bindings.push_back(PLY::Scalar("label", &labels[0], sizeof(Label)));
@@ -1142,6 +1145,7 @@ bool PointCloud::SaveWithScale(const String& fileName, const ImageArr& images, f
 
 	// save the points with their color, normal, confidence and scale
 	ASSERT(!fileName.empty());
+	ASSERT((colors.empty() || colors.size() == points.size()) && (normals.empty() || normals.size() == points.size()));
 	Util::ensureFolder(fileName);
 	PLY::Bindings bindings{
 		PLY::Scalar("x", &points[0].x, sizeof(Point)),
