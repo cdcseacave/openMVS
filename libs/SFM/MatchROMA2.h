@@ -202,11 +202,11 @@ SFM_API bool AssemblePairROMA2(const PairsMatcher& pairsMatcher, const Image& im
 // maxEpipolarError on temporary Image copies whose keypoints are those correspondences, polished by
 // PairsMatcher::RefineRelativePose with each dense correspondence at config.denseFitWeight; when that
 // fails the geometry `pair` arrives with stands. Then the classification against the kept geometry
-// (through E on the bearings when a camera has a lens, else the pixel F): a sparse correspondence
-// within maxEpipolarError is an inlier, the others outliers (all inliers when maxEpipolarError is 0,
-// or when `pair` holds no geometry at all); a dense one within config.denseEpipolarErrorFactor times
-// that bar is kept (within denseTolerance when maxEpipolarError is 0, every one when denseTolerance
-// is 0 too).
+// (through E on the bearings when a camera has a lens and both trust their intrinsics, else the
+// pixel F): a sparse correspondence within maxEpipolarError is an inlier, the others outliers (all
+// inliers when maxEpipolarError is 0, or when `pair` holds no geometry at all); a dense one within
+// config.denseEpipolarErrorFactor times that bar is kept (within denseTolerance when
+// maxEpipolarError is 0, every one when denseTolerance is 0 too).
 // `pair` must arrive with no matches; on return pair.matches holds the sparse inliers in the order
 // of `sparse`, pair.outlierMatches the rest, numFilteredInliers their count and numDenseInliers 0 --
 // the dense segment is the caller's to materialise -- and denseKept one flag per dense correspondence.

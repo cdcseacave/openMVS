@@ -461,13 +461,17 @@ size_t CollectEligibleCells(const WarpMaps& maps, const cv::Size& sizeSrc, const
 }
 
 // One correspondence measured against the geometry a fit produced: the first-order (Sampson)
-// distance, compared against a tolerance. Through F where the fit produced one and neither camera
-// has a lens -- in pixels, the units WarpTolerance and MatchConfig::maxEpipolarError are both
-// expressed in -- and otherwise through E on calibrated bearings, with the pixel tolerance converted
-// per camera exactly as PairsMatcher::GeometricFilter converts its own. F is composed from E and K
-// alone: a straight epipolar line in pixels, which a lens bends, so that F puts a right match near a
-// corner tens of pixels off; a bearing goes through the lens (UnprojectNormalized undistorts first),
-// so E measures it where it is. F is not geometrically meaningful on a spherical or mixed pair either
+// distance, compared against a tolerance. Through F where the fit produced one, unless a camera has
+// a lens and both trust their intrinsics -- in pixels, the units WarpTolerance and
+// MatchConfig::maxEpipolarError are both expressed in -- and otherwise through E on calibrated
+// bearings, with the pixel tolerance converted per camera exactly as PairsMatcher::GeometricFilter
+// converts its own. F is composed from E and K alone: a straight epipolar line in pixels, which a lens
+// bends, so that F puts a right match near a corner tens of pixels off; a bearing goes through the
+// lens (UnprojectNormalized undistorts first), so E measures it where it is -- the E the essential
+// branch fits on those bearings, which GeometricFilter runs when both cameras trust their
+// intrinsics. A pair with an untrusted camera keeps F: the shared-focal branch fits its E on the
+// distorted pixels at the focal its RANSAC finds, which the nominal focal and the lens would not
+// measure exactly. F is not geometrically meaningful on a spherical or mixed pair either
 // (SphericalCamera::GetK is the identity, so GeometricFilter leaves F unset), and such a pair has to
 // be judged rather than silently rejected for want of a matrix.
 // The convention is the matcher's own throughout: F maps a point of the FIRST image to its epipolar
@@ -479,7 +483,8 @@ public:
 	SampsonTest(const Image& imgA, const Image& imgB, const ImagePair& pair, float tolerance)
 		: camA(imgA.pCamera), camB(imgB.pCamera),
 		  bFundamental(pair.F.has_value() &&
-			!(pair.E.has_value() && (imgA.pCamera->HasDistortion() || imgB.pCamera->HasDistortion())))
+			!(pair.E.has_value() && (imgA.pCamera->HasDistortion() || imgB.pCamera->HasDistortion()) &&
+			  imgA.TrustIntrinsics() && imgB.TrustIntrinsics()))
 	{
 		if (bFundamental) {
 			M = pair.F.value();

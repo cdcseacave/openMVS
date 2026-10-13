@@ -403,14 +403,20 @@ bool SFM::MatchFeaturesGeometric(
 	// sets pair.F only when BOTH cameras are pinhole -- for spherical or mixed pairs the fundamental
 	// matrix is not geometrically meaningful (SphericalCamera::GetK returns IDENTITY) -- and F is
 	// composed from E and K alone, a straight epipolar line in pixels that a lens bends. We dispatch:
-	//   - F present, no lens on either camera -> pixel-space epipolar line distance (unchanged)
+	//   - F present, and no lens on either camera or a camera that does not trust its intrinsics
+	//                                         -> pixel-space epipolar line distance (unchanged)
 	//   - otherwise, E present                -> bearing-space Sampson-on-sphere residual (the
 	//     bearings go through the lens) with an angular threshold derived per camera from
 	//     epipolarThreshold.
+	// E measures a lens pair where it is only as the essential branch fits it, on the bearings, which
+	// GeometricFilter runs when both cameras trust their intrinsics; the shared-focal branch fits its
+	// E on the distorted pixels at the focal its RANSAC finds, which the nominal focal and the lens
+	// would not measure exactly, so such a pair keeps F.
 	// For pinhole bearings the Sampson-on-sphere formula reduces exactly to the pinhole Sampson
 	// form (up to linear scaling), so the two paths agree on lens-free pinhole inputs up to the unit
 	// of the threshold. Keeping the F path separate preserves zero-regression on all pinhole tests.
-	const bool bLens = img1.pCamera->HasDistortion() || img2.pCamera->HasDistortion();
+	const bool bLens = (img1.pCamera->HasDistortion() || img2.pCamera->HasDistortion()) &&
+		img1.TrustIntrinsics() && img2.TrustIntrinsics();
 	if (pair.F.has_value() && !(bLens && pair.E.has_value())) {
 		const Matrix3x3f F = pair.F.value();
 		for (uint32_t i = 0; i < numDescribed1; ++i) {
