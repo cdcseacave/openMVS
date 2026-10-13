@@ -506,6 +506,17 @@ bool SceneClusterStandaloneCommunityTest();
 // where it is; it must not come out as a sub-scene whatever position it holds in the cluster order
 bool SceneClusterCoupledOrphanSkippedTest();
 
+// The balance pass never takes an image whose departure would leave part of its own cluster coupled
+// under minClusterCoupling, even when the image's own affinity favours the move
+// (SceneCluster::RefineClustersBalance, SceneCluster::KeepsCoupling)
+bool SceneClusterBalanceCouplingTest();
+
+// The thin-waist check weighs every prefix cut along the Fiedler order, not only the balanced one: a
+// stretch too small to stand on its own moves whole to the cluster it is most coupled to when one
+// holds it at the floor, and otherwise stays; a stretch large enough to stand is split off as before
+// (SceneCluster::RefineClustersSplitThinWaist)
+bool SceneClusterThinStretchTest();
+
 // Phase 3: Global Alignment tests
 bool GlobalAlignmentBuildGlobalToLocalMapTest();
 bool GlobalAlignmentRotationAveragingExtendedTest();

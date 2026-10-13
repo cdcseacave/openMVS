@@ -21,33 +21,33 @@ constexpr float WEIGHT_MULTIPLIER = 10.f; // Multiplier to convert float weights
 
 namespace {
 
-// Creation-time connectivity self-check for a single finished cluster.
+// One cluster's internal coupling, the test the refinement passes and the creation-time check share.
 //
-// The greedy merge holds every merge to the same test: it refuses to join two
-// clusters across an interface carrying less than minClusterCoupling of the weaker
-// side's internal weight, so that no sub-scene contains two blocks joined only by a
-// sparse seam (such a seam lets scale drift accumulate unobserved and reconstructs
-// as two independently scaled blocks — the two-scale bug the merge-time split then
-// has to repair).
-// This routine verifies that invariant on the FINAL clusters: it finds each
-// cluster's best balanced bipartition (the spectral / Fiedler cut of its internal
-// covisibility graph) and expresses the interface as the same coupling ratio the
-// merge test uses. A cluster whose two substantial halves fall below the floor was
-// mis-assembled by clustering; flagging it here points debugging at the clustering
-// decision instead of the post-reconstruction symptom. Purely structural, log only.
+// The greedy merge holds every merge to one test: it refuses to join two clusters across an interface
+// carrying less than minClusterCoupling of the weaker side's internal weight, so that no sub-scene
+// contains two blocks joined only by a sparse seam (such a seam lets scale drift accumulate unobserved
+// and reconstructs as two independently scaled blocks, or bends). This finds the cluster's weakest cut
+// among the prefix cuts of its Fiedler order: its images sorted by the second-smallest eigenvector of
+// the weighted Laplacian of its internal covisibility graph, every cut between the first k and the rest
+// weighed by that same coupling ratio, over the cuts whose smaller side holds at least minSide images.
+// The balanced cut the vector's sign gives is one of them; the others see a stretch of any size hanging
+// on its cluster by a thin interface, which the balanced cut hides (on Playground a 31-image stretch at
+// 0.023 inside a cluster whose balanced cut measured 0.145).
 struct ClusterCoupling {
-	unsigned larger = 0, smaller = 0; // bipartition block sizes (order-independent)
-	double coupling = 1.0;            // interface weight / weaker block internal weight
+	unsigned larger = 0, smaller = 0; // sizes of the two sides of the weakest cut
+	double coupling = 1.0;            // its interface weight / the weaker side's internal weight
+	double cutWeight = 0.0;           // its interface weight
+	double smallerInternal = 0.0;     // the internal weight of its smaller side
 	bool connected = true;            // internal graph in one piece
-	bool weak = false;                // substantial balanced blocks below the coupling floor
-	std::vector<uint8_t> side;        // Fiedler bipartition (0/1 per local index; filled when connected)
+	bool weak = false;                // the weakest cut is under the coupling floor
+	std::vector<uint8_t> side;        // 1 marks the smaller side of the weakest cut, 0 the rest (filled when connected and a cut qualifies)
 };
 
 ClusterCoupling AnalyzeClusterCoupling(
 	unsigned numImages,
 	const std::vector<std::pair<uint32_t, uint32_t>>& edges,
 	const std::vector<double>& weights,
-	unsigned minBlock, float minCoupling)
+	unsigned minSide, float minCoupling)
 {
 	ClusterCoupling r;
 	if (numImages < 2 || edges.empty())
@@ -71,7 +71,7 @@ ClusterCoupling AnalyzeClusterCoupling(
 		return r;
 	}
 
-	// Fiedler (second-smallest eigenvector) bipartition of the weighted Laplacian
+	// Fiedler (second-smallest eigenvector) of the weighted Laplacian
 	Eigen::MatrixXd L = Eigen::MatrixXd::Zero(numImages, numImages);
 	for (size_t k = 0; k < edges.size(); ++k) {
 		const uint32_t u = edges[k].first, v = edges[k].second;
@@ -81,27 +81,62 @@ ClusterCoupling AnalyzeClusterCoupling(
 	}
 	Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> es(L);
 	const Eigen::VectorXd fiedler = es.eigenvectors().col(1);
-	std::vector<uint8_t> side(numImages);
-	unsigned n0 = 0;
-	for (uint32_t i = 0; i < numImages; ++i) {
-		side[i] = fiedler[(Eigen::Index)i] >= 0.0 ? 0 : 1;
-		if (side[i] == 0)
-			++n0;
-	}
-	const unsigned n1 = numImages - n0;
-	double cut = 0.0, wint0 = 0.0, wint1 = 0.0;
+
+	// the images in Fiedler order (ties by index), and every prefix cut weighed as it grows: an image
+	// moving into the prefix turns its edges to the prefix internal and its edges to the rest into cut
+	std::vector<uint32_t> order(numImages);
+	std::iota(order.begin(), order.end(), 0u);
+	std::stable_sort(order.begin(), order.end(), [&fiedler](uint32_t a, uint32_t b) {
+		return fiedler[(Eigen::Index)a] < fiedler[(Eigen::Index)b];
+	});
+	std::vector<std::vector<std::pair<uint32_t, double>>> adjacency(numImages);
+	double internalRest = 0.0;
 	for (size_t k = 0; k < edges.size(); ++k) {
-		const uint32_t u = edges[k].first, v = edges[k].second;
-		const double w = weights[k];
-		if (side[u] != side[v]) cut += w;
-		else if (side[u] == 0) wint0 += w; else wint1 += w;
+		adjacency[edges[k].first].emplace_back(edges[k].second, weights[k]);
+		adjacency[edges[k].second].emplace_back(edges[k].first, weights[k]);
+		internalRest += weights[k];
 	}
-	const double minInt = MINF(wint0, wint1);
-	r.coupling = minInt > 1e-9 ? cut / minInt : 0.0;
-	r.larger = MAXF(n0, n1);
-	r.smaller = MINF(n0, n1);
-	r.weak = r.smaller >= minBlock && r.coupling < (double)minCoupling;
-	r.side = std::move(side);
+	std::vector<uint8_t> inPrefix(numImages, 0);
+	double internalPrefix = 0.0, cut = 0.0;
+	unsigned bestK = 0;
+	double best = std::numeric_limits<double>::max(), bestCut = 0.0;
+	for (unsigned k = 1; k < numImages; ++k) {
+		const uint32_t u = order[k - 1];
+		for (const auto& [v, w] : adjacency[u]) {
+			if (inPrefix[v]) {
+				internalPrefix += w;
+				cut -= w;
+			} else {
+				cut += w;
+				internalRest -= w;
+			}
+		}
+		inPrefix[u] = 1;
+		if (MINF(k, numImages - k) < minSide)
+			continue;
+		const double weaker = MINF(internalPrefix, internalRest);
+		if (weaker <= 0.0)
+			continue; // a side without internal weight has no cohesion to measure the cut against
+		if (cut/weaker < best) {
+			best = cut/weaker;
+			bestK = k;
+			bestCut = cut;
+		}
+	}
+	if (bestK == 0)
+		return r; // no cut leaves minSide images with internal weight on both sides
+	const bool prefixSmaller = bestK <= numImages - bestK;
+	r.side.assign(numImages, 0);
+	for (unsigned k = 0; k < numImages; ++k)
+		r.side[order[k]] = (k < bestK) == prefixSmaller ? 1 : 0;
+	for (size_t k = 0; k < edges.size(); ++k)
+		if (r.side[edges[k].first] && r.side[edges[k].second])
+			r.smallerInternal += weights[k];
+	r.smaller = MINF(bestK, numImages - bestK);
+	r.larger = numImages - r.smaller;
+	r.coupling = best;
+	r.cutWeight = bestCut;
+	r.weak = best < (double)minCoupling;
 	return r;
 }
 
@@ -164,7 +199,7 @@ void ReportClusterCoupling(const Scene& scene, const std::vector<IIndexArr>& clu
 	unsigned numWeak = 0;
 	for (unsigned s = 0; s < numKept; ++s) {
 		const unsigned V = clusterSize[s];
-		const ClusterCoupling cc = AnalyzeClusterCoupling(V, edges[s], weights[s], MAXF(config.minViewsPerCluster, V / 5), config.minClusterCoupling);
+		const ClusterCoupling cc = AnalyzeClusterCoupling(V, edges[s], weights[s], config.minWaistSideViews, config.minClusterCoupling);
 		if (!cc.connected) {
 			VERBOSE("warning: Sub-scene %u internally disconnected at creation: components %u+%u images; clustering produced a split sub-scene", s, cc.larger, cc.smaller);
 			++numWeak;
@@ -172,7 +207,7 @@ void ReportClusterCoupling(const Scene& scene, const std::vector<IIndexArr>& clu
 			VERBOSE("warning: Sub-scene %u under-coupled at creation: blocks %u+%u images joined at coupling %.3f < %.3f; it may reconstruct at two scales, which the merge cannot repair", s, cc.larger, cc.smaller, cc.coupling, config.minClusterCoupling);
 			++numWeak;
 		} else {
-			VERBOSE("Sub-scene %u coupling ok: %u images, spectral cut coupling %.3f", s, V, cc.coupling);
+			VERBOSE("Sub-scene %u coupling ok: %u images, weakest prefix cut coupling %.3f (%u+%u)", s, V, cc.coupling, cc.larger, cc.smaller);
 		}
 	}
 	VERBOSE("Cluster coupling check: %u/%u sub-scenes flagged weak at creation", numWeak, numKept);
@@ -1130,15 +1165,41 @@ void SceneCluster::RefineClustersLocalSearch(std::vector<IIndexArr>& clusters)
 	}), clusters.end());
 }
 
+// Whether cluster c without image u keeps every prefix cut along its Fiedler order at or above
+// minClusterCoupling, and stays connected
+bool SceneCluster::KeepsCoupling(const std::vector<IIndexArr>& clusters, int c, IIndex u) const
+{
+	std::vector<int> clusterOf(scene.images.size(), -1);
+	std::vector<uint32_t> localIndex(scene.images.size(), 0);
+	uint32_t li = 0;
+	for (IIndex g : clusters[c])
+		if (g != u) {
+			clusterOf[g] = 0;
+			localIndex[g] = li++;
+		}
+	std::vector<std::vector<std::pair<uint32_t, uint32_t>>> edges(1);
+	std::vector<std::vector<double>> weights(1);
+	BucketClusterEdges(scene, config.minPairWeight, clusterOf, localIndex, edges, weights);
+	const ClusterCoupling cc = AnalyzeClusterCoupling(li, edges[0], weights[0], config.minWaistSideViews, config.minClusterCoupling);
+	return cc.connected && !cc.weak;
+}
+
 // Move well-connected boundary images out of the largest cluster into smaller
 // neighbors. Sub-scenes reconstruct concurrently, so wall-clock time is
 // dominated by the largest cluster; moving a modest number of strongly-shared
 // images shortens that critical path. Conservative by construction: a move is
 // only made when the candidate's connectivity to the target cluster is a
 // large fraction of its connectivity to its own cluster, so weakly-coupled
-// images (e.g. an isolated strip of views) never move.
+// images (e.g. an isolated strip of views) never move; and never made at all
+// when it would leave the source cluster's weakest prefix cut (KeepsCoupling)
+// under minClusterCoupling, whatever the candidate's own affinity -- the
+// bridge of a stretch judged only by its own weight can strand that stretch
+// (Playground's 97-101, which used to leave 102-132 at a coupling of 0.023).
 void SceneCluster::RefineClustersBalance(std::vector<IIndexArr>& clusters)
 {
+	if (xadj.empty())
+		BuildConnectivityGraph(); // a caller handing clusters in directly (not through SplitScene) has none yet
+
 	constexpr float kBalanceAffinity = 0.7f;   // min ratio of target-weight to current-internal-weight for a move
 	constexpr float kBalanceTolerance = 1.25f; // stop when largest cluster <= tolerance * mean cluster size
 
@@ -1180,10 +1241,11 @@ void SceneCluster::RefineClustersBalance(std::vector<IIndexArr>& clusters)
 		if (srcSize <= config.minViewsPerCluster)
 			break; // moving further would shrink the largest cluster below the minimum
 
-		// scan every image in src (ascending order) for the best eligible move this sweep
-		IIndex bestU = NO_ID;
-		int bestC = -1;
-		int bestWeight = 0;
+		// every eligible move this pass, heaviest first; the first that leaves the source cluster without
+		// a prefix cut under the coupling floor is made: a move judged by the image's own affinity alone
+		// can take the bridge of a stretch and strand it (Playground's 97-101, which left 102-132 at 0.023)
+		struct Move { int weight; IIndex u; int target; };
+		std::vector<Move> moves;
 		for (IIndex u = 0; u < nViews; ++u) {
 			if (nodeToCluster[u] != src)
 				continue;
@@ -1215,22 +1277,27 @@ void SceneCluster::RefineClustersBalance(std::vector<IIndexArr>& clusters)
 			if (targetC < 0 || (float)targetW < kBalanceAffinity * (float)wSrc)
 				continue;
 
-			if (targetW > bestWeight) {
-				bestWeight = targetW;
-				bestU = u;
-				bestC = targetC;
+			moves.push_back({targetW, u, targetC});
+		}
+		std::sort(moves.begin(), moves.end(), [](const Move& a, const Move& b) {
+			return a.weight > b.weight || (a.weight == b.weight && a.u < b.u);
+		});
+		const Move* chosen = NULL;
+		for (const Move& move : moves) {
+			if (KeepsCoupling(clusters, src, move.u)) {
+				chosen = &move;
+				break;
 			}
 		}
+		if (!chosen)
+			break; // no eligible move keeps its source coupled
 
-		if (bestU == NO_ID)
-			break; // no eligible move this sweep
-
-		auto it = std::find(clusters[src].begin(), clusters[src].end(), bestU);
+		auto it = std::find(clusters[src].begin(), clusters[src].end(), chosen->u);
 		ASSERT(it != clusters[src].end());
 		*it = clusters[src].back();
 		clusters[src].pop_back();
-		clusters[bestC].push_back(bestU);
-		nodeToCluster[bestU] = bestC;
+		clusters[chosen->target].push_back(chosen->u);
+		nodeToCluster[chosen->u] = chosen->target;
 		++numMoves;
 	}
 
@@ -1289,72 +1356,98 @@ void SceneCluster::RefineClustersSplitDisconnected(std::vector<IIndexArr>& clust
 	}
 }
 
+// A cluster whose weakest prefix cut along its Fiedler order (AnalyzeClusterCoupling) is under
+// minClusterCoupling is reshaped: a side of minViewsPerCluster images or more is split off into its
+// own cluster, as it stood a chance of reconstructing at two scales otherwise; a smaller stretch
+// cannot stand on its own, so it moves whole to the neighbouring cluster that holds it more than its
+// own cluster does, when one has the room, and otherwise stays, left for the merge to place through
+// whatever seam it still has.
 void SceneCluster::RefineClustersSplitThinWaist(std::vector<IIndexArr>& clusters)
 {
+	if (xadj.empty())
+		BuildConnectivityGraph(); // a caller handing clusters in directly (not through SplitScene) has none yet
 	if (config.minClusterCoupling <= 0)
 		return;
-	// bucket every cluster's internal edges in a single sweep over the pair graph;
-	// after a split each half's edges are a filter of the parent's bucket (a parent
-	// edge is either internal to a half or part of the cut), so the pair graph is
-	// never scanned again
-	std::vector<std::vector<std::pair<uint32_t, uint32_t>>> edges(clusters.size());
-	std::vector<std::vector<double>> weights(clusters.size());
-	{
+
+	// every split or move strictly shrinks the cluster analysed, and a moved stretch is held more by
+	// its new cluster than by its old one, so it never moves back; this bounds the rounds generously
+	constexpr unsigned kWaistRoundsPerCluster = 4;
+	unsigned budget = kWaistRoundsPerCluster * (unsigned)clusters.size();
+	for (size_t c = 0; c < clusters.size() && budget > 0; ) {
+		// a move changes two clusters' edges, so every round re-buckets the whole pair graph (one
+		// pass over the pairs) rather than patch the previous round's edges incrementally
 		std::vector<int> clusterOf(scene.images.size(), -1);
 		std::vector<uint32_t> localIndex(scene.images.size(), 0);
-		for (size_t c = 0; c < clusters.size(); ++c) {
+		for (size_t ci = 0; ci < clusters.size(); ++ci) {
 			uint32_t li = 0;
-			for (IIndex g : clusters[c]) {
-				clusterOf[g] = (int)c;
+			for (IIndex g : clusters[ci]) {
+				clusterOf[g] = (int)ci;
 				localIndex[g] = li++;
 			}
 		}
+		std::vector<std::vector<std::pair<uint32_t, uint32_t>>> edges(clusters.size());
+		std::vector<std::vector<double>> weights(clusters.size());
 		BucketClusterEdges(scene, config.minPairWeight, clusterOf, localIndex, edges, weights);
-	}
-	// a split appends the second half for later re-analysis and leaves the first half
-	// in place to be re-analysed immediately; each split strictly shrinks a cluster and
-	// both halves are >= minViewsPerCluster, so the process is naturally bounded
-	unsigned budget = (unsigned)clusters.size();
-	for (size_t c = 0; c < clusters.size() && budget > 0; ) {
-		const IIndexArr& cluster = clusters[c];
-		const unsigned V = (unsigned)cluster.size();
-		if (V < 2 * config.minViewsPerCluster) { // cannot yield two keepable halves
+
+		const unsigned V = (unsigned)clusters[c].size();
+		if (V < 2 * config.minWaistSideViews) { // cannot yield two sides the coupling checks can weigh
 			++c;
 			continue;
 		}
-		const ClusterCoupling cc = AnalyzeClusterCoupling(V, edges[c], weights[c],
-			MAXF(config.minViewsPerCluster, V / 5), config.minClusterCoupling);
-		if (!cc.connected || !cc.weak || cc.side.size() != V ||
-			cc.smaller < config.minViewsPerCluster) {
+		const ClusterCoupling cc = AnalyzeClusterCoupling(V, edges[c], weights[c], config.minWaistSideViews, config.minClusterCoupling);
+		if (!cc.connected || !cc.weak || cc.side.size() != V) {
 			++c;
 			continue;
 		}
-		IIndexArr halves[2];
-		std::vector<uint32_t> newLocal(V);
-		FOREACH(i, cluster) {
-			newLocal[i] = (uint32_t)halves[cc.side[i]].size();
-			halves[cc.side[i]].push_back(cluster[i]);
+		IIndexArr stretch, rest;
+		FOREACH(i, clusters[c])
+			(cc.side[i] ? stretch : rest).push_back(clusters[c][i]);
+		if (cc.smaller >= config.minViewsPerCluster) {
+			// the weak side can stand on its own: split it off, as before
+			VERBOSE("Clustering: split thin-waist cluster (%u images, internal coupling %.3f < %.3f) into %u+%u images",
+				V, cc.coupling, config.minClusterCoupling, (unsigned)rest.size(), (unsigned)stretch.size());
+			clusters[c] = std::move(rest);
+			clusters.push_back(std::move(stretch));
+			--budget;
+			continue; // re-analyse what is left of c; the split-off side is reached later
 		}
-		std::vector<std::pair<uint32_t, uint32_t>> halfEdges[2];
-		std::vector<double> halfWeights[2];
-		for (size_t e = 0; e < edges[c].size(); ++e) {
-			const auto [u, v] = edges[c][e];
-			if (cc.side[u] != cc.side[v])
-				continue; // a cut edge belongs to neither half
-			const int s = cc.side[u];
-			halfEdges[s].emplace_back(newLocal[u], newLocal[v]);
-			halfWeights[s].push_back(weights[c][e]);
+
+		// a stretch too small to stand on its own: its weight to every other cluster, counted only
+		// through the images the weakest cut puts on its side (clusterOf[...] == c guards the
+		// cc.side lookup, since cc.side is indexed by c's local index, not the image's global one)
+		std::unordered_map<int, double> interfaces;
+		for (const ImagePair& pair : scene.pairs) {
+			const float weight(pair.GetCompositeWeight());
+			if (weight < config.minPairWeight)
+				continue;
+			const int c1 = clusterOf[pair.ID1], c2 = clusterOf[pair.ID2];
+			if (c1 == (int)c && c2 >= 0 && c2 != (int)c && cc.side[localIndex[pair.ID1]])
+				interfaces[c2] += weight;
+			else if (c2 == (int)c && c1 >= 0 && c1 != (int)c && cc.side[localIndex[pair.ID2]])
+				interfaces[c1] += weight;
 		}
-		VERBOSE("Clustering: split thin-waist cluster (%u images, internal coupling %.3f < %.3f) into %u+%u images",
-			V, cc.coupling, config.minClusterCoupling, (unsigned)halves[0].size(), (unsigned)halves[1].size());
-		clusters[c] = std::move(halves[0]);
-		edges[c] = std::move(halfEdges[0]);
-		weights[c] = std::move(halfWeights[0]);
-		clusters.push_back(std::move(halves[1]));
-		edges.push_back(std::move(halfEdges[1]));
-		weights.push_back(std::move(halfWeights[1]));
+		int target = -1;
+		double targetWeight = 0.0;
+		for (const auto& [t, w] : interfaces)
+			if (w > targetWeight || (w == targetWeight && t < target)) { target = t; targetWeight = w; }
+		const double internalTarget = target >= 0 ? std::accumulate(weights[target].begin(), weights[target].end(), 0.0) : 0.0;
+		if (target < 0 || targetWeight <= cc.cutWeight ||
+			targetWeight < (double)config.minClusterCoupling * MINF(cc.smallerInternal, internalTarget) ||
+			clusters[target].size() + stretch.size() > config.maxViewsPerCluster + config.maxOverCapacity) {
+			// no neighbour holds it more than its own cluster does, or none has room: leave it in place
+			DEBUG("Clustering: a stretch of %u images coupled %.3f to its cluster of %u has no neighbour holding it better; left in place",
+				(unsigned)stretch.size(), cc.coupling, V);
+			++c;
+			continue;
+		}
+		VERBOSE("Clustering: moved a stretch of %u images, coupled %.3f to its cluster of %u images, to the cluster of %u images it is coupled %.3f to",
+			(unsigned)stretch.size(), cc.coupling, V, (unsigned)clusters[target].size(),
+			targetWeight / MAXF(MINF(cc.smallerInternal, internalTarget), 1e-9));
+		for (IIndex u : stretch)
+			clusters[target].push_back(u);
+		clusters[c] = std::move(rest);
 		--budget;
-		// leave c in place: re-analyse the replacing half; the appended half is reached later
+		// re-analyse what is left of c
 	}
 }
 

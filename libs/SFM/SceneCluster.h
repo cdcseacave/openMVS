@@ -32,8 +32,11 @@ class SFM_API Scene;
  * reconstruction problem becomes both computationally expensive and numerically
  * fragile: large bundle adjustment problems converge slowly and are more prone
  * to local minima. Hierarchical SfM addresses this by splitting the scene into
- * smaller, overlapping sub-scenes that can be reconstructed independently and
- * later merged into a single global scene.
+ * smaller sub-scenes that share no cameras -- every image belongs to exactly
+ * one -- and overlap only in structure: the points the cameras on both sides
+ * of a cut see, which the merge registers the sub-scenes on. Each sub-scene
+ * can be reconstructed independently and later merged into a single global
+ * scene.
  *
  * This file implements the SPLIT phase. The MERGE phase is in GlobalAlignment.h.
  *
@@ -75,12 +78,16 @@ class SFM_API Scene;
  *       and enters through the merge.
  *    c) Balance: move well-connected boundary images out of the largest cluster
  *       into smaller neighbors, gated by a minimum affinity ratio, to shorten the
- *       critical path of concurrent sub-scene reconstruction.
+ *       critical path of concurrent sub-scene reconstruction; a move that would
+ *       leave part of the source cluster coupled under minClusterCoupling is
+ *       refused.
  *    d) Split disconnected: if a cluster has disconnected components in the
  *       covisibility graph, split it into separate clusters.
- *    e) Split thin waists: a cluster whose best balanced bipartition is joined
- *       below the minClusterCoupling seam is split in two, rather than left to
- *       reconstruct as two independently scaled blocks.
+ *    e) Split thin waists: a cluster whose weakest prefix cut along its Fiedler
+ *       order is joined below the minClusterCoupling seam is split in two when
+ *       both sides can stand (minViewsPerCluster), and otherwise its smaller
+ *       side moves whole to the cluster it is most coupled to, rather than left
+ *       to reconstruct as an appendage that bends or takes its own scale.
  *    f) Make the cuts usable by the merge: a cluster whose seams carry too few
  *       usable tracks, or hold them in too few cameras, to register it against
  *       its neighbors (IsStrongSeam, below minClusterDegree strong neighbors) is
@@ -148,6 +155,7 @@ struct SFM_API ClusterConfig
 	float minPairWeight{3.f};            // minimum composite weight for pair edge
 	TrackConflictConfig trackConflictCfg; // how a component holding one image twice is settled when the tracks are built here
 	float minClusterCoupling{0.05f};     // refuse a merge whose interface weight falls below this fraction of the weaker side's internal weight, whatever either side's size, and split any final cluster with such an internal seam (0 = disabled)
+	unsigned minWaistSideViews{10};      // the fewest images either side of a prefix cut must hold for the coupling checks to weigh it: a smaller side's internal weight is a pair or two, too little for the ratio to judge (Playground's under-coupled stretches held 23 and 31)
 	bool useCommunityDetection{false};   // partition by community detection + capacity packing instead of pure aggregative clustering
 
 	// The ceiling and the two sizes that follow from it: a cluster aims at two thirds of the
@@ -242,6 +250,22 @@ public:
 	void RepairClusterSeams(std::vector<IIndexArr>& clusters);
 
 	/**
+	 * @brief Move well-connected boundary images out of the largest cluster into smaller neighbours, to
+	 * shorten the critical path of concurrent sub-scene reconstruction: a move needs the image's weight to
+	 * the target to reach a minimum affinity ratio of its weight to its own cluster, and is refused when
+	 * the cluster it leaves would then hold a prefix cut under minClusterCoupling (AnalyzeClusterCoupling)
+	 */
+	void RefineClustersBalance(std::vector<IIndexArr>& clusters);
+
+	/**
+	 * @brief Split or reshape every cluster whose weakest prefix cut along its Fiedler order is under the
+	 * minClusterCoupling seam: a side of minViewsPerCluster images or more becomes its own cluster; a
+	 * smaller stretch moves whole to the neighbouring cluster it is most coupled to, when that cluster
+	 * holds it at the floor, more than its own does, and has room; else it stays
+	 */
+	void RefineClustersSplitThinWaist(std::vector<IIndexArr>& clusters);
+
+	/**
 	 * @brief Export cluster GPS positions to PLY file with unique colors per cluster
 	 * @param subScenes Vector of scene clusters
 	 * @param fileName Output PLY file path
@@ -288,23 +312,15 @@ private:
 	// as its own sub-scene by the small-cluster pass, the orphan rescue and the sub-scene builder
 	bool IsStandaloneCommunity(const std::vector<IIndexArr>& clusters, size_t c, const SeamTrackStatsMap& seamStats) const;
 
+	// Whether cluster c without image u keeps every prefix cut along its Fiedler order at or above
+	// minClusterCoupling, and stays connected
+	bool KeepsCoupling(const std::vector<IIndexArr>& clusters, int c, IIndex u) const;
+
 	// Helper: Refine clusters using local search (move/swap nodes for modularity + balance)
 	void RefineClustersLocalSearch(std::vector<IIndexArr>& clusters);
 
-	// Helper: conservatively move well-connected boundary images out of the
-	// largest cluster into smaller neighbors, to shorten the critical path of
-	// concurrent sub-scene reconstruction (moves are gated by a minimum
-	// affinity ratio to the target cluster, so weakly-coupled images never move)
-	void RefineClustersBalance(std::vector<IIndexArr>& clusters);
-
 	// Helper: Split disconnected components within clusters
 	void RefineClustersSplitDisconnected(std::vector<IIndexArr>& clusters);
-
-	// Helper: split any cluster whose best balanced bipartition (spectral cut of its
-	// internal covisibility graph) is joined below the minClusterCoupling seam — the
-	// thin-waist clusters that would otherwise reconstruct as two independently scaled
-	// blocks; each half becomes its own sub-scene, realigned by the global Sim(3) merge
-	void RefineClustersSplitThinWaist(std::vector<IIndexArr>& clusters);
 
 	// Helper: the cuts as the merge will see them — merge away the clusters no seam can register,
 	// widen the seams whose tracks sit in too few cameras, and hand whatever that leaves under the

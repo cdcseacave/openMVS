@@ -370,6 +370,10 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::SceneClusterCoupledOrphanSkippedTest())
 				return false;
+			if (!SFM::SceneClusterBalanceCouplingTest())
+				return false;
+			if (!SFM::SceneClusterThinStretchTest())
+				return false;
 			// Hierarchical SFM tests - Phase 3: Global Alignment
 			if (!SFM::GlobalAlignmentBuildGlobalToLocalMapTest())
 				return false;

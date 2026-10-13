@@ -13310,6 +13310,170 @@ bool SceneClusterCoupledOrphanSkippedTest()
 }
 /*----------------------------------------------------------------*/
 
+// The balance pass (RefineClustersBalance) never takes an image whose departure leaves part of its
+// cluster hanging under the coupling floor: X holds a 10-image body, a 5-image stretch and the one
+// image bridging them, which leans toward the smaller cluster Y (affinity 1.5, past the pass's 0.7);
+// moving it would leave the stretch on the body by a pair of weight 4 against its own 550. It stays,
+// and so does the stretch, where the pass used to move the bridge and strand it.
+bool SceneClusterBalanceCouplingTest()
+{
+	TD_TIMER_START();
+
+	// images: body 0-9, bridge 10, stretch 11-15 (cluster X, 16 images); Y 16-23 (8 images)
+	Scene scene;
+	SceneConfig cfg;
+	cfg.numImages = 24;
+	cfg.numPoints = 0;
+	cfg.generatePairs = false;
+	cfg.generateDescriptors = false;
+	cfg.poseMode = SceneConfig::CIRCULAR_ARRANGEMENT;
+	cfg.rotationAngleStep = 360.0 / 24;
+	GenerateTestScene(scene, cfg);
+	scene.pairs.clear();
+	scene.tracks.clear();
+
+	// a pair whose composite weight is exactly the given number: unit quality factors, triplet 0.5
+	const auto AddPair = [&scene](IIndex a, IIndex b, float weight) {
+		ImagePair pair(a, b);
+		pair.weightedInliers = weight;
+		pair.weightSpatial = 1.f;
+		pair.weightConnectivity = 1.f;
+		pair.weightTriplet = 0.5f;
+		scene.pairs.emplace_back(std::move(pair));
+	};
+	const auto AddChain = [&](IIndex first, IIndex last) {
+		for (IIndex k = first; k < last; ++k) AddPair(k, k + 1, 100.f);
+		for (IIndex k = first; k + 1 < last; ++k) AddPair(k, k + 2, 50.f);
+	};
+	AddChain(0, 9);                     // the body
+	AddChain(11, 15);                   // the stretch: internal weight 4 x 100 + 3 x 50 = 550
+	AddChain(16, 23);                   // Y
+	AddPair(9, 10, 100.f); AddPair(8, 10, 50.f);    // the bridge holds the body: 150
+	AddPair(10, 11, 100.f); AddPair(10, 12, 50.f);  // and the stretch: 150
+	AddPair(9, 11, 4.f);                            // the stretch's own link to the body, under the floor
+	AddPair(10, 16, 300.f); AddPair(10, 17, 150.f); // and leans toward Y: 450 against its 300 in X
+
+	ClusterConfig clusterCfg;
+	clusterCfg.maxViewsPerCluster = 20;
+	clusterCfg.targetViewsPerCluster = 16;
+	clusterCfg.minViewsPerCluster = 4;
+	clusterCfg.minWaistSideViews = 3;
+	clusterCfg.minClusterDegree = 0;
+	SceneCluster cluster(scene, clusterCfg);
+	std::vector<IIndexArr> clusters(2);
+	for (IIndex i = 0; i <= 15; ++i) clusters[0].push_back(i);
+	for (IIndex i = 16; i <= 23; ++i) clusters[1].push_back(i);
+	cluster.RefineClustersBalance(clusters);
+
+	const auto Holds = [&](size_t c, IIndex i) { return std::find(clusters[c].begin(), clusters[c].end(), i) != clusters[c].end(); };
+	for (IIndex i = 0; i <= 15; ++i) {
+		if (!Holds(0, i)) {
+			VERBOSE("SceneClusterBalanceCouplingTest FAILED: image %u left X, %s", i,
+				i == 10 ? "the bridge whose departure strands the stretch under the floor" : "an image the fixture never offers Y");
+			return false;
+		}
+	}
+	VERBOSE("SceneClusterBalanceCouplingTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+// The thin-waist check (RefineClustersSplitThinWaist) weighs every prefix cut along the Fiedler order:
+// a 4-image stretch hanging on its 12-image cluster C by a pair of weight 5 (coupling 0.0125), too
+// small for a sub-scene of its own and heavily coupled to the cluster D (250 against its own 400), moves
+// whole to D; with no neighbour holding it at the floor it stays where it is; and an 8-image side
+// under-coupled to its cluster, large enough to stand, is split off as before
+bool SceneClusterThinStretchTest()
+{
+	TD_TIMER_START();
+
+	struct Variant { const char* name; unsigned stretch; bool linkedToD; };
+	for (const Variant& variant : {Variant{"a stretch D holds", 4, true}, Variant{"a stretch nothing holds", 4, false}, Variant{"a side that can stand", 8, true}}) {
+		// C: body 0-11 and the stretch 12..; D: the 12 images after it
+		const IIndex firstD = 12 + variant.stretch, numImages = firstD + 12;
+		Scene scene;
+		SceneConfig cfg;
+		cfg.numImages = numImages;
+		cfg.numPoints = 0;
+		cfg.generatePairs = false;
+		cfg.generateDescriptors = false;
+		cfg.poseMode = SceneConfig::CIRCULAR_ARRANGEMENT;
+		cfg.rotationAngleStep = 360.0 / numImages;
+		GenerateTestScene(scene, cfg);
+		scene.pairs.clear();
+		scene.tracks.clear();
+
+		// a pair whose composite weight is exactly the given number: unit quality factors, triplet 0.5
+		const auto AddPair = [&scene](IIndex a, IIndex b, float weight) {
+			ImagePair pair(a, b);
+			pair.weightedInliers = weight;
+			pair.weightSpatial = 1.f;
+			pair.weightConnectivity = 1.f;
+			pair.weightTriplet = 0.5f;
+			scene.pairs.emplace_back(std::move(pair));
+		};
+		const auto AddChain = [&](IIndex first, IIndex last) {
+			for (IIndex k = first; k < last; ++k) AddPair(k, k + 1, 100.f);
+			for (IIndex k = first; k + 1 < last; ++k) AddPair(k, k + 2, 50.f);
+		};
+		AddChain(0, 11);
+		AddChain(12, firstD - 1);
+		AddChain(firstD, numImages - 1);
+		AddPair(11, 12, 5.f); // the stretch's only link to its body
+		if (variant.linkedToD) {
+			AddPair(12, firstD, 100.f); AddPair(13, firstD + 1, 100.f); AddPair(14, firstD + 2, 50.f);
+		}
+
+		ClusterConfig clusterCfg;
+		clusterCfg.maxViewsPerCluster = 24;
+		clusterCfg.minViewsPerCluster = 6;
+		clusterCfg.maxOverCapacity = 5;
+		clusterCfg.minWaistSideViews = 3;
+		clusterCfg.minClusterDegree = 0;
+		SceneCluster cluster(scene, clusterCfg);
+		std::vector<IIndexArr> clusters(2);
+		for (IIndex i = 0; i < firstD; ++i) clusters[0].push_back(i);
+		for (IIndex i = firstD; i < numImages; ++i) clusters[1].push_back(i);
+		cluster.RefineClustersSplitThinWaist(clusters);
+
+		// the cluster holding image 12 (the stretch's first), image 0 (the body) and image firstD (D)
+		const auto ClusterOf = [&](IIndex img) {
+			for (size_t ci = 0; ci < clusters.size(); ++ci)
+				if (std::find(clusters[ci].begin(), clusters[ci].end(), img) != clusters[ci].end())
+					return (int)ci;
+			return -1;
+		};
+		unsigned numClusters = 0;
+		for (const IIndexArr& c : clusters)
+			if (!c.empty()) ++numClusters;
+		const int cBody = ClusterOf(0), cStretch = ClusterOf(12), cD = ClusterOf(firstD);
+		bool ok = true;
+		for (IIndex i = 12; i < firstD; ++i)
+			if (ClusterOf(i) != cStretch)
+				ok = false; // the stretch split instead of moving or staying whole
+		if (ok) {
+			if (variant.stretch >= clusterCfg.minViewsPerCluster)
+				// large enough to stand on its own: split off as its own cluster
+				ok = numClusters == 3 && cBody != cStretch && cStretch != cD && cBody != cD;
+			else if (variant.linkedToD)
+				// too small to stand, held more by D than by its own cluster: moves whole to D
+				ok = numClusters == 2 && cStretch == cD && cBody != cStretch;
+			else
+				// too small to stand and no neighbour holds it better: stays in place
+				ok = numClusters == 2 && cStretch == cBody && cBody != cD;
+		}
+		if (!ok) {
+			VERBOSE("SceneClusterThinStretchTest FAILED: %s, %u clusters, image 0 in %d, image 12 in %d, image %u in %d",
+				variant.name, numClusters, cBody, cStretch, firstD, cD);
+			return false;
+		}
+	}
+
+	VERBOSE("SceneClusterThinStretchTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
 
 // ===============================================================================
 // Phase 3: Global Alignment Tests
