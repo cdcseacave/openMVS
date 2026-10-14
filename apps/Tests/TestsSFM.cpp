@@ -17560,10 +17560,12 @@ static bool CheckUnobservableScale(const Transform transforms[2], const Transfor
 		GlobalAlignment::RescaleSeamAboutRig(rigCentre, rigIsB, scale, rescaled);
 		const Point3 after(rigIsB ? rescaled.Invert() * rigCentre : rescaled * rigCentre);
 		const REAL moved = norm(after - before) / MAXF(norm(before), REAL(1));
-		const REAL turned = R2D(ACOS(ComputeAngle(Matrix3x3(rescaled.R), Matrix3x3(c.T.R))));
-		if (rescaled.scale != scale || turned > REAL(1e-6) || moved > REAL(1e-9)) {
+		// the rotation is compared as a matrix, not as an angle: the angle between a rotation and itself
+		// comes out of ACOS as up to 1.2e-6 deg for a matrix orthonormal to the last bits only
+		const REAL turned = norm(Matrix3x3(rescaled.R) - Matrix3x3(c.T.R));
+		if (rescaled.scale != scale || turned != REAL(0) || moved > REAL(1e-9)) {
 			VERBOSE("HierarchicalCameraAlignmentTest FAILED: rescaling about the %s rig moved it by %g, "
-				"turned it by %g deg and left the scale at %g instead of %g",
+				"changed its rotation by %g (matrix norm) and left the scale at %g instead of %g",
 				rigIsB ? "B" : "A", moved, turned, rescaled.scale, scale);
 			return false;
 		}
