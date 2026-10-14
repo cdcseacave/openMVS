@@ -49,6 +49,11 @@ using namespace SFM;
 #undef VERBOSE
 #define VERBOSE(...) LOG(lt, __VA_ARGS__)
 
+// multi-threading of the fit's work per pair based on OpenMP
+#ifdef _USE_OPENMP
+#define LENSFIT_USE_OPENMP
+#endif
+
 // A lens is held one to one this far past the farthest radius its camera's matches reach while it is
 // fitted, and past the image corner to be kept, or, given, to be held: right at the farthest match
 // the fit can walk into a lens that folds just beyond it, where the undistortion stops having one
@@ -81,6 +86,28 @@ constexpr double LENS_MIN_GRADIENT_SQ = 1e-30;
 // axis is too close to t to build the tangent basis from, their cross product short and poorly
 // conditioned, so the y axis is used
 constexpr double LENS_TANGENT_MAX_COS_X = 0.9;
+// The check of a fit, which tells one that reached its lenses from one held short of them by the pairs
+// whose pinhole poses it could not turn: refined alone from the fit, its pose and its own copy of its
+// fitted cameras' lenses free, a pair explains its matches about as well as the fit does where the fit is
+// right, and far better where it is held short. A fitted camera passes when at least LENS_CHECK_MIN_SHARE
+// of its pairs keep the fit's median error within LENS_CHECK_MAX_RATIO of the median they reach alone
+// (or under LENS_MIN_MEDIAN_ERROR). Over 100 synthetic scenes of each lens test (barrel lenses of 164
+// and 20 px at the corner, pincushions of 80 and 160 px, a second camera's of 22 px) every first fit that
+// reached its lens kept 0.975-1.000 of its pairs so, and every one held short of it (more than 10 px
+// off) 0.27-0.73, at 0.25 px of noise as at 0.5; the five test captures' fits keep 0.967-1.000. The
+// same share of pairs whose median error past 0.7 of the corner radius stays within the loss scale,
+// which needs no solve, separates them too at 0.5 px (0.96 and more against 0.87 at most), but its bar
+// is absolute: at 0.25 px of noise a fit held short keeps up to 0.92
+constexpr double LENS_CHECK_MAX_RATIO = 1.5;
+constexpr double LENS_CHECK_MIN_SHARE = 0.85;
+// Where the first fit fails the check, the joint fit is started again from its fitted cameras' lenses
+// scaled this many times (k1 and k2 both), each pair's pose first re-estimated through that start, and
+// the fit of least cost is kept; a start that folds before a camera's valid radius is skipped. A fit held
+// short reaches part of the lens and of its sign (25-72% of it at the corner in the synthetic scenes),
+// so that doubled it starts past the poses that held the first fit: over 100 scenes of each lens test
+// every fit held short so reached its lens. Starts from fixed lenses do not: from radial changes of -5,
+// -10 and +5% at the corner, the pincushion of 160 px stays short in 14 of 35 scenes
+constexpr double LENS_FIT_RESTART_SCALES[] = {2};
 
 
 // S T R U C T S ///////////////////////////////////////////////////
@@ -321,6 +348,24 @@ void RefinePosesAlone(std::vector<FitPair>& pairs, const std::vector<FitCamera>&
 	}
 }
 
+// The residuals of pair p's matches added to a problem over its 5 pose numbers `pose` and the lens block of
+// each of its fitted cameras (`cameras`' own), under `loss`
+void AddPairResiduals(ceres::Problem& problem, ceres::LossFunction* loss, const FitPair& p, std::vector<FitCamera>& cameras, double* pose)
+{
+	FitCamera& c1 = cameras[p.cam1];
+	FitCamera& c2 = cameras[p.cam2];
+	ASSERT(c1.free || c2.free); // a pair is selected for a fitted camera it informs
+	for (size_t k = 0; k < p.m1.size(); ++k) {
+		LensSampsonError* const e = new LensSampsonError(MakeResidual(p, k, cameras, true));
+		if (p.cam1 == p.cam2)
+			problem.AddResidualBlock(new ceres::AutoDiffCostFunction<LensSampsonError, 1, 5, 2>(e), loss, pose, c1.lens);
+		else if (c1.free && c2.free)
+			problem.AddResidualBlock(new ceres::AutoDiffCostFunction<LensSampsonError, 1, 5, 2, 2>(e), loss, pose, c1.lens, c2.lens);
+		else
+			problem.AddResidualBlock(new ceres::AutoDiffCostFunction<LensSampsonError, 1, 5, 2>(e), loss, pose, c1.free ? c1.lens : c2.lens);
+	}
+}
+
 // The lenses of the fitted cameras and every pair's pose together, from the pairs' bases, each pair's
 // 5 pose numbers eliminated first (they touch only their own pair's residuals), so the reduced
 // system holds 2 unknowns per fitted camera; the bases then move to the solution.
@@ -333,19 +378,7 @@ bool RefineJointly(std::vector<FitPair>& pairs, std::vector<FitCamera>& cameras,
 	std::vector<std::array<double, 5>> poses(pairs.size(), std::array<double, 5>{0, 0, 0, 0, 0});
 	auto ordering = std::make_shared<ceres::ParameterBlockOrdering>();
 	FOREACH(i, pairs) {
-		const FitPair& p = pairs[i];
-		FitCamera& c1 = cameras[p.cam1];
-		FitCamera& c2 = cameras[p.cam2];
-		ASSERT(c1.free || c2.free); // a pair is selected for a fitted camera it informs
-		for (size_t k = 0; k < p.m1.size(); ++k) {
-			LensSampsonError* const e = new LensSampsonError(MakeResidual(p, k, cameras, true));
-			if (p.cam1 == p.cam2)
-				problem.AddResidualBlock(new ceres::AutoDiffCostFunction<LensSampsonError, 1, 5, 2>(e), loss, poses[i].data(), c1.lens);
-			else if (c1.free && c2.free)
-				problem.AddResidualBlock(new ceres::AutoDiffCostFunction<LensSampsonError, 1, 5, 2, 2>(e), loss, poses[i].data(), c1.lens, c2.lens);
-			else
-				problem.AddResidualBlock(new ceres::AutoDiffCostFunction<LensSampsonError, 1, 5, 2>(e), loss, poses[i].data(), c1.free ? c1.lens : c2.lens);
-		}
+		AddPairResiduals(problem, loss, pairs[i], cameras, poses[i].data());
 		ordering->AddElementToGroup(poses[i].data(), 0);
 	}
 	for (FitCamera& c : cameras)
@@ -439,6 +472,91 @@ unsigned ReestimatePoses(std::vector<FitPair>& pairs, const std::vector<FitCamer
 		p.t0 = t0;
 	}
 	return numReplaced;
+}
+
+// The joint fit and its rounds of pose re-estimation from the pairs' bases and the cameras' lenses as
+// they are; rounds receives the poses each round replaced. Returns whether every joint fit reached a
+// usable solution (RefineJointly)
+bool FitFrom(std::vector<FitPair>& pairs, std::vector<FitCamera>& cameras, const MatchConfig& config, unsigned numThreads, std::vector<unsigned>& rounds)
+{
+	bool solved = RefineJointly(pairs, cameras, config.lensFitLossScale, numThreads);
+	rounds.clear();
+	for (unsigned round = 0; solved && round < config.lensFitRounds; ++round) {
+		const unsigned numReplaced = ReestimatePoses(pairs, cameras, config.lensFitLossScale);
+		rounds.push_back(numReplaced);
+		if (numReplaced == 0)
+			break;
+		solved = RefineJointly(pairs, cameras, config.lensFitLossScale, numThreads);
+	}
+	return solved;
+}
+
+// The soft L1 cost of every pair at its base and the cameras' current lenses
+double TotalCost(const std::vector<FitPair>& pairs, const std::vector<FitCamera>& cameras, double lossScale)
+{
+	double cost = 0;
+	for (const FitPair& p : pairs)
+		cost += PairCost(p, cameras, lossScale);
+	return cost;
+}
+
+// The median of `values`, which it reorders
+double MedianOf(std::vector<double>& values)
+{
+	ASSERT(!values.empty());
+	std::nth_element(values.begin(), values.begin() + values.size()/2, values.end());
+	return values[values.size()/2];
+}
+
+// Whether every fitted camera passes the check (LENS_CHECK_MIN_SHARE) at the pairs' bases and the
+// cameras' current lenses: each pair refined alone from there, its 5 pose numbers and its own copy of its
+// fitted cameras' lenses free
+bool PassesPairsCheck(const std::vector<FitPair>& pairs, const std::vector<FitCamera>& cameras, double lossScale, unsigned numThreads)
+{
+	std::vector<char> explained(pairs.size(), 0);
+	#ifdef LENSFIT_USE_OPENMP
+	#pragma omp parallel for schedule(dynamic) num_threads(numThreads)
+	#endif
+	for (int_t i = 0; i < (int_t)pairs.size(); ++i) {
+		const FitPair& p = pairs[i];
+		std::vector<double> errors(p.m1.size());
+		for (size_t k = 0; k < p.m1.size(); ++k)
+			errors[k] = ABS(ResidualAt(p, k, cameras));
+		const double medianFit = MedianOf(errors);
+		if (medianFit < LENS_MIN_MEDIAN_ERROR) {
+			explained[i] = 1; // nothing left for the pair alone to explain
+			continue;
+		}
+		FitPair alone(p);
+		std::vector<FitCamera> own(cameras);
+		double pose[5] = {0, 0, 0, 0, 0};
+		ceres::Problem problem;
+		AddPairResiduals(problem, new ceres::SoftLOneLoss(lossScale), alone, own, pose);
+		ceres::Solver::Options options;
+		options.linear_solver_type = ceres::DENSE_QR;
+		options.max_num_iterations = LENS_FIT_MAX_ITERATIONS;
+		options.logging_type = ceres::SILENT;
+		ceres::Solver::Summary summary;
+		ceres::Solve(options, &problem, &summary);
+		Rebase(alone, pose);
+		for (size_t k = 0; k < p.m1.size(); ++k)
+			errors[k] = ABS(ResidualAt(alone, k, own));
+		explained[i] = medianFit <= LENS_CHECK_MAX_RATIO*MedianOf(errors);
+	}
+	std::vector<unsigned> numPairs(cameras.size(), 0), numExplained(cameras.size(), 0);
+	FOREACH(i, pairs) {
+		const FitPair& p = pairs[i];
+		++numPairs[p.cam1];
+		numExplained[p.cam1] += explained[i];
+		if (p.cam2 != p.cam1) {
+			++numPairs[p.cam2];
+			numExplained[p.cam2] += explained[i];
+		}
+	}
+	FOREACH(c, cameras)
+		if (cameras[c].free && numExplained[c] < LENS_CHECK_MIN_SHARE*numPairs[c])
+			return false;
+	return true;
 }
 
 } // namespace
@@ -657,14 +775,43 @@ LensFitReport SFM::FitLensesFromPairs(Scene& scene, const MatchConfig& config)
 		std::vector<FitPair> baseline(pairs);
 		RefinePosesAlone(baseline, cameras, config.lensFitLossScale);
 		const std::vector<double> mediansBefore(MedianErrors(baseline, cameras));
-		bool solved = RefineJointly(pairs, cameras, config.lensFitLossScale, scene.nMaxThreads);
-		report.reestimatedPoses.clear();
-		for (unsigned round = 0; solved && round < config.lensFitRounds; ++round) {
-			const unsigned numReplaced = ReestimatePoses(pairs, cameras, config.lensFitLossScale);
-			report.reestimatedPoses.push_back(numReplaced);
-			if (numReplaced == 0)
-				break;
-			solved = RefineJointly(pairs, cameras, config.lensFitLossScale, scene.nMaxThreads);
+		const std::vector<FitPair> storedPairs(pairs);
+		const std::vector<FitCamera> startCameras(cameras);
+		bool solved = FitFrom(pairs, cameras, config, scene.nMaxThreads, report.reestimatedPoses);
+		report.numStarts = 1;
+		if (solved && !PassesPairsCheck(pairs, cameras, config.lensFitLossScale, scene.nMaxThreads)) {
+			// held short of its lenses: started again from them scaled, from the stored poses each
+			// re-estimated through that start, the fit of least cost kept
+			const std::vector<FitCamera> firstCameras(cameras);
+			double cost = TotalCost(pairs, cameras, config.lensFitLossScale);
+			for (const double scale : LENS_FIT_RESTART_SCALES) {
+				std::vector<FitPair> restartPairs(storedPairs);
+				std::vector<FitCamera> restartCameras(startCameras);
+				bool folds = false;
+				FOREACH(c, restartCameras) {
+					FitCamera& camera = restartCameras[c];
+					if (!camera.free)
+						continue;
+					camera.lens[0] = scale*firstCameras[c].lens[0];
+					camera.lens[1] = scale*firstCameras[c].lens[1];
+					if (!IsLensOneToOne(camera.lens[0], camera.lens[1], LENS_VALID_MARGIN*camera.reach))
+						folds = true;
+				}
+				if (folds)
+					continue; // the fit could not evaluate it: its undistortion has no answer within the matches' reach
+				ReestimatePoses(restartPairs, restartCameras, config.lensFitLossScale);
+				std::vector<unsigned> rounds;
+				++report.numStarts;
+				if (!FitFrom(restartPairs, restartCameras, config, scene.nMaxThreads, rounds))
+					continue;
+				const double restartCost = TotalCost(restartPairs, restartCameras, config.lensFitLossScale);
+				if (restartCost >= cost)
+					continue;
+				pairs.swap(restartPairs);
+				cameras.swap(restartCameras);
+				report.reestimatedPoses.swap(rounds);
+				cost = restartCost;
+			}
 		}
 		const std::vector<double> mediansAfter(MedianErrors(pairs, cameras));
 		// the verdict on every fitted camera; a refused one keeps no lens and leaves, and the others
@@ -764,6 +911,8 @@ LensFitReport SFM::FitLensesAndReverifyPairs(PairsMatcher& pairsMatcher)
 	String rounds;
 	for (unsigned n : report.reestimatedPoses)
 		rounds += String::FormatString(rounds.empty() ? "%u" : ",%u", n);
+	if (report.numStarts > 1)
+		rounds += String::FormatString(" (the best of %u starts)", report.numStarts);
 	VERBOSE("Lens fit: %u of %u cameras fitted in %.1f s, poses re-estimated %s; %u pairs verified again through their lens: sparse inliers %zu -> %zu, dense %zu -> %zu; %u pairs invalidated (%s)",
 		(unsigned)fitted.size(), (unsigned)report.cameras.size(), report.seconds, rounds.empty() ? "-" : rounds.c_str(),
 		numPairs, sparseBefore, sparseAfter, denseBefore, denseAfter, numInvalidated, TD_TIMER_GET_FMT().c_str());

@@ -69,10 +69,14 @@ struct SFM_API MatchConfig;
  * the lenses and poses together from the stored poses (each pair's 5 pose unknowns eliminated first,
  * so the reduced system holds 2 unknowns per fitted camera); each pair's pose re-estimated by RANSAC
  * through the fitted lens and kept where it explains the pair better, then the joint fit again, until
- * a round keeps none, for up to lensFitRounds rounds; a lens is kept when it stays one to one past the
- * image corner and its median error falls lensFitMinErrorDrop below the baseline, and a fit the solver
- * cannot complete keeps none. A refused camera keeps no lens, and the others are fitted again without
- * its pairs.
+ * a round keeps none, for up to lensFitRounds rounds; where that fit fails a check (too few of a fitted
+ * camera's pairs keep the fit's median error close to the one each reaches refined alone from the fit,
+ * its pose and its own copy of the lenses free, as where the pairs whose pinhole poses the fit could not
+ * turn held it short of the lens), all of it again from the fitted lenses doubled, the poses
+ * re-estimated through that start first, and the fit of least cost kept; a lens is kept when it stays one
+ * to one past the image corner and its median error falls lensFitMinErrorDrop below the baseline, and a
+ * fit the solver cannot complete keeps none. A refused camera keeps no lens, and the others are fitted
+ * again without its pairs.
  */
 
 // The undistortion displacement of a radial lens (k1, k2 on coordinates normalized by `focal`) at the
@@ -109,7 +113,8 @@ struct SFM_API LensFitOutcome {
 // What the fit did
 struct SFM_API LensFitReport {
 	std::vector<LensFitOutcome> cameras;    // one per scene camera, in scene.cameras order
-	std::vector<unsigned> reestimatedPoses; // per round of the last fit: the pairs whose pose the re-estimation replaced
+	std::vector<unsigned> reestimatedPoses; // per round of the last fit, from the start it kept: the pairs whose pose the re-estimation replaced
+	unsigned numStarts = 0;                 // the joint fits the last fit ran from different starting lenses: 1 where its first passes the check
 	double seconds = 0;
 
 	// the cameras whose lens was fitted and set
