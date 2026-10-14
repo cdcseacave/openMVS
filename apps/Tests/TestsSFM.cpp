@@ -3411,6 +3411,13 @@ constexpr REAL LENS_TEST_REACH_PERCENTILE = REAL(0.99);      // a camera's reach
 // pairs alone, whose second unknown lens leaves 3.35 median, 3.80 p90 in the prototype: 5 px for it
 constexpr REAL LENS_TEST_MAX_ERROR_PX = REAL(2);
 constexpr REAL LENS_TEST_CROSS_MAX_ERROR_PX = REAL(5);
+// The scene of LensFitRecoveryTest's slow case, and the rounds of pose re-estimation its fit takes more
+// than: its first joint fit reaches 63 px of the 164 at the corner, 18 of its 40 pairs keeping their
+// pinhole baselines reversed, and the rounds then replace 2, 4, 6 and 3 poses before one replaces none
+// (5 rounds; 3 leave the lens 6.7 px off within reach). Over 100 seeds of this scene no fit that ends
+// takes more than 5 rounds
+constexpr unsigned LENS_TEST_SLOW_SEED = 32;
+constexpr unsigned LENS_TEST_SLOW_MIN_ROUNDS = 3;
 
 // A rotation of `deg` degrees about `axis` (normalized here), Rodrigues
 Matrix3x3 LensTestRotation(Point3 axis, REAL deg)
@@ -3588,6 +3595,8 @@ REAL LensCurveError(const Scene& scene, unsigned idxCamera, const LensTestCamera
 
 // The lens fit from pairs recovers the lenses that rendered them: one camera from 40 pairs that turn
 // and move, to LENS_TEST_MAX_ERROR_PX over the radii its matches reach, the lens set on the camera;
+// the same from a scene whose first joint fit falls far short of the lens, which the rounds of pose
+// re-estimation reach after more than LENS_TEST_SLOW_MIN_ROUNDS of them;
 // two cameras with different lenses joined only by 40 cross pairs, each fitted, the weak lens to
 // LENS_TEST_MAX_ERROR_PX and the strong one to LENS_TEST_CROSS_MAX_ERROR_PX
 bool LensFitRecoveryTest()
@@ -3614,6 +3623,35 @@ bool LensFitRecoveryTest()
 		}
 		VERBOSE("LensFitRecoveryTest: one camera, k1 %.4f k2 %.4f (true -0.20 0.05), %.2f px off within reach, median %.3f -> %.3f px, %.1f s",
 			camera.k1, camera.k2, error, outcome.medianBefore, outcome.medianAfter, report.seconds);
+	}
+	{
+		// one camera whose first joint fit falls far short of its lens: each round of pose re-estimation
+		// through the lens so far turns a few more pairs right and takes the lens further, until a round
+		// replaces no pose
+		Scene scene;
+		std::unordered_map<PairIdx, Pose3D> truePoses;
+		BuildLensTestScene(scene, {LENS_TEST_A}, {{0, 0, LensTestMotion::TURN, 40}}, LENS_TEST_SLOW_SEED, truePoses);
+		const LensFitReport report = FitLensesFromPairs(scene, MatchConfig());
+		const LensFitOutcome& outcome = report.cameras[0];
+		const PinholeCamera& camera = *static_cast<const PinholeCamera*>(scene.cameras[0]);
+		if (outcome.status != LensFitOutcome::FITTED) {
+			VERBOSE("LensFitRecoveryTest FAILED: one camera recovered slowly, status %u, median %.3f -> %.3f px over %u pairs",
+				(unsigned)outcome.status, outcome.medianBefore, outcome.medianAfter, outcome.numPairs);
+			return false;
+		}
+		const REAL error = LensCurveError(scene, 0, LENS_TEST_A);
+		if (error > LENS_TEST_MAX_ERROR_PX) {
+			VERBOSE("LensFitRecoveryTest FAILED: one camera recovered slowly, the fitted lens (%g, %g) is %.2f px off the true one within its matches' reach after %u rounds of pose re-estimation",
+				camera.k1, camera.k2, error, (unsigned)report.reestimatedPoses.size());
+			return false;
+		}
+		if (report.reestimatedPoses.size() <= LENS_TEST_SLOW_MIN_ROUNDS) {
+			VERBOSE("LensFitRecoveryTest FAILED: one camera recovered slowly, its fit took only %u rounds of pose re-estimation, the fixture does not exercise them",
+				(unsigned)report.reestimatedPoses.size());
+			return false;
+		}
+		VERBOSE("LensFitRecoveryTest: one camera recovered slowly, %.2f px off within reach after %u rounds of pose re-estimation, %.1f s",
+			error, (unsigned)report.reestimatedPoses.size(), report.seconds);
 	}
 	{
 		Scene scene;

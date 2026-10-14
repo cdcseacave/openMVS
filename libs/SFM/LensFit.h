@@ -68,10 +68,11 @@ struct SFM_API MatchConfig;
  * In order: the poses alone refined at the starting lenses (their median error is the baseline);
  * the lenses and poses together from the stored poses (each pair's 5 pose unknowns eliminated first,
  * so the reduced system holds 2 unknowns per fitted camera); each pair's pose re-estimated by RANSAC
- * through the fitted lens and kept where it explains the pair better, then the joint fit again, for up
- * to lensFitRounds rounds; a lens is kept when it stays one to one past the image corner and its
- * median error falls lensFitMinErrorDrop below the baseline, and a fit the solver cannot complete
- * keeps none. A refused camera keeps no lens, and the others are fitted again without its pairs.
+ * through the fitted lens and kept where it explains the pair better, then the joint fit again, until
+ * a round keeps none, for up to lensFitRounds rounds; a lens is kept when it stays one to one past the
+ * image corner and its median error falls lensFitMinErrorDrop below the baseline, and a fit the solver
+ * cannot complete keeps none. A refused camera keeps no lens, and the others are fitted again without
+ * its pairs.
  */
 
 // The undistortion displacement of a radial lens (k1, k2 on coordinates normalized by `focal`) at the

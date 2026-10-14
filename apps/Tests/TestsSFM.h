@@ -122,8 +122,9 @@ bool MatchGeometricLensTest();
 
 // The lens fit from pairs (FitLensesFromPairs) recovers the lenses that rendered them: one camera
 // from 40 pairs that turn and move, to 2 px over the radii its matches reach, the lens set on the
-// camera; two cameras with different lenses joined only by 40 cross pairs, each fitted, the weak lens
-// to 2 px and the strong one to 5 px
+// camera, also where the first joint fit falls far short of the lens and the pose re-estimation
+// takes more than three rounds to reach it; two cameras with different lenses joined only by 40 cross
+// pairs, each fitted, the weak lens to 2 px and the strong one to 5 px
 bool LensFitRecoveryTest();
 
 // The lens fit refuses what no lens explains: pairs of a camera without a lens, forward pairs that

@@ -108,7 +108,7 @@ struct SFM_API MatchConfig
 	float lensFitMaxRotation = 45.f;       // degrees: a pair turning more is usually a loop or cross view covering little of the frame
 	float lensFitLossScale = 1.f;          // pixels: the soft L1 scale of the Sampson error, quadratic below it and linear above
 	float lensFitMinErrorDrop = 0.10f;     // the median error must fall this fraction below the poses' own refinement at the starting lens for the lens to be kept
-	unsigned lensFitRounds = 3;            // re-estimations of every pair's pose through the fitted lens, each followed by the joint fit again
+	unsigned lensFitRounds = 10;           // pose re-estimations through the fitted lens at most, each followed by the joint fit again, stopping at the first that replaces no pose: where the first joint fit falls far short of a strong lens each round turns a few more pairs right (synthetic, 164 px at the corner: up to 5 rounds over 100 scenes); pairs that hide the lens may replace poses in every round
 	bool useCUDA = true; // use CUDA for SiftMatchGPU if available (otherwise OpenGL)
 
 	// Pairs weighting parameters
