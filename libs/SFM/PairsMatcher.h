@@ -108,6 +108,10 @@ struct SFM_API MatchConfig
 	float lensFitMaxRotation = 45.f;       // degrees: a pair turning more is usually a loop or cross view covering little of the frame
 	float lensFitLossScale = 1.f;          // pixels: the soft L1 scale of the Sampson error, quadratic below it and linear above
 	float lensFitMinErrorDrop = 0.10f;     // the median error must fall this fraction below the poses' own refinement at the starting lens for the lens to be kept
+	// constant: the focal check takes a camera's focal from the fit with the focal free when that fit's median
+	// error falls this fraction below the fit with it held: an accurate focal's free fit lowers the median at
+	// most 0.7% on eleven real captures, a wrong one's at least 16% (most by 32-71%)
+	static constexpr float lensFitFocalMinErrorDrop = 0.10f;
 	unsigned lensFitRounds = 10;           // pose re-estimations through the fitted lens at most, each followed by the joint fit again, stopping at the first that replaces no pose: where the first joint fit falls far short of a strong lens each round turns a few more pairs right (synthetic, 164 px at the corner: up to 5 rounds over 100 scenes); pairs that hide the lens may replace poses in every round
 	bool useCUDA = true; // use CUDA for SiftMatchGPU if available (otherwise OpenGL)
 

@@ -128,6 +128,8 @@ bool MatchGeometricLensTest();
 // different lenses joined only by 40 cross pairs, each fitted, the weak lens to 2 px and the strong one
 // to 5 px
 bool LensFitRecoveryTest();
+// The focal check of the lens fit corrects a trusted focal its pairs clearly reject and keeps a right one
+bool LensFitFocalTest();
 
 // The lens fit refuses what no lens explains: pairs of a camera without a lens, forward pairs that
 // hide a strong lens, and exact positions whose error is float rounding, without a lens or through one
@@ -164,6 +166,10 @@ bool ROMA2ReverifyLensTest();
 // median, half a degree of its true baseline direction; a second run, the camera now carrying its
 // lens, holds it and fits nothing
 bool LensFitStageTest();
+// The lens stage also verifies again the pairs of a camera whose focal the check moved, with no lens kept
+// at it: a camera without a lens given a focal 15% short has its pairs' rotations come out within half a
+// degree of the true ones
+bool LensFitFocalStageTest();
 
 // The described/dense keypoint boundary: an image whose keypoints.size() > descriptors.rows keeps
 // its stored described-keypoint count across a descriptor release and an .sfm round-trip, the

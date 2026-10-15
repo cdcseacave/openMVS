@@ -241,12 +241,17 @@ Right after the view-graph calibration, `FitLensesAndReverifyPairs` fits the rad
 every pinhole camera that has none and trusts its focal, from its verified pairs (`FitLensesFromPairs`):
 the heaviest `MatchConfig::lensFitMaxPairs` (150) that turn 5-45 deg, 200 sparse inliers each, the
 Sampson error in measured pixels under soft L1 at 1 px, each pair's 5-dof pose eliminated, three
-rounds of each pose re-estimated through the lens. A lens is kept when it is one to one past the image
-corner (1.05x) and lowers the median error 10% below the poses' own refinement; a camera under 20
-eligible pairs, spherical, untrusted, or with a given lens past k1, k2 or that folds within the frame
-(not one to one out to 1.05x its corner) is left as it is, its pairs out of the fit. Every pair of a
-fitted camera is then verified again through `PairsMatcher::ComputeRelativePoses` (a RoMa2 pair
-through `ReverifyPairROMA2`), and the summary line counts the pairs that verification invalidated.
+rounds of each pose re-estimated through the lens. First the focal check: on the fit as first built the
+joint fit runs twice from the same start, every fitted camera's focal held and free (a log scale, a
+third number beside k1, k2), and a camera takes the free fit's focal (fx, fy scaled alike) when its
+median error falls 10% below the held fit's (`MatchConfig::lensFitFocalMinErrorDrop`, a constant) and the held fit passes the
+fit's own check; the fit is then built again at the moved focal. A lens is kept when it is one to one
+past the image corner (1.05x) and lowers the median error 10% below the poses' own refinement; a
+camera under 20 eligible pairs, spherical, untrusted, or with a given lens past k1, k2 or that folds
+within the frame (not one to one out to 1.05x its corner) is left as it is, its pairs out of the fit.
+Every pair of a camera whose lens was fitted or whose focal moved (`LensFitReport::CamerasToVerifyAgain`)
+is then verified again through `PairsMatcher::ComputeRelativePoses` (a RoMa2 pair through
+`ReverifyPairROMA2`), and the summary line counts the pairs that verification invalidated.
 The bundle adjustments refine k1, k2 from the fitted lens. No command-line flag;
 `MatchConfig::lensFitEnabled` turns it off. A lens given with `--k1/--k2` or imported is held, and a
 resumed scene's fitted lens counts as given; a resumed scene fits again every camera that still has

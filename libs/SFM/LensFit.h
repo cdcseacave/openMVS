@@ -49,7 +49,8 @@ struct SFM_API MatchConfig;
  * geometry inherits that. This fits one radial lens per camera that has none -- k1, k2 of the forward
  * model PinholeCamera, OpenCV and COLMAP's OPENCV share, x_d = x_u (1 + k1 r^2 + k2 r^4) on
  * coordinates normalized by the focal around the principal point -- from its pairs, jointly with each
- * pair's relative pose; focal and principal point are held.
+ * pair's relative pose; the principal point is held, and so is the focal unless the focal check below
+ * moves it.
  *
  * Which cameras: a pinhole camera that trusts its focal and has no lens is fitted; one whose lens is
  * given as k1, k2 alone, one to one past its image corner, is held, its pairs informing the others;
@@ -65,6 +66,13 @@ struct SFM_API MatchConfig;
  * The loss: the first-order distance of each match's two measured, distorted pixels to the pair's
  * epipolar constraint, each side through its own lens and focal (the constraint's gradient through
  * the inverse lens Jacobian), under soft L1 at lensFitLossScale pixels.
+ * The focal check: a focal the pairs clearly reject (an EXIF focal of the full sensor on a cropped frame,
+ * one the view-graph calibration biased through the uncorrected lens) is corrected before the lens is
+ * fitted at it. On the fit as first built, the joint fit and its rounds below run twice from the same
+ * start, every fitted camera's focal held and then free beside its lens and the poses (a log scale of
+ * the start, a third number of the camera's lens); a camera takes the free fit's focal when its median
+ * error falls MatchConfig::lensFitFocalMinErrorDrop below the held fit's, and the fit is built again
+ * at the moved focal. A focal the check keeps leaves the fit as it is.
  * In order: the poses alone refined at the starting lenses (their median error is the baseline);
  * the lenses and poses together from the stored poses (each pair's 5 pose unknowns eliminated first,
  * so the reduced system holds 2 unknowns per fitted camera); each pair's pose re-estimated by RANSAC
@@ -108,6 +116,12 @@ struct SFM_API LensFitOutcome {
 	double medianBefore = 0;       // median Sampson error with the poses alone refined at the starting lens, pixels
 	double medianAfter = 0;        // the same after the joint fit, pixels
 	double cornerDisplacement = 0; // LensDisplacement of the fitted lens at the image corner, pixels; 0 for a lens that folds before it (FOLDS), where undistortion has no answer
+	// the focal check, 0 where it did not judge the camera (EXCLUDED, HELD, or not fitted for lack of pairs)
+	REAL focalBefore = 0;          // the focal it started from, pixels (the mean of fx, fy)
+	REAL focalFree = 0;            // the focal the free fit reached, pixels
+	double medianFocalHeld = 0;    // median Sampson error of the fit with the focal held, pixels
+	double medianFocalFree = 0;    // the same with the focal free
+	bool focalMoved = false;       // the camera took the free fit's focal (fx, fy scaled by focalFree / focalBefore)
 };
 
 // What the fit did
@@ -115,19 +129,25 @@ struct SFM_API LensFitReport {
 	std::vector<LensFitOutcome> cameras;    // one per scene camera, in scene.cameras order
 	std::vector<unsigned> reestimatedPoses; // per round of the last fit, from the start it kept: the pairs whose pose the re-estimation replaced
 	unsigned numStarts = 0;                 // the joint fits the last fit ran from different starting lenses: 1 where its first passes the check
+	double focalSeconds = 0;                // the focal check's share of `seconds`
 	double seconds = 0;
 
 	// the cameras whose lens was fitted and set
 	std::unordered_set<CameraPtr> FittedCameras() const;
+	// the cameras whose pairs were verified at a focal or lens the fit then changed: those whose lens was
+	// fitted and set, and those whose focal the check moved, whether or not a lens was kept at it
+	std::unordered_set<CameraPtr> CamerasToVerifyAgain() const;
 };
 
 // Fit the radial lens of every pinhole camera that has none and trusts its focal, from the scene's
-// verified pairs, and set every lens kept on its camera (SetDistortion(k1, k2, 0, 0); the trust flag
-// is left as it is). The pairs themselves are not changed.
+// verified pairs, after checking the focal of each such camera: set every focal moved on its camera
+// (fx and fy scaled alike) and every lens kept (SetDistortion(k1, k2, 0, 0); the trust flag is left as
+// it is). The pairs themselves are not changed.
 SFM_API LensFitReport FitLensesFromPairs(Scene& scene, const MatchConfig& config);
 
-// The lens stage of the matching: FitLensesFromPairs, then every pair of a fitted camera verified
-// again through its lens (PairsMatcher::ComputeRelativePoses: a descriptor pair through
+// The lens stage of the matching: FitLensesFromPairs, then every pair of a camera whose lens was
+// fitted or whose focal moved (LensFitReport::CamerasToVerifyAgain) verified again through its focal
+// and lens (PairsMatcher::ComputeRelativePoses: a descriptor pair through
 // GeometricFilter, its outliers rejoining the candidates; a RoMa2 pair through ReverifyPairROMA2,
 // its sparse and dense segments kept apart), which also recomputes the pair weights. Logs every
 // camera's outcome, the pairs' inliers before and after, and how many of the pairs that formed tracks

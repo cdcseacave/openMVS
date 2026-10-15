@@ -3413,6 +3413,8 @@ constexpr REAL LENS_TEST_REACH_PERCENTILE = REAL(0.99);      // a camera's reach
 // 164 px lens and far under a fit that fails, 3.4 px and more), except the strong lens fitted from cross
 // pairs alone, whose second unknown lens leaves 3.35 median, 3.80 p90 in the prototype: 5 px for it
 constexpr REAL LENS_TEST_MAX_ERROR_PX = REAL(2);
+// the focal check's bar: a focal the check moved lands within 1% of the true one
+constexpr REAL LENS_TEST_FOCAL_MAX_ERROR = REAL(0.01);
 constexpr REAL LENS_TEST_CROSS_MAX_ERROR_PX = REAL(5);
 // The scene of LensFitRecoveryTest's slow case, and the rounds of pose re-estimation its fit takes more
 // than: its first joint fit reaches 63 px of the 164 at the corner, 18 of its 40 pairs keeping their
@@ -3445,12 +3447,13 @@ Matrix3x3 LensTestRotation(Point3 axis, REAL deg)
 // two-view setups of their own (two images each), LENS_TEST_POINTS points 3-15 m in front of the
 // first view projected into both through the TRUE lenses, with `noisePx` of Gaussian noise and
 // `outlierShare` of the second view's positions replaced by random ones. The scene's cameras carry
-// the true focal and centre, trust them and have NO lens, and every pair is verified through that
-// pinhole exactly as the matching verifies it (PairsMatcher::GeometricFilter at the default
-// MatchConfig); a pair that fails is not stored. A stored pair weighs its inlier count (unit quality
-// factors, triplet 0.5). truePoses receives each stored pair's true relative pose (x2 = R x1 + t),
-// keyed by the pair's image IDs: neither the order the pairs are built in (a pair that fails leaves a
-// gap) nor their position in scene.pairs (ComputePairsWeights sorts them) names a pair.
+// the true focal times `givenFocalScale` (1: the true focal) and the true centre, trust them and have
+// NO lens, and every pair is verified through that pinhole exactly as the matching verifies it
+// (PairsMatcher::GeometricFilter at the default MatchConfig); a pair that fails is not stored. A
+// stored pair weighs its inlier count (unit quality factors, triplet 0.5). truePoses receives each
+// stored pair's true relative pose (x2 = R x1 + t), keyed by the pair's image IDs: neither the order
+// the pairs are built in (a pair that fails leaves a gap) nor their position in scene.pairs
+// (ComputePairsWeights sorts them) names a pair.
 // Every draw is made from the raw output of the std::mt19937, whose sequence the standard fixes, and
 // not through std::uniform_real_distribution or std::normal_distribution, whose algorithms are each
 // standard library's own: so that every platform the suite runs on draws the same scene, to the
@@ -3458,8 +3461,9 @@ Matrix3x3 LensTestRotation(Point3 axis, REAL deg)
 // which a call's arguments are evaluated unspecified.
 void BuildLensTestScene(Scene& scene, const std::vector<LensTestCamera>& cameras,
 	const std::vector<LensTestPairs>& pairs, unsigned seed, std::unordered_map<PairIdx, Pose3D>& truePoses,
-	REAL noisePx = LENS_TEST_NOISE_PX, REAL outlierShare = LENS_TEST_OUTLIER_SHARE)
+	REAL noisePx = LENS_TEST_NOISE_PX, REAL outlierShare = LENS_TEST_OUTLIER_SHARE, REAL givenFocalScale = REAL(1))
 {
+	ASSERT(givenFocalScale > 0);
 	std::mt19937 rng(seed);
 	// a uniform in [0, 1) at a double's precision: the top 27 bits of one output and the top 26 of the
 	// next, a 53-bit integer scaled by 2^-53
@@ -3479,10 +3483,12 @@ void BuildLensTestScene(Scene& scene, const std::vector<LensTestCamera>& cameras
 	std::vector<PinholeCamera> truth;
 	for (const LensTestCamera& c : cameras) {
 		PinholeCamera* const camera = new PinholeCamera(cv::Size(c.width, c.height),
-			c.focal, c.focal, REAL(c.width - 1)/2, REAL(c.height - 1)/2);
+			c.focal*givenFocalScale, c.focal*givenFocalScale, REAL(c.width - 1)/2, REAL(c.height - 1)/2);
 		camera->trustIntrinsics = true;
 		scene.cameras.emplace_back(camera);
-		truth.push_back(*camera);
+		truth.push_back(PinholeCamera(cv::Size(c.width, c.height),
+			c.focal, c.focal, REAL(c.width - 1)/2, REAL(c.height - 1)/2));
+		truth.back().trustIntrinsics = true;
 		truth.back().SetDistortion(c.k1, c.k2, 0, 0);
 	}
 	const auto Inside = [](const PinholeCamera& camera, const Point2& x) {
@@ -3575,9 +3581,9 @@ void BuildLensTestScene(Scene& scene, const std::vector<LensTestCamera>& cameras
 	}
 }
 
-// The worst difference, pixels, between a fitted and a true lens's undistortion displacement over
-// the radii a camera's matched keypoints reach (their LENS_TEST_REACH_PERCENTILE quantile), at
-// LENS_TEST_RADII radii from the centre
+// The worst difference, pixels, between a fitted lens's undistortion displacement (at the camera's own
+// focal) and the true one's (at the true focal) over the radii a camera's matched keypoints reach (their
+// LENS_TEST_REACH_PERCENTILE quantile), at LENS_TEST_RADII radii from the centre
 REAL LensCurveError(const Scene& scene, unsigned idxCamera, const LensTestCamera& lens)
 {
 	const PinholeCamera& camera = *static_cast<const PinholeCamera*>(scene.cameras[idxCamera]);
@@ -3597,7 +3603,7 @@ REAL LensCurveError(const Scene& scene, unsigned idxCamera, const LensTestCamera
 	REAL worst = 0;
 	for (unsigned i = 0; i <= LENS_TEST_RADII; ++i) {
 		const REAL r = reach*i/LENS_TEST_RADII;
-		worst = MAXF(worst, ABS(LensDisplacement(lens.focal, camera.k1, camera.k2, r) - LensDisplacement(lens.focal, lens.k1, lens.k2, r)));
+		worst = MAXF(worst, ABS(LensDisplacement(camera.fx, camera.k1, camera.k2, r) - LensDisplacement(lens.focal, lens.k1, lens.k2, r)));
 	}
 	return worst;
 }
@@ -3717,6 +3723,82 @@ bool LensFitRecoveryTest()
 		VERBOSE("LensFitRecoveryTest: two cameras from cross pairs only, %.2f and %.2f px off within reach", errorA, errorB);
 	}
 	VERBOSE("LensFitRecoveryTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// The focal check of the lens fit corrects a trusted focal its pairs clearly reject and leaves a right
+// one exactly as it is: the strong barrel lens of camera A given a focal 20% short and 20% long of the
+// one its pairs were rendered with, and a camera without a lens given one 15% short, each take a focal
+// within LENS_TEST_FOCAL_MAX_ERROR of the true one, the lens fitted at it within LENS_TEST_MAX_ERROR_PX
+// of the true one over its matches' reach; given its true focal, the camera keeps it bit for bit and the
+// lens comes out as true within the same bar
+bool LensFitFocalTest()
+{
+	TD_TIMER_START();
+	const MatchConfig config;
+	struct Variant {
+		const char* name;
+		LensTestCamera camera;
+		REAL givenFocalScale;
+	};
+	const Variant moved[] = {
+		{"a strong lens, the focal 20% short", LENS_TEST_A, REAL(0.8)},
+		{"a strong lens, the focal 20% long", LENS_TEST_A, REAL(1.2)},
+		{"no lens, the focal 15% short", LENS_TEST_P, REAL(0.85)},
+	};
+	for (const Variant& variant : moved) {
+		Scene scene;
+		std::unordered_map<PairIdx, Pose3D> truePoses;
+		BuildLensTestScene(scene, {variant.camera}, {{0, 0, LensTestMotion::TURN, 40}}, 7, truePoses,
+			LENS_TEST_NOISE_PX, LENS_TEST_OUTLIER_SHARE, variant.givenFocalScale);
+		const LensFitReport report = FitLensesFromPairs(scene, config);
+		const LensFitOutcome& outcome = report.cameras[0];
+		const PinholeCamera& camera = *static_cast<const PinholeCamera*>(scene.cameras[0]);
+		const REAL focalError = ABS(camera.fx/variant.camera.focal - REAL(1));
+		if (!outcome.focalMoved || camera.fx != camera.fy || focalError > LENS_TEST_FOCAL_MAX_ERROR) {
+			VERBOSE("LensFitFocalTest FAILED: %s, focal %s %g -> %g (true %g, %.2f%% off), median %.3f held, %.3f free",
+				variant.name, outcome.focalMoved ? "moved" : "kept", outcome.focalBefore, camera.fx, variant.camera.focal,
+				100*focalError, outcome.medianFocalHeld, outcome.medianFocalFree);
+			return false;
+		}
+		REAL lensError = 0;
+		if (variant.camera.k1 != 0 || variant.camera.k2 != 0) {
+			if (outcome.status != LensFitOutcome::FITTED) {
+				VERBOSE("LensFitFocalTest FAILED: %s, lens status %u at the moved focal", variant.name, (unsigned)outcome.status);
+				return false;
+			}
+			lensError = LensCurveError(scene, 0, variant.camera);
+			if (lensError > LENS_TEST_MAX_ERROR_PX) {
+				VERBOSE("LensFitFocalTest FAILED: %s, the lens (%g, %g) at the moved focal %g is %.2f px off the true one",
+					variant.name, camera.k1, camera.k2, camera.fx, lensError);
+				return false;
+			}
+		}
+		VERBOSE("LensFitFocalTest: %s, focal %g -> %g (true %g, %.2f%% off), lens %.2f px off, median %.3f held, %.3f free, %.1f s",
+			variant.name, outcome.focalBefore, camera.fx, variant.camera.focal, 100*focalError, lensError,
+			outcome.medianFocalHeld, outcome.medianFocalFree, report.seconds);
+	}
+	{
+		// the true focal given: kept bit for bit, and the lens the true one
+		Scene scene;
+		std::unordered_map<PairIdx, Pose3D> truePoses;
+		BuildLensTestScene(scene, {LENS_TEST_A}, {{0, 0, LensTestMotion::TURN, 40}}, 7, truePoses);
+		const LensFitReport report = FitLensesFromPairs(scene, config);
+		const LensFitOutcome& outcome = report.cameras[0];
+		const PinholeCamera& camera = *static_cast<const PinholeCamera*>(scene.cameras[0]);
+		const REAL lensError = outcome.status == LensFitOutcome::FITTED ? LensCurveError(scene, 0, LENS_TEST_A) : REAL(0);
+		if (outcome.focalMoved || camera.fx != LENS_TEST_A.focal || camera.fy != LENS_TEST_A.focal ||
+			outcome.focalBefore != LENS_TEST_A.focal || outcome.status != LensFitOutcome::FITTED ||
+			lensError > LENS_TEST_MAX_ERROR_PX) {
+			VERBOSE("LensFitFocalTest FAILED: the true focal, %s, focal %g, lens status %u, %.2f px off the true one, median %.3f held, %.3f free",
+				outcome.focalMoved ? "moved" : "kept", camera.fx, (unsigned)outcome.status, lensError,
+				outcome.medianFocalHeld, outcome.medianFocalFree);
+			return false;
+		}
+		VERBOSE("LensFitFocalTest: the true focal kept (the free fit reached %g), lens %.2f px off, median %.3f held, %.3f free",
+			outcome.focalFree, lensError, outcome.medianFocalHeld, outcome.medianFocalFree);
+	}
+	VERBOSE("LensFitFocalTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 
@@ -4262,39 +4344,43 @@ bool ROMA2ReverifyLensTest()
 constexpr REAL LENS_STAGE_MAX_ROTATION_DEG = REAL(0.5);
 constexpr REAL LENS_STAGE_MAX_DIRECTION_DEG = REAL(0.5);
 constexpr REAL LENS_STAGE_MIN_PINHOLE_ERROR_DEG = REAL(1); // the fixture: the pinhole's median rotation error must reach this
+// The rotation error and the baseline direction error, degrees, of every pair of the scene against its
+// true pose (named by its images: ComputeRelativePoses recomputes the pair weights, which sorts
+// scene.pairs, and BuildLensTestScene stores only the pairs its verification passes); false where a pair
+// has no pose
+static bool LensStagePoseErrors(const Scene& scene, const std::unordered_map<PairIdx, Pose3D>& truePoses,
+	std::vector<REAL>& rotation, std::vector<REAL>& direction)
+{
+	rotation.clear();
+	direction.clear();
+	FOREACH(i, scene.pairs) {
+		const ImagePair& pair = scene.pairs[i];
+		if (!pair.relativePose.has_value())
+			return false;
+		const Pose3D& truePose = truePoses.at(PairIdx(pair.ID1, pair.ID2));
+		rotation.push_back(R2D(ACOS(ComputeAngle(pair.relativePose->R, truePose.R))));
+		direction.push_back(R2D(ACOS(CLAMP(normalized(pair.relativePose->GetT()).dot(normalized(truePose.GetT())), REAL(-1), REAL(1)))));
+	}
+	return true;
+}
+static REAL LensStageMedian(std::vector<REAL> values)
+{
+	std::nth_element(values.begin(), values.begin() + values.size()/2, values.end());
+	return values[values.size()/2];
+}
 bool LensFitStageTest()
 {
 	TD_TIMER_START();
 	Scene scene;
 	std::unordered_map<PairIdx, Pose3D> truePoses;
 	BuildLensTestScene(scene, {LENS_TEST_A}, {{0, 0, LensTestMotion::TURN, 40}}, 23, truePoses);
-	const auto Errors = [&](std::vector<REAL>& rotation, std::vector<REAL>& direction) {
-		rotation.clear();
-		direction.clear();
-		FOREACH(i, scene.pairs) {
-			const ImagePair& pair = scene.pairs[i];
-			if (!pair.relativePose.has_value())
-				return false;
-			// a pair's truth is named by its images: ComputeRelativePoses recomputes the pair weights,
-			// which sorts scene.pairs by weight, and BuildLensTestScene stores only the pairs its
-			// verification passes
-			const Pose3D& truePose = truePoses.at(PairIdx(pair.ID1, pair.ID2));
-			rotation.push_back(R2D(ACOS(ComputeAngle(pair.relativePose->R, truePose.R))));
-			direction.push_back(R2D(ACOS(CLAMP(normalized(pair.relativePose->GetT()).dot(normalized(truePose.GetT())), REAL(-1), REAL(1)))));
-		}
-		return true;
-	};
-	const auto Median = [](std::vector<REAL> values) {
-		std::nth_element(values.begin(), values.begin() + values.size()/2, values.end());
-		return values[values.size()/2];
-	};
 	std::vector<REAL> rotation, direction;
-	if (!Errors(rotation, direction) || Median(rotation) < LENS_STAGE_MIN_PINHOLE_ERROR_DEG) {
+	if (!LensStagePoseErrors(scene, truePoses, rotation, direction) || LensStageMedian(rotation) < LENS_STAGE_MIN_PINHOLE_ERROR_DEG) {
 		VERBOSE("LensFitStageTest FAILED: through the pinhole the pairs are only %.2f deg off (median), the fixture does not exercise the lens",
-			rotation.empty() ? 0.0 : Median(rotation));
+			rotation.empty() ? 0.0 : LensStageMedian(rotation));
 		return false;
 	}
-	const REAL pinholeRotation = Median(rotation), pinholeDirection = Median(direction);
+	const REAL pinholeRotation = LensStageMedian(rotation), pinholeDirection = LensStageMedian(direction);
 	MatchConfig config;
 	PairsMatcher matcher(scene, config);
 	const LensFitReport report = FitLensesAndReverifyPairs(matcher);
@@ -4302,12 +4388,12 @@ bool LensFitStageTest()
 		VERBOSE("LensFitStageTest FAILED: the lens was not fitted (status %u)", (unsigned)report.cameras[0].status);
 		return false;
 	}
-	if (!Errors(rotation, direction)) {
+	if (!LensStagePoseErrors(scene, truePoses, rotation, direction)) {
 		VERBOSE("LensFitStageTest FAILED: a pair lost its pose when verified again through the lens");
 		return false;
 	}
 	const REAL worstRotation = *std::max_element(rotation.begin(), rotation.end());
-	const REAL medianDirection = Median(direction);
+	const REAL medianDirection = LensStageMedian(direction);
 	if (worstRotation > LENS_STAGE_MAX_ROTATION_DEG || medianDirection > LENS_STAGE_MAX_DIRECTION_DEG) {
 		VERBOSE("LensFitStageTest FAILED: through the fitted lens the pairs are up to %.2f deg off in rotation, %.2f deg in baseline direction (median)",
 			worstRotation, medianDirection);
@@ -4320,6 +4406,61 @@ bool LensFitStageTest()
 	}
 	VERBOSE("LensFitStageTest PASSED: rotation median %.2f -> worst %.2f deg, baseline direction median %.2f -> %.2f deg (%s)",
 		pinholeRotation, worstRotation, pinholeDirection, medianDirection, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// The lens stage verifies again the pairs of a camera whose focal the check moved even where no lens
+// is kept at it: a camera without a lens, given a focal 15% short of the one its 40 pairs were rendered
+// with, has them verified through the short focal (rotations degrees off); the focal check moves its
+// focal to the true one and the fit keeps no lens (there is none), and the pairs then come out of
+// FitLensesAndReverifyPairs within LENS_STAGE_MAX_ROTATION_DEG of their true rotation and, in the
+// median, LENS_STAGE_MAX_DIRECTION_DEG of their true baseline direction
+bool LensFitFocalStageTest()
+{
+	TD_TIMER_START();
+	Scene scene;
+	std::unordered_map<PairIdx, Pose3D> truePoses;
+	BuildLensTestScene(scene, {LENS_TEST_P}, {{0, 0, LensTestMotion::TURN, 40}}, 7, truePoses,
+		LENS_TEST_NOISE_PX, LENS_TEST_OUTLIER_SHARE, REAL(0.85));
+	std::vector<REAL> rotation, direction;
+	if (!LensStagePoseErrors(scene, truePoses, rotation, direction) || LensStageMedian(rotation) < LENS_STAGE_MIN_PINHOLE_ERROR_DEG) {
+		VERBOSE("LensFitFocalStageTest FAILED: through the short focal the pairs are only %.2f deg off (median), the fixture does not exercise the focal",
+			rotation.empty() ? 0.0 : LensStageMedian(rotation));
+		return false;
+	}
+	const REAL shortRotation = LensStageMedian(rotation);
+	size_t numInliersBefore = 0;
+	for (const ImagePair& pair : scene.pairs)
+		numInliersBefore += pair.GetNumFilteredInliers();
+	MatchConfig config;
+	PairsMatcher matcher(scene, config);
+	const LensFitReport report = FitLensesAndReverifyPairs(matcher);
+	const LensFitOutcome& outcome = report.cameras[0];
+	const PinholeCamera& camera = *static_cast<const PinholeCamera*>(scene.cameras[0]);
+	const REAL focalError = ABS(camera.fx/LENS_TEST_P.focal - REAL(1));
+	if (!outcome.focalMoved || outcome.status == LensFitOutcome::FITTED || camera.HasDistortion() ||
+		focalError > LENS_TEST_FOCAL_MAX_ERROR) {
+		VERBOSE("LensFitFocalStageTest FAILED: focal %s to %g (true %g, %.2f%% off), lens status %u: the fixture needs the focal moved and no lens kept",
+			outcome.focalMoved ? "moved" : "kept", camera.fx, LENS_TEST_P.focal, 100*focalError, (unsigned)outcome.status);
+		return false;
+	}
+	if (!LensStagePoseErrors(scene, truePoses, rotation, direction)) {
+		VERBOSE("LensFitFocalStageTest FAILED: a pair lost its pose when verified again at the moved focal");
+		return false;
+	}
+	const REAL worstRotation = *std::max_element(rotation.begin(), rotation.end());
+	const REAL medianDirection = LensStageMedian(direction);
+	size_t numInliersAfter = 0;
+	for (const ImagePair& pair : scene.pairs)
+		numInliersAfter += pair.GetNumFilteredInliers();
+	if (worstRotation > LENS_STAGE_MAX_ROTATION_DEG || medianDirection > LENS_STAGE_MAX_DIRECTION_DEG) {
+		VERBOSE("LensFitFocalStageTest FAILED: at the moved focal %g the pairs are up to %.2f deg off in rotation (%.2f deg median through the short focal %g), %.2f deg in baseline direction (median); sparse inliers %zu -> %zu",
+			camera.fx, worstRotation, shortRotation, outcome.focalBefore, medianDirection, numInliersBefore, numInliersAfter);
+		return false;
+	}
+	VERBOSE("LensFitFocalStageTest PASSED: focal %g -> %g, rotation median %.2f -> worst %.2f deg, baseline direction median %.2f deg, sparse inliers %zu -> %zu (%s)",
+		outcome.focalBefore, camera.fx, shortRotation, worstRotation, medianDirection, numInliersBefore, numInliersAfter,
+		TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 

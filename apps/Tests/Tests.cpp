@@ -293,6 +293,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::LensFitRecoveryTest())
 				return false;
+			if (!SFM::LensFitFocalTest())
+				return false;
 			if (!SFM::LensFitRefusalTest())
 				return false;
 			if (!SFM::LensFitMinimumPairsTest())
@@ -302,6 +304,8 @@ int main(int argc, LPCTSTR* argv)
 			if (!SFM::ROMA2ReverifyLensTest())
 				return false;
 			if (!SFM::LensFitStageTest())
+				return false;
+			if (!SFM::LensFitFocalStageTest())
 				return false;
 			if (!SFM::CubeMapFaceRenderTest())
 				return false;

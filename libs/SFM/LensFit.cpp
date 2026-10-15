@@ -122,10 +122,10 @@ inline double Scalar(const ceres::Jet<T, N>& x) { return x.a; }
 
 // The undistortion of a normalized distorted radius rd through the radial lens (k1, k2), as the
 // ratio r_u / r_d: Newton on r_u (1 + k1 r_u^2 + k2 r_u^4) = r_d from r_u = r_d
-template <typename T>
-T UndistortionScale(const T& k1, const T& k2, double rd)
+template <typename T, typename R>
+T UndistortionScale(const T& k1, const T& k2, const R& rd)
 {
-	if (rd <= 0)
+	if (Scalar(rd) <= 0)
 		return T(1);
 	T ru(rd);
 	for (int i = 0; i < LENS_UNDISTORT_ITERATIONS; ++i) {
@@ -174,7 +174,10 @@ double CornerRadius(const PinholeCamera& pinhole)
 // Jacobian -- in pixels.
 // The pair's pose is 5 numbers about its base pose (R0, t0): R = exp([w]x) R0 and
 // t = normalize(t0 + a e1 + b e2), e1 and e2 spanning the plane orthogonal to t0 (x2 = R x1 + t).
-// A side's lens is a parameter block where it is fitted, else a constant held here.
+// A side's lens is a parameter block where it is fitted, else a constant held here; its focal is the
+// camera's times exp(q), q the third number of its lens block where the focal check frees it (the
+// measured points normalized by that focal, the gradient brought back to pixels by it), else q held
+// here (0 outside the focal check: the focal as given, the arithmetic unchanged).
 // A fitted lens that is not one to one out to its valid radius (the farthest normalized radius its
 // camera's matches reach, times LENS_VALID_MARGIN) makes the evaluation fail, which Ceres answers by
 // shrinking its trust region; a held side (valid radius 0) is not tested: its lens is one to one past
@@ -184,16 +187,17 @@ struct LensSampsonError {
 	Point2d f1, f2;            // each side's focal (fx, fy), to bring the gradient back to pixels
 	Matrix3x3 R0;              // the base rotation
 	Point3 t0, e1, e2;         // the base baseline direction and its tangent basis
-	double held1[2], held2[2]; // each side's lens where it is held
+	double held1[3], held2[3]; // each side's lens where it is held: k1, k2, and q
 	double valid1, valid2;     // each side's valid radius where its lens is fitted, else 0
 	bool sameCamera;           // both sides are one camera: one lens block
 	bool freeFirst;            // one fitted side of two cameras: whether it is the first
 
 	template <typename T>
-	bool Evaluate(const T* pose, const T* lens1, const T* lens2, T* residual) const {
-		if (valid1 > 0 && !IsLensOneToOne(Scalar(lens1[0]), Scalar(lens1[1]), valid1))
+	bool Evaluate(const T* pose, const T* lens1, const T& q1, const T* lens2, const T& q2, T* residual) const {
+		const T scale1(ceres::exp(q1)), scale2(ceres::exp(q2));
+		if (valid1 > 0 && !IsLensOneToOne(Scalar(lens1[0]), Scalar(lens1[1]), valid1/Scalar(scale1)))
 			return false;
-		if (valid2 > 0 && !IsLensOneToOne(Scalar(lens2[0]), Scalar(lens2[1]), valid2))
+		if (valid2 > 0 && !IsLensOneToOne(Scalar(lens2[0]), Scalar(lens2[1]), valid2/Scalar(scale2)))
 			return false;
 		T dR[9];
 		ceres::AngleAxisToRotationMatrix(pose, ceres::RowMajorAdapter3x3(dR));
@@ -213,10 +217,12 @@ struct LensSampsonError {
 		for (int r = 0; r < 3; ++r)
 			for (int c = 0; c < 3; ++c)
 				E[r*3+c] = tx[r*3+0]*R[0*3+c] + tx[r*3+1]*R[1*3+c] + tx[r*3+2]*R[2*3+c];
-		const T s1(UndistortionScale(lens1[0], lens1[1], norm(m1)));
-		const T s2(UndistortionScale(lens2[0], lens2[1], norm(m2)));
-		const T u1[2] = { T(m1.x)*s1, T(m1.y)*s1 };
-		const T u2[2] = { T(m2.x)*s2, T(m2.y)*s2 };
+		const T d1[2] = { T(m1.x)/scale1, T(m1.y)/scale1 };
+		const T d2[2] = { T(m2.x)/scale2, T(m2.y)/scale2 };
+		const T s1(UndistortionScale(lens1[0], lens1[1], T(norm(m1))/scale1));
+		const T s2(UndistortionScale(lens2[0], lens2[1], T(norm(m2))/scale2));
+		const T u1[2] = { d1[0]*s1, d1[1]*s1 };
+		const T u2[2] = { d2[0]*s2, d2[1]*s2 };
 		const T Eu1[3] = {
 			E[0]*u1[0] + E[1]*u1[1] + E[2],
 			E[3]*u1[0] + E[4]*u1[1] + E[5],
@@ -228,8 +234,8 @@ struct LensSampsonError {
 		T ga[2], gb[2];
 		InverseLensJacobianTimes(lens1[0], lens1[1], u1, Etu2, ga);
 		InverseLensJacobianTimes(lens2[0], lens2[1], u2, Eu1, gb);
-		const T gradSq(ga[0]*ga[0]/T(f1.x*f1.x) + ga[1]*ga[1]/T(f1.y*f1.y) +
-			gb[0]*gb[0]/T(f2.x*f2.x) + gb[1]*gb[1]/T(f2.y*f2.y));
+		const T gradSq(ga[0]*ga[0]/(T(f1.x*f1.x)*scale1*scale1) + ga[1]*ga[1]/(T(f1.y*f1.y)*scale1*scale1) +
+			gb[0]*gb[0]/(T(f2.x*f2.x)*scale2*scale2) + gb[1]*gb[1]/(T(f2.y*f2.y)*scale2*scale2));
 		residual[0] = g/ceres::sqrt(gradSq + T(LENS_MIN_GRADIENT_SQ));
 		return true;
 	}
@@ -237,24 +243,44 @@ struct LensSampsonError {
 	template <typename T>
 	bool operator()(const T* pose, T* residual) const {
 		const T l1[2] = { T(held1[0]), T(held1[1]) }, l2[2] = { T(held2[0]), T(held2[1]) };
-		return Evaluate(pose, l1, l2, residual);
+		return Evaluate(pose, l1, T(held1[2]), l2, T(held2[2]), residual);
+	}
+};
+
+// The residual over the lens blocks of the fitted sides, each of N numbers (N2 0: one block): 2, k1 and k2,
+// with q held as the residual has it; or 3 where the camera's focal is free, q its third number
+template <int N1, int N2>
+struct LensBlockError {
+	static_assert((N1 == 2 || N1 == 3) && (N2 == 0 || N2 == 2 || N2 == 3), "a lens block holds 2 or 3 numbers");
+	LensSampsonError e;
+
+	explicit LensBlockError(const LensSampsonError& _e) : e(_e) {}
+	// q of a lens block of N numbers
+	template <int N, typename T>
+	static T Focal(const T* lens, double held) {
+		if constexpr (N == 3)
+			return lens[2];
+		else
+			return T(held);
 	}
 	// one lens block: the camera of both sides, or the one fitted side of two cameras
 	template <typename T>
 	bool operator()(const T* pose, const T* lens, T* residual) const {
-		if (sameCamera)
-			return Evaluate(pose, lens, lens, residual);
-		if (freeFirst) {
-			const T l2[2] = { T(held2[0]), T(held2[1]) };
-			return Evaluate(pose, lens, l2, residual);
+		if (e.sameCamera) {
+			const T q(Focal<N1>(lens, e.held1[2]));
+			return e.Evaluate(pose, lens, q, lens, q, residual);
 		}
-		const T l1[2] = { T(held1[0]), T(held1[1]) };
-		return Evaluate(pose, l1, lens, residual);
+		if (e.freeFirst) {
+			const T l2[2] = { T(e.held2[0]), T(e.held2[1]) };
+			return e.Evaluate(pose, lens, Focal<N1>(lens, e.held1[2]), l2, T(e.held2[2]), residual);
+		}
+		const T l1[2] = { T(e.held1[0]), T(e.held1[1]) };
+		return e.Evaluate(pose, l1, T(e.held1[2]), lens, Focal<N1>(lens, e.held2[2]), residual);
 	}
 	// two lens blocks
 	template <typename T>
 	bool operator()(const T* pose, const T* lens1, const T* lens2, T* residual) const {
-		return Evaluate(pose, lens1, lens2, residual);
+		return e.Evaluate(pose, lens1, Focal<N1>(lens1, e.held1[2]), lens2, Focal<N2>(lens2, e.held2[2]), residual);
 	}
 };
 
@@ -262,7 +288,8 @@ struct LensSampsonError {
 struct FitCamera {
 	unsigned idxScene;      // its index in scene.cameras and the report
 	bool free;              // its lens is fitted, else held at `lens`
-	double lens[2];         // k1, k2: the start, then the fit
+	bool freeFocal;         // its focal is fitted too (the focal check's free fit), else held at `lens[2]`
+	double lens[3];         // k1, k2 and q (its focal is `focal` times exp(q)): the start, then the fit
 	Point2d focal, centre;
 	double reach;           // the farthest normalized distorted radius its drawn matches reach
 	double corner;          // the normalized radius of its image corner farthest from the centre
@@ -289,8 +316,9 @@ LensSampsonError MakeResidual(const FitPair& p, size_t k, const std::vector<FitC
 	e.R0 = p.R0;
 	e.t0 = p.t0;
 	TangentBasis(p.t0, e.e1, e.e2);
-	e.held1[0] = c1.lens[0]; e.held1[1] = c1.lens[1];
-	e.held2[0] = c2.lens[0]; e.held2[1] = c2.lens[1];
+	ASSERT((!c1.freeFocal || c1.free) && (!c2.freeFocal || c2.free)); // only a fitted lens carries a free focal
+	e.held1[0] = c1.lens[0]; e.held1[1] = c1.lens[1]; e.held1[2] = c1.lens[2];
+	e.held2[0] = c2.lens[0]; e.held2[1] = c2.lens[1]; e.held2[2] = c2.lens[2];
 	const bool free1 = refineLens && c1.free, free2 = refineLens && c2.free;
 	e.valid1 = free1 ? LENS_VALID_MARGIN*c1.reach : 0;
 	e.valid2 = free2 ? LENS_VALID_MARGIN*c2.reach : 0;
@@ -304,7 +332,7 @@ double ResidualAt(const FitPair& p, size_t k, const std::vector<FitCamera>& came
 {
 	static const double zero[5] = {0, 0, 0, 0, 0};
 	double residual;
-	MakeResidual(p, k, cameras, false).Evaluate(zero, cameras[p.cam1].lens, cameras[p.cam2].lens, &residual);
+	MakeResidual(p, k, cameras, false).Evaluate(zero, cameras[p.cam1].lens, cameras[p.cam1].lens[2], cameras[p.cam2].lens, cameras[p.cam2].lens[2], &residual);
 	return residual;
 }
 
@@ -348,21 +376,41 @@ void RefinePosesAlone(std::vector<FitPair>& pairs, const std::vector<FitCamera>&
 	}
 }
 
+// The cost of one match over its pose block and one lens block of n numbers (2, or 3 with the focal)
+ceres::CostFunction* LensCost(const LensSampsonError& e, int n)
+{
+	ASSERT(n == 2 || n == 3);
+	if (n == 3)
+		return new ceres::AutoDiffCostFunction<LensBlockError<3, 0>, 1, 5, 3>(new LensBlockError<3, 0>(e));
+	return new ceres::AutoDiffCostFunction<LensBlockError<2, 0>, 1, 5, 2>(new LensBlockError<2, 0>(e));
+}
+// The same over two lens blocks of n1 and n2 numbers
+ceres::CostFunction* LensCost(const LensSampsonError& e, int n1, int n2)
+{
+	ASSERT((n1 == 2 || n1 == 3) && (n2 == 2 || n2 == 3));
+	if (n1 == 3)
+		return n2 == 3 ? (ceres::CostFunction*)new ceres::AutoDiffCostFunction<LensBlockError<3, 3>, 1, 5, 3, 3>(new LensBlockError<3, 3>(e)) :
+			new ceres::AutoDiffCostFunction<LensBlockError<3, 2>, 1, 5, 3, 2>(new LensBlockError<3, 2>(e));
+	return n2 == 3 ? (ceres::CostFunction*)new ceres::AutoDiffCostFunction<LensBlockError<2, 3>, 1, 5, 2, 3>(new LensBlockError<2, 3>(e)) :
+		new ceres::AutoDiffCostFunction<LensBlockError<2, 2>, 1, 5, 2, 2>(new LensBlockError<2, 2>(e));
+}
+
 // The residuals of pair p's matches added to a problem over its 5 pose numbers `pose` and the lens block of
-// each of its fitted cameras (`cameras`' own), under `loss`
+// each of its fitted cameras (`cameras`' own; its third number, q, part of it where the focal is free), under `loss`
 void AddPairResiduals(ceres::Problem& problem, ceres::LossFunction* loss, const FitPair& p, std::vector<FitCamera>& cameras, double* pose)
 {
 	FitCamera& c1 = cameras[p.cam1];
 	FitCamera& c2 = cameras[p.cam2];
 	ASSERT(c1.free || c2.free); // a pair is selected for a fitted camera it informs
+	const int n1 = c1.freeFocal ? 3 : 2, n2 = c2.freeFocal ? 3 : 2;
 	for (size_t k = 0; k < p.m1.size(); ++k) {
-		LensSampsonError* const e = new LensSampsonError(MakeResidual(p, k, cameras, true));
+		const LensSampsonError e(MakeResidual(p, k, cameras, true));
 		if (p.cam1 == p.cam2)
-			problem.AddResidualBlock(new ceres::AutoDiffCostFunction<LensSampsonError, 1, 5, 2>(e), loss, pose, c1.lens);
+			problem.AddResidualBlock(LensCost(e, n1), loss, pose, c1.lens);
 		else if (c1.free && c2.free)
-			problem.AddResidualBlock(new ceres::AutoDiffCostFunction<LensSampsonError, 1, 5, 2, 2>(e), loss, pose, c1.lens, c2.lens);
+			problem.AddResidualBlock(LensCost(e, n1, n2), loss, pose, c1.lens, c2.lens);
 		else
-			problem.AddResidualBlock(new ceres::AutoDiffCostFunction<LensSampsonError, 1, 5, 2>(e), loss, pose, c1.free ? c1.lens : c2.lens);
+			problem.AddResidualBlock(LensCost(e, c1.free ? n1 : n2), loss, pose, c1.free ? c1.lens : c2.lens);
 	}
 }
 
@@ -442,15 +490,17 @@ unsigned ReestimatePoses(std::vector<FitPair>& pairs, const std::vector<FitCamer
 		std::vector<poselib::Point3D> bearings1, bearings2;
 		bearings1.reserve(p.m1.size());
 		bearings2.reserve(p.m2.size());
+		// each side's points normalized by its focal as the fit has it (exp(q) times the start's)
+		const double scale1 = std::exp(c1.lens[2]), scale2 = std::exp(c2.lens[2]);
 		for (size_t k = 0; k < p.m1.size(); ++k) {
-			const double s1 = UndistortionScale(c1.lens[0], c1.lens[1], norm(p.m1[k]));
-			const double s2 = UndistortionScale(c2.lens[0], c2.lens[1], norm(p.m2[k]));
-			bearings1.emplace_back(poselib::Point3D(p.m1[k].x*s1, p.m1[k].y*s1, 1.0).normalized());
-			bearings2.emplace_back(poselib::Point3D(p.m2[k].x*s2, p.m2[k].y*s2, 1.0).normalized());
+			const double s1 = UndistortionScale(c1.lens[0], c1.lens[1], norm(p.m1[k])/scale1);
+			const double s2 = UndistortionScale(c2.lens[0], c2.lens[1], norm(p.m2[k])/scale2);
+			bearings1.emplace_back(poselib::Point3D(p.m1[k].x/scale1*s1, p.m1[k].y/scale1*s1, 1.0).normalized());
+			bearings2.emplace_back(poselib::Point3D(p.m2[k].x/scale2*s2, p.m2[k].y/scale2*s2, 1.0).normalized());
 		}
 		poselib::RelativePoseOptions opt;
-		opt.max_error = 0.5*(ATAN(LENS_REESTIMATION_ERROR/(0.5*(c1.focal.x + c1.focal.y))) +
-			ATAN(LENS_REESTIMATION_ERROR/(0.5*(c2.focal.x + c2.focal.y))));
+		opt.max_error = 0.5*(ATAN(LENS_REESTIMATION_ERROR/(0.5*(c1.focal.x + c1.focal.y)*scale1)) +
+			ATAN(LENS_REESTIMATION_ERROR/(0.5*(c2.focal.x + c2.focal.y)*scale2)));
 		opt.ransac.min_iterations = LENS_REESTIMATION_MIN_ITERATIONS;
 		opt.ransac.max_iterations = LENS_REESTIMATION_MAX_ITERATIONS;
 		poselib::CameraPose pose;
@@ -559,6 +609,53 @@ bool PassesPairsCheck(const std::vector<FitPair>& pairs, const std::vector<FitCa
 	return true;
 }
 
+// The focal check of a fit's cameras as `pairs` and `cameras` stand built, before any lens is fitted:
+// the fit from there with every fitted camera's focal held, then free beside its lens and the poses, each
+// the joint fit and its rounds of pose re-estimation; a fitted camera takes the free fit's focal (fx and
+// fy scaled alike) where both were solved, the held fit passes the check of a fit (PassesPairsCheck), the
+// free lens stays one to one past the image corner at that focal, and the median error falls
+// MatchConfig::lensFitFocalMinErrorDrop below the held fit's. A held fit that fails the check is held short of its lens
+// by the pairs whose pinhole poses it cannot turn, and a free focal then absorbs part of the shortfall: on
+// the synthetic barrel lens of LensFitRecoveryTest's held-short scene it fell the median error 14% at a
+// focal 12% short of the true one. The focal stays as given for the fit's restart from the doubled lens.
+// Records both medians and focals on every fitted camera's outcome; returns whether any focal moved
+bool CheckFocals(Scene& scene, const std::vector<FitPair>& pairs, const std::vector<FitCamera>& cameras,
+	const MatchConfig& config, LensFitReport& report)
+{
+	std::vector<FitPair> heldPairs(pairs), freePairs(pairs);
+	std::vector<FitCamera> heldCameras(cameras), freeCameras(cameras);
+	for (FitCamera& c : freeCameras)
+		c.freeFocal = c.free;
+	std::vector<unsigned> rounds;
+	const bool heldPasses = FitFrom(heldPairs, heldCameras, config, scene.nMaxThreads, rounds) &&
+		PassesPairsCheck(heldPairs, heldCameras, config.lensFitLossScale, scene.nMaxThreads);
+	const bool freeSolved = FitFrom(freePairs, freeCameras, config, scene.nMaxThreads, rounds);
+	const std::vector<double> mediansHeld(MedianErrors(heldPairs, heldCameras));
+	const std::vector<double> mediansFree(MedianErrors(freePairs, freeCameras));
+	bool moved = false;
+	FOREACH(f, freeCameras) {
+		const FitCamera& fc = freeCameras[f];
+		if (!fc.free)
+			continue;
+		PinholeCamera& pinhole = *static_cast<PinholeCamera*>(scene.cameras[fc.idxScene]);
+		LensFitOutcome& outcome = report.cameras[fc.idxScene];
+		const REAL scale = (REAL)std::exp(fc.lens[2]);
+		outcome.focalBefore = REAL(0.5)*(pinhole.fx + pinhole.fy);
+		outcome.focalFree = outcome.focalBefore*scale;
+		outcome.medianFocalHeld = mediansHeld[f];
+		outcome.medianFocalFree = mediansFree[f];
+		// written so that a NaN median, which fails every comparison, keeps the focal
+		if (heldPasses && freeSolved && IsLensOneToOne((REAL)fc.lens[0], (REAL)fc.lens[1], LENS_VALID_MARGIN*(REAL)fc.corner/scale) &&
+			mediansFree[f] <= (1.0 - (double)MatchConfig::lensFitFocalMinErrorDrop)*mediansHeld[f]) {
+			pinhole.fx *= scale;
+			pinhole.fy *= scale;
+			outcome.focalMoved = true;
+			moved = true;
+		}
+	}
+	return moved;
+}
+
 } // namespace
 
 std::unordered_set<CameraPtr> LensFitReport::FittedCameras() const
@@ -568,6 +665,15 @@ std::unordered_set<CameraPtr> LensFitReport::FittedCameras() const
 		if (outcome.status == LensFitOutcome::FITTED)
 			fitted.insert(outcome.pCamera);
 	return fitted;
+}
+
+std::unordered_set<CameraPtr> LensFitReport::CamerasToVerifyAgain() const
+{
+	std::unordered_set<CameraPtr> changed;
+	for (const LensFitOutcome& outcome : cameras)
+		if (outcome.status == LensFitOutcome::FITTED || outcome.focalMoved)
+			changed.insert(outcome.pCamera);
+	return changed;
 }
 
 REAL SFM::LensDisplacement(REAL focal, REAL k1, REAL k2, REAL radius)
@@ -610,6 +716,7 @@ LensFitReport SFM::FitLensesFromPairs(Scene& scene, const MatchConfig& config)
 	ASSERT(config.lensFitMinErrorDrop >= 0 && config.lensFitMinErrorDrop < 1);
 	ASSERT(config.lensFitLossScale > 0);
 	const auto start = std::chrono::steady_clock::now();
+	bool focalChecked = false;
 	LensFitReport report;
 	const unsigned numCameras = (unsigned)scene.cameras.size();
 	report.cameras.resize(numCameras);
@@ -719,8 +826,10 @@ LensFitReport SFM::FitLensesFromPairs(Scene& scene, const MatchConfig& config)
 				FitCamera f;
 				f.idxScene = c;
 				f.free = roles[c] == Role::FIT;
+				f.freeFocal = false;
 				f.lens[0] = f.free ? 0.0 : (double)pinhole.k1;
 				f.lens[1] = f.free ? 0.0 : (double)pinhole.k2;
+				f.lens[2] = 0.0;
 				f.focal = Point2d(pinhole.fx, pinhole.fy);
 				f.centre = Point2d(pinhole.cx, pinhole.cy);
 				f.reach = 0;
@@ -768,6 +877,16 @@ LensFitReport SFM::FitLensesFromPairs(Scene& scene, const MatchConfig& config)
 				f2.reach = MAXF(f2.reach, norm(p.m2.back()));
 			}
 			pairs.push_back(std::move(p));
+		}
+		// the focal check, once, on the fit as first built: where it moves a focal, the fit is built again
+		// at it (the same pairs, their matches normalized by the moved focal)
+		if (!focalChecked) {
+			focalChecked = true;
+			const auto startCheck = std::chrono::steady_clock::now();
+			const bool moved = CheckFocals(scene, pairs, cameras, config, report);
+			report.focalSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - startCheck).count();
+			if (moved)
+				continue;
 		}
 		// the baseline: the poses alone at the starting lenses, so that the lens is credited only with
 		// what the poses could not do; the joint fit still starts from the stored poses, which have not
@@ -861,6 +980,10 @@ LensFitReport SFM::FitLensesAndReverifyPairs(PairsMatcher& pairsMatcher)
 	const LensFitReport report = FitLensesFromPairs(scene, config);
 	FOREACH(c, report.cameras) {
 		const LensFitOutcome& outcome = report.cameras[c];
+		if (outcome.focalBefore > 0)
+			VERBOSE("Focal of camera %u %s: %.2f px, the fit with it free reaching %.2f px (%+.2f%%), median error %.3f px held, %.3f px free (%.1f s)",
+				(unsigned)c, outcome.focalMoved ? "moved" : "kept", outcome.focalBefore, outcome.focalFree,
+				100*(outcome.focalFree/outcome.focalBefore - 1), outcome.medianFocalHeld, outcome.medianFocalFree, report.focalSeconds);
 		switch (outcome.status) {
 		case LensFitOutcome::FITTED:
 			VERBOSE("Lens fitted to camera %u from %u pairs: k1 %.4f, k2 %.4f (%.1f px at the corner), median error %.3f -> %.3f px",
@@ -879,10 +1002,12 @@ LensFitReport SFM::FitLensesAndReverifyPairs(PairsMatcher& pairsMatcher)
 			break;
 		}
 	}
-	const std::unordered_set<CameraPtr> fitted(report.FittedCameras());
-	if (fitted.empty())
+	// the cameras whose lens was fitted or whose focal the check moved, with or without a lens kept at it:
+	// the pairs of both were verified at the focal and lens the camera had before
+	const std::unordered_set<CameraPtr> changed(report.CamerasToVerifyAgain());
+	if (changed.empty())
 		return report;
-	// the inliers of the pairs a fitted camera holds, before and after they are verified again, and
+	// the inliers of the pairs a changed camera holds, before and after they are verified again, and
 	// the pairs among them that form tracks, named by their images since the weights recomputed after
 	// sort scene.pairs again
 	const auto Totals = [&](size_t& numSparse, size_t& numDense, std::unordered_set<PairIdx>& forming) {
@@ -890,7 +1015,7 @@ LensFitReport SFM::FitLensesAndReverifyPairs(PairsMatcher& pairsMatcher)
 		numSparse = numDense = 0;
 		forming.clear();
 		for (const ImagePair& pair : scene.pairs) {
-			if (!fitted.count(scene.images[pair.ID1].pCamera) && !fitted.count(scene.images[pair.ID2].pCamera))
+			if (!changed.count(scene.images[pair.ID1].pCamera) && !changed.count(scene.images[pair.ID2].pCamera))
 				continue;
 			++numPairs;
 			numSparse += pair.GetNumFilteredInliers();
@@ -903,7 +1028,7 @@ LensFitReport SFM::FitLensesAndReverifyPairs(PairsMatcher& pairsMatcher)
 	size_t sparseBefore, denseBefore, sparseAfter, denseAfter;
 	std::unordered_set<PairIdx> formingBefore, formingAfter;
 	const unsigned numPairs = Totals(sparseBefore, denseBefore, formingBefore);
-	pairsMatcher.ComputeRelativePoses(true, false, fitted);
+	pairsMatcher.ComputeRelativePoses(true, false, changed);
 	Totals(sparseAfter, denseAfter, formingAfter);
 	// the pairs the verification through the lens invalidated: track-forming matches before, none after
 	const unsigned numInvalidated = (unsigned)std::count_if(formingBefore.begin(), formingBefore.end(),
@@ -914,7 +1039,7 @@ LensFitReport SFM::FitLensesAndReverifyPairs(PairsMatcher& pairsMatcher)
 	if (report.numStarts > 1)
 		rounds += String::FormatString(" (the best of %u starts)", report.numStarts);
 	VERBOSE("Lens fit: %u of %u cameras fitted in %.1f s, poses re-estimated %s; %u pairs verified again through their lens: sparse inliers %zu -> %zu, dense %zu -> %zu; %u pairs invalidated (%s)",
-		(unsigned)fitted.size(), (unsigned)report.cameras.size(), report.seconds, rounds.empty() ? "-" : rounds.c_str(),
+		(unsigned)report.FittedCameras().size(), (unsigned)report.cameras.size(), report.seconds, rounds.empty() ? "-" : rounds.c_str(),
 		numPairs, sparseBefore, sparseAfter, denseBefore, denseAfter, numInvalidated, TD_TIMER_GET_FMT().c_str());
 	return report;
 }
