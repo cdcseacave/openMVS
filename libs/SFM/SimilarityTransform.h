@@ -28,6 +28,7 @@ namespace SFM {
  * @param refine If true, refines the transform after initial estimation
  * @param maxIters RANSAC iteration budget (0 = auto-cap); raise for low inlier ratios
  * @param confidence RANSAC confidence used for the adaptive iteration update
+ * @param pInliers Optional output indices of the correspondences used for the final estimate
  * @return number of inliers used for the final estimate (RANSAC inlier count when threshold > 0,
  *         otherwise the total correspondence count) or 0 on failure
  */
@@ -38,7 +39,8 @@ SFM_API unsigned EstimateSimilarityTransform(
 	double threshold = 0.0,
 	bool refine = true,
 	size_t maxIters = 0,
-	double confidence = 0.9999);
+	double confidence = 0.9999,
+	std::vector<size_t>* pInliers = nullptr);
 
 /**
  * @brief Estimate a similarity transform from paired centers, using the paired rotations

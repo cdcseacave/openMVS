@@ -100,7 +100,7 @@ The **composite weight** (`spatial × connectivity × triplet`) ranks pairs by r
 All reconstruction workflows share a common front-end that extracts features, matches images, and builds tracks. They diverge after that: the **hierarchical** workflow clusters the scene and uses incremental reconstruction per cluster, the **global** workflow solves all poses simultaneously, and the **known-poses** workflow skips pose estimation entirely and refines the poses it was given.
 
 ```
-Input: Images (or video keyframes)          [+ optional poses file]
+Input: Images (or video keyframes)     [+ optional poses file / GCP CSV]
   │
   ▼
 ┌─────────────────────────────────────────────────────────┐
@@ -143,7 +143,7 @@ Input: Images (or video keyframes)          [+ optional poses file]
                          ▼
          Shared tail: pre-final BA, filtering, final BA,
          weak-image filtering, resection of unposed images,
-         GPS alignment *or* re-alignment to the prior poses
+         GCP alignment, GPS alignment, or re-alignment to prior poses
                          │
                          ▼
               Export to MVS::Scene
@@ -292,7 +292,7 @@ Output: Calibrated poses + sparse point cloud
 
 - **Star Initialization** (`StarInitializer.h`): Instead of the classic two-view initialization (sensitive to baseline selection), OpenMVS uses a star configuration: the most-connected image becomes the reference, and multiple views are registered simultaneously. This averages over multiple baselines for a more stable initial estimate.
 
-- **Bundle Adjustment** (`BundleAdjustment.h`): Uses Ceres Solver. **Local BA** optimizes a window of cameras + their points with fixed intrinsics (fast, used during resection). **Global BA** optimizes everything including intrinsics (slower, used at end). GPS constraints can be added when EXIF GPS data is available.
+- **Bundle Adjustment** (`BundleAdjustment.h`): Uses Ceres Solver. **Local BA** optimizes a window of cameras + their points with fixed intrinsics (fast, used during resection). **Global BA** optimizes everything including intrinsics (slower, used at end). GPS camera-position constraints or GCP reprojection and coordinate-prior constraints can anchor the solution absolutely.
 
 ---
 
@@ -357,6 +357,31 @@ Output: Calibrated poses + sparse point cloud
 - **Global positioning** treats rotations as fixed and solves only for translations and 3D point positions. This makes the problem linear (or nearly so), which is what gives the global approach its speed advantage. The downside is that any errors in the rotation averaging stage are baked in and cannot be corrected.
 
 - **No incremental registration**: Images are not added one at a time. All poses are estimated in one shot. This means there's no opportunity for the system to detect and reject problematic images during reconstruction.
+
+---
+
+### Ground Control Points
+
+`CreateStructure` can align a reconstruction to surveyed ground control points (GCPs) and retain them as constraints during the final and resection bundle adjustments:
+
+```bash
+CreateStructure -s images -o scene.sfm \
+  --import-gcp-csv gcps.csv \
+  --align-gcp-threshold 5 \
+  --gcp-position-weight 1
+```
+
+The CSV must contain these named columns; their order is not significant:
+
+```text
+gcp_label,image_file_name,x,y,x_map,y_map,elev,x_map_acc,y_map_acc,elev_acc
+```
+
+Each row is one image observation. `x,y` are working-image pixel coordinates, `x_map,y_map,elev` are surveyed coordinates in one consistent Cartesian coordinate system, and the three accuracy columns are one-sigma values in the same units. A control point needs observations in at least two distinct images. Image names are matched by filename stem.
+
+After the initial reconstruction, `AlignToGCP` triangulates the observed control points and robustly estimates a similarity transform into the surveyed frame. Only controls accepted as RANSAC inliers participate in subsequent bundle adjustment. Bundle adjustment then optimizes one latent 3D point per accepted GCP with both image reprojection residuals and an accuracy-weighted coordinate prior. The surveyed coordinates remain immutable. GCP priors anchor the bundle-adjustment gauge and therefore provide absolute pose covariance when pose-quality export is enabled.
+
+The GCP frame is distinct from GPS alignment's local ENU frame: it sets `GCP_ALIGN`, does not set `GEO_ALIGN`, and does not use `Scene::transform` as an ECEF origin. When GCP alignment succeeds it takes precedence over imported-pose and GPS alignment. `--align-gcp-threshold 0` disables GCP alignment and constraints; `--gcp-position-weight 0` keeps alignment but disables the bundle-adjustment constraints.
 
 ---
 
@@ -459,7 +484,7 @@ A JSON array of frames, the format Polycam-style AR captures export:
 
 #### Re-aligning to the input frame (`Scene::AlignToPriorPoses`)
 
-Bundle adjustment leaves the gauge free, so the refined reconstruction drifts off the input frame -- and, without GPS priors, its scale is unanchored entirely. `AlignToPriorPoses` estimates a similarity transform from the refined camera centers to their `priorPoses` counterparts (`EstimateSimilarityTransformWithRotations`, which falls back to rotation averaging plus a least-squares scale/translation when the centers are near-collinear -- a straight-line capture leaves the roll unconstrained by centers alone) and applies it with `Scene::Transform`, which also re-maps the track positions and the pose covariances. Images resected along the way have no prior and simply ride along with the transform. Prior-pose alignment takes precedence over GPS: preserving the input frame is the point of this workflow.
+Bundle adjustment leaves the gauge free, so the refined reconstruction drifts off the input frame -- and, without GPS priors, its scale is unanchored entirely. `AlignToPriorPoses` estimates a similarity transform from the refined camera centers to their `priorPoses` counterparts (`EstimateSimilarityTransformWithRotations`, which falls back to rotation averaging plus a least-squares scale/translation when the centers are near-collinear -- a straight-line capture leaves the roll unconstrained by centers alone) and applies it with `Scene::Transform`, which also re-maps the track positions and the pose covariances. Images resected along the way have no prior and simply ride along with the transform. Prior-pose alignment takes precedence over GPS; successful GCP alignment takes precedence over both.
 
 The RANSAC threshold is expressed as a *fraction* of the median distance between neighboring prior camera centers (default 0.5) rather than in absolute units, because the prior frame may be in any units at all. If this final similarity cannot be estimated, the failure is reported as a warning and the finished reconstruction is kept in the refined (arbitrary-gauge) frame rather than discarded.
 

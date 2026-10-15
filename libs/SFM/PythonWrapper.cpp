@@ -97,6 +97,9 @@ public:
 	bool pyAlignToGPS(double threshold=0.0) {
 		return AlignToGPS(threshold);
 	}
+	bool pyAlignToGCP(double threshold=0.0) {
+		return AlignToGCP(threshold);
+	}
 	bool pyAlignToPriorPoses(float thresholdRatio=0.5f) {
 		return AlignToPriorPoses(thresholdRatio);
 	}
@@ -269,6 +272,7 @@ void RegisterBindings()
 		.def_readwrite("k1", &SFM::ImportConfig::k1)
 		.def_readwrite("k2", &SFM::ImportConfig::k2)
 		.DEF_STR_RW("import_poses_file", &SFM::ImportConfig::importPosesFile)
+		.DEF_STR_RW("import_gcps_csv", &SFM::ImportConfig::importGCPsCSV)
 		.def_readwrite("import_poses_mode", &SFM::ImportConfig::importPosesMode)
 		.def_readwrite("frames_convention", &SFM::ImportConfig::framesConvention);
 
@@ -303,6 +307,7 @@ void RegisterBindings()
 		.def_readwrite("use_global_solver", &SFM::ReconstructionConfig::useGlobalSolver)
 		.def_readwrite("ba_intrinsic_flags", &SFM::ReconstructionConfig::baIntrinsicFlags)
 		.def_readwrite("th_align_gps", &SFM::ReconstructionConfig::thAlignGPS)
+		.def_readwrite("th_align_gcp", &SFM::ReconstructionConfig::thAlignGCP)
 		.def_readwrite("extract_colors", &SFM::ReconstructionConfig::extractColors);
 
 	// ExportMVSConfig — undistortion + spherical cube-map options for ExportMVS
@@ -336,6 +341,7 @@ void RegisterBindings()
 		.def("reconstruct_known_poses", &Scene::pyReconstructKnownPoses, (arg("config")))
 		.def("sample_colors", &Scene::pySampleColors)
 		.def("align_to_gps", &Scene::pyAlignToGPS, (arg("threshold")=0.0))
+		.def("align_to_gcp", &Scene::pyAlignToGCP, (arg("threshold")=0.0))
 		.def("align_to_prior_poses", &Scene::pyAlignToPriorPoses, (arg("threshold_ratio")=0.5f))
 		.def("export_to_mvs", &ExportToMVSFile,
 				(arg("file_path"), arg("config")=SFM::ExportMVSConfig()))
