@@ -36,6 +36,9 @@
 #include "TestsMath.h"
 #include "TestsSFM.h"
 #include "TestsMVS.h"
+#include "Tests.h"
+#include <atomic>
+#include <new>
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -46,6 +49,79 @@
 // S T R U C T S ///////////////////////////////////////////////////
 
 DEFINE_LOG_NAME(lt, _T("Test    "));
+
+// The pool of ScopedDescendingHeap and the operator new that hands it out: constant-initialized, so it
+// is in place before any allocation of the program
+namespace {
+constexpr size_t DESCENDING_HEAP_ALIGNMENT = alignof(std::max_align_t);
+char* descendingHeapBegin = nullptr;
+char* descendingHeapEnd = nullptr;
+std::atomic<char*> descendingHeapTop{nullptr};
+std::atomic<bool> descendingHeapActive{false};
+} // namespace
+
+ScopedDescendingHeap::ScopedDescendingHeap()
+{
+	ASSERT(!descendingHeapActive.load());
+	if (descendingHeapBegin == nullptr) {
+		// with no memory for the pool every request goes to the allocator, and the scope changes nothing
+		descendingHeapBegin = static_cast<char*>(std::malloc(POOL_SIZE));
+		if (descendingHeapBegin != nullptr) {
+			descendingHeapEnd = descendingHeapBegin + POOL_SIZE;
+			descendingHeapTop.store(descendingHeapEnd);
+		}
+	}
+	startTop = descendingHeapTop.load();
+	descendingHeapActive.store(true);
+}
+ScopedDescendingHeap::~ScopedDescendingHeap()
+{
+	descendingHeapActive.store(false);
+}
+size_t ScopedDescendingHeap::BytesHandedOut() const
+{
+	return (size_t)(startTop - descendingHeapTop.load());
+}
+
+void* operator new(std::size_t size)
+{
+	if (descendingHeapActive.load(std::memory_order_relaxed) && size <= ScopedDescendingHeap::MAX_BLOCK) {
+		const std::size_t bytes = (MAXF(size, (std::size_t)1) + DESCENDING_HEAP_ALIGNMENT - 1) & ~(DESCENDING_HEAP_ALIGNMENT - 1);
+		char* top = descendingHeapTop.load();
+		while ((std::size_t)(top - descendingHeapBegin) >= bytes) {
+			if (descendingHeapTop.compare_exchange_weak(top, top - bytes))
+				return top - bytes;
+		}
+	}
+	for (;;) {
+		if (void* const ptr = std::malloc(MAXF(size, (std::size_t)1)))
+			return ptr;
+		const std::new_handler handler = std::get_new_handler();
+		if (handler == nullptr)
+			throw std::bad_alloc();
+		handler();
+	}
+}
+// GCC inlines this delete where a new-expression's block is released and reads the free() below as
+// releasing operator new's memory with the wrong function; the operator new above takes it from malloc
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmismatched-new-delete"
+#endif
+void operator delete(void* ptr) noexcept
+{
+	const std::uintptr_t address = reinterpret_cast<std::uintptr_t>(ptr);
+	if (address >= reinterpret_cast<std::uintptr_t>(descendingHeapBegin) && address < reinterpret_cast<std::uintptr_t>(descendingHeapEnd))
+		return; // a pooled block: the pool is never given back
+	std::free(ptr);
+}
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+void operator delete(void* ptr, std::size_t) noexcept
+{
+	operator delete(ptr);
+}
 
 // test various algorithms independently
 bool UnitTests()
@@ -206,6 +282,8 @@ int main(int argc, LPCTSTR* argv)
 			if (!SFM::BundleAdjustmentPairConstraintTest())
 				return false;
 			if (!SFM::BAObservationCapTest())
+				return false;
+			if (!SFM::BAInnerIterationOrderTest())
 				return false;
 			if (!SFM::BADenseWeightPerImageTest())
 				return false;

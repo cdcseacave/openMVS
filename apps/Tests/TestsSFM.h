@@ -277,6 +277,11 @@ bool BundleAdjustmentPairConstraintTest();
 // the solve fits every observation
 bool BAObservationCapTest();
 
+// A bundle adjustment large enough to be refined by inner iterations ends at the same bits when it is
+// solved twice from the same start, the second time with the small blocks it allocates laid out in
+// the reverse order
+bool BAInnerIterationOrderTest();
+
 // An image rich in described observations weighs its dense ones less: a bias shared by every dense
 // keypoint of one such image moves the model at most half as far as under a uniform dense weight
 bool BADenseWeightPerImageTest();

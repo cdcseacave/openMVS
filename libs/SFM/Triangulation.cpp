@@ -246,7 +246,7 @@ unsigned SFM::TriangulateTracks(
 	constexpr unsigned minInliers = 2;
 	unsigned numInliers = 0, numInliersPrev = 0, numInvalids = 0, numInliersObservations = 0;
 	#ifdef _USE_OPENMP
-	#pragma omp parallel for reduction(+:numInliers,numInliersPrev,numInliersObservations) schedule(dynamic)
+	#pragma omp parallel for reduction(+:numInliers,numInliersPrev,numInvalids,numInliersObservations) schedule(dynamic)
 	#endif
 	for (int_t i = 0; i < (int_t)scene.tracks.size(); ++i) {
 		Track& track = scene.tracks[i];

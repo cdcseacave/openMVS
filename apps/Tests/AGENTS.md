@@ -42,6 +42,13 @@ if (!tmpDir.IsValid())
 const String path = tmpDir(_T("scene.mvs"));
 ```
 
+Tests showing that a result does not depend on where the allocator places memory use
+`ScopedDescendingHeap` (`Tests.h`): while one is alive, every `new` of up to 256 bytes comes from a
+pool handed out from its top down, so each block lies below the previous one. `Tests.cpp` replaces
+the global `operator new`/`operator delete` for this; outside such a scope they forward to
+`malloc`/`free`. It reaches the libraries' allocations where they bind to the executable's operator
+new (shared objects on Linux), and has no effect where they do not.
+
 ## SFM Tests (`TestsSFM.h` / `TestsSFM.cpp`)
 
 All in `namespace SFM`. Called sequentially when `argv[1] == 1`.

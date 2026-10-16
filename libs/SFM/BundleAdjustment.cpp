@@ -823,6 +823,101 @@ inline String FormatObservationCapReport(const ObservationCapStats& stats) {
 		dropped.c_str(), stats.numKept, stats.numObservations);
 }
 
+// The order the inner iterations refine the free parameter blocks of problem in: the order Ceres
+// builds when it is given none -- rounds of mutually independent blocks peeled off the graph of the
+// blocks that share a residual, each round taken greedily from the blocks still left, fewest
+// neighbours first, and the rounds visited from the last found to the first -- with one difference.
+// Ceres breaks the ties between blocks of as many neighbours by the address of its own record of each
+// block, so where the allocator happened to place those records decided which blocks were refined
+// together, and the same problem solved twice in one process, or once under another environment,
+// could end apart; here a tie goes to the block a residual of the problem named first.
+std::shared_ptr<ceres::ParameterBlockOrdering> ComputeInnerIterationOrdering(const ceres::Problem& problem)
+{
+	// the free blocks, numbered as the residuals first name them (the problem lists its residuals
+	// in the order they were added, but its parameter blocks in the order of their addresses)
+	std::vector<ceres::ResidualBlockId> residualBlocks;
+	problem.GetResidualBlocks(&residualBlocks);
+	std::vector<double*> blocks;
+	std::unordered_map<const double*, uint32_t> blockIndices;
+	blockIndices.reserve(problem.NumParameterBlocks());
+	std::vector<std::vector<uint32_t>> neighbors;
+	std::vector<double*> residualParams;
+	std::vector<uint32_t> residualBlockIndices;
+	for (const ceres::ResidualBlockId residualBlock : residualBlocks) {
+		problem.GetParameterBlocksForResidualBlock(residualBlock, &residualParams);
+		residualBlockIndices.clear();
+		for (double* block : residualParams) {
+			if (problem.IsParameterBlockConstant(block))
+				continue;
+			const auto [it, inserted] = blockIndices.emplace(block, (uint32_t)blocks.size());
+			if (inserted) {
+				blocks.push_back(block);
+				neighbors.emplace_back();
+			}
+			residualBlockIndices.push_back(it->second);
+		}
+		for (size_t i = 0; i < residualBlockIndices.size(); ++i) {
+			for (size_t j = i + 1; j < residualBlockIndices.size(); ++j) {
+				neighbors[residualBlockIndices[i]].push_back(residualBlockIndices[j]);
+				neighbors[residualBlockIndices[j]].push_back(residualBlockIndices[i]);
+			}
+		}
+	}
+	const uint32_t numBlocks = (uint32_t)blocks.size();
+	std::vector<uint32_t> degrees(numBlocks);
+	for (uint32_t b = 0; b < numBlocks; ++b) {
+		std::vector<uint32_t>& adjacent = neighbors[b];
+		std::sort(adjacent.begin(), adjacent.end());
+		adjacent.erase(std::unique(adjacent.begin(), adjacent.end()), adjacent.end());
+		degrees[b] = (uint32_t)adjacent.size();
+	}
+
+	// peel independent sets off the graph until every block is in one
+	enum : uint8_t { FREE = 0, NEIGHBOR, TAKEN, REMOVED };
+	std::vector<uint8_t> states(numBlocks, FREE);
+	std::vector<uint32_t> remaining(numBlocks);
+	for (uint32_t b = 0; b < numBlocks; ++b)
+		remaining[b] = b;
+	std::vector<std::vector<uint32_t>> rounds;
+	while (!remaining.empty()) {
+		std::sort(remaining.begin(), remaining.end(), [&degrees](uint32_t a, uint32_t b) {
+			return degrees[a] < degrees[b] || (degrees[a] == degrees[b] && a < b);
+		});
+		std::vector<uint32_t> independentSet;
+		for (const uint32_t b : remaining) {
+			if (states[b] != FREE)
+				continue;
+			independentSet.push_back(b);
+			states[b] = TAKEN;
+			for (const uint32_t n : neighbors[b])
+				if (states[n] == FREE)
+					states[n] = NEIGHBOR;
+		}
+		for (const uint32_t b : independentSet) {
+			states[b] = REMOVED;
+			for (const uint32_t n : neighbors[b])
+				if (states[n] != REMOVED)
+					--degrees[n];
+		}
+		size_t numLeft = 0;
+		for (const uint32_t b : remaining) {
+			if (states[b] == REMOVED)
+				continue;
+			states[b] = FREE;
+			remaining[numLeft++] = b;
+		}
+		remaining.resize(numLeft);
+		rounds.emplace_back(std::move(independentSet));
+	}
+
+	auto ordering = std::make_shared<ceres::ParameterBlockOrdering>();
+	const int numRounds = (int)rounds.size();
+	for (int r = 0; r < numRounds; ++r)
+		for (const uint32_t b : rounds[r])
+			ordering->AddElementToGroup(blocks[b], numRounds - 1 - r);
+	return ordering;
+}
+
 // Solve, retrying once with the iterative solver if a sparse solve failed: the sparse
 // factorization of the reduced camera system gives up outright on an ill-conditioned problem,
 // while the iterative solver never factorizes it, so the failure costs a retry rather than the
@@ -1435,6 +1530,8 @@ bool BundleAdjustment::Adjust()
 		// slowly, which is what SolveBundle's retry is for.
 		options.linear_solver_type = ceres::SPARSE_SCHUR;
 		options.use_inner_iterations = true; // Improves convergence
+		// in an order the problem alone decides: the one Ceres picks itself hangs on the heap
+		options.inner_iteration_ordering = ComputeInnerIterationOrdering(problem);
 	}
 	#ifndef _RELEASE
 	options.minimizer_progress_to_stdout = true;

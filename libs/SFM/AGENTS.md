@@ -194,6 +194,11 @@ Ceres Solver-based non-linear optimization.
 - Parameterization: angle-axis or quaternion for rotation
 - Robust loss: Huber with configurable threshold
 - Variants: Global BA, Local BA (windowed)
+- Solver: DENSE_SCHUR under 500000 reprojection residuals, SPARSE_SCHUR with inner iterations past it;
+  the inner iterations get their block order from `ComputeInnerIterationOrdering` (Ceres's own
+  rounds of independent sets, ties broken by the order the residuals name the blocks), since Ceres
+  left to itself breaks those ties by the heap addresses of its block records and the same scene
+  then solves differently from one run to the next
 - Optional GPS position constraints (`GPSPositionError`: camera center vs GPS in ENU, weighted by
   per-image accuracy metadata with 10 m / 20 m fallbacks; gated on the GEO_ALIGN scene state; when
   present the gauge is anchored, so no reference pose is held fixed)

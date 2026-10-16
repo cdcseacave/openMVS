@@ -11741,6 +11741,111 @@ bool BAObservationCapTest()
 	return true;
 }
 
+// The same bundle adjustment solved twice, the second time with the small blocks it allocates laid out
+// in the reverse order, ends at the same bits. Past half a million reprojection residuals a solve also
+// refines its blocks by inner iterations, one round of mutually independent blocks after another, and
+// which blocks share a round is a choice among blocks with as many neighbours as one another: made by
+// where the solver's records of the blocks lie in memory, a reconstruction would follow from what the
+// heap held before it as much as from its input. Ten cameras along the arc, each joined by a verified
+// pair to its two nearest neighbours on either side -- a pose graph whose cameras tie in their number
+// of links: the two ends, the two next to them and the six between -- and 168000 three-view tracks,
+// moved off the truth with the poses so the solve has work to do.
+bool BAInnerIterationOrderTest()
+{
+	TD_TIMER_START();
+	constexpr unsigned NUM_IMAGES = 10;
+	constexpr unsigned NUM_TRACKS_PER_TRIPLE = 21000; // 8 triples of consecutive cameras: 504000 residuals
+	constexpr unsigned MIN_RESIDUALS = 500000;        // where BundleAdjustment::Adjust turns to inner iterations
+	constexpr unsigned PAIR_INLIERS = 300;
+	constexpr REAL ROTATION_NOISE_DEG = 0.2;          // each pose turned this far about each axis, at most
+	constexpr REAL CENTER_NOISE = 0.02;               // each centre and each point moved this far per axis, at most
+
+	const auto buildScene = [&](Scene& scene) {
+		std::mt19937 rng(20261015);
+		BuildResectionArc(scene, NUM_IMAGES);
+		for (IIndex i = 0; i + 2 < NUM_IMAGES; ++i)
+			AddResectionTracks(scene, {i, i + 1, i + 2}, NUM_TRACKS_PER_TRIPLE, rng);
+		for (IIndex i = 0; i < NUM_IMAGES; ++i) {
+			if (i + 1 < NUM_IMAGES)
+				AddResectionPair(scene, i, i + 1, PAIR_INLIERS);
+			if (i + 2 < NUM_IMAGES)
+				AddResectionPair(scene, i, i + 2, PAIR_INLIERS);
+		}
+		TriangulateTracks(scene, false, 4.f, 1.f);
+		std::uniform_real_distribution<REAL> unit(-1, 1);
+		for (Image& img : scene.images) {
+			const RMatrix turn(Point3(unit(rng), unit(rng), unit(rng)) * D2R(ROTATION_NOISE_DEG));
+			img.R = turn * img.R;
+			img.C += Point3(unit(rng), unit(rng), unit(rng)) * CENTER_NOISE;
+		}
+		for (Track& track : scene.tracks)
+			track.position += Point3(unit(rng), unit(rng), unit(rng)) * CENTER_NOISE;
+	};
+	BAConfig config;
+	config.numThreads = 1; // the solver's own threads sum in the order they finish
+
+	Scene first;
+	buildScene(first);
+	{
+		BundleAdjustment ba(first, config);
+		if (!ba.Adjust()) {
+			VERBOSE("BAInnerIterationOrderTest FAILED: the first bundle adjustment did not solve the scene");
+			return false;
+		}
+		unsigned numResiduals = 0;
+		for (const unsigned numImageResiduals : ba.GetNumReprojResidualsPerImage())
+			numResiduals += numImageResiduals;
+		if (numResiduals < MIN_RESIDUALS) {
+			VERBOSE("BAInnerIterationOrderTest FAILED: the scene gave %u reprojection residuals, under the %u past "
+				"which the solve refines by inner iterations", numResiduals, MIN_RESIDUALS);
+			return false;
+		}
+	}
+
+	// the second solve with every small block it allocates placed below the one before, so the
+	// solver's records of the blocks lie in the reverse of the order they had in the first
+	Scene second;
+	buildScene(second);
+	size_t pooledBytes;
+	{
+		const ScopedDescendingHeap descendingHeap;
+		if (!BundleAdjustment::Adjust(second, config)) {
+			VERBOSE("BAInnerIterationOrderTest FAILED: the second bundle adjustment did not solve the scene");
+			return false;
+		}
+		pooledBytes = descendingHeap.BytesHandedOut();
+	}
+
+	unsigned numPosesApart = 0, numPointsApart = 0;
+	double maxCenterApart = 0, maxPointApart = 0;
+	FOREACH(i, first.images) {
+		const Image& a = first.images[i];
+		const Image& b = second.images[i];
+		if (memcmp(a.R.val, b.R.val, sizeof(a.R.val)) != 0 || memcmp(&a.C, &b.C, sizeof(a.C)) != 0) {
+			++numPosesApart;
+			maxCenterApart = MAXF(maxCenterApart, (double)norm(a.C - b.C));
+		}
+	}
+	FOREACH(i, first.tracks) {
+		const Point3& a = first.tracks[i].position;
+		const Point3& b = second.tracks[i].position;
+		if (memcmp(&a, &b, sizeof(a)) != 0) {
+			++numPointsApart;
+			maxPointApart = MAXF(maxPointApart, (double)norm(a - b));
+		}
+	}
+	if (numPosesApart > 0 || numPointsApart > 0) {
+		VERBOSE("BAInnerIterationOrderTest FAILED: solved twice from the same start, the scene ended with %u of %u "
+			"poses (centres up to %g apart) and %u of %u points (up to %g apart) not the same",
+			numPosesApart, first.images.size(), maxCenterApart, numPointsApart, first.tracks.size(), maxPointApart);
+		return false;
+	}
+	VERBOSE("BAInnerIterationOrderTest PASSED: a bundle adjustment refined by inner iterations ends at the same bits "
+		"with the first %s of the small blocks it allocates placed in the reverse order (%s)",
+		Util::formatBytes(pooledBytes).c_str(), TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 // An image whose described observations fix its pose on their own hears its dense ones less: each
 // dense residual of an image weighs BAConfig::denseHalfWeightObservations / (that + the image's
 // described observations) of the dense weight, so warp samples that share a bias pull an image rich
