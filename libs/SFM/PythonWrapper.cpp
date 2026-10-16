@@ -286,7 +286,6 @@ void RegisterBindings()
 
 	// SFM::ImportConfig — image import + camera priors
 	class_<SFM::ImportConfig>("ImportConfig")
-		.def_readwrite("use_exif", &SFM::ImportConfig::useExif)
 		.def_readwrite("default_focal_ratio", &SFM::ImportConfig::defaultFocalRatio)
 		.def_readwrite("focal_length", &SFM::ImportConfig::focalLength)
 		.def_readwrite("k1", &SFM::ImportConfig::k1)

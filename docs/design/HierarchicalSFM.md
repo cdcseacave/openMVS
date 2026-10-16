@@ -71,7 +71,7 @@ BuildTracks → StarInitializer → Resection → BundleAdjustment → FilterTra
 
 **BuildTracks**: union-find over feature matches within intra-cluster pairs; produces 3D track candidates from multi-view observations. A component holding one image twice is settled on its own links (`TrackConflictConfig`): the least-supported link on the path between the two keypoints is cut, keeping the side the triangles corroborate, and two keypoints within the merge distance count as one feature; the union veto in pair order remains as the fallback for components above the size bar, or when the cut is off.
 
-**StarInitializer**: selects the reference view (highest connectivity) and builds a star configuration (`minViews=4`, `maxViews=36`, `minTracksPerView=50`).
+**StarInitializer**: selects the reference view (highest connectivity) and builds a star configuration (`minViews=4`, `maxViews=36`).
 
 **Resection**: incrementally registers remaining images via PnP + RANSAC, with periodic local BA.
 

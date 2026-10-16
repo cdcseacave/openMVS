@@ -212,7 +212,7 @@ Ceres Solver-based non-linear optimization.
 
 ### Star Initializer (`StarInitializer.h`)
 Reference view selection (highest connectivity) + star configuration initialization.
-Config: `minViews` (4), `maxViews` (36), `minTracksPerView` (50).
+Config: `minViews` (4), `maxViews` (36).
 
 ### Incremental Resection (`Resection.h`)
 Register images one at a time via 2D-3D PnP + RANSAC. Periodic local/global BA.

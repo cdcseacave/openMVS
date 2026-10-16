@@ -439,10 +439,9 @@ int main(int argc, LPCTSTR* argv)
 	// derived BA configuration copies cfg.baConfig, so both reach all of them
 	cfg.baConfig.maxObservationsPerImage = OPT::baMaxObservations;
 	cfg.baConfig.minObservationsForCap = OPT::baCapMinObservations;
-	// the rotation sigma names the pair constraints; the baseline direction, the weaker of the two
-	// measurements a pair makes, follows at twice it
+	// the rotation sigma names the pair constraints; the baseline direction follows at
+	// ReconstructionConfig::relativeTranslationSigmaFactor times it
 	cfg.relativeRotationSigma = MAXF(OPT::baPairSigma, 0.f);
-	cfg.relativeTranslationSigma = 2.f * cfg.relativeRotationSigma;
 	cfg.baIntrinsicFlags = OPT::refineIntrinsics == 0 ? ReconstructionConfig::INTRINSIC_NONE :
 		OPT::refineIntrinsics == 1 ? ReconstructionConfig::INTRINSIC_MAIN :
 		ReconstructionConfig::INTRINSIC_MAIN_EXTRA;

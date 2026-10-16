@@ -53,9 +53,9 @@ the wider bar admits and the track filter removes them, so the filter's own bar 
 the bar to try once the dense matching gets more precise. A pose is accepted only when credible:
 `minInliers` (12) inliers at least, and `minInlierRatio` (0.25) of the correspondences, unless the inlier
 count alone reaches `minInliersAbsolute` (100) -- a small consensus inside a large set can agree on a
-pose the image never had. Every pose (`wellSupportedInlierRatio` 1; lowering it exempts a well-supported
-pose) is cross-checked against the rotation its verified pairs to registered images predict -- not the
-single strongest pair, misleading if that neighbour is misplaced, but the quorum: the largest group,
+pose the image never had. Every pose, however well supported, is cross-checked against the rotation its
+verified pairs to registered images predict -- not the single strongest pair, misleading if that
+neighbour is misplaced, but the quorum: the largest group,
 among the strongest few links, agreeing within `maxRelativeRotationError` (15 degrees) of one another
 (`PoseLink.h`). A pose further than that from the quorum's rotation is rejected; contradictory links (no
 two agree) are left to the other rules. On alameda a pose registered with a 54% inlier share (87 of 162
@@ -105,9 +105,10 @@ the main-set intrinsics (focal, k1, k2, as far as `--refine-intrinsics` allows t
 beyond the main set.
 
 Between the adjustments, the tracks are triangulated and filtered against `maxReprojError` (4 px) and
-`minAngleThreshold`. A dense (warp-sampled) observation is held to `denseReprojErrorFactor` times that
-bar: the warp is computed at a fixed resolution, so a dense keypoint's pixel error grows with the image
-size where a detected keypoint's does not (1 holds both kinds to the same bar).
+`minAngleThreshold`. Both kinds of observation answer to that bar. `FilterTracks` and `TriangulateTracks`
+can hold a dense (warp-sampled) observation to a multiple of it (`denseReprojErrorFactor`, 1 by default and
+in every call the reconstruction makes): the warp is computed at a fixed resolution, so a dense keypoint's
+pixel error grows with the image size where a detected keypoint's does not.
 
 ## Bundle adjustment
 
@@ -186,7 +187,7 @@ deciding, so a chain cannot lift itself in.
 | `--ba-pair-sigma F` | `1` | relative-pose residual rotation sigma, in degrees (the baseline direction at twice that; 0 disables the residuals) |
 
 The resection's acceptance parameters (`minInlierRatio`, `minInliersAbsolute`,
-`maxRelativeRotationError`, `wellSupportedInlierRatio`, `maxLinkDirectionError`,
+`maxRelativeRotationError`, `maxLinkDirectionError`,
 `minRegisteredEvidence`, `relativePoseFallback`) and the image filter's corroboration bar
 (`maxCorroborationAngle`, its inlier floor) have no flags; their defaults live in `ResectionConfig` and
 the `FilterWeaklyConnectedImages` call in `Scene.cpp`.

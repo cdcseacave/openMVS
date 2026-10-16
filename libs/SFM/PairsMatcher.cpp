@@ -381,21 +381,6 @@ bool PairsMatcher::GeometricFilter(
 		return false;
 	}
 	ASSERT(img1.HasCamera() && img2.HasCamera());
-	// minFeatureDistance drops matches while building the estimator's point list (FetchPoints, and
-	// the bearings loop of the calibrated branch), so the inlier mask RANSAC hands back is shorter
-	// than pair.matches and PartitionMatchesByMask's mask.size() == matches.size() precondition
-	// (ImagePair.cpp:164) no longer holds: in a Release build that mispartitions inliers silently.
-	// Nothing in this build sets the option (it is 0 everywhere, and no CLI reaches it), so this
-	// refuses an unsupported input by name instead of leaving the trap armed -- a dense sample of
-	// thousands of correspondences, many of them genuinely close together, would spring it far more
-	// readily than the descriptor path ever did.
-	if (config.minFeatureDistance > 0.f) {
-		VERBOSE("error: minFeatureDistance (%g px) is not supported by the geometric verification: "
-			"skipping matches there desynchronises the RANSAC inlier mask from the match list", config.minFeatureDistance);
-		pair.InvalidateMatches();
-		return false;
-	}
-
 	// Configure RANSAC options.
 	// PoseLib master: RelativePoseOptions wraps RansacOptions + BundleOptions and
 	// holds the inlier threshold (max_error) directly. The estimate_* free functions
@@ -408,15 +393,12 @@ bool PairsMatcher::GeometricFilter(
 
 	// Lambda to fetch matched points from the pair
 	const auto FetchPoints = [&]() {
-		const float minFeatureDistanceSq = SQUARE(config.minFeatureDistance);
 		std::vector<poselib::Point2D> pts1, pts2;
 		pts1.reserve(pair.matches.size());
 		pts2.reserve(pair.matches.size());
 		for (const auto& m : pair.matches) {
 			const cv::Point2f& pt1 = img1.keypoints[m.queryIdx].pt;
 			const cv::Point2f& pt2 = img2.keypoints[m.trainIdx].pt;
-			if (minFeatureDistanceSq > 0 && normSq(pt1 - pt2) < minFeatureDistanceSq)
-				continue; // skip matches that are too close
 			pts1.emplace_back(pt1.x, pt1.y);
 			pts2.emplace_back(pt2.x, pt2.y);
 		}
@@ -511,15 +493,12 @@ bool PairsMatcher::GeometricFilter(
 		opt.max_error = 0.5 * (angle1 + angle2);
 
 		// Extract matched keypoints and convert directly to 3D unit bearing vectors
-		const float minFeatureDistanceSq = SQUARE(config.minFeatureDistance);
 		std::vector<poselib::Point3D> bearings1, bearings2;
 		bearings1.reserve(pair.matches.size());
 		bearings2.reserve(pair.matches.size());
 		for (const auto& m : pair.matches) {
 			const cv::Point2f& pt1 = img1.keypoints[m.queryIdx].pt;
 			const cv::Point2f& pt2 = img2.keypoints[m.trainIdx].pt;
-			if (minFeatureDistanceSq > 0 && normSq(pt1 - pt2) < minFeatureDistanceSq)
-				continue; // skip matches that are too close
 			bearings1.emplace_back(cam1.UnprojectNormalized(Cast<REAL>(pt1)));
 			bearings2.emplace_back(cam2.UnprojectNormalized(Cast<REAL>(pt2)));
 		}

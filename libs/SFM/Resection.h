@@ -51,14 +51,9 @@ struct SFM_API ResectionConfig
 	                                    // quorum of the verified pairs to already registered images composes -- the
 	                                    // largest group of those pairs agreeing on a rotation within this same angle,
 	                                    // so that one pair among several cannot speak for the image;
-	                                    // checked for every pose unless wellSupportedInlierRatio is lowered, which
-	                                    // exempts a pose whose inlier share is above it, trusting it over its pairs.
+	                                    // checked for every pose, however large its inlier share.
 	                                    // Also the angle within which the relative-pose fallback groups an image's
 	                                    // links (0 = disabled)
-	float wellSupportedInlierRatio{1.f}; // Inlier share above which a pose is trusted over its verified pairs; 1 = no pose
-	                                    // is. On alameda a 54% share (87/162) put a pose 1.9 degrees off, taking the 15
-	                                    // images it seeded with it; every right registration passes the three checks
-	                                    // (quorum within 7.7 of the 15-degree bar; one direction refusal of 1538).
 	float maxLinkDirectionError{3.f};   // Maximum angle (degrees) between the baseline direction a verified pair to a
 	                                    // registered image predicts and the one the estimated centre makes with that
 	                                    // neighbour, as seen from the structure the pair triangulates: a pair of
@@ -113,13 +108,12 @@ struct SFM_API ResectionConfig
 	                                    // [-0.006, +0.010], better on two, worse on none) before the dense weight ceiling
 	                                    // of the bundle adjustment shipped, and was not measured with it
 	float maxReprojError{4.f};          // Reprojection error for triangulation and filtering
-	float denseReprojErrorFactor{1.f};  // Multiple of maxReprojError a dense (warp-sampled) observation is held to by
-	                                    // the triangulation and the filtering: the dense measurement is the less
-	                                    // precise one (its error grows with the image size, the warp being computed
-	                                    // at a fixed resolution), so it answers to a looser bar (1 = the same bar)
 	float minAngleThreshold{1.f};       // Minimum triangulation angle (degrees)
-	float multDepthNear{0.05f};         // Near depth threshold multiplier
-	float multDepthFar{20.f};           // Far depth threshold multiplier
+	// constant: near and far depth threshold multipliers of the track filter: a track nearer than
+	// multDepthNear times the median distance of the tracks to their cameras, or farther than
+	// multDepthFar times it, is removed (ReconstructionConfig has the same two values)
+	static constexpr float multDepthNear = 0.05f;
+	static constexpr float multDepthFar = 20.f;
 	RansacOptions ransac;               // RANSAC options for absolute pose estimation
 	BAConfig localBAConfig;             // Local BA settings (incremental); never refines intrinsics
 	BAConfig fullBAConfig;              // Full BA settings (global), restricted to the main-set intrinsics

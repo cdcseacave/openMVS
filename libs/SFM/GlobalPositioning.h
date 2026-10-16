@@ -53,16 +53,6 @@ struct SFM_API GlobalPositionerOptions
 	int maxNumIterations = 200;
 	double functionTolerance = 1e-5;
 
-	// Whether initialize the reconstruction randomly
-	bool generateRandomPositions = true;
-	bool generateRandomPoints = true;
-	bool generateScales = true; // Now using fixed 1 as initializaiton
-
-	// Flags for which parameters to optimize
-	bool optimizePositions = true;
-	bool optimizePoints = true;
-	bool optimizeScales = true;
-
 	// GPU/CUDA options
 	bool useGpu = true;
 	unsigned minNumImagesGpuSolver = 50;

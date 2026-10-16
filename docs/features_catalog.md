@@ -225,7 +225,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
   - Sets absolute poses from relative pose chain
   - `EstimateGlobalScale()`: multi-baseline ratio estimation
   - Triangulates initial tracks
-- **Configuration:** `StarInitConfig` — `minViews` (4), `maxViews` (36), `minTracksPerView` (50), `maxReprojError`
+- **Configuration:** `StarInitConfig` — `minViews` (4), `maxViews` (36), `maxReprojError`
 - **GPU Support:** No
 - **Threading:** Single
 - **Dependencies:** Common, PoseLib
@@ -372,7 +372,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
   - `ONLY_POINTS` constraint type: reprojection residuals
   - Optional per-image scale variables
   - GPU solver (GLOMAP-style) when `images >= 50` and CUDA available
-- **Configuration:** `GlobalPositionerOptions` — `constraintType`, `generateRandomPositions`, `maxNumIterations` (200), `minNumViewPerTrack` (3), `useGpu`
+- **Configuration:** `GlobalPositionerOptions` — `constraintType`, `maxNumIterations` (200), `minNumViewPerTrack` (3), `useGpu`
 - **GPU Support:** Yes (CUDA solver for large scenes)
 - **Threading:** Ceres internal parallelism; GPU path when available
 - **Dependencies:** Ceres Solver, CUDA (optional)

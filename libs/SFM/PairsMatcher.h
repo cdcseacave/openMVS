@@ -71,7 +71,6 @@ struct SFM_API MatchConfig
 	bool verificationFeedback = true;   // Two-round matching: hold back part of the pair budget and re-invest it in pairs suggested by the geometrically verified matches (VOCABULARY/KNOWN_POSES/RETRIEVAL mode)
 	unsigned matchSequenceOverlap = 3;  // Consecutive images each image is matched with: the whole candidate set of SEQUENTIAL mode, and a prior added to the VOCABULARY/RETRIEVAL candidates (0 = no prior)
 	unsigned preMatchThreshold = 0;     // Minimum number of matches in pre-matching step to keep the pair (0 = disabled)
-	float minFeatureDistance = 0.f;     // Minimum distance between matched features in pixels (0 = disabled)
 	float matchDistance = 100.f;        // Absolute distance test threshold (100 - AKAZE 486bit, 64 - ORB 256bit, FLT_MAX - SIFT)
 	// Lowe's ratio test threshold (0.9 - AKAZE/ORB, 0.8 - SIFT). The two matching paths range it over
 	// different quantities, so the same constant is not the same strictness: PairsMatcher::MatchFeatures

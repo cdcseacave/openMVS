@@ -58,11 +58,11 @@ void SFM::SetBAIntrinsicFlags(BAConfig& baCfg, unsigned baIntrinsicFlags)
 	baCfg.refineRadialDistortion3 = (baIntrinsicFlags & ReconstructionConfig::INTRINSIC_RADIAL_DIST_3) != 0;
 }
 
-// Copy the reconstruction's relative-pose sigmas onto a bundle-adjustment configuration
-void SFM::SetBAPairConstraints(BAConfig& baCfg, float relativeRotationSigma, float relativeTranslationSigma)
+// Copy the reconstruction's relative-pose sigma onto a bundle-adjustment configuration
+void SFM::SetBAPairConstraints(BAConfig& baCfg, float relativeRotationSigma)
 {
 	baCfg.relativeRotationSigma = relativeRotationSigma;
-	baCfg.relativeTranslationSigma = relativeTranslationSigma;
+	baCfg.relativeTranslationSigma = ReconstructionConfig::relativeTranslationSigmaFactor * relativeRotationSigma;
 }
 
 
@@ -746,9 +746,9 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	// any other focal once the model is large enough to hold it.
 	ReconstructionConfig cfg = config;
 	// Every bundle adjustment below derives its configuration from cfg.baConfig, so mapping the
-	// relative-pose sigmas onto it here is what carries them to all of them: the star initializer's
+	// relative-pose sigma onto it here is what carries it to all of them: the star initializer's
 	// solves, the resection's local and full ones, and the global passes alike.
-	SetBAPairConstraints(cfg.baConfig, cfg.relativeRotationSigma, cfg.relativeTranslationSigma);
+	SetBAPairConstraints(cfg.baConfig, cfg.relativeRotationSigma);
 	if (cfg.importCfg.focalLength > 0) {
 		cfg.initCfg.refineFocalLength = false;
 		VERBOSE("Focal length forced at %g px: kept by the star initializer, refined by bundle adjustment", cfg.importCfg.focalLength);
@@ -817,14 +817,14 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 
 
 	// Final global bundle adjustment
-	FilterTracks(*this, cfg.maxReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar, cfg.resectionCfg.denseReprojErrorFactor);
-	TriangulateTracks(*this, true, cfg.maxReprojError, cfg.minAngleThreshold, cfg.resectionCfg.denseReprojErrorFactor);
-	FilterTracks(*this, cfg.maxReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar, cfg.resectionCfg.denseReprojErrorFactor);
+	FilterTracks(*this, cfg.maxReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
+	TriangulateTracks(*this, true, cfg.maxReprojError, cfg.minAngleThreshold);
+	FilterTracks(*this, cfg.maxReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
 	status.nState.set(Status::STATE::CALIBRATED);
 	BAConfig finalBaCfg = cfg.baConfig;
 	SetBAIntrinsicFlags(finalBaCfg, cfg.baIntrinsicFlags);
 	BundleAdjustment::Adjust(*this, finalBaCfg);
-	FilterTracks(*this, cfg.maxFineReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar, cfg.resectionCfg.denseReprojErrorFactor);
+	FilterTracks(*this, cfg.maxFineReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
 
 	// Filter weakly connected images and resection remaining images into the reconstruction;
 	// what the filter removed for contradicting the model is withheld from that resection, so it
@@ -872,13 +872,13 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 				// with absolute ENU covariances (and covers the images resected since)
 				poseUncertainty = ba.ComputePoseUncertainty();
 			}
-			FilterTracks(*this, cfg.maxFineReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar, cfg.resectionCfg.denseReprojErrorFactor);
+			FilterTracks(*this, cfg.maxFineReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
 		}
 	} else if (cfg.estimatePoseUncertainty) {
 		BundleAdjustment ba(*this, uncBaCfg);
 		if (ba.Adjust()) {
 			poseUncertainty = ba.ComputePoseUncertainty();
-			FilterTracks(*this, cfg.maxFineReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar, cfg.resectionCfg.denseReprojErrorFactor);
+			FilterTracks(*this, cfg.maxFineReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
 		}
 	}
 
@@ -940,7 +940,7 @@ bool Scene::ReconstructHierarchical(const ReconstructionConfig& config, const II
 		resection.RegisterImages();
 		// The resection already closes with a full adjustment of this sub-scene; only the
 		// tracks it leaves behind need settling before the sub-scenes are merged
-		FilterTracks(subScene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar, config.resectionCfg.denseReprojErrorFactor);
+		FilterTracks(subScene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
 	});
 	threadPool.wait();
 
@@ -1009,14 +1009,14 @@ bool Scene::ReconstructGlobal(const ReconstructionConfig& config)
 	baCfg.refinePosesRotation = false;
 	baCfg.maxIterations = 12;
 	BundleAdjustment::Adjust(*this, baCfg);
-	FilterTracks(*this, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar, config.resectionCfg.denseReprojErrorFactor);
+	FilterTracks(*this, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
 
 	// Bundle Adjustment with full pose and structure refinement
 	baCfg.refinePosesRotation = true;
 	baCfg.maxIterations = 25;
 	BundleAdjustment::Adjust(*this, baCfg);
-	FilterTracks(*this, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar, config.resectionCfg.denseReprojErrorFactor);
-	TriangulateTracks(*this, true, config.maxReprojError, config.minAngleThreshold, config.resectionCfg.denseReprojErrorFactor);
+	FilterTracks(*this, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+	TriangulateTracks(*this, true, config.maxReprojError, config.minAngleThreshold);
 
 	DEBUG("Global reconstruction complete: %u/%u images, %u/%u points (%s)",
 		status.nCalibratedImages, images.size(), status.nTracks, tracks.size(), TD_TIMER_GET_FMT().c_str());
@@ -1091,9 +1091,9 @@ bool Scene::ReconstructKnownPoses(const ReconstructionConfig& config)
 		return false;
 	}
 	const float initReprojError = config.maxReprojError*4.f;
-	TriangulateTracks(*this, false, initReprojError, config.minAngleThreshold, config.resectionCfg.denseReprojErrorFactor);
+	TriangulateTracks(*this, false, initReprojError, config.minAngleThreshold);
 	const std::pair<float, float> initError = FilterTracks(*this, initReprojError,
-		config.minAngleThreshold, config.multDepthNear, config.multDepthFar, config.resectionCfg.denseReprojErrorFactor);
+		config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
 	if (status.nTracks == 0) {
 		VERBOSE("error: no track survived triangulation with the imported poses "
 			"(wrong camera-axes convention or wrong image-to-pose association?)");
@@ -1134,15 +1134,15 @@ bool Scene::ReconstructKnownPoses(const ReconstructionConfig& config)
 		VERBOSE("error: known-poses bundle adjustment failed");
 		return false;
 	}
-	TriangulateTracks(*this, true, config.maxReprojError, config.minAngleThreshold, config.resectionCfg.denseReprojErrorFactor);
-	FilterTracks(*this, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar, config.resectionCfg.denseReprojErrorFactor);
+	TriangulateTracks(*this, true, config.maxReprojError, config.minAngleThreshold);
+	FilterTracks(*this, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
 	baCfg.maxIterations = config.baConfig.maxIterations;
 	if (!BundleAdjustment::Adjust(*this, baCfg)) {
 		VERBOSE("error: known-poses bundle adjustment failed");
 		return false;
 	}
 	const std::pair<float, float> finalError = FilterTracks(*this, config.maxReprojError,
-		config.minAngleThreshold, config.multDepthNear, config.multDepthFar, config.resectionCfg.denseReprojErrorFactor);
+		config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
 
 	RecomputeCalibratedImages();
 	DEBUG("Known-poses reconstruction complete: %u/%u images (%u posed by import), %u/%u points, "

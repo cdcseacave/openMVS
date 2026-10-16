@@ -285,9 +285,8 @@ unsigned GlobalPositioner::AddPointToCameraConstraints(Scene& scene, size_t numP
 	for (Track& track : scene.tracks) {
 		if (track.observations.size() < options.minNumViewPerTrack)
 			continue;
-		// Only set the points to be random if they are needed to be optimized
-		if (options.optimizePoints && options.generateRandomPoints)
-			track.position = RandPoint3(randomGenerator, -100, 100);
+		// Start every point at a random position
+		track.position = RandPoint3(randomGenerator, -100, 100);
 		// For each observation in the track add the point to camera correspondences.
 		bool hasValidObservation = false;
 		for (const Observation& obs : track.observations) {
@@ -302,11 +301,6 @@ unsigned GlobalPositioner::AddPointToCameraConstraints(Scene& scene, size_t numP
 
 			ASSERT(scales.capacity() > scales.size());
 			double& scale = scales.emplace_back(1);
-			if (!options.generateScales && track.IsInlier()) {
-				// Initialize scale from existing triangulated position
-				const Point3d trans_calc = track.position - image.C;
-				scale = MAXF(1e-5, translation.dot(trans_calc) / normSq(trans_calc));
-			}
 
 			// Select loss function based on camera calibration
 			// Down-weight uncalibrated cameras (TrustIntrinsics = false)
@@ -360,34 +354,12 @@ void GlobalPositioner::ConfigureProblem(Scene& scene)
 	solverOptions.linear_solver_ordering.reset(parameterOrdering);
 	solverOptions.visibility_clustering_type = ceres::CANONICAL_VIEWS;
 
-	// Parameterize the variables:
-	// If do not optimize the positions, set the camera positions to be constant
-	if (!options.optimizePositions) {
-		for (Image& image : scene.images) {
-			if (!image.IsValid())
-				continue;
-			if (problem->HasParameterBlock(image.C.ptr()))
-				problem->SetParameterBlockConstant(image.C.ptr());
-		}
-	}
-	// If do not optimize the points, set the track positions to be constant
-	if (!options.optimizePoints) {
-		for (Track& track : scene.tracks)
-			if (problem->HasParameterBlock(track.position.ptr()))
-				problem->SetParameterBlockConstant(track.position.ptr());
-	}
-	// If do not optimize the scales, set the scales to be constant
-	if (!options.optimizeScales) {
-		for (double& scale : scales)
-			if (problem->HasParameterBlock(&scale))
-				problem->SetParameterBlockConstant(&scale);
-	} else {
-		// Set the first scale to be constant to remove the gauge ambiguity.
-		for (double& scale : scales) {
-			if (problem->HasParameterBlock(&scale)) {
-				problem->SetParameterBlockConstant(&scale);
-				break;
-			}
+	// Parameterize the variables: the camera positions, the points and the scales are all optimized;
+	// set the first scale to be constant to remove the gauge ambiguity.
+	for (double& scale : scales) {
+		if (problem->HasParameterBlock(&scale)) {
+			problem->SetParameterBlockConstant(&scale);
+			break;
 		}
 	}
 

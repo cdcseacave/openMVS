@@ -400,7 +400,7 @@ The following five suggestions offer the highest impact relative to implementati
 **Current Implementation:** Ceres joint optimization of translations + 3D points with fixed rotations. Optional GPU.
 
 1. **Informed Initialization** (Priority: Medium | Complexity: Low)
-   - **What:** When `generateRandomPositions=true`, initialize camera positions from the translation averaging result rather than random positions.
+   - **What:** Initialize camera positions from the translation averaging result rather than random positions.
    - **Why:** Random initialization requires more Ceres iterations and can converge to poor local minima.
    - **Risk:** Low.
 

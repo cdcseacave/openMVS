@@ -39,7 +39,6 @@ namespace SFM {
  * @brief Configuration for importing images and initializing cameras
  */
 struct SFM_API ImportConfig {
-	bool useExif = true;             // attempt to parse EXIF (tinyexif) if available
 	float defaultFocalRatio = 1.2f;  // fallback focal = ratio * max(width,height)
 	float focalLength = 0.f;         // force focal length (in pixels) for specified images (0 = disabled)
 	float k1 = 0.f;                  // force k1 distortion coefficient (0 = not used)
@@ -98,8 +97,10 @@ struct SFM_API ReconstructionConfig {
 	float maxReprojError{4.f}; // Reprojection error for coarse triangulation and filtering
 	float maxFineReprojError{2.f}; // Reprojection error for fine triangulation and filtering
 	float minAngleThreshold{1.5f}; // Minimum triangulation angle (degrees)
-	float multDepthNear{0.05f}; // Near depth threshold multiplier
-	float multDepthFar{20.f}; // Far depth threshold multiplier
+	// constant: near and far depth threshold multipliers of the track filter, the resection's (one value
+	// for the reconstruction's filtering and the resection's)
+	static constexpr float multDepthNear = ResectionConfig::multDepthNear;
+	static constexpr float multDepthFar = ResectionConfig::multDepthFar;
 
 	// Clustering parameters
 	ClusterConfig clusterCfg;
@@ -131,11 +132,15 @@ struct SFM_API ReconstructionConfig {
 						INTRINSIC_RADIAL_DIST_456
 	};
 	unsigned baIntrinsicFlags{INTRINSIC_MAIN}; // which intrinsics to refine
-	// Relative-pose constraints from the verified pairs, in degrees (0 disables that half): how far
-	// the bundle adjustment lets the model's relative rotation, and its baseline direction, sit from
-	// what a pair measured. Copied onto every BAConfig the reconstruction derives.
+	// Relative-pose constraints from the verified pairs, in degrees (0 disables them): how far the
+	// bundle adjustment lets the model's relative rotation sit from what a pair measured, and its
+	// baseline direction relativeTranslationSigmaFactor times as far. Copied onto every BAConfig the
+	// reconstruction derives.
 	float relativeRotationSigma{1.f};
-	float relativeTranslationSigma{2.f};
+	// constant: the baseline direction of a verified pair is the weaker of the two measurements the
+	// pair makes, so the bundle adjustment lets it sit this many times as far from the model's as the
+	// relative rotation (the baseline direction's sigma is this times relativeRotationSigma)
+	static constexpr float relativeTranslationSigmaFactor = 2.f;
 	BAConfig baConfig;  // detailed BA configuration
 
 	float thAlignGPS{5.f}; // threshold for aligning to GPS (meters)
@@ -155,9 +160,10 @@ struct SFM_API ReconstructionConfig {
 // bundle-adjustment switches on the given BAConfig
 SFM_API void SetBAIntrinsicFlags(BAConfig& baCfg, unsigned baIntrinsicFlags);
 
-// Copy ReconstructionConfig's relative-pose sigmas onto the given BAConfig, so that every bundle
+// Copy ReconstructionConfig's relative-pose sigma onto the given BAConfig, the baseline direction's
+// following at ReconstructionConfig::relativeTranslationSigmaFactor times it, so that every bundle
 // adjustment the reconstruction derives hears the verified pairs on the same terms
-SFM_API void SetBAPairConstraints(BAConfig& baCfg, float relativeRotationSigma, float relativeTranslationSigma);
+SFM_API void SetBAPairConstraints(BAConfig& baCfg, float relativeRotationSigma);
 
 
 // Scene contains all data for a Structure-from-Motion reconstruction:

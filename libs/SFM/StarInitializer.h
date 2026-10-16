@@ -31,7 +31,6 @@ struct SFM_API StarInitConfig
 {
 	unsigned minViews{4};           // Minimum connected views
 	unsigned maxViews{36};          // Maximum connected views
-	unsigned minTracksPerView{50};  // Minimum tracks per view
 	float ratioInliersFilter{0.2f}; // Ratio threshold for inlier views filter (optional, 0 to disable)
 	float maxReprojError{6.f};      // Maximum reprojection error (pixels)
 	float minAngleThreshold{1.f};   // Minimum angle between cameras (degrees)

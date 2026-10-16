@@ -94,7 +94,7 @@ graph TD
 - Input: folder path or semicolon-separated image list
 - Processing: scans directory for jpg/png/tif/jxl/exr/webp; sorts numerically; loads each image metadata (EXIF, GPS, focal length estimate via `Image::LoadMetadata`); clusters images sharing identical camera parameters into shared `Camera` pointers
 - Output: `scene.images[]` populated with file paths, metadata, and `pCamera` pointers; `scene.cameras[]` unique camera list
-- Config: `ImportConfig::defaultFocalRatio` (1.2), `ImportConfig::useExif`, `ImportConfig::importPosesFile`/`importPosesMode` (`PoseImportMode`), `ImportConfig::focalLength`/`k1`/`k2` overrides
+- Config: `ImportConfig::defaultFocalRatio` (1.2), `ImportConfig::importPosesFile`/`importPosesMode` (`PoseImportMode`), `ImportConfig::focalLength`/`k1`/`k2` overrides
 
 **Step 2: Feature Extraction**
 - Function: `Scene::ExtractFeatures()` → `FeaturesExtractor::Extract()` — `libs/SFM/Scene.cpp:545`, `libs/SFM/FeaturesExtractor.cpp`
@@ -246,7 +246,7 @@ graph TD
 - Input: sub-scene with relative poses in `scene.pairs`
 - Processing: `SelectReferenceView()` picks image with most connections; forms star configuration with `minViews`–`maxViews` (4–36) connected images; sets absolute poses from relative poses via chain; `EstimateGlobalScale()` from multiple baseline ratios; triangulates initial tracks
 - Output: initial absolute camera poses in `image.R`, `image.C`
-- Config: `StarInitConfig::minViews`, `maxViews`, `minTracksPerView`, `maxReprojError`
+- Config: `StarInitConfig::minViews`, `maxViews`, `maxReprojError`
 
 **Step 4: Incremental Resection**
 - Function: `Resection::RegisterImages()` — `libs/SFM/Resection.cpp`
@@ -312,7 +312,7 @@ graph TD
 - Input: scene with known rotations, tracks, `GlobalPositionerOptions`
 - Processing: random initialization of camera centers and 3D point positions; Ceres problem with `ONLY_POINTS` constraint type (reprojection residuals); optional per-image scale variables; GPU solver (GLOMAP-style) when `images >= 50` and CUDA available
 - Output: `image.C` (camera centers), `track.position` (3D points)
-- Config: `constraintType` (ONLY_POINTS), `generateRandomPositions`, `maxNumIterations` (200), `minNumViewPerTrack` (3), `useGpu`
+- Config: `constraintType` (ONLY_POINTS), `maxNumIterations` (200), `minNumViewPerTrack` (3), `useGpu`
 
 **Step 4: Bundle Adjustment (2 passes)**
 - First pass: `BundleAdjustment::Adjust()` with `refinePosesRotation=false`, 12 iterations — refines translations and structure only
