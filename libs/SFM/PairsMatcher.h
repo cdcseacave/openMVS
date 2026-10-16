@@ -98,20 +98,28 @@ struct SFM_API MatchConfig
 
 	bool viewGraphCalibrationEnabled = true;  // Enable view graph calibration
 	// The radial lens fit from pairs (LensFit.h), run after the view-graph calibration on every
-	// pinhole camera that has no lens and trusts its focal; no command-line flag
+	// pinhole camera that has no lens and trusts its focal; no command-line flag, and its settings are constants
 	bool lensFitEnabled = true;            // fit the lens of every camera that has none
-	unsigned lensFitMaxPairs = 150;        // pairs a camera's fit reads at most, heaviest first
-	unsigned lensFitMinPairs = 20;         // eligible pairs a camera needs to be fitted: drawn from the prototype's pairs, fits stop failing at 8-10, 20 leaves a margin
-	unsigned lensFitMatchesPerPair = 200;  // verified sparse matches each pair contributes, and the least an eligible pair holds
-	float lensFitMinRotation = 5.f;        // degrees: a pair turning less moves its points too little across the frame for the lens to show
-	float lensFitMaxRotation = 45.f;       // degrees: a pair turning more is usually a loop or cross view covering little of the frame
-	float lensFitLossScale = 1.f;          // pixels: the soft L1 scale of the Sampson error, quadratic below it and linear above
-	float lensFitMinErrorDrop = 0.10f;     // the median error must fall this fraction below the poses' own refinement at the starting lens for the lens to be kept
+	// constant: pairs a camera's fit reads at most, heaviest first
+	static constexpr unsigned lensFitMaxPairs = 150;
+	// constant: eligible pairs a camera needs to be fitted: drawn from the prototype's pairs, fits stop failing at 8-10, 20 leaves a margin
+	static constexpr unsigned lensFitMinPairs = 20;
+	// constant: verified sparse matches each pair contributes, and the least an eligible pair holds
+	static constexpr unsigned lensFitMatchesPerPair = 200;
+	// constant: degrees: a pair turning less moves its points too little across the frame for the lens to show
+	static constexpr float lensFitMinRotation = 5.f;
+	// constant: degrees: a pair turning more is usually a loop or cross view covering little of the frame
+	static constexpr float lensFitMaxRotation = 45.f;
+	// constant: pixels: the soft L1 scale of the Sampson error, quadratic below it and linear above
+	static constexpr float lensFitLossScale = 1.f;
+	// constant: the median error must fall this fraction below the poses' own refinement at the starting lens for the lens to be kept
+	static constexpr float lensFitMinErrorDrop = 0.10f;
 	// constant: the focal check takes a camera's focal from the fit with the focal free when that fit's median
 	// error falls this fraction below the fit with it held: an accurate focal's free fit lowers the median at
 	// most 0.7% on eleven real captures, a wrong one's at least 16% (most by 32-71%)
 	static constexpr float lensFitFocalMinErrorDrop = 0.10f;
-	unsigned lensFitRounds = 10;           // pose re-estimations through the fitted lens at most, each followed by the joint fit again, stopping at the first that replaces no pose: where the first joint fit falls far short of a strong lens each round turns a few more pairs right (synthetic, 164 px at the corner: up to 5 rounds over 100 scenes); pairs that hide the lens may replace poses in every round
+	// constant: pose re-estimations through the fitted lens at most, each followed by the joint fit again, stopping at the first that replaces no pose: where the first joint fit falls far short of a strong lens each round turns a few more pairs right (synthetic, 164 px at the corner: up to 5 rounds over 100 scenes); pairs that hide the lens may replace poses in every round
+	static constexpr unsigned lensFitRounds = 10;
 	bool useCUDA = true; // use CUDA for SiftMatchGPU if available (otherwise OpenGL)
 
 	// Pairs weighting parameters

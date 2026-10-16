@@ -710,11 +710,12 @@ bool SFM::IsLensOneToOne(REAL k1, REAL k2, REAL radius)
 LensFitReport SFM::FitLensesFromPairs(Scene& scene, const MatchConfig& config)
 {
 	// a fitted camera reads at least one pair and every pair at least one match; the rotation band
-	// is not empty, the error drop is a fraction, and the loss has a scale
-	ASSERT(config.lensFitMinPairs >= 1 && config.lensFitMaxPairs >= 1 && config.lensFitMatchesPerPair >= 1);
-	ASSERT(config.lensFitMinRotation <= config.lensFitMaxRotation);
-	ASSERT(config.lensFitMinErrorDrop >= 0 && config.lensFitMinErrorDrop < 1);
-	ASSERT(config.lensFitLossScale > 0);
+	// is not empty, the error drops are fractions, and the loss has a scale
+	static_assert(MatchConfig::lensFitMinPairs >= 1 && MatchConfig::lensFitMaxPairs >= 1 && MatchConfig::lensFitMatchesPerPair >= 1);
+	static_assert(MatchConfig::lensFitMinRotation <= MatchConfig::lensFitMaxRotation);
+	static_assert(MatchConfig::lensFitMinErrorDrop >= 0 && MatchConfig::lensFitMinErrorDrop < 1);
+	static_assert(MatchConfig::lensFitFocalMinErrorDrop >= 0 && MatchConfig::lensFitFocalMinErrorDrop < 1);
+	static_assert(MatchConfig::lensFitLossScale > 0);
 	const auto start = std::chrono::steady_clock::now();
 	bool focalChecked = false;
 	LensFitReport report;
