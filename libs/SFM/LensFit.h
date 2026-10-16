@@ -67,12 +67,13 @@ struct SFM_API MatchConfig;
  * epipolar constraint, each side through its own lens and focal (the constraint's gradient through
  * the inverse lens Jacobian), under soft L1 at lensFitLossScale pixels.
  * The focal check: a focal the pairs clearly reject (an EXIF focal of the full sensor on a cropped frame,
- * one the view-graph calibration biased through the uncorrected lens) is corrected before the lens is
- * fitted at it. On the fit as first built, the joint fit and its rounds below run twice from the same
- * start, every fitted camera's focal held and then free beside its lens and the poses (a log scale of
- * the start, a third number of the camera's lens); a camera takes the free fit's focal when its median
- * error falls MatchConfig::lensFitFocalMinErrorDrop below the held fit's, and the fit is built again
- * at the moved focal. A focal the check keeps leaves the fit as it is.
+ * one the view-graph calibration biased through the uncorrected lens) is corrected and the lens fitted
+ * again at it. The fit as first built runs below with every fitted camera's focal held, its check and
+ * restart included; from the lenses and poses it reached, the joint fit and its rounds run again with
+ * every fitted camera's focal free beside its lens (a log scale of the focal, a third number of the
+ * camera's lens), with the same check and restart; a camera takes the free fit's focal when its median
+ * error falls MatchConfig::lensFitFocalMinErrorDrop below the held fit's, and the fit is built again at
+ * the moved focal from the free fit's poses. A focal the check keeps leaves the held fit as the fit.
  * In order: the poses alone refined at the starting lenses (their median error is the baseline);
  * the lenses and poses together from the stored poses (each pair's 5 pose unknowns eliminated first,
  * so the reduced system holds 2 unknowns per fitted camera); each pair's pose re-estimated by RANSAC

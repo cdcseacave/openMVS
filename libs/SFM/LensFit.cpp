@@ -303,6 +303,9 @@ struct FitPair {
 	std::vector<Point2d> m1, m2; // its drawn matches, normalized and distorted
 };
 
+// A pair's relative pose (x2 = R x1 + t, t of unit length), by the pair's index in scene.pairs
+typedef std::unordered_map<IIndex, std::pair<Matrix3x3, Point3>> PairPoses;
+
 // The residual of match k of pair p; refineLens false holds every lens at its current value
 LensSampsonError MakeResidual(const FitPair& p, size_t k, const std::vector<FitCamera>& cameras, bool refineLens)
 {
@@ -609,28 +612,81 @@ bool PassesPairsCheck(const std::vector<FitPair>& pairs, const std::vector<FitCa
 	return true;
 }
 
-// The focal check of a fit's cameras as `pairs` and `cameras` stand built, before any lens is fitted:
-// the fit from there with every fitted camera's focal held, then free beside its lens and the poses, each
-// the joint fit and its rounds of pose re-estimation; a fitted camera takes the free fit's focal (fx and
-// fy scaled alike) where both were solved, the held fit passes the check of a fit (PassesPairsCheck), the
-// free lens stays one to one past the image corner at that focal, and the median error falls
-// MatchConfig::lensFitFocalMinErrorDrop below the held fit's. A held fit that fails the check is held short of its lens
-// by the pairs whose pinhole poses it cannot turn, and a free focal then absorbs part of the shortfall: on
-// the synthetic barrel lens of LensFitRecoveryTest's held-short scene it fell the median error 14% at a
-// focal 12% short of the true one. The focal stays as given for the fit's restart from the doubled lens.
-// Records both medians and focals on every fitted camera's outcome; returns whether any focal moved
-bool CheckFocals(Scene& scene, const std::vector<FitPair>& pairs, const std::vector<FitCamera>& cameras,
-	const MatchConfig& config, LensFitReport& report)
+// A fit that failed the check started again: the joint fit and its rounds from `startPairs` and
+// `startCameras`, every fitted camera's lens that of `cameras` scaled by each of LENS_FIT_RESTART_SCALES
+// (its focal, where it is free, the camera's: the start holds q at 0), each pair's pose re-estimated through that start
+// first; a start that folds within a camera's valid radius is skipped, and the fit of least cost over the
+// same matches replaces `pairs`, `cameras` and `rounds` (the poses each of its rounds replaced). Returns the
+// starts run
+unsigned RestartFit(std::vector<FitPair>& pairs, std::vector<FitCamera>& cameras, std::vector<unsigned>& rounds,
+	const std::vector<FitPair>& startPairs, const std::vector<FitCamera>& startCameras, const MatchConfig& config, unsigned numThreads)
 {
-	std::vector<FitPair> heldPairs(pairs), freePairs(pairs);
-	std::vector<FitCamera> heldCameras(cameras), freeCameras(cameras);
-	for (FitCamera& c : freeCameras)
+	ASSERT(startCameras.size() == cameras.size()); // the same fit's cameras
+	const std::vector<FitCamera> firstCameras(cameras);
+	double cost = TotalCost(pairs, cameras, config.lensFitLossScale);
+	unsigned numStarts = 0;
+	for (const double scale : LENS_FIT_RESTART_SCALES) {
+		std::vector<FitPair> restartPairs(startPairs);
+		std::vector<FitCamera> restartCameras(startCameras);
+		bool folds = false;
+		FOREACH(c, restartCameras) {
+			FitCamera& camera = restartCameras[c];
+			if (!camera.free)
+				continue;
+			ASSERT(camera.lens[2] == 0); // the start's focal is the camera's, at which its valid radius is measured
+			camera.lens[0] = scale*firstCameras[c].lens[0];
+			camera.lens[1] = scale*firstCameras[c].lens[1];
+			if (!IsLensOneToOne(camera.lens[0], camera.lens[1], LENS_VALID_MARGIN*camera.reach))
+				folds = true;
+		}
+		if (folds)
+			continue; // the fit could not evaluate it: its undistortion has no answer within the matches' reach
+		ReestimatePoses(restartPairs, restartCameras, config.lensFitLossScale);
+		std::vector<unsigned> restartRounds;
+		++numStarts;
+		if (!FitFrom(restartPairs, restartCameras, config, numThreads, restartRounds))
+			continue;
+		const double restartCost = TotalCost(restartPairs, restartCameras, config.lensFitLossScale);
+		if (restartCost >= cost)
+			continue;
+		pairs.swap(restartPairs);
+		cameras.swap(restartCameras);
+		rounds.swap(restartRounds);
+		cost = restartCost;
+	}
+	return numStarts;
+}
+
+// The focal check of a fit's cameras, from the fit `pairs` and `cameras` reached with every fitted camera's
+// focal held, its check of a fit passed or its restart run (`mediansHeld` its median errors): the fit again
+// from its lenses and poses with every fitted camera's focal free beside its lens (a log scale of the focal,
+// the third number of the lens block), the joint fit and its rounds, and, where that free fit fails the check
+// of a fit (each pair alone with its own lens and focal free), its restart from its lenses doubled, from the
+// held fit's poses at the focal as given. A fitted camera takes the free fit's focal (fx and fy scaled alike)
+// where the free fit was solved, its lens stays one to one past the image corner at that focal, and its
+// median error falls MatchConfig::lensFitFocalMinErrorDrop below the held fit's. The held fit is judged
+// only once it is not held short of its lens by the pairs whose pinhole poses it could not turn, where a free
+// focal absorbs part of the shortfall (LensFitRecoveryTest's held-short barrel: the median error 14% lower at
+// a focal 12% short of the true one); started from the held fit, the free fit costs a few rounds where the
+// focal is right, and from no lens it can stall where the lens the focal's error looks like (a barrel given
+// a focal short, a pincushion one long: LensFitFocalTest's barrel given 20% short, from 1120 px to 1182 of
+// 1400), which its own check tells. Records both medians and focals on every fitted camera's outcome and,
+// where a focal moved, the free fit's poses in `startPoses` (a relative pose does not depend on the focal),
+// for the fit built again at the moved focal; returns whether any focal moved
+bool CheckFocals(Scene& scene, const std::vector<FitPair>& pairs, const std::vector<FitCamera>& cameras,
+	const std::vector<double>& mediansHeld, const MatchConfig& config, LensFitReport& report, PairPoses& startPoses)
+{
+	std::vector<FitCamera> startCameras(cameras);
+	for (FitCamera& c : startCameras) {
+		ASSERT(c.lens[2] == 0); // the held fit's focal is the camera's
 		c.freeFocal = c.free;
+	}
+	std::vector<FitPair> freePairs(pairs);
+	std::vector<FitCamera> freeCameras(startCameras);
 	std::vector<unsigned> rounds;
-	const bool heldPasses = FitFrom(heldPairs, heldCameras, config, scene.nMaxThreads, rounds) &&
-		PassesPairsCheck(heldPairs, heldCameras, config.lensFitLossScale, scene.nMaxThreads);
-	const bool freeSolved = FitFrom(freePairs, freeCameras, config, scene.nMaxThreads, rounds);
-	const std::vector<double> mediansHeld(MedianErrors(heldPairs, heldCameras));
+	const bool solved = FitFrom(freePairs, freeCameras, config, scene.nMaxThreads, rounds);
+	if (solved && !PassesPairsCheck(freePairs, freeCameras, config.lensFitLossScale, scene.nMaxThreads))
+		RestartFit(freePairs, freeCameras, rounds, pairs, startCameras, config, scene.nMaxThreads);
 	const std::vector<double> mediansFree(MedianErrors(freePairs, freeCameras));
 	bool moved = false;
 	FOREACH(f, freeCameras) {
@@ -645,7 +701,7 @@ bool CheckFocals(Scene& scene, const std::vector<FitPair>& pairs, const std::vec
 		outcome.medianFocalHeld = mediansHeld[f];
 		outcome.medianFocalFree = mediansFree[f];
 		// written so that a NaN median, which fails every comparison, keeps the focal
-		if (heldPasses && freeSolved && IsLensOneToOne((REAL)fc.lens[0], (REAL)fc.lens[1], LENS_VALID_MARGIN*(REAL)fc.corner/scale) &&
+		if (solved && IsLensOneToOne((REAL)fc.lens[0], (REAL)fc.lens[1], LENS_VALID_MARGIN*(REAL)fc.corner/scale) &&
 			mediansFree[f] <= (1.0 - (double)MatchConfig::lensFitFocalMinErrorDrop)*mediansHeld[f]) {
 			pinhole.fx *= scale;
 			pinhole.fy *= scale;
@@ -653,6 +709,9 @@ bool CheckFocals(Scene& scene, const std::vector<FitPair>& pairs, const std::vec
 			moved = true;
 		}
 	}
+	if (moved)
+		for (const FitPair& p : freePairs)
+			startPoses[p.idxPair] = std::make_pair(p.R0, p.t0);
 	return moved;
 }
 
@@ -718,6 +777,7 @@ LensFitReport SFM::FitLensesFromPairs(Scene& scene, const MatchConfig& config)
 	static_assert(MatchConfig::lensFitLossScale > 0);
 	const auto start = std::chrono::steady_clock::now();
 	bool focalChecked = false;
+	PairPoses startPoses; // where the focal check moved a focal, the poses its free fit reached: the fit built again at it starts from them
 	LensFitReport report;
 	const unsigned numCameras = (unsigned)scene.cameras.size();
 	report.cameras.resize(numCameras);
@@ -849,8 +909,13 @@ LensFitReport SFM::FitLensesFromPairs(Scene& scene, const MatchConfig& config)
 			p.idxPair = idxPair;
 			p.cam1 = FitIndexOf(c1);
 			p.cam2 = FitIndexOf(c2);
-			p.R0 = pair.relativePose->R;
-			p.t0 = normalized(pair.relativePose->GetT());
+			if (const auto it = startPoses.find(idxPair); it != startPoses.end()) {
+				p.R0 = it->second.first;
+				p.t0 = it->second.second;
+			} else {
+				p.R0 = pair.relativePose->R;
+				p.t0 = normalized(pair.relativePose->GetT());
+			}
 			// lensFitMatchesPerPair of its sparse inliers, drawn by a partial Fisher-Yates shuffle from a
 			// generator seeded from the pair's IDs, so that the same pair always contributes the same
 			// ones, on every platform: each index is the engine's raw output, whose sequence the standard
@@ -879,16 +944,6 @@ LensFitReport SFM::FitLensesFromPairs(Scene& scene, const MatchConfig& config)
 			}
 			pairs.push_back(std::move(p));
 		}
-		// the focal check, once, on the fit as first built: where it moves a focal, the fit is built again
-		// at it (the same pairs, their matches normalized by the moved focal)
-		if (!focalChecked) {
-			focalChecked = true;
-			const auto startCheck = std::chrono::steady_clock::now();
-			const bool moved = CheckFocals(scene, pairs, cameras, config, report);
-			report.focalSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - startCheck).count();
-			if (moved)
-				continue;
-		}
 		// the baseline: the poses alone at the starting lenses, so that the lens is credited only with
 		// what the poses could not do; the joint fit still starts from the stored poses, which have not
 		// absorbed the lens any further
@@ -902,38 +957,22 @@ LensFitReport SFM::FitLensesFromPairs(Scene& scene, const MatchConfig& config)
 		if (solved && !PassesPairsCheck(pairs, cameras, config.lensFitLossScale, scene.nMaxThreads)) {
 			// held short of its lenses: started again from them scaled, from the stored poses each
 			// re-estimated through that start, the fit of least cost kept
-			const std::vector<FitCamera> firstCameras(cameras);
-			double cost = TotalCost(pairs, cameras, config.lensFitLossScale);
-			for (const double scale : LENS_FIT_RESTART_SCALES) {
-				std::vector<FitPair> restartPairs(storedPairs);
-				std::vector<FitCamera> restartCameras(startCameras);
-				bool folds = false;
-				FOREACH(c, restartCameras) {
-					FitCamera& camera = restartCameras[c];
-					if (!camera.free)
-						continue;
-					camera.lens[0] = scale*firstCameras[c].lens[0];
-					camera.lens[1] = scale*firstCameras[c].lens[1];
-					if (!IsLensOneToOne(camera.lens[0], camera.lens[1], LENS_VALID_MARGIN*camera.reach))
-						folds = true;
-				}
-				if (folds)
-					continue; // the fit could not evaluate it: its undistortion has no answer within the matches' reach
-				ReestimatePoses(restartPairs, restartCameras, config.lensFitLossScale);
-				std::vector<unsigned> rounds;
-				++report.numStarts;
-				if (!FitFrom(restartPairs, restartCameras, config, scene.nMaxThreads, rounds))
-					continue;
-				const double restartCost = TotalCost(restartPairs, restartCameras, config.lensFitLossScale);
-				if (restartCost >= cost)
-					continue;
-				pairs.swap(restartPairs);
-				cameras.swap(restartCameras);
-				report.reestimatedPoses.swap(rounds);
-				cost = restartCost;
-			}
+			report.numStarts += RestartFit(pairs, cameras, report.reestimatedPoses, storedPairs, startCameras, config, scene.nMaxThreads);
 		}
 		const std::vector<double> mediansAfter(MedianErrors(pairs, cameras));
+		// the focal check, once, from the fit as first built and run: where it moves a focal, the fit is
+		// built again at it (the same pairs, their matches normalized by the moved focal, from the poses the
+		// check's free fit reached) and runs again; where it moves none, this fit is the lens fit
+		if (!focalChecked) {
+			focalChecked = true;
+			if (solved) {
+				const auto startCheck = std::chrono::steady_clock::now();
+				const bool moved = CheckFocals(scene, pairs, cameras, mediansAfter, config, report, startPoses);
+				report.focalSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - startCheck).count();
+				if (moved)
+					continue;
+			}
+		}
 		// the verdict on every fitted camera; a refused one keeps no lens and leaves, and the others
 		// are fitted again without its pairs; a fit the solver could not complete is not judged, and
 		// refuses every camera it fits

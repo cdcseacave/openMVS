@@ -3730,8 +3730,12 @@ bool LensFitRecoveryTest()
 // one exactly as it is: the strong barrel lens of camera A given a focal 20% short and 20% long of the
 // one its pairs were rendered with, and a camera without a lens given one 15% short, each take a focal
 // within LENS_TEST_FOCAL_MAX_ERROR of the true one, the lens fitted at it within LENS_TEST_MAX_ERROR_PX
-// of the true one over its matches' reach; given its true focal, the camera keeps it bit for bit and the
-// lens comes out as true within the same bar
+// of the true one over its matches' reach; so do the scenes whose fit from no lens is held short of the
+// lens (LENS_TEST_PINCUSHION_SEED's pincushion given a focal 15% short and 15% long, LENS_TEST_HELD_SEED's
+// barrel given one 15% short), whose held fit fails the check of a fit until it restarts, and that barrel
+// given a focal 20% short, whose free fit from no lens stalls 16% short while its held fit passes the
+// check; given its true focal, the camera keeps it bit for bit and the lens comes out as true within the
+// same bar
 bool LensFitFocalTest()
 {
 	TD_TIMER_START();
@@ -3740,16 +3744,21 @@ bool LensFitFocalTest()
 		const char* name;
 		LensTestCamera camera;
 		REAL givenFocalScale;
+		unsigned seed;
 	};
 	const Variant moved[] = {
-		{"a strong lens, the focal 20% short", LENS_TEST_A, REAL(0.8)},
-		{"a strong lens, the focal 20% long", LENS_TEST_A, REAL(1.2)},
-		{"no lens, the focal 15% short", LENS_TEST_P, REAL(0.85)},
+		{"a strong lens, the focal 20% short", LENS_TEST_A, REAL(0.8), 7},
+		{"a strong lens, the focal 20% long", LENS_TEST_A, REAL(1.2), 7},
+		{"no lens, the focal 15% short", LENS_TEST_P, REAL(0.85), 7},
+		{"a pincushion held short from no lens, the focal 15% short", LENS_TEST_PINCUSHION, REAL(0.85), LENS_TEST_PINCUSHION_SEED},
+		{"a pincushion held short from no lens, the focal 15% long", LENS_TEST_PINCUSHION, REAL(1.15), LENS_TEST_PINCUSHION_SEED},
+		{"a strong lens held short from no lens, the focal 15% short", LENS_TEST_A, REAL(0.85), LENS_TEST_HELD_SEED},
+		{"a strong lens whose free fit from no lens stalls, the focal 20% short", LENS_TEST_A, REAL(0.8), LENS_TEST_HELD_SEED},
 	};
 	for (const Variant& variant : moved) {
 		Scene scene;
 		std::unordered_map<PairIdx, Pose3D> truePoses;
-		BuildLensTestScene(scene, {variant.camera}, {{0, 0, LensTestMotion::TURN, 40}}, 7, truePoses,
+		BuildLensTestScene(scene, {variant.camera}, {{0, 0, LensTestMotion::TURN, 40}}, variant.seed, truePoses,
 			LENS_TEST_NOISE_PX, LENS_TEST_OUTLIER_SHARE, variant.givenFocalScale);
 		const LensFitReport report = FitLensesFromPairs(scene, config);
 		const LensFitOutcome& outcome = report.cameras[0];
