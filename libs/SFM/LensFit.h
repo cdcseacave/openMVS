@@ -38,6 +38,7 @@ namespace SFM {
 class SFM_API Scene;
 class SFM_API PairsMatcher;
 struct SFM_API MatchConfig;
+struct SFM_API ViewGraphCalibratorConfig;
 
 /*
  * The radial lens of a camera, estimated from its verified pairs
@@ -66,14 +67,16 @@ struct SFM_API MatchConfig;
  * The loss: the first-order distance of each match's two measured, distorted pixels to the pair's
  * epipolar constraint, each side through its own lens and focal (the constraint's gradient through
  * the inverse lens Jacobian), under soft L1 at lensFitLossScale pixels.
- * The focal check: a focal the pairs clearly reject (an EXIF focal of the full sensor on a cropped frame,
- * one the view-graph calibration biased through the uncorrected lens) is corrected and the lens fitted
- * again at it. The fit as first built runs below with every fitted camera's focal held, its check and
+ * The focal check: a focal the pairs clearly reject (a forced focal off, a calibration's) is corrected and
+ * the lens fitted again at it. The fit as first built runs below with every fitted camera's focal held, its check and
  * restart included; from the lenses and poses it reached, the joint fit and its rounds run again with
  * every fitted camera's focal free beside its lens (a log scale of the focal, a third number of the
  * camera's lens), with the same check and restart; a camera takes the free fit's focal when its median
  * error falls MatchConfig::lensFitFocalMinErrorDrop below the held fit's, and the fit is built again at
  * the moved focal from the free fit's poses. A focal the check keeps leaves the held fit as the fit.
+ * The check runs first for the estimated focals (`estimated`: an untrusted start, not a prior, taken with
+ * no bar on the error drop), then for the trusted ones, each judged on a fit whose estimated focals
+ * already moved.
  * In order: the poses alone refined at the starting lenses (their median error is the baseline);
  * the lenses and poses together from the stored poses (each pair's 5 pose unknowns eliminated first,
  * so the reduced system holds 2 unknowns per fitted camera); each pair's pose re-estimated by RANSAC
@@ -144,16 +147,32 @@ struct SFM_API LensFitReport {
 // verified pairs, after checking the focal of each such camera: set every focal moved on its camera
 // (fx and fy scaled alike) and every lens kept (SetDistortion(k1, k2, 0, 0); the trust flag is left as
 // it is). The pairs themselves are not changed.
-SFM_API LensFitReport FitLensesFromPairs(Scene& scene, const MatchConfig& config);
+// `estimated` names the cameras whose focal is an untrusted start (CalibrateFocalsAndFitLenses), not a prior,
+// which the focal check takes from the free fit with no bar on the error drop.
+SFM_API LensFitReport FitLensesFromPairs(Scene& scene, const MatchConfig& config, const std::unordered_set<CameraPtr>& estimated = {});
 
-// The lens stage of the matching: FitLensesFromPairs, then every pair of a camera whose lens was
+// The lens stage of the matching: FitLensesFromPairs, then a camera of `estimated` whose focal the fit did
+// not take untrusted again, with no lens and its pairs back to their F, then every pair of a camera whose lens was
 // fitted or whose focal moved (LensFitReport::CamerasToVerifyAgain) verified again through its focal
 // and lens (PairsMatcher::ComputeRelativePoses: a descriptor pair through
 // GeometricFilter, its outliers rejoining the candidates; a RoMa2 pair through ReverifyPairROMA2,
 // its sparse and dense segments kept apart), which also recomputes the pair weights. Logs every
 // camera's outcome, the pairs' inliers before and after, and how many of the pairs that formed tracks
 // the verification invalidated.
-SFM_API LensFitReport FitLensesAndReverifyPairs(PairsMatcher& pairsMatcher);
+SFM_API LensFitReport FitLensesAndReverifyPairs(PairsMatcher& pairsMatcher, const std::unordered_set<CameraPtr>& estimated = {});
+
+// The focal and lens stage of the matching, once every pair is verified. Every pinhole camera that does not trust its focal
+// (an EXIF 35 mm-equivalent focal, the import's default ratio of the long side) and that the lens fit can take
+// (MatchConfig::lensFitEnabled, no lens given) is trusted at that focal, each of its pairs posed from its F there (E = K2^T F K1,
+// at least five sparse inliers), and the lens stage (FitLensesAndReverifyPairs) fits its focal free with its lens, with no bar
+// on the error drop, beside the lens of every trusted camera that has none, then verifies again through E the pairs of every
+// camera whose lens or focal it changed. A camera whose focal the lens fit did not take (too few eligible pairs, an unsolved or
+// folding fit) goes back to untrusted, its pairs to their F; the view-graph calibration then estimates every camera still
+// untrusted (also one with a lens given, and all of them with the lens fit off) and its pairs are verified through E there, so
+// that no camera is left at an unverified start. A scene resumed already matched carries the lens it was fitted, which makes it
+// given: that camera is not fitted again; a camera that still has no lens is fitted again. Returns false where the calibration
+// fails; `report` receives the lens stage's report.
+SFM_API bool CalibrateFocalsAndFitLenses(PairsMatcher& pairsMatcher, const ViewGraphCalibratorConfig& vgConfig, LensFitReport* report = NULL);
 
 } // namespace SFM
 

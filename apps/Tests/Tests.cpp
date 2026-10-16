@@ -249,6 +249,8 @@ int main(int argc, LPCTSTR* argv)
 			// import is the pipeline's first stage, and every test below starts with one
 			if (!SFM::ImportMetadataDeterminismTest())
 				return false;
+			if (!SFM::ExifFocalUntrustedTest())
+				return false;
 			if (!SFM::TestSimilarityTransform())
 				return false;
 			if (!SFM::KnownPosesImportTest())
@@ -384,6 +386,8 @@ int main(int argc, LPCTSTR* argv)
 			if (!SFM::LensFitStageTest())
 				return false;
 			if (!SFM::LensFitFocalStageTest())
+				return false;
+			if (!SFM::LensFitUntrustedFocalTest())
 				return false;
 			if (!SFM::CubeMapFaceRenderTest())
 				return false;

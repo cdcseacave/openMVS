@@ -293,8 +293,11 @@ bool Image::LoadMetadata(float defaultFocalRatio)
 			const REAL diagonal = SQRT(SQUARE((REAL)w) + SQUARE((REAL)h));
 			const REAL focal = diagonal * exif.LensInfo.FocalLengthIn35mm / REAL(43.27);
 			if (plausibleFocal(focal)) {
+				// a guess, not a calibration: the tag describes the lens on the full sensor, which a video frame
+				// can crop (Tanks and Temples' DJI X5R 1080p frames: 1222 px against 2028), so the lens stage fits
+				// the focal with the lens straight from it (CalibrateFocalsAndFitLenses)
 				fx = fy = focal;
-				trustIntrinsics = true;
+				trustIntrinsics = false;
 			} else {
 				VERBOSE("warning: image '%s' has an unusable EXIF 35mm-equivalent focal length "
 					"(%g mm); ignoring it", Util::getFileName(fileName).c_str(), exif.LensInfo.FocalLengthIn35mm);

@@ -170,6 +170,8 @@ bool LensFitStageTest();
 // at it: a camera without a lens given a focal 15% short has its pairs' rotations come out within half a
 // degree of the true ones
 bool LensFitFocalStageTest();
+// An untrusted focal fitted with its lens straight from its import focal, and its fallbacks
+bool LensFitUntrustedFocalTest();
 
 // The described/dense keypoint boundary: an image whose keypoints.size() > descriptors.rows keeps
 // its stored described-keypoint count across a descriptor release and an .sfm round-trip, the
@@ -356,6 +358,8 @@ bool HEIFMetadataTest();
 // per-file read once more on a deliberately dirtied stack, which is what pins the metadata to
 // the file rather than to whatever the process did before it
 bool ImportMetadataDeterminismTest();
+// An EXIF 35 mm-equivalent focal seeds the camera's focal untrusted (Image::LoadMetadata)
+bool ExifFocalUntrustedTest();
 
 // Pose-frame detection: recover both the camera-axes convention and, for EXIF-rotated images,
 // the in-plane rotation of an imported frames.json from the matched pairs

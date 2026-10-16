@@ -93,7 +93,7 @@ class ImagePair {
 ### Incremental Reconstruction (`Scene::Reconstruct`)
 ```
 Extract features (AKAZE/ORB/SIFT/SIFTGPU) -> Match pairs (VOCABULARY/EXHAUSTIVE/SEQUENTIAL/KNOWN_POSES)
--> Geometric verification (E/F/H + RANSAC) -> View graph calibration (focal estimation) -> Lens fit from pairs (k1, k2 of every camera with none; its pairs verified again through it)
+-> Geometric verification (E/F/H + RANSAC) -> Lens fit from pairs (k1, k2 of every camera with none, the focal of every untrusted one from its import focal; its pairs verified again through it) -> View graph calibration (focal estimation of the cameras the lens fit could not take)
 -> Build tracks (union-find) -> Filter tracks + weak images
 -> Star initialization (reference view) -> Resect remaining images (incremental)
 -> Bundle adjustment (global + local)
@@ -239,20 +239,30 @@ Places each independently reconstructed block ("sub-scene") into a shared frame,
 - Options: `maxRelativeRotationAngle`, `skipInitialization` (warm-start)
 
 ### View Graph Calibration (`ViewGraphCalibrator.h`)
-Global focal length estimation across all image pairs. Uses Fetzer method with robust loss.
+Global focal length estimation across all image pairs. Uses Fetzer method with robust loss. Only for a
+camera still untrusted after the lens fit (`CalibrateFocalsAndFitLenses`): it reads the uncorrected lens as focal.
 
 ### Lens Fit From Pairs (`LensFit.h`)
-Right after the view-graph calibration, `FitLensesAndReverifyPairs` fits the radial lens (k1, k2) of
-every pinhole camera that has none and trusts its focal, from its verified pairs (`FitLensesFromPairs`):
-the heaviest `MatchConfig::lensFitMaxPairs` (150) that turn 5-45 deg, 200 sparse inliers each, the
-Sampson error in measured pixels under soft L1 at 1 px, each pair's 5-dof pose eliminated, up to
-`lensFitRounds` (10) rounds of each pose re-estimated through the lens, the check of the fit and its
-restart from the lens doubled (these settings are `static constexpr` members of `MatchConfig`). Then the focal check: from the lenses and poses that fit reached, the joint fit
-runs again with every fitted camera's focal free (a log scale, a third number beside k1, k2), with the
-same check and restart, and a camera takes the free fit's focal (fx, fy scaled alike) when its median
-error falls 10% below the held fit's (`MatchConfig::lensFitFocalMinErrorDrop`, a constant); the fit is
-then built again at the moved focal from the free fit's poses and runs again, and a focal kept leaves
-the held fit as the fit. A lens is kept when it is one to one past the image corner (1.05x) and lowers the median error 10% below the poses' own refinement; a
+Once the pairs are verified, `CalibrateFocalsAndFitLenses` trusts every untrusted pinhole camera the lens fit
+can take (no lens given) at its import focal (an EXIF 35 mm-equivalent focal, the default ratio of the long
+side), poses its pairs from their F there (E = K2^T F K1, pairs under 5 sparse inliers left) and has
+`FitLensesAndReverifyPairs` fit the radial lens (k1, k2) of every pinhole camera that has none and trusts
+its focal, from its verified pairs (`FitLensesFromPairs`): the heaviest `MatchConfig::lensFitMaxPairs` (150)
+that turn 5-45 deg, 200 sparse inliers each, the Sampson error in measured pixels under soft L1 at 1 px,
+each pair's 5-dof pose eliminated, up to `lensFitRounds` (10) rounds of each pose re-estimated through the
+lens, the check of the fit and its restart from the lens doubled (these settings are `static constexpr`
+members of `MatchConfig`). Then the focal check: from the lenses and poses that fit reached, the joint fit
+runs again with focals free (a log scale, a third number beside k1, k2), with the same check and restart,
+first for the estimated focals (the untrusted starts), taken with no bar, then for the trusted ones,
+judged on the fit whose estimated focals already moved: a trusted camera takes the free fit's focal (fx, fy
+scaled alike) when its median error falls 10% below the held fit's (`MatchConfig::lensFitFocalMinErrorDrop`,
+a constant); the fit is then built again at a moved focal from the free fit's poses and runs again, and a
+focal kept leaves the held fit as the fit. A camera whose focal the lens fit does not take (too few pairs,
+an unsolved or folding fit) goes back to untrusted, with no lens and its pairs to their F, before the pairs
+of the changed cameras are verified again (so those it shares with them through F, not through an E at its
+start), and every camera still untrusted
+(also one with a lens given, and all with the lens fit off) is estimated by the view-graph calibration, its
+pairs then verified through E. A lens is kept when it is one to one past the image corner (1.05x) and lowers the median error 10% below the poses' own refinement; a
 camera under 20 eligible pairs, spherical, untrusted, or with a given lens past k1, k2 or that folds
 within the frame (not one to one out to 1.05x its corner) is left as it is, its pairs out of the fit.
 Every pair of a camera whose lens was fitted or whose focal moved (`LensFitReport::CamerasToVerifyAgain`)

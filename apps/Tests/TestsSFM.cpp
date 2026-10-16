@@ -625,6 +625,48 @@ bool ImportMetadataDeterminismTest()
 /*----------------------------------------------------------------*/
 
 
+// An EXIF 35 mm-equivalent focal (Image::LoadMetadata's second rung) seeds the camera's focal and leaves it
+// untrusted: it describes the lens on the full sensor, which a video frame can crop (Tanks and Temples'
+// DJI X5R frames, whose 24 mm tag gives a focal 40% short), so the lens fit fits the focal free with the lens
+// from it. The two fixtures are 192x108 grey images carrying the EXIF block of a DJI X5R and a Sony A7SM2 frame
+// of Tanks and Temples (FocalLength 12 and 21 mm, FocalLengthIn35mmFilm 24 and 21, no focal-plane
+// resolution): the focal is the 35 mm formula on the decoded size
+bool ExifFocalUntrustedTest()
+{
+	TD_TIMER_START();
+	struct Case {
+		const char* file;
+		REAL focalLength35mm;
+	};
+	const Case cases[] = {
+		{"exif_samples/dji_x5r_sample.jpg", REAL(24)},
+		{"exif_samples/sony_a7sm2_sample.jpg", REAL(21)},
+	};
+	for (const Case& c : cases) {
+		Image image(0, MAKE_PATH(c.file));
+		if (!image.LoadMetadata() || !image.HasCamera() || image.GetCameraType() != CameraType::PINHOLE) {
+			VERBOSE("ExifFocalUntrustedTest FAILED: '%s' did not import as a pinhole camera", c.file);
+			return false;
+		}
+		const PinholeCamera& camera = static_cast<const PinholeCamera&>(*image.pCamera);
+		const REAL expected = SQRT(SQUARE((REAL)camera.GetWidth()) + SQUARE((REAL)camera.GetHeight()))*c.focalLength35mm/REAL(43.27);
+		if (camera.fx != expected || camera.fy != expected) {
+			VERBOSE("ExifFocalUntrustedTest FAILED: '%s' focal %g %g, the 35 mm formula gives %g", c.file, camera.fx, camera.fy, expected);
+			return false;
+		}
+		if (camera.TrustIntrinsics()) {
+			VERBOSE("ExifFocalUntrustedTest FAILED: '%s' trusts its 35 mm-equivalent focal %g", c.file, camera.fx);
+			return false;
+		}
+		VERBOSE("ExifFocalUntrustedTest: '%s' %dx%d, focal %g from the 35 mm-equivalent %g mm, untrusted", c.file,
+			camera.GetWidth(), camera.GetHeight(), camera.fx, c.focalLength35mm);
+	}
+	VERBOSE("ExifFocalUntrustedTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+
 // Pose-frame detection: a frames.json declares neither the camera axes it uses nor, for an
 // EXIF-rotated image, how much in-plane rotation separates its camera frame from the working
 // raster (1 quarter turn for the on-disk portrait raster, 2 for the sensor-native landscape one
@@ -3393,6 +3435,13 @@ const LensTestCamera LENS_TEST_FAINT{1920, 1080, REAL(1400), REAL(-1.5e-6), REAL
 // its frame (its corner lies at 0.89): past the fold its undistortion has no answer
 constexpr REAL LENS_TEST_FOLDING_K1 = REAL(-0.9);
 
+// The focal a camera of a lens scene is given, and whether it is trusted (a calibration, a forced focal) or not (an EXIF
+// 35 mm-equivalent focal, the import's default)
+struct LensTestGiven {
+	REAL focalScale; // the given focal, a scale of the true one
+	bool trusted;
+};
+
 enum class LensTestMotion {
 	TURN,   // the second view turns 10-30 deg about a near-vertical axis and moves 0.2-0.8 sideways: the lens shows
 	FORWARD // it moves 0.5-1.5 along the optical axis rolling 6-10 deg about it: the lens moves points along the epipolar lines, and hides
@@ -3415,6 +3464,13 @@ constexpr REAL LENS_TEST_REACH_PERCENTILE = REAL(0.99);      // a camera's reach
 constexpr REAL LENS_TEST_MAX_ERROR_PX = REAL(2);
 // the focal check's bar: a focal the check moved lands within 1% of the true one
 constexpr REAL LENS_TEST_FOCAL_MAX_ERROR = REAL(0.01);
+// The import's default focal of a camera with no EXIF focal, a ratio of its long side (ImportConfig::defaultFocalRatio)
+constexpr REAL LENS_TEST_DEFAULT_FOCAL_RATIO = REAL(1.2);
+// The share of its sparse inliers a pair keeps when verified again while one of its cameras still has an unknown focal
+constexpr double LENS_TEST_MIN_INLIER_SHARE = 0.9;
+// The focal camera B is given in LensFitFocalTest's estimated case, a scale of the true one: 4% short, where the free
+// fit lowers the median error 8% (0.371 -> 0.340 px), under the bar a trusted focal is held to
+constexpr REAL LENS_TEST_ESTIMATED_FOCAL_SCALE = REAL(0.96);
 constexpr REAL LENS_TEST_CROSS_MAX_ERROR_PX = REAL(5);
 // The scene of LensFitRecoveryTest's slow case, and the rounds of pose re-estimation its fit takes more
 // than: its first joint fit reaches 63 px of the 164 at the corner, 18 of its 40 pairs keeping their
@@ -3453,7 +3509,8 @@ Matrix3x3 LensTestRotation(Point3 axis, REAL deg)
 // stored pair weighs its inlier count (unit quality factors, triplet 0.5). truePoses receives each
 // stored pair's true relative pose (x2 = R x1 + t), keyed by the pair's image IDs: neither the order
 // the pairs are built in (a pair that fails leaves a gap) nor their position in scene.pairs
-// (ComputePairsWeights sorts them) names a pair.
+// (ComputePairsWeights sorts them) names a pair. `given`, where not empty, gives each camera its own focal scale and kind
+// instead: an untrusted camera's pairs are verified through F, as the matching verifies them.
 // Every draw is made from the raw output of the std::mt19937, whose sequence the standard fixes, and
 // not through std::uniform_real_distribution or std::normal_distribution, whose algorithms are each
 // standard library's own: so that every platform the suite runs on draws the same scene, to the
@@ -3461,9 +3518,11 @@ Matrix3x3 LensTestRotation(Point3 axis, REAL deg)
 // which a call's arguments are evaluated unspecified.
 void BuildLensTestScene(Scene& scene, const std::vector<LensTestCamera>& cameras,
 	const std::vector<LensTestPairs>& pairs, unsigned seed, std::unordered_map<PairIdx, Pose3D>& truePoses,
-	REAL noisePx = LENS_TEST_NOISE_PX, REAL outlierShare = LENS_TEST_OUTLIER_SHARE, REAL givenFocalScale = REAL(1))
+	REAL noisePx = LENS_TEST_NOISE_PX, REAL outlierShare = LENS_TEST_OUTLIER_SHARE, REAL givenFocalScale = REAL(1),
+	const std::vector<LensTestGiven>& given = {})
 {
 	ASSERT(givenFocalScale > 0);
+	ASSERT(given.empty() || given.size() == cameras.size()); // one entry per camera
 	std::mt19937 rng(seed);
 	// a uniform in [0, 1) at a double's precision: the top 27 bits of one output and the top 26 of the
 	// next, a 53-bit integer scaled by 2^-53
@@ -3481,10 +3540,12 @@ void BuildLensTestScene(Scene& scene, const std::vector<LensTestCamera>& cameras
 		return SQRT(-2.0*std::log(u1))*COS(2.0*M_PI*u2);
 	};
 	std::vector<PinholeCamera> truth;
-	for (const LensTestCamera& c : cameras) {
+	FOREACH(i, cameras) {
+		const LensTestCamera& c = cameras[i];
+		const REAL scale = given.empty() ? givenFocalScale : given[i].focalScale;
 		PinholeCamera* const camera = new PinholeCamera(cv::Size(c.width, c.height),
-			c.focal*givenFocalScale, c.focal*givenFocalScale, REAL(c.width - 1)/2, REAL(c.height - 1)/2);
-		camera->trustIntrinsics = true;
+			c.focal*scale, c.focal*scale, REAL(c.width - 1)/2, REAL(c.height - 1)/2);
+		camera->trustIntrinsics = given.empty() || given[i].trusted;
 		scene.cameras.emplace_back(camera);
 		truth.push_back(PinholeCamera(cv::Size(c.width, c.height),
 			c.focal, c.focal, REAL(c.width - 1)/2, REAL(c.height - 1)/2));
@@ -3734,8 +3795,10 @@ bool LensFitRecoveryTest()
 // lens (LENS_TEST_PINCUSHION_SEED's pincushion given a focal 15% short and 15% long, LENS_TEST_HELD_SEED's
 // barrel given one 15% short), whose held fit fails the check of a fit until it restarts, and that barrel
 // given a focal 20% short, whose free fit from no lens stalls 16% short while its held fit passes the
-// check; given its true focal, the camera keeps it bit for bit and the lens comes out as true within the
-// same bar
+// check; camera B's mild lens given a focal 4% short keeps it while it is trusted (the free fit lowers the
+// median error under lensFitFocalMinErrorDrop) and takes the free fit's within the same bars where it is
+// an untrusted start (an estimate); given its true focal, the camera keeps it bit for bit and the lens
+// comes out as true within the same bar
 bool LensFitFocalTest()
 {
 	TD_TIMER_START();
@@ -3786,6 +3849,36 @@ bool LensFitFocalTest()
 		VERBOSE("LensFitFocalTest: %s, focal %g -> %g (true %g, %.2f%% off), lens %.2f px off, median %.3f held, %.3f free, %.1f s",
 			variant.name, outcome.focalBefore, camera.fx, variant.camera.focal, 100*focalError, lensError,
 			outcome.medianFocalHeld, outcome.medianFocalFree, report.seconds);
+	}
+	for (const bool estimated : {false, true}) {
+		// camera B's mild lens given a focal 4% short: trusted, the focal is a prior the bar protects, and the
+		// free fit's median error falls 8% (under lensFitFocalMinErrorDrop), so it is kept; an untrusted start,
+		// an unknown, the check takes the free fit's focal and the lens is fitted at it
+		Scene scene;
+		std::unordered_map<PairIdx, Pose3D> truePoses;
+		BuildLensTestScene(scene, {LENS_TEST_B}, {{0, 0, LensTestMotion::TURN, 40}}, 7, truePoses,
+			LENS_TEST_NOISE_PX, LENS_TEST_OUTLIER_SHARE, LENS_TEST_ESTIMATED_FOCAL_SCALE);
+		std::unordered_set<CameraPtr> calibrated;
+		if (estimated)
+			calibrated.insert(scene.cameras[0]);
+		const LensFitReport report = FitLensesFromPairs(scene, config, calibrated);
+		const LensFitOutcome& outcome = report.cameras[0];
+		const PinholeCamera& camera = *static_cast<const PinholeCamera*>(scene.cameras[0]);
+		const REAL focalError = ABS(camera.fx/LENS_TEST_B.focal - REAL(1));
+		const REAL lensError = outcome.status == LensFitOutcome::FITTED ? LensCurveError(scene, 0, LENS_TEST_B) : REAL(0);
+		const bool right = estimated ?
+			outcome.focalMoved && camera.fx == camera.fy && focalError <= LENS_TEST_FOCAL_MAX_ERROR &&
+				outcome.status == LensFitOutcome::FITTED && lensError <= LENS_TEST_MAX_ERROR_PX :
+			!outcome.focalMoved && camera.fx == LENS_TEST_ESTIMATED_FOCAL_SCALE*LENS_TEST_B.focal;
+		if (!right) {
+			VERBOSE("LensFitFocalTest FAILED: a mild lens given a focal 4%% short, %s: focal %s %g -> %g (true %g, %.2f%% off), lens status %u, %.2f px off, median %.3f held, %.3f free",
+				estimated ? "estimated" : "trusted", outcome.focalMoved ? "moved" : "kept", outcome.focalBefore, camera.fx,
+				LENS_TEST_B.focal, 100*focalError, (unsigned)outcome.status, lensError, outcome.medianFocalHeld, outcome.medianFocalFree);
+			return false;
+		}
+		VERBOSE("LensFitFocalTest: a mild lens given a focal 4%% short, %s: focal %s %g -> %g (true %g, %.2f%% off), lens %.2f px off, median %.3f held, %.3f free",
+			estimated ? "estimated" : "trusted", outcome.focalMoved ? "moved" : "kept", outcome.focalBefore, camera.fx,
+			LENS_TEST_B.focal, 100*focalError, lensError, outcome.medianFocalHeld, outcome.medianFocalFree);
 	}
 	{
 		// the true focal given: kept bit for bit, and the lens the true one
@@ -4470,6 +4563,149 @@ bool LensFitFocalStageTest()
 	VERBOSE("LensFitFocalStageTest PASSED: focal %g -> %g, rotation median %.2f -> worst %.2f deg, baseline direction median %.2f deg, sparse inliers %zu -> %zu (%s)",
 		outcome.focalBefore, camera.fx, shortRotation, worstRotation, medianDirection, numInliersBefore, numInliersAfter,
 		TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// A camera that does not trust its focal is fitted with its lens straight from the focal it was imported with by the focal
+// and lens stage (CalibrateFocalsAndFitLenses): trusted at it, its pairs posed from their F there, its focal free in the lens
+// fit with no bar, then its pairs verified through E at the focal and lens fitted. Camera A's strong barrel given a focal 20%
+// short (an EXIF 35 mm-equivalent focal of the full sensor on a cropped frame) and given the import's default 1.2 times its
+// long side (65% long) is fitted from that start to LENS_TEST_FOCAL_MAX_ERROR, the lens to LENS_TEST_MAX_ERROR_PX; beside a
+// trusted camera A, an untrusted camera B given 10% short is fitted from its start while A keeps its focal bit for bit; a
+// camera the lens fit cannot take (fewer pairs than lensFitMinPairs), and every untrusted camera when the lens fit is off, goes
+// through the view-graph calibration and then through E at its focal, so that none is left at an unverified start. Every case
+// is judged and reported before the verdict
+bool LensFitUntrustedFocalTest()
+{
+	TD_TIMER_START();
+	const ViewGraphCalibratorConfig vgConfig;
+	// every pair that holds matches has a relative pose and an essential matrix: verified through E
+	const auto VerifiedThroughE = [](const Scene& scene) {
+		for (const ImagePair& pair : scene.pairs)
+			if (pair.HasMatches() && (!pair.relativePose.has_value() || !pair.E.has_value()))
+				return false;
+		return true;
+	};
+	bool passed = true;
+	for (const REAL scale : {REAL(0.8), LENS_TEST_DEFAULT_FOCAL_RATIO*(REAL)LENS_TEST_A.width/LENS_TEST_A.focal}) {
+		// camera A's strong barrel from 40 turning pairs, given a focal 20% short, then the import's default
+		Scene scene;
+		std::unordered_map<PairIdx, Pose3D> truePoses;
+		BuildLensTestScene(scene, {LENS_TEST_A}, {{0, 0, LensTestMotion::TURN, 40}}, 7, truePoses,
+			LENS_TEST_NOISE_PX, LENS_TEST_OUTLIER_SHARE, REAL(1), {{scale, false}});
+		const REAL start = scale*LENS_TEST_A.focal;
+		MatchConfig config;
+		PairsMatcher matcher(scene, config);
+		LensFitReport report;
+		const bool solved = CalibrateFocalsAndFitLenses(matcher, vgConfig, &report);
+		const LensFitOutcome& outcome = report.cameras[0];
+		const PinholeCamera& camera = *static_cast<const PinholeCamera*>(scene.cameras[0]);
+		const REAL focalError = ABS(camera.fx/LENS_TEST_A.focal - REAL(1));
+		const REAL lensError = outcome.status == LensFitOutcome::FITTED ? LensCurveError(scene, 0, LENS_TEST_A) : REAL(-1);
+		if (!solved || outcome.focalBefore != start || !outcome.focalMoved || !camera.TrustIntrinsics() || camera.fx != camera.fy ||
+			focalError > LENS_TEST_FOCAL_MAX_ERROR || outcome.status != LensFitOutcome::FITTED || lensError > LENS_TEST_MAX_ERROR_PX ||
+			!VerifiedThroughE(scene)) {
+			VERBOSE("LensFitUntrustedFocalTest FAILED: a strong lens given %g: the lens fit started from %g, focal %s to %g (true %g, %.2f%% off), lens status %u, %.2f px off, %s",
+				start, outcome.focalBefore, outcome.focalMoved ? "moved" : "kept", camera.fx, LENS_TEST_A.focal, 100*focalError,
+				(unsigned)outcome.status, lensError, VerifiedThroughE(scene) ? "its pairs verified through E" : "some pair not verified through E");
+			passed = false;
+		} else {
+			VERBOSE("LensFitUntrustedFocalTest: a strong lens given %g: fitted from it to %g (true %g, %.2f%% off), lens %.2f px off",
+				start, camera.fx, LENS_TEST_A.focal, 100*focalError, lensError);
+		}
+	}
+	{
+		// the trusted camera A beside the untrusted camera B given 10% short, each with its own turning pairs and 40 cross pairs
+		Scene scene;
+		std::unordered_map<PairIdx, Pose3D> truePoses;
+		BuildLensTestScene(scene, {LENS_TEST_A, LENS_TEST_B},
+			{{0, 0, LensTestMotion::TURN, 40}, {1, 1, LensTestMotion::TURN, 40}, {0, 1, LensTestMotion::TURN, 40}}, 11, truePoses,
+			LENS_TEST_NOISE_PX, LENS_TEST_OUTLIER_SHARE, REAL(1), {{REAL(1), true}, {REAL(0.9), false}});
+		const REAL start = REAL(0.9)*LENS_TEST_B.focal;
+		MatchConfig config;
+		PairsMatcher matcher(scene, config);
+		LensFitReport report;
+		const bool solved = CalibrateFocalsAndFitLenses(matcher, vgConfig, &report);
+		const PinholeCamera& cameraA = *static_cast<const PinholeCamera*>(scene.cameras[0]);
+		const PinholeCamera& cameraB = *static_cast<const PinholeCamera*>(scene.cameras[1]);
+		const REAL focalErrorB = ABS(cameraB.fx/LENS_TEST_B.focal - REAL(1));
+		if (!solved || cameraA.fx != LENS_TEST_A.focal || cameraA.fy != LENS_TEST_A.focal || report.cameras[1].focalBefore != start ||
+			!cameraB.TrustIntrinsics() || focalErrorB > LENS_TEST_FOCAL_MAX_ERROR || !VerifiedThroughE(scene)) {
+			VERBOSE("LensFitUntrustedFocalTest FAILED: a trusted camera beside an untrusted one given 10%% short: A's focal %g %g (true %g), B's lens fit started from %g (its start %g), focal %g (true %g, %.2f%% off), %s",
+				cameraA.fx, cameraA.fy, LENS_TEST_A.focal, report.cameras[1].focalBefore, start, cameraB.fx, LENS_TEST_B.focal,
+				100*focalErrorB, VerifiedThroughE(scene) ? "the pairs verified through E" : "some pair not verified through E");
+			passed = false;
+		} else {
+			VERBOSE("LensFitUntrustedFocalTest: a trusted camera beside an untrusted one given 10%% short: A's focal kept %g, B's %g -> %g (true %g, %.2f%% off)",
+				cameraA.fx, start, cameraB.fx, LENS_TEST_B.focal, 100*focalErrorB);
+		}
+	}
+	{
+		// an untrusted camera B the lens fit cannot take (6 pairs of its own and 6 with A, under lensFitMinPairs), given the
+		// import's default focal (71% long), beside the trusted camera A whose lens it fits: the pairs with A, which the lens
+		// stage verifies again through A's lens while B's focal is still unknown, keep their inliers until the calibration
+		// estimates B and its pairs are verified through E there
+		Scene scene;
+		std::unordered_map<PairIdx, Pose3D> truePoses;
+		const REAL scaleB = LENS_TEST_DEFAULT_FOCAL_RATIO*(REAL)LENS_TEST_B.width/LENS_TEST_B.focal;
+		BuildLensTestScene(scene, {LENS_TEST_A, LENS_TEST_B},
+			{{0, 0, LensTestMotion::TURN, 40}, {1, 1, LensTestMotion::TURN, 6}, {0, 1, LensTestMotion::TURN, 6}}, 11, truePoses,
+			LENS_TEST_NOISE_PX, LENS_TEST_OUTLIER_SHARE, REAL(1), {{REAL(1), true}, {scaleB, false}});
+		const REAL start = scaleB*LENS_TEST_B.focal;
+		std::unordered_map<PairIdx, unsigned> crossInliers; // the sparse inliers of each pair of A and B, as the matching verified them
+		for (const ImagePair& pair : scene.pairs)
+			if (scene.images[pair.ID1].pCamera != scene.images[pair.ID2].pCamera)
+				crossInliers.emplace(PairIdx(pair.ID1, pair.ID2), pair.GetNumFilteredInliers());
+		MatchConfig config;
+		PairsMatcher matcher(scene, config);
+		LensFitReport report;
+		const bool solved = CalibrateFocalsAndFitLenses(matcher, vgConfig, &report);
+		const PinholeCamera& cameraB = *static_cast<const PinholeCamera*>(scene.cameras[1]);
+		double worstShare = 1;
+		for (const auto& [idPair, numBefore] : crossInliers) {
+			unsigned numAfter = 0;
+			for (const ImagePair& pair : scene.pairs)
+				if (PairIdx(pair.ID1, pair.ID2) == idPair)
+					numAfter = pair.GetNumFilteredInliers();
+			worstShare = MINF(worstShare, (double)numAfter/numBefore);
+		}
+		if (!solved || report.cameras[0].status != LensFitOutcome::FITTED || report.cameras[1].status != LensFitOutcome::TOO_FEW_PAIRS ||
+			!cameraB.TrustIntrinsics() || cameraB.fx == start || !VerifiedThroughE(scene) || worstShare < LENS_TEST_MIN_INLIER_SHARE) {
+			VERBOSE("LensFitUntrustedFocalTest FAILED: an untrusted camera with too few pairs beside a trusted one fitted: A's lens status %u, B's %u, B %s at %g (its start %g, true %g), %s, the worst pair of A and B keeping %.2f of its inliers",
+				(unsigned)report.cameras[0].status, (unsigned)report.cameras[1].status, cameraB.TrustIntrinsics() ? "trusted" : "untrusted",
+				cameraB.fx, start, LENS_TEST_B.focal, VerifiedThroughE(scene) ? "the pairs verified through E" : "some pair not verified through E", worstShare);
+			passed = false;
+		} else {
+			VERBOSE("LensFitUntrustedFocalTest: an untrusted camera with too few pairs beside a trusted one fitted: B calibrated %g -> %g (true %g), the worst pair of A and B keeping %.2f of its inliers",
+				start, cameraB.fx, LENS_TEST_B.focal, worstShare);
+		}
+	}
+	for (const bool lensFit : {true, false}) {
+		// an untrusted camera the lens fit cannot take: too few pairs for it (10, under lensFitMinPairs), or the lens fit off
+		const char* const name = lensFit ? "too few pairs" : "the lens fit off";
+		Scene scene;
+		std::unordered_map<PairIdx, Pose3D> truePoses;
+		BuildLensTestScene(scene, {LENS_TEST_A}, {{0, 0, LensTestMotion::TURN, lensFit ? 10u : 40u}}, 7, truePoses,
+			LENS_TEST_NOISE_PX, LENS_TEST_OUTLIER_SHARE, REAL(1), {{REAL(0.85), false}});
+		const REAL start = REAL(0.85)*LENS_TEST_A.focal;
+		MatchConfig config;
+		ASSERT(10 < config.lensFitMinPairs); // the fixture holds fewer pairs than the lens fit needs
+		config.lensFitEnabled = lensFit;
+		PairsMatcher matcher(scene, config);
+		const bool solved = CalibrateFocalsAndFitLenses(matcher, vgConfig);
+		const PinholeCamera& camera = *static_cast<const PinholeCamera*>(scene.cameras[0]);
+		if (!solved || !camera.TrustIntrinsics() || camera.fx == start || !VerifiedThroughE(scene)) {
+			VERBOSE("LensFitUntrustedFocalTest FAILED: %s: %s, focal %g (its start %g), %s", name,
+				camera.TrustIntrinsics() ? "trusted" : "untrusted", camera.fx, start,
+				VerifiedThroughE(scene) ? "its pairs verified through E" : "some pair not verified through E");
+			passed = false;
+		} else {
+			VERBOSE("LensFitUntrustedFocalTest: %s: calibrated %g -> %g, its pairs verified through E", name, start, camera.fx);
+		}
+	}
+	if (!passed)
+		return false;
+	VERBOSE("LensFitUntrustedFocalTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 

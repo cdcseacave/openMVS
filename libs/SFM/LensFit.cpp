@@ -28,6 +28,7 @@
 #include "LensFit.h"
 #include "Scene.h"
 #include "PairsMatcher.h"
+#include "ViewGraphCalibrator.h"
 #pragma push_macro("VERBOSE")
 #undef VERBOSE
 #pragma push_macro("LOG")
@@ -108,6 +109,8 @@ constexpr double LENS_CHECK_MIN_SHARE = 0.85;
 // every fit held short so reached its lens. Starts from fixed lenses do not: from radial changes of -5,
 // -10 and +5% at the corner, the pincushion of 160 px stays short in 14 of 35 scenes
 constexpr double LENS_FIT_RESTART_SCALES[] = {2};
+// The five correspondences a relative pose needs at least: a pair with fewer sparse inliers is not posed from its F
+constexpr size_t LENS_POSE_MIN_MATCHES = 5;
 
 
 // S T R U C T S ///////////////////////////////////////////////////
@@ -289,6 +292,7 @@ struct FitCamera {
 	unsigned idxScene;      // its index in scene.cameras and the report
 	bool free;              // its lens is fitted, else held at `lens`
 	bool freeFocal;         // its focal is fitted too (the focal check's free fit), else held at `lens[2]`
+	bool focalEstimated;    // its focal is an untrusted start, not a prior: the focal check takes the free fit's with no bar
 	double lens[3];         // k1, k2 and q (its focal is `focal` times exp(q)): the start, then the fit
 	Point2d focal, centre;
 	double reach;           // the farthest normalized distorted radius its drawn matches reach
@@ -672,15 +676,21 @@ unsigned RestartFit(std::vector<FitPair>& pairs, std::vector<FitCamera>& cameras
 // a focal short, a pincushion one long: LensFitFocalTest's barrel given 20% short, from 1120 px to 1182 of
 // 1400), which its own check tells. Records both medians and focals on every fitted camera's outcome and,
 // where a focal moved, the free fit's poses in `startPoses` (a relative pose does not depend on the focal),
-// for the fit built again at the moved focal; returns whether any focal moved
+// for the fit built again at the moved focal; returns whether any focal moved. `estimated` picks the cameras it frees:
+// those whose focal is an estimate (FitCamera::focalEstimated), taken with no bar on the error drop, or the trusted ones,
+// held to it; the others stay held, and a fit with none of the kind is not run
 bool CheckFocals(Scene& scene, const std::vector<FitPair>& pairs, const std::vector<FitCamera>& cameras,
-	const std::vector<double>& mediansHeld, const MatchConfig& config, LensFitReport& report, PairPoses& startPoses)
+	const std::vector<double>& mediansHeld, bool estimated, const MatchConfig& config, LensFitReport& report, PairPoses& startPoses)
 {
 	std::vector<FitCamera> startCameras(cameras);
+	bool anyFree = false;
 	for (FitCamera& c : startCameras) {
 		ASSERT(c.lens[2] == 0); // the held fit's focal is the camera's
-		c.freeFocal = c.free;
+		c.freeFocal = c.free && c.focalEstimated == estimated;
+		anyFree = anyFree || c.freeFocal;
 	}
+	if (!anyFree)
+		return false;
 	std::vector<FitPair> freePairs(pairs);
 	std::vector<FitCamera> freeCameras(startCameras);
 	std::vector<unsigned> rounds;
@@ -691,7 +701,7 @@ bool CheckFocals(Scene& scene, const std::vector<FitPair>& pairs, const std::vec
 	bool moved = false;
 	FOREACH(f, freeCameras) {
 		const FitCamera& fc = freeCameras[f];
-		if (!fc.free)
+		if (!fc.freeFocal)
 			continue;
 		PinholeCamera& pinhole = *static_cast<PinholeCamera*>(scene.cameras[fc.idxScene]);
 		LensFitOutcome& outcome = report.cameras[fc.idxScene];
@@ -702,7 +712,7 @@ bool CheckFocals(Scene& scene, const std::vector<FitPair>& pairs, const std::vec
 		outcome.medianFocalFree = mediansFree[f];
 		// written so that a NaN median, which fails every comparison, keeps the focal
 		if (solved && IsLensOneToOne((REAL)fc.lens[0], (REAL)fc.lens[1], LENS_VALID_MARGIN*(REAL)fc.corner/scale) &&
-			mediansFree[f] <= (1.0 - (double)MatchConfig::lensFitFocalMinErrorDrop)*mediansHeld[f]) {
+			(fc.focalEstimated || mediansFree[f] <= (1.0 - (double)MatchConfig::lensFitFocalMinErrorDrop)*mediansHeld[f])) {
 			pinhole.fx *= scale;
 			pinhole.fy *= scale;
 			outcome.focalMoved = true;
@@ -713,6 +723,50 @@ bool CheckFocals(Scene& scene, const std::vector<FitPair>& pairs, const std::vec
 		for (const FitPair& p : freePairs)
 			startPoses[p.idxPair] = std::make_pair(p.R0, p.t0);
 	return moved;
+}
+
+// Every pair of a camera in `cameras` that its verification left with an F and no pose (an untrusted camera's pairs
+// are verified through F), both its cameras pinhole and trusted by now, posed from its F at their focals: E = K2^T F K1,
+// the pose that puts its sparse inliers, normalized by each camera's K, in front of both views (cv::recoverPose at unit
+// focal); its matches as the F verification left them. A pair with fewer than LENS_POSE_MIN_MATCHES sparse inliers is
+// left as it is. Returns the number of pairs posed
+unsigned PosePairsFromF(Scene& scene, const std::unordered_set<CameraPtr>& cameras)
+{
+	unsigned numPosed = 0;
+	FOREACH(idxPair, scene.pairs) {
+		ImagePair& pair = scene.pairs[idxPair];
+		if (!pair.F.has_value() || pair.relativePose.has_value() || !pair.HasMatches())
+			continue;
+		const Image& img1 = scene.images[pair.ID1];
+		const Image& img2 = scene.images[pair.ID2];
+		if (!cameras.count(img1.pCamera) && !cameras.count(img2.pCamera))
+			continue;
+		if (img1.GetCameraType() != CameraType::PINHOLE || img2.GetCameraType() != CameraType::PINHOLE ||
+			!img1.TrustIntrinsics() || !img2.TrustIntrinsics())
+			continue; // the other camera's focal is still unknown
+		const auto [points1, points2] = pair.GetMatchedPoints(img1, img2);
+		if (points1.size() < LENS_POSE_MIN_MATCHES)
+			continue;
+		const PinholeCamera& c1 = *static_cast<const PinholeCamera*>(img1.pCamera);
+		const PinholeCamera& c2 = *static_cast<const PinholeCamera*>(img2.pCamera);
+		std::vector<cv::Point2d> normalized1, normalized2;
+		normalized1.reserve(points1.size());
+		normalized2.reserve(points2.size());
+		FOREACH(k, points1) {
+			normalized1.emplace_back((points1[k].x - c1.cx)/c1.fx, (points1[k].y - c1.cy)/c1.fy);
+			normalized2.emplace_back((points2[k].x - c2.cx)/c2.fx, (points2[k].y - c2.cy)/c2.fy);
+		}
+		const Matrix3x3 E(ImagePair::DecomposeFundamentalMatrix(pair.F.value(), c1.GetK(), c2.GetK()));
+		cv::Mat R, t;
+		if (cv::recoverPose(E, normalized1, normalized2, R, t, 1.0, cv::Point2d(0, 0)) <= 0)
+			continue;
+		pair.E = E;
+		Pose3D& pose = pair.relativePose.emplace();
+		pose.R = R;
+		pose.SetT(Point3(t.at<double>(0), t.at<double>(1), t.at<double>(2)));
+		++numPosed;
+	}
+	return numPosed;
 }
 
 } // namespace
@@ -766,7 +820,7 @@ bool SFM::IsLensOneToOne(REAL k1, REAL k2, REAL radius)
 	return SQRT(sStar)*(1 + k1*sStar + k2*sStar*sStar) > radius;
 }
 
-LensFitReport SFM::FitLensesFromPairs(Scene& scene, const MatchConfig& config)
+LensFitReport SFM::FitLensesFromPairs(Scene& scene, const MatchConfig& config, const std::unordered_set<CameraPtr>& estimated)
 {
 	// a fitted camera reads at least one pair and every pair at least one match; the rotation band
 	// is not empty, the error drops are fractions, and the loss has a scale
@@ -776,7 +830,7 @@ LensFitReport SFM::FitLensesFromPairs(Scene& scene, const MatchConfig& config)
 	static_assert(MatchConfig::lensFitFocalMinErrorDrop >= 0 && MatchConfig::lensFitFocalMinErrorDrop < 1);
 	static_assert(MatchConfig::lensFitLossScale > 0);
 	const auto start = std::chrono::steady_clock::now();
-	bool focalChecked = false;
+	bool focalChecked = false, estimatedChecked = false;
 	PairPoses startPoses; // where the focal check moved a focal, the poses its free fit reached: the fit built again at it starts from them
 	LensFitReport report;
 	const unsigned numCameras = (unsigned)scene.cameras.size();
@@ -888,6 +942,7 @@ LensFitReport SFM::FitLensesFromPairs(Scene& scene, const MatchConfig& config)
 				f.idxScene = c;
 				f.free = roles[c] == Role::FIT;
 				f.freeFocal = false;
+				f.focalEstimated = estimated.count(scene.cameras[c]) != 0;
 				f.lens[0] = f.free ? 0.0 : (double)pinhole.k1;
 				f.lens[1] = f.free ? 0.0 : (double)pinhole.k2;
 				f.lens[2] = 0.0;
@@ -960,19 +1015,26 @@ LensFitReport SFM::FitLensesFromPairs(Scene& scene, const MatchConfig& config)
 			report.numStarts += RestartFit(pairs, cameras, report.reestimatedPoses, storedPairs, startCameras, config, scene.nMaxThreads);
 		}
 		const std::vector<double> mediansAfter(MedianErrors(pairs, cameras));
-		// the focal check, once, from the fit as first built and run: where it moves a focal, the fit is
-		// built again at it (the same pairs, their matches normalized by the moved focal, from the poses the
-		// check's free fit reached) and runs again; where it moves none, this fit is the lens fit
-		if (!focalChecked) {
-			focalChecked = true;
-			if (solved) {
-				const auto startCheck = std::chrono::steady_clock::now();
-				const bool moved = CheckFocals(scene, pairs, cameras, mediansAfter, config, report, startPoses);
-				report.focalSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - startCheck).count();
-				if (moved)
-					continue;
-			}
+		// the focal check from the fit as built and run, once for the estimated focals (taken with no bar), then
+		// once for the trusted ones (held to it), so that a trusted camera is judged on a fit whose estimated
+		// focals already moved (its pairs with them would otherwise credit their correction to its own focal):
+		// where a focal moves, the fit is built again at it (the same pairs, their matches normalized by the
+		// moved focal, from the poses the check's free fit reached) and runs again; where none moves, this fit
+		// is the lens fit
+		bool moved = false;
+		for (const bool estimated : {true, false}) {
+			bool& checked = estimated ? estimatedChecked : focalChecked;
+			if (moved || checked)
+				continue;
+			checked = true;
+			if (!solved)
+				continue;
+			const auto startCheck = std::chrono::steady_clock::now();
+			moved = CheckFocals(scene, pairs, cameras, mediansAfter, estimated, config, report, startPoses);
+			report.focalSeconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - startCheck).count();
 		}
+		if (moved)
+			continue;
 		// the verdict on every fitted camera; a refused one keeps no lens and leaves, and the others
 		// are fitted again without its pairs; a fit the solver could not complete is not judged, and
 		// refuses every camera it fits
@@ -1012,12 +1074,12 @@ LensFitReport SFM::FitLensesFromPairs(Scene& scene, const MatchConfig& config)
 	return report;
 }
 
-LensFitReport SFM::FitLensesAndReverifyPairs(PairsMatcher& pairsMatcher)
+LensFitReport SFM::FitLensesAndReverifyPairs(PairsMatcher& pairsMatcher, const std::unordered_set<CameraPtr>& estimated)
 {
 	TD_TIMER_START();
 	Scene& scene = pairsMatcher.GetScene();
 	const MatchConfig& config = pairsMatcher.GetConfig();
-	const LensFitReport report = FitLensesFromPairs(scene, config);
+	const LensFitReport report = FitLensesFromPairs(scene, config, estimated);
 	FOREACH(c, report.cameras) {
 		const LensFitOutcome& outcome = report.cameras[c];
 		if (outcome.focalBefore > 0)
@@ -1040,6 +1102,24 @@ LensFitReport SFM::FitLensesAndReverifyPairs(PairsMatcher& pairsMatcher)
 			break;
 		default:
 			break;
+		}
+	}
+	// an estimated camera whose focal the fit did not take (fewer eligible pairs than lensFitMinPairs, a fit unsolved or
+	// folding at the focal it reached) is not left at its unverified start: untrusted again, with no lens (one fitted at
+	// that start would not hold at the focal the calibration estimates), its pairs back to the F of their verification,
+	// before the pairs of the changed cameras are verified again: those it shares with them through their F, not through
+	// an E at its start (from the default 71% long, a pair kept 0.52 of its inliers, LensFitUntrustedFocalTest)
+	for (const LensFitOutcome& outcome : report.cameras) {
+		if (!estimated.count(outcome.pCamera) || outcome.focalMoved)
+			continue;
+		PinholeCamera& pinhole = *static_cast<PinholeCamera*>(outcome.pCamera);
+		pinhole.trustIntrinsics = false;
+		pinhole.SetDistortion(0, 0, 0, 0);
+		for (ImagePair& pair : scene.pairs) {
+			if (scene.images[pair.ID1].pCamera != outcome.pCamera && scene.images[pair.ID2].pCamera != outcome.pCamera)
+				continue;
+			pair.relativePose.reset();
+			pair.E.reset();
 		}
 	}
 	// the cameras whose lens was fitted or whose focal the check moved, with or without a lens kept at it:
@@ -1082,6 +1162,48 @@ LensFitReport SFM::FitLensesAndReverifyPairs(PairsMatcher& pairsMatcher)
 		(unsigned)report.FittedCameras().size(), (unsigned)report.cameras.size(), report.seconds, rounds.empty() ? "-" : rounds.c_str(),
 		numPairs, sparseBefore, sparseAfter, denseBefore, denseAfter, numInvalidated, TD_TIMER_GET_FMT().c_str());
 	return report;
+}
+
+bool SFM::CalibrateFocalsAndFitLenses(PairsMatcher& pairsMatcher, const ViewGraphCalibratorConfig& vgConfig, LensFitReport* report)
+{
+	Scene& scene = pairsMatcher.GetScene();
+	const MatchConfig& config = pairsMatcher.GetConfig();
+	// every pinhole camera that does not trust its focal and that the lens fit can take (no lens given) is trusted at the
+	// focal it was imported with, each of its pairs posed from its F there, and its focal fitted with the lens, free with no
+	// bar on the error drop: the view-graph calibration, which reads the uncorrected lens as focal, is left to the others
+	std::unordered_set<CameraPtr> untrusted;
+	LensFitReport lensFit;
+	if (config.lensFitEnabled) {
+		for (const CameraPtr pCamera : scene.cameras) {
+			if (pCamera->GetType() != CameraType::PINHOLE || pCamera->TrustIntrinsics())
+				continue;
+			PinholeCamera& pinhole = *static_cast<PinholeCamera*>(pCamera);
+			if (pinhole.HasDistortion() || pinhole.HasAdditionalDistortion())
+				continue;
+			pinhole.trustIntrinsics = true;
+			untrusted.insert(pCamera);
+		}
+		const unsigned numPosed = PosePairsFromF(scene, untrusted);
+		if (!untrusted.empty())
+			VERBOSE("Focal of %u untrusted cameras fitted with the lens from their import focal: %u of their pairs posed from their F there",
+				(unsigned)untrusted.size(), numPosed);
+		lensFit = FitLensesAndReverifyPairs(pairsMatcher, untrusted);
+	}
+	// the view-graph calibration of every camera still untrusted (the lens fit could not take it, or did not, or is off),
+	// the pairs of every camera it updated then verified through E at its focal
+	if (config.viewGraphCalibrationEnabled && std::any_of(scene.cameras.begin(), scene.cameras.end(), [](const CameraPtr pCamera) {
+		return pCamera->GetType() == CameraType::PINHOLE && !pCamera->TrustIntrinsics(); })) {
+		ViewGraphCalibrator calibrator(vgConfig);
+		if (!calibrator.Solve(scene)) {
+			DEBUG("warning: ViewGraph calibration failed");
+			return false;
+		}
+		if (!calibrator.GetUpdatedCameras().empty())
+			pairsMatcher.ComputeRelativePoses(true, false, calibrator.GetUpdatedCameras());
+	}
+	if (report)
+		*report = lensFit;
+	return true;
 }
 /*----------------------------------------------------------------*/
 

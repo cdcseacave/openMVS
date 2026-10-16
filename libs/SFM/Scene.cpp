@@ -641,28 +641,12 @@ bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, c
 		status.nState.set(Status::STATE::MATCHED);
 	}
 
-	if (config.viewGraphCalibrationEnabled) {
-		// Run ViewGraph calibration in order to improve focal-length and relative poses
-		ViewGraphCalibrator calibrator(vgConfig);
-		if (!calibrator.Solve(*this)) {
-			DEBUG("warning: ViewGraph calibration failed");
-			return false;
-		}
-		// Recompute relative-pose for all pairs with updated image cameras
-		if (!calibrator.GetUpdatedCameras().empty())
-			pairsMatcher.ComputeRelativePoses(true, false, calibrator.GetUpdatedCameras());
-	}
+	// the focals of the cameras that do not trust theirs, and the radial lens of every camera that has none (LensFit.h):
+	// after every pair is verified, before anything reads the pairs' geometry (the pairs export, the triplet and
+	// tree-rotation filters, the clustering, every reconstruction stage)
+	if (!CalibrateFocalsAndFitLenses(pairsMatcher, vgConfig))
+		return false;
 
-	// The radial lens of every camera that has none, fitted from its verified pairs, then every pair
-	// of a fitted camera verified again through it (LensFit.h): after the calibration, whose focal the
-	// fit holds, and before anything reads the pairs' geometry (the pairs export, the triplet and
-	// tree-rotation filters, the clustering, every reconstruction stage). A scene resumed already
-	// matched carries the lens it was fitted, which makes it given: that camera is not fitted again.
-	// A camera that still has no lens -- refused, under the minimum of pairs, or matched by a build
-	// without the fit -- is fitted again: alone it is judged on the same pairs again, but beside a
-	// camera fitted the first time, now held at its lens, a camera refused then can be kept.
-	if (config.lensFitEnabled)
-		FitLensesAndReverifyPairs(pairsMatcher);
 	return true;
 }
 
