@@ -448,6 +448,9 @@ bool ResectionDenseFitWeightTest();
 // single solve fed by the inlier prefix alone does not do, one whose input grows once it is back takes a second
 // solve, and with ResectionConfig::fullBARepeats 0 the adjustment is one solve of the wider input
 bool RepeatedFullAdjustmentTest();
+// A global solve with the per-image observation cap, one camera held and no GPS, keeps the cameras' scale, so the
+// tracks the cap left out of it are still where their observations see them after it
+bool CappedSolveScaleTest();
 
 // A dense (warp-sampled) observation is the less precise measurement, so the track filter and the
 // triangulation hold it to its own multiple of the reprojection bar a described one answers to

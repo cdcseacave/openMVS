@@ -11530,6 +11530,110 @@ bool RepeatedFullAdjustmentTest()
 	return true;
 }
 
+// Twelve arc cameras in a chain, every track seen by three consecutive cameras at its exact projection: per triple a
+// few described tracks, which the per-image observation cap keeps whole, and many dense ones, of which it keeps a few
+// observations an image and leaves most tracks out of the solve. The cameras and the dense points sit at the truth;
+// the described points start CAPPED_SCALE_PUSH further from the cameras (scaled about their centroid), the depth error
+// a solve of a new input corrects. A global solve with the cap applied, one camera held as the reference and no GPS:
+// with nothing else holding the scale, the iterations that bring the described points back also move the cameras along it
+// (+0.83% here), and the dense tracks the cap left out keep their points, so 12% of their observations land past the
+// 4 px bar (mean 2.3 px) and the filter after the solve would drop them. Held, the solve ends at the truth: every
+// camera where it was and every left-out observation on its keypoint.
+bool CappedSolveScaleTest()
+{
+	TD_TIMER_START();
+
+	constexpr unsigned NUM_CAMERAS = 12;
+	constexpr unsigned NUM_DESCRIBED = 30;          // per triple: at most 90 an image, all kept by the cap
+	constexpr unsigned NUM_DENSE = 400;             // per triple: the cap keeps what is left of an image's budget
+	constexpr REAL CAPPED_SCALE_PUSH = 0.02;        // the described points' start, this share further from the cameras
+	constexpr unsigned CAPPED_SCALE_CAP = 100;      // observations an image keeps, whatever the scene's size
+	constexpr double MAX_SCALE_CHANGE = 1e-4;       // the cameras' scale after the solve against the true one
+	constexpr double MAX_LEFT_OUT_PAST_BAR = 0.01;  // share of the left-out observations past the 4 px bar
+	const ResectionConfig config;
+	std::mt19937 rng(20261016);
+	Scene scene;
+	BuildResectionArc(scene, NUM_CAMERAS);
+	for (unsigned k = 0; k + 2 < NUM_CAMERAS; ++k)
+		AddResectionTracks(scene, {k, k + 1, k + 2}, NUM_DESCRIBED, rng);
+	const size_t numDescribedTracks = scene.tracks.size();
+	for (Image& img : scene.images)
+		img.CloseDescribedKeypoints();
+	for (unsigned k = 0; k + 2 < NUM_CAMERAS; ++k)
+		AddResectionTracks(scene, {k, k + 1, k + 2}, NUM_DENSE, rng);
+	std::vector<Point3> trueCenters;
+	for (const Image& img : scene.images)
+		trueCenters.push_back(img.C);
+	Point3 cameraCentroid(0, 0, 0);
+	for (const Point3& c : trueCenters)
+		cameraCentroid += c;
+	cameraCentroid *= REAL(1) / trueCenters.size();
+	for (size_t ti = 0; ti < numDescribedTracks; ++ti)
+		scene.tracks[ti].position = cameraCentroid + (scene.tracks[ti].position - cameraCentroid) * (REAL(1) + CAPPED_SCALE_PUSH);
+	std::vector<Point3> startPoints;
+	for (const Track& track : scene.tracks)
+		startPoints.push_back(track.position);
+	FilterTracks(scene, config.maxReprojError * ResectionConfig::fullBAInputErrorFactor, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+	BAConfig baConfig = config.fullBAConfig;
+	baConfig.maxObservationsPerImage = CAPPED_SCALE_CAP;
+	baConfig.minObservationsForCap = 0;
+	BundleAdjustment::Adjust(scene, baConfig);
+
+	// the scale: the spread of the camera centres about their centroid, against the true one
+	const auto spread = [](const std::vector<Point3>& centers) {
+		Point3 mean(0, 0, 0);
+		for (const Point3& c : centers)
+			mean += c;
+		mean *= REAL(1) / centers.size();
+		double sum = 0;
+		for (const Point3& c : centers)
+			sum += normSq(c - mean);
+		return SQRT(sum / centers.size());
+	};
+	std::vector<Point3> centers;
+	for (const Image& img : scene.images)
+		centers.push_back(img.C);
+	const double scaleChange = spread(centers) / spread(trueCenters) - 1;
+	// the observations of the inlier tracks the solve left out (their points untouched)
+	unsigned leftOut = 0, leftOutTracks = 0, pastBar = 0, solvedDescribed = 0;
+	double sumError = 0;
+	FOREACH(ti, scene.tracks) {
+		const Track& track = scene.tracks[ti];
+		if (!track.IsInlier())
+			continue;
+		if (track.position != startPoints[ti]) {
+			solvedDescribed += ti < numDescribedTracks;
+			continue;
+		}
+		++leftOutTracks;
+		for (const Observation& obs : track) {
+			const Image& img = scene.images[obs.imageID];
+			const auto [proj, valid] = img.ProjectPoint(track.position);
+			const double error = valid ? norm(Point2(proj) - Cast<REAL>(img.keypoints[obs.featureID].pt)) : DBL_MAX;
+			++leftOut;
+			pastBar += error > config.maxReprojError;
+			sumError += MINF(error, 1e3);
+		}
+	}
+	if (leftOut == 0 || solvedDescribed != numDescribedTracks) {
+		VERBOSE("CappedSolveScaleTest FAILED: premise not met: the cap left %u tracks out of the solve and solved %u of the %u "
+			"described ones", leftOutTracks, solvedDescribed, (unsigned)numDescribedTracks);
+		return false;
+	}
+	const double pastShare = (double)pastBar / leftOut;
+	if (ABS(scaleChange) > MAX_SCALE_CHANGE || pastShare > MAX_LEFT_OUT_PAST_BAR) {
+		VERBOSE("CappedSolveScaleTest FAILED: the capped solve changed the cameras' scale by %+.4f%% and left %u of the %u "
+			"observations of the %u tracks it left out past %g px (mean %.2f px); expected within %g%% and %g%%",
+			scaleChange * 100, pastBar, leftOut, leftOutTracks, config.maxReprojError, sumError / leftOut, MAX_SCALE_CHANGE * 100,
+			MAX_LEFT_OUT_PAST_BAR * 100);
+		return false;
+	}
+	VERBOSE("CappedSolveScaleTest PASSED: a capped solve without GPS kept the cameras' scale within %+.4f%% and %u of the %u "
+		"observations of the %u tracks it left out within %g px (mean %.3f px) (%s)", scaleChange * 100, leftOut - pastBar,
+		leftOut, leftOutTracks, config.maxReprojError, sumError / leftOut, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 bool DenseReprojectionBarTest()
 {
 	TD_TIMER_START();

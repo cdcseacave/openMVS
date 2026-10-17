@@ -425,6 +425,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::RepeatedFullAdjustmentTest())
 				return false;
+			if (!SFM::CappedSolveScaleTest())
+				return false;
 			if (!SFM::DenseReprojectionBarTest())
 				return false;
 			if (!SFM::CorroboratedImageTest())

@@ -1081,6 +1081,20 @@ inline ceres::LocalParameterization* CreateSE3PoseManifold() {
 }
 #endif
 
+// The SE(3) manifold of a pose block whose centre keeps one coordinate (0-2) where it is: the quaternion's own
+// manifold for the rotation, the other two centre coordinates free
+#if CERES_VERSION_MAJOR >= 2 && CERES_VERSION_MINOR >= 1
+inline ceres::Manifold* CreateSE3PoseManifoldHoldingCenterCoordinate(int coordinate) {
+	return new ceres::ProductManifold<ceres::QuaternionManifold, ceres::SubsetManifold>{
+		ceres::QuaternionManifold{}, ceres::SubsetManifold(3, {coordinate})};
+}
+#else
+inline ceres::LocalParameterization* CreateSE3PoseManifoldHoldingCenterCoordinate(int coordinate) {
+	return new ceres::ProductParameterization(new ceres::QuaternionParameterization,
+		new ceres::SubsetParameterization(3, {coordinate}));
+}
+#endif
+
 // Threshold of the robust loss the two halves of a pair residual share, in sigmas: past three
 // standard deviations the pair and the model disagree about more than measurement noise, and the
 // residual's pull stops growing rather than dragging a correct model onto a wrong pair.
@@ -1476,6 +1490,7 @@ bool BundleAdjustment::Adjust()
 	}
 
 	// Fix best connected camera (gauge freedom) - unless we have GPS constraints
+	IIndex scaleImgID = NO_ID; // the camera whose centre coordinate holds the scale, if any
 	if (numGPSResiduals == 0) {
 		IIndex bestImgID = NO_ID;
 		FOREACH(i, scene.images) {
@@ -1487,6 +1502,50 @@ bool BundleAdjustment::Adjust()
 		if (bestImgID != NO_ID) {
 			SetParameterBlockConstantIfPresent(problem, poseParams.data() + bestImgID * 7);
 			DEBUG("Fixed view %u (reference, no GPS)", bestImgID);
+			// The reference pose leaves the scale free (the reprojections and the pair terms are all blind to it),
+			// and the iterations of a solve drift it; once the per-image cap leaves tracks out of the solve, their points
+			// stay at the old scale and their observations land pixels off: on Truck the capped solves shrank the
+			// model to 8-42% of its size, a reduced camera system singular along the scale failing its dense Cholesky
+			// factorization, and stranded 74% of the observations the cap left out. Hold it the way COLMAP does:
+			// one centre coordinate of a second camera kept where it is, the coordinate of that camera's largest
+			// offset from the reference, the camera the one with the most residuals among those at least the median
+			// distance from the reference, so that the coordinate held is a long lever and the camera a well-measured
+			// one; held, a capped solve changes the scale by 0.01% and strands 2%
+			if (config.refinePosesRotation && config.refinePosesPosition) {
+				const Point3 refCenter(scene.images[bestImgID].C);
+				const auto inSolve = [&](IIndex i) {
+					return i != bestImgID && scene.images[i].IsValid() && problem.HasParameterBlock(poseParams.data() + i * 7);
+				};
+				std::vector<double> distances;
+				FOREACH(i, scene.images)
+					if (inSolve(i))
+						distances.push_back(norm(Point3(scene.images[i].C) - refCenter));
+				if (!distances.empty()) {
+					std::nth_element(distances.begin(), distances.begin() + distances.size() / 2, distances.end());
+					const double medianDistance = distances[distances.size() / 2];
+					FOREACH(i, scene.images) {
+						if (!inSolve(i) || norm(Point3(scene.images[i].C) - refCenter) < medianDistance)
+							continue;
+						if (scaleImgID == NO_ID || numReprojResidualsPerImage[scaleImgID] < numReprojResidualsPerImage[i])
+							scaleImgID = i;
+					}
+				}
+				if (scaleImgID != NO_ID) {
+					const Point3 offset(Point3(scene.images[scaleImgID].C) - refCenter);
+					const int coordinate = ABS(offset.x) >= ABS(offset.y) ?
+						(ABS(offset.x) >= ABS(offset.z) ? 0 : 2) : (ABS(offset.y) >= ABS(offset.z) ? 1 : 2);
+					if (offset[coordinate] == 0) {
+						scaleImgID = NO_ID;
+					} else {
+						#if CERES_VERSION_MAJOR >= 2 && CERES_VERSION_MINOR >= 1
+						problem.SetManifold(poseParams.data() + scaleImgID * 7, CreateSE3PoseManifoldHoldingCenterCoordinate(coordinate));
+						#else
+						problem.SetParameterization(poseParams.data() + scaleImgID * 7, CreateSE3PoseManifoldHoldingCenterCoordinate(coordinate));
+						#endif
+						DEBUG("Held centre coordinate %d of view %u (scale, no GPS)", coordinate, scaleImgID);
+					}
+				}
+			}
 		}
 	}
 
@@ -1558,6 +1617,15 @@ bool BundleAdjustment::Adjust()
 	FOREACH(i, scene.images)
 		if (scene.images[i].IsValid())
 			QuaternionAndCenterToPose3D(poseParams.data() + i * 7, scene.images[i]);
+	// The held coordinate fixed the scale of this solve only: the pose covariances (ComputePoseUncertainty) treat that
+	// camera like any other and bound the free scale themselves, so it gets its whole pose manifold back
+	if (scaleImgID != NO_ID) {
+		#if CERES_VERSION_MAJOR >= 2 && CERES_VERSION_MINOR >= 1
+		problem.SetManifold(poseParams.data() + scaleImgID * 7, CreateSE3PoseManifold());
+		#else
+		problem.SetParameterization(poseParams.data() + scaleImgID * 7, CreateSE3PoseManifold());
+		#endif
+	}
 
 	// Update camera intrinsics if refined
 	if (config.IsRefiningIntrinsics() && !intrinsicParams.empty()) {
