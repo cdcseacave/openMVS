@@ -442,6 +442,12 @@ bool ResectionInlierBarTest();
 // systematic error and outnumber the described ones pull the pose of the robust fit over all of
 // them, and the weighted polish brings it back to the described ones.
 bool ResectionDenseFitWeightTest();
+// A full adjustment fits the observations within ResectionConfig::fullBAInputErrorFactor x the reprojection bar of the
+// model and runs again while some camera's input to the next solve differs enough from what it gave this one
+// (AdjustRepeated): a camera whose observations all lie between the bar and 3x it comes back in one solve, which a
+// single solve fed by the inlier prefix alone does not do, one whose input grows once it is back takes a second
+// solve, and with ResectionConfig::fullBARepeats 0 the adjustment is one solve of the wider input
+bool RepeatedFullAdjustmentTest();
 
 // A dense (warp-sampled) observation is the less precise measurement, so the track filter and the
 // triangulation hold it to its own multiple of the reprojection bar a described one answers to

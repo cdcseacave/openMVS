@@ -85,6 +85,27 @@ struct SFM_API ResectionConfig
 	unsigned triangulateEvery{0};       // Run triangulation every N registered images (0 = disabled)
 	unsigned localBAEvery{10};          // Run local BA every N registered images (0 = disabled)
 	std::array<unsigned, 3> fullBAEvery{25, 50, 100}; // Run full BA every N registered images (0 = disabled)
+	unsigned fullBARepeats{4};          // Solves a full BA may run after its first (AdjustRepeated), each one only while the
+	                                    // observations the next solve would fit differ enough from the ones the last one
+	                                    // fitted; 0 = one solve of the observations within fullBAInputErrorFactor x
+	                                    // maxReprojError. Playground's pinhole-verified matching needs them (F1 +0.017
+	                                    // over one solve, which leaves two images off in every run), and its first full
+	                                    // adjustments and 2678a364's relocating cameras take all five solves
+	// constant: the observations a full BA fits are the ones within this multiple of maxReprojError of the model,
+	// filtered just before each solve, the filter after it holding the model to maxReprojError again: a camera placed
+	// a few degrees off has its ties to the rest of the model a few pixels past the bar at its current pose, outside
+	// the inlier prefix, so no solve of the prefix alone brings it back. Playground's pinhole-verified matching left
+	// its turning stretch 6.6 deg off with the lens right, its ties 4-14 px off the bent poses, and 3x brought it back;
+	// on the eleven verified captures with the lens fitted, a tie or better on every capture
+	static constexpr float fullBAInputErrorFactor = 3.f;
+	// constant: another solve runs while some camera's input changes by at least this share of the observations it
+	// gave the last solve (the observations the next solve's input adds or removes); every share above it skips solves
+	// after which a camera still turns 1-4 deg, and 0.08 saves 6% of the time on the eleven verified captures but leaves
+	// 7 of 5936fac3's images unregistered in two runs of three
+	static constexpr float fullBARepeatMinChange = 0.05f;
+	// constant: a camera holding fewer observations in the input is left out of that share; at 300 the share already
+	// misses a camera of 2678a364 relocating 13 deg while it holds few observations
+	static constexpr unsigned fullBARepeatMinObservations = 100;
 	unsigned minRefineExtIntrs{100};    // Min number of registered images to refine extended intrinsics in full BA (0 = disabled)
 
 	float ratioCorrespondences{0.3f};   // Min ratio of 2D-3D correspondences to best next image to accept for bundle resection (0 = disabled)
@@ -179,6 +200,20 @@ struct SFM_API ResectionConfig
 		extendedBAConfig.robustThreshold = 2.f;
 	}
 };
+
+/**
+ * @brief Full bundle adjustment of a model held to config.maxReprojError, repeated while what it fits keeps changing
+ *
+ * Each solve fits the observations within ResectionConfig::fullBAInputErrorFactor x maxReprojError of the model (the
+ * track filter at that bar just before it); after it the filter holds the model to the bar again and the tracks left
+ * without a point are triangulated again, which is what the next solve would fit. A solve that reached its minimum
+ * differs from the next one only through that input, so another one runs, up to config.fullBARepeats of them, only
+ * while some camera holding fullBARepeatMinObservations observations in the input has at least fullBARepeatMinChange
+ * of them added or removed. The model is left filtered at maxReprojError. Callable by any adjustment that holds its
+ * model to the resection's bars, not only the resection's own.
+ * @return the number of solves
+ */
+SFM_API unsigned AdjustRepeated(Scene& scene, const BAConfig& baConfig, const ResectionConfig& config);
 
 /**
  * @brief Incremental camera resection using PnP

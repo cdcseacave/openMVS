@@ -11387,6 +11387,149 @@ bool ResectionDenseFitWeightTest()
 }
 
 
+// Five arc cameras observe 300 tracks at their exact projections, and camera 2's stored pose is put off its true
+// one the way a camera placed before the lens was known sits in the model, its observations several pixels off the
+// points the four others hold exactly:
+// - turned REPEATED_TEST_TURN_DEG about its vertical axis: every observation 8.7-9.4 px off, past the 4 px bar and
+//   within 3 x 4 = 12 px. A single solve of the inlier prefix has nothing to move the camera with and leaves it off;
+//   the repeated adjustment fits them, brings the camera back in one solve and stops there, the next solve's input
+//   being the same as this one's;
+// - rolled REPEATED_TEST_ROLL_DEG about its optical axis: its observations 0.8-20 px off, the ones near the image
+//   centre within 12 px and the ones near the corners past it. The first solve brings the camera back from the inner
+//   ones, the outer ones then enter the input, which changes far more than the share of the camera's input that calls
+//   for another solve, and the second solve changes nothing, so the adjustment ends after two;
+// - rolled REPEATED_TEST_SHORT_ROLL_DEG with solves of one iteration: the first solve stops short of the camera's
+//   pose and the next ones finish the way; with ResectionConfig::fullBARepeats 0 the adjustment is that first solve
+//   alone, the camera left off where it stopped, exactly as one solve of the 12 px input leaves it.
+bool RepeatedFullAdjustmentTest()
+{
+	TD_TIMER_START();
+
+	constexpr unsigned NUM_TRACKS = 300;
+	constexpr IIndex OFF = 2;
+	constexpr REAL REPEATED_TEST_TURN_DEG = 1; // 8.7 px at a 500 px focal, the middle of 4-12 px
+	constexpr REAL REPEATED_TEST_ROLL_DEG = 7; // 0.8-20 px off: the points project within 163 px of the image centre
+	constexpr REAL REPEATED_TEST_SHORT_ROLL_DEG = 10; // with one iteration a solve leaves it 0.05 deg off
+	constexpr double MAX_RECOVERED_ROTATION_DEG = 0.02; // where a recovered camera has to end
+	constexpr double MIN_SHORT_ROTATION_DEG = 0.04; // where one one-iteration solve leaves the short-rolled camera
+	const ResectionConfig config;
+	struct Outcome {
+		double rotationError = 0;          // degrees off its true rotation after the adjustment
+		unsigned prefixObservations = 0;   // of its observations, the ones in an inlier prefix after it
+		unsigned solves = 0;               // solves the adjustment ran (0 = a single solve of the prefix)
+		double minError = DBL_MAX, maxError = 0; // its observations' errors at the pose it started from
+		unsigned withinInput = 0;          // of them, the ones within the 12 px input bar
+		RMatrix R;                         // its rotation after the adjustment
+	};
+	enum Mode { PREFIX, INPUT_ONCE, REPEATED };
+	// the arc scene with camera OFF moved by `offset`, the observations filtered at the bar, then a single solve of
+	// the inlier prefix, a single solve of the 12 px input (the filter at the bar after either), or the repeated
+	// adjustment with `repeats`
+	const auto adjust = [&](const RMatrix& offset, Mode mode, unsigned repeats, unsigned maxIterations) {
+		Outcome out;
+		std::mt19937 rng(20261015);
+		Scene scene;
+		BuildResectionArc(scene, 5);
+		AddResectionTracks(scene, {0, 1, 2, 3, 4}, NUM_TRACKS, rng);
+		Image& img = scene.images[OFF];
+		const RMatrix trueR(img.R);
+		img.R = offset * trueR;
+		for (const Track& track : scene.tracks) {
+			for (const Observation& obs : track.observations) {
+				if (obs.imageID != OFF)
+					continue;
+				const auto [proj, valid] = img.ProjectPoint(track.position);
+				ASSERT(valid);
+				const double error = norm(Point2(proj) - Cast<REAL>(img.keypoints[obs.featureID].pt));
+				out.minError = MINF(out.minError, error);
+				out.maxError = MAXF(out.maxError, error);
+				out.withinInput += error < ResectionConfig::fullBAInputErrorFactor * config.maxReprojError;
+			}
+		}
+		ResectionConfig cfg = config;
+		cfg.fullBARepeats = repeats;
+		BAConfig baConfig = cfg.fullBAConfig;
+		baConfig.maxIterations = maxIterations;
+		FilterTracks(scene, cfg.maxReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
+		if (mode == REPEATED) {
+			out.solves = AdjustRepeated(scene, baConfig, cfg);
+		} else {
+			if (mode == INPUT_ONCE)
+				FilterTracks(scene, cfg.maxReprojError * ResectionConfig::fullBAInputErrorFactor, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
+			BundleAdjustment::Adjust(scene, baConfig);
+			FilterTracks(scene, cfg.maxReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
+		}
+		out.R = img.R;
+		out.rotationError = RotationErrorDeg(img.R, trueR);
+		for (const Track& track : scene.tracks)
+			for (const Observation& obs : track)
+				out.prefixObservations += obs.imageID == OFF;
+		return out;
+	};
+
+	const unsigned iterations = config.fullBAConfig.maxIterations;
+	const RMatrix turn(Point3(0, 1, 0), D2R(REPEATED_TEST_TURN_DEG));
+	const RMatrix roll(Point3(0, 0, 1), D2R(REPEATED_TEST_ROLL_DEG));
+	const RMatrix shortRoll(Point3(0, 0, 1), D2R(REPEATED_TEST_SHORT_ROLL_DEG));
+	const Outcome turnedPrefix = adjust(turn, PREFIX, config.fullBARepeats, iterations);
+	const Outcome turned = adjust(turn, REPEATED, config.fullBARepeats, iterations);
+	const Outcome rolled = adjust(roll, REPEATED, config.fullBARepeats, iterations);
+	const Outcome shortRepeated = adjust(shortRoll, REPEATED, config.fullBARepeats, 1);
+	const Outcome shortOnce = adjust(shortRoll, REPEATED, 0, 1);
+	const Outcome shortInput = adjust(shortRoll, INPUT_ONCE, 0, 1);
+	// the premises: the turned camera's observations all past the bar and within the input bar; the rolled one's
+	// partly within the input bar, enough of them to bring it back and few enough for the rest to change its input
+	const double inputBar = ResectionConfig::fullBAInputErrorFactor * config.maxReprojError;
+	if (config.fullBARepeats == 0 || turned.minError <= config.maxReprojError || turned.maxError >= inputBar ||
+		rolled.withinInput < NUM_TRACKS / 4 || rolled.withinInput > NUM_TRACKS * 9 / 10) {
+		VERBOSE("RepeatedFullAdjustmentTest FAILED: premise not met: %u repeats by default, the turned camera's observations "
+			"are %.2f-%.2f px off (all between %g and %g expected), %u of the rolled one's (%.2f-%.2f px off) are within %g px "
+			"(%u-%u expected)", config.fullBARepeats, turned.minError, turned.maxError, config.maxReprojError, inputBar,
+			rolled.withinInput, rolled.minError, rolled.maxError, inputBar, NUM_TRACKS / 4, NUM_TRACKS * 9 / 10);
+		return false;
+	}
+	// a single solve of the prefix does not move the turned camera, and none of its observations comes back
+	if (turnedPrefix.rotationError < 0.9*REPEATED_TEST_TURN_DEG || turnedPrefix.prefixObservations != 0) {
+		VERBOSE("RepeatedFullAdjustmentTest FAILED: a single solve of the inlier prefix leaves the turned camera %.4f deg off "
+			"with %u observations in the prefix; expected it left %g deg off with none", turnedPrefix.rotationError,
+			turnedPrefix.prefixObservations, REPEATED_TEST_TURN_DEG);
+		return false;
+	}
+	for (const auto& [name, out, solves] : {std::make_tuple("turned", turned, 1u), std::make_tuple("rolled", rolled, 2u)}) {
+		if (out.rotationError > MAX_RECOVERED_ROTATION_DEG || out.prefixObservations != NUM_TRACKS || out.solves != solves) {
+			VERBOSE("RepeatedFullAdjustmentTest FAILED: the %s camera ends %.4f deg off with %u of its %u observations in "
+				"the prefix after %u solves; expected it within %g deg with all of them after %u", name, out.rotationError,
+				out.prefixObservations, NUM_TRACKS, out.solves, MAX_RECOVERED_ROTATION_DEG, solves);
+			return false;
+		}
+	}
+	// solves of one iteration: repeated, the camera comes back; with no repeats, one solve, the camera left where the
+	// 12 px input's single solve leaves it
+	if (shortRepeated.rotationError > MAX_RECOVERED_ROTATION_DEG || shortRepeated.solves < 2) {
+		VERBOSE("RepeatedFullAdjustmentTest FAILED: with solves of one iteration the repeated adjustment leaves the camera "
+			"%.4f deg off after %u solves; expected it within %g deg after two or more", shortRepeated.rotationError,
+			shortRepeated.solves, MAX_RECOVERED_ROTATION_DEG);
+		return false;
+	}
+	if (shortOnce.solves != 1 || shortOnce.rotationError < MIN_SHORT_ROTATION_DEG ||
+		RotationErrorDeg(shortOnce.R, shortInput.R) > 1e-9) {
+		VERBOSE("RepeatedFullAdjustmentTest FAILED: with no repeats and solves of one iteration the adjustment ran %u solves "
+			"and left the camera %.4f deg off, %.2e deg from where one solve of the 12 px input leaves it; expected one solve, "
+			"at least %g deg off, at that same pose", shortOnce.solves, shortOnce.rotationError,
+			RotationErrorDeg(shortOnce.R, shortInput.R), MIN_SHORT_ROTATION_DEG);
+		return false;
+	}
+	VERBOSE("RepeatedFullAdjustmentTest PASSED: a camera turned %g deg (observations %.2f-%.2f px off) stays %.4f deg off "
+		"through a single solve of the inlier prefix and ends %.4f deg off after %u solve of the repeated adjustment; rolled "
+		"%g deg (%u of %u observations within %g px) it ends %.4f deg off after %u solves; rolled %g deg with solves of one "
+		"iteration it ends %.4f deg off after %u solves, and %.4f deg off after the single solve of no repeats (%s)",
+		REPEATED_TEST_TURN_DEG, turned.minError, turned.maxError, turnedPrefix.rotationError, turned.rotationError,
+		turned.solves, REPEATED_TEST_ROLL_DEG, rolled.withinInput, NUM_TRACKS, inputBar, rolled.rotationError, rolled.solves,
+		REPEATED_TEST_SHORT_ROLL_DEG, shortRepeated.rotationError, shortRepeated.solves, shortOnce.rotationError,
+		TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 bool DenseReprojectionBarTest()
 {
 	TD_TIMER_START();

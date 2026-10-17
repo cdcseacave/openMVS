@@ -562,6 +562,64 @@ void Resection::ExcludeImages(const IIndexArr& imageIDs)
 	excludedImages.insert(imageIDs.begin(), imageIDs.end());
 }
 
+unsigned SFM::AdjustRepeated(Scene& scene, const BAConfig& baConfig, const ResectionConfig& config)
+{
+	ASSERT(config.maxReprojError > 0.f);
+	const float inputErrorPixels = config.maxReprojError * ResectionConfig::fullBAInputErrorFactor;
+	const auto Filter = [&](float bar) {
+		FilterTracks(scene, bar, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+	};
+	// per image and keypoint: bit 1 = in the input of the solve that ran, bit 2 = in the input of the next one
+	std::vector<std::vector<uint8_t>> input(config.fullBARepeats > 0 ? scene.images.size() : 0);
+	FOREACH(i, input)
+		if (scene.images[i].IsValid())
+			input[i].assign(scene.images[i].keypoints.size(), 0);
+	const auto Mark = [&](uint8_t bit) {
+		for (const Track& track : scene.tracks) {
+			if (!track.IsInlier())
+				continue;
+			for (const Observation& obs : track) {
+				ASSERT(obs.featureID < input[obs.imageID].size()); // an inlier prefix holds valid images only
+				input[obs.imageID][obs.featureID] |= bit;
+			}
+		}
+	};
+	Filter(inputErrorPixels);
+	unsigned solves = 0;
+	double change = 0;
+	for (;;) {
+		if (!input.empty())
+			Mark(1);
+		BundleAdjustment::Adjust(scene, baConfig);
+		++solves;
+		Filter(config.maxReprojError);
+		if (solves > config.fullBARepeats)
+			break;
+		// the tracks left without a point triangulated again, and what the next solve would fit from the model
+		TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold);
+		Filter(inputErrorPixels);
+		Mark(2);
+		// the largest share of one camera's input that the next solve's input adds or removes
+		change = 0;
+		for (std::vector<uint8_t>& bits : input) {
+			unsigned before = 0, changed = 0;
+			for (uint8_t& b : bits) {
+				before += b & 1;
+				changed += b == 1 || b == 2;
+				b = 0;
+			}
+			if (before >= ResectionConfig::fullBARepeatMinObservations)
+				change = MAXF(change, (double)changed / before);
+		}
+		if (change < ResectionConfig::fullBARepeatMinChange) {
+			Filter(config.maxReprojError);
+			break;
+		}
+	}
+	DEBUG("Full adjustment ran %u solve(s), the last input change %.1f%% of a camera's input", solves, change * 100);
+	return solves;
+}
+
 bool Resection::RegisterImages()
 {
 	TD_TIMER_STARTD();
@@ -596,13 +654,13 @@ bool Resection::RegisterImages()
 			// filter first so the observations of the images registered since the last filtering enter the
 			// inlier prefix the BA iterates, then re-triangulate only the tracks left without a valid
 			// position (real outliers and never-triangulated tracks): a track that merely gained a newly
-			// valid view keeps the position the previous BA refined instead of being reset to a linear solve
+			// valid view keeps the position the previous BA refined instead of being reset to a linear solve. The
+			// adjustment fits a wider bar than the model is held to and repeats while what it fits keeps changing
 			FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
 			TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold);
 			const bool refineExtended = config.minRefineExtIntrs > 0 &&
 				scene.status.nCalibratedImages + registeredCount >= config.minRefineExtIntrs;
-			BundleAdjustment::Adjust(scene, refineExtended ? config.extendedBAConfig : config.fullBAConfig);
-			FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+			AdjustRepeated(scene, refineExtended ? config.extendedBAConfig : config.fullBAConfig, config);
 			lastRegistered.clear();
 			avgInliersRatio.Clear();
 			sinceFullBA = 0;
@@ -695,8 +753,7 @@ bool Resection::RegisterImages()
 	if (sinceFullBA > 0) {
 		TriangulateTracks(scene, false, config.maxReprojError, config.minAngleThreshold);
 		config.extendedBAConfig.maxIterations = 100;
-		BundleAdjustment::Adjust(scene, config.extendedBAConfig);
-		FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+		AdjustRepeated(scene, config.extendedBAConfig, config);
 	}
 
 	// Update scene status
