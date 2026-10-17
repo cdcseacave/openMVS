@@ -360,6 +360,9 @@ bool HEIFMetadataTest();
 bool ImportMetadataDeterminismTest();
 // An EXIF 35 mm-equivalent focal seeds the camera's focal untrusted (Image::LoadMetadata)
 bool ExifFocalUntrustedTest();
+// The camera model an import gives every image: read from the metadata by default, forced spherical or
+// pinhole by ImportConfig::cameraType (an equirectangular panorama that carries no projection tag)
+bool CameraTypeImportTest();
 
 // Pose-frame detection: recover both the camera-axes convention and, for EXIF-rotated images,
 // the in-plane rotation of an imported frames.json from the matched pairs

@@ -283,10 +283,15 @@ void RegisterBindings()
 		.value("AUTO", SFM::FramesConvention::AUTO)
 		.value("ARKIT", SFM::FramesConvention::ARKIT)
 		.value("OPENCV", SFM::FramesConvention::OPENCV);
+	enum_<SFM::CameraType>("CameraType")
+		.value("UNDEFINED", SFM::CameraType::UNDEFINED)
+		.value("PINHOLE", SFM::CameraType::PINHOLE)
+		.value("SPHERICAL", SFM::CameraType::SPHERICAL);
 
 	// SFM::ImportConfig — image import + camera priors
 	class_<SFM::ImportConfig>("ImportConfig")
 		.def_readwrite("default_focal_ratio", &SFM::ImportConfig::defaultFocalRatio)
+		.def_readwrite("camera_type", &SFM::ImportConfig::cameraType)
 		.def_readwrite("focal_length", &SFM::ImportConfig::focalLength)
 		.def_readwrite("k1", &SFM::ImportConfig::k1)
 		.def_readwrite("k2", &SFM::ImportConfig::k2)

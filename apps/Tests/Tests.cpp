@@ -251,6 +251,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::ExifFocalUntrustedTest())
 				return false;
+			if (!SFM::CameraTypeImportTest())
+				return false;
 			if (!SFM::TestSimilarityTransform())
 				return false;
 			if (!SFM::KnownPosesImportTest())

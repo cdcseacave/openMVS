@@ -156,7 +156,9 @@ public:
 
 	// Load EXIF metadata and initialize view camera (does not decode pixels)
 	//  - defaultFocalRatio: default focal length to image width ratio if EXIF data is missing
-	bool LoadMetadata(float defaultFocalRatio = 1.2f);
+	//  - cameraType: the camera model to create; UNDEFINED takes it from the metadata (spherical when it
+	//    tags the image equirectangular, else pinhole)
+	bool LoadMetadata(float defaultFocalRatio = 1.2f, CameraType cameraType = CameraType::UNDEFINED);
 
 	// Load image pixels from file
 	//  - gray: load image as grayscale if true, otherwise as color

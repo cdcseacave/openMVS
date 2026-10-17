@@ -666,6 +666,65 @@ bool ExifFocalUntrustedTest()
 }
 /*----------------------------------------------------------------*/
 
+// The camera model ImportConfig::cameraType gives every imported image. A panorama whose file carries no
+// equirectangular projection tag (Holo360D's 2880x1440 JPEGs carry none) imports as a pinhole by default, the
+// model the metadata gives; forced spherical, every image gets a SphericalCamera and the import shares one camera
+// among them; forced pinhole, the same file stays a pinhole. The fixtures are two 64x32 grey JPEGs written
+// here (the 2:1 shape an equirectangular image needs)
+bool CameraTypeImportTest()
+{
+	TD_TIMER_START();
+	const ScopedTempDir tmpDir(_T("CameraTypeImportTest"));
+	if (!tmpDir.IsValid())
+		return false;
+	constexpr int width = 64, height = 32; // equirectangular: width = 2 x height
+	for (unsigned i = 0; i < 2; ++i) {
+		const cv::Mat grey(height, width, CV_8UC3, cv::Scalar::all(96 + 32 * i));
+		if (!cv::imwrite(tmpDir(String::FormatString("pano%u.jpg", i)), grey)) {
+			VERBOSE("CameraTypeImportTest FAILED: cannot write the fixture images");
+			return false;
+		}
+	}
+	struct Case {
+		CameraType forced;
+		CameraType expected;
+	};
+	const Case cases[] = {
+		{CameraType::UNDEFINED, CameraType::PINHOLE},
+		{CameraType::SPHERICAL, CameraType::SPHERICAL},
+		{CameraType::PINHOLE, CameraType::PINHOLE},
+	};
+	for (const Case& c : cases) {
+		Scene scene;
+		ImportConfig importCfg;
+		importCfg.cameraType = c.forced;
+		if (!scene.Import(tmpDir.Path(), importCfg) || scene.images.size() != 2) {
+			VERBOSE("CameraTypeImportTest FAILED: the import (camera type %s) did not load the two images",
+				CameraTypeToString(c.forced).c_str());
+			return false;
+		}
+		for (const Image& image : scene.images) {
+			if (!image.HasCamera() || image.GetCameraType() != c.expected) {
+				VERBOSE("CameraTypeImportTest FAILED: camera type %s gave '%s' a %s camera, %s expected",
+					CameraTypeToString(c.forced).c_str(), Util::getFileName(image.fileName).c_str(),
+					image.HasCamera() ? CameraTypeToString(image.GetCameraType()).c_str() : "no",
+					CameraTypeToString(c.expected).c_str());
+				return false;
+			}
+		}
+		if (scene.cameras.size() != 1) {
+			VERBOSE("CameraTypeImportTest FAILED: camera type %s left %u cameras for two images of one size",
+				CameraTypeToString(c.forced).c_str(), (unsigned)scene.cameras.size());
+			return false;
+		}
+		VERBOSE("CameraTypeImportTest: camera type %s -> %s", CameraTypeToString(c.forced).c_str(),
+			CameraTypeToString(c.expected).c_str());
+	}
+	VERBOSE("CameraTypeImportTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
 
 // Pose-frame detection: a frames.json declares neither the camera axes it uses nor, for an
 // EXIF-rotated image, how much in-plane rotation separates its camera frame from the working

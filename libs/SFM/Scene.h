@@ -40,6 +40,10 @@ namespace SFM {
  */
 struct SFM_API ImportConfig {
 	float defaultFocalRatio = 1.2f;  // fallback focal = ratio * max(width,height)
+	// camera model of every image: UNDEFINED reads it from the image metadata (an equirectangular
+	// projection tag makes a spherical camera, anything else a pinhole), PINHOLE or SPHERICAL forces it
+	// (an equirectangular panorama whose file carries no projection tag)
+	CameraType cameraType = CameraType::UNDEFINED;
 	float focalLength = 0.f;         // force focal length (in pixels) for specified images (0 = disabled)
 	float k1 = 0.f;                  // force k1 distortion coefficient (0 = not used)
 	float k2 = 0.f;                  // force k2 distortion coefficient (0 = not used)

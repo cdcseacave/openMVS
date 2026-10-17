@@ -113,7 +113,7 @@ bool Image::SavePixels() const
 	return true;
 }
 
-bool Image::LoadMetadata(float defaultFocalRatio)
+bool Image::LoadMetadata(float defaultFocalRatio, CameraType cameraType)
 {
 	if (fileName.empty()) {
 		VERBOSE("Image::LoadMetadata: empty file name");
@@ -321,7 +321,9 @@ bool Image::LoadMetadata(float defaultFocalRatio)
 		fx = fy = defaultFocalRatio * (REAL)MAXF(w, h);
 	}
 
-	// Instantiate per-image camera
+	// Instantiate per-image camera, of the model the caller forces or else the one the metadata gives
+	if (cameraType != CameraType::UNDEFINED)
+		isSpherical = (cameraType == CameraType::SPHERICAL);
 	if (isSpherical) {
 		if (w != 2 * h) {
 			VERBOSE("warning: image '%s' is marked spherical but has %dx%d; equirectangular input requires width == 2 * height",

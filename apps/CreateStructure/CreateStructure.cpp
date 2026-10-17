@@ -84,6 +84,7 @@ float fTripletKeepMaxShort;
 float fTripletSecondFaceScore;
 String strROMA2Provider;
 float defaultFocalRatio;
+int nCameraType;
 float focalLength;
 float k1;
 float k2;
@@ -188,6 +189,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("roma2-min-overlap", boost::program_options::value(&OPT::fROMA2MinOverlap)->default_value(0.10f), "dense matching: the verdict, as the smaller of the two inlier areas one fitted geometry explains -- of the first image's confident cells and of the second's (0.10 is about 0.15-0.17 of true overlap, 0.15 about 0.25; 0 admits every pair)")
 		("roma2-dense-matches", boost::program_options::value(&OPT::nROMA2DenseMatches)->default_value(2000), "dense matching: correspondences the dense fill adds per FULL FRAME of overlap; a pair draws that density over the part of its overlap its guided sparse matches did not already cover, capped by the smaller of the two inlier areas the verdict measured, so the dense keypoint density is bounded in both images; each costs a keypoint in both images plus a track")
 		("roma2-provider", boost::program_options::value<std::string>(&OPT::strROMA2Provider)->default_value("auto"), "ONNX Runtime execution provider: auto (CUDA > CoreML > DirectML > CPU), cuda, coreml, dml or cpu")
+		("camera-type", boost::program_options::value(&OPT::nCameraType)->default_value(-1), "camera model type: -1-from the image metadata (an equirectangular projection tag gives spherical, else pinhole), 0-pinhole, 1-spherical (equirectangular, width = 2 x height)")
 		("default-focal-ratio", boost::program_options::value(&OPT::defaultFocalRatio)->default_value(1.2f), "focal-length is set to ratio * max(width,height) for images with unknown focal-length")
 		("focal-length,f", boost::program_options::value(&OPT::focalLength)->default_value(0.f), "force focal-length (in pixels) for specified images (0 = disabled)")
 		("k1", boost::program_options::value(&OPT::k1)->default_value(0.f), "force k1 distortion coefficient for specified images (0 = not used)")
@@ -260,6 +262,10 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	if (OPT::matchMode < static_cast<int>(MatchConfig::SKIP) ||
 		OPT::matchMode > static_cast<int>(MatchConfig::RETRIEVAL)) {
 		LOG("error: unknown match mode %d (accepted: -1, 0, 1, 2, 3, 4)", OPT::matchMode);
+		return false;
+	}
+	if (OPT::nCameraType < -1 || OPT::nCameraType > 1) {
+		LOG("error: unknown camera type %d (accepted: -1, 0, 1)", OPT::nCameraType);
 		return false;
 	}
 	if (OPT::refineIntrinsics > 2) {
@@ -381,6 +387,7 @@ int main(int argc, LPCTSTR* argv)
 	// Prepare reconstruction config
 	ReconstructionConfig cfg;
 	cfg.importCfg.defaultFocalRatio = OPT::defaultFocalRatio;
+	cfg.importCfg.cameraType = (CameraType)(OPT::nCameraType+1);
 	cfg.importCfg.focalLength = OPT::focalLength;
 	cfg.importCfg.k1 = OPT::k1;
 	cfg.importCfg.k2 = OPT::k2;

@@ -385,7 +385,7 @@ bool Scene::Import(const String& source, const ImportConfig& config)
 			img.fileName = imgPath;
 			Util::ensureValidPath(img.fileName);
 			img.fileName = MAKE_PATH_FULL(WORKING_FOLDER_FULL, img.fileName);
-			if (!img.LoadMetadata(config.defaultFocalRatio)) {
+			if (!img.LoadMetadata(config.defaultFocalRatio, config.cameraType)) {
 				VERBOSE("error: failed to load metadata for '%s'", imgPath.c_str());
 				continue;
 			}
