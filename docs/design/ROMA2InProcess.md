@@ -92,9 +92,11 @@ Manifest `format_version` **1**:
 | `roma_<setting>_match_coarse_fp32.onnx` (+`.onnx.data`) | `descriptors_A`, `descriptors_B` `[1,2,G,G,1024]` f32 — the dead `img_A`/`img_B` inputs are dropped from the trace; if the wrapper cannot be traced without them the exporter keeps them and says so in its report, and the C++ binds them only when the loaded match graph still declares them (read from the ONNX session's own input metadata, not the manifest's `io` block — that block is `RoMa2Manifest::Load`'s optional shape-consistency check, not what decides binding; the one tolerated variation, decided by the exported graph, not a compatibility path) | `warp` `[1,C,C,2]`, `confidence` `[1,C,C,1]` f32 (A→B, normalised (x,y) ∈ [-1,1], align_corners=False; confidence a raw overlap logit, sigmoid on host); `warp_BA`, `confidence_BA`, the same for B→A, from the same forward pass (`bidirectional=True`) — one graph call states both directions of the pair |
 | `roma_<setting>.json` | openMVS manifest: `format_version`, `model`, `setting`, `image_size`, `patch`, `layers`, `value_facet_blocks`, `warp_size`, `confidence_channels`, `retrieval_recipes` (`facets`/`layers` dim + GeM params), `files`, `io` (shapes), `opset`, checksums | |
 
-fp32, static shapes, batch 1, opset 18. Coordinate conventions (`ROMA2Warp.h/cpp`, deliberate
-asymmetry): pixel→grid `CoordFromTo` is align_corners=**true**; grid→pixel `DenormCoord` is
-align_corners=**false** (`0.5*(n+1)*W - 0.5`). `RoMa2Manifest::Load` (`libs/SFM/RoMa2Matcher.h/cpp`)
+fp32, static shapes, batch 1, opset 18. Coordinate conventions (`ROMA2Warp.h/cpp`), all
+align_corners=**false**: warp cell (i,j) describes the source image at its centre, pixel
+`(i+0.5)*W/C - 0.5` (`CellToPixel`, inverse `PixelToCell`; the grid romav2 pairs the warp with,
+`get_normalized_grid`), and a warp value n is the target pixel `0.5*(n+1)*W - 0.5` (`DenormCoord`,
+inverse `NormCoord`). `RoMa2Manifest::Load` (`libs/SFM/RoMa2Matcher.h/cpp`)
 rejects a manifest of any `format_version` other than 1, naming the version, and rejects a
 missing/ill-typed key or a declared graph I/O that disagrees with the shapes derived from
 `image_size`/`warp_size`; the C++ loader (`OnnxModel::Load`, `libs/SFM/OnnxRuntime.cpp`) separately

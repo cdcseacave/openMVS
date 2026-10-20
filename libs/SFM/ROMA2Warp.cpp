@@ -41,10 +41,18 @@ using namespace SFM;
 DEFINE_LOG_NAME(lt, _T("ROMA2   "));
 
 
-Point2f SFM::CoordFromTo(const Point2f& coord, const cv::Size& sizeA, const cv::Size& sizeB) {
+Point2f SFM::PixelToCell(const Point2f& pixel, const cv::Size& sizeImage, const cv::Size& sizeGrid) {
+	// the cell-centre (align_corners=False) convention of the warp grid, the inverse of CellToPixel below
 	return Point2f(
-		coord.x * (float)(sizeB.width  - 1) / (float)(sizeA.width  - 1),
-		coord.y * (float)(sizeB.height - 1) / (float)(sizeA.height - 1)
+		(pixel.x + 0.5f) * (float)sizeGrid.width  / (float)sizeImage.width  - 0.5f,
+		(pixel.y + 0.5f) * (float)sizeGrid.height / (float)sizeImage.height - 0.5f
+	);
+}
+
+Point2f SFM::CellToPixel(const Point2f& cell, const cv::Size& sizeGrid, const cv::Size& sizeImage) {
+	return Point2f(
+		(cell.x + 0.5f) * (float)sizeImage.width  / (float)sizeGrid.width  - 0.5f,
+		(cell.y + 0.5f) * (float)sizeImage.height / (float)sizeGrid.height - 0.5f
 	);
 }
 
@@ -91,11 +99,16 @@ size_t SFM::TrackKeypointsByWarp(
 	for (size_t i = 0; i < numKp; ++i) {
 		const cv::Point2f& kpA = imgA.keypoints[i].pt;
 		trackedA[i] = kpA;
-		const Point2f wkpA = CoordFromTo(kpA, imgA.GetSize(), warp.size());
-		// sampleSafe, not sample: a keypoint on the right/bottom border of A maps exactly onto the
-		// last warp column/row, where the bilinear interpolation of sample() reads the (zero-weighted)
-		// neighbour one past the end of the grid. Clamping that neighbour to the last cell leaves
-		// every interior sample bit-identical and only makes the border reads legal.
+		// clamped to the span of the cell centres: a keypoint within half a cell of the border of A
+		// maps outside [0, C-1], where sampleSafe's integer truncation would weigh the first two
+		// columns/rows by 1-x and x < 0, extrapolating; clamped, it reads the border cell's value, on
+		// all four sides alike
+		const Point2f cell(PixelToCell(kpA, imgA.GetSize(), warp.size()));
+		const Point2f wkpA(MINF(MAXF(cell.x, 0.f), (float)(warp.cols-1)), MINF(MAXF(cell.y, 0.f), (float)(warp.rows-1)));
+		// sampleSafe, not sample: a keypoint clamped onto the last warp column/row is read there by a
+		// bilinear interpolation that reaches for the (zero-weighted) neighbour one past the end of the
+		// grid; sampleSafe clamps that neighbour to the last cell, which leaves every interior sample
+		// bit-identical and only makes the border reads legal.
 		const float ckpB = confidence.sampleSafe(wkpA);
 		if (ckpB < minConfidence) {
 			trackStatus[i] = 0;
@@ -208,7 +221,7 @@ void CollectWarpCandidates(const cv::Size& sizeA, const cv::Size& sizeB, const I
 				continue;
 			candidates.push_back(WarpCandidate{conf, y*confidence.cols + x,
 				WarpCellLatticePriority(x, y),
-				CoordFromTo(Point2f((float)x, (float)y), confidence.size(), sizeA), ptB});
+				CellToPixel(Point2f((float)x, (float)y), confidence.size(), sizeA), ptB});
 		}
 	}
 }
@@ -394,10 +407,10 @@ size_t SFM::SampleWarpComplementary(
 	// would also need a B->A back-map of this very draw) would mark the same buckets.
 	std::vector<bool> occupied((size_t)numBuckets*numBuckets, false);
 	for (const Point2f& pt : occupiedA) {
-		// inverse of the cell -> imgA pixel map the draw itself uses: CoordFromTo is linear and
-		// carries no half-pixel term, so its inverse carries none either. Rounded to the nearest
-		// cell, and clamped because a keypoint may sit on the very border of A.
-		const Point2f cell(CoordFromTo(pt, sizeA, confidence.size()));
+		// the cell the position lies in: PixelToCell inverts the CellToPixel the draw places its cells
+		// with, so a drawn cell's own position rounds back to that cell. Rounded to the nearest cell,
+		// and clamped because a keypoint within half a cell of the border of A maps outside [0, C-1].
+		const Point2f cell(PixelToCell(pt, sizeA, confidence.size()));
 		const int x = MINF(MAXF(ROUND2INT(cell.x), 0), confidence.cols-1);
 		const int y = MINF(MAXF(ROUND2INT(cell.y), 0), confidence.rows-1);
 		occupied[WarpCellBucket(y*confidence.cols + x, confidence, numBuckets)] = true;

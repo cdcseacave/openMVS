@@ -1145,10 +1145,8 @@ bool ROMA2WarpTrackingTest()
 	Image32F2 warp(cells, cells);
 	Image32F overlap(cv::Size(cells, cells), 1.f);
 	for (int y = 0; y < cells; ++y)
-		for (int x = 0; x < cells; ++x) // grid (x,y) (align_corners=true) -> same pixel, normalized align_corners=false
-			warp(y, x) = Point2f(
-				((x*(width-1.f)/(cells-1)) + 0.5f)*2.f/width - 1.f,
-				((y*(height-1.f)/(cells-1)) + 0.5f)*2.f/height - 1.f);
+		for (int x = 0; x < cells; ++x) // cell (x,y) -> the pixel at its centre, normalized (both align_corners=false)
+			warp(y, x) = NormCoord(CellToPixel(Point2f((float)x, (float)y), cv::Size(cells, cells), cv::Size(width, height)), cv::Size(width, height));
 	std::mt19937 rng(7);
 	std::uniform_real_distribution<float> ux(8.f, 631.f), uy(8.f, 471.f);
 	for (unsigned i = 0; i < 500; ++i)
@@ -1273,9 +1271,7 @@ bool ROMA2CoverageSampleTest()
 	Image32F2 warp(cells, cells);
 	for (int y = 0; y < cells; ++y)
 		for (int x = 0; x < cells; ++x)
-			warp(y, x) = Point2f(
-				((x*(width-1.f)/(cells-1)) + 0.5f)*2.f/width - 1.f,
-				((y*(height-1.f)/(cells-1)) + 0.5f)*2.f/height - 1.f);
+			warp(y, x) = NormCoord(CellToPixel(Point2f((float)x, (float)y), cv::Size(cells, cells), cv::Size(width, height)), cv::Size(width, height));
 	const unsigned budget = 2000;
 	std::vector<Point2f> sampledA, sampledB;
 
@@ -1346,14 +1342,14 @@ bool ROMA2CoverageSampleTest()
 		// map each A-point back to the warp-grid cell it came from, then to its
 		// (numBuckets x numBuckets) bucket, and require no two samples to share one: a fill-up
 		// necessarily puts extra points into buckets that already have a winner, which this catches
-		// directly. The mapping is the exact inverse of CoordFromTo (ROMA2Warp.cpp), which the
-		// sampler uses to place a cell in image coordinates: it scales by (size-1)/(cells-1) with
-		// no half-pixel term, so the inverse carries none either -- any offset here would bias
-		// every index and would only stay invisible while the bias sat under the rounding threshold
+		// directly. The mapping is PixelToCell (ROMA2Warp.cpp), the exact inverse of the CellToPixel
+		// the sampler places a cell in image coordinates with -- any other map here would bias every
+		// index and would only stay invisible while the bias sat under the rounding threshold
 		std::vector<int> bucketHits((size_t)numBuckets*numBuckets, 0);
 		FOREACH(i, sampled) {
-			const int cx = ROUND2INT(sampled[i].x*(cells-1)/(float)(width-1));
-			const int cy = ROUND2INT(sampled[i].y*(cells-1)/(float)(height-1));
+			const Point2f cell(PixelToCell(sampled[i], cv::Size(width, height), cv::Size(cells, cells)));
+			const int cx = ROUND2INT(cell.x);
+			const int cy = ROUND2INT(cell.y);
 			const int bx = MINF(cx*numBuckets/cells, numBuckets-1);
 			const int by = MINF(cy*numBuckets/cells, numBuckets-1);
 			++bucketHits[(size_t)by*numBuckets + bx];
@@ -1510,18 +1506,18 @@ bool ROMA2ComplementaryDrawTest()
 	Image32F2 warp(cells, cells);
 	for (int y = 0; y < cells; ++y)
 		for (int x = 0; x < cells; ++x)
-			warp(y, x) = Point2f(
-				((x*(width-1.f)/(cells-1)) + 0.5f)*2.f/width - 1.f,
-				((y*(height-1.f)/(cells-1)) + 0.5f)*2.f/height - 1.f);
+			warp(y, x) = NormCoord(CellToPixel(Point2f((float)x, (float)y), cv::Size(cells, cells), cv::Size(width, height)), cv::Size(width, height));
 	// the cell <-> pixel map the draw places its winners with and its occupancy test inverts
-	// (CoordFromTo: linear, no half-pixel term), and the documented bucket-grid formula -- replayed
-	// here so the checks speak the implementation's own coordinates rather than an approximation
-	const auto CellToPixel = [&](int cx, int cy) {
-		return Point2f((float)cx*(width-1.f)/(float)(cells-1), (float)cy*(height-1.f)/(float)(cells-1));
+	// (CellToPixel / PixelToCell, the cell-centre convention), and the documented bucket-grid formula
+	// -- replayed here so the checks speak the implementation's own coordinates rather than an
+	// approximation
+	const auto CellPixel = [&](int cx, int cy) {
+		return CellToPixel(Point2f((float)cx, (float)cy), cv::Size(cells, cells), cv::Size(width, height));
 	};
 	const auto PixelToBucket = [&](const Point2f& pt, int numBuckets) {
-		const int cx = MINF(MAXF(ROUND2INT(pt.x*(float)(cells-1)/(width-1.f)), 0), cells-1);
-		const int cy = MINF(MAXF(ROUND2INT(pt.y*(float)(cells-1)/(height-1.f)), 0), cells-1);
+		const Point2f cell(PixelToCell(pt, cv::Size(width, height), cv::Size(cells, cells)));
+		const int cx = MINF(MAXF(ROUND2INT(cell.x), 0), cells-1);
+		const int cy = MINF(MAXF(ROUND2INT(cell.y), 0), cells-1);
 		return (size_t)(cy*numBuckets/cells)*numBuckets + cx*numBuckets/cells;
 	};
 	// eligibility restated independently of the draw: a cell the confidence map admits whose warped
@@ -1546,7 +1542,7 @@ bool ROMA2ComplementaryDrawTest()
 	std::vector<Point2f> sparseA;
 	for (int cy = 0; cy < 40; cy += 2)
 		for (int cx = 0; cx < 40; cx += 2)
-			sparseA.push_back(CellToPixel(cx, cy));
+			sparseA.push_back(CellPixel(cx, cy));
 	const ROMA2Config config; // denseMatchesPerFrame 2000 (a density per full frame of overlap), minConfidence 0.1
 	const unsigned denseBudget = config.denseMatchesPerFrame;
 	const int numBuckets = DenseFillGridSide(denseBudget, cells);
@@ -1729,7 +1725,7 @@ bool ROMA2ComplementaryDrawTest()
 		return false;
 	}
 	// the cells both warps are confident about: [40, 120) on both axes, in pixels of A
-	const Point2f commonLo(CellToPixel(40, 40)), commonHi(CellToPixel(119, 119));
+	const Point2f commonLo(CellPixel(40, 40)), commonHi(CellPixel(119, 119));
 	const auto InCommon = [&](const Point2f& pt) {
 		return pt.x >= commonLo.x - 1e-3f && pt.x <= commonHi.x + 1e-3f &&
 			pt.y >= commonLo.y - 1e-3f && pt.y <= commonHi.y + 1e-3f;
@@ -1788,14 +1784,15 @@ bool ROMA2ComplementaryDrawTest()
 	// the property the fixed pitch above depends on: the ceiling is per-pair, so enforcing it by
 	// anything that read this pair's own list would leave two pairs which agreed on every winner
 	// holding different subsets of them.
-	const auto PixelToCell = [&](const Point2f& pt) {
-		const int cx = MINF(MAXF(ROUND2INT(pt.x*(float)(cells-1)/(width-1.f)), 0), cells-1);
-		const int cy = MINF(MAXF(ROUND2INT(pt.y*(float)(cells-1)/(height-1.f)), 0), cells-1);
+	const auto CellIndexOf = [&](const Point2f& pt) {
+		const Point2f cell(PixelToCell(pt, cv::Size(width, height), cv::Size(cells, cells)));
+		const int cx = MINF(MAXF(ROUND2INT(cell.x), 0), cells-1);
+		const int cy = MINF(MAXF(ROUND2INT(cell.y), 0), cells-1);
 		return cy*cells + cx;
 	};
 	std::vector<int> acCellIdx;
 	for (const Point2f& pt : acA)
-		acCellIdx.push_back(PixelToCell(pt));
+		acCellIdx.push_back(CellIndexOf(pt));
 	std::vector<Point2f> thinA(acA), thinB(acB);
 	std::vector<float> thinC(acC);
 	std::vector<int> thinCellIdx(acCellIdx);
@@ -1862,11 +1859,9 @@ bool ROMA2DenseFillDensityTest()
 	Image32F2 warp(cells, cells);
 	for (int y = 0; y < cells; ++y)
 		for (int x = 0; x < cells; ++x)
-			warp(y, x) = Point2f(
-				((x*(width-1.f)/(cells-1)) + 0.5f)*2.f/width - 1.f,
-				((y*(height-1.f)/(cells-1)) + 0.5f)*2.f/height - 1.f);
-	const auto CellToPixel = [&](int cx, int cy) {
-		return Point2f((float)cx*(width-1.f)/(float)(cells-1), (float)cy*(height-1.f)/(float)(cells-1));
+			warp(y, x) = NormCoord(CellToPixel(Point2f((float)x, (float)y), cv::Size(cells, cells), cv::Size(width, height)), cv::Size(width, height));
+	const auto CellPixel = [&](int cx, int cy) {
+		return CellToPixel(Point2f((float)cx, (float)cy), cv::Size(cells, cells), cv::Size(width, height));
 	};
 
 	// --- 1) THE PITCH IS A FUNCTION OF THE DENSITY ALONE -------------------------------------
@@ -1912,8 +1907,8 @@ bool ROMA2DenseFillDensityTest()
 	for (int y = 0; y < 80; ++y)
 		for (int x = 0; x < 80; ++x) {
 			if (x < 40)
-				halfOccupied.push_back(CellToPixel(x, y));
-			allOccupied.push_back(CellToPixel(x, y));
+				halfOccupied.push_back(CellPixel(x, y));
+			allOccupied.push_back(CellPixel(x, y));
 		}
 	std::vector<Point2f> halfA, halfB, fullA, fullB;
 	std::vector<float> halfC, fullC;
@@ -2135,7 +2130,7 @@ static void MakeROMA2WedgeWarp(const Image& imgSrc, const Image& imgDst, int cel
 			maps.warp(y, x) = Point2f(-3.f, -3.f);
 			Point2f ptDst;
 			if (!ROMA2WedgeCorrespondence(imgSrc, imgDst,
-				CoordFromTo(Point2f((float)x, (float)y), gridSize, sizeSrc), ptDst))
+				CellToPixel(Point2f((float)x, (float)y), gridSize, sizeSrc), ptDst))
 				continue;
 			maps.warp(y, x) = ROMA2NormCoord(ptDst, sizeDst);
 			if (x >= x0 && x < x1 && y >= y0 && y < y1)
@@ -2159,7 +2154,7 @@ static void MakeROMA2HomographyWarp(const Image& imgSrc, const Image& imgDst, in
 	const float cxDst = 0.5f*(float)sizeDst.width, cyDst = 0.5f*(float)sizeDst.height;
 	for (int y = 0; y < cells; ++y) {
 		for (int x = 0; x < cells; ++x) {
-			const Point2f ptSrc(CoordFromTo(Point2f((float)x, (float)y), gridSize, sizeSrc));
+			const Point2f ptSrc(CellToPixel(Point2f((float)x, (float)y), gridSize, sizeSrc));
 			const float dx = ptSrc.x - cxSrc, dy = ptSrc.y - cySrc;
 			const float w = 1.f + 3e-4f*dx - 2e-4f*dy;
 			const Point2f ptDst(cxDst + (cosT*dx - sinT*dy - 30.f)/w, cyDst + (sinT*dx + cosT*dy + 12.f)/w);
@@ -2170,6 +2165,236 @@ static void MakeROMA2HomographyWarp(const Image& imgSrc, const Image& imgDst, in
 		}
 	}
 }
+
+// The pixel <-> cell convention of the warp grid, end to end. RoMa v2's warp and confidence maps hold
+// cell (i,j) at the align_corners=False centre p = (i+0.5)*W/C - 0.5 of the source image (romav2
+// geometry.py get_normalized_grid, the grid its own sampler and refiners pair the warp with), the
+// convention DenormCoord already reads the warp's VALUES in. A synthetic warp generated in exactly that
+// convention, of a known homography, on a 1024x768 and a 2789x2092 frame with 160 cells:
+//  - CellToPixel is that cell centre and PixelToCell its exact inverse, so a cell centre rounds back
+//    to its own cell (the occupancy of the complementary draw, the dense fill's rebuild of the grid);
+//  - tracking (TrackKeypointsByWarp, pixel -> cell) lands every keypoint within 0.05 px of its true
+//    target, and a keypoint within half a cell of a border reads the border cell's value (clamped,
+//    not extrapolated), i.e. the target of the nearest cell centre in that axis;
+//  - every warp draw places a cell's A end at the cell's true centre (CollectWarpCandidates through
+//    SampleWarpByCoverage, CollectEligibleCells through the verdict's inlier cells);
+//  - the complementary draw's occupancy (pixel -> cell, rounded) strikes the cell a position lies in.
+// The convention is written out here rather than taken from ROMA2Warp.h, so the test states it
+// independently of the implementation.
+bool ROMA2WarpGridConventionTest()
+{
+	TD_TIMER_START();
+	const auto CellCentre = [](float i, int size, int cells) { return (i + 0.5f)*(float)size/(float)cells - 0.5f; };
+	const auto NormalizedCoord = [](float p, int size) { return 2.f*(p + 0.5f)/(float)size - 1.f; };
+	const int cells = 160;
+	for (const cv::Size size : {cv::Size(1024, 768), cv::Size(2789, 2092)}) {
+		Scene scene;
+		scene.cameras.emplace_back(new PinholeCamera(size, REAL(size.width), REAL(size.width),
+			REAL(size.width - 1)/2, REAL(size.height - 1)/2));
+		scene.images.emplace_back((IIndex)0, String("a.jpg"));
+		scene.images.emplace_back((IIndex)1, String("b.jpg"));
+		FOREACH(i, scene.images) {
+			scene.images[i].cameraID = 0;
+			scene.images[i].pCamera = scene.cameras[0];
+		}
+		Image& imgA = scene.images[0];
+		const Image& imgB = scene.images[1];
+		// a known homography of A onto B: 0.9 zoom and 3 degrees about the centre, a shift and a mild
+		// projective term, which keeps all of A inside B
+		const float cx = 0.5f*(float)(size.width - 1), cy = 0.5f*(float)(size.height - 1);
+		const float cosT = 0.9f*(float)COS(D2R(REAL(3))), sinT = 0.9f*(float)SIN(D2R(REAL(3)));
+		const float projective = 1e-5f*1024.f/(float)size.width;
+		const auto MapAB = [&](const Point2f& a) {
+			const float dx = a.x - cx, dy = a.y - cy;
+			const float w = 1.f + projective*(dx - dy);
+			return Point2f(cx + (cosT*dx - sinT*dy + 10.f)/w, cy + (sinT*dx + cosT*dy - 6.f)/w);
+		};
+		const auto CellCentreA = [&](int x, int y) {
+			return Point2f(CellCentre((float)x, size.width, cells), CellCentre((float)y, size.height, cells));
+		};
+		// 0) THE MAPS THEMSELVES: CellToPixel is the cell centre above, PixelToCell its inverse, and
+		// the rounding the occupancy and the dense fill's rebuild apply to PixelToCell lands every
+		// cell centre back on its own cell
+		const cv::Size gridSize(cells, cells);
+		for (int i = 0; i < cells; ++i) {
+			for (const float f : {0.f, 0.25f, -0.5f, 0.5f}) {
+				const Point2f cell((float)i + f, (float)(cells - 1 - i) - f);
+				const Point2f pixel(CellToPixel(cell, gridSize, size));
+				if (ABS(pixel.x - CellCentre(cell.x, size.width, cells)) > 1e-3f ||
+					ABS(pixel.y - CellCentre(cell.y, size.height, cells)) > 1e-3f ||
+					norm(PixelToCell(pixel, size, gridSize) - cell) > 1e-4f) {
+					VERBOSE("ROMA2WarpGridConventionTest FAILED: %dx%d: cell (%g,%g) -> pixel (%g,%g) -> cell (%g,%g)",
+						size.width, size.height, cell.x, cell.y, pixel.x, pixel.y,
+						PixelToCell(pixel, size, gridSize).x, PixelToCell(pixel, size, gridSize).y);
+					return false;
+				}
+			}
+			const Point2f back(PixelToCell(CellToPixel(Point2f((float)i, (float)i), gridSize, size), size, gridSize));
+			if (ROUND2INT(back.x) != i || ROUND2INT(back.y) != i) {
+				VERBOSE("ROMA2WarpGridConventionTest FAILED: %dx%d: cell %d rounds back to (%d,%d)",
+					size.width, size.height, i, ROUND2INT(back.x), ROUND2INT(back.y));
+				return false;
+			}
+		}
+
+		Image32F2 warp(cells, cells);
+		const Image32F confidence(cv::Size(cells, cells), 1.f);
+		for (int y = 0; y < cells; ++y) {
+			for (int x = 0; x < cells; ++x) {
+				const Point2f b(MapAB(CellCentreA(x, y)));
+				ASSERT(Image8U::isInside(b, size));
+				warp(y, x) = Point2f(NormalizedCoord(b.x, size.width), NormalizedCoord(b.y, size.height));
+			}
+		}
+
+		// 1) TRACKING, pixel -> cell. Interior keypoints at random, the outermost cell centres, the
+		// frame's corners and edges, and keypoints within half a cell of each border: the expected
+		// target is that of the keypoint clamped to the span of the cell centres, which is the keypoint
+		// itself except within half a cell of a border, where the read is the border cell's value
+		const float firstX = CellCentre(0.f, size.width, cells), lastX = CellCentre((float)(cells - 1), size.width, cells);
+		const float firstY = CellCentre(0.f, size.height, cells), lastY = CellCentre((float)(cells - 1), size.height, cells);
+		std::mt19937 rng(11);
+		std::uniform_real_distribution<float> ux(0.f, (float)(size.width - 1)), uy(0.f, (float)(size.height - 1));
+		imgA.keypoints.clear();
+		for (unsigned i = 0; i < 400; ++i)
+			imgA.keypoints.emplace_back(ux(rng), uy(rng), 1.f);
+		const float W1 = (float)(size.width - 1), H1 = (float)(size.height - 1);
+		for (const Point2f& pt : {Point2f(firstX, firstY), Point2f(lastX, lastY), Point2f(firstX, lastY), Point2f(lastX, firstY),
+			Point2f(lastX, cy), Point2f(cx, lastY), Point2f(CellCentre(1.f, size.width, cells), cy),
+			Point2f(0.f, 0.f), Point2f(W1, H1), Point2f(0.f, H1), Point2f(W1, 0.f),
+			Point2f(1.f, cy), Point2f(cx, 1.f), Point2f(1.f, 1.f), Point2f(W1 - 1.f, cy), Point2f(cx, H1 - 1.f)})
+			imgA.keypoints.emplace_back(pt, 1.f);
+		std::vector<Point2f> trackedA, trackedB;
+		std::vector<uchar> status;
+		if (TrackKeypointsByWarp(imgA, imgB, warp, confidence, 0.1f, trackedA, trackedB, status) != imgA.keypoints.size()) {
+			VERBOSE("ROMA2WarpGridConventionTest FAILED: %dx%d: not every keypoint tracked through a fully confident warp",
+				size.width, size.height);
+			return false;
+		}
+		float maxError = 0.f;
+		unsigned worst = 0;
+		FOREACH(i, trackedA) {
+			const Point2f& a = imgA.keypoints[i].pt;
+			const Point2f expected(MapAB(Point2f(CLAMP(a.x, firstX, lastX), CLAMP(a.y, firstY, lastY))));
+			const float error = (float)norm(trackedB[i] - expected);
+			if (maxError < error) {
+				maxError = error;
+				worst = (unsigned)i;
+			}
+		}
+		if (maxError > 0.05f) {
+			VERBOSE("ROMA2WarpGridConventionTest FAILED: %dx%d: keypoint (%g,%g) tracked %g px off its true target",
+				size.width, size.height, imgA.keypoints[worst].pt.x, imgA.keypoints[worst].pt.y, maxError);
+			return false;
+		}
+
+		// 2) THE DRAW, cell -> pixel (CollectWarpCandidates): with a budget past the grid every cell is
+		// taken, in raster order, and each one's A end must sit at the cell's centre, its B end at the
+		// cell centre's target
+		std::vector<Point2f> sampledA, sampledB;
+		if (SampleWarpByCoverage(imgA, imgB, warp, confidence, 0.1f, (unsigned)(cells*cells), sampledA, sampledB) != (size_t)(cells*cells)) {
+			VERBOSE("ROMA2WarpGridConventionTest FAILED: %dx%d: the draw did not take every cell of a fully confident warp",
+				size.width, size.height);
+			return false;
+		}
+		FOREACH(k, sampledA) {
+			const Point2f centre(CellCentreA((int)k%cells, (int)k/cells));
+			if (norm(sampledA[k] - centre) > 2e-3f || norm(sampledB[k] - MapAB(centre)) > 0.01f) {
+				VERBOSE("ROMA2WarpGridConventionTest FAILED: %dx%d: cell (%d,%d) drawn at (%g,%g) -> (%g,%g), its centre is (%g,%g) -> (%g,%g)",
+					size.width, size.height, (int)k%cells, (int)k/cells, sampledA[k].x, sampledA[k].y, sampledB[k].x, sampledB[k].y,
+					centre.x, centre.y, MapAB(centre).x, MapAB(centre).y);
+				return false;
+			}
+		}
+
+		// 3) OCCUPANCY, pixel -> cell rounded: one bucket per cell, and positions 0.45 cell from the
+		// centres of the last column's and the last row's cells, on the side of the frame's centre --
+		// each lies in that cell, so the complementary draw must take every cell but those
+		std::vector<Point2f> occupiedA;
+		std::vector<bool> struck((size_t)cells*cells, false);
+		const float offX = 0.45f*(float)size.width/(float)cells, offY = 0.45f*(float)size.height/(float)cells;
+		for (int i = 0; i < cells; i += 7) {
+			occupiedA.emplace_back(lastX - offX, CellCentre((float)i, size.height, cells));
+			struck[(size_t)i*cells + (cells - 1)] = true;
+			occupiedA.emplace_back(CellCentre((float)i, size.width, cells), lastY - offY);
+			struck[(size_t)(cells - 1)*cells + i] = true;
+		}
+		const size_t numStruck = (size_t)std::count(struck.begin(), struck.end(), true);
+		std::vector<float> sampledConfidences;
+		SampleWarpComplementary(imgA, imgB, warp, confidence, 0.1f, cells, (unsigned)(cells*cells), occupiedA,
+			sampledA, sampledB, sampledConfidences);
+		bool bStruckDrawn = false;
+		for (const Point2f& pt : sampledA) {
+			const int x = ROUND2INT((pt.x + 0.5f)*(float)cells/(float)size.width - 0.5f);
+			const int y = ROUND2INT((pt.y + 0.5f)*(float)cells/(float)size.height - 0.5f);
+			if (struck[(size_t)y*cells + x])
+				bStruckDrawn = true;
+		}
+		if (sampledA.size() != (size_t)cells*cells - numStruck || bStruckDrawn) {
+			VERBOSE("ROMA2WarpGridConventionTest FAILED: %dx%d: the complementary draw took %u cells around %u occupied ones (%s an occupied cell), expected %u",
+				size.width, size.height, (unsigned)sampledA.size(), (unsigned)numStruck, bStruckDrawn ? "including" : "excluding",
+				(unsigned)((size_t)cells*cells - numStruck));
+			return false;
+		}
+	}
+
+	// 4) THE VERDICT'S CELLS (CollectEligibleCells, cell -> pixel): the exact bidirectional warp of the
+	// wedge, generated in the same convention, admitted, and every inlier cell of A at a cell centre
+	{
+		Scene scene;
+		MakeROMA2WedgeScene(scene);
+		const Image& imgA = scene.images[0];
+		const Image& imgB = scene.images[1];
+		MatchConfig matchCfg;
+		PairsMatcher matcher(scene, matchCfg);
+		const int wedgeCells = 64;
+		const int rx0 = 14, rx1 = 50, ry0 = 13, ry1 = 47;
+		PairWarps warps;
+		for (int direction = 0; direction < 2; ++direction) {
+			const Image& imgSrc = direction == 0 ? imgA : imgB;
+			const Image& imgDst = direction == 0 ? imgB : imgA;
+			WarpMaps& maps = direction == 0 ? warps.ab : warps.ba;
+			const cv::Size sizeSrc(imgSrc.GetSize()), sizeDst(imgDst.GetSize());
+			maps.warp.create(wedgeCells, wedgeCells);
+			maps.confidence.create(wedgeCells, wedgeCells);
+			maps.confidence.memset(0);
+			for (int y = 0; y < wedgeCells; ++y) {
+				for (int x = 0; x < wedgeCells; ++x) {
+					maps.warp(y, x) = Point2f(-3.f, -3.f);
+					Point2f ptDst;
+					if (!ROMA2WedgeCorrespondence(imgSrc, imgDst, Point2f(CellCentre((float)x, sizeSrc.width, wedgeCells),
+						CellCentre((float)y, sizeSrc.height, wedgeCells)), ptDst))
+						continue;
+					maps.warp(y, x) = Point2f(NormalizedCoord(ptDst.x, sizeDst.width), NormalizedCoord(ptDst.y, sizeDst.height));
+					if (x >= rx0 && x < rx1 && y >= ry0 && y < ry1)
+						maps.confidence(y, x) = 1.f;
+				}
+			}
+		}
+		const ROMA2Config config;
+		ImagePair pair(0, 1);
+		PairVerdict verdict;
+		JudgePairROMA2(matcher, imgA, imgB, warps, config, pair, verdict);
+		if (!verdict.admitted || verdict.inliersA.empty()) {
+			VERBOSE("ROMA2WarpGridConventionTest FAILED: the exact wedge warp was rejected (inlier areas %.4f/%.4f)",
+				verdict.inlierAreaA, verdict.inlierAreaB);
+			return false;
+		}
+		for (const Point2f& pt : verdict.inliersA) {
+			const float x = (pt.x + 0.5f)*(float)wedgeCells/(float)imgA.GetWidth() - 0.5f;
+			const float y = (pt.y + 0.5f)*(float)wedgeCells/(float)imgA.GetHeight() - 0.5f;
+			if (ABS(x - (float)ROUND2INT(x)) > 1e-3f || ABS(y - (float)ROUND2INT(y)) > 1e-3f) {
+				VERBOSE("ROMA2WarpGridConventionTest FAILED: a verdict inlier of A at (%g,%g) is cell (%g,%g), not a cell centre",
+					pt.x, pt.y, x, y);
+				return false;
+			}
+		}
+	}
+
+	VERBOSE("ROMA2WarpGridConventionTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
 
 // The pair verdict (JudgePairROMA2) on the exact bidirectional warp of two pinhole cameras looking
 // at a non-planar surface: a warp confident over ~30% of both frames is admitted with both inlier
@@ -2806,7 +3031,7 @@ bool ROMA2AssemblyTest()
 	verdict.admitted = true;
 	for (int y = ry0; y < ry1; ++y) {
 		for (int x = rx0; x < rx1; ++x) {
-			const Point2f ptA(CoordFromTo(Point2f((float)x, (float)y), cv::Size(cells, cells), imgA.GetSize()));
+			const Point2f ptA(CellToPixel(Point2f((float)x, (float)y), cv::Size(cells, cells), imgA.GetSize()));
 			Point2f ptB;
 			if (!ROMA2WedgeCorrespondence(imgA, imgB, ptA, ptB))
 				continue;
@@ -2922,7 +3147,7 @@ bool ROMA2AssemblyTest()
 	{
 		const cv::Size gridSize(cells, cells);
 		const auto CellOf = [&](const Point2f& ptA) {
-			const Point2f cell(CoordFromTo(ptA, imgA.GetSize(), gridSize));
+			const Point2f cell(PixelToCell(ptA, imgA.GetSize(), gridSize));
 			return ROUND2INT(cell.y)*cells + ROUND2INT(cell.x);
 		};
 		std::vector<int> inlierOfCell((size_t)cells*cells, -1);
@@ -3209,7 +3434,7 @@ bool ROMA2DenseFitWeightTest()
 	std::vector<Point2f> exactB;
 	for (int y = ry0; y < ry1; ++y) {
 		for (int x = rx0; x < rx1; ++x) {
-			const Point2f ptA(CoordFromTo(Point2f((float)x, (float)y), cv::Size(cells, cells), imgA.GetSize()));
+			const Point2f ptA(CellToPixel(Point2f((float)x, (float)y), cv::Size(cells, cells), imgA.GetSize()));
 			Point2f ptB;
 			if (!ROMA2WedgeCorrespondence(imgA, imgB, ptA, ptB))
 				continue;
@@ -4132,7 +4357,7 @@ static IIndex StoreROMA2WedgePair(Scene& scene, PairsMatcher& matcher, const ROM
 	std::vector<Point2f> exactB;
 	for (int y = ry0; y < ry1; ++y) {
 		for (int x = rx0; x < rx1; ++x) {
-			const Point2f ptA(CoordFromTo(Point2f((float)x, (float)y), cv::Size(cells, cells), imgA.GetSize()));
+			const Point2f ptA(CellToPixel(Point2f((float)x, (float)y), cv::Size(cells, cells), imgA.GetSize()));
 			Point2f ptB;
 			if (!ROMA2WedgeCorrespondence(imgA, imgB, ptA, ptB))
 				continue;

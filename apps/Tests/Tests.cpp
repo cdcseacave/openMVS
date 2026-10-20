@@ -315,6 +315,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::VocabularyTreeTest())
 				return false;
+			if (!SFM::ROMA2WarpGridConventionTest())
+				return false;
 			if (!SFM::ROMA2WarpTrackingTest())
 				return false;
 			if (!SFM::ROMA2CoverageSampleTest())

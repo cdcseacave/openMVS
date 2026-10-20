@@ -40,6 +40,10 @@ namespace SFM {
 // VocabularyTree save/load roundtrip test
 bool VocabularyTreeTest();
 
+// The warp grid's pixel <-> cell convention (align_corners=False cell centres) end to end: keypoint
+// tracking, the draws' cell positions, the occupancy rounding and the verdict's cells
+bool ROMA2WarpGridConventionTest();
+
 // ROMA2 warp helpers test: keypoint tracking through an identity warp (the
 // pixel<->grid<->normalized coordinate conventions), the confidence gate, and the dense append
 bool ROMA2WarpTrackingTest();

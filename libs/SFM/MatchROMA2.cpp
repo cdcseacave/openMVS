@@ -452,7 +452,7 @@ size_t CollectEligibleCells(const WarpMaps& maps, const cv::Size& sizeSrc, const
 			Point2f ptDst;
 			if (!IsWarpCellEligible(conf, maps.warp(y, x), minConfidence, sizeDst, ptDst))
 				continue;
-			ptsSrc.push_back(CoordFromTo(Point2f((float)x, (float)y), maps.confidence.size(), sizeSrc));
+			ptsSrc.push_back(CellToPixel(Point2f((float)x, (float)y), maps.confidence.size(), sizeSrc));
 			ptsDst.push_back(ptDst);
 			confidences.push_back(conf);
 		}
@@ -538,8 +538,8 @@ private:
 // eligibility bar, same bucket sizing, same lattice winner rule, hence the same cross-pair keypoint
 // identity FilterRedundantKeypoints chains tracks through.
 // The cell of an inlier is recovered from its A position rather than carried through PairVerdict:
-// the verdict wrote it as CoordFromTo(cell, grid, sizeA), a linear map with no half-pixel term, so
-// the inverse lands back on the same integer cell.
+// the verdict wrote it as CellToPixel(cell, grid, sizeA), whose exact inverse PixelToCell lands back
+// on the same integer cell.
 void RebuildInlierWarp(const PairVerdict& verdict, const cv::Size& sizeA, const cv::Size& sizeB,
 	int warpSize, Image32F2& warp, Image32F& confidence)
 {
@@ -557,7 +557,7 @@ void RebuildInlierWarp(const PairVerdict& verdict, const cv::Size& sizeA, const 
 		for (int x = 0; x < warpSize; ++x)
 			warp(y, x) = Point2f(-3.f, -3.f);
 	FOREACH(k, verdict.inliersA) {
-		const Point2f cell(CoordFromTo(verdict.inliersA[k], sizeA, gridSize));
+		const Point2f cell(PixelToCell(verdict.inliersA[k], sizeA, gridSize));
 		const int x = MINF(MAXF(ROUND2INT(cell.x), 0), warpSize-1);
 		const int y = MINF(MAXF(ROUND2INT(cell.y), 0), warpSize-1);
 		confidence(y, x) = verdict.confidences[k];

@@ -68,8 +68,18 @@ struct SFM_API PairWarps {
 };
 /*----------------------------------------------------------------*/
 
-// Map a pixel coordinate from the resolution of A to the resolution of B (align_corners=true)
-SFM_API Point2f CoordFromTo(const Point2f& coord, const cv::Size& sizeA, const cv::Size& sizeB);
+// The pixel <-> cell maps of a warp grid (align_corners=false). Cell (i,j) of RoMa v2's warp and
+// confidence maps describes the source image at the cell's centre, p = (i+0.5)*W/C - 0.5 in openMVS
+// pixels (integer = pixel centre): the grid romav2 pairs the warp with (geometry.py
+// get_normalized_grid, read by its own sampler and refiners), the half-pixel convention DenormCoord
+// and NormCoord read the warp's VALUES in, and the one the model input is resampled in
+// (PreprocessImageRoMa2). The two maps are exact inverses of each other, so a cell placed by
+// CellToPixel rounds back to itself through PixelToCell. A pixel within half a cell of a border maps
+// outside [0, C-1]; a caller sampling the grid there clamps first.
+// Pixel of an image of size sizeImage -> fractional cell of a grid of size sizeGrid
+SFM_API Point2f PixelToCell(const Point2f& pixel, const cv::Size& sizeImage, const cv::Size& sizeGrid);
+// Fractional cell of a grid of size sizeGrid -> pixel of an image of size sizeImage
+SFM_API Point2f CellToPixel(const Point2f& cell, const cv::Size& sizeGrid, const cv::Size& sizeImage);
 
 // Map a normalized warp coordinate to the pixel coordinates of an image (align_corners=false)
 SFM_API Point2f DenormCoord(const Point2f& normCoord, const cv::Size& size);
