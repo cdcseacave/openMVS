@@ -47,15 +47,6 @@ void CollectPoseLinks(const Scene& scene, IIndex imageID, std::vector<PoseLink>&
 	std::sort(links.begin(), links.end(), IsStrongerLink);
 }
 
-// Median of the given values (the upper one of the two middle values for an even count)
-inline REAL MedianValue(std::vector<REAL>& values)
-{
-	ASSERT(!values.empty());
-	const size_t mid = values.size() / 2;
-	std::nth_element(values.begin(), values.begin() + mid, values.end());
-	return values[mid];
-}
-
 // Polish an absolute pose over its inliers with each dense correspondence at denseWeight against a
 // described one's 1, through the estimator's own final refinement (estimate_absolute_pose_bearings:
 // the same loss at the same chord-distance tolerance). Uniform weights would leave that refinement's
@@ -83,66 +74,6 @@ void PolishAbsolutePose(const std::vector<poselib::Point3D>& bearings, const std
 	poselib::BundleOptions bundle = opt.bundle;
 	bundle.loss_scale = 2.0 * std::sin(0.5 * opt.max_error);
 	poselib::bundle_adjust_bearing(bearingsInliers, pointsInliers, &pose, bundle, weights);
-}
-
-// Median distance between the given registered image's center and the centers of the registered
-// neighbors its own quorum holds -- the ones that agree about how it is oriented, so a neighbor the
-// rest contradict does not set the scale. Falls back to the median over every registered pair in the
-// scene when the image has no such neighbor. Returns 0 when the scene has no baseline at all.
-REAL MedianQuorumBaseline(const Scene& scene, IIndex imageID, float maxRotationError)
-{
-	const Image& img = scene.images[imageID];
-	std::vector<PoseLink> links;
-	CollectPoseLinks(scene, imageID, links);
-	const PoseLinkQuorum quorum = ComputePoseLinkQuorum(links, maxRotationError, NeighborPose(scene));
-	std::vector<REAL> baselines;
-	for (const PoseLink& link : quorum.links)
-		baselines.push_back(norm(img.C - scene.images[link.neighborID].C));
-	if (baselines.empty()) {
-		for (const ImagePair& pair : scene.pairs) {
-			if (!IsPoseLinkPair(pair))
-				continue;
-			const Image& img1 = scene.images[pair.ID1];
-			const Image& img2 = scene.images[pair.ID2];
-			if (img1.HasPose() && img2.HasPose())
-				baselines.push_back(norm(img1.C - img2.C));
-		}
-	}
-	if (baselines.empty())
-		return 0;
-	return MedianValue(baselines);
-}
-
-// One ray along which a registered image places the center of an unregistered one
-struct CenterRay
-{
-	IIndex neighborID; // the registered image the ray starts from
-	Point3 origin;     // the registered image's center, in world coordinates
-	Point3 direction;  // unit direction towards the unregistered image's center, in world coordinates
-};
-
-// Least-squares point closest to every ray: minimizing the sum of the squared distances to the
-// rays gives A*X = b with A = sum(I - d*d') and b = sum((I - d*d')*C).
-bool ClosestPointToRays(const std::vector<CenterRay>& rays, Point3& X)
-{
-	ASSERT(rays.size() >= 2);
-	Eigen::Matrix3d A(Eigen::Matrix3d::Zero());
-	Eigen::Vector3d b(Eigen::Vector3d::Zero());
-	for (const CenterRay& ray : rays) {
-		const Eigen::Vector3d d(ray.direction.x, ray.direction.y, ray.direction.z);
-		const Eigen::Vector3d c(ray.origin.x, ray.origin.y, ray.origin.z);
-		const Eigen::Matrix3d P(Eigen::Matrix3d::Identity() - d * d.transpose());
-		A += P;
-		b += P * c;
-	}
-	const Eigen::FullPivLU<Eigen::Matrix3d> lu(A);
-	if (!lu.isInvertible())
-		return false;
-	const Eigen::Vector3d x = lu.solve(b);
-	if (!x.allFinite())
-		return false;
-	X = Point3(x(0), x(1), x(2));
-	return true;
 }
 
 } // namespace
@@ -344,150 +275,6 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 	return {numInliers, n, numDescribed};
 }
 
-IIndex Resection::RegisterFromRelativePoses(const IIndexScores& unregistered)
-{
-	// Gather, in one pass over the pairs, the links every unregistered image has to a registered one
-	std::unordered_map<IIndex, std::vector<PoseLink>> links;
-	for (const ImagePair& pair : scene.pairs) {
-		if (!IsPoseLinkPair(pair))
-			continue;
-		const bool registered1 = scene.images[pair.ID1].HasPose();
-		const bool registered2 = scene.images[pair.ID2].HasPose();
-		if (registered1 == registered2)
-			continue; // both registered, or neither: no link to add
-		const IIndex imageID = registered1 ? pair.ID2 : pair.ID1;
-		if (unregistered.find(imageID) == unregistered.end())
-			continue;
-		links[imageID].push_back(MakePoseLink(pair, registered1 ? pair.ID1 : pair.ID2));
-	}
-
-	// Candidates, ranked by the total inliers their links carry, ties to the lower image ID. An image
-	// most of whose pair weight lies in images the model does not hold yet is no candidate at all:
-	// the few links it does hold to the model are often the strongest of any image left, so leaving
-	// it in the ranking and turning it away further down would let a handful of such images take
-	// every slot below and end the resection with registrable images still in hand.
-	const float evidenceBar = config.minRegisteredEvidence * RegisteredImagesFraction();
-	std::vector<IIndex> candidates;
-	candidates.reserve(links.size());
-	std::unordered_map<IIndex, unsigned> scores;
-	scores.reserve(links.size());
-	for (const auto& it : links) {
-		if (config.minRegisteredEvidence > 0.f) {
-			const float share = RegisteredEvidenceShare(it.first);
-			if (share < evidenceBar) {
-				DEBUG("warning: cannot register image %u from its relative poses: only %.1f%% of its pair weight lies in "
-					"registered images, under the %.1f%% the registered share of the scene asks", it.first, share * 100.f,
-					evidenceBar * 100.f);
-				continue;
-			}
-		}
-		unsigned score = 0;
-		for (const PoseLink& link : it.second)
-			score += link.numInliers;
-		scores.emplace(it.first, score);
-		candidates.push_back(it.first);
-	}
-	std::sort(candidates.begin(), candidates.end(), [&scores](IIndex a, IIndex b) {
-		return scores.at(a) > scores.at(b) || (scores.at(a) == scores.at(b) && a < b);
-	});
-	// A candidate none of whose links can place a center is no reason to end the resection: try the
-	// next one down the ranking instead, up to this many of them
-	constexpr unsigned maxCandidates = 3;
-	if (candidates.size() > maxCandidates)
-		candidates.resize(maxCandidates);
-
-	for (const IIndex imageID : candidates) {
-		std::vector<PoseLink>& imageLinks = links[imageID];
-		std::sort(imageLinks.begin(), imageLinks.end(), IsStrongerLink);
-
-		// Only the links that agree about how the image is oriented place it: the rotation, the rays
-		// and the baseline prior all come from the quorum, the rest are ignored. A candidate whose
-		// links contradict one another so thoroughly that no two of them agree, while it has links to
-		// spare, is left for a later one: a pose taken from a contested link is a misplacement.
-		const PoseLinkQuorum quorum = ComputePoseLinkQuorum(imageLinks, config.maxRelativeRotationError, NeighborPose(scene));
-		if (quorum.links.size() < 2 && imageLinks.size() >= 3) {
-			DEBUG("warning: cannot register image %u from its relative poses: its %u links to registered images "
-				"disagree by up to %.1f degrees and no two of them agree", imageID, (unsigned)imageLinks.size(),
-				quorum.maxDisagreement);
-			continue;
-		}
-
-		// The rotation comes from the strongest link of the quorum, composed with its neighbor's pose
-		const RMatrix R(quorum.R);
-
-		// Every link of the quorum casts a ray from its neighbor's center along the direction in which
-		// the pair places the image's center; the relative pose fixes that direction but not how far
-		// along it the center lies, so the length is the only unknown left
-		std::vector<CenterRay> rays;
-		rays.reserve(quorum.links.size());
-		for (const PoseLink& link : quorum.links) {
-			const Image& neighbor = scene.images[link.neighborID];
-			Point3 direction;
-			if (link.PredictedDirection(neighbor, direction))
-				rays.emplace_back(CenterRay{link.neighborID, neighbor.C, direction});
-		}
-		if (rays.empty()) {
-			DEBUG("warning: cannot register image %u from its relative poses: none of its pairs has a baseline", imageID);
-			continue;
-		}
-
-		CMatrix C;
-		bool solved = false; // the center came out of the rays themselves, not out of the prior below
-		if (rays.size() >= 2) {
-			// Two or more rays fix the center where they come closest, provided they are far enough
-			// from parallel for that point to be defined at all (the angle between the lines they
-			// span, so that opposite directions count as parallel too) and that it does not land
-			// behind one of the neighbors
-			REAL minCosAngle = 1;
-			for (size_t i = 0; i + 1 < rays.size(); ++i)
-				for (size_t j = i + 1; j < rays.size(); ++j)
-					minCosAngle = MINF(minCosAngle, ABS(rays[i].direction.dot(rays[j].direction)));
-			const REAL angle = R2D(ACOS(minCosAngle));
-			if (angle < 1) {
-				DEBUG("warning: image %u has %u rays only %.3f degrees apart, placing its center on the strongest one alone",
-					imageID, (unsigned)rays.size(), angle);
-			} else if (!ClosestPointToRays(rays, C)) {
-				DEBUG("warning: the %u rays of image %u do not meet, placing its center on the strongest one alone",
-					(unsigned)rays.size(), imageID);
-			} else {
-				bool ahead = true;
-				for (const CenterRay& ray : rays) {
-					if ((C - ray.origin).dot(ray.direction) <= 0) {
-						DEBUG("warning: the center the %u rays of image %u meet at falls behind a neighbor, placing it on "
-							"the strongest ray alone", (unsigned)rays.size(), imageID);
-						ahead = false;
-						break;
-					}
-				}
-				solved = ahead;
-			}
-		}
-		const char* path = solved ? "two rays" : (rays.size() >= 2 ? "one ray after a degenerate solve" : "one ray");
-		if (!solved) {
-			// One usable ray, or several the solve above could not use: the distance stays open, so
-			// take the median distance the strongest ray's neighbor already has to its own registered
-			// neighbors, which is what a capture moving steadily between views suggests
-			const REAL baseline = MedianQuorumBaseline(scene, rays.front().neighborID, config.maxRelativeRotationError);
-			if (baseline <= 0) {
-				DEBUG("warning: cannot register image %u from its relative poses: no baseline to scale its ray with", imageID);
-				continue;
-			}
-			C = rays.front().origin + rays.front().direction * baseline;
-		}
-
-		Image& img = scene.images[imageID];
-		static_cast<Pose3D&>(img) = Pose3D(R, C);
-		// Its two-view tracks with the registered images can now be triangulated, which is what gives
-		// the next selection the 2D-3D correspondences it was missing
-		TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold);
-		DEBUG("Image %u registered from the relative pose to image %u (quorum %u of %u links, %s, baseline %s)",
-			imageID, rays.front().neighborID, (unsigned)quorum.links.size(), (unsigned)imageLinks.size(), path,
-			String::FormatString("%g", norm(C - scene.images[rays.front().neighborID].C)).c_str());
-		return imageID;
-	}
-	return NO_ID;
-}
-
 float Resection::RegisteredEvidenceShare(IIndex imageID) const
 {
 	float registered = 0.f, total = 0.f;
@@ -638,7 +425,6 @@ bool Resection::RegisterImages()
 	// Resection loop
 	unsigned nBA = 0;
 	unsigned registeredCount = 0;
-	unsigned relativePoseCount = 0;
 	unsigned sinceFullBA = 0;
 	IIndexArr lastRegistered;
 	TRunningAverage<float, 10> avgInliersRatio;
@@ -647,9 +433,7 @@ bool Resection::RegisterImages()
 	const auto AdjustIfScheduled = [&]() {
 		if ((config.fullBAEvery[nBA] > 0 && sinceFullBA >= config.fullBAEvery[nBA]) ||
 			(config.avgInliersRatioForceBA > 0.f && sinceFullBA >= config.minImagesForceBA &&
-			 // an image registered from a relative pose has no inlier ratio to contribute, so the
-			 // average may hold no measurement at all and must not be read as a low one
-			 avgInliersRatio.GetCount() > 0 && avgInliersRatio.GetAverage() < config.avgInliersRatioForceBA)) {
+			 avgInliersRatio.GetAverage() < config.avgInliersRatioForceBA)) {
 			// Full BA every N registered images;
 			// filter first so the observations of the images registered since the last filtering enter the
 			// inlier prefix the BA iterates, then re-triangulate only the tracks left without a valid
@@ -680,27 +464,9 @@ bool Resection::RegisterImages()
 		}
 		return false;
 	};
-	// When the resection stalls -- no image reaches the correspondence minimum, or every candidate
-	// that did failed to register -- images joined to the model by a verified pair still have a
-	// relative pose: register one of them from it so its two-view tracks can be triangulated, and
-	// let the next selection pick up from there; false when no image can be registered that way
-	const auto RegisterOneFromRelativePoses = [&]() {
-		const IIndex imageID = config.relativePoseFallback ? RegisterFromRelativePoses(unregistered) : NO_ID;
-		if (imageID == NO_ID)
-			return false;
-		lastRegistered.push_back(imageID);
-		unregistered.erase(imageID);
-		++registeredCount;
-		++relativePoseCount;
-		++sinceFullBA;
-		AdjustIfScheduled();
-		return true;
-	};
 	while (!unregistered.empty()) {
 		IIndexArr nextIDs = SelectNextImages(unregistered);
 		if (nextIDs.empty()) {
-			if (RegisterOneFromRelativePoses())
-				continue;
 			VERBOSE("warning: no more connected images to register, %u images remain", unregistered.size());
 			for (const auto& it : unregistered) {
 				DEBUG_EXTRA("\timage %u ('%s'): %u 2D-3D correspondences (min %u)", it.first,
@@ -742,7 +508,7 @@ bool Resection::RegisterImages()
 				break; // restart selection of next images
 			}
 		}
-		if (registeredCount == startRegisteredCount && !RegisterOneFromRelativePoses()) {
+		if (registeredCount == startRegisteredCount) {
 			VERBOSE("warning: no images were registered in last iteration, stopping resection, %u images remain", unregistered.size());
 			break;
 		}
@@ -759,8 +525,8 @@ bool Resection::RegisterImages()
 	// Update scene status
 	scene.status.nCalibratedImages += registeredCount;
 	scene.status.nState.set(Scene::Status::STATE::CALIBRATED);
-	DEBUG("Resection registered %u new images (%u from relative poses), total %u/%u images (%s)",
-		registeredCount, relativePoseCount, scene.status.nCalibratedImages, scene.images.size(), TD_TIMER_GET_FMT().c_str());
+	DEBUG("Resection registered %u new images, total %u/%u images (%s)",
+		registeredCount, scene.status.nCalibratedImages, scene.images.size(), TD_TIMER_GET_FMT().c_str());
 	return registeredCount > 0;
 }
 /*----------------------------------------------------------------*/

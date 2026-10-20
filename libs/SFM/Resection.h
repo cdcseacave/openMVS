@@ -51,9 +51,7 @@ struct SFM_API ResectionConfig
 	                                    // quorum of the verified pairs to already registered images composes -- the
 	                                    // largest group of those pairs agreeing on a rotation within this same angle,
 	                                    // so that one pair among several cannot speak for the image;
-	                                    // checked for every pose, however large its inlier share.
-	                                    // Also the angle within which the relative-pose fallback groups an image's
-	                                    // links (0 = disabled)
+	                                    // checked for every pose, however large its inlier share (0 = disabled)
 	float maxLinkDirectionError{3.f};   // Maximum angle (degrees) between the baseline direction a verified pair to a
 	                                    // registered image predicts and the one the estimated centre makes with that
 	                                    // neighbour, as seen from the structure the pair triangulates: a pair of
@@ -72,15 +70,11 @@ struct SFM_API ResectionConfig
 	                                    // most evidence is expected to lie ahead, late on an image whose evidence is
 	                                    // almost all in unregistered images belongs to a part the model barely
 	                                    // touches, and registering it there registers it where its evidence is not.
-	                                    // Also holds for the relative-pose fallback. A deferred image is retried as its
-	                                    // neighbours come in, but a round in which every candidate is deferred and the
-	                                    // fallback finds no image either ends this sub-scene's resection: only the
+	                                    // A deferred image is retried as its neighbours come in, but a round in which
+	                                    // every candidate is deferred ends this sub-scene's resection: only the
 	                                    // whole-scene pass that follows the merge sees the image again, with its
 	                                    // neighbours registered, and a community that stays unregistered as a whole is
 	                                    // left out (0 = disabled)
-	bool relativePoseFallback{true};    // Register one image from its relative poses to registered images when no image
-	                                    // reaches minCorrespondences, or every candidate that did failed to register,
-	                                    // instead of stopping there
 	unsigned maxLocalWindow{25};        // Max images in local BA window (0 = all neighbors)
 	unsigned triangulateEvery{0};       // Run triangulation every N registered images (0 = disabled)
 	unsigned localBAEvery{10};          // Run local BA every N registered images (0 = disabled)
@@ -267,19 +261,6 @@ private:
 	using IIndexScores = std::unordered_map<IIndex,unsigned>;
 
 	IIndexArr SelectNextImages(IIndexScores& unregistered) const;
-
-	/**
-	 * @brief Set the pose of one unregistered image from its relative poses to registered images
-	 *
-	 * Used when no image has enough 2D-3D correspondences left, or every candidate that did failed
-	 * to register: the tracks of the remaining images are two-view tracks with a single registered
-	 * image, which cannot be triangulated, while the verified pairs joining those images to
-	 * registered ones do carry a relative pose. Registering one such image turns its two-view
-	 * tracks into 3D points, which gives the next selection the correspondences it was missing.
-	 * @param unregistered Images still without a pose
-	 * @return ID of the image that was registered, NO_ID when none could be
-	 */
-	IIndex RegisterFromRelativePoses(const IIndexScores& unregistered);
 
 	// Composite weight of the image's valid pairs to registered images as a share of that of all its
 	// valid pairs; 1 for an image with no valid pair. A pair to an image the caller withheld

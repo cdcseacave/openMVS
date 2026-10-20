@@ -74,24 +74,13 @@ into already-registered images to reach a tenth of the registered share of the s
 weight of all its pairs -- a bar that rises as the model fills in, so an image is not hung off the model
 by the few pairs it happens to have when most of its evidence still lies beyond the model's edge. An
 image that misses the bar is not refused outright, only deferred -- retried once more of its neighbours
-have registered, or picked up by the tail pass, which sees every pair; the relative-pose fallback holds
-the same bar, and an image under it is not even ranked among the fallback's candidates, so a handful of
-deferred images cannot take every slot from one whose evidence is registered. A round in which every
-candidate is deferred and the fallback finds no image either ends this sub-scene's resection there:
+have registered, or picked up by the tail pass, which sees every pair. A round in which every
+candidate is deferred ends this sub-scene's resection there:
 only the whole-scene pass that follows the merge sees those images again, with their neighbours
 registered, and a community that stays unregistered as a whole is left out.
 
-When no image reaches `minCorrespondences` (15), or an iteration's candidates all fail to register,
-the resection falls back to relative poses (`relativePoseFallback`, on by default): an image still
-joined to the model by a verified pair -- its tracks two-view, not yet triangulable -- is registered
-from that pair's relative pose instead of PnP, trying up to three ranked candidates and skipping one
-only when it has links to spare and no two of them agree (a candidate with just two contradicting
-links is registered from the heavier one instead). Rotation and center both come from the quorum: two
-or more agreeing rays are intersected by least squares (rejecting a near-degenerate or
-behind-the-neighbour solution); one usable ray falls
-back to a distance drawn from the median baseline its neighbour already has to its own registered
-neighbours -- what a steadily moving capture suggests -- after which the two-view tracks are
-triangulated, handing the next round the correspondences it was missing.
+The resection stops when no image reaches `minCorrespondences` (15), or when an iteration's candidates
+all fail to register.
 
 Local bundle adjustment (`localBAEvery`, every 10 registrations, a fixed window of `maxLocalWindow`
 neighbours, never refining intrinsics) avoids a global solve every step. Full bundle adjustment runs
@@ -188,15 +177,13 @@ deciding, so a chain cannot lift itself in.
 
 The resection's acceptance parameters (`minInlierRatio`, `minInliersAbsolute`,
 `maxRelativeRotationError`, `maxLinkDirectionError`,
-`minRegisteredEvidence`, `relativePoseFallback`) and the image filter's corroboration bar
+`minRegisteredEvidence`) and the image filter's corroboration bar
 (`maxCorroborationAngle`, its inlier floor) have no flags; their defaults live in `ResectionConfig` and
 the `FilterWeaklyConnectedImages` call in `Scene.cpp`.
 
 ## Limitations
 
-A chain of images registered from relative poses alone carries an unobservable scale until a third
-view triangulates their shared points -- the one-ray fallback's median-baseline prior is a guess, not a
-measurement. A long single trajectory with no loop closure drifts like any incremental method: the
+A long single trajectory with no loop closure drifts like any incremental method: the
 relative-pose residuals restrain a joint the tracks do not hold, not a bend spread evenly across a
 trajectory that never re-observes itself. A look-alike block whose false pairs outnumber its true ones
 can still join the model at the wrong place -- the triplet filter's cutting rule and the

@@ -404,11 +404,6 @@ bool TripletFilterTest();
 // views, which is the worst place to start.
 bool StarReferenceViewTest();
 
-// The incremental resection registers an image that has no 2D-3D correspondence at all from the
-// relative poses of its verified pairs to already registered images, instead of stopping there
-// (ResectionConfig::relativePoseFallback).
-bool ResectionRelativePoseFallbackTest();
-
 // A resected pose enters the model only when its support is credible: enough of its 2D-3D
 // correspondences agree with it (ResectionConfig::minInlierRatio / minInliersAbsolute), and a
 // weakly supported one also agrees with the rotation the quorum of its verified pairs to registered
@@ -428,10 +423,9 @@ bool ResectionLinkDirectionTest();
 
 // A weakly supported pose is registered only where the image's evidence is: the composite weight
 // of its pairs to registered images must be a share of all its pairs' weight at least
-// minRegisteredEvidence times the fraction of the scene's images that are registered, in the
-// resection and in its relative-pose fallback alike (ResectionConfig::minRegisteredEvidence); the
-// deferral that follows reports no correspondences, so it enters no measure of the model's health,
-// and the deferred image takes none of the fallback's candidate slots
+// minRegisteredEvidence times the fraction of the scene's images that are registered
+// (ResectionConfig::minRegisteredEvidence); the deferral that follows reports no correspondences,
+// so it enters no measure of the model's health
 bool ResectionEvidenceShareTest();
 
 // The resection's inlier bar admits a correspondence measured with the precision of a warp-sampled
