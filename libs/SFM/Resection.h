@@ -103,7 +103,9 @@ struct SFM_API ResectionConfig
 	unsigned minRefineExtIntrs{100};    // Min number of registered images to refine extended intrinsics in full BA (0 = disabled)
 
 	float ratioCorrespondences{0.3f};   // Min ratio of 2D-3D correspondences to best next image to accept for bundle resection (0 = disabled)
-	float avgInliersRatioForceBA{0.6f}; // Minimum resection average inliers ratio to force full BA (0 = disabled)
+	float avgInliersRatioForceBA{0.6f}; // Minimum resection average inliers ratio to force full BA, averaged over the
+	                                    // registered images alone (an attempt that failed or was refused adds nothing;
+	                                    // 0 = disabled)
 	unsigned minImagesForceBA{3};       // Minimum images registered since the last full BA before a low average inliers
 	                                    // ratio may force one; without it a persistently low ratio forces a full BA after
 	                                    // every single registration (0 = no minimum; the fullBAEvery cadence is unaffected)

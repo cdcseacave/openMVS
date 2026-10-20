@@ -224,8 +224,7 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 					"registered images, under the %.1f%% the registered share of the scene asks", imageID, numInliers, n,
 					inlierRatio * 100.f, share * 100.f, bar * 100.f);
 				// a deferral reports no correspondences: it says nothing about how well the model fits this
-				// image, only that its evidence is elsewhere for now, so it must stay out of the average
-				// inlier ratio the caller reads the model's health from, and force no bundle adjustment
+				// image, only that its evidence is elsewhere for now
 				return {0, 0, numDescribed};
 			}
 		}
@@ -479,19 +478,19 @@ bool Resection::RegisterImages()
 			// Attempt to register next image
 			const IIndex nextID = nextIDs[n];
 			const auto [numInliers, numPoints, numDescribed] = RegisterImage(nextID);
-			if (numPoints > 0) {
-				// Weigh the ratio against what a registration with this same mix of described and
-				// dense correspondences reaches on a healthy model, so the average reads drift and
-				// not how much of the image matched densely
-				const float describedShare = numDescribed / (float)numPoints;
-				const float expectedRatio = describedShare + (1.f - describedShare) * config.denseInlierRatioFactor;
-				avgInliersRatio += (numInliers / (float)numPoints) / expectedRatio;
-			}
 			if (numInliers == 0) {
 				DEBUG("warning: failed to register image %u (%u/%u correspondences), retrying later", nextID, numInliers, numPoints);
 				nextIDs.RemoveAtMove(n);
 				continue; // n now points to the shifted element, do not increment
 			}
+			// The average the full bundle adjustment is forced from reads the registered images' inlier
+			// ratios alone, weighed against what a registration with this same mix of described and
+			// dense correspondences reaches on a healthy model, so it reads drift and not how much of
+			// the image matched densely: an image whose attempt failed or was refused is not in the
+			// model, so its zero says nothing about how well the model fits
+			const float describedShare = numDescribed / (float)numPoints;
+			const float expectedRatio = describedShare + (1.f - describedShare) * config.denseInlierRatioFactor;
+			avgInliersRatio += (numInliers / (float)numPoints) / expectedRatio;
 			lastRegistered.push_back(nextID);
 			unregistered.erase(nextID);
 			++registeredCount;

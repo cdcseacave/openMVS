@@ -424,9 +424,14 @@ bool ResectionLinkDirectionTest();
 // A weakly supported pose is registered only where the image's evidence is: the composite weight
 // of its pairs to registered images must be a share of all its pairs' weight at least
 // minRegisteredEvidence times the fraction of the scene's images that are registered
-// (ResectionConfig::minRegisteredEvidence); the deferral that follows reports no correspondences,
-// so it enters no measure of the model's health
+// (ResectionConfig::minRegisteredEvidence); the deferral that follows reports no correspondences
 bool ResectionEvidenceShareTest();
+
+// The average inlier ratio that forces a full bundle adjustment when it falls under
+// ResectionConfig::avgInliersRatioForceBA reads the registered images alone: an image whose pose is
+// refused adds nothing to it, so the refusals of one candidate force no full adjustment while the
+// images registered after it hold the average above the bar
+bool ResectionRefusedAverageTest();
 
 // The resection's inlier bar admits a correspondence measured with the precision of a warp-sampled
 // (dense) keypoint on a full-resolution image, several pixels off its projection, and not only one

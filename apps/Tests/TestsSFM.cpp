@@ -10643,6 +10643,32 @@ bool StarReferenceViewTest()
 	return true;
 }
 
+// Everything the log recorded while it was alive, so a test can assert on what the merge reported.
+// The verbosity is raised for its lifetime, the per-candidate gate reports being written at the
+// ultimate level.
+struct LogCapture
+{
+	String text;
+	int verbosity;
+
+	LogCapture() : verbosity(g_nVerbosityLevel) {
+		g_nVerbosityLevel = 3;
+		GET_LOG().RegisterListener(DELEGATEBINDCLASS(Log::ClbkRecordMsg, &LogCapture::Record, this));
+	}
+	~LogCapture() {
+		GET_LOG().UnregisterListener(DELEGATEBINDCLASS(Log::ClbkRecordMsg, &LogCapture::Record, this));
+		g_nVerbosityLevel = verbosity;
+	}
+	void Record(const String& msg) { text += msg; }
+	bool Contains(const char* what) const { return text.find(what) != String::npos; }
+	unsigned Count(const char* what) const {
+		unsigned num = 0;
+		for (size_t pos = text.find(what); pos != String::npos; pos = text.find(what, pos + 1))
+			++num;
+		return num;
+	}
+};
+
 namespace {
 
 // Scenes for the two resection tests. Cameras sit on a 5-unit circle in the XZ plane, one every
@@ -11069,7 +11095,7 @@ bool ResectionEvidenceShareTest()
 	TD_TIMER_START();
 
 	// The deferral itself reports no correspondences: it says nothing about how well the model fits
-	// the image, only that its evidence is elsewhere for now, so it must enter no health average
+	// the image, only that its evidence is elsewhere for now
 	{
 		std::mt19937 rng(20260918);
 		Scene scene;
@@ -11079,8 +11105,7 @@ bool ResectionEvidenceShareTest()
 		const auto [numInliers, numPoints, numDescribed] = resection.RegisterImage(IIndex(4));
 		if (numInliers != 0 || numPoints != 0) {
 			VERBOSE("ResectionEvidenceShareTest FAILED: the deferral of image 4 reported %u inliers of %u correspondences "
-				"(%u described), which the resection would read as a measurement of its model's health",
-				numInliers, numPoints, numDescribed);
+				"(%u described)", numInliers, numPoints, numDescribed);
 			return false;
 		}
 	}
@@ -11125,8 +11150,64 @@ bool ResectionEvidenceShareTest()
 	}
 
 	VERBOSE("ResectionEvidenceShareTest PASSED: a weakly supported pose is registered only where its evidence is, the bar "
-		"scaled by how much of the scene is registered; the deferral reports no correspondences, so it enters no health "
-		"average (%s)", TD_TIMER_GET_FMT().c_str());
+		"scaled by how much of the scene is registered; the deferral reports no correspondences (%s)",
+		TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// The average inlier ratio that forces a full bundle adjustment when it falls under
+// ResectionConfig::avgInliersRatioForceBA reads the registered images alone: an image whose attempt
+// fails or is refused is not in the model, so the zero it would add says nothing about how well the
+// model fits. Nine cameras of the arc, images 0-3 registered with 150 tracks. Image 4 holds the most
+// correspondences, 30 at the projections its pose gives and 120 at random pixels, a 20% share that
+// the acceptance refuses (minInlierRatio 25%), and it is tried again every round; images 5-8 hold 70
+// true and 30 random each, a 70% share, above the 60% bar. Counting the refusals as zeros, the
+// average falls to 0.525 at the third registration of the first round and forces a full adjustment
+// there, and the registration that follows it then needs the one that closes the resection too; counting
+// the registrations alone it stays at 0.7 and the one that closes the resection is the only full adjustment.
+bool ResectionRefusedAverageTest()
+{
+	TD_TIMER_START();
+	constexpr IIndex REFUSED = 4;
+	constexpr IIndex NUM_IMAGES = 9;
+	std::mt19937 rng(20261020);
+	Scene scene;
+	BuildResectionArc(scene, NUM_IMAGES);
+	AddResectionTracks(scene, {0, 1, 2, 3}, 150, rng);
+	AddResectionCorrespondences(scene, REFUSED, 30, 120, rng);
+	for (IIndex imageID = REFUSED + 1; imageID < NUM_IMAGES; ++imageID)
+		AddResectionCorrespondences(scene, imageID, 70, 30, rng);
+	std::vector<Pose3D> truePoses;
+	for (const Image& img : scene.images)
+		truePoses.push_back(static_cast<const Pose3D&>(img));
+	for (IIndex imageID = REFUSED; imageID < NUM_IMAGES; ++imageID)
+		scene.images[imageID].InvalidatePose();
+	scene.status.nCalibratedImages = 4;
+	TriangulateTracks(scene, false, 4.f, 1.f);
+
+	LogCapture log;
+	Resection resection(scene, ResectionConfig());
+	resection.RegisterImages();
+	if (scene.images[REFUSED].HasPose()) {
+		VERBOSE("ResectionRefusedAverageTest FAILED: image %u was registered at a 20%% inlier share, so the scene does not "
+			"pose the problem", REFUSED);
+		return false;
+	}
+	for (IIndex imageID = REFUSED + 1; imageID < NUM_IMAGES; ++imageID) {
+		if (!scene.images[imageID].HasPose() || RotationErrorDeg(scene.images[imageID].R, truePoses[imageID].R) > 1.0) {
+			VERBOSE("ResectionRefusedAverageTest FAILED: image %u was not registered at its true pose", imageID);
+			return false;
+		}
+	}
+	const unsigned numFullAdjustments = log.Count("Full adjustment ran");
+	if (numFullAdjustments != 1) {
+		VERBOSE("ResectionRefusedAverageTest FAILED: %u full adjustments ran, expected only the one that closes the "
+			"resection: the refusals of image %u pulled the average inlier ratio under its bar", numFullAdjustments, REFUSED);
+		return false;
+	}
+
+	VERBOSE("ResectionRefusedAverageTest PASSED: an image whose pose is refused adds nothing to the average inlier "
+		"ratio, so it forces no full adjustment (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 
@@ -14750,32 +14831,6 @@ bool SeamGraphConsensusTest()
 	VERBOSE("SeamGraphConsensusTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
-
-// Everything the log recorded while it was alive, so a test can assert on what the merge reported.
-// The verbosity is raised for its lifetime, the per-candidate gate reports being written at the
-// ultimate level.
-struct LogCapture
-{
-	String text;
-	int verbosity;
-
-	LogCapture() : verbosity(g_nVerbosityLevel) {
-		g_nVerbosityLevel = 3;
-		GET_LOG().RegisterListener(DELEGATEBINDCLASS(Log::ClbkRecordMsg, &LogCapture::Record, this));
-	}
-	~LogCapture() {
-		GET_LOG().UnregisterListener(DELEGATEBINDCLASS(Log::ClbkRecordMsg, &LogCapture::Record, this));
-		g_nVerbosityLevel = verbosity;
-	}
-	void Record(const String& msg) { text += msg; }
-	bool Contains(const char* what) const { return text.find(what) != String::npos; }
-	unsigned Count(const char* what) const {
-		unsigned num = 0;
-		for (size_t pos = text.find(what); pos != String::npos; pos = text.find(what, pos + 1))
-			++num;
-		return num;
-	}
-};
 
 // ===============================================================================
 // A capture walking around a loop: blocks of cameras on a circle looking outward at a cylinder
