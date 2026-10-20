@@ -429,8 +429,6 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::DenseReprojectionBarTest())
 				return false;
-			if (!SFM::CorroboratedImageTest())
-				return false;
 			if (!SFM::ContradictingImagesTest())
 				return false;
 			if (!SFM::PairDirectionToleranceTest())

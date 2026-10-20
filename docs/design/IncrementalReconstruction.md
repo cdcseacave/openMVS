@@ -140,8 +140,8 @@ never refines intrinsics, full BA stays at the main set regardless, and only the
 removes, the ones cut for contradicting the model -- a cut component whose verified pairs to the kept
 images put it elsewhere than the model did, by more inlier weight than agrees -- are withheld from the
 resection offered the rest, so such an image is not just handed back and removed again; the ones cut
-for want of evidence (no triangulated structure, no witness among the pairs) are offered again, since
-the grown model may hold what they lacked. The filter runs a second time only when that resection
+for want of evidence (no verified pair of theirs puts them elsewhere than the model) are offered again,
+since the grown model may hold what they lacked. The filter runs a second time only when that resection
 registers something.
 Two tier verdicts drop an image outright:
 spatial distribution (triangulated points occupy too little of the image, `minObservationArea` 0.15)
@@ -153,20 +153,6 @@ component is retaken. An optional pose-consistency cut (`maxPoseInconsistencyAng
 can additionally drop an edge whose global rotation disagrees with the pair's own stored one, for a
 scene the tier verdicts and the peel do not separate.
 
-Every stage above judges an image by triangulated structure, which one the resection registered from a
-relative pose alone does not have -- its tracks are two-view, with no covisibility edge at all.
-Corroboration (`maxCorroborationAngle`, default 5 degrees) rescues such an image when at least two
-verified pairs, each carrying 15 or more weighted inliers, join it to images already settled -- settled
-starting as whatever the tier verdicts and the largest component keep on their own merits -- and each
-pair's model rotation and baseline direction agree with what it measured. The rotation is held to
-that angle; the baseline direction to the same angle as seen from the structure the pair triangulates,
-`atan(tan(angle) / rayAngle)` for the pair's median triangulation angle, since a pose that far off as
-seen from the structure swings a short baseline's direction much further than a long one's. A
-near-duplicate pair, whose rays triangulate under 2 degrees, is judged on rotation alone. Settled grows
-a round at a time as newly corroborated images become witnesses for the next round, rescuing a chain of
-relative-pose registrations as far as it reaches back -- but never from an image its own round is still
-deciding, so a chain cannot lift itself in.
-
 ## Flags
 
 | Flag | Default | Effect |
@@ -177,9 +163,7 @@ deciding, so a chain cannot lift itself in.
 
 The resection's acceptance parameters (`minInlierRatio`, `minInliersAbsolute`,
 `maxRelativeRotationError`, `maxLinkDirectionError`,
-`minRegisteredEvidence`) and the image filter's corroboration bar
-(`maxCorroborationAngle`, its inlier floor) have no flags; their defaults live in `ResectionConfig` and
-the `FilterWeaklyConnectedImages` call in `Scene.cpp`.
+`minRegisteredEvidence`) have no flags; their defaults live in `ResectionConfig`.
 
 ## Limitations
 

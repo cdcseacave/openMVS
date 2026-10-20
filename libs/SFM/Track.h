@@ -216,16 +216,11 @@ SFM_API std::pair<float, float> FilterTracks(Scene& scene,
  * - Peels images with too few independent covisibility neighbors (absolute k-core) and
  *   keeps the largest remaining connected component
  *
- * Every stage above judges an image by the structure it has triangulated, which an image joined to
- * the model by two-view geometry alone does not have; such an image is exempted from the tier
- * verdicts, the two largest-component passes and the k-core peel when two verified pairs to distinct
- * settled images agree with the pose the model gives it (maxCorroborationAngle). Settled starts as
- * the images the filter keeps on their own merits and grows a round at a time as pairs reach further
- * images, so a chain of two-view registrations is rescued as far as it reaches back into the model.
- * The agreement-gated backstops below (maxReprojErrorPixels) deliberately do not honor this
- * exemption: a corroborated image has no triangulated structure of its own, which is exactly the
- * shape a low match-survival ratio punishes, but it still has to fail the reprojection signal too
- * before either backstop fires.
+ * Among the images the largest-component passes cut, the ones the model contradicts are told from
+ * the ones it merely lacks evidence for: a cut component whose verified pairs (of at least 15
+ * weighted inliers) to the kept images disagree with the pose the model gives it, in rotation or
+ * baseline direction beyond 5 degrees, by more inlier weight than agrees is contradicted; one with
+ * no such pair, or agreeing ones, is not.
  *
  * @param scene Scene containing images and tracks (tracks must be pre-filtered by FilterTracks)
  * @param minCovisibilityCount Minimum number of shared tracks to form a covisibility edge
@@ -241,22 +236,6 @@ SFM_API std::pair<float, float> FilterTracks(Scene& scene,
  *                       (detects wrongly positioned views). Default: 0 (disabled)
  * @param maxReprojErrorPixels Enable the agreement-gated per-image backstops (match-survival +
  *                       robust reprojection); pass config.maxFineReprojError. Default: 0 (disabled)
- * @param maxCorroborationAngle Keep an image, whatever the stages above decide, when two verified
- *                       pairs join it to distinct settled images -- images those stages keep on their
- *                       own merits, or corroborated in an earlier round -- and both the relative
- *                       rotation and the direction of the baseline the model gives are within this
- *                       angle, in degrees, of what each pair measured. Default: 5 (0 disables it).
- *                       The same angle tells, among the images the largest-component passes cut,
- *                       the ones the model contradicts from the ones it merely lacks evidence for:
- *                       a cut component whose verified pairs to the kept images disagree with the
- *                       pose the model gives it by more inlier weight than agrees is contradicted;
- *                       one with no such pair, or agreeing ones, is not. Only pairs of the
- *                       corroboration's inlier strength are read.
- *                       Enabling it pays for a second BuildCovisEdges pass, on the entry-state graph
- *                       rather than the post-tier one the rest of the filter builds -- the two differ
- *                       because InvalidateImages strips observations at the tier verdicts, and
- *                       BuildCovisEdges is the filter's single most expensive step, so this is a
- *                       deliberate cost paid on every default run, not an oversight.
  * @return the invalidated image IDs, and among them the ones cut for contradicting the model
  */
 struct RemovedImages {
@@ -269,8 +248,7 @@ SFM_API RemovedImages FilterWeaklyConnectedImages(Scene& scene,
 	float minTriangulationAngle = 1.5f,
 	unsigned minCovisDegree = 2,
 	float maxPoseInconsistencyAngle = 0.f,
-	float maxReprojErrorPixels = 0.f,
-	float maxCorroborationAngle = 5.f);
+	float maxReprojErrorPixels = 0.f);
 /*----------------------------------------------------------------*/
 
 } // namespace SFM

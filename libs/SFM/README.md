@@ -214,7 +214,7 @@ Union-find merges matched features across all image pairs into tracks. Filtering
 - Tracks with too few observations
 - Images with spatially clustered tracks (likely degenerate geometry)
 - Images with small triangulation angles
-- Images outside the largest covisibility component, or peeled off it for too few independent covisibility neighbours (`FilterWeaklyConnectedImages`, `Track.h`) -- except one corroborated by two verified pairs to images already kept, agreeing with the model in rotation and baseline direction (chained across rounds, so a whole chain the resection registered from relative poses can be rescued); on by default (`maxCorroborationAngle` 5°, no flag)
+- Images outside the largest covisibility component, or peeled off it for too few independent covisibility neighbours (`FilterWeaklyConnectedImages`, `Track.h`)
 
 See `docs/design/IncrementalReconstruction.md` for the full design of pair selection, the star initializer, the resection and its bundle adjustments, and this filter.
 
