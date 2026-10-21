@@ -417,6 +417,19 @@ float StrictestPassing(const std::vector<float>& thresholds, const Test& passes)
 	return thresholds[lo];
 }
 
+// The score of every scene pair: its edge's, TripletScores::unscored for a pair that is no edge or
+// whose edge is unscored
+std::vector<float> ScoresOfPairs(const ViewGraph& g, const EdgeScores& edgeScores)
+{
+	std::vector<float> scores(g.edgeOfPair.size(), TripletScores::unscored);
+	FOREACH(idxPair, scores) {
+		const uint32_t e = g.edgeOfPair[idxPair];
+		if (e != NO_INDEX && edgeScores.scores[e] >= 0.f)
+			scores[idxPair] = edgeScores.scores[e];
+	}
+	return scores;
+}
+
 // a value that only means anything in [0,1], guarded once (CLAMP passes a NaN through)
 float Unit(float value, const char* name)
 {
@@ -436,15 +449,11 @@ TripletScores SFM::ComputeTripletScores(const Scene& scene, float minScore, floa
 	const ViewGraph graph = BuildViewGraph(scene, gridSize);
 	const EdgeScores edgeScores = ScoreEdges(graph, minScore, minYield);
 	TripletScores result;
-	result.scores.assign(scene.pairs.size(), TripletScores::unscored);
+	result.scores = ScoresOfPairs(graph, edgeScores);
 	result.numScoredPairs = 0;
-	FOREACH(idxPair, scene.pairs) {
-		const uint32_t e = graph.edgeOfPair[idxPair];
-		if (e == NO_INDEX || edgeScores.scores[e] < 0.f)
-			continue;
-		result.scores[idxPair] = edgeScores.scores[e];
-		++result.numScoredPairs;
-	}
+	for (const float score : result.scores)
+		if (score != TripletScores::unscored)
+			++result.numScoredPairs;
 	result.tau = edgeScores.tau;
 	result.numTriplets = edgeScores.numTriplets;
 	result.numTripletComponents = edgeScores.numComponents;
@@ -456,18 +465,18 @@ TripletScores SFM::ComputeTripletScores(const Scene& scene, float minScore, floa
 /*----------------------------------------------------------------*/
 
 unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& config, const PairsWeightingConfig& weightingCfg,
-	IIndexArr* pSeedViews)
+	IIndexArr* pSeedViews, std::vector<float>* pScores)
 {
 	if (pSeedViews)
 		pSeedViews->Empty();
+	if (pScores)
+		pScores->assign(scene.pairs.size(), TripletScores::unscored);
 	if (!config.enabled)
 		return 0;
 	TD_TIMER_STARTD();
 	const float minScore = Unit(config.minScore, "minimum edge score");
 	const float minYield = Unit(config.minYield, "minimum yield");
-	const float keepMaxShort = Unit(config.keepMaxShort, "maximum short share");
 	const float secondFace = Unit(config.secondFaceScore, "second-face score");
-	const float keepMinAngle = std::isnan(config.keepMinAngle) ? 0.f : MAXF(config.keepMinAngle, 0.f);
 
 	const ViewGraph graph = BuildViewGraph(scene, weightingCfg.gridSize);
 	const EdgeScores edgeScores = ScoreEdges(graph, minScore, minYield);
@@ -569,163 +578,6 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 			tau, tau < ceiling ? "the strictest threshold joining every piece" :
 				twoFaced ? "the ceiling inside the larger face" : "the ceiling",
 			ceiling, minScore, degreeRatio, (unsigned)atCeiling.roots.size(), minPiece, atCeiling.numNodes, graph.numNodes);
-	} else {
-		// The keep mode: the candidates are the scored pairs below the threshold that join two
-		// pieces the ceiling keeps apart -- the paper's evidence that a pair is false is that its
-		// threshold separates what the pair joins -- and a weak pair inside one piece is kept
-		// whatever its score (on a video every non-consecutive pair is the weak side of a
-		// triangle a consecutive pair tops, and those are the pairs bundle adjustment needs
-		// most). Of the candidates only what the graph can spare goes: nothing on a graph in one
-		// piece at the ceiling.
-		const std::vector<uint32_t> pieceOf = ComponentsAt(graph, scores, ceiling);
-		const auto IsCandidate = [&](uint32_t e, float threshold) {
-			return scores[e] >= 0.f && scores[e] < threshold && pieceOf[graph.edges[e].i] != pieceOf[graph.edges[e].j];
-		};
-		unsigned numPieces = 0, numBridges = 0;
-		{
-			std::unordered_map<uint32_t, unsigned> sizes;
-			for (IIndex i = 0; i < graph.numImages; ++i)
-				if (graph.isNode[i])
-					++sizes[pieceOf[i]];
-			numPieces = (unsigned)sizes.size();
-			for (uint32_t e = 0; e < numEdges; ++e)
-				if (IsCandidate(e, ceiling))
-					++numBridges;
-		}
-		if (numBridges == 0) {
-			VERBOSE("Triplet filter: the ceiling %.3f (m %.2f, d_max/|V| %.3f) leaves the graph in %u pieces of %u nodes and no pair "
-				"below it joins two of them: nothing removed", ceiling, minScore, degreeRatio, numPieces, graph.numNodes);
-		} else {
-			// The floor: every image keeps at least keepPairs pairs holding keepMatches weighted
-			// inliers, counting only pairs whose ray angle reaches keepMinAngle (an unmeasured
-			// angle counts): a near-duplicate pair yields no 3D point, and a burst of
-			// near-duplicate frames would otherwise keep nothing but itself. An image falls
-			// short at a threshold when its counting pairs that are not candidates there fall
-			// short of the floor.
-			const auto Counts = [&](uint32_t e) {
-				const float rayAngle = graph.edges[e].rayAngle;
-				return !(rayAngle > 0.f) || R2D(rayAngle) >= keepMinAngle;
-			};
-			std::vector<unsigned> keptPairs(graph.numImages);
-			std::vector<double> keptMatches(graph.numImages);
-			const auto NumShortAt = [&](float threshold) {
-				std::fill(keptPairs.begin(), keptPairs.end(), 0u);
-				std::fill(keptMatches.begin(), keptMatches.end(), 0.0);
-				for (uint32_t e = 0; e < numEdges; ++e) {
-					if (!Counts(e) || IsCandidate(e, threshold))
-						continue;
-					const ViewGraph::Edge& edge = graph.edges[e];
-					++keptPairs[edge.i];
-					++keptPairs[edge.j];
-					keptMatches[edge.i] += edge.numInliers;
-					keptMatches[edge.j] += edge.numInliers;
-				}
-				unsigned numShort = 0;
-				for (IIndex i = 0; i < graph.numImages; ++i)
-					if (graph.isNode[i] && (keptPairs[i] < config.keepPairs || keptMatches[i] < (double)config.keepMatches))
-						++numShort;
-				return numShort;
-			};
-			const auto Fits = [&](float threshold) {
-				return (double)NumShortAt(threshold) <= (double)keepMaxShort * (double)graph.numNodes;
-			};
-			// The threshold is the strictest one the graph fits: the ceiling when at most
-			// keepMaxShort of the nodes fall short there, else the largest score below it at
-			// which that holds (a lower threshold keeps every pair a higher one keeps, so the
-			// count is monotone). The paper's ceiling presumes a collection where an image keeps
-			// hundreds of pairs above it; a small set matched exhaustively puts the ceiling near
-			// 1 and fits a lower one, still above its look-alike pairs; an interior, most of
-			// whose images hold fewer matches than the floor asks for in the whole graph, fits
-			// none and loses nothing.
-			bool fitsNone = false;
-			if (!Fits(ceiling)) {
-				const std::vector<float> thresholds = ThresholdsBelow(scores, ceiling);
-				if (thresholds.empty() || !Fits(thresholds.back()))
-					fitsNone = true;
-				else
-					tau = StrictestPassing(thresholds, Fits);
-			}
-			if (fitsNone) {
-				VERBOSE("Triplet filter: the ceiling %.3f (m %.2f, d_max/|V| %.3f) leaves %u pieces of %u nodes and %u distinct pairs joining two, "
-					"but the graph fits no threshold (more than %.0f%% of the images short of %u pairs holding %u weighted inliers at %g degrees "
-					"or more even with every pair kept): nothing removed",
-					ceiling, minScore, degreeRatio, numPieces, graph.numNodes, numBridges,
-					100.f * keepMaxShort, config.keepPairs, config.keepMatches, keepMinAngle);
-			} else {
-				// what every image keeps at tau (NumShortAt leaves keptPairs/keptMatches at that
-				// threshold, which the floor below reads), and the candidates, best-scoring first,
-				// ties to the one with more inliers, then the earlier
-				const unsigned numShort = NumShortAt(tau);
-				std::vector<uint32_t> candidates;
-				for (uint32_t e = 0; e < numEdges; ++e)
-					if (IsCandidate(e, tau))
-						candidates.push_back(e);
-				std::sort(candidates.begin(), candidates.end(), [&](uint32_t a, uint32_t b) {
-					if (scores[a] != scores[b])
-						return scores[a] > scores[b];
-					if (graph.edges[a].numInliers != graph.edges[b].numInliers)
-						return graph.edges[a].numInliers > graph.edges[b].numInliers;
-					return a < b;
-				});
-				// serve the floor: the images in ascending order of what they keep, each
-				// retaining its best counting candidates until the floor holds or they run out
-				std::vector<bool> retained(numEdges, false);
-				std::vector<std::vector<uint32_t>> candidatesOf(graph.numImages);
-				for (uint32_t e : candidates) {
-					if (!Counts(e))
-						continue;
-					candidatesOf[graph.edges[e].i].push_back(e);
-					candidatesOf[graph.edges[e].j].push_back(e);
-				}
-				IIndexArr order;
-				for (IIndex i = 0; i < graph.numImages; ++i)
-					if (!candidatesOf[i].empty())
-						order.push_back(i);
-				std::sort(order.begin(), order.end(), [&](IIndex a, IIndex b) {
-					if (keptPairs[a] != keptPairs[b])
-						return keptPairs[a] < keptPairs[b];
-					if (keptMatches[a] != keptMatches[b])
-						return keptMatches[a] < keptMatches[b];
-					return a < b;
-				});
-				unsigned numForFloor = 0, numForRepair = 0;
-				for (IIndex i : order) {
-					for (uint32_t e : candidatesOf[i]) {
-						if (keptPairs[i] >= config.keepPairs && keptMatches[i] >= (double)config.keepMatches)
-							break;
-						if (retained[e])
-							continue;
-						retained[e] = true;
-						++numForFloor;
-						const ViewGraph::Edge& edge = graph.edges[e];
-						++keptPairs[edge.i];
-						++keptPairs[edge.j];
-						keptMatches[edge.i] += edge.numInliers;
-						keptMatches[edge.j] += edge.numInliers;
-					}
-				}
-				// the repair: every component of the matched graph stays one component, joined
-				// by its best-scoring candidates
-				UnionFind uf(graph.numImages);
-				for (uint32_t e = 0; e < numEdges; ++e)
-					if (retained[e] || !IsCandidate(e, tau))
-						uf.Join(graph.edges[e].i, graph.edges[e].j);
-				for (uint32_t e : candidates) {
-					if (!retained[e] && uf.Join(graph.edges[e].i, graph.edges[e].j)) {
-						retained[e] = true;
-						++numForRepair;
-					}
-				}
-				for (uint32_t e : candidates)
-					removed[e] = !retained[e];
-				VERBOSE("Triplet filter: keep mode, tau %.3f (%s); the ceiling %.3f (m %.2f, d_max/|V| %.3f) leaves %u pieces of %u nodes; "
-					"%u distinct pairs below tau join two of them, %u of %u images short of the floor (%u pairs holding %u weighted inliers "
-					"at %g degrees or more) without them: %u retained for the floor, %u to keep every component whole",
-					tau, tau < ceiling ? "the strictest threshold the graph fits" : "the ceiling", ceiling, minScore, degreeRatio,
-					numPieces, graph.numNodes, (unsigned)candidates.size(), numShort, graph.numNodes,
-					config.keepPairs, config.keepMatches, keepMinAngle, numForFloor, numForRepair);
-			}
-		}
 	}
 
 	// remove the scene pairs of the removed edges, compacting in one pass
@@ -749,6 +601,11 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 	// the connectivity and cycle-consistency weights describe the unfiltered graph
 	if (numRemoved > 0)
 		ComputePairsWeights(scene, weightingCfg);
+	// the scores of the pairs left: those computed above when nothing was removed, else the scores of the
+	// graph the removal left (a triangle lost changes the score of the pairs beside it)
+	if (pScores)
+		*pScores = numRemoved == 0 ? ScoresOfPairs(graph, edgeScores) :
+			ComputeTripletScores(scene, minScore, minYield, weightingCfg.gridSize).scores;
 	DEBUG("Filtered the view graph by camera triplets: %u pairs removed (%s)", numRemoved, TD_TIMER_GET_FMT().c_str());
 	return numRemoved;
 }

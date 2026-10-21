@@ -85,12 +85,12 @@ struct SFM_API ReconstructionConfig {
 	// Triplet-based view-graph disambiguation, applied right after that CSV is written, so it
 	// still describes the whole matched graph and carries the score of every pair
 	TripletFilterConfig tripletFilterCfg;
-	// Then every pair whose relative rotation is more than this many degrees from the one its
-	// graph's maximum spanning tree composes is removed (FilterPairsByTreeRotations): the cross-face
-	// pairs of a four-fold symmetric roof are a quarter or a half turn off and weak, too weak to be
-	// on the tree, while a right pair is off by what the loops it closes drift, under 60 on every
-	// verified capture (0 = off)
-	float maxTreeRotationResidual{70.f};
+	// Then the contradiction cut (FilterPairsByContradiction), weighted by those scores: its rotation
+	// stage removes every pair whose rotation is not the one the global rotation averaging of the pairs
+	// gives, and its translation stage removes every pair whose baseline direction is more than this
+	// many degrees from the camera centres the pairs place; 0 = no translation stage, the rotation
+	// stage alone
+	float maxPairDirectionResidual{45.f};
 
 	// View graph calibration parameters
 	ViewGraphCalibratorConfig viewgraphCfg;

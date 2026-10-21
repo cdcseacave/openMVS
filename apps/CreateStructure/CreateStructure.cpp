@@ -77,11 +77,8 @@ unsigned nROMA2DenseMatches;
 bool bFilterTriplets;
 bool bTripletCut;
 float fTripletMinScore;
-unsigned nTripletKeepPairs;
-unsigned nTripletKeepMatches;
-float fTripletKeepMinAngle;
-float fTripletKeepMaxShort;
 float fTripletSecondFaceScore;
+float fMaxPairDirectionResidual;
 String strROMA2Provider;
 float defaultFocalRatio;
 int nCameraType;
@@ -164,14 +161,11 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("export-openmvg-dir", boost::program_options::value<std::string>(&OPT::strExportOpenMVGDir), "export OpenMVG features to directory (optional)")
 		("export-pairs-csv", boost::program_options::value<std::string>(&OPT::strExportPairsCSV), "export image pairs to CSV file (written right after matching, before reconstruction) (optional)")
 		("compare-mvs", boost::program_options::value<std::string>(&OPT::strCompareMVS), "compare reconstruction against ground-truth MVS file (optional)")
-		("filter-triplets", boost::program_options::value<bool>(&OPT::bFilterTriplets)->default_value(TripletFilterConfig().enabled), "disambiguate the matched view graph with the camera-triplet filter (Manam & Govindu, CVPR 2024): a pair is scored by how its coverage-discounted inlier count compares with the strongest pair of every triangle it belongs to; by default only pairs joining pieces the paper's threshold keeps apart go, and of those only what the graph can spare (see --triplet-keep-pairs), so a scene without repeated structure loses nothing; with --triplet-cut every pair below the threshold goes")
+		("filter-triplets", boost::program_options::value<bool>(&OPT::bFilterTriplets)->default_value(TripletFilterConfig().enabled), "score the matched view graph with the camera-triplet filter (Manam & Govindu, CVPR 2024): a pair is scored by how its coverage-discounted inlier count compares with the strongest pair of every triangle it belongs to; by default nothing is removed, the scores weigh the contradiction cut (see --max-pair-direction-residual) and the reconstruction seeds in the largest piece the paper's threshold leaves; with --triplet-cut every pair below the threshold goes")
 		("triplet-cut", boost::program_options::value<bool>(&OPT::bTripletCut)->default_value(TripletFilterConfig().cut), "camera-triplet filter: the cutting rule -- every pair scoring below the threshold goes, the smaller face of a symmetric building is cut off (--triplet-second-face-score), otherwise below a threshold that shatters the graph the strictest one joining the pieces applies; unfolds a symmetric building, halves the registrations of an interior")
 		("triplet-min-score", boost::program_options::value(&OPT::fTripletMinScore)->default_value(TripletFilterConfig().minScore), "camera-triplet filter: the paper's minimum edge score m in [0,1], from which the threshold tau = m(1-r)+r follows, r the maximum-degree ratio of the scored graph (0.3 medium and small ambiguous sets, 0.6 generic, 0.9 highly ambiguous)")
-		("triplet-keep-pairs", boost::program_options::value(&OPT::nTripletKeepPairs)->default_value(TripletFilterConfig().keepPairs), "camera-triplet filter, keep mode: every image keeps, where the graph can spare them, at least this many of its pairs at --triplet-keep-min-angle or more")
-		("triplet-keep-matches", boost::program_options::value(&OPT::nTripletKeepMatches)->default_value(TripletFilterConfig().keepMatches), "camera-triplet filter, keep mode: every image keeps, where the graph can spare them, enough of its best-scoring pairs to hold this many weighted inliers")
-		("triplet-keep-min-angle", boost::program_options::value(&OPT::fTripletKeepMinAngle)->default_value(TripletFilterConfig().keepMinAngle), "camera-triplet filter, keep mode: only pairs whose ray angle reaches this many degrees count towards an image's floor of pairs and weighted inliers (a near-duplicate pair yields no 3D point); 0 counts every pair")
-		("triplet-keep-max-short", boost::program_options::value(&OPT::fTripletKeepMaxShort)->default_value(TripletFilterConfig().keepMaxShort), "camera-triplet filter, keep mode: the largest share of the images that may fall short of the floor at the threshold; the threshold descends from the paper's until that holds, and a graph that fits no threshold loses nothing")
 		("triplet-second-face-score", boost::program_options::value(&OPT::fTripletSecondFaceScore)->default_value(TripletFilterConfig().secondFaceScore), "camera-triplet filter, with --triplet-cut: a stricter minimum score whose threshold names the two faces of a symmetric building (a majority piece and a second one of at least a third of it); the smaller face is then cut off; at or below --triplet-min-score the faces are not looked for")
+		("max-pair-direction-residual", boost::program_options::value(&OPT::fMaxPairDirectionResidual)->default_value(ReconstructionConfig().maxPairDirectionResidual), "the view graph's contradiction cut, after the camera-triplet filter: every pair whose rotation the global rotation averaging of the pairs contradicts goes; its translation stage also removes every pair whose baseline direction is more than this many degrees from the camera centres the pairs place, in [0,180]; 0 = no translation stage, the rotation stage alone")
 		("max-features-per-cell", boost::program_options::value(&OPT::nMaxFeaturesPerCell)->default_value(3000), "maximum features per grid cell (3x3 grid)")
 		("min-features-per-cell", boost::program_options::value(&OPT::nMinFeaturesPerCell)->default_value(500), "minimum features per cell before adjusting sensitivity")
 		("match-mode", boost::program_options::value(&OPT::matchMode)->default_value(1), "match mode: -1=SKIP,0=EXHAUSTIVE,1=VOCABULARY,2=SEQUENTIAL,3=KNOWN_POSES,4=RETRIEVAL")
@@ -290,6 +284,10 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	}
 	if (OPT::fTripletSecondFaceScore < 0.f || OPT::fTripletSecondFaceScore > 1.f) {
 		LOG("error: --triplet-second-face-score must be in [0,1] (got %g)", OPT::fTripletSecondFaceScore);
+		return false;
+	}
+	if (!(OPT::fMaxPairDirectionResidual >= 0.f && OPT::fMaxPairDirectionResidual <= 180.f)) {
+		LOG("error: --max-pair-direction-residual is the translation stage's bar in degrees, it must be in [0,180] (got %g; 0 = no translation stage)", OPT::fMaxPairDirectionResidual);
 		return false;
 	}
 	Util::ensureValidFolderPath(OPT::strROMA2Model);
@@ -428,11 +426,8 @@ int main(int argc, LPCTSTR* argv)
 	cfg.tripletFilterCfg.enabled = OPT::bFilterTriplets;
 	cfg.tripletFilterCfg.cut = OPT::bTripletCut;
 	cfg.tripletFilterCfg.minScore = OPT::fTripletMinScore;
-	cfg.tripletFilterCfg.keepPairs = OPT::nTripletKeepPairs;
-	cfg.tripletFilterCfg.keepMatches = OPT::nTripletKeepMatches;
-	cfg.tripletFilterCfg.keepMinAngle = OPT::fTripletKeepMinAngle;
-	cfg.tripletFilterCfg.keepMaxShort = OPT::fTripletKeepMaxShort;
 	cfg.tripletFilterCfg.secondFaceScore = OPT::fTripletSecondFaceScore;
+	cfg.maxPairDirectionResidual = OPT::fMaxPairDirectionResidual;
 	cfg.viewgraphCfg.maxTwoViewError = 0; // disable pair filtering after ViewGraph calibration
 	cfg.useGlobalSolver = OPT::bUseGlobalSolver;
 	cfg.thAlignGPS = OPT::thAlignGPS;

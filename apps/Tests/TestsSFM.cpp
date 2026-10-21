@@ -10483,7 +10483,7 @@ bool TripletFilterTest()
 		VERBOSE("TripletFilterTest FAILED: walk removed %u pairs; expected 23, keeping only the 14 consecutive pairs", yieldRemoved); return false;
 	}
 
-	// 4. The two modes on two rooms of 60 and 30 images (consecutive pairs 1000 inliers, two apart
+	// 4. The cutting rule and the default mode on two rooms of 60 and 30 images (consecutive pairs 1000 inliers, two apart
 	// 600) joined by three weak pairs, (59,60)=60, (58,60)=50, (59,61)=50: no image holds more than
 	// four pairs, so G_LCT has |V|=90, d_max=4 and tau = 0.3(1-4/90)+4/90 = 0.331, below which only
 	// the three bridges sit.
@@ -10496,70 +10496,79 @@ bool TripletFilterTest()
 		for (IIndex i = 60; i + 2 < 90; ++i) AddTripletPair(s, i, i + 2, 600);
 		AddTripletPair(s, 59, 60, 60); AddTripletPair(s, 58, 60, 50); AddTripletPair(s, 59, 61, 50);
 	};
+	// the scores of the pairs a scene holds, as the filter should have handed them over
+	const auto sameScores = [](const std::vector<float>& scores, const Scene& scene, const TripletFilterConfig& cfg, int gridSize) {
+		const TripletScores expected = ComputeTripletScores(scene, cfg.minScore, cfg.minYield, gridSize);
+		return scores == expected.scores;
+	};
 	{
-		// The cutting rule removes all three bridges: the larger room's 60 images seed the reconstruction.
+		// The cutting rule removes all three bridges: the larger room's 60 images seed the reconstruction, and the
+		// scores handed over are those of the 174 pairs left.
 		Scene rooms; buildRooms(rooms);
 		TripletFilterConfig cutCfg; cutCfg.enabled = true; cutCfg.cut = true; cutCfg.minYield = 0.f;
 		IIndexArr seeds;
-		const unsigned removed = FilterPairsByTriplets(rooms, cutCfg, roomsCfg, &seeds);
+		std::vector<float> scores;
+		const unsigned removed = FilterPairsByTriplets(rooms, cutCfg, roomsCfg, &seeds, &scores);
 		if (removed != 3 || TripletKeptPairs(rooms).size() != 174 || seeds.size() != 60 || seeds.front() != 0 || seeds.back() != 59) {
 			VERBOSE("TripletFilterTest FAILED: rooms cutting rule removed %u pairs, %u seeds; expected 3 removed, 174 kept, 60 seed images 0-59",
 				removed, (unsigned)seeds.size()); return false;
 		}
-	}
-	{
-		// A floor of 2 pairs, no matches: every image already keeps two pairs at the ceiling (the
-		// chain ends), so only the repair joins the rooms, through the best-scoring bridge.
-		Scene rooms; buildRooms(rooms);
-		TripletFilterConfig keepCfg; keepCfg.enabled = true; keepCfg.keepPairs = 2; keepCfg.keepMatches = 0; keepCfg.minYield = 0.f;
-		const unsigned removed = FilterPairsByTriplets(rooms, keepCfg, roomsCfg);
-		const std::set<std::pair<IIndex,IIndex>> kept = TripletKeptPairs(rooms);
-		if (removed != 2 || kept.count({59,60}) != 1 || kept.count({58,60}) != 0 || kept.count({59,61}) != 0) {
-			VERBOSE("TripletFilterTest FAILED: rooms floor of 2 pairs removed %u pairs; expected the two weaker bridges gone, (59,60) kept by the repair", removed); return false;
+		if (scores.size() != 174 || !sameScores(scores, rooms, cutCfg, roomsCfg.gridSize)) {
+			VERBOSE("TripletFilterTest FAILED: rooms cutting rule handed over %zu scores; expected those of the 174 pairs left", scores.size()); return false;
 		}
 	}
 	{
-		// A floor of 3 pairs and 1700 matches: node 59 needs both bridges to clear 1700 matches
-		// (1600+60+50), and node 60, inheriting (59,60), needs (58,60) too (1660+50): all survive.
+		// The default mode removes nothing, whatever the graph could spare, and names the same seed views:
+		// the larger room's 60 images; it hands over the scores it computed, one per pair, the bridges
+		// below the ceiling among them.
 		Scene rooms; buildRooms(rooms);
-		TripletFilterConfig keepCfg; keepCfg.enabled = true; keepCfg.keepPairs = 3; keepCfg.keepMatches = 1700; keepCfg.minYield = 0.f;
-		const unsigned removed = FilterPairsByTriplets(rooms, keepCfg, roomsCfg);
-		const std::set<std::pair<IIndex,IIndex>> kept = TripletKeptPairs(rooms);
-		if (removed != 0 || kept.count({59,60}) != 1 || kept.count({58,60}) != 1 || kept.count({59,61}) != 1) {
-			VERBOSE("TripletFilterTest FAILED: rooms floor of 3 pairs/1700 matches removed %u pairs; expected every bridge retained by the floor", removed); return false;
+		TripletFilterConfig defaultCfg; defaultCfg.enabled = true; defaultCfg.minYield = 0.f;
+		IIndexArr seeds;
+		std::vector<float> scores;
+		const unsigned removed = FilterPairsByTriplets(rooms, defaultCfg, roomsCfg, &seeds, &scores);
+		if (removed != 0 || rooms.pairs.size() != 177 || seeds.size() != 60 || seeds.front() != 0 || seeds.back() != 59) {
+			VERBOSE("TripletFilterTest FAILED: rooms default mode removed %u of 177 pairs, %u seeds; expected none removed, 60 seed images 0-59",
+				removed, (unsigned)seeds.size()); return false;
+		}
+		const TripletScores expected = ComputeTripletScores(rooms, defaultCfg.minScore, defaultCfg.minYield, roomsCfg.gridSize);
+		if (scores.size() != 177 || scores != expected.scores || expected.numScoredPairs != 177 ||
+			!(scores[174] < expected.tau) || !(scores[175] < expected.tau) || !(scores[176] < expected.tau)) {
+			VERBOSE("TripletFilterTest FAILED: rooms default mode handed over %zu scores (bridges %g %g %g, ceiling %g); expected the 177 scores of "
+				"ComputeTripletScores with the three bridges below the ceiling", scores.size(), scores.size() > 176 ? scores[174] : -9.f,
+				scores.size() > 176 ? scores[175] : -9.f, scores.size() > 176 ? scores[176] : -9.f, expected.tau); return false;
 		}
 	}
 	{
-		// The default floor (3 pairs, 2000 matches) already fits at the ceiling: only the four
-		// chain-end images (0, 59, 60, 89) fall short, well under half of 90, so tau stays the
-		// ceiling; serving the floor gives 59 both its bridges and 60 the third: nothing is removed.
-		Scene rooms; buildRooms(rooms);
-		TripletFilterConfig keepCfg; keepCfg.enabled = true; keepCfg.minYield = 0.f;
-		const unsigned removed = FilterPairsByTriplets(rooms, keepCfg, roomsCfg);
-		if (removed != 0 || rooms.pairs.size() != 177) {
-			VERBOSE("TripletFilterTest FAILED: rooms default floor removed %u of 177 pairs; expected none", removed); return false;
-		}
-	}
-	{
-		// A disabled filter removes nothing and reports no seed views.
+		// A disabled filter removes nothing, reports no seed views and leaves every pair unscored.
 		Scene rooms; buildRooms(rooms);
 		TripletFilterConfig offCfg; offCfg.enabled = false;
 		IIndexArr seeds;
-		const unsigned removed = FilterPairsByTriplets(rooms, offCfg, roomsCfg, &seeds);
-		if (removed != 0 || rooms.pairs.size() != 177 || !seeds.empty()) {
-			VERBOSE("TripletFilterTest FAILED: disabled filter removed %u pairs (%u seeds); expected none and no seeds", removed, (unsigned)seeds.size()); return false;
+		std::vector<float> scores;
+		const unsigned removed = FilterPairsByTriplets(rooms, offCfg, roomsCfg, &seeds, &scores);
+		if (removed != 0 || rooms.pairs.size() != 177 || !seeds.empty() ||
+			scores != std::vector<float>(177, TripletScores::unscored)) {
+			VERBOSE("TripletFilterTest FAILED: disabled filter removed %u pairs (%u seeds, %zu scores); expected none, no seeds, 177 unscored",
+				removed, (unsigned)seeds.size(), scores.size()); return false;
+		}
+	}
+	{
+		// A scene without a verified pair has nothing to score: its pairs are all unscored.
+		Scene bare; AddTripletImages(bare, 3);
+		AddTripletPair(bare, 0, 1, 100, false); AddTripletPair(bare, 1, 2, 100, false);
+		std::vector<float> scores;
+		const unsigned removed = FilterPairsByTriplets(bare, TripletFilterConfig(), roomsCfg, NULL, &scores);
+		if (removed != 0 || scores != std::vector<float>(2, TripletScores::unscored)) {
+			VERBOSE("TripletFilterTest FAILED: scene without a verified pair removed %u pairs, %zu scores; expected none and 2 unscored", removed, scores.size()); return false;
 		}
 	}
 
-	// 5. The defaults: enabled, the keep mode, the paper's minimum score for medium/small ambiguous
-	// sets, the yield rule on, and the floor/ceiling constants of the keep mode.
+	// 5. The defaults: enabled, the default mode (removes nothing, scores only), the paper's minimum
+	// score for medium/small ambiguous sets, the yield rule on, the second face's score.
 	const TripletFilterConfig defaults;
 	if (!defaults.enabled || defaults.cut || !ISEQUAL(defaults.minScore, 0.3f) || !ISEQUAL(defaults.minYield, 0.4f) ||
-		defaults.keepPairs != 3 || defaults.keepMatches != 2000 || !ISEQUAL(defaults.keepMinAngle, 3.f) ||
-		!ISEQUAL(defaults.keepMaxShort, 0.5f) || !ISEQUAL(defaults.secondFaceScore, 0.75f)) {
-		VERBOSE("TripletFilterTest FAILED: defaults enabled %d cut %d minScore %g minYield %g keepPairs %u keepMatches %u keepMinAngle %g keepMaxShort %g secondFaceScore %g",
-			defaults.enabled ? 1 : 0, defaults.cut ? 1 : 0, defaults.minScore, defaults.minYield, defaults.keepPairs,
-			defaults.keepMatches, defaults.keepMinAngle, defaults.keepMaxShort, defaults.secondFaceScore); return false;
+		!ISEQUAL(defaults.secondFaceScore, 0.75f)) {
+		VERBOSE("TripletFilterTest FAILED: defaults enabled %d cut %d minScore %g minYield %g secondFaceScore %g",
+			defaults.enabled ? 1 : 0, defaults.cut ? 1 : 0, defaults.minScore, defaults.minYield, defaults.secondFaceScore); return false;
 	}
 
 	VERBOSE("TripletFilterTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
@@ -12421,59 +12430,378 @@ bool RotationEstimatorTest()
 	return true;
 }
 
-// A pair whose rotation is a quarter turn off, the cross-face pair of a four-fold symmetric
-// building, is found against the rotations its graph's strongest pairs compose and removed before
-// any track is built from it; a weak pair a few tens of degrees off, a loop's drift, stays.
-bool SpanningTreeRotationFilterTest()
+// The contradiction cut (FilterPairsByContradiction), its rotation stage: (1) an eight-fold symmetric
+// ring, the Palace case -- four look-alike pairs between opposite images claim the same view, heavier
+// in composite weight than the true neighbour pairs of the ring, lighter once weighted by their triplet
+// score -- lands in the true basin from the score-weighted tree and removes exactly the look-alikes,
+// while the same graph unscored starts in the symmetric mode; (2) a bridge, the only pair joining
+// two consistent groups, is fitted exactly and never removed, however far its rotation is from
+// anything; (3) a wrong pair whose inlier count is far past the weight cap weighs what the cap
+// says (1000) before its triplet score scales it, and the ring of right pairs outvotes it; (4) the
+// cross-face pairs of a four-fold symmetric roof, a quarter and a half turn off and too weak to be
+// usable themselves, are judged against the rotations the other pairs give and removed, a pair
+// a few degrees off, a loop's drift, stays; (5) the translation stage's bar takes both its ends.
+bool ContradictionCutTest()
 {
 	TD_TIMER_START();
-	Scene sceneGT, scene;
-	SceneConfig cfg;
-	cfg.numImages = 16;
-	cfg.numPoints = 200;
-	cfg.rotationAngleStep = 16.0;
-	cfg.generatePairs = true;
-	GenerateTestScene(sceneGT, cfg, &scene);
-	ComputePairsWeights(scene);
-	constexpr REAL maxResidual = 70; // degrees, ReconstructionConfig::maxTreeRotationResidual
-	const RMatrix quarterTurn(Point3(0, D2R(REAL(90)), 0));
-	const RMatrix drift(Point3(0, D2R(REAL(40)), 0));
-	const std::set<std::pair<IIndex,IIndex>> crossFace{{0,8}, {1,9}, {3,12}, {5,14}};
-	const std::pair<IIndex,IIndex> drifting(2, 11);
-	const size_t numPairs = scene.pairs.size();
-	for (ImagePair& pair : scene.pairs) {
-		const std::pair<IIndex,IIndex> ids(pair.ID1, pair.ID2);
-		const bool isCrossFace = crossFace.count(ids) != 0;
-		if (!isCrossFace && ids != drifting)
-			continue;
-		// weak, as the cross-face pairs of the captures are: far from every tree edge's weight
-		pair.weightSpatial *= 1e-3f;
-		pair.relativePose->R = (isCrossFace ? quarterTurn : drift) * pair.relativePose->R;
-	}
-	// off: nothing is judged
-	if (FilterPairsByTreeRotations(scene, 0, PairsWeightingConfig()) != 0 || scene.pairs.size() != numPairs) {
-		VERBOSE("ERROR: SpanningTreeRotationFilterTest: the check off removed pairs");
-		return false;
-	}
-	const unsigned removed = FilterPairsByTreeRotations(scene, maxResidual, PairsWeightingConfig());
-	std::set<std::pair<IIndex,IIndex>> kept;
-	for (const ImagePair& pair : scene.pairs)
-		kept.emplace(pair.ID1, pair.ID2);
-	if (removed != crossFace.size() || scene.pairs.size() != numPairs - crossFace.size()) {
-		VERBOSE("ERROR: SpanningTreeRotationFilterTest: removed %u pairs, expected %zu", removed, crossFace.size());
-		return false;
-	}
-	for (const auto& ids : crossFace)
-		if (kept.count(ids)) {
-			VERBOSE("ERROR: SpanningTreeRotationFilterTest: cross-face pair (%u,%u) kept", ids.first, ids.second);
+	// a scene of numImages images and no pair
+	const auto makeScene = [](Scene& scene, IIndex numImages) {
+		AddTripletImages(scene, numImages);
+	};
+	// add a pair of the given relative rotation about the vertical axis (degrees) and composite weight
+	// (inlier count at full quality)
+	const auto addPair = [](Scene& scene, IIndex a, IIndex b, REAL degrees, unsigned numInliers) {
+		AddTripletPair(scene, a, b, MINF(numInliers, 40u));
+		ImagePair& pair = scene.pairs.back();
+		if (a > b) // the pair holds its smaller index first: the rotation from it is the inverse
+			degrees = -degrees;
+		pair.relativePose = Pose3D(RMatrix(Point3(0, D2R(degrees), 0)), CMatrix(1, 0, 0));
+		pair.weightSpatial = pair.weightConnectivity = 1.f;
+		pair.weightTriplet = 0.5f;
+		pair.weightedInliers = (float)numInliers;
+	};
+	const auto keptPairs = [](const Scene& scene) {
+		std::set<std::pair<IIndex,IIndex>> kept;
+		for (const ImagePair& pair : scene.pairs)
+			kept.emplace(pair.ID1, pair.ID2);
+		return kept;
+	};
+	constexpr float minPairWeight = 3.f;
+	const PairsWeightingConfig weightingCfg;
+
+	// (1) the octagon: the ring of eight neighbour pairs of 45 degrees (weight 20 each), and the four
+	// opposite pairs claiming no rotation at all (weight 100 each), which a spanning tree by composite
+	// weight takes for the truth
+	const std::set<std::pair<IIndex,IIndex>> lookAlikes{{0,4}, {1,5}, {2,6}, {3,7}};
+	const auto buildOctagon = [&](Scene& scene) {
+		makeScene(scene, 8);
+		for (IIndex k = 0; k < 8; ++k)
+			addPair(scene, k, (k + 1) % 8, k == 7 ? REAL(-315) : REAL(45), 20);
+		for (const auto& ids : lookAlikes)
+			addPair(scene, ids.first, ids.second, 0, 100);
+	};
+	{
+		Scene scene; buildOctagon(scene);
+		std::vector<float> scores(scene.pairs.size(), 1.f);
+		FOREACH(idxPair, scene.pairs)
+			if (lookAlikes.count({scene.pairs[idxPair].ID1, scene.pairs[idxPair].ID2}))
+				scores[idxPair] = 0.05f;
+		const unsigned removed = FilterPairsByContradiction(scene, scores, minPairWeight, 0.f, weightingCfg);
+		if (removed != lookAlikes.size() || keptPairs(scene).size() != 8) {
+			VERBOSE("ERROR: ContradictionCutTest: the scored octagon removed %u pairs, expected %zu look-alikes", removed, lookAlikes.size());
 			return false;
 		}
-	if (!kept.count(drifting)) {
-		VERBOSE("ERROR: SpanningTreeRotationFilterTest: the drifting pair under the bar was removed");
+		for (const auto& ids : lookAlikes)
+			if (keptPairs(scene).count(ids)) {
+				VERBOSE("ERROR: ContradictionCutTest: look-alike pair (%u,%u) kept", ids.first, ids.second);
+				return false;
+			}
+	}
+	{
+		// unscored, the same graph starts in the symmetric mode and cuts the true ring instead
+		Scene scene; buildOctagon(scene);
+		const std::vector<float> scores(scene.pairs.size(), TripletScores::unscored);
+		FilterPairsByContradiction(scene, scores, minPairWeight, 0.f, weightingCfg);
+		bool allLookAlikes = true;
+		for (const auto& ids : lookAlikes)
+			allLookAlikes = allLookAlikes && !keptPairs(scene).count(ids);
+		if (allLookAlikes) {
+			VERBOSE("ERROR: ContradictionCutTest: the unscored octagon removed the look-alikes: the start no longer decides the basin");
+			return false;
+		}
+	}
+
+	// (2) a bridge: two rings of four images (true 90 degrees each) joined by the one pair (3,4), claiming
+	// a rotation of 100 degrees; and an image hanging on one pair
+	{
+		Scene scene;
+		makeScene(scene, 9);
+		for (IIndex k = 0; k < 4; ++k) {
+			addPair(scene, k, (k + 1) % 4, k == 3 ? REAL(-270) : REAL(90), 200);
+			addPair(scene, 4 + k, 4 + (k + 1) % 4, k == 3 ? REAL(-270) : REAL(90), 200);
+		}
+		addPair(scene, 3, 4, 100, 5);
+		addPair(scene, 8, 0, 179, 4);
+		const size_t numPairs = scene.pairs.size();
+		const std::vector<float> scores(numPairs, 1.f);
+		if (FilterPairsByContradiction(scene, scores, 0.f, 0.f, weightingCfg) != 0 || scene.pairs.size() != numPairs) {
+			VERBOSE("ERROR: ContradictionCutTest: a bridge or a pendant pair was removed");
+			return false;
+		}
+	}
+
+	// (3) a capped-weight pair: eight right pairs of a ring (50000 inliers each, weight 1000 at the cap) against
+	// one wrong pair of 400000 inliers (also 1000 at the cap) scoring 0.05
+	{
+		Scene scene;
+		makeScene(scene, 8);
+		for (IIndex k = 0; k < 8; ++k)
+			addPair(scene, k, (k + 1) % 8, k == 7 ? REAL(-315) : REAL(45), 50000);
+		addPair(scene, 0, 4, 0, 400000);
+		if (scene.pairs.back().GetCompositeWeight() != 1000.f) {
+			VERBOSE("ERROR: ContradictionCutTest: the weight of a pair past the cap is %g, expected 1000", scene.pairs.back().GetCompositeWeight());
+			return false;
+		}
+		// its score of 0.05 leaves it 50 against the ring's 1000; read at the raw count it would weigh 20000
+		std::vector<float> scores(scene.pairs.size(), 1.f);
+		scores.back() = 0.05f;
+		const unsigned removed = FilterPairsByContradiction(scene, scores, minPairWeight, 0.f, weightingCfg);
+		if (removed != 1 || keptPairs(scene).count({0, 4}) || keptPairs(scene).size() != 8) {
+			VERBOSE("ERROR: ContradictionCutTest: the capped wrong pair: %u pairs removed, expected only the wrong one", removed);
+			return false;
+		}
+	}
+
+	// (4) the tree check: the cross-face pairs of a four-fold roof (images 0-15 over a 240 degree arc), two a
+	// quarter turn off and two a half turn off, weak as the cross-face pairs of the captures are (composite
+	// weight under 6 against over 34 for every other pair); and a pair 8 degrees off, under the 12 degrees the
+	// estimator allows, which stays. Once with the weak pairs in the averaging, outweighed, and once under the
+	// minimum pair weight (10), so that they are not in it at all and are judged all the same.
+	for (const float weightBar : {minPairWeight, 10.f}) {
+		Scene sceneGT, scene;
+		SceneConfig cfg;
+		cfg.numImages = 16;
+		cfg.numPoints = 200;
+		cfg.rotationAngleStep = 16.0;
+		cfg.generatePairs = true;
+		GenerateTestScene(sceneGT, cfg, &scene);
+		ComputePairsWeights(scene);
+		const RMatrix quarterTurn(Point3(0, D2R(REAL(90)), 0));
+		const RMatrix halfTurn(Point3(0, D2R(REAL(180)), 0));
+		const RMatrix drift(Point3(0, D2R(REAL(8)), 0));
+		const std::set<std::pair<IIndex,IIndex>> crossFace{{0,8}, {1,9}, {3,12}, {5,14}};
+		const std::pair<IIndex,IIndex> drifting(2, 11);
+		const size_t numPairs = scene.pairs.size();
+		for (ImagePair& pair : scene.pairs) {
+			const std::pair<IIndex,IIndex> ids(pair.ID1, pair.ID2);
+			const bool isCrossFace = crossFace.count(ids) != 0;
+			if (!isCrossFace && ids != drifting)
+				continue;
+			pair.weightSpatial *= 1e-3f;
+			pair.relativePose->R = (isCrossFace ? (pair.ID1 < 2 ? quarterTurn : halfTurn) : drift) * pair.relativePose->R;
+		}
+		const std::vector<float> scores(scene.pairs.size(), TripletScores::unscored);
+		const unsigned removed = FilterPairsByContradiction(scene, scores, weightBar, 0.f, weightingCfg);
+		const auto kept = keptPairs(scene);
+		if (removed != crossFace.size() || scene.pairs.size() != numPairs - crossFace.size()) {
+			VERBOSE("ERROR: ContradictionCutTest: the roof at minimum weight %g: removed %u pairs, expected %zu", weightBar, removed, crossFace.size());
+			return false;
+		}
+		for (const auto& ids : crossFace)
+			if (kept.count(ids)) {
+				VERBOSE("ERROR: ContradictionCutTest: the roof at minimum weight %g: cross-face pair (%u,%u) kept", weightBar, ids.first, ids.second);
+				return false;
+			}
+		if (!kept.count(drifting)) {
+			VERBOSE("ERROR: ContradictionCutTest: the roof at minimum weight %g: the pair 8 degrees off was removed", weightBar);
+			return false;
+		}
+	}
+
+	// (5) the bar of the translation stage: 0 (no translation stage) and 180 (every direction is within it) are both
+	// valid, and the rotation stage's answer is the same
+	for (const float bar : {0.f, 180.f}) {
+		Scene scene; buildOctagon(scene);
+		std::vector<float> scores(scene.pairs.size(), 1.f);
+		FOREACH(idxPair, scene.pairs)
+			if (lookAlikes.count({scene.pairs[idxPair].ID1, scene.pairs[idxPair].ID2}))
+				scores[idxPair] = 0.05f;
+		const unsigned removed = FilterPairsByContradiction(scene, scores, minPairWeight, bar, weightingCfg);
+		if (removed != lookAlikes.size()) {
+			VERBOSE("ERROR: ContradictionCutTest: bar %g: %u pairs removed, expected the %zu look-alikes", bar, removed, lookAlikes.size());
+			return false;
+		}
+	}
+	VERBOSE("ContradictionCutTest passed (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// The translation stage of the contradiction cut (FilterPairsByContradiction, its bar above 0): on a
+// ring of cameras with exact relative poses, (1) a pair whose baseline sign is flipped and one whose
+// baseline is turned 120 degrees, both with the rotation exact, are removed at the default bar and
+// nothing else is; (2) the one pair joining two groups of cameras, its baseline flipped, is a bridge
+// and is never removed; (3) a pair under 2 degrees of ray angle is never judged, whatever its baseline
+// says (the same pair at 10 degrees is removed); (4) the sparse scale solve gives the dense one's
+// scales; (5) with the bar 0 the cut is the rotation stage alone: a pair 30 degrees off in rotation
+// goes at either bar, the flipped and the turned baselines only at 45; (6) a connected graph of fewer
+// pairs than a scale component needs is not solved and removes nothing.
+bool TranslationCutTest()
+{
+	TD_TIMER_START();
+	constexpr float minPairWeight = 3.f;
+	const PairsWeightingConfig weightingCfg;
+	const float maxDirectionResidual = ReconstructionConfig().maxPairDirectionResidual;
+	if (!ISEQUAL(maxDirectionResidual, 45.f)) {
+		VERBOSE("ERROR: TranslationCutTest: the default bar of the translation stage is %g degrees, expected 45", maxDirectionResidual);
 		return false;
 	}
-	VERBOSE("SpanningTreeRotationFilterTest passed: %u cross-face pairs removed, %zu kept (%s)",
-		removed, scene.pairs.size(), TD_TIMER_GET_FMT().c_str());
+	const auto build = [&](Scene& scene) {
+		Scene sceneGT;
+		SceneConfig cfg;
+		cfg.numImages = 16;
+		cfg.numPoints = 300;
+		cfg.rotationAngleStep = 16.0;
+		cfg.generatePairs = true;
+		GenerateTestScene(sceneGT, cfg, &scene);
+		ComputePairsWeights(scene);
+		for (ImagePair& pair : scene.pairs)
+			pair.meanRayAngle = D2R(10.f);
+	};
+	const auto findPair = [](Scene& scene, IIndex a, IIndex b) -> ImagePair* {
+		for (ImagePair& pair : scene.pairs)
+			if (pair.ID1 == a && pair.ID2 == b)
+				return &pair;
+		return NULL;
+	};
+	const auto flip = [](ImagePair& pair) { pair.relativePose->C = -pair.relativePose->C; };
+	const auto turn = [](ImagePair& pair) {
+		pair.relativePose->C = RMatrix(Point3(D2R(REAL(70)), D2R(REAL(70)), D2R(REAL(70)))) * pair.relativePose->C;
+	};
+	const auto keptPairs = [](const Scene& scene) {
+		std::set<std::pair<IIndex,IIndex>> kept;
+		for (const ImagePair& pair : scene.pairs)
+			kept.emplace(pair.ID1, pair.ID2);
+		return kept;
+	};
+	const auto run = [&](Scene& scene, float bar) {
+		const std::vector<float> scores(scene.pairs.size(), TripletScores::unscored);
+		return FilterPairsByContradiction(scene, scores, minPairWeight, bar, weightingCfg);
+	};
+	{
+		Scene scene; build(scene);
+		const size_t numPairs = scene.pairs.size();
+		ImagePair* pFlipped = findPair(scene, 3, 9);
+		ImagePair* pTurned = findPair(scene, 2, 11);
+		if (pFlipped == NULL || pTurned == NULL) {
+			VERBOSE("ERROR: TranslationCutTest: the ring has no pair (3,9) or (2,11)");
+			return false;
+		}
+		flip(*pFlipped);
+		turn(*pTurned);
+		const unsigned removed = run(scene, maxDirectionResidual);
+		const auto kept = keptPairs(scene);
+		if (removed != 2 || kept.size() != numPairs - 2 || kept.count({3, 9}) || kept.count({2, 11})) {
+			VERBOSE("ERROR: TranslationCutTest: the planted flipped and turned pairs: %u removed of %zu, expected exactly those two", removed, numPairs);
+			return false;
+		}
+		Scene clean; build(clean);
+		if (run(clean, maxDirectionResidual) != 0) {
+			VERBOSE("ERROR: TranslationCutTest: the ring with exact poses lost pairs");
+			return false;
+		}
+	}
+	{
+		// two groups (images 0-7, 8-15) joined by the one pair (7,8), its baseline flipped
+		Scene scene; build(scene);
+		const IIndex half = 8;
+		for (size_t idxPair = scene.pairs.size(); idxPair-- > 0; ) {
+			const ImagePair& pair = scene.pairs[idxPair];
+			if ((pair.ID1 < half) != (pair.ID2 < half) && !(pair.ID1 == 7 && pair.ID2 == 8))
+				scene.pairs.RemoveAt(idxPair);
+		}
+		ImagePair* pBridge = findPair(scene, 7, 8);
+		if (pBridge == NULL) {
+			VERBOSE("ERROR: TranslationCutTest: the ring has no pair (7,8)");
+			return false;
+		}
+		flip(*pBridge);
+		const unsigned removed = run(scene, maxDirectionResidual);
+		if (removed != 0 || !keptPairs(scene).count({7, 8})) {
+			VERBOSE("ERROR: TranslationCutTest: the bridge was removed (%u pairs)", removed);
+			return false;
+		}
+	}
+	for (const bool shortRay : {true, false}) {
+		Scene scene; build(scene);
+		ImagePair* pPair = findPair(scene, 4, 12);
+		if (pPair == NULL) {
+			VERBOSE("ERROR: TranslationCutTest: the ring has no pair (4,12)");
+			return false;
+		}
+		flip(*pPair);
+		pPair->meanRayAngle = D2R(shortRay ? 1.5f : 10.f);
+		const unsigned removed = run(scene, maxDirectionResidual);
+		if (removed != (shortRay ? 0u : 1u)) {
+			VERBOSE("ERROR: TranslationCutTest: the flipped pair at %s ray angle: %u removed", shortRay ? "1.5 degrees of" : "10 degrees of", removed);
+			return false;
+		}
+	}
+	{
+		// the sparse solve is the dense solve's least squares
+		std::vector<ScalePair> pairs;
+		pairs.emplace_back(0, 1, REAL(2), 30.f);
+		pairs.emplace_back(1, 2, REAL(0.5), 25.f);
+		pairs.emplace_back(2, 3, REAL(4), 20.f);
+		pairs.emplace_back(0, 2, REAL(1.1), 20.f);
+		pairs.emplace_back(1, 3, REAL(2.2), 18.f);
+		pairs.emplace_back(0, 3, REAL(7), 10.f);
+		GlobalScaleEstimator estimator;
+		std::vector<REAL> dense, sparse;
+		if (!estimator.EstimateScales(pairs, 4, 0, dense) || !estimator.EstimateScales(pairs, 4, 0, sparse, true)) {
+			VERBOSE("ERROR: TranslationCutTest: a scale solve failed");
+			return false;
+		}
+		for (unsigned i = 0; i < 4; ++i)
+			if (ABS(dense[i] - sparse[i]) > REAL(1e-6) * dense[i]) {
+				VERBOSE("ERROR: TranslationCutTest: sparse scale %u is %g, dense %g", i, sparse[i], dense[i]);
+				return false;
+			}
+	}
+	{
+		// bar 0: the rotation stage alone. One more pair is 30 degrees off in rotation: it goes at either
+		// bar; the flipped and the turned baselines go only when the translation stage runs
+		const std::set<std::pair<IIndex,IIndex>> rotated{{6, 14}}, flippedAndTurned{{3, 9}, {2, 11}};
+		for (const float bar : {maxDirectionResidual, 0.f}) {
+			Scene scene; build(scene);
+			const size_t numPairs = scene.pairs.size();
+			ImagePair* pRotated = findPair(scene, 6, 14);
+			ImagePair* pFlipped = findPair(scene, 3, 9);
+			ImagePair* pTurned = findPair(scene, 2, 11);
+			if (pRotated == NULL || pFlipped == NULL || pTurned == NULL) {
+				VERBOSE("ERROR: TranslationCutTest: the ring has no pair (6,14), (3,9) or (2,11)");
+				return false;
+			}
+			pRotated->relativePose->R = RMatrix(Point3(0, D2R(REAL(30)), 0)) * pRotated->relativePose->R;
+			flip(*pFlipped);
+			turn(*pTurned);
+			const unsigned removed = run(scene, bar);
+			const auto kept = keptPairs(scene);
+			std::set<std::pair<IIndex,IIndex>> expected(rotated);
+			if (bar > 0.f)
+				expected.insert(flippedAndTurned.begin(), flippedAndTurned.end());
+			bool exact = removed == expected.size() && kept.size() == numPairs - expected.size();
+			for (const auto& ids : expected)
+				exact = exact && !kept.count(ids);
+			for (const auto& ids : flippedAndTurned)
+				exact = exact && (bar > 0.f || kept.count(ids));
+			if (!exact) {
+				VERBOSE("ERROR: TranslationCutTest: bar %g: %u pairs removed of %zu, expected the %zu pairs of the rotated%s", bar,
+					removed, numPairs, expected.size(), bar > 0.f ? ", the flipped and the turned baselines" : " pair alone");
+				return false;
+			}
+		}
+	}
+	{
+		// a connected graph of 5 pairs, a loop and a chord among them, one baseline flipped: under
+		// minScaleComponent pairs nothing is solved, so nothing is judged
+		Scene scene; build(scene);
+		const std::set<std::pair<IIndex,IIndex>> graph{{0, 1}, {1, 2}, {2, 3}, {0, 3}, {0, 2}};
+		for (size_t idxPair = scene.pairs.size(); idxPair-- > 0; )
+			if (!graph.count({scene.pairs[idxPair].ID1, scene.pairs[idxPair].ID2}))
+				scene.pairs.RemoveAt(idxPair);
+		ImagePair* pFlipped = findPair(scene, 0, 2);
+		if (pFlipped == NULL || scene.pairs.size() != graph.size()) {
+			VERBOSE("ERROR: TranslationCutTest: the ring has not the 5 pairs of the small graph");
+			return false;
+		}
+		flip(*pFlipped);
+		const unsigned removed = run(scene, maxDirectionResidual);
+		if (removed != 0 || scene.pairs.size() != graph.size()) {
+			VERBOSE("ERROR: TranslationCutTest: the 5-pair graph lost %u pairs", removed);
+			return false;
+		}
+	}
+	VERBOSE("TranslationCutTest passed (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 
@@ -12930,6 +13258,182 @@ bool TranslationNormalEquationsTest()
 		}
 	}
 	VERBOSE("TranslationNormalEquationsTest passed (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// The sparse scale solve of GlobalScaleEstimator (conjugate gradients on the normal equations, started
+// from the previous solve of the same estimator) gives the answer of a sparse Cholesky of the same
+// system to 1e-9, on a system shaped like a view graph's pair scales (2000 unknowns, ~16 equations
+// each, weights sqrt of 15-300 points) and on a badly conditioned one (weights over 1e-2..1e2, two
+// groups joined by one weak equation), always converged at the tolerance and not at the iteration
+// bound. The start is the estimator's previous scales, kept relative to the gauge: a system perturbed
+// a little is solved in at most half the iterations of a solve from nothing, and one with another
+// gauge, more unknowns or fewer, or a robust round's change of a tenth of the equations has the
+// same answer.
+bool ScaleConjugateGradientsTest()
+{
+	TD_TIMER_START();
+	std::mt19937 rng(5);
+	std::uniform_real_distribution<double> uniform(0, 1);
+	std::normal_distribution<double> noise(0, 0.02);
+	constexpr uint32_t numUnknowns = 2000, numGrown = 2500, numShrunk = 1500;
+	std::vector<double> logScales(numGrown);
+	for (double& logScale : logScales)
+		logScale = (uniform(rng) - 0.5);
+	// the equations among the unknowns of [first, last): a ring and 15 random chords each, weight(): the weight of one
+	const auto addEquations = [&](std::vector<ScalePair>& equations, uint32_t first, uint32_t last, const std::function<float()>& weight) {
+		const auto add = [&](uint32_t a, uint32_t b) {
+			if (a != b)
+				equations.emplace_back(a, b, std::exp(logScales[b] - logScales[a] + noise(rng)), weight());
+		};
+		for (uint32_t i = first; i < last; ++i) {
+			add(i, i + 1 < last ? i + 1 : first);
+			for (unsigned c = 0; c < 15; ++c)
+				add(i, first + (uint32_t)(uniform(rng) * (last - first)) % (last - first));
+		}
+	};
+	const auto viewGraphWeight = [&]() { return (float)std::sqrt(15 + uniform(rng) * 285); };
+	std::vector<ScalePair> pairs;
+	addEquations(pairs, 0, numUnknowns, viewGraphWeight);
+	// the Cholesky reference: the normal equations of the gauge-eliminated system, with the solver's own ridge
+	const auto reference = [&](const std::vector<ScalePair>& equations, uint32_t numNodes, uint32_t gauge, std::vector<double>& x) {
+		const auto variable = [&](uint32_t node) { return (int)(node < gauge ? node : node - 1); };
+		std::vector<Eigen::Triplet<double>> triplets;
+		Eigen::VectorXd b = Eigen::VectorXd::Zero((Eigen::Index)equations.size());
+		FOREACH(i, equations) {
+			const ScalePair& pair = equations[i];
+			if (pair.idxA != gauge)
+				triplets.emplace_back((int)i, variable(pair.idxA), -(double)pair.weight);
+			if (pair.idxB != gauge)
+				triplets.emplace_back((int)i, variable(pair.idxB), (double)pair.weight);
+			b(i) = (double)pair.weight * std::log((double)pair.scaleRatio);
+		}
+		Eigen::SparseMatrix<double> A((int)equations.size(), (int)numNodes - 1);
+		A.setFromTriplets(triplets.begin(), triplets.end());
+		Eigen::SparseMatrix<double> normal = A.transpose() * A;
+		const double ridge = 1e-12 * normal.diagonal().mean();
+		for (int i = 0; i < normal.rows(); ++i)
+			normal.coeffRef(i, i) += ridge;
+		Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> solver(normal);
+		Eigen::VectorXd solution = solver.solve(A.transpose() * b);
+		// one step of refinement against the incidence matrix: the normal equations alone are off by their condition number times 1e-16
+		solution += solver.solve(A.transpose() * (b - A * solution) - ridge * solution);
+		x.assign(numNodes, 0.0);
+		for (uint32_t i = 0; i < numNodes; ++i)
+			if (i != gauge)
+				x[i] = solution(variable(i));
+	};
+	// a solve of `equations` by `estimator`, its iterations; with `verify` it is also the Cholesky answer to 1e-9
+	const auto solve = [&](const char* what, GlobalScaleEstimator& estimator, const std::vector<ScalePair>& equations, uint32_t numNodes, uint32_t gauge, bool verify, unsigned& iterations) {
+		std::vector<REAL> scales;
+		const auto start = std::chrono::steady_clock::now();
+		if (!estimator.EstimateScales(equations, numNodes, gauge, scales, true)) {
+			VERBOSE("ERROR: ScaleConjugateGradientsTest: %s: the solve failed", what);
+			return false;
+		}
+		const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+		const GlobalScaleEstimator::Solve& stats = estimator.GetSolve();
+		iterations = stats.iterations;
+		if (!stats.converged) {
+			VERBOSE("ERROR: ScaleConjugateGradientsTest: %s: %u conjugate gradients iterations, not converged at the tolerance", what, stats.iterations);
+			return false;
+		}
+		// a sanity bound, not the check (the iterations are): 5 s, 10x the 0.5 s the largest solve (2500 unknowns) takes on an idle machine
+		if (seconds > 5) {
+			VERBOSE("ERROR: ScaleConjugateGradientsTest: %s: the solve took %.1f s", what, seconds);
+			return false;
+		}
+		if (!verify)
+			return true;
+		std::vector<double> expected;
+		reference(equations, numNodes, gauge, expected);
+		double worst = 0;
+		for (uint32_t i = 0; i < numNodes; ++i)
+			worst = MAXF(worst, std::abs(std::log((double)scales[i]) - expected[i]));
+		if (!(worst < 1e-9)) {
+			VERBOSE("ERROR: ScaleConjugateGradientsTest: %s: the log scales differ from the Cholesky ones by %g", what, worst);
+			return false;
+		}
+		return true;
+	};
+	// the iterations of the same system solved from nothing (a fresh estimator)
+	const auto cold = [&](const char* what, const std::vector<ScalePair>& equations, uint32_t numNodes, uint32_t gauge, unsigned& iterations) {
+		GlobalScaleEstimator fresh;
+		return solve(what, fresh, equations, numNodes, gauge, false, iterations);
+	};
+	// a system of the view graph's kind: from nothing the iterations stay near a few dozen
+	GlobalScaleEstimator estimator;
+	unsigned iterations, coldIterations;
+	if (!solve("first solve", estimator, pairs, numUnknowns, 0, true, iterations))
+		return false;
+	if (iterations > 100) {
+		VERBOSE("ERROR: ScaleConjugateGradientsTest: first solve: %u iterations from nothing", iterations);
+		return false;
+	}
+	// a perturbation of every scale ratio by 1e-10, no equation dropped: the previous scales are nearly the answer, and
+	// the iterations fall with the logarithm of the distance, so half of them are saved only by a nearly exact start
+	for (ScalePair& pair : pairs)
+		pair.scaleRatio *= 1 + 1e-10 * uniform(rng);
+	if (!solve("perturbed ratios", estimator, pairs, numUnknowns, 0, true, iterations) ||
+		!cold("perturbed ratios from nothing", pairs, numUnknowns, 0, coldIterations))
+		return false;
+	if (2 * iterations > coldIterations) {
+		VERBOSE("ERROR: ScaleConjugateGradientsTest: the system with ratios perturbed by 1e-10 took %u iterations from the previous solve, %u from nothing", iterations, coldIterations);
+		return false;
+	}
+	// every weight perturbed by 1%: fewer iterations from the previous solve than from nothing
+	for (ScalePair& pair : pairs)
+		pair.weight *= (float)(1 + 0.01 * uniform(rng));
+	if (!solve("perturbed weights", estimator, pairs, numUnknowns, 0, true, iterations) ||
+		!cold("perturbed weights from nothing", pairs, numUnknowns, 0, coldIterations))
+		return false;
+	if (iterations >= coldIterations) {
+		VERBOSE("ERROR: ScaleConjugateGradientsTest: the system with weights perturbed by 1%% took %u iterations from the previous solve, %u from nothing", iterations, coldIterations);
+		return false;
+	}
+	// the same system with another gauge: the scales of the previous solve are taken relative to it
+	if (!solve("another gauge", estimator, pairs, numUnknowns, 7, true, iterations) ||
+		!cold("another gauge from nothing", pairs, numUnknowns, 7, coldIterations))
+		return false;
+	if (2 * iterations > coldIterations) {
+		VERBOSE("ERROR: ScaleConjugateGradientsTest: the other gauge took %u iterations from the previous solve, %u from nothing", iterations, coldIterations);
+		return false;
+	}
+	// the robust average's next round: a tenth of the equations out, the others reweighted: the answer only
+	{
+		std::vector<ScalePair> active;
+		FOREACH(i, pairs)
+			if (i % 10 != 3)
+				active.emplace_back(pairs[i].idxA, pairs[i].idxB, pairs[i].scaleRatio, pairs[i].weight * (1.f + 0.5f * (float)uniform(rng)));
+		pairs.swap(active);
+		if (!solve("a tenth of the equations dropped", estimator, pairs, numUnknowns, 0, true, iterations))
+			return false;
+	}
+	// more unknowns than the previous solve had, then fewer: nothing of the previous scales is read out of its range
+	{
+		std::vector<ScalePair> grown = pairs;
+		addEquations(grown, numUnknowns, numGrown, viewGraphWeight);
+		for (uint32_t i = 0; i < 4; ++i)
+			grown.emplace_back(i, numUnknowns + i, std::exp(logScales[numUnknowns + i] - logScales[i]), 10.f);
+		if (!solve("more unknowns", estimator, grown, numGrown, 0, true, iterations))
+			return false;
+		std::vector<ScalePair> shrunk;
+		addEquations(shrunk, 0, numShrunk, viewGraphWeight);
+		if (!solve("fewer unknowns", estimator, shrunk, numShrunk, 0, true, iterations))
+			return false;
+	}
+	// badly conditioned: weights over 1e-2..1e2 and two groups held together by one weak equation
+	{
+		std::vector<ScalePair> bad;
+		const auto badWeight = [&]() { return (float)std::pow(10.0, uniform(rng) * 4 - 2); };
+		addEquations(bad, 0, 300, badWeight);
+		addEquations(bad, 300, 600, badWeight);
+		bad.emplace_back(299, 300, std::exp(logScales[300] - logScales[299]), 3e-2f);
+		GlobalScaleEstimator fresh;
+		if (!solve("badly conditioned", fresh, bad, 600, 0, true, iterations))
+			return false;
+	}
+	VERBOSE("ScaleConjugateGradientsTest passed (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 

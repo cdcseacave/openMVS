@@ -11,6 +11,13 @@
 #include "GlobalRotationAveraging.h"
 #include "Scene.h"
 #include "PairsWeighting.h"
+#include "GlobalAlignment.h"
+#include "GlobalScaleAveraging.h"
+#include "GlobalTranslationAveraging.h"
+#include "PoseLink.h"
+#include "RobustAveraging.h"
+#include "StarInitializer.h"
+#include "../Math/DisjointSet.h"
 #include "../Math/LeastAbsoluteDeviationSolver.h"
 #include <boost/graph/adjacency_list.hpp>
 #include <boost/graph/connected_components.hpp>
@@ -593,59 +600,230 @@ unsigned GlobalRotationEstimator::FilterRelativeRotations(const std::vector<Poin
 }
 /*----------------------------------------------------------------*/
 
-unsigned SFM::FilterPairsByTreeRotations(Scene& scene, REAL maxResidual, const PairsWeightingConfig& weightingCfg)
+namespace {
+
+// The translation stage of the contradiction cut: on the pairs the rotation stage kept, the scales
+// of the pairs, then the camera centres, then every pair whose baseline direction is more than
+// maxDirectionResidual degrees from the centres. The solves read the usable pairs with a measurable
+// baseline (a ray angle past kNearDuplicateRayAngle), weighted by composite weight times triplet
+// score; the scale equations are StarInitializer's (ComputePairScales), solved per component of the
+// pair-scale graph by RobustAverage (Geman-McClure at the merge graph's bar) around the sparse
+// GlobalScaleEstimator; the centres per component by GlobalTranslationEstimator reweighted towards
+// the sum of norms (convex, so no start decides). A pair of a component is judged by its own solve,
+// any other pair with a pose and a measurable baseline by the largest solve that places both its
+// images. Marks the removed pairs in `removed`; returns their number.
+constexpr unsigned minScaleComponent = 10;  // pairs a component of the pair-scale graph needs to be solved
+constexpr unsigned numL1Rounds = 40;        // reweighting rounds of the centres
+constexpr REAL l1Floor = REAL(1e-3);        // the L1 weight's error floor, in median pair lengths
+
+unsigned RemoveTranslationContradictions(const Scene& scene, const std::vector<Point3>& rotations,
+	const std::vector<uint32_t>& componentOf, const std::vector<float>& scores, float minPairWeight,
+	float maxDirectionResidual, std::vector<bool>& removed)
 {
-	ASSERT(maxResidual >= 0);
-	if (maxResidual <= 0)
-		return 0;
 	TD_TIMER_STARTD();
-	// the pairs the tree is built from, each with the scene pair it stands for
-	std::vector<RotationPair> rotationPairs;
-	IIndexArr scenePairs;
+	const uint32_t numPairs = (uint32_t)scene.pairs.size();
+	const uint32_t numImages = (uint32_t)scene.images.size();
+	// the pairs judged, with their world-frame baseline (length: the pair's own, usually arbitrary)
+	std::vector<Point3> baselines(numPairs);
+	IIndexArr judged, solved;
 	FOREACH(idxPair, scene.pairs) {
 		const ImagePair& pair = scene.pairs[idxPair];
-		if (!pair.relativePose.has_value() || !pair.HasValidWeight())
+		if (removed[idxPair] || !pair.relativePose.has_value() || !(pair.meanRayAngle >= D2R(kNearDuplicateRayAngle)) ||
+			componentOf[pair.ID1] == NO_ID || componentOf[pair.ID1] != componentOf[pair.ID2])
 			continue;
-		rotationPairs.emplace_back(pair.ID1, pair.ID2, pair.relativePose->R, pair.GetCompositeWeight());
-		scenePairs.push_back((IIndex)idxPair);
+		baselines[idxPair] = RMatrix(rotations[pair.ID1]).t() * pair.relativePose->C;
+		if (norm(baselines[idxPair]) <= ZEROTOLERANCE<REAL>())
+			continue;
+		judged.push_back((IIndex)idxPair);
+		if (pair.GetCompositeWeight() > minPairWeight && scores[idxPair] != 0.f)
+			solved.push_back((IIndex)idxPair);
 	}
-	// the tree reaches the largest component of the pairs given; its pairs are judged and set
-	// aside, and the next tree spans the largest component of what is left, until no component
-	// of two images remains
-	const REAL minCosAngle = COS(D2R(maxResidual));
+	const auto weightOf = [&](IIndex idxPair) {
+		return scene.pairs[idxPair].GetCompositeWeight() * (scores[idxPair] < 0.f ? 1.f : scores[idxPair]);
+	};
+
+	// the components of the pair-scale graph, largest first (by pairs, ties to the lower pair)
+	const std::vector<ScalePair> equations = ComputePairScales(scene, solved);
+	DisjointSet<uint32_t> sets(numPairs);
+	for (const ScalePair& equation : equations)
+		sets.Union(equation.idxA, equation.idxB);
+	struct Component { uint32_t root; std::vector<uint32_t> pairs; std::vector<ScalePair> equations; };
+	std::unordered_map<uint32_t, Component> componentOfRoot;
+	for (const ScalePair& equation : equations) {
+		Component& component = componentOfRoot[sets.Find(equation.idxA)];
+		component.root = sets.Find(equation.idxA);
+		component.equations.push_back(equation);
+	}
+	std::vector<bool> inEquation(numPairs, false);
+	for (const ScalePair& equation : equations)
+		inEquation[equation.idxA] = inEquation[equation.idxB] = true;
+	for (uint32_t idxPair = 0; idxPair < numPairs; ++idxPair)
+		if (inEquation[idxPair])
+			componentOfRoot[sets.Find(idxPair)].pairs.push_back(idxPair);
+	std::vector<Component*> components;
+	for (auto& [root, component] : componentOfRoot)
+		components.push_back(&component);
+	std::sort(components.begin(), components.end(), [](const Component* a, const Component* b) {
+		return a->pairs.size() != b->pairs.size() ? a->pairs.size() > b->pairs.size() : a->root < b->root;
+	});
+
+	// one solve per component: the pair's angle against the centres, NaN where no solve judged it
+	std::vector<REAL> angles(numPairs, std::numeric_limits<REAL>::quiet_NaN());
+	std::vector<bool> scaled(numPairs, false);
+	const REAL maxLogScaleResidual = LOGN((REAL)GlobalAlignmentConfig().maxGraphScaleResidual);
+	unsigned numComponents = 0;
+	std::vector<REAL> centresMedianResidual;
+	for (const Component* pComponent : components) {
+		if (pComponent->pairs.size() < minScaleComponent)
+			break;
+		// the scales of the component's pairs
+		GlobalScaleEstimator scaleEstimator;
+		std::vector<REAL> scales, scaleResiduals;
+		if (!RobustAverage(pComponent->equations, maxLogScaleResidual, kRobustRounds,
+			[&](const std::vector<ScalePair>& active, std::vector<REAL>& s) { return scaleEstimator.EstimateScales(active, numPairs, NO_ID, s, true); },
+			[&](size_t i, const std::vector<REAL>& s) {
+				const ScalePair& p = pComponent->equations[i];
+				return LOGN(p.scaleRatio) - (LOGN(s[p.idxB]) - LOGN(s[p.idxA]));
+			},
+			scales, scaleResiduals))
+			continue;
+		// the centres: C_2 - C_1 = scale * baseline of every pair, towards the sum of norms
+		std::vector<TranslationPair> offsets;
+		std::vector<REAL> lengths;
+		for (const uint32_t idxPair : pComponent->pairs) {
+			const ImagePair& pair = scene.pairs[idxPair];
+			offsets.emplace_back(pair.ID1, pair.ID2, baselines[idxPair] * scales[idxPair], weightOf(idxPair));
+			lengths.push_back(norm(offsets.back().relativeTranslation));
+		}
+		std::sort(lengths.begin(), lengths.end());
+		const REAL floorLength = l1Floor * lengths[lengths.size() / 2];
+		GlobalTranslationEstimator translationEstimator;
+		std::vector<Point3> centres;
+		std::vector<REAL> centreResiduals;
+		if (!RobustAverageWith(offsets, numL1Rounds,
+			[&](const std::vector<TranslationPair>& active, std::vector<Point3>& t) {
+				// the estimator's rows are scaled by the weight, the least squares' weight is its square
+				std::vector<TranslationPair> rows(active);
+				for (TranslationPair& row : rows)
+					row.weight = SQRT(row.weight);
+				return translationEstimator.EstimateTranslations(rows, numImages, NO_ID, t);
+			},
+			[&](size_t i, const std::vector<Point3>& t) {
+				const TranslationPair& p = offsets[i];
+				return norm(t[p.idxB] - t[p.idxA] - p.relativeTranslation);
+			},
+			[&](REAL r) { return (float)(REAL(1) / MAXF(r, floorLength)); },
+			centres, centreResiduals))
+			continue;
+		++numComponents;
+		std::vector<bool> placed(numImages, false);
+		for (const TranslationPair& p : offsets)
+			placed[p.idxA] = placed[p.idxB] = true;
+		for (const uint32_t idxPair : pComponent->pairs)
+			scaled[idxPair] = true;
+		// the angles: the component's own pairs by this solve, any other judged pair no solve has judged
+		// yet when both its images are placed
+		std::vector<REAL> residualsSorted(centreResiduals);
+		std::sort(residualsSorted.begin(), residualsSorted.end());
+		centresMedianResidual.push_back(residualsSorted[residualsSorted.size() / 2]);
+		for (const IIndex idxPair : judged) {
+			const ImagePair& pair = scene.pairs[idxPair];
+			const bool own = sets.Find(idxPair) == pComponent->root && inEquation[idxPair];
+			if (!own && (scaled[idxPair] || !std::isnan(angles[idxPair]) || !placed[pair.ID1] || !placed[pair.ID2]))
+				continue;
+			const Point3 centresOffset = centres[pair.ID2] - centres[pair.ID1];
+			const REAL length = norm(centresOffset);
+			if (length <= ZEROTOLERANCE<REAL>())
+				continue;
+			const REAL cosAngle = baselines[idxPair].dot(centresOffset) / (norm(baselines[idxPair]) * length);
+			angles[idxPair] = R2D(ACOS(MINF(MAXF(cosAngle, REAL(-1)), REAL(1))));
+		}
+	}
+	unsigned numJudged = 0, numRemoved = 0;
+	for (const IIndex idxPair : judged) {
+		if (std::isnan(angles[idxPair]))
+			continue;
+		++numJudged;
+		if (angles[idxPair] <= maxDirectionResidual)
+			continue;
+		removed[idxPair] = true;
+		++numRemoved;
+	}
+	VERBOSE("Translation cut: removed %u/%u pairs whose baseline direction is more than %g degrees from the centres of %u of %u scale components "
+		"(%u pairs scaled by %u equations, median residual of the largest %.3g) (%s)",
+		numRemoved, numJudged, maxDirectionResidual, numComponents, (unsigned)components.size(), (unsigned)solved.size(), (unsigned)equations.size(),
+		centresMedianResidual.empty() ? REAL(0) : centresMedianResidual.front(), TD_TIMER_GET_FMT().c_str());
+	return numRemoved;
+}
+
+} // namespace
+/*----------------------------------------------------------------*/
+
+unsigned SFM::FilterPairsByContradiction(Scene& scene, const std::vector<float>& scores,
+	float minPairWeight, float maxDirectionResidual, const PairsWeightingConfig& weightingCfg)
+{
+	ASSERT(scores.size() == scene.pairs.size());
+	ASSERT(maxDirectionResidual >= 0 && maxDirectionResidual <= 180);
+	TD_TIMER_STARTD();
+	// the pairs the averaging is built from: the usable ones, weighted by the composite weight and the score
+	std::vector<RotationPair> rotationPairs;
+	FOREACH(idxPair, scene.pairs) {
+		const ImagePair& pair = scene.pairs[idxPair];
+		if (!pair.relativePose.has_value() || pair.GetCompositeWeight() <= minPairWeight)
+			continue;
+		const float weight = pair.GetCompositeWeight() * (scores[idxPair] < 0.f ? 1.f : scores[idxPair]);
+		if (weight > 0.f)
+			rotationPairs.emplace_back(pair.ID1, pair.ID2, pair.relativePose->R, weight);
+	}
+	// each component of the pairs is averaged on its own, the largest first: its images get their
+	// rotations and the component's number, the next solve takes the pairs left
+	const GlobalRotationEstimatorOptions options;
+	const uint32_t numImages = (uint32_t)scene.images.size();
+	std::vector<Point3> rotations(numImages, Point3::INF);
+	std::vector<uint32_t> componentOf(numImages, NO_ID);
+	unsigned numComponents = 0;
+	while (!rotationPairs.empty()) {
+		std::vector<Point3> solved;
+		GlobalRotationEstimator estimator(options);
+		if (!estimator.EstimateRotations(rotationPairs, numImages, solved))
+			break;
+		for (uint32_t i = 0; i < numImages; ++i) {
+			if (solved[i] == Point3::INF)
+				continue;
+			rotations[i] = solved[i];
+			componentOf[i] = numComponents;
+		}
+		std::vector<RotationPair> leftPairs;
+		for (const RotationPair& pair : rotationPairs) {
+			// a pair joins the two images of one component, so both or neither are reached
+			ASSERT((solved[pair.idxA] == Point3::INF) == (solved[pair.idxB] == Point3::INF));
+			if (solved[pair.idxA] == Point3::INF)
+				leftPairs.push_back(pair);
+		}
+		rotationPairs.swap(leftPairs);
+		++numComponents;
+	}
+	// judge every pair with a pose whose two images one solve reached
+	const REAL minCosAngle = COS(D2R(options.maxRelativeRotationAngle));
 	std::vector<bool> removed(scene.pairs.size(), false);
 	unsigned numJudged = 0, numRemoved = 0;
 	float maxRemovedWeight = 0.f;
-	std::vector<Point3> rotations;
-	while (!rotationPairs.empty()) {
-		if (GlobalRotationEstimator::RotationsFromMaximumSpanningTree(scene.images.size(), rotationPairs,
-				std::make_pair(NO_ID, NO_ID), rotations) == NO_ID)
-			break;
-		std::vector<RotationPair> leftPairs;
-		IIndexArr leftScenePairs;
-		FOREACH(r, rotationPairs) {
-			const RotationPair& pair = rotationPairs[r];
-			// a pair joins the two images of one component, so both or neither are reached
-			if (rotations[pair.idxA] == Point3::INF) {
-				ASSERT(rotations[pair.idxB] == Point3::INF);
-				leftPairs.push_back(pair);
-				leftScenePairs.push_back(scenePairs[r]);
-				continue;
-			}
-			ASSERT(rotations[pair.idxB] != Point3::INF);
-			++numJudged;
-			const Matrix3x3 treeR = RMatrix(rotations[pair.idxB]) * RMatrix(rotations[pair.idxA]).t();
-			if (ComputeAngle(pair.relativeRotation, treeR) >= minCosAngle)
-				continue;
-			removed[scenePairs[r]] = true;
-			maxRemovedWeight = MAXF(maxRemovedWeight, pair.weight);
-			++numRemoved;
-		}
-		rotationPairs.swap(leftPairs);
-		scenePairs.swap(leftScenePairs);
+	FOREACH(idxPair, scene.pairs) {
+		const ImagePair& pair = scene.pairs[idxPair];
+		if (!pair.relativePose.has_value() || componentOf[pair.ID1] == NO_ID || componentOf[pair.ID1] != componentOf[pair.ID2])
+			continue;
+		++numJudged;
+		const Matrix3x3 solvedR = RMatrix(rotations[pair.ID2]) * RMatrix(rotations[pair.ID1]).t();
+		if (ComputeAngle(pair.relativePose->R, solvedR) >= minCosAngle)
+			continue;
+		removed[idxPair] = true;
+		maxRemovedWeight = MAXF(maxRemovedWeight, pair.GetCompositeWeight());
+		++numRemoved;
 	}
-	VERBOSE("Tree rotation check: removed %u/%u pairs more than %g degrees from the rotations of their maximum spanning tree (heaviest %.1f)",
-		numRemoved, numJudged, maxResidual, maxRemovedWeight);
+	VERBOSE("Contradiction cut: removed %u/%u pairs more than %g degrees from the rotations of the weighted averaging of %u usable components (heaviest %.1f)",
+		numRemoved, numJudged, options.maxRelativeRotationAngle, numComponents, maxRemovedWeight);
+	if (maxDirectionResidual > 0)
+		numRemoved += RemoveTranslationContradictions(scene, rotations, componentOf, scores, minPairWeight, maxDirectionResidual, removed);
 	if (numRemoved == 0)
 		return 0;
 	// remove the scene pairs, compacting in one pass
@@ -661,7 +839,7 @@ unsigned SFM::FilterPairsByTreeRotations(Scene& scene, REAL maxResidual, const P
 	ASSERT(numPairs - numKept == numRemoved);
 	scene.pairs.RemoveLast(numRemoved);
 	ComputePairsWeights(scene, weightingCfg);
-	DEBUG("Filtered the view graph by its maximum spanning tree's rotations: %u pairs removed (%s)", numRemoved, TD_TIMER_GET_FMT().c_str());
+	DEBUG("Filtered the view graph by contradiction with its rotation and translation averaging: %u pairs removed (%s)", numRemoved, TD_TIMER_GET_FMT().c_str());
 	return numRemoved;
 }
 /*----------------------------------------------------------------*/

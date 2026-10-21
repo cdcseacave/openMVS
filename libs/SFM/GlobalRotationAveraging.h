@@ -178,12 +178,23 @@ private:
 };
 /*----------------------------------------------------------------*/
 
-// Remove every pair whose relative rotation is more than maxResidual degrees from the one its
-// graph's strongest pairs compose: the maximum spanning tree of the pairs holding a relative pose,
-// by composite weight, carries a rotation to every image of each component it spans, and a pair
-// off the tree is the cycle it closes with it. The pair weights are recomputed when anything was
-// removed. 0 disables the check. Returns the number of removed pairs.
-unsigned SFM_API FilterPairsByTreeRotations(Scene& scene, REAL maxResidual, const PairsWeightingConfig& weightingCfg);
+// The contradiction cut: remove every pair whose relative rotation is more than the estimator's
+// maxRelativeRotationAngle from the global rotations a robust averaging of the usable pairs
+// gives. The usable pairs are those holding a relative pose and a composite weight above
+// minPairWeight (the ones the reconstruction reads); each is weighted by its composite weight
+// times its triplet score (scores: per scene pair, TripletScores::unscored, negative, for an
+// unscored pair, which weighs 1), and the averaging starts from the maximum spanning tree of those
+// weights. A component of the usable graph is averaged on its own (the largest first); every scene
+// pair with a pose whose two images one solve reached is judged, usable or not. A pair the graph
+// holds alone, a bridge, is fitted exactly and never removed.
+//  - maxDirectionResidual: after the rotation stage, a translation stage on the pairs it kept: the
+//    scales of the pairs (StarInitializer's equations, solved robustly), the camera centres they
+//    place (towards the sum of norms), and every pair whose baseline direction is more than this
+//    many degrees from the centres removed; a pair under kNearDuplicateRayAngle of ray angle is
+//    never judged. In [0,180]; 0 skips the translation stage, the rotation stage alone.
+// The pair weights are recomputed when anything was removed. Returns the number of removed pairs.
+unsigned SFM_API FilterPairsByContradiction(Scene& scene, const std::vector<float>& scores,
+	float minPairWeight, float maxDirectionResidual, const PairsWeightingConfig& weightingCfg);
 
 } // namespace SFM
 

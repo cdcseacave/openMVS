@@ -8,7 +8,8 @@ bundle adjustment and dropping images whose evidence falls apart.
 
 Pair selection (`PairsMatcher.h/cpp`) proposes which pairs to attempt and matches and verifies them
 (`MatchGeometric.h/cpp`); the triplet filter (`ViewGraphTriplets.h/cpp`, see
-`TripletDisambiguation.md`) removes the pairs a look-alike or repeated structure fabricated. The star
+`TripletDisambiguation.md`) scores them and the contradiction cut that follows
+(`FilterPairsByContradiction`) removes the pairs a look-alike or repeated structure fabricated. The star
 initializer (`StarInitializer.h/cpp`) picks a well-connected reference view and registers a handful of
 its strongest neighbours at once, seeding the model the resection (`Resection.h/cpp`, `PoseLink.h`)
 grows one image at a time, interleaved with local and full bundle adjustments

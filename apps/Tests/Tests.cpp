@@ -295,13 +295,17 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::RotationEstimatorTest())
 				return false;
-			if (!SFM::SpanningTreeRotationFilterTest())
+			if (!SFM::ContradictionCutTest())
+				return false;
+			if (!SFM::TranslationCutTest())
 				return false;
 			if (!SFM::ScaleEstimatorTest())
 				return false;
 			if (!SFM::TranslationEstimatorTest())
 				return false;
 			if (!SFM::TranslationNormalEquationsTest())
+				return false;
+			if (!SFM::ScaleConjugateGradientsTest())
 				return false;
 			if (!SFM::TripletStarInitTest())
 				return false;

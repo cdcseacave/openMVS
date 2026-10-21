@@ -473,8 +473,15 @@ bool PairDirectionToleranceTest();
 // Test function for rotation estimation
 bool RotationEstimatorTest();
 
-// A quarter-turn pair is removed against its graph's maximum spanning tree, a drifting one kept
-bool SpanningTreeRotationFilterTest();
+// The contradiction cut's rotation stage: the look-alikes of a symmetric ring, the cross-face pairs of
+// a roof (the tree check) and a wrong pair at the weight cap go, a bridge and a pendant pair never,
+// the unscored start is the symmetric mode, and the translation stage's bar takes 0 and 180
+bool ContradictionCutTest();
+
+// The contradiction cut's translation stage: a flipped and a turned baseline go at the default bar,
+// a bridge and a pair under the near-duplicate ray angle are never judged, bar 0 is the rotation
+// stage alone, and a graph under a scale component's pairs removes nothing
+bool TranslationCutTest();
 
 // The flat pair-scale build equals the node-map one it replaced
 bool PairScalesTest();
@@ -488,6 +495,10 @@ bool TranslationEstimatorTest();
 // The translation estimator's normal-equations solve factors the graph Laplacian of the pairs and
 // gives the SparseQR solution of their incidence matrix
 bool TranslationNormalEquationsTest();
+
+// The scale estimator's sparse route (conjugate gradients on the normal equations, started from the
+// previous solve) gives the sparse Cholesky solution, converged, and a near start saves iterations
+bool ScaleConjugateGradientsTest();
 
 // Pairs weighting test
 bool PairsWeightingTest();

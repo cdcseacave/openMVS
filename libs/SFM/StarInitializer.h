@@ -29,8 +29,9 @@ class SFM_API Scene;
 // pose): for every (view, feature) two pairs both triangulate in their own unit frame, the ratio of
 // the distances they give; per pair of pairs the 10%-trimmed mean of those ratios over at least 15
 // common points, as ScalePair(pairIdx2, pairIdx1, mean ratio, sqrt(points kept)) with
-// pairIdx1 < pairIdx2 (the indices are scene pair indices): log s(pairIdx2) - log s(pairIdx1)
-// = log of the ratio. The equations come sorted by (pairIdx1, pairIdx2).
+// pairIdx1 < pairIdx2 (the indices are scene pair indices): log s(pairIdx1) - log s(pairIdx2)
+// = log of the ratio, s the scale that takes a pair's unit frame to the common one. The equations
+// come sorted by (pairIdx1, pairIdx2).
 std::vector<ScalePair> SFM_API ComputePairScales(const Scene& scene, const IIndexArr& pairIndices);
 
 /**

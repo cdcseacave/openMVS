@@ -92,8 +92,9 @@ Its first threshold rule, a sweep relaxing the threshold until the graph held to
 32a4a6c), was replaced by the rule that ships: the strictest threshold whose ceiling leaves the graph
 in pieces the filter joins. Its default minimum score went from the paper's 0.3 to 0.75 (51126ea) and
 back to 0.3 (d67dd9b) within two days. The cutting rule stays behind `--triplet-cut`, the keep mode
-being the default since 210ada5. The validation runs, the offline harness and the planning documents
-were removed at 128d47f and 1e32426 (2026-09-08).
+being the default since 210ada5 until the contradiction cut (`FilterPairsByContradiction`) replaced
+it: the default mode now removes nothing and the scores weigh the cut. The validation runs, the
+offline harness and the planning documents were removed at 128d47f and 1e32426 (2026-09-08).
 
 ## The retrieval descriptors
 
@@ -359,8 +360,10 @@ image entered ahead of its right neighbours: next-best-view counts its visible p
 cross-face pairs (6.3% of the graph, a quarter or a half turn off) supplied, and every registered
 partner it had was across the roof, so the rotation quorum agreed with the wrong pose; it cleared
 the evidence share (`ResectionConfig::minRegisteredEvidence` 0.1 times the registered fraction) by
-1.11-1.12 times, where 99% of right first registrations clear 1.31. What ships is the spanning-tree
-rotation check (`ReconstructionConfig::maxTreeRotationResidual`, 6642add). Retired:
+1.11-1.12 times, where 99% of right first registrations clear 1.31. What shipped was the spanning-tree
+rotation check (`ReconstructionConfig::maxTreeRotationResidual`, 6642add), since replaced by the
+contradiction cut's rotation stage, which judges the same pairs against a robust averaging of the
+usable pairs instead of their spanning tree. Retired:
 
 - **A stricter evidence share** (`minRegisteredEvidence` 0.15, dev build on 68a1cd7): it only moves
   the entry point. At 8 threads the block enters through its last image instead, at 2.28 times the

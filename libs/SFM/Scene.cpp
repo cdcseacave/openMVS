@@ -685,18 +685,20 @@ void ExportMatchingCSVs(const Scene& scene, const ReconstructionConfig& config)
 		VERBOSE("warning: failed to export image pairs to CSV file '%s'", config.exportPairsCSV.c_str());
 }
 
-// Export the pairs CSV of a freshly matched scene, then disambiguate its view graph with the
-// camera-triplet filter (ViewGraphTriplets.h) and the spanning-tree rotation check
-// (FilterPairsByTreeRotations): the CSV describes the whole matched graph, each pair with its
-// triplet score, the pairs the filters remove included. Returns the images of
-// the largest piece the filter's ceiling leaves, the reconstruction's seed views; empty without
-// the filter.
+// Export the pairs CSV of a freshly matched scene, then disambiguate its view graph: the
+// camera-triplet filter (ViewGraphTriplets.h) scores every pair and, by default, removes nothing,
+// and the contradiction cut (FilterPairsByContradiction), weighted by those scores, removes the
+// pairs the global rotation and translation averaging contradict. The CSV describes the whole
+// matched graph, each pair with its triplet score, the pairs the filters remove included. Returns
+// the images of the largest piece the triplet filter's ceiling leaves, the reconstruction's seed
+// views; empty without the filter.
 IIndexArr ExportMatchingCSVsAndFilterPairs(Scene& scene, const ReconstructionConfig& config)
 {
 	ExportMatchingCSVs(scene, config);
 	IIndexArr seedViews;
-	FilterPairsByTriplets(scene, config.tripletFilterCfg, config.matchCfg.weightingCfg, &seedViews);
-	FilterPairsByTreeRotations(scene, config.maxTreeRotationResidual, config.matchCfg.weightingCfg);
+	std::vector<float> scores;
+	FilterPairsByTriplets(scene, config.tripletFilterCfg, config.matchCfg.weightingCfg, &seedViews, &scores);
+	FilterPairsByContradiction(scene, scores, config.minPairWeight, config.maxPairDirectionResidual, config.matchCfg.weightingCfg);
 	return seedViews;
 }
 

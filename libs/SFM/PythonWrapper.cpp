@@ -318,10 +318,6 @@ void RegisterBindings()
 		.def_readwrite("cut", &SFM::TripletFilterConfig::cut)
 		.def_readwrite("min_score", &SFM::TripletFilterConfig::minScore)
 		.def_readwrite("min_yield", &SFM::TripletFilterConfig::minYield)
-		.def_readwrite("keep_pairs", &SFM::TripletFilterConfig::keepPairs)
-		.def_readwrite("keep_matches", &SFM::TripletFilterConfig::keepMatches)
-		.def_readwrite("keep_min_angle", &SFM::TripletFilterConfig::keepMinAngle)
-		.def_readwrite("keep_max_short", &SFM::TripletFilterConfig::keepMaxShort)
 		.def_readwrite("second_face_score", &SFM::TripletFilterConfig::secondFaceScore);
 
 	// SFM::ViewGraphCalibratorConfig — focal-length verification
@@ -344,6 +340,7 @@ void RegisterBindings()
 		.def_readwrite("triplet_filter_cfg", &SFM::ReconstructionConfig::tripletFilterCfg)
 		.def_readwrite("viewgraph_cfg", &SFM::ReconstructionConfig::viewgraphCfg)
 		.def_readwrite("min_pair_weight", &SFM::ReconstructionConfig::minPairWeight)
+		.def_readwrite("max_pair_direction_residual", &SFM::ReconstructionConfig::maxPairDirectionResidual)
 		.def_readwrite("max_reproj_error", &SFM::ReconstructionConfig::maxReprojError)
 		.def_readwrite("max_fine_reproj_error", &SFM::ReconstructionConfig::maxFineReprojError)
 		.def_readwrite("min_angle_threshold", &SFM::ReconstructionConfig::minAngleThreshold)

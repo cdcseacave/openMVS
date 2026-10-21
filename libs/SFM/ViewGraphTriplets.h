@@ -38,32 +38,21 @@ class SFM_API Scene;
 // than pairs at their ray angle do in this graph is three look-alikes vouching for one another
 // and gives no evidence.
 //
-// Two modes. In the keep mode, the default, tau(m) is a ceiling that only names the candidates:
-// the scored pairs below it joining two pieces (connected components) the ceiling keeps apart.
-// Of those, only what the graph can spare goes: every image keeps a floor of pairs and inliers,
-// the threshold descends to the strictest one at which at most keepMaxShort of the images fall
-// short of that floor, and every component of the matched graph stays one component. A graph in
-// one piece at the ceiling, or one fitting no threshold, loses nothing, which is what lets the
-// filter run on every scene. The cutting rule (cut) is the paper's: every scored pair below the
-// threshold goes. A second, stricter ceiling names the two faces of a symmetric building and cuts
-// the smaller face off; otherwise, below a ceiling that shatters the graph, the threshold descends
-// to the strictest one joining the pieces again. It unfolds a collection of repeated structure, and it
-// halves the registrations of an interior whose rooms it cuts off, so it is not the default.
+// Two modes. By default the filter removes nothing: it scores every pair and names the seed views
+// (the largest piece, a connected component, the ceiling tau(m) leaves), and the scores weigh the
+// contradiction cut that follows (FilterPairsByContradiction, GlobalRotationAveraging.h), which
+// removes the pairs the global rotations and camera centres contradict. The cutting rule (cut) is
+// the paper's: every scored pair below the threshold goes. A second, stricter ceiling names the two
+// faces of a symmetric building and cuts the smaller face off; otherwise, below a ceiling that
+// shatters the graph, the threshold descends to the strictest one joining the pieces again. It
+// unfolds a collection of repeated structure, and it halves the registrations of an interior whose
+// rooms it cuts off, so it is not the default.
 struct SFM_API TripletFilterConfig
 {
-	bool enabled = true;          // filter the matched view graph
-	bool cut = false;             // the cutting rule instead of the keep mode
+	bool enabled = true;          // score the matched view graph (and, with cut, filter it)
+	bool cut = false;             // the cutting rule: remove the pairs below the threshold
 	float minScore = 0.3f;        // the paper's minimum edge score m, in [0,1]: 0.3 for medium and small ambiguous sets, 0.6 generic, 0.9 highly ambiguous
 	float minYield = 0.4f;        // a triangle whose three pairs all yield below this fraction of the inliers pairs at their ray angle deliver gives no evidence (0: off)
-	// keep mode: the floor every image keeps where the graph can spare it, keepPairs pairs holding
-	// keepMatches weighted inliers, counting only pairs whose ray angle reaches keepMinAngle degrees
-	// (an unmeasured angle counts; a near-duplicate pair yields no 3D point), and the largest share
-	// of the images that may fall short of it at the threshold; the threshold descends until that
-	// holds, and a graph that fits no threshold loses nothing
-	unsigned keepPairs = 3;
-	unsigned keepMatches = 2000;
-	float keepMinAngle = 3.f;
-	float keepMaxShort = 0.5f;
 	// cutting rule: the minimum score whose stricter ceiling names the faces, when the graph it
 	// leaves has two (a majority piece and a second one of at least a third of it); at or below
 	// minScore the faces are not looked for
@@ -93,13 +82,17 @@ struct SFM_API TripletScores
 // depend on the minimum score, only tau does.
 TripletScores SFM_API ComputeTripletScores(const Scene& scene, float minScore, float minYield, int gridSize);
 
-// Remove the pairs the filter rejects (TripletFilterConfig) and recompute the pair weights when
-// anything was removed; a disabled filter is a no-op. pSeedViews, when given, receives the images
-// of the largest piece the ceiling leaves, ascending (empty when the filter is off or the graph
-// has no edge): the reconstruction chooses its reference view among them, since after the filter
-// the seed's side of a symmetric building is the model. Returns the number of removed pairs.
+// Score the pairs and, with the cutting rule, remove the ones it rejects (TripletFilterConfig),
+// recomputing the pair weights when anything was removed; the default mode removes nothing and a
+// disabled filter is a no-op. pSeedViews, when given, receives the images of the largest piece the
+// ceiling leaves, ascending (empty when the filter is off or the graph has no edge): the
+// reconstruction chooses its reference view among them, since after the filter the seed's side of a
+// symmetric building is the model. pScores, when given, receives one score per pair the scene holds
+// afterwards (TripletScores::unscored for an unscored pair): the scores it computed when it removed
+// nothing, ComputeTripletScores of the pairs left after the cutting rule removed some, all unscored
+// when the filter is disabled or the graph has no verified pair. Returns the number of removed pairs.
 unsigned SFM_API FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& config,
-	const PairsWeightingConfig& weightingCfg, IIndexArr* pSeedViews = NULL);
+	const PairsWeightingConfig& weightingCfg, IIndexArr* pSeedViews = NULL, std::vector<float>* pScores = NULL);
 
 } // namespace SFM
 
