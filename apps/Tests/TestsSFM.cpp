@@ -13315,25 +13315,33 @@ bool TranslationNormalEquationsTest()
 		}
 		return worst / extent;
 	};
+	// the nodes the estimator pins at the origin: the gauge, and the lowest node of each component without it
+	const auto pinsOf = [&](const std::vector<TranslationPair>& pairs, uint32_t gauge) {
+		DisjointSet<uint32_t> components((uint32_t)positions.size());
+		for (const TranslationPair& pair : pairs)
+			components.Union(pair.idxA, pair.idxB);
+		std::unordered_map<uint32_t, uint32_t> pinOfComponent;
+		pinOfComponent.emplace(components.Find(gauge), gauge);
+		for (const TranslationPair& pair : pairs)
+			for (const uint32_t node : {pair.idxA, pair.idxB}) {
+				uint32_t& low = pinOfComponent.emplace(components.Find(node), node).first->second;
+				if (low != gauge)
+					low = MINF(low, node);
+			}
+		std::unordered_set<uint32_t> pins;
+		for (const auto& [component, pin] : pinOfComponent)
+			pins.insert(pin);
+		return pins;
+	};
 	const auto checkLaplacian = [&](const char* what, const GlobalTranslationEstimator& estimator, const std::vector<TranslationPair>& pairs, uint32_t gauge) {
-		// the matrix handed to the factorization is the weighted graph Laplacian of the free nodes (the gauge,
-		// and the lowest node of each component without it, eliminated), built here from the pairs alone: the
+		// the matrix handed to the factorization is the weighted graph Laplacian of the free nodes (the pinned
+		// nodes eliminated), built here from the pairs alone: the
 		// diagonal the sum of the squared weights of the node's pairs, an off-diagonal minus the squared
 		// weights of the pairs between its two nodes (a duplicated or reversed pair summed), both triangles
 		// held, so exactly the free nodes plus twice the distinct free-free pairs of non-zeros (a QR of the
 		// incidence matrix has a row per pair)
-		DisjointSet<uint32_t> components((uint32_t)positions.size());
-		for (const TranslationPair& pair : pairs)
-			components.Union(pair.idxA, pair.idxB);
-		std::unordered_map<uint32_t, uint32_t> pinned; // by component: the gauge, else the lowest node
-		pinned.emplace(components.Find(gauge), gauge);
-		for (const TranslationPair& pair : pairs)
-			for (const uint32_t node : {pair.idxA, pair.idxB}) {
-				uint32_t& low = pinned.emplace(components.Find(node), node).first->second;
-				if (low != gauge)
-					low = MINF(low, node);
-			}
-		const auto isFree = [&](uint32_t node) { return pinned.at(components.Find(node)) != node; };
+		const std::unordered_set<uint32_t> pins = pinsOf(pairs, gauge);
+		const auto isFree = [&](uint32_t node) { return pins.find(node) == pins.end(); };
 		std::unordered_set<uint32_t> nodes;
 		std::map<std::pair<uint32_t, uint32_t>, double> laplacian;
 		for (const TranslationPair& pair : pairs) {
@@ -13352,7 +13360,7 @@ bool TranslationNormalEquationsTest()
 		const GlobalTranslationEstimator::NormalEquations& normal = estimator.GetNormalEquations();
 		const Eigen::SparseMatrix<double>& matrix = normal.matrix;
 		size_t count = 0;
-		const size_t numFree = nodes.size() - pinned.size();
+		const size_t numFree = nodes.size() - pins.size();
 		bool consistent = matrix.rows() == matrix.cols() && (size_t)matrix.rows() == numFree && normal.nodeOfRow.size() == numFree;
 		for (int column = 0; consistent && column < matrix.outerSize(); ++column)
 			for (Eigen::SparseMatrix<double>::InnerIterator it(matrix, column); it; ++it, ++count) {
@@ -13370,25 +13378,25 @@ bool TranslationNormalEquationsTest()
 	const auto check = [&](const char* what, const std::vector<TranslationPair>& pairs) {
 		const uint32_t gauge = pairs.front().idxA;
 		GlobalTranslationEstimator estimator;
-		std::vector<Point3> centres, expected;
+		std::vector<Point3> centres(positions.size(), Point3(1e6, 1e6, 1e6)), expected; // stale values the solve must overwrite
 		if (!estimator.EstimateTranslations(pairs, (uint32_t)positions.size(), gauge, centres)) {
 			VERBOSE("ERROR: TranslationNormalEquationsTest: %s: the solve failed", what);
 			return false;
 		}
 		if (!checkLaplacian(what, estimator, pairs, gauge))
 			return false;
+		// every pinned node (the gauge, and the lowest node of each component without it) is written at the origin
+		for (const uint32_t pin : pinsOf(pairs, gauge))
+			if (norm(centres[pin]) != 0) {
+				VERBOSE("ERROR: TranslationNormalEquationsTest: %s: pinned node %u is %g from the origin", what, pin, (double)norm(centres[pin]));
+				return false;
+			}
 		reference(pairs, gauge, expected);
 		const REAL error = difference(pairs, gauge, centres, expected);
-		if (!(error < REAL(1e-9)) || norm(centres[gauge]) != 0) {
+		if (!(error < REAL(1e-9))) {
 			VERBOSE("ERROR: TranslationNormalEquationsTest: %s: the centres differ from the SparseQR ones by %g of the extent", what, (double)error);
 			return false;
 		}
-		// a component without the gauge stays near the origin (its lowest node is the one pinned there)
-		for (const TranslationPair& pair : pairs)
-			if (!(norm(centres[pair.idxA]) < 2 * extent)) {
-				VERBOSE("ERROR: TranslationNormalEquationsTest: %s: node %u is %g from the origin", what, pair.idxA, (double)norm(centres[pair.idxA]));
-				return false;
-			}
 		return true;
 	};
 	{

@@ -128,7 +128,8 @@ bool GlobalTranslationEstimator::EstimateTranslations(
 	A.setFromTriplets(triplets.begin(), triplets.end());
 
 	// Solve the normal equations (a weighted graph Laplacian) by a sparse Cholesky: the same least
-	// squares as the QR of the incidence matrix, a thousand times faster on a view graph's
+	// squares as the QR of the incidence matrix (52.9 s for alameda's view graph, 28830 pairs and
+	// 1733 nodes, against 0.025 s here)
 	const Eigen::SparseMatrix<double> At = A.transpose();
 	normal.matrix = At * A;
 	normal.nodeOfRow.assign((size_t)V, NO_ID);
@@ -158,6 +159,8 @@ bool GlobalTranslationEstimator::EstimateTranslations(
 	// Convert results to output translations
 	outTranslations.resize(numIndices, Point3::ZERO);
 	outTranslations[gaugeIdx] = Point3::ZERO;
+	for (const auto& [component, pinIdx] : pinOfComponent)
+		outTranslations[pinIdx] = Point3::ZERO; // the gauge and the lowest node of each component without it
 	for (const auto& [idx, varIdx] : idxToVar) {
 		ASSERT(idx < numIndices);
 		outTranslations[idx] = Point3(
