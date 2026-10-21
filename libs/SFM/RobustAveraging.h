@@ -20,6 +20,9 @@
 
 namespace SFM {
 
+// Reweighting rounds of every averaging of the seam graph and of the view graph's contradiction cut.
+constexpr unsigned kRobustRounds = 10;
+
 // Iteratively reweighted averaging around any weighted least-squares solve over pairs that carry a
 // float `weight`:
 //  solve(activePairs, solution) -> bool   the plain solver over the pairs with weight > 0
@@ -29,14 +32,15 @@ namespace SFM {
 // next round out, never permanently. Stops after maxRounds or when no weight moved by more than
 // 1e-3 of its initial value. Returns false when the first solve fails; a later failure keeps the
 // previous solution. residuals[i] = |residual(i, solution)| against the returned solution.
-template <typename Pair, typename Solution, typename SolveFn, typename ResidualFn>
-bool RobustAverage(const std::vector<Pair>& pairs, REAL sigma, unsigned maxRounds, SolveFn solve, ResidualFn residual, Solution& solution, std::vector<REAL>& residuals)
+// The same loop with the factor a pair's weight is scaled by, from its error, given by the caller:
+//  factor(r) -> float                     the weight of a pair with error r, in units of its initial weight
+template <typename Pair, typename Solution, typename SolveFn, typename ResidualFn, typename FactorFn>
+bool RobustAverageWith(const std::vector<Pair>& pairs, unsigned maxRounds, SolveFn solve, ResidualFn residual, FactorFn factor, Solution& solution, std::vector<REAL>& residuals)
 {
 	if (pairs.empty())
 		return false;
 	std::vector<Pair> weighted(pairs);
 	residuals.assign(pairs.size(), REAL(0));
-	const REAL sigma2 = sigma * sigma;
 	for (unsigned round = 0; ; ++round) {
 		std::vector<Pair> active;
 		active.reserve(weighted.size());
@@ -54,7 +58,7 @@ bool RobustAverage(const std::vector<Pair>& pairs, REAL sigma, unsigned maxRound
 		REAL maxChange = 0;
 		for (size_t i = 0; i < pairs.size(); ++i) {
 			const REAL r = residuals[i] = ABS(residual(i, solution));
-			const float w = pairs[i].weight * (float)SQUARE(sigma2 / (sigma2 + r * r));
+			const float w = pairs[i].weight * factor(r);
 			maxChange = MAXF(maxChange, REAL(ABS(w - weighted[i].weight)) / pairs[i].weight);
 			weighted[i].weight = (w < 1e-3f * pairs[i].weight ? 0.f : w);
 		}
@@ -62,6 +66,15 @@ bool RobustAverage(const std::vector<Pair>& pairs, REAL sigma, unsigned maxRound
 			break;
 	}
 	return true;
+}
+
+// Geman-McClure weights w = (sigma^2 / (sigma^2 + r^2))^2, r in the units of sigma
+template <typename Pair, typename Solution, typename SolveFn, typename ResidualFn>
+bool RobustAverage(const std::vector<Pair>& pairs, REAL sigma, unsigned maxRounds, SolveFn solve, ResidualFn residual, Solution& solution, std::vector<REAL>& residuals)
+{
+	const REAL sigma2 = sigma * sigma;
+	return RobustAverageWith(pairs, maxRounds, solve, residual,
+		[sigma2](REAL r) { return (float)SQUARE(sigma2 / (sigma2 + r * r)); }, solution, residuals);
 }
 /*----------------------------------------------------------------*/
 

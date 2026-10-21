@@ -303,8 +303,6 @@ constexpr float kVoteContraFraction = 0.1f;
 constexpr float kVoteContraLooseFraction = 0.5f;
 // Cells per axis of the image grid a supporting camera's inlier keypoints must spread over.
 constexpr unsigned kVoteGridCells = 4;
-// Reweighting rounds of every averaging of the seam graph.
-constexpr unsigned kRobustRounds = 10;
 // A seam nothing corroborates stands alone only with this many times the tracks a seam needs at all.
 constexpr unsigned kStrongAloneFactor = 4;
 // What an undecided candidate is worth when the placement ranks the blocks waiting to be tried:

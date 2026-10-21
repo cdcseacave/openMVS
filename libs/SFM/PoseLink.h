@@ -21,6 +21,9 @@
 
 namespace SFM {
 
+// The ray angle, in degrees, under which a pair is a near-duplicate and fixes no baseline direction
+constexpr float kNearDuplicateRayAngle = 2.f;
+
 // How far a verified pair's word about an image sits from the pose a model gives it: the angle
 // between the rotation the pair predicts from the neighbor's pose and the image's own, and the
 // angle between the baseline direction the pair predicts and the one the two centres make. The
@@ -87,7 +90,7 @@ struct PoseLink
 		d.rotation = R2D(ACOS(MINF(MAXF(ComputeAngle(image.R, PredictedRotation(neighbor)), REAL(-1)), REAL(1))));
 		d.direction = -1;
 		d.rayAngle = rayAngle > 0.f ? REAL(rayAngle) : REAL(0);
-		const bool nearDuplicate = rayAngle > 0.f && rayAngle < D2R(2.f);
+		const bool nearDuplicate = rayAngle > 0.f && rayAngle < D2R(kNearDuplicateRayAngle);
 		Point3 modelDirection(image.C - neighbor.C), linkDirection;
 		const REAL baseline = norm(modelDirection);
 		if (!nearDuplicate && baseline > ZEROTOLERANCE<REAL>() && PredictedDirection(neighbor, linkDirection))
