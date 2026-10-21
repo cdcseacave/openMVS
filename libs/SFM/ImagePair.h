@@ -290,6 +290,12 @@ public:
 	// claiming a baseline measured on matches it no longer only has either.
 	// 0 when the pair has no relative pose to triangulate against, i.e. no measurable baseline.
 	float ComputeMeanRayAngle(const Image& img1, const Image& img2) const;
+	// The cosine of the triangulation angle of each track-forming match that triangulates at the
+	// pair's relative pose (empty without one): what the median above is taken over.
+	FloatArr ComputeRayAngleCosines(const Image& img1, const Image& img2) const;
+	// The share of the track-forming matches that triangulate at the pair's relative pose with a ray
+	// angle of at least minAngle degrees: the share of the pair's inliers that measure a distance.
+	float ComputeShareAboveAngle(const Image& img1, const Image& img2, float minAngle) const;
 
 	// Filter matches using cheirality, triangulation angle, and epipole distance constraints
 	// minAngle: minimum triangulation angle in degrees

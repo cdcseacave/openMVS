@@ -221,7 +221,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 - **Files:** `libs/SFM/StarInitializer.h`, `libs/SFM/StarInitializer.cpp`
 - **Algorithms:**
   - `SelectReferenceView()`: picks image with highest connectivity count
-  - Star configuration: connects `minViews`–`maxViews` (4–36) images to reference
+  - Star configuration: connects `minViews`–`maxViews` (4–36) images to reference, each listed by its star evidence (the pair's weighted inliers times the share of its matches whose ray angle reaches `evidenceMinAngle`, `ImagePair::ComputeShareAboveAngle`), the pairs of the reference computed under OpenMP
   - Sets absolute poses from relative pose chain
   - `EstimateGlobalScale()`: multi-baseline ratio estimation over the pair-scale equations of the star's pairs
   - `ComputePairScales()`: the pair-scale equations of any set of scene pairs (every match triangulated in its pair's unit frame; per (view, feature) shared by two pairs the ratio of their distances; per pair of pairs the 10%-trimmed mean over at least 15 common points), built in flat per-view arrays under OpenMP

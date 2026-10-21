@@ -909,6 +909,7 @@ bool Scene::ReconstructHierarchical(const ReconstructionConfig& config, const II
 		StarInitConfig initCfg = config.initCfg;
 		initCfg.baConfig = config.baConfig;
 		initCfg.seedViews = SubSceneSeedViews(seedViews, localToGlobals, i);
+		initCfg.evidenceMinAngle = config.minAngleThreshold;
 		if (!StarInitializer::Initialize(subScene, initCfg)) {
 			VERBOSE("error: star initialization failed for sub-scene %u (skipping)", i);
 			return; // skip this sub-scene

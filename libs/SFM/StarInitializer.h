@@ -44,6 +44,7 @@ struct SFM_API StarInitConfig
 	float ratioInliersFilter{0.2f}; // Ratio threshold for inlier views filter (optional, 0 to disable)
 	float maxReprojError{6.f};      // Maximum reprojection error (pixels)
 	float minAngleThreshold{1.f};   // Minimum angle between cameras (degrees)
+	float evidenceMinAngle{1.5f};   // Ray angle a pair's inlier must reach to count as star evidence (degrees): the reconstruction's minAngleThreshold, which Scene sets it from
 	bool globalRotations{false};    // Use global rotation averaging to initialize rotations (optional)
 
 	// Refine the focal length in the star's own bundle adjustment (step 7 of Initialize()); the

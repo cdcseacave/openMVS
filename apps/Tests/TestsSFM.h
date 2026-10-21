@@ -404,6 +404,13 @@ bool TripletFilterTest();
 // views, which is the worst place to start.
 bool StarReferenceViewTest();
 
+// The star initializer lists a neighbour of the reference view by the inliers that fix its distance,
+// those whose ray angle at the pair's pose reaches the reconstruction's triangulation bar, not by
+// all of them: a far view that shares only far points with the reference is no arm of the star,
+// whatever its inlier count, and its unit baseline guesses a distance no match backs. The reference
+// stays chosen by inlier count.
+bool StarEvidenceTest();
+
 // A resected pose enters the model only when its support is credible: enough of its 2D-3D
 // correspondences agree with it (ResectionConfig::minInlierRatio / minInliersAbsolute), and a
 // weakly supported one also agrees with the rotation the quorum of its verified pairs to registered

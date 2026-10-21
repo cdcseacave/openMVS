@@ -228,10 +228,10 @@ std::pair<std::vector<Point2f>, std::vector<Point2f>> ImagePair::GetTrackForming
 	return std::make_pair(pts1, pts2);
 }
 
-float ImagePair::ComputeMeanRayAngle(const Image& img1, const Image& img2) const
+FloatArr ImagePair::ComputeRayAngleCosines(const Image& img1, const Image& img2) const
 {
 	if (!relativePose.has_value() || matches.empty())
-		return 0.f; // no pose, no measurable baseline
+		return FloatArr(); // no pose, no measurable baseline
 	const Pose3D& relPose = relativePose.value();
 	const Camera& cam1 = *img1.pCamera;
 	const Camera& cam2 = *img2.pCamera;
@@ -249,7 +249,23 @@ float ImagePair::ComputeMeanRayAngle(const Image& img1, const Image& img2) const
 		const Point3 V2 = X - relPose.C;
 		cosAngles.push_back((float)ComputeAngle(X.ptr(), V2.ptr()));
 	}
+	return cosAngles;
+}
+
+float ImagePair::ComputeMeanRayAngle(const Image& img1, const Image& img2) const
+{
+	FloatArr cosAngles(ComputeRayAngleCosines(img1, img2));
 	return cosAngles.empty() ? 0.f : ACOS(CLAMP(cosAngles.GetMedian(), -1.f, 1.f)); // clamped: see FilterMatches
+}
+
+float ImagePair::ComputeShareAboveAngle(const Image& img1, const Image& img2, float minAngle) const
+{
+	const FloatArr cosAngles(ComputeRayAngleCosines(img1, img2));
+	const float maxCosAngle = COS(D2R(minAngle));
+	unsigned numWide = 0;
+	for (float cosAngle : cosAngles)
+		numWide += cosAngle <= maxCosAngle ? 1 : 0;
+	return (float)numWide / MAXF(MINF(GetNumTrackFormingMatches(), (unsigned)matches.size()), 1u);
 }
 
 void ImagePair::CheckSparseSegmentIsDescribed(const Image& img1, const Image& img2) const

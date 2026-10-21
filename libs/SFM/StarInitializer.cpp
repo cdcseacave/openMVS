@@ -17,6 +17,28 @@ using namespace SFM;
 
 // S T R U C T S ///////////////////////////////////////////////////
 
+// The star evidence of the pairs that join the reference view to another view: the pair's weighted
+// inliers times the share of its inliers that triangulate at its own relative pose with a ray angle
+// of at least minAngle degrees, the inliers that measure a distance (a pair of far points fixes no
+// distance, whatever its inlier count; its unit baseline only guesses one); 0 for every other pair
+// and for a pair without a pose or a valid weight, the star does not use them
+static UnsignedArr ComputeStarEvidence(const Scene& scene, IIndex refID, float minAngle)
+{
+	UnsignedArr evidence(scene.pairs.size());
+	evidence.Memset(0);
+	#pragma omp parallel for schedule(dynamic)
+	for (int_t i = 0; i < (int_t)scene.pairs.size(); ++i) {
+		const ImagePair& pair = scene.pairs[i];
+		if (pair.ID1 != refID && pair.ID2 != refID)
+			continue;
+		if (!pair.relativePose.has_value() || !pair.HasValidWeight())
+			continue;
+		const float share = pair.ComputeShareAboveAngle(scene.images[pair.ID1], scene.images[pair.ID2], minAngle);
+		evidence[i] = ROUND2INT<unsigned>(pair.GetNumWeightedInliers() * share);
+	}
+	return evidence;
+}
+
 IIndex StarInitializer::SelectReferenceView(const Scene& scene, const IIndexArr& seedViews, unsigned minPairs)
 {
 	// weighted inliers and valid pairs per view, dense supplement discounted and included: a
@@ -310,12 +332,17 @@ bool StarInitializer::Initialize(
 	struct ConnectedView {
 		IIndex viewID; // ID of the connected target view
 		unsigned numInliers; // number of inliers in the pair
+		unsigned numEvidence; // the inliers of the pair that fix a distance (see ComputeStarEvidence)
 		Pose3D relPose; // relative pose to reference
 	};
 	CLISTDEF0IDX(ConnectedView, IIndex) candidates;
-	for (const ImagePair& pair : scene.pairs) {
+	const UnsignedArr pairEvidence(ComputeStarEvidence(scene, refID, config.evidenceMinAngle));
+	FOREACH(idxPair, scene.pairs) {
+		const ImagePair& pair = scene.pairs[idxPair];
 		if (!pair.relativePose.has_value() || !pair.HasValidWeight())
 			continue;
+		if (pairEvidence[idxPair] == 0)
+			continue; // no inlier fixes a distance (or the pair does not touch the reference): the view is left to the resection
 		IIndex sourceID = NO_ID, targetID = NO_ID;
 		// Determine which view is the reference
 		if (pair.ID1 == refID) {
@@ -335,31 +362,35 @@ bool StarInitializer::Initialize(
 		// Absolute: target pose relative to source (which is identity)
 		// If source is ID2, we need inverse transform
 		Pose3D pose(sourceID == pair.ID1 ? pair.relativePose.value() : pair.relativePose->Inverse());
-		candidates.push_back({targetID, pair.GetNumWeightedInliers(), pose});
+		candidates.push_back({targetID, pair.GetNumWeightedInliers(), pairEvidence[idxPair], pose});
 	}
 	if (candidates.size() < config.minViews-1) {
 		VERBOSE("error: insufficient initial views (%u < %u)",
 			candidates.size(), config.minViews-1);
 		return false;
 	}
-	// Sort candidates by number of inliers (descending)
+	// Sort candidates by evidence (descending)
 	candidates.Sort([](const ConnectedView& a, const ConnectedView& b) {
-		return a.numInliers > b.numInliers;
+		return a.numEvidence > b.numEvidence;
 	});
-	// Filter candidates by minimum inliers per view
+	// Filter candidates by minimum evidence per view
 	if (config.ratioInliersFilter > 0) {
-		// Compute robust threshold top 3 views
+		// Compute robust threshold top 3 views: by their inliers, the minimum a view's evidence must pass
+		UnsignedArr inliers(candidates.size());
+		FOREACH(i, candidates)
+			inliers[i] = candidates[i].numInliers;
+		inliers.Sort([](unsigned a, unsigned b) { return a > b; });
 		unsigned avgInliers = 0;
 		const IIndex numCandidates = candidates.size();
 		IIndex count = MINF(3u, numCandidates);
 		for (unsigned i = 0; i < count; ++i)
-			avgInliers += candidates[i].numInliers;
+			avgInliers += inliers[i];
 		avgInliers /= count;
 		const unsigned thInliers = ROUND2INT<unsigned>(avgInliers * config.ratioInliersFilter);
 		IIndex size = numCandidates;
-		while (size-- > 0 && candidates[size].numInliers < thInliers);
+		while (size-- > 0 && candidates[size].numEvidence < thInliers);
 		candidates.resize(size + 1);
-		DEBUG_EXTRA("Filtered connected views by inlier matches: kept %u/%u views with at least %u inliers",
+		DEBUG_EXTRA("Filtered connected views by inlier matches: kept %u/%u views with at least %u inliers of evidence",
 			candidates.size(), numCandidates, thInliers);
 	}
 	// Keep only up to maxViews
