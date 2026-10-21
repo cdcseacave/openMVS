@@ -71,6 +71,131 @@ IIndex StarInitializer::SelectReferenceView(const Scene& scene, const IIndexArr&
 	return bestView;
 }
 
+std::vector<ScalePair> SFM::ComputePairScales(const Scene& scene, const IIndexArr& pairIndices)
+{
+	// 1. Triangulate the matches of each pair in its unit frame (in parallel): the distances of every
+	// point that passes the checks from the pair's two cameras, with its feature in each view
+	struct PairPoint { uint32_t feature1, feature2; double dist1, dist2; };
+	std::vector<std::vector<PairPoint>> pairPoints(pairIndices.size());
+	const REAL maxCosAngle = COS(D2R(0.5));
+	const REAL reprojPixelThreshold = 6;
+	#pragma omp parallel for schedule(dynamic, 16)
+	for (int_t k = 0; k < (int_t)pairIndices.size(); ++k) {
+		const ImagePair& pair = scene.pairs[pairIndices[k]];
+		ASSERT(pair.relativePose.has_value());
+		const Image& img1 = scene.images[pair.ID1];
+		const Image& img2 = scene.images[pair.ID2];
+		const Camera& cam1 = *img1.pCamera;
+		const Camera& cam2 = *img2.pCamera;
+		const Pose3D& relPose = pair.relativePose.value();
+		// Angular reprojection threshold (works for both pinhole and spherical; pixel metric breaks on equirectangular)
+		const REAL cosReprojAngle = COS(REAL(0.5) * (cam1.PixelErrorToAngular(reprojPixelThreshold) + cam2.PixelErrorToAngular(reprojPixelThreshold)));
+		std::vector<PairPoint>& points = pairPoints[k];
+		points.reserve(pair.matches.size());
+		for (const DMatch& match : pair.matches) {
+			// Observed unit bearings (works for both camera types)
+			const Point3 b1 = cam1.UnprojectNormalized(Cast<REAL>(img1.keypoints[match.queryIdx].pt));
+			const Point3 b2 = cam2.UnprojectNormalized(Cast<REAL>(img2.keypoints[match.trainIdx].pt));
+			// Triangulate in Camera 1 frame (midpoint on unit bearings)
+			Point3 Xlocal;
+			if (!TriangulatePoint3D(relPose.R, relPose.C, b1, b2, Xlocal))
+				continue;
+			// Cheirality + angular reprojection in Cam1
+			const REAL nX = norm(Xlocal);
+			if (nX < ZEROTOLERANCE<REAL>() || b1.dot(Xlocal / nX) < cosReprojAngle)
+				continue;
+			// Cheirality + angular reprojection in Cam2
+			const Point3 Xcam2 = relPose.TransformPointW2C(Xlocal);
+			const REAL nXc2 = norm(Xcam2);
+			if (nXc2 < ZEROTOLERANCE<REAL>() || b2.dot(Xcam2 / nXc2) < cosReprojAngle)
+				continue;
+			// Angle check between the rays from C1 and from C2 (relPose.C is Cam 2's position in Cam 1's frame)
+			const Point3 V1 = Xlocal;
+			const Point3 V2 = Xlocal - relPose.C;
+			if (ComputeAngle(V1.ptr(), V2.ptr()) > maxCosAngle)
+				continue;
+			points.push_back({(uint32_t)match.queryIdx, (uint32_t)match.trainIdx, cv::norm(Xlocal), cv::norm(V2)});
+		}
+	}
+
+	// 2. Build system of equations
+	// Variables: log(Scale_p) for each active pair p
+	// Equations: log(S_p) - log(S_q) = log(dist_q / dist_p)
+	// For each view and feature, if we have measurements from multiple pairs, they should agree.
+	// Two pairs share at most one view, so each pair of pairs gets all its ratios from one view and
+	// the views are independent (in parallel): per view, the distances of every pair that triangulated
+	// each of its features, then the ratios of every two pairs, grouped per pair of pairs
+	struct FeatureDist { uint32_t feature, pair, order; double dist; }; // pair = index in the scene's pairs
+	struct Ratio { uint32_t pair1, pair2; double ratio; }; // pair1 < pair2
+	struct Equation { uint32_t pair1, pair2; double meanRatio; float weight; };
+	std::vector<std::vector<std::pair<uint32_t, bool>>> pairsOfView(scene.images.size()); // index in pairIndices, view is ID2
+	FOREACH(k, pairIndices) {
+		const ImagePair& pair = scene.pairs[pairIndices[k]];
+		pairsOfView[pair.ID1].emplace_back((uint32_t)k, false);
+		pairsOfView[pair.ID2].emplace_back((uint32_t)k, true);
+	}
+	std::vector<std::vector<Equation>> equationsOfView(scene.images.size());
+	#pragma omp parallel for schedule(dynamic, 1)
+	for (int_t v = 0; v < (int_t)pairsOfView.size(); ++v) {
+		if (pairsOfView[v].size() < 2)
+			continue;
+		std::vector<FeatureDist> dists;
+		for (const auto& [k, isSecond] : pairsOfView[v]) {
+			const std::vector<PairPoint>& points = pairPoints[k];
+			FOREACH(i, points)
+				dists.push_back(isSecond ?
+					FeatureDist{points[i].feature2, pairIndices[k], (uint32_t)i, points[i].dist2} :
+					FeatureDist{points[i].feature1, pairIndices[k], (uint32_t)i, points[i].dist1});
+		}
+		// a feature a pair lists twice (no cross-checking in the matching) keeps its first distance
+		std::sort(dists.begin(), dists.end(), [](const FeatureDist& a, const FeatureDist& b) {
+			return a.feature != b.feature ? a.feature < b.feature : (a.pair != b.pair ? a.pair < b.pair : a.order < b.order);
+		});
+		std::vector<Ratio> ratios;
+		std::vector<const FeatureDist*> features; // the first distance of each pair of one feature
+		for (size_t i = 0; i < dists.size(); ) {
+			features.clear();
+			for (; i < dists.size() && (features.empty() || dists[i].feature == features.front()->feature); ++i)
+				if (features.empty() || features.back()->pair != dists[i].pair)
+					features.push_back(&dists[i]);
+			// S_1 / S_2 = dist_2 / dist_1 for every two pairs that triangulated the feature (pair 1 < pair 2)
+			for (size_t a = 0; a + 1 < features.size(); ++a)
+				for (size_t b = a + 1; b < features.size(); ++b)
+					ratios.push_back({features[a]->pair, features[b]->pair, features[b]->dist / features[a]->dist});
+		}
+		std::sort(ratios.begin(), ratios.end(), [](const Ratio& a, const Ratio& b) {
+			return a.pair1 != b.pair1 ? a.pair1 < b.pair1 : (a.pair2 != b.pair2 ? a.pair2 < b.pair2 : a.ratio < b.ratio);
+		});
+		// the 10%-trimmed mean of the ratios of each pair of pairs
+		for (size_t i = 0; i < ratios.size(); ) {
+			size_t end = i;
+			while (end < ratios.size() && ratios[end].pair1 == ratios[i].pair1 && ratios[end].pair2 == ratios[i].pair2)
+				++end;
+			const size_t num = end - i;
+			if (num >= 15) { // Require minimum common points
+				const size_t trim = num / 10;
+				double sum = 0;
+				for (size_t j = i + trim; j < end - trim; ++j)
+					sum += ratios[j].ratio;
+				const double numValid = static_cast<double>(num - 2 * trim);
+				equationsOfView[v].push_back({ratios[i].pair1, ratios[i].pair2, sum / numValid, (float)SQRT(numValid)});
+			}
+			i = end;
+		}
+	}
+	std::vector<Equation> equations;
+	for (const std::vector<Equation>& viewEquations : equationsOfView)
+		equations.insert(equations.end(), viewEquations.begin(), viewEquations.end());
+	std::sort(equations.begin(), equations.end(), [](const Equation& a, const Equation& b) {
+		return a.pair1 != b.pair1 ? a.pair1 < b.pair1 : a.pair2 < b.pair2;
+	});
+	std::vector<ScalePair> scalePairs;
+	scalePairs.reserve(equations.size());
+	for (const Equation& equation : equations)
+		scalePairs.emplace_back(equation.pair2, equation.pair1, equation.meanRatio, equation.weight);
+	return scalePairs;
+}
+
 bool StarInitializer::EstimateGlobalScale(
 	Scene& scene,
 	IIndex refViewID,
@@ -84,147 +209,26 @@ bool StarInitializer::EstimateGlobalScale(
 	validViews.insert(refViewID);
 	validViews.insert(connectedViews.begin(), connectedViews.end());
 
-	// Map: ViewID -> { FeatureID -> List of (PairIndex, DistanceFromView) }
-	// This stores the distance of a triangulated point from a specific view, derived from a specific pair
-	typedef std::pair<uint32_t, double> PairDist; // PairIndex, Distance
-	typedef CLISTDEF0(PairDist) PairDistArr;
-	typedef std::unordered_map<uint32_t, PairDistArr> FeatureDistMap; // FeatureID -> List
-	std::unordered_map<uint32_t, FeatureDistMap> viewFeatureDists; // ViewID -> FeatureDistMap
-
-	// Track if any valid pair contributes to scale estimation
-	bool hasValidPairs = false;
-
-	// 1. Iterate all pairs in the scene
-	const REAL maxCosAngle = COS(D2R(0.5));
-	const REAL reprojPixelThreshold = 6;
+	// The pairs joining two of them with a usable relative pose
+	IIndexArr pairIndices;
 	FOREACH(pairIdx, scene.pairs) {
-		// Only consider pairs where both views are in our set
 		const ImagePair& pair = scene.pairs[pairIdx];
 		if (validViews.find(pair.ID1) == validViews.end() ||
 			validViews.find(pair.ID2) == validViews.end())
 			continue;
 		if (!pair.relativePose.has_value() || !pair.HasValidWeight())
 			continue;
-		// Triangulate all matches
-		const Image& img1 = scene.images[pair.ID1];
-		const Image& img2 = scene.images[pair.ID2];
-		const Camera& cam1 = *img1.pCamera;
-		const Camera& cam2 = *img2.pCamera;
-		const Pose3D& relPose = pair.relativePose.value();
-		// Angular reprojection threshold (works for both pinhole and spherical; pixel metric breaks on equirectangular)
-		const REAL cosReprojAngle = COS(REAL(0.5) * (cam1.PixelErrorToAngular(reprojPixelThreshold) + cam2.PixelErrorToAngular(reprojPixelThreshold)));
-		for (const DMatch& match : pair.matches) {
-			const Point2f& pt1 = img1.keypoints[match.queryIdx].pt;
-			const Point2f& pt2 = img2.keypoints[match.trainIdx].pt;
-			// Observed unit bearings (works for both camera types)
-			const Point3 b1 = cam1.UnprojectNormalized(Cast<REAL>(pt1));
-			const Point3 b2 = cam2.UnprojectNormalized(Cast<REAL>(pt2));
-			// Triangulate in Camera 1 frame (midpoint on unit bearings)
-			Point3 Xlocal;
-			if (!TriangulatePoint3D(relPose.R, relPose.C, b1, b2, Xlocal))
-				continue;
-			// Cheirality + angular reprojection in Cam1
-			const REAL nX = norm(Xlocal);
-			if (nX < ZEROTOLERANCE<REAL>())
-				continue;
-			const REAL cosErr1 = b1.dot(Xlocal / nX);
-			if (cosErr1 < cosReprojAngle)
-				continue;
-			// Cheirality + angular reprojection in Cam2
-			const Point3 Xcam2 = relPose.TransformPointW2C(Xlocal);
-			const REAL nXc2 = norm(Xcam2);
-			if (nXc2 < ZEROTOLERANCE<REAL>())
-				continue;
-			const REAL cosErr2 = b2.dot(Xcam2 / nXc2);
-			if (cosErr2 < cosReprojAngle)
-				continue;
-			// Angle check
-			const Point3 V1 = Xlocal; // ray from C1 to X
-			const Point3 V2 = Xlocal - relPose.C; // ray from C2 to X
-			REAL cosAngle = ComputeAngle(V1.ptr(), V2.ptr());
-			if (cosAngle > maxCosAngle)
-				continue;
-			// Compute distances from camera centers
-			// Dist from Cam 1 (Origin): |Xlocal - 0|
-			double dist1 = cv::norm(Xlocal);
-			// Dist from Cam 2 (relPose.C): |Xlocal - relPose.C|
-			// Note: relPose.C is the position of Cam 2 in Cam 1 frame
-			double dist2 = cv::norm(Xlocal - relPose.C);
-			// Store distances
-			// View1 (ID1), Feature (queryIdx)
-			PairDistArr& arr1 = viewFeatureDists[pair.ID1][match.queryIdx];
-			if (arr1.FindFunc([pairIdx](const auto& elem) { return elem.first == pairIdx; }) == PairDistArr::NO_INDEX)
-				arr1.emplace_back(pairIdx, dist1); // should not happen
-			// View2 (ID2), Feature (trainIdx)
-			PairDistArr& arr2 = viewFeatureDists[pair.ID2][match.trainIdx];
-			if (arr2.FindFunc([pairIdx](const auto& elem) { return elem.first == pairIdx; }) == PairDistArr::NO_INDEX)
-				arr2.emplace_back(pairIdx, dist2); // possible if no cross-checking matching was used
-		}
-		hasValidPairs = true;
+		pairIndices.push_back((IIndex)pairIdx);
 	}
-	if (!hasValidPairs)
+	if (pairIndices.empty())
 		return true;
 
-	// 2. Build system of equations
-	// Variables: log(Scale_p) for each active pair p
-	// Equations: log(S_p) - log(S_q) = log(dist_q / dist_p)
-	// For each view and feature, if we have measurements from multiple pairs, they should agree
-	std::vector<ScalePair> scalePairs;
+	// 1-2. The pair-scale equations
+	const std::vector<ScalePair> scalePairs = ComputePairScales(scene, pairIndices);
 	std::unordered_set<uint32_t> constrainedPairs;
-
-	// Map: PairIdx1 -> { PairIdx2 -> List of log-ratios }
-	std::map<uint32_t, std::map<uint32_t, DoubleArr>> pairRatios;
-	for (const auto& viewIt : viewFeatureDists) {
-		for (const auto& featIt : viewIt.second) {
-			const PairDistArr& obs = featIt.second;
-			if (obs.size() < 2)
-				continue;
-			// We have multiple pairs observing the same feature from the same view.
-			// For each pair (i, j), S_i * dist_i = S_j * dist_j => S_i / S_j = dist_j / dist_i
-			// We can link all to the first one, or all pairs.
-			// Linking to the first one is sufficient (spanning tree).
-			// Or all combinations for robustness.
-			// Let's do all combinations (n*(n-1)/2) but n is usually small (2-4).
-			for (size_t i = 0; i + 1 < obs.size(); ++i) {
-				for (size_t j = i + 1; j < obs.size(); ++j) {
-					uint32_t pairIdx1 = obs[i].first;
-					double dist1 = obs[i].second;
-					uint32_t pairIdx2 = obs[j].first;
-					double dist2 = obs[j].second;
-					ASSERT(pairIdx1 != pairIdx2);
-					// Ensure pairIdx1 < pairIdx2 for consistent storage
-					if (pairIdx1 > pairIdx2) {
-						std::swap(pairIdx1, pairIdx2);
-						std::swap(dist1, dist2);
-					}
-					// log(S1) - log(S2) = log(dist2 / dist1)
-					double ratio = dist2 / dist1;
-					pairRatios[pairIdx1][pairIdx2].push_back(ratio);
-				}
-			}
-		}
-	}
-	// Compute the mean of the ratios for each pair of image pairs
-	for (auto& it1 : pairRatios) {
-		uint32_t pairIdx1 = it1.first;
-		for (auto& it2 : it1.second) {
-			uint32_t pairIdx2 = it2.first;
-			ASSERT(pairIdx1 < pairIdx2);
-			DoubleArr& ratios = it2.second;
-			if (ratios.size() < 15) // Require minimum common points
-				continue;
-			ratios.Sort();
-			size_t num = ratios.size();
-			size_t start = num / 10;
-			size_t end = num - start;
-			ASSERT(end > start);
-			double sum = std::accumulate(ratios.begin() + start, ratios.begin() + end, 0.0);
-			double numValid = static_cast<double>(end - start);
-			double meanRatio = sum / numValid;
-			scalePairs.emplace_back(pairIdx2, pairIdx1, meanRatio, (float)SQRT(numValid));
-			constrainedPairs.insert(pairIdx1);
-			constrainedPairs.insert(pairIdx2);
-		}
+	for (const ScalePair& scalePair : scalePairs) {
+		constrainedPairs.insert(scalePair.idxB); // pairIdx1 first, as the equations were built
+		constrainedPairs.insert(scalePair.idxA);
 	}
 	if (scalePairs.empty()) {
 		VERBOSE("warning: no overlapping constraints for global scale");

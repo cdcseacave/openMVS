@@ -476,6 +476,9 @@ bool RotationEstimatorTest();
 // A quarter-turn pair is removed against its graph's maximum spanning tree, a drifting one kept
 bool SpanningTreeRotationFilterTest();
 
+// The flat pair-scale build equals the node-map one it replaced
+bool PairScalesTest();
+
 // Test function for global scale estimation
 bool ScaleEstimatorTest();
 

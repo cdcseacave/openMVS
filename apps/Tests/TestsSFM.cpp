@@ -12477,6 +12477,132 @@ bool SpanningTreeRotationFilterTest()
 	return true;
 }
 
+// ComputePairScales (its equations built in flat per-view arrays, in parallel) gives the equations of the
+// node-map build it replaced, which the test carries: the same count, in the same order, with the same
+// scale ratios and weights to the last bit, at one thread and at four, on a scene whose pairs share
+// features, one of them listing a feature twice, over all the pairs and over a subset of them.
+static std::vector<ScalePair> ReferencePairScales(const Scene& scene, const IIndexArr& pairIndices)
+{
+	typedef std::pair<uint32_t, double> PairDist;
+	std::unordered_map<uint32_t, std::unordered_map<uint32_t, std::vector<PairDist>>> viewFeatureDists;
+	const REAL maxCosAngle = COS(D2R(0.5));
+	const REAL reprojPixelThreshold = 6;
+	for (const IIndex pairIdx : pairIndices) {
+		const ImagePair& pair = scene.pairs[pairIdx];
+		const Image& img1 = scene.images[pair.ID1];
+		const Image& img2 = scene.images[pair.ID2];
+		const Camera& cam1 = *img1.pCamera;
+		const Camera& cam2 = *img2.pCamera;
+		const Pose3D& relPose = pair.relativePose.value();
+		const REAL cosReprojAngle = COS(REAL(0.5) * (cam1.PixelErrorToAngular(reprojPixelThreshold) + cam2.PixelErrorToAngular(reprojPixelThreshold)));
+		for (const DMatch& match : pair.matches) {
+			const Point3 b1 = cam1.UnprojectNormalized(Cast<REAL>(img1.keypoints[match.queryIdx].pt));
+			const Point3 b2 = cam2.UnprojectNormalized(Cast<REAL>(img2.keypoints[match.trainIdx].pt));
+			Point3 Xlocal;
+			if (!TriangulatePoint3D(relPose.R, relPose.C, b1, b2, Xlocal))
+				continue;
+			const REAL nX = norm(Xlocal);
+			if (nX < ZEROTOLERANCE<REAL>() || b1.dot(Xlocal / nX) < cosReprojAngle)
+				continue;
+			const Point3 Xcam2 = relPose.TransformPointW2C(Xlocal);
+			const REAL nXc2 = norm(Xcam2);
+			if (nXc2 < ZEROTOLERANCE<REAL>() || b2.dot(Xcam2 / nXc2) < cosReprojAngle)
+				continue;
+			const Point3 V1 = Xlocal, V2 = Xlocal - relPose.C;
+			if (ComputeAngle(V1.ptr(), V2.ptr()) > maxCosAngle)
+				continue;
+			std::vector<PairDist>& arr1 = viewFeatureDists[pair.ID1][match.queryIdx];
+			if (std::none_of(arr1.begin(), arr1.end(), [pairIdx](const PairDist& e) { return e.first == pairIdx; }))
+				arr1.emplace_back(pairIdx, cv::norm(Xlocal));
+			std::vector<PairDist>& arr2 = viewFeatureDists[pair.ID2][match.trainIdx];
+			if (std::none_of(arr2.begin(), arr2.end(), [pairIdx](const PairDist& e) { return e.first == pairIdx; }))
+				arr2.emplace_back(pairIdx, cv::norm(Xlocal - relPose.C));
+		}
+	}
+	std::map<uint32_t, std::map<uint32_t, DoubleArr>> pairRatios;
+	for (const auto& viewIt : viewFeatureDists)
+		for (const auto& featIt : viewIt.second) {
+			const std::vector<PairDist>& obs = featIt.second;
+			for (size_t i = 0; i + 1 < obs.size(); ++i)
+				for (size_t j = i + 1; j < obs.size(); ++j) {
+					uint32_t pairIdx1 = obs[i].first, pairIdx2 = obs[j].first;
+					double dist1 = obs[i].second, dist2 = obs[j].second;
+					if (pairIdx1 > pairIdx2) {
+						std::swap(pairIdx1, pairIdx2);
+						std::swap(dist1, dist2);
+					}
+					pairRatios[pairIdx1][pairIdx2].push_back(dist2 / dist1);
+				}
+		}
+	std::vector<ScalePair> scalePairs;
+	for (auto& it1 : pairRatios)
+		for (auto& it2 : it1.second) {
+			DoubleArr& ratios = it2.second;
+			if (ratios.size() < 15)
+				continue;
+			ratios.Sort();
+			const size_t start = ratios.size() / 10, end = ratios.size() - start;
+			const double numValid = static_cast<double>(end - start);
+			scalePairs.emplace_back(it2.first, it1.first, std::accumulate(ratios.begin() + start, ratios.begin() + end, 0.0) / numValid, (float)SQRT(numValid));
+		}
+	return scalePairs;
+}
+
+bool PairScalesTest()
+{
+	TD_TIMER_START();
+	Scene sceneGT, scene;
+	SceneConfig cfg;
+	cfg.numImages = 24;
+	cfg.numPoints = 400;
+	cfg.rotationAngleStep = 10.0;
+	cfg.generatePairs = true;
+	GenerateTestScene(sceneGT, cfg, &scene);
+	// a feature listed twice by one pair: the first match's distance is the one kept
+	for (ImagePair& pair : scene.pairs)
+		if (pair.matches.size() > 20) {
+			pair.matches.push_back(pair.matches[5]);
+			break;
+		}
+	IIndexArr all, subset;
+	FOREACH(i, scene.pairs) {
+		if (!scene.pairs[i].relativePose.has_value())
+			continue;
+		all.push_back((IIndex)i);
+		if (i % 3 != 1)
+			subset.push_back((IIndex)i);
+	}
+	#ifdef _USE_OPENMP
+	const int maxThreads = omp_get_max_threads();
+	#endif
+	for (const IIndexArr* pPairs : {&all, &subset}) {
+		const std::vector<ScalePair> expected = ReferencePairScales(scene, *pPairs);
+		if (expected.size() < 50) {
+			VERBOSE("ERROR: PairScalesTest: the scene gives only %zu equations", expected.size());
+			return false;
+		}
+		for (const int numThreads : {1, 4}) {
+			#ifdef _USE_OPENMP
+			omp_set_num_threads(numThreads);
+			#endif
+			const std::vector<ScalePair> equations = ComputePairScales(scene, *pPairs);
+			bool same = equations.size() == expected.size();
+			for (size_t i = 0; same && i < equations.size(); ++i)
+				same = equations[i].idxA == expected[i].idxA && equations[i].idxB == expected[i].idxB &&
+					equations[i].scaleRatio == expected[i].scaleRatio && equations[i].weight == expected[i].weight;
+			if (!same) {
+				VERBOSE("ERROR: PairScalesTest: %zu pairs, %d threads: %zu equations against the reference's %zu, or they differ", pPairs->size(), numThreads, equations.size(), expected.size());
+				return false;
+			}
+		}
+	}
+	#ifdef _USE_OPENMP
+	omp_set_num_threads(maxThreads);
+	#endif
+	VERBOSE("PairScalesTest passed (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 bool ScaleEstimatorTest()
 {
 	TD_TIMER_START();

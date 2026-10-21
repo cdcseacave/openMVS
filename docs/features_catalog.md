@@ -223,11 +223,12 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
   - `SelectReferenceView()`: picks image with highest connectivity count
   - Star configuration: connects `minViews`–`maxViews` (4–36) images to reference
   - Sets absolute poses from relative pose chain
-  - `EstimateGlobalScale()`: multi-baseline ratio estimation
+  - `EstimateGlobalScale()`: multi-baseline ratio estimation over the pair-scale equations of the star's pairs
+  - `ComputePairScales()`: the pair-scale equations of any set of scene pairs (every match triangulated in its pair's unit frame; per (view, feature) shared by two pairs the ratio of their distances; per pair of pairs the 10%-trimmed mean over at least 15 common points), built in flat per-view arrays under OpenMP
   - Triangulates initial tracks
 - **Configuration:** `StarInitConfig` — `minViews` (4), `maxViews` (36), `maxReprojError`
 - **GPU Support:** No
-- **Threading:** Single
+- **Threading:** `ComputePairScales()` OpenMP; the rest single
 - **Dependencies:** Common, PoseLib
 
 ### Resection (Incremental Registration)

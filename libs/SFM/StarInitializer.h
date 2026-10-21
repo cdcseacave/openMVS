@@ -12,6 +12,7 @@
 
 #include "Image.h"
 #include "BundleAdjustment.h"
+#include "GlobalScaleAveraging.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -23,6 +24,14 @@ namespace SFM {
 
 // forward declarations to avoid circular includes
 class SFM_API Scene;
+
+// The pair-scale equations of the given scene pairs (indices into scene.pairs, each with a relative
+// pose): for every (view, feature) two pairs both triangulate in their own unit frame, the ratio of
+// the distances they give; per pair of pairs the 10%-trimmed mean of those ratios over at least 15
+// common points, as ScalePair(pairIdx2, pairIdx1, mean ratio, sqrt(points kept)) with
+// pairIdx1 < pairIdx2 (the indices are scene pair indices): log s(pairIdx2) - log s(pairIdx1)
+// = log of the ratio. The equations come sorted by (pairIdx1, pairIdx2).
+std::vector<ScalePair> SFM_API ComputePairScales(const Scene& scene, const IIndexArr& pairIndices);
 
 /**
  * @brief Configuration for star initialization
