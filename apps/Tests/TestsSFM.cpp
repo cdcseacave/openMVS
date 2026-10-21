@@ -13239,7 +13239,7 @@ bool TranslationEstimatorTest()
 // pair, row weights over 1e-2..1e2, (3) a graph of two components, the second without the gauge (placed
 // up to its own translation, as the QR solution is), (4) two floating rings of unit weights, whose full
 // Laplacian is exactly singular; and (5) a graph of the size of a view graph's (1200 nodes, 25173 rows)
-// is solved in seconds, not in the half minute the QR takes.
+// is solved in seconds (a Release build checks the time), not in the half minute the QR takes.
 bool TranslationNormalEquationsTest()
 {
 	TD_TIMER_START();
@@ -13426,23 +13426,33 @@ bool TranslationNormalEquationsTest()
 		addRows(pairs, 0, 1200, 20);
 		GlobalTranslationEstimator estimator;
 		std::vector<Point3> centres;
+		#ifdef _RELEASE
 		const auto start = std::chrono::steady_clock::now();
+		#endif
 		if (!estimator.EstimateTranslations(pairs, (uint32_t)positions.size(), 0, centres)) {
 			VERBOSE("ERROR: TranslationNormalEquationsTest: the view-graph sized solve failed");
 			return false;
 		}
+		#ifdef _RELEASE // a wall-clock bound holds in a Release build only: a Debug or sanitizer build is slower by an order of magnitude
 		const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+		#endif
 		if (!checkLaplacian("1200 nodes", estimator, pairs, 0))
 			return false;
 		REAL sumSq = 0;
 		for (uint32_t i = 1; i < (uint32_t)positions.size(); ++i)
 			sumSq += SQUARE(norm((centres[i] - centres[0]) - (positions[i] - positions[0])));
 		const REAL rms = SQRT(sumSq / (REAL)positions.size());
-		// a sanity bound, not the check (the structure above is): 6 s, 10x the 0.6 s the solve takes on an idle core (34 s by the QR it replaced)
-		if (seconds > 6 || !(rms < REAL(1))) {
-			VERBOSE("ERROR: TranslationNormalEquationsTest: 1200 nodes, %zu rows: %.1f s, %g rms from the truth", pairs.size(), seconds, (double)rms);
+		if (!(rms < REAL(1))) {
+			VERBOSE("ERROR: TranslationNormalEquationsTest: 1200 nodes, %zu rows: %g rms from the truth", pairs.size(), (double)rms);
 			return false;
 		}
+		#ifdef _RELEASE
+		// a sanity bound, not the check (the structure above is): 6 s, 10x the 0.6 s the solve takes on an idle core (34 s by the QR it replaced)
+		if (seconds > 6) {
+			VERBOSE("ERROR: TranslationNormalEquationsTest: 1200 nodes, %zu rows: %.1f s", pairs.size(), seconds);
+			return false;
+		}
+		#endif
 	}
 	VERBOSE("TranslationNormalEquationsTest passed (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
@@ -13513,23 +13523,29 @@ bool ScaleConjugateGradientsTest()
 	// a solve of `equations` by `estimator`, its iterations; with `verify` it is also the Cholesky answer to 1e-9
 	const auto solve = [&](const char* what, GlobalScaleEstimator& estimator, const std::vector<ScalePair>& equations, uint32_t numNodes, uint32_t gauge, bool verify, unsigned& iterations) {
 		std::vector<REAL> scales;
+		#ifdef _RELEASE
 		const auto start = std::chrono::steady_clock::now();
+		#endif
 		if (!estimator.EstimateScales(equations, numNodes, gauge, scales, true)) {
 			VERBOSE("ERROR: ScaleConjugateGradientsTest: %s: the solve failed", what);
 			return false;
 		}
+		#ifdef _RELEASE // a wall-clock bound holds in a Release build only: a Debug or sanitizer build is slower by an order of magnitude
 		const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+		#endif
 		const GlobalScaleEstimator::Solve& stats = estimator.GetSolve();
 		iterations = stats.iterations;
 		if (!stats.converged) {
 			VERBOSE("ERROR: ScaleConjugateGradientsTest: %s: %u conjugate gradients iterations, not converged at the tolerance", what, stats.iterations);
 			return false;
 		}
+		#ifdef _RELEASE
 		// a sanity bound, not the check (the iterations are): 5 s, 10x the 0.5 s the largest solve (2500 unknowns) takes on an idle machine
 		if (seconds > 5) {
 			VERBOSE("ERROR: ScaleConjugateGradientsTest: %s: the solve took %.1f s", what, seconds);
 			return false;
 		}
+		#endif
 		if (!verify)
 			return true;
 		std::vector<double> expected;
