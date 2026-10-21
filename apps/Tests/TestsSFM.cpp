@@ -12801,6 +12801,41 @@ bool TranslationCutTest()
 			return false;
 		}
 	}
+	{
+		// two components: images 0-8 and 9-15 as two groups of cameras with every pair inside a group and none
+		// between them, so the rotation stage averages two components (the second pass of its loop) and the
+		// pair-scale graph falls into two components, each of more than minScaleComponent pairs; one baseline
+		// of the smaller group is flipped. Only that pair goes, and the cut reports both solves and every pair
+		// judged: the flipped pair is judged by the smaller group's own solve.
+		Scene scene; build(scene);
+		const IIndex firstOfSecond = 9;
+		for (size_t idxPair = scene.pairs.size(); idxPair-- > 0; )
+			if ((scene.pairs[idxPair].ID1 < firstOfSecond) != (scene.pairs[idxPair].ID2 < firstOfSecond))
+				scene.pairs.RemoveAt(idxPair);
+		const size_t numPairs = scene.pairs.size();
+		ImagePair* pFlipped = findPair(scene, 10, 13);
+		if (pFlipped == NULL || numPairs != 9 * 8 / 2 + 7 * 6 / 2) {
+			VERBOSE("ERROR: TranslationCutTest: the two groups hold %zu pairs, or have no pair (10,13)", numPairs);
+			return false;
+		}
+		flip(*pFlipped);
+		LogCapture log;
+		const unsigned removed = run(scene, maxDirectionResidual);
+		const auto kept = keptPairs(scene);
+		if (removed != 1 || kept.size() != numPairs - 1 || kept.count({10, 13})) {
+			VERBOSE("ERROR: TranslationCutTest: the two groups: %u pairs removed of %zu, expected only the flipped (10,13)", removed, numPairs);
+			return false;
+		}
+		const String rotationReport = String::FormatString("Contradiction cut: removed 0/%zu pairs", numPairs);
+		const String translationReport = String::FormatString("Translation cut: removed 1/%zu pairs", numPairs);
+		if (!log.Contains(rotationReport) || !log.Contains("of 2 usable components") ||
+			!log.Contains(translationReport) || !log.Contains("centres of 2 of 2 scale components")) {
+			VERBOSE("ERROR: TranslationCutTest: the two groups: the cut did not report the two rotation components and the two solves "
+				"judging every pair of the %zu (\"%s\", \"of 2 usable components\", \"%s\", \"centres of 2 of 2 scale components\")",
+				numPairs, rotationReport.c_str(), translationReport.c_str());
+			return false;
+		}
+	}
 	VERBOSE("TranslationCutTest passed (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }

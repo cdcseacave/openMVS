@@ -93,7 +93,8 @@ unscored and the contradiction cut runs unweighted.
 
 `minYield` (0.4) has no command-line flag. Python: `TripletFilterConfig` with the attributes
 `enabled`, `cut`, `min_score`, `min_yield` and `second_face_score`,
-`ReconstructionConfig.triplet_filter_cfg` and `ReconstructionConfig.max_pair_direction_residual`,
+`ReconstructionConfig.triplet_filter_cfg` and `ReconstructionConfig.max_pair_direction_residual`
+(set outside [0,180], NaN included, it raises `ValueError`, as the command line refuses it),
 and `compute_triplet_scores(scene, min_score, min_yield, grid_size)` to score a matched scene
 without filtering it.
 

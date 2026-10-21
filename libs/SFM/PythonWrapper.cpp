@@ -43,6 +43,7 @@
 #define BOOST_PYTHON_STATIC_LIB
 #endif
 #include <boost/python.hpp>
+#include <stdexcept>
 
 
 // S T R U C T S ///////////////////////////////////////////////////
@@ -209,6 +210,19 @@ static boost::python::dict ComputeTripletScoresDict(const Scene& scene, float mi
 	return out;
 }
 
+// ReconstructionConfig::maxPairDirectionResidual, the contradiction cut's translation stage bar in
+// degrees: a value set from Python is external input, refused (ValueError) unless it is in [0,180]
+// (NaN included; 0 = no translation stage), as the command line is.
+static float GetMaxPairDirectionResidual(const SFM::ReconstructionConfig& config) {
+	return config.maxPairDirectionResidual;
+}
+static void SetMaxPairDirectionResidual(SFM::ReconstructionConfig& config, float value) {
+	if (!(value >= 0.f && value <= 180.f))
+		throw std::invalid_argument(SEACAVE::String::FormatString(
+			"max_pair_direction_residual is the translation stage's bar in degrees, it must be in [0,180] (got %g; 0 = no translation stage)", value));
+	config.maxPairDirectionResidual = value;
+}
+
 
 // SEACAVE::String <-> Python str converters.
 // SEACAVE::String publicly derives from std::string, but Boost.Python keys
@@ -340,7 +354,7 @@ void RegisterBindings()
 		.def_readwrite("triplet_filter_cfg", &SFM::ReconstructionConfig::tripletFilterCfg)
 		.def_readwrite("viewgraph_cfg", &SFM::ReconstructionConfig::viewgraphCfg)
 		.def_readwrite("min_pair_weight", &SFM::ReconstructionConfig::minPairWeight)
-		.def_readwrite("max_pair_direction_residual", &SFM::ReconstructionConfig::maxPairDirectionResidual)
+		.add_property("max_pair_direction_residual", &GetMaxPairDirectionResidual, &SetMaxPairDirectionResidual)
 		.def_readwrite("max_reproj_error", &SFM::ReconstructionConfig::maxReprojError)
 		.def_readwrite("max_fine_reproj_error", &SFM::ReconstructionConfig::maxFineReprojError)
 		.def_readwrite("min_angle_threshold", &SFM::ReconstructionConfig::minAngleThreshold)
