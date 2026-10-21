@@ -301,6 +301,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::TranslationEstimatorTest())
 				return false;
+			if (!SFM::TranslationNormalEquationsTest())
+				return false;
 			if (!SFM::TripletStarInitTest())
 				return false;
 			if (!SFM::PreMatchTest())

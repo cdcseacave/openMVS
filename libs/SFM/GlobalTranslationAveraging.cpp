@@ -6,7 +6,8 @@
 
 #include "Common.h"
 #include "GlobalTranslationAveraging.h"
-#include <Eigen/SparseQR>
+#include <Eigen/SparseCholesky>
+#include "../Math/DisjointSet.h"
 
 using namespace SFM;
 
@@ -68,11 +69,27 @@ bool GlobalTranslationEstimator::EstimateTranslations(
 	}
 	ASSERT(gaugeIdx != NO_ID);
 
-	// Build final map excluding the gauge node; this enforces t_gauge = 0 exactly.
+	// A component of the pairs that does not hold the gauge node floats free: its lowest node is
+	// pinned at the origin too, which makes the normal equations below positive definite
+	DisjointSet<uint32_t> components(numIndices);
+	for (const auto& transPair : pairwiseTranslations) {
+		ASSERT(transPair.idxA < numIndices && transPair.idxB < numIndices);
+		components.Union(transPair.idxA, transPair.idxB);
+	}
+	std::unordered_map<uint32_t, uint32_t> pinOfComponent;
+	if (idxSet.count(gaugeIdx))
+		pinOfComponent.emplace(components.Find(gaugeIdx), gaugeIdx);
+	for (const uint32_t idx : idxSet) {
+		const auto [it, inserted] = pinOfComponent.emplace(components.Find(idx), idx);
+		if (!inserted && it->second != gaugeIdx)
+			it->second = MINF(it->second, idx);
+	}
+
+	// Build final map excluding the pinned nodes; this enforces t_pinned = 0 exactly.
 	std::unordered_map<uint32_t, int> idxToVar;
 	idxToVar.reserve((size_t)N - 1);
 	for (const uint32_t idx : idxSet) {
-		if (idx == gaugeIdx)
+		if (pinOfComponent.at(components.Find(idx)) == idx)
 			continue;
 		idxToVar.emplace(idx, (int)idxToVar.size());
 	}
@@ -110,17 +127,29 @@ bool GlobalTranslationEstimator::EstimateTranslations(
 	Eigen::SparseMatrix<double> A(M, V);
 	A.setFromTriplets(triplets.begin(), triplets.end());
 
-	// Solve using Sparse QR
-	Eigen::SparseQR<Eigen::SparseMatrix<double>, Eigen::COLAMDOrdering<int>> solver;
-	solver.compute(A);
+	// Solve the normal equations (a weighted graph Laplacian) by a sparse Cholesky: the same least
+	// squares as the QR of the incidence matrix, a thousand times faster on a view graph's
+	const Eigen::SparseMatrix<double> At = A.transpose();
+	normal.matrix = At * A;
+	normal.nodeOfRow.assign((size_t)V, NO_ID);
+	for (const auto& [idx, varIdx] : idxToVar)
+		normal.nodeOfRow[varIdx] = idx;
+	Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> solver(normal.matrix);
 	if (solver.info() != Eigen::Success) {
 		VERBOSE("error: solver decomposition failed");
 		return false;
 	}
-
-	Eigen::VectorXd xX = solver.solve(bX);
-	Eigen::VectorXd xY = solver.solve(bY);
-	Eigen::VectorXd xZ = solver.solve(bZ);
+	DEBUG_EXTRA("Global translation normal equations: %d unknowns, %zu non-zeros, factor %zu (incidence %d x %d)",
+		V, (size_t)normal.matrix.nonZeros(), (size_t)solver.matrixL().nestedExpression().nonZeros(), M, V);
+	// one step of refinement against the incidence matrix itself recovers the digits the squared condition number takes
+	const auto solve = [&](const Eigen::VectorXd& b) {
+		Eigen::VectorXd x = solver.solve(At * b);
+		x += solver.solve(At * (b - A * x));
+		return x;
+	};
+	const Eigen::VectorXd xX = solve(bX);
+	const Eigen::VectorXd xY = solve(bY);
+	const Eigen::VectorXd xZ = solve(bZ);
 	if (solver.info() != Eigen::Success) {
 		VERBOSE("error: solver failed");
 		return false;

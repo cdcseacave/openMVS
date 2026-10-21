@@ -358,7 +358,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 ### Global Translation Averaging
 
 - **Files:** `libs/SFM/GlobalTranslationAveraging.h`, `libs/SFM/GlobalTranslationAveraging.cpp`
-- **Algorithms:** Linear least-squares system `t_j - t_i = t_ij` with sparse QR/LU solver given fixed rotations and scales
+- **Algorithms:** Linear least-squares system `t_j - t_i = t_ij` solved by its normal equations (a weighted graph Laplacian, sparse Cholesky) given fixed rotations and scales; a component without the gauge is placed with its lowest node at the origin
 - **GPU Support:** No
 - **Threading:** Single
 - **Dependencies:** Common, Eigen3

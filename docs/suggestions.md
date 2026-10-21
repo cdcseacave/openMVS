@@ -383,7 +383,7 @@ The following five suggestions offer the highest impact relative to implementati
 
 ### B11. Global Translation Averaging (`libs/SFM/GlobalTranslationAveraging.h`)
 
-**Current Implementation:** Linear LS system `t_j - t_i = t_ij` with sparse QR/LU.
+**Current Implementation:** Linear LS system `t_j - t_i = t_ij` solved by its normal equations (a weighted graph Laplacian) with a sparse Cholesky.
 
 1. **1DSfM-Style Translation Averaging** (Priority: Medium | Complexity: High)
    - **What:** Project translations to 1D, solve ordering, lift to 3D.

@@ -482,6 +482,10 @@ bool ScaleEstimatorTest();
 // Test function for global translation estimation
 bool TranslationEstimatorTest();
 
+// The translation estimator's normal-equations solve factors the graph Laplacian of the pairs and
+// gives the SparseQR solution of their incidence matrix
+bool TranslationNormalEquationsTest();
+
 // Pairs weighting test
 bool PairsWeightingTest();
 

@@ -12590,6 +12590,223 @@ bool TranslationEstimatorTest()
 	return true;
 }
 
+// The global translation estimator solves its weighted least squares by the normal equations: the
+// matrix it factors is the weighted graph Laplacian of the pairs with the gauge node (and the lowest
+// node of each component without it) pinned, exactly the free nodes plus twice the distinct free-free
+// pairs of non-zeros, and its centres equal Eigen's SparseQR solution of the incidence matrix to 1e-9
+// of the scene's extent on (1) a connected graph, (2) a graph of two dense groups joined by one weak
+// pair, row weights over 1e-2..1e2, (3) a graph of two components, the second without the gauge (placed
+// up to its own translation, as the QR solution is), (4) two floating rings of unit weights, whose full
+// Laplacian is exactly singular; and (5) a graph of the size of a view graph's (1200 nodes, 25173 rows)
+// is solved in seconds, not in the half minute the QR takes.
+bool TranslationNormalEquationsTest()
+{
+	TD_TIMER_START();
+	std::mt19937 rng(11);
+	std::uniform_real_distribution<double> uniform(0, 1);
+	std::normal_distribution<double> noise(0, 0.5);
+	constexpr double extent = 100;
+	std::vector<Point3> positions(1200);
+	for (Point3& position : positions)
+		position = Point3(uniform(rng) * extent, uniform(rng) * extent, uniform(rng) * extent);
+	// the rows between nodes of [first, last): a ring and `chords` random pairs per node, weights log-uniform in [1e-2, 1e2]
+	const auto addRows = [&](std::vector<TranslationPair>& pairs, uint32_t first, uint32_t last, unsigned chords) {
+		const auto add = [&](uint32_t a, uint32_t b) {
+			if (a == b)
+				return;
+			const float weight = (float)std::pow(10.0, uniform(rng) * 4 - 2);
+			pairs.emplace_back(a, b, positions[b] - positions[a] + Point3(noise(rng), noise(rng), noise(rng)), weight);
+		};
+		for (uint32_t i = first; i < last; ++i) {
+			add(i, i + 1 < last ? i + 1 : first);
+			for (unsigned c = 0; c < chords; ++c)
+				add(i, first + (uint32_t)(uniform(rng) * (last - first)) % (last - first));
+		}
+	};
+	// the least-squares reference: SparseQR of the weighted incidence matrix, the gauge node eliminated
+	const auto reference = [&](const std::vector<TranslationPair>& pairs, uint32_t gauge, std::vector<Point3>& centres) {
+		std::unordered_map<uint32_t, int> variable;
+		for (const TranslationPair& pair : pairs)
+			for (const uint32_t node : {pair.idxA, pair.idxB})
+				if (node != gauge)
+					variable.emplace(node, (int)variable.size());
+		std::vector<Eigen::Triplet<double>> triplets;
+		Eigen::MatrixXd b = Eigen::MatrixXd::Zero((Eigen::Index)pairs.size(), 3);
+		FOREACH(i, pairs) {
+			const TranslationPair& pair = pairs[i];
+			if (pair.idxA != gauge)
+				triplets.emplace_back((int)i, variable[pair.idxA], -(double)pair.weight);
+			if (pair.idxB != gauge)
+				triplets.emplace_back((int)i, variable[pair.idxB], (double)pair.weight);
+			for (int d = 0; d < 3; ++d)
+				b((Eigen::Index)i, d) = (double)pair.weight * (double)pair.relativeTranslation[d];
+		}
+		Eigen::SparseMatrix<double> A((int)pairs.size(), (int)variable.size());
+		A.setFromTriplets(triplets.begin(), triplets.end());
+		Eigen::SparseQR<Eigen::SparseMatrix<double>, Eigen::COLAMDOrdering<int>> solver;
+		solver.compute(A);
+		centres.assign(positions.size(), Point3::ZERO);
+		for (int d = 0; d < 3; ++d) {
+			const Eigen::VectorXd x = solver.solve(b.col(d));
+			for (const auto& [node, index] : variable)
+				centres[node][d] = (REAL)x(index);
+		}
+	};
+	// the largest difference of the two solutions, the component of each node taken up to its own
+	// translation unless it holds the gauge
+	const auto difference = [&](const std::vector<TranslationPair>& pairs, uint32_t gauge, const std::vector<Point3>& a, const std::vector<Point3>& b) {
+		DisjointSet<uint32_t> sets((uint32_t)positions.size());
+		for (const TranslationPair& pair : pairs)
+			sets.Union(pair.idxA, pair.idxB);
+		std::unordered_map<uint32_t, uint32_t> origin; // the lowest node of each component
+		for (const TranslationPair& pair : pairs)
+			for (const uint32_t node : {pair.idxA, pair.idxB}) {
+				uint32_t& low = origin.emplace(sets.Find(node), node).first->second;
+				low = MINF(low, node);
+			}
+		REAL worst = 0;
+		for (const auto& [root, low] : origin) {
+			const uint32_t shiftNode = sets.Find(gauge) == root ? gauge : low;
+			for (const TranslationPair& pair : pairs)
+				for (const uint32_t node : {pair.idxA, pair.idxB})
+					if (sets.Find(node) == root)
+						worst = MAXF(worst, norm((a[node] - a[shiftNode]) - (b[node] - b[shiftNode])));
+		}
+		return worst / extent;
+	};
+	const auto checkLaplacian = [&](const char* what, const GlobalTranslationEstimator& estimator, const std::vector<TranslationPair>& pairs, uint32_t gauge) {
+		// the matrix handed to the factorization is the weighted graph Laplacian of the free nodes (the gauge,
+		// and the lowest node of each component without it, eliminated), built here from the pairs alone: the
+		// diagonal the sum of the squared weights of the node's pairs, an off-diagonal minus the squared
+		// weights of the pairs between its two nodes (a duplicated or reversed pair summed), both triangles
+		// held, so exactly the free nodes plus twice the distinct free-free pairs of non-zeros (a QR of the
+		// incidence matrix has a row per pair)
+		DisjointSet<uint32_t> components((uint32_t)positions.size());
+		for (const TranslationPair& pair : pairs)
+			components.Union(pair.idxA, pair.idxB);
+		std::unordered_map<uint32_t, uint32_t> pinned; // by component: the gauge, else the lowest node
+		pinned.emplace(components.Find(gauge), gauge);
+		for (const TranslationPair& pair : pairs)
+			for (const uint32_t node : {pair.idxA, pair.idxB}) {
+				uint32_t& low = pinned.emplace(components.Find(node), node).first->second;
+				if (low != gauge)
+					low = MINF(low, node);
+			}
+		const auto isFree = [&](uint32_t node) { return pinned.at(components.Find(node)) != node; };
+		std::unordered_set<uint32_t> nodes;
+		std::map<std::pair<uint32_t, uint32_t>, double> laplacian;
+		for (const TranslationPair& pair : pairs) {
+			nodes.insert(pair.idxA);
+			nodes.insert(pair.idxB);
+			const double weight2 = SQUARE((double)pair.weight);
+			if (isFree(pair.idxA))
+				laplacian[{pair.idxA, pair.idxA}] += weight2;
+			if (isFree(pair.idxB))
+				laplacian[{pair.idxB, pair.idxB}] += weight2;
+			if (isFree(pair.idxA) && isFree(pair.idxB)) {
+				laplacian[{pair.idxA, pair.idxB}] -= weight2;
+				laplacian[{pair.idxB, pair.idxA}] -= weight2;
+			}
+		}
+		const GlobalTranslationEstimator::NormalEquations& normal = estimator.GetNormalEquations();
+		const Eigen::SparseMatrix<double>& matrix = normal.matrix;
+		size_t count = 0;
+		const size_t numFree = nodes.size() - pinned.size();
+		bool consistent = matrix.rows() == matrix.cols() && (size_t)matrix.rows() == numFree && normal.nodeOfRow.size() == numFree;
+		for (int column = 0; consistent && column < matrix.outerSize(); ++column)
+			for (Eigen::SparseMatrix<double>::InnerIterator it(matrix, column); it; ++it, ++count) {
+				const auto expected = laplacian.find({normal.nodeOfRow[it.row()], normal.nodeOfRow[it.col()]});
+				consistent = expected != laplacian.end() && std::abs(it.value() - expected->second) <= 1e-12 * std::abs(expected->second);
+				if (!consistent)
+					break;
+			}
+		if (!consistent || count != laplacian.size()) {
+			VERBOSE("ERROR: TranslationNormalEquationsTest: %s: the factored matrix (%d x %d, %zu non-zeros) is not the Laplacian of the %zu free nodes and %zu entries the pairs give", what, (int)matrix.rows(), (int)matrix.cols(), (size_t)matrix.nonZeros(), numFree, laplacian.size());
+			return false;
+		}
+		return true;
+	};
+	const auto check = [&](const char* what, const std::vector<TranslationPair>& pairs) {
+		const uint32_t gauge = pairs.front().idxA;
+		GlobalTranslationEstimator estimator;
+		std::vector<Point3> centres, expected;
+		if (!estimator.EstimateTranslations(pairs, (uint32_t)positions.size(), gauge, centres)) {
+			VERBOSE("ERROR: TranslationNormalEquationsTest: %s: the solve failed", what);
+			return false;
+		}
+		if (!checkLaplacian(what, estimator, pairs, gauge))
+			return false;
+		reference(pairs, gauge, expected);
+		const REAL error = difference(pairs, gauge, centres, expected);
+		if (!(error < REAL(1e-9)) || norm(centres[gauge]) != 0) {
+			VERBOSE("ERROR: TranslationNormalEquationsTest: %s: the centres differ from the SparseQR ones by %g of the extent", what, (double)error);
+			return false;
+		}
+		// a component without the gauge stays near the origin (its lowest node is the one pinned there)
+		for (const TranslationPair& pair : pairs)
+			if (!(norm(centres[pair.idxA]) < 2 * extent)) {
+				VERBOSE("ERROR: TranslationNormalEquationsTest: %s: node %u is %g from the origin", what, pair.idxA, (double)norm(centres[pair.idxA]));
+				return false;
+			}
+		return true;
+	};
+	{
+		std::vector<TranslationPair> pairs;
+		addRows(pairs, 0, 80, 4);
+		if (!check("connected graph", pairs))
+			return false;
+	}
+	{
+		std::vector<TranslationPair> pairs;
+		addRows(pairs, 0, 40, 6);
+		addRows(pairs, 40, 80, 6);
+		pairs.emplace_back(39, 40, positions[40] - positions[39], 1e-2f);
+		if (!check("weak bridge", pairs))
+			return false;
+	}
+	{
+		std::vector<TranslationPair> pairs;
+		addRows(pairs, 0, 40, 6);
+		addRows(pairs, 50, 90, 6);
+		if (!check("two components", pairs))
+			return false;
+	}
+	{
+		// unit weights and whole offsets: the floating ring's Laplacian is exactly singular
+		std::vector<TranslationPair> pairs;
+		for (const uint32_t first : {0u, 10u})
+			for (uint32_t i = 0; i < 6; ++i)
+				pairs.emplace_back(first + i, first + (i + 1) % 6, Point3(REAL(i % 2), REAL(1), REAL(i % 3)), 1.f);
+		if (!check("floating ring of unit weights", pairs))
+			return false;
+	}
+	{
+		std::vector<TranslationPair> pairs;
+		addRows(pairs, 0, 1200, 20);
+		GlobalTranslationEstimator estimator;
+		std::vector<Point3> centres;
+		const auto start = std::chrono::steady_clock::now();
+		if (!estimator.EstimateTranslations(pairs, (uint32_t)positions.size(), 0, centres)) {
+			VERBOSE("ERROR: TranslationNormalEquationsTest: the view-graph sized solve failed");
+			return false;
+		}
+		const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+		if (!checkLaplacian("1200 nodes", estimator, pairs, 0))
+			return false;
+		REAL sumSq = 0;
+		for (uint32_t i = 1; i < (uint32_t)positions.size(); ++i)
+			sumSq += SQUARE(norm((centres[i] - centres[0]) - (positions[i] - positions[0])));
+		const REAL rms = SQRT(sumSq / (REAL)positions.size());
+		// a sanity bound, not the check (the structure above is): 6 s, 10x the 0.6 s the solve takes on an idle core (34 s by the QR it replaced)
+		if (seconds > 6 || !(rms < REAL(1))) {
+			VERBOSE("ERROR: TranslationNormalEquationsTest: 1200 nodes, %zu rows: %.1f s, %g rms from the truth", pairs.size(), seconds, (double)rms);
+			return false;
+		}
+	}
+	VERBOSE("TranslationNormalEquationsTest passed (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 
 // Pairs weighting test
 bool PairsWeightingTest()

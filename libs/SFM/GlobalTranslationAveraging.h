@@ -11,6 +11,7 @@
 // I N C L U D E S /////////////////////////////////////////////////
 
 #include "Camera.h"
+#include <Eigen/SparseCore>
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -41,9 +42,10 @@ struct SFM_API TranslationPair
  * Estimates global translations by solving a weighted linear least-squares system:
  *   t_j - t_i = relative_translation_ij
  *
- * The system is solved using Eigen's sparse linear solvers (QR or LU decomposition).
- * Gauge freedom is resolved by pinning the node the caller names, and the best-connected
- * node of the pairs when it names none.
+ * The system is solved by its normal equations (a weighted graph Laplacian) and a sparse
+ * Cholesky factorization. Gauge freedom is resolved by pinning the node the caller names, and
+ * the best-connected node of the pairs when it names none; a component of the pairs that holds
+ * no gauge node is placed with its lowest node at the origin.
  */
 class SFM_API GlobalTranslationEstimator
 {
@@ -68,6 +70,17 @@ public:
 		std::vector<Point3>& outTranslations) {
 		return EstimateTranslations(pairwiseTranslations, numIndices, NO_ID, outTranslations);
 	}
+
+	/// the system the last solve factored: the normal equations (both triangles, the weighted graph
+	/// Laplacian of the free nodes: the pinned ones eliminated), and the node of each of its rows
+	struct NormalEquations {
+		Eigen::SparseMatrix<double> matrix;
+		std::vector<uint32_t> nodeOfRow;
+	};
+	const NormalEquations& GetNormalEquations() const { return normal; }
+
+private:
+	NormalEquations normal;
 };
 /*----------------------------------------------------------------*/
 
