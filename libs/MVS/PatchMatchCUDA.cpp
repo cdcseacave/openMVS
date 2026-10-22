@@ -88,6 +88,9 @@ PatchMatch::PatchMatch()
 	// initialize CUDA device if needed
 	if (SEACAVE::CUDA::devices.IsEmpty())
 		SEACAVE::CUDA::initDevices(SEACAVE::CUDA::desiredDeviceIDs);
+	// no usable device: leave the stream unset so the caller can fall back to the CPU
+	if (SEACAVE::CUDA::devices.IsEmpty())
+		return;
 	CUDA_CHECK(cudaStreamCreate(&cudaStream));
 }
 
