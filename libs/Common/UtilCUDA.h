@@ -62,10 +62,13 @@ extern GENERAL_API Devices devices;
 inline CUresult __reportCudaError(CUresult result, LPCSTR errorMessage) {
 	if (result == CUDA_SUCCESS)
 		return CUDA_SUCCESS;
+	// the out-parameters are left untouched on failure (e.g. CUDA_ERROR_STUB_LIBRARY)
 	LPCSTR szName;
-	cuGetErrorName(result, &szName);
+	if (cuGetErrorName(result, &szName) != CUDA_SUCCESS)
+		szName = "unknown";
 	LPCSTR szError;
-	cuGetErrorString(result, &szError);
+	if (cuGetErrorString(result, &szError) != CUDA_SUCCESS)
+		szError = "unknown error";
 	#ifdef _DEBUG
 	VERBOSE("CUDA error at %s:%d: %s (%s (code %d) - %s)", __FILE__, __LINE__, errorMessage, szName, static_cast<unsigned>(result), szError);
 	#else
