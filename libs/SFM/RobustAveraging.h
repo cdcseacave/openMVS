@@ -26,14 +26,13 @@ constexpr unsigned kRobustRounds = 10;
 // Iteratively reweighted averaging around any weighted least-squares solve over pairs that carry a
 // float `weight`:
 //  solve(activePairs, solution) -> bool   the plain solver over the pairs with weight > 0
-//  residual(i, solution) -> REAL          pair i's signed error, in the units of sigma
-// Geman-McClure weights w = (sigma^2 / (sigma^2 + r^2))^2 are recomputed every round from each
-// pair's initial weight and the current solution; a pair under 1e-3 of its initial weight sits the
-// next round out, never permanently. Stops after maxRounds or when no weight moved by more than
-// 1e-3 of its initial value. Returns false when the first solve fails; a later failure keeps the
-// previous solution. residuals[i] = |residual(i, solution)| against the returned solution.
-// The same loop with the factor a pair's weight is scaled by, from its error, given by the caller:
+//  residual(i, solution) -> REAL          pair i's signed error, in the units the caller's factor takes
 //  factor(r) -> float                     the weight of a pair with error r, in units of its initial weight
+// Every round each pair's weight is recomputed as its initial weight times factor(|residual|) of the
+// current solution; a pair under 1e-3 of its initial weight sits the next round out, never permanently
+// (it is weighed again from the next solution). Stops after maxRounds or when no weight moved by more
+// than 1e-3 of its initial value. Returns false when the first solve fails; a later failure keeps the
+// previous solution. residuals[i] = |residual(i, solution)| against the returned solution.
 template <typename Pair, typename Solution, typename SolveFn, typename ResidualFn, typename FactorFn>
 bool RobustAverageWith(const std::vector<Pair>& pairs, unsigned maxRounds, SolveFn solve, ResidualFn residual, FactorFn factor, Solution& solution, std::vector<REAL>& residuals)
 {
@@ -68,7 +67,8 @@ bool RobustAverageWith(const std::vector<Pair>& pairs, unsigned maxRounds, Solve
 	return true;
 }
 
-// Geman-McClure weights w = (sigma^2 / (sigma^2 + r^2))^2, r in the units of sigma
+// RobustAverageWith with the Geman-McClure factor (sigma^2 / (sigma^2 + r^2))^2, residual(i, solution)
+// and sigma in the same units (a pair at an error of sigma keeps a quarter of its weight)
 template <typename Pair, typename Solution, typename SolveFn, typename ResidualFn>
 bool RobustAverage(const std::vector<Pair>& pairs, REAL sigma, unsigned maxRounds, SolveFn solve, ResidualFn residual, Solution& solution, std::vector<REAL>& residuals)
 {

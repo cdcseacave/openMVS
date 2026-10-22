@@ -39,9 +39,9 @@ std::vector<ScalePair> SFM_API ComputePairScales(const Scene& scene, const IInde
  */
 struct SFM_API StarInitConfig
 {
-	unsigned minViews{4};           // Minimum connected views
+	unsigned minViews{4};           // Minimum views of the star, the reference included (at least 2)
 	unsigned maxViews{36};          // Maximum connected views
-	float ratioInliersFilter{0.2f}; // Ratio threshold for inlier views filter (optional, 0 to disable)
+	float ratioInliersFilter{0.2f}; // Floor of a neighbour's evidence: this share of the mean inlier count of the three heaviest candidates (optional, 0 to disable)
 	float maxReprojError{6.f};      // Maximum reprojection error (pixels)
 	float minAngleThreshold{1.f};   // Minimum angle between cameras (degrees)
 	float evidenceMinAngle{1.5f};   // Ray angle a pair's inlier must reach to count as star evidence (degrees): the reconstruction's minAngleThreshold, which Scene sets it from

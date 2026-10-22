@@ -208,9 +208,14 @@ std::vector<ScalePair> SFM::ComputePairScales(const Scene& scene, const IIndexAr
 	std::vector<Equation> equations;
 	for (const std::vector<Equation>& viewEquations : equationsOfView)
 		equations.insert(equations.end(), viewEquations.begin(), viewEquations.end());
-	std::sort(equations.begin(), equations.end(), [](const Equation& a, const Equation& b) {
+	const auto lessPairs = [](const Equation& a, const Equation& b) {
 		return a.pair1 != b.pair1 ? a.pair1 < b.pair1 : a.pair2 < b.pair2;
-	});
+	};
+	std::sort(equations.begin(), equations.end(), lessPairs);
+	// two distinct pairs share at most one view, so a pair of pairs has one equation: a scene pair
+	// listed twice would give it two
+	ASSERT(std::adjacent_find(equations.begin(), equations.end(),
+		[&lessPairs](const Equation& a, const Equation& b) { return !lessPairs(a, b); }) == equations.end());
 	std::vector<ScalePair> scalePairs;
 	scalePairs.reserve(equations.size());
 	for (const Equation& equation : equations)
@@ -343,17 +348,8 @@ bool StarInitializer::Initialize(
 			continue;
 		if (pairEvidence[idxPair] == 0)
 			continue; // no inlier fixes a distance (or the pair does not touch the reference): the view is left to the resection
-		IIndex sourceID = NO_ID, targetID = NO_ID;
-		// Determine which view is the reference
-		if (pair.ID1 == refID) {
-			sourceID = refID;
-			targetID = pair.ID2;
-		} else if (pair.ID2 == refID) {
-			sourceID = refID;
-			targetID = pair.ID1;
-		} else {
-			continue; // neither view is reference
-		}
+		ASSERT(pair.ID1 == refID || pair.ID2 == refID); // the evidence of a pair that does not join the reference is 0
+		const IIndex sourceID = refID, targetID = pair.ID1 == refID ? pair.ID2 : pair.ID1;
 		Image& targetImg = scene.images[targetID];
 		if (targetImg.HasPose())
 			continue; // already registered
@@ -383,6 +379,7 @@ bool StarInitializer::Initialize(
 		unsigned avgInliers = 0;
 		const IIndex numCandidates = candidates.size();
 		IIndex count = MINF(3u, numCandidates);
+		ASSERT(count > 0); // the check above left a candidate (the star needs at least one neighbour)
 		for (unsigned i = 0; i < count; ++i)
 			avgInliers += inliers[i];
 		avgInliers /= count;
@@ -392,6 +389,11 @@ bool StarInitializer::Initialize(
 		candidates.resize(size + 1);
 		DEBUG_EXTRA("Filtered connected views by inlier matches: kept %u/%u views with at least %u inliers of evidence",
 			candidates.size(), numCandidates, thInliers);
+		if (candidates.empty()) { // no neighbour passes the floor (near-duplicate frames of many inliers can lift it above the evidence of every wider one): the star would fail at its triangulation, say so here
+			VERBOSE("error: insufficient initial views (%u < %u)",
+				candidates.size(), config.minViews-1);
+			return false;
+		}
 	}
 	// Keep only up to maxViews
 	if (candidates.size() > config.maxViews)

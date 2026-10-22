@@ -98,10 +98,11 @@ unscored and the contradiction cut runs unweighted.
 and `compute_triplet_scores(scene, min_score, min_yield, grid_size)` to score a matched scene
 without filtering it.
 
-Two caveats. The filter is not idempotent: a saved, already-filtered scene re-fed with
-`--filter-triplets true` is filtered again, against its own already-thinned graph. And with
-geometric verification off, no pair carries a two-view geometry, so no pair is scored and nothing is
-removed.
+Two caveats. The contradiction cut is not idempotent: it re-applies on every reload of a matched
+scene, whatever `--filter-triplets` says (unweighted when the triplet filter is off), against the
+graph its earlier run already thinned, and a `--match-images-only` scene is saved after the cut, so
+the pairs it removed are not in the saved scene. And with geometric verification off, no pair
+carries a two-view geometry, so no pair is scored and nothing is removed.
 
 ## Limitations
 

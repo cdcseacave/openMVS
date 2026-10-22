@@ -642,8 +642,8 @@ bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, c
 	}
 
 	// the focals of the cameras that do not trust theirs, and the radial lens of every camera that has none (LensFit.h):
-	// after every pair is verified, before anything reads the pairs' geometry (the pairs export, the triplet and
-	// tree-rotation filters, the clustering, every reconstruction stage)
+	// after every pair is verified, before anything reads the pairs' geometry (the pairs export, the triplet filter
+	// and the contradiction cut, the clustering, every reconstruction stage)
 	if (!CalibrateFocalsAndFitLenses(pairsMatcher, vgConfig))
 		return false;
 

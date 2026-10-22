@@ -839,7 +839,8 @@ unsigned SFM::FilterPairsByContradiction(Scene& scene, const std::vector<float>&
 	ASSERT(numPairs - numKept == numRemoved);
 	scene.pairs.RemoveLast(numRemoved);
 	ComputePairsWeights(scene, weightingCfg);
-	DEBUG("Filtered the view graph by contradiction with its rotation and translation averaging: %u pairs removed (%s)", numRemoved, TD_TIMER_GET_FMT().c_str());
+	DEBUG("Filtered the view graph by contradiction with its %s averaging: %u pairs removed (%s)",
+		maxDirectionResidual > 0 ? "rotation and translation" : "rotation", numRemoved, TD_TIMER_GET_FMT().c_str());
 	return numRemoved;
 }
 /*----------------------------------------------------------------*/

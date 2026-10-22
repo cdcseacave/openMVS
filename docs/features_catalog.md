@@ -226,7 +226,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
   - `EstimateGlobalScale()`: multi-baseline ratio estimation over the pair-scale equations of the star's pairs
   - `ComputePairScales()`: the pair-scale equations of any set of scene pairs (every match triangulated in its pair's unit frame; per (view, feature) shared by two pairs the ratio of their distances; per pair of pairs the 10%-trimmed mean over at least 15 common points), built in flat per-view arrays under OpenMP
   - Triangulates initial tracks
-- **Configuration:** `StarInitConfig` — `minViews` (4), `maxViews` (36), `maxReprojError`
+- **Configuration:** `StarInitConfig` — `minViews` (4), `maxViews` (36), `ratioInliersFilter` (0.2, the floor of a neighbour's evidence as a share of the mean inlier count of the three heaviest candidates), `evidenceMinAngle` (1.5 degrees), `maxReprojError`
 - **GPU Support:** No
 - **Threading:** `ComputePairScales()` OpenMP; the rest single
 - **Dependencies:** Common, PoseLib
@@ -346,7 +346,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
   - `FilterPairsByContradiction()`: the view graph's contradiction cut, run after the triplet filter. Rotation stage: the usable pairs (composite weight times triplet score) averaged per connected component, every pair whose rotation is past `maxRelativeRotationAngle` of the result removed; translation stage (bar `ReconstructionConfig::maxPairDirectionResidual`, 45 degrees, 0 = off): pair scales (`ComputePairScales`, robust, sparse `GlobalScaleEstimator`), camera centres (`GlobalTranslationEstimator`, reweighted towards the sum of norms), every pair whose baseline direction is past the bar from the centres removed
 - **Configuration:** `GlobalRotationEstimatorOptions` — `maxNumL1Iterations` (5), `maxNumIrlsIterations` (100), `weightType` (GEMAN_MCCLURE or HALF_NORM), `maxRelativeRotationAngle` (12 degrees)
 - **GPU Support:** No
-- **Threading:** Single (sparse linear system); could use Eigen parallelism
+- **Threading:** Single (sparse linear system; could use Eigen parallelism); the contradiction cut's pair scales (`ComputePairScales`) run under OpenMP
 - **Dependencies:** Common, Math (LeastAbsoluteDeviationSolver), Eigen3
 
 ### Global Scale Averaging

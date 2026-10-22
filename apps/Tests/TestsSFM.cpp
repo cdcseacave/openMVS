@@ -10652,158 +10652,6 @@ bool StarReferenceViewTest()
 	return true;
 }
 
-// The star initializer lists, for the reference view, only the neighbours whose matches fix their
-// distance: the pair's inliers whose ray angle reaches the reconstruction's triangulation bar
-// (StarInitConfig::evidenceMinAngle), not all of them. Image 0 is the reference. Five near views
-// (1-5, 0.5-1.5 units to the side) see 200 points at depth 4-8, a ray angle of 3-20 deg, and 500 far
-// points at depth 400-800 (under 0.2 deg); six far views (6-11, 3-6 units to the side, 0.4-0.9 deg
-// of the far points) see the far points alone. Every pair has the unit baseline a relative pose has,
-// so a distance is known only to a view whose pair triangulates the near points. By inlier count a
-// far view (500) is within the star's ratio of a near one (700) and would enter it at the distance
-// its unit baseline guesses; by evidence it is left out, and the near views' distances to the
-// reference agree. Without the near points no pair has any evidence and there is no star. The
-// keyframe extractor's configuration (the defaults and three views) builds the same star.
-bool StarEvidenceTest()
-{
-	TD_TIMER_START();
-	const std::vector<REAL> nearSides{0.5, 0.8, 1.0, 1.2, 1.5};
-	const std::vector<REAL> farSides{3.0, 3.6, 4.2, 4.8, 5.4, 6.0};
-	const unsigned numNear = (unsigned)nearSides.size(), numFar = (unsigned)farSides.size();
-	const auto buildScene = [&](Scene& scene, bool bNearPoints) {
-		PinholeCamera* pCamera = new PinholeCamera(cv::Size(640, 480), REAL(400), REAL(400), REAL(320), REAL(240));
-		pCamera->trustIntrinsics = true;
-		scene.cameras.emplace_back(pCamera);
-		for (unsigned i = 0; i <= numNear + numFar; ++i) {
-			const REAL side = i == 0 ? REAL(0) : i <= numNear ? nearSides[i-1] : farSides[i-1-numNear];
-			Pose3D pose;
-			pose.R = Matrix3x3::IDENTITY;
-			pose.C = Point3(side, (i % 2) * side * 0.3, 0);
-			scene.images.emplace_back(i, "", pose, 0, scene.cameras[0]);
-		}
-		std::mt19937 rng(7);
-		std::uniform_int_distribution<int> pixelX(40, 600), pixelY(40, 440);
-		std::uniform_real_distribution<REAL> nearDepth(4, 8), farDepth(400, 800);
-		for (unsigned p = 0; p < 700; ++p) {
-			const bool bNear = p < 200;
-			const Point3 X = scene.images[0].UnprojectPoint(Point2(pixelX(rng), pixelY(rng)), bNear ? nearDepth(rng) : farDepth(rng));
-			if (bNear && !bNearPoints)
-				continue;
-			Track track(X);
-			for (Image& img : scene.images) {
-				if (bNear && img.ID > numNear)
-					continue; // the far views do not see the near points
-				const auto [proj, valid] = img.ProjectPoint(X);
-				if (!valid || !Image8U::isInside(proj, img.GetSize()))
-					continue;
-				img.keypoints.emplace_back(proj, 0.f, 0.f, 10.f);
-				track.observations.emplace_back(img.ID, (uint32_t)img.keypoints.size() - 1);
-			}
-			track.numInliers = (uint8_t)track.observations.size();
-			scene.tracks.emplace_back(std::move(track));
-		}
-		for (IIndex j = 1; j < scene.images.size(); ++j) {
-			ImagePair& pair = scene.pairs.emplace_back(0, j);
-			for (const Track& track : scene.tracks) {
-				uint32_t obs0 = NO_ID, obsJ = NO_ID;
-				for (const auto& obs : track.observations) {
-					if (obs.imageID == 0)
-						obs0 = obs.featureID;
-					else if (obs.imageID == j)
-						obsJ = obs.featureID;
-				}
-				if (obs0 != NO_ID && obsJ != NO_ID)
-					pair.matches.emplace_back(obs0, obsJ);
-			}
-			pair.numFilteredInliers = (int)pair.matches.size();
-			pair.relativePose = scene.images[j] / scene.images[0];
-			pair.relativePose->C /= norm(pair.relativePose->C); // a relative pose has no scale
-			pair.E = ImagePair::ComposeEssentialMatrix(pair.relativePose.value());
-			pair.F = ImagePair::ComposeFundamentalMatrix(pair.E.value(), scene.images[0].GetK(), scene.images[j].GetK());
-			pair.weightSpatial = 1.f;
-			pair.weightConnectivity = 1.f;
-		}
-		scene.status.nCalibratedImages = scene.images.size();
-	};
-	const auto runStar = [&](Scene& scene, bool bNearPoints, const StarInitConfig& cfg) {
-		buildScene(scene, bNearPoints);
-		for (Image& img : scene.images)
-			img.InvalidatePose();
-		return StarInitializer::Initialize(scene, cfg);
-	};
-	// the truth: each view's distance to the reference
-	Scene truth;
-	buildScene(truth, true);
-	std::vector<REAL> trueDist(truth.images.size());
-	FOREACH(i, truth.images)
-		trueDist[i] = norm(truth.images[i].C);
-	// the premise: by inlier count every far pair passes the star's floor, a ratio of the mean of the
-	// three heaviest pairs
-	{
-		std::vector<int> inliers;
-		for (const ImagePair& pair : truth.pairs)
-			inliers.push_back(pair.numFilteredInliers);
-		std::sort(inliers.begin(), inliers.end(), std::greater<int>());
-		const int meanTop = (inliers[0] + inliers[1] + inliers[2]) / 3;
-		const int floorInliers = ROUND2INT<int>(meanTop * StarInitConfig().ratioInliersFilter);
-		for (IIndex j = numNear + 1; j < truth.images.size(); ++j) {
-			const int numInliers = truth.pairs[j-1].numFilteredInliers;
-			if (numInliers < floorInliers) {
-				VERBOSE("StarEvidenceTest FAILED: far pair (0,%u) has %d inliers, under the star's floor of %d; the scene does not set the by-count trap", j, numInliers, floorInliers);
-				return false;
-			}
-		}
-	}
-	// by evidence only the near views enter the star, at consistent distances
-	StarInitConfig cfg;
-	cfg.refineFocalLength = false;
-	Scene byEvidence;
-	if (!runStar(byEvidence, true, cfg)) {
-		VERBOSE("StarEvidenceTest FAILED: the star by evidence did not initialize");
-		return false;
-	}
-	REAL minRatio = FLT_MAX, maxRatio = 0;
-	for (IIndex v = 1; v < byEvidence.images.size(); ++v) {
-		const bool bNear = v <= numNear;
-		if (byEvidence.images[v].HasPose() != bNear) {
-			VERBOSE("StarEvidenceTest FAILED: %s view %u %s the star by evidence", bNear ? "near" : "far", v, bNear ? "is not in" : "is in");
-			return false;
-		}
-		if (bNear) {
-			const REAL ratio = norm(byEvidence.images[v].C) / trueDist[v];
-			minRatio = MINF(minRatio, ratio);
-			maxRatio = MAXF(maxRatio, ratio);
-		}
-	}
-	if ((maxRatio - minRatio) > 0.01 * minRatio) {
-		VERBOSE("StarEvidenceTest FAILED: the near views' distances to the reference span %.2f%% of one scale; expected 1%%",
-			(maxRatio / minRatio - 1) * 100);
-		return false;
-	}
-	// no evidence: without the near points no pair measures a distance, so there is no star
-	Scene noEvidence;
-	if (runStar(noEvidence, false, cfg)) {
-		VERBOSE("StarEvidenceTest FAILED: a star was built from pairs none of which measures a distance");
-		return false;
-	}
-	// the keyframe extractor's configuration: the defaults and three views
-	StarInitConfig keyframeCfg;
-	keyframeCfg.minViews = 3;
-	Scene keyframes;
-	if (!runStar(keyframes, true, keyframeCfg)) {
-		VERBOSE("StarEvidenceTest FAILED: the star of the keyframe extractor's configuration did not initialize");
-		return false;
-	}
-	for (IIndex v = 1; v <= numNear; ++v) {
-		if (!keyframes.images[v].HasPose()) {
-			VERBOSE("StarEvidenceTest FAILED: near view %u is not in the star of the keyframe extractor's configuration", v);
-			return false;
-		}
-	}
-	VERBOSE("StarEvidenceTest PASSED: %u far views left out of the star by evidence, near distances within %.3f%%, no star without evidence, "
-		"the keyframe configuration initializes (%s)", numFar, (maxRatio / minRatio - 1) * 100, TD_TIMER_GET_FMT().c_str());
-	return true;
-}
-
 // Everything the log recorded while it was alive, so a test can assert on what the merge reported.
 // The verbosity is raised for its lifetime, the per-candidate gate reports being written at the
 // ultimate level.
@@ -10829,6 +10677,228 @@ struct LogCapture
 		return num;
 	}
 };
+
+// The star initializer lists, for the reference view, only the neighbours whose matches fix their
+// distance: the pair's inliers whose ray angle reaches the reconstruction's triangulation bar
+// (StarInitConfig::evidenceMinAngle), not all of them. Image 0 is the reference. Five near views
+// (1-5, 0.5-1.5 units to the side) see 200 points at depth 4-8, a ray angle of 3-20 deg, and 500 far
+// points at depth 400-800 (under 0.2 deg); six far views (6-11, 3-6 units to the side, 0.4-0.9 deg
+// of the far points) see the far points alone. Every pair has the unit baseline a relative pose has,
+// so a distance is known only to a view whose pair triangulates the near points. By inlier count a
+// far view (500) is within the star's ratio of a near one (700) and would enter it at the distance
+// its unit baseline guesses; by evidence it is left out, and the near views' distances to the
+// reference agree. Without the near points no pair has any evidence and there is no star, and the
+// star says so ("insufficient initial views"). The keyframe extractor's configuration (the defaults
+// and three views) builds the same star.
+// The floor of the star (StarInitConfig::ratioInliersFilter, 0.2) is a share of the mean inlier count
+// of the three heaviest candidates, compared with each candidate's evidence; a floor that keeps at
+// least one neighbour goes on with the neighbours it keeps, however few the star needed, and one that
+// keeps none refuses the star there ("insufficient initial views (0 < ..."), not later at its
+// triangulation. With the near/far scene above a ratio of 0.275 (a floor of 191 over the evidence
+// 199, 192, 188, 184, 179) keeps the first two near views, fewer than the three the star needs, and
+// the star is built from them.
+// The known limit of the floor: a burst of near-duplicate frames (1-3, 0.02-0.04 units to the side)
+// shares 2500 far points and a dozen points under a unit from the reference with it, 3012 inliers a
+// pair of which only the dozen measure a distance (evidence 11-12), and four wider views (4-7,
+// 0.8-1.5 units) see 200 near points and 500 far ones, 679-692 inliers of which 179-192 are evidence.
+// The floor, 0.2 of the 3012 inliers (602), is above the evidence of every wider view: it keeps none
+// and the star is refused. A floor in the units of evidence (38 here) would keep the four wider views,
+// but it also admitted the low-evidence views the evidence keeps out, grew the stars of every
+// sub-scene of the real captures and moved their poses by ten times the noise, so it is not used.
+bool StarEvidenceTest()
+{
+	TD_TIMER_START();
+	const std::vector<REAL> nearSides{0.5, 0.8, 1.0, 1.2, 1.5};
+	const std::vector<REAL> farSides{3.0, 3.6, 4.2, 4.8, 5.4, 6.0};
+	const unsigned numNear = (unsigned)nearSides.size(), numFar = (unsigned)farSides.size();
+	// the points of one depth range and the views that see them (the reference sees every point)
+	struct PointGroup {
+		unsigned count;
+		REAL minDepth, maxDepth;
+		std::function<bool(IIndex)> seenBy;
+	};
+	const auto buildScene = [&](Scene& scene, const std::vector<REAL>& sides, const std::vector<PointGroup>& groups) {
+		PinholeCamera* pCamera = new PinholeCamera(cv::Size(640, 480), REAL(400), REAL(400), REAL(320), REAL(240));
+		pCamera->trustIntrinsics = true;
+		scene.cameras.emplace_back(pCamera);
+		FOREACH(i, sides) {
+			Pose3D pose;
+			pose.R = Matrix3x3::IDENTITY;
+			pose.C = Point3(sides[i], (i % 2) * sides[i] * 0.3, 0);
+			scene.images.emplace_back(i, "", pose, 0, scene.cameras[0]);
+		}
+		std::mt19937 rng(7);
+		std::uniform_int_distribution<int> pixelX(40, 600), pixelY(40, 440);
+		for (const PointGroup& group : groups) {
+			std::uniform_real_distribution<REAL> depth(group.minDepth, group.maxDepth);
+			for (unsigned p = 0; p < group.count; ++p) {
+				const Point3 X = scene.images[0].UnprojectPoint(Point2(pixelX(rng), pixelY(rng)), depth(rng));
+				Track track(X);
+				for (Image& img : scene.images) {
+					if (img.ID != 0 && !group.seenBy(img.ID))
+						continue;
+					const auto [proj, valid] = img.ProjectPoint(X);
+					if (!valid || !Image8U::isInside(proj, img.GetSize()))
+						continue;
+					img.keypoints.emplace_back(proj, 0.f, 0.f, 10.f);
+					track.observations.emplace_back(img.ID, (uint32_t)img.keypoints.size() - 1);
+				}
+				track.numInliers = (uint8_t)track.observations.size();
+				scene.tracks.emplace_back(std::move(track));
+			}
+		}
+		for (IIndex j = 1; j < scene.images.size(); ++j) {
+			ImagePair& pair = scene.pairs.emplace_back(0, j);
+			for (const Track& track : scene.tracks) {
+				uint32_t obs0 = NO_ID, obsJ = NO_ID;
+				for (const auto& obs : track.observations) {
+					if (obs.imageID == 0)
+						obs0 = obs.featureID;
+					else if (obs.imageID == j)
+						obsJ = obs.featureID;
+				}
+				if (obs0 != NO_ID && obsJ != NO_ID)
+					pair.matches.emplace_back(obs0, obsJ);
+			}
+			pair.numFilteredInliers = (int)pair.matches.size();
+			pair.relativePose = scene.images[j] / scene.images[0];
+			pair.relativePose->C /= norm(pair.relativePose->C); // a relative pose has no scale
+			pair.E = ImagePair::ComposeEssentialMatrix(pair.relativePose.value());
+			pair.F = ImagePair::ComposeFundamentalMatrix(pair.E.value(), scene.images[0].GetK(), scene.images[j].GetK());
+			pair.weightSpatial = 1.f;
+			pair.weightConnectivity = 1.f;
+		}
+		scene.status.nCalibratedImages = scene.images.size();
+	};
+	const auto runStar = [&](Scene& scene, const std::vector<REAL>& sides, const std::vector<PointGroup>& groups, const StarInitConfig& cfg) {
+		buildScene(scene, sides, groups);
+		for (Image& img : scene.images)
+			img.InvalidatePose();
+		return StarInitializer::Initialize(scene, cfg);
+	};
+	std::vector<REAL> sides{0};
+	sides.insert(sides.end(), nearSides.begin(), nearSides.end());
+	sides.insert(sides.end(), farSides.begin(), farSides.end());
+	const PointGroup nearPoints{200, 4, 8, [numNear](IIndex v) { return v <= numNear; }};
+	const PointGroup farPoints{500, 400, 800, [](IIndex) { return true; }};
+	// the truth: each view's distance to the reference
+	Scene truth;
+	buildScene(truth, sides, {nearPoints, farPoints});
+	std::vector<REAL> trueDist(truth.images.size());
+	FOREACH(i, truth.images)
+		trueDist[i] = norm(truth.images[i].C);
+	// the premise: by inlier count every far pair passes the star's floor, a ratio of the mean of the
+	// three heaviest pairs
+	{
+		std::vector<int> inliers;
+		for (const ImagePair& pair : truth.pairs)
+			inliers.push_back(pair.numFilteredInliers);
+		std::sort(inliers.begin(), inliers.end(), std::greater<int>());
+		const int meanTop = (inliers[0] + inliers[1] + inliers[2]) / 3;
+		const int floorInliers = ROUND2INT<int>(meanTop * StarInitConfig().ratioInliersFilter);
+		for (IIndex j = numNear + 1; j < truth.images.size(); ++j) {
+			const int numInliers = truth.pairs[j-1].numFilteredInliers;
+			if (numInliers < floorInliers) {
+				VERBOSE("StarEvidenceTest FAILED: far pair (0,%u) has %d inliers, under the star's floor of %d; the scene does not set the by-count trap", j, numInliers, floorInliers);
+				return false;
+			}
+		}
+	}
+	// by evidence only the near views enter the star, at consistent distances
+	StarInitConfig cfg;
+	cfg.refineFocalLength = false;
+	Scene byEvidence;
+	if (!runStar(byEvidence, sides, {nearPoints, farPoints}, cfg)) {
+		VERBOSE("StarEvidenceTest FAILED: the star by evidence did not initialize");
+		return false;
+	}
+	REAL minRatio = FLT_MAX, maxRatio = 0;
+	for (IIndex v = 1; v < byEvidence.images.size(); ++v) {
+		const bool bNear = v <= numNear;
+		if (byEvidence.images[v].HasPose() != bNear) {
+			VERBOSE("StarEvidenceTest FAILED: %s view %u %s the star by evidence", bNear ? "near" : "far", v, bNear ? "is not in" : "is in");
+			return false;
+		}
+		if (bNear) {
+			const REAL ratio = norm(byEvidence.images[v].C) / trueDist[v];
+			minRatio = MINF(minRatio, ratio);
+			maxRatio = MAXF(maxRatio, ratio);
+		}
+	}
+	if ((maxRatio - minRatio) > 0.01 * minRatio) {
+		VERBOSE("StarEvidenceTest FAILED: the near views' distances to the reference span %.2f%% of one scale; expected 1%%",
+			(maxRatio / minRatio - 1) * 100);
+		return false;
+	}
+	// no evidence: without the near points no pair measures a distance, so there is no star
+	{
+		Scene noEvidence;
+		LogCapture log;
+		if (runStar(noEvidence, sides, {farPoints}, cfg)) {
+			VERBOSE("StarEvidenceTest FAILED: a star was built from pairs none of which measures a distance");
+			return false;
+		}
+		if (!log.Contains("insufficient initial views")) {
+			VERBOSE("StarEvidenceTest FAILED: the star without evidence did not fail for want of initial views:\n%s", log.text.c_str());
+			return false;
+		}
+	}
+	// the keyframe extractor's configuration: the defaults and three views
+	StarInitConfig keyframeCfg;
+	keyframeCfg.minViews = 3;
+	Scene keyframes;
+	if (!runStar(keyframes, sides, {nearPoints, farPoints}, keyframeCfg)) {
+		VERBOSE("StarEvidenceTest FAILED: the star of the keyframe extractor's configuration did not initialize");
+		return false;
+	}
+	for (IIndex v = 1; v <= numNear; ++v) {
+		if (!keyframes.images[v].HasPose()) {
+			VERBOSE("StarEvidenceTest FAILED: near view %u is not in the star of the keyframe extractor's configuration", v);
+			return false;
+		}
+	}
+	// a floor that keeps fewer neighbours than the star needs but some: the star goes on with them
+	{
+		StarInitConfig floorCfg(cfg);
+		floorCfg.ratioInliersFilter = 0.275f;
+		Scene kept;
+		LogCapture log;
+		if (!runStar(kept, sides, {nearPoints, farPoints}, floorCfg)) {
+			VERBOSE("StarEvidenceTest FAILED: the star did not go on with the two neighbours the floor keeps:\n%s", log.text.c_str());
+			return false;
+		}
+		for (IIndex v = 1; v <= numNear; ++v) {
+			const bool bKept = v <= 2;
+			if (kept.images[v].HasPose() != bKept) {
+				VERBOSE("StarEvidenceTest FAILED: near view %u %s the star of the floor that keeps two", v, bKept ? "is not in" : "is in");
+				return false;
+			}
+		}
+	}
+	// near-duplicate burst: the floor keeps no wider view (the known limit of the floor), the star is
+	// refused there and not at its triangulation
+	const unsigned numBurst = 3;
+	const std::vector<REAL> burstSides{0, 0.02, 0.03, 0.04, 0.8, 1.0, 1.2, 1.5};
+	const PointGroup widePoints{200, 4, 8, [numBurst](IIndex v) { return v > numBurst; }};
+	const PointGroup burstPoints{2500, 400, 800, [numBurst](IIndex v) { return v <= numBurst; }};
+	const PointGroup closePoints{12, 0.3, 0.6, [numBurst](IIndex v) { return v <= numBurst; }};
+	{
+		Scene burst;
+		LogCapture log;
+		if (runStar(burst, burstSides, {widePoints, farPoints, burstPoints, closePoints}, cfg)) {
+			VERBOSE("StarEvidenceTest FAILED: a star was built although the floor keeps no wider view beside a burst of near-duplicate frames");
+			return false;
+		}
+		if (!log.Contains("insufficient initial views (0 < ") || log.Contains("insufficient triangulated tracks")) {
+			VERBOSE("StarEvidenceTest FAILED: the star beside a burst of near-duplicate frames was not refused by the floor with \"insufficient initial views (0 < \":\n%s", log.text.c_str());
+			return false;
+		}
+	}
+	VERBOSE("StarEvidenceTest PASSED: %u far views left out of the star by evidence, near distances within %.3f%%, no star without evidence, "
+		"the keyframe configuration initializes, the star goes on with the neighbours the floor keeps, a burst of %u near-duplicate frames that lifts the floor above every wider view is refused at the floor (%s)",
+		numFar, (maxRatio / minRatio - 1) * 100, numBurst, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
 
 namespace {
 

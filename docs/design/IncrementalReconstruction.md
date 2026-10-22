@@ -38,11 +38,23 @@ weighted inliers times the share of its track-forming matches whose ray angle at
 `StarInitConfig::evidenceMinAngle` (`ImagePair::ComputeShareAboveAngle`; `Scene::ReconstructHierarchical`
 sets it to the reconstruction's `minAngleThreshold`, 1.5 degrees by default, the bar the track filter
 applies later). A pair without evidence is no arm of the star, and the neighbours are sorted by evidence
-and kept above `ratioInliersFilter` (0.2) of the mean raw inlier count of the three heaviest, up to
-`maxViews`. A view that shares only far points with the reference (a skyline, a building across the street)
-has inliers by the hundreds and a unit baseline that guesses its distance at the scale of the
-near views, and the star it enters fixes a distance no match backs: it is left to the resection, which
-registers it from the model's own points once it sees some.
+and kept when their evidence reaches `ratioInliersFilter` (0.2) of the mean inlier count of the three
+heaviest candidates, up to `maxViews`. A star with fewer than `minViews - 1` neighbours that have
+evidence is refused ("insufficient initial views") before the floor is applied; a floor that keeps none
+refuses it there too ("insufficient initial views (0 < ...)"), where it would otherwise fail at its
+triangulation ("insufficient triangulated tracks (0)"), and one that keeps at least one goes on with the
+neighbours it keeps, however few. This is the floor as it was measured, and it has a known limit: it is
+set by inlier counts and compared with evidence, so a burst of near-duplicate frames (many inliers, a
+dozen that fix a distance) can lift it above the evidence of every wider neighbour, and the star then
+fails. A floor in the units of evidence keeps those neighbours but also admits low-evidence views, the
+ones the star evidence keeps out: the stars of every sub-scene grew (5992d620 16 to 22, 14 to 19 and 9 to
+12 views; Outdoor_004 9 to 18, 22 to 37, in all 8), the poses moved by 0.35 degrees, ten times the noise
+of the same build, and the F1 fell (0.8113 to 0.8067; Outdoor_004 0.7772 to 0.7720); it is not used.
+
+A view that shares only far points with the reference (a skyline, a building across the street) has
+inliers by the hundreds and a unit baseline that guesses its distance at the scale of the near views, and
+the star it enters fixes a distance no match backs: it is left to the resection, which registers it from
+the model's own points once it sees some.
 
 The star initializer refines the focal length alone, in its own small bundle adjustment
 (`StarInitConfig::refineFocalLength`, default true), leaving every distortion term fixed: a star of a
