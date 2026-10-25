@@ -11366,8 +11366,8 @@ bool ResectionWeakEvidenceTest()
 	}
 	const size_t at4 = LogFirstAttempt(log, 4, true), at6 = LogFirstAttempt(log, 6, true), at7 = LogFirstAttempt(log, 7, true);
 	if (!(at6 < at7 && at7 < at4) || LogFirstAttempt(log, 4, false) != String::npos) {
-		VERBOSE("ResectionWeakEvidenceTest FAILED: image 4 was not tried after images 6 and 7, then 7, by their registered pair "
-			"weight (20 against 300 and 200)");
+		VERBOSE("ResectionWeakEvidenceTest FAILED: images 6, 7 and 4 were not registered in that order (registered pair "
+			"weights 300, 200 and 20), or image 4 failed an attempt");
 		return false;
 	}
 
@@ -11455,7 +11455,7 @@ bool ResectionNextImageOrderTest()
 	return true;
 }
 
-// A round tries the candidates down the list until one registers, the last one too: eight cameras of
+// A round tries the candidates down the list until one registers, the last one too: seven cameras of
 // the arc, images 0-3 registered with 150 tracks; images 4 and 5 hold 100 and 90 correspondences at
 // random pixels (their poses cannot be estimated) and the heaviest pairs to registered images (1000
 // and 500), image 6 holds 25 true correspondences, under 0.3 of image 4's 100, and a pair of 50.
@@ -11465,7 +11465,7 @@ bool ResectionTriesEveryCandidateTest()
 	TD_TIMER_START();
 	std::mt19937 rng(20261025);
 	Scene scene;
-	BuildResectionArc(scene, 8);
+	BuildResectionArc(scene, 7);
 	AddResectionTracks(scene, {0, 1, 2, 3}, 150, rng);
 	AddResectionCorrespondences(scene, 4, 0, 100, rng);
 	AddResectionCorrespondences(scene, 5, 0, 90, rng);
@@ -11474,7 +11474,7 @@ bool ResectionTriesEveryCandidateTest()
 	AddResectionPair(scene, 3, 5, 500);
 	AddResectionPair(scene, 3, 6, 50);
 	const Pose3D truePose6 = static_cast<const Pose3D&>(scene.images[6]);
-	for (IIndex imageID = 4; imageID < 8; ++imageID)
+	for (IIndex imageID = 4; imageID < 7; ++imageID)
 		scene.images[imageID].InvalidatePose();
 	scene.status.nCalibratedImages = 4;
 	TriangulateTracks(scene, false, 4.f, 1.f);
@@ -11510,7 +11510,8 @@ bool ResectionTriesEveryCandidateTest()
 // fails or is refused is not in the model, so the zero it would add says nothing about how well the
 // model fits. Nine cameras of the arc, images 0-3 registered with 150 tracks. Image 4 holds the most
 // correspondences, 30 at the projections its pose gives and 120 at random pixels, a 20% share that
-// the acceptance refuses (minInlierRatio 25%), and it is tried first in every round; images 5-8 hold
+// the acceptance refuses (minInlierRatio 25%), and it is tried first in every round: the scene has no
+// pairs, so every registered pair weight is 0 and the count (150 against 100) decides; images 5-8 hold
 // 70 true and 30 random each, a 70% share, above the 60% bar, and one of them registers in each round.
 // Counting the refusals as zeros, the average falls to 0.35 at the third registration and forces a
 // full adjustment there, a third one besides the two every such resection runs; counting the

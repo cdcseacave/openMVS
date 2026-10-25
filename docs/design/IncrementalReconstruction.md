@@ -113,11 +113,15 @@ A stall -- no image holds `minCorrespondences` (15) correspondences, or every ca
 images registered since the last full bundle adjustment runs that adjustment and tries again: it
 re-triangulates the tracks those registrations made triangulable and moves the model, which can give
 the remaining images the correspondences or the fit they lacked. A stall with nothing registered since
-the last full adjustment ends the resection, which always closes with a full adjustment of its own
-(every track triangulated again, every intrinsic the flags allow, 100 iterations), also when it
-registered nothing since the last one: the whole-scene pass that follows the merge receives the model
-filtered at the final bundle adjustment's tighter bar, and closing it only when it registered an image
-left 8d2f4877 with 146k of its 413k tracks valid where the closing keeps 389k. Over the fourteen test
+the last full adjustment ends the resection. A resection that enters its loop closes with a full
+adjustment of its own (every track triangulated again, every intrinsic the flags allow, 100
+iterations), also when it registered nothing since the last one: the whole-scene pass that follows the
+merge receives the model filtered at the final bundle adjustment's tighter bar, and closing it only when
+it registered an image left 8d2f4877 with 146k of its 413k tracks valid where the closing keeps 389k.
+The model still keeps that 2 px filtering when the whole-scene pass does not run its loop: when the merge
+registered every image (`Scene::Reconstruct` then skips the pass), or when the only unregistered images
+are the ones the weak-image filter withheld for contradicting the model (`ExcludeImages`; the
+resection then returns at once). Over the fourteen test
 captures the order, the loop and the stall retry together leave 112 images unregistered where the count
 order, the 0.3 cut of the count, the deferral and the stop at the first stall left 470 (b68e320e 201 ->
 269 of 269, 5936fac3 393 -> 456, alameda 1690 -> 1731), add no wrong image to any capture, and take 32%

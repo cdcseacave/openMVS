@@ -267,7 +267,7 @@ graph TD
 
 - Function: `Resection::RegisterImages()` — `libs/SFM/Resection.cpp`
 - Input: sub-scene with some initialized poses and tracks
-- Processing: tries, one registration per round, the images holding `minCorrespondences` 2D-3D correspondences in the order of the composite weight of their verified pairs to registered images; a stall runs the full BA and tries again when images were registered since the last one; `RegisterImage()` runs PnP via PoseLib + RANSAC with `ransac.threshold` (4px); new tracks triangulated; local BA every `localBAEvery` (10) images in window of `maxLocalWindow` (25); full BA every `fullBAEvery` (25, 50, 100)
+- Processing: tries, one registration per round, the images holding `minCorrespondences` 2D-3D correspondences in the order of the composite weight of their verified pairs to registered images; a stall runs the full BA and tries again when images were registered since the last one; `RegisterImage()` runs PnP via PoseLib + RANSAC with `ransac.threshold` (8 px); new tracks triangulated; local BA every `localBAEvery` (10) images in window of `maxLocalWindow` (25); full BA every `fullBAEvery` (25, 50, 100)
 - Output: fully calibrated camera poses for all connected images
 - Config: `ResectionConfig::minCorrespondences`, `minInliers`, `localBAEvery`, `fullBAEvery`
 

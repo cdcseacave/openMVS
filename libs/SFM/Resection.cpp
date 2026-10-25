@@ -140,7 +140,7 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 			return weightA > weightB;
 		return unregistered.at(a) > unregistered.at(b);
 	});
-	VERBOSE("Selected %u images, the first with %g registered pair weight and %u visible points",
+	DEBUG_EXTRA("Selected %u images, the first with %g registered pair weight and %u visible points",
 		nextIDs.size(), registeredWeights.at(nextIDs[0]), unregistered.at(nextIDs[0]));
 	return nextIDs;
 }
@@ -474,7 +474,10 @@ bool Resection::RegisterImages()
 				nextID, numInliers, numPoints, scene.status.nCalibratedImages+registeredCount, scene.images.size(), avgInliersRatio.GetAverage() * 100.f);
 			if (!AdjustIfScheduled() &&
 				(n+1 == nextIDs.size() || (config.triangulateEvery > 0 && (lastRegistered.size() % config.triangulateEvery) == 0))) {
-				// Update scene with new points every N registered images, and when one candidate is left untried
+				// Update scene with new points every N registered images, and when one candidate is left
+				// untried: the trigger is kept from the batch loop as it was measured (it read "the batch is
+				// almost exhausted"); with one registration per round it fires only when exactly one untried
+				// candidate is left after the registered image
 				TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold);
 				FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
 			}
@@ -504,10 +507,11 @@ bool Resection::RegisterImages()
 		break;
 	}
 
-	// Full BA to close the resection, always: also when nothing was registered since the last
-	// adjustment, the closing form (every track triangulated again, every intrinsic the flags allow,
-	// more iterations) settles the model the caller is left with, e.g. the model the whole-scene pass
-	// receives filtered at the final bundle adjustment's tighter bar
+	// Full BA to close every resection that entered its loop, also when nothing was registered since
+	// the last adjustment: the closing form (every track triangulated again, every intrinsic the flags
+	// allow, more iterations) settles the model the caller is left with, e.g. the model the
+	// whole-scene pass receives filtered at the final bundle adjustment's tighter bar. A resection
+	// with no image to try returned above without it
 	TriangulateTracks(scene, false, config.maxReprojError, config.minAngleThreshold);
 	config.extendedBAConfig.maxIterations = 100;
 	AdjustRepeated(scene, config.extendedBAConfig, config);

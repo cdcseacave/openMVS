@@ -237,7 +237,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 - **Algorithms:**
   - `SelectNextImages()`: lists every unregistered image holding `minCorrespondences` (15) 2D-3D correspondences, ordered by the composite weight of its verified pairs to registered images (ties by the count)
   - `RegisterImages()`: tries the list down until one image registers and reads it again after each registration; a stall (no candidate, or every candidate failed) runs the full BA and tries again when images were registered since the last one, else ends the loop; always closes with a full BA
-  - `RegisterImage()`: PnP via PoseLib + RANSAC with `ransac.threshold` (4px)
+  - `RegisterImage()`: PnP via PoseLib + RANSAC with `ransac.threshold` (8 px)
   - New tracks triangulated after each registration
   - Local BA every `localBAEvery` (10) images in window of `maxLocalWindow` (25)
   - Full BA every `fullBAEvery` (25, 50, 100 images)
