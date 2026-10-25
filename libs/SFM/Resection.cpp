@@ -100,7 +100,7 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 		}
 	}
 
-	// Fetch image IDs and order by score
+	// Fetch the image IDs with sufficient correspondences
 	IIndexArr nextIDs;
 	for (const auto& it : unregistered)
 		if (it.second >= config.minCorrespondences)
@@ -109,19 +109,39 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 		VERBOSE("warning: no next images with sufficient correspondences");
 		return nextIDs;
 	}
-	nextIDs.Sort([&unregistered](IIndex a, IIndex b) {
-		return unregistered.at(a) > unregistered.at(b);
-	});
 
-	// Select top images with sufficient visible points
-	const unsigned thScore = config.ratioCorrespondences * unregistered.at(nextIDs[0]);
-	for (unsigned i = 1; i < nextIDs.size(); ++i) {
-		if (unregistered.at(nextIDs[i]) < thScore) {
-			nextIDs.resize(i);
-			break;
+	// Order them by the weight of their evidence the model holds: the composite weight of their
+	// valid pairs to registered images. Among the candidates of one moment the one with the most
+	// correspondences is often the one that fails while a less counted one beside it, whose pairs
+	// lie in the model, registers; and every candidate stays in the list, however few its
+	// correspondences against the best one's
+	std::unordered_map<IIndex, float> registeredWeights;
+	registeredWeights.reserve(nextIDs.size());
+	for (IIndex imageID : nextIDs)
+		registeredWeights.emplace(imageID, 0.f);
+	for (const ImagePair& pair : scene.pairs) {
+		const float weight = pair.GetCompositeWeight();
+		if (weight <= 0.f)
+			continue;
+		if (scene.images[pair.ID2].HasPose()) {
+			const auto it = registeredWeights.find(pair.ID1);
+			if (it != registeredWeights.end())
+				it->second += weight;
+		}
+		if (scene.images[pair.ID1].HasPose()) {
+			const auto it = registeredWeights.find(pair.ID2);
+			if (it != registeredWeights.end())
+				it->second += weight;
 		}
 	}
-	VERBOSE("Selected %u images with %u best visible points", nextIDs.size(), unregistered.at(nextIDs[0]));
+	nextIDs.Sort([&registeredWeights, &unregistered](IIndex a, IIndex b) {
+		const float weightA = registeredWeights.at(a), weightB = registeredWeights.at(b);
+		if (weightA != weightB)
+			return weightA > weightB;
+		return unregistered.at(a) > unregistered.at(b);
+	});
+	VERBOSE("Selected %u images, the first with %g registered pair weight and %u visible points",
+		nextIDs.size(), registeredWeights.at(nextIDs[0]), unregistered.at(nextIDs[0]));
 	return nextIDs;
 }
 
@@ -212,22 +232,7 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 	// them, which speaks falsely whenever that single neighbor is itself misplaced. When the pairs
 	// contradict one another they are no witness at all, so the pose is left to the other
 	// acceptance rules and the disagreement is reported.
-	if (config.minRegisteredEvidence > 0.f || config.maxRelativeRotationError > 0.f || config.maxLinkDirectionError > 0.f) {
-		// registered where the evidence is: an image most of whose pair weight lies in images the
-		// model does not hold yet is registered by the few pairs it does hold, and its community then
-		// hangs off the model through them
-		if (config.minRegisteredEvidence > 0.f) {
-			const float share = RegisteredEvidenceShare(imageID);
-			const float bar = config.minRegisteredEvidence * RegisteredImagesFraction();
-			if (share < bar) {
-				DEBUG("warning: deferred the pose of image %u: %u/%u inliers (%.1f%%) and only %.1f%% of its pair weight lies in "
-					"registered images, under the %.1f%% the registered share of the scene asks", imageID, numInliers, n,
-					inlierRatio * 100.f, share * 100.f, bar * 100.f);
-				// a deferral reports no correspondences: it says nothing about how well the model fits this
-				// image, only that its evidence is elsewhere for now
-				return {0, 0, numDescribed};
-			}
-		}
+	if (config.maxRelativeRotationError > 0.f || config.maxLinkDirectionError > 0.f) {
 		std::vector<PoseLink> links;
 		CollectPoseLinks(scene, imageID, links);
 		const PoseLinkQuorum quorum = ComputePoseLinkQuorum(links, config.maxRelativeRotationError, NeighborPose(scene));
@@ -272,35 +277,6 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 
 	static_cast<Pose3D&>(img) = pose;
 	return {numInliers, n, numDescribed};
-}
-
-float Resection::RegisteredEvidenceShare(IIndex imageID) const
-{
-	float registered = 0.f, total = 0.f;
-	for (const ImagePair& pair : scene.pairs) {
-		if (pair.ID1 != imageID && pair.ID2 != imageID)
-			continue;
-		const float weight = pair.GetCompositeWeight();
-		if (weight <= 0.f)
-			continue;
-		total += weight;
-		if (scene.images[pair.ID1 == imageID ? pair.ID2 : pair.ID1].HasPose())
-			registered += weight;
-	}
-	return total > 0.f ? registered / total : 1.f;
-}
-
-float Resection::RegisteredImagesFraction() const
-{
-	unsigned numImages = 0, numRegistered = 0;
-	for (const Image& img : scene.images) {
-		if (!img.HasCamera())
-			continue;
-		++numImages;
-		if (img.HasPose())
-			++numRegistered;
-	}
-	return numImages > 0 ? numRegistered / (float)numImages : 0.f;
 }
 
 IIndexArr Resection::BuildLocalWindow(const IIndexArr& imageIDs) const
@@ -427,28 +403,31 @@ bool Resection::RegisterImages()
 	unsigned sinceFullBA = 0;
 	IIndexArr lastRegistered;
 	TRunningAverage<float, 10> avgInliersRatio;
-	// Run the bundle adjustment the registration count has come due for, if any; true when one ran,
-	// in which case the selection of the next images has to start over
+	// Full BA of the images registered since the last one;
+	// filter first so the observations of the images registered since the last filtering enter the
+	// inlier prefix the BA iterates, then re-triangulate only the tracks left without a valid
+	// position (real outliers and never-triangulated tracks): a track that merely gained a newly
+	// valid view keeps the position the previous BA refined instead of being reset to a linear solve. The
+	// adjustment fits a wider bar than the model is held to and repeats while what it fits keeps changing
+	const auto AdjustFull = [&]() {
+		FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+		TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold);
+		const bool refineExtended = config.minRefineExtIntrs > 0 &&
+			scene.status.nCalibratedImages + registeredCount >= config.minRefineExtIntrs;
+		AdjustRepeated(scene, refineExtended ? config.extendedBAConfig : config.fullBAConfig, config);
+		lastRegistered.clear();
+		avgInliersRatio.Clear();
+		sinceFullBA = 0;
+		if (nBA + 1 < config.fullBAEvery.size())
+			++nBA;
+	};
+	// Run the bundle adjustment the registration count has come due for, if any; true when one ran
 	const auto AdjustIfScheduled = [&]() {
 		if ((config.fullBAEvery[nBA] > 0 && sinceFullBA >= config.fullBAEvery[nBA]) ||
 			(config.avgInliersRatioForceBA > 0.f && sinceFullBA >= config.minImagesForceBA &&
 			 avgInliersRatio.GetAverage() < config.avgInliersRatioForceBA)) {
-			// Full BA every N registered images;
-			// filter first so the observations of the images registered since the last filtering enter the
-			// inlier prefix the BA iterates, then re-triangulate only the tracks left without a valid
-			// position (real outliers and never-triangulated tracks): a track that merely gained a newly
-			// valid view keeps the position the previous BA refined instead of being reset to a linear solve. The
-			// adjustment fits a wider bar than the model is held to and repeats while what it fits keeps changing
-			FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
-			TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold);
-			const bool refineExtended = config.minRefineExtIntrs > 0 &&
-				scene.status.nCalibratedImages + registeredCount >= config.minRefineExtIntrs;
-			AdjustRepeated(scene, refineExtended ? config.extendedBAConfig : config.fullBAConfig, config);
-			lastRegistered.clear();
-			avgInliersRatio.Clear();
-			sinceFullBA = 0;
-			if (nBA + 1 < config.fullBAEvery.size())
-				++nBA;
+			// Full BA every N registered images
+			AdjustFull();
 			return true;
 		}
 		if (config.localBAEvery > 0 && lastRegistered.size() >= config.localBAEvery) {
@@ -463,16 +442,11 @@ bool Resection::RegisterImages()
 		}
 		return false;
 	};
+	// One registration per round: the candidates are tried down the list until one registers, and
+	// the next round orders them again on the model it left
 	while (!unregistered.empty()) {
 		IIndexArr nextIDs = SelectNextImages(unregistered);
-		if (nextIDs.empty()) {
-			VERBOSE("warning: no more connected images to register, %u images remain", unregistered.size());
-			for (const auto& it : unregistered) {
-				DEBUG_EXTRA("\timage %u ('%s'): %u 2D-3D correspondences (min %u)", it.first,
-					Util::getFileName(scene.images[it.first].fileName).c_str(), it.second, config.minCorrespondences);
-			}
-			break;
-		}
+		const IIndex numCandidates = nextIDs.size();
 		const unsigned startRegisteredCount = registeredCount;
 		for (IIndex n = 0; n < nextIDs.size(); ) {
 			// Attempt to register next image
@@ -498,28 +472,45 @@ bool Resection::RegisterImages()
 			++n;
 			DEBUG_EXTRA("\tImage %u registered: %u/%u correspondences (%u/%u images, %.2f%% avg normalized inliers ratio)",
 				nextID, numInliers, numPoints, scene.status.nCalibratedImages+registeredCount, scene.images.size(), avgInliersRatio.GetAverage() * 100.f);
-			if (AdjustIfScheduled()) {
-				break; // restart selection of next images
-			} else if (n+1 == nextIDs.size() || (config.triangulateEvery > 0 && (lastRegistered.size() % config.triangulateEvery) == 0)) {
-				// Update scene with new points every N registered images
+			if (!AdjustIfScheduled() &&
+				(n+1 == nextIDs.size() || (config.triangulateEvery > 0 && (lastRegistered.size() % config.triangulateEvery) == 0))) {
+				// Update scene with new points every N registered images, and when one candidate is left untried
 				TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold);
 				FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
-				break; // restart selection of next images
 			}
+			break; // restart selection of next images
 		}
-		if (registeredCount == startRegisteredCount) {
+		if (registeredCount > startRegisteredCount)
+			continue;
+		// Stall: no image holds enough correspondences, or every candidate failed. The full adjustment
+		// of the images registered since the last one re-triangulates the tracks they made triangulable
+		// and moves the model, which can give the remaining images the correspondences or the fit they
+		// lacked, so it runs and the resection tries again; a stall with nothing registered since the
+		// last full adjustment ends the resection
+		if (sinceFullBA > 0) {
+			DEBUG("Resection stalled at %u registered images, full adjustment and another pass", scene.status.nCalibratedImages+registeredCount);
+			AdjustFull();
+			continue;
+		}
+		if (numCandidates == 0) {
+			VERBOSE("warning: no more connected images to register, %u images remain", unregistered.size());
+			for (const auto& it : unregistered) {
+				DEBUG_EXTRA("\timage %u ('%s'): %u 2D-3D correspondences (min %u)", it.first,
+					Util::getFileName(scene.images[it.first].fileName).c_str(), it.second, config.minCorrespondences);
+			}
+		} else {
 			VERBOSE("warning: no images were registered in last iteration, stopping resection, %u images remain", unregistered.size());
-			break;
 		}
+		break;
 	}
 
-	// Full BA to close the resection, unless the last one scheduled inside the loop already
-	// covers every image registered since (nothing left for a further adjustment to refine)
-	if (sinceFullBA > 0) {
-		TriangulateTracks(scene, false, config.maxReprojError, config.minAngleThreshold);
-		config.extendedBAConfig.maxIterations = 100;
-		AdjustRepeated(scene, config.extendedBAConfig, config);
-	}
+	// Full BA to close the resection, always: also when nothing was registered since the last
+	// adjustment, the closing form (every track triangulated again, every intrinsic the flags allow,
+	// more iterations) settles the model the caller is left with, e.g. the model the whole-scene pass
+	// receives filtered at the final bundle adjustment's tighter bar
+	TriangulateTracks(scene, false, config.maxReprojError, config.minAngleThreshold);
+	config.extendedBAConfig.maxIterations = 100;
+	AdjustRepeated(scene, config.extendedBAConfig, config);
 
 	// Update scene status
 	scene.status.nCalibratedImages += registeredCount;

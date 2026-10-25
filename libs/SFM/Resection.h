@@ -40,7 +40,9 @@ struct SFM_API RansacOptions
  */
 struct SFM_API ResectionConfig
 {
-	unsigned minCorrespondences{15};    // Minimum 2D-3D correspondences to attempt resection
+	unsigned minCorrespondences{15};    // Minimum 2D-3D correspondences to attempt resection; every image holding them
+	                                    // is a candidate, tried in the order of the composite weight of its verified
+	                                    // pairs to registered images
 	unsigned minInliers{12};            // Minimum inliers to accept a pose
 	float minInlierRatio{0.25f};        // Minimum share of the 2D-3D correspondences that must be inliers for a pose to
 	                                    // be accepted; a smaller consensus can agree on a pose that is nowhere near the
@@ -64,17 +66,6 @@ struct SFM_API ResectionConfig
 	                                    // (image 581, 29.1 degrees off at an 8.9-degree ray angle, 18.7-degree
 	                                    // tolerance) is refused, where 5 degrees would have given it 29.5 and passed
 	                                    // it.
-	float minRegisteredEvidence{0.1f};  // A pose is accepted only when the composite weight of the image's
-	                                    // pairs to registered images is at least this share of all its pairs' weight,
-	                                    // scaled by the fraction of the scene's images that are registered: early on
-	                                    // most evidence is expected to lie ahead, late on an image whose evidence is
-	                                    // almost all in unregistered images belongs to a part the model barely
-	                                    // touches, and registering it there registers it where its evidence is not.
-	                                    // A deferred image is retried as its neighbours come in, but a round in which
-	                                    // every candidate is deferred ends this sub-scene's resection: only the
-	                                    // whole-scene pass that follows the merge sees the image again, with its
-	                                    // neighbours registered, and a community that stays unregistered as a whole is
-	                                    // left out (0 = disabled)
 	unsigned maxLocalWindow{25};        // Max images in local BA window (0 = all neighbors)
 	unsigned triangulateEvery{0};       // Run triangulation every N registered images (0 = disabled)
 	unsigned localBAEvery{10};          // Run local BA every N registered images (0 = disabled)
@@ -102,7 +93,6 @@ struct SFM_API ResectionConfig
 	static constexpr unsigned fullBARepeatMinObservations = 100;
 	unsigned minRefineExtIntrs{100};    // Min number of registered images to refine extended intrinsics in full BA (0 = disabled)
 
-	float ratioCorrespondences{0.3f};   // Min ratio of 2D-3D correspondences to best next image to accept for bundle resection (0 = disabled)
 	float avgInliersRatioForceBA{0.6f}; // Minimum resection average inliers ratio to force full BA, averaged over the
 	                                    // registered images alone (an attempt that failed or was refused adds nothing;
 	                                    // 0 = disabled)
@@ -236,6 +226,11 @@ public:
 
 	/**
 	 * @brief Register all remaining images connected to current reconstruction
+	 *
+	 * Each round tries the candidates of SelectNextImages down the list until one registers; the
+	 * next round reads the list again. A stall (no candidate, or every candidate failed) with images
+	 * registered since the last full adjustment runs that adjustment and tries again; any other stall
+	 * ends the loop. The resection always closes with a full adjustment.
 	 * @return true if at least one image was registered
 	 */
 	bool RegisterImages();
@@ -262,15 +257,10 @@ private:
 
 	using IIndexScores = std::unordered_map<IIndex,unsigned>;
 
+	// Count each unregistered image's 2D-3D correspondences into unregistered and list the images
+	// holding minCorrespondences of them, the heaviest registered pair weight first (the composite
+	// weight of the image's valid pairs to registered images; ties by the count)
 	IIndexArr SelectNextImages(IIndexScores& unregistered) const;
-
-	// Composite weight of the image's valid pairs to registered images as a share of that of all its
-	// valid pairs; 1 for an image with no valid pair. A pair to an image the caller withheld
-	// (ExcludeImages) stays in the denominator: the model rejected that evidence rather than gaining
-	// it, and the share is read against everything the image has
-	float RegisteredEvidenceShare(IIndex imageID) const;
-	// Share of the scene's images holding a camera that are registered
-	float RegisteredImagesFraction() const;
 
 	IIndexArr BuildLocalWindow(const IIndexArr& imageIDs) const;
 };

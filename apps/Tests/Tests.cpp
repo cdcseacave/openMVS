@@ -427,9 +427,15 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::ResectionLinkDirectionTest())
 				return false;
-			if (!SFM::ResectionEvidenceShareTest())
+			if (!SFM::ResectionWeakEvidenceTest())
+				return false;
+			if (!SFM::ResectionNextImageOrderTest())
+				return false;
+			if (!SFM::ResectionTriesEveryCandidateTest())
 				return false;
 			if (!SFM::ResectionRefusedAverageTest())
+				return false;
+			if (!SFM::ResectionStallRetryTest())
 				return false;
 			if (!SFM::ResectionInlierBarTest())
 				return false;

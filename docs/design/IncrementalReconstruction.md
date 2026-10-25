@@ -67,8 +67,16 @@ safely.
 
 ## The resection
 
-Candidates are the unregistered images with the most 2D-3D correspondences to the model, plus every image
-within `ratioCorrespondences` (0.3) of the best of them (`SelectNextImages`), solved by bearing-vector
+Candidates are every unregistered image holding at least `minCorrespondences` (15) 2D-3D correspondences
+to the model, ordered by the weight of the evidence the model already holds for it: the composite weight
+of its verified pairs to registered images (`SelectNextImages`; ties by the correspondence count). Among
+the candidates of one moment the one with the most correspondences is often the one that fails while a
+less counted one beside it, whose pairs lie in the model, registers: over the attempts judged at the event
+on the fourteen test captures, of two attempts of the same round with different outcomes this weight puts
+the right one first in 68% of the cases, the correspondence count in 32%. A round tries the candidates
+down the list until one registers, and the next round orders them again on the model that registration
+left (COLMAP's loop); no candidate is cut for holding few correspondences against the best one. Each is
+solved by bearing-vector
 PnP (PoseLib RANSAC) with an inlier bar of `ransac.threshold` (8 px, twice `maxReprojError`). The bar is
 set for the dense (warp-sampled) correspondences, which land several pixels off on a full-resolution
 image (a median of 6 px, against 1 px for a detected keypoint) and make up most of the correspondences of
@@ -95,19 +103,26 @@ near-duplicate one (rays under 2 degrees, its own baseline unreliable) fixes no 
 of the count; the pose is refused only when the links whose direction disagrees outweigh, by weighted
 inliers, the ones that agree, so one misplaced neighbour cannot refuse it alone.
 
-Before either link check runs, every pose first has to be registered where its
-evidence actually is: `minRegisteredEvidence` (0.1) requires the composite weight of the image's pairs
-into already-registered images to reach a tenth of the registered share of the scene's images, out of the
-weight of all its pairs -- a bar that rises as the model fills in, so an image is not hung off the model
-by the few pairs it happens to have when most of its evidence still lies beyond the model's edge. An
-image that misses the bar is not refused outright, only deferred -- retried once more of its neighbours
-have registered, or picked up by the tail pass, which sees every pair. A round in which every
-candidate is deferred ends this sub-scene's resection there:
-only the whole-scene pass that follows the merge sees those images again, with their neighbours
-registered, and a community that stays unregistered as a whole is left out.
+A pose that passes these checks is accepted however little of the image's evidence the model holds; the
+order above already tries such an image after the candidates whose pairs lie in the model. (A deferral
+that threw away a pose whose registered share of the pair weight was under a tenth of the registered
+share of the scene's images only cost images: the under-coupled sub-scene it kept out of Outdoor_004 is
+refused by the merge, and its images come in right in the whole-scene pass.)
 
-The resection stops when no image reaches `minCorrespondences` (15), or when an iteration's candidates
-all fail to register.
+A stall -- no image holds `minCorrespondences` (15) correspondences, or every candidate failed -- with
+images registered since the last full bundle adjustment runs that adjustment and tries again: it
+re-triangulates the tracks those registrations made triangulable and moves the model, which can give
+the remaining images the correspondences or the fit they lacked. A stall with nothing registered since
+the last full adjustment ends the resection, which always closes with a full adjustment of its own
+(every track triangulated again, every intrinsic the flags allow, 100 iterations), also when it
+registered nothing since the last one: the whole-scene pass that follows the merge receives the model
+filtered at the final bundle adjustment's tighter bar, and closing it only when it registered an image
+left 8d2f4877 with 146k of its 413k tracks valid where the closing keeps 389k. Over the fourteen test
+captures the order, the loop and the stall retry together leave 112 images unregistered where the count
+order, the 0.3 cut of the count, the deferral and the stop at the first stall left 470 (b68e320e 201 ->
+269 of 269, 5936fac3 393 -> 456, alameda 1690 -> 1731), add no wrong image to any capture, and take 32%
+more time (a refused candidate is attempted again after every registration, and every retry is a full
+adjustment).
 
 Local bundle adjustment (`localBAEvery`, every 10 registrations, a fixed window of `maxLocalWindow`
 neighbours, never refining intrinsics) avoids a global solve every step. Full bundle adjustment runs
@@ -190,8 +205,8 @@ scene the tier verdicts and the peel do not separate.
 | `--ba-pair-sigma F` | `1` | relative-pose residual rotation sigma, in degrees (the baseline direction at twice that; 0 disables the residuals) |
 
 The resection's acceptance parameters (`minInlierRatio`, `minInliersAbsolute`,
-`maxRelativeRotationError`, `maxLinkDirectionError`,
-`minRegisteredEvidence`) have no flags; their defaults live in `ResectionConfig`.
+`maxRelativeRotationError`, `maxLinkDirectionError`) have no flags; their defaults live in
+`ResectionConfig`.
 
 ## Limitations
 

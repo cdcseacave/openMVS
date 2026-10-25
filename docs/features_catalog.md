@@ -235,7 +235,8 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 
 - **Files:** `libs/SFM/Resection.h`, `libs/SFM/Resection.cpp`
 - **Algorithms:**
-  - `SelectNextImages()`: ranks unregistered images by 2D-3D overlap score
+  - `SelectNextImages()`: lists every unregistered image holding `minCorrespondences` (15) 2D-3D correspondences, ordered by the composite weight of its verified pairs to registered images (ties by the count)
+  - `RegisterImages()`: tries the list down until one image registers and reads it again after each registration; a stall (no candidate, or every candidate failed) runs the full BA and tries again when images were registered since the last one, else ends the loop; always closes with a full BA
   - `RegisterImage()`: PnP via PoseLib + RANSAC with `ransac.threshold` (4px)
   - New tracks triangulated after each registration
   - Local BA every `localBAEvery` (10) images in window of `maxLocalWindow` (25)

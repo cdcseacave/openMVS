@@ -428,17 +428,27 @@ bool ResectionAcceptanceTest();
 // fixes no direction and a small-baseline pair forgives a wide error (PoseLink.h PairDisagreement)
 bool ResectionLinkDirectionTest();
 
-// A weakly supported pose is registered only where the image's evidence is: the composite weight
-// of its pairs to registered images must be a share of all its pairs' weight at least
-// minRegisteredEvidence times the fraction of the scene's images that are registered
-// (ResectionConfig::minRegisteredEvidence); the deferral that follows reports no correspondences
-bool ResectionEvidenceShareTest();
+// The resection's next image is the candidate whose verified pairs to registered images weigh most
+// (their composite weight), among every image holding ResectionConfig::minCorrespondences 2D-3D
+// correspondences, whatever its share of the best correspondence count; the candidates are tried
+// down that list until one registers, and the list is read again after each registration. An image
+// whose evidence lies almost entirely in unregistered images is tried last and registered all the
+// same, its pose right
+bool ResectionWeakEvidenceTest();
+bool ResectionNextImageOrderTest();
+bool ResectionTriesEveryCandidateTest();
 
 // The average inlier ratio that forces a full bundle adjustment when it falls under
 // ResectionConfig::avgInliersRatioForceBA reads the registered images alone: an image whose pose is
 // refused adds nothing to it, so the refusals of one candidate force no full adjustment while the
 // images registered after it hold the average above the bar
 bool ResectionRefusedAverageTest();
+
+// A resection that stalls -- no image holds minCorrespondences correspondences, or every candidate
+// failed -- with images registered since its last full adjustment runs that adjustment and tries
+// again, and stops at a stall that follows no registration; it always closes with its full
+// adjustment, even when it registered nothing since the last one
+bool ResectionStallRetryTest();
 
 // The resection's inlier bar admits a correspondence measured with the precision of a warp-sampled
 // (dense) keypoint on a full-resolution image, several pixels off its projection, and not only one

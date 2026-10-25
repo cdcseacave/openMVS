@@ -216,7 +216,7 @@ graph TD
     F --> F1[SelectReferenceView: highest connectivity]
     F1 --> F2[EstimateGlobalScale from multiple baselines]
     F2 --> G[Resection::RegisterImages<br/>Resection.cpp]
-    G --> G1[SelectNextImages: best 2D-3D overlap]
+    G --> G1[SelectNextImages: heaviest registered pair weight]
     G1 --> G2[RegisterImage: PnP + RANSAC via PoseLib]
     G2 --> G3{Periodic?}
     G3 -->|localBAEvery| G4[Local BA in window]
@@ -267,7 +267,7 @@ graph TD
 
 - Function: `Resection::RegisterImages()` — `libs/SFM/Resection.cpp`
 - Input: sub-scene with some initialized poses and tracks
-- Processing: iterates selecting next best image by 2D-3D overlap score; `RegisterImage()` runs PnP via PoseLib + RANSAC with `ransac.threshold` (4px); new tracks triangulated; local BA every `localBAEvery` (10) images in window of `maxLocalWindow` (25); full BA every `fullBAEvery` (25, 50, 100)
+- Processing: tries, one registration per round, the images holding `minCorrespondences` 2D-3D correspondences in the order of the composite weight of their verified pairs to registered images; a stall runs the full BA and tries again when images were registered since the last one; `RegisterImage()` runs PnP via PoseLib + RANSAC with `ransac.threshold` (4px); new tracks triangulated; local BA every `localBAEvery` (10) images in window of `maxLocalWindow` (25); full BA every `fullBAEvery` (25, 50, 100)
 - Output: fully calibrated camera poses for all connected images
 - Config: `ResectionConfig::minCorrespondences`, `minInliers`, `localBAEvery`, `fullBAEvery`
 

@@ -11121,25 +11121,40 @@ void BuildResectionDirectionScene(Scene& scene, Pose3D& truePose, unsigned numTu
 	TriangulateTracks(scene, false, 4.f, 1.f);
 }
 
-// The arc scene of the evidence case: numImages cameras, images 0-3 registered with 150
+// The arc scene of the weak-evidence case: eight cameras, images 0-3 registered with 150
 // triangulated tracks, image 4 unregistered with the 40 true and 60 random correspondences of the
 // direction case, joined to registered image 3 by a pair of 20 weighted inliers and to unregistered
 // image 5 by one of 1000: its evidence lies almost entirely in an image the model does not hold
-// yet. Images 5 and beyond are unregistered.
-void BuildResectionEvidenceScene(Scene& scene, Pose3D& truePose, unsigned numImages, std::mt19937& rng)
+// yet, and image 5 holds no correspondence. Images 6 and 7 hold 30 true correspondences each and
+// are joined to registered images by pairs of 300 and 200 weighted inliers.
+void BuildResectionEvidenceScene(Scene& scene, std::vector<Pose3D>& truePoses, std::mt19937& rng)
 {
-	ASSERT(numImages >= 6);
-	BuildResectionArc(scene, numImages);
-	truePose = static_cast<const Pose3D&>(scene.images[4]);
+	BuildResectionArc(scene, 8);
 	AddResectionTracks(scene, {0, 1, 2, 3}, 150, rng);
 
 	AddResectionCorrespondences(scene, 4, RESECTION_TRUE_CORRESPONDENCES, RESECTION_NOISE_CORRESPONDENCES, rng);
+	AddResectionCorrespondences(scene, 6, 30, 0, rng);
+	AddResectionCorrespondences(scene, 7, 30, 0, rng);
 	AddResectionPair(scene, 3, 4, 20);
 	AddResectionPair(scene, 4, 5, 1000);
-	for (IIndex i = 4; i < numImages; ++i)
+	AddResectionPair(scene, 2, 6, 300);
+	AddResectionPair(scene, 3, 7, 200);
+	truePoses.clear();
+	for (const Image& img : scene.images)
+		truePoses.push_back(static_cast<const Pose3D&>(img));
+	for (IIndex i = 4; i < scene.images.size(); ++i)
 		scene.images[i].InvalidatePose();
 	scene.status.nCalibratedImages = 4;
 	TriangulateTracks(scene, false, 4.f, 1.f);
+}
+
+// Where the log records the first attempt that registered or failed the given image (String::npos
+// when there was none): the order of two attempts is the order of these positions
+size_t LogFirstAttempt(const LogCapture& log, IIndex imageID, bool registered)
+{
+	return log.text.find(registered ?
+		String::FormatString("Image %u registered:", imageID) :
+		String::FormatString("failed to register image %u (", imageID));
 }
 
 } // namespace
@@ -11321,68 +11336,172 @@ bool ResectionLinkDirectionTest()
 	return true;
 }
 
-bool ResectionEvidenceShareTest()
+// An image whose evidence lies almost entirely in unregistered images is registered all the same,
+// once the candidates with more of their evidence in the model have had their turn: the next image
+// is the one whose verified pairs to registered images weigh most, so image 4, joined to the model
+// by a pair of 20 weighted inliers (2% of its pair weight), is tried after images 6 and 7 (300 and
+// 200), although it holds the most correspondences (100 against 30), and its pose, right, enters
+// the model however little of its evidence the model holds.
+bool ResectionWeakEvidenceTest()
 {
 	TD_TIMER_START();
+	std::mt19937 rng(20261025);
+	Scene scene;
+	std::vector<Pose3D> truePoses;
+	BuildResectionEvidenceScene(scene, truePoses, rng);
+	LogCapture log;
+	Resection resection(scene, ResectionConfig());
+	resection.RegisterImages();
+	for (IIndex imageID : {IIndex(4), IIndex(6), IIndex(7)}) {
+		if (!scene.images[imageID].HasPose()) {
+			VERBOSE("ResectionWeakEvidenceTest FAILED: image %u was left out%s", imageID, imageID == 4 ?
+				"; its pose is right, only 2% of its pair weight lies in registered images" : "");
+			return false;
+		}
+		if (RotationErrorDeg(scene.images[imageID].R, truePoses[imageID].R) > 1.0) {
+			VERBOSE("ResectionWeakEvidenceTest FAILED: image %u was registered %.2f deg off the truth", imageID,
+				RotationErrorDeg(scene.images[imageID].R, truePoses[imageID].R));
+			return false;
+		}
+	}
+	const size_t at4 = LogFirstAttempt(log, 4, true), at6 = LogFirstAttempt(log, 6, true), at7 = LogFirstAttempt(log, 7, true);
+	if (!(at6 < at7 && at7 < at4) || LogFirstAttempt(log, 4, false) != String::npos) {
+		VERBOSE("ResectionWeakEvidenceTest FAILED: image 4 was not tried after images 6 and 7, then 7, by their registered pair "
+			"weight (20 against 300 and 200)");
+		return false;
+	}
 
-	// The deferral itself reports no correspondences: it says nothing about how well the model fits
-	// the image, only that its evidence is elsewhere for now
+	VERBOSE("ResectionWeakEvidenceTest PASSED: the image with the least registered pair weight is tried last and its right "
+		"pose is registered however little of its evidence the model holds (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// The next image is the candidate whose verified pairs to registered images weigh most, not the one
+// with the most 2D-3D correspondences, and every candidate holding minCorrespondences of them is in
+// the list. Seven cameras of the arc, images 0-3 registered with 150 tracks. Image 4 holds 100
+// correspondences at random pixels (its pose cannot be estimated) and its pairs are to registered
+// image 3 (20 weighted inliers) and unregistered image 6 (1000); image 5 holds 25 true
+// correspondences, under 0.3 of image 4's 100, and a pair of 300 to image 3. Image 5 is tried first
+// and registers; image 4 is tried after it and fails. The list is read again after each
+// registration: in a second scene images 4, 5 and 6 hold 30 true correspondences each, images 4
+// and 5 pairs of 400 and 100 to image 3, image 6 a pair of 1000 to image 4 alone; image 4 registers
+// first, and image 6, which its registration made the heaviest, comes before image 5.
+bool ResectionNextImageOrderTest()
+{
+	TD_TIMER_START();
+	std::mt19937 rng(20261025);
+	Scene scene;
+	BuildResectionArc(scene, 7);
+	AddResectionTracks(scene, {0, 1, 2, 3}, 150, rng);
+	AddResectionCorrespondences(scene, 4, 0, 100, rng);
+	AddResectionCorrespondences(scene, 5, 25, 0, rng);
+	AddResectionPair(scene, 3, 4, 20);
+	AddResectionPair(scene, 4, 6, 1000);
+	AddResectionPair(scene, 3, 5, 300);
+	const Pose3D truePose5 = static_cast<const Pose3D&>(scene.images[5]);
+	for (IIndex imageID = 4; imageID < 7; ++imageID)
+		scene.images[imageID].InvalidatePose();
+	scene.status.nCalibratedImages = 4;
+	TriangulateTracks(scene, false, 4.f, 1.f);
+
+	LogCapture log;
+	Resection resection(scene, ResectionConfig());
+	resection.RegisterImages();
+	if (scene.images[4].HasPose()) {
+		VERBOSE("ResectionNextImageOrderTest FAILED: image 4 was registered on random correspondences, so the scene does not "
+			"pose the problem");
+		return false;
+	}
+	if (!scene.images[5].HasPose() || RotationErrorDeg(scene.images[5].R, truePose5.R) > 1.0) {
+		VERBOSE("ResectionNextImageOrderTest FAILED: image 5 was %s; its 25 true correspondences and its pair of 300 to a "
+			"registered image make it the next image, although it holds under 0.3 of image 4's 100 correspondences",
+			scene.images[5].HasPose() ? "registered off its true pose" : "left out");
+		return false;
+	}
+	const size_t failed4 = LogFirstAttempt(log, 4, false);
+	if (failed4 == String::npos || LogFirstAttempt(log, 5, true) > failed4) {
+		VERBOSE("ResectionNextImageOrderTest FAILED: image 4 was %s; image 5, whose pairs to registered images weigh 300 "
+			"against image 4's 20, is the one to try first", failed4 == String::npos ? "never tried" : "tried before image 5");
+		return false;
+	}
 	{
-		std::mt19937 rng(20260918);
+		std::mt19937 rng(20261025);
 		Scene scene;
-		Pose3D truePose;
-		BuildResectionEvidenceScene(scene, truePose, 6, rng);
+		BuildResectionArc(scene, 7);
+		AddResectionTracks(scene, {0, 1, 2, 3}, 150, rng);
+		for (IIndex imageID = 4; imageID < 7; ++imageID)
+			AddResectionCorrespondences(scene, imageID, 30, 0, rng);
+		AddResectionPair(scene, 3, 4, 400);
+		AddResectionPair(scene, 3, 5, 100);
+		AddResectionPair(scene, 4, 6, 1000);
+		for (IIndex imageID = 4; imageID < 7; ++imageID)
+			scene.images[imageID].InvalidatePose();
+		scene.status.nCalibratedImages = 4;
+		TriangulateTracks(scene, false, 4.f, 1.f);
+		LogCapture log;
 		Resection resection(scene, ResectionConfig());
-		const auto [numInliers, numPoints, numDescribed] = resection.RegisterImage(IIndex(4));
-		if (numInliers != 0 || numPoints != 0) {
-			VERBOSE("ResectionEvidenceShareTest FAILED: the deferral of image 4 reported %u inliers of %u correspondences "
-				"(%u described)", numInliers, numPoints, numDescribed);
-			return false;
-		}
-	}
-
-	// Image 4 holds 2% of its evidence in registered images. With 4 of 6 images registered the bar
-	// is 10% of two thirds, so the pose is refused; with the rule off it is accepted and right,
-	// so the rule is what refused it; with image 5 registered the whole evidence is in the model
-	// and the pose is accepted; with 4 of 40 images registered the bar is 1% and the pose is
-	// accepted: early in a reconstruction most evidence is expected to lie ahead.
-	struct Case { unsigned numImages; bool registerImage5; float minRegisteredEvidence; bool accepted; const char* why; };
-	const Case cases[] = {
-		{ 6, false, 0.1f, false, "2% of the evidence in registered images against a bar of 6.7%" },
-		{ 6, false, 0.f,  true,  "the same scene with the rule off" },
-		{ 6, true,  0.1f, true,  "the same scene with the strong neighbour registered" },
-		{ 40, false, 0.1f, true, "4 of 40 images registered: the bar is 1%" },
-	};
-	for (const Case& c : cases) {
-		std::mt19937 rng(20260918);
-		Scene scene;
-		Pose3D truePose;
-		BuildResectionEvidenceScene(scene, truePose, c.numImages, rng);
-		if (c.registerImage5) {
-			static_cast<Pose3D&>(scene.images[5]) = ResectionArcPose(5 * RESECTION_ARC_STEP);
-			scene.status.nCalibratedImages = 5;
-		}
-		ResectionConfig config;
-		config.minRegisteredEvidence = c.minRegisteredEvidence;
-		Resection resection(scene, config);
 		resection.RegisterImages();
-		const bool accepted = scene.images[4].HasPose();
-		if (accepted != c.accepted) {
-			VERBOSE("ResectionEvidenceShareTest FAILED: with %u images, image 5 %s and a bar of %.2f the pose was %s; %s",
-				c.numImages, c.registerImage5 ? "registered" : "unregistered", c.minRegisteredEvidence,
-				accepted ? "accepted" : "refused", c.why);
-			return false;
-		}
-		if (accepted && RotationErrorDeg(scene.images[4].R, truePose.R) > 1.0) {
-			VERBOSE("ResectionEvidenceShareTest FAILED: the accepted pose is %.2f deg off the truth",
-				RotationErrorDeg(scene.images[4].R, truePose.R));
+		const size_t at4 = LogFirstAttempt(log, 4, true), at5 = LogFirstAttempt(log, 5, true), at6 = LogFirstAttempt(log, 6, true);
+		if (at4 == String::npos || at5 == String::npos || at6 == String::npos || !(at4 < at6 && at6 < at5)) {
+			VERBOSE("ResectionNextImageOrderTest FAILED: images 4, 6 and 5 were not registered in that order; once image 4 is "
+				"registered, image 6's pair of 1000 to it outweighs image 5's 100, so the list read again puts image 6 next");
 			return false;
 		}
 	}
 
-	VERBOSE("ResectionEvidenceShareTest PASSED: a weakly supported pose is registered only where its evidence is, the bar "
-		"scaled by how much of the scene is registered; the deferral reports no correspondences (%s)",
+	VERBOSE("ResectionNextImageOrderTest PASSED: the candidate whose pairs to registered images weigh most is tried first, "
+		"whatever its share of the best correspondence count, and the list is read again after each registration (%s)",
 		TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// A round tries the candidates down the list until one registers, the last one too: eight cameras of
+// the arc, images 0-3 registered with 150 tracks; images 4 and 5 hold 100 and 90 correspondences at
+// random pixels (their poses cannot be estimated) and the heaviest pairs to registered images (1000
+// and 500), image 6 holds 25 true correspondences, under 0.3 of image 4's 100, and a pair of 50.
+// Images 4 and 5 are tried and fail, image 6 is tried after them and registers.
+bool ResectionTriesEveryCandidateTest()
+{
+	TD_TIMER_START();
+	std::mt19937 rng(20261025);
+	Scene scene;
+	BuildResectionArc(scene, 8);
+	AddResectionTracks(scene, {0, 1, 2, 3}, 150, rng);
+	AddResectionCorrespondences(scene, 4, 0, 100, rng);
+	AddResectionCorrespondences(scene, 5, 0, 90, rng);
+	AddResectionCorrespondences(scene, 6, 25, 0, rng);
+	AddResectionPair(scene, 3, 4, 1000);
+	AddResectionPair(scene, 3, 5, 500);
+	AddResectionPair(scene, 3, 6, 50);
+	const Pose3D truePose6 = static_cast<const Pose3D&>(scene.images[6]);
+	for (IIndex imageID = 4; imageID < 8; ++imageID)
+		scene.images[imageID].InvalidatePose();
+	scene.status.nCalibratedImages = 4;
+	TriangulateTracks(scene, false, 4.f, 1.f);
+
+	LogCapture log;
+	Resection resection(scene, ResectionConfig());
+	resection.RegisterImages();
+	if (scene.images[4].HasPose() || scene.images[5].HasPose()) {
+		VERBOSE("ResectionTriesEveryCandidateTest FAILED: an image was registered on random correspondences, so the scene "
+			"does not pose the problem");
+		return false;
+	}
+	if (!scene.images[6].HasPose() || RotationErrorDeg(scene.images[6].R, truePose6.R) > 1.0) {
+		VERBOSE("ResectionTriesEveryCandidateTest FAILED: image 6 was %s; the candidates ahead of it failed, so it is the one "
+			"to try next, whatever its share of the best correspondence count",
+			scene.images[6].HasPose() ? "registered off its true pose" : "left out");
+		return false;
+	}
+	const size_t registered6 = LogFirstAttempt(log, 6, true);
+	if (LogFirstAttempt(log, 4, false) > registered6 || LogFirstAttempt(log, 5, false) > registered6) {
+		VERBOSE("ResectionTriesEveryCandidateTest FAILED: image 6 was tried before images 4 and 5, whose pairs to registered "
+			"images weigh more");
+		return false;
+	}
+
+	VERBOSE("ResectionTriesEveryCandidateTest PASSED: the candidates are tried down the list until one registers, the last "
+		"one too (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 
@@ -11391,11 +11510,12 @@ bool ResectionEvidenceShareTest()
 // fails or is refused is not in the model, so the zero it would add says nothing about how well the
 // model fits. Nine cameras of the arc, images 0-3 registered with 150 tracks. Image 4 holds the most
 // correspondences, 30 at the projections its pose gives and 120 at random pixels, a 20% share that
-// the acceptance refuses (minInlierRatio 25%), and it is tried again every round; images 5-8 hold 70
-// true and 30 random each, a 70% share, above the 60% bar. Counting the refusals as zeros, the
-// average falls to 0.525 at the third registration of the first round and forces a full adjustment
-// there, and the registration that follows it then needs the one that closes the resection too; counting
-// the registrations alone it stays at 0.7 and the one that closes the resection is the only full adjustment.
+// the acceptance refuses (minInlierRatio 25%), and it is tried first in every round; images 5-8 hold
+// 70 true and 30 random each, a 70% share, above the 60% bar, and one of them registers in each round.
+// Counting the refusals as zeros, the average falls to 0.35 at the third registration and forces a
+// full adjustment there, a third one besides the two every such resection runs; counting the
+// registrations alone it stays at 0.7, and the full adjustments are only those two: the one the
+// stall retry runs once image 4 is the only candidate left, and the one that closes the resection.
 bool ResectionRefusedAverageTest()
 {
 	TD_TIMER_START();
@@ -11431,14 +11551,128 @@ bool ResectionRefusedAverageTest()
 		}
 	}
 	const unsigned numFullAdjustments = log.Count("Full adjustment ran");
-	if (numFullAdjustments != 1) {
-		VERBOSE("ResectionRefusedAverageTest FAILED: %u full adjustments ran, expected only the one that closes the "
-			"resection: the refusals of image %u pulled the average inlier ratio under its bar", numFullAdjustments, REFUSED);
+	if (numFullAdjustments != 2) {
+		VERBOSE("ResectionRefusedAverageTest FAILED: %u full adjustments ran, expected only the stall retry's and the one "
+			"that closes the resection: the refusals of image %u pulled the average inlier ratio under its bar",
+			numFullAdjustments, REFUSED);
 		return false;
 	}
 
 	VERBOSE("ResectionRefusedAverageTest PASSED: an image whose pose is refused adds nothing to the average inlier "
 		"ratio, so it forces no full adjustment (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// A resection that stalls with images registered since its last full adjustment runs one and tries
+// again: the adjustment re-triangulates the tracks the registrations made triangulable, which can
+// give the remaining images the correspondences they lacked. Seven cameras of the arc, images 0-3
+// registered with 150 tracks. Image 4 sees 60 of them, so it is the first image registered; the 40
+// tracks B that images 5 and 6 see are observed by images 3-6, so they gain their second registered
+// view with image 4, but nothing triangulates them before the next round (triangulateEvery is off,
+// a local or a scheduled adjustment is not due, and more than one candidate is left untried). Images
+// 5 and 6 then find either no 2D-3D correspondence (the resection finds no image to attempt) or 16
+// each, 4 at their true projections and 12 at random pixels, on which they fail to register (every
+// candidate fails): either way the resection stalls with one registration since its last
+// adjustment. Stopping there leaves both out; the adjustment of the retry triangulates B and
+// registers both at their true poses. In a third scene the tracks of images 5 and 6 are seen by no
+// registered image: the adjustment unlocks nothing, the second stall comes with no registration
+// since it and the resection stops, so the loop terminates. Every resection closes with its full
+// adjustment, whatever ran before it, so each of the three runs two (the retry's and the closing
+// one), and a resection that registers nothing runs the closing one alone.
+bool ResectionStallRetryTest()
+{
+	TD_TIMER_START();
+	constexpr IIndex NUM_IMAGES = 7;
+	struct Case { bool unlockable; unsigned numTrueOnA; unsigned numNoiseOnA; const char* why; };
+	const Case cases[] = {
+		{ true,  0, 0,  "no image has a correspondence left (the resection finds no image to attempt)" },
+		{ true,  4, 12, "the images with correspondences fail to register on them (every candidate fails)" },
+		{ false, 0, 0,  "the adjustment unlocks nothing, so the retry has to stop" },
+	};
+	for (const Case& c : cases) {
+		std::mt19937 rng(20261021);
+		Scene scene;
+		BuildResectionArc(scene, NUM_IMAGES);
+		AddResectionTracks(scene, {0, 1, 2, 3}, 150, rng);
+		AddResectionCorrespondences(scene, 4, 60, 0, rng);
+		if (c.numTrueOnA + c.numNoiseOnA > 0) {
+			AddResectionCorrespondences(scene, 5, c.numTrueOnA, c.numNoiseOnA, rng);
+			AddResectionCorrespondences(scene, 6, c.numTrueOnA, c.numNoiseOnA, rng);
+		}
+		const size_t numTracksA = scene.tracks.size();
+		AddResectionTracks(scene, c.unlockable ? std::vector<IIndex>{3, 4, 5, 6} : std::vector<IIndex>{5, 6}, 40, rng);
+		std::vector<Pose3D> truePoses;
+		for (const Image& img : scene.images)
+			truePoses.push_back(static_cast<const Pose3D&>(img));
+		for (IIndex imageID = 4; imageID < NUM_IMAGES; ++imageID)
+			scene.images[imageID].InvalidatePose();
+		scene.status.nCalibratedImages = 4;
+		TriangulateTracks(scene, false, 4.f, 1.f);
+		for (size_t t = numTracksA; t < scene.tracks.size(); ++t) {
+			if (scene.tracks[t].IsInlier()) {
+				VERBOSE("ResectionStallRetryTest FAILED: a track one registered image sees was triangulated, so the scene does "
+					"not pose the problem");
+				return false;
+			}
+		}
+
+		LogCapture log;
+		Resection resection(scene, ResectionConfig());
+		resection.RegisterImages();
+		if (!scene.images[4].HasPose() || RotationErrorDeg(scene.images[4].R, truePoses[4].R) > 1.0) {
+			VERBOSE("ResectionStallRetryTest FAILED: image 4 was not registered at its true pose");
+			return false;
+		}
+		for (IIndex imageID = 5; imageID < NUM_IMAGES; ++imageID) {
+			const bool registered = scene.images[imageID].HasPose();
+			if (registered != c.unlockable) {
+				VERBOSE("ResectionStallRetryTest FAILED: image %u was %s where %s", imageID,
+					registered ? "registered" : "left out", c.why);
+				return false;
+			}
+			if (registered && RotationErrorDeg(scene.images[imageID].R, truePoses[imageID].R) > 1.0) {
+				VERBOSE("ResectionStallRetryTest FAILED: image %u was not registered at its true pose", imageID);
+				return false;
+			}
+		}
+		const unsigned numFullAdjustments = log.Count("Full adjustment ran");
+		if (numFullAdjustments != 2) {
+			VERBOSE("ResectionStallRetryTest FAILED: %u full adjustments ran where %s, expected the retry's and the one that "
+				"closes the resection", numFullAdjustments, c.why);
+			return false;
+		}
+	}
+
+	// the resection registers nothing (image 4's correspondences are random pixels): the closing
+	// adjustment runs all the same
+	{
+		std::mt19937 rng(20261021);
+		Scene scene;
+		BuildResectionArc(scene, 5);
+		AddResectionTracks(scene, {0, 1, 2, 3}, 150, rng);
+		AddResectionCorrespondences(scene, 4, 0, 100, rng);
+		scene.images[4].InvalidatePose();
+		scene.status.nCalibratedImages = 4;
+		TriangulateTracks(scene, false, 4.f, 1.f);
+		LogCapture log;
+		Resection resection(scene, ResectionConfig());
+		resection.RegisterImages();
+		if (scene.images[4].HasPose()) {
+			VERBOSE("ResectionStallRetryTest FAILED: image 4 was registered on random correspondences, so the scene does not "
+				"pose the problem");
+			return false;
+		}
+		const unsigned numFullAdjustments = log.Count("Full adjustment ran");
+		if (numFullAdjustments != 1) {
+			VERBOSE("ResectionStallRetryTest FAILED: %u full adjustments ran in a resection that registered nothing, expected "
+				"the one that closes it", numFullAdjustments);
+			return false;
+		}
+	}
+
+	VERBOSE("ResectionStallRetryTest PASSED: a resection that stalls after registrations runs its full adjustment and tries "
+		"again, whether no image or no candidate registers, stops when the adjustment unlocks nothing, and always closes with "
+		"its full adjustment (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 
