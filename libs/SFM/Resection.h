@@ -56,16 +56,16 @@ struct SFM_API ResectionConfig
 	                                    // checked for every pose, however large its inlier share (0 = disabled)
 	float maxLinkDirectionError{3.f};   // Maximum angle (degrees) between the baseline direction a verified pair to a
 	                                    // registered image predicts and the one the estimated centre makes with that
-	                                    // neighbour, as seen from the structure the pair triangulates: a pair of
-	                                    // nearly parallel rays forgives a wide direction error and a near-duplicate
-	                                    // pair (rays under 2 degrees) fixes no direction, since its translation is
-	                                    // unreliable. A pose is refused when the quorum links that
-	                                    // contradict the direction outweigh the ones that agree (0 = disabled).
-	                                    // Of 1538 right alameda registrations only one is refused at 3 degrees, and
-	                                    // barely (28.3 vs a 28.3-degree tolerance); the one misregistration on record
-	                                    // (image 581, 29.1 degrees off at an 8.9-degree ray angle, 18.7-degree
-	                                    // tolerance) is refused, where 5 degrees would have given it 29.5 and passed
-	                                    // it.
+	                                    // neighbour, as seen from the structure: held to the larger of the pair's ray
+	                                    // angle and the model's parallax of the two cameras (the baseline over the
+	                                    // median distance of the pose's inlier points), a small angle forgiving a wide
+	                                    // direction error; a link that the pair and the model both see under 2 degrees
+	                                    // agrees, one that only one of them does abstains. A pose is refused when the
+	                                    // quorum links that contradict the direction outweigh the ones that agree
+	                                    // (0 = no direction check at all). Against the pair's ray angle alone, on the
+	                                    // 14 test captures: right poses refused 517 times (21 images, 10 never
+	                                    // registered) -> 22 (7 images, 4), wrong poses refused 97 -> 178, accepted
+	                                    // 45 -> 41
 	unsigned maxLocalWindow{25};        // Max images in local BA window (0 = all neighbors)
 	unsigned triangulateEvery{0};       // Run triangulation every N registered images (0 = disabled)
 	unsigned localBAEvery{10};          // Run local BA every N registered images (0 = disabled)

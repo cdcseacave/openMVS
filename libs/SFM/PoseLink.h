@@ -41,8 +41,12 @@ struct PairDisagreement
 	REAL direction; // degrees; negative when the pair fixes no direction
 	REAL rayAngle;  // radians, the pair's median triangulation angle; 0 when unknown
 	bool HasDirection() const { return direction >= 0; }
-	REAL DirectionTolerance(float maxAngle) const {
+	// the direction tolerance, in degrees, of the given ray angle (radians, 0 when unknown)
+	static REAL DirectionTolerance(float maxAngle, REAL rayAngle) {
 		return rayAngle > 0 ? R2D(ATAN(TAN(D2R(REAL(maxAngle))) / rayAngle)) : REAL(maxAngle);
+	}
+	REAL DirectionTolerance(float maxAngle) const {
+		return DirectionTolerance(maxAngle, rayAngle);
 	}
 	bool Within(float maxAngle) const {
 		return rotation <= maxAngle && (!HasDirection() || direction <= DirectionTolerance(maxAngle));
@@ -62,6 +66,11 @@ struct PoseLink
 	unsigned numInliers; // weighted inliers of the pair
 	Pose3D relPose;      // transform from the neighbor's frame to the image's frame
 	float rayAngle;      // the pair's median triangulation angle, radians; 0 when unknown
+
+	// Does the pair triangulate under kNearDuplicateRayAngle, so that it fixes no baseline direction?
+	bool IsNearDuplicate() const {
+		return rayAngle > 0.f && rayAngle < D2R(kNearDuplicateRayAngle);
+	}
 
 	// The absolute rotation this link predicts for the image, given its neighbor's own rotation
 	RMatrix PredictedRotation(const Pose3D& neighborPose) const {
@@ -90,10 +99,9 @@ struct PoseLink
 		d.rotation = R2D(ACOS(MINF(MAXF(ComputeAngle(image.R, PredictedRotation(neighbor)), REAL(-1)), REAL(1))));
 		d.direction = -1;
 		d.rayAngle = rayAngle > 0.f ? REAL(rayAngle) : REAL(0);
-		const bool nearDuplicate = rayAngle > 0.f && rayAngle < D2R(kNearDuplicateRayAngle);
 		Point3 modelDirection(image.C - neighbor.C), linkDirection;
 		const REAL baseline = norm(modelDirection);
-		if (!nearDuplicate && baseline > ZEROTOLERANCE<REAL>() && PredictedDirection(neighbor, linkDirection))
+		if (!IsNearDuplicate() && baseline > ZEROTOLERANCE<REAL>() && PredictedDirection(neighbor, linkDirection))
 			d.direction = R2D(ACOS(MINF(MAXF(linkDirection.dot(modelDirection / baseline), REAL(-1)), REAL(1))));
 		return d;
 	}

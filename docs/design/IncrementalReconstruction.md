@@ -97,11 +97,22 @@ two agree) are left to the other rules. On alameda a pose registered with a 54% 
 correspondences) was 1.9 degrees off, and the 15 images registered from its structure landed 1.9 degrees
 off with it, while every right registration of the scene passes the quorum by a wide margin (never more
 than 7.7 degrees against the 15-degree bar). The same quorum's links are also weighed on the baseline
-direction they predict (`maxLinkDirectionError`, 3 degrees): each link's own tolerance grows with its ray
-angle (`atan(tan(3°)/rayAngle)`), so a wide-baseline pair forgives little disagreement and a
-near-duplicate one (rays under 2 degrees, its own baseline unreliable) fixes no direction and is left out
-of the count; the pose is refused only when the links whose direction disagrees outweigh, by weighted
-inliers, the ones that agree, so one misplaced neighbour cannot refuse it alone.
+direction they predict (`maxLinkDirectionError`, 3 degrees, `--max-link-direction-error`; 0 = no direction
+check at all), judged on what the pair measured and on what the model sees: the model's parallax of a link
+is the baseline the pose makes with the neighbour over the median distance of the pose's inlier points. A
+link that the pair (its ray angle) and the model both see under `kNearDuplicateRayAngle` (2 degrees)
+agrees; one that only one of them sees that close abstains (a near-duplicate pair's own baseline is
+unreliable, and a baseline the model sees that short fixes no direction worth checking); any other is
+held to `atan(tan(3°)/a)`, `a` the larger of the pair's ray angle and the model's parallax, so a wide
+baseline forgives little disagreement and the pose under test can tighten its own tolerance but never
+widen it. The pose is refused only when the links whose direction disagrees outweigh, by weighted
+inliers, the ones that agree, so one misplaced neighbour cannot refuse it alone. Against the pair's ray
+angle alone (one run per arm at 8 threads on the 14 test captures) the model's parallax cut the refusals
+of right poses from 517 attempts on 21 images, 10 of them never registered, to 22 attempts on 7 images,
+4 never registered, refused 178 wrong poses instead of 97 and accepted 41 instead of 45. Its known weak
+spot is a quorum of pairs whose translation is wrong at a ray angle of a few degrees (Outdoor_004's
+panorama pairs, 50-110 degrees off at 2-16 degrees): it cannot tell a wrong pair from a wrong pose and
+refuses the right one.
 
 A pose that passes these checks is accepted however little of the image's evidence the model holds; the
 order above already tries such an image after the candidates whose pairs lie in the model. (A deferral
@@ -207,10 +218,10 @@ scene the tier verdicts and the peel do not separate.
 | `--match-sequence-overlap N` | `3` | consecutive images every image is matched with; the whole candidate set of SEQUENTIAL mode, a prior added to VOCABULARY/RETRIEVAL (0 = off) |
 | `--refine-intrinsics 0\|1\|2` | `1` | bundle-adjustment intrinsics: 0 none, 1 focal length + k1, k2; 2 adds k3, the principal point and the tangential terms |
 | `--ba-pair-sigma F` | `1` | relative-pose residual rotation sigma, in degrees (the baseline direction at twice that; 0 disables the residuals) |
+| `--max-link-direction-error F` | `3` | the resection's direction check, in degrees, in [0,90] (`maxLinkDirectionError`, read by every resection: the sub-scenes' and the whole-scene pass); 0 = no direction check at all, the inlier-share and rotation checks stay |
 
-The resection's acceptance parameters (`minInlierRatio`, `minInliersAbsolute`,
-`maxRelativeRotationError`, `maxLinkDirectionError`) have no flags; their defaults live in
-`ResectionConfig`.
+The resection's other acceptance parameters (`minInlierRatio`, `minInliersAbsolute`,
+`maxRelativeRotationError`) have no flags; their defaults live in `ResectionConfig`.
 
 ## Limitations
 

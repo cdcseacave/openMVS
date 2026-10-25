@@ -79,6 +79,7 @@ bool bTripletCut;
 float fTripletMinScore;
 float fTripletSecondFaceScore;
 float fMaxPairDirectionResidual;
+float fMaxLinkDirectionError;
 String strROMA2Provider;
 float defaultFocalRatio;
 int nCameraType;
@@ -166,6 +167,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("triplet-min-score", boost::program_options::value(&OPT::fTripletMinScore)->default_value(TripletFilterConfig().minScore), "camera-triplet filter: the paper's minimum edge score m in [0,1], from which the threshold tau = m(1-r)+r follows, r the maximum-degree ratio of the scored graph (0.3 medium and small ambiguous sets, 0.6 generic, 0.9 highly ambiguous)")
 		("triplet-second-face-score", boost::program_options::value(&OPT::fTripletSecondFaceScore)->default_value(TripletFilterConfig().secondFaceScore), "camera-triplet filter, with --triplet-cut: a stricter minimum score whose threshold names the two faces of a symmetric building (a majority piece and a second one of at least a third of it); the smaller face is then cut off; at or below --triplet-min-score the faces are not looked for")
 		("max-pair-direction-residual", boost::program_options::value(&OPT::fMaxPairDirectionResidual)->default_value(ReconstructionConfig().maxPairDirectionResidual), "the view graph's contradiction cut, after the camera-triplet filter: every pair whose rotation the global rotation averaging of the pairs contradicts goes; its translation stage also removes every pair whose baseline direction is more than this many degrees from the camera centres the pairs place, in [0,180]; 0 = no translation stage, the rotation stage alone")
+		("max-link-direction-error", boost::program_options::value(&OPT::fMaxLinkDirectionError)->default_value(ResectionConfig().maxLinkDirectionError), "the direction check of every resection: a resected pose is refused when the verified pairs to registered images whose baseline direction it contradicts outweigh the ones that agree; each pair is held to this many degrees as seen from the structure, atan(tan(this) / a) with a the larger of the pair's ray angle and the model's parallax of the two cameras, and a pair the two angles both put under 2 degrees agrees while one only one of them does abstains; in [0,90] (past 90 degrees the tangent turns negative and every pair would contradict); 0 = no direction check at all (the inlier-share and rotation checks stay)")
 		("max-features-per-cell", boost::program_options::value(&OPT::nMaxFeaturesPerCell)->default_value(3000), "maximum features per grid cell (3x3 grid)")
 		("min-features-per-cell", boost::program_options::value(&OPT::nMinFeaturesPerCell)->default_value(500), "minimum features per cell before adjusting sensitivity")
 		("match-mode", boost::program_options::value(&OPT::matchMode)->default_value(1), "match mode: -1=SKIP,0=EXHAUSTIVE,1=VOCABULARY,2=SEQUENTIAL,3=KNOWN_POSES,4=RETRIEVAL")
@@ -288,6 +290,10 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	}
 	if (!(OPT::fMaxPairDirectionResidual >= 0.f && OPT::fMaxPairDirectionResidual <= 180.f)) {
 		LOG("error: --max-pair-direction-residual is the translation stage's bar in degrees, it must be in [0,180] (got %g; 0 = no translation stage)", OPT::fMaxPairDirectionResidual);
+		return false;
+	}
+	if (!(OPT::fMaxLinkDirectionError >= 0.f && OPT::fMaxLinkDirectionError <= 90.f)) {
+		LOG("error: --max-link-direction-error is the resection's direction check bar in degrees, it must be in [0,90] (got %g; 0 = no direction check)", OPT::fMaxLinkDirectionError);
 		return false;
 	}
 	Util::ensureValidFolderPath(OPT::strROMA2Model);
@@ -428,6 +434,8 @@ int main(int argc, LPCTSTR* argv)
 	cfg.tripletFilterCfg.minScore = OPT::fTripletMinScore;
 	cfg.tripletFilterCfg.secondFaceScore = OPT::fTripletSecondFaceScore;
 	cfg.maxPairDirectionResidual = OPT::fMaxPairDirectionResidual;
+	// every resection copies cfg.resectionCfg: the sub-scenes' and the whole-scene pass after the merge
+	cfg.resectionCfg.maxLinkDirectionError = OPT::fMaxLinkDirectionError;
 	cfg.viewgraphCfg.maxTwoViewError = 0; // disable pair filtering after ViewGraph calibration
 	cfg.useGlobalSolver = OPT::bUseGlobalSolver;
 	cfg.thAlignGPS = OPT::thAlignGPS;

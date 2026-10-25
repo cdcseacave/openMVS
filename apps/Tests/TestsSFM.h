@@ -424,9 +424,18 @@ bool ResectionAcceptanceTest();
 // registered images predict: it is refused when the quorum links that contradict the direction
 // carry more weighted inliers than the ones that agree (ResectionConfig::maxLinkDirectionError) --
 // the weight they carry and not their number, so the strongest link alone outweighs two weak ones
-// that agree -- each link's tolerance growing as its ray angle shrinks, so a near-duplicate pair
-// fixes no direction and a small-baseline pair forgives a wide error (PoseLink.h PairDisagreement)
+// that agree -- each link's tolerance growing as the larger of its ray angle and the model's
+// parallax shrinks, so a near-duplicate pair fixes no direction and a small-baseline pair forgives
+// no more than the model's parallax of the two cameras allows (ResectionModelParallaxTest)
 bool ResectionLinkDirectionTest();
+
+// The direction a quorum link predicts is also held to the model's parallax of the link (the
+// baseline the pose makes with the neighbour over the median distance of its inlier points): a
+// link the model sees under 2 degrees abstains, or agrees when its pair is a near-duplicate too,
+// and otherwise the larger of the pair's ray angle and the model's parallax sets the tolerance, so
+// the pose under test cannot widen its own; ResectionConfig::maxLinkDirectionError 0 turns every
+// direction check off and leaves the rotation check on
+bool ResectionModelParallaxTest();
 
 // The resection's next image is the candidate whose verified pairs to registered images weigh most
 // (their composite weight), among every image holding ResectionConfig::minCorrespondences 2D-3D

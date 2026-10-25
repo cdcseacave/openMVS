@@ -226,8 +226,8 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 
 	// Every pose is cross-checked against the image's verified pairs to already registered images,
 	// however large its inlier share: on alameda a 54% share (87/162) put a pose 1.9 degrees off,
-	// taking the 15 images it seeded with it, and every right registration passes the three checks
-	// (quorum within 7.7 of the 15-degree bar; one direction refusal of 1538). The witness is the
+	// taking the 15 images it seeded with it, and every right registration there passes the rotation
+	// check (its quorum within 7.7 of the 15-degree bar). The witness is the
 	// quorum of those pairs -- the largest group agreeing on a rotation -- not the strongest one of
 	// them, which speaks falsely whenever that single neighbor is itself misplaced. When the pairs
 	// contradict one another they are no witness at all, so the pose is left to the other
@@ -251,21 +251,42 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 					return {0, n, numDescribed};
 				}
 			}
-			// the baseline direction each quorum link predicts: each is held to the tolerance its own
-			// ray angle allows, and the pose is refused only when the links that contradict it
-			// outweigh the ones that agree, so one misplaced neighbour cannot refuse a right pose
-			// that other links vouch for
+			// the baseline direction each quorum link predicts, judged on what the pair measured and on
+			// what the model sees: the model's parallax of a link is the baseline the pose makes with the
+			// neighbour over the median distance of the pose's inlier points. A link both see close
+			// (under kNearDuplicateRayAngle) agrees, one only one of them sees close abstains, and any
+			// other is held to the tolerance of the larger of the pair's ray angle and the model's
+			// parallax, so the pose under test can tighten its own tolerance but never widen it. The
+			// pose is refused only when the links that contradict it outweigh the ones that agree, so
+			// one misplaced neighbour cannot refuse a right pose that other links vouch for
 			if (config.maxLinkDirectionError > 0.f) {
+				REALArr depths;
+				depths.reserve(numInliers);
+				const Eigen::Vector3d C(pose.C.x, pose.C.y, pose.C.z);
+				FOREACH(k, points3D)
+					if (inliers[k])
+						depths.push_back((points3D[k] - C).norm());
+				const REAL depth = depths.GetNth(depths.size() / 2);
+				ASSERT(depth > 0);
 				unsigned agreeing = 0, disagreeing = 0;
 				for (const PoseLink& link : quorum.links) {
-					const PairDisagreement d = link.Measure(pose, scene.images[link.neighborID]);
+					const Image& neighbor = scene.images[link.neighborID];
+					const float parallax = (float)(norm(pose.C - neighbor.C) / depth);
+					const bool modelClose = parallax < D2R(kNearDuplicateRayAngle);
+					if (link.IsNearDuplicate() || modelClose) {
+						if (link.IsNearDuplicate() && modelClose)
+							agreeing += link.numInliers;
+						continue;
+					}
+					const PairDisagreement d = link.Measure(pose, neighbor);
 					if (!d.HasDirection())
 						continue;
-					(d.direction <= d.DirectionTolerance(config.maxLinkDirectionError) ? agreeing : disagreeing) += link.numInliers;
+					const REAL tolerance = PairDisagreement::DirectionTolerance(config.maxLinkDirectionError, MAXF(parallax, link.rayAngle));
+					(d.direction <= tolerance ? agreeing : disagreeing) += link.numInliers;
 				}
 				if (disagreeing > agreeing) {
 					DEBUG("warning: rejected the pose of image %u: %u/%u inliers (%.1f%%) and its centre lies in a direction "
-						"the pairs carrying %u of the %u weighted inliers of the quorum links that fix one contradict "
+						"the pairs carrying %u of the %u weighted inliers of the voting quorum links contradict "
 						"(strongest to image %u)",
 						imageID, numInliers, n, inlierRatio * 100.f, disagreeing, agreeing + disagreeing,
 						quorum.links.front().neighborID);

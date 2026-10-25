@@ -11087,6 +11087,21 @@ void BuildResectionQuorumScene(Scene& scene, Pose3D& truePose, bool corroboratin
 // how much direction error a pair may forgive.
 constexpr REAL RESECTION_DIRECTION_TURN = 40; // degrees
 
+// Turn the relative translation of the given pair by the given degrees, keeping its length and the
+// rotation: a unit vector perpendicular to the translation mixes into it with the sine of the angle
+void TurnPairTranslation(ImagePair& pair, REAL degrees)
+{
+	Point3& C = pair.relativePose->C;
+	const REAL length = norm(C);
+	ASSERT(length > 0);
+	const Point3 dir(C / length);
+	Point3 perp(dir.cross(Point3(0, 1, 0)));
+	if (norm(perp) < 1e-6) perp = dir.cross(Point3(1, 0, 0));
+	perp /= norm(perp);
+	const REAL turn = D2R(degrees);
+	C = (dir * COS(turn) + perp * SIN(turn)) * length;
+}
+
 void BuildResectionDirectionScene(Scene& scene, Pose3D& truePose, unsigned numTurned, REAL rayAngleDegrees, std::mt19937& rng,
 	const std::array<unsigned, 3>& pairWeights = {400, 300, 250})
 {
@@ -11099,25 +11114,46 @@ void BuildResectionDirectionScene(Scene& scene, Pose3D& truePose, unsigned numTu
 	AddResectionPair(scene, 3, 4, pairWeights[0]);
 	AddResectionPair(scene, 2, 4, pairWeights[1]);
 	AddResectionPair(scene, 1, 4, pairWeights[2]);
-	// turn the relative translation of the strongest numTurned pairs by RESECTION_DIRECTION_TURN
-	// degrees, keeping its length and the rotation: a unit vector perpendicular to the translation
-	// mixes into it with the sine of the angle
-	for (unsigned k = 0; k < numTurned; ++k) {
-		ImagePair& pair = scene.pairs[scene.pairs.size() - 3 + k];
-		Point3& C = pair.relativePose->C;
-		const REAL length = norm(C);
-		ASSERT(length > 0);
-		const Point3 dir(C / length);
-		Point3 perp(dir.cross(Point3(0, 1, 0)));
-		if (norm(perp) < 1e-6) perp = dir.cross(Point3(1, 0, 0));
-		perp /= norm(perp);
-		const REAL turn = D2R(RESECTION_DIRECTION_TURN);
-		C = (dir * COS(turn) + perp * SIN(turn)) * length;
-	}
+	for (unsigned k = 0; k < numTurned; ++k)
+		TurnPairTranslation(scene.pairs[scene.pairs.size() - 3 + k], RESECTION_DIRECTION_TURN);
 	for (size_t k = scene.pairs.size() - 3; k < scene.pairs.size(); ++k)
 		scene.pairs[k].meanRayAngle = (float)D2R(rayAngleDegrees);
 	scene.images[4].InvalidatePose();
 	scene.status.nCalibratedImages = 4;
+	TriangulateTracks(scene, false, 4.f, 1.f);
+}
+
+// The six-camera scene of the model-parallax cases: images 0-3 of the arc and image 5, placed one
+// degree along the arc from image 4 (0.087 world units: from points about 5 units away the model
+// sees the two under 1 degree of parallax, against 10 for images 4 and 3), registered with 150
+// triangulated tracks; image 4 unregistered and observing the first 100 of them, 40 at the
+// projections the given pose gives (its true one when none is given) and 60 at random pixels. Its
+// pairs to registered images are the given links: each carries the true relative pose and the given
+// weighted inliers, reports the given ray angle and has its translation turned by the given degrees.
+struct ResectionLinkSpec { IIndex neighborID; unsigned numInliers; REAL rayAngleDeg; REAL turnDeg; };
+constexpr REAL RESECTION_CLOSE_STEP = 1; // degrees along the arc between images 4 and 5
+
+void BuildResectionParallaxScene(Scene& scene, const std::vector<ResectionLinkSpec>& links, const Pose3D* projectingPose,
+	std::mt19937& rng)
+{
+	BuildResectionArc(scene, 6);
+	static_cast<Pose3D&>(scene.images[5]) = ResectionArcPose(4 * RESECTION_ARC_STEP + RESECTION_CLOSE_STEP);
+	AddResectionTracks(scene, {0, 1, 2, 3, 5}, 150, rng);
+	Image& img = scene.images[4];
+	const Pose3D truePose = static_cast<const Pose3D&>(img);
+	if (projectingPose)
+		static_cast<Pose3D&>(img) = *projectingPose;
+	AddResectionCorrespondences(scene, 4, RESECTION_TRUE_CORRESPONDENCES, RESECTION_NOISE_CORRESPONDENCES, rng);
+	static_cast<Pose3D&>(img) = truePose;
+	for (const ResectionLinkSpec& link : links) {
+		AddResectionPair(scene, MINF(link.neighborID, IIndex(4)), MAXF(link.neighborID, IIndex(4)), link.numInliers);
+		ImagePair& pair = scene.pairs.back();
+		pair.meanRayAngle = (float)D2R(link.rayAngleDeg);
+		if (link.turnDeg != 0)
+			TurnPairTranslation(pair, link.turnDeg);
+	}
+	img.InvalidatePose();
+	scene.status.nCalibratedImages = 5;
 	TriangulateTracks(scene, false, 4.f, 1.f);
 }
 
@@ -11284,7 +11320,7 @@ bool ResectionLinkDirectionTest()
 		{ 2, 20, 5.f, false, "two turned pairs of three: the links that contradict the direction outweigh the one that agrees" },
 		{ 2, 20, 0.f, true,  "the same two turned pairs with the direction check off: the pose is accepted, so the check is what refused it" },
 		{ 2, 1,  5.f, true,  "near-duplicate pairs (rays 1 degree apart) fix no direction at all: their translation is unreliable, so they are judged on the rotation alone" },
-		{ 2, 4,  5.f, true,  "pairs whose rays are 4 degrees apart forgive a 40-degree direction error: as seen from their structure that is within the tolerance" },
+		{ 2, 4,  5.f, false, "pairs whose rays are 4 degrees apart would forgive a 40-degree direction error (51 degrees), but the model places images 3 and 2 10 and 20 degrees of parallax from the pose and the larger angle sets the tolerance (27 and 14 degrees), so the two turned links outweigh the one that agrees" },
 	};
 	for (const Case& c : cases) {
 		std::mt19937 rng(20260918);
@@ -11330,9 +11366,121 @@ bool ResectionLinkDirectionTest()
 	}
 
 	VERBOSE("ResectionLinkDirectionTest PASSED: a weakly supported pose is refused when the links that contradict its baseline "
-		"direction outweigh, in weighted inliers and not in links, the ones that agree, and small-baseline links forgive what "
-		"their ray angle cannot fix (%s)",
+		"direction outweigh, in weighted inliers and not in links, the ones that agree, near-duplicate links fix no direction and "
+		"a small ray angle forgives no more than the model's parallax allows (%s)",
 		TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// The direction a quorum link predicts is held to what the model sees as well as to what the pair
+// measured: the model's parallax of the link is the baseline the pose makes with the neighbour over
+// the median distance of the pose's inlier points. Each case is checked and reported on its own.
+bool ResectionModelParallaxTest()
+{
+	TD_TIMER_START();
+	const Pose3D truePose = ResectionArcPose(4 * RESECTION_ARC_STEP);
+	// image 4's resection in the parallax scene with the given links and config: whether it was
+	// registered, and how far its rotation and centre are from the truth
+	struct Outcome { bool registered; double rotErr; REAL centreErr; };
+	const auto resect = [&truePose](const std::vector<ResectionLinkSpec>& links, const Pose3D* projectingPose, const ResectionConfig& config) {
+		std::mt19937 rng(20261025);
+		Scene scene;
+		BuildResectionParallaxScene(scene, links, projectingPose, rng);
+		Resection resection(scene, config);
+		resection.RegisterImages();
+		const Image& img = scene.images[4];
+		if (!img.HasPose())
+			return Outcome{false, 0, 0};
+		return Outcome{true, RotationErrorDeg(img.R, truePose.R), norm(img.C - truePose.C)};
+	};
+	const auto atTruth = [](const Outcome& o) {
+		return o.registered && o.rotErr <= 1.0 && o.centreErr <= 0.01 * RESECTION_ARC_EXTENT;
+	};
+	const auto describe = [](const Outcome& o) {
+		return o.registered ? String::FormatString("registered %.2f deg and %.4f units off the truth", o.rotErr, o.centreErr) : String("refused");
+	};
+	// a wrong pose: image 4's rotation at a centre whose baseline to image 3 is the true one lifted
+	// RESECTION_DECOY_LIFT degrees out of the arc's plane, 0.38 units from the true centre
+	constexpr REAL RESECTION_DECOY_LIFT = 25;
+	Pose3D decoyPose = truePose;
+	{
+		const Point3 C3(ResectionArcPose(3 * RESECTION_ARC_STEP).C), baseline(truePose.C - C3);
+		decoyPose.C = C3 + baseline * COS(D2R(RESECTION_DECOY_LIFT)) + Point3(0, norm(baseline) * SIN(D2R(RESECTION_DECOY_LIFT)), 0);
+	}
+	bool passed = true;
+
+	// 1. The model sees the cameras close, the pair does not: the heaviest link, to image 5, is a pair
+	// of 5-degree rays whose translation is turned 40 degrees (its own tolerance, 31 degrees, would
+	// refuse the right pose), while the model sees images 4 and 5 under 2 degrees of parallax: the
+	// link abstains and the lighter, right link to image 3 accepts the pose
+	{
+		const Outcome o = resect({{5, 400, 5, RESECTION_DIRECTION_TURN}, {3, 100, 20, 0}}, NULL, ResectionConfig());
+		if (!atTruth(o)) {
+			VERBOSE("ResectionModelParallaxTest FAILED: case 1: the right pose was %s; its heaviest link, to image 5, is a pair "
+				"of 5-degree rays whose translation is turned 40 degrees, but the model sees images 4 and 5 under 2 degrees of "
+				"parallax, so that link abstains and the right link to image 3 vouches for the pose", describe(o).c_str());
+			passed = false;
+		}
+	}
+
+	// 2. The model's parallax tightens a wide pair tolerance: the wrong pose's centre lies 25 degrees
+	// off the direction its only link, to image 3, predicts; the pair's 4-degree rays forgive 36.9
+	// degrees, but the model places the pose 10 degrees of parallax from image 3, and the larger of
+	// the two angles holds the direction to 16.7 degrees
+	{
+		const Outcome o = resect({{3, 400, 4, 0}}, &decoyPose, ResectionConfig());
+		if (o.registered) {
+			VERBOSE("ResectionModelParallaxTest FAILED: case 2: the wrong pose, its centre 25 degrees off the direction its "
+				"pair to image 3 predicts, was %s; the pair's 4-degree rays forgive 36.9 degrees, but the model places the "
+				"pose 10 degrees of parallax from image 3 and the larger angle holds the direction to 16.7", describe(o).c_str());
+			passed = false;
+		}
+	}
+
+	// 3. Both see the cameras close: the pair to image 5 is a near-duplicate (1-degree rays) that the
+	// model also sees under 2 degrees, so it agrees, and its 400 weighted inliers outweigh the 100 of
+	// the pair to image 3, whose translation is turned 40 degrees
+	{
+		const Outcome o = resect({{5, 400, 1, 0}, {3, 100, 20, RESECTION_DIRECTION_TURN}}, NULL, ResectionConfig());
+		if (!atTruth(o)) {
+			VERBOSE("ResectionModelParallaxTest FAILED: case 3: the right pose was %s; its pair to image 5 is a near-duplicate "
+				"that the model also sees under 2 degrees of parallax, so its 400 weighted inliers agree and outweigh the 100 "
+				"of the pair to image 3 whose translation is turned 40 degrees", describe(o).c_str());
+			passed = false;
+		}
+	}
+
+	// 4. maxLinkDirectionError 0 turns every direction check off: the wrong pose of case 2 is
+	// accepted, while a pose 40 degrees away from the rotation its pair composes is still refused
+	// (the rotation check stays)
+	{
+		ResectionConfig config;
+		config.maxLinkDirectionError = 0.f;
+		const Outcome o = resect({{3, 400, 4, 0}}, &decoyPose, config);
+		if (!o.registered) {
+			VERBOSE("ResectionModelParallaxTest FAILED: case 4: with maxLinkDirectionError 0 the pose of case 2 was refused; "
+				"0 turns every direction check off");
+			passed = false;
+		}
+		std::mt19937 rng(20260908);
+		Scene scene;
+		Pose3D acceptancePose;
+		BuildResectionAcceptanceScene(scene, acceptancePose, rng);
+		config.minInlierRatio = 0.f;
+		Resection resection(scene, config);
+		resection.RegisterImages();
+		if (scene.images[4].HasPose()) {
+			VERBOSE("ResectionModelParallaxTest FAILED: case 4: with maxLinkDirectionError 0 a pose %.2f deg away from the "
+				"rotation its pair composes was accepted; the rotation check stays", RotationErrorDeg(scene.images[4].R, acceptancePose.R));
+			passed = false;
+		}
+	}
+	if (!passed)
+		return false;
+
+	VERBOSE("ResectionModelParallaxTest PASSED: a link the model sees close abstains unless its pair is a near-duplicate too, "
+		"when it agrees; the model's parallax tightens the tolerance of a narrow pair; at 0 no direction check runs and the "
+		"rotation check still does (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 
