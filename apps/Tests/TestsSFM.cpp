@@ -11123,21 +11123,22 @@ void BuildResectionDirectionScene(Scene& scene, Pose3D& truePose, unsigned numTu
 	TriangulateTracks(scene, false, 4.f, 1.f);
 }
 
-// The six-camera scene of the model-parallax cases: images 0-3 of the arc and image 5, placed one
-// degree along the arc from image 4 (0.087 world units: from points about 5 units away the model
-// sees the two under 1 degree of parallax, against 10 for images 4 and 3), registered with 150
+// The six-camera scene of the model-parallax cases: images 0-3 of the arc and image 5, placed the
+// given degrees along the arc from image 4 (by default one: 0.087 world units, so that from points
+// about 5 units away the model sees the two under 1 degree of parallax, against 10 for images 4 and
+// 3; the parallax is about the step), registered with 150
 // triangulated tracks; image 4 unregistered and observing the first 100 of them, 40 at the
 // projections the given pose gives (its true one when none is given) and 60 at random pixels. Its
 // pairs to registered images are the given links: each carries the true relative pose and the given
 // weighted inliers, reports the given ray angle and has its translation turned by the given degrees.
 struct ResectionLinkSpec { IIndex neighborID; unsigned numInliers; REAL rayAngleDeg; REAL turnDeg; };
-constexpr REAL RESECTION_CLOSE_STEP = 1; // degrees along the arc between images 4 and 5
+constexpr REAL RESECTION_CLOSE_STEP = 1; // degrees along the arc between images 4 and 5, by default
 
 void BuildResectionParallaxScene(Scene& scene, const std::vector<ResectionLinkSpec>& links, const Pose3D* projectingPose,
-	std::mt19937& rng)
+	std::mt19937& rng, REAL closeStep = RESECTION_CLOSE_STEP)
 {
 	BuildResectionArc(scene, 6);
-	static_cast<Pose3D&>(scene.images[5]) = ResectionArcPose(4 * RESECTION_ARC_STEP + RESECTION_CLOSE_STEP);
+	static_cast<Pose3D&>(scene.images[5]) = ResectionArcPose(4 * RESECTION_ARC_STEP + closeStep);
 	AddResectionTracks(scene, {0, 1, 2, 3, 5}, 150, rng);
 	Image& img = scene.images[4];
 	const Pose3D truePose = static_cast<const Pose3D&>(img);
@@ -11382,10 +11383,11 @@ bool ResectionModelParallaxTest()
 	// image 4's resection in the parallax scene with the given links and config: whether it was
 	// registered, and how far its rotation and centre are from the truth
 	struct Outcome { bool registered; double rotErr; REAL centreErr; };
-	const auto resect = [&truePose](const std::vector<ResectionLinkSpec>& links, const Pose3D* projectingPose, const ResectionConfig& config) {
+	const auto resect = [&truePose](const std::vector<ResectionLinkSpec>& links, const Pose3D* projectingPose, const ResectionConfig& config,
+		REAL closeStep = RESECTION_CLOSE_STEP) {
 		std::mt19937 rng(20261025);
 		Scene scene;
-		BuildResectionParallaxScene(scene, links, projectingPose, rng);
+		BuildResectionParallaxScene(scene, links, projectingPose, rng, closeStep);
 		Resection resection(scene, config);
 		resection.RegisterImages();
 		const Image& img = scene.images[4];
@@ -11475,12 +11477,42 @@ bool ResectionModelParallaxTest()
 			passed = false;
 		}
 	}
+
+	// 5. A small angle forgives a wide error: image 5 placed 4 degrees along the arc (the model's
+	// parallax about 4 degrees, past the near-duplicate bar), its pair of 4-degree rays and 400
+	// weighted inliers turned 20 degrees, and the right link to image 3 (100, 20 degrees): the larger
+	// angle, about 4 degrees, gives a 36.9-degree tolerance, the link agrees and the right pose is
+	// accepted; held to the plain 3 degrees it would contradict and outweigh the link to image 3
+	{
+		const Outcome o = resect({{5, 400, 4, 20}, {3, 100, 20, 0}}, NULL, ResectionConfig(), 4);
+		if (!atTruth(o)) {
+			VERBOSE("ResectionModelParallaxTest FAILED: case 5: the right pose was %s; its link to image 5 is turned 20 degrees, "
+				"but both the pair's rays and the model's parallax are about 4 degrees apart, which forgives 36.9 degrees",
+				describe(o).c_str());
+			passed = false;
+		}
+	}
+
+	// 6. The pair's larger angle tightens: image 5 placed 3 degrees along the arc (the model's
+	// parallax about 3 degrees, which alone would forgive 45), its only link a pair of 80-degree rays
+	// turned 2.6 degrees: the larger angle, 80 degrees, holds the direction to 2.15 degrees, tighter
+	// than the plain 3, and the pose is refused
+	{
+		const Outcome o = resect({{5, 400, 80, 2.6}}, NULL, ResectionConfig(), 3);
+		if (o.registered) {
+			VERBOSE("ResectionModelParallaxTest FAILED: case 6: the pose whose link to image 5 is turned 2.6 degrees was %s; "
+				"the pair's 80-degree rays hold the direction to 2.15 degrees, whatever the model's 3 degrees of parallax "
+				"or the plain 3-degree bar would forgive", describe(o).c_str());
+			passed = false;
+		}
+	}
 	if (!passed)
 		return false;
 
 	VERBOSE("ResectionModelParallaxTest PASSED: a link the model sees close abstains unless its pair is a near-duplicate too, "
-		"when it agrees; the model's parallax tightens the tolerance of a narrow pair; at 0 no direction check runs and the "
-		"rotation check still does (%s)", TD_TIMER_GET_FMT().c_str());
+		"when it agrees; otherwise the larger of the pair's ray angle and the model's parallax sets the tolerance, a small "
+		"one forgiving a wide error and either one tightening it; at 0 no direction check runs and the rotation check still "
+		"does (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 

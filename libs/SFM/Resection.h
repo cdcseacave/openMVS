@@ -60,12 +60,13 @@ struct SFM_API ResectionConfig
 	                                    // angle and the model's parallax of the two cameras (the baseline over the
 	                                    // median distance of the pose's inlier points), a small angle forgiving a wide
 	                                    // direction error; a link that the pair and the model both see under 2 degrees
-	                                    // agrees, one that only one of them does abstains. A pose is refused when the
+	                                    // agrees, one that only one of them does abstains, and a pair of unknown ray
+	                                    // angle is held to the model's parallax alone. A pose is refused when the
 	                                    // quorum links that contradict the direction outweigh the ones that agree
-	                                    // (0 = no direction check at all). Against the pair's ray angle alone, on the
-	                                    // 14 test captures: right poses refused 517 times (21 images, 10 never
-	                                    // registered) -> 22 (7 images, 4), wrong poses refused 97 -> 178, accepted
-	                                    // 45 -> 41
+	                                    // (at most 90; 0 = no direction check at all). Against the pair's ray angle
+	                                    // alone, on the 14 test captures: right poses refused 517 times (21 images, 10
+	                                    // never registered) -> 22 (7 images, 4), wrong poses refused 97 -> 178,
+	                                    // accepted 45 -> 41
 	unsigned maxLocalWindow{25};        // Max images in local BA window (0 = all neighbors)
 	unsigned triangulateEvery{0};       // Run triangulation every N registered images (0 = disabled)
 	unsigned localBAEvery{10};          // Run local BA every N registered images (0 = disabled)

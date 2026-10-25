@@ -227,11 +227,11 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 	// Every pose is cross-checked against the image's verified pairs to already registered images,
 	// however large its inlier share: on alameda a 54% share (87/162) put a pose 1.9 degrees off,
 	// taking the 15 images it seeded with it, and every right registration there passes the rotation
-	// check (its quorum within 7.7 of the 15-degree bar). The witness is the
-	// quorum of those pairs -- the largest group agreeing on a rotation -- not the strongest one of
-	// them, which speaks falsely whenever that single neighbor is itself misplaced. When the pairs
-	// contradict one another they are no witness at all, so the pose is left to the other
-	// acceptance rules and the disagreement is reported.
+	// check (its quorum within 7.7 of the 15-degree bar). The witness is the quorum of those pairs --
+	// the largest group agreeing on a rotation -- not the strongest one of them, which speaks falsely
+	// whenever that single neighbor is itself misplaced. When the pairs contradict one another they
+	// are no witness at all, so the pose is left to the other acceptance rules and the disagreement
+	// is reported.
 	if (config.maxRelativeRotationError > 0.f || config.maxLinkDirectionError > 0.f) {
 		std::vector<PoseLink> links;
 		CollectPoseLinks(scene, imageID, links);
@@ -254,12 +254,15 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 			// the baseline direction each quorum link predicts, judged on what the pair measured and on
 			// what the model sees: the model's parallax of a link is the baseline the pose makes with the
 			// neighbour over the median distance of the pose's inlier points. A link both see close
-			// (under kNearDuplicateRayAngle) agrees, one only one of them sees close abstains, and any
-			// other is held to the tolerance of the larger of the pair's ray angle and the model's
-			// parallax, so the pose under test can tighten its own tolerance but never widen it. The
-			// pose is refused only when the links that contradict it outweigh the ones that agree, so
-			// one misplaced neighbour cannot refuse a right pose that other links vouch for
+			// (under kNearDuplicateRayAngle) agrees, one that only one of them sees close abstains, and
+			// any other is held to the tolerance of the larger of the pair's ray angle and the model's
+			// parallax (a pair of unknown ray angle, 0, to the model's parallax alone), so the pose under
+			// test can tighten its own tolerance but never widen it. The pose is refused only when the
+			// links that contradict it outweigh the ones that agree, so one misplaced neighbour cannot
+			// refuse a right pose that other links vouch for
 			if (config.maxLinkDirectionError > 0.f) {
+				// past 90 degrees the tangent of the tolerance turns negative and every link would contradict
+				ASSERT(config.maxLinkDirectionError <= 90.f);
 				REALArr depths;
 				depths.reserve(numInliers);
 				const Eigen::Vector3d C(pose.C.x, pose.C.y, pose.C.z);
@@ -272,9 +275,9 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 				for (const PoseLink& link : quorum.links) {
 					const Image& neighbor = scene.images[link.neighborID];
 					const float parallax = (float)(norm(pose.C - neighbor.C) / depth);
-					const bool modelClose = parallax < D2R(kNearDuplicateRayAngle);
-					if (link.IsNearDuplicate() || modelClose) {
-						if (link.IsNearDuplicate() && modelClose)
+					const bool pairClose = link.IsNearDuplicate(), modelClose = parallax < D2R(kNearDuplicateRayAngle);
+					if (pairClose || modelClose) {
+						if (pairClose && modelClose)
 							agreeing += link.numInliers;
 						continue;
 					}
