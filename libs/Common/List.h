@@ -174,7 +174,7 @@ public:
 	}
 
 	// constructor a list from a raw data array
-	explicit cList(TYPE* pDataBegin, TYPE* pDataEnd) : _size((IDX)(pDataEnd-pDataBegin)), _vectorSize(_size)
+	explicit cList(TYPE* pDataBegin, TYPE* pDataEnd) : _size((IDX)(pDataEnd-pDataBegin)), _vectorSize(_size), _vector(NULL)
 	{
 		if (_vectorSize == 0)
 			return;
@@ -1493,7 +1493,7 @@ public:
 	typedef value_type& reference;
 	typedef const value_type& const_reference;
 	typedef std::vector<Type> VectorType;
-	inline cList(const VectorType& rList) { CopyOf(&rList[0], rList.size()); }
+	inline cList(const VectorType& rList) : _size(0), _vectorSize(0), _vector(NULL) { if (!rList.empty()) CopyOf(rList.data(), (IDX)rList.size()); }
 	#ifdef _SUPPORT_CPP11
 	inline cList(std::initializer_list<Type> l) : _size(0), _vectorSize((size_type)l.size()), _vector(NULL) { ASSERT(l.size()<NO_INDEX); if (_vectorSize == 0) return; _vector = (Type*) operator new[] (static_cast<size_t>(_vectorSize)*sizeof(Type)); const Type* first(l.begin()); do new(_vector + _size++) Type(*first++); while (first!=l.end()); }
 	#endif
@@ -1638,6 +1638,33 @@ inline bool cListTest(unsigned iters) {
 				ASSERT("there is a problem" == NULL);
 				return false;
 			}
+		}
+		// built from a std::vector, empty or not, and from an empty pointer range, in storage holding
+		// anything but zeros: the constructors may read none of the members they are initializing
+		typedef cList<int, int, 1> IntList;
+		alignas(IntList) unsigned char storage[sizeof(IntList)];
+		const std::vector<int> none;
+		for (const std::vector<int>* pVector : {(const std::vector<int>*)&arrR, &none}) {
+			const std::vector<int>& vector = *pVector;
+			memset(storage, 0xA5, sizeof(storage));
+			IntList* const pFromVector = new(storage) IntList(vector);
+			bool same = pFromVector->size() == vector.size();
+			for (size_t i=0; same && i<vector.size(); ++i)
+				same = (*pFromVector)[i] == vector[i];
+			pFromVector->~IntList();
+			if (!same) {
+				ASSERT("there is a problem" == NULL);
+				return false;
+			}
+		}
+		memset(storage, 0xA5, sizeof(storage));
+		int* const pNone = arrR.data();
+		IntList* const pFromRange = new(storage) IntList(pNone, pNone);
+		const bool emptyRange = pFromRange->empty() && pFromRange->data() == NULL;
+		pFromRange->~IntList();
+		if (!emptyRange) {
+			ASSERT("there is a problem" == NULL);
+			return false;
 		}
 	}
 	return true;
