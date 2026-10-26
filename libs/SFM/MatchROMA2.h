@@ -61,7 +61,12 @@ struct SFM_API ROMA2Config {
 	// geometry classifies it: the coarse warp lands a correspondence several pixels off on a
 	// full-resolution image, and a correspondence admitted at half a warp cell (8.7 px on a 2789 px
 	// frame with the 160-cell grid) pollutes every track it enters, so the dense segment answers to
-	// the same bar the sparse matches do.
+	// the same bar the sparse matches do. Retuned on the cell-centre warp grid (2026-10-20, replays of
+	// one warp dump per capture): a lower factor keeps fewer, more exact dense correspondences (0.5:
+	// -21 to -41% of them, their share past 4 px under the reference 12.6/17.4/12.8% -> 10.1/12.3/7.8%
+	// on 5936fac3/Playground/alameda) but leaves weakly held images out (26ccbd51: 6-8 of 730 in both
+	// samples, 5936fac3 at 0.25-0.35), and a higher one (1.5, 2) adds correspondences 37-91% of which
+	// are past 4 px and lowers the accuracy; no other value beats 1 on the reconstructions.
 	float denseEpipolarErrorFactor = 1.f;
 	// Weight of a dense correspondence against a sparse one's 1 in the refinement that closes the
 	// pair's relative pose: the robust fit runs on guided u dense, whose depth breaks the degeneracy
@@ -77,14 +82,20 @@ struct SFM_API ROMA2Config {
 	// The guided sparse match of an admitted pair looks for each described keypoint of A along its
 	// epipolar line in B, in a band centred on the warp's prediction (GuidedSearch, MatchGeometric.h):
 	// guidedBandLengthCells warp cells either way along the line -- the coarse warp's along-line
-	// error, 5.8 px median and 13.4 px at the 90th percentile in 2D on a 2789 px frame with the
-	// 160-cell grid -- and guidedBandHalfWidthCells either way across it, the across-line error,
-	// 2.3 px median there. The band is centred on the prediction, which lives in B's own pixels, so an
-	// imprecise focal or principal point and lens distortion, none of which the geometry the verdict
-	// fitted models, enter only as a rotation of the band by a few degrees. A half-width of 0 searches
-	// the disc of the length's radius. Every winner must also beat the closest keypoint OUTSIDE the
-	// band by the matcher's ratio, the reference that refuses an impostor where the true keypoint was
-	// never detected (see MatchGeometric.h).
+	// error at warp-free SIFT matches, 0.20-0.29 cell median, 0.68-0.87 cell at the 90th percentile
+	// and a tail of 3.5-4.6 cells at the 99th (5936fac3, Playground, alameda; a cell is the image's
+	// long side over the 160-cell grid) -- and guidedBandHalfWidthCells either way across it, the
+	// across-line error, 0.13-0.20 cell median and 0.34-0.54 cell at the 90th percentile (3.5-6.8 px:
+	// neither constant in pixels nor across captures, so the band stays in cells). The band holds
+	// 87-95% of those matches and picks a wrong keypoint for none of them; a wider band gains true
+	// matches at the cost of cross-line wrong ones (0.65: +1.5-6 pts held, the share of guided
+	// matches past 4 px 1.58/2.38/2.38% -> 1.92/2.60/3.19%), a shorter one the reverse, and neither
+	// changes a reconstruction (retune of 2026-10-20). The band is centred on the prediction, which
+	// lives in B's own pixels, so an imprecise focal or principal point and lens distortion, none of
+	// which the geometry the verdict fitted models, enter only as a rotation of the band by a few
+	// degrees. A half-width of 0 searches the disc of the length's radius. Every winner must also beat
+	// the closest keypoint OUTSIDE the band by the matcher's ratio, the reference that refuses an
+	// impostor where the true keypoint was never detected (see MatchGeometric.h).
 	float guidedBandLengthCells = 2.f;
 	float guidedBandHalfWidthCells = 0.5f;
 	// A rival within this distance (pixels) of the winner is the same feature described twice (a
