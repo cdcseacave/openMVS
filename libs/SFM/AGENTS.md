@@ -136,9 +136,10 @@ Selected by `ReconstructionConfig::HasKnownPoses()` (a poses file is configured 
 ```
 Then falls through to the shared tail of `Scene::Reconstruct` (pre-final BA,
 filtering, final BA, `FilterWeaklyConnectedImages`, resection of the images missing from the
-poses file, alignment, colors). A failed final similarity alignment back to the imported frame
-is reported as a warning and leaves the scene in the refined (arbitrary-gauge) frame; when prior
-poses exist the alignment takes precedence over GPS. Clustering is never involved.
+poses file, which closes with a full bundle adjustment either way, alignment, colors). A failed
+final similarity alignment back to the imported frame is reported as a warning and leaves the scene
+in the refined (arbitrary-gauge) frame; when prior poses exist the alignment takes precedence over
+GPS. Clustering is never involved.
 
 ## Key Algorithms
 

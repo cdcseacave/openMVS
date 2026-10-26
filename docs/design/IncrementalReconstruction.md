@@ -127,9 +127,9 @@ the remaining images the correspondences or the fit they lacked. A stall with no
 the last full adjustment ends the resection. Every resection closes with a full adjustment of its own
 (every track triangulated again, every intrinsic the flags allow, 100 iterations), also when it
 registered nothing since the last one and also when it had no image to try: the whole-scene pass that
-follows the merge receives the model filtered at the final bundle adjustment's tighter bar, and closing
-it only when it registered an image left 8d2f4877 with 146k of its 413k tracks valid where the closing
-keeps 389k. So the whole-scene pass always runs, also when the merge registered every image, and a pass
+follows the merge receives the model filtered at the final bundle adjustment's tighter bar, and the
+closing re-admits the observations within the resection's bar that filter dropped (8d2f4877 keeps 389k
+of its 413k tracks valid with the closing, 146k without it). So the whole-scene pass always runs, also when the merge registered every image, and a pass
 whose only unregistered images are the ones the weak-image filter withheld for contradicting the model
 (`ExcludeImages`) skips its loop, logs "warning: no unregistered images" and closes all the same. It
 returns false like any pass that registered nothing, so the caller does not filter the weakly connected

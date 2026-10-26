@@ -143,7 +143,8 @@ Input: Images (or video keyframes)          [+ optional poses file]
         └────────────────┼────────────────────┘
                          ▼
          Shared tail: pre-final BA, filtering, final BA,
-         weak-image filtering, resection of unposed images,
+         weak-image filtering, resection of unposed images
+         (closing with a full bundle adjustment either way),
          GPS alignment *or* re-alignment to the prior poses
                          │
                          ▼
