@@ -46,7 +46,7 @@ class SFM_API Scene;
  *
  * Selection (SelectSeamGraph): every component of the kept readings (all of them at first) is
  * averaged (AverageBlockPoses: rotations by GlobalRotationEstimator, log-scales and translations
- * under an L1 reweighting); every reading is judged against the poses of its component and kept
+ * reweighted by the inverse of each reading's error); every reading is judged against the poses of its component and kept
  * within the graph bars; repeated, re-entry allowed, until the kept set settles. A bridge (a block
  * pair no cycle of the other block pairs tests) keeps a reading only with minSeamWeight cameras on
  * its weaker side and its verified pairs not against it. Each component of the readings left is a
@@ -190,9 +190,10 @@ struct SFM_API GlobalAlignmentConfig
 	unsigned minPairInliers{30};
 	float maxPairRotationResidual{5.f};     // degrees
 	// The graph bars: a reading stays in the block graph while the averaged poses of its component
-	// sit within these of it (a reading that observes no scale on its rotation alone). Right readings
-	// stay under 2.8 deg / 1.093 / 0.131 (99th percentile) and copies of a repeated structure sit past
-	// 0.27 of the footprint
+	// sit within these of it (a reading that observes no scale on its rotation alone). The right
+	// readings of the two measured block sets reach 2.8 deg / 1.093 / 0.131 and 3.3 deg / 1.156 /
+	// 0.205 at their 99th percentile, and the copies of a repeated structure sit past 0.27 of the
+	// footprint
 	float maxGraphRotationResidual{5.f};    // degrees
 	float maxGraphScaleResidual{1.20f};
 	float maxGraphTranslationResidual{0.20f}; // fraction of the pair's shared camera-bbox diagonal
@@ -270,39 +271,6 @@ public:
 		std::vector<SeamCorrespondence>& correspondences) const;
 
 	/**
-	 * @brief Robust rotation, scale and translation averaging of the given readings — the one call
-	 * site of the three global solvers
-	 *
-	 * @param edges indices into candidates of the readings of ONE connected component; the blocks
-	 * they touch are the nodes, and a reading weighs its candidate's weight. The rotations by
-	 * GlobalRotationEstimator (its maximum spanning tree, L1, its own reweighting), run again over
-	 * whatever a run leaves in another frame; the log-scales and the translations, between the
-	 * blocks' camera centroids (BlockFootprint), so they do not depend on where the arbitrary origin
-	 * of a block's frame lies, under an L1 reweighting. A reading past the rotation bar takes no part
-	 * in the scales, and one past the scale bar none in the translations
-	 * @param fixedBlock the gauge: the frame every pose comes out in, when the readings reach it
-	 * @param footprints per block, its camera footprint; its size is the number of blocks
-	 * @param poses out: one entry per block; every block the rotation, scale and translation
-	 * averaging reaches from the gauge gets its local -> gauge frame transform and model 0, the
-	 * rest keep model NO_ID and state UNPLACED
-	 * @param residuals out: one per edge, the averaging against it (rotation degrees, scale ratio
-	 * >= 1, translation as a fraction of the footprint the two blocks share); an edge the
-	 * rotation averaging left with its two ends in different frames, and one measuring a scale
-	 * between blocks the metric averaging did not both place, gets an infinite rotation. A reading
-	 * that cannot observe a scale is judged on its rotation alone, and keeps a residual of 1 in
-	 * scale and 0 in translation.
-	 * @return false when no block could be placed, which a component whose readings observe no
-	 * scale at all always reports even though its rotation residuals are filled in
-	 */
-	bool AverageBlockPoses(
-		const std::vector<SeamCandidate>& candidates,
-		const std::vector<uint32_t>& edges,
-		const std::vector<BlockFootprint>& footprints,
-		uint32_t fixedBlock,
-		std::vector<BlockPose>& poses,
-		std::vector<Point3>& residuals) const;
-
-	/**
 	 * @brief The one decision over the block graph: which readings stay, and where the blocks of
 	 * every model sit
 	 *
@@ -324,6 +292,33 @@ public:
 		std::vector<uint32_t>& edgeSeams) const;
 
 private:
+	/**
+	 * @brief Robust rotation, scale and translation averaging of the given readings — the one call
+	 * site of the three global solvers
+	 *
+	 * @param edges indices into candidates of the readings of ONE connected component; the blocks
+	 * they touch are the nodes, and a reading weighs its candidate's weight. The rotations by
+	 * GlobalRotationEstimator (its maximum spanning tree, L1, its own reweighting), run again over
+	 * whatever a run leaves in another frame; the log-scales and the translations, between the
+	 * blocks' camera centroids (BlockFootprint), so they do not depend on where the arbitrary origin
+	 * of a block's frame lies, every reading reweighted by the inverse of its error as the
+	 * estimators' row scale (their normal equations weigh its square, which settles on one reading
+	 * rather than the L1 median). A reading past the rotation bar or of weight 0 takes no part in the
+	 * scales, and one past the scale bar none in the translations
+	 * @param fixedBlock the gauge: the frame every pose comes out in, when the readings reach it
+	 * @param footprints per block, its camera footprint; its size is the number of blocks
+	 * @param poses out: one entry per block; every block the rotation, scale and translation
+	 * averaging reaches from the gauge gets its local -> gauge frame transform and model 0, the
+	 * rest keep model NO_ID and state UNPLACED (all of them when the component's readings observe
+	 * no scale at all)
+	 */
+	void AverageBlockPoses(
+		const std::vector<SeamCandidate>& candidates,
+		const std::vector<uint32_t>& edges,
+		const std::vector<BlockFootprint>& footprints,
+		uint32_t fixedBlock,
+		std::vector<BlockPose>& poses) const;
+
 	// The cross-block image pairs grouped by block pair, the pair ordered a < b
 	void MapBlockPairLinks();
 

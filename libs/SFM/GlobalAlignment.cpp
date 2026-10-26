@@ -103,12 +103,13 @@ constexpr float kMinExtentShare = 0.2f;
 // A one-camera door takes its scale from the depths its points have in both blocks only with this many
 // of them; with fewer it observes no scale.
 constexpr unsigned kDoorMinDepthRatios = 10;
-// The L1 reweighting of the scales and the translations of the block graph (the view-graph filter's
-// form of it): its rounds, and the error a reading is never weighed as below -- in log-scale, and
-// in the footprint the two blocks share
-constexpr unsigned kL1Rounds = 40;
-constexpr REAL kL1ScaleFloor = REAL(1e-4);
-constexpr REAL kL1TranslationFloor = REAL(1e-3);
+// The reweighting of the scales and the translations of the block graph, every reading's weight
+// times the inverse of its error as the estimators' row scale (their normal equations weigh its
+// square, which settles on one reading rather than the L1 median): its rounds, and the error a
+// reading is never weighed as below -- in log-scale, and in the footprint the two blocks share
+constexpr unsigned kReweightRounds = 40;
+constexpr REAL kReweightScaleFloor = REAL(1e-4);
+constexpr REAL kReweightTranslationFloor = REAL(1e-3);
 
 // One cross-sub-scene image pair, with the sub-scene each of its two images belongs to already
 // resolved, so feature indices (queryIdx/trainIdx) can be mapped consistently.
@@ -887,8 +888,8 @@ bool SolveRotationFrames(
 	return numFrames > 0;
 }
 
-// The weight of an L1 reweighting: the inverse of the reading's error, never under the floor
-auto L1Factor(const REAL minError)
+// The factor of the reweighting: the inverse of the reading's error, never under the floor
+auto InverseErrorFactor(const REAL minError)
 {
 	return [minError](REAL r) { return (float)(REAL(1) / MAXF(r, minError)); };
 }
@@ -896,20 +897,17 @@ auto L1Factor(const REAL minError)
 } // namespace
 /*----------------------------------------------------------------*/
 
-bool GlobalAlignment::AverageBlockPoses(
+void GlobalAlignment::AverageBlockPoses(
 	const std::vector<SeamCandidate>& candidates,
 	const std::vector<uint32_t>& edges,
 	const std::vector<BlockFootprint>& footprints,
 	const uint32_t fixedBlock,
-	std::vector<BlockPose>& poses,
-	std::vector<Point3>& residuals) const
+	std::vector<BlockPose>& poses) const
 {
 	const uint32_t numBlocks = (uint32_t)footprints.size();
 	poses.assign(numBlocks, BlockPose());
-	// a reading whose blocks the averaging does not place is left without a verdict
-	residuals.assign(edges.size(), Point3(REAL(FLT_MAX), REAL(1), REAL(0)));
 	if (edges.empty())
-		return false;
+		return;
 
 	// the blocks the readings touch, renumbered 0..n-1 for the solvers
 	std::vector<uint32_t> nodeOfBlock(numBlocks, NO_ID), blockOfNode;
@@ -947,7 +945,7 @@ bool GlobalAlignment::AverageBlockPoses(
 	std::vector<Point3> rotations;
 	if (!SolveRotationFrames(rotationPairs, n, rotations, frameOfNode)) {
 		VERBOSE("error: rotation averaging over %u readings failed", (unsigned)edges.size());
-		return false;
+		return;
 	}
 	std::vector<REAL> rotationResiduals(rotationPairs.size());
 	FOREACH(i, rotationPairs)
@@ -958,14 +956,16 @@ bool GlobalAlignment::AverageBlockPoses(
 	for (const uint32_t frame : frameOfNode)
 		if (frame != NO_ID)
 			numFrames = MAXF(numFrames, frame + 1);
-	DEBUG("Seam graph: component of %u blocks solved in %u frames", n, numFrames);
-	// scales: only the readings within the rotation bar, and only those that observe a scale
+	DEBUG_EXTRA("Seam graph: component of %u blocks solved in %u frames", n, numFrames);
+	// scales: only the readings within the rotation bar that observe a scale and weigh something --
+	// a reading of weight 0 (every verified pair across it against it) gives the solves nothing, and
+	// is still judged against their poses
 	const REAL maxLogScaleResidual = std::log((REAL)config.maxGraphScaleResidual);
 	std::vector<uint32_t> scaleEdges; // positions in `edges`
 	std::vector<ScalePair> scalePairs;
 	FOREACH(k, edges) {
 		const SeamCandidate& c = candidates[edges[k]];
-		if (!c.scaleObservable || c.T.scale <= 0 || rotationResiduals[k] > config.maxGraphRotationResidual)
+		if (!c.scaleObservable || c.T.scale <= 0 || !(c.weight > 0.f) || rotationResiduals[k] > config.maxGraphRotationResidual)
 			continue;
 		scaleEdges.push_back(k);
 		scalePairs.emplace_back(nodeOfBlock[c.sceneA], nodeOfBlock[c.sceneB], REAL(1) / c.T.scale, c.weight);
@@ -981,16 +981,16 @@ bool GlobalAlignment::AverageBlockPoses(
 		const uint32_t scaleGauge = SolveGauge(scalePairs, gauge);
 		GlobalScaleEstimator scaleEstimator;
 		std::vector<REAL> scaleResiduals;
-		if (!RobustAverageWith(scalePairs, kL1Rounds,
+		if (!RobustAverageWith(scalePairs, kReweightRounds,
 			[&](const std::vector<ScalePair>& active, std::vector<REAL>& s) { return scaleEstimator.EstimateScales(active, n, scaleGauge, s); },
 			[&](size_t i, const std::vector<REAL>& s) {
 				const ScalePair& p = scalePairs[i];
 				return std::log(p.scaleRatio) - (std::log(s[p.idxB]) - std::log(s[p.idxA]));
 			},
-			L1Factor(kL1ScaleFloor), scales, scaleResiduals))
+			InverseErrorFactor(kReweightScaleFloor), scales, scaleResiduals))
 		{
 			VERBOSE("error: scale averaging over %u readings failed", (unsigned)scalePairs.size());
-			return false;
+			return;
 		}
 
 		// translations: the readings under both bars, each placing one block's cameras' centroid in
@@ -1013,7 +1013,7 @@ bool GlobalAlignment::AverageBlockPoses(
 			metricGauge = SolveGauge(translationPairs, scaleGauge);
 			GlobalTranslationEstimator translationEstimator;
 			std::vector<REAL> translationResiduals;
-			if (!RobustAverageWith(translationPairs, kL1Rounds,
+			if (!RobustAverageWith(translationPairs, kReweightRounds,
 				[&](const std::vector<TranslationPair>& active, std::vector<Point3>& t) { return translationEstimator.EstimateTranslations(active, n, metricGauge, t); },
 				[&](size_t i, const std::vector<Point3>& t) {
 					const TranslationPair& p = translationPairs[i];
@@ -1023,10 +1023,10 @@ bool GlobalAlignment::AverageBlockPoses(
 						footprints[blockOfNode[p.idxB]].extent * scales[p.idxB]);
 					return extent > 0 ? norm(t[p.idxB] - t[p.idxA] - p.relativeTranslation) / extent : REAL(0);
 				},
-				L1Factor(kL1TranslationFloor), translations, translationResiduals))
+				InverseErrorFactor(kReweightTranslationFloor), translations, translationResiduals))
 			{
 				VERBOSE("error: translation averaging over %u readings failed", (unsigned)translationPairs.size());
-				return false;
+				return;
 			}
 		}
 	}
@@ -1035,38 +1035,17 @@ bool GlobalAlignment::AverageBlockPoses(
 	// metric averaging reaches from the gauge are placed
 	const uint32_t poseFrame = frameOfNode[metricGauge != NO_ID ? metricGauge : gauge];
 	if (poseFrame == NO_ID)
-		return false;
-	std::vector<Transform> transforms(numBlocks);
-	std::vector<bool> hasTransform(numBlocks, false);
-	unsigned numPlaced = 0;
+		return;
 	for (uint32_t node = 0; node < n; ++node) {
-		if (frameOfNode[node] != poseFrame)
+		if (frameOfNode[node] != poseFrame || metricGauge == NO_ID || metricSets.Find(node) != metricSets.Find(metricGauge))
 			continue;
 		const uint32_t block = blockOfNode[node];
 		// the averaging solved where the block's centroid lands; its frame's origin follows
 		const RMatrix R(RMatrix(rotations[node]).t());
-		transforms[block] = BuildGlobalTransform(rotations[node], scales[node],
+		poses[block].T = BuildGlobalTransform(rotations[node], scales[node],
 			translations[node] - (R * footprints[block].centre) * scales[node]);
-		hasTransform[block] = true;
-		if (metricGauge == NO_ID || metricSets.Find(node) != metricSets.Find(metricGauge))
-			continue;
-		poses[block].T = transforms[block];
 		poses[block].model = 0;
-		++numPlaced;
 	}
-	// what the averaging says of each reading: a rotation-only reading took part in the rotation
-	// averaging alone, and one that measured a scale needs both its blocks placed to be judged
-	FOREACH(k, edges) {
-		const SeamCandidate& c = candidates[edges[k]];
-		if (!hasTransform[c.sceneA] || !hasTransform[c.sceneB])
-			continue;
-		const SeamResidual residual = ComputeSeamResidual(c.sceneA, c.sceneB, c.T, transforms, footprints);
-		if (!c.scaleObservable)
-			residuals[k] = Point3(residual.rotation, REAL(1), REAL(0));
-		else if (poses[c.sceneA].model != NO_ID && poses[c.sceneB].model != NO_ID)
-			residuals[k] = Point3(residual.rotation, residual.scale, residual.translation);
-	}
-	return numPlaced > 0;
 }
 /*----------------------------------------------------------------*/
 
@@ -1268,7 +1247,7 @@ void GlobalAlignment::EstimateSeamPair(
 		// verified pairs' inlier weight it reproduces; the 3D-3D reading enters only with supporting
 		// cameras on both sides and its verified pairs not against it, weighing its cameras
 		const bool enters = !pointAlignment || (c.score.Weight() > 0 && c.pairs.Holds());
-		DEBUG("Seam (%u, %u) %s: %u/%u inliers, cameras %u+%u, %u pairs weighing %.0f for / %.0f against%s",
+		DEBUG_EXTRA("Seam (%u, %u) %s: %u/%u inliers, cameras %u+%u, %u pairs weighing %.0f for / %.0f against%s",
 			a, b, SourceWord(reading.source), c.score.inliers, (unsigned)observations.size(), c.score.support[0], c.score.support[1],
 			c.pairs.numPairs, c.pairs.agree, c.pairs.disagree, enters ? "" : ", refused");
 		if (!enters)
@@ -1323,8 +1302,7 @@ void GlobalAlignment::SelectSeamGraph(
 			// nothing: the rotation averaging reads no reading of weight 0, so its blocks get no pose
 			if (blockWeights[gauge] > 0.f) {
 				std::vector<BlockPose> componentPoses;
-				std::vector<Point3> residuals;
-				AverageBlockPoses(candidates, readings, footprints, gauge, componentPoses, residuals);
+				AverageBlockPoses(candidates, readings, footprints, gauge, componentPoses);
 				FOREACH(blk, componentPoses)
 					if (componentPoses[blk].model != NO_ID) {
 						poses[blk].T = componentPoses[blk].T;
@@ -1355,13 +1333,17 @@ void GlobalAlignment::SelectSeamGraph(
 		return r.rotation <= barR && (!c.scaleObservable || (r.scale <= barS && r.translation <= barT));
 	};
 	unsigned numRounds = 0;
-	for (; numRounds < kRobustRounds; ++numRounds) {
+	for (bool settled = false; !settled; ) {
+		if (numRounds == kRobustRounds) {
+			VERBOSE("warning: the kept readings did not settle in %u rounds", kRobustRounds);
+			break;
+		}
+		++numRounds;
 		AverageKept();
 		std::vector<bool> next(candidates.size());
 		FOREACH(i, candidates)
 			next[i] = Within(candidates[i]);
-		if (next == kept)
-			break;
+		settled = next == kept;
 		kept.swap(next);
 	}
 	// a block pair on no cycle of the other block pairs (a bridge: no other path tests it) keeps a
@@ -1386,7 +1368,7 @@ void GlobalAlignment::SelectSeamGraph(
 				const SeamCandidate& c = candidates[i];
 				if (c.score.Weight() >= config.minSeamWeight && c.pairs.Holds())
 					continue;
-				VERBOSE("Seam (%u, %u) %s off: a bridge of %u cameras on its weaker side, its verified pairs %.0f for / %.0f against",
+				DEBUG_EXTRA("Seam (%u, %u) %s off: a bridge of %u cameras on its weaker side, its verified pairs %.0f for / %.0f against",
 					blockPair.first, blockPair.second, SourceWord(c.source), c.score.Weight(), c.pairs.agree, c.pairs.disagree);
 				kept[i] = false;
 				++numBridgesOff;
@@ -1422,7 +1404,7 @@ void GlobalAlignment::SelectSeamGraph(
 		pose.reason = !touched[blk] ? "no seam" : (onEdge[blk] ? "no pose from the averaging" : "every reading off");
 	}
 	VERBOSE("Block graph: %u blocks, %u readings, %u kept after %u rounds, %u bridges off, %u models (%s)",
-		numBlocks, (unsigned)candidates.size(), (unsigned)edgeSeams.size(), numRounds + 1, numBridgesOff, numModels, TD_TIMER_GET_FMT().c_str());
+		numBlocks, (unsigned)candidates.size(), (unsigned)edgeSeams.size(), numRounds, numBridgesOff, numModels, TD_TIMER_GET_FMT().c_str());
 }
 /*----------------------------------------------------------------*/
 

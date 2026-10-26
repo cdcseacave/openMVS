@@ -600,14 +600,17 @@ bool SeamGraphConsensusTest();
 // The selection over planted block graphs: a chord heavier than any one true seam and wrong by 30
 // degrees across two cycles is left off; a bridge keeps a reading only where its two directions
 // agree, two cameras hold its weaker side and the verified pairs across it are not against it; the
-// L1 reweighting does not follow a lighter copy that a least-squares solve would sit between; a
-// reading without scale is judged on its rotation
+// inverse-error reweighting does not follow a lighter copy that a least-squares solve would sit
+// between; a reading without scale is judged on its rotation; a reading cut by one round's averaging
+// is judged again in the next; a reading of weight 0 gives the scale and translation solves nothing
 bool HeavyWrongChordTest();
 bool TwoDirectionBridgeTest();
 bool SymmetricBridgePairsTest();
 bool OneCameraBridgeTest();
-bool L1StartTest();
+bool ReweightingStartTest();
 bool RotationOnlyReadingTest();
+bool BarsReEntryTest();
+bool WeightlessScaleReadingTest();
 bool RingPlacementTest();
 bool UnobservableScaleTest();
 bool UnobservableScalePairTest();
@@ -643,7 +646,7 @@ bool FoldedBlock45Test();
 bool FalseChordTest();
 bool SeamInliersBecomeTracksTest();
 bool UnplacedBlocksReportedTest();
-bool BentBlocksRelaxationTest();
+bool BentBlocksAdjustmentTest();
 bool GlobalAlignmentMergeSingleSceneTest();
 bool GlobalAlignmentTrackMergeDuplicateImageGuardTest();
 bool GlobalAlignmentTrackMerge3DProximityGuardTest();

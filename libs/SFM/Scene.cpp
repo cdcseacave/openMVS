@@ -946,7 +946,7 @@ bool Scene::ReconstructHierarchical(const ReconstructionConfig& config, const II
 	});
 	threadPool.wait();
 
-	// 3. Merge/align sub-scenes (simple merge + final BA)
+	// 3. Place the blocks and merge them, then adjust the merged model at the loose bar
 	if (subScenes.size() == 1) {
 		*this = std::move(subScenes[0]);
 	} else {

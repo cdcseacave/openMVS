@@ -509,9 +509,13 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::OneCameraBridgeTest())
 				return false;
-			if (!SFM::L1StartTest())
+			if (!SFM::ReweightingStartTest())
 				return false;
 			if (!SFM::RotationOnlyReadingTest())
+				return false;
+			if (!SFM::BarsReEntryTest())
+				return false;
+			if (!SFM::WeightlessScaleReadingTest())
 				return false;
 			if (!SFM::RingPlacementTest())
 				return false;
@@ -549,7 +553,7 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::UnplacedBlocksReportedTest())
 				return false;
-			if (!SFM::BentBlocksRelaxationTest())
+			if (!SFM::BentBlocksAdjustmentTest())
 				return false;
 			if (!SFM::BentBlockClosureTest())
 				return false;
