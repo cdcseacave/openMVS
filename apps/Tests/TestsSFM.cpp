@@ -33,6 +33,7 @@
 #include "../../libs/SFM/GlobalRotationAveraging.h"
 #include "../../libs/SFM/GlobalScaleAveraging.h"
 #include "../../libs/SFM/GlobalTranslationAveraging.h"
+#include "../../libs/Math/DisjointSet.h"
 #include "../../libs/SFM/RobustAveraging.h"
 #include "../../libs/SFM/PairsWeighting.h"
 #include "../../libs/SFM/ViewGraphCalibrator.h"
@@ -40,6 +41,7 @@
 #include "../../libs/SFM/SceneCluster.h"
 #include "../../libs/SFM/GlobalAlignment.h"
 #include "../../libs/SFM/PoseLink.h"
+#include "../../libs/SFM/Triangulation.h"
 #include "../../libs/SFM/MatchGeometric.h"
 #include "../../libs/SFM/LensFit.h"
 #include "../../libs/SFM/RoMa2Matcher.h"
@@ -49,6 +51,8 @@
 #include "../../libs/IO/json.hpp"
 #include "Tests.h"
 #include <filesystem>
+#include <chrono>
+#include <random>
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -16218,8 +16222,10 @@ bool SeamGraphConsensusTest()
 	for (Transform& T : G)
 		T = Transform::Random(rng, 180, 10, 0.5);
 	// two blocks share a seam because they overlap, so each block's cameras span a box of the size
-	// of the distance to the blocks it is joined to
-	const std::vector<REAL> extents(numBlocks, REAL(20));
+	// of the distance to the blocks it is joined to, about the origin of the block's own frame
+	BlockFootprint footprint;
+	footprint.extent = 20;
+	const std::vector<BlockFootprint> footprints(numBlocks, footprint);
 
 	// a seam is the exact relative similarity of its two blocks, off by a fraction of a degree and
 	// a percent of scale, plus whatever rotation error is planted in it
@@ -16236,6 +16242,7 @@ bool SeamGraphConsensusTest()
 		c.T.R = RMatrix(noiseR * c.T.R);
 		c.T.scale *= REAL(1) + REAL(0.01) * noiseDist(rng);
 		c.weight = weight;
+		c.score.support[0] = c.score.support[1] = (unsigned)weight;
 		return c;
 	};
 	std::vector<SeamCandidate> candidates;
@@ -16247,27 +16254,22 @@ bool SeamGraphConsensusTest()
 	// a chord neither block ever saw, as strong as a true seam and 60 degrees away from the truth
 	const size_t idxFalseChord = candidates.size();
 	candidates.push_back(MakeSeam(2, 8, 60, 20.f));
-	// a second and weaker opinion on a pair a true seam already covers
-	const size_t idxWrongDuplicate = candidates.size();
+	// a second and weaker hypothesis on a pair a true seam already covers: a rival the cycles judge
+	const size_t idxWrongRival = candidates.size();
 	candidates.push_back(MakeSeam(5, 6, 20, 6.f));
-	// two opinions on a pair joined to nothing else: no cycle can tell them apart
+	// two readings of near-equal weight on a pair joined to nothing else, 15 degrees apart, and the
+	// verified image pairs across it, which reproduce the true one and hold against the other
 	const size_t idxDisputedPair = candidates.size();
 	candidates.push_back(MakeSeam(12, 13, 0, 20.f));
-	candidates.push_back(MakeSeam(12, 13, 15, 12.f));
-	// a pair joined to nothing else, measured from one side only but on a wide and dense rig
-	const size_t idxLoneBridge = candidates.size();
-	SeamCandidate bridge(MakeSeam(14, 15, 0, 20.f));
-	bridge.source = SeamCandidate::RIG_B_ON_A;
-	bridge.oneDirection = true;
-	bridge.score.centres = 3;
-	bridge.observations.assign(200, SeamObservation());
-	for (SeamObservation& obs : bridge.observations)
-		obs.forward = true;
-	bridge.score.inlierMask.assign(bridge.observations.size(), true);
-	bridge.score.inliers = (unsigned)bridge.observations.size();
-	candidates.push_back(std::move(bridge));
+	candidates.push_back(MakeSeam(12, 13, 15, 15.f));
+	for (size_t i = idxDisputedPair; i < idxDisputedPair + 2; ++i) {
+		PairAgreement& pairs = candidates[i].pairs;
+		pairs.numPairs = 6;
+		(i == idxDisputedPair ? pairs.agree : pairs.disagree) = 400.f;
+	}
+	// a pair joined to nothing else holding one hypothesis
+	candidates.push_back(MakeSeam(14, 15, 0, 20.f));
 	// three blocks whose rigs are too shallow to observe a scale: only their rotations are averaged
-	const size_t idxRotationOnly = candidates.size();
 	for (uint32_t i = 0; i < 3; ++i) {
 		SeamCandidate c(MakeSeam(16 + i, 16 + (i + 1) % 3, 0, 6.f));
 		c.scaleObservable = false;
@@ -16275,7 +16277,6 @@ bool SeamGraphConsensusTest()
 	}
 	// a chain whose middle seam observes no scale: the two ends share a rotation but no scale and no
 	// position, so only the side the averaging is gauged at can be placed
-	const size_t idxSplitChain = candidates.size();
 	candidates.push_back(MakeSeam(19, 20, 0, 7.f));
 	SeamCandidate rotationOnlyLink(MakeSeam(20, 21, 0, 6.f));
 	rotationOnlyLink.scaleObservable = false;
@@ -16285,77 +16286,73 @@ bool SeamGraphConsensusTest()
 	Scene scene;
 	GlobalAlignmentConfig alignCfg;
 	GlobalAlignment alignment(scene, alignCfg);
-	alignment.ClassifySeamGraph(extents, candidates);
+	std::vector<BlockPose> poses;
+	std::vector<uint32_t> edgeSeams;
+	alignment.SelectSeamGraph(footprints, candidates, poses, edgeSeams);
+	const auto IsOn = [&edgeSeams](size_t i) {
+		return std::find(edgeSeams.begin(), edgeSeams.end(), (uint32_t)i) != edgeSeams.end();
+	};
 
 	for (size_t i = 0; i < numTrueSeams; ++i) {
 		const SeamCandidate& c = candidates[i];
-		if (c.cls != SeamCandidate::ROBUST) {
-			VERBOSE("SeamGraphConsensusTest FAILED: true seam (%u, %u) is class %u: rotation %.2f deg, scale %.3f, translation %.3f",
-				c.sceneA, c.sceneB, (unsigned)c.cls, c.residualRotation, c.residualScale, c.residualTranslation);
+		if (!IsOn(i)) {
+			VERBOSE("SeamGraphConsensusTest FAILED: true seam (%u, %u) is off: rotation %.2f deg, scale %.3f, translation %.3f",
+				c.sceneA, c.sceneB, c.residualRotation, c.residualScale, c.residualTranslation);
 			return false;
 		}
 	}
 	const SeamCandidate& falseChord = candidates[idxFalseChord];
-	if (falseChord.cls != SeamCandidate::REJECTED || falseChord.residualRotation <= 30.f) {
-		VERBOSE("SeamGraphConsensusTest FAILED: the false chord is class %u with rotation residual %.2f deg",
-			(unsigned)falseChord.cls, falseChord.residualRotation);
+	if (IsOn(idxFalseChord) || falseChord.residualRotation <= 30.f) {
+		VERBOSE("SeamGraphConsensusTest FAILED: the false chord is %s with rotation residual %.2f deg",
+			IsOn(idxFalseChord) ? "on" : "off", falseChord.residualRotation);
 		return false;
 	}
-	const SeamCandidate& wrongDuplicate = candidates[idxWrongDuplicate];
-	if (wrongDuplicate.cls != SeamCandidate::REJECTED) {
-		VERBOSE("SeamGraphConsensusTest FAILED: the wrong duplicate seam is class %u with rotation residual %.2f deg",
-			(unsigned)wrongDuplicate.cls, wrongDuplicate.residualRotation);
+	// the rival the cycles judge loses its edge to the true seam
+	if (IsOn(idxWrongRival)) {
+		VERBOSE("SeamGraphConsensusTest FAILED: the wrong rival on (5, 6) carries its edge");
 		return false;
 	}
-	for (size_t i = idxDisputedPair; i < idxLoneBridge; ++i) {
-		if (candidates[i].cls != SeamCandidate::UNDECIDED) {
-			VERBOSE("SeamGraphConsensusTest FAILED: opinion %u on the isolated pair is class %u",
-				(unsigned)(i - idxDisputedPair), (unsigned)candidates[i].cls);
-			return false;
-		}
-	}
-	const SeamCandidate& loneBridge = candidates[idxLoneBridge];
-	if (loneBridge.cls != SeamCandidate::VERIFIED) {
-		VERBOSE("SeamGraphConsensusTest FAILED: the lone bridge is class %u", (unsigned)loneBridge.cls);
+	// the disputed bridge keeps the reading its pairs reproduce
+	if (!IsOn(idxDisputedPair) || IsOn(idxDisputedPair + 1)) {
+		VERBOSE("SeamGraphConsensusTest FAILED: of the disputed bridge, the reading its pairs reproduce is %s and the one they hold against %s",
+			IsOn(idxDisputedPair) ? "on" : "off", IsOn(idxDisputedPair + 1) ? "on" : "off");
 		return false;
 	}
-	for (size_t i = idxRotationOnly; i < idxSplitChain; ++i) {
-		const SeamCandidate& c = candidates[i];
-		if (c.cls != SeamCandidate::ROBUST || c.residualScale != 1.f || c.residualTranslation != 0.f) {
-			VERBOSE("SeamGraphConsensusTest FAILED: rotation-only seam (%u, %u) is class %u: rotation %.2f deg, scale %.3f, translation %.3f",
-				c.sceneA, c.sceneB, (unsigned)c.cls, c.residualRotation, c.residualScale, c.residualTranslation);
-			return false;
-		}
-	}
-	// the near side of the chain is judged, the far side has no scale or position to be judged by
-	if (!candidates[idxSplitChain].IsTrusted() || !candidates[idxSplitChain + 1].IsTrusted() ||
-		candidates[idxSplitChain + 2].cls != SeamCandidate::UNDECIDED) {
-		VERBOSE("SeamGraphConsensusTest FAILED: the split chain is classified %u, %u, %u",
-			(unsigned)candidates[idxSplitChain].cls, (unsigned)candidates[idxSplitChain + 1].cls,
-			(unsigned)candidates[idxSplitChain + 2].cls);
-		return false;
-	}
-
-	std::vector<BlockPose> poses;
-	if (!alignment.ComputeInitialBlockPoses(candidates, extents, numBlocks, poses)) {
-		VERBOSE("SeamGraphConsensusTest FAILED: no initial block pose");
-		return false;
-	}
-	// the models are numbered by the trusted weight they hold: the ring, the lone bridge, the three
-	// blocks with no scale between them (which no averaging can place) and the split chain
-	const auto ExpectedModel = [](uint32_t block) -> uint32_t {
-		if (block < numRingBlocks)
-			return 0;
-		if (block == 14 || block == 15)
-			return 1;
-		if (block == 19 || block == 20)
-			return 3;
-		return NO_ID; // two opinions, no scale of their own, or no metric tie to their gauge
+	// the ring, the two bridges and the side of the split chain the averaging is gauged at are
+	// models of several blocks; no scale of their own, or no metric tie to the gauge leave a block a
+	// model of its own
+	std::map<uint32_t, unsigned> blocksOfModel;
+	for (const BlockPose& pose : poses)
+		++blocksOfModel[pose.model];
+	const auto ModelOf = [&](uint32_t block) {
+		return poses[block].state == BlockPose::ADMITTED && blocksOfModel[poses[block].model] > 1 ? poses[block].model : (uint32_t)NO_ID;
+	};
+	const auto ExpectedPlaced = [](uint32_t block) {
+		return block < numRingBlocks || (block >= 12 && block <= 15) || block == 19 || block == 20;
 	};
 	for (uint32_t i = 0; i < numBlocks; ++i) {
-		if (poses[i].model != ExpectedModel(i)) {
-			VERBOSE("SeamGraphConsensusTest FAILED: block %u is in model %u, expected %u",
-				i, poses[i].model, ExpectedModel(i));
+		if ((ModelOf(i) != NO_ID) != ExpectedPlaced(i)) {
+			VERBOSE("SeamGraphConsensusTest FAILED: block %u is %s", i, ModelOf(i) != NO_ID ? "in a model of several" : "alone");
+			return false;
+		}
+	}
+	for (uint32_t i = 1; i < numRingBlocks; ++i)
+		if (ModelOf(i) != ModelOf(0)) {
+			VERBOSE("SeamGraphConsensusTest FAILED: ring block %u is in model %u, block 0 in %u", i, ModelOf(i), ModelOf(0));
+			return false;
+		}
+	if (ModelOf(12) != ModelOf(13) || ModelOf(14) != ModelOf(15) || ModelOf(19) != ModelOf(20) ||
+		ModelOf(12) == ModelOf(0) || ModelOf(14) == ModelOf(0) || ModelOf(19) == ModelOf(0) ||
+		ModelOf(12) == ModelOf(14) || ModelOf(12) == ModelOf(19) || ModelOf(14) == ModelOf(19)) {
+		VERBOSE("SeamGraphConsensusTest FAILED: the two bridges and the split chain are not models of their own");
+		return false;
+	}
+	for (const auto& [a, b] : {std::make_pair(12u, 13u), std::make_pair(14u, 15u)}) {
+		const Transform estimated = poses[b].T.Invert() * poses[a].T;
+		const Transform truth = G[b].Invert() * G[a];
+		const REAL angle = R2D(ACOS(ComputeAngle(Matrix3x3(estimated.R), Matrix3x3(truth.R))));
+		if (angle > REAL(1)) {
+			VERBOSE("SeamGraphConsensusTest FAILED: the bridge (%u, %u) placed %.2f deg off", a, b, angle);
 			return false;
 		}
 	}
@@ -16375,6 +16372,286 @@ bool SeamGraphConsensusTest()
 	return true;
 }
 
+// A block graph for the selection alone, built as SeamGraphConsensusTest builds one: blocks at random
+// true frames of unit scale (so a shift reads the same share of the footprint from either end), and
+// hypotheses made from the exact relative similarity of their two blocks, turned or shifted in block
+// A's frame by what is planted in them
+struct PlantedSeamGraph
+{
+	// the camera footprint of every block, the unit a planted shift is a share of
+	static constexpr REAL kExtent = 20;
+	// how far a block may sit from where the truth puts it against the block it is read from
+	static constexpr REAL kPlacedRotation = 1, kPlacedShift = 0.02;
+	std::vector<SEACAVE::Transform> G;
+	std::vector<BlockFootprint> footprints;
+	std::vector<SeamCandidate> candidates;
+	std::vector<BlockPose> poses;
+	std::vector<uint32_t> edgeSeams;
+
+	PlantedSeamGraph(uint32_t numBlocks, uint32_t seed) : G(numBlocks) {
+		std::mt19937 rng(seed);
+		for (SEACAVE::Transform& T : G) {
+			T = SEACAVE::Transform::Random(rng, 180, 10, 0.5);
+			T.scale = 1;
+		}
+		BlockFootprint footprint;
+		footprint.extent = kExtent;
+		footprints.assign(numBlocks, footprint);
+	}
+	// a reading of (a, b) held by `cameras` cameras on either side, turned by `rotationDeg` about the
+	// vertical of block A's frame and shifted along its x axis by `shift` of the footprint; returns
+	// its index
+	size_t Add(uint32_t a, uint32_t b, unsigned cameras, REAL rotationDeg = 0, REAL shift = 0) {
+		ASSERT(a < b && b < G.size());
+		SEACAVE::Transform planted;
+		planted.R.SetRotationAxisAngle(Point3(0, 0, D2R(rotationDeg)));
+		planted.t = Point3(shift * kExtent, 0, 0);
+		SeamCandidate c;
+		c.sceneA = a;
+		c.sceneB = b;
+		c.T = G[b].Invert() * G[a] * planted;
+		c.score.support[0] = c.score.support[1] = cameras;
+		c.weight = (float)cameras;
+		candidates.push_back(std::move(c));
+		return candidates.size() - 1;
+	}
+	void Select() {
+		Scene scene;
+		const GlobalAlignmentConfig alignCfg;
+		GlobalAlignment alignment(scene, alignCfg);
+		alignment.SelectSeamGraph(footprints, candidates, poses, edgeSeams);
+	}
+	bool IsOn(size_t i) const { return std::find(edgeSeams.begin(), edgeSeams.end(), (uint32_t)i) != edgeSeams.end(); }
+	// whether block `b` sits in the same model as block `a`, where the truth puts it against it
+	bool PlacedRight(uint32_t a, uint32_t b) const {
+		if (poses[a].state != BlockPose::ADMITTED || poses[b].state != BlockPose::ADMITTED || poses[a].model != poses[b].model)
+			return false;
+		const SEACAVE::Transform estimated(poses[b].T.Invert() * poses[a].T), truth(G[b].Invert() * G[a]);
+		const REAL angle = R2D(ACOS(ComputeAngle(Matrix3x3(estimated.R), Matrix3x3(truth.R))));
+		const SEACAVE::Transform E(truth.Invert() * estimated);
+		return angle <= kPlacedRotation && norm(E.t) <= kPlacedShift * kExtent;
+	}
+	// the blocks of the model block `a` is in
+	unsigned ModelSize(uint32_t a) const {
+		unsigned num = 0;
+		for (const BlockPose& pose : poses)
+			num += pose.state == BlockPose::ADMITTED && pose.model == poses[a].model ? 1 : 0;
+		return num;
+	}
+};
+
+// A chord that is wrong by 30 degrees and heavier than every true seam, across two cycles of true
+// seams: a short one of two seams and a long one of five. The two seams the chord would put off the
+// truth together outweigh it, so the block poses most evidence agrees with leave it off; a solve
+// that shares the chord's error out over the seams it closes charges the two short seams most, and
+// switching off the worst seam first sacrifices them one after the other.
+bool HeavyWrongChordTest()
+{
+	TD_TIMER_START();
+	constexpr unsigned TRUE_CAMERAS = 4, CHORD_CAMERAS = 7; // the chord heavier than one true seam, lighter than two
+	constexpr REAL CHORD_DEG = 30;
+	PlantedSeamGraph graph(7, 4513);
+	graph.Add(0, 1, TRUE_CAMERAS);
+	graph.Add(1, 2, TRUE_CAMERAS);
+	graph.Add(0, 3, TRUE_CAMERAS);
+	graph.Add(3, 4, TRUE_CAMERAS);
+	graph.Add(4, 5, TRUE_CAMERAS);
+	graph.Add(5, 6, TRUE_CAMERAS);
+	graph.Add(2, 6, TRUE_CAMERAS);
+	const size_t chord = graph.Add(0, 2, CHORD_CAMERAS, CHORD_DEG);
+	graph.Select();
+	if (graph.IsOn(chord)) {
+		VERBOSE("HeavyWrongChordTest FAILED: the chord wrong by %.0f deg is on", CHORD_DEG);
+		return false;
+	}
+	for (size_t i = 0; i < chord; ++i)
+		if (!graph.IsOn(i)) {
+			VERBOSE("HeavyWrongChordTest FAILED: the true seam (%u, %u) is off", graph.candidates[i].sceneA, graph.candidates[i].sceneB);
+			return false;
+		}
+	for (uint32_t b = 1; b < 7; ++b)
+		if (!graph.PlacedRight(0, b)) {
+			VERBOSE("HeavyWrongChordTest FAILED: block %u is not placed on the truth against block 0", b);
+			return false;
+		}
+	VERBOSE("HeavyWrongChordTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// A triangle of true seams and block 3 reached through the pair (2, 3) alone, a bridge whose two
+// readings are its two directions. Read alike, the two stand together and carry block 3; when one
+// direction is turned by ten degrees, past the rotation bar, the averaging follows the heavier one
+// and the turned reading is cut, while the one its pair agrees with keeps the block
+bool TwoDirectionBridgeTest()
+{
+	TD_TIMER_START();
+	constexpr unsigned TRIANGLE_CAMERAS = 5, BRIDGE_CAMERAS = 4, TURNED_CAMERAS = 3;
+	constexpr REAL TURN_DEG = 10;
+	for (const bool turned : {false, true}) {
+		PlantedSeamGraph graph(4, 6151);
+		graph.Add(0, 1, TRIANGLE_CAMERAS);
+		graph.Add(1, 2, TRIANGLE_CAMERAS);
+		graph.Add(0, 2, TRIANGLE_CAMERAS);
+		const size_t forward = graph.Add(2, 3, BRIDGE_CAMERAS);
+		const size_t backward = turned ? graph.Add(2, 3, TURNED_CAMERAS, TURN_DEG) : graph.Add(2, 3, BRIDGE_CAMERAS);
+		graph.Select();
+		if (!graph.IsOn(forward) || graph.IsOn(backward) != !turned) {
+			VERBOSE("TwoDirectionBridgeTest FAILED: with the second direction %s, the first reading is %s and the second %s",
+				turned ? "turned by 10 deg" : "agreeing", graph.IsOn(forward) ? "on" : "off", graph.IsOn(backward) ? "on" : "off");
+			return false;
+		}
+		if (!graph.PlacedRight(0, 3)) {
+			VERBOSE("TwoDirectionBridgeTest FAILED: with the second direction %s, block 3 is not placed on the truth",
+				turned ? "turned by 10 deg" : "agreeing");
+			return false;
+		}
+	}
+	VERBOSE("TwoDirectionBridgeTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// Both directions of the bridge (2, 3) read the same copy, block 3 turned by 90 degrees about the
+// vertical, as a symmetric facade gives it: the two agree with each other, so their own cycle cannot
+// tell, and only the verified image pairs across the bridge can. Held against it by those pairs, the
+// bridge goes off and block 3 is a model of its own; held for it, the bridge stands where its
+// readings put block 3
+bool SymmetricBridgePairsTest()
+{
+	TD_TIMER_START();
+	constexpr unsigned TRIANGLE_CAMERAS = 5, BRIDGE_CAMERAS = 4;
+	constexpr REAL COPY_DEG = 90;
+	constexpr float HEAVY = 400.f, LIGHT = 100.f; // inlier weight of the verified pairs for and against
+	for (const bool against : {true, false}) {
+		PlantedSeamGraph graph(4, 7027);
+		graph.Add(0, 1, TRIANGLE_CAMERAS);
+		graph.Add(1, 2, TRIANGLE_CAMERAS);
+		graph.Add(0, 2, TRIANGLE_CAMERAS);
+		const size_t readings[2] = {graph.Add(2, 3, BRIDGE_CAMERAS, COPY_DEG), graph.Add(2, 3, BRIDGE_CAMERAS, COPY_DEG)};
+		for (const size_t i : readings) {
+			SeamCandidate& c = graph.candidates[i];
+			c.pairs.numPairs = 4;
+			c.pairs.agree = against ? LIGHT : HEAVY;
+			c.pairs.disagree = against ? HEAVY : LIGHT;
+			c.weight = (float)c.score.Weight() * c.pairs.Share();
+		}
+		graph.Select();
+		const bool on = graph.IsOn(readings[0]) && graph.IsOn(readings[1]);
+		const bool off = !graph.IsOn(readings[0]) && !graph.IsOn(readings[1]);
+		if (against ? !off : !on) {
+			VERBOSE("SymmetricBridgePairsTest FAILED: with the verified pairs %s the 90-deg bridge, its readings are %s and %s",
+				against ? "against" : "for", graph.IsOn(readings[0]) ? "on" : "off", graph.IsOn(readings[1]) ? "on" : "off");
+			return false;
+		}
+		const bool inModel = graph.poses[3].model == graph.poses[0].model;
+		if (inModel == against || graph.ModelSize(0) != (against ? 3u : 4u)) {
+			VERBOSE("SymmetricBridgePairsTest FAILED: with the verified pairs %s the bridge, block 3 is %s the triangle's model of %u blocks",
+				against ? "against" : "for", inModel ? "in" : "out of", graph.ModelSize(0));
+			return false;
+		}
+	}
+	VERBOSE("SymmetricBridgePairsTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// The true bridge (2, 3) to a triangle, its weaker side held by one camera and then by two: one
+// camera is what a frame misplaced inside its own block carrying a whole seam looks like, and a
+// bridge no cycle corroborates stands only with minSeamWeight cameras on its weaker side
+bool OneCameraBridgeTest()
+{
+	TD_TIMER_START();
+	constexpr unsigned TRIANGLE_CAMERAS = 5, STRONG_SIDE = 6;
+	for (const unsigned weakSide : {1u, 2u}) {
+		PlantedSeamGraph graph(4, 8089);
+		graph.Add(0, 1, TRIANGLE_CAMERAS);
+		graph.Add(1, 2, TRIANGLE_CAMERAS);
+		graph.Add(0, 2, TRIANGLE_CAMERAS);
+		const size_t bridge = graph.Add(2, 3, STRONG_SIDE);
+		SeamCandidate& c = graph.candidates[bridge];
+		c.score.support[1] = weakSide;
+		c.weight = (float)c.score.Weight();
+		graph.Select();
+		const bool expected = weakSide >= GlobalAlignmentConfig().minSeamWeight;
+		if (graph.IsOn(bridge) != expected || graph.PlacedRight(0, 3) != expected) {
+			VERBOSE("OneCameraBridgeTest FAILED: the bridge whose weaker side holds %u camera(s) is %s and block 3 %s",
+				weakSide, graph.IsOn(bridge) ? "on" : "off", graph.PlacedRight(0, 3) ? "placed" : "not placed");
+			return false;
+		}
+	}
+	VERBOSE("OneCameraBridgeTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// The pair (2, 3), joined to a triangle, holds its true reading and a lighter copy shifted by 60% of
+// the footprint along the wall, past the 0.20 bar of either: a least-squares solve puts block 3
+// between the two, past the bar of both, and the cut would leave the pair without a reading; the
+// L1 reweighting of the translations places block 3 on the true reading and cuts the copy
+bool L1StartTest()
+{
+	TD_TIMER_START();
+	constexpr unsigned TRIANGLE_CAMERAS = 5, TRUE_CAMERAS = 5, COPY_CAMERAS = 4;
+	constexpr REAL COPY_SHIFT = 0.6;
+	PlantedSeamGraph graph(4, 9203);
+	graph.Add(0, 1, TRIANGLE_CAMERAS);
+	graph.Add(1, 2, TRIANGLE_CAMERAS);
+	graph.Add(0, 2, TRIANGLE_CAMERAS);
+	const size_t right = graph.Add(2, 3, TRUE_CAMERAS);
+	const size_t copy = graph.Add(2, 3, COPY_CAMERAS, 0, COPY_SHIFT);
+	graph.Select();
+	if (!graph.IsOn(right) || graph.IsOn(copy) || !graph.PlacedRight(0, 3)) {
+		VERBOSE("L1StartTest FAILED: the true reading is %s, the copy %s, block 3 %s",
+			graph.IsOn(right) ? "on" : "off", graph.IsOn(copy) ? "on" : "off", graph.PlacedRight(0, 3) ? "on the truth" : "not on the truth");
+		return false;
+	}
+	VERBOSE("L1StartTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// A triangle of true seams carrying two more readings that observe no scale: one of (0, 2) whose
+// translation is 60% of the footprint off, judged on its rotation alone and kept -- the same reading
+// observing a scale is judged on its translation too, and cut -- and one of (0, 1) turned by ten
+// degrees, cut on its rotation. Block 3, reached through (2, 3) by a reading without scale alone,
+// has nothing tying it to the triangle in scale or position: it gets no pose, its reading cannot be
+// judged and goes off, and the block is a model of its own.
+bool RotationOnlyReadingTest()
+{
+	TD_TIMER_START();
+	constexpr unsigned TRIANGLE_CAMERAS = 5, READING_CAMERAS = 4;
+	constexpr REAL SHIFT = 0.6, TURN_DEG = 10;
+	for (const bool observesScale : {false, true}) {
+		PlantedSeamGraph graph(4, 1187);
+		graph.Add(0, 1, TRIANGLE_CAMERAS);
+		graph.Add(1, 2, TRIANGLE_CAMERAS);
+		graph.Add(0, 2, TRIANGLE_CAMERAS);
+		const size_t shifted = graph.Add(0, 2, READING_CAMERAS, 0, SHIFT);
+		graph.candidates[shifted].scaleObservable = observesScale;
+		const size_t turned = graph.Add(0, 1, READING_CAMERAS, TURN_DEG);
+		graph.candidates[turned].scaleObservable = false;
+		const size_t link = graph.Add(2, 3, READING_CAMERAS);
+		graph.candidates[link].scaleObservable = false;
+		graph.Select();
+		if (graph.IsOn(shifted) == observesScale) {
+			VERBOSE("RotationOnlyReadingTest FAILED: the reading %s a scale whose translation is %.0f%% off is %s",
+				observesScale ? "observing" : "without", SHIFT * 100, graph.IsOn(shifted) ? "on" : "off");
+			return false;
+		}
+		if (graph.IsOn(turned)) {
+			VERBOSE("RotationOnlyReadingTest FAILED: the reading without scale turned by %.0f deg is on", TURN_DEG);
+			return false;
+		}
+		if (!graph.PlacedRight(0, 1) || !graph.PlacedRight(0, 2) || graph.ModelSize(0) != 3) {
+			VERBOSE("RotationOnlyReadingTest FAILED: the triangle is not one model of three blocks on the truth");
+			return false;
+		}
+		if (graph.IsOn(link) || graph.ModelSize(3) != 1 || graph.poses[3].reason != "every reading off") {
+			VERBOSE("RotationOnlyReadingTest FAILED: block 3, reached by a reading without scale alone, sits in a model of %u blocks "
+				"(its reading %s, its reason '%s')", graph.ModelSize(3), graph.IsOn(link) ? "on" : "off", graph.poses[3].reason.c_str());
+			return false;
+		}
+	}
+	VERBOSE("RotationOnlyReadingTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 // ===============================================================================
 // A capture walking around a loop: blocks of cameras on a circle looking outward at a cylinder
 // wall. Every merge test builds its scene from these helpers, so a defect one of them reproduces
@@ -16389,7 +16666,8 @@ struct RingSceneConfig
 	REAL driftScalePerBlock{0};  // internal scale ramp of every block (centres scaled about the block's first camera)
 	REAL noisePx{0.3};           // keypoint noise
 	std::set<uint32_t> tinyBlocks; // these blocks get two cameras 1 mm apart instead of camsPerBlock
-	uint32_t foldedBlock{NO_ID}; // this block's second half is reconstructed folded by 180 degrees
+	uint32_t foldedBlock{NO_ID}; // this block's second half is reconstructed folded by foldDeg
+	REAL foldDeg{180};           // the turn of the folded half about the ring axis
 	uint32_t seed{7};
 };
 
@@ -16531,7 +16809,7 @@ static void DropFoldPairs(Scene& scene, const IIndexArr& block, unsigned half)
 		const auto it1 = localOf.find(scene.pairs[i].ID1);
 		const auto it2 = localOf.find(scene.pairs[i].ID2);
 		if (it1 != localOf.end() && it2 != localOf.end() && (it1->second < half) != (it2->second < half))
-			scene.pairs.RemoveAtMove(i--);
+			scene.pairs.RemoveAt(i--);
 	}
 }
 
@@ -16554,22 +16832,22 @@ static void BendRingBlock(const RingSceneConfig& cfg, Scene& sub)
 }
 
 // A block reconstructed folded: it holds no track its two halves share, and its second half sits
-// turned by half a turn about the ring axis through the block's own centroid
-static void FoldRingBlock(Scene& sub, unsigned half)
+// turned by `foldDeg` about the ring axis through the block's own centroid
+static void FoldRingBlock(Scene& sub, unsigned half, REAL foldDeg)
 {
 	for (uint32_t t = sub.tracks.size(); t-- > 0; ) {
 		bool inHalf[2] = {false, false};
 		for (const Observation& obs : sub.tracks[t].observations)
 			inHalf[obs.imageID < half ? 0 : 1] = true;
 		if (inHalf[0] && inHalf[1])
-			sub.tracks.RemoveAtMove(t);
+			sub.tracks.RemoveAt(t);
 	}
 	Point3 centroid(Point3::ZERO);
 	for (const Image& img : sub.images)
 		centroid += img.C;
 	centroid /= (REAL)sub.images.size();
 	RMatrix R;
-	R.SetRotationAxisAngle(Point3(0, 0, REAL(M_PI)));
+	R.SetRotationAxisAngle(Point3(0, 0, D2R(foldDeg)));
 	for (IIndex k = half; k < sub.images.size(); ++k) {
 		Image& img = sub.images[k];
 		img.R = RMatrix(img.R * R.t());
@@ -16608,7 +16886,7 @@ static void BuildRingBlocks(const RingSceneConfig& cfg, Scene& scene, const std:
 		}
 		BendRingBlock(cfg, sub);
 		if (b == cfg.foldedBlock)
-			FoldRingBlock(sub, cfg.camsPerBlock / 2);
+			FoldRingBlock(sub, cfg.camsPerBlock / 2, cfg.foldDeg);
 		sub.RecomputeCalibratedImages();
 		// the block's own points, from the cameras it ended up with; a rig a millimetre wide has
 		// nothing left once the angle bar is applied, so it is lifted here
@@ -16628,12 +16906,13 @@ static REAL Median(std::vector<REAL>& values)
 	return values[values.size() / 2];
 }
 
-static std::pair<REAL, REAL> RingErrors(const Scene& scene, const std::vector<Pose3D>& gtPoses)
+static std::pair<REAL, REAL> RingErrors(const Scene& scene, const std::vector<Pose3D>& gtPoses,
+	const std::set<IIndex>* skipped = NULL)
 {
 	Point3Arr centres, gtCentres;
 	IIndexArr registered;
 	FOREACH(i, scene.images)
-		if (scene.images[i].IsValid()) {
+		if (scene.images[i].IsValid() && (skipped == NULL || !skipped->count((IIndex)i))) {
 			centres.emplace_back(scene.images[i].C);
 			gtCentres.emplace_back(gtPoses[i].C);
 			registered.push_back(i);
@@ -16664,11 +16943,13 @@ static uint64_t FeatureKey(IIndex image, uint32_t feature)
 	return ((uint64_t)image << 32) | (uint64_t)feature;
 }
 
-// The final adjustment of a reconstruction, run on a merged scene: the tracks filtered and
-// re-triangulated from the merged poses, then the one global bundle adjustment
+// The final adjustment of a hierarchical reconstruction, run on a merged scene: the merged model's
+// own adjustment at the loose bar, then the tracks filtered and re-triangulated at the bar and the
+// global bundle adjustment
 static void RunFinalAdjustment(Scene& scene)
 {
 	const ReconstructionConfig cfg;
+	AdjustMergedScene(scene, cfg);
 	FilterTracks(scene, cfg.maxReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
 	TriangulateTracks(scene, true, cfg.maxReprojError, cfg.minAngleThreshold);
 	FilterTracks(scene, cfg.maxReprojError, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
@@ -16754,18 +17035,20 @@ static void ThinSeam(Scene& scene, const std::vector<IIndexArr>& blocks, uint32_
 }
 
 // Plant a false seam: up to `count` tracks of pointBlock no camera of rigBlock ever saw each get
-// ONE new observation, in a camera of rigBlock (round-robin over the first `rigCameras` cameras
-// that see the moved point), of the point moved by `wrong` (a Sim(3) of the world frame); the
-// projection becomes a new keypoint of that image and a match of the cross pair with every
-// pointBlock image observing the track (pairs created when absent). Usable in the direction "rig
-// of rigBlock on the points of pointBlock" only, since one observation cannot be triangulated in
-// rigBlock. Returns the number planted. Call before BuildRingBlocks
+// ONE new observation, in a camera of rigBlock (round-robin over the `rigCameras` cameras from
+// `firstCamera` on that see the moved point), of the point moved by `wrong` (a Sim(3) of the world
+// frame); the projection becomes a new keypoint of that image and a match of the cross pair with
+// every pointBlock image observing the track (pairs created when absent). Usable in the direction
+// "rig of rigBlock on the points of pointBlock" only, since one observation cannot be triangulated
+// in rigBlock. Returns the number planted. Call before BuildRingBlocks
 static unsigned PlantFalseSeam(Scene& scene, const std::vector<IIndexArr>& blocks, uint32_t rigBlock,
-	uint32_t pointBlock, unsigned count, unsigned rigCameras, const SEACAVE::Transform& wrong)
+	uint32_t pointBlock, unsigned count, unsigned rigCameras, const SEACAVE::Transform& wrong,
+	unsigned firstCamera = 0)
 {
+	ASSERT(firstCamera < blocks[rigBlock].size());
 	const std::set<IIndex> rigImages(blocks[rigBlock].begin(), blocks[rigBlock].end());
 	const std::set<IIndex> pointImages(blocks[pointBlock].begin(), blocks[pointBlock].end());
-	const unsigned numRig = MINF(rigCameras, (unsigned)blocks[rigBlock].size());
+	const unsigned numRig = MINF(rigCameras, (unsigned)blocks[rigBlock].size() - firstCamera);
 	// the pairs by their two images, so a cross pair is found once and created once
 	std::unordered_map<PairIdx::PairIndex, uint32_t> pairOf;
 	FOREACH(i, scene.pairs)
@@ -16787,7 +17070,7 @@ static unsigned PlantFalseSeam(Scene& scene, const std::vector<IIndexArr>& block
 		Point2 projection;
 		const Point3 X(wrong * track.position);
 		for (unsigned k = 0; k < numRig && rigImage == NO_ID; ++k) {
-			const IIndex image = blocks[rigBlock][(nextCamera + k) % numRig];
+			const IIndex image = blocks[rigBlock][firstCamera + (nextCamera + k) % numRig];
 			const auto [proj, valid] = scene.images[image].ProjectPoint(X);
 			if (valid && Image8U::isInside(proj, scene.images[image].GetSize())) {
 				rigImage = image;
@@ -16867,6 +17150,11 @@ static void DropCrossObservations(Scene& scene, const std::vector<IIndexArr>& bl
 	}
 }
 
+// The bars the block poses a merge leaves a ring at are held to, before the final adjustment: every
+// seam of the ring is biased by a few hundredths of a degree the same way (0.03-0.09 at 0.3 px of
+// keypoint noise), and the averaging spreads what twelve of them miss the ring by evenly over it
+static constexpr REAL kRingMergeRotation = 0.3, kRingMergePosition = 0.002;
+
 // The one way a merge test asserts its result: the blocks placed, the models they made, no image
 // left behind, every registered image accounted for by a placed block, and the merged poses on the
 // truth under the two bars
@@ -16899,6 +17187,84 @@ static bool CheckRingMerge(const char* test, const MergeReport& rep, const Scene
 	return true;
 }
 /*----------------------------------------------------------------*/
+
+// The diagonal of the box a block's cameras span, the unit its seams' translations are judged in
+static std::vector<REAL> RingBlockExtents(const std::vector<Scene>& subScenes)
+{
+	std::vector<REAL> blockExtents(subScenes.size(), REAL(0));
+	FOREACH(b, subScenes) {
+		AABB3 bbox(true);
+		for (const Image& img : subScenes[b].images)
+			if (img.IsValid())
+				bbox.InsertFull(img.C);
+		blockExtents[b] = bbox.IsEmpty() ? REAL(0) : (REAL)bbox.GetSize().norm();
+	}
+	return blockExtents;
+}
+
+// How far one A -> B similarity sits from another: the rotation between them in degrees, and the
+// translation of their discrepancy as a fraction of block A's camera footprint
+static std::pair<REAL, REAL> SeamOffset(const SEACAVE::Transform& T, const SEACAVE::Transform& truth, REAL extentA)
+{
+	const SEACAVE::Transform E(truth.Invert() * T);
+	return std::make_pair(R2D(ACOS(ComputeAngle(Matrix3x3(T.R), Matrix3x3(truth.R)))),
+		extentA > 0 ? norm(E.t) / extentA : REAL(0));
+}
+
+// The pixel error of one seam observation under an A -> B similarity, as the merge charges it: the
+// angle between the observed bearing and the one the transformed point gives, at the camera's rate
+static REAL SeamPixelError(const SeamObservation& obs, const SEACAVE::Transform& T)
+{
+	const Point3 p(obs.forward ? T * obs.X : T.Invert() * obs.X);
+	const Point3 d(obs.R * (p - obs.C));
+	const REAL len = norm(d);
+	if (!(len > 0))
+		return REAL(FLT_MAX);
+	return obs.pixelPerRadian * ACOS(CLAMP((d / len).dot(normalized(obs.bearing)), REAL(-1), REAL(1)));
+}
+
+// Every correspondence of every block pair the cross pairs join, collected as the merge collects
+// them, before a merge consumes the blocks
+struct BlockPairCorrespondences
+{
+	uint32_t a, b;
+	std::vector<SeamObservation> observations;
+	std::vector<SeamCorrespondence> correspondences;
+};
+static std::vector<BlockPairCorrespondences> CollectBlockPairCorrespondences(Scene& scene,
+	const std::vector<Scene>& subScenes, const std::vector<IIndexArr>& localToGlobals)
+{
+	const GlobalAlignmentConfig alignCfg;
+	GlobalAlignment alignment(scene, alignCfg);
+	alignment.PrepareSeamEvidence(subScenes, localToGlobals);
+	std::vector<BlockPairCorrespondences> all;
+	for (uint32_t a = 0; a < subScenes.size(); ++a)
+		for (uint32_t b = a + 1; b < subScenes.size(); ++b) {
+			BlockPairCorrespondences pair{a, b, {}, {}};
+			alignment.CollectPairObservations(subScenes, a, b, pair.observations, pair.correspondences);
+			if (!pair.observations.empty())
+				all.emplace_back(std::move(pair));
+		}
+	return all;
+}
+
+// The block pairs the merged model rests on, each once
+static std::set<std::pair<uint32_t, uint32_t>> ModelBlockPairs(const MergeReport& rep)
+{
+	std::set<std::pair<uint32_t, uint32_t>> pairs;
+	for (const uint32_t i : rep.modelSeams)
+		pairs.emplace(rep.candidates[i].sceneA, rep.candidates[i].sceneB);
+	return pairs;
+}
+
+// A copy one period along the wall: a translation along the ring's tangent at the given angle, what
+// a repeated facade makes of the structure across a seam
+static SEACAVE::Transform WallCopy(REAL angle, REAL period)
+{
+	SEACAVE::Transform copy;
+	copy.t = Point3(-SIN(angle), COS(angle), 0) * period;
+	return copy;
+}
 
 // ===============================================================================
 // Clustering for the merge: cluster sizes aimed at it, and cuts whose seams it can read
@@ -17246,68 +17612,6 @@ bool SceneClusterSeamRepairTest()
 
 // Three blocks of one ring, each pushed off where it belongs: the one joint refinement must pull
 // them back onto each other over the inlier observations of the seams alone
-bool BlockJointRefinementTest()
-{
-	TD_TIMER_START();
-	// a block reaches into its neighbour only as far as its own tracks go, and a track needs two of
-	// its own cameras: the ring carries enough cameras that the arc one of them sees spans several
-	const RingSceneConfig cfg{3, 16};
-	Scene scene;
-	std::vector<IIndexArr> blocks;
-	std::vector<Pose3D> gtPoses;
-	GenerateRingScene(cfg, scene, blocks, gtPoses);
-	std::vector<Scene> subScenes;
-	std::vector<IIndexArr> localToGlobals;
-	std::vector<SEACAVE::Transform> applied;
-	BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
-
-	GlobalAlignmentConfig alignCfg;
-	GlobalAlignment alignment(scene, alignCfg);
-	std::vector<SeamCandidate> candidates;
-	if (!alignment.EstimateSeamCandidates(subScenes, localToGlobals, candidates)) {
-		VERBOSE("BlockJointRefinementTest FAILED: the three blocks yielded no seam candidate");
-		return false;
-	}
-	// the chain the model rests on, block 1 in the middle
-	std::vector<uint32_t> modelSeams;
-	FOREACH(i, candidates)
-		if (candidates[i].sceneB == candidates[i].sceneA + 1)
-			modelSeams.push_back(i);
-	if (modelSeams.size() < 2) {
-		VERBOSE("BlockJointRefinementTest FAILED: %u of the two chain seams were measured, out of %u candidates",
-			(unsigned)modelSeams.size(), (unsigned)candidates.size());
-		return false;
-	}
-
-	// block 0's frame is the model frame, so a block's truth is where its own frame sits in it
-	std::vector<BlockPose> poses(cfg.numBlocks);
-	FOREACH(b, poses) {
-		poses[b].T = applied[0] * applied[b].Invert();
-		poses[b].model = 0;
-		poses[b].state = BlockPose::ADMITTED;
-	}
-	const SEACAVE::Transform truth(applied[2] * applied[1].Invert());
-	std::mt19937 rng(31);
-	for (uint32_t b = 1; b < cfg.numBlocks; ++b)
-		poses[b].T = SEACAVE::Transform::Random(rng, 2, 0.1, 0.03) * poses[b].T;
-
-	alignment.RefineBlockPoses(candidates, modelSeams, 0, 0, poses);
-
-	// the two blocks the gauge does not hold, against the similarity that really separates them
-	const SEACAVE::Transform refined(poses[2].T.Invert() * poses[1].T);
-	const REAL angle = R2D(ACOS(ComputeAngle(Matrix3x3(refined.R), Matrix3x3(truth.R))));
-	const REAL scaleRatio = MAXF(refined.scale / truth.scale, truth.scale / refined.scale);
-	if (angle > REAL(0.2) || scaleRatio > REAL(1.005)) {
-		VERBOSE("BlockJointRefinementTest FAILED: blocks 1 and 2 came out %.3f deg and %.2f%% apart",
-			angle, (scaleRatio - 1) * 100);
-		return false;
-	}
-	VERBOSE("BlockJointRefinementTest PASSED: %.3f deg and %.3f%% over %u seams (%s)",
-		angle, (scaleRatio - 1) * 100, (unsigned)modelSeams.size(), TD_TIMER_GET_FMT().c_str());
-	return true;
-}
-/*----------------------------------------------------------------*/
-
 // A whole ring, block by block: every block arrives in its own frame and the placement has to take
 // all of them into one model, on the evidence of the seams alone
 bool RingPlacementTest()
@@ -17327,21 +17631,26 @@ bool RingPlacementTest()
 	GlobalAlignment ga(scene, alignCfg);
 	MergeReport rep;
 	ga.MergeScenes(subScenes, localToGlobals, rep);
-	if (!CheckRingMerge("RingPlacementTest", rep, scene, gtPoses, cfg.numBlocks, 1, 0.1, 0.001))
+	// the block poses the averaging leaves, and the model the final adjustment makes of them: the
+	// seams are each biased by a few hundredths of a degree the same way, which the averaging
+	// spreads evenly round the ring and the adjustment takes out
+	if (!CheckRingMerge("RingPlacementTest", rep, scene, gtPoses, cfg.numBlocks, 1, kRingMergeRotation, kRingMergePosition))
 		return false;
-	if (rep.numRejected != 0 || rep.numUndecided != 0) {
-		VERBOSE("RingPlacementTest FAILED: the graph left %u seams rejected and %u undecided",
-			rep.numRejected, rep.numUndecided);
+	RunFinalAdjustment(scene);
+	if (!CheckRingMerge("RingPlacementTest, adjusted", rep, scene, gtPoses, cfg.numBlocks, 1, 0.1, 0.001))
+		return false;
+	// every block overlaps the next and the ring closes: the readings lie on the ring's twelve pairs,
+	// and the merged model rests on every one of them
+	std::set<std::pair<uint32_t, uint32_t>> pairs;
+	for (const SeamCandidate& c : rep.candidates)
+		pairs.emplace(c.sceneA, c.sceneB);
+	if (pairs.size() != cfg.numBlocks || rep.modelSeams.size() != rep.candidates.size()) {
+		VERBOSE("RingPlacementTest FAILED: %u readings on %u pairs, %u of them in the merged model",
+			(unsigned)rep.candidates.size(), (unsigned)pairs.size(), (unsigned)rep.modelSeams.size());
 		return false;
 	}
-	// every block overlaps the next and the ring closes: every seam sits on a cycle that confirms it
-	for (const SeamCandidate& c : rep.candidates)
-		if (c.cls != SeamCandidate::ROBUST) {
-			VERBOSE("RingPlacementTest FAILED: seam (%u, %u) is class %u", c.sceneA, c.sceneB, (unsigned)c.cls);
-			return false;
-		}
-	VERBOSE("RingPlacementTest PASSED: %u blocks on %u robust seams (%s)",
-		rep.numPlaced, (unsigned)rep.candidates.size(), TD_TIMER_GET_FMT().c_str());
+	VERBOSE("RingPlacementTest PASSED: %u blocks on %u seams (%s)",
+		rep.numPlaced, (unsigned)rep.modelSeams.size(), TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 /*----------------------------------------------------------------*/
@@ -17415,8 +17724,8 @@ bool UnobservableScalePairTest()
 		++numShallowSeams;
 		if (c.scaleObservable) {
 			VERBOSE("UnobservableScalePairTest FAILED: the seam (%u, %u) between two rigs a millimetre "
-				"wide claims to observe a scale (%s, class %u)", tinyA, tinyB,
-				c.oneDirection ? "one direction" : "both directions", (unsigned)c.cls);
+				"wide claims to observe a scale (%s)", tinyA, tinyB,
+				c.source == SeamCandidate::RIG_B_ON_A ? "the rig of B on A" : "the rig of A on B");
 			return false;
 		}
 	}
@@ -17456,23 +17765,23 @@ bool UnobservableScalePairTest()
 static bool BuildAmbiguousPair(const RingSceneConfig& cfg, unsigned numClusters, REAL keepFraction,
 	Scene& scene, std::vector<IIndexArr>& blocks, std::vector<Pose3D>& gtPoses,
 	std::vector<Scene>& subScenes, std::vector<IIndexArr>& localToGlobals,
-	std::vector<SEACAVE::Transform>& applied, REAL turnDeg = 20)
+	std::vector<SEACAVE::Transform>& applied, REAL turnDeg = 20, unsigned plantedCameras = 3)
 {
 	GenerateRingScene(cfg, scene, blocks, gtPoses);
 	DropCrossObservations(scene, blocks, 1, {0, 1, 2, 3, 4, 5, 6, 7, 8, 9}, 0, keepFraction);
-	if (PlantFalseSeam(scene, blocks, 1, 0, UINT32_MAX, 3, RingRotation(turnDeg)) == 0)
+	if (PlantFalseSeam(scene, blocks, 1, 0, UINT32_MAX, plantedCameras, RingRotation(turnDeg)) == 0)
 		return false;
 	const std::vector<IIndexArr> clusters(blocks.begin(), blocks.begin() + numClusters);
 	BuildRingBlocks(cfg, scene, clusters, gtPoses, subScenes, localToGlobals, applied);
 	return true;
 }
 
-// The vote one image cast on a candidate, NULL when it had too few correspondences to vote
-static const CameraVote* FindVote(const SeamScore& score, IIndex image)
+// The hypothesis of the merged model on the pair (a, b), NULL when the model does not rest on one
+static const SeamCandidate* ModelSeamOf(const MergeReport& rep, uint32_t a, uint32_t b)
 {
-	for (const CameraVote& vote : score.votes)
-		if (vote.image == image)
-			return &vote;
+	for (const uint32_t i : rep.modelSeams)
+		if (rep.candidates[i].sceneA == a && rep.candidates[i].sceneB == b)
+			return &rep.candidates[i];
 	return NULL;
 }
 
@@ -17481,9 +17790,12 @@ bool AmbiguousPairTest()
 	TD_TIMER_START();
 	const RingSceneConfig cfg{12, 10};
 	// the one knob of this test: how much of its true evidence block 1 keeps toward block 0, which
-	// has to leave the planted majority winning its own direction while the surviving direction
-	// still explains enough of what that one saw
+	// has to leave the planted majority winning its own direction while the true reading is still
+	// measured
 	const REAL keepFraction = 0.15;
+	// the bar the true reading is held to: a seam measured on a thinned sixth of its
+	// correspondences carries that much less of the truth
+	constexpr REAL MAX_ROTATION = 0.5;
 	const GlobalAlignmentConfig alignCfg;
 	Scene scene;
 	std::vector<IIndexArr> blocks;
@@ -17495,106 +17807,53 @@ bool AmbiguousPairTest()
 		VERBOSE("AmbiguousPairTest FAILED: nothing could be planted on block 1's first three cameras");
 		return false;
 	}
-	// the pair on its own: the planted direction is measured and the gates drop it
+	const SEACAVE::Transform truth(applied[1] * applied[0].Invert());
+	const auto Angle = [&truth](const SeamCandidate& c) {
+		return R2D(ACOS(ComputeAngle(Matrix3x3(c.T.R), Matrix3x3(truth.R))));
+	};
+	// the pair on its own: each direction is read, the planted one far off the truth with the
+	// verified pairs across it against it, the true one within the bar with them for it
 	{
 		GlobalAlignment alignment(scene, alignCfg);
 		std::vector<SeamCandidate> cands;
-		LogCapture log;
 		alignment.PrepareSeamEvidence(subScenes, localToGlobals);
 		alignment.EstimateSeamPair(subScenes, 0, 1, cands);
-		if (cands.size() != 1 || !cands.front().oneDirection ||
-			cands.front().source != SeamCandidate::RIG_A_ON_B) {
-			VERBOSE("AmbiguousPairTest FAILED: the pair yielded %u candidates, the first %s from source %u",
-				(unsigned)cands.size(), cands.empty() ? "none" :
-				(cands.front().oneDirection ? "on one direction" : "on both directions"),
-				cands.empty() ? 0u : (unsigned)cands.front().source);
+		const SeamCandidate* right = NULL;
+		const SeamCandidate* planted = NULL;
+		for (const SeamCandidate& c : cands)
+			(Angle(c) <= MAX_ROTATION ? right : planted) = &c;
+		if (right == NULL || planted == NULL || Angle(*planted) < alignCfg.maxGraphRotationResidual) {
+			VERBOSE("AmbiguousPairTest FAILED: the pair yielded %s true reading and %s planted one past the rotation bar",
+				right == NULL ? "no" : "a", planted == NULL || Angle(*planted) < alignCfg.maxGraphRotationResidual ? "no" : "a");
 			return false;
 		}
-		// the direction the plant sits on was measured and refused, the camera votes among the
-		// gates it failed (a drop names every one of them)
-		if (!log.Contains("Seam (0, 1) rig B on A dropped by") || !log.Contains("camera votes")) {
-			VERBOSE("AmbiguousPairTest FAILED: the planted direction was not measured and dropped");
+		if (planted->pairs.Holds() || !right->pairs.Holds() || planted->weight >= right->weight) {
+			VERBOSE("AmbiguousPairTest FAILED: the verified pairs hold %s the planted reading (%.0f for / %.0f against, weight %.2f) "
+				"and %s the true one (%.0f for / %.0f against, weight %.2f)",
+				planted->pairs.Holds() ? "for" : "against", planted->pairs.agree, planted->pairs.disagree, planted->weight,
+				right->pairs.Holds() ? "for" : "against", right->pairs.agree, right->pairs.disagree, right->weight);
 			return false;
 		}
-		const SeamCandidate& c = cands.front();
-		// what the thinning and the plant left of block 1's cameras: every one of them still carries
-		// a vote, eight of the ten hold the correspondences a vote weighs with, and on the three the
-		// plant sits on more than half of what they hold is false under the direction that survived,
-		// against almost nothing on the seven it left alone. Every count here is per distinct
-		// correspondence: a true match lies on a track in both blocks and is collected in both
-		// directions, and the camera that meets it in both roles counts it once
-		constexpr unsigned minWeighing = 8;
-		unsigned numWeighing = 0;
-		for (unsigned k = 0; k < cfg.camsPerBlock; ++k) {
-			const CameraVote* vote = FindVote(c.score, blocks[1][k]);
-			const bool planted = k < 3;
-			if (vote == NULL || (planted ? vote->inliers * 2 >= vote->correspondences :
-					vote->inliers * 10 < vote->correspondences * 9)) {
-				VERBOSE("AmbiguousPairTest FAILED: camera %u of block 1 kept %u of %u correspondences "
-					"under the surviving seam, and the plant %s sit on it",
-					k, vote == NULL ? 0 : vote->inliers, vote == NULL ? 0 : vote->correspondences,
-					planted ? "does" : "does not");
-				return false;
-			}
-			if (vote->correspondences >= alignCfg.minVoteInliers)
-				++numWeighing;
-		}
-		if (numWeighing < minWeighing) {
-			VERBOSE("AmbiguousPairTest FAILED: %u of block 1's %u cameras kept the %u correspondences "
-				"a vote weighs with", numWeighing, cfg.camsPerBlock, alignCfg.minVoteInliers);
-			return false;
-		}
-		// and what they voted: the surviving direction carried by the distinct centres a seam has to
-		// stand on, and not one camera of block 1 behind the direction it beat -- a camera that was
-		// would be counted against this one. The fixture yields 5+/0-
-		if (c.score.support[1] < alignCfg.minSupportingCentres || c.score.contra[1] != 0) {
-			VERBOSE("AmbiguousPairTest FAILED: block 1 voted %u+/%u- on the surviving direction, "
-				"expected at least %u supporters and no contradictor",
-				c.score.support[1], c.score.contra[1], alignCfg.minSupportingCentres);
-			return false;
-		}
-		// what the surviving seam makes of what the other direction saw: a minority, the planted
-		// evidence being the majority there -- which is why that direction lied in the first place
-		if (c.NumInliers(1) * 2 >= c.NumObservations(1)) {
-			VERBOSE("AmbiguousPairTest FAILED: the surviving seam explains %u of the %u correspondences "
-				"of the planted direction, so nothing was planted there",
-				c.NumInliers(1), c.NumObservations(1));
-			return false;
-		}
-		const SEACAVE::Transform truth(applied[1] * applied[0].Invert());
-		const REAL angle = R2D(ACOS(ComputeAngle(Matrix3x3(c.T.R), Matrix3x3(truth.R))));
-		if (angle > REAL(0.5)) {
-			VERBOSE("AmbiguousPairTest FAILED: the surviving seam is %.3f deg off the truth", angle);
-			return false;
-		}
-		VERBOSE("  ambiguous pair: %u+/%u- cameras of block 0, %u+/%u- of block 1, %u of the %u "
-			"planted correspondences explained, seam %.3f deg off",
-			c.score.support[0], c.score.contra[0], c.score.support[1], c.score.contra[1],
-			c.NumInliers(1), c.NumObservations(1), angle);
+		VERBOSE("  ambiguous pair: the planted reading %.2f deg off weighs %.2f, the true one %.3f deg off %.2f",
+			Angle(*planted), planted->weight, Angle(*right), right->weight);
 	}
 
-	// three blocks: the seam the votes settled has to carry the chain, on its own evidence -- three
-	// arcs of a ring hold no cycle, so nothing else can corroborate it
+	// three blocks, two seams in a chain and no cycle: the true reading carries the pair on its own
 	{
 		GlobalAlignment merger(scene, alignCfg);
 		MergeReport rep;
 		merger.MergeScenes(subScenes, localToGlobals, rep);
-		const SeamCandidate* seam = NULL;
-		for (const SeamCandidate& c : rep.candidates)
-			if (c.sceneA == 0 && c.sceneB == 1)
-				seam = &c;
-		if (seam == NULL || seam->cls != SeamCandidate::VERIFIED) {
-			VERBOSE("AmbiguousPairTest FAILED: the pair seam is class %d among three blocks",
-				seam == NULL ? -1 : (int)seam->cls);
+		const SeamCandidate* seam = ModelSeamOf(rep, 0, 1);
+		if (seam == NULL || Angle(*seam) > MAX_ROTATION) {
+			VERBOSE("AmbiguousPairTest FAILED: the model rests on %s hypothesis of the pair among three blocks",
+				seam == NULL ? "no" : "a wrong");
 			return false;
 		}
-		// the rotation bar is the looser one of the merge tests: a seam measured on a thinned sixth
-		// of its correspondences carries that much less of the truth into the model
 		if (!CheckRingMerge("AmbiguousPairTest, three blocks", rep, scene, gtPoses, 3, 1, 0.3, 0.001))
 			return false;
 	}
 
-	// the same pair alone: nothing corroborates the seam, and its own evidence has to carry it
+	// the same pair alone
 	{
 		Scene pairScene;
 		std::vector<IIndexArr> pairBlocks;
@@ -17608,13 +17867,8 @@ bool AmbiguousPairTest()
 		GlobalAlignment merger(pairScene, alignCfg);
 		MergeReport rep;
 		merger.MergeScenes(pairSubScenes, pairLocalToGlobals, rep);
-		const SeamCandidate* seam = NULL;
-		for (const SeamCandidate& c : rep.candidates)
-			if (c.sceneA == 0 && c.sceneB == 1)
-				seam = &c;
-		if (seam == NULL || seam->cls != SeamCandidate::VERIFIED) {
-			VERBOSE("AmbiguousPairTest FAILED: the lone pair seam is class %d",
-				seam == NULL ? -1 : (int)seam->cls);
+		if (ModelSeamOf(rep, 0, 1) == NULL) {
+			VERBOSE("AmbiguousPairTest FAILED: the lone pair was not merged");
 			return false;
 		}
 		if (!CheckRingMerge("AmbiguousPairTest, two blocks", rep, pairScene, pairPoses, 2, 1, 0.3, 0.001))
@@ -17679,55 +17933,69 @@ bool ContradictedPlacementTest()
 		VERBOSE("  planted placement: %u blocks placed, seam %.2f deg off the truth", rep.numPlaced, angle);
 	}
 
-	// read, they refuse it: block 1 is left unplaced rather than placed wrong
+	// read, they leave the bridge off: block 1 is left unplaced rather than placed wrong
 	{
 		if (!Build())
 			return false;
 		const GlobalAlignmentConfig alignCfg;
 		GlobalAlignment merger(scene, alignCfg);
 		MergeReport rep;
-		LogCapture log;
 		merger.MergeScenes(subScenes, localToGlobals, rep);
 		if (rep.numPlaced != 1) {
 			VERBOSE("ContradictedPlacementTest FAILED: %u blocks were placed although every verified pair between "
 				"them contradicts the placement", rep.numPlaced);
 			return false;
 		}
-		if (!log.Contains("pair agreement")) {
-			VERBOSE("ContradictedPlacementTest FAILED: block 1 was left out, but not by the pairs' word");
+		unsigned numRead = 0;
+		for (const SeamCandidate& c : rep.candidates) {
+			if (c.sceneA != 0 || c.sceneB != 1)
+				continue;
+			++numRead;
+			if (c.pairs.Holds()) {
+				VERBOSE("ContradictedPlacementTest FAILED: block 1 was left out, but the verified pairs hold for a reading of it "
+					"(%.0f for / %.0f against)", c.pairs.agree, c.pairs.disagree);
+				return false;
+			}
+		}
+		if (numRead == 0) {
+			VERBOSE("ContradictedPlacementTest FAILED: the pair yielded no reading, so the pairs were never asked");
 			return false;
 		}
 	}
-	VERBOSE("ContradictedPlacementTest PASSED: a placement %.0f degrees wrong that passes every vote is refused "
+	VERBOSE("ContradictedPlacementTest PASSED: a seam %.0f degrees wrong that its cameras carry is refused "
 		"by the verified pairs across it (%s)", (double)ABS(PLANTED_TURN), TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 
-// What the verified pairs across a placement decide is settled by inlier weight over all of them:
-// a neighbour whose two thin pairs disagree cannot outvote one whose twenty-four heavy pairs agree
+// What the verified pairs across a seam decide is settled by inlier weight over all of them: two
+// thin pairs that disagree cannot outvote twenty-four heavy ones that agree
 bool PairAgreementWeightTest()
 {
 	TD_TIMER_START();
-	struct Case { float agree, disagree; unsigned numNeighbours, numContra; bool holds; const char* why; };
+	struct Case { float agree, disagree; unsigned numPairs; bool holds; float share; const char* why; };
 	const Case cases[] = {
-		{ 3084.f, 728.f, 2, 1, true, "a neighbour of two thin pairs against one of twenty-four heavy pairs agreeing" },
-		{ 0.f, 708.f, 2, 2, false, "every pair across says otherwise" },
-		{ 369.f, 1066.f, 4, 3, false, "most of the weight says otherwise" },
-		{ 0.f, 0.f, 0, 0, true, "nothing read holds nothing against a placement" },
+		{ 3084.f, 728.f, 26, true, 0.809f, "two thin pairs against twenty-four heavy pairs agreeing" },
+		{ 0.f, 708.f, 4, false, 0.f, "every pair across says otherwise" },
+		{ 369.f, 1066.f, 9, false, 0.257f, "most of the weight says otherwise" },
+		{ 0.f, 0.f, 0, true, 1.f, "nothing read holds nothing against a hypothesis" },
 	};
 	for (const Case& c : cases) {
 		PairAgreement pairs;
 		pairs.agree = c.agree;
 		pairs.disagree = c.disagree;
-		pairs.numNeighbours = c.numNeighbours;
-		pairs.numContra = c.numContra;
+		pairs.numPairs = c.numPairs;
 		if (pairs.Holds() != c.holds) {
-			VERBOSE("PairAgreementWeightTest FAILED: %.0f for / %.0f against over %u neighbours (%u contradicting) was "
-				"%s; %s", c.agree, c.disagree, c.numNeighbours, c.numContra, c.holds ? "refused" : "held", c.why);
+			VERBOSE("PairAgreementWeightTest FAILED: %.0f for / %.0f against over %u pairs was %s; %s",
+				c.agree, c.disagree, c.numPairs, c.holds ? "refused" : "held", c.why);
+			return false;
+		}
+		if (ABS(pairs.Share() - c.share) > 0.001f) {
+			VERBOSE("PairAgreementWeightTest FAILED: %.0f for / %.0f against over %u pairs reproduced %.3f of the weight, expected %.3f; %s",
+				c.agree, c.disagree, c.numPairs, pairs.Share(), c.share, c.why);
 			return false;
 		}
 	}
-	VERBOSE("PairAgreementWeightTest PASSED: the pairs across a placement decide by inlier weight (%s)",
+	VERBOSE("PairAgreementWeightTest PASSED: the pairs across a seam decide by inlier weight (%s)",
 		TD_TIMER_GET_FMT().c_str());
 	return true;
 }
@@ -17826,17 +18094,13 @@ bool BiasedClosingSeamTest()
 	ga.MergeScenes(subScenes, localToGlobals, rep);
 	// what the graph made of the biased seam, for the record: a seam this close to the drift the
 	// ring carries is one no residual can indict
-	uint32_t seam = NO_ID;
-	FOREACH(i, rep.candidates)
-		if (rep.candidates[i].sceneA == 0 && rep.candidates[i].sceneB == closing)
-			seam = (uint32_t)i;
-	const unsigned seamClass = seam == NO_ID ? (unsigned)SeamCandidate::UNCLASSIFIED : (unsigned)rep.candidates[seam].cls;
+	const char* seamWord = ModelSeamOf(rep, 0, closing) != NULL ? "in the model" : "off";
 	if (rep.numPlaced < cfg.numBlocks) {
 		// the model refused the block the biased seam closes the ring through, which is the other
 		// answer this test allows -- what it may not do is take it in and come out wrong
-		VERBOSE("BiasedClosingSeamTest PASSED, the closing block refused: the biased seam (class %u) "
+		VERBOSE("BiasedClosingSeamTest PASSED, the closing block refused: the biased seam (%s) "
 			"left %u of %u blocks placed (%s)",
-			seamClass, rep.numPlaced, cfg.numBlocks, TD_TIMER_GET_FMT().c_str());
+			seamWord, rep.numPlaced, cfg.numBlocks, TD_TIMER_GET_FMT().c_str());
 		return true;
 	}
 	// the other branch: the block is in, and the two gradings below say what carrying that seam's
@@ -17847,30 +18111,27 @@ bool BiasedClosingSeamTest()
 	if (!CheckRingMerge("BiasedClosingSeamTest, adjusted", rep, scene, gtPoses, cfg.numBlocks, 1, 0.3, 0.005))
 		return false;
 	VERBOSE("BiasedClosingSeamTest PASSED, the closing block taken in: the seam planted on %u tracks "
-		"came out class %u and the whole ring still answers to the truth (%s)",
-		planted, seamClass, TD_TIMER_GET_FMT().c_str());
+		"came out %s and the whole ring still answers to the truth (%s)",
+		planted, seamWord, TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 /*----------------------------------------------------------------*/
 
-// The pair that closes a ring, left with two correspondences on each of thirty tracks: no camera of
-// either block is left holding the inliers a vote weighs with, so the seam stage measures the pair
-// and the camera votes drop it, and the blocks arrive as an open chain. The eleven seams that were
-// measured still carry the chain around to within a fraction of a degree of its far end, and what
-// the model then predicts of that pair reads its correspondences well enough to close the ring on
-// them
+// The pair that closes a ring, left with two correspondences on each of thirty tracks, in one
+// direction: the pair is a thin seam at best, held by the two or three cameras of each block the
+// tracks concentrate on. The eleven seams that were measured carry the chain around to within a
+// fraction of a degree of its far end, the closing pair's correspondences join their tracks, and
+// the final adjustment closes the ring on them
 bool WeakClosingSeamTest()
 {
 	TD_TIMER_START();
 	RingSceneConfig cfg{12, 10};
 	// the blocks come out slightly bent, so the chain has an error of its own to carry around the
 	// ring, and the keypoints are read more precisely than the generator's default: what the chain
-	// accumulates is what the model is off by when it predicts the closing pair, and only a
-	// prediction within the loose threshold can read that pair's correspondences again. At 0.3 px
+	// accumulates is what the closing pair is off by when its correspondences are joined. At 0.3 px
 	// every seam is biased by about 0.065 degrees the same way, which over eleven seams leaves the
-	// closing pair 1.05 degrees -- 16 px at its cameras -- from where the model puts it, past the
-	// three times the reprojection bar a prediction is read at; at 0.1 px the same chain arrives
-	// 0.14 degrees out and the pair is read back in full.
+	// closing pair 1.05 degrees from where the chain puts it; at 0.1 px the same chain arrives 0.14
+	// degrees out.
 	cfg.driftDegPerBlock = 0.05;
 	cfg.noisePx = 0.1;
 	Scene scene;
@@ -17886,8 +18147,8 @@ bool WeakClosingSeamTest()
 
 	const GlobalAlignmentConfig alignCfg;
 	const uint32_t closing = cfg.numBlocks - 1;
-	// what the pair is worth on its own evidence: nothing the seam stage can use, while the seams
-	// that carry its two blocks into the chain are measured as they always were
+	// what the pair is worth on its own evidence, while the seams that carry its two blocks into the
+	// chain are measured as they always were
 	{
 		GlobalAlignment alignment(scene, alignCfg);
 		std::vector<SeamCandidate> candidates;
@@ -17897,11 +18158,9 @@ bool WeakClosingSeamTest()
 		}
 		bool chained[2] = {false, false};
 		for (const SeamCandidate& c : candidates) {
-			if (c.sceneA == 0 && c.sceneB == closing) {
-				VERBOSE("WeakClosingSeamTest FAILED: the thinned pair (0, %u) yielded a candidate of "
-					"class %u on %u correspondences", closing, (unsigned)c.cls, (unsigned)c.observations.size());
-				return false;
-			}
+			if (c.sceneA == 0 && c.sceneB == closing)
+				VERBOSE("  the thinned pair (0, %u) yields a reading of weight %.0f on %u inliers",
+					closing, c.weight, c.score.inliers);
 			chained[0] = chained[0] || (c.sceneA == 0 && c.sceneB == 1);
 			chained[1] = chained[1] || (c.sceneA == closing - 1 && c.sceneB == closing);
 		}
@@ -17913,63 +18172,346 @@ bool WeakClosingSeamTest()
 		}
 	}
 
+	// the eleven seams carry the chain round the ring, every one of them a bridge holding one
+	// hypothesis, and the closing pair's correspondences join their tracks under the cross-pair
+	// guards for the final adjustment to close the ring on them
 	GlobalAlignment ga(scene, alignCfg);
 	MergeReport rep;
-	{
-		LogCapture log;
-		ga.MergeScenes(subScenes, localToGlobals, rep);
-		if (!log.Contains("Seam (0, 11) verified after loop closure")) {
-			VERBOSE("WeakClosingSeamTest FAILED: the closing pair was never verified against the model");
-			return false;
-		}
-	}
-	// the seam the model read off its own prediction, and the model resting on it
-	uint32_t seam = NO_ID;
-	FOREACH(i, rep.candidates) {
-		const SeamCandidate& c = rep.candidates[i];
-		if (c.sceneA == 0 && c.sceneB == closing && c.cls == SeamCandidate::VERIFIED)
-			seam = (uint32_t)i;
-	}
-	if (seam == NO_ID) {
-		VERBOSE("WeakClosingSeamTest FAILED: no verified candidate closes the pair (0, %u)", closing);
-		return false;
-	}
-	if (std::find(rep.modelSeams.begin(), rep.modelSeams.end(), seam) == rep.modelSeams.end()) {
-		VERBOSE("WeakClosingSeamTest FAILED: the closing seam is not among the %u seams the model rests on",
-			(unsigned)rep.modelSeams.size());
-		return false;
-	}
+	ga.MergeScenes(subScenes, localToGlobals, rep);
 	if (!CheckRingMerge("WeakClosingSeamTest", rep, scene, gtPoses, cfg.numBlocks, 1, 0.6, 0.005))
 		return false;
 	RunFinalAdjustment(scene);
 	if (!CheckRingMerge("WeakClosingSeamTest, adjusted", rep, scene, gtPoses, cfg.numBlocks, 1, 0.3, 0.005))
 		return false;
-	VERBOSE("WeakClosingSeamTest PASSED: the closing seam kept %u of %u correspondences and %s a scale (%s)",
-		rep.candidates[seam].score.inliers, (unsigned)rep.candidates[seam].observations.size(),
-		rep.candidates[seam].scaleObservable ? "observes" : "cannot observe", TD_TIMER_GET_FMT().c_str());
+	VERBOSE("WeakClosingSeamTest PASSED: %u blocks over %u seams, the ring closed by the final adjustment (%s)",
+		rep.numPlaced, (unsigned)rep.modelSeams.size(), TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 /*----------------------------------------------------------------*/
 
-// The diagonal of the box a block's cameras span, the unit its seams' translations are judged in
-static std::vector<REAL> RingBlockExtents(const std::vector<Scene>& subScenes)
+// A ring whose pair (3, 4) carries two consistent readings on the cameras of block 4 nearest block
+// 3: the true one, thinned, on the first three, and a copy of block 3's structure one period along
+// the wall on the first five -- the reading a repeated facade gives. The copy weighs at least what
+// the truth weighs, so the pair on its own could take it; only the cycle the pair closes, by the
+// translation it puts block 4 at, can tell it is the wrong one.
+bool RivalModesOnCycleTest()
 {
-	std::vector<REAL> blockExtents(subScenes.size(), REAL(0));
-	FOREACH(b, subScenes) {
-		AABB3 bbox(true);
-		for (const Image& img : subScenes[b].images)
-			if (img.IsValid())
-				bbox.InsertFull(img.C);
-		blockExtents[b] = bbox.IsEmpty() ? REAL(0) : (REAL)bbox.GetSize().norm();
+	TD_TIMER_START();
+	const RingSceneConfig cfg{12, 10};
+	constexpr uint32_t pairA = 3, pairB = 4;
+	constexpr REAL PERIOD = 5; // how far along the wall the copy sits, in the ring's units
+	Scene scene;
+	std::vector<IIndexArr> blocks;
+	std::vector<Pose3D> gtPoses;
+	GenerateRingScene(cfg, scene, blocks, gtPoses);
+	constexpr REAL KEEP = 0.4; // the share of its true evidence block 4 keeps on its first three cameras
+	DropCrossObservations(scene, blocks, pairB, {3, 4, 5, 6, 7, 8, 9}, pairA, 0);
+	DropCrossObservations(scene, blocks, pairB, {0, 1, 2}, pairA, KEEP);
+	const unsigned planted = PlantFalseSeam(scene, blocks, pairB, pairA, 600, 5,
+		WallCopy(REAL(2) * REAL(M_PI) * pairB / cfg.numBlocks, PERIOD));
+	if (planted < 150) {
+		VERBOSE("RivalModesOnCycleTest FAILED: only %u tracks of block %u could be copied onto block %u", planted, pairA, pairB);
+		return false;
 	}
-	return blockExtents;
-}
+	ComputePairsWeights(scene);
+	std::vector<Scene> subScenes;
+	std::vector<IIndexArr> localToGlobals;
+	std::vector<SEACAVE::Transform> applied;
+	BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
+	const REAL extentA = RingBlockExtents(subScenes)[pairA];
+	const SEACAVE::Transform truth(applied[pairB] * applied[pairA].Invert());
 
-// A ring the trusted seams carry in two pieces: the pair (0, 11) is severed outright, and the pair
-// (8, 9) is left a bridge measurable from one direction only and too thin to stand on its own
-// evidence, so blocks 9, 10 and 11 are a component the graph cannot join to the rest. The merge has
-// to place that second model against the large one as a single group, on the very bridge the graph
-// could not settle.
+	// the verified pairs across the seam kept their true word and would refuse the copy on their own:
+	// left unread, the cycle is what has to
+	GlobalAlignmentConfig alignCfg;
+	alignCfg.maxPairRotationResidual = 0;
+	GlobalAlignment ga(scene, alignCfg);
+	MergeReport rep;
+	ga.MergeScenes(subScenes, localToGlobals, rep);
+	if (!CheckRingMerge("RivalModesOnCycleTest", rep, scene, gtPoses, cfg.numBlocks, 1, kRingMergeRotation, kRingMergePosition))
+		return false;
+	RunFinalAdjustment(scene);
+	if (!CheckRingMerge("RivalModesOnCycleTest, adjusted", rep, scene, gtPoses, cfg.numBlocks, 1, 0.1, 0.001))
+		return false;
+	// the pair's hypotheses: the copy, the heaviest, and the true one, the one the model rests on
+	uint32_t right = NO_ID, copy = NO_ID;
+	FOREACH(i, rep.candidates) {
+		const SeamCandidate& c = rep.candidates[i];
+		if (c.sceneA != pairA || c.sceneB != pairB)
+			continue;
+		const auto [rotation, translation] = SeamOffset(c.T, truth, extentA);
+		VERBOSE("  pair (%u, %u) hypothesis %u: weight %.0f, %.3f deg and %.2f%% off the truth",
+			pairA, pairB, (unsigned)i, c.weight, rotation, translation * 100);
+		// the truth within the graph bars, measured on a thinned share of its evidence; the copy a
+		// period away, twice the block's footprint
+		if (rotation < alignCfg.maxGraphRotationResidual && translation < alignCfg.maxGraphTranslationResidual)
+			right = (uint32_t)i;
+		else if (translation > 1 && (copy == NO_ID || c.weight > rep.candidates[copy].weight))
+			copy = (uint32_t)i;
+	}
+	if (right == NO_ID || copy == NO_ID || rep.candidates[copy].weight < rep.candidates[right].weight) {
+		VERBOSE("RivalModesOnCycleTest FAILED: the pair holds %s true hypothesis and %s copy, the copy %s",
+			right == NO_ID ? "no" : "a", copy == NO_ID ? "no" : "a",
+			right == NO_ID || copy == NO_ID ? "-" : "lighter than the truth");
+		return false;
+	}
+	const auto RestsOn = [&rep](uint32_t i) {
+		return std::find(rep.modelSeams.begin(), rep.modelSeams.end(), i) != rep.modelSeams.end();
+	};
+	if (!RestsOn(right) || RestsOn(copy)) {
+		VERBOSE("RivalModesOnCycleTest FAILED: the merged model rests on the %s", RestsOn(copy) ? "copy" : "neither of the two");
+		return false;
+	}
+	VERBOSE("RivalModesOnCycleTest PASSED: the copy planted on %u tracks weighs %.0f against the truth's %.0f, "
+		"and the cycle chose the truth (%s)", planted, rep.candidates[copy].weight, rep.candidates[right].weight,
+		TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+// A pair whose every cross pair runs through one camera of block 1: block 0's cameras register
+// against block 1's points through that one camera's features, and the camera on the other side
+// holds every correspondence of block 1's side of the seam -- what a frame of a block carrying a
+// whole seam on its side looks like. However many correspondences that camera holds, the seam
+// weighs what one camera weighs, and as a bridge, which no cycle corroborates, it places no block
+bool OneCameraSideTest()
+{
+	TD_TIMER_START();
+	const RingSceneConfig cfg{12, 10};
+	constexpr unsigned MIN_CORRESPONDENCES = 300; // what the one camera has to hold for the test to mean anything
+	Scene scene;
+	std::vector<IIndexArr> blocks;
+	std::vector<Pose3D> gtPoses;
+	GenerateRingScene(cfg, scene, blocks, gtPoses);
+	// the cross pairs of the two blocks, but those of block 1's first camera, are gone
+	const IIndex door = blocks[1][0];
+	const std::set<IIndex> block0(blocks[0].begin(), blocks[0].end()), block1(blocks[1].begin(), blocks[1].end());
+	RFOREACH(i, scene.pairs) {
+		const ImagePair& pair = scene.pairs[i];
+		const bool cross = (block0.count(pair.ID1) && block1.count(pair.ID2)) || (block1.count(pair.ID1) && block0.count(pair.ID2));
+		if (cross && pair.ID1 != door && pair.ID2 != door)
+			scene.pairs.RemoveAtMove(i);
+	}
+	ComputePairsWeights(scene);
+	std::vector<Scene> subScenes;
+	std::vector<IIndexArr> localToGlobals;
+	std::vector<SEACAVE::Transform> applied;
+	const std::vector<IIndexArr> clusters(blocks.begin(), blocks.begin() + 2);
+	BuildRingBlocks(cfg, scene, clusters, gtPoses, subScenes, localToGlobals, applied);
+
+	const GlobalAlignmentConfig alignCfg;
+	{
+		GlobalAlignment alignment(scene, alignCfg);
+		alignment.PrepareSeamEvidence(subScenes, localToGlobals);
+		std::vector<SeamObservation> observations;
+		std::vector<SeamCorrespondence> correspondences;
+		alignment.CollectPairObservations(subScenes, 0, 1, observations, correspondences);
+		std::map<IIndex, unsigned> perCamera;
+		for (const SeamObservation& obs : observations)
+			for (const IIndex image : {obs.rigImage, obs.pointImage})
+				if (block1.count(image))
+					++perCamera[image];
+		if (perCamera.size() != 1 || perCamera.begin()->second < MIN_CORRESPONDENCES) {
+			VERBOSE("OneCameraSideTest FAILED: block 1's side of the seam spans %u cameras, the first holding %u correspondences",
+				(unsigned)perCamera.size(), perCamera.empty() ? 0u : perCamera.begin()->second);
+			return false;
+		}
+		std::vector<SeamCandidate> candidates;
+		alignment.EstimateSeamPair(subScenes, 0, 1, candidates);
+		for (const SeamCandidate& c : candidates)
+			if (c.score.Weight() > 1) {
+				VERBOSE("OneCameraSideTest FAILED: the seam held by one camera's %u correspondences yielded a hypothesis of %u cameras",
+					perCamera.begin()->second, c.score.Weight());
+				return false;
+			}
+		VERBOSE("  one camera holds the %u correspondences of block 1's side, and the seam weighs one camera", perCamera.begin()->second);
+	}
+	GlobalAlignment merger(scene, alignCfg);
+	MergeReport rep;
+	merger.MergeScenes(subScenes, localToGlobals, rep);
+	if (rep.numPlaced != 1) {
+		VERBOSE("OneCameraSideTest FAILED: %u blocks placed on a seam one camera holds", rep.numPlaced);
+		return false;
+	}
+	VERBOSE("OneCameraSideTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+// Three blocks of a ring, each joined to the other two: the pair (1, 2) carries the true reading and
+// a copy one period along the wall on the same five cameras of block 2, weighing alike, and the pair
+// (0, 2) is joined through one camera a side. Without the door, (1, 2) is a bridge between rivals
+// of equal weight and block 2 stays out; measured from its two cameras, the door closes the
+// triangle, and the cycle chooses the true reading by the translation it puts block 2 at.
+bool OneCameraDoorTest()
+{
+	TD_TIMER_START();
+	const RingSceneConfig cfg{3, 16};
+	constexpr REAL PERIOD = 5; // how far along the wall the copy sits, in the ring's units
+	constexpr REAL KEEP = 0.4; // the share of its true evidence block 2 keeps toward block 1
+	Scene scene;
+	std::vector<IIndexArr> blocks;
+	std::vector<Pose3D> gtPoses;
+	GenerateRingScene(cfg, scene, blocks, gtPoses);
+	// (0, 2): only the cross pair of block 0's first camera and block 2's last
+	const IIndex door0 = blocks[0].front(), door2 = blocks[2].back();
+	const std::set<IIndex> block0(blocks[0].begin(), blocks[0].end()), block2(blocks[2].begin(), blocks[2].end());
+	RFOREACH(i, scene.pairs) {
+		const ImagePair& pair = scene.pairs[i];
+		const bool cross = (block0.count(pair.ID1) && block2.count(pair.ID2)) || (block2.count(pair.ID1) && block0.count(pair.ID2));
+		if (cross && !(MINF(pair.ID1, pair.ID2) == MINF(door0, door2) && MAXF(pair.ID1, pair.ID2) == MAXF(door0, door2)))
+			scene.pairs.RemoveAtMove(i);
+	}
+	// (1, 2): the truth on block 2's first five cameras, thinned, and a copy on the same five
+	std::vector<unsigned> far(cfg.camsPerBlock - 5);
+	std::iota(far.begin(), far.end(), 5u);
+	DropCrossObservations(scene, blocks, 2, far, 1, 0);
+	DropCrossObservations(scene, blocks, 2, {0, 1, 2, 3, 4}, 1, KEEP);
+	const unsigned planted = PlantFalseSeam(scene, blocks, 2, 1, 600, 5, WallCopy(REAL(2) * REAL(M_PI) * 2 / cfg.numBlocks, PERIOD));
+	if (planted < 100) {
+		VERBOSE("OneCameraDoorTest FAILED: only %u tracks of block 1 could be copied onto block 2", planted);
+		return false;
+	}
+	ComputePairsWeights(scene);
+	std::vector<Scene> subScenes;
+	std::vector<IIndexArr> localToGlobals;
+	std::vector<SEACAVE::Transform> applied;
+	BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
+	const REAL extent1 = RingBlockExtents(subScenes)[1];
+	const SEACAVE::Transform truth(applied[2] * applied[1].Invert());
+
+	// the verified pairs left unread, so the copy stands on its cameras as the truth does
+	GlobalAlignmentConfig alignCfg;
+	alignCfg.maxPairRotationResidual = 0;
+	GlobalAlignment ga(scene, alignCfg);
+	MergeReport rep;
+	ga.MergeScenes(subScenes, localToGlobals, rep);
+	const SeamCandidate* door = ModelSeamOf(rep, 0, 2);
+	if (door == NULL) {
+		VERBOSE("OneCameraDoorTest FAILED: the merged model rests on no hypothesis of the door (0, 2)");
+		return false;
+	}
+	const SeamCandidate* seam = ModelSeamOf(rep, 1, 2);
+	const auto [rotation, translation] = seam == NULL ? std::make_pair(REAL(FLT_MAX), REAL(FLT_MAX)) : SeamOffset(seam->T, truth, extent1);
+	if (rotation > alignCfg.maxGraphRotationResidual || translation > alignCfg.maxGraphTranslationResidual) {
+		VERBOSE("OneCameraDoorTest FAILED: the merged model rests on %s hypothesis of (1, 2), %.2f deg and %.2f%% off the truth",
+			seam == NULL ? "no" : "a wrong", rotation, translation * 100);
+		return false;
+	}
+	if (!CheckRingMerge("OneCameraDoorTest", rep, scene, gtPoses, cfg.numBlocks, 1, kRingMergeRotation, kRingMergePosition))
+		return false;
+	VERBOSE("OneCameraDoorTest PASSED: the door of weight %.2f closes the triangle, the copy planted on %u tracks left out (%s)",
+		door->weight, planted, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+// A ring whose blocks were each reconstructed bent by a degree along their own cameras: the twelve
+// degrees the loop then misses are spread over its seams, and the merged model leaves the
+// correspondences of every seam a few pixels apart, past the reprojection bar and within the loose
+// one. Those far matches must join their tracks at the merge and hold them through the final
+// adjustment, which then straightens the blocks and leaves them within the bar
+bool BentBlockClosureTest()
+{
+	TD_TIMER_START();
+	RingSceneConfig cfg{12, 10};
+	cfg.driftDegPerBlock = 1;
+	constexpr unsigned MIN_FAR_MATCHES = 100; // what the bend has to leave past the bar for the test to mean anything
+	constexpr REAL MIN_KEPT_SHARE = 0.9;      // of those, the share that must end inliers within the bar
+	Scene scene;
+	std::vector<IIndexArr> blocks;
+	std::vector<Pose3D> gtPoses;
+	GenerateRingScene(cfg, scene, blocks, gtPoses);
+	std::vector<Scene> subScenes;
+	std::vector<IIndexArr> localToGlobals;
+	std::vector<SEACAVE::Transform> applied;
+	BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
+	const std::vector<BlockPairCorrespondences> blockPairs(CollectBlockPairCorrespondences(scene, subScenes, localToGlobals));
+
+	const GlobalAlignmentConfig alignCfg;
+	GlobalAlignment ga(scene, alignCfg);
+	MergeReport rep;
+	ga.MergeScenes(subScenes, localToGlobals, rep);
+	if (rep.numPlaced != cfg.numBlocks) {
+		VERBOSE("BentBlockClosureTest FAILED: %u of %u bent blocks placed", rep.numPlaced, cfg.numBlocks);
+		return false;
+	}
+	// the far matches: the correspondences of the model's block pairs its block poses leave past the
+	// bar and within the loose bar
+	const REAL bar = alignCfg.maxReprojError, looseBar = alignCfg.looseSeamFactor * alignCfg.maxReprojError;
+	const std::set<std::pair<uint32_t, uint32_t>> modelPairs(ModelBlockPairs(rep));
+	std::vector<SeamCorrespondence> farMatches;
+	for (const BlockPairCorrespondences& pair : blockPairs) {
+		if (!modelPairs.count(std::make_pair(pair.a, pair.b)))
+			continue;
+		const SEACAVE::Transform T(rep.poses[pair.b].T.Invert() * rep.poses[pair.a].T);
+		FOREACH(i, pair.observations) {
+			const REAL error = SeamPixelError(pair.observations[i], T);
+			if (error > bar && error <= looseBar)
+				farMatches.push_back(pair.correspondences[i]);
+		}
+	}
+	if (farMatches.size() < MIN_FAR_MATCHES) {
+		VERBOSE("BentBlockClosureTest FAILED: the bend left only %u matches past the bar", (unsigned)farMatches.size());
+		return false;
+	}
+	// where every observation ended up: its track and whether it is an inlier of it
+	const auto TrackOf = [&scene](IIndex image, uint32_t feature, bool& inlier) {
+		FOREACH(t, scene.tracks) {
+			const Track& track = scene.tracks[t];
+			FOREACH(k, track.observations)
+				if (track.observations[k].imageID == image && track.observations[k].featureID == feature) {
+					inlier = k < track.numInliers;
+					return (uint32_t)t;
+				}
+		}
+		inlier = false;
+		return (uint32_t)NO_ID;
+	};
+	unsigned numJoined = 0;
+	for (const SeamCorrespondence& corr : farMatches) {
+		bool inlierA, inlierB;
+		const uint32_t trackA = TrackOf(corr.imageA, corr.featureA, inlierA);
+		if (trackA != NO_ID && trackA == TrackOf(corr.imageB, corr.featureB, inlierB))
+			++numJoined;
+	}
+	RunFinalAdjustment(scene);
+	// and what the final adjustment made of them: one track, both ends inliers within the bar
+	unsigned numKept = 0;
+	for (const SeamCorrespondence& corr : farMatches) {
+		bool inlierA, inlierB;
+		const uint32_t trackA = TrackOf(corr.imageA, corr.featureA, inlierA);
+		if (trackA == NO_ID || trackA != TrackOf(corr.imageB, corr.featureB, inlierB) || !inlierA || !inlierB)
+			continue;
+		const Track& track = scene.tracks[trackA];
+		bool within = true;
+		for (const auto& end : {std::make_pair(corr.imageA, corr.featureA), std::make_pair(corr.imageB, corr.featureB)}) {
+			const Image& image = scene.images[end.first];
+			const auto [proj, valid] = image.ProjectPoint(track.position);
+			within = within && valid && norm(proj - Point2(image.keypoints[end.second].pt)) <= bar;
+		}
+		if (within)
+			++numKept;
+	}
+	const auto [rotation, position] = RingErrors(scene, gtPoses);
+	VERBOSE("  %u far matches: %u joined at the merge, %u inliers within the bar after the final adjustment; "
+		"ring %.4f deg and %.4f%% from the truth", (unsigned)farMatches.size(), numJoined, numKept, rotation, position * 100);
+	if (numKept < MIN_KEPT_SHARE * farMatches.size()) {
+		VERBOSE("BentBlockClosureTest FAILED: %u of the %u far matches end inliers within the bar",
+			numKept, (unsigned)farMatches.size());
+		return false;
+	}
+	if (!CheckRingMerge("BentBlockClosureTest, adjusted", rep, scene, gtPoses, cfg.numBlocks, 1, 0.1, 0.002))
+		return false;
+	VERBOSE("BentBlockClosureTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+
+// A ring cut open between blocks 0 and 11, whose pair (8, 9) is left a thin bridge measurable from
+// one direction only: blocks 9, 10 and 11 reach the rest of the ring through it alone. The bridge
+// holds one hypothesis, so nothing rivals it, and the whole ring is one model resting on it.
 bool SecondModelTest()
 {
 	TD_TIMER_START();
@@ -17995,63 +18537,39 @@ bool SecondModelTest()
 	BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
 
 	const GlobalAlignmentConfig alignCfg;
-	// what the merge starts from: one undecided bridge on (8, 9), and nothing at all on (0, 11)
+	// what the merge starts from: one hypothesis on (8, 9), and nothing at all on (0, 11)
 	{
 		GlobalAlignment alignment(scene, alignCfg);
 		std::vector<SeamCandidate> candidates;
 		alignment.EstimateSeamCandidates(subScenes, localToGlobals, candidates);
-		alignment.ClassifySeamGraph(RingBlockExtents(subScenes), candidates);
 		unsigned numBridges = 0;
 		for (const SeamCandidate& c : candidates) {
 			if (c.sceneA == 0 && c.sceneB == cfg.numBlocks - 1) {
-				VERBOSE("SecondModelTest FAILED: the severed pair (0, %u) still yielded a candidate of class %u",
-					cfg.numBlocks - 1, (unsigned)c.cls);
+				VERBOSE("SecondModelTest FAILED: the severed pair (0, %u) still yielded a hypothesis of weight %.0f",
+					cfg.numBlocks - 1, c.weight);
 				return false;
 			}
-			if (c.sceneA != 8 || c.sceneB != 9)
-				continue;
-			++numBridges;
-			if (c.cls != SeamCandidate::UNDECIDED) {
-				VERBOSE("SecondModelTest FAILED: the bridge (8, 9) came out class %u on %u inliers, expected undecided",
-					(unsigned)c.cls, c.score.inliers);
-				return false;
-			}
+			if (c.sceneA == 8 && c.sceneB == 9)
+				++numBridges;
 		}
 		if (numBridges != 1) {
-			VERBOSE("SecondModelTest FAILED: the pair (8, 9) yielded %u candidates, expected exactly one", numBridges);
+			VERBOSE("SecondModelTest FAILED: the pair (8, 9) yielded %u hypotheses, expected exactly one", numBridges);
 			return false;
 		}
 	}
 
 	GlobalAlignment ga(scene, alignCfg);
 	MergeReport rep;
-	{
-		LogCapture log;
-		ga.MergeScenes(subScenes, localToGlobals, rep);
-		if (!log.Contains("Model 1 (3 blocks) placed on model 0")) {
-			VERBOSE("SecondModelTest FAILED: the model of blocks 9, 10 and 11 was never placed on the first");
-			return false;
-		}
-	}
+	ga.MergeScenes(subScenes, localToGlobals, rep);
 	if (!CheckRingMerge("SecondModelTest", rep, scene, gtPoses, cfg.numBlocks, 1, 0.1, 0.001))
 		return false;
-	// the bridge the graph could not settle is what carried the second model in, and the merged
-	// model rests on it
-	uint32_t bridge = NO_ID;
-	FOREACH(i, rep.candidates)
-		if (rep.candidates[i].sceneA == 8 && rep.candidates[i].sceneB == 9)
-			bridge = (uint32_t)i;
-	if (bridge == NO_ID || rep.candidates[bridge].cls != SeamCandidate::VERIFIED) {
-		VERBOSE("SecondModelTest FAILED: the bridge (8, 9) came out class %u, expected verified by the placement",
-			bridge == NO_ID ? 0u : (unsigned)rep.candidates[bridge].cls);
-		return false;
-	}
-	if (std::find(rep.modelSeams.begin(), rep.modelSeams.end(), bridge) == rep.modelSeams.end()) {
+	// the bridge is what carries blocks 9, 10 and 11, and the merged model rests on it
+	if (ModelSeamOf(rep, 8, 9) == NULL) {
 		VERBOSE("SecondModelTest FAILED: the bridge is not among the %u seams the merged model rests on",
 			(unsigned)rep.modelSeams.size());
 		return false;
 	}
-	VERBOSE("SecondModelTest PASSED: %u blocks in one model, the second model placed on the bridge (8, 9) (%s)",
+	VERBOSE("SecondModelTest PASSED: %u blocks in one model, blocks 9, 10 and 11 on the bridge (8, 9) (%s)",
 		rep.numPlaced, TD_TIMER_GET_FMT().c_str());
 	return true;
 }
@@ -18059,8 +18577,9 @@ bool SecondModelTest()
 
 // A block reconstructed folded: its two halves never saw each other, and the second sits turned by
 // half a turn in the block's own frame. No pose of the block can answer to both its neighbours, and
-// its own cameras say so -- half of them behind any placement of it, half against it. The merge has
-// to cut it in two along the fold and place each half on its own.
+// the cycle of the ring says so: one of its two seams is off the solution. The fold must not put the
+// model wrong -- every other block lands on the truth -- whatever the half of it its kept seam
+// carries brings along.
 bool FoldedBlockTest()
 {
 	TD_TIMER_START();
@@ -18079,45 +18598,105 @@ bool FoldedBlockTest()
 	const GlobalAlignmentConfig alignCfg;
 	GlobalAlignment ga(scene, alignCfg);
 	MergeReport rep;
-	{
-		LogCapture log;
-		ga.MergeScenes(subScenes, localToGlobals, rep);
-		if (!log.Contains("Block 6 split into 12 and 13")) {
-			VERBOSE("FoldedBlockTest FAILED: the folded block was never cut in two");
-			return false;
-		}
-	}
-	// the block that came apart keeps its place, and its two parts are appended behind it
-	if (rep.poses.size() != cfg.numBlocks + 2) {
-		VERBOSE("FoldedBlockTest FAILED: the merge ended with %u blocks, expected the %u it started with and two parts",
-			(unsigned)rep.poses.size(), cfg.numBlocks);
+	ga.MergeScenes(subScenes, localToGlobals, rep);
+	// the folded block reaches the ring through two seams the cycle cannot both keep
+	if (ModelSeamOf(rep, cfg.foldedBlock - 1, cfg.foldedBlock) != NULL && ModelSeamOf(rep, cfg.foldedBlock, cfg.foldedBlock + 1) != NULL) {
+		VERBOSE("FoldedBlockTest FAILED: the merged model rests on both seams of the folded block");
 		return false;
 	}
-	if (rep.poses[cfg.foldedBlock].state != BlockPose::SPLIT) {
-		VERBOSE("FoldedBlockTest FAILED: block %u came out in state %u, expected split",
-			cfg.foldedBlock, (unsigned)rep.poses[cfg.foldedBlock].state);
+	// every block but the folded one placed, and every one of their cameras on the truth
+	if (rep.numPlaced < cfg.numBlocks - 1) {
+		VERBOSE("FoldedBlockTest FAILED: %u of the %u blocks placed", rep.numPlaced, cfg.numBlocks);
 		return false;
 	}
-	for (uint32_t part = cfg.numBlocks; part < (uint32_t)rep.poses.size(); ++part)
-		if (rep.poses[part].state != BlockPose::ADMITTED) {
-			VERBOSE("FoldedBlockTest FAILED: part %u came out in state %u, expected admitted",
-				part, (unsigned)rep.poses[part].state);
-			return false;
-		}
-	// the two parts carry between them every image the folded block held
-	for (const IIndex image : blocks[cfg.foldedBlock])
-		if (!scene.images[image].IsValid()) {
-			VERBOSE("FoldedBlockTest FAILED: image %u of the folded block is not registered", image);
-			return false;
-		}
-	// the eleven whole blocks and the two parts, the block they came from carrying nothing
-	if (!CheckRingMerge("FoldedBlockTest", rep, scene, gtPoses, cfg.numBlocks + 1, 1, 0.1, 0.001))
+	const std::set<IIndex> folded(blocks[cfg.foldedBlock].begin(), blocks[cfg.foldedBlock].end());
+	const auto [rotation, position] = RingErrors(scene, gtPoses, &folded);
+	if (rotation > kRingMergeRotation || position > kRingMergePosition) {
+		VERBOSE("FoldedBlockTest FAILED: the unfolded blocks are %.4f deg and %.3f%% off the truth", rotation, position * 100);
 		return false;
-	VERBOSE("FoldedBlockTest PASSED: block %u placed as two, %u blocks in one model (%s)",
-		cfg.foldedBlock, rep.numPlaced, TD_TIMER_GET_FMT().c_str());
+	}
+	VERBOSE("FoldedBlockTest PASSED: %u blocks placed, the unfolded ones %.4f deg and %.4f%% from the truth (%s)",
+		rep.numPlaced, rotation, position * 100, TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 /*----------------------------------------------------------------*/
+
+// A ring of twelve blocks each bent by half a degree: the ring's rigid seams miss its loop by six
+// degrees, more than a seam's bar, while each of them is within its bar of the averaged poses. Every
+// seam between neighbours stays in the model, so the closure joins every one of them, and the final
+// adjustment ends the ring on the truth.
+bool BentRingKeepsSeamsTest()
+{
+	TD_TIMER_START();
+	RingSceneConfig cfg{12, 10};
+	cfg.driftDegPerBlock = 0.5;
+	Scene scene;
+	std::vector<IIndexArr> blocks;
+	std::vector<Pose3D> gtPoses;
+	GenerateRingScene(cfg, scene, blocks, gtPoses);
+	std::vector<Scene> subScenes;
+	std::vector<IIndexArr> localToGlobals;
+	std::vector<SEACAVE::Transform> applied;
+	BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
+	const GlobalAlignmentConfig alignCfg;
+	GlobalAlignment ga(scene, alignCfg);
+	MergeReport rep;
+	ga.MergeScenes(subScenes, localToGlobals, rep);
+	for (uint32_t b = 0; b < cfg.numBlocks; ++b) {
+		const uint32_t next = (b + 1) % cfg.numBlocks;
+		if (ModelSeamOf(rep, MINF(b, next), MAXF(b, next)) == NULL) {
+			VERBOSE("BentRingKeepsSeamsTest FAILED: the seam (%u, %u) is not in the merged model", MINF(b, next), MAXF(b, next));
+			return false;
+		}
+	}
+	RunFinalAdjustment(scene);
+	if (!CheckRingMerge("BentRingKeepsSeamsTest, adjusted", rep, scene, gtPoses, cfg.numBlocks, 1, 0.1, 0.002))
+		return false;
+	VERBOSE("BentRingKeepsSeamsTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+// FoldedBlockTest with the fold of a symmetric scene: the block's second half sits turned by 45
+// degrees, each half seen by one neighbour. The fold must not put the model wrong: every other block
+// lands on the truth.
+bool FoldedBlock45Test()
+{
+	TD_TIMER_START();
+	// twenty cameras per block, so either half of the fold is still a block of ten views
+	RingSceneConfig cfg{12, 20};
+	cfg.foldedBlock = 6;
+	cfg.foldDeg = 45;
+	Scene scene;
+	std::vector<IIndexArr> blocks;
+	std::vector<Pose3D> gtPoses;
+	GenerateRingScene(cfg, scene, blocks, gtPoses);
+	std::vector<Scene> subScenes;
+	std::vector<IIndexArr> localToGlobals;
+	std::vector<SEACAVE::Transform> applied;
+	BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
+	const GlobalAlignmentConfig alignCfg;
+	GlobalAlignment ga(scene, alignCfg);
+	MergeReport rep;
+	ga.MergeScenes(subScenes, localToGlobals, rep);
+	if (ModelSeamOf(rep, cfg.foldedBlock - 1, cfg.foldedBlock) != NULL && ModelSeamOf(rep, cfg.foldedBlock, cfg.foldedBlock + 1) != NULL) {
+		VERBOSE("FoldedBlock45Test FAILED: the merged model rests on both seams of the folded block");
+		return false;
+	}
+	if (rep.numPlaced < cfg.numBlocks - 1) {
+		VERBOSE("FoldedBlock45Test FAILED: %u of the %u blocks placed", rep.numPlaced, cfg.numBlocks);
+		return false;
+	}
+	const std::set<IIndex> folded(blocks[cfg.foldedBlock].begin(), blocks[cfg.foldedBlock].end());
+	const auto [rotation, position] = RingErrors(scene, gtPoses, &folded);
+	if (rotation > kRingMergeRotation || position > kRingMergePosition) {
+		VERBOSE("FoldedBlock45Test FAILED: the unfolded blocks are %.4f deg and %.3f%% off the truth", rotation, position * 100);
+		return false;
+	}
+	VERBOSE("FoldedBlock45Test PASSED: %u blocks placed, the unfolded ones %.4f deg and %.4f%% from the truth (%s)",
+		rep.numPlaced, rotation, position * 100, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
 
 // A chord across the ring that reads perfectly on its own evidence: two cameras of block 3 are given
 // block 9's wall, turned half a turn about the ring axis onto block 3's own arc and pushed out to
@@ -18149,107 +18728,25 @@ bool FalseChordTest()
 	const GlobalAlignmentConfig alignCfg;
 	GlobalAlignment ga(scene, alignCfg);
 	MergeReport rep;
+	bool measured;
 	{
 		LogCapture log;
 		ga.MergeScenes(subScenes, localToGlobals, rep);
-		if (!log.Contains("Seam (3, 9) rejected by consensus")) {
-			VERBOSE("FalseChordTest FAILED: the planted chord was never rejected by the consensus");
-			return false;
-		}
+		measured = log.Contains("Seam (3, 9) rig");
 	}
+	// the chord is measured, enters the block graph, and the cycles it closes cut it
 	uint32_t chord = NO_ID;
 	FOREACH(i, rep.candidates)
 		if (rep.candidates[i].sceneA == 3 && rep.candidates[i].sceneB == 9)
 			chord = (uint32_t)i;
-	if (chord == NO_ID) {
-		VERBOSE("FalseChordTest FAILED: the planted chord (3, 9) was never measured");
+	if (!measured || chord == NO_ID || ModelSeamOf(rep, 3, 9) != NULL || rep.candidates[chord].residualRotation <= 30) {
+		VERBOSE("FalseChordTest FAILED: the planted chord was %s", !measured ? "never measured" : "kept or not indicted");
 		return false;
 	}
-	if (rep.candidates[chord].cls != SeamCandidate::REJECTED || rep.candidates[chord].residualRotation <= 30) {
-		VERBOSE("FalseChordTest FAILED: the chord (3, 9) came out class %u, %.2f deg from the consensus",
-			(unsigned)rep.candidates[chord].cls, rep.candidates[chord].residualRotation);
+	if (!CheckRingMerge("FalseChordTest", rep, scene, gtPoses, cfg.numBlocks, 1, kRingMergeRotation, kRingMergePosition))
 		return false;
-	}
-	if (std::find(rep.modelSeams.begin(), rep.modelSeams.end(), chord) != rep.modelSeams.end()) {
-		VERBOSE("FalseChordTest FAILED: the rejected chord is among the seams the merged model rests on");
-		return false;
-	}
-	if (!CheckRingMerge("FalseChordTest", rep, scene, gtPoses, cfg.numBlocks, 1, 0.1, 0.001))
-		return false;
-	VERBOSE("FalseChordTest PASSED: the chord planted on %u tracks was rejected %.2f deg from the consensus, "
-		"%u blocks placed (%s)", planted, rep.candidates[chord].residualRotation, rep.numPlaced,
-		TD_TIMER_GET_FMT().c_str());
-	return true;
-}
-/*----------------------------------------------------------------*/
-
-// The same chord, carried by every camera of the block instead of two: 512 tracks over 20
-// supporting cameras, so the wrong seam weighs what a true one weighs and the rotation averaging
-// carries its initialization out through it ahead of the seams it contradicts. What the graph makes
-// of that is this test's subject, and what it makes of it is the right answer on the first reading:
-// the chord is REJECTED 179.94 deg from the consensus, no seam of the component is left undecided
-// (12 robust), the component comes back in one frame, and the ring is placed whole in one model.
-// The leave-one-out reading is the insurance for the case where such a chord turns the half of the
-// component the tree reaches through it and leaves the true seams looking like the wrong ones; it
-// costs nothing here, because there is nothing for it to improve on
-bool HeavyFalseChordTest()
-{
-	TD_TIMER_START();
-	const RingSceneConfig cfg{12, 10};
-	Scene scene;
-	std::vector<IIndexArr> blocks;
-	std::vector<Pose3D> gtPoses;
-	GenerateRingScene(cfg, scene, blocks, gtPoses);
-	SEACAVE::Transform wrong(RingRotation(180));
-	wrong.scale = 1.6;
-	// spread over every camera of block 3, so the chord carries the votes of a whole block
-	const unsigned planted = PlantFalseSeam(scene, blocks, 3, 9, 600, cfg.camsPerBlock, wrong);
-	if (planted < 350) {
-		VERBOSE("HeavyFalseChordTest FAILED: only %u tracks of block 9 could be planted on block 3", planted);
-		return false;
-	}
-	std::vector<Scene> subScenes;
-	std::vector<IIndexArr> localToGlobals;
-	std::vector<SEACAVE::Transform> applied;
-	BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
-
-	const GlobalAlignmentConfig alignCfg;
-	GlobalAlignment ga(scene, alignCfg);
-	MergeReport rep;
-	ga.MergeScenes(subScenes, localToGlobals, rep);
-	uint32_t chord = NO_ID;
-	FOREACH(i, rep.candidates)
-		if (rep.candidates[i].sceneA == 3 && rep.candidates[i].sceneB == 9)
-			chord = (uint32_t)i;
-	if (chord == NO_ID) {
-		VERBOSE("HeavyFalseChordTest FAILED: the planted chord (3, 9) was never measured");
-		return false;
-	}
-	if (rep.candidates[chord].cls != SeamCandidate::REJECTED) {
-		VERBOSE("HeavyFalseChordTest FAILED: the chord (3, 9) came out class %u on %u supporting cameras, "
-			"%.2f deg from the consensus", (unsigned)rep.candidates[chord].cls,
-			rep.candidates[chord].score.support[0] + rep.candidates[chord].score.support[1],
-			rep.candidates[chord].residualRotation);
-		return false;
-	}
-	// and the ring itself is decided: a component a wrong seam carried the initialization through
-	// comes back split, which leaves every seam of it undecided and the blocks to be placed on
-	// nothing
-	if (rep.numUndecided != 0) {
-		VERBOSE("HeavyFalseChordTest FAILED: the graph left %u of its seams undecided and %u robust",
-			rep.numUndecided, rep.numRobust);
-		return false;
-	}
-	if (std::find(rep.modelSeams.begin(), rep.modelSeams.end(), chord) != rep.modelSeams.end()) {
-		VERBOSE("HeavyFalseChordTest FAILED: the rejected chord is among the seams the merged model rests on");
-		return false;
-	}
-	if (!CheckRingMerge("HeavyFalseChordTest", rep, scene, gtPoses, cfg.numBlocks, 1, 0.1, 0.001))
-		return false;
-	VERBOSE("HeavyFalseChordTest PASSED: the chord planted on %u tracks over %u cameras was rejected "
-		"%.2f deg from the consensus, %u robust seams, %u blocks placed (%s)",
-		planted, rep.candidates[chord].score.support[0] + rep.candidates[chord].score.support[1],
-		rep.candidates[chord].residualRotation, rep.numRobust, rep.numPlaced, TD_TIMER_GET_FMT().c_str());
+	VERBOSE("FalseChordTest PASSED: the chord planted on %u tracks cut by the cycles, %u blocks placed (%s)", planted,
+		rep.numPlaced, TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 /*----------------------------------------------------------------*/
@@ -18280,6 +18777,7 @@ bool SeamInliersBecomeTracksTest()
 				subTrackOf.emplace(FeatureKey(globalID, obs.featureID), (((uint64_t)b) << 32) | (uint64_t)t);
 			}
 
+	const std::vector<BlockPairCorrespondences> blockPairs(CollectBlockPairCorrespondences(scene, subScenes, localToGlobals));
 	const GlobalAlignmentConfig alignCfg;
 	GlobalAlignment ga(scene, alignCfg);
 	MergeReport rep;
@@ -18305,13 +18803,16 @@ bool SeamInliersBecomeTracksTest()
 
 	unsigned numChecked = 0, numViolations = 0;
 	std::set<std::pair<uint64_t, uint64_t>> distinctTrackPairs;
-	for (const uint32_t seamIdx : rep.modelSeams) {
-		const SeamCandidate& c = rep.candidates[seamIdx];
-		const size_t numScored = MINF(c.correspondences.size(), c.score.inlierMask.size());
-		for (size_t i = 0; i < numScored; ++i) {
-			if (!c.score.inlierMask[i])
+	const std::set<std::pair<uint32_t, uint32_t>> modelPairs(ModelBlockPairs(rep));
+	for (const BlockPairCorrespondences& pair : blockPairs) {
+		if (!modelPairs.count(std::make_pair(pair.a, pair.b)))
+			continue;
+		// the pair's inliers at the bar under the final block poses
+		const SEACAVE::Transform T(rep.poses[pair.b].T.Invert() * rep.poses[pair.a].T);
+		FOREACH(i, pair.observations) {
+			if (SeamPixelError(pair.observations[i], T) > alignCfg.maxReprojError)
 				continue;
-			const SeamCorrespondence& corr = c.correspondences[i];
+			const SeamCorrespondence& corr = pair.correspondences[i];
 			++numChecked;
 			const auto itA = trackOf.find(FeatureKey(corr.imageA, corr.featureA));
 			const auto itB = trackOf.find(FeatureKey(corr.imageB, corr.featureB));
@@ -18361,72 +18862,6 @@ bool SeamInliersBecomeTracksTest()
 	VERBOSE("SeamInliersBecomeTracksTest PASSED: %u seam inliers, %u violations, %u distinct sub-scene track pairs, "
 		"%u tracks span two blocks (%s)",
 		numChecked, numViolations, (unsigned)distinctTrackPairs.size(), numCrossBlockTracks, TD_TIMER_GET_FMT().c_str());
-	return true;
-}
-/*----------------------------------------------------------------*/
-
-// Two blocks of one model that contradict each other: block 1 sits twenty degrees off where its seam
-// to block 0 puts it. Judged again, the model may let one of them go, never both: the block that
-// remains has no other block left to be judged against, and a merged model left holding nothing
-// leaves the whole scene to a resection with no pose to start from
-bool RevalidationKeepsOneBlockTest()
-{
-	TD_TIMER_START();
-	constexpr REAL WRONG_TURN = 20; // degrees block 1 is turned away from where its seam puts it
-	const RingSceneConfig cfg{3, 16};
-	Scene scene;
-	std::vector<IIndexArr> blocks;
-	std::vector<Pose3D> gtPoses;
-	GenerateRingScene(cfg, scene, blocks, gtPoses);
-	std::vector<Scene> subScenes;
-	std::vector<IIndexArr> localToGlobals;
-	std::vector<SEACAVE::Transform> applied;
-	BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
-
-	const GlobalAlignmentConfig alignCfg;
-	GlobalAlignment alignment(scene, alignCfg);
-	std::vector<SeamCandidate> candidates;
-	if (!alignment.EstimateSeamCandidates(subScenes, localToGlobals, candidates)) {
-		VERBOSE("RevalidationKeepsOneBlockTest FAILED: the three blocks yielded no seam candidate");
-		return false;
-	}
-	std::vector<REAL> blockExtents(RingBlockExtents(subScenes));
-	alignment.ClassifySeamGraph(blockExtents, candidates);
-	std::vector<uint32_t> modelSeams;
-	FOREACH(i, candidates)
-		if (candidates[i].sceneA == 0 && candidates[i].sceneB == 1)
-			modelSeams.push_back(i);
-	if (modelSeams.empty()) {
-		VERBOSE("RevalidationKeepsOneBlockTest FAILED: no seam was measured between blocks 0 and 1");
-		return false;
-	}
-
-	// the model holds blocks 0 and 1, block 1 turned off its true pose; block 2 is outside it
-	std::vector<BlockPose> poses(cfg.numBlocks);
-	for (uint32_t b = 0; b < 2; ++b) {
-		poses[b].T = applied[0] * applied[b].Invert();
-		poses[b].model = 0;
-		poses[b].state = BlockPose::ADMITTED;
-	}
-	poses[1].T = RingRotation(WRONG_TURN) * poses[1].T;
-	const unsigned numLetGo = alignment.RevalidateBlocks(
-		subScenes, localToGlobals, blockExtents, candidates, 0, poses, modelSeams);
-	unsigned numHeld = 0;
-	for (const BlockPose& pose : poses)
-		if (pose.state == BlockPose::ADMITTED && pose.model == 0)
-			++numHeld;
-	if (numLetGo == 0) {
-		VERBOSE("RevalidationKeepsOneBlockTest FAILED: the model kept both blocks although they are %.0f deg apart, "
-			"so the scene does not pose the problem", (double)WRONG_TURN);
-		return false;
-	}
-	if (numHeld != 1) {
-		VERBOSE("RevalidationKeepsOneBlockTest FAILED: %u blocks let go and %u of the two left in the model",
-			numLetGo, numHeld);
-		return false;
-	}
-	VERBOSE("RevalidationKeepsOneBlockTest PASSED: of two blocks %.0f deg apart one is let go and one kept (%s)",
-		(double)WRONG_TURN, TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 /*----------------------------------------------------------------*/
@@ -18513,21 +18948,18 @@ bool UnplacedBlocksReportedTest()
 /*----------------------------------------------------------------*/
 
 // Every block of a six-block ring bent inside its own reconstruction, by half a degree of rotation
-// and half a percent of scale along its own cameras. A ring like this the merge closes over the
-// block poses alone: what its seams are left disagreeing by is 0.63 px, well inside the bar that
-// hands a model to the camera relaxation, and a bend big enough to pass that bar is one the
-// placement refuses -- at a degree per block the closing block goes out, and an open chain of blocks
-// has no discrepancy left to carry, every seam being satisfiable in turn. So the bar is held down
-// here, which is the only way to read what the relaxation is worth on a ring: it takes the merged
-// cameras from 0.1374 deg and 0.1063% of the ring off the truth to 0.0484 deg and 0.0216%, and
-// leaves every seam inside the reprojection bar. Where it is worth more is a loop the rigid blocks
-// cannot close at all, which is what the real captures bring and this fixture cannot.
+// and half a percent of scale along its own cameras: the block poses alone close the ring over
+// seams a fraction of a pixel apart, and leave the cameras bent. What the final adjustment the
+// merge hands over makes of it -- the merged model filtered at the loose bar and adjusted, then
+// filtered at the bar and adjusted again -- is the subject: it straightens the blocks, taking the
+// cameras well under what the rigid block poses leave.
 bool BentBlocksRelaxationTest()
 {
 	TD_TIMER_START();
 	RingSceneConfig cfg{6, 20};
 	cfg.driftDegPerBlock = 0.5;
 	cfg.driftScalePerBlock = 0.005;
+	constexpr REAL MAX_ROTATION_SHARE = 0.5, MAX_POSITION_SHARE = 0.5; // of the rigid block poses' errors
 	Scene scene;
 	std::vector<IIndexArr> blocks;
 	std::vector<Pose3D> gtPoses;
@@ -18537,87 +18969,26 @@ bool BentBlocksRelaxationTest()
 	std::vector<SEACAVE::Transform> applied;
 	BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
 
-	// the same blocks again, for the merge that is allowed to relax them
-	Scene relaxedScene(scene);
-	std::vector<Scene> relaxedSubScenes(subScenes);
-	std::vector<IIndexArr> relaxedLocalToGlobals(localToGlobals);
-
-	// the merge as it is configured: the block poses close the ring on their own, and the cameras
-	// are left where the placement put them
-	const GlobalAlignmentConfig rigidCfg;
-	GlobalAlignment rigidGa(scene, rigidCfg);
-	MergeReport rigidRep;
-	rigidGa.MergeScenes(subScenes, localToGlobals, rigidRep);
-	if (rigidRep.camerasRelaxed) {
-		VERBOSE("BentBlocksRelaxationTest FAILED: the cameras were relaxed at %.2f px, under the bar",
-			rigidRep.seamErrorBeforeRelax);
-		return false;
-	}
-	if (rigidRep.seamErrorBeforeRelax >= rigidCfg.relaxSeamResidualFactor * rigidCfg.maxReprojError) {
-		VERBOSE("BentBlocksRelaxationTest FAILED: the block poses left the seams %.2f px apart, at the bar",
-			rigidRep.seamErrorBeforeRelax);
-		return false;
-	}
-	// the whole ring, so the arm the relaxed one is read against covers every camera of it
-	if (rigidRep.numPlaced != cfg.numBlocks) {
-		VERBOSE("BentBlocksRelaxationTest FAILED: %u of %u blocks placed without the relaxation",
-			rigidRep.numPlaced, cfg.numBlocks);
+	const GlobalAlignmentConfig alignCfg;
+	GlobalAlignment ga(scene, alignCfg);
+	MergeReport rep;
+	ga.MergeScenes(subScenes, localToGlobals, rep);
+	if (rep.numPlaced != cfg.numBlocks) {
+		VERBOSE("BentBlocksRelaxationTest FAILED: %u of %u bent blocks placed", rep.numPlaced, cfg.numBlocks);
 		return false;
 	}
 	const auto [rigidRotation, rigidPosition] = RingErrors(scene, gtPoses);
-
-	// and the same merge with the bar held down, which hands the model to the relaxation
-	GlobalAlignmentConfig relaxCfg;
-	relaxCfg.relaxSeamResidualFactor = 0.1f;
-	GlobalAlignment relaxedGa(relaxedScene, relaxCfg);
-	MergeReport rep;
-	bool reported;
-	{
-		LogCapture log;
-		relaxedGa.MergeScenes(relaxedSubScenes, relaxedLocalToGlobals, rep);
-		reported = log.Contains("Cameras relaxed");
-	}
-	if (!rep.camerasRelaxed) {
-		VERBOSE("BentBlocksRelaxationTest FAILED: the merge left the bent blocks rigid at %.2f px",
-			rep.seamErrorBeforeRelax);
-		return false;
-	}
-	if (!reported) {
-		VERBOSE("BentBlocksRelaxationTest FAILED: the log does not report the relaxation");
-		return false;
-	}
-	// every seam inside the reprojection bar: a relaxation pulling the wrong way leaves tens of pixels
-	if (rep.seamErrorAfterRelax >= relaxCfg.maxReprojError) {
-		VERBOSE("BentBlocksRelaxationTest FAILED: the seams went %.2f px -> %.2f px, past the reprojection bar",
-			rep.seamErrorBeforeRelax, rep.seamErrorAfterRelax);
-		return false;
-	}
-	// what the relaxation is worth, before a single adjustment step: the cameras it hands over against
-	// the ones the block poses alone leave behind, the two read over the same registered images
-	if (rep.numPlaced != rigidRep.numPlaced) {
-		VERBOSE("BentBlocksRelaxationTest FAILED: %u blocks placed with the relaxation against %u without",
-			rep.numPlaced, rigidRep.numPlaced);
-		return false;
-	}
-	const auto [rotation, position] = RingErrors(relaxedScene, gtPoses);
-	if (rotation >= rigidRotation * REAL(0.75) || position >= rigidPosition * REAL(0.5)) {
-		VERBOSE("BentBlocksRelaxationTest FAILED: the relaxed cameras are %.4f deg and %.4f%% off the truth, "
+	RunFinalAdjustment(scene);
+	const auto [adjustedRotation, adjustedPosition] = RingErrors(scene, gtPoses);
+	if (adjustedRotation >= rigidRotation * MAX_ROTATION_SHARE || adjustedPosition >= rigidPosition * MAX_POSITION_SHARE) {
+		VERBOSE("BentBlocksRelaxationTest FAILED: the adjusted cameras are %.4f deg and %.4f%% off the truth, "
 			"against the block poses' %.4f deg and %.4f%%",
-			rotation, position * 100, rigidRotation, rigidPosition * 100);
+			adjustedRotation, adjustedPosition * 100, rigidRotation, rigidPosition * 100);
 		return false;
 	}
-
-	// and the starting point it leaves the reconstruction's own final adjustment
-	RunFinalAdjustment(relaxedScene);
-	const auto [adjustedRotation, adjustedPosition] = RingErrors(relaxedScene, gtPoses);
-	if (adjustedRotation >= 0.3) {
-		VERBOSE("BentBlocksRelaxationTest FAILED: the adjusted model is %.4f deg off the truth", adjustedRotation);
-		return false;
-	}
-	VERBOSE("BentBlocksRelaxationTest PASSED: %u blocks, seams %.2f px -> %.2f px, cameras %.4f deg and %.4f%% "
-		"from the truth against %.4f deg and %.4f%% left rigid, %.4f deg and %.4f%% adjusted (%s)",
-		rep.numPlaced, rep.seamErrorBeforeRelax, rep.seamErrorAfterRelax, rotation, position * 100,
-		rigidRotation, rigidPosition * 100, adjustedRotation, adjustedPosition * 100, TD_TIMER_GET_FMT().c_str());
+	VERBOSE("BentBlocksRelaxationTest PASSED: %u blocks, cameras %.4f deg and %.4f%% from the truth left rigid, "
+		"%.4f deg and %.4f%% adjusted (%s)", rep.numPlaced, rigidRotation, rigidPosition * 100,
+		adjustedRotation, adjustedPosition * 100, TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 /*----------------------------------------------------------------*/
@@ -19226,18 +19597,18 @@ struct SeamCase {
 	REAL keypointNoise{0}; // pixels
 };
 
-enum SeamOutcome { SEAM_SETUP_FAILED, SEAM_REJECTED, SEAM_MEASURED };
-
-// Measure the seam of two sub-scenes prepared as above, under one such setup
-static SeamOutcome MeasureSeam(const Transform transforms[2], unsigned alignment, const SeamCase& setup,
-	Transform& T, SeamCandidate* outCandidate = NULL)
+// Measure the seam of two sub-scenes prepared as above, under one such setup: the readings the pair
+// yields, false when the setup failed or the pair yielded none
+static bool MeasureSeam(const Transform transforms[2], unsigned alignment, const SeamCase& setup,
+	std::vector<SeamCandidate>& readings)
 {
+	readings.clear();
 	Scene scene;
 	std::vector<Scene> subScenes;
 	std::vector<IIndexArr> localToGlobals;
 	std::vector<Pose3D> gtPoses;
 	if (!BuildTransformedSubScenes(scene, subScenes, localToGlobals, gtPoses, transforms, setup.hubBridge))
-		return SEAM_SETUP_FAILED;
+		return false;
 	if (setup.blindScene != NO_ID)
 		for (Track& track : subScenes[setup.blindScene].tracks)
 			track.numInliers = 0;
@@ -19247,8 +19618,7 @@ static SeamOutcome MeasureSeam(const Transform transforms[2], unsigned alignment
 				img.C *= setup.poseScale;
 	if (setup.keypointNoise > 0) {
 		// the tracks were triangulated before this, so the 3D points stay exact and only the
-		// bearings the two directions are estimated from move: their minimal-solver estimates then
-		// differ, and the joint refinement starts away from the answer it has to converge to
+		// bearings the two directions are estimated from move
 		std::mt19937 rng(11);
 		std::normal_distribution<float> noise(0.f, (float)setup.keypointNoise);
 		for (Scene& subScene : subScenes)
@@ -19262,25 +19632,26 @@ static SeamOutcome MeasureSeam(const Transform transforms[2], unsigned alignment
 	GlobalAlignmentConfig alignCfg;
 	alignCfg.alignment = alignment;
 	GlobalAlignment alignment_(scene, alignCfg);
-	std::vector<SeamCandidate> candidates;
-	if (!alignment_.EstimateSeamCandidates(subScenes, localToGlobals, candidates) || candidates.empty())
-		return SEAM_REJECTED;
-	if (candidates.size() != 1)
-		return SEAM_SETUP_FAILED;
-	T = candidates.front().T;
-	if (outCandidate)
-		*outCandidate = candidates.front();
-	return SEAM_MEASURED;
+	return alignment_.EstimateSeamCandidates(subScenes, localToGlobals, readings);
 }
 
-// One direction alone: the candidate must name the direction that measured it, say that it rests
-// on that one alone, and explain enough of the seam
-static bool CheckOneDirectionCandidate(
-	const char* what, const SeamCandidate& c, SeamCandidate::Source source, unsigned minCommonTracks)
+// The reading of the given direction among a pair's readings, NULL when the pair yielded none
+static const SeamCandidate* ReadingOf(const std::vector<SeamCandidate>& readings, SeamCandidate::Source source)
 {
-	if (c.source != source || !c.oneDirection || c.NumInliers() < minCommonTracks) {
-		VERBOSE("HierarchicalCameraAlignmentTest FAILED: %s came out as source %u, %s, %u inliers",
-			what, (unsigned)c.source, c.oneDirection ? "one direction" : "two directions", c.NumInliers());
+	for (const SeamCandidate& c : readings)
+		if (c.source == source)
+			return &c;
+	return NULL;
+}
+
+// One direction alone: the pair yields one reading, of that direction, explaining enough of the seam
+static bool CheckOneDirectionReading(
+	const char* what, const std::vector<SeamCandidate>& readings, SeamCandidate::Source source, unsigned minCommonTracks)
+{
+	if (readings.size() != 1 || readings.front().source != source || readings.front().score.inliers < minCommonTracks) {
+		VERBOSE("HierarchicalCameraAlignmentTest FAILED: %s came out as %u readings, the first of source %u with %u inliers",
+			what, (unsigned)readings.size(), readings.empty() ? 0u : (unsigned)readings.front().source,
+			readings.empty() ? 0u : readings.front().score.inliers);
 		return false;
 	}
 	return true;
@@ -19392,7 +19763,7 @@ static void GenerateThreeClusterScene(
 			pair.weightConnectivity = 1.f;
 			pair.weightTriplet = 0.f;
 		} else {
-			scene.pairs.RemoveAtMove(i);
+			scene.pairs.RemoveAt(i);
 		}
 	}
 }
@@ -19473,9 +19844,8 @@ static bool BuildTriangleSubScenes(
 	return bridgeLocals.size() >= 3;
 }
 
-// The seam graph of those three sub-scenes: all three seams must be measured, and the corrupted one
-// must be the one that is wrong -- which is all the graph can say here, three equally weighted seams
-// on one cycle leaving the consensus nothing to tell them apart by.
+// The seams of those three sub-scenes: all three must be measured, and the corrupted one must be the
+// one that is wrong
 static bool CheckTriangleSeams()
 {
 	Scene scene;
@@ -19492,130 +19862,27 @@ static bool CheckTriangleSeams()
 	GlobalAlignmentConfig alignCfg;
 	GlobalAlignment merger(scene, alignCfg);
 	std::vector<SeamCandidate> candidates;
-	if (!merger.EstimateSeamCandidates(subScenes, localToGlobals, candidates) || candidates.size() != 3) {
+	merger.EstimateSeamCandidates(subScenes, localToGlobals, candidates);
+	std::set<std::pair<uint32_t, uint32_t>> measured;
+	for (const SeamCandidate& c : candidates)
+		measured.emplace(c.sceneA, c.sceneB);
+	if (measured.size() != 3) {
 		VERBOSE("HierarchicalCameraAlignmentTest FAILED: %u of the 3 seams of the triangle were measured",
-			(unsigned)candidates.size());
+			(unsigned)measured.size());
 		return false;
 	}
-	// the cameras of the three sub-scenes span the box each seam's translation is judged against
-	std::vector<REAL> blockExtents(subScenes.size(), REAL(0));
-	FOREACH(s, subScenes) {
-		AABB3 bbox(true);
-		for (const Image& img : subScenes[s].images)
-			if (img.IsValid())
-				bbox.InsertFull(img.C);
-		blockExtents[s] = bbox.IsEmpty() ? REAL(0) : (REAL)bbox.GetSize().norm();
-	}
-	merger.ClassifySeamGraph(blockExtents, candidates);
 	for (const SeamCandidate& c : candidates) {
 		const Transform expected = transforms[c.sceneB] * transforms[c.sceneA].Invert();
 		const REAL errScale = ABS(c.T.scale / expected.scale - REAL(1));
 		const bool corrupted = (c.sceneA == 0 && c.sceneB == 2);
-		VERBOSE("  triangle seam (%u, %u): %.1f%% off in scale, class %u",
-			c.sceneA, c.sceneB, errScale * 100, (unsigned)c.cls);
+		VERBOSE("  triangle seam (%u, %u): %.1f%% off in scale, weight %.0f",
+			c.sceneA, c.sceneB, errScale * 100, c.weight);
 		if (corrupted != (errScale > 0.5)) {
 			VERBOSE("HierarchicalCameraAlignmentTest FAILED: seam (%u, %u) is %.1f%% off in scale, expected %s",
 				c.sceneA, c.sceneB, errScale * 100, corrupted ? "the corrupted one" : "a right one");
 			return false;
 		}
-		// the two right seams weigh at least as much as the wrong one, so the consensus of the
-		// cycle they close is what settles it
-		// the three seams weigh the same and the wrong one sits on the triangle's only cycle, so
-		// the consensus spreads its scale error evenly over all three and can indict none of them:
-		// what tells them apart is what the placement makes of them, below
-		if (c.IsTrusted()) {
-			VERBOSE("HierarchicalCameraAlignmentTest FAILED: the %s seam (%u, %u) came out trusted (class %u)",
-				corrupted ? "corrupted" : "right", c.sceneA, c.sceneB, (unsigned)c.cls);
-			return false;
-		}
 	}
-	return true;
-}
-
-// The merge of those three sub-scenes: the block the wrong seam reaches has one neighbour behind it
-// and one against it, so the placement refuses it and merges it without poses, leaving its images to
-// the post-merge resection; the two blocks that agree come back at the truth.
-static bool CheckTriangleMerge()
-{
-	Scene scene;
-	std::vector<Scene> subScenes;
-	std::vector<IIndexArr> localToGlobals;
-	std::vector<Pose3D> gtPoses;
-	Transform transforms[3];
-	std::vector<IIndex> perturbedGlobals;
-	if (!BuildTriangleSubScenes(scene, subScenes, localToGlobals, gtPoses, transforms, perturbedGlobals))
-		return false;
-
-	GlobalAlignmentConfig alignCfg;
-	GlobalAlignment merger(scene, alignCfg);
-	MergeReport report;
-	if (!merger.MergeScenes(subScenes, localToGlobals, report)) {
-		VERBOSE("HierarchicalCameraAlignmentTest FAILED: the triangle merge returned false");
-		return false;
-	}
-	// The third sub-scene is the one the doubled seam reaches, and the merge leaves it out: the
-	// three seams weigh the same and the wrong one sits on the triangle's only cycle, so the scale
-	// consensus spreads its error evenly and can indict none of them, which leaves the third
-	// sub-scene with one neighbour behind its placement and one against it -- more than the share
-	// of contradicting neighbours a placement is allowed. Its images go to the post-merge
-	// resection, which is what the two right seams were kept for.
-	if (report.numPlaced != 2 || report.poses[2].state != BlockPose::UNPLACEABLE) {
-		VERBOSE("HierarchicalCameraAlignmentTest FAILED: the triangle merge placed %u of %u blocks, "
-			"the sub-scene the wrong seam reaches in state %u",
-			report.numPlaced, report.numBlocks, (unsigned)report.poses[2].state);
-		return false;
-	}
-	// exactly its images, and no others, are the ones the merge reports unplaced
-	std::vector<bool> unplaced(scene.images.size(), false);
-	for (const IIndex globalID : localToGlobals[2])
-		unplaced[globalID] = true;
-	const std::set<IIndex> reportedUnplaced(report.unplacedImages.begin(), report.unplacedImages.end());
-	const std::set<IIndex> thirdSubScene(localToGlobals[2].begin(), localToGlobals[2].end());
-	if (reportedUnplaced != thirdSubScene) {
-		VERBOSE("HierarchicalCameraAlignmentTest FAILED: the merge reports %u images unplaced, "
-			"the sub-scene the wrong seam reaches holds %u",
-			(unsigned)reportedUnplaced.size(), (unsigned)thirdSubScene.size());
-		return false;
-	}
-	// every image of the two blocks that agree must sit on the truth under the one similarity the
-	// merged frame is free to choose -- the moved cameras among them included, there being none
-	Point3Arr mergedCenters, gtCenters;
-	IIndexArr checked;
-	FOREACH(i, scene.images) {
-		if (unplaced[i] != !scene.images[i].IsValid()) {
-			VERBOSE("HierarchicalCameraAlignmentTest FAILED: image %u came back %s the triangle merge",
-				i, unplaced[i] ? "registered although its block was not placed" : "unregistered");
-			return false;
-		}
-		if (unplaced[i])
-			continue;
-		mergedCenters.emplace_back(scene.images[i].C);
-		gtCenters.emplace_back(gtPoses[i].C);
-		checked.emplace_back(i);
-	}
-	Transform T;
-	if (EstimateSimilarityTransform(mergedCenters, gtCenters, T) == 0) {
-		VERBOSE("HierarchicalCameraAlignmentTest FAILED: could not fit the triangle merge to the truth");
-		return false;
-	}
-	AABB3 gtBbox(true);
-	for (const Point3& C : gtCenters)
-		gtBbox.InsertFull(C);
-	const REAL extent = gtBbox.GetSize().norm();
-	REAL maxPos = 0, maxRot = 0;
-	FOREACH(i, checked) {
-		maxPos = MAXF(maxPos, norm(T * mergedCenters[i] - gtCenters[i]) / extent);
-		maxRot = MAXF(maxRot, (REAL)R2D(ACOS(ComputeAngle(
-			Matrix3x3(scene.images[checked[i]].R * T.R.t()), Matrix3x3(gtPoses[checked[i]].R)))));
-	}
-	if (maxPos > 0.01 || maxRot > 0.5) {
-		VERBOSE("HierarchicalCameraAlignmentTest FAILED: the triangle merge is %.2f%% and %.3f deg off the truth",
-			maxPos * 100, maxRot);
-		return false;
-	}
-	VERBOSE("  triangle merge: %u images checked, %u left for the resection (%u of them moved), "
-		"%.3f%% position and %.4f deg from the truth", checked.size(),
-		report.numImagesUnplaced, (unsigned)perturbedGlobals.size(), maxPos * 100, maxRot);
 	return true;
 }
 
@@ -19627,32 +19894,6 @@ static std::unordered_map<IIndex, IIndex> LocalOf(const IIndexArr& localToGlobal
 		if (localToGlobal[localID] != NO_ID)
 			localOf.emplace(localToGlobal[localID], (IIndex)localID);
 	return localOf;
-}
-
-// Keep only `numKept` of one image of sub-scene B's correspondences, taken evenly along its
-// keypoint list, and drop the rest from the candidate
-static void KeepSomeCorrespondences(SeamCandidate& c, IIndex image, unsigned numKept)
-{
-	std::vector<uint32_t> owned;
-	FOREACH(i, c.correspondences)
-		if (c.correspondences[i].imageB == image)
-			owned.push_back((uint32_t)i);
-	if (owned.size() <= numKept)
-		return;
-	std::vector<bool> keep(c.observations.size(), true);
-	for (uint32_t i : owned)
-		keep[i] = false;
-	for (unsigned k = 0; k < numKept; ++k)
-		keep[owned[(size_t)k * owned.size() / numKept]] = true;
-	std::vector<SeamObservation> observations;
-	std::vector<SeamCorrespondence> correspondences;
-	FOREACH(i, c.observations)
-		if (keep[i]) {
-			observations.push_back(c.observations[i]);
-			correspondences.push_back(c.correspondences[i]);
-		}
-	c.observations.swap(observations);
-	c.correspondences.swap(correspondences);
 }
 
 // A sub-scene left with two cameras a millimetre apart: the direction whose rig they are sees no
@@ -19729,199 +19970,24 @@ static bool CheckUnobservableScale(const Transform transforms[2], const Transfor
 	GlobalAlignmentConfig alignCfg;
 	GlobalAlignment merger(scene, alignCfg);
 	merger.PrepareSeamEvidence(subScenes, localToGlobals);
-	std::vector<SeamCandidate> candidates;
-	merger.EstimateSeamPair(subScenes, 0, 1, candidates);
-	if (candidates.size() != 1) {
-		VERBOSE("HierarchicalCameraAlignmentTest FAILED: the shallow rig gave %u candidates",
-			(unsigned)candidates.size());
+	std::vector<SeamCandidate> readings;
+	merger.EstimateSeamPair(subScenes, 0, 1, readings);
+	// the direction registering the two-camera sub-scene cannot observe a scale; the other one can,
+	// and measures it
+	const SeamCandidate* shallowRig = ReadingOf(readings, SeamCandidate::RIG_B_ON_A);
+	const SeamCandidate* deepRig = ReadingOf(readings, SeamCandidate::RIG_A_ON_B);
+	if (shallowRig == NULL || deepRig == NULL || shallowRig->scaleObservable || !deepRig->scaleObservable) {
+		VERBOSE("HierarchicalCameraAlignmentTest FAILED: the shallow rig's reading is %s, the other direction's %s",
+			shallowRig == NULL ? "missing" : (shallowRig->scaleObservable ? "scaled" : "unscaled"),
+			deepRig == NULL ? "missing" : (deepRig->scaleObservable ? "scaled" : "unscaled"));
 		return false;
 	}
-	const SeamCandidate& c = candidates.front();
-	// the direction registering the two-camera sub-scene cannot observe a scale; the other one can
-	if (merger.IsScaleObservable(subScenes, c, true) || !merger.IsScaleObservable(subScenes, c, false)) {
-		VERBOSE("HierarchicalCameraAlignmentTest FAILED: scale observability came out %u and %u, expected 0 and 1",
-			(unsigned)merger.IsScaleObservable(subScenes, c, true),
-			(unsigned)merger.IsScaleObservable(subScenes, c, false));
+	const REAL errScale = ABS(deepRig->T.scale / expected.scale - REAL(1));
+	if (errScale > 0.02) {
+		VERBOSE("HierarchicalCameraAlignmentTest FAILED: the other direction's reading is %.2f%% off in scale", errScale * 100);
 		return false;
 	}
-	const REAL errScale = ABS(c.T.scale / expected.scale - REAL(1));
-	if (!c.scaleObservable || errScale > 0.02) {
-		VERBOSE("HierarchicalCameraAlignmentTest FAILED: the shallow-rig seam is %s at %.2f%% off in scale",
-			c.scaleObservable ? "scaled" : "unscaled", errScale * 100);
-		return false;
-	}
-
-	// the rule a seam standing on one direction alone takes that scale by: whichever block the rig
-	// belongs to, its centre must keep the point it already sat at across the seam, and nothing but
-	// the scale may change
-	for (unsigned side = 0; side < 2; ++side) {
-		const bool rigIsB = side == 0;
-		const Point3 rigCentre(subScenes[rigIsB ? 1 : 0].images[rigIsB ? keptFirst : 0].C);
-		const Point3 before(rigIsB ? c.T.Invert() * rigCentre : c.T * rigCentre);
-		const REAL scale = c.T.scale * REAL(1.5);
-		Transform rescaled(c.T);
-		GlobalAlignment::RescaleSeamAboutRig(rigCentre, rigIsB, scale, rescaled);
-		const Point3 after(rigIsB ? rescaled.Invert() * rigCentre : rescaled * rigCentre);
-		const REAL moved = norm(after - before) / MAXF(norm(before), REAL(1));
-		// the rotation is compared as a matrix, not as an angle: the angle between a rotation and itself
-		// comes out of ACOS as up to 1.2e-6 deg for a matrix orthonormal to the last bits only
-		const REAL turned = norm(Matrix3x3(rescaled.R) - Matrix3x3(c.T.R));
-		if (rescaled.scale != scale || turned != REAL(0) || moved > REAL(1e-9)) {
-			VERBOSE("HierarchicalCameraAlignmentTest FAILED: rescaling about the %s rig moved it by %g, "
-				"changed its rotation by %g (matrix norm) and left the scale at %g instead of %g",
-				rigIsB ? "B" : "A", moved, turned, rescaled.scale, scale);
-			return false;
-		}
-	}
-	VERBOSE("  shallow rig: scale taken from the other direction, %.2f%% off; rescaling holds the rig in place",
-		errScale * 100);
-	return true;
-}
-
-// What a camera's vote says about a candidate: too few inliers spread over its image to support,
-// enough of them spread out to support, almost none of them to contradict.
-static bool CheckVoteRule(const Transform transforms[2])
-{
-	Scene scene;
-	std::vector<Scene> subScenes;
-	std::vector<IIndexArr> localToGlobals;
-	std::vector<Pose3D> gtPoses;
-	if (!BuildTransformedSubScenes(scene, subScenes, localToGlobals, gtPoses, transforms)) {
-		VERBOSE("HierarchicalCameraAlignmentTest FAILED: could not prepare the sub-scenes for the vote rule");
-		return false;
-	}
-	GlobalAlignmentConfig alignCfg;
-	GlobalAlignment merger(scene, alignCfg);
-	merger.PrepareSeamEvidence(subScenes, localToGlobals);
-	std::vector<SeamCandidate> candidates;
-	merger.EstimateSeamPair(subScenes, 0, 1, candidates);
-	if (candidates.size() != 1) {
-		VERBOSE("HierarchicalCameraAlignmentTest FAILED: the vote-rule seam gave %u candidates",
-			(unsigned)candidates.size());
-		return false;
-	}
-	const SeamCandidate measured(candidates.front());
-
-	// the cameras of sub-scene 1 that carry the most of the seam
-	const std::unordered_map<IIndex, IIndex> localOf1 = LocalOf(localToGlobals[1]);
-	std::vector<std::pair<unsigned, IIndex>> voters;
-	for (const CameraVote& vote : measured.score.votes)
-		if (localOf1.count(vote.image))
-			voters.emplace_back(vote.inliers, vote.image);
-	std::sort(voters.rbegin(), voters.rend());
-	if (voters.size() < 4 || voters[3].first < alignCfg.minVoteInliers) {
-		VERBOSE("HierarchicalCameraAlignmentTest FAILED: only %u cameras of sub-scene 1 vote on the seam",
-			(unsigned)voters.size());
-		return false;
-	}
-
-	// forty correspondences spread over the image are enough to support. The counts a camera votes
-	// with are per distinct match: both blocks hold a track for every one of these, so each is
-	// collected in both directions and the camera that meets it in both roles counts it once --
-	// eighty of the pair's observations are the forty correspondences the rule is written in
-	{
-		SeamCandidate c(measured);
-		for (unsigned k = 0; k < 3; ++k)
-			KeepSomeCorrespondences(c, voters[k].second, 80);
-		merger.ScoreCandidate(subScenes, c);
-		for (unsigned k = 0; k < 3; ++k) {
-			const CameraVote* vote = FindVote(c.score, voters[k].second);
-			if (vote == NULL || vote->vote != 1) {
-				VERBOSE("HierarchicalCameraAlignmentTest FAILED: camera %u of %u correspondences voted %d, expected support",
-					voters[k].second, vote == NULL ? 0 : vote->correspondences, vote == NULL ? 0 : (int)vote->vote);
-				return false;
-			}
-		}
-	}
-
-	// sixty correspondences of which almost none is an inlier contradict -- again a hundred and
-	// twenty of the pair's observations, each match counted once by the camera that holds it
-	{
-		SeamCandidate c(measured);
-		const IIndex image = voters[3].second;
-		KeepSomeCorrespondences(c, image, 120);
-		// the points of all but two of them replaced by another track's, on the same side of the seam
-		std::vector<Point3> elsewhere[2];
-		FOREACH(i, c.observations)
-			if (c.correspondences[i].imageB != image)
-				elsewhere[c.observations[i].forward ? 1 : 0].push_back(c.observations[i].X);
-		unsigned numCorrupted = 0;
-		FOREACH(i, c.observations) {
-			const int side = c.observations[i].forward ? 1 : 0;
-			if (c.correspondences[i].imageB != image || numCorrupted >= 116 || elsewhere[side].empty())
-				continue;
-			c.observations[i].X = elsewhere[side][(i * 7 + 3) % elsewhere[side].size()];
-			++numCorrupted;
-		}
-		merger.ScoreCandidate(subScenes, c);
-		const CameraVote* vote = FindVote(c.score, image);
-		if (vote == NULL || vote->vote != -1) {
-			VERBOSE("HierarchicalCameraAlignmentTest FAILED: camera %u with %u corrupted correspondences voted %d, expected contradiction",
-				image, numCorrupted, vote == NULL ? 0 : (int)vote->vote);
-			return false;
-		}
-	}
-
-	// the same sixty correspondences merely imprecise -- every point pushed off along the camera's
-	// image plane by about twice the bar, past it but within the loose one -- abstain rather than
-	// contradict: a camera a few pixels off is imprecise, one whose correspondences miss even the
-	// loose bar is placed elsewhere
-	{
-		SeamCandidate c(measured);
-		const IIndex image = voters[3].second;
-		KeepSomeCorrespondences(c, image, 120);
-		const Image& img = subScenes[1].images[localOf1.at(image)];
-		const Transform TInv(c.T.Invert());
-		unsigned numDisplaced = 0;
-		FOREACH(i, c.observations) {
-			if (c.correspondences[i].imageB != image)
-				continue;
-			// the point in the camera's own frame, moved sideways by what reprojects to about
-			// twice the bar at its depth, then put back into the frame it is stored in
-			SeamObservation& obs = c.observations[i];
-			const Point3 X((obs.forward ? c.T : TInv) * obs.X);
-			const Point3 d(obs.R * (X - obs.C));
-			const REAL depth = d.z;
-			if (depth <= 0)
-				continue;
-			const REAL shift = 2.0 * alignCfg.maxReprojError * depth / img.pCamera->GetFocalLength();
-			const Point3 moved(X + obs.R.t() * Point3(shift, 0, 0));
-			obs.X = (obs.forward ? TInv : c.T) * moved;
-			++numDisplaced;
-		}
-		merger.ScoreCandidate(subScenes, c);
-		const CameraVote* vote = FindVote(c.score, image);
-		if (vote == NULL || vote->vote != 0 || vote->inliers * 10 > vote->correspondences) {
-			VERBOSE("HierarchicalCameraAlignmentTest FAILED: camera %u with %u correspondences displaced by twice the bar "
-				"voted %d with %u/%u inliers, expected abstention on almost none",
-				image, numDisplaced, vote == NULL ? 0 : (int)vote->vote, vote == NULL ? 0 : vote->inliers,
-				vote == NULL ? 0 : vote->correspondences);
-			return false;
-		}
-	}
-
-	// inliers all crowded into one cell of the image support nothing: the bearings the seam was
-	// collected from do not move, so the camera keeps every one of its inliers
-	{
-		const IIndex image = voters[0].second;
-		Image& img = subScenes[1].images[localOf1.at(image)];
-		std::mt19937 rng(3);
-		std::uniform_real_distribution<float> cellX(0.f, img.pCamera->GetWidth() * 0.25f - 1.f);
-		std::uniform_real_distribution<float> cellY(0.f, img.pCamera->GetHeight() * 0.25f - 1.f);
-		for (const SeamCorrespondence& corr : measured.correspondences)
-			if (corr.imageB == image && corr.featureB < img.keypoints.size())
-				img.keypoints[corr.featureB].pt = cv::Point2f(cellX(rng), cellY(rng));
-		SeamCandidate c(measured);
-		merger.ScoreCandidate(subScenes, c);
-		const CameraVote* vote = FindVote(c.score, image);
-		if (vote == NULL || vote->inliers < alignCfg.minVoteInliers || vote->vote != 0) {
-			VERBOSE("HierarchicalCameraAlignmentTest FAILED: camera %u with %u inliers in one cell voted %d at coverage %.2f, expected abstention",
-				image, vote == NULL ? 0 : vote->inliers, vote == NULL ? 0 : (int)vote->vote,
-				vote == NULL ? 0.f : vote->coverage);
-			return false;
-		}
-	}
-	VERBOSE("  camera votes: crowded inliers abstain, forty spread ones support, corrupted ones contradict, displaced ones abstain");
+	VERBOSE("  shallow rig: its own reading observes no scale, the other direction's is %.2f%% off", errScale * 100);
 	return true;
 }
 
@@ -19952,94 +20018,97 @@ bool HierarchicalCameraAlignmentTest()
 	// each direction on its own, then both together: blinding one sub-scene's tracks leaves the
 	// other sub-scene's cameras as the only rig with anything to register against
 	const GlobalAlignmentConfig defaultCfg;
-	Transform T;
-	SeamCandidate candidate;
+	std::vector<SeamCandidate> readings;
 	SeamCase setup;
 	setup.blindScene = 1;
-	if (MeasureSeam(transforms, GlobalAlignmentConfig::ALIGN_CAMERAS, setup, T, &candidate) != SEAM_MEASURED ||
-		!CheckSeamTransform("cameras of sub-scene 1 on points of sub-scene 0", T, expected, extent) ||
-		!CheckOneDirectionCandidate("cameras of sub-scene 1 on points of sub-scene 0", candidate,
-			SeamCandidate::RIG_B_ON_A, defaultCfg.minCommonTracks))
+	if (!MeasureSeam(transforms, GlobalAlignmentConfig::ALIGN_CAMERAS, setup, readings) ||
+		!CheckOneDirectionReading("cameras of sub-scene 1 on points of sub-scene 0", readings,
+			SeamCandidate::RIG_B_ON_A, defaultCfg.minCommonTracks) ||
+		!CheckSeamTransform("cameras of sub-scene 1 on points of sub-scene 0", readings.front().T, expected, extent))
 		return false;
 	setup.blindScene = 0;
-	if (MeasureSeam(transforms, GlobalAlignmentConfig::ALIGN_CAMERAS, setup, T, &candidate) != SEAM_MEASURED ||
-		!CheckSeamTransform("cameras of sub-scene 0 on points of sub-scene 1", T, expected, extent) ||
-		!CheckOneDirectionCandidate("cameras of sub-scene 0 on points of sub-scene 1", candidate,
-			SeamCandidate::RIG_A_ON_B, defaultCfg.minCommonTracks))
+	if (!MeasureSeam(transforms, GlobalAlignmentConfig::ALIGN_CAMERAS, setup, readings) ||
+		!CheckOneDirectionReading("cameras of sub-scene 0 on points of sub-scene 1", readings,
+			SeamCandidate::RIG_A_ON_B, defaultCfg.minCommonTracks) ||
+		!CheckSeamTransform("cameras of sub-scene 0 on points of sub-scene 1", readings.front().T, expected, extent))
 		return false;
+	// both directions: two readings, each on the truth, observing a scale, the cameras of both sides
+	// behind each
 	setup.blindScene = NO_ID;
-	if (MeasureSeam(transforms, GlobalAlignmentConfig::ALIGN_CAMERAS, setup, T, &candidate) != SEAM_MEASURED ||
-		!CheckSeamTransform("both directions, jointly refined", T, expected, extent))
-		return false;
-	// the two directions agree, so the seam is one candidate every voting camera is behind
-	if (candidate.source != SeamCandidate::UNION || !candidate.scaleObservable ||
-		candidate.score.support[0] + candidate.score.support[1] != candidate.score.votes.size() ||
-		candidate.score.contra[0] != 0 || candidate.score.contra[1] != 0) {
-		VERBOSE("HierarchicalCameraAlignmentTest FAILED: the agreed seam came out as source %u, scale %s, "
-			"%u+%u of %u cameras supporting, %u+%u against",
-			(unsigned)candidate.source, candidate.scaleObservable ? "observable" : "unobservable",
-			candidate.score.support[0], candidate.score.support[1], (unsigned)candidate.score.votes.size(),
-			candidate.score.contra[0], candidate.score.contra[1]);
+	if (!MeasureSeam(transforms, GlobalAlignmentConfig::ALIGN_CAMERAS, setup, readings) || readings.size() != 2 ||
+		ReadingOf(readings, SeamCandidate::RIG_B_ON_A) == NULL || ReadingOf(readings, SeamCandidate::RIG_A_ON_B) == NULL) {
+		VERBOSE("HierarchicalCameraAlignmentTest FAILED: both directions gave %u readings, expected one of each", (unsigned)readings.size());
 		return false;
 	}
+	for (const SeamCandidate& c : readings) {
+		if (!CheckSeamTransform(c.source == SeamCandidate::RIG_B_ON_A ? "both directions, rig of sub-scene 1" :
+			"both directions, rig of sub-scene 0", c.T, expected, extent))
+			return false;
+		if (!c.scaleObservable || c.score.support[0] < defaultCfg.minSeamWeight || c.score.support[1] < defaultCfg.minSeamWeight) {
+			VERBOSE("HierarchicalCameraAlignmentTest FAILED: the reading of source %u came out scale %s, %u+%u cameras supporting",
+				(unsigned)c.source, c.scaleObservable ? "observable" : "unobservable", c.score.support[0], c.score.support[1]);
+			return false;
+		}
+	}
 
-	// with noise on the observed bearings the two directions no longer agree to the last digit, so
-	// the joint refinement starts away from the answer: it must end closer to it than either
-	// direction reached alone
+	// with noise on the observed bearings, every reading still on the truth within the noisy bars
 	SeamCase noisy;
 	noisy.keypointNoise = 1.0;
-	SeamError errA, errB, errJoint;
-	noisy.blindScene = 1;
-	if (MeasureSeam(transforms, GlobalAlignmentConfig::ALIGN_CAMERAS, noisy, T) != SEAM_MEASURED ||
-		!CheckSeamTransform("noisy, cameras of sub-scene 1 only", T, expected, extent, 1.0, 0.05, 0.05, &errA))
-		return false;
-	noisy.blindScene = 0;
-	if (MeasureSeam(transforms, GlobalAlignmentConfig::ALIGN_CAMERAS, noisy, T) != SEAM_MEASURED ||
-		!CheckSeamTransform("noisy, cameras of sub-scene 0 only", T, expected, extent, 1.0, 0.05, 0.05, &errB))
-		return false;
-	noisy.blindScene = NO_ID;
-	if (MeasureSeam(transforms, GlobalAlignmentConfig::ALIGN_CAMERAS, noisy, T) != SEAM_MEASURED ||
-		!CheckSeamTransform("noisy, both directions, jointly refined", T, expected, extent, 1.0, 0.05, 0.05, &errJoint))
-		return false;
-	if (errJoint.score > MINF(errA.score, errB.score)) {
-		VERBOSE("HierarchicalCameraAlignmentTest FAILED: the joint refinement scored %.4f, worse than "
-			"%.4f and %.4f from the two directions alone", errJoint.score, errA.score, errB.score);
-		return false;
+	for (const uint32_t blind : {(uint32_t)1, (uint32_t)0, (uint32_t)NO_ID}) {
+		noisy.blindScene = blind;
+		if (!MeasureSeam(transforms, GlobalAlignmentConfig::ALIGN_CAMERAS, noisy, readings)) {
+			VERBOSE("HierarchicalCameraAlignmentTest FAILED: the noisy pair (blind sub-scene %d) yielded no reading", (int)blind);
+			return false;
+		}
+		for (const SeamCandidate& c : readings)
+			if (!CheckSeamTransform(c.source == SeamCandidate::RIG_B_ON_A ? "noisy, rig of sub-scene 1" : "noisy, rig of sub-scene 0",
+				c.T, expected, extent, 1.0, 0.05, 0.05))
+				return false;
 	}
-	VERBOSE("  joint refinement scored %.4f against %.4f and %.4f from the two directions alone",
-		errJoint.score, errA.score, errB.score);
 
-	// one direction starved: with the whole bridge running through a single image of the first
-	// cluster, that side's rig cannot observe a scale and the seam has to be verified against its
-	// correspondences instead of standing on the other direction's word
+	// the whole bridge running through a single image of the first cluster: that side of the seam
+	// is one camera, and a reading weighs the cameras of its weaker side, however many correspondences
+	// the one camera holds
 	SeamCase starved;
 	starved.hubBridge = true;
-	if (MeasureSeam(transforms, GlobalAlignmentConfig::ALIGN_CAMERAS, starved, T) != SEAM_MEASURED ||
-		!CheckSeamTransform("one direction, verified on the other", T, expected, extent))
+	if (!MeasureSeam(transforms, GlobalAlignmentConfig::ALIGN_CAMERAS, starved, readings)) {
+		VERBOSE("HierarchicalCameraAlignmentTest FAILED: the seam one image carries on its side yielded no reading");
 		return false;
+	}
+	for (const SeamCandidate& c : readings)
+		if (c.score.Weight() != 1 || !CheckSeamTransform("one image on one side", c.T, expected, extent)) {
+			VERBOSE("HierarchicalCameraAlignmentTest FAILED: a reading of the seam one image carries on its side came out of %u cameras",
+				c.score.Weight());
+			return false;
+		}
+	VERBOSE("  a bridge through one image: readings of one camera");
 
 	// the two directions made to disagree: sub-scene 1's cameras are moved away from its own points,
 	// so the direction that registers them measures a different similarity than the one that
-	// registers its points, and neither explains what the other saw
+	// registers its points; the verified pairs across, which saw the cameras where they truly are,
+	// hold for one of the two and against the other, which weighs less
 	SeamCase disagreeing;
 	disagreeing.rescaledPoses = 1;
-	{
-		LogCapture log;
-		if (MeasureSeam(transforms, GlobalAlignmentConfig::ALIGN_CAMERAS, disagreeing, T) != SEAM_REJECTED) {
-			VERBOSE("HierarchicalCameraAlignmentTest FAILED: the seam of two disagreeing directions was accepted");
-			return false;
-		}
-		const unsigned numDropped = log.Count("union support");
-		if (numDropped < 2) {
-			VERBOSE("HierarchicalCameraAlignmentTest FAILED: %u of the two disagreeing directions were dropped "
-				"for lack of union support", numDropped);
-			return false;
-		}
+	if (!MeasureSeam(transforms, GlobalAlignmentConfig::ALIGN_CAMERAS, disagreeing, readings) || readings.size() != 2 ||
+		readings[0].pairs.Holds() == readings[1].pairs.Holds()) {
+		VERBOSE("HierarchicalCameraAlignmentTest FAILED: the two disagreeing directions gave %u readings, %s",
+			(unsigned)readings.size(), readings.size() == 2 ? "the pairs across holding alike for both" : "not one of each");
+		return false;
 	}
-	VERBOSE("  two disagreeing directions: both dropped for lack of union support");
+	{
+		const SeamCandidate& held = readings[0].pairs.Holds() ? readings[0] : readings[1];
+		const SeamCandidate& refused = readings[0].pairs.Holds() ? readings[1] : readings[0];
+		if (refused.weight >= held.weight) {
+			VERBOSE("HierarchicalCameraAlignmentTest FAILED: the reading the pairs across hold against weighs %.2f, the other %.2f",
+				refused.weight, held.weight);
+			return false;
+		}
+		VERBOSE("  two disagreeing directions: the pairs across hold against one (%.0f for / %.0f against, weight %.2f against %.2f)",
+			refused.pairs.agree, refused.pairs.disagree, refused.weight, held.weight);
+	}
 
-	// a sub-scene of two cameras a millimetre apart, and the camera vote itself
-	if (!CheckUnobservableScale(transforms, expected) || !CheckVoteRule(transforms))
+	// a sub-scene of two cameras a millimetre apart
+	if (!CheckUnobservableScale(transforms, expected))
 		return false;
 
 	// the whole merge, in both modes, so the flag is exercised end to end
@@ -20048,9 +20117,9 @@ bool HierarchicalCameraAlignmentTest()
 	if (!CheckMerge(transforms, GlobalAlignmentConfig::ALIGN_POINTS, "point"))
 		return false;
 
-	// three sub-scenes, two right seams and a wrong one closing the triangle: the cycle is what
-	// indicts it, and the merge must come out right once it is pruned
-	if (!CheckTriangleSeams() || !CheckTriangleMerge())
+	// three sub-scenes, two right seams and a wrong one closing the triangle: all three measured, the
+	// wrong one off in scale
+	if (!CheckTriangleSeams())
 		return false;
 
 	VERBOSE("HierarchicalCameraAlignmentTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());

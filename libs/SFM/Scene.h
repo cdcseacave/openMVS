@@ -519,6 +519,17 @@ SFM_API bool CompareScenes(const Scene& scene, const String& gtFile, bool matchB
 SFM_API REAL MedianNearestCameraDistance(BS::light_thread_pool& threadPool, const Point3Arr& centers);
 /*----------------------------------------------------------------*/
 
+/**
+ * @brief The adjustment a merged model takes before the reconstruction's own final one
+ *
+ * The merge joins the correspondences of its block pairs at GlobalAlignmentConfig::looseSeamFactor
+ * times the reprojection bar: the tracks are filtered at that loose bar, triangulated again and
+ * adjusted once, so a block bent within the merge's bars keeps the matches of its far end until the
+ * adjustment has straightened it, and the final adjustment then filters at the bar.
+ */
+SFM_API void AdjustMergedScene(Scene& scene, const ReconstructionConfig& cfg);
+/*----------------------------------------------------------------*/
+
 } // namespace SFM
 
 #endif // _SFM_SCENE_H_

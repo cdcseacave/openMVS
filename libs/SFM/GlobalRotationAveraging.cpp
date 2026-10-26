@@ -11,7 +11,6 @@
 #include "GlobalRotationAveraging.h"
 #include "Scene.h"
 #include "PairsWeighting.h"
-#include "GlobalAlignment.h"
 #include "GlobalScaleAveraging.h"
 #include "GlobalTranslationAveraging.h"
 #include "PoseLink.h"
@@ -607,7 +606,7 @@ namespace {
 // maxDirectionResidual degrees from the centres. The solves read the usable pairs with a measurable
 // baseline (a ray angle past kNearDuplicateRayAngle), weighted by composite weight times triplet
 // score; the scale equations are StarInitializer's (ComputePairScales), solved per component of the
-// pair-scale graph by RobustAverage (Geman-McClure at the merge graph's bar) around the sparse
+// pair-scale graph by RobustAverage (Geman-McClure at maxScaleResidual) around the sparse
 // GlobalScaleEstimator; the centres per component by GlobalTranslationEstimator reweighted towards
 // the sum of norms (convex, so no start decides). A pair of a component is judged by its own solve,
 // any other pair with a pose and a measurable baseline by the largest solve that places both its
@@ -615,6 +614,7 @@ namespace {
 constexpr unsigned minScaleComponent = 10;  // pairs a component of the pair-scale graph needs to be solved
 constexpr unsigned numL1Rounds = 40;        // reweighting rounds of the centres
 constexpr REAL l1Floor = REAL(1e-3);        // the L1 weight's error floor, in median pair lengths
+constexpr float maxScaleResidual = 1.05f;   // the Geman-McClure scale of the pair scales (the merge graph's former scale bar)
 
 unsigned RemoveTranslationContradictions(const Scene& scene, const std::vector<Point3>& rotations,
 	const std::vector<uint32_t>& componentOf, const std::vector<float>& scores, float minPairWeight,
@@ -670,7 +670,7 @@ unsigned RemoveTranslationContradictions(const Scene& scene, const std::vector<P
 	// one solve per component: the pair's angle against the centres, NaN where no solve judged it
 	std::vector<REAL> angles(numPairs, std::numeric_limits<REAL>::quiet_NaN());
 	std::vector<bool> scaled(numPairs, false);
-	const REAL maxLogScaleResidual = LOGN((REAL)GlobalAlignmentConfig().maxGraphScaleResidual);
+	const REAL maxLogScaleResidual = LOGN((REAL)maxScaleResidual);
 	unsigned numComponents = 0;
 	std::vector<REAL> centresMedianResidual;
 	for (const Component* pComponent : components) {

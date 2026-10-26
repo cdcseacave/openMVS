@@ -263,14 +263,13 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 ### Global Alignment (Multi-Scene Merge)
 
 - **Files:** `libs/SFM/GlobalAlignment.h`, `libs/SFM/GlobalAlignment.cpp`
-- **Algorithms:** places each independently reconstructed block into a shared frame, block by block, on the evidence its seams to already-placed blocks carry:
-  1. **Seam measurement:** every adjacent block pair, both directions — 3D-3D similarity (`ALIGN_POINTS`) or generalized-camera PnP with scale, one block's cameras as a rig against the other's tracks (`ALIGN_CAMERAS`, default) — gated by camera votes; min `minCommonTracks` (25) inliers
-  2. **Seam graph** (`ClassifySeamGraph`): robust rotation/scale/translation averaging as the cycle test a seam's own evidence cannot provide — ROBUST / VERIFIED / UNDECIDED / REJECTED
-  3. **Initial poses** (`ComputeInitialBlockPoses`): the trusted seams alone average each component about its best-connected block
-  4. **Placement** (`PlaceBlocks`/`PlaceGroup`/`AdmitGroup`): one block at a time, held to four gates (union support, camera votes, neighbours, and the verified image pairs across the placement agreeing with it by inlier weight, `maxPairRotationResidual` 5 degrees); loop closure and camera relaxation for what the placement order alone cannot resolve
-  5. **Merge:** apply the transforms of the model holding the most images; average shared camera intrinsics via `Camera::AccumulateIntrinsics()`/`ScaleIntrinsics()`; union-find on tracks with a 3D-proximity guard (seam-agreed correspondences join by construction); every other block is merged without a pose, for the resection to recover
+- **Algorithms:** places the independently reconstructed blocks in one frame by one robust averaging of the block graph (the view-graph filter's pattern over blocks):
+  1. **Readings** (`EstimateSeamPair`): every block pair the cross pairs join, read once per direction — generalized-camera PnP with scale of one block's cameras against the other's tracks, refined over its inliers at `maxReprojError` (4 px) (`ALIGN_CAMERAS`, default; a rig of one camera is a door read by that camera's own pose, its scale from the depth ratios) — or one 3D-3D similarity (`ALIGN_POINTS`, `--cluster-alignment 0`); the two directions stay two readings. Each is scored on every correspondence of the pair (the supporting cameras of its weaker side, `minCameraInliers` 10) and read against the verified image pairs across it (`minPairInliers` 30, `maxPairRotationResidual` 5 degrees); weight = max(cameras, 1) x the share of the pairs' inlier weight it reproduces
+  2. **Selection** (`SelectSeamGraph`, `AverageBlockPoses`): every component of the kept readings averaged — rotations by `GlobalRotationEstimator`, log-scales and camera-centroid translations reweighted by the inverse of each reading's error (40 rounds) — and every reading kept within 5 degrees / 1.20 / 0.20 of the pair's footprint of its component's poses, repeated until the kept set settles; a bridge (a pair no cycle tests) keeps a reading only with `minSeamWeight` (2) cameras on its weaker side and its verified pairs not against it; each component left is a model
+  3. **Merge** (`MergeScenes`): apply the poses of the model holding the most images; average shared camera intrinsics via `Camera::AccumulateIntrinsics()`/`ScaleIntrinsics()`; union-find on tracks with a 3D-proximity guard, every correspondence of every placed block pair within the loose bar (3 x 4 px) joining by construction; every other block is merged without a pose, for the resection to recover; `AdjustMergedScene` then filters the merged scene at the loose bar and adjusts it once
+  - **Known limits:** a non-rigid block (several bodies at different scales) can be placed wrong; a heavy wrong chord no verified pair refuses, a bridge with two equal readings, and a copy heavier than the truth on a one-camera door's triangle are not caught (`docs/design/HierarchicalSFM.md`)
 - **GPU Support:** No
-- **Threading:** Single (sequential placement)
+- **Threading:** Single
 - **Dependencies:** PoseLib, Ceres Solver, Common
 
 ### Known-Poses Reconstruction (Finetune)

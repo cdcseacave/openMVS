@@ -597,29 +597,52 @@ bool GlobalAlignmentTranslationAveragingExtendedTest();
 bool RobustAveragingScaleTest();
 bool RobustAveragingTranslationTest();
 bool SeamGraphConsensusTest();
-bool BlockJointRefinementTest();
+// The selection over planted block graphs: a chord heavier than any one true seam and wrong by 30
+// degrees across two cycles is left off; a bridge keeps a reading only where its two directions
+// agree, two cameras hold its weaker side and the verified pairs across it are not against it; the
+// L1 reweighting does not follow a lighter copy that a least-squares solve would sit between; a
+// reading without scale is judged on its rotation
+bool HeavyWrongChordTest();
+bool TwoDirectionBridgeTest();
+bool SymmetricBridgePairsTest();
+bool OneCameraBridgeTest();
+bool L1StartTest();
+bool RotationOnlyReadingTest();
 bool RingPlacementTest();
 bool UnobservableScaleTest();
 bool UnobservableScalePairTest();
 bool AmbiguousPairTest();
-// A placement that passes every vote but is contradicted by the verified image pairs across it is
-// refused (GlobalAlignmentConfig::maxPairRotationResidual)
+// A seam its cameras carry but the verified image pairs across it contradict places no block
+// (GlobalAlignmentConfig::maxPairRotationResidual)
 bool ContradictedPlacementTest();
 
-// The verified pairs across a placement decide by inlier weight over all of them, not by counting
-// neighbours: two thin disagreeing pairs cannot outvote twenty-four heavy agreeing ones.
+// The verified pairs across a seam decide by inlier weight over all of them, not by counting pairs:
+// two thin disagreeing pairs cannot outvote twenty-four heavy agreeing ones.
 bool PairAgreementWeightTest();
 bool RingLoopClosureTest();
 bool BiasedClosingSeamTest();
 bool WeakClosingSeamTest();
+// A ring pair carrying the true reading and a heavier copy of one block's structure one period
+// along the wall: the cycle the pair closes chooses the true one by the translation it implies
+bool RivalModesOnCycleTest();
+// A seam one camera holds on its side weighs one camera, however many correspondences it carries,
+// and no block is placed on it
+bool OneCameraSideTest();
+// A one-camera door closes the triangle that chooses between a pair's true reading and a copy of
+// equal weight
+bool OneCameraDoorTest();
+// The correspondences a ring of bent blocks leaves past the bar and within the loose bar join their
+// tracks at the merge and end inliers within the bar after the final adjustment
+bool BentBlockClosureTest();
 bool SecondModelTest();
 bool FoldedBlockTest();
+// A ring of blocks bent half a degree each keeps every seam between neighbours and ends on the truth
+bool BentRingKeepsSeamsTest();
+// A block folded by 45 degrees does not put the rest of the model wrong
+bool FoldedBlock45Test();
 bool FalseChordTest();
-bool HeavyFalseChordTest();
 bool SeamInliersBecomeTracksTest();
 bool UnplacedBlocksReportedTest();
-// Judged again, a model of two contradicting blocks lets one go and keeps the other
-bool RevalidationKeepsOneBlockTest();
 bool BentBlocksRelaxationTest();
 bool GlobalAlignmentMergeSingleSceneTest();
 bool GlobalAlignmentTrackMergeDuplicateImageGuardTest();

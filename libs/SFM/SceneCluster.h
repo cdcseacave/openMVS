@@ -151,7 +151,7 @@ struct SFM_API ClusterConfig
 	unsigned minClusterDegree{2};        // strong neighbours a cluster is held to, capped by the number it has; below that it is merged into its heaviest one when the result fits (0 = keep every cluster)
 	unsigned minSeamTracks{75};          // seam-usable tracks a cluster pair needs for the neighbour to count as strong
 	unsigned minSeamCameras{3};          // cameras per side with enough seam-usable tracks for the neighbour to count as strong
-	unsigned minSeamCameraTracks{30};    // seam-usable tracks one camera needs to count (the merge's vote floor)
+	unsigned minSeamCameraTracks{30};    // seam-usable tracks one camera needs to count
 	float minPairWeight{3.f};            // minimum composite weight for pair edge
 	TrackConflictConfig trackConflictCfg; // how a component holding one image twice is settled when the tracks are built here
 	float minClusterCoupling{0.05f};     // refuse a merge whose interface weight falls below this fraction of the weaker side's internal weight, whatever either side's size, and split any final cluster with such an internal seam (0 = disabled)
@@ -174,8 +174,8 @@ struct SFM_API ClusterConfig
  * Seam-usable tracks are the tracks with at least two observations in one cluster (it can
  * triangulate them) and at least one in the other (its camera sees them): the correspondences the
  * generalized pose estimation of one cluster's cameras against the other's points consumes. A
- * camera votes in that estimation from either side, so every observation of a usable track counts
- * for the camera that made it.
+ * camera supports the merge's readings from either side, so every observation of a usable track
+ * counts for the camera that made it.
  */
 struct SFM_API SeamTrackStats
 {
@@ -191,9 +191,10 @@ struct SFM_API SeamTrackStats
 typedef std::map<std::pair<uint32_t, uint32_t>, std::pair<SeamTrackStats, SeamTrackStats>> SeamTrackStatsMap;
 
 // A neighbour is strong when the seam between the two clusters carries enough usable tracks AND
-// enough cameras on BOTH sides reach the merge's per-camera vote floor: anything less and the merge
-// has no registration between the two, whatever the covisibility graph says about them. The one
-// place this rule is written.
+// enough cameras on BOTH sides carry minSeamCameraTracks of them: the merge weighs a reading by the
+// supporting cameras of its weaker side, and anything less leaves it no registration between the
+// two it can stand on, whatever the covisibility graph says about them. The one place this rule is
+// written.
 bool SFM_API IsStrongSeam(const std::pair<SeamTrackStats, SeamTrackStats>& seam, const ClusterConfig& config);
 
 /**
@@ -238,7 +239,7 @@ public:
 
 	/**
 	 * @brief Merge away every cluster the merge could not attach: one whose seams carry too few
-	 * usable tracks, or too few cameras reaching the vote floor, to register it against its
+	 * usable tracks, or too few cameras carrying minSeamCameraTracks of them, to register it against its
 	 * neighbours. It joins the neighbour it shares the most usable tracks with, if the result fits.
 	 */
 	void MergeLeafClusters(std::vector<IIndexArr>& clusters);

@@ -501,7 +501,17 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::SeamGraphConsensusTest())
 				return false;
-			if (!SFM::BlockJointRefinementTest())
+			if (!SFM::HeavyWrongChordTest())
+				return false;
+			if (!SFM::TwoDirectionBridgeTest())
+				return false;
+			if (!SFM::SymmetricBridgePairsTest())
+				return false;
+			if (!SFM::OneCameraBridgeTest())
+				return false;
+			if (!SFM::L1StartTest())
+				return false;
+			if (!SFM::RotationOnlyReadingTest())
 				return false;
 			if (!SFM::RingPlacementTest())
 				return false;
@@ -515,6 +525,12 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::PairAgreementWeightTest())
 				return false;
+			if (!SFM::RivalModesOnCycleTest())
+				return false;
+			if (!SFM::OneCameraSideTest())
+				return false;
+			if (!SFM::OneCameraDoorTest())
+				return false;
 			if (!SFM::RingLoopClosureTest())
 				return false;
 			if (!SFM::BiasedClosingSeamTest())
@@ -525,17 +541,19 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::FoldedBlockTest())
 				return false;
-			if (!SFM::FalseChordTest())
+			if (!SFM::FoldedBlock45Test())
 				return false;
-			if (!SFM::HeavyFalseChordTest())
+			if (!SFM::FalseChordTest())
 				return false;
 			if (!SFM::SeamInliersBecomeTracksTest())
 				return false;
 			if (!SFM::UnplacedBlocksReportedTest())
 				return false;
-			if (!SFM::RevalidationKeepsOneBlockTest())
-				return false;
 			if (!SFM::BentBlocksRelaxationTest())
+				return false;
+			if (!SFM::BentBlockClosureTest())
+				return false;
+			if (!SFM::BentRingKeepsSeamsTest())
 				return false;
 			if (!SFM::GlobalAlignmentMergeSingleSceneTest())
 				return false;

@@ -227,12 +227,11 @@ graph TD
     H --> I{Multiple sub-scenes?}
     I -->|no| J[Move single sub-scene back to global]
     I -->|yes| K[GlobalAlignment::MergeScenes<br/>GlobalAlignment.cpp]
-    K --> K1[EstimateSeamCandidates<br/>both directions, camera-vote gates]
-    K1 --> K2[ClassifySeamGraph<br/>robust R/s/t consensus: ROBUST/VERIFIED/UNDECIDED/REJECTED]
-    K2 --> K3[ComputeInitialBlockPoses<br/>trusted seams averaged per component]
-    K3 --> K4[PlaceBlocks/PlaceGroup<br/>one block at a time, four gates + loop closure]
-    K4 --> K5[Merge placed blocks<br/>average intrinsics + union-find tracks]
-    K5 --> J
+    K --> K1[EstimateSeamCandidates<br/>one reading per direction, weaker-side cameras x verified-pair share]
+    K1 --> K2[SelectSeamGraph / AverageBlockPoses<br/>average every component, cut past 5 deg / 1.20 / 0.20, repeat; bridge witnesses]
+    K2 --> K3[Merge the model of most images<br/>average intrinsics + union-find tracks, closure at the loose bar]
+    K3 --> K4[AdjustMergedScene<br/>filter at the loose bar + one BA]
+    K4 --> J
     J --> L[Return to Scene::Reconstruct post-BA]
 ```
 
@@ -274,11 +273,9 @@ graph TD
 **Step 5: Global Alignment Merge**
 
 - Function: `GlobalAlignment::MergeScenes()` — `libs/SFM/GlobalAlignment.cpp`
-- Seam measurement: `EstimateSeamCandidates()`/`EstimateSeamPair()` measure every adjacent block pair in both directions — a 3D-3D similarity (`ALIGN_POINTS`) or a generalized-camera PnP with scale, one block's cameras as a rig against the other's tracks (`ALIGN_CAMERAS`, default) — gated by camera votes; min `minCommonTracks` (25) inliers, `maxReprojError` (4px)
-- Seam graph: `ClassifySeamGraph()` averages each component robustly (rotation, then scale, then translation) as the cycle test a seam's own evidence cannot provide, classing every candidate ROBUST / VERIFIED / UNDECIDED / REJECTED
-- Initial poses: `ComputeInitialBlockPoses()` averages the trusted (ROBUST or VERIFIED) seams of each component about its best-connected block
-- Placement: `PlaceBlocks()`/`PlaceGroup()`/`AdmitGroup()` grow one model at a time, one block at a time, each hypothesis held to four gates (union support, camera votes, neighbours, and the verified image pairs across the placement agreeing with it by inlier weight); `CloseCycleThrough()` closes loops the placement order alone leaves open, `RelaxCameras()` relaxes individual cameras when the placed model's seams still disagree at the block poses
-- Merge: the model holding the most images is applied — similarity transforms, shared camera intrinsics averaged via `Camera::AccumulateIntrinsics()`/`ScaleIntrinsics()`, keypoints/descriptors moved back, tracks merged by union-find with a 3D-proximity guard (the correspondences of a seam the merged model rests on join by construction, without that guard); every other block is merged without a pose, for the post-merge resection to recover its images
+- Readings: `EstimateSeamCandidates()`/`EstimateSeamPair()` read every block pair the cross pairs join once per direction — a generalized-camera PnP with scale, one block's cameras as a rig against the other's tracks, refined over its inliers (`ALIGN_CAMERAS`, default; a one-camera rig is a door read by that camera's own pose) — or once by a 3D-3D similarity (`ALIGN_POINTS`, `--cluster-alignment 0`); min `minCommonTracks` (25) inliers, `maxReprojError` (4px); each reading weighs the supporting cameras of its weaker side times the share of the verified pairs' inlier weight it reproduces
+- Selection: `SelectSeamGraph()` averages every component of the kept readings (`AverageBlockPoses()`: rotations by `GlobalRotationEstimator`, log-scales and camera-centroid translations reweighted by the inverse of each reading's error) and keeps every reading within 5 deg / 1.20 / 0.20 of the pair footprint of its component's poses, repeated until the kept set settles; a bridge keeps a reading only with two cameras on its weaker side and its verified pairs not against it; each component left is a model
+- Merge: the model holding the most images is applied — similarity transforms, shared camera intrinsics averaged via `Camera::AccumulateIntrinsics()`/`ScaleIntrinsics()`, keypoints/descriptors moved back, tracks merged by union-find with a 3D-proximity guard (every correspondence of every placed block pair within the loose bar, 3 x 4 px, joins by construction, without that guard); every other block is merged without a pose, for the post-merge resection to recover its images; `AdjustMergedScene()` (`Scene.cpp`) filters the merged scene at the loose bar and adjusts it once
 - Output: merged global scene with all poses and tracks in one coordinate frame
 
 ---

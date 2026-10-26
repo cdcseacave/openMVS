@@ -275,25 +275,24 @@ Input: Images + matched pairs (from common front-end)
 │ 3. Global Alignment                                       │
 │    GlobalAlignment.h/cpp                                 │
 │                                                          │
-│    a. Measure every adjacent block pair in both          │
-│       directions (3D-3D similarity, or generalized-      │
-│       camera PnP with scale), gated by camera votes       │
+│    a. Read every block pair once per direction:          │
+│       generalized-camera PnP with scale (or one 3D-3D    │
+│       similarity), weighed by the cameras of its weaker  │
+│       side x the verified pairs' share                   │
 │                        ▼                                 │
-│    b. Seam graph: robust rotation/scale/translation       │
-│       averaging as the cycle test -- ROBUST / VERIFIED /  │
-│       UNDECIDED / REJECTED                                │
+│    b. Average every component of the kept readings       │
+│       (rotation, log-scale, translation), cut every      │
+│       reading past 5 deg / 1.20 / 0.20, repeat; a bridge │
+│       needs two cameras and its pairs not against it     │
 │                        ▼                                 │
-│    c. Initial poses per trusted component, then           │
-│       block-by-block placement against four gates,        │
-│       with loop closure and camera relaxation for what    │
-│       the placement order alone cannot resolve            │
+│    c. Merge the model with the most images: apply its    │
+│       block poses, average shared camera intrinsics,     │
+│       merge tracks via union-find + 3D proximity guards  │
+│       (every placed pair's correspondences within the    │
+│       loose bar join by construction); every other block │
+│       is merged without a pose, for the resection        │
 │                        ▼                                 │
-│    d. Merge the model with the most images: apply its     │
-│       similarity transforms, average shared camera        │
-│       intrinsics, merge tracks via union-find + 3D        │
-│       proximity guards (seam-agreed correspondences join   │
-│       by construction); every other block is merged       │
-│       without a pose, for the resection to recover        │
+│    d. AdjustMergedScene: filter at the loose bar, one BA │
 │                                                          │
 └─────────────────────────────────────────────────────────┘
   │
@@ -317,6 +316,8 @@ Output: Calibrated poses + sparse point cloud
 - **Star Initialization** (`StarInitializer.h`): Instead of the classic two-view initialization (sensitive to baseline selection), OpenMVS uses a star configuration: the most-connected image (by inlier count) becomes the reference, and its neighbours are registered simultaneously, each listed by the inliers that fix its distance -- those whose ray angle at the pair's pose reaches the reconstruction's `minAngleThreshold` (`StarInitConfig::evidenceMinAngle`) -- so that a far view sharing only far points with the reference, whose unit baseline guesses a distance no match backs, is left to the resection, however many inliers it has. The star refines the focal length alone (a star this small cannot also constrain distortion) -- a focal forced with `--focal-length` is left untouched here and refined by the global bundle adjustments instead.
 
 - **Resection** (`Resection.h`, `PoseLink.h`): tries next the image whose verified pairs to registered images weigh most, among every image holding `minCorrespondences` (15) 2D-3D correspondences, one registration per round (the list is read again after each), and at a stall runs the full bundle adjustment and tries again when images were registered since the last one; accepts a pose only when its inliers are a large share of the correspondences (or reach an absolute count regardless of share), its rotation agrees with the quorum of the image's verified pairs to already-registered neighbours, not just the single strongest one, and the quorum links that contradict its baseline direction do not outweigh the ones that agree: each link held to `atan(tan(3°)/a)`, `a` the larger of the pair's ray angle and the model's parallax of the two cameras, a link both see under 2 degrees agreeing and one only one of them does abstaining (`--max-link-direction-error`, 3; 0 = no direction check).
+
+- **Global Alignment** (`GlobalAlignment.h`): the blocks are the nodes of a graph and every block pair the cross pairs join an edge holding its readings, one per direction (`--cluster-alignment 1`, generalized-camera PnP with scale; a rig of one camera is read by that camera's own pose) or one 3D-3D similarity (`--cluster-alignment 0`, weaker: it placed alameda's block 5 wrong and 1c65aab4's blocks 2 of 4 where the default places them). Each reading weighs the supporting cameras of its weaker side times the share of the verified image pairs across it that it reproduces. Every component of the kept readings is averaged robustly and every reading the averaged poses leave past 5 degrees, a scale ratio of 1.20 or 0.20 of the pair's camera footprint is cut, until the kept set settles; a pair no cycle tests (a bridge) keeps a reading only with two supporting cameras on its weaker side and its verified pairs not against it. The component of the most images is the model; its blocks' correspondences within 12 px join their tracks, and `AdjustMergedScene` filters at that loose bar and adjusts once before the final adjustment. Known limits: a non-rigid block can be placed wrong, and three planted scenes no capture produces (a heavy wrong chord no verified pair refuses, a bridge with two equal readings, a copy heavier than the truth on a door's triangle) are not caught; see `docs/design/HierarchicalSFM.md`.
 
 - **Bundle Adjustment** (`BundleAdjustment.h`, `BundleAdjustmentCostFunctions.h`): Uses Ceres Solver. **Local BA** optimizes a window of cameras + their points with fixed intrinsics (fast, used during resection). **Full/Global BA** refines the main-set intrinsics (focal, k1, k2) by default, `--refine-intrinsics 2` and `minRefineExtIntrs` opening the rest, and adds a robustified relative-pose residual per verified pair (`--ba-pair-sigma`, default 1°) that holds a joint straight where the tracks joining it are few or two-view only. GPS constraints can be added when EXIF GPS data is available.
 
@@ -638,7 +639,7 @@ libs/SFM/
 │
 │ # Hierarchical / Global reconstruction
 ├── SceneCluster.h/cpp                  # Aggregative scene clustering
-├── GlobalAlignment.h/cpp               # Seam measurement, seam graph, block placement, merging
+├── GlobalAlignment.h/cpp               # Block pair readings, block-graph averaging, merging
 ├── GlobalRotationAveraging.h/cpp       # SO(3) rotation averaging; the view graph's contradiction cut
 ├── GlobalScaleAveraging.h/cpp          # Log-space scale averaging
 ├── GlobalTranslationAveraging.h/cpp    # Linear translation solving

@@ -434,12 +434,12 @@ The following five suggestions offer the highest impact relative to implementati
 
 ### B15. Global Alignment (`libs/SFM/GlobalAlignment.h`)
 
-**Current Implementation:** every adjacent block pair is measured and gated by camera votes, a seam graph classifies each by robust rotation/scale/translation consensus, blocks are then placed one at a time into a model against four gates (with loop closure and camera relaxation for what the placement order alone cannot resolve), and tracks are merged by union-find.
+**Current Implementation:** every block pair the cross pairs join is read once per direction (generalized-camera PnP with scale, or one 3D-3D similarity), each reading weighed by the cameras of its weaker side times the verified pairs' share; every component of the kept readings is averaged robustly (rotation, log-scale, translation) and every reading the averaged poses contradict is cut, until the kept set settles; a bridge needs two cameras on its weaker side and its verified pairs not against it; the model of the most images is merged, its block pairs' correspondences within the loose bar join their tracks, and `AdjustMergedScene` adjusts it once. (The joint refinement across models suggested here before is moot: each component's block poses are one averaging, and the closure and the merged model's adjustment refine at camera level.)
 
-1. **Joint Refinement Across Models** (Priority: Medium | Complexity: Medium)
-   - **What:** `RefineBlockPoses` already fits every admitted block of one model jointly, by reprojection, each time a block is added to it; extend that one solve to run across every model's blocks and every trusted seam at once, instead of one model at a time.
-   - **Why:** Models are still placed against each other one at a time (`PlaceModel`), so error a model accumulated while it grew can still bias how it is placed against another already-placed model.
-   - **Risk:** Medium — adds computation time proportional to the number of blocks.
+1. **Non-rigid blocks** (Priority: Low | Complexity: High)
+   - **What:** a block holding several bodies at different scales is placed by one similarity and may be placed wrong (the merge's known limit, `docs/design/HierarchicalSFM.md`); the final design recorded in `docs/design/ExperimentRecord.md` places such a block by one of its bodies through a search for a second mode on camera evidence.
+   - **Why:** the current blocks are rigid on the test captures, so the extra machinery buys nothing there today.
+   - **Risk:** Medium — the mode search brings copies of repeated structures in, which the final design needed free space and the evidence product to tell apart.
 
 ### B16. Dense Depth Estimation (`libs/MVS/DepthMap.h`, `SceneDensify.cpp`)
 

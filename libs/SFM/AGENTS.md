@@ -111,7 +111,7 @@ Extract features (AKAZE/ORB/SIFT/SIFTGPU) -> Match pairs (VOCABULARY/EXHAUSTIVE/
 [Pipeline up to track building]
 -> Cluster scene (aggregative partitioning)
 -> For each cluster: extract sub-scene -> full pipeline
--> Global alignment (seam graph + block placement + merge) -> Final BA
+-> Global alignment (block-graph averaging + merge + loose-bar adjustment) -> Final BA
 ```
 
 ### Global Reconstruction (`Scene::ReconstructGlobal`)
@@ -225,12 +225,11 @@ Aggregative clustering on covisibility graph for hierarchical reconstruction.
 - Data split: keypoints/descriptors MOVED (not copied) to sub-scenes
 
 ### Global Alignment (`GlobalAlignment.h`)
-Places each independently reconstructed block ("sub-scene") into a shared frame, block by block, on the evidence its seams to already-placed blocks carry:
-1. **Seam measurement** (`EstimateSeamCandidates`/`EstimateSeamPair`): every adjacent block pair, both directions — 3D-3D similarity (`ALIGN_POINTS`) or generalized-camera PnP with scale, one block's cameras as a rig against the other's tracks (`ALIGN_CAMERAS`, default) — gated by camera votes (`minCommonTracks` 25, `maxReprojError` 4px)
-2. **Seam graph** (`ClassifySeamGraph`): robust rotation/scale/translation averaging as the cycle test that a seam's own evidence cannot provide — ROBUST / VERIFIED / UNDECIDED / REJECTED
-3. **Initial poses** (`ComputeInitialBlockPoses`): the trusted seams alone average each component about its best-connected block
-4. **Placement** (`PlaceBlocks`/`PlaceGroup`/`AdmitGroup`): one block at a time, held to four gates (union support, camera votes, neighbours, pair agreement); loop closure (`CloseCycleThrough`) and camera relaxation (`RelaxCameras`) for what the placement order alone cannot resolve
-5. **Merge**: apply the transforms of the model holding the most images, average shared camera intrinsics, union-find the tracks (the correspondences of a seam the merged model rests on join by construction); every other block is merged without a pose, for the resection to recover its images
+Places the independently reconstructed blocks ("sub-scenes") in one frame by one robust averaging of the block graph, the view-graph filter's pattern over blocks:
+1. **Readings** (`EstimateSeamCandidates`/`EstimateSeamPair`): every block pair the cross pairs join, read once per direction by generalized-camera PnP with scale of one block's cameras against the other's tracks, refined over its inliers (`ALIGN_CAMERAS`, default; a one-camera rig is a door read by its camera's own pose), or by one 3D-3D similarity (`ALIGN_POINTS`, `--cluster-alignment 0`); the two directions stay two readings. Each scored on every correspondence of the pair (the supporting cameras of its weaker side, `minCameraInliers` 10) and read against the verified pairs across it (`minPairInliers` 30, `maxPairRotationResidual` 5 deg); weight = max(cameras, 1) x the pairs' share
+2. **Selection** (`SelectSeamGraph` / `AverageBlockPoses`): every component of the kept readings averaged (rotations by `GlobalRotationEstimator`, log-scales and translations of the camera centroids under the inverse-error reweighting of the contradiction cut), every reading judged against its component's poses at 5 deg / 1.20 / 0.20 of the pair footprint, repeated until the kept set settles (`kRobustRounds`); a bridge keeps a reading only with `minSeamWeight` (2) cameras on its weaker side and its verified pairs not against it; each component left is a model
+3. **Merge** (`MergeScenes`): apply the poses of the model holding the most images, average shared camera intrinsics, union-find the tracks (every correspondence of every placed block pair within the loose bar, 3 x 4 px, joins by construction); every other block is merged without a pose, for the resection to recover its images; then `AdjustMergedScene` (Scene.h) filters at the loose bar and adjusts once
+Known limits: a non-rigid block can be placed wrong; a heavy wrong chord with no verified pairs, two equal readings of a bridge, and a copy heavier than the truth on a door's triangle are not caught (`docs/design/HierarchicalSFM.md`)
 
 ### Rotation Averaging (`GlobalRotationAveraging.h`)
 - MST initialization (weighted by match counts)

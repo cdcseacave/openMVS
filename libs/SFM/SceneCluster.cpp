@@ -947,9 +947,9 @@ void SceneCluster::RepairClusterSeams(std::vector<IIndexArr>& clusters)
 		RepairClusterSeam(clusters, clusterA, clusterB);
 }
 
-// One seam that carries usable tracks enough but holds them in too few cameras: the merge poses a
-// camera only on a vote of its own, so such a seam registers on one or two cameras and is thrown
-// out. Moving a boundary image across the cut hands the tracks it sees to the other side, where
+// One seam that carries usable tracks enough but holds them in too few cameras: the merge weighs a
+// reading by the supporting cameras of its weaker side, so such a seam registers on one or two
+// cameras, and as a bridge it is left off. Moving a boundary image across the cut hands the tracks it sees to the other side, where
 // they now cross the cut, which spreads the seam over more cameras on both sides; the move that
 // raises the weaker side the most is taken, while the two clusters stay within their size bounds.
 void SceneCluster::RepairClusterSeam(std::vector<IIndexArr>& clusters, uint32_t clusterA, uint32_t clusterB)

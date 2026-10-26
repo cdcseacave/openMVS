@@ -65,6 +65,21 @@ void SFM::SetBAPairConstraints(BAConfig& baCfg, float relativeRotationSigma)
 	baCfg.relativeTranslationSigma = ReconstructionConfig::relativeTranslationSigmaFactor * relativeRotationSigma;
 }
 
+void SFM::AdjustMergedScene(Scene& scene, const ReconstructionConfig& cfg)
+{
+	TD_TIMER_STARTD();
+	const float looseBar = GlobalAlignmentConfig::looseSeamFactor * cfg.maxReprojError;
+	FilterTracks(scene, looseBar, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
+	TriangulateTracks(scene, true, looseBar, cfg.minAngleThreshold);
+	FilterTracks(scene, looseBar, cfg.minAngleThreshold, cfg.multDepthNear, cfg.multDepthFar);
+	scene.status.nState.set(Scene::Status::STATE::CALIBRATED);
+	BAConfig baCfg = cfg.baConfig;
+	SetBAIntrinsicFlags(baCfg, cfg.baIntrinsicFlags);
+	BundleAdjustment::Adjust(scene, baCfg);
+	VERBOSE("Merged scene adjusted at the loose bar of %g px: %u images, %u tracks (%s)",
+		looseBar, scene.status.nCalibratedImages, scene.status.nTracks, TD_TIMER_GET_FMT().c_str());
+}
+
 
 Scene::Scene(unsigned _nMaxThreads)
 	: transform(Matrix4x4::IDENTITY), obb(true), nMaxThreads(Thread::getMaxThreads(_nMaxThreads)),
@@ -935,12 +950,14 @@ bool Scene::ReconstructHierarchical(const ReconstructionConfig& config, const II
 	if (subScenes.size() == 1) {
 		*this = std::move(subScenes[0]);
 	} else {
-		// merge sub-scenes, or, if not possible, keep only the largest sub-scene
+		// place the blocks and merge the model holding the most images; every other block's images
+		// are left to the resection
 		GlobalAlignment globalAlign(*this, config.globalAlignmentCfg);
 		MergeReport mergeReport;
 		globalAlign.MergeScenes(subScenes, localToGlobals, mergeReport);
 		VERBOSE("Hierarchical merge: %u/%u blocks placed, %u images placed, %u images of unplaced blocks left to the resection",
 			mergeReport.numPlaced, mergeReport.numBlocks, mergeReport.numImagesPlaced, mergeReport.numImagesUnplaced);
+		AdjustMergedScene(*this, config);
 	}
 	DEBUG("Hierarchical reconstruction complete: %u/%u images, %u/%u points (%s)",
 		status.nCalibratedImages, images.size(), status.nTracks, tracks.size(), TD_TIMER_GET_FMT().c_str());
