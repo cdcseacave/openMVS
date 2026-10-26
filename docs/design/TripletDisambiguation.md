@@ -64,7 +64,7 @@ rest of the graph contradicts, in two stages.
   has no baseline direction of its own) has its baseline direction taken in the world frame of the
   rotation stage. The scale of every usable pair is solved from the pair-scale equations of
   `ComputePairScales` (StarInitializer.h), per component of the pair-scale graph, robustly
-  (`RobustAverage`, Geman-McClure) around the sparse route of `GlobalScaleEstimator`; the camera
+  (`RobustAverage`, Geman-McClure) around `GlobalScaleEstimator`; the camera
   centres follow from `C_2 - C_1 = scale * baseline` per component of at least 10 pairs, solved by
   `GlobalTranslationEstimator` reweighted towards the sum of norms (40 rounds). A pair of a
   component is judged by its own solve, any other pair by the largest solve that places both its

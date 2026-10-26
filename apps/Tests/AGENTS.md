@@ -79,6 +79,7 @@ All in `namespace SFM`. Called sequentially when `argv[1] == 1`.
 | `ReconstructTest()` | Full SFM on real images: import → AKAZE features → exhaustive matching → geometric filter → tracks → BA | 4 images loaded; BA converges; tracks non-empty |
 | `RotationEstimatorTest()` | Global rotation averaging (16 circular cameras, 1 disconnected) | Relative rotation < 5 deg |
 | `ScaleEstimatorTest()` | Global scale averaging from pairwise ratios (auto + fixed gauge) | Scale ratio error < 1e-4 |
+| `ScaleComponentsTest()` | Global scale averaging of two components plus an unnamed index (fixed index in either, a dropped bridge) against a dense SVD of the whole system | Log scales within 1e-9 of the SVD; unreached component at mean zero; unnamed index at 1 |
 | `TranslationEstimatorTest()` | Global translation averaging from pairwise constraints | Translation error < 1e-4 |
 | `PairsWeightingTest()` | Spatial, connectivity, and triplet weight computation for image pairs | Spread > clumped; valid triplets > 0 |
 | `ViewGraphCalibratorTest()` | Focal length refinement via view graph (8 images, +30% perturbation) | Focal < 2% error |

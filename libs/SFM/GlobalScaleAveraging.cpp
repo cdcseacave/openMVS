@@ -7,6 +7,7 @@
 #include "Common.h"
 #include "GlobalScaleAveraging.h"
 #include <Eigen/IterativeLinearSolvers>
+#include "../Math/DisjointSet.h"
 
 using namespace SFM;
 
@@ -24,14 +25,12 @@ DEFINE_LOG_NAME(lt, _T("GlbSclAg"));
 
 namespace {
 
-// The sparse route's conjugate gradients on the normal equations A^T A x = A^T b. The ridge, relative
-// to the mean diagonal, keeps solvable a component the fixed index does not reach (its scales are
-// free); the tolerance is tight because at 1e-10 an equation on the robust weight floor crosses the
-// bar in another round and the cut's removed pairs change; the correction of the refinement step
-// needs only its first digits.
-constexpr double kSparseRidge = 1e-12;
-constexpr double kSparseTolerance = 1e-14;
-constexpr int kSparseMaxIterations = 20000;
+// The conjugate gradients on the normal equations A^T A x = A^T b of a component pinned at one of its
+// indices: the pinned system's normal matrix is positive definite, so it needs no ridge. The tolerance is
+// tight because at 1e-10 an equation on the robust weight floor crosses the bar in another round and the
+// cut's removed pairs change; the correction of the refinement step needs only its first digits.
+constexpr double kTolerance = 1e-14;
+constexpr int kMaxIterations = 20000;
 constexpr double kRefinementTolerance = 1e-6;
 
 bool SelectFixedNode(
@@ -69,137 +68,126 @@ bool GlobalScaleEstimator::EstimateScales(
 	const std::vector<ScalePair>& pairwiseScales,
 	const uint32_t numIndices,
 	const uint32_t fixedIdx,
-	std::vector<REAL>& outScales,
-	bool sparse)
+	std::vector<REAL>& outScales)
 {
 	if (pairwiseScales.empty() || numIndices == 0) {
 		VERBOSE("warning: no pairwise scales provided");
 		return false;
 	}
 
-	// Map index to variable position in the linear system
+	// The unknowns are the indices the equations name, numbered in order of first appearance
 	std::unordered_map<uint32_t, int> idxToVar;
+	std::vector<uint32_t> varToIdx;
 	for (const ScalePair& scalePair : pairwiseScales) {
 		ASSERT(scalePair.scaleRatio > REAL(0));
 		ASSERT(ISFINITE(scalePair.scaleRatio));
 		ASSERT(scalePair.weight > 0.f);
 		ASSERT(ISFINITE(scalePair.weight));
-		const auto [itA, insertedA] = idxToVar.emplace(scalePair.idxA, (int)idxToVar.size());
-		(void)itA;
-		(void)insertedA;
-		const auto [itB, insertedB] = idxToVar.emplace(scalePair.idxB, (int)idxToVar.size());
-		(void)itB;
-		(void)insertedB;
+		ASSERT(scalePair.idxA != scalePair.idxB);
+		ASSERT(scalePair.idxA < numIndices && scalePair.idxB < numIndices);
+		if (idxToVar.emplace(scalePair.idxA, (int)varToIdx.size()).second)
+			varToIdx.push_back(scalePair.idxA);
+		if (idxToVar.emplace(scalePair.idxB, (int)varToIdx.size()).second)
+			varToIdx.push_back(scalePair.idxB);
 	}
-
-	const int N = (int)idxToVar.size(); // number of variables (scales)
+	const int N = (int)varToIdx.size(); // number of variables (scales)
 	const int M = (int)pairwiseScales.size(); // number of equations
-	if (N < 2) {
-		VERBOSE("warning: insufficient indices for scale estimation");
-		return false;
-	}
+	ASSERT(N >= 2);
 
 	uint32_t fixedNode;
 	if (!SelectFixedNode(pairwiseScales, fixedIdx, idxToVar, fixedNode))
 		return false;
 
-	// Eliminate the fixed variable for exact gauge enforcement.
-	std::unordered_map<uint32_t, int> idxToTmpVar;
-	idxToTmpVar.reserve((size_t)N - 1);
-	for (const auto& [idx, varIdx] : idxToVar) {
-		(void)varIdx;
-		if (idx == fixedNode)
-			continue;
-		idxToTmpVar.emplace(idx, (int)idxToTmpVar.size());
-	}
-	const int Ntmp = (int)idxToTmpVar.size();
-	if (Ntmp == 0) {
-		outScales.resize(numIndices, REAL(1));
-		return true;
-	}
+	// The equations split into connected components, which share no unknown: each is solved on its own
+	DisjointSet<uint32_t> sets((size_t)N);
+	for (const ScalePair& scalePair : pairwiseScales)
+		sets.Union((uint32_t)idxToVar.at(scalePair.idxA), (uint32_t)idxToVar.at(scalePair.idxB));
+	sets.CompressAllPaths();
+	std::vector<uint32_t> componentOfVar;
+	const unsigned numComponents = sets.GetComponents(componentOfVar);
+	struct Component {
+		std::vector<int> vars; // in order of first appearance
+		std::vector<int> equations;
+	};
+	std::vector<Component> components(numComponents);
+	for (int v = 0; v < N; ++v)
+		components[componentOfVar[v]].vars.push_back(v);
+	FOREACH(i, pairwiseScales)
+		components[componentOfVar[idxToVar.at(pairwiseScales[i].idxA)]].equations.push_back((int)i);
+	const int fixedVar = idxToVar.at(fixedNode);
 
-	Eigen::VectorXd b = Eigen::VectorXd::Zero(M);
-	FOREACH(i, pairwiseScales) {
-		const ScalePair& scalePair = pairwiseScales[i];
-		b(i) = (double)scalePair.weight * LOGN((double)scalePair.scaleRatio);
-	}
-	Eigen::VectorXd x;
-	if (sparse) {
+	// the start of every solve: the previous solve's scales, taken relative to the component's pin, when it
+	// had as many indices (a robust round's change of the equations moves the answer a little)
+	const bool warmStart = previousScales.size() == numIndices;
+	std::vector<REAL> scales(numIndices, REAL(1));
+	std::vector<int> unknownOfVar(N, -1);
+	Solve stats;
+	stats.converged = true;
+	for (const Component& component : components) {
+		// the pin takes scale 1: the fixed index in the component that holds it, the first named index in any
+		// other, which is then shifted to mean-zero log scales (it has no scale to be tied to, and the minimum-norm
+		// least squares of the whole system is the mean-zero one)
+		const bool holdsFixed = componentOfVar[component.vars.front()] == componentOfVar[fixedVar];
+		const int pin = holdsFixed ? fixedVar : component.vars.front();
+		int numUnknowns = 0;
+		for (const int v : component.vars)
+			unknownOfVar[v] = (v == pin ? -1 : numUnknowns++);
+		ASSERT(numUnknowns > 0);
+		const int numEquations = (int)component.equations.size();
+		Eigen::VectorXd b(numEquations);
 		std::vector<Eigen::Triplet<double>> triplets;
-		triplets.reserve((size_t)M * 2);
-		FOREACH(i, pairwiseScales) {
-			const ScalePair& scalePair = pairwiseScales[i];
+		triplets.reserve((size_t)numEquations * 2);
+		for (int row = 0; row < numEquations; ++row) {
+			const ScalePair& scalePair = pairwiseScales[component.equations[row]];
 			const double weight = (double)scalePair.weight;
-			const auto itA = idxToTmpVar.find(scalePair.idxA);
-			const auto itB = idxToTmpVar.find(scalePair.idxB);
-			if (itA != idxToTmpVar.end())
-				triplets.emplace_back((int)i, itA->second, -weight);
-			if (itB != idxToTmpVar.end())
-				triplets.emplace_back((int)i, itB->second, weight);
+			const int unknownA = unknownOfVar[idxToVar.at(scalePair.idxA)];
+			const int unknownB = unknownOfVar[idxToVar.at(scalePair.idxB)];
+			if (unknownA >= 0)
+				triplets.emplace_back(row, unknownA, -weight);
+			if (unknownB >= 0)
+				triplets.emplace_back(row, unknownB, weight);
+			b(row) = weight * LOGN((double)scalePair.scaleRatio);
 		}
-		Eigen::SparseMatrix<double> A(M, Ntmp);
+		Eigen::SparseMatrix<double> A(numEquations, numUnknowns);
 		A.setFromTriplets(triplets.begin(), triplets.end());
-		Eigen::SparseMatrix<double> normal = A.transpose() * A;
-		const double ridge = kSparseRidge * normal.diagonal().mean();
-		for (int i = 0; i < Ntmp; ++i)
-			normal.coeffRef(i, i) += ridge;
-		// the start: the previous sparse solve's scales taken relative to this solve's fixed index, when it
-		// solved as many indices (a robust round's change of the equations moves the answer a little)
-		Eigen::VectorXd x0 = Eigen::VectorXd::Zero(Ntmp);
-		if (previousScales.size() == numIndices && fixedNode < numIndices) {
-			const double logFixed = LOGN((double)previousScales[fixedNode]);
-			for (const auto& [idx, tmpVarIdx] : idxToTmpVar) {
-				ASSERT(idx < numIndices);
-				x0(tmpVarIdx) = LOGN((double)previousScales[idx]) - logFixed;
-			}
+		const Eigen::SparseMatrix<double> normal = A.transpose() * A;
+		Eigen::VectorXd x0 = Eigen::VectorXd::Zero(numUnknowns);
+		if (warmStart) {
+			const double logPin = LOGN((double)previousScales[varToIdx[pin]]);
+			for (const int v : component.vars)
+				if (unknownOfVar[v] >= 0)
+					x0(unknownOfVar[v]) = LOGN((double)previousScales[varToIdx[v]]) - logPin;
 		}
 		// conjugate gradients with the Jacobi preconditioner: the normal matrix of a view graph's pair
 		// scales is as dense as an expander and its Cholesky factor many times denser, while a product
 		// with it is cheap
 		Eigen::ConjugateGradient<Eigen::SparseMatrix<double>, Eigen::Lower | Eigen::Upper> solver;
-		solver.setTolerance(kSparseTolerance);
-		solver.setMaxIterations(kSparseMaxIterations);
+		solver.setTolerance(kTolerance);
+		solver.setMaxIterations(kMaxIterations);
 		solver.compute(normal);
-		x = solver.solveWithGuess(A.transpose() * b, x0);
-		solve.iterations = (unsigned)solver.iterations();
-		solve.converged = solver.info() == Eigen::Success;
+		Eigen::VectorXd x = solver.solveWithGuess(A.transpose() * b, x0);
+		stats.iterations += (unsigned)solver.iterations();
+		stats.converged = stats.converged && solver.info() == Eigen::Success;
 		if (x.array().isNaN().any()) {
-			VERBOSE("warning: sparse scale solve failed");
+			VERBOSE("warning: scale solve failed");
 			return false;
 		}
 		// one step of refinement against the incidence matrix itself, as the translation solve does: the
 		// normal matrix holds the squared condition number's rounding (a weak equation between two groups
 		// of strong ones moved the answer by 3e-7), the residual of A and b does not
 		solver.setTolerance(kRefinementTolerance);
-		x += solver.solve(A.transpose() * (b - A * x) - ridge * x);
-		solve.refinementIterations = (unsigned)solver.iterations();
-		solve.converged = solve.converged && solver.info() == Eigen::Success;
-		DEBUG_EXTRA("Global scale conjugate gradients: %u unknowns, %u iterations and %u of refinement, %s", (unsigned)Ntmp,
-			solve.iterations, solve.refinementIterations, solve.converged ? "converged" : "stopped at the iteration bound");
-	} else {
-		Eigen::MatrixXd A = Eigen::MatrixXd::Zero(M, Ntmp);
-		FOREACH(i, pairwiseScales) {
-			const ScalePair& scalePair = pairwiseScales[i];
-			const double weight = (double)scalePair.weight;
-			const auto itA = idxToTmpVar.find(scalePair.idxA);
-			const auto itB = idxToTmpVar.find(scalePair.idxB);
-			if (itA != idxToTmpVar.end())
-				A(i, itA->second) = -weight;
-			if (itB != idxToTmpVar.end())
-				A(i, itB->second) = weight;
-		}
-		x = A.jacobiSvd(Eigen::ComputeThinU | Eigen::ComputeThinV).solve(b);
+		x += solver.solve(A.transpose() * (b - A * x));
+		stats.refinementIterations += (unsigned)solver.iterations();
+		stats.converged = stats.converged && solver.info() == Eigen::Success;
+		const double shift = holdsFixed ? 0.0 : x.sum() / (double)component.vars.size();
+		for (const int v : component.vars)
+			scales[varToIdx[v]] = EXP((v == pin ? 0.0 : x(unknownOfVar[v])) - shift);
 	}
-
-	outScales.resize(numIndices, REAL(1));
-	for (const auto& [idx, tmpVarIdx] : idxToTmpVar) {
-		ASSERT(idx < numIndices);
-		outScales[idx] = EXP(x(tmpVarIdx));
-	}
-	if (fixedNode < numIndices)
-		outScales[fixedNode] = REAL(1);
-	if (sparse)
-		previousScales = outScales;
+	DEBUG_EXTRA("Global scale conjugate gradients: %u unknowns, %u iterations and %u of refinement, %s", (unsigned)(N - (int)numComponents),
+		stats.iterations, stats.refinementIterations, stats.converged ? "converged" : "stopped at the iteration bound");
+	solve = stats;
+	outScales = std::move(scales);
+	previousScales = outScales;
 
 	DEBUG("Global scale averaging completed: %u indices, %u pairs (exact gauge, fixed %u)",
 		N, M, fixedNode);

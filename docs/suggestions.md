@@ -369,7 +369,7 @@ The following five suggestions offer the highest impact relative to implementati
 
 ### B10. Global Scale Averaging (`libs/SFM/GlobalScaleAveraging.h`)
 
-**Current Implementation:** Log-space weighted least-squares with SVD.
+**Current Implementation:** Log-space weighted least-squares, one conjugate-gradients solve per connected component of the equations.
 
 1. **IRLS for Robustness** (Priority: Medium | Complexity: Low)
    - **What:** Add IRLS (Iteratively Reweighted Least Squares) with Huber loss to the log-space scale averaging.

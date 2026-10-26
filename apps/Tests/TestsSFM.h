@@ -515,6 +515,11 @@ bool PairScalesTest();
 // Test function for global scale estimation
 bool ScaleEstimatorTest();
 
+// The scale estimator solves every connected component of its equations on its own: the one holding the
+// fixed index pinned at it, any other at mean zero log scale (the dense SVD's minimum-norm answer), an index
+// no equation names at scale 1
+bool ScaleComponentsTest();
+
 // Test function for global translation estimation
 bool TranslationEstimatorTest();
 
@@ -522,8 +527,8 @@ bool TranslationEstimatorTest();
 // gives the SparseQR solution of their incidence matrix
 bool TranslationNormalEquationsTest();
 
-// The scale estimator's sparse route (conjugate gradients on the normal equations, started from the
-// previous solve) gives the sparse Cholesky solution, converged, and a near start saves iterations
+// The scale estimator's solve (conjugate gradients on the normal equations, started from the previous
+// solve) gives the sparse Cholesky solution of the gauge-pinned system, converged, and a near start saves iterations
 bool ScaleConjugateGradientsTest();
 
 // Pairs weighting test

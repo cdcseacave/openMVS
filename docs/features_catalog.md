@@ -343,7 +343,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
   - IRLS refinement with Geman-McClure or Half-Norm loss
   - Optional second pass after filtering inconsistent pairs
   - Gauge freedom fixed by first node
-  - `FilterPairsByContradiction()`: the view graph's contradiction cut, run after the triplet filter. Rotation stage: the usable pairs (composite weight times triplet score) averaged per connected component, every pair whose rotation is past `maxRelativeRotationAngle` of the result removed; translation stage (bar `ReconstructionConfig::maxPairDirectionResidual`, 45 degrees, 0 = off): pair scales (`ComputePairScales`, robust, sparse `GlobalScaleEstimator`), camera centres (`GlobalTranslationEstimator`, reweighted towards the sum of norms), every pair whose baseline direction is past the bar from the centres removed
+  - `FilterPairsByContradiction()`: the view graph's contradiction cut, run after the triplet filter. Rotation stage: the usable pairs (composite weight times triplet score) averaged per connected component, every pair whose rotation is past `maxRelativeRotationAngle` of the result removed; translation stage (bar `ReconstructionConfig::maxPairDirectionResidual`, 45 degrees, 0 = off): pair scales (`ComputePairScales`, robust, `GlobalScaleEstimator`), camera centres (`GlobalTranslationEstimator`, reweighted towards the sum of norms), every pair whose baseline direction is past the bar from the centres removed
 - **Configuration:** `GlobalRotationEstimatorOptions` — `maxNumL1Iterations` (5), `maxNumIrlsIterations` (100), `weightType` (GEMAN_MCCLURE or HALF_NORM), `maxRelativeRotationAngle` (12 degrees)
 - **GPU Support:** No
 - **Threading:** Single (sparse linear system; could use Eigen parallelism); the contradiction cut's pair scales (`ComputePairScales`) run under OpenMP
@@ -352,7 +352,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 ### Global Scale Averaging
 
 - **Files:** `libs/SFM/GlobalScaleAveraging.h`, `libs/SFM/GlobalScaleAveraging.cpp`
-- **Algorithms:** Log-space weighted least-squares with SVD: `log(s_j) - log(s_i) = log(s_ij)`; gauge fix on first sub-scene. A sparse route (`sparse = true`, the contradiction cut's pair scales): Jacobi-preconditioned conjugate gradients on the normal equations, started from the estimator's previous solve, with one step of refinement against the equations
+- **Algorithms:** Log-space weighted least-squares, `log(s_j) - log(s_i) = log(s_ij)`, one solve for every caller (the star initializer, the block merge's averaging, the contradiction cut's pair scales): the equations split into connected components, each solved on its own by Jacobi-preconditioned conjugate gradients on the normal equations of the system with one index pinned at scale 1 (the fixed index, auto-selected as the best-connected when not given, in the component that holds it; the first named index in any other), with one step of refinement against the equations, started from the estimator's previous solve; a component the fixed index does not reach is shifted to mean-zero log scales (the minimum-norm least squares of the whole system), an index no equation names keeps scale 1. No ridge: the pinned normal matrix is positive definite
 - **GPU Support:** No
 - **Threading:** Single
 - **Dependencies:** Common, Eigen3

@@ -606,7 +606,7 @@ namespace {
 // maxDirectionResidual degrees from the centres. The solves read the usable pairs with a measurable
 // baseline (a ray angle past kNearDuplicateRayAngle), weighted by composite weight times triplet
 // score; the scale equations are StarInitializer's (ComputePairScales), solved per component of the
-// pair-scale graph by RobustAverage (Geman-McClure at maxScaleResidual) around the sparse
+// pair-scale graph by RobustAverage (Geman-McClure at maxScaleResidual) around
 // GlobalScaleEstimator; the centres per component by GlobalTranslationEstimator reweighted towards
 // the sum of norms (convex, so no start decides). A pair of a component is judged by its own solve,
 // any other pair with a pose and a measurable baseline by the largest solve that places both its
@@ -680,7 +680,7 @@ unsigned RemoveTranslationContradictions(const Scene& scene, const std::vector<P
 		GlobalScaleEstimator scaleEstimator;
 		std::vector<REAL> scales, scaleResiduals;
 		if (!RobustAverage(pComponent->equations, maxLogScaleResidual, kRobustRounds,
-			[&](const std::vector<ScalePair>& active, std::vector<REAL>& s) { return scaleEstimator.EstimateScales(active, numPairs, NO_ID, s, true); },
+			[&](const std::vector<ScalePair>& active, std::vector<REAL>& s) { return scaleEstimator.EstimateScales(active, numPairs, NO_ID, s); },
 			[&](size_t i, const std::vector<REAL>& s) {
 				const ScalePair& p = pComponent->equations[i];
 				return LOGN(p.scaleRatio) - (LOGN(s[p.idxB]) - LOGN(s[p.idxA]));

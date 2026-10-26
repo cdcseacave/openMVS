@@ -305,6 +305,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::TranslationNormalEquationsTest())
 				return false;
+			if (!SFM::ScaleComponentsTest())
+				return false;
 			if (!SFM::ScaleConjugateGradientsTest())
 				return false;
 			if (!SFM::TripletStarInitTest())

@@ -41,11 +41,15 @@ struct SFM_API ScalePair
  * Estimates global scales by solving a weighted least-squares system:
  *   log(s_j) - log(s_i) ≈ log(scale_ratio_ij)
  *
- * This is solved via SVD decomposition with exact gauge enforcement by
- * eliminating one fixed-scale variable (scale = 1.0). Systems of many indices and
- * equations (the scales of every pair of a view graph) take the sparse route instead:
- * conjugate gradients on the normal equations, started from the previous sparse solve
- * of the same estimator.
+ * The indices the equations name split into connected components, which share no unknown, and each
+ * component is solved on its own by conjugate gradients on the normal equations (Jacobi-preconditioned,
+ * with one step of refinement against the equations themselves) of the system with one of its indices
+ * pinned at scale 1 (exact gauge enforcement by eliminating that variable): the fixed index in the
+ * component that holds it, the first named index in any other. A component the fixed index does not reach
+ * has no scale to be tied to, so its log-scales are then shifted to mean zero, which is the minimum-norm
+ * least squares of the whole system. An index no equation names keeps scale 1. Every solve starts from
+ * the scales of this estimator's previous solve (relative to the component's pin) when that solve had as
+ * many indices, as a robust averaging round does after the one before it.
  *
  * Generalized from StarInitializer::EstimateGlobalScale() to work with
  * arbitrary indices (sub-scenes, images, etc.) instead of image pairs.
@@ -59,20 +63,13 @@ public:
 	 * @param numIndices Total number of indices (scenes/images)
 	 * @param fixedIdx Optional fixed index to set exact scale=1 (NO_ID = auto-select best-connected index)
 	 * @param outScales Output vector of global scales (indexed by scene/image ID)
-	 * @param sparse Solve by conjugate gradients on the normal equations (with one step of refinement
-	 *        against the equations themselves) instead of the dense SVD, started from the scales of this
-	 *        estimator's previous sparse solve when it had as many indices (GetSolve() reports the
-	 *        iterations); the dense route stays the default. The same least-squares solution when the
-	 *        pairs join all indices in one component; a component the fixed index does not reach is
-	 *        solved up to a ridge, not as the SVD's minimum-norm answer.
 	 * @return true if estimation successful
 	 */
 	bool EstimateScales(
 		const std::vector<ScalePair>& pairwiseScales,
 		const uint32_t numIndices,
 		const uint32_t fixedIdx,
-		std::vector<REAL>& outScales,
-		bool sparse = false);
+		std::vector<REAL>& outScales);
 
 	bool EstimateScales(
 		const std::vector<ScalePair>& pairwiseScales,
@@ -81,8 +78,8 @@ public:
 		return EstimateScales(pairwiseScales, numIndices, NO_ID, outScales);
 	}
 
-	/// the last sparse solve: the conjugate gradients iterations it took from its start (and those of the
-	/// refinement of its answer), and whether both reached the tolerance, not the iteration bound
+	/// the last solve: the conjugate gradients iterations it took from their start, summed over the components
+	/// (and those of the refinement of their answers), and whether all reached the tolerance, not the iteration bound
 	struct Solve {
 		unsigned iterations = 0;
 		unsigned refinementIterations = 0;
@@ -92,7 +89,7 @@ public:
 
 private:
 	Solve solve;
-	std::vector<REAL> previousScales; // the scales of the last sparse solve, the start of the next
+	std::vector<REAL> previousScales; // the scales of the last solve, the start of the next
 };
 /*----------------------------------------------------------------*/
 

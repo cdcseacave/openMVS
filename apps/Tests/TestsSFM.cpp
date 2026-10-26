@@ -13262,10 +13262,10 @@ bool ContradictionCutTest()
 // baseline is turned 120 degrees, both with the rotation exact, are removed at the default bar and
 // nothing else is; (2) the one pair joining two groups of cameras, its baseline flipped, is a bridge
 // and is never removed; (3) a pair under 2 degrees of ray angle is never judged, whatever its baseline
-// says (the same pair at 10 degrees is removed); (4) the sparse scale solve gives the dense one's
-// scales; (5) with the bar 0 the cut is the rotation stage alone: a pair 30 degrees off in rotation
-// goes at either bar, the flipped and the turned baselines only at 45; (6) a connected graph of fewer
-// pairs than a scale component needs is not solved and removes nothing.
+// says (the same pair at 10 degrees is removed); (4) the scale solve gives the least squares of its
+// equations, a dense SVD's; (5) with the bar 0 the cut is the rotation stage alone: a pair 30 degrees
+// off in rotation goes at either bar, the flipped and the turned baselines only at 45; (6) a connected
+// graph of fewer pairs than a scale component needs is not solved and removes nothing.
 bool TranslationCutTest()
 {
 	TD_TIMER_START();
@@ -13368,7 +13368,7 @@ bool TranslationCutTest()
 		}
 	}
 	{
-		// the sparse solve is the dense solve's least squares
+		// the scale solve is the least squares of its equations: a dense SVD of the system with the gauge eliminated, computed here
 		std::vector<ScalePair> pairs;
 		pairs.emplace_back(0, 1, REAL(2), 30.f);
 		pairs.emplace_back(1, 2, REAL(0.5), 25.f);
@@ -13377,14 +13377,29 @@ bool TranslationCutTest()
 		pairs.emplace_back(1, 3, REAL(2.2), 18.f);
 		pairs.emplace_back(0, 3, REAL(7), 10.f);
 		GlobalScaleEstimator estimator;
-		std::vector<REAL> dense, sparse;
-		if (!estimator.EstimateScales(pairs, 4, 0, dense) || !estimator.EstimateScales(pairs, 4, 0, sparse, true)) {
-			VERBOSE("ERROR: TranslationCutTest: a scale solve failed");
+		std::vector<REAL> scales;
+		if (!estimator.EstimateScales(pairs, 4, 0, scales)) {
+			VERBOSE("ERROR: TranslationCutTest: the scale solve failed");
 			return false;
 		}
-		for (unsigned i = 0; i < 4; ++i)
-			if (ABS(dense[i] - sparse[i]) > REAL(1e-6) * dense[i]) {
-				VERBOSE("ERROR: TranslationCutTest: sparse scale %u is %g, dense %g", i, sparse[i], dense[i]);
+		Eigen::MatrixXd A = Eigen::MatrixXd::Zero((Eigen::Index)pairs.size(), 3);
+		Eigen::VectorXd b((Eigen::Index)pairs.size());
+		FOREACH(i, pairs) {
+			const ScalePair& pair = pairs[i];
+			if (pair.idxA > 0)
+				A(i, pair.idxA - 1) = -(double)pair.weight;
+			if (pair.idxB > 0)
+				A(i, pair.idxB - 1) = (double)pair.weight;
+			b(i) = (double)pair.weight * std::log((double)pair.scaleRatio);
+		}
+		const Eigen::VectorXd expected = A.jacobiSvd(Eigen::ComputeThinU | Eigen::ComputeThinV).solve(b);
+		if (!(std::abs(std::log((double)scales[0])) < 1e-12)) {
+			VERBOSE("ERROR: TranslationCutTest: the fixed scale is %g, not 1", (double)scales[0]);
+			return false;
+		}
+		for (unsigned i = 1; i < 4; ++i)
+			if (!(std::abs(std::log((double)scales[i]) - expected(i - 1)) < 1e-9)) {
+				VERBOSE("ERROR: TranslationCutTest: scale %u is %g, the dense SVD's least squares %g", i, (double)scales[i], std::exp(expected(i - 1)));
 				return false;
 			}
 	}
@@ -13672,6 +13687,111 @@ bool ScaleEstimatorTest()
 	return true;
 }
 
+// The scale estimator solves every connected component of its equations on its own: the one holding the
+// fixed index is pinned at the fixed index, any other has its log-scales at mean zero (the minimum-norm least
+// squares of the whole system), and an index no equation names keeps scale 1. The reference is a dense
+// JacobiSVD of the whole system with the fixed index eliminated, computed here; the answer must equal it to
+// 1e-9 in log scale. Cases: two components with the fixed index in the first, then in the second; the same
+// estimator solving the two components joined by a bridge and then without it (a robust round that drops the
+// bridge leaves a component the fixed index no longer reaches, which must come out at mean zero whatever the
+// solve before it left there).
+bool ScaleComponentsTest()
+{
+	TD_TIMER_START();
+	std::mt19937 rng(11);
+	std::uniform_real_distribution<double> uniform(0, 1);
+	std::normal_distribution<double> noise(0, 0.05);
+	// the first component holds indices 0..5, the second 7..11, and index 6 is named by no equation
+	constexpr uint32_t numIndices = 12, unnamed = 6;
+	const std::vector<uint32_t> first{0, 1, 2, 3, 4, 5}, second{7, 8, 9, 10, 11};
+	std::vector<double> logScales(numIndices);
+	for (double& logScale : logScales)
+		logScale = 2 * uniform(rng) - 1;
+	// noisy ratios (so the least squares is not the planted scales), a ring and chords in each component
+	std::vector<ScalePair> separate;
+	const auto addEquations = [&](const std::vector<uint32_t>& indices) {
+		const auto add = [&](uint32_t a, uint32_t b) {
+			separate.emplace_back(a, b, std::exp(logScales[b] - logScales[a] + noise(rng)), (float)(1 + 9 * uniform(rng)));
+		};
+		for (size_t i = 0; i < indices.size(); ++i)
+			add(indices[i], indices[(i + 1) % indices.size()]);
+		for (size_t i = 0; i + 2 < indices.size(); ++i)
+			add(indices[i], indices[i + 2]);
+	};
+	addEquations(first);
+	addEquations(second);
+	std::vector<ScalePair> bridged = separate;
+	bridged.emplace_back(3, 8, std::exp(logScales[8] - logScales[3] + noise(rng)), 5.f);
+	// the dense reference: the whole system with the fixed index eliminated, its minimum-norm least squares
+	const auto reference = [&](const std::vector<ScalePair>& system, uint32_t fixed) {
+		std::vector<int> column(numIndices, -1);
+		int numColumns = 0;
+		for (const ScalePair& pair : system)
+			for (const uint32_t idx : {pair.idxA, pair.idxB})
+				if (idx != fixed && column[idx] < 0)
+					column[idx] = numColumns++;
+		Eigen::MatrixXd A = Eigen::MatrixXd::Zero((Eigen::Index)system.size(), numColumns);
+		Eigen::VectorXd b((Eigen::Index)system.size());
+		FOREACH(i, system) {
+			const ScalePair& pair = system[i];
+			if (column[pair.idxA] >= 0)
+				A(i, column[pair.idxA]) = -(double)pair.weight;
+			if (column[pair.idxB] >= 0)
+				A(i, column[pair.idxB]) = (double)pair.weight;
+			b(i) = (double)pair.weight * std::log((double)pair.scaleRatio);
+		}
+		const Eigen::VectorXd x = A.jacobiSvd(Eigen::ComputeThinU | Eigen::ComputeThinV).solve(b);
+		std::vector<double> expected(numIndices, 0.0);
+		for (uint32_t i = 0; i < numIndices; ++i)
+			if (column[i] >= 0)
+				expected[i] = x(column[i]);
+		return expected;
+	};
+	// one solve of `system` by `estimator` against the reference; `pUnreached` the indices of the component the fixed index does not reach
+	const auto check = [&](const char* what, GlobalScaleEstimator& estimator, const std::vector<ScalePair>& system, uint32_t fixed, const std::vector<uint32_t>* pUnreached) {
+		std::vector<REAL> scales;
+		if (!estimator.EstimateScales(system, numIndices, fixed, scales) || scales.size() != numIndices) {
+			VERBOSE("ERROR: ScaleComponentsTest: %s: the solve failed", what);
+			return false;
+		}
+		bool ok = true;
+		if (!(std::abs(std::log((double)scales[fixed])) < 1e-12)) {
+			VERBOSE("ERROR: ScaleComponentsTest: %s: the fixed index %u has scale %g, not 1", what, fixed, (double)scales[fixed]);
+			ok = false;
+		}
+		if (!(std::abs(std::log((double)scales[unnamed])) < 1e-12)) {
+			VERBOSE("ERROR: ScaleComponentsTest: %s: the index no equation names has scale %g, not 1", what, (double)scales[unnamed]);
+			ok = false;
+		}
+		const std::vector<double> expected = reference(system, fixed);
+		double worst = 0;
+		for (uint32_t i = 0; i < numIndices; ++i)
+			worst = MAXF(worst, std::abs(std::log((double)scales[i]) - expected[i]));
+		double meanUnreached = 0;
+		if (pUnreached != NULL) {
+			for (const uint32_t idx : *pUnreached)
+				meanUnreached += std::log((double)scales[idx]);
+			meanUnreached /= (double)pUnreached->size();
+		}
+		if (!(worst < 1e-9) || !(std::abs(meanUnreached) < 1e-9)) {
+			VERBOSE("ERROR: ScaleComponentsTest: %s: the log scales differ from the dense SVD's by up to %g; the mean log scale of the component the fixed index does not reach is %g",
+				what, worst, meanUnreached);
+			ok = false;
+		}
+		return ok;
+	};
+	bool passed = true;
+	GlobalScaleEstimator inFirst, inSecond, bridge;
+	passed = check("two components, the fixed index in the first", inFirst, separate, 2, &second) && passed;
+	passed = check("two components, the fixed index in the second", inSecond, separate, 9, &first) && passed;
+	passed = check("one component, joined by a bridge", bridge, bridged, 2, NULL) && passed;
+	passed = check("the bridge dropped after a solve with it", bridge, separate, 2, &second) && passed;
+	if (!passed)
+		return false;
+	VERBOSE("ScaleComponentsTest passed (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 bool TranslationEstimatorTest()
 {
 	TD_TIMER_START();
@@ -13955,9 +14075,9 @@ bool TranslationNormalEquationsTest()
 	return true;
 }
 
-// The sparse scale solve of GlobalScaleEstimator (conjugate gradients on the normal equations, started
-// from the previous solve of the same estimator) gives the answer of a sparse Cholesky of the same
-// system to 1e-9, on a system shaped like a view graph's pair scales (2000 unknowns, ~16 equations
+// The scale solve of GlobalScaleEstimator (conjugate gradients on the normal equations, started from the
+// previous solve of the same estimator) gives the least-squares answer of a sparse Cholesky of the
+// gauge-pinned system, which needs no ridge, to 1e-9, on a system shaped like a view graph's pair scales (2000 unknowns, ~16 equations
 // each, weights sqrt of 15-300 points) and on a badly conditioned one (weights over 1e-2..1e2, two
 // groups joined by one weak equation), always converged at the tolerance and not at the iteration
 // bound. The start is the estimator's previous scales, kept relative to the gauge: a system perturbed
@@ -13989,7 +14109,7 @@ bool ScaleConjugateGradientsTest()
 	const auto viewGraphWeight = [&]() { return (float)std::sqrt(15 + uniform(rng) * 285); };
 	std::vector<ScalePair> pairs;
 	addEquations(pairs, 0, numUnknowns, viewGraphWeight);
-	// the Cholesky reference: the normal equations of the gauge-eliminated system, with the solver's own ridge
+	// the Cholesky reference: the normal equations of the gauge-eliminated system, which are positive definite (no ridge)
 	const auto reference = [&](const std::vector<ScalePair>& equations, uint32_t numNodes, uint32_t gauge, std::vector<double>& x) {
 		const auto variable = [&](uint32_t node) { return (int)(node < gauge ? node : node - 1); };
 		std::vector<Eigen::Triplet<double>> triplets;
@@ -14004,14 +14124,11 @@ bool ScaleConjugateGradientsTest()
 		}
 		Eigen::SparseMatrix<double> A((int)equations.size(), (int)numNodes - 1);
 		A.setFromTriplets(triplets.begin(), triplets.end());
-		Eigen::SparseMatrix<double> normal = A.transpose() * A;
-		const double ridge = 1e-12 * normal.diagonal().mean();
-		for (int i = 0; i < normal.rows(); ++i)
-			normal.coeffRef(i, i) += ridge;
+		const Eigen::SparseMatrix<double> normal = A.transpose() * A;
 		Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> solver(normal);
 		Eigen::VectorXd solution = solver.solve(A.transpose() * b);
 		// one step of refinement against the incidence matrix: the normal equations alone are off by their condition number times 1e-16
-		solution += solver.solve(A.transpose() * (b - A * solution) - ridge * solution);
+		solution += solver.solve(A.transpose() * (b - A * solution));
 		x.assign(numNodes, 0.0);
 		for (uint32_t i = 0; i < numNodes; ++i)
 			if (i != gauge)
@@ -14023,7 +14140,7 @@ bool ScaleConjugateGradientsTest()
 		#ifdef _RELEASE
 		const auto start = std::chrono::steady_clock::now();
 		#endif
-		if (!estimator.EstimateScales(equations, numNodes, gauge, scales, true)) {
+		if (!estimator.EstimateScales(equations, numNodes, gauge, scales)) {
 			VERBOSE("ERROR: ScaleConjugateGradientsTest: %s: the solve failed", what);
 			return false;
 		}
