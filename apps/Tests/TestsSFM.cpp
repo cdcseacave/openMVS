@@ -16258,7 +16258,7 @@ bool SeamGraphConsensusTest()
 	// a second and weaker hypothesis on a pair a true seam already covers: a rival the cycles judge
 	const size_t idxWrongRival = candidates.size();
 	candidates.push_back(MakeSeam(5, 6, 20, 6.f));
-	// two readings of near-equal weight on a pair joined to nothing else, 15 degrees apart, and the
+	// two readings of 20 and 15 cameras on a pair joined to nothing else, 15 degrees apart, and the
 	// verified image pairs across it, which reproduce the true one and hold against the other
 	const size_t idxDisputedPair = candidates.size();
 	candidates.push_back(MakeSeam(12, 13, 0, 20.f));

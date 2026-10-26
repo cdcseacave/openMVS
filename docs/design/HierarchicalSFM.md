@@ -169,7 +169,7 @@ Key invariants:
 
 ### Decoupled R → s → t Estimation
 
-The block graph is averaged by one routine, `AverageBlockPoses`, which solves rotation, then scale, then translation, never all seven parameters of a Sim(3) at once. Each subproblem is convex (or nearly so) on its own: rotation averaging on SO(3) has well-studied convex relaxations, scale averaging in log-space is linear least-squares, and translation averaging given known rotations and scales is a linear system. The scales and translations are reweighted toward the readings the solution satisfies (the inverse of each one's error), so no least-squares start decides between a reading and a lighter copy of it, and a reading a solution leaves past a bar has no say in the next.
+The block graph is averaged by one routine, `AverageBlockPoses`, which solves rotation, then scale, then translation, never all seven parameters of a Sim(3) at once. Each subproblem is convex (or nearly so) on its own: rotation averaging on SO(3) has well-studied convex relaxations, scale averaging in log-space is linear least-squares, and translation averaging given known rotations and scales is a linear system. The scales and translations are reweighted toward the readings the solution satisfies (the inverse of each one's error, which their normal equations square), so a solve settles on one of a pair's readings rather than between them: the one nearest its least-squares start, which is why a reading cut in one round is judged again in the next, where the start has moved.
 
 ### Why a reading weighs the cameras of its weaker side
 

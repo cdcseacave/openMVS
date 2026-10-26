@@ -46,8 +46,8 @@ class SFM_API Scene;
  *
  * Selection (SelectSeamGraph): every component of the kept readings (all of them at first) is
  * averaged (AverageBlockPoses: rotations by GlobalRotationEstimator, log-scales and translations
- * reweighted by the inverse of each reading's error); every reading is judged against the poses of its component and kept
- * within the graph bars; repeated, re-entry allowed, until the kept set settles. A bridge (a block
+ * reweighted by the inverse of each reading's error); every reading is judged against the poses of
+ * its component and kept within the graph bars; repeated, re-entry allowed, until the kept set settles. A bridge (a block
  * pair no cycle of the other block pairs tests) keeps a reading only with minSeamWeight cameras on
  * its weaker side and its verified pairs not against it. Each component of the readings left is a
  * model, its block poses the averaging's.

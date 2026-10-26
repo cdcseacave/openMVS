@@ -1640,7 +1640,8 @@ inline bool cListTest(unsigned iters) {
 			}
 		}
 		// built from a std::vector, empty or not, and from an empty pointer range, in storage holding
-		// anything but zeros: the constructors may read none of the members they are initializing
+		// anything but zeros: the constructors may read none of the members they are initializing (an
+		// optimized build may treat that storage as dead, so the empty range fails only in a Debug build)
 		typedef cList<int, int, 1> IntList;
 		alignas(IntList) unsigned char storage[sizeof(IntList)];
 		const std::vector<int> none;
