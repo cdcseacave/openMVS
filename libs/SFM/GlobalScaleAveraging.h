@@ -51,6 +51,14 @@ struct SFM_API ScalePair
  * the scales of this estimator's previous solve (relative to the component's pin) when that solve had as
  * many indices, as a robust averaging round does after the one before it.
  *
+ * The solve is as accurate as the conditioning of the normal equations allows: conjugate gradients
+ * stop on the relative residual of A^T A x = A^T b, and so does the refinement step, so
+ * GetSolve().converged does not certify the answer, and a weak tie between two strongly connected groups
+ * can be off (two groups of 150 indices with weights 1 to 100, joined by one equation of weight 1e-4,
+ * left an error of 4e-4 in log scale, with weight 1e-5 of 0.37, both converged). The inputs measured
+ * (the star initializer, the block merge and the contradiction cut of seven captures, 322 calls)
+ * agree with a dense SVD to 3.4e-14. There is no warning and no fallback for such a tie.
+ *
  * Generalized from StarInitializer::EstimateGlobalScale() to work with
  * arbitrary indices (sub-scenes, images, etc.) instead of image pairs.
  */
@@ -62,7 +70,8 @@ public:
 	 * @param pairwiseScales Vector of pairwise scale ratios
 	 * @param numIndices Total number of indices (scenes/images)
 	 * @param fixedIdx Optional fixed index to set exact scale=1 (NO_ID = auto-select best-connected index)
-	 * @param outScales Output vector of global scales (indexed by scene/image ID)
+	 * @param outScales Output vector of global scales (indexed by scene/image ID), replaced, not
+	 *        resized: scale 1 at every index no equation names
 	 * @return true if estimation successful
 	 */
 	bool EstimateScales(

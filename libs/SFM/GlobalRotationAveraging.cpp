@@ -606,11 +606,11 @@ namespace {
 // maxDirectionResidual degrees from the centres. The solves read the usable pairs with a measurable
 // baseline (a ray angle past kNearDuplicateRayAngle), weighted by composite weight times triplet
 // score; the scale equations are StarInitializer's (ComputePairScales), solved per component of the
-// pair-scale graph by RobustAverage (Geman-McClure at maxScaleResidual) around
-// GlobalScaleEstimator; the centres per component by GlobalTranslationEstimator reweighted towards
-// the sum of norms (convex, so no start decides). A pair of a component is judged by its own solve,
-// any other pair with a pose and a measurable baseline by the largest solve that places both its
-// images. Marks the removed pairs in `removed`; returns their number.
+// pair-scale graph by RobustAverage (Geman-McClure at maxScaleResidual) around GlobalScaleEstimator;
+// the centres per component by GlobalTranslationEstimator reweighted towards the sum of norms (convex,
+// so no start decides). A pair of a component is judged by its own solve, any other pair with a pose
+// and a measurable baseline by the largest solve that places both its images. Marks the removed pairs
+// in `removed`; returns their number.
 constexpr unsigned minScaleComponent = 10;  // pairs a component of the pair-scale graph needs to be solved
 constexpr unsigned numL1Rounds = 40;        // reweighting rounds of the centres
 constexpr REAL l1Floor = REAL(1e-3);        // the L1 weight's error floor, in median pair lengths

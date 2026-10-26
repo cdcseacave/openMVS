@@ -355,7 +355,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 - **Algorithms:** Log-space weighted least-squares, `log(s_j) - log(s_i) = log(s_ij)`, one solve for every caller (the star initializer, the block merge's averaging, the contradiction cut's pair scales): the equations split into connected components, each solved on its own by Jacobi-preconditioned conjugate gradients on the normal equations of the system with one index pinned at scale 1 (the fixed index, auto-selected as the best-connected when not given, in the component that holds it; the first named index in any other), with one step of refinement against the equations, started from the estimator's previous solve; a component the fixed index does not reach is shifted to mean-zero log scales (the minimum-norm least squares of the whole system), an index no equation names keeps scale 1. No ridge: the pinned normal matrix is positive definite
 - **GPU Support:** No
 - **Threading:** Single
-- **Dependencies:** Common, Eigen3
+- **Dependencies:** Common, Math (DisjointSet), Eigen3
 
 ### Global Translation Averaging
 

@@ -13694,7 +13694,8 @@ bool ScaleEstimatorTest()
 // 1e-9 in log scale. Cases: two components with the fixed index in the first, then in the second; the same
 // estimator solving the two components joined by a bridge and then without it (a robust round that drops the
 // bridge leaves a component the fixed index no longer reaches, which must come out at mean zero whatever the
-// solve before it left there).
+// solve before it left there); and no fixed index given, as the view-graph filter calls the estimator, whose
+// gauge is then the index of the largest summed weight, in the first component and in the second.
 bool ScaleComponentsTest()
 {
 	TD_TIMER_START();
@@ -13747,10 +13748,25 @@ bool ScaleComponentsTest()
 				expected[i] = x(column[i]);
 		return expected;
 	};
-	// one solve of `system` by `estimator` against the reference; `pUnreached` the indices of the component the fixed index does not reach
-	const auto check = [&](const char* what, GlobalScaleEstimator& estimator, const std::vector<ScalePair>& system, uint32_t fixed, const std::vector<uint32_t>* pUnreached) {
+	// the gauge the estimator takes when none is given: the index of the largest summed weight
+	const auto bestConnected = [&](const std::vector<ScalePair>& system) {
+		std::vector<float> connection(numIndices, 0.f);
+		for (const ScalePair& pair : system) {
+			connection[pair.idxA] += pair.weight;
+			connection[pair.idxB] += pair.weight;
+		}
+		uint32_t best = 0;
+		for (uint32_t i = 1; i < numIndices; ++i)
+			if (connection[i] > connection[best])
+				best = i;
+		return best;
+	};
+	// one solve of `system` by `estimator` against the reference, asking for the fixed index `requested` (NO_ID: none);
+	// `twoComponents`: the system has the two components, the one the fixed index does not reach is at mean zero
+	const auto check = [&](const char* what, GlobalScaleEstimator& estimator, const std::vector<ScalePair>& system, uint32_t requested, bool twoComponents) {
+		const uint32_t fixed = requested != NO_ID ? requested : bestConnected(system);
 		std::vector<REAL> scales;
-		if (!estimator.EstimateScales(system, numIndices, fixed, scales) || scales.size() != numIndices) {
+		if (!estimator.EstimateScales(system, numIndices, requested, scales) || scales.size() != numIndices) {
 			VERBOSE("ERROR: ScaleComponentsTest: %s: the solve failed", what);
 			return false;
 		}
@@ -13768,10 +13784,11 @@ bool ScaleComponentsTest()
 		for (uint32_t i = 0; i < numIndices; ++i)
 			worst = MAXF(worst, std::abs(std::log((double)scales[i]) - expected[i]));
 		double meanUnreached = 0;
-		if (pUnreached != NULL) {
-			for (const uint32_t idx : *pUnreached)
+		if (twoComponents) {
+			const std::vector<uint32_t>& unreached = std::find(first.begin(), first.end(), fixed) != first.end() ? second : first;
+			for (const uint32_t idx : unreached)
 				meanUnreached += std::log((double)scales[idx]);
-			meanUnreached /= (double)pUnreached->size();
+			meanUnreached /= (double)unreached.size();
 		}
 		if (!(worst < 1e-9) || !(std::abs(meanUnreached) < 1e-9)) {
 			VERBOSE("ERROR: ScaleComponentsTest: %s: the log scales differ from the dense SVD's by up to %g; the mean log scale of the component the fixed index does not reach is %g",
@@ -13782,10 +13799,24 @@ bool ScaleComponentsTest()
 	};
 	bool passed = true;
 	GlobalScaleEstimator inFirst, inSecond, bridge;
-	passed = check("two components, the fixed index in the first", inFirst, separate, 2, &second) && passed;
-	passed = check("two components, the fixed index in the second", inSecond, separate, 9, &first) && passed;
-	passed = check("one component, joined by a bridge", bridge, bridged, 2, NULL) && passed;
-	passed = check("the bridge dropped after a solve with it", bridge, separate, 2, &second) && passed;
+	passed = check("two components, the fixed index in the first", inFirst, separate, 2, true) && passed;
+	passed = check("two components, the fixed index in the second", inSecond, separate, 9, true) && passed;
+	passed = check("one component, joined by a bridge", bridge, bridged, 2, false) && passed;
+	passed = check("the bridge dropped after a solve with it", bridge, separate, 2, true) && passed;
+	// no fixed index given: the weights of one component raised tenfold put the best-connected index in it
+	for (const bool inFirstComponent : {true, false}) {
+		std::vector<ScalePair> weighted = separate;
+		for (ScalePair& pair : weighted)
+			pair.weight *= (pair.idxA < unnamed) == inFirstComponent ? 10.f : 1.f;
+		const char* const what = inFirstComponent ? "no fixed index, the best-connected index in the first component" : "no fixed index, the best-connected index in the second component";
+		if ((bestConnected(weighted) < unnamed) != inFirstComponent) {
+			VERBOSE("ERROR: ScaleComponentsTest: %s: the test's best-connected index %u is in the other component", what, bestConnected(weighted));
+			passed = false;
+			continue;
+		}
+		GlobalScaleEstimator unfixed;
+		passed = check(what, unfixed, weighted, NO_ID, true) && passed;
+	}
 	if (!passed)
 		return false;
 	VERBOSE("ScaleComponentsTest passed (%s)", TD_TIMER_GET_FMT().c_str());
@@ -14076,8 +14107,8 @@ bool TranslationNormalEquationsTest()
 }
 
 // The scale solve of GlobalScaleEstimator (conjugate gradients on the normal equations, started from the
-// previous solve of the same estimator) gives the least-squares answer of a sparse Cholesky of the
-// gauge-pinned system, which needs no ridge, to 1e-9, on a system shaped like a view graph's pair scales (2000 unknowns, ~16 equations
+// previous solve of the same estimator) gives the answer of a sparse Cholesky of the gauge-pinned system
+// (no ridge) to 1e-9, on a system shaped like a view graph's pair scales (2000 unknowns, ~16 equations
 // each, weights sqrt of 15-300 points) and on a badly conditioned one (weights over 1e-2..1e2, two
 // groups joined by one weak equation), always converged at the tolerance and not at the iteration
 // bound. The start is the estimator's previous scales, kept relative to the gauge: a system perturbed
