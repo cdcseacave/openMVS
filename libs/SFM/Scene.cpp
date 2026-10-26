@@ -830,18 +830,19 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	// Filter weakly connected images and resection remaining images into the reconstruction;
 	// what the filter removed for contradicting the model is withheld from that resection, so it
 	// is not simply handed back and removed again, while what it removed for want of evidence
-	// (no structure, no witness) is tried again once the model has grown
+	// (no structure, no witness) is tried again once the model has grown. The pass always runs,
+	// whether or not an image is left for it, and so does the full adjustment that closes it: that
+	// adjustment triangulates every track again at the resection's bar, which re-admits the
+	// observations the final adjustment's tighter bar dropped from the model it receives
 	const RemovedImages removed = FilterWeaklyConnectedImages(*this);
-	if (status.nCalibratedImages < images.size()) {
-		ResectionConfig resectionCfg = cfg.resectionCfg;
-		BAConfig resectionBaCfg = cfg.baConfig;
-		SetBAIntrinsicFlags(resectionBaCfg, cfg.baIntrinsicFlags);
-		resectionCfg.DeriveBAConfigs(resectionBaCfg);
-		Resection resection(*this, resectionCfg);
-		resection.ExcludeImages(removed.contradicting);
-		if (resection.RegisterImages())
-			FilterWeaklyConnectedImages(*this);
-	}
+	ResectionConfig resectionCfg = cfg.resectionCfg;
+	BAConfig resectionBaCfg = cfg.baConfig;
+	SetBAIntrinsicFlags(resectionBaCfg, cfg.baIntrinsicFlags);
+	resectionCfg.DeriveBAConfigs(resectionBaCfg);
+	Resection resection(*this, resectionCfg);
+	resection.ExcludeImages(removed.contradicting);
+	if (resection.RegisterImages())
+		FilterWeaklyConnectedImages(*this);
 
 	// Align the scene back to the imported prior poses in known-poses mode (preserving the
 	// input frame is the point of that path, so it takes precedence over GPS, which would
@@ -940,8 +941,9 @@ bool Scene::ReconstructHierarchical(const ReconstructionConfig& config, const II
 		resectionCfg.DeriveBAConfigs(resectionBaCfg);
 		Resection resection(subScene, resectionCfg);
 		resection.RegisterImages();
-		// The resection already closes with a full adjustment of this sub-scene; only the
-		// tracks it leaves behind need settling before the sub-scenes are merged
+		// The resection always closes with a full adjustment of this sub-scene, also when the star
+		// initialization registered every image; only the tracks it leaves behind need settling
+		// before the sub-scenes are merged
 		FilterTracks(subScene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
 	});
 	threadPool.wait();

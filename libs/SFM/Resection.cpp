@@ -416,10 +416,8 @@ bool Resection::RegisterImages()
 	for (const Image& img : scene.images)
 		if (!img.HasPose() && !excludedImages.count(img.ID))
 			unregistered.emplace(img.ID, 0u);
-	if (unregistered.empty()) {
+	if (unregistered.empty())
 		VERBOSE("warning: no unregistered images");
-		return true;
-	}
 
 	// Resection loop
 	unsigned nBA = 0;
@@ -531,11 +529,11 @@ bool Resection::RegisterImages()
 		break;
 	}
 
-	// Full BA to close every resection that entered its loop, also when nothing was registered since
-	// the last adjustment: the closing form (every track triangulated again, every intrinsic the flags
-	// allow, more iterations) settles the model the caller is left with, e.g. the model the
-	// whole-scene pass receives filtered at the final bundle adjustment's tighter bar. A resection
-	// with no image to try returned above without it
+	// Full BA to close every resection, also one with no image left to try (the loop above is then
+	// skipped) and one that registered nothing since the last adjustment: the closing form (every
+	// track triangulated again, every intrinsic the flags allow, more iterations) settles the model
+	// the caller is left with, e.g. the model the whole-scene pass receives filtered at the final
+	// bundle adjustment's tighter bar, whose observations within the resection's bar it re-admits
 	TriangulateTracks(scene, false, config.maxReprojError, config.minAngleThreshold);
 	config.extendedBAConfig.maxIterations = 100;
 	AdjustRepeated(scene, config.extendedBAConfig, config);

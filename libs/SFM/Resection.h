@@ -231,9 +231,9 @@ public:
 	 * Each round tries the candidates of SelectNextImages down the list until one registers; the
 	 * next round reads the list again. A stall (no candidate, or every candidate failed) with images
 	 * registered since the last full adjustment runs that adjustment and tries again; any other stall
-	 * ends the loop. Every resection that enters its loop -- at least one unregistered image not
-	 * withheld by ExcludeImages -- closes with a full adjustment, whatever it registered; with no
-	 * such image it returns at once and adjusts nothing.
+	 * ends the loop. Every resection closes with a full adjustment, whatever it registered, also when
+	 * it has no image to try (every image holds a pose, or the ones left are withheld by
+	 * ExcludeImages): the loop is then skipped and the closing runs.
 	 * @return true if at least one image was registered
 	 */
 	bool RegisterImages();

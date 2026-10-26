@@ -124,20 +124,21 @@ A stall -- no image holds `minCorrespondences` (15) correspondences, or every ca
 images registered since the last full bundle adjustment runs that adjustment and tries again: it
 re-triangulates the tracks those registrations made triangulable and moves the model, which can give
 the remaining images the correspondences or the fit they lacked. A stall with nothing registered since
-the last full adjustment ends the resection. A resection that enters its loop closes with a full
-adjustment of its own (every track triangulated again, every intrinsic the flags allow, 100
-iterations), also when it registered nothing since the last one: the whole-scene pass that follows the
-merge receives the model filtered at the final bundle adjustment's tighter bar, and closing it only when
-it registered an image left 8d2f4877 with 146k of its 413k tracks valid where the closing keeps 389k.
-The model still keeps that 2 px filtering when the whole-scene pass does not run its loop: when the merge
-registered every image (`Scene::Reconstruct` then skips the pass), or when the only unregistered images
-are the ones the weak-image filter withheld for contradicting the model (`ExcludeImages`; the
-resection then returns at once). Over the fourteen test
-captures the order, the loop and the stall retry together leave 112 images unregistered where the count
-order, the 0.3 cut of the count, the deferral and the stop at the first stall left 470 (b68e320e 201 ->
-269 of 269, 5936fac3 393 -> 456, alameda 1690 -> 1731), add no wrong image to any capture, and take 32%
-more time (a refused candidate is attempted again after every registration, and every retry is a full
-adjustment).
+the last full adjustment ends the resection. Every resection closes with a full adjustment of its own
+(every track triangulated again, every intrinsic the flags allow, 100 iterations), also when it
+registered nothing since the last one and also when it had no image to try: the whole-scene pass that
+follows the merge receives the model filtered at the final bundle adjustment's tighter bar, and closing
+it only when it registered an image left 8d2f4877 with 146k of its 413k tracks valid where the closing
+keeps 389k. So the whole-scene pass always runs, also when the merge registered every image, and a pass
+whose only unregistered images are the ones the weak-image filter withheld for contradicting the model
+(`ExcludeImages`) skips its loop, logs "warning: no unregistered images" and closes all the same. It
+returns false like any pass that registered nothing, so the caller does not filter the weakly connected
+images a second time. A sub-scene whose star initialization registered every image closes the same way.
+Over the fourteen test captures the order, the loop and the stall retry together leave 112 images
+unregistered where the count order, the 0.3 cut of the count, the deferral and the stop at the first
+stall left 470 (b68e320e 201 -> 269 of 269, 5936fac3 393 -> 456, alameda 1690 -> 1731), add no wrong
+image to any capture, and take 32% more time (a refused candidate is attempted again after every
+registration, and every retry is a full adjustment).
 
 Local bundle adjustment (`localBAEvery`, every 10 registrations, a fixed window of `maxLocalWindow`
 neighbours, never refining intrinsics) avoids a global solve every step. Full bundle adjustment runs

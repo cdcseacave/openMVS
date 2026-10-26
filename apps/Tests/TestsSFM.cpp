@@ -11861,6 +11861,115 @@ bool ResectionStallRetryTest()
 	return true;
 }
 
+// The full adjustment that ends a resection runs whether or not the resection had an image to try:
+// its closing form triangulates every track again at the resection's bar (maxReprojError, 4 px) and
+// adjusts, which re-admits the observations that the final adjustment's tighter bar (2 px) dropped
+// and the resection's own bar keeps. Four cameras of the arc, 150 tracks seen by all of them, and
+// 60 tracks seen by images 0 and 1 alone, whose observation in image 0 is 6 px off vertically,
+// across the epipolar lines of the arc: the two views share the error, about 3 px each, under the
+// 4 px bar and over the 2 px one. The scene is triangulated at 4 px and then filtered at 2 px, as the
+// final adjustment leaves it, and the 60 tracks are not valid. Case 1: every image holds a pose, as
+// when the merge registered them all. Case 2: the only image without a pose is withheld by
+// ExcludeImages, as the weak-image filter withholds an image the model contradicts; it holds 100
+// true correspondences, so it registers when it is not withheld. In both the resection has no image
+// to try, registers nothing, still logs that it had none, and runs its closing adjustment once,
+// after which the 60 tracks are valid again.
+bool ResectionClosingAlwaysTest()
+{
+	TD_TIMER_START();
+	constexpr unsigned NUM_GOOD = 150, NUM_BAD = 60;
+	constexpr float FINE_BAR = 2.f; // the bar of the final adjustment (ReconstructionConfig::maxFineReprojError)
+	const ResectionConfig config;
+	const auto countValid = [](const Scene& scene) {
+		unsigned numValid = 0;
+		for (const Track& track : scene.tracks)
+			numValid += track.IsInlier();
+		return numValid;
+	};
+	// the scene the resection receives: the images 0-3 posed, the tracks triangulated at the resection's
+	// bar and then filtered at the fine one; image 4, when there is one, has no pose
+	const auto buildScene = [&](Scene& scene, unsigned numImages) {
+		std::mt19937 rng(20261026);
+		BuildResectionArc(scene, numImages);
+		AddResectionTracks(scene, {0, 1, 2, 3}, NUM_GOOD, rng);
+		if (numImages > 4)
+			AddResectionCorrespondences(scene, 4, 100, 0, rng);
+		AddResectionTracks(scene, {0, 1}, NUM_BAD, rng);
+		for (size_t t = NUM_GOOD; t < scene.tracks.size(); ++t)
+			scene.images[0].keypoints[scene.tracks[t].observations[0].featureID].pt.y += 6.f;
+		if (numImages > 4) {
+			scene.images[4].InvalidatePose();
+			scene.status.nCalibratedImages = 4;
+		}
+		TriangulateTracks(scene, false, config.maxReprojError, config.minAngleThreshold);
+		const unsigned numLoose = countValid(scene);
+		FilterTracks(scene, FINE_BAR, config.minAngleThreshold, ResectionConfig::multDepthNear, ResectionConfig::multDepthFar);
+		return std::make_pair(numLoose, countValid(scene));
+	};
+	struct Case { unsigned numImages; bool withhold; const char* what; };
+	const Case cases[] = {
+		{ 4, false, "every image holds a pose" },
+		{ 5, true,  "the only image without a pose is withheld" },
+	};
+	for (const Case& c : cases) {
+		Scene scene;
+		const auto [numLoose, numFine] = buildScene(scene, c.numImages);
+		if (numLoose != NUM_GOOD + NUM_BAD || numFine != NUM_GOOD) {
+			VERBOSE("ResectionClosingAlwaysTest FAILED: %u tracks are valid at %g px and %u at %g px, expected %u and %u, so "
+				"the scene does not pose the problem", numLoose, config.maxReprojError, numFine, FINE_BAR, NUM_GOOD + NUM_BAD, NUM_GOOD);
+			return false;
+		}
+		if (c.withhold) {
+			// the image registers when it is not withheld
+			Scene control;
+			buildScene(control, c.numImages);
+			Resection(control, config).RegisterImages();
+			if (!control.images[4].HasPose()) {
+				VERBOSE("ResectionClosingAlwaysTest FAILED: image 4 was not registered without ExcludeImages, so the scene "
+					"does not pose the problem");
+				return false;
+			}
+		}
+
+		LogCapture log;
+		Resection resection(scene, config);
+		if (c.withhold) {
+			IIndexArr withheld;
+			withheld.push_back(IIndex(4));
+			resection.ExcludeImages(withheld);
+		}
+		const bool registered = resection.RegisterImages();
+		const unsigned numClosed = countValid(scene);
+		if (numClosed != NUM_GOOD + NUM_BAD) {
+			VERBOSE("ResectionClosingAlwaysTest FAILED: %s, and %u of the %u tracks are valid after the resection, the %u that "
+				"the final adjustment's %g px bar dropped are not back: the closing adjustment did not triangulate them again "
+				"at %g px", c.what, numClosed, NUM_GOOD + NUM_BAD, NUM_BAD, FINE_BAR, config.maxReprojError);
+			return false;
+		}
+		const unsigned numFullAdjustments = log.Count("Full adjustment ran");
+		if (numFullAdjustments != 1) {
+			VERBOSE("ResectionClosingAlwaysTest FAILED: %s, and %u full adjustments ran, expected the one that closes the "
+				"resection", c.what, numFullAdjustments);
+			return false;
+		}
+		if (log.Count("warning: no unregistered images") != 1) {
+			VERBOSE("ResectionClosingAlwaysTest FAILED: %s, and the resection did not log that it had no unregistered image",
+				c.what);
+			return false;
+		}
+		if (registered || (c.withhold && scene.images[4].HasPose())) {
+			VERBOSE("ResectionClosingAlwaysTest FAILED: %s, and the resection reports having registered an image, so "
+				"a caller would filter the weakly connected images again", c.what);
+			return false;
+		}
+	}
+
+	VERBOSE("ResectionClosingAlwaysTest PASSED: a resection with no image to try, because every image holds a pose or the "
+		"only ones left are withheld, still closes with its full adjustment, which brings the tracks the fine bar dropped "
+		"back (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 bool ResectionInlierBarTest()
 {
 	TD_TIMER_START();

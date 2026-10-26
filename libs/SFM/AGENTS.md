@@ -215,7 +215,7 @@ Reference view selection (highest connectivity) + star configuration initializat
 Config: `minViews` (4), `maxViews` (36).
 
 ### Incremental Resection (`Resection.h`)
-Register images one at a time via 2D-3D PnP + RANSAC. Periodic local/global BA.
+Register images one at a time via 2D-3D PnP + RANSAC. Periodic local/global BA. Every resection closes with a full BA, also one with no image left to try (`Scene::Reconstruct`'s whole-scene pass always runs).
 
 ### Scene Clustering (`SceneCluster.h`)
 Aggregative clustering on covisibility graph for hierarchical reconstruction.

@@ -73,9 +73,7 @@ graph TD
     I2 --> J
     J[Pre-final BA: BundleAdjustment::Adjust<br/>+ FilterTracks + TriangulateTracks] --> K[Final BA: BundleAdjustment::Adjust]
     K --> L[FilterWeaklyConnectedImages]
-    L --> M{Uncalibrated images?}
-    M -->|yes| N[Resection::RegisterImages]
-    M -->|no| O
+    L --> N[Resection::RegisterImages<br/>always runs, closes with a full BA]
     N --> O
     O{GPS available?} -->|yes| P[Scene::AlignToGPS]
     O -->|no, known poses| P2[Scene::AlignToPriorPoses]
@@ -134,7 +132,7 @@ graph TD
 
 **Step 6: Post-reconstruction refinement (shared)**
 - Function: `Scene::Reconstruct()` — `libs/SFM/Scene.cpp:657–719`
-- Processing: two-phase global BA (pre-final at 25 iters, final at config iters); `FilterTracks()`; `TriangulateTracks()`; `FilterWeaklyConnectedImages()`; optional final `Resection::RegisterImages()` for remaining unregistered images; optional `AlignToGPS()`, or `AlignToPriorPoses()` in known-poses mode; optional `SampleColors()`
+- Processing: two-phase global BA (pre-final at 25 iters, final at config iters); `FilterTracks()`; `TriangulateTracks()`; `FilterWeaklyConnectedImages()`; final `Resection::RegisterImages()` (registers the remaining unregistered images, if any, and always closes with a full BA); optional `AlignToGPS()`, or `AlignToPriorPoses()` in known-poses mode; optional `SampleColors()`
 
 ### C. Data Flow Summary
 
@@ -250,7 +248,7 @@ graph TD
 **Step 4: Incremental Resection**
 - Function: `Resection::RegisterImages()` — `libs/SFM/Resection.cpp`
 - Input: sub-scene with some initialized poses and tracks
-- Processing: tries, one registration per round, the images holding `minCorrespondences` 2D-3D correspondences in the order of the composite weight of their verified pairs to registered images; a stall runs the full BA and tries again when images were registered since the last one; `RegisterImage()` runs PnP via PoseLib + RANSAC with `ransac.threshold` (8 px) and accepts the pose after the inlier-share, rotation-quorum and direction checks (the direction of each quorum link held to the larger of the pair's ray angle and the model's parallax; `--max-link-direction-error`, 0 = no direction check); new tracks triangulated; local BA every `localBAEvery` (10) images in window of `maxLocalWindow` (25); full BA every `fullBAEvery` (25, 50, 100)
+- Processing: tries, one registration per round, the images holding `minCorrespondences` 2D-3D correspondences in the order of the composite weight of their verified pairs to registered images; a stall runs the full BA and tries again when images were registered since the last one; `RegisterImage()` runs PnP via PoseLib + RANSAC with `ransac.threshold` (8 px) and accepts the pose after the inlier-share, rotation-quorum and direction checks (the direction of each quorum link held to the larger of the pair's ray angle and the model's parallax; `--max-link-direction-error`, 0 = no direction check); new tracks triangulated; local BA every `localBAEvery` (10) images in window of `maxLocalWindow` (25); full BA every `fullBAEvery` (25, 50, 100); always closes with a full BA, also with no image left to try
 - Output: fully calibrated camera poses for all connected images
 - Config: `ResectionConfig::minCorrespondences`, `minInliers`, `maxRelativeRotationError`, `maxLinkDirectionError`, `localBAEvery`, `fullBAEvery`
 

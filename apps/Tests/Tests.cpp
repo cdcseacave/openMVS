@@ -441,6 +441,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::ResectionStallRetryTest())
 				return false;
+			if (!SFM::ResectionClosingAlwaysTest())
+				return false;
 			if (!SFM::ResectionInlierBarTest())
 				return false;
 			if (!SFM::ResectionDenseFitWeightTest())

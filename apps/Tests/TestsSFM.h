@@ -459,6 +459,11 @@ bool ResectionRefusedAverageTest();
 // adjustment, even when it registered nothing since the last one
 bool ResectionStallRetryTest();
 
+// The full adjustment that ends a resection runs whether or not the resection had an image to try
+// -- every image holds a pose, or the only ones without are withheld by ExcludeImages -- and brings
+// back the tracks the final adjustment's tighter bar dropped
+bool ResectionClosingAlwaysTest();
+
 // The resection's inlier bar admits a correspondence measured with the precision of a warp-sampled
 // (dense) keypoint on a full-resolution image, several pixels off its projection, and not only one
 // measured with a detected keypoint's: an image seen through such correspondences alone reaches a

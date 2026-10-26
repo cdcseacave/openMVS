@@ -454,7 +454,7 @@ Output: Refined poses + sparse point cloud, handed to the
 
 - **Clustering never runs.** This path does not go through `ReconstructHierarchical`; `Scene::priorPoses` is transient (not serialized) but is preserved by regular scene copies and moves.
 
-- **The shared tail still runs.** After this method returns, `Scene::Reconstruct` continues through final bundle adjustment, filtering, and `Resection::RegisterImages()`, which registers images that had no entry in the poses file.
+- **The shared tail still runs.** After this method returns, `Scene::Reconstruct` continues through final bundle adjustment, filtering, and `Resection::RegisterImages()`, which registers images that had no entry in the poses file and always closes with a full bundle adjustment, whether or not an image is left for it.
 
 #### The frames.json format (`PoseIO.h`)
 
