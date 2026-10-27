@@ -153,7 +153,9 @@ the main-set intrinsics (focal, k1, k2, as far as `--refine-intrinsics` allows t
 beyond the main set.
 
 Between the adjustments, the tracks are triangulated and filtered against `maxReprojError` (4 px) and
-`minAngleThreshold`. Both kinds of observation answer to that bar. `FilterTracks` and `TriangulateTracks`
+`minAngleThreshold`. A track seen by fewer than two posed images has no position, so the triangulation leaves
+it out and the filter does not judge it (it still holds the default position at the world origin, which can be
+where a posed camera sits: the star puts its reference camera there). Both kinds of observation answer to that bar. `FilterTracks` and `TriangulateTracks`
 can hold a dense (warp-sampled) observation to a multiple of it (`denseReprojErrorFactor`, 1 by default and
 in every call the reconstruction makes): the warp is computed at a fixed resolution, so a dense keypoint's
 pixel error grows with the image size where a detected keypoint's does not.

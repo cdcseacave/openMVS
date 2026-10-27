@@ -86,6 +86,9 @@ struct SFM_API Track
 	inline bool IsInlier() const { return numInliers >= 2; }
 	inline bool IsInlier(uint8_t n) const { return numInliers >= n; }
 
+	// Get the number of observations whose image has a pose (the triangulation, and so a position, needs two)
+	unsigned GetNumPosedObservations(const ImageArr&) const;
+
 	// Compute the minimum angle between any two inlier observations
 	float ComputeMinAngleBetweenRays(const ImageArr&) const;
 

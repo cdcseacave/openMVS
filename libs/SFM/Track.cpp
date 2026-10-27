@@ -17,6 +17,15 @@ using namespace SFM;
 
 // S T R U C T S ///////////////////////////////////////////////////
 
+unsigned Track::GetNumPosedObservations(const ImageArr& images) const
+{
+	unsigned numPosed = 0;
+	for (const Observation& obs : observations)
+		if (images[obs.imageID].IsValid())
+			++numPosed;
+	return numPosed;
+}
+
 float Track::ComputeMinAngleBetweenRays(const ImageArr& images) const
 {
 	// Minimum triangulation angle
@@ -607,6 +616,11 @@ std::pair<float, float> SFM::FilterTracks(Scene& scene,
 	for (Track& track : scene.tracks) {
 		track.numInliers = 0;
 		if (!track.IsValid())
+			continue;
+		// A track seen by fewer than two posed images was never triangulated (TriangulateTracks leaves
+		// it out), so it has no position to judge: it still holds the default (0,0,0), which can be
+		// exactly where a posed camera sits (the star puts its reference camera at the origin)
+		if (track.GetNumPosedObservations(scene.images) < 2)
 			continue;
 
 		// Partition observations into inliers and outliers

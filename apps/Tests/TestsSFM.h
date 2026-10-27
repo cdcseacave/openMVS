@@ -491,6 +491,11 @@ bool CappedSolveScaleTest();
 // (FilterTracks / TriangulateTracks denseReprojErrorFactor).
 bool DenseReprojectionBarTest();
 
+// The track filter judges only a track that can have a position, one with two posed views (the rule the
+// triangulation applies): a track with a single posed view was never triangulated and holds the default
+// position (0,0,0), which is the star reference camera's centre, so judging it has no meaning.
+bool FilterTracksUnposedTrackTest();
+
 // The image filter tells the images it removed for contradicting the model (their verified pairs to
 // the kept images disagree with the pose the model gives them, by more inlier weight than agrees)
 // apart from the ones it removed for want of evidence: only the former are withheld from the

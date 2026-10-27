@@ -255,11 +255,7 @@ unsigned SFM::TriangulateTracks(
 			++numInliersPrev;
 			continue;
 		}
-		unsigned nObservations = 0;
-		for (const Observation& obs : track.observations)
-			if (scene.images[obs.imageID].IsValid())
-				++nObservations;
-		if (nObservations < minInliers) {
+		if (track.GetNumPosedObservations(scene.images) < minInliers) {
 			++numInvalids;
 			continue;
 		}

@@ -12426,6 +12426,62 @@ bool DenseReprojectionBarTest()
 	return true;
 }
 
+bool FilterTracksUnposedTrackTest()
+{
+	TD_TIMER_START();
+	std::mt19937 rng(20261027);
+
+	// The star puts its reference view exactly at the world origin, and a track whose only posed view
+	// is that reference was never triangulated (TriangulateTracks leaves it out), so it still holds the
+	// default position (0,0,0): the point the reference camera sits on. The filter must not judge such
+	// a track, because it has no position to judge: from the reference the point is at the camera
+	// centre, the angle to the observed ray is 0/0 (NaN), which the gate's comparison lets through.
+	// Image 0 is the reference at the origin, image 3 has no pose, and the positionless track sees
+	// exactly those two; 30 exact tracks over the posed images 1 and 2 show the filter still judges
+	// the tracks that can have a position.
+	Scene scene;
+	BuildResectionArc(scene, 4);
+	static_cast<Pose3D&>(scene.images[0]) = Pose3D::Identity();
+	scene.images[3].InvalidatePose();
+	AddResectionTracks(scene, {1, 2}, 30, rng);
+	const size_t numExact = scene.tracks.size();
+	Track positionless;
+	for (const IIndex imageID : {IIndex(0), IIndex(3)}) {
+		Image& img = scene.images[imageID];
+		positionless.observations.emplace_back(imageID, (uint32_t)img.keypoints.size());
+		img.keypoints.emplace_back(cv::Point2f(100.f, 150.f), 1.f);
+	}
+	scene.tracks.emplace_back(std::move(positionless));
+	if (!scene.images[0].IsValid() || scene.images[3].IsValid() || scene.images[0].C != CMatrix::ZERO ||
+		scene.tracks.back().position != Point3(0, 0, 0)) {
+		VERBOSE("FilterTracksUnposedTrackTest FAILED: premise not met: the reference at the origin, the unposed image and the track at the default position");
+		return false;
+	}
+
+	FilterTracks(scene, 4.f, 1.f, 0.f, 0.f, 1.f);
+	const Track& track = scene.tracks.back();
+	if (track.numInliers != 0) {
+		VERBOSE("FilterTracksUnposedTrackTest FAILED: the filter judged the track with one posed view at its default position "
+			"and kept %u of its %u observations, expected none", track.numInliers, track.GetNumObservations());
+		return false;
+	}
+	for (size_t i = 0; i < numExact; ++i) {
+		if (scene.tracks[i].numInliers != 2) {
+			VERBOSE("FilterTracksUnposedTrackTest FAILED: the exact track %zu of the two posed views kept %u observations, expected 2",
+				i, scene.tracks[i].numInliers);
+			return false;
+		}
+	}
+	if (scene.status.nTracks != numExact) {
+		VERBOSE("FilterTracksUnposedTrackTest FAILED: the filter counted %u inlier tracks, expected the %zu exact ones", scene.status.nTracks, numExact);
+		return false;
+	}
+
+	VERBOSE("FilterTracksUnposedTrackTest PASSED: the track filter leaves a track with one posed view, at the origin where the reference camera "
+		"sits, unjudged and not an inlier, and keeps judging the %zu tracks of two posed views (%s)", numExact, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 namespace {
 
 // A verified pair as the image filter reads one: on top of what the resection needs (the ground
