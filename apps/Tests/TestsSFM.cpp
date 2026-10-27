@@ -10737,15 +10737,22 @@ bool StarEvidenceTest()
 			std::uniform_real_distribution<REAL> depth(group.minDepth, group.maxDepth);
 			for (unsigned p = 0; p < group.count; ++p) {
 				const Point3 X = scene.images[0].UnprojectPoint(Point2(pixelX(rng), pixelY(rng)), depth(rng));
-				Track track(X);
+				std::vector<std::pair<Image*, Point2>> seen;
 				for (Image& img : scene.images) {
 					if (img.ID != 0 && !group.seenBy(img.ID))
 						continue;
 					const auto [proj, valid] = img.ProjectPoint(X);
 					if (!valid || !Image8U::isInside(proj, img.GetSize()))
 						continue;
-					img.keypoints.emplace_back(proj, 0.f, 0.f, 10.f);
-					track.observations.emplace_back(img.ID, (uint32_t)img.keypoints.size() - 1);
+					seen.emplace_back(&img, proj);
+				}
+				// a track holds at least two observations: a point only the reference sees makes none
+				if (seen.size() < 2)
+					continue;
+				Track track(X);
+				for (const auto& [img, proj] : seen) {
+					img->keypoints.emplace_back(proj, 0.f, 0.f, 10.f);
+					track.observations.emplace_back(img->ID, (uint32_t)img->keypoints.size() - 1);
 				}
 				track.numInliers = (uint8_t)track.observations.size();
 				scene.tracks.emplace_back(std::move(track));
