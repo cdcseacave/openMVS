@@ -137,6 +137,9 @@ poses exist the alignment takes precedence over GPS. Clustering is never involve
 ### Feature Extraction (`FeaturesExtractor.h`)
 - Detectors: **AKAZE** (default), **ORB**, **SIFT**, **SiftGPU** (optional)
 - 3x3 spatial grid for even distribution: `maxFeaturesPerCell` (default 3000, ~27k total)
+- SiftGPU: peak threshold 0.0025; adaptive ~256 px grid selection of the `GetMaxNumFeatures()` budget
+  (equal per-cell quota, unused quota redistributed); bulk path decodes images ahead on the scene
+  thread pool (bounded look-ahead, one decode task and future per image)
 - Keypoint weighting: `ComputeKeypointWeight()`, `ComputeKeypointPrecision()`
 
 ### Feature Matching (`PairsMatcher.h`, `MatchGeometric.h`)

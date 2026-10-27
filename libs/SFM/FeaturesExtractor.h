@@ -79,7 +79,7 @@ inline FeatureType FeatureTypeFromString(const String& str) {
  */
 struct SFM_API FeatureExtractionConfig {
 	FeatureType detectorType = FeatureType::AKAZE; // feature detector: AKAZE/ORB/SIFT/SIFTGPU
-	int maxFeaturesPerCell = 3000; // maximum features per grid cell (3x3 grid)
+	int maxFeaturesPerCell = 3000; // maximum features per grid cell (3x3 grid; SiftGPU selects GetMaxNumFeatures() on a finer adaptive grid)
 	int minFeaturesPerCell = 500;  // minimum features per cell before adjusting sensitivity
 	bool releaseImagePixels = true; // release image pixel data after feature extraction to save memory
 	bool useCUDA = true; // use CUDA for SiftGPU if available (otherwise OpenGL)
