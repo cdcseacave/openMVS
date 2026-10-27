@@ -12440,7 +12440,8 @@ bool FilterTracksUnposedTrackTest()
 
 	// The star puts its reference view exactly at the world origin, and a track whose only posed view
 	// is that reference was never triangulated (TriangulateTracks leaves it out), so it still holds the
-	// default position (0,0,0): the point the reference camera sits on. The filter must not judge such
+	// default position, which a scene saved before the default became an improbable point stores as (0,0,0):
+	// the point the reference camera sits on (the track below is given that position). The filter must not judge such
 	// a track, because it has no position to judge: from the reference the point is at the camera
 	// centre, the angle to the observed ray is 0/0 (NaN), which the gate's comparison lets through.
 	// Image 0 is the reference at the origin, image 3 has no pose, and the positionless track sees
@@ -12453,6 +12454,7 @@ bool FilterTracksUnposedTrackTest()
 	AddResectionTracks(scene, {1, 2}, 30, rng);
 	const size_t numExact = scene.tracks.size();
 	Track positionless;
+	positionless.position = Point3(0, 0, 0); // what a scene saved before the default was an improbable point stores
 	for (const IIndex imageID : {IIndex(0), IIndex(3)}) {
 		Image& img = scene.images[imageID];
 		positionless.observations.emplace_back(imageID, (uint32_t)img.keypoints.size());
@@ -12486,6 +12488,54 @@ bool FilterTracksUnposedTrackTest()
 
 	VERBOSE("FilterTracksUnposedTrackTest PASSED: the track filter leaves a track with one posed view, at the origin where the reference camera "
 		"sits, unjudged and not an inlier, and keeps judging the %zu tracks of two posed views (%s)", numExact, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+bool FilterTracksUntriangulatedTrackTest()
+{
+	TD_TIMER_START();
+
+	// A track of two posed views that was never triangulated is judged by the callers that filter before
+	// they triangulate (the resection's full adjustment, the merged model's adjustment) at the position it
+	// was made with. That position must not be a point a posed camera can sit on: the star puts its
+	// reference camera exactly at the world origin, where a position of (0,0,0) makes the camera-frame point
+	// zero, its angle to the observed ray 0/0 (NaN), which the gate's comparison lets through (a kept
+	// observation of a track that has no position, and ASSERT(projValid) in a Debug build). A track
+	// made without a position holds an improbable one instead, far from every keypoint and with rays that
+	// meet at no angle, so the filter's own tests reject it.
+	Scene scene;
+	BuildResectionArc(scene, 2);
+	static_cast<Pose3D&>(scene.images[0]) = Pose3D::Identity();
+	Track& untriangulated = scene.tracks.emplace_back(); // as BuildTracks makes its tracks
+	for (const IIndex imageID : {IIndex(0), IIndex(1)}) {
+		Image& img = scene.images[imageID];
+		untriangulated.observations.emplace_back(imageID, (uint32_t)img.keypoints.size());
+		img.keypoints.emplace_back(cv::Point2f(100.f, 150.f), 1.f);
+	}
+	if (!scene.images[0].IsValid() || !scene.images[1].IsValid() || scene.images[0].C != CMatrix::ZERO ||
+		scene.tracks.back().GetNumPosedObservations(scene.images) != 2) {
+		VERBOSE("FilterTracksUntriangulatedTrackTest FAILED: premise not met: the reference at the origin, a second posed image and a track of both");
+		return false;
+	}
+
+	FilterTracks(scene, 4.f, 1.f, 0.f, 0.f, 1.f);
+	const Track& track = scene.tracks.back();
+	if (track.numInliers != 0 || scene.status.nTracks != 0) {
+		VERBOSE("FilterTracksUntriangulatedTrackTest FAILED: the filter kept %u of the %u observations of a track that was never triangulated "
+			"(%u inlier tracks), expected none", track.numInliers, track.GetNumObservations(), scene.status.nTracks);
+		return false;
+	}
+	const Point3 untriangulatedPosition(Track::UNTRIANGULATED_COORD);
+	if (Track().position != untriangulatedPosition || track.position != untriangulatedPosition ||
+		Track::UNTRIANGULATED_COORD < 1e12 || !ISFINITE(Track::UNTRIANGULATED_COORD * Track::UNTRIANGULATED_COORD)) {
+		VERBOSE("FilterTracksUntriangulatedTrackTest FAILED: a track made without a position holds (%g,%g,%g) and a default Track (%g,%g,%g), "
+			"expected the same far finite coordinate %g in all three", track.position.x, track.position.y, track.position.z,
+			Track().position.x, Track().position.y, Track().position.z, Track::UNTRIANGULATED_COORD);
+		return false;
+	}
+
+	VERBOSE("FilterTracksUntriangulatedTrackTest PASSED: a track of two posed views, one of them the camera at the origin, that was never triangulated "
+		"holds the far default position and the filter rejects it (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 

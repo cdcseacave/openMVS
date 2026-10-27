@@ -269,8 +269,8 @@ bool SFM::ImportCOLMAP(const String& fileName, Scene& scene,
 		uint32_t num_observations = 0;
 		ReadBinary(file, num_observations);
 
-		// Create track with default position (0, 0, 0)
-		Track track(Point3(0, 0, 0));
+		// Create track without a position (the file holds none: it is not triangulated)
+		Track track;
 		track.observations.reserve(num_observations);
 
 		bool valid_track = true;

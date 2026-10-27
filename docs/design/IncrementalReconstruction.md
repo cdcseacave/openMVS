@@ -160,10 +160,17 @@ pixel error grows with the image size where a detected keypoint's does not.
 
 A track seen by fewer than two posed images has no position that two posed views determine, so the triangulation
 leaves it out and the filter does not judge it: it either was never triangulated and still holds the default
-position at the world origin, which can be where a posed camera sits (the star puts its reference camera there),
-or it lost a view's pose after it was triangulated. A triangulation that fails, for want of two inliers or because
+position, or it lost a view's pose after it was triangulated. A triangulation that fails, for want of two inliers or because
 its rays meet below `minAngleThreshold`, leaves its track with no inliers, so an adjustment that runs before the
 next filter does not take the track in.
+
+A track that has no position yet is made at an improbable one, `Track::UNTRIANGULATED_COORD` (1e18) in all three
+coordinates, and not at the origin, which a posed camera can sit on (the star puts its reference camera there): a
+track of two posed views that a caller filters before it is triangulated (the resection's full adjustment, the merged
+model's adjustment) is then judged at a point far from every keypoint, with rays that meet at no angle, so the
+filter's own tests reject it. The value is finite, so nothing computed from it turns to INF or NaN. Nothing reads the
+position as a flag of "not triangulated": `numInliers` says that. A scene saved before this default stores (0,0,0)
+for such a track, and the rule above covers what that reaches.
 
 ## Bundle adjustment
 

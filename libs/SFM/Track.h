@@ -68,7 +68,7 @@ typedef SEACAVE::cList<Observation, const Observation&, 0, 4, uint32_t> Observat
  */
 struct SFM_API Track
 {
-	Point3 position;             // 3D position in world coordinates
+	Point3 position;             // 3D position in world coordinates (UNTRIANGULATED_COORD in all three while not triangulated)
 	ObservationArr observations; // list of observations in images
 	uint8_t numInliers;		     // number of inlier observations (stored first in the array)
 
@@ -76,7 +76,13 @@ struct SFM_API Track
 	// inlier, and this many posed ones to be triangulated or judged by the track filter
 	inline static constexpr unsigned MIN_VIEWS = 2;
 
-	Track() : numInliers(0) {}
+	// Every coordinate of the position of a track not yet triangulated: an improbable point, far beyond any
+	// scene (yet finite, so no arithmetic on it turns to INF or NaN, and its square still fits a float), instead
+	// of the origin, which a posed camera can sit on (the star puts its reference there): a track judged at
+	// this position projects far from its keypoints and its rays meet at no angle, so the filter rejects it
+	inline static constexpr REAL UNTRIANGULATED_COORD = 1e18;
+
+	Track() : position(UNTRIANGULATED_COORD), numInliers(0) {}
 	Track(const Point3& _pos) : position(_pos), numInliers(0) {}
 
 	// Get number of observations

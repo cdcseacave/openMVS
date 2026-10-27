@@ -493,8 +493,13 @@ bool DenseReprojectionBarTest();
 
 // The track filter judges only a track that can have a position, one with two posed views (the rule the
 // triangulation applies): a track with a single posed view was never triangulated and holds the default
-// position (0,0,0), which is the star reference camera's centre, so judging it has no meaning.
+// position (a scene saved before the default was improbable stores (0,0,0), the star reference camera's centre), so
+// judging it has no meaning.
 bool FilterTracksUnposedTrackTest();
+
+// A track of two posed views that was never triangulated holds the improbable default position, not (0,0,0), which is
+// where the star's reference camera sits: the filter rejects it instead of reading a NaN angle as a good one.
+bool FilterTracksUntriangulatedTrackTest();
 
 // A triangulation that fails (TriangulateSkewLLS, TriangulateDLT, and so TriangulateTracks), whether the rays
 // meet below the minimum angle or fewer than the minimum number of observations fit, returns 0 and leaves the
