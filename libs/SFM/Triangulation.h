@@ -42,7 +42,7 @@ class SFM_API Scene;
 	* @param minInliers Minimum number of inlier views
 	* @param denseReprojErrorFactor Multiple of reprojThreshold a dense (warp-sampled) observation is
 	*                               held to, the less precise measurement (1 = the same threshold)
-	* @return number of inliers if triangulation successful
+	* @return number of inliers if triangulation successful, 0 on failure (the track then holds no inliers)
 	*/
 SFM_API unsigned TriangulateDLT(
 	Track& track,
@@ -63,7 +63,7 @@ SFM_API unsigned TriangulateDLT(
 	* @param minInliers Minimum number of inlier observations.
 	* @param denseReprojErrorFactor Multiple of reprojThreshold a dense (warp-sampled) observation is
 	*                               held to, the less precise measurement (1 = the same threshold)
-	* @return The number of inliers or 0 on failure.
+	* @return The number of inliers or 0 on failure (the track then holds no inliers).
 	*/
 SFM_API unsigned TriangulateSkewLLS(
 	Track& track,

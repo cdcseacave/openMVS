@@ -208,6 +208,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
   - **DLT** (Direct Linear Transform): fast linear method
   - **Skew-Symmetric LLS:** more robust, returns inlier count
   - Filters: reprojection error, triangulation angle, depth bounds (`multDepthNear`, `multDepthFar`)
+  - A triangulation that fails (fewer than `minInliers` inliers, or rays meeting below the minimum angle) returns 0 and leaves the track with no inliers (`numInliers` 0), the position it wrote staying
 - **GPU Support:** No
 - **Threading:** Single (called from BA or resection)
 - **Dependencies:** Common, Eigen3

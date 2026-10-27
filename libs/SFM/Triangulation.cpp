@@ -95,12 +95,14 @@ unsigned SFM::TriangulateDLT(
 		}
 		++track.numInliers;
 	}
-	if (track.numInliers < minInliers)
+	// A triangulation that fails, for want of inliers or because the rays meet below the minimum
+	// triangulation angle, leaves the track with none: IsInlier() is what the adjustments that
+	// follow read, and the caller counts the track as failed (the position written stays)
+	if (track.numInliers < minInliers ||
+		R2D(track.ComputeMinAngleBetweenRays(images)) < minAngleThreshold) {
+		track.numInliers = 0;
 		return 0;
-	// Check minimum triangulation angle
-	const float minAngle = R2D(track.ComputeMinAngleBetweenRays(images));
-	if (minAngle < minAngleThreshold)
-		return 0;
+	}
 
 	// Refine with all inliers
 	if (track.numInliers != track.observations.size()) {
@@ -208,12 +210,14 @@ unsigned SFM::TriangulateSkewLLS(
 		}
 		++track.numInliers;
 	}
-	if (track.numInliers < minInliers)
+	// A triangulation that fails, for want of inliers or because the rays meet below the minimum
+	// triangulation angle, leaves the track with none: IsInlier() is what the adjustments that
+	// follow read, and the caller counts the track as failed (the position written stays)
+	if (track.numInliers < minInliers ||
+		R2D(track.ComputeMinAngleBetweenRays(images)) < minAngleThreshold) {
+		track.numInliers = 0;
 		return 0;
-	// Minimum triangulation angle
-	const float minAngle = R2D(track.ComputeMinAngleBetweenRays(images));
-	if (minAngle < minAngleThreshold)
-		return 0;
+	}
 
 	// Refine using only inliers (now at positions 0..numInliers-1 of both arrays)
 	if (track.numInliers < cams.size()) {

@@ -188,6 +188,7 @@ Composite weight = `spatial x connectivity x triplet`
 - **DLT** (Direct Linear Transform): Fast, linear, assumes inliers
 - **Skew-Symmetric LLS**: More robust, returns inlier count
 - Filters: reprojection error, triangulation angle, depth bounds
+- A triangulation that fails returns 0 and leaves the track with no inliers (`numInliers` 0), the position it wrote staying
 
 ### Bundle Adjustment (`BundleAdjustment.h`, `BundleAdjustmentCostFunctions.h`)
 Ceres Solver-based non-linear optimization.

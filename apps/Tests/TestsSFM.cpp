@@ -12482,6 +12482,82 @@ bool FilterTracksUnposedTrackTest()
 	return true;
 }
 
+bool TriangulationMinAngleTest()
+{
+	TD_TIMER_START();
+
+	// Two posed views of the arc see one exact track, at a point 100 units beyond the middle of their
+	// two centres: about half a degree of parallax. The keypoints are exact, so the reprojection test
+	// passes and both views are inliers, and the rays meet below the 1.5-degree minimum angle. A
+	// triangulation that fails on the angle returns 0, and the track it leaves must hold no inliers:
+	// IsInlier() is what the adjustments that follow read, and the caller counts the track as failed
+	constexpr float minAngle = 1.5f, looseAngle = 0.1f;
+	Scene scene;
+	BuildResectionArc(scene, 2);
+	const Point3 mid = (scene.images[0].C + scene.images[1].C) * 0.5;
+	if (!AddResectionTrack(scene, mid * (1 - 100 / norm(mid)), {0, 1})) {
+		VERBOSE("TriangulationMinAngleTest FAILED: the track does not project inside both images");
+		return false;
+	}
+	const auto Fresh = [&scene]() {
+		Track track(scene.tracks[0]);
+		track.position = Point3(0, 0, 0);
+		track.numInliers = 0;
+		return track;
+	};
+	bool passed = true;
+	const auto Check = [&passed](const char* what, bool ok, unsigned returned, const Track& track) {
+		if (ok)
+			return;
+		VERBOSE("TriangulationMinAngleTest FAILED: %s returned %u, leaving the track with %u inliers (%s), expected 0 and no inliers",
+			what, returned, track.numInliers, track.IsInlier() ? "an inlier" : "not an inlier");
+		passed = false;
+	};
+
+	// Control: held to a looser angle, the same track triangulates, with the parallax the test means
+	{
+		Track track = Fresh();
+		const unsigned returned = TriangulateSkewLLS(track, scene.images, 4.f, looseAngle);
+		const double angle = R2D(track.ComputeMinAngleBetweenRays(scene.images));
+		if (returned != 2 || !track.IsInlier() || angle < 0.25 || angle > 1.0) {
+			VERBOSE("TriangulationMinAngleTest FAILED: premise not met: at %g degrees the track triangulates with %u inliers (%s) and %.3f degrees of parallax, expected 2 and a parallax between 0.25 and 1",
+				looseAngle, returned, track.IsInlier() ? "an inlier" : "not an inlier", angle);
+			return false;
+		}
+	}
+	{
+		Track track = Fresh();
+		const unsigned returned = TriangulateSkewLLS(track, scene.images, 4.f, minAngle);
+		Check("TriangulateSkewLLS below the minimum angle", returned == 0 && !track.IsInlier(), returned, track);
+	}
+	{
+		Track track = Fresh();
+		const unsigned returned = TriangulateDLT(track, scene.images, 4.f, minAngle);
+		Check("TriangulateDLT below the minimum angle", returned == 0 && !track.IsInlier(), returned, track);
+	}
+	{
+		Track& track = scene.tracks[0];
+		track.position = Point3(0, 0, 0);
+		track.numInliers = 0;
+		const unsigned returned = TriangulateTracks(scene, false, 4.f, minAngle);
+		Check("TriangulateTracks below the minimum angle", returned == 0 && !track.IsInlier() && scene.status.nTracks == 0, returned, track);
+		// the track did not triangulate, so the next call that only triangulates the tracks without inliers
+		// takes it up again, and at a looser angle it succeeds
+		const unsigned retried = TriangulateTracks(scene, true, 4.f, looseAngle);
+		if (retried != 1 || !track.IsInlier()) {
+			VERBOSE("TriangulationMinAngleTest FAILED: the next TriangulateTracks of the tracks without inliers, at %g degrees, triangulated %u tracks (the track is %s), expected 1 and an inlier",
+				looseAngle, retried, track.IsInlier() ? "an inlier" : "not an inlier");
+			passed = false;
+		}
+	}
+	if (!passed)
+		return false;
+
+	VERBOSE("TriangulationMinAngleTest PASSED: a triangulation that fails the minimum angle (TriangulateSkewLLS, TriangulateDLT, TriangulateTracks) leaves the track "
+		"with no inliers, and the next TriangulateTracks of the tracks without inliers takes it up again (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 namespace {
 
 // A verified pair as the image filter reads one: on top of what the resection needs (the ground
