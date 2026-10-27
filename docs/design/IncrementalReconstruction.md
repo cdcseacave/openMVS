@@ -153,14 +153,17 @@ the main-set intrinsics (focal, k1, k2, as far as `--refine-intrinsics` allows t
 beyond the main set.
 
 Between the adjustments, the tracks are triangulated and filtered against `maxReprojError` (4 px) and
-`minAngleThreshold`. A track seen by fewer than two posed images has no position, so the triangulation leaves
-it out and the filter does not judge it (it still holds the default position at the world origin, which can be
-where a posed camera sits: the star puts its reference camera there). A triangulation that fails, for want of two inliers or
-because its rays meet below `minAngleThreshold`, leaves its track with no inliers, so an adjustment that runs before
-the next filter does not take the track in. Both kinds of observation answer to that bar. `FilterTracks` and `TriangulateTracks`
+`minAngleThreshold`. Both kinds of observation answer to that bar. `FilterTracks` and `TriangulateTracks`
 can hold a dense (warp-sampled) observation to a multiple of it (`denseReprojErrorFactor`, 1 by default and
 in every call the reconstruction makes): the warp is computed at a fixed resolution, so a dense keypoint's
 pixel error grows with the image size where a detected keypoint's does not.
+
+A track seen by fewer than two posed images has no position that two posed views determine, so the triangulation
+leaves it out and the filter does not judge it: it either was never triangulated and still holds the default
+position at the world origin, which can be where a posed camera sits (the star puts its reference camera there),
+or it lost a view's pose after it was triangulated. A triangulation that fails, for want of two inliers or because
+its rays meet below `minAngleThreshold`, leaves its track with no inliers, so an adjustment that runs before the
+next filter does not take the track in.
 
 ## Bundle adjustment
 

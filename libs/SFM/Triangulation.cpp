@@ -21,6 +21,7 @@ unsigned SFM::TriangulateDLT(
 	float denseReprojErrorFactor)
 {
 	ASSERT(track.IsValid());
+	track.numInliers = 0; // none until the checks below count them, so every return 0 leaves none
 	const float denseReprojThreshold = reprojThreshold * denseReprojErrorFactor;
 
 	// Collect camera poses and 2D normalized points
@@ -74,7 +75,6 @@ unsigned SFM::TriangulateDLT(
 	}
 
 	// Check constraints and mark inliers
-	track.numInliers = 0;
 	CLISTDEF0IDX(uint32_t, uint32_t) mapIndices(track.observations.size());
 	FOREACH(obsIdx, track.observations) {
 		const Observation& obs = track.observations[obsIdx];
@@ -141,6 +141,7 @@ unsigned SFM::TriangulateSkewLLS(
 	float denseReprojErrorFactor)
 {
 	ASSERT(track.IsValid());
+	track.numInliers = 0; // none until the checks below count them, so every return 0 leaves none
 	const float denseReprojThreshold = reprojThreshold * denseReprojErrorFactor;
 
 	// Collect normalized directions in camera space and R, t from each camera.
@@ -192,7 +193,6 @@ unsigned SFM::TriangulateSkewLLS(
 
 	// Validate by cheirality and reprojection, a dense observation against its own looser
 	// threshold, moving inliers to the front of both cams and observations
-	track.numInliers = 0;
 	FOREACH(obsIdx, cams) {
 		const Observation& obs = track.observations[obsIdx];
 		const Image& img = images[obs.imageID];
@@ -247,7 +247,7 @@ unsigned SFM::TriangulateTracks(
 	ASSERT(!scene.tracks.empty());
 
 	// Triangulate each track
-	constexpr unsigned minInliers = 2;
+	constexpr unsigned minInliers = Track::MIN_VIEWS;
 	unsigned numInliers = 0, numInliersPrev = 0, numInvalids = 0, numInliersObservations = 0;
 	#ifdef _USE_OPENMP
 	#pragma omp parallel for reduction(+:numInliers,numInliersPrev,numInvalids,numInliersObservations) schedule(dynamic)

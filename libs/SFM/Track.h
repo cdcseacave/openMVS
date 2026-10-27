@@ -72,6 +72,10 @@ struct SFM_API Track
 	ObservationArr observations; // list of observations in images
 	uint8_t numInliers;		     // number of inlier observations (stored first in the array)
 
+	// The fewest views that determine a position: a track needs this many inlier observations to be an
+	// inlier, and this many posed ones to be triangulated or judged by the track filter
+	inline static constexpr unsigned MIN_VIEWS = 2;
+
 	Track() : numInliers(0) {}
 	Track(const Point3& _pos) : position(_pos), numInliers(0) {}
 
@@ -83,10 +87,10 @@ struct SFM_API Track
 	// Is this track valid (has at least 2 observations)
 	inline bool IsValid() const { return observations.size() >= 2; }
 	// Is this track triangulated and inlier (has a valid 3D position)
-	inline bool IsInlier() const { return numInliers >= 2; }
+	inline bool IsInlier() const { return numInliers >= MIN_VIEWS; }
 	inline bool IsInlier(uint8_t n) const { return numInliers >= n; }
 
-	// Get the number of observations whose image has a pose (the triangulation, and so a position, needs two)
+	// Get the number of observations whose image has a pose (a position needs MIN_VIEWS of them)
 	unsigned GetNumPosedObservations(const ImageArr&) const;
 
 	// Compute the minimum angle between any two inlier observations
@@ -184,6 +188,9 @@ SFM_API void ComputeObservationSigmas(const Scene& scene,
 
 /**
  * @brief Filter tracks based on various criteria
+ *
+ * A track seen by fewer than two posed images has no position that two posed views determine: it is
+ * not judged and ends with numInliers 0.
  *
  * Reprojection error is always evaluated in the angular domain — the pixel threshold is
  * converted per-camera via Camera::PixelErrorToAngular, so the same check works uniformly

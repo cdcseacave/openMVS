@@ -496,9 +496,10 @@ bool DenseReprojectionBarTest();
 // position (0,0,0), which is the star reference camera's centre, so judging it has no meaning.
 bool FilterTracksUnposedTrackTest();
 
-// A triangulation that fails the minimum angle between the rays (TriangulateSkewLLS, TriangulateDLT, and so
-// TriangulateTracks) returns 0 and leaves the track with no inliers: IsInlier() is what the adjustments that
-// follow read, and the caller counts the track as failed.
+// A triangulation that fails (TriangulateSkewLLS, TriangulateDLT, and so TriangulateTracks), whether the rays
+// meet below the minimum angle or fewer than the minimum number of observations fit, returns 0 and leaves the
+// track with no inliers: IsInlier() is what the adjustments that follow read, and the caller counts the track
+// as failed.
 bool TriangulationMinAngleTest();
 
 // The image filter tells the images it removed for contradicting the model (their verified pairs to

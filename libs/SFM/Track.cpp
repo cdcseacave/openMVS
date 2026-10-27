@@ -617,10 +617,11 @@ std::pair<float, float> SFM::FilterTracks(Scene& scene,
 		track.numInliers = 0;
 		if (!track.IsValid())
 			continue;
-		// A track seen by fewer than two posed images was never triangulated (TriangulateTracks leaves
-		// it out), so it has no position to judge: it still holds the default (0,0,0), which can be
-		// exactly where a posed camera sits (the star puts its reference camera at the origin)
-		if (track.GetNumPosedObservations(scene.images) < 2)
+		// A track seen by fewer than two posed images has no position that two posed views determine, so
+		// it is not judged: either it was never triangulated (TriangulateTracks leaves it out) and holds
+		// the default (0,0,0), which can be exactly where a posed camera sits (the star puts its
+		// reference camera at the origin), or it lost a view's pose after it was triangulated
+		if (track.GetNumPosedObservations(scene.images) < Track::MIN_VIEWS)
 			continue;
 
 		// Partition observations into inliers and outliers

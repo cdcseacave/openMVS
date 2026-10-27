@@ -77,7 +77,7 @@ BuildTracks → StarInitializer → Resection → BundleAdjustment → FilterTra
 
 **BundleAdjustment**: Ceres Solver non-linear optimization refining poses, points, and intrinsics.
 
-**FilterTracks**: removes tracks with high reprojection error, low triangulation angle, or depth outside bounds (a track seen by fewer than two posed images has no position and is not judged).
+**FilterTracks**: removes tracks with high reprojection error, low triangulation angle, or depth outside bounds (a track seen by fewer than two posed images has no position that two posed views determine and is not judged).
 
 If initialization fails for a sub-scene it is skipped; those images remain uncalibrated.
 

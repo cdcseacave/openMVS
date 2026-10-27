@@ -74,7 +74,8 @@ SFM_API unsigned TriangulateSkewLLS(
 	float denseReprojErrorFactor = 1.f);
 
 /**
-	* @brief Triangulate all tracks in scene.
+	* @brief Triangulate all tracks in scene. A track seen by fewer than two posed images is left out;
+	* a track whose triangulation fails holds no inliers.
 	* @param scene Scene with cameras, poses, and tracks
 	* @param outliersOnly If true, triangulate only tracks with outlier observations
 	* @param reprojThreshold Reprojection error threshold

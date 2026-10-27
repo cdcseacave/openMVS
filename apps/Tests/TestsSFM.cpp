@@ -12550,11 +12550,67 @@ bool TriangulationMinAngleTest()
 			passed = false;
 		}
 	}
+
+	// A triangulation that fails for want of inliers leaves none either: three views of one point whose
+	// second and third keypoints are 12 pixels off in opposite directions across the plane of the arc
+	// (the direction every view constrains alike) leave the first view the only one within the 4-pixel
+	// bar of the solution (about 2.7 pixels, the two others about 12), so one inlier is counted against
+	// the minimum of two
+	{
+		constexpr float displacement = 12.f;
+		Scene fit;
+		BuildResectionArc(fit, 3);
+		if (!AddResectionTrack(fit, Point3(0.2, 0.1, -0.3), {0, 1, 2})) {
+			VERBOSE("TriangulationMinAngleTest FAILED: the track of three views does not project inside every image");
+			return false;
+		}
+		const Track& exact = fit.tracks[0];
+		fit.images[1].keypoints[exact.observations[1].featureID].pt.y += displacement;
+		fit.images[2].keypoints[exact.observations[2].featureID].pt.y -= displacement;
+		const auto FreshFit = [&fit]() {
+			Track track(fit.tracks[0]);
+			track.position = Point3(0, 0, 0);
+			track.numInliers = 0;
+			return track;
+		};
+		// Control: with no angle bar and one inlier enough, both functions count the one inlier the test means
+		{
+			Track skew = FreshFit(), dlt = FreshFit();
+			const unsigned returnedSkew = TriangulateSkewLLS(skew, fit.images, 4.f, 0.f, 1);
+			const unsigned returnedDLT = TriangulateDLT(dlt, fit.images, 4.f, 0.f, 1);
+			if (returnedSkew != 1 || returnedDLT != 1) {
+				VERBOSE("TriangulationMinAngleTest FAILED: premise not met: with one inlier enough and no angle bar TriangulateSkewLLS counts %u inliers and TriangulateDLT %u, expected 1 and 1",
+					returnedSkew, returnedDLT);
+				return false;
+			}
+		}
+		{
+			Track track = FreshFit();
+			const unsigned returned = TriangulateSkewLLS(track, fit.images, 4.f, minAngle);
+			Check("TriangulateSkewLLS with one inlier", returned == 0 && track.GetNumInliers() == 0, returned, track);
+		}
+		{
+			Track track = FreshFit();
+			const unsigned returned = TriangulateDLT(track, fit.images, 4.f, minAngle);
+			Check("TriangulateDLT with one inlier", returned == 0 && track.GetNumInliers() == 0, returned, track);
+		}
+		// and so does one that comes in with inliers counted earlier and has one posed view left, which
+		// the function turns down before it counts anything
+		{
+			fit.images[1].InvalidatePose();
+			fit.images[2].InvalidatePose();
+			Track track = FreshFit();
+			track.numInliers = 2;
+			const unsigned returned = TriangulateSkewLLS(track, fit.images, 4.f, minAngle);
+			Check("TriangulateSkewLLS with one posed view", returned == 0 && track.GetNumInliers() == 0, returned, track);
+		}
+	}
 	if (!passed)
 		return false;
 
-	VERBOSE("TriangulationMinAngleTest PASSED: a triangulation that fails the minimum angle (TriangulateSkewLLS, TriangulateDLT, TriangulateTracks) leaves the track "
-		"with no inliers, and the next TriangulateTracks of the tracks without inliers takes it up again (%s)", TD_TIMER_GET_FMT().c_str());
+	VERBOSE("TriangulationMinAngleTest PASSED: a triangulation that fails, for the minimum angle (TriangulateSkewLLS, TriangulateDLT, TriangulateTracks) or for want of "
+		"a second inlier (TriangulateSkewLLS, TriangulateDLT), leaves the track with no inliers, and the next TriangulateTracks of the tracks without inliers "
+		"takes it up again (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 
