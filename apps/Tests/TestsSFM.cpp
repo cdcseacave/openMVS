@@ -12489,7 +12489,7 @@ bool FilterTracksUnposedTrackTest()
 	return true;
 }
 
-bool TriangulationMinAngleTest()
+bool TriangulationFailureTest()
 {
 	TD_TIMER_START();
 
@@ -12503,7 +12503,7 @@ bool TriangulationMinAngleTest()
 	BuildResectionArc(scene, 2);
 	const Point3 mid = (scene.images[0].C + scene.images[1].C) * 0.5;
 	if (!AddResectionTrack(scene, mid * (1 - 100 / norm(mid)), {0, 1})) {
-		VERBOSE("TriangulationMinAngleTest FAILED: the track does not project inside both images");
+		VERBOSE("TriangulationFailureTest FAILED: the track does not project inside both images");
 		return false;
 	}
 	const auto Fresh = [&scene]() {
@@ -12516,7 +12516,7 @@ bool TriangulationMinAngleTest()
 	const auto Check = [&passed](const char* what, bool ok, unsigned returned, const Track& track) {
 		if (ok)
 			return;
-		VERBOSE("TriangulationMinAngleTest FAILED: %s returned %u, leaving the track with %u inliers (%s), expected 0 and no inliers",
+		VERBOSE("TriangulationFailureTest FAILED: %s returned %u, leaving the track with %u inliers (%s), expected 0 and no inliers",
 			what, returned, track.numInliers, track.IsInlier() ? "an inlier" : "not an inlier");
 		passed = false;
 	};
@@ -12527,7 +12527,7 @@ bool TriangulationMinAngleTest()
 		const unsigned returned = TriangulateSkewLLS(track, scene.images, 4.f, looseAngle);
 		const double angle = R2D(track.ComputeMinAngleBetweenRays(scene.images));
 		if (returned != 2 || !track.IsInlier() || angle < 0.25 || angle > 1.0) {
-			VERBOSE("TriangulationMinAngleTest FAILED: premise not met: at %g degrees the track triangulates with %u inliers (%s) and %.3f degrees of parallax, expected 2 and a parallax between 0.25 and 1",
+			VERBOSE("TriangulationFailureTest FAILED: premise not met: at %g degrees the track triangulates with %u inliers (%s) and %.3f degrees of parallax, expected 2 and a parallax between 0.25 and 1",
 				looseAngle, returned, track.IsInlier() ? "an inlier" : "not an inlier", angle);
 			return false;
 		}
@@ -12552,23 +12552,25 @@ bool TriangulationMinAngleTest()
 		// takes it up again, and at a looser angle it succeeds
 		const unsigned retried = TriangulateTracks(scene, true, 4.f, looseAngle);
 		if (retried != 1 || !track.IsInlier()) {
-			VERBOSE("TriangulationMinAngleTest FAILED: the next TriangulateTracks of the tracks without inliers, at %g degrees, triangulated %u tracks (the track is %s), expected 1 and an inlier",
+			VERBOSE("TriangulationFailureTest FAILED: the next TriangulateTracks of the tracks without inliers, at %g degrees, triangulated %u tracks (the track is %s), expected 1 and an inlier",
 				looseAngle, retried, track.IsInlier() ? "an inlier" : "not an inlier");
 			passed = false;
 		}
 	}
 
 	// A triangulation that fails for want of inliers leaves none either: three views of one point whose
-	// second and third keypoints are 12 pixels off in opposite directions across the plane of the arc
+	// second and third keypoints are 10 pixels off in opposite directions across the plane of the arc
 	// (the direction every view constrains alike) leave the first view the only one within the 4-pixel
-	// bar of the solution (about 2.7 pixels, the two others about 12), so one inlier is counted against
-	// the minimum of two
+	// bar of the solution, so one inlier is counted against the minimum of two. Measured on the solution
+	// the two functions count against, the first view is 1.14 pixels off in TriangulateSkewLLS and 2.12 in
+	// TriangulateDLT, the other two 10.04 and 10.03 in the first and 10.10 and 10.19 in the second. The
+	// angle bar is 0 in the two checks, so that only the count of inliers can fail them
 	{
-		constexpr float displacement = 12.f;
+		constexpr float displacement = 10.f;
 		Scene fit;
 		BuildResectionArc(fit, 3);
 		if (!AddResectionTrack(fit, Point3(0.2, 0.1, -0.3), {0, 1, 2})) {
-			VERBOSE("TriangulationMinAngleTest FAILED: the track of three views does not project inside every image");
+			VERBOSE("TriangulationFailureTest FAILED: the track of three views does not project inside every image");
 			return false;
 		}
 		const Track& exact = fit.tracks[0];
@@ -12586,19 +12588,19 @@ bool TriangulationMinAngleTest()
 			const unsigned returnedSkew = TriangulateSkewLLS(skew, fit.images, 4.f, 0.f, 1);
 			const unsigned returnedDLT = TriangulateDLT(dlt, fit.images, 4.f, 0.f, 1);
 			if (returnedSkew != 1 || returnedDLT != 1) {
-				VERBOSE("TriangulationMinAngleTest FAILED: premise not met: with one inlier enough and no angle bar TriangulateSkewLLS counts %u inliers and TriangulateDLT %u, expected 1 and 1",
+				VERBOSE("TriangulationFailureTest FAILED: premise not met: with one inlier enough and no angle bar TriangulateSkewLLS counts %u inliers and TriangulateDLT %u, expected 1 and 1",
 					returnedSkew, returnedDLT);
 				return false;
 			}
 		}
 		{
 			Track track = FreshFit();
-			const unsigned returned = TriangulateSkewLLS(track, fit.images, 4.f, minAngle);
+			const unsigned returned = TriangulateSkewLLS(track, fit.images, 4.f, 0.f);
 			Check("TriangulateSkewLLS with one inlier", returned == 0 && track.GetNumInliers() == 0, returned, track);
 		}
 		{
 			Track track = FreshFit();
-			const unsigned returned = TriangulateDLT(track, fit.images, 4.f, minAngle);
+			const unsigned returned = TriangulateDLT(track, fit.images, 4.f, 0.f);
 			Check("TriangulateDLT with one inlier", returned == 0 && track.GetNumInliers() == 0, returned, track);
 		}
 		// and so does one that comes in with inliers counted earlier and has one posed view left, which
@@ -12615,7 +12617,7 @@ bool TriangulationMinAngleTest()
 	if (!passed)
 		return false;
 
-	VERBOSE("TriangulationMinAngleTest PASSED: a triangulation that fails, for the minimum angle (TriangulateSkewLLS, TriangulateDLT, TriangulateTracks) or for want of "
+	VERBOSE("TriangulationFailureTest PASSED: a triangulation that fails, for the minimum angle (TriangulateSkewLLS, TriangulateDLT, TriangulateTracks) or for want of "
 		"a second inlier (TriangulateSkewLLS, TriangulateDLT), leaves the track with no inliers, and the next TriangulateTracks of the tracks without inliers "
 		"takes it up again (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;

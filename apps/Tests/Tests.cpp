@@ -455,7 +455,7 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::FilterTracksUnposedTrackTest())
 				return false;
-			if (!SFM::TriangulationMinAngleTest())
+			if (!SFM::TriangulationFailureTest())
 				return false;
 			if (!SFM::ContradictingImagesTest())
 				return false;

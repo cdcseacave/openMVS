@@ -49,7 +49,7 @@ SFM_API unsigned TriangulateDLT(
 	const ImageArr& images,
 	float reprojThreshold = 4.f,
 	float minAngleThreshold = 2.f,
-	unsigned minInliers = 2,
+	unsigned minInliers = Track::MIN_VIEWS,
 	float denseReprojErrorFactor = 1.f);
 
 /**
@@ -70,7 +70,7 @@ SFM_API unsigned TriangulateSkewLLS(
 	const ImageArr& images,
 	float reprojThreshold = 4.f,
 	float minAngleThreshold = 2.f,
-	unsigned minInliers = 2,
+	unsigned minInliers = Track::MIN_VIEWS,
 	float denseReprojErrorFactor = 1.f);
 
 /**
