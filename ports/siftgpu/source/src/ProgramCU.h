@@ -39,7 +39,7 @@ public:
 	template<int KWIDTH> static void FilterImage(CuTexImage *dst, CuTexImage *src, CuTexImage* buf);
 	static void FilterImage(CuTexImage *dst, CuTexImage *src, CuTexImage* buf, float sigma);
 	static void ComputeDOG(CuTexImage* gus, CuTexImage* dog, CuTexImage* got);
-	static void ComputeKEY(CuTexImage* dog, CuTexImage* key, float Tdog, float Tedge);
+	static void ComputeKEY(CuTexImage* dog, CuTexImage* key, float Tdog, float Tedge, float sigma);
 	static void InitHistogram(CuTexImage* key, CuTexImage* hist);
 	static void ReduceHistogram(CuTexImage*hist1, CuTexImage* hist2);
 	static void GenerateList(CuTexImage* list, CuTexImage* hist);

@@ -237,7 +237,6 @@ void PyramidCU::ResizePyramid(int w, int h)
 			if(	j >= 1 && j < 1 + param._dog_level_num)
 			{
 				got->InitTexture(wa, h, 2); //2 * nlev - 6
-				got->InitTexture2D();
 			}
 			if(j > 1 && j < nlev -1)	key->InitTexture(wa, h, 4); // nlev -3 ; 4 * nlev - 12
 		}
@@ -296,7 +295,6 @@ void PyramidCU::FitPyramid(int w, int h)
 			if(	j >= 1 && j < 1 + param._dog_level_num)
 			{
 				got->InitTexture(wa, h, 2); //2 * nlev - 6
-				got->InitTexture2D();
 			}
 			if(j > 1 && j < nlev -1)	key->InitTexture(wa, h, 4); // nlev -3 ; 4 * nlev - 12
 		}
@@ -843,9 +841,8 @@ void PyramidCU::GenerateFeatureList()
 			std::cout << "| \t" << int(ocount) << " :\t(" << (t2 - t1) << ")\n";
 		}
 	}
-	/////
-	CopyGradientTex();
-	/////
+	// the gradient textures are read directly from their pitch-linear buffers
+	// (CuTexImage::BindTexture2D), so no copy into CUDA arrays is needed here
 	if(GlobalUtil::_timingS)ProgramCU::FinishCUDA();
 
 	if(GlobalUtil::_verbose)
@@ -1048,7 +1045,8 @@ void PyramidCU::DetectKeypointsEX()
 			if(GlobalUtil::_timingL)t = CLOCK();
 			//input, dog, dog + 1, dog -1
 			//output, key
-			ProgramCU::ComputeKEY(dog, key, param._dog_threshold, param._edge_threshold);
+			// sigma of the keypoints found on this level (see GetFeatureOrientations)
+			ProgramCU::ComputeKEY(dog, key, param._dog_threshold, param._edge_threshold, param.GetLevelSigma(j - 1));
 			if(GlobalUtil::_timingL)
 			{
 				std::cout<<(CLOCK()-t)<<"\t";
@@ -1069,32 +1067,6 @@ void PyramidCU::DetectKeypointsEX()
 			std::cout	<<"<Gradient, DOG  >\t"<<(t1-ts)<<"\n"
 						<<"<Get Keypoints  >\t"<<(t2-t1)<<"\n";
 		}				
-	}
-}
-
-void PyramidCU::CopyGradientTex()
-{
-	double ts, t1;
-
-	if(GlobalUtil::_timingS && GlobalUtil::_verbose)ts = CLOCK();
-
-	for(int i = 0, idx = 0; i < _octave_num; i++)
-	{
-		CuTexImage * got = GetBaseLevel(i + _octave_min, DATA_GRAD) +  1;
-		//compute the gradient
-		for(int j = 0; j <  param._dog_level_num ; j++, got++, idx++)
-		{
-			if(_levelFeatureNum[idx] > 0)	got->CopyToTexture2D();
-		}
-	}
-	if(GlobalUtil::_timingS)
-	{
-		ProgramCU::FinishCUDA();
-		if(GlobalUtil::_verbose)
-		{
-			t1 = CLOCK();
-			std::cout	<<"<Copy Grad/Orientation>\t"<<(t1-ts)<<"\n";
-		}
 	}
 }
 

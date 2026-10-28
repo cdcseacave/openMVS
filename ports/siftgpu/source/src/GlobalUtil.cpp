@@ -106,6 +106,7 @@ int	GlobalParam::		_KeepExtremumSign = 0; // if 1, scales of dog-minimum will be
 ///
 int GlobalParam::       _KeyPointListForceLevel0 = 0;
 int GlobalParam::		_DarknessAdaption = 0;
+float GlobalParam::	_MinCurvature = 0.0f;
 int	GlobalParam::		_ProcessOBO = 0;
 int GlobalParam::       _TruncateMethod = 0;
 int	GlobalParam::		_PreciseBorder = 1;

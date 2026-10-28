@@ -41,10 +41,28 @@ protected:
 	int			_texHeight;
 	GLuint		_fromPBO;
 public:
+	// Owns a CUDA texture object; destroyed when it goes out of scope (the driver keeps it
+	// alive for kernels already launched with it). Move-only: copying the handle would let
+	// the temporary returned by BindTexture() destroy the texture before the kernel uses it.
 	struct CuTexObj
 	{
-		cudaTextureObject_t handle;
-		~CuTexObj();
+		cudaTextureObject_t handle = 0;
+		CuTexObj() = default;
+		CuTexObj(CuTexObj&& other) noexcept : handle(other.handle) { other.handle = 0; }
+		CuTexObj& operator=(CuTexObj&& other) noexcept
+		{
+			if(this != &other)
+			{
+				Release();
+				handle = other.handle;
+				other.handle = 0;
+			}
+			return *this;
+		}
+		CuTexObj(const CuTexObj&) = delete;
+		CuTexObj& operator=(const CuTexObj&) = delete;
+		~CuTexObj() { Release(); }
+		void Release();
 	};
 
 	virtual void SetImageSize(int width, int height);

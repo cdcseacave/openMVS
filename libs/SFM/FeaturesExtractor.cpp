@@ -249,12 +249,17 @@ private:
 		constexpr int firstOctave = -1;
 		constexpr int octaveResolution = 3;
 		constexpr unsigned maxNumOrientations = 2;
-		// DoG peak threshold (SiftGPU default 0.02/3 for 3 levels per octave): the low
-		// value, together with the adaptive grid selection (see SelectFeatures), finds
-		// features in low-contrast, weakly textured areas (walls, floors) and increases
-		// the number of correct matches on weakly textured and textured scenes alike
-		constexpr float peakThreshold = 0.0025f;
-		constexpr float edgeThreshold = 20.f;
+		// Minimum scale-normalized smaller principal curvature sigma^2*|lambda_min| of
+		// the DoG Hessian (SiftGPU -cmin, implemented in the CUDA kernels): a keypoint must
+		// be curved enough in both directions, an absolute cornerness floor that takes over
+		// from the DoG value as the main contrast test. It lets the very low DoG peak
+		// threshold (SiftGPU default 0.02/3 for 3 levels per octave) keep low-contrast
+		// corners and blobs of weakly textured areas (walls, floors) while rejecting flat
+		// and edge-like extrema; without the floor (GLSL) the higher threshold is used.
+		// The edge threshold 12.5 (maximum ratio of the principal curvatures) is the one
+		// of the RSa1 detector and increases the ratio-test precision of the matches.
+		constexpr float minCurvature = 0.001f;
+		constexpr float edgeThreshold = 12.5f;
 		constexpr unsigned maxNumFeatures = 0; // 0 = no limit
 		constexpr bool upright = false;
 		const bool darknessAdaptivity = extractor.GetConfig().useCUDA ? false : true;
@@ -274,6 +279,8 @@ private:
 			args.push_back("-cuda"); args.push_back(std::to_string(gpuIndices[0]));
 		}
 		#endif
+		const bool cuda = gpuIndices[0] >= 0;
+		const float peakThreshold = cuda ? 0.001f : 0.0025f;
 		if (darknessAdaptivity) {
 			if (gpuIndices[0] >= 0)
 				DEBUG("warning: darkness adaptivity only available for GLSL SiftGPU.");
@@ -283,6 +290,9 @@ private:
 		args.push_back("-maxd"); args.push_back(std::to_string(maxImageSize * octaveFactor));
 		args.push_back("-t"); args.push_back(std::to_string(peakThreshold));
 		args.push_back("-e"); args.push_back(std::to_string(edgeThreshold));
+		if (cuda) {
+			args.push_back("-cmin"); args.push_back(std::to_string(minCurvature));
+		}
 		if (maxNumFeatures > 0) {
 			args.push_back("-tc2"); args.push_back(std::to_string(maxNumFeatures));
 		}

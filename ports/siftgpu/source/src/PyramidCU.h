@@ -60,7 +60,6 @@ public:
 	virtual void ResizePyramid(int w, int h);
     virtual int  IsUsingRectDescription(){return _existing_keypoints & SIFT_RECT_DESCRIPTION; }	
 	//////////
-	void CopyGradientTex();
 	void FitPyramid(int w, int h);
 
     void InitializeContext();

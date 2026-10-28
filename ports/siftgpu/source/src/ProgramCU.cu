@@ -532,8 +532,14 @@ void ProgramCU::ComputeDOG(CuTexImage* gus, CuTexImage* dog, CuTexImage* got)
 		}
 
 
+// min_curvature (0 = off): after the edge test, the smaller principal curvature |lambda_min| of the
+// DoG Hessian must reach this value (already divided by the squared level sigma, so the test is on
+// the scale-normalized curvature sigma^2*|lambda_min|). Like the RSa1 detector of Acute3D, this keeps
+// low-contrast extrema that are well curved in both directions (blobs and corners on weakly textured
+// surfaces) and rejects flat and edge-like ones, so a low DoG threshold can be used with it.
 void __global__ ComputeKEY_Kernel(cudaTextureObject_t texP, cudaTextureObject_t texC, cudaTextureObject_t texN, float4* d_key, int width, int colmax, int rowmax,
-					float dog_threshold0,  float dog_threshold, float edge_threshold, int subpixel_localization)
+					float dog_threshold0,  float dog_threshold, float edge_threshold, int subpixel_localization,
+					float min_curvature)
 {
        float data[3][3], v;
        float datap[3][3], datan[3][3];
@@ -578,6 +584,13 @@ void __global__ ComputeKEY_Kernel(cudaTextureObject_t texP, cudaTextureObject_t 
 			float temp1 = fxx * fyy - fxy * fxy;
 			float temp2 = (fxx + fyy) * (fxx + fyy);
 			if(temp1 <=0 || temp2 > edge_threshold * temp1) goto key_finish;
+
+			if(min_curvature > 0)
+			{
+				// det > 0 here: both curvatures share the sign of the trace
+				float lambda_min = 0.5f * (fabs(fxx + fyy) - sqrt((fxx - fyy) * (fxx - fyy) + 4.0f * fxy * fxy));
+				if(lambda_min < min_curvature) goto key_finish;
+			}
 
 
 			//read the previous level
@@ -650,7 +663,7 @@ key_finish:
 }
 
 
-void ProgramCU::ComputeKEY(CuTexImage* dog, CuTexImage* key, float Tdog, float Tedge)
+void ProgramCU::ComputeKEY(CuTexImage* dog, CuTexImage* key, float Tdog, float Tedge, float sigma)
 {
 	int width = dog->GetImgWidth(), height = dog->GetImgHeight();
 	float Tdog1 = (GlobalUtil::_SubpixelLocalization? 0.8f : 1.0f) * Tdog;
@@ -667,7 +680,8 @@ void ProgramCU::ComputeKEY(CuTexImage* dog, CuTexImage* key, float Tdog, float T
 	CuTexImage::CuTexObj texNObj = dogn->BindTexture(texDataDesc, cudaCreateChannelDesc<float>());
 	Tedge = (Tedge+1)*(Tedge+1)/Tedge;
 	ComputeKEY_Kernel<<<grid, block>>>(texPObj.handle, texCObj.handle, texNObj.handle, (float4*) key->_cuData, width,
-        width -1, height -1, Tdog1, Tdog, Tedge, GlobalUtil::_SubpixelLocalization);
+        width -1, height -1, Tdog1, Tdog, Tedge, GlobalUtil::_SubpixelLocalization,
+        GlobalUtil::_MinCurvature / (sigma * sigma));
 
 }
 

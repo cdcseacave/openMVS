@@ -40,9 +40,13 @@ using namespace std;
 #include "CuTexImage.h"
 #include "ProgramCU.h"
 
-CuTexImage::CuTexObj::~CuTexObj()
+void CuTexImage::CuTexObj::Release()
 {
-	cudaDestroyTextureObject(handle);
+	if(handle)
+	{
+		cudaDestroyTextureObject(handle);
+		handle = 0;
+	}
 }
 
 CuTexImage::CuTexObj CuTexImage::BindTexture(const cudaTextureDesc& textureDesc,

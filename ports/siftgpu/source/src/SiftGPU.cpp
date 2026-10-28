@@ -1007,6 +1007,16 @@ void SiftGPU::ParseParam(const int argc, const char **argv)
                     }
                     break;
                 }
+            case MAKEINT4(c, m, i, n): // -cmin: minimum scale-normalized curvature (CUDA)
+                {
+                    float threshold = 0.0f;
+                    if(sscanf(param, "%f", &threshold) && threshold >= 0 )
+                    {
+                        GlobalUtil::_MinCurvature = threshold;
+                        i++;
+                    }
+                    break;
+                }
             case MAKEINT1(d):
                 {
                     int num = 0;
