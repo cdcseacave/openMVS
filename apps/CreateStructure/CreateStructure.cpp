@@ -73,6 +73,7 @@ float k2;
 String strImageIndices;
 unsigned nMaxFeaturesPerCell;
 unsigned nMinFeaturesPerCell;
+bool bSiftGPUDarknessAdaptivity;
 unsigned maxViewsPerCluster;
 bool bClusterCommunities;
 bool bUseGlobalSolver;
@@ -143,6 +144,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("compare-mvs", boost::program_options::value<std::string>(&OPT::strCompareMVS), "compare reconstruction against ground-truth MVS file (optional)")
 		("max-features-per-cell", boost::program_options::value(&OPT::nMaxFeaturesPerCell)->default_value(3000), "maximum features per grid cell (3x3 grid)")
 		("min-features-per-cell", boost::program_options::value(&OPT::nMinFeaturesPerCell)->default_value(500), "minimum features per cell before adjusting sensitivity")
+		("siftgpu-darkness-adaptivity", boost::program_options::value(&OPT::bSiftGPUDarknessAdaptivity)->default_value(false), "SiftGPU: lower the DoG threshold and curvature floor in dark areas")
 		("match-mode", boost::program_options::value(&OPT::matchMode)->default_value(1), "match mode: -1=SKIP,0=EXHAUSTIVE,1=VOCABULARY,2=SEQUENTIAL,3=KNOWN_POSES")
 		("match-sequence-overlap", boost::program_options::value(&OPT::matchSequenceOverlap)->default_value(3), "sequence overlap for sequential matching")
 		("vocab-max-pairs", boost::program_options::value(&OPT::maxPairsPerImage)->default_value(50), "target pairs per image for vocabulary and pose-guided matching")
@@ -271,6 +273,7 @@ int main(int argc, LPCTSTR* argv)
 	cfg.featuresCfg.detectorType = FeatureTypeFromString(OPT::strDetectorType);
 	cfg.featuresCfg.maxFeaturesPerCell = OPT::nMaxFeaturesPerCell;
 	cfg.featuresCfg.minFeaturesPerCell = OPT::nMinFeaturesPerCell;
+	cfg.featuresCfg.siftgpuDarknessAdaptivity = OPT::bSiftGPUDarknessAdaptivity;
 	cfg.featuresCfg.importOpenMVGDir = OPT::strImportOpenMVGDir;
 	cfg.featuresCfg.exportOpenMVGDir = OPT::strExportOpenMVGDir;
 	cfg.roma2Cfg.importROMA2Path = OPT::strImportROMA2Path;

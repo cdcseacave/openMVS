@@ -32,7 +32,17 @@ class PyramidCU:public SiftPyramid
 {
 	CuTexImage* _inputTex;
 	CuTexImage* _allPyramid;
-	CuTexImage* _histoPyramidTex;
+	// keypoint bit masks (32 pixels per word) and per-row keypoint counts of all levels
+	CuTexImage* _keyMaskTex;
+	CuTexImage* _keyRowCountTex;
+	CuTexImage* _keyRowStartTex;
+	// multi-orientation expansion: orientation counts and output offsets of the feature blocks,
+	// expanded features of all levels
+	CuTexImage* _orientationCountTex;
+	CuTexImage* _orientationStartTex;
+	CuTexImage* _featureAllTex;
+	std::vector<int> _keyMaskOffset, _keyRowOffset;
+	std::vector<int> _keyRowCount, _keyRowStart;
 	CuTexImage* _featureTex;
 	CuTexImage* _descriptorTex;
 	CuTexImage* _orientationTex;
@@ -64,7 +74,6 @@ public:
 
     void InitializeContext();
 	int ResizeFeatureStorage();
-	int FitHistogramPyramid(CuTexImage* tex);
 	void SetLevelFeatureNum(int idx, int fcount);
 	void ConvertInputToCU(GLTexInput* input);
 	GLTexImage* ConvertTexCU2GL(CuTexImage* tex, int dataName);
@@ -72,8 +81,6 @@ public:
     void TruncateWidth(int& w) { w = GLTexInput::TruncateWidthCU(w); }
     //////////////////////////
     static int CheckCudaDevice(int device);
-private:
-	void GenerateFeatureList(int i, int j, int reduction_count, vector<int>& hbuffer);
 public:
 	PyramidCU(SiftParam& sp);
 	virtual ~PyramidCU();

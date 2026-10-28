@@ -55,8 +55,13 @@ using namespace std;
 PyramidCU::PyramidCU(SiftParam& sp) : SiftPyramid(sp)
 {
 	_allPyramid = NULL;
-	_histoPyramidTex = NULL;
 	_featureTex = NULL;
+	_keyMaskTex = new CuTexImage();
+	_keyRowCountTex = new CuTexImage();
+	_keyRowStartTex = new CuTexImage();
+	_orientationCountTex = new CuTexImage();
+	_orientationStartTex = new CuTexImage();
+	_featureAllTex = new CuTexImage();
 	_descriptorTex = NULL;
 	_orientationTex = NULL;
 	_bufferPBO = 0;
@@ -73,6 +78,12 @@ PyramidCU::~PyramidCU()
 	DestroySharedData();
 	DestroyPyramidData();
 	if(_inputTex) delete _inputTex;
+	delete _keyMaskTex;
+	delete _keyRowCountTex;
+	delete _keyRowStartTex;
+	delete _orientationCountTex;
+	delete _orientationStartTex;
+	delete _featureAllTex;
     if(_bufferPBO) glDeleteBuffers(1, &_bufferPBO);
     if(_bufferTEX) delete _bufferTEX;
 }
@@ -320,29 +331,7 @@ int PyramidCU::ResizeFeatureStorage()
 	if(_levelFeatureNum==NULL)	_levelFeatureNum = new int[_octave_num * param._dog_level_num];
 	std::fill(_levelFeatureNum, _levelFeatureNum+_octave_num * param._dog_level_num, 0); 
 
-	int wmax = GetBaseLevel(_octave_min)->GetImgWidth();
-	int hmax = GetBaseLevel(_octave_min)->GetImgHeight();
-	int whmax = max(wmax, hmax);
-	int w,  i;
-
-	//
-	int num = (int)ceil(log(double(whmax))/log(4.0));
-
-	if( _hpLevelNum != num)
-	{
-		_hpLevelNum = num;
-		if(_histoPyramidTex ) delete [] _histoPyramidTex;
-		_histoPyramidTex = new CuTexImage[_hpLevelNum];
-	}
-
-	for(i = 0, w = 1; i < _hpLevelNum; i++)
-	{
-		_histoPyramidTex[i].InitTexture(w, whmax, 4);
-		w<<=2;
-	}
-
-	// (4 ^ (_hpLevelNum) -1 / 3) pixels
-	totalkb += (((1 << (2 * _hpLevelNum)) -1) / 3 * 16 / 1024);
+	int i;
 
 	//initialize the feature texture
 	int idx = 0, n = _octave_num * param._dog_level_num;
@@ -401,6 +390,11 @@ void PyramidCU::GetFeatureDescriptors()
 		pd = &descriptor_buffer2[0];
 	}
 
+	// the descriptors of all levels in one buffer, downloaded at once
+	int num = 0;
+	for(int idx = 0; idx < _octave_num * param._dog_level_num; idx++) num += _levelFeatureNum[idx];
+	_descriptorTex->InitTexture(num * 128, 1, 1);
+	float* descriptors = (float*) _descriptorTex->_cuData;
 	CuTexImage * got, * ftex= _featureTex;
 	for(int i = 0, idx = 0; i < _octave_num; i++)
 	{
@@ -408,11 +402,11 @@ void PyramidCU::GetFeatureDescriptors()
 		for(int j = 0; j < param._dog_level_num; j++, ftex++, idx++, got++)
 		{
 			if(_levelFeatureNum[idx]==0) continue;
-            ProgramCU::ComputeDescriptor(ftex, got, _descriptorTex, IsUsingRectDescription());//process
-			_descriptorTex->CopyToHost(pd); //readback descriptor
-			pd += 128*_levelFeatureNum[idx];
+			ProgramCU::ComputeDescriptor(ftex, got, descriptors, IsUsingRectDescription());
+			descriptors += 128*_levelFeatureNum[idx];
 		}
 	}
+	if(num > 0) _descriptorTex->CopyToHost(pd);
 
 	if(GlobalUtil::_timingS) ProgramCU::FinishCUDA();
 
@@ -496,86 +490,79 @@ void PyramidCU::GenerateFeatureListTex()
 
 }
 
-void PyramidCU::ReshapeFeatureListCPU() 
+// Expands the features with two orientations into two features, on the GPU: the orientation
+// counts of each block of features of all levels come back in one transfer, the output offset of
+// each block is the sum of the counts before it, and the expanded features of all levels are
+// written into one buffer, copied back to the level lists and downloaded at once.
+void PyramidCU::ReshapeFeatureListCPU()
 {
-	int i, szmax =0, sz;
-	int n = param._dog_level_num*_octave_num;
-	for( i = 0; i < n; i++) 
+	const int n = param._dog_level_num*_octave_num;
+	std::vector<int> blockOffset(n + 1, 0);
+	for(int i = 0; i < n; i++)
+		blockOffset[i + 1] = blockOffset[i] + ProgramCU::GetOrientationBlockNum(_levelFeatureNum[i]);
+	const int nblock = blockOffset[n];
+	if(nblock == 0)
 	{
-		sz = _levelFeatureNum[i];
-		if(sz > szmax ) szmax = sz;
+		_featureNum = 0;
+		_keypoint_buffer.resize(0);
+		return;
 	}
-	float * buffer = new float[szmax*16];
-	float * buffer1 = buffer;
-	float * buffer2 = buffer + szmax*4;
+	_orientationCountTex->InitTexture(nblock, 1);
+	_orientationStartTex->InitTexture(nblock, 1);
+	int* blockCount = (int*) _orientationCountTex->_cuData;
+	for(int i = 0; i < n; i++)
+		if(_levelFeatureNum[i] > 0) ProgramCU::CountOrientations(_featureTex + i, _levelFeatureNum[i], blockCount + blockOffset[i]);
 
-
-
+	std::vector<int> count(nblock), start(nblock);
+	std::vector<int> levelCount(n, 0), levelStart(n, 0);
+	_orientationCountTex->CopyToHost(&count[0]);
 	_featureNum = 0;
-
-#ifdef NO_DUPLICATE_DOWNLOAD
-	const double twopi = 2.0*3.14159265358979323846;
-	_keypoint_buffer.resize(0);
-	float os = _octave_min>=0? float(1<<_octave_min): 1.0f/(1<<(-_octave_min));
-	if(_down_sample_factor>0) os *= float(1<<_down_sample_factor); 
-	float offset = GlobalUtil::_LoweOrigin? 0 : 0.5f;
-#endif
-
-
-	for(i = 0; i < n; i++)
+	for(int i = 0; i < n; i++)
 	{
-		if(_levelFeatureNum[i]==0)continue;
-
-		_featureTex[i].CopyToHost(buffer1);
-		
-		int fcount =0;
-		float * src = buffer1;
-		float * des = buffer2;
-		const static double factor  = 2.0*3.14159265358979323846/65535.0;
-		for(int j = 0; j < _levelFeatureNum[i]; j++, src+=4)
+		levelStart[i] = _featureNum;
+		for(int b = blockOffset[i]; b < blockOffset[i + 1]; ++b)
 		{
-			unsigned short * orientations = (unsigned short*) (&src[3]);
-			if(orientations[0] != 65535)
-			{
-				des[0] = src[0];
-				des[1] = src[1];
-				des[2] = src[2];
-				des[3] = float( factor* orientations[0]);
-				fcount++;
-				des += 4;
-				if(orientations[1] != 65535 && orientations[1] != orientations[0])
-				{
-					des[0] = src[0];
-					des[1] = src[1];
-					des[2] = src[2];
-					des[3] = float(factor* orientations[1]);	
-					fcount++;
-					des += 4;
-				}
-			}
+			start[b] = _featureNum;
+			_featureNum += count[b];
 		}
-		//texture size
-		SetLevelFeatureNum(i, fcount);
-		_featureTex[i].CopyFromHost(buffer2);
-		
-		if(fcount == 0) continue;
+		levelCount[i] = _featureNum - levelStart[i];
+	}
+	_orientationStartTex->CopyFromHost(&start[0]);
+	_featureAllTex->InitTexture(_featureNum, 1, 4);
+	float4* all = (float4*) _featureAllTex->_cuData;
+	for(int i = 0; i < n; i++)
+		if(_levelFeatureNum[i] > 0) ProgramCU::ExpandOrientations(_featureTex + i, _levelFeatureNum[i], (const int*) _orientationStartTex->_cuData + blockOffset[i], all);
+	for(int i = 0; i < n; i++)
+	{
+		// a reallocation of the list waits for the expansion that reads it
+		SetLevelFeatureNum(i, levelCount[i]);
+		if(levelCount[i] > 0)
+			cudaMemcpyAsync(_featureTex[i]._cuData, all + levelStart[i], levelCount[i] * sizeof(float4), cudaMemcpyDeviceToDevice);
+	}
 
 #ifdef NO_DUPLICATE_DOWNLOAD
-		float oss = os * (1 << (i / param._dog_level_num));
-		_keypoint_buffer.resize((_featureNum + fcount) * 4);
-		float* ds = &_keypoint_buffer[_featureNum * 4];
-		float* fs = buffer2;
-		for(int k = 0;  k < fcount; k++, ds+=4, fs+=4)
+	// the keypoints in image coordinates, so DownloadKeypoints is not needed
+	std::vector<float> features(4 * _featureNum);
+	if(_featureNum > 0) _featureAllTex->CopyToHost(&features[0]);
+	const double twopi = 2.0*3.14159265358979323846;
+	float os = _octave_min>=0? float(1<<_octave_min): 1.0f/(1<<(-_octave_min));
+	if(_down_sample_factor>0) os *= float(1<<_down_sample_factor);
+	const float offset = GlobalUtil::_LoweOrigin? 0 : 0.5f;
+	_keypoint_buffer.resize(_featureNum * 4);
+	for(int i = 0; i < n; i++)
+	{
+		const float oss = os * (1 << (i / param._dog_level_num));
+		float* ds = &_keypoint_buffer[0] + levelStart[i] * 4;
+		const float* fs = &features[0] + levelStart[i] * 4;
+		for(int k = 0; k < levelCount[i]; k++, ds+=4, fs+=4)
 		{
 			ds[0] = oss*(fs[0]-0.5f) + offset;	//x
 			ds[1] = oss*(fs[1]-0.5f) + offset;	//y
 			ds[2] = oss*fs[2];  //scale
 			ds[3] = (float)fmod(twopi-fs[3], twopi);	//orientation, mirrored
 		}
-#endif
-		_featureNum += fcount;
 	}
-	delete[] buffer;
+#endif
 	if(GlobalUtil::_verbose)
 	{
 		std::cout<<"#Features MO:\t"<<_featureNum<<endl;
@@ -608,13 +595,6 @@ void PyramidCU::GenerateFeatureDisplayVBO()
 
 void PyramidCU::DestroySharedData() 
 {
-	//histogram reduction
-	if(_histoPyramidTex)
-	{
-		delete[]	_histoPyramidTex;
-		_hpLevelNum = 0;
-		_histoPyramidTex = NULL;
-	}
 	//descriptor storage shared by all levels
 	if(_descriptorTex)
 	{
@@ -733,116 +713,59 @@ void PyramidCU::GenerateFeatureListCPU()
 	GenerateFeatureList();
 }
 
-void PyramidCU::GenerateFeatureList(int i, int j, int reduction_count, vector<int>& hbuffer)
-{
-    int fcount = 0, idx = i * param._dog_level_num  + j;
-	int hist_level_num = _hpLevelNum - _pyramid_octave_first /2; 
-	int ii, k, len; 
-
-	CuTexImage * htex, * ftex, * tex, *got;
-	ftex = _featureTex + idx;
-	htex = _histoPyramidTex + hist_level_num -1;
-	tex = GetBaseLevel(_octave_min + i, DATA_KEYPOINT) + 2 + j;
-	got = GetBaseLevel(_octave_min + i, DATA_GRAD) + 2 + j;
-
-	ProgramCU::InitHistogram(tex, htex);
-
-	for(k = 0; k < reduction_count - 1; k++, htex--)
-	{
-		ProgramCU::ReduceHistogram(htex, htex -1);	
-	}
-	
-	//htex has the row reduction result
-	len = htex->GetImgHeight() * 4;
-	hbuffer.resize(len);
-	ProgramCU::FinishCUDA();
-	htex->CopyToHost(&hbuffer[0]);
-	
-    ////TO DO: track the error found here..
-	for(ii = 0; ii < len; ++ii)     {if(!(hbuffer[ii]>= 0)) hbuffer[ii] = 0; }//?
-	
-    
-    for(ii = 0; ii < len; ++ii)		fcount += hbuffer[ii];
-	SetLevelFeatureNum(idx, fcount);
-	
-    //build the feature list
-	if(fcount > 0)
-	{
-		_featureNum += fcount;
-		_keypoint_buffer.resize(fcount * 4);
-		//vector<int> ikbuf(fcount*4);
-		int* ibuf = (int*) (&_keypoint_buffer[0]);
-
-		for(ii = 0; ii < len; ++ii)
-		{
-			int x = ii%4, y = ii / 4;
-			for(int jj = 0 ; jj < hbuffer[ii]; ++jj, ibuf+=4)
-			{
-				ibuf[0] = x; ibuf[1] = y; ibuf[2] = jj; ibuf[3] = 0;
-			}
-		}
-		_featureTex[idx].CopyFromHost(&_keypoint_buffer[0]);
-	
-		////////////////////////////////////////////
-		ProgramCU::GenerateList(_featureTex + idx, ++htex);
-		for(k = 2; k < reduction_count; k++)
-		{
-			ProgramCU::GenerateList(_featureTex + idx, ++htex);
-		}
-	}
-}
-
+// The keypoint detection left a bit mask of the keypoints and the keypoint count of every row
+// of every level (see ProgramCU::ComputeKEY). One transfer brings the row counts of all levels
+// back, the list offset of each row is the sum of the counts before it, and one kernel per level
+// writes the keypoint positions in row-major order.
 void PyramidCU::GenerateFeatureList()
 {
-	double t1, t2; 
-	int ocount = 0, reduction_count;
-    int reverse = (GlobalUtil::_TruncateMethod == 1);
+	const int reverse = (GlobalUtil::_TruncateMethod == 1);
+	const int nlevel = _octave_num * param._dog_level_num;
+	const int nrow = _keyRowOffset[nlevel];
+	_keyRowCount.resize(nrow);
+	_keyRowStart.assign(nrow, 0);
+	_keyRowCountTex->CopyToHost(&_keyRowCount[0]);
 
-	vector<int> hbuffer;
 	_featureNum = 0;
-
-	//for(int i = 0, idx = 0; i < _octave_num; i++)
-    FOR_EACH_OCTAVE(i, reverse)
+	FOR_EACH_OCTAVE(i, reverse)
 	{
-        CuTexImage* tex = GetBaseLevel(_octave_min + i, DATA_KEYPOINT) + 2;
-		reduction_count = FitHistogramPyramid(tex);
-
-		if(GlobalUtil::_timingO)
+		FOR_EACH_LEVEL(j, reverse)
 		{
-			t1 = CLOCK(); 
-			ocount = 0;
-			std::cout<<"#"<<i+_octave_min + _down_sample_factor<<":\t";
-		}
-		//for(int j = 0; j < param._dog_level_num; j++, idx++)
-        FOR_EACH_LEVEL(j, reverse)
-		{
-            // (mgprt 20/06/2018) _levelFeatureNum can still contain old
-            // values for these levels, so if we do not reset them the sum
-            // of level features will not match the absolte number of features.
-            if (GlobalUtil::_TruncateMethod && GlobalUtil::_FeatureCountThreshold > 0 && _featureNum > GlobalUtil::_FeatureCountThreshold) {
-                int idx = i * param._dog_level_num + j;
-                _levelFeatureNum[idx] = 0;
-                continue;
-            }
-
-	        GenerateFeatureList(i, j, reduction_count, hbuffer);
-
-			/////////////////////////////
-			if(GlobalUtil::_timingO)
-			{
-                int idx = i * param._dog_level_num + j;
-				ocount += _levelFeatureNum[idx];
-				std::cout<< _levelFeatureNum[idx] <<"\t";
+			const int idx = i * param._dog_level_num + j;
+			// (mgprt 20/06/2018) _levelFeatureNum can still contain old
+			// values for these levels, so if we do not reset them the sum
+			// of level features will not match the absolte number of features.
+			if (GlobalUtil::_TruncateMethod && GlobalUtil::_FeatureCountThreshold > 0 && _featureNum > GlobalUtil::_FeatureCountThreshold) {
+				_levelFeatureNum[idx] = 0;
+				continue;
 			}
-		}
-		if(GlobalUtil::_timingO)
-		{	
-			t2 = CLOCK(); 
-			std::cout << "| \t" << int(ocount) << " :\t(" << (t2 - t1) << ")\n";
+			int fcount = 0;
+			for(int r = _keyRowOffset[idx]; r < _keyRowOffset[idx + 1]; ++r)
+			{
+				_keyRowStart[r] = fcount;
+				fcount += _keyRowCount[r];
+			}
+			SetLevelFeatureNum(idx, fcount);
+			_featureNum += fcount;
 		}
 	}
-	// the gradient textures are read directly from their pitch-linear buffers
-	// (CuTexImage::BindTexture2D), so no copy into CUDA arrays is needed here
+	_keyRowStartTex->CopyFromHost(&_keyRowStart[0]);
+
+	const unsigned int* mask = (const unsigned int*) _keyMaskTex->_cuData;
+	const int* rowCount = (const int*) _keyRowCountTex->_cuData;
+	const int* rowStart = (const int*) _keyRowStartTex->_cuData;
+	for(int i = 0, idx = 0; i < _octave_num; i++)
+	{
+		CuTexImage* key = GetBaseLevel(_octave_min + i, DATA_KEYPOINT) + 2;
+		for(int j = 0; j < param._dog_level_num; j++, idx++, key++)
+		{
+			if(GlobalUtil::_timingO) std::cout << _levelFeatureNum[idx] << (j + 1 < param._dog_level_num ? "\t" : "\n");
+			if(_levelFeatureNum[idx] == 0) continue;
+			const int row = _keyRowOffset[idx];
+			ProgramCU::ListKeys(_featureTex + idx, mask + _keyMaskOffset[idx], ProgramCU::GetKeyMaskWidth(key->GetImgWidth()),
+				rowCount + row, rowStart + row, key->GetImgHeight());
+		}
+	}
 	if(GlobalUtil::_timingS)ProgramCU::FinishCUDA();
 
 	if(GlobalUtil::_verbose)
@@ -1029,6 +952,29 @@ void PyramidCU::DetectKeypointsEX()
 		t1 = CLOCK();
 	}
 
+	// keypoint bit masks and per-row keypoint counts of all levels (see GenerateFeatureList)
+	const int nlevel = _octave_num * param._dog_level_num;
+	_keyMaskOffset.resize(nlevel);
+	_keyRowOffset.resize(nlevel + 1);
+	int nmask = 0, nrow = 0;
+	for(i = 0; i < _octave_num; i++)
+	{
+		CuTexImage * dog = GetBaseLevel(i + _octave_min, DATA_DOG) + 2;
+		for(j = 0; j < param._dog_level_num; j++, dog++)
+		{
+			const int idx = i * param._dog_level_num + j;
+			_keyMaskOffset[idx] = nmask;
+			_keyRowOffset[idx] = nrow;
+			nmask += ProgramCU::GetKeyMaskWidth(dog->GetImgWidth()) * dog->GetImgHeight();
+			nrow += dog->GetImgHeight();
+		}
+	}
+	_keyRowOffset[nlevel] = nrow;
+	_keyMaskTex->InitTexture(nmask, 1);
+	_keyRowCountTex->InitTexture(nrow, 1);
+	_keyRowStartTex->InitTexture(nrow, 1);
+	cudaMemsetAsync(_keyRowCountTex->_cuData, 0, nrow * sizeof(int));
+
 	for ( i = _octave_min; i < _octave_min + _octave_num; i++)
 	{
 		if(GlobalUtil::_timingO)
@@ -1036,17 +982,22 @@ void PyramidCU::DetectKeypointsEX()
 			t0 = CLOCK();
 			std::cout<<"#"<<(i + _down_sample_factor)<<"\t";
 		}
+		const int level0 = (i - _octave_min) * param._dog_level_num;
 		CuTexImage * dog = GetBaseLevel(i, DATA_DOG) + 2;
 		CuTexImage * key = GetBaseLevel(i, DATA_KEYPOINT) +2;
+		CuTexImage * gus = GetBaseLevel(i) + 2; // Gaussian level of the DoG, for darkness adaptation
 
 
-		for( j = param._level_min +2; j <  param._level_max ; j++, dog++, key++)
+		for( j = param._level_min +2; j <  param._level_max ; j++, dog++, key++, gus++)
 		{
+			const int idx = level0 + j - (param._level_min + 2);
 			if(GlobalUtil::_timingL)t = CLOCK();
 			//input, dog, dog + 1, dog -1
 			//output, key
 			// sigma of the keypoints found on this level (see GetFeatureOrientations)
-			ProgramCU::ComputeKEY(dog, key, param._dog_threshold, param._edge_threshold, param.GetLevelSigma(j - 1));
+			ProgramCU::ComputeKEY(dog, key, gus, (unsigned int*) _keyMaskTex->_cuData + _keyMaskOffset[idx],
+				(int*) _keyRowCountTex->_cuData + _keyRowOffset[idx],
+				param._dog_threshold, param._edge_threshold, param.GetLevelSigma(j - 1));
 			if(GlobalUtil::_timingL)
 			{
 				std::cout<<(CLOCK()-t)<<"\t";
@@ -1099,26 +1050,6 @@ void PyramidCU::ComputeGradient()
 			std::cout	<<"<Gradient, DOG  >\t"<<(t1-ts)<<"\n";
 		}
 	}
-}
-
-int PyramidCU::FitHistogramPyramid(CuTexImage* tex)
-{
-	CuTexImage *htex;
-	int hist_level_num = _hpLevelNum - _pyramid_octave_first / 2; 
-	htex = _histoPyramidTex + hist_level_num - 1;
-	int w = (tex->GetImgWidth() + 2) >> 2;
-	int h = tex->GetImgHeight();
-	int count = 0; 
-	for(int k = 0; k < hist_level_num; k++, htex--)
-	{
-		//htex->SetImageSize(w, h);	
-		htex->InitTexture(w, h, 4); 
-		++count;
-		if(w == 1)
-            break;
-		w = (w + 3)>>2; 
-	}
-	return count;
 }
 
 void PyramidCU::GetFeatureOrientations() 

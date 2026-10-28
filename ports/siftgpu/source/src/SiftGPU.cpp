@@ -659,6 +659,8 @@ void SiftGPU::PrintUsage()
 	<<"-d <int>          : Number of DOG levels in an octave (default : 3)\n"
 	<<"-t <float>        : DOG threshold (default : 0.02/3)\n"
 	<<"-e <float>        : Edge Threshold (default : 10.0)\n"
+	<<"-cmin <float>     : Minimum scale-normalized smaller DoG curvature (default : 0 = off)\n"
+	<<"-da               : Lower the DOG threshold and -cmin in dark areas (darkness adaptation)\n"
 	<<"-m  <int=2>       : Multi Feature Orientations (default : 1)\n"
 	<<"-m2p              : 2 Orientations packed as one float\n"
 	<<"-s  <int=1>       : Sub-Pixel, Sub-Scale Localization, Multi-Refinement(num)\n"
@@ -1007,7 +1009,7 @@ void SiftGPU::ParseParam(const int argc, const char **argv)
                     }
                     break;
                 }
-            case MAKEINT4(c, m, i, n): // -cmin: minimum scale-normalized curvature (CUDA)
+            case MAKEINT4(c, m, i, n): // -cmin: minimum scale-normalized curvature of the DoG extrema
                 {
                     float threshold = 0.0f;
                     if(sscanf(param, "%f", &threshold) && threshold >= 0 )

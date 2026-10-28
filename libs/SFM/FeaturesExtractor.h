@@ -83,6 +83,7 @@ struct SFM_API FeatureExtractionConfig {
 	int minFeaturesPerCell = 500;  // minimum features per cell before adjusting sensitivity
 	bool releaseImagePixels = true; // release image pixel data after feature extraction to save memory
 	bool useCUDA = true; // use CUDA for SiftGPU if available (otherwise OpenGL)
+	bool siftgpuDarknessAdaptivity = false; // SiftGPU: lower the DoG threshold and curvature floor in dark areas
 	String importOpenMVGDir; // directory to import OpenMVG features from (optional)
 	String exportOpenMVGDir; // directory to export OpenMVG features to (optional)
 

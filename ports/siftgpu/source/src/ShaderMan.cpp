@@ -239,10 +239,11 @@ void ShaderMan::UseShaderGradientPass(int texP)
 }
 
 
-void ShaderMan::UseShaderKeypoint(int texU, int texD)
+void ShaderMan::UseShaderKeypoint(int texU, int texD, float minCurvature)
 {
 	s_bag->s_keypoint->UseProgram();
 	s_bag->SetDogTexParam(texU, texD);
+	s_bag->SetMinCurvature(minCurvature);
 }
 
 

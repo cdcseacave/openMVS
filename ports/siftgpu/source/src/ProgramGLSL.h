@@ -163,6 +163,11 @@ public:
 	virtual void SetGradPassParam(int texP=0){}
 	virtual void SetGenListStepParam(int tex, int tex0) = 0;
 	virtual void SetGenVBOParam( float width, float fwidth, float size)=0;
+	// minimum scale-normalized curvature of the current DoG level (see -cmin)
+	void SetMinCurvature(float minCurvature) { if(_param_dog_cmin >= 0) glUniform1f(_param_dog_cmin, minCurvature); }
+protected:
+	GLint _param_dog_cmin;
+	static void WriteMinCurvatureTest(std::ostream& out);
 public:
     void CreateGaussianFilters(SiftParam&param);
     void SelectInitialSmoothingFilter(int octave_min, SiftParam&param);
@@ -197,6 +202,8 @@ public:
 	virtual void SetFeatureOrientationParam(int gtex, int width, int height, float sigma, int stex = 0, float step = 1.0f);
 	virtual void SetFeatureDescirptorParam(int gtex, int otex, float dwidth, float fwidth, float width, float height, float sigma);
 	static void  WriteOrientationCodeToStream(std::ostream& out);
+	static float OrientationGain(int k);
+	static const char* OrientationMomentMacros();
 	static ProgramGLSL* LoadGenListStepShader(int start, int step);
 	virtual void SetGenListInitParam(int w, int h);
 	virtual void SetGenListStartParam(float width, int tex0);

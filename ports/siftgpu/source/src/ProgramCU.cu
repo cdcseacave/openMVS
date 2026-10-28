@@ -61,30 +61,28 @@
 #define DOG_BLOCK_DIMY (1 << DOG_BLOCK_LOG_DIMY)
 
 //////////////////////////////////////////////////////////
-//thread block size for keypoint detection
-#define KEY_BLOCK_LOG_DIMX 3
-#define KEY_BLOCK_LOG_DIMY 3
-#define KEY_BLOCK_DIMX (1<<KEY_BLOCK_LOG_DIMX)
-#define KEY_BLOCK_DIMY (1<<KEY_BLOCK_LOG_DIMY)
-//#define KEY_OFFSET_ONE
-//make KEY_BLOCK_LOG_DIMX 4 will make the write coalesced..
-//but it seems uncoalesced writes don't affect the speed
+//thread block size for keypoint detection: each warp covers 32 consecutive
+//pixels of one row, so that it can write the keypoint bit mask of that row segment
+#define KEY_BLOCK_DIMX 32
+#define KEY_BLOCK_DIMY 4
 
 //////////////////////////////////////////////////////////
-//thread block size for initializing list generation (64, 128, 256, 512 ...)
-#define HIST_INIT_WIDTH 128
-//thread block size for generating feature list (32, 64, 128, 256, 512, ...)
+//thread block size for generating the feature list (one block per row)
 #define LISTGEN_BLOCK_DIM 128
 
 
 /////////////////////////////////////////////////////////
 //how many keypoint orientations to compute in a block
 #define ORIENTATION_COMPUTE_PER_BLOCK 64
+#define ORIENTATION_HARMONICS 5
+#define ORIENTATION_SMOOTHING 0.35f
 //how many keypoint descriptor to compute in a block (2, 4, 8, 16, 32)
 #define DESCRIPTOR_COMPUTE_PER_BLOCK	4
 #define DESCRIPTOR_COMPUTE_BLOCK_SIZE	(16 * DESCRIPTOR_COMPUTE_PER_BLOCK)
 //how many keypoint descriptor to normalized in a block (32, ...)
 #define DESCRIPTOR_NORMALIZ_PER_BLOCK	32
+//thread block size of the multi-orientation feature expansion (multiple of 32)
+#define ORIENTATION_EXPAND_BLOCK	256
 
 
 
@@ -283,14 +281,14 @@ template<int LOG_SCALE> __global__ void UpsampleKernel(cudaTextureObject_t texDa
 void ProgramCU::SampleImageU(CuTexImage *dst, CuTexImage *src, int log_scale)
 {
 	int width = src->GetImgWidth(), height = src->GetImgHeight();
-	CuTexImage::CuTexObj srcTex = src->BindTexture(texDataDesc, cudaCreateChannelDesc<float>());
+	const cudaTextureObject_t srcTex = src->BindTexture(texDataDesc, cudaCreateChannelDesc<float>());
 	dim3 grid((width +  FILTERH_TILE_WIDTH - 1)/ FILTERH_TILE_WIDTH, height << log_scale);
 	dim3 block(FILTERH_TILE_WIDTH);
 	switch(log_scale)
 	{
-	case 1 : 	UpsampleKernel<1> <<< grid, block>>> (srcTex.handle, (float*) dst->_cuData, width);	break;
-	case 2 : 	UpsampleKernel<2> <<< grid, block>>> (srcTex.handle, (float*) dst->_cuData, width);	break;
-	case 3 : 	UpsampleKernel<3> <<< grid, block>>> (srcTex.handle, (float*) dst->_cuData, width);	break;
+	case 1 : 	UpsampleKernel<1> <<< grid, block>>> (srcTex, (float*) dst->_cuData, width);	break;
+	case 2 : 	UpsampleKernel<2> <<< grid, block>>> (srcTex, (float*) dst->_cuData, width);	break;
+	case 3 : 	UpsampleKernel<3> <<< grid, block>>> (srcTex, (float*) dst->_cuData, width);	break;
 	default:	break;
 	}
 }
@@ -325,15 +323,15 @@ void ProgramCU::SampleImageD(CuTexImage *dst, CuTexImage *src, int log_scale)
 {
 	int src_width = src->GetImgWidth(), dst_width = dst->GetImgWidth() ;
 
-	CuTexImage::CuTexObj srcTex = src->BindTexture(texDataDesc, cudaCreateChannelDesc<float>());
+	const cudaTextureObject_t srcTex = src->BindTexture(texDataDesc, cudaCreateChannelDesc<float>());
 	dim3 grid((dst_width +  FILTERH_TILE_WIDTH - 1)/ FILTERH_TILE_WIDTH, dst->GetImgHeight());
 	dim3 block(FILTERH_TILE_WIDTH);
 	switch(log_scale)
 	{
-	case 1 : 	DownsampleKernel<1> <<< grid, block>>> (srcTex.handle, (float*) dst->_cuData, src_width, dst_width);	break;
-	case 2 :	DownsampleKernel<2> <<< grid, block>>> (srcTex.handle, (float*) dst->_cuData, src_width, dst_width);	break;
-	case 3 : 	DownsampleKernel<3> <<< grid, block>>> (srcTex.handle, (float*) dst->_cuData, src_width, dst_width);	break;
-	default:	DownsampleKernel    <<< grid, block>>> (srcTex.handle, (float*) dst->_cuData, src_width, dst_width, log_scale);
+	case 1 : 	DownsampleKernel<1> <<< grid, block>>> (srcTex, (float*) dst->_cuData, src_width, dst_width);	break;
+	case 2 :	DownsampleKernel<2> <<< grid, block>>> (srcTex, (float*) dst->_cuData, src_width, dst_width);	break;
+	case 3 : 	DownsampleKernel<3> <<< grid, block>>> (srcTex, (float*) dst->_cuData, src_width, dst_width);	break;
+	default:	DownsampleKernel    <<< grid, block>>> (srcTex, (float*) dst->_cuData, src_width, dst_width, log_scale);
 	}
 }
 
@@ -358,12 +356,12 @@ void ProgramCU::ReduceToSingleChannel(CuTexImage* dst, CuTexImage* src, int conv
 	dim3 block(FILTERH_TILE_WIDTH);
 	if(convert_rgb)
 	{
-        CuTexImage::CuTexObj srcTex = src->BindTexture(texDataDesc, cudaCreateChannelDesc<float4>());
-		ChannelReduce_Convert_Kernel<<<grid, block>>>(srcTex.handle, (float*)dst->_cuData);
+        const cudaTextureObject_t srcTex = src->BindTexture(texDataDesc, cudaCreateChannelDesc<float4>());
+		ChannelReduce_Convert_Kernel<<<grid, block>>>(srcTex, (float*)dst->_cuData);
 	}else
 	{
-		CuTexImage::CuTexObj srcTex = src->BindTexture(texDataDesc, cudaCreateChannelDesc<float>());
-		ChannelReduce_Kernel<<<grid, block>>>(srcTex.handle, (float*)dst->_cuData);
+		const cudaTextureObject_t srcTex = src->BindTexture(texDataDesc, cudaCreateChannelDesc<float>());
+		ChannelReduce_Kernel<<<grid, block>>>(srcTex, (float*)dst->_cuData);
 	}
 }
 
@@ -378,8 +376,8 @@ void ProgramCU::ConvertByteToFloat(CuTexImage*src, CuTexImage* dst)
 	int width = src->GetImgWidth(), height = dst->GetImgHeight() ;
 	dim3 grid((width * height +  FILTERH_TILE_WIDTH - 1)/ FILTERH_TILE_WIDTH);
 	dim3 block(FILTERH_TILE_WIDTH);
-	CuTexImage::CuTexObj srcTex = src->BindTexture(texDataBDesc, cudaCreateChannelDesc<float>());
-	ConvertByteToFloat_Kernel<<<grid, block>>>(srcTex.handle, (float*)dst->_cuData);
+	const cudaTextureObject_t srcTex = src->BindTexture(texDataBDesc, cudaCreateChannelDesc<float>());
+	ConvertByteToFloat_Kernel<<<grid, block>>>(srcTex, (float*)dst->_cuData);
 }
 
 void ProgramCU::CreateFilterKernel(float sigma, float* kernel, int& width)
@@ -418,17 +416,17 @@ template<int FW> void ProgramCU::FilterImage(CuTexImage *dst, CuTexImage *src, C
 	int width = src->GetImgWidth(), height = src->GetImgHeight();
 
 	//horizontal filtering
-	CuTexImage::CuTexObj srcTex = src->BindTexture(texDataDesc, cudaCreateChannelDesc<float>());
+	const cudaTextureObject_t srcTex = src->BindTexture(texDataDesc, cudaCreateChannelDesc<float>());
 	dim3 gridh((width +  FILTERH_TILE_WIDTH - 1)/ FILTERH_TILE_WIDTH, height);
 	dim3 blockh(FILTERH_TILE_WIDTH);
-	FilterH<FW><<<gridh, blockh>>>(srcTex.handle, (float*)buf->_cuData, width);
+	FilterH<FW><<<gridh, blockh>>>(srcTex, (float*)buf->_cuData, width);
 	CheckErrorCUDA("FilterH");
 
 	///vertical filtering
-	CuTexImage::CuTexObj bufTex = buf->BindTexture(texDataDesc, cudaCreateChannelDesc<float>());
+	const cudaTextureObject_t bufTex = buf->BindTexture(texDataDesc, cudaCreateChannelDesc<float>());
 	dim3 gridv((width + FILTERV_TILE_WIDTH - 1)/ FILTERV_TILE_WIDTH,  (height + FILTERV_TILE_HEIGHT - 1)/FILTERV_TILE_HEIGHT);
 	dim3 blockv(FILTERV_TILE_WIDTH, FILTERV_BLOCK_HEIGHT);
-	FilterV<FW><<<gridv, blockv>>>(bufTex.handle, (float*)dst->_cuData, width, height);
+	FilterV<FW><<<gridv, blockv>>>(bufTex, (float*)dst->_cuData, width, height);
 	CheckErrorCUDA("FilterV");
 }
 
@@ -504,12 +502,12 @@ void ProgramCU::ComputeDOG(CuTexImage* gus, CuTexImage* dog, CuTexImage* got)
 	int width = gus->GetImgWidth(), height = gus->GetImgHeight();
 	dim3 grid((width + DOG_BLOCK_DIMX - 1)/ DOG_BLOCK_DIMX,  (height + DOG_BLOCK_DIMY - 1)/DOG_BLOCK_DIMY);
 	dim3 block(DOG_BLOCK_DIMX, DOG_BLOCK_DIMY);
-	CuTexImage::CuTexObj texCObj = gus->BindTexture(texDataDesc, cudaCreateChannelDesc<float>());
-	CuTexImage::CuTexObj texPObj = (gus-1)->BindTexture(texDataDesc, cudaCreateChannelDesc<float>());
+	const cudaTextureObject_t texCObj = gus->BindTexture(texDataDesc, cudaCreateChannelDesc<float>());
+	const cudaTextureObject_t texPObj = (gus-1)->BindTexture(texDataDesc, cudaCreateChannelDesc<float>());
 	if(got->_cuData)
-		ComputeDOG_Kernel<<<grid, block>>>(texCObj.handle, texPObj.handle, (float*) dog->_cuData, (float2*) got->_cuData, width, height);
+		ComputeDOG_Kernel<<<grid, block>>>(texCObj, texPObj, (float*) dog->_cuData, (float2*) got->_cuData, width, height);
 	else
-		ComputeDOG_Kernel<<<grid, block>>>(texCObj.handle, texPObj.handle, (float*) dog->_cuData, width, height);
+		ComputeDOG_Kernel<<<grid, block>>>(texCObj, texPObj, (float*) dog->_cuData, width, height);
 }
 
 
@@ -532,38 +530,46 @@ void ProgramCU::ComputeDOG(CuTexImage* gus, CuTexImage* dog, CuTexImage* got)
 		}
 
 
+// Detects the DoG extrema of one level. Besides the per-pixel keypoint data (sign, sub-pixel
+// offset), each warp writes the bit mask of the keypoints in its 32 pixels of a row to d_mask
+// and adds their number to the row count, from which GenerateFeatureList builds the feature list
+// without reading the keypoint map back.
+//
 // min_curvature (0 = off): after the edge test, the smaller principal curvature |lambda_min| of the
 // DoG Hessian must reach this value (already divided by the squared level sigma, so the test is on
 // the scale-normalized curvature sigma^2*|lambda_min|). Like the RSa1 detector of Acute3D, this keeps
 // low-contrast extrema that are well curved in both directions (blobs and corners on weakly textured
 // surfaces) and rejects flat and edge-like ones, so a low DoG threshold can be used with it.
-void __global__ ComputeKEY_Kernel(cudaTextureObject_t texP, cudaTextureObject_t texC, cudaTextureObject_t texN, float4* d_key, int width, int colmax, int rowmax,
+// Darkness adaptation (texG = the Gaussian level, 0 = off) lowers the DoG thresholds and the
+// curvature floor in dark areas by min(2 * intensity + 0.1, 1), as the GLSL implementation does
+// (contrast in the gamma-encoded image falls with brightness). Without a per-image feature cap it
+// improves the poses of normally exposed scenes; on underexposed, noisy images it admits noise.
+void __global__ ComputeKEY_Kernel(cudaTextureObject_t texP, cudaTextureObject_t texC, cudaTextureObject_t texN,
+					cudaTextureObject_t texG,
+					float4* d_key, unsigned int* d_mask, int* d_row_count, int width, int height, int mask_width,
 					float dog_threshold0,  float dog_threshold, float edge_threshold, int subpixel_localization,
 					float min_curvature)
 {
-       float data[3][3], v;
-       float datap[3][3], datan[3][3];
-#ifdef KEY_OFFSET_ONE
-       int row = (blockIdx.y << KEY_BLOCK_LOG_DIMY) + threadIdx.y + 1;
-       int col = (blockIdx.x << KEY_BLOCK_LOG_DIMX) + threadIdx.x + 1;
-#else
-       int row = (blockIdx.y << KEY_BLOCK_LOG_DIMY) + threadIdx.y;
-       int col = (blockIdx.x << KEY_BLOCK_LOG_DIMX) + threadIdx.x;
-#endif
-       int index = IMUL(row, width) + col;
-	   int idx[3] ={index - width, index, index + width};
-       int in_image =0;
-       float nmax, nmin, result = 0.0f;
-	   float dx = 0, dy = 0, ds = 0;
-	   bool offset_test_passed = true;
-#ifdef KEY_OFFSET_ONE
-       if(row < rowmax && col < colmax)
-#else
-       if(row > 0 && col > 0 && row < rowmax && col < colmax)
-#endif
-       {
-			in_image = 1;
+	float data[3][3], v;
+	float datap[3][3], datan[3][3];
+	const int row = blockIdx.y * KEY_BLOCK_DIMY + threadIdx.y;
+	const int col = blockIdx.x * KEY_BLOCK_DIMX + threadIdx.x;
+	const int index = IMUL(row, width) + col;
+	const int idx[3] ={index - width, index, index + width};
+	const bool in_image = row > 0 && col > 0 && row < height - 1 && col < width - 1;
+	float nmax, nmin, result = 0.0f;
+	float dx = 0, dy = 0, ds = 0;
+	bool offset_test_passed = true;
+	if(in_image)
+	{
 			data[1][1] = v = tex1Dfetch<float>(texC, idx[1]);
+			if(texG)
+			{
+				const float dark = fminf(2.0f * tex1Dfetch<float>(texG, idx[1]) + 0.1f, 1.0f);
+				dog_threshold0 *= dark;
+				dog_threshold *= dark;
+				min_curvature *= dark;
+			}
 			if(fabs(v) <= dog_threshold0) goto key_finish;
 
 			data[1][0] = tex1Dfetch<float>(texC, idx[1] - 1);
@@ -572,7 +578,6 @@ void __global__ ComputeKEY_Kernel(cudaTextureObject_t texP, cudaTextureObject_t 
 			nmin = min(data[1][0], data[1][2]);
 
 			if(v <=nmax && v >= nmin) goto key_finish;
-			//if((v > nmax && v < 0 )|| (v < nmin && v > 0)) goto key_finish;
 			READ_CMP_DOG_DATA(data[0], texC, idx[0]);
 			READ_CMP_DOG_DATA(data[2], texC, idx[2]);
 
@@ -657,146 +662,92 @@ void __global__ ComputeKEY_Kernel(cudaTextureObject_t texP, cudaTextureObject_t 
 				}
 			}
 			if(offset_test_passed) result = v > nmax ? 1.0 : -1.0;
-       }
+	}
 key_finish:
-       if(in_image) d_key[index] = make_float4(result, dx, dy, ds);
+	if(in_image) d_key[index] = make_float4(result, dx, dy, ds);
+	// every thread of the warp gets here (no early return), one row segment per warp
+	const unsigned int mask = __ballot_sync(0xffffffff, result != 0.0f);
+	if(threadIdx.x == 0 && row < height)
+	{
+		d_mask[IMUL(row, mask_width) + blockIdx.x] = mask;
+		if(mask) atomicAdd(d_row_count + row, __popc(mask));
+	}
 }
 
 
-void ProgramCU::ComputeKEY(CuTexImage* dog, CuTexImage* key, float Tdog, float Tedge, float sigma)
+void ProgramCU::ComputeKEY(CuTexImage* dog, CuTexImage* key, CuTexImage* gus, unsigned int* mask, int* row_count,
+						   float Tdog, float Tedge, float sigma)
 {
 	int width = dog->GetImgWidth(), height = dog->GetImgHeight();
 	float Tdog1 = (GlobalUtil::_SubpixelLocalization? 0.8f : 1.0f) * Tdog;
 	CuTexImage* dogp = dog - 1;
 	CuTexImage* dogn = dog + 1;
-#ifdef KEY_OFFSET_ONE
-	dim3 grid((width - 1 + KEY_BLOCK_DIMX - 1)/ KEY_BLOCK_DIMX,  (height - 1 + KEY_BLOCK_DIMY - 1)/KEY_BLOCK_DIMY);
-#else
-	dim3 grid((width + KEY_BLOCK_DIMX - 1)/ KEY_BLOCK_DIMX,  (height + KEY_BLOCK_DIMY - 1)/KEY_BLOCK_DIMY);
-#endif
+	dim3 grid(GetKeyMaskWidth(width),  (height + KEY_BLOCK_DIMY - 1)/KEY_BLOCK_DIMY);
 	dim3 block(KEY_BLOCK_DIMX, KEY_BLOCK_DIMY);
-	CuTexImage::CuTexObj texPObj = dogp->BindTexture(texDataDesc, cudaCreateChannelDesc<float>());
-	CuTexImage::CuTexObj texCObj = dog->BindTexture(texDataDesc, cudaCreateChannelDesc<float>());
-	CuTexImage::CuTexObj texNObj = dogn->BindTexture(texDataDesc, cudaCreateChannelDesc<float>());
+	const cudaTextureObject_t texPObj = dogp->BindTexture(texDataDesc, cudaCreateChannelDesc<float>());
+	const cudaTextureObject_t texCObj = dog->BindTexture(texDataDesc, cudaCreateChannelDesc<float>());
+	const cudaTextureObject_t texNObj = dogn->BindTexture(texDataDesc, cudaCreateChannelDesc<float>());
+	const cudaTextureObject_t texGObj = GlobalUtil::_DarknessAdaption ? gus->BindTexture(texDataDesc, cudaCreateChannelDesc<float>()) : 0;
 	Tedge = (Tedge+1)*(Tedge+1)/Tedge;
-	ComputeKEY_Kernel<<<grid, block>>>(texPObj.handle, texCObj.handle, texNObj.handle, (float4*) key->_cuData, width,
-        width -1, height -1, Tdog1, Tdog, Tedge, GlobalUtil::_SubpixelLocalization,
-        GlobalUtil::_MinCurvature / (sigma * sigma));
+	ComputeKEY_Kernel<<<grid, block>>>(texPObj, texCObj, texNObj, texGObj, (float4*) key->_cuData,
+		mask, row_count, width, height, GetKeyMaskWidth(width), Tdog1, Tdog, Tedge, GlobalUtil::_SubpixelLocalization,
+		GlobalUtil::_MinCurvature / (sigma * sigma));
+}
 
+int ProgramCU::GetKeyMaskWidth(int width)
+{
+	return (width + KEY_BLOCK_DIMX - 1) / KEY_BLOCK_DIMX;
 }
 
 
-
-void __global__ InitHist_Kernel(cudaTextureObject_t texDataF4, int4* hist, int ws, int wd, int height)
+// Writes the keypoint positions (col, row, 0, 0) of one level in row-major order, one block per
+// row: the set bits of the row's masks, in column order, starting at the row's list offset.
+void __global__ ListKeys_Kernel(const unsigned int* d_mask, int mask_width, const int* d_row_count,
+								const int* d_row_offset, int4* d_list)
 {
-       int row = IMUL(blockIdx.y, blockDim.y) + threadIdx.y;
-       int col = IMUL(blockIdx.x, blockDim.x) + threadIdx.x;
-	   if(row < height && col < wd)
-	   {
-			int hidx = IMUL(row, wd) + col;
-			int scol = col << 2;
-			int sidx = IMUL(row, ws) + scol;
-			int v[4] = {0, 0, 0, 0};
-			if(row > 0 && row < height -1)
-			{
+	__shared__ int warp_total[LISTGEN_BLOCK_DIM / 32];
+	const int row = blockIdx.x;
+	if(d_row_count[row] == 0) return;
+	const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+	int offset = d_row_offset[row];
+	for(int first = 0; first < mask_width; first += LISTGEN_BLOCK_DIM)
+	{
+		const int word = first + threadIdx.x;
+		unsigned int mask = word < mask_width ? d_mask[IMUL(row, mask_width) + word] : 0;
+		const int count = __popc(mask);
+		// inclusive scan of the counts within the warp, then across the warps
+		int scan = count;
 #pragma unroll
-				for(int i = 0; i < 4 ; ++i, ++scol)
-				{
-					float4 temp = tex1Dfetch<float4>(texDataF4, sidx +i);
-					v[i] = (scol < ws -1 && scol > 0 && temp.x!=0) ? 1 : 0;
-				}
-			}
-			hist[hidx] = make_int4(v[0], v[1], v[2], v[3]);
-
-	   }
-}
-
-
-
-void ProgramCU::InitHistogram(CuTexImage* key, CuTexImage* hist)
-{
-	int ws = key->GetImgWidth(), hs = key->GetImgHeight();
-	int wd = hist->GetImgWidth(), hd = hist->GetImgHeight();
-	dim3 grid((wd  + HIST_INIT_WIDTH - 1)/ HIST_INIT_WIDTH,  hd);
-	dim3 block(HIST_INIT_WIDTH, 1);
-    CuTexImage::CuTexObj keyTex = key->BindTexture(texDataDesc, cudaCreateChannelDesc<float4>());
-	InitHist_Kernel<<<grid, block>>>(keyTex.handle, (int4*) hist->_cuData, ws, wd, hd);
-}
-
-
-
-void __global__ ReduceHist_Kernel(cudaTextureObject_t texDataI4, int4* d_hist, int ws, int wd, int height)
-{
-       int row = IMUL(blockIdx.y, blockDim.y) + threadIdx.y;
-       int col = IMUL(blockIdx.x, blockDim.x) + threadIdx.x;
-	   if(row < height && col < wd)
-	   {
-			int hidx = IMUL(row, wd) + col;
-			int scol = col << 2;
-			int sidx = IMUL(row, ws) + scol;
-			int v[4] = {0, 0, 0, 0};
+		for(int d = 1; d < 32; d <<= 1)
+		{
+			const int other = __shfl_up_sync(0xffffffff, scan, d);
+			if(lane >= d) scan += other;
+		}
+		if(lane == 31) warp_total[warp] = scan;
+		__syncthreads();
+		int before = 0, total = 0;
 #pragma unroll
-			for(int i = 0; i < 4 && scol < ws; ++i, ++scol)
-			{
-				int4 temp = tex1Dfetch<int4>(texDataI4, sidx + i);
-				v[i] = temp.x + temp.y + temp.z + temp.w;
-			}
-			d_hist[hidx] = make_int4(v[0], v[1], v[2], v[3]);
-	   }
-}
-
-void ProgramCU::ReduceHistogram(CuTexImage*hist1, CuTexImage* hist2)
-{
-	int ws = hist1->GetImgWidth(), hs = hist1->GetImgHeight();
-	int wd = hist2->GetImgWidth(), hd = hist2->GetImgHeight();
-	int temp = (int)floorf(logf(float(wd * 2/ 3)) / logf(2.0f));
-	const int wi = std::min(7, std::max(temp , 0));
-    CuTexImage::CuTexObj hist1Tex = hist1->BindTexture(texDataDesc, cudaCreateChannelDesc<int4>());
-
-	const int BW = 1 << wi, BH =  1 << (7 - wi);
-	dim3 grid((wd  + BW - 1)/ BW,  (hd + BH -1) / BH);
-	dim3 block(BW, BH);
-	ReduceHist_Kernel<<<grid, block>>>(hist1Tex.handle, (int4*)hist2->_cuData, ws, wd, hd);
-}
-
-
-void __global__ ListGen_Kernel(cudaTextureObject_t texDataList, cudaTextureObject_t texDataI4, int4* d_list, int list_len, int width)
-{
-	int idx1 = IMUL(blockIdx.x, blockDim.x) + threadIdx.x;
-    int4 pos = tex1Dfetch<int4>(texDataList, idx1);
-	int idx2 = IMUL(pos.y, width) + pos.x;
-	int4 temp = tex1Dfetch<int4>(texDataI4, idx2);
-	int  sum1 = temp.x + temp.y;
-	int  sum2 = sum1 + temp.z;
-	pos.x <<= 2;
-	if(pos.z >= sum2)
-	{
-		pos.x += 3;
-		pos.z -= sum2;
-	}else if(pos.z >= sum1)
-	{
-		pos.x += 2;
-		pos.z -= sum1;
-	}else if(pos.z >= temp.x)
-	{
-		pos.x += 1;
-		pos.z -= temp.x;
+		for(int w = 0; w < LISTGEN_BLOCK_DIM / 32; ++w)
+		{
+			if(w < warp) before += warp_total[w];
+			total += warp_total[w];
+		}
+		int pos = offset + before + scan - count;
+		while(mask)
+		{
+			const int bit = __ffs(mask) - 1;
+			mask &= mask - 1;
+			d_list[pos++] = make_int4((word << 5) + bit, row, 0, 0);
+		}
+		offset += total;
+		__syncthreads();
 	}
-  if (idx1 < list_len) {
-    d_list[idx1] = pos;
-  }
 }
 
-//input list (x, y) (x, y) ....
-void ProgramCU::GenerateList(CuTexImage* list, CuTexImage* hist)
+void ProgramCU::ListKeys(CuTexImage* list, const unsigned int* mask, int mask_width, const int* row_count,
+						 const int* row_offset, int height)
 {
-	int len = list->GetImgWidth();
-    CuTexImage::CuTexObj listTex = list->BindTexture(texDataDesc, cudaCreateChannelDesc<int4>());
-    CuTexImage::CuTexObj histTex = hist->BindTexture(texDataDesc, cudaCreateChannelDesc<int4>());
-	dim3  grid((len + LISTGEN_BLOCK_DIM -1) /LISTGEN_BLOCK_DIM);
-	dim3  block(LISTGEN_BLOCK_DIM);
-	ListGen_Kernel<<<grid, block>>>(listTex.handle, histTex.handle, (int4*) list->_cuData, len,
-                                  hist->GetImgWidth());
+	ListKeys_Kernel<<<height, LISTGEN_BLOCK_DIM>>>(mask, mask_width, row_count, row_offset, (int4*) list->_cuData);
 }
 
 void __global__ ComputeOrientation_Kernel(cudaTextureObject_t texDataF2,
@@ -812,7 +763,6 @@ void __global__ ComputeOrientation_Kernel(cudaTextureObject_t texDataF2,
 										  int subpixel,
 										  int keepsign)
 {
-	const float ten_degree_per_radius = 5.7295779513082320876798154814105;
 	const float radius_per_ten_degrees = 1.0 / 5.7295779513082320876798154814105;
 	int idx = IMUL(blockDim.x, blockIdx.x) + threadIdx.x;
 	if(idx >= list_len) return;
@@ -844,6 +794,13 @@ void __global__ ComputeOrientation_Kernel(cudaTextureObject_t texDataF2,
 		d_list[idx] = key;
 		return;
 	}
+	// Orientation density from circular moments instead of a 36-bin histogram: each gradient adds
+	// w * exp(i k theta) to M_k, k = 0..ORIENTATION_HARMONICS (complex multiplication by the unit
+	// direction, no binning). Smoothing the density with a wrapped Gaussian of ORIENTATION_SMOOTHING
+	// rad (the six [1 1 1]/3 passes of the histogram are about 0.35 rad) attenuates harmonic k by
+	// exp(-k^2 sigma^2 / 2), so a few harmonics suffice; the density is sampled at the former bin
+	// centres (t + 0.5) * 10 degrees, where the peak search below works as before. The angle is
+	// estimated without quantization (about 20% lower orientation error on rotated views).
 	float vote[37];
 	float gsigma = key.z * gaussian_factor;
 	float win = fabs(key.z) * sample_factor;
@@ -853,11 +810,16 @@ void __global__ ComputeOrientation_Kernel(cudaTextureObject_t texDataF2,
 	float ymin = max(1.5f, floorf(key.y - win) + 0.5f);
 	float xmax = min(width - 1.5f, floorf(key.x + win) + 0.5f);
 	float ymax = min(height -1.5f, floorf(key.y + win) + 0.5f);
+	float mre[ORIENTATION_HARMONICS + 1], mim[ORIENTATION_HARMONICS + 1];
 #pragma unroll
-	for(int i = 0; i < 36; ++i) vote[i] = 0.0f;
+	for(int k = 0; k <= ORIENTATION_HARMONICS; ++k) mre[k] = mim[k] = 0.0f;
 	for(float y = ymin; y <= ymax; y += 1.0f)
 	{
-		for(float x = xmin; x <= xmax; x += 1.0f)
+		// columns of the window circle on this row, with one pixel of margin (the test below decides)
+		const float half = sqrtf(fmaxf(dist_threshold - (y - key.y) * (y - key.y), 0.0f)) + 1.0f;
+		const float x0 = fmaxf(xmin, xmin + floorf(key.x - half - xmin));
+		const float x1 = fminf(xmax, key.x + half);
+		for(float x = x0; x <= x1; x += 1.0f)
 		{
 			float dx = x - key.x;
 			float dy = y - key.y;
@@ -865,27 +827,37 @@ void __global__ ComputeOrientation_Kernel(cudaTextureObject_t texDataF2,
 			if(sq_dist >= dist_threshold) continue;
 			float2 got = tex2D<float2>(texDataF2, x, y);
 			float weight = got.x * exp(sq_dist * factor);
-			float fidx = floorf(got.y * ten_degree_per_radius);
-			int oidx = fidx;
-			if(oidx < 0) oidx += 36;
-			vote[oidx] += weight;
+			float s, c;
+			sincosf(got.y, &s, &c);
+			float zr = weight, zi = 0.0f;
+#pragma unroll
+			for(int k = 0; k <= ORIENTATION_HARMONICS; ++k)
+			{
+				mre[k] += zr; mim[k] += zi;
+				const float t = zr * c - zi * s;
+				zi = zr * s + zi * c;
+				zr = t;
+			}
 		}
 	}
-
-	//filter the vote
-
-	const float one_third = 1.0 /3.0;
+	float gain[ORIENTATION_HARMONICS + 1];
 #pragma unroll
-	for(int i = 0; i < 6; ++i)
+	for(int k = 0; k <= ORIENTATION_HARMONICS; ++k)
+		gain[k] = (k == 0 ? 1.0f : 2.0f) * expf(-0.5f * k * k * ORIENTATION_SMOOTHING * ORIENTATION_SMOOTHING);
+	for(int t = 0; t < 36; ++t)
 	{
-		vote[36] = vote[0];
-		float pre = vote[35];
+		float s1, c1;
+		sincosf((t + 0.5f) * radius_per_ten_degrees, &s1, &c1);
+		float cr = 1.0f, ci = 0.0f, d = 0.0f;
 #pragma unroll
-		for(int j = 0; j < 36; ++j)
+		for(int k = 0; k <= ORIENTATION_HARMONICS; ++k)
 		{
-			float temp = one_third * (pre + vote[j] + vote[j + 1]);
-			pre = vote[j];			vote[j] = temp;
+			d += gain[k] * (mre[k] * cr + mim[k] * ci);
+			const float tmp = cr * c1 - ci * s1;
+			ci = cr * s1 + ci * c1;
+			cr = tmp;
 		}
+		vote[t] = d;
 	}
 
 	vote[36] = vote[0];
@@ -971,8 +943,8 @@ void ProgramCU::ComputeOrientation(CuTexImage* list, CuTexImage* got, CuTexImage
 	int len = list->GetImgWidth();
 	if(len <= 0) return;
 	int width = got->GetImgWidth(), height = got->GetImgHeight();
-    CuTexImage::CuTexObj texObjF4;
-    CuTexImage::CuTexObj texObjList;
+    cudaTextureObject_t texObjF4 = 0;
+    cudaTextureObject_t texObjList = 0;
 	if(existing_keypoint)
 	{
         texObjF4 = list->BindTexture(texDataDesc, cudaCreateChannelDesc<float4>());
@@ -985,16 +957,16 @@ void ProgramCU::ComputeOrientation(CuTexImage* list, CuTexImage* got, CuTexImage
         }
 	}
 
-	CuTexImage::CuTexObj gotTex = got->BindTexture2D(texDataDesc, cudaCreateChannelDesc<float2>());
+	const cudaTextureObject_t gotTex = got->BindTexture2D(texDataDesc, cudaCreateChannelDesc<float2>());
 
 	const int block_width = len < ORIENTATION_COMPUTE_PER_BLOCK ? 16 : ORIENTATION_COMPUTE_PER_BLOCK;
 	dim3 grid((len + block_width -1) / block_width);
 	dim3 block(block_width);
 
 	ComputeOrientation_Kernel<<<grid, block>>>(
-        gotTex.handle,
-        texObjF4.handle,
-        texObjList.handle,
+        gotTex,
+        texObjF4,
+        texObjList,
         (float4*) list->_cuData,
 		len, width, height, sigma, sigma_step,
 		GlobalUtil::_OrientationGaussianFactor,
@@ -1003,6 +975,18 @@ void ProgramCU::ComputeOrientation(CuTexImage* list, CuTexImage* got, CuTexImage
 		existing_keypoint, GlobalUtil::_SubpixelLocalization, GlobalUtil::_KeepExtremumSign);
 
 	ProgramCU::CheckErrorCUDA("ComputeOrientation");
+}
+
+// Narrows [lo, hi] to the values t with low < a * t < high (lo > hi when empty).
+__device__ inline void NarrowLinearRange(float a, float low, float high, float& lo, float& hi)
+{
+	if(a != 0.0f)
+	{
+		const float t0 = low / a, t1 = high / a;
+		lo = fmaxf(lo, fminf(t0, t1));
+		hi = fminf(hi, fmaxf(t0, t1));
+	}
+	else if(!(low < 0.0f && high > 0.0f)) hi = lo - 1.0f;
 }
 
 template <bool DYNAMIC_INDEXING> void __global__ ComputeDescriptor_Kernel(cudaTextureObject_t texDataF2, cudaTextureObject_t texDataF4, float4* d_des, int num,
@@ -1035,7 +1019,15 @@ template <bool DYNAMIC_INDEXING> void __global__ ComputeDescriptor_Kernel(cudaTe
 	for(int i =0; i < 9; ++i) des[i] = 0.0f;
 	for(float y = ymin; y <= ymax; y += 1.0f)
 	{
-		for(float x = xmin; x <= xmax; x += 1.0f)
+		// columns of the rotated cell (|nx| < 1 and |ny| < 1) on this row, with one pixel of
+		// margin (the test below decides)
+		float lo = xmin - pt.x, hi = xmax - pt.x;
+		NarrowLinearRange(crspt, -1.0f - srspt * (y - pt.y), 1.0f - srspt * (y - pt.y), lo, hi);
+		NarrowLinearRange(-srspt, -1.0f - crspt * (y - pt.y), 1.0f - crspt * (y - pt.y), lo, hi);
+		if(lo > hi) continue;
+		const float x0 = fmaxf(xmin, xmin + floorf(pt.x + lo - xmin) - 1.0f);
+		const float x1 = fminf(xmax, pt.x + hi + 1.0f);
+		for(float x = x0; x <= x1; x += 1.0f)
 		{
 			float dx = x - pt.x;
 			float dy = y - pt.y;
@@ -1155,7 +1147,7 @@ template <bool DYNAMIC_INDEXING> void __global__ ComputeDescriptorRECT_Kernel(cu
 	d_des[didx+1] = make_float4(des[4], des[5], des[6], des[7]);
 }
 
-void __global__ NormalizeDescriptor_Kernel(cudaTextureObject_t texDataF4, float4* d_des, int num)
+void __global__ NormalizeDescriptor_Kernel(float4* d_des, int num)
 {
 	float4 temp[32];
 	int idx = IMUL(blockIdx.x, blockDim.x) + threadIdx.x;
@@ -1165,7 +1157,7 @@ void __global__ NormalizeDescriptor_Kernel(cudaTextureObject_t texDataF4, float4
 #pragma unroll
 	for(int i = 0; i < 32; ++i)
 	{
-		temp[i] = tex1Dfetch<float4>(texDataF4, sidx +i);
+		temp[i] = d_des[sidx + i];
 		norm1 += (temp[i].x * temp[i].x + temp[i].y * temp[i].y +
 				 temp[i].z * temp[i].z + temp[i].w * temp[i].w);
 	}
@@ -1192,15 +1184,15 @@ void __global__ NormalizeDescriptor_Kernel(cudaTextureObject_t texDataF4, float4
 	}
 }
 
-void ProgramCU::ComputeDescriptor(CuTexImage*list, CuTexImage* got, CuTexImage* dtex, int rect, int stream)
+void ProgramCU::ComputeDescriptor(CuTexImage*list, CuTexImage* got, float* descriptors, int rect)
 {
 	int num = list->GetImgWidth();
 	int width = got->GetImgWidth();
 	int height = got->GetImgHeight();
+	float4* d_des = (float4*) descriptors;
 
-    dtex->InitTexture(num * 128, 1, 1);
-    CuTexImage::CuTexObj gotTex = got->BindTexture2D(texDataDesc, cudaCreateChannelDesc<float2>());
-    CuTexImage::CuTexObj listTex = list->BindTexture(texDataDesc, cudaCreateChannelDesc<float4>());
+    const cudaTextureObject_t gotTex = got->BindTexture2D(texDataDesc, cudaCreateChannelDesc<float2>());
+    const cudaTextureObject_t listTex = list->BindTexture(texDataDesc, cudaCreateChannelDesc<float4>());
 	int block_width = DESCRIPTOR_COMPUTE_BLOCK_SIZE;
 	dim3 grid((num * 16 + block_width -1) / block_width);
 	dim3 block(block_width);
@@ -1208,26 +1200,98 @@ void ProgramCU::ComputeDescriptor(CuTexImage*list, CuTexImage* got, CuTexImage* 
     if(rect)
     {
 	    if(GlobalUtil::_UseDynamicIndexing)
-	    	ComputeDescriptorRECT_Kernel<true><<<grid, block>>>(gotTex.handle, listTex.handle, (float4*) dtex->_cuData, num, width, height, GlobalUtil::_DescriptorWindowFactor);
+	    	ComputeDescriptorRECT_Kernel<true><<<grid, block>>>(gotTex, listTex, d_des, num, width, height, GlobalUtil::_DescriptorWindowFactor);
 	    else
-	    	ComputeDescriptorRECT_Kernel<false><<<grid, block>>>(gotTex.handle, listTex.handle, (float4*) dtex->_cuData, num, width, height, GlobalUtil::_DescriptorWindowFactor);
+	    	ComputeDescriptorRECT_Kernel<false><<<grid, block>>>(gotTex, listTex, d_des, num, width, height, GlobalUtil::_DescriptorWindowFactor);
 
     }else
     {
 	    if(GlobalUtil::_UseDynamicIndexing)
-	    	ComputeDescriptor_Kernel<true><<<grid, block>>>(gotTex.handle, listTex.handle, (float4*) dtex->_cuData, num, width, height, GlobalUtil::_DescriptorWindowFactor);
+	    	ComputeDescriptor_Kernel<true><<<grid, block>>>(gotTex, listTex, d_des, num, width, height, GlobalUtil::_DescriptorWindowFactor);
 	    else
-	    	ComputeDescriptor_Kernel<false><<<grid, block>>>(gotTex.handle, listTex.handle, (float4*) dtex->_cuData, num, width, height, GlobalUtil::_DescriptorWindowFactor);
+	    	ComputeDescriptor_Kernel<false><<<grid, block>>>(gotTex, listTex, d_des, num, width, height, GlobalUtil::_DescriptorWindowFactor);
     }
 	if(GlobalUtil::_NormalizedSIFT)
 	{
-        CuTexImage::CuTexObj dtexTex = dtex->BindTexture(texDataDesc, cudaCreateChannelDesc<float4>());
 		const int block_width = DESCRIPTOR_NORMALIZ_PER_BLOCK;
 		dim3 grid((num + block_width -1) / block_width);
 		dim3 block(block_width);
-		NormalizeDescriptor_Kernel<<<grid, block>>>(dtexTex.handle, (float4*) dtex->_cuData, num);
+		NormalizeDescriptor_Kernel<<<grid, block>>>(d_des, num);
 	}
 	CheckErrorCUDA("ComputeDescriptor");
+}
+
+
+// Number of orientations (0, 1 or 2) of a feature whose w component packs two 16-bit
+// orientations (65535 = none), see ComputeOrientation_Kernel.
+__device__ inline int OrientationCount(float packed)
+{
+	const unsigned int bits = __float_as_uint(packed);
+	const unsigned int first = bits & 0xffff, second = bits >> 16;
+	return first == 65535 ? 0 : (second != 65535 && second != first ? 2 : 1);
+}
+
+// Exclusive scan of count over the threads of a ORIENTATION_EXPAND_BLOCK block; total gets the block sum.
+__device__ inline int BlockExclusiveScan(int count, int& total)
+{
+	__shared__ int warp_total[ORIENTATION_EXPAND_BLOCK / 32];
+	const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+	int scan = count;
+#pragma unroll
+	for(int d = 1; d < 32; d <<= 1)
+	{
+		const int other = __shfl_up_sync(0xffffffff, scan, d);
+		if(lane >= d) scan += other;
+	}
+	if(lane == 31) warp_total[warp] = scan;
+	__syncthreads();
+	int before = 0;
+	total = 0;
+#pragma unroll
+	for(int w = 0; w < ORIENTATION_EXPAND_BLOCK / 32; ++w)
+	{
+		if(w < warp) before += warp_total[w];
+		total += warp_total[w];
+	}
+	return before + scan - count;
+}
+
+void __global__ CountOrientations_Kernel(const float4* d_list, int num, int* d_block_count)
+{
+	const int idx = blockIdx.x * ORIENTATION_EXPAND_BLOCK + threadIdx.x;
+	int total;
+	BlockExclusiveScan(idx < num ? OrientationCount(d_list[idx].w) : 0, total);
+	if(threadIdx.x == 0) d_block_count[blockIdx.x] = total;
+}
+
+// Writes one feature per orientation, in feature order, starting at the block's output offset;
+// the angle is decoded exactly as the CPU code did (16-bit fraction of 2*pi in double precision).
+void __global__ ExpandOrientations_Kernel(const float4* d_list, int num, const int* d_block_start, float4* d_out)
+{
+	const int idx = blockIdx.x * ORIENTATION_EXPAND_BLOCK + threadIdx.x;
+	const float4 key = idx < num ? d_list[idx] : make_float4(0, 0, 0, 0);
+	const int count = idx < num ? OrientationCount(key.w) : 0;
+	int total;
+	int pos = d_block_start[blockIdx.x] + BlockExclusiveScan(count, total);
+	const double factor = 2.0 * 3.14159265358979323846 / 65535.0;
+	const unsigned int bits = __float_as_uint(key.w);
+	if(count > 0) d_out[pos++] = make_float4(key.x, key.y, key.z, float(factor * (bits & 0xffff)));
+	if(count > 1) d_out[pos] = make_float4(key.x, key.y, key.z, float(factor * (bits >> 16)));
+}
+
+int ProgramCU::GetOrientationBlockNum(int num)
+{
+	return (num + ORIENTATION_EXPAND_BLOCK - 1) / ORIENTATION_EXPAND_BLOCK;
+}
+
+void ProgramCU::CountOrientations(CuTexImage* list, int num, int* block_count)
+{
+	CountOrientations_Kernel<<<GetOrientationBlockNum(num), ORIENTATION_EXPAND_BLOCK>>>((const float4*) list->_cuData, num, block_count);
+}
+
+void ProgramCU::ExpandOrientations(CuTexImage* list, int num, const int* block_start, float4* out)
+{
+	ExpandOrientations_Kernel<<<GetOrientationBlockNum(num), ORIENTATION_EXPAND_BLOCK>>>((const float4*) list->_cuData, num, block_start, out);
 }
 
 //////////////////////////////////////////////////////
@@ -1268,10 +1332,10 @@ void ProgramCU::DisplayConvertDOG(CuTexImage* dog, CuTexImage* out)
 {
 	if(out->_cuData == NULL) return;
 	int width = dog->GetImgWidth(), height = dog ->GetImgHeight();
-	CuTexImage::CuTexObj dogTex = dog->BindTexture(texDataDesc, cudaCreateChannelDesc<float>());
+	const cudaTextureObject_t dogTex = dog->BindTexture(texDataDesc, cudaCreateChannelDesc<float>());
 	dim3 grid((width + BLOCK_DIM - 1)/ BLOCK_DIM,  (height + BLOCK_DIM - 1)/BLOCK_DIM);
 	dim3 block(BLOCK_DIM, BLOCK_DIM);
-	ConvertDOG_Kernel<<<grid, block>>>(dogTex.handle, (float*) out->_cuData, width, height);
+	ConvertDOG_Kernel<<<grid, block>>>(dogTex, (float*) out->_cuData, width, height);
 	ProgramCU::CheckErrorCUDA("DisplayConvertDOG");
 }
 
@@ -1294,10 +1358,10 @@ void ProgramCU::DisplayConvertGRD(CuTexImage* got, CuTexImage* out)
 {
 	if(out->_cuData == NULL) return;
 	int width = got->GetImgWidth(), height = got ->GetImgHeight();
-	CuTexImage::CuTexObj gotTex = got->BindTexture(texDataDesc, cudaCreateChannelDesc<float>());
+	const cudaTextureObject_t gotTex = got->BindTexture(texDataDesc, cudaCreateChannelDesc<float>());
 	dim3 grid((width + BLOCK_DIM - 1)/ BLOCK_DIM,  (height + BLOCK_DIM - 1)/BLOCK_DIM);
 	dim3 block(BLOCK_DIM, BLOCK_DIM);
-	ConvertGRD_Kernel<<<grid, block>>>(gotTex.handle, (float*) out->_cuData, width, height);
+	ConvertGRD_Kernel<<<grid, block>>>(gotTex, (float*) out->_cuData, width, height);
 	ProgramCU::CheckErrorCUDA("DisplayConvertGRD");
 }
 
@@ -1322,11 +1386,11 @@ void ProgramCU::DisplayConvertKEY(CuTexImage* key, CuTexImage* dog, CuTexImage* 
 {
 	if(out->_cuData == NULL) return;
 	int width = key->GetImgWidth(), height = key ->GetImgHeight();
-	CuTexImage::CuTexObj dogTex = dog->BindTexture(texDataDesc, cudaCreateChannelDesc<float>());
-    CuTexImage::CuTexObj keyTex = key->BindTexture(texDataDesc, cudaCreateChannelDesc<float4>());
+	const cudaTextureObject_t dogTex = dog->BindTexture(texDataDesc, cudaCreateChannelDesc<float>());
+    const cudaTextureObject_t keyTex = key->BindTexture(texDataDesc, cudaCreateChannelDesc<float4>());
 	dim3 grid((width + BLOCK_DIM - 1)/ BLOCK_DIM,  (height + BLOCK_DIM - 1)/BLOCK_DIM);
 	dim3 block(BLOCK_DIM, BLOCK_DIM);
-	ConvertKEY_Kernel<<<grid, block>>>(dogTex.handle, keyTex.handle, (float4*) out->_cuData, width, height);
+	ConvertKEY_Kernel<<<grid, block>>>(dogTex, keyTex, (float4*) out->_cuData, width, height);
 }
 
 
@@ -1344,8 +1408,8 @@ void ProgramCU::DisplayKeyPoint(CuTexImage* ftex, CuTexImage* out)
 	int block_width = 64;
 	dim3 grid((num + block_width -1) /block_width);
 	dim3 block(block_width);
-    CuTexImage::CuTexObj ftexTex = ftex->BindTexture(texDataDesc, cudaCreateChannelDesc<float4>());
-	DisplayKeyPoint_Kernel<<<grid, block>>>(ftexTex.handle, (float4*) out->_cuData, num);
+    const cudaTextureObject_t ftexTex = ftex->BindTexture(texDataDesc, cudaCreateChannelDesc<float4>());
+	DisplayKeyPoint_Kernel<<<grid, block>>>(ftexTex, (float4*) out->_cuData, num);
 	ProgramCU::CheckErrorCUDA("DisplayKeyPoint");
 }
 
@@ -1374,8 +1438,8 @@ void ProgramCU::DisplayKeyBox(CuTexImage* ftex, CuTexImage* out)
 	int block_width = 32;
 	dim3 grid((len * 10 + block_width -1) / block_width);
 	dim3 block(block_width);
-    CuTexImage::CuTexObj ftexTex = ftex->BindTexture(texDataDesc, cudaCreateChannelDesc<float4>());
-	DisplayKeyBox_Kernel<<<grid, block>>>(ftexTex.handle, (float4*) out->_cuData, len * 10);
+    const cudaTextureObject_t ftexTex = ftex->BindTexture(texDataDesc, cudaCreateChannelDesc<float4>());
+	DisplayKeyBox_Kernel<<<grid, block>>>(ftexTex, (float4*) out->_cuData, len * 10);
 }
 
 int ProgramCU::CheckCudaDevice(int device)
@@ -1519,10 +1583,10 @@ void ProgramCU::MultiplyDescriptor(CuTexImage* des1, CuTexImage* des2, CuTexImag
 	dim3 block(MULT_TBLOCK_DIMX, MULT_TBLOCK_DIMY);
 	texDot->InitTexture( num2,num1);
 	if(texCRT) texCRT->InitTexture(num2, (num1 + MULT_BLOCK_DIMY - 1)/MULT_BLOCK_DIMY, 32);
-	CuTexImage::CuTexObj des1Tex = des1->BindTexture(texDataDesc, cudaCreateChannelDesc<uint4>());
-	CuTexImage::CuTexObj des2Tex = des2->BindTexture(texDataDesc, cudaCreateChannelDesc<uint4>());
+	const cudaTextureObject_t des1Tex = des1->BindTexture(texDataDesc, cudaCreateChannelDesc<uint4>());
+	const cudaTextureObject_t des2Tex = des2->BindTexture(texDataDesc, cudaCreateChannelDesc<uint4>());
 
-	MultiplyDescriptor_Kernel<<<grid, block>>>(des1Tex.handle, des2Tex.handle, (int*)texDot->_cuData, num1, num2,
+	MultiplyDescriptor_Kernel<<<grid, block>>>(des1Tex, des2Tex, (int*)texDot->_cuData, num1, num2,
 												(texCRT? (int3*)texCRT->_cuData : NULL));
 }
 
@@ -1695,11 +1759,11 @@ void ProgramCU::MultiplyDescriptorG(CuTexImage* des1, CuTexImage* des2,
 	//intermediate results
 	texDot->InitTexture( num2,num1);
 	if(texCRT) texCRT->InitTexture( num2, (num1 + MULT_BLOCK_DIMY - 1)/MULT_BLOCK_DIMY, 3);
-	CuTexImage::CuTexObj loc1Tex = loc1->BindTexture(texDataDesc, cudaCreateChannelDesc<float>());
-	CuTexImage::CuTexObj loc2Tex = loc2->BindTexture(texDataDesc, cudaCreateChannelDesc<float2>());
-	CuTexImage::CuTexObj des1Tex = des1->BindTexture(texDataDesc, cudaCreateChannelDesc<uint4>());
-	CuTexImage::CuTexObj des2Tex = des2->BindTexture(texDataDesc, cudaCreateChannelDesc<uint4>());
-	MultiplyDescriptorG_Kernel<<<grid, block>>>(des1Tex.handle, des2Tex.handle, loc1Tex.handle, loc2Tex.handle,
+	const cudaTextureObject_t loc1Tex = loc1->BindTexture(texDataDesc, cudaCreateChannelDesc<float>());
+	const cudaTextureObject_t loc2Tex = loc2->BindTexture(texDataDesc, cudaCreateChannelDesc<float2>());
+	const cudaTextureObject_t des1Tex = des1->BindTexture(texDataDesc, cudaCreateChannelDesc<uint4>());
+	const cudaTextureObject_t des2Tex = des2->BindTexture(texDataDesc, cudaCreateChannelDesc<uint4>());
+	MultiplyDescriptorG_Kernel<<<grid, block>>>(des1Tex, des2Tex, loc1Tex, loc2Tex,
 												(int*)texDot->_cuData, num1, num2,
 												(texCRT? (int3*)texCRT->_cuData : NULL),
 												MatH, hdistmax, MatF, fdistmax);
