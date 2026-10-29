@@ -112,6 +112,7 @@ INT_TYPE cvRANSACUpdateNumIters(REAL_TYPE p, REAL_TYPE ep, INT_TYPE modelPoints,
 namespace cv {
 
 #if CV_MAJOR_VERSION > 2
+#if CV_MAJOR_VERSION < 5 // OpenCV 5 defines DataType<unsigned> itself (CV_32U)
 template<> class DataType<unsigned>
 {
 public:
@@ -126,6 +127,7 @@ public:
 		type         = CV_MAKETYPE(depth, channels)
 	};
 };
+#endif
 #else
 #if CV_MINOR_VERSION < 4
 template<typename _Tp, typename _AccTp> static inline
@@ -1461,7 +1463,9 @@ DEFINE_CVDATADEPTH(SEACAVE::cuint32_t)
 // define specialized cv:DataType<>
 DEFINE_CVDATATYPE(SEACAVE::hfloat)
 DEFINE_CVDATATYPE(SEACAVE::cuint32_t)
+#if CV_MAJOR_VERSION < 5 // OpenCV 5 defines DataType<uint64_t> itself (CV_64U)
 DEFINE_GENERIC_CVDATATYPE(uint64_t,double)
+#endif
 /*----------------------------------------------------------------*/
 DEFINE_CVDATATYPE(SEACAVE::Point2i)
 DEFINE_CVDATATYPE(SEACAVE::Point2hf)
