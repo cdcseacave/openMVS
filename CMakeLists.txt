@@ -469,6 +469,9 @@ write_basic_package_version_file("${PROJECT_BINARY_DIR}/OpenMVSConfigVersion.cma
 	COMPATIBILITY AnyNewerVersion)
 # Note: Include paths are handled via imported targets and target_include_directories
 SET(OpenMVS_CONFIG_USE_OPENMP ${_USE_OPENMP})
+SET(OpenMVS_CONFIG_USE_PNG ${_USE_PNG})
+SET(OpenMVS_CONFIG_USE_JPG ${_USE_JPG})
+SET(OpenMVS_CONFIG_USE_TIFF ${_USE_TIFF})
 SET(OpenMVS_CONFIG_USE_CUDA ${_USE_CUDA})
 SET(OpenMVS_CONFIG_USE_SUITESPARSE ${SuiteSparse_config_FOUND})
 configure_package_config_file("${CMAKE_CURRENT_SOURCE_DIR}/build/Templates/OpenMVSConfig.cmake.in"
