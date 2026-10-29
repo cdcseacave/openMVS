@@ -2225,15 +2225,18 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 			break; // no more depth-maps to fuse (only invalid depth-maps left)
 		totalNumImageNeighborsInCache += numImageNeighborsInCache;
 		totalNumImagesInCache += numImagesInCache;
-		// fuse depth-map
+		// fuse depth-map; protect it before loading: UseImage() ejects the least recently used
+		// depth-maps to fit the memory budget, which otherwise includes the reference itself
+		// when the budget (derived from the free memory) is smaller than one depth-map
+		cacheDMaps.SkipMemoryCheckIdxImage(idxImage);
 		cacheDMaps.UseImage(idxImage);
 		const DepthData& depthData(arrDepthData[idxImage]);
 		ASSERT(depthData.GetView().GetLocalID(scene.images) == idxImage);
 		if (depthData.IsEmpty()) {
+			cacheDMaps.SkipMemoryCheckIdxImage();
 			fusedDMaps[idxImage] = true; // unreadable depth-map file (logged by the cache): nothing to fuse
 			continue;
 		}
-		cacheDMaps.SkipMemoryCheckIdxImage(idxImage);
 		if (bEstimateNormal && depthData.normalMap.empty())
 			EstimateNormalMaps();
 		ASSERT(!depthData.images.empty() && !depthData.neighbors.empty());
@@ -2608,15 +2611,18 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 		totalNumImageNeighborsInCache += numImageNeighborsInCache;
 		totalNumImagesInCache += numImagesInCache;
 		++numDMapsFused;
-		// fuse depth-map
+		// fuse depth-map; protect it before loading: UseImage() ejects the least recently used
+		// depth-maps to fit the memory budget, which otherwise includes the reference itself
+		// when the budget (derived from the free memory) is smaller than one depth-map
+		cacheDMaps.SkipMemoryCheckIdxImage(idxImage);
 		cacheDMaps.UseImage(idxImage);
 		DepthData& depthData(arrDepthData[idxImage]); // non-const: GetIntraMapPrior caches into depthData.priorMap
 		ASSERT(depthData.GetView().GetLocalID(scene.images) == idxImage);
 		if (depthData.IsEmpty()) {
+			cacheDMaps.SkipMemoryCheckIdxImage();
 			fusedDMaps[idxImage] = true; // unreadable depth-map file (logged by the cache): nothing to fuse
 			continue;
 		}
-		cacheDMaps.SkipMemoryCheckIdxImage(idxImage);
 		if (bEstimateNormal && depthData.normalMap.empty())
 			EstimateNormalMaps();
 		if (bUsePrior)
