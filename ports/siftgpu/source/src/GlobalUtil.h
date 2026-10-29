@@ -90,6 +90,7 @@ public:
 	static int		_FeatureCountThreshold;
     static int      _KeyPointListForceLevel0;
 	static int		_DarknessAdaption;
+	static float	_MinCurvature; // minimum scale-normalized smaller principal curvature sigma^2*|lambda_min| of the DoG (0 = off)
 
 	//for compatability with old version:
 	static float	_OrientationExtraFactor;

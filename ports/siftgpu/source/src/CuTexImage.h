@@ -25,6 +25,7 @@
 #define CU_TEX_IMAGE_H
 
 #include <cuda_runtime.h>
+#include <vector>
 
 class GLTexImage;
 
@@ -32,32 +33,34 @@ class CuTexImage
 {
 protected:
 	void*		_cuData;
-	cudaArray*	_cuData2D;
 	int			_numChannel;
 	size_t			_numBytes;
 	int			_imgWidth;
 	int			_imgHeight;
-	int			_texWidth;
-	int			_texHeight;
 	GLuint		_fromPBO;
-public:
-	struct CuTexObj
+	// Texture objects created on the buffer, reused by later bindings with the same format and
+	// view size; they are destroyed when the buffer is reallocated or released (only then can no
+	// kernel launched with them still be running).
+	struct TexObj
 	{
+		cudaResourceType type;
+		cudaChannelFormatDesc format;
+		cudaTextureReadMode readMode;
+		int width, height;
 		cudaTextureObject_t handle;
-		~CuTexObj();
 	};
-
+	std::vector<TexObj> _texObjs;
+	cudaTextureObject_t GetTexture(cudaResourceType type, const cudaTextureDesc& textureDesc,
+								   const cudaChannelFormatDesc& channelFmtDesc);
+	void ReleaseTextures();
+public:
 	virtual void SetImageSize(int width, int height);
 	virtual bool InitTexture(int width, int height, int nchannel = 1);
-	void InitTexture2D();
-	CuTexObj BindTexture(const cudaTextureDesc& textureDesc,
-											 const cudaChannelFormatDesc& channelFmtDesc);
-	CuTexObj BindTexture2D(const cudaTextureDesc& textureDesc,
-											   const cudaChannelFormatDesc& channelFmtDesc);
+	// texture of the whole buffer (1D fetches) / of the image (2D fetches, pitch-linear)
+	cudaTextureObject_t BindTexture(const cudaTextureDesc& textureDesc, const cudaChannelFormatDesc& channelFmtDesc);
+	cudaTextureObject_t BindTexture2D(const cudaTextureDesc& textureDesc, const cudaChannelFormatDesc& channelFmtDesc);
 	void CopyToHost(void* buf);
-	void CopyToHost(void* buf, int stream);
 	void CopyFromHost(const void* buf);
-	void CopyToTexture2D();
 	int  CopyToPBO(GLuint pbo);
 	void CopyFromPBO(int width, int height, GLuint pbo);
 public:
@@ -67,12 +70,11 @@ public:
 public:
 	CuTexImage();
 	CuTexImage(int width, int height, int nchannel, GLuint pbo);
+	CuTexImage(const CuTexImage&) = delete;
+	CuTexImage& operator=(const CuTexImage&) = delete;
 	virtual ~CuTexImage();
 	friend class ProgramCU;
 	friend class PyramidCU;
 };
 
-//////////////////////////////////////////////////
-//transfer OpenGL Texture to PBO, then to CUDA vector
-//#endif
 #endif // !defined(CU_TEX_IMAGE_H)

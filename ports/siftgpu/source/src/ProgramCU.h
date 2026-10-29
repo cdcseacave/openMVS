@@ -39,13 +39,17 @@ public:
 	template<int KWIDTH> static void FilterImage(CuTexImage *dst, CuTexImage *src, CuTexImage* buf);
 	static void FilterImage(CuTexImage *dst, CuTexImage *src, CuTexImage* buf, float sigma);
 	static void ComputeDOG(CuTexImage* gus, CuTexImage* dog, CuTexImage* got);
-	static void ComputeKEY(CuTexImage* dog, CuTexImage* key, float Tdog, float Tedge);
-	static void InitHistogram(CuTexImage* key, CuTexImage* hist);
-	static void ReduceHistogram(CuTexImage*hist1, CuTexImage* hist2);
-	static void GenerateList(CuTexImage* list, CuTexImage* hist);
+	static void ComputeKEY(CuTexImage* dog, CuTexImage* key, CuTexImage* gus, unsigned int* mask, int* row_count,
+		float Tdog, float Tedge, float sigma);
+	static int  GetKeyMaskWidth(int width);
+	static void ListKeys(CuTexImage* list, const unsigned int* mask, int mask_width, const int* row_count,
+		const int* row_offset, int height);
 	static void ComputeOrientation(CuTexImage*list, CuTexImage* got, CuTexImage*key,
 		float sigma, float sigma_step, int existing_keypoint);
-	static void ComputeDescriptor(CuTexImage*list, CuTexImage* got, CuTexImage* dtex, int rect = 0, int stream = 0);
+	static void ComputeDescriptor(CuTexImage*list, CuTexImage* got, float* descriptors, int rect = 0);
+	static int  GetOrientationBlockNum(int num);
+	static void CountOrientations(CuTexImage* list, int num, int* block_count);
+	static void ExpandOrientations(CuTexImage* list, int num, const int* block_start, float4* out);
 
     //data conversion
 	static void SampleImageU(CuTexImage *dst, CuTexImage *src, int log_scale);

@@ -56,7 +56,7 @@ public:
 	static void UseShaderGenListEnd(int ktex);
 	static void UseShaderGenListHisto();
 	static void UseShaderGenListInit(int w, int h, int tight = 1);
-	static void UseShaderKeypoint(int texU, int texD);
+	static void UseShaderKeypoint(int texU, int texD, float minCurvature);
 	static void UseShaderGradientPass(int texP = 0);
 	static void UseShaderDisplayKeypoints();
 	static void UseShaderDisplayGrad();

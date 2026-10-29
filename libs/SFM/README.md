@@ -166,6 +166,8 @@ Supported detectors:
 
 The 3x3 grid extraction ensures features aren't concentrated in textured areas while ignoring featureless regions. Each cell targets up to 3000 features, giving ~27k features per image.
 
+SiftGPU uses a very low DoG peak threshold (0.001) together with a minimum scale-normalized curvature of the DoG extrema (0.001) and the edge ratio 12.5, so it also detects features in weakly textured areas while rejecting flat and edge-like extrema; orientations come from the circular moments of the gradient directions instead of a 36-bin histogram, and darkness adaptation is optional (`siftgpuDarknessAdaptivity`, off). It selects at most `GetMaxNumFeatures()` (~27k) per image on an adaptive grid of ~256 px cells: every cell gets the same quota and the quota unused by sparse cells goes to the dense ones, so no feature is dropped while the image is under budget. Images are decoded (and converted to SiftGPU's float input) ahead of the GPU on the scene thread pool. Design, validation and rejected alternatives: [docs/design/SiftGPUFeatureExtraction.md](../../docs/design/SiftGPUFeatureExtraction.md).
+
 #### 2. Feature Matching (`PairsMatcher.h`, `MatchGeometric.h`)
 
 Four matching strategies:

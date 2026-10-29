@@ -40,56 +40,67 @@ using namespace std;
 #include "CuTexImage.h"
 #include "ProgramCU.h"
 
-CuTexImage::CuTexObj::~CuTexObj()
+cudaTextureObject_t CuTexImage::GetTexture(cudaResourceType type, const cudaTextureDesc& textureDesc,
+										   const cudaChannelFormatDesc& channelFmtDesc)
 {
-	cudaDestroyTextureObject(handle);
-}
-
-CuTexImage::CuTexObj CuTexImage::BindTexture(const cudaTextureDesc& textureDesc,
-											   										 const cudaChannelFormatDesc& channelFmtDesc)
-{
-	CuTexObj texObj;
+	const int width = type == cudaResourceTypePitch2D ? _imgWidth : 0;
+	const int height = type == cudaResourceTypePitch2D ? _imgHeight : 0;
+	for(const TexObj& tex : _texObjs)
+	{
+		if(tex.type == type && tex.readMode == textureDesc.readMode && tex.width == width && tex.height == height &&
+		   tex.format.x == channelFmtDesc.x && tex.format.y == channelFmtDesc.y && tex.format.z == channelFmtDesc.z &&
+		   tex.format.w == channelFmtDesc.w && tex.format.f == channelFmtDesc.f)
+			return tex.handle;
+	}
 
 	cudaResourceDesc resourceDesc;
 	memset(&resourceDesc, 0, sizeof(resourceDesc));
-  resourceDesc.resType = cudaResourceTypeLinear;
-  resourceDesc.res.linear.devPtr = _cuData;
-	resourceDesc.res.linear.desc = channelFmtDesc;
-	resourceDesc.res.linear.sizeInBytes = _numBytes;
-
-	cudaCreateTextureObject(&texObj.handle, &resourceDesc, &textureDesc, nullptr);
-	ProgramCU::CheckErrorCUDA("CuTexImage::BindTexture");
-
-	return texObj;
+	resourceDesc.resType = type;
+	if(type == cudaResourceTypePitch2D)
+	{
+		resourceDesc.res.pitch2D.devPtr = _cuData;
+		resourceDesc.res.pitch2D.width = _imgWidth;
+		resourceDesc.res.pitch2D.height = _imgHeight;
+		resourceDesc.res.pitch2D.pitchInBytes = _imgWidth * _numChannel * sizeof(float);
+		resourceDesc.res.pitch2D.desc = channelFmtDesc;
+	}else
+	{
+		resourceDesc.res.linear.devPtr = _cuData;
+		resourceDesc.res.linear.desc = channelFmtDesc;
+		resourceDesc.res.linear.sizeInBytes = _numBytes;
+	}
+	TexObj tex = {type, channelFmtDesc, textureDesc.readMode, width, height, 0};
+	cudaCreateTextureObject(&tex.handle, &resourceDesc, &textureDesc, nullptr);
+	ProgramCU::CheckErrorCUDA("CuTexImage::GetTexture");
+	_texObjs.push_back(tex);
+	return tex.handle;
 }
 
-CuTexImage::CuTexObj CuTexImage::BindTexture2D(const cudaTextureDesc& textureDesc,
-											   											 const cudaChannelFormatDesc& channelFmtDesc)
+void CuTexImage::ReleaseTextures()
 {
-	CuTexObj texObj;
+	for(const TexObj& tex : _texObjs)
+		cudaDestroyTextureObject(tex.handle);
+	_texObjs.clear();
+}
 
-	cudaResourceDesc resourceDesc;
-	memset(&resourceDesc, 0, sizeof(resourceDesc));
-	resourceDesc.resType = cudaResourceTypePitch2D;
-  resourceDesc.res.pitch2D.devPtr = _cuData;
-	resourceDesc.res.pitch2D.width = _imgWidth;
-	resourceDesc.res.pitch2D.height = _imgHeight;
-	resourceDesc.res.pitch2D.pitchInBytes = _imgWidth * _numChannel * sizeof(float);
-	resourceDesc.res.pitch2D.desc = channelFmtDesc;
+cudaTextureObject_t CuTexImage::BindTexture(const cudaTextureDesc& textureDesc,
+											const cudaChannelFormatDesc& channelFmtDesc)
+{
+	return GetTexture(cudaResourceTypeLinear, textureDesc, channelFmtDesc);
+}
 
-	cudaCreateTextureObject(&texObj.handle, &resourceDesc, &textureDesc, nullptr);
-	ProgramCU::CheckErrorCUDA("CuTexImage::BindTexture2D");
-
-	return texObj;
+cudaTextureObject_t CuTexImage::BindTexture2D(const cudaTextureDesc& textureDesc,
+											  const cudaChannelFormatDesc& channelFmtDesc)
+{
+	return GetTexture(cudaResourceTypePitch2D, textureDesc, channelFmtDesc);
 }
 
 CuTexImage::CuTexImage()
 {
 	_cuData = NULL;
-	_cuData2D = NULL;
 	_fromPBO = 0;
 	_numChannel = _numBytes = 0;
-	_imgWidth = _imgHeight = _texWidth = _texHeight = 0;
+	_imgWidth = _imgHeight = 0;
 }
 
 CuTexImage::CuTexImage(int width, int height, int nchannel, GLuint pbo)
@@ -131,25 +142,22 @@ CuTexImage::CuTexImage(int width, int height, int nchannel, GLuint pbo)
 		_imgHeight = 0;
 		_numChannel = 0;
 	}
-
-	_texWidth = _texHeight =0;
-
-	_cuData2D = NULL;
 }
 
 CuTexImage::~CuTexImage()
 {
-
-
 	if(_fromPBO)
 	{
+		// the kernels using the mapped buffer must finish before it is unmapped
+		cudaDeviceSynchronize();
+		ReleaseTextures();
 		cudaGLUnmapBufferObject(_fromPBO);
 		cudaGLUnregisterBufferObject(_fromPBO);
 	}else if(_cuData)
 	{
 		cudaFree(_cuData);
 	}
-	if(_cuData2D)  cudaFreeArray(_cuData2D);
+	ReleaseTextures();
 }
 
 void CuTexImage::SetImageSize(int width, int height)
@@ -178,7 +186,9 @@ bool CuTexImage::InitTexture(int width, int height, int nchannel)
 
 	if(size <= _numBytes) return true;
 
+	// cudaFree waits for the kernels still using the buffer and its textures
 	if(_cuData) cudaFree(_cuData);
+	ReleaseTextures();
 
 	//allocate the array data
 	const cudaError_t status = cudaMalloc(&_cuData, _numBytes = size);
@@ -202,53 +212,6 @@ void CuTexImage::CopyToHost(void * buf)
 {
 	if(_cuData == NULL) return;
 	cudaMemcpy(buf, _cuData, _imgWidth * _imgHeight * _numChannel * sizeof(float), cudaMemcpyDeviceToHost);
-}
-
-void CuTexImage::CopyToHost(void * buf, int stream)
-{
-	if(_cuData == NULL) return;
-	cudaMemcpyAsync(buf, _cuData, _imgWidth * _imgHeight * _numChannel * sizeof(float), cudaMemcpyDeviceToHost, (cudaStream_t)stream);
-}
-
-void CuTexImage::InitTexture2D()
-{
-#if !defined(SIFTGPU_ENABLE_LINEAR_TEX2D)
-	if(_cuData2D && (_texWidth < _imgWidth || _texHeight < _imgHeight))
-	{
-		cudaFreeArray(_cuData2D);
-		_cuData2D = NULL;
-	}
-	if(_cuData2D == NULL)
-	{
-		_texWidth = max(_texWidth, _imgWidth);
-		_texHeight = max(_texHeight, _imgHeight);
-		cudaChannelFormatDesc desc;
-		desc.f = cudaChannelFormatKindFloat;
-		desc.x = sizeof(float) * 8;
-		desc.y = _numChannel >=2 ? sizeof(float) * 8 : 0;
-		desc.z = _numChannel >=3 ? sizeof(float) * 8 : 0;
-		desc.w = _numChannel >=4 ? sizeof(float) * 8 : 0;
-		const cudaError_t status = cudaMallocArray(&_cuData2D, &desc, _texWidth, _texHeight);
-    if (status != cudaSuccess) {
-      _cuData = NULL;
-      _numBytes = 0;
-    }
-		ProgramCU::CheckErrorCUDA("CuTexImage::InitTexture2D");
-	}
-#endif
-}
-
-void CuTexImage::CopyToTexture2D()
-{
-#if !defined(SIFTGPU_ENABLE_LINEAR_TEX2D)
-	InitTexture2D();
-	if(_cuData2D)
-	{
-		cudaMemcpy2DToArray(_cuData2D, 0, 0, _cuData, _imgWidth* _numChannel* sizeof(float) ,
-		_imgWidth * _numChannel*sizeof(float), _imgHeight,	cudaMemcpyDeviceToDevice);
-		ProgramCU::CheckErrorCUDA("cudaMemcpy2DToArray");
-	}
-#endif
 }
 
 void CuTexImage::CopyFromPBO(int width, int height, GLuint pbo)
