@@ -393,10 +393,10 @@ public:
 		ar & matches & outlierMatches;
 		ar & numFilteredInliers & numDenseInliers;
 		ar & overlapRatio & overlapArea & meanRayAngle;
-		// weightedInliers travels with the three weights it belongs to: the reconstruction path that
-		// loads an already-matched scene does not re-run ComputePairsWeights, so a derived value left
-		// out of the stream would come back as "never computed" and silently drop every pair's dense
-		// evidence from the view graph
+		// weightedInliers travels with the three weights it belongs to, so a loaded scene is complete
+		// as it was matched: they reflect the weighting config it was matched with, and the
+		// reconstruction does not trust them, it computes them again with its own config before
+		// anything reads them (ExportMatchingCSVsAndFilterPairs)
 		ar & weightSpatial & weightConnectivity & weightTriplet & weightedInliers;
 
 		// Deserialize std::optional fields

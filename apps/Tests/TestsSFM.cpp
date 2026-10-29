@@ -5611,14 +5611,14 @@ bool SupplementEvidenceIsolationTest()
 		return false;
 	}
 	// The MAGNITUDE the area score multiplies is where the supplement is scaled instead of
-	// ignored: the pair's evidence is 5 sparse + 25/2000 x 15 dense = 5.1875 at the default frame
+	// ignored: the pair's evidence is 5 sparse + 50/2000 x 15 dense = 5.375 at the default frame
 	// scale, more than the sparse count alone and far less than the twenty a full count would
 	// give, so a coverage-maximising draw cannot re-rank the graph by sheer count, and a
 	// dense-only pair is still not a zero.
-	if (ABS(weighted.weightedInliers - 5.1875f) > 1e-5f || weighted.GetNumWeightedInliers() != 5 ||
+	if (ABS(weighted.weightedInliers - 5.375f) > 1e-5f || weighted.GetNumWeightedInliers() != 5 ||
 		weighted.GetNumFilteredInliers() != 5) {
 		VERBOSE("SupplementEvidenceIsolationTest FAILED: the pair's evidence is %.4f (%u rounded) with %u sparse, "
-			"expected 5 + 25/2000 x 15 = 5.1875 (5)",
+			"expected 5 + 50/2000 x 15 = 5.375 (5)",
 			weighted.weightedInliers, weighted.GetNumWeightedInliers(), weighted.GetNumFilteredInliers());
 		return false;
 	}
@@ -11377,8 +11377,28 @@ bool ResectionLinkDirectionTest()
 		}
 	}
 
+	// The pose's own inliers vote for it: the pose holds 40 inliers, so with the two agreeing links at 150
+	// each (300) the turned one must carry more than 340 to refuse it. At 335 it outweighs the links that
+	// agree (300) but not the links and the pose together, and the pose is accepted; at 345 it is refused.
+	for (const unsigned turnedWeight : {335u, 345u}) {
+		std::mt19937 rng(20260918);
+		Scene scene;
+		Pose3D truePose;
+		BuildResectionDirectionScene(scene, truePose, 1, 20, rng, {turnedWeight, 150, 150});
+		Resection resection(scene, ResectionConfig());
+		resection.RegisterImages();
+		const bool accepted = scene.images[4].HasPose(), expected = turnedWeight < 340;
+		if (accepted != expected) {
+			VERBOSE("ResectionLinkDirectionTest FAILED: the one turned pair carries %u weighted inliers against 300 that agree and "
+				"the pose's own 40; the pose was %s, expected %s", turnedWeight, accepted ? "accepted" : "refused",
+				expected ? "accepted" : "refused");
+			return false;
+		}
+	}
+
 	VERBOSE("ResectionLinkDirectionTest PASSED: a weakly supported pose is refused when the links that contradict its baseline "
-		"direction outweigh, in weighted inliers and not in links, the ones that agree, near-duplicate links fix no direction and "
+		"direction outweigh, in weighted inliers and not in links, the ones that agree together with the pose's own inliers, "
+		"near-duplicate links fix no direction and "
 		"a small ray angle forgives no more than the model's parallax allows (%s)",
 		TD_TIMER_GET_FMT().c_str());
 	return true;

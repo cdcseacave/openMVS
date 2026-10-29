@@ -70,18 +70,35 @@ struct SFM_API PairsWeightingConfig
     // all exceeded it, and through the connectivity term's per-image maximum a textureless interior
     // with 1000-1700 dense matches per adjacent pair had a near and a far link weigh the same and a
     // 13-degree-wrong far link outrank the right adjacent one (indoor capture chris-house, 55 images
-    // placed 12-15 units off). At 25 a whole dense frame is a modest descriptor pair: on the same
-    // capture's matching the clustering graph keeps every adjacent pair and every image, a wrong
+    // placed 12-15 units off). Anchored, a whole dense frame is a modest descriptor pair (measured at 25, and 50
+    // keeps it so): on the same capture's matching the clustering graph keeps every adjacent pair and every image, a wrong
     // 50-image revisit community falls from 0.056 to 0.022 of coupling, and on alameda the three
     // wide-baseline dense-heavy pairs that once glued a seven-image community to the wrong block
     // fall from 5.4/3.8/1.3 to 0.4/0.2/0.1, well under the clustering bar of 3. This is the view
     // graph's own number and nothing else's: bundle adjustment weighs a dense OBSERVATION by the
     // precision it measures per solve (BAConfig::denseObservationWeight, DENSE_OBSERVATION_WEIGHT as
     // its fallback), a different question whose answer once happened to share the value 0.25.
-    float denseFrameInliers = 25.f;
+    //
+    // 50 (1/40 of the draw) since 2026-10-29, together with the direction check of a new pose, which
+    // weighs the pose's own inliers as a pair weighs its matches. 25 (1/80) left that vote too little
+    // to outweigh a few weak contradicting links. Measured on 33 captures against the code before
+    // both: the summed F1 change is +0.374 by pose_score and +0.213 by a rotation-fitted re-scoring
+    // that cannot flip between alignments, mostly 5ada248e 0.719 -> 0.887/0.890 (3 of 4 runs register
+    // about 200 more images); 1/40 alone gives +0.198 / +0.053. 1/20 (100) was measured and refused:
+    // 77-80 wrong images against 50-61, and 6DCA1E8E runs with 103 and 82 wrong under both scores;
+    // 100 and 150 were already refuted at 25's expense on 2026-09-22 (the same 41 images refused at
+    // every value, the indoor body wrong at 150).
+    float denseFrameInliers = 50.f;
     // The matcher's dense draw per frame the number above is anchored to. The application hands it
     // the value it gives the matcher (ROMA2Config::denseMatchesPerFrame); the default is that config's.
     unsigned denseMatchesPerFrame = 2000;
+    // What one dense inlier counts as in sparse inliers: its share of the frame draw times what a whole
+    // frame is worth. The one formula of the pair evidence (ComputePairsWeights) and of every other
+    // reader that weighs dense inliers beside described ones (the resection's direction check).
+    float DenseScale() const {
+        ASSERT(denseMatchesPerFrame > 0);
+        return denseFrameInliers / (float)denseMatchesPerFrame;
+    }
 };
 
 // The fraction of a gridSize x gridSize grid over the image that the pair's track-forming matches

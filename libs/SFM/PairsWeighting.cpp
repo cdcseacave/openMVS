@@ -101,10 +101,9 @@ float ComputeIntrinsicWeight(ImagePair& pair, const Image& img1, const Image& im
 void SFM::ComputePairsWeights(Scene& scene, const PairsWeightingConfig& config, IIndexArr* pComponents) {
 	TD_TIMER_STARTD();
 
-	ASSERT(config.denseMatchesPerFrame > 0);
 	// what one dense inlier is worth as evidence: the share of a whole frame's draw it is, times what
 	// a whole frame is worth
-	const float denseScale = config.denseFrameInliers / (float)config.denseMatchesPerFrame;
+	const float denseScale = config.DenseScale();
 
 	// 1. Compute Intrinsic Weights (Parallelizable)
 	// This depends only on the pair itself
@@ -126,7 +125,7 @@ void SFM::ComputePairsWeights(Scene& scene, const PairsWeightingConfig& config, 
 			(float)pair.GetNumFilteredInliers() + denseScale*(float)pair.GetNumDenseInliers() : -1.f;
 		pair.weightSpatial = ComputeIntrinsicWeight(pair, scene.images[pair.ID1], scene.images[pair.ID2], config.gridSize, config.minInliers);
 		// A pair whose evidence ROUNDS AWAY carries none: with a small enough minInliers the floor
-		// above admits a pair of under 40 dense matches, whose evidence at the frame scale (25 of 2000
+		// above admits a pair of under 40 dense matches, whose evidence at the frame scale (denseFrameInliers of 2000
 		// each) is well under a half and rounds to 0, and a zero magnitude is a zero composite weight
 		// however good the quality factors are. Give it the same answer the floor gives instead, here,
 		// once: every later step of this pass and every consumer downstream reads "no weight" off

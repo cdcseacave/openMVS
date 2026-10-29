@@ -709,6 +709,10 @@ void ExportMatchingCSVs(const Scene& scene, const ReconstructionConfig& config)
 // views; empty without the filter.
 IIndexArr ExportMatchingCSVsAndFilterPairs(Scene& scene, const ReconstructionConfig& config)
 {
+	// a saved scene's pair weights reflect the config it was matched with (the dense frame weight
+	// among them); the reconstruction weighs with its own, so they are computed again before
+	// anything reads them
+	ComputePairsWeights(scene, config.matchCfg.weightingCfg);
 	ExportMatchingCSVs(scene, config);
 	IIndexArr seedViews;
 	std::vector<float> scores;
@@ -836,6 +840,7 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	// observations the final adjustment's tighter bar dropped from the model it receives
 	const RemovedImages removed = FilterWeaklyConnectedImages(*this);
 	ResectionConfig resectionCfg = cfg.resectionCfg;
+	resectionCfg.pairsWeighting = cfg.matchCfg.weightingCfg; // the pose's dense inliers weigh as the pairs' did
 	BAConfig resectionBaCfg = cfg.baConfig;
 	SetBAIntrinsicFlags(resectionBaCfg, cfg.baIntrinsicFlags);
 	resectionCfg.DeriveBAConfigs(resectionBaCfg);
@@ -936,6 +941,7 @@ bool Scene::ReconstructHierarchical(const ReconstructionConfig& config, const II
 		// local/full BA settings from the scene's configured BAConfig so the resection's bundle
 		// adjustments see the same settings as the rest of the pipeline.
 		ResectionConfig resectionCfg = config.resectionCfg;
+		resectionCfg.pairsWeighting = config.matchCfg.weightingCfg; // the pose's dense inliers weigh as the pairs' did
 		BAConfig resectionBaCfg = config.baConfig;
 		SetBAIntrinsicFlags(resectionBaCfg, config.baIntrinsicFlags);
 		resectionCfg.DeriveBAConfigs(resectionBaCfg);

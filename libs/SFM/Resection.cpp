@@ -287,12 +287,20 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 					const REAL tolerance = PairDisagreement::DirectionTolerance(config.maxLinkDirectionError, MAXF(parallax, link.rayAngle));
 					(d.direction <= tolerance ? agreeing : disagreeing) += link.numInliers;
 				}
-				if (disagreeing > agreeing) {
+				// the pose's own inliers vote for it, weighed as a pair weighs its matches (the described
+				// ones plus the dense ones at the pairs' dense scale), so a pose its own evidence carries
+				// is not refused by a few weak links that contradict it
+				unsigned numDescribedInliers = 0, numDenseInliers = 0;
+				FOREACH(k, inliers)
+					if (inliers[k])
+						++(dense[k] ? numDenseInliers : numDescribedInliers);
+				const unsigned poseWeight = ROUND2INT<unsigned>(numDescribedInliers + numDenseInliers * config.pairsWeighting.DenseScale());
+				if (disagreeing > agreeing + poseWeight) {
 					DEBUG("warning: rejected the pose of image %u: %u/%u inliers (%.1f%%) and its centre lies in a direction "
-						"the pairs carrying %u of the %u weighted inliers of the voting quorum links contradict "
-						"(strongest to image %u)",
+						"the pairs carrying %u of the %u weighted inliers of the voting quorum links contradict, "
+						"outweighing the %u weighted inliers of the pose itself (strongest to image %u)",
 						imageID, numInliers, n, inlierRatio * 100.f, disagreeing, agreeing + disagreeing,
-						quorum.links.front().neighborID);
+						poseWeight, quorum.links.front().neighborID);
 					return {0, n, numDescribed};
 				}
 			}

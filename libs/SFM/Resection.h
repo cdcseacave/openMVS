@@ -11,6 +11,7 @@
 // I N C L U D E S /////////////////////////////////////////////////
 
 #include "BundleAdjustment.h"
+#include "PairsWeighting.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -129,6 +130,10 @@ struct SFM_API ResectionConfig
 	BAConfig extendedBAConfig;          // Same as fullBAConfig, but with every intrinsic the reconstruction's
 	                                     // flags allow, main and extended alike; used once minRefineExtIntrs
 	                                     // images are registered, and for the final solve
+
+	// The weighting the run's pairs were weighed with (the application's matchCfg.weightingCfg, set
+	// by Scene where it copies this config); the direction check weighs the pose's own inliers by it
+	PairsWeightingConfig pairsWeighting;
 
 	ResectionConfig() {
 		// Robust absolute pose estimation. The inlier bar is set for the dense (warp-sampled)

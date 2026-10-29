@@ -529,8 +529,8 @@ cannot match at all — on a sufficiently textureless capture those pairs are th
 registered model and none. The view graph's constant therefore stays fixed and independent of bundle
 adjustment's, which is free to move with every capture and every solve. What the view graph does fix
 is what a dense match is worth beside a descriptor one: the discounted count enters the pair evidence
-scaled to the matcher's frame target (`PairsWeightingConfig::denseFrameInliers` 25 of
-`denseMatchesPerFrame` 2000), so a whole frame of warp samples weighs a modest descriptor pair and a
+scaled to the matcher's frame target (`PairsWeightingConfig::denseFrameInliers` 50 of
+`denseMatchesPerFrame` 2000, 25 until 2026-10-29), so a whole frame of warp samples weighs a modest descriptor pair and a
 wide imprecise overlap cannot outweigh the descriptor-verified pairs around it.
 
 ---
