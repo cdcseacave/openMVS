@@ -100,9 +100,10 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
   - Supported detectors: **AKAZE** (default, binary), **ORB** (binary), **SIFT** (converted to RootSIFT), **SiftGPU** (CUDA/OpenGL, optional)
   - RootSIFT conversion: L1-normalize then sqrt, quantized to uint8
   - Keypoint quality scoring: `ComputeKeypointWeight()`, `ComputeKeypointPrecision()`
-- **Configuration:** `FeatureExtractionConfig` — `detectorType`, `maxFeaturesPerCell` (3000, giving max ~27k per image), `minFeaturesPerCell`, `releaseImagePixels`
+- **Configuration:** `FeatureExtractionConfig` — `detectorType`, `maxFeaturesPerCell` (3000, giving max ~27k per image), `minFeaturesPerCell`, `releaseImagePixels`, `useCUDA`, `siftgpuDarknessAdaptivity`
 - **GPU Support:** Yes (SiftGPU path — CUDA or OpenGL backend)
-- **Threading:** `BS::light_thread_pool` for parallel per-image extraction; SiftGPU uses producer-consumer pattern
+- **Threading:** `BS::light_thread_pool` for parallel per-image extraction; SiftGPU decodes ahead on the scene thread pool (one future per image) and extracts on one GPU thread
+- **Design record:** `docs/design/SiftGPUFeatureExtraction.md` (detector with curvature floor, moment orientation, CUDA pipeline, selection, validation, rejected alternatives)
 - **Dependencies:** OpenCV (AKAZE, ORB, SIFT), SiftGPU (optional)
 
 ---
