@@ -1,23 +1,43 @@
-# Configure file for the OpenMVS package, defining the following variables:
-#  OpenMVS_INCLUDE_DIRS - include directories
-#  OpenMVS_DEFINITIONS  - definitions to be used
-#  OpenMVS_LIBRARIES    - libraries to link against
-#  OpenMVS_BINARIES     - binaries
+# - Config file for the OpenMVS package
+# It defines the imported targets OpenMVS::Common, OpenMVS::Math, OpenMVS::IO,
+# OpenMVS::SFM and OpenMVS::MVS (and the tools) and the variables
+#  OpenMVS_INCLUDE_DIRS - include directory of OpenMVS
+#  OpenMVS_LIBRARIES    - libraries to link against (OpenMVS::MVS)
+#  OpenMVS_BINARIES     - the OpenMVS tools
 
 @PACKAGE_INIT@
 
+# Dependencies of the exported targets
+include(CMakeFindDependencyMacro)
+find_dependency(Boost COMPONENTS iostreams program_options serialization exception)
+find_dependency(Eigen3 CONFIG)
+find_dependency(OpenCV)
+find_dependency(CGAL)
+find_dependency(nanoflann)
+find_dependency(halfmesh CONFIG)
+find_dependency(Ceres CONFIG)
+find_dependency(PoseLib CONFIG)
+find_dependency(TinyEXIF CONFIG)
+find_dependency(TinyNPY CONFIG)
+if("@OpenMVS_CONFIG_USE_OPENMP@")
+	find_dependency(OpenMP)
+endif()
+if("@OpenMVS_CONFIG_USE_CUDA@")
+	find_dependency(CUDAToolkit)
+endif()
+if("@OpenMVS_CONFIG_USE_SUITESPARSE@")
+	find_dependency(SuiteSparse_config)
+	find_dependency(CHOLMOD)
+endif()
+
 set(OpenMVS_VERSION "@OpenMVS_VERSION@")
-
-# Compute paths
-set(OpenMVS_PREFIX "@CMAKE_INSTALL_PREFIX@")
-set(OpenMVS_CMAKE_DIR "@INSTALL_CMAKE_DIR_IN@")
-set(OpenMVS_INCLUDE_DIRS "@INSTALL_INCLUDE_DIR_IN@")
-
+set(OpenMVS_PREFIX "${PACKAGE_PREFIX_DIR}")
+set(OpenMVS_CMAKE_DIR "${CMAKE_CURRENT_LIST_DIR}")
+set(OpenMVS_INCLUDE_DIRS "@PACKAGE_INSTALL_INCLUDE_DIR@")
 set(OpenMVS_DEFINITIONS "@OpenMVS_DEFINITIONS@")
-
-# These are IMPORTED targets created by OpenMVSTargets.cmake
-set(OpenMVS_LIBRARIES MVS)
+set(OpenMVS_LIBRARIES OpenMVS::MVS)
 set(OpenMVS_BINARIES InterfaceCOLMAP DensifyPointCloud ReconstructMesh RefineMesh TextureMesh)
 
 include("${CMAKE_CURRENT_LIST_DIR}/OpenMVSTargets.cmake")
+
 check_required_components("OpenMVS")

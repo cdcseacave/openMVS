@@ -468,10 +468,13 @@ write_basic_package_version_file("${PROJECT_BINARY_DIR}/OpenMVSConfigVersion.cma
 	VERSION ${OpenMVS_VERSION}
 	COMPATIBILITY AnyNewerVersion)
 # Note: Include paths are handled via imported targets and target_include_directories
-SET(INSTALL_CMAKE_DIR_IN ${INSTALL_CMAKE_DIR_PREFIX})
+SET(OpenMVS_CONFIG_USE_OPENMP ${_USE_OPENMP})
+SET(OpenMVS_CONFIG_USE_CUDA ${_USE_CUDA})
+SET(OpenMVS_CONFIG_USE_SUITESPARSE ${SuiteSparse_config_FOUND})
 configure_package_config_file("${CMAKE_CURRENT_SOURCE_DIR}/build/Templates/OpenMVSConfig.cmake.in"
 	"${PROJECT_BINARY_DIR}/OpenMVSConfig.cmake"
-	INSTALL_DESTINATION ${PROJECT_BINARY_DIR}
+	INSTALL_DESTINATION "${INSTALL_CMAKE_DIR}"
+	PATH_VARS INSTALL_INCLUDE_DIR
 	NO_SET_AND_CHECK_MACRO)
 # Install the OpenMVSConfig.cmake and OpenMVSConfigVersion.cmake
 INSTALL(FILES

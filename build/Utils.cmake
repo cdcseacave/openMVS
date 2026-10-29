@@ -843,7 +843,8 @@ macro(ConfigLibrary)
 	# Disable to install them directly into <prefix>/bin, <prefix>/lib, ... so the
 	# executables sit next to their dependency DLLs (e.g. a shared vcpkg triplet).
 	# Headers are always namespaced under <prefix>/include/${PROJECT_NAME} to avoid
-	# collisions with other packages in a shared include prefix.
+	# collisions with other packages in a shared include prefix, and the CMake
+	# package files under <prefix>/lib/cmake/${PROJECT_NAME} where find_package() looks.
 	option(INSTALL_USE_SUBDIR "Group installed binaries/libraries/CMake files under a per-project (${PROJECT_NAME}) subdirectory" ON)
 	# Make relative paths absolute (needed later on)
 	foreach(p LIB BIN INCLUDE CMAKE)
@@ -855,7 +856,7 @@ macro(ConfigLibrary)
 			set(${varp} "${CMAKE_INSTALL_PREFIX}/${${var}}")
 		endif()
 		set(${var} "${${varp}}")
-		if(INSTALL_USE_SUBDIR OR p STREQUAL "INCLUDE")
+		if(INSTALL_USE_SUBDIR OR p STREQUAL "INCLUDE" OR p STREQUAL "CMAKE")
 			set(${var} "${${var}}/${PROJECT_NAME}")
 		endif()
 	endforeach()
