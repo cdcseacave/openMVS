@@ -97,13 +97,13 @@ two agree) are left to the other rules. On alameda a pose registered with a 54% 
 correspondences) was 1.9 degrees off, and the 15 images registered from its structure landed 1.9 degrees
 off with it, while every right registration of the scene passes the quorum by a wide margin (never more
 than 7.7 degrees against the 15-degree bar). The same quorum's links are also weighed on the baseline
-direction they predict (`maxLinkDirectionError`, 3 degrees, `--max-link-direction-error`; 0 = no direction
+direction they predict (`maxLinkDirectionError`, 5 degrees, `--max-link-direction-error`; 0 = no direction
 check at all), judged on what the pair measured and on what the model sees: the model's parallax of a link
 is the baseline the pose makes with the neighbour over the median distance of the pose's inlier points. A
 link that the pair (its ray angle) and the model both see under `kNearDuplicateRayAngle` (2 degrees)
 agrees; one that only one of them sees that close abstains (a near-duplicate pair's own baseline is
 unreliable, and a baseline the model sees that short fixes no direction worth checking); any other is
-held to `atan(tan(3°)/a)`, `a` the larger of the pair's ray angle and the model's parallax, so a wide
+held to `atan(tan(5°)/a)`, `a` the larger of the pair's ray angle and the model's parallax, so a wide
 baseline forgives little disagreement and the pose under test can tighten its own tolerance but never
 widen it. The pose is refused only when the links whose direction disagrees outweigh, by weighted
 inliers, the ones that agree, so one misplaced neighbour cannot refuse it alone. Against the pair's ray
@@ -233,7 +233,7 @@ scene the tier verdicts and the peel do not separate.
 | `--match-sequence-overlap N` | `3` | consecutive images every image is matched with; the whole candidate set of SEQUENTIAL mode, a prior added to VOCABULARY/RETRIEVAL (0 = off) |
 | `--refine-intrinsics 0\|1\|2` | `1` | bundle-adjustment intrinsics: 0 none, 1 focal length + k1, k2; 2 adds k3, the principal point and the tangential terms |
 | `--ba-pair-sigma F` | `1` | relative-pose residual rotation sigma, in degrees (the baseline direction at twice that; 0 disables the residuals) |
-| `--max-link-direction-error F` | `3` | the resection's direction check, in degrees, in [0,90] (`maxLinkDirectionError`, read by every resection: the sub-scenes' and the whole-scene pass); 0 = no direction check at all, the inlier-share and rotation checks stay |
+| `--max-link-direction-error F` | `5` | the resection's direction check, in degrees, in [0,90] (`maxLinkDirectionError`, read by every resection: the sub-scenes' and the whole-scene pass); 0 = no direction check at all, the inlier-share and rotation checks stay |
 
 The resection's other acceptance parameters (`minInlierRatio`, `minInliersAbsolute`,
 `maxRelativeRotationError`) have no flags; their defaults live in `ResectionConfig`.

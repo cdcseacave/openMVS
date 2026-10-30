@@ -55,7 +55,7 @@ struct SFM_API ResectionConfig
 	                                    // largest group of those pairs agreeing on a rotation within this same angle,
 	                                    // so that one pair among several cannot speak for the image;
 	                                    // checked for every pose, however large its inlier share (0 = disabled)
-	float maxLinkDirectionError{3.f};   // Maximum angle (degrees) between the baseline direction a verified pair to a
+	float maxLinkDirectionError{5.f};   // Maximum angle (degrees) between the baseline direction a verified pair to a
 	                                    // registered image predicts and the one the estimated centre makes with that
 	                                    // neighbour, as seen from the structure: held to the larger of the pair's ray
 	                                    // angle and the model's parallax of the two cameras (the baseline over the

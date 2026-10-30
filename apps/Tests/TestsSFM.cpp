@@ -11442,12 +11442,18 @@ bool ResectionModelParallaxTest()
 	}
 	bool passed = true;
 
+	// Every case computes its numbers (31, 36.9, 16.7, 2.15 degrees) against a 3-degree bar: a premise of
+	// the mechanism under test (the larger of the pair's ray angle and the model's parallax sets the
+	// tolerance), not of the default, which is 5 and would forgive the decoy and the turns of cases 1 and 2
+	ResectionConfig bar3;
+	bar3.maxLinkDirectionError = 3.f;
+
 	// 1. The model sees the cameras close, the pair does not: the heaviest link, to image 5, is a pair
 	// of 5-degree rays whose translation is turned 40 degrees (its own tolerance, 31 degrees, would
 	// refuse the right pose), while the model sees images 4 and 5 under 2 degrees of parallax: the
 	// link abstains and the lighter, right link to image 3 accepts the pose
 	{
-		const Outcome o = resect({{5, 400, 5, RESECTION_DIRECTION_TURN}, {3, 100, 20, 0}}, NULL, ResectionConfig());
+		const Outcome o = resect({{5, 400, 5, RESECTION_DIRECTION_TURN}, {3, 100, 20, 0}}, NULL, bar3);
 		if (!atTruth(o)) {
 			VERBOSE("ResectionModelParallaxTest FAILED: case 1: the right pose was %s; its heaviest link, to image 5, is a pair "
 				"of 5-degree rays whose translation is turned 40 degrees, but the model sees images 4 and 5 under 2 degrees of "
@@ -11461,7 +11467,7 @@ bool ResectionModelParallaxTest()
 	// degrees, but the model places the pose 10 degrees of parallax from image 3, and the larger of
 	// the two angles holds the direction to 16.7 degrees
 	{
-		const Outcome o = resect({{3, 400, 4, 0}}, &decoyPose, ResectionConfig());
+		const Outcome o = resect({{3, 400, 4, 0}}, &decoyPose, bar3);
 		if (o.registered) {
 			VERBOSE("ResectionModelParallaxTest FAILED: case 2: the wrong pose, its centre 25 degrees off the direction its "
 				"pair to image 3 predicts, was %s; the pair's 4-degree rays forgive 36.9 degrees, but the model places the "
@@ -11474,7 +11480,7 @@ bool ResectionModelParallaxTest()
 	// model also sees under 2 degrees, so it agrees, and its 400 weighted inliers outweigh the 100 of
 	// the pair to image 3, whose translation is turned 40 degrees
 	{
-		const Outcome o = resect({{5, 400, 1, 0}, {3, 100, 20, RESECTION_DIRECTION_TURN}}, NULL, ResectionConfig());
+		const Outcome o = resect({{5, 400, 1, 0}, {3, 100, 20, RESECTION_DIRECTION_TURN}}, NULL, bar3);
 		if (!atTruth(o)) {
 			VERBOSE("ResectionModelParallaxTest FAILED: case 3: the right pose was %s; its pair to image 5 is a near-duplicate "
 				"that the model also sees under 2 degrees of parallax, so its 400 weighted inliers agree and outweigh the 100 "
@@ -11515,7 +11521,7 @@ bool ResectionModelParallaxTest()
 	// angle, about 4 degrees, gives a 36.9-degree tolerance, the link agrees and the right pose is
 	// accepted; held to the plain 3 degrees it would contradict and outweigh the link to image 3
 	{
-		const Outcome o = resect({{5, 400, 4, 20}, {3, 100, 20, 0}}, NULL, ResectionConfig(), 4);
+		const Outcome o = resect({{5, 400, 4, 20}, {3, 100, 20, 0}}, NULL, bar3, 4);
 		if (!atTruth(o)) {
 			VERBOSE("ResectionModelParallaxTest FAILED: case 5: the right pose was %s; its link to image 5 is turned 20 degrees, "
 				"but both the pair's rays and the model's parallax are about 4 degrees apart, which forgives 36.9 degrees",
@@ -11529,7 +11535,7 @@ bool ResectionModelParallaxTest()
 	// turned 2.6 degrees: the larger angle, 80 degrees, holds the direction to 2.15 degrees, tighter
 	// than the plain 3, and the pose is refused
 	{
-		const Outcome o = resect({{5, 400, 80, 2.6}}, NULL, ResectionConfig(), 3);
+		const Outcome o = resect({{5, 400, 80, 2.6}}, NULL, bar3, 3);
 		if (o.registered) {
 			VERBOSE("ResectionModelParallaxTest FAILED: case 6: the pose whose link to image 5 is turned 2.6 degrees was %s; "
 				"the pair's 80-degree rays hold the direction to 2.15 degrees, whatever the model's 3 degrees of parallax "
