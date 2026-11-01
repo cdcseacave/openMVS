@@ -653,8 +653,9 @@ bool EstimateDoorReading(
 	pointToRig.t = first.C - (pointToRig.R * Cp) * scale;
 	reading.T = forward ? pointToRig : pointToRig.Invert();
 	reading.source = forward ? SeamCandidate::RIG_B_ON_A : SeamCandidate::RIG_A_ON_B;
-	DEBUG_EXTRA("Seam door of one camera: %u of %u correspondences, scale %g from %u depth ratios",
-		(unsigned)stats.num_inliers, (unsigned)direction.size(), scale, (unsigned)ratios.size());
+	DEBUG_EXTRA("Seam door of one camera: %u of %u correspondences, scale %g from %u depth ratios%s",
+		(unsigned)stats.num_inliers, (unsigned)direction.size(), scale, (unsigned)ratios.size(),
+		reading.scaleObservable ? "" : String::FormatString(", observes no scale: needs %u", kDoorMinDepthRatios).c_str());
 	return true;
 }
 
@@ -1247,9 +1248,9 @@ void GlobalAlignment::EstimateSeamPair(
 		// verified pairs' inlier weight it reproduces; the 3D-3D reading enters only with supporting
 		// cameras on both sides and its verified pairs not against it, weighing its cameras
 		const bool enters = !pointAlignment || (c.score.Weight() > 0 && c.pairs.Holds());
-		DEBUG_EXTRA("Seam (%u, %u) %s: %u/%u inliers, cameras %u+%u, %u pairs weighing %.0f for / %.0f against%s",
+		DEBUG_EXTRA("Seam (%u, %u) %s: %u/%u inliers, cameras %u+%u, %u pairs weighing %.0f for / %.0f against%s%s",
 			a, b, SourceWord(reading.source), c.score.inliers, (unsigned)observations.size(), c.score.support[0], c.score.support[1],
-			c.pairs.numPairs, c.pairs.agree, c.pairs.disagree, enters ? "" : ", refused");
+			c.pairs.numPairs, c.pairs.agree, c.pairs.disagree, reading.scaleObservable ? "" : ", observes no scale", enters ? "" : ", refused");
 		if (!enters)
 			continue;
 		c.sceneA = a;
@@ -1379,12 +1380,26 @@ void GlobalAlignment::SelectSeamGraph(
 	AverageKept();
 	edgeSeams.clear();
 	std::vector<bool> touched(numBlocks, false), onEdge(numBlocks, false);
+	// per block, its readings and those of them that observe a scale: a block whose readings observe
+	// none has no metric tie to any other, so the averaging places it nowhere
+	std::vector<unsigned> numReadings(numBlocks, 0), numScaled(numBlocks, 0);
 	FOREACH(i, candidates) {
 		const SeamCandidate& c = candidates[i];
 		touched[c.sceneA] = touched[c.sceneB] = true;
+		for (const uint32_t blk : {c.sceneA, c.sceneB}) {
+			++numReadings[blk];
+			numScaled[blk] += c.scaleObservable ? 1 : 0;
+		}
 		if (!kept[i]) {
-			DEBUG_EXTRA("Seam (%u, %u) %s cut: %.2f deg, %.1f%%, %.2f%% from the solution (weight %.2f)", c.sceneA, c.sceneB,
-				SourceWord(c.source), c.residualRotation, (c.residualScale - 1) * 100, c.residualTranslation * 100, c.weight);
+			// a reading whose two blocks the averaging did not place in one model was not judged
+			if (c.residualRotation == FLT_MAX) {
+				DEBUG_EXTRA("Seam (%u, %u) %s cut: not judged, block %u has no pose in the model of the other (the reading %s, weight %.2f)",
+					c.sceneA, c.sceneB, SourceWord(c.source), poses[c.sceneA].state != BlockPose::ADMITTED ? c.sceneA : c.sceneB,
+					c.scaleObservable ? "observes a scale" : "observes no scale", c.weight);
+			} else {
+				DEBUG_EXTRA("Seam (%u, %u) %s cut: %.2f deg, %.1f%%, %.2f%% from the solution (weight %.2f)", c.sceneA, c.sceneB,
+					SourceWord(c.source), c.residualRotation, (c.residualScale - 1) * 100, c.residualTranslation * 100, c.weight);
+			}
 			continue;
 		}
 		onEdge[c.sceneA] = onEdge[c.sceneB] = true;
@@ -1401,7 +1416,10 @@ void GlobalAlignment::SelectSeamGraph(
 		pose.T = Transform();
 		pose.model = numModels++;
 		pose.state = BlockPose::ADMITTED;
-		pose.reason = !touched[blk] ? "no seam" : (onEdge[blk] ? "no pose from the averaging" : "every reading off");
+		pose.reason = !touched[blk] ? String("no seam") :
+			onEdge[blk] ? String("no pose from the averaging") :
+			numScaled[blk] == 0 ? String::FormatString("no scale: none of its %u readings observes one", numReadings[blk]) :
+			String("every reading off");
 	}
 	VERBOSE("Block graph: %u blocks, %u readings, %u kept after %u rounds, %u bridges off, %u models (%s)",
 		numBlocks, (unsigned)candidates.size(), (unsigned)edgeSeams.size(), numRounds, numBridgesOff, numModels, TD_TIMER_GET_FMT().c_str());

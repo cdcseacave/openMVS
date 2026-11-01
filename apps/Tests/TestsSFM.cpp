@@ -17143,7 +17143,7 @@ bool ReweightingStartTest()
 // observing a scale is judged on its translation too, and cut -- and one of (0, 1) turned by ten
 // degrees, cut on its rotation. Block 3, reached through (2, 3) by a reading without scale alone,
 // has nothing tying it to the triangle in scale or position: it gets no pose, its reading cannot be
-// judged and goes off, and the block is a model of its own.
+// judged and goes off, and the block is a model of its own, its reason naming the scale it lacks.
 bool RotationOnlyReadingTest()
 {
 	TD_TIMER_START();
@@ -17174,7 +17174,7 @@ bool RotationOnlyReadingTest()
 			VERBOSE("RotationOnlyReadingTest FAILED: the triangle is not one model of three blocks on the truth");
 			return false;
 		}
-		if (graph.IsOn(link) || graph.ModelSize(3) != 1 || graph.poses[3].reason != "every reading off") {
+		if (graph.IsOn(link) || graph.ModelSize(3) != 1 || graph.poses[3].reason != "no scale: none of its 1 readings observes one") {
 			VERBOSE("RotationOnlyReadingTest FAILED: block 3, reached by a reading without scale alone, sits in a model of %u blocks "
 				"(its reading %s, its reason '%s')", graph.ModelSize(3), graph.IsOn(link) ? "on" : "off", graph.poses[3].reason.c_str());
 			return false;
