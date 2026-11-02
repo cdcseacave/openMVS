@@ -89,6 +89,10 @@ bool MeshUnseenFacesTest();
 // unit must change neither the scale nor the neighbors picked, and no neighbor the filter keeps
 // may carry a scale outside its bounds (an image is resampled by it)
 bool SelectNeighborViewsScaleTest();
+
+// test that DMapCache::UseImage() keeps the depth-map it was asked for loaded even when it alone
+// exceeds the memory budget, ejecting the least recently used other depth-maps instead
+bool DMapCacheKeepsRequestedImageTest();
 /*----------------------------------------------------------------*/
 
 } // namespace MVS
