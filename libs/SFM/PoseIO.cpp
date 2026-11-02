@@ -9,7 +9,11 @@
 #include "PoseIO.h"
 #include "Scene.h"
 #include "Triangulation.h"
+#ifdef _USE_SYSTEM_NLOHMANN_JSON
+#include <nlohmann/json.hpp>
+#else
 #include "../IO/json.hpp"
+#endif
 
 using namespace SFM;
 

@@ -41,7 +41,11 @@
 #define TINYGLTF_NO_STB_IMAGE
 #define TINYGLTF_NO_STB_IMAGE_WRITE
 #include <tiny_gltf.h>
+#ifdef _USE_SYSTEM_NLOHMANN_JSON
+#include <nlohmann/json.hpp>
+#else
 #include "../IO/json.hpp"
+#endif
 
 using namespace MVS;
 

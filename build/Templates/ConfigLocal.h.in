@@ -69,6 +69,9 @@
 // Fast CBRT support
 #cmakedefine _USE_FAST_CBRT
 
+// Use the installed nlohmann_json instead of libs/IO/json.hpp
+#cmakedefine _USE_SYSTEM_NLOHMANN_JSON
+
 // SSE support
 #cmakedefine _USE_SSE
 

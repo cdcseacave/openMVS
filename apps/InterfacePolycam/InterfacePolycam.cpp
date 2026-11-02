@@ -32,7 +32,11 @@
 #include "../../libs/MVS/Common.h"
 #include "../../libs/MVS/Scene.h"
 #define JSON_NOEXCEPTION
+#ifdef _USE_SYSTEM_NLOHMANN_JSON
+#include <nlohmann/json.hpp>
+#else
 #include "../../libs/IO/json.hpp"
+#endif
 #include <boost/program_options.hpp>
 
 using namespace MVS;
