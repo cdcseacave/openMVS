@@ -23,19 +23,22 @@ rebuild all dependencies first.
 ### 2.1 Input pipeline (`ExtractFeaturesSiftGPU`)
 
 One thread owns the SiftGPU context. Images are decoded ahead of it on `scene.threadPool`: one task
-and one `std::future<bool>` per image, at most one task in flight per pool thread and at most 768 MB
-of decoded images. A task loads the pixels, converts them to SiftGPU's float grey input and
-optionally releases the image pixels; the GPU thread waits on the image's future, uploads, extracts,
-and never loads an image itself. Decode failures are reported through the future's value, never by
-throwing, so the GPU thread cannot leave a running task behind.
+and one `std::future<bool>` per image, at most one task in flight per pool thread and at most 960 MB
+of decoded images (their 8-bit pixels and float input). A task loads the pixels, converts them to
+SiftGPU's float grey input and optionally releases the image pixels; the GPU thread waits on the
+image's future, uploads, extracts, and never loads an image itself. An image that fails to load is
+reported through the future's value; an exception travels through the future to the GPU thread, and
+on every exit from the pipeline a guard waits for the decode and post-processing tasks still using
+its buffers.
 
 ### 2.2 Gaussian and DoG pyramid
 
 SiftGPU's pyramid: first octave `-fo -1` (input upsampled 2x), 3 levels per octave (`-d 3`),
 `-maxd = maxImageSize * 2`. Gaussian levels, DoG and gradient magnitude/angle levels are pitch-linear
-`CuTexImage` buffers. Each buffer caches the texture objects bound to it (one per texture
-description); they are created on first use and destroyed when the buffer is reallocated or
-destroyed, never by a copy (`CuTexImage` is not copyable).
+`CuTexImage` buffers. Each buffer caches the texture objects bound to it (one per channel format
+and texture descriptor, and for the 2D ones per view size); they are created on first use and
+destroyed when the buffer is reallocated or destroyed, the 2D ones also when the view size changes
+(after a device synchronization), never by a copy (`CuTexImage` is not copyable).
 
 ### 2.3 Keypoint detection (`ComputeKEY_Kernel`, GLSL keypoint shaders)
 
@@ -112,7 +115,7 @@ budget keeps every keypoint.
 | Orientation harmonics, smoothing | 5, 0.35 rad | `ORIENTATION_HARMONICS`, `ORIENTATION_SMOOTHING` (CUDA), GLSL constants |
 | Selection budget | `GetMaxNumFeatures()` (27,000) | `maxFeaturesPerCell` x 9 |
 | Selection cell | about 256 px | `gridCellSize` |
-| Decode look-ahead | pool threads, 768 MB | `ExtractFeaturesSiftGPU` |
+| Decode look-ahead | pool threads, 960 MB | `ExtractFeaturesSiftGPU` |
 
 SiftGPU's own defaults for `-cmin` (0 = off) and `-da` (off) leave other users of the library on
 the original detector; the orientation estimator has no switch.
@@ -121,8 +124,9 @@ the original detector; the orientation estimator has no switch.
 
 - `-cmin` is compared with the curvature of the level's DoG divided by σ², so it is independent of
   the octave; changing `-d` or the pyramid sigmas changes its meaning.
-- A texture object belongs to the buffer it is bound to and lives until that buffer is reallocated;
-  kernels may run asynchronously after the host function that bound it returns.
+- A texture object belongs to the buffer it is bound to and lives until that buffer is reallocated
+  (a 2D one until the view size changes); kernels may run asynchronously after the host function
+  that bound it returns, so it is destroyed only once they are done.
 - The CUDA and GLSL detectors must stay equivalent: the same thresholds, floor, darkness factor and
   orientation density (feature counts within about 0.3%, orientation error within 0.01°).
 - With darkness adaptation off and the same settings, the optimized CUDA pipeline reproduced the
