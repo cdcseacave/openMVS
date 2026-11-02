@@ -189,15 +189,10 @@ bool DepthMapsData::AllocateCudaPool(unsigned poolSize)
 	ASSERT(pmCUDAPool.empty());
 	if (poolSize == 0)
 		poolSize = 1;
-	// PatchMatch's ctor triggers CUDA::initDevices() on first construction;
-	// build one to probe and check whether any device was actually picked up.
-	auto probe = std::make_unique<MVS::CUDA::PatchMatch>();
-	if (SEACAVE::CUDA::devices.IsEmpty())
+	if (!SEACAVE::CUDA::isEnabled() && SEACAVE::CUDA::initDevices(SEACAVE::CUDA::desiredDeviceIDs) != CUDA_SUCCESS)
 		return false;
-	probe->Init(false);
 	pmCUDAPool.reserve(poolSize);
-	pmCUDAPool.emplace_back(std::move(probe));
-	for (unsigned k = 1; k < poolSize; ++k) {
+	for (unsigned k = 0; k < poolSize; ++k) {
 		auto pm = std::make_unique<MVS::CUDA::PatchMatch>();
 		pm->Init(false);
 		pmCUDAPool.emplace_back(std::move(pm));
@@ -3191,6 +3186,8 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 			: 1u;
 		#ifdef _USE_CUDA
 		const bool bAllocatedPool = data.depthMaps.AllocateCudaPool(poolSize);
+		if (!bAllocatedPool)
+			VERBOSE("WARNING: no usable CUDA device; using CPU depth-map estimation");
 		#else
 		const bool bAllocatedPool = SEACAVE::METAL::isRuntimeAvailable() && data.depthMaps.AllocateMetalPool(poolSize);
 		if (!bAllocatedPool)

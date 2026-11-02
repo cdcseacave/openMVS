@@ -50,6 +50,8 @@ cmake --build . -j4
 cmake --install .
 ```
 
+A CUDA build compiles the GPU code only for the GPU of the build machine by default (`CMAKE_CUDA_ARCHITECTURES=native`). Binaries meant to run on other machines must list the targeted architectures, ex. `cmake .. -DCMAKE_CUDA_ARCHITECTURES=all-major` (native code for every GPU generation supported by the CUDA toolkit, plus PTX for newer ones). At runtime, a GPU the build contains no code for is reported in the log and skipped, and the CPU is used instead.
+
 -------------------
 Library usage
 -------------------

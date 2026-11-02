@@ -38,109 +38,111 @@ namespace CUDA {
 
 GENERAL_API Devices devices;
 
-// validate a CUDA device and fill the Device struct
-static CUresult _validateDevice(int devID, Device& device)
+// log the failed CUDA runtime call and abort
+void abortCudaCall(cudaError_t error, const char* call, const char* file, int line)
 {
-	int device_count;
-	if (cudaGetDeviceCount(&device_count) != cudaSuccess || device_count == 0) {
-		VERBOSE("CUDA error: no devices supporting CUDA");
-		return CUDA_ERROR_NO_DEVICE;
-	}
-	if (devID < 0 || devID >= device_count) {
-		VERBOSE("CUDA error: device [%d] is not a valid GPU device (%d detected)", devID, device_count);
-		return CUDA_ERROR_INVALID_DEVICE;
-	}
-	int computeMode;
-	if (cudaDeviceGetAttribute(&computeMode, cudaDevAttrComputeMode, devID) != cudaSuccess) {
-		VERBOSE("CUDA error: failed to get compute mode for device %d", devID);
-		return CUDA_ERROR_INVALID_DEVICE;
-	}
-	if (computeMode == cudaComputeModeProhibited) {
-		VERBOSE("CUDA error: device %d is running in Compute Mode Prohibited", devID);
-		return CUDA_ERROR_INVALID_DEVICE;
-	}
-	int major, minor;
-	if (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, devID) != cudaSuccess ||
-		cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, devID) != cudaSuccess) {
-		VERBOSE("CUDA error: failed to get compute capability for device %d", devID);
-		return CUDA_ERROR_INVALID_DEVICE;
-	}
-	if (major < 3) {
-		VERBOSE("CUDA error: device %d compute capability %d.%d < 3.0", devID, major, minor);
-		return CUDA_ERROR_INVALID_DEVICE;
-	}
-	device.ID = devID;
-	device.major = major;
-	device.minor = minor;
-	device.computeMode = computeMode;
-	return CUDA_SUCCESS;
+	VERBOSE("CUDA error at %s:%d: %s (%s (code %d) - %s)", file, line, call, cudaGetErrorName(error), static_cast<int>(error), cudaGetErrorString(error));
+	ASSERT("CudaError" == NULL);
+	exit(EXIT_FAILURE);
+}
+/*----------------------------------------------------------------*/
+
+
+// the compute capabilities (major*10+minor) the CUDA code is compiled for,
+// see CMAKE_CUDA_ARCHITECTURES: native code (SASS) and the lowest PTX (0 if none)
+static constexpr int cudaArchsSASS[] = {0, _CUDA_ARCHS_SASS};
+static constexpr int cudaArchPTX(_CUDA_ARCH_PTX);
+
+// the CUDA code runs on a device if it holds native code of the same major
+// and an equal or lower minor version, or PTX of an equal or lower version
+// that the driver can compile for it
+static bool _isComputeCapabilitySupported(int major, int minor)
+{
+	ASSERT(major > 0 && minor >= 0 && minor < 10);
+	for (int arch: cudaArchsSASS)
+		if (arch > 0 && arch/10 == major && arch%10 <= minor)
+			return true;
+	return cudaArchPTX > 0 && cudaArchPTX <= major*10+minor;
 }
 
-// select the best available CUDA device by compute capability and performance
-static CUresult _selectBestDevice(Device& bestDevice)
+static String _formatComputeCapabilities()
 {
-	int device_count = 0;
-	if (cudaGetDeviceCount(&device_count) != cudaSuccess || device_count == 0) {
-		VERBOSE("CUDA error: no devices supporting CUDA");
-		return CUDA_ERROR_NO_DEVICE;
+	String archs;
+	for (int arch: cudaArchsSASS)
+		if (arch > 0)
+			archs += String::FormatString("sm_%d ", arch);
+	if (cudaArchPTX > 0)
+		archs += String::FormatString("compute_%d (PTX) ", cudaArchPTX);
+	ASSERT(!archs.empty());
+	archs.pop_back();
+	return archs;
+}
+
+// fill the Device struct if the device can run the CUDA code
+static bool _initDevice(int devID, Device& device)
+{
+	cudaDeviceProp props;
+	int computeMode;
+	if (cudaGetDeviceProperties(&props, devID) != cudaSuccess ||
+		cudaDeviceGetAttribute(&computeMode, cudaDevAttrComputeMode, devID) != cudaSuccess) {
+		VERBOSE("CUDA device %d: failed to query its properties", devID);
+		return false;
 	}
-	size_t max_perf = 0;
-	bool found = false;
-	for (int i = 0; i < device_count; ++i) {
-		int computeMode;
-		if (cudaDeviceGetAttribute(&computeMode, cudaDevAttrComputeMode, i) != cudaSuccess)
-			continue;
-		int major, minor;
-		if (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, i) != cudaSuccess ||
-			cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, i) != cudaSuccess)
-			continue;
-		if (computeMode == cudaComputeModeProhibited || major < 3)
-			continue;
-		int multiProcessorCount, clockRate;
-		if (cudaDeviceGetAttribute(&multiProcessorCount, cudaDevAttrMultiProcessorCount, i) != cudaSuccess ||
-			cudaDeviceGetAttribute(&clockRate, cudaDevAttrClockRate, i) != cudaSuccess)
-			continue;
-		const size_t perf = (size_t)multiProcessorCount * (size_t)clockRate;
-		if (!found ||
-			major > bestDevice.major ||
-			(major == bestDevice.major && minor > bestDevice.minor) ||
-			(major == bestDevice.major && minor == bestDevice.minor && perf > max_perf))
-		{
-			bestDevice.ID = i;
-			bestDevice.major = major;
-			bestDevice.minor = minor;
-			bestDevice.computeMode = computeMode;
-			max_perf = perf;
-			found = true;
-		}
+	if (computeMode == cudaComputeModeProhibited) {
+		VERBOSE("CUDA device %d (%s) is running in compute mode prohibited", devID, props.name);
+		return false;
 	}
-	if (!found) {
-		VERBOSE("CUDA error: no suitable CUDA device found");
-		return CUDA_ERROR_NO_DEVICE;
+	if (!_isComputeCapabilitySupported(props.major, props.minor)) {
+		VERBOSE("CUDA device %d (%s) has compute capability %d.%d, but this build contains CUDA code only for %s; "
+			"rebuild with -DCMAKE_CUDA_ARCHITECTURES=%d%d (or all-major) to use it",
+			devID, props.name, props.major, props.minor, _formatComputeCapabilities().c_str(), props.major, props.minor);
+		return false;
 	}
-	return CUDA_SUCCESS;
+	device.ID = devID;
+	device.major = props.major;
+	device.minor = props.minor;
+	return true;
 }
 
 // initialize CUDA devices from a comma-separated list of device IDs
 CUresult initDevices(const String& deviceIDs)
 {
+	ASSERT(devices.IsEmpty());
 	if (isCpuRequested(deviceIDs))
 		return CUDA_ERROR_INVALID_DEVICE;
 
-	// cuInit needed because MemDevice uses Driver API (cuMemAlloc, etc.)
-	checkCudaError(cuInit(0));
+	// no driver, no device or a driver too old for the CUDA runtime: expected on
+	// machines without an NVIDIA GPU, so not an error
+	int deviceCount;
+	if (cudaGetDeviceCount(&deviceCount) != cudaSuccess || deviceCount == 0) {
+		VERBOSE("No CUDA device available");
+		return CUDA_ERROR_NO_DEVICE;
+	}
 
 	if (deviceIDs == "-1") {
-		// auto-select best device
-		Device device;
-		const CUresult ret = _selectBestDevice(device);
-		if (ret != CUDA_SUCCESS)
-			return ret;
-		if (cudaSetDevice(device.ID) != cudaSuccess) {
-			VERBOSE("CUDA error: failed to set device %d", device.ID);
-			return CUDA_ERROR_INVALID_DEVICE;
+		// auto-select the supported device with the highest compute capability, then performance
+		size_t maxPerf(0);
+		Device bestDevice;
+		for (int devID = 0; devID < deviceCount; ++devID) {
+			Device device;
+			if (!_initDevice(devID, device))
+				continue;
+			int multiProcessorCount, clockRate;
+			if (cudaDeviceGetAttribute(&multiProcessorCount, cudaDevAttrMultiProcessorCount, devID) != cudaSuccess ||
+				cudaDeviceGetAttribute(&clockRate, cudaDevAttrClockRate, devID) != cudaSuccess)
+				continue;
+			const size_t perf((size_t)multiProcessorCount * (size_t)clockRate);
+			if (bestDevice.ID < 0 ||
+				device.major > bestDevice.major ||
+				(device.major == bestDevice.major && device.minor > bestDevice.minor) ||
+				(device.major == bestDevice.major && device.minor == bestDevice.minor && perf > maxPerf))
+			{
+				bestDevice = device;
+				maxPerf = perf;
+			}
 		}
-		devices.Insert(device);
+		if (bestDevice.ID >= 0)
+			devices.Insert(bestDevice);
 	} else {
 		// parse comma-separated device IDs
 		CLISTDEF2(String) tokens;
@@ -149,19 +151,26 @@ CUresult initDevices(const String& deviceIDs)
 			if (token.empty())
 				continue;
 			const int devID = std::atoi(token.c_str());
-			Device device;
-			if (_validateDevice(devID, device) != CUDA_SUCCESS) {
-				VERBOSE("CUDA warning: skipping invalid device ID %d", devID);
+			if (devID < 0 || devID >= deviceCount) {
+				VERBOSE("CUDA device %d does not exist (%d detected)", devID, deviceCount);
 				continue;
 			}
-			devices.Insert(device);
+			Device device;
+			if (_initDevice(devID, device))
+				devices.Insert(device);
 		}
 	}
-	if (devices.IsEmpty())
+	if (devices.IsEmpty()) {
+		VERBOSE("No usable CUDA device");
 		return CUDA_ERROR_NO_DEVICE;
+	}
 
 	// set the first device as active
-	cudaSetDevice(devices[0].ID);
+	if (cudaSetDevice(devices[0].ID) != cudaSuccess) {
+		VERBOSE("CUDA device %d: failed to activate it", devices[0].ID);
+		devices.Release();
+		return CUDA_ERROR_INVALID_DEVICE;
+	}
 
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	for (const Device& device: devices) {
@@ -174,7 +183,6 @@ CUresult initDevices(const String& deviceIDs)
 	#endif
 	return CUDA_SUCCESS;
 }
-
 /*----------------------------------------------------------------*/
 
 

@@ -30,6 +30,11 @@ if(_USE_METAL)
 		COMPILE_OPTIONS "-fobjc-arc")
 endif()
 
+if(_USE_CUDA)
+	# the compute capabilities the CUDA code is compiled for, see initDevices()
+	TARGET_COMPILE_DEFINITIONS(Common PRIVATE _CUDA_ARCHS_SASS=${_CUDA_ARCHS_SASS} _CUDA_ARCH_PTX=${_CUDA_ARCH_PTX})
+endif()
+
 # Add public include directories that propagate to dependent targets
 target_include_directories(Common PUBLIC
 	$<BUILD_INTERFACE:${CMAKE_BINARY_DIR}>

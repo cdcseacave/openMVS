@@ -38,7 +38,6 @@ OPTION(OpenMVS_USE_FAST_FLOAT2INT "Use an optimized code to convert real numbers
 OPTION(OpenMVS_USE_FAST_INVSQRT "Use an optimized code to compute the inverse square root (slower in fact on modern compilers)" OFF)
 OPTION(OpenMVS_USE_FAST_CBRT "Use an optimized code to compute the cubic root" OFF)
 OPTION(OpenMVS_USE_SSE "Enable SSE optimizations" ON)
-OPTION(OpenMVS_MAX_CUDA_COMPATIBILITY "Build for maximum CUDA device compatibility" OFF)
 OPTION(OpenMVS_ENABLE_IPO "Whether to enable interprocedural optimization" ON)
 OPTION(OpenMVS_ENABLE_TESTS "Enable test code" ON)
 OPTION(OpenMVS_HEADLESS_DEBUG "Print asserts to stderr and continue; do not redirect cout/cerr or pop modal dialogs (for CI / non-interactive debug runs)" OFF)
@@ -221,9 +220,10 @@ if(OpenMVS_USE_CUDA)
 		# Finding CUDA fails on some systems if paths to nvcc / cuda library are not set; ex. on linux:
 		# export PATH="/usr/local/cuda/bin:$PATH"
 		# export LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH}"
-		if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-			# `native` (CMake >= 3.24) tells nvcc to detect and target the build
-			# host's GPU; the project's CMAKE_MINIMUM_REQUIRED guarantees support.
+		if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES AND NOT DEFINED ENV{CUDAARCHS})
+			# `native` (CMake >= 3.24) tells nvcc to target only the build host's GPU,
+			# the fastest to compile; distributed binaries must instead list every
+			# targeted architecture, ex. -DCMAKE_CUDA_ARCHITECTURES=all-major
 			SET(CMAKE_CUDA_ARCHITECTURES "native")
 		endif()
 		SET(CMAKE_CUDA_FLAGS_INIT "${CMAKE_CUDA_FLAGS_INIT} -allow-unsupported-compiler")
@@ -232,37 +232,36 @@ if(OpenMVS_USE_CUDA)
 		SET(CMAKE_CUDA_STANDARD 17)
 		SET(CMAKE_CUDA_STANDARD_REQUIRED ON)
 		FIND_PACKAGE(CUDAToolkit REQUIRED)
-		if(OpenMVS_MAX_CUDA_COMPATIBILITY)
-			EXECUTE_PROCESS(COMMAND "${CMAKE_CUDA_COMPILER}" --list-gpu-arch
-				OUTPUT_VARIABLE LIST_GPU_ARCH
-				ERROR_QUIET)
-			if(NOT LIST_GPU_ARCH)
-				MESSAGE(WARNING "Cannot compile for max CUDA compatibility, nvcc does not support --list-gpu-arch")
-				SET(OpenMVS_MAX_CUDA_COMPATIBILITY OFF)
+		# resolve the compute capabilities the CUDA code is compiled for, so that
+		# devices it cannot run on are skipped at runtime: native code (SASS) runs
+		# on the same major version, PTX is compiled by the driver for newer ones
+		if(CMAKE_CUDA_ARCHITECTURES STREQUAL "native")
+			SET(_CUDA_ARCHS "${CMAKE_CUDA_ARCHITECTURES_NATIVE}")
+		elseif(CMAKE_CUDA_ARCHITECTURES STREQUAL "all")
+			SET(_CUDA_ARCHS "${CMAKE_CUDA_ARCHITECTURES_ALL}")
+		elseif(CMAKE_CUDA_ARCHITECTURES STREQUAL "all-major")
+			SET(_CUDA_ARCHS "${CMAKE_CUDA_ARCHITECTURES_ALL_MAJOR}")
+		else()
+			SET(_CUDA_ARCHS "${CMAKE_CUDA_ARCHITECTURES}")
+		endif()
+		SET(_CUDA_ARCHS_SASS "")
+		SET(_CUDA_ARCH_PTX 0)
+		foreach(CUDA_ARCH ${_CUDA_ARCHS})
+			if(NOT CUDA_ARCH MATCHES "^([0-9]+)([a-z]?)(-real|-virtual)?$")
+				MESSAGE(FATAL_ERROR "Unsupported CUDA architecture '${CUDA_ARCH}' in CMAKE_CUDA_ARCHITECTURES='${CMAKE_CUDA_ARCHITECTURES}'")
 			endif()
+			if(NOT CMAKE_MATCH_3 STREQUAL "-virtual")
+				LIST(APPEND _CUDA_ARCHS_SASS ${CMAKE_MATCH_1})
+			endif()
+			# architecture-specific PTX (ex. 90a) runs only on that exact architecture
+			if(NOT CMAKE_MATCH_3 STREQUAL "-real" AND NOT CMAKE_MATCH_2 AND (_CUDA_ARCH_PTX EQUAL 0 OR CMAKE_MATCH_1 LESS _CUDA_ARCH_PTX))
+				SET(_CUDA_ARCH_PTX ${CMAKE_MATCH_1})
+			endif()
+		endforeach()
+		if(NOT _CUDA_ARCHS_SASS AND _CUDA_ARCH_PTX EQUAL 0)
+			MESSAGE(FATAL_ERROR "No CUDA architecture to compile for: set CMAKE_CUDA_ARCHITECTURES (ex. native or all-major)")
 		endif()
-		if(OpenMVS_MAX_CUDA_COMPATIBILITY)
-			# Build for maximum compatibility
-			# https://arnon.dk/matching-sm-architectures-arch-and-gencode-for-various-nvidia-cards/
-			UNSET(CMAKE_CUDA_ARCHITECTURES)
-			# Extract list of arch and gencodes
-			STRING(REPLACE "\r" "" LIST_GPU_ARCH ${LIST_GPU_ARCH})
-			STRING(REPLACE "\n" ";" LIST_GPU_ARCH ${LIST_GPU_ARCH})
-			EXECUTE_PROCESS(COMMAND "${CMAKE_CUDA_COMPILER}" --list-gpu-code
-				OUTPUT_VARIABLE LIST_GPU_CODE
-				ERROR_QUIET)
-			STRING(REPLACE "\r" "" LIST_GPU_CODE ${LIST_GPU_CODE})
-			STRING(REPLACE "\n" ";" LIST_GPU_CODE ${LIST_GPU_CODE})
-			LIST(GET LIST_GPU_CODE 0 TARGET_GPU_CODE)
-			SET(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -arch=${TARGET_GPU_CODE}")
-			SET(IDX 0)
-			foreach(GPU_ARCH ${LIST_GPU_ARCH})
-				LIST(GET LIST_GPU_CODE ${IDX} GPU_CODE)
-				SET(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -gencode=arch=${GPU_ARCH},code=${GPU_CODE}")
-				MATH(EXPR IDX "${IDX}+1")
-			endforeach()
-			MESSAGE(STATUS "Set CUDA flags: " ${CMAKE_CUDA_FLAGS})
-		endif()
+		STRING(REPLACE ";" "," _CUDA_ARCHS_SASS "${_CUDA_ARCHS_SASS}")
 		SET(CMAKE_CUDA_SEPARABLE_COMPILATION ON)
 		SET(CMAKE_CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 		SET(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --expt-relaxed-constexpr")
@@ -274,7 +273,7 @@ if(OpenMVS_USE_CUDA)
 		INCLUDE_DIRECTORIES(${CUDAToolkit_INCLUDE_DIRS})
 		LIST(APPEND OpenMVS_EXTRA_LIBS ${CUDAToolkit_LIBRARIES} CUDA::cuda_driver CUDA::cudart CUDA::curand)
 		SET(_USE_CUDA TRUE)
-		MESSAGE(STATUS "Found CUDA: " ${CMAKE_CUDA_COMPILER_VERSION} " with GPU arch: " ${CMAKE_CUDA_ARCHITECTURES})
+		MESSAGE(STATUS "Found CUDA: ${CMAKE_CUDA_COMPILER_VERSION} with GPU arch: ${CMAKE_CUDA_ARCHITECTURES} (SASS ${_CUDA_ARCHS_SASS}; PTX ${_CUDA_ARCH_PTX})")
 	else()
 		MESSAGE(STATUS "Can't find CUDA. Continuing without it.")
 	endif()
