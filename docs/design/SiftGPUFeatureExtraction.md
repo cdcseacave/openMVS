@@ -186,10 +186,78 @@ minimum of 15, 12 now). ImageMatching registers all 263 with the same features.
   low-light ones); a size-dependent noise floor on the factor rarely applied.
 - 6 or 7 harmonics, smoothing 0.30 rad: within noise of 5 harmonics at 0.35 rad.
 - Shared-memory orientation histogram: no measurable speed difference.
+- Adaptive Non-Maximal Suppression (ANMS): rank points by distance to a sufficiently stronger
+  neighbour to spread the cap spatially; the tested response/scale variants did not improve the
+  measured quality over the existing selection, so more uniform spacing alone was insufficient.
+- Local contrast normalization and fixed spatial quotas: did not establish a matching/pose gain;
+  equal spatial coverage does not imply equally useful or repeatable descriptors.
+- Overlapping grid cells with protected spatial floors: could improve total pair matches while
+  losing weak-region matches or full-scene support/cameras; at cap 8192, one scale-only overlap
+  screen raised correct matches 548.31 -> 584.81 per pair but weak-weak matches fell 29.31 -> 28.38.
+- Intra-image descriptor uniqueness (distance to other-location competitors): exact nearest-
+  competitor weighting lost both correct and weak-region matches; weight 0.5 lost 4.78%/4.05%
+  versus grid-scale at cap 8192, so rarity within one image was not a sufficient matching score.
+- Response-times-scale with descriptor entropy under the same coverage guards: some total-match
+  gains displaced useful weak-region correspondences; at cap 8192, overlap plus this score gained
+  8.47% correct matches but lost 9.81% weak-weak matches versus grid-scale in the reused-scene screen.
 - Ranking the selection by DoG contrast, or a coarse 6-cell share followed by contrast × scale: more
   repeatable across views (rank correlation 0.83-0.90 vs 0.50-0.73 for scale) and better at an 8192
   budget (SfM 0.359% vs 0.397%), but worse at the default 27,000 (0.341% vs 0.318%); it would also
   need SiftGPU to return the DoG value of each keypoint.
+- Own-image stability prepass for capping (four transformed-image extractions, up to eight
+  self-matches): rejected as impractically slow, 4.57-10.38 s/image versus native 0.44-0.78 s in
+  fresh prototype timing, despite pooled correct/textureless pair-inlier gains of 0.33%/3.59%;
+  synthetic stability also failed to guarantee better reconstruction poses (details in the
+  companion Acute3D `docs/feature_extraction_study.md`, per-image capping).
+
+### Follow-up image-local cap screen (2026-11-01)
+
+The follow-up tested SSC, native KD/range/SDC suppression, author and stable-tie quadtrees,
+variance partitioning, weighted FPS, adaptive Poisson, robust Brown ANMS, and grid-block/full-image
+Gaussian DPP. The screen uses 62 extractor/image sources from 31 photos in eight reused scenes,
+16 physical pairs per extractor, and caps 2048/8192/27000; full-image DPP is a 2048-only pilot.
+All 3040 quality cases were independently checked after deduplicating physical correspondences.
+These are matching-screen results, not full-scene SfM or generalization claims.
+
+At SiftGPU cap 8192, with reciprocal matching and a two-sided 0.8 distance ratio:
+
+| Selection | Correct physical matches | Weak-both matches | Occupied weak cells |
+|---|---:|---:|---:|
+| Current grid/scale | 6252 | 351 | 291 |
+| Adaptive Poisson/scale | 6525 | 406 | 268 |
+| Robust ANMS/scale | 5338 | 363 | 271 |
+| Published SSC/scale | 5709 | 365 | 265 |
+
+None of these classical selectors improves all three pooled objectives over its native control.
+More weak matches can still cover fewer weak regions. The private C++ Poisson implementation
+reproduced all 372 prototype selections; its over-budget SiftGPU median selector cost at 8192
+was 189 ms (maximum 416 ms), excluding process/file adapters. Published C++ SSC took a median
+4.18 ms for its function, excluding supplied ordering and external count repair. Full-image DPP
+took roughly 47-51 s/image in the tested BLAS-backed Python implementation at 2048. These are
+concurrent component timings with different boundaries, not integrated production speed ratios.
+Fresh response-proxy processing is additional to cached response-based selector timings: the
+31-image, three-repeat CPU DoG-proxy pass took a median 2.274 s/image with pixels resident
+(2.403 s including repeat decoding). All scores reproduced the cached values exactly; this is
+not the cost of exporting DoG values already computed inside SiftGPU.
+
+The subsequent 64 full native SfM runs also completed: Office/Pipes plus unseen Electro/Terrains,
+both original/private-bookkeeping-corrected backends and two repeats. At cap 8190, Poisson/scale
+lost weak final-track supports on Pipes (1594 -> 1001) and Terrains (22534 -> 12799), despite its
+pooled pair-screen gains; the private corrected backend retained the same regressions. Neither
+tested cap tradeoff is adopted. The companion Acute3D study retains all policies, per-scene
+results and cost boundaries. The production cap and two-orientation default remain unchanged.
+
+A later orientation-budget variant preserved every native cell quota and selected primary
+record, spending secondary-orientation slots on additional detector locations only in saturated
+cells. It improved the 8192 strict pair screen (6252 -> 6805 correct, 351 -> 407 weak-both,
+291 -> 294 weak cells) and the first four full-scene support counts. Its private C++ selector
+took about 4.8 ms/image median on over-budget validation inputs, with no extra image pass.
+All 3931 captured photos passed 15724 C++/Python selection and input-location/quota checks.
+However, 16 additional native DarkPipes/Meadow guards exposed regressions: DarkPipes at 8190
+lost weak supports 251 -> 221, and Meadow lost correct supports and retained its bad camera.
+Removing a secondary orientation can lose useful appearance even when its primary location is
+retained. This fast variant is also not adopted as a blanket replacement. Detailed pose,
+per-image coverage and cost boundaries are in the companion Acute3D study.
 
 ## 7. Open items
 
