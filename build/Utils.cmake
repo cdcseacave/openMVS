@@ -828,37 +828,49 @@ endmacro()
 
 # Initialize variables needed for a library type project.
 macro(ConfigLibrary)
-	# Offer the user the choice of overriding the installation directories
+	# Offer the user the choice of overriding the installation directories; relative paths
+	# are relative to the install prefix, resolved at install time (cmake --install --prefix)
 	set(INSTALL_LIB_DIR "lib" CACHE PATH "Installation directory for libraries")
 	set(INSTALL_BIN_DIR "bin" CACHE PATH "Installation directory for executables")
 	set(INSTALL_INCLUDE_DIR "include" CACHE PATH "Installation directory for header files")
-	if(WIN32 AND NOT CYGWIN)
-		set(DEF_INSTALL_CMAKE_DIR "CMake")
-	else()
-		set(DEF_INSTALL_CMAKE_DIR "lib/cmake")
-	endif()
-	set(INSTALL_CMAKE_DIR ${DEF_INSTALL_CMAKE_DIR} CACHE PATH "Installation directory for CMake files")
-	# Group the installed binaries, libraries and CMake files under a per-project
-	# subdirectory (<prefix>/bin/${PROJECT_NAME}, <prefix>/lib/${PROJECT_NAME}, ...).
-	# Disable to install them directly into <prefix>/bin, <prefix>/lib, ... so the
+	# a location find_package() searches on every platform
+	set(INSTALL_CMAKE_DIR "lib/cmake/${PROJECT_NAME}" CACHE PATH "Installation directory for CMake files")
+	# Group the installed binaries and libraries under a per-project subdirectory
+	# (<prefix>/bin/${PROJECT_NAME}, <prefix>/lib/${PROJECT_NAME}).
+	# Disable to install them directly into <prefix>/bin, <prefix>/lib so the
 	# executables sit next to their dependency DLLs (e.g. a shared vcpkg triplet).
 	# Headers are always namespaced under <prefix>/include/${PROJECT_NAME} to avoid
 	# collisions with other packages in a shared include prefix.
-	option(INSTALL_USE_SUBDIR "Group installed binaries/libraries/CMake files under a per-project (${PROJECT_NAME}) subdirectory" ON)
-	# Make relative paths absolute (needed later on)
-	foreach(p LIB BIN INCLUDE CMAKE)
-		set(var INSTALL_${p}_DIR)
-		set(varp INSTALL_${p}_DIR_PREFIX)
-		if(IS_ABSOLUTE "${${varp}}")
-			set(${varp} "${${varp}}")
-		else()
-			set(${varp} "${CMAKE_INSTALL_PREFIX}/${${var}}")
+	option(INSTALL_USE_SUBDIR "Group installed binaries/libraries under a per-project (${PROJECT_NAME}) subdirectory" ON)
+	if(INSTALL_USE_SUBDIR)
+		set(INSTALL_LIB_DIR "${INSTALL_LIB_DIR}/${PROJECT_NAME}")
+		set(INSTALL_BIN_DIR "${INSTALL_BIN_DIR}/${PROJECT_NAME}")
+	endif()
+	set(INSTALL_INCLUDE_DIR "${INSTALL_INCLUDE_DIR}/${PROJECT_NAME}")
+endmacro()
+
+# find_exported_dependency(<package> [find_package arguments])
+# Find a package the exported targets link against, and record the lookup for the
+# installed package configuration (see OpenMVSConfig.cmake.in), so that the projects
+# using OpenMVS find exactly the packages OpenMVS was built with.
+macro(find_exported_dependency name)
+	# a hint the build was given, not one the package sets for itself
+	unset(_find_root)
+	if(DEFINED ${name}_ROOT)
+		set(_find_root "${${name}_ROOT}")
+	endif()
+	find_package(${name} ${ARGN})
+	if(${name}_FOUND)
+		if(DEFINED _find_root)
+			set_property(GLOBAL APPEND PROPERTY OpenMVS_EXPORTED_DEPENDENCIES "if(NOT DEFINED ${name}_ROOT)
+	set(${name}_ROOT \"${_find_root}\")
+endif()")
 		endif()
-		set(${var} "${${varp}}")
-		if(INSTALL_USE_SUBDIR OR p STREQUAL "INCLUDE")
-			set(${var} "${${var}}/${PROJECT_NAME}")
-		endif()
-	endforeach()
+		set(_find_args ${name} ${ARGN})
+		list(REMOVE_ITEM _find_args REQUIRED QUIET)
+		string(REPLACE ";" " " _find_args "${_find_args}")
+		set_property(GLOBAL APPEND PROPERTY OpenMVS_EXPORTED_DEPENDENCIES "find_dependency(${_find_args})")
+	endif()
 endmacro()
 
 function(create_rc_files name)

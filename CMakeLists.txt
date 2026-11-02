@@ -125,12 +125,9 @@ SET(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
 # build/Utils.cmake was already included above (it must run before project()
 # so the opencv4 overlay generator can append to VCPKG_OVERLAY_PORTS before
 # the vcpkg toolchain consumes it). Among other things, it declares
-# OPTION(BUILD_SHARED_LIBS ...), so the OPENMVS_SHARED / IPO logic that
-# follows can rely on BUILD_SHARED_LIBS being defined here.
-# Tell C++ code we are building shared libraries, so headers (e.g. Types.h) can
-# pick the cross-DLL-friendly path for things like boost exception-unwinding.
+# OPTION(BUILD_SHARED_LIBS ...), so the IPO logic that follows can rely on
+# BUILD_SHARED_LIBS being defined here (the Common library defines OPENMVS_SHARED).
 IF(BUILD_SHARED_LIBS)
-	ADD_COMPILE_DEFINITIONS(OPENMVS_SHARED)
 	# MSVC's /GL+/LTCG is catastrophic on shared builds: the linker tries to
 	# re-do whole-program optimization across each DLL's .obj graph, peaking at
 	# 30-40 GB RAM and many minutes per DLL link. Per-DLL native code is fine
@@ -197,7 +194,7 @@ if(OpenMVS_USE_OPENMP)
 	if(APPLE AND CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64")
 		set(OpenMP_ROOT "/opt/homebrew/opt/libomp")
 	endif()
-	FIND_PACKAGE(OpenMP QUIET)
+	find_exported_dependency(OpenMP QUIET)
 	if(OPENMP_FOUND)
 		SET(_USE_OPENMP TRUE)
 		LIST(APPEND OpenMVS_EXTRA_LIBS OpenMP::OpenMP_CXX)
@@ -231,7 +228,7 @@ if(OpenMVS_USE_CUDA)
 		SET(CUDA_FOUND TRUE)
 		SET(CMAKE_CUDA_STANDARD 17)
 		SET(CMAKE_CUDA_STANDARD_REQUIRED ON)
-		FIND_PACKAGE(CUDAToolkit REQUIRED)
+		find_exported_dependency(CUDAToolkit REQUIRED)
 		# resolve the compute capabilities the CUDA code is compiled for, so that
 		# devices it cannot run on are skipped at runtime: native code (SASS) runs
 		# on the same major version, PTX is compiled by the driver for newer ones
@@ -313,7 +310,7 @@ if(OpenMVS_USE_PYTHON)
 	MESSAGE(STATUS "Python ${Python3_VERSION_MAJOR}.${Python3_VERSION_MINOR} found (include: ${Python3_INCLUDE_DIRS})")
 endif()
 
-FIND_PACKAGE(Boost REQUIRED COMPONENTS iostreams program_options serialization exception)
+find_exported_dependency(Boost REQUIRED COMPONENTS iostreams program_options serialization exception)
 if(Boost_FOUND)
 	ADD_DEFINITIONS(${Boost_DEFINITIONS})
 	LIST(APPEND OpenMVS_EXTRA_LIBS ${Boost_LIBRARIES})
@@ -343,7 +340,7 @@ if(OpenMVS_USE_PYTHON)
 	endif()
 endif()
 
-FIND_PACKAGE(Eigen3 CONFIG REQUIRED)
+find_exported_dependency(Eigen3 CONFIG REQUIRED)
 if(Eigen3_FOUND)
 	if(Eigen3_VERSION VERSION_LESS "3.4")
 		MESSAGE(FATAL_ERROR "Eigen ${Eigen3_VERSION} found, but at least 3.4 is required")
@@ -353,7 +350,7 @@ if(Eigen3_FOUND)
 	MESSAGE(STATUS "Eigen ${Eigen3_VERSION} found")
 endif()
 
-FIND_PACKAGE(OpenCV REQUIRED)
+find_exported_dependency(OpenCV REQUIRED)
 if(OpenCV_FOUND)
 	ADD_DEFINITIONS(${OpenCV_DEFINITIONS})
 	LIST(APPEND OpenMVS_EXTRA_LIBS ${OpenCV_LIBS})
@@ -375,6 +372,12 @@ FIND_PACKAGE(gflags CONFIG QUIET)
 if(TARGET gflags::gflags AND NOT TARGET gflags)
 	ADD_LIBRARY(gflags INTERFACE IMPORTED)
 	SET_TARGET_PROPERTIES(gflags PROPERTIES INTERFACE_LINK_LIBRARIES gflags::gflags)
+	# the projects using the installed OpenMVS link ceres through it too
+	SET_PROPERTY(GLOBAL APPEND PROPERTY OpenMVS_EXPORTED_DEPENDENCIES "find_dependency(gflags CONFIG)
+if(NOT TARGET gflags)
+	add_library(gflags INTERFACE IMPORTED)
+	set_target_properties(gflags PROPERTIES INTERFACE_LINK_LIBRARIES gflags::gflags)
+endif()")
 endif()
 
 LIST(REMOVE_DUPLICATES OpenMVS_EXTRA_LIBS)
@@ -466,11 +469,14 @@ INCLUDE(CMakePackageConfigHelpers)
 write_basic_package_version_file("${PROJECT_BINARY_DIR}/OpenMVSConfigVersion.cmake"
 	VERSION ${OpenMVS_VERSION}
 	COMPATIBILITY AnyNewerVersion)
-# Note: Include paths are handled via imported targets and target_include_directories
-SET(INSTALL_CMAKE_DIR_IN ${INSTALL_CMAKE_DIR_PREFIX})
+# the packages the exported targets link against, as found by find_exported_dependency()
+GET_PROPERTY(OpenMVS_EXPORTED_DEPENDENCIES GLOBAL PROPERTY OpenMVS_EXPORTED_DEPENDENCIES)
+LIST(REMOVE_DUPLICATES OpenMVS_EXPORTED_DEPENDENCIES)
+STRING(REPLACE ";" "\n" OpenMVS_EXPORTED_DEPENDENCIES "${OpenMVS_EXPORTED_DEPENDENCIES}")
 configure_package_config_file("${CMAKE_CURRENT_SOURCE_DIR}/build/Templates/OpenMVSConfig.cmake.in"
 	"${PROJECT_BINARY_DIR}/OpenMVSConfig.cmake"
-	INSTALL_DESTINATION ${PROJECT_BINARY_DIR}
+	INSTALL_DESTINATION "${INSTALL_CMAKE_DIR}"
+	PATH_VARS INSTALL_INCLUDE_DIR
 	NO_SET_AND_CHECK_MACRO)
 # Install the OpenMVSConfig.cmake and OpenMVSConfigVersion.cmake
 INSTALL(FILES

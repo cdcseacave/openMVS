@@ -214,6 +214,13 @@ jobs:
         run: |
           ctest --parallel 2 --build-config ${{ env.BUILD_CONFIG }}
 
+      - name: Package Test
+        run: |
+          # install OpenMVS and build a project using it through find_package(OpenMVS)
+          cmake --install ${{ env.BUILD_DIR }} --config ${{ env.BUILD_CONFIG }} --prefix install
+          cmake -S build/PackageTest -B package_test -DCMAKE_BUILD_TYPE=${{ env.BUILD_CONFIG }} -DCMAKE_CONFIGURATION_TYPES=${{ env.BUILD_CONFIG }} -DCMAKE_TOOLCHAIN_FILE=${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake -DVCPKG_MANIFEST_MODE=OFF -DVCPKG_INSTALLED_DIR=${{ github.workspace }}/${{ env.BUILD_DIR }}/vcpkg_installed -DVCPKG_TARGET_TRIPLET=${{ env.VCPKG_DEFAULT_TRIPLET }} -DCMAKE_PREFIX_PATH=${{ github.workspace }}/install ${{ env.CMAKE_EXTRA_ARGS }}
+          cmake --build package_test --config ${{ env.BUILD_CONFIG }}
+
       - name: Deploy release
         uses: actions/upload-artifact@v4
         with:

@@ -1,5 +1,5 @@
 # Find required packages
-FIND_PACKAGE(nanoflann REQUIRED)
+find_exported_dependency(nanoflann REQUIRED)
 SET(COMMON_EXTRA_LIBS "")
 if(nanoflann_FOUND)
 	ADD_DEFINITIONS(${nanoflann_DEFINITIONS})
@@ -9,7 +9,7 @@ endif()
 
 # List sources files
 FILE(GLOB LIBRARY_FILES_C "*.cpp")
-FILE(GLOB LIBRARY_FILES_H "*.h" "*.inl")
+FILE(GLOB LIBRARY_FILES_H "*.h" "*.hpp" "*.inl")
 if(_USE_METAL)
 	FILE(GLOB LIBRARY_FILES_METAL "*.mm")
 	LIST(APPEND LIBRARY_FILES_C ${LIBRARY_FILES_METAL})
@@ -38,7 +38,16 @@ endif()
 # Add public include directories that propagate to dependent targets
 target_include_directories(Common PUBLIC
 	$<BUILD_INTERFACE:${CMAKE_BINARY_DIR}>
+	$<INSTALL_INTERFACE:${INSTALL_INCLUDE_DIR}>
 )
+# the headers, also in the projects using OpenMVS, depend on the C++ standard (ex. the
+# BS::thread_pool layout) and on the library type: tell them we are building shared
+# libraries, so they pick dllimport and the cross-DLL-friendly path for things like
+# boost exception-unwinding (see Types.h)
+TARGET_COMPILE_FEATURES(Common PUBLIC cxx_std_${CMAKE_CXX_STANDARD})
+if(BUILD_SHARED_LIBS)
+	TARGET_COMPILE_DEFINITIONS(Common PUBLIC OPENMVS_SHARED)
+endif()
 
 # Link its dependencies with PUBLIC visibility so they propagate
 TARGET_LINK_LIBRARIES(Common PUBLIC ${OpenMVS_EXTRA_LIBS} ${COMMON_EXTRA_LIBS})
