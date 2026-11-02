@@ -47,9 +47,9 @@ cudaTextureObject_t CuTexImage::GetTexture(cudaResourceType type, const cudaText
 	const int height = type == cudaResourceTypePitch2D ? _imgHeight : 0;
 	for(const TexObj& tex : _texObjs)
 	{
-		if(tex.type == type && tex.readMode == textureDesc.readMode && tex.width == width && tex.height == height &&
-		   tex.format.x == channelFmtDesc.x && tex.format.y == channelFmtDesc.y && tex.format.z == channelFmtDesc.z &&
-		   tex.format.w == channelFmtDesc.w && tex.format.f == channelFmtDesc.f)
+		if(tex.type == type && tex.width == width && tex.height == height &&
+		   memcmp(&tex.format, &channelFmtDesc, sizeof(channelFmtDesc)) == 0 &&
+		   memcmp(&tex.desc, &textureDesc, sizeof(textureDesc)) == 0)
 			return tex.handle;
 	}
 
@@ -69,7 +69,7 @@ cudaTextureObject_t CuTexImage::GetTexture(cudaResourceType type, const cudaText
 		resourceDesc.res.linear.desc = channelFmtDesc;
 		resourceDesc.res.linear.sizeInBytes = _numBytes;
 	}
-	TexObj tex = {type, channelFmtDesc, textureDesc.readMode, width, height, 0};
+	TexObj tex = {type, channelFmtDesc, textureDesc, width, height, 0};
 	cudaCreateTextureObject(&tex.handle, &resourceDesc, &textureDesc, nullptr);
 	ProgramCU::CheckErrorCUDA("CuTexImage::GetTexture");
 	_texObjs.push_back(tex);
@@ -81,6 +81,18 @@ void CuTexImage::ReleaseTextures()
 	for(const TexObj& tex : _texObjs)
 		cudaDestroyTextureObject(tex.handle);
 	_texObjs.clear();
+}
+
+void CuTexImage::Release2DTextures()
+{
+	const auto it2D = std::stable_partition(_texObjs.begin(), _texObjs.end(),
+		[](const TexObj& tex) { return tex.type != cudaResourceTypePitch2D; });
+	if(it2D == _texObjs.end()) return;
+	// the kernels using them must finish before they are destroyed
+	cudaDeviceSynchronize();
+	for(auto it = it2D; it != _texObjs.end(); ++it)
+		cudaDestroyTextureObject(it->handle);
+	_texObjs.erase(it2D, _texObjs.end());
 }
 
 cudaTextureObject_t CuTexImage::BindTexture(const cudaTextureDesc& textureDesc,
@@ -168,6 +180,8 @@ void CuTexImage::SetImageSize(int width, int height)
 
 bool CuTexImage::InitTexture(int width, int height, int nchannel)
 {
+	// a 2D texture is bound to the view size it was created for
+	if(width != _imgWidth || height != _imgHeight) Release2DTextures();
 	_imgWidth = width;
 	_imgHeight = height;
 	_numChannel = min(max(nchannel, 1), 4);

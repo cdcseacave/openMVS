@@ -65,6 +65,7 @@
 //pixels of one row, so that it can write the keypoint bit mask of that row segment
 #define KEY_BLOCK_DIMX 32
 #define KEY_BLOCK_DIMY 4
+static_assert(KEY_BLOCK_DIMX == 32, "the keypoint bit mask of a row segment is one warp ballot");
 
 //////////////////////////////////////////////////////////
 //thread block size for generating the feature list (one block per row)

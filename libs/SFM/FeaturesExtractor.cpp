@@ -104,7 +104,7 @@ public:
 			VERBOSE("error: no pixels loaded for image %u", img.ID);
 			return false;
 		}
-		const cv::Mat input(PrepareSIFTInput(img.pixels));
+		cv::Mat input(PrepareSIFTInput(img.pixels));
 		CLISTDEF0IDX(SiftGPU::SiftKeypoint,uint32_t) keys;
 		FloatArr descs;
 		if (!RunSIFTOnImage(img.ID, input, keys, descs))
@@ -147,35 +147,43 @@ public:
 				todo.push_back(i);
 		}
 		// look-ahead bounds: at most one decode per pool thread, and at most this
-		// many bytes of prepared GPU input in flight (8 float images of 24 MP)
-		constexpr size_t maxBytesInFlight = size_t(768) * 1024 * 1024;
+		// many bytes in flight, the 8-bit pixels and the float GPU input prepared
+		// from them (8 images of 24 MP)
+		constexpr size_t maxBytesInFlight = size_t(960) * 1024 * 1024;
 		const size_t maxImagesInFlight = MAXF(size_t(1), (size_t)scene.threadPool.get_thread_count());
 		std::vector<std::future<bool>> decoded(todo.size());
 		std::vector<cv::Mat> inputs(todo.size());
-		std::vector<size_t> inputBytes(todo.size(), 0);
+		CLISTDEF0(size_t) inputBytes(todo.size());
 		size_t nextDecode = 0, imagesInFlight = 0, bytesInFlight = 0;
+		// on any exit, also by an exception, the tasks still using the locals
+		// above must finish before they are destroyed
+		struct TasksGuard {
+			std::vector<std::future<bool>>& decoded;
+			BS::light_thread_pool& threadPool;
+			~TasksGuard() {
+				for (std::future<bool>& future: decoded)
+					if (future.valid())
+						future.wait();
+				threadPool.wait();
+			}
+		} tasksGuard{decoded, scene.threadPool};
 		auto ScheduleDecodes = [&](size_t current) {
 			for (; nextDecode < todo.size(); ++nextDecode) {
 				Image& img = scene.images[todo[nextDecode]];
 				if (IsSpherical(img))
 					continue;
-				const size_t bytes = img.pCamera ? sizeof(float) *
+				const size_t bytes = img.pCamera ? (sizeof(float) + sizeof(uint8_t)) *
 					(size_t)img.pCamera->GetWidth() * (size_t)img.pCamera->GetHeight() : size_t(0);
 				// the image needed right now is always scheduled, and so is the next
 				// one if nothing else is in flight, even if it exceeds the budget
 				if (nextDecode > current && (imagesInFlight >= maxImagesInFlight ||
 						(imagesInFlight > 0 && bytesInFlight + bytes > maxBytesInFlight)))
 					break;
+				// an exception is rethrown on the GPU thread by the future
 				decoded[nextDecode] = scene.threadPool.submit_task([&img, &input = inputs[nextDecode], releasePixels]() {
-					// the future must not throw: the GPU thread would leave this
-					// function while other decode tasks still reference its locals
-					try {
-						if (!img.HasPixels() && !img.LoadPixels(true))
-							return false;
-						input = PrepareSIFTInput(img.pixels);
-					} catch (const std::exception&) {
+					if (!img.HasPixels() && !img.LoadPixels(true))
 						return false;
-					}
+					input = PrepareSIFTInput(img.pixels);
 					// the GPU only needs the prepared input
 					if (releasePixels)
 						img.ReleasePixels();
@@ -187,7 +195,7 @@ public:
 			}
 		};
 		double gpuSeconds = 0, waitSeconds = 0;
-		size_t numGPUImages = 0;
+		unsigned numGPUImages = 0;
 		FOREACH(t, todo) {
 			Image& img = scene.images[todo[t]];
 			progress.display(todo[t]);
@@ -355,7 +363,7 @@ private:
 	// concurrently against the same coordinator.
 	// The input must be a continuous CV_32FC1 image owned by the caller: SiftGPU
 	// uses it in place and compacts its rows when the width is not a multiple of 4.
-	bool RunSIFTOnImage(uint32_t imageID, const cv::Mat& input,
+	bool RunSIFTOnImage(uint32_t imageID, cv::Mat& input,
 		CLISTDEF0IDX(SiftGPU::SiftKeypoint,uint32_t)& keys,
 		FloatArr& descs)
 	{
@@ -394,8 +402,8 @@ private:
 		const int ny = MAXF(1, (size.height + cellSize / 2) / cellSize);
 		std::vector<std::vector<uint32_t>> cells(size_t(nx) * ny);
 		for (uint32_t k = 0; k < numKeys; ++k) {
-			const int x = MINF(MAXF((int)keys[k].x, 0), size.width - 1);
-			const int y = MINF(MAXF((int)keys[k].y, 0), size.height - 1);
+			const int x = (int)keys[k].x, y = (int)keys[k].y;
+			ASSERT(x >= 0 && x < size.width && y >= 0 && y < size.height);
 			cells[size_t(y * ny / size.height) * nx + x * nx / size.width].push_back(k);
 		}
 		// largest per-cell quota that fits the budget

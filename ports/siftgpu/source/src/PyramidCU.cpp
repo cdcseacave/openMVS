@@ -543,7 +543,7 @@ void PyramidCU::ReshapeFeatureListCPU()
 #ifdef NO_DUPLICATE_DOWNLOAD
 	// the keypoints in image coordinates, so DownloadKeypoints is not needed
 	std::vector<float> features(4 * _featureNum);
-	if(_featureNum > 0) _featureAllTex->CopyToHost(&features[0]);
+	if(_featureNum > 0) _featureAllTex->CopyToHost(features.data());
 	const double twopi = 2.0*3.14159265358979323846;
 	float os = _octave_min>=0? float(1<<_octave_min): 1.0f/(1<<(-_octave_min));
 	if(_down_sample_factor>0) os *= float(1<<_down_sample_factor);
@@ -552,8 +552,8 @@ void PyramidCU::ReshapeFeatureListCPU()
 	for(int i = 0; i < n; i++)
 	{
 		const float oss = os * (1 << (i / param._dog_level_num));
-		float* ds = &_keypoint_buffer[0] + levelStart[i] * 4;
-		const float* fs = &features[0] + levelStart[i] * 4;
+		float* ds = _keypoint_buffer.data() + levelStart[i] * 4;
+		const float* fs = features.data() + levelStart[i] * 4;
 		for(int k = 0; k < levelCount[i]; k++, ds+=4, fs+=4)
 		{
 			ds[0] = oss*(fs[0]-0.5f) + offset;	//x

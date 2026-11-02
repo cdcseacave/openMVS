@@ -38,14 +38,14 @@ protected:
 	int			_imgWidth;
 	int			_imgHeight;
 	GLuint		_fromPBO;
-	// Texture objects created on the buffer, reused by later bindings with the same format and
-	// view size; they are destroyed when the buffer is reallocated or released (only then can no
-	// kernel launched with them still be running).
+	// Texture objects created on the buffer, reused by later bindings with the same descriptors
+	// and view size; they are destroyed when the buffer is reallocated or released, and the 2D
+	// ones also when the view size changes (once no kernel launched with them can still be running).
 	struct TexObj
 	{
 		cudaResourceType type;
 		cudaChannelFormatDesc format;
-		cudaTextureReadMode readMode;
+		cudaTextureDesc desc;
 		int width, height;
 		cudaTextureObject_t handle;
 	};
@@ -53,6 +53,7 @@ protected:
 	cudaTextureObject_t GetTexture(cudaResourceType type, const cudaTextureDesc& textureDesc,
 								   const cudaChannelFormatDesc& channelFmtDesc);
 	void ReleaseTextures();
+	void Release2DTextures();
 public:
 	virtual void SetImageSize(int width, int height);
 	virtual bool InitTexture(int width, int height, int nchannel = 1);
