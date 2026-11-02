@@ -39,7 +39,11 @@
 #include "../../libs/MVS/Scene.h"
 
 #define GLAD_GL_IMPLEMENTATION
+#ifdef _USE_GLAD2
+#include <glad/gl.h>
+#else
 #include <glad/glad.h>
+#endif
 #define GLFW_INCLUDE_NONE 
 #include <GLFW/glfw3.h>
 

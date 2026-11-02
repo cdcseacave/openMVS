@@ -153,7 +153,11 @@ bool Window::Initialize(const cv::Size& size, const String& windowTitle, Scene& 
 	glfwMakeContextCurrent(window);
 
 	// Load OpenGL functions with GLAD
+	#ifdef _USE_GLAD2
+	if (!gladLoadGL(glfwGetProcAddress)) {
+	#else
 	if (!gladLoadGL()) {
+	#endif
 		DEBUG("Failed to initialize GLAD");
 		glfwDestroyWindow(window);
 		glfwTerminate();
