@@ -38,8 +38,15 @@
 #include "../../libs/MVS/Common.h"
 #include "../../libs/MVS/Scene.h"
 
+// the only place choosing between GLAD 2 and GLAD 1: include this header for OpenGL
 #define GLAD_GL_IMPLEMENTATION
+#ifdef _USE_GLAD2
+#include <glad/gl.h>
+#define LOAD_OPENGL_FUNCTIONS() gladLoadGL(glfwGetProcAddress)
+#else
 #include <glad/glad.h>
+#define LOAD_OPENGL_FUNCTIONS() gladLoadGL()
+#endif
 #define GLFW_INCLUDE_NONE 
 #include <GLFW/glfw3.h>
 

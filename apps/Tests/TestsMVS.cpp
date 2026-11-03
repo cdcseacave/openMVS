@@ -31,6 +31,7 @@
 
 #include "../../libs/MVS.h"
 #include "../../libs/MVS/SceneRefineCommon.h"
+#include "../../libs/MVS/DMapCache.h"
 #include "Tests.h"
 #include "TestsMVS.h"
 #include <halfmesh/RectPacking.h>
@@ -3462,6 +3463,32 @@ bool SelectNeighborViewsScaleTest()
 				neighbors[n].ID, neighbors[n].scale, expectedScales[n]);
 			return false;
 		}
+	}
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+bool DMapCacheKeepsRequestedImageTest()
+{
+	// two depth-maps already in memory, each larger than the whole budget: UseImage() accounts
+	// them on first use and ejects to fit, as after loading them from disk
+	DepthDataArr arrDepthData(2);
+	for (DepthData& depthData: arrDepthData) {
+		depthData.images.emplace_back();
+		depthData.depthMap.create(4, 4);
+		depthData.depthMap.setTo(1.f);
+	}
+	DMapCache cache(arrDepthData, 0, 1);
+	cache.UseImage(0);
+	if (arrDepthData[0].IsEmpty()) {
+		VERBOSE("ERROR: DMapCacheKeepsRequestedImageTest ejected the depth-map it was asked for!");
+		return false;
+	}
+	cache.UseImage(1);
+	if (arrDepthData[1].IsEmpty() || !arrDepthData[0].IsEmpty()) {
+		VERBOSE("ERROR: DMapCacheKeepsRequestedImageTest kept depth-maps %d/%d loaded, expected only the second!",
+			!arrDepthData[0].IsEmpty(), !arrDepthData[1].IsEmpty());
+		return false;
 	}
 	return true;
 }

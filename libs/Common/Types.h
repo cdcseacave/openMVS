@@ -120,6 +120,10 @@
 #include <opencv2/opencv_modules.hpp>
 #endif
 #include <opencv2/opencv.hpp>
+#if CV_MAJOR_VERSION >= 5 && defined(HAVE_OPENCV_GEOMETRY)
+// OpenCV 5 moved DistanceTypes (cv::DIST_L1, ...) into the new geometry module
+#include <opencv2/geometry.hpp>
+#endif
 #ifdef HAVE_OPENCV_GPU
 #if CV_MAJOR_VERSION > 2
 #include <opencv2/cudaarithm.hpp>

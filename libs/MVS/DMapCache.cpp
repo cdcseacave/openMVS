@@ -88,8 +88,9 @@ bool DMapCache::UseImage(IIndex idxImage) const {
 		// must be non-zero whenever fifo is non-empty (see IsEmpty)
 		if (accountedMemory.find(idxImage) == accountedMemory.end()) {
 			usedMemory += (accountedMemory[idxImage] = GetMemorySize(idxImage));
-			Eject();
+			Eject(idxImage);
 		}
+		ASSERT(!arrDepthData[idxImage].IsEmpty());
 		return false;
 	}
 	lock.unlock();
@@ -114,7 +115,8 @@ bool DMapCache::UseImage(IIndex idxImage) const {
 	hitStats.Miss();
 	usedMemory += (accountedMemory[idxImage] = GetMemorySize(idxImage));
 	fifo.Put(idxImage);
-	Eject();
+	Eject(idxImage);
+	ASSERT(!arrDepthData[idxImage].IsEmpty());
 	return true;
 }
 
@@ -140,19 +142,19 @@ void DMapCache::ClearCache() {
 		EjectOldest();
 }
 
-bool DMapCache::Eject() const {
+bool DMapCache::Eject(IIndex idxImageKeep) const {
 	if (maxMemory == 0)
 		return true;
 	while (usedMemory > maxMemory) {
-		if (!EjectOldest())
+		if (!EjectOldest(idxImageKeep))
 			return false;
 	}
 	return true;
 }
 
-bool DMapCache::EjectOldest() const {
+bool DMapCache::EjectOldest(IIndex idxImageKeep) const {
 	ASSERT(!fifo.IsEmpty());
-	if (fifo.Back() == skipMemoryCheckIdxImage)
+	if (fifo.Back() == skipMemoryCheckIdxImage || fifo.Back() == idxImageKeep)
 		return false;
 	const IIndex idxImage = fifo.Pop();
 	// subtract the bytes accounted at load time, NOT the current size: maps grown since
