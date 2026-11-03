@@ -138,8 +138,13 @@ if(LINUX)
 		DESTINATION "share/mime/packages" COMPONENT desktop)
 	FIND_PROGRAM(MIME_UPDATE_CMD update-mime-database)
 	if(MIME_UPDATE_CMD)
-		# run update-mime-database at install time (best effort)
-		INSTALL(CODE "execute_process(COMMAND ${MIME_UPDATE_CMD} \"${CMAKE_INSTALL_PREFIX}/share/mime\" RESULT_VARIABLE _res) if(NOT _res EQUAL 0) message(WARNING \"update-mime-database failed: \${_res}\") endif()")
+		# run update-mime-database at install time (best effort), in the prefix
+		# and staging directory given at install time
+		INSTALL(CODE "
+			execute_process(COMMAND \"${MIME_UPDATE_CMD}\" \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/share/mime\" RESULT_VARIABLE _res)
+			if(NOT _res EQUAL 0)
+				message(WARNING \"update-mime-database failed: \${_res}\")
+			endif()" COMPONENT desktop)
 	endif()
 endif()
 
