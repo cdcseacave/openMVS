@@ -49,20 +49,27 @@ void abortCudaCall(cudaError_t error, const char* call, const char* file, int li
 
 
 // the compute capabilities (major*10+minor) the CUDA code is compiled for,
-// see CMAKE_CUDA_ARCHITECTURES: native code (SASS) and the lowest PTX (0 if none)
+// see CMAKE_CUDA_ARCHITECTURES: native code (SASS), architecture-specific
+// native code and the lowest PTX (0 if none)
 static constexpr int cudaArchsSASS[] = {0, _CUDA_ARCHS_SASS};
+static constexpr int cudaArchsSASSExact[] = {0, _CUDA_ARCHS_SASS_EXACT};
 static constexpr int cudaArchPTX(_CUDA_ARCH_PTX);
 
 // the CUDA code runs on a device if it holds native code of the same major
-// and an equal or lower minor version, or PTX of an equal or lower version
+// and an equal or lower minor version, architecture-specific native code
+// (ex. sm_90a) of the exact version, or PTX of an equal or lower version
 // that the driver can compile for it
 static bool _isComputeCapabilitySupported(int major, int minor)
 {
 	ASSERT(major > 0 && minor >= 0 && minor < 10);
+	const int cc(major*10+minor);
 	for (int arch: cudaArchsSASS)
 		if (arch > 0 && arch/10 == major && arch%10 <= minor)
 			return true;
-	return cudaArchPTX > 0 && cudaArchPTX <= major*10+minor;
+	for (int arch: cudaArchsSASSExact)
+		if (arch == cc)
+			return true;
+	return cudaArchPTX > 0 && cudaArchPTX <= cc;
 }
 
 static String _formatComputeCapabilities()
@@ -71,6 +78,9 @@ static String _formatComputeCapabilities()
 	for (int arch: cudaArchsSASS)
 		if (arch > 0)
 			archs += String::FormatString("sm_%d ", arch);
+	for (int arch: cudaArchsSASSExact)
+		if (arch > 0)
+			archs += String::FormatString("sm_%da ", arch);
 	if (cudaArchPTX > 0)
 		archs += String::FormatString("compute_%d (PTX) ", cudaArchPTX);
 	ASSERT(!archs.empty());
