@@ -59,7 +59,7 @@ Factory pattern with format auto-detection by file extension.
 **Texture storage:** Embedded in PLY comments as `TextureFile <filename>`, saved separately as PNG/JPEG.
 
 ## Third-Party Components
-- `json.hpp` - nlohmann JSON (header-only)
+- nlohmann JSON comes from the vcpkg `nlohmann-json` port (`<nlohmann/json.hpp>`), linked PUBLIC by IO
 
 ## Build & Dependencies
 - **Optional deps**: libpng, libjpeg, libtiff, libjxl, exiv2 (EXIF metadata)

@@ -91,7 +91,7 @@ Key components:
 - **OBJ:** Wavefront OBJ with MTL material libraries
 - **glTF:** not here — the codec moved to `libs/MVS/` (`MeshHalfMesh.cpp` via halfmesh for meshes, `PointCloud.cpp` for point clouds)
 - **Image formats:** BMP, TGA, DDS (always available); PNG, JPEG, TIFF, JpegXL (conditional on build flags); SCI (custom)
-- **Third-party:** `json.hpp` (nlohmann JSON)
+- **Third-party:** nlohmann JSON (vcpkg `nlohmann-json` port, linked through IO)
 
 File count: ~20 `.h`/`.cpp` files
 
@@ -390,7 +390,7 @@ Executables land in `make/bin/Debug/` or `make/bin/Release/`.
 | TinyEXIF | bundled | EXIF metadata parsing | SFM |
 | TinyNPY | bundled | NumPy `.npz` file reading (ROMA2) | SFM |
 | tiny_gltf | vcpkg | glTF 2.0 binary/ASCII loading (implementation unit compiled by halfmesh) | MVS |
-| nlohmann/json | bundled | JSON parsing | IO |
+| nlohmann/json | vcpkg | JSON parsing | IO |
 | TinyXML2 | vcpkg | XML parsing (Metashape interface) | InterfaceMetashape |
 | BS::thread_pool | bundled | Lightweight task-based thread pool | Common |
 

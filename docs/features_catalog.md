@@ -419,7 +419,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 - **Configuration:** `ImportConfig::importPosesFile` (dispatched on extension: `.csv` → `ImportPosesCSV`, `.json` → here), `importPosesMode` (`PoseImportMode`), `framesConvention` (`auto|arkit|opencv`)
 - **GPU Support:** No
 - **Threading:** Single
-- **Dependencies:** Common, IO (`json.hpp`), `Triangulation`
+- **Dependencies:** Common, nlohmann JSON, `Triangulation`
 
 ### Interface MVS (SFM-to-MVS Bridge)
 
@@ -763,7 +763,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 
 ### Third-Party Components
 
-- **Files:** `libs/IO/json.hpp` (glTF comes from the vcpkg `tinygltf` port, XML from the vcpkg `tinyxml2` port)
+- **Files:** none bundled: JSON comes from the vcpkg `nlohmann-json` port, glTF from the `tinygltf` port, XML from the `tinyxml2` port
 - **Algorithms:** glTF 2.0 binary/ASCII loading (header-only), nlohmann JSON parsing (header-only), XML parsing
 
 ---

@@ -37,11 +37,11 @@
 // every TU including the header must agree with halfmesh, which sets them on its
 // own target but only as BUILD_INTERFACE. Its TINYGLTF_NOEXCEPTION/JSON_NOEXCEPTION
 // stay behind TINYGLTF_IMPLEMENTATION and must not be repeated here: the latter
-// would turn the exceptions of the json.hpp below into abort().
+// would turn the exceptions of nlohmann/json.hpp below into abort().
 #define TINYGLTF_NO_STB_IMAGE
 #define TINYGLTF_NO_STB_IMAGE_WRITE
 #include <tiny_gltf.h>
-#include "../IO/json.hpp"
+#include <nlohmann/json.hpp>
 
 using namespace MVS;
 

@@ -41,6 +41,7 @@
       ]
     },
     "nanoflann",
+    "nlohmann-json",
     "pkgconf",
     "poselib",
     "tiff",
