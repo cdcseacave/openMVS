@@ -11,6 +11,11 @@ feature selection) and the detector itself in the local vcpkg port `ports/siftgp
 OpenGL path implements the same detector, orientation and options and gives the same features up to
 floating-point differences. Matching, the other detectors and the SfM are documented elsewhere.
 
+The image-local cap and orientation study retains the current grid/scale cap and up-to-two-
+orientation default. Its completed coverage, negative cases and unexecuted cases are recorded in
+the [companion feature-cap study](https://github.com/cdcseacave/Acute3D/blob/feature/rsa1-orientation/docs/feature_cap_followup_results.md).
+No experimental selector or private SfM bookkeeping/allocation change is adopted.
+
 The port is built by vcpkg in manifest mode with `VCPKG_OVERLAY_PORTS=ports`; vcpkg hashes the port
 sources, so a CMake configure after a change rebuilds only `siftgpu`, as long as the vcpkg toolchain
 (and with it the ABI hash of every package) is unchanged. A changed toolchain makes vcpkg remove and
@@ -142,7 +147,7 @@ error relative to the camera extent; Courtroom excluded where noted because abou
 reference cameras are flipped). Run-to-run SfM noise is a few hundredths of a percent per scene
 average (office alone spans 0.5-0.9%).
 
-| Change | Measure | Before | Shipped |
+| Comparison | Measure | Reference | Shipped |
 |---|---|---|---|
 | Decoding on the pool | ETH3D 24 MP, images/s (facade, office) | 5.0, 7.4-8.0 | 12.8, 16.4 |
 | CUDA list generation, cached textures, GPU orientation split, one download | GPU ms per 1920x1080 image | 28 | 21 |
@@ -160,6 +165,11 @@ average (office alone spans 0.5-0.9%).
 | (same) | SfM centre error, 8 scenes | 0.297% | 0.295% |
 | GLSL parity | orientation error CUDA / GLSL | | 0.733° / 0.727° |
 | (same) | features per image, 20 Meetingroom images, CUDA / GLSL | | 10,257 / 10,233 |
+| Up to two orientations vs one | `ExtractImage` ms, cached timing pair, 3,931 photos | 83.717 (one) | 87.286 (two) |
+| (same) | Ignatius, cap 27,000: accurate cameras | 262/263 (one) | 263/263 (two) |
+| (same) | Ignatius, cap 27,000: weak-both final supports | 7,661 (one) | 9,177 (two) |
+| (same) | DarkPipes, cap 27,000: accurate cameras | 9/14 (one) | 12/14 (two) |
+| (same) | Truck, cap 27,000: accurate cameras | 251/251 (one) | 131/251 (two) |
 
 Darkness adaptation, all features kept (no SiftGPU or ImageMatching cap), SfM centre error / share of
 cameras within 1° and 1%: normal scenes (8) 0.343% / 89.7% off, 0.277% / 91.7% on (RSa1 0.270% /
@@ -170,6 +180,32 @@ cameras within 1° and 1%: normal scenes (8) 0.343% / 89.7% off, 0.277% / 91.7% 
 CreateStructure on Ignatius registers 262 of 263 images with the shipped orientation (two runs) and
 263 with the histogram; the dropped image was borderline before (19 2D-3D correspondences for a
 minimum of 15, 12 now). ImageMatching registers all 263 with the same features.
+
+The orientation comparison captured both actual native modes on all 3,931 photos in 33 scenes,
+completed 15,724 extraction timing calls and evaluated 2,066 independent image pairs. Native SfM
+stopped at the user's request after 227 of 264 planned runs, all independently pose/support audited:
+224 balanced cases cover 28 scenes at both caps with two actual repeats per mode, plus three
+Meetingroom cases. One active Meetingroom run was cancelled and 36 cases were never started;
+no runs remain scheduled. Missing cases are not scored as failures or zeros.
+
+In the 20 completed balanced mesh-evaluated scenes, one orientation improves correct final-track
+supports in 17/20 at cap 8,190, but weak-both supports in only 12/20. At 27,000 these counts are
+11/20 and 7/20. Accurate cameras in the table satisfy both <1 degree rotation and <1% reference-
+relative centre error, including missing reference cameras in the denominator. Supports are
+unique physical 2D correspondences induced by published final tracks and checked against frozen
+mesh transfer within three pixels in at least one valid direction. Truck illustrates a pose gain
+for one orientation despite fewer correct/weak supports; Ignatius and DarkPipes show losses.
+Ignatius worst centre error rises from 0.351% with two to 6.106% with one. The completed first
+Meetingroom repeat retains all 371 accurate cameras with either mode, but one loses 13.39% correct
+and 15.19% weak supports; it is not a balanced two-repeat comparison.
+
+The timing pair measures individual extraction calls, not bulk-prefetch throughput or isolated
+end-to-end SfM speed. Native reconstruction times describe a concurrent quality wave with fixed
+`Scene(1)` numerical settings; 107/113 completed repeat pairs are numerically byte-identical and
+the other variations are retained. These are original OpenMVS-backend outcomes, not Acute3D
+pipeline parity or proof that orientation alone explains solver failures. The private filtered-
+prefix bookkeeping sensitivity and Courtroom reference-camera flips remain limitations. Native
+SfM cap 8,190 differs from the independent matching-screen cap 8,192.
 
 ## 6. Rejected alternatives
 
@@ -190,7 +226,7 @@ minimum of 15, 12 now). ImageMatching registers all 263 with the same features.
   low-light ones); a size-dependent noise floor on the factor rarely applied.
 - 6 or 7 harmonics, smoothing 0.30 rad: within noise of 5 harmonics at 0.35 rad.
 - Shared-memory orientation histogram: no measurable speed difference.
-- Adaptive Non-Maximal Suppression (ANMS): rank points by distance to a sufficiently stronger
+- Adaptive Non-Maximal Suppression (ANMS), including robust Brown radius with c=0.9: rank points by distance to a sufficiently stronger
   neighbour to spread the cap spatially; the tested response/scale variants did not improve the
   measured quality over the existing selection, so more uniform spacing alone was insufficient.
 - Local contrast normalization and fixed spatial quotas: did not establish a matching/pose gain;
@@ -214,57 +250,38 @@ minimum of 15, 12 now). ImageMatching registers all 263 with the same features.
   synthetic stability also failed to guarantee better reconstruction poses (details in the
   companion Acute3D `docs/feature_extraction_study.md`, per-image capping).
 
-### Follow-up image-local cap screen (2026-11-01)
+- Published SSC and KD/range/SDC suppression, author/stable quadtrees, variance partitioning and
+  weighted FPS: the 62-source / 31-photo / eight-reused-scene screen (3,040 cases) found no selector
+  improving correct
+  physical matches, weak-both matches and weak spatial coverage together; published SSC at cap
+  8,192 loses correct matches 6,252 -> 5,709 and weak cells 291 -> 265 despite a 4.18 ms function cost
+  that excludes supplied ordering and external count repair.
+- Adaptive Poisson/scale: at pair-screen cap 8,192, correct matches rise 6,252 -> 6,525 and weak-both
+  351 -> 406 but weak cells fall 291 -> 268; the 64 native cap-validation runs retain weak-support
+  losses on Pipes (1,594 -> 1,001) and Terrains (22,534 -> 12,799), also with private bookkeeping
+  corrected; private C++ selection costs median 189 ms (maximum 416 ms) on over-budget inputs.
+- Grid-block/full-image Gaussian DPP: no consistent quality advantage in the tested greedy-MAP
+  variants; the full-image pilot at cap 2,048 takes roughly 47-51 s per SiftGPU image in the tested
+  BLAS-backed Python implementation, and higher full-image caps were not run.
+- Primary-first orientation budget: group exact `(x, y, scale)` families, marking the first native
+  record as primary; preserve cell quotas, selected primaries and under-budget outputs, replacing
+  secondary-orientation slots only in saturated cells; the
+  4.784 ms median C++ selector improves initial repeatability/supports but loses DarkPipes weak
+  supports 251 -> 221 and Meadow correct supports, so it is not a blanket replacement despite
+  15,724 exact selection/anchor/quota checks across all 3,931 photos.
+- One orientation globally: 4.09% less extraction component time and frequent low-cap matching
+  gains do not outweigh weak-support and pose regressions; at cap 27,000 weak supports decline
+  in 13/20 completed balanced mesh-evaluated scenes, so the default remains up to two.
 
-The follow-up tested SSC, native KD/range/SDC suppression, author and stable-tie quadtrees,
-variance partitioning, weighted FPS, adaptive Poisson, robust Brown ANMS, and grid-block/full-image
-Gaussian DPP. The screen uses 62 extractor/image sources from 31 photos in eight reused scenes,
-16 physical pairs per extractor, and caps 2048/8192/27000; full-image DPP is a 2048-only pilot.
-All 3040 quality cases were independently checked after deduplicating physical correspondences.
-These are matching-screen results, not full-scene SfM or generalization claims.
-
-At SiftGPU cap 8192, with reciprocal matching and a two-sided 0.8 distance ratio:
-
-| Selection | Correct physical matches | Weak-both matches | Occupied weak cells |
-|---|---:|---:|---:|
-| Current grid/scale | 6252 | 351 | 291 |
-| Adaptive Poisson/scale | 6525 | 406 | 268 |
-| Robust ANMS/scale | 5338 | 363 | 271 |
-| Published SSC/scale | 5709 | 365 | 265 |
-
-None of these classical selectors improves all three pooled objectives over its native control.
-More weak matches can still cover fewer weak regions. The private C++ Poisson implementation
-reproduced all 372 prototype selections; its over-budget SiftGPU median selector cost at 8192
-was 189 ms (maximum 416 ms), excluding process/file adapters. Published C++ SSC took a median
-4.18 ms for its function, excluding supplied ordering and external count repair. Full-image DPP
-took roughly 47-51 s/image in the tested BLAS-backed Python implementation at 2048. These are
-concurrent component timings with different boundaries, not integrated production speed ratios.
-Fresh response-proxy processing is additional to cached response-based selector timings: the
-31-image, three-repeat CPU DoG-proxy pass took a median 2.274 s/image with pixels resident
-(2.403 s including repeat decoding). All scores reproduced the cached values exactly; this is
-not the cost of exporting DoG values already computed inside SiftGPU.
-
-The subsequent 64 full native SfM runs also completed: Office/Pipes plus unseen Electro/Terrains,
-both original/private-bookkeeping-corrected backends and two repeats. At cap 8190, Poisson/scale
-lost weak final-track supports on Pipes (1594 -> 1001) and Terrains (22534 -> 12799), despite its
-pooled pair-screen gains; the private corrected backend retained the same regressions. Neither
-tested cap tradeoff is adopted. The companion Acute3D study retains all policies, per-scene
-results and cost boundaries. The production cap and two-orientation default remain unchanged.
-
-A later orientation-budget variant preserved every native cell quota and selected primary
-record, spending secondary-orientation slots on additional detector locations only in saturated
-cells. It improved the 8192 strict pair screen (6252 -> 6805 correct, 351 -> 407 weak-both,
-291 -> 294 weak cells) and the first four full-scene support counts. Its private C++ selector
-took about 4.8 ms/image median on over-budget validation inputs, with no extra image pass.
-All 3931 captured photos passed 15724 C++/Python selection and input-location/quota checks.
-However, 16 additional native DarkPipes/Meadow guards exposed regressions: DarkPipes at 8190
-lost weak supports 251 -> 221, and Meadow lost correct supports and retained its bad camera.
-Removing a secondary orientation can lose useful appearance even when its primary location is
-retained. This fast variant is also not adopted as a blanket replacement. Detailed pose,
-per-image coverage and cost boundaries are in the companion Acute3D study.
+The companion study retains each policy, full per-scene tables, count-repair conventions and
+independent physical-correspondence audits. Component selector costs above have different
+boundaries and are not integrated production speed comparisons. Response-based cached rankings
+also omit the fresh CPU DoG-proxy cost: median 2.274 s with pixels resident or 2.403 s including
+repeat decoding, with all scores matching the frozen cache. Actual native GPU response export
+remains unmeasured; the four-transform prepass cost cannot be reduced to its cached selector time.
 
 ## 7. Open items
 
-- A per-image budget well below 27,000 would favour the two-stage contrast selection; SiftGPU would
-  have to export the refined DoG value it computes in `ComputeKEY_Kernel`.
+- A cheap image-local ranker that retains weak-region support and useful alternate orientations
+  remains unresolved; native DoG export cost and any resulting quality gain require measurement.
 - Darkness adaptation needs a noise-aware threshold to help on underexposed images.
