@@ -378,7 +378,7 @@ Executables land in `make/bin/Debug/` or `make/bin/Release/`.
 | nanoflann | 1.5+ | KD-tree for KNN queries (normal estimation, outlier removal) | MVS |
 | FLANN | 1.9+ | Approximate nearest neighbor matching (LSH, KDTree) | SFM |
 | GLFW | 3.x | Window management, OpenGL context, input events | Viewer |
-| GLAD | latest | OpenGL function loader | Viewer |
+| GLAD | 1 (vcpkg) or 2 | OpenGL function loader | Viewer |
 | ImGui | 1.9+ | Immediate-mode GUI with docking | Viewer |
 | SuiteSparse | optional | Fast sparse linear solvers (CHOLMOD) | Math |
 | CUDA Toolkit | 11+ | GPU acceleration (PatchMatch, mesh refine, positioning) | MVS, SFM |

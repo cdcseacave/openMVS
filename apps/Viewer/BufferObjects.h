@@ -31,7 +31,7 @@
 
 #pragma once
 
-#include <glad/glad.h>
+#include "Common.h"
 
 namespace VIEWER {
 
