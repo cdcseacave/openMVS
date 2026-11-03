@@ -50,6 +50,8 @@ cmake --build . -j4
 cmake --install .
 ```
 
+A CUDA build compiles the GPU code only for the GPU of the build machine by default (`CMAKE_CUDA_ARCHITECTURES=native`). Binaries meant to run on other machines must list the targeted architectures, ex. `cmake .. -DCMAKE_CUDA_ARCHITECTURES=all-major` (native code for every GPU generation supported by the CUDA toolkit, plus PTX for newer ones). At runtime, a GPU the build contains no code for is reported in the log and skipped, and the CPU is used instead.
+
 -------------------
 Library usage
 -------------------
@@ -61,15 +63,13 @@ vcpkg install openmvs
 
 Inside your project CMake script, use:
 ```
-find_package(OpenMVS)
-if(OpenMVS_FOUND)
-	include_directories(${OpenMVS_INCLUDE_DIRS})
-	add_definitions(${OpenMVS_DEFINITIONS})
-endif()
+find_package(OpenMVS CONFIG REQUIRED)
 
 add_executable(your_project source_code.cpp)
 target_link_libraries(your_project PRIVATE OpenMVS::MVS)
 ```
+
+The imported targets carry the include directories, definitions and dependencies, which `find_package(OpenMVS)` looks up the same way OpenMVS found them when it was built. Point `CMAKE_PREFIX_PATH` to the install prefix (and use the same toolchain, ex. vcpkg, as for OpenMVS); `build/PackageTest` is a minimal example.
 
 -------------------
 Python API

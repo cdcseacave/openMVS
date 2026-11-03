@@ -85,9 +85,7 @@ void FreeTextureArray(cudaArray_t& array, cudaTextureObject_t& texture)
 PatchMatch::PatchMatch()
 	: cudaStream(0)
 {
-	// initialize CUDA device if needed
-	if (SEACAVE::CUDA::devices.IsEmpty())
-		SEACAVE::CUDA::initDevices(SEACAVE::CUDA::desiredDeviceIDs);
+	ASSERT(SEACAVE::CUDA::isEnabled());
 	CUDA_CHECK(cudaStreamCreate(&cudaStream));
 }
 

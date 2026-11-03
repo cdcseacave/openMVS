@@ -1,4 +1,5 @@
-# Configure file for the OpenMVS package, defining the following variables:
+# Configure file for the OpenMVS package, defining the imported targets OpenMVS::Common,
+# OpenMVS::Math, OpenMVS::IO, OpenMVS::SFM, OpenMVS::MVS and the tools, and the variables:
 #  OpenMVS_INCLUDE_DIRS - include directories
 #  OpenMVS_DEFINITIONS  - definitions to be used
 #  OpenMVS_LIBRARIES    - libraries to link against
@@ -9,15 +10,19 @@
 set(OpenMVS_VERSION "@OpenMVS_VERSION@")
 
 # Compute paths
-set(OpenMVS_PREFIX "@CMAKE_INSTALL_PREFIX@")
-set(OpenMVS_CMAKE_DIR "@INSTALL_CMAKE_DIR_IN@")
-set(OpenMVS_INCLUDE_DIRS "@INSTALL_INCLUDE_DIR_IN@")
+set(OpenMVS_PREFIX "${PACKAGE_PREFIX_DIR}")
+set(OpenMVS_CMAKE_DIR "${CMAKE_CURRENT_LIST_DIR}")
+set(OpenMVS_INCLUDE_DIRS "@PACKAGE_INSTALL_INCLUDE_DIR@")
 
 set(OpenMVS_DEFINITIONS "@OpenMVS_DEFINITIONS@")
 
+# The packages the exported targets link against, found as OpenMVS found them
+include(CMakeFindDependencyMacro)
+@OpenMVS_EXPORTED_DEPENDENCIES@
+
 # These are IMPORTED targets created by OpenMVSTargets.cmake
-set(OpenMVS_LIBRARIES MVS)
-set(OpenMVS_BINARIES InterfaceCOLMAP DensifyPointCloud ReconstructMesh RefineMesh TextureMesh)
+set(OpenMVS_LIBRARIES OpenMVS::MVS)
+set(OpenMVS_BINARIES OpenMVS::InterfaceCOLMAP OpenMVS::DensifyPointCloud OpenMVS::ReconstructMesh OpenMVS::RefineMesh OpenMVS::TextureMesh)
 
 include("${CMAKE_CURRENT_LIST_DIR}/OpenMVSTargets.cmake")
 check_required_components("OpenMVS")

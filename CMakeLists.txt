@@ -38,7 +38,6 @@ OPTION(OpenMVS_USE_FAST_FLOAT2INT "Use an optimized code to convert real numbers
 OPTION(OpenMVS_USE_FAST_INVSQRT "Use an optimized code to compute the inverse square root (slower in fact on modern compilers)" OFF)
 OPTION(OpenMVS_USE_FAST_CBRT "Use an optimized code to compute the cubic root" OFF)
 OPTION(OpenMVS_USE_SSE "Enable SSE optimizations" ON)
-OPTION(OpenMVS_MAX_CUDA_COMPATIBILITY "Build for maximum CUDA device compatibility" OFF)
 OPTION(OpenMVS_ENABLE_IPO "Whether to enable interprocedural optimization" ON)
 OPTION(OpenMVS_ENABLE_TESTS "Enable test code" ON)
 OPTION(OpenMVS_HEADLESS_DEBUG "Print asserts to stderr and continue; do not redirect cout/cerr or pop modal dialogs (for CI / non-interactive debug runs)" OFF)
@@ -126,12 +125,9 @@ SET(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
 # build/Utils.cmake was already included above (it must run before project()
 # so the opencv4 overlay generator can append to VCPKG_OVERLAY_PORTS before
 # the vcpkg toolchain consumes it). Among other things, it declares
-# OPTION(BUILD_SHARED_LIBS ...), so the OPENMVS_SHARED / IPO logic that
-# follows can rely on BUILD_SHARED_LIBS being defined here.
-# Tell C++ code we are building shared libraries, so headers (e.g. Types.h) can
-# pick the cross-DLL-friendly path for things like boost exception-unwinding.
+# OPTION(BUILD_SHARED_LIBS ...), so the IPO logic that follows can rely on
+# BUILD_SHARED_LIBS being defined here (the Common library defines OPENMVS_SHARED).
 IF(BUILD_SHARED_LIBS)
-	ADD_COMPILE_DEFINITIONS(OPENMVS_SHARED)
 	# MSVC's /GL+/LTCG is catastrophic on shared builds: the linker tries to
 	# re-do whole-program optimization across each DLL's .obj graph, peaking at
 	# 30-40 GB RAM and many minutes per DLL link. Per-DLL native code is fine
@@ -198,7 +194,7 @@ if(OpenMVS_USE_OPENMP)
 	if(APPLE AND CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64")
 		set(OpenMP_ROOT "/opt/homebrew/opt/libomp")
 	endif()
-	FIND_PACKAGE(OpenMP QUIET)
+	find_exported_dependency(OpenMP QUIET)
 	if(OPENMP_FOUND)
 		SET(_USE_OPENMP TRUE)
 		LIST(APPEND OpenMVS_EXTRA_LIBS OpenMP::OpenMP_CXX)
@@ -221,9 +217,10 @@ if(OpenMVS_USE_CUDA)
 		# Finding CUDA fails on some systems if paths to nvcc / cuda library are not set; ex. on linux:
 		# export PATH="/usr/local/cuda/bin:$PATH"
 		# export LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH}"
-		if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-			# `native` (CMake >= 3.24) tells nvcc to detect and target the build
-			# host's GPU; the project's CMAKE_MINIMUM_REQUIRED guarantees support.
+		if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES AND NOT DEFINED ENV{CUDAARCHS})
+			# `native` (CMake >= 3.24) tells nvcc to target only the build host's GPU,
+			# the fastest to compile; distributed binaries must instead list every
+			# targeted architecture, ex. -DCMAKE_CUDA_ARCHITECTURES=all-major
 			SET(CMAKE_CUDA_ARCHITECTURES "native")
 		endif()
 		SET(CMAKE_CUDA_FLAGS_INIT "${CMAKE_CUDA_FLAGS_INIT} -allow-unsupported-compiler")
@@ -231,38 +228,45 @@ if(OpenMVS_USE_CUDA)
 		SET(CUDA_FOUND TRUE)
 		SET(CMAKE_CUDA_STANDARD 17)
 		SET(CMAKE_CUDA_STANDARD_REQUIRED ON)
-		FIND_PACKAGE(CUDAToolkit REQUIRED)
-		if(OpenMVS_MAX_CUDA_COMPATIBILITY)
-			EXECUTE_PROCESS(COMMAND "${CMAKE_CUDA_COMPILER}" --list-gpu-arch
-				OUTPUT_VARIABLE LIST_GPU_ARCH
-				ERROR_QUIET)
-			if(NOT LIST_GPU_ARCH)
-				MESSAGE(WARNING "Cannot compile for max CUDA compatibility, nvcc does not support --list-gpu-arch")
-				SET(OpenMVS_MAX_CUDA_COMPATIBILITY OFF)
+		find_exported_dependency(CUDAToolkit REQUIRED)
+		# resolve the compute capabilities the CUDA code is compiled for, so that
+		# devices it cannot run on are skipped at runtime: native code (SASS) runs
+		# on the same major version, PTX is compiled by the driver for newer ones
+		if(CMAKE_CUDA_ARCHITECTURES STREQUAL "native")
+			SET(_CUDA_ARCHS "${CMAKE_CUDA_ARCHITECTURES_NATIVE}")
+		elseif(CMAKE_CUDA_ARCHITECTURES STREQUAL "all")
+			SET(_CUDA_ARCHS "${CMAKE_CUDA_ARCHITECTURES_ALL}")
+		elseif(CMAKE_CUDA_ARCHITECTURES STREQUAL "all-major")
+			SET(_CUDA_ARCHS "${CMAKE_CUDA_ARCHITECTURES_ALL_MAJOR}")
+		else()
+			SET(_CUDA_ARCHS "${CMAKE_CUDA_ARCHITECTURES}")
+		endif()
+		SET(_CUDA_ARCHS_SASS "")
+		SET(_CUDA_ARCHS_SASS_EXACT "")
+		SET(_CUDA_ARCH_PTX 0)
+		foreach(CUDA_ARCH ${_CUDA_ARCHS})
+			if(NOT CUDA_ARCH MATCHES "^([0-9]+)([a-z]?)(-real|-virtual)?$")
+				MESSAGE(FATAL_ERROR "Unsupported CUDA architecture '${CUDA_ARCH}' in CMAKE_CUDA_ARCHITECTURES='${CMAKE_CUDA_ARCHITECTURES}'")
 			endif()
+			# architecture-specific code (ex. 90a) runs only on that exact architecture,
+			# family-specific code (ex. 100f) like the generic one on its major version
+			if(NOT CMAKE_MATCH_3 STREQUAL "-virtual")
+				if(CMAKE_MATCH_2 STREQUAL "a")
+					LIST(APPEND _CUDA_ARCHS_SASS_EXACT ${CMAKE_MATCH_1})
+				else()
+					LIST(APPEND _CUDA_ARCHS_SASS ${CMAKE_MATCH_1})
+				endif()
+			endif()
+			# architecture- and family-specific PTX is not forward compatible
+			if(NOT CMAKE_MATCH_3 STREQUAL "-real" AND NOT CMAKE_MATCH_2 AND (_CUDA_ARCH_PTX EQUAL 0 OR CMAKE_MATCH_1 LESS _CUDA_ARCH_PTX))
+				SET(_CUDA_ARCH_PTX ${CMAKE_MATCH_1})
+			endif()
+		endforeach()
+		if(NOT _CUDA_ARCHS_SASS AND NOT _CUDA_ARCHS_SASS_EXACT AND _CUDA_ARCH_PTX EQUAL 0)
+			MESSAGE(FATAL_ERROR "No CUDA architecture to compile for: set CMAKE_CUDA_ARCHITECTURES (ex. native or all-major)")
 		endif()
-		if(OpenMVS_MAX_CUDA_COMPATIBILITY)
-			# Build for maximum compatibility
-			# https://arnon.dk/matching-sm-architectures-arch-and-gencode-for-various-nvidia-cards/
-			UNSET(CMAKE_CUDA_ARCHITECTURES)
-			# Extract list of arch and gencodes
-			STRING(REPLACE "\r" "" LIST_GPU_ARCH ${LIST_GPU_ARCH})
-			STRING(REPLACE "\n" ";" LIST_GPU_ARCH ${LIST_GPU_ARCH})
-			EXECUTE_PROCESS(COMMAND "${CMAKE_CUDA_COMPILER}" --list-gpu-code
-				OUTPUT_VARIABLE LIST_GPU_CODE
-				ERROR_QUIET)
-			STRING(REPLACE "\r" "" LIST_GPU_CODE ${LIST_GPU_CODE})
-			STRING(REPLACE "\n" ";" LIST_GPU_CODE ${LIST_GPU_CODE})
-			LIST(GET LIST_GPU_CODE 0 TARGET_GPU_CODE)
-			SET(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -arch=${TARGET_GPU_CODE}")
-			SET(IDX 0)
-			foreach(GPU_ARCH ${LIST_GPU_ARCH})
-				LIST(GET LIST_GPU_CODE ${IDX} GPU_CODE)
-				SET(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -gencode=arch=${GPU_ARCH},code=${GPU_CODE}")
-				MATH(EXPR IDX "${IDX}+1")
-			endforeach()
-			MESSAGE(STATUS "Set CUDA flags: " ${CMAKE_CUDA_FLAGS})
-		endif()
+		STRING(REPLACE ";" "," _CUDA_ARCHS_SASS "${_CUDA_ARCHS_SASS}")
+		STRING(REPLACE ";" "," _CUDA_ARCHS_SASS_EXACT "${_CUDA_ARCHS_SASS_EXACT}")
 		SET(CMAKE_CUDA_SEPARABLE_COMPILATION ON)
 		SET(CMAKE_CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 		SET(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --expt-relaxed-constexpr")
@@ -274,7 +278,7 @@ if(OpenMVS_USE_CUDA)
 		INCLUDE_DIRECTORIES(${CUDAToolkit_INCLUDE_DIRS})
 		LIST(APPEND OpenMVS_EXTRA_LIBS ${CUDAToolkit_LIBRARIES} CUDA::cuda_driver CUDA::cudart CUDA::curand)
 		SET(_USE_CUDA TRUE)
-		MESSAGE(STATUS "Found CUDA: " ${CMAKE_CUDA_COMPILER_VERSION} " with GPU arch: " ${CMAKE_CUDA_ARCHITECTURES})
+		MESSAGE(STATUS "Found CUDA: ${CMAKE_CUDA_COMPILER_VERSION} with GPU arch: ${CMAKE_CUDA_ARCHITECTURES} (SASS ${_CUDA_ARCHS_SASS}; exact SASS ${_CUDA_ARCHS_SASS_EXACT}; PTX ${_CUDA_ARCH_PTX})")
 	else()
 		MESSAGE(STATUS "Can't find CUDA. Continuing without it.")
 	endif()
@@ -311,10 +315,17 @@ SET(OpenMVS_PYTHON_LIBS "")
 if(OpenMVS_USE_PYTHON)
 	FIND_PACKAGE(Python3 COMPONENTS Interpreter Development.Module REQUIRED)
 	LIST(APPEND OpenMVS_PYTHON_LIBS Python3::Module)
+	# relative to the install prefix, laid out like a Python installation or virtual environment
+	if(WIN32)
+		SET(_PYTHON_INSTALL_PATH "Lib/site-packages")
+	else()
+		SET(_PYTHON_INSTALL_PATH "lib/python${Python3_VERSION_MAJOR}.${Python3_VERSION_MINOR}/site-packages")
+	endif()
+	SET(PYTHON_INSTALL_PATH "${_PYTHON_INSTALL_PATH}" CACHE PATH "Installation directory for the Python bindings")
 	MESSAGE(STATUS "Python ${Python3_VERSION_MAJOR}.${Python3_VERSION_MINOR} found (include: ${Python3_INCLUDE_DIRS})")
 endif()
 
-FIND_PACKAGE(Boost REQUIRED COMPONENTS iostreams program_options serialization exception)
+find_exported_dependency(Boost REQUIRED COMPONENTS iostreams program_options serialization exception)
 if(Boost_FOUND)
 	ADD_DEFINITIONS(${Boost_DEFINITIONS})
 	LIST(APPEND OpenMVS_EXTRA_LIBS ${Boost_LIBRARIES})
@@ -344,7 +355,7 @@ if(OpenMVS_USE_PYTHON)
 	endif()
 endif()
 
-FIND_PACKAGE(Eigen3 CONFIG REQUIRED)
+find_exported_dependency(Eigen3 CONFIG REQUIRED)
 if(Eigen3_FOUND)
 	if(Eigen3_VERSION VERSION_LESS "3.4")
 		MESSAGE(FATAL_ERROR "Eigen ${Eigen3_VERSION} found, but at least 3.4 is required")
@@ -354,7 +365,7 @@ if(Eigen3_FOUND)
 	MESSAGE(STATUS "Eigen ${Eigen3_VERSION} found")
 endif()
 
-FIND_PACKAGE(OpenCV REQUIRED)
+find_exported_dependency(OpenCV REQUIRED)
 if(OpenCV_FOUND)
 	ADD_DEFINITIONS(${OpenCV_DEFINITIONS})
 	LIST(APPEND OpenMVS_EXTRA_LIBS ${OpenCV_LIBS})
@@ -376,6 +387,12 @@ FIND_PACKAGE(gflags CONFIG QUIET)
 if(TARGET gflags::gflags AND NOT TARGET gflags)
 	ADD_LIBRARY(gflags INTERFACE IMPORTED)
 	SET_TARGET_PROPERTIES(gflags PROPERTIES INTERFACE_LINK_LIBRARIES gflags::gflags)
+	# the projects using the installed OpenMVS link ceres through it too
+	SET_PROPERTY(GLOBAL APPEND PROPERTY OpenMVS_EXPORTED_DEPENDENCIES "find_dependency(gflags CONFIG)
+if(NOT TARGET gflags)
+	add_library(gflags INTERFACE IMPORTED)
+	set_target_properties(gflags PROPERTIES INTERFACE_LINK_LIBRARIES gflags::gflags)
+endif()")
 endif()
 
 LIST(REMOVE_DUPLICATES OpenMVS_EXTRA_LIBS)
@@ -467,11 +484,14 @@ INCLUDE(CMakePackageConfigHelpers)
 write_basic_package_version_file("${PROJECT_BINARY_DIR}/OpenMVSConfigVersion.cmake"
 	VERSION ${OpenMVS_VERSION}
 	COMPATIBILITY AnyNewerVersion)
-# Note: Include paths are handled via imported targets and target_include_directories
-SET(INSTALL_CMAKE_DIR_IN ${INSTALL_CMAKE_DIR_PREFIX})
+# the packages the exported targets link against, as found by find_exported_dependency()
+GET_PROPERTY(OpenMVS_EXPORTED_DEPENDENCIES GLOBAL PROPERTY OpenMVS_EXPORTED_DEPENDENCIES)
+LIST(REMOVE_DUPLICATES OpenMVS_EXPORTED_DEPENDENCIES)
+STRING(REPLACE ";" "\n" OpenMVS_EXPORTED_DEPENDENCIES "${OpenMVS_EXPORTED_DEPENDENCIES}")
 configure_package_config_file("${CMAKE_CURRENT_SOURCE_DIR}/build/Templates/OpenMVSConfig.cmake.in"
 	"${PROJECT_BINARY_DIR}/OpenMVSConfig.cmake"
-	INSTALL_DESTINATION ${PROJECT_BINARY_DIR}
+	INSTALL_DESTINATION "${INSTALL_CMAKE_DIR}"
+	PATH_VARS INSTALL_INCLUDE_DIR
 	NO_SET_AND_CHECK_MACRO)
 # Install the OpenMVSConfig.cmake and OpenMVSConfigVersion.cmake
 INSTALL(FILES

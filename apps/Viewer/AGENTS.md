@@ -24,7 +24,7 @@ Scene (top-level container)
 ```
 
 ### Precompiled Header Chain
-`Common.h` → `MVS/Common.h` → `glad/glad.h` (with `GLAD_GL_IMPLEMENTATION`) → `GLFW/glfw3.h` → `OpenGLDebug.h`
+`Common.h` → `MVS/Common.h` → `glad/gl.h` (GLAD 2, `_USE_GLAD2`) or `glad/glad.h` (GLAD 1) → `GLFW/glfw3.h` → `OpenGLDebug.h`; Common.h is the only place choosing the loader, so every Viewer file gets OpenGL by including it
 
 ### Coordinate System
 `Common.h` defines `gs_convert` — a static 4x4 matrix converting from OpenGL default (Y-up) to camera coordinates (Y-down, Z-backward/NADIR). Helper functions `TransW2L(R,t)` and `TransL2W(R,t)` build world-to-local and local-to-world 4x4 Eigen matrices from rotation + translation.
@@ -241,7 +241,7 @@ Async MVS pipeline stages executable from the Viewer UI:
 
 ## Build & Dependencies
 
-**Required packages** (all via vcpkg): GLAD, GLFW3, ImGui, portable-file-dialogs
+**Required packages** (all via vcpkg): GLAD (GLAD 1 from vcpkg; a GLAD 2 CMake package with `glad_add_library` is preferred when found), GLFW3, ImGui, portable-file-dialogs
 **Links against**: MVS library (which brings in Common, IO, Math, Eigen, OpenCV, etc.)
 
 ### Platform-Specific

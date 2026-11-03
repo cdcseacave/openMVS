@@ -3,12 +3,28 @@ if(NOT VIEWER_NAME)
 endif()
 
 # Find required packages
-FIND_PACKAGE(glad QUIET)
-if(glad_FOUND)
-	MESSAGE(STATUS "GLAD ${glad_VERSION} found")
+# GLAD 2 (its CMake package generates the loader at build time) or GLAD 1 (ex. vcpkg)
+FIND_PACKAGE(Glad CONFIG QUIET)
+if(Glad_FOUND AND COMMAND glad_add_library)
+	MESSAGE(STATUS "GLAD 2 found")
+	ENABLE_LANGUAGE(C)
+	# static, linked into the Viewer (glad 2.0.8 ignores STATIC when BUILD_SHARED_LIBS is ON);
+	# the 4.6 loader also provides the debug output used when the driver offers GL 4.3
+	SET(_BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS})
+	SET(BUILD_SHARED_LIBS OFF)
+	glad_add_library(glad_gl STATIC REPRODUCIBLE QUIET API gl:compatibility=4.6)
+	SET(BUILD_SHARED_LIBS ${_BUILD_SHARED_LIBS})
+	SET(GLAD_LIBRARY glad_gl)
+	SET(_USE_GLAD2 TRUE)
 else()
-	MESSAGE("-- Can't find GLAD. Continuing without it.")
-	RETURN()
+	FIND_PACKAGE(glad QUIET)
+	if(glad_FOUND)
+		MESSAGE(STATUS "GLAD ${glad_VERSION} found")
+		SET(GLAD_LIBRARY glad::glad)
+	else()
+		MESSAGE("-- Can't find GLAD. Continuing without it.")
+		RETURN()
+	endif()
 endif()
 FIND_PACKAGE(glfw3 QUIET)
 if(glfw3_FOUND)
@@ -48,7 +64,10 @@ FILE(GLOB LIBRARY_FILES_H "*.h" "*.inl")
 FILE(GLOB SHADERS_LIBRARY_FILES "shaders/*.*")
 SOURCE_GROUP("Shaders" FILES ${SHADERS_LIBRARY_FILES})
 
-cxx_executable_with_flags(${VIEWER_NAME} "Apps" "${cxx_default}" "MVS;glad::glad;${GLFW_STATIC_LIBRARIES};${glfw3_LIBRARY};${GLFW3_LIBRARY};glfw;imgui::imgui" ${LIBRARY_FILES_C} ${LIBRARY_FILES_H} ${SHADERS_LIBRARY_FILES})
+cxx_executable_with_flags(${VIEWER_NAME} "Apps" "${cxx_default}" "MVS;${GLAD_LIBRARY};${GLFW_STATIC_LIBRARIES};${glfw3_LIBRARY};${GLFW3_LIBRARY};glfw;imgui::imgui" ${LIBRARY_FILES_C} ${LIBRARY_FILES_H} ${SHADERS_LIBRARY_FILES})
+if(_USE_GLAD2)
+	TARGET_COMPILE_DEFINITIONS(${VIEWER_NAME} PRIVATE _USE_GLAD2)
+endif()
 
 # On macOS, link Cocoa explicitly for our ObjC++ bridge and disable PCH for .mm
 if(APPLE)
@@ -95,17 +114,21 @@ if(APPLE)
 endif()
 
 if(LINUX)
-	# Prepare a Linux desktop entry for better integration. Exec path is configured
-	# to the installed binary location (prefix + install bin dir). Install the
-	# resulting .desktop file into share/applications so desktop environments pick it up.
+	# Prepare a Linux desktop entry for better integration. Install the resulting
+	# .desktop file into share/applications so desktop environments pick it up.
 	set(DESKTOP_IN "${CMAKE_CURRENT_SOURCE_DIR}/templates/openMVS-Viewer.desktop.in")
-	set(EXEC_PATH "${CMAKE_INSTALL_PREFIX}/${INSTALL_BIN_DIR}/${VIEWER_NAME}")
 	get_filename_component(ICON_NAME "${CMAKE_CURRENT_SOURCE_DIR}/Viewer.svg" NAME_WE)
 	# Register both .mvs and .dmap MIME types so desktop environments treat
 	# both as owned by the OpenMVS Viewer. openmvs-mime.xml.in defines both
 	# application/x-openmvs-mvs and application/x-openmvs-dmap.
 	set(MIME_TYPE "application/x-openmvs-mvs;application/x-openmvs-dmap")
-	configure_file(${DESKTOP_IN} ${CMAKE_CURRENT_BINARY_DIR}/openMVS-Viewer.desktop @ONLY)
+	# its Exec path is the installed binary, so it is configured with the prefix given at install time
+	INSTALL(CODE "
+		set(VIEWER_NAME \"${VIEWER_NAME}\")
+		set(ICON_NAME \"${ICON_NAME}\")
+		set(OpenMVS_VERSION \"${OpenMVS_VERSION}\")
+		set(EXEC_PATH \"\${CMAKE_INSTALL_PREFIX}/${INSTALL_BIN_DIR}/${VIEWER_NAME}\")
+		configure_file(\"${DESKTOP_IN}\" \"${CMAKE_CURRENT_BINARY_DIR}/openMVS-Viewer.desktop\" @ONLY)" COMPONENT desktop)
 	INSTALL(FILES "${CMAKE_CURRENT_BINARY_DIR}/openMVS-Viewer.desktop"
 		DESTINATION "share/applications" COMPONENT desktop)
 	# Install an SVG icon into hicolor icon theme (scalable) if present
@@ -119,8 +142,13 @@ if(LINUX)
 		DESTINATION "share/mime/packages" COMPONENT desktop)
 	FIND_PROGRAM(MIME_UPDATE_CMD update-mime-database)
 	if(MIME_UPDATE_CMD)
-		# run update-mime-database at install time (best effort)
-		INSTALL(CODE "execute_process(COMMAND ${MIME_UPDATE_CMD} \"${CMAKE_INSTALL_PREFIX}/share/mime\" RESULT_VARIABLE _res) if(NOT _res EQUAL 0) message(WARNING \"update-mime-database failed: \${_res}\") endif()")
+		# run update-mime-database at install time (best effort), in the prefix
+		# and staging directory given at install time
+		INSTALL(CODE "
+			execute_process(COMMAND \"${MIME_UPDATE_CMD}\" \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/share/mime\" RESULT_VARIABLE _res)
+			if(NOT _res EQUAL 0)
+				message(WARNING \"update-mime-database failed: \${_res}\")
+			endif()" COMPONENT desktop)
 	endif()
 endif()
 

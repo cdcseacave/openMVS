@@ -162,7 +162,7 @@ mesh.SaveGLTF("model.glb", true);   // Binary glTF
 
 ## Third-Party Code
 
-- **`json.hpp`**: nlohmann JSON (header-only, MIT license)
+- **nlohmann JSON**: from the vcpkg `nlohmann-json` port (`<nlohmann/json.hpp>`), linked PUBLIC by IO
 
 ## File Organization
 

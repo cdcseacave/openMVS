@@ -311,6 +311,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!MVS::SelectNeighborViewsScaleTest())
 				return false;
+			if (!MVS::DMapCacheKeepsRequestedImageTest())
+				return false;
 		}
 		return true;
 	}();

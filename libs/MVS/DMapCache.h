@@ -51,7 +51,7 @@ namespace MVS {
 // pixels of those images as well: pass the scene images to decode them alongside
 // their depth-data and release them together with it, keeping both under the same
 // memory budget instead of requiring every image to stay resident.
-class DMapCache {
+class MVS_API DMapCache {
 public:
 	explicit DMapCache(DepthDataArr& arrDepthData, unsigned loadFlags, size_t max_memory_bytes, ImageArr* pImages = NULL);
 	// reports how well the cache did
@@ -90,10 +90,12 @@ public:
 
 
 private:
-	// eject the least recently used images if the cache size is above max-limit
-	bool Eject() const;
-	// eject the least recently used image
-	bool EjectOldest() const;
+	// eject the least recently used images if the cache size is above max-limit,
+	// stopping at the given image: the one UseImage() was just asked to provide
+	// stays loaded even if it alone exceeds the limit
+	bool Eject(IIndex idxImageKeep = NO_ID) const;
+	// eject the least recently used image, unless it is the given one
+	bool EjectOldest(IIndex idxImageKeep = NO_ID) const;
 	// bytes the depth-data of the given image occupies, plus its color pixels
 	// when this cache manages them too
 	size_t GetMemorySize(IIndex idxImage) const;
