@@ -218,7 +218,8 @@ jobs:
         run: |
           # install OpenMVS and build a project using it through find_package(OpenMVS)
           cmake --install ${{ env.BUILD_DIR }} --config ${{ env.BUILD_CONFIG }} --prefix install
-          cmake -S build/PackageTest -B package_test -DCMAKE_BUILD_TYPE=${{ env.BUILD_CONFIG }} -DCMAKE_CONFIGURATION_TYPES=${{ env.BUILD_CONFIG }} -DCMAKE_TOOLCHAIN_FILE=${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake -DVCPKG_MANIFEST_MODE=OFF -DVCPKG_INSTALLED_DIR=${{ github.workspace }}/${{ env.BUILD_DIR }}/vcpkg_installed -DVCPKG_TARGET_TRIPLET=${{ env.VCPKG_DEFAULT_TRIPLET }} -DCMAKE_PREFIX_PATH=${{ github.workspace }}/install ${{ env.CMAKE_EXTRA_ARGS }}
+          # quoted shell variables: bash drops the backslashes of unquoted Windows paths
+          cmake -S build/PackageTest -B package_test -DCMAKE_BUILD_TYPE=${{ env.BUILD_CONFIG }} -DCMAKE_CONFIGURATION_TYPES=${{ env.BUILD_CONFIG }} -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_MANIFEST_MODE=OFF -DVCPKG_INSTALLED_DIR="$GITHUB_WORKSPACE/${{ env.BUILD_DIR }}/vcpkg_installed" -DVCPKG_TARGET_TRIPLET=${{ env.VCPKG_DEFAULT_TRIPLET }} -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/install" ${{ env.CMAKE_EXTRA_ARGS }}
           cmake --build package_test --config ${{ env.BUILD_CONFIG }}
 
       - name: Deploy release
