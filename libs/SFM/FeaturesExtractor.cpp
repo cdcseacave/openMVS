@@ -60,8 +60,8 @@ namespace {
  * Both share the same per-image primitives — only the scheduling differs:
  * - Per-image: run GPU + post-process, both on the calling thread.
  * - Bulk: run GPU on the main thread, dispatch post-processing to the
- *   thread pool so it overlaps with the next image's GPU work. Next
- *   image's pixels are prefetched via the thread pool in parallel.
+ *   thread pool so it overlaps with the next image's GPU work. The next
+ *   images are decoded and prepared in parallel on the thread pool.
  *
  * File-local singleton: the GPU context lives for the process and is
  * shared across all FeaturesExtractor instances that use SIFTGPU.
@@ -100,56 +100,144 @@ public:
 	// FeaturesExtractor::ExtractImage for keyframe-style workflows that
 	// process one frame at a time.
 	bool ExtractImage(Image& img, bool skipIO = false) {
+		cv::Mat input;
+		if (!LoadSIFTInput(img, input, extractor.GetConfig().releaseImagePixels)) {
+			VERBOSE("error: no pixels loaded for image %u", img.ID);
+			return false;
+		}
 		CLISTDEF0IDX(SiftGPU::SiftKeypoint,uint32_t) keys;
 		FloatArr descs;
-		if (!RunSIFTOnImage(img, keys, descs))
+		if (!RunSIFTOnImage(img.ID, input, keys, descs))
 			return false;
-		StoreFeatures(img, keys, descs, skipIO);
+		StoreFeatures(img, input.size(), keys, descs, skipIO);
 		return !img.keypoints.empty();
 	}
 
-	// Bulk driver: pipelines image prefetch and post-processing around the
+	// Bulk driver: pipelines image decoding and post-processing around the
 	// serialized GPU call to keep the device busy.
+	// Decoding a large image (ex. a 24 MP JPEG) takes longer than SiftGPU takes
+	// to process it, so the next images are decoded in parallel on the scene
+	// thread pool, bounded by the number of pool threads and by a budget on the
+	// prepared data waiting for the GPU. The decode task also prepares the GPU
+	// input (see PrepareSIFTInput), keeping all per-image CPU work off the GPU
+	// thread.
+	// Each image is decoded by exactly one task and the GPU thread waits on that
+	// task's future before touching its data, so no image is ever loaded twice
+	// or read while being written. The pool queue is FIFO: a decode task is
+	// queued several images ahead, so it only waits behind the (short)
+	// post-processing tasks of older images; the GPU thread is not a pool
+	// worker, so waiting on a future can not deadlock the pool.
 	size_t ProcessImages(Util::Progress& progress) {
+		typedef std::chrono::steady_clock Clock;
+		const Clock::time_point timeStart(Clock::now());
 		std::atomic<size_t> numFeatures(0);
 		Scene& scene = extractor.GetScene();
-		FOREACH(i, scene.images) {
-			++progress;
-			Image& img = scene.images[i];
-			// Skip if already processed
-			if (img.HasFeatures() && img.HasDescriptors())
-				continue;
+		const bool releasePixels = extractor.GetConfig().releaseImagePixels;
+		// spherical images are processed inline (not prefetched),
+		// as they are decoded in color and split in faces
+		auto IsSpherical = [](const Image& img) {
+			return img.pCamera && img.pCamera->GetType() == CameraType::SPHERICAL;
+		};
+		// images to process, in scene order
+		IIndexArr todo;
+		todo.reserve(scene.images.size());
+		FOREACH(i, scene.images)
+			if (extractor.NeedsExtraction(scene.images[i]))
+				todo.push_back(i);
+		// look-ahead bounds: the current image plus at most one decode per pool
+		// thread (so even a one-thread pool decodes the next image while the GPU
+		// works on the current one), and at most this many bytes in flight, the
+		// 8-bit pixels and the float GPU input prepared from them (8 images of 24 MP)
+		constexpr size_t maxBytesInFlight = size_t(960) * 1024 * 1024;
+		const size_t maxImagesInFlight = (size_t)scene.threadPool.get_thread_count() + 1;
+		std::vector<std::future<bool>> decoded(todo.size());
+		std::vector<cv::Mat> inputs(todo.size());
+		CLISTDEF0(size_t) inputBytes(todo.size());
+		size_t nextDecode = 0, imagesInFlight = 0, bytesInFlight = 0;
+		// on any exit, also by an exception, the tasks still using the locals
+		// above must finish before they are destroyed
+		struct TasksGuard {
+			std::vector<std::future<bool>>& decoded;
+			BS::light_thread_pool& threadPool;
+			~TasksGuard() {
+				for (std::future<bool>& future: decoded)
+					if (future.valid())
+						future.wait();
+				threadPool.wait();
+			}
+		} tasksGuard{decoded, scene.threadPool};
+		auto ScheduleDecodes = [&](size_t current) {
+			for (; nextDecode < todo.size(); ++nextDecode) {
+				Image& img = scene.images[todo[nextDecode]];
+				if (IsSpherical(img))
+					continue;
+				const size_t bytes = img.pCamera ? (sizeof(float) + sizeof(uint8_t)) *
+					(size_t)img.pCamera->GetWidth() * (size_t)img.pCamera->GetHeight() : size_t(0);
+				// the image needed right now is always scheduled, and so is the next
+				// one if only the current image is in flight, even if it exceeds the budget
+				ASSERT(nextDecode <= current || imagesInFlight > 0); // the current image is in flight
+				if (nextDecode > current && (imagesInFlight >= maxImagesInFlight ||
+						(imagesInFlight > 1 && bytesInFlight + bytes > maxBytesInFlight)))
+					break;
+				// an exception is rethrown on the GPU thread by the future
+				decoded[nextDecode] = scene.threadPool.submit_task([&img, &input = inputs[nextDecode], releasePixels]() {
+					return LoadSIFTInput(img, input, releasePixels);
+				});
+				inputBytes[nextDecode] = bytes;
+				++imagesInFlight;
+				bytesInFlight += bytes;
+			}
+		};
+		double gpuSeconds = 0, waitSeconds = 0;
+		unsigned numGPUImages = 0;
+		FOREACH(t, todo) {
+			Image& img = scene.images[todo[t]];
+			progress.display(todo[t]);
 			// Spherical images can't be fed to SIFTGPU directly — they need
 			// per-face tangent extraction. Delegate to the per-image driver,
 			// which recursively re-enters this coordinator for each face.
-			if (img.pCamera && img.pCamera->GetType() == CameraType::SPHERICAL) {
+			if (IsSpherical(img)) {
 				cv::Ptr<cv::Feature2D> unusedDet;
 				if (extractor.ExtractImage(img, unusedDet))
 					numFeatures.fetch_add(img.keypoints.size(), std::memory_order_relaxed);
 				continue;
 			}
-			// Pre-load next image (async task)
-			if (i + 1 < scene.images.size()) {
-				Image& imgNext = scene.images[i+1];
-				scene.threadPool.detach_task([&imgNext]() {
-					if (!imgNext.HasPixels())
-						imgNext.LoadPixels(true);
-				});
+			ScheduleDecodes(t);
+			// wait for this image's decode task
+			const Clock::time_point timeWait(Clock::now());
+			ASSERT(decoded[t].valid());
+			const bool loaded = decoded[t].get();
+			waitSeconds += std::chrono::duration<double>(Clock::now() - timeWait).count();
+			--imagesInFlight;
+			bytesInFlight -= inputBytes[t];
+			if (!loaded) {
+				VERBOSE("error: no pixels loaded for image %u", img.ID);
+				continue;
 			}
 			// Main-thread GPU call; skip image on failure
+			const cv::Size size(inputs[t].size());
 			CLISTDEF0IDX(SiftGPU::SiftKeypoint,uint32_t) keys;
 			FloatArr descs;
-			if (!RunSIFTOnImage(img, keys, descs))
+			const Clock::time_point timeGPU(Clock::now());
+			const bool extracted = RunSIFTOnImage(img.ID, inputs[t], keys, descs);
+			gpuSeconds += std::chrono::duration<double>(Clock::now() - timeGPU).count();
+			inputs[t].release();
+			if (!extracted)
 				continue;
+			++numGPUImages;
 			// Offload post-processing to thread pool so it overlaps with
 			// the next image's GPU work (async task)
 			scene.threadPool.detach_task(
-				[this, &img, keys = std::move(keys), descs = std::move(descs), &numFeatures]() {
-					numFeatures.fetch_add(StoreFeatures(img, keys, descs), std::memory_order_relaxed);
+				[this, &img, size, keys = std::move(keys), descs = std::move(descs), &numFeatures]() {
+					numFeatures.fetch_add(StoreFeatures(img, size, keys, descs), std::memory_order_relaxed);
 				});
 		}
 		// Wait for all post-processing tasks to complete
 		scene.threadPool.wait();
+		const double totalSeconds = std::chrono::duration<double>(Clock::now() - timeStart).count();
+		DEBUG_EXTRA("SiftGPU pipeline: %u images in %.3fs (%.2f images/s): GPU thread busy %.3fs (%.1f%%), waited %.3fs for decoding",
+			numGPUImages, totalSeconds, numGPUImages / MAXF(totalSeconds, 1e-9),
+			gpuSeconds, 100.0 * gpuSeconds / MAXF(totalSeconds, 1e-9), waitSeconds);
 		return numFeatures.load(std::memory_order_relaxed);
 	}
 
@@ -163,11 +251,22 @@ private:
 		constexpr int firstOctave = -1;
 		constexpr int octaveResolution = 3;
 		constexpr unsigned maxNumOrientations = 2;
-		constexpr float peakThreshold = 0.005f;
-		constexpr float edgeThreshold = 20.f;
+		// Minimum scale-normalized smaller principal curvature sigma^2*|lambda_min| of
+		// the DoG Hessian (SiftGPU -cmin, CUDA and GLSL): a keypoint must be curved enough
+		// in both directions, an absolute cornerness floor that takes over from the DoG
+		// value as the main contrast test. It lets the very low DoG peak threshold (SiftGPU
+		// default 0.02/3 for 3 levels per octave) keep low-contrast corners and blobs of
+		// weakly textured areas (walls, floors) while rejecting flat and edge-like extrema.
+		// The edge threshold 12.5 (maximum ratio of the principal curvatures) increases the
+		// ratio-test precision of the matches.
+		// Darkness adaptation (-da, off by default) lowers the DoG threshold and the curvature
+		// floor in dark areas: more features and coverage there, but less precise matches; it
+		// helps the poses only when the features are not capped and the images are not noisy.
+		constexpr float peakThreshold = 0.001f;
+		constexpr float minCurvature = 0.001f;
+		constexpr float edgeThreshold = 12.5f;
 		constexpr unsigned maxNumFeatures = 0; // 0 = no limit
 		constexpr bool upright = false;
-		const bool darknessAdaptivity = extractor.GetConfig().useCUDA ? false : true;
 		int gpuIndices[1] = { -1 };
 
 		std::vector<std::string> args;
@@ -180,19 +279,20 @@ private:
 		#ifdef _USE_CUDA
 		if (extractor.GetConfig().useCUDA && gpuIndices[0] < 0)
 			gpuIndices[0] = 0;
+		#endif
+		// the backend and the options are process-global in SiftGPU: set all of them explicitly,
+		// so an earlier extraction in this process can not leak its settings into this one
 		if (gpuIndices[0] >= 0) {
 			args.push_back("-cuda"); args.push_back(std::to_string(gpuIndices[0]));
-		}
-		#endif
-		if (darknessAdaptivity) {
-			if (gpuIndices[0] >= 0)
-				DEBUG("warning: darkness adaptivity only available for GLSL SiftGPU.");
-			args.push_back("-da");
+		} else {
+			args.push_back("-glsl");
 		}
 		const int octaveFactor = 1 << -MINF(0, firstOctave);
 		args.push_back("-maxd"); args.push_back(std::to_string(maxImageSize * octaveFactor));
 		args.push_back("-t"); args.push_back(std::to_string(peakThreshold));
 		args.push_back("-e"); args.push_back(std::to_string(edgeThreshold));
+		args.push_back("-cmin"); args.push_back(std::to_string(minCurvature));
+		args.push_back("-da"); args.push_back(extractor.GetConfig().siftgpuDarknessAdaptivity ? "1" : "0");
 		if (maxNumFeatures > 0) {
 			args.push_back("-tc2"); args.push_back(std::to_string(maxNumFeatures));
 		}
@@ -229,19 +329,55 @@ private:
 		return true;
 	}
 
-	// Main-thread GPU work: ensure pixels are loaded, run SIFT, download results.
+	// Convert the gray pixels to the normalized float image SiftGPU works on.
+	// This is exactly SiftGPU's own conversion of 8-bit luminance input
+	// (value / 255.f, see DownSamplePixelDataI2F), so the features are unchanged;
+	// doing it here lets it run on a decode worker instead of the GPU thread, and
+	// SiftGPU then uses the float buffer directly (no per-image allocation+copy).
+	// Pure function of its input, safe to call from any thread.
+	static cv::Mat PrepareSIFTInput(const cv::Mat& pixels) {
+		cv::Mat gray;
+		if (pixels.channels() == 1)
+			gray = pixels;
+		else
+			cv::cvtColor(pixels, gray, pixels.channels() == 4 ? cv::COLOR_BGRA2GRAY : cv::COLOR_BGR2GRAY);
+		ASSERT(gray.type() == CV_8UC1);
+		float lut[256];
+		for (int v = 0; v < 256; ++v)
+			lut[v] = float(v) / 255.f;
+		cv::Mat input(gray.size(), CV_32FC1);
+		for (int r = 0; r < gray.rows; ++r) {
+			const uint8_t* const src = gray.ptr<uint8_t>(r);
+			float* const dst = input.ptr<float>(r);
+			for (int c = 0; c < gray.cols; ++c)
+				dst[c] = lut[src[c]];
+		}
+		return input;
+	}
+
+	// Load the image pixels (if needed) and prepare the GPU input from them; the pixels are
+	// released afterwards if requested, as the GPU only needs the prepared input.
+	static bool LoadSIFTInput(Image& img, cv::Mat& input, bool releasePixels) {
+		if (!img.HasPixels() && !img.LoadPixels(true))
+			return false;
+		input = PrepareSIFTInput(img.pixels);
+		if (releasePixels)
+			img.ReleasePixels();
+		return true;
+	}
+
+	// Main-thread GPU work: run SIFT on the prepared input, download results.
 	// SiftGPU's context is bound to a single thread, so this must never be called
 	// concurrently against the same coordinator.
-	bool RunSIFTOnImage(Image& img,
+	// The input must be a continuous CV_32FC1 image owned by the caller: SiftGPU
+	// uses it in place and compacts its rows when the width is not a multiple of 4.
+	bool RunSIFTOnImage(uint32_t imageID, cv::Mat& input,
 		CLISTDEF0IDX(SiftGPU::SiftKeypoint,uint32_t)& keys,
 		FloatArr& descs)
 	{
-		if (!img.HasPixels() && !img.LoadPixels(true)) {
-			VERBOSE("error: no pixels loaded for image %u", img.ID);
-			return false;
-		}
-		if (!gpu.RunSIFT(img.pixels.cols, img.pixels.rows, img.pixels.data, GL_LUMINANCE, GL_UNSIGNED_BYTE)) {
-			VERBOSE("error: SiftGPU failed on image %u", img.ID);
+		ASSERT(input.type() == CV_32FC1 && input.isContinuous());
+		if (!gpu.RunSIFT(input.cols, input.rows, input.data, GL_LUMINANCE, GL_FLOAT)) {
+			VERBOSE("error: SiftGPU failed on image %u", imageID);
 			return false;
 		}
 		const int num = gpu.GetFeatureNum();
@@ -251,39 +387,82 @@ private:
 		return true;
 	}
 
+	// Adaptive grid selection of at most maxFeatures keypoints, with cells of
+	// about cellSize pixels covering the whole image. When there are more
+	// keypoints than the budget, every cell gets the same quota (water filling):
+	// cells with fewer keypoints keep all of them and their unused quota goes to
+	// the denser cells (the remainder one per cell, in cell order), so weakly
+	// textured areas keep every feature SiftGPU finds there. Inside a cell the
+	// largest scales are kept (ties by index). Unlike a fixed per-cell cap, no
+	// feature is dropped while the image is under budget.
+	// Returns the kept indices in SiftGPU order.
+	static std::vector<uint32_t> SelectFeatures(const CLISTDEF0IDX(SiftGPU::SiftKeypoint,uint32_t)& keys,
+		const cv::Size& size, int cellSize, size_t maxFeatures)
+	{
+		const uint32_t numKeys = keys.size();
+		std::vector<uint32_t> selected;
+		if (numKeys <= maxFeatures) {
+			selected.resize(numKeys);
+			std::iota(selected.begin(), selected.end(), 0u);
+			return selected;
+		}
+		const int nx = MAXF(1, (size.width + cellSize / 2) / cellSize);
+		const int ny = MAXF(1, (size.height + cellSize / 2) / cellSize);
+		std::vector<std::vector<uint32_t>> cells(size_t(nx) * ny);
+		for (uint32_t k = 0; k < numKeys; ++k) {
+			const int x = (int)keys[k].x, y = (int)keys[k].y;
+			ASSERT(x >= 0 && x < size.width && y >= 0 && y < size.height);
+			cells[size_t(y * ny / size.height) * nx + x * nx / size.width].push_back(k);
+		}
+		// largest per-cell quota that fits the budget
+		auto NumKept = [&cells](size_t quota) {
+			size_t sum = 0;
+			for (const std::vector<uint32_t>& cell : cells)
+				sum += MINF(cell.size(), quota);
+			return sum;
+		};
+		size_t lo = 0, hi = 0;
+		for (const std::vector<uint32_t>& cell : cells)
+			hi = MAXF(hi, cell.size());
+		while (hi - lo > 1) {
+			const size_t mid = (lo + hi) / 2;
+			(NumKept(mid) <= maxFeatures ? lo : hi) = mid;
+		}
+		size_t extra = maxFeatures - NumKept(lo);
+		selected.reserve(maxFeatures);
+		for (std::vector<uint32_t>& cell : cells) {
+			size_t quota = MINF(cell.size(), lo);
+			if (cell.size() > lo && extra > 0) {
+				++quota;
+				--extra;
+			}
+			if (cell.size() > quota) {
+				std::partial_sort(cell.begin(), cell.begin() + quota, cell.end(), [&keys](uint32_t a, uint32_t b) {
+					return keys[a].s > keys[b].s || (keys[a].s == keys[b].s && a < b);
+				});
+				cell.resize(quota);
+			}
+			selected.insert(selected.end(), cell.begin(), cell.end());
+		}
+		std::sort(selected.begin(), selected.end());
+		return selected;
+	}
+
 	// Pure-CPU post-processing: grid-based filtering + RootSIFT + store on Image.
 	// Reads config from the bound extractor; safe to run on a worker thread
 	// (bulk path) or on the calling thread (per-image path) as long as no two
 	// invocations target the same Image concurrently.
 	// Returns the number of features stored.
-	size_t StoreFeatures(Image& img,
+	// The image size is passed explicitly, as the bulk path releases the pixels
+	// right after the upload to the GPU.
+	size_t StoreFeatures(Image& img, const cv::Size& size,
 		const CLISTDEF0IDX(SiftGPU::SiftKeypoint,uint32_t)& keys,
 		const FloatArr& descs,
 		bool skipIO = false)
 	{
 		const FeatureExtractionConfig& cfg = extractor.GetConfig();
 		// Grid-based feature filtering
-		const int cellWidth = img.pixels.cols / 3;
-		const int cellHeight = img.pixels.rows / 3;
-		std::vector<Unsigned32Arr> grid(9);
-		FOREACH(k, keys) {
-			const int cx = (int)keys[k].x / cellWidth;
-			const int cy = (int)keys[k].y / cellHeight;
-			if (cx >= 0 && cx < 3 && cy >= 0 && cy < 3)
-				grid[cy * 3 + cx].push_back(k);
-		}
-		// Select best features from each cell
-		Unsigned32Arr selected;
-		selected.reserve(MINF(keys.size(), (uint32_t)cfg.maxFeaturesPerCell * 9));
-		for (int c = 0; c < 9; ++c) {
-			Unsigned32Arr& cells = grid[c];
-			if (cells.size() > (uint32_t)cfg.maxFeaturesPerCell) {
-				std::partial_sort(cells.begin(), cells.begin() + cfg.maxFeaturesPerCell, cells.end(),
-					[&keys](int a, int b) { return keys[a].s > keys[b].s; });
-				cells.resize(cfg.maxFeaturesPerCell);
-			}
-			selected.JoinRemove(cells);
-		}
+		const std::vector<uint32_t> selected(SelectFeatures(keys, size, gridCellSize, (size_t)cfg.GetMaxNumFeatures()));
 		// Store keypoints and descriptors
 		img.keypoints.resize(selected.size());
 		img.descriptors.create((int)selected.size(), 128, CV_8U);
@@ -295,19 +474,15 @@ private:
 			cv::Mat siftRow(1, 128, CV_32F, const_cast<float*>(&descs[idx * 128]));
 			FeaturesExtractor::ConvertToRootSIFT(siftRow).copyTo(img.descriptors.row((int)k));
 		}
-		const size_t numFeatures = img.keypoints.size();
-		if (cfg.releaseImagePixels)
-			img.ReleasePixels();
-		DEBUG_ULTIMATE("Extracted features for image % 4u: % 6u features using %s (%.2f%s focal-length)",
-			img.ID, numFeatures, FeatureTypeToString(cfg.detectorType).c_str(), img.pCamera->GetFocalLength(), img.TrustIntrinsics() ? "" : "*");
-		if (!skipIO && !cfg.exportOpenMVGDir.empty())
-			FeaturesExtractor::ExportFeaturesOpenMVG(cfg.exportOpenMVGDir, img);
-		return numFeatures;
+		extractor.FinishImage(img, skipIO);
+		return img.keypoints.size();
 	}
 
 	FeaturesExtractor& extractor;
 	SiftGPU gpu;
 	static std::unique_ptr<SiftGPUFeatureCoordinator> instance;
+	// cell size (in pixels) of the adaptive feature selection grid
+	static constexpr int gridCellSize = 256;
 };
 
 // Singleton instance storage
@@ -360,7 +535,7 @@ size_t FeaturesExtractor::Extract()
 
 		scene.threadPool.detach_loop(IIndex(0), scene.images.size(), [&](IIndex i) {
 			Image& img = scene.images[i];
-			if (img.HasFeatures() && (img.HasDescriptors() || scene.status.nFeaturesType != FeatureType::NONE)) {
+			if (!NeedsExtraction(img)) {
 				++progress;
 				return;
 			}
@@ -390,7 +565,7 @@ bool FeaturesExtractor::ExtractImage(Image& image, cv::Ptr<cv::Feature2D>& detec
 	}
 
 	if (image.pCamera && image.pCamera->GetType() == CameraType::SPHERICAL)
-		return ExtractImageSpherical(image, detector);
+		return ExtractImageSpherical(image, detector, skipIO);
 
 	#ifdef _USE_SIFTGPU
 	if (config.detectorType == FeatureType::SIFTGPU) {
@@ -546,12 +721,20 @@ bool FeaturesExtractor::ExtractImage(Image& image, cv::Ptr<cv::Feature2D>& detec
 		}
 	}
 	cv::vconcat(vecDescriptors, image.descriptors);
+	return FinishImage(image, skipIO);
+}
+
+bool FeaturesExtractor::NeedsExtraction(const Image& image) const
+{
+	return !(image.HasFeatures() && (image.HasDescriptors() || scene.status.nFeaturesType != FeatureType::NONE));
+}
+
+bool FeaturesExtractor::FinishImage(Image& image, bool skipIO) const
+{
 	if (config.releaseImagePixels)
 		image.ReleasePixels(); // free pixel memory after feature extraction
-
 	DEBUG_ULTIMATE("Extracted features for image % 4u: % 6u features using %s (%.2f%s focal-length)",
-	    image.ID, image.keypoints.size(), FeatureTypeToString(config.detectorType).c_str(), image.pCamera->GetFocalLength(), image.TrustIntrinsics() ? "" : "*");
-
+		image.ID, image.keypoints.size(), FeatureTypeToString(config.detectorType).c_str(), image.pCamera->GetFocalLength(), image.TrustIntrinsics() ? "" : "*");
 	if (!skipIO && !config.exportOpenMVGDir.empty())
 		ExportFeaturesOpenMVG(config.exportOpenMVGDir, image);
 	return !image.keypoints.empty();
@@ -581,7 +764,7 @@ cv::Mat FeaturesExtractor::ConvertToRootSIFT(const cv::Mat& siftDesc)
 /*----------------------------------------------------------------*/
 
 
-bool FeaturesExtractor::ExtractImageSpherical(Image& image, cv::Ptr<cv::Feature2D>& detector)
+bool FeaturesExtractor::ExtractImageSpherical(Image& image, cv::Ptr<cv::Feature2D>& detector, bool skipIO)
 {
 	// Spherical driver: render N tangent-pinhole faces via the unified
 	// SphereCubeMap::SphericalToTangentialFaces entry point (same one MVS
@@ -734,17 +917,8 @@ bool FeaturesExtractor::ExtractImageSpherical(Image& image, cv::Ptr<cv::Feature2
 		descRows.push_back(all[idx].descRow);
 	}
 	cv::vconcat(descRows, image.descriptors);
-
-	if (config.releaseImagePixels)
-		image.ReleasePixels();
-
-	DEBUG_ULTIMATE("Extracted features for image % 4u: % 6u features using %s cubemap (%d faces x %d px)",
-		image.ID, image.keypoints.size(),
-		FeatureTypeToString(config.detectorType).c_str(), numFaces, faceSize);
-
-	if (!config.exportOpenMVGDir.empty())
-		ExportFeaturesOpenMVG(config.exportOpenMVGDir, image);
-	return !image.keypoints.empty();
+	DEBUG_ULTIMATE("Extracted features for image % 4u from %d cubemap faces of %d px", image.ID, numFaces, faceSize);
+	return FinishImage(image, skipIO);
 }
 /*----------------------------------------------------------------*/
 

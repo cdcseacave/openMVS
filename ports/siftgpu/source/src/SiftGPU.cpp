@@ -659,6 +659,8 @@ void SiftGPU::PrintUsage()
 	<<"-d <int>          : Number of DOG levels in an octave (default : 3)\n"
 	<<"-t <float>        : DOG threshold (default : 0.02/3)\n"
 	<<"-e <float>        : Edge Threshold (default : 10.0)\n"
+	<<"-cmin <float>     : Minimum scale-normalized smaller DoG curvature (default : 0 = off)\n"
+	<<"-da [0|1]         : Lower the DOG threshold and -cmin in dark areas (darkness adaptation, default : 0; 1 without a value)\n"
 	<<"-m  <int=2>       : Multi Feature Orientations (default : 1)\n"
 	<<"-m2p              : 2 Orientations packed as one float\n"
 	<<"-s  <int=1>       : Sub-Pixel, Sub-Scale Localization, Multi-Refinement(num)\n"
@@ -671,6 +673,7 @@ void SiftGPU::PrintUsage()
 	<<"-b      *         : Write binary sift file if specified\n"
 	<<"-fs <int>         : Block Size for freature storage <default : 4>\n"
     <<"-cuda <int=0>     : Use CUDA SiftGPU, and specify the device index\n"
+    <<"-glsl             : Use OpenGL/GLSL SiftGPU (default unless -cuda or -cl)\n"
 	<<"-tight            : Automatically resize pyramid to fit new images tightly\n"
 	<<"-p  <W>x<H>       : Inititialize the pyramids to contain image of WxH (eg -p 1024x768)\n"
 	<<"-tc[1|2|3] <int> *: Threshold for limiting the overall number of features (3 methods)\n"
@@ -775,6 +778,9 @@ void SiftGPU::ParseParam(const int argc, const char **argv)
 					<< "solution for VS2005+ or set siftgpu_enable_cuda to 1 in makefile\n"
 					<< "----------------------------------------------------------------------------\n";
 #endif
+            break;
+        case MAKEINT4(g, l, s, l): // -glsl: OpenGL/GLSL, also after an earlier -cuda or -cl in this process
+            if(!_initialized) GlobalUtil::_UseCUDA = GlobalUtil::_UseOpenCL = 0;
             break;
         case MAKEINT2(c, l):
 #if defined(CL_SIFTGPU_ENABLED)
@@ -891,8 +897,12 @@ void SiftGPU::ParseParam(const int argc, const char **argv)
         case MAKEINT2(k, x):
             GlobalUtil::_KeyPointListForceLevel0 = 0;
             break;
-		case MAKEINT2(d, a):
-			GlobalUtil::_DarknessAdaption = 1;
+		case MAKEINT2(d, a): // -da [0|1]: darkness adaptation, on when the value is omitted
+			{
+				int enable = 1;
+				if(i+1 < argc && sscanf(param, "%d", &enable) == 1) i++;
+				GlobalUtil::_DarknessAdaption = enable != 0;
+			}
 			break;
 		case MAKEINT3(f, m, c):
 			GlobalUtil::_FitMemoryCap = 1;
@@ -1003,6 +1013,16 @@ void SiftGPU::ParseParam(const int argc, const char **argv)
                     if(sscanf(param, "%f", &threshold) && threshold >0 )
                     {
                         SiftParam::_edge_threshold = threshold;
+                        i++;
+                    }
+                    break;
+                }
+            case MAKEINT4(c, m, i, n): // -cmin: minimum scale-normalized curvature of the DoG extrema
+                {
+                    float threshold = 0.0f;
+                    if(sscanf(param, "%f", &threshold) && threshold >= 0 )
+                    {
+                        GlobalUtil::_MinCurvature = threshold;
                         i++;
                     }
                     break;

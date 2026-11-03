@@ -780,7 +780,9 @@ void PyramidNaive::DetectKeypointsEX()
 			(tex+1)->BindTex();
 			glActiveTexture(GL_TEXTURE2);
 			(tex-1)->BindTex();
-			ShaderMan::UseShaderKeypoint((tex+1)->GetTexID(), (tex-1)->GetTexID());
+			// minimum curvature of this level: the -cmin value divided by the squared sigma of its keypoints
+			const float sigma = param.GetLevelSigma(j - 1);
+			ShaderMan::UseShaderKeypoint((tex+1)->GetTexID(), (tex-1)->GetTexID(), GlobalUtil::_MinCurvature / (sigma * sigma));
 			aux->DrawQuadMT8();
 	
 			if(GlobalUtil::_timingL)
@@ -2128,7 +2130,9 @@ void PyramidPacked::DetectKeypointsEX()
 				glActiveTexture(GL_TEXTURE3);
 				gus->BindTex();
 			}
-			ShaderMan::UseShaderKeypoint((dog+1)->GetTexID(), (dog-1)->GetTexID());
+			// minimum curvature of this level: the -cmin value divided by the squared sigma of its keypoints
+			const float sigma = param.GetLevelSigma(j - 1);
+			ShaderMan::UseShaderKeypoint((dog+1)->GetTexID(), (dog-1)->GetTexID(), GlobalUtil::_MinCurvature / (sigma * sigma));
 			key->DrawQuadMT8();
 			if(GlobalUtil::_timingL)
 			{
