@@ -538,7 +538,7 @@ void ProgramCU::ComputeDOG(CuTexImage* gus, CuTexImage* dog, CuTexImage* got)
 //
 // min_curvature (0 = off): after the edge test, the smaller principal curvature |lambda_min| of the
 // DoG Hessian must reach this value (already divided by the squared level sigma, so the test is on
-// the scale-normalized curvature sigma^2*|lambda_min|). Like the RSa1 detector of Acute3D, this keeps
+// the scale-normalized curvature sigma^2*|lambda_min|). This keeps
 // low-contrast extrema that are well curved in both directions (blobs and corners on weakly textured
 // surfaces) and rejects flat and edge-like ones, so a low DoG threshold can be used with it.
 // Darkness adaptation (texG = the Gaussian level, 0 = off) lowers the DoG thresholds and the

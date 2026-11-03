@@ -100,11 +100,11 @@ public:
 	// FeaturesExtractor::ExtractImage for keyframe-style workflows that
 	// process one frame at a time.
 	bool ExtractImage(Image& img, bool skipIO = false) {
-		if (!img.HasPixels() && !img.LoadPixels(true)) {
+		cv::Mat input;
+		if (!LoadSIFTInput(img, input, extractor.GetConfig().releaseImagePixels)) {
 			VERBOSE("error: no pixels loaded for image %u", img.ID);
 			return false;
 		}
-		cv::Mat input(PrepareSIFTInput(img.pixels));
 		CLISTDEF0IDX(SiftGPU::SiftKeypoint,uint32_t) keys;
 		FloatArr descs;
 		if (!RunSIFTOnImage(img.ID, input, keys, descs))
@@ -141,16 +141,15 @@ public:
 		// images to process, in scene order
 		IIndexArr todo;
 		todo.reserve(scene.images.size());
-		FOREACH(i, scene.images) {
-			const Image& img = scene.images[i];
-			if (!(img.HasFeatures() && img.HasDescriptors()))
+		FOREACH(i, scene.images)
+			if (extractor.NeedsExtraction(scene.images[i]))
 				todo.push_back(i);
-		}
-		// look-ahead bounds: at most one decode per pool thread, and at most this
-		// many bytes in flight, the 8-bit pixels and the float GPU input prepared
-		// from them (8 images of 24 MP)
+		// look-ahead bounds: the current image plus at most one decode per pool
+		// thread (so even a one-thread pool decodes the next image while the GPU
+		// works on the current one), and at most this many bytes in flight, the
+		// 8-bit pixels and the float GPU input prepared from them (8 images of 24 MP)
 		constexpr size_t maxBytesInFlight = size_t(960) * 1024 * 1024;
-		const size_t maxImagesInFlight = MAXF(size_t(1), (size_t)scene.threadPool.get_thread_count());
+		const size_t maxImagesInFlight = (size_t)scene.threadPool.get_thread_count() + 1;
 		std::vector<std::future<bool>> decoded(todo.size());
 		std::vector<cv::Mat> inputs(todo.size());
 		CLISTDEF0(size_t) inputBytes(todo.size());
@@ -181,13 +180,7 @@ public:
 					break;
 				// an exception is rethrown on the GPU thread by the future
 				decoded[nextDecode] = scene.threadPool.submit_task([&img, &input = inputs[nextDecode], releasePixels]() {
-					if (!img.HasPixels() && !img.LoadPixels(true))
-						return false;
-					input = PrepareSIFTInput(img.pixels);
-					// the GPU only needs the prepared input
-					if (releasePixels)
-						img.ReleasePixels();
-					return true;
+					return LoadSIFTInput(img, input, releasePixels);
 				});
 				inputBytes[nextDecode] = bytes;
 				++imagesInFlight;
@@ -263,8 +256,8 @@ private:
 		// value as the main contrast test. It lets the very low DoG peak threshold (SiftGPU
 		// default 0.02/3 for 3 levels per octave) keep low-contrast corners and blobs of
 		// weakly textured areas (walls, floors) while rejecting flat and edge-like extrema.
-		// The edge threshold 12.5 (maximum ratio of the principal curvatures) is the one
-		// of the RSa1 detector and increases the ratio-test precision of the matches.
+		// The edge threshold 12.5 (maximum ratio of the principal curvatures) increases the
+		// ratio-test precision of the matches.
 		// Darkness adaptation (-da, off by default) lowers the DoG threshold and the curvature
 		// floor in dark areas: more features and coverage there, but less precise matches; it
 		// helps the poses only when the features are not capped and the images are not noisy.
@@ -285,17 +278,20 @@ private:
 		#ifdef _USE_CUDA
 		if (extractor.GetConfig().useCUDA && gpuIndices[0] < 0)
 			gpuIndices[0] = 0;
+		#endif
+		// the backend and the options are process-global in SiftGPU: set all of them explicitly,
+		// so an earlier extraction in this process can not leak its settings into this one
 		if (gpuIndices[0] >= 0) {
 			args.push_back("-cuda"); args.push_back(std::to_string(gpuIndices[0]));
+		} else {
+			args.push_back("-glsl");
 		}
-		#endif
 		const int octaveFactor = 1 << -MINF(0, firstOctave);
 		args.push_back("-maxd"); args.push_back(std::to_string(maxImageSize * octaveFactor));
 		args.push_back("-t"); args.push_back(std::to_string(peakThreshold));
 		args.push_back("-e"); args.push_back(std::to_string(edgeThreshold));
 		args.push_back("-cmin"); args.push_back(std::to_string(minCurvature));
-		if (extractor.GetConfig().siftgpuDarknessAdaptivity)
-			args.push_back("-da");
+		args.push_back("-da"); args.push_back(extractor.GetConfig().siftgpuDarknessAdaptivity ? "1" : "0");
 		if (maxNumFeatures > 0) {
 			args.push_back("-tc2"); args.push_back(std::to_string(maxNumFeatures));
 		}
@@ -356,6 +352,17 @@ private:
 				dst[c] = lut[src[c]];
 		}
 		return input;
+	}
+
+	// Load the image pixels (if needed) and prepare the GPU input from them; the pixels are
+	// released afterwards if requested, as the GPU only needs the prepared input.
+	static bool LoadSIFTInput(Image& img, cv::Mat& input, bool releasePixels) {
+		if (!img.HasPixels() && !img.LoadPixels(true))
+			return false;
+		input = PrepareSIFTInput(img.pixels);
+		if (releasePixels)
+			img.ReleasePixels();
+		return true;
 	}
 
 	// Main-thread GPU work: run SIFT on the prepared input, download results.
@@ -466,14 +473,8 @@ private:
 			cv::Mat siftRow(1, 128, CV_32F, const_cast<float*>(&descs[idx * 128]));
 			FeaturesExtractor::ConvertToRootSIFT(siftRow).copyTo(img.descriptors.row((int)k));
 		}
-		const size_t numFeatures = img.keypoints.size();
-		if (cfg.releaseImagePixels)
-			img.ReleasePixels();
-		DEBUG_ULTIMATE("Extracted features for image % 4u: % 6u features using %s (%.2f%s focal-length)",
-			img.ID, numFeatures, FeatureTypeToString(cfg.detectorType).c_str(), img.pCamera->GetFocalLength(), img.TrustIntrinsics() ? "" : "*");
-		if (!skipIO && !cfg.exportOpenMVGDir.empty())
-			FeaturesExtractor::ExportFeaturesOpenMVG(cfg.exportOpenMVGDir, img);
-		return numFeatures;
+		extractor.FinishImage(img, skipIO);
+		return img.keypoints.size();
 	}
 
 	FeaturesExtractor& extractor;
@@ -533,7 +534,7 @@ size_t FeaturesExtractor::Extract()
 
 		scene.threadPool.detach_loop(IIndex(0), scene.images.size(), [&](IIndex i) {
 			Image& img = scene.images[i];
-			if (img.HasFeatures() && (img.HasDescriptors() || scene.status.nFeaturesType != FeatureType::NONE)) {
+			if (!NeedsExtraction(img)) {
 				++progress;
 				return;
 			}
@@ -563,7 +564,7 @@ bool FeaturesExtractor::ExtractImage(Image& image, cv::Ptr<cv::Feature2D>& detec
 	}
 
 	if (image.pCamera && image.pCamera->GetType() == CameraType::SPHERICAL)
-		return ExtractImageSpherical(image, detector);
+		return ExtractImageSpherical(image, detector, skipIO);
 
 	#ifdef _USE_SIFTGPU
 	if (config.detectorType == FeatureType::SIFTGPU) {
@@ -719,12 +720,20 @@ bool FeaturesExtractor::ExtractImage(Image& image, cv::Ptr<cv::Feature2D>& detec
 		}
 	}
 	cv::vconcat(vecDescriptors, image.descriptors);
+	return FinishImage(image, skipIO);
+}
+
+bool FeaturesExtractor::NeedsExtraction(const Image& image) const
+{
+	return !(image.HasFeatures() && (image.HasDescriptors() || scene.status.nFeaturesType != FeatureType::NONE));
+}
+
+bool FeaturesExtractor::FinishImage(Image& image, bool skipIO) const
+{
 	if (config.releaseImagePixels)
 		image.ReleasePixels(); // free pixel memory after feature extraction
-
 	DEBUG_ULTIMATE("Extracted features for image % 4u: % 6u features using %s (%.2f%s focal-length)",
-	    image.ID, image.keypoints.size(), FeatureTypeToString(config.detectorType).c_str(), image.pCamera->GetFocalLength(), image.TrustIntrinsics() ? "" : "*");
-
+		image.ID, image.keypoints.size(), FeatureTypeToString(config.detectorType).c_str(), image.pCamera->GetFocalLength(), image.TrustIntrinsics() ? "" : "*");
 	if (!skipIO && !config.exportOpenMVGDir.empty())
 		ExportFeaturesOpenMVG(config.exportOpenMVGDir, image);
 	return !image.keypoints.empty();
@@ -754,7 +763,7 @@ cv::Mat FeaturesExtractor::ConvertToRootSIFT(const cv::Mat& siftDesc)
 /*----------------------------------------------------------------*/
 
 
-bool FeaturesExtractor::ExtractImageSpherical(Image& image, cv::Ptr<cv::Feature2D>& detector)
+bool FeaturesExtractor::ExtractImageSpherical(Image& image, cv::Ptr<cv::Feature2D>& detector, bool skipIO)
 {
 	// Spherical driver: render N tangent-pinhole faces via the unified
 	// SphereCubeMap::SphericalToTangentialFaces entry point (same one MVS
@@ -907,17 +916,8 @@ bool FeaturesExtractor::ExtractImageSpherical(Image& image, cv::Ptr<cv::Feature2
 		descRows.push_back(all[idx].descRow);
 	}
 	cv::vconcat(descRows, image.descriptors);
-
-	if (config.releaseImagePixels)
-		image.ReleasePixels();
-
-	DEBUG_ULTIMATE("Extracted features for image % 4u: % 6u features using %s cubemap (%d faces x %d px)",
-		image.ID, image.keypoints.size(),
-		FeatureTypeToString(config.detectorType).c_str(), numFaces, faceSize);
-
-	if (!config.exportOpenMVGDir.empty())
-		ExportFeaturesOpenMVG(config.exportOpenMVGDir, image);
-	return !image.keypoints.empty();
+	DEBUG_ULTIMATE("Extracted features for image % 4u from %d cubemap faces of %d px", image.ID, numFaces, faceSize);
+	return FinishImage(image, skipIO);
 }
 /*----------------------------------------------------------------*/
 

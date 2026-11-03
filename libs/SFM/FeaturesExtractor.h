@@ -141,6 +141,12 @@ public:
 	 */
 	bool ExtractImage(Image& image, cv::Ptr<cv::Feature2D>& detector, bool skipIO = false);
 
+	// Common to the drivers of every detector: whether the image still needs features, and the
+	// tail of every extraction (release the pixels, log, export to OpenMVG unless skipIO;
+	// returns true if the image got features).
+	bool NeedsExtraction(const Image& image) const;
+	bool FinishImage(Image& image, bool skipIO) const;
+
 	/**
 	 * @brief Convert SIFT descriptors to RootSIFT and quantize to uint8_t
 	 * @param siftDesc Input CV_32F SIFT descriptors (rows x 128)
@@ -168,7 +174,7 @@ private:
 	// Spherical path: render N tangent faces via SphereCubeMap::SphericalToTangentialFaces,
 	// recursively run the pinhole ExtractImage on each face with skipIO=true,
 	// then reproject + angular-NMS-dedup back to equirectangular coordinates.
-	bool ExtractImageSpherical(Image& image, cv::Ptr<cv::Feature2D>& detector);
+	bool ExtractImageSpherical(Image& image, cv::Ptr<cv::Feature2D>& detector, bool skipIO);
 
 	Scene& scene;
 	FeatureExtractionConfig config;
