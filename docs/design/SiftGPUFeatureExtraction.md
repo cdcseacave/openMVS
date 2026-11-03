@@ -81,7 +81,9 @@ circular moments `M_k = Σ w·|g|·exp(i·k·θ)`, k = 0..5, by repeated complex
 gradient direction (no binning). The orientation density smoothed by a wrapped Gaussian of
 0.35 rad, `D(φ) = Σ_k g_k·Re(M_k·exp(-i·k·φ))` with `g_0 = 1`, `g_k = 2·exp(-k²·0.35²/2)`, is sampled
 at the 36 former bin centres `(t + 0.5)·10°`; the peak search, the parabolic refinement and the second
-orientation (a local maximum above 0.8 of the highest, `-mo 2`) are SiftGPU's. 0.35 rad matches the
+orientation (a local maximum above 0.8 of the highest, `-mo 2`, threshold `-ot`, read by CUDA and
+GLSL) are SiftGPU's. Two local maxima are at least two samples (20°) apart, and the 0.35 rad
+smoothing merges directions closer than about 40° into one peak. 0.35 rad matches the
 six `[1 1 1]/3` smoothing passes of SiftGPU's 36-bin histogram, which this replaces; the angle is no
 longer quantized before smoothing. The density is the same in CUDA and GLSL (`OrientationMomentMacros`,
 `OrientationGain`).
@@ -117,6 +119,7 @@ budget keeps every keypoint.
 | Darkness adaptation `-da 0/1` | off | `siftgpuDarknessAdaptivity`, `--siftgpu-darkness-adaptivity` |
 | First octave, levels per octave | -1, 3 | constants |
 | Orientations per keypoint `-mo` | 2 | constant |
+| Second-orientation threshold `-ot` | 0.8 of the highest peak | SiftGPU default |
 | Orientation harmonics, smoothing | 5, 0.35 rad | `ORIENTATION_HARMONICS`, `ORIENTATION_SMOOTHING` (CUDA), GLSL constants |
 | Selection budget | `GetMaxNumFeatures()` (27,000) | `maxFeaturesPerCell` x 9 |
 | Selection cell | about 256 px | `gridCellSize` |
@@ -181,6 +184,15 @@ weak-region supports in 13 of 20 mesh-evaluated scenes at the default budget, wi
 on Ignatius and DarkPipes; up to two orientations are kept. The SfM part of this comparison covers
 227 of the 264 planned runs.
 
+Second-orientation threshold 0.9 instead of 0.8 (ETH3D: 3 textured, 5 weak, 4 low-light copies with
+and without darkness adaptation; SfM 3 runs, every feature kept): it halves the share of keypoints
+with a second orientation (about 14% → 7%), which frees about 7% of the budget for new locations on
+capped images, but costs 4-5% of the correct matches on the uncapped weak and low-light scenes (weak:
+1,230 → 1,167 per pair, top-1 0.543 → 0.527, SfM points −4%) with no gain on textured ones (2,440 →
+2,430). SfM centre error: textured 0.192% → 0.207%, weak 0.460% → 0.463%, low-light 0.488% → 0.426%
+(0.537% → 0.420% with darkness adaptation), the low-light gain coming from two of four scenes and
+within run-to-run noise; registered images and track lengths are unchanged. 0.8 is kept.
+
 ## 6. Rejected alternatives
 
 - Fixed 256 px cell quota without redistribution: 14% fewer correct matches, pose AUC@10 0.888 vs
@@ -215,7 +227,7 @@ on Ignatius and DarkPipes; up to two orientations are kept. The SfM part of this
 - DPP selection (per grid block or full image): no consistent gain, 47-51 s/image at 2048.
 - Primary-first budget (secondary orientations only on new locations in saturated cells): fewer
   weak-region supports (DarkPipes 251 -> 221).
-- One orientation per keypoint: see §5.
+- One orientation per keypoint, or a second-orientation threshold of 0.9: see §5.
 
 ## 7. Open items
 

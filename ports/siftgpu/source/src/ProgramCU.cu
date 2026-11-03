@@ -764,7 +764,7 @@ void __global__ ComputeOrientation_Kernel(cudaTextureObject_t texDataF2,
 										  int width, int height,
 										  float sigma, float sigma_step,
 										  float gaussian_factor, float sample_factor,
-										  int num_orientation,
+										  int num_orientation, float orientation_threshold,
 										  int existing_keypoint,
 										  int subpixel,
 										  int keepsign)
@@ -890,7 +890,7 @@ void __global__ ComputeOrientation_Kernel(cudaTextureObject_t texDataF2,
 #pragma unroll
 		for(int i = 1; i < 36; ++i)		max_vote = max(max_vote, vote[i]);
 
-		float vote_threshold = max_vote * 0.8f;
+		float vote_threshold = max_vote * orientation_threshold;
 		float pre = vote[35];
 		float max_rot[2], max_vot[2] = {0, 0};
 		int  ocount = 0;
@@ -977,7 +977,7 @@ void ProgramCU::ComputeOrientation(CuTexImage* list, CuTexImage* got, CuTexImage
 		len, width, height, sigma, sigma_step,
 		GlobalUtil::_OrientationGaussianFactor,
 		GlobalUtil::_OrientationGaussianFactor * GlobalUtil::_OrientationWindowFactor,
-		GlobalUtil::_FixedOrientation? 0 : GlobalUtil::_MaxOrientation,
+		GlobalUtil::_FixedOrientation? 0 : GlobalUtil::_MaxOrientation, GlobalUtil::_MulitiOrientationThreshold,
 		existing_keypoint, GlobalUtil::_SubpixelLocalization, GlobalUtil::_KeepExtremumSign);
 
 	ProgramCU::CheckErrorCUDA("ComputeOrientation");
