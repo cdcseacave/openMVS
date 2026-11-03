@@ -315,6 +315,13 @@ SET(OpenMVS_PYTHON_LIBS "")
 if(OpenMVS_USE_PYTHON)
 	FIND_PACKAGE(Python3 COMPONENTS Interpreter Development.Module REQUIRED)
 	LIST(APPEND OpenMVS_PYTHON_LIBS Python3::Module)
+	# relative to the install prefix, laid out like a Python installation or virtual environment
+	if(WIN32)
+		SET(_PYTHON_INSTALL_PATH "Lib/site-packages")
+	else()
+		SET(_PYTHON_INSTALL_PATH "lib/python${Python3_VERSION_MAJOR}.${Python3_VERSION_MINOR}/site-packages")
+	endif()
+	SET(PYTHON_INSTALL_PATH "${_PYTHON_INSTALL_PATH}" CACHE PATH "Installation directory for the Python bindings")
 	MESSAGE(STATUS "Python ${Python3_VERSION_MAJOR}.${Python3_VERSION_MINOR} found (include: ${Python3_INCLUDE_DIRS})")
 endif()
 

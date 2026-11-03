@@ -48,6 +48,12 @@ TARGET_COMPILE_FEATURES(Common PUBLIC cxx_std_${CMAKE_CXX_STANDARD})
 if(BUILD_SHARED_LIBS)
 	TARGET_COMPILE_DEFINITIONS(Common PUBLIC OPENMVS_SHARED)
 endif()
+if(CLANG)
+	# the libraries are built against libc++ (see ConfigCompilerAndLinker), so the
+	# installed projects must use it too; the build tree gets it from CMAKE_CXX_FLAGS
+	TARGET_COMPILE_OPTIONS(Common INTERFACE $<INSTALL_INTERFACE:$<$<COMPILE_LANGUAGE:CXX>:-stdlib=libc++>>)
+	TARGET_LINK_OPTIONS(Common INTERFACE $<INSTALL_INTERFACE:-stdlib=libc++>)
+endif()
 
 # Link its dependencies with PUBLIC visibility so they propagate
 TARGET_LINK_LIBRARIES(Common PUBLIC ${OpenMVS_EXTRA_LIBS} ${COMMON_EXTRA_LIBS})
