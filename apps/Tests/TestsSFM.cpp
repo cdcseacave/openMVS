@@ -3496,6 +3496,251 @@ bool ROMA2DenseFitWeightTest()
 	return true;
 }
 
+// The scene of PlanarTwinSwitchTest: one 1000x1000 pinhole camera at f 500 that trusts its intrinsics
+// (the calibrated branch: the twin's polish needs it), shared by images looking down at the floor
+// z = 0, each given by its centre and two tilts (degrees about x, then about y)
+struct PlanarTwinView { REAL x, y, z, tiltX, tiltY; };
+static void MakePlanarTwinScene(Scene& scene, const std::vector<PlanarTwinView>& views)
+{
+	PinholeCamera* const camera = new PinholeCamera(cv::Size(1000, 1000), REAL(500), REAL(500), REAL(500), REAL(500));
+	camera->trustIntrinsics = true;
+	scene.cameras.emplace_back(camera);
+	FOREACH(i, views) {
+		const PlanarTwinView& v = views[i];
+		const REAL ax = D2R(v.tiltX), ay = D2R(v.tiltY);
+		const Matrix3x3 Rx(1, 0, 0, 0, COS(ax), -SIN(ax), 0, SIN(ax), COS(ax));
+		const Matrix3x3 Ry(COS(ay), 0, SIN(ay), 0, 1, 0, -SIN(ay), 0, COS(ay));
+		const Matrix3x3 down(1, 0, 0, 0, -1, 0, 0, 0, -1); // the camera's z axis along the world's -z
+		Pose3D pose;
+		pose.R = Rx*Ry*down;
+		pose.C = Point3(v.x, v.y, v.z);
+		scene.images.emplace_back((IIndex)i, String::FormatString("%u.jpg", (unsigned)i), pose, (IIndex)0, scene.cameras[0]);
+	}
+}
+
+// Keypoint k of the image = the projection of points[k]; every keypoint described (the image counts as
+// a RoMa2 one, with no dense keypoint yet). False when a point falls behind the image or outside it.
+static bool AddPlanarTwinKeypoints(Image& img, const std::vector<Point3>& points)
+{
+	for (const Point3& X : points) {
+		const auto [proj, valid] = img.ProjectPoint(X);
+		const Point2f pt((float)proj.x, (float)proj.y);
+		if (!valid || !Image8U::isInside(pt, img.GetSize()))
+			return false;
+		img.keypoints.emplace_back(pt.x, pt.y, 10.f);
+	}
+	img.numDescribedKeypoints = (uint32_t)img.keypoints.size();
+	return true;
+}
+
+// A verified pair holding `pose` (with its E and F) and the first numMatches keypoints of both
+// images matched one to one as sparse inliers; with no match it is a pose alone, a neighbour that
+// closes loops and is no candidate (a twin needs matches)
+static ImagePair MakePlanarTwinPair(const Scene& scene, IIndex a, IIndex b, const Pose3D& pose, unsigned numMatches)
+{
+	ImagePair pair(a, b);
+	pair.relativePose = pose;
+	pair.E = ImagePair::ComposeEssentialMatrix(pose);
+	pair.F = ImagePair::ComposeFundamentalMatrix(pair.E.value(), scene.images[a].GetK(), scene.images[b].GetK());
+	for (uint32_t k = 0; k < numMatches; ++k)
+		pair.matches.emplace_back(k, k);
+	pair.numFilteredInliers = (int)numMatches;
+	pair.numDenseInliers = 0;
+	return pair;
+}
+
+// The planar twin switch (SwitchPlanarTwinsROMA2) on cameras looking at a floor, every match exact:
+// - a pair whose matches all lie on the floor and whose stored pose is the wrong one of its two
+//   planar solutions, while its four neighbours close their rotation loops only with the right one,
+//   switches to it and keeps every match as an inlier; it does not switch with the switch off
+//   (twinMinLoopGain 0) nor when the margin asks for more loops (5) than the twin gains (4);
+// - the same pair with 40% of its matches off the floor is not plane dominated (a homography
+//   explains 60% of them, under the 0.75 gate) and is untouched, although its stored pose is the same
+//   wrong one and its loops prefer the twin: with the gate lowered to 0.5 the same pair switches;
+// - two wrong twins sharing a triangle, P = (0,1) with four certain neighbours of its own and
+//   Q = (0,2) with two: alone Q gains 2 loops (its triangle with P closes only once P is right), under
+//   the margin 3, so a single pass on the stored poses would switch P only; best gain first switches
+//   P, then counts Q again with P at its twin, now 3, and switches Q too. Without P's neighbours P
+//   stays and so does Q.
+bool PlanarTwinSwitchTest()
+{
+	TD_TIMER_START();
+
+	// the floor, and a second layer 0.8 above it for the pair that is not plane dominated
+	std::vector<Point3> floorPoints, layerPoints;
+	for (int i = 0; i < 12; ++i)
+		for (int j = 0; j < 10; ++j)
+			floorPoints.emplace_back(REAL(-1.5) + REAL(3)*i/11, REAL(-1.2) + REAL(2.4)*j/9, REAL(0));
+	for (int i = 0; i < 10; ++i)
+		for (int j = 0; j < 8; ++j)
+			layerPoints.emplace_back(REAL(-1) + REAL(2)*i/9, REAL(-0.8) + REAL(1.6)*j/7, REAL(0.8));
+	std::vector<Point3> allPoints(floorPoints);
+	allPoints.insert(allPoints.end(), layerPoints.begin(), layerPoints.end());
+	const unsigned numFloor = (unsigned)floorPoints.size(), numAll = (unsigned)allPoints.size();
+	// images 0, 1 and 2 see the floor (pairs (0,1) and (0,2) have a planar twin 30 and 18 degrees
+	// off); images 3-8 are neighbours, poses alone
+	const std::vector<PlanarTwinView> views = {
+		{0, 0, 3, 0, 0}, {2, -0.1, 4.4, -2, 10}, {-1, -0.2, 3.6, -13, -10},
+		{-1, 1, 3, 5, 5}, {1, 2, 3.5, -5, 0}, {-2, -1, 4, 0, 8}, {0.5, -2, 3.2, 10, -5},
+		{2, 2, 4, -8, 6}, {-2, 2, 3.8, 6, -12}};
+	MatchConfig matchCfg;
+	const ROMA2Config config;
+	const auto RotationDeg = [](const Pose3D& a, const Pose3D& b) { return R2D(ACOS(ComputeAngle(a.R, b.R))); };
+	// the scene: images, keypoints (all points, or the floor only) and the pairs; `twinOf` lists the
+	// pairs stored at their wrong planar twin (the twin of the true pose on the floor matches alone)
+	struct PairSpec { IIndex a, b; unsigned numMatches; bool bWrongTwin; };
+	const auto Build = [&](Scene& scene, const std::vector<Point3>& points, const std::vector<PairSpec>& specs, String& error) {
+		MakePlanarTwinScene(scene, views);
+		for (IIndex i = 0; i < 3; ++i)
+			if (!AddPlanarTwinKeypoints(scene.images[i], points)) {
+				error = String::FormatString("image %u does not see every point", i);
+				return false;
+			}
+		PairsMatcher matcher(scene, matchCfg);
+		for (const PairSpec& spec : specs) {
+			const Image& imgA = scene.images[spec.a];
+			const Image& imgB = scene.images[spec.b];
+			ImagePair pair(MakePlanarTwinPair(scene, spec.a, spec.b, Pose3D(imgB / imgA), spec.numMatches));
+			if (spec.bWrongTwin) {
+				ImagePair onFloor(MakePlanarTwinPair(scene, spec.a, spec.b, Pose3D(imgB / imgA), numFloor));
+				ImagePair twin;
+				float share;
+				if (!PlanarTwinROMA2(matcher, imgA, imgB, config, onFloor, twin, share) ||
+					RotationDeg(twin.relativePose.value(), onFloor.relativePose.value()) < REAL(10)) {
+					error = String::FormatString("the floor matches of pair %u-%u have no planar twin 10 degrees off (share %g)", spec.a, spec.b, share);
+					return false;
+				}
+				pair.relativePose = twin.relativePose;
+				pair.E = twin.E;
+				pair.F = twin.F;
+			}
+			scene.pairs.emplace_back(std::move(pair));
+		}
+		return true;
+	};
+	const auto NeighbourSpecs = [](IIndex a, IIndex b, std::initializer_list<IIndex> neighbours) {
+		std::vector<PairSpec> specs;
+		for (IIndex c : neighbours) {
+			specs.push_back({MINF(a, c), MAXF(a, c), 0u, false});
+			specs.push_back({MINF(b, c), MAXF(b, c), 0u, false});
+		}
+		return specs;
+	};
+	const auto Run = [&](Scene& scene, const ROMA2Config& cfg) {
+		PairsMatcher matcher(scene, matchCfg);
+		return SwitchPlanarTwinsROMA2(matcher, cfg);
+	};
+	const auto IsTrue = [&](const Scene& scene, IIndex p) {
+		const ImagePair& pair = scene.pairs[p];
+		return RotationDeg(pair.relativePose.value(), Pose3D(scene.images[pair.ID2] / scene.images[pair.ID1])) < REAL(0.05);
+	};
+	String error;
+
+	// 1) a planar pair stored at its wrong twin, four neighbours that close their loops with the true pose
+	{
+		std::vector<PairSpec> specs = {{0, 1, numFloor, true}};
+		const std::vector<PairSpec> neighbours = NeighbourSpecs(0, 1, {3, 4, 5, 6});
+		specs.insert(specs.end(), neighbours.begin(), neighbours.end());
+		// the switch off, a margin of 5 loops, the default configuration (a margin of 3)
+		for (int run = 0; run < 3; ++run) {
+			ROMA2Config cfg;
+			if (run < 2)
+				cfg.twinMinLoopGain = run == 0 ? 0u : 5u;
+			Scene scene;
+			if (!Build(scene, floorPoints, specs, error)) {
+				VERBOSE("PlanarTwinSwitchTest FAILED: %s", error.c_str());
+				return false;
+			}
+			const Pose3D stored(scene.pairs[0].relativePose.value());
+			const unsigned numSwitched = Run(scene, cfg);
+			const ImagePair& pair = scene.pairs[0];
+			if (run < 2) {
+				if (numSwitched != 0 || !(pair.relativePose.value() == stored)) {
+					VERBOSE("PlanarTwinSwitchTest FAILED: with twinMinLoopGain %u the planar pair switched (%u pairs switched)", cfg.twinMinLoopGain, numSwitched);
+					return false;
+				}
+				continue;
+			}
+			if (numSwitched != 1 || !IsTrue(scene, 0)) {
+				VERBOSE("PlanarTwinSwitchTest FAILED: the planar pair stored at its wrong twin is %.3f deg off the true pose after the switch (%u pairs switched), expected it switched to the true pose",
+					RotationDeg(pair.relativePose.value(), Pose3D(scene.images[1] / scene.images[0])), numSwitched);
+				return false;
+			}
+			if (pair.GetNumFilteredInliers() != numFloor || pair.GetNumDenseInliers() != 0 || !pair.outlierMatches.empty()) {
+				VERBOSE("PlanarTwinSwitchTest FAILED: the switched pair keeps %u of its %u matches as inliers (%u outliers)",
+					pair.GetNumFilteredInliers(), numFloor, (unsigned)pair.outlierMatches.size());
+				return false;
+			}
+		}
+	}
+
+	// 2) the same pair with 40% of its matches off the floor: not plane dominated, untouched, unless
+	// the gate is lowered under its plane share
+	{
+		std::vector<PairSpec> specs = {{0, 1, numAll, true}};
+		const std::vector<PairSpec> neighbours = NeighbourSpecs(0, 1, {3, 4, 5, 6});
+		specs.insert(specs.end(), neighbours.begin(), neighbours.end());
+		for (float minPlaneShare : {config.twinMinPlaneShare, 0.5f}) {
+			Scene scene;
+			if (!Build(scene, allPoints, specs, error)) {
+				VERBOSE("PlanarTwinSwitchTest FAILED: %s", error.c_str());
+				return false;
+			}
+			const ImagePair stored(scene.pairs[0]);
+			PairsMatcher matcher(scene, matchCfg);
+			ImagePair twin;
+			float share;
+			PlanarTwinROMA2(matcher, scene.images[0], scene.images[1], config, stored, twin, share);
+			if (share < 0.5f || share >= config.twinMinPlaneShare) {
+				VERBOSE("PlanarTwinSwitchTest FAILED: premise not met: a homography explains %.3f of the two-layer matches, expected [0.5, %g)", share, config.twinMinPlaneShare);
+				return false;
+			}
+			ROMA2Config cfg;
+			cfg.twinMinPlaneShare = minPlaneShare;
+			const unsigned numSwitched = Run(scene, cfg);
+			const ImagePair& pair = scene.pairs[0];
+			if (minPlaneShare == config.twinMinPlaneShare) {
+				if (numSwitched != 0 || !(pair.relativePose.value() == stored.relativePose.value()) ||
+					pair.matches.size() != stored.matches.size() || pair.numFilteredInliers != stored.numFilteredInliers) {
+					VERBOSE("PlanarTwinSwitchTest FAILED: the pair with %.0f%% of its matches on one plane was touched (%u pairs switched)", 100*share, numSwitched);
+					return false;
+				}
+			} else if (numSwitched != 1 || !IsTrue(scene, 0)) {
+				VERBOSE("PlanarTwinSwitchTest FAILED: premise not met: with the gate at %g the two-layer pair does not switch to the true pose (%u pairs switched)", minPlaneShare, numSwitched);
+				return false;
+			}
+		}
+	}
+
+	// 3) P = (0,1) and Q = (0,2), both at their wrong twins, sharing the triangle (0,1,2) with (1,2)
+	// true; P has the neighbours 3-6, Q the neighbours 7 and 8
+	for (bool bNeighboursOfP : {true, false}) {
+		std::vector<PairSpec> specs = {{0, 1, numFloor, true}, {0, 2, numFloor, true}, {1, 2, 0u, false}};
+		const std::vector<PairSpec> neighboursQ = NeighbourSpecs(0, 2, {7, 8});
+		specs.insert(specs.end(), neighboursQ.begin(), neighboursQ.end());
+		if (bNeighboursOfP) {
+			const std::vector<PairSpec> neighboursP = NeighbourSpecs(0, 1, {3, 4, 5, 6});
+			specs.insert(specs.end(), neighboursP.begin(), neighboursP.end());
+		}
+		Scene scene;
+		if (!Build(scene, floorPoints, specs, error)) {
+			VERBOSE("PlanarTwinSwitchTest FAILED: %s", error.c_str());
+			return false;
+		}
+		const unsigned numSwitched = Run(scene, config);
+		const bool bP = IsTrue(scene, 0), bQ = IsTrue(scene, 1);
+		if (bNeighboursOfP ? (numSwitched != 2 || !bP || !bQ) : (numSwitched != 0 || bP || bQ)) {
+			VERBOSE("PlanarTwinSwitchTest FAILED: %s P's neighbours %u pairs switched, P %s and Q %s, expected %s",
+				bNeighboursOfP ? "with" : "without", numSwitched, bP ? "true" : "wrong", bQ ? "true" : "wrong",
+				bNeighboursOfP ? "both switched to the true pose (Q once P is right)" : "neither switched");
+			return false;
+		}
+	}
+
+	VERBOSE("PlanarTwinSwitchTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 // The two-view fixture of the inlier tests through a lens: a 640x480 camera at f 400 with a barrel
 // lens it knows (LENS_INLIER_K1: 44 px at the corner), and a second view turned
 // LENS_INLIER_YAW_DEG about the vertical and moved 0.3 sideways, so that a point near the edge of

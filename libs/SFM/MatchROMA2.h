@@ -101,6 +101,17 @@ struct SFM_API ROMA2Config {
 	// A rival within this distance (pixels) of the winner is the same feature described twice (a
 	// scale or orientation duplicate) and does not count as a rival in the ratio test.
 	float guidedSameFeatureDistance = 3.f;
+	// The planar twin switch (SwitchPlanarTwinsROMA2): the matches of a pair that lie mostly on one
+	// plane admit two relative poses, the stored one and its planar twin, which explain them equally
+	// well, so the matches cannot tell which is right and the rotation loops with the pair's
+	// neighbours decide. A pair is plane dominated when a homography explains at least
+	// twinMinPlaneShare of its track-forming matches; a loop of three pairs closes when its rotation
+	// is within twinMaxLoopAngle degrees; a pair takes its twin when that closes at least
+	// twinMinLoopGain more loops than its current pose, every other pair at its current pose,
+	// largest gain first, repeated until no switch gains that much. 0 loops turns the switch off.
+	float twinMinPlaneShare = 0.75f;
+	float twinMaxLoopAngle = 3.f;
+	unsigned twinMinLoopGain = 3;
 	unsigned slotBudget = 64;      // image descriptors kept resident on the device
 	bool useGPU = true;            // allow the GPU execution providers
 
@@ -223,10 +234,11 @@ SFM_API bool AssemblePairROMA2(const PairsMatcher& pairsMatcher, const Image& im
 // the dense segment is the caller's to materialise -- and denseKept one flag per dense correspondence.
 // Returns whether the union fit succeeded: when it did not, the classification ran against the
 // geometry `pair` arrived with, which the assembly keeps (the verdict's) and the re-verification
-// refuses.
+// refuses. With bFit false the fit is skipped and the classification runs against the geometry
+// `pair` arrives with (a relative pose, asserted), which is then kept: true is returned.
 SFM_API bool FitAndClassifyPairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
 	const std::vector<DMatch>& sparse, const std::vector<Point2f>& densePointsA, const std::vector<Point2f>& densePointsB,
-	const ROMA2Config& config, float denseTolerance, ImagePair& pair, std::vector<uint8_t>& denseKept);
+	const ROMA2Config& config, float denseTolerance, ImagePair& pair, std::vector<uint8_t>& denseKept, bool bFit = true);
 
 // Re-verify a stored RoMa2 pair through its cameras as they are now (a lens fitted, a focal
 // calibrated), the way it was assembled: its sparse candidates -- the sparse segment, any RANSAC
@@ -240,8 +252,38 @@ SFM_API bool FitAndClassifyPairROMA2(const PairsMatcher& pairsMatcher, const Ima
 // candidates, or too few inliers for the estimator) is invalidated, as GeometricFilter leaves a pair
 // it cannot verify: its geometry reset, every candidate, sparse and dense, an outlier, and no
 // partition (numFilteredInliers -1, numDenseInliers 0).
+// With bRefit false the candidates are gathered the same way but no geometry is fitted: they are
+// classified against the geometry the pair carries (a relative pose, asserted), which it keeps.
 SFM_API void ReverifyPairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
-	const ROMA2Config& config, ImagePair& pair);
+	const ROMA2Config& config, ImagePair& pair, bool bRefit = true);
+
+// The planar twin of a RoMa2 pair: a homography fitted (RANSAC, 2000 iterations, on the cameras'
+// normalized planes, at the angular equivalent of the matches' classification bar maxEpipolarError)
+// on the pair's track-forming matches; `share` is the part of them it explains. When that is at
+// least config.twinMinPlaneShare, the physically valid decompositions of the homography (90% of
+// its inliers in front of both cameras) are the stored pose (the one nearest to it) and the twin
+// (the other), which is polished with the union fit's polish (RefineRelativePose, sparse matches
+// at 1, dense at config.denseFitWeight) on the same matches, so `twin` comes back with pose, E and
+// F and no matches. Returns false when the pair is not plane dominated or has no distinct twin
+// (rotation within 0.5 deg and direction within 10 deg of the stored pose).
+SFM_API bool PlanarTwinROMA2(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
+	const ROMA2Config& config, const ImagePair& pair, ImagePair& twin, float& share);
+
+// The planar twin switch, once every pair is verified (after the lens fit) and before anything
+// reads the poses: the candidates are the posed RoMa2 pairs with a planar twin (PlanarTwinROMA2);
+// a triangle is a candidate (a,b) and an image c with (a,c) and (b,c) posed, and it closes when its
+// rotation loop is within config.twinMaxLoopAngle degrees. The gain of a candidate is the number of
+// its triangles that close after switching it minus before, every other pair at its current pose
+// (so a twin that depends on a neighbour that is itself a candidate is judged with that
+// neighbour's current choice). The largest gain switches when it is at least
+// config.twinMinLoopGain (ties: more sparse inliers, then the larger (ID1,ID2)), the gains of the
+// candidates sharing a triangle with it are updated, and this repeats until no gain is that large;
+// a pair may switch back. Every switch raises the number of closed triangles by at least
+// twinMinLoopGain, so this ends. A pair that ends at its twin takes the twin's pose, E and F and
+// re-classifies its matches against them (ReverifyPairROMA2 without the refit); its weight is
+// left to be recomputed. twinMinLoopGain 0 turns the switch off.
+// Returns the number of pairs that end at their twin.
+SFM_API unsigned SwitchPlanarTwinsROMA2(PairsMatcher& pairsMatcher, const ROMA2Config& config);
 
 // Store one assembled pair: create it, or replace the same-key pair a previous Match() left, then
 // append its dense segment (AppendDenseMatches). Serial, in (ID1,ID2) order -- the keypoint indices

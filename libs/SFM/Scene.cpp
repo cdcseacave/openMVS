@@ -662,6 +662,11 @@ bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, c
 	if (!CalibrateFocalsAndFitLenses(pairsMatcher, vgConfig))
 		return false;
 
+	// a plane-dominated RoMa2 pair keeps the planar twin its rotation loops prefer (SwitchPlanarTwinsROMA2): after the
+	// last refit of the pairs (the lens fit's), before anything reads their poses (ExportMatchingCSVsAndFilterPairs
+	// recomputes the pair weights first)
+	SwitchPlanarTwinsROMA2(pairsMatcher, roma2Cfg);
+
 	return true;
 }
 

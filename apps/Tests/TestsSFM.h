@@ -113,6 +113,13 @@ bool ROMA2AssemblyTest();
 // ROMA2Config::denseFitWeight and the dense bias at full weight
 bool ROMA2DenseFitWeightTest();
 
+// The planar twin switch (SwitchPlanarTwinsROMA2): a floor pair stored at its wrong planar twin
+// switches to the true pose its neighbours' rotation loops close with (not with the switch off or a
+// margin above its gain), a pair with 40% of its matches off the floor is untouched (under the plane
+// gate), and of two wrong twins sharing a triangle the second switches once the first has (best
+// gain first, where one pass on the stored poses would leave it)
+bool PlanarTwinSwitchTest();
+
 // The inlier tests of a RoMa2 pair through a lens (SampsonTest): on two views through a barrel lens
 // the camera knows, every guided match on the true geometry is a sparse inlier, the corner ones
 // included, while the pixel fundamental matrix of the same geometry, composed without the lens, puts

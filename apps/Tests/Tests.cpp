@@ -349,6 +349,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::ROMA2DenseFitWeightTest())
 				return false;
+			if (!SFM::PlanarTwinSwitchTest())
+				return false;
 			if (!SFM::ROMA2LensInlierTest())
 				return false;
 			if (!SFM::DenseKeypointBoundaryTest())

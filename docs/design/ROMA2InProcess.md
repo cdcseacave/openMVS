@@ -312,6 +312,32 @@ failed as an outlier, and with the strict filter off it folded the dense segment
 (the strict filter's pass, `ImagePair::FilterMatches`, re-derives the dense segment from the
 keypoints).
 
+**The planar twin switch** (`SwitchPlanarTwinsROMA2`, called by `Scene::MatchPairs` right after the
+lens fit, on a fresh run and on a reload alike, before anything reads the poses). The matches of a
+pair that lie mostly on one plane (a floor, a wall) admit two relative poses that explain them equally
+well, the stored one and its planar twin, and the union fit lands on either. For every posed RoMa2
+pair (one carrying a dense segment, or whose images carry dense keypoints) `PlanarTwinROMA2` fits a
+homography (OpenCV RANSAC, 2000 iterations, on the cameras' normalized planes at the angular
+equivalent of `maxEpipolarError`) on its track-forming matches; when it explains at least
+`twinMinPlaneShare` (0.75) of them, its physically valid decompositions (90% of the homography's
+inliers in front of both cameras) are the stored pose (the nearest, rotation plus direction/10 in
+degrees) and the twin (the other), polished with the union fit's polish (`RefineRelativePose`,
+sparse 1, dense `denseFitWeight`); a twin within 0.5 deg rotation and 10 deg direction of the stored
+pose is the same pose and no candidate. The rotation loops decide between the two: a triangle is a
+candidate (a,b) and an image c with (a,c) and (b,c) posed, closed when its loop rotation is within
+`twinMaxLoopAngle` (3 deg); each triangle stores whether it closes for every state combination of the
+candidates it holds. A candidate's gain is its triangles closed after switching it minus before,
+every other pair at its current state, so twins that depend on each other (a triangle of two or three
+candidates) are judged with each other's current choice. Best gain first: the largest gain switches
+when it is at least `twinMinLoopGain` (3), ties to more sparse inliers then the larger (ID1,ID2); the
+gains of the candidates sharing a triangle with it are counted again; repeat until no gain reaches the
+margin. A pair may switch back; each switch raises the number of closed triangles by at least the
+margin, so the loop ends (asserted in Debug). A pair that ends at its twin takes the twin's pose, E and
+F and re-classifies its candidates against them through `ReverifyPairROMA2` with `bRefit` false
+(`FitAndClassifyPairROMA2` with `bFit` false: no fit, the classification against the geometry the
+pair carries); the ray angle is measured again and the weight left to be recomputed, which
+`ExportMatchingCSVsAndFilterPairs` does first. `twinMinLoopGain` 0 turns the switch off.
+
 A judged pair costs on the order of 100 ms on an A100 at the base preset, growing on a texture-rich
 capture where the guided descriptor search dominates rather than the graph call, and less at the
 faster presets. Bundle adjustment over the tracks the dense fill creates, not matching itself, is what
@@ -394,11 +420,17 @@ bool AssemblePairROMA2(const PairsMatcher&, const Image& imgA, const Image& imgB
 bool FitAndClassifyPairROMA2(const PairsMatcher&, const Image& imgA, const Image& imgB,
     const std::vector<DMatch>& sparse, const std::vector<Point2f>& densePointsA,
     const std::vector<Point2f>& densePointsB, const ROMA2Config& config, float denseTolerance,
-    ImagePair& pair, std::vector<uint8_t>& denseKept);
+    ImagePair& pair, std::vector<uint8_t>& denseKept, bool bFit = true);
 
-// a stored pair verified again through its cameras as they are now (PairsMatcher::ComputeRelativePoses)
+// a stored pair verified again through its cameras as they are now (PairsMatcher::ComputeRelativePoses);
+// with bRefit false classified against the geometry it carries, no fit
 void ReverifyPairROMA2(const PairsMatcher&, const Image& imgA, const Image& imgB,
-    const ROMA2Config& config, ImagePair& pair);
+    const ROMA2Config& config, ImagePair& pair, bool bRefit = true);
+
+// the planar twin of a plane-dominated pair, and the switch over all pairs (after the lens fit)
+bool PlanarTwinROMA2(const PairsMatcher&, const Image& imgA, const Image& imgB,
+    const ROMA2Config& config, const ImagePair& pair, ImagePair& twin, float& share);
+unsigned SwitchPlanarTwinsROMA2(PairsMatcher&, const ROMA2Config& config);
 
 void StorePairROMA2(Scene&, std::unordered_map<PairIdx::PairIndex, IIndex>& pairIndexMap,
     ImagePair&& pair, const DenseMatches& dense, int warpSize);
@@ -475,12 +507,17 @@ stored.
 | warp tolerance | half a warp cell | fixed, in image pixels; the verdict and the union fit |
 | sparse tolerance | `MatchConfig::maxEpipolarError` | the matcher's own |
 | dense tolerance | `denseEpipolarErrorFactor` (1) × the sparse one | the dense segment's classification |
+| planar twin gate | 0.75 | `twinMinPlaneShare`: share of a pair's track-forming matches a homography explains |
+| twin loop bar | 3 deg | `twinMaxLoopAngle`: a triangle's loop rotation that counts as closed |
+| twin margin | 3 loops | `twinMinLoopGain`: closed triangles a switch must gain; 0 turns the switch off |
 
 ### Known limit
 
 Unchanged from the SIFT path: on a planar, textureless, small-baseline pair the essential matrix
 degenerates (the warp is right, the pose is not) — `PairsMatcher` has no homography branch, and this
-design does not add one.
+design does not add one. Where the pair's two planar solutions are both physically valid, the planar
+twin switch (above) picks the one its rotation loops close with; a pair whose loops do not decide, or
+whose homography explains under 0.75 of its matches, keeps the fit's pose.
 
 ### Bundle adjustment's dense observation weight
 
@@ -728,6 +765,15 @@ sees no reloads at all.
   the pinhole geometry of its true pose and verified again once its camera knows its lens: the corner
   matches the pinhole rejected come back as sparse inliers, and the dense samples off the true
   geometry are dropped while the true ones stay.
+- **`PlanarTwinSwitchTest`** (synthetic, no model needed) — the planar twin switch
+  (`SwitchPlanarTwinsROMA2`) on cameras looking at a floor: a pair whose matches all lie on the floor,
+  stored at the wrong one of its two planar solutions while its four neighbours close their loops only
+  with the right one, switches to the right one and keeps every match an inlier, and does not with the
+  switch off or with a margin above its gain; the same pair with 40% of its matches 0.8 above the
+  floor (a homography explains 60%) is untouched, and switches once the gate is lowered to 0.5; of two
+  wrong twins sharing a triangle, the one with two neighbours of its own gains only 2 loops until the
+  other (four neighbours) has switched, then 3, and both end right (a single pass on the stored poses
+  would leave it), while without the first one's neighbours neither moves.
 - **`DenseKeypointBoundaryTest`** (`apps/Tests/TestsSFM.cpp`) — always runs, no model needed: the
   stored described-keypoint count surviving a descriptor release and an `.sfm` round-trip of an image
   whose `keypoints.size() > descriptors.rows`, `SelectTopKeypoints` staying inside the prefix, and

@@ -807,9 +807,10 @@ bool SFM::AssemblePairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA,
 
 bool SFM::FitAndClassifyPairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
 	const std::vector<DMatch>& sparse, const std::vector<Point2f>& densePointsA, const std::vector<Point2f>& densePointsB,
-	const ROMA2Config& config, float denseTolerance, ImagePair& pair, std::vector<uint8_t>& denseKept)
+	const ROMA2Config& config, float denseTolerance, ImagePair& pair, std::vector<uint8_t>& denseKept, bool bFit)
 {
 	ASSERT(pair.matches.empty() && pair.outlierMatches.empty());
+	ASSERT(bFit || pair.relativePose.has_value());
 	ASSERT(densePointsA.size() == densePointsB.size());
 	// ONE geometry for the pair, fitted on sparse u dense through the matcher's own estimator at its
 	// own threshold: the sparse correspondences are sub-pixel where texture exists and the dense ones
@@ -818,10 +819,11 @@ bool SFM::FitAndClassifyPairROMA2(const PairsMatcher& pairsMatcher, const Image&
 	// decides whether it may stand: at matching it is the verdict's and stands, an admitted pair is
 	// always stored; at re-verification it does not, a pair no fit stands behind is invalidated. A
 	// pair holding one fit's pose next to another fit's matrices would describe two geometries as
-	// one, which is why all three members move together or none do.
-	bool bFitted = false;
+	// one, which is why all three members move together or none do. Without the fit (bFit false)
+	// the geometry the pair arrives with is the one kept.
+	bool bFitted = !bFit;
 	const size_t numTotal = sparse.size() + densePointsA.size();
-	if (numTotal >= 8) {
+	if (bFit && numTotal >= 8) {
 		std::vector<Point2f> pointsA, pointsB;
 		pointsA.reserve(numTotal);
 		pointsB.reserve(numTotal);
@@ -895,7 +897,7 @@ bool SFM::FitAndClassifyPairROMA2(const PairsMatcher& pairsMatcher, const Image&
 }
 
 void SFM::ReverifyPairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
-	const ROMA2Config& config, ImagePair& pair)
+	const ROMA2Config& config, ImagePair& pair, bool bRefit)
 {
 	ASSERT(pair.ID1 == imgA.ID && pair.ID2 == imgB.ID);
 	const unsigned numSparse = pair.GetNumFilteredInliers(), numDense = pair.GetNumDenseInliers();
@@ -928,7 +930,7 @@ void SFM::ReverifyPairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA,
 	}
 	pair.ResetMatches();
 	std::vector<uint8_t> denseKept;
-	if (!FitAndClassifyPairROMA2(pairsMatcher, imgA, imgB, sparse, densePointsA, densePointsB, config, 0.f, pair, denseKept)) {
+	if (!FitAndClassifyPairROMA2(pairsMatcher, imgA, imgB, sparse, densePointsA, densePointsB, config, 0.f, pair, denseKept, bRefit)) {
 		// no geometry explains the candidates any more (too few of them, or too few inliers for the
 		// estimator): the pair is invalidated, as GeometricFilter leaves a pair it cannot verify -- no
 		// geometry, every candidate an outlier and no partition -- rather than classified against a
@@ -949,6 +951,296 @@ void SFM::ReverifyPairROMA2(const PairsMatcher& pairsMatcher, const Image& imgA,
 	if (pair.relativePose.has_value() && pair.GetNumTrackFormingMatches() > 0)
 		pair.meanRayAngle = pair.ComputeMeanRayAngle(imgA, imgB);
 }
+
+bool SFM::PlanarTwinROMA2(const PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
+	const ROMA2Config& config, const ImagePair& pair, ImagePair& twin, float& share)
+{
+	ASSERT(pair.ID1 == imgA.ID && pair.ID2 == imgB.ID);
+	ASSERT(pair.relativePose.has_value());
+	share = 0.f;
+	const unsigned numSparse = pair.GetNumFilteredInliers(), numMatches = pair.GetNumTrackFormingMatches();
+	if (numMatches < 8)
+		return false;
+	// the track-forming matches on the normalized plane of each camera (the homography's space)
+	const Camera& camA = *imgA.pCamera;
+	const Camera& camB = *imgB.pCamera;
+	std::vector<cv::Point2f> pointsA, pointsB;
+	pointsA.reserve(numMatches);
+	pointsB.reserve(numMatches);
+	for (unsigned k = 0; k < numMatches; ++k) {
+		const DMatch& match = pair.matches[k];
+		const Point3 bearingA = camA.UnprojectNormalized(Cast<REAL>(imgA.keypoints[match.queryIdx].pt));
+		const Point3 bearingB = camB.UnprojectNormalized(Cast<REAL>(imgB.keypoints[match.trainIdx].pt));
+		if (bearingA.z <= 1e-6 || bearingB.z <= 1e-6)
+			continue;
+		pointsA.emplace_back((float)(bearingA.x/bearingA.z), (float)(bearingA.y/bearingA.z));
+		pointsB.emplace_back((float)(bearingB.x/bearingB.z), (float)(bearingB.y/bearingB.z));
+	}
+	if (pointsA.size() < 8)
+		return false;
+	// the homography is held to the bar the matches were classified with: the gate asks whether a
+	// plane explains the pair's inliers
+	const float bar = pairsMatcher.GetConfig().maxEpipolarError;
+	const double angle = 0.5*(double)(camA.PixelErrorToAngular((REAL)bar) + camB.PixelErrorToAngular((REAL)bar));
+	cv::Mat mask;
+	const cv::Mat H = cv::findHomography(pointsA, pointsB, cv::RANSAC, angle, mask, 2000, 0.999);
+	if (H.empty())
+		return false;
+	share = (float)cv::countNonZero(mask)/(float)pointsA.size();
+	if (share < config.twinMinPlaneShare)
+		return false;
+	// the physically valid decompositions: 90% of the homography's inliers in front of both cameras;
+	// the one nearest the stored pose (rotation + direction/10, in degrees) is the stored pose itself
+	std::vector<cv::Mat> rotations, translations, normals;
+	cv::decomposeHomographyMat(H, cv::Mat::eye(3, 3, CV_64F), rotations, translations, normals);
+	const Matrix3x3 R0(pair.relativePose->R);
+	const Point3 t0 = pair.relativePose->GetT();
+	const auto DirectionDeg = [](const Point3& a, const Point3& b) {
+		return R2D(ACOS(CLAMP(a.dot(b)/(norm(a)*norm(b)), REAL(-1), REAL(1))));
+	};
+	std::vector<Pose3D> valid;
+	int nearest = -1;
+	REAL nearestDistance = std::numeric_limits<REAL>::max();
+	FOREACH(s, rotations) {
+		Matrix3x3 R;
+		Point3 t, n;
+		for (int r = 0; r < 3; ++r) {
+			for (int c = 0; c < 3; ++c)
+				R(r,c) = rotations[s].at<double>(r,c);
+			t[r] = translations[s].at<double>(r);
+			n[r] = normals[s].at<double>(r);
+		}
+		if (norm(t) < 1e-9)
+			continue;
+		unsigned numInFront = 0, numInliers = 0;
+		FOREACH(i, pointsA) {
+			if (!mask.at<uchar>((int)i))
+				continue;
+			const Point3 x(pointsA[i].x, pointsA[i].y, 1.0);
+			const REAL depth = n.dot(x);
+			++numInliers;
+			if (depth > 0 && (R*(x/depth) + t).z > 0)
+				++numInFront;
+		}
+		if (numInliers == 0 || numInFront < 0.9*numInliers)
+			continue;
+		Pose3D& pose = valid.emplace_back();
+		pose.R = R;
+		pose.SetT(t*(REAL(1)/norm(t)));
+		const REAL distance = R2D(ACOS(ComputeAngle(R, R0))) + DirectionDeg(t, t0)/10;
+		if (distance < nearestDistance) {
+			nearestDistance = distance;
+			nearest = (int)valid.size()-1;
+		}
+	}
+	int other = -1;
+	FOREACH(v, valid)
+		if ((int)v != nearest)
+			other = (int)v;
+	if (other < 0)
+		return false;
+	// the union fit's polish on the twin, over the same matches
+	twin = ImagePair(pair.ID1, pair.ID2);
+	twin.matches.assign(pair.matches.begin(), pair.matches.begin() + numMatches);
+	twin.relativePose = valid[other];
+	std::vector<double> weights(numMatches, (double)config.denseFitWeight);
+	std::fill(weights.begin(), weights.begin() + numSparse, 1.0);
+	const bool bRefined = pairsMatcher.RefineRelativePose(imgA, imgB, twin, weights);
+	twin.matches = std::vector<DMatch>(); // only the geometry is kept
+	if (!bRefined)
+		return false;
+	// a twin this close to the stored pose is the same pose
+	constexpr REAL minRotationDeg = 0.5, minDirectionDeg = 10;
+	return R2D(ACOS(ComputeAngle(Matrix3x3(twin.relativePose->R), R0))) > minRotationDeg ||
+		DirectionDeg(twin.relativePose->GetT(), t0) > minDirectionDeg;
+}
+
+unsigned SFM::SwitchPlanarTwinsROMA2(PairsMatcher& pairsMatcher, const ROMA2Config& config)
+{
+	if (config.twinMinLoopGain == 0)
+		return 0;
+	TD_TIMER_STARTD();
+	Scene& scene = pairsMatcher.GetScene();
+	const auto IsRoMa2Pair = [&](const ImagePair& pair) {
+		return pair.GetNumDenseInliers() > 0 || scene.images[pair.ID1].HasDenseKeypoints() || scene.images[pair.ID2].HasDenseKeypoints();
+	};
+	// 1) the twin of every posed, plane-dominated RoMa2 pair
+	std::vector<ImagePair> twins(scene.pairs.size());
+	std::vector<uint8_t> hasTwin(scene.pairs.size(), 0);
+	std::atomic<unsigned> numPlanar{0};
+	cv::setNumThreads(1); // temporarily turn off multi-threading for OpenCV functions (the pool tasks are already parallel)
+	scene.threadPool.detach_loop(0u, scene.pairs.size(), [&](unsigned i) {
+		const ImagePair& pair = scene.pairs[i];
+		if (!pair.relativePose.has_value() || !IsRoMa2Pair(pair))
+			return;
+		float share;
+		hasTwin[i] = PlanarTwinROMA2(pairsMatcher, scene.images[pair.ID1], scene.images[pair.ID2], config, pair, twins[i], share) ? 1 : 0;
+		if (share >= config.twinMinPlaneShare)
+			++numPlanar;
+	});
+	scene.threadPool.wait();
+	cv::setNumThreads(scene.nMaxThreads); // restore OpenCV threading
+	// 2) the candidates and their triangles, each with whether its loop closes for every state
+	// combination of the candidates it holds (bit s of `closed`: bit k of s set = its k-th candidate
+	// at its twin)
+	std::vector<IIndex> candidates; // the pair of each candidate
+	std::vector<IIndex> candidateOf(scene.pairs.size(), NO_ID);
+	std::unordered_map<PairIdx::PairIndex, IIndex> pairOf;
+	std::vector<std::vector<IIndex>> neighbours(scene.images.size());
+	FOREACH(i, scene.pairs) {
+		const ImagePair& pair = scene.pairs[i];
+		if (!pair.relativePose.has_value())
+			continue;
+		pairOf.emplace(MakePairIdx(pair.ID1, pair.ID2).idx, (IIndex)i);
+		neighbours[pair.ID1].push_back(pair.ID2);
+		neighbours[pair.ID2].push_back(pair.ID1);
+		if (hasTwin[i]) {
+			candidateOf[i] = (IIndex)candidates.size();
+			candidates.push_back((IIndex)i);
+		}
+	}
+	const auto PairOf = [&](IIndex u, IIndex v) { return pairOf.at(MakePairIdx(u, v).idx); };
+	const auto RelativeRotation = [&](IIndex u, IIndex v, bool bTwin) -> Matrix3x3 { // x_v = R_uv x_u
+		const IIndex i = PairOf(u, v);
+		const ImagePair& pair = scene.pairs[i];
+		const Matrix3x3 R(bTwin ? twins[i].relativePose->R : pair.relativePose->R);
+		return pair.ID1 == u ? R : Matrix3x3(R.t());
+	};
+	struct Triangle {
+		IIndex candidates[3];
+		uint8_t numCandidates;
+		uint8_t closed;
+	};
+	std::vector<Triangle> triangles;
+	std::vector<std::vector<IIndex>> trianglesOf(candidates.size());
+	const REAL minLoopCos = COS(D2R((REAL)config.twinMaxLoopAngle));
+	FOREACH(ci, candidates) {
+		const ImagePair& pair = scene.pairs[candidates[ci]];
+		for (IIndex c : neighbours[pair.ID1]) {
+			if (c == pair.ID2 || !pairOf.count(MakePairIdx(pair.ID2, c).idx))
+				continue;
+			// the loop a->b->c->a over the pairs (a,b), (b,c) and (c,a)
+			const IIndex v[3] = {pair.ID1, pair.ID2, c};
+			const IIndex e[3] = {candidates[ci], PairOf(v[1], v[2]), PairOf(v[2], v[0])};
+			// a triangle holding several candidates is made once, from the first of them
+			if ((candidateOf[e[1]] != NO_ID && candidateOf[e[1]] < ci) || (candidateOf[e[2]] != NO_ID && candidateOf[e[2]] < ci))
+				continue;
+			Triangle triangle;
+			triangle.numCandidates = 0;
+			int slot[3];
+			for (int k = 0; k < 3; ++k) {
+				slot[k] = candidateOf[e[k]] != NO_ID ? (int)triangle.numCandidates : -1;
+				if (slot[k] >= 0)
+					triangle.candidates[triangle.numCandidates++] = candidateOf[e[k]];
+			}
+			triangle.closed = 0;
+			for (unsigned s = 0; s < (1u << triangle.numCandidates); ++s) {
+				const auto AtTwin = [&](int k) { return slot[k] >= 0 && ((s >> slot[k]) & 1u); };
+				const Matrix3x3 loop(RelativeRotation(v[1], v[2], AtTwin(1))*RelativeRotation(v[0], v[1], AtTwin(0))*RelativeRotation(v[2], v[0], AtTwin(2)));
+				if (ComputeAngle(loop) > minLoopCos)
+					triangle.closed |= (uint8_t)(1u << s);
+			}
+			for (unsigned k = 0; k < triangle.numCandidates; ++k)
+				trianglesOf[triangle.candidates[k]].push_back((IIndex)triangles.size());
+			triangles.push_back(triangle);
+		}
+	}
+	// 3) the switches, largest gain first, each gain counted with the other candidates at their
+	// current states, until no switch gains twinMinLoopGain closed triangles
+	std::vector<uint8_t> atTwin(candidates.size(), 0);
+	const auto Closed = [&](const Triangle& triangle) {
+		unsigned s = 0;
+		for (unsigned k = 0; k < triangle.numCandidates; ++k)
+			s |= (unsigned)atTwin[triangle.candidates[k]] << k;
+		return (int)((triangle.closed >> s) & 1u);
+	};
+	const auto NumClosed = [&](IIndex ci) {
+		int numClosed = 0;
+		for (IIndex t : trianglesOf[ci])
+			numClosed += Closed(triangles[t]);
+		return numClosed;
+	};
+	const auto Gain = [&](IIndex ci) {
+		const int before = NumClosed(ci);
+		atTwin[ci] ^= 1;
+		const int after = NumClosed(ci);
+		atTwin[ci] ^= 1;
+		return after - before;
+	};
+	const auto Precedes = [&](IIndex a, int gainA, IIndex b, int gainB) { // larger gain, more sparse inliers, larger (ID1,ID2)
+		if (gainA != gainB)
+			return gainA > gainB;
+		const ImagePair& pairA = scene.pairs[candidates[a]];
+		const ImagePair& pairB = scene.pairs[candidates[b]];
+		if (pairA.GetNumFilteredInliers() != pairB.GetNumFilteredInliers())
+			return pairA.GetNumFilteredInliers() > pairB.GetNumFilteredInliers();
+		return std::make_pair(pairA.ID1, pairA.ID2) > std::make_pair(pairB.ID1, pairB.ID2);
+	};
+	std::vector<int> gains(candidates.size());
+	FOREACH(ci, candidates)
+		gains[ci] = Gain(ci);
+	#ifndef _RELEASE
+	const auto NumClosedAll = [&]() {
+		unsigned numClosed = 0;
+		for (const Triangle& triangle : triangles)
+			numClosed += (unsigned)Closed(triangle);
+		return numClosed;
+	};
+	unsigned numClosedAll = NumClosedAll();
+	#endif
+	unsigned numSwitches = 0, numSwitchesBack = 0;
+	while (!candidates.empty()) {
+		IIndex best = 0;
+		for (IIndex ci = 1; ci < candidates.size(); ++ci)
+			if (Precedes(ci, gains[ci], best, gains[best]))
+				best = ci;
+		if (gains[best] < (int)config.twinMinLoopGain)
+			break;
+		if (atTwin[best])
+			++numSwitchesBack;
+		atTwin[best] ^= 1;
+		++numSwitches;
+		#ifndef _RELEASE
+		// a switch changes only the triangles through its pair, so the closed triangles grow by its
+		// gain, at least twinMinLoopGain: the number of switches is bounded and the loop ends
+		const unsigned numClosedBefore = numClosedAll;
+		numClosedAll = NumClosedAll();
+		ASSERT(numClosedAll == numClosedBefore + (unsigned)gains[best] && numClosedAll >= numClosedBefore + config.twinMinLoopGain);
+		#endif
+		for (IIndex t : trianglesOf[best])
+			for (unsigned k = 0; k < triangles[t].numCandidates; ++k)
+				gains[triangles[t].candidates[k]] = Gain(triangles[t].candidates[k]);
+	}
+	// 4) every pair that ends at its twin takes it and re-classifies its matches against it
+	unsigned numSwitched = 0;
+	FOREACH(ci, candidates) {
+		if (!atTwin[ci])
+			continue;
+		ImagePair& pair = scene.pairs[candidates[ci]];
+		const ImagePair& twin = twins[candidates[ci]];
+		atTwin[ci] = 0;
+		const int loopsStored = NumClosed(ci);
+		atTwin[ci] = 1;
+		const int loopsTwin = NumClosed(ci);
+		const Point3 t0 = pair.relativePose->GetT(), t1 = twin.relativePose->GetT();
+		const unsigned numSparseBefore = pair.GetNumFilteredInliers(), numDenseBefore = pair.GetNumDenseInliers();
+		const REAL rotationDeg = R2D(ACOS(ComputeAngle(Matrix3x3(pair.relativePose->R), Matrix3x3(twin.relativePose->R))));
+		pair.relativePose = twin.relativePose;
+		pair.E = twin.E;
+		pair.F = twin.F;
+		ReverifyPairROMA2(pairsMatcher, scene.images[pair.ID1], scene.images[pair.ID2], config, pair, false);
+		VERBOSE("Pair %u-%u switched to its planar twin: loops %d -> %d of %u within %g deg, rotation change %.2f deg, direction change %.1f deg; sparse inliers %u -> %u, dense %u -> %u",
+			pair.ID1, pair.ID2, loopsStored, loopsTwin, (unsigned)trianglesOf[ci].size(), config.twinMaxLoopAngle, rotationDeg,
+			R2D(ACOS(CLAMP(t0.dot(t1)/(norm(t0)*norm(t1)), REAL(-1), REAL(1)))),
+			numSparseBefore, pair.GetNumFilteredInliers(), numDenseBefore, pair.GetNumDenseInliers());
+		++numSwitched;
+	}
+	VERBOSE("Planar twins: %u plane-dominated pairs (share >= %g) of %u, %u with a distinct twin, %u switches (%u back) in %u triangles, %u pairs switched (%s)",
+		numPlanar.load(), config.twinMinPlaneShare, (unsigned)scene.pairs.size(), (unsigned)candidates.size(), numSwitches, numSwitchesBack,
+		(unsigned)triangles.size(), numSwitched, TD_TIMER_GET_FMT().c_str());
+	return numSwitched;
+}
+/*----------------------------------------------------------------*/
 
 void SFM::StorePairROMA2(Scene& scene, std::unordered_map<PairIdx::PairIndex, IIndex>& pairIndexMap,
 	ImagePair&& pair, const DenseMatches& dense, int warpSize)
