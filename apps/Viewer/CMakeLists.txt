@@ -114,17 +114,21 @@ if(APPLE)
 endif()
 
 if(LINUX)
-	# Prepare a Linux desktop entry for better integration. Exec path is configured
-	# to the installed binary location (prefix + install bin dir). Install the
-	# resulting .desktop file into share/applications so desktop environments pick it up.
+	# Prepare a Linux desktop entry for better integration. Install the resulting
+	# .desktop file into share/applications so desktop environments pick it up.
 	set(DESKTOP_IN "${CMAKE_CURRENT_SOURCE_DIR}/templates/openMVS-Viewer.desktop.in")
-	set(EXEC_PATH "${CMAKE_INSTALL_PREFIX}/${INSTALL_BIN_DIR}/${VIEWER_NAME}")
 	get_filename_component(ICON_NAME "${CMAKE_CURRENT_SOURCE_DIR}/Viewer.svg" NAME_WE)
 	# Register both .mvs and .dmap MIME types so desktop environments treat
 	# both as owned by the OpenMVS Viewer. openmvs-mime.xml.in defines both
 	# application/x-openmvs-mvs and application/x-openmvs-dmap.
 	set(MIME_TYPE "application/x-openmvs-mvs;application/x-openmvs-dmap")
-	configure_file(${DESKTOP_IN} ${CMAKE_CURRENT_BINARY_DIR}/openMVS-Viewer.desktop @ONLY)
+	# its Exec path is the installed binary, so it is configured with the prefix given at install time
+	INSTALL(CODE "
+		set(VIEWER_NAME \"${VIEWER_NAME}\")
+		set(ICON_NAME \"${ICON_NAME}\")
+		set(OpenMVS_VERSION \"${OpenMVS_VERSION}\")
+		set(EXEC_PATH \"\${CMAKE_INSTALL_PREFIX}/${INSTALL_BIN_DIR}/${VIEWER_NAME}\")
+		configure_file(\"${DESKTOP_IN}\" \"${CMAKE_CURRENT_BINARY_DIR}/openMVS-Viewer.desktop\" @ONLY)" COMPONENT desktop)
 	INSTALL(FILES "${CMAKE_CURRENT_BINARY_DIR}/openMVS-Viewer.desktop"
 		DESTINATION "share/applications" COMPONENT desktop)
 	# Install an SVG icon into hicolor icon theme (scalable) if present
