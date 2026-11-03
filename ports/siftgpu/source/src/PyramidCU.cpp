@@ -235,9 +235,11 @@ void PyramidCU::ResizePyramid(int w, int h)
 
 	////////////there could be "out of memory" happening during the allocation
 
+	_octaveWidth.resize(noct);
 	for(i = 0; i< noct; i++)
 	{
 		int wa = ((w + 3) / 4) * 4;
+		_octaveWidth[i] = w;
 
 		totalkb += ((nlev *8 -19)* (wa * h) * 4 / 1024);
 		for( j = 0; j< nlev; j++, gus++, dog++, got++, key++)
@@ -294,9 +296,11 @@ void PyramidCU::FitPyramid(int w, int h)
 	CuTexImage * dog =  GetBaseLevel(_octave_min, DATA_DOG);
 	CuTexImage * got =  GetBaseLevel(_octave_min, DATA_GRAD);
 	CuTexImage * key =  GetBaseLevel(_octave_min, DATA_KEYPOINT);
+	_octaveWidth.resize(_octave_num);
 	for(int i = 0; i< _octave_num; i++)
 	{
 		int wa = ((w + 3) / 4) * 4;
+		_octaveWidth[i] = w;
 
 		for(int j = 0; j< nlev; j++, gus++, dog++, got++, key++)
 		{
@@ -996,7 +1000,7 @@ void PyramidCU::DetectKeypointsEX()
 			//output, key
 			// sigma of the keypoints found on this level (see GetFeatureOrientations)
 			ProgramCU::ComputeKEY(dog, key, gus, (unsigned int*) _keyMaskTex->_cuData + _keyMaskOffset[idx],
-				(int*) _keyRowCountTex->_cuData + _keyRowOffset[idx],
+				(int*) _keyRowCountTex->_cuData + _keyRowOffset[idx], _octaveWidth[i - _octave_min],
 				param._dog_threshold, param._edge_threshold, param.GetLevelSigma(j - 1));
 			if(GlobalUtil::_timingL)
 			{

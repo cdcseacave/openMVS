@@ -42,6 +42,8 @@ class PyramidCU:public SiftPyramid
 	CuTexImage* _orientationStartTex;
 	CuTexImage* _featureAllTex;
 	std::vector<int> _keyMaskOffset, _keyRowOffset;
+	// image width of each octave; its buffers are padded to a multiple of 4
+	std::vector<int> _octaveWidth;
 	std::vector<int> _keyRowCount, _keyRowStart;
 	CuTexImage* _featureTex;
 	CuTexImage* _descriptorTex;

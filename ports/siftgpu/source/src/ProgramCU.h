@@ -40,7 +40,7 @@ public:
 	static void FilterImage(CuTexImage *dst, CuTexImage *src, CuTexImage* buf, float sigma);
 	static void ComputeDOG(CuTexImage* gus, CuTexImage* dog, CuTexImage* got);
 	static void ComputeKEY(CuTexImage* dog, CuTexImage* key, CuTexImage* gus, unsigned int* mask, int* row_count,
-		float Tdog, float Tedge, float sigma);
+		int valid_width, float Tdog, float Tedge, float sigma);
 	static int  GetKeyMaskWidth(int width);
 	static void ListKeys(CuTexImage* list, const unsigned int* mask, int mask_width, const int* row_count,
 		const int* row_offset, int height);

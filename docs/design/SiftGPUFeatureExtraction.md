@@ -27,7 +27,8 @@ rebuild all dependencies first.
 One thread owns the SiftGPU context. Images are decoded ahead of it on `scene.threadPool`: one task
 and one `std::future<bool>` per image, at most the current image plus one task per pool thread in
 flight (a one-thread pool still decodes the next image during the GPU work) and at most 960 MB of
-decoded images (their 8-bit pixels and float input). A task loads the pixels, converts them to
+decoded images (their 8-bit pixels and float input); the image after the current one is decoded even
+when the two exceed the budget. A task loads the pixels, converts them to
 SiftGPU's float grey input and optionally releases the image pixels; the GPU thread waits on the
 image's future, uploads, extracts, and never loads an image itself. An image that fails to load is
 reported through the future's value; an exception travels through the future to the GPU thread, and
@@ -38,7 +39,9 @@ its buffers.
 
 SiftGPU's pyramid: first octave `-fo -1` (input upsampled 2x), 3 levels per octave (`-d 3`),
 `-maxd = maxImageSize * 2`. Gaussian levels, DoG and gradient magnitude/angle levels are pitch-linear
-`CuTexImage` buffers. Each buffer caches the texture objects bound to it (one per channel format
+`CuTexImage` buffers whose rows are padded to a multiple of 4 pixels; the padding holds no image data,
+so keypoints are searched only inside the octave's image width (`PyramidCU::_octaveWidth`), which
+keeps every keypoint inside the input image. Each buffer caches the texture objects bound to it (one per channel format
 and texture descriptor, and for the 2D ones per view size); they are created on first use and
 destroyed when the buffer is reallocated or destroyed, the 2D ones also when the view size changes
 (after a device synchronization), never by a copy (`CuTexImage` is not copyable).

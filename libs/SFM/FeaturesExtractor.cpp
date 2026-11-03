@@ -174,9 +174,10 @@ public:
 				const size_t bytes = img.pCamera ? (sizeof(float) + sizeof(uint8_t)) *
 					(size_t)img.pCamera->GetWidth() * (size_t)img.pCamera->GetHeight() : size_t(0);
 				// the image needed right now is always scheduled, and so is the next
-				// one if nothing else is in flight, even if it exceeds the budget
+				// one if only the current image is in flight, even if it exceeds the budget
+				ASSERT(nextDecode <= current || imagesInFlight > 0); // the current image is in flight
 				if (nextDecode > current && (imagesInFlight >= maxImagesInFlight ||
-						(imagesInFlight > 0 && bytesInFlight + bytes > maxBytesInFlight)))
+						(imagesInFlight > 1 && bytesInFlight + bytes > maxBytesInFlight)))
 					break;
 				// an exception is rethrown on the GPU thread by the future
 				decoded[nextDecode] = scene.threadPool.submit_task([&img, &input = inputs[nextDecode], releasePixels]() {

@@ -24,6 +24,7 @@
 #include <glad/glad.h>
 #include "stdio.h"
 #include <algorithm>
+#include <cassert>
 
 #include "CuTexImage.h"
 #include "ProgramCU.h"
@@ -538,16 +539,19 @@ void ProgramCU::ComputeDOG(CuTexImage* gus, CuTexImage* dog, CuTexImage* got)
 //
 // min_curvature (0 = off): after the edge test, the smaller principal curvature |lambda_min| of the
 // DoG Hessian must reach this value (already divided by the squared level sigma, so the test is on
-// the scale-normalized curvature sigma^2*|lambda_min|). This keeps
-// low-contrast extrema that are well curved in both directions (blobs and corners on weakly textured
-// surfaces) and rejects flat and edge-like ones, so a low DoG threshold can be used with it.
+// the scale-normalized curvature sigma^2*|lambda_min|). This keeps low-contrast extrema that are
+// well curved in both directions (blobs and corners on weakly textured surfaces) and rejects flat
+// and edge-like ones, so a low DoG threshold can be used with it.
+//
+// valid_width: the octave's image width; the rows of the level are padded to width (a multiple of
+// 4), and the padding columns hold no image data, so extrema are searched only inside valid_width.
 // Darkness adaptation (texG = the Gaussian level, 0 = off) lowers the DoG thresholds and the
 // curvature floor in dark areas by min(2 * intensity + 0.1, 1), as the GLSL implementation does
 // (contrast in the gamma-encoded image falls with brightness). Without a per-image feature cap it
 // improves the poses of normally exposed scenes; on underexposed, noisy images it admits noise.
 void __global__ ComputeKEY_Kernel(cudaTextureObject_t texP, cudaTextureObject_t texC, cudaTextureObject_t texN,
 					cudaTextureObject_t texG,
-					float4* d_key, unsigned int* d_mask, int* d_row_count, int width, int height, int mask_width,
+					float4* d_key, unsigned int* d_mask, int* d_row_count, int width, int valid_width, int height, int mask_width,
 					float dog_threshold0,  float dog_threshold, float edge_threshold, int subpixel_localization,
 					float min_curvature)
 {
@@ -557,7 +561,7 @@ void __global__ ComputeKEY_Kernel(cudaTextureObject_t texP, cudaTextureObject_t 
 	const int col = blockIdx.x * KEY_BLOCK_DIMX + threadIdx.x;
 	const int index = IMUL(row, width) + col;
 	const int idx[3] ={index - width, index, index + width};
-	const bool in_image = row > 0 && col > 0 && row < height - 1 && col < width - 1;
+	const bool in_image = row > 0 && col > 0 && row < height - 1 && col < valid_width - 1;
 	float nmax, nmin, result = 0.0f;
 	float dx = 0, dy = 0, ds = 0;
 	bool offset_test_passed = true;
@@ -677,9 +681,10 @@ key_finish:
 
 
 void ProgramCU::ComputeKEY(CuTexImage* dog, CuTexImage* key, CuTexImage* gus, unsigned int* mask, int* row_count,
-						   float Tdog, float Tedge, float sigma)
+						   int valid_width, float Tdog, float Tedge, float sigma)
 {
 	int width = dog->GetImgWidth(), height = dog->GetImgHeight();
+	assert(valid_width <= width && width - valid_width < 4);
 	float Tdog1 = (GlobalUtil::_SubpixelLocalization? 0.8f : 1.0f) * Tdog;
 	CuTexImage* dogp = dog - 1;
 	CuTexImage* dogn = dog + 1;
@@ -691,7 +696,7 @@ void ProgramCU::ComputeKEY(CuTexImage* dog, CuTexImage* key, CuTexImage* gus, un
 	const cudaTextureObject_t texGObj = GlobalUtil::_DarknessAdaption ? gus->BindTexture(texDataDesc, cudaCreateChannelDesc<float>()) : 0;
 	Tedge = (Tedge+1)*(Tedge+1)/Tedge;
 	ComputeKEY_Kernel<<<grid, block>>>(texPObj, texCObj, texNObj, texGObj, (float4*) key->_cuData,
-		mask, row_count, width, height, GetKeyMaskWidth(width), Tdog1, Tdog, Tedge, GlobalUtil::_SubpixelLocalization,
+		mask, row_count, width, valid_width, height, GetKeyMaskWidth(width), Tdog1, Tdog, Tedge, GlobalUtil::_SubpixelLocalization,
 		GlobalUtil::_MinCurvature / (sigma * sigma));
 }
 
