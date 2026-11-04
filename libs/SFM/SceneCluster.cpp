@@ -147,7 +147,7 @@ ClusterCoupling AnalyzeClusterCoupling(
 // consumer of the coupling invariant sees: BuildConnectivityGraph drops them before
 // clustering and BuildTracks forms no tracks from them, so they constrain nothing.
 // scene.pairs still holds every pair here — intra-cluster pairs are moved into the
-// sub-scenes only later, in BuildSubScenesFromClusters.
+// blocks only later, in SceneBlocks::Extract.
 void BucketClusterEdges(const Scene& scene, float minPairWeight,
 	const std::vector<int>& clusterOf, const std::vector<uint32_t>& localIndex,
 	std::vector<std::vector<std::pair<uint32_t, uint32_t>>>& edges, std::vector<std::vector<double>>& weights)
@@ -165,7 +165,7 @@ void BucketClusterEdges(const Scene& scene, float minPairWeight,
 }
 
 // Run AnalyzeClusterCoupling on every cluster that will become a sub-scene, numbered exactly
-// as BuildSubScenesFromClusters numbers them (isSubScene decides which ones, a standalone
+// as SceneBlocks::Extract numbers them (isSubScene decides which ones, a standalone
 // community among them), so a flag here lines up with the merge-time telemetry of the same
 // sub-scene. This is the health check for the two-scale defect: the merge stage aligns the
 // sub-scenes to each other but cannot tell whether one of them reconstructed at two scales, so
@@ -268,90 +268,20 @@ SceneCluster::SceneCluster(Scene& scene, const ClusterConfig& config)
 {
 }
 
-Scene SceneCluster::ExtractSubScene(
-	const IIndexArr& viewIndices,
-	const IIndexArr& globalToLocal,
-	unsigned nThreadsPerCluster)
+ScenePartition SceneCluster::Partition()
 {
-	Scene subScene(nThreadsPerCluster);
-
-	// Map: global camera index -> local camera index
-	std::unordered_map<IIndex, IIndex> cameraMap;
-
-	// Copy images and cameras; move expensive data (keypoints, descriptors)
-	// from the global scene to sub-scenes to save memory during reconstruction.
-	// These are moved back during GlobalAlignment::MergeSingleScene.
-	for (IIndex globalID : viewIndices) {
-		Image& img = scene.images[globalID];
-		// Ensure camera exists in sub-scene
-		const IIndex globalCamID = img.cameraID;
-		auto ret = cameraMap.emplace(globalCamID, subScene.cameras.size());
-		if (ret.second) {
-			// Clone camera for independent bundle adjustment
-			subScene.cameras.emplace_back(scene.cameras[globalCamID]->Clone());
-		}
-		IIndex localCamID = ret.first->second;
-		// Add image with remapped IDs
-		Image subImg = img;
-		subImg.ID = subScene.images.size();
-		subImg.cameraID = localCamID;
-		subImg.pCamera = subScene.cameras[localCamID];
-		// Move expensive data from global to sub-scene to save memory, described-keypoint boundary
-		// included: it indexes the keypoint array, so it has to follow it rather than stay behind
-		// on an image that no longer has one
-		subImg.MoveFeaturesFrom(img);
-		subScene.images.emplace_back(std::move(subImg));
-	}
-
-	// Move image pairs (only with image IDs within cluster)
-	for (uint32_t i = 0; i < scene.pairs.size(); ++i) {
-		ImagePair& pair = scene.pairs[i];
-		const IIndex localID1 = globalToLocal[pair.ID1];
-		const IIndex localID2 = globalToLocal[pair.ID2];
-		if (localID1 == NO_ID || localID2 == NO_ID)
-			continue; // pair crosses cluster boundary
-		// Move pair to avoid copying large match vectors
-		ASSERT(localID1 < localID2);
-		pair.ID1 = localID1;
-		pair.ID2 = localID2;
-		subScene.pairs.emplace_back(std::move(pair));
-		scene.pairs.RemoveAtMove(i--);
-	}
-
-	// Copy tracks (include tracks with ≥2 observations in this cluster)
-	for (const Track& srcTrack : scene.tracks) {
-		Track dstTrack;
-		dstTrack.position = srcTrack.position;
-		FOREACH(k, srcTrack.observations) {
-			const Observation& obs = srcTrack.observations[k];
-			const uint32_t localID = globalToLocal[obs.imageID];
-			if (localID == NO_ID)
-				continue; // observation outside this cluster
-			dstTrack.observations.emplace_back(localID, obs.featureID);
-			if (k < srcTrack.numInliers)
-				++dstTrack.numInliers;
-		}
-		// Include track if it has at least 2 observations in this cluster
-		if (dstTrack.GetNumObservations() >= 2)
-			subScene.tracks.emplace_back(dstTrack);
-	}
-
-    VERBOSE("Sub-scene: %u images, %u pairs, %u tracks",
-	    subScene.images.size(), subScene.pairs.size(),
-	    subScene.tracks.size());
-	return subScene;
-}
-
-std::vector<Scene> SceneCluster::SplitScene(std::vector<IIndexArr>* outLocalToGlobal)
-{
-	IIndex nViews = scene.images.size();
+	const IIndex nViews = scene.images.size();
 	if (nViews == 0) {
 		return {};
 	}
 	if (config.maxViewsPerCluster == 0 || nViews <= config.maxViewsPerCluster) {
-		// No need to split - create single cluster with identity mapping
+		// No need to split - a single cluster of every image
 		DEBUG("Scene has %u images, no clustering needed", nViews);
-		return {std::move(scene)};
+		ScenePartition partition;
+		partition.clusters.emplace_back(nViews);
+		FOREACH(i, partition.clusters[0])
+			partition.clusters[0][i] = i;
+		return partition;
 	}
 
 	// the seams are measured on the tracks, so a scene that arrives with only matches gets them
@@ -362,8 +292,8 @@ std::vector<Scene> SceneCluster::SplitScene(std::vector<IIndexArr>* outLocalToGl
 	BuildConnectivityGraph();
 
 	return config.useCommunityDetection ?
-		SplitSceneCommunityDetection(outLocalToGlobal) :
-		SplitSceneAggregativeClustering(outLocalToGlobal);
+		PartitionCommunityDetection() :
+		PartitionAggregativeClustering();
 }
 
 void SceneCluster::BuildConnectivityGraph()
@@ -403,7 +333,7 @@ void SceneCluster::BuildConnectivityGraph()
 	VERBOSE("Built connectivity graph: %u nodes, %u edges", (unsigned)nViews, (unsigned)(adjncy.size() / 2));
 }
 
-std::vector<Scene> SceneCluster::SplitSceneAggregativeClustering(std::vector<IIndexArr>* outLocalToGlobal)
+ScenePartition SceneCluster::PartitionAggregativeClustering()
 {
 	const IIndex nViews = scene.images.size();
 	std::vector<IIndexArr> clusters(nViews);
@@ -418,9 +348,8 @@ std::vector<Scene> SceneCluster::SplitSceneAggregativeClustering(std::vector<IIn
 	RefineClustersSplitDisconnected(clusters);
 	RefineClustersSplitThinWaist(clusters);
 	RefineClustersForSeams(clusters);
-	RefineClustersRescueOrphans(clusters);
 
-	return BuildSubScenesFromClusters(clusters, outLocalToGlobal);
+	return FinishPartition(clusters);
 }
 
 // Merge clusters bottom-up: repeatedly join the two clusters connected by the
@@ -547,7 +476,7 @@ void SceneCluster::GreedyMergeClusters(std::vector<IIndexArr>& clusters, bool pe
 	}
 }
 
-std::vector<Scene> SceneCluster::SplitSceneCommunityDetection(std::vector<IIndexArr>* outLocalToGlobal)
+ScenePartition SceneCluster::PartitionCommunityDetection()
 {
 	const IIndex nViews = scene.images.size();
 	IIndexArr nodes(0u, nViews);
@@ -573,9 +502,8 @@ std::vector<Scene> SceneCluster::SplitSceneCommunityDetection(std::vector<IIndex
 	RefineClustersSplitDisconnected(clusters);
 	RefineClustersSplitThinWaist(clusters);
 	RefineClustersForSeams(clusters);
-	RefineClustersRescueOrphans(clusters);
 
-	return BuildSubScenesFromClusters(clusters, outLocalToGlobal);
+	return FinishPartition(clusters);
 }
 
 std::vector<IIndexArr> SceneCluster::DetectCommunities(const IIndexArr& nodes, float gamma) const
@@ -738,8 +666,8 @@ void SceneCluster::SplitOversizedCommunity(const IIndexArr& community, float gam
 // (0.18% under the frame-anchored one), stayed unregistered to the end that way. Kept as its own
 // sub-scene it reconstructs on its own cohesion and enters through the merge's placement of the
 // whole block over every seam track at once. A community the merge could not place either is
-// absorbed as before: a block left unplaced would only hand the same images to the whole-scene
-// resection.
+// absorbed by the small-cluster pass, or goes to the pool when no neighbour has room for it: a block
+// left unplaced would only hand the same images to the whole-scene resection.
 bool SceneCluster::IsStandaloneCommunity(const std::vector<IIndexArr>& clusters, size_t c, const SeamTrackStatsMap& seamStats) const
 {
 	ASSERT(c < clusters.size() && !clusters[c].empty());
@@ -930,159 +858,11 @@ void SceneCluster::MergeLeafClusters(std::vector<IIndexArr>& clusters)
 	}
 }
 
-void SceneCluster::RepairClusterSeams(std::vector<IIndexArr>& clusters)
-{
-	// the seams to repair are collected first: repairing one moves images between its two clusters,
-	// which the statistics of the seams sharing a cluster with it would not survive
-	std::vector<std::pair<uint32_t, uint32_t>> thinSeams;
-	for (const auto& [pair, seam] : ComputeSeamTrackStats(clusters)) {
-		if (seam.first.usable < config.minSeamTracks)
-			continue; // too little material to spread over more cameras
-		if (seam.first.CamerasWithAtLeast(config.minSeamCameraTracks) >= config.minSeamCameras &&
-			seam.second.CamerasWithAtLeast(config.minSeamCameraTracks) >= config.minSeamCameras)
-			continue;
-		thinSeams.push_back(pair);
-	}
-	for (const auto& [clusterA, clusterB] : thinSeams)
-		RepairClusterSeam(clusters, clusterA, clusterB);
-}
-
-// One seam that carries usable tracks enough but holds them in too few cameras: the merge weighs a
-// reading by the supporting cameras of its weaker side, so such a seam registers on one or two
-// cameras, and as a bridge it is left off. Moving a boundary image across the cut hands the tracks
-// it sees to the other side, where they now cross the cut, which spreads the seam over more cameras
-// on both sides; the move that raises the weaker side the most is taken, while the two clusters stay
-// within their size bounds.
-void SceneCluster::RepairClusterSeam(std::vector<IIndexArr>& clusters, uint32_t clusterA, uint32_t clusterB)
-{
-	const IIndex nViews = scene.images.size();
-	std::vector<uint8_t> side(nViews, 2); // 0 = first cluster, 1 = second, 2 = neither
-	for (IIndex u : clusters[clusterA])
-		side[u] = 0;
-	for (IIndex u : clusters[clusterB])
-		side[u] = 1;
-
-	// the boundary images: the ones with a covisibility pair crossing the seam
-	IIndexArr candidates;
-	std::vector<bool> isCandidate(nViews, false);
-	for (const ImagePair& pair : scene.pairs) {
-		if (pair.GetCompositeWeight() < config.minPairWeight ||
-			side[pair.ID1] > 1 || side[pair.ID2] > 1 || side[pair.ID1] == side[pair.ID2])
-			continue;
-		for (IIndex u : {pair.ID1, pair.ID2}) {
-			if (!isCandidate[u]) {
-				isCandidate[u] = true;
-				candidates.push_back(u);
-			}
-		}
-	}
-	if (candidates.empty())
-		return;
-	candidates.Sort(); // the same seam is repaired the same way whatever order the pairs came in
-
-	// the tracks each candidate takes part in: moving it changes the seam through those alone
-	std::unordered_map<IIndex, std::vector<uint32_t>> tracksOf;
-	for (IIndex u : candidates)
-		tracksOf.emplace(u, std::vector<uint32_t>());
-	FOREACH(t, scene.tracks) {
-		for (const Observation& obs : scene.tracks[t].observations) {
-			const auto it = tracksOf.find(obs.imageID);
-			if (it != tracksOf.end())
-				it->second.push_back(t);
-		}
-	}
-
-	// What one track contributes to the seam under the current sides, added or taken back. Both the
-	// count below and the per-move recount go through here, so they read the same tracks and a take
-	// back can only ever undo an add of its own.
-	const auto ApplyTrack = [&side](std::pair<SeamTrackStats, SeamTrackStats>& seam, const Track& track, bool add) {
-		if (!track.IsValid())
-			return;
-		const auto Bump = [add](unsigned& value) { if (add) ++value; else --value; };
-		unsigned numObservations[2] = {0, 0};
-		for (const Observation& obs : track.observations)
-			if (side[obs.imageID] < 2)
-				++numObservations[side[obs.imageID]];
-		if (numObservations[0] == 0 || numObservations[1] == 0 ||
-			MAXF(numObservations[0], numObservations[1]) < 2)
-			return;
-		Bump(seam.first.usable);
-		Bump(seam.second.usable);
-		for (const Observation& obs : track.observations) {
-			if (side[obs.imageID] == 0)
-				Bump(seam.first.perCamera[obs.imageID]);
-			else if (side[obs.imageID] == 1)
-				Bump(seam.second.perCamera[obs.imageID]);
-		}
-	};
-	std::pair<SeamTrackStats, SeamTrackStats> seam;
-	for (const Track& track : scene.tracks)
-		ApplyTrack(seam, track, true);
-
-	// the seam after moving one image to the other side, its own tracks the only ones re-read
-	const auto StatsAfterMove = [&](IIndex u) {
-		std::pair<SeamTrackStats, SeamTrackStats> moved = seam;
-		for (uint32_t t : tracksOf[u])
-			ApplyTrack(moved, scene.tracks[t], false);
-		side[u] ^= 1;
-		for (uint32_t t : tracksOf[u])
-			ApplyTrack(moved, scene.tracks[t], true);
-		side[u] ^= 1;
-		return moved;
-	};
-	const auto SeamCameras = [this](const SeamTrackStats& stats) {
-		return stats.CamerasWithAtLeast(config.minSeamCameraTracks);
-	};
-
-	const unsigned camerasBefore[2] = {SeamCameras(seam.first), SeamCameras(seam.second)};
-	const unsigned maxMoves = config.maxViewsPerCluster / 10;
-	unsigned numMoves = 0;
-	while (numMoves < maxMoves) {
-		const unsigned cameras[2] = {SeamCameras(seam.first), SeamCameras(seam.second)};
-		if (cameras[0] >= config.minSeamCameras && cameras[1] >= config.minSeamCameras)
-			break; // the seam carries the merge now
-		IIndex bestImage = NO_ID;
-		unsigned bestObjective = MINF(cameras[0], cameras[1]);
-		std::pair<SeamTrackStats, SeamTrackStats> bestSeam;
-		for (IIndex u : candidates) {
-			const IIndexArr& from = clusters[side[u] == 0 ? clusterA : clusterB];
-			const IIndexArr& into = clusters[side[u] == 0 ? clusterB : clusterA];
-			if (from.size() <= config.minViewsPerCluster || into.size() >= config.maxViewsPerCluster)
-				continue; // the move would push one of the two out of its size bounds
-			std::pair<SeamTrackStats, SeamTrackStats> moved = StatsAfterMove(u);
-			const unsigned objective = MINF(SeamCameras(moved.first), SeamCameras(moved.second));
-			if (objective > bestObjective) {
-				bestObjective = objective;
-				bestImage = u;
-				bestSeam = std::move(moved);
-			}
-		}
-		if (bestImage == NO_ID)
-			break; // no move spreads the seam wider
-		IIndexArr& from = clusters[side[bestImage] == 0 ? clusterA : clusterB];
-		IIndexArr& into = clusters[side[bestImage] == 0 ? clusterB : clusterA];
-		const auto it = std::find(from.begin(), from.end(), bestImage);
-		ASSERT(it != from.end());
-		*it = from.back();
-		from.pop_back();
-		into.push_back(bestImage);
-		side[bestImage] ^= 1;
-		seam = std::move(bestSeam);
-		++numMoves;
-	}
-	if (numMoves == 0)
-		return;
-	VERBOSE("Cluster pair (%u, %u): %u boundary images moved; seam cameras %u/%u -> %u/%u",
-		clusterA, clusterB, numMoves, camerasBefore[0], camerasBefore[1],
-		SeamCameras(seam.first), SeamCameras(seam.second));
-}
-
 void SceneCluster::RefineClustersForSeams(std::vector<IIndexArr>& clusters)
 {
 	MergeLeafClusters(clusters);
-	RepairClusterSeams(clusters);
-	// both passes above move whole clusters and single images around, and either can leave a part
-	// under the floor; the floor rule takes them the same way it takes any other small cluster
+	// the pass above moves whole clusters around and can leave a part under the floor; the floor rule
+	// takes them the same way it takes any other small cluster
 	MergeSmallClusters(clusters);
 
 	// the seam of every adjacent pair as the merge will read it: the raw material for setting the
@@ -1199,7 +979,7 @@ bool SceneCluster::KeepsCoupling(const std::vector<IIndexArr>& clusters, int c, 
 void SceneCluster::RefineClustersBalance(std::vector<IIndexArr>& clusters)
 {
 	if (xadj.empty())
-		BuildConnectivityGraph(); // a caller handing clusters in directly (not through SplitScene) has none yet
+		BuildConnectivityGraph(); // a caller handing clusters in directly (not through Partition) has none yet
 
 	constexpr float kBalanceAffinity = 0.7f;   // min ratio of target-weight to current-internal-weight for a move
 	constexpr float kBalanceTolerance = 1.25f; // stop when largest cluster <= tolerance * mean cluster size
@@ -1366,7 +1146,7 @@ void SceneCluster::RefineClustersSplitDisconnected(std::vector<IIndexArr>& clust
 void SceneCluster::RefineClustersSplitThinWaist(std::vector<IIndexArr>& clusters)
 {
 	if (xadj.empty())
-		BuildConnectivityGraph(); // a caller handing clusters in directly (not through SplitScene) has none yet
+		BuildConnectivityGraph(); // a caller handing clusters in directly (not through Partition) has none yet
 	if (config.minClusterCoupling <= 0)
 		return;
 
@@ -1452,163 +1232,44 @@ void SceneCluster::RefineClustersSplitThinWaist(std::vector<IIndexArr>& clusters
 	}
 }
 
-void SceneCluster::RefineClustersRescueOrphans(std::vector<IIndexArr>& clusters)
+ScenePartition SceneCluster::FinishPartition(std::vector<IIndexArr>& clusters)
 {
-	const IIndex nViews = scene.images.size();
-	std::vector<int> nodeToCluster(nViews, -1);
-	for (size_t c = 0; c < clusters.size(); ++c) {
-		for (IIndex u : clusters[c]) {
-			nodeToCluster[u] = (int)c;
-		}
-	}
-	// the predicate is only ever consulted for a cluster under the floor, so the statistics are
-	// worth computing only when one exists
+	// a cluster under the floor goes to the pool, except a community that stands alone (see
+	// IsStandaloneCommunity); decided once, over the whole partition
 	const SeamTrackStatsMap seamStats = std::any_of(clusters.begin(), clusters.end(),
-		[&](const IIndexArr& c) { return !c.empty() && c.size() < config.minViewsPerCluster; }) ?
-		ComputeSeamTrackStats(clusters) : SeamTrackStatsMap();
-
-	for (size_t c = 0; c < clusters.size(); ++c) {
-		if (clusters[c].empty() || clusters[c].size() >= config.minViewsPerCluster) continue;
-		if (IsStandaloneCommunity(clusters, c, seamStats)) continue; // stands alone: not dismantled
-
-		// This cluster is still too small, try to reassign its nodes individually
-		IIndexArr nodes = clusters[c];
-		clusters[c].clear();
-		for (IIndex u : nodes) {
-			std::unordered_map<int, int> cluster_weights;
-			for (int i = xadj[u]; i < xadj[u+1]; ++i) {
-				int v = adjncy[i];
-				int target_c = nodeToCluster[v];
-				if (target_c != -1 && target_c != (int)c) {
-					cluster_weights[target_c] += adjwgt[i];
-				}
-			}
-
-			int best_target = -1;
-			int max_weight = -1;
-			for (const auto& p : cluster_weights) {
-				if (p.second > max_weight) {
-					if (clusters[p.first].size() < config.maxViewsPerCluster + config.maxOverCapacity) {
-						max_weight = p.second;
-						best_target = p.first;
-					}
-				}
-			}
-
-			if (best_target != -1) {
-				nodeToCluster[u] = best_target;
-				clusters[best_target].push_back(u);
-			} else {
-				// No cluster is connected to this image: keep it out of the sub-scenes
-				// (its cluster stays small and is skipped); the image remains in the
-				// global scene and is registered by the post-merge resection instead
-				clusters[c].push_back(u);
-			}
-		}
-	}
-
-	clusters.erase(std::remove_if(clusters.begin(), clusters.end(), [](const IIndexArr& c) {
-		return c.empty();
-	}), clusters.end());
-}
-
-std::vector<Scene> SceneCluster::SplitSceneByClusters(
-	const std::vector<IIndexArr>& clusters,
-	std::vector<IIndexArr>* outLocalToGlobal)
-{
-	// the clusters are given, so there is nothing to partition and no connectivity graph to build
-	std::vector<IIndexArr> given(clusters);
-	return BuildSubScenesFromClusters(given, outLocalToGlobal, false);
-}
-
-std::vector<Scene> SceneCluster::BuildSubScenesFromClusters(
-	std::vector<IIndexArr>& clusters,
-	std::vector<IIndexArr>* outLocalToGlobal,
-	const bool skipSmallClusters)
-{
-	IIndex nSkippedViews = 0;
-	std::vector<Scene> subScenes;
-	subScenes.reserve(clusters.size());
-	if (outLocalToGlobal)
-		outLocalToGlobal->reserve(clusters.size());
-
-	// a cluster under the floor is skipped, except a community that stands alone (see
-	// IsStandaloneCommunity); decided once, before the extraction loop moves a cluster out of
-	// `clusters` and leaves the predicate reading a partial partition
-	const SeamTrackStatsMap seamStats = skipSmallClusters && std::any_of(clusters.begin(), clusters.end(),
 		[&](const IIndexArr& c) { return !c.empty() && c.size() < config.minViewsPerCluster; }) ?
 		ComputeSeamTrackStats(clusters) : SeamTrackStatsMap();
 	std::vector<bool> isSubScene(clusters.size());
 	for (size_t c = 0; c < clusters.size(); ++c)
 		isSubScene[c] = !clusters[c].empty() &&
-			(!skipSmallClusters || clusters[c].size() >= config.minViewsPerCluster ||
-			 IsStandaloneCommunity(clusters, c, seamStats));
-
-	// the budget is shared by the clusters that will actually become sub-scenes, so counting them
-	// first: a clustering yielding one real cluster and a crowd of skipped singletons must not
-	// leave the one reconstruction that runs with a single thread
-	unsigned nClusters = 0;
-	for (size_t c = 0; c < clusters.size(); ++c)
-		if (isSubScene[c]) ++nClusters;
-	const unsigned nThreadsPerCluster = MAXF(1u, scene.nMaxThreads / MAXF(nClusters, 1u));
-	DEBUG_EXTRA("Allocating %u threads per sub-scene (%u clusters, %u parent threads)",
-		nThreadsPerCluster, nClusters, scene.nMaxThreads);
+			(clusters[c].size() >= config.minViewsPerCluster || IsStandaloneCommunity(clusters, c, seamStats));
 
 	// verify the clusters are well connected before reconstruction; the internal
-	// covisibility graph still holds every intra-cluster pair (ExtractSubScene moves
-	// them out below), so this must run before the extraction loop
+	// covisibility graph still holds every intra-cluster pair (the blocks move them out
+	// when they are extracted), so this must run before
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2)
 		ReportClusterCoupling(scene, clusters, config, isSubScene);
 	#endif
 
-	// which global images each sub-scene took, as ranges: the membership every later stage is
-	// reported against, so a block that comes out wrong can be traced back to the split
-	std::vector<String> memberships;
+	ScenePartition partition;
+	partition.clusters.reserve(clusters.size());
 	for (size_t c = 0; c < clusters.size(); ++c) {
-		if (skipSmallClusters && clusters[c].empty()) continue;
+		if (clusters[c].empty()) continue;
 		IIndexArr& cluster = clusters[c];
 		// Sort by global ID so that local IDs preserve global ordering:
 		// localID1 < localID2 means also globalID1 < globalID2
 		// so pair ID ordering (ID1 < ID2) is maintained through local-global remapping
 		cluster.Sort();
 		if (!isSubScene[c]) {
-			DEBUG("warning: skipping small cluster with %u views", (unsigned)cluster.size());
-			nSkippedViews += cluster.size();
+			DEBUG("Small cluster of %u views goes to the pool", (unsigned)cluster.size());
+			partition.pool.Join(cluster);
 			continue;
 		}
-		String membership;
-		FOREACH(i, cluster) {
-			if (i > 0 && cluster[i] == cluster[i-1] + 1)
-				continue; // still inside the current range
-			IIndex last = cluster[i];
-			for (IIndex j = i + 1; j < cluster.size() && cluster[j] == last + 1; ++j)
-				last = cluster[j];
-			if (!membership.empty())
-				membership += ", ";
-			membership += last == cluster[i] ?
-				String::FormatString("%u", cluster[i]) :
-				String::FormatString("%u-%u", cluster[i], last);
-		}
-		memberships.emplace_back(String::FormatString("sub-scene %u: %s (%u images)",
-			(unsigned)subScenes.size(), membership.c_str(), (unsigned)cluster.size()));
-		IIndexArr globalToLocal(scene.images.size());
-		globalToLocal.MemsetValue(NO_ID);
-		FOREACH(localID, cluster)
-			globalToLocal[cluster[localID]] = localID;
-		subScenes.emplace_back(ExtractSubScene(cluster, globalToLocal, nThreadsPerCluster));
-		if (outLocalToGlobal)
-			outLocalToGlobal->emplace_back(std::move(cluster));
+		partition.clusters.emplace_back(std::move(cluster));
 	}
-	DEBUG("Clustering: split into %u sub-scenes and %u skipped views, %u cross-sub-scene pairs remain",
-		(unsigned)subScenes.size(), nSkippedViews, scene.pairs.size());
-	for (const String& membership : memberships)
-		DEBUG_ULTIMATE("Clustering: %s", membership.c_str());
-	#if TD_VERBOSE != TD_VERBOSE_OFF
-	if (VERBOSITY_LEVEL > 2 && !subScenes.empty() && !subScenes[0].images.empty() && subScenes[0].images[0].View::metadata.HasGPS())
-		ExportClusterPositions(subScenes, MAKE_PATH(String("clusters_gps.ply")));
-	#endif
-	return subScenes;
+	partition.pool.Sort();
+	return partition;
 }
 
 bool SceneCluster::ExportClusterPositions(

@@ -595,7 +595,6 @@ bool SceneClusterDisconnectedComponentsTest();
 bool SceneClusterTargetSizeTest();
 bool SceneClusterSeamTracksTest();
 bool SceneClusterLeafMergeTest();
-bool SceneClusterSeamRepairTest();
 bool SceneClusterMemoryProtocolTest();
 bool SceneClusterIDRemappingTest();
 bool SceneClusterSmallClusterRescueTest();
@@ -625,6 +624,9 @@ bool SceneClusterBalanceCouplingTest();
 // holds it at the floor, and otherwise stays; a stretch large enough to stand is split off as before
 // (SceneCluster::RefineClustersSplitThinWaist)
 bool SceneClusterThinStretchTest();
+bool SceneBlocksInsertReleaseTest();
+bool SceneBlocksInsertRebuildTest();
+bool PoolResectionWrongClusterTest();
 
 // Phase 3: Global Alignment tests
 bool GlobalAlignmentBuildGlobalToLocalMapTest();
@@ -650,6 +652,8 @@ bool RotationOnlyReadingTest();
 bool BarsReEntryTest();
 bool WeightlessScaleReadingTest();
 bool RingPlacementTest();
+bool MergeJoinReprojectionTest();
+bool MergeTrackLengthTest();
 bool UnobservableScaleTest();
 bool UnobservableScalePairTest();
 bool AmbiguousPairTest();

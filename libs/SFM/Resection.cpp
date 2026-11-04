@@ -119,21 +119,13 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 	registeredWeights.reserve(nextIDs.size());
 	for (IIndex imageID : nextIDs)
 		registeredWeights.emplace(imageID, 0.f);
-	for (const ImagePair& pair : scene.pairs) {
-		const float weight = pair.GetCompositeWeight();
-		if (weight <= 0.f)
-			continue;
-		if (scene.images[pair.ID2].HasPose()) {
-			const auto it = registeredWeights.find(pair.ID1);
+	ForEachRegisteredPairWeight(scene.pairs,
+		[this](IIndex imageID) { return scene.images[imageID].HasPose(); },
+		[&registeredWeights](IIndex imageID, IIndex, float weight) {
+			const auto it = registeredWeights.find(imageID);
 			if (it != registeredWeights.end())
 				it->second += weight;
-		}
-		if (scene.images[pair.ID1].HasPose()) {
-			const auto it = registeredWeights.find(pair.ID2);
-			if (it != registeredWeights.end())
-				it->second += weight;
-		}
-	}
+		});
 	nextIDs.Sort([&registeredWeights, &unregistered](IIndex a, IIndex b) {
 		const float weightA = registeredWeights.at(a), weightB = registeredWeights.at(b);
 		if (weightA != weightB)
@@ -416,7 +408,7 @@ unsigned SFM::AdjustRepeated(Scene& scene, const BAConfig& baConfig, const Resec
 	return solves;
 }
 
-bool Resection::RegisterImages()
+bool Resection::RegisterImages(bool closeWhenNothingRegistered)
 {
 	TD_TIMER_STARTD();
 
@@ -546,10 +538,13 @@ bool Resection::RegisterImages()
 	// skipped) and one that registered nothing since the last adjustment: the closing form (every
 	// track triangulated again, every intrinsic the flags allow, more iterations) settles the model
 	// the caller is left with, e.g. the whole-scene pass's model filtered at the final adjustment's
-	// tighter bar, re-admitting the observations that bar dropped and the resection's own bar keeps
-	TriangulateTracks(scene, false, config.maxReprojError, config.minAngleThreshold);
-	config.extendedBAConfig.maxIterations = 100;
-	AdjustRepeated(scene, config.extendedBAConfig, config);
+	// tighter bar, re-admitting the observations that bar dropped and the resection's own bar keeps;
+	// a caller that asked to keep a model that took nothing as it was gets no closing then
+	if (registeredCount > 0 || closeWhenNothingRegistered) {
+		TriangulateTracks(scene, false, config.maxReprojError, config.minAngleThreshold);
+		config.extendedBAConfig.maxIterations = 100;
+		AdjustRepeated(scene, config.extendedBAConfig, config);
+	}
 
 	// Update scene status
 	scene.status.nCalibratedImages += registeredCount;

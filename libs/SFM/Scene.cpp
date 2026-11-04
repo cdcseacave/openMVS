@@ -12,6 +12,7 @@
 #include "Track.h"
 #include "Triangulation.h"
 #include "SceneCluster.h"
+#include "SceneBlocks.h"
 #include "StarInitializer.h"
 #include "Resection.h"
 #include "BundleAdjustment.h"
@@ -914,15 +915,24 @@ bool Scene::ReconstructHierarchical(const ReconstructionConfig& config, const II
 
 	TD_TIMER_STARTD();
 
-	// 1. Cluster scene if necessary
-	std::vector<Scene> subScenes;
-	std::vector<IIndexArr> localToGlobals;
-	if (config.clusterCfg.maxViewsPerCluster > 0 && images.size() > config.clusterCfg.maxViewsPerCluster) {
-		SceneCluster clusterer(*this, config.clusterCfg);
-		subScenes = clusterer.SplitScene(&localToGlobals);
-	} else {
-		subScenes.emplace_back(std::move(*this));
-	}
+	// 1. Partition the scene if necessary, and extract its blocks
+	SceneBlocks sceneBlocks(*this);
+	if (config.clusterCfg.maxViewsPerCluster > 0 && images.size() > config.clusterCfg.maxViewsPerCluster)
+		sceneBlocks.Extract(SceneCluster(*this, config.clusterCfg).Partition());
+	else
+		sceneBlocks.TakeWhole();
+	std::vector<Scene>& subScenes = sceneBlocks.blocks;
+	const std::vector<IIndexArr>& localToGlobals = sceneBlocks.localToGlobal;
+
+	// The resection of every block and of the pool resection; every Ceres solve clamps itself to the
+	// block's thread budget (see BundleAdjustment). The local/full BA settings derive from the scene's
+	// configured BAConfig so the resection's bundle adjustments see the same settings as the rest of the
+	// pipeline.
+	ResectionConfig resectionCfg = config.resectionCfg;
+	resectionCfg.pairsWeighting = config.matchCfg.weightingCfg; // the pose's dense inliers weigh as the pairs' did
+	BAConfig resectionBaCfg = config.baConfig;
+	SetBAIntrinsicFlags(resectionBaCfg, config.baIntrinsicFlags);
+	resectionCfg.DeriveBAConfigs(resectionBaCfg);
 
 	// 2. Reconstruct each sub-scene in parallel
 	threadPool.detach_loop(IIndex(0), (IIndex)subScenes.size(), [&](IIndex i) {
@@ -943,15 +953,7 @@ bool Scene::ReconstructHierarchical(const ReconstructionConfig& config, const II
 			return; // skip this sub-scene
 		}
 
-		// Incrementally resect images into the reconstruction; every Ceres solve
-		// clamps itself to the sub-scene's thread budget (see BundleAdjustment). Derive the
-		// local/full BA settings from the scene's configured BAConfig so the resection's bundle
-		// adjustments see the same settings as the rest of the pipeline.
-		ResectionConfig resectionCfg = config.resectionCfg;
-		resectionCfg.pairsWeighting = config.matchCfg.weightingCfg; // the pose's dense inliers weigh as the pairs' did
-		BAConfig resectionBaCfg = config.baConfig;
-		SetBAIntrinsicFlags(resectionBaCfg, config.baIntrinsicFlags);
-		resectionCfg.DeriveBAConfigs(resectionBaCfg);
+		// Incrementally resect images into the reconstruction
 		Resection resection(subScene, resectionCfg);
 		resection.RegisterImages();
 		// The resection always closes with a full adjustment of this sub-scene, also when the star
@@ -961,12 +963,19 @@ bool Scene::ReconstructHierarchical(const ReconstructionConfig& config, const II
 	});
 	threadPool.wait();
 
-	// 3. Place the blocks and merge them, then adjust the merged model at the loose bar
-	if (subScenes.size() == 1) {
+	if (!sceneBlocks.IsSplit()) {
 		*this = std::move(subScenes[0]);
 	} else {
-		// place the blocks and merge the model holding the most images; every other block's images
-		// are left to the resection
+		// 3. The pool resection: the images a block did not register, and the ones the partition left
+		// in no block, registered into the blocks they connect to best
+		sceneBlocks.ResectPool(resectionCfg, config);
+		if (subScenes.empty()) {
+			VERBOSE("warning: no block initialized; every image is left to the resection");
+			return true;
+		}
+
+		// 4. Place the blocks and merge them, then adjust the merged model at the loose bar: the model
+		// holding the most images is merged, every other block's images are left to the resection
 		GlobalAlignment globalAlign(*this, config.globalAlignmentCfg);
 		MergeReport mergeReport;
 		globalAlign.MergeScenes(subScenes, localToGlobals, mergeReport);

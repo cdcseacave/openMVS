@@ -41,6 +41,7 @@
 
 // Scene clustering
 #include "SFM/SceneCluster.h"
+#include "SFM/SceneBlocks.h"
 
 // Incremental reconstruction
 #include "SFM/StarInitializer.h"

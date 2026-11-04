@@ -1453,13 +1453,13 @@ bool GlobalAlignment::MergeScenes(
 	std::vector<SeamCandidate> candidates;
 	EstimateSeamCandidates(subScenes, localToGlobals, candidates);
 
-	// a single block has nothing to align against, so it is copied in as it is
+	// a single block has nothing to align against, so it is merged in its own frame
 	if (numBlocks == 1) {
-		VERBOSE("Single block, copying directly");
-		MergeSingleScene(subScenes[0], localToGlobals[0], true);
+		VERBOSE("Single block, merged as it is");
 		report.poses.assign(1, BlockPose());
 		report.poses[0].model = 0;
 		report.poses[0].state = BlockPose::ADMITTED;
+		MergeTransformedScenes(subScenes, localToGlobals, report.poses, std::vector<SeamCorrespondence>());
 		report.numPlaced = report.numModels = 1;
 		report.numImagesPlaced = scene.status.nCalibratedImages;
 		DEBUG("Single-block merge completed (%s)", TD_TIMER_GET_FMT().c_str());
@@ -1642,7 +1642,7 @@ bool GlobalAlignment::MergeTransformedScenes(
 void GlobalAlignment::MergeSingleScene(Scene& subScene, const IIndexArr& localToGlobal, bool placed)
 {
 	// Copy image poses and move back keypoints/descriptors
-	// (keypoints/descriptors were moved to sub-scenes during ExtractSubScene to save memory)
+	// (keypoints/descriptors were moved to sub-scenes during SceneBlocks::Extract to save memory)
 	for (IIndex localID = 0; localID < subScene.images.size(); ++localID) {
 		const IIndex globalID = localToGlobal[localID];
 		if (globalID == NO_ID || globalID >= scene.images.size())
@@ -1736,6 +1736,7 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs(
 		Point3 position{Point3::ZERO};
 		uint32_t numInliers{0};
 		std::unique_ptr<std::unordered_set<IIndex>> images;
+		std::unique_ptr<ObservationArr> posedObs; // its observations in posed images, the ones a position joining it must explain
 		bool hasPosition{false};
 
 		void InitImages() {
@@ -1774,7 +1775,6 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs(
 	// observations (first numInliers entries, which passed reprojection filtering)
 	// or all observations including outliers.
 	const bool useOnlyInliers = config.mergeTrackInliersOnly;
-	AABB3 bbox(true);
 	for (const Track& track : scene.tracks) {
 		if (!track.IsValid())
 			continue;
@@ -1816,19 +1816,21 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs(
 		for (uint32_t i = 0; i < numObs; ++i) {
 			const Observation& obs = track.observations[i];
 			if (obs.imageID < scene.images.size() &&
-				obs.featureID < scene.images[obs.imageID].keypoints.size())
+				obs.featureID < scene.images[obs.imageID].keypoints.size()) {
 				meta.images->emplace(obs.imageID);
+				// the inliers of a positioned track (what its position was computed from), every posed one otherwise
+				if ((!meta.hasPosition || i < track.numInliers) && scene.images[obs.imageID].IsValid()) {
+					if (!meta.posedObs)
+						meta.posedObs = std::make_unique<ObservationArr>();
+					meta.posedObs->push_back(obs);
+				}
+			}
 		}
-		if (meta.hasPosition)
-			bbox.InsertFull(track.position);
 	}
-
-	// Compute proximity threshold from scene bounding box
-	const REAL proximityThreshold = bbox.IsEmpty() ? REAL(0) : REAL(0.02) * bbox.GetSize().norm();
 
 	// Cross-sub-scene connectivity: the seam inliers below, then every connecting pair in Phase 2,
 	// share one union-find, one set of root guards, and one summary.
-	unsigned numMerged = 0, numRejectedProximity = 0, numRejectedDupImage = 0, numNewPairTracks = 0;
+	unsigned numMerged = 0, numRejectedReprojection = 0, numRejectedDupImage = 0, numRejectedLength = 0, numNewPairTracks = 0;
 	unsigned numCrossScenePairs = 0, numSeamMerged = 0;
 
 	// Ensure root has metadata and feature is counted exactly once;
@@ -1842,6 +1844,11 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs(
 		RootMeta& meta = rootMeta[ds.Find(gid)];
 		meta.InitImages();
 		meta.images->emplace(imgID);
+		if (scene.images[imgID].IsValid()) {
+			if (!meta.posedObs)
+				meta.posedObs = std::make_unique<ObservationArr>();
+			meta.posedObs->emplace_back(imgID, gid - featureOffsets[imgID]);
+		}
 	};
 
 	// Guard 1, shared by every union below: reject if merging would create duplicate image
@@ -1867,11 +1874,43 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs(
 		metaDst.numInliers += metaSrc.numInliers;
 		metaDst.images->insert(metaSrc.images->begin(), metaSrc.images->end());
 		metaSrc.images.reset();
+		if (metaSrc.posedObs) {
+			if (!metaDst.posedObs)
+				metaDst.posedObs = std::move(metaSrc.posedObs);
+			else
+				metaDst.posedObs->Join(*metaSrc.posedObs);
+			metaSrc.posedObs.reset();
+		}
+	};
+
+	// Guard 2, shared by every union below: a track holds at most 255 observations (its inlier count is a
+	// byte), so a join that would make a longer one is refused; one image per observation (guard 1)
+	auto FitsInTrack = [](const RootMeta& metaDst, const RootMeta& metaSrc) -> bool {
+		return metaDst.images->size() + metaSrc.images->size() <= 255;
+	};
+
+	// Guard 3, for the pair matches: the position of a root must reproject within the loose bar into every
+	// posed observation of the other, judged as FilterTracks judges (the angle between the observed ray and
+	// the point, the bar converted per camera; behind the camera fails); a root without a position is
+	// checked from the other side alone, one without posed observations offers nothing to check
+	const float looseBar = config.looseSeamFactor * config.maxReprojError;
+	auto ReprojectsInto = [&](const Point3& X, const RootMeta& meta) -> bool {
+		if (!meta.posedObs)
+			return true;
+		for (const Observation& obs : *meta.posedObs) {
+			const Image& img = scene.images[obs.imageID];
+			ASSERT(img.IsValid() && img.HasCamera());
+			const Point3 Xcam = img.TransformPointW2C(X);
+			const Point3 observedRay = img.pCamera->UnprojectNormalized(Cast<REAL>(img.keypoints[obs.featureID].pt));
+			if (ComputeAngle(observedRay.ptr(), Xcam.ptr()) < COS(img.pCamera->PixelErrorToAngular(looseBar)))
+				return false;
+		}
+		return true;
 	};
 
 	// Seam inliers: every kept correspondence of a seam the merged model rests on already agrees
-	// with the placement, so its two ends join their tracks on the duplicate-image guard alone --
-	// no proximity test, since the seam is itself the evidence the two sides are the same point.
+	// with the placement, so its two ends join their tracks on the duplicate-image and length guards alone --
+	// no reprojection test, since the seam is itself the evidence the two sides are the same point.
 	for (const SeamCorrespondence& corr : seamInliers) {
 		ASSERT(corr.imageA < scene.images.size() && corr.imageB < scene.images.size());
 		ASSERT(corr.featureA < scene.images[corr.imageA].keypoints.size() &&
@@ -1889,6 +1928,10 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs(
 					++numRejectedDupImage;
 					return false;
 				}
+				if (!FitsInTrack(metaDst, metaSrc)) {
+					++numRejectedLength;
+					return false;
+				}
 				MergeRoots(metaDst, metaSrc);
 				++numSeamMerged;
 				return true;
@@ -1896,10 +1939,12 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs(
 		);
 	}
 
-	// Phase 2: Process ONLY cross-sub-scene pairs (connecting pairs) to merge
-	// tracks across sub-scene boundaries.
+	// Phase 2: Process ONLY the connecting pairs to merge tracks across sub-scene boundaries.
 	//
-	// A pair is a "connecting pair" if its two images belong to different sub-scenes.
+	// A pair is a "connecting pair" unless its two images belong to the same sub-scene: a pair
+	// joining two sub-scenes, or with an image in no sub-scene (the pool: no block registered it,
+	// and its observations left the block tracks with it, so its pairs are the only source of
+	// its tracks the post-merge resection can read).
 	// Intra-sub-scene pairs are skipped: their tracks are already correctly formed
 	// by BuildTracks during sub-scene reconstruction. Re-processing them here would
 	// over-merge tracks within a sub-scene (because outlier observations removed
@@ -1911,14 +1956,9 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs(
 			continue;
 		ASSERT(pair.ID1 < scene.images.size() && pair.ID2 < scene.images.size());
 		ASSERT(scene.images[pair.ID1].HasFeatures() && scene.images[pair.ID2].HasFeatures());
-		// Filter: only process cross-sub-scene pairs.
-		// Both images must be in globalToLocal (assigned to a sub-scene)
-		// and must belong to different sub-scenes.
 		const auto itA = globalToLocal.find(pair.ID1);
 		const auto itB = globalToLocal.find(pair.ID2);
-		if (itA == globalToLocal.end() || itB == globalToLocal.end())
-			continue;
-		if (itA->second.first == itB->second.first)
+		if (itA != globalToLocal.end() && itB != globalToLocal.end() && itA->second.first == itB->second.first)
 			continue; // same sub-scene, skip
 		++numCrossScenePairs;
 
@@ -1940,7 +1980,7 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs(
 			AccumulateFeature(gid1, pair.ID1);
 			AccumulateFeature(gid2, pair.ID2);
 
-			// Attempt union with image-uniqueness and 3D proximity guards
+			// Attempt union with the image-uniqueness, length and reprojection guards
 			ds.UnionIf(gid1, gid2,
 				[&](uint32_t rootDst, uint32_t rootSrc) -> bool {
 					RootMeta& metaDst = rootMeta[rootDst];
@@ -1951,13 +1991,16 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs(
 						++numRejectedDupImage;
 						return false;
 					}
-					// Guard 2: if both sides have triangulated 3D positions,
-					// reject if they are too far apart (indicates false match)
-					if (metaDst.hasPosition && metaSrc.hasPosition && proximityThreshold > 0) {
-						if (norm(metaDst.position - metaSrc.position) > proximityThreshold) {
-							++numRejectedProximity;
-							return false;
-						}
+					// Guard 2: the joined track must fit in 255 observations
+					if (!FitsInTrack(metaDst, metaSrc)) {
+						++numRejectedLength;
+						return false;
+					}
+					// Guard 3: each position explains the other root's posed observations
+					if ((metaDst.hasPosition && !ReprojectsInto(metaDst.position, metaSrc)) ||
+						(metaSrc.hasPosition && !ReprojectsInto(metaSrc.position, metaDst))) {
+						++numRejectedReprojection;
+						return false;
 					}
 					MergeRoots(metaDst, metaSrc);
 					++numMerged;
@@ -2013,9 +2056,9 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs(
 	}
 
 	DEBUG("Track merge: %u/%u tracks, %u cross-sub-scene merges from %u connecting pairs, "
-		"%u from seam inliers, %u new from pairs, %u rejected by proximity, %u rejected by duplicate image",
+		"%u from seam inliers, %u new from pairs, %u rejected by reprojection, %u rejected by duplicate image, %u rejected by length",
 		scene.status.nTracks, scene.tracks.size(), numMerged, numCrossScenePairs,
-		numSeamMerged, numNewPairTracks, numRejectedProximity, numRejectedDupImage);
+		numSeamMerged, numNewPairTracks, numRejectedReprojection, numRejectedDupImage, numRejectedLength);
 }
 /*----------------------------------------------------------------*/
 

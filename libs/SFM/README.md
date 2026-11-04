@@ -236,9 +236,10 @@ Input: Images + matched pairs (from common front-end)
   ▼
 ┌─────────────────────────────────────────────────────────┐
 │ 1. Scene Clustering                                      │
-│    SceneCluster.h/cpp                                    │
+│    SceneCluster.h/cpp, SceneBlocks.h/cpp                 │
 │    Aggregative clustering on covisibility graph          │
-│    Partition into clusters of ≤150 images (default)      │
+│    Partition into clusters of ≤200 images (default),     │
+│    images no cluster holds well left in the pool         │
 │    (if scene ≤ maxViewsPerCluster → 1 cluster = pure    │
 │     incremental reconstruction, no alignment needed)     │
 └─────────────────────────────────────────────────────────┘
@@ -293,7 +294,7 @@ Input: Images + matched pairs (from common front-end)
 │                        ▼                                 │
 │    c. Merge the model with the most images: apply its    │
 │       block poses, average shared camera intrinsics,     │
-│       merge tracks via union-find + 3D proximity guards  │
+│       merge tracks via union-find + reprojection guards  │
 │       (every placed pair's correspondences within the    │
 │       loose bar join by construction); every other block │
 │       is merged without a pose, for the resection        │
@@ -315,9 +316,11 @@ Output: Calibrated poses + sparse point cloud
 
 **Key implementation details**:
 
-- **Scene Clustering** (`SceneCluster.h`): Builds a covisibility graph (nodes = images, edges = inlier match counts), then uses bottom-up aggregative clustering. It merges the highest-weight edge at each step, aiming for `targetViewsPerCluster` (two thirds of `maxViewsPerCluster`, default 150) and never crossing the ceiling itself. Seven refinement passes then merge small clusters, move boundary images for better modularity and balance, split disconnected or thin-waisted components, and merge away or widen any cluster boundary the merge could not otherwise register against.
+- **Scene Clustering** (`SceneCluster.h`): Builds a covisibility graph (nodes = images, edges = inlier match counts), then uses bottom-up aggregative clustering. It merges the highest-weight edge at each step, aiming for `targetViewsPerCluster` (two thirds of `maxViewsPerCluster`, default 150) and never crossing the ceiling itself. Six refinement passes then merge small clusters, move boundary images for better modularity and balance, split disconnected or thin-waisted components, and merge away any cluster the merge could not otherwise register against; a cluster still under the floor (not a standalone community) goes to the pool.
 
-- **Data protocol**: Keypoints and descriptors are **moved** (not copied) from the global scene into sub-scenes to save memory. Cross-cluster image pairs remain in the global scene for use during alignment. After merge, data is moved back.
+- **Pool resection** (`SceneBlocks.h`): after the blocks are reconstructed and before the merge, every image a block could not register goes to a common pool with the images the clustering left in no block; each pool image is tried by the block its verified pairs to registered images weigh most on (the sum the resection orders its candidates by), with that block's ordinary resection, in passes and rounds until a round registers nothing.
+
+- **Data protocol**: Keypoints and descriptors are **moved** (not copied) from the global scene into sub-scenes to save memory, and between a block and the pool when the pool resection moves an image. Cross-cluster image pairs and the pool's pairs remain in the global scene for use during alignment. After merge, data is moved back.
 
 - **Star Initialization** (`StarInitializer.h`): Instead of the classic two-view initialization (sensitive to baseline selection), OpenMVS uses a star configuration: the most-connected image (by inlier count) becomes the reference, and its neighbours are registered simultaneously, each listed by the inliers that fix its distance -- those whose ray angle at the pair's pose reaches the reconstruction's `minAngleThreshold` (`StarInitConfig::evidenceMinAngle`) -- so that a far view sharing only far points with the reference, whose unit baseline guesses a distance no match backs, is left to the resection, however many inliers it has. The star refines the focal length alone (a star this small cannot also constrain distortion) -- a focal forced with `--focal-length` is left untouched here and refined by the global bundle adjustments instead.
 
@@ -644,7 +647,8 @@ libs/SFM/
 ├── RelativePoseRefine.h/cpp            # Two-view calibration refinement
 │
 │ # Hierarchical / Global reconstruction
-├── SceneCluster.h/cpp                  # Aggregative scene clustering
+├── SceneCluster.h/cpp                  # Aggregative scene clustering (the partition)
+├── SceneBlocks.h/cpp                   # The blocks and the pool: extraction, pool resection
 ├── GlobalAlignment.h/cpp               # Block pair readings, block-graph averaging, merging
 ├── GlobalRotationAveraging.h/cpp       # SO(3) rotation averaging; the view graph's contradiction cut
 ├── GlobalScaleAveraging.h/cpp          # Log-space scale averaging

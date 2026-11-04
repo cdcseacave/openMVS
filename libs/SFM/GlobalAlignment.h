@@ -54,10 +54,10 @@ class SFM_API Scene;
  *
  * Merge (MergeScenes): transform every block of the model holding the most images, average the
  * intrinsics of a camera shared across blocks, move keypoints, descriptors and pairs back from
- * every block (reversing SceneCluster::ExtractSubScene), and merge tracks with a union-find over
+ * every block (reversing SceneBlocks::Extract), and merge tracks with a union-find over
  * global feature IDs: every correspondence of every placed block pair that the final block poses
  * explain within the loose bar joins by construction, cross-block pairs join under a
- * duplicate-image and a 3D-proximity guard, and intra-block pairs are skipped -- their tracks were
+ * duplicate-image, a 255-observation and a reprojection guard, and intra-block pairs are skipped -- their tracks were
  * already correctly formed. AdjustMergedScene (Scene.h) then filters the merged scene at that loose
  * bar and adjusts it, so a block bent within the bars keeps the matches of its far end until the
  * adjustment has straightened it. Every block outside the merged model is merged without a pose,
@@ -366,7 +366,7 @@ private:
 	 * @brief Merge a single scene into the global scene
 	 *
 	 * Moves keypoints/descriptors back from sub-scene images to the global scene
-	 * (they were moved to sub-scenes during SceneCluster::ExtractSubScene to save memory).
+	 * (they were moved to sub-scenes during SceneBlocks::Extract to save memory).
 	 * Also moves image pairs back and remaps track observation IDs.
 	 * When not placed, camera poses are not copied and all merged tracks are marked
 	 * non-inlier (numInliers=0): the observations survive for later triangulation, but no
@@ -381,8 +381,10 @@ private:
 	 * 1. Initialize each sub-scene's tracks as independent sets
 	 * 2. Union every correspondence of the merged model's block pairs its block poses explain:
 	 *    its two ends join by construction, on the duplicate-image guard alone
-	 * 3. Process cross-sub-scene pairs to connect tracks across boundaries,
-	 *    using 3D proximity as validation when both sides have triangulated positions
+	 * 3. Process the connecting pairs (two sub-scenes, or an image in no sub-scene: a pool image,
+	 *    whose pairs are the only source of its tracks) to connect tracks across boundaries,
+	 *    a join refused when it would hold one image twice or more than 255 observations, or when a
+	 *    root's position does not reproject within the loose bar into the other root's posed observations
 	 * 4. Assemble final tracks, triangulating any new tracks without 3D positions
 	 *
 	 * Tracks of unplaced sub-scenes (all observations in unregistered images) are seeded with

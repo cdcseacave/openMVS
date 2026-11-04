@@ -39,6 +39,7 @@
 #include "../../libs/SFM/ViewGraphCalibrator.h"
 #include "../../libs/SFM/BundleAdjustment.h"
 #include "../../libs/SFM/SceneCluster.h"
+#include "../../libs/SFM/SceneBlocks.h"
 #include "../../libs/SFM/GlobalAlignment.h"
 #include "../../libs/SFM/PoseLink.h"
 #include "../../libs/SFM/Triangulation.h"
@@ -10453,7 +10454,7 @@ bool ReconstructTest(bool verbose)
 //     early return;
 // (b) an already-matched .sfm given back as source, which takes the "scene already matched
 //     after import" early return that never calls MatchPairs() again.
-// This tiny scene never triggers SceneCluster::SplitScene (well under the default
+// This tiny scene never triggers SceneCluster::Partition (well under the default
 // 200-image cluster threshold) and match-images-only mode stops before any reconstruction step
 // runs, so scene.pairs is never touched after matching -- the exported CSV row count is checked
 // against scene.pairs.size() right after Reconstruct() returns, rather than against a count
@@ -15809,6 +15810,17 @@ bool VocabularyIgnoresGlobalDescriptorsTest()
 // Phase 1: Scene Clustering Tests
 // ===============================================================================
 
+// The blocks of a partition as the reconstruction extracts them (SceneBlocks::Extract), handed out
+// as the sub-scenes and their local-to-global maps the merge reads
+static std::vector<Scene> ExtractBlocks(Scene& scene, const ScenePartition& partition, std::vector<IIndexArr>* localToGlobals = NULL)
+{
+	SceneBlocks sceneBlocks(scene);
+	sceneBlocks.Extract(partition);
+	if (localToGlobals)
+		*localToGlobals = std::move(sceneBlocks.localToGlobal);
+	return std::move(sceneBlocks.blocks);
+}
+
 // Test 1: Single cluster passthrough and disabled clustering
 bool SceneClusterSingleClusterTest()
 {
@@ -15829,7 +15841,7 @@ bool SceneClusterSingleClusterTest()
 		clusterCfg.maxViewsPerCluster = 10; // 8 <= 10, no split
 		SceneCluster cluster(scene, clusterCfg);
 		std::vector<IIndexArr> localToGlobals;
-		std::vector<Scene> subScenes = cluster.SplitScene(&localToGlobals);
+		std::vector<Scene> subScenes = ExtractBlocks(scene, cluster.Partition(), &localToGlobals);
 
 		if (subScenes.size() != 1) {
 			VERBOSE("SceneClusterSingleClusterTest FAILED: expected 1 sub-scene, got %u", (unsigned)subScenes.size());
@@ -15856,7 +15868,7 @@ bool SceneClusterSingleClusterTest()
 		ClusterConfig clusterCfg;
 		clusterCfg.maxViewsPerCluster = 0;
 		SceneCluster cluster(scene, clusterCfg);
-		std::vector<Scene> subScenes = cluster.SplitScene();
+		std::vector<Scene> subScenes = ExtractBlocks(scene, cluster.Partition());
 
 		if (subScenes.size() != 1) {
 			VERBOSE("SceneClusterSingleClusterTest FAILED: disabled clustering should return 1 sub-scene, got %u", (unsigned)subScenes.size());
@@ -15885,7 +15897,7 @@ bool SceneClusterSizeConstraintsTest()
 
 	SceneCluster cluster(scene, clusterCfg);
 	std::vector<IIndexArr> localToGlobals;
-	std::vector<Scene> subScenes = cluster.SplitScene(&localToGlobals);
+	std::vector<Scene> subScenes = ExtractBlocks(scene, cluster.Partition(), &localToGlobals);
 
 	if (subScenes.size() < 2) {
 		VERBOSE("SceneClusterSizeConstraintsTest FAILED: expected >= 2 sub-scenes, got %u", (unsigned)subScenes.size());
@@ -15966,7 +15978,7 @@ bool SceneClusterDisconnectedComponentsTest()
 
 	SceneCluster cluster(scene, clusterCfg);
 	std::vector<IIndexArr> localToGlobals;
-	std::vector<Scene> subScenes = cluster.SplitScene(&localToGlobals);
+	std::vector<Scene> subScenes = ExtractBlocks(scene, cluster.Partition(), &localToGlobals);
 
 	if (subScenes.size() < 2) {
 		VERBOSE("SceneClusterDisconnectedComponentsTest FAILED: expected >= 2 sub-scenes, got %u", (unsigned)subScenes.size());
@@ -16014,7 +16026,7 @@ bool SceneClusterMemoryProtocolTest()
 
 	SceneCluster cluster(scene, clusterCfg);
 	std::vector<IIndexArr> localToGlobals;
-	std::vector<Scene> subScenes = cluster.SplitScene(&localToGlobals);
+	std::vector<Scene> subScenes = ExtractBlocks(scene, cluster.Partition(), &localToGlobals);
 
 	if (subScenes.size() < 2) {
 		VERBOSE("SceneClusterMemoryProtocolTest FAILED: expected >= 2 sub-scenes, got %u", (unsigned)subScenes.size());
@@ -16099,7 +16111,7 @@ bool SceneClusterIDRemappingTest()
 
 	SceneCluster cluster(scene, clusterCfg);
 	std::vector<IIndexArr> localToGlobals;
-	std::vector<Scene> subScenes = cluster.SplitScene(&localToGlobals);
+	std::vector<Scene> subScenes = ExtractBlocks(scene, cluster.Partition(), &localToGlobals);
 
 	if (subScenes.size() < 2) {
 		VERBOSE("SceneClusterIDRemappingTest FAILED: expected >= 2 sub-scenes");
@@ -16222,7 +16234,7 @@ bool SceneClusterSmallClusterRescueTest()
 
 	SceneCluster cluster(scene, clusterCfg);
 	std::vector<IIndexArr> localToGlobals;
-	std::vector<Scene> subScenes = cluster.SplitScene(&localToGlobals);
+	std::vector<Scene> subScenes = ExtractBlocks(scene, cluster.Partition(), &localToGlobals);
 
 	// Verify no output cluster has fewer than minViewsPerCluster
 	for (unsigned s = 0; s < subScenes.size(); ++s) {
@@ -16305,7 +16317,7 @@ bool SceneClusterSubFloorCouplingTest()
 
 	SceneCluster cluster(scene, clusterCfg);
 	std::vector<IIndexArr> localToGlobals;
-	std::vector<Scene> subScenes = cluster.SplitScene(&localToGlobals);
+	std::vector<Scene> subScenes = ExtractBlocks(scene, cluster.Partition(), &localToGlobals);
 
 	std::vector<int> subSceneOf(25, -1);
 	FOREACH(s, localToGlobals)
@@ -16373,7 +16385,7 @@ bool SceneClusterStandaloneCommunityTest()
 		AddPair(21, 9, 4.f);
 		if (withSeamTracks) {
 			// 80 tracks each seen by W's 21, 22, 23 and B's 10, 11, 12: seam-usable on both sides,
-			// 80 >= 75 tracks, three cameras a side with >= 30 (SplitScene builds tracks only when
+			// 80 >= 75 tracks, three cameras a side with >= 30 (Partition builds tracks only when
 			// the scene has none, so these are the seam's)
 			for (uint32_t t = 0; t < 80; ++t) {
 				Track& track = scene.tracks.emplace_back();
@@ -16395,7 +16407,7 @@ bool SceneClusterStandaloneCommunityTest()
 		clusterCfg.maxOverCapacity = 5;
 		SceneCluster cluster(scene, clusterCfg);
 		std::vector<IIndexArr> localToGlobals;
-		std::vector<Scene> subScenes = cluster.SplitScene(&localToGlobals);
+		std::vector<Scene> subScenes = ExtractBlocks(scene, cluster.Partition(), &localToGlobals);
 
 		std::vector<int> subSceneOf(25, -1);
 		FOREACH(s, localToGlobals)
@@ -16492,7 +16504,7 @@ bool SceneClusterCoupledOrphanSkippedTest()
 
 	SceneCluster cluster(scene, clusterCfg);
 	std::vector<IIndexArr> localToGlobals;
-	std::vector<Scene> subScenes = cluster.SplitScene(&localToGlobals);
+	std::vector<Scene> subScenes = ExtractBlocks(scene, cluster.Partition(), &localToGlobals);
 
 	std::vector<int> subSceneOf(26, -1);
 	FOREACH(s, localToGlobals)
@@ -16687,6 +16699,413 @@ bool SceneClusterThinStretchTest()
 
 
 // ===============================================================================
+// Blocks and the pool (SceneBlocks)
+// ===============================================================================
+
+// A two-cluster scene (A = images 0-11, B = 12-23) split into two blocks by hand and each block
+// "reconstructed" on the ground truth (its images posed, tracks built and triangulated), as the pool
+// resection receives the blocks: the images of `wrong` sit in block 0 (A's) although they belong to B,
+// unposed as a block leaves an image it could not register, and the images of `pool` are in no block.
+// The global images hold no pose, as in a reconstruction.
+static void BuildPoolBlocks(Scene& scene, SceneBlocks& sceneBlocks, std::vector<Pose3D>& gtPoses,
+	const std::set<IIndex>& wrong, const std::set<IIndex>& pool, const ReconstructionConfig& config)
+{
+	GenerateTwoClusterScene(scene, 12, 12, 10, 60, 300);
+	gtPoses.resize(scene.images.size());
+	FOREACH(i, scene.images) {
+		gtPoses[i].R = scene.images[i].R;
+		gtPoses[i].C = scene.images[i].C;
+		scene.images[i].InvalidatePose();
+	}
+	scene.status.nCalibratedImages = 0;
+	ScenePartition partition;
+	partition.clusters.resize(2);
+	FOREACH(i, scene.images) {
+		if (pool.count(i))
+			partition.pool.push_back(i);
+		else
+			partition.clusters[i < 12 || wrong.count(i) ? 0 : 1].push_back(i);
+	}
+	sceneBlocks.Extract(partition);
+	FOREACH(b, sceneBlocks.blocks) {
+		Scene& block = sceneBlocks.blocks[b];
+		FOREACH(l, block.images) {
+			const IIndex g = sceneBlocks.localToGlobal[b][l];
+			if (wrong.count(g))
+				continue;
+			block.images[l].R = gtPoses[g].R;
+			block.images[l].C = gtPoses[g].C;
+		}
+		BuildTracks(block, config.minPairWeight, config.trackConflictCfg);
+		TriangulateTracks(block, true, config.maxReprojError, config.minAngleThreshold);
+		block.RecomputeCalibratedImages();
+		block.status.nState.set(Scene::Status::STATE::CALIBRATED);
+	}
+}
+
+// The two blocks hold the same images, pairs and tracks, byte for byte, in the same order
+static bool SameBlock(const Scene& a, const Scene& b, String& diff)
+{
+	if (a.cameras.size() != b.cameras.size() || a.images.size() != b.images.size() ||
+		a.pairs.size() != b.pairs.size() || a.tracks.size() != b.tracks.size()) {
+		diff = String::FormatString("sizes: cameras %u/%u, images %u/%u, pairs %u/%u, tracks %u/%u",
+			a.cameras.size(), b.cameras.size(), a.images.size(), b.images.size(),
+			a.pairs.size(), b.pairs.size(), a.tracks.size(), b.tracks.size());
+		return false;
+	}
+	FOREACH(c, a.cameras)
+		if (a.cameras[c]->GetIntrinsicsString() != b.cameras[c]->GetIntrinsicsString()) {
+			diff = String::FormatString("camera %u", c);
+			return false;
+		}
+	FOREACH(i, a.images) {
+		const Image &x = a.images[i], &y = b.images[i];
+		if (x.ID != y.ID || x.cameraID != y.cameraID || x.fileName != y.fileName ||
+			memcmp(&x.R, &y.R, sizeof(x.R)) != 0 || memcmp(&x.C, &y.C, sizeof(x.C)) != 0 ||
+			x.numDescribedKeypoints != y.numDescribedKeypoints || x.keypoints.size() != y.keypoints.size() ||
+			(!x.keypoints.empty() && memcmp(x.keypoints.data(), y.keypoints.data(), x.keypoints.size() * sizeof(cv::KeyPoint)) != 0) ||
+			x.descriptors.rows != y.descriptors.rows || x.descriptors.cols != y.descriptors.cols ||
+			(!x.descriptors.empty() && cv::norm(x.descriptors, y.descriptors, cv::NORM_INF) != 0)) {
+			diff = String::FormatString("image %u", i);
+			return false;
+		}
+	}
+	FOREACH(p, a.pairs) {
+		const ImagePair &x = a.pairs[p], &y = b.pairs[p];
+		if (x.ID1 != y.ID1 || x.ID2 != y.ID2 || x.matches.size() != y.matches.size() ||
+			(!x.matches.empty() && memcmp(x.matches.data(), y.matches.data(), x.matches.size() * sizeof(x.matches[0])) != 0) ||
+			x.GetCompositeWeight() != y.GetCompositeWeight()) {
+			diff = String::FormatString("pair %u (%u,%u) vs (%u,%u)", p, x.ID1, x.ID2, y.ID1, y.ID2);
+			return false;
+		}
+	}
+	FOREACH(t, a.tracks) {
+		const Track &x = a.tracks[t], &y = b.tracks[t];
+		if (x.numInliers != y.numInliers || memcmp(&x.position, &y.position, sizeof(x.position)) != 0 ||
+			x.observations.size() != y.observations.size() ||
+			memcmp(x.observations.data(), y.observations.data(), x.observations.size() * sizeof(Observation)) != 0) {
+			diff = String::FormatString("track %u", t);
+			return false;
+		}
+	}
+	return true;
+}
+
+// Insert then refuse: two pool images go into block B (their features, their pairs to B and to each
+// other, B's tracks rebuilt with them) and are handed back as the pool resection hands back what a block
+// refused (Release): the block's cameras, images and pairs come back byte for byte, its tracks hold no
+// observation of the refused images and stay valid (what the images joined stays), and the images are in
+// the pool again with their features and pairs; on the way the block keeps its local IDs ordered as the
+// global ones and every pair ID1 < ID2
+bool SceneBlocksInsertReleaseTest()
+{
+	TD_TIMER_START();
+	const ReconstructionConfig config;
+	ResectionConfig resectionCfg = config.resectionCfg;
+	resectionCfg.DeriveBAConfigs(config.baConfig);
+	Scene scene;
+	SceneBlocks sceneBlocks(scene);
+	std::vector<Pose3D> gtPoses;
+	BuildPoolBlocks(scene, sceneBlocks, gtPoses, {}, {17, 18}, config);
+	const IIndex b = 1;
+	const IIndexArr images{17, 18};
+	const Scene before(sceneBlocks.blocks[b]);
+	const IIndexArr localToGlobalBefore(sceneBlocks.localToGlobal[b]);
+	std::set<std::pair<IIndex,IIndex>> globalPairsBefore;
+	for (const ImagePair& pair : scene.pairs)
+		globalPairsBefore.emplace(pair.ID1, pair.ID2);
+	const size_t numKeypoints[2] = {scene.images[17].keypoints.size(), scene.images[18].keypoints.size()};
+	size_t numObservationsBefore = 0;
+	for (const Track& track : before.tracks)
+		numObservationsBefore += track.observations.size();
+
+	sceneBlocks.Insert(b, images, config, resectionCfg);
+	const Scene& block = sceneBlocks.blocks[b];
+	const IIndexArr& l2g = sceneBlocks.localToGlobal[b];
+	if (l2g.size() != localToGlobalBefore.size() + 2 || !std::is_sorted(l2g.begin(), l2g.end()) ||
+		std::adjacent_find(l2g.begin(), l2g.end()) != l2g.end() || block.images.size() != l2g.size()) {
+		VERBOSE("SceneBlocksInsertReleaseTest FAILED: after Insert the block's local IDs are not the sorted global ones");
+		return false;
+	}
+	for (IIndex g : images) {
+		if (sceneBlocks.blockOf[g] != b || scene.images[g].HasFeatures() || !std::binary_search(l2g.begin(), l2g.end(), g)) {
+			VERBOSE("SceneBlocksInsertReleaseTest FAILED: image %u not moved into the block with its features", g);
+			return false;
+		}
+	}
+	FOREACH(l, block.images)
+		if (block.images[l].ID != l) {
+			VERBOSE("SceneBlocksInsertReleaseTest FAILED: image at %u holds ID %u", l, block.images[l].ID);
+			return false;
+		}
+	for (const ImagePair& pair : block.pairs)
+		if (pair.ID1 >= pair.ID2 || pair.ID2 >= block.images.size()) {
+			VERBOSE("SceneBlocksInsertReleaseTest FAILED: pair (%u,%u) after Insert", pair.ID1, pair.ID2);
+			return false;
+		}
+	for (const ImagePair& pair : scene.pairs)
+		if (sceneBlocks.blockOf[pair.ID1] == b && sceneBlocks.blockOf[pair.ID2] == b) {
+			VERBOSE("SceneBlocksInsertReleaseTest FAILED: pair (%u,%u) of two images of the block left in the global scene", pair.ID1, pair.ID2);
+			return false;
+		}
+	size_t numObservations = 0;
+	for (const Track& track : block.tracks) {
+		std::set<IIndex> seen;
+		for (const Observation& obs : track.observations) {
+			if (obs.imageID >= block.images.size() || obs.featureID >= block.images[obs.imageID].keypoints.size() ||
+				!seen.insert(obs.imageID).second) {
+				VERBOSE("SceneBlocksInsertReleaseTest FAILED: a track holds an invalid or repeated observation (%u,%u)", obs.imageID, obs.featureID);
+				return false;
+			}
+		}
+		numObservations += track.observations.size();
+	}
+	if (block.pairs.size() <= before.pairs.size() || numObservations <= numObservationsBefore) {
+		VERBOSE("SceneBlocksInsertReleaseTest FAILED: Insert took no pair (%u -> %u) or attached no keypoint (%u -> %u observations); the fixture does not exercise it",
+			before.pairs.size(), block.pairs.size(), (unsigned)numObservationsBefore, (unsigned)numObservations);
+		return false;
+	}
+	const unsigned numPairsInserted = block.pairs.size() - before.pairs.size();
+	const unsigned numObservationsInserted = (unsigned)(numObservations - numObservationsBefore);
+
+	sceneBlocks.Release(b, images);
+	// the cameras, images and pairs as they were (the tracks compared apart: what the refused images joined stays)
+	Scene withoutTracks(sceneBlocks.blocks[b]);
+	withoutTracks.tracks = before.tracks;
+	String diff;
+	if (!SameBlock(before, withoutTracks, diff)) {
+		VERBOSE("SceneBlocksInsertReleaseTest FAILED: the refusal did not return the block's cameras, images and pairs: %s", diff.c_str());
+		return false;
+	}
+	for (const Track& track : sceneBlocks.blocks[b].tracks) {
+		std::set<IIndex> seen;
+		bool valid = track.IsValid() && track.numInliers <= track.observations.size();
+		FOREACH(k, track.observations) {
+			const Observation& obs = track.observations[k];
+			valid &= obs.imageID < sceneBlocks.blocks[b].images.size() && seen.insert(obs.imageID).second &&
+				obs.featureID < sceneBlocks.blocks[b].images[obs.imageID].keypoints.size() &&
+				(k >= track.numInliers || sceneBlocks.blocks[b].images[obs.imageID].HasPose());
+		}
+		if (!valid) {
+			VERBOSE("SceneBlocksInsertReleaseTest FAILED: a track left after the refusal is not valid (%u observations, %u inliers)",
+				track.observations.size(), track.numInliers);
+			return false;
+		}
+	}
+	if (sceneBlocks.localToGlobal[b] != localToGlobalBefore) {
+		VERBOSE("SceneBlocksInsertReleaseTest FAILED: Release did not return the block's local IDs");
+		return false;
+	}
+	std::set<std::pair<IIndex,IIndex>> globalPairs;
+	for (const ImagePair& pair : scene.pairs)
+		globalPairs.emplace(pair.ID1, pair.ID2);
+	if (globalPairs != globalPairsBefore || scene.pairs.size() != globalPairsBefore.size()) {
+		VERBOSE("SceneBlocksInsertReleaseTest FAILED: the global scene holds %u pairs after Release, %u before",
+			scene.pairs.size(), (unsigned)globalPairsBefore.size());
+		return false;
+	}
+	FOREACH(i, images)
+		if (sceneBlocks.blockOf[images[i]] != NO_ID || scene.images[images[i]].keypoints.size() != numKeypoints[i]) {
+			VERBOSE("SceneBlocksInsertReleaseTest FAILED: image %u is not back in the pool with its features", images[i]);
+			return false;
+		}
+
+	VERBOSE("SceneBlocksInsertReleaseTest PASSED: Insert took %u pairs and %u observations, the refusal returned the block's cameras, images and pairs byte for byte and left valid tracks (%s)",
+		numPairsInserted, numObservationsInserted, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// A block that takes images through the pool ends with the tracks its own track building would have
+// given it with those images from the start: images 16-18 of B are inserted together into B's block, the
+// pairs among them weigh the most (consecutive frames of a real capture) and the middle one has no pair to
+// the block at all, so it reaches the block only through its two neighbours; the tracks after Insert, as
+// sets of observations in global IDs, are the tracks of BuildTracks over the block holding them from the
+// start, and every inserted image holds keypoints on triangulated tracks
+bool SceneBlocksInsertRebuildTest()
+{
+	TD_TIMER_START();
+	const ReconstructionConfig config;
+	ResectionConfig resectionCfg = config.resectionCfg;
+	resectionCfg.DeriveBAConfigs(config.baConfig);
+	const IIndexArr chain{16, 17, 18};
+	// the block's tracks as sets of observations in global IDs
+	const auto TrackSets = [](const Scene& block, const IIndexArr& l2g) {
+		std::set<std::vector<std::pair<IIndex, uint32_t>>> sets;
+		for (const Track& track : block.tracks) {
+			std::vector<std::pair<IIndex, uint32_t>> obs;
+			for (const Observation& o : track.observations)
+				obs.emplace_back(l2g[o.imageID], o.featureID);
+			std::sort(obs.begin(), obs.end());
+			sets.insert(std::move(obs));
+		}
+		return sets;
+	};
+	const auto EditPairs = [&chain](Scene& scene) {
+		RFOREACH(p, scene.pairs) {
+			ImagePair& pair = scene.pairs[p];
+			const bool in1 = std::find(chain.begin(), chain.end(), pair.ID1) != chain.end();
+			const bool in2 = std::find(chain.begin(), chain.end(), pair.ID2) != chain.end();
+			if (in1 && in2) {
+				pair.weightSpatial = 20.f; // the heaviest pairs of the scene
+			} else if ((pair.ID1 == chain[1] || pair.ID2 == chain[1]) && (in1 != in2)) {
+				scene.pairs.RemoveAtMove(p); // the middle image: no pair to the block
+			}
+		}
+	};
+	// the keypoints of each chain image on triangulated tracks of block 1
+	const auto CountOnInlierTracks = [&chain](const Scene& block, const IIndexArr& l2g, std::vector<unsigned>& counts) {
+		counts.assign(chain.size(), 0);
+		for (const Track& track : block.tracks) {
+			if (!track.IsInlier())
+				continue;
+			for (const Observation& obs : track.observations) {
+				const auto it = std::find(chain.begin(), chain.end(), l2g[obs.imageID]);
+				if (it != chain.end())
+					++counts[it - chain.begin()];
+			}
+		}
+	};
+	const auto Partition = [](const Scene& scene, const IIndexArr& pool) {
+		ScenePartition partition;
+		partition.clusters.resize(2);
+		FOREACH(i, scene.images) {
+			if (std::find(pool.begin(), pool.end(), (IIndex)i) != pool.end())
+				partition.pool.push_back(i);
+			else
+				partition.clusters[i < 12 ? 0 : 1].push_back(i);
+		}
+		return partition;
+	};
+	// pose every block image but the chain on the truth, then build and triangulate its tracks
+	const auto Reconstruct = [&](Scene& block, const IIndexArr& l2g, const std::vector<Pose3D>& gtPoses) {
+		FOREACH(l, block.images) {
+			if (std::find(chain.begin(), chain.end(), l2g[l]) != chain.end())
+				continue;
+			block.images[l].R = gtPoses[l2g[l]].R;
+			block.images[l].C = gtPoses[l2g[l]].C;
+		}
+		BuildTracks(block, config.minPairWeight, config.trackConflictCfg);
+		TriangulateTracks(block, true, config.maxReprojError, config.minAngleThreshold);
+		block.RecomputeCalibratedImages();
+		block.status.nState.set(Scene::Status::STATE::CALIBRATED);
+	};
+	const auto Generate = [&](Scene& scene, std::vector<Pose3D>& gtPoses) {
+		GenerateTwoClusterScene(scene, 12, 12, 10, 60, 300);
+		EditPairs(scene);
+		gtPoses.resize(scene.images.size());
+		FOREACH(i, scene.images) {
+			gtPoses[i].R = scene.images[i].R;
+			gtPoses[i].C = scene.images[i].C;
+			scene.images[i].InvalidatePose();
+		}
+		scene.status.nCalibratedImages = 0;
+	};
+
+	// the reference: the chain in block 1 from the start, unposed
+	std::vector<unsigned> reference, inserted;
+	std::set<std::vector<std::pair<IIndex, uint32_t>>> referenceTracks, insertedTracks;
+	{
+		Scene scene;
+		std::vector<Pose3D> gtPoses;
+		Generate(scene, gtPoses);
+		SceneBlocks sceneBlocks(scene);
+		sceneBlocks.Extract(Partition(scene, IIndexArr()));
+		Reconstruct(sceneBlocks.blocks[1], sceneBlocks.localToGlobal[1], gtPoses);
+		CountOnInlierTracks(sceneBlocks.blocks[1], sceneBlocks.localToGlobal[1], reference);
+		referenceTracks = TrackSets(sceneBlocks.blocks[1], sceneBlocks.localToGlobal[1]);
+	}
+	// the pool: block 1 without the chain, then the chain inserted
+	{
+		Scene scene;
+		std::vector<Pose3D> gtPoses;
+		Generate(scene, gtPoses);
+		SceneBlocks sceneBlocks(scene);
+		sceneBlocks.Extract(Partition(scene, chain));
+		Reconstruct(sceneBlocks.blocks[1], sceneBlocks.localToGlobal[1], gtPoses);
+		sceneBlocks.Insert(1, chain, config, resectionCfg);
+		CountOnInlierTracks(sceneBlocks.blocks[1], sceneBlocks.localToGlobal[1], inserted);
+		insertedTracks = TrackSets(sceneBlocks.blocks[1], sceneBlocks.localToGlobal[1]);
+	}
+	if (insertedTracks != referenceTracks) {
+		std::vector<std::vector<std::pair<IIndex, uint32_t>>> onlyInserted, onlyReference;
+		std::set_difference(insertedTracks.begin(), insertedTracks.end(), referenceTracks.begin(), referenceTracks.end(), std::back_inserter(onlyInserted));
+		std::set_difference(referenceTracks.begin(), referenceTracks.end(), insertedTracks.begin(), insertedTracks.end(), std::back_inserter(onlyReference));
+		VERBOSE("SceneBlocksInsertRebuildTest FAILED: after Insert %u tracks, built with the block from the start %u: %u only after Insert, %u only in the reference",
+			(unsigned)insertedTracks.size(), (unsigned)referenceTracks.size(), (unsigned)onlyInserted.size(), (unsigned)onlyReference.size());
+		return false;
+	}
+	FOREACH(i, chain) {
+		if (reference[i] == 0 || inserted[i] == 0) {
+			VERBOSE("SceneBlocksInsertRebuildTest FAILED: image %u holds %u keypoints on triangulated tracks after Insert (%u in the reference)",
+				chain[i], inserted[i], reference[i]);
+			return false;
+		}
+	}
+
+	VERBOSE("SceneBlocksInsertRebuildTest PASSED: %u tracks after Insert, the same observation sets as BuildTracks over the block holding the images from the start; keypoints on triangulated tracks %u/%u/%u (reference %u/%u/%u) (%s)",
+		(unsigned)insertedTracks.size(), inserted[0], inserted[1], inserted[2], reference[0], reference[1], reference[2], TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// An image the partition put in the wrong cluster (B's image 18 in A's block, where it has only a
+// few weak pairs and stays unregistered) ends registered in B's block before the merge: the pool
+// resection releases it from A and offers it to B, whose verified pairs to it weigh the most, and
+// B's own resection registers it where the ground truth has it
+bool PoolResectionWrongClusterTest()
+{
+	TD_TIMER_START();
+	const ReconstructionConfig config;
+	ResectionConfig resectionCfg = config.resectionCfg;
+	resectionCfg.pairsWeighting = config.matchCfg.weightingCfg;
+	resectionCfg.DeriveBAConfigs(config.baConfig);
+	const IIndex wrong = 18;
+	Scene scene;
+	SceneBlocks sceneBlocks(scene);
+	std::vector<Pose3D> gtPoses;
+	BuildPoolBlocks(scene, sceneBlocks, gtPoses, {wrong}, {}, config);
+	if (sceneBlocks.blockOf[wrong] != 0) {
+		VERBOSE("PoolResectionWrongClusterTest FAILED: the fixture did not put image %u in block 0", wrong);
+		return false;
+	}
+
+	sceneBlocks.ResectPool(resectionCfg, config);
+	if (sceneBlocks.blocks.size() != 2 || sceneBlocks.blockOf[wrong] != 1) {
+		VERBOSE("PoolResectionWrongClusterTest FAILED: image %u ended in block %d of %u, expected block 1",
+			wrong, sceneBlocks.blockOf[wrong] == NO_ID ? -1 : (int)sceneBlocks.blockOf[wrong], (unsigned)sceneBlocks.blocks.size());
+		return false;
+	}
+	const auto PoseOf = [&](IIndex g) -> const Image& {
+		const IIndex b = sceneBlocks.blockOf[g];
+		const IIndexArr& l2g = sceneBlocks.localToGlobal[b];
+		return sceneBlocks.blocks[b].images[std::lower_bound(l2g.begin(), l2g.end(), g) - l2g.begin()];
+	};
+	for (IIndex g = 0; g < scene.images.size(); ++g) {
+		if (sceneBlocks.blockOf[g] != (g < 12 ? 0u : 1u) || !PoseOf(g).HasPose()) {
+			VERBOSE("PoolResectionWrongClusterTest FAILED: image %u not registered in its cluster's block", g);
+			return false;
+		}
+	}
+	// the pose against its neighbours in B, whatever gauge the block's adjustments left it in
+	const Image &img = PoseOf(wrong), &prev = PoseOf(wrong - 1), &next = PoseOf(wrong + 1);
+	const RMatrix relR(img.R * prev.R.t()), relRGT(gtPoses[wrong].R * gtPoses[wrong - 1].R.t());
+	const REAL rotationError = R2D(ACOS(ComputeAngle(relR, relRGT)));
+	const Point3 dir(img.C - prev.C), dirGT(gtPoses[wrong].C - gtPoses[wrong - 1].C);
+	const REAL directionError = R2D(ACOS(CLAMP(dir.dot(dirGT) / (norm(dir) * norm(dirGT)), REAL(-1), REAL(1))));
+	const REAL ratio = norm(dir) / norm(next.C - prev.C), ratioGT = norm(dirGT) / norm(gtPoses[wrong + 1].C - gtPoses[wrong - 1].C);
+	if (rotationError > 0.5 || directionError > 2.0 || ABS(ratio / ratioGT - 1) > 0.02) {
+		VERBOSE("PoolResectionWrongClusterTest FAILED: image %u registered off the truth: %.3f deg rotation, %.3f deg direction, baseline ratio %.4f vs %.4f",
+			wrong, rotationError, directionError, ratio, ratioGT);
+		return false;
+	}
+
+	VERBOSE("PoolResectionWrongClusterTest PASSED: image %u moved from block 0 to block 1, %.3f deg rotation, %.3f deg direction off the truth (%s)",
+		wrong, rotationError, directionError, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+
+// ===============================================================================
 // Phase 3: Global Alignment Tests
 // ===============================================================================
 
@@ -16722,7 +17141,7 @@ bool GlobalAlignmentBuildGlobalToLocalMapTest()
 
 	SceneCluster cluster(scene, clusterCfg);
 	std::vector<IIndexArr> localToGlobals;
-	std::vector<Scene> subScenes = cluster.SplitScene(&localToGlobals);
+	std::vector<Scene> subScenes = ExtractBlocks(scene, cluster.Partition(), &localToGlobals);
 
 	if (subScenes.size() < 2) {
 		VERBOSE("GlobalAlignmentBuildGlobalToLocalMapTest FAILED: expected >= 2 sub-scenes");
@@ -17792,7 +18211,19 @@ static void BuildRingBlocks(const RingSceneConfig& cfg, Scene& scene, const std:
 
 	localToGlobals.clear();
 	const ClusterConfig clusterCfg;
-	subScenes = SceneCluster(scene, clusterCfg).SplitSceneByClusters(blocks, &localToGlobals);
+	// the given blocks, each sorted; an image in none of them is in the pool
+	ScenePartition partition;
+	partition.clusters = blocks;
+	std::vector<bool> inBlock(scene.images.size(), false);
+	for (IIndexArr& cluster : partition.clusters) {
+		cluster.Sort();
+		for (IIndex g : cluster)
+			inBlock[g] = true;
+	}
+	FOREACH(g, scene.images)
+		if (!inBlock[g])
+			partition.pool.push_back(g);
+	subScenes = ExtractBlocks(scene, partition, &localToGlobals);
 
 	// the reconstruction hands the merge a scene without tracks; the blocks carry them
 	scene.tracks.Release();
@@ -18270,7 +18701,7 @@ bool SceneClusterTargetSizeTest()
 	const ClusterConfig clusterCfg;
 	SceneCluster cluster(scene, clusterCfg);
 	std::vector<IIndexArr> localToGlobals;
-	const std::vector<Scene> subScenes = cluster.SplitScene(&localToGlobals);
+	const std::vector<Scene> subScenes = ExtractBlocks(scene, cluster.Partition(), &localToGlobals);
 
 	if (subScenes.size() < 3) {
 		VERBOSE("SceneClusterTargetSizeTest FAILED: expected >= 3 sub-scenes, got %u", (unsigned)subScenes.size());
@@ -18409,7 +18840,7 @@ bool SceneClusterLeafMergeTest()
 	const ClusterConfig clusterCfg;
 	SceneCluster cluster(scene, clusterCfg);
 	std::vector<IIndexArr> localToGlobals;
-	const std::vector<Scene> subScenes = cluster.SplitScene(&localToGlobals);
+	const std::vector<Scene> subScenes = ExtractBlocks(scene, cluster.Partition(), &localToGlobals);
 
 	for (unsigned s = 0; s < subScenes.size(); ++s) {
 		if (subScenes[s].images.size() < clusterCfg.minViewsPerCluster) {
@@ -18449,93 +18880,6 @@ bool SceneClusterLeafMergeTest()
 	return true;
 }
 
-// A cut whose seam holds tracks enough but keeps them in too few cameras: moving a boundary image
-// across it hands the tracks that image sees to the other side, which spreads the seam over the
-// cameras the merge needs on both sides. Image 8 stays where the clusters put it, on the far side of
-// the cut from its neighbours, and that is the rule working rather than failing: the tracks it alone
-// carries across the cut are what makes this seam wide, so moving it back would narrow the seam and
-// lower the very count the repair raises.
-bool SceneClusterSeamRepairTest()
-{
-	TD_TIMER_START();
-
-	Scene scene;
-	BuildChainScene(12, 30, [](unsigned i) { return i <= 7 ? 5u : 0u; }, scene);
-
-	ClusterConfig clusterCfg;
-	clusterCfg.maxViewsPerCluster = 12;
-	clusterCfg.minViewsPerCluster = 5;
-	clusterCfg.minSeamCameraTracks = 120; // four of the five-view track starts, of thirty tracks each
-	SceneCluster cluster(scene, clusterCfg);
-
-	std::vector<IIndexArr> clusters(2);
-	for (IIndex i : {0, 1, 2, 3, 4, 5, 8})
-		clusters[0].push_back(i);
-	for (IIndex i : {6, 7, 9, 10, 11})
-		clusters[1].push_back(i);
-	const std::vector<IIndexArr> before(clusters);
-
-	const auto SeamCameras = [&cluster, &clusterCfg](const std::vector<IIndexArr>& state, unsigned cameras[2]) {
-		const SeamTrackStatsMap seams = cluster.ComputeSeamTrackStats(state);
-		ASSERT(seams.size() == 1);
-		const std::pair<SeamTrackStats, SeamTrackStats>& seam = seams.begin()->second;
-		cameras[0] = seam.first.CamerasWithAtLeast(clusterCfg.minSeamCameraTracks);
-		cameras[1] = seam.second.CamerasWithAtLeast(clusterCfg.minSeamCameraTracks);
-		return seam.first.usable;
-	};
-	unsigned camerasBefore[2], camerasAfter[2];
-	const unsigned usableBefore = SeamCameras(before, camerasBefore);
-	if (usableBefore < clusterCfg.minSeamTracks ||
-		MINF(camerasBefore[0], camerasBefore[1]) >= clusterCfg.minSeamCameras) {
-		VERBOSE("SceneClusterSeamRepairTest FAILED: the seam is not the thin one to repair: %u tracks over %u/%u cameras",
-			usableBefore, camerasBefore[0], camerasBefore[1]);
-		return false;
-	}
-
-	cluster.RepairClusterSeams(clusters);
-	SeamCameras(clusters, camerasAfter);
-
-	// the two sides carry the merge now, and neither lost cameras doing so
-	if (MINF(camerasAfter[0], camerasAfter[1]) < clusterCfg.minSeamCameras) {
-		VERBOSE("SceneClusterSeamRepairTest FAILED: seam cameras %u/%u -> %u/%u, expected >= %u each",
-			camerasBefore[0], camerasBefore[1], camerasAfter[0], camerasAfter[1], clusterCfg.minSeamCameras);
-		return false;
-	}
-	if (MINF(camerasAfter[0], camerasAfter[1]) < MINF(camerasBefore[0], camerasBefore[1])) {
-		VERBOSE("SceneClusterSeamRepairTest FAILED: the repair took the seam from %u/%u cameras to %u/%u",
-			camerasBefore[0], camerasBefore[1], camerasAfter[0], camerasAfter[1]);
-		return false;
-	}
-
-	// the images are the same ones, moved between the two sides and within their size bounds
-	std::multiset<IIndex> imagesBefore, imagesAfter;
-	unsigned numMoved = 0;
-	for (unsigned c = 0; c < 2; ++c) {
-		imagesBefore.insert(before[c].begin(), before[c].end());
-		imagesAfter.insert(clusters[c].begin(), clusters[c].end());
-		if (clusters[c].size() < clusterCfg.minViewsPerCluster || clusters[c].size() > clusterCfg.maxViewsPerCluster) {
-			VERBOSE("SceneClusterSeamRepairTest FAILED: cluster %u has %u images, outside [%u, %u]",
-				c, (unsigned)clusters[c].size(), clusterCfg.minViewsPerCluster, clusterCfg.maxViewsPerCluster);
-			return false;
-		}
-		const std::set<IIndex> was(before[c].begin(), before[c].end());
-		for (IIndex globalID : clusters[c])
-			if (was.count(globalID) == 0)
-				++numMoved;
-	}
-	if (imagesBefore != imagesAfter) {
-		VERBOSE("SceneClusterSeamRepairTest FAILED: the repair lost or duplicated images");
-		return false;
-	}
-	if (numMoved == 0) {
-		VERBOSE("SceneClusterSeamRepairTest FAILED: no boundary image moved");
-		return false;
-	}
-
-	VERBOSE("SceneClusterSeamRepairTest PASSED: %u images moved, seam cameras %u/%u -> %u/%u (%s)",
-		numMoved, camerasBefore[0], camerasBefore[1], camerasAfter[0], camerasAfter[1], TD_TIMER_GET_FMT().c_str());
-	return true;
-}
 /*----------------------------------------------------------------*/
 
 // A whole ring, block by block: every block arrives in its own frame and the merge has to take all
@@ -18577,6 +18921,181 @@ bool RingPlacementTest()
 	}
 	VERBOSE("RingPlacementTest PASSED: %u blocks on %u seams (%s)",
 		rep.numPlaced, (unsigned)rep.modelSeams.size(), TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+// The track join of the merge across two blocks: a right and a false cross match whose two roots
+// lie the same 3D distance apart, at different depths. The right one is a far point the second
+// block placed 0.5 too deep along its own camera's ray (well under a pixel in every view); the false
+// one joins two different near points 0.5 apart across the ray (50 px). Both distances sit under the
+// 2% of the bounding-box diagonal the distance rule allows, so only a test in pixels tells them
+// apart: the right one must join, the false one not. The same for a one-sided root, a block-0 track
+// matched to a keypoint of block 1 no track holds, once at its true projection and once 50 px off.
+bool MergeJoinReprojectionTest()
+{
+	TD_TIMER_START();
+	RingSceneConfig cfg{2, 20};
+	Scene scene;
+	std::vector<IIndexArr> blocks;
+	std::vector<Pose3D> gtPoses;
+	GenerateRingScene(cfg, scene, blocks, gtPoses);
+	// the four cameras at a seam: two of block 0, two of block 1, and the cross pair (i, j)
+	const IIndex a0 = blocks[0][blocks[0].size()-2], i = blocks[0].back(), j = blocks[1].front(), b1 = blocks[1][1];
+	AABB3 gtBox(true);
+	for (const Track& track : scene.tracks)
+		gtBox.InsertFull(track.position);
+	std::vector<Scene> subScenes;
+	std::vector<IIndexArr> localToGlobals;
+	std::vector<SEACAVE::Transform> applied;
+	BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
+	ImagePair* crossPair = scene.FindPair(i, j);
+	if (crossPair == NULL) {
+		VERBOSE("MergeJoinReprojectionTest FAILED: no pair across the seam between images %u and %u", i, j);
+		return false;
+	}
+	const auto LocalOf = [&](uint32_t b, IIndex g) -> IIndex {
+		FOREACH(k, localToGlobals[b])
+			if (localToGlobals[b][k] == g)
+				return k;
+		return NO_ID;
+	};
+	const auto Ray = [&](IIndex g, const Point3& X) { return Point3(normalized(X - Point3(gtPoses[g].C))); };
+	// a keypoint at the projection of the world point X in global image g (of block b); its feature ID
+	const auto AddKeypoint = [&](uint32_t b, IIndex g, const Point3& X, uint32_t& feature) -> bool {
+		Image& img = subScenes[b].images[LocalOf(b, g)];
+		const auto [proj, valid] = img.ProjectPoint(applied[b] * X);
+		if (!valid || !Image8U::isInside(proj, img.GetSize()))
+			return false;
+		feature = (uint32_t)img.keypoints.size();
+		img.keypoints.emplace_back(proj, 0.f, 0.f, 10.f);
+		return true;
+	};
+	// a track of block b over two of its images seeing the world point X, held at the world position P;
+	// the feature of its observation in the seam image (i for block 0, j for block 1)
+	const auto AddTrack = [&](uint32_t b, IIndex g1, IIndex g2, const Point3& X, const Point3& P, uint32_t& seamFeature) -> bool {
+		uint32_t f1, f2;
+		if (!AddKeypoint(b, g1, X, f1) || !AddKeypoint(b, g2, X, f2))
+			return false;
+		seamFeature = (g1 == i || g1 == j) ? f1 : f2;
+		Track track(applied[b] * P);
+		track.observations.emplace_back(LocalOf(b, g1), f1);
+		track.observations.emplace_back(LocalOf(b, g2), f2);
+		track.numInliers = 2;
+		subScenes[b].tracks.emplace_back(std::move(track));
+		return true;
+	};
+	const Point3 mid((Point3(gtPoses[i].C) + Point3(gtPoses[j].C)) / REAL(2));
+	const Point3 out(normalized(Point3(mid.x, mid.y, 0)));       // radially outward at the seam
+	const Point3 up(0, 0, 1);
+	constexpr REAL d = 0.5;
+	// two far points (depth about 30) and two near ones (depth about 4), a little apart
+	const Point3 far1(mid + out * REAL(30) + up * REAL(1)), far2(mid + out * REAL(30) - up * REAL(1));
+	const Point3 near1(mid + out * REAL(4) + up * REAL(0.3)), near2(mid + out * REAL(4) - up * REAL(0.3));
+	const Point3 across(normalized(Ray(j, near1).cross(up)));   // perpendicular to camera j's ray
+	uint32_t fRightI, fRightJ, fFalseI, fFalseJ, fOneRightI, fOneRightJ, fOneFalseI, fOneFalseJ;
+	// two positioned roots, the right match: block 1 holds the far point d too deep along camera j's ray
+	// two positioned roots, the false match: block 1's track is another point d across camera j's ray
+	// one positioned root: block 0's track matched to a lone keypoint of image j, right and 50 px off
+	if (!AddTrack(0, a0, i, far1, far1, fRightI) || !AddTrack(1, j, b1, far1, far1 + Ray(j, far1) * d, fRightJ) ||
+		!AddTrack(0, a0, i, near1, near1, fFalseI) || !AddTrack(1, j, b1, near1 + across * d, near1 + across * d, fFalseJ) ||
+		!AddTrack(0, a0, i, far2, far2, fOneRightI) || !AddKeypoint(1, j, far2, fOneRightJ) ||
+		!AddTrack(0, a0, i, near2, near2, fOneFalseI) || !AddKeypoint(1, j, near2 + across * d, fOneFalseJ)) {
+		VERBOSE("MergeJoinReprojectionTest FAILED: a test point does not project into the seam's four images");
+		return false;
+	}
+	crossPair->matches.emplace_back(fRightI, fRightJ);
+	crossPair->matches.emplace_back(fFalseI, fFalseJ);
+	crossPair->matches.emplace_back(fOneRightI, fOneRightJ);
+	crossPair->matches.emplace_back(fOneFalseI, fOneFalseJ);
+	// the premise: the two 3D distances are equal and both under what the distance rule allows
+	gtBox.InsertFull(far1); gtBox.InsertFull(far2);
+	const REAL distanceBar = REAL(0.02) * gtBox.GetSize().norm();
+	if (!(d < distanceBar)) {
+		VERBOSE("MergeJoinReprojectionTest FAILED: premise, the distance %g is not under the 2%% bar %g", d, distanceBar);
+		return false;
+	}
+
+	GlobalAlignmentConfig alignCfg;
+	GlobalAlignment ga(scene, alignCfg);
+	MergeReport rep;
+	ga.MergeScenes(subScenes, localToGlobals, rep);
+	if (rep.numPlaced != 2) {
+		VERBOSE("MergeJoinReprojectionTest FAILED: %u of 2 blocks placed", rep.numPlaced);
+		return false;
+	}
+	// joined: one merged track holds both ends of the match
+	const auto Joined = [&](uint32_t fI, uint32_t fJ) -> bool {
+		for (const Track& track : scene.tracks) {
+			bool hasI = false, hasJ = false;
+			for (const Observation& obs : track.observations) {
+				hasI |= obs.imageID == i && obs.featureID == fI;
+				hasJ |= obs.imageID == j && obs.featureID == fJ;
+			}
+			if (hasI || hasJ)
+				return hasI && hasJ;
+		}
+		return false;
+	};
+	const bool right = Joined(fRightI, fRightJ), wrong = Joined(fFalseI, fFalseJ);
+	const bool oneRight = Joined(fOneRightI, fOneRightJ), oneWrong = Joined(fOneFalseI, fOneFalseJ);
+	if (!right || wrong || !oneRight || oneWrong) {
+		VERBOSE("MergeJoinReprojectionTest FAILED: two positioned roots d=%g apart (2%% bar %g): right match %s (expected joined), false match %s (expected apart); one positioned root: right %s (expected joined), 50 px off %s (expected apart)",
+			d, distanceBar, right ? "joined" : "apart", wrong ? "joined" : "apart", oneRight ? "joined" : "apart", oneWrong ? "joined" : "apart");
+		return false;
+	}
+	VERBOSE("MergeJoinReprojectionTest PASSED: the right matches joined, the false ones (%g apart, under the 2%% bar %g) not (%s)",
+		d, distanceBar, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+// A track never holds more than 255 observations (its inlier count is a byte): a chain of 300 pool
+// images (in no block, unposed), each matched to the next through one keypoint, joins in the merge's
+// track union one image at a time until the next join would make 256 observations; that join and
+// every later one into it is refused, so the chain ends in tracks of at most 255 observations
+bool MergeTrackLengthTest()
+{
+	TD_TIMER_START();
+	RingSceneConfig cfg{2, 20};
+	Scene scene;
+	std::vector<IIndexArr> blocks;
+	std::vector<Pose3D> gtPoses;
+	GenerateRingScene(cfg, scene, blocks, gtPoses);
+	std::vector<Scene> subScenes;
+	std::vector<IIndexArr> localToGlobals;
+	std::vector<SEACAVE::Transform> applied;
+	BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
+	constexpr unsigned numChain = 300;
+	const IIndex first = scene.images.size();
+	for (unsigned k = 0; k < numChain; ++k) {
+		Image& img = scene.images.emplace_back((IIndex)scene.images.size(), String(), Pose3D(), 0, scene.cameras[0]);
+		img.InvalidatePose();
+		img.keypoints.emplace_back(Point2f(320.f, 240.f), 0.f, 0.f, 10.f);
+	}
+	for (unsigned k = 0; k + 1 < numChain; ++k) {
+		ImagePair& pair = scene.pairs.emplace_back(first + k, first + k + 1);
+		pair.matches.emplace_back(0, 0);
+	}
+	GlobalAlignmentConfig alignCfg;
+	GlobalAlignment ga(scene, alignCfg);
+	MergeReport rep;
+	ga.MergeScenes(subScenes, localToGlobals, rep);
+	unsigned longest = 0, numChainTracks = 0, numChainObservations = 0;
+	for (const Track& track : scene.tracks) {
+		longest = MAXF(longest, (unsigned)track.observations.size());
+		if (track.observations[0].imageID >= first) {
+			++numChainTracks;
+			numChainObservations += (unsigned)track.observations.size();
+		}
+	}
+	if (longest > 255 || numChainTracks < 2 || numChainObservations != numChain) {
+		VERBOSE("MergeTrackLengthTest FAILED: the longest merged track holds %u observations (at most 255 expected); the chain of %u images is in %u tracks holding %u observations",
+			longest, numChain, numChainTracks, numChainObservations);
+		return false;
+	}
+	VERBOSE("MergeTrackLengthTest PASSED: the chain of %u images split into %u tracks, the longest merged track %u observations (%s)",
+		numChain, numChainTracks, longest, TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 /*----------------------------------------------------------------*/
@@ -19941,7 +20460,7 @@ bool GlobalAlignmentMergeSingleSceneTest()
 
 	SceneCluster cluster(scene, clusterCfg);
 	std::vector<IIndexArr> localToGlobals;
-	std::vector<Scene> subScenes = cluster.SplitScene(&localToGlobals);
+	std::vector<Scene> subScenes = ExtractBlocks(scene, cluster.Partition(), &localToGlobals);
 
 	if (subScenes.size() < 2) {
 		VERBOSE("GlobalAlignmentMergeSingleSceneTest FAILED: expected >= 2 sub-scenes");
@@ -20172,7 +20691,7 @@ bool HierarchicalSFMSplitMergeRoundtripTest()
 
 	SceneCluster cluster(scene, clusterCfg);
 	std::vector<IIndexArr> localToGlobals;
-	std::vector<Scene> subScenes = cluster.SplitScene(&localToGlobals);
+	std::vector<Scene> subScenes = ExtractBlocks(scene, cluster.Partition(), &localToGlobals);
 
 	if (subScenes.size() < 2) {
 		VERBOSE("HierarchicalSFMSplitMergeRoundtripTest FAILED: expected >= 2 sub-scenes, got %u",
@@ -20310,7 +20829,7 @@ bool HierarchicalSFMWithRandomTransformTest()
 
 	SceneCluster cluster(scene, clusterCfg);
 	std::vector<IIndexArr> localToGlobals;
-	std::vector<Scene> subScenes = cluster.SplitScene(&localToGlobals);
+	std::vector<Scene> subScenes = ExtractBlocks(scene, cluster.Partition(), &localToGlobals);
 
 	if (subScenes.size() < 2) {
 		VERBOSE("HierarchicalSFMWithRandomTransformTest FAILED: expected >= 2 sub-scenes");
@@ -20429,7 +20948,7 @@ static bool BuildTransformedSubScenes(
 	clusterCfg.minViewsPerCluster = 5;
 	SceneCluster cluster(scene, clusterCfg);
 	localToGlobals.clear();
-	subScenes = cluster.SplitScene(&localToGlobals);
+	subScenes = ExtractBlocks(scene, cluster.Partition(), &localToGlobals);
 	if (subScenes.size() != 2)
 		return false;
 
@@ -20701,7 +21220,7 @@ static bool BuildTriangleSubScenes(
 	clusterCfg.minViewsPerCluster = 5;
 	SceneCluster cluster(scene, clusterCfg);
 	localToGlobals.clear();
-	subScenes = cluster.SplitScene(&localToGlobals);
+	subScenes = ExtractBlocks(scene, cluster.Partition(), &localToGlobals);
 	if (subScenes.size() != 3)
 		return false;
 

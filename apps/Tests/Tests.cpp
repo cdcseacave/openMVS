@@ -480,8 +480,6 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::SceneClusterLeafMergeTest())
 				return false;
-			if (!SFM::SceneClusterSeamRepairTest())
-				return false;
 			if (!SFM::SceneClusterMemoryProtocolTest())
 				return false;
 			if (!SFM::SceneClusterIDRemappingTest())
@@ -497,6 +495,12 @@ int main(int argc, LPCTSTR* argv)
 			if (!SFM::SceneClusterBalanceCouplingTest())
 				return false;
 			if (!SFM::SceneClusterThinStretchTest())
+				return false;
+			if (!SFM::SceneBlocksInsertReleaseTest())
+				return false;
+			if (!SFM::SceneBlocksInsertRebuildTest())
+				return false;
+			if (!SFM::PoolResectionWrongClusterTest())
 				return false;
 			// Hierarchical SFM tests - Phase 3: Global Alignment
 			if (!SFM::GlobalAlignmentBuildGlobalToLocalMapTest())
@@ -532,6 +536,10 @@ int main(int argc, LPCTSTR* argv)
 			if (!SFM::WeightlessScaleReadingTest())
 				return false;
 			if (!SFM::RingPlacementTest())
+				return false;
+			if (!SFM::MergeJoinReprojectionTest())
+				return false;
+			if (!SFM::MergeTrackLengthTest())
 				return false;
 			if (!SFM::UnobservableScaleTest())
 				return false;

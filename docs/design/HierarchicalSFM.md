@@ -4,19 +4,22 @@
 
 The pipeline solves a fundamental scaling problem: running bundle adjustment on thousands of images at once is slow and numerically fragile. The solution is **divide → reconstruct → reunite** — split the scene into manageable clusters, reconstruct each independently, then align and merge everything back into one coordinate system.
 
-Three phases, orchestrated by `Scene::ReconstructHierarchical()`:
+Four phases, orchestrated by `Scene::ReconstructHierarchical()`:
 
 ```
-Phase 1: SceneCluster::SplitScene()         → partition into sub-scenes
-Phase 2: threadPool.detach_loop(subScenes)  → parallel incremental SFM
-Phase 3: GlobalAlignment::MergeScenes()     → read every block pair, average the block graph, merge
+Phase 1: SceneCluster::Partition() + SceneBlocks::Extract()  → clusters become blocks, the rest is the pool
+Phase 2: threadPool.detach_loop(blocks)                       → parallel incremental SFM
+Phase 3: SceneBlocks::ResectPool()                            → unregistered images to the pool, registered into the block they connect to best
+Phase 4: GlobalAlignment::MergeScenes()                       → read every block pair, average the block graph, merge
 ```
+
+In plain words: the images are split into groups (blocks), each block is reconstructed on its own, every image a block could not register (and every image no block took) is put in one common pool and tried by the block it is best connected to, and then the blocks are placed against each other and merged.
 
 ---
 
 ## Phase 1 — Scene Clustering
 
-**Goal**: partition images into sub-scenes of bounded size, each image belonging to exactly one — the sub-scenes share no cameras and overlap only in structure: the points the cameras on both sides of a cut see, which the merge registers the sub-scenes on. `--max-views-per-cluster` sets the ceiling (`ClusterConfig::maxViewsPerCluster`, default 200; 0 disables clustering); `ClusterConfig::SetMaxViews` derives the target a cluster aims at (`targetViewsPerCluster`, two thirds of the ceiling — default 133) and the floor under which a cluster is merged away (`minViewsPerCluster`, four fifteenths of the ceiling — default 53) from that one ceiling, so a user-given `--max-views-per-cluster` and the compiled-in defaults follow the same rule.
+**Goal**: partition images into sub-scenes of bounded size, each image belonging to at most one — an image no cluster holds well is left in the pool (Phase 3) — the sub-scenes share no cameras and overlap only in structure: the points the cameras on both sides of a cut see, which the merge registers the sub-scenes on. `--max-views-per-cluster` sets the ceiling (`ClusterConfig::maxViewsPerCluster`, default 200; 0 disables clustering); `ClusterConfig::SetMaxViews` derives the target a cluster aims at (`targetViewsPerCluster`, two thirds of the ceiling — default 133) and the floor under which a cluster is merged away (`minViewsPerCluster`, four fifteenths of the ceiling — default 53) from that one ceiling, so a user-given `--max-views-per-cluster` and the compiled-in defaults follow the same rule.
 
 ### Covisibility Graph
 
@@ -33,31 +36,33 @@ Bottom-up greedy merging that respects covisibility structure:
 
 ### Cluster Refinement
 
-Seven passes tidy the greedy result and make every remaining cluster boundary usable by the merge:
+Six passes tidy the greedy result and make every remaining cluster boundary usable by the merge; whatever is still under the floor after them, save a community that stands alone, goes to the pool (`SceneCluster::FinishPartition`):
 
 1. **RefineClustersLocalSearch** — up to 20 iterations: move boundary images to whichever cluster maximizes internal connectivity (modularity + balance)
 2. **MergeSmallClusters** — absorb clusters below `minViewsPerCluster` into the most-connected neighbor, with `maxOverCapacity` (20) slack; a community the coupling test refused during the greedy merge lands here too, placed by connection strength rather than by whichever cluster still had room — unless it is a community no neighbour is coupled to (its heaviest interface under `minClusterCoupling` of its own internal weight) that carries the strong seams the merge places a block by (`IsStrongSeam`, as many as its track neighbours allow): that one is left alone, reconstructs as its own sub-scene and enters through the merge (`SceneCluster::IsStandaloneCommunity`).
 3. **RefineClustersBalance** — conservatively move well-connected boundary images out of the largest cluster into smaller neighbors, gated by a minimum affinity ratio, to shorten the critical path of concurrent sub-scene reconstruction; a move that would leave part of the source cluster coupled under `minClusterCoupling` is refused
 4. **RefineClustersSplitDisconnected** — split clusters whose images form disconnected components in the covisibility graph
 5. **RefineClustersSplitThinWaist** — split thin waists: a cluster whose weakest prefix cut along its Fiedler order is joined below the `minClusterCoupling` seam is split in two when both sides can stand (`minViewsPerCluster`), and otherwise its smaller side moves whole to the cluster it is most coupled to, rather than left to reconstruct as an appendage that bends or takes its own scale
-6. **RefineClustersForSeams** — the cuts as the merge will see them. `MergeLeafClusters` merges away a cluster whose seams the merge could never attach — fewer than `minClusterDegree` (2, capped by the neighbours it actually has) strong neighbours, where a strong neighbour needs a seam of at least `minSeamTracks` (75) seam-usable tracks with, on both sides, at least `minSeamCameras` (3) cameras each carrying `minSeamCameraTracks` (30) of them (`IsStrongSeam`) — into the neighbour it shares the most usable tracks with, as long as the result still fits `maxViewsPerCluster + maxOverCapacity`. `RepairClusterSeams` then widens a seam that carries tracks enough but holds them in too few cameras, moving boundary images across it to raise `min(camerasA, camerasB)` toward `minSeamCameras`. A final `MergeSmallClusters` pass mops up whatever either pass left under the floor, save the communities that stand alone.
-7. **RefineClustersRescueOrphans** — absorb remaining small orphans into neighbors, node by node; a community that stands alone (see pass 2) is not dismantled.
+6. **RefineClustersForSeams** — the cuts as the merge will see them. `MergeLeafClusters` merges away a cluster whose seams the merge could never attach — fewer than `minClusterDegree` (2, capped by the neighbours it actually has) strong neighbours, where a strong neighbour needs a seam of at least `minSeamTracks` (75) seam-usable tracks with, on both sides, at least `minSeamCameras` (3) cameras each carrying `minSeamCameraTracks` (30) of them (`IsStrongSeam`) — into the neighbour it shares the most usable tracks with, as long as the result still fits `maxViewsPerCluster + maxOverCapacity`. A final `MergeSmallClusters` pass absorbs whatever that left under the floor, save the communities that stand alone.
 
-### Sub-Scene Extraction
+Removed on 2026-10-31 (#59), with the pool: the seam repair (`RepairClusterSeams`, which moved boundary images across a seam holding its tracks in too few cameras: 6 of the 9 seams it repaired over the 33 captures became unreadable, the moved image having no partners on its new side) and the orphan rescue (`RefineClustersRescueOrphans`, which dismantled a cluster still under the floor image by image into its neighbours). An image such a pass would have moved is now left where it is or put in the pool, and the pool resection registers it in the block that can.
 
-`ExtractSubScene()` creates an independent `Scene` per cluster. The memory protocol is the key design element:
+### Block Extraction (SceneBlocks)
+
+`SceneBlocks` (`libs/SFM/SceneBlocks.h`) owns the state between the partition and the merge: the blocks (one `Scene` each), `localToGlobal` per block, `blockOf` per global image (`NO_ID` = the pool), and the global scene. `SceneBlocks::Extract` creates an independent `Scene` per cluster (local IDs sorted by global ID, so every pair keeps `ID1 < ID2` through each remap); the scene's threads are split over the blocks. The memory protocol is the key design element:
 
 | Data | Action |
 |------|--------|
 | Camera models | **Cloned** (independent copies for per-sub-scene BA) |
 | Image keypoints & descriptors | **Moved** from global to sub-scene |
 | Intra-cluster pairs | **Moved** from global to sub-scene |
-| Cross-cluster pairs | **Left** in global scene (used in Phase 3) |
+| Cross-cluster pairs, pairs with a pool image | **Left** in global scene (the pool's and the merge's) |
+| Pool images' keypoints & descriptors | **Left** in global scene |
 | Tracks | Filtered to observations with ≥2 views in cluster |
 
 All IDs are remapped to a local `[0, N)` range. A `localToGlobal[localImgID] = globalImgID` mapping is stored for the merge phase.
 
-After split the global scene is a shell: keypoints empty, only cross-cluster pairs remain.
+After split the global scene is a shell for the blocks' images (keypoints empty) and holds the pool images whole; only the pairs no block holds remain in it.
 
 ---
 
@@ -79,11 +84,24 @@ BuildTracks → StarInitializer → Resection → BundleAdjustment → FilterTra
 
 **FilterTracks**: removes tracks with high reprojection error, low triangulation angle, or depth outside bounds (a track seen by fewer than two posed images has no position that two posed views determine and is not judged).
 
-If initialization fails for a sub-scene it is skipped; those images remain uncalibrated.
+If initialization fails for a sub-scene it is skipped; the pool resection hands all its images to the pool and drops the block.
 
 ---
 
-## Phase 3 — Global Alignment (the block graph)
+## Phase 3 — The pool resection (SceneBlocks::ResectPool)
+
+In plain words: every image a block could not register leaves its block for a common pool, joining the images the partition left in no block; each pool image is then tried, one pass after another, by the block it is best connected to, until no more can be registered.
+
+1. **Release**: every block hands its unregistered images to the pool (blocks in parallel): their features return to the global scene, their pairs too (in global IDs), their track observations are removed (an unposed image is never in an inlier prefix; a track left with fewer than two observations is dropped). A block whose star initialization failed hands every image and is dropped.
+2. **Score**: for each pool image and block, the composite weight of the image's verified pairs to that block's registered images — `ForEachRegisteredPairWeight` (`Resection.h`), the same sum `Resection::SelectNextImages` orders its candidates by.
+3. **Pass**: each pool image goes to its best block not yet tried in this round (`SceneBlocks::Insert`: features, its pairs to the block and to the other inserted images, then `SceneBlocks::RebuildTracks`: the block's tracks built again by `BuildTracks` over its pairs, read in decreasing composite weight with the block's weight bar and conflict settling, so the block holds exactly the tracks it would hold had the images been in it from the start; a track with the same observations as before keeps its position, inlier state and observation order, every new or changed one is triangulated and filtered as the resection does after a registration — so an inserted image matched to two posed block images already holds a correspondence on the point their two keypoints now share). Every block with a batch runs `Resection::RegisterImages(false)` in parallel, the scene's threads split over them; the batch is the block's only unposed images, and every check of the ordinary resection applies (2D-3D minimum, PnP bars, rotation check, direction check, the schedule of adjustments). `false`: a block that registered nothing skips the closing adjustment and keeps its model exactly; one that registered is filtered as Phase 2 leaves a block. The images a block refused are released back (`SceneBlocks::Release`): their observations leave the block's tracks, and what they joined of those tracks stays (a point two of the block's views now share through a refused image keeps its position where it passes the filter: real evidence the merge would add anyway). The next `Insert` into the block rebuilds its tracks from its pairs again.
+4. **Rounds**: a round ends when no pool image has an untried block with evidence; rounds repeat until one registers nothing. Blocks left empty are removed and the others renumbered (logged).
+
+Logs: one VERBOSE line per round (passes, attempts, registered, left in the pool), one DEBUG line per attempt (image, its origin block, target, registered or refused with its 2D-3D correspondences when inserted and at the end, and its inliers), and a summary (registered per origin -> target block, -1 for the partition's pool; left in the pool; blocks dropped). The images left in the pool are what a skipped cluster was before: in no block, features in the global scene, left to the whole-scene resection after the merge.
+
+---
+
+## Phase 4 — Global Alignment (the block graph)
 
 Each sub-scene — a **block** from here on, `GlobalAlignment`'s own word for it — lives in its own arbitrary coordinate system. `GlobalAlignment::MergeScenes` treats the blocks as the nodes of a small graph and every block pair the cross pairs join as an edge holding the readings of its Sim(3); it places the blocks as the view-graph filter places images — one robust averaging of the kept readings, every reading the averaged poses contradict cut, repeated until the kept set settles — and merges the model holding the most images back into the scene; every block outside it is merged without a pose, for the post-merge resection to recover.
 
@@ -113,9 +131,9 @@ Every reading is then judged against the poses of its component: kept when its r
 
 ### Merge and the merged model's adjustment
 
-The blocks of the merged model are transformed by their poses, a camera shared across blocks gets the average of its intrinsics, and keypoints, descriptors and pairs move back from every block (reversing `SceneCluster::ExtractSubScene`). **Closure**: every correspondence of every pair of placed blocks — whether or not a reading of it was kept — that the final block poses explain within the loose bar (`looseSeamFactor` 3 × `maxReprojError` = 12 px) joins its two tracks by construction, on the duplicate-image guard alone; the other cross pairs join under the duplicate-image and 3D-proximity guards; intra-block pairs are skipped. Every block outside the merged model is merged without its poses and its tracks without positions, so the resection can register its images one by one.
+The blocks of the merged model are transformed by their poses, a camera shared across blocks gets the average of its intrinsics, and keypoints, descriptors and pairs move back from every block (reversing `SceneBlocks::Extract`). **Closure**: every correspondence of every pair of placed blocks — whether or not a reading of it was kept — that the final block poses explain within the loose bar (`looseSeamFactor` 3 × `maxReprojError` = 12 px) joins its two tracks by construction, on the duplicate-image and length guards alone; the other connecting pairs (two blocks, or a pool image) join under the duplicate-image, length and reprojection guards; intra-block pairs are skipped. Every block outside the merged model is merged without its poses and its tracks without positions, so the resection can register its images one by one. A single block (a split the pool resection leaves with one block) is merged in its own frame through the same path, so its intrinsics and its tracks reach the scene as a placed block's do.
 
-`AdjustMergedScene` (`Scene.h`) then filters the merged scene at the loose bar, triangulates again, filters again and runs one bundle adjustment: a model never closes its cycles exactly, and a block bent within the graph bars is off by about the loose bar at its far end, so its far matches stay in their tracks until the adjustment has straightened it. `Scene::ReconstructHierarchical` returns, and the reconstruction's shared tail — track filtering, re-triangulation, the final bundle adjustment at the bar, and the resection of every unregistered image (an unplaced block's images among them) against the adjusted model (which always runs and closes with its full adjustment) — runs as for any other reconstruction.
+`AdjustMergedScene` (`Scene.h`) then filters the merged scene at the loose bar, triangulates again, filters again and runs one bundle adjustment: a model never closes its cycles exactly, and a block bent within the graph bars is off by about the loose bar at its far end, so its far matches stay in their tracks until the adjustment has straightened it. `Scene::ReconstructHierarchical` returns, and the reconstruction's shared tail — track filtering, re-triangulation, the final bundle adjustment at the bar, and the resection of every unregistered image (an unplaced block's images and the pool's among them) against the adjusted model (which always runs and closes with its full adjustment) — runs as for any other reconstruction.
 
 ### Measured (2026-10-25, 8 threads, one run per arm, the 17 of the 18 test captures that split)
 
@@ -149,7 +167,12 @@ The split/merge cycle minimizes peak memory by **moving** (not copying) expensiv
 Split:
   Global → Sub-scenes:  keypoints, descriptors, intra-cluster pairs   (MOVED)
   Global → Sub-scenes:  cameras                                       (CLONED)
-  Global retains:       cross-cluster pairs only
+  Global retains:       cross-cluster pairs, the pool images and their pairs
+
+Pool resection:
+  Block → Global:       a released image's keypoints, descriptors, pairs (MOVED, pairs to global IDs)
+  Global → Block:       an inserted image's keypoints, descriptors, pairs to the block (MOVED, pairs to local IDs)
+  Global → Block:       a camera the block does not have yet            (CLONED; one no image uses is deleted)
 
 Merge:
   Sub-scenes → Global:  keypoints, descriptors, pairs                 (MOVED BACK)
@@ -160,7 +183,8 @@ Merge:
 Key invariants:
 
 - Keypoints and descriptors exist in exactly one place at any time
-- Intra-cluster pairs move to sub-scenes during split, move back during merge; cross-cluster pairs never leave the global scene
+- A pair lives in the block holding both its images, else in the global scene with global IDs; it moves with the images (split, pool resection, merge)
+- `localToGlobal` stays strictly increasing, so every pair keeps `ID1 < ID2` in local and global IDs
 - Colors are released during track reassembly (indices change) and must be rebuilt downstream
 
 ---
@@ -179,9 +203,9 @@ A transform can rack up inlier correspondences from a single repeated texture pa
 
 On the measured blocks the first reading of each direction is the right reading on every block pair where any reading is right; the two directions of a pair read alike on almost every pair, and where one is wrong the other and the cycles indict it. A mode search, a free-space test, an evidence product and a consensus over spanning forests (the final design) change no placement there, and each copy of a repeated structure they find is what makes the others necessary. What the averaging cannot judge is a bridge, a pair no cycle tests: it keeps a reading only with two cameras on its weaker side and the verified pairs not against it, which is what refuses a seam one camera holds and a symmetric bridge both directions read as the same copy.
 
-### Union-Find with 3D Guards
+### Union-Find with Guards
 
-Track merging across blocks reuses the union-find pattern from `BuildTracks`, guarded by 3D proximity: because sub-scene tracks have disjoint image sets by construction, the duplicate-image guard alone cannot catch a false match between two blocks, so merged tracks must also land within a small fraction of the scene's bounding-box diagonal of each other. The one exception is the closure: a correspondence of a pair of placed blocks that the final block poses explain within the loose bar has already agreed with the placement, so it joins on the duplicate-image guard alone — re-running the proximity test on it would only risk losing it to noise in the very positions the merged model's adjustment is about to correct.
+Track merging across blocks reuses the union-find pattern from `BuildTracks`, under three guards. Duplicate image: a joined track never holds one image twice. Length: a joined track never holds more than 255 observations (the inlier count is a byte). Reprojection: because sub-scene tracks have disjoint image sets by construction, the duplicate-image guard alone cannot catch a false match between two blocks, so the position of each root must reproject within the loose bar (12 px, judged as `FilterTracks` judges, behind the camera fails) into every posed observation of the other root (a root without a position is checked from the other side alone; one without posed observations offers nothing to check). It replaced a 3D distance of 2% of the bounding-box diagonal, which is one length for every depth: generous for a near point, strict for a far one whose depth two blocks measure poorly (#62). Every pair with a pool image is a connecting pair: a pool image's observations left its block's tracks, so its pairs are the only source of the tracks the post-merge resection reads for it. The one exception is the closure: a correspondence of a pair of placed blocks that the final block poses explain within the loose bar has already agreed with the placement, so it joins on the duplicate-image and length guards alone.
 
 ### Why a block left out is not resected as a block
 

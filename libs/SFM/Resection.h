@@ -209,6 +209,26 @@ struct SFM_API ResectionConfig
 SFM_API unsigned AdjustRepeated(Scene& scene, const BAConfig& baConfig, const ResectionConfig& config);
 
 /**
+ * @brief The evidence a model holds of the images it has not registered: the composite weight of every
+ * verified pair (composite weight > 0) with one registered image; add(image, registeredImage, weight) is
+ * called for each such pair, once per registered side (ID2 registered first, then ID1). The one sum the
+ * resection orders its candidates by and the pool resection chooses an image's block by.
+ */
+template <typename IsRegistered, typename Add>
+void ForEachRegisteredPairWeight(const ImagePairArr& pairs, const IsRegistered& isRegistered, const Add& add)
+{
+	for (const ImagePair& pair : pairs) {
+		const float weight = pair.GetCompositeWeight();
+		if (weight <= 0.f)
+			continue;
+		if (isRegistered(pair.ID2))
+			add(pair.ID1, pair.ID2, weight);
+		if (isRegistered(pair.ID1))
+			add(pair.ID2, pair.ID1, weight);
+	}
+}
+
+/**
  * @brief Incremental camera resection using PnP
  *
  * Registers new cameras by estimating absolute pose from 2D-3D correspondences.
@@ -240,9 +260,11 @@ public:
 	 * runs that adjustment and tries again; any other stall ends the loop. Every resection closes with
 	 * a full adjustment, whatever it registered, also when it has no image to try (every image holds a
 	 * pose, or the ones left are withheld by ImagesRemoved): the loop is then skipped and the closing runs.
+	 * @param closeWhenNothingRegistered false skips the closing adjustment when no image registered,
+	 * so a model that took nothing is left exactly as it was (the pool resection's passes)
 	 * @return true if at least one image was registered
 	 */
-	bool RegisterImages();
+	bool RegisterImages(bool closeWhenNothingRegistered = true);
 
 	/**
 	 * @brief The images a filter just removed from the model (FilterWeaklyConnectedImages): the ones

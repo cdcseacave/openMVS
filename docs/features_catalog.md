@@ -255,12 +255,24 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
   - Agglomerative bottom-up clustering on covisibility graph
   - Merges highest-weight edges, aiming for `targetViewsPerCluster` (two thirds of `maxViewsPerCluster`, default 200), never past the ceiling
   - `maxOverCapacity` (20): extra images allowed over the ceiling when absorbing a small cluster
-  - Refinement (seven passes): local search, merge small clusters, balance load, split disconnected/thin-waisted components, merge away or widen any cluster boundary the merge could not register against (`IsStrongSeam`), rescue orphans
-  - Keypoints/descriptors MOVED (not copied) to sub-scenes
+  - Refinement (six passes): local search, merge small clusters, balance load, split disconnected/thin-waisted components, merge away any cluster the merge could not register against (`IsStrongSeam`); a cluster still under the floor (not a standalone community) goes to the pool
+  - Returns a `ScenePartition`: the clusters that become blocks and the pool
 - **Configuration:** `ClusterConfig` — `maxViewsPerCluster` (200), `maxOverCapacity` (20)
 - **GPU Support:** No
 - **Threading:** Single (clustering); sub-scene reconstruction parallelized via thread pool
 - **Dependencies:** Common, Math (DisjointSet)
+
+### Scene Blocks and the Pool Resection
+
+- **Files:** `libs/SFM/SceneBlocks.h`, `libs/SFM/SceneBlocks.cpp`
+- **Algorithms:**
+  - `Extract`: one `Scene` per cluster, keypoints/descriptors and intra-block pairs MOVED (not copied), cameras cloned, local IDs sorted by global ID; the pool's images stay in the global scene
+  - `Release` / `Insert`: move unposed images between a block and the pool through one remap (features, pairs, track observations); Insert rebuilds the block's tracks with `BuildTracks` as if the images had been there from the start (unchanged tracks kept, new or changed ones triangulated and filtered); a refused image leaves with its observations, what it joined of the block's tracks stays
+  - `ResectPool`: every block hands its unregistered images to the pool (a block whose star initialization failed hands all and is dropped); each pool image is tried by its best untried block by the composite weight of its verified pairs to that block's registered images (`ForEachRegisteredPairWeight`, shared with `Resection::SelectNextImages`), the blocks' resections (`RegisterImages(false)`) in parallel; rounds until one registers nothing
+- **Configuration:** none of its own (the resection's `ResectionConfig`, `minPairWeight`)
+- **GPU Support:** No
+- **Threading:** blocks in parallel on the scene's thread pool, the threads split over the blocks of a pass
+- **Dependencies:** Resection, Common
 
 ### Global Alignment (Multi-Scene Merge)
 
@@ -268,7 +280,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 - **Algorithms:** places the independently reconstructed blocks in one frame by one robust averaging of the block graph (the view-graph filter's pattern over blocks):
   1. **Readings** (`EstimateSeamPair`): every block pair the cross pairs join, read once per direction — generalized-camera PnP with scale of one block's cameras against the other's tracks, refined over its inliers at `maxReprojError` (4 px) (`ALIGN_CAMERAS`, default; a rig of one camera is a door read by that camera's own pose, its scale from the depth ratios) — or one 3D-3D similarity (`ALIGN_POINTS`, `--cluster-alignment 0`); the two directions stay two readings. Each is scored on every correspondence of the pair (the supporting cameras of its weaker side, `minCameraInliers` 10) and read against the verified image pairs across it (`minPairInliers` 30, `maxPairRotationResidual` 5 degrees); weight = max(cameras, 1) x the share of the pairs' inlier weight it reproduces
   2. **Selection** (`SelectSeamGraph`, `AverageBlockPoses`): every component of the kept readings averaged — rotations by `GlobalRotationEstimator`, log-scales and camera-centroid translations reweighted by the inverse of each reading's error (40 rounds) — and every reading kept within 5 degrees / 1.20 / 0.20 of the pair's footprint of its component's poses, repeated until the kept set settles; a bridge (a pair no cycle tests) keeps a reading only with `minSeamWeight` (2) cameras on its weaker side and its verified pairs not against it; each component left is a model
-  3. **Merge** (`MergeScenes`): apply the poses of the model holding the most images; average shared camera intrinsics via `Camera::AccumulateIntrinsics()`/`ScaleIntrinsics()`; union-find on tracks with a 3D-proximity guard, every correspondence of every placed block pair within the loose bar (3 x 4 px) joining by construction; every other block is merged without a pose, for the resection to recover; `AdjustMergedScene` then filters the merged scene at the loose bar and adjusts it once
+  3. **Merge** (`MergeScenes`): apply the poses of the model holding the most images; average shared camera intrinsics via `Camera::AccumulateIntrinsics()`/`ScaleIntrinsics()`; union-find on tracks with duplicate-image, 255-observation and reprojection (12 px into every posed observation of the other track) guards, pool images' pairs included, every correspondence of every placed block pair within the loose bar (3 x 4 px) joining by construction; every other block is merged without a pose, for the resection to recover; `AdjustMergedScene` then filters the merged scene at the loose bar and adjusts it once
   - **Known limits:** a non-rigid block (several bodies at different scales) can be placed wrong; a heavy wrong chord no verified pair refuses, a bridge with two equal readings, and a copy heavier than the truth on a one-camera door's triangle are not caught (`docs/design/HierarchicalSFM.md`)
 - **GPU Support:** No
 - **Threading:** Single

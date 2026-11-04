@@ -32,13 +32,15 @@ class SFM_API Scene;
  * reconstruction problem becomes both computationally expensive and numerically
  * fragile: large bundle adjustment problems converge slowly and are more prone
  * to local minima. Hierarchical SfM addresses this by splitting the scene into
- * smaller sub-scenes that share no cameras -- every image belongs to exactly
- * one -- and overlap only in structure: the points the cameras on both sides
+ * smaller sub-scenes that share no cameras -- every image belongs to at most
+ * one; an image no cluster holds well is left in the pool -- and overlap only in structure: the points the cameras on both sides
  * of a cut see, which the merge registers the sub-scenes on. Each sub-scene
  * can be reconstructed independently and later merged into a single global
  * scene.
  *
- * This file implements the SPLIT phase. The MERGE phase is in GlobalAlignment.h.
+ * This file implements the PARTITION. The blocks extracted from it and the pool
+ * resection between the blocks' reconstruction and the merge are in SceneBlocks.h;
+ * the MERGE phase is in GlobalAlignment.h.
  *
  * ── Pipeline overview (split) ──────────────────────────────────────────────
  *
@@ -66,7 +68,7 @@ class SFM_API Scene;
  *    ensuring each sub-scene has strong internal connectivity.
  *
  * 3. CLUSTER REFINEMENT
- *    Seven passes tidy the greedy result and make every remaining boundary usable
+ *    Six passes tidy the greedy result and make every remaining boundary usable
  *    by the merge:
  *    a) Local search: iteratively move boundary images between clusters to
  *       improve a modularity + balance objective.
@@ -91,14 +93,16 @@ class SFM_API Scene;
  *    f) Make the cuts usable by the merge: a cluster whose seams carry too few
  *       usable tracks, or hold them in too few cameras, to register it against
  *       its neighbors (IsStrongSeam, below minClusterDegree strong neighbors) is
- *       merged into the neighbor it shares the most usable tracks with; a seam
- *       holding tracks enough but concentrated in too few cameras is then widened
- *       by moving boundary images across it; a final small-cluster pass mops up
- *       whatever either step left under the floor.
- *    g) Rescue orphans: small clusters that remain after splitting are absorbed
- *       into neighbors.
+ *       merged into the neighbor it shares the most usable tracks with; a final
+ *       small-cluster pass absorbs whatever that left under the floor.
  *
- * 4. EXTRACT SUB-SCENES
+ * 4. FINISH THE PARTITION (FinishPartition)
+ *    A cluster still under minViewsPerCluster that is not a standalone community
+ *    goes to the pool: its images are in no block, reconstructed by no block, and
+ *    the pool resection (SceneBlocks::ResectPool) registers them in the block they
+ *    connect to best. The partition is the clusters that become blocks plus the pool.
+ *
+ * 5. EXTRACT THE BLOCKS (SceneBlocks::Extract)
  *    For each cluster, create an independent Scene object:
  *    - Copy camera definitions (with local camera IDs).
  *    - Copy images (with local image IDs), MOVING keypoints and descriptors
@@ -110,12 +114,14 @@ class SFM_API Scene;
  *      cross-sub-scene pairs are used later by GlobalAlignment to establish
  *      connections between independently reconstructed sub-scenes.
  *
- *    The output is:
+ *    The output (SceneBlocks) is:
  *    - A vector of sub-scenes with local IDs [0, N), each self-contained with
  *      its own cameras, images (with keypoints), and intra-cluster pairs.
  *    - A parallel vector of localToGlobal mappings: localToGlobal[sceneIdx][localImgID] = globalImgID.
+ *    - blockOf[globalImgID]: the block holding the image, NO_ID for the pool.
  *    - The global scene retains its image array (now with empty keypoints for
- *      assigned images) and only the cross-sub-scene pairs.
+ *      assigned images, whole for the pool's) and only the pairs no block holds:
+ *      the cross-sub-scene pairs and the pairs with a pool image.
  *
  * ── Memory protocol ────────────────────────────────────────────────────────
  *
@@ -126,8 +132,8 @@ class SFM_API Scene;
  *     pairs[]      → all image pairs with matches
  *
  *   Global scene (after split):
- *     images[]     → keypoints/descriptors MOVED OUT (empty for clustered images)
- *     pairs[]      → only cross-sub-scene pairs remain
+ *     images[]     → keypoints/descriptors MOVED OUT (empty for clustered images, kept for the pool)
+ *     pairs[]      → only cross-sub-scene pairs and the pool's pairs remain
  *
  *   Sub-scenes (after split):
  *     images[]     → keypoints/descriptors MOVED IN from global
@@ -135,8 +141,10 @@ class SFM_API Scene;
  *
  * During independent reconstruction of each sub-scene (BuildTracks →
  * StarInitializer → Resection → BundleAdjustment), only that sub-scene's
- * data is in memory. After reconstruction, GlobalAlignment::MergeSingleScene
- * moves everything back to the global scene.
+ * data is in memory. The pool resection moves an image's features and pairs
+ * between its block and the global scene (SceneBlocks::Release / Insert), so
+ * they still exist in one place only. After reconstruction,
+ * GlobalAlignment::MergeSingleScene moves everything back to the global scene.
  */
 
 /**
@@ -198,10 +206,20 @@ typedef std::map<std::pair<uint32_t, uint32_t>, std::pair<SeamTrackStats, SeamTr
 bool SFM_API IsStrongSeam(const std::pair<SeamTrackStats, SeamTrackStats>& seam, const ClusterConfig& config);
 
 /**
+ * @brief The partition clustering ends with: the clusters that become blocks, each sorted by global
+ * image ID, and the pool, the images no cluster holds well (sorted); together they hold every image once
+ */
+struct SFM_API ScenePartition
+{
+	std::vector<IIndexArr> clusters;
+	IIndexArr pool;
+};
+
+/**
  * @brief Scene partitioning using aggregative graph clustering
  *
  * See the top-level comment in this file for the full hierarchical SfM
- * split-phase architecture and memory protocol.
+ * partition architecture and memory protocol.
  */
 class SFM_API SceneCluster
 {
@@ -214,22 +232,11 @@ public:
 	SceneCluster(Scene& scene, const ClusterConfig& config);
 
 	/**
-	 * @brief Split scene into sub-scenes using graph partitioning
-	 * @param outLocalToGlobal Optional output vector of ID mappings (parallel to returned scenes)
-	 * @return Vector of sub-scenes with local IDs [0, N)
+	 * @brief Partition the scene by graph clustering into the clusters that become blocks and the pool
+	 * (a scene within maxViewsPerCluster, or with clustering disabled, is one cluster); SceneBlocks
+	 * extracts the blocks from it
 	 */
-	std::vector<Scene> SplitScene(std::vector<IIndexArr>* outLocalToGlobal = NULL);
-
-	/**
-	 * @brief Split the scene into the given clusters of global image IDs, each cluster one sub-scene
-	 *
-	 * The same memory protocol as SplitScene; clusters under minViewsPerCluster are NOT skipped
-	 * here, so the sub-scenes come out numbered exactly as the given clusters are.
-	 * @param outLocalToGlobal Optional output vector of ID mappings (parallel to returned scenes)
-	 */
-	std::vector<Scene> SplitSceneByClusters(
-		const std::vector<IIndexArr>& clusters,
-		std::vector<IIndexArr>* outLocalToGlobal = NULL);
+	ScenePartition Partition();
 
 	/**
 	 * @brief The seam statistics of every adjacent cluster pair, read off the scene tracks
@@ -243,12 +250,6 @@ public:
 	 * neighbours. It joins the neighbour it shares the most usable tracks with, if the result fits.
 	 */
 	void MergeLeafClusters(std::vector<IIndexArr>& clusters);
-
-	/**
-	 * @brief Move boundary images across a seam that carries tracks enough but holds them in too
-	 * few cameras, until both sides reach the number of cameras the merge needs
-	 */
-	void RepairClusterSeams(std::vector<IIndexArr>& clusters);
 
 	/**
 	 * @brief Move well-connected boundary images out of the largest cluster into smaller neighbours, to
@@ -280,19 +281,13 @@ private:
 	// Build METIS connectivity graph in CSR format
 	void BuildConnectivityGraph();
 
-	// Extract sub-scene from cluster assignment
-	Scene ExtractSubScene(
-		const IIndexArr& viewIndices,
-		const IIndexArr& globalToLocal,
-		unsigned nThreadsPerCluster);
-
 	// Aggregative clustering (greedy max-weight)
-	std::vector<Scene> SplitSceneAggregativeClustering(std::vector<IIndexArr>* outLocalToGlobal);
+	ScenePartition PartitionAggregativeClustering();
 
 	// Community detection (Louvain) followed by capacity packing; same interface
 	// and refinement passes as the aggregative method, but clusters are built from
 	// detected communities instead of individual images
-	std::vector<Scene> SplitSceneCommunityDetection(std::vector<IIndexArr>* outLocalToGlobal);
+	ScenePartition PartitionCommunityDetection();
 
 	// Greedy max-weight merging of the given initial clusters under the capacity
 	// limit and the minimum-coupling acceptance test (shared by both methods)
@@ -310,7 +305,7 @@ private:
 	void MergeSmallClusters(std::vector<IIndexArr>& clusters);
 
 	// a cluster under the floor that no neighbour is coupled to but that the merge could place: kept
-	// as its own sub-scene by the small-cluster pass, the orphan rescue and the sub-scene builder
+	// as its own sub-scene by the small-cluster pass and the partition's finish
 	bool IsStandaloneCommunity(const std::vector<IIndexArr>& clusters, size_t c, const SeamTrackStatsMap& seamStats) const;
 
 	// Whether cluster c without image u keeps every prefix cut along its Fiedler order at or above
@@ -324,23 +319,14 @@ private:
 	void RefineClustersSplitDisconnected(std::vector<IIndexArr>& clusters);
 
 	// Helper: the cuts as the merge will see them — merge away the clusters no seam can register,
-	// widen the seams whose tracks sit in too few cameras, and hand whatever that leaves under the
-	// floor back to the floor rule; the tail both clustering methods end through
+	// and hand whatever that leaves under the floor back to the floor rule; the tail both
+	// clustering methods end through
 	void RefineClustersForSeams(std::vector<IIndexArr>& clusters);
 
-	// Helper: one seam of RepairClusterSeams, between the two given clusters
-	void RepairClusterSeam(std::vector<IIndexArr>& clusters, uint32_t clusterA, uint32_t clusterB);
-
-	// Helper: Rescue small orphaned clusters
-	void RefineClustersRescueOrphans(std::vector<IIndexArr>& clusters);
-
-	// Helper: Create sub-scenes and logging/export from clusters; clusters smaller than
-	// minViewsPerCluster are left out unless the caller asked for every one of them, except a
-	// community that stands alone (IsStandaloneCommunity), which becomes a sub-scene at any size
-	std::vector<Scene> BuildSubScenesFromClusters(
-		std::vector<IIndexArr>& clusters,
-		std::vector<IIndexArr>* outLocalToGlobal,
-		bool skipSmallClusters = true);
+	// Helper: the partition the refined clusters make: a cluster smaller than minViewsPerCluster
+	// goes to the pool, except a community that stands alone (IsStandaloneCommunity), which becomes
+	// a block at any size
+	ScenePartition FinishPartition(std::vector<IIndexArr>& clusters);
 
 private:
 	Scene& scene;                  // Reference to input scene
