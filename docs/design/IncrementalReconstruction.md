@@ -121,17 +121,22 @@ share of the scene's images only cost images: the under-coupled sub-scene it kep
 refused by the merge, and its images come in right in the whole-scene pass.)
 
 A stall -- no image holds `minCorrespondences` (15) correspondences, or every candidate failed -- with
-images registered since the last full bundle adjustment runs that adjustment and tries again: it
-re-triangulates the tracks those registrations made triangulable and moves the model, which can give
-the remaining images the correspondences or the fit they lacked. A stall with nothing registered since
-the last full adjustment ends the resection. Every resection closes with a full adjustment of its own
+the model changed since the last full bundle adjustment runs that adjustment and tries again: it
+re-triangulates the tracks the change made triangulable or left without a position and moves the
+model, which can give the remaining images the correspondences or the fit they lacked. Two things
+change the model: an image registered, and images a filter removed right before the resection
+(`ImagesRemoved`, the weak-image filter ahead of the whole-scene pass: their tracks lost views). A
+stall with nothing registered or removed since the last full adjustment ends the resection. (Without
+the removal counted, Outdoor_004 lost the 200 images the filter cut after the merge whenever the
+whole-scene pass stalled before registering anything; it got them back only when a few leftover
+registrations happened to trigger the adjustment.) Every resection closes with a full adjustment of its own
 (every track triangulated again, every intrinsic the flags allow, 100 iterations), also when it
 registered nothing since the last one and also when it had no image to try: the whole-scene pass that
 follows the merge receives the model filtered at the final bundle adjustment's tighter bar, and the
 closing re-admits the observations within the resection's bar that filter dropped (8d2f4877 keeps 389k
 of its 413k tracks valid with the closing, 146k without it). So the whole-scene pass always runs, also when the merge registered every image, and a pass
 whose only unregistered images are the ones the weak-image filter withheld for contradicting the model
-(`ExcludeImages`) skips its loop, logs "warning: no unregistered images" and closes all the same. It
+(`ImagesRemoved`) skips its loop, logs "warning: no unregistered images" and closes all the same. It
 returns false like any pass that registered nothing, so the caller does not filter the weakly connected
 images a second time. A sub-scene whose star initialization registered every image closes the same way.
 Over the fourteen test captures the order, the loop and the stall retry together leave 112 images

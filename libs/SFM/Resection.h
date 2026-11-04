@@ -12,6 +12,7 @@
 
 #include "BundleAdjustment.h"
 #include "PairsWeighting.h"
+#include "Track.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -234,21 +235,24 @@ public:
 	 * @brief Register all remaining images connected to current reconstruction
 	 *
 	 * Each round tries the candidates of SelectNextImages down the list until one registers; the
-	 * next round reads the list again. A stall (no candidate, or every candidate failed) with images
-	 * registered since the last full adjustment runs that adjustment and tries again; any other stall
-	 * ends the loop. Every resection closes with a full adjustment, whatever it registered, also when
-	 * it has no image to try (every image holds a pose, or the ones left are withheld by
-	 * ExcludeImages): the loop is then skipped and the closing runs.
+	 * next round reads the list again. A stall (no candidate, or every candidate failed) with the model
+	 * changed since the last full adjustment -- images registered, or images removed (ImagesRemoved) --
+	 * runs that adjustment and tries again; any other stall ends the loop. Every resection closes with
+	 * a full adjustment, whatever it registered, also when it has no image to try (every image holds a
+	 * pose, or the ones left are withheld by ImagesRemoved): the loop is then skipped and the closing runs.
 	 * @return true if at least one image was registered
 	 */
 	bool RegisterImages();
 
 	/**
-	 * @brief Withhold images from registration, e.g. ones a caller just removed for being
-	 * weakly connected: offering them back would only reproduce the same removal
-	 * @param imageIDs Images to leave unregistered
+	 * @brief The images a filter just removed from the model (FilterWeaklyConnectedImages): the ones
+	 * it found contradicting the model are withheld from registration, as offering them back would
+	 * only reproduce the same removal, and the removal counts as a change of the model since its last
+	 * full adjustment, as a registration does: their tracks lost views, so a stall runs the full
+	 * adjustment (which triangulates the tracks left without a position again) and another pass
+	 * before the resection can stop
 	 */
-	void ExcludeImages(const IIndexArr& imageIDs);
+	void ImagesRemoved(const RemovedImages& removed);
 
 	/**
 	 * @brief Estimate the pose of one unregistered image from its 2D-3D correspondences to the
@@ -262,6 +266,7 @@ private:
 	Scene& scene;
 	ResectionConfig config;
 	std::unordered_set<IIndex> excludedImages;
+	bool imagesRemoved = false; // images left the model since its last full adjustment (ImagesRemoved)
 
 	using IIndexScores = std::unordered_map<IIndex,unsigned>;
 

@@ -839,8 +839,10 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	// Filter weakly connected images and resection remaining images into the reconstruction;
 	// what the filter removed for contradicting the model is withheld from that resection, so it
 	// is not simply handed back and removed again, while what it removed for want of evidence
-	// (no structure, no witness) is tried again once the model has grown. The pass always runs,
-	// whether or not an image is left for it, and so does the full adjustment that closes it: that
+	// (no structure, no witness) is tried again once the model has grown; the removal counts as a
+	// change of the model, so a stall of that resection adjusts and tries again before it stops.
+	// The pass always runs, whether or not an image is left for it, and so does the full adjustment
+	// that closes it: that
 	// adjustment triangulates every track again at the resection's bar, which re-admits the
 	// observations the final adjustment's tighter bar dropped from the model it receives
 	const RemovedImages removed = FilterWeaklyConnectedImages(*this);
@@ -850,7 +852,7 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	SetBAIntrinsicFlags(resectionBaCfg, cfg.baIntrinsicFlags);
 	resectionCfg.DeriveBAConfigs(resectionBaCfg);
 	Resection resection(*this, resectionCfg);
-	resection.ExcludeImages(removed.contradicting);
+	resection.ImagesRemoved(removed);
 	if (resection.RegisterImages())
 		FilterWeaklyConnectedImages(*this);
 

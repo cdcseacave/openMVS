@@ -351,9 +351,11 @@ IIndexArr Resection::BuildLocalWindow(const IIndexArr& imageIDs) const
 	return fixedViewIDs;
 }
 
-void Resection::ExcludeImages(const IIndexArr& imageIDs)
+void Resection::ImagesRemoved(const RemovedImages& removed)
 {
-	excludedImages.insert(imageIDs.begin(), imageIDs.end());
+	excludedImages.insert(removed.contradicting.begin(), removed.contradicting.end());
+	if (!removed.all.empty())
+		imagesRemoved = true;
 }
 
 unsigned SFM::AdjustRepeated(Scene& scene, const BAConfig& baConfig, const ResectionConfig& config)
@@ -448,6 +450,7 @@ bool Resection::RegisterImages()
 		lastRegistered.clear();
 		avgInliersRatio.Clear();
 		sinceFullBA = 0;
+		imagesRemoved = false;
 		if (nBA + 1 < config.fullBAEvery.size())
 			++nBA;
 	};
@@ -516,12 +519,14 @@ bool Resection::RegisterImages()
 		if (registeredCount > startRegisteredCount)
 			continue;
 		// Stall: no image holds enough correspondences, or every candidate failed. The full adjustment
-		// of the images registered since the last one re-triangulates the tracks they made triangulable
-		// and moves the model, which can give the remaining images the correspondences or the fit they
-		// lacked, so it runs and the resection tries again; a stall with nothing registered since the
+		// of the model changed since the last one (images registered, which made tracks triangulable,
+		// or images removed, which left tracks without a position) re-triangulates those tracks and
+		// moves the model, which can give the remaining images the correspondences or the fit they
+		// lacked, so it runs and the resection tries again; a stall with the model unchanged since the
 		// last full adjustment ends the resection
-		if (sinceFullBA > 0) {
-			DEBUG("Resection stalled at %u registered images, full adjustment and another pass", scene.status.nCalibratedImages+registeredCount);
+		if (sinceFullBA > 0 || imagesRemoved) {
+			DEBUG("Resection stalled at %u registered images (%u registered since the last full adjustment%s), full adjustment and another pass",
+				scene.status.nCalibratedImages+registeredCount, sinceFullBA, imagesRemoved ? ", images removed" : "");
 			AdjustFull();
 			continue;
 		}

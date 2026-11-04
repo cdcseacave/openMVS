@@ -12148,7 +12148,7 @@ bool ResectionStallRetryTest()
 // 4 px bar and over the 2 px one. The scene is triangulated at 4 px and then filtered at 2 px, as the
 // final adjustment leaves it, and the 60 tracks are not valid. Case 1: every image holds a pose, as
 // when the merge registered them all. Case 2: the only image without a pose is withheld by
-// ExcludeImages, as the weak-image filter withholds an image the model contradicts; it holds 100
+// ImagesRemoved, as the weak-image filter withholds an image the model contradicts; it holds 100
 // true correspondences, so it registers when it is not withheld. In both the resection has no image
 // to try, registers nothing, still logs that it had none, and runs its closing adjustment once,
 // after which the 60 tracks are valid again.
@@ -12203,7 +12203,7 @@ bool ResectionClosingAlwaysTest()
 			buildScene(control, c.numImages);
 			Resection(control, config).RegisterImages();
 			if (!control.images[4].HasPose()) {
-				VERBOSE("ResectionClosingAlwaysTest FAILED: image 4 was not registered without ExcludeImages, so the scene "
+				VERBOSE("ResectionClosingAlwaysTest FAILED: image 4 was not registered without ImagesRemoved, so the scene "
 					"does not pose the problem");
 				return false;
 			}
@@ -12212,9 +12212,10 @@ bool ResectionClosingAlwaysTest()
 		LogCapture log;
 		Resection resection(scene, config);
 		if (c.withhold) {
-			IIndexArr withheld;
-			withheld.push_back(IIndex(4));
-			resection.ExcludeImages(withheld);
+			RemovedImages withheld;
+			withheld.all.push_back(IIndex(4));
+			withheld.contradicting.push_back(IIndex(4));
+			resection.ImagesRemoved(withheld);
 		}
 		const bool registered = resection.RegisterImages();
 		const unsigned numClosed = countValid(scene);
@@ -12245,6 +12246,91 @@ bool ResectionClosingAlwaysTest()
 	VERBOSE("ResectionClosingAlwaysTest PASSED: a resection with no image to try, because every image holds a pose or the "
 		"only ones left are withheld, still closes with its full adjustment, which brings the tracks the fine bar dropped "
 		"back (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// A filter that removes images from the model right before a resection changes the model as a
+// registration does: the tracks of the removed images lost views. Six cameras of the arc, as the
+// whole-scene pass receives them after the final adjustment. Images 0-3 share 150 tracks. Image 4 is
+// posed but observes only 40 two-view tracks with image 3, so the covisibility graph holds no edge for
+// it and FilterWeaklyConnectedImages removes it (for want of evidence: no pair contradicts it). Image 5
+// has no pose and observes 60 tracks with images 0 and 1 alone, whose observation in image 0 is 6 px
+// off across the epipolar lines of the arc: triangulated at the resection's bar (4 px) they are valid,
+// filtered at the final adjustment's (2 px) they are not. So image 5 holds no correspondence, the
+// resection finds no image to attempt and stalls before registering anything. Told of the removal
+// (ImagesRemoved), the stall runs the full adjustment, which triangulates the 60 tracks again, and the
+// next pass registers image 5 at its true pose. In the control image 4 also sees the 150 tracks, the
+// filter removes nothing, the model is unchanged since its last adjustment, and the same stall ends
+// the resection with image 5 left out and only the closing adjustment run.
+bool ResectionRemovalStallTest()
+{
+	TD_TIMER_START();
+	constexpr unsigned NUM_SHARED = 150, NUM_PAIRWISE = 40, NUM_BAD = 60;
+	constexpr float FINE_BAR = 2.f; // the bar of the final adjustment (ReconstructionConfig::maxFineReprojError)
+	const ResectionConfig config;
+	struct Case { bool removed; const char* what; };
+	const Case cases[] = {
+		{ true,  "the filter removed image 4" },
+		{ false, "the filter removed nothing" },
+	};
+	for (const Case& c : cases) {
+		std::mt19937 rng(20261103);
+		Scene scene;
+		BuildResectionArc(scene, 6);
+		AddResectionTracks(scene, c.removed ? std::vector<IIndex>{0, 1, 2, 3} : std::vector<IIndex>{0, 1, 2, 3, 4}, NUM_SHARED, rng);
+		AddResectionTracks(scene, {3, 4}, NUM_PAIRWISE, rng);
+		const size_t firstBad = scene.tracks.size();
+		AddResectionTracks(scene, {0, 1, 5}, NUM_BAD, rng);
+		for (size_t t = firstBad; t < scene.tracks.size(); ++t)
+			scene.images[0].keypoints[scene.tracks[t].observations[0].featureID].pt.y += 6.f;
+		const Pose3D truePose5 = static_cast<const Pose3D&>(scene.images[5]);
+		scene.images[5].InvalidatePose();
+		scene.status.nCalibratedImages = 5;
+		TriangulateTracks(scene, false, config.maxReprojError, config.minAngleThreshold);
+		FilterTracks(scene, FINE_BAR, config.minAngleThreshold, ResectionConfig::multDepthNear, ResectionConfig::multDepthFar);
+		for (size_t t = firstBad; t < scene.tracks.size(); ++t) {
+			if (scene.tracks[t].IsInlier()) {
+				VERBOSE("ResectionRemovalStallTest FAILED: %s, and a track of image 5 is valid at %g px, so the scene does not "
+					"pose the problem", c.what, FINE_BAR);
+				return false;
+			}
+		}
+		const RemovedImages removed = FilterWeaklyConnectedImages(scene, 5, 0.15f, 1.5f, 2, 0.f, 0.f);
+		if ((removed.all.size() == 1 && removed.all[0] == 4) != c.removed || !removed.contradicting.empty()) {
+			VERBOSE("ResectionRemovalStallTest FAILED: %s was expected, but the filter removed %u images (the first %d, %u "
+				"contradicting), so the scene does not pose the problem", c.what, removed.all.size(),
+				removed.all.empty() ? -1 : (int)removed.all[0], removed.contradicting.size());
+			return false;
+		}
+
+		LogCapture log;
+		Resection resection(scene, config);
+		resection.ImagesRemoved(removed);
+		resection.RegisterImages();
+		const bool registered = scene.images[5].HasPose();
+		if (registered != c.removed) {
+			VERBOSE("ResectionRemovalStallTest FAILED: %s, and image 5 was %s: %s", c.what, registered ? "registered" : "left out",
+				c.removed ? "the stall that followed the removal did not run the full adjustment that triangulates its tracks "
+					"again" : "a stall with the model unchanged since its last adjustment did not end the resection");
+			return false;
+		}
+		if (registered && RotationErrorDeg(scene.images[5].R, truePose5.R) > 1.0) {
+			VERBOSE("ResectionRemovalStallTest FAILED: %s, and image 5 was not registered at its true pose", c.what);
+			return false;
+		}
+		const unsigned numRemovalStalls = log.Count("registered since the last full adjustment, images removed)");
+		const unsigned numFullAdjustments = log.Count("Full adjustment ran");
+		if (numRemovalStalls != (c.removed ? 1u : 0u) || numFullAdjustments != (c.removed ? 3u : 1u)) {
+			VERBOSE("ResectionRemovalStallTest FAILED: %s, and %u stalls ran their adjustment for the removal and %u full "
+				"adjustments ran, expected %s", c.what, numRemovalStalls, numFullAdjustments,
+				c.removed ? "1, and 3 (the removal's, the one after image 5 registered, the closing one)" : "0, and 1 (the closing one)");
+			return false;
+		}
+	}
+
+	VERBOSE("ResectionRemovalStallTest PASSED: a stall after a filter removed images runs the full adjustment, which "
+		"triangulates the tracks again and lets the next pass register what they hold, and a stall with nothing removed or "
+		"registered since the last adjustment ends the resection (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 

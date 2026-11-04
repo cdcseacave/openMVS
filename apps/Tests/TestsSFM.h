@@ -467,9 +467,14 @@ bool ResectionRefusedAverageTest();
 bool ResectionStallRetryTest();
 
 // The full adjustment that ends a resection runs whether or not the resection had an image to try
-// -- every image holds a pose, or the only ones without are withheld by ExcludeImages -- and brings
+// -- every image holds a pose, or the only ones without are withheld by ImagesRemoved -- and brings
 // back the tracks the final adjustment's tighter bar dropped
 bool ResectionClosingAlwaysTest();
+
+// Images a filter removed right before a resection count as a change of the model since its last
+// full adjustment: a stall that follows runs the adjustment and another pass, which registers the
+// image the re-triangulated tracks hold; a stall with nothing removed or registered ends the resection
+bool ResectionRemovalStallTest();
 
 // The resection's inlier bar admits a correspondence measured with the precision of a warp-sampled
 // (dense) keypoint on a full-resolution image, several pixels off its projection, and not only one
