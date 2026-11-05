@@ -59,6 +59,9 @@ bool PoseUncertaintyExportTest();
 // rejected without modifying the scene; well-spread GPS must still align
 bool AlignToGPSDegenerateTest();
 
+// GCP CSV import, robust map-frame alignment, and GCP-constrained bundle adjustment
+bool GroundControlPointTest();
+
 // Full-hemisphere spherical reconstruction regression test: exercises the
 // Triangulation + BA pipeline on a spherical scene with 3D points distributed
 // across the entire sphere (front AND back hemispheres). Pins the correctness
