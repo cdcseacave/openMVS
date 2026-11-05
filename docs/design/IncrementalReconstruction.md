@@ -114,6 +114,22 @@ spot is a quorum of pairs whose translation is wrong at a ray angle of a few deg
 panorama pairs, 50-110 degrees off at 2-16 degrees): it cannot tell a wrong pair from a wrong pose and
 refuses the right one.
 
+A pose that passes the rotation and direction checks is then weighed on the rotation EVERY link predicts,
+not only the quorum's: the mean angle between the pose's rotation and the rotations its links to
+registered images predict from their neighbours' current poses, each link weighted by its pair weight
+(the weighted inliers, the dense ones at `PairsWeightingConfig::DenseScale()`), must not exceed
+`maxLinkRotationDisagreement` (8 degrees; 0 = off; no command-line flag). It runs also when the quorum
+is contested, and an image with no such link is not judged. The quorum hears only its agreeing group, so
+a pose 13 degrees from a strong link and in line with weak ones passes it; the weighted mean hears the
+strong link. Its refusals are logged as "warning: rejected the pose of image I: ... and D degrees away
+from the rotations its N links predict". Against no such check (12 runs on 10 test captures, 8 threads)
+it cut the wrong registrations at acceptance from 629.5 to 593 (block 417 -> 403, pool 28 -> 24,
+post-merge 184.5 -> 166) and the wrong images of the final models from 70.5 to 59.5, refusing 160 poses
+of 49 images, 8 of them right ones (at 5 degrees: 252 right of 932). Most wrong acceptances it avoids are
+transient ones the block's own adjustments would have repaired; where it matters it keeps one wrong
+image out of a block (6DCA1E8E's block 2: wrong images at the block stage's end 45 -> 11) or changes the
+registration order so a wrong chain never starts (Outdoor_004: final wrong 12 -> 0).
+
 A pose that passes these checks is accepted however little of the image's evidence the model holds; the
 order above already tries such an image after the candidates whose pairs lie in the model. (A deferral
 that threw away a pose whose registered share of the pair weight was under a tenth of the registered
@@ -241,7 +257,7 @@ scene the tier verdicts and the peel do not separate.
 | `--max-link-direction-error F` | `5` | the resection's direction check, in degrees, in [0,90] (`maxLinkDirectionError`, read by every resection: the sub-scenes' and the whole-scene pass); 0 = no direction check at all, the inlier-share and rotation checks stay |
 
 The resection's other acceptance parameters (`minInlierRatio`, `minInliersAbsolute`,
-`maxRelativeRotationError`) have no flags; their defaults live in `ResectionConfig`.
+`maxRelativeRotationError`, `maxLinkRotationDisagreement`) have no flags; their defaults live in `ResectionConfig`.
 
 ## Limitations
 

@@ -444,6 +444,12 @@ bool ResectionLinkDirectionTest();
 // direction check off and leaves the rotation check on
 bool ResectionModelParallaxTest();
 
+// Every link of a pose to a registered image weighs on it, not only the quorum's: a pose is refused
+// when its mean angle to the rotations all its links predict, weighted by the pair weights, exceeds
+// ResectionConfig::maxLinkRotationDisagreement, also when the quorum passes it; 0 turns the check
+// off, and an image with no link to a registered image is not judged
+bool ResectionLinkRotationTest();
+
 // The resection's next image is the candidate whose verified pairs to registered images weigh most
 // (their composite weight), among every image holding ResectionConfig::minCorrespondences 2D-3D
 // correspondences, whatever its share of the best correspondence count; the candidates are tried

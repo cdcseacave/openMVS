@@ -11474,8 +11474,8 @@ bool ResectionAcceptanceTest()
 		}
 	}
 
-	// Every acceptance rule off -- the inlier share, the rotation the pairs compose and the direction
-	// they predict: the same pose is accepted, and it is the wrong one -- which is what makes the
+	// Every acceptance rule off -- the inlier share, the rotation the pairs compose, the direction
+	// they predict and the rotation all links predict: the same pose is accepted, and it is the wrong one -- which is what makes the
 	// rules the reason the image does not enter the model
 	{
 		std::mt19937 rng(20260908);
@@ -11486,6 +11486,7 @@ bool ResectionAcceptanceTest()
 		config.minInlierRatio = 0.f;
 		config.maxRelativeRotationError = 180.f;
 		config.maxLinkDirectionError = 0.f;
+		config.maxLinkRotationDisagreement = 0.f;
 		Resection resection(scene, config);
 		resection.RegisterImages();
 		if (!scene.images[4].HasPose()) {
@@ -11523,13 +11524,17 @@ bool ResectionAcceptanceTest()
 	// A pair to a misregistered neighbour is a false witness: the strongest pair of image 4 is to the
 	// displaced image 3 and puts its rotation 40 degrees away from the recovered one, while the two
 	// weaker pairs, to the correctly placed images 2 and 1, agree with it. The pose is accepted on
-	// the word of those two.
+	// the word of those two. The case tests the quorum, so the link rotation check is off: it hears
+	// every link, and the false witness's 400 of the 950 weighted inliers, 40 degrees off, make a
+	// weighted mean of 16.8 degrees, past its bar (ResectionLinkRotationTest)
 	{
 		std::mt19937 rng(20260908);
 		Scene scene;
 		Pose3D truePose;
 		BuildResectionQuorumScene(scene, truePose, true, rng);
-		Resection resection(scene, ResectionConfig());
+		ResectionConfig config;
+		config.maxLinkRotationDisagreement = 0.f;
+		Resection resection(scene, config);
 		resection.RegisterImages();
 		if (!scene.images[4].HasPose()) {
 			VERBOSE("ResectionAcceptanceTest FAILED: the pose was refused although two of its three pairs agree with it");
@@ -11796,6 +11801,87 @@ bool ResectionModelParallaxTest()
 		"when it agrees; otherwise the larger of the pair's ray angle and the model's parallax sets the tolerance, a small "
 		"one forgiving a wide error and either one tightening it; at 0 no direction check runs and the rotation check still "
 		"does (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// The rotation every link predicts weighs on the pose, not only the quorum's: a pose is refused when
+// its mean angle to the rotations of all its links to registered images, weighted by the pair
+// weights, exceeds ResectionConfig::maxLinkRotationDisagreement. Each case is checked on its own.
+bool ResectionLinkRotationTest()
+{
+	TD_TIMER_START();
+	// the six-camera arc: images 0-3 registered with 150 triangulated tracks, image 4 unregistered with
+	// the 40 true and 60 random correspondences of the direction case (so the pose found is its true
+	// one), image 5 unregistered with none; image 4's pairs carry the true relative poses and the given
+	// weighted inliers, each with its relative rotation turned the given degrees about the vertical axis
+	// and its translation kept, so the link predicts a rotation that far off and the true direction.
+	// Returns whether image 4 registered (the adjustments after it pull its pose towards the turned
+	// links' rotations, so the pose is not held to the truth here)
+	struct Link { IIndex neighborID; unsigned numInliers; REAL turnDeg; };
+	const auto registers = [](const std::vector<Link>& links, float maxLinkRotationDisagreement) {
+		std::mt19937 rng(20261105);
+		Scene scene;
+		BuildResectionArc(scene, 6);
+		AddResectionTracks(scene, {0, 1, 2, 3}, 150, rng);
+		AddResectionCorrespondences(scene, 4, RESECTION_TRUE_CORRESPONDENCES, RESECTION_NOISE_CORRESPONDENCES, rng);
+		for (const Link& link : links) {
+			AddResectionPair(scene, MINF(link.neighborID, IIndex(4)), MAXF(link.neighborID, IIndex(4)), link.numInliers);
+			Pose3D& relPose = scene.pairs.back().relativePose.value();
+			relPose.R = RMatrix(Point3(0, D2R(link.turnDeg), 0)) * relPose.R;
+		}
+		scene.images[4].InvalidatePose();
+		scene.images[5].InvalidatePose();
+		scene.status.nCalibratedImages = 4;
+		TriangulateTracks(scene, false, 4.f, 1.f);
+		ResectionConfig config;
+		config.maxLinkRotationDisagreement = maxLinkRotationDisagreement;
+		Resection resection(scene, config);
+		resection.RegisterImages();
+		return scene.images[4].HasPose();
+	};
+	const float defaultBar = ResectionConfig().maxLinkRotationDisagreement;
+	bool passed = true;
+
+	// the strongest link (800) predicts a rotation 13 degrees off, the two weak ones (100 each) the true
+	// one: the quorum holds all three and the pose is 13 degrees from the rotation its strongest link
+	// composes, inside the 15 the rotation check allows, but the weighted mean is 10.4 degrees and the
+	// pose is refused by this check (an unweighted mean, 4.3 degrees, would accept it)
+	{
+		LogCapture log;
+		if (registers({{3, 800, 13}, {2, 100, 0}, {1, 100, 0}}, defaultBar)) {
+			VERBOSE("ResectionLinkRotationTest FAILED: case 1: the pose was accepted although the link carrying 800 of the 1000 "
+				"weighted inliers predicts a rotation 13 degrees off (weighted mean 10.4 > %.0f degrees)", defaultBar);
+			passed = false;
+		} else if (!log.Contains("away from the rotations its 3 links predict")) {
+			VERBOSE("ResectionLinkRotationTest FAILED: case 1: the pose was refused, but not by the link rotation check");
+			passed = false;
+		}
+	}
+	// the same links with the check off: the pose is accepted, so the check is what refused it
+	if (!registers({{3, 800, 13}, {2, 100, 0}, {1, 100, 0}}, 0.f)) {
+		VERBOSE("ResectionLinkRotationTest FAILED: case 2: with maxLinkRotationDisagreement 0 the pose of case 1 was refused");
+		passed = false;
+	}
+	// the strongest link (800) predicts the true rotation, the two weak ones (100 each) one 13 degrees
+	// off: the weighted mean is 2.6 degrees and the pose is accepted (an unweighted mean, 8.7 degrees,
+	// would refuse it)
+	if (!registers({{3, 800, 0}, {2, 100, 13}, {1, 100, 13}}, defaultBar)) {
+		VERBOSE("ResectionLinkRotationTest FAILED: case 3: the pose was refused although the links carrying 800 of "
+			"the 1000 weighted inliers predict its rotation (weighted mean 2.6 degrees)");
+		passed = false;
+	}
+	// no link to a registered image, only a pair to the unregistered image 5 predicting a rotation 30
+	// degrees off: the image is not judged and its pose is accepted
+	if (!registers({{5, 800, 30}}, defaultBar)) {
+		VERBOSE("ResectionLinkRotationTest FAILED: case 4: the pose of an image with no link to a registered image was refused");
+		passed = false;
+	}
+	if (!passed)
+		return false;
+
+	VERBOSE("ResectionLinkRotationTest PASSED: a pose whose mean angle to the rotations of all its links, weighted by the pair "
+		"weights, exceeds %.0f degrees is refused although its quorum passes it, weighted and not counted by links; at 0 the "
+		"check is off, and an image with no link is not judged (%s)", defaultBar, TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 

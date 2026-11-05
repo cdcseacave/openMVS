@@ -56,6 +56,15 @@ struct SFM_API ResectionConfig
 	                                    // largest group of those pairs agreeing on a rotation within this same angle,
 	                                    // so that one pair among several cannot speak for the image;
 	                                    // checked for every pose, however large its inlier share (0 = disabled)
+	float maxLinkRotationDisagreement{8.f}; // Maximum angle (degrees) between the estimated rotation and the ones the
+	                                    // verified pairs to already registered images predict from their neighbours'
+	                                    // poses, averaged over EVERY such link weighted by its pair weight (the weighted
+	                                    // inliers, the dense ones at PairsWeightingConfig::DenseScale()): the quorum above
+	                                    // hears only its agreeing group, this hears every link. Checked after the
+	                                    // rotation and direction checks, also when the quorum is contested; an image with
+	                                    // no such link is not judged (0 = disabled). Against no such check on 10 test
+	                                    // captures (12 runs): wrong registrations at acceptance 629.5 -> 593, wrong images
+	                                    // in the final models 70.5 -> 59.5, 8 right poses refused (252 at 5 degrees)
 	float maxLinkDirectionError{5.f};   // Maximum angle (degrees) between the baseline direction a verified pair to a
 	                                    // registered image predicts and the one the estimated centre makes with that
 	                                    // neighbour, as seen from the structure: held to the larger of the pair's ray

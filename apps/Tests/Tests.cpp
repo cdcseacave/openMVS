@@ -433,6 +433,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::ResectionModelParallaxTest())
 				return false;
+			if (!SFM::ResectionLinkRotationTest())
+				return false;
 			if (!SFM::ResectionWeakEvidenceTest())
 				return false;
 			if (!SFM::ResectionNextImageOrderTest())

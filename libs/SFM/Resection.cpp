@@ -224,7 +224,7 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 	// whenever that single neighbor is itself misplaced. When the pairs contradict one another they
 	// are no witness at all, so the pose is left to the other acceptance rules and the disagreement
 	// is reported.
-	if (config.maxRelativeRotationError > 0.f || config.maxLinkDirectionError > 0.f) {
+	if (config.maxRelativeRotationError > 0.f || config.maxLinkDirectionError > 0.f || config.maxLinkRotationDisagreement > 0.f) {
 		std::vector<PoseLink> links;
 		CollectPoseLinks(scene, imageID, links);
 		const PoseLinkQuorum quorum = ComputePoseLinkQuorum(links, config.maxRelativeRotationError, NeighborPose(scene));
@@ -295,6 +295,25 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 						poseWeight, quorum.links.front().neighborID);
 					return {0, n, numDescribed};
 				}
+			}
+		}
+		// the rotation every link predicts, not only the quorum's: the mean angle between the pose's
+		// rotation and each link's prediction, weighted by the pair weight, also when the quorum is
+		// contested; an image with no link is not judged
+		if (config.maxLinkRotationDisagreement > 0.f && !links.empty()) {
+			double sumWeight = 0, sumAngle = 0;
+			for (const PoseLink& link : links) {
+				const PairDisagreement d = link.Measure(pose, scene.images[link.neighborID]);
+				sumWeight += link.numInliers;
+				sumAngle += link.numInliers * d.rotation;
+			}
+			ASSERT(sumWeight > 0);
+			const double linkRot = sumAngle / sumWeight;
+			if (linkRot > config.maxLinkRotationDisagreement) {
+				DEBUG("warning: rejected the pose of image %u: %u/%u inliers (%.1f%%) and %.2f degrees away from the rotations "
+					"its %u links predict, on average weighted by the pair weights", imageID, numInliers, n,
+					inlierRatio * 100.f, linkRot, (unsigned)links.size());
+				return {0, n, numDescribed};
 			}
 		}
 	}
