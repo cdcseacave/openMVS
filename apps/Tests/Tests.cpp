@@ -213,6 +213,7 @@ bool UnitTests()
 
 
 
+
 int main(int argc, LPCTSTR* argv)
 {
 	// Flush stdout/stderr per write so CI logs aren't lost on SIGKILL.
@@ -457,6 +458,8 @@ int main(int argc, LPCTSTR* argv)
 			if (!SFM::ResectionDenseFitWeightTest())
 				return false;
 			if (!SFM::LinkWalksTest())
+				return false;
+			if (!SFM::ResectionLinkGateTest())
 				return false;
 			if (!SFM::RepeatedFullAdjustmentTest())
 				return false;

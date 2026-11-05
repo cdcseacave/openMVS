@@ -77,13 +77,28 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 	for (auto& it : unregistered)
 		it.second = counts[it.first].observations;
 
-	// Fetch the image IDs with sufficient correspondences
+	// Fetch the image IDs with sufficient correspondences and a link (ForEachLink: a verified pair with
+	// a relative pose to a registered image). An image can reach the correspondences through long
+	// tracks alone, before any image it is paired with is registered; its pose would then have no link
+	// for the checks of RegisterImage to weigh it against, so it waits until one of its paired images
+	// is registered
+	std::unordered_set<IIndex> linked;
+	ForEachLink(scene.pairs, IsRegistered(scene), [&unregistered, &linked](IIndex imageID, IIndex, const ImagePair&) {
+		if (unregistered.count(imageID))
+			linked.insert(imageID);
+	});
 	IIndexArr nextIDs;
-	for (const auto& it : unregistered)
-		if (it.second >= config.minCorrespondences)
+	unsigned numWaiting = 0;
+	for (const auto& it : unregistered) {
+		if (it.second < config.minCorrespondences)
+			continue;
+		if (linked.count(it.first))
 			nextIDs.push_back(it.first);
+		else
+			++numWaiting;
+	}
 	if (nextIDs.empty()) {
-		VERBOSE("warning: no next images with sufficient correspondences");
+		VERBOSE("warning: no next images with sufficient correspondences and a link (%u hold the correspondences but no link)", numWaiting);
 		return nextIDs;
 	}
 
@@ -108,8 +123,8 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 			return weightA > weightB;
 		return unregistered.at(a) > unregistered.at(b);
 	});
-	DEBUG_EXTRA("Selected %u images, the first with %g registered pair weight and %u visible points",
-		nextIDs.size(), registeredWeights.at(nextIDs[0]), unregistered.at(nextIDs[0]));
+	DEBUG_EXTRA("Selected %u images, the first with %g registered pair weight and %u visible points (%u more wait for a link)",
+		nextIDs.size(), registeredWeights.at(nextIDs[0]), unregistered.at(nextIDs[0]), numWaiting);
 	return nextIDs;
 }
 

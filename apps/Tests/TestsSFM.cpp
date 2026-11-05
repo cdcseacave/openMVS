@@ -11817,9 +11817,10 @@ bool ResectionLinkRotationTest()
 	// weighted inliers, each with its relative rotation turned the given degrees about the vertical axis
 	// and its translation kept, so the link predicts a rotation that far off and the true direction.
 	// Returns whether image 4 registered (the adjustments after it pull its pose towards the turned
-	// links' rotations, so the pose is not held to the truth here)
+	// links' rotations, so the pose is not held to the truth here), through RegisterImages, or through
+	// RegisterImage alone when single is set
 	struct Link { IIndex neighborID; unsigned numInliers; REAL turnDeg; };
-	const auto registers = [](const std::vector<Link>& links, float maxLinkRotationDisagreement) {
+	const auto registers = [](const std::vector<Link>& links, float maxLinkRotationDisagreement, bool single = false) {
 		std::mt19937 rng(20261105);
 		Scene scene;
 		BuildResectionArc(scene, 6);
@@ -11837,7 +11838,10 @@ bool ResectionLinkRotationTest()
 		ResectionConfig config;
 		config.maxLinkRotationDisagreement = maxLinkRotationDisagreement;
 		Resection resection(scene, config);
-		resection.RegisterImages();
+		if (single)
+			resection.RegisterImage(4);
+		else
+			resection.RegisterImages();
 		return scene.images[4].HasPose();
 	};
 	const float defaultBar = ResectionConfig().maxLinkRotationDisagreement;
@@ -11872,8 +11876,9 @@ bool ResectionLinkRotationTest()
 		passed = false;
 	}
 	// no link to a registered image, only a pair to the unregistered image 5 predicting a rotation 30
-	// degrees off: the image is not judged and its pose is accepted
-	if (!registers({{5, 800, 30}}, defaultBar)) {
+	// degrees off: the image is not judged and its pose is accepted (by RegisterImage itself: the
+	// resection's loop does not try an image without a link, ResectionLinkGateTest)
+	if (!registers({{5, 800, 30}}, defaultBar, true)) {
 		VERBOSE("ResectionLinkRotationTest FAILED: case 4: the pose of an image with no link to a registered image was refused");
 		passed = false;
 	}
@@ -12060,8 +12065,8 @@ bool ResectionTriesEveryCandidateTest()
 // fails or is refused is not in the model, so the zero it would add says nothing about how well the
 // model fits. Nine cameras of the arc, images 0-3 registered with 150 tracks. Image 4 holds the most
 // correspondences, 30 at the projections its pose gives and 120 at random pixels, a 20% share that
-// the acceptance refuses (minInlierRatio 25%), and it is tried first in every round: the scene has no
-// pairs, so every registered pair weight is 0 and the count (150 against 100) decides; images 5-8 hold
+// the acceptance refuses (minInlierRatio 25%), and it is tried first in every round: each of images 4-8
+// has one link, to image 3, all of one weight, so the count (150 against 100) decides; images 5-8 hold
 // 70 true and 30 random each, a 70% share, above the 60% bar, and one of them registers in each round.
 // Counting the refusals as zeros, the average falls to 0.35 at the third registration and forces a
 // full adjustment there, a third one besides the two every such resection runs; counting the
@@ -12079,6 +12084,8 @@ bool ResectionRefusedAverageTest()
 	AddResectionCorrespondences(scene, REFUSED, 30, 120, rng);
 	for (IIndex imageID = REFUSED + 1; imageID < NUM_IMAGES; ++imageID)
 		AddResectionCorrespondences(scene, imageID, 70, 30, rng);
+	for (IIndex imageID = REFUSED; imageID < NUM_IMAGES; ++imageID)
+		AddResectionPair(scene, 3, imageID, 100);
 	std::vector<Pose3D> truePoses;
 	for (const Image& img : scene.images)
 		truePoses.push_back(static_cast<const Pose3D&>(img));
@@ -12152,6 +12159,9 @@ bool ResectionStallRetryTest()
 		}
 		const size_t numTracksA = scene.tracks.size();
 		AddResectionTracks(scene, c.unlockable ? std::vector<IIndex>{3, 4, 5, 6} : std::vector<IIndex>{5, 6}, 40, rng);
+		AddResectionPair(scene, 3, 4, 300);
+		AddResectionPair(scene, 4, 5, 200);
+		AddResectionPair(scene, 4, 6, 200);
 		std::vector<Pose3D> truePoses;
 		for (const Image& img : scene.images)
 			truePoses.push_back(static_cast<const Pose3D&>(img));
@@ -12237,7 +12247,7 @@ bool ResectionStallRetryTest()
 // final adjustment leaves it, and the 60 tracks are not valid. Case 1: every image holds a pose, as
 // when the merge registered them all. Case 2: the only image without a pose is withheld by
 // ImagesRemoved, as the weak-image filter withholds an image the model contradicts; it holds 100
-// true correspondences, so it registers when it is not withheld. In both the resection has no image
+// true correspondences and a link to image 3, so it registers when it is not withheld. In both the resection has no image
 // to try, registers nothing, still logs that it had none, and runs its closing adjustment once,
 // after which the 60 tracks are valid again.
 bool ResectionClosingAlwaysTest()
@@ -12264,6 +12274,7 @@ bool ResectionClosingAlwaysTest()
 		for (size_t t = NUM_GOOD; t < scene.tracks.size(); ++t)
 			scene.images[0].keypoints[scene.tracks[t].observations[0].featureID].pt.y += 6.f;
 		if (numImages > 4) {
+			AddResectionPair(scene, 3, 4, 300);
 			scene.images[4].InvalidatePose();
 			scene.status.nCalibratedImages = 4;
 		}
@@ -12342,14 +12353,14 @@ bool ResectionClosingAlwaysTest()
 // whole-scene pass receives them after the final adjustment. Images 0-3 share 150 tracks. Image 4 is
 // posed but observes only 40 two-view tracks with image 3, so the covisibility graph holds no edge for
 // it and FilterWeaklyConnectedImages removes it (for want of evidence: no pair contradicts it). Image 5
-// has no pose and observes 60 tracks with images 0 and 1 alone, whose observation in image 0 is 6 px
-// off across the epipolar lines of the arc: triangulated at the resection's bar (4 px) they are valid,
-// filtered at the final adjustment's (2 px) they are not. So image 5 holds no correspondence, the
-// resection finds no image to attempt and stalls before registering anything. Told of the removal
-// (ImagesRemoved), the stall runs the full adjustment, which triangulates the 60 tracks again, and the
-// next pass registers image 5 at its true pose. In the control image 4 also sees the 150 tracks, the
-// filter removes nothing, the model is unchanged since its last adjustment, and the same stall ends
-// the resection with image 5 left out and only the closing adjustment run.
+// has no pose, a link to image 1, and observes 60 tracks with images 0 and 1 alone, whose observation
+// in image 0 is 6 px off across the epipolar lines of the arc: triangulated at the resection's bar
+// (4 px) they are valid, filtered at the final adjustment's (2 px) they are not. So image 5 holds no
+// correspondence, the resection finds no image to attempt and stalls before registering anything.
+// Told of the removal (ImagesRemoved), the stall runs the full adjustment, which triangulates the 60
+// tracks again, and the next pass registers image 5 at its true pose. In the control image 4 also sees
+// the 150 tracks, the filter removes nothing, the model is unchanged since its last adjustment, and
+// the same stall ends the resection with image 5 left out and only the closing adjustment run.
 bool ResectionRemovalStallTest()
 {
 	TD_TIMER_START();
@@ -12372,6 +12383,7 @@ bool ResectionRemovalStallTest()
 		for (size_t t = firstBad; t < scene.tracks.size(); ++t)
 			scene.images[0].keypoints[scene.tracks[t].observations[0].featureID].pt.y += 6.f;
 		const Pose3D truePose5 = static_cast<const Pose3D&>(scene.images[5]);
+		AddResectionPair(scene, 1, 5, 200);
 		scene.images[5].InvalidatePose();
 		scene.status.nCalibratedImages = 5;
 		TriangulateTracks(scene, false, config.maxReprojError, config.minAngleThreshold);
@@ -12660,6 +12672,117 @@ bool LinkWalksTest()
 
 	VERBOSE("LinkWalksTest PASSED: image 3 has 10 PnP correspondences (first keypoint per inlier track, the outlier track "
 		"out), 11 observations counted, links to 2 then 1 and none to the unposed pair or the unregistered image (%s)",
+		TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// An image is tried for resection only once it has a link (ForEachLink: a verified pair with a relative
+// pose to a registered image), on six cameras of the arc, images 0-3 registered with 150 tracks:
+// (1) image 4 holds 40 true correspondences, its only pair with a relative pose goes to unregistered
+// image 5 (300), and a pair to registered image 0 of 1000 weighted inliers carries no relative pose,
+// so it heads the order; image 5 holds 40 true correspondences and a link to image 3 (200). Image 4
+// waits, image 5 registers, and image 4 registers after it, through its link to image 5.
+// (2) the control: image 4 also has a link to image 2 (100), and is tried first, as before the rule.
+// (3) image 5 holds no correspondence: image 4, linked to nothing registered, is never tried; once
+// image 5 holds its correspondences, a second resection registers image 5 and then image 4.
+bool ResectionLinkGateTest()
+{
+	TD_TIMER_START();
+	const auto build = [](Scene& scene, std::vector<Pose3D>& truePoses, bool image5Correspondences, bool control, std::mt19937& rng) {
+		BuildResectionArc(scene, 6);
+		AddResectionTracks(scene, {0, 1, 2, 3}, 150, rng);
+		AddResectionCorrespondences(scene, 4, 40, 0, rng);
+		if (image5Correspondences)
+			AddResectionCorrespondences(scene, 5, 40, 0, rng);
+		AddResectionPair(scene, 0, 4, 1000);
+		scene.pairs.back().relativePose.reset();
+		AddResectionPair(scene, 4, 5, 300);
+		AddResectionPair(scene, 3, 5, 200);
+		if (control)
+			AddResectionPair(scene, 2, 4, 100);
+		truePoses.clear();
+		for (const Image& img : scene.images)
+			truePoses.push_back(static_cast<const Pose3D&>(img));
+		scene.images[4].InvalidatePose();
+		scene.images[5].InvalidatePose();
+		scene.status.nCalibratedImages = 4;
+		TriangulateTracks(scene, false, 4.f, 1.f);
+	};
+	const auto atTruePose = [](const Scene& scene, const std::vector<Pose3D>& truePoses, IIndex i) {
+		return scene.images[i].HasPose() && RotationErrorDeg(scene.images[i].R, truePoses[i].R) < 1.0;
+	};
+	const auto firstAttempt = [](const LogCapture& log, IIndex i) {
+		return MINF(LogFirstAttempt(log, i, true), LogFirstAttempt(log, i, false));
+	};
+	std::vector<Pose3D> truePoses;
+
+	// (1) the image without a link waits for its paired image, then registers through it
+	{
+		std::mt19937 rng(20261105);
+		Scene scene;
+		build(scene, truePoses, true, false, rng);
+		LogCapture log;
+		Resection resection(scene, ResectionConfig());
+		resection.RegisterImages();
+		const size_t registered5 = LogFirstAttempt(log, 5, true), tried4 = firstAttempt(log, 4);
+		if (!atTruePose(scene, truePoses, 5) || !atTruePose(scene, truePoses, 4) || registered5 == String::npos || tried4 < registered5) {
+			VERBOSE("ResectionLinkGateTest FAILED: image 4, whose only pair with a relative pose goes to unregistered image 5, "
+				"was %s; it must wait until image 5 is registered and then register at its true pose (image 5 %s)",
+				tried4 < registered5 ? "tried before image 5 was registered" : (atTruePose(scene, truePoses, 4) ? "registered" : "left out or off its pose"),
+				atTruePose(scene, truePoses, 5) ? "registered at its true pose" : "not registered at its true pose");
+			return false;
+		}
+	}
+
+	// (2) the control: an image with a link is tried as before, first by its pair weight
+	{
+		std::mt19937 rng(20261105);
+		Scene scene;
+		build(scene, truePoses, true, true, rng);
+		LogCapture log;
+		Resection resection(scene, ResectionConfig());
+		resection.RegisterImages();
+		const size_t registered4 = LogFirstAttempt(log, 4, true), tried5 = firstAttempt(log, 5);
+		if (!atTruePose(scene, truePoses, 4) || !atTruePose(scene, truePoses, 5) || registered4 == String::npos || registered4 > tried5) {
+			VERBOSE("ResectionLinkGateTest FAILED: image 4, linked to registered image 2, was not registered first at its true pose");
+			return false;
+		}
+	}
+
+	// (3) an image linked to nothing registered is never tried; it registers once its paired image is
+	{
+		std::mt19937 rng(20261105);
+		Scene scene;
+		build(scene, truePoses, false, false, rng);
+		{
+			LogCapture log;
+			Resection resection(scene, ResectionConfig());
+			resection.RegisterImages();
+			if (scene.images[4].HasPose() || firstAttempt(log, 4) != String::npos) {
+				VERBOSE("ResectionLinkGateTest FAILED: image 4, which holds 40 correspondences but no link, was %s",
+					scene.images[4].HasPose() ? "registered" : "tried");
+				return false;
+			}
+		}
+		// image 5 now observes 40 of the tracks, at the projections its true pose gives
+		Image& img5 = scene.images[5];
+		static_cast<Pose3D&>(img5) = truePoses[5];
+		AddResectionCorrespondences(scene, 5, 40, 0, rng);
+		img5.InvalidatePose();
+		LogCapture log;
+		Resection resection(scene, ResectionConfig());
+		resection.RegisterImages();
+		const size_t registered5 = LogFirstAttempt(log, 5, true), tried4 = firstAttempt(log, 4);
+		if (!atTruePose(scene, truePoses, 5) || !atTruePose(scene, truePoses, 4) || registered5 == String::npos || tried4 < registered5) {
+			VERBOSE("ResectionLinkGateTest FAILED: once image 5 holds its correspondences, it was %s and image 4 %s",
+				atTruePose(scene, truePoses, 5) ? "registered" : "not registered at its true pose",
+				tried4 < registered5 ? "was tried before it" : (atTruePose(scene, truePoses, 4) ? "registered" : "was left out or off its pose"));
+			return false;
+		}
+	}
+
+	VERBOSE("ResectionLinkGateTest PASSED: an image whose pairs with a relative pose go to unregistered images waits and registers "
+		"once one of them is registered, and is never tried while none is; an image with a link is tried as before (%s)",
 		TD_TIMER_GET_FMT().c_str());
 	return true;
 }

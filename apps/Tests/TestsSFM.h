@@ -499,6 +499,11 @@ bool ResectionDenseFitWeightTest();
 // each, in track order), its observation counts, the registered pairs of a model seen from their other
 // side and the links among them (the ones carrying a relative pose), strongest first
 bool LinkWalksTest();
+
+// An image is tried for resection only once it has a link (a verified pair with a relative pose to a
+// registered image): one whose pairs with a relative pose go to unregistered images waits until one
+// of them is registered, however many 2D-3D correspondences it holds; one with a link is tried as before
+bool ResectionLinkGateTest();
 // A full adjustment fits the observations within ResectionConfig::fullBAInputErrorFactor x the reprojection bar of the
 // model and runs again while some camera's input to the next solve differs enough from what it gave this one
 // (AdjustRepeated): a camera whose observations all lie between the bar and 3x it comes back in one solve, which a

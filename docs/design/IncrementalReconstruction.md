@@ -68,7 +68,14 @@ safely.
 ## The resection
 
 Candidates are every unregistered image holding at least `minCorrespondences` (15) 2D-3D correspondences
-to the model, ordered by the weight of the evidence the model already holds for it: the composite weight
+to the model and at least one link -- a verified pair with a relative pose to a registered image
+(`ForEachLink`, `PoseLink.h`, the same links the pose checks below read through `CollectPoseLinks`). An
+image can reach the correspondences through long tracks alone before any image it is paired with is
+registered; its pose would then have no link for the checks to weigh it against (on 6DCA1E8E image 326,
+registered so in 2 of 4 runs, came out with its centre 20% off, and registered right, with 5 links,
+when it waited), so it waits until one of its paired images is registered. The rule sits in the one
+`RegisterImages` every resection uses (block, pool, whole-scene); the star start is not a resection.
+Candidates are ordered by the weight of the evidence the model already holds for it: the composite weight
 of its verified pairs to registered images (`SelectNextImages`; ties by the correspondence count). Among
 the candidates of one moment the one with the most correspondences is often the one that fails while a
 less counted one beside it, whose pairs lie in the model, registers: over the attempts judged at the event
@@ -136,7 +143,7 @@ that threw away a pose whose registered share of the pair weight was under a ten
 share of the scene's images only cost images: the under-coupled sub-scene it kept out of Outdoor_004 is
 refused by the merge, and its images come in right in the whole-scene pass.)
 
-A stall -- no image holds `minCorrespondences` (15) correspondences, or every candidate failed -- with
+A stall -- no image holds `minCorrespondences` (15) correspondences and a link, or every candidate failed -- with
 the model changed since the last full bundle adjustment runs that adjustment and tries again: it
 re-triangulates the tracks the change made triangulable or left without a position and moves the
 model, which can give the remaining images the correspondences or the fit they lacked. Two things
