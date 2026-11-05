@@ -31,7 +31,8 @@ verifies almost every time; 0 turns the prior off.
 ## The star initializer
 
 The reference view is the image with the most weighted inliers (among the seed views the triplet filter
-names, see `TripletDisambiguation.md`); it is a neighbour's evidence, not its inlier count, that lists
+names, see `TripletDisambiguation.md`), a near-duplicate pair's inliers left out unless the image has no
+other pair; it is a neighbour's evidence, not its inlier count, that lists
 the neighbour in its star. A pair carries a relative pose of unit baseline, so a neighbour's distance to
 the reference is known only through the matches that triangulate: the star's evidence of a pair is its
 weighted inliers times the share of its track-forming matches whose ray angle at the pair's pose reaches
@@ -39,14 +40,22 @@ weighted inliers times the share of its track-forming matches whose ray angle at
 sets it to the reconstruction's `minAngleThreshold`, 1.5 degrees by default, the bar the track filter
 applies later). A pair without evidence is no arm of the star, and the neighbours are sorted by evidence
 and kept when their evidence reaches `ratioInliersFilter` (0.2) of the mean inlier count of the three
-heaviest candidates, up to `maxViews`. A star with fewer than `minViews - 1` neighbours that have
+heaviest candidates that are not near-duplicates (all candidates when every one is), up to `maxViews`. A star with fewer than `minViews - 1` neighbours that have
 evidence is refused ("insufficient initial views") before the floor is applied; a floor that keeps none
 refuses it there too ("insufficient initial views (0 < ...)"), where it would otherwise fail at its
 triangulation ("insufficient triangulated tracks (0)"), and one that keeps at least one goes on with the
-neighbours it keeps, however few. This is the floor as it was measured, and it has a known limit: it is
-set by inlier counts and compared with evidence, so a burst of near-duplicate frames (many inliers, a
-dozen that fix a distance) can lift it above the evidence of every wider neighbour, and the star then
-fails. A floor in the units of evidence keeps those neighbours but also admits low-evidence views, the
+neighbours it keeps, however few. The floor is set by inlier counts and compared with evidence, so a burst
+of near-duplicate frames (many inliers, a dozen that fix a distance) used to lift it above the evidence of
+every wider neighbour, and the star then failed. A near-duplicate pair (`ImagePair::IsNearDuplicate`: its
+10x10 overlap above `PairsWeightingConfig::maxDuplicateOverlap`, 0.75, and its measured ray angle under
+`maxDuplicateRayAngle`, 1.5 degrees; `StarInitConfig::pairsWeighting`, set by the scene) no longer sets
+it, nor the reference view, nor the pair the star's scale is fixed on (the reference's strongest pair
+otherwise). Tuned against the reference poses of 33 captures (a pair fixes no distance when the true
+parallax of its shared points is under 1.5 degrees; records-2026-11-05-duplicates/rule-075-15.md): 85% of
+the pairs the rule flags fix no distance, and the yardstick moves off a pair that fixes no distance for
+2045 images and off one that does for 296. The overlap condition keeps out the frames turned on the spot
+by a large rotation, whose ray angle is small too. Near-duplicate frames the bars do not flag can still
+lift the floor. A floor in the units of evidence keeps those neighbours but also admits low-evidence views, the
 ones the star evidence keeps out: the stars of every sub-scene grew (5992d620 16 to 22, 14 to 19 and 9 to
 12 views; Outdoor_004 9 to 18, 22 to 37, in all 8), the poses moved by 0.35 degrees, ten times the noise
 of the same build, and the F1 fell (0.8113 to 0.8067; Outdoor_004 0.7772 to 0.7720); it is not used.

@@ -194,7 +194,9 @@ static bool ExportToMVSFile(const Scene& scene, const std::string& fileName,
 // remaining entries are the statistics of the scored graph. grid_size is the coverage grid the
 // pair strengths are discounted on, min_yield the look-alike triangle bar of TripletFilterConfig.
 static boost::python::dict ComputeTripletScoresDict(const Scene& scene, float minScore, float minYield, int gridSize) {
-	const SFM::TripletScores tripletScores = SFM::ComputeTripletScores(scene, minScore, minYield, gridSize);
+	SFM::PairsWeightingConfig weighting;
+	weighting.gridSize = gridSize;
+	const SFM::TripletScores tripletScores = SFM::ComputeTripletScores(scene, minScore, minYield, weighting);
 	boost::python::list scores;
 	for (float score : tripletScores.scores)
 		scores.append(score);

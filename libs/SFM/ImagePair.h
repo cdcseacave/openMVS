@@ -91,7 +91,10 @@ public:
 
 	// Overlap metrics
 	float overlapRatio;       // ratio of tracked/matched features
-	float overlapArea;        // overlap area computed from homography (0-1)
+	float overlapArea;        // the share of the frame the pair's TRACK-FORMING matches cover, the smaller of the two
+	                          // images' (ComputePairCoverage, 0-1); every weighting pass (ComputePairsWeights) rewrites
+	                          // it, so it describes the pair's current matches (the keyframe extractor writes its
+	                          // homography overlap here first, and its own weighting pass replaces it)
 	float meanRayAngle;       // median angle between viewing rays of the TRACK-FORMING matches in
 	                          // radians (pseudo-baseline): the dense supplement is included, because a
 	                          // ray angle is a geometric quantity a warp-sampled position measures
@@ -181,6 +184,13 @@ public:
 	}
 	// Check if pair has matches
 	inline bool HasMatches() const { return !matches.empty(); }
+	// Is the pair a NEAR-DUPLICATE: its two frames see nearly the same view (overlapArea above maxOverlap) from nearly the
+	// same spot (a measured meanRayAngle under maxRayAngle, radians), so it fixes no distance. maxOverlap 0 turns the test
+	// off; maxRayAngle 0 leaves the overlap alone to decide
+	inline bool IsNearDuplicate(float maxOverlap, float maxRayAngle) const {
+		return maxOverlap > 0.f && overlapArea > maxOverlap &&
+			(maxRayAngle <= 0.f || (meanRayAngle > 0.f && meanRayAngle < maxRayAngle));
+	}
 	// Check if pair has geometric verification
 	inline bool HasGeometricVerification() const {
 		return relativePose.has_value() || F.has_value() || E.has_value() || H.has_value();

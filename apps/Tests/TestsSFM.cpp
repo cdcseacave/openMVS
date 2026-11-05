@@ -10672,12 +10672,13 @@ bool TripletFilterTest()
 	// {1,2,3} sharing edge (1,2), plus the isolated triangle {5,6,7}; G_LCT is the four nodes and
 	// five edges of the first component, scored by the mean over its triangles of s_ij / max s_kl.
 	// A 1-cell grid gives every pair full coverage, so strength = inlier count.
+	PairsWeightingConfig cellCfg; cellCfg.gridSize = 1;
 	static const TripletPairSpec pairSpecs[] = {
 		{0,1,100,true}, {0,2,100,true}, {1,2,70,true}, {1,3,50,true}, {2,3,40,true},
 		{3,4,30,true}, {3,5,20,true}, {5,6,10,true}, {6,7,10,true}, {5,7,10,true}
 	};
 	Scene scene; BuildTripletScene(scene, 8, pairSpecs, 10);
-	const TripletScores scores03 = ComputeTripletScores(scene, 0.3f, 0.f, 1);
+	const TripletScores scores03 = ComputeTripletScores(scene, 0.3f, 0.f, cellCfg);
 	if (scores03.numTriplets != 3 || scores03.numTripletComponents != 2 || scores03.numScoredPairs != 5 ||
 		scores03.numNodes != 4 || scores03.maxDegree != 3) {
 		VERBOSE("TripletFilterTest FAILED: statistics %zu triplets in %u components, %u scored pairs, %u nodes, max degree %u (expected 3, 2, 5, 4, 3)",
@@ -10693,7 +10694,7 @@ bool TripletFilterTest()
 	}
 	// tau = m(1 - d_max/|V|) + d_max/|V| = m*0.25 + 0.75: 0.825 at m=0.3, 0.9 at m=0.6, and the
 	// scores at m=0.6 (spot-checked) do not depend on m.
-	const TripletScores scores06 = ComputeTripletScores(scene, 0.6f, 0.f, 1);
+	const TripletScores scores06 = ComputeTripletScores(scene, 0.6f, 0.f, cellCfg);
 	if (ABS(scores03.tau - 0.825f) > eps || ABS(scores06.tau - 0.9f) > eps ||
 		ABS(scores06.scores[2] - expectedScores[2]) > eps || ABS(scores06.scores[3] - expectedScores[3]) > eps) {
 		VERBOSE("TripletFilterTest FAILED: tau %g at m=0.3 (expected 0.825), %g at m=0.6 (expected 0.9); scores at m=0.6 %g %g (expected %g %g)",
@@ -10708,7 +10709,7 @@ bool TripletFilterTest()
 	dupSpecs[10] = TripletPairSpec{0, 1, 10, true}; dupSpecs[11] = TripletPairSpec{0, 3, 25, false};
 	dupSpecs[12] = TripletPairSpec{2, 4, 0, true}; dupSpecs[13] = TripletPairSpec{3, 3, 30, true};
 	Scene sceneDup; BuildTripletScene(sceneDup, 8, dupSpecs, 14);
-	const TripletScores scoresDup = ComputeTripletScores(sceneDup, 0.3f, 0.f, 1);
+	const TripletScores scoresDup = ComputeTripletScores(sceneDup, 0.3f, 0.f, cellCfg);
 	if (scoresDup.numTriplets != 3 || scoresDup.numScoredPairs != 6 || scoresDup.numNodes != 4 || scoresDup.maxDegree != 3 ||
 		ABS(scoresDup.scores[10] - scoresDup.scores[0]) > eps ||
 		scoresDup.scores[11] != -1.f || scoresDup.scores[12] != -1.f || scoresDup.scores[13] != -1.f) {
@@ -10725,8 +10726,9 @@ bool TripletFilterTest()
 	PairsWeightingConfig weightingCfg; // default gridSize (10)
 	Scene sceneCov; AddTripletImages(sceneCov, 3);
 	AddTripletPair(sceneCov, 0, 1, 600); AddTripletPair(sceneCov, 1, 2, 600); AddTripletPair(sceneCov, 0, 2, 900, true, 10, 100);
-	const TripletScores covScores = ComputeTripletScores(sceneCov, 0.f, 0.f, weightingCfg.gridSize);
-	const TripletScores coarseScores = ComputeTripletScores(sceneCov, 0.f, 0.f, 2);
+	const TripletScores covScores = ComputeTripletScores(sceneCov, 0.f, 0.f, weightingCfg);
+	PairsWeightingConfig coarseCfg; coarseCfg.gridSize = 2;
+	const TripletScores coarseScores = ComputeTripletScores(sceneCov, 0.f, 0.f, coarseCfg);
 	if (covScores.numTriplets != 1 || covScores.numScoredPairs != 3 || !ISEQUAL(covScores.scores[0], 1.f) ||
 		!ISEQUAL(covScores.scores[1], 1.f) || !ISEQUAL(covScores.scores[2], 0.15f) || !ISEQUAL(coarseScores.scores[2], 0.75f)) {
 		VERBOSE("TripletFilterTest FAILED: coverage scene %zu triplets, %u scored, scores %g %g %g on the default grid, %g on 2x2 (expected 1, 3, 1 1 0.15, 0.75)",
@@ -10764,8 +10766,8 @@ bool TripletFilterTest()
 	Scene walk; buildWalk(walk);
 	const unsigned idx01 = 0, idx02 = 14, idx03 = 27, idx06 = 28; // in order of insertion
 	const TripletFilterConfig yieldDefaults;
-	const TripletScores yieldScores = ComputeTripletScores(walk, 0.f, yieldDefaults.minYield, weightingCfg.gridSize);
-	const TripletScores yieldOff = ComputeTripletScores(walk, 0.f, 0.f, weightingCfg.gridSize); // rule off: look-alike triangles count like any other
+	const TripletScores yieldScores = ComputeTripletScores(walk, 0.f, yieldDefaults.minYield, weightingCfg);
+	const TripletScores yieldOff = ComputeTripletScores(walk, 0.f, 0.f, weightingCfg); // rule off: look-alike triangles count like any other
 	if (yieldScores.numTriplets != 31 || yieldScores.numDoppelgangerTriplets != 10 || yieldScores.numScoredPairs != 37 ||
 		!ISEQUAL(yieldScores.scores[idx01], 1.f) || !ISEQUAL(yieldScores.scores[idx02], 0.6f) ||
 		!ISEQUAL(yieldScores.scores[idx03], 0.12f) || !ISEQUAL(yieldScores.scores[idx06], 0.f) ||
@@ -10782,7 +10784,7 @@ bool TripletFilterTest()
 	// triangle with 6 now scores 1 instead of 0, raising its mean from 0.6 to 1.6 over 5 triplets, 0.32.
 	Scene walkNaN; buildWalk(walkNaN);
 	walkNaN.pairs[idx06].meanRayAngle = std::numeric_limits<float>::quiet_NaN();
-	const TripletScores nanScores = ComputeTripletScores(walkNaN, 0.f, yieldDefaults.minYield, weightingCfg.gridSize);
+	const TripletScores nanScores = ComputeTripletScores(walkNaN, 0.f, yieldDefaults.minYield, weightingCfg);
 	if (nanScores.numDoppelgangerTriplets != 7 || !ISEQUAL(nanScores.scores[idx03], 0.32f) ||
 		!ISEQUAL(nanScores.scores[idx01], 1.f) || !ISEQUAL(nanScores.scores[idx02], 0.6f)) {
 		VERBOSE("TripletFilterTest FAILED: NaN ray angle on (0,6), %u doppelganger triplets; (0,1) %g (0,2) %g (0,3) %g (expected 7; 1 0.6 0.32)",
@@ -10813,8 +10815,8 @@ bool TripletFilterTest()
 		AddTripletPair(s, 59, 60, 60); AddTripletPair(s, 58, 60, 50); AddTripletPair(s, 59, 61, 50);
 	};
 	// the scores of the pairs a scene holds, as the filter should have handed them over
-	const auto sameScores = [](const std::vector<float>& scores, const Scene& scene, const TripletFilterConfig& cfg, int gridSize) {
-		const TripletScores expected = ComputeTripletScores(scene, cfg.minScore, cfg.minYield, gridSize);
+	const auto sameScores = [](const std::vector<float>& scores, const Scene& scene, const TripletFilterConfig& cfg, const PairsWeightingConfig& weighting) {
+		const TripletScores expected = ComputeTripletScores(scene, cfg.minScore, cfg.minYield, weighting);
 		return scores == expected.scores;
 	};
 	{
@@ -10829,7 +10831,7 @@ bool TripletFilterTest()
 			VERBOSE("TripletFilterTest FAILED: rooms cutting rule removed %u pairs, %u seeds; expected 3 removed, 174 kept, 60 seed images 0-59",
 				removed, (unsigned)seeds.size()); return false;
 		}
-		if (scores.size() != 174 || !sameScores(scores, rooms, cutCfg, roomsCfg.gridSize)) {
+		if (scores.size() != 174 || !sameScores(scores, rooms, cutCfg, roomsCfg)) {
 			VERBOSE("TripletFilterTest FAILED: rooms cutting rule handed over %zu scores; expected those of the 174 pairs left", scores.size()); return false;
 		}
 	}
@@ -10846,7 +10848,7 @@ bool TripletFilterTest()
 			VERBOSE("TripletFilterTest FAILED: rooms default mode removed %u of 177 pairs, %u seeds; expected none removed, 60 seed images 0-59",
 				removed, (unsigned)seeds.size()); return false;
 		}
-		const TripletScores expected = ComputeTripletScores(rooms, defaultCfg.minScore, defaultCfg.minYield, roomsCfg.gridSize);
+		const TripletScores expected = ComputeTripletScores(rooms, defaultCfg.minScore, defaultCfg.minYield, roomsCfg);
 		if (scores.size() != 177 || scores != expected.scores || expected.numScoredPairs != 177 ||
 			!(scores[174] < expected.tau) || !(scores[175] < expected.tau) || !(scores[176] < expected.tau)) {
 			VERBOSE("TripletFilterTest FAILED: rooms default mode handed over %zu scores (bridges %g %g %g, ceiling %g); expected the 177 scores of "
@@ -10922,7 +10924,7 @@ bool StarReferenceViewTest()
 	for (IIndex i = 3; i + 2 < 9; ++i)
 		addPair(i, i + 2, 300);
 	addPair(5, 8, 100);
-	const IIndex refAll = StarInitializer::SelectReferenceView(scene, IIndexArr(), 2);
+	const IIndex refAll = StarInitializer::SelectReferenceView(scene, IIndexArr(), 2, PairsWeightingConfig());
 	if (refAll != 0) {
 		VERBOSE("StarReferenceViewTest FAILED: reference view %u with no seed views; expected 0, the heaviest image", refAll);
 		return false;
@@ -10930,7 +10932,7 @@ bool StarReferenceViewTest()
 	IIndexArr chain;
 	for (IIndex i = 3; i < 9; ++i)
 		chain.push_back(i);
-	const IIndex refChain = StarInitializer::SelectReferenceView(scene, chain, 2);
+	const IIndex refChain = StarInitializer::SelectReferenceView(scene, chain, 2, PairsWeightingConfig());
 	if (refChain != 5) {
 		VERBOSE("StarReferenceViewTest FAILED: reference view %u among the chain's images; expected 5, the heaviest "
 			"of them, not an image of the heavier triangle", refChain);
@@ -10938,7 +10940,7 @@ bool StarReferenceViewTest()
 	}
 	IIndexArr lonely;
 	lonely.push_back(9);
-	const IIndex refLonely = StarInitializer::SelectReferenceView(scene, lonely, 2);
+	const IIndex refLonely = StarInitializer::SelectReferenceView(scene, lonely, 2, PairsWeightingConfig());
 	if (refLonely != 0) {
 		VERBOSE("StarReferenceViewTest FAILED: reference view %u with a seed view that has no valid pair; expected "
 			"the fallback to every image, 0", refLonely);
@@ -10950,14 +10952,14 @@ bool StarReferenceViewTest()
 	// pairs must not stall the star initializer.
 	IIndexArr three;
 	three.push_back(3);
-	const IIndex refThree = StarInitializer::SelectReferenceView(scene, three, 3);
+	const IIndex refThree = StarInitializer::SelectReferenceView(scene, three, 3, PairsWeightingConfig());
 	if (refThree != 5) {
 		VERBOSE("StarReferenceViewTest FAILED: reference view %u with a seed view of two pairs and a star of three arms "
 			"required; expected 5, the heaviest image with three or more pairs", refThree);
 		return false;
 	}
 	// No image has six pairs: the heaviest image is returned and the initializer reports the shortfall.
-	const IIndex refSix = StarInitializer::SelectReferenceView(scene, IIndexArr(), 6);
+	const IIndex refSix = StarInitializer::SelectReferenceView(scene, IIndexArr(), 6, PairsWeightingConfig());
 	if (refSix != 0) {
 		VERBOSE("StarReferenceViewTest FAILED: reference view %u with six arms required and no image having them; "
 			"expected 0, the heaviest image", refSix);
@@ -11220,6 +11222,207 @@ bool StarEvidenceTest()
 	VERBOSE("StarEvidenceTest PASSED: %u far views left out of the star by evidence, near distances within %.3f%%, no star without evidence, "
 		"the keyframe configuration initializes, the star goes on with the neighbours the floor keeps, a burst of %u near-duplicate frames that lifts the floor above every wider view is refused at the floor (%s)",
 		numFar, (maxRatio / minRatio - 1) * 100, numBurst, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+
+// A near-duplicate pair is never the yardstick of good connectivity (PairsWeightingConfig::maxDuplicateOverlap /
+// maxDuplicateRayAngle). A reference view 0 with a burst of three near-duplicate frames (1-3, 0.02-0.04 apart, 2500
+// points 2-4 units away over the whole frame, plus a few close ones) and four wide views (4-7, 0.8-1.5 apart) whose points fill only the left
+// half of the frame, so the burst pairs cover the whole frame (overlap 1, ray angle well under 1.5 deg) and the wide pairs half
+// of it. With the rule off the burst pair is the reference's yardstick: it shrinks every wide pair's connectivity factor and
+// lifts the star floor above every wide view's evidence (the limit StarEvidenceTest shows). With the default bars both read
+// the first non-duplicate pair: the strongest wide pair's connectivity is 1 and the star starts with the wide views. The burst
+// pair (1,2), weaker than (0,1) and (0,2), joins two images whose pairs are all near-duplicates: they keep today's yardstick,
+// so its factor is the same with the rule on and off. The stored overlap follows the pair's current matches (a pair cut to half
+// the frame reads half at the next weighting pass). Last, the predicate itself: the overlap and the angle must both say so.
+bool NearDuplicateYardstickTest()
+{
+	TD_TIMER_START();
+	struct PointGroup {
+		unsigned count;
+		REAL minDepth, maxDepth;
+		int maxPixelX;
+		std::function<bool(IIndex)> seenBy;
+	};
+	const std::vector<REAL> sides{0, 0.02, 0.03, 0.04, 0.8, 1.0, 1.2, 1.5};
+	const unsigned numBurst = 3;
+	const auto buildScene = [&](Scene& scene, const std::vector<PointGroup>& groups) {
+		PinholeCamera* pCamera = new PinholeCamera(cv::Size(640, 480), REAL(400), REAL(400), REAL(320), REAL(240));
+		pCamera->trustIntrinsics = true;
+		scene.cameras.emplace_back(pCamera);
+		FOREACH(i, sides) {
+			Pose3D pose;
+			pose.R = Matrix3x3::IDENTITY;
+			pose.C = Point3(sides[i], (i % 2) * sides[i] * 0.3, 0);
+			scene.images.emplace_back(i, "", pose, 0, scene.cameras[0]);
+		}
+		std::mt19937 rng(7);
+		for (const PointGroup& group : groups) {
+			std::uniform_int_distribution<int> pixelX(40, group.maxPixelX), pixelY(40, 440);
+			std::uniform_real_distribution<REAL> depth(group.minDepth, group.maxDepth);
+			for (unsigned p = 0; p < group.count; ++p) {
+				const Point3 X = scene.images[0].UnprojectPoint(Point2(pixelX(rng), pixelY(rng)), depth(rng));
+				std::vector<std::pair<Image*, Point2>> seen;
+				for (Image& img : scene.images) {
+					if (img.ID != 0 && !group.seenBy(img.ID))
+						continue;
+					const auto [proj, valid] = img.ProjectPoint(X);
+					if (!valid || !Image8U::isInside(proj, img.GetSize()))
+						continue;
+					seen.emplace_back(&img, proj);
+				}
+				if (seen.size() < 2)
+					continue;
+				Track track(X); // no inlier yet, as BuildTracks leaves it: the star triangulates the tracks its views see
+				for (const auto& [img, proj] : seen) {
+					img->keypoints.emplace_back(proj, 0.f, 0.f, 10.f);
+					track.observations.emplace_back(img->ID, (uint32_t)img->keypoints.size() - 1);
+				}
+								scene.tracks.emplace_back(std::move(track));
+			}
+		}
+		const auto addPair = [&](IIndex a, IIndex b, unsigned stride) {
+			ImagePair& pair = scene.pairs.emplace_back(a, b);
+			unsigned k = 0;
+			for (const Track& track : scene.tracks) {
+				uint32_t obsA = NO_ID, obsB = NO_ID;
+				for (const auto& obs : track.observations) {
+					if (obs.imageID == a)
+						obsA = obs.featureID;
+					else if (obs.imageID == b)
+						obsB = obs.featureID;
+				}
+				if (obsA != NO_ID && obsB != NO_ID && (k++ % stride) == 0)
+					pair.matches.emplace_back(obsA, obsB);
+			}
+			pair.numFilteredInliers = (int)pair.matches.size();
+			pair.relativePose = scene.images[b] / scene.images[a];
+			pair.relativePose->C /= norm(pair.relativePose->C);
+			pair.E = ImagePair::ComposeEssentialMatrix(pair.relativePose.value());
+			pair.F = ImagePair::ComposeFundamentalMatrix(pair.E.value(), scene.images[a].GetK(), scene.images[b].GetK());
+			pair.meanRayAngle = pair.ComputeMeanRayAngle(scene.images[a], scene.images[b]);
+		};
+		for (IIndex j = 1; j < scene.images.size(); ++j)
+			addPair(0, j, 1);
+		addPair(1, 2, 2); // every other match: weaker than (0,1) and (0,2), still over the whole frame
+		scene.status.nCalibratedImages = scene.images.size();
+	};
+	const PointGroup widePoints{200, 4, 8, 300, [numBurst](IIndex v) { return v > numBurst; }};
+	const PointGroup farPoints{500, 400, 800, 300, [](IIndex) { return true; }};
+	const PointGroup burstPoints{2500, 2, 4, 600, [numBurst](IIndex v) { return v <= numBurst; }}; // near enough for a measurable ray angle, well under 1.5 deg
+	const PointGroup closePoints{12, 0.3, 0.6, 600, [numBurst](IIndex v) { return v <= numBurst; }};
+	const std::vector<PointGroup> groups{widePoints, farPoints, burstPoints, closePoints};
+	struct Reading { std::vector<float> conn; float conn12; bool star; std::vector<bool> posed; String log; };
+	const auto run = [&](const PairsWeightingConfig& weighting) {
+		Scene scene;
+		buildScene(scene, groups);
+		ComputePairsWeights(scene, weighting);
+		Reading r;
+		for (IIndex j = 1; j < scene.images.size(); ++j)
+			r.conn.push_back(scene.FindPair(0, j)->weightConnectivity);
+		r.conn12 = scene.FindPair(1, 2)->weightConnectivity;
+		for (Image& img : scene.images)
+			img.InvalidatePose();
+		StarInitConfig cfg;
+		cfg.refineFocalLength = false;
+		cfg.pairsWeighting = weighting;
+		LogCapture log;
+		r.star = StarInitializer::Initialize(scene, cfg);
+		r.log = log.text;
+		for (const Image& img : scene.images)
+			r.posed.push_back(img.HasPose());
+		// the premise: the burst pairs cover the frame, the wide pairs at most half of it
+		for (IIndex j = 1; j < scene.images.size(); ++j) {
+			const float overlap = scene.FindPair(0, j)->overlapArea, rayAngle = R2D(scene.FindPair(0, j)->meanRayAngle);
+			if ((j <= numBurst) != (overlap > 0.9f) || (j > numBurst && overlap > 0.5f) || (j <= numBurst && !(rayAngle > 0.f && rayAngle < 1.f)))
+				r.log = String::FormatString("premise: pair (0,%u) overlap %.2f, ray angle %.3f deg", j, overlap, rayAngle);
+		}
+		if (scene.FindPair(1, 2)->overlapArea <= 0.9f)
+			r.log = String::FormatString("premise: pair (1,2) overlap %.2f", scene.FindPair(1, 2)->overlapArea);
+		return r;
+	};
+	PairsWeightingConfig offCfg;
+	offCfg.maxDuplicateOverlap = 0.f;
+	const Reading off = run(offCfg), on = run(PairsWeightingConfig());
+	for (const Reading* r : {&off, &on})
+		if (r->log.find("premise:") == 0) {
+			VERBOSE("NearDuplicateYardstickTest FAILED: %s", r->log.c_str());
+			return false;
+		}
+	// today: the burst is the yardstick, every wide factor under 0.6, and the star is refused at the floor
+	float maxWideOff = 0, maxWideOn = 0;
+	for (IIndex j = numBurst + 1; j < sides.size(); ++j) {
+		maxWideOff = MAXF(maxWideOff, off.conn[j - 1]);
+		maxWideOn = MAXF(maxWideOn, on.conn[j - 1]);
+	}
+	if (maxWideOff >= 0.6f || off.star) {
+		VERBOSE("NearDuplicateYardstickTest FAILED: with the rule off the strongest wide pair's connectivity is %.3f (under 0.6 expected) and the star %s (refused expected)",
+			maxWideOff, off.star ? "started" : "was refused");
+		return false;
+	}
+	// rule on: the strongest wide pair is the reference's yardstick
+	if (maxWideOn < 0.999f) {
+		VERBOSE("NearDuplicateYardstickTest FAILED: with the rule on the strongest wide pair's connectivity is %.3f (1 expected: the first non-duplicate pair is the yardstick)", maxWideOn);
+		return false;
+	}
+	if (!on.star) {
+		VERBOSE("NearDuplicateYardstickTest FAILED: the star was refused with the rule on (expected to start with the wide views):\n%s", on.log.c_str());
+		return false;
+	}
+	for (IIndex v = numBurst + 1; v < sides.size(); ++v)
+		if (!on.posed[v]) {
+			VERBOSE("NearDuplicateYardstickTest FAILED: wide view %u is not in the star with the rule on", v);
+			return false;
+		}
+	// an image whose pairs are all near-duplicates keeps today's yardstick
+	if (off.conn12 >= 0.9f || ABS(on.conn12 - off.conn12) > 1e-6f) {
+		VERBOSE("NearDuplicateYardstickTest FAILED: the burst pair (1,2) has connectivity %.4f off and %.4f on (equal and under 0.9 expected: its images keep today's yardstick)",
+			off.conn12, on.conn12);
+		return false;
+	}
+	// the stored overlap follows the pair's matches: a burst pair cut to the left half of the frame after a first weighting
+	// pass reads the half overlap at the next pass, and is no near-duplicate any more
+	{
+		Scene scene;
+		buildScene(scene, groups);
+		const PairsWeightingConfig cfg;
+		ComputePairsWeights(scene, cfg);
+		ImagePair& pair = *scene.FindPair(0, 1);
+		const float before = pair.overlapArea;
+		std::vector<DMatch> left;
+		for (const DMatch& m : pair.matches)
+			if (scene.images[0].keypoints[m.queryIdx].pt.x < 300.f)
+				left.push_back(m);
+		pair.matches = std::move(left);
+		pair.numFilteredInliers = (int)pair.matches.size();
+		pair.weightedInliers = -1.f;
+		ComputePairsWeights(scene, cfg);
+		const ImagePair& cut = *scene.FindPair(0, 1);
+		const float after = cut.overlapArea, coverage = ComputePairCoverage(cut, scene.images[0], scene.images[1], cfg.gridSize);
+		if (before <= 0.9f || after != coverage || after > 0.5f || cfg.IsNearDuplicate(cut)) {
+			VERBOSE("NearDuplicateYardstickTest FAILED: the burst pair cut to the left half stores an overlap of %.2f after the second weighting pass (its matches cover %.2f; %.2f before the cut) and is %sa near-duplicate",
+				after, coverage, before, cfg.IsNearDuplicate(cut) ? "" : "not ");
+			return false;
+		}
+	}
+	// the predicate: a near-duplicate needs the overlap above the bar AND a measured ray angle under it
+	{
+		const PairsWeightingConfig cfg;
+		ImagePair pair(0, 1);
+		const auto test = [&](float overlap, float rayAngleDeg) {
+			pair.overlapArea = overlap;
+			pair.meanRayAngle = D2R(rayAngleDeg);
+			return cfg.IsNearDuplicate(pair);
+		};
+		if (!test(0.9f, 1.f) || test(0.7f, 1.f) || test(0.9f, 2.f) || test(0.9f, 0.f) || offCfg.IsNearDuplicate(pair)) {
+			VERBOSE("NearDuplicateYardstickTest FAILED: the near-duplicate test: overlap 0.9 and 1 deg %d (1 expected), overlap 0.7 %d, angle 2 deg %d, angle not measured %d, rule off %d (0 expected)",
+				(int)test(0.9f, 1.f), (int)test(0.7f, 1.f), (int)test(0.9f, 2.f), (int)test(0.9f, 0.f), (int)offCfg.IsNearDuplicate(pair));
+			return false;
+		}
+	}
+	VERBOSE("NearDuplicateYardstickTest PASSED: strongest wide connectivity %.3f -> %.3f, star refused -> started, burst pair (1,2) %.3f both ways, the stored overlap follows a cut of the matches, the test needs both the overlap and the angle (%s)",
+		maxWideOff, maxWideOn, off.conn12, TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 

@@ -2332,7 +2332,7 @@ unsigned PairsMatcher::Match(bool& bFatal)
 }
 
 
-bool PairsMatcher::ExportPairsCSV(const Scene& scene, const String& fileName, float minWeight, float minYield, int gridSize)
+bool PairsMatcher::ExportPairsCSV(const Scene& scene, const String& fileName, float minWeight, float minYield, const PairsWeightingConfig& weighting)
 {
 	std::ofstream ofs(fileName);
 	if (!ofs.is_open()) {
@@ -2344,7 +2344,7 @@ bool PairsMatcher::ExportPairsCSV(const Scene& scene, const String& fileName, fl
 	// acts on; it does not depend on the minimum score, only the threshold derived from it does,
 	// so the column can be re-thresholded offline; the Coverage column beside the raw NumMatches
 	// count lets the pair strength (their product) be replayed offline too
-	const TripletScores tripletScores = ComputeTripletScores(scene, 0.f, minYield, gridSize);
+	const TripletScores tripletScores = ComputeTripletScores(scene, 0.f, minYield, weighting);
 	ofs << "ImageA,ImageB,NumMatches,Coverage,Weight,WeightSpatial,WeightConnectivity,WeightTriplet,MeanRayAngle,TripletScore,"
 		   "RelQw,RelQx,RelQy,RelQz,RelTx,RelTy,RelTz\n";
 	FOREACH(idxPair, scene.pairs) {
@@ -2353,7 +2353,7 @@ bool PairsMatcher::ExportPairsCSV(const Scene& scene, const String& fileName, fl
 		const String relImageNameB = MAKE_PATH_REL(basePath, scene.images[pair.ID2].fileName);
 		ofs << relImageNameA << "," << relImageNameB << ","
 		    << pair.GetNumFilteredInliers() << ","
-			<< ComputePairCoverage(pair, scene.images[pair.ID1], scene.images[pair.ID2], gridSize) << ","
+			<< ComputePairCoverage(pair, scene.images[pair.ID1], scene.images[pair.ID2], weighting.gridSize) << ","
 			<< pair.GetCompositeWeight() << ","
 			<< pair.weightSpatial << ","
 			<< pair.weightConnectivity << ","

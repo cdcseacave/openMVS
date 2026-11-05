@@ -67,9 +67,12 @@ float SFM::ComputePairCoverage(const ImagePair& pair, const Image& img1, const I
 	return (float)MINF(occupied(points1, img1), occupied(points2, img2)) / (float)(gridSize * gridSize);
 }
 
-// Intrinsic weight of a pair: the grid coverage of its inliers (ComputePairCoverage) times the
-// angle/baseline term, with a proxy from the homography overlap for pairs without stored matches.
+// Intrinsic weight of a pair: the grid coverage of its track-forming matches (ComputePairCoverage, stored
+// as the pair's overlapArea) times the angle/baseline term; 0 for a pair without stored matches.
 float ComputeIntrinsicWeight(ImagePair& pair, const Image& img1, const Image& img2, int gridSize = 10, unsigned minInliers = 15) {
+	// the stored overlap describes the pair's CURRENT matches: every pass rewrites it, since a refit, the dense
+	// infusion, the lens fit, the planar twin switch and a reload all change or bring the matches an earlier pass measured
+	pair.overlapArea = ComputePairCoverage(pair, img1, img2, gridSize);
 	if (!pair.HasMatches())
 		return 0.f;
 
@@ -88,13 +91,9 @@ float ComputeIntrinsicWeight(ImagePair& pair, const Image& img1, const Image& im
 	// is dense. Only a pair with no relative pose at all reads 0 here, which
 	// ComputeAngleBaselineWeight scores at its MAXIMUM (see the note there): no baseline was
 	// measurable, and no term in this product will demote such a pair.
-	const float areaScore = ComputePairCoverage(pair, img1, img2, gridSize);
-	if (pair.overlapArea <= 0.f)
-		pair.overlapArea = areaScore; // no overlap, store area score as proxy
-
 	// Apply angle baseline weighting
 	const float angleScore = pair.ComputeAngleBaselineWeight();
-	return areaScore * angleScore;
+	return pair.overlapArea * angleScore;
 }
 
 
@@ -222,9 +221,8 @@ void SFM::ComputePairsWeights(Scene& scene, const PairsWeightingConfig& config, 
 	// D_local = sqrt( (N_ij / Max_N_i) * (N_ij / Max_N_j) )
 	// Where N_ij can be the raw count or the spatial weighted count. Let's use spatial weighted count for robustness.
 
-	// Precompute max weight per node
-	UnsignedArr maxNodeWeight(scene.images.size());
-	maxNodeWeight.Memset(0);
+	// Precompute max weight per node: the image's yardstick, a near-duplicate pair left out
+	std::vector<Yardstick> yardsticks(scene.images.size());
 	for (const ImagePair& pair : scene.pairs) {
 		if (pair.weightSpatial <= 0.f)
 			continue; // skip if no matches
@@ -233,9 +231,13 @@ void SFM::ComputePairsWeights(Scene& scene, const PairsWeightingConfig& config, 
 		// this assertion is therefore a statement about that invariant, not a bar a configuration
 		// can trip
 		ASSERT(w > 0, "ComputePairsWeights: non-positive intrinsic weight in connectivity computation");
-		if (w > maxNodeWeight[pair.ID1]) maxNodeWeight[pair.ID1] = w;
-		if (w > maxNodeWeight[pair.ID2]) maxNodeWeight[pair.ID2] = w;
+		const bool nearDuplicate = config.IsNearDuplicate(pair);
+		yardsticks[pair.ID1].Add(w, nearDuplicate);
+		yardsticks[pair.ID2].Add(w, nearDuplicate);
 	}
+	UnsignedArr maxNodeWeight(scene.images.size());
+	FOREACH(i, maxNodeWeight)
+		maxNodeWeight[i] = yardsticks[i].Count();
 
 	const float ratioSigma = -1.f / (2.f * SQUARE(config.sigmaInlierPerMatches)); // Gaussian sigma for inliers ratio weighting
 	#ifdef PAIRSWEIGHTING_USE_OPENMP

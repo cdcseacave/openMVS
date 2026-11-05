@@ -421,6 +421,7 @@ bool StarReferenceViewTest();
 // whatever its inlier count, and its unit baseline guesses a distance no match backs. The reference
 // stays chosen by inlier count.
 bool StarEvidenceTest();
+bool NearDuplicateYardstickTest();
 
 // A resected pose enters the model only when its support is credible: enough of its 2D-3D
 // correspondences agree with it (ResectionConfig::minInlierRatio / minInliersAbsolute), and a

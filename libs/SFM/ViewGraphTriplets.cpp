@@ -65,6 +65,7 @@ struct ViewGraph
 		float strength;      // weighted inliers x coverage; 0 when no matches are stored (never scored, always kept)
 		unsigned numInliers; // weighted inliers
 		float rayAngle;      // median ray angle of the track-forming matches, radians (0: not measured)
+		bool nearDuplicate;  // PairsWeightingConfig::IsNearDuplicate: never an image's capacity
 	};
 	IIndex numImages;
 	std::vector<Edge> edges;
@@ -74,7 +75,7 @@ struct ViewGraph
 	unsigned numNodes, mainSize;
 };
 
-ViewGraph BuildViewGraph(const Scene& scene, int gridSize)
+ViewGraph BuildViewGraph(const Scene& scene, const PairsWeightingConfig& weighting)
 {
 	ViewGraph g;
 	g.numImages = scene.images.size();
@@ -90,15 +91,16 @@ ViewGraph BuildViewGraph(const Scene& scene, int gridSize)
 			continue;
 		const PairIdx images(MakePairIdx(pair.ID1, pair.ID2));
 		const float strength = (float)numInliers *
-			ComputePairCoverage(pair, scene.images[pair.ID1], scene.images[pair.ID2], gridSize);
+			ComputePairCoverage(pair, scene.images[pair.ID1], scene.images[pair.ID2], weighting.gridSize);
+		const bool nearDuplicate = weighting.IsNearDuplicate(pair);
 		const auto inserted = edgeOfImages.emplace(images.idx, (uint32_t)g.edges.size());
 		if (inserted.second) {
-			g.edges.push_back({images.i, images.j, strength, numInliers, pair.meanRayAngle});
+			g.edges.push_back({images.i, images.j, strength, numInliers, pair.meanRayAngle, nearDuplicate});
 			g.isNode[images.i] = g.isNode[images.j] = true;
 		} else {
 			ViewGraph::Edge& edge = g.edges[inserted.first->second];
 			if (strength > edge.strength || (strength == edge.strength && numInliers > edge.numInliers))
-				edge = {images.i, images.j, strength, numInliers, pair.meanRayAngle};
+				edge = {images.i, images.j, strength, numInliers, pair.meanRayAngle, nearDuplicate};
 		}
 		g.edgeOfPair[idxPair] = inserted.first->second;
 	}
@@ -130,7 +132,7 @@ ViewGraph BuildViewGraph(const Scene& scene, int gridSize)
 
 // The yield of every edge: the inliers it delivered against what pairs at its ray angle deliver
 // in this graph. u_e = n_e / min(K_i, K_j), with K_i the inlier count of image i's strongest
-// edge; the envelope H is the 90th percentile of u over the edges of each 1-degree bin of ray
+// edge that is not a near-duplicate (Yardstick); the envelope H is the 90th percentile of u over the edges of each 1-degree bin of ray
 // angle (bins holding at least five edges), made non-increasing in the angle by a suffix maximum
 // (a narrower viewpoint never promises less than a wider one), so an empty bin takes the nearest
 // populated bin above it and the bins above the highest populated one keep its value; the yield
@@ -144,13 +146,16 @@ std::vector<float> ComputeYields(const ViewGraph& g)
 	constexpr float percentile = 0.9f;
 	const uint32_t numEdges = (uint32_t)g.edges.size();
 	std::vector<float> yields(numEdges, 1.f);
-	std::vector<unsigned> capacity(g.numImages, 0);
+	std::vector<Yardstick> yardsticks(g.numImages);
 	for (const ViewGraph::Edge& edge : g.edges) {
 		if (edge.strength <= 0.f)
 			continue;
-		capacity[edge.i] = MAXF(capacity[edge.i], edge.numInliers);
-		capacity[edge.j] = MAXF(capacity[edge.j], edge.numInliers);
+		yardsticks[edge.i].Add(edge.numInliers, edge.nearDuplicate);
+		yardsticks[edge.j].Add(edge.numInliers, edge.nearDuplicate);
 	}
+	std::vector<unsigned> capacity(g.numImages);
+	for (IIndex i = 0; i < g.numImages; ++i)
+		capacity[i] = yardsticks[i].Count();
 	std::vector<float> delivered(numEdges, 0.f);
 	std::vector<unsigned> binOfEdge(numEdges, numBins); // numBins: no measured geometry
 	std::vector<std::vector<float>> bins(numBins);
@@ -444,9 +449,9 @@ float Unit(float value, const char* name)
 
 // F U N C T I O N S ///////////////////////////////////////////////
 
-TripletScores SFM::ComputeTripletScores(const Scene& scene, float minScore, float minYield, int gridSize)
+TripletScores SFM::ComputeTripletScores(const Scene& scene, float minScore, float minYield, const PairsWeightingConfig& weighting)
 {
-	const ViewGraph graph = BuildViewGraph(scene, gridSize);
+	const ViewGraph graph = BuildViewGraph(scene, weighting);
 	const EdgeScores edgeScores = ScoreEdges(graph, minScore, minYield);
 	TripletScores result;
 	result.scores = ScoresOfPairs(graph, edgeScores);
@@ -478,7 +483,7 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 	const float minYield = Unit(config.minYield, "minimum yield");
 	const float secondFace = Unit(config.secondFaceScore, "second-face score");
 
-	const ViewGraph graph = BuildViewGraph(scene, weightingCfg.gridSize);
+	const ViewGraph graph = BuildViewGraph(scene, weightingCfg);
 	const EdgeScores edgeScores = ScoreEdges(graph, minScore, minYield);
 	const uint32_t numEdges = (uint32_t)graph.edges.size();
 	if (numEdges == 0) {
@@ -605,7 +610,7 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 	// graph the removal left (a triangle lost changes the score of the pairs beside it)
 	if (pScores)
 		*pScores = numRemoved == 0 ? ScoresOfPairs(graph, edgeScores) :
-			ComputeTripletScores(scene, minScore, minYield, weightingCfg.gridSize).scores;
+			ComputeTripletScores(scene, minScore, minYield, weightingCfg).scores;
 	DEBUG("Filtered the view graph by camera triplets: %u pairs removed (%s)", numRemoved, TD_TIMER_GET_FMT().c_str());
 	return numRemoved;
 }

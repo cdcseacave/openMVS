@@ -40,22 +40,34 @@ static UnsignedArr ComputeStarEvidence(const Scene& scene, IIndex refID, float m
 	return evidence;
 }
 
-IIndex StarInitializer::SelectReferenceView(const Scene& scene, const IIndexArr& seedViews, unsigned minPairs)
+IIndex StarInitializer::SelectReferenceView(const Scene& scene, const IIndexArr& seedViews, unsigned minPairs,
+	const PairsWeightingConfig& weighting)
 {
 	// weighted inliers and valid pairs per view, dense supplement discounted and included: a
 	// dense-only pair is a real connection of both its images, and the star initializer must see
 	// the same graph the weights that let it through were computed on
 	UnsignedArr degree(scene.images.size()), numPairs(scene.images.size());
+	// a near-duplicate pair adds to a view's weight only when the view has no other pair (degreeAll)
+	UnsignedArr degreeAll(scene.images.size());
 	degree.Memset(0);
+	degreeAll.Memset(0);
 	numPairs.Memset(0);
 	for (const ImagePair& pair : scene.pairs) {
 		if (!IsPoseLinkPair(pair))
 			continue;
-		degree[pair.ID1] += pair.GetNumWeightedInliers();
-		degree[pair.ID2] += pair.GetNumWeightedInliers();
+		const unsigned w = pair.GetNumWeightedInliers();
+		degreeAll[pair.ID1] += w;
+		degreeAll[pair.ID2] += w;
+		if (!weighting.IsNearDuplicate(pair)) {
+			degree[pair.ID1] += w;
+			degree[pair.ID2] += w;
+		}
 		++numPairs[pair.ID1];
 		++numPairs[pair.ID2];
 	}
+	FOREACH(i, degree)
+		if (degree[i] == 0)
+			degree[i] = degreeAll[i];
 	// the heaviest of the given views with at least minArms valid pairs: the star built around the
 	// reference view has one arm per valid pair and the initializer refuses a star smaller than
 	// its minimum, so a heavier view with fewer arms is no use -- on a sparse kept graph (a chain
@@ -227,7 +239,8 @@ std::vector<ScalePair> SFM::ComputePairScales(const Scene& scene, const IIndexAr
 bool StarInitializer::EstimateGlobalScale(
 	Scene& scene,
 	IIndex refViewID,
-	const IIndexArr& connectedViews)
+	const IIndexArr& connectedViews,
+	const PairsWeightingConfig& weighting)
 {
 	if (connectedViews.empty())
 		return true;
@@ -264,19 +277,14 @@ bool StarInitializer::EstimateGlobalScale(
 	}
 
 	// 3. Solve system using shared global scale averaging
-	// Fix one pair scale to 1.0: choose the pair connected to Ref with most matches.
-	uint32_t fixedPairIdx = NO_ID;
-	unsigned maxMatches = 0;
+	// Fix one pair scale to 1.0: the pair connected to Ref with most matches, a near-duplicate only when Ref has no other
+	Yardstick gauge;
 	for (const uint32_t pairIdx : constrainedPairs) {
 		const ImagePair& pair = scene.pairs[pairIdx];
-		// Check if connected to Ref
-		if (pair.ID1 == refViewID || pair.ID2 == refViewID) {
-			if (pair.GetNumInliers() > maxMatches) {
-				maxMatches = pair.GetNumInliers();
-				fixedPairIdx = pairIdx;
-			}
-		}
+		if (pair.ID1 == refViewID || pair.ID2 == refViewID)
+			gauge.Add(pair.GetNumInliers(), weighting.IsNearDuplicate(pair), pairIdx);
 	}
+	const uint32_t fixedPairIdx = gauge.Pair();
 
 	std::vector<REAL> pairScales;
 	GlobalScaleEstimator scaleEstimator;
@@ -326,7 +334,7 @@ bool StarInitializer::Initialize(
 	ASSERT(!scene.IsEmpty() && !scene.pairs.empty() && !scene.tracks.empty())
 
 	// 1. Select reference view (highest connectivity)
-	const IIndex refID = SelectReferenceView(scene, config.seedViews, config.minViews > 0 ? config.minViews - 1 : 0);
+	const IIndex refID = SelectReferenceView(scene, config.seedViews, config.minViews > 0 ? config.minViews - 1 : 0, config.pairsWeighting);
 	if (refID == NO_ID)
 		return false;
 	// Set reference view to identity pose
@@ -340,6 +348,7 @@ bool StarInitializer::Initialize(
 		unsigned numInliers; // number of inliers in the pair
 		unsigned numEvidence; // the inliers of the pair that fix a distance (see ComputeStarEvidence)
 		Pose3D relPose; // relative pose to reference
+		bool nearDuplicate; // the pair is a near-duplicate (PairsWeightingConfig::IsNearDuplicate): never the floor's yardstick
 	};
 	CLISTDEF0IDX(ConnectedView, IIndex) candidates;
 	const UnsignedArr pairEvidence(ComputeStarEvidence(scene, refID, config.evidenceMinAngle));
@@ -359,7 +368,7 @@ bool StarInitializer::Initialize(
 		// Absolute: target pose relative to source (which is identity)
 		// If source is ID2, we need inverse transform
 		Pose3D pose(sourceID == pair.ID1 ? pair.relativePose.value() : pair.relativePose->Inverse());
-		candidates.push_back({targetID, pair.GetNumWeightedInliers(), pairEvidence[idxPair], pose});
+		candidates.push_back({targetID, pair.GetNumWeightedInliers(), pairEvidence[idxPair], pose, config.pairsWeighting.IsNearDuplicate(pair)});
 	}
 	if (candidates.size() < config.minViews-1) {
 		VERBOSE("error: insufficient initial views (%u < %u)",
@@ -373,13 +382,19 @@ bool StarInitializer::Initialize(
 	// Filter candidates by minimum evidence per view
 	if (config.ratioInliersFilter > 0) {
 		// Compute robust threshold top 3 views: by their inliers, the minimum a view's evidence must pass
-		UnsignedArr inliers(candidates.size());
-		FOREACH(i, candidates)
-			inliers[i] = candidates[i].numInliers;
+		// (a near-duplicate's inliers fix no distance: they set the floor only when every candidate is one)
+		UnsignedArr inliers(0, candidates.size()), inliersAll(0, candidates.size());
+		for (const ConnectedView& cv : candidates) {
+			inliersAll.push_back(cv.numInliers);
+			if (!cv.nearDuplicate)
+				inliers.push_back(cv.numInliers);
+		}
+		if (inliers.empty())
+			inliers.Swap(inliersAll);
 		inliers.Sort([](unsigned a, unsigned b) { return a > b; });
 		unsigned avgInliers = 0;
 		const IIndex numCandidates = candidates.size();
-		IIndex count = MINF(3u, numCandidates);
+		IIndex count = MINF(3u, (unsigned)inliers.size());
 		ASSERT(count > 0); // the check above left a candidate (the star needs at least one neighbour)
 		for (unsigned i = 0; i < count; ++i)
 			avgInliers += inliers[i];
@@ -390,7 +405,7 @@ bool StarInitializer::Initialize(
 		candidates.resize(size + 1);
 		DEBUG_EXTRA("Filtered connected views by inlier matches: kept %u/%u views with at least %u inliers of evidence",
 			candidates.size(), numCandidates, thInliers);
-		if (candidates.empty()) { // no neighbour passes the floor (near-duplicate frames of many inliers can lift it above the evidence of every wider one): the star would fail at its triangulation, say so here
+		if (candidates.empty()) { // no neighbour passes the floor (near-duplicate frames the near-duplicate bars do not flag can still lift it above the evidence of every wider one): the star would fail at its triangulation, say so here
 			VERBOSE("error: insufficient initial views (%u < %u)",
 				candidates.size(), config.minViews-1);
 			return false;
@@ -421,7 +436,7 @@ bool StarInitializer::Initialize(
 	}
 
 	// 3. Estimate global scale
-	if (!EstimateGlobalScale(scene, refID, connectedViews)) {
+	if (!EstimateGlobalScale(scene, refID, connectedViews, config.pairsWeighting)) {
 		VERBOSE("error: global scale estimation failed (proceeding without scaling)");
 		return false;
 	}

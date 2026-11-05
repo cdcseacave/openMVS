@@ -702,7 +702,7 @@ void ExportMatchingCSVs(const Scene& scene, const ReconstructionConfig& config)
 {
 	if (!config.exportPairsCSV.empty() &&
 		!PairsMatcher::ExportPairsCSV(scene, config.exportPairsCSV, config.minPairWeight,
-			config.tripletFilterCfg.minYield, config.matchCfg.weightingCfg.gridSize))
+			config.tripletFilterCfg.minYield, config.matchCfg.weightingCfg))
 		VERBOSE("warning: failed to export image pairs to CSV file '%s'", config.exportPairsCSV.c_str());
 }
 
@@ -948,6 +948,7 @@ bool Scene::ReconstructHierarchical(const ReconstructionConfig& config, const II
 		initCfg.baConfig = config.baConfig;
 		initCfg.seedViews = SubSceneSeedViews(seedViews, localToGlobals, i);
 		initCfg.evidenceMinAngle = config.minAngleThreshold;
+		initCfg.pairsWeighting = config.matchCfg.weightingCfg; // the near-duplicates the pairs were weighted with
 		if (!StarInitializer::Initialize(subScene, initCfg)) {
 			VERBOSE("error: star initialization failed for sub-scene %u (skipping)", i);
 			return; // skip this sub-scene

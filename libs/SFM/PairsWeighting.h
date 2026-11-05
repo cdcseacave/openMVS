@@ -99,6 +99,40 @@ struct SFM_API PairsWeightingConfig
         ASSERT(denseMatchesPerFrame > 0);
         return denseFrameInliers / (float)denseMatchesPerFrame;
     }
+    // NEAR-DUPLICATE pairs (ImagePair::IsNearDuplicate): two frames from almost the same spot share nearly the whole
+    // frame and get the most matches of any pair, yet fix no distance, so such a pair is never the yardstick of an
+    // image's connectivity (Yardstick): the connectivity factor of the pair weights, the star's reference view, floor
+    // and scale gauge, and the triplet yield's capacity. A pair is one when its overlap (ImagePair::overlapArea, the
+    // 10 x 10 coverage of its track-forming matches) is above maxDuplicateOverlap AND its measured ray angle is under
+    // maxDuplicateRayAngle degrees; the overlap keeps out the pairs turned on the spot by a large rotation, whose ray
+    // angle is small too. Tuned on 33 captures against the reference poses (true parallax under 1.5 deg = no distance;
+    // T/records-2026-11-05-duplicates/rule-075-15.md): of the pairs this flags, 85% fix no distance. 0 turns the rule off;
+    // an angle of 0 leaves the overlap alone to decide.
+    float maxDuplicateOverlap = 0.75f;
+    float maxDuplicateRayAngle = 1.5f;
+    bool IsNearDuplicate(const ImagePair& pair) const {
+        return pair.IsNearDuplicate(maxDuplicateOverlap, D2R(maxDuplicateRayAngle));
+    }
+};
+
+// The yardstick of an image's connectivity: the count of its strongest pair, a near-duplicate pair left out unless the
+// image has no other pair (then it keeps the strongest of its near-duplicates). Add() every pair of the image; Count() is
+// the yardstick and Pair() the pair holding it.
+struct Yardstick {
+    unsigned all = 0, distinct = 0;
+    uint32_t pairAll = NO_ID, pairDistinct = NO_ID;
+    void Add(unsigned count, bool nearDuplicate, uint32_t pair = NO_ID) {
+        if (count > all) {
+            all = count;
+            pairAll = pair;
+        }
+        if (!nearDuplicate && count > distinct) {
+            distinct = count;
+            pairDistinct = pair;
+        }
+    }
+    unsigned Count() const { return distinct > 0 ? distinct : all; }
+    uint32_t Pair() const { return distinct > 0 ? pairDistinct : pairAll; }
 };
 
 // The fraction of a gridSize x gridSize grid over the image that the pair's track-forming matches

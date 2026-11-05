@@ -13,6 +13,7 @@
 #include "Image.h"
 #include "BundleAdjustment.h"
 #include "GlobalScaleAveraging.h"
+#include "PairsWeighting.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -41,7 +42,7 @@ struct SFM_API StarInitConfig
 {
 	unsigned minViews{4};           // Minimum views of the star, the reference included (at least 2)
 	unsigned maxViews{36};          // Maximum connected views
-	float ratioInliersFilter{0.2f}; // Floor of a neighbour's evidence: this share of the mean inlier count of the three heaviest candidates (optional, 0 to disable)
+	float ratioInliersFilter{0.2f}; // Floor of a neighbour's evidence: this share of the mean inlier count of the three heaviest candidates that are not near-duplicates (pairsWeighting; all candidates when every one is) (optional, 0 to disable)
 	float maxReprojError{6.f};      // Maximum reprojection error (pixels)
 	float minAngleThreshold{1.f};   // Minimum angle between cameras (degrees)
 	float evidenceMinAngle{1.5f};   // Ray angle a pair's inlier must reach to count as star evidence (degrees): the reconstruction's minAngleThreshold, which Scene sets it from
@@ -61,6 +62,11 @@ struct SFM_API StarInitConfig
 	// weights, keypoint-confidence gating, ...); the star initializer applies its own local
 	// overrides (iteration budget, intrinsics refinement) on top, same as ResectionConfig.
 	BAConfig baConfig;
+
+	// The pair weighting the scene was weighted with: which pairs are near-duplicates, never the yardstick of the
+	// reference view's choice, of the floor of a neighbour's evidence or of the scale gauge (Scene sets it, as for
+	// ResectionConfig).
+	PairsWeightingConfig pairsWeighting;
 };
 
 /**
@@ -89,21 +95,26 @@ public:
 	 * @param scene Scene with image pairs
 	 * @param seedViews Candidate images (empty: every image)
 	 * @param minPairs Valid pairs a candidate needs (StarInitConfig::minViews - 1)
+	 * @param weighting Which pairs are near-duplicates: their inliers count toward a view's weight only when the view has no
+	 *        other pair (an image of near-duplicates keeps its whole weight)
 	 * @return Image ID of reference view
 	 */
-	static IIndex SelectReferenceView(const Scene& scene, const IIndexArr& seedViews, unsigned minPairs);
+	static IIndex SelectReferenceView(const Scene& scene, const IIndexArr& seedViews, unsigned minPairs,
+		const PairsWeightingConfig& weighting);
 
 	/**
 	 * @brief Estimate global scale from multiple baselines
 	 * @param scene Scene with initialized poses
 	 * @param refViewID Reference view ID
 	 * @param connectedViews IDs of connected views
+	 * @param weighting Which pairs are near-duplicates: the scale is fixed on the reference's strongest pair that is not one
 	 * @return true if scale estimation successful
 	 */
 	static bool EstimateGlobalScale(
 		Scene& scene,
 		IIndex refViewID,
-		const IIndexArr& connectedViews);
+		const IIndexArr& connectedViews,
+		const PairsWeightingConfig& weighting);
 };
 
 } // namespace SFM

@@ -75,12 +75,13 @@ struct SFM_API TripletScores
 
 // Score every verified pair of the scene by the triangles of its view graph (Algorithm 1, steps
 // 1-9). A pair's strength is its weighted inlier count discounted by the fraction of the frame its
-// inliers cover on a gridSize x gridSize grid (PairsWeightingConfig::gridSize, so the discount is
-// measured as the pair weighting measures coverage). Only the edges of the largest connected
+// inliers cover on a gridSize x gridSize grid (weighting.gridSize, so the discount is measured as the
+// pair weighting measures coverage); weighting also says which pairs are near-duplicates, never an
+// image's capacity in the yield (minYield). Only the edges of the largest connected
 // component of the triplet graph are scored; every other pair -- unverified, without inliers or
 // stored matches, in no triangle, or in a smaller component -- stays unscored. The scores do not
 // depend on the minimum score, only tau does.
-TripletScores SFM_API ComputeTripletScores(const Scene& scene, float minScore, float minYield, int gridSize);
+TripletScores SFM_API ComputeTripletScores(const Scene& scene, float minScore, float minYield, const PairsWeightingConfig& weighting);
 
 // Score the pairs and, with the cutting rule, remove the ones it rejects (TripletFilterConfig),
 // recomputing the pair weights when anything was removed; the default mode removes nothing and a
