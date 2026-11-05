@@ -72,7 +72,7 @@ public:
 		if (!UseImage(idxImage, decoded))
 			return false;
 		ASSERT(decoded.type() == cv::DataType<TYPE>::type);
-		image = decoded;
+		image = std::move(decoded);
 		return true;
 	}
 
