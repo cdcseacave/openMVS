@@ -727,8 +727,8 @@ bool CheckFocals(Scene& scene, const std::vector<FitPair>& pairs, const std::vec
 
 // Every pair of a camera in `cameras` that its verification left with an F and no pose (an untrusted camera's pairs
 // are verified through F), both its cameras pinhole and trusted by now, posed from its F at their focals: E = K2^T F K1,
-// the pose that puts its sparse inliers, normalized by each camera's K, in front of both views (cv::recoverPose at unit
-// focal); its matches as the F verification left them. A pair with fewer than LENS_POSE_MIN_MATCHES sparse inliers is
+// the pose that puts the most of its sparse inliers in front of both views (ImagePair::RecoverPose, on their bearings);
+// its matches as the F verification left them. A pair with fewer than LENS_POSE_MIN_MATCHES sparse inliers is
 // left as it is. Returns the number of pairs posed
 unsigned PosePairsFromF(Scene& scene, const std::unordered_set<CameraPtr>& cameras)
 {
@@ -744,26 +744,15 @@ unsigned PosePairsFromF(Scene& scene, const std::unordered_set<CameraPtr>& camer
 		if (img1.GetCameraType() != CameraType::PINHOLE || img2.GetCameraType() != CameraType::PINHOLE ||
 			!img1.TrustIntrinsics() || !img2.TrustIntrinsics())
 			continue; // the other camera's focal is still unknown
-		const auto [points1, points2] = pair.GetMatchedPoints(img1, img2);
-		if (points1.size() < LENS_POSE_MIN_MATCHES)
+		const auto [bearings1, bearings2] = pair.GetMatchedBearings(img1, img2);
+		if (bearings1.size() < LENS_POSE_MIN_MATCHES)
 			continue;
-		const PinholeCamera& c1 = *static_cast<const PinholeCamera*>(img1.pCamera);
-		const PinholeCamera& c2 = *static_cast<const PinholeCamera*>(img2.pCamera);
-		std::vector<cv::Point2d> normalized1, normalized2;
-		normalized1.reserve(points1.size());
-		normalized2.reserve(points2.size());
-		FOREACH(k, points1) {
-			normalized1.emplace_back((points1[k].x - c1.cx)/c1.fx, (points1[k].y - c1.cy)/c1.fy);
-			normalized2.emplace_back((points2[k].x - c2.cx)/c2.fx, (points2[k].y - c2.cy)/c2.fy);
-		}
-		const Matrix3x3 E(ImagePair::DecomposeFundamentalMatrix(pair.F.value(), c1.GetK(), c2.GetK()));
-		cv::Mat R, t;
-		if (cv::recoverPose(E, normalized1, normalized2, R, t, 1.0, cv::Point2d(0, 0)) <= 0)
+		const Matrix3x3 E(ImagePair::DecomposeFundamentalMatrix(pair.F.value(), img1.GetK(), img2.GetK()));
+		Pose3D pose;
+		if (ImagePair::RecoverPose(E, bearings1, bearings2, pose) == 0)
 			continue;
 		pair.E = E;
-		Pose3D& pose = pair.relativePose.emplace();
-		pose.R = R;
-		pose.SetT(Point3(t.at<double>(0), t.at<double>(1), t.at<double>(2)));
+		pair.relativePose = pose;
 		++numPosed;
 	}
 	return numPosed;
