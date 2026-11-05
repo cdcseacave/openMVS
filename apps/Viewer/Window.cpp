@@ -69,6 +69,7 @@ Window::Window()
 	, uncertaintyEllipsoidScale(1.f)
 	, cameraDisplayType(CAMERA_DISPLAY_FRUSTUM)
 	, showCameraLookAt(true)
+	, cameraSequenceColor(false)
 	, pointSize(3.f)
 	, pointNormalLength(0.02f)
 	, imageOverlayOpacity(0.5f)
@@ -533,6 +534,7 @@ void Window::Render() {
 			ui->ShowRenderSettings(*this);
 			ui->ShowBoundingBoxControls(*this);
 			ui->ShowPointConfidenceFilter(*this);
+			ui->ShowPointObservations(*this);
 			ui->ShowWorkflowWindows(*this);
 		}
 	}
@@ -945,6 +947,10 @@ void Window::HandleKeyboard(int key, int action, int mods) {
 			return;
 		case GLFW_KEY_B:
 			ui->ToggleBoundingBoxControls();
+			RequestRedraw();
+			return;
+		case GLFW_KEY_P:
+			ui->TogglePointObservations();
 			RequestRedraw();
 			return;
 		default:

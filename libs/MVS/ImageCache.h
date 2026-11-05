@@ -42,6 +42,7 @@
 // the STL containers and the rest of the standard library this header uses come with
 // the Common.h precompiled header; only what the PCH does not provide is included here
 #include <condition_variable>
+#include <functional>
 #include <mutex>
 
 
@@ -49,71 +50,74 @@
 
 namespace MVS {
 
-// Caches the image intensities used to estimate depth-maps, decoding them on demand.
+// Caches decoded images, decoding them on demand and evicting the least recently used
+// ones once the memory budget is reached; safe to use from any number of threads.
 //
-// Decoding every image up front does not scale: a scene of ten thousand views needs
-// tens of gigabytes of pixels resident before the first depth-map is estimated, which
-// is what keeps the depth-map phase from running on large datasets. Instead the images
-// are opened only for their resolution and their pixels are decoded the first time a
-// view asks for them, evicting the least recently used ones once the memory budget is
-// reached.
-//
-// Entries store the image already converted to the float intensities the estimator
-// consumes, which is also what makes a hit cheaper than the eager path it replaces:
-// within a pass a view is used once as the reference image and once more for every
-// image listing it as a neighbor, and each of those uses used to redo the color
-// conversion of the whole image.
-class ImageCache {
+// What an entry holds is up to the decoder the cache is built with: the depth-map
+// estimation keeps the float intensities it consumes (a hit then also skips the color
+// conversion), the Viewer keeps the full resolution color pixels it crops observation
+// patches from. Decoding every image up front does not scale: a scene of ten thousand
+// views needs tens of gigabytes of pixels resident before the first one is used.
+class MVS_API ImageCache {
 public:
-	explicit ImageCache(const ImageArr& images, size_t max_memory_bytes = 0/*no caching*/);
+	// decode the image with the given index; called outside the cache lock, from any thread
+	typedef std::function<bool(IIndex, cv::Mat&)> FncDecode;
+	// bytes the given image will hold once decoded
+	typedef std::function<size_t(IIndex)> FncMemorySize;
+
+	explicit ImageCache(FncDecode decode, size_t max_memory_bytes = 0/*no caching*/);
 	~ImageCache();
 
-	// return the intensities of the given image, decoding them if not cached;
+	// return the given image, decoding it if not cached;
 	// the returned image shares its memory with the cache and must not be modified
-	bool UseImage(IIndex idxImage, Image32F& imageGray);
+	bool UseImage(IIndex idxImage, cv::Mat& image);
+	template <typename TYPE>
+	bool UseImage(IIndex idxImage, TImage<TYPE>& image) {
+		cv::Mat decoded;
+		if (!UseImage(idxImage, decoded))
+			return false;
+		ASSERT(decoded.type() == cv::DataType<TYPE>::type);
+		image = decoded;
+		return true;
+	}
 
 	// decode as many of the given images as the budget holds, in the order given,
-	// which is also the order the estimation consumes them in; filling the cache
+	// which is also the order the caller consumes them in; filling the cache
 	// while all the cores are still idle keeps the workers from having to decode
 	// their way through the first pass one image at a time
-	bool Prefetch(const IIndexArr& idxImages);
+	bool Prefetch(const IIndexArr& idxImages, const FncMemorySize& imageMemorySize);
 
 	// drop everything cached and set the maximum memory usage (in bytes);
 	// pass 0 to disable caching, decoding each image every time it is used;
 	// reports how well the cache did before forgetting it
 	void Reset(size_t max_memory_bytes = 0/*no caching*/);
 
-	// bytes needed to hold the intensities of all the given images
-	static size_t ComputeMemorySize(const ImageArr& images, const IIndexArr& idxImages);
-
 	size_t GetMaxMemory() const { return maxMemory; }
-	// bytes the cache may still grow by, which is what the rest of the estimation
-	// has to leave alone on top of what the cache already holds
+	// bytes the cache may still grow by, which is what the rest of the caller's
+	// work has to leave alone on top of what the cache already holds
 	size_t GetFreeMemory() const { return maxMemory > usedMemory ? maxMemory - usedMemory : 0; }
 	// number of images decoded from disk
 	uint32_t GetNumImageReads() const { return hitStats.numMisses; }
 
 protected:
-	// decode the image file and convert it to the intensities the estimator consumes
-	static bool DecodeImage(const Image& imageData, Image32F& imageGray);
-	static size_t ComputeImageMemorySize(const Image32F& imageGray) {
-		return (size_t)imageGray.size().area() * sizeof(float);
+	static size_t ComputeImageMemorySize(const cv::Mat& image) {
+		return image.total() * image.elemSize();
 	}
 	// eject the least recently used images while above the memory limit
 	void Eject();
 
 protected:
-	const ImageArr& images;
+	const FncDecode decode;
 
 	// maximum and used memory (in bytes); a worker holding an image that gets
 	// ejected keeps it alive through the reference count, so the used memory is
 	// a lower bound on what the cached images actually occupy
 	size_t maxMemory, usedMemory;
 
-	// cached intensities; an entry holding an empty image is a placeholder marking
+	// cached images; an entry holding an empty image is a placeholder marking
 	// a decode another thread has already started, so the threads finding it wait
 	// for that decode instead of repeating it
-	std::unordered_map<IIndex, Image32F> imagesGray;
+	std::unordered_map<IIndex, cv::Mat> images;
 	std::condition_variable decoded;
 
 	// track which images are last accessed; holds only the entries that finished

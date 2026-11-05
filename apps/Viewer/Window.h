@@ -120,6 +120,7 @@ public:
 	float uncertaintyEllipsoidScale; // multiplies the 1-sigma pose-uncertainty ellipsoid radii
 	CameraDisplayType cameraDisplayType;
 	bool showCameraLookAt;
+	bool cameraSequenceColor; // color the cameras of new layers by image order (persisted; each layer then keeps its own)
 	float pointSize;
 	float pointNormalLength;
 	float imageOverlayOpacity;

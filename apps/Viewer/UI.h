@@ -33,6 +33,7 @@
 
 #include "Camera.h"
 #include "Texture.h"
+#include "PointObservations.h"
 
 namespace VIEWER {
 
@@ -57,6 +58,8 @@ private:
 	bool showViewportOverlay;
 	bool showSelectionOverlay;
 	bool showLayersPanel;
+	bool showPointObservations;
+	size_t numLayersSeen; // layer count at the previous frame: the panel opens when a second layer arrives
 	bool showAboutDialog;
 	bool showHelpDialog;
 	bool showExportDialog;
@@ -80,6 +83,9 @@ private:
 
 	// Embedded resources
 	Texture emptySceneIcon;
+
+	// Observations of the selected point (Point Observations panel)
+	PointObservations pointObservations;
 
 	// Log console
 	std::deque<String> logBuffer;
@@ -108,6 +114,7 @@ public:
 	void ShowRenderSettings(Window& window);
 	void ShowBoundingBoxControls(Window& window);
 	void ShowPointConfidenceFilter(Window& window);
+	void ShowPointObservations(Window& window); // patches of the selected point in every view seeing it
 	void ShowLayersPanel(Window& window);
 	void ShowCompareDivider(Window& window); // A|B split view divider (draggable) + side labels
 	void ShowConsoleOverlay(Window& window);
@@ -125,6 +132,7 @@ public:
 	void ToggleRenderSettings() { showRenderSettings = !showRenderSettings; }
 	void ToggleBoundingBoxControls() { showBoundingBoxControls = !showBoundingBoxControls; }
 	void ToggleLayersPanel() { showLayersPanel = !showLayersPanel; }
+	void TogglePointObservations() { showPointObservations = !showPointObservations; }
 	void RequestSavePrompt() { showSavePromptDialog = true; }
 	void SetSelectionControls(bool v) { showSelectionControls = v; }
 	void SetUserFontScale(float scale);

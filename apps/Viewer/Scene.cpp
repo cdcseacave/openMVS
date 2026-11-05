@@ -593,6 +593,7 @@ bool Scene::HasCameraUncertainty() const
 void Scene::RefreshLayerState(Layer& layer, bool rebuildImages)
 {
 	MVS::Scene& scene(layer.scene);
+	++layer.revision;
 	AABB3f bounds(true);
 	AABB3f imageBounds(true);
 
@@ -1061,6 +1062,7 @@ bool Scene::AddLayer(const String& fileName, String geometryFileName, bool makeA
 
 	Layer layer;
 	layer.id = nextLayerID++;
+	layer.useCameraJetColor = window.cameraSequenceColor;
 	if (!LoadLayer(layer, fileName, geometryFileName)) {
 		if (const Layer* activeLayer = GetActiveLayer())
 			ActivateWorkingFolder(*activeLayer);

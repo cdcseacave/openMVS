@@ -133,6 +133,47 @@ inline float Conf2Weight(float conf, Depth depth) {
 }
 /*----------------------------------------------------------------*/
 
+// bytes the image cache needs to hold the intensities of the given image
+static size_t ComputeImageGrayMemorySize(const Image& imageData) {
+	ASSERT(imageData.HasResolution());
+	return (size_t)imageData.GetSize().area() * sizeof(float);
+}
+// bytes the image cache needs to hold the intensities of all the given images
+static size_t ComputeImagesGrayMemorySize(const ImageArr& images, const IIndexArr& idxImages) {
+	size_t memory(0);
+	for (IIndex idxImage: idxImages)
+		memory += ComputeImageGrayMemorySize(images[idxImage]);
+	return memory;
+}
+
+// decode the image file and convert it to the intensities the estimator consumes,
+// at the resolution the depth-maps are estimated at
+static bool DecodeImageGray(const Image& imageData, cv::Mat& image) {
+	ASSERT(imageData.HasResolution());
+	Image32F imageGray;
+	if (!imageData.image.empty()) {
+		// the color pixels are resident, as the SGM fusion modes keep them
+		ASSERT(imageData.image.size() == imageData.GetSize());
+		imageData.image.toGray(imageGray, cv::COLOR_BGR2GRAY, true);
+		image = imageGray;
+		return true;
+	}
+	Image8U3 imageColor;
+	const auto pImage(Image::ReadImage(imageData.name, imageColor));
+	if (pImage == NULL) {
+		LOG("error: failed decoding image '%s'", imageData.name.c_str());
+		return false;
+	}
+	// bring the image to the resolution the depth-maps are estimated at;
+	// Image::GetSize() is the size ReloadImage() resolved when it read the header
+	if (imageColor.size() != imageData.GetSize())
+		Image::ResizeUniform(imageColor, imageColor, imageData.GetSize(), cv::INTER_AREA);
+	imageColor.toGray(imageGray, cv::COLOR_BGR2GRAY, true);
+	image = imageGray;
+	return true;
+}
+/*----------------------------------------------------------------*/
+
 // S T R U C T S ///////////////////////////////////////////////////
 
 
@@ -140,7 +181,7 @@ DepthMapsData::DepthMapsData(Scene& _scene)
 	:
 	scene(_scene),
 	arrDepthData(_scene.images.GetSize()),
-	imageCache(_scene.images)
+	imageCache([&images = _scene.images](IIndex idxImage, cv::Mat& image) { return DecodeImageGray(images[idxImage], image); })
 	#ifdef _USE_CUDA
 	, pmCUDANextIdx((Thread::safe_t)-1)
 	, pmCUDAEpoch(0)
@@ -172,7 +213,7 @@ size_t DepthMapsData::ComputeImageCacheMemory(const IIndexArr& images) const
 {
 	if (images.empty())
 		return 0;
-	const size_t allImages(ImageCache::ComputeMemorySize(scene.images, images));
+	const size_t allImages(ComputeImagesGrayMemorySize(scene.images, images));
 	const Util::MemoryInfo memInfo(Util::GetMemoryInfo());
 	const size_t safetyMemory(ComputeSafetyMemory(memInfo));
 	if (memInfo.freePhysical <= safetyMemory)
@@ -3160,11 +3201,11 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		TD_TIMER_START();
 		ImageCache& imageCache = data.depthMaps.imageCache;
 		imageCache.Reset(data.depthMaps.ComputeImageCacheMemory(data.images));
-		if (!imageCache.Prefetch(data.images)) {
+		if (!imageCache.Prefetch(data.images, [this](IIndex idxImage) { return ComputeImageGrayMemorySize(images[idxImage]); })) {
 			VERBOSE("error: preparing images for dense reconstruction failed (errors decoding images)");
 			return false;
 		}
-		const size_t allImagesMemory(ImageCache::ComputeMemorySize(images, data.images));
+		const size_t allImagesMemory(ComputeImagesGrayMemorySize(images, data.images));
 		if (imageCache.GetMaxMemory() == 0)
 			VERBOSE("warning: not enough memory to cache the images (%luMB needed); each use decodes them again",
 				allImagesMemory/1024/1024);
