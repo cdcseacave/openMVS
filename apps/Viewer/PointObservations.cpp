@@ -93,6 +93,9 @@ void PointObservations::Update(const Window& window)
 
 void PointObservations::Release()
 {
+	// called every frame while the panel is closed
+	if (imageCache == nullptr && observations.empty())
+		return;
 	Clear();
 	imageCache.reset();
 	imageCacheLayerID = NO_ID;
@@ -102,6 +105,10 @@ void PointObservations::Clear()
 {
 	++croppedPatches->generation;
 	threadPool.purge();
+	{
+		std::lock_guard<std::mutex> lock(croppedPatches->mutex);
+		croppedPatches->patches.clear();
+	}
 	observations.clear();
 	layerID = pointIdx = NO_ID;
 }
@@ -187,21 +194,24 @@ void PointObservations::RequestPatches()
 	const bool bEqualized(patchScale == SCALE_EQUALIZED);
 	for (uint32_t i = 0; i < (uint32_t)observations.size(); ++i) {
 		const Observation& observation = observations[i];
-		threadPool.detach_task([=, imageCache = imageCache, croppedPatches = croppedPatches,
-			idxImage = observation.idxImage, proj = observation.proj,
-			width = observation.width, footprint = observation.footprint, footprintRef = footprintRef]() {
+		// the task captures only values and the shared state, never this
+		threadPool.detach_task([imageCache = imageCache, croppedPatches = croppedPatches, generation, i,
+			window, bEqualized, footprintRef = footprintRef, idxImage = observation.idxImage,
+			proj = observation.proj, width = observation.width, footprint = observation.footprint]() {
+			// a request superseded meanwhile (selection or settings changed, panel or Viewer
+			// closed) skips the remaining work and takes no patches nor redraws
 			if (croppedPatches->generation != generation)
 				return;
 			cv::Mat image;
 			Image8U3 patch;
 			if (imageCache->UseImage(idxImage, image)) {
+				if (croppedPatches->generation != generation)
+					return;
 				// the projection is in the resolution the camera is currently scaled to
 				const float scale((float)image.cols/width);
 				patch = CropPatch(image, MVS::Camera::ScaleImagePixel(proj, scale),
 					bEqualized ? window*footprint*scale/footprintRef : window, patchSize);
 			}
-			// a request cleared meanwhile (selection changed, panel closed, Viewer closing)
-			// takes no patches and needs no redraw
 			if (croppedPatches->generation != generation)
 				return;
 			{

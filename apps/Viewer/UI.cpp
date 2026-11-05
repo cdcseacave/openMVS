@@ -976,7 +976,7 @@ void UI::ShowPointObservations(Window& window) {
 			ImGui::SetTooltip("Every patch shows the image pixels at the same magnification");
 		pointObservations.patchScale = (PointObservations::PatchScale)patchScale;
 		ImGui::SetNextItemWidth(160);
-		ImGui::SliderFloat("Zoom", &pointObservations.zoom, 0.25f, 8.f, "x%.2f", ImGuiSliderFlags_Logarithmic);
+		ImGui::SliderFloat("Zoom", &pointObservations.zoom, 0.25f, 8.f, "x%.2f", ImGuiSliderFlags_Logarithmic|ImGuiSliderFlags_AlwaysClamp);
 		if (ImGui::IsItemHovered())
 			ImGui::SetTooltip(pointObservations.patchScale == PointObservations::SCALE_EQUALIZED ?
 				"Magnification of the median view" : "Magnification of the image pixels");
@@ -1031,8 +1031,10 @@ void UI::ShowPointObservations(Window& window) {
 				ImGui::TextDisabled("click to view from this camera");
 				ImGui::EndTooltip();
 			}
-			if (clicked)
+			if (clicked) {
 				window.GetCamera().SetCameraViewMode(observation.idxView);
+				window.RequestRedraw();
+			}
 			ImGui::PopID();
 			if (i+1 < observations.size() && ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + patchSize.x < maxX)
 				ImGui::SameLine();
