@@ -584,7 +584,7 @@ void UI::ShowCameraControls(Window& window) {
 			ImGui::SameLine();
 			colorModeChanged |= ImGui::RadioButton("Solid##CameraDisplayColor", &colorMode, 0);
 			if (colorModeChanged) {
-				activeLayer->useCameraJetColor = window.cameraSequenceColor = (colorMode == 1);
+				activeLayer->useCameraJetColor = window.useCameraJetColor = (colorMode == 1);
 				cameraDisplayChanged = true;
 			}
 			if (!activeLayer->useCameraJetColor) {
@@ -955,7 +955,7 @@ void UI::ShowPointObservations(Window& window) {
 	pointObservations.Update(window);
 
 	ImGui::SetNextWindowPos(ImVec2(10, 100), ImGuiCond_FirstUseEver);
-	ImGui::SetNextWindowSize(ImVec2(4*(PointObservations::patchSize+12.f), 600), ImGuiCond_FirstUseEver);
+	ImGui::SetNextWindowSize(ImVec2(4*(PointObservations::PATCH_SIZE+12.f), 600), ImGuiCond_FirstUseEver);
 	if (ImGui::Begin("Point Observations", &showPointObservations)) {
 		if (pointObservations.IsEmpty()) {
 			ImGui::TextDisabled("Select a point seen by several views");
@@ -984,10 +984,11 @@ void UI::ShowPointObservations(Window& window) {
 			ImGui::Checkbox("Sort by confidence", &pointObservations.sortByWeight);
 		ImGui::Separator();
 
-		// patches grid, wrapping to the window width; a click views the scene from that camera
-		const ImVec2 patchSize((float)PointObservations::patchSize, (float)PointObservations::patchSize);
+		// patches grid wrapping to the window width; a click views the scene from that camera
+		const ImVec2 patchSize((float)PointObservations::PATCH_SIZE, (float)PointObservations::PATCH_SIZE);
 		const float maxX = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
 		const ImU32 colorCross = IM_COL32(255, 0, 0, 200);
+		ImDrawList* drawList = ImGui::GetWindowDrawList();
 		for (size_t i = 0; i < observations.size(); ++i) {
 			const PointObservations::Observation& observation = observations[i];
 			ImGui::PushID((int)i);
@@ -1000,9 +1001,9 @@ void UI::ShowPointObservations(Window& window) {
 				ImGui::Image((ImTextureID)(uintptr_t)observation.patch.GetID(), patchSize);
 			} else {
 				ImGui::Dummy(patchSize);
-				ImDrawList* drawList = ImGui::GetWindowDrawList();
-				drawList->AddRectFilled(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), IM_COL32(40, 40, 40, 255));
-				drawList->AddText(ImVec2(ImGui::GetItemRectMin().x+4, ImGui::GetItemRectMin().y+4),
+				const ImVec2 rectMin = ImGui::GetItemRectMin();
+				drawList->AddRectFilled(rectMin, ImGui::GetItemRectMax(), IM_COL32(40, 40, 40, 255));
+				drawList->AddText(ImVec2(rectMin.x+4, rectMin.y+4),
 					IM_COL32(160, 160, 160, 255), observation.failed ? "no image" : "loading...");
 			}
 			const bool hovered = ImGui::IsItemHovered();
@@ -1011,7 +1012,6 @@ void UI::ShowPointObservations(Window& window) {
 			const ImVec2 rectMin = ImGui::GetItemRectMin();
 			const ImVec2 center(rectMin.x+0.5f*patchSize.x, rectMin.y+0.5f*patchSize.y);
 			const float gap = 2.f, arm = 7.f;
-			ImDrawList* drawList = ImGui::GetWindowDrawList();
 			drawList->AddLine(ImVec2(center.x-arm, center.y), ImVec2(center.x-gap, center.y), colorCross, 1.5f);
 			drawList->AddLine(ImVec2(center.x+gap, center.y), ImVec2(center.x+arm, center.y), colorCross, 1.5f);
 			drawList->AddLine(ImVec2(center.x, center.y-arm), ImVec2(center.x, center.y-gap), colorCross, 1.5f);
@@ -3599,7 +3599,7 @@ void SettingsReadLine(ImGuiContext*, ImGuiSettingsHandler* handler, void* entry,
 		window.uncertaintyEllipsoidScale = x;
 	}
 	else if (sscanf(line, "CameraDisplayColor=%d", &intVal) == 1) {
-		window.cameraSequenceColor = (intVal != 0);
+		window.useCameraJetColor = (intVal != 0);
 	}
 	else if (sscanf(line, "CameraDisplayType=%d", &intVal) == 1) {
 		window.cameraDisplayType =
@@ -3665,7 +3665,7 @@ void SettingsWriteAll(ImGuiContext*, ImGuiSettingsHandler* handler, ImGuiTextBuf
 		window.clearColor[2], window.clearColor[3]);
 	buf->appendf("CameraSize=%f\n", window.cameraSize);
 	buf->appendf("EllipsoidScale=%f\n", window.uncertaintyEllipsoidScale);
-	buf->appendf("CameraDisplayColor=%d\n", window.cameraSequenceColor ? 1 : 0);
+	buf->appendf("CameraDisplayColor=%d\n", window.useCameraJetColor ? 1 : 0);
 	buf->appendf("CameraDisplayType=%d\n", (int)window.cameraDisplayType);
 	buf->appendf("ShowCameraLookAt=%d\n", window.showCameraLookAt ? 1 : 0);
 	buf->appendf("PointSize=%f\n", window.pointSize);

@@ -40,14 +40,12 @@ using namespace VIEWER;
 
 namespace {
 
-// crop the square patch of the given side centered at the given pixel and covering
-// the given number of image pixels; outside the image the patch is black, so the
-// point always stays in the middle of the patch
+// crop the square patch of the given side, centered at the given pixel and covering
+// the given number of image pixels; the area outside the image is black
 Image8U3 CropPatch(const cv::Mat& image, const Point2f& center, float window, int size)
 {
 	ASSERT(image.type() == CV_8UC3 && window > 0 && size > 0);
-	// sample at least one image pixel per patch pixel, so shrinking a large window
-	// averages the pixels instead of aliasing (bounded, the far views would be huge)
+	// sample up to one image pixel per patch pixel, so shrinking averages instead of aliasing
 	const int sampleSize(CLAMP(CEIL2INT(window), size, size*4));
 	const double step((double)window/sampleSize);
 	const double offset(0.5*(sampleSize-1)*step);
@@ -68,6 +66,7 @@ Image8U3 CropPatch(const cv::Mat& image, const Point2f& center, float window, in
 
 PointObservations::~PointObservations()
 {
+	++croppedPatches->generation;
 	threadPool.purge();
 }
 
@@ -93,7 +92,6 @@ void PointObservations::Update(const Window& window)
 
 void PointObservations::Release()
 {
-	// called every frame while the panel is closed
 	if (imageCache == nullptr && observations.empty())
 		return;
 	Clear();
@@ -124,8 +122,7 @@ void PointObservations::BuildObservations(const Window& window)
 	sortedByWeight = sortByWeight;
 	hasWeights = !pointcloud.pointWeights.empty();
 	if (imageCacheLayerID != layerID) {
-		// decode the image files at their full resolution, from their names only:
-		// the layer's images are rescaled by the Viewer when shown in camera view
+		// decode the image files at full resolution (the layer images may be loaded rescaled)
 		std::vector<String> names;
 		names.reserve(layer.scene.images.size());
 		for (const MVS::Image& imageData: layer.scene.images)
@@ -174,7 +171,6 @@ void PointObservations::BuildObservations(const Window& window)
 		std::stable_sort(observations.begin(), observations.end(),
 			[](const Observation& a, const Observation& b) { return a.weight > b.weight; });
 
-	// the equalized patches show the median view at the requested zoom
 	std::vector<float> footprints;
 	footprints.reserve(observations.size());
 	for (const Observation& observation: observations)
@@ -189,17 +185,15 @@ void PointObservations::RequestPatches()
 	requestedScale = patchScale;
 	requestedZoom = zoom;
 	const uint32_t generation(++croppedPatches->generation);
-	threadPool.purge(); // drop the crops of the previous request not started yet
-	const float window(patchSize/zoom); // image pixels covered at the reference footprint
+	threadPool.purge();
+	const float window(PATCH_SIZE/zoom); // image pixels covered at the reference footprint
 	const bool bEqualized(patchScale == SCALE_EQUALIZED);
 	for (uint32_t i = 0; i < (uint32_t)observations.size(); ++i) {
 		const Observation& observation = observations[i];
-		// the task captures only values and the shared state, never this
 		threadPool.detach_task([imageCache = imageCache, croppedPatches = croppedPatches, generation, i,
 			window, bEqualized, footprintRef = footprintRef, idxImage = observation.idxImage,
 			proj = observation.proj, width = observation.width, footprint = observation.footprint]() {
-			// a request superseded meanwhile (selection or settings changed, panel or Viewer
-			// closed) skips the remaining work and takes no patches nor redraws
+			// stop as soon as the request is superseded
 			if (croppedPatches->generation != generation)
 				return;
 			cv::Mat image;
@@ -207,10 +201,10 @@ void PointObservations::RequestPatches()
 			if (imageCache->UseImage(idxImage, image)) {
 				if (croppedPatches->generation != generation)
 					return;
-				// the projection is in the resolution the camera is currently scaled to
+				// the projection is given in the resolution the camera is scaled to
 				const float scale((float)image.cols/width);
 				patch = CropPatch(image, MVS::Camera::ScaleImagePixel(proj, scale),
-					bEqualized ? window*footprint*scale/footprintRef : window, patchSize);
+					bEqualized ? window*footprint*scale/footprintRef : window, PATCH_SIZE);
 			}
 			if (croppedPatches->generation != generation)
 				return;

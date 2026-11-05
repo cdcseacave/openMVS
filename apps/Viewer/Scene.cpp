@@ -1062,7 +1062,7 @@ bool Scene::AddLayer(const String& fileName, String geometryFileName, bool makeA
 
 	Layer layer;
 	layer.id = nextLayerID++;
-	layer.useCameraJetColor = window.cameraSequenceColor;
+	layer.useCameraJetColor = window.useCameraJetColor;
 	if (!LoadLayer(layer, fileName, geometryFileName)) {
 		if (const Layer* activeLayer = GetActiveLayer())
 			ActivateWorkingFolder(*activeLayer);

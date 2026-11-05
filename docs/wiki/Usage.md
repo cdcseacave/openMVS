@@ -442,7 +442,7 @@ The input file (or any of the supported formats listed below) can be passed on t
 The user interface is built on Dear ImGui and organized into menus, dockable panels and overlays:
 
 - **File menu** — Open / Save / Save As / Close / Export, plus screenshot capture (with or without UI visible).
-- **View menu** — toggles the Layers panel, Scene Info, Camera Info, Camera Controls, Selection, Render Settings, Bounding Box, Console and the Performance / Workflow / Viewport / Selection overlays.
+- **View menu** — toggles the Layers panel, Scene Info, Camera Info, Camera Controls, Selection, Render Settings, Bounding Box, Point Confidence, Point Observations, Console and the Performance / Workflow / Viewport / Selection overlays. The Layers panel opens by itself once a second layer is loaded.
 - **Render toggles** — one-key switches for Point-cloud, Mesh, Cameras, Wireframe, Textured, and Bounding-box visibility.
 - **Workflow menu** — launches the OpenMVS pipeline steps on the loaded scene: *Estimate ROI*, *Densify*, *Reconstruct Mesh*, *Refine*, *Texture*. Each opens a parameter panel with the corresponding module's options.
 - **Help / About dialogs** — `F1` shows the complete in-app keybinding reference.
@@ -468,7 +468,7 @@ Display toggles
 - `P` point cloud · `M` mesh · `C` cameras · `W` wireframe · `T` textured · `B` bounding box
 
 Panels (Shift + letter)
-- `Shift+A` Scene Info · `Shift+Q` Camera Info · `Shift+C` Camera Controls · `Shift+S` Selection · `Shift+R` Render Settings · `Shift+B` Bounding-Box editor
+- `Shift+A` Scene Info · `Shift+Q` Camera Info · `Shift+C` Camera Controls · `Shift+S` Selection · `Shift+R` Render Settings · `Shift+B` Bounding-Box editor · `Shift+P` Point Observations
 
 Tools
 - `G` toggle selection mode · `Ctrl+B` run ROI estimation
@@ -478,7 +478,8 @@ Tools
 - **Multi-scene layers.** Several scenes or geometry files can be loaded at the same time as independent layers (`-l` on the command line, `Ctrl+O` or drag-and-drop) with per-layer visibility, solo, active selection and appearance controls in the *View ▸ Layers* panel; `[` / `]` cycle the active layer, on which the in-GUI pipeline and all editing tools operate.
 - **Side-by-side compare.** The Layers panel places each layer on side A or B of a vertical divider, in one of two modes: *Swipe* renders both sides with the same full-window camera separated by a draggable divider, so aligned scenes match pixel-exact across it, while *Split* shows two equal viewports with each scene centered in its own frustum. Camera movement is synchronized between the two sides by default; uncheck *Sync Cameras* to adjust each viewport's camera individually with the mouse over it. *Align to Active* moves every other layer onto the active one with a similarity transform estimated from cameras shared between the scenes (matched by photo file name, then by preserved SfM image ID; at least 3 shared cameras are required).
 - **ROI editing.** Press `Shift+B` to overlay an interactive oriented bounding box on the scene; drag the corner, face or rotation handles to define the region that subsequent pipeline stages will focus on. ROI can also be auto-estimated from the scene (`Ctrl+B`) or loaded from a file.
-- **Camera trajectory colouring.** Camera frustums are coloured along a Jet colormap according to their index in the capture sequence — blue at the start, red at the end — making it easy to spot loop closures, gaps or ordering issues. Cameras can be rendered as full frustums or as simple dots; the currently selected camera and its neighbours are highlighted distinctly.
+- **Camera trajectory colouring.** In *Camera Controls ▸ Camera Display Color*, *Sequence* colours the cameras of the active layer along a Jet colormap by their index in the capture sequence — red at the start, blue at the end — making it easy to spot loop closures, gaps or ordering issues; *Solid* uses a single colour picked next to it. The last choice is remembered between sessions and applied to newly loaded layers. Cameras can be rendered as full frustums or as simple dots; the currently selected camera and its neighbours are highlighted distinctly.
+- **Point observations.** Select a point of a cloud that stores its views (e.g. a dense cloud) and press `Shift+P`: the *Point Observations* panel shows, for every view seeing the point, the image patch centered on its projection (red cross), cropped from the full resolution photo in the background. *Equalized* sizes every patch to cover the same surface around the point, *Original* shows every photo's pixels at the same magnification; *Zoom* sets the magnification and *Sort by confidence* orders the views by their fusion confidence. Hovering a patch shows the image name, pixel position, depth, footprint, confidence and angle to the normal; clicking it views the scene from that camera.
 - **Camera-pose navigation.** The left / right arrow keys step through the scene's registered views; `Shift+Q` pins a panel showing the selected camera's intrinsics and extrinsics.
 - **Depth-map inspection.** Load a `.dmap` file directly (command-line, `Ctrl+O` or drag-and-drop) to render the depth map as a coloured 3D surface; the viewer also exports depth maps to `.ply` for use in external tools.
 - **In-GUI pipeline.** The *Workflow* menu launches `DensifyPointCloud`, `ReconstructMesh`, `RefineMesh` and `TextureMesh` on the loaded scene without leaving the viewer, with the result live-reloaded once each step completes.

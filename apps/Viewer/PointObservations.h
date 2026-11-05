@@ -40,13 +40,11 @@ namespace VIEWER {
 class Window;
 
 // The observations of the selected point: for every view seeing it, the image patch
-// around the point's projection, so the user can judge each observation by eye.
+// centered on the point's projection.
 //
-// The patches are cropped from the full resolution images on a thread pool, the
-// images coming from an LRU cache (MVS::ImageCache) bound to the active layer, so
-// nothing blocks the UI and moving between nearby points decodes nothing new. The
-// crop tasks only touch the data they were given and the cache, never the layer,
-// which is why they do not count as background work holding the scene.
+// The patches are cropped from the full resolution images on a thread pool, through an
+// image cache bound to the active layer. The crop tasks use only the values they are
+// given and the cache, never the layer, so they do not count as scene background work.
 class PointObservations {
 public:
 	enum PatchScale {
@@ -75,7 +73,7 @@ public:
 	};
 	typedef std::vector<Observation> ObservationArr;
 
-	static constexpr int patchSize = 128; // patch side (pixels)
+	static constexpr int PATCH_SIZE = 128; // patch side (pixels)
 
 	PatchScale patchScale{SCALE_EQUALIZED};
 	float zoom{1.5f}; // patch magnification (of the median view when equalized)
@@ -85,8 +83,7 @@ public:
 	PointObservations() = default;
 	~PointObservations();
 
-	// follow the window's point selection: rebuild the observations when it changes,
-	// crop the patches anew when the patch settings change, and upload the patches
+	// follow the selected point and the patch settings, and upload the patches
 	// cropped since the last call; must be called from the OpenGL thread
 	void Update(const Window& window);
 	// drop the observations, the patches and the image cache
@@ -111,7 +108,7 @@ private:
 			uint32_t idxObservation;
 			Image8U3 image; // empty if the image failed to decode
 		};
-		std::atomic<uint32_t> generation{0}; // latest request; older tasks skip their crop
+		std::atomic<uint32_t> generation{0}; // latest request; the tasks of older ones stop
 		std::mutex mutex;
 		std::vector<Patch> patches;
 	};
@@ -123,8 +120,8 @@ private:
 	bool sortedByWeight{true};
 	bool hasWeights{false};
 	ObservationArr observations;
-	float footprintRef{0}; // median native footprint the equalized patches are scaled to
-	// the patch settings of the last request
+	float footprintRef{0}; // median native footprint, shown at the zoom when equalized
+	// patch settings of the last request
 	PatchScale requestedScale{SCALE_EQUALIZED};
 	float requestedZoom{0};
 

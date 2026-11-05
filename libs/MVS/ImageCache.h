@@ -50,14 +50,9 @@
 
 namespace MVS {
 
-// Caches decoded images, decoding them on demand and evicting the least recently used
-// ones once the memory budget is reached; safe to use from any number of threads.
-//
-// What an entry holds is up to the decoder the cache is built with: the depth-map
-// estimation keeps the float intensities it consumes (a hit then also skips the color
-// conversion), the Viewer keeps the full resolution color pixels it crops observation
-// patches from. Decoding every image up front does not scale: a scene of ten thousand
-// views needs tens of gigabytes of pixels resident before the first one is used.
+// Caches images decoded on demand, evicting the least recently used ones once the
+// memory budget is reached; safe to use from any number of threads.
+// What an entry holds (format, resolution) is up to the decoder the cache is built with.
 class MVS_API ImageCache {
 public:
 	// decode the image with the given index; called outside the cache lock, from any thread
