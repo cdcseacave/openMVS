@@ -22,7 +22,7 @@ env:
   BUILD_DIR: make
   CTEST_OUTPUT_ON_FAILURE: 1
   VCPKG_FEATURE_FLAGS: manifests,binarycaching,registries
-  VCPKG_COMMIT: '37bb045f3c7a747d3e5d1c13b6fe6a0aec4b5d00'
+  VCPKG_COMMIT: '9eec002df1cd109f8f104cd966a763daf9751489' # 2026.10.16
 
 defaults:
   run:
@@ -45,7 +45,7 @@ jobs:
           - os: windows-latest
             triplet: x64-windows-release
             build-type: Release
-            cmake-extra-args: -A x64 -DOpenMVS_MSVC_FAST_RELEASE=ON
+            cmake-extra-args: -A x64
             artifact-name: OpenMVS_Windows_Release_x64
           - os: ubuntu-latest
             triplet: x64-linux-release
@@ -213,6 +213,14 @@ jobs:
         working-directory: ./${{ env.BUILD_DIR }}
         run: |
           ctest --parallel 2 --build-config ${{ env.BUILD_CONFIG }}
+
+      - name: Package Test
+        run: |
+          # install OpenMVS and build a project using it through find_package(OpenMVS)
+          cmake --install ${{ env.BUILD_DIR }} --config ${{ env.BUILD_CONFIG }} --prefix install
+          # quoted shell variables: bash drops the backslashes of unquoted Windows paths
+          cmake -S build/PackageTest -B package_test -DCMAKE_BUILD_TYPE=${{ env.BUILD_CONFIG }} -DCMAKE_CONFIGURATION_TYPES=${{ env.BUILD_CONFIG }} -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_MANIFEST_MODE=OFF -DVCPKG_INSTALLED_DIR="$GITHUB_WORKSPACE/${{ env.BUILD_DIR }}/vcpkg_installed" -DVCPKG_TARGET_TRIPLET=${{ env.VCPKG_DEFAULT_TRIPLET }} -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/install" ${{ env.CMAKE_EXTRA_ARGS }}
+          cmake --build package_test --config ${{ env.BUILD_CONFIG }}
 
       - name: Deploy release
         uses: actions/upload-artifact@v4

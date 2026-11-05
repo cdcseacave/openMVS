@@ -14,13 +14,8 @@
 #include "Thread.h"
 
 #ifndef _MSC_VER
-#ifdef _SUPPORT_CPP11
 #include <mutex>
 #include <condition_variable>
-#else
-#include "CriticalSection.h"
-#include <sys/time.h>
-#endif
 #endif
 
 
@@ -65,61 +60,8 @@ public:
 protected:
 	HANDLE h;
 
-#elif !defined(_SUPPORT_CPP11)
-// pthread implementation
-public:
-	Semaphore(unsigned c=0) : count(c) { pthread_cond_init(&cond, NULL); }
-	~Semaphore() { pthread_cond_destroy(&cond); }
-
-	void Clear(unsigned c=0) {
-		cs.Clear();
-		pthread_cond_destroy(&cond);
-		pthread_cond_init(&cond, NULL);
-		count = c;
-	}
-
-	void Signal() {
-		Lock l(cs);
-		++count;
-		pthread_cond_signal(&cond);
-	}
-	void Signal(unsigned c) {
-		ASSERT(c > 0);
-		for (unsigned i=0; i<c; ++i)
-			Signal();
-	}
-
-	void Wait() {
-		Lock l(cs);
-		while (!count)
-			pthread_cond_wait(&cond, &cs.getMutex());
-		--count;
-	}
-	bool Wait(uint32_t millis) {
-		Lock l(cs);
-		if (count == 0) {
-			timeval timev;
-			gettimeofday(&timev, NULL);
-			millis += timev.tv_usec/1000;
-			timespec t = {
-				timev.tv_sec + (millis/1000),
-				(millis%1000)*1000*1000
-			};
-			pthread_cond_timedwait(&cond, &cs.getMutex(), &t);
-			if (count == 0)
-				return false;
-		}
-		--count;
-		return true;
-	}
-
-protected:
-	pthread_cond_t cond;
-	CriticalSection cs;
-	unsigned count;
-
 #else
-// C++11 implementation
+// standard library implementation
 public:
 	Semaphore(unsigned c=0) : count(c) {}
 	~Semaphore() {}

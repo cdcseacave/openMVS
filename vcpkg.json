@@ -41,11 +41,13 @@
       ]
     },
     "nanoflann",
+    "nlohmann-json",
     "pkgconf",
     "poselib",
     "tiff",
     "tinyexif",
     "tinygltf",
+    "tinyxml2",
     "zlib"
   ],
   "features": {

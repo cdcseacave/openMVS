@@ -460,8 +460,7 @@ graph TD
     B14 -->|yes| B15[Geometric iteration:<br/>use neighbor depths to refine]
     B15 --> B16
     B14 -->|no| B16[EVTOptimizeDepthMap<br/>RemoveSmallSegments + GapInterpolation]
-    B16 --> B17[Optional: SGM refinement<br/>SemiGlobalMatcher]
-    B17 --> B18[EVTSaveDepthMap -> .dmap file]
+    B16 --> B18[EVTSaveDepthMap -> .dmap file]
     B18 --> C{nFusionMode}
     C -->|ABS==1| D[Return depth maps only]
     C -->|FUSE_NOFILTER| E[MergeDepthMaps<br/>simple merge, no consistency]
@@ -549,9 +548,9 @@ graph TD
     F -->|no| H[Score edges quality only]
     G --> I[TetraFlow min-cut graph-cut<br/>source=free-space, sink=matter]
     H --> I
-    I --> J[Extract surface from cut facets<br/>webbing gate: drop facets with an edge > maxEdgeScale x median]
+    I --> J[Extract every cut facet as surface triangle]
     J --> K[Fix non-manifold: single exhaustive pass]
-    K --> L[Mesh::Clean: halfmesh QEM decimation<br/>spurious removal, hole closing, Taubin smoothing]
+    K --> L[Mesh::Clean, halfmesh-delegated:<br/>1 capped-face webbing gate RemoveLongEdgeFacesCapped<br/>2 spurious removal 3 spike removal<br/>4 QEM decimation 5 hole closing<br/>6 Taubin smoothing 7 remeshing]
     L --> M[scene.mesh populated]
 ```
 
@@ -580,16 +579,24 @@ graph TD
 
 - TetraFlow min-cut solver (`libs/Math/TetraFlow.h`, incremental breadth-first search max-flow on
   one 64-byte node per cell) separates free-space (source) from matter (sink) tetrahedra
-- Cut facets form the extracted surface triangles, minus those the webbing gate drops:
-  `maxEdgeScale` (4) x the median cut-facet longest edge, the gap-spanning surface no observation
-  supports
+- Every cut facet becomes an extracted surface triangle — no edge-length gate runs at this stage
+  any more
 - Non-manifold vertices and edges are repaired in a single exhaustive pass (splitting a vertex
   never changes another vertex's incident faces, so no second pass can find more)
 
 **Step 4: Mesh Cleaning**
 
 - `Mesh::Clean()` — `libs/MVS/MeshHalfMesh.cpp`, delegated to the halfmesh library
-- One pass over a single half-edge mesh: spurious-component removal (`fSpurious`), spike removal (`bRemoveSpikes`), QEM decimation (`fDecimate`), hole closing (`nCloseHoles`, a maximum hole size in boundary edges), Taubin band-pass smoothing (`nSmoothMesh`), isotropic remeshing (`fEdgeLength`), then degenerate-face / unreferenced-vertex removal and non-manifold repair
+- One pass over a single half-edge mesh, in this order: the capped-face webbing gate
+  (`maxEdgeScale`, 2) removes faces whose longest edge exceeds the factor times the median longest
+  edge and that have mesh surface close behind or in front of them along their normal, via halfmesh
+  `RemoveLongEdgeFacesCapped()`; it is Clean's first stage so it applies uniformly to any mesh
+  passed in, not only a freshly cut one;
+  then spurious-component removal (`fSpurious`), spike removal (`bRemoveSpikes`), QEM decimation
+  (`fDecimate`), hole closing (`nCloseHoles`, a maximum hole size in boundary edges), Taubin
+  band-pass smoothing (`nSmoothMesh`), isotropic remeshing (`fEdgeLength`), then degenerate-face /
+  unreferenced-vertex removal and non-manifold repair
+- `apps/ReconstructMesh --max-edge-scale` sets the `Clean` option
 
 ---
 
@@ -613,10 +620,10 @@ graph TD
     E --> F[SubdivideMesh<br/>nMaxFaceArea, fDecimateMesh, nCloseHoles, nEnsureEdgeSize]
     F --> G[ListVertexFacesPost: normals]
     G --> H{Solver}
-    H -->|fGradientStep>0| I[Gradient descent: 75 iterations]
-    H -->|MESHOPT_CERES| J[Ceres GradientProblemSolver]
-    I --> I1[ScoreMesh: photo-consistency cost<br/>+ regularization]
-    I1 --> I2[Apply gradient step to vertices]
+    H -->|default| I[MeshRefineStep: pixel-unit bold driver<br/>accept/reject, stops on convergence]
+    H -->|bUseCeres| J[Ceres GradientProblemSolver<br/>opt-in, CPU only]
+    I --> I1[ScoreMesh: masked ZNCC score S<br/>+ regularization gradient]
+    I1 --> I2[Apply the step, in pixels per vertex<br/>ACCEPT if S improved, else halve and back off]
     I2 --> I3{bAdaptMesh? iter >= iterStart}
     I3 -->|yes| I4[Remove planar vertices<br/>small gradient + near center of patch]
     I3 -->|no| I5
@@ -633,29 +640,34 @@ graph TD
 
 **Multi-resolution structure**
 
-- `nScales` (3) coarse-to-fine levels; scale factor `fScaleStep` (0.5) per level
+- `nScales` (2) coarse-to-fine levels; scale factor `fScaleStep` (0.5) per level
 - Coarsest scale: images at `fScaleStep^(nScales-1)` resolution; allows large moves
 - Finest scale: full resolution; fine detail recovery
+- Each level pre-blurs at `sigma = 0.09*2^(nScales-i) + 0.15` before resizing and differentiating
 
 **Subdivision (`SubdivideMesh()`)**
 
-- `nMaxFaceArea`: subdivides faces larger than threshold
-- `fDecimateMesh`: decimates at first scale only
+- `fDecimateMesh` (0 = auto): decimates at the first scale only, in auto mode straight to a mean projected face area of half `nMaxFaceArea` in the tightest image pair
 - `nCloseHoles`: largest hole to close, in boundary edges
-- `nEnsureEdgeSize`: remeshes isotropically to 2.25x the mean edge length, as part of the same `Mesh::Clean` pass
+- `nEnsureEdgeSize`: remeshes isotropically in a band around the mean edge, or against a per-vertex sizing field with `--adaptive-face-size` (default on), as part of the same `Mesh::Clean` pass
+- `nMaxFaceArea` (16 px^2): subdivides any face whose projected area in the tightest camera pair exceeds the threshold
 
 **Photo-consistency scoring (`ScoreMesh()`)**
 
-- Projects each face into all views that can see it (based on normal)
-- Computes ZNCC (zero-normalized cross-correlation) photometric error between rendered patches
+- For every ordered image pair, warps image A into B through the current surface and scores masked 7x7 ZNCC windows; invalid pixels are excluded from the window sums rather than filled with a copy of A
+- Two rejection gates drop windows whose brightness or contrast disagree too much to be the same surface
+- The score `S` is the reliability-weighted mean of `1-ZNCC`, dimensionless and independent of scene scale, resolution and pair count
 - Regularization term weighted by `fRegularityWeight`: penalizes deviation from smooth surface
-- `fRatioRigidityElasticity`: ratio between rigid and elastic deformation energy (high in early iters, 1.0 near end)
+- `fRatioRigidityElasticity`: ratio between rigid and elastic deformation energy, applied as a two-phase per-scale schedule
 - `nAlternatePair`: alternate between using one or both views per pair
 
-**Vertex update**
+**Vertex update (`MeshRefineStep`, shared by both backends)**
 
-- `grad * gstep` applied to each vertex position; `gstep = 0.4` (or from `fGradientStep`)
-- `fThPlanarVertex`: removes nearly-planar low-gradient vertices after `iterStart` = 40% of total iters
+- The step is measured in pixels through each vertex's own footprint, so the trajectory is scale-invariant; the median seen vertex moves `eta/2` px on the first evaluation and every other vertex moves in proportion to its own gradient
+- Bold driver: an evaluation that worsens `S` is rejected (vertices move back half the offending step, `eta` halves), an accepted one grows `eta` by 1.05 up to 1 px
+- A scale ends on convergence — three stalled accepted iterations, a median step below 0.05 px at full stride, or four consecutive rejections — not on a fixed iteration count
+- `fThPlanarVertex`: removes nearly-planar low-gradient vertices, CPU only, disabled by default
+- Once the last scale ends the mesh is decimated within a 0.25 px reprojection tolerance (`--simplify-tolerance`), roughly halving the face count at unchanged accuracy
 
 **CUDA variant (`RefineMeshCUDA`)**
 
@@ -728,7 +740,7 @@ graph TD
 
 **Step 5: Sharpness Enhancement**
 
-- `fSharpnessWeight` (0.5): unsharp masking applied to final texture atlas
+- `fSharpnessWeight` (0, disabled): optional unsharp masking applied to the final texture atlas
 - `colEmpty`: fill color for untextured regions (default orange RGB 255,127,39)
 
 ---
@@ -888,7 +900,8 @@ dMin, dMax: float           — depth range from SFM sparse points
 | Ceres BA | `_USE_CERES` | enabled | Non-linear optimization |
 | SiftGPU | `_USE_SIFTGPU` | disabled | GPU SIFT feature extraction |
 | OpenMP | `_USE_OPENMP` | enabled | Multi-threaded image loops |
-| SGM refinement | `OPTDENSE::nEstimationGeometricIters > 0` | 1 | Geometry-consistent depth |
+| Geometric-consistency iterations | `OPTDENSE::nEstimationGeometricIters > 0` | 1 | Geometry-consistent depth |
+| SGM densification | `--fusion-mode -2` (`-1` pair disparity-maps only) | off (PatchMatch) | CPU multi-view SGM instead of PatchMatch |
 | Global vs Hierarchical | `ReconstructionConfig::useGlobalSolver` | false (hierarchical) | SFM solver selection |
 | GPS Alignment | `ReconstructionConfig::thAlignGPS > 0` + GPS in EXIF | enabled | ENU coordinate frame |
 
@@ -917,7 +930,7 @@ dMin, dMax: float           — depth range from SFM sparse points
 | `libs/MVS/SceneDensify.cpp` | Dense depth estimation |
 | `libs/MVS/DepthMap.cpp` | CPU PatchMatch |
 | `libs/MVS/PatchMatchCUDA.cu` | GPU PatchMatch |
-| `libs/MVS/SemiGlobalMatcher.cpp` | SGM depth refinement |
+| `libs/MVS/SemiGlobalMatcher.cpp` | SGM densification (`--fusion-mode -2`) |
 | `libs/MVS/SceneReconstruct.cpp` | Mesh reconstruction |
 | `libs/MVS/Mesh.cpp` | Mesh container, I/O, projection, sampling |
 | `libs/MVS/MeshHalfMesh.cpp` | Generic mesh processing, delegated to halfmesh |

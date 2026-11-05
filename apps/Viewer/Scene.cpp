@@ -31,6 +31,7 @@
 
 #include "Common.h"
 #include "Scene.h"
+#include "../../libs/MVS/SceneRefineCommon.h"
 
 using namespace VIEWER;
 
@@ -211,6 +212,7 @@ public:
 
 		// Clean mesh
 		MVS::Mesh::CleanParams cleanParams;
+		cleanParams.maxEdgeScale = 2.f; // drop cavity-capping faces first
 		cleanParams.simplifyTarget = decimate;
 		cleanParams.spuriousFactor = options.removeSpurious;
 		cleanParams.removeSpikes = options.removeSpikes;
@@ -233,11 +235,15 @@ public:
 		Scene::Layer* layer = pScene->GetLayerByID(layerID);
 		if (layer == NULL)
 			return false;
+		// the refiner reads its own configuration space, which nothing else in the Viewer touches:
+		// without this the declared defaults (the pixel rejection gates in particular) would stay
+		// at the zero every DEFVAR_OPTION starts at
+		MVS::OPTREFINE::init();
+		MVS::OPTREFINE::update();
 		return layer->scene.RefineMesh(options.resolutionLevel, options.minResolution, options.maxViews,
 		                               options.decimateMesh, options.closeHoles, options.ensureEdgeSize, options.maxFaceArea,
 		                               options.scales, options.scaleStep, options.alternatePair, options.regularityWeight,
-		                               options.rigidityElasticityRatio, options.gradientStep, options.planarVertexRatio,
-		                               options.reduceMemory);
+		                               options.rigidityElasticityRatio, options.planarVertexRatio);
 	}
 	EVTWorkflowRefineMesh(Scene* _pScene, uint32_t _layerID, const Scene::RefineMeshWorkflowOptions& _options)
 		: EventWorkflow(_pScene, _layerID), options(_options) {}
@@ -259,6 +265,7 @@ public:
 		if (decimate <= 0.f)
 			decimate = 1.f;
 		MVS::Mesh::CleanParams cleanParams;
+		cleanParams.maxEdgeScale = 2.f; // drop cavity-capping faces first
 		cleanParams.simplifyTarget = decimate;
 		cleanParams.maxHoleEdges = options.closeHoles;
 		mvsScene.mesh.Clean(cleanParams);
@@ -626,6 +633,7 @@ void Scene::RefreshLayerState(Layer& layer, bool rebuildImages)
 	else
 		layer.sceneSize = Point3f(bounds.GetSize().cast<float>());
 	layer.sceneDistance = layer.images.empty() ? 1.f : scene.ComputeDistanceCameras2Scene(0.1f, true);
+	layer.pointConfidence.Reset(scene.pointcloud);
 	if (layer.label.empty()) {
 		layer.label = Util::getFileNameExt(layer.sceneName);
 	}
@@ -2102,8 +2110,12 @@ void Scene::RemoveSelectedGeometry() {
 
 	// Classify geometry based on current selection
 	if (!scene.pointcloud.IsEmpty()) {
-		// Get selected point indices
-		MVS::PointCloud::IndexArr selectedIndices = selectionController.getSelectedPointIndices();
+		// Get selected point indices, keeping only the points the confidence filter shows
+		// (a point selected before the window was narrowed stays selected, but hidden)
+		MVS::PointCloud::IndexArr selectedIndices;
+		for (MVS::PointCloud::Index idx : selectionController.getSelectedPointIndices())
+			if (layer->pointConfidence.IsShown(scene.pointcloud, idx))
+				selectedIndices.push_back(idx);
 		if (!selectedIndices.empty()) {
 			// Remove selected points
 			bDirtyScene = true;

@@ -23,7 +23,7 @@ namespace SEACAVE {
 template <typename TYPE, int DIMS>
 class TSphere
 {
-	STATIC_ASSERT(DIMS > 1 && DIMS <= 3);
+	static_assert(DIMS > 1 && DIMS <= 3);
 
 public:
 	typedef TYPE Type;

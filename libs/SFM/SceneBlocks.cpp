@@ -377,11 +377,11 @@ void SceneBlocks::Insert(IIndex block, const IIndexArr& images, const Reconstruc
 	IIndexArr newLocalToGlobal(0, localToGlobal[block].size() + images.size());
 	std::merge(localToGlobal[block].begin(), localToGlobal[block].end(), images.begin(), images.end(),
 		std::back_inserter(newLocalToGlobal));
-	MAYBEUNUSED const ImagePairArr removed(Remap(block, newLocalToGlobal, inserted));
+	[[maybe_unused]] const ImagePairArr removed(Remap(block, newLocalToGlobal, inserted));
 	ASSERT(removed.empty());
 
 	// the pairs whose two images the block now holds, out of the global scene in local IDs
-	MAYBEUNUSED const uint32_t firstNew = blk.pairs.size();
+	[[maybe_unused]] const uint32_t firstNew = blk.pairs.size();
 	ImagePairArr kept;
 	kept.reserve(scene.pairs.size());
 	for (ImagePair& pair : scene.pairs) {

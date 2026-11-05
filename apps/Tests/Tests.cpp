@@ -168,12 +168,20 @@ bool UnitTests()
 		VERBOSE("ERROR: TestTetraFlow failed!");
 		return false;
 	}
+	if (!SEACAVE::TestLBPPotts()) {
+		VERBOSE("ERROR: TestLBPPotts failed!");
+		return false;
+	}
 	if (Util::toString(L"\x00A9\U0001F600") != "\xC2\xA9\xF0\x9F\x98\x80") {
 		VERBOSE("ERROR: wide string UTF-8 conversion failed!");
 		return false;
 	}
 	if (!MVS::MeshVertexColorsPLYTest()) {
 		VERBOSE("ERROR: MeshVertexColorsPLYTest failed!");
+		return false;
+	}
+	if (!MVS::PLYCodecTest()) {
+		VERBOSE("ERROR: PLYCodecTest failed!");
 		return false;
 	}
 	if (!MVS::MeshBipyramidFixtureTest()) {
@@ -192,6 +200,22 @@ bool UnitTests()
 		VERBOSE("ERROR: PlatformArrGrowOwnershipTest failed!");
 		return false;
 	}
+	if (!MVS::MeshRefineStepTest()) {
+		VERBOSE("ERROR: MeshRefineStepTest failed!");
+		return false;
+	}
+	if (!MVS::MeshRefineWindowStatsTest()) {
+		VERBOSE("ERROR: MeshRefineWindowStatsTest failed!");
+		return false;
+	}
+	if (!MVS::MeshCleanPerVertexTest()) {
+		VERBOSE("ERROR: MeshCleanPerVertexTest failed!");
+		return false;
+	}
+	if (!MVS::ImageResizeCameraTest()) {
+		VERBOSE("ERROR: ImageResizeCameraTest failed!");
+		return false;
+	}
 	#ifdef _IMAGE_HEIF
 	// the reader's own semantics are tested next to the reader, in libs/IO/ImageHEIF.cpp
 	if (!CImageHEIF::Test(MAKE_PATH("images"))) {
@@ -201,6 +225,17 @@ bool UnitTests()
 	if (!SFM::HEIFMetadataTest()) {
 		VERBOSE("ERROR: HEIFMetadataTest failed!");
 		return false;
+	}
+	#endif
+	#ifdef _IMAGE_TIFF
+	// the TIFF codec's own semantics (header parsing, channel order, read/write roundtrip,
+	// OpenCV compatibility) are tested in libs/IO/ImageTIFF.cpp
+	{
+		const ScopedTempDir tmpDir(_T("ImageTIFF"));
+		if (!tmpDir.IsValid() || !CImageTIFF::Test(tmpDir.Path())) {
+			VERBOSE("ERROR: CImageTIFF::Test failed!");
+			return false;
+		}
 	}
 	#endif
 	VERBOSE("All unit tests passed (%s)", TD_TIMER_GET_FMT().c_str());
@@ -611,6 +646,16 @@ int main(int argc, LPCTSTR* argv)
 		} else {
 			// Run MVS pipeline test
 			if (!MVS::PipelineTest(forceCPU, verbose))
+				return false;
+			if (!MVS::MeshRefineSyntheticTest(forceCPU, verbose))
+				return false;
+			if (!MVS::MeshRefineEnergyGradientTest(verbose))
+				return false;
+			if (!MVS::MeshUnseenFacesTest())
+				return false;
+			if (!MVS::SelectNeighborViewsScaleTest())
+				return false;
+			if (!MVS::DMapCacheKeepsRequestedImageTest())
 				return false;
 		}
 		return true;

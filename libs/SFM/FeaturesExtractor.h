@@ -79,10 +79,11 @@ inline FeatureType FeatureTypeFromString(const String& str) {
  */
 struct SFM_API FeatureExtractionConfig {
 	FeatureType detectorType = FeatureType::AKAZE; // feature detector: AKAZE/ORB/SIFT/SIFTGPU
-	int maxFeaturesPerCell = 3000; // maximum features per grid cell (3x3 grid)
+	int maxFeaturesPerCell = 3000; // maximum features per grid cell (3x3 grid; SiftGPU selects GetMaxNumFeatures() on a finer adaptive grid)
 	int minFeaturesPerCell = 500;  // minimum features per cell before adjusting sensitivity
 	bool releaseImagePixels = true; // release image pixel data after feature extraction to save memory
 	bool useCUDA = true; // use CUDA for SiftGPU if available (otherwise OpenGL)
+	bool siftgpuDarknessAdaptivity = false; // SiftGPU: lower the DoG threshold and curvature floor in dark areas
 	String importOpenMVGDir; // directory to import OpenMVG features from (optional)
 	String exportOpenMVGDir; // directory to export OpenMVG features to (optional)
 
@@ -140,6 +141,12 @@ public:
 	 */
 	bool ExtractImage(Image& image, cv::Ptr<cv::Feature2D>& detector, bool skipIO = false);
 
+	// Common to the drivers of every detector: whether the image still needs features, and the
+	// tail of every extraction (release the pixels, log, export to OpenMVG unless skipIO;
+	// returns true if the image got features).
+	bool NeedsExtraction(const Image& image) const;
+	bool FinishImage(Image& image, bool skipIO) const;
+
 	/**
 	 * @brief Convert SIFT descriptors to RootSIFT and quantize to uint8_t
 	 * @param siftDesc Input CV_32F SIFT descriptors (rows x 128)
@@ -167,7 +174,7 @@ private:
 	// Spherical path: render N tangent faces via SphereCubeMap::SphericalToTangentialFaces,
 	// recursively run the pinhole ExtractImage on each face with skipIO=true,
 	// then reproject + angular-NMS-dedup back to equirectangular coordinates.
-	bool ExtractImageSpherical(Image& image, cv::Ptr<cv::Feature2D>& detector);
+	bool ExtractImageSpherical(Image& image, cv::Ptr<cv::Feature2D>& detector, bool skipIO);
 
 	Scene& scene;
 	FeatureExtractionConfig config;

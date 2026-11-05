@@ -156,9 +156,21 @@ float Image::ResizeImage(unsigned nMaxResolution)
 	width = (uint32_t)scaledSize.width;
 	height = (uint32_t)scaledSize.height;
 	if (!image.empty())
-		cv::resize(image, image, scaledSize, 0, 0, cv::INTER_AREA);
+		ResizeUniform(image, image, scaledSize, cv::INTER_AREA);
 	return static_cast<float>(scale);
 } // ResizeImage
+
+void Image::ResizeUniform(cv::InputArray src, cv::OutputArray dst, const cv::Size& size, int interpolation)
+{
+	const cv::Size srcSize(src.size());
+	ASSERT(srcSize.width > 0 && srcSize.height > 0);
+	// the factor cv::resize applies to both axes: the ratio of the largest sides, the one K is scaled by
+	const REAL scale((REAL)MAXF(size.width, size.height)/MAXF(srcSize.width, srcSize.height));
+	// the size must be the uniform size of the source, else the raster is not on the grid of that K
+	ASSERT(Image8U::computeResize(srcSize, scale) == size);
+	cv::resize(src, dst, cv::Size(), scale, scale, interpolation);
+	ASSERT(dst.size() == size);
+}
 
 // compute image scale for a given max and min resolution, using the current image file data
 unsigned Image::RecomputeMaxResolution(unsigned& level, unsigned minImageSize, unsigned maxImageSize) const
@@ -184,7 +196,7 @@ Image Image::GetImage(const PlatformArr& platforms, double scale, bool bUseImage
 	scaledImage.camera = GetCamera(platforms, scaledImage.GetSize());
 	if (!image.empty()) {
 		if (bUseImage)
-			cv::resize(image, scaledImage.image, scaledSize, 0, 0, scale>1?cv::INTER_CUBIC:cv::INTER_AREA);
+			ResizeUniform(image, scaledImage.image, scaledSize, scale>1?cv::INTER_CUBIC:cv::INTER_AREA);
 		else
 			scaledImage.image.release();
 	}

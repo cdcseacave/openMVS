@@ -89,6 +89,8 @@ float k2;
 String strImageIndices;
 unsigned nMaxFeaturesPerCell;
 unsigned nMinFeaturesPerCell;
+bool bSiftGPUDarknessAdaptivity;
+bool bSiftGPUCUDA;
 unsigned maxViewsPerCluster;
 bool bClusterCommunities;
 unsigned clusterAlignment;
@@ -170,6 +172,8 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("max-link-direction-error", boost::program_options::value(&OPT::fMaxLinkDirectionError)->default_value(ResectionConfig().maxLinkDirectionError), "the direction check of every resection: a resected pose is refused when the verified pairs to registered images whose baseline direction it contradicts outweigh the ones that agree; each pair is held to this many degrees as seen from the structure, atan(tan(this) / a) with a the larger of the pair's ray angle and the model's parallax of the two cameras, a pair both angles put under 2 degrees agrees, one that only one of them puts that close abstains, and a pair of unknown ray angle is held to the model's parallax alone; in [0,90] (past 90 degrees the tangent turns negative and every pair would contradict); 0 = no direction check at all (the inlier-share and rotation checks stay)")
 		("max-features-per-cell", boost::program_options::value(&OPT::nMaxFeaturesPerCell)->default_value(3000), "maximum features per grid cell (3x3 grid)")
 		("min-features-per-cell", boost::program_options::value(&OPT::nMinFeaturesPerCell)->default_value(500), "minimum features per cell before adjusting sensitivity")
+		("siftgpu-darkness-adaptivity", boost::program_options::value(&OPT::bSiftGPUDarknessAdaptivity)->default_value(false), "SiftGPU: lower the DoG threshold and curvature floor in dark areas")
+		("siftgpu-cuda", boost::program_options::value(&OPT::bSiftGPUCUDA)->default_value(true), "SiftGPU feature extraction and matching backend: 1 = CUDA (if available), 0 = OpenGL/GLSL")
 		("match-mode", boost::program_options::value(&OPT::matchMode)->default_value(1), "match mode: -1=SKIP,0=EXHAUSTIVE,1=VOCABULARY,2=SEQUENTIAL,3=KNOWN_POSES,4=RETRIEVAL")
 		("match-sequence-overlap", boost::program_options::value(&OPT::matchSequenceOverlap)->default_value(3), "consecutive images each image is matched with: the whole candidate set of the sequential mode, and a prior added to the vocabulary and retrieval candidates (0 = no prior)")
 		("vocab-max-pairs", boost::program_options::value(&OPT::maxPairsPerImage)->default_value(50), "target pairs per image for vocabulary and pose-guided matching")
@@ -403,6 +407,7 @@ int main(int argc, LPCTSTR* argv)
 	cfg.featuresCfg.detectorType = FeatureTypeFromString(OPT::strDetectorType);
 	cfg.featuresCfg.maxFeaturesPerCell = OPT::nMaxFeaturesPerCell;
 	cfg.featuresCfg.minFeaturesPerCell = OPT::nMinFeaturesPerCell;
+	cfg.featuresCfg.siftgpuDarknessAdaptivity = OPT::bSiftGPUDarknessAdaptivity;
 	cfg.featuresCfg.importOpenMVGDir = OPT::strImportOpenMVGDir;
 	cfg.featuresCfg.exportOpenMVGDir = OPT::strExportOpenMVGDir;
 	cfg.matchCfg.DefaultsForFeatureType(cfg.featuresCfg.detectorType);
@@ -422,7 +427,7 @@ int main(int argc, LPCTSTR* argv)
 	cfg.roma2Cfg.slotBudget = OPT::nROMA2Slots;
 	cfg.roma2Cfg.provider = OPT::strROMA2Provider;
 	#ifdef _USE_CUDA
-	cfg.matchCfg.useCUDA = cfg.featuresCfg.useCUDA = !SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs);
+	cfg.matchCfg.useCUDA = cfg.featuresCfg.useCUDA = OPT::bSiftGPUCUDA && !SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs);
 	cfg.roma2Cfg.useGPU = !SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs);
 	#endif
 	cfg.matchImagesOnly = OPT::matchImagesOnly;

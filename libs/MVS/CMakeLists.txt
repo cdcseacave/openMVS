@@ -1,26 +1,22 @@
 # Find required packages
-FIND_PACKAGE(CGAL REQUIRED)
+find_exported_dependency(CGAL REQUIRED)
 if(CGAL_FOUND)
 	include_directories(${CGAL_INCLUDE_DIRS})
 	add_definitions(${CGAL_DEFINITIONS})
 	link_directories(${CGAL_LIBRARY_DIRS})
 endif()
-FIND_PACKAGE(halfmesh CONFIG REQUIRED)
+find_exported_dependency(halfmesh CONFIG REQUIRED)
 # PointCloud.cpp includes <tiny_gltf.h> directly (halfmesh owns the only
 # TINYGLTF_IMPLEMENTATION in the build, this side is declarations only), and
 # vcpkg's tinygltf ships no CMake config, so locate the header by name.
 FIND_PATH(TINYGLTF_INCLUDE_DIR NAMES "tiny_gltf.h" REQUIRED)
 
+# link Ceres through its config target, which carries the compile definitions recent
+# Ceres and glog need; the SFM library requires the same package, so it is always there
 set(CERES_LIBS "")
 if(OpenMVS_USE_CERES)
-	FIND_PACKAGE(Ceres)
-	if(CERES_FOUND)
-		include_directories(${CERES_INCLUDE_DIRS})
-		add_definitions(${CERES_DEFINITIONS})
-	else()
-		set(OpenMVS_USE_CERES OFF)
-		message("-- Can't find CERES. Continuing without it.")
-	endif()
+	find_exported_dependency(Ceres CONFIG REQUIRED)
+	set(CERES_LIBS Ceres::ceres)
 endif()
 
 # List sources files
@@ -73,51 +69,13 @@ if(_USE_METAL)
 	TARGET_INCLUDE_DIRECTORIES(MVS PRIVATE "${CMAKE_CURRENT_BINARY_DIR}") # generated PatchMatchMetal_msl.h
 endif()
 
-# MSVC scalpel: Camera.cpp and Scene.cpp drag in a template graph (CGAL/Eigen/OpenCV)
-# that can land MSVC's optimizer in a pathological codegen path and take hours on
-# constrained builders.
-#
-# Policy:
-#   * Release       — full /O2 by default. OpenMVS_MSVC_FAST_RELEASE opts these two
-#                     files into /Od for constrained builders such as hosted CI.
-#   * RelWithDebInfo/Debug — /Od for just these two files, keeping dev builds under 30 min.
-#
-# Implementation notes:
-#   * PCH for MVS is built with /O2, so /Od on a TU reusing that PCH triggers warning
-#     C4653 and cl.exe silently snaps the TU back to /O2 — the /Od becomes a no-op.
-#     To actually apply /Od we must also skip the PCH on these files.
-#   * SKIP_PRECOMPILE_HEADERS is set unconditionally (no genex): in Release it means
-#     Camera/Scene re-parse Common.h instead of reusing the PCH (2-3s overhead, dwarfed
-#     by the 10+ min optimizer cost), and in non-Release it enables the /Od override.
-if(MSVC)
-	set_source_files_properties(
-		"${CMAKE_CURRENT_SOURCE_DIR}/Camera.cpp"
-		"${CMAKE_CURRENT_SOURCE_DIR}/Scene.cpp"
-		PROPERTIES
-			COMPILE_OPTIONS "$<$<OR:$<BOOL:${OpenMVS_MSVC_FAST_RELEASE}>,$<NOT:$<CONFIG:Release>>>:/Od>"
-			SKIP_PRECOMPILE_HEADERS ON
-	)
-	if(OpenMVS_MSVC_FAST_RELEASE)
-		message(STATUS "OpenMVS_MSVC_FAST_RELEASE: compiling MVS Camera.cpp and Scene.cpp with /Od")
-	else()
-		message(WARNING "MVS build speed notice:\n"
-		        "  * Release builds compile Camera.cpp and Scene.cpp at full /O2. These two\n"
-		        "    files can dominate Release wall time due to heavy CGAL/Eigen/OpenCV\n"
-		        "    template instantiation.\n"
-		        "  * RelWithDebInfo (and Debug) use /Od for just these two files to keep\n"
-		        "    dev iteration fast; the rest of the project stays at /O2.\n"
-		        "  * To speed up Release at the cost of less-optimized Camera.cpp/Scene.cpp,\n"
-		        "    configure with -DOpenMVS_MSVC_FAST_RELEASE=ON.")
-	endif()
-endif()
-
 # Manually set Common.h as the precompiled header
 IF(CMAKE_VERSION VERSION_GREATER_EQUAL 3.16.0)
 	TARGET_PRECOMPILE_HEADERS(MVS PRIVATE "Common.h")
 endif()
 
 # Link its dependencies
-TARGET_LINK_LIBRARIES(MVS PUBLIC Common Math IO CGAL::CGAL halfmesh::halfmesh ${CERES_LIBRARIES})
+TARGET_LINK_LIBRARIES(MVS PUBLIC Common Math IO CGAL::CGAL halfmesh::halfmesh ${CERES_LIBS})
 
 if(_USE_BOOST_PYTHON)
 	# SFM-side wrapper lives in libs/SFM/PythonWrapper.cpp; compile it into the
@@ -158,3 +116,6 @@ INSTALL(TARGETS MVS
 	ARCHIVE DESTINATION "${INSTALL_LIB_DIR}"
 	RUNTIME DESTINATION "${INSTALL_BIN_DIR}"
 	PUBLIC_HEADER DESTINATION "${INSTALL_INCLUDE_DIR}/MVS")
+if(_USE_CUDA)
+	INSTALL(FILES ${CUDA_LIBRARY_FILES_H} DESTINATION "${INSTALL_INCLUDE_DIR}/MVS/CUDA")
+endif()

@@ -32,7 +32,7 @@
 #include "../../libs/MVS/Common.h"
 #include "../../libs/MVS/Scene.h"
 #define JSON_NOEXCEPTION
-#include "../../libs/IO/json.hpp"
+#include <nlohmann/json.hpp>
 #include <boost/program_options.hpp>
 
 using namespace MVS;
@@ -149,8 +149,12 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 
 	// initialize optional options
 	Util::ensureValidPath(OPT::strOutputFileName);
-	if (OPT::strOutputFileName.empty())
-		OPT::strOutputFileName = "scene" MVS_EXT;
+	if (OPT::strOutputFileName.empty()) {
+		OPT::strOutputFileName = _T("scene") MVS_EXT;
+	} else if (Util::getFileExt(OPT::strOutputFileName).empty() || File::isFolder(OPT::strOutputFileName)) {
+		Util::ensureFolderSlash(OPT::strOutputFileName);
+		OPT::strOutputFileName += _T("scene") MVS_EXT;
+	}
 
 	MVS::Initialize(APPNAME, OPT::nMaxThreads, OPT::nProcessPriority);
 	return true;
@@ -268,7 +272,6 @@ bool ParseImage(Scene& scene, const String& imagePath, const String& cameraPath,
 // parse scene stored in Polycam format
 bool ParseScene(Scene& scene, const String& scenePath)
 {
-	#if defined(_SUPPORT_CPP17) && (!defined(__GNUC__) || (__GNUC__ > 7))
 	size_t numCorrectedFolders(0), numCorrectedDepthFolders(0), numFolders(0), numDepthFolders(0);
 	for (const auto& file: std::filesystem::directory_iterator(scenePath.c_str())) {
 		if (file.path().stem() == "corrected_cameras" ||
@@ -327,9 +330,6 @@ bool ParseScene(Scene& scene, const String& scenePath)
 		}
 	}
 	return true;
-	#else
-	return false;
-	#endif
 }
 
 } // unnamed namespace
@@ -354,7 +354,10 @@ int main(int argc, LPCTSTR* argv)
 		return EXIT_FAILURE;
 
 	// write OpenMVS input data
-	scene.Save(MAKE_PATH_SAFE(OPT::strOutputFileName), (ARCHIVE_TYPE)OPT::nArchiveType);
+	if (!scene.Save(MAKE_PATH_SAFE(OPT::strOutputFileName), (ARCHIVE_TYPE)OPT::nArchiveType)) {
+		VERBOSE("error: cannot save scene to '%s'", OPT::strOutputFileName.c_str());
+		return EXIT_FAILURE;
+	}
 
 	VERBOSE("Exported data: %u platforms, %u cameras, %u poses, %u images (%s)",
 			scene.platforms.size(), scene.images.size(), scene.images.size(), scene.images.size(),

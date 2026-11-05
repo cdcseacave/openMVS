@@ -39,7 +39,25 @@ namespace MVS {
 
 // test vertex-colored PLY export and geometry reload
 bool MeshVertexColorsPLYTest();
+// test the PLY codec: exact binary/ascii round trips, big-endian input, skipped data, malformed files
+bool PLYCodecTest();
 bool MeshHalfMeshProcessingTest();
+
+// test the pixel-unit bold-driver optimizer (MeshRefineStep, SceneRefineCommon.h) against
+// hand-built Terms arrays: no images, no scene, milliseconds to run
+bool MeshRefineStepTest();
+
+// test the scalar window statistics and ZNCC math both refinement backends share
+// (SceneRefineCommon.h) against closed-form identities and a finite difference
+bool MeshRefineWindowStatsTest();
+
+// test the per-vertex decimation bound Mesh::Clean routes into halfmesh, on a grid one half of
+// which is locked by a negative bound
+bool MeshCleanPerVertexTest();
+
+// test that every image resize paired with a camera (Image::ResizeImage/GetImage, the neighbor
+// scaling and the depth-estimation pyramid) moves the pixels exactly as the camera's K is scaled
+bool ImageResizeCameraTest();
 
 // test the Delaunay mesh cut on the two hand-solved synthetic fixtures
 // (docs/design/DelaunayMeshReconstruction.md, Appendix)
@@ -51,6 +69,33 @@ bool PlatformArrGrowOwnershipTest();
 
 // test MVS stages on a small sample dataset
 bool PipelineTest(bool forceCPU = false, bool verbose = false);
+
+// synthetic end-to-end test of the mesh-refinement photometric pipeline (rasterize, warp,
+// window statistics, ZNCC gradient, smoothing, stepper) against a textured flat plane with a
+// known ground truth: no other automated test exercises Scene::RefineMesh/RefineMeshCUDA
+bool MeshRefineSyntheticTest(bool forceCPU = false, bool verbose = false);
+
+// finite-difference consistency gate for the exact energy the Ceres arm of Scene::RefineMesh
+// (--use-ceres) minimizes: on the same synthetic fixture, E(v+t*u)-E(v) must agree with
+// t*<grad E(v),u> to within 5% for the photometric term alone, the thin-plate term alone and
+// their sum. Runs on the CPU with no Ceres dependency, so a build without _USE_CERES still proves
+// that the cost and the gradient the solver would be handed are the same functional
+bool MeshRefineEnergyGradientTest(bool verbose = false);
+
+// test Scene::RemoveUnseenMeshFaces on a closed box photographed from one side only: only the
+// faces a camera actually observes may survive, the nMinViews threshold must separate the side
+// both cameras see from the side only one of them does, and a second pass must remove nothing
+bool MeshUnseenFacesTest();
+
+// test the neighbor-view scale Scene::SelectNeighborViews estimates and FilterNeighborViews bounds:
+// one mis-triangulated point next to the reference camera center must not move it, the scene's
+// unit must change neither the scale nor the neighbors picked, and no neighbor the filter keeps
+// may carry a scale outside its bounds (an image is resampled by it)
+bool SelectNeighborViewsScaleTest();
+
+// test that DMapCache::UseImage() keeps the depth-map it was asked for loaded even when it alone
+// exceeds the memory budget, ejecting the least recently used other depth-maps instead
+bool DMapCacheKeepsRequestedImageTest();
 /*----------------------------------------------------------------*/
 
 } // namespace MVS

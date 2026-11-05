@@ -169,7 +169,6 @@ public:
 		File::close();
 	}
 
-	#ifdef _SUPPORT_CPP11
 	inline File(File&& rhs) : h(rhs.h) {
 		#ifndef _RELEASE
 		breakRead = rhs.breakRead;
@@ -187,7 +186,6 @@ public:
 		rhs.h = FILE_INVALID_HANDLE;
 		return *this;
 	}
-	#endif
 
 	bool isOpen() const {
 		return h != FILE_INVALID_HANDLE;

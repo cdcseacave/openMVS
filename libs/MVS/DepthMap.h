@@ -147,17 +147,23 @@ extern MVS_API float fNCCThresholdKeep;
 // The posterior's shape constants are NOT exposed: they are a single jointly ground-truth-calibrated
 // operating point living in ConfidenceRefine.h (see the note there).
 // DenseFuseDepthMaps: weight of the intra-map prior as virtual view/pixel support to keep few-view
-// inliers (0 disables). Default 3 favors completeness (GT bench: +6.5pp mean completeness for
-// +0.17pp gross outliers vs 0) -- right for the usual pipeline where mesh reconstruction follows and
-// cleans the extra outliers; prefer 2 when the dense point-cloud IS the final output (+2.6pp for
-// +0.07pp, within the per-scene outlier budget on 26/28 GT scene-levels vs 17/28 at 3).
+// inliers (0 disables). The rescue is only granted to points no view contradicts (see
+// nFuseViolationMax), which is what makes the generous default 4 pay off on both completeness- and
+// accuracy-bound scenes.
 extern MVS_API float fFusePriorWeight;
-// free-space-violation (FSV) guard on fusion-RESCUED points only (points kept solely thanks to
-// fFusePriorWeight's virtual support -- see DenseFuseDepthMaps), counted during fusion's own join
-// gate. -1 disables the guard: fully inert, byte-identical to fusion without it. Default 0 (strict)
-// rejects any rescued point contradicted by >=1 free-space ray; N allows <=N such violations.
-// Non-rescued points are never affected.
+// contradiction guard of fusion's keep-rule, counted during fusion's own join gate from DISTINCT views:
+// a point RESCUED by fFusePriorWeight's virtual support may be contradicted by at most N views, either
+// seeing behind it (free-space violation) or agreeing with its depth but disputing its normal; a point
+// kept on real support alone is dropped when the views disputing its normal outnumber its supporting
+// views. Default 0; -1 disables the guard entirely (byte-identical to fusion without it).
 extern MVS_API int nFuseViolationMax;
+// DenseFuseDepthMaps: hand the pixels of a cluster the keep-rule dropped back to the pool, so that a
+// later seed or probe can still use them -- a pixel is otherwise marked consumed for good, so one
+// doomed early cluster locks away every pixel a later cluster needed. A completeness-for-precision
+// trade (T&T: +17..42% points and +1.6..+5.0pp completeness for -1.3..-3.3pp precision), so it is
+// off by default: worth enabling when the dense point-cloud itself is the final output, not when a
+// mesh reconstruction follows (which interpolates the extra points anyway).
+extern MVS_API bool bFuseRecycleDropped;
 extern MVS_API bool bEstimateConfidenceCUDA; // when CUDA estimation is used, run ADJUST_CONFIDENCE on the GPU integrated into the last geometric-consistency iteration (default); 0 forces the CPU version
 extern MVS_API unsigned nEstimationIters;
 extern MVS_API unsigned nEstimationGeometricIters;
@@ -244,7 +250,8 @@ struct MVS_API DepthData {
 		static bool ScaleImage(const IMAGE& image, IMAGE& imageScaled, float scale) {
 			if (!NeedScaleImage(scale))
 				return false;
-			cv::resize(image, imageScaled, cv::Size(), scale, scale, scale>1?cv::INTER_CUBIC:cv::INTER_AREA);
+			// the camera of the scaled view comes from GetCamera(), so scale on its uniform grid
+			Image::ResizeUniform(image, imageScaled, Image8U::computeResize(image.size(), scale), scale>1?cv::INTER_CUBIC:cv::INTER_AREA);
 			return true;
 		}
 	};
@@ -425,6 +432,7 @@ struct MVS_API DepthEstimator {
 	#endif
 	const MapRefArr& coords;
 	const Image8U::Size size;
+	const Eigen::Vector2f focal, principal; // image0's intrinsics (skew-free)
 	const Depth dMin, dMax;
 	const Depth dMinSqr, dMaxSqr;
 	const ENDIRECTION dir;
@@ -504,7 +512,7 @@ struct MVS_API DepthEstimator {
 	inline Normal RandomNormal(const Point3f& viewRay) {
 		Normal normal;
 		Dir2Normal(Point2f(rnd.randomRange(D2R(0.f),D2R(180.f)), rnd.randomRange(D2R(90.f),D2R(180.f))), normal);
-		ASSERT(ISEQUAL(norm(normal), 1.f), "Norm = ", norm(normal));
+		ASSERT(ISEQUAL(norm(normal), 1.f, 1e-2f), "Norm = ", norm(normal));
 		return normal.dot(viewRay) > 0 ? -normal : normal;
 	}
 
@@ -523,9 +531,13 @@ struct MVS_API DepthEstimator {
 			else
 				normal = -normal;
 		}
-		ASSERT(ISEQUAL(norm(normal), 1.f), "Norm = ", norm(normal));
+		ASSERT(ISEQUAL(norm(normal), 1.f, 1e-2f), "Norm = ", norm(normal));
 	}
 
+	// the mask stored in the scene, else the file next to the image, resized into a local buffer (the
+	// Image is never touched, so it is safe to call concurrently for the same Image and across scales);
+	// bmask gets the keep-mask (bit set = keep), or pMask the mask != label if given; returns false
+	// and leaves both untouched if there is no mask to load
 	static bool ImportIgnoreMask(const Image&, const cv::Size&, uint8_t nIgnoreMaskLabel, BitMatrix&, Image8U* =NULL);
 	static void MapMatrix2ZigzagIdx(const cv::Size& size, DepthEstimator::MapRefArr& coords, const BitMatrix& mask, int rawStride=16);
 
@@ -576,22 +588,6 @@ MVS_API unsigned ColorPointSegmentation(PointCloud& pointcloud);
 MVS_API void EstimatePointNormals(const ImageArr& images, PointCloud& pointcloud, int numNeighbors=16/*K-nearest neighbors*/);
 
 MVS_API bool EstimateNormalMap(const Matrix3x3f& K, const DepthMap&, NormalMap&);
-
-// Local first-order depth-plane estimator: fits depth(x,y) ~ w + wx*x + wy*y over the 3x3
-// neighborhood using only depth-similar neighbors, and derives the implied surface normal.
-// Shared by EstimateNormalMap and DepthMapsData::ComputeIntraMapPrior.
-class MVS_API DepthGradientEstimator {
-public:
-	DepthGradientEstimator(const Matrix3x3f& K, const DepthMap& depthMap) : K(K), depthMap(depthMap) {}
-	static bool IsDepthValid(Depth d, Depth nd) { return nd > 0 && IsDepthSimilar(d, nd, Depth(0.03f)); }
-	// fit the local depth gradient at ir; fills ws=(w, dd/dx, dd/dy); false if <3 similar neighbors / singular
-	bool DepthGradient(const ImageRef& ir, Point3f& ws) const;
-	// surface normal implied by a depth gradient (camera-facing, normalized)
-	Normal NormalFromGradient(int x, int y, Depth d, Depth dx, Depth dy) const;
-private:
-	const Matrix3x3f& K;
-	const DepthMap& depthMap;
-};
 
 // Standalone confidence estimators, deriving a confidence-map from the geometry of one
 // depth-map alone -- no images, no neighboring views, no matching cost. The dense

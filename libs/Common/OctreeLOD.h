@@ -51,7 +51,7 @@ namespace SEACAVE {
 template <typename ITEMARR_TYPE, typename TYPE, int DIMS>
 class TOctreeLOD
 {
-	STATIC_ASSERT(DIMS > 0 && DIMS <= 3);
+	static_assert(DIMS > 0 && DIMS <= 3);
 
 public:
 	typedef TYPE Type;

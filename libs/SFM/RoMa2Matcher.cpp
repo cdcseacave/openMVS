@@ -26,7 +26,7 @@
 
 #include "Common.h"
 #include "RoMa2Matcher.h"
-#include "../IO/json.hpp"
+#include <nlohmann/json.hpp>
 
 #include <fstream>
 

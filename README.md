@@ -22,6 +22,10 @@ Automatic Windows x64 binary builds can be found for each commit on its Artifact
 
 See the usage [example](https://github.com/cdcseacave/openMVS/wiki/Usage) wiki page.
 
+## Large scenes
+
+`scripts/python/MvsScalablePipeline.py scene.mvs` runs the dense reconstruction, mesh, refinement and texturing of a scene of any size: when the scene does not fit the memory this machine has available, it is split into sub-scenes that each do, reconstructed one after the other and merged. A scene that fits is reconstructed whole, as by the modules themselves. `MvgMvsPipeline.py` does the same for its dense steps by default (`--sub-scene-memory off` disables it). See [large scenes](https://github.com/cdcseacave/openMVS/wiki/Usage#large-scenes) on the wiki.
+
 ## License
 
 See the [copyright](https://github.com/cdcseacave/openMVS/blob/master/COPYRIGHT.md) file.

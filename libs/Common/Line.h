@@ -23,7 +23,7 @@ namespace SEACAVE {
 template <typename TYPE, int DIMS>
 class TLine
 {
-	STATIC_ASSERT(DIMS > 1 && DIMS <= 3);
+	static_assert(DIMS > 1 && DIMS <= 3);
 
 public:
 	typedef Eigen::Matrix<TYPE,DIMS,1> VECTOR;

@@ -62,11 +62,13 @@ bool bUseConstantWeight;
 Scene::ReconstructMeshParams reconstructParams;
 float fDecimateMesh;
 unsigned nTargetFaceNum;
+float fMaxEdgeScale;
 float fRemoveSpurious;
 bool bRemoveSpikes;
 unsigned nCloseHoles;
 unsigned nSmoothMesh;
 float fEdgeLength;
+unsigned nRemoveUnseenFaces;
 bool bCrop2ROI;
 float fBorderROI;
 float fSplitMaxArea;
@@ -131,17 +133,18 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		// single call site can pass the struct and still leave the default path unchanged
 		("adaptive-sigma", boost::program_options::value(&OPT::reconstructParams.bAdaptiveSigma)->default_value(true), "derive the point uncertainty sigma per-vertex from its median incident Delaunay edge length, clamped to [0.25,4] x the global sigma (0 - the single global sigma everywhere)")
 		("canonical-rescale", boost::program_options::value(&OPT::reconstructParams.bCanonicalRescale)->default_value(true), "rescale the triangulation by a power of two so the median Delaunay edge lands near 1, where the ray-walk orientation predicate is calibrated; no-op unless the median edge falls outside [2^-10,2^10]")
-		("max-edge-scale", boost::program_options::value(&OPT::reconstructParams.maxEdgeScale)->default_value(4.f), "drop extracted surface facets whose longest edge exceeds this multiple of the median cut-facet longest edge - the gap-spanning webbing grown across occluded space no observation supports (relative units, scale-independent; 0 - disabled)")
 		;
 	boost::program_options::options_description config_clean("Clean options");
 	config_clean.add_options()
 		("decimate", boost::program_options::value(&OPT::fDecimateMesh)->default_value(1.f), "decimation factor in range (0..1] to be applied to the reconstructed surface (1 - disabled)")
 		("target-face-num", boost::program_options::value(&OPT::nTargetFaceNum)->default_value(0), "target number of faces to be applied to the reconstructed surface. (0 - disabled)")
+		("max-edge-scale", boost::program_options::value(&OPT::fMaxEdgeScale)->default_value(2.f), "remove faces whose longest edge exceeds this factor times the median longest edge and that have mesh surface close behind or in front of them along their normal (a lid over a cavity), before any other cleaning (0 - disabled)")
 		("remove-spurious", boost::program_options::value(&OPT::fRemoveSpurious)->default_value(20.f), "spurious factor for removing faces with too long edges or isolated components (0 - disabled)")
 		("remove-spikes", boost::program_options::value(&OPT::bRemoveSpikes)->default_value(true), "flag controlling the removal of spike faces")
 		("close-holes", boost::program_options::value(&OPT::nCloseHoles)->default_value(30), "close every hole in the reconstructed surface spanned by at most this many boundary edges (0 - disabled)")
 		("smooth", boost::program_options::value(&OPT::nSmoothMesh)->default_value(10), "number of Taubin band-pass iterations used to smooth the reconstructed surface; the filter is deliberately gentle per pass, so it wants tens of them, not the two a plain Laplacian needed (0 - disabled)")
 		("edge-length", boost::program_options::value(&OPT::fEdgeLength)->default_value(0.f), "remesh such that the average edge length is this size (0 - disabled)")
+		("remove-unseen-faces", boost::program_options::value(&OPT::nRemoveUnseenFaces)->default_value(0), "remove the faces seen by fewer than this many images, rendering the mesh with a z-buffer into every camera (0 - disabled)")
 		("roi-border", boost::program_options::value(&OPT::fBorderROI)->default_value(0), "add a border to the region-of-interest when cropping the scene (0 - disabled, >0 - percentage, <0 - absolute)")
 		("crop-to-roi", boost::program_options::value(&OPT::bCrop2ROI)->default_value(true), "crop scene using the region-of-interest")
 		;
@@ -200,8 +203,8 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	if (OPT::strInputFileName.empty())
 		return false;
 	OPT::strExportType = OPT::strExportType.ToLower() == _T("obj") ? _T(".obj") : _T(".ply");
-	if (OPT::reconstructParams.maxEdgeScale < 0.f) {
-		VERBOSE("error: invalid max edge scale %g (expected >= 0, 0 disables the gate)", OPT::reconstructParams.maxEdgeScale);
+	if (OPT::fMaxEdgeScale < 0.f) {
+		VERBOSE("error: invalid max edge scale %g (expected >= 0, 0 disables the gate)", OPT::fMaxEdgeScale);
 		return false;
 	}
 
@@ -352,10 +355,9 @@ int main(int argc, LPCTSTR* argv)
 		OPT::fSplitMaxArea > 0 || OPT::fDecimateMesh < 1 || OPT::nTargetFaceNum > 0 || !OPT::strImportROIFileName.empty()));
 	if (sceneType == Scene::SCENE_NA)
 		return EXIT_FAILURE;
-	if (!OPT::strPointCloudFileName.empty() && (File::isFile(MAKE_PATH_SAFE(OPT::strPointCloudFileName)) ?
-		!scene.pointcloud.Load(MAKE_PATH_SAFE(OPT::strPointCloudFileName)) :
-		!scene.pointcloud.IsValid())) {
-		VERBOSE("error: cannot load point-cloud file");
+	if (!OPT::strPointCloudFileName.empty() && File::isFile(MAKE_PATH_SAFE(OPT::strPointCloudFileName)) &&
+		!scene.pointcloud.Load(MAKE_PATH_SAFE(OPT::strPointCloudFileName))) {
+		VERBOSE("error: cannot load point-cloud file '%s'", OPT::strPointCloudFileName.c_str());
 		return EXIT_FAILURE;
 	}
 	if (!OPT::strMeshFileName.empty() && !scene.mesh.Load(MAKE_PATH_SAFE(OPT::strMeshFileName))) {
@@ -383,8 +385,7 @@ int main(int argc, LPCTSTR* argv)
 			scene.mesh.RemoveFacesOutside(scene.obb);
 			VERBOSE("Mesh trimmed to ROI: %u vertices and %u faces removed (%s)",
 				numVertices-scene.mesh.vertices.size(), numFaces-scene.mesh.faces.size(), TD_TIMER_GET_FMT().c_str());
-			scene.mesh.Save(baseFileName+OPT::strExportType);
-			return EXIT_SUCCESS;
+			return scene.mesh.Save(baseFileName+OPT::strExportType) ? EXIT_SUCCESS : EXIT_FAILURE;
 		}
 	}
 
@@ -399,7 +400,8 @@ int main(int argc, LPCTSTR* argv)
 			return EXIT_FAILURE;
 		// save mesh
 		const String fileName(MAKE_PATH_SAFE(OPT::strOutputFileName));
-		scene.mesh.Save(fileName);
+		if (!scene.mesh.Save(fileName))
+			return EXIT_FAILURE;
 		#if TD_VERBOSE != TD_VERBOSE_OFF
 		if (VERBOSITY_LEVEL > 2)
 			scene.ExportCamerasMLP(baseFileName+_T(".mlp"), fileName);
@@ -411,6 +413,10 @@ int main(int argc, LPCTSTR* argv)
 		else if (OPT::fBorderROI < 0)
 			scene.obb.Enlarge(-OPT::fBorderROI);
 		if (OPT::strMeshFileName.empty() && scene.mesh.IsEmpty()) {
+			if (!scene.pointcloud.IsValid()) {
+				VERBOSE("error: the point-cloud is empty or has no views, both needed to reconstruct the mesh");
+				return EXIT_FAILURE;
+			}
 			// reset image resolution to the original size and
 			// make sure the image neighbors are initialized before deleting the point-cloud
 			#ifdef RECMESH_USE_OPENMP
@@ -478,6 +484,7 @@ int main(int argc, LPCTSTR* argv)
 		const float fDecimate(OPT::nTargetFaceNum ? static_cast<float>(OPT::nTargetFaceNum) : OPT::fDecimateMesh);
 		Mesh::CleanParams cleanParams;
 		cleanParams.simplifyTarget = fDecimate;
+		cleanParams.maxEdgeScale = OPT::fMaxEdgeScale;
 		cleanParams.spuriousFactor = OPT::fRemoveSpurious;
 		cleanParams.removeSpikes = OPT::bRemoveSpikes;
 		cleanParams.maxHoleEdges = OPT::nCloseHoles;
@@ -486,8 +493,13 @@ int main(int argc, LPCTSTR* argv)
 		scene.mesh.Clean(cleanParams);
 		scene.obb = initialOBB;
 
+		// remove the surface no camera ever observed
+		if (OPT::nRemoveUnseenFaces > 0 && !scene.mesh.IsEmpty())
+			scene.RemoveUnseenMeshFaces(OPT::nRemoveUnseenFaces);
+
 		// save the final mesh
-		scene.mesh.Save(baseFileName+OPT::strExportType);
+		if (!scene.mesh.Save(baseFileName+OPT::strExportType))
+			return EXIT_FAILURE;
 		#if TD_VERBOSE != TD_VERBOSE_OFF
 		if (VERBOSITY_LEVEL > 2)
 			scene.ExportCamerasMLP(baseFileName+_T(".mlp"), baseFileName+OPT::strExportType);

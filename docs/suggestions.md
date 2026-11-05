@@ -451,10 +451,10 @@ The following five suggestions offer the highest impact relative to implementati
    - **Reference:** Xu & Tao (2019, CVPR) — Planar Prior Assisted PatchMatch.
    - **Risk:** Medium.
 
-2. **SGM 8-Direction Accumulation** (Priority: Medium | Complexity: Low)
-   - **What:** Change `SemiGlobalMatcher::numDirs` default from 4 to 8.
-   - **Why:** 8 directions eliminate streak artifacts in the depth map at approximately 2× the computational cost. This is the standard SGM configuration.
-   - **Risk:** Low — only affects runtime.
+2. **SGM Depth-Map Refinement and Speed** (Priority: Medium | Complexity: Medium)
+   - **What:** Seed a few PatchMatch iterations (with per-pixel view selection and geometric consistency against the neighbors' depth-maps) from the multi-view SGM depth and normals (`--fusion-mode -2`); port the cost, aggregation and refinement to CUDA.
+   - **Why:** SGM's precision is close to PatchMatch's but its recall is lower and the gap widens with the number of views (F-score 0.372/0.259/0.503 vs PatchMatch's 0.40/0.27/0.61 on Herz-Jesu-P8/fountain-P11/Herz-Jesu-P25); it is CPU-only and already faster than PatchMatch there. Per-pixel view selection inside SGM itself was measured and rejected (design record §6).
+   - **Risk:** Low — the SGM mode is opt-in.
 
 3. **Confidence-Guided Iteration Count** (Priority: Medium | Complexity: Low)
    - **What:** Allocate more PatchMatch iterations to low-confidence pixels instead of uniform counts for all pixels.
@@ -642,7 +642,7 @@ Ranked by impact-to-effort ratio:
 | 5 | Fisheye Camera Models | A4 | High | Medium | Unblocks GoPro/drone/robotics use cases entirely |
 | 6 | Monocular Depth Priors for MVS | A3 | High | Medium | Significant quality gain in textureless/reflective regions |
 | 7 | DEGENSAC/MAGSAC++ | B2.1 | High | Medium | Robustness on planar scenes with no quality trade-off |
-| 8 | SGM 8-Direction Accumulation | B16.2 | Medium | Low | One-line change, eliminates visible depth streaks |
+| 8 | SGM Depth-Map Refinement and Speed | B16.2 | Medium | Medium | Closes part of the SGM gap to PatchMatch |
 | 9 | Triangulate After Each Registration | B7.3 | Medium | Low | More complete reconstruction, low effort |
 | 10 | `FindPair` O(1) Lookup | B28.1 | Medium | Low | Performance improvement, minimal risk |
 

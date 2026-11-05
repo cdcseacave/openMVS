@@ -23,7 +23,7 @@ namespace SEACAVE {
 template <typename TYPE, int DIMS>
 class TTriangle
 {
-	STATIC_ASSERT(DIMS > 1 && DIMS <= 3);
+	static_assert(DIMS > 1 && DIMS <= 3);
 
 public:
 	typedef Eigen::Matrix<TYPE,DIMS,1> VECTOR;
@@ -55,7 +55,7 @@ public:
 template <typename TYPE, int DIMS>
 class TRay
 {
-	STATIC_ASSERT(DIMS > 1 && DIMS <= 3);
+	static_assert(DIMS > 1 && DIMS <= 3);
 
 public:
 	typedef Eigen::Matrix<TYPE,DIMS+1,DIMS+1,Eigen::RowMajor> MATRIX;
@@ -131,7 +131,7 @@ public:
 template <typename TYPE, int DIMS>
 class TCylinder
 {
-	STATIC_ASSERT(DIMS > 1 && DIMS <= 3);
+	static_assert(DIMS > 1 && DIMS <= 3);
 
 public:
 	typedef Eigen::Matrix<TYPE,DIMS,1> VECTOR;
@@ -166,7 +166,7 @@ public:
 template <typename TYPE, int DIMS>
 class TCone
 {
-	STATIC_ASSERT(DIMS > 1 && DIMS <= 3);
+	static_assert(DIMS > 1 && DIMS <= 3);
 
 public:
 	typedef Eigen::Matrix<TYPE,DIMS,1> VECTOR;
@@ -191,7 +191,7 @@ public:
 template <typename TYPE, int DIMS>
 class TConeIntersect
 {
-	STATIC_ASSERT(DIMS > 1 && DIMS <= 3);
+	static_assert(DIMS > 1 && DIMS <= 3);
 
 public:
 	typedef Eigen::Matrix<TYPE,DIMS,1> VECTOR;

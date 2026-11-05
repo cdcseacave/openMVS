@@ -1,9 +1,9 @@
 # Find required packages are inherited from parent CMakeLists.txt
 
 # Additional SfM-specific packages (all available via vcpkg)
-FIND_PACKAGE(TinyEXIF CONFIG REQUIRED)
-FIND_PACKAGE(PoseLib CONFIG REQUIRED)
-FIND_PACKAGE(Ceres CONFIG REQUIRED)
+find_exported_dependency(TinyEXIF CONFIG REQUIRED)
+find_exported_dependency(PoseLib CONFIG REQUIRED)
+find_exported_dependency(Ceres CONFIG REQUIRED)
 
 # Check which SfM features are available
 SET(SFM_EXTRA_LIBS "")
@@ -32,7 +32,7 @@ ENDIF()
 
 # Optional SiftGPU support via vcpkg manifest feature
 if(OpenMVS_USE_SIFTGPU)
-	FIND_PACKAGE(siftgpu CONFIG QUIET)
+	find_exported_dependency(siftgpu CONFIG QUIET)
 	if(siftgpu_FOUND)
 		ADD_DEFINITIONS(-D_USE_SIFTGPU)
 		LIST(APPEND SFM_EXTRA_LIBS siftgpu::siftgpu)

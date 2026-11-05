@@ -58,6 +58,7 @@ UI::UI()
 	, showSelectionControls(false)
 	, showRenderSettings(false)
 	, showBoundingBoxControls(false)
+	, showPointConfidenceFilter(true)
 	, showConsoleOverlay(true)
 	, showPerformanceOverlay(true)
 	, showWorkflowOverlay(true)
@@ -350,6 +351,7 @@ void UI::ShowMainMenuBar(Window& window) {
 			ImGui::MenuItem("Selection Dialog", "Shift+S", &showSelectionDialog);
 			ImGui::MenuItem("Render Settings", "Shift+R", &showRenderSettings);
 			ImGui::MenuItem("Bounding Box", "Shift+B", &showBoundingBoxControls);
+			ImGui::MenuItem("Point Confidence", nullptr, &showPointConfidenceFilter);
 			ImGui::MenuItem("Layers", nullptr, &showLayersPanel);
 			ImGui::Separator();
 			ImGui::MenuItem("Console", nullptr, &showConsoleOverlay);
@@ -862,6 +864,54 @@ void UI::ShowRenderSettings(Window& window) {
 		ShowRenderingControls(window);
 		ShowPointCloudControls(window);
 		ShowMeshControls(window);
+	}
+	ImGui::End();
+}
+
+void UI::ShowPointConfidenceFilter(Window& window) {
+	if (!showPointConfidenceFilter) return;
+	Scene::Layer* layer = window.GetScene().GetActiveLayer();
+	if (layer == NULL || !layer->HasPointConfidence())
+		return;
+
+	ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x - 350, 110), ImGuiCond_FirstUseEver);
+	ImGui::SetNextWindowSize(ImVec2(340, 0), ImGuiCond_FirstUseEver);
+	if (ImGui::Begin("Point Confidence", &showPointConfidenceFilter)) {
+		PointConfidenceFilter& filter = layer->pointConfidence;
+		ImGui::Text("Layer: %s", layer->label.c_str());
+		// the thresholds snap to the 256 levels the renderer stores the confidence in;
+		// moving one past the other drags it along, so the window never inverts
+		uint8_t levelMin = filter.levelMin, levelMax = filter.levelMax;
+		float threshold = filter.Dequantize(levelMin);
+		if (ImGui::SliderFloat("Min", &threshold, filter.minConf, filter.maxConf, "%.3f")) {
+			levelMin = filter.Quantize(CLAMP(threshold, filter.minConf, filter.maxConf));
+			levelMax = MAXF(levelMax, levelMin);
+		}
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Hide the points with\na lower confidence");
+		threshold = filter.Dequantize(levelMax);
+		if (ImGui::SliderFloat("Max", &threshold, filter.minConf, filter.maxConf, "%.3f")) {
+			levelMax = filter.Quantize(CLAMP(threshold, filter.minConf, filter.maxConf));
+			levelMin = MINF(levelMin, levelMax);
+		}
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Hide the points with\na higher confidence");
+		ImGui::Text("Range: %.3f .. %.3f", filter.minConf, filter.maxConf);
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Point confidence:\n"
+				"- .dmap: depth-map confidence\n"
+				"- fused cloud: best view confidence");
+		ImGui::SameLine();
+		if (ImGui::SmallButton("Reset")) {
+			levelMin = 0;
+			levelMax = 255;
+		}
+		if (levelMin != filter.levelMin || levelMax != filter.levelMax) {
+			filter.levelMin = levelMin;
+			filter.levelMax = levelMax;
+			window.GetRenderer().SetPointConfidence(layer->id, filter);
+			window.RequestRedraw();
+		}
 	}
 	ImGui::End();
 }
@@ -2822,6 +2872,10 @@ void UI::HandleGlobalKeys(Window& window) {
 			showBoundingBoxControls = false;
 			return;
 		}
+		if (showPointConfidenceFilter && window.GetScene().GetActiveLayer() != NULL && window.GetScene().GetActiveLayer()->HasPointConfidence()) {
+			showPointConfidenceFilter = false;
+			return;
+		}
 		if (showDensifyWorkflow) {
 			showDensifyWorkflow = false;
 			return;
@@ -3212,29 +3266,15 @@ void UI::ShowRefineWorkflowWindow(Window& window) {
 		opts.alternatePair = (unsigned)alternatePair;
 	if (ImGui::IsItemHovered())
 		ImGui::SetTooltip("Which image pairs to use as reference during multi-view refinement:\n- Both references: Use all paired views (most accurate)\n- Alternate: Switch between left/right (balanced)\n- Left/Right only: Use only one reference (faster, less accurate)");
-	ImGui::DragFloat("Regularity Weight", &opts.regularityWeight, 0.05f, 0.f, 10.f, "%.2f");
+	ImGui::DragFloat("Regularity Weight", &opts.regularityWeight, 0.05f, 0.f, 1.f, "%.2f");
 	if (ImGui::IsItemHovered())
-		ImGui::SetTooltip("Weight for mesh regularity term.\nHigher values produce smoother surfaces, but may lose detail.\nLower values preserve sharp features, but can be noisy.");
+		ImGui::SetTooltip("Weight for mesh regularity term (at most 1: one full step must not amplify the Laplacian).\nHigher values produce smoother surfaces, but may lose detail.\nLower values preserve sharp features, but can be noisy.");
 	ImGui::DragFloat("Rigidity/Elasticity", &opts.rigidityElasticityRatio, 0.05f, 0.f, 1.f, "%.2f");
 	if (ImGui::IsItemHovered())
 		ImGui::SetTooltip("Balance between mesh rigidity and elasticity:\n- 0 = fully elastic (flexible deformation)\n- 1 = fully rigid (minimal deformation)\nAffects how much the mesh can deform.");
-	float iters = FLOOR2INT(opts.gradientStep);
-	float gstep = (opts.gradientStep-(float)iters)*10;
-	ImGui::DragFloat("Gradient Iterations", &iters, 1.f, 0.f, 200.f, "%.2f");
+	ImGui::DragFloat("Planar Vertex Ratio", &opts.planarVertexRatio, 0.0001f, 0.f, 0.01f, "%.4f");
 	if (ImGui::IsItemHovered())
-		ImGui::SetTooltip("Number of iterations of gradient descent optimization.");
-	ImGui::DragFloat("Gradient Step", &gstep, 0.01f, 0.01f, 10.f, "%.2f");
-	if (ImGui::IsItemHovered())
-		ImGui::SetTooltip("Step size for gradient descent optimization.\nLarger values converge faster, but may be unstable.\nSmaller values are more stable, but slower.");
-	opts.gradientStep = iters + gstep*0.1f;
-	ImGui::DragFloat("Planar Vertex Ratio", &opts.planarVertexRatio, 0.01f, 0.f, 1.f, "%.2f");
-	if (ImGui::IsItemHovered())
-		ImGui::SetTooltip("Ratio of vertices to treat as planar (constrained to move along their normal).\nHigher values preserve flat surfaces better, but reduce flexibility.");
-	int reduceMemory = (int)opts.reduceMemory;
-	if (ImGui::SliderInt("Reduce Memory", &reduceMemory, 0, 3))
-		opts.reduceMemory = (unsigned)MAXF(reduceMemory, 0);
-	if (ImGui::IsItemHovered())
-		ImGui::SetTooltip("Memory reduction strategy:\n- 0 = no reduction (fastest, most memory)\n- 3 = maximum reduction (slowest, least memory)\nUse higher values for large scenes or limited RAM.");
+		ImGui::SetTooltip("Remove vertices whose photometric gradient and Laplacian are both below this fraction of the vertex depth (0 disables; CPU only).\nUseful values are 0.0001-0.001: larger ones strip whole planar patches.");
 
 	ImGui::Separator();
 	const bool workflowRunning = scene.IsWorkflowRunning();

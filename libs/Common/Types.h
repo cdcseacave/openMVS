@@ -31,11 +31,7 @@
 #include <cstddef>
 #include <type_traits>
 #include <initializer_list>
-#ifdef _SUPPORT_CPP17
-#if !defined(__GNUC__) || (__GNUC__ > 7)
 #include <filesystem>
-#endif
-#endif
 #include <new>
 #include <memory>
 #include <string>
@@ -124,6 +120,10 @@
 #include <opencv2/opencv_modules.hpp>
 #endif
 #include <opencv2/opencv.hpp>
+#if CV_MAJOR_VERSION >= 5 && defined(HAVE_OPENCV_GEOMETRY)
+// OpenCV 5 moved DistanceTypes (cv::DIST_L1, ...) into the new geometry module
+#include <opencv2/geometry.hpp>
+#endif
 #ifdef HAVE_OPENCV_GPU
 #if CV_MAJOR_VERSION > 2
 #include <opencv2/cudaarithm.hpp>
@@ -210,13 +210,9 @@ inline pid_t GetCurrentThreadId() { uint64_t tid64; pthread_threadid_np(NULL, &t
 # if defined(_MSC_VER)
 #  define STCALL __cdecl
 # elif defined(__OS2__)
-#  if defined (__GNUC__) && __GNUC__ < 4
-#   define STCALL _cdecl
-#  else
-#   /* On other compilers on OS/2, we use the _System calling convention */
-#   /* to be compatible with every compiler */
-#   define STCALL _System
-#  endif
+#  /* On OS/2, we use the _System calling convention */
+#  /* to be compatible with every compiler */
+#  define STCALL _System
 # elif defined(__GNUC__)
 #   define STCALL __attribute__((__cdecl__))
 # else
@@ -1324,11 +1320,9 @@ public:
 	inline TImage(const Size& sz) : Base(sz) {}
 	inline TImage(const Size& sz, const TYPE& v) : Base(sz, v) {}
 	inline TImage(const Size& sz, TYPE* _data, size_t _step=Base::AUTO_STEP) : Base(sz.height, sz.width, _data, _step) {}
-	#ifdef _SUPPORT_CPP11
 	inline TImage(cv::Mat&& rhs) : Base(std::forward<cv::Mat>(rhs)) {}
 
 	inline TImage& operator = (cv::Mat&& rhs) { BaseBase::operator=(std::forward<cv::Mat>(rhs)); return *this; }
-	#endif
 	inline TImage& operator = (const Base& rhs) { BaseBase::operator=(rhs); return *this; }
 	inline TImage& operator = (const BaseBase& rhs) { BaseBase::operator=(rhs); return *this; }
 	inline TImage& operator = (const cv::MatExpr& rhs) { BaseBase::operator=(rhs); return *this; }
@@ -1790,6 +1784,7 @@ template<typename TYPE> inline String cvMat2String(const TPoint3<TYPE>& pt, LPCS
 #include "../Math/LMFit/lmmin.h"
 #include "Types.inl"
 #include "Util.inl"
+#include "DepthGeometry.h"
 #include "Rotation.h"
 #include "Sphere.h"
 #include "AABB.h"

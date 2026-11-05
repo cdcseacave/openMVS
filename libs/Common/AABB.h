@@ -23,7 +23,7 @@ namespace SEACAVE {
 template <typename TYPE, int DIMS>
 class TAABB
 {
-	STATIC_ASSERT(DIMS > 0 && DIMS <= 3);
+	static_assert(DIMS > 0 && DIMS <= 3);
 
 public:
 	typedef TYPE Type;

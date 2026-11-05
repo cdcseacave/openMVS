@@ -68,14 +68,24 @@ namespace {
 std::mutex g_patchMatchCudaMutex;
 cudaEvent_t g_constMemReady = nullptr;
 std::once_flag g_constMemEventInit;
+
+// destroy the texture object and free its CUDA array; a slot is left unallocated
+// when its view has no depth-map, and destroying a null texture object is an error
+void FreeTextureArray(cudaArray_t& array, cudaTextureObject_t& texture)
+{
+	if (array == NULL)
+		return;
+	cudaDestroyTextureObject(texture);
+	cudaFreeArray(array);
+	array = NULL;
+	texture = 0;
+}
 } // anonymous namespace
 
 PatchMatch::PatchMatch()
 	: cudaStream(0)
 {
-	// initialize CUDA device if needed
-	if (SEACAVE::CUDA::devices.IsEmpty())
-		SEACAVE::CUDA::initDevices(SEACAVE::CUDA::desiredDeviceIDs);
+	ASSERT(SEACAVE::CUDA::isEnabled());
 	CUDA_CHECK(cudaStreamCreate(&cudaStream));
 }
 
@@ -91,17 +101,13 @@ void PatchMatch::Release()
 	if (images.empty())
 		return;
 
-	FOREACH(i, cudaImageArrays) {
-		cudaDestroyTextureObject(textureImages[i]);
-		cudaFreeArray(cudaImageArrays[i]);
-	}
+	FOREACH(i, cudaImageArrays)
+		FreeTextureArray(cudaImageArrays[i], textureImages[i]);
 	cudaImageArrays.clear();
 
 	if (params.bGeomConsistency) {
-		FOREACH(i, cudaDepthArrays) {
-			cudaDestroyTextureObject(textureDepths[i]);
-			cudaFreeArray(cudaDepthArrays[i]);
-		}
+		FOREACH(i, cudaDepthArrays)
+			FreeTextureArray(cudaDepthArrays[i], textureDepths[i]);
 		cudaDepthArrays.clear();
 	}
 
@@ -344,20 +350,14 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 			} else
 			if (images[i].size() != image.size()) {
 				// reallocate image CUDA memory
-				cudaDestroyTextureObject(textureImages[i]);
-				cudaFreeArray(cudaImageArrays[i]);
-				if (params.bGeomConsistency && i > 0) {
-					cudaDestroyTextureObject(textureDepths[i-1]);
-					cudaFreeArray(cudaDepthArrays[i-1]);
-				}
+				FreeTextureArray(cudaImageArrays[i], textureImages[i]);
+				if (params.bGeomConsistency && i > 0)
+					FreeTextureArray(cudaDepthArrays[i-1], textureDepths[i-1]);
 				AllocateImageCUDA(i, image, true, !view.depthMap.empty());
 			} else
 			if (params.bGeomConsistency && i > 0 && (view.depthMap.empty() != (cudaDepthArrays[i-1] == NULL))) {
 				// reallocate depth CUDA memory
-				if (cudaDepthArrays[i-1]) {
-					cudaDestroyTextureObject(textureDepths[i-1]);
-					cudaFreeArray(cudaDepthArrays[i-1]);
-				}
+				FreeTextureArray(cudaDepthArrays[i-1], textureDepths[i-1]);
 				AllocateImageCUDA(i, image, false, !view.depthMap.empty());
 			}
 			// large images stage through per-instance pinned slot for a truly-async
@@ -367,28 +367,24 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 			if (params.bGeomConsistency && i > 0 && !view.depthMap.empty()) {
 				// set previously computed depth-map
 				DepthMap depthMap(view.depthMap);
-				if (depthMap.size() != image.size())
-					cv::resize(depthMap, depthMap, image.size(), 0, 0, cv::INTER_LINEAR);
+				if (depthMap.size() != image.size()) // a neighbor image scaled onto its uniform grid
+					MVS::Image::ResizeUniform(depthMap, depthMap, image.size(), cv::INTER_LINEAR);
 				StagedUploadCvMat(cudaDepthArrays[i-1], depthMap, hostDepthPriorStaging, hostDepthPriorStagingArea, (size_t)(i-1));
 			}
 			images[i] = std::move(image);
 			cameras[i] = std::move(camera);
 		}
 		if (params.bGeomConsistency && cudaDepthArrays.size() > numImages - 1) {
-			for (IIndex i = numImages; i < prevNumImages; ++i) {
-				// free image CUDA memory
-				cudaDestroyTextureObject(textureDepths[i-1]);
-				cudaFreeArray(cudaDepthArrays[i-1]);
-			}
+			// free depth CUDA memory
+			for (IIndex i = numImages; i < prevNumImages; ++i)
+				FreeTextureArray(cudaDepthArrays[i-1], textureDepths[i-1]);
 			cudaDepthArrays.resize(params.nNumViews);
 			textureDepths.resize(params.nNumViews);
 		}
 		if (prevNumImages > numImages) {
-			for (IIndex i = numImages; i < prevNumImages; ++i) {
-				// free image CUDA memory
-				cudaDestroyTextureObject(textureImages[i]);
-				cudaFreeArray(cudaImageArrays[i]);
-			}
+			// free image CUDA memory
+			for (IIndex i = numImages; i < prevNumImages; ++i)
+				FreeTextureArray(cudaImageArrays[i], textureImages[i]);
 			images.resize(numImages);
 			cameras.resize(numImages);
 			cudaImageArrays.resize(numImages);
@@ -477,15 +473,12 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 					n.width == images[n.srcImage].cols && n.height == images[n.srcImage].rows)
 					n.texDepth = (unsigned long long)textureDepths[n.srcImage-1];
 			}
-			const std::chrono::steady_clock::time_point t0(std::chrono::steady_clock::now());
 			bFusedConfDone = RunConfidenceFusedCUDA(size.width, size.height,
 				cudaDepthNormalEstimates, cudaDepthNormalCosts,
-				pConfRequest->k00, pConfRequest->k11, pConfRequest->k02, pConfRequest->k12,
+				pConfRequest->fx, pConfRequest->fy, pConfRequest->cx, pConfRequest->cy,
 				pConfRequest->neighbors.data(), (int)pConfRequest->neighbors.size(),
 				pConfRequest->params,
 				(void*)cudaStream, depthData.confMap.ptr<float>());
-			pConfRequest->computeNS += std::chrono::duration_cast<std::chrono::nanoseconds>(
-				std::chrono::steady_clock::now() - t0).count();
 			pConfRequest->done = bFusedConfDone;
 		}
 

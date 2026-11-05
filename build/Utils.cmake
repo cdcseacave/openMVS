@@ -403,57 +403,30 @@ macro(optimize_default_compiler_settings)
 	set(BUILD_EXTRA_EXE_LINKER_FLAGS_RELEASE "")
 	set(BUILD_EXTRA_EXE_LINKER_FLAGS_DEBUG "")
 
-	# try to enable C++XX support
-	if(CMAKE_VERSION VERSION_LESS "3.8.2")
-		if (MSVC)
-			set(CXX_CHECK_PREFIX "/std:")
-		else()
-			set(CXX_CHECK_PREFIX "--std=")
+	# use the newest C++ standard the compiler supports; C++17 is the minimum. halfmesh picks
+	# its standard by the same rule, and the two must agree: both instantiate BS::thread_pool,
+	# whose layout depends on the standard (std::move_only_function from C++23 on), so
+	# different standards give two definitions of the same class across the library boundary;
+	# extend both lists together
+	foreach(CXX_STD 23 20 17)
+		if("cxx_std_${CXX_STD}" IN_LIST CMAKE_CXX_COMPILE_FEATURES)
+			set(CMAKE_CXX_STANDARD ${CXX_STD})
+			break()
 		endif()
-		check_cxx_compiler_flag("${CXX_CHECK_PREFIX}c++23" SUPPORTS_STD_CXX23)
-		check_cxx_compiler_flag("${CXX_CHECK_PREFIX}c++20" SUPPORTS_STD_CXX20)
-		check_cxx_compiler_flag("${CXX_CHECK_PREFIX}c++17" SUPPORTS_STD_CXX17)
-		check_cxx_compiler_flag("${CXX_CHECK_PREFIX}c++14" SUPPORTS_STD_CXX14)
-		check_cxx_compiler_flag("${CXX_CHECK_PREFIX}c++11" SUPPORTS_STD_CXX11)
-		if(SUPPORTS_STD_CXX23)
-			set(CMAKE_CXX_STANDARD 23)
-		elseif(SUPPORTS_STD_CXX20)
-			set(CMAKE_CXX_STANDARD 20)
-		elseif(SUPPORTS_STD_CXX17)
-			set(CMAKE_CXX_STANDARD 17)
-		elseif(SUPPORTS_STD_CXX14)
-			set(CMAKE_CXX_STANDARD 14)
-		elseif(SUPPORTS_STD_CXX11)
-			set(CMAKE_CXX_STANDARD 11)
-		endif()
-	else()
-		list(FIND CMAKE_CXX_COMPILE_FEATURES "cxx_std_23" CXX_STD_INDEX)
-		if(${CXX_STD_INDEX} GREATER -1)
-			set(CMAKE_CXX_STANDARD 23)
-		else()
-			list(FIND CMAKE_CXX_COMPILE_FEATURES "cxx_std_20" CXX_STD_INDEX)
-			if(${CXX_STD_INDEX} GREATER -1)
-				set(CMAKE_CXX_STANDARD 20)
-			else()
-				list(FIND CMAKE_CXX_COMPILE_FEATURES "cxx_std_17" CXX_STD_INDEX)
-				if(${CXX_STD_INDEX} GREATER -1)
-					set(CMAKE_CXX_STANDARD 17)
-				else()
-					list(FIND CMAKE_CXX_COMPILE_FEATURES "cxx_std_14" CXX_STD_INDEX)
-					if(${CXX_STD_INDEX} GREATER -1)
-						set(CMAKE_CXX_STANDARD 14)
-					else()
-						list(FIND CMAKE_CXX_COMPILE_FEATURES "cxx_std_11" CXX_STD_INDEX)
-						if(${CXX_STD_INDEX} GREATER -1)
-							set(CMAKE_CXX_STANDARD 11)
-						endif()
-					endif()
-				endif()
-			endif()
-		endif()
+	endforeach()
+	if(NOT CMAKE_CXX_STANDARD OR CMAKE_CXX_STANDARD LESS 17)
+		message(FATAL_ERROR "C++17 or newer is required, not supported by ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
 	endif()
-	if(CLANG AND (CMAKE_CXX_STANDARD EQUAL 11 OR CMAKE_CXX_STANDARD EQUAL 14 OR CMAKE_CXX_STANDARD EQUAL 17 OR CMAKE_CXX_STANDARD EQUAL 20 OR CMAKE_CXX_STANDARD EQUAL 23))
-		set(CMAKE_EXE_LINKER_FLAGS "-stdlib=libc++")
+	# older compilers claim C++17 but ship std::filesystem in a separate library (stdc++fs, c++fs)
+	# or not at all, so they would configure and then fail to build
+	if((CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9) OR
+	   (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9) OR
+	   (CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 11) OR
+	   (MSVC AND MSVC_VERSION LESS 1914))
+		message(FATAL_ERROR "${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION} is too old: GCC 9, Clang 9, Apple Clang 11 or MSVC 19.14 (Visual Studio 2017 15.7) is the minimum")
+	endif()
+	if(CLANG)
+		# lands in CMAKE_CXX_FLAGS, which CMake also passes when linking C++ targets
 		add_extra_compiler_option(-stdlib=libc++)
 	endif()
 	set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -637,18 +610,14 @@ macro(optimize_default_compiler_settings)
 		set(BUILD_EXTRA_FLAGS_RELEASE "${BUILD_EXTRA_FLAGS_RELEASE} /Zi")
 	  endif()
 
-	  if(NOT MSVC64)
-		# 64-bit MSVC compiler uses SSE/SSE2 by default
-		if(ENABLE_SSE)
-		  set(BUILD_EXTRA_FLAGS "${BUILD_EXTRA_FLAGS} /arch:SSE")
-		endif()
-		if(ENABLE_SSE2)
-		  set(BUILD_EXTRA_FLAGS "${BUILD_EXTRA_FLAGS} /arch:SSE2")
-		endif()
-	  endif()
-
+	  # MSVC keeps only the last /arch (warning D9025 otherwise), so emit the highest enabled one;
+	  # 64-bit MSVC compiler uses SSE/SSE2 by default and has no /arch for them
 	  if(ENABLE_AVX)
 		set(BUILD_EXTRA_FLAGS "${BUILD_EXTRA_FLAGS} /arch:AVX")
+	  elseif(ENABLE_SSE2 AND NOT MSVC64)
+		set(BUILD_EXTRA_FLAGS "${BUILD_EXTRA_FLAGS} /arch:SSE2")
+	  elseif(ENABLE_SSE AND NOT MSVC64)
+		set(BUILD_EXTRA_FLAGS "${BUILD_EXTRA_FLAGS} /arch:SSE")
 	  endif()
 
 	  if(ENABLE_SSE OR ENABLE_SSE2 OR ENABLE_SSE3 OR ENABLE_SSE4_1)
@@ -667,21 +636,16 @@ macro(optimize_default_compiler_settings)
 	  # enable __cplusplus
 	  set(BUILD_EXTRA_FLAGS "${BUILD_EXTRA_FLAGS} /Zc:__cplusplus")
 
-	  # Multi-process compilation: spawns one cl.exe child per core to compile TUs of
-	  # a single vcxproj in parallel. Without this, ClCompile runs TUs serially and
-	  # MSBuild's /m parallelism is wasted on projects with many sources (SFM: 31 .cpp,
-	  # MVS: 19, Viewer: 15). Huge win on full project builds.
-	  # NOTE: /MP alone is enough; do NOT combine with /cgthreads>1, as /MP * /cgthreads
-	  # oversubscribes the CPU (e.g. 24 cl.exe * 8 threads on a 16-core box -> thrash).
+	  # compile the sources of one project in parallel (one cl.exe per core)
 	  set(BUILD_EXTRA_FLAGS "${BUILD_EXTRA_FLAGS} /MP")
 
-	  # Bound optimizer time on huge generated functions. Undocumented but widely used
-	  # (Chromium, Unreal). CRITICAL for MVS: without it, cl.exe hangs indefinitely in
-	  # the optimizer on large TUs like Scene.cpp / SceneTexture.cpp / SceneRefine.cpp
-	  # / Camera.cpp (observed with MSVC 14.50 on i7-13700K, 10+ min per TU with no
-	  # progress). No effect at /Od; kicks in only for optimized (Release/RelWithDebInfo)
-	  # builds where cl.exe's optimizer would otherwise spin on pathological inlining.
-	  set(BUILD_EXTRA_FLAGS "${BUILD_EXTRA_FLAGS} /d2ReducedOptimizeHugeFunctions")
+	  # Eigen defines EIGEN_STRONG_INLINE as __forceinline on MSVC only (GCC and Clang get
+	  # plain inline), and MSVC honours __forceinline even at /Od. Every SEACAVE vector and
+	  # matrix type is Eigen-backed, so each expression is expanded into its caller as one
+	  # enormous body that the MSVC back end takes minutes per translation unit on (10-30 min
+	  # for the large MVS sources, 2-7 s with the override). Plain inline lets MSVC apply
+	  # its own inlining heuristics to Eigen, as GCC and Clang always have.
+	  set(BUILD_EXTRA_FLAGS "${BUILD_EXTRA_FLAGS} /DEIGEN_STRONG_INLINE=inline")
 
 	  # Match the 8 MB main-thread stack that Linux and macOS provide by default.
 	  # The /O2-inlined Eigen + CGAL chain in Scene::EstimateROI (covariance PCA,
@@ -864,37 +828,49 @@ endmacro()
 
 # Initialize variables needed for a library type project.
 macro(ConfigLibrary)
-	# Offer the user the choice of overriding the installation directories
+	# Offer the user the choice of overriding the installation directories; relative paths
+	# are relative to the install prefix, resolved at install time (cmake --install --prefix)
 	set(INSTALL_LIB_DIR "lib" CACHE PATH "Installation directory for libraries")
 	set(INSTALL_BIN_DIR "bin" CACHE PATH "Installation directory for executables")
 	set(INSTALL_INCLUDE_DIR "include" CACHE PATH "Installation directory for header files")
-	if(WIN32 AND NOT CYGWIN)
-		set(DEF_INSTALL_CMAKE_DIR "CMake")
-	else()
-		set(DEF_INSTALL_CMAKE_DIR "lib/cmake")
-	endif()
-	set(INSTALL_CMAKE_DIR ${DEF_INSTALL_CMAKE_DIR} CACHE PATH "Installation directory for CMake files")
-	# Group the installed binaries, libraries and CMake files under a per-project
-	# subdirectory (<prefix>/bin/${PROJECT_NAME}, <prefix>/lib/${PROJECT_NAME}, ...).
-	# Disable to install them directly into <prefix>/bin, <prefix>/lib, ... so the
+	# a location find_package() searches on every platform
+	set(INSTALL_CMAKE_DIR "lib/cmake/${PROJECT_NAME}" CACHE PATH "Installation directory for CMake files")
+	# Group the installed binaries and libraries under a per-project subdirectory
+	# (<prefix>/bin/${PROJECT_NAME}, <prefix>/lib/${PROJECT_NAME}).
+	# Disable to install them directly into <prefix>/bin, <prefix>/lib so the
 	# executables sit next to their dependency DLLs (e.g. a shared vcpkg triplet).
 	# Headers are always namespaced under <prefix>/include/${PROJECT_NAME} to avoid
 	# collisions with other packages in a shared include prefix.
-	option(INSTALL_USE_SUBDIR "Group installed binaries/libraries/CMake files under a per-project (${PROJECT_NAME}) subdirectory" ON)
-	# Make relative paths absolute (needed later on)
-	foreach(p LIB BIN INCLUDE CMAKE)
-		set(var INSTALL_${p}_DIR)
-		set(varp INSTALL_${p}_DIR_PREFIX)
-		if(IS_ABSOLUTE "${${varp}}")
-			set(${varp} "${${varp}}")
-		else()
-			set(${varp} "${CMAKE_INSTALL_PREFIX}/${${var}}")
+	option(INSTALL_USE_SUBDIR "Group installed binaries/libraries under a per-project (${PROJECT_NAME}) subdirectory" ON)
+	if(INSTALL_USE_SUBDIR)
+		set(INSTALL_LIB_DIR "${INSTALL_LIB_DIR}/${PROJECT_NAME}")
+		set(INSTALL_BIN_DIR "${INSTALL_BIN_DIR}/${PROJECT_NAME}")
+	endif()
+	set(INSTALL_INCLUDE_DIR "${INSTALL_INCLUDE_DIR}/${PROJECT_NAME}")
+endmacro()
+
+# find_exported_dependency(<package> [find_package arguments])
+# Find a package the exported targets link against, and record the lookup for the
+# installed package configuration (see OpenMVSConfig.cmake.in), so that the projects
+# using OpenMVS find exactly the packages OpenMVS was built with.
+macro(find_exported_dependency name)
+	# a hint the build was given, not one the package sets for itself
+	unset(_find_root)
+	if(DEFINED ${name}_ROOT)
+		set(_find_root "${${name}_ROOT}")
+	endif()
+	find_package(${name} ${ARGN})
+	if(${name}_FOUND)
+		if(DEFINED _find_root)
+			set_property(GLOBAL APPEND PROPERTY OpenMVS_EXPORTED_DEPENDENCIES "if(NOT DEFINED ${name}_ROOT)
+	set(${name}_ROOT \"${_find_root}\")
+endif()")
 		endif()
-		set(${var} "${${varp}}")
-		if(INSTALL_USE_SUBDIR OR p STREQUAL "INCLUDE")
-			set(${var} "${${var}}/${PROJECT_NAME}")
-		endif()
-	endforeach()
+		set(_find_args ${name} ${ARGN})
+		list(REMOVE_ITEM _find_args REQUIRED QUIET)
+		string(REPLACE ";" " " _find_args "${_find_args}")
+		set_property(GLOBAL APPEND PROPERTY OpenMVS_EXPORTED_DEPENDENCIES "find_dependency(${_find_args})")
+	endif()
 endmacro()
 
 function(create_rc_files name)
@@ -968,21 +944,12 @@ function(cxx_library_with_type name folder type cxx_flags)
   endif()
 endfunction()
 
-# cxx_executable_with_flags(name cxx_flags libs [DISABLE_IPO] srcs...)
+# cxx_executable_with_flags(name cxx_flags libs srcs...)
 #
 # creates a named C++ executable that depends on the given libraries and
 # is built from the given source files with the given compiler flags.
-# If DISABLE_IPO is specified, interprocedural optimization is disabled for this target on Windows.
 function(cxx_executable_with_flags name folder cxx_flags libs)
-  set(disable_ipo OFF)
   set(source_files ${ARGN})
-
-  # Check if DISABLE_IPO keyword is present
-  if("DISABLE_IPO" IN_LIST source_files)
-    list(REMOVE_ITEM source_files "DISABLE_IPO")
-    set(disable_ipo ON)
-  endif()
-
   add_executable("${name}" ${source_files})
   if (cxx_flags)
     set_target_properties("${name}" PROPERTIES COMPILE_FLAGS "${cxx_flags}")
@@ -994,19 +961,6 @@ function(cxx_executable_with_flags name folder cxx_flags libs)
   endforeach()
   # Set project folder
   set_target_properties("${name}" PROPERTIES FOLDER "${folder}")
-
-  # Disable IPO and LTO flags for this target if requested (useful for slow builds on Windows).
-  # /GL and /LTCG are appended globally to CMAKE_*_FLAGS_RELEASE in fix_default_compiler_settings(),
-  # NOT to any per-target COMPILE_FLAGS / LINK_FLAGS. Stripping those target properties is a no-op.
-  # Instead we append MSVC's documented negations, which override earlier occurrences (last wins):
-  #   /GL-      disables whole-program optimization at compile time
-  #   /LTCG:OFF disables link-time code generation at link time
-  # Both are per-config (Release only) since the globals only inject /GL and /LTCG in Release.
-  if(disable_ipo AND MSVC)
-    set_property(TARGET "${name}" PROPERTY INTERPROCEDURAL_OPTIMIZATION FALSE)
-    target_compile_options("${name}" PRIVATE $<$<CONFIG:Release>:/GL->)
-    target_link_options("${name}" PRIVATE $<$<CONFIG:Release>:/LTCG:OFF>)
-  endif()
 
   if (MSVC)
     # Check if any of the files listed in source_files has the extension .rc

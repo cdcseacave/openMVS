@@ -50,7 +50,7 @@
 #include "../../libs/SFM/SphereCubeMap.h"
 #include "../../libs/SFM/InterfaceMVS.h"
 #include "../../libs/MVS.h"
-#include "../../libs/IO/json.hpp"
+#include <nlohmann/json.hpp>
 #include "Tests.h"
 #include <filesystem>
 #include <chrono>

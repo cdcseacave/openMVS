@@ -73,6 +73,7 @@ public:
 		AABB3f bounds{true};
 		Point3f sceneSize{0, 0, 0};
 		float sceneDistance{1.f};
+		PointConfidenceFilter pointConfidence; // range set by RefreshLayerState
 
 		Layer() = default;
 		Layer(const Layer&) = delete;
@@ -81,6 +82,7 @@ public:
 		Layer& operator=(Layer&&) noexcept = default;
 
 		bool IsOpen() const { return scene.IsValid() || !scene.IsEmpty(); }
+		bool HasPointConfidence() const { return !scene.pointcloud.pointWeights.empty(); }
 	};
 	using LayerArr = std::vector<Layer>;
 
@@ -114,7 +116,7 @@ public:
 		bool removeDepthMaps{false};
 		bool postprocess{false};
 		int fusionMode{0};
-		float fDepthReprojectionErrorThreshold{1.2f};
+		float fDepthReprojectionErrorThreshold{0.6f};
 		bool cropToROI{true};
 		float borderROI{0.f};
 		float sampleMeshNeighbors{0.f};
@@ -150,9 +152,7 @@ public:
 		unsigned alternatePair{0};
 		float regularityWeight{0.2f};
 		float rigidityElasticityRatio{0.9f};
-		float gradientStep{45.05f};
 		float planarVertexRatio{0.f};
-		unsigned reduceMemory{1};
 	};
 
 	struct TextureMeshWorkflowOptions {

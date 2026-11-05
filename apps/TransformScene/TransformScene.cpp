@@ -63,6 +63,8 @@ float fEpsNoiseRotation;
 float fPlaneThreshold;
 float fSampleMesh;
 unsigned nMaxResolution;
+unsigned nTextureSize;
+unsigned nRemoveUnseenFaces;
 unsigned nUpAxis;
 unsigned nNormalizeCoordinates;
 unsigned nArchiveType;
@@ -123,12 +125,14 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("transfer-texture-file", boost::program_options::value<std::string>(&OPT::strTransferTextureFileName), "input mesh filename to which the texture of the scene's mesh will be transferred (the two meshes should be aligned; a UV-map on the new mesh is baked onto, else one is generated)")
 		("indices-file", boost::program_options::value<std::string>(&OPT::strIndicesFileName), "input indices filename to be used with ex. texture transfer to select a subset of the new mesh's faces (needs the new mesh to carry a UV-map that can be baked onto)")
 		("convert", boost::program_options::value(&OPT::bConvert)->default_value(false), "just convert the input to the output format without any transformation")
-		("compute-volume", boost::program_options::value(&OPT::bComputeVolume)->default_value(false), "compute the volume of the given watertight mesh, or else try to estimate the ground plane and assume the mesh is bounded by it")
+		("compute-volume", boost::program_options::value(&OPT::bComputeVolume)->default_value(false), "compute the volume of the given watertight mesh, or else estimate the ground plane and measure the volume between the mesh and it (fill above, cut below)")
 		("eps-noise-position", boost::program_options::value(&OPT::fEpsNoisePosition)->default_value(0.f), "add noise to camera positions (0 - disabled)")
 		("eps-noise-rotation", boost::program_options::value(&OPT::fEpsNoiseRotation)->default_value(0.f), "add noise to camera rotations (0 - disabled)")
 		("plane-threshold", boost::program_options::value(&OPT::fPlaneThreshold)->default_value(0.f), "threshold used to estimate the ground plane (<0 - disabled, 0 - auto, >0 - desired threshold)")
 		("sample-mesh", boost::program_options::value(&OPT::fSampleMesh)->default_value(-300000.f), "uniformly samples points on a mesh (0 - disabled, <0 - number of points, >0 - sample density per square unit)")
 		("max-resolution", boost::program_options::value(&OPT::nMaxResolution)->default_value(0), "make sure image resolution are not not larger than this (0 - disabled)")
+		("max-texture-size", boost::program_options::value(&OPT::nTextureSize)->default_value(Mesh::DEFAULT_TEXTURE_SIZE), "size of the texture pages baked by the texture transfer when the target mesh has no texture of its own")
+		("remove-unseen-faces", boost::program_options::value(&OPT::nRemoveUnseenFaces)->default_value(0), "remove the mesh faces seen by fewer than this many images, rendering the mesh with a z-buffer into every camera of the scene (0 - disabled)")
 		("up-axis", boost::program_options::value(&OPT::nUpAxis)->default_value(2), "scene axis considered to point upwards when computing the volume (0 - x, 1 - y, 2 - z)")
 		("normalize-coordinates", boost::program_options::value(&OPT::nNormalizeCoordinates)->default_value(0), "normalize scene coordinates and output the inverse transform to file (0 - disabled, 1 - center, 2 - center & scale, 3 - invert internal transform)")
 		;
@@ -174,7 +178,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	Util::ensureValidPath(OPT::strIndicesFileName);
 	const String strInputFileNameExt(Util::getFileExt(OPT::strInputFileName).ToLower());
 	const bool bInvalidCommand(OPT::strInputFileName.empty() ||
-		(OPT::strAlignFileName.empty() && OPT::strTransformFileName.empty() && OPT::strTransferTextureFileName.empty() && !OPT::bComputeVolume && OPT::nNormalizeCoordinates == 0 && !OPT::bConvert));
+		(OPT::strAlignFileName.empty() && OPT::strTransformFileName.empty() && OPT::strTransferTextureFileName.empty() && !OPT::bComputeVolume && OPT::nNormalizeCoordinates == 0 && OPT::nRemoveUnseenFaces == 0 && !OPT::bConvert));
 	if (OPT::vm.count("help") || bInvalidCommand) {
 		boost::program_options::options_description visible("Available options");
 		visible.add(generic).add(config);
@@ -340,9 +344,10 @@ int main(int argc, LPCTSTR* argv)
 				faceSubsetIndices.emplace_back(index.From<Mesh::FIndex>());
 			}
 		}
-		if (!scene.mesh.TransferTexture(newMesh, Mesh::DEFAULT_TEXTURE_BORDER, Mesh::DEFAULT_TEXTURE_SIZE, faceSubsetIndices))
+		if (!scene.mesh.TransferTexture(newMesh, Mesh::DEFAULT_TEXTURE_BORDER, OPT::nTextureSize, faceSubsetIndices))
 			return EXIT_FAILURE;
-		newMesh.Save(baseFileName + OPT::strExportType);
+		if (!newMesh.Save(baseFileName + OPT::strExportType))
+			return EXIT_FAILURE;
 		VERBOSE("Texture transfered (%s)", TD_TIMER_GET_FMT().c_str());
 		return EXIT_SUCCESS;
 	}
@@ -354,6 +359,15 @@ int main(int argc, LPCTSTR* argv)
 			DEBUG("error: can not scale scene images to '%s'", folderName.c_str());
 			return EXIT_FAILURE;
 		}
+	}
+
+	if (OPT::nRemoveUnseenFaces > 0 && !scene.mesh.IsEmpty()) {
+		// remove the surface no camera ever observed
+		if (!scene.IsValid()) {
+			VERBOSE("error: removing the unseen faces needs the scene's cameras");
+			return EXIT_FAILURE;
+		}
+		scene.RemoveUnseenMeshFaces(OPT::nRemoveUnseenFaces);
 	}
 
 	if (OPT::bComputeVolume && !scene.mesh.IsEmpty()) {

@@ -352,8 +352,8 @@ struct walk_stats_t {
 	uint64_t nSteps; // facet/edge/vertex steps accepted by intersect()
 	uint64_t nBadEnd; // intersect() gave up with the segment not consumed
 	uint64_t nCamRayDropped; // camera-side walk failed on its first step, the whole ray is discarded
-	uint64_t nCamWalkAborted; // camera-side walk did not end on its own vertex, so cell2Cam is wrong
-	uint64_t nEndWalkAborted; // end-point-side walk did not end on its own vertex, so cell2End is wrong
+	uint64_t nCamWalkAborted; // camera-side walk did not end on its own vertex, so cell2Cam stays unset
+	uint64_t nEndWalkAborted; // end-point-side walk did not end on its own vertex, so cell2End stays unset
 
 	// fold this worker's counts into the shared total, one atomic per field: the accounting must
 	// not serialize the walks, and an unnamed critical section is program-wide, not local to it
@@ -669,11 +669,7 @@ struct triangle_vhandles_t {
 	vertex_handle_t verts[3];
 	triangle_vhandles_t() {}
 	triangle_vhandles_t(vertex_handle_t _v0, vertex_handle_t _v1, vertex_handle_t _v2)
-		#ifdef _SUPPORT_CPP11
 		: verts{_v0,_v1,_v2} {}
-		#else
-		{ verts[0] = _v0; verts[1] = _v1; verts[2] = _v2; }
-		#endif
 };
 inline triangle_vhandles_t getTriangle(cell_handle_t cell, int i)
 {
@@ -740,7 +736,7 @@ float computePlaneSphereAngle(const delaunay_t& Tr, const facet_t& facet)
 bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 {
 	using namespace DELAUNAY;
-	ASSERT(!pointcloud.IsEmpty());
+	ASSERT(pointcloud.IsValid());
 	mesh.Release();
 	const float distInsert(params.distInsert);
 	const bool bUseFreeSpaceSupport(params.bUseFreeSpaceSupport);
@@ -1136,11 +1132,10 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 					f += w;
 				} while (intersect(delaunay, segCamPoint, facets, facets, inter, stats));
 				const bool bCamWalkOK(facets.empty() && inter.type == intersection_t::VERTEX && inter.v1 == vi);
-				ASSERT(bCamWalkOK);
 				if (!bCamWalkOK)
-					++stats.nCamWalkAborted;
+					++stats.nCamWalkAborted; // near-coplanar cells can end the walk off the vertex
 				#ifdef DELAUNAY_WEAKSURF
-				if (bUseFreeSpaceSupport) {
+				else if (bUseFreeSpaceSupport) {
 					ASSERT(vert.viewsInfo[v].cell2Cam == NULL);
 					vert.viewsInfo[v].cell2Cam = inter.facet.first;
 				}
@@ -1168,11 +1163,10 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 					f += w;
 				}
 				const bool bEndWalkOK(facets.empty() && inter.type == intersection_t::VERTEX && inter.v1 == vi);
-				ASSERT(bEndWalkOK);
 				if (!bEndWalkOK)
 					++stats.nEndWalkAborted;
 				#ifdef DELAUNAY_WEAKSURF
-				if (bUseFreeSpaceSupport) {
+				else if (bUseFreeSpaceSupport) {
 					ASSERT(vert.viewsInfo[v].cell2End == NULL);
 					vert.viewsInfo[v].cell2End = inter.facet.first;
 				}
@@ -1312,41 +1306,9 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 		// extract surface formed by the facets between inside/outside cells
 		const size_t nEstimatedNumVerts(delaunay.number_of_vertices());
 		std::unordered_map<void*,Mesh::VIndex> mapVertices;
-		#if defined(_MSC_VER) && (_MSC_VER > 1600)
 		mapVertices.reserve(nEstimatedNumVerts);
-		#endif
 		mesh.vertices.Reserve((Mesh::VIndex)nEstimatedNumVerts);
 		mesh.faces.Reserve((Mesh::FIndex)nEstimatedNumVerts*2);
-		// scale-aware webbing gate: every Delaunay vertex IS an input point, so a facet can
-		// stray far from the observed cloud only by spanning it with long edges - the surface
-		// a visibility mesh grows across occluded space (under vehicles, behind walls) that no
-		// observation supports; measure each cut facet by its longest squared edge and drop
-		// the ones beyond maxEdgeScale x the median cut-facet longest edge (both live in the
-		// working space so canonical rescale cancels, and the ratio is scene-independent)
-		const auto maxFacetEdgeSq([&delaunay](const cell_handle_t& ci, int i) {
-			const auto tri(delaunay.triangle(ci, i));
-			return (float)MAXF3(CGAL::squared_distance(tri[0], tri[1]),
-			                    CGAL::squared_distance(tri[1], tri[2]),
-			                    CGAL::squared_distance(tri[2], tri[0]));
-		});
-		float gateEdgeSq(FLT_MAX);
-		if (params.maxEdgeScale > 0) {
-			FloatArr edgesSq(0, nEstimatedNumVerts*2);
-			for (delaunay_t::All_cells_iterator ci=delaunay.all_cells_begin(), ce=delaunay.all_cells_end(); ci!=ce; ++ci) {
-				const cell_size_t ciID(ci->info());
-				for (int i=0; i<4; ++i) {
-					if (delaunay.is_infinite(ci, i)) continue;
-					const cell_handle_t cj(ci->neighbor(i));
-					const cell_size_t cjID(cj->info());
-					if (ciID < cjID) continue;
-					if (srcSide[ciID] == srcSide[cjID]) continue;
-					edgesSq.Insert(maxFacetEdgeSq(ci, i));
-				}
-			}
-			if (!edgesSq.IsEmpty())
-				gateEdgeSq = edgesSq.GetMedian()*SQUARE(params.maxEdgeScale);
-		}
-		size_t numUnsupportedFaces(0);
 		for (delaunay_t::All_cells_iterator ci=delaunay.all_cells_begin(), ce=delaunay.all_cells_end(); ci!=ce; ++ci) {
 			const cell_size_t ciID(ci->info());
 			for (int i=0; i<4; ++i) {
@@ -1356,10 +1318,6 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 				if (ciID < cjID) continue;
 				const bool ciType(srcSide[ciID]);
 				if (ciType == srcSide[cjID]) continue;
-				if (params.maxEdgeScale > 0 && maxFacetEdgeSq(ci, i) > gateEdgeSq) {
-					++numUnsupportedFaces;
-					continue;
-				}
 				Mesh::Face& face = mesh.faces.AddEmpty();
 				const triangle_vhandles_t tri(getTriangle(ci, i));
 				for (int v=0; v<3; ++v) {
@@ -1377,8 +1335,6 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 			}
 		}
 		delaunay.clear();
-		if (params.maxEdgeScale > 0)
-			DEBUG_EXTRA("Unsupported surface facets removed: %u (longest edge > %g x median)", (unsigned)numUnsupportedFaces, params.maxEdgeScale);
 
 		DEBUG_EXTRA("Delaunay tetrahedras graph-cut completed (%g flow): %u vertices, %u faces (%s)", maxflow, mesh.vertices.GetSize(), mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 	}
@@ -1393,6 +1349,149 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 		mesh.FixNonManifold();
 	return true;
 }
+/*----------------------------------------------------------------*/
+
+
+namespace {
+// mesh renderer used by RemoveUnseenMeshFaces(): a z-buffer plus the face owning each pixel
+typedef TImage<cuint32_t> UnseenFaceMap;
+struct UnseenRasterMesh : TRasterMesh<UnseenRasterMesh> {
+	typedef TRasterMesh<UnseenRasterMesh> Base;
+	UnseenFaceMap& faceMap;
+	Mesh::FIndex idxFace;
+	UnseenRasterMesh(const Mesh::VertexArr& _vertices, const Camera& _camera, DepthMap& _depthMap, UnseenFaceMap& _faceMap)
+		: Base(_vertices, _camera, _depthMap), faceMap(_faceMap) {}
+	// accept any vertex in front of the camera and let RasterizeTriangleBary clip the triangle to
+	// the image; the inherited TRasterMeshBase::ProjectVertex additionally requires every vertex
+	// inside a hardcoded 3px border, which would drop the whole face -- and so report it unseen --
+	// the moment it touches the image edge
+	inline bool ProjectVertex(const Point3f& pt, int v, Triangle& t) {
+		t.ptc[v] = camera.TransformPointW2C(Cast<REAL>(pt));
+		if (t.ptc[v].z <= 0)
+			return false;
+		t.pti[v] = camera.TransformPointC2I(t.ptc[v]);
+		return true;
+	}
+	inline void Clear() {
+		Base::Clear();
+		faceMap.memset((uint8_t)NO_ID);
+	}
+	void Raster(const ImageRef& pt, const Triangle& t, const Point3f& bary) {
+		const Point3f pbary(PerspectiveCorrectBarycentricCoordinates(t, bary));
+		const Depth z(ComputeDepth(t, pbary));
+		ASSERT(z > Depth(0));
+		Depth& depth = depthMap(pt);
+		if (depth == 0 || depth > z) {
+			depth = z;
+			faceMap(pt) = idxFace;
+		}
+	}
+};
+} // unnamed namespace
+
+// remove the mesh faces no image sees:
+// the mesh is rendered with a z-buffer into every valid image of the scene and a face survives
+// only if at least nMinViews images see it. An image sees a face when at least one pixel of its
+// rasterization survives the depth test, or -- the sub-pixel case, a face smaller than a pixel
+// never wins a pixel of its own -- when its centroid projects inside the image in front of the
+// camera at a depth no deeper than the z-buffer there by more than kUnseenDepthTol (an empty
+// z-buffer pixel means nothing stands in front of it).
+// This deletes the surface the graph-cut invents in the volume no camera ever observed
+// (undersides, vehicle interiors, pockets between wheels): correct as an interpolation, but with
+// no observation behind it, so it only costs precision.
+// Only the cameras are used, no image pixels are read; the views are rendered one at a time, so
+// a single z-buffer pair per thread is alive at once
+unsigned Scene::RemoveUnseenMeshFaces(unsigned nMinViews, unsigned nResolutionLevel, unsigned nMinResolution)
+{
+	ASSERT(nMinViews > 0);
+	ASSERT(!mesh.vertices.IsEmpty() && !mesh.faces.IsEmpty());
+	ASSERT(!images.IsEmpty() && !platforms.IsEmpty());
+	TD_TIMER_START();
+	// relative depth tolerance of the centroid visibility probe
+	constexpr float kUnseenDepthTol = 0.01f;
+	const Mesh::FIndex numFaces(mesh.faces.GetSize());
+	// how many images see each face
+	CLISTDEF0IDX(uint32_t,Mesh::FIndex) faceViews(numFaces);
+	faceViews.Memset(0);
+	// face centroids, the sub-pixel visibility probes
+	Mesh::VertexArr centroids(numFaces);
+	FOREACH(idxFace, mesh.faces) {
+		const Mesh::Face& face = mesh.faces[idxFace];
+		centroids[idxFace] = (mesh.vertices[face[0]]+mesh.vertices[face[1]]+mesh.vertices[face[2]])/3.f;
+	}
+	#ifdef DELAUNAY_USE_OPENMP
+	#pragma omp parallel for schedule(dynamic)
+	for (int64_t i=0; i<(int64_t)images.GetSize(); ++i) {
+		const IIndex idxImage((IIndex)i);
+	#else
+	FOREACH(idxImage, images) {
+	#endif
+		const Image& imageData = images[idxImage];
+		if (!imageData.IsValid())
+			continue;
+		ASSERT(imageData.HasResolution());
+		// working resolution and the camera matching it, both derived from the stored image size
+		unsigned level(nResolutionLevel);
+		const unsigned imageSize(Image8U::computeMaxResolution(imageData.width, imageData.height, level, nMinResolution));
+		const cv::Size size(imageData.GetSize(imageSize));
+		const Camera camera(imageData.GetCamera(platforms, size));
+		// render the mesh into this view
+		DepthMap depthMap(size);
+		UnseenFaceMap faceMap(size);
+		UnseenRasterMesh rasterizer(mesh.vertices, camera, depthMap, faceMap);
+		UnseenRasterMesh::Triangle triangle;
+		UnseenRasterMesh::TriangleRasterizer triangleRasterizer(triangle, rasterizer);
+		rasterizer.Clear();
+		FOREACH(idxFace, mesh.faces) {
+			rasterizer.idxFace = idxFace;
+			rasterizer.Project(mesh.faces[idxFace], triangleRasterizer);
+		}
+		// the faces this view sees: the ones owning at least one pixel...
+		CLISTDEF0IDX(uint8_t,Mesh::FIndex) seen(numFaces);
+		seen.Memset(0);
+		const cuint32_t* pFaceMap(faceMap.getData());
+		for (int p=0, np=faceMap.area(); p<np; ++p) {
+			const uint32_t idxFace(pFaceMap[p]);
+			if (idxFace != NO_ID)
+				seen[idxFace] = 1;
+		}
+		// ...plus the ones whose centroid is not occluded
+		FOREACH(idxFace, mesh.faces) {
+			if (seen[idxFace])
+				continue;
+			const Point3 X(camera.TransformPointW2C(Cast<REAL>(centroids[idxFace])));
+			if (X.z <= 0)
+				continue;
+			const ImageRef x(ROUND2INT(camera.TransformPointC2I(X)));
+			if (!depthMap.isInside(x))
+				continue;
+			const Depth depth(depthMap(x));
+			if (depth == 0 || (Depth)X.z <= depth*(1.f+kUnseenDepthTol))
+				seen[idxFace] = 1;
+		}
+		FOREACH(idxFace, mesh.faces) {
+			if (!seen[idxFace])
+				continue;
+			uint32_t& numViews(faceViews[idxFace]);
+			#ifdef DELAUNAY_USE_OPENMP
+			#pragma omp atomic
+			#endif
+			++numViews;
+		}
+	}
+	// remove the faces too few views see, and the vertices they orphan
+	Mesh::FaceIdxArr facesRemove(0, numFaces);
+	FOREACH(idxFace, mesh.faces)
+		if (faceViews[idxFace] < nMinViews)
+			facesRemove.Insert(idxFace);
+	const Mesh::FIndex numRemoved(facesRemove.GetSize());
+	if (numRemoved > 0) {
+		mesh.RemoveFaces(facesRemove);
+		mesh.RemoveUnreferencedVertices();
+	}
+	DEBUG_EXTRA("Mesh unseen faces removed: %u of %u faces (%u views min) (%s)", numRemoved, numFaces, nMinViews, TD_TIMER_GET_FMT().c_str());
+	return numRemoved;
+} // RemoveUnseenMeshFaces
 /*----------------------------------------------------------------*/
 
 #pragma pop_macro("VERBOSE")

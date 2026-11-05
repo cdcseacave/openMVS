@@ -23,6 +23,7 @@
 #include <string.h>
 #include <cstdlib>
 #include <iostream>
+#include <chrono>
 
 #include <glad/glad.h>
 #include "GlobalUtil.h"
@@ -106,6 +107,7 @@ int	GlobalParam::		_KeepExtremumSign = 0; // if 1, scales of dog-minimum will be
 ///
 int GlobalParam::       _KeyPointListForceLevel0 = 0;
 int GlobalParam::		_DarknessAdaption = 0;
+float GlobalParam::	_MinCurvature = 0.0f;
 int	GlobalParam::		_ProcessOBO = 0;
 int GlobalParam::       _TruncateMethod = 0;
 int	GlobalParam::		_PreciseBorder = 1;
@@ -294,14 +296,16 @@ bool GlobalUtil::CheckFramebufferStatus() {
 }
 
 
+// steady clock, used for the timings printed with verbosity >= 2
 int ClockTimer::ClockMS()
 {
-	return 0;
+	return (int)std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
 double ClockTimer::CLOCK()
 {
-	return 0;
+	return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
 void ClockTimer::InitHighResolution()
@@ -310,17 +314,23 @@ void ClockTimer::InitHighResolution()
 
 void ClockTimer::StartTimer(const char* event, int verb)
 {
-
+	strncpy(_current_event, event, sizeof(_current_event) - 1);
+	_current_event[sizeof(_current_event) - 1] = 0;
+	_time_start = ClockMS();
+	if(verb && GlobalUtil::_verbose)
+		std::cout << "\n[" << _current_event << "]:\tbegin ...\n";
 }
 
 void ClockTimer::StopTimer(int verb)
 {
-
+	_time_stop = ClockMS();
+	if(verb && GlobalUtil::_verbose)
+		std::cout << "[" << _current_event << "]:\t" << GetElapsedTime() << "\n";
 }
 
 float ClockTimer::GetElapsedTime()
 {
-	return 0;
+	return (_time_stop - _time_start) / 1000.0f;
 }
 
 void GlobalUtil::SetGLParam()

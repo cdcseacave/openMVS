@@ -6,7 +6,7 @@ else()
 endif()
 FILE(GLOB LIBRARY_FILES_H "*.h" "*.inl")
 
-cxx_executable_with_flags(CreateStructure "Apps" "${cxx_default}" "SFM" DISABLE_IPO ${LIBRARY_FILES_C} ${LIBRARY_FILES_H})
+cxx_executable_with_flags(CreateStructure "Apps" "${cxx_default}" "SFM" ${LIBRARY_FILES_C} ${LIBRARY_FILES_H})
 
 # Install
 INSTALL(TARGETS CreateStructure

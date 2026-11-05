@@ -451,16 +451,8 @@ String Util::GetOSInfo()
 
 String Util::GetDiskInfo(const String& path)
 {
-	#if defined(_SUPPORT_CPP17) && (defined(__APPLE__) || !defined(__GNUC__) || (__GNUC__ > 7))
-
 	const std::filesystem::space_info si = std::filesystem::space(path.c_str());
 	return String::FormatString("%s (%s) space", formatBytes(si.available).c_str(), formatBytes(si.capacity).c_str());
-
-	#else
-
-	return String();
-
-	#endif // _SUPPORT_CPP17
 }
 /*----------------------------------------------------------------*/
 
@@ -468,16 +460,16 @@ String Util::GetDiskInfo(const String& path)
 // Initialize various global variables (ex: random-number-generator state).
 void Util::Init()
 {
-	#ifdef _RELEASE
+	#ifdef _USE_DETERMINISTIC_RANDOM
+	std::srand((unsigned)0);
+	#if CV_MAJOR_VERSION > 3 || (CV_MAJOR_VERSION == 3 && CV_MINOR_VERSION >= 4)
+	cv::setRNGSeed((int)0);
+	#endif
+	#else
 	const time_t t(Util::getTime());
 	std::srand((unsigned)t);
 	#if CV_MAJOR_VERSION > 3 || (CV_MAJOR_VERSION == 3 && CV_MINOR_VERSION >= 4)
 	cv::setRNGSeed((int)t);
-	#endif
-	#else
-	std::srand((unsigned)0);
-	#if CV_MAJOR_VERSION > 3 || (CV_MAJOR_VERSION == 3 && CV_MINOR_VERSION >= 4)
-	cv::setRNGSeed((int)0);
 	#endif
 	#endif
 }
@@ -739,9 +731,7 @@ void Util::LogBuild()
 	LOG(_T("CPU: %s (%u cores)"), Util::GetCPUInfo().c_str(), Thread::hardwareConcurrency());
 	LOG((_T("RAM: ") + Util::GetRAMInfo()).c_str());
 	LOG((_T("OS: ") + Util::GetOSInfo()).c_str());
-	#ifdef _SUPPORT_CPP17
 	LOG((_T("Disk: ") + Util::GetDiskInfo(WORKING_FOLDER_FULL)).c_str());
-	#endif
 	#ifdef _USE_SSE
 	if (!SIMD_ENABLED.isSet(Util::SSE)) LOG(_T("warning: no SSE compatible CPU or OS detected"));
 	else if (!SIMD_ENABLED.isSet(Util::AVX)) LOG(_T("warning: no AVX compatible CPU or OS detected"));
@@ -863,9 +853,23 @@ Util::MemoryInfo Util::GetMemoryInfo()
 		ASSERT(false);
 		return MemoryInfo();
 	}
+	// the free memory is what a new allocation gets without swapping, the reclaimable page cache
+	// included: the kernel's MemAvailable estimate (Linux 3.14+), not sysinfo's freeram, which
+	// leaves the cache out and reads near zero on any machine that has been reading files
+	size_t freeMemory((size_t)info.freeram*(size_t)info.mem_unit);
+	if (FILE* meminfo = fopen("/proc/meminfo", "r")) {
+		char line[256];
+		unsigned long long kb;
+		while (fgets(line, sizeof(line), meminfo))
+			if (sscanf(line, "MemAvailable: %llu kB", &kb) == 1) {
+				freeMemory = (size_t)kb*1024;
+				break;
+			}
+		fclose(meminfo);
+	}
 	return MemoryInfo(
 		(size_t)info.totalram*(size_t)info.mem_unit,
-		(size_t)info.freeram*(size_t)info.mem_unit,
+		freeMemory,
 		(size_t)info.totalswap*(size_t)info.mem_unit,
 		(size_t)info.freeswap*(size_t)info.mem_unit
 	);

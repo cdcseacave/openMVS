@@ -100,9 +100,10 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
   - Supported detectors: **AKAZE** (default, binary), **ORB** (binary), **SIFT** (converted to RootSIFT), **SiftGPU** (CUDA/OpenGL, optional)
   - RootSIFT conversion: L1-normalize then sqrt, quantized to uint8
   - Keypoint quality scoring: `ComputeKeypointWeight()`, `ComputeKeypointPrecision()`
-- **Configuration:** `FeatureExtractionConfig` — `detectorType`, `maxFeaturesPerCell` (3000, giving max ~27k per image), `minFeaturesPerCell`, `releaseImagePixels`
+- **Configuration:** `FeatureExtractionConfig` — `detectorType`, `maxFeaturesPerCell` (3000, giving max ~27k per image), `minFeaturesPerCell`, `releaseImagePixels`, `useCUDA`, `siftgpuDarknessAdaptivity`
 - **GPU Support:** Yes (SiftGPU path — CUDA or OpenGL backend)
-- **Threading:** `BS::light_thread_pool` for parallel per-image extraction; SiftGPU uses producer-consumer pattern
+- **Threading:** `BS::light_thread_pool` for parallel per-image extraction; SiftGPU decodes ahead on the scene thread pool (one future per image) and extracts on one GPU thread
+- **Design record:** `docs/design/SiftGPUFeatureExtraction.md` (detector with curvature floor, moment orientation, CUDA pipeline, selection, validation, rejected alternatives)
 - **Dependencies:** OpenCV (AKAZE, ORB, SIFT), SiftGPU (optional)
 
 ---
@@ -442,7 +443,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 - **Configuration:** `ImportConfig::importPosesFile` (dispatched on extension: `.csv` → `ImportPosesCSV`, `.json` → here), `importPosesMode` (`PoseImportMode`), `framesConvention` (`auto|arkit|opencv`)
 - **GPU Support:** No
 - **Threading:** Single
-- **Dependencies:** Common, IO (`json.hpp`), `Triangulation`
+- **Dependencies:** Common, nlohmann JSON, `Triangulation`
 
 ### Interface MVS (SFM-to-MVS Bridge)
 
@@ -458,7 +459,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 
 ### MVS Scene
 
-- **Files:** `libs/MVS/Scene.h`, `libs/MVS/Scene.cpp`
+- **Files:** `libs/MVS/Scene.h`, `libs/MVS/Scene.cpp` (lifecycle, Load/Save, exporters), `libs/MVS/SceneNeighbors.cpp`, `libs/MVS/SceneSplit.cpp`, `libs/MVS/SceneTransform.cpp`, `libs/MVS/SceneROI.cpp`, `libs/MVS/SceneTower.cpp`, `libs/MVS/SceneGeometry.cpp`
 - **Algorithms:** Pipeline orchestration for all MVS stages; `Load()`/`Save()` for `.mvs` binary format (Boost serialization); `SelectNeighborViews()` for geometric view scoring; `SampleMeshWithVisibility()` for depth map initialization from mesh
 - **Key Data:** `PlatformArr platforms`, `ImageArr images`, `PointCloud pointcloud`, `Mesh mesh`, `OBB3f obb`, `Matrix4x4 transform`, `unsigned nCalibratedImages`, `unsigned nMaxThreads`
 - **Configuration:** All downstream pipeline configurations (OPTDENSE, etc.)
@@ -512,7 +513,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 - **Files:** `libs/MVS/Mesh.h`, `libs/MVS/Mesh.cpp`
 - **Algorithms:**
   - `VertexArr vertices`, `FaceArr faces`, `NormalArr vertexNormals/faceNormals`, `VertexVerticesArr vertexVertices`, `VertexFacesArr vertexFaces`, `FaceFacesArr faceFaces`, `TexCoordArr faceTexcoords`, `Image8U3Arr texturesDiffuse`
-  - `Clean(fDecimate, fSpurious, bRemoveSpikes, nCloseHoles, nSmoothMesh, fEdgeLength, bLastClean)`: CGAL-based pipeline — decimation, spurious removal, spike removal, hole closing, Laplacian smoothing, edge-length enforcement
+  - `Clean(CleanParams)`: halfmesh-delegated pipeline — `RemoveLongEdgeFacesCapped(maxEdgeScale)` capped-face webbing gate first, then `RemoveLongEdgeFaces`/`RemoveSpuriousComponents(spuriousFactor)` global spurious removal, spike removal, QEM decimation, hole closing, Taubin smoothing, isotropic remeshing
   - `ComputeNormals()`, adjacency structure computation
   - Serialization: PLY, OBJ (with MTL), GLTF
 - **GPU Support:** No
@@ -581,13 +582,16 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 
 - **Files:** `libs/MVS/SemiGlobalMatcher.h`, `libs/MVS/SemiGlobalMatcher.cpp`
 - **Algorithms:**
-  - Semi-Global Matching (SGM) for depth refinement after PatchMatch
-  - Cost aggregation over `numDirs` (4 default, up to 8) directions
-  - Dynamic programming along each direction
-  - Winner-Take-All disparity selection
+  - SGM densification, an alternative to PatchMatch (`--fusion-mode -2`); `-1` instead exports the disparity-maps of the rectified image pairs (`.dimap`) as a standalone product, not read back by the pipeline
+  - Per image, all selected neighbor views are matched at once (`MatchMultiView`): the "disparities" are uniform inverse-depth samples, one step being at most one pixel of motion in the neighbor that moves the most; the resulting depth-map goes directly to the standard depth-map fusion
+  - Matching cost: for each pixel and sample, the mean of the two lowest neighbor WZNCC costs (occluded or out-of-view neighbors do not veto), on a 7x7 bilateral-weighted window sampled at 16 of its 49 texels and warped by the surface slant estimated at the previous pyramid level (fronto-parallel at the coarsest level); the pair export can use a Census cost instead, a compile-time option (`SGM_SIMILARITY`)
+  - Hierarchical scheme: image pyramid (top level at least 320 px wide); the coarsest level searches, per pixel, the whole inverse-depth range spanned by the sparse-point depth range of the image; finer levels search only around the previous level's estimate (7x7 neighborhood if valid, 41x41 otherwise, 5 to 32/64 samples). With no second map to cross-check against, only the coarsest level is speckle-filtered (`--speckle-size`); the depth-map fusion discards the depths the other views do not confirm
+  - Cost aggregation along 8 paths (P1=9, P2=12 scaled up to 15x in flat regions), Winner-Take-All, sub-pixel fit on the aggregated costs (LC-blend, quarter-sample steps stored as int16), then a parabola search of the matching cost itself over the whole window and the two best views; confidence = sqrt(1 - best/second) of the aggregated costs (peak ratio, second = best non-adjacent sample), on the [0,1] scale of PatchMatch's NCC score
+  - Matching-cost kernel on Eigen arrays (SIMD over the texels), with the samples at which a view sees the warped patch found once per pixel and view as an inverse-depth interval
+- **Design record:** `docs/design/SemiGlobalMatching.md` (algorithm as implemented, validated defaults, rejected alternatives, future work)
 - **GPU Support:** No
-- **Threading:** OpenMP
-- **Dependencies:** OpenCV, Common
+- **Threading:** own worker-thread pool (`SemiGlobalMatcher::CreateThreads`)
+- **Dependencies:** OpenCV, Eigen, Common
 
 ---
 
@@ -609,12 +613,17 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
   - Camera cells linked to source with weight `kInf`; edge weights: `kf`, `kRel`, `kAbs`, `kQual`
   - TetraFlow min-cut (`libs/Math/TetraFlow.h`) separating free-space from matter: incremental
     breadth-first search max-flow on one 64-byte node per cell (the dual graph is 4-regular)
-  - Surface extraction drops cut facets whose longest edge exceeds `maxEdgeScale` x the median cut
-    facet (the webbing gate, default 4)
+  - Surface extraction takes every cut facet from the graph-cut with no edge-length gate; the
+    webbing cleanup is `Mesh::Clean()`'s first stage — halfmesh `RemoveLongEdgeFacesCapped`
+    drops faces whose longest edge exceeds `maxEdgeScale` x the median longest edge and that have
+    mesh surface close behind or in front of them along their normal (probes at 0.5..4 x the
+    longest edge, hit within a 0.35 cone); a coarsely sampled real surface has nothing behind it
+    and survives
   - Single-pass non-manifold repair, then the `Mesh::Clean()` pipeline
 - **Configuration:** a single `ReconstructMeshParams` (`distInsert`, `bUseFreeSpaceSupport`,
   `bUseOnlyROI`, `kSigma`, `kQual`, `kb`, `kf`, `kRel`, `kAbs`, `kOutl`, `kInf`,
-  `bAdaptiveSigma`, `bCanonicalRescale`, `maxEdgeScale`)
+  `bAdaptiveSigma`, `bCanonicalRescale`); the long-edge/spurious cleanup is a `Mesh::CleanParams`
+  option (`maxEdgeScale`) applied by `Mesh::Clean()`, not `ReconstructMeshParams`
 - **Design record:** `docs/design/DelaunayMeshReconstruction.md` (shipped defaults, validated
   numbers, and the registry of ideas that were tried and rejected)
 - **GPU Support:** No
@@ -627,18 +636,18 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 
 ### Scene Refine (CPU)
 
-- **Files:** `libs/MVS/SceneRefine.cpp`
+- **Files:** `libs/MVS/SceneRefine.cpp`, `libs/MVS/SceneRefineCommon.h/.cpp` (shared with the CUDA backend)
 - **Algorithms:**
-  - Multi-resolution coarse-to-fine: `nScales` (3) levels, `fScaleStep` (0.5) per level
+  - Multi-resolution coarse-to-fine: `nScales` (2) levels, `fScaleStep` (0.5) per level
   - `SubdivideMesh()`: `nMaxFaceArea`, `fDecimateMesh`, `nCloseHoles`, `nEnsureEdgeSize`
-  - `ScoreMesh()`: ZNCC photo-consistency + Laplacian regularization weighted by `fRegularityWeight`
-  - Gradient descent: 75 iterations per scale with `gstep` (0.4)
-  - `fRatioRigidityElasticity`: rigid vs elastic deformation ratio
-  - Ceres `GradientProblemSolver` variant via `MESHOPT_CERES`
-  - `fThPlanarVertex`: adaptive removal of planar low-gradient vertices after 40% of iterations
-- **Configuration:** `nResolutionLevel`, `fDecimateMesh`, `nCloseHoles`, `fRegularityWeight`, `fGradientStep`, `nScales`, `fScaleStep`, `nAlternatePair`
-- **GPU Support:** No
-- **Threading:** OpenMP for parallel face projection scoring
+  - `ScoreMesh()`: masked ZNCC photo-consistency + Laplacian regularization weighted by `fRegularityWeight`
+  - `MeshRefineStep` (`SceneRefineCommon.h`): pixel-unit bold-driver descent shared with the CUDA backend, stops on convergence
+  - `fRatioRigidityElasticity`: rigid vs elastic deformation ratio, two-phase per-scale schedule
+  - Ceres `GradientProblemSolver` arm via `bUseCeres` (`--use-ceres`, opt-in)
+  - `fThPlanarVertex`: removal of planar low-gradient vertices between evaluations (CPU only)
+- **Configuration:** `nResolutionLevel`, `fDecimateMesh`, `nCloseHoles`, `fRegularityWeight`, `nScales`, `fScaleStep`, `nAlternatePair`, `fThPlanarVertex`, `bUseCeres`; `OPTREFINE` (`--refine-config-file`): image gradient stencil, rejection gates, `--adaptive-face-size`, `--simplify-tolerance`
+- **GPU Support:** Yes, `RefineMeshCUDA` (next section)
+- **Threading:** worker-thread pool over views, image pairs and vertex ranges
 - **Dependencies:** OpenCV, Ceres Solver (optional), Common
 
 ### Scene Refine CUDA (GPU)
@@ -662,7 +671,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
   - `GenerateTexture()`: rasterizes face UVs into atlas
   - `bGlobalSeamLeveling` (default true): linear system to equalize mean intensity at seam boundaries
   - `bLocalSeamLeveling` (default true): Poisson blending along patch boundary strips
-  - `fSharpnessWeight` (0.5): unsharp masking post-processing
+  - `fSharpnessWeight` (0, disabled): optional unsharp masking post-processing
   - `nIgnoreMaskLabel`: excludes masked regions
   - `colEmpty` (orange RGB 255,127,39): fill for untextured regions
 - **Configuration:** `nResolutionLevel`, `fOutlierThreshold`, `fRatioDataSmoothness`, `bGlobalSeamLeveling`, `bLocalSeamLeveling`, `fSharpnessWeight`, `nIgnoreMaskLabel`, `minCommonCameras`
@@ -762,13 +771,13 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 ### PLY Format
 
 - **Files:** `libs/IO/PLY.h`, `libs/IO/PLY.cpp`
-- **Algorithms:** Full PLY polygon format parser/writer; supports ASCII and binary (little/big-endian); property combine rules: AVERAGE, MAJORITY, MINIMUM, MAXIMUM, SAME, RANDOM
-- **File types:** `PLY::ASCII`, `PLY::BINARY_BE`, `PLY::BINARY_LE`
+- **Algorithms:** PLY reader/writer bound directly to the caller's arrays (property name + first value + stride): fixed-size runs at fixed offsets, adjacent copies merged, whole-element block transfer when the file layout matches memory; values converted to the bound type; fixed-size lists (triangles) and variable-size lists (point views); malformed files refused with a message, element counts checked against the file size; ASCII reals written in their shortest exact form
+- **File types:** `PLY::BINARY_LE` (default), `PLY::ASCII`, `PLY::BINARY_BE` (read only)
 
 ### OBJ Format
 
-- **Files:** `libs/IO/OBJ.h`, `libs/IO/OBJ.cpp`
-- **Algorithms:** Wavefront OBJ with material library (MTL); `ObjModel` container with vertices, texcoords, normals, material groups
+- **Files:** `libs/MVS/MeshHalfMesh.cpp` (`Mesh::LoadOBJ` / `Mesh::SaveOBJ`), implemented by halfmesh
+- **Algorithms:** Wavefront OBJ with material library (MTL): streamed blocks parsed in parallel, correctly rounded floats written in their shortest round-trip form, every index form, polygons triangulated, a material without a loadable map kept as a one-texel texture of its Kd
 
 ### Image Formats
 
@@ -778,7 +787,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 
 ### Third-Party Components
 
-- **Files:** `libs/IO/json.hpp`, `libs/IO/TinyXML2.h/.cpp` (glTF comes from the vcpkg `tinygltf` port)
+- **Files:** none bundled: JSON comes from the vcpkg `nlohmann-json` port, glTF from the `tinygltf` port, XML from the `tinyxml2` port
 - **Algorithms:** glTF 2.0 binary/ASCII loading (header-only), nlohmann JSON parsing (header-only), XML parsing
 
 ---

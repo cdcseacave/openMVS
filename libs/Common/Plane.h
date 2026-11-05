@@ -24,7 +24,7 @@ namespace SEACAVE {
 template <typename TYPE, int DIMS=3>
 class TPlane
 {
-	STATIC_ASSERT(DIMS > 0 && DIMS <= 3);
+	static_assert(DIMS > 0 && DIMS <= 3);
 
 public:
 	typedef Eigen::Matrix<TYPE,DIMS+1,DIMS+1,Eigen::RowMajor> MATRIX;
@@ -114,7 +114,7 @@ struct FitPlaneOnline {
 template <typename TYPE, int DIMS=6>
 class TFrustum
 {
-	STATIC_ASSERT(DIMS > 0 && DIMS <= 6);
+	static_assert(DIMS > 0 && DIMS <= 6);
 
 public:
 	typedef Eigen::Matrix<TYPE,4,4,Eigen::RowMajor> MATRIX4x4;

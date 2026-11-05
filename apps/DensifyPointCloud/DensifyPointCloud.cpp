@@ -60,7 +60,7 @@ String strExportDMAPSPathName;
 String strDenseConfigFileName;
 String strExportDepthMapsName;
 String strMaskPath;
-float fMaxSubsceneArea;
+float fMaxSubsceneMemory;
 float fSampleMesh;
 uint32_t nSampleMeshSeed;
 float fSampleMeshNeighbors;
@@ -147,6 +147,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	float fDepthDiffThreshold;
 	float fDepthReprojectionErrorThreshold;
 	float fFusePriorWeight;
+	bool bFuseRecycleDropped;
 	bool bRemoveDmaps;
 	boost::program_options::options_description config("Densify options");
 	config.add_options()
@@ -170,14 +171,15 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("estimate-normals", boost::program_options::value(&nEstimateNormals)->default_value(2), "estimate the normals for the dense point-cloud (0 - disabled, 1 - final, 2 - estimate)")
 		("estimate-scale", boost::program_options::value(&OPT::fEstimateScale)->default_value(0.f), "estimate the point-scale for the dense point-cloud (scale multiplier, 0 - disabled)")
 		("estimate-segmentation", boost::program_options::value(&OPT::nEstimateSegmentation)->default_value(0), "estimate segmentation of the dense point-cloud based on the image segmentation masks; num views to agree (0 - disabled, <0 - only segmentation)")
-		("sub-scene-area", boost::program_options::value(&OPT::fMaxSubsceneArea)->default_value(0.f), "split the scene in sub-scenes such that each sub-scene surface does not exceed the given maximum sampling area (0 - disabled)")
+		("sub-scene-memory", boost::program_options::value(&OPT::fMaxSubsceneMemory)->default_value(0.f), "split the scene in sub-scenes whose depth-map fusion and mesh reconstruction each fit this much memory, in GB (0 - disabled, <0 - fit this machine: the physical memory available now, less a reserve of 10% of the total and at least 2GB)")
 		("sample-mesh", boost::program_options::value(&OPT::fSampleMesh)->default_value(0.f), "uniformly samples points on a mesh (0 - disabled, <0 - number of points, >0 - sample density per square unit)")
 		("sample-mesh-seed", boost::program_options::value(&OPT::nSampleMeshSeed)->default_value(NO_ID), "seed used to initialize the RNG for mesh sampling, for reproducible results (default - seed from a random device)")
-		("fusion-mode", boost::program_options::value(&OPT::nFusionMode)->default_value(0), "depth-maps fusion mode (-2 - fuse disparity-maps, -1 - export disparity-maps only, 0 - depth-maps & fusion, 1 - export depth-maps only)")
+		("fusion-mode", boost::program_options::value(&OPT::nFusionMode)->default_value(0), "depth-maps fusion mode (-2 - SGM depth-maps & fusion, -1 - export SGM pair disparity-maps only, 0 - depth-maps & fusion, 1 - export depth-maps only)")
 		("fusion-filter", boost::program_options::value(&nFuseFilter)->default_value(2), "filter used to fuse the depth-maps (0 - merge, 1 - fuse, 2 - dense-fuse)")
-		("fusion-depth-diff-threshold,t", boost::program_options::value(&fDepthDiffThreshold)->default_value(0.01f), "maximum variance allowed for the depths during fusion")
-		("fusion-reprojection-threshold,d", boost::program_options::value(&fDepthReprojectionErrorThreshold)->default_value(1.2f), "dense-fuse maximum distance between measured and depth projected pixel")
-		("fusion-prior-weight", boost::program_options::value(&fFusePriorWeight)->default_value(3.f), "dense-fuse weight of the intra-map geometric prior used as virtual support to keep few-view inliers (0 - disabled); the default 3 favors completeness, best when a mesh reconstruction step follows and cleans the few extra outliers; set 2 when the dense point-cloud itself is the final output (fewer outliers at slightly lower completeness)")
+		("fusion-depth-diff-threshold,t", boost::program_options::value(&fDepthDiffThreshold)->default_value(0.01f), "dense-fuse maximum relative depth difference between a pixel and the fused point it joins")
+		("fusion-reprojection-threshold,d", boost::program_options::value(&fDepthReprojectionErrorThreshold)->default_value(0.6f), "dense-fuse maximum distance, in pixels, between measured and depth projected pixel")
+		("fusion-prior-weight", boost::program_options::value(&fFusePriorWeight)->default_value(4.f), "dense-fuse weight of the intra-map geometric prior used as virtual support to keep few-view inliers, granted only to points no view contradicts (0 - disabled)")
+		("fusion-recycle-dropped", boost::program_options::value(&bFuseRecycleDropped)->default_value(false), "dense-fuse hand the pixels of a cluster the keep-rule dropped back to the pool, so that a later cluster can still use them (0 - disabled/default); trades precision for completeness (+17..42% points)")
 		("postprocess-dmaps", boost::program_options::value(&nOptimize)->default_value(4), "flags used to filter the depth-maps after estimation (0 - disabled, 1 - remove-speckles, 2 - fill-gaps, 4 - adjust-confidence only when the depth-maps are estimated on CUDA, where it runs fused into the last estimation iteration and costs almost nothing, 8 - adjust-confidence; the default 4 therefore enables it on GPU and skips it on CPU, where it would cost a separate full-resolution pass -- pass 8 to force it on regardless)")
 		("filter-point-cloud", boost::program_options::value(&OPT::thFilterPointCloud)->default_value(0), "filter dense point-cloud based on visibility (0 - disabled)")
 		("export-number-views", boost::program_options::value(&OPT::nExportNumViews)->default_value(0), "export points with >= number of views (0 - disabled, <0 - save MVS project too)")
@@ -285,6 +287,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	OPTDENSE::fDepthDiffThreshold = fDepthDiffThreshold;
 	OPTDENSE::fDepthReprojectionErrorThreshold = fDepthReprojectionErrorThreshold;
 	OPTDENSE::fFusePriorWeight = fFusePriorWeight;
+	OPTDENSE::bFuseRecycleDropped = bFuseRecycleDropped;
 	OPTDENSE::bRemoveDmaps = bRemoveDmaps;
 	if (!bValidConfig && !OPT::strDenseConfigFileName.empty())
 		OPTDENSE::oConfig.Save(OPT::strDenseConfigFileName);
@@ -450,15 +453,39 @@ int main(int argc, LPCTSTR* argv)
 		VERBOSE("Mesh projection completed: %u depth-maps (%s)", scene.images.size(), TD_TIMER_GET_FMT().c_str());
 		return EXIT_SUCCESS;
 	}
-	if (OPT::fMaxSubsceneArea > 0) {
-		// split the scene in sub-scenes by maximum sampling area
+	if (OPT::fMaxSubsceneMemory != 0) {
+		// split the scene in sub-scenes by the memory their processing needs
+		float maxMemory(OPT::fMaxSubsceneMemory);
+		if (maxMemory < 0) {
+			// fit this machine: what is available now, less a reserve for the rest of the system and
+			// the error of the cost model (the fusion's depth-map cache grows into the free memory)
+			const Util::MemoryInfo memInfo(Util::GetMemoryInfo());
+			constexpr double GB(1024.0*1024.0*1024.0);
+			const double reserve(MAXF(0.1*(double)memInfo.totalPhysical, 2.0*GB));
+			maxMemory = (float)(((double)memInfo.freePhysical - reserve)/GB);
+			if (maxMemory < 1.f) {
+				VERBOSE("error: %.1fGB of physical memory available, too little to split the scene", (double)memInfo.freePhysical/GB);
+				return EXIT_FAILURE;
+			}
+			VERBOSE("Sub-scene memory budget: %.1fGB (%.1fGB available of %.1fGB)", maxMemory, (double)memInfo.freePhysical/GB, (double)memInfo.totalPhysical/GB);
+		}
 		Scene::ImagesChunkArr chunks;
-		scene.Split(chunks, OPT::fMaxSubsceneArea);
-		scene.ExportChunks(chunks, GET_PATH_FULL(OPT::strOutputFileName), (ARCHIVE_TYPE)OPT::nArchiveType);
+		if (scene.Split(chunks, maxMemory) <= 0)
+			return EXIT_FAILURE;
+		if (chunks.empty())
+			return EXIT_SUCCESS; // the whole scene fits: no sub-scene to export
+		if (!scene.ExportChunks(chunks, GET_PATH_FULL(OPT::strOutputFileName), (ARCHIVE_TYPE)OPT::nArchiveType)) {
+			VERBOSE("error: can not export the sub-scenes");
+			return EXIT_FAILURE;
+		}
 		return EXIT_SUCCESS;
 	}
 	if (OPT::thFilterPointCloud < 0) {
 		// filter point-cloud based on camera-point visibility intersections
+		if (!scene.pointcloud.IsValid()) {
+			VERBOSE("error: the point-cloud is empty or has no views, both needed to filter it");
+			return EXIT_FAILURE;
+		}
 		scene.PointCloudFilter(OPT::thFilterPointCloud);
 		const String baseFileName(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName))+_T("_filtered"));
 		scene.Save(baseFileName+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
@@ -526,9 +553,10 @@ int main(int argc, LPCTSTR* argv)
 				VERBOSE("Removed all image neighbors");
 		}
 		TD_TIMER_START();
-		if (!scene.DenseReconstruction(OPT::nFusionMode, OPT::bCrop2ROI, OPT::fBorderROI, OPT::fSampleMeshNeighbors)) {
-			if (ABS(OPT::nFusionMode) != 1)
-				return EXIT_FAILURE;
+		if (!scene.DenseReconstruction(OPT::nFusionMode, OPT::bCrop2ROI, OPT::fBorderROI, OPT::fSampleMeshNeighbors))
+			return EXIT_FAILURE;
+		if (ABS(OPT::nFusionMode) == 1) {
+			// only the depth-maps were asked for: the scene's point-cloud is not a dense one to save
 			VERBOSE("Depth-maps estimated (%s)", TD_TIMER_GET_FMT().c_str());
 			return EXIT_SUCCESS;
 		}

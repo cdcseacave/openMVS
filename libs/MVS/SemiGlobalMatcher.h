@@ -54,7 +54,10 @@ class MVS_API Scene;
 
 namespace STEREO {
 
-// An implementation of the popular Semi-Global Matching (SGM) algorithm.
+// An implementation of the popular Semi-Global Matching (SGM) algorithm, run hierarchically (tSGM):
+// the image is matched coarse to fine, every level searching per pixel only around the disparities
+// estimated by the previous one; the depth-map of an image is estimated against all its neighbor
+// views at once (MatchMultiView), while Match exports the disparity-maps of its rectified pairs.
 class MVS_API SemiGlobalMatcher
 {
 public:
@@ -74,7 +77,7 @@ public:
 		Disparity maxDisp;
 		Disparity avgDisp() const { return (minDisp+maxDisp)>>1; }
 		Disparity numDisp() const { return maxDisp-minDisp; }
-		Disparity isValid() const { return minDisp<maxDisp; }
+		bool isValid() const { return minDisp<maxDisp; }
 	};
 	struct PixelData {
 		Index idx; // index to pixel costs/accumulated-costs data
@@ -100,7 +103,7 @@ public:
 	typedef uint64_t Census; // used to store Census transform
 	typedef TImage<Census> CensusMap; // image of Census transforms
 	typedef Image8U ImageGray; // used to store intensities image
-	STATIC_ASSERT(sizeof(Census)*8 >= numTexels);
+	static_assert(sizeof(Census)*8 >= numTexels);
 	#else
 	typedef WeightedPatchFix<numTexels> WeightedPatch; // pre-computed patch weights
 	typedef Image32F ImageGray; // used to store normalized float intensities image
@@ -133,8 +136,10 @@ public:
 			}
 			ASSERT(scale < 1);
 			ViewData scaledView;
-			cv::resize(imageColor, scaledView.imageColor, cv::Size(), scale, scale, cv::INTER_AREA);
-			cv::resize(imageGray, scaledView.imageGray, cv::Size(), scale, scale, cv::INTER_AREA);
+			// resize to an explicit size: the levels scale K per axis (GetScaledK(size, newSize)),
+			// and so does OpenCV only when given the size instead of the factor
+			cv::resize(imageColor, scaledView.imageColor, Image8U::computeResize(imageColor.size(), scale), 0, 0, cv::INTER_AREA);
+			cv::resize(imageGray, scaledView.imageGray, Image8U::computeResize(imageGray.size(), scale), 0, 0, cv::INTER_AREA);
 			#if SGM_SIMILARITY == SGM_SIMILARITY_CENSUS
 			CensusTransform(scaledView.imageGray, scaledView.imageCensus);
 			#endif
@@ -142,15 +147,14 @@ public:
 		}
 	};
 
-	typedef Point2f DepthRange;
-	typedef TImage<DepthRange> DepthRangeMap;
+	typedef TImage<Point2f> SlopeMap; // disparity change per pixel along x and y
 
 public:
-	SemiGlobalMatcher(SgmSubpixelMode subpixelMode=SUBPIXEL_LC_BLEND, Disparity subpixelSteps=4, AccumCost P1=3, AccumCost P2=4, float P2alpha=14, float P2beta=38);
+	SemiGlobalMatcher(SgmSubpixelMode subpixelMode=SUBPIXEL_LC_BLEND, Disparity subpixelSteps=4, AccumCost P1=9, AccumCost P2=12, float P2alpha=14, float P2beta=38);
 	~SemiGlobalMatcher();
 
 	void Match(const Scene& scene, IIndex idxImage, IIndex numNeighbors, unsigned minResolution=320);
-	void Fuse(const Scene& scene, IIndex idxImage, IIndex numNeighbors, unsigned minViews, DepthMap& depthMap, ConfidenceMap& confMap);
+	void MatchMultiView(const Scene& scene, IIndex idxImage, IIndex numNeighbors, DepthData& depthData, unsigned minResolution=320);
 
 	static void CreateThreads(unsigned nMaxThreads=1);
 	static void DestroyThreads();
@@ -168,24 +172,25 @@ public:
 
 protected:
 	void Match(const ViewData& leftImage, const ViewData& rightImage, DisparityMap& disparityMap, AccumCostMap& costMap);
-	Index Disparity2RangeMap(const DisparityMap& disparityMap, const MaskMap& maskMap, Disparity minNumDisp=3, Disparity minNumDispInvalid=16);
+	void Aggregate(const ImageGray& imageGray, DisparityMap& disparityMap, AccumCostMap& costMap);
+	#if SGM_SIMILARITY != SGM_SIMILARITY_CENSUS
+	static void InitWeightedPatch(const ViewData& image, const ImageRef& u, WeightedPatch& w, int texelStep=1);
+	#endif
+	static Range DepthRange2Disparity(const Matrix3x3& H, const Matrix4x4& Q, REAL scale, const MaskMap& maskMap, Depth dMin, Depth dMax);
+	Index Range2RangeMap(const MaskMap& maskMap, const Range& range, bool bClampToWidth=true);
+	Index Disparity2RangeMap(const DisparityMap& disparityMap, const MaskMap& maskMap);
 	#if SGM_SIMILARITY == SGM_SIMILARITY_CENSUS
 	static void CensusTransform(const Image8U& imageGray, CensusMap& imageCensus);
 	#endif
 	static void ConsistencyCrossCheck(DisparityMap& l2r, const DisparityMap& r2l, Disparity thCross=1);
-	static void FilterByCost(DisparityMap&, const AccumCostMap&, AccumCost th);
 	static void ExtractMask(const DisparityMap&, MaskMap&, int thValid=3);
 	static void FlipDirection(const DisparityMap& l2r, DisparityMap& r2l);
 	static void UpscaleMask(MaskMap& maskMap, const cv::Size& size2x);
 	void RefineDisparityMap(DisparityMap& disparityMap) const;
-	#ifndef _RELEASE
-	void DisplayState(const cv::Size& size) const;
-	#endif
+	static void FitSlopes(const DisparityMap& disparityMap, SlopeMap& slopeMap);
 
+	float PeakRatioConfidence(Index idxPixel) const;
 	static CLISTDEF0IDX(AccumCost,int) GenerateP2s(AccumCost P2, float P2alpha, float P2beta);
-	static void Depth2DisparityMap(const DepthMap&, const Matrix3x3& invH, const Matrix4x4& invQ, Disparity subpixelSteps, DisparityMap&);
-	static void Disparity2DepthMap(const DisparityMap&, const AccumCostMap&, const Matrix3x3& H, const Matrix4x4& Q, Disparity subpixelSteps, DepthMap&, ConfidenceMap&);
-	static bool ProjectDisparity2DepthMap(const DisparityMap&, const AccumCostMap&, const Matrix4x4& Q, Disparity subpixelSteps, DepthMap&, DepthRangeMap&, ConfidenceMap&);
 
 protected:
 	// parameters

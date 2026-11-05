@@ -1,3 +1,5 @@
+FIND_PACKAGE(tinyxml2 CONFIG REQUIRED)
+
 if(MSVC)
 	create_rc_files(InterfaceMetashape)
 	FILE(GLOB LIBRARY_FILES_C "*.cpp" "${CMAKE_CURRENT_BINARY_DIR}/*.rc")
@@ -7,6 +9,7 @@ endif()
 FILE(GLOB LIBRARY_FILES_H "*.h" "*.inl")
 
 cxx_executable_with_flags(InterfaceMetashape "Apps" "${cxx_default}" "MVS" ${LIBRARY_FILES_C} ${LIBRARY_FILES_H})
+TARGET_LINK_LIBRARIES(InterfaceMetashape tinyxml2::tinyxml2)
 
 # Install
 INSTALL(TARGETS InterfaceMetashape

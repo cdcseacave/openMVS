@@ -91,7 +91,7 @@ Key components:
 - **OBJ:** Wavefront OBJ with MTL material libraries
 - **glTF:** not here — the codec moved to `libs/MVS/` (`MeshHalfMesh.cpp` via halfmesh for meshes, `PointCloud.cpp` for point clouds)
 - **Image formats:** BMP, TGA, DDS (always available); PNG, JPEG, TIFF, JpegXL (conditional on build flags); SCI (custom)
-- **Third-party:** `json.hpp` (nlohmann JSON), `TinyXML2` (XML)
+- **Third-party:** nlohmann JSON (vcpkg `nlohmann-json` port, linked through IO)
 
 File count: ~20 `.h`/`.cpp` files
 
@@ -378,7 +378,7 @@ Executables land in `make/bin/Debug/` or `make/bin/Release/`.
 | nanoflann | 1.5+ | KD-tree for KNN queries (normal estimation, outlier removal) | MVS |
 | FLANN | 1.9+ | Approximate nearest neighbor matching (LSH, KDTree) | SFM |
 | GLFW | 3.x | Window management, OpenGL context, input events | Viewer |
-| GLAD | latest | OpenGL function loader | Viewer |
+| GLAD | 1 (vcpkg) or 2 | OpenGL function loader | Viewer |
 | ImGui | 1.9+ | Immediate-mode GUI with docking | Viewer |
 | SuiteSparse | optional | Fast sparse linear solvers (CHOLMOD) | Math |
 | CUDA Toolkit | 11+ | GPU acceleration (PatchMatch, mesh refine, positioning) | MVS, SFM |
@@ -389,8 +389,8 @@ Executables land in `make/bin/Debug/` or `make/bin/Release/`.
 | libjxl | optional | JPEG XL image format | IO |
 | TinyEXIF | bundled | EXIF metadata parsing | SFM |
 | tiny_gltf | vcpkg | glTF 2.0 binary/ASCII loading (implementation unit compiled by halfmesh) | MVS |
-| nlohmann/json | bundled | JSON parsing | IO |
-| TinyXML2 | bundled | XML parsing (Metashape interface) | IO |
+| nlohmann/json | vcpkg | JSON parsing | IO |
+| TinyXML2 | vcpkg | XML parsing (Metashape interface) | InterfaceMetashape |
 | BS::thread_pool | bundled | Lightweight task-based thread pool | Common |
 
 ---
@@ -477,7 +477,7 @@ CUDA kernels run on the GPU while the CPU pipeline continues. GPU synchronizatio
 | Extension | Library | Description |
 |-----------|---------|-------------|
 | `.ply` | `libs/IO/PLY` | Point clouds and meshes (ASCII or binary LE/BE) |
-| `.obj` | `libs/IO/OBJ` | Mesh with MTL material library and separate texture images |
+| `.obj` | `libs/MVS/MeshHalfMesh.cpp` via halfmesh | Mesh with MTL material library and separate texture images |
 | `.gltf` / `.glb` | `libs/MVS/PointCloud.cpp` (point clouds), `libs/MVS/MeshHalfMesh.cpp` via halfmesh (meshes) | Binary/ASCII 3D format; textures written beside the file |
 
 ### Interface Formats (Import/Export)

@@ -2,16 +2,13 @@ if(VCPKG_TARGET_IS_WINDOWS)
     vcpkg_check_linkage(ONLY_STATIC_LIBRARY)
 endif()
 
-# 0.3.0 carries the mesh-repair, rect-packing and selected-fill work that this
-# port used to apply as patches, so no patch is needed any more.
-# The v0.3.0 tag was re-cut (now b8a491c: the glTF image codec moved onto OpenCV),
-# so the SHA512 below no longer matches an older download of the same tag --
-# bump port-version alongside it whenever the tag moves again.
+# halfmesh's CMakeLists fails the configure if the version in vcpkg.json disagrees
+# with the one it declares, so the two move together.
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO cdcseacave/halfmesh
-    REF "v${VERSION}"
-    SHA512 d41747481d865b2e3693d4ea66f9358ba4af2d2d67e5a55319a0459e5413a0c7bb9769e1f1e6c80d1f1459f180ac8063eba8a3b13a313a8814dc3f71483a88e1
+    REF v${VERSION}
+    SHA512 fe9ea85900aaf6fddf82e9ef9fa79a18f0ed0e58c13cf9fd92adad2a553d7bb3003fdda39db2f5c625a130b02fefd0591f5a834045299dedec989ac4fd53e159
     HEAD_REF develop
 )
 

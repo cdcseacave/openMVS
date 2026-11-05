@@ -161,6 +161,8 @@ Per-step options can be appended with `--<step-number> <key> <value>` (drop the 
 python MvgMvsPipeline.py <images_folder> <output_folder> --preset SEQUENTIAL --1 p HIGH n 8 --2 n ANNL2
 ```
 
+The dense steps 18-21 split a scene that does not fit this machine's memory into sub-scenes (see [Large Scenes](#large-scenes)); `--sub-scene-memory off` disables the split, a number of GB sets the budget.
+
 For the full step / preset / passthrough reference, invoke `-h`:
 
 ```
@@ -248,12 +250,13 @@ Two options are worth knowing about:
 <details>
 <summary><strong>Dense Point-Cloud Reconstruction using Semi-Global Matching (optional)</strong></summary>
 
-Alternatively, the dense reconstruction module can estimate a dense point-cloud using Semi-Global Matching (SGM), in two steps: first estimating disparity-maps between all valid image pairs, followed by a second step fusing them in the final point-cloud:
+Alternatively, the dense reconstruction module can estimate a dense point-cloud using Semi-Global Matching (SGM) on the CPU: it matches each image against all its neighbor views at once to estimate its depth-map, then fuses the depth-maps into the final point-cloud:
 
 ```
-DensifyPointCloud scene.mvs --fusion-mode -1
 DensifyPointCloud scene.mvs --fusion-mode -2
 ```
+
+`--fusion-mode -1` instead exports the disparity-maps of the rectified image pairs (`.dimap`).
 
 </details>
 
@@ -285,7 +288,7 @@ The obtained mesh:
 The mesh obtained either from the sparse or dense point-cloud can be further refined to recover all fine details or even bigger missing parts. Next the rough mesh obtained only from the sparse point-cloud is refined:
 
 ```
-RefineMesh scene.mvs -m scene_mesh.ply -o scene_mesh_refine.mvs
+RefineMesh scene.mvs -m scene_mesh.ply -o scene_mesh_refined.mvs
 ```
 
 The mesh before and after refinement:
@@ -296,7 +299,7 @@ The mesh before and after refinement:
 Similarly, the rough mesh obtained from the dense point-cloud can be refined:
 
 ```
-RefineMesh scene_dense.mvs -m scene_dense_mesh.ply -o scene_dense_mesh_refine.mvs --scales 1 --max-face-area 16
+RefineMesh scene_dense.mvs -m scene_dense_mesh.ply -o scene_dense_mesh_refined.mvs --scales 1 --max-face-area 16
 ```
 
 The mesh before and after refinement:
@@ -311,7 +314,7 @@ The mesh before and after refinement:
 The mesh obtained in the previous steps is used as the input of the mesh texturing module:
 
 ```
-TextureMesh scene_dense.mvs -m scene_dense_mesh_refine.ply -o scene_dense_mesh_refine_texture.mvs
+TextureMesh scene_dense.mvs -m scene_dense_mesh_refined.ply -o scene_dense_mesh_refined_texture.mvs
 ```
 
 The obtained mesh plus texture:
@@ -322,14 +325,53 @@ Note that the triangles textured in orange (default) are not visible in any of t
 
 </details>
 
+<a name="large-scenes"></a>
+<details>
+<summary><strong>Large Scenes: split into sub-scenes that fit this machine</strong></summary>
+
+A scene with many images or a large dense point-cloud can need more memory for the depth-map fusion, the mesh reconstruction and the refinement than the machine has. [`MvsScalablePipeline.py`](https://github.com/cdcseacave/openMVS/blob/master/scripts/python/MvsScalablePipeline.py) runs the whole dense chain — point-cloud, mesh, refined mesh and texture — and splits the scene only when it has to:
+
+```
+python MvsScalablePipeline.py scene.mvs
+```
+
+1. the depth-maps of the whole scene are estimated (`DensifyPointCloud --fusion-mode 1`);
+2. the memory each stage needs is predicted from the depth-maps (`DensifyPointCloud --sub-scene-memory`): if the scene fits the memory available on this machine (less a 10% reserve, at least 2 GB), it is reconstructed whole, exactly as by the modules themselves; otherwise it is cut into boxes that each fit, written as `subscenes/scene_XXXX.mvs`;
+3. every box is fused, meshed and refined on its own, one after the other;
+4. the box point-clouds and meshes are merged ([`MvsMergeChunks.py`](https://github.com/cdcseacave/openMVS/blob/master/scripts/python/MvsMergeChunks.py): each box keeps what lies inside it) and the merged mesh is textured with all the images.
+
+The results have the usual names: `scene_dense.ply`, `scene_dense_mesh.ply`, `scene_dense_mesh_refined.ply` and `scene_dense_mesh_refined_texture.mvs` (+ `.ply` and texture images).
+
+Options:
+
+| option | meaning |
+|---|---|
+| `--memory auto\|off\|GB` | memory budget per sub-scene: `auto` (default) fits this machine, `off` never splits, a number of GB sets the budget, e.g. to leave room for other programs |
+| `--steps densify,mesh,refine,texture` | the stages to run (default all); without `densify`, the sub-scenes an earlier run wrote are reused |
+| `--densify "..."`, `--mesh "..."`, `--refine "..."`, `--texture "..."` | extra options for that module, e.g. `--densify "--resolution-level 0 --number-views 24"` |
+| `--resume` | skip a stage whose output exists already (continue an interrupted run) |
+| `--bin <folder>` | the OpenMVS binaries, if they are not in `PATH` |
+
+`MvgMvsPipeline.py` runs its dense steps (18-21) through this script by default; `--sub-scene-memory off` restores the plain module calls, and a number of GB sets the budget.
+
+The sub-scenes are not stitched: the merged mesh can show small seams where two boxes meet, so a scene that fits is never split. The split itself can also be run by hand, on depth-maps computed with `--fusion-mode 1`:
+
+```
+DensifyPointCloud scene.mvs --sub-scene-memory -1 -o subscenes/scene.mvs
+```
+
+where `-1` fits this machine and a positive value is a budget in GB. The algorithm, its memory model and its validation are described in [design/SceneSplit.md](https://github.com/cdcseacave/openMVS/blob/master/docs/design/SceneSplit.md).
+
+</details>
+
 <details>
 <summary><strong>Exporting and Viewing Results</strong></summary>
 
 Each of the above commands also writes a `PLY` file that can be used with many third-party tools. The `Viewer` can additionally export the loaded `MVS` projects to `PLY`, `OBJ` or `glTF` (`.glb`). For batch / scripted export — including web-ready formats — use the `TransformScene` app:
 
 ```
-TransformScene scene_dense_mesh_refine_texture.mvs --convert 1 --export-type glb     # → .glb
-TransformScene scene_dense_mesh_refine_texture.mvs --convert 1 --export-type gltf    # → .gltf (text + bin sidecars)
+TransformScene scene_dense_mesh_refined_texture.mvs --convert 1 --export-type glb     # → .glb
+TransformScene scene_dense_mesh_refined_texture.mvs --convert 1 --export-type gltf    # → .gltf (text + bin sidecars)
 TransformScene scene_dense.mvs                     --convert 1 --export-type potree  # → folder of Potree 2.0 tiles
 ```
 
