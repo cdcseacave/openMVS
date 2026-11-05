@@ -327,6 +327,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::TwoViewTest())
 				return false;
+			if (!SFM::FundamentalPoseTwoCamerasTest())
+				return false;
 			if (!SFM::VocabularyTreeTest())
 				return false;
 			if (!SFM::ROMA2WarpGridConventionTest())

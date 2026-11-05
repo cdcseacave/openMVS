@@ -230,7 +230,9 @@ public:
 		ImagePair& pair,
 		const std::vector<double>& weights) const;
 
-	// Decompose F into E and relative-pose
+	// Decompose F into E (E = K2^T F K1) and the relative pose (ImagePair::RecoverPose on the matches' bearings,
+	// each unprojected by its own camera, so any two cameras); false, the matches invalidated, when fewer than
+	// minMatches matches lie in front of both cameras or survive the strict filter
 	// note: if intrinsics are not accurate, the decomposition will result in very few filtered inliers
 	bool DecomposeFundamentalToPose(
 		const Image& img1,

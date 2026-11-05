@@ -392,6 +392,10 @@ bool SequentialPairsPriorTest();
 // Two-view geometry test: PairsMatcher and ImagePair matrix operations
 bool TwoViewTest();
 
+// The relative pose recovered from the fundamental matrix (GeometricFilter's F branch, then DecomposeFundamentalToPose)
+// is the true one for two cameras of different intrinsics and image sizes, as for two cameras of one size
+bool FundamentalPoseTwoCamerasTest();
+
 // Reconstruction test: Import images, extract features, match pairs, build tracks, and initialize
 bool ReconstructTest(bool verbose = false);
 

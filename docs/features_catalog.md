@@ -143,6 +143,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 - **Algorithms:**
   - RANSAC-based geometric verification via PoseLib
   - Essential matrix (calibrated pairs) or Fundamental matrix (uncalibrated)
+  - F to relative pose (`PairsMatcher::DecomposeFundamentalToPose`, trusted intrinsics or `forceFundamentalDecomposition`): E = K2^T F K1, then `ImagePair::RecoverPose`, the factorization of E that puts the most matches in front of both cameras, on the matches' bearings, each unprojected by its own camera, so two cameras of different intrinsics or image sizes are posed alike
   - Homography estimation when inlier ratio > 0.8 or `forceFundamental` mode
   - `maxEpipolarError` (pixels) threshold; minimum 50 inlier matches required
 - **GPU Support:** No

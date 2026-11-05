@@ -8,6 +8,7 @@
 #include "Common.h"
 #include "ImagePair.h"
 #include "Image.h"
+#include <PoseLib/misc/essential.h>
 
 using namespace SFM;
 
@@ -59,21 +60,28 @@ Pose3D ImagePair::DecomposeEssentialMatrix(const Matrix3x3& E)
 
 unsigned ImagePair::RecoverPose(
 	const Matrix3x3& E,
-	const std::vector<Point2f>& points1,
-	const std::vector<Point2f>& points2,
-	const Matrix3x3& K,
-	Pose3D& pose,
-	cv::InputOutputArray inliers)
+	const std::vector<Eigen::Vector3d>& bearings1,
+	const std::vector<Eigen::Vector3d>& bearings2,
+	Pose3D& pose)
 {
-	// Use OpenCV's recoverPose which handles the 4-fold ambiguity and cheirality check.
-	// TODO: implement our own version to support different K for both images
-	cv::Mat R_cv, t_cv;
-	int numInliers = cv::recoverPose(E, points1, points2, K, R_cv, t_cv, inliers);
-	if (numInliers > 0) {
-		pose.R = R_cv;
-		pose.SetT(Point3(t_cv.at<double>(0), t_cv.at<double>(1), t_cv.at<double>(2)));
+	ASSERT(bearings1.size() == bearings2.size());
+	// the four factorizations of the SVD of E (no correspondence given, so none is filtered out here)
+	poselib::CameraPoseVector candidates;
+	poselib::motion_from_essential_svd(E, {}, {}, &candidates);
+	ASSERT(candidates.size() == 4);
+	unsigned numBest = 0;
+	for (const poselib::CameraPose& candidate : candidates) {
+		unsigned numInFront = 0;
+		FOREACH(i, bearings1)
+			if (poselib::check_cheirality(candidate, bearings1[i], bearings2[i]))
+				++numInFront;
+		if (numBest < numInFront) {
+			numBest = numInFront;
+			pose.R = candidate.R();
+			pose.SetT(candidate.t);
+		}
 	}
-	return static_cast<unsigned>(numInliers);
+	return numBest;
 }
 
 Point3 ImagePair::EpipoleFromEssentialMatrix(const Matrix3x3& E, bool leftImage) {
@@ -210,6 +218,20 @@ std::pair<std::vector<Point2f>, std::vector<Point2f>> ImagePair::GetMatchedPoint
 		}
 	}
 	return std::make_pair(pts1, pts2);
+}
+
+std::pair<std::vector<Eigen::Vector3d>, std::vector<Eigen::Vector3d>> ImagePair::GetMatchedBearings(const Image& img1, const Image& img2, bool allInliers) const
+{
+	const unsigned numInliers = allInliers ? GetNumInliers() : GetNumFilteredInliers();
+	std::vector<Eigen::Vector3d> bearings1, bearings2;
+	bearings1.reserve(numInliers);
+	bearings2.reserve(numInliers);
+	for (unsigned i = 0; i < numInliers; ++i) {
+		const DMatch& m = matches[i];
+		bearings1.emplace_back(img1.pCamera->UnprojectNormalized(Cast<REAL>(img1.keypoints[m.queryIdx].pt)));
+		bearings2.emplace_back(img2.pCamera->UnprojectNormalized(Cast<REAL>(img2.keypoints[m.trainIdx].pt)));
+	}
+	return std::make_pair(bearings1, bearings2);
 }
 
 std::pair<std::vector<Point2f>, std::vector<Point2f>> ImagePair::GetTrackFormingPoints(const Image& img1, const Image& img2) const

@@ -175,7 +175,9 @@ GPS. Clustering is never involved.
   its sparse matches in an epipolar band centred on each warp prediction, `AssemblePairROMA2` fills the rest
   of the overlap densely and fits the pair's geometry, `StorePairROMA2` stores it. A rejected pair
   is dropped, never descriptor-matched
-- **Geometric verification**: RANSAC for E (calibrated) or F (uncalibrated), optional H
+- **Geometric verification**: RANSAC for E (calibrated) or F (uncalibrated), optional H; an F is posed
+  (`DecomposeFundamentalToPose`) through E = K2^T F K1 and `ImagePair::RecoverPose`
+  on bearings (`ImagePair::GetMatchedBearings`, each keypoint through its own camera): any two cameras
 - Threshold: `maxEpipolarError` (pixels), min inliers (default 50)
 
 ### Pair Weighting (`PairsWeighting.h`)

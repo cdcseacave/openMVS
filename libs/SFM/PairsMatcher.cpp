@@ -493,15 +493,7 @@ bool PairsMatcher::GeometricFilter(
 		opt.max_error = 0.5 * (angle1 + angle2);
 
 		// Extract matched keypoints and convert directly to 3D unit bearing vectors
-		std::vector<poselib::Point3D> bearings1, bearings2;
-		bearings1.reserve(pair.matches.size());
-		bearings2.reserve(pair.matches.size());
-		for (const auto& m : pair.matches) {
-			const cv::Point2f& pt1 = img1.keypoints[m.queryIdx].pt;
-			const cv::Point2f& pt2 = img2.keypoints[m.trainIdx].pt;
-			bearings1.emplace_back(cam1.UnprojectNormalized(Cast<REAL>(pt1)));
-			bearings2.emplace_back(cam2.UnprojectNormalized(Cast<REAL>(pt2)));
-		}
+		const auto [bearings1, bearings2] = pair.GetMatchedBearings(img1, img2, true);
 
 		poselib::CameraPose plPose;
 		if (pair.relativePose.has_value()) {
@@ -573,13 +565,7 @@ bool PairsMatcher::RefineRelativePose(
 		return false;
 	const Camera& cam1 = *img1.pCamera;
 	const Camera& cam2 = *img2.pCamera;
-	std::vector<poselib::Point3D> bearings1, bearings2;
-	bearings1.reserve(pair.matches.size());
-	bearings2.reserve(pair.matches.size());
-	for (const DMatch& m : pair.matches) {
-		bearings1.emplace_back(cam1.UnprojectNormalized(Cast<REAL>(img1.keypoints[m.queryIdx].pt)));
-		bearings2.emplace_back(cam2.UnprojectNormalized(Cast<REAL>(img2.keypoints[m.trainIdx].pt)));
-	}
+	const auto [bearings1, bearings2] = pair.GetMatchedBearings(img1, img2, true);
 	// the loss of the estimator's own polish (estimate_relative_pose_bearings): its tolerance is the
 	// angular equivalent of the pixel bar GeometricFilter verifies with, as a unit-norm Sampson residual
 	poselib::BundleOptions bundle;
@@ -602,32 +588,20 @@ bool PairsMatcher::DecomposeFundamentalToPose(const Image& img1, const Image& im
 	ASSERT(pair.ID2 == img2.ID);
 	ASSERT(img1.HasCamera() && img2.HasCamera());
 	ASSERT(pair.F.has_value());
-	const KMatrix K1 = img1.GetK();
-	const KMatrix K2 = img2.GetK();
-	// Decompose F into E
-	pair.E = ImagePair::DecomposeFundamentalMatrix(pair.F.value(), K1, K2);
-	// Decompose E into relative pose using cheirality check
-	// (only if same image size, a limitation of cv::recoverPose which assumes same K)
-	if (img1.GetWidth() == img2.GetWidth() && img1.GetHeight() == img2.GetHeight()) {
-		const auto [points1, points2] = pair.GetMatchedPoints(img1, img2);
-		const unsigned numInliers = ImagePair::RecoverPose(
-			pair.E.value(),
-			points1, points2,
-			K1,
-			pair.relativePose.emplace());
-		if (numInliers < config.minMatches) {
-			// Failed to recover a valid pose
-			pair.relativePose.reset();
+	// E from F and the two cameras' K, then the pose its matches put in front of both cameras
+	pair.E = ImagePair::DecomposeFundamentalMatrix(pair.F.value(), img1.GetK(), img2.GetK());
+	const auto [bearings1, bearings2] = pair.GetMatchedBearings(img1, img2);
+	if (ImagePair::RecoverPose(pair.E.value(), bearings1, bearings2, pair.relativePose.emplace()) < config.minMatches) {
+		pair.relativePose.reset();
+		pair.InvalidateMatches();
+		return false;
+	}
+	if (config.IsMatchesFilterOn()) {
+		// Apply strict outlier filtering (cheirality, angle, epipole)
+		const unsigned numFilteredInliers = pair.FilterMatches(img1, img2, config.minTriangulationAngle, config.reprojThreshold, config.epipoleFilterThreshold);
+		if (numFilteredInliers < config.minMatches) {
 			pair.InvalidateMatches();
 			return false;
-		}
-		if (config.IsMatchesFilterOn()) {
-			// Apply strict outlier filtering (cheirality, angle, epipole)
-			const unsigned numFilteredInliers = pair.FilterMatches(img1, img2, config.minTriangulationAngle, config.reprojThreshold, config.epipoleFilterThreshold);
-			if (numFilteredInliers < config.minMatches) {
-				pair.InvalidateMatches();
-				return false;
-			}
 		}
 	}
 	return true;

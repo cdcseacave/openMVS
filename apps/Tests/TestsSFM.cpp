@@ -10082,14 +10082,14 @@ bool TwoViewTest()
 		// Test DecomposeEssentialMatrix (returns one of 4 solutions, needs cheirality check)
 		const Pose3D pose_decomposed = ImagePair::DecomposeEssentialMatrix(E_composed);
 
-		// Test RecoverPose with actual point correspondences
-		std::vector<Point2f> pts1, pts2;
+		// Test RecoverPose with actual point correspondences (unit bearings, each through its own camera)
+		std::vector<Eigen::Vector3d> bearings1, bearings2;
 		for (const Track& track : scene.tracks) {
-			pts1.push_back(scene.images[0].keypoints[track.observations[0].featureID].pt);
-			pts2.push_back(scene.images[1].keypoints[track.observations[1].featureID].pt);
+			bearings1.emplace_back(scene.images[0].pCamera->UnprojectNormalized(Cast<REAL>(scene.images[0].keypoints[track.observations[0].featureID].pt)));
+			bearings2.emplace_back(scene.images[1].pCamera->UnprojectNormalized(Cast<REAL>(scene.images[1].keypoints[track.observations[1].featureID].pt)));
 		}
 		Pose3D pose_recovered;
-		int numInliers = ImagePair::RecoverPose(E_composed, pts1, pts2, K, pose_recovered);
+		int numInliers = ImagePair::RecoverPose(E_composed, bearings1, bearings2, pose_recovered);
 		if (numInliers < 8) {
 			VERBOSE("TwoViewTest: RecoverPose returned insufficient inliers (%d)", numInliers);
 			return false;
@@ -10268,6 +10268,71 @@ bool TwoViewTest()
 	}
 
 	VERBOSE("TwoViewTest: All tests passed (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// The relative pose recovered from the fundamental matrix (GeometricFilter's 7-DoF F branch over trusted
+// intrinsics, then DecomposeFundamentalToPose) for two cameras of different intrinsics and image sizes, and for
+// two cameras of one size: the true rotation and translation direction, and nearly every match in front of both
+bool FundamentalPoseTwoCamerasTest()
+{
+	TD_TIMER_START();
+	const auto RunCase = [](LPCSTR name, const SceneConfig::CameraSpec& spec2) {
+		SceneConfig cfg;
+		cfg.cameras = {SceneConfig::CameraSpec{SceneConfig::PINHOLE, 640, 480, 500.0, 330.0, 235.0}, spec2};
+		cfg.numImages = 2;
+		cfg.numPoints = 400;
+		cfg.poseMode = SceneConfig::RANDOM_POSES;
+		cfg.generatePairs = true;
+		cfg.perturbOptions = SceneConfig::PERTURB_KEYPOINTS;
+		Scene sceneGT, scene;
+		GenerateTestScene(sceneGT, cfg, &scene);
+		ImagePair& pair = scene.pairs.front();
+		const Pose3D truth = pair.relativePose.value(); // image 1 relative to image 0, as generated
+		const unsigned numTrue = pair.GetNumInliers();
+		pair.relativePose.reset();
+		pair.E.reset();
+		pair.F.reset();
+		MatchConfig config;
+		config.forceFundamental = true; // the 7-DoF F over the fixture's trusted intrinsics, then its decomposition
+		PairsMatcher matcher(scene, config);
+		const Image& img1 = scene.images[pair.ID1];
+		const Image& img2 = scene.images[pair.ID2];
+		if (PairsMatcher::SelectGeometryBranch(config, img1, img2) != PairsMatcher::GeometryBranch::FUNDAMENTAL) {
+			VERBOSE("FundamentalPoseTwoCamerasTest FAILED (%s): the pair did not take the fundamental branch", name);
+			return false;
+		}
+		if (!matcher.GeometricFilter(img1, img2, pair) || !pair.relativePose.has_value()) {
+			VERBOSE("FundamentalPoseTwoCamerasTest FAILED (%s): images %dx%d and %dx%d, no relative pose from F (%s)", name,
+				img1.GetWidth(), img1.GetHeight(), img2.GetWidth(), img2.GetHeight(), pair.HasMatches() ? "matches kept" : "matches invalidated");
+			return false;
+		}
+		const REAL rotErr = R2D(ACOS(ComputeAngle(pair.relativePose->R, truth.R)));
+		const REAL dirErr = R2D(ACOS(CLAMP(normalized(pair.relativePose->GetT()).dot(normalized(truth.GetT())), REAL(-1), REAL(1))));
+		const auto [bearings1, bearings2] = pair.GetMatchedBearings(img1, img2, true);
+		Pose3D pose;
+		const unsigned numInFront = ImagePair::RecoverPose(pair.E.value(), bearings1, bearings2, pose);
+		VERBOSE("FundamentalPoseTwoCamerasTest (%s): images %dx%d f=%g and %dx%d f=%g: rotation error %.3f deg, direction error %.3f deg, "
+			"%u of %u true matches verified, %u in front of both cameras, %u after the strict filter", name,
+			img1.GetWidth(), img1.GetHeight(), img1.GetK()(0,0), img2.GetWidth(), img2.GetHeight(), img2.GetK()(0,0),
+			rotErr, dirErr, pair.GetNumInliers(), numTrue, numInFront, pair.GetNumFilteredInliers());
+		if (rotErr > 1.0 || dirErr > 2.0) {
+			VERBOSE("FundamentalPoseTwoCamerasTest FAILED (%s): the pose from F is off the truth (bars 1 and 2 deg)", name);
+			return false;
+		}
+		if (pair.GetNumInliers() < numTrue * 95 / 100 || numInFront < numTrue * 95 / 100) {
+			VERBOSE("FundamentalPoseTwoCamerasTest FAILED (%s): fewer than 95%% of the %u true matches verified or in front", name, numTrue);
+			return false;
+		}
+		return true;
+	};
+	// a second camera of another focal, principal point and image size
+	if (!RunCase("different sizes", SceneConfig::CameraSpec{SceneConfig::PINHOLE, 1600, 900, 1300.0, 790.0, 460.0}))
+		return false;
+	// a second camera of the same size and intrinsics (the case the pose was recovered for before)
+	if (!RunCase("same size", SceneConfig::CameraSpec{SceneConfig::PINHOLE, 640, 480, 500.0, 330.0, 235.0}))
+		return false;
+	VERBOSE("FundamentalPoseTwoCamerasTest passed (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 

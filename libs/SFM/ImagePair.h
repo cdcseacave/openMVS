@@ -274,6 +274,10 @@ public:
 	//  - allMatches: if true, returns all matched points (inliers + outliers)
 	std::pair<std::vector<Point2f>, std::vector<Point2f>> GetMatchedPoints(
 		const Image& img1, const Image& img2, bool allInliers = false, bool allMatches = false) const;
+	// The unit bearings of the same matched points (the inliers selected as GetMatchedPoints selects them),
+	// each keypoint unprojected by its own image's camera: the input of every relative pose estimate
+	std::pair<std::vector<Eigen::Vector3d>, std::vector<Eigen::Vector3d>> GetMatchedBearings(
+		const Image& img1, const Image& img2, bool allInliers = false) const;
 
 	// The points of the TRACK-FORMING prefix: the sparse inliers plus the dense supplement, i.e.
 	// exactly the matches BuildTracks unions, and nothing the strict filter rejected. What a
@@ -336,14 +340,15 @@ public:
 	static Matrix3x3 ComposeFundamentalMatrix(const Matrix3x3& E, const Matrix3x3& K1, const Matrix3x3& K2, bool normalize = false);
 	static Matrix3x3 DecomposeFundamentalMatrix(const Matrix3x3& F, const Matrix3x3& K1, const Matrix3x3& K2, bool normalize = false);
 
-	// Recover the unique relative pose from essential matrix and matched points using cheirality check
+	// Recover the relative pose from the essential matrix: of its four factorizations, the one that puts the most
+	// correspondences in front of both cameras; the correspondences are unit bearings, each unprojected by its own
+	// camera, so the two cameras may differ in intrinsics, image size and model; returns that number of
+	// correspondences (0, the pose left as it was, when none is in front of both cameras for any factorization)
 	static unsigned RecoverPose(
 		const Matrix3x3& E,
-		const std::vector<Point2f>& points1,
-		const std::vector<Point2f>& points2,
-		const Matrix3x3& K,
-		Pose3D& pose,
-		cv::InputOutputArray inliers = cv::noArray());
+		const std::vector<Eigen::Vector3d>& bearings1,
+		const std::vector<Eigen::Vector3d>& bearings2,
+		Pose3D& pose);
 
 	// The Mathematics of Angle Baseline Weighting
 	// The average ray angle θ_avg provides:
