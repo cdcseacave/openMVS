@@ -6,6 +6,7 @@
 
 #include "Common.h"
 #include "GlobalPositioning.h"
+#include "PoseLink.h"
 #include "Scene.h"
 
 #pragma push_macro("VERBOSE")
@@ -220,7 +221,7 @@ unsigned GlobalPositioner::AddCameraToCameraConstraints(Scene& scene)
 	// Add constraints from relative poses between image pairs
 	unsigned numValidPairs = 0;
 	for (const ImagePair& pair : scene.pairs) {
-		if (!pair.relativePose.has_value() || !pair.HasValidWeight())
+		if (!IsPoseLinkPair(pair))
 			continue; // skip invalid pairs
 		ASSERT(scene.images[pair.ID1].HasCamera() && scene.images[pair.ID2].HasCamera());
 		if (!scene.images[pair.ID1].IsValid() || !scene.images[pair.ID2].IsValid())

@@ -494,6 +494,11 @@ bool ResectionInlierBarTest();
 // systematic error and outnumber the described ones pull the pose of the robust fit over all of
 // them, and the weighted polish brings it back to the described ones.
 bool ResectionDenseFitWeightTest();
+
+// The shared walks: an image's 2D-3D correspondences to a model's inlier tracks (its first keypoint on
+// each, in track order), its observation counts, the registered pairs of a model seen from their other
+// side and the links among them (the ones carrying a relative pose), strongest first
+bool LinkWalksTest();
 // A full adjustment fits the observations within ResectionConfig::fullBAInputErrorFactor x the reprojection bar of the
 // model and runs again while some camera's input to the next solve differs enough from what it gave this one
 // (AdjustRepeated): a camera whose observations all lie between the bar and 3x it comes back in one solve, which a

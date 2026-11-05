@@ -42,6 +42,7 @@
 #include "../../libs/SFM/SceneBlocks.h"
 #include "../../libs/SFM/GlobalAlignment.h"
 #include "../../libs/SFM/PoseLink.h"
+#include "../../libs/SFM/Link2D3D.h"
 #include "../../libs/SFM/Triangulation.h"
 #include "../../libs/SFM/MatchGeometric.h"
 #include "../../libs/SFM/LensFit.h"
@@ -12551,6 +12552,115 @@ bool ResectionDenseFitWeightTest()
 	VERBOSE("ResectionDenseFitWeightTest PASSED: %.4f deg / %.4g off with the dense correspondences at full weight, "
 		"%.4f deg / %.4g at %g (%u dense, %u described) (%s)", rotFull, cenFull, rotWeighted, cenWeighted,
 		DENSE_FIT_WEIGHT, NUM_TRACKS - NUM_DESCRIBED, NUM_DESCRIBED, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+
+// The shared walks of the 2D-3D linking (Link2D3D.h) and of an image's links (PoseLink.h), on the arc:
+// images 0-2 registered with 20 triangulated tracks, image 3 unregistered and observing the first 10
+// of them, the first of those twice (two keypoints of one image a track can hold), and an outlier
+// track it observes too. Its pairs: to registered 2 (300 weighted inliers) and 1 (100) with a relative
+// pose, to registered 0 with a valid weight but no relative pose, to unregistered 4 (500) with one.
+bool LinkWalksTest()
+{
+	TD_TIMER_START();
+	std::mt19937 rng(20261105);
+	Scene scene;
+	BuildResectionArc(scene, 5);
+	AddResectionTracks(scene, {0, 1, 2}, 20, rng);
+	AddResectionCorrespondences(scene, 3, 10, 0, rng);
+	Image& img = scene.images[3];
+	// a second keypoint of image 3 on the first track, one pixel off the first
+	const Observation first = scene.tracks[0].observations.back();
+	ASSERT(first.imageID == 3);
+	scene.tracks[0].observations.emplace_back(IIndex(3), (uint32_t)img.keypoints.size());
+	img.keypoints.emplace_back(img.keypoints[first.featureID].pt + cv::Point2f(1.f, 0.f), 1.f);
+	if (!AddResectionTrack(scene, Point3(0, 0, 0), {0, 1, 3})) {
+		VERBOSE("LinkWalksTest FAILED: the outlier track's point does not project in its images");
+		return false;
+	}
+	AddResectionPair(scene, 2, 3, 300);
+	AddResectionPair(scene, 1, 3, 100);
+	AddResectionPair(scene, 0, 3, 50);
+	scene.pairs.back().relativePose.reset();
+	AddResectionPair(scene, 3, 4, 500);
+	AddResectionPair(scene, 1, 2, 200);
+	img.InvalidatePose();
+	scene.images[4].InvalidatePose();
+	scene.status.nCalibratedImages = 3;
+	TriangulateTracks(scene, false, 4.f, 1.f);
+	Track& outlier = scene.tracks.back();
+	if (!outlier.IsInlier()) {
+		VERBOSE("LinkWalksTest FAILED: the extra track did not triangulate");
+		return false;
+	}
+	outlier.numInliers = 1;
+
+	// the PnP input: image 3's first keypoint on each inlier track, in track order, nothing of the outlier track
+	CameraCorrespondences correspondences;
+	CollectTrackCorrespondences(scene, 3, correspondences);
+	if (correspondences.size() != 10 || correspondences.numDescribed != 10 || correspondences.dense.size() != 10) {
+		VERBOSE("LinkWalksTest FAILED: %u correspondences (%u described) collected for image 3, 10 expected",
+			correspondences.size(), correspondences.numDescribed);
+		return false;
+	}
+	for (unsigned t = 0; t < 10; ++t) {
+		const Track& track = scene.tracks[t];
+		uint32_t featureID = NO_ID;
+		for (const Observation& obs : track.observations)
+			if (obs.imageID == 3) {
+				featureID = obs.featureID;
+				break;
+			}
+		const Point3 bearing(img.pCamera->UnprojectNormalized(Cast<REAL>(img.keypoints[featureID].pt)));
+		if (correspondences.points[t] != Eigen::Vector3d(track.position.x, track.position.y, track.position.z) ||
+			correspondences.bearings[t] != Eigen::Vector3d(bearing.x, bearing.y, bearing.z)) {
+			VERBOSE("LinkWalksTest FAILED: correspondence %u is not the first observation of image 3 on track %u", t, t);
+			return false;
+		}
+	}
+
+	// the counts: every observation of an inlier track, and the ones in its inlier prefix
+	const std::vector<TrackObservationCount> counts(CountTrackObservations(scene));
+	for (IIndex i = 0; i < 3; ++i)
+		if (counts[i].observations != 20 || counts[i].inliers != 20) {
+			VERBOSE("LinkWalksTest FAILED: registered image %u counts %u observations, %u inliers (20 and 20 expected)",
+				i, counts[i].observations, counts[i].inliers);
+			return false;
+		}
+	if (counts[3].observations != 11 || counts[3].inliers != 0 || counts[4].observations != 0) {
+		VERBOSE("LinkWalksTest FAILED: image 3 counts %u observations, %u inliers (11 and 0 expected), image 4 %u",
+			counts[3].observations, counts[3].inliers, counts[4].observations);
+		return false;
+	}
+
+	// the registered pairs of the model, seen from their other side, and the links among them
+	const auto isRegistered = [&scene](IIndex i) { return scene.images[i].HasPose(); };
+	std::vector<std::pair<IIndex, IIndex>> visits, linkVisits;
+	ForEachRegisteredPair(scene.pairs, isRegistered, [&visits](IIndex image, IIndex registered, const ImagePair&) {
+		visits.emplace_back(image, registered);
+	});
+	ForEachLink(scene.pairs, isRegistered, [&linkVisits](IIndex image, IIndex registered, const ImagePair&) {
+		linkVisits.emplace_back(image, registered);
+	});
+	const std::vector<std::pair<IIndex, IIndex>> expectedVisits{{3, 2}, {3, 1}, {3, 0}, {1, 2}, {2, 1}};
+	const std::vector<std::pair<IIndex, IIndex>> expectedLinks{{3, 2}, {3, 1}, {1, 2}, {2, 1}};
+	if (visits != expectedVisits || linkVisits != expectedLinks) {
+		VERBOSE("LinkWalksTest FAILED: %u registered pair visits (5 expected) and %u link visits (4 expected)",
+			(unsigned)visits.size(), (unsigned)linkVisits.size());
+		return false;
+	}
+	std::vector<PoseLink> links;
+	CollectPoseLinks(scene.pairs, 3, isRegistered, links);
+	if (links.size() != 2 || links[0].neighborID != 2 || links[0].numInliers != 300 || links[1].neighborID != 1) {
+		VERBOSE("LinkWalksTest FAILED: image 3 has %u links, the strongest to image %d; 2 expected, to images 2 then 1",
+			(unsigned)links.size(), links.empty() ? -1 : (int)links[0].neighborID);
+		return false;
+	}
+
+	VERBOSE("LinkWalksTest PASSED: image 3 has 10 PnP correspondences (first keypoint per inlier track, the outlier track "
+		"out), 11 observations counted, links to 2 then 1 and none to the unposed pair or the unregistered image (%s)",
+		TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 

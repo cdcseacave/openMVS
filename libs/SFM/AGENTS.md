@@ -219,6 +219,12 @@ Config: `minViews` (4), `maxViews` (36).
 ### Incremental Resection (`Resection.h`)
 Register images one at a time via 2D-3D PnP + RANSAC. Periodic local/global BA. Every resection closes with a full BA, also one with no image left to try (`Scene::Reconstruct`'s whole-scene pass always runs).
 
+### Links and 2D-3D correspondences (`PoseLink.h`, `Link2D3D.h`)
+One definition each, shared by every caller:
+- `ForEachRegisteredPair(pairs, isRegistered, fn)`: every verified pair (composite weight > 0) with a registered side, seen from the other side; the evidence the resection orders its candidates by and the pool chooses a block by
+- `ForEachLink` / `CollectPoseLinks`: the registered pairs that carry a relative pose (`IsPoseLinkPair`), an image's links; read by the resection's pose checks
+- `CameraCorrespondences` (one camera's bearings, points, dense flags), `CollectTrackCorrespondences` (the resection's PnP input), `CountTrackObservations` (candidate and pool counts), `AngularError` (pixel bar to angle at the camera's noise scale): the resection's PnP, the merge's generalized PnP (one `CameraCorrespondences` per rig camera) and its one-camera door
+
 ### Scene Clustering (`SceneCluster.h`)
 Aggregative clustering on covisibility graph for hierarchical reconstruction.
 - Bottom-up: merge highest-weight edges, aiming for `targetViewsPerCluster` (two thirds of `maxViewsPerCluster`, default 150), never past the ceiling itself
@@ -230,7 +236,7 @@ Aggregative clustering on covisibility graph for hierarchical reconstruction.
 Owns the blocks (one `Scene` each, local IDs sorted by global ID so every pair keeps ID1 < ID2), `localToGlobal`, `blockOf` (NO_ID = pool) and the global scene (pool images' features, every pair with a pool or cross endpoint).
 - `Extract(partition)`: keypoints/descriptors and intra-block pairs MOVED (not copied) into the blocks, cameras cloned, the scene's threads split over the blocks
 - `Release(block, images)` / `Insert(block, images, config, resectionCfg)`: move unposed images between a block and the pool through one remap; Insert rebuilds the block's tracks (`RebuildTracks`: `BuildTracks` over the block's pairs, unchanged tracks kept as they were, new or changed ones triangulated and filtered as after a registration); a refused image leaves with its observations (Release), what it joined of the tracks stays
-- `ResectPool(resectionCfg, config)`: after the blocks' reconstruction, every block hands its unregistered images to the pool (a block whose star failed hands all and is dropped); passes send each pool image to its best untried block by `ForEachRegisteredPairWeight` (Resection.h, the same sum `SelectNextImages` orders by), blocks run `Resection::RegisterImages(false)` in parallel, refused images return to the pool; rounds until one registers nothing
+- `ResectPool(resectionCfg, config)`: after the blocks' reconstruction, every block hands its unregistered images to the pool (a block whose star failed hands all and is dropped); passes send each pool image to its best untried block by `ForEachRegisteredPair` (PoseLink.h, the same sum `SelectNextImages` orders by), blocks run `Resection::RegisterImages(false)` in parallel, refused images return to the pool; rounds until one registers nothing
 
 ### Global Alignment (`GlobalAlignment.h`)
 Places the independently reconstructed blocks ("sub-scenes") in one frame by one robust averaging of the block graph, the view-graph filter's pattern over blocks:

@@ -6,6 +6,7 @@
 
 #include "Common.h"
 #include "Resection.h"
+#include "Link2D3D.h"
 #include "PoseLink.h"
 #include "Scene.h"
 #include "Track.h"
@@ -27,46 +28,31 @@ inline auto NeighborPose(const Scene& scene)
 	return [&scene](IIndex imageID) -> const Pose3D& { return scene.images[imageID]; };
 }
 
-// Every link the given image has to an already registered image, strongest first
-void CollectPoseLinks(const Scene& scene, IIndex imageID, std::vector<PoseLink>& links)
+// Is the given image registered in the scene, as the links and the evidence of a model read it?
+inline auto IsRegistered(const Scene& scene)
 {
-	links.clear();
-	for (const ImagePair& pair : scene.pairs) {
-		if (!IsPoseLinkPair(pair))
-			continue;
-		IIndex neighborID;
-		if (pair.ID1 == imageID)
-			neighborID = pair.ID2;
-		else if (pair.ID2 == imageID)
-			neighborID = pair.ID1;
-		else
-			continue;
-		if (scene.images[neighborID].HasPose())
-			links.push_back(MakePoseLink(pair, neighborID));
-	}
-	std::sort(links.begin(), links.end(), IsStrongerLink);
+	return [&scene](IIndex imageID) { return scene.images[imageID].HasPose(); };
 }
 
 // Polish an absolute pose over its inliers with each dense correspondence at denseWeight against a
 // described one's 1, through the estimator's own final refinement (estimate_absolute_pose_bearings:
 // the same loss at the same chord-distance tolerance). Uniform weights would leave that refinement's
 // pose where it is, so an inlier set of a single kind is left alone.
-void PolishAbsolutePose(const std::vector<poselib::Point3D>& bearings, const std::vector<poselib::Point3D>& points3D,
-	const std::vector<char>& dense, const std::vector<char>& inliers, const poselib::AbsolutePoseOptions& opt,
-	float denseWeight, poselib::CameraPose& pose)
+void PolishAbsolutePose(const CameraCorrespondences& correspondences, const std::vector<char>& inliers,
+	const poselib::AbsolutePoseOptions& opt, float denseWeight, poselib::CameraPose& pose)
 {
 	ASSERT(denseWeight >= 0.f && denseWeight <= 1.f);
-	ASSERT(bearings.size() == points3D.size() && bearings.size() == dense.size() && bearings.size() == inliers.size());
+	ASSERT(correspondences.size() == inliers.size());
 	std::vector<poselib::Point3D> bearingsInliers, pointsInliers;
 	std::vector<double> weights;
 	size_t numDense = 0;
-	FOREACH(k, bearings) {
+	FOREACH(k, correspondences.bearings) {
 		if (!inliers[k])
 			continue;
-		bearingsInliers.push_back(bearings[k]);
-		pointsInliers.push_back(points3D[k]);
-		weights.push_back(dense[k] ? (double)denseWeight : 1.0);
-		if (dense[k])
+		bearingsInliers.push_back(correspondences.bearings[k]);
+		pointsInliers.push_back(correspondences.points[k]);
+		weights.push_back(correspondences.dense[k] ? (double)denseWeight : 1.0);
+		if (correspondences.dense[k])
 			++numDense;
 	}
 	if (numDense == 0 || numDense == weights.size())
@@ -87,18 +73,9 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 	ASSERT(!unregistered.empty());
 
 	// Score accumulation
+	const std::vector<TrackObservationCount> counts(CountTrackObservations(scene));
 	for (auto& it : unregistered)
-		it.second = 0;
-	for (uint32_t trackID = 0; trackID < scene.tracks.size(); ++trackID) {
-		const Track& track = scene.tracks[trackID];
-		if (!track.IsInlier())
-			continue;
-		for (const Observation& obs : track.observations) {
-			auto it = unregistered.find(obs.imageID);
-			if (it != unregistered.end())
-				++it->second;
-		}
-	}
+		it.second = counts[it.first].observations;
 
 	// Fetch the image IDs with sufficient correspondences
 	IIndexArr nextIDs;
@@ -119,12 +96,11 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 	registeredWeights.reserve(nextIDs.size());
 	for (IIndex imageID : nextIDs)
 		registeredWeights.emplace(imageID, 0.f);
-	ForEachRegisteredPairWeight(scene.pairs,
-		[this](IIndex imageID) { return scene.images[imageID].HasPose(); },
-		[&registeredWeights](IIndex imageID, IIndex, float weight) {
+	ForEachRegisteredPair(scene.pairs, IsRegistered(scene),
+		[&registeredWeights](IIndex imageID, IIndex, const ImagePair& pair) {
 			const auto it = registeredWeights.find(imageID);
 			if (it != registeredWeights.end())
-				it->second += weight;
+				it->second += pair.GetCompositeWeight();
 		});
 	nextIDs.Sort([&registeredWeights, &unregistered](IIndex a, IIndex b) {
 		const float weightA = registeredWeights.at(a), weightB = registeredWeights.at(b);
@@ -146,26 +122,10 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 	// (pinhole, spherical / equirectangular, fisheye). The bearings come from
 	// Camera::UnprojectNormalized which already returns unit vectors carrying
 	// hemisphere information (sign(z)) for spherical cameras.
-	std::vector<poselib::Point3D> bearings;
-	std::vector<poselib::Point3D> points3D;
-	std::vector<char> dense;
-	unsigned numDescribed = 0;
-	for (const Track& track : scene.tracks) {
-		if (!track.IsInlier())
-			continue;
-		for (const Observation& obs : track.observations) {
-			if (obs.imageID == imageID) {
-				const Point2 kp = img.keypoints[obs.featureID].pt;
-				bearings.emplace_back(img.pCamera->UnprojectNormalized(kp));
-				points3D.push_back(track.position);
-				dense.push_back(img.IsDenseKeypoint(obs.featureID));
-				if (!dense.back())
-					++numDescribed;
-				break;
-			}
-		}
-	}
-	const unsigned n = (unsigned)bearings.size();
+	CameraCorrespondences correspondences;
+	CollectTrackCorrespondences(scene, imageID, correspondences);
+	const unsigned n = correspondences.size();
+	const unsigned numDescribed = correspondences.numDescribed;
 	if (n < config.minInliers)
 		return {0, n, numDescribed};
 
@@ -180,13 +140,12 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 	opt.ransac.max_iterations = config.ransac.max_iterations;
 	opt.ransac.min_iterations = config.ransac.min_iterations;
 	opt.ransac.success_prob = config.ransac.confidence;
-	opt.max_error = img.pCamera->PixelErrorToAngular(
-		config.ransac.threshold * img.pCamera->GetFeatureNoiseScale());
+	opt.max_error = AngularError(img, config.ransac.threshold);
 
 	std::vector<char> inliers;
 	poselib::CameraPose camPose;
 	poselib::RansacStats stats = poselib::estimate_absolute_pose_bearings(
-		bearings, points3D, opt, &camPose, &inliers);
+		correspondences.bearings, correspondences.points, opt, &camPose, &inliers);
 
 	const unsigned numInliers = (unsigned)stats.num_inliers;
 	if (numInliers < config.minInliers)
@@ -208,7 +167,7 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 	// described ones, sub-pixel where a dense one is a coarse warp sample whose error its neighbours
 	// share, set it wherever they are many
 	if (config.denseFitWeight != 1.f)
-		PolishAbsolutePose(bearings, points3D, dense, inliers, opt, config.denseFitWeight, camPose);
+		PolishAbsolutePose(correspondences, inliers, opt, config.denseFitWeight, camPose);
 
 	// the pose the estimator found, in the model's own frame: the checks below weigh it against the
 	// image's links before the image is given it
@@ -226,7 +185,7 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 	// is reported.
 	if (config.maxRelativeRotationError > 0.f || config.maxLinkDirectionError > 0.f || config.maxLinkRotationDisagreement > 0.f) {
 		std::vector<PoseLink> links;
-		CollectPoseLinks(scene, imageID, links);
+		CollectPoseLinks(scene.pairs, imageID, IsRegistered(scene), links);
 		const PoseLinkQuorum quorum = ComputePoseLinkQuorum(links, config.maxRelativeRotationError, NeighborPose(scene));
 		if (quorum.IsContested()) {
 			DEBUG("the pairs of image %u to its registered neighbours disagree by up to %.1f degrees",
@@ -258,9 +217,9 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 				REALArr depths;
 				depths.reserve(numInliers);
 				const Eigen::Vector3d C(pose.C.x, pose.C.y, pose.C.z);
-				FOREACH(k, points3D)
+				FOREACH(k, correspondences.points)
 					if (inliers[k])
-						depths.push_back((points3D[k] - C).norm());
+						depths.push_back((correspondences.points[k] - C).norm());
 				const REAL depth = depths.GetNth(depths.size() / 2);
 				ASSERT(depth > 0);
 				unsigned agreeing = 0, disagreeing = 0;
@@ -285,7 +244,7 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 				unsigned numDescribedInliers = 0, numDenseInliers = 0;
 				FOREACH(k, inliers)
 					if (inliers[k])
-						++(dense[k] ? numDenseInliers : numDescribedInliers);
+						++(correspondences.dense[k] ? numDenseInliers : numDescribedInliers);
 				const unsigned poseWeight = ROUND2INT<unsigned>(numDescribedInliers + numDenseInliers * config.pairsWeighting.DenseScale());
 				if (disagreeing > agreeing + poseWeight) {
 					DEBUG("warning: rejected the pose of image %u: %u/%u inliers (%.1f%%) and its centre lies in a direction "

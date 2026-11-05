@@ -77,7 +77,7 @@ bool GlobalRotationEstimator::EstimateRotations(Scene& scene, unsigned* pNumFilt
 	std::vector<RotationPair> rotationPairs;
 	rotationPairs.reserve(scene.pairs.size());
 	for (const ImagePair& pair : scene.pairs) {
-		if (!pair.relativePose.has_value() || !pair.HasValidWeight())
+		if (!IsPoseLinkPair(pair))
 			continue;
 		const float weight = options.useWeight ? pair.GetCompositeWeight() : (float)pair.GetNumWeightedInliers();
 		rotationPairs.emplace_back(pair.ID1, pair.ID2, pair.relativePose->R, weight);
@@ -538,7 +538,7 @@ unsigned GlobalRotationEstimator::FilterRelativeRotations(Scene& scene, REAL max
 	unsigned numPairs = 0, numInvalidPairs = 0;
 	float maxInvalidWeight = 0.f;
 	for (ImagePair& pair : scene.pairs) {
-		if (!pair.relativePose.has_value() || !pair.HasValidWeight())
+		if (!IsPoseLinkPair(pair))
 			continue;
 		Image& image1 = scene.images[pair.ID1];
 		Image& image2 = scene.images[pair.ID2];

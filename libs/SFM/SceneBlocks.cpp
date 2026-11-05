@@ -6,6 +6,8 @@
 
 #include "Common.h"
 #include "SceneBlocks.h"
+#include "Link2D3D.h"
+#include "PoseLink.h"
 #include "Triangulation.h"
 
 using namespace SFM;
@@ -509,11 +511,11 @@ void SceneBlocks::ResectPool(const ResectionConfig& resectionCfg, const Reconstr
 					if (blocks[b].images[l].HasPose())
 						registered[localToGlobal[b][l]] = 1;
 			std::unordered_map<IIndex, std::unordered_map<IIndex, float>> weights; // pool image -> block -> weight
-			ForEachRegisteredPairWeight(scene.pairs,
+			ForEachRegisteredPair(scene.pairs,
 				[&registered](IIndex g) { return registered[g] != 0; },
-				[&](IIndex g, IIndex h, float weight) {
+				[&](IIndex g, IIndex h, const ImagePair& pair) {
 					if (blockOf[g] == NO_ID)
-						weights[g][blockOf[h]] += weight;
+						weights[g][blockOf[h]] += pair.GetCompositeWeight();
 				});
 			IIndexArr candidates(0, (IIndex)weights.size());
 			for (const auto& it : weights)
@@ -545,11 +547,10 @@ void SceneBlocks::ResectPool(const ResectionConfig& resectionCfg, const Reconstr
 			std::unordered_map<IIndex, unsigned> numCorrInserted; // pool image -> its observations on the block's inlier tracks
 			for (const auto& [b, batch] : batches) {
 				Insert(b, batch, config, resectionCfg);
-				for (const Track& track : blocks[b].tracks)
-					if (track.IsInlier())
-						for (const Observation& obs : track.observations)
-							if (!blocks[b].images[obs.imageID].HasPose())
-								++numCorrInserted[localToGlobal[b][obs.imageID]];
+				const std::vector<TrackObservationCount> counts(CountTrackObservations(blocks[b]));
+				FOREACH(l, blocks[b].images)
+					if (!blocks[b].images[l].HasPose())
+						numCorrInserted[localToGlobal[b][l]] = counts[l].observations;
 				ASSERT(UnregisteredImages(b).size() == batch.size());
 				targets.push_back(b);
 			}
@@ -566,21 +567,14 @@ void SceneBlocks::ResectPool(const ResectionConfig& resectionCfg, const Reconstr
 			// what each block registered stays there, the rest returns to the pool
 			for (const auto& [b, batch] : batches) {
 				const Scene& blk = blocks[b];
-				std::unordered_map<IIndex, unsigned> numCorr, numInliers; // at the end of the resection
-				for (const Track& track : blk.tracks)
-					if (track.IsInlier())
-						FOREACH(k, track.observations) {
-							const IIndex g = localToGlobal[b][track.observations[k].imageID];
-							++numCorr[g];
-							if (k < track.numInliers)
-								++numInliers[g];
-						}
+				const std::vector<TrackObservationCount> counts(CountTrackObservations(blk)); // at the end of the resection
 				IIndexArr refused;
 				for (IIndex g : batch) {
-					const bool registeredHere = blk.images[LocalOf(b, g)].HasPose();
+					const IIndex l = LocalOf(b, g);
+					const bool registeredHere = blk.images[l].HasPose();
 					DEBUG("Pool resection round %u: image %u (from block %d) -> block %u: %s (%u correspondences when inserted, %u at the end, %u inliers)",
 						round, g, origin[g] == NO_ID ? -1 : (int)origin[g], b, registeredHere ? "registered" : "refused",
-						numCorrInserted[g], numCorr[g], numInliers[g]);
+						numCorrInserted[g], counts[l].observations, counts[l].inliers);
 					tried[g].insert(b);
 					++numTriedRound;
 					if (registeredHere) {

@@ -11,6 +11,7 @@
 #include "BundleAdjustment.h"
 #include "GlobalRotationAveraging.h"
 #include "GlobalScaleAveraging.h"
+#include "PoseLink.h"
 #include <numeric>
 
 using namespace SFM;
@@ -31,7 +32,7 @@ static UnsignedArr ComputeStarEvidence(const Scene& scene, IIndex refID, float m
 		const ImagePair& pair = scene.pairs[i];
 		if (pair.ID1 != refID && pair.ID2 != refID)
 			continue;
-		if (!pair.relativePose.has_value() || !pair.HasValidWeight())
+		if (!IsPoseLinkPair(pair))
 			continue;
 		const float share = pair.ComputeShareAboveAngle(scene.images[pair.ID1], scene.images[pair.ID2], minAngle);
 		evidence[i] = ROUND2INT<unsigned>(pair.GetNumWeightedInliers() * share);
@@ -48,7 +49,7 @@ IIndex StarInitializer::SelectReferenceView(const Scene& scene, const IIndexArr&
 	degree.Memset(0);
 	numPairs.Memset(0);
 	for (const ImagePair& pair : scene.pairs) {
-		if (!pair.relativePose.has_value() || !pair.HasValidWeight())
+		if (!IsPoseLinkPair(pair))
 			continue;
 		degree[pair.ID1] += pair.GetNumWeightedInliers();
 		degree[pair.ID2] += pair.GetNumWeightedInliers();
@@ -243,7 +244,7 @@ bool StarInitializer::EstimateGlobalScale(
 		if (validViews.find(pair.ID1) == validViews.end() ||
 			validViews.find(pair.ID2) == validViews.end())
 			continue;
-		if (!pair.relativePose.has_value() || !pair.HasValidWeight())
+		if (!IsPoseLinkPair(pair))
 			continue;
 		pairIndices.push_back((IIndex)pairIdx);
 	}
@@ -344,7 +345,7 @@ bool StarInitializer::Initialize(
 	const UnsignedArr pairEvidence(ComputeStarEvidence(scene, refID, config.evidenceMinAngle));
 	FOREACH(idxPair, scene.pairs) {
 		const ImagePair& pair = scene.pairs[idxPair];
-		if (!pair.relativePose.has_value() || !pair.HasValidWeight())
+		if (!IsPoseLinkPair(pair))
 			continue;
 		if (pairEvidence[idxPair] == 0)
 			continue; // no inlier fixes a distance (or the pair does not touch the reference): the view is left to the resection

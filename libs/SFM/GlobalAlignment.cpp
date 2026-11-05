@@ -9,6 +9,7 @@
 #include "GlobalRotationAveraging.h"
 #include "GlobalScaleAveraging.h"
 #include "GlobalTranslationAveraging.h"
+#include "Link2D3D.h"
 #include "PoseLink.h"
 #include "RobustAveraging.h"
 #include "Resection.h"
@@ -239,8 +240,7 @@ struct BlockSeamReprojectionError
 // the mapping back to the sub-scene.
 struct RigCorrespondences
 {
-	std::vector<std::vector<poselib::Point3D>> bearings; // per rig camera, unit vectors in that camera's frame
-	std::vector<std::vector<poselib::Point3D>> points;   // per rig camera, points in the other sub-scene's frame
+	std::vector<CameraCorrespondences> cameras;          // per rig camera, its bearings and the other sub-scene's points
 	std::vector<std::vector<SeamCorrespondence>> matches; // per rig camera, the two images and features behind each
 	std::vector<poselib::CameraPose> cameraExt;          // per rig camera, its pose in the rig sub-scene's frame
 	std::vector<IIndex> localIDs;                        // per rig camera, its image index in the rig sub-scene
@@ -253,7 +253,7 @@ struct RigCorrespondences
 // camera model in a rig is judged at the same pixel error
 double PixelPerRadian(const Image& image, float maxReprojError)
 {
-	const REAL angular = image.pCamera->PixelErrorToAngular(maxReprojError * image.pCamera->GetFeatureNoiseScale());
+	const REAL angular = AngularError(image, maxReprojError);
 	return angular > 0 ? (double)(maxReprojError / angular) : 0.0;
 }
 
@@ -296,16 +296,14 @@ RigCorrespondences CollectRigCorrespondences(
 			if (inserted) {
 				rc.cameraExt.emplace_back(imgRig.R, imgRig.GetT());
 				rc.localIDs.push_back(localIdRig);
-				rc.bearings.emplace_back();
-				rc.points.emplace_back();
+				rc.cameras.emplace_back();
 				rc.matches.emplace_back();
 				const double pixelPerRadian = PixelPerRadian(imgRig, maxReprojError);
 				rc.pixelPerRadian.push_back(pixelPerRadian);
 				rc.maxError = MAXF(rc.maxError, pixelPerRadian > 0 ? (double)maxReprojError / pixelPerRadian : 0.0);
 			}
 			const uint32_t r = itRig->second;
-			rc.bearings[r].emplace_back(imgRig.pCamera->UnprojectNormalized(imgRig.keypoints[featureRig].pt));
-			rc.points[r].push_back(pointScene.tracks[it->second].position);
+			rc.cameras[r].Add(imgRig, featureRig, pointScene.tracks[it->second].position);
 			rc.matches[r].push_back(SeamCorrespondence{link.globalIdA, link.globalIdB, featureA, featureB});
 			++rc.numCorrespondences;
 		}
@@ -323,13 +321,14 @@ void AppendRigObservations(
 	correspondences.reserve(correspondences.size() + rc.numCorrespondences);
 	for (size_t r = 0; r < rc.cameraExt.size(); ++r) {
 		const Image& imgRig = rigScene.images[rc.localIDs[r]];
-		for (size_t i = 0; i < rc.points[r].size(); ++i) {
+		const CameraCorrespondences& camera = rc.cameras[r];
+		for (size_t i = 0; i < camera.points.size(); ++i) {
 			const SeamCorrespondence& match = rc.matches[r][i];
 			SeamObservation obs;
-			obs.X = rc.points[r][i];
+			obs.X = camera.points[i];
 			obs.R = imgRig.R;
 			obs.C = imgRig.C;
-			obs.bearing = rc.bearings[r][i];
+			obs.bearing = camera.bearings[i];
 			obs.pixelPerRadian = rc.pixelPerRadian[r];
 			obs.forward = pointsAreA;
 			obs.rigImage = pointsAreA ? match.imageB : match.imageA;
@@ -355,13 +354,12 @@ void GroupRigObservations(
 		const auto [it, inserted] = rigIndexOf.emplace(obs.rigImage, (uint32_t)rc.cameraExt.size());
 		if (inserted) {
 			rc.cameraExt.emplace_back(obs.R, Point3(obs.R * (-obs.C)));
-			rc.bearings.emplace_back();
-			rc.points.emplace_back();
+			rc.cameras.emplace_back();
 			indexOf.emplace_back();
 			rc.maxError = MAXF(rc.maxError, obs.pixelPerRadian > 0 ? (double)maxReprojError / obs.pixelPerRadian : 0.0);
 		}
-		rc.bearings[it->second].emplace_back(normalized(obs.bearing));
-		rc.points[it->second].push_back(obs.X);
+		rc.cameras[it->second].bearings.emplace_back(normalized(obs.bearing));
+		rc.cameras[it->second].points.push_back(obs.X);
 		indexOf[it->second].push_back(i);
 		++rc.numCorrespondences;
 	}
@@ -388,10 +386,17 @@ unsigned EstimateRigAgainstPoints(
 	// the widest of its cameras' thresholds; the refinement below charges each camera its own
 	opt.max_error = rc.maxError;
 
+	std::vector<std::vector<poselib::Point3D>> bearings, points;
+	bearings.reserve(rc.cameras.size());
+	points.reserve(rc.cameras.size());
+	for (const CameraCorrespondences& camera : rc.cameras) {
+		bearings.push_back(camera.bearings);
+		points.push_back(camera.points);
+	}
 	poselib::CameraPose pose;
 	double scale = 1;
 	const poselib::RansacStats stats = poselib::estimate_generalized_absolute_pose_scale_bearings(
-		rc.bearings, rc.points, rc.cameraExt, opt, &pose, &scale, &inliers);
+		bearings, points, rc.cameraExt, opt, &pose, &scale, &inliers);
 	if (stats.num_inliers == 0 || !ISFINITE(scale) || scale <= 0)
 		return 0;
 
@@ -594,20 +599,14 @@ struct DoorContext
 // pose against the other block's points (P3P RANSAC on its bearings), its own pose in its block giving
 // the rotation and the translation, and the scale the median ratio of the depths its points have in
 // the two blocks, over the correspondences whose keypoint is also an observation of a track of its
-// own block
+// own block; camera holds the direction's correspondences, grouped as the rig's one camera
 bool EstimateDoorReading(
 	const std::vector<SeamObservation>& observations, const std::vector<uint32_t>& direction,
-	bool forward, const DoorContext& door, const GlobalAlignmentConfig& config, SeamReading& reading)
+	const CameraCorrespondences& camera, bool forward, const DoorContext& door, const GlobalAlignmentConfig& config,
+	SeamReading& reading)
 {
-	ASSERT(!direction.empty());
+	ASSERT(!direction.empty() && camera.size() == direction.size());
 	const SeamObservation& first = observations[direction.front()];
-	std::vector<poselib::Point3D> bearings, points;
-	for (const uint32_t i : direction) {
-		ASSERT(observations[i].rigImage == first.rigImage);
-		const Point3 b(normalized(observations[i].bearing));
-		bearings.emplace_back(b.x, b.y, b.z);
-		points.emplace_back(observations[i].X.x, observations[i].X.y, observations[i].X.z);
-	}
 	poselib::AbsolutePoseOptions opt;
 	opt.ransac = SeamRansacOptions();
 	opt.max_error = first.pixelPerRadian > 0 ? (double)config.maxReprojError / first.pixelPerRadian : 0.0;
@@ -615,7 +614,7 @@ bool EstimateDoorReading(
 		return false;
 	poselib::CameraPose pose;
 	std::vector<char> inliers;
-	const poselib::RansacStats stats = poselib::estimate_absolute_pose_bearings(bearings, points, opt, &pose, &inliers);
+	const poselib::RansacStats stats = poselib::estimate_absolute_pose_bearings(camera.bearings, camera.points, opt, &pose, &inliers);
 	if (stats.num_inliers < config.minCommonTracks)
 		return false;
 	// the camera in the point block's frame (x_cam = R X + t), and the depths its inlier points have
@@ -677,7 +676,7 @@ bool EstimateDirectionReading(
 	std::vector<std::vector<uint32_t>> indexOf;
 	GroupRigObservations(observations, direction, config.maxReprojError, rc, indexOf);
 	// a direction of one rig camera is a door, measured by that camera's own pose
-	const bool door1 = rc.cameraExt.size() == 1 && EstimateDoorReading(observations, direction, forward, door, config, reading);
+	const bool door1 = rc.cameraExt.size() == 1 && EstimateDoorReading(observations, direction, rc.cameras.front(), forward, door, config, reading);
 	if (!door1) {
 		Transform T;
 		std::vector<std::vector<char>> ransacInliers;

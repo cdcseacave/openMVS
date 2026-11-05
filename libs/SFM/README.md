@@ -638,7 +638,8 @@ libs/SFM/
 │ # Reconstruction
 ├── StarInitializer.h/cpp               # Star-config initialization
 ├── Resection.h/cpp                     # Incremental PnP registration
-├── PoseLink.h                          # Pose-link quorum over an image's verified pairs (resection + image filter)
+├── PoseLink.h                          # An image's links to a model (ForEachRegisteredPair, ForEachLink, CollectPoseLinks) and their quorum
+├── Link2D3D.h/cpp                      # One camera's 2D-3D correspondences, shared by the resection's PnP and the merge's gPnP
 ├── Triangulation.h/cpp                 # Multi-view triangulation
 ├── BundleAdjustment.h/cpp              # Ceres-based optimization
 ├── BundleAdjustmentCostFunctions.h     # Reprojection error residuals
