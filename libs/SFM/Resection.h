@@ -45,7 +45,7 @@ struct SFM_API ResectionConfig
 	unsigned minCorrespondences{15};    // Minimum 2D-3D correspondences to attempt resection; every image holding them
 	                                    // and at least one link (a verified pair with a relative pose to a registered
 	                                    // image, ForEachLink) is a candidate, tried in the order of the composite weight
-	                                    // of its verified pairs to registered images
+	                                    // of its links
 	unsigned minInliers{12};            // Minimum inliers to accept a pose
 	float minInlierRatio{0.25f};        // Minimum share of the 2D-3D correspondences that must be inliers for a pose to
 	                                    // be accepted; a smaller consensus can agree on a pose that is nowhere near the
@@ -283,9 +283,8 @@ private:
 	using IIndexScores = std::unordered_map<IIndex,unsigned>;
 
 	// Count each unregistered image's 2D-3D correspondences into unregistered and list the images
-	// holding minCorrespondences of them and at least one link (ForEachLink), the heaviest registered
-	// pair weight first (the composite weight of the image's valid pairs to registered images; ties by
-	// the count)
+	// holding minCorrespondences of them and at least one link (ForEachLink), the heaviest link weight
+	// first (the composite weight of the image's links; ties by the count)
 	IIndexArr SelectNextImages(IIndexScores& unregistered) const;
 
 	IIndexArr BuildLocalWindow(const IIndexArr& imageIDs) const;

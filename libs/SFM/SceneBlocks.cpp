@@ -504,14 +504,14 @@ void SceneBlocks::ResectPool(const ResectionConfig& resectionCfg, const Reconstr
 		std::unordered_map<IIndex, std::unordered_set<IIndex>> tried; // pool image -> the blocks it tried this round
 		unsigned numMovedRound = 0, numTriedRound = 0, numPasses = 0;
 		for (;;) {
-			// the evidence each block holds of each pool image: the weight of its pairs to the block's registered images
+			// the evidence each block holds of each pool image: the weight of its links to the block's registered images
 			std::vector<uint8_t> registered(scene.images.size(), 0);
 			FOREACH(b, blocks)
 				FOREACH(l, blocks[b].images)
 					if (blocks[b].images[l].HasPose())
 						registered[localToGlobal[b][l]] = 1;
 			std::unordered_map<IIndex, std::unordered_map<IIndex, float>> weights; // pool image -> block -> weight
-			ForEachRegisteredPair(scene.pairs,
+			ForEachLink(scene.pairs,
 				[&registered](IIndex g) { return registered[g] != 0; },
 				[&](IIndex g, IIndex h, const ImagePair& pair) {
 					if (blockOf[g] == NO_ID)

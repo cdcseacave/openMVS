@@ -501,13 +501,14 @@ bool ResectionInlierBarTest();
 bool ResectionDenseFitWeightTest();
 
 // The shared walks: an image's 2D-3D correspondences to a model's inlier tracks (its first keypoint on
-// each, in track order), its observation counts, the registered pairs of a model seen from their other
-// side and the links among them (the ones carrying a relative pose), strongest first
+// each, in track order), its observation counts, and the links of a model (its registered pairs carrying
+// a relative pose) seen from their other side, strongest first
 bool LinkWalksTest();
 
 // An image is tried for resection only once it has a link (a verified pair with a relative pose to a
 // registered image): one whose pairs with a relative pose go to unregistered images waits until one
-// of them is registered, however many 2D-3D correspondences it holds; one with a link is tried as before
+// of them is registered, however many 2D-3D correspondences it holds; the candidates are tried in the order
+// of their links' weight, a pair without a relative pose counting for nothing
 bool ResectionLinkGateTest();
 // A full adjustment fits the observations within ResectionConfig::fullBAInputErrorFactor x the reprojection bar of the
 // model and runs again while some camera's input to the next solve differs enough from what it gave this one
@@ -648,6 +649,9 @@ bool SceneClusterThinStretchTest();
 bool SceneBlocksInsertReleaseTest();
 bool SceneBlocksInsertRebuildTest();
 bool PoolResectionWrongClusterTest();
+// A pool image is offered only to the blocks it has links in (verified pairs with a relative pose to their
+// registered images): pairs without a relative pose, however heavy, do not send it to a block
+bool PoolResectionLinkOnlyTest();
 
 // Phase 3: Global Alignment tests
 bool GlobalAlignmentBuildGlobalToLocalMapTest();

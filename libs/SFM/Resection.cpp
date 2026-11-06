@@ -78,21 +78,21 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 		it.second = counts[it.first].observations;
 
 	// Fetch the image IDs with sufficient correspondences and a link (ForEachLink: a verified pair with
-	// a relative pose to a registered image). An image can reach the correspondences through long
-	// tracks alone, before any image it is paired with is registered; its pose would then have no link
-	// for the checks of RegisterImage to weigh it against, so it waits until one of its paired images
-	// is registered
-	std::unordered_set<IIndex> linked;
-	ForEachLink(scene.pairs, IsRegistered(scene), [&unregistered, &linked](IIndex imageID, IIndex, const ImagePair&) {
+	// a relative pose to a registered image), with the composite weight of their links. An image can
+	// reach the correspondences through long tracks alone, before any image it is paired with is
+	// registered; its pose would then have no link for the checks of RegisterImage to weigh it against,
+	// so it waits until one of its paired images is registered
+	std::unordered_map<IIndex, float> linkWeights;
+	ForEachLink(scene.pairs, IsRegistered(scene), [&unregistered, &linkWeights](IIndex imageID, IIndex, const ImagePair& pair) {
 		if (unregistered.count(imageID))
-			linked.insert(imageID);
+			linkWeights[imageID] += pair.GetCompositeWeight();
 	});
 	IIndexArr nextIDs;
 	unsigned numWaiting = 0;
 	for (const auto& it : unregistered) {
 		if (it.second < config.minCorrespondences)
 			continue;
-		if (linked.count(it.first))
+		if (linkWeights.count(it.first))
 			nextIDs.push_back(it.first);
 		else
 			++numWaiting;
@@ -102,29 +102,18 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 		return nextIDs;
 	}
 
-	// Order them by the weight of their evidence the model holds: the composite weight of their
-	// valid pairs to registered images. Among the candidates of one moment the one with the most
-	// correspondences is often the one that fails while a less counted one beside it, whose pairs
-	// lie in the model, registers; and every candidate stays in the list, however few its
-	// correspondences against the best one's
-	std::unordered_map<IIndex, float> registeredWeights;
-	registeredWeights.reserve(nextIDs.size());
-	for (IIndex imageID : nextIDs)
-		registeredWeights.emplace(imageID, 0.f);
-	ForEachRegisteredPair(scene.pairs, IsRegistered(scene),
-		[&registeredWeights](IIndex imageID, IIndex, const ImagePair& pair) {
-			const auto it = registeredWeights.find(imageID);
-			if (it != registeredWeights.end())
-				it->second += pair.GetCompositeWeight();
-		});
-	nextIDs.Sort([&registeredWeights, &unregistered](IIndex a, IIndex b) {
-		const float weightA = registeredWeights.at(a), weightB = registeredWeights.at(b);
+	// Order them by the weight of the evidence the model holds of them: the composite weight of their
+	// links. Among the candidates of one moment the one with the most correspondences is often the one
+	// that fails while a less counted one beside it, whose links lie in the model, registers; and every
+	// candidate stays in the list, however few its correspondences against the best one's
+	nextIDs.Sort([&linkWeights, &unregistered](IIndex a, IIndex b) {
+		const float weightA = linkWeights.at(a), weightB = linkWeights.at(b);
 		if (weightA != weightB)
 			return weightA > weightB;
 		return unregistered.at(a) > unregistered.at(b);
 	});
-	DEBUG_EXTRA("Selected %u images, the first with %g registered pair weight and %u visible points (%u more wait for a link)",
-		nextIDs.size(), registeredWeights.at(nextIDs[0]), unregistered.at(nextIDs[0]), numWaiting);
+	DEBUG_EXTRA("Selected %u images, the first with %g link weight and %u visible points (%u more wait for a link)",
+		nextIDs.size(), linkWeights.at(nextIDs[0]), unregistered.at(nextIDs[0]), numWaiting);
 	return nextIDs;
 }
 

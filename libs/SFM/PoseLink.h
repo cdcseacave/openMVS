@@ -137,35 +137,24 @@ inline bool IsStrongerLink(const PoseLink& a, const PoseLink& b)
 	return a.numInliers > b.numInliers || (a.numInliers == b.numInliers && a.neighborID < b.neighborID);
 }
 
-// The evidence a model holds of the images it has not registered: every verified pair (composite
-// weight > 0) with a registered image, seen from its other image; fn(image, registeredImage, pair)
-// is called for each such pair, once per registered side (ID2 registered first, then ID1). The walk
-// the resection orders its candidates by and the pool resection chooses an image's block by, and
-// the one the links below are read through.
+// The links of a model: every verified pair (composite weight > 0) with a registered image that
+// carries a relative pose (IsPoseLinkPair), seen from its other image; fn(image, registeredImage, pair)
+// is called for each such pair, once per registered side (ID2 registered first, then ID1). The one
+// definition of an image's link to a model and the evidence a model holds of the images it has not
+// registered: read by the resection's candidate gate (an image is tried only once it has a link) and
+// next-image order, by the pool resection's choice of an image's block and, through CollectPoseLinks,
+// by the checks of the pose an image is given.
 template <typename IsRegistered, typename Fn>
-void ForEachRegisteredPair(const ImagePairArr& pairs, const IsRegistered& isRegistered, const Fn& fn)
+void ForEachLink(const ImagePairArr& pairs, const IsRegistered& isRegistered, const Fn& fn)
 {
 	for (const ImagePair& pair : pairs) {
-		if (!pair.HasValidWeight())
+		if (!IsPoseLinkPair(pair))
 			continue;
 		if (isRegistered(pair.ID2))
 			fn(pair.ID1, pair.ID2, pair);
 		if (isRegistered(pair.ID1))
 			fn(pair.ID2, pair.ID1, pair);
 	}
-}
-
-// The links of a model: every registered pair (ForEachRegisteredPair) that carries a relative pose
-// (IsPoseLinkPair); fn(image, registeredImage, pair). The one definition of an image's link to a
-// model, read by the resection's candidate gate (an image is tried only once it has a link) and,
-// through CollectPoseLinks, by the checks of the pose it is given.
-template <typename IsRegistered, typename Fn>
-void ForEachLink(const ImagePairArr& pairs, const IsRegistered& isRegistered, const Fn& fn)
-{
-	ForEachRegisteredPair(pairs, isRegistered, [&fn](IIndex image, IIndex registered, const ImagePair& pair) {
-		if (IsPoseLinkPair(pair))
-			fn(image, registered, pair);
-	});
 }
 
 // Every link the given image has to a registered image (ForEachLink), strongest first

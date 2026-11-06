@@ -12971,20 +12971,17 @@ bool LinkWalksTest()
 		return false;
 	}
 
-	// the registered pairs of the model, seen from their other side, and the links among them
+	// the links of the model, seen from their other side: the pairs to a registered image carrying a
+	// relative pose, not the one to image 0 without it
 	const auto isRegistered = [&scene](IIndex i) { return scene.images[i].HasPose(); };
-	std::vector<std::pair<IIndex, IIndex>> visits, linkVisits;
-	ForEachRegisteredPair(scene.pairs, isRegistered, [&visits](IIndex image, IIndex registered, const ImagePair&) {
-		visits.emplace_back(image, registered);
-	});
+	std::vector<std::pair<IIndex, IIndex>> linkVisits;
 	ForEachLink(scene.pairs, isRegistered, [&linkVisits](IIndex image, IIndex registered, const ImagePair&) {
 		linkVisits.emplace_back(image, registered);
 	});
-	const std::vector<std::pair<IIndex, IIndex>> expectedVisits{{3, 2}, {3, 1}, {3, 0}, {1, 2}, {2, 1}};
 	const std::vector<std::pair<IIndex, IIndex>> expectedLinks{{3, 2}, {3, 1}, {1, 2}, {2, 1}};
-	if (visits != expectedVisits || linkVisits != expectedLinks) {
-		VERBOSE("LinkWalksTest FAILED: %u registered pair visits (5 expected) and %u link visits (4 expected)",
-			(unsigned)visits.size(), (unsigned)linkVisits.size());
+	if (linkVisits != expectedLinks) {
+		VERBOSE("LinkWalksTest FAILED: %u link visits (4 expected: 3 to 2 and 1, and 1 and 2 to each other)",
+			(unsigned)linkVisits.size());
 		return false;
 	}
 	std::vector<PoseLink> links;
@@ -13007,7 +13004,9 @@ bool LinkWalksTest()
 // image 5 (300), and a pair to registered image 0 of 1000 weighted inliers carries no relative pose,
 // so it heads the order; image 5 holds 40 true correspondences and a link to image 3 (200). Image 4
 // waits, image 5 registers, and image 4 registers after it, through its link to image 5.
-// (2) the control: image 4 also has a link to image 2 (100), and is tried first, as before the rule.
+// (2) the order reads the links alone: image 4 also has a link to image 2 (100), image 5 holds the same 40
+// correspondences and its link to image 3 (200) weighs more than image 4's links, though less than image 4's
+// pair without a relative pose; image 5 is tried first and registers, then image 4.
 // (3) image 5 holds no correspondence: image 4, linked to nothing registered, is never tried; once
 // image 5 holds its correspondences, a second resection registers image 5 and then image 4.
 bool ResectionLinkGateTest()
@@ -13059,7 +13058,7 @@ bool ResectionLinkGateTest()
 		}
 	}
 
-	// (2) the control: an image with a link is tried as before, first by its pair weight
+	// (2) an image with a link is tried, in the order of its links' weight; its pair without a relative pose counts for nothing
 	{
 		std::mt19937 rng(20261105);
 		Scene scene;
@@ -13067,9 +13066,12 @@ bool ResectionLinkGateTest()
 		LogCapture log;
 		Resection resection(scene, ResectionConfig());
 		resection.RegisterImages();
-		const size_t registered4 = LogFirstAttempt(log, 4, true), tried5 = firstAttempt(log, 5);
-		if (!atTruePose(scene, truePoses, 4) || !atTruePose(scene, truePoses, 5) || registered4 == String::npos || registered4 > tried5) {
-			VERBOSE("ResectionLinkGateTest FAILED: image 4, linked to registered image 2, was not registered first at its true pose");
+		const size_t registered5 = LogFirstAttempt(log, 5, true), tried4 = firstAttempt(log, 4);
+		if (!atTruePose(scene, truePoses, 4) || !atTruePose(scene, truePoses, 5) || registered5 == String::npos || tried4 < registered5) {
+			VERBOSE("ResectionLinkGateTest FAILED: image 5, whose link to image 3 (200) outweighs image 4's link to image 2 (100), was %s; "
+				"image 4's pair of 1000 to image 0 has no relative pose and must not count in the order (image 4 %s)",
+				tried4 < registered5 ? "tried after image 4" : "not registered at its true pose",
+				atTruePose(scene, truePoses, 4) ? "registered at its true pose" : "not registered at its true pose");
 			return false;
 		}
 	}
@@ -13107,7 +13109,7 @@ bool ResectionLinkGateTest()
 	}
 
 	VERBOSE("ResectionLinkGateTest PASSED: an image whose pairs with a relative pose go to unregistered images waits and registers "
-		"once one of them is registered, and is never tried while none is; an image with a link is tried as before (%s)",
+		"once one of them is registered, and is never tried while none is; the order follows the links' weight alone (%s)",
 		TD_TIMER_GET_FMT().c_str());
 	return true;
 }
@@ -17750,6 +17752,75 @@ bool PoolResectionWrongClusterTest()
 
 	VERBOSE("PoolResectionWrongClusterTest PASSED: image %u moved from block 0 to block 1, %.3f deg rotation, %.3f deg direction off the truth (%s)",
 		wrong, rotationError, directionError, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// A pool image is offered only to the blocks it has links in (verified pairs with a relative pose to their
+// registered images): pool image 18 (B's) has its links to B's registered images, and its pairs to the images
+// of block A carry no relative pose (F-only pairs): the generated one loses its relative pose, and every other
+// image of A gets a pair of 1000 weighted inliers, the heaviest pairs of the scene, together heavier than its
+// links; it is sent to block B first, registers there, and is never tried in block A
+bool PoolResectionLinkOnlyTest()
+{
+	TD_TIMER_START();
+	const ReconstructionConfig config;
+	ResectionConfig resectionCfg = config.resectionCfg;
+	resectionCfg.pairsWeighting = config.matchCfg.weightingCfg;
+	resectionCfg.DeriveBAConfigs(config.baConfig);
+	const IIndex image = 18;
+	Scene scene;
+	SceneBlocks sceneBlocks(scene);
+	std::vector<Pose3D> gtPoses;
+	BuildPoolBlocks(scene, sceneBlocks, gtPoses, {}, {image}, config);
+	std::set<IIndex> paired; // the images of block A the image already has a pair to
+	for (ImagePair& pair : scene.pairs) {
+		const IIndex other = pair.ID1 == image ? pair.ID2 : pair.ID1;
+		if ((pair.ID1 == image || pair.ID2 == image) && sceneBlocks.blockOf[other] == 0) {
+			pair.relativePose.reset();
+			paired.insert(other);
+		}
+	}
+	for (IIndex a = 0; a < 12; ++a) {
+		if (paired.count(a))
+			continue;
+		ImagePair pair(a, image);
+		pair.weightedInliers = 1000.f;
+		pair.weightSpatial = 20.f;
+		pair.weightConnectivity = 1.f;
+		scene.pairs.emplace_back(std::move(pair));
+	}
+	float weightA = 0.f, weightB = 0.f; // the image's F-only pairs to block 0, its links to block 1
+	unsigned numLinksA = 0;
+	for (const ImagePair& pair : scene.pairs) {
+		if (!pair.HasValidWeight() || (pair.ID1 != image && pair.ID2 != image))
+			continue;
+		const IIndex b = sceneBlocks.blockOf[pair.ID1 == image ? pair.ID2 : pair.ID1];
+		if (b == 0 && pair.relativePose.has_value())
+			++numLinksA;
+		else if (b == 0)
+			weightA += pair.GetCompositeWeight();
+		else if (b == 1 && pair.relativePose.has_value())
+			weightB += pair.GetCompositeWeight();
+	}
+	if (sceneBlocks.blockOf[image] != NO_ID || numLinksA != 0 || weightB <= 0.f || weightA <= weightB) {
+		VERBOSE("PoolResectionLinkOnlyTest FAILED: the fixture does not pose the problem: image %u in block %d, %u links to block 0, its F-only pairs to it weigh %g, its links to block 1 %g",
+			image, sceneBlocks.blockOf[image] == NO_ID ? -1 : (int)sceneBlocks.blockOf[image], numLinksA, weightA, weightB);
+		return false;
+	}
+
+	LogCapture log;
+	sceneBlocks.ResectPool(resectionCfg, config);
+	const String toA(String::FormatString("image %u (from block -1) -> block 0:", image));
+	const String toB(String::FormatString("image %u (from block -1) -> block 1: registered", image));
+	if (log.Contains(toA.c_str()) || !log.Contains(toB.c_str()) || sceneBlocks.blockOf[image] != 1) {
+		VERBOSE("PoolResectionLinkOnlyTest FAILED: image %u, whose pairs to block 0 carry no relative pose, was %s; it ended in block %d",
+			image, log.Contains(toA.c_str()) ? "tried in block 0" : "not registered in block 1 at its first attempt",
+			sceneBlocks.blockOf[image] == NO_ID ? -1 : (int)sceneBlocks.blockOf[image]);
+		return false;
+	}
+
+	VERBOSE("PoolResectionLinkOnlyTest PASSED: image %u, F-only pairs of %g to block 0 and links of %g to block 1, was sent to block 1 first and registered there (%s)",
+		image, weightA, weightB, TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 /*----------------------------------------------------------------*/

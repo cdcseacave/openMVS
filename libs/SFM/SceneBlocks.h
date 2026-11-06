@@ -40,8 +40,8 @@ namespace SFM {
  *
  * Between the blocks' own reconstruction and the merge, the pool resection (ResectPool) moves images
  * between blocks through the pool: every block hands back the images it could not register, and each
- * pool image is offered to the block its verified pairs to registered images weigh most on, where
- * that block's ordinary resection tries it. Release and Insert are the two moves; both renumber the
+ * pool image is offered to the block its links (verified pairs with a relative pose) to registered
+ * images weigh most on, where that block's ordinary resection tries it. Release and Insert are the two moves; both renumber the
  * block through one remap and keep every invariant above.
  */
 class SFM_API SceneBlocks
@@ -90,8 +90,8 @@ public:
 	 * @brief The pool resection, between the blocks' reconstruction and the merge: every block hands its
 	 * unregistered images to the pool (a block whose initialization failed hands all of them and is
 	 * dropped); then, pass after pass, each pool image goes to the block not yet tried this round that its
-	 * verified pairs to registered images weigh most on (ForEachRegisteredPair), the blocks with
-	 * images to try run their ordinary resection on them in parallel, and what a block does not register
+	 * links (verified pairs with a relative pose) to registered images weigh most on (ForEachLink), the
+	 * blocks with images to try run their ordinary resection on them in parallel, and what a block does not register
 	 * returns to the pool with its observations (Release); what it joined of the block's tracks stays. A
 	 * round ends when no pool image has an untried block it has evidence in; rounds repeat until one moves
 	 * nothing. A block that registers images is settled as the blocks'

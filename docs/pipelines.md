@@ -214,7 +214,7 @@ graph TD
     F --> F1[SelectReferenceView: highest connectivity]
     F1 --> F2[EstimateGlobalScale from multiple baselines]
     F2 --> G[Resection::RegisterImages<br/>Resection.cpp]
-    G --> G1[SelectNextImages: heaviest registered pair weight]
+    G --> G1[SelectNextImages: heaviest link weight]
     G1 --> G2[RegisterImage: PnP + RANSAC via PoseLib]
     G2 --> G3{Periodic?}
     G3 -->|localBAEvery| G4[Local BA in window]
@@ -264,7 +264,7 @@ graph TD
 
 - Function: `Resection::RegisterImages()` — `libs/SFM/Resection.cpp`
 - Input: sub-scene with some initialized poses and tracks
-- Processing: tries, one registration per round, the images holding `minCorrespondences` 2D-3D correspondences in the order of the composite weight of their verified pairs to registered images; a stall runs the full BA and tries again when images were registered since the last one; `RegisterImage()` runs PnP via PoseLib + RANSAC with `ransac.threshold` (8 px) and accepts the pose after the inlier-share, rotation-quorum and direction checks (the direction of each quorum link held to the larger of the pair's ray angle and the model's parallax; `--max-link-direction-error`, 0 = no direction check); new tracks triangulated; local BA every `localBAEvery` (10) images in window of `maxLocalWindow` (25); full BA every `fullBAEvery` (25, 50, 100); always closes with a full BA, also with no image left to try
+- Processing: tries, one registration per round, the images holding `minCorrespondences` 2D-3D correspondences and a link (a verified pair with a relative pose to a registered image) in the order of the composite weight of their links; a stall runs the full BA and tries again when images were registered since the last one; `RegisterImage()` runs PnP via PoseLib + RANSAC with `ransac.threshold` (8 px) and accepts the pose after the inlier-share, rotation-quorum and direction checks (the direction of each quorum link held to the larger of the pair's ray angle and the model's parallax; `--max-link-direction-error`, 0 = no direction check); new tracks triangulated; local BA every `localBAEvery` (10) images in window of `maxLocalWindow` (25); full BA every `fullBAEvery` (25, 50, 100); always closes with a full BA, also with no image left to try
 - Output: fully calibrated camera poses for all connected images
 - Config: `ResectionConfig::minCorrespondences`, `minInliers`, `maxRelativeRotationError`, `maxLinkDirectionError`, `localBAEvery`, `fullBAEvery`
 

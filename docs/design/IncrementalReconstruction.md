@@ -89,10 +89,10 @@ registered so in 2 of 4 runs, came out with its centre 20% off, and registered r
 when it waited), so it waits until one of its paired images is registered. The rule sits in the one
 `RegisterImages` every resection uses (block, pool, whole-scene); the star start is not a resection.
 Candidates are ordered by the weight of the evidence the model already holds for it: the composite weight
-of its verified pairs to registered images (`SelectNextImages`; ties by the correspondence count). Among
-the candidates of one moment the one with the most correspondences is often the one that fails while a
-less counted one beside it, whose pairs lie in the model, registers: over the attempts judged at the event
-on the fourteen test captures, of two attempts of the same round with different outcomes this weight puts
+of its links (`SelectNextImages`; ties by the correspondence count; a verified pair without a relative
+pose does not count). Among the candidates of one moment the one with the most correspondences is often
+the one that fails while a less counted one beside it, whose links lie in the model, registers: over the
+attempts judged at the event on the fourteen test captures, of two attempts of the same round with different outcomes this weight puts
 the right one first in 68% of the cases, the correspondence count in 32%. A round tries the candidates
 down the list until one registers, and the next round orders them again on the model that registration
 left (COLMAP's loop); no candidate is cut for holding few correspondences against the best one. Each is
