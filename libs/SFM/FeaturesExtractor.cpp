@@ -138,11 +138,24 @@ public:
 		auto IsSpherical = [](const Image& img) {
 			return img.pCamera && img.pCamera->GetType() == CameraType::SPHERICAL;
 		};
+		// images whose features are on disk are imported first, as ExtractImage does for the
+		// other drivers, and never reach the GPU
+		std::vector<uint8_t> imported(scene.images.size(), 0);
+		if (!extractor.GetConfig().importOpenMVGDir.empty()) {
+			scene.threadPool.detach_loop(IIndex(0), (IIndex)scene.images.size(), [&](IIndex i) {
+				Image& img = scene.images[i];
+				if (!extractor.NeedsExtraction(img) || !extractor.ImportImage(img))
+					return;
+				imported[i] = 1;
+				numFeatures.fetch_add(img.keypoints.size(), std::memory_order_relaxed);
+			});
+			scene.threadPool.wait();
+		}
 		// images to process, in scene order
 		IIndexArr todo;
 		todo.reserve(scene.images.size());
 		FOREACH(i, scene.images)
-			if (extractor.NeedsExtraction(scene.images[i]))
+			if (!imported[i] && extractor.NeedsExtraction(scene.images[i]))
 				todo.push_back(i);
 		// look-ahead bounds: the current image plus at most one decode per pool
 		// thread (so even a one-thread pool decodes the next image while the GPU
@@ -557,12 +570,8 @@ size_t FeaturesExtractor::Extract()
 
 bool FeaturesExtractor::ExtractImage(Image& image, cv::Ptr<cv::Feature2D>& detector, bool skipIO)
 {
-	if (!skipIO && !config.importOpenMVGDir.empty() && ImportFeaturesOpenMVG(config.importOpenMVGDir, image)) {
-		image.ReleasePixels(); // free pixel memory after feature extraction
-		DEBUG_ULTIMATE("Imported features for image % 4u: % 6u features (%.2f focal-length)",
-			image.ID, image.keypoints.size(), image.pCamera->GetFocalLength());
-		return !image.keypoints.empty();
-	}
+	if (!skipIO && ImportImage(image))
+		return true;
 
 	if (image.pCamera && image.pCamera->GetType() == CameraType::SPHERICAL)
 		return ExtractImageSpherical(image, detector, skipIO);
@@ -727,6 +736,17 @@ bool FeaturesExtractor::ExtractImage(Image& image, cv::Ptr<cv::Feature2D>& detec
 bool FeaturesExtractor::NeedsExtraction(const Image& image) const
 {
 	return !(image.HasFeatures() && (image.HasDescriptors() || scene.status.nFeaturesType != FeatureType::NONE));
+}
+
+bool FeaturesExtractor::ImportImage(Image& image) const
+{
+	if (config.importOpenMVGDir.empty() || !ImportFeaturesOpenMVG(config.importOpenMVGDir, image))
+		return false;
+	ASSERT(!image.keypoints.empty()); // the import fails on a file without keypoints
+	image.ReleasePixels(); // free pixel memory after feature extraction
+	DEBUG_ULTIMATE("Imported features for image % 4u: % 6u features (%.2f focal-length)",
+		image.ID, image.keypoints.size(), image.pCamera->GetFocalLength());
+	return true;
 }
 
 bool FeaturesExtractor::FinishImage(Image& image, bool skipIO) const

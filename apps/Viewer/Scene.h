@@ -55,6 +55,7 @@ public:
 
 	struct Layer {
 		uint32_t id{NO_ID};
+		uint32_t revision{0}; // bumped by RefreshLayerState() whenever the layer's content may have changed
 		String label;
 		String sceneName;
 		String workingFolder;

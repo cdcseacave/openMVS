@@ -141,10 +141,12 @@ public:
 	 */
 	bool ExtractImage(Image& image, cv::Ptr<cv::Feature2D>& detector, bool skipIO = false);
 
-	// Common to the drivers of every detector: whether the image still needs features, and the
-	// tail of every extraction (release the pixels, log, export to OpenMVG unless skipIO;
-	// returns true if the image got features).
+	// Common to the drivers of every detector: whether the image still needs features, the
+	// OpenMVG import that replaces the extraction of an image whose features are on disk (true if
+	// imported), and the tail of every extraction (release the pixels, log, export to OpenMVG
+	// unless skipIO; returns true if the image got features).
 	bool NeedsExtraction(const Image& image) const;
+	bool ImportImage(Image& image) const;
 	bool FinishImage(Image& image, bool skipIO) const;
 
 	/**

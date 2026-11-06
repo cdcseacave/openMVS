@@ -835,7 +835,13 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 ### UI
 
 - **Files:** `apps/Viewer/UI.h`, `apps/Viewer/UI.cpp`
-- **Algorithms:** ImGui with docking; Layers panel (visibility/solo/active, compare off/swipe/split with A|B side assignment and camera sync, align-to-active); compare divider overlay (draggable in swipe mode); workflow windows (Densify, ReconstructMesh, RefineMesh, TextureMesh, Batch); scene info, render settings, console overlay, performance overlay; auto-hiding menu bar
+- **Algorithms:** ImGui with docking; Layers panel (visibility/solo/active, compare off/swipe/split with A|B side assignment and camera sync, align-to-active); compare divider overlay (draggable in swipe mode); camera colors per layer (sequence jet or solid, persisted mode); workflow windows (Densify, ReconstructMesh, RefineMesh, TextureMesh, Batch); scene info, render settings, console overlay, performance overlay; auto-hiding menu bar
+
+### Point Observations
+
+- **Files:** `apps/Viewer/PointObservations.h`, `apps/Viewer/PointObservations.cpp`
+- **Algorithms:** per-view image patches of the selected point, centered on its projection and cropped from the full resolution images on a `BS::light_thread_pool` through a per-layer `MVS::ImageCache`; equalized (same surface, footprint-scaled to the median view) or original (same pixel magnification) scale; superseded requests dropped by a generation counter
+- **Dependencies:** MVS library (`ImageCache`)
 
 ---
 
