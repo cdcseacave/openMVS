@@ -14849,8 +14849,10 @@ bool TranslationCutTest()
 
 // ComputePairScales (its equations built in flat per-view arrays, in parallel) gives the equations of the
 // node-map build it replaced, which the test carries: the same count, in the same order, with the same
-// scale ratios and weights to the last bit, at one thread and at four, on a scene whose pairs share
-// features, one of them listing a feature twice, over all the pairs and over a subset of them.
+// weights to the last bit and the same scale ratios to the rounding of the trimmed sum (the shared
+// cList::GetTrimmedMean adds the kept ratios in another order than the sorted one), at one thread and
+// at four, on a scene whose pairs share features, one of them listing a feature twice, over all the
+// pairs and over a subset of them.
 static std::vector<ScalePair> ReferencePairScales(const Scene& scene, const IIndexArr& pairIndices)
 {
 	typedef std::pair<uint32_t, double> PairDist;
@@ -14945,6 +14947,7 @@ bool PairScalesTest()
 	#ifdef _USE_OPENMP
 	const int maxThreads = omp_get_max_threads();
 	#endif
+	double maxRelDiff = 0; // the largest relative difference of a scale ratio from the reference's
 	for (const IIndexArr* pPairs : {&all, &subset}) {
 		const std::vector<ScalePair> expected = ReferencePairScales(scene, *pPairs);
 		if (expected.size() < 50) {
@@ -14957,9 +14960,12 @@ bool PairScalesTest()
 			#endif
 			const std::vector<ScalePair> equations = ComputePairScales(scene, *pPairs);
 			bool same = equations.size() == expected.size();
-			for (size_t i = 0; same && i < equations.size(); ++i)
+			for (size_t i = 0; same && i < equations.size(); ++i) {
+				const double relDiff = ABS(equations[i].scaleRatio / expected[i].scaleRatio - 1);
+				maxRelDiff = MAXF(maxRelDiff, relDiff);
 				same = equations[i].idxA == expected[i].idxA && equations[i].idxB == expected[i].idxB &&
-					equations[i].scaleRatio == expected[i].scaleRatio && equations[i].weight == expected[i].weight;
+					relDiff < 1e-12 && equations[i].weight == expected[i].weight;
+			}
 			if (!same) {
 				VERBOSE("ERROR: PairScalesTest: %zu pairs, %d threads: %zu equations against the reference's %zu, or they differ", pPairs->size(), numThreads, equations.size(), expected.size());
 				return false;
@@ -14969,7 +14975,7 @@ bool PairScalesTest()
 	#ifdef _USE_OPENMP
 	omp_set_num_threads(maxThreads);
 	#endif
-	VERBOSE("PairScalesTest passed (%s)", TD_TIMER_GET_FMT().c_str());
+	VERBOSE("PairScalesTest passed: scale ratios within %g of the reference's (%s)", maxRelDiff, TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 

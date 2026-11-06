@@ -199,21 +199,19 @@ std::vector<ScalePair> SFM::ComputePairScales(const Scene& scene, const IIndexAr
 					ratios.push_back({features[a]->pair, features[b]->pair, features[b]->dist / features[a]->dist});
 		}
 		std::sort(ratios.begin(), ratios.end(), [](const Ratio& a, const Ratio& b) {
-			return a.pair1 != b.pair1 ? a.pair1 < b.pair1 : (a.pair2 != b.pair2 ? a.pair2 < b.pair2 : a.ratio < b.ratio);
+			return a.pair1 != b.pair1 ? a.pair1 < b.pair1 : a.pair2 < b.pair2;
 		});
-		// the 10%-trimmed mean of the ratios of each pair of pairs
+		// the 10%-trimmed mean of the ratios of each pair of pairs, weighted by how many it averages
+		DoubleArr pairRatios; // the ratios of one pair of pairs
 		for (size_t i = 0; i < ratios.size(); ) {
+			pairRatios.clear();
 			size_t end = i;
-			while (end < ratios.size() && ratios[end].pair1 == ratios[i].pair1 && ratios[end].pair2 == ratios[i].pair2)
-				++end;
-			const size_t num = end - i;
-			if (num >= 15) { // Require minimum common points
-				const size_t trim = num / 10;
-				double sum = 0;
-				for (size_t j = i + trim; j < end - trim; ++j)
-					sum += ratios[j].ratio;
-				const double numValid = static_cast<double>(num - 2 * trim);
-				equationsOfView[v].push_back({ratios[i].pair1, ratios[i].pair2, sum / numValid, (float)SQRT(numValid)});
+			for (; end < ratios.size() && ratios[end].pair1 == ratios[i].pair1 && ratios[end].pair2 == ratios[i].pair2; ++end)
+				pairRatios.push_back(ratios[end].ratio);
+			if (pairRatios.size() >= 15) { // Require minimum common points
+				DoubleArr::IDX numKept;
+				const double meanRatio = DoubleArr::GetTrimmedMean(pairRatios.begin(), pairRatios.end(), 0.1f, 0.1f, 0, &numKept);
+				equationsOfView[v].push_back({ratios[i].pair1, ratios[i].pair2, meanRatio, (float)SQRT(static_cast<double>(numKept))});
 			}
 			i = end;
 		}
