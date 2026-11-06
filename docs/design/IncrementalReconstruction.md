@@ -39,26 +39,30 @@ weighted inliers times the share of its track-forming matches whose ray angle at
 `StarInitConfig::evidenceMinAngle` (`ImagePair::ComputeShareAboveAngle`; `Scene::ReconstructHierarchical`
 sets it to the reconstruction's `minAngleThreshold`, 1.5 degrees by default, the bar the track filter
 applies later). A pair without evidence is no arm of the star, and the neighbours are sorted by evidence
-and kept when their evidence reaches `ratioInliersFilter` (0.2) of the mean inlier count of the three
-heaviest candidates that are not near-duplicates (all candidates when every one is), up to `maxViews`. A star with fewer than `minViews - 1` neighbours that have
-evidence is refused ("insufficient initial views") before the floor is applied; a floor that keeps none
-refuses it there too ("insufficient initial views (0 < ...)"), where it would otherwise fail at its
-triangulation ("insufficient triangulated tracks (0)"), and one that keeps at least one goes on with the
-neighbours it keeps, however few. The floor is set by inlier counts and compared with evidence, so a burst
-of near-duplicate frames (many inliers, a dozen that fix a distance) used to lift it above the evidence of
-every wider neighbour, and the star then failed. A near-duplicate pair (`ImagePair::IsNearDuplicate`: its
-10x10 overlap above `PairsWeightingConfig::maxDuplicateOverlap`, 0.75, and its measured ray angle under
-`maxDuplicateRayAngle`, 1.5 degrees; `StarInitConfig::pairsWeighting`, set by the scene) no longer sets
-it, nor the reference view, nor the pair the star's scale is fixed on (the reference's strongest pair
+and kept when their evidence reaches `ratioInliersFilter` (0.2) of the mean evidence of the three
+strongest candidates that are not near-duplicates (all candidates when every one is), up to `maxViews`:
+the floor is in the units the neighbours are sorted and compared by, so the strongest candidate always
+passes it. A star with fewer than `minViews - 1` neighbours that have evidence is refused ("insufficient
+initial views") before the floor is applied; one that keeps fewer goes on with the neighbours it keeps,
+however few. A near-duplicate pair (`ImagePair::IsNearDuplicate`: its 10x10 overlap above
+`PairsWeightingConfig::maxDuplicateOverlap`, 0.75, and its measured ray angle under
+`maxDuplicateRayAngle`, 1.5 degrees; `StarInitConfig::pairsWeighting`, set by the scene) sets neither the
+floor, nor the reference view, nor the pair the star's scale is fixed on (the reference's strongest pair
 otherwise). Tuned against the reference poses of 33 captures (a pair fixes no distance when the true
 parallax of its shared points is under 1.5 degrees; records-2026-11-05-duplicates/rule-075-15.md): 85% of
 the pairs the rule flags fix no distance, and the yardstick moves off a pair that fixes no distance for
 2045 images and off one that does for 296. The overlap condition keeps out the frames turned on the spot
-by a large rotation, whose ray angle is small too. Near-duplicate frames the bars do not flag can still
-lift the floor. A floor in the units of evidence keeps those neighbours but also admits low-evidence views, the
-ones the star evidence keeps out: the stars of every sub-scene grew (5992d620 16 to 22, 14 to 19 and 9 to
-12 views; Outdoor_004 9 to 18, 22 to 37, in all 8), the poses moved by 0.35 degrees, ten times the noise
-of the same build, and the F1 fell (0.8113 to 0.8067; Outdoor_004 0.7772 to 0.7720); it is not used.
+by a large rotation, whose ray angle is small too.
+
+| Floor of a neighbour's evidence (11 captures, 8 threads, reloads, without the near-duplicate rule; records-2026-11-05-duplicates/report-final.md) | final wrong | F1 summed |
+|---|---|---|
+| 0.2 x mean inlier count of the three heaviest | 22.5 | 9.728 |
+| 0.2 x mean evidence of the three strongest (shipped) | 20.5 | 9.763 |
+
+On f7dbf861 block 1 the inlier floor was 381 and no neighbour of 23 passed it (near-duplicate frames
+with many inliers and a dozen that fix a distance), the evidence floor is 57 and 18 pass. The floor in
+evidence admits more low-evidence views: Outdoor_004 block 3's star took one wrong camera there (0 wrong
+after the reconstruction).
 
 A view that shares only far points with the reference (a skyline, a building across the street) has
 inliers by the hundreds and a unit baseline that guesses its distance at the scale of the near views, and

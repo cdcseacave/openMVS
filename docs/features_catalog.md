@@ -231,7 +231,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
   - `EstimateGlobalScale()`: multi-baseline ratio estimation over the pair-scale equations of the star's pairs
   - `ComputePairScales()`: the pair-scale equations of any set of scene pairs (every match triangulated in its pair's unit frame; per (view, feature) shared by two pairs the ratio of their distances; per pair of pairs the 10%-trimmed mean over at least 15 common points), built in flat per-view arrays under OpenMP
   - Triangulates initial tracks
-- **Configuration:** `StarInitConfig` — `minViews` (4), `maxViews` (36), `ratioInliersFilter` (0.2, the floor of a neighbour's evidence as a share of the mean inlier count of the three heaviest candidates that are not near-duplicates), `pairsWeighting` (the near-duplicate bars, set by the scene), `evidenceMinAngle` (1.5 degrees), `maxReprojError`
+- **Configuration:** `StarInitConfig` — `minViews` (4), `maxViews` (36), `ratioInliersFilter` (0.2, the floor of a neighbour's evidence as a share of the mean evidence of the three strongest candidates that are not near-duplicates), `pairsWeighting` (the near-duplicate bars, set by the scene), `evidenceMinAngle` (1.5 degrees), `maxReprojError`
 - **GPU Support:** No
 - **Threading:** `ComputePairScales()` OpenMP; the rest single
 - **Dependencies:** Common, PoseLib

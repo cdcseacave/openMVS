@@ -345,7 +345,6 @@ bool StarInitializer::Initialize(
 	// 2. Register connected views from relative poses
 	struct ConnectedView {
 		IIndex viewID; // ID of the connected target view
-		unsigned numInliers; // number of inliers in the pair
 		unsigned numEvidence; // the inliers of the pair that fix a distance (see ComputeStarEvidence)
 		Pose3D relPose; // relative pose to reference
 		bool nearDuplicate; // the pair is a near-duplicate (PairsWeightingConfig::IsNearDuplicate): never the floor's yardstick
@@ -368,7 +367,7 @@ bool StarInitializer::Initialize(
 		// Absolute: target pose relative to source (which is identity)
 		// If source is ID2, we need inverse transform
 		Pose3D pose(sourceID == pair.ID1 ? pair.relativePose.value() : pair.relativePose->Inverse());
-		candidates.push_back({targetID, pair.GetNumWeightedInliers(), pairEvidence[idxPair], pose, config.pairsWeighting.IsNearDuplicate(pair)});
+		candidates.push_back({targetID, pairEvidence[idxPair], pose, config.pairsWeighting.IsNearDuplicate(pair)});
 	}
 	if (candidates.size() < config.minViews-1) {
 		VERBOSE("error: insufficient initial views (%u < %u)",
@@ -381,35 +380,27 @@ bool StarInitializer::Initialize(
 	});
 	// Filter candidates by minimum evidence per view
 	if (config.ratioInliersFilter > 0) {
-		// Compute robust threshold top 3 views: by their inliers, the minimum a view's evidence must pass
-		// (a near-duplicate's inliers fix no distance: they set the floor only when every candidate is one)
-		UnsignedArr inliers(0, candidates.size()), inliersAll(0, candidates.size());
+		ASSERT(config.ratioInliersFilter <= 1); // a share of the strongest candidates' evidence, which the strongest one then passes
+		// the floor a view's evidence must pass: a share of the mean evidence of the three strongest candidates
+		// (the first three, as sorted) that are not near-duplicates, of the three strongest when every candidate is one
+		const bool allNearDuplicates = std::all_of(candidates.begin(), candidates.end(), [](const ConnectedView& cv) { return cv.nearDuplicate; });
+		unsigned sumEvidence = 0, count = 0;
 		for (const ConnectedView& cv : candidates) {
-			inliersAll.push_back(cv.numInliers);
-			if (!cv.nearDuplicate)
-				inliers.push_back(cv.numInliers);
+			if (cv.nearDuplicate && !allNearDuplicates)
+				continue;
+			sumEvidence += cv.numEvidence;
+			if (++count == 3)
+				break;
 		}
-		if (inliers.empty())
-			inliers.Swap(inliersAll);
-		inliers.Sort([](unsigned a, unsigned b) { return a > b; });
-		unsigned avgInliers = 0;
-		const IIndex numCandidates = candidates.size();
-		IIndex count = MINF(3u, (unsigned)inliers.size());
 		ASSERT(count > 0); // the check above left a candidate (the star needs at least one neighbour)
-		for (unsigned i = 0; i < count; ++i)
-			avgInliers += inliers[i];
-		avgInliers /= count;
-		const unsigned thInliers = ROUND2INT<unsigned>(avgInliers * config.ratioInliersFilter);
+		const IIndex numCandidates = candidates.size();
+		const unsigned thEvidence = ROUND2INT<unsigned>(sumEvidence / count * config.ratioInliersFilter);
 		IIndex size = numCandidates;
-		while (size-- > 0 && candidates[size].numEvidence < thInliers);
+		while (size-- > 0 && candidates[size].numEvidence < thEvidence);
 		candidates.resize(size + 1);
-		DEBUG_EXTRA("Filtered connected views by inlier matches: kept %u/%u views with at least %u inliers of evidence",
-			candidates.size(), numCandidates, thInliers);
-		if (candidates.empty()) { // no neighbour passes the floor (near-duplicate frames the near-duplicate bars do not flag can still lift it above the evidence of every wider one): the star would fail at its triangulation, say so here
-			VERBOSE("error: insufficient initial views (%u < %u)",
-				candidates.size(), config.minViews-1);
-			return false;
-		}
+		DEBUG_EXTRA("Filtered connected views by evidence: kept %u/%u views with at least %u inliers of evidence",
+			candidates.size(), numCandidates, thEvidence);
+		ASSERT(!candidates.empty()); // the strongest candidate passes a floor of at most its own evidence
 	}
 	// Keep only up to maxViews
 	if (candidates.size() > config.maxViews)
@@ -419,7 +410,7 @@ bool StarInitializer::Initialize(
 	for (const ConnectedView& cv : candidates) {
 		static_cast<Pose3D&>(scene.images[cv.viewID]) = cv.relPose;
 		connectedViews.push_back(cv.viewID);
-		DEBUG_ULTIMATE("Registered view %u (%u matches)", cv.viewID, cv.numInliers);
+		DEBUG_ULTIMATE("Registered view %u (%u inliers of evidence)", cv.viewID, cv.numEvidence);
 	}
 	DEBUG("Registered %u views from relative poses", candidates.size());
 

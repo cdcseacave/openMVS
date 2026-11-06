@@ -11008,21 +11008,17 @@ struct LogCapture
 // reference agree. Without the near points no pair has any evidence and there is no star, and the
 // star says so ("insufficient initial views"). The keyframe extractor's configuration (the defaults
 // and three views) builds the same star.
-// The floor of the star (StarInitConfig::ratioInliersFilter, 0.2) is a share of the mean inlier count
-// of the three heaviest candidates, compared with each candidate's evidence; a floor that keeps at
-// least one neighbour goes on with the neighbours it keeps, however few the star needed, and one that
-// keeps none refuses the star there ("insufficient initial views (0 < ..."), not later at its
-// triangulation. With the near/far scene above a ratio of 0.275 (a floor of 191 over the evidence
-// 199, 192, 188, 184, 179) keeps the first two near views, fewer than the three the star needs, and
-// the star is built from them.
-// The known limit of the floor: a burst of near-duplicate frames (1-3, 0.02-0.04 units to the side)
-// shares 2500 far points and a dozen points under a unit from the reference with it, 3012 inliers a
-// pair of which only the dozen measure a distance (evidence 11-12), and four wider views (4-7,
-// 0.8-1.5 units) see 200 near points and 500 far ones, 679-692 inliers of which 179-192 are evidence.
-// The floor, 0.2 of the 3012 inliers (602), is above the evidence of every wider view: it keeps none
-// and the star is refused. A floor in the units of evidence (38 here) would keep the four wider views,
-// but it also admitted the low-evidence views the evidence keeps out, grew the stars of every
-// sub-scene of the real captures and moved their poses by ten times the noise, so it is not used.
+// The floor of the star (StarInitConfig::ratioInliersFilter, 0.2) is a share of the mean evidence of
+// the three strongest candidates, compared with each candidate's evidence; a floor that keeps fewer
+// neighbours than the star needed goes on with the neighbours it keeps. With the near/far scene above
+// a ratio of 0.98 (a floor of 189 over the evidence 199, 192, 188, 184, 179) keeps the first two near
+// views, fewer than the three the star needs, and the star is built from them.
+// A burst of near-duplicate frames (1-3, 0.02-0.04 units to the side) shares 2500 far points and a
+// dozen points under a unit from the reference with it, 3012 inliers a pair of which only the dozen
+// measure a distance (evidence 11-12), and four wider views (4-7, 0.8-1.5 units) see 200 near points
+// and 500 far ones, 679-692 inliers of which 179-192 are evidence. The floor, 0.2 of the mean evidence
+// of the three strongest (38), keeps the four wider views and leaves the burst out, where a floor of
+// 0.2 of the 3012 inliers (602) would keep none.
 bool StarEvidenceTest()
 {
 	TD_TIMER_START();
@@ -11112,8 +11108,8 @@ bool StarEvidenceTest()
 	std::vector<REAL> trueDist(truth.images.size());
 	FOREACH(i, truth.images)
 		trueDist[i] = norm(truth.images[i].C);
-	// the premise: by inlier count every far pair passes the star's floor, a ratio of the mean of the
-	// three heaviest pairs
+	// the premise: by inlier count every far pair would pass the star's ratio of the mean of the three
+	// heaviest pairs
 	{
 		std::vector<int> inliers;
 		for (const ImagePair& pair : truth.pairs)
@@ -11124,7 +11120,7 @@ bool StarEvidenceTest()
 		for (IIndex j = numNear + 1; j < truth.images.size(); ++j) {
 			const int numInliers = truth.pairs[j-1].numFilteredInliers;
 			if (numInliers < floorInliers) {
-				VERBOSE("StarEvidenceTest FAILED: far pair (0,%u) has %d inliers, under the star's floor of %d; the scene does not set the by-count trap", j, numInliers, floorInliers);
+				VERBOSE("StarEvidenceTest FAILED: far pair (0,%u) has %d inliers, under the star's ratio of the heaviest (%d); the scene does not set the by-count trap", j, numInliers, floorInliers);
 				return false;
 			}
 		}
@@ -11185,7 +11181,7 @@ bool StarEvidenceTest()
 	// a floor that keeps fewer neighbours than the star needs but some: the star goes on with them
 	{
 		StarInitConfig floorCfg(cfg);
-		floorCfg.ratioInliersFilter = 0.275f;
+		floorCfg.ratioInliersFilter = 0.98f;
 		Scene kept;
 		LogCapture log;
 		if (!runStar(kept, sides, {nearPoints, farPoints}, floorCfg)) {
@@ -11200,8 +11196,7 @@ bool StarEvidenceTest()
 			}
 		}
 	}
-	// near-duplicate burst: the floor keeps no wider view (the known limit of the floor), the star is
-	// refused there and not at its triangulation
+	// near-duplicate burst: the floor keeps the wider views and leaves the burst out
 	const unsigned numBurst = 3;
 	const std::vector<REAL> burstSides{0, 0.02, 0.03, 0.04, 0.8, 1.0, 1.2, 1.5};
 	const PointGroup widePoints{200, 4, 8, [numBurst](IIndex v) { return v > numBurst; }};
@@ -11210,17 +11205,18 @@ bool StarEvidenceTest()
 	{
 		Scene burst;
 		LogCapture log;
-		if (runStar(burst, burstSides, {widePoints, farPoints, burstPoints, closePoints}, cfg)) {
-			VERBOSE("StarEvidenceTest FAILED: a star was built although the floor keeps no wider view beside a burst of near-duplicate frames");
+		if (!runStar(burst, burstSides, {widePoints, farPoints, burstPoints, closePoints}, cfg)) {
+			VERBOSE("StarEvidenceTest FAILED: the star beside a burst of near-duplicate frames was refused:\n%s", log.text.c_str());
 			return false;
 		}
-		if (!log.Contains("insufficient initial views (0 < ") || log.Contains("insufficient triangulated tracks")) {
-			VERBOSE("StarEvidenceTest FAILED: the star beside a burst of near-duplicate frames was not refused by the floor with \"insufficient initial views (0 < \":\n%s", log.text.c_str());
-			return false;
-		}
+		for (IIndex v = 1; v < burstSides.size(); ++v)
+			if (burst.images[v].HasPose() != (v > numBurst)) {
+				VERBOSE("StarEvidenceTest FAILED: %s view %u %s the star beside a burst of near-duplicate frames", v > numBurst ? "wider" : "burst", v, v > numBurst ? "is not in" : "is in");
+				return false;
+			}
 	}
 	VERBOSE("StarEvidenceTest PASSED: %u far views left out of the star by evidence, near distances within %.3f%%, no star without evidence, "
-		"the keyframe configuration initializes, the star goes on with the neighbours the floor keeps, a burst of %u near-duplicate frames that lifts the floor above every wider view is refused at the floor (%s)",
+		"the keyframe configuration initializes, the star goes on with the neighbours the floor keeps, the star beside a burst of %u near-duplicate frames starts with the wider views (%s)",
 		numFar, (maxRatio / minRatio - 1) * 100, numBurst, TD_TIMER_GET_FMT().c_str());
 	return true;
 }
@@ -11230,12 +11226,14 @@ bool StarEvidenceTest()
 // maxDuplicateRayAngle). A reference view 0 with a burst of three near-duplicate frames (1-3, 0.02-0.04 apart, 2500
 // points 2-4 units away over the whole frame, plus a few close ones) and four wide views (4-7, 0.8-1.5 apart) whose points fill only the left
 // half of the frame, so the burst pairs cover the whole frame (overlap 1, ray angle well under 1.5 deg) and the wide pairs half
-// of it. With the rule off the burst pair is the reference's yardstick: it shrinks every wide pair's connectivity factor and
-// lifts the star floor above every wide view's evidence (the limit StarEvidenceTest shows). With the default bars both read
-// the first non-duplicate pair: the strongest wide pair's connectivity is 1 and the star starts with the wide views. The burst
-// pair (1,2), weaker than (0,1) and (0,2), joins two images whose pairs are all near-duplicates: they keep today's yardstick,
-// so its factor is the same with the rule on and off. The stored overlap follows the pair's current matches (a pair cut to half
-// the frame reads half at the next weighting pass). Last, the predicate itself: the overlap and the angle must both say so.
+// of it. With the rule off the burst pair is the reference's yardstick: it shrinks every wide pair's connectivity factor. With
+// the default bars it reads the first non-duplicate pair: the strongest wide pair's connectivity is 1. The star's floor is a
+// share of the strongest candidates' evidence, which the burst has little of, so the star starts with the wide views either
+// way, also beside a burst the bars do not flag (its points over 70% of the frame, under the 0.75 bar), whose inliers would
+// lift a floor in inliers above every wide view's evidence. The burst pair (1,2), weaker than (0,1) and (0,2), joins two images
+// whose pairs are all near-duplicates: they keep today's yardstick, so its factor is the same with the rule on and off. The
+// stored overlap follows the pair's current matches (a pair cut to half the frame reads half at the next weighting pass).
+// Last, the predicate itself: the overlap and the angle must both say so.
 bool NearDuplicateYardstickTest()
 {
 	TD_TIMER_START();
@@ -11313,15 +11311,23 @@ bool NearDuplicateYardstickTest()
 	const PointGroup burstPoints{2500, 2, 4, 600, [numBurst](IIndex v) { return v <= numBurst; }}; // near enough for a measurable ray angle, well under 1.5 deg
 	const PointGroup closePoints{12, 0.3, 0.6, 600, [numBurst](IIndex v) { return v <= numBurst; }};
 	const std::vector<PointGroup> groups{widePoints, farPoints, burstPoints, closePoints};
-	struct Reading { std::vector<float> conn; float conn12; bool star; std::vector<bool> posed; String log; };
-	const auto run = [&](const PairsWeightingConfig& weighting) {
+	// per pair (0,j), j = 1..7: its connectivity factor, overlap, ray angle (deg), weighted inliers and star evidence
+	struct Reading { std::vector<float> conn, overlap, rayAngle; std::vector<unsigned> inliers, evidence; float conn12, overlap12; bool star; std::vector<bool> posed; String log; };
+	const auto run = [&](const PairsWeightingConfig& weighting, const std::vector<PointGroup>& groups) {
 		Scene scene;
 		buildScene(scene, groups);
 		ComputePairsWeights(scene, weighting);
 		Reading r;
-		for (IIndex j = 1; j < scene.images.size(); ++j)
-			r.conn.push_back(scene.FindPair(0, j)->weightConnectivity);
+		for (IIndex j = 1; j < scene.images.size(); ++j) {
+			const ImagePair& pair = *scene.FindPair(0, j);
+			r.conn.push_back(pair.weightConnectivity);
+			r.overlap.push_back(pair.overlapArea);
+			r.rayAngle.push_back(R2D(pair.meanRayAngle));
+			r.inliers.push_back(pair.GetNumWeightedInliers());
+			r.evidence.push_back(ROUND2INT<unsigned>(pair.GetNumWeightedInliers() * pair.ComputeShareAboveAngle(scene.images[0], scene.images[j], StarInitConfig().evidenceMinAngle)));
+		}
 		r.conn12 = scene.FindPair(1, 2)->weightConnectivity;
+		r.overlap12 = scene.FindPair(1, 2)->overlapArea;
 		for (Image& img : scene.images)
 			img.InvalidatePose();
 		StarInitConfig cfg;
@@ -11332,33 +11338,39 @@ bool NearDuplicateYardstickTest()
 		r.log = log.text;
 		for (const Image& img : scene.images)
 			r.posed.push_back(img.HasPose());
-		// the premise: the burst pairs cover the frame, the wide pairs at most half of it
-		for (IIndex j = 1; j < scene.images.size(); ++j) {
-			const float overlap = scene.FindPair(0, j)->overlapArea, rayAngle = R2D(scene.FindPair(0, j)->meanRayAngle);
-			if ((j <= numBurst) != (overlap > 0.9f) || (j > numBurst && overlap > 0.5f) || (j <= numBurst && !(rayAngle > 0.f && rayAngle < 1.f)))
-				r.log = String::FormatString("premise: pair (0,%u) overlap %.2f, ray angle %.3f deg", j, overlap, rayAngle);
-		}
-		if (scene.FindPair(1, 2)->overlapArea <= 0.9f)
-			r.log = String::FormatString("premise: pair (1,2) overlap %.2f", scene.FindPair(1, 2)->overlapArea);
 		return r;
+	};
+	// the premise of a burst: its pairs cover more than minBurstOverlap of the frame at a ray angle under 1 deg, the wide pairs
+	// at most half of it
+	const auto premise = [&](const Reading& r, float minBurstOverlap) {
+		for (IIndex j = 1; j < sides.size(); ++j) {
+			const float overlap = r.overlap[j - 1], rayAngle = r.rayAngle[j - 1];
+			if ((j <= numBurst) != (overlap > minBurstOverlap) || (j > numBurst && overlap > 0.5f) || (j <= numBurst && !(rayAngle > 0.f && rayAngle < 1.f))) {
+				VERBOSE("NearDuplicateYardstickTest FAILED: premise: pair (0,%u) overlap %.2f, ray angle %.3f deg", j, overlap, rayAngle);
+				return false;
+			}
+		}
+		if (r.overlap12 <= minBurstOverlap) {
+			VERBOSE("NearDuplicateYardstickTest FAILED: premise: pair (1,2) overlap %.2f", r.overlap12);
+			return false;
+		}
+		return true;
 	};
 	PairsWeightingConfig offCfg;
 	offCfg.maxDuplicateOverlap = 0.f;
-	const Reading off = run(offCfg), on = run(PairsWeightingConfig());
-	for (const Reading* r : {&off, &on})
-		if (r->log.find("premise:") == 0) {
-			VERBOSE("NearDuplicateYardstickTest FAILED: %s", r->log.c_str());
-			return false;
-		}
-	// today: the burst is the yardstick, every wide factor under 0.6, and the star is refused at the floor
+	const Reading off = run(offCfg, groups), on = run(PairsWeightingConfig(), groups);
+	if (!premise(off, 0.9f) || !premise(on, 0.9f))
+		return false;
+	// rule off: the burst is the yardstick, every wide factor under 0.6; the star's floor, in the units of evidence, keeps
+	// the wide views either way
 	float maxWideOff = 0, maxWideOn = 0;
 	for (IIndex j = numBurst + 1; j < sides.size(); ++j) {
 		maxWideOff = MAXF(maxWideOff, off.conn[j - 1]);
 		maxWideOn = MAXF(maxWideOn, on.conn[j - 1]);
 	}
-	if (maxWideOff >= 0.6f || off.star) {
-		VERBOSE("NearDuplicateYardstickTest FAILED: with the rule off the strongest wide pair's connectivity is %.3f (under 0.6 expected) and the star %s (refused expected)",
-			maxWideOff, off.star ? "started" : "was refused");
+	if (maxWideOff >= 0.6f || !off.star) {
+		VERBOSE("NearDuplicateYardstickTest FAILED: with the rule off the strongest wide pair's connectivity is %.3f (under 0.6 expected) and the star %s (started expected):\n%s",
+			maxWideOff, off.star ? "started" : "was refused", off.log.c_str());
 		return false;
 	}
 	// rule on: the strongest wide pair is the reference's yardstick
@@ -11371,10 +11383,47 @@ bool NearDuplicateYardstickTest()
 		return false;
 	}
 	for (IIndex v = numBurst + 1; v < sides.size(); ++v)
-		if (!on.posed[v]) {
-			VERBOSE("NearDuplicateYardstickTest FAILED: wide view %u is not in the star with the rule on", v);
+		if (!on.posed[v] || !off.posed[v]) {
+			VERBOSE("NearDuplicateYardstickTest FAILED: wide view %u is not in the star with the rule %s", v, on.posed[v] ? "off" : "on");
 			return false;
 		}
+	// a burst the bars do not flag: its points over 70% of the frame, under the 0.75 bar; by inlier count it would lift the
+	// floor above every wide view's evidence (the three heaviest pairs are the burst's), by evidence the wide views pass it,
+	// the star starts with them and the burst, a dozen inliers of evidence each, is left to the resection
+	unsigned maxWideEvidence = 0, floorInliers = 0;
+	float maxBurstOverlap = 0;
+	{
+		std::vector<PointGroup> partGroups(groups);
+		partGroups[2].maxPixelX = partGroups[3].maxPixelX = 420; // the burst and its close points over 7 of the 10 grid columns
+		const PairsWeightingConfig cfg;
+		const Reading part = run(cfg, partGroups);
+		if (!premise(part, 0.6f))
+			return false;
+		std::vector<unsigned> inliers(part.inliers);
+		std::sort(inliers.begin(), inliers.end(), std::greater<unsigned>());
+		floorInliers = ROUND2INT<unsigned>((inliers[0] + inliers[1] + inliers[2]) / 3 * StarInitConfig().ratioInliersFilter);
+		for (IIndex j = 1; j < sides.size(); ++j) {
+			const bool bBurst = j <= numBurst;
+			if (bBurst)
+				maxBurstOverlap = MAXF(maxBurstOverlap, part.overlap[j - 1]);
+			else
+				maxWideEvidence = MAXF(maxWideEvidence, part.evidence[j - 1]);
+			if (bBurst ? part.overlap[j - 1] >= cfg.maxDuplicateOverlap : part.evidence[j - 1] >= floorInliers) {
+				VERBOSE("NearDuplicateYardstickTest FAILED: premise: pair (0,%u) overlap %.2f (under %.2f expected for a burst pair), evidence %u (under the inlier floor %u expected for a wide pair)",
+					j, part.overlap[j - 1], cfg.maxDuplicateOverlap, part.evidence[j - 1], floorInliers);
+				return false;
+			}
+		}
+		if (!part.star) {
+			VERBOSE("NearDuplicateYardstickTest FAILED: the star beside a burst the bars do not flag was refused (expected to start with the wide views):\n%s", part.log.c_str());
+			return false;
+		}
+		for (IIndex v = 1; v < sides.size(); ++v)
+			if (part.posed[v] != (v > numBurst)) {
+				VERBOSE("NearDuplicateYardstickTest FAILED: %s view %u %s the star beside a burst the bars do not flag", v > numBurst ? "wide" : "burst", v, part.posed[v] ? "is in" : "is not in");
+				return false;
+			}
+	}
 	// an image whose pairs are all near-duplicates keeps today's yardstick
 	if (off.conn12 >= 0.9f || ABS(on.conn12 - off.conn12) > 1e-6f) {
 		VERBOSE("NearDuplicateYardstickTest FAILED: the burst pair (1,2) has connectivity %.4f off and %.4f on (equal and under 0.9 expected: its images keep today's yardstick)",
@@ -11421,8 +11470,9 @@ bool NearDuplicateYardstickTest()
 			return false;
 		}
 	}
-	VERBOSE("NearDuplicateYardstickTest PASSED: strongest wide connectivity %.3f -> %.3f, star refused -> started, burst pair (1,2) %.3f both ways, the stored overlap follows a cut of the matches, the test needs both the overlap and the angle (%s)",
-		maxWideOff, maxWideOn, off.conn12, TD_TIMER_GET_FMT().c_str());
+	VERBOSE("NearDuplicateYardstickTest PASSED: strongest wide connectivity %.3f -> %.3f, the star starts with the wide views both ways, burst pair (1,2) %.3f both ways, "
+		"a burst the bars do not flag (overlap %.2f) lifts no floor above the wide views (evidence %u at most, a floor in inliers %u), the stored overlap follows a cut of the matches, the test needs both the overlap and the angle (%s)",
+		maxWideOff, maxWideOn, off.conn12, maxBurstOverlap, maxWideEvidence, floorInliers, TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 

@@ -42,7 +42,7 @@ struct SFM_API StarInitConfig
 {
 	unsigned minViews{4};           // Minimum views of the star, the reference included (at least 2)
 	unsigned maxViews{36};          // Maximum connected views
-	float ratioInliersFilter{0.2f}; // Floor of a neighbour's evidence: this share of the mean inlier count of the three heaviest candidates that are not near-duplicates (pairsWeighting; all candidates when every one is) (optional, 0 to disable)
+	float ratioInliersFilter{0.2f}; // Floor of a neighbour's evidence: this share (at most 1) of the mean evidence of the three strongest candidates that are not near-duplicates (pairsWeighting; all candidates when every one is) (optional, 0 to disable)
 	float maxReprojError{6.f};      // Maximum reprojection error (pixels)
 	float minAngleThreshold{1.f};   // Minimum angle between cameras (degrees)
 	float evidenceMinAngle{1.5f};   // Ray angle a pair's inlier must reach to count as star evidence (degrees): the reconstruction's minAngleThreshold, which Scene sets it from
