@@ -6600,19 +6600,26 @@ static bool ROMA2ReconstructScene(Scene& scene, const String& setting, const Str
 	int expectedDim, bool bUseMatching, unsigned slotBudget,
 	bool bViewGraphCalibration, ROMA2PairSummaries& pairSummaries)
 {
-	// the EXIF intrinsics as imported (720.51 px, no distortion), unlike ReconstructTest, which
-	// forces a deliberately wrong 900 px / k1=0.6 / k2=-0.09 and leans on the view-graph
+	// the images' own focal, given and so trusted (720.51 px, no distortion), unlike ReconstructTest,
+	// which forces a deliberately wrong 900 px / k1=0.6 / k2=-0.09 and leans on the view-graph
 	// calibrator to recover them from the fundamental matrices. That recovery is exactly what
 	// warp-guided matching cannot feed: it keeps, per keypoint of A, the descriptor-best keypoint
 	// of B inside a disc around the position the warp predicts, so the stored correspondences are
 	// consistent with a whole family of F near the warp's own geometry and the focal a calibrator
 	// extracts from them is wildly unstable (measured on these 4 images at turbo with the forced
 	// 900 px: 690 px from the descriptor matches, 133 px from the guided ones on the CPU provider,
-	// which then drags the bundle to f=315, and a rejected 34450 px estimate on CUDA). Nothing else
-	// in the pipeline reads a focal out of F, and with the imported intrinsics trusted the pairs
-	// carry a relative pose straight from matching, which is what the reconstruction stage below
-	// actually consumes.
+	// which then drags the bundle to f=315, and a rejected 34450 px estimate on CUDA). With the
+	// intrinsics trusted the pairs carry a relative pose straight from matching, which is what the
+	// reconstruction stage below actually consumes.
+	// The focal is given, not left to the import: the images carry only a 35 mm-equivalent focal
+	// (39 mm on the 640x479 frame, 720.51 px), which the import takes as a guess, untrusted, for the
+	// lens fit to estimate (Image::LoadMetadata, CalibrateFocalsAndFitLenses); four images give the
+	// fit 4 eligible pairs of the MatchConfig::lensFitMinPairs it needs, so it leaves the camera
+	// untrusted with its pairs back to their F, and with the view-graph calibration off
+	// (bViewGraphCalibration) no pair would carry a relative pose: the star initializer would find
+	// no reference view.
 	ImportConfig importCfg;
+	importCfg.focalLength = 720.51f;
 	if (!scene.Import(MAKE_PATH("images"), importCfg)) {
 		VERBOSE("ROMA2ReconstructTest FAILED: Import failed");
 		return false;
@@ -6895,8 +6902,8 @@ bool ROMA2ReconstructTest()
 		//    into the distortion coefficients of a scene that has none: measured at 10.1 px (turbo,
 		//    CUDA) against the 1.5 px of ReconstructTest. 20 px keeps the check meaningful (a
 		//    blown-up distortion is still caught) while leaving room above the measured value.
-		// Note what the focal check means here, which differs from ReconstructTest: the imported
-		// EXIF focal is 720.51 px, so the `focal_error > 100` bound is already satisfied before the
+		// Note what the focal check means here, which differs from ReconstructTest: the focal given
+		// at import is 720.51 px, so the `focal_error > 100` bound is already satisfied before the
 		// bundle runs and this stage asserts that the one-pass scene keeps the focal stable, not
 		// that it recovers it -- recovery from a deliberately wrong 900 px is what ReconstructTest
 		// still tests, on the descriptor matches that can support it.
