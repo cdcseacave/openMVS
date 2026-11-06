@@ -167,10 +167,18 @@ public:
 					prevImageID2 = pair.ID2;
 				}
 
-				const int numMaxMatches = MINF(img1.descriptors.rows, img2.descriptors.rows);
+				// mutual best matches only with cross-check, as the CPU matcher; without it every feature
+				// of the first image can hold a match, so the buffer holds one per feature of the first image
+				const bool crossCheck = pairsMatcher.GetConfig().crossCheck;
+				const int numMaxMatches = crossCheck ? MINF(img1.descriptors.rows, img2.descriptors.rows) : img1.descriptors.rows;
 				CLISTDEF0(DMatch) matchBuffer(numMaxMatches);
 				int numMatchesFound = gpu->GetSiftMatch(numMaxMatches, reinterpret_cast<uint32_t (*)[2]>(matchBuffer.data()),
-					0.7f, pairsMatcher.GetConfig().matchRatio, 1);
+					0.7f, pairsMatcher.GetConfig().matchRatio, crossCheck ? 1 : 0);
+				if (numMatchesFound < 0) {
+					// the device reported an error (SiftMatchCU returns -1 on a CUDA error)
+					VERBOSE("error: SiftMatchGPU failed to match images %u and %u", img1.ID, img2.ID);
+					continue;
+				}
 				if (numMatchesFound == 0)
 					continue;
 				matchBuffer.resize((size_t)numMatchesFound);

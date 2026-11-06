@@ -64,7 +64,9 @@ UI::UI()
 	, showWorkflowOverlay(true)
 	, showViewportOverlay(true)
 	, showSelectionOverlay(true)
-	, showLayersPanel(true)
+	, showLayersPanel(false)
+	, numLayersSeen(0)
+	, showPointObservations(false)
 	, showAboutDialog(false)
 	, showHelpDialog(false)
 	, showExportDialog(false)
@@ -173,6 +175,7 @@ void UI::Release() {
 
 	// Release embedded icon texture if loaded
 	emptySceneIcon.Release();
+	pointObservations.Release();
 }
 
 void UI::NewFrame(Window& window) {
@@ -194,6 +197,10 @@ void UI::Render(Window& window) {
 	ShowViewportOverlay(window);
 	ShowEmptySceneOverlay(window);
 	ShowSelectionOverlay(window);
+	const size_t numLayers = window.GetScene().GetLayers().size();
+	if (numLayers > 1 && numLayersSeen <= 1)
+		showLayersPanel = true;
+	numLayersSeen = numLayers;
 	if (showLayersPanel)
 		ShowLayersPanel(window);
 	if (window.compareMode && window.GetScene().IsOpen())
@@ -352,6 +359,7 @@ void UI::ShowMainMenuBar(Window& window) {
 			ImGui::MenuItem("Render Settings", "Shift+R", &showRenderSettings);
 			ImGui::MenuItem("Bounding Box", "Shift+B", &showBoundingBoxControls);
 			ImGui::MenuItem("Point Confidence", nullptr, &showPointConfidenceFilter);
+			ImGui::MenuItem("Point Observations", "Shift+P", &showPointObservations);
 			ImGui::MenuItem("Layers", nullptr, &showLayersPanel);
 			ImGui::Separator();
 			ImGui::MenuItem("Console", nullptr, &showConsoleOverlay);
@@ -565,6 +573,29 @@ void UI::ShowCameraControls(Window& window) {
 			cameraDisplayChanged = true;
 		if (ImGui::IsItemHovered())
 			ImGui::SetTooltip("Show look-at direction indicator for each camera");
+
+		// Camera display color of the active layer: solid, or a jet gradient along the image sequence
+		if (Scene::Layer* activeLayer = window.GetScene().GetActiveLayer(); activeLayer != nullptr && !activeLayer->images.empty()) {
+			ImGui::TextUnformatted("Camera Display Color");
+			int colorMode = activeLayer->useCameraJetColor ? 1 : 0;
+			bool colorModeChanged = ImGui::RadioButton("Sequence##CameraDisplayColor", &colorMode, 1);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Color the active layer's cameras by image order: red (first) to blue (last)");
+			ImGui::SameLine();
+			colorModeChanged |= ImGui::RadioButton("Solid##CameraDisplayColor", &colorMode, 0);
+			if (colorModeChanged) {
+				activeLayer->useCameraJetColor = window.useCameraJetColor = (colorMode == 1);
+				cameraDisplayChanged = true;
+			}
+			if (!activeLayer->useCameraJetColor) {
+				ImGui::SameLine();
+				float cameraColor[3] = {activeLayer->cameraColor.x, activeLayer->cameraColor.y, activeLayer->cameraColor.z};
+				if (ImGui::ColorEdit3("##CameraColor", cameraColor, ImGuiColorEditFlags_NoInputs)) {
+					activeLayer->cameraColor = Point3f(cameraColor[0], cameraColor[1], cameraColor[2]);
+					cameraDisplayChanged = true;
+				}
+			}
+		}
 
 		if (cameraDisplayChanged) {
 			window.cameraDisplayType = (Window::CameraDisplayType)displayType;
@@ -911,6 +942,102 @@ void UI::ShowPointConfidenceFilter(Window& window) {
 			filter.levelMax = levelMax;
 			window.GetRenderer().SetPointConfidence(layer->id, filter);
 			window.RequestRedraw();
+		}
+	}
+	ImGui::End();
+}
+
+void UI::ShowPointObservations(Window& window) {
+	if (!showPointObservations) {
+		pointObservations.Release();
+		return;
+	}
+	pointObservations.Update(window);
+
+	ImGui::SetNextWindowPos(ImVec2(10, 100), ImGuiCond_FirstUseEver);
+	ImGui::SetNextWindowSize(ImVec2(4*(PointObservations::PATCH_SIZE+12.f), 600), ImGuiCond_FirstUseEver);
+	if (ImGui::Begin("Point Observations", &showPointObservations)) {
+		if (pointObservations.IsEmpty()) {
+			ImGui::TextDisabled("Select a point seen by several views");
+			ImGui::End();
+			return;
+		}
+		const PointObservations::ObservationArr& observations = pointObservations.GetObservations();
+		ImGui::Text("Point %u: %zu views", pointObservations.GetPointIdx(), observations.size());
+
+		// patch settings
+		int patchScale = (int)pointObservations.patchScale;
+		ImGui::RadioButton("Equalized", &patchScale, PointObservations::SCALE_EQUALIZED);
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Every patch covers the same surface around the point");
+		ImGui::SameLine();
+		ImGui::RadioButton("Original", &patchScale, PointObservations::SCALE_ORIGINAL);
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Every patch shows the image pixels at the same magnification");
+		pointObservations.patchScale = (PointObservations::PatchScale)patchScale;
+		ImGui::SetNextItemWidth(160);
+		ImGui::SliderFloat("Zoom", &pointObservations.zoom, 0.25f, 8.f, "x%.2f", ImGuiSliderFlags_Logarithmic|ImGuiSliderFlags_AlwaysClamp);
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip(pointObservations.patchScale == PointObservations::SCALE_EQUALIZED ?
+				"Magnification of the median view" : "Magnification of the image pixels");
+		if (pointObservations.HasWeights())
+			ImGui::Checkbox("Sort by confidence", &pointObservations.sortByWeight);
+		ImGui::Separator();
+
+		// patches grid wrapping to the window width; a click views the scene from that camera
+		const ImVec2 patchSize((float)PointObservations::PATCH_SIZE, (float)PointObservations::PATCH_SIZE);
+		const float maxX = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+		const ImU32 colorCross = IM_COL32(255, 0, 0, 200);
+		ImDrawList* drawList = ImGui::GetWindowDrawList();
+		for (size_t i = 0; i < observations.size(); ++i) {
+			const PointObservations::Observation& observation = observations[i];
+			ImGui::PushID((int)i);
+			ImGui::BeginGroup();
+			if (pointObservations.HasWeights())
+				ImGui::Text("%u (%.2f)", observation.ID, observation.weight);
+			else
+				ImGui::Text("%u", observation.ID);
+			if (observation.patch.IsValid()) {
+				ImGui::Image((ImTextureID)(uintptr_t)observation.patch.GetID(), patchSize);
+			} else {
+				ImGui::Dummy(patchSize);
+				const ImVec2 rectMin = ImGui::GetItemRectMin();
+				drawList->AddRectFilled(rectMin, ImGui::GetItemRectMax(), IM_COL32(40, 40, 40, 255));
+				drawList->AddText(ImVec2(rectMin.x+4, rectMin.y+4),
+					IM_COL32(160, 160, 160, 255), observation.failed ? "no image" : "loading...");
+			}
+			const bool hovered = ImGui::IsItemHovered();
+			const bool clicked = ImGui::IsItemClicked();
+			// mark the projection in the middle of the patch
+			const ImVec2 rectMin = ImGui::GetItemRectMin();
+			const ImVec2 center(rectMin.x+0.5f*patchSize.x, rectMin.y+0.5f*patchSize.y);
+			const float gap = 2.f, arm = 7.f;
+			drawList->AddLine(ImVec2(center.x-arm, center.y), ImVec2(center.x-gap, center.y), colorCross, 1.5f);
+			drawList->AddLine(ImVec2(center.x+gap, center.y), ImVec2(center.x+arm, center.y), colorCross, 1.5f);
+			drawList->AddLine(ImVec2(center.x, center.y-arm), ImVec2(center.x, center.y-gap), colorCross, 1.5f);
+			drawList->AddLine(ImVec2(center.x, center.y+gap), ImVec2(center.x, center.y+arm), colorCross, 1.5f);
+			ImGui::EndGroup();
+			if (hovered) {
+				const Point2f proj = observation.ProjNative();
+				ImGui::BeginTooltip();
+				ImGui::Text("%s (index %u, ID %u)", observation.name.c_str(), observation.idxImage, observation.ID);
+				ImGui::Text("pixel: %.2f, %.2f", proj.x, proj.y);
+				ImGui::Text("depth: %g", observation.depth);
+				ImGui::Text("footprint: %.3g px per unit", observation.FootprintNative());
+				if (pointObservations.HasWeights())
+					ImGui::Text("confidence: %.3f", observation.weight);
+				if (observation.angle >= 0)
+					ImGui::Text("angle to normal: %.1f deg", observation.angle);
+				ImGui::TextDisabled("click to view from this camera");
+				ImGui::EndTooltip();
+			}
+			if (clicked) {
+				window.GetCamera().SetCameraViewMode(observation.idxView);
+				window.RequestRedraw();
+			}
+			ImGui::PopID();
+			if (i+1 < observations.size() && ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + patchSize.x < maxX)
+				ImGui::SameLine();
 		}
 	}
 	ImGui::End();
@@ -1269,12 +1396,7 @@ void UI::ShowLayersPanel(Window& window)
 		ImGui::Text("Active Layer Appearance");
 
 		bool pointAppearanceChanged = false;
-		bool cameraAppearanceChanged = false;
-
-		const bool hasPoints = !activeLayer->scene.pointcloud.IsEmpty();
-		const bool hasCameras = !activeLayer->images.empty();
-
-		if (hasPoints) {
+		if (!activeLayer->scene.pointcloud.IsEmpty()) {
 			bool usePointSolidColor = activeLayer->usePointSolidColor;
 			if (ImGui::Checkbox("Solid Point Color", &usePointSolidColor)) {
 				activeLayer->usePointSolidColor = usePointSolidColor;
@@ -1295,33 +1417,8 @@ void UI::ShowLayersPanel(Window& window)
 			ImGui::TextDisabled("No point cloud in active layer");
 		}
 
-		if (hasCameras) {
-			bool useCameraJetColor = activeLayer->useCameraJetColor;
-			if (ImGui::Checkbox("Jet Camera Colors", &useCameraJetColor)) {
-				activeLayer->useCameraJetColor = useCameraJetColor;
-				cameraAppearanceChanged = true;
-			}
-
-			float cameraColor[3] = {
-			    activeLayer->cameraColor.x,
-			    activeLayer->cameraColor.y,
-			    activeLayer->cameraColor.z};
-			ImGui::BeginDisabled(activeLayer->useCameraJetColor);
-			if (ImGui::ColorEdit3("Camera Color", cameraColor)) {
-				activeLayer->cameraColor = Point3f(cameraColor[0], cameraColor[1], cameraColor[2]);
-				cameraAppearanceChanged = true;
-			}
-			ImGui::EndDisabled();
-			ImGui::TextDisabled("Jet gradient is computed within this layer.");
-		} else {
-			ImGui::TextDisabled("No cameras in active layer");
-		}
-
-		if (pointAppearanceChanged || cameraAppearanceChanged) {
-			if (pointAppearanceChanged)
-				window.GetRenderer().UploadPointClouds(scene, window.pointNormalLength);
-			if (cameraAppearanceChanged)
-				window.GetRenderer().UploadCameras(window);
+		if (pointAppearanceChanged) {
+			window.GetRenderer().UploadPointClouds(scene, window.pointNormalLength);
 			window.RequestRedraw();
 		}
 	}
@@ -1744,6 +1841,7 @@ void UI::ShowHelpDialog() {
 		ImGui::Text("  W             Toggle wireframe mesh rendering");
 		ImGui::Text("  T             Toggle textured mesh rendering");
 		ImGui::Text("  B             Toggle bounding-box display");
+		ImGui::Text("  Shift+P       Toggle Point Observations panel (selected point seen by each view)");
 		ImGui::Separator();
 
 		// Bounding Box Controls
@@ -3501,7 +3599,7 @@ void SettingsReadLine(ImGuiContext*, ImGuiSettingsHandler* handler, void* entry,
 		window.uncertaintyEllipsoidScale = x;
 	}
 	else if (sscanf(line, "CameraDisplayColor=%d", &intVal) == 1) {
-		(void)intVal; // deprecated: camera jet/solid mode is stored per layer
+		window.useCameraJetColor = (intVal != 0);
 	}
 	else if (sscanf(line, "CameraDisplayType=%d", &intVal) == 1) {
 		window.cameraDisplayType =
@@ -3567,6 +3665,7 @@ void SettingsWriteAll(ImGuiContext*, ImGuiSettingsHandler* handler, ImGuiTextBuf
 		window.clearColor[2], window.clearColor[3]);
 	buf->appendf("CameraSize=%f\n", window.cameraSize);
 	buf->appendf("EllipsoidScale=%f\n", window.uncertaintyEllipsoidScale);
+	buf->appendf("CameraDisplayColor=%d\n", window.useCameraJetColor ? 1 : 0);
 	buf->appendf("CameraDisplayType=%d\n", (int)window.cameraDisplayType);
 	buf->appendf("ShowCameraLookAt=%d\n", window.showCameraLookAt ? 1 : 0);
 	buf->appendf("PointSize=%f\n", window.pointSize);
