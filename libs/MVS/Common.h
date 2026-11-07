@@ -81,7 +81,7 @@ using namespace SEACAVE;
 
 #define _USE_OPENCV
 #define _DISABLE_NO_ID
-#include "Interface.h"
+#include "../Math/Interface.h"
 
 namespace MVS {
 

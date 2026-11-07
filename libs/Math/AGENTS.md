@@ -58,6 +58,10 @@ struct Transform {
 - `DecomposeProjectionMatrix(P, K, R, C)` - RQ decomposition of P=K[R|-RC]
 - `AssembleProjectionMatrix(K, R, C, P)` - Construct P from components
 
+## Scene Interface (`Interface.h`)
+Drop-in header (no `Common/` include, no OpenMVS types) defining the `.mvs` scene and `.dmap`
+depth-map formats, shared by SFM and MVS; see `libs/MVS/AGENTS.md` for its rules.
+
 ## Geodetic Transforms (`GeodeticTransforms.h/cpp`)
 WGS84 coordinate conversions for GPS integration.
 

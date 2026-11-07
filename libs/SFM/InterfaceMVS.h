@@ -39,7 +39,7 @@ SFM_API bool UndistortDepthMaps(const Scene& scene,
 
 // Depth-map import from MVS format (similar to MVS::ImportDepthDataRaw).
 // The DMAP header carries the recalibrated-confidence flag (CONF_ADJUSTED in
-// MVS/Interface.h): anything that rewrites a depth-map has to carry it over, or the
+// Math/Interface.h): anything that rewrites a depth-map has to carry it over, or the
 // stored confidence would be recalibrated a second time by a later dense run.
 SFM_API bool ImportDepthDataRaw(const String& fileName, String& imageFileName,
 	IIndexArr& IDs, cv::Size& imageSize, cv::Size& depthSize,

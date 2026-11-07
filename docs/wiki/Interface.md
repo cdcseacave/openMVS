@@ -4,7 +4,7 @@
 
 1. Run the **native SfM** module, `CreateStructure`, directly on a folder of images. It produces a `.sfm` scene that can additionally be exported as a `.mvs` project with the `--export-mvs` flag, feeding the downstream MVS pipeline with zero external dependencies. Video can be ingested first via `ExtractKeyframes`, including 360° / equirectangular video.
 
-2. The most generic way is to generate a native *OpenMVS* project. In order to do this, just copy and include [libs/MVS/Interface.h](https://github.com/cdcseacave/openMVS/blob/master/libs/MVS/Interface.h) (self contained) into your project, fill the structure with your data and save it to a file using the included serialization support. As an example, see *OpenMVG* exporter *openMVG_main_openMVG2openMVS*.
+2. The most generic way is to generate a native *OpenMVS* project. In order to do this, just copy and include [libs/Math/Interface.h](https://github.com/cdcseacave/openMVS/blob/master/libs/Math/Interface.h) (self contained) into your project, fill the structure with your data and save it to a file using the included serialization support. As an example, see *OpenMVG* exporter *openMVG_main_openMVG2openMVS*.
 
 3. [OpenMVG](https://github.com/openMVG/openMVG) output is supported by *OpenMVS*. In order to convert a project from *OpenMVG* to *OpenMVS* either use the *OpenMVG* integrated exporter *openMVG_main_openMVG2openMVS*, or at the building stage make sure to point the *CMake* tool to the *OpenMVG* installation folder to generate an importer.
 
