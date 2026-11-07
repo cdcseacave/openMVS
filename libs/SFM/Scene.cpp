@@ -1297,27 +1297,18 @@ bool Scene::UndistortImages(String outputDir, String extension, float alpha,
 	if (extension.empty())
 		extension = ".jxl";
 
-	struct UndistortData {
-		cv::Mat map1;
-		cv::Mat map2;
-		KMatrix newK;
-	};
-	std::unordered_map<const Camera*, UndistortData> undistortMaps;
+	std::unordered_map<const Camera*, UndistortMaps> undistortMaps;
 	undistortMaps.reserve(cameras.size());
 	for (CameraPtr const camPtr : cameras) {
 		if (!camPtr->IsValid() || !camPtr->HasDistortion())
 			continue;
-		const cv::Size imgSize(camPtr->GetSize());
 		switch (camPtr->GetType()) {
 		case CameraType::PINHOLE: {
 			const PinholeCamera* pc = static_cast<const PinholeCamera*>(camPtr);
-			const cv::Mat distCoeffs = pc->GetDistortionCoeffs();
-			UndistortData data;
-			data.newK = cv::getOptimalNewCameraMatrix(pc->GetK(), distCoeffs, imgSize, alpha);
-			cv::initUndistortRectifyMap(pc->GetK(), distCoeffs, cv::noArray(), data.newK, imgSize, CV_16SC2, data.map1, data.map2);
+			UndistortMaps& maps = undistortMaps[pc];
+			maps.Init(pc->GetK(), pc->GetDistortion(), camPtr->GetSize(), alpha);
 			if (undistortedIntrinsics)
-				undistortedIntrinsics->emplace(pc, data.newK);
-			undistortMaps.emplace(pc, std::move(data));
+				undistortedIntrinsics->emplace(pc, maps.K);
 			break;
 		}
 		default:
@@ -1350,9 +1341,7 @@ bool Scene::UndistortImages(String outputDir, String extension, float alpha,
 		if (!img.HasPixels())
 			continue;
 		cv::Mat undistorted;
-		const UndistortData& data = undistortMaps.at(img.pCamera);
-		// Undistort image
-		cv::remap(img.pixels, undistorted, data.map1, data.map2, cv::INTER_CUBIC, cv::BORDER_CONSTANT, cv::Scalar::all(0));
+		undistortMaps.at(img.pCamera).Remap(img.pixels, undistorted, cv::INTER_CUBIC);
 		if (loadedHere)
 			const_cast<Image&>(img).ReleasePixels();
 		// Restore original orientation if the working copy was rotated to landscape

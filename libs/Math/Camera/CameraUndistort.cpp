@@ -1,42 +1,82 @@
 ////////////////////////////////////////////////////////////////////
-// SphereCubeMap.cpp
+// CameraUndistort.cpp
 //
-// Copyright 2026 cDc@seacave
+// Copyright 2007 cDc@seacave
 // Distributed under the Boost Software License, Version 1.0
 // (See http://www.boost.org/LICENSE_1_0.txt)
 
-#include "Common.h"
-#include "SphereCubeMap.h"
+#include "../Common.h"
+#include "CameraUndistort.h"
 
-using namespace SFM;
-using namespace SFM::SphereCubeMap;
+using namespace SEACAVE;
 
 
 // D E F I N E S ///////////////////////////////////////////////////
 
 // uncomment to enable save rendered faces to disk for visual inspection (debug only)
-//#define SFM_DEBUG_SPHERICAL_FACES
+//#define SPHERECUBEMAP_DEBUG_FACES
 
 
 // S T R U C T S ///////////////////////////////////////////////////
 
+void UndistortMaps::Init(const KMatrix& _K, const BrownDistortion<REAL>& distortion, const cv::Size& size, const KMatrix& newK)
+{
+	ASSERT(size.width > 0 && size.height > 0);
+	ASSERT(_K(0,0) > 0 && _K(1,1) > 0 && newK(0,0) > 0 && newK(1,1) > 0);
+	const cv::Vec<double,8> coeffs(distortion.k1, distortion.k2, distortion.p1, distortion.p2,
+		distortion.k3, distortion.k4, distortion.k5, distortion.k6);
+	K = newK;
+	cv::initUndistortRectifyMap(_K, coeffs, cv::noArray(), K, size, CV_16SC2, map1, map2);
+}
+void UndistortMaps::Init(const KMatrix& _K, const BrownDistortion<REAL>& distortion, const cv::Size& size, double alpha)
+{
+	ASSERT(alpha >= 0 && alpha <= 1);
+	const cv::Vec<double,8> coeffs(distortion.k1, distortion.k2, distortion.p1, distortion.p2,
+		distortion.k3, distortion.k4, distortion.k5, distortion.k6);
+	const KMatrix newK(cv::getOptimalNewCameraMatrix(_K, coeffs, size, alpha));
+	Init(_K, distortion, size, newK);
+}
+
+void UndistortMaps::Remap(cv::InputArray src, cv::OutputArray dst, int interpolation) const
+{
+	ASSERT(!map1.empty() && !src.empty());
+	cv::remap(src, dst, map1, map2, interpolation, cv::BORDER_CONSTANT, cv::Scalar::all(0));
+}
+
+void UndistortMaps::RemapDepth(const Image32F& depthMap, Image32F& undistortedDepthMap) const
+{
+	ASSERT(!map1.empty() && !depthMap.empty());
+	undistortedDepthMap.create(map1.size());
+	undistortedDepthMap.setTo(cv::Scalar(0));
+	// for each undistorted pixel, sample the source depth-map at the position given by the remap tables
+	for (int y = 0; y < undistortedDepthMap.rows; ++y) {
+		for (int x = 0; x < undistortedDepthMap.cols; ++x) {
+			const Point2f srcPt = CoordinateRemap2Float(cv::Point2i(x, y), map1, map2);
+			if (!depthMap.isInsideWithBorder(srcPt, 1))
+				continue;
+			// interpolate only between depths similar to the nearest one
+			const float centerDepth = depthMap(ROUND2INT(srcPt));
+			if (centerDepth <= 0.f)
+				continue;
+			const auto Sample = [centerDepth](const float& depth) {
+				return IsDepthSimilar(centerDepth, depth);
+			};
+			float sampledDepth;
+			if (!depthMap.sampleSafe(sampledDepth, srcPt, Sample))
+				continue;
+			undistortedDepthMap(y, x) = sampledDepth;
+		}
+	}
+}
+/*----------------------------------------------------------------*/
+
+
 namespace {
 
-// ------------------------------------------------------------------
-// 6-face cube rotation table — bit-exact with the pre-generalization
-// implementation so MVS-export outputs are unchanged.
-//
-// Face order: +Z forward, -Z back, +X right, -X left, +Y, -Y.
-// All rotations are pure SO(3) elements (det=+1) that map the body
-// frame to a face frame whose +Z points along the named body axis.
-//
-// SphericalCamera now uses the Y-DOWN imaging convention (the same as
-// MVS's pinhole formula and the OpenCV image frame), so the rendered
-// face images are vertically upright (sky at top for face 0). MVS's
-// K*cam.R*(X-C) chain produces pixel coordinates that match where each
-// sampled equirect direction was written, so dense reconstruction,
-// meshing and texturing all behave correctly.
-// ------------------------------------------------------------------
+// 6-face cube rotation table; face order: +Z forward, -Z back, +X right, -X left, +Y, -Y.
+// All rotations are proper (det=+1) and map the panorama frame to a face frame whose +Z points
+// along the named axis; the face frames keep the y-down convention of the Spherical model, so the
+// rendered faces are upright (sky at top for face 0).
 std::array<Matrix3x3, 6> BuildFaceRotations6()
 {
 	std::array<Matrix3x3, 6> R;
@@ -66,12 +106,10 @@ const std::array<Matrix3x3, 6>& GetFaceRotations6()
 	return kRotations;
 }
 
-// Generic body→face rotation for an arbitrary unit "forward" direction n
-// (where face +Z points, expressed in body frame). Uses Gram–Schmidt
-// against body up-reference (+Y, or +X as fallback when n is parallel to +Y).
-// R has rows [right^T; up_face^T; n^T] so R * n_body = (0,0,1), etc.
-// The 6-face table does NOT go through this — it's kept bit-exact above —
-// but the 8/12/20-face tables do.
+// body→face rotation for a unit "forward" direction n (where face +Z points, in the body frame);
+// Gram–Schmidt against the body +Y (or +X when n is nearly parallel to +Y);
+// R has rows [right^T; up_face^T; n^T] so R * n_body = (0,0,1);
+// used by the 8/12/20-face tables, the 6-face one is the explicit table above
 Matrix3x3 RotationFromForward(const Point3& n_in)
 {
 	const REAL nlen = norm(n_in);
@@ -164,45 +202,35 @@ std::vector<Matrix3x3> BuildFaceRotations20()
 	return R;
 }
 
-// ------------------------------------------------------------------
-// Per-face render kernel — file-local. Equivalent of the old RenderFace
-// but parameterised on the shared (f, cx, cy) instead of re-deriving
-// them from the 90°-FOV cube convention.
-// ------------------------------------------------------------------
+// render one face: each face pixel ray is projected into the panorama and sampled bilinearly;
+// sourceWrapped carries one extra column (a copy of column 0) so samples across the seam interpolate
 template <typename TYPE>
 void RenderFaceKernel(
 	const TImage<TYPE>& sourceWrapped,
-	int sourceWidth,
-	const SphericalCamera& sphCam,
+	const Spherical<REAL>& sphere,
 	const Matrix3x3& R_face,
 	REAL f, REAL cx, REAL cy,
 	int faceSize,
 	TImage<TYPE>& dst)
 {
+	const int srcW = sourceWrapped.width() - 1;
+	const int srcH = sourceWrapped.height();
+	ASSERT(srcW > 0 && srcH > 0);
 	if (dst.cols != faceSize || dst.rows != faceSize)
 		dst.create(faceSize, faceSize);
 
 	const Matrix3x3 R_face_T = R_face.t();
-	const int srcH = sourceWrapped.height();
-
 	for (int v = 0; v < faceSize; ++v) {
 		for (int u = 0; u < faceSize; ++u) {
-			const REAL x_face = (REAL(u) - cx) / f;
-			const REAL y_face = (REAL(v) - cy) / f;
-			const Point3 b_body = R_face_T * Point3(x_face, y_face, REAL(1));
-
-			const auto [proj, ok] = sphCam.Project(b_body);
-			if (!ok) {
-				dst(v, u) = TYPE::BLACK;
-				continue;
-			}
-
-			REAL px = proj.x;
-			REAL py = proj.y;
-			while (px < REAL(0)) px += REAL(sourceWidth);
-			while (px >= REAL(sourceWidth)) px -= REAL(sourceWidth);
-			if (py < REAL(0)) py = REAL(0);
-			if (py > REAL(srcH - 1)) py = REAL(srcH - 1);
+			const Point3 b_body = R_face_T * Point3((REAL(u) - cx) / f, (REAL(v) - cy) / f, REAL(1));
+			Eigen::Vector2d x;
+			if (!sphere.Project(b_body, x))
+				ASSERT("face rays are never zero" == NULL);
+			// the projection spans [-0.5, srcW-0.5] horizontally: wrap the left half-pixel onto
+			// the extra column, and clamp vertically to the first/last row centers
+			REAL px = x.x();
+			if (px < REAL(0)) px += REAL(srcW);
+			const REAL py = CLAMP(x.y(), REAL(0), REAL(srcH - 1));
 			dst(v, u) = sourceWrapped.sampleSafe(Point2(px, py));
 		}
 	}
@@ -211,11 +239,7 @@ void RenderFaceKernel(
 } // namespace
 
 
-// ------------------------------------------------------------------
-// Public API — pure geometric tables
-// ------------------------------------------------------------------
-
-std::vector<Matrix3x3> SFM::SphereCubeMap::FaceRotations(int n)
+std::vector<Matrix3x3> SphereCubeMap::FaceRotations(int n)
 {
 	switch (n) {
 	case 4: {
@@ -243,7 +267,7 @@ std::vector<Matrix3x3> SFM::SphereCubeMap::FaceRotations(int n)
 	return {};
 }
 
-REAL SFM::SphereCubeMap::FaceFOVDegrees(int n)
+REAL SphereCubeMap::FaceFOVDegrees(int n)
 {
 	switch (n) {
 	case 4:
@@ -256,7 +280,7 @@ REAL SFM::SphereCubeMap::FaceFOVDegrees(int n)
 	return REAL(90);
 }
 
-Matrix3x3 SFM::SphereCubeMap::FaceIntrinsics(int faceSize, int n)
+Matrix3x3 SphereCubeMap::FaceIntrinsics(int faceSize, int n)
 {
 	ASSERT(faceSize > 0);
 	const REAL fovRad = D2R(FaceFOVDegrees(n));
@@ -272,12 +296,7 @@ Matrix3x3 SFM::SphereCubeMap::FaceIntrinsics(int faceSize, int n)
 /*----------------------------------------------------------------*/
 
 
-// ------------------------------------------------------------------
-// Public API — split geometry / rendering
-// ------------------------------------------------------------------
-
-SphereCubeMap::TangentFacesGeometry SFM::SphereCubeMap::MakeTangentFacesGeometry(
-	int numFaces, int faceSize)
+SphereCubeMap::TangentFacesGeometry SphereCubeMap::MakeTangentFacesGeometry(int numFaces, int faceSize)
 {
 	TangentFacesGeometry g;
 	g.rotations = FaceRotations(numFaces);
@@ -289,9 +308,8 @@ SphereCubeMap::TangentFacesGeometry SFM::SphereCubeMap::MakeTangentFacesGeometry
 	return g;
 }
 
-
 template <typename TYPE>
-std::vector<TImage<TYPE>> SFM::SphereCubeMap::SphericalToTangentialFaces(
+std::vector<TImage<TYPE>> SphereCubeMap::SphericalToTangentialFaces(
 	const TImage<TYPE>& sphericalImage,
 	const TangentFacesGeometry& geometry)
 {
@@ -299,7 +317,7 @@ std::vector<TImage<TYPE>> SFM::SphereCubeMap::SphericalToTangentialFaces(
 	ASSERT((int)geometry.rotations.size() == geometry.numFaces);
 	ASSERT(sphericalImage.width() > 0 && sphericalImage.height() > 0);
 
-	const SphericalCamera sphCam(sphericalImage.size());
+	const Spherical<REAL> sphere(Spherical<REAL>::FromSize(sphericalImage.width(), sphericalImage.height()));
 	const REAL f  = geometry.K(0,0);
 	const REAL cx = geometry.K(0,2);
 	const REAL cy = geometry.K(1,2);
@@ -308,15 +326,10 @@ std::vector<TImage<TYPE>> SFM::SphereCubeMap::SphericalToTangentialFaces(
 
 	std::vector<TImage<TYPE>> images(geometry.numFaces);
 	for (int k = 0; k < geometry.numFaces; ++k)
-		RenderFaceKernel(sphericalImageWrapped, sphericalImage.width(), sphCam, geometry.rotations[k],
+		RenderFaceKernel(sphericalImageWrapped, sphere, geometry.rotations[k],
 		                 f, cx, cy, geometry.faceSize, images[k]);
 
-	#ifdef SFM_DEBUG_SPHERICAL_FACES
-	// Debug: save rendered faces to disk for visual inspection.
-	// The output images are vertically upright (sky at top, ground at bottom for face 0)
-	// because SphericalCamera uses the Y-DOWN convention, same as MVS's pinhole
-	// formula, so the raw pixel coordinates match where each sampled equirect
-	// direction was written.
+	#ifdef SPHERECUBEMAP_DEBUG_FACES
 	for (int k = 0; k < geometry.numFaces; ++k) {
 		String fileName = MAKE_PATH(String::FormatString("spherical_face_%02d.png", k));
 		if (!images[k].Save(fileName))
@@ -327,14 +340,11 @@ std::vector<TImage<TYPE>> SFM::SphereCubeMap::SphericalToTangentialFaces(
 	return images;
 }
 
-
-// Explicit instantiations — one line per supported pixel type. Add new
-// rows here if a caller needs Pixel16U, Pixel64F, etc. Tagged SFM_API so the
-// instantiated symbols actually get exported from SFM.dll.
-template SFM_API std::vector<Image8U3>
-	SFM::SphereCubeMap::SphericalToTangentialFaces<Pixel8U>(
-	const Image8U3&, const TangentFacesGeometry&);
-template SFM_API std::vector<Image32F3>
-	SFM::SphereCubeMap::SphericalToTangentialFaces<Pixel32F>(
-	const Image32F3&, const TangentFacesGeometry&);
+// explicit instantiations, exported from the library; add a row per pixel type a caller needs
+template MATH_API std::vector<Image8U3>
+	SphereCubeMap::SphericalToTangentialFaces<Pixel8U>(
+	const Image8U3&, const SphereCubeMap::TangentFacesGeometry&);
+template MATH_API std::vector<Image32F3>
+	SphereCubeMap::SphericalToTangentialFaces<Pixel32F>(
+	const Image32F3&, const SphereCubeMap::TangentFacesGeometry&);
 /*----------------------------------------------------------------*/

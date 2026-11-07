@@ -12,6 +12,7 @@
 // I N C L U D E S /////////////////////////////////////////////////
 
 #include "Camera.h"
+#include "../Math/Camera/CameraUndistort.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -27,7 +28,7 @@ class SFM_API Scene;
 
 // Depth-map undistortion using depth-aware interpolation
 SFM_API bool UndistortDMAP(const String& depthMapFile,
-	const cv::Mat& map1, const cv::Mat& map2, const KMatrix& imageUndistortedK);
+	const UndistortMaps& maps, const KMatrix& imageUndistortedK);
 
 // Batch undistort depth-maps at their native resolution, matching image undistortion.
 // alpha should match the alpha used for image undistortion.

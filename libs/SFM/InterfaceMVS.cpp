@@ -8,7 +8,7 @@
 #include "Common.h"
 #include "InterfaceMVS.h"
 #include "Scene.h"
-#include "SphereCubeMap.h"
+#include "../Math/Camera/CameraUndistort.h"
 
 // Import/Export scene and depth-maps to MVS and DMAP Interface format respectively
 #ifndef _USE_OPENCV
@@ -26,7 +26,7 @@ using namespace SFM;
 // S T R U C T S ///////////////////////////////////////////////////
 
 bool SFM::UndistortDMAP(const String& depthMapFile,
-	const cv::Mat& map1, const cv::Mat& map2, const KMatrix& imageUndistortedK)
+	const UndistortMaps& maps, const KMatrix& imageUndistortedK)
 {
 	// Import depth-map
 	String imageFileName;
@@ -45,43 +45,19 @@ bool SFM::UndistortDMAP(const String& depthMapFile,
 		DEBUG("warning: failed to import depth-map from '%s'", depthMapFile.c_str());
 		return false;
 	}
-	// Undistort depth-map using depth-aware interpolation at its native resolution
-	Image32F undistortedDepthMap(depthMap.size(), 0.f);
 	if (!normalMap.empty()) {
 		DEBUG("warning: undistortion of normal-maps not implemented yet, skipping");
 	}
-	// For each pixel in the undistorted depth-map, find the corresponding pixel in the distorted depth-map
-	for (int y = 0; y < undistortedDepthMap.rows; ++y) {
-		for (int x = 0; x < undistortedDepthMap.cols; ++x) {
-			// Get the corresponding distorted pixel coordinates from the remap maps
-			// Convert from fixed-point to float (map1: integer part, map2: fractional part)
-			const Point2f srcPt = CoordinateRemap2Float(cv::Point2i(x, y), map1, map2);
-			// Check if source point is within bounds
-			if (!depthMap.isInsideWithBorder(srcPt, 1))
-				continue;
-			// Sample depth using depth-aware interpolation
-			// Only interpolate between pixels with similar depths
-			const Point2i centerPt = ROUND2INT(srcPt);
-			const float centerDepth = depthMap(centerPt);
-			if (centerDepth <= 0.f)
-				continue;
-			const auto Sample = [centerDepth](const float& depth) {
-				return IsDepthSimilar(centerDepth, depth);
-			};
-			// Sample with a functor that checks depth similarity
-			float sampledDepth;
-			if (!depthMap.sampleSafe(sampledDepth, srcPt, Sample))
-				continue;
-			undistortedDepthMap(y, x) = sampledDepth;
-		}
-	}
+	// Undistort depth-map using depth-aware interpolation at its native resolution
+	Image32F undistortedDepthMap;
+	maps.RemapDepth(depthMap, undistortedDepthMap);
 	// Undistort confidence and views-map if available (using nearest neighbor interpolation)
 	Image32F undistortedConfMap;
 	if (!confMap.empty())
-		cv::remap(confMap, undistortedConfMap, map1, map2, cv::INTER_NEAREST, cv::BORDER_CONSTANT, cv::Scalar::all(0));
+		maps.Remap(confMap, undistortedConfMap, cv::INTER_NEAREST);
 	Image8U4 undistortedViewsMap;
 	if (!viewsMap.empty())
-		cv::remap(viewsMap, undistortedViewsMap, map1, map2, cv::INTER_NEAREST, cv::BORDER_CONSTANT, cv::Scalar::all(0));
+		maps.Remap(viewsMap, undistortedViewsMap, cv::INTER_NEAREST);
 	// Export undistorted depth-map to a temporary file first; undistortion resamples the
 	// confidence but does not change what it measures, so a recalibrated map stays
 	// recalibrated and keeps its CONF_ADJUSTED flag
@@ -107,15 +83,8 @@ bool SFM::UndistortDepthMaps(const Scene& scene,
 	std::unordered_map<const Camera*, KMatrix>* undistortedIntrinsics)
 {
 	ASSERT(!depthMapFiles.empty());
-	struct UndistortData
-	{
-		cv::Mat map1;
-		cv::Mat map2;
-		KMatrix newK;
-	};
-
 	TD_TIMER_STARTD();
-	std::unordered_map<const Camera*, UndistortData> undistortMaps;
+	std::unordered_map<const Camera*, UndistortMaps> undistortMaps;
 	undistortMaps.reserve(scene.cameras.size());
 
 	// For each image/depth-map, compute maps at the depth resolution using K scaled to that resolution
@@ -137,8 +106,8 @@ bool SFM::UndistortDepthMaps(const Scene& scene,
 		if (!pc->HasDistortion())
 			continue; // nothing to undistort for depth-map
 		// Check if undistortion maps already computed for this camera
-		UndistortData& data = [&]() -> UndistortData& {
-			UndistortData* pData = nullptr;
+		UndistortMaps& data = [&]() -> UndistortMaps& {
+			UndistortMaps* pData = nullptr;
 			#ifdef INTERFACEMVS_USE_OPENMP
 			#pragma omp critical
 			#endif
@@ -158,17 +127,15 @@ bool SFM::UndistortDepthMaps(const Scene& scene,
 					const cv::Size depthSize((int)meta.header.depthWidth, (int)meta.header.depthHeight);
 					// Build K at depth resolution by scaling the image K
 					const KMatrix Kdepth = ScaleK(pc->GetK(), imageSize, depthSize);
-					const cv::Mat distCoeffs = pc->GetDistortionCoeffs();
-					pData->newK = cv::getOptimalNewCameraMatrix(Kdepth, distCoeffs, depthSize, alpha);
-					cv::initUndistortRectifyMap(Kdepth, distCoeffs, cv::noArray(), pData->newK, depthSize, CV_16SC2, pData->map1, pData->map2);
+					pData->Init(Kdepth, pc->GetDistortion(), depthSize, alpha);
 					if (undistortedIntrinsics)
-						undistortedIntrinsics->emplace(pc, pData->newK);
+						undistortedIntrinsics->emplace(pc, pData->K);
 				}
 			}
 			return *pData;
 		}();
 		// Undistort DMAP with depth-aware interpolation and write back
-		if (!UndistortDMAP(dfile, data.map1, data.map2, img.GetK())) {
+		if (!UndistortDMAP(dfile, data, img.GetK())) {
 			DEBUG("warning: undistort depth failed for '%s'", dfile.c_str());
 			continue;
 		}
@@ -386,10 +353,12 @@ bool SFM::ImportMVS(const String& fileName, Scene& scene, bool loadColors)
 
 
 // ------------------------------------------------------------------
-// SphereCubeMap MVS-export helpers convert a pre-built
-// TangentFacesGeometry into MVS::Interface records
+// MVS-export helpers converting a pre-built
+// SphereCubeMap::TangentFacesGeometry into MVS::Interface records
 // ------------------------------------------------------------------
-namespace SFM::SphereCubeMap {
+namespace {
+
+using SphereCubeMap::TangentFacesGeometry;
 
 // Phase 1: one rig Platform per spherical SFM camera, N face Cameras each.
 void EmitSphericalPlatforms(
@@ -494,7 +463,7 @@ unsigned RenderAndSaveSphericalFaces(
 		// Normalize pixel format to BGR/8U if needed and
 		// render all N faces in one call, consuming the shared geometry
 		const std::vector<Image8U3> faces =
-			SphericalToTangentialFaces<Pixel8U>(img.GetImage8U3(), geometry);
+			SphereCubeMap::SphericalToTangentialFaces<Pixel8U>(img.GetImage8U3(), geometry);
 
 		const String stem = Util::getFileName(img.fileName);
 		for (int k = 0; k < (int)faces.size(); ++k) {
@@ -543,7 +512,7 @@ void ProjectTrackOntoSphericalFaces(
 	}
 }
 
-} // namespace SFM::SphereCubeMap
+} // namespace
 
 
 bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig config)
@@ -645,7 +614,7 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig 
 		}
 	}
 	if (hasSpherical)
-		SphereCubeMap::EmitSphericalPlatforms(scene, sphericalGeom, iface, camToPlatform);
+		EmitSphericalPlatforms(scene, sphericalGeom, iface, camToPlatform);
 
 	// ----- Phase 2: images + poses -----
 	// sfmToMvsImage[i] holds the images-array positions produced for SFM image i
@@ -674,7 +643,7 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig 
 		ASSERT(cam != NULL);
 
 		if (cam->GetType() == CameraType::SPHERICAL) {
-			SphereCubeMap::AppendSphericalFaceImages(
+			AppendSphericalFaceImages(
 				img, sphericalGeom, faceBaseSlash, config.extension,
 				camToPlatform[cam], iface, sfmToMvsImage[i], nextSyntheticID);
 			continue;
@@ -704,7 +673,7 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig 
 
 	// ----- Phase 3: render + write cube-map face pixels -----
 	if (hasSpherical) {
-		const unsigned written = SphereCubeMap::RenderAndSaveSphericalFaces(
+		const unsigned written = RenderAndSaveSphericalFaces(
 			scene, sphericalGeom, config.extension, cubeMapOutputDir);
 		DEBUG("SphereCubeMap: wrote %u face images to '%s'",
 			written, cubeMapOutputDir.c_str());
@@ -739,7 +708,7 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig 
 				continue;
 			const Image& srcImg = scene.images[sfmImageID];
 			if (srcImg.pCamera->GetType() == CameraType::SPHERICAL) {
-				SphereCubeMap::ProjectTrackOntoSphericalFaces(
+				ProjectTrackOntoSphericalFaces(
 					track.position, srcImg, sphericalGeom, mvsIDs, v);
 			} else {
 				MVSVertex::View view;

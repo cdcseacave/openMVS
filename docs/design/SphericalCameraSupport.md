@@ -11,14 +11,25 @@ faces that downstream PatchMatch/texturing consume as ordinary pinhole images.
 
 ## 2. Algorithm as implemented
 
-### Camera model — `libs/SFM/Camera.h`, `libs/SFM/Camera.cpp:216-278`
+### Camera model — `libs/Math/Camera/CameraModels.h`, `libs/SFM/Camera.h/.cpp`
 
-`SphericalCamera : public Camera` implements equirectangular projection/unprojection. `Project`
-maps a 3D camera-space point to equirectangular pixel coordinates. Two unprojection forms exist:
-`Unproject(x)` returns `(tan θ, tan φ / cos θ)` — algebraically the pinhole-normalized plane, so
-it is only valid for the front hemisphere and diverges at the equator/back pole — while
-`UnprojectNormalized(x)` returns a genuine 3D unit bearing vector and is singularity-free over the
-whole sphere. `PixelErrorToAngular` converts a pixel threshold to radians; `GetFeatureNoiseScale`
+The projection math lives in the header-only, scalar-templated `SEACAVE::Spherical<T>` model
+(`libs/Math/Camera/CameraModels.h`, shared with `Pinhole<T>` and `BrownDistortion<T>` and usable on
+the host, in CUDA and on Ceres Jets). `Spherical<T>::FromSize(W, H)` sets `fx = W/2π`,
+`fy = H/π`, `cx = (W-1)/2`, `cy = (H-1)/2`: pixel centers lie at integer coordinates (the
+OpenCV/MVS convention), so column 0 is centered at longitude `-π + π/W` and the image spans
+`[-0.5, W-0.5] x [-0.5, H-0.5]`. Axes are the pinhole camera frame (x-right, y-down, z-forward):
+longitude `θ = atan2(X.x, X.z)` grows with the column (`u = fx·θ + cx`, forward +Z at the
+center column, +X at 3/4 width), elevation `φ = asin(-X.y/|X|)` is `+π/2` on the top edge
+(`v = cy - fy·φ`, computed as `fy·atan2(X.y, |X.xz|) + cy`), so an upright camera's sky is at the
+top. `Ray(x)` returns the unit bearing `(cos φ sin θ, -sin φ, cos φ cos θ)`, `Depth(X) = |X|`,
+`Project` reports a point visible iff `|X| > 0`.
+
+`SphericalCamera : public Camera` is a thin wrapper over that model (`GetModel()`), converting
+`TPoint` ↔ Eigen at the boundary. Two unprojection forms exist: `Unproject(x)` returns the bearing
+scaled to `|z| = 1` — the pinhole-normalized plane in the front hemisphere, divergent where the
+bearing is orthogonal to the optical axis — while `UnprojectNormalized(x)` returns the unit
+bearing and is singularity-free over the whole sphere. `PixelErrorToAngular` converts a pixel threshold to radians; `GetFeatureNoiseScale`
 returns 2 (cube-face SIFT has roughly twice the pixel-space localization noise of a pinhole
 pipeline, from face-seam sampling and off-center descriptor warping). `GetK()` returns identity
 (no traditional intrinsics); `TrustIntrinsics()` is always `true`.
@@ -33,7 +44,8 @@ Two call sites still use the raw 2D form: `View::Ray()` and `View::UnprojectPoin
 When `image.pCamera->GetType() == CameraType::SPHERICAL`, extraction is dispatched to
 `ExtractImageSpherical`: the equirectangular image is rendered to `config.cubemapFaces` tangent
 pinhole faces (default 6; `config.cubemapFaceSize`, default 0 = `max(1024, equirect_width/4)`) via
-`SphereCubeMap::MakeTangentFacesGeometry` + `SphericalToTangentialFaces`. Each face is wrapped as
+`SphereCubeMap::MakeTangentFacesGeometry` + `SphericalToTangentialFaces`
+(`libs/Math/Camera/CameraUndistort.h/.cpp`, shared with the MVS export). Each face is wrapped as
 a synthetic pinhole `Image` and run back through the normal `ExtractImage` path — SIFT/AKAZE/
 SiftGPU detection logic is not duplicated per camera type. Resulting keypoints are reprojected to
 equirectangular pixel coordinates (face pixel → bearing in the face frame → body frame via the
@@ -78,15 +90,17 @@ anywhere in the codebase (production or tests) today.
 gated by `PixelErrorToAngular`, so back-hemisphere spherical observations are neither
 misreported nor silently discarded as outliers.
 
-### Bundle adjustment — `libs/SFM/BundleAdjustment.cpp`, `libs/SFM/BundleAdjustmentCostFunctions.h:357-412`
+### Bundle adjustment — `libs/SFM/BundleAdjustment.cpp`, `libs/SFM/BundleAdjustmentCostFunctions.h`
 
 `AddReprojectionResidual` dispatches per `img.GetCameraType()`: pinhole observations get
 `PinholeReprojectionError` with pose + 12-parameter intrinsics + point blocks; spherical
 observations get `SphericalAngularReprojectionError::Create(kp.pt.x, kp.pt.y, width, height)` with
 only pose + point blocks — spherical cameras never receive an intrinsics parameter block, so
 nothing about the spherical model itself is refined by BA. The cost functor precomputes a
-per-observation tangent-plane basis on the unit sphere, pre-scaled by `pixel_scale = width/(2π)`
-so residuals come out in pixel-equivalent units; it has no z/cheirality check (valid across the
+per-observation tangent-plane basis on the unit sphere at the observed bearing (longitude and
+elevation from `Spherical<double>::Angles`, so the observation follows the same pixel-center
+convention as `Project`), pre-scaled by the model's `fx = width/(2π)` (longitude) and
+`fy = height/π` (elevation) so residuals come out in pixel-equivalent units; it has no z/cheirality check (valid across the
 full sphere) and returns the two tangent-plane dot products as residuals rather than minimizing
 angular (`acos`) error directly, for numerical stability near zero residual.
 
@@ -103,20 +117,24 @@ dispatches on `config.cameraType` (`PINHOLE` / `SPHERICAL`) to build the matchin
 `SFM::ExportMVS` detects any `CameraType::SPHERICAL` camera in the scene, builds one
 `SphereCubeMap::TangentFacesGeometry` for `(config.sphericalNumFaces, config.sphericalFaceSize)`
 (defaults 6 / 1024px, `ExportMVSConfig` in `libs/SFM/InterfaceMVS.h`; must be one of 4/6/8/12/20 or
-export fails), then runs four phases in `namespace SFM::SphereCubeMap` (scoped to
-`InterfaceMVS.cpp`):
+export fails), then runs four phases implemented as file-local helpers of `InterfaceMVS.cpp`:
 
 1. `EmitSphericalPlatforms` — one MVS `Platform` per spherical SFM camera with N face `Camera`
    records sharing the geometry's intrinsics and per-face rotations.
 2. `AppendSphericalFaceImages` — N `Interface::Image` records per spherical source image, named
    `<stem>_face<k><ext>`; face image IDs are drawn from a synthetic counter past the maximum SFM
    image ID (pinhole images keep their original SFM ID).
-3. `RenderAndSaveSphericalFaces` — renders and writes the N face images to disk.
+3. `RenderAndSaveSphericalFaces` — renders (`SphereCubeMap::SphericalToTangentialFaces`: each
+   face pixel's ray is projected by the `Spherical` model and sampled bilinearly, wrapping across
+   the seam) and writes the N face images to disk.
 4. `ProjectTrackOntoSphericalFaces` — for each 3D track point, projects into every face's pinhole
    model and adds a `Vertex::View` per face where the point is in front of that face's camera.
 
 `UndistortDepthMaps` (`InterfaceMVS.cpp`) remains pinhole-only (explicitly skips any camera whose
-type is not `PINHOLE`) — consistent with there being no native spherical depth-map path.
+type is not `PINHOLE`) — consistent with there being no native spherical depth-map path; its
+remap tables and depth-aware resampling are `SEACAVE::UndistortMaps`
+(`libs/Math/Camera/CameraUndistort.h`), shared with `Scene::UndistortImages` and
+`apps/InterfaceMetashape`.
 
 No CLI flag exposes `sphericalNumFaces` / `sphericalFaceSize` in `CreateStructure` or any other
 app; only the Python bindings (`libs/SFM/PythonWrapper.cpp`) and hand-constructed
@@ -139,6 +157,9 @@ app; only the Python bindings (`libs/SFM/PythonWrapper.cpp`) and hand-constructe
 
 - `SphericalCamera` requires `width == 2 * height` (equirectangular aspect ratio), enforced by an
   `ASSERT` in the constructor.
+- Every equirectangular pixel ↔ direction mapping goes through `Spherical<T>`; no SFM code maps
+  pixels to angles by hand. Keypoint columns therefore span `(-0.5, W-0.5]` (the seam is the
+  meridian `θ = ±π`, at `u = -0.5 ≡ W-0.5`).
 - Whole-sphere-correct callers must use `UnprojectNormalized`; the 2D `Unproject()` form is only
   valid in the front hemisphere and must never be used for RANSAC/DLT/angle inputs. `View::Ray()`
   and `View::UnprojectPoint()` are exceptions that still use the 2D form — callers passing a
@@ -159,7 +180,8 @@ app; only the Python bindings (`libs/SFM/PythonWrapper.cpp`) and hand-constructe
 
 | Test | File | Checks |
 |---|---|---|
-| `ReconstructSphericalSyntheticTest` | `apps/Tests/TestsSFM.cpp` | ≥95% of tracks recovered within 0.1 m of ground truth; mean reprojection ≤1.0 px; mean angular error ≤1.0°; same bounds post-BA |
+| `TestCameraModels` | `apps/Tests/TestsMath.cpp` | `Spherical`: axis/seam/pole conventions exact to 1e-9 px, column 0 at longitude `-π+π/W`, `Ray`∘`Project` round trip ≤1e-8 px over random pixels, the seam columns, both hemispheres and the pole rows; Ceres Jet evaluation matches double values (1e-9 px) and central-difference derivatives (1e-5 relative) |
+| `ReconstructSphericalSyntheticTest` | `apps/Tests/TestsSFM.cpp` | ≥95% of tracks recovered within 0.1 m of ground truth; mean reprojection ≤1.0 px; mean angular error ≤1.0°; same bounds post-BA; +X/-X exactly at 3/4 and 1/4 width (pixel-center convention) |
 | `PairsMatcherSphericalTest` | `apps/Tests/TestsSFM.cpp` | Relative-pose rotation error ≤0.5°; translation direction similarity ≥0.99 |
 | `MatchGeometricSphericalTest` | `apps/Tests/TestsSFM.cpp` | Rotation error ≤0.5°; translation similarity ≥0.99; ≥80% of tracked correspondences retained as inliers; requires ≥20 back-hemisphere matches to be meaningful |
 | `PipelineTest` (spherical BA sub-test) | `apps/Tests/TestsSFM.cpp` | Mean reprojection error ≤1.0 px post-BA |

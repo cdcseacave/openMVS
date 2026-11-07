@@ -60,64 +60,14 @@ inline void ProjectPinhole(
 	const T* p_cam,             // camera-space point[3]
 	T* projected)               // output: pixel[2]
 {
-	// Perspective division
-	const T inv_z = 1.0 / p_cam[2];
-	const T x = p_cam[0] * inv_z;
-	const T y = p_cam[1] * inv_z;
-
-	// Extract intrinsics
-	const T& fx = intrinsics[0];
-	const T fy = fx * intrinsics[1]; // fy = aspect_ratio * fx
-	const T& cx = intrinsics[2];
-	const T& cy = intrinsics[3];
-	const T& k1 = intrinsics[4];
-	const T& k2 = intrinsics[5];
-	const T& k3 = intrinsics[6];
-	const T& p1 = intrinsics[7];
-	const T& p2 = intrinsics[8];
-	const T& k4 = intrinsics[9];
-	const T& k5 = intrinsics[10];
-	const T& k6 = intrinsics[11];
-
-	// Radial distortion
-	const T r2 = x*x + y*y;
-	const T r4 = r2*r2;
-	const T r6 = r4*r2;
-
-	// Rational distortion model
-	const T radial_numerator = 1.0 + k1*r2 + k2*r4 + k3*r6;
-	const T radial_denominator = 1.0 + k4*r2 + k5*r4 + k6*r6;
-	const T radial = radial_numerator / radial_denominator;
-
-	// Tangential distortion
-	const T dx_tangential = 2.0*p1*x*y + p2*(r2 + 2.0*x*x);
-	const T dy_tangential = p1*(r2 + 2.0*y*y) + 2.0*p2*x*y;
-
-	// Apply distortion
-	const T xd = x * radial + dx_tangential;
-	const T yd = y * radial + dy_tangential;
-
-	// Apply intrinsic matrix
-	projected[0] = fx * xd + cx;
-	projected[1] = fy * yd + cy;
-}
-
-// Spherical camera projection (equirectangular)
-// No intrinsics needed, only image size (stored in camera, not optimized)
-template <typename T>
-inline void ProjectSpherical(
-	int width, int height,      // image dimensions
-	const T* p_cam,             // camera-space point[3]
-	T* projected)               // output: pixel[2]
-{
-	// Convert to spherical coordinates
-	const T longitude = ceres::atan2(p_cam[0], p_cam[2]);
-	const T r_xz = ceres::sqrt(p_cam[0]*p_cam[0] + p_cam[2]*p_cam[2]);
-	const T latitude = ceres::atan2(-p_cam[1], r_xz);
-
-	// Map to image coordinates
-	projected[0] = T(width) * (0.5 + longitude / (2.0 * M_PI));
-	projected[1] = T(height) * (0.5 - latitude / M_PI);
+	typedef Eigen::Matrix<T,2,1> Vec2;
+	typedef Eigen::Matrix<T,3,1> Vec3;
+	const Pinhole<T> camera{intrinsics[0], intrinsics[0] * intrinsics[1], intrinsics[2], intrinsics[3]};
+	// the distortion coefficients are passed by reference, not copied into a BrownDistortion (Jets are large)
+	const Vec2 x(camera.NormalizedToPixel(DistortBrown(Pinhole<T>::Perspective(Eigen::Map<const Vec3>(p_cam)),
+		intrinsics[4], intrinsics[5], intrinsics[7], intrinsics[8], intrinsics[6], intrinsics[9], intrinsics[10], intrinsics[11])));
+	projected[0] = x.x();
+	projected[1] = x.y();
 }
 
 // Reprojection error cost functor for pinhole cameras
@@ -358,20 +308,18 @@ struct SphericalAngularReprojectionError {
 	SphericalAngularReprojectionError(double observed_x, double observed_y,
 	                                  int width, int height)
 	{
-		const double longitude = (observed_x/width - 0.5) * 2.0 * M_PI;
-		const double latitude = (observed_y/height - 0.5) * M_PI;
-		const double cos_lat = COS(latitude);
-		const double sin_lat = SIN(latitude);
-		const double cos_lon = COS(longitude);
-		const double sin_lon = SIN(longitude);
-		// Pre-scale tangent basis by pixel scale (width / 2π) for efficiency
-		// This converts angular error directly to pixel error without runtime computation
-		const double pixel_scale = double(width) * M_1_PI * 0.5;
-		// Tangent basis vectors (u, v) at the observation point on the unit sphere
-		// u = dP/d_lon normalized = [cos(lon), 0, -sin(lon)] * pixel_scale
-		u_ = Eigen::Vector3d(cos_lon * pixel_scale, 0.0, -sin_lon * pixel_scale);
-		// v = dP/d_lat normalized = [-sin(lat)sin(lon), cos(lat), -sin(lat)cos(lon)] * pixel_scale
-		v_ = Eigen::Vector3d(-sin_lat * sin_lon, cos_lat, -sin_lat * cos_lon) * pixel_scale;
+		const Spherical<double> sphere(Spherical<double>::FromSize(width, height));
+		const Eigen::Vector2d angles(sphere.Angles(Eigen::Vector2d(observed_x, observed_y)));
+		const double cos_lon = COS(angles.x());
+		const double sin_lon = SIN(angles.x());
+		const double cos_el = COS(angles.y());
+		const double sin_el = SIN(angles.y());
+		// Tangent basis vectors (u, v) at the observed bearing (cos_el*sin_lon, -sin_el, cos_el*cos_lon)
+		// on the unit sphere, pre-scaled by the pixels per radian, so the residuals are in pixels:
+		// u = d(bearing)/d(longitude) normalized = [cos(lon), 0, -sin(lon)]
+		u_ = Eigen::Vector3d(cos_lon, 0.0, -sin_lon) * sphere.fx;
+		// v = -d(bearing)/d(elevation) = [sin(el)sin(lon), cos(el), sin(el)cos(lon)] (toward +v, down)
+		v_ = Eigen::Vector3d(sin_el * sin_lon, cos_el, sin_el * cos_lon) * sphere.fy;
 	}
 
 	template <typename T>

@@ -16,7 +16,7 @@ Both pinhole and spherical (equirectangular) cameras are first-class camera mode
 
 OpenMVS models a spherical camera as an equirectangular image whose width is exactly twice its height, covering 360° horizontally and 180° vertically. The `SphericalCamera` class in [libs/SFM/Camera.h](https://github.com/cdcseacave/openMVS/blob/master/libs/SFM/Camera.h) handles projection (longitude/latitude → pixel) and back-projection (pixel → unit bearing vector) without a calibration matrix; `K` is the identity. Panoramic images tagged with EXIF `ProjectionType=equirectangular` are auto-detected on load.
 
-Because the downstream MVS modules (`DensifyPointCloud`, `ReconstructMesh`, `RefineMesh`, `TextureMesh`) operate natively on pinhole views, spherical images are internally converted to a six-face cube-map of virtual pinhole views via [libs/SFM/SphereCubeMap.h](https://github.com/cdcseacave/openMVS/blob/master/libs/SFM/SphereCubeMap.h). This bridge is transparent to the user — the cube-map faces carry the correct relative poses and intrinsics and are stitched back into a single reconstruction.
+Because the downstream MVS modules (`DensifyPointCloud`, `ReconstructMesh`, `RefineMesh`, `TextureMesh`) operate natively on pinhole views, spherical images are internally converted to a six-face cube-map of virtual pinhole views via [libs/Math/Camera/CameraUndistort.h](https://github.com/cdcseacave/openMVS/blob/master/libs/Math/Camera/CameraUndistort.h). This bridge is transparent to the user — the cube-map faces carry the correct relative poses and intrinsics and are stitched back into a single reconstruction.
 
 ## Dense Point-Cloud Reconstruction
 

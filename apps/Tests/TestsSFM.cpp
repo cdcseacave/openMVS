@@ -39,7 +39,7 @@
 #include "../../libs/SFM/SceneCluster.h"
 #include "../../libs/SFM/GlobalAlignment.h"
 #include "../../libs/SFM/MatchGeometric.h"
-#include "../../libs/SFM/SphereCubeMap.h"
+#include "../../libs/Math/Camera/CameraUndistort.h"
 #include "../../libs/SFM/InterfaceMVS.h"
 #include "../../libs/MVS.h"
 #include "Tests.h"
@@ -1337,8 +1337,9 @@ bool ReconstructSphericalSyntheticTest()
 	//     +X on the right half, and the Y-DOWN convention shared with the pinhole
 	//     camera: camera +Y toward the bottom row) — NOT from Project.
 	const Camera& sphCam = *sceneGT.cameras[0];
-	const REAL uCenter = REAL(width) / 2;
-	const REAL vCenter = REAL(height) / 2;
+	// pixel centers at integer coordinates: the image center is ((W-1)/2, (H-1)/2)
+	const REAL uCenter = REAL(width - 1) / 2;
+	const REAL vCenter = REAL(height - 1) / 2;
 	struct ConventionCase { Point3 dirCam; const char* name; int expectU; int expectV; };
 	// expectU/expectV: -1 => strictly left/above centre, +1 => strictly right/below, 0 => ~centre
 	const ConventionCase cases[] = {
@@ -1369,16 +1370,19 @@ bool ReconstructSphericalSyntheticTest()
 		DEBUG("Convention %s -> pixel (%.1f, %.1f) [centre (%.1f, %.1f)]", c.name, px.x, px.y, uCenter, vCenter);
 	}
 	// Exact numeric lock: pure camera-right (+X, z=0) must land at u = 3/4 width,
-	// pure camera-left (-X) at u = 1/4 width (standard equirect azimuth mapping).
+	// pure camera-left (-X) at u = 1/4 width (standard equirect azimuth mapping),
+	// both measured in the pixel-center convention (-0.5).
 	{
 		const auto [pxR, vR] = sphCam.Project(Point3( 1, 0, 0));
 		const auto [pxL, vL] = sphCam.Project(Point3(-1, 0, 0));
+		const REAL expectR = REAL(0.75) * width - REAL(0.5);
+		const REAL expectL = REAL(0.25) * width - REAL(0.5);
 		if (!vR || !vL ||
-		    ABS(pxR.x - REAL(0.75) * width) > REAL(1) ||
-		    ABS(pxL.x - REAL(0.25) * width) > REAL(1)) {
+		    ABS(pxR.x - expectR) > REAL(1e-9) ||
+		    ABS(pxL.x - expectL) > REAL(1e-9)) {
 			VERBOSE("ReconstructSphericalSyntheticTest FAILED: azimuth mapping is mirrored "
 			        "(+X u=%.1f expected %.1f, -X u=%.1f expected %.1f)",
-			        pxR.x, REAL(0.75) * width, pxL.x, REAL(0.25) * width);
+			        pxR.x, expectR, pxL.x, expectL);
 			return false;
 		}
 	}

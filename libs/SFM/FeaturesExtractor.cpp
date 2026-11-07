@@ -25,7 +25,7 @@
 #include "Common.h"
 #include "FeaturesExtractor.h"
 #include "Scene.h"
-#include "SphereCubeMap.h"
+#include "../Math/Camera/CameraUndistort.h"
 #include <opencv2/features2d.hpp>
 #include <opencv2/imgproc.hpp>
 

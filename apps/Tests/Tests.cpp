@@ -202,6 +202,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 		} else if (std::atoi(argv[1]) == 1) {
 			// Run SFM smoke tests
+			if (!SEACAVE::TestCameraModels())
+				return false;
 			if (!SFM::TestSimilarityTransform())
 				return false;
 			if (!SFM::KnownPosesImportTest())

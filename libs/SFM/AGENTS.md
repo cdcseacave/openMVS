@@ -33,6 +33,7 @@ not serialized, but preserved by regular `Scene` copies and moves.
 - **Camera** (abstract base): Virtual `Project()`, `Unproject()`, `GetK()`, `AccumulateIntrinsics()`, `ScaleIntrinsics()`
 - **PinholeCamera**: `fx, fy, cx, cy` + Brown-Conrady distortion `k1-k6, p1, p2`. Flag `useAdditionalDistortion` for k4-k6
 - **SphericalCamera**: Equirectangular 360 projection, no distortion params
+- Both are thin wrappers over `libs/Math/Camera/CameraModels.h` (`GetModel()`, `GetDistortion()`)
 
 ### Image / View (`Image.h`, `View.h`)
 ```cpp

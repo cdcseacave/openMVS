@@ -36,6 +36,13 @@
 #include "TestsMath.h"
 
 #include <random>
+#pragma push_macro("VERBOSE")
+#undef VERBOSE
+#pragma push_macro("LOG")
+#undef LOG
+#include <ceres/jet.h>
+#pragma pop_macro("VERBOSE")
+#pragma pop_macro("LOG")
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -268,6 +275,178 @@ bool TestLBPPotts()
 					return false;
 				}
 			}
+		}
+	}
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+
+// camera models: round trips, the pixel-center and axis conventions, Brown inversion over
+// realistic lenses, and evaluation on Ceres Jets (values matching the double evaluation, derivatives
+// matching central differences)
+bool TestCameraModels()
+{
+	typedef Eigen::Vector2d Vec2;
+	typedef Eigen::Vector3d Vec3;
+	std::mt19937 rng(7);
+	std::uniform_real_distribution<double> U(0, 1);
+	const auto R = [&](double a, double b) { return a + (b - a) * U(rng); };
+
+	// pinhole: Project(Ray(x)) == x, Depth(lambda*Ray(x)) == lambda
+	{
+		const Pinhole<double> cam{2850.5, 2851.25, 1999.75, 1501.25};
+		double maxErr(0), maxDepthErr(0);
+		for (int i = 0; i < 10000; ++i) {
+			const Vec2 x(R(-0.5, 3999.5), R(-0.5, 2999.5));
+			const double lambda(R(0.1, 100));
+			Vec2 y;
+			if (!cam.Project(cam.Ray(x) * lambda, y)) {
+				VERBOSE("error: camera models: pinhole point in front of the camera reported invisible");
+				return false;
+			}
+			maxErr = MAXF(maxErr, (y - x).cwiseAbs().maxCoeff());
+			maxDepthErr = MAXF(maxDepthErr, ABS(Pinhole<double>::Depth(cam.Ray(x) * lambda) - lambda) / lambda);
+		}
+		Vec2 y;
+		if (maxErr > 1e-9 || maxDepthErr > 1e-12 || cam.Project(Vec3(0.1, 0.2, -1.0), y)) {
+			VERBOSE("error: camera models: pinhole round trip %g px, depth %g, or a point behind reported visible", maxErr, maxDepthErr);
+			return false;
+		}
+	}
+
+	// Brown: Distort(Undistort(p)) == p over the whole image of realistic lenses
+	{
+		struct Lens { const char* name; int width, height; double f; BrownDistortion<double> d; };
+		const Lens lenses[] = {
+			{"mild",       6048, 4032, 3410, {-0.05,  0.02,   1e-4,  1e-4,  0,     0,    0,    0}},
+			{"wide",       4000, 3000, 2600, {-0.25,  0.07,   5e-4,  3e-4, -0.008, 0,    0,    0}},
+			{"pincushion", 1920, 1080, 1700, { 0.12, -0.03,  -3e-4,  2e-4,  0.004, 0,    0,    0}},
+			{"rational",   2048, 1536, 1800, {-0.05,  0.01,   1e-4, -2e-4,  0,     0.25, 0.02, 0.001}},
+		};
+		for (const Lens& lens : lenses) {
+			double maxResidual(0), maxInverse(0);
+			for (int y = 0; y <= lens.height; y += 7) {
+				for (int x = 0; x <= lens.width; x += 7) {
+					const Vec2 p((x - lens.width*0.5) / lens.f, (y - lens.height*0.5) / lens.f);
+					maxResidual = MAXF(maxResidual, (lens.d.Distort(lens.d.Undistort(p)) - p).cwiseAbs().maxCoeff());
+					maxInverse = MAXF(maxInverse, (lens.d.Undistort(lens.d.Distort(p)) - p).cwiseAbs().maxCoeff());
+				}
+			}
+			if (maxResidual > 1e-9 || maxInverse > 1e-9) {
+				VERBOSE("error: camera models: Brown %s lens inversion residual %g / %g (normalized)", lens.name, maxResidual, maxInverse);
+				return false;
+			}
+		}
+	}
+
+	// spherical: conventions
+	{
+		const int width(4096), height(2048);
+		const Spherical<double> sph(Spherical<double>::FromSize(width, height));
+		const double cx((width-1)*0.5), cy((height-1)*0.5);
+		struct Case { Vec3 X; Vec2 x; const char* name; };
+		const Case cases[] = {
+			{Vec3( 0, 0, 1), Vec2(cx, cy), "forward +Z at the image center"},
+			{Vec3( 1, 0, 0), Vec2(cx + width*0.25, cy), "right +X at 3/4 width"},
+			{Vec3(-1, 0, 0), Vec2(cx - width*0.25, cy), "left -X at 1/4 width"},
+			{Vec3( 0, 0,-1), Vec2(cx + width*0.5, cy), "back -Z on the right seam"},
+			{Vec3( 0,-1, 0), Vec2(cx, -0.5), "up -Y on the top edge"},
+			{Vec3( 0, 1, 0), Vec2(cx, height-0.5), "down +Y on the bottom edge"},
+		};
+		for (const Case& c : cases) {
+			Vec2 x;
+			if (!sph.Project(c.X * 3.0, x) || (x - c.x).cwiseAbs().maxCoeff() > 1e-9 || ABS(Spherical<double>::Depth(c.X * 3.0) - 3.0) > 1e-12) {
+				VERBOSE("error: camera models: spherical %s: projected to (%g, %g), expected (%g, %g)", c.name, x.x(), x.y(), c.x.x(), c.x.y());
+				return false;
+			}
+		}
+		// pixel centers at integer coordinates: column 0 is centered half a pixel right of longitude -pi
+		const Vec2 a0(sph.Angles(Vec2(0, cy)));
+		const Vec2 aTop(sph.Angles(Vec2(cx, 0)));
+		if (ABS(a0.x() - (-M_PI + M_PI/width)) > 1e-12 || ABS(a0.y()) > 1e-12 || ABS(aTop.y() - (M_PI_2 - M_PI_2/height)) > 1e-12) {
+			VERBOSE("error: camera models: spherical pixel centers: column 0 longitude %.15g, row 0 elevation %.15g", a0.x(), aTop.y());
+			return false;
+		}
+		Vec2 x;
+		if (sph.Project(Vec3::Zero(), x)) {
+			VERBOSE("error: camera models: spherical zero vector reported visible");
+			return false;
+		}
+		// round trips over the pixel-center rows: random pixels, the seam columns, both hemispheres and
+		// the rows next to the poles
+		const auto RoundTrip = [&](const Vec2& x) {
+			const Vec3 ray(sph.Ray(x));
+			Vec2 y;
+			if (ABS(ray.norm() - 1) > 1e-12 || !sph.Project(ray * 7.5, y))
+				return 1e9;
+			// longitude wraps: the two seam edges -0.5 and W-0.5 are the same meridian
+			const double du(ABS(y.x() - x.x()));
+			return MAXF(MINF(du, ABS(du - width)), ABS(y.y() - x.y()));
+		};
+		double maxErr(0);
+		for (int i = 0; i < 20000; ++i)
+			maxErr = MAXF(maxErr, RoundTrip(Vec2(R(-0.5, width-0.5), R(0, height-1))));
+		const double us[] = {-0.5, -0.49, 0, 0.25, 1, width*0.25-0.5, width*0.5-0.5, width*0.75-0.5, width-2.0, width-1.0, width-0.75, width-0.5};
+		const double vs[] = {0, 0.25, 1, 2, cy, height-3.0, height-2.0, height-1.0, height-1.25};
+		for (double u : us)
+			for (double v : vs)
+				maxErr = MAXF(maxErr, RoundTrip(Vec2(u, v)));
+		if (maxErr > 1e-8) {
+			VERBOSE("error: camera models: spherical round trip error %g px", maxErr);
+			return false;
+		}
+	}
+
+	// Ceres Jets: values matching the double evaluation (Jet division multiplies by the reciprocal), derivatives matching central differences
+	{
+		typedef ceres::Jet<double,3> Jet;
+		typedef Eigen::Matrix<Jet,2,1> JVec2;
+		typedef Eigen::Matrix<Jet,3,1> JVec3;
+		const Spherical<double> sph(Spherical<double>::FromSize(2048, 1024));
+		const Spherical<Jet> sphJ{Jet(sph.fx), Jet(sph.fy), Jet(sph.cx), Jet(sph.cy)};
+		const Pinhole<double> cam{1500, 1510, 960, 540};
+		const Pinhole<Jet> camJ{Jet(cam.fx), Jet(cam.fy), Jet(cam.cx), Jet(cam.cy)};
+		const BrownDistortion<double> dist{-0.12, 0.05, 2e-4, -3e-4, -0.01, 0.1, 0.01, 0.001};
+		const BrownDistortion<Jet> distJ{Jet(dist.k1), Jet(dist.k2), Jet(dist.p1), Jet(dist.p2), Jet(dist.k3), Jet(dist.k4), Jet(dist.k5), Jet(dist.k6)};
+		const auto ProjectBrown = [&](const Vec3& X) {
+			return Vec2(cam.NormalizedToPixel(dist.Distort(Pinhole<double>::Perspective(X))));
+		};
+		const auto ProjectSpherical = [&](const Vec3& X) {
+			Vec2 x;
+			sph.Project(X, x);
+			return x;
+		};
+		double maxValue(0), maxDerivative(0);
+		for (int i = 0; i < 1000; ++i) {
+			const Vec3 X(R(-1, 1), R(-1, 1), R(0.5, 2) * (i%2 ? 1 : -1));
+			const JVec3 XJ(Jet(X.x(), 0), Jet(X.y(), 1), Jet(X.z(), 2));
+			JVec2 xs;
+			sphJ.Project(XJ, xs);
+			const Vec2 ys(ProjectSpherical(X));
+			maxValue = MAXF(maxValue, ABS(xs.x().a - ys.x()) + ABS(xs.y().a - ys.y()));
+			const bool front(X.z() > 0);
+			JVec2 xb(Jet(0), Jet(0));
+			if (front) {
+				xb = camJ.NormalizedToPixel(distJ.Distort(Pinhole<Jet>::Perspective(XJ)));
+				const Vec2 yb(ProjectBrown(X));
+				maxValue = MAXF(maxValue, ABS(xb.x().a - yb.x()) + ABS(xb.y().a - yb.y()));
+			}
+			for (int k = 0; k < 3; ++k) {
+				const double h(1e-6);
+				Vec3 Xp(X), Xm(X);
+				Xp[k] += h; Xm[k] -= h;
+				const Vec2 ds((ProjectSpherical(Xp) - ProjectSpherical(Xm)) / (2*h));
+				maxDerivative = MAXF(maxDerivative, MAXF(ABS(xs.x().v[k] - ds.x()), ABS(xs.y().v[k] - ds.y())) / MAXF(1.0, ds.cwiseAbs().maxCoeff()));
+				if (front) {
+					const Vec2 db((ProjectBrown(Xp) - ProjectBrown(Xm)) / (2*h));
+					maxDerivative = MAXF(maxDerivative, MAXF(ABS(xb.x().v[k] - db.x()), ABS(xb.y().v[k] - db.y())) / MAXF(1.0, db.cwiseAbs().maxCoeff()));
+				}
+			}
+		}
+		if (maxValue > 1e-9 || maxDerivative > 1e-5) {
+			VERBOSE("error: camera models: Jet evaluation differs by %g in value, %g (relative) in derivative", maxValue, maxDerivative);
+			return false;
 		}
 	}
 	return true;

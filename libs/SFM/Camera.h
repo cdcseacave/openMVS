@@ -245,8 +245,13 @@ public:
 		k1 = _k1; k2 = _k2; p1 = _p1; p2 = _p2; k3 = _k3;
 	}
 
-	// Get distortion coefficients as OpenCV format
-	cv::Mat GetDistortionCoeffs() const;
+	// projection and lens models; k4..k6 are zero unless useAdditionalDistortion
+	inline Pinhole<REAL> GetModel() const { return Pinhole<REAL>{fx, fy, cx, cy}; }
+	inline BrownDistortion<REAL> GetDistortion() const {
+		if (useAdditionalDistortion)
+			return BrownDistortion<REAL>{k1, k2, p1, p2, k3, k4, k5, k6};
+		return BrownDistortion<REAL>{k1, k2, p1, p2, k3, REAL(0), REAL(0), REAL(0)};
+	}
 
 	// Format intrinsic parameters as a human-readable string
 	virtual String GetIntrinsicsString() const override {
@@ -289,15 +294,9 @@ public:
 	// sampleDensity controls sampling grid resolution (default: 20x20)
 	REAL ComputeMaxDistortion(int sampleDensity = 20) const;
 
-	// Helper function: apply distortion to normalized coordinates
-	// Input: undistorted normalized coordinates (x, y)
-	// Output: distorted normalized coordinates
-	Point2 Distort(const Point2& p) const;
-
-	// Helper function: remove distortion from normalized coordinates (iterative)
-	// Input: distorted normalized coordinates (x, y)
-	// Output: undistorted normalized coordinates
-	Point2 Undistort(const Point2& p) const;
+	// undistorted <-> distorted normalized coordinates
+	inline Point2 Distort(const Point2& p) const { return GetDistortion().Distort(p); }
+	inline Point2 Undistort(const Point2& p) const { return GetDistortion().Undistort(p); }
 
 	#ifdef _USE_BOOST
 	// implement BOOST serialization
@@ -335,9 +334,11 @@ public:
 	// Project 3D point to 2D using equirectangular projection
 	virtual std::pair<Point2, bool> Project(const Point3& X) const override;
 
+	// equirectangular model of this image size
+	inline Spherical<REAL> GetModel() const { return Spherical<REAL>::FromSize(size.width, size.height); }
+
 	// Unproject 2D point to 3D ray using equirectangular projection;
 	// Unproject returns a Point3 scaled so that |z|=1
-	Point2 MapImageToSpherical(const Point2& x) const;
 	virtual Point3 Unproject(const Point2& x) const override;
 	virtual Point3 UnprojectNormalized(const Point2& x) const override;
 

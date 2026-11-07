@@ -31,6 +31,7 @@
 
 #include "../../libs/MVS/Common.h"
 #include "../../libs/MVS/Scene.h"
+#include "../../libs/Math/Camera/CameraUndistort.h"
 #include <tinyxml2.h>
 #include <boost/program_options.hpp>
 
@@ -171,15 +172,8 @@ void Application::Finalize()
 	CLOSE_LOG();
 }
 
-struct DistCoeff {
-	union {
-		REAL coeff[8];
-		struct {
-			REAL k1, k2, p1, p2, k3, k4, k5, k6;
-		};
-	};
-	DistCoeff() : k1(0), k2(0), p1(0), p2(0), k3(0), k4(0), k5(0), k6(0) {}
-	bool HasDistortion() const { return k1 != 0 || k2 != 0 || k3 != 0 || k4 != 0 || k5 != 0 || k6 != 0; }
+struct DistCoeff : BrownDistortion<REAL> {
+	DistCoeff() : BrownDistortion<REAL>{0, 0, 0, 0, 0, 0, 0, 0} {}
 };
 typedef cList<DistCoeff> DistCoeffs;
 typedef cList<DistCoeffs> PlatformDistCoeffs;
@@ -642,34 +636,19 @@ bool ParseSceneXML(Scene& scene, PlatformDistCoeffs& pltDistCoeffs, size_t& nCam
 bool UndistortBrown(Image& imageData, uint32_t ID, const DistCoeff& dc, const String& pathData)
 {
 	// do we need to undistort?
-	if (!dc.HasDistortion())
+	if (dc.IsZero())
 		return true;
 
 	// load image pixels
 	if (!imageData.ReloadImage())
 		return false;
 
-	// initialize intrinsics
-	const cv::Vec<double,8>& distCoeffs = *reinterpret_cast<const cv::Vec<REAL,8>*>(dc.coeff);
-	const KMatrix prevK(imageData.camera.GetK<REAL>(imageData.width, imageData.height));
-	#if 1
-	const KMatrix& K(prevK);
-	#else
-	const KMatrix K(cv::getOptimalNewCameraMatrix(prevK, distCoeffs, imageData.size(), 0.0, cv::Size(), NULL, true));
-	ASSERT(K(0,2) == Camera::ComposeK(prevK(0,0), prevK(1,1), imageData.width(), imageData.height())(0,2));
-	ASSERT(K(1,2) == Camera::ComposeK(prevK(0,0), prevK(1,1), imageData.width(), imageData.height())(1,2));
-	if (K.IsEqual(prevK)) {
-		int i(0);
-		while (distCoeffs(i++) == 0.0) {
-			if (i == 8)
-				return true; // nothing to do
-		}
-	}
-	#endif
-
-	// undistort image
+	// undistort image, keeping the camera matrix
+	const KMatrix K(imageData.camera.GetK<REAL>(imageData.width, imageData.height));
+	UndistortMaps maps;
+	maps.Init(K, dc, imageData.image.size(), K);
 	Image8U3 imgUndist;
-	cv::undistort(imageData.image, imgUndist, prevK, distCoeffs, K);
+	maps.Remap(imageData.image, imgUndist, cv::INTER_LINEAR);
 	imageData.ReleaseImage();
 
 	// save undistorted image
