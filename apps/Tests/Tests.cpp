@@ -307,6 +307,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 		} else {
 			// Run MVS pipeline test
+			if (!MVS::PatchWarpModelTest())
+				return false;
 			if (!MVS::PipelineTest(forceCPU, verbose))
 				return false;
 			if (!MVS::MeshRefineSyntheticTest(forceCPU, verbose))

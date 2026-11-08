@@ -287,6 +287,8 @@ bool DepthData::Load(const String& fileName, unsigned flags)
 		return false;
 	ASSERT(!IDs.empty() && (!IsValid() || IDs.front() == GetView().GetID()));
 	ASSERT(depthMap.size() == imageSize);
+	if (!IsValid())
+		size = imageSize; // a depth-data with no views prepared takes the size of the file
 	ASSERT(depthMap.size() == size);
 	return true;
 }
@@ -347,7 +349,7 @@ size_t MVS::DepthData::GetMemorySize() const
 // the mask for each image is stored in the MVS scene or next to each image with '.mask.png' extension;
 // the mask marks as false (or 0) pixels that should be ignored
 // - pMask: optional output mask; if defined, the mask is returned in this image instead of the BitMatrix
-bool DepthEstimator::ImportIgnoreMask(const Image& image0, const cv::Size& size, uint8_t nIgnoreMaskLabel, BitMatrix& bmask, Image8U* pMask)
+bool DepthEstimatorBase::ImportIgnoreMask(const Image& image0, const cv::Size& size, uint8_t nIgnoreMaskLabel, BitMatrix& bmask, Image8U* pMask)
 {
 	ASSERT(image0.IsValid());
 	// the mask stored in the scene if there is one, else the file next to the image; resized into a
@@ -377,9 +379,8 @@ bool DepthEstimator::ImportIgnoreMask(const Image& image0, const cv::Size& size,
 //                        1 2 3
 // 1 2 4 7 5 3 6 8 9 -->  4 5 6
 //                        7 8 9
-void DepthEstimator::MapMatrix2ZigzagIdx(const cv::Size& size, DepthEstimator::MapRefArr& coords, const BitMatrix& mask, int rawStride)
+void DepthEstimatorBase::MapMatrix2ZigzagIdx(const cv::Size& size, MapRefArr& coords, const BitMatrix& mask, int rawStride)
 {
-	typedef DepthEstimator::MapRef MapRef;
 	const int w = size.width;
 	const int w1 = size.width-1;
 	coords.clear();
@@ -407,10 +408,11 @@ void DepthEstimator::MapMatrix2ZigzagIdx(const cv::Size& size, DepthEstimator::M
 }
 
 // replace POWI(0.5f, idxScaleRange):           0    1      2       3       4         5         6           7           8             9             10              11
-const float DepthEstimator::scaleRanges[12] = {1.f, 0.5f, 0.25f, 0.125f, 0.0625f, 0.03125f, 0.015625f, 0.0078125f, 0.00390625f, 0.001953125f, 0.0009765625f, 0.00048828125f};
+const float DepthEstimatorBase::scaleRanges[12] = {1.f, 0.5f, 0.25f, 0.125f, 0.0625f, 0.03125f, 0.015625f, 0.0078125f, 0.00390625f, 0.001953125f, 0.0009765625f, 0.00048828125f};
 
-DepthEstimator::DepthEstimator(
-	unsigned nIter, DepthData& _depthData0, volatile Thread::safe_t& _idx,
+template<template<typename> class MODEL>
+DepthEstimatorT<MODEL>::DepthEstimatorT(
+	unsigned nIter, DepthData& _depthData0, volatile Thread::safe_t& _idx, PixelPending* _pending,
 	#if DENSE_NCC == DENSE_NCC_WEIGHTED
 	WeightMap& _weightMap0,
 	#else
@@ -421,7 +423,7 @@ DepthEstimator::DepthEstimator(
 	#ifdef _USE_DETERMINISTIC_RANDOM
 	rnd(SEACAVE::Random::default_seed),
 	#endif
-	idxPixel(_idx),
+	idxPixel(_idx), pending(_pending),
 	neighbors(0,2),
 	#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
 	neighborsClose(0,4),
@@ -437,7 +439,7 @@ DepthEstimator::DepthEstimator(
 	image0Sum(_image0Sum),
 	#endif
 	coords(_coords), size(_depthData0.images.First().image.size()),
-	camera0f{(float)image0.camera.K(0,0), (float)image0.camera.K(1,1), (float)image0.camera.K(0,2), (float)image0.camera.K(1,2)},
+	camera0(MakeCameraModel<Model>(image0.camera)), camera0f(MakeCameraModel<Modelf>(image0.camera)),
 	dMin(_depthData0.dMin), dMax(_depthData0.dMax),
 	dMinSqr(SQRT(_depthData0.dMin)), dMaxSqr(SQRT(_depthData0.dMax)),
 	dir(nIter%2 ? RB2LT : LT2RB),
@@ -464,14 +466,16 @@ DepthEstimator::DepthEstimator(
 }
 
 // center a patch of given size on the segment
-bool DepthEstimator::PreparePixelPatch(const ImageRef& x)
+template<template<typename> class MODEL>
+bool DepthEstimatorT<MODEL>::PreparePixelPatch(const ImageRef& x)
 {
 	x0 = x;
 	return image0.image.isInside(ImageRef(x.x-nSizeHalfWindow, x.y-nSizeHalfWindow)) &&
 	       image0.image.isInside(ImageRef(x.x+nSizeHalfWindow, x.y+nSizeHalfWindow));
 }
 // fetch the patch pixel values in the main image
-bool DepthEstimator::FillPixelPatch()
+template<template<typename> class MODEL>
+bool DepthEstimatorT<MODEL>::FillPixelPatch()
 {
 	#if DENSE_NCC != DENSE_NCC_WEIGHTED
 	const float mean(GetImage0Sum(x0)/nTexels);
@@ -509,19 +513,18 @@ bool DepthEstimator::FillPixelPatch()
 	#endif
 	if (normSq0 < thMagnitudeSq && (lowResDepthMap.empty() || lowResDepthMap(x0) <= 0))
 		return false;
-	X0 = image0.camera.TransformPointI2C(Cast<REAL>(x0));
+	X0 = camera0.Ray(Eigen::Vector2d((REAL)x0.x, (REAL)x0.y));
 	return true;
 }
 
 // compute pixel's NCC score in the given target image
-float DepthEstimator::ScorePixelImage(const DepthData::ViewData& image1, Depth depth, const Normal& normal)
+template<template<typename> class MODEL>
+float DepthEstimatorT<MODEL>::ScorePixelImage(const DepthData::ViewData& image1, Depth depth, const Normal& normal)
 {
 	// center a patch of given size on the segment and fetch the pixel values in the target image
-	Matrix3x3f H(ComputeHomographyMatrix(image1, depth, normal));
-	Point3f X;
-	ProjectVertex_3x3_2_3(H.val, Point2f(float(x0.x-nSizeHalfWindow),float(x0.y-nSizeHalfWindow)).ptr(), X.ptr());
+	const PatchWarp warp(ComputePatchWarp(image1, depth, normal));
+	Point3f X(warp.base);
 	Point3f baseX(X);
-	H *= float(nSizeStep);
 	int n(0);
 	float sum(0);
 	#if DENSE_NCC != DENSE_NCC_DEFAULT
@@ -549,9 +552,9 @@ float DepthEstimator::ScorePixelImage(const DepthData::ViewData& image1, Depth d
 			#else
 			sum += texels1(n++)=v;
 			#endif
-			X.x += H[0]; X.y += H[3]; X.z += H[6];
+			X.x += warp.dx.x; X.y += warp.dx.y; X.z += warp.dx.z;
 		}
-		baseX.x += H[1]; baseX.y += H[4]; baseX.z += H[7];
+		baseX.x += warp.dy.x; baseX.y += warp.dy.y; baseX.z += warp.dy.z;
 		X = baseX;
 	}
 	ASSERT(n == nTexels);
@@ -586,20 +589,7 @@ float DepthEstimator::ScorePixelImage(const DepthData::ViewData& image1, Depth d
 	#endif
 	if (!image1.depthMap.empty()) {
 		ASSERT(OPTDENSE::fEstimationGeometricWeight > 0);
-		float consistency(4.f);
-		const Point3f X1(image1.Tl*Point3f(float(X0.x)*depth,float(X0.y)*depth,depth)+image1.Tm); // Kj * Rj * (Ri.t() * X + Ci - Cj)
-		if (X1.z > 0) {
-			const Point2f x1(X1);
-			if (image1.depthMap.isInsideWithBorder<float,1>(x1)) {
-				Depth depth1;
-				if (image1.depthMap.sample(depth1, x1, [&X1](Depth d) { return IsDepthSimilar(X1.z, d, 0.03f); })) {
-					const Point2f xb(image1.Tr*Point3f(x1.x*depth1,x1.y*depth1,depth1)+image1.Tn); // Ki * Ri * (Rj.t() * Kj-1 * X + Cj - Ci)
-					const float dist(norm(Point2f(float(x0.x)-xb.x, float(x0.y)-xb.y)));
-					consistency = MINF(SQRT(dist*(dist+2.f)), consistency);
-				}
-			}
-		}
-		score += OPTDENSE::fEstimationGeometricWeight * consistency;
+		score += OPTDENSE::fEstimationGeometricWeight * ComputeGeometricConsistency(image1, depth);
 	}
 	// apply depth prior weight based on patch textureless;
 	// hard-cap the prior on medium to well-textured patches:
@@ -618,7 +608,8 @@ float DepthEstimator::ScorePixelImage(const DepthData::ViewData& image1, Depth d
 }
 
 // compute pixel's NCC score
-float DepthEstimator::ScorePixel(Depth depth, const Normal& normal)
+template<template<typename> class MODEL>
+float DepthEstimatorT<MODEL>::ScorePixel(Depth depth, const Normal& normal)
 {
 	ASSERT(depth > 0 && normal.dot(Cast<float>(X0)) <= 0);
 	// compute score for this pixel as seen in each view
@@ -679,14 +670,32 @@ float DepthEstimator::ScorePixel(Depth depth, const Normal& normal)
 	#endif
 }
 
-// run propagation and random refinement cycles;
-// the solution belonging to the target image can be also propagated
-void DepthEstimator::ProcessPixel(IDX idx)
+// estimate the pixel of the given index in the pass order, once its 4-neighbors preceding it in
+// that order are estimated: (x-1,y) and (x,y-1) from left-top to right-bottom, (x+1,y) and (x,y+1)
+// in the opposite direction (the zigzag order visits a pixel after those two)
+template<template<typename> class MODEL>
+void DepthEstimatorT<MODEL>::ProcessPixel(IDX idx)
 {
-	// compute pixel coordinates from pixel index and its neighbors
 	ASSERT(dir == LT2RB || dir == RB2LT);
-	if (!PreparePixelPatch(dir == LT2RB ? coords[idx] : coords[coords.GetSize()-1-idx]) || !FillPixelPatch())
-		return;
+	const ImageRef& x(dir == LT2RB ? coords[idx] : coords[coords.GetSize()-1-idx]);
+	const int step(dir == LT2RB ? -1 : 1);
+	for (const ImageRef nx: {ImageRef(x.x+step, x.y), ImageRef(x.x, x.y+step)}) {
+		if (nx.x < 0 || nx.y < 0 || nx.x >= size.width || nx.y >= size.height)
+			continue;
+		const PixelPending& flag = pending[nx.y*size.width+nx.x];
+		while (flag.load(std::memory_order_acquire))
+			std::this_thread::yield();
+	}
+	if (PreparePixelPatch(x) && FillPixelPatch())
+		EstimatePixel();
+	pending[x.y*size.width+x.x].store(0, std::memory_order_release);
+}
+
+// run propagation and random refinement cycles on the prepared pixel x0;
+// the solution belonging to the target image can be also propagated
+template<template<typename> class MODEL>
+void DepthEstimatorT<MODEL>::EstimatePixel()
+{
 	// find neighbors
 	neighbors.Empty();
 	#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
@@ -700,7 +709,7 @@ void DepthEstimator::ProcessPixel(IDX idx)
 			neighbors.emplace_back(nx);
 			neighborsClose.emplace_back(NeighborEstimate{ndepth, normalMap0(nx)
 				#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
-				, Cast<float>(image0.camera.TransformPointI2C(Point3(nx, ndepth)))
+				, ComputeNeighborPoint(nx, ndepth)
 				#endif
 			});
 			#else
@@ -714,7 +723,7 @@ void DepthEstimator::ProcessPixel(IDX idx)
 			ASSERT(ISEQUAL(norm(normalMap0(nx)), 1.f, 1e-2f), "Norm = ", norm(normalMap0(nx)));
 			neighborsClose.emplace_back(NeighborEstimate{ndepth, normalMap0(nx)
 				#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
-				, Cast<float>(image0.camera.TransformPointI2C(Point3(nx, ndepth)))
+				, ComputeNeighborPoint(nx, ndepth)
 				#endif
 				});
 		}
@@ -893,15 +902,17 @@ void DepthEstimator::ProcessPixel(IDX idx)
 }
 
 // interpolate given pixel's estimate to the current position
-Depth DepthEstimator::InterpolatePixel(const ImageRef& nx, Depth depth, const Normal& normal) const
+template<template<typename> class MODEL>
+Depth DepthEstimatorT<MODEL>::InterpolatePixel(const ImageRef& nx, Depth depth, const Normal& normal) const
 {
-	ASSERT(normal.dot(image0.camera.TransformPointI2C(Cast<REAL>(nx))) <= 0);
+	ASSERT(normal.dot(Normal(camera0f.Ray(Eigen::Vector2f((float)nx.x, (float)nx.y)))) <= 0);
 	return InterpolatePlaneDepth(camera0f, x0, nx, depth, normal, dMin, dMax);
 }
 
 #if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
 // compute plane defined by current depth and normal estimate
-void DepthEstimator::InitPlane(Depth depth, const Normal& normal)
+template<template<typename> class MODEL>
+void DepthEstimatorT<MODEL>::InitPlane(Depth depth, const Normal& normal)
 {
 	#if 0
 	plane.Set(normal, Normal(Cast<float>(X0)*depth));
@@ -913,7 +924,8 @@ void DepthEstimator::InitPlane(Depth depth, const Normal& normal)
 #endif
 
 #if DENSE_REFINE == DENSE_REFINE_EXACT
-DepthEstimator::PixelEstimate DepthEstimator::PerturbEstimate(const PixelEstimate& est, float perturbation)
+template<template<typename> class MODEL>
+DepthEstimatorBase::PixelEstimate DepthEstimatorT<MODEL>::PerturbEstimate(const PixelEstimate& est, float perturbation)
 {
 	PixelEstimate ptbEst;
 
@@ -957,6 +969,48 @@ DepthEstimator::PixelEstimate DepthEstimator::PerturbEstimate(const PixelEstimat
 	return ptbEst;
 }
 #endif
+
+
+// pinhole reference: the warp into a pinhole target is the plane-induced homography from the
+// cached ViewData constants, applied to absolute reference pixels
+template<>
+PatchWarp DepthEstimatorT<Pinhole>::ComputePatchWarp(const DepthData::ViewData& image1, Depth depth, const Normal& normal) const
+{
+	const Matrix3x3f H(image1.ComputeHomography(X0, depth, normal));
+	PatchWarp warp;
+	ProjectVertex_3x3_2_3(H.val, Point2f(float(x0.x-nSizeHalfWindow),float(x0.y-nSizeHalfWindow)).ptr(), warp.base.ptr());
+	warp.dx = Point3f(H(0,0), H(1,0), H(2,0)) * float(nSizeStep);
+	warp.dy = Point3f(H(0,1), H(1,1), H(2,1)) * float(nSizeStep);
+	return warp;
+}
+// pinhole reference and target depth-map: the distance between the reference pixel and its round
+// trip through the target depth, mapped to [0,4] (4 if the target holds no similar depth there)
+template<>
+float DepthEstimatorT<Pinhole>::ComputeGeometricConsistency(const DepthData::ViewData& image1, Depth depth) const
+{
+	ASSERT(!image1.depthMap.empty());
+	float consistency(4.f);
+	const Point3f X1(image1.Tl*Point3f(float(X0.x)*depth,float(X0.y)*depth,depth)+image1.Tm); // Kj * Rj * (Ri.t() * X + Ci - Cj)
+	if (X1.z > 0) {
+		const Point2f x1(X1);
+		if (image1.depthMap.isInsideWithBorder<float,1>(x1)) {
+			Depth depth1;
+			if (image1.depthMap.sample(depth1, x1, [&X1](Depth d) { return IsDepthSimilar(X1.z, d, 0.03f); })) {
+				const Point2f xb(image1.Tr*Point3f(x1.x*depth1,x1.y*depth1,depth1)+image1.Tn); // Ki * Ri * (Rj.t() * Kj-1 * X + Cj - Ci)
+				const float dist(norm(Point2f(float(x0.x)-xb.x, float(x0.y)-xb.y)));
+				consistency = MINF(SQRT(dist*(dist+2.f)), consistency);
+			}
+		}
+	}
+	return consistency;
+}
+template<>
+Point3f DepthEstimatorT<Pinhole>::ComputeNeighborPoint(const ImageRef& nx, Depth depth) const
+{
+	return Cast<float>(image0.camera.TransformPointI2C(Point3(nx, depth)));
+}
+
+template struct DepthEstimatorT<Pinhole>;
 /*----------------------------------------------------------------*/
 
 

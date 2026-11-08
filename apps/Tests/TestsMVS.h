@@ -64,6 +64,10 @@ bool ImageResizeCameraTest();
 bool MeshBipyramidFixtureTest();
 bool MeshTetraInteriorPointFixtureTest();
 
+// test the camera-model patch warp and depth geometry against the cached pinhole homography and
+// closed forms of the CPU PatchMatch estimator
+bool PatchWarpModelTest();
+
 // test MVS stages on a small sample dataset
 bool PipelineTest(bool forceCPU = false, bool verbose = false);
 

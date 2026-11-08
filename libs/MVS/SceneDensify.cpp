@@ -807,6 +807,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 	if (nMaxThreads > 1)
 		threads.resize(nMaxThreads-1); // current thread is also used
 	volatile Thread::safe_t idxPixel;
+	std::unique_ptr<DepthEstimator::PixelPending[]> pending; // per pixel of the current scale
 
 	// Multi-Resolution :
 	DepthData& fullResDepthData(arrDepthData[idxImage]);
@@ -839,6 +840,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 			fullResDepthData.confMap.release();
 		}
 		depthData.confMap.create(size);
+		pending.reset(new DepthEstimator::PixelPending[size.area()]);
 
 		// init integral images and index to image-ref map for the reference data
 		#if DENSE_NCC == DENSE_NCC_WEIGHTED
@@ -869,7 +871,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 			idxPixel = -1;
 			ASSERT(estimators.empty());
 			while (estimators.size() < nMaxThreads) {
-				estimators.emplace_back(iterBegin, depthData, idxPixel,
+				estimators.emplace_back(iterBegin, depthData, idxPixel, pending.get(),
 					#if DENSE_NCC == DENSE_NCC_WEIGHTED
 					weightMap0,
 					#else
@@ -898,11 +900,16 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 
 		// run propagation and random refinement cycles on the reference data
 		for (unsigned iter=iterBegin; iter<iterEnd; ++iter) {
+			// mark the pixels this pass estimates
+			for (int i=0; i<size.area(); ++i)
+				pending[i].store(0, std::memory_order_relaxed);
+			for (const DepthEstimator::MapRef& x: coords)
+				pending[x.y*size.width+x.x].store(1, std::memory_order_relaxed);
 			// create working threads
 			idxPixel = -1;
 			ASSERT(estimators.empty());
 			while (estimators.size() < nMaxThreads) {
-				estimators.emplace_back(iter, depthData, idxPixel,
+				estimators.emplace_back(iter, depthData, idxPixel, pending.get(),
 					#if DENSE_NCC == DENSE_NCC_WEIGHTED
 					weightMap0,
 					#else
@@ -949,7 +956,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 		idxPixel = -1;
 		ASSERT(estimators.empty());
 		while (estimators.size() < nMaxThreads)
-			estimators.emplace_back(0, depthData, idxPixel,
+			estimators.emplace_back(0, depthData, idxPixel, pending.get(),
 				#if DENSE_NCC == DENSE_NCC_WEIGHTED
 				weightMap0,
 				#else
@@ -1229,9 +1236,7 @@ void DepthMapsData::ComputeIntraMapPrior(const DepthData& depthData, ConfidenceM
 	const DepthMap& depthMap = depthData.depthMap;
 	const NormalMap& normalMap = depthData.normalMap;
 	const bool bHasNormal(!normalMap.empty());
-	const Matrix3x3f K(depthData.GetView().camera.K);
-	ASSERT(ISZERO(K(0,1)));
-	const Pinhole<float> camera{K(0,0), K(1,1), K(0,2), K(1,2)};
+	const Pinhole<float> camera(MakeCameraModel<Pinhole<float>>(depthData.GetView().camera));
 	// relative planarity band, in units of the calibrated depth noise (the GPU PriorKernel derives
 	// the same band from Params::thDepth == CONFIRM_DEPTH)
 	const float band(ConfRefine::CONFIRM_DEPTH * 3.f);

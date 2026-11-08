@@ -2146,6 +2146,119 @@ static double ResizeTestMaxError(const Camera& camera, const std::vector<Point3>
 	}
 	return maxError;
 }
+// a pinhole seen through the generic DepthGeometry.h functions instead of their pinhole overloads
+struct PinholeGenericf : Pinhole<float> {};
+// the patch warp composed from the camera models (PlanePatchWarp) against the cached pinhole
+// homography the CPU estimator warps with, over random poses, planes and pixels; the pinhole
+// ray/projection/depth round trips the estimator relies on; and the generic depth geometry against
+// its pinhole overloads (and the exact ray-plane intersection, also for a spherical camera)
+bool PatchWarpModelTest()
+{
+	std::mt19937 rng(11);
+	std::uniform_real_distribution<double> U(0, 1);
+	const auto R = [&](double a, double b) { return a + (b - a) * U(rng); };
+	const auto RandomCamera = [&]() {
+		Camera camera;
+		camera.K = KMatrix::IDENTITY;
+		camera.K(0,0) = R(800, 3000); camera.K(1,1) = camera.K(0,0)*R(0.98, 1.02);
+		camera.K(0,2) = R(900, 1100); camera.K(1,2) = R(650, 850);
+		const Eigen::Matrix3d rot(Eigen::AngleAxisd(R(0, 0.4), Eigen::Vector3d(R(-1,1), R(-1,1), R(-1,1)).normalized()).toRotationMatrix());
+		for (int r=0; r<3; ++r)
+			for (int c=0; c<3; ++c)
+				camera.R(r,c) = rot(r,c);
+		camera.C = CMatrix(R(-1,1), R(-1,1), R(-1,1));
+		return camera;
+	};
+	const auto ToEigen = [](const RMatrix& m) {
+		Eigen::Matrix3d e;
+		for (int r=0; r<3; ++r)
+			for (int c=0; c<3; ++c)
+				e(r,c) = m(r,c);
+		return e;
+	};
+	double maxWarpErr(0), maxProjErr(0), maxDepthErr(0), maxNormalErr(0), maxPlaneErr(0), maxPlaneSphErr(0);
+	unsigned numWarps(0);
+	for (int i=0; i<2000; ++i) {
+		const Camera cameraRef(RandomCamera()), cameraTrg(RandomCamera());
+		const Pinhole<REAL> ref(MakeCameraModel<Pinhole<REAL>>(cameraRef)), trg(MakeCameraModel<Pinhole<REAL>>(cameraTrg));
+		const ImageRef x0(ROUND2INT(R(100, 1900)), ROUND2INT(R(100, 1400)));
+		// the estimator's reference ray is the camera's back-projection, bit for bit
+		const Point3 X0(ref.Ray(Eigen::Vector2d((REAL)x0.x, (REAL)x0.y)));
+		if (X0 != cameraRef.TransformPointI2C(Cast<REAL>(x0))) {
+			VERBOSE("error: PatchWarpModelTest: the pinhole ray of pixel (%d,%d) differs from the camera back-projection", x0.x, x0.y);
+			return false;
+		}
+		// the round trips through the reference model
+		const Depth depth((Depth)R(2, 20));
+		const Eigen::Vector3d X(Eigen::Vector3d(X0)*(REAL)depth);
+		Eigen::Vector2d x;
+		if (!ref.Project(X, x)) {
+			VERBOSE("error: PatchWarpModelTest: a point in front of the camera is not visible");
+			return false;
+		}
+		maxProjErr = MAXF(maxProjErr, (x - Eigen::Vector2d((REAL)x0.x, (REAL)x0.y)).norm());
+		maxDepthErr = MAXF(maxDepthErr, ABS(Pinhole<REAL>::Depth(X) - (REAL)depth)/(REAL)depth);
+		// a camera-facing plane within ~60 degrees of the reversed ray
+		Eigen::Vector3f n(-Eigen::Vector3d(X0).cast<float>().normalized() + Eigen::Vector3f((float)R(-.5,.5), (float)R(-.5,.5), (float)R(-.5,.5)));
+		n.normalize();
+		if (n.dot(Eigen::Vector3d(X0).cast<float>()) >= 0)
+			continue;
+		const Normal normal(n);
+		// the target sees the patch in front, away from its center
+		const Eigen::Matrix3d Rref(ToEigen(cameraRef.R)), Rtrg(ToEigen(cameraTrg.R));
+		const Eigen::Matrix3d Rrel(Rtrg*Rref.transpose());
+		const Eigen::Vector3d t(Rtrg*(Eigen::Vector3d(cameraRef.C)-Eigen::Vector3d(cameraTrg.C)));
+		if ((Rrel*X+t).z() < 1)
+			continue;
+		DepthData::ViewData view;
+		view.camera = cameraTrg;
+		view.Init(cameraRef);
+		const Matrix3x3f H(view.ComputeHomography(X0, depth, normal));
+		const Eigen::Matrix3d M(PlanePatchWarp(ref, trg, Rrel, t, Eigen::Vector3d(n.cast<double>()), X, Eigen::Vector2d((REAL)x0.x, (REAL)x0.y)));
+		for (int dy=-DepthEstimator::nSizeHalfWindow; dy<=DepthEstimator::nSizeHalfWindow; dy+=DepthEstimator::nSizeStep) {
+			for (int dx=-DepthEstimator::nSizeHalfWindow; dx<=DepthEstimator::nSizeHalfWindow; dx+=DepthEstimator::nSizeStep) {
+				const Point2f xc(H*Point3f(float(x0.x+dx), float(x0.y+dy), 1.f));
+				const Eigen::Vector2d xm((M*Eigen::Vector3d(dx, dy, 1)).hnormalized());
+				maxWarpErr = MAXF(maxWarpErr, (Eigen::Vector2d(xc.x, xc.y) - xm).norm());
+			}
+		}
+		++numWarps;
+		// the generic depth geometry agrees with the pinhole closed forms
+		const Pinhole<float> camf(MakeCameraModel<Pinhole<float>>(cameraRef));
+		const PinholeGenericf camg{camf};
+		const Eigen::Vector2f gradient((float)R(-0.05, 0.05)*depth, (float)R(-0.05, 0.05)*depth);
+		const Eigen::Vector2i p(x0.x, x0.y);
+		maxNormalErr = MAXF(maxNormalErr, (double)(NormalFromDepthGradient(camg, p, depth, gradient) - NormalFromDepthGradient(camf, p, depth, gradient)).norm());
+		// a diagonal neighbor is intersected along the ray in both, matching the exact intersection
+		const Eigen::Vector2i np(x0.x+1, x0.y+1);
+		const float dPinhole(InterpolatePlaneDepth(camf, p, np, depth, n, 0.01f, 1000.f));
+		const float dGeneric(InterpolatePlaneDepth(camg, p, np, depth, n, 0.01f, 1000.f));
+		const Eigen::Vector3d nX(Eigen::Vector3d(ref.Ray(np.cast<double>()))*(REAL)depth), r(ref.Ray(p.cast<double>()));
+		const double dExact(n.cast<double>().dot(nX)/n.cast<double>().dot(r));
+		maxPlaneErr = MAXF(maxPlaneErr, MAXF(ABS(dPinhole - dExact), ABS(dGeneric - dExact))/dExact);
+		// the generic plane depth on a spherical camera
+		const Spherical<float> sph(Spherical<float>::FromSize(4000, 2000));
+		const Eigen::Vector2i ps(ROUND2INT(R(10, 3990)), ROUND2INT(R(200, 1800))), nps(ps.x()+1, ps.y()-1);
+		const Eigen::Vector3f rs(sph.Ray(ps.cast<float>())), nrs(sph.Ray(nps.cast<float>()));
+		Eigen::Vector3f ns(-nrs + Eigen::Vector3f((float)R(-.5,.5), (float)R(-.5,.5), (float)R(-.5,.5)));
+		ns.normalize();
+		if (ns.dot(rs) < -0.2f && ns.dot(nrs) < -0.2f) {
+			const float dSph(InterpolatePlaneDepth(sph, ps, nps, depth, ns, 0.01f, 1000.f));
+			const double dSphExact(depth*ns.cast<double>().dot(Eigen::Vector3d(Spherical<double>::FromSize(4000, 2000).Ray(nps.cast<double>())))/
+				ns.cast<double>().dot(Eigen::Vector3d(Spherical<double>::FromSize(4000, 2000).Ray(ps.cast<double>()))));
+			maxPlaneSphErr = MAXF(maxPlaneSphErr, ABS(dSph - dSphExact)/dSphExact);
+		}
+	}
+	VERBOSE("PatchWarpModelTest: %u warps: max warp difference %g px, projection %g px, depth %g, normal %g, plane depth %g (spherical %g)",
+		numWarps, maxWarpErr, maxProjErr, maxDepthErr, maxNormalErr, maxPlaneErr, maxPlaneSphErr);
+	if (numWarps < 500 || maxWarpErr > 2e-3 || maxProjErr > 1e-9 || maxDepthErr > 1e-15 || maxNormalErr > 1e-5 || maxPlaneErr > 1e-5 || maxPlaneSphErr > 1e-5) {
+		VERBOSE("error: PatchWarpModelTest: the camera-model warp/geometry disagrees with the pinhole estimator");
+		return false;
+	}
+	return true;
+}
+/*----------------------------------------------------------------*/
+
 // every image resize the pipeline pairs with a camera must move the pixels exactly as that camera's K
 // is scaled: a point must project, through the camera of the resized view, onto the spot the resize
 // actually moved it to. A 1957x1091 view (odd sides, so rounded sizes and scale factors disagree)
