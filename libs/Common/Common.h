@@ -80,7 +80,12 @@ namespace SEACAVE { extern GENERAL_API int g_nVerbosityLevel; }
 
 #ifdef PRINT_ASSERT_MSG
 #undef PRINT_ASSERT_MSG
+#ifdef _HEADLESS_DEBUG
+// headless: the same "[ASSERT] file:line: expression" line Config.h prints, on stderr, plus the message arguments
+#define PRINT_ASSERT_MSG(exp, ...) {std::cerr << SEACAVE::PrintMessageToString("[ASSERT] " __FILE__ ":" TOSTRING(__LINE__) ": " #exp " ", ##__VA_ARGS__) << std::endl;}
+#else
 #define PRINT_ASSERT_MSG(exp, ...) {std::cout << SEACAVE::PrintMessageToString("ASSERTION FAILED at " __FILE__ ":" TOSTRING(__LINE__) ": (" #exp ") ", ##__VA_ARGS__) << std::endl;}
+#endif
 #endif
 
 
