@@ -1029,12 +1029,32 @@ bool ExportScene(const String& strFolder, const Interface& scene,
 			file << _T("# Camera list with one line of data per camera:") << std::endl;
 			file << _T("#   CAMERA_ID, MODEL, WIDTH, HEIGHT, PARAMS[]") << std::endl;
 		}
-		cam.model = _T("PINHOLE");
-		cam.params.resize(4);
 		for (uint32_t ID=0; ID<(uint32_t)scene.platforms.size(); ++ID) {
 			const Interface::Platform& platform = scene.platforms[ID];
 			ASSERT(platform.cameras.size() == 1); // only one camera per platform supported
 			const Interface::Platform::Camera& camera = platform.cameras[0];
+			// COLMAP OPENCV / FULL_OPENCV list the Brown coefficients in the same order: k1,k2,p1,p2[,k3,k4,k5,k6]
+			switch (camera.model) {
+			case Interface::Platform::Camera::PINHOLE:
+				cam.model = _T("PINHOLE");
+				cam.params.resize(4);
+				break;
+			case Interface::Platform::Camera::BROWN:
+				ASSERT(camera.params.size() == 5 || camera.params.size() == 8);
+				if (camera.params.size() == 5 && camera.params[4] == 0) {
+					cam.model = _T("OPENCV");
+					cam.params.resize(8);
+				} else {
+					cam.model = _T("FULL_OPENCV");
+					cam.params.resize(12);
+				}
+				for (size_t p=4; p<cam.params.size(); ++p)
+					cam.params[p] = p-4 < camera.params.size() ? camera.params[p-4] : 0.0;
+				break;
+			default:
+				VERBOSE("error: camera model %u of platform %u is not supported by COLMAP", (unsigned)camera.model, ID);
+				return false;
+			}
 			cam.ID = ID;
 			KMatrix K;
 			if (camera.width == 0 || camera.height == 0) {
@@ -1393,6 +1413,10 @@ bool ExportImagesCamera(const String& pathName, const Interface& scene)
 		if (image.platformID != NO_ID && image.cameraID != NO_ID) {
 			const Interface::Platform& platform = scene.platforms[image.platformID];
 			const Interface::Platform::Camera& camera = platform.cameras[image.cameraID];
+			if (camera.model != Interface::Platform::Camera::PINHOLE) {
+				VERBOSE("error: the Strecha camera format supports only pinhole cameras");
+				return false;
+			}
 			if (camera.HasResolution()) {
 				width = camera.width;
 				height = camera.height;

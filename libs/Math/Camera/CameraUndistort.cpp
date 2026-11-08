@@ -7,6 +7,9 @@
 
 #include "../Common.h"
 #include "CameraUndistort.h"
+#include <array>
+#include <map>
+#include <mutex>
 
 using namespace SEACAVE;
 
@@ -19,6 +22,16 @@ using namespace SEACAVE;
 
 // S T R U C T S ///////////////////////////////////////////////////
 
+KMatrix SEACAVE::UndistortedK(const KMatrix& K, const BrownDistortion<REAL>& distortion, const cv::Size& size, double alpha)
+{
+	ASSERT(size.width > 0 && size.height > 0);
+	ASSERT(K(0,0) > 0 && K(1,1) > 0);
+	ASSERT(alpha >= 0 && alpha <= 1);
+	const cv::Vec<double,8> coeffs(distortion.k1, distortion.k2, distortion.p1, distortion.p2,
+		distortion.k3, distortion.k4, distortion.k5, distortion.k6);
+	return KMatrix(cv::getOptimalNewCameraMatrix(K, coeffs, size, alpha));
+}
+
 void UndistortMaps::Init(const KMatrix& _K, const BrownDistortion<REAL>& distortion, const cv::Size& size, const KMatrix& newK)
 {
 	ASSERT(size.width > 0 && size.height > 0);
@@ -30,11 +43,7 @@ void UndistortMaps::Init(const KMatrix& _K, const BrownDistortion<REAL>& distort
 }
 void UndistortMaps::Init(const KMatrix& _K, const BrownDistortion<REAL>& distortion, const cv::Size& size, double alpha)
 {
-	ASSERT(alpha >= 0 && alpha <= 1);
-	const cv::Vec<double,8> coeffs(distortion.k1, distortion.k2, distortion.p1, distortion.p2,
-		distortion.k3, distortion.k4, distortion.k5, distortion.k6);
-	const KMatrix newK(cv::getOptimalNewCameraMatrix(_K, coeffs, size, alpha));
-	Init(_K, distortion, size, newK);
+	Init(_K, distortion, size, UndistortedK(_K, distortion, size, alpha));
 }
 
 void UndistortMaps::Remap(cv::InputArray src, cv::OutputArray dst, int interpolation) const
@@ -67,6 +76,78 @@ void UndistortMaps::RemapDepth(const Image32F& depthMap, Image32F& undistortedDe
 			undistortedDepthMap(y, x) = sampledDepth;
 		}
 	}
+}
+
+namespace {
+
+// the cache behind GetCameraUndistortMaps
+class CameraUndistortCache {
+public:
+	typedef std::array<REAL,15> Key; // K (fx, skew, cx, fy, cy), the 8 coefficients, the source size
+
+	std::shared_ptr<const CameraUndistortMaps> Get(const KMatrix& K, const BrownDistortion<REAL>& distortion, const cv::Size& size) {
+		const Key key{K(0,0), K(0,1), K(0,2), K(1,1), K(1,2),
+			distortion.k1, distortion.k2, distortion.p1, distortion.p2, distortion.k3, distortion.k4, distortion.k5, distortion.k6,
+			REAL(size.width), REAL(size.height)};
+		std::shared_ptr<Entry> entry;
+		{
+			const std::lock_guard<std::mutex> lock(mtx);
+			std::shared_ptr<Entry>& slot = entries[key];
+			if (slot == NULL)
+				slot = std::make_shared<Entry>();
+			entry = slot;
+			entry->lastUse = ++useClock;
+		}
+		std::call_once(entry->once, [&]() {
+			const std::shared_ptr<CameraUndistortMaps> maps(std::make_shared<CameraUndistortMaps>());
+			maps->Init(K, distortion, size, UNDISTORT_ALPHA);
+			// a source footprint fully inside the source image interpolates 255 from the all-255 image
+			Image8U source(size), remapped;
+			source.setTo(cv::Scalar(255));
+			maps->Remap(source, remapped, cv::INTER_LINEAR);
+			cv::compare(remapped, cv::Scalar(255), maps->mask, cv::CMP_EQ);
+			const std::lock_guard<std::mutex> lock(mtx);
+			entry->bytes = maps->map1.total()*maps->map1.elemSize() + maps->map2.total()*maps->map2.elemSize() + maps->mask.total();
+			entry->maps = maps;
+		});
+		const std::lock_guard<std::mutex> lock(mtx);
+		ASSERT(entry->maps != NULL);
+		size_t bytes(0);
+		for (const auto& slot: entries)
+			bytes += slot.second->bytes;
+		while (bytes > budget) {
+			auto itOldest = entries.end();
+			for (auto it = entries.begin(); it != entries.end(); ++it)
+				if (it->second != entry && it->second->maps != NULL &&
+					(itOldest == entries.end() || it->second->lastUse < itOldest->second->lastUse))
+					itOldest = it;
+			if (itOldest == entries.end())
+				break;
+			bytes -= itOldest->second->bytes;
+			entries.erase(itOldest);
+		}
+		return entry->maps;
+	}
+
+private:
+	struct Entry {
+		std::once_flag once;
+		std::shared_ptr<const CameraUndistortMaps> maps; // set once by the first request
+		size_t bytes = 0; // memory of the maps, 0 until computed
+		uint64_t lastUse = 0;
+	};
+	static constexpr size_t budget = size_t(1) << 30;
+	std::mutex mtx;
+	std::map<Key, std::shared_ptr<Entry>> entries;
+	uint64_t useClock = 0;
+};
+
+} // namespace
+
+std::shared_ptr<const CameraUndistortMaps> SEACAVE::GetCameraUndistortMaps(const KMatrix& K, const BrownDistortion<REAL>& distortion, const cv::Size& size)
+{
+	static CameraUndistortCache cache;
+	return cache.Get(K, distortion, size);
 }
 /*----------------------------------------------------------------*/
 
@@ -296,15 +377,20 @@ Matrix3x3 SphereCubeMap::FaceIntrinsics(int faceSize, int n)
 /*----------------------------------------------------------------*/
 
 
+bool SphereCubeMap::IsSupportedNumFaces(int numFaces)
+{
+	return numFaces == 4 || numFaces == 6 || numFaces == 8 || numFaces == 12 || numFaces == 20;
+}
+
 SphereCubeMap::TangentFacesGeometry SphereCubeMap::MakeTangentFacesGeometry(int numFaces, int faceSize)
 {
+	ASSERT(IsSupportedNumFaces(numFaces) && faceSize > 0);
 	TangentFacesGeometry g;
 	g.rotations = FaceRotations(numFaces);
-	if (g.rotations.empty() || faceSize <= 0)
-		return g; // invalid — leave numFaces=0 sentinel
 	g.K        = FaceIntrinsics(faceSize, numFaces);
-	g.numFaces = static_cast<int>(g.rotations.size());
+	g.numFaces = numFaces;
 	g.faceSize = faceSize;
+	ASSERT((int)g.rotations.size() == numFaces);
 	return g;
 }
 

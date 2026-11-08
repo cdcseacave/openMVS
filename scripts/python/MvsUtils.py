@@ -282,6 +282,13 @@ def saveDMAP(data: dict, dmap_path: str):
       data['views_map'].astype(np.uint8).tofile(dmap)
 
 
+# Interface::Platform::Camera::Model and Interface::Flags (libs/Math/Interface.h)
+CAMERA_MODEL_PINHOLE = 0
+CAMERA_MODEL_BROWN = 1
+CAMERA_MODEL_SPHERICAL = 2
+HAS_OBSERVATIONS = 1
+
+
 def loadMVSInterface(archive_path):
   """
   Load and parse an MVS (Multi-View Stereo) interface file.
@@ -298,6 +305,8 @@ def loadMVSInterface(archive_path):
       - band_name (str, optional): The band name (if version > 3).
       - width (int, optional): The width of the camera image (if version > 0).
       - height (int, optional): The height of the camera image (if version > 0).
+      - model (int, optional): The projection model, 0=PINHOLE, 1=BROWN, 2=SPHERICAL (if version > 7).
+      - params (list, optional): The BROWN distortion coefficients k1,k2,p1,p2,k3[,k4,k5,k6] (if model is BROWN).
       - K (list): The intrinsic camera matrix.
       - R (list): The rotation matrix relative to the platform.
       - C (list): The camera center relative to the platform.
@@ -321,6 +330,7 @@ def loadMVSInterface(archive_path):
       - angle (float): The angle.
       - area (float): The area.
       - score (float): The score.
+  - flags (int, optional): The optional content, bit HAS_OBSERVATIONS (if version > 7).
   - vertices (list): A list of vertices, each containing:
     - X (list): The vertex coordinates.
     - views (list): A list of views, each containing:
@@ -381,6 +391,13 @@ def loadMVSInterface(archive_path):
         R = np.asarray(np.frombuffer(mvs.read(72), dtype=np.float64)).reshape(3, 3).tolist()
         C = np.asarray(np.frombuffer(mvs.read(24), dtype=np.float64)).tolist()
         data['platforms'][platform_index]['cameras'][camera_index].update({'K': K, 'R': R, 'C': C})
+        if version > 7:
+          model = np.frombuffer(mvs.read(1), dtype=np.uint8).tolist()[0]
+          data['platforms'][platform_index]['cameras'][camera_index].update({'model': model})
+          if model == CAMERA_MODEL_BROWN:
+            params_size = np.frombuffer(mvs.read(8), dtype=np.uint64)[0]
+            params = np.frombuffer(mvs.read(8*int(params_size)), dtype=np.float64).tolist()
+            data['platforms'][platform_index]['cameras'][camera_index].update({'params': params})
       # the poses follow the whole camera array, not each camera (Platform::serialize does
       # `ar & cameras; ar & poses;`), so reading them per camera desynced the stream and
       # consumed the next camera's bytes on any multi-camera (rig) platform
@@ -413,6 +430,10 @@ def loadMVSInterface(archive_path):
           scale, angle, area, score = np.frombuffer(mvs.read(16), dtype=np.float32).tolist()
           data['images'][image_index]['view_scores'].append({'id': id, 'points': points, 'scale': scale, 'angle': angle, 'area': area, 'score': score})
     
+    flags = 0
+    if version > 7:
+      flags = np.frombuffer(mvs.read(1), dtype=np.uint8).tolist()[0]
+      data.update({'flags': flags})
     vertices_size = np.frombuffer(mvs.read(8), dtype=np.uint64)[0]
     for vertex_index in range(vertices_size):
       X = np.frombuffer(mvs.read(12), dtype=np.float32).tolist()
@@ -421,7 +442,10 @@ def loadMVSInterface(archive_path):
       for _ in range(views_size):
         image_id = np.frombuffer(mvs.read(4), dtype=np.uint32).tolist()[0]
         confidence = np.frombuffer(mvs.read(4), dtype=np.float32).tolist()[0]
-        data['vertices'][vertex_index]['views'].append({'image_id': image_id, 'confidence': confidence})
+        view = {'image_id': image_id, 'confidence': confidence}
+        if flags & HAS_OBSERVATIONS:
+          view.update({'x': np.frombuffer(mvs.read(8), dtype=np.float32).tolist()})
+        data['vertices'][vertex_index]['views'].append(view)
     
     vertices_normal_size = np.frombuffer(mvs.read(8), dtype=np.uint64)[0]
     for _ in range(vertices_normal_size):
@@ -471,7 +495,7 @@ def saveMVSInterface(data: dict, archive_path: str):
   Save a scene as an MVS (Multi-View Stereo) interface file.
   Example:
     scene = {
-      'stream_version': 3,
+      'stream_version': 8,
       'platforms': [],
       'images': [],
       'vertices': [],
@@ -490,7 +514,7 @@ def saveMVSInterface(data: dict, archive_path: str):
   """
   with open(archive_path, 'wb') as mvs:
     mvs.write('MVSI'.encode())
-    version = data.get('stream_version', 7)
+    version = data.get('stream_version', 8)
     mvs.write(np.array([version], dtype=np.uint32))
     mvs.write(np.array([0], dtype=np.uint32))  # reserve
 
@@ -515,6 +539,13 @@ def saveMVSInterface(data: dict, archive_path: str):
         mvs.write(np.array(camera['K'], dtype=np.float64).tobytes())
         mvs.write(np.array(camera['R'], dtype=np.float64).tobytes())
         mvs.write(np.array(camera['C'], dtype=np.float64).tobytes())
+        if version > 7:
+          model = camera.get('model', CAMERA_MODEL_PINHOLE)
+          mvs.write(np.array([model], dtype=np.uint8))
+          if model == CAMERA_MODEL_BROWN:
+            assert len(camera['params']) in (5, 8)
+            mvs.write(np.array([len(camera['params'])], dtype=np.uint64))
+            mvs.write(np.array(camera['params'], dtype=np.float64).tobytes())
       poses_size = len(platform['poses'])
       mvs.write(np.array([poses_size], dtype=np.uint64))
       for pose in platform['poses']:
@@ -542,6 +573,10 @@ def saveMVSInterface(data: dict, archive_path: str):
           mvs.write(np.array([view_score['id'], view_score['points']], dtype=np.uint32))
           mvs.write(np.array([view_score['scale'], view_score['angle'], view_score['area'], view_score['score']], dtype=np.float32))
 
+    flags = 0
+    if version > 7:
+      flags = data.get('flags', 0)
+      mvs.write(np.array([flags], dtype=np.uint8))
     vertices_size = len(data['vertices'])
     mvs.write(np.array([vertices_size], dtype=np.uint64))
     for vertex in data['vertices']:
@@ -551,6 +586,8 @@ def saveMVSInterface(data: dict, archive_path: str):
       for view in vertex['views']:
         mvs.write(np.array([view['image_id']], dtype=np.uint32))
         mvs.write(np.array([view['confidence']], dtype=np.float32))
+        if flags & HAS_OBSERVATIONS:
+          mvs.write(np.array(view['x'], dtype=np.float32))
 
     vertices_normal_size = len(data['vertices_normal'])
     mvs.write(np.array([vertices_normal_size], dtype=np.uint64))
@@ -562,10 +599,13 @@ def saveMVSInterface(data: dict, archive_path: str):
     for color in data['vertices_color']:
       mvs.write(np.array(color, dtype=np.uint8))
 
-    if 'lines' in data:
-      lines_size = len(data['lines'])
+    # the reader consumes every block below that the stream version holds, so each one is always
+    # written, from the Interface defaults when the dictionary lacks it
+    if version > 0:
+      lines = data.get('lines', [])
+      lines_size = len(lines)
       mvs.write(np.array([lines_size], dtype=np.uint64))
-      for line in data['lines']:
+      for line in lines:
         mvs.write(np.array(line['pt1'], dtype=np.float32))
         mvs.write(np.array(line['pt2'], dtype=np.float32))
         views_size = len(line['views'])
@@ -574,19 +614,25 @@ def saveMVSInterface(data: dict, archive_path: str):
           mvs.write(np.array([view['image_id']], dtype=np.uint32))
           mvs.write(np.array([view['confidence']], dtype=np.float32))
 
-      lines_normal_size = len(data['lines_normal'])
+      lines_normal = data.get('lines_normal', [])
+      lines_normal_size = len(lines_normal)
       mvs.write(np.array([lines_normal_size], dtype=np.uint64))
-      for normal in data['lines_normal']:
+      for normal in lines_normal:
         mvs.write(np.array(normal, dtype=np.float32))
 
-      lines_color_size = len(data['lines_color'])
+      lines_color = data.get('lines_color', [])
+      lines_color_size = len(lines_color)
       mvs.write(np.array([lines_color_size], dtype=np.uint64))
-      for color in data['lines_color']:
+      for color in lines_color:
         mvs.write(np.array(color, dtype=np.uint8))
 
-    if 'transform' in data:
-      mvs.write(np.array(data['transform'], dtype=np.float64).tobytes())
-      if 'obb' in data:
-        mvs.write(np.array(data['obb']['rot'], dtype=np.float64).tobytes())
-        mvs.write(np.array(data['obb']['pt_min'], dtype=np.float64).tobytes())
-        mvs.write(np.array(data['obb']['pt_max'], dtype=np.float64).tobytes())
+      if version > 1:
+        # default: identity transform
+        transform = data.get('transform', np.eye(4).tolist())
+        mvs.write(np.array(transform, dtype=np.float64).tobytes())
+        if version > 5:
+          # default: the invalid OBB of Interface::OBB() (rot = I, pt_min = pt_max = 0)
+          obb = data.get('obb', {'rot': np.eye(3).tolist(), 'pt_min': [0.0, 0.0, 0.0], 'pt_max': [0.0, 0.0, 0.0]})
+          mvs.write(np.array(obb['rot'], dtype=np.float64).tobytes())
+          mvs.write(np.array(obb['pt_min'], dtype=np.float64).tobytes())
+          mvs.write(np.array(obb['pt_max'], dtype=np.float64).tobytes())
