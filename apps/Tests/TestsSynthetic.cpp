@@ -1,0 +1,850 @@
+/*
+ * TestsSynthetic.cpp
+ *
+ * Copyright (c) 2014-2026 SEACAVE
+ *
+ * Author(s):
+ *
+ *      cDc <cdc.seacave@gmail.com>
+ *
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ *
+ * Additional Terms:
+ *
+ *      You are required to preserve legal notices and author attributions in
+ *      that material or in the Appropriate Legal Notices displayed by works
+ *      containing it.
+ */
+
+#include "../../libs/MVS.h"
+#include "../../libs/Math/Camera/CameraUndistort.h"
+#include "Tests.h"
+#include "TestsSynthetic.h"
+#include <fstream>
+
+using namespace MVS;
+
+
+// D E F I N E S ///////////////////////////////////////////////////
+
+
+// S T R U C T S ///////////////////////////////////////////////////
+
+DEFINE_LOG_NAME(lt, _T("TestSyn "));
+
+namespace {
+
+typedef Eigen::Vector2d EVec2;
+typedef Eigen::Vector3d EVec3;
+typedef Eigen::Matrix3d EMat3;
+
+// analytic scene; the surface ids index the texture parameters
+enum SynthSurface { SURF_WALL_XMIN, SURF_WALL_XMAX, SURF_WALL_YMIN, SURF_WALL_YMAX, SURF_FLOOR, SURF_CEILING, SURF_SPHERE0, SURF_SPHERE1, SURF_SPHERE2, SURF_PILLAR, SURF_RAMP, NUM_SURFACES };
+const EVec3 roomMin(-8, -5, 0), roomMax(8, 5, 5);
+const EVec3 sphereCenters[3] = {EVec3(-3.5, 2.5, 1.0), EVec3(4.0, -3.0, 1.2), EVec3(5.5, 3.0, 3.6)};
+const double sphereRadii[3] = {1.0, 1.2, 0.7};
+const EVec2 pillarAxis(1.5, 2.2); // vertical cylinder from floor to ceiling
+const double pillarRadius(0.15);
+const EVec3 rampOrigin(-6.5, -4.5, 0), rampEdge1(4.0, 0, 1.6), rampEdge2(0, 2.0, 0); // rectangle rising along x
+// low-texture patch on the SURF_WALL_YMAX wall: x and z ranges
+const double lowTextureX[2] = {-1.5, 0.5}, lowTextureZ[2] = {1.8, 3.2};
+
+struct SynthHit {
+	double t; // ray parameter
+	EVec3 normal; // world unit normal facing the ray origin
+	int surface;
+};
+
+// closest hit of the ray o + t*d (d any length) from a point inside the room and outside the objects
+SynthHit SynthTrace(const EVec3& o, const EVec3& d)
+{
+	SynthHit hit{std::numeric_limits<double>::max(), EVec3::Zero(), -1};
+	for (int i = 0; i < 3; ++i) {
+		ASSERT(o[i] > roomMin[i] && o[i] < roomMax[i]);
+		if (d[i] == 0)
+			continue;
+		const double t(((d[i] > 0 ? roomMax[i] : roomMin[i]) - o[i]) / d[i]);
+		if (t < hit.t) {
+			hit.t = t;
+			hit.normal = EVec3::Zero();
+			hit.normal[i] = d[i] > 0 ? -1 : 1;
+			hit.surface = 2*i + (d[i] > 0 ? 1 : 0);
+		}
+	}
+	ASSERT(hit.surface >= 0);
+	const double a(d.squaredNorm());
+	for (int s = 0; s < 3; ++s) {
+		const EVec3 oc(o - sphereCenters[s]);
+		const double b(oc.dot(d)), c(oc.squaredNorm() - SQUARE(sphereRadii[s]));
+		ASSERT(c > 0);
+		const double disc(b*b - a*c);
+		if (disc < 0)
+			continue;
+		const double t((-b - std::sqrt(disc)) / a);
+		if (t > 0 && t < hit.t) {
+			hit.t = t;
+			hit.normal = (oc + t*d) / sphereRadii[s];
+			hit.surface = SURF_SPHERE0 + s;
+		}
+	}
+	{
+		const EVec2 oc(o.x() - pillarAxis.x(), o.y() - pillarAxis.y());
+		const double a2(d.x()*d.x() + d.y()*d.y()), b(oc.x()*d.x() + oc.y()*d.y()), c(oc.squaredNorm() - SQUARE(pillarRadius));
+		ASSERT(c > 0);
+		const double disc(b*b - a2*c);
+		if (a2 > 0 && disc >= 0) {
+			const double t((-b - std::sqrt(disc)) / a2);
+			if (t > 0 && t < hit.t) {
+				hit.t = t;
+				hit.normal = EVec3(oc.x() + t*d.x(), oc.y() + t*d.y(), 0) / pillarRadius;
+				hit.surface = SURF_PILLAR;
+			}
+		}
+	}
+	{
+		const EVec3 n(rampEdge1.cross(rampEdge2).normalized());
+		const double denom(d.dot(n));
+		if (denom != 0) {
+			const double t((rampOrigin - o).dot(n) / denom);
+			if (t > 0 && t < hit.t) {
+				const EVec3 X(o + t*d - rampOrigin);
+				const double u(X.dot(rampEdge1) / rampEdge1.squaredNorm()), v(X.dot(rampEdge2) / rampEdge2.squaredNorm());
+				if (u >= 0 && u <= 1 && v >= 0 && v <= 1) {
+					hit.t = t;
+					hit.normal = denom < 0 ? n : EVec3(-n);
+					hit.surface = SURF_RAMP;
+				}
+			}
+		}
+	}
+	return hit;
+}
+
+// deterministic lattice value in [0,1)
+inline double SynthLattice(int64_t x, int64_t y, int64_t z, uint32_t seed)
+{
+	uint32_t h((uint32_t)x*0x8da6b343u ^ (uint32_t)y*0xd8163841u ^ (uint32_t)z*0xcb1ab31fu ^ seed*0x9e3779b9u);
+	h ^= h >> 16; h *= 0x7feb352du; h ^= h >> 15; h *= 0x846ca68bu; h ^= h >> 16;
+	return double(h) * (1.0/4294967296.0);
+}
+// 3D value noise in [0,1], C2 (quintic) interpolation, unit lattice period
+double SynthValueNoise(const EVec3& p, uint32_t seed)
+{
+	const EVec3 f(p.array().floor());
+	const int64_t x((int64_t)f.x()), y((int64_t)f.y()), z((int64_t)f.z());
+	const EVec3 t(p - f);
+	const EVec3 u(t.array()*t.array()*t.array()*(t.array()*(t.array()*6.0 - 15.0) + 10.0));
+	double v[2][2];
+	for (int j = 0; j < 2; ++j)
+		for (int k = 0; k < 2; ++k)
+			v[j][k] = SynthLattice(x, y+j, z+k, seed) + u.x()*(SynthLattice(x+1, y+j, z+k, seed) - SynthLattice(x, y+j, z+k, seed));
+	const double v0(v[0][0] + u.y()*(v[1][0] - v[0][0])), v1(v[0][1] + u.y()*(v[1][1] - v[0][1]));
+	return v0 + u.z()*(v1 - v0);
+}
+// band-limited multi-octave value noise in [0,1]; each octave is rotated against the lattice
+double SynthFbm(EVec3 p, int octaves, uint32_t seed)
+{
+	static const EMat3 octave(Eigen::AngleAxisd(0.7, EVec3(0.48, 0.6, 0.64).normalized()).toRotationMatrix() * 2.03);
+	double sum(0), amplitude(1), norm(0);
+	for (int i = 0; i < octaves; ++i) {
+		sum += amplitude * SynthValueNoise(p, seed + 17u*i);
+		norm += amplitude;
+		amplitude *= 0.55;
+		p = octave * p;
+	}
+	return sum / norm;
+}
+inline double SynthSmoothStep(double e0, double e1, double x)
+{
+	const double t(CLAMP((x - e0) / (e1 - e0), 0.0, 1.0));
+	return t*t*(3 - 2*t);
+}
+
+// view-independent RGB in [0,1] of the world point X on the surface: two albedos blended by a
+// low-frequency noise, modulated by a 6-octave fbm (periods ~0.6 m down to ~2 cm) and darkened
+// by sharp-edged spots; the low-texture patch keeps only a faint 3-octave fbm
+EVec3 SynthColor(const EVec3& X, int surface)
+{
+	static const EVec3 albedos[NUM_SURFACES][2] = {
+		{EVec3(0.85, 0.75, 0.60), EVec3(0.70, 0.80, 0.90)}, // SURF_WALL_XMIN
+		{EVec3(0.90, 0.70, 0.65), EVec3(0.75, 0.85, 0.70)}, // SURF_WALL_XMAX
+		{EVec3(0.75, 0.80, 0.90), EVec3(0.90, 0.85, 0.65)}, // SURF_WALL_YMIN
+		{EVec3(0.80, 0.90, 0.75), EVec3(0.90, 0.75, 0.80)}, // SURF_WALL_YMAX
+		{EVec3(0.70, 0.55, 0.40), EVec3(0.55, 0.50, 0.45)}, // SURF_FLOOR
+		{EVec3(0.92, 0.92, 0.88), EVec3(0.80, 0.85, 0.92)}, // SURF_CEILING
+		{EVec3(0.90, 0.35, 0.30), EVec3(0.95, 0.65, 0.30)}, // SURF_SPHERE0
+		{EVec3(0.30, 0.55, 0.90), EVec3(0.40, 0.85, 0.80)}, // SPHERE1
+		{EVec3(0.45, 0.85, 0.35), EVec3(0.85, 0.85, 0.30)}, // SPHERE2
+		{EVec3(0.85, 0.85, 0.85), EVec3(0.60, 0.60, 0.70)}, // SURF_PILLAR
+		{EVec3(0.75, 0.45, 0.80), EVec3(0.55, 0.40, 0.85)}, // SURF_RAMP
+	};
+	ASSERT(surface >= 0 && surface < NUM_SURFACES);
+	const double blend(SynthValueNoise(X*0.45, 11u + surface));
+	const EVec3 albedo(albedos[surface][0]*(1 - blend) + albedos[surface][1]*blend);
+	if (surface == SURF_WALL_YMAX && X.x() > lowTextureX[0] && X.x() < lowTextureX[1] && X.z() > lowTextureZ[0] && X.z() < lowTextureZ[1])
+		return albedo * (0.6 + 0.05*(SynthFbm(X*1.7, 3, 101u + surface) - 0.5));
+	const double detail(CLAMP(0.5 + 2.5*(SynthFbm(X*1.7, 6, 101u + surface) - 0.5), 0.0, 1.0));
+	const double spot(SynthSmoothStep(0.62, 0.65, SynthValueNoise(X*3.1 + EVec3(7.3, 1.9, 4.1), 202u + surface)));
+	return albedo * ((0.2 + 0.8*detail) * (1 - 0.65*spot));
+}
+
+// rotation of a camera looking along forward with the world z up, rolled about its axis
+Matrix3x3 SynthLookRotation(const EVec3& forward, double roll)
+{
+	const EVec3 z(forward.normalized());
+	const EVec3 x(EVec3(0, 0, -1).cross(z).normalized());
+	ASSERT(ISFINITE(x.x()));
+	EMat3 R;
+	R.row(0) = x;
+	R.row(1) = z.cross(x);
+	R.row(2) = z;
+	return Matrix3x3(EMat3(Eigen::AngleAxisd(roll, EVec3::UnitZ()).toRotationMatrix() * R));
+}
+
+// pose of panorama i of n: x from -5.5 to 5.5 m weaving in y and height, heading along x with
+// small yaw, pitch and roll
+void SynthPanoPose(unsigned i, unsigned n, Matrix3x3& R, Point3& C)
+{
+	ASSERT(n >= 2 && i < n);
+	const double s(double(i) / (n - 1));
+	C = Point3(-5.5 + 11*s, -0.3 + 0.8*std::sin(PI*1.7*s), 1.5 + 0.4*std::sin(2*PI*1.3*s));
+	const double yaw(0.3*std::sin(2*PI*s)), pitch(0.06*std::cos(3*PI*s)), roll(0.05*std::sin(4.2*PI*s));
+	R = Matrix3x3(EMat3(Eigen::AngleAxisd(pitch, EVec3::UnitX()).toRotationMatrix() * EMat3(SynthLookRotation(EVec3(std::cos(yaw), std::sin(yaw), 0), roll))));
+}
+
+// ray-cast GT lambda and normal at the pixel centers and the supersampled color
+void SynthRender(SynthView& view, unsigned supersample)
+{
+	ASSERT(supersample > 0);
+	const SynthCamera& cam(view.camera);
+	const EMat3 R(cam.R), Rt(R.transpose());
+	const EVec3 C(cam.C);
+	view.image.create(cam.height, cam.width);
+	view.depthMap.create(cam.height, cam.width);
+	view.normalMap.create(cam.height, cam.width);
+	const double step(1.0 / supersample), weight(1.0 / (supersample*supersample));
+	#ifdef _USE_OPENMP
+	#pragma omp parallel for schedule(dynamic)
+	#endif
+	for (int r = 0; r < cam.height; ++r) {
+		for (int c = 0; c < cam.width; ++c) {
+			const EVec3 ray(cam.Ray(EVec2(c, r)));
+			const SynthHit hit(SynthTrace(C, Rt*ray));
+			const EVec3 normal(R*hit.normal);
+			ASSERT(normal.dot(ray) <= 0);
+			view.depthMap(r, c) = (Depth)hit.t;
+			view.normalMap(r, c) = Normal((float)normal.x(), (float)normal.y(), (float)normal.z());
+			EVec3 color(EVec3::Zero());
+			for (unsigned sy = 0; sy < supersample; ++sy) {
+				for (unsigned sx = 0; sx < supersample; ++sx) {
+					const EVec3 d(Rt*cam.Ray(EVec2(c - 0.5 + (sx + 0.5)*step, r - 0.5 + (sy + 0.5)*step)));
+					const SynthHit h(SynthTrace(C, d));
+					color += SynthColor(C + h.t*d, h.surface);
+				}
+			}
+			color *= weight * 255.0;
+			view.image(r, c) = Pixel8U(
+				(uint8_t)ROUND2INT(CLAMP(color.x(), 0.0, 255.0)),
+				(uint8_t)ROUND2INT(CLAMP(color.y(), 0.0, 255.0)),
+				(uint8_t)ROUND2INT(CLAMP(color.z(), 0.0, 255.0)));
+		}
+	}
+}
+
+// points WORKING_FOLDER, where MAKE_PATH places the depth-maps and Scene::Save makes the image
+// paths relative to, at folder for its lifetime
+struct SynthWorkingFolder {
+	String prev, prevFull;
+	explicit SynthWorkingFolder(const String& folder) : prev(WORKING_FOLDER), prevFull(WORKING_FOLDER_FULL) {
+		WORKING_FOLDER = folder;
+		INIT_WORKING_FOLDER;
+	}
+	~SynthWorkingFolder() {
+		WORKING_FOLDER = prev;
+		WORKING_FOLDER_FULL = prevFull;
+	}
+};
+
+const char* SynthModelName(CameraModelType model)
+{
+	switch (model) {
+	case CameraModelType::PINHOLE: return "PINHOLE";
+	case CameraModelType::BROWN: return "BROWN";
+	case CameraModelType::SPHERICAL: return "SPHERICAL";
+	}
+	ASSERT("unknown camera model" == NULL);
+	return "";
+}
+
+} // namespace
+
+
+SynthCamera::Vec3 SynthCamera::Ray(const EVec2& x) const
+{
+	switch (model) {
+	case CameraModelType::PINHOLE:
+		return pinhole.Ray(x);
+	case CameraModelType::BROWN: {
+		const EVec2 u(distortion.Undistort(pinhole.PixelToNormalized(x)));
+		return EVec3(u.x(), u.y(), 1); }
+	case CameraModelType::SPHERICAL:
+		return spherical.Ray(x);
+	}
+	ASSERT("unknown camera model" == NULL);
+	return EVec3::Zero();
+}
+bool SynthCamera::Project(const EVec3& X, EVec2& x) const
+{
+	switch (model) {
+	case CameraModelType::PINHOLE:
+		return pinhole.Project(X, x);
+	case CameraModelType::BROWN:
+		x = pinhole.NormalizedToPixel(distortion.Distort(Pinhole<double>::Perspective(X)));
+		return X.z() > 0;
+	case CameraModelType::SPHERICAL:
+		return spherical.Project(X, x);
+	}
+	ASSERT("unknown camera model" == NULL);
+	return false;
+}
+double SynthCamera::Depth(const EVec3& X) const
+{
+	return model == CameraModelType::SPHERICAL ? Spherical<double>::Depth(X) : Pinhole<double>::Depth(X);
+}
+KMatrix SynthCamera::GetK() const
+{
+	const std::vector<double> params(Params());
+	KMatrix K(KMatrix::IDENTITY);
+	K(0,0) = params[0]; K(1,1) = params[1];
+	K(0,2) = params[2]; K(1,2) = params[3];
+	return K;
+}
+std::vector<double> SynthCamera::Params() const
+{
+	if (model == CameraModelType::SPHERICAL)
+		return {spherical.fx, spherical.fy, spherical.cx, spherical.cy};
+	if (model == CameraModelType::PINHOLE)
+		return {pinhole.fx, pinhole.fy, pinhole.cx, pinhole.cy};
+	return {pinhole.fx, pinhole.fy, pinhole.cx, pinhole.cy,
+		distortion.k1, distortion.k2, distortion.p1, distortion.p2, distortion.k3, distortion.k4, distortion.k5, distortion.k6};
+}
+/*----------------------------------------------------------------*/
+
+
+void MVS::SynthGenerate(const SynthConfig& config, SynthViewArr& views)
+{
+	ASSERT(config.panoWidth > 0 && config.panoWidth % 8 == 0);
+	ASSERT(config.numRenderPanos > 0 && config.firstPano + config.numRenderPanos <= config.numPanos);
+	ASSERT(config.numBrown < config.numRenderPanos || config.numBrown == 0);
+	views.clear();
+	const int faceSize(config.panoWidth / 4);
+	const SphereCubeMap::TangentFacesGeometry faces(SphereCubeMap::MakeTangentFacesGeometry(6, faceSize));
+	ASSERT(faces.numFaces == 6);
+	std::vector<Matrix3x3> panoRs(config.numPanos);
+	std::vector<Point3> panoCs(config.numPanos);
+	for (unsigned p = 0; p < config.numPanos; ++p)
+		SynthPanoPose(p, config.numPanos, panoRs[p], panoCs[p]);
+	for (unsigned p = config.firstPano; p < config.firstPano + config.numRenderPanos; ++p) {
+		if (config.spherical) {
+			SynthView& view = views.AddEmpty();
+			view.name = String::FormatString("pano%03u", p);
+			view.pano = (int)p;
+			view.face = -1;
+			view.camera.model = CameraModelType::SPHERICAL;
+			view.camera.width = config.panoWidth;
+			view.camera.height = config.panoWidth / 2;
+			view.camera.spherical = Spherical<double>::FromSize(view.camera.width, view.camera.height);
+			view.camera.R = panoRs[p];
+			view.camera.C = panoCs[p];
+		}
+		if (config.faces) {
+			for (int f = 0; f < 6; ++f) {
+				SynthView& view = views.AddEmpty();
+				view.name = String::FormatString("pano%03u_face%d", p, f);
+				view.pano = (int)p;
+				view.face = f;
+				view.camera.model = CameraModelType::PINHOLE;
+				view.camera.width = view.camera.height = faceSize;
+				view.camera.pinhole = Pinhole<double>{faces.K(0,0), faces.K(1,1), faces.K(0,2), faces.K(1,2)};
+				view.camera.R = faces.rotations[f] * panoRs[p];
+				view.camera.C = panoCs[p];
+			}
+		}
+	}
+	// Brown views halfway between consecutive panoramas, 15 cm higher, looking at the objects
+	const EVec3 targets[5] = {sphereCenters[0], rampOrigin + 0.5*(rampEdge1 + rampEdge2), EVec3(pillarAxis.x(), pillarAxis.y(), 2.0), sphereCenters[1], sphereCenters[2]};
+	for (unsigned k = 0; k < config.numBrown; ++k) {
+		const unsigned p(config.firstPano + k);
+		SynthView& view = views.AddEmpty();
+		view.name = String::FormatString("brown%03u", p);
+		view.pano = (int)p;
+		view.face = -1;
+		SynthCamera& cam = view.camera;
+		cam.model = CameraModelType::BROWN;
+		cam.width = config.panoWidth / 2;
+		cam.height = cam.width * 3 / 4;
+		cam.pinhole = Pinhole<double>{0.6*cam.width, 0.6*cam.width, 0.5*(cam.width - 1) + 0.01*cam.width, 0.5*(cam.height - 1) - 0.01*cam.height};
+		cam.distortion = BrownDistortion<double>{-0.22, 0.06, 0.0008, -0.0006, 0, 0, 0, 0};
+		cam.C = (panoCs[p] + panoCs[p+1]) * 0.5 + Point3(0, 0, 0.15);
+		cam.R = SynthLookRotation(targets[k % 5] - EVec3(cam.C), k % 2 ? 0.05 : -0.05);
+	}
+	FOREACH(i, views)
+		SynthRender(views[i], config.supersample);
+}
+/*----------------------------------------------------------------*/
+
+double MVS::SynthGTMismatch(const SynthView& a, const SynthView& b, size_t& numPixels)
+{
+	const EMat3 Ra(a.camera.R), Rb(b.camera.R);
+	const EVec3 Ca(a.camera.C), Cb(b.camera.C);
+	const bool wrap(b.camera.model == CameraModelType::SPHERICAL);
+	const int W(b.depthMap.width()), H(b.depthMap.height());
+	FloatArr errors;
+	for (int r = 0; r < a.depthMap.height(); ++r) {
+		for (int c = 0; c < a.depthMap.width(); ++c) {
+			const EVec3 X(Rb*(Ca + Ra.transpose()*(a.camera.Ray(EVec2(c, r))*(double)a.depthMap(r, c)) - Cb));
+			// the bounds are tested on the doubles: far outside the Brown field of view the
+			// distortion polynomial overflows to inf/NaN
+			EVec2 x;
+			if (!b.camera.Project(X, x) || !(x.y() >= 0 && x.y() < H - 1) || !(wrap || (x.x() >= 0 && x.x() < W - 1)))
+				continue;
+			int x0(FLOOR2INT(x.x())), x1(x0 + 1);
+			const int y0(FLOOR2INT(x.y()));
+			if (wrap) {
+				x0 = (x0 + W) % W;
+				x1 = (x1 + W) % W;
+			}
+			const double fx(x.x() - std::floor(x.x())), fy(x.y() - y0);
+			const double d00(b.depthMap(y0, x0)), d01(b.depthMap(y0, x1)), d10(b.depthMap(y0+1, x0)), d11(b.depthMap(y0+1, x1));
+			// skip depth discontinuities; interpolate 1/lambda, linear in the pixel on pinhole planes
+			if (MAXF(MAXF(d00, d01), MAXF(d10, d11)) > 1.02*MINF(MINF(d00, d01), MINF(d10, d11)))
+				continue;
+			const double lambda(1.0 / ((1/d00*(1-fx) + 1/d01*fx)*(1-fy) + (1/d10*(1-fx) + 1/d11*fx)*fy));
+			const double depth(b.camera.Depth(X));
+			if (depth > 1.01*lambda)
+				continue; // occluded in b
+			errors.push_back((float)(ABS(depth - lambda) / lambda));
+		}
+	}
+	numPixels = errors.size();
+	ASSERT(numPixels > 0);
+	return errors.GetMedian();
+}
+/*----------------------------------------------------------------*/
+
+bool MVS::SynthBuildScene(const SynthViewArr& views, const IIndexArr& viewIDs, const String& folder, Scene& scene)
+{
+	ASSERT(!viewIDs.empty());
+	scene.Release();
+	const std::vector<Matrix3x3> faceRotations(SphereCubeMap::FaceRotations(6));
+	std::unordered_map<int, uint32_t> panoPlatforms;
+	FOREACH(i, viewIDs) {
+		const SynthView& view = views[viewIDs[i]];
+		ASSERT(view.camera.model == CameraModelType::PINHOLE && view.face >= 0 && view.face < 6);
+		const auto itPlatform(panoPlatforms.emplace(view.pano, scene.platforms.size()));
+		if (itPlatform.second) {
+			// the 6 faces as the cameras of the panorama rig
+			Platform& platform = scene.platforms.AddEmpty();
+			platform.name = String::FormatString("pano%03d", view.pano);
+			const float scale(Camera::GetNormalizationScale(view.camera.width, view.camera.height));
+			for (int f = 0; f < 6; ++f) {
+				Platform::Camera& camera = platform.cameras.AddEmpty();
+				camera.K = KMatrix::IDENTITY;
+				camera.K(0,0) = view.camera.pinhole.fx / scale;
+				camera.K(1,1) = view.camera.pinhole.fy / scale;
+				camera.R = faceRotations[f];
+				camera.C = Point3::ZERO;
+			}
+			Platform::Pose& pose = platform.poses.AddEmpty();
+			pose.R = faceRotations[view.face].t() * view.camera.R;
+			pose.C = view.camera.C;
+		}
+		Image& image = scene.images.AddEmpty();
+		image.ID = i;
+		image.platformID = itPlatform.first->second;
+		image.cameraID = view.face;
+		image.poseID = 0;
+		image.width = view.camera.width;
+		image.height = view.camera.height;
+		image.scale = 1;
+		image.name = folder + view.name + ".png";
+		if (!view.image.Save(image.name)) {
+			VERBOSE("error: cannot save image '%s'", image.name.c_str());
+			return false;
+		}
+		image.UpdateCamera(scene.platforms);
+		ASSERT(ABS(image.camera.K(0,2) - view.camera.pinhole.cx) < 1e-9 && ABS(image.camera.K(0,0) - view.camera.pinhole.fx) < 1e-4);
+	}
+	scene.nCalibratedImages = viewIDs.size();
+	// GT sparse points: every 8th pixel of every view, seen by every view whose GT agrees within 1%
+	constexpr int pointStep(8);
+	FOREACH(i, viewIDs) {
+		const SynthView& view = views[viewIDs[i]];
+		const EMat3 Rt(EMat3(view.camera.R).transpose());
+		for (int r = pointStep/2; r < view.camera.height; r += pointStep) {
+			for (int c = pointStep/2; c < view.camera.width; c += pointStep) {
+				const EVec3 X(EVec3(view.camera.C) + Rt*(view.camera.Ray(EVec2(c, r))*(double)view.depthMap(r, c)));
+				PointCloud::ViewArr pointViews;
+				FOREACH(j, viewIDs) {
+					const SynthView& other = views[viewIDs[j]];
+					const EVec3 Xj(EMat3(other.camera.R)*(X - EVec3(other.camera.C)));
+					EVec2 x;
+					if (!other.camera.Project(Xj, x) || !(x.x() >= 0 && x.y() >= 0 && x.x() <= other.camera.width - 1 && x.y() <= other.camera.height - 1))
+						continue;
+					const int xc(ROUND2INT(x.x())), yc(ROUND2INT(x.y()));
+					if (ABS(other.camera.Depth(Xj) - other.depthMap(yc, xc)) < 0.01*other.depthMap(yc, xc))
+						pointViews.push_back(j);
+				}
+				ASSERT(pointViews.FindFirst(i) != PointCloud::ViewArr::NO_INDEX);
+				if (pointViews.size() < 2)
+					continue;
+				scene.pointcloud.points.emplace_back(Cast<float>(Point3(X)));
+				scene.pointcloud.pointViews.emplace_back(std::move(pointViews));
+			}
+		}
+	}
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+bool MVS::SynthSave(const SynthViewArr& views, const String& folder)
+{
+	Util::ensureFolder(folder);
+	IIndexArr faceIDs;
+	std::ofstream json((folder + "cameras.json").c_str());
+	json << std::setprecision(17);
+	json << "{\n\"convention\": \"X_cam = R (X - C); camera x-right, y-down, z-forward; pixel centers at integers; "
+		"lambda (the .dmap depth) = z for PINHOLE, z of the undistorted ray for BROWN, range for SPHERICAL; "
+		"params PINHOLE/SPHERICAL fx,fy,cx,cy, BROWN fx,fy,cx,cy,k1,k2,p1,p2,k3,k4,k5,k6\",\n\"views\": [\n";
+	FOREACH(i, views) {
+		const SynthView& view = views[i];
+		const String imageName(folder + view.name + ".png");
+		if (view.face >= 0)
+			faceIDs.push_back(i);
+		else if (!view.image.Save(imageName))
+			return false;
+		Depth dMin(FLT_MAX), dMax(0);
+		for (const Depth d: view.depthMap) {
+			dMin = MINF(dMin, d);
+			dMax = MAXF(dMax, d);
+		}
+		if (!ExportDepthDataRaw(folder + view.name + ".dmap", imageName, IIndexArr{i}, view.depthMap.size(),
+				view.camera.GetK(), RMatrix(view.camera.R), CMatrix(view.camera.C), dMin, dMax,
+				view.depthMap, view.normalMap, ConfidenceMap(), ViewsMap()) ||
+			!ExportDepthMap(folder + view.name + ".depth.png", view.depthMap))
+			return false;
+		json << (i ? ",\n" : "") << "{\"name\": \"" << view.name << "\", \"pano\": " << view.pano << ", \"face\": " << view.face
+			<< ", \"model\": \"" << SynthModelName(view.camera.model) << "\", \"width\": " << view.camera.width << ", \"height\": " << view.camera.height
+			<< ", \"params\": [";
+		const std::vector<double> params(view.camera.Params());
+		for (size_t p = 0; p < params.size(); ++p)
+			json << (p ? ", " : "") << params[p];
+		json << "], \"R\": [";
+		for (int k = 0; k < 9; ++k)
+			json << (k ? ", " : "") << view.camera.R.val[k];
+		json << "], \"C\": [" << view.camera.C.x << ", " << view.camera.C.y << ", " << view.camera.C.z
+			<< "], \"image\": \"" << view.name << ".png\", \"gt\": \"" << view.name << ".dmap\"}";
+	}
+	json << "\n]\n}\n";
+	if (!json.good())
+		return false;
+	if (faceIDs.empty())
+		return true;
+	const SynthWorkingFolder workingFolder(folder);
+	Scene scene;
+	return SynthBuildScene(views, faceIDs, folder, scene) && scene.Save(folder + "scene.mvs");
+}
+/*----------------------------------------------------------------*/
+
+
+void DepthEvaluator::Add(const DepthMap& gt, const NormalMap& gtNormals, const DepthMap& est, const NormalMap& estNormals, CameraModelType model)
+{
+	ASSERT(!gt.empty() && gt.size() == est.size() && gt.size() == gtNormals.size());
+	ASSERT(estNormals.empty() || estNormals.size() == est.size());
+	constexpr int band(16); // seam and border band width in pixels
+	const int W(gt.width()), H(gt.height());
+	const bool spherical(model == CameraModelType::SPHERICAL);
+	const Spherical<double> sphere(Spherical<double>::FromSize(W, H));
+	for (int r = 0; r < H; ++r) {
+		const double elevation(R2D(sphere.Angles(EVec2(0, r)).y()));
+		for (int c = 0; c < W; ++c) {
+			const Depth g(gt(r, c));
+			if (!(g > 0))
+				continue;
+			int pixelBands[3], numPixelBands(0);
+			pixelBands[numPixelBands++] = ALL;
+			if (spherical) {
+				if (ABS(elevation) < 30)
+					pixelBands[numPixelBands++] = EQUATOR;
+				else if (elevation > 70)
+					pixelBands[numPixelBands++] = NORTH;
+				else if (elevation < -70)
+					pixelBands[numPixelBands++] = SOUTH;
+				if (c < band || c >= W - band)
+					pixelBands[numPixelBands++] = SEAM;
+			} else {
+				pixelBands[numPixelBands++] = (c < band || r < band || c >= W - band || r >= H - band) ? BORDER : CENTER;
+			}
+			const Depth e(est(r, c));
+			float angle(-1);
+			if (e > 0 && !estNormals.empty() && estNormals(r, c) != Normal::ZERO) {
+				angle = R2D(ACOS(ComputeAngle(estNormals(r, c).ptr(), gtNormals(r, c).ptr())));
+			}
+			for (int b = 0; b < numPixelBands; ++b) {
+				Accum& accum = bands[pixelBands[b]];
+				++accum.numGT;
+				if (e > 0) {
+					accum.absRel.push_back(ABS(e - g) / g);
+					if (angle >= 0)
+						accum.normalAngle.push_back(angle);
+				}
+			}
+		}
+	}
+}
+
+DepthEvaluator::Stats DepthEvaluator::GetStats(Band band) const
+{
+	const Accum& accum = bands[band];
+	Stats stats{accum.numGT, accum.absRel.size(), 0, 0, 0, 0, 0, 0, 0};
+	if (accum.numGT)
+		stats.completeness = double(stats.numEst) / accum.numGT;
+	if (!accum.absRel.empty()) {
+		double sum(0);
+		size_t n1(0), n2(0), n5(0);
+		for (const float e: accum.absRel) {
+			sum += e;
+			n1 += e < 0.01f;
+			n2 += e < 0.02f;
+			n5 += e < 0.05f;
+		}
+		stats.absRelMean = sum / stats.numEst;
+		stats.absRelMedian = FloatArr(accum.absRel).GetMedian();
+		stats.within1 = double(n1) / stats.numEst;
+		stats.within2 = double(n2) / stats.numEst;
+		stats.within5 = double(n5) / stats.numEst;
+	}
+	if (!accum.normalAngle.empty())
+		stats.normalMedianDeg = FloatArr(accum.normalAngle).GetMedian();
+	return stats;
+}
+
+String DepthEvaluator::Print() const
+{
+	static const char* names[NUM_BANDS] = {"all", "equator", "north", "south", "seam", "center", "border"};
+	String table("band       GT-px  compl  absrel-mean  absrel-med    <1%    <2%    <5%  normal-med\n");
+	for (int b = 0; b < NUM_BANDS; ++b) {
+		const Stats s(GetStats((Band)b));
+		if (s.numGT == 0)
+			continue;
+		table += String::FormatString("%-8s %9zu  %5.3f  %11.5f  %10.5f  %5.3f  %5.3f  %5.3f  %8.2fdeg\n",
+			names[b], s.numGT, s.completeness, s.absRelMean, s.absRelMedian, s.within1, s.within2, s.within5, s.normalMedianDeg);
+	}
+	return table;
+}
+/*----------------------------------------------------------------*/
+
+
+bool MVS::SyntheticDepthBaselineTest()
+{
+	TD_TIMER_START();
+	SynthConfig config;
+	config.firstPano = 3;
+	config.numRenderPanos = 3;
+	config.numBrown = 2;
+	config.supersample = 3;
+	SynthViewArr views;
+	SynthGenerate(config, views);
+	// GT consistency across the models: panorama -> panorama, panorama <-> face, Brown <-> panorama/face
+	IIndex panos[3], faces[3][6], browns[2];
+	FOREACH(i, views) {
+		const SynthView& view = views[i];
+		if (view.camera.model == CameraModelType::BROWN)
+			browns[view.pano - 3] = i;
+		else if (view.face < 0)
+			panos[view.pano - 3] = i;
+		else
+			faces[view.pano - 3][view.face] = i;
+	}
+	// the face of the first panorama looking closest to where the first Brown view looks
+	const auto forward([&](IIndex i) { return EVec3(EMat3(views[i].camera.R).row(2).transpose()); });
+	int brownFace(0);
+	for (int f = 1; f < 6; ++f)
+		if (forward(faces[0][f]).dot(forward(browns[0])) > forward(faces[0][brownFace]).dot(forward(browns[0])))
+			brownFace = f;
+	const std::pair<IIndex,IIndex> pairs[] = {
+		{panos[0], panos[1]}, {panos[1], faces[0][0]}, {faces[2][2], panos[1]}, {faces[0][4], faces[1][4]},
+		{browns[0], panos[1]}, {panos[0], browns[1]}, {faces[0][brownFace], browns[0]}};
+	for (const auto& pair: pairs) {
+		size_t numPixels;
+		const double mismatch(SynthGTMismatch(views[pair.first], views[pair.second], numPixels));
+		VERBOSE("SyntheticDepthBaselineTest: GT %s -> %s: median lambda mismatch %.2e over %zu px",
+			views[pair.first].name.c_str(), views[pair.second].name.c_str(), mismatch, numPixels);
+		if (!(mismatch < 1e-4) || numPixels < 1000) {
+			VERBOSE("ERROR: SyntheticDepthBaselineTest: inconsistent GT %s -> %s (%.2e over %zu px)!",
+				views[pair.first].name.c_str(), views[pair.second].name.c_str(), mismatch, numPixels);
+			return false;
+		}
+	}
+
+	// CPU PatchMatch on the 18 faces, full resolution, depth-maps only
+	const ScopedTempDir tmpDir(_T("SyntheticDepth"));
+	if (!tmpDir.IsValid())
+		return false;
+	const String folder(tmpDir.Path() + "/");
+	const SynthWorkingFolder workingFolder(folder);
+	#if defined(_USE_CUDA) || defined(_USE_METAL)
+	struct DevicesRestore {
+		const String prev;
+		~DevicesRestore() { SEACAVE::CUDA::desiredDeviceIDs = prev; }
+	} const devicesRestore{SEACAVE::CUDA::desiredDeviceIDs};
+	SEACAVE::CUDA::desiredDeviceIDs.clear();
+	#endif
+	IIndexArr faceIDs;
+	FOREACH(i, views)
+		if (views[i].face >= 0)
+			faceIDs.push_back(i);
+	Scene scene;
+	if (!SynthBuildScene(views, faceIDs, folder, scene))
+		return false;
+	OPTDENSE::init();
+	OPTDENSE::update();
+	OPTDENSE::nResolutionLevel = 0;
+	OPTDENSE::nMinResolution = 64;
+	if (!scene.DenseReconstruction(1)) {
+		VERBOSE("ERROR: SyntheticDepthBaselineTest: depth-map estimation failed!");
+		return false;
+	}
+	DepthEvaluator evaluator;
+	FOREACH(i, scene.images) {
+		String imageFileName;
+		IIndexArr IDs;
+		cv::Size imageSize;
+		KMatrix K; RMatrix R; CMatrix C;
+		Depth dMin, dMax;
+		DepthMap depthMap; NormalMap normalMap; ConfidenceMap confMap; ViewsMap viewsMap;
+		if (!ImportDepthDataRaw(ComposeDepthFilePath(scene.images[i].ID, "dmap"), imageFileName, IDs, imageSize, K, R, C, dMin, dMax,
+				depthMap, normalMap, confMap, viewsMap, HeaderDepthDataRaw::HAS_DEPTH|HeaderDepthDataRaw::HAS_NORMAL)) {
+			VERBOSE("ERROR: SyntheticDepthBaselineTest: missing depth-map of image %u!", i);
+			return false;
+		}
+		const SynthView& view = views[faceIDs[i]];
+		evaluator.Add(view.depthMap, view.normalMap, depthMap, normalMap, view.camera.model);
+	}
+	VERBOSE("SyntheticDepthBaselineTest: CPU PatchMatch on %u cube faces of %dx%d px:\n%s",
+		faceIDs.size(), views[faceIDs[0]].camera.width, views[faceIDs[0]].camera.height, evaluator.Print().c_str());
+	// measured (Debug, CPU, two runs): all: completeness 0.854, abs-rel median 0.0027, <1% 0.749..0.754,
+	// <5% 0.920..0.922, normal median 4.0..4.1 deg; center completeness 0.988, border 0.682
+	const DepthEvaluator::Stats all(evaluator.GetStats(DepthEvaluator::ALL));
+	const DepthEvaluator::Stats center(evaluator.GetStats(DepthEvaluator::CENTER)), border(evaluator.GetStats(DepthEvaluator::BORDER));
+	if (!(all.completeness > 0.80) || !(all.absRelMedian < 0.004) || !(all.within1 > 0.70) || !(all.within5 > 0.88) ||
+		!(all.normalMedianDeg < 6) || !(center.completeness > 0.95) || !(border.completeness > 0.60)) {
+		VERBOSE("ERROR: SyntheticDepthBaselineTest: depth accuracy below the baseline!");
+		return false;
+	}
+	VERBOSE("SyntheticDepthBaselineTest passed (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+
+bool MVS::SynthTool(int argc, LPCTSTR* argv)
+{
+	ASSERT(argc > 0);
+	const String mode(argv[0]);
+	if (mode == "synth" && argc >= 2) {
+		SynthConfig config;
+		if (argc > 2)
+			config.panoWidth = std::atoi(argv[2]);
+		if (config.panoWidth <= 0 || config.panoWidth % 8) {
+			std::printf("error: panoWidth must be a positive multiple of 8\n");
+			return false;
+		}
+		String folder(Util::getFullPath(argv[1]));
+		Util::ensureValidFolderPath(folder);
+		TD_TIMER_START();
+		SynthViewArr views;
+		SynthGenerate(config, views);
+		std::printf("rendered %u views (%s)\n", views.size(), TD_TIMER_GET_FMT().c_str());
+		// GT consistency: each panorama against the next, its first face and the Brown view after it
+		for (const SynthView& a: views) {
+			for (const SynthView& b: views) {
+				if (&a == &b || a.camera.model != CameraModelType::SPHERICAL ||
+					!((b.camera.model == CameraModelType::SPHERICAL && b.pano == a.pano + 1) || (b.pano == a.pano && b.face <= 0)))
+					continue;
+				size_t numPixels;
+				const double mismatch(SynthGTMismatch(a, b, numPixels));
+				std::printf("GT %s -> %s: median lambda mismatch %.2e over %zu px\n", a.name.c_str(), b.name.c_str(), mismatch, numPixels);
+			}
+		}
+		if (!SynthSave(views, folder)) {
+			std::printf("error: cannot write the dataset to '%s'\n", folder.c_str());
+			return false;
+		}
+		std::printf("saved to '%s' (%s)\n", folder.c_str(), TD_TIMER_GET_FMT().c_str());
+		return true;
+	}
+	if (mode == "synthtest")
+		return SyntheticDepthBaselineTest();
+	if (mode == "evaldepth" && argc >= 3) {
+		DepthMap maps[2]; NormalMap normals[2]; KMatrix Ks[2];
+		for (int i = 0; i < 2; ++i) {
+			String imageFileName;
+			IIndexArr IDs;
+			cv::Size imageSize;
+			RMatrix R; CMatrix C;
+			Depth dMin, dMax;
+			ConfidenceMap confMap; ViewsMap viewsMap;
+			if (!ImportDepthDataRaw(argv[1+i], imageFileName, IDs, imageSize, Ks[i], R, C, dMin, dMax, maps[i], normals[i], confMap, viewsMap,
+					HeaderDepthDataRaw::HAS_DEPTH|HeaderDepthDataRaw::HAS_NORMAL)) {
+				std::printf("error: cannot read the depth-map '%s'\n", argv[1+i]);
+				return false;
+			}
+		}
+		// the model only selects the bands: SPHERICAL if named or if the GT camera matrix is the equirect one
+		const Spherical<double> sphere(Spherical<double>::FromSize(maps[0].width(), maps[0].height()));
+		const String model(argc > 3 ? String(argv[3]) : String());
+		const bool spherical(model.empty() ? ABS(Ks[0](0,0) - sphere.fx) < 1e-9*sphere.fx && ABS(Ks[0](1,1) - sphere.fy) < 1e-9*sphere.fy : model == "spherical");
+		// a GT of another resolution is sampled at the nearest pixel of each estimated pixel center
+		if (maps[0].size() != maps[1].size()) {
+			if (int64_t(maps[0].width())*maps[1].height() != int64_t(maps[0].height())*maps[1].width()) {
+				std::printf("error: GT %dx%d and estimate %dx%d differ in aspect ratio\n", maps[0].width(), maps[0].height(), maps[1].width(), maps[1].height());
+				return false;
+			}
+			const double scale(double(maps[0].width()) / maps[1].width());
+			DepthMap gt(maps[1].size());
+			NormalMap gtNormals(maps[1].size());
+			for (int r = 0; r < gt.height(); ++r) {
+				for (int c = 0; c < gt.width(); ++c) {
+					const int rg(MINF(FLOOR2INT((r + 0.5)*scale), maps[0].height() - 1)), cg(MINF(FLOOR2INT((c + 0.5)*scale), maps[0].width() - 1));
+					gt(r, c) = maps[0](rg, cg);
+					gtNormals(r, c) = normals[0](rg, cg);
+				}
+			}
+			maps[0] = std::move(gt);
+			normals[0] = std::move(gtNormals);
+		}
+		DepthEvaluator evaluator;
+		evaluator.Add(maps[0], normals[0], maps[1], normals[1], spherical ? CameraModelType::SPHERICAL : CameraModelType::PINHOLE);
+		std::fputs(evaluator.Print().c_str(), stdout);
+		return true;
+	}
+	std::printf("usage:\n"
+		"  Tests synth <outDir> [panoWidth=512]\n"
+		"  Tests evaldepth <gt.dmap> <est.dmap> [pinhole|brown|spherical, default from the GT camera matrix]\n");
+	return false;
+}
+/*----------------------------------------------------------------*/

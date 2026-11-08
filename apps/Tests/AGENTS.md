@@ -9,6 +9,7 @@ main(argv)
   argv[1] == 0 or missing → UnitTests()      — data structures & math
   argv[1] == 1            → SFM smoke tests   — multiple sequential tests
   argv[1] >= 2            → MVS::PipelineTest() — full dense reconstruction
+  argv[1] not a number    → MVS::SynthTool()    — tool modes (see Synthetic Depth GT)
 ```
 
 Each test prints `VERBOSE` progress and returns `false` on failure, causing `main()` to `return EXIT_FAILURE` immediately.
@@ -106,6 +107,39 @@ The face/quality bounds are deliberately wide plausibility windows: they bracket
 spread of both the CPU and GPU PatchMatch backends, which differ by design.
 
 Keeps the depth maps on disk (`OPTDENSE::bRemoveDmaps = false`) for `SceneSplitTest` and deletes them right after it, whatever its outcome. Optionally saves `.ply` outputs when verbose (into the data folder: remove them after a verbose run).
+
+## Synthetic Depth GT (`TestsSynthetic.h` / `TestsSynthetic.cpp`)
+
+Deterministic depth ground truth without data files, used for the spherical PatchMatch work:
+- **Scene:** closed room [-8,8]x[-5,5]x[0,5] m (z up) with 3 spheres, a slanted ramp and a thin
+  pillar, solid world-space value-noise texture (6-octave fbm + sharp-edged spots, Lambertian),
+  one small low-texture patch on the y=+5 wall.
+- **Views** (`SynthGenerate(SynthConfig, SynthViewArr&)`): per panorama on an 8-pose trajectory
+  the equirect view (`panoWidth` x `panoWidth/2`, default 512), its 6 `SphereCubeMap` faces
+  (`panoWidth/4`), plus Brown-distorted pinhole views between panoramas. Exact ray casting
+  through `CameraModels.h`; color SxS supersampled; GT lambda (z for pinhole, z of the
+  undistorted ray for Brown, range for spherical) and camera-frame normals at pixel centers.
+- `SynthCamera` = model + `Params()` (the planned Interface v8 description), `R`, `C`
+  (X_cam = R (X - C)).
+- `SynthGTMismatch(a, b)`: median relative lambda mismatch of a reprojected into b
+  (faces ~2e-8, Brown ~4e-6, panorama targets ~2e-5 from the bilinear interpolation).
+- `SynthBuildScene`: MVS scene of the face views (one platform per panorama, faces as its
+  cameras), PNGs written to a folder, GT sparse points.
+- `SynthSave`: PNG + GT `.dmap` (lambda + normals; the spherical K holds fx,fy,cx,cy) + depth
+  preview per view, `cameras.json` for every view, `scene.mvs` of the faces.
+- `DepthEvaluator`: abs-rel mean/median, % < 1/2/5 %, completeness, normal median angle, per
+  band: all; equirect equator (|elev| < 30), north/south (|elev| > 70), seam (16 px from
+  column 0 / W-1); pinhole center / border (16 px).
+- `SyntheticDepthBaselineTest()` (MVS suite, CPU forced): GT consistency across the models,
+  then CPU PatchMatch on the 18 128x128 faces of 3 panoramas, asserted against calibrated
+  thresholds (measured numbers in the code). ~25 s in Debug.
+
+Tool modes (argv[1] is not a number):
+```
+Tests synth <outDir> [panoWidth=512]          # write the dataset
+Tests evaldepth <gt.dmap> <est.dmap> [model]  # band table (GT resampled to the estimate size)
+Tests synthtest [verbosity]                   # run SyntheticDepthBaselineTest alone
+```
 
 ## Logging Convention
 

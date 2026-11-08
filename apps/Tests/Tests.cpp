@@ -36,6 +36,7 @@
 #include "TestsMath.h"
 #include "TestsSFM.h"
 #include "TestsMVS.h"
+#include "TestsSynthetic.h"
 #include "Tests.h"
 
 
@@ -197,6 +198,9 @@ int main(int argc, LPCTSTR* argv)
 	// run the selected suite inside a lambda so the teardown below is reached on failure
 	// too: the log file in particular must be closed, or a failing run truncates its own log
 	const bool succeeded = [&]() {
+		// tool modes (synth, evaldepth, synthtest) are named, the suites numbered
+		if (argc > 1 && !std::isdigit((unsigned char)argv[1][0]))
+			return MVS::SynthTool(argc-1, argv+1);
 		if (argc < 2 || std::atoi(argv[1]) == 0) {
 			if (!UnitTests())
 				return false;
@@ -314,6 +318,8 @@ int main(int argc, LPCTSTR* argv)
 			if (!MVS::SelectNeighborViewsScaleTest())
 				return false;
 			if (!MVS::DMapCacheKeepsRequestedImageTest())
+				return false;
+			if (!MVS::SyntheticDepthBaselineTest())
 				return false;
 		}
 		return true;

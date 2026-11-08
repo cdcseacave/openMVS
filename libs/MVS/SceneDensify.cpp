@@ -467,9 +467,10 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 				depthData.images.RemoveAtMove(i);
 				continue;
 			}
-			// the depth-map belongs to this neighbor, so it matches its own image size,
-			// which can differ from the reference image (ex: a rotated view)
-			ASSERT(view.image.empty() || view.image.size() == view.depthMap.size());
+			// the depth-map belongs to this neighbor, so it matches its own prepared image size,
+			// which can differ from the reference image (ex: a rotated view) and from view.image
+			// (resampled by the neighbor scale)
+			ASSERT(view.depthMap.size() == view.pImageData->GetSize());
 			if (bLoadNeighborConf) {
 				view.normalMap = std::move(normalMap);
 				// the confirmation sweep's gates are calibrated for the RAW photometric neighbor
