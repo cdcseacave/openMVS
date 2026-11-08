@@ -28,7 +28,10 @@ namespace SEACAVE {
 //  - pixel centers lie at integer coordinates (OpenCV/MVS): pixel (0,0) covers [-0.5,0.5]^2;
 //  - camera frame x-right, y-down, z-forward;
 //  - Ray(x) is the camera-space direction of pixel x, Project(X, x) its inverse (returns
-//    whether X is visible), and Depth(X) the distance along the ray that Ray(x) scales.
+//    whether X is visible), and Depth(X) the distance along the ray that Ray(x) scales;
+//  - RayFrame(x) maps pixel offsets (dx,dy,1) around x to rays (columns: the ray derivatives
+//    along x and y, then Ray(x)), PixelHomography(r) maps rays near r to homogeneous pixels;
+//    the plane-induced patch warp between two views is composed from these two.
 
 // model ids, stored in the scene files
 enum class CameraModelType : uint8_t {
@@ -40,8 +43,10 @@ enum class CameraModelType : uint8_t {
 // skew-free pinhole; Ray(x) lies on the z=1 plane, so the depth along it is z
 template<typename T>
 struct Pinhole {
+	typedef T Scalar;
 	typedef Eigen::Matrix<T,2,1> Vec2;
 	typedef Eigen::Matrix<T,3,1> Vec3;
+	typedef Eigen::Matrix<T,3,3> Mat3;
 
 	T fx, fy; // focal lengths in pixels
 	T cx, cy; // principal point in pixels
@@ -71,6 +76,24 @@ struct Pinhole {
 	}
 	HOST_DEVICE static T Depth(const Vec3& X) {
 		return X.z();
+	}
+
+	// pixel offsets (dx,dy,1) around x -> rays: Ray(x+d) = RayFrame(x)*(dx,dy,1), exact for a pinhole
+	HOST_DEVICE Mat3 RayFrame(const Vec2& x) const {
+		const Vec3 r(Ray(x));
+		Mat3 F;
+		F << T(1)/fx, T(0), r.x(),
+		     T(0), T(1)/fy, r.y(),
+		     T(0), T(0), T(1);
+		return F;
+	}
+	// rays near the given one -> homogeneous pixels, exact for a pinhole: K
+	HOST_DEVICE Mat3 PixelHomography(const Vec3& /*ray*/) const {
+		Mat3 K;
+		K << fx, T(0), cx,
+		     T(0), fy, cy,
+		     T(0), T(0), T(1);
+		return K;
 	}
 };
 /*----------------------------------------------------------------*/
@@ -156,6 +179,7 @@ struct BrownDistortion {
 // Ray(x) is a unit vector, so the depth along it is |X|
 template<typename T>
 struct Spherical {
+	typedef T Scalar;
 	typedef Eigen::Matrix<T,2,1> Vec2;
 	typedef Eigen::Matrix<T,3,1> Vec3;
 

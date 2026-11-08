@@ -432,7 +432,7 @@ struct MVS_API DepthEstimator {
 	#endif
 	const MapRefArr& coords;
 	const Image8U::Size size;
-	const Eigen::Vector2f focal, principal; // image0's intrinsics (skew-free)
+	const Pinhole<float> camera0f; // image0's camera model (skew-free)
 	const Depth dMin, dMax;
 	const Depth dMinSqr, dMaxSqr;
 	const ENDIRECTION dir;

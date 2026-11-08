@@ -142,7 +142,7 @@ __global__ void PriorKernel(RefAcc ref, LinearCameraModel camera,
 	const float gate = 1.f - ConfRefine::CRexp(-(float)nInl * invKmin);
 	float Pnorm = 1.f;
 	if (ref.HasNormal()) {
-		Pnorm = fmaxf(0.f, SEACAVE::NormalFromDepthGradient(camera.f, camera.p, pos, w, grad).dot(ref.Normal(idx)));
+		Pnorm = fmaxf(0.f, SEACAVE::NormalFromDepthGradient(camera.AsPinhole(), pos, w, grad).dot(ref.Normal(idx)));
 	}
 	float pr = Pplane * Pnorm * gate;
 	priorOut[idx] = pr < 0.f ? 0.f : (pr > 1.f ? 1.f : pr);

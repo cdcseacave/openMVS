@@ -1231,7 +1231,7 @@ void DepthMapsData::ComputeIntraMapPrior(const DepthData& depthData, ConfidenceM
 	const bool bHasNormal(!normalMap.empty());
 	const Matrix3x3f K(depthData.GetView().camera.K);
 	ASSERT(ISZERO(K(0,1)));
-	const Eigen::Vector2f focal(K(0,0), K(1,1)), principal(K(0,2), K(1,2));
+	const Pinhole<float> camera{K(0,0), K(1,1), K(0,2), K(1,2)};
 	// relative planarity band, in units of the calibrated depth noise (the GPU PriorKernel derives
 	// the same band from Params::thDepth == CONFIRM_DEPTH)
 	const float band(ConfRefine::CONFIRM_DEPTH * 3.f);
@@ -1277,7 +1277,7 @@ void DepthMapsData::ComputeIntraMapPrior(const DepthData& depthData, ConfidenceM
 			// is unconstrained and disagrees with the geometry-implied gradient normal => Pnorm collapses.
 			float Pnorm(1.f);
 			if (bHasNormal) {
-				const Normal nGrad(NormalFromDepthGradient(focal, principal, pos, w, gradient));
+				const Normal nGrad(NormalFromDepthGradient(camera, pos, w, gradient));
 				Pnorm = MAXF(0.f, nGrad.dot(normalMap(r,c)));
 			}
 			priorMap(r,c) = CLAMP(Pplane*Pnorm*gate, 0.f, 1.f);

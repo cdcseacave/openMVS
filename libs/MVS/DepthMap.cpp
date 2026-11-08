@@ -437,8 +437,7 @@ DepthEstimator::DepthEstimator(
 	image0Sum(_image0Sum),
 	#endif
 	coords(_coords), size(_depthData0.images.First().image.size()),
-	focal((float)image0.camera.K(0,0), (float)image0.camera.K(1,1)),
-	principal((float)image0.camera.K(0,2), (float)image0.camera.K(1,2)),
+	camera0f{(float)image0.camera.K(0,0), (float)image0.camera.K(1,1), (float)image0.camera.K(0,2), (float)image0.camera.K(1,2)},
 	dMin(_depthData0.dMin), dMax(_depthData0.dMax),
 	dMinSqr(SQRT(_depthData0.dMin)), dMaxSqr(SQRT(_depthData0.dMax)),
 	dir(nIter%2 ? RB2LT : LT2RB),
@@ -897,7 +896,7 @@ void DepthEstimator::ProcessPixel(IDX idx)
 Depth DepthEstimator::InterpolatePixel(const ImageRef& nx, Depth depth, const Normal& normal) const
 {
 	ASSERT(normal.dot(image0.camera.TransformPointI2C(Cast<REAL>(nx))) <= 0);
-	return InterpolatePlaneDepth(focal, principal, x0, nx, depth, normal, dMin, dMax);
+	return InterpolatePlaneDepth(camera0f, x0, nx, depth, normal, dMin, dMax);
 }
 
 #if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
@@ -1638,7 +1637,7 @@ bool MVS::EstimateNormalMap(const Matrix3x3f& K, const DepthMap& depthMap, Norma
 {
 	ASSERT(ISZERO(K(0,1)));
 	normalMap.create(depthMap.size());
-	const Eigen::Vector2f focal(K(0,0), K(1,1)), principal(K(0,2), K(1,2));
+	const Pinhole<float> camera{K(0,0), K(1,1), K(0,2), K(1,2)};
 	for (int r=0; r<normalMap.rows; ++r) {
 		for (int c=0; c<normalMap.cols; ++c) {
 			// the normal of the depth plane fitted at x
@@ -1647,7 +1646,7 @@ bool MVS::EstimateNormalMap(const Matrix3x3f& K, const DepthMap& depthMap, Norma
 			Depth depth;
 			Eigen::Vector2f gradient;
 			if (FitDepthGradient(depthMap, x, depth, gradient))
-				n = NormalFromDepthGradient(focal, principal, x, depth, gradient);
+				n = NormalFromDepthGradient(camera, x, depth, gradient);
 			else
 				n = Normal::ZERO;
 			ASSERT(normalMap(r,c).dot(K.inv()*Point3f(float(c),float(r),1.f)) <= 0);

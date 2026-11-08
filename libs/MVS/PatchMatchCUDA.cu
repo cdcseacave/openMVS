@@ -408,7 +408,7 @@ __device__ inline void MultiViewScorePlane(const RefPatchCache& cache, const Ima
 template <bool GEOM>
 __device__ inline float MultiViewScoreNeighborPlane(const RefPatchCache& cache, const ImagePixels* images, const ImagePixels* depthImages, const Point2i& p, const Point2i& np, Point4 plane, const float lowDepth, float* costVector)
 {
-	plane.w() = SEACAVE::InterpolatePlaneDepth(g_cameras[0].model.f, g_cameras[0].model.p, p, np, plane.w(), plane.topLeftCorner<3,1>(), g_params.fDepthMin, g_params.fDepthMax);
+	plane.w() = SEACAVE::InterpolatePlaneDepth(g_cameras[0].model.AsPinhole(), p, np, plane.w(), plane.topLeftCorner<3,1>(), g_params.fDepthMin, g_params.fDepthMax);
 	MultiViewScorePlane<GEOM>(cache, images, depthImages, p, plane, lowDepth, costVector);
 	return plane.w();
 }
@@ -595,7 +595,7 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 		fit.Add( 0, 1, LoadPlaneWLDG(&planes[neighborPositions[1]]) - depth);
 		fit.Add(-1, 0, LoadPlaneWLDG(&planes[neighborPositions[2]]) - depth);
 		fit.Add( 1, 0, LoadPlaneWLDG(&planes[neighborPositions[3]]) - depth);
-		surfaceNormal = SEACAVE::NormalFromDepthGradient(g_cameras[0].model.f, g_cameras[0].model.p, p, depth, fit.Gradient());
+		surfaceNormal = SEACAVE::NormalFromDepthGradient(g_cameras[0].model.AsPinhole(), p, depth, fit.Gradient());
 		numValidPlanes = 4;
 	}
 	constexpr int numPlanes = 4;
