@@ -161,7 +161,9 @@ bool Scene::EstimatePointCloudNormals(bool bRefine)
 			Point3 normal;
 			Dir2Normal(*reinterpret_cast<const Point2d*>(x), normal);
 			// Ensure normal points toward target camera
-			const Camera& targetCamera = data.images[data.views[data.targetViewIdx]].camera;
+			const Image& targetImage = data.images[data.views[data.targetViewIdx]];
+			const Camera& targetCamera = targetImage.camera;
+			const ModelCamera targetModel(targetImage.GetModelCamera());
 			const Point3 viewDir = normalized(targetCamera.C - Cast<REAL>(data.point));
 			if (normal.dot(viewDir) < 0)
 				normal = -normal;
@@ -182,13 +184,13 @@ bool Scene::EstimatePointCloudNormals(bool bRefine)
 					for (int dx = -patchRadius; dx <= patchRadius; ++dx) {
 						const Point2f targetPos = data.targetProjection + Point2f(dx, dy);
 						// Back-project target pixel to 3D using the refined normal
-						const Ray3 ray(targetCamera.C, normalized(targetCamera.RayPoint(Cast<REAL>(targetPos))));
+						const Ray3 ray(targetCamera.C, normalized(targetModel.RayPoint(Cast<REAL>(targetPos))));
 						// Intersect ray with plane to get 3D point
 						Point3::EVec X3D;
 						if (!ray.Intersects(plane, false, NULL, &X3D))
 							continue;
 						// Project 3D point to reference image
-						const Point2f refPos = refImage.camera.TransformPointW2I(Point3(X3D));
+						const Point2f refPos(refImage.GetModelCamera().TransformPointW2I(Point3(X3D)));
 						if (refImage.image.isInsideWithBorder<float,1>(refPos)) {
 							const Pixel32F pixelValue = refImage.image.sample<Sampler,Pixel32F>(data.sampler, refPos);
 							const float intensity = pixelValue.r * 0.299f + pixelValue.g * 0.587f + pixelValue.b * 0.114f;
@@ -240,7 +242,7 @@ bool Scene::EstimatePointCloudNormals(bool bRefine)
 			const Camera& camera = imageData.camera;
 			const Point3f viewDir = normalized(camera.C - Cast<REAL>(point));
 			// Project point to image
-			const auto [projection, depth] = camera.ProjectPointP(point);
+			const auto [projection, depth] = imageData.GetModelCamera().ProjectPointP(point);
 			if (depth <= 0 || !imageData.image.isInsideWithBorder<float>(projection, patchRadius))
 				continue;
 			// Compute view score: angle compatibility and footprint

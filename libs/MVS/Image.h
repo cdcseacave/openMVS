@@ -52,6 +52,83 @@ typedef _INTERFACE_NAMESPACE::Interface::Image::ViewScore ViewScore;
 typedef CLISTDEF0IDX(ViewScore, IIndex) ViewScoreArr;
 /*----------------------------------------------------------------*/
 
+// a camera seen through the projection model of its view: the depth of a pixel is the distance along
+// the model's ray (z for a pinhole, the range for an equirectangular panorama, whose columns wrap);
+// the geometry outside the PatchMatch estimator (fusion, depth-map filters, point colors and normals)
+// goes through it, so pinhole and spherical views mix; the pinhole calls are the camera's own
+class ModelCamera
+{
+public:
+	const Camera& camera;
+	const bool bSpherical;
+
+	inline ModelCamera(const Camera& _camera, CameraModelType model) : camera(_camera), bSpherical(model == CameraModelType::SPHERICAL) {}
+
+	// the equirectangular model of a spherical camera, from its angular K
+	inline Spherical<REAL> GetSpherical() const {
+		ASSERT(bSpherical && ISZERO(camera.K(0,1)));
+		return Spherical<REAL>{camera.K(0,0), camera.K(1,1), camera.K(0,2), camera.K(1,2)};
+	}
+
+	// camera-frame point of pixel x at the given depth
+	inline Point3 TransformPointI2C(const Point2& x, REAL depth) const {
+		if (!bSpherical)
+			return camera.TransformPointI2C(Point3(x.x, x.y, depth));
+		ASSERT(depth > 0);
+		const Eigen::Vector3d ray(GetSpherical().Ray(Eigen::Vector2d(x.x, x.y)));
+		return Point3(ray.x()*depth, ray.y()*depth, ray.z()*depth);
+	}
+	// world point of pixel x at the given depth
+	inline Point3 TransformPointI2W(const Point2& x, REAL depth) const {
+		return camera.TransformPointC2W(TransformPointI2C(x, depth));
+	}
+	// world-frame direction of the ray of pixel x (not normalized)
+	inline Point3 RayPoint(const Point2& x) const {
+		if (!bSpherical)
+			return camera.RayPoint(x);
+		return camera.R.t() * TransformPointI2C(x, REAL(1));
+	}
+	// pixel and depth of a world point; the depth is not positive if the point is behind a pinhole camera
+	template <typename TYPE>
+	inline std::tuple<TPoint2<TYPE>,TYPE> ProjectPointP(const TPoint3<TYPE>& X) const {
+		if (!bSpherical)
+			return camera.ProjectPointP(X);
+		const Point3 Xc(camera.TransformPointW2C(Cast<REAL>(X)));
+		Eigen::Vector2d x;
+		GetSpherical().Project(Eigen::Vector3d(Xc.x, Xc.y, Xc.z), x);
+		return {TPoint2<TYPE>(TYPE(x.x()), TYPE(x.y())), TYPE(norm(Xc))};
+	}
+	// pixel of a world point in front of the camera
+	inline Point2 TransformPointW2I(const Point3& X) const {
+		if (!bSpherical)
+			return camera.TransformPointW2I(X);
+		return std::get<0>(ProjectPointP(X));
+	}
+	// the pixel of an image of the given size closest to x, its column wrapped for a spherical camera;
+	// false if outside the image
+	template <typename TYPE>
+	inline bool GetPixel(const TPoint2<TYPE>& x, const cv::Size& size, ImageRef& ir) const {
+		ir = ROUND2INT(x);
+		if (bSpherical)
+			ir.x = WrapColumn(ir.x, size.width);
+		return Image8U::isInside(ir, size);
+	}
+	// a column at most one width off the image, wrapped onto it (equirectangular images)
+	static inline int WrapColumn(int c, int width) {
+		ASSERT(c >= -width && c < 2*width);
+		return c < 0 ? c + width : (c >= width ? c - width : c);
+	}
+	// the column offset a-b, the shortest one around the panorama for a spherical camera
+	template <typename TYPE>
+	inline TYPE ColumnOffset(TYPE a, TYPE b, int width) const {
+		const TYPE d(a - b);
+		if (!bSpherical)
+			return d;
+		return d > TYPE(width)/2 ? d - TYPE(width) : (d < -TYPE(width)/2 ? d + TYPE(width) : d);
+	}
+};
+/*----------------------------------------------------------------*/
+
 // a view instance seeing the scene
 class MVS_API Image
 {
@@ -81,6 +158,8 @@ public:
 	inline bool IsUndistortedOnRead() const { return model == CameraModelType::BROWN; }
 	// the depth of a world point along the ray of the camera model: z, or the range for a spherical image
 	inline REAL PointDepth(const Point3& X) const { return model == CameraModelType::SPHERICAL ? camera.Distance(X) : camera.PointDepth(X); }
+	inline bool IsSpherical() const { return model == CameraModelType::SPHERICAL; }
+	inline ModelCamera GetModelCamera() const { return ModelCamera(camera, model); }
 	inline String GetMaskFileName() const { return maskName.empty() ? Util::getFileFullName(name)+".mask.png" : maskName; }
 	inline bool HasResolution() const { return width > 0 && height > 0; }
 	inline cv::Size GetSize() const { return cv::Size(width, height); }

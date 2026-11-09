@@ -211,6 +211,32 @@ bool Scene::EstimateNeighborViewsPointCloud(unsigned maxResolution)
 			}
 		}
 	};
+	// a pair with a panorama has no viewing directions to intersect: a grid over the whole first
+	// image, at depths spread log-uniformly over two orders of magnitude around the depth where
+	// the directions normal to the baseline meet at the optimal triangulation angle, seen by the
+	// second image if it projects inside it
+	const auto ProjectSphereGridToImage = [&](IIndex idI, IIndex idJ) {
+		const Image& imageData = images[idI];
+		const Image& imageData2 = images[idJ];
+		const ModelCamera camera(imageData.GetModelCamera()), camera2(imageData2.GetModelCamera());
+		const REAL depth(norm(imageData.camera.C - imageData2.camera.C) / (2*TAN(D2R(REAL(OPTDENSE::fOptimAngle))/2)));
+		const REAL logMinDepth(LOGN(depth*REAL(0.1))), logMaxDepth(LOGN(depth*REAL(10)));
+		const unsigned rows(imageData.IsSpherical() ? maxResolution/2 : maxResolution);
+		const float stepW((float)imageData.width / maxResolution);
+		const float stepH((float)imageData.height / rows);
+		for (unsigned r = 0; r < rows; ++r) {
+			for (unsigned c = 0; c < maxResolution; ++c) {
+				const Point2f x(c*stepW + stepW/2, r*stepH + stepH/2);
+				const Point3 X(camera.TransformPointI2W(Point2(x), EXP(randomRange(logMinDepth, logMaxDepth))));
+				const auto [x2, depth2] = camera2.ProjectPointP(X);
+				ImageRef ir2;
+				if (depth2 <= 0 || !camera2.GetPixel(x2, imageData2.GetSize(), ir2))
+					continue;
+				pointcloud.points.emplace_back(X);
+				pointcloud.pointViews.emplace_back(idI < idJ ? PointCloud::ViewArr{idI, idJ} : PointCloud::ViewArr{idJ, idI});
+			}
+		}
+	};
 	pointcloud.Release();
 	FOREACH(i, images) {
 		const Image& imageData = images[i];
@@ -220,6 +246,11 @@ bool Scene::EstimateNeighborViewsPointCloud(unsigned maxResolution)
 			if (i == j)
 				continue;
 			const Image& imageData2 = images[j];
+			if (imageData.IsSpherical() || imageData2.IsSpherical()) {
+				if (imageData2.IsValid())
+					ProjectSphereGridToImage(i, j);
+				continue;
+			}
 			Point3 X;
 			TriangulatePoint3D(
 				imageData.camera.K, imageData2.camera.K,

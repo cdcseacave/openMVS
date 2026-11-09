@@ -255,6 +255,9 @@ struct MVS_API DepthData {
 		inline bool IsSpherical() const {
 			return pImageData->model == CameraModelType::SPHERICAL;
 		}
+		inline ModelCamera GetModelCamera() const {
+			return ModelCamera(camera, pImageData->model);
+		}
 		// homography from reference pixels to this view's pixels induced by the plane through the
 		// reference camera-frame point X0*depth with the given normal (pinhole cameras, cached constants)
 		inline Matrix3x3f ComputeHomography(const Point3& X0, Depth depth, const Normal& normal) const {
@@ -435,13 +438,16 @@ struct MVS_API DepthEstimatorBase {
 	// per-pixel state of a propagation pass: 1 while the pixel is not estimated yet in this pass, 2 while
 	// its estimate is written to the maps, 0 once it is
 	typedef std::atomic<uint8_t> PixelPending;
+	// the smallest stripe height of the zigzag pixel order: off the stripe corners, the preceding
+	// neighbors of a pixel are at least this many pixels before it in the order
+	enum { nZigzagMinStride = 64 };
 
 	// the mask stored in the scene, else the file next to the image, resized into a local buffer (the
 	// Image is never touched, so it is safe to call concurrently for the same Image and across scales);
 	// bmask gets the keep-mask (bit set = keep), or pMask the mask != label if given; returns false
 	// and leaves both untouched if there is no mask to load
 	static bool ImportIgnoreMask(const Image&, const cv::Size&, int nIgnoreMaskLabel, BitMatrix&, Image8U* =NULL);
-	static void MapMatrix2ZigzagIdx(const cv::Size& size, MapRefArr& coords, const BitMatrix& mask, int rawStride=16);
+	static void MapMatrix2ZigzagIdx(const cv::Size& size, MapRefArr& coords, const BitMatrix& mask, int rawStride=nZigzagMinStride);
 
 	static inline Point3 ComputeRelativeC(const DepthData& depthData) {
 		return depthData.images[1].camera.R*(depthData.images[0].camera.C-depthData.images[1].camera.C);
@@ -470,7 +476,9 @@ struct MVS_API DepthEstimatorBase {
 // Concurrent estimators pull pixels in the zigzag order of coords; an estimate is written to the maps
 // as a whole at the end of its pixel, so a neighbor's estimate is read whole: the one of this pass if
 // that neighbor is done, else the previous pass's (a single thread reads lower neighbors final and
-// higher ones from the previous pass). The columns of a spherical reference wrap: the first and the
+// higher ones from the previous pass). On the short anti-diagonals of a stripe corner, where the
+// estimators work on adjacent pixels, a pixel waits for its preceding neighbors still in flight, so
+// it reads them as a single thread does. The columns of a spherical reference wrap: the first and the
 // last column are neighbors.
 template<template<typename> class MODEL>
 struct DepthEstimatorT : DepthEstimatorBase {
@@ -506,6 +514,7 @@ struct DepthEstimatorT : DepthEstimatorBase {
 	TexelRays texelRays0; // the rays of the patch texels at x0, for the exact warp, filled on first use
 	CLISTDEF0IDX(TexelRays,IIndex) viewTexelRays0; // per view, Rrel*texelRays0, filled on first use
 	CLISTDEF0IDX(bool,IIndex) bViewTexelRays0; // per view, viewTexelRays0 is filled for x0 (the last entry: texelRays0)
+	CLISTDEF0IDX(Eigen::Vector3f,IIndex) viewCenters0; // per view, its center in the reference camera frame, if bModelWarp
 	#if DENSE_NCC != DENSE_NCC_WEIGHTED
 	TexelVec texels0; //
 	#endif
@@ -687,6 +696,7 @@ struct DepthEstimatorT : DepthEstimatorBase {
 	const float thPerturbation;
 	#endif
 	const float sinSqWarpMaxElevation; // SQUARE(SIN(fSphericalWarpMaxElevation))
+	const float cosMinViewAngle; // COS(OPTDENSE::fMinAngle): the per-pixel view gate of a model warp (ScorePixel)
 };
 template<> FORCEINLINE PatchWarp DepthEstimatorT<Pinhole>::ComputePatchWarp(const DepthData::ViewData&, Depth, const Normal&) const;
 template<> FORCEINLINE float DepthEstimatorT<Pinhole>::ComputeGeometricConsistency(const DepthData::ViewData&, Depth) const;

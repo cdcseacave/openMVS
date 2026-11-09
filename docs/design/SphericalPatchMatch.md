@@ -8,10 +8,10 @@ template parameter (`DepthEstimatorT<Pinhole>`, `DepthEstimatorT<Spherical>`, `l
 and resolves the camera model of each neighbor view once per (pixel, hypothesis, view). Pinhole,
 Brown (undistorted on load, see `SphericalCameraSupport.md`) and spherical views can be mixed.
 
-Scope: depth-maps only (`--fusion-mode 1`) on the CPU (`--gpu-device -2`), with the photometric
-confidence. `Scene::DenseReconstruction` refuses a scene with spherical images otherwise, with a
-clear error: the fusion, SGM, the CUDA/Metal estimators and a scene without sparse points; the
-confidence recalibration is switched off for it.
+Scope: depth-maps and their fusion into the dense cloud on the CPU (`--gpu-device -2`), with the
+photometric confidence. `Scene::DenseReconstruction` refuses a scene with spherical images, with a
+clear error, for SGM (`--fusion-mode` < 0) and the CUDA/Metal estimators; the confidence
+recalibration is switched off for it.
 
 ## 2. Algorithm as implemented
 
@@ -76,10 +76,16 @@ branch on the model.
   between two state changes of its per-pixel flag (`PixelPending`: 1 not estimated yet in this pass,
   2 being written, 0 done). A neighbor's estimate is read as a whole (`ReadEstimate`, read again if
   the flag changed meanwhile): the one of this pass if that neighbor is done, else the previous
-  pass's; never a mix of the two. Nobody waits. A single thread reads its lower neighbors final and
-  the higher ones from the previous pass; with several threads a lower neighbor still in progress
-  is read from the previous pass. The first and the last column of a spherical reference are
-  neighbors like any other two.
+  pass's; never a mix of the two. A single thread reads its lower neighbors final and the higher
+  ones from the previous pass. Several threads wait only on the corners of the zigzag stripes: there
+  the anti-diagonals are shorter than the number of estimators, which then work on adjacent pixels,
+  so a pixel waits for a lower neighbor still in flight fewer than
+  `DepthEstimatorBase::nZigzagMinStride` (64, the smallest stripe height) pixels before it in the
+  order, and reads it as a single thread does. Elsewhere a lower neighbor is a whole anti-diagonal
+  back and done, or its estimator is preempted and the pixel reads the previous pass's estimate
+  rather than stall. The corners of a panorama lie on the seam next to the poles. The first and the
+  last column of a spherical reference are neighbors like any other two (the one across the seam
+  comes later in the order, so nobody waits for it).
 
 ### Geometric consistency
 
@@ -117,12 +123,49 @@ from them, with no trigonometry per pixel.
   test would accept its forward direction).
 - Pyramid levels and neighbor scaling scale K per axis, so a spherical view keeps
   fx = W/2π, fy = H/π, c = (size−1)/2 on its grid; the estimator ASSERTs it.
+- Per-pixel view gate: the per-view triangulation angle of `Scene::FilterNeighborViews` (an average
+  over the shared sparse points) says little about a panorama, which sees a neighbor along its
+  baseline in some directions and across it in others. When a spherical camera is involved
+  (`bModelWarp`), `ScorePixel` also gates every (hypothesis, view): a view whose center is seen from
+  the hypothesis point at less than `OPTDENSE::fMinAngle` (3°) from the reference center scores
+  `thRobust`, like a view that does not see the patch, so the min-mean aggregation drops it; the
+  view centers in the reference frame are cached per estimator (`viewCenters0`). Pinhole-only
+  estimators do not gate (bit-identical depth-maps).
 
 ### Depth-map files
 
 The `.dmap` header carries the flag bit `SPHERICAL` (`HeaderDepthDataRaw`, `Interface.h`,
 `MvsUtils.py`): `DepthData::Save` sets it from the reference camera model; `DepthData::Load` and the
 depth-map loads of `InitViews` reject a file whose flag disagrees with the view's model.
+
+### Fusion, filters and the other consumers of the depth-maps
+
+Everything downstream of the estimator reaches a view's geometry through `ModelCamera`
+(`libs/MVS/Image.h`, from `Image::GetModelCamera()` or `DepthData::ViewData::GetModelCamera()`): a
+camera with the model of its view, whose pinhole calls are the camera's own (the pinhole results are
+bit-identical) and whose spherical calls go through `Spherical<REAL>` built from the angular K:
+- `TransformPointI2C/I2W(x, depth)`: the point of pixel x at the depth along the model's ray;
+  `ProjectPointP(X)`: pixel and depth (range) of a world point; `TransformPointW2I`, `RayPoint`;
+- `GetPixel(x, size, ir)`: the rounded pixel, its column wrapped for a panorama, false if outside;
+  `ColumnOffset(a, b, width)`: the shortest column offset around a panorama; `WrapColumn`.
+
+The consumers, each with the model of every view it touches, so mixed pinhole and spherical
+scenes fuse as such:
+- `DepthMapsData::FuseDepthMaps`, `DenseFuseDepthMaps` (back-projection, projection into the
+  neighbor depth-maps with wrapped columns, the reprojection-error test on the wrapped column
+  offset), `MergeDepthMaps`, the intra-map prior of the dense fusion (`ComputeIntraMapPrior`: the
+  depth-gradient fit and the 3x3 window wrap, the gradient normal of the model);
+- the depth-map filters: `RemoveSmallSegments` (4-neighbors wrap), `GapInterpolation` (a row of a
+  panorama is a circle, walked once around from its first valid pixel, so a gap across the seam
+  is filled like any other; columns do not cross the poles), `FilterDepthMap` (per pixel);
+- `EstimateNormalMaps` (the spherical `EstimateNormalMap`), `DepthData::GetNormal` (the window
+  wraps), `EstimatePointColors` (the range picks the closest view; nearest-pixel sampling next to
+  the seam), `EstimatePointSegmentation`, `ExportPointCloud`, `Scene::EstimatePointCloudNormals`;
+- `Scene::PointCloudFilter`: the visibility cone of a point is the ray from the camera center to
+  it, its aperture the angle a pixel spans (1/fx on the equator of a panorama);
+- `Scene::EstimateNeighborViewsPointCloud` (a scene without sparse points): a pair with a panorama
+  gets a grid over the whole first image, at depths log-uniform in [0.1, 10] x the depth where
+  directions normal to the baseline meet at `fOptimAngle`, kept where the second view sees them.
 
 ## 3. Parameters
 
@@ -140,19 +183,33 @@ Holo360D Outdoor_004 (40 frames, `--max-resolution 1440`, `Tests evaldepth`):
 | case | completeness | abs-rel median | <1% | <5% | notes |
 |---|---|---|---|---|---|
 | synthetic 3 panoramas 1536x768, A only | 0.911 | 0.00047 | 0.982 | 0.994 | equator 0.00069, north 0.00030, south 0.00042, seam 0.00051 |
-| same, B + A above 70° (default) | 0.911 | 0.00050 | 0.983 | 0.995 | equator 0.00072, north 0.00030, south 0.00041, seam 0.00055 |
+| same, B + A above 70°, no view gate | 0.911 | 0.00050 | 0.983 | 0.995 | equator 0.00072, north 0.00030, south 0.00041, seam 0.00055 |
 | same, B + A above 80° | 0.911 | 0.00051 | 0.982 | 0.994 | south 0.00049 |
 | same, B only | 0.911 | 0.00053 | 0.982 | 0.994 | south 0.00064, seam 0.00062 |
 | their 18 cube faces 384x384, pinhole | 0.913 | 0.00079 | 0.912 | 0.952 | border band completeness 0.69 |
-| synthetic 512x256, A only / B70 | 0.956 / 0.956 | 0.00116 / 0.00145 | 0.926 / 0.920 | 0.984 / 0.985 | faces 128x128: 0.854, 0.00273, 0.756, 0.921 |
-| Holo360D, B + A above 70° | 0.956 | 0.203 | 0.131 | 0.343 | equator 0.974 / 0.111 / 0.149 / 0.390, seam 0.951 / 0.208 / 0.136 / 0.333, south (the ground under the handheld camera, behind the operator in the neighbors) 0.945 / 1.94 |
+| synthetic 512x256, A only / B70, no view gate | 0.956 / 0.956 | 0.00116 / 0.00145 | 0.926 / 0.920 | 0.984 / 0.985 | faces 128x128: 0.854, 0.00273, 0.756, 0.921 |
+| synthetic 512x256, B70, view gate (default), 24 threads, 5 runs | 0.955 | 0.00145–0.00150 | 0.918–0.919 | 0.982–0.983 | <5%: equator 0.956–0.960, south 0.981–0.986, seam 0.976–0.978, center (longitude 0) 0.979–0.980; completeness seam 0.948, center 0.953 |
+| Holo360D, B + A above 70°, no view gate | 0.956 | 0.203 | 0.131 | 0.343 | equator 0.974 / 0.111 / 0.149 / 0.390, seam 0.951 / 0.208 / 0.136 / 0.333, south (the ground under the handheld camera, behind the operator in the neighbors) 0.945 / 1.94 |
 | Holo360D, cube faces 416x416, pinhole | 0.774 | 0.130 | 0.126 | 0.374 | same pipeline on the rendered faces |
+| synthetic 3 panoramas 1536x768, B + A above 70°, view gate (default) | 0.911 | 0.00050 | 0.977 | 0.989 | equator 0.00073 / <5% 0.976, north 0.00031 / 1.000, south 0.00042 / 0.982, seam 0.00056 / 0.971 |
+| Holo360D, B + A above 70°, view gate (default) | 0.955 | 0.192 | 0.138 | 0.348 | equator 0.972 / 0.103 / 0.160 / 0.400, seam 0.950 / 0.187 / 0.144 / 0.344 |
 
 The pole bands (|elevation| > 70°) lose the 4 rows next to each pole and the floor below the
 synthetic cameras; their accuracy matches the equator's. Holo360D is a handheld capture whose
 LiDAR-derived GT and poses agree with the images to a few pixels only (a GT-predicted
 correspondence lands within 1 px of the image match in 12–48 % of the cases at 2880 px): both the
 spherical and the cube-face estimates are bounded by it alike.
+
+The synthetic panoramas look along their trajectory, so the epipoles of their neighbors lie in the
+seam band and in its antipodal band at longitude 0 (the two middle panoramas at columns 15 / 271
+and 3–4 / 259–260 of 512), where the view gate leaves pixels no view constrains (see section 6):
+the seam band is compared with that antipodal band, not with the equator (`SyntheticSphericalTest`:
+seam <5% above center − 0.005, completeness above 0.99 x center). A seam defect breaks it: no
+propagation across the seam gives seam <5% 0.950 against center 0.979, target patches across the
+seam scored unseen 0.91 against 0.97. Without the corner waits of the pixel order, 24 threads left
+145–285 wrong estimates per run in the bottom-right corner of the zigzag order (the seam next to
+the south pole) against 11–54 single-threaded, seam <5% 0.984–0.991 against 0.995 without the
+view gate; with them 5–31 and 0.997, at the same wall.
 
 Patch warp, B against A over random poses and slanted planes (2880x1440, 9x9 patch step 2):
 per-patch max texel error p99 0.042 / 0.079 / 0.140 / 0.757 px for target elevations below
@@ -170,6 +227,46 @@ P-core pinned, timing-exclusive machine, one discarded warm-up run, min of 3 rot
 200.2 s against 199.4 s for the estimator before the camera models (+0.4 %, 3054 / 3046 CPU-s);
 with per-pixel waits instead of whole-estimate reads it was 208.6 s (+4.6 %, 3163 CPU-s).
 
+### Fused clouds
+
+`Tests sphfuse` (synthetic, the GT ray-cast from the panorama centers at 4x the width, at most
+4096) and `Tests evalcloud` (Holo360D, the GT range maps of the frames, masked pixels excluded on
+both sides), CPU, dense fusion, default options. Precision: the share of the cloud within th x
+range of a GT point; recall: the share of the GT points on the grid of the estimated images within
+th x range of a cloud point; the range and the band from the nearest panorama; seam band = the
+longitudes 16 pixels from the seam.
+
+| case | points | P / R / F @1% | P / R / F @2% | per band |
+|---|---|---|---|---|
+| synthetic 3 panoramas 1536x768 | 778750 | 0.999 / 0.948 / 0.973 | 1.000 / 0.978 / 0.989 | F@1% equator 0.955, north 1.000, south 0.964, seam 0.974 |
+| their 18 cube faces 384x384 | 592042 | 0.997 / 0.821 / 0.901 | 1.000 / 0.902 / 0.948 | F@1% equator 0.939, north 1.000, south 0.715, seam 0.923 |
+| synthetic 3 panoramas 512x256 | 81108 | 0.984 / 0.684 / 0.807 | 0.998 / 0.871 / 0.930 | F@1% equator 0.716, north 0.981, south 0.641, seam 0.809 |
+| their 18 cube faces 128x128 | 43452 | 0.973 / 0.474 / 0.637 | 0.996 / 0.618 / 0.757 | F@1% equator 0.618, north 0.980, south 0.227, seam 0.651 |
+| the panoramas and faces fused together (mixed scene) | 112049 | 0.988 / 0.789 / 0.878 | 0.999 / 0.925 / 0.960 | |
+| panoramas 512, FuseDepthMaps / MergeDepthMaps | 95970 / 375808 | F 0.838 / 0.944 | F 0.966 / 0.987 | merge keeps every depth, so its recall is the depth-map completeness |
+| panoramas 512 without sparse points (virtual cloud) | 80975 | 0.984 / 0.684 / 0.807 | 0.997 / 0.871 / 0.930 | depth-maps: completeness 0.956, <5% 0.984 |
+
+Holo360D, 40 frames at 1440 px, the GT of the 2048x1024 range maps (thresholds 2 / 5 / 10 %):
+
+| case | points | P / R / F @2% | P / R / F @5% | P / R / F @10% | F@5% per band |
+|---|---|---|---|---|---|
+| 40 panoramas, view gate | 336027 | 0.804 / 0.219 / 0.344 | 0.916 / 0.377 / 0.534 | 0.971 / 0.532 / 0.687 | equator 0.415, north 0.904, south 0.291, seam 0.541 |
+| their 240 cube faces 416x416 | 287846 | 0.760 / 0.194 / 0.310 | 0.932 / 0.401 / 0.561 | 0.971 / 0.596 / 0.738 | equator 0.434, north 0.859, south 0.489, seam 0.573 |
+
+The panoramas give the more precise cloud, the faces the higher recall at the loose thresholds,
+most of it on the ground below the handheld camera (south band) and the far equator.
+
+Holo360D, its first 10 frames at 720 px (thresholds 2 / 5 / 10 %, F; precision @5 %):
+
+| case | F@2% | F@5% | F@10% | P@5% | depth abs-rel median / <5% |
+|---|---|---|---|---|---|
+| panoramas, no view gate (2 runs) | 0.216 / 0.215 | 0.361 / 0.362 | 0.477 / 0.466 | 0.849 / 0.836 | 0.340 / 0.254, 0.309 / 0.268 |
+| panoramas, view gate (3 runs) | 0.231 / 0.225 / 0.228 | 0.383 / 0.382 / 0.379 | 0.489 / 0.496 / 0.493 | 0.896 / 0.874 / 0.901 | 0.285 / 0.275, 0.298 / 0.265, 0.283 / 0.276 |
+| 60 cube faces 208x208 | 0.157 | 0.330 | 0.472 | 0.901 | |
+
+The seam band of Holo360D has a lower recall than the equator for the panoramas and the cube faces
+alike: it looks behind the camera, at the operator (masked) and the path walked.
+
 ## 5. Rejected alternatives
 
 - Affine warp (M with its projective row frozen at the patch center): 1–3.6 px median texel error.
@@ -178,19 +275,44 @@ with per-pixel waits instead of whole-estimate reads it was 208.6 s (+4.6 %, 316
 - Padding the equirectangular images with wrapped columns: patches off the seam already take the
   plain pinhole loop.
 - std::atan2 in the warps: the exact warp spends most of its time there.
-- Pixels waiting for their preceding neighbors (reads exactly as a single thread, the first race
+- Pixels waiting for all their preceding neighbors (reads exactly as a single thread, the first race
   fix): 5–8 % multi-threaded wall on fountain-P11 with the same CPU work, idle cores while waiting;
   zigzag strides T·8 to T·64 and sleeping instead of yielding change nothing.
 - Setting aside a pixel whose preceding neighbors are in progress and estimating it later: +40 %.
 - Eigen fixed-size expressions in the per-hypothesis warp code: not inlined by MSVC, ~10 ns per 3x3
   product.
+- Pole stride (~1/cos(elevation) columns estimated per row, the others filled from them after every
+  pass): synthetic 512 px, 3 panoramas: south band <5% 0.98 -> 0.44, north 0.999 -> 0.70, for ~30 %
+  fewer estimated pixels; the filled pixels starve the horizontal propagation.
+- Isotropic angular patch (the patch columns stepped by round(1/cos(elevation)), at most 8):
+  synthetic south completeness 0.797 -> 0.851, fused F@1% +0.004 (within the run-to-run noise of
+  0.003); Holo360D fused precision@2% 0.672 -> 0.631 alone, neutral with the view gate.
+- Filling the rows next to the poles a patch does not fit (the plane of the nearest estimated row
+  along their rays): synthetic completeness north 0.857 -> 1.0, south 0.797 -> 0.933 (the 4 rows
+  are 14 % of the pole band's pixels, 0.06 % of the sphere), fused F@1% +0.002; Holo360D neutral.
+- An upper triangulation-angle gate (65°) beside the lower one: Holo360D depth abs-rel median
+  0.28 -> 0.74.
+- Dropping the per-view angle filter of `FilterNeighborViews` for panoramas: no change (Holo360D
+  F@2% 0.232 / 0.229 vs 0.228; synthetic F@1% 0.809 vs 0.807): with the per-pixel gate it filters
+  nothing that matters.
 
 ## 6. Open items
 
 - Per-hypothesis cost ~1.24x pinhole against the 1.2x target (section 4): what remains is the
   projection of the patch center (two FastAtan2, one square root, the reciprocal of ρ) and the
   per-pixel ray frames, amortized over few hypotheses in `scorebench`.
-- Seam/pole-aware propagation and red/black parity on CUDA (P6/P7), per-pixel view weighting by
-  the ray-to-ray triangulation angle (P6).
-- Fusion, the depth-map filters' seam wrap, the confidence recalibration (P6).
-- CUDA (P7) and Metal (P8) ports of `RayFrame`/`PixelHomography` and the wrapped sampling.
+- CUDA (P7) and Metal (P8): the ports of `RayFrame`/`PixelHomography`, the wrapped sampling,
+  the seam-aware propagation (red/black parity, ASSERT an even width; skip pole crossings) and the
+  per-pixel view gate; the CUDA fusion needs nothing, it runs on the host.
+- The confidence recalibration (`ConfidenceRefine.h`, `ConfidenceCUDA.cu`) is pinhole only and
+  stays off for scenes with spherical images (`AdjustConfidenceSweep` ASSERTs a pinhole reference).
+- The view gate is evaluated at the hypothesis depth, and a closer depth sees the neighbors at a
+  larger angle: a pixel whose neighbors all fall below `fMinAngle` at its true depth (next to the
+  epipoles) takes the closest depth that passes the gate instead of staying unestimated. Synthetic
+  512 px: such pixels are 0.44 % of the estimates (2.0 % of the seam band, 1.3 % of the equator),
+  94 % of them wrong by more than 5 % (median 19–26 % too close; 0.4 % wrong without the gate),
+  which costs the depth-maps <5% 0.987 -> 0.982, not the fused cloud (F@1% unchanged). A gate per
+  pixel (one view set for all its hypotheses) or a soft weight is untested.
+- The corner waits of the pixel order cover up to 64 concurrent estimators; with more threads the
+  corner anti-diagonals between 64 and the thread count are read from the previous pass.
+- `GapInterpolation` does not cross the poles; the rows next to the poles stay unestimated.
