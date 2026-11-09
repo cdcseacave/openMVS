@@ -1151,19 +1151,18 @@ bool MVS::SyntheticSphericalTest()
 	const DepthEvaluator::Stats all(evaluator.GetStats(DepthEvaluator::ALL)), equator(evaluator.GetStats(DepthEvaluator::EQUATOR));
 	const DepthEvaluator::Stats seam(evaluator.GetStats(DepthEvaluator::SEAM)), center(evaluator.GetStats(DepthEvaluator::CENTER));
 	const DepthEvaluator::Stats north(evaluator.GetStats(DepthEvaluator::NORTH)), south(evaluator.GetStats(DepthEvaluator::SOUTH));
-	// measured (Release, CPU, 5 runs): all: completeness 0.955, abs-rel median 0.0015, <1% 0.92, <5% 0.982,
-	// normal median 4.0 deg; equator completeness 0.991, <5% 0.956..0.960; north 0.857, <5% 1.000; south
-	// 0.797, <5% 0.981..0.986 (the 4 rows next to each pole are not estimated); seam 0.948, <5%
-	// 0.976..0.978; center 0.953, <5% 0.979..0.980.
+	// measured (Release, CPU, 5 runs): all: completeness 0.956, abs-rel median 0.0015, <1% 0.92, <5%
+	// 0.985..0.988, normal median 4.0 deg; equator completeness 0.993, <5% 0.965..0.974; north 0.857, <5%
+	// 1.000; south 0.797, <5% 0.978..0.987 (the 4 rows next to each pole are not estimated); seam 0.951,
+	// <5% 0.996..0.997; center 0.957, <5% 0.994..0.996.
 	// The panoramas look along their trajectory, so the epipoles of their neighbors lie next to the seam
-	// and next to longitude 0 (pano004 at columns 15 and 271 of 512, pano005 at 3-4 and 259-260): there a
-	// neighbor sees the scene below fMinAngle, the per-pixel view gate drops it, and the pixels no view
-	// constrains get wrong depths, so the seam band cannot be expected to match the equator. It is
-	// compared with its antipodal band (CENTER) instead, which holds the mirrored epipoles of the same
-	// views at the same latitudes. The seam is 0.001..0.003 <5% below it (Release and Debug: it holds a few
-	// more of those pixels), while a seam artifact costs it 0.03 or more (no propagation across the seam:
-	// <5% 0.950 vs 0.979; target patches across the seam unseen: 0.91 vs 0.97, completeness 0.940 vs
-	// 0.953), hence the 0.01 margin.
+	// and next to longitude 0 (pano004 at columns 15 and 271 of 512, pano005 at 3-4 and 259-260), where
+	// the neighbors see the scene at small triangulation angles and the view gate acts: the seam band is
+	// compared with its antipodal band (CENTER), which holds the mirrored epipoles of the same views at
+	// the same latitudes, not with the equator. The two agree within 0.003 <5%, while target patches
+	// across the seam scored as unseen cost the seam 0.06..0.08 (0.904..0.920 vs 0.983..0.984, completeness
+	// 0.945 vs 0.957), hence the 0.01 margin; no propagation across the seam fails the south band
+	// (<5% 0.933..0.947).
 	if (!(all.completeness > 0.93) || !(all.absRelMedian < 0.0025) || !(all.within1 > 0.88) || !(all.within5 > 0.97) || !(all.normalMedianDeg < 5.5) ||
 		!(seam.completeness > 0.99*center.completeness) || !(seam.within5 > center.within5 - 0.01) ||
 		!(north.completeness > 0.8) || !(north.within5 > 0.95) || !(south.completeness > 0.75) || !(south.within5 > 0.95)) {
