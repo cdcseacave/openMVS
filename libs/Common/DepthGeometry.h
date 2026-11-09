@@ -70,9 +70,10 @@ struct DepthPlaneFit {
 
 // fit the depth plane at pixel x over its 3x3 neighbors within 3% of its depth: fills the depth at x
 // and the plane's gradient; false if x has no depth or the fit is not valid. DEPTHMAP is indexed
-// (row,col) and has rows/cols members: a DepthMap on the host, the kernels' own views on the device
+// (row,col) and has rows/cols members: a DepthMap on the host, the kernels' own views on the device;
+// wrapCols makes the first and the last column neighbors (equirectangular maps)
 template<typename DEPTHMAP>
-HOST_DEVICE inline bool FitDepthGradient(const DEPTHMAP& depthMap, const Eigen::Vector2i& x, float& depth, Eigen::Vector2f& gradient) {
+HOST_DEVICE inline bool FitDepthGradient(const DEPTHMAP& depthMap, const Eigen::Vector2i& x, float& depth, Eigen::Vector2f& gradient, bool wrapCols=false) {
 	ASSERT(x.x() >= 0 && x.x() < depthMap.cols && x.y() >= 0 && x.y() < depthMap.rows);
 	depth = depthMap(x.y(), x.x());
 	if (depth <= 0.f)
@@ -83,7 +84,9 @@ HOST_DEVICE inline bool FitDepthGradient(const DEPTHMAP& depthMap, const Eigen::
 		if (r < 0 || r >= depthMap.rows)
 			continue;
 		for (int i = -1; i <= 1; ++i) {
-			const int c = x.x() + i;
+			int c = x.x() + i;
+			if (wrapCols)
+				c = c < 0 ? c + depthMap.cols : (c >= depthMap.cols ? c - depthMap.cols : c);
 			if ((i == 0 && j == 0) || c < 0 || c >= depthMap.cols)
 				continue;
 			const float d = depthMap(r, c);
@@ -158,15 +161,20 @@ HOST_DEVICE inline T InterpolatePlaneDepth(const Pinhole<T>& camera, const Eigen
 	return depth >= dMin && depth <= dMax ? depth : nDepth;
 }
 
+// homography H = Rrel + t*n^T/(n.X) mapping reference camera-frame rays to target camera-frame rays
+// through the plane with normal n containing the reference camera-frame point X, where Rrel = Rj*Rref^T
+// and t = Rj*(Cref-Cj) give the target pose relative to the reference
+template<typename MAT3, typename VEC3>
+HOST_DEVICE inline MAT3 PlaneRayHomography(const MAT3& Rrel, const VEC3& t, const VEC3& normal, const VEC3& X) {
+	ASSERT(normal.dot(X) < typename VEC3::Scalar(0));
+	return Rrel + t*(normal.transpose()/normal.dot(X));
+}
 // plane-induced patch warp from reference pixel offsets (dx,dy,1) around x0 to homogeneous pixels of
-// a target view: M = trg.PixelHomography(H*r0)*H*ref.RayFrame(x0), where H = Rrel + t*n^T/(n.X) maps
-// reference rays to target rays through the plane with normal n containing the reference camera-frame
-// point X, and Rrel = Rj*Rref^T, t = Rj*(Cref-Cj) give the target pose relative to the reference
+// a target view: M = trg.PixelHomography(H*r0)*H*ref.RayFrame(x0), with H the PlaneRayHomography
 template<typename REF, typename TRG>
 HOST_DEVICE inline typename REF::Mat3 PlanePatchWarp(const REF& ref, const TRG& trg, const typename REF::Mat3& Rrel, const typename REF::Vec3& t, const typename REF::Vec3& normal, const typename REF::Vec3& X, const typename REF::Vec2& x0) {
 	typedef typename REF::Mat3 Mat3;
-	ASSERT(normal.dot(X) < typename REF::Scalar(0));
-	const Mat3 H(Rrel + t*(normal.transpose()/normal.dot(X)));
+	const Mat3 H(PlaneRayHomography(Rrel, t, normal, X));
 	const Mat3 F(ref.RayFrame(x0));
 	return trg.PixelHomography(H*F.col(2))*H*F;
 }

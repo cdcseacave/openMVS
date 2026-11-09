@@ -182,6 +182,7 @@ struct Spherical {
 	typedef T Scalar;
 	typedef Eigen::Matrix<T,2,1> Vec2;
 	typedef Eigen::Matrix<T,3,1> Vec3;
+	typedef Eigen::Matrix<T,3,3> Mat3;
 
 	T fx, fy; // pixels per radian: width/(2*pi), height/pi
 	T cx, cy; // pixel of longitude 0 and elevation 0: (width-1)/2, (height-1)/2
@@ -214,6 +215,44 @@ struct Spherical {
 	}
 	HOST_DEVICE static T Depth(const Vec3& X) {
 		return X.norm();
+	}
+
+	// pixel offsets (dx,dy,1) around x -> rays, to first order: Ray(x+d) ~ RayFrame(x)*(dx,dy,1);
+	// the columns are the ray derivatives along the row and down the column, then Ray(x)
+	HOST_DEVICE Mat3 RayFrame(const Vec2& x) const {
+		using std::cos; using std::sin;
+		const Vec2 a(Angles(x));
+		const T cosLon(cos(a.x())), sinLon(sin(a.x()));
+		const T cosEl(cos(a.y())), sinEl(sin(a.y()));
+		Mat3 F;
+		F << cosEl*cosLon/fx, sinEl*sinLon/fy, cosEl*sinLon,
+		     T(0), cosEl/fy, -sinEl,
+		     -cosEl*sinLon/fx, sinEl*cosLon/fy, cosEl*cosLon;
+		return F;
+	}
+	// rays near the given one -> homogeneous pixels: the gnomonic projection onto the plane tangent to
+	// the sphere at the ray, scaled by the equirectangular Jacobian there; exact at the ray and first
+	// order around it, with an error growing as 1/cos(elevation) towards the poles
+	HOST_DEVICE Mat3 PixelHomography(const Vec3& ray) const {
+		Vec2 x;
+		Project(ray, x);
+		return PixelHomography(ray, x);
+	}
+	// the same, given the pixel x of the ray (Project)
+	HOST_DEVICE Mat3 PixelHomography(const Vec3& ray, const Vec2& x) const {
+		using std::sqrt;
+		// with d = ray/|ray|, the rows fx/cos(el)*eLon + x.x*d, fy*eDown + x.y*d, d, where eLon =
+		// (cos(lon),0,-sin(lon)) is the longitude tangent and eDown = (-d.y*sin(lon),cos(el),-d.y*cos(lon))
+		// the downward elevation tangent, scaled by |ray| (a homography is defined up to scale)
+		const T rho(sqrt(ray.x()*ray.x() + ray.z()*ray.z())); // |ray|*cos(el)
+		ASSERT(rho > T(0));
+		const T invRho(T(1)/rho);
+		const T sx(fx*ray.squaredNorm()*invRho*invRho), sy(fy*ray.y()*invRho);
+		Mat3 P;
+		P << sx*ray.z() + x.x()*ray.x(), x.x()*ray.y(), -sx*ray.x() + x.x()*ray.z(),
+		     -sy*ray.x() + x.y()*ray.x(), fy*rho + x.y()*ray.y(), -sy*ray.z() + x.y()*ray.z(),
+		     ray.x(), ray.y(), ray.z();
+		return P;
 	}
 };
 /*----------------------------------------------------------------*/

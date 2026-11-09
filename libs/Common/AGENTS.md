@@ -70,10 +70,12 @@ Common typedefs: `AABB3f`, `OBB3f`, `Ray3f`, `Plane3f`, `Sphere3f`, `Line3f`, `T
 Host and CUDA device functions on Eigen types, the single implementation used by the CPU depth-map
 code and the CUDA kernels: `DepthSimilarity`/`IsDepthSimilar` (relative depth difference),
 `DepthPlaneFit` (least-squares depth plane from neighbor offsets), `FitDepthGradient` (that fit over
-the 3x3 depth-similar neighbors of a pixel, on any map indexed `(row,col)` with `rows`/`cols`),
+the 3x3 depth-similar neighbors of a pixel, on any map indexed `(row,col)` with `rows`/`cols`, the
+columns optionally wrapping for equirectangular maps),
 `NormalFromDepthGradient` (the plane's camera-facing normal), `InterpolatePlaneDepth` (a neighbor's
-plane carried to a pixel, as in PatchMatch propagation) and `PlanePatchWarp` (the plane-induced patch
-warp between two views, `trg.PixelHomography(H*r0)*H*ref.RayFrame(x0)`). The camera-dependent ones
+plane carried to a pixel, as in PatchMatch propagation), `PlaneRayHomography` (the ray-to-ray
+homography `H` a plane induces between two camera frames) and `PlanePatchWarp` (the plane-induced
+patch warp between two views, `trg.PixelHomography(H*r0)*H*ref.RayFrame(x0)`). The camera-dependent ones
 take a camera model of `Math/Camera/CameraModels.h` (depth = distance along the model's ray): a
 generic version written with the model's `Ray`/`RayFrame`/`PixelHomography`, and a `Pinhole<T>`
 overload keeping the closed-form pinhole operations. `HOST_DEVICE` (`Config.h`) marks functions
