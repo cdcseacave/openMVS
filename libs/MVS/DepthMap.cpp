@@ -383,15 +383,16 @@ bool DepthEstimatorBase::ImportIgnoreMask(const Image& image0, const cv::Size& s
 	if (nIgnoreMaskLabel < 0 && !image0.IsUndistortedOnRead())
 		return false;
 	// the mask stored in the scene if there is one, else the file next to the image; resized into a
-	// local buffer, so a mask stored in the scene stays at its own resolution for the next call
+	// local buffer, so a mask stored in the scene stays at its own resolution for the next call;
+	// an image without a segmentation mask keeps the validity mask
 	Image8U mask;
 	if (nIgnoreMaskLabel >= 0) {
-		if (image0.mask.empty() && !image0.LoadMask(mask)) {
+		if (!image0.mask.empty() || image0.LoadMask(mask)) {
+			cv::resize(image0.mask.empty() ? mask : image0.mask, mask, size, 0, 0, cv::INTER_NEAREST);
+			mask = (mask != (uint8_t)nIgnoreMaskLabel);
+		} else {
 			DEBUG("warning: can not load the segmentation mask '%s'", image0.GetMaskFileName().c_str());
-			return false;
 		}
-		cv::resize(image0.mask.empty() ? mask : image0.mask, mask, size, 0, 0, cv::INTER_NEAREST);
-		mask = (mask != (uint8_t)nIgnoreMaskLabel);
 	}
 	if (image0.IsUndistortedOnRead()) {
 		Image8U valid;
@@ -401,6 +402,8 @@ bool DepthEstimatorBase::ImportIgnoreMask(const Image& image0, const cv::Size& s
 		else
 			cv::bitwise_and(mask, valid, mask);
 	}
+	if (mask.empty())
+		return false;
 	if (pMask) {
 		*pMask = mask;
 	} else {
