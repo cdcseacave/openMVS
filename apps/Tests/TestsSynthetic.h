@@ -141,9 +141,15 @@ bool SyntheticDepthBaselineTest();
 // overall and per band (the seam and the poles against the equator)
 bool SyntheticSphericalTest();
 
-// CUDA PatchMatch on the panoramas of SyntheticSphericalTest, held to that test's CPU accuracy;
-// skipped without a CUDA device
-bool SyntheticSphericalCUDATest(bool forceCPU);
+// GPU PatchMatch (CUDA, or Metal on Apple) on the panoramas of SyntheticSphericalTest, held to that
+// test's CPU accuracy; skipped without a GPU
+bool SyntheticSphericalGPUTest(bool forceCPU);
+
+#ifdef _USE_METAL
+// the Metal kernels' hand mirror of CameraModels.h and DepthGeometry.h against the C++ models on
+// random inputs, evaluated on the device; skipped without a Metal device
+bool MetalModelMathTest(bool forceCPU);
+#endif
 
 // Brown views of the synthetic scene loaded through an Interface v8 Brown camera: MVS::Image reads
 // them undistorted as the pinhole render at K', the pixels without a source are in the ignore mask,
@@ -154,7 +160,7 @@ bool BrownUndistortOnLoadTest();
 //   synth <outDir> [panoWidth=512]: write the default dataset
 //   evaldepth <gt.dmap> <est.dmap> [pinhole|brown|spherical]: print the evaluation table
 //   synthtest [verbosity]: run SyntheticDepthBaselineTest alone
-//   sphtest <verbosity> [panoWidth=512] [numPanos=3] [faces=1] [maxElevation] [maxViews] [maxThreads] [gpu=0]: CPU (gpu: CUDA)
+//   sphtest <verbosity> [panoWidth=512] [numPanos=3] [faces=1] [maxElevation] [maxViews] [maxThreads] [gpu=0]: CPU (gpu: CUDA, or Metal on Apple)
 //     PatchMatch on panoramas and on their cube faces; maxElevation overrides DepthEstimatorBase::fSphericalWarpMaxElevation
 //     (0: exact warp only)
 //   facescene <scene.mvs> <gtFolder> <outFolder> <panoWidth> [faceSize]: the cube-face scene of a spherical scene
