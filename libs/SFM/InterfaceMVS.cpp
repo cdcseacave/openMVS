@@ -458,8 +458,10 @@ void AppendSphericalFaceImages(
 
 // Phase 3: render + save N face images for every spherical source image.
 // Geometry is shared across all calls; each image pays only the per-pixel
-// render cost (not the rotation-table build).
-unsigned RenderAndSaveSphericalFaces(
+// render cost (not the rotation-table build). Fails on the first panorama
+// that can not be read or face that can not be written, since the exported
+// scene already references every face file.
+bool RenderAndSaveSphericalFaces(
 	const Scene& scene,
 	const TangentFacesGeometry& geometry,
 	const String& extension,
@@ -470,7 +472,6 @@ unsigned RenderAndSaveSphericalFaces(
 	Util::ensureValidFolderPath(outDir);
 	Util::ensureFolder(outDir);
 	unsigned written = 0;
-
 	for (const Image& img : scene.images) {
 		if (img.pCamera == NULL || img.pCamera->GetType() != CameraType::SPHERICAL)
 			continue;
@@ -481,8 +482,8 @@ unsigned RenderAndSaveSphericalFaces(
 			loadedHere = true;
 		}
 		if (!img.HasPixels()) {
-			DEBUG("SphereCubeMap: failed to load pixels for '%s'", img.fileName.c_str());
-			continue;
+			VERBOSE("error: can not read the panorama '%s' to render its cube-map faces", img.fileName.c_str());
+			return false;
 		}
 
 		// Normalize pixel format to BGR/8U if needed and
@@ -495,15 +496,16 @@ unsigned RenderAndSaveSphericalFaces(
 			const String facePath = outDir + stem +
 				String::FormatString(_T("_face%d"), k) + extension;
 			if (!faces[k].Save(facePath)) {
-				DEBUG("SphereCubeMap: failed to save face '%s'", facePath.c_str());
-				continue;
+				VERBOSE("error: can not write the cube-map face '%s'", facePath.c_str());
+				return false;
 			}
 			++written;
 		}
 		if (loadedHere)
 			const_cast<Image&>(img).ReleasePixels();
 	}
-	return written;
+	DEBUG("SphereCubeMap: wrote %u face images to '%s'", written, outDir.c_str());
+	return true;
 }
 
 // Phase 4: project 3D world point X through each face of one spherical
@@ -742,10 +744,8 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig 
 
 	// ----- Phase 3: render + write cube-map face pixels -----
 	if (cubeMap) {
-		const unsigned written = RenderAndSaveSphericalFaces(
-			scene, sphericalGeom, config.extension, cubeMapOutputDir);
-		DEBUG("SphereCubeMap: wrote %u face images to '%s'",
-			written, cubeMapOutputDir.c_str());
+		if (!RenderAndSaveSphericalFaces(scene, sphericalGeom, config.extension, cubeMapOutputDir))
+			return false;
 	}
 
 	// ----- Phase 4: vertices (tracks) -----

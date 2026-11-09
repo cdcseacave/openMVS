@@ -1909,9 +1909,16 @@ bool CubeMapBridgeGeometryTest()
 	if (!tmpDir.IsValid())
 		return false;
 	const String mvsPath = tmpDir(_T("scene.mvs"));
+	// the export renders and writes the faces of every panorama, so each needs pixels and a file name
+	FOREACH(i, scene.images) {
+		Image& img = scene.images[i];
+		img.fileName = tmpDir(String::FormatString(_T("pano%u.png"), i));
+		img.pixels = cv::Mat(img.GetSize(), CV_8UC3, cv::Scalar(128, 128, 128));
+	}
 
 	ExportMVSConfig cfg;
 	cfg.sphericalExport = ExportMVSConfig::Spherical::CUBEMAP;
+	cfg.extension         = _T(".png");
 	cfg.undistortAlpha    = 0.f;
 	cfg.onlyInlierTracks  = true;
 	cfg.includeColors     = false;
