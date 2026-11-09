@@ -452,6 +452,11 @@ struct MVS_API DepthEstimatorBase {
 	}
 
 	static const float scaleRanges[12];
+
+	// a spherical target view is sampled through the tangent-plane homography of the patch while the
+	// elevation of the patch center seen from the target is at most this (degrees), and through the
+	// exact per-texel warp above it, where the homography error grows as 1/cos(elevation)
+	static float fSphericalWarpMaxElevation;
 };
 
 // PatchMatch depth-map estimator of a reference view seen through the camera model MODEL
@@ -489,7 +494,8 @@ struct DepthEstimatorT : DepthEstimatorBase {
 	float normSq0;	  //
 	Matrix3x3f normalFrame0; // spherical reference: the frame random and perturbed normals are drawn in
 		// (columns: the longitude and the downward elevation tangents at X0, and X0)
-	Eigen::Matrix3f rayFrame0; // spherical reference: Model::RayFrame at x0
+	Eigen::Matrix3f rayFrame0; // Model::RayFrame at x0, if bModelWarp
+	CLISTDEF0IDX(Eigen::Matrix3f,IIndex) viewRayFrames0; // per view, Rrel*rayFrame0: the ray frame at x0 in the view's camera frame
 	struct TexelRays { Eigen::Vector3f rays[nTexels]; };
 	TexelRays texelRays0; // the rays of the patch texels at x0, for the exact warp, filled on first use
 	CLISTDEF0IDX(TexelRays,IIndex) viewTexelRays0; // per view, Rrel*texelRays0, filled on first use
@@ -668,6 +674,7 @@ struct DepthEstimatorT : DepthEstimatorBase {
 	#if DENSE_REFINE == DENSE_REFINE_EXACT
 	const float thPerturbation;
 	#endif
+	const float sinSqWarpMaxElevation; // SQUARE(SIN(fSphericalWarpMaxElevation))
 };
 template<> PatchWarp DepthEstimatorT<Pinhole>::ComputePatchWarp(const DepthData::ViewData&, Depth, const Normal&) const;
 template<> float DepthEstimatorT<Pinhole>::ComputeGeometricConsistency(const DepthData::ViewData&, Depth) const;

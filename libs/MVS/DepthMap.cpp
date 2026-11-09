@@ -430,6 +430,8 @@ void DepthEstimatorBase::MapMatrix2ZigzagIdx(const cv::Size& size, MapRefArr& co
 }
 
 // replace POWI(0.5f, idxScaleRange):           0    1      2       3       4         5         6           7           8             9             10              11
+float DepthEstimatorBase::fSphericalWarpMaxElevation(70.f);
+
 const float DepthEstimatorBase::scaleRanges[12] = {1.f, 0.5f, 0.25f, 0.125f, 0.0625f, 0.03125f, 0.015625f, 0.0078125f, 0.00390625f, 0.001953125f, 0.0009765625f, 0.00048828125f};
 
 template<template<typename> class MODEL>
@@ -484,6 +486,7 @@ DepthEstimatorT<MODEL>::DepthEstimatorT(
 	#if DENSE_REFINE == DENSE_REFINE_EXACT
 	, thPerturbation(1.f/POW(2.f,float(nIter+1)))
 	#endif
+	, sinSqWarpMaxElevation(SQUARE(SIN(D2R(fSphericalWarpMaxElevation))))
 {
 	ASSERT(_depthData0.images.size() >= 1);
 	// an equirectangular reference spans 360x180 degrees on its grid, so its columns wrap
@@ -491,6 +494,7 @@ DepthEstimatorT<MODEL>::DepthEstimatorT(
 		ISEQUAL(camera0.cx, REAL(size.width-1)/2) && ISEQUAL(camera0.cy, REAL(size.height-1)/2)));
 	ASSERT(bSphericalRef == image0.IsSpherical());
 	if (bModelWarp) {
+		viewRayFrames0.resize(images.size());
 		viewTexelRays0.resize(images.size());
 		bViewTexelRays0.resize(images.size()+1);
 	}
@@ -556,6 +560,12 @@ bool DepthEstimatorT<MODEL>::FillPixelPatch()
 		X0 = Point3((REAL)rayFrame0(0,2), (REAL)rayFrame0(1,2), (REAL)rayFrame0(2,2));
 	} else {
 		X0 = camera0.Ray(Eigen::Vector2d((REAL)x0.x, (REAL)x0.y));
+		if (bModelWarp)
+			rayFrame0 = camera0.RayFrame(Eigen::Vector2d((REAL)x0.x, (REAL)x0.y)).template cast<float>();
+	}
+	if (bModelWarp) {
+		FOREACH(v, images)
+			viewRayFrames0[v] = images[v].Rrel*rayFrame0;
 	}
 	if constexpr (bSphericalRef) {
 		// the longitude and the downward elevation tangents at X0, from its ray frame
@@ -639,7 +649,7 @@ inline float FastAtan2(float y, float x) {
 	return y < 0.f ? -r : r;
 }
 // the pixel of a target camera-frame point in the warps: Project, through FastAtan2 for a spherical
-// target (its two atan2 dominate the exact warp per texel)
+// target (its two atan2 dominate the exact warp per texel, the tangent-plane one per hypothesis)
 template <typename TRG>
 inline bool ProjectFast(const TRG& trg, const Eigen::Vector3f& X, Eigen::Vector2f& x) {
 	return trg.Project(X, x);
@@ -667,6 +677,30 @@ inline bool SampleWarpedPatch(const Image32F& image, const PatchWarp& warp, floa
 	}
 	return true;
 }
+// the same for the tangent-plane warp into an equirectangular image: the homogeneous coordinate is
+// affine over the patch and the patch maps to a convex quadrilateral, so the corners decide whether
+// every texel is in front of the tangent plane (texel rays more than 90 degrees off the center are
+// not seen) and whether the patch crosses the seam (else no column needs wrapping)
+inline bool SampleTangentPatch(const Image32F& image, const PatchWarp& warp, float* texels) {
+	constexpr float steps(float(2*DepthEstimatorBase::nSizeHalfWindow/DepthEstimatorBase::nSizeStep));
+	const Point3f corners[4] = {warp.base, warp.base+warp.dx*steps, warp.base+warp.dy*steps, warp.base+(warp.dx+warp.dy)*steps};
+	float minX(FLT_MAX), maxX(-FLT_MAX);
+	for (const Point3f& corner: corners) {
+		if (corner.z <= 0)
+			return false;
+		const float x(corner.x/corner.z);
+		minX = MINF(minX, x);
+		maxX = MAXF(maxX, x);
+	}
+	// off the seam by a pixel (the texels accumulate the steps)
+	if (minX >= 2.f && maxX <= float(image.width()-3))
+		return SampleWarpedPatch<false>(image, warp, texels);
+	// a patch stretched over more than one turn is not a view
+	if (!(minX >= -float(image.width()) && maxX < float(2*image.width()-1)))
+		return false;
+	return SampleWarpedPatch<true>(image, warp, texels);
+}
+
 // the reference texels of the patch through the plane (depth, normal), each texel ray intersected
 // with the plane and projected exactly into the target: Method A, the reference warp of every model
 template<template<typename> class MODEL>
@@ -708,6 +742,13 @@ bool DepthEstimatorT<MODEL>::SampleExactPatch(const DepthData::ViewData& image1,
 	return true;
 }
 
+// the patch warp of the reference pixel offsets (dx,dy,1) mapped by M to homogeneous target pixels
+inline PatchWarp MakePatchWarp(const Eigen::Matrix3f& M) {
+	const Eigen::Vector3f base(M*Eigen::Vector3f(-DepthEstimatorBase::nSizeHalfWindow, -DepthEstimatorBase::nSizeHalfWindow, 1));
+	const Eigen::Vector3f dx(M.col(0)*float(DepthEstimatorBase::nSizeStep)), dy(M.col(1)*float(DepthEstimatorBase::nSizeStep));
+	return PatchWarp{Point3f(base.x(), base.y(), base.z()), Point3f(dx.x(), dx.y(), dx.z()), Point3f(dy.x(), dy.y(), dy.z())};
+}
+
 // the warp into the target view when every camera is pinhole: the cached plane homography
 template<template<typename> class MODEL>
 bool DepthEstimatorT<MODEL>::SamplePinholePatch(const DepthData::ViewData& image1, Depth depth, const Normal& normal, float* texels)
@@ -719,8 +760,9 @@ bool DepthEstimatorT<MODEL>::SamplePinholePatch(const DepthData::ViewData& image
 		return SampleWarpedPatch<false>(image1.image, ComputePatchWarp(image1, depth, normal), texels);
 }
 // the warp into the target view as soon as a spherical camera is involved: the cached homography
-// between pinhole cameras, the exact per-texel warp (Method A) for any pair with a spherical camera;
-// the target model is resolved once per (pixel, hypothesis, view)
+// between pinhole cameras, else M = trg.PixelHomography(H*r0)*H*ref.RayFrame(x0) (Method B), or the
+// exact per-texel warp (Method A) where the target sees the patch center above
+// fSphericalWarpMaxElevation; the target model is resolved once per (pixel, hypothesis, view)
 template<template<typename> class MODEL>
 bool DepthEstimatorT<MODEL>::SampleModelPatch(const DepthData::ViewData& image1, Depth depth, const Normal& normal, float* texels)
 {
@@ -728,9 +770,25 @@ bool DepthEstimatorT<MODEL>::SampleModelPatch(const DepthData::ViewData& image1,
 		if (!image1.IsSpherical())
 			return SampleWarpedPatch<false>(image1.image, ComputePatchWarp(image1, depth, normal), texels);
 	}
-	if (!image1.IsSpherical())
-		return SampleExactPatch(image1, MakeCameraModel<Pinhole<float>>(image1.camera), depth, normal, texels);
-	return SampleExactPatch(image1, MakeCameraModel<Spherical<float>>(image1.camera), depth, normal, texels);
+	// H*F = Rrel*F + t*(n^T*F)/(n.X), the first term cached per pixel and view
+	ASSERT(bModelWarp);
+	const Eigen::Vector3f n(normal.x, normal.y, normal.z);
+	const float nX(depth*normal.dot(Cast<float>(X0))); // n.X of the plane point at x0
+	ASSERT(nX < 0);
+	const Eigen::Matrix3f HF(viewRayFrames0[(IIndex)(&image1-images.data())] + image1.trel*((n.transpose()*rayFrame0)/nX));
+	const Eigen::Vector3f q0(HF.col(2)); // the target ray of the patch center
+	if (!image1.IsSpherical()) {
+		// the patch center must be in front of a pinhole target
+		if (q0.z() <= 0)
+			return false;
+		return SampleWarpedPatch<false>(image1.image, MakePatchWarp(MakeCameraModel<Pinhole<float>>(image1.camera).PixelHomography(q0)*HF), texels);
+	}
+	const Spherical<float> trg(MakeCameraModel<Spherical<float>>(image1.camera));
+	if (SQUARE(q0.y()) > sinSqWarpMaxElevation*q0.squaredNorm())
+		return SampleExactPatch(image1, trg, depth, normal, texels);
+	Eigen::Vector2f xc;
+	ProjectFast(trg, q0, xc);
+	return SampleTangentPatch(image1.image, MakePatchWarp(trg.PixelHomography(q0, xc)*HF), texels);
 }
 
 // the geometric consistency against a target depth-map of any camera model: the distance between
