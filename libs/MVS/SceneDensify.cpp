@@ -326,7 +326,7 @@ bool DepthMapsData::FetchViewImage(DepthData::ViewData& view)
 	Image32F imageGray;
 	if (!imageCache.UseImage(view.GetLocalID(scene.images), imageGray))
 		return false;
-	if (!DepthData::ViewData::ScaleImage(imageGray, view.image, view.scale))
+	if (!DepthData::ViewData::ScaleImage(imageGray, view.image, view.scale, view.IsSpherical()))
 		view.image = imageGray;
 	return true;
 } // FetchViewImage
@@ -372,7 +372,7 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 				viewTrg.camera = viewTrg.pImageData->GetCamera(scene.platforms, viewTrg.image.size());
 		} else {
 			if (DepthData::ViewData::NeedScaleImage(viewTrg.scale))
-				viewTrg.camera = viewTrg.pImageData->GetCamera(scene.platforms, Image8U::computeResize(viewTrg.pImageData->GetSize(), viewTrg.scale));
+				viewTrg.camera = viewTrg.pImageData->GetCamera(scene.platforms, Image::ComputeResize(viewTrg.pImageData->GetSize(), viewTrg.scale, viewTrg.IsSpherical()));
 		}
 		DEBUG_EXTRA("Reference image %3u paired with image %3u", idxImage, neighbor.ID);
 	} else {
@@ -399,7 +399,7 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 					viewTrg.camera = viewTrg.pImageData->GetCamera(scene.platforms, viewTrg.image.size());
 			} else {
 				if (DepthData::ViewData::NeedScaleImage(viewTrg.scale))
-					viewTrg.camera = viewTrg.pImageData->GetCamera(scene.platforms, Image8U::computeResize(viewTrg.pImageData->GetSize(), viewTrg.scale));
+					viewTrg.camera = viewTrg.pImageData->GetCamera(scene.platforms, Image::ComputeResize(viewTrg.pImageData->GetSize(), viewTrg.scale, viewTrg.IsSpherical()));
 			}
 		}
 		#if TD_VERBOSE != TD_VERBOSE_OFF
@@ -734,7 +734,7 @@ DepthData DepthMapsData::ScaleDepthData(const DepthData& inputDeptData, float sc
 		// newSize/size, and scale this view's own camera, the one of its (possibly neighbor-scaled)
 		// input image
 		const cv::Size size(viewData.image.size());
-		const cv::Size scaledSize(Image8U::computeResize(size, scale));
+		const cv::Size scaledSize(Image::ComputeResize(size, scale, viewData.IsSpherical()));
 		cv::resize(viewData.image, viewData.image, scaledSize, 0, 0, cv::INTER_AREA);
 		viewData.camera = viewData.camera.GetScaled(size, scaledSize);
 		if (!viewData.depthMap.empty()) {

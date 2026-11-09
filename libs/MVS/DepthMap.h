@@ -277,11 +277,11 @@ struct MVS_API DepthData {
 			return ABS(scale-1.f) >= 0.15f;
 		}
 		template <typename IMAGE>
-		static bool ScaleImage(const IMAGE& image, IMAGE& imageScaled, float scale) {
+		static bool ScaleImage(const IMAGE& image, IMAGE& imageScaled, float scale, bool bSpherical) {
 			if (!NeedScaleImage(scale))
 				return false;
 			// the camera of the scaled view comes from GetCamera(), so scale on its uniform grid
-			Image::ResizeUniform(image, imageScaled, Image8U::computeResize(image.size(), scale), scale>1?cv::INTER_CUBIC:cv::INTER_AREA);
+			Image::ResizeUniform(image, imageScaled, Image::ComputeResize(image.size(), scale, bSpherical), scale>1?cv::INTER_CUBIC:cv::INTER_AREA);
 			return true;
 		}
 	};

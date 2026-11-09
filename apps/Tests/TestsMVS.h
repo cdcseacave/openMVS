@@ -106,6 +106,10 @@ bool InterfaceV8Test();
 // the boost archives of the platforms saved before the camera models (Platform::Camera a CameraIntern)
 // load, in the text, binary and compressed archives, and so do the current ones with a Brown camera
 bool PlatformArchiveCompatibilityTest();
+
+// every size of an equirectangular image (load scale, resolution level, neighbor scale, pyramid) keeps
+// an even width, W = 2H, and the angular K of its camera
+bool SphericalImageSizeTest();
 /*----------------------------------------------------------------*/
 
 } // namespace MVS

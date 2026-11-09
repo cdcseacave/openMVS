@@ -54,8 +54,17 @@ REAL Image::GetSizeScale(unsigned nMaxResolution) const
 // the image size must be already initialized
 cv::Size Image::GetSize(unsigned nMaxResolution) const
 {
-	return Image8U::computeResize(GetSize(), GetSizeScale(nMaxResolution));
+	return ComputeResize(GetSize(), GetSizeScale(nMaxResolution), IsSpherical());
 } // GetSize
+
+cv::Size Image::ComputeResize(const cv::Size& size, REAL scale, bool bSpherical)
+{
+	if (!bSpherical)
+		return Image8U::computeResize(size, scale);
+	ASSERT(size.width >= size.height && scale > 0);
+	const int width(2*MAXF(ROUND2INT((REAL)size.width*scale/2), 1));
+	return Image8U::computeResize(size, (REAL)width/size.width);
+} // ComputeResize
 /*----------------------------------------------------------------*/
 
 
@@ -183,7 +192,7 @@ float Image::ResizeImage(unsigned nMaxResolution)
 		height = image.height();
 	}
 	const REAL scale(GetSizeScale(nMaxResolution));
-	const cv::Size scaledSize(Image8U::computeResize(GetSize(), scale));
+	const cv::Size scaledSize(ComputeResize(GetSize(), scale, IsSpherical()));
 	width = (uint32_t)scaledSize.width;
 	height = (uint32_t)scaledSize.height;
 	if (!image.empty())
@@ -221,7 +230,7 @@ unsigned Image::RecomputeMaxResolution(unsigned& level, unsigned minImageSize, u
 Image Image::GetImage(const PlatformArr& platforms, double scale, bool bUseImage) const
 {
 	Image scaledImage(*this);
-	const cv::Size scaledSize(Image8U::computeResize(GetSize(), scale));
+	const cv::Size scaledSize(ComputeResize(GetSize(), scale, IsSpherical()));
 	scaledImage.width = (unsigned)scaledSize.width;
 	scaledImage.height = (unsigned)scaledSize.height;
 	scaledImage.camera = GetCamera(platforms, scaledImage.GetSize());

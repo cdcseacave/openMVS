@@ -165,6 +165,11 @@ public:
 	inline cv::Size GetSize() const { return cv::Size(width, height); }
 	REAL GetSizeScale(unsigned nMaxResolution) const;
 	cv::Size GetSize(unsigned nMaxResolution) const;
+	// the size of a raster of the given size scaled by the given factor, as TImage::computeResize; an
+	// equirectangular raster keeps an even width, which the seam-wrapped red/black propagation of its
+	// depth-map needs at every level: the width is rounded to an even number and the height follows
+	// from that uniform factor, so a 2:1 panorama stays 2:1 (its angular K keeps fx=W/2pi, fy=H/pi)
+	static cv::Size ComputeResize(const cv::Size& size, REAL scale, bool bSpherical);
 
 	// read image data from the file
 	static IMAGEPTR OpenImage(const String& fileName);
