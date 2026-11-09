@@ -36,6 +36,10 @@
 #include "TestsSynthetic.h"
 #include <chrono>
 #include <fstream>
+#include <random>
+#ifdef _USE_METAL
+#include "../../libs/MVS/PatchMatchMetal.h"
+#endif
 
 using namespace MVS;
 
@@ -826,10 +830,10 @@ String CloudEvaluator::Print() const
 /*----------------------------------------------------------------*/
 
 
-// CPU (or, if gpu, CUDA) PatchMatch on the given views of the synthetic scene, at full resolution,
-// depth-maps only, in a temporary folder; the estimates are scored against the GT into evaluator, the
-// estimation wall time goes to seconds; maxViews > 0 caps the neighbor views of a depth-map, maxThreads > 0
-// the threads; the caller checks that a CUDA device is available for gpu (SynthCUDAAvailable)
+// CPU (or, if gpu, GPU: CUDA, or Metal on Apple) PatchMatch on the given views of the synthetic scene, at full
+// resolution, depth-maps only, in a temporary folder; the estimates are scored against the GT into evaluator,
+// the estimation wall time goes to seconds; maxViews > 0 caps the neighbor views of a depth-map, maxThreads > 0
+// the threads; the caller checks that a GPU is available for gpu (SynthGPUAvailable)
 static bool SynthEstimateDepth(const SynthViewArr& views, const IIndexArr& viewIDs, DepthEvaluator& evaluator, double& seconds, unsigned maxViews=0, unsigned maxThreads=0, bool gpu=false)
 {
 	const ScopedTempDir tmpDir(_T("SyntheticDepth"));
@@ -952,22 +956,30 @@ bool MVS::SyntheticDepthBaselineTest()
 /*----------------------------------------------------------------*/
 
 
-// whether a CUDA device runs the GPU PatchMatch (CI machines have none)
-static bool SynthCUDAAvailable()
+// whether a GPU runs the GPU PatchMatch: a CUDA device, or Metal on Apple (CI machines have none)
+static bool SynthGPUAvailable()
 {
 	#ifdef _USE_CUDA
 	return SEACAVE::CUDA::isEnabled() || SEACAVE::CUDA::initDevices("-1") == CUDA_SUCCESS;
+	#elif defined(_USE_METAL)
+	return SEACAVE::METAL::isRuntimeAvailable();
 	#else
 	return false;
 	#endif
 }
+// the name of the GPU backend
+#ifdef _USE_CUDA
+#define SYNTH_GPU_BACKEND _T("CUDA")
+#else
+#define SYNTH_GPU_BACKEND _T("Metal")
+#endif
 
-// CPU (or, if gpu, CUDA) PatchMatch on panoramas of the synthetic scene (and, if faces, separately on
+// CPU (or, if gpu, GPU) PatchMatch on panoramas of the synthetic scene (and, if faces, separately on
 // their cube faces): prints the accuracy per band and the estimation wall time per estimated pixel;
 // returns the evaluators
 static bool SynthSphericalRun(int panoWidth, unsigned numPanos, bool faces, DepthEvaluator& sphereEval, DepthEvaluator& faceEval, unsigned maxViews=0, unsigned maxThreads=0, bool gpu=false)
 {
-	LPCTSTR const backend(gpu ? _T("CUDA") : _T("CPU"));
+	LPCTSTR const backend(gpu ? SYNTH_GPU_BACKEND : _T("CPU"));
 	SynthConfig config;
 	config.panoWidth = panoWidth;
 	config.firstPano = 3;
@@ -1191,32 +1203,150 @@ bool MVS::SyntheticSphericalTest()
 	return true;
 }
 
-bool MVS::SyntheticSphericalCUDATest(bool forceCPU)
+bool MVS::SyntheticSphericalGPUTest(bool forceCPU)
 {
-	if (forceCPU || !SynthCUDAAvailable()) {
-		VERBOSE("SyntheticSphericalCUDATest skipped: no CUDA device");
+	if (forceCPU || !SynthGPUAvailable()) {
+		VERBOSE("SyntheticSphericalGPUTest skipped: no GPU");
 		return true;
 	}
 	TD_TIMER_START();
 	DepthEvaluator evaluator, unused;
 	if (!SynthSphericalRun(512, 3, false, evaluator, unused, 0, 0, true))
 		return false;
-	const DepthEvaluator::Stats all(evaluator.GetStats(DepthEvaluator::ALL)), equator(evaluator.GetStats(DepthEvaluator::EQUATOR));
+	const DepthEvaluator::Stats all(evaluator.GetStats(DepthEvaluator::ALL));
 	const DepthEvaluator::Stats seam(evaluator.GetStats(DepthEvaluator::SEAM)), center(evaluator.GetStats(DepthEvaluator::CENTER));
 	const DepthEvaluator::Stats north(evaluator.GetStats(DepthEvaluator::NORTH)), south(evaluator.GetStats(DepthEvaluator::SOUTH));
 	// measured (Release, CUDA): all: completeness 0.964, abs-rel median 0.0014, <1% 0.93, <5% 0.989, normal
 	// median 3.2 deg; equator completeness 0.991, <5% 0.974; seam 0.969, <5% 0.994; north 0.857, <5% 1.000;
 	// south 0.849, <5% 0.989; center (the seam's antipode) 0.966, <5% 0.990; every band at or above the CPU
-	// estimator (SyntheticSphericalTest); the seam is held to its antipodal band as there
-	if (!(all.completeness > 0.94) || !(all.absRelMedian < 0.002) || !(all.within1 > 0.90) || !(all.within5 > 0.975) || !(all.normalMedianDeg < 4.5) ||
+	// estimator (SyntheticSphericalTest). Metal, a hand mirror of the CUDA kernels not yet measured, is held to
+	// the CPU bounds of SyntheticSphericalTest. The seam band is compared with its antipodal band, as in
+	// SyntheticSphericalTest
+	struct Bounds { double completeness, absRel, within1, within5, normalDeg, poleCompleteness[2], poleWithin5; };
+	#ifdef _USE_CUDA
+	const Bounds bounds{0.94, 0.002, 0.90, 0.975, 4.5, {0.8, 0.8}, 0.97};
+	#else
+	const Bounds bounds{0.93, 0.0025, 0.88, 0.97, 5.5, {0.8, 0.75}, 0.95};
+	#endif
+	if (!(all.completeness > bounds.completeness) || !(all.absRelMedian < bounds.absRel) || !(all.within1 > bounds.within1) ||
+		!(all.within5 > bounds.within5) || !(all.normalMedianDeg < bounds.normalDeg) ||
 		!(seam.completeness > 0.99*center.completeness) || !(seam.within5 > center.within5 - 0.01) ||
-		!(north.completeness > 0.8) || !(north.within5 > 0.97) || !(south.completeness > 0.8) || !(south.within5 > 0.97)) {
-		VERBOSE("ERROR: SyntheticSphericalCUDATest: depth accuracy below the CPU baseline!");
+		!(north.completeness > bounds.poleCompleteness[0]) || !(north.within5 > bounds.poleWithin5) ||
+		!(south.completeness > bounds.poleCompleteness[1]) || !(south.within5 > bounds.poleWithin5)) {
+		VERBOSE("ERROR: SyntheticSphericalGPUTest: %s depth accuracy below the CPU baseline!", SYNTH_GPU_BACKEND);
 		return false;
 	}
-	VERBOSE("SyntheticSphericalCUDATest passed (%s)", TD_TIMER_GET_FMT().c_str());
+	VERBOSE("SyntheticSphericalGPUTest passed on %s (%s)", SYNTH_GPU_BACKEND, TD_TIMER_GET_FMT().c_str());
 	return true;
 }
+
+#ifdef _USE_METAL
+bool MVS::MetalModelMathTest(bool forceCPU)
+{
+	if (forceCPU || !SEACAVE::METAL::isRuntimeAvailable()) {
+		VERBOSE("MetalModelMathTest skipped: no Metal device");
+		return true;
+	}
+	const METAL::PatchMatch pm;
+	if (!pm.IsValid()) {
+		VERBOSE("ERROR: MetalModelMathTest: the Metal PatchMatch kernels do not build!");
+		return false;
+	}
+	typedef Eigen::Vector2f Vec2;
+	typedef Eigen::Vector3f Vec3;
+	typedef Eigen::Matrix3f Mat3;
+	const int width(4096), height(2048);
+	const Spherical<double> sphD(Spherical<double>::FromSize(width, height));
+	const Spherical<float> sph(Spherical<float>::FromSize(width, height));
+	const Pinhole<float> pin{1500.5f, 1510.25f, 959.5f, 539.75f};
+	std::mt19937 rng(11);
+	std::uniform_real_distribution<float> U(0, 1);
+	std::normal_distribution<float> N(0, 1);
+	const auto R = [&](float a, float b) { return a + (b - a)*U(rng); };
+	const auto RandomUnit = [&]() { return Vec3(N(rng), N(rng), N(rng)).normalized(); };
+	const auto Copy = [](float* dst, const float* src, int n) { std::copy(src, src+n, dst); };
+	// random points, pixels and planes; the rows of the ray frames on the equirectangular pixel centers
+	// with the trig tables of the kernels (sin and cos in double of the pixel's angles)
+	const int numSamples(1 << 14);
+	std::vector<METAL::ModelMathSample> samples(numSamples);
+	std::vector<Eigen::Vector2i> pixels(numSamples);
+	for (int i = 0; i < numSamples; ++i) {
+		METAL::ModelMathSample& s = samples[i];
+		std::fill((float*)&s, (float*)(&s+1), 0.f);
+		const float sphParams[4] = {sph.fx, sph.fy, sph.cx, sph.cy}, pinParams[4] = {pin.fx, pin.fy, pin.cx, pin.cy};
+		Copy(s.spherical, sphParams, 4);
+		Copy(s.pinhole, pinParams, 4);
+		const Vec3 X(RandomUnit()*R(0.1f, 50.f));
+		Copy(s.X, X.data(), 3);
+		pixels[i] = Eigen::Vector2i((int)R(0, width-1), (int)R(0, height-1));
+		const Eigen::Vector2d a(sphD.Angles(pixels[i].cast<double>()));
+		const float trig[4] = {(float)std::sin(a.x()), (float)std::cos(a.x()), (float)std::sin(a.y()), (float)std::cos(a.y())};
+		Copy(s.trig, trig, 4);
+		s.pixel[0] = R(-0.5f, 1919.5f); s.pixel[1] = R(-0.5f, 1079.5f);
+		const Vec3 ray(RandomUnit()), nRay(RandomUnit());
+		Vec3 normal;
+		do normal = RandomUnit(); while (std::abs(normal.dot(ray)) < 0.05f);
+		Copy(s.ray, ray.data(), 3);
+		Copy(s.nRay, nRay.data(), 3);
+		Copy(s.normal, normal.data(), 3);
+		s.nDepth = R(1, 10); s.dMin = 0.01f; s.dMax = 1000.f;
+		s.depth = R(1, 10);
+		s.gradient[0] = R(-1, 1)*s.depth/sph.fx; s.gradient[1] = R(-1, 1)*s.depth/sph.fy;
+	}
+	if (!pm.EvaluateModelMath(samples)) {
+		VERBOSE("ERROR: MetalModelMathTest: the test kernel did not run!");
+		return false;
+	}
+	// the largest error of each output against the C++ models in single precision
+	const auto MaxRel = [](const float* dev, const Mat3& M) {
+		const float scale(std::max(M.cwiseAbs().maxCoeff(), 1e-30f));
+		float err(0);
+		for (int r = 0; r < 3; ++r)
+			for (int c = 0; c < 3; ++c)
+				err = std::max(err, std::abs(dev[r*3+c] - M(r,c)) / scale);
+		return err;
+	};
+	float errAtan(0), errProject(0), errRange(0), errRay(0), errFrame(0), errHomography(0), errPinFrame(0), errPinProject(0), errInterp(0), errNormal(0);
+	unsigned numVisibility(0);
+	for (int i = 0; i < numSamples; ++i) {
+		const METAL::ModelMathSample& s = samples[i];
+		const Vec3 X(s.X[0], s.X[1], s.X[2]);
+		errAtan = std::max(errAtan, std::abs(s.fastAtan2 - FastAtan2(X.y(), X.x())));
+		const float rho(std::sqrt(X.x()*X.x() + X.z()*X.z()));
+		Vec2 x;
+		numVisibility += sph.ProjectFast(X, x, rho) != (s.visible != 0.f);
+		errProject = std::max(errProject, std::max(std::abs(s.projected[0] - x.x()), std::abs(s.projected[1] - x.y())));
+		errRange = std::max(errRange, std::abs(s.range - Spherical<float>::Depth(X)) / X.norm());
+		const Vec3 r(Spherical<float>::Ray(s.trig[0], s.trig[1], s.trig[2], s.trig[3]));
+		errRay = std::max(errRay, (Vec3(s.sphRay[0], s.sphRay[1], s.sphRay[2]) - r).cwiseAbs().maxCoeff());
+		errFrame = std::max(errFrame, MaxRel(s.sphFrame, sph.RayFrame(s.trig[0], s.trig[1], s.trig[2], s.trig[3])));
+		errHomography = std::max(errHomography, MaxRel(s.homography, sph.PixelHomography(X, x, rho)));
+		errPinFrame = std::max(errPinFrame, MaxRel(s.pinFrame, pin.RayFrame(Vec2(s.pixel[0], s.pixel[1]))));
+		Vec2 xp;
+		numVisibility += pin.Project(X, xp) != (s.pinVisible != 0.f);
+		errPinProject = std::max(errPinProject, std::max(std::abs(s.pinProjected[0] - xp.x()) / std::max(1.f, std::abs(xp.x())), std::abs(s.pinProjected[1] - xp.y()) / std::max(1.f, std::abs(xp.y()))));
+		const float interpolated(InterpolatePlaneDepth(Vec3(s.ray[0], s.ray[1], s.ray[2]), Vec3(s.nRay[0], s.nRay[1], s.nRay[2]),
+			s.nDepth, Vec3(s.normal[0], s.normal[1], s.normal[2]), s.dMin, s.dMax));
+		errInterp = std::max(errInterp, std::abs(s.interpolated - interpolated) / interpolated);
+		const Vec3 n(NormalFromDepthGradient(sph, pixels[i], s.depth, Vec2(s.gradient[0], s.gradient[1])));
+		errNormal = std::max(errNormal, (Vec3(s.normalOut[0], s.normalOut[1], s.normalOut[2]) - n).cwiseAbs().maxCoeff());
+	}
+	VERBOSE("MetalModelMathTest: %d samples, max error: FastAtan2 %.2e rad, Spherical ProjectFast %.2e px, Depth %.2e, Ray %.2e, "
+		"RayFrame %.2e, PixelHomography %.2e, Pinhole RayFrame %.2e, Project %.2e, InterpolatePlaneDepth %.2e, NormalFromDepthGradient %.2e; "
+		"%u visibility mismatches", numSamples, errAtan, errProject, errRange, errRay, errFrame, errHomography, errPinFrame, errPinProject,
+		errInterp, errNormal, numVisibility);
+	// single precision with the fast math of the Metal compiler: a few ulp; the normal also differs by
+	// the host computing the ray frame from the float angles, the kernels from the trig tables
+	if (!(errAtan < 2e-6f) || !(errProject < 2e-3f) || !(errRange < 1e-5f) || !(errRay < 1e-6f) || !(errFrame < 1e-5f) ||
+		!(errHomography < 1e-5f) || !(errPinFrame < 1e-5f) || !(errPinProject < 1e-5f) || !(errInterp < 1e-4f) || !(errNormal < 1e-4f) ||
+		numVisibility) {
+		VERBOSE("ERROR: MetalModelMathTest: the Metal camera models differ from CameraModels.h!");
+		return false;
+	}
+	VERBOSE("MetalModelMathTest passed");
+	return true;
+}
+#endif // _USE_METAL
 /*----------------------------------------------------------------*/
 
 bool MVS::SyntheticSphericalFusionTest()
@@ -1494,8 +1624,8 @@ bool MVS::SynthTool(int argc, LPCTSTR* argv)
 		const unsigned maxViews(argc > 6 ? (unsigned)std::atoi(argv[6]) : 0u);
 		const unsigned maxThreads(argc > 7 ? (unsigned)std::atoi(argv[7]) : 0u);
 		const bool gpu(argc > 8 && std::atoi(argv[8]) != 0);
-		if (gpu && !SynthCUDAAvailable()) {
-			std::printf("error: no CUDA device\n");
+		if (gpu && !SynthGPUAvailable()) {
+			std::printf("error: no GPU\n");
 			return false;
 		}
 		if (panoWidth <= 0 || panoWidth % 8 || numPanos < 2 || numPanos > 5) {

@@ -2892,7 +2892,7 @@ void DenseDepthMapData::SignalCompleteDepthmapFilter()
 static void* DenseReconstructionEstimateTmp(void*);
 static void* DenseReconstructionFilterTmp(void*);
 
-// the scene has equirectangular images: their depth-maps are estimated only by the CPU or the CUDA
+// the scene has equirectangular images: their depth-maps are estimated by the CPU, CUDA or Metal
 // PatchMatch, with the photometric confidence
 static bool HasSphericalImages(const Scene& scene)
 {
@@ -2909,12 +2909,6 @@ bool Scene::DenseReconstruction(int nFusionMode, bool bCrop2ROI, float fBorderRO
 			VERBOSE("error: the scene has spherical images: the semi-global matcher supports pinhole cameras only; use PatchMatch (--fusion-mode 0 or 1)");
 			return false;
 		}
-		#ifdef _USE_METAL
-		if (!SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs)) {
-			VERBOSE("error: the scene has spherical images: their depth-maps are estimated on the CPU or by CUDA, not by Metal (--gpu-device -2)");
-			return false;
-		}
-		#endif
 	}
 	DenseDepthMapData data(*this, nFusionMode, fSampleMeshNeighbors);
 

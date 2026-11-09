@@ -59,14 +59,23 @@ struct MtlCamera { simd_float2 f; simd_float2 pp; simd_float3x3 R; simd_float3 C
 struct MtlParams {
 	float fDepthMin, fDepthMax, fThresholdKeepCost;
 	int nNumViews, nEstimationIters, nInitTopK, bLowResProcessed, width, height;
+	uint32_t sphericalViews;
+	float fSinSqWarpMaxElevation, cosMinViewAngle;
 };
+struct MtlModelView { simd_float3x3 R; simd_float3 t; simd_float3 C; simd_float2 texScale; };
+
+// the camera models a kernel serves: the MODEL function constant of the shader
+enum KernelModel { MODEL_PINHOLE, MODEL_PINHOLE_REF, MODEL_SPHERICAL_REF, NUM_MODELS };
 
 struct PatchMatch::Impl {
 	id<MTLDevice> device = nil;
 	id<MTLCommandQueue> queue = nil;
-	id<MTLComputePipelineState> psInit = nil, psBlack = nil, psRed = nil, psFilter = nil;       // GEOM=false
-	id<MTLComputePipelineState> psInitG = nil, psBlackG = nil, psRedG = nil;                    // GEOM=true
+	id<MTLLibrary> library = nil;
+	// the kernels specialized on the function constants [GEOM][MODEL]
+	id<MTLComputePipelineState> psInit[2][NUM_MODELS] = {}, psBlack[2][NUM_MODELS] = {}, psRed[2][NUM_MODELS] = {};
+	id<MTLComputePipelineState> psFilter = nil;
 	id<MTLTexture> dummyDepth = nil;   // 1x1 zero, stands in for neighbors without a depth-map
+	id<MTLBuffer> dummyTrig = nil;     // stands in for the trig tables of a pinhole reference
 	bool valid = false;
 };
 
@@ -75,8 +84,10 @@ static id<MTLComputePipelineState> MakePipe(id<MTLDevice> dev, id<MTLLibrary> li
 	NSError* e = nil;
 	id<MTLFunction> fn = fc ? [lib newFunctionWithName:name constantValues:fc error:&e]
 	                        : [lib newFunctionWithName:name];
-	if (!fn) return nil;
-	return [dev newComputePipelineStateWithFunction:fn error:&e];
+	id<MTLComputePipelineState> ps = fn ? [dev newComputePipelineStateWithFunction:fn error:&e] : nil;
+	if (!ps)
+		VERBOSE("error: Metal kernel %s: %s", name.UTF8String, e ? e.localizedDescription.UTF8String : "not found");
+	return ps;
 }
 
 PatchMatch::PatchMatch()
@@ -89,28 +100,33 @@ PatchMatch::PatchMatch()
 		impl->queue = [impl->device newCommandQueue];
 		NSError* err = nil;
 		NSString* src = [NSString stringWithUTF8String:kPatchMatchMSL];
-		id<MTLLibrary> lib = [impl->device newLibraryWithSource:src options:[MTLCompileOptions new] error:&err];
-		if (!lib)
+		impl->library = [impl->device newLibraryWithSource:src options:[MTLCompileOptions new] error:&err];
+		if (!impl->library) {
+			VERBOSE("error: the Metal PatchMatch shaders do not compile: %s", err ? err.localizedDescription.UTF8String : "unknown error");
 			return;
-		MTLFunctionConstantValues* fcN = [MTLFunctionConstantValues new];
-		bool gf = false; [fcN setConstantValue:&gf type:MTLDataTypeBool atIndex:0];
-		MTLFunctionConstantValues* fcG = [MTLFunctionConstantValues new];
-		bool gt = true;  [fcG setConstantValue:&gt type:MTLDataTypeBool atIndex:0];
-		impl->psInit   = MakePipe(impl->device, lib, @"InitializeScore", fcN);
-		impl->psBlack  = MakePipe(impl->device, lib, @"BlackPixelProcess", fcN);
-		impl->psRed    = MakePipe(impl->device, lib, @"RedPixelProcess", fcN);
-		impl->psFilter = MakePipe(impl->device, lib, @"FilterPlanes", nil);
-		impl->psInitG  = MakePipe(impl->device, lib, @"InitializeScore", fcG);
-		impl->psBlackG = MakePipe(impl->device, lib, @"BlackPixelProcess", fcG);
-		impl->psRedG   = MakePipe(impl->device, lib, @"RedPixelProcess", fcG);
+		}
+		bool valid = true;
+		for (int geom = 0; geom < 2; ++geom) {
+			for (int model = 0; model < NUM_MODELS; ++model) {
+				MTLFunctionConstantValues* fc = [MTLFunctionConstantValues new];
+				const bool bGeom = geom != 0;
+				[fc setConstantValue:&bGeom type:MTLDataTypeBool atIndex:0];
+				[fc setConstantValue:&model type:MTLDataTypeInt atIndex:1];
+				impl->psInit[geom][model]  = MakePipe(impl->device, impl->library, @"InitializeScore", fc);
+				impl->psBlack[geom][model] = MakePipe(impl->device, impl->library, @"BlackPixelProcess", fc);
+				impl->psRed[geom][model]   = MakePipe(impl->device, impl->library, @"RedPixelProcess", fc);
+				valid = valid && impl->psInit[geom][model] && impl->psBlack[geom][model] && impl->psRed[geom][model];
+			}
+		}
+		impl->psFilter = MakePipe(impl->device, impl->library, @"FilterPlanes", nil);
 		// 1x1 zero depth texture for neighbors that have no depth-map yet
 		MTLTextureDescriptor* ddesc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR32Float width:1 height:1 mipmapped:NO];
 		ddesc.usage = MTLTextureUsageShaderRead;
 		impl->dummyDepth = [impl->device newTextureWithDescriptor:ddesc];
 		const float zero = 0.f;
 		[impl->dummyDepth replaceRegion:MTLRegionMake2D(0,0,1,1) mipmapLevel:0 withBytes:&zero bytesPerRow:sizeof(float)];
-		impl->valid = impl->psInit && impl->psBlack && impl->psRed && impl->psFilter
-			&& impl->psInitG && impl->psBlackG && impl->psRedG;
+		impl->dummyTrig = [impl->device newBufferWithLength:sizeof(simd_float2) options:MTLResourceStorageModeShared];
+		impl->valid = valid && impl->psFilter && impl->dummyTrig;
 	}
 }
 
@@ -176,6 +192,17 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData)
 	params.fDepthMin = depthData.dMin;
 	params.fDepthMax = depthData.dMax;
 	const int maxPixelViews(MINF(params.nNumViews, 4));
+	// the camera models: bit i set if view i (0 the reference) is equirectangular; they select the
+	// kernels (MODEL), as in CUDA::PatchMatch::RunCUDA
+	uint32_t sphericalViews(0);
+	for (IIndex i = 0; i < numImages; ++i)
+		if (depthData.images[i].IsSpherical())
+			sphericalViews |= 1u << i;
+	const KernelModel model(sphericalViews == 0 ? MODEL_PINHOLE : (sphericalViews & 1u ? MODEL_SPHERICAL_REF : MODEL_PINHOLE_REF));
+	const float fSinSqWarpMaxElevation(SQUARE(SIN(D2R(DepthEstimatorBase::fSphericalWarpMaxElevation))));
+	const float cosMinViewAngle(COS(D2R(OPTDENSE::fMinAngle)));
+	// the view gate of the model kernels holds one bit per neighbor view
+	ASSERT(model == MODEL_PINHOLE || params.nNumViews < 32);
 
 	for (unsigned scaleNumber = totalScaleNumber + 1; scaleNumber-- > 0; ) {
 		// per-scale pool: drains this scale's textures/buffers/command buffer before
@@ -223,11 +250,29 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData)
 		// (neighbor views can differ in resolution from the reference, so a shared
 		// reference-sized descriptor would overflow replaceRegion for larger neighbors)
 		std::vector<MtlCamera> cams(numImages);
+		// the views relative to the reference, for the model kernels (CUDA::PatchMatch::UploadCameras)
+		std::vector<MtlModelView> views(numImages);
+		const Eigen::Matrix3d Rref(Eigen::Map<const SEACAVE::Matrix3x3::EMat>(dd.images[0].camera.R.val));
+		const Eigen::Vector3d Cref(Eigen::Map<const SEACAVE::Point3::EVec>(dd.images[0].camera.C.ptr()));
 		NSMutableArray<id<MTLTexture>>* texs = [NSMutableArray arrayWithCapacity:numImages];
 		for (IIndex i = 0; i < numImages; ++i) {
 			const DepthData::ViewData& view = dd.images[i];
 			const Image32F& image = view.image;
 			cams[i] = ConvertCamera(view.camera, image.cols, image.rows);
+			const bool bSpherical = ((sphericalViews >> i) & 1u) != 0;
+			// an equirectangular camera keeps its angular K on the grid of every level (fx=W/2pi, fy=H/pi)
+			ASSERT(!bSpherical || (ISEQUAL(view.camera.K(0,0)*REAL(TWO_PI), REAL(image.cols)) && ISEQUAL(view.camera.K(1,1)*REAL(PI), REAL(image.rows))));
+			const Eigen::Matrix3d Ri(Eigen::Map<const SEACAVE::Matrix3x3::EMat>(view.camera.R.val));
+			const Eigen::Vector3d Ci(Eigen::Map<const SEACAVE::Point3::EVec>(view.camera.C.ptr()));
+			const Eigen::Matrix3d Rrel(Ri * Rref.transpose());
+			const Eigen::Vector3d t(Ri * (Cref - Ci));
+			const Eigen::Vector3d C(Rref * (Ci - Cref)); // -Rrel^T*t
+			MtlModelView& mv = views[i];
+			for (int j = 0; j < 3; ++j)
+				mv.R.columns[j] = simd_make_float3((float)Rrel(0,j), (float)Rrel(1,j), (float)Rrel(2,j));
+			mv.t = simd_make_float3((float)t.x(), (float)t.y(), (float)t.z());
+			mv.C = simd_make_float3((float)C.x(), (float)C.y(), (float)C.z());
+			mv.texScale = bSpherical ? simd_make_float2(1.f/image.cols, 1.f/image.rows) : simd_make_float2(1.f, 1.f);
 			MTLTextureDescriptor* td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR32Float
 				width:image.cols height:image.rows mipmapped:NO];
 			td.usage = MTLTextureUsageShaderRead;
@@ -268,8 +313,30 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData)
 
 		MtlParams mp{ params.fDepthMin, params.fDepthMax, params.fThresholdKeepCost,
 			params.nNumViews, params.nEstimationIters, params.nInitTopK,
-			params.bLowResProcessed ? 1 : 0, W, Hh };
+			params.bLowResProcessed ? 1 : 0, W, Hh,
+			sphericalViews, fSinSqWarpMaxElevation, cosMinViewAngle };
 		id<MTLBuffer> bPrm = [dev newBufferWithBytes:&mp length:sizeof(MtlParams) options:MTLResourceStorageModeShared];
+		id<MTLBuffer> bViews = [dev newBufferWithBytes:views.data() length:sizeof(MtlModelView)*numImages options:MTLResourceStorageModeShared];
+
+		// the sines and cosines of the longitude of every column and of the elevation of every row of an
+		// equirectangular reference, its rays and ray frames being built from them
+		id<MTLBuffer> bTrig = impl->dummyTrig;
+		if (model == MODEL_SPHERICAL_REF) {
+			// the seam-wrapped propagation keeps the red/black parity of a pixel and its wrapped
+			// neighbors only for an even width
+			ASSERT(W % 2 == 0);
+			const Spherical<double> camera(MakeCameraModel<Spherical<double>>(dd.images.front().camera));
+			bTrig = [dev newBufferWithLength:sizeof(simd_float2)*(W + Hh) options:MTLResourceStorageModeShared];
+			simd_float2* trig = (simd_float2*)bTrig.contents;
+			for (int c = 0; c < W; ++c) {
+				const double lon(camera.Angles(Eigen::Vector2d(c, 0)).x());
+				trig[c] = simd_make_float2((float)std::sin(lon), (float)std::cos(lon));
+			}
+			for (int r = 0; r < Hh; ++r) {
+				const double el(camera.Angles(Eigen::Vector2d(0, r)).y());
+				trig[W + r] = simd_make_float2((float)std::sin(el), (float)std::cos(el));
+			}
+		}
 
 		// geometric-consistency: upload each neighbor's depth-map as a texture; a dummy
 		// 1x1 zero stands in when a neighbor has none (GeometricConsistencyWeight -> maxDist).
@@ -305,11 +372,13 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData)
 			[enc setBuffer:bRng offset:0 atIndex:4];
 			[enc setBuffer:bSel offset:0 atIndex:5];
 			[enc setBuffer:bPrm offset:0 atIndex:6];
+			[enc setBuffer:bViews offset:0 atIndex:8];
+			[enc setBuffer:bTrig offset:0 atIndex:9];
 		};
 		const MTLSize tg = MTLSizeMake(32, 8, 1);
-		id<MTLComputePipelineState> psI = geom ? impl->psInitG : impl->psInit;
-		id<MTLComputePipelineState> psB = geom ? impl->psBlackG : impl->psBlack;
-		id<MTLComputePipelineState> psR = geom ? impl->psRedG : impl->psRed;
+		id<MTLComputePipelineState> psI = impl->psInit[geom][model];
+		id<MTLComputePipelineState> psB = impl->psBlack[geom][model];
+		id<MTLComputePipelineState> psR = impl->psRed[geom][model];
 
 		// one command buffer per scale: each pass gets its own encoder so Metal's
 		// automatic hazard tracking serializes the read-after-write dependencies on
@@ -390,10 +459,44 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData)
 		} // @autoreleasepool (per scale)
 	}
 
+	// apply the ignore mask (with the validity mask of an undistorted image), as CUDA does
+	{
+		const DepthData::ViewData& view = depthData.GetView();
+		BitMatrix mask;
+		if (DepthEstimator::ImportIgnoreMask(*view.pImageData, depthData.depthMap.size(), OPTDENSE::nIgnoreMaskLabel, mask))
+			depthData.ApplyIgnoreMask(mask);
+	}
+
 	DEBUG_EXTRA("Depth-map for image %3u estimated via Metal: %dx%d (%s)",
 		depthData.images.front().GetID(),
 		depthData.images.front().image.cols, depthData.images.front().image.rows,
 		TD_TIMER_GET_FMT().c_str());
+}
+
+bool PatchMatch::EvaluateModelMath(std::vector<ModelMathSample>& samples) const
+{
+	ASSERT(IsValid() && !samples.empty());
+	@autoreleasepool {
+		id<MTLComputePipelineState> ps = MakePipe(impl->device, impl->library, @"TestModelMath", nil);
+		if (!ps)
+			return false;
+		const size_t size(sizeof(ModelMathSample)*samples.size());
+		id<MTLBuffer> buffer = [impl->device newBufferWithBytes:samples.data() length:size options:MTLResourceStorageModeShared];
+		const uint32_t numSamples((uint32_t)samples.size());
+		id<MTLCommandBuffer> cb = [impl->queue commandBuffer];
+		id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+		[enc setComputePipelineState:ps];
+		[enc setBuffer:buffer offset:0 atIndex:0];
+		[enc setBytes:&numSamples length:sizeof(numSamples) atIndex:1];
+		[enc dispatchThreads:MTLSizeMake(numSamples, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+		[enc endEncoding];
+		[cb commit];
+		[cb waitUntilCompleted];
+		if (cb.status != MTLCommandBufferStatusCompleted)
+			return false;
+		memcpy(samples.data(), buffer.contents, size);
+	}
+	return true;
 }
 
 } // namespace METAL

@@ -333,9 +333,13 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!MVS::SyntheticSphericalTest())
 				return false;
-			if (!MVS::SyntheticSphericalFusionTest())
+			#ifdef _USE_METAL
+			if (!MVS::MetalModelMathTest(forceCPU))
 				return false;
-			if (!MVS::SyntheticSphericalCUDATest(forceCPU))
+			#endif
+			if (!MVS::SyntheticSphericalGPUTest(forceCPU))
+				return false;
+			if (!MVS::SyntheticSphericalFusionTest())
 				return false;
 		}
 		return true;
