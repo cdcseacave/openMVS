@@ -390,6 +390,14 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData)
 		} // @autoreleasepool (per scale)
 	}
 
+	// apply the ignore mask (with the validity mask of an undistorted image), as CUDA does
+	{
+		const DepthData::ViewData& view = depthData.GetView();
+		BitMatrix mask;
+		if (DepthEstimator::ImportIgnoreMask(*view.pImageData, depthData.depthMap.size(), OPTDENSE::nIgnoreMaskLabel, mask))
+			depthData.ApplyIgnoreMask(mask);
+	}
+
 	DEBUG_EXTRA("Depth-map for image %3u estimated via Metal: %dx%d (%s)",
 		depthData.images.front().GetID(),
 		depthData.images.front().image.cols, depthData.images.front().image.rows,
