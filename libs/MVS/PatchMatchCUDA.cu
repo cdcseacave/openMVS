@@ -447,25 +447,33 @@ __device__ float ScorePlane(const RefPatchCache& cache, const CUDA::Camera& refC
 	return ScoreNCC(cache, sums, plane.w(), lowDepth);
 }
 
-// per-pixel reference state of the model kernels: the reference camera model, its ray frame at the
-// pixel (CameraModels.h RayFrame: the ray derivatives along x and y, then the ray) and, filled by the
-// first exact warp the pixel needs, the rays of the patch texels
+// per-pixel reference state of the model kernels: the reference camera model and its ray frame at the
+// pixel (CameraModels.h RayFrame: the ray derivatives along x and y, then the ray); an equirectangular
+// reference builds both, and the rays of the patch texels, from the sines and cosines of the column's
+// longitude and the row's elevation (Params::refTrig), as the CPU estimator does
 template <int MODEL>
 struct RefPixel {
-	enum { nTexels = (2 * nSizeHalfWindow / nSizeStep + 1) * (2 * nSizeHalfWindow / nSizeStep + 1) };
 	typename RefModel<MODEL>::Type camera;
 	Matrix3 F;
-	Point3 texelRays[nTexels];
-	bool bTexelRays;
-	__device__ RefPixel(const Point2i& p) : camera(RefModel<MODEL>::Get(g_cameras[0])), F(camera.RayFrame(p.cast<float>())), bTexelRays(false) {}
-	__device__ void InitTexelRays(const Point2i& p) {
-		#pragma unroll 1
-		for (int k = 0; k < nTexels; ++k) {
-			const int i = (k / (2*nSizeHalfWindow/nSizeStep + 1)) * nSizeStep - nSizeHalfWindow;
-			const int j = (k % (2*nSizeHalfWindow/nSizeStep + 1)) * nSizeStep - nSizeHalfWindow;
-			texelRays[k] = camera.Ray(Point2(float(p.x() + j), float(p.y() + i)));
+	__device__ RefPixel(const Point2i& p) : camera(RefModel<MODEL>::Get(g_cameras[0])) {
+		if constexpr (MODEL == MODEL_SPHERICAL_REF) {
+			const float2 lon = __ldg(g_params.refTrig + p.x()), el = __ldg(g_params.refTrig + g_cameras[0].size.x() + p.y());
+			F = camera.RayFrame(lon.x, lon.y, el.x, el.y);
+		} else {
+			F = camera.RayFrame(p.cast<float>());
 		}
-		bTexelRays = true;
+	}
+	// the ray of the pixel at offset (j,i) of p, inside the image but for the wrapping columns
+	__device__ Point3 TexelRay(const Point2i& p, int j, int i) const {
+		if constexpr (MODEL == MODEL_SPHERICAL_REF) {
+			const int width = g_cameras[0].size.x();
+			int c = p.x() + j;
+			c = c < 0 ? c + width : (c >= width ? c - width : c);
+			const float2 lon = __ldg(g_params.refTrig + c), el = __ldg(g_params.refTrig + width + p.y() + i);
+			return SEACAVE::Spherical<float>::Ray(lon.x, lon.y, el.x, el.y);
+		} else {
+			return camera.Ray(Point2(float(p.x() + j), float(p.y() + i)));
+		}
 	}
 };
 // the pinhole kernels: the plane homography needs no per-pixel state
@@ -487,24 +495,26 @@ __device__ inline Point3 ViewDirection(const RefPixel<MODEL>& ref, const Point2i
 // Method A: each texel ray of the reference patch intersected with the plane and projected exactly
 // into the equirectangular target; false if a texel ray meets the plane behind the reference camera
 template <int MODEL>
-__device__ __forceinline__ bool SampleExactPatch(const RefPatchCache& cache, RefPixel<MODEL>& ref, const ImagePixels trgImage, const SEACAVE::Spherical<float>& trg, const ModelView& view, const Point3& normal, const float nX, const Point2i& p, PatchSums& sums)
+__device__ __forceinline__ bool SampleExactPatch(const RefPatchCache& cache, const RefPixel<MODEL>& ref, const ImagePixels trgImage, const SEACAVE::Spherical<float>& trg, const ModelView& view, const Point3& normal, const float nX, const Point2i& p, PatchSums& sums)
 {
-	if (!ref.bTexelRays)
-		ref.InitTexelRays(p);
+	int idx = 0;
 	#pragma unroll
-	for (int idx = 0; idx < RefPixel<MODEL>::nTexels; ++idx) {
-		const Point3& ray = ref.texelRays[idx];
-		const float den = normal.dot(ray);
-		if (den >= 0.f)
-			return false;
-		Point2 x;
-		trg.ProjectFast(view.R * ray * (nX / den) + view.t, x);
-		const float trgPix = tex2D<float>(trgImage, (x.x() + 0.5f) * view.texScale.x(), (x.y() + 0.5f) * view.texScale.y());
-		const float w = cache.weight[idx];
-		const float wTrg = w * trgPix;
-		sums.sumTrg += wTrg;
-		sums.sumTrgTrg += wTrg * trgPix;
-		sums.sumRefTrg += cache.weightRefPix[idx] * trgPix;
+	for (int i = -nSizeHalfWindow; i <= nSizeHalfWindow; i += nSizeStep) {
+		#pragma unroll
+		for (int j = -nSizeHalfWindow; j <= nSizeHalfWindow; j += nSizeStep, ++idx) {
+			const Point3 ray = ref.TexelRay(p, j, i);
+			const float den = normal.dot(ray);
+			if (den >= 0.f)
+				return false;
+			Point2 x;
+			trg.ProjectFast(view.R * ray * (nX / den) + view.t, x);
+			const float trgPix = tex2D<float>(trgImage, (x.x() + 0.5f) * view.texScale.x(), (x.y() + 0.5f) * view.texScale.y());
+			const float w = cache.weight[idx];
+			const float wTrg = w * trgPix;
+			sums.sumTrg += wTrg;
+			sums.sumTrgTrg += wTrg * trgPix;
+			sums.sumRefTrg += cache.weightRefPix[idx] * trgPix;
+		}
 	}
 	return true;
 }

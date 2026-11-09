@@ -430,6 +430,24 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 		// pinned host buffer => DMA-async on cudaStream
 		CUDA_CHECK(cudaMemcpyAsync(cudaDepthNormalEstimates, depthNormalEstimates, sizeof(Point4) * depthData.depthMap.size().area(), cudaMemcpyHostToDevice, cudaStream));
 
+		// the sines and cosines of the longitude of every column and of the elevation of every row of an
+		// equirectangular reference, its rays and ray frames being built from them
+		std::vector<float2> refTrig;
+		if (params.sphericalViews & 1u) {
+			const Spherical<double> camera(MakeCameraModel<Spherical<double>>(depthData.images.front().camera));
+			refTrig.resize(size.width + size.height);
+			for (int c = 0; c < size.width; ++c) {
+				const double lon(camera.Angles(Eigen::Vector2d(c, 0)).x());
+				refTrig[c] = make_float2((float)std::sin(lon), (float)std::cos(lon));
+			}
+			for (int r = 0; r < size.height; ++r) {
+				const double el(camera.Angles(Eigen::Vector2d(0, r)).y());
+				refTrig[size.width + r] = make_float2((float)std::sin(el), (float)std::cos(el));
+			}
+			CUDA_CHECK(cudaMallocAsync((void**)&params.refTrig, sizeof(float2) * refTrig.size(), cudaStream));
+			CUDA_CHECK(cudaMemcpyAsync((void*)params.refTrig, refTrig.data(), sizeof(float2) * refTrig.size(), cudaMemcpyHostToDevice, cudaStream));
+		}
+
 		// load low resolution depth-map into CUDA memory
 		if (params.bLowResProcessed) {
 			ASSERT(depthData.depthMap.isContinuous());
@@ -457,6 +475,10 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 		CUDA_CHECK(cudaGetLastError());
 		if (params.bLowResProcessed)
 			CUDA_CHECK(cudaFreeAsync(cudaLowDepths, cudaStream));
+		if (params.refTrig) {
+			CUDA_CHECK(cudaFreeAsync((void*)params.refTrig, cudaStream));
+			params.refTrig = NULL;
+		}
 
 		// resident-buffer reuse: recalibrate the confidence as a true extension of the last
 		// geometric-consistency iteration, reading the final reference depth+normal
