@@ -527,6 +527,7 @@ DepthEstimatorT<MODEL>::DepthEstimatorT(
 		}
 	}
 	if (bModelWarp) {
+		ASSERT(images.size() < 32); // the view gate of ScorePixel holds one bit per view
 		viewRayFrames0.resize(images.size());
 		viewTexelRays0.resize(images.size());
 		bViewTexelRays0.resize(images.size()+1);
@@ -1041,19 +1042,23 @@ float DepthEstimatorT<MODEL>::ScorePixel(Depth depth, const Normal& normal)
 	ASSERT(depth > 0 && normal.dot(Cast<float>(X0)) <= 0);
 	// compute score for this pixel as seen in each view
 	ASSERT(scores.size() == images.size());
-	FOREACH(idxView, images) {
-		if (bModelWarp) {
-			// a view seeing the hypothesis point at a triangulation angle below fMinAngle does not
-			// constrain its depth: it scores as a view that does not see the patch
-			const Eigen::Vector3f X(Eigen::Vector3f((float)X0.x, (float)X0.y, (float)X0.z)*depth);
+	// the view gate of a model warp: a view seeing the hypothesis point at a triangulation angle below
+	// fMinAngle does not constrain its depth and scores as a view that does not see the patch, unless
+	// every view does: then none is gated, else next to the epipoles, where the true depth gates every
+	// view, the closer hypotheses that some view sees at a larger angle would win for that alone
+	uint32_t gatedViews(0);
+	if (bModelWarp) {
+		const Eigen::Vector3f X(Eigen::Vector3f((float)X0.x, (float)X0.y, (float)X0.z)*depth);
+		FOREACH(idxView, images) {
 			const Eigen::Vector3f D(X - viewCenters0[idxView]);
-			if (X.dot(D) > cosMinViewAngle*SQRT(X.squaredNorm()*D.squaredNorm())) {
-				scores[idxView] = thRobust;
-				continue;
-			}
+			if (X.dot(D) > cosMinViewAngle*SQRT(X.squaredNorm()*D.squaredNorm()))
+				gatedViews |= 1u << idxView;
 		}
-		scores[idxView] = ScorePixelImage(images[idxView], depth, normal);
+		if (gatedViews == (1u << images.size()) - 1u)
+			gatedViews = 0;
 	}
+	FOREACH(idxView, images)
+		scores[idxView] = (gatedViews >> idxView) & 1u ? thRobust : ScorePixelImage(images[idxView], depth, normal);
 	#if DENSE_AGGNCC == DENSE_AGGNCC_NTH
 	// set score as the nth element
 	return scores.GetNth(idxScore);
