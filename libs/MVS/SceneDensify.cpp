@@ -910,7 +910,7 @@ bool DepthMapsData::EstimateDepthMapCPU(IIndex idxImage, int nGeometricIter)
 			const bool bMasked(DepthEstimatorBase::ImportIgnoreMask(*image.pImageData, depthData.depthMap.size(), OPTDENSE::nIgnoreMaskLabel, mask));
 			if (bMasked)
 				depthData.ApplyIgnoreMask(mask);
-			DepthEstimatorBase::MapMatrix2ZigzagIdx(size, coords, mask, MAXF(64,(int)nMaxThreads*8));
+			DepthEstimatorBase::MapMatrix2ZigzagIdx(size, coords, mask, MAXF((int)DepthEstimatorBase::nZigzagMinStride,(int)nMaxThreads*8));
 			#if 0 && !defined(_RELEASE)
 			// show pixels to be processed
 			Image8U cmask(size);

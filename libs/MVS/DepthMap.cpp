@@ -422,6 +422,7 @@ bool DepthEstimatorBase::ImportIgnoreMask(const Image& image0, const cv::Size& s
 //                        7 8 9
 void DepthEstimatorBase::MapMatrix2ZigzagIdx(const cv::Size& size, MapRefArr& coords, const BitMatrix& mask, int rawStride)
 {
+	ASSERT(rawStride >= nZigzagMinStride);
 	const int w = size.width;
 	const int w1 = size.width-1;
 	coords.clear();
@@ -1117,6 +1118,28 @@ void DepthEstimatorT<MODEL>::ProcessPixel(IDX idx)
 	const ImageRef x(dir == LT2RB ? coords[idx] : coords[coords.size()-1-idx]);
 	PixelPending& flag = pending[x.y*size.width+x.x];
 	ASSERT(flag.load(std::memory_order_relaxed) == 1);
+	// a preceding 4-neighbor (left and up from left-top to right-bottom, right and down the other way;
+	// the one across the seam of a spherical reference comes later in the order) still in flight fewer
+	// than nZigzagMinStride pixels before x lies on the short anti-diagonals of a stripe corner, where the
+	// concurrent estimators work on consecutive anti-diagonals: x waits for it and reads it as a single
+	// thread does; elsewhere a preceding neighbor is a whole anti-diagonal back and done, or its estimator
+	// is preempted and x reads the previous pass's estimate rather than stall
+	const int step(dir == LT2RB ? -1 : 1);
+	for (const ImageRef nx: {ImageRef(x.x+step, x.y), ImageRef(x.x, x.y+step)}) {
+		if (nx.x < 0 || nx.y < 0 || nx.x >= size.width || nx.y >= size.height)
+			continue;
+		const PixelPending& nflag = pending[nx.y*size.width+nx.x];
+		if (nflag.load(std::memory_order_acquire) == 0)
+			continue;
+		for (IDX k=1; k<=MINF((IDX)nZigzagMinStride, idx); ++k) {
+			const ImageRef p(dir == LT2RB ? coords[idx-k] : coords[coords.size()-1-(idx-k)]);
+			if (p.x == nx.x && p.y == nx.y) {
+				while (nflag.load(std::memory_order_acquire))
+					std::this_thread::yield();
+				break;
+			}
+		}
+	}
 	if (PreparePixelPatch(x) && FillPixelPatch()) {
 		Depth depth(depthMap0(x));
 		Normal normal(normalMap0(x));
