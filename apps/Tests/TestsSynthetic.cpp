@@ -1516,6 +1516,26 @@ bool MVS::BrownUndistortOnLoadTest()
 			return false;
 		}
 	}
+	// the images stored at half the resolution (Scene::ScaleImages): the cameras become the pinhole K' of
+	// the stored files and the observations move with them
+	if (!scene.ScaleImages((unsigned)lens.width/2, 0, tmpDir("scaled/"))) {
+		VERBOSE("ERROR: BrownUndistortOnLoadTest: the images can not be scaled");
+		return false;
+	}
+	double maxScaledObsErr(0);
+	FOREACH(j, points) {
+		const PointCloud::ViewArr& pointViews = scene.pointcloud.pointViews[(uint32_t)j];
+		const PointCloud::ObservationArr& observations = scene.pointcloud.pointObservations[(uint32_t)j];
+		FOREACH(k, pointViews) {
+			const Image& imageData = scene.images[pointViews[k]];
+			ASSERT(!imageData.IsUndistortedOnRead() && imageData.width == (uint32_t)lens.width/2);
+			maxScaledObsErr = MAXF(maxScaledObsErr, norm(imageData.camera.TransformPointW2I(points[j].first) - Cast<REAL>(observations[k])));
+		}
+	}
+	if (!(maxScaledObsErr < 1e-3)) {
+		VERBOSE("ERROR: BrownUndistortOnLoadTest: the observations of the scaled images are %.2e px off", maxScaledObsErr);
+		return false;
+	}
 	VERBOSE("BrownUndistortOnLoadTest passed (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
