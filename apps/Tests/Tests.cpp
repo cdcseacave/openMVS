@@ -200,7 +200,7 @@ int main(int argc, LPCTSTR* argv)
 	// run the selected suite inside a lambda so the teardown below is reached on failure
 	// too: the log file in particular must be closed, or a failing run truncates its own log
 	const bool succeeded = [&]() {
-		// tool modes (synth, evaldepth, synthtest, sphtest, scorebench, facescene) are named, the suites numbered
+		// tool modes (synth, evaldepth, synthtest, sphtest, scorebench, facescene, sphfuse, evalcloud) are named, the suites numbered
 		if (toolMode)
 			return MVS::SynthTool(argc-1, argv+1);
 		if (argc < 2 || std::atoi(argv[1]) == 0) {
@@ -332,6 +332,8 @@ int main(int argc, LPCTSTR* argv)
 			if (!MVS::SyntheticDepthBaselineTest())
 				return false;
 			if (!MVS::SyntheticSphericalTest())
+				return false;
+			if (!MVS::SyntheticSphericalFusionTest())
 				return false;
 			if (!MVS::SyntheticSphericalCUDATest(forceCPU))
 				return false;

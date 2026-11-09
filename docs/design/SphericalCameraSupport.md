@@ -192,8 +192,8 @@ app; only the Python bindings (`libs/SFM/PythonWrapper.cpp`) and hand-constructe
   `PointCloud::pointObservations`; `Scene::SaveInterface` distorts them back and writes the camera
   back as it was read (`K`, resolution and coefficients).
 - **`SPHERICAL`:** loaded and saved as is; `DensifyPointCloud` estimates the depth-maps with the
-  CPU PatchMatch only (`--fusion-mode 1 --gpu-device -2`, see `SphericalPatchMatch.md`); SGM, the
-  fusion and the GPU estimators refuse the scene.
+  CPU PatchMatch (`--gpu-device -2`) and fuses them (see `SphericalPatchMatch.md`); SGM and the
+  GPU estimators refuse the scene.
 
 ## 3. Parameters and defaults
 
@@ -233,8 +233,9 @@ app; only the Python bindings (`libs/SFM/PythonWrapper.cpp`) and hand-constructe
   does not account for.
 - `libs/MVS` keeps the camera model only on `Platform::Camera` and `Image` (`model`, `lens`); the
   `MVS::Camera` every dense-reconstruction consumer uses is a pinhole `K` (the undistorted `K'` of
-  a Brown camera). A spherical camera reaches only the CPU PatchMatch, which builds its
-  `Spherical` model from `Image::model` and that `K`; the other apps assume pinhole cameras.
+  a Brown camera). A spherical camera reaches the CPU PatchMatch and the consumers of its
+  depth-maps (fusion, filters, point colors and normals), which build its `Spherical` model from
+  `Image::model` and that `K` (`ModelCamera`); the other apps assume pinhole cameras.
 - `K'` of a Brown camera depends only on its lens and resolution (`UndistortedK`); the MVS loader,
   the SfM export and the depth-map undistortion all call that one function.
 
@@ -270,9 +271,8 @@ app; only the Python bindings (`libs/SFM/PythonWrapper.cpp`) and hand-constructe
 - `View::Ray()` and `View::UnprojectPoint()` still use the front-hemisphere-biased 2D `Unproject()`
   form rather than `UnprojectNormalized`; whether any live caller invokes them on a spherical image
   has not been audited.
-- Dense reconstruction of a natively exported spherical scene stops at the depth-maps (CPU): the
-  fusion, the GPU estimators and the confidence recalibration are pinhole only; the cube-map
-  export densifies end to end, with per-face seams and the fixed face count/resolution of that bridge.
+- Dense reconstruction of a natively exported spherical scene runs on the CPU only: the GPU
+  estimators and the confidence recalibration are pinhole only.
 - ReconstructMesh, RefineMesh, TextureMesh and the Viewer do not check the camera model; with a
   spherical scene they treat the angular `K` as a pinhole one.
 - The semi-global matcher does not apply the undistortion validity mask (the ignore mask) of the
