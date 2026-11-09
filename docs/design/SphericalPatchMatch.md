@@ -211,7 +211,8 @@ The pinhole estimator keeps its cost: fountain-P11 CPU depth-maps + fusion, P-co
 - Method A everywhere: ~3x the cost of B.
 - Exact warp only above 80° (B80): at 512x256 the pole bands lose 20-35 % abs-rel (CUDA north 0.00090 vs
   0.00069, south 0.00129 vs 0.00096; CPU north 0.00091 vs 0.00075, south 0.00134 vs 0.00107) for 1.32x
-  instead of 1.62x the CUDA cube-face cost at 1024 px.
+  instead of 1.62x the CUDA cube-face cost at 1024 px; on Holo360D (10 frames at 720) it is within the
+  GT/pose noise (CUDA all 0.719 / 0.0571 vs 0.718 / 0.0572, CPU 0.960 / 0.300 vs 0.958 / 0.305).
 - Padding the equirectangular images with wrapped columns: patches off the seam already take the
   plain pinhole loop.
 - std::atan2 in the warps: the exact warp spends most of its time there.
