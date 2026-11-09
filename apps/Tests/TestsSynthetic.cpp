@@ -1207,8 +1207,8 @@ bool MVS::SyntheticSphericalCUDATest(bool forceCPU)
 	const DepthEvaluator::Stats north(evaluator.GetStats(DepthEvaluator::NORTH)), south(evaluator.GetStats(DepthEvaluator::SOUTH));
 	// measured (Release, CUDA): all: completeness 0.964, abs-rel median 0.0014, <1% 0.93, <5% 0.989, normal
 	// median 3.2 deg; equator completeness 0.991, <5% 0.974; seam 0.969, <5% 0.994; north 0.857, <5% 1.000;
-	// south 0.849, <5% 0.989; every band at or above the CPU estimator (SyntheticSphericalTest); the seam is
-	// held to its antipodal band as there
+	// south 0.849, <5% 0.989; center (the seam's antipode) 0.966, <5% 0.990; every band at or above the CPU
+	// estimator (SyntheticSphericalTest); the seam is held to its antipodal band as there
 	if (!(all.completeness > 0.94) || !(all.absRelMedian < 0.002) || !(all.within1 > 0.90) || !(all.within5 > 0.975) || !(all.normalMedianDeg < 4.5) ||
 		!(seam.completeness > 0.99*center.completeness) || !(seam.within5 > center.within5 - 0.01) ||
 		!(north.completeness > 0.8) || !(north.within5 > 0.97) || !(south.completeness > 0.8) || !(south.within5 > 0.97)) {
