@@ -46,9 +46,19 @@ like `Pinhole<T>`:
   `DepthEstimatorBase::fSphericalWarpMaxElevation`: each texel ray (cached per pixel, and turned
   into the view frame per pixel and view) is cut with the plane and projected by the target model.
   A texel whose plane intersection is behind the reference camera scores the view `thRobust`, as an
-  out-of-image texel does.
+  out-of-image texel does. The texel rays are stored as structure-of-arrays padded to whole SIMD
+  packets, and the intersections and projections run on Eigen's packet functions
+  (`Eigen::internal::p*`, SSE or NEON), lane by lane identical to the scalar code; only the bilinear
+  samples are taken per texel.
 - The spherical projections of both warps use `FastAtan2` (a minimax polynomial, max error
-  1.3e-7 rad, the precision of the float atan2).
+  1.3e-7 rad, the precision of the float atan2; a scalar and a packet version) and `FastSqrt` (the
+  SIMD square root: `std::sqrt` is a library call under `/fp:strict`). Method B computes
+  ρ = √(q_x²+q_z²) once for the projection of the patch center and for
+  `Spherical::PixelHomography(q, x, ρ)`.
+- The 3x3 products of the warps (`Rrel·F` per pixel and view, `H·F`, `P·(H·F)`, the patch warp and
+  the geometric-consistency transforms) are written out on the Eigen storage (`MulMat3`): MSVC does
+  not inline the fixed-size Eigen products in these builds (`EIGEN_STRONG_INLINE=inline`), and they
+  were the main cost of the model warps.
 
 The error of B grows as 1/cosφ of the target elevation of the patch center, not of the reference
 one. The choice between B and A is one branch per (pixel, hypothesis, view); there is no per-texel
@@ -61,11 +71,15 @@ branch on the model.
   same way (`SampleDepth<true>`).
 - Spherical reference: patches are estimated across the seam (only the 4 rows next to each pole
   are skipped); the reference patch and the propagation neighbors wrap their columns (`Col0`).
-- Pixel order: estimators pull pixels in the zigzag order and a pixel waits for its 4-neighbors
-  that precede it. The first and the last column are neighbors: in each pass the one visited second
-  waits for the other, so the first reads the last as the previous pass left it and the last reads
-  the first finished, as a single thread would; every wait points backwards in the order, so there
-  is no deadlock.
+- Pixel order (pinhole and spherical alike): the estimators pull pixels in the zigzag order and work
+  on a copy of the pixel's estimate, written back to the maps as a whole at the end of the pixel
+  between two state changes of its per-pixel flag (`PixelPending`: 1 not estimated yet in this pass,
+  2 being written, 0 done). A neighbor's estimate is read as a whole (`ReadEstimate`, read again if
+  the flag changed meanwhile): the one of this pass if that neighbor is done, else the previous
+  pass's; never a mix of the two. Nobody waits. A single thread reads its lower neighbors final and
+  the higher ones from the previous pass; with several threads a lower neighbor still in progress
+  is read from the previous pass. The first and the last column of a spherical reference are
+  neighbors like any other two.
 
 ### Geometric consistency
 
@@ -78,9 +92,18 @@ wrapped for a spherical reference, mapped to [0,4]. The pinhole pair keeps its c
 
 Random and perturbed normals are drawn as directions (`Dir2Normal`) in a frame whose z axis is the
 pixel ray: the camera frame for pinhole (unchanged), the frame (e_lon, e_down, ray) of the pixel
-for spherical (`normalFrame0`), where the polar angle of the turned normal is taken by atan2 (the
-turned vector is unit only to the rounding). `CorrectNormal` is ray-based. `EstimateNormalMap` of a
-spherical map fits the depth gradient with wrapped columns.
+for spherical (`normalFrame0`, e_lon = (cos lon, 0, −sin lon), e_down = (sin el·sin lon, cos el,
+sin el·cos lon)), where the polar angle of the turned normal is taken by atan2 (the turned vector is
+unit only to the rounding). `CorrectNormal` is ray-based. `EstimateNormalMap` of a spherical map
+fits the depth gradient with wrapped columns.
+
+### Reference trigonometry
+
+A spherical reference tabulates, per estimator, the sine and cosine of the longitude of every
+column and of the elevation of every row (`lonSinCos0`, `elSinCos0`): the ray frame at x0
+(`Spherical::RayFrame(sinLon, cosLon, sinEl, cosEl)`), the normal frame, the texel rays of Method A,
+and the rays of the propagation (`InterpolatePlaneDepth` on rays, `ComputeNeighborPoint`) are built
+from them, with no trigonometry per pixel.
 
 ### Initialization and view selection
 
@@ -135,12 +158,17 @@ Patch warp, B against A over random poses and slanted planes (2880x1440, 9x9 pat
 per-patch max texel error p99 0.042 / 0.079 / 0.140 / 0.757 px for target elevations below
 30 / 50 / 70 / 90°, seam-crossing patches max 0.23 px; the affine warp: median 1.0–3.6 px.
 
-Cost (`scorebench`, one ScorePixel against one view, all texels seen, min of 5 alternating runs):
-panorama 1536x768 B70 ~250 ns, B only ~215 ns, A only ~750 ns; cube faces of the same image size
-~150 ns: B70 1.6–1.7x, B only ~1.4x the pinhole cost. The difference is the per-hypothesis model
-math (two atan2, a square root and the 3x3 products of the warp) and Method A near the poles.
+Cost (`scorebench`, one ScorePixel against one view, all texels seen, the pixel prepared once per 4
+hypotheses; min of 3x5 alternating runs, timing-exclusive machine): panorama 1536x768 B70 158 ns,
+B only 155 ns, A only 225 ns; cube faces of the same image size 126–129 ns: B70 1.22–1.25x, B only
+~1.21x, A only ~1.8x the pinhole cost. Whole runs (`sphtest 1536`, 24 threads, B70): the 3 panoramas
+take 9.6 s, 2.71 µs per GT pixel, their 18 cube faces 384x384 7.4 s, 2.80 µs per GT pixel (the
+panoramas hold 1.33x the pixels of their faces).
 
-The pinhole estimator keeps its cost: fountain-P11 CPU depth-maps + fusion, P-core pinned, min of N, 212.4 / 225.0 s against 211.9 / 224.3 s for the pinhole-only estimator it extends (two sessions; the pinhole-only scenes take the cached-homography loop without the model dispatch).
+The pinhole estimator keeps its cost: fountain-P11 CPU depth-maps + fusion (default 24 threads,
+P-core pinned, timing-exclusive machine, one discarded warm-up run, min of 3 rotating runs):
+200.2 s against 199.4 s for the estimator before the camera models (+0.4 %, 3054 / 3046 CPU-s);
+with per-pixel waits instead of whole-estimate reads it was 208.6 s (+4.6 %, 3163 CPU-s).
 
 ## 5. Rejected alternatives
 
@@ -150,10 +178,18 @@ The pinhole estimator keeps its cost: fountain-P11 CPU depth-maps + fusion, P-co
 - Padding the equirectangular images with wrapped columns: patches off the seam already take the
   plain pinhole loop.
 - std::atan2 in the warps: the exact warp spends most of its time there.
+- Pixels waiting for their preceding neighbors (reads exactly as a single thread, the first race
+  fix): 5–8 % multi-threaded wall on fountain-P11 with the same CPU work, idle cores while waiting;
+  zigzag strides T·8 to T·64 and sleeping instead of yielding change nothing.
+- Setting aside a pixel whose preceding neighbors are in progress and estimating it later: +40 %.
+- Eigen fixed-size expressions in the per-hypothesis warp code: not inlined by MSVC, ~10 ns per 3x3
+  product.
 
 ## 6. Open items
 
-- Per-pixel cost above the 1.2x target (see section 4).
+- Per-hypothesis cost ~1.24x pinhole against the 1.2x target (section 4): what remains is the
+  projection of the patch center (two FastAtan2, one square root, the reciprocal of ρ) and the
+  per-pixel ray frames, amortized over few hypotheses in `scorebench`.
 - Seam/pole-aware propagation and red/black parity on CUDA (P6/P7), per-pixel view weighting by
   the ray-to-ray triangulation angle (P6).
 - Fusion, the depth-map filters' seam wrap, the confidence recalibration (P6).
