@@ -1160,11 +1160,12 @@ bool MVS::SyntheticSphericalTest()
 	// neighbor sees the scene below fMinAngle, the per-pixel view gate drops it, and the pixels no view
 	// constrains get wrong depths, so the seam band cannot be expected to match the equator. It is
 	// compared with its antipodal band (CENTER) instead, which holds the mirrored epipoles of the same
-	// views at the same latitudes: the two agree within 0.003 <5%, while a seam artifact makes the seam
-	// lose (no propagation across the seam: <5% 0.950 vs 0.979; target patches across the seam unseen:
-	// 0.91 vs 0.97, completeness 0.940 vs 0.953)
+	// views at the same latitudes. The seam is 0.001..0.003 <5% below it (Release and Debug: it holds a few
+	// more of those pixels), while a seam artifact costs it 0.03 or more (no propagation across the seam:
+	// <5% 0.950 vs 0.979; target patches across the seam unseen: 0.91 vs 0.97, completeness 0.940 vs
+	// 0.953), hence the 0.01 margin.
 	if (!(all.completeness > 0.93) || !(all.absRelMedian < 0.0025) || !(all.within1 > 0.88) || !(all.within5 > 0.97) || !(all.normalMedianDeg < 5.5) ||
-		!(seam.completeness > 0.99*center.completeness) || !(seam.within5 > center.within5 - 0.005) ||
+		!(seam.completeness > 0.99*center.completeness) || !(seam.within5 > center.within5 - 0.01) ||
 		!(north.completeness > 0.8) || !(north.within5 > 0.95) || !(south.completeness > 0.75) || !(south.within5 > 0.95)) {
 		VERBOSE("ERROR: SyntheticSphericalTest: depth accuracy below the baseline!");
 		return false;
