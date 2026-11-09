@@ -201,15 +201,16 @@ correspondence lands within 1 px of the image match in 12–48 % of the cases at
 spherical and the cube-face estimates are bounded by it alike.
 
 The synthetic panoramas look along their trajectory, so the epipoles of their neighbors lie in the
-seam band and in its antipodal band at longitude 0 (the two middle panoramas at columns 15 / 271
+seam band and in its antipodal band at longitude 0 (two of the three panoramas, at columns 15 / 271
 and 3–4 / 259–260 of 512), where the view gate leaves pixels no view constrains (see section 6):
 the seam band is compared with that antipodal band, not with the equator (`SyntheticSphericalTest`:
-seam <5% above center − 0.005, completeness above 0.99 x center). A seam defect breaks it: no
-propagation across the seam gives seam <5% 0.950 against center 0.979, target patches across the
-seam scored unseen 0.91 against 0.97. Without the corner waits of the pixel order, 24 threads left
-145–285 wrong estimates per run in the bottom-right corner of the zigzag order (the seam next to
-the south pole) against 11–54 single-threaded, seam <5% 0.984–0.991 against 0.995 without the
-view gate; with them 5–31 and 0.997, at the same wall.
+seam <5% above center − 0.01, completeness above 0.99 x center). The seam band holds a few more of
+those pixels and sits 0.001–0.003 <5% below its antipode, Release and Debug alike; a seam defect
+costs 0.03 or more: no propagation across the seam gives seam <5% 0.950 against center 0.979,
+target patches across the seam scored unseen 0.91 against 0.97. Without the corner waits of the
+pixel order, 24 threads left 145–285 wrong estimates per run in the bottom-right corner of the
+zigzag order (the seam next to the south pole) against 11–54 single-threaded, seam <5%
+0.984–0.991 against 0.995 without the view gate; with them 5–31 and 0.997.
 
 Patch warp, B against A over random poses and slanted planes (2880x1440, 9x9 patch step 2):
 per-patch max texel error p99 0.042 / 0.079 / 0.140 / 0.757 px for target elevations below
@@ -225,7 +226,10 @@ panoramas hold 1.33x the pixels of their faces).
 The pinhole estimator keeps its cost: fountain-P11 CPU depth-maps + fusion (default 24 threads,
 P-core pinned, timing-exclusive machine, one discarded warm-up run, min of 3 rotating runs):
 200.2 s against 199.4 s for the estimator before the camera models (+0.4 %, 3054 / 3046 CPU-s);
-with per-pixel waits instead of whole-estimate reads it was 208.6 s (+4.6 %, 3163 CPU-s).
+with per-pixel waits instead of whole-estimate reads it was 208.6 s (+4.6 %, 3163 CPU-s). The
+corner waits and the model-dispatched fusion leave it there: 202.1 s against 201.4 s for the
+estimator without them in the same session (3080 / 3065 CPU-s; depth-maps 195.9 / 195.3 s, fusion
+4.8 / 4.6 s).
 
 ### Fused clouds
 
