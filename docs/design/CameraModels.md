@@ -64,6 +64,9 @@ own state and call the models. The depth-map algorithms built on the models are 
   types, so the same code runs on `double`/`float`, on `ceres::Jet` (bundle adjustment cost functors,
   `libs/SFM/BundleAdjustmentCostFunctions.h`) and in CUDA. The including context provides Eigen,
   `ASSERT` and `HOST_DEVICE` (`libs/Common/Config.h`, or `libs/MVS/CUDA/Maths.h` in `.cu` files).
+- The numeric constants of the code Ceres differentiates (`DistortBrown`, `Pinhole::Perspective`) are
+  written in `ScalarOf<T>::type`, the plain scalar of `T` (the value type of a Jet): a constant Jet would
+  turn each `1 + ...` or `2 * ...` into a full Jet operation. These two helpers are force-inlined.
 - `HOST_DEVICE` functions are included unchanged by CUDA code (`libs/MVS/CUDA/Camera.h` includes
   `CameraModels.h`; `LinearCameraModel::AsPinhole()` yields the shared model), so the host and the
   device evaluate the same source. The depth geometry written over the models is
@@ -111,9 +114,10 @@ own state and call the models. The depth-map algorithms built on the models are 
 
 - SfM: `PinholeCamera::GetModel()/GetDistortion()` and `SphericalCamera::GetModel()` (`libs/SFM/Camera.h`)
   make `Project`, `Unproject`, `Distort`, `Undistort` thin wrappers (`libs/SFM/Camera.cpp`).
-- Bundle adjustment: `libs/SFM/BundleAdjustmentCostFunctions.h` evaluates `DistortBrown` and
-  `Pinhole<T>::Perspective/NormalizedToPixel` on Jets and builds the spherical angular residual from
-  `Spherical<double>`.
+- Bundle adjustment: `libs/SFM/BundleAdjustmentCostFunctions.h` (`ProjectPinhole`) evaluates
+  `Pinhole<T>::Perspective` and `DistortBrown` on Jets and applies `fx, fy, cx, cy` from the parameter
+  block in place (no `Pinhole` of Jets is built); the spherical angular residual takes its tangent basis
+  from `Spherical<double>`.
 - `SFM::Scene::UndistortImages`, `SFM::UndistortDepthMaps` (`libs/SFM/Scene.cpp`, `InterfaceMVS.cpp`) and
   `apps/InterfaceMetashape` use `UndistortMaps`; SfM feature extraction uses `SphereCubeMap`.
 - SfM export (`SFM::ExportMVS`, `libs/SFM/InterfaceMVS.cpp`) writes Brown cameras natively with the
@@ -162,6 +166,8 @@ own state and call the models. The depth-map algorithms built on the models are 
 | Remap cost on load (`Tests undistortbench`, ETH3D 6048x4032 JPEG) | 10.5-10.8 ms per image vs 108-121 ms decode; 34-43 ms once per camera for the maps |
 | ETH3D F1@2cm, native Brown vs undistorted-on-export (pipes / office ICP-refined) | 0.7068 vs 0.7043 / 0.3106 vs 0.3104 |
 | v7 to v8 file size | + one byte per camera + 1 |
+| SfM reconstruct-only vs the code before the move (same matches; BA time P-core pinned, min of 3) | SceauxCastle 11 images: BA 7.50 vs 7.54 s; Herz-Jesu-P25 25 images: BA 20.23 vs 20.25 s; same registrations, points and final cost (Herz-Jesu single-thread logs identical apart from timings) |
+| Spherical SfM from the video, ExtractKeyframes + CreateStructure (MaidenLane, 91 keyframes) | 91/91 registered both; 977k vs 981k points; reprojection 1.03 vs 1.01 px |
 
 ## 6. Rejected alternatives
 
@@ -173,8 +179,9 @@ own state and call the models. The depth-map algorithms built on the models are 
 
 ## 7. Open items
 
-- BA wall time and the bench4 SfM numbers after the move to the library were not re-measured (the
-  spherical convention fix moves spherical results by about 0.05 degrees at 4K).
+- Spherical keypoints in `.sfm` projects written before the pixel-center fix sit half a pixel off in
+  latitude in the current model (a spherical camera has no principal point to absorb it): such a project
+  reconstructs with a higher reprojection error (Cocarascu: 1.92 vs 1.80 px) and should be re-extracted.
 - InterfaceCOLMAP, InterfaceMetashape and InterfacePolycam still undistort on their own instead of
   passing the distortion through.
 - Metal runs the hand mirror on Apple hardware only; it is checked there by `MetalModelMathTest`.
