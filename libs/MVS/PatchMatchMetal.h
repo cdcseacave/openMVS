@@ -50,7 +50,36 @@ namespace MVS {
 
 namespace METAL {
 
-class PatchMatch {
+// the inputs and outputs of the shader's hand mirror of CameraModels.h and DepthGeometry.h evaluated
+// on the device (PatchMatch::EvaluateModelMath); PatchMatchMetal.metal holds the same struct
+struct ModelMathSample {
+	// inputs
+	float spherical[4];      // Spherical fx, fy, cx, cy
+	float pinhole[4];        // Pinhole fx, fy, cx, cy
+	float X[3];              // a camera-frame point
+	float trig[4];           // sin and cos of a longitude, then of an elevation
+	float pixel[2];          // a pinhole pixel
+	float ray[3], nRay[3];   // InterpolatePlaneDepth rays
+	float normal[3];         // InterpolatePlaneDepth plane normal
+	float nDepth, dMin, dMax;
+	float depth, gradient[2];// NormalFromDepthGradient at the ray frame of trig
+	// outputs
+	float fastAtan2;         // FastAtan2(X.y, X.x)
+	float projected[2];      // Spherical::ProjectFast(X)
+	float visible;           // its return value (0 or 1)
+	float range;             // Spherical::Depth(X)
+	float sphRay[3];         // Spherical::Ray(trig)
+	float sphFrame[9];       // Spherical::RayFrame(trig), row-major
+	float homography[9];     // Spherical::PixelHomography(X, projected, rho), row-major
+	float pinFrame[9];       // Pinhole::RayFrame(pixel), row-major
+	float pinProjected[2];   // Pinhole::Project(X)
+	float pinVisible;        // its return value (0 or 1)
+	float interpolated;      // InterpolatePlaneDepth(ray, nRay, nDepth, normal, dMin, dMax)
+	float normalOut[3];      // NormalFromDepthGradient(sphFrame, depth, gradient)
+};
+static_assert(sizeof(ModelMathSample) == 74*sizeof(float), "ModelMathSample must match the shader's layout");
+
+class MVS_API PatchMatch {
 public:
 	struct Params {
 		int   nNumViews = 5;
@@ -73,6 +102,10 @@ public:
 	void Release();
 
 	void EstimateDepthMap(DepthData&);
+
+	// evaluate the shader's camera-model math on the given samples' inputs (TestModelMath kernel),
+	// for the unit test against CameraModels.h; false if the kernel did not run
+	bool EvaluateModelMath(std::vector<ModelMathSample>& samples) const;
 
 	Params params;
 

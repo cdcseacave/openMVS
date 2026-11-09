@@ -2916,12 +2916,6 @@ bool Scene::DenseReconstruction(int nFusionMode, bool bCrop2ROI, float fBorderRO
 			VERBOSE("error: the scene has spherical images: their neighbor views are selected from the sparse points, and there are none");
 			return false;
 		}
-		#ifdef _USE_METAL
-		if (!SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs)) {
-			VERBOSE("error: the scene has spherical images: their depth-maps are estimated on the CPU or by CUDA, not by Metal (--gpu-device -2)");
-			return false;
-		}
-		#endif
 	}
 	DenseDepthMapData data(*this, nFusionMode, fSampleMeshNeighbors);
 
