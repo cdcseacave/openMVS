@@ -201,6 +201,8 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData)
 	const KernelModel model(sphericalViews == 0 ? MODEL_PINHOLE : (sphericalViews & 1u ? MODEL_SPHERICAL_REF : MODEL_PINHOLE_REF));
 	const float fSinSqWarpMaxElevation(SQUARE(SIN(D2R(DepthEstimatorBase::fSphericalWarpMaxElevation))));
 	const float cosMinViewAngle(COS(D2R(OPTDENSE::fMinAngle)));
+	// the view gate of the model kernels holds one bit per neighbor view
+	ASSERT(model == MODEL_PINHOLE || params.nNumViews < 32);
 
 	for (unsigned scaleNumber = totalScaleNumber + 1; scaleNumber-- > 0; ) {
 		// per-scale pool: drains this scale's textures/buffers/command buffer before

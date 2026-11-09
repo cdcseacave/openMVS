@@ -801,13 +801,6 @@ static inline float ScorePlaneModel(thread const RefCache& cache, thread const R
     const float nX = plane.w * dot(normal, ref.F[2]); // n.X of the plane point at p
     if (nX >= 0.f)
         return fBadCost; // a propagated plane not facing the reference camera at p
-    // the per-pixel view gate of the CPU estimator (DepthEstimatorT::ScorePixel): a view seeing the
-    // hypothesis point at a triangulation angle below fMinAngle does not constrain its depth, and
-    // scores as a view that does not see the patch
-    const float3 X = ref.F[2] * plane.w;
-    const float3 D = X - view.C;
-    if (dot(X, D) > prm.cosMinViewAngle * sqrt(length_squared(X) * length_squared(D)))
-        return fBadCost;
     const float3x3 HF = view.R * ref.F + outer(view.t, float3(dot(normal, ref.F[0]), dot(normal, ref.F[1]), dot(normal, ref.F[2])) / nX);
     const float3 q0 = HF[2]; // the target ray of the patch center
     constant Camera& trgCam = cams[imgId];
@@ -894,7 +887,12 @@ static inline float GeometricConsistencyWeightModel(texture2d<float> depthImg, t
     return min(maxDist, sqrt(distSq + sqrt(distSq)*2.0f));
 }
 
-// multi-view score: fills costVector[0..nNumViews-1]
+// multi-view score: fills costVector[0..nNumViews-1]. The view gate of the CPU estimator
+// (DepthEstimatorT::ScorePixel), at the hypothesis depth: a view seeing the hypothesis point at a
+// triangulation angle below fMinAngle does not constrain its depth and scores as a view that does not
+// see the patch, unless every view does: then none is gated, else next to the epipoles, where the true
+// depth gates every view, the closer hypotheses that some view sees at a larger angle would win for
+// that alone
 static inline void MultiViewScorePlaneModel(thread const RefCache& cache, thread const RefPixel& ref,
                                             const array<texture2d<float>, MAX_VIEWS> images,
                                             const array<texture2d<float>, MAX_VIEWS> depthImages,
@@ -902,8 +900,18 @@ static inline void MultiViewScorePlaneModel(thread const RefCache& cache, thread
                                             int2 p, float4 plane, float lowDepth,
                                             constant Params& prm, thread float* costVector) {
     const int nNumViews = prm.nNumViews;
+    const float3 X = ref.F[2] * plane.w; // the hypothesis point in the reference frame
+    uint gatedViews = 0; // bit imgId-1: view imgId
+    for (int imgId = 1; imgId <= nNumViews; ++imgId) {
+        const float3 D = X - views[imgId].C;
+        if (dot(X, D) > prm.cosMinViewAngle * sqrt(length_squared(X) * length_squared(D)))
+            SetBit(gatedViews, (uint)(imgId-1));
+    }
+    if (gatedViews == (1u << nNumViews) - 1u)
+        gatedViews = 0;
     for (int imgId = 1; imgId <= nNumViews; ++imgId)
-        costVector[imgId-1] = ScorePlaneModel(cache, ref, images[imgId], cams, views, refTrig, imgId, p, plane, lowDepth, prm);
+        costVector[imgId-1] = IsBitSet(gatedViews, (uint)(imgId-1)) ? fBadCost :
+            ScorePlaneModel(cache, ref, images[imgId], cams, views, refTrig, imgId, p, plane, lowDepth, prm);
     if (GEOM)
         for (int imgId = 0; imgId < nNumViews; ++imgId)
             costVector[imgId] += 0.1f * GeometricConsistencyWeightModel(depthImages[imgId], ref, cams, views, imgId+1, plane, p, prm);
