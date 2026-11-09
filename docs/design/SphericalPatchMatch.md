@@ -182,6 +182,10 @@ equirectangular reference; `RunCUDA` picks it from the per-view mask `Params::sp
   propagation use the generic `NormalFromDepthGradient`/`InterpolatePlaneDepth`.
 - Geometric consistency (`GeometricConsistencyWeightModel`): the CPU round trip through both
   models, the column distance wrapped for a spherical reference.
+- View gate (`MultiViewScorePlane`, the model kernels): per (pixel, hypothesis), as `ScorePixel`, a view
+  whose center C (`g_views`, reference frame) sees X = depth·r at X·(X−C) > cos(`fMinAngle`)·|X||X−C|
+  scores the bad cost of a view that does not see the patch, unless every view is gated; its
+  geometric-consistency term is added as for any unseen view. At most 31 views (ASSERT).
 - The model kernels inline the whole scoring path (`__forceinline__`): under `-rdc` a callee is
   compiled with its own register count and must fit the 128 registers of the launch bounds.
 - Pinhole scenes run the unchanged kernels: their SASS is identical but for the stack layout of the
@@ -242,8 +246,8 @@ RelWithDebInfo), Holo360D Outdoor_004 (40 frames at `--max-resolution 1440` unle
 | Holo360D, cube faces 416x416, pinhole | 0.774 | 0.130 | 0.126 | 0.374 | same pipeline on the rendered faces |
 | synthetic 3 panoramas 1536x768, B + A above 70°, view gate (default) | 0.911 | 0.00050 | 0.982 | 0.994 | equator 0.00072 / <5% 0.987, north 0.00031 / 1.000, south 0.00040 / 0.992, seam 0.00054 / 0.998, center 0.00054 / 1.000 |
 | Holo360D, B + A above 70°, view gate (default), 2 runs | 0.954 | 0.193–0.197 | 0.133–0.134 | 0.341–0.344 | equator 0.972 / 0.111–0.112 / 0.150–0.151 / 0.388–0.389, seam 0.947–0.949 / 0.198–0.213 / 0.136–0.137 / 0.333–0.334 |
-| CUDA: synthetic 512x256, B70, no view gate | 0.964 | 0.00141 | 0.932 | 0.989 | equator 0.991 / 0.00218, north 0.857 / 0.00069, south 0.849 / 0.00097, seam 0.969 / 0.00149 (CPU 0.956 / 0.00147 / 0.919 / 0.985); normal median 3.2° (CPU 4.0°); faces 128x128 on CUDA 0.949 |
-| CUDA: Holo360D 10 frames at 720, B70, no view gate | 0.718 | 0.057 | 0.203 | 0.481 | CPU on the same: 0.960 / 0.295 / 0.088 / 0.268; the CPU's best 71.8 % by confidence 0.173 / 0.113 / 0.338 |
+| CUDA: synthetic 512x256, B70, view gate | 0.964 | 0.00139 | 0.931 | 0.988 | equator 0.991 / 0.00218, north 0.857 / 0.00068, south 0.850 / 0.00092, seam 0.968 / 0.00153 / <5% 0.994, center 0.966 / 0.00163 / <5% 0.991 (CPU 0.956 / 0.00147 / 0.919 / 0.986, seam 0.951 / 0.00166, center 0.958 / 0.00168); normal median 3.2° (CPU 4.0°); without the gate 0.964 / 0.00140 |
+| CUDA: Holo360D 10 frames at 720, B70, view gate | 0.711 | 0.056 | 0.209 | 0.483 | CPU with the gate on the same: 0.958 / 0.284 / 0.090 / 0.269; CUDA without the gate 0.718 / 0.057 / 0.203 / 0.481; the CPU's best 71.8 % by confidence (no gate) 0.173 / 0.113 / 0.338 |
 
 On Holo360D the CUDA estimator keeps fewer pixels than the CPU one and is more accurate on every band
 (equator 0.79 / 0.047 against 0.97 / 0.20, south 0.62 / 0.51 against 0.95 / 1.99): the pixels only the
@@ -393,7 +397,7 @@ alike: it looks behind the camera, at the operator (masked) and the path walked.
 - Per-hypothesis cost ~1.24x pinhole against the 1.2x target (section 4): what remains is the
   projection of the patch center (two FastAtan2, one square root, the reciprocal of ρ) and the
   per-pixel ray frames, amortized over few hypotheses in `scorebench`.
-- CUDA: the per-pixel view gate is not ported yet; the rows are clamped at the poles where the CPU
+- CUDA: the rows are clamped at the poles where the CPU
   rejects the view; mixed pinhole/spherical scenes run the `MODEL_PINHOLE_REF` kernels, untested.
 - Metal (P8): the port of the model kernels, the wrapped sampling and the model math (hand mirror).
 - The confidence recalibration (`ConfidenceRefine.h`, `ConfidenceCUDA.cu`) is pinhole only and
