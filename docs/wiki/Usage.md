@@ -41,6 +41,8 @@ From either the keyframes produced above or any folder / semicolon-separated lis
 CreateStructure -s images_folder -o scene.sfm --export-mvs scene.mvs --extract-colors 1
 ```
 
+The exported project references the original images: distorted cameras are written with their Brown distortion and undistorted by the MVS modules when they load the images. `--undistort-extension .png` (or `.jpg`, `.jxl`) writes undistorted copies into an `undistorted` folder instead, with `--undistort-alpha` choosing how much of the image they keep.
+
 ![native sparse reconstruction](https://github.com/cdcseacave/openMVS_sample/blob/master/scene_sparse.jpg)
 
 When the input is a `.sfm` produced by `ExtractKeyframes` or `CreateStructure` with feature extraction and matching only, point `--source` at that file directly: `CreateStructure` loads the saved features and pair matches and skips re-detection.
@@ -105,7 +107,7 @@ A complete reconstruction starting from a 360° video file:
 
 ```
 ExtractKeyframes -i pano.mp4 -o scene_keyframes.sfm -d frames --camera-type 1
-CreateStructure -s scene_keyframes.sfm -o scene.sfm --export-mvs scene.mvs --extract-colors 1
+CreateStructure -s scene_keyframes.sfm -o scene.sfm --export-mvs scene.mvs --extract-colors 1 --spherical-export cubemap
 DensifyPointCloud scene.mvs
 ReconstructMesh scene_dense.mvs -p scene_dense.ply
 TextureMesh scene_dense.mvs -m scene_dense_mesh.ply
@@ -114,7 +116,7 @@ TextureMesh scene_dense.mvs -m scene_dense_mesh.ply
 ![spherical untextured mesh](https://github.com/cdcseacave/openMVS_sample/blob/master/scene_spherical_dense_mesh.jpg)
 ![spherical reconstruction result](https://github.com/cdcseacave/openMVS_sample/blob/master/scene_spherical_dense.jpg)
 
-Equirectangular images and video are supported end-to-end: the SfM stage processes them natively, and the downstream MVS modules receive an automatic six-face cube-map projection — no manual flat-panorama unwrapping is needed.
+Equirectangular images and video are processed natively by the SfM stage. The `.mvs` export writes them as native spherical cameras, which the dense reconstruction does not support yet; `CreateStructure --spherical-export cubemap` writes instead each panorama as an automatic six-face cube-map of pinhole views, which the downstream MVS modules consume as they are — no manual flat-panorama unwrapping is needed.
 
 </details>
 

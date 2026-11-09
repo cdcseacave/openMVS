@@ -809,12 +809,12 @@ bool FeaturesExtractor::ExtractImageSpherical(Image& image, cv::Ptr<cv::Feature2
 	// Geometry is cheap and doesn't depend on pixels — MVS export shares the
 	// same builder across all spherical images in a scene; we still rebuild
 	// per-call here because ExtractImageSpherical runs one image at a time.
-	const SphereCubeMap::TangentFacesGeometry geom =
-		SphereCubeMap::MakeTangentFacesGeometry(numFaces, faceSize);
-	if (geom.numFaces == 0) {
+	if (!SphereCubeMap::IsSupportedNumFaces(numFaces)) {
 		VERBOSE("FeaturesExtractor::ExtractImageSpherical: unsupported numFaces=%d for image %u", numFaces, image.ID);
 		return false;
 	}
+	const SphereCubeMap::TangentFacesGeometry geom =
+		SphereCubeMap::MakeTangentFacesGeometry(numFaces, faceSize);
 	const std::vector<Image8U3> faceImages =
 		SphereCubeMap::SphericalToTangentialFaces<Pixel8U>(image.GetImage8U3(), geom);
 

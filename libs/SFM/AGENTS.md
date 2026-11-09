@@ -249,7 +249,11 @@ Joint refinement of focal length + distortion (k1, k2) with relative pose via Ce
   `trustIntrinsics`) / `POSES` (R + C) / `POSITIONS` (C only). Rows match by file-name stem
   (case-insensitive, ambiguous stems rejected) and `score <= 0` invalidates the pose.
   `ImportPoses` (`PoseIO.h`) dispatches on extension: `.csv` here, `.json` to `ImportFramesJSON`
-- **MVS export** (`InterfaceMVS.h`): Conversion to MVS binary format. The SFM image ID is written
+- **MVS export** (`InterfaceMVS.h`): Conversion to MVS binary format (Interface v8). Distorted
+  pinhole cameras are written as `BROWN` cameras of the original images (MVS undistorts on load)
+  unless `undistortImageDir` asks for undistorted files; spherical cameras are written natively
+  unless `sphericalExport` is `CUBEMAP`; observations only with `includeObservations`. The design
+  is in `docs/design/SphericalCameraSupport.md`. The SFM image ID is written
   into `Interface::Image::ID` (the external/global-ID field) so per-image data keyed by SFM ID —
   e.g. the pose-quality CSV — correlates after import; `Vertex::View::imageID` stays the
   images-ARRAY-POSITION (hard invariant), tracked separately from the IDs. Spherical cube-map faces
