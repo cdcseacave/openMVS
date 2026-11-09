@@ -122,18 +122,24 @@ HOST_DEVICE inline typename Pinhole<T>::Vec3 NormalFromDepthGradient(const Pinho
 		(camera.cx-(T)x.x())*gradient.x() + (camera.cy-(T)x.y())*gradient.y() - depth).normalized();
 }
 
+// depth along ray of the plane through the point at nDepth along nRay with the given normal (camera
+// frame): nDepth*(n.nRay)/(n.ray); nDepth if the plane is parallel to ray or the new depth is outside
+// [dMin,dMax]
+template<typename T>
+HOST_DEVICE inline T InterpolatePlaneDepth(const Eigen::Matrix<T,3,1>& ray, const Eigen::Matrix<T,3,1>& nRay, T nDepth, const Eigen::Matrix<T,3,1>& normal, T dMin, T dMax) {
+	ASSERT(nDepth > T(0) && dMin < dMax);
+	const T denom(normal.dot(ray));
+	if (Eigen::numext::abs(denom) < Eigen::NumTraits<T>::epsilon())
+		return nDepth;
+	const T depth(nDepth*normal.dot(nRay)/denom);
+	return depth >= dMin && depth <= dMax ? depth : nDepth;
+}
 // depth at pixel x of the plane through neighbor pixel nx at depth nDepth with the given normal
 // (camera frame), intersected with the ray through x: depth = nDepth*(n.Ray(nx))/(n.Ray(x));
 // nDepth if the plane is parallel to that ray or the new depth is outside [dMin,dMax]
 template<typename MODEL>
 HOST_DEVICE inline typename MODEL::Scalar InterpolatePlaneDepth(const MODEL& camera, const Eigen::Vector2i& x, const Eigen::Vector2i& nx, typename MODEL::Scalar nDepth, const typename MODEL::Vec3& normal, typename MODEL::Scalar dMin, typename MODEL::Scalar dMax) {
-	typedef typename MODEL::Scalar T;
-	ASSERT(nDepth > T(0) && dMin < dMax);
-	const T denom(normal.dot(camera.Ray(x.cast<T>())));
-	if (Eigen::numext::abs(denom) < Eigen::NumTraits<T>::epsilon())
-		return nDepth;
-	const T depth(nDepth*normal.dot(camera.Ray(nx.cast<T>()))/denom);
-	return depth >= dMin && depth <= dMax ? depth : nDepth;
+	return InterpolatePlaneDepth(camera.Ray(x.cast<typename MODEL::Scalar>()), camera.Ray(nx.cast<typename MODEL::Scalar>()), nDepth, normal, dMin, dMax);
 }
 // pinhole: a neighbor on the same column or row is intersected in that slice, any other one along
 // the ray through x

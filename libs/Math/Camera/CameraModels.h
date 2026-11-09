@@ -34,9 +34,17 @@ namespace SEACAVE {
 //    along x and y, then Ray(x)), PixelHomography(r) maps rays near r to homogeneous pixels;
 //    the plane-induced patch warp between two views is composed from these two.
 
+// the small hot helpers below are always inlined, on the host and on the device
+#ifdef __CUDACC__
+#define CAMERAMODELS_FORCEINLINE __forceinline__
+#else
+#define CAMERAMODELS_FORCEINLINE FORCEINLINE
+#endif
+
 // atan2 in single precision by a minimax polynomial of atan on [0,1] (max error 1.3e-7 rad, the
-// precision of the float atan2), several times cheaper than the library atan2 on the CPU and the GPU
-HOST_DEVICE inline float FastAtan2(float y, float x) {
+// precision of the float atan2), several times cheaper than the library atan2 on the CPU and the GPU;
+// the CPU packet version (DepthMap.cpp) evaluates the same polynomial lane by lane
+HOST_DEVICE CAMERAMODELS_FORCEINLINE float FastAtan2(float y, float x) {
 	const float ax(x < 0.f ? -x : x), ay(y < 0.f ? -y : y);
 	const float mx(ax > ay ? ax : ay);
 	if (mx == 0.f)
@@ -91,7 +99,7 @@ struct Pinhole {
 		x = NormalizedToPixel(Perspective(X));
 		return X.z() > T(0);
 	}
-	HOST_DEVICE bool ProjectFast(const Vec3& X, Vec2& x) const {
+	HOST_DEVICE CAMERAMODELS_FORCEINLINE bool ProjectFast(const Vec3& X, Vec2& x) const {
 		return Project(X, x);
 	}
 	HOST_DEVICE static T Depth(const Vec3& X) {
@@ -223,8 +231,12 @@ struct Spherical {
 	HOST_DEVICE Vec3 Ray(const Vec2& x) const {
 		using std::cos; using std::sin;
 		const Vec2 a(Angles(x));
-		const T cosElevation(cos(a.y()));
-		return Vec3(cosElevation * sin(a.x()), -sin(a.y()), cosElevation * cos(a.x()));
+		return Ray(sin(a.x()), cos(a.x()), sin(a.y()), cos(a.y()));
+	}
+	// the same from the sines and cosines of the pixel's longitude and elevation (they depend on the
+	// column and on the row only, so a caller may tabulate them)
+	HOST_DEVICE static Vec3 Ray(T sinLon, T cosLon, T sinEl, T cosEl) {
+		return Vec3(cosEl * sinLon, -sinEl, cosEl * cosLon);
 	}
 	HOST_DEVICE bool Project(const Vec3& X, Vec2& x) const {
 		using std::atan2; using std::sqrt;
@@ -233,13 +245,19 @@ struct Spherical {
 			fy * atan2(X.y(), sqrt(X.x()*X.x() + X.z()*X.z())) + cy);
 		return X.squaredNorm() > T(0);
 	}
-	// Project in single precision through FastAtan2, for the patch warps' hot loops
-	HOST_DEVICE bool ProjectFast(const Vec3& X, Vec2& x) const {
+	// Project in single precision through FastAtan2, for the patch warps' hot loops, given
+	// rho = sqrt(X.x^2+X.z^2) (which PixelHomography takes too)
+	HOST_DEVICE CAMERAMODELS_FORCEINLINE bool ProjectFast(const Vec3& X, Vec2& x, T rho) const {
 		using std::sqrt;
+		ASSERT(rho == sqrt(X.x()*X.x() + X.z()*X.z()));
 		x = Vec2(
 			fx * FastAtan2(X.x(), X.z()) + cx,
-			fy * FastAtan2(X.y(), sqrt(X.x()*X.x() + X.z()*X.z())) + cy);
-		return X.squaredNorm() > T(0);
+			fy * FastAtan2(X.y(), rho) + cy);
+		return rho > T(0) || X.y() != T(0);
+	}
+	HOST_DEVICE CAMERAMODELS_FORCEINLINE bool ProjectFast(const Vec3& X, Vec2& x) const {
+		using std::sqrt;
+		return ProjectFast(X, x, sqrt(X.x()*X.x() + X.z()*X.z()));
 	}
 	HOST_DEVICE static T Depth(const Vec3& X) {
 		return X.norm();
@@ -250,8 +268,10 @@ struct Spherical {
 	HOST_DEVICE Mat3 RayFrame(const Vec2& x) const {
 		using std::cos; using std::sin;
 		const Vec2 a(Angles(x));
-		const T cosLon(cos(a.x())), sinLon(sin(a.x()));
-		const T cosEl(cos(a.y())), sinEl(sin(a.y()));
+		return RayFrame(sin(a.x()), cos(a.x()), sin(a.y()), cos(a.y()));
+	}
+	// the same from the sines and cosines of the pixel's longitude and elevation
+	HOST_DEVICE Mat3 RayFrame(T sinLon, T cosLon, T sinEl, T cosEl) const {
 		Mat3 F;
 		F << cosEl*cosLon/fx, sinEl*sinLon/fy, cosEl*sinLon,
 		     T(0), cosEl/fy, -sinEl,
@@ -269,13 +289,16 @@ struct Spherical {
 	// the same, given the pixel x of the ray (Project)
 	HOST_DEVICE Mat3 PixelHomography(const Vec3& ray, const Vec2& x) const {
 		using std::sqrt;
+		return PixelHomography(ray, x, sqrt(ray.x()*ray.x() + ray.z()*ray.z()));
+	}
+	// the same, given also rho = sqrt(ray.x^2+ray.z^2) = |ray|*cos(el), which Project computes too
+	HOST_DEVICE Mat3 PixelHomography(const Vec3& ray, const Vec2& x, T rho) const {
 		// with d = ray/|ray|, the rows fx/cos(el)*eLon + x.x*d, fy*eDown + x.y*d, d, where eLon =
 		// (cos(lon),0,-sin(lon)) is the longitude tangent and eDown = (-d.y*sin(lon),cos(el),-d.y*cos(lon))
 		// the downward elevation tangent, scaled by |ray| (a homography is defined up to scale)
-		const T rho(sqrt(ray.x()*ray.x() + ray.z()*ray.z())); // |ray|*cos(el)
 		ASSERT(rho > T(0));
 		const T invRho(T(1)/rho);
-		const T sx(fx*ray.squaredNorm()*invRho*invRho), sy(fy*ray.y()*invRho);
+		const T sx(fx*(rho*rho + ray.y()*ray.y())*invRho*invRho), sy(fy*ray.y()*invRho);
 		Mat3 P;
 		P << sx*ray.z() + x.x()*ray.x(), x.x()*ray.y(), -sx*ray.x() + x.x()*ray.z(),
 		     -sy*ray.x() + x.y()*ray.x(), fy*rho + x.y()*ray.y(), -sy*ray.z() + x.y()*ray.z(),

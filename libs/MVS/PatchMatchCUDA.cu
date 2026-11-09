@@ -531,9 +531,10 @@ __device__ __forceinline__ float ScorePlaneModel(const RefPatchCache& cache, Ref
 			if (!SampleExactPatch(cache, ref, trgImage, trg, view, normal, nX, p, sums))
 				return fBadCost;
 		} else {
+			const float rho = sqrtf(q0.x() * q0.x() + q0.z() * q0.z());
 			Point2 xc;
-			trg.ProjectFast(q0, xc);
-			Matrix3 M = trg.PixelHomography(q0, xc) * HF;
+			trg.ProjectFast(q0, xc, rho);
+			Matrix3 M = trg.PixelHomography(q0, xc, rho) * HF;
 			M.row(0) *= view.texScale.x();
 			M.row(1) *= view.texScale.y();
 			const Point3 X = M * Point3(float(-nSizeHalfWindow), float(-nSizeHalfWindow), 1.f);
