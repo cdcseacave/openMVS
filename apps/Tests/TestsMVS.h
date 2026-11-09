@@ -102,6 +102,10 @@ bool DMapCacheKeepsRequestedImageTest();
 // a v7 stream loads, the v8 size identity (v7 + 1 byte per camera + 1 flags byte without observations),
 // MVS::Scene load/save round trip of the models, and the undistorted camera K' rule shared by SfM and MVS
 bool InterfaceV8Test();
+
+// the boost archives of the platforms saved before the camera models (Platform::Camera a CameraIntern)
+// load, in the text, binary and compressed archives, and so do the current ones with a Brown camera
+bool PlatformArchiveCompatibilityTest();
 /*----------------------------------------------------------------*/
 
 } // namespace MVS
