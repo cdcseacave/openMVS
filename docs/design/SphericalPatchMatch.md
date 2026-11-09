@@ -295,7 +295,7 @@ RelWithDebInfo), Holo360D Outdoor_004 (40 frames at `--max-resolution 1440` unle
 | Holo360D, B + A above 70°, no view gate | 0.956 | 0.203 | 0.131 | 0.343 | equator 0.974 / 0.111 / 0.149 / 0.390, seam 0.951 / 0.208 / 0.136 / 0.333, south (the ground under the handheld camera, behind the operator in the neighbors) 0.945 / 1.94 |
 | Holo360D, cube faces 416x416, pinhole | 0.774 | 0.130 | 0.126 | 0.374 | same pipeline on the rendered faces |
 | synthetic 3 panoramas 1536x768, B + A above 70°, view gate (default) | 0.911 | 0.00050 | 0.982 | 0.994 | equator 0.00072 / <5% 0.987, north 0.00031 / 1.000, south 0.00040 / 0.992, seam 0.00054 / 0.998, center 0.00054 / 1.000 |
-| Holo360D, B + A above 70°, view gate (default), 2 runs | 0.954 | 0.193–0.197 | 0.133–0.134 | 0.341–0.344 | equator 0.972 / 0.111–0.112 / 0.150–0.151 / 0.388–0.389, seam 0.947–0.949 / 0.198–0.213 / 0.136–0.137 / 0.333–0.334 |
+| Holo360D, B + A above 70°, view gate (default), 3 runs | 0.953–0.954 | 0.193–0.198 | 0.132–0.134 | 0.341–0.344 | equator 0.972 / 0.111–0.112 / 0.148–0.151 / 0.387–0.389, seam 0.947–0.949 / 0.198–0.213 / 0.136–0.137 / 0.326–0.334 |
 | CUDA: synthetic 512x256, B70, view gate | 0.964 | 0.00139 | 0.931 | 0.988 | equator 0.991 / 0.00218, north 0.857 / 0.00068, south 0.850 / 0.00092, seam 0.968 / 0.00153 / <5% 0.994, center 0.966 / 0.00163 / <5% 0.991 (CPU 0.956 / 0.00147 / 0.919 / 0.986, seam 0.951 / 0.00166, center 0.958 / 0.00168); normal median 3.2° (CPU 4.0°); without the gate 0.964 / 0.00140 |
 | CUDA: Holo360D 10 frames at 720, B70, view gate | 0.711 | 0.056 | 0.209 | 0.483 | CPU with the gate on the same: 0.958 / 0.284 / 0.090 / 0.269; CUDA without the gate 0.718 / 0.057 / 0.203 / 0.481; the CPU's best 71.8 % by confidence (no gate) 0.173 / 0.113 / 0.338 |
 
@@ -382,7 +382,7 @@ Holo360D, 40 frames at 1440 px, the GT of the 2048x1024 range maps (thresholds 2
 
 | case | points | P / R / F @2% | P / R / F @5% | P / R / F @10% | F@5% per band |
 |---|---|---|---|---|---|
-| 40 panoramas, view gate (2 runs) | 324781–330978 | 0.792–0.797 / 0.208–0.212 / 0.330–0.335 | 0.908–0.916 / 0.360–0.365 / 0.516–0.521 | 0.968–0.973 / 0.504–0.509 / 0.663–0.668 | equator 0.396–0.403, north 0.898–0.904, south 0.279–0.295, seam 0.517–0.519 |
+| 40 panoramas, view gate (3 runs) | 317445–330978 | 0.785–0.797 / 0.208–0.212 / 0.328–0.335 | 0.908–0.916 / 0.350–0.365 / 0.506–0.521 | 0.968–0.973 / 0.491–0.509 / 0.652–0.668 | equator 0.384–0.403, north 0.898–0.906, south 0.225–0.295, seam 0.489–0.519 |
 | their 240 cube faces 416x416 | 287846 | 0.760 / 0.194 / 0.310 | 0.932 / 0.401 / 0.561 | 0.971 / 0.596 / 0.738 | equator 0.434, north 0.859, south 0.489, seam 0.573 |
 
 The panoramas give the more precise cloud, the faces the higher recall at the loose thresholds,
