@@ -5,9 +5,11 @@
 `libs/SFM` supports equirectangular (360°) still images and video as a first-class camera model
 end to end through sparse reconstruction: EXIF auto-detection, feature extraction, matching,
 pose estimation, triangulation, and bundle adjustment all dispatch on `CameraType::SPHERICAL`
-alongside `PINHOLE`. Dense reconstruction (`libs/MVS`) has no spherical camera model at all; the
-SFM→MVS export bridges the gap by rendering each spherical image to N tangent pinhole cube-map
-faces that downstream PatchMatch/texturing consume as ordinary pinhole images.
+alongside `PINHOLE`. The SFM→MVS export writes spherical cameras natively (Interface v8
+`SPHERICAL` model) by default; `libs/MVS` loads and saves them, but its dense reconstruction has no
+spherical path yet and `DensifyPointCloud` refuses such a scene. The cube-map bridge, which renders
+each spherical image to N tangent pinhole faces that the whole MVS pipeline consumes as ordinary
+pinhole images, stays available as an export option.
 
 ## 2. Algorithm as implemented
 
@@ -112,12 +114,34 @@ dispatches on `config.cameraType` (`PINHOLE` / `SPHERICAL`) to build the matchin
 `apps/ExtractKeyframes` exposes `--camera-type 0|1` (pinhole/spherical) and `--cubemap-faces`
 (default 6, feature-extraction face count only).
 
-### MVS export (cube-map bridge) — `libs/SFM/InterfaceMVS.cpp`
+### MVS export — `libs/SFM/InterfaceMVS.cpp`
 
-`SFM::ExportMVS` detects any `CameraType::SPHERICAL` camera in the scene, builds one
-`SphereCubeMap::TangentFacesGeometry` for `(config.sphericalNumFaces, config.sphericalFaceSize)`
-(defaults 6 / 1024px, `ExportMVSConfig` in `libs/SFM/InterfaceMVS.h`; must be one of 4/6/8/12/20 or
-export fails), then runs four phases implemented as file-local helpers of `InterfaceMVS.cpp`:
+`SFM::ExportMVS` writes an Interface v8 project (`libs/Math/Interface.h`, format in
+`docs/wiki/Interface.md`). Each SFM camera becomes one platform with one camera:
+
+- **Pinhole without distortion:** `PINHOLE`, the original images.
+- **Pinhole with distortion:** `BROWN` with `k1,k2,p1,p2,k3` (plus `k4,k5,k6` when the rational
+  terms are used) and the original image paths; no image is written. The images of a camera the
+  SfM rotated to landscape get the camera of their on-disk orientation: `View::RevertRotation` for
+  `K`, and `p1' = -p2`, `p2' = p1` for the tangential terms (the radial ones are invariant).
+  `libs/MVS` undistorts on load (below). Only if `ExportMVSConfig::undistortImageDir` is set
+  (`CreateStructure --undistort-extension <ext>`) are the images undistorted on export by
+  `Scene::UndistortImages` (cubic remap, `undistortAlpha`) and written as `PINHOLE` cameras of
+  `UndistortedK(K, distortion, size, undistortAlpha)`; the images of the other cameras keep their paths.
+- **Spherical, `Spherical::NATIVE` (default, `--spherical-export native`):** `SPHERICAL` with the
+  angular `K` of `Spherical<REAL>::FromSize(W, H)` and the original image paths.
+- **Spherical, `Spherical::CUBEMAP` (`--spherical-export cubemap`):** the cube-map bridge below.
+
+Observations are written when `ExportMVSConfig::includeObservations` is set (off by default, no
+CLI flag): the keypoint of every view in the exported image file (through `UndistortedK` for an
+undistorted file, in the on-disk orientation for a rotated one, and through the feature ray
+projected into each face for the cube-map faces); the export fails if a track observation has no
+keypoint.
+
+The cube-map bridge builds one `SphereCubeMap::TangentFacesGeometry` for
+`(config.sphericalNumFaces, config.sphericalFaceSize)` (defaults 6 / 1024px; the face count must be
+one of 4/6/8/12/20, `SphereCubeMap::IsSupportedNumFaces`, or the export fails), then runs four phases
+implemented as file-local helpers of `InterfaceMVS.cpp`:
 
 1. `EmitSphericalPlatforms` — one MVS `Platform` per spherical SFM camera with N face `Camera`
    records sharing the geometry's intrinsics and per-face rotations.
@@ -130,15 +154,44 @@ export fails), then runs four phases implemented as file-local helpers of `Inter
 4. `ProjectTrackOntoSphericalFaces` — for each 3D track point, projects into every face's pinhole
    model and adds a `Vertex::View` per face where the point is in front of that face's camera.
 
-`UndistortDepthMaps` (`InterfaceMVS.cpp`) remains pinhole-only (explicitly skips any camera whose
-type is not `PINHOLE`) — consistent with there being no native spherical depth-map path; its
-remap tables and depth-aware resampling are `SEACAVE::UndistortMaps`
-(`libs/Math/Camera/CameraUndistort.h`), shared with `Scene::UndistortImages` and
-`apps/InterfaceMetashape`.
+`UndistortDepthMaps` (`InterfaceMVS.cpp`, the ROMA2 depth-maps of `CreateStructure`) is
+pinhole-only (it skips any camera whose type is not `PINHOLE`). It writes each depth-map in the
+frame of the undistorted camera of its image, `UndistortedK(K, distortion, imageSize, alpha)` scaled
+to the depth-map resolution, and stores that `K'`: `alpha` is `UNDISTORT_ALPHA` for a native export
+(the frame `libs/MVS` loads the images in) and `--undistort-alpha` for an undistorted one. Its remap
+tables and depth-aware resampling are `SEACAVE::UndistortMaps` (`libs/Math/Camera/CameraUndistort.h`),
+shared with `Scene::UndistortImages` and `apps/InterfaceMetashape`.
 
 No CLI flag exposes `sphericalNumFaces` / `sphericalFaceSize` in `CreateStructure` or any other
 app; only the Python bindings (`libs/SFM/PythonWrapper.cpp`) and hand-constructed
 `ExportMVSConfig` (tests) can change them from the 6-face/1024px defaults.
+
+### MVS load — `libs/MVS/Scene.cpp`, `libs/MVS/Image.cpp`
+
+`Scene::LoadInterface` keeps the model of every camera in `MVS::Platform::Camera::model`:
+
+- **`BROWN`:** the lens of the image files (`CameraLens`: `K` at the file resolution, the
+  distortion, the resolution, which a Brown camera must carry) is kept, and the camera `K` every
+  consumer sees is `K' = UndistortedK(lens.K, lens.distortion, lens.size)`, i.e.
+  `cv::getOptimalNewCameraMatrix` with `UNDISTORT_ALPHA = 0.6` at the same size: the rule of the SfM
+  undistort-on-export path, computed by the one function in `libs/Math/Camera`. `Image::UpdateCamera`
+  copies the model and lens into each `MVS::Image`.
+- **`Image::ReadPixels`** reads an image file and, for a Brown camera, remaps it at its original
+  resolution (linear) through the `CameraUndistortMaps` of the process-wide cache
+  (`GetCameraUndistortMaps`: keyed by the lens and the resolution, shared by the images of a
+  camera, thread-safe, least recently used maps dropped beyond 1 GiB), before any resize.
+  `LoadImage`, `ReloadImage`, the densify on-demand decode and the Viewer observations panel all
+  read through it, so every app sees the same pixels; depth-maps live in the `K'` frame.
+  `Image::LoadMask` remaps a segmentation mask with nearest-neighbour sampling.
+- The undistorted pixels whose bilinear source footprint leaves the image file are unset in
+  `CameraUndistortMaps::mask`; `DepthEstimator::ImportIgnoreMask` ANDs it into the ignore mask
+  of a Brown image whatever the ignore label (densify CPU and CUDA, refine), and the texturing
+  validity mask detects them as the black regions it already handles.
+- Observations (`HAS_OBSERVATIONS`) are undistorted into `K'` (`BrownDistortion::Undistort`) into
+  `PointCloud::pointObservations`; `Scene::SaveInterface` distorts them back and writes the camera
+  back as it was read (`K`, resolution and coefficients).
+- **`SPHERICAL`:** loaded and saved as is; `DensifyPointCloud` refuses the scene (PatchMatch, SGM
+  and the fusion are pinhole only).
 
 ## 3. Parameters and defaults
 
@@ -148,8 +201,12 @@ app; only the Python bindings (`libs/SFM/PythonWrapper.cpp`) and hand-constructe
 | `cubemapFaces` | `FeaturesExtractor` config | 6 | Tangent-face count for feature extraction (4/6/8/12/20) |
 | `cubemapFaceSize` | `FeaturesExtractor` config | 0 (auto = `max(1024, width/4)`) | Tangent-face resolution for feature extraction |
 | `cubemapDedupAngleDeg` | `FeaturesExtractor` config | 0.25° | Angular non-max-suppression radius for cross-face duplicate keypoints |
-| `sphericalNumFaces` | `ExportMVSConfig` (`InterfaceMVS.h`) | 6 | Tangent-face count for MVS export (4/6/8/12/20; not exposed on any app's CLI) |
-| `sphericalFaceSize` | `ExportMVSConfig` | 1024 px | Tangent-face resolution for MVS export (square; not exposed on any app's CLI) |
+| `sphericalExport` / `--spherical-export` | `ExportMVSConfig` / `CreateStructure` | `NATIVE` / `native` | Spherical cameras exported natively or as the cube-map bridge (`cubemap`) |
+| `sphericalNumFaces` | `ExportMVSConfig` (`InterfaceMVS.h`) | 6 | Tangent-face count for the cube-map export (4/6/8/12/20; not exposed on any app's CLI) |
+| `sphericalFaceSize` | `ExportMVSConfig` | 1024 px | Tangent-face resolution for the cube-map export (square; not exposed on any app's CLI) |
+| `undistortImageDir` / `--undistort-extension` | `ExportMVSConfig` / `CreateStructure` | empty | Undistort the Brown cameras on export into this folder / with this image format, instead of exporting them as `BROWN` |
+| `includeObservations` | `ExportMVSConfig` | false | Write the feature observation of every view (no CLI flag) |
+| `UNDISTORT_ALPHA` | `libs/Math/Camera/CameraUndistort.h` | 0.6 | Free scaling of `K'` for the cameras undistorted on load (fixed, not an option) |
 | `--camera-type` | `apps/ExtractKeyframes` | 0 (pinhole) | `0` = pinhole, `1` = spherical |
 | `--cubemap-faces` | `apps/ExtractKeyframes` | 6 | Feature-extraction face count (does not affect MVS export) |
 
@@ -172,9 +229,12 @@ app; only the Python bindings (`libs/SFM/PythonWrapper.cpp`) and hand-constructe
 - Pose-quality / uncertainty export (`docs/design/PoseUncertainty.md`) is validated for pinhole
   cameras only; spherical scenes use angular reprojection residuals its GPS-weight balancing term
   does not account for.
-- `libs/MVS` has no `CameraType` concept at all — every dense-reconstruction consumer (PatchMatch,
-  texturing, `UndistortDepthMaps`) only ever sees the rendered pinhole cube-map faces, never a
-  spherical camera object.
+- `libs/MVS` keeps the camera model only on `Platform::Camera` and `Image` (`model`, `lens`); the
+  `MVS::Camera` every dense-reconstruction consumer uses is a pinhole `K` (the undistorted `K'` of
+  a Brown camera). A spherical camera reaches no consumer: `DensifyPointCloud` refuses the scene,
+  and the other apps assume pinhole cameras.
+- `K'` of a Brown camera depends only on its lens and resolution (`UndistortedK`); the MVS loader,
+  the SfM export and the depth-map undistortion all call that one function.
 
 ## 5. Validation of the shipped defaults
 
@@ -187,6 +247,11 @@ app; only the Python bindings (`libs/SFM/PythonWrapper.cpp`) and hand-constructe
 | `PipelineTest` (spherical BA sub-test) | `apps/Tests/TestsSFM.cpp` | Mean reprojection error ≤1.0 px post-BA |
 | `CubeMapBridgeDropTopBottomTest` | `apps/Tests/TestsSFM.cpp` | 4-face geometry shows 0 views for zenith/nadir points vs. 6-face geometry showing the expected face |
 | `CubeMapFaceRenderTest`, `CubeMapBridgeGeometryTest`, `CubeMapBridgeEndToEndTest`, `CubeMapBridgeMVSLoadTest`, `CubeMapBridgeMixedSceneTest` | `apps/Tests/TestsSFM.cpp` | Cube-map rendering, geometry, MVS-export round trip, and mixed pinhole/spherical scenes (no numeric tolerances recorded beyond pass/fail) |
+| `InterfaceV8Test` | `apps/Tests/TestsMVS.cpp` | Interface v8 round trip of every model (pinhole, Brown 5/8 coefficients, spherical) with and without observations; a v7 stream loads; v8 size = v7 + 1 byte per camera + 1; `MVS::Scene` keeps the Brown lens exactly and the observations within 1e-3 px; `K'` identical between `UndistortedK`, `UndistortMaps::Init`, the map cache and the loaded image camera |
+| `BrownUndistortOnLoadTest` | `apps/Tests/TestsSynthetic.cpp` | Synthetic Brown views read through `MVS::Image` against the pinhole render at `K'`: mean abs difference 0.96 / 0.89 grey levels (bound 1.5; supersampled render vs bilinear remap), 4.61 % invalid pixels (bound 1-10 %), ignore mask equal to the undistortion mask, observation error 2.1e-5 px (bound 1e-3 px) |
+| v7 load / re-save identity | `TransformScene --convert 1`, develop vs this code | `apps/Tests/data` `scene.mvs` and `reconstruct_test.mvs`, EPFL fountain-P11 and Herz-Jesu-P8, ETH3D pipes (Metashape import): content equal, v8 size = v7 + cameras + 1 byte (+3/+2/+2/+2/+2), the v8 file rewritten as v7 by `MvsUtils.py` byte-identical to the develop re-save |
+| Native Brown export vs undistort-on-export | `CreateStructure` once, re-exported with `--undistort-extension .png`; `DensifyPointCloud --resolution-level 1 --max-resolution 3072`; in-house ETH3D scorer (Sim3 from the camera centres) | pipes (14/14 images): F1@2cm 0.7068 native / 0.7043 undistorted, F1@5cm 0.7800 / 0.7791; office (the SfM registers 6/26 images, 1.1° camera rotation error, so only the ICP-refined score is meaningful): F1@2cm 0.3106 / 0.3104, F1@5cm 0.3520 / 0.3526 |
+| Undistortion cost on load | `Tests undistortbench`, RelWithDebInfo, ETH3D 6048x4032 JPEG | remap 10.5 ms per image over a 108.5 ms decode (pipes, 14 images; office 10.8 / 120.6 ms, 6 images), 34-43 ms once per camera to build the maps |
 
 ## 6. Rejected alternatives
 
@@ -203,9 +268,15 @@ app; only the Python bindings (`libs/SFM/PythonWrapper.cpp`) and hand-constructe
 - `View::Ray()` and `View::UnprojectPoint()` still use the front-hemisphere-biased 2D `Unproject()`
   form rather than `UnprojectNormalized`; whether any live caller invokes them on a spherical image
   has not been audited.
-- Dense reconstruction has no native spherical camera model; PatchMatch and texturing only ever
-  operate on the rendered pinhole cube-map faces, so per-face seams and the fixed face
-  count/resolution are inherent to the current MVS path, not a configurable trade-off from any
-  app's CLI.
+- Dense reconstruction has no native spherical camera model yet: a natively exported spherical
+  scene loads and saves, but only the cube-map export densifies, with per-face seams and the
+  fixed face count/resolution of that bridge.
+- ReconstructMesh, RefineMesh, TextureMesh and the Viewer do not check the camera model; with a
+  spherical scene they treat the angular `K` as a pinhole one.
+- The semi-global matcher does not apply the undistortion validity mask (the ignore mask) of the
+  Brown images.
+- The other Interface producers (InterfaceCOLMAP import, InterfaceMetashape, InterfacePolycam)
+  still undistort on their own instead of passing the distortion through; InterfaceCOLMAP exports a
+  Brown camera as `OPENCV`/`FULL_OPENCV`.
 - Pose-uncertainty/covariance estimation is not validated for spherical cameras (see
   `docs/design/PoseUncertainty.md` §4).

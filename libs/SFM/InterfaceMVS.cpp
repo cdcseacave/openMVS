@@ -84,7 +84,8 @@ bool SFM::UndistortDepthMaps(const Scene& scene,
 {
 	ASSERT(!depthMapFiles.empty());
 	TD_TIMER_STARTD();
-	std::unordered_map<const Camera*, UndistortMaps> undistortMaps;
+	// per camera: the maps at the depth-map resolution and the undistorted K at the image resolution
+	std::unordered_map<const Camera*, std::pair<UndistortMaps,KMatrix>> undistortMaps;
 	undistortMaps.reserve(scene.cameras.size());
 
 	// For each image/depth-map, compute maps at the depth resolution using K scaled to that resolution
@@ -106,14 +107,14 @@ bool SFM::UndistortDepthMaps(const Scene& scene,
 		if (!pc->HasDistortion())
 			continue; // nothing to undistort for depth-map
 		// Check if undistortion maps already computed for this camera
-		UndistortMaps& data = [&]() -> UndistortMaps& {
-			UndistortMaps* pData = nullptr;
+		const std::pair<UndistortMaps,KMatrix>& data = [&]() -> const std::pair<UndistortMaps,KMatrix>& {
+			std::pair<UndistortMaps,KMatrix>* pData = nullptr;
 			#ifdef INTERFACEMVS_USE_OPENMP
 			#pragma omp critical
 			#endif
 			{
 				pData = &undistortMaps[pc];
-				if (pData->map1.empty() || pData->map2.empty()) {
+				if (pData->first.map1.empty()) {
 					// read only the header to obtain the image size and depth-map resolution;
 					// flags=0 requests the meta-data alone, leaving the map arguments untouched
 					MVS::DepthDataRaw meta;
@@ -125,17 +126,20 @@ bool SFM::UndistortDepthMaps(const Scene& scene,
 					}
 					const cv::Size imageSize((int)meta.header.imageWidth, (int)meta.header.imageHeight);
 					const cv::Size depthSize((int)meta.header.depthWidth, (int)meta.header.depthHeight);
-					// Build K at depth resolution by scaling the image K
+					// the undistorted camera of the images (the one the MVS scene uses), scaled
+					// to the depth-map resolution, so the depth-map lands on its pixel grid
+					ASSERT(imageSize == pc->GetSize());
+					pData->second = UndistortedK(pc->GetK(), pc->GetDistortion(), imageSize, alpha);
 					const KMatrix Kdepth = ScaleK(pc->GetK(), imageSize, depthSize);
-					pData->Init(Kdepth, pc->GetDistortion(), depthSize, alpha);
+					pData->first.Init(Kdepth, pc->GetDistortion(), depthSize, ScaleK(pData->second, imageSize, depthSize));
 					if (undistortedIntrinsics)
-						undistortedIntrinsics->emplace(pc, pData->K);
+						undistortedIntrinsics->emplace(pc, pData->second);
 				}
 			}
 			return *pData;
 		}();
 		// Undistort DMAP with depth-aware interpolation and write back
-		if (!UndistortDMAP(dfile, data, img.GetK())) {
+		if (!UndistortDMAP(dfile, data.first, data.second)) {
 			DEBUG("warning: undistort depth failed for '%s'", dfile.c_str());
 			continue;
 		}
@@ -264,14 +268,36 @@ bool SFM::ImportMVS(const String& fileName, Scene& scene, bool loadColors)
 				VERBOSE("error: missing resolution for platform %u camera %u", pid, cid);
 				continue;
 			}
-			const auto fullK = platform.GetFullK(cid, (uint32_t)size.width, (uint32_t)size.height);
-			PinholeCamera* pc = new PinholeCamera(size);
-			pc->SetK(fullK);
-			pc->trustIntrinsics = true;
-			pc->SetName(cam.name.empty() ? platform.name : cam.name);
-			pc->metadata.model = cam.bandName;
+			Camera* pCamera;
+			if (cam.model == MVSPlatform::Camera::SPHERICAL) {
+				pCamera = new SphericalCamera(size);
+			} else {
+				const auto fullK = platform.GetFullK(cid, (uint32_t)size.width, (uint32_t)size.height);
+				PinholeCamera* pc = new PinholeCamera(size);
+				pc->SetK(fullK);
+				pc->trustIntrinsics = true;
+				if (cam.model == MVSPlatform::Camera::BROWN) {
+					if (cam.params.size() != 5 && cam.params.size() != 8) {
+						VERBOSE("error: Brown camera %u of platform %u needs 5 or 8 distortion coefficients", cid, pid);
+						delete pc;
+						continue;
+					}
+					pc->SetDistortion(cam.params[0], cam.params[1], cam.params[2], cam.params[3], cam.params[4]);
+					if (cam.params.size() == 8) {
+						pc->useAdditionalDistortion = true;
+						pc->k4 = cam.params[5]; pc->k5 = cam.params[6]; pc->k6 = cam.params[7];
+					}
+				} else if (cam.model != MVSPlatform::Camera::PINHOLE) {
+					VERBOSE("error: unknown model %u of camera %u of platform %u", (unsigned)cam.model, cid, pid);
+					delete pc;
+					continue;
+				}
+				pCamera = pc;
+			}
+			pCamera->SetName(cam.name.empty() ? platform.name : cam.name);
+			pCamera->metadata.model = cam.bandName;
 			const IIndex camID = scene.cameras.size();
-			scene.cameras.emplace_back(pc);
+			scene.cameras.emplace_back(pCamera);
 			camToID.emplace(PairIdx(pid, cid).idx, camID);
 		}
 	}
@@ -439,8 +465,7 @@ unsigned RenderAndSaveSphericalFaces(
 	const String& extension,
 	const String& outputDir)
 {
-	if (outputDir.empty() || geometry.numFaces == 0)
-		return 0;
+	ASSERT(!outputDir.empty() && geometry.numFaces > 0);
 	String outDir = outputDir;
 	Util::ensureValidFolderPath(outDir);
 	Util::ensureFolder(outDir);
@@ -482,12 +507,15 @@ unsigned RenderAndSaveSphericalFaces(
 }
 
 // Phase 4: project 3D world point X through each face of one spherical
-// image's rig pose; push a Vertex::View entry for every face that sees it.
+// image's rig pose; push a Vertex::View entry for every face that sees it;
+// pFeatureRay, if given, is the ray of the feature (panorama frame), mapped
+// to each face as the view observation.
 void ProjectTrackOntoSphericalFaces(
 	const Point3& X,
 	const Pose3D& sphericalPose,
 	const TangentFacesGeometry& geometry,
 	const std::vector<uint32_t>& faceImageIDs,
+	const Point3* pFeatureRay,
 	MVS::Interface::Vertex& vertex)
 {
 	ASSERT((int)faceImageIDs.size() == geometry.numFaces);
@@ -508,6 +536,11 @@ void ProjectTrackOntoSphericalFaces(
 		MVS::Interface::Vertex::View view;
 		view.imageID    = faceImageIDs[k];
 		view.confidence = 0.f;
+		if (pFeatureRay) {
+			const Point3 ray = geometry.rotations[k] * (*pFeatureRay);
+			ASSERT(ray.z > 0);
+			view.x = MVS::Interface::Pos2f(float(f * ray.x / ray.z + cx), float(f * ray.y / ray.z + cy));
+		}
 		vertex.views.push_back(view);
 	}
 }
@@ -531,8 +564,8 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig 
 	TD_TIMER_STARTD();
 	MVSInterface iface;
 
-	// Detect whether this scene contains any spherical cameras — if so,
-	// expand them into N-face rigs using the SphereCubeMap geometry.
+	// Detect whether this scene contains any spherical cameras, and whether
+	// they are expanded into N-face rigs using the SphereCubeMap geometry.
 	bool hasSpherical = false;
 	for (CameraPtr const cam : scene.cameras) {
 		if (cam != NULL && cam->GetType() == CameraType::SPHERICAL) {
@@ -540,18 +573,20 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig 
 			break;
 		}
 	}
+	const bool cubeMap = hasSpherical && config.sphericalExport == ExportMVSConfig::Spherical::CUBEMAP;
 
 	// Build the sphere→tangent-faces geometry ONCE and reuse it across
-	// every spherical phase (platform emission, face-image emission,
-	// rendering, track projection). Empty geometry for pinhole-only scenes.
+	// every cube-map phase (platform emission, face-image emission,
+	// rendering, track projection).
 	SphereCubeMap::TangentFacesGeometry sphericalGeom;
-	if (hasSpherical)
+	if (cubeMap) {
+		if (!SphereCubeMap::IsSupportedNumFaces(config.sphericalNumFaces) || config.sphericalFaceSize <= 0) {
+			VERBOSE("error: unsupported sphericalNumFaces=%d (expected 4,6,8,12,20) or sphericalFaceSize=%d",
+				config.sphericalNumFaces, config.sphericalFaceSize);
+			return false;
+		}
 		sphericalGeom = SphereCubeMap::MakeTangentFacesGeometry(
 			config.sphericalNumFaces, config.sphericalFaceSize);
-	if (hasSpherical && sphericalGeom.numFaces == 0) {
-		VERBOSE("error: unsupported sphericalNumFaces=%d (expected 4,6,8,12,20)",
-			config.sphericalNumFaces);
-		return false;
 	}
 
 	// Resolve the face output directory for cube-map images. Prefer the
@@ -560,7 +595,7 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig 
 	// directory so everything stays self-contained.
 	const String mvsFileDir = MAKE_PATH_FULL(WORKING_FOLDER_FULL, Util::getFilePath(fileName));
 	String cubeMapOutputDir;
-	if (hasSpherical)
+	if (cubeMap)
 		cubeMapOutputDir = config.undistortImageDir.empty() ? mvsFileDir : config.undistortImageDir;
 
 	// Map each SFM camera pointer to its (possibly multi-camera) platform.
@@ -575,31 +610,49 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig 
 		config.undistortAlpha, &undistortedPaths, &undistortK);
 
 	// ----- Phase 1: platforms + cameras -----
-	// Pinhole: one platform with a single camera per SFM camera.
-	// Spherical: one platform with N face cameras via EmitSphericalPlatforms.
-	unsigned numDistortedCams = 0;
+	// Pinhole and native spherical: one platform with a single camera per SFM camera.
+	// Cube-map spherical: one platform with N face cameras via EmitSphericalPlatforms.
+	unsigned numBrownCams = 0;
 	for (CameraPtr const cam : scene.cameras) {
 		ASSERT(camToPlatform.count(cam) == 0);
-		if (cam->GetType() == CameraType::SPHERICAL)
+		if (cam->GetType() == CameraType::SPHERICAL && cubeMap)
 			continue; // deferred to EmitSphericalPlatforms below
 		const uint32_t platformID = (uint32_t)iface.platforms.size();
 		camToPlatform[cam] = platformID;
 		MVSPlatform& platform = iface.platforms.emplace_back();
 		platform.name = cam->metadata.name;
 		MVSCamera& outCam = platform.cameras.emplace_back();
-
-		// Build intrinsic matrix
-		outCam.K = cam->GetK();
-		if (cam->HasDistortion()) {
-			if (undistort)
-				outCam.K = undistortK.at(cam);
-			++numDistortedCams;
-		}
 		outCam.width = (uint32_t)cam->GetWidth();
 		outCam.height = (uint32_t)cam->GetHeight();
 		// Camera extrinsics relative to platform: identity (platform pose holds absolute)
 		outCam.R = Mat33d::eye();
 		outCam.C = Pos3d(0, 0, 0);
+		if (cam->GetType() == CameraType::SPHERICAL) {
+			// the angular camera matrix of the equirectangular images
+			const Spherical<REAL> sphere(Spherical<REAL>::FromSize(cam->GetWidth(), cam->GetHeight()));
+			outCam.model = MVSCamera::SPHERICAL;
+			outCam.K = Mat33d::eye();
+			outCam.K(0,0) = sphere.fx; outCam.K(1,1) = sphere.fy;
+			outCam.K(0,2) = sphere.cx; outCam.K(1,2) = sphere.cy;
+			continue;
+		}
+		ASSERT(cam->GetType() == CameraType::PINHOLE);
+
+		// Build intrinsic matrix
+		outCam.K = cam->GetK();
+		BrownDistortion<REAL> distortion{};
+		if (cam->HasDistortion()) {
+			// the cameras undistorted on export have their undistorted images (UndistortImages
+			// skips the invalid cameras); the others are exported with their distortion
+			const auto itK = undistortK.find(cam);
+			if (itK != undistortK.end()) {
+				outCam.K = itK->second;
+			} else {
+				distortion = static_cast<const PinholeCamera*>(cam)->GetDistortion();
+				outCam.model = MVSCamera::BROWN;
+				++numBrownCams;
+			}
+		}
 		// Find first image using this camera to deduce image rotation
 		for (const Image& img : scene.images) {
 			if (img.pCamera != cam)
@@ -610,10 +663,20 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig 
 			const cv::Size size = img.RevertRotation(&outCam.K);
 			outCam.width = (uint32_t)size.width;
 			outCam.height = (uint32_t)size.height;
+			// the original normalized coordinates are (y,-x) of the working ones: the radial terms
+			// are invariant, the tangential ones become p1'=-p2, p2'=p1
+			const REAL p1 = distortion.p1;
+			distortion.p1 = -distortion.p2;
+			distortion.p2 = p1;
 			break;
 		}
+		if (outCam.model == MVSCamera::BROWN) {
+			outCam.params = {distortion.k1, distortion.k2, distortion.p1, distortion.p2, distortion.k3};
+			if (distortion.k4 != 0 || distortion.k5 != 0 || distortion.k6 != 0)
+				outCam.params.insert(outCam.params.end(), {distortion.k4, distortion.k5, distortion.k6});
+		}
 	}
-	if (hasSpherical)
+	if (cubeMap)
 		EmitSphericalPlatforms(scene, sphericalGeom, iface, camToPlatform);
 
 	// ----- Phase 2: images + poses -----
@@ -622,7 +685,7 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig 
 	// Pinhole images get 1 entry; spherical images get N (== numFaces).
 	const String basePath = mvsFileDir;
 	String faceBaseSlash;
-	if (hasSpherical) {
+	if (cubeMap) {
 		faceBaseSlash = MAKE_PATH_REL(basePath, cubeMapOutputDir);
 		if (!faceBaseSlash.empty() && faceBaseSlash.back() != PATH_SEPARATOR)
 			faceBaseSlash += PATH_SEPARATOR;
@@ -642,7 +705,7 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig 
 		const Camera* cam = img.pCamera;
 		ASSERT(cam != NULL);
 
-		if (cam->GetType() == CameraType::SPHERICAL) {
+		if (cam->GetType() == CameraType::SPHERICAL && cubeMap) {
 			AppendSphericalFaceImages(
 				img, sphericalGeom, faceBaseSlash, config.extension,
 				camToPlatform[cam], iface, sfmToMvsImage[i], nextSyntheticID);
@@ -659,9 +722,15 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig 
 			img.RevertRotation(NULL, &pose.R); // revert any image rotation
 		}
 		// Build Interface::Image record
-		// Use undistorted image path if available, otherwise use original
+		// Use the undistorted image path for the undistorted cameras, otherwise the original
 		MVS::Interface::Image outImg;
-		outImg.name = undistort ? undistortedPaths[i] : img.fileName;
+		const bool undistorted(undistortK.count(cam) != 0);
+		outImg.name = undistorted ? undistortedPaths[i] : img.fileName;
+		if (undistorted && outImg.name.empty() && img.IsValid()) {
+			// the image file could not be read for undistortion
+			VERBOSE("error: no undistorted image of '%s'", img.fileName.c_str());
+			return false;
+		}
 		outImg.name = MAKE_PATH_REL(basePath, outImg.name);
 		outImg.platformID = platformID;
 		outImg.cameraID = 0; // single camera per platform
@@ -672,7 +741,7 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig 
 	}
 
 	// ----- Phase 3: render + write cube-map face pixels -----
-	if (hasSpherical) {
+	if (cubeMap) {
 		const unsigned written = RenderAndSaveSphericalFaces(
 			scene, sphericalGeom, config.extension, cubeMapOutputDir);
 		DEBUG("SphereCubeMap: wrote %u face images to '%s'",
@@ -690,6 +759,26 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig 
 		emitColors = !scene.colors.empty();
 	if (emitColors)
 		iface.verticesColor.reserve(scene.tracks.size());
+	if (config.includeObservations)
+		iface.flags |= MVSInterface::HAS_OBSERVATIONS;
+	// the keypoint of an observation in the exported image file of a single-view (not cube-map) image
+	const auto FeatureInFile = [&](const Image& img, const Point2f& kp) -> MVS::Interface::Pos2f {
+		Point2f x(kp);
+		const auto itK = undistortK.find(img.pCamera);
+		if (itK != undistortK.end()) {
+			// the undistorted image file: the keypoint through the undistorted camera
+			const PinholeCamera& pc = *static_cast<const PinholeCamera*>(img.pCamera);
+			const KMatrix& K = pc.GetK();
+			const KMatrix& Ku = itK->second;
+			const Pinhole<REAL> distorted{K(0,0), K(1,1), K(0,2), K(1,2)};
+			const Pinhole<REAL> undistorted{Ku(0,0), Ku(1,1), Ku(0,2), Ku(1,2)};
+			const Eigen::Vector2d u(undistorted.NormalizedToPixel(pc.GetDistortion().Undistort(
+				distorted.PixelToNormalized(Eigen::Vector2d(kp.x, kp.y)))));
+			x = Point2f((float)u.x(), (float)u.y());
+		}
+		x = img.ToOriginalOrientation(x);
+		return MVS::Interface::Pos2f(x.x, x.y);
+	};
 	FOREACH(i, scene.tracks) {
 		const Track& track = scene.tracks[i];
 		if (!track.IsValid())
@@ -707,13 +796,25 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig 
 			if (mvsIDs.empty())
 				continue;
 			const Image& srcImg = scene.images[sfmImageID];
-			if (srcImg.pCamera->GetType() == CameraType::SPHERICAL) {
+			if (config.includeObservations && obs.featureID >= srcImg.keypoints.size()) {
+				VERBOSE("error: observations requested, but image %u has no keypoint %u", sfmImageID, obs.featureID);
+				return false;
+			}
+			if (srcImg.pCamera->GetType() == CameraType::SPHERICAL && cubeMap) {
+				Point3 featureRay;
+				if (config.includeObservations) {
+					const cv::Point2f& kp = srcImg.keypoints[obs.featureID].pt;
+					const Eigen::Vector3d ray(Spherical<REAL>::FromSize(srcImg.GetWidth(), srcImg.GetHeight()).Ray(Eigen::Vector2d(kp.x, kp.y)));
+					featureRay = Point3(ray.x(), ray.y(), ray.z());
+				}
 				ProjectTrackOntoSphericalFaces(
-					track.position, srcImg, sphericalGeom, mvsIDs, v);
+					track.position, srcImg, sphericalGeom, mvsIDs, config.includeObservations ? &featureRay : NULL, v);
 			} else {
 				MVSVertex::View view;
 				view.imageID = mvsIDs.front();
 				view.confidence = 0.f;
+				if (config.includeObservations)
+					view.x = FeatureInFile(srcImg, Point2f(srcImg.keypoints[obs.featureID].pt));
 				v.views.push_back(view);
 			}
 		}
@@ -735,10 +836,8 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig 
 	}
 	DEBUG("Scene exported as MVS: %u platforms, %u images (%u valid), %u points%s%s to '%s' (%s)",
 		(unsigned)iface.platforms.size(), (unsigned)iface.images.size(), scene.status.nCalibratedImages, (unsigned)iface.vertices.size(),
-		undistort ? " (undistorted)" : "", hasSpherical ? " (spherical cube-map expanded)" : "",
+		undistort ? " (undistorted)" : numBrownCams ? " (Brown cameras)" : "", cubeMap ? " (spherical cube-map expanded)" : "",
 		fileName.c_str(), TD_TIMER_GET_FMT().c_str());
-	if (numDistortedCams > 0 && !undistort)
-		VERBOSE("warning: %u cameras had distortion; export ignores distortion (consider enabling undistort)", numDistortedCams);
 	return true;
 } // ExportMVS
 /*----------------------------------------------------------------*/

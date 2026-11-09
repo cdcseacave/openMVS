@@ -419,7 +419,7 @@ struct MVS_API DepthEstimatorBase {
 	// Image is never touched, so it is safe to call concurrently for the same Image and across scales);
 	// bmask gets the keep-mask (bit set = keep), or pMask the mask != label if given; returns false
 	// and leaves both untouched if there is no mask to load
-	static bool ImportIgnoreMask(const Image&, const cv::Size&, uint8_t nIgnoreMaskLabel, BitMatrix&, Image8U* =NULL);
+	static bool ImportIgnoreMask(const Image&, const cv::Size&, int nIgnoreMaskLabel, BitMatrix&, Image8U* =NULL);
 	static void MapMatrix2ZigzagIdx(const cv::Size& size, MapRefArr& coords, const BitMatrix& mask, int rawStride=16);
 
 	static inline Point3 ComputeRelativeC(const DepthData& depthData) {

@@ -1911,6 +1911,7 @@ bool CubeMapBridgeGeometryTest()
 	const String mvsPath = tmpDir(_T("scene.mvs"));
 
 	ExportMVSConfig cfg;
+	cfg.sphericalExport = ExportMVSConfig::Spherical::CUBEMAP;
 	cfg.undistortAlpha    = 0.f;
 	cfg.onlyInlierTracks  = true;
 	cfg.includeColors     = false;
@@ -2056,6 +2057,7 @@ bool CubeMapBridgeEndToEndTest()
 	const String mvsPath = tmpDir(_T("scene.mvs"));
 
 	ExportMVSConfig cfg;
+	cfg.sphericalExport = ExportMVSConfig::Spherical::CUBEMAP;
 	cfg.undistortImageDir = outputDir;
 	cfg.undistortAlpha    = 0.f;
 	cfg.onlyInlierTracks  = true;
@@ -2137,6 +2139,7 @@ bool CubeMapBridgeMVSLoadTest()
 	// alongside the .mvs output (no undistort dir provided).
 	const String mvsPath = tmpDir(_T("scene.mvs"));
 	ExportMVSConfig cfg;
+	cfg.sphericalExport = ExportMVSConfig::Spherical::CUBEMAP;
 	cfg.includeColors      = false;
 	cfg.sphericalFaceSize  = 256;  // small for speed
 	if (!ExportMVS(mvsPath, scene, cfg)) {
@@ -2256,6 +2259,7 @@ bool CubeMapBridgeMixedSceneTest()
 	// Export
 	const String mvsPath = tmpDir(_T("scene.mvs"));
 	ExportMVSConfig cfg;
+	cfg.sphericalExport = ExportMVSConfig::Spherical::CUBEMAP;
 	cfg.includeColors      = false;
 	cfg.sphericalFaceSize  = 256;
 	if (!ExportMVS(mvsPath, scene, cfg)) {

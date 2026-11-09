@@ -36,6 +36,7 @@
 // I N C L U D E S /////////////////////////////////////////////////
 
 #include "Platform.h"
+#include "../Math/Camera/CameraUndistort.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -62,6 +63,8 @@ public:
 	String name; // image file name (relative path)
 	String maskName; // segmentation file name (optional)
 	Camera camera; // view's pose
+	CameraModelType model; // projection model of the image file, from its platform camera (UpdateCamera)
+	CameraLens lens; // BROWN: the lens of the image file, removed when the pixels are read
 	uint32_t width, height; // image size
 	Image8U3 image; // image color pixels
 	Image8U mask; // image 8-bit segmentation mask, max 256 labels
@@ -70,9 +73,12 @@ public:
 	float avgDepth; // average depth of the points seen by this camera
 
 public:
-	inline Image() : poseID(NO_ID), width(0), height(0), avgDepth(0) {}
+	inline Image() : poseID(NO_ID), model(CameraModelType::PINHOLE), width(0), height(0), avgDepth(0) {}
 
 	inline bool IsValid() const { return poseID != NO_ID; }
+	// the pixels of the image file are undistorted when read (BROWN), which leaves the
+	// undistorted pixels without a source invalid (see GetUndistortMaps()->mask)
+	inline bool IsUndistortedOnRead() const { return model == CameraModelType::BROWN; }
 	inline String GetMaskFileName() const { return maskName.empty() ? Util::getFileFullName(name)+".mask.png" : maskName; }
 	inline bool HasResolution() const { return width > 0 && height > 0; }
 	inline cv::Size GetSize() const { return cv::Size(width, height); }
@@ -84,6 +90,14 @@ public:
 	static IMAGEPTR ReadImageHeader(const String& fileName);
 	static IMAGEPTR ReadImage(const String& fileName, Image8U3& image);
 	static bool ReadImage(IMAGEPTR pImage, Image8U3& image);
+	// read the pixels of the image file at its resolution, as the camera sees them: undistorted if
+	// IsUndistortedOnRead(); every reader of the image pixels goes through it
+	IMAGEPTR ReadPixels(Image8U3& image) const;
+	// read the segmentation mask file (GetMaskFileName()) as the camera sees it, at the image file
+	// resolution: undistorted with nearest-neighbor sampling if IsUndistortedOnRead()
+	bool LoadMask(Image8U& mask) const;
+	// the undistortion maps of the image file, shared by the images of the camera; IsUndistortedOnRead() only
+	std::shared_ptr<const CameraUndistortMaps> GetUndistortMaps() const;
 	bool LoadImage(const String& fileName, unsigned nMaxResolution=0);
 	bool ReloadImage(unsigned nMaxResolution=0, bool bLoadPixels=true);
 	// reload the pixels at the resolution the scene was prepared at: width/height

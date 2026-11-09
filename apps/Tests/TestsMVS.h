@@ -97,6 +97,11 @@ bool SelectNeighborViewsScaleTest();
 // test that DMapCache::UseImage() keeps the depth-map it was asked for loaded even when it alone
 // exceeds the memory budget, ejecting the least recently used other depth-maps instead
 bool DMapCacheKeepsRequestedImageTest();
+
+// Interface v8: camera models (pinhole, Brown 5/8, spherical) and optional observations round trip,
+// a v7 stream loads, the v8 size identity (v7 + 1 byte per camera + 1 flags byte without observations),
+// MVS::Scene load/save round trip of the models, and the undistorted camera K' rule shared by SfM and MVS
+bool InterfaceV8Test();
 /*----------------------------------------------------------------*/
 
 } // namespace MVS

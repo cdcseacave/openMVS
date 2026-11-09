@@ -141,6 +141,16 @@ bool Scene::ScaleImages(unsigned nMaxResolution, REAL scale, const String& folde
 			image.ReleaseImage();
 		}
 	}
+	if (!folderName.empty()) {
+		// the stored images are the ones the cameras see: a Brown camera is now the pinhole camera K' of its files
+		for (Platform& platform: platforms)
+			for (Platform::Camera& camera: platform.cameras)
+				if (camera.model == CameraModelType::BROWN)
+					camera.model = CameraModelType::PINHOLE;
+		for (Image& image: images)
+			if (image.IsValid())
+				image.UpdateCamera(platforms);
+	}
 	return true;
 } // ScaleImages
 

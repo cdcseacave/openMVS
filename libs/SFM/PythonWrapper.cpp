@@ -305,13 +305,18 @@ void RegisterBindings()
 		.def_readwrite("th_align_gps", &SFM::ReconstructionConfig::thAlignGPS)
 		.def_readwrite("extract_colors", &SFM::ReconstructionConfig::extractColors);
 
-	// ExportMVSConfig — undistortion + spherical cube-map options for ExportMVS
+	// ExportMVSConfig — undistortion + spherical export options for ExportMVS
+	enum_<SFM::ExportMVSConfig::Spherical>("SphericalExport")
+		.value("NATIVE", SFM::ExportMVSConfig::Spherical::NATIVE)
+		.value("CUBEMAP", SFM::ExportMVSConfig::Spherical::CUBEMAP);
 	class_<SFM::ExportMVSConfig>("ExportMVSConfig")
 		.DEF_STR_RW("undistort_image_dir", &SFM::ExportMVSConfig::undistortImageDir)
 		.DEF_STR_RW("extension", &SFM::ExportMVSConfig::extension)
 		.def_readwrite("undistort_alpha", &SFM::ExportMVSConfig::undistortAlpha)
 		.def_readwrite("only_inlier_tracks", &SFM::ExportMVSConfig::onlyInlierTracks)
 		.def_readwrite("include_colors", &SFM::ExportMVSConfig::includeColors)
+		.def_readwrite("include_observations", &SFM::ExportMVSConfig::includeObservations)
+		.def_readwrite("spherical_export", &SFM::ExportMVSConfig::sphericalExport)
 		.def_readwrite("spherical_face_size", &SFM::ExportMVSConfig::sphericalFaceSize)
 		.def_readwrite("spherical_num_faces", &SFM::ExportMVSConfig::sphericalNumFaces);
 

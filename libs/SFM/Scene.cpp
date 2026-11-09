@@ -1333,6 +1333,10 @@ bool Scene::UndistortImages(String outputDir, String extension, float alpha,
 		const Image& img = images[i];
 		if (!img.IsValid())
 			continue;
+		// only the images of the distorted pinhole cameras are undistorted
+		const auto itMaps = undistortMaps.find(img.pCamera);
+		if (itMaps == undistortMaps.end())
+			continue;
 		bool loadedHere = false;
 		if (!img.HasPixels()) {
 			const_cast<Image&>(img).LoadPixels();
@@ -1341,7 +1345,7 @@ bool Scene::UndistortImages(String outputDir, String extension, float alpha,
 		if (!img.HasPixels())
 			continue;
 		cv::Mat undistorted;
-		undistortMaps.at(img.pCamera).Remap(img.pixels, undistorted, cv::INTER_CUBIC);
+		itMaps->second.Remap(img.pixels, undistorted, cv::INTER_CUBIC);
 		if (loadedHere)
 			const_cast<Image&>(img).ReleasePixels();
 		// Restore original orientation if the working copy was rotated to landscape

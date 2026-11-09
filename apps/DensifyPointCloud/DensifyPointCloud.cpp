@@ -338,6 +338,15 @@ int main(int argc, LPCTSTR* argv)
 	const Scene::SCENE_TYPE sceneType(scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)));
 	if (sceneType == Scene::SCENE_NA)
 		return EXIT_FAILURE;
+	for (const Platform& platform: scene.platforms) {
+		for (const Platform::Camera& camera: platform.cameras) {
+			if (camera.model == CameraModelType::SPHERICAL) {
+				// the depth estimators (PatchMatch and SGM) and the fusion are pinhole only
+				VERBOSE("error: the scene has spherical cameras, the dense reconstruction supports only pinhole and Brown cameras");
+				return EXIT_FAILURE;
+			}
+		}
+	}
 	if (!OPT::strExportDMAPSPathName.empty() && scene.IsValid()) {
 		// export depth-maps as PNG images
 		Util::ensureValidFolderPath(OPT::strExportDMAPSPathName);
@@ -565,7 +574,7 @@ int main(int argc, LPCTSTR* argv)
 	if (OPT::nEstimateSegmentation != 0 && !scene.pointcloud.IsEmpty() && !scene.images.empty() && !scene.images.front().maskName.empty()) {
 		// segment point-cloud using image segmentation masks
 		for (Image& image: scene.images)
-			if (image.mask.empty() && !image.mask.Load(image.GetMaskFileName()))
+			if (image.mask.empty() && !image.LoadMask(image.mask))
 				VERBOSE("error: cannot load mask image %s", image.GetMaskFileName().c_str());
 		EstimatePointSegmentation(scene.images, scene.pointcloud, ABS(OPT::nEstimateSegmentation));
 	}
