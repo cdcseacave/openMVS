@@ -5,14 +5,14 @@
 `DensifyPointCloud` estimates the depth-maps of equirectangular (360x180 degree) images natively,
 without rendering them to cube faces: the CPU PatchMatch takes the reference camera model as a
 template parameter (`DepthEstimatorT<Pinhole>`, `DepthEstimatorT<Spherical>`, `libs/MVS/DepthMap.h`),
-the CUDA PatchMatch as a kernel template argument (`libs/MVS/PatchMatchCUDA.cu`, "CUDA estimator" below), and
-both resolve the camera model of each neighbor view once per (pixel, hypothesis, view). Pinhole,
+the CUDA PatchMatch as a kernel template argument (`libs/MVS/PatchMatchCUDA.cu`, "CUDA estimator" below),
+the Metal PatchMatch as a function constant (`libs/MVS/PatchMatchMetal.metal`, "Metal estimator" below),
+and all resolve the camera model of each neighbor view once per (pixel, hypothesis, view). Pinhole,
 Brown (undistorted on load, see `SphericalCameraSupport.md`) and spherical views can be mixed.
 
-Scope: depth-maps only (`--fusion-mode 1`) on the CPU or CUDA, with the photometric confidence.
+Scope: depth-maps only (`--fusion-mode 1`) on the CPU, CUDA or Metal, with the photometric confidence.
 `Scene::DenseReconstruction` refuses a scene with spherical images otherwise, with a clear error: the
-fusion, SGM, the Metal estimator and a scene without sparse points; the confidence recalibration is
-switched off for it.
+fusion, SGM and a scene without sparse points; the confidence recalibration is switched off for it.
 
 ## 2. Algorithm as implemented
 
@@ -140,6 +140,49 @@ equirectangular reference; `RunCUDA` picks it from the per-view mask `Params::sp
 - Pinhole scenes run the unchanged kernels: their SASS is identical but for the stack layout of the
   local arrays of the two geometric-consistency kernels, and the depth-maps are byte-identical.
 
+### Metal estimator
+
+`PatchMatchMetal.metal` mirrors the CUDA model kernels by hand: MSL cannot include Eigen or the shared
+HOST_DEVICE headers.
+- Specialization: the function constant `MODEL` next to `GEOM`: 0 (`MODEL_PINHOLE`) every view pinhole,
+  the pinhole kernels textually unchanged; 1 (`MODEL_PINHOLE_REF`) a pinhole reference with spherical
+  views; 2 (`MODEL_SPHERICAL_REF`) an equirectangular reference. The model kernels are separate functions
+  (`InitializePixelScoreModel`, `ProcessPixelModel`, `ScorePlaneModel`, `GeometricConsistencyWeightModel`)
+  that the kernels select by `MODEL`. `PatchMatch` builds the pipelines of every (GEOM, MODEL) pair when it
+  is created; `EstimateDepthMap` picks MODEL from the per-view spherical mask, as `RunCUDA` does.
+- Camera models: one delimited block mirrors `CameraModels.h` function by function (`FastAtan2` with the same
+  coefficients; Spherical `Ray` and `RayFrame` from sines and cosines, `ProjectFast` with rho, `Depth`,
+  `PixelHomography` with rho; Pinhole `Ray`, `Project`, `RayFrame`, `PixelHomography`) and `DepthGeometry.h`
+  (`InterpolatePlaneDepth` on rays, the `DepthPlaneFit` gradient of the 4-neighbors, the generic
+  `NormalFromDepthGradient`). A pinhole reference uses the existing `InterpolatePixel` and
+  `ComputeDepthGradient`, which are the closed forms of the pinhole overloads. The test kernel
+  `TestModelMath` evaluates the block for `MetalModelMathTest` (Tests suite 2, Apple only), which compares
+  it with the C++ models on random inputs.
+- Buffers: `Params` adds `sphericalViews`, `fSinSqWarpMaxElevation` and `cosMinViewAngle`. Buffer 8 holds
+  the per-view `ModelView` {R, t, C, texScale}, where C is the view center in the reference frame. Buffer 9
+  holds the reference trig table: W+H (sin, cos) pairs, or a one-entry dummy for a pinhole reference. Both
+  are filled per level on the host.
+- Sampling: a second constexpr sampler (`coord::normalized`, linear, `s_address::repeat`,
+  `t_address::clamp_to_edge`) reads the image and depth textures of an equirectangular view, chosen per view
+  by the mask, at `(x+0.5)*texScale`.
+- The kernel logic is that of the CUDA estimator: `ScorePlaneModel` (Method B with the 4-corner check,
+  Method A above the elevation threshold, the pinhole-target branch); the wrapped propagation without pole
+  crossing and an even-width ASSERT; the pole rows skipped; F.col(2) as the view direction of the random
+  normals; the model geometric consistency with the wrapped column distance.
+- The per-pixel view gate of the CPU estimator runs in the model kernels. A view that sees the hypothesis
+  point at a triangulation angle below `fMinAngle` (`X.(X-C) > cos(fMinAngle)|X||X-C|`) scores the bad cost,
+  as a view that does not see the patch; the geometric term is added to it as to any such view.
+- Differences from CUDA: the plane propagation and the surface normal of an equirectangular reference take
+  their rays and ray frame from the trig tables, as the CPU estimator does (CUDA evaluates `Ray` and
+  `RayFrame` from the float angles there). The view poses are composed in double precision. The random
+  numbers come from PCG instead of curand, and the bilateral weights from `exp` instead of the LUT, as in
+  the pinhole Metal kernels. The model kernels skip an invalid neighbor in the plane comparison (cost
+  `FLT_MAX`, as CUDA); the pinhole Metal kernels aggregate its unwritten costs and reject it afterwards.
+- The host applies the ignore mask, with the validity mask of undistorted images, as CUDA does. The kernels
+  are compiled from source at runtime; CMake also compiles `PatchMatchMetal.metal` with the offline Metal
+  compiler (target `PatchMatchMetalCheck`) when the toolchain has a working one. The configure step that
+  embeds the source re-runs when the file changes.
+
 ## 3. Parameters
 
 | parameter | default | meaning |
@@ -222,7 +265,9 @@ The pinhole estimator keeps its cost: fountain-P11 CPU depth-maps + fusion, P-co
 - CPU per-pixel cost above the 1.2x target (see section 4).
 - Per-pixel view weighting by the ray-to-ray triangulation angle (P6).
 - Fusion, the depth-map filters' seam wrap, the confidence recalibration (P6).
-- Metal port (P8) of the model kernels, the wrapped sampling and the model math (hand mirror).
+- Metal: not yet run on Apple hardware; still to be done there: `MetalModelMathTest`, the parity with the CPU
+  and CUDA estimators (synthetic panoramas per band, Holo360D) and the cost per pixel. CUDA lacks the per-pixel
+  view gate that the CPU and Metal estimators apply.
 - CUDA: an equirectangular reference needs an even width at every pyramid level (ASSERT); the
   rows are clamped at the poles where the CPU rejects the view; mixed pinhole/spherical scenes run
   the `MODEL_PINHOLE_REF` kernels, untested.
