@@ -115,11 +115,13 @@ template <> struct RefModel<MODEL_SPHERICAL_REF> {
 };
 
 // a view as the model kernels see it: its pose relative to the reference (a reference camera-frame
-// point X is R*X+t in the view's frame; identity for the reference) and the scale from texel-centered
-// pixel coordinates to its texture coordinates (normalized for an equirectangular view, else 1)
+// point X is R*X+t in the view's frame; identity for the reference), its center in the reference frame
+// (C = -R^T*t) and the scale from texel-centered pixel coordinates to its texture coordinates (normalized
+// for an equirectangular view, else 1)
 struct ModelView {
 	Matrix3 R;
 	Point3 t;
+	Point3 C;
 	Point2 texScale;
 };
 struct alignas(ModelView) ModelViewConstStorage {
@@ -625,8 +627,23 @@ __device__ __forceinline__ void MultiViewScorePlane(const RefPatchCache& cache, 
 				costVector[imgId] += 0.1f * GeometricConsistencyWeight(depthImages[imgId], g_cameras[0], g_cameras[imgId+1], plane, p);
 		}
 	} else {
+		// the view gate, as the CPU estimator's (ScorePixel): a view seeing the hypothesis point at a
+		// triangulation angle below fMinAngle does not constrain its depth and scores as a view that does
+		// not see the patch, unless every view does: then none is gated (next to the epipoles, where the
+		// true depth gates every view, the closer hypotheses some view sees at a larger angle would win)
+		const Point3 X(ref.F.col(2) * plane.w());
+		const float sqNormX = X.squaredNorm();
+		uint32_t gatedViews = 0;
+		for (int imgId = 1; imgId <= nNumViews; ++imgId) {
+			const Point3 D(X - g_views[imgId].C);
+			if (X.dot(D) > g_params.fCosMinViewAngle * sqrtf(sqNormX * D.squaredNorm()))
+				gatedViews |= 1u << (imgId-1);
+		}
+		ASSERT(nNumViews < 32);
+		if (gatedViews == (1u << nNumViews) - 1u)
+			gatedViews = 0;
 		for (int imgId = 1; imgId <= nNumViews; ++imgId)
-			costVector[imgId-1] = ScorePlaneModel(cache, ref, images[imgId], imgId, p, plane, lowDepth);
+			costVector[imgId-1] = (gatedViews >> (imgId-1)) & 1u ? fBadCost : ScorePlaneModel(cache, ref, images[imgId], imgId, p, plane, lowDepth);
 		if (GEOM) {
 			for (int imgId = 0; imgId < nNumViews; ++imgId)
 				costVector[imgId] += 0.1f * GeometricConsistencyWeightModel(depthImages[imgId], ref, imgId+1, plane, p);
@@ -996,6 +1013,7 @@ __host__ void PatchMatch::UploadCameras()
 		ModelView& view = views[i];
 		view.R = camera.pose.R * ref.R.transpose();
 		view.t = camera.pose.R * (ref.C - camera.pose.C);
+		view.C = -(view.R.transpose() * view.t);
 		view.texScale = (params.sphericalViews >> i) & 1u ?
 			Point2(1.f / camera.size.x(), 1.f / camera.size.y()) : Point2(1.f, 1.f);
 	}

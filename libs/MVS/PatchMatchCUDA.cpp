@@ -273,6 +273,9 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 		if (depthData.images[i].IsSpherical())
 			params.sphericalViews |= 1u << i;
 	params.fSinSqWarpMaxElevation = SQUARE(SIN(D2R(DepthEstimatorBase::fSphericalWarpMaxElevation)));
+	params.fCosMinViewAngle = COS(D2R(OPTDENSE::fMinAngle));
+	// the view gate of the model kernels keeps one bit per neighbor view and the all-gated mask
+	ASSERT(params.sphericalViews == 0 || numImages - 1 < 32);
 	// the confidence recalibration is pinhole only (switched off for scenes with spherical images)
 	ASSERT(!pConfRequest || params.sphericalViews == 0);
 	params.nNumViews = (int)numImages-1;
