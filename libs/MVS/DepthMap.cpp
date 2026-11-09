@@ -633,33 +633,6 @@ inline bool SampleDepth(const DepthMap& depthMap, const Point2f& pt, Depth& v, c
 		return depthMap.sample(v, pt, functor);
 	}
 }
-// atan2 in single precision by a minimax polynomial of atan on [0,1] (max error 1.3e-7 rad, the
-// precision of the float atan2), several times cheaper than std::atan2
-inline float FastAtan2(float y, float x) {
-	const float ax(ABS(x)), ay(ABS(y));
-	const float mx(MAXF(ax, ay));
-	if (mx == 0.f)
-		return 0.f;
-	const float a(MINF(ax, ay)/mx), s(a*a);
-	float r((((((((-0.0040540580f*s + 0.0218612288f)*s - 0.0559098861f)*s + 0.0964200441f)*s - 0.1390853351f)*s + 0.1994653599f)*s - 0.3332985605f)*s + 0.9999993329f)*a);
-	if (ay > ax)
-		r = FHALF_PI - r;
-	if (x < 0.f)
-		r = FPI - r;
-	return y < 0.f ? -r : r;
-}
-// the pixel of a target camera-frame point in the warps: Project, through FastAtan2 for a spherical
-// target (its two atan2 dominate the exact warp per texel, the tangent-plane one per hypothesis)
-template <typename TRG>
-inline bool ProjectFast(const TRG& trg, const Eigen::Vector3f& X, Eigen::Vector2f& x) {
-	return trg.Project(X, x);
-}
-inline bool ProjectFast(const Spherical<float>& trg, const Eigen::Vector3f& X, Eigen::Vector2f& x) {
-	x = Eigen::Vector2f(
-		trg.fx*FastAtan2(X.x(), X.z()) + trg.cx,
-		trg.fy*FastAtan2(X.y(), SQRT(X.x()*X.x() + X.z()*X.z())) + trg.cy);
-	return X.squaredNorm() > 0.f;
-}
 
 // the texels of the patch warped by warp, in the order of the reference texels
 template <bool WRAPX>
@@ -734,7 +707,7 @@ bool DepthEstimatorT<MODEL>::SampleExactPatch(const DepthData::ViewData& image1,
 		if (den >= 0)
 			return false;
 		Eigen::Vector2f x;
-		if (!ProjectFast(trg, viewRays.rays[k]*(nX/den) + image1.trel, x))
+		if (!trg.ProjectFast(viewRays.rays[k]*(nX/den) + image1.trel, x))
 			return false;
 		if (!SampleTexel<bWrapX>(image1.image, Point2f(x.x(), x.y()), texels[k]))
 			return false;
@@ -787,7 +760,7 @@ bool DepthEstimatorT<MODEL>::SampleModelPatch(const DepthData::ViewData& image1,
 	if (SQUARE(q0.y()) > sinSqWarpMaxElevation*q0.squaredNorm())
 		return SampleExactPatch(image1, trg, depth, normal, texels);
 	Eigen::Vector2f xc;
-	ProjectFast(trg, q0, xc);
+	trg.ProjectFast(q0, xc);
 	return SampleTangentPatch(image1.image, MakePatchWarp(trg.PixelHomography(q0, xc)*HF), texels);
 }
 
@@ -802,7 +775,7 @@ float DepthEstimatorT<MODEL>::GeometricConsistency(const DepthData::ViewData& im
 	const Eigen::Vector3f X(Eigen::Vector3f((float)X0.x, (float)X0.y, (float)X0.z)*depth);
 	const Eigen::Vector3f X1(image1.RrelDM*X + image1.trelDM);
 	Eigen::Vector2f x1;
-	if (!ProjectFast(trg, X1, x1))
+	if (!trg.ProjectFast(X1, x1))
 		return 4.f;
 	const Depth depth1Expected(trg.Depth(X1));
 	Depth depth1;
@@ -812,7 +785,7 @@ float DepthEstimatorT<MODEL>::GeometricConsistency(const DepthData::ViewData& im
 	// the target point at the sampled depth, along the ray of x1, which is X1's
 	const Eigen::Vector3f Xb(image1.RrelDM.transpose()*(X1*(depth1/depth1Expected) - image1.trelDM));
 	Eigen::Vector2f xb;
-	if (!ProjectFast(camera0f, Xb, xb))
+	if (!camera0f.ProjectFast(Xb, xb))
 		return 4.f;
 	float dx(float(x0.x)-xb.x());
 	if constexpr (bSphericalRef)
