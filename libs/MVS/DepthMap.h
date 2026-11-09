@@ -497,8 +497,12 @@ struct DepthEstimatorT : DepthEstimatorBase {
 	Matrix3x3f normalFrame0; // spherical reference: the frame random and perturbed normals are drawn in
 		// (columns: the longitude and the downward elevation tangents at X0, and X0)
 	Eigen::Matrix3f rayFrame0; // Model::RayFrame at x0, if bModelWarp
+	struct SinCos { float s, c; };
+	CLISTDEF0IDX(SinCos,int) lonSinCos0, elSinCos0; // spherical reference: the longitude of each column and
+		// the elevation of each row, by their sine and cosine (the trigonometry of its rays)
 	CLISTDEF0IDX(Eigen::Matrix3f,IIndex) viewRayFrames0; // per view, Rrel*rayFrame0: the ray frame at x0 in the view's camera frame
-	struct TexelRays { Eigen::Vector3f rays[nTexels]; };
+	enum { nTexelsPacked = (nTexels+15)/16*16 }; // whole SIMD packets
+	struct TexelRays { float x[nTexelsPacked], y[nTexelsPacked], z[nTexelsPacked]; }; // padded with the last texel
 	TexelRays texelRays0; // the rays of the patch texels at x0, for the exact warp, filled on first use
 	CLISTDEF0IDX(TexelRays,IIndex) viewTexelRays0; // per view, Rrel*texelRays0, filled on first use
 	CLISTDEF0IDX(bool,IIndex) bViewTexelRays0; // per view, viewTexelRays0 is filled for x0 (the last entry: texelRays0)
@@ -578,9 +582,8 @@ struct DepthEstimatorT : DepthEstimatorBase {
 	bool SamplePinholePatch(const DepthData::ViewData& image1, Depth, const Normal&, float* texels);
 	// the same as soon as a spherical camera is involved in the scene
 	bool SampleModelPatch(const DepthData::ViewData& image1, Depth, const Normal&, float* texels);
-	// the same through the exact per-texel warp into a target of model TRG (single precision)
-	template<typename TRG>
-	bool SampleExactPatch(const DepthData::ViewData& image1, const TRG& trg, Depth, const Normal&, float* texels);
+	// the same through the exact per-texel warp into a spherical target (single precision)
+	bool SampleExactPatch(const DepthData::ViewData& image1, const Spherical<float>& trg, Depth, const Normal&, float* texels);
 	// the geometric-consistency cost against the depth-map of a target of model TRG (single precision)
 	template<typename TRG>
 	float GeometricConsistency(const DepthData::ViewData& image1, const TRG& trg, Depth) const;
@@ -606,6 +609,12 @@ struct DepthEstimatorT : DepthEstimatorBase {
 		if constexpr (bSphericalRef)
 			return c < 0 ? c + size.width : (c >= size.width ? c - size.width : c);
 		return c;
+	}
+	// spherical reference: the ray of the pixel (c,r), the column within one width of the image
+	inline Eigen::Vector3f Ray0(int c, int r) const {
+		ASSERT(bSphericalRef && !lonSinCos0.empty());
+		const SinCos& lon(lonSinCos0[Col0(c)]), el(elSinCos0[r]);
+		return Spherical<float>::Ray(lon.s, lon.c, el.s, el.c);
 	}
 
 	#if DENSE_NCC == DENSE_NCC_WEIGHTED
