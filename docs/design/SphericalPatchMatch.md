@@ -128,11 +128,20 @@ from them, with no trigonometry per pixel.
 - Per-pixel view gate: the per-view triangulation angle of `Scene::FilterNeighborViews` (an average
   over the shared sparse points) says little about a panorama, which sees a neighbor along its
   baseline in some directions and across it in others. When a spherical camera is involved
-  (`bModelWarp`), `ScorePixel` also gates every (hypothesis, view): a view whose center is seen from
-  the hypothesis point at less than `OPTDENSE::fMinAngle` (3°) from the reference center scores
-  `thRobust`, like a view that does not see the patch, so the min-mean aggregation drops it; the
-  view centers in the reference frame are cached per estimator (`viewCenters0`). Pinhole-only
-  estimators do not gate (bit-identical depth-maps).
+  (`bModelWarp`), `ScorePixel` also gates every (hypothesis, view), at the hypothesis depth:
+  1. X = depth·Ray(x0), the hypothesis point in the reference frame; a view is gated where the
+     angle at X between the reference center (the origin) and the view's center (`viewCenters0`,
+     cached per estimator) is below `OPTDENSE::fMinAngle` (3°): X·(X−C) > cos(fMinAngle)·|X|·|X−C|;
+  2. if that gates every view, none is gated;
+  3. a gated view scores `thRobust`, like a view that does not see the patch (the min-mean
+     aggregation leaves it out); the others score their NCC as usual.
+
+  Step 2 keeps the ranking of the hypotheses of a pixel next to an epipole fair: its true depth
+  gates every view, while a closer depth sees some view at a larger angle; scoring the all-gated
+  hypothesis `thRobust` made the closer ones win for that alone (synthetic: 94 % of those pixels
+  too close by 19–26 % median). The views a pixel sees above fMinAngle at some depth thus still
+  decide alone there, and the pixels no view sees above it are estimated from all of them.
+  Pinhole-only estimators do not gate (bit-identical depth-maps).
 
 ### Depth-map files
 
@@ -228,11 +237,11 @@ RelWithDebInfo), Holo360D Outdoor_004 (40 frames at `--max-resolution 1440` unle
 | same, B only | 0.911 | 0.00053 | 0.982 | 0.994 | south 0.00064, seam 0.00062 |
 | their 18 cube faces 384x384, pinhole | 0.913 | 0.00079 | 0.912 | 0.952 | border band completeness 0.69 |
 | synthetic 512x256, A only / B70, no view gate | 0.956 / 0.956 | 0.00116 / 0.00145 | 0.926 / 0.920 | 0.984 / 0.985 | faces 128x128: 0.854, 0.00273, 0.756, 0.921 |
-| synthetic 512x256, B70, view gate (default), 24 threads, 5 runs | 0.955 | 0.00145–0.00150 | 0.918–0.919 | 0.982–0.983 | <5%: equator 0.956–0.960, south 0.981–0.986, seam 0.976–0.978, center (longitude 0) 0.979–0.980; completeness seam 0.948, center 0.953 |
+| synthetic 512x256, B70, view gate (default), 24 threads, 8 runs | 0.956 | 0.00145–0.00150 | 0.919–0.922 | 0.985–0.988 | <5%: equator 0.965–0.974, south 0.978–0.987, seam 0.996–0.997, center (longitude 0) 0.994–0.996; completeness seam 0.951, center 0.957 |
 | Holo360D, B + A above 70°, no view gate | 0.956 | 0.203 | 0.131 | 0.343 | equator 0.974 / 0.111 / 0.149 / 0.390, seam 0.951 / 0.208 / 0.136 / 0.333, south (the ground under the handheld camera, behind the operator in the neighbors) 0.945 / 1.94 |
 | Holo360D, cube faces 416x416, pinhole | 0.774 | 0.130 | 0.126 | 0.374 | same pipeline on the rendered faces |
-| synthetic 3 panoramas 1536x768, B + A above 70°, view gate (default) | 0.911 | 0.00050 | 0.977 | 0.989 | equator 0.00073 / <5% 0.976, north 0.00031 / 1.000, south 0.00042 / 0.982, seam 0.00056 / 0.971 |
-| Holo360D, B + A above 70°, view gate (default) | 0.955 | 0.192 | 0.138 | 0.348 | equator 0.972 / 0.103 / 0.160 / 0.400, seam 0.950 / 0.187 / 0.144 / 0.344 |
+| synthetic 3 panoramas 1536x768, B + A above 70°, view gate (default) | 0.911 | 0.00050 | 0.982 | 0.994 | equator 0.00072 / <5% 0.987, north 0.00031 / 1.000, south 0.00040 / 0.992, seam 0.00054 / 0.998, center 0.00054 / 1.000 |
+| Holo360D, B + A above 70°, view gate (default), 2 runs | 0.954 | 0.193–0.197 | 0.133–0.134 | 0.341–0.344 | equator 0.972 / 0.111–0.112 / 0.150–0.151 / 0.388–0.389, seam 0.947–0.949 / 0.198–0.213 / 0.136–0.137 / 0.333–0.334 |
 | CUDA: synthetic 512x256, B70, no view gate | 0.964 | 0.00141 | 0.932 | 0.989 | equator 0.991 / 0.00218, north 0.857 / 0.00069, south 0.849 / 0.00097, seam 0.969 / 0.00149 (CPU 0.956 / 0.00147 / 0.919 / 0.985); normal median 3.2° (CPU 4.0°); faces 128x128 on CUDA 0.949 |
 | CUDA: Holo360D 10 frames at 720, B70, no view gate | 0.718 | 0.057 | 0.203 | 0.481 | CPU on the same: 0.960 / 0.295 / 0.088 / 0.268; the CPU's best 71.8 % by confidence 0.173 / 0.113 / 0.338 |
 
@@ -252,12 +261,14 @@ spherical and the cube-face estimates are bounded by it alike.
 
 The synthetic panoramas look along their trajectory, so the epipoles of their neighbors lie in the
 seam band and in its antipodal band at longitude 0 (two of the three panoramas, at columns 15 / 271
-and 3–4 / 259–260 of 512), where the view gate leaves pixels no view constrains (see section 6):
-the seam band is compared with that antipodal band, not with the equator (`SyntheticSphericalTest`:
-seam <5% above center − 0.01, completeness above 0.99 x center). The seam band holds a few more of
-those pixels and sits 0.001–0.003 <5% below its antipode, Release and Debug alike; a seam defect
-costs 0.03 or more: no propagation across the seam gives seam <5% 0.950 against center 0.979,
-target patches across the seam scored unseen 0.91 against 0.97. Without the corner waits of the
+and 3–4 / 259–260 of 512), where the neighbors see the scene at small angles and the view gate
+acts: the seam band is compared with that antipodal band, not with the equator
+(`SyntheticSphericalTest`: seam <5% above center − 0.01, completeness above 0.99 x center). The two
+agree within 0.003; target patches across the seam scored unseen cost the seam 0.06–0.08 (0.904–0.920
+against 0.983–0.984, completeness 0.945 against 0.957), and no propagation across the seam fails the
+south band (<5% 0.933–0.947 against 0.978–0.987). Of the 1983 pixels whose true point both
+neighbors see below 3° (2.0 % of the seam band, 1.3 % of the equator), 1976–1979 are estimated and
+57–60 of them off by more than 5 % (71 without the view gate). Without the corner waits of the
 pixel order, 24 threads left 145–285 wrong estimates per run in the bottom-right corner of the
 zigzag order (the seam next to the south pole) against 11–54 single-threaded, seam <5%
 0.984–0.991 against 0.995 without the view gate; with them 5–31 and 0.997.
@@ -305,19 +316,19 @@ longitudes 16 pixels from the seam.
 
 | case | points | P / R / F @1% | P / R / F @2% | per band |
 |---|---|---|---|---|
-| synthetic 3 panoramas 1536x768 | 778750 | 0.999 / 0.948 / 0.973 | 1.000 / 0.978 / 0.989 | F@1% equator 0.955, north 1.000, south 0.964, seam 0.974 |
+| synthetic 3 panoramas 1536x768 | 784178 | 0.999 / 0.952 / 0.975 | 1.000 / 0.982 / 0.991 | F@1% equator 0.963, north 1.000, south 0.964, seam 0.973 |
 | their 18 cube faces 384x384 | 592042 | 0.997 / 0.821 / 0.901 | 1.000 / 0.902 / 0.948 | F@1% equator 0.939, north 1.000, south 0.715, seam 0.923 |
-| synthetic 3 panoramas 512x256 | 81108 | 0.984 / 0.684 / 0.807 | 0.998 / 0.871 / 0.930 | F@1% equator 0.716, north 0.981, south 0.641, seam 0.809 |
+| synthetic 3 panoramas 512x256 | 81705 | 0.979 / 0.685 / 0.806 | 0.997 / 0.874 / 0.931 | F@1% equator 0.714, north 0.981, south 0.646, seam 0.802 |
 | their 18 cube faces 128x128 | 43452 | 0.973 / 0.474 / 0.637 | 0.996 / 0.618 / 0.757 | F@1% equator 0.618, north 0.980, south 0.227, seam 0.651 |
-| the panoramas and faces fused together (mixed scene) | 112049 | 0.988 / 0.789 / 0.878 | 0.999 / 0.925 / 0.960 | |
-| panoramas 512, FuseDepthMaps / MergeDepthMaps | 95970 / 375808 | F 0.838 / 0.944 | F 0.966 / 0.987 | merge keeps every depth, so its recall is the depth-map completeness |
+| the panoramas and faces fused together (mixed scene) | 112856 | 0.984 / 0.793 / 0.878 | 0.998 / 0.930 / 0.963 | |
+| panoramas 512, FuseDepthMaps / MergeDepthMaps | 96059 / 375841 | F 0.838 / 0.943 | F 0.967 / 0.987 | merge keeps every depth, so its recall is the depth-map completeness |
 | panoramas 512 without sparse points (virtual cloud) | 80975 | 0.984 / 0.684 / 0.807 | 0.997 / 0.871 / 0.930 | depth-maps: completeness 0.956, <5% 0.984 |
 
 Holo360D, 40 frames at 1440 px, the GT of the 2048x1024 range maps (thresholds 2 / 5 / 10 %):
 
 | case | points | P / R / F @2% | P / R / F @5% | P / R / F @10% | F@5% per band |
 |---|---|---|---|---|---|
-| 40 panoramas, view gate | 336027 | 0.804 / 0.219 / 0.344 | 0.916 / 0.377 / 0.534 | 0.971 / 0.532 / 0.687 | equator 0.415, north 0.904, south 0.291, seam 0.541 |
+| 40 panoramas, view gate (2 runs) | 324781–330978 | 0.792–0.797 / 0.208–0.212 / 0.330–0.335 | 0.908–0.916 / 0.360–0.365 / 0.516–0.521 | 0.968–0.973 / 0.504–0.509 / 0.663–0.668 | equator 0.396–0.403, north 0.898–0.904, south 0.279–0.295, seam 0.517–0.519 |
 | their 240 cube faces 416x416 | 287846 | 0.760 / 0.194 / 0.310 | 0.932 / 0.401 / 0.561 | 0.971 / 0.596 / 0.738 | equator 0.434, north 0.859, south 0.489, seam 0.573 |
 
 The panoramas give the more precise cloud, the faces the higher recall at the loose thresholds,
@@ -327,9 +338,8 @@ Holo360D, its first 10 frames at 720 px (thresholds 2 / 5 / 10 %, F; precision @
 
 | case | F@2% | F@5% | F@10% | P@5% | depth abs-rel median / <5% |
 |---|---|---|---|---|---|
-| panoramas, no view gate (2 runs) | 0.216 / 0.215 | 0.361 / 0.362 | 0.477 / 0.466 | 0.849 / 0.836 | 0.340 / 0.254, 0.309 / 0.268 |
-| panoramas, view gate (3 runs) | 0.231 / 0.225 / 0.228 | 0.383 / 0.382 / 0.379 | 0.489 / 0.496 / 0.493 | 0.896 / 0.874 / 0.901 | 0.285 / 0.275, 0.298 / 0.265, 0.283 / 0.276 |
-| 60 cube faces 208x208 | 0.157 | 0.330 | 0.472 | 0.901 | |
+| panoramas, no view gate (3 runs) | 0.204–0.214 | 0.356–0.364, mean 0.360 | 0.471–0.474 | 0.850–0.863 | 0.299–0.333 / 0.260–0.277 |
+| panoramas, view gate (5 runs) | 0.222–0.232 | 0.367–0.379, mean 0.373 | 0.473–0.490 | 0.860–0.901, mean 0.881 | 0.276–0.326 / 0.257–0.273 || 60 cube faces 208x208 | 0.157 | 0.330 | 0.472 | 0.901 | |
 
 The seam band of Holo360D has a lower recall than the equator for the panoramas and the cube faces
 alike: it looks behind the camera, at the operator (masked) and the path walked.
@@ -366,6 +376,17 @@ alike: it looks behind the camera, at the operator (masked) and the path walked.
 - Dropping the per-view angle filter of `FilterNeighborViews` for panoramas: no change (Holo360D
   F@2% 0.232 / 0.229 vs 0.228; synthetic F@1% 0.809 vs 0.807): with the per-pixel gate it filters
   nothing that matters.
+- View gate variants (synthetic 512: wrong estimates among the 1983 pixels whose true point every
+  neighbor sees below 3°; Holo360D 10 frames at 720 px: F@5%):
+  - an all-gated hypothesis scoring `thRobust` (no step 2): 1518–1540 wrong, median 24 % too
+    close; F@5% mean 0.375 (4 runs), 40 frames at 1440 px 0.519: the same as the current rule
+    within the noise;
+  - gated views left out of the aggregation, an all-gated hypothesis the maximum cost: the same;
+  - one view set per pixel and pass, gated at the depth the pixel starts the pass with (all passes,
+    or from the second on): 370–410 wrong, F@5% 0.349–0.360 (all) and 0.360–0.370 (second on);
+  - dropping the estimates every view sees below fMinAngle at the end of each pixel: only the ones
+    at a depth that passes the gate survive, 1083–1113 wrong with the current rule (F@5%
+    0.367–0.380), 434–511 with a view set per pixel and pass (F@5% 0.359–0.381).
 
 ## 6. Open items
 
@@ -377,13 +398,10 @@ alike: it looks behind the camera, at the operator (masked) and the path walked.
 - Metal (P8): the port of the model kernels, the wrapped sampling and the model math (hand mirror).
 - The confidence recalibration (`ConfidenceRefine.h`, `ConfidenceCUDA.cu`) is pinhole only and
   stays off for scenes with spherical images (`AdjustConfidenceSweep` ASSERTs a pinhole reference).
-- The view gate is evaluated at the hypothesis depth, and a closer depth sees the neighbors at a
-  larger angle: a pixel whose neighbors all fall below `fMinAngle` at its true depth (next to the
-  epipoles) takes the closest depth that passes the gate instead of staying unestimated. Synthetic
-  512 px: such pixels are 0.44 % of the estimates (2.0 % of the seam band, 1.3 % of the equator),
-  94 % of them wrong by more than 5 % (median 19–26 % too close; 0.4 % wrong without the gate),
-  which costs the depth-maps <5% 0.987 -> 0.982, not the fused cloud (F@1% unchanged). A gate per
-  pixel (one view set for all its hypotheses) or a soft weight is untested.
+- The view gate still ranks hypotheses that leave a pixel different views: a closer depth that
+  some views see above fMinAngle is scored by those alone, a farther one that no view sees above
+  it by all of them. On the synthetic scene and Holo360D that costs nothing measurable; a soft
+  weight by the triangulation angle is untested.
 - The corner waits of the pixel order cover up to 64 concurrent estimators; with more threads the
   corner anti-diagonals between 64 and the thread count are read from the previous pass.
 - `GapInterpolation` does not cross the poles; the rows next to the poles stay unestimated.
