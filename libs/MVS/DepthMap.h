@@ -681,8 +681,14 @@ template<> float DepthEstimatorT<Pinhole>::ComputeGeometricConsistency(const Dep
 template<> Point3f DepthEstimatorT<Pinhole>::ComputeNeighborPoint(const ImageRef&, Depth) const;
 template<> float DepthEstimatorT<Spherical>::ComputeGeometricConsistency(const DepthData::ViewData&, Depth) const;
 template<> Point3f DepthEstimatorT<Spherical>::ComputeNeighborPoint(const ImageRef&, Depth) const;
+// the estimators are instantiated in DepthMap.cpp, and exported for the tests
+#ifdef MVS_EXPORTS
 extern template struct DepthEstimatorT<Pinhole>;
 extern template struct DepthEstimatorT<Spherical>;
+#else
+extern template struct MVS_API DepthEstimatorT<Pinhole>;
+extern template struct MVS_API DepthEstimatorT<Spherical>;
+#endif
 typedef DepthEstimatorT<Pinhole> DepthEstimator;
 /*----------------------------------------------------------------*/
 

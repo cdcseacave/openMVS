@@ -45,6 +45,9 @@ bool TestTetraFlow();
 // graphs whose nodes have random, partly shared label sets: the labels must match after every iteration
 bool TestLBPPotts();
 bool TestCameraModels();
+
+// the spherical tangent-plane patch warp (Method B) against the exact per-texel warp, per target elevation
+bool TestSphericalPatchWarp();
 /*----------------------------------------------------------------*/
 
 } // namespace SEACAVE

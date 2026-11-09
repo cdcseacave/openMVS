@@ -100,9 +100,9 @@ void SynthGenerate(const SynthConfig&, SynthViewArr& views);
 // median relative mismatch between the GT lambda of the pixels of a reprojected into b and the
 // GT lambda of b there (~0 for consistent GT), over the pixels visible in b (numPixels > 0)
 double SynthGTMismatch(const SynthView& a, const SynthView& b, size_t& numPixels);
-// MVS scene of the given face views: one platform per panorama (its 6 faces as cameras, the
-// panorama pose), images saved as PNG in folder, sparse points sampled from the GT (every 8th
-// pixel of every view, seen by the views whose GT agrees)
+// MVS scene of the given face and panorama views: one platform per panorama (its 6 faces and the
+// spherical panorama as cameras, the panorama pose), images saved as PNG in folder, sparse points
+// sampled from the GT (every 8th pixel of every view, seen by the views whose GT agrees)
 bool SynthBuildScene(const SynthViewArr& views, const IIndexArr& viewIDs, const String& folder, Scene& scene);
 // save every view (PNG, GT .dmap with lambda and normals, depth preview PNG), cameras.json and,
 // if there are face views, scene.mvs of them (paths relative to folder)
@@ -137,6 +137,10 @@ protected:
 // panoramas scored against the GT
 bool SyntheticDepthBaselineTest();
 
+// CPU PatchMatch on three equirectangular panoramas of the synthetic scene scored against the GT,
+// overall and per band (the seam and the poles against the equator)
+bool SyntheticSphericalTest();
+
 // Brown views of the synthetic scene loaded through an Interface v8 Brown camera: MVS::Image reads
 // them undistorted as the pinhole render at K', the pixels without a source are in the ignore mask,
 // and the observations of GT points land on their K' projections
@@ -146,6 +150,10 @@ bool BrownUndistortOnLoadTest();
 //   synth <outDir> [panoWidth=512]: write the default dataset
 //   evaldepth <gt.dmap> <est.dmap> [pinhole|brown|spherical]: print the evaluation table
 //   synthtest [verbosity]: run SyntheticDepthBaselineTest alone
+//   sphtest <verbosity> [panoWidth=512] [numPanos=3] [faces=1] [maxElevation] [maxViews] [maxThreads]: CPU PatchMatch on panoramas and on
+//     their cube faces; maxElevation overrides DepthEstimatorBase::fSphericalWarpMaxElevation (0: exact warp only)
+//   facescene <scene.mvs> <gtFolder> <outFolder> <panoWidth> [faceSize]: the cube-face scene of a spherical scene
+//     and the face GT depth-maps, the baseline of its spherical depth-maps
 bool SynthTool(int argc, LPCTSTR* argv);
 
 } // namespace MVS

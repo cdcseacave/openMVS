@@ -453,31 +453,45 @@ bool MVS::SynthBuildScene(const SynthViewArr& views, const IIndexArr& viewIDs, c
 	scene.Release();
 	const std::vector<Matrix3x3> faceRotations(SphereCubeMap::FaceRotations(6));
 	std::unordered_map<int, uint32_t> panoPlatforms;
+	// the cameras of a panorama rig: its 6 faces, then the panorama itself, the rig pose being the
+	// panorama's; a face camera is set up by the first face view of the rig, the spherical one by the panorama
+	constexpr uint32_t sphericalCamera(6);
 	FOREACH(i, viewIDs) {
 		const SynthView& view = views[viewIDs[i]];
-		ASSERT(view.camera.model == CameraModelType::PINHOLE && view.face >= 0 && view.face < 6);
+		ASSERT((view.camera.model == CameraModelType::PINHOLE && view.face >= 0 && view.face < 6) ||
+			(view.camera.model == CameraModelType::SPHERICAL && view.face < 0));
 		const auto itPlatform(panoPlatforms.emplace(view.pano, scene.platforms.size()));
+		Platform& platform = itPlatform.second ? scene.platforms.AddEmpty() : scene.platforms[itPlatform.first->second];
 		if (itPlatform.second) {
-			// the 6 faces as the cameras of the panorama rig
-			Platform& platform = scene.platforms.AddEmpty();
 			platform.name = String::FormatString("pano%03d", view.pano);
-			const float scale(Camera::GetNormalizationScale(view.camera.width, view.camera.height));
-			for (int f = 0; f < 6; ++f) {
-				Platform::Camera& camera = platform.cameras.AddEmpty();
+			platform.cameras.resize(sphericalCamera+1);
+			for (Platform::Camera& camera: platform.cameras) {
 				camera.K = KMatrix::IDENTITY;
-				camera.K(0,0) = view.camera.pinhole.fx / scale;
-				camera.K(1,1) = view.camera.pinhole.fy / scale;
-				camera.R = faceRotations[f];
+				camera.R = RMatrix::IDENTITY;
 				camera.C = Point3::ZERO;
 			}
 			Platform::Pose& pose = platform.poses.AddEmpty();
-			pose.R = faceRotations[view.face].t() * view.camera.R;
+			pose.R = view.face < 0 ? Matrix3x3(view.camera.R) : Matrix3x3(faceRotations[view.face].t() * view.camera.R);
 			pose.C = view.camera.C;
+		}
+		const float scale(Camera::GetNormalizationScale(view.camera.width, view.camera.height));
+		if (view.face < 0) {
+			Platform::Camera& camera = platform.cameras[sphericalCamera];
+			camera.model = CameraModelType::SPHERICAL;
+			camera.K(0,0) = view.camera.spherical.fx / scale;
+			camera.K(1,1) = view.camera.spherical.fy / scale;
+		} else {
+			for (int f = 0; f < 6; ++f) {
+				Platform::Camera& camera = platform.cameras[f];
+				camera.K(0,0) = view.camera.pinhole.fx / scale;
+				camera.K(1,1) = view.camera.pinhole.fy / scale;
+				camera.R = faceRotations[f];
+			}
 		}
 		Image& image = scene.images.AddEmpty();
 		image.ID = i;
 		image.platformID = itPlatform.first->second;
-		image.cameraID = view.face;
+		image.cameraID = view.face < 0 ? sphericalCamera : (uint32_t)view.face;
 		image.poseID = 0;
 		image.width = view.camera.width;
 		image.height = view.camera.height;
@@ -488,7 +502,9 @@ bool MVS::SynthBuildScene(const SynthViewArr& views, const IIndexArr& viewIDs, c
 			return false;
 		}
 		image.UpdateCamera(scene.platforms);
-		ASSERT(ABS(image.camera.K(0,2) - view.camera.pinhole.cx) < 1e-9 && ABS(image.camera.K(0,0) - view.camera.pinhole.fx) < 1e-4);
+		ASSERT(view.face < 0 ?
+			ABS(image.camera.K(0,2) - view.camera.spherical.cx) < 1e-9 && ABS(image.camera.K(1,1) - view.camera.spherical.fy) < 1e-4 :
+			ABS(image.camera.K(0,2) - view.camera.pinhole.cx) < 1e-9 && ABS(image.camera.K(0,0) - view.camera.pinhole.fx) < 1e-4);
 	}
 	scene.nCalibratedImages = viewIDs.size();
 	// GT sparse points: every 8th pixel of every view, seen by every view whose GT agrees within 1%
@@ -660,6 +676,58 @@ String DepthEvaluator::Print() const
 /*----------------------------------------------------------------*/
 
 
+// CPU PatchMatch on the given views of the synthetic scene, at full resolution, depth-maps only, in
+// a temporary folder; the estimates are scored against the GT into evaluator, the estimation wall
+// time goes to seconds; maxViews > 0 caps the neighbor views of a depth-map, maxThreads > 0 the threads
+static bool SynthEstimateDepth(const SynthViewArr& views, const IIndexArr& viewIDs, DepthEvaluator& evaluator, double& seconds, unsigned maxViews=0, unsigned maxThreads=0)
+{
+	const ScopedTempDir tmpDir(_T("SyntheticDepth"));
+	if (!tmpDir.IsValid())
+		return false;
+	const String folder(tmpDir.Path() + "/");
+	const SynthWorkingFolder workingFolder(folder);
+	#if defined(_USE_CUDA) || defined(_USE_METAL)
+	struct DevicesRestore {
+		const String prev;
+		~DevicesRestore() { SEACAVE::CUDA::desiredDeviceIDs = prev; }
+	} const devicesRestore{SEACAVE::CUDA::desiredDeviceIDs};
+	SEACAVE::CUDA::desiredDeviceIDs.clear();
+	#endif
+	Scene scene;
+	if (!SynthBuildScene(views, viewIDs, folder, scene))
+		return false;
+	if (maxThreads)
+		scene.nMaxThreads = maxThreads;
+	OPTDENSE::init();
+	OPTDENSE::update();
+	OPTDENSE::nResolutionLevel = 0;
+	OPTDENSE::nMinResolution = 64;
+	if (maxViews)
+		OPTDENSE::nMaxViews = OPTDENSE::nNumViews = maxViews;
+	const auto t0(std::chrono::steady_clock::now());
+	if (!scene.DenseReconstruction(1)) {
+		VERBOSE("ERROR: synthetic depth: depth-map estimation failed!");
+		return false;
+	}
+	seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+	FOREACH(i, scene.images) {
+		String imageFileName;
+		IIndexArr IDs;
+		cv::Size imageSize;
+		KMatrix K; RMatrix R; CMatrix C;
+		Depth dMin, dMax;
+		DepthMap depthMap; NormalMap normalMap; ConfidenceMap confMap; ViewsMap viewsMap;
+		if (!ImportDepthDataRaw(ComposeDepthFilePath(scene.images[i].ID, "dmap"), imageFileName, IDs, imageSize, K, R, C, dMin, dMax,
+				depthMap, normalMap, confMap, viewsMap, HeaderDepthDataRaw::HAS_DEPTH|HeaderDepthDataRaw::HAS_NORMAL)) {
+			VERBOSE("ERROR: synthetic depth: missing depth-map of image %u!", i);
+			return false;
+		}
+		const SynthView& view = views[viewIDs[i]];
+		evaluator.Add(view.depthMap, view.normalMap, depthMap, normalMap, view.camera.model);
+	}
+	return true;
+}
+
 bool MVS::SyntheticDepthBaselineTest()
 {
 	TD_TIMER_START();
@@ -703,49 +771,14 @@ bool MVS::SyntheticDepthBaselineTest()
 	}
 
 	// CPU PatchMatch on the 18 faces, full resolution, depth-maps only
-	const ScopedTempDir tmpDir(_T("SyntheticDepth"));
-	if (!tmpDir.IsValid())
-		return false;
-	const String folder(tmpDir.Path() + "/");
-	const SynthWorkingFolder workingFolder(folder);
-	#if defined(_USE_CUDA) || defined(_USE_METAL)
-	struct DevicesRestore {
-		const String prev;
-		~DevicesRestore() { SEACAVE::CUDA::desiredDeviceIDs = prev; }
-	} const devicesRestore{SEACAVE::CUDA::desiredDeviceIDs};
-	SEACAVE::CUDA::desiredDeviceIDs.clear();
-	#endif
 	IIndexArr faceIDs;
 	FOREACH(i, views)
 		if (views[i].face >= 0)
 			faceIDs.push_back(i);
-	Scene scene;
-	if (!SynthBuildScene(views, faceIDs, folder, scene))
-		return false;
-	OPTDENSE::init();
-	OPTDENSE::update();
-	OPTDENSE::nResolutionLevel = 0;
-	OPTDENSE::nMinResolution = 64;
-	if (!scene.DenseReconstruction(1)) {
-		VERBOSE("ERROR: SyntheticDepthBaselineTest: depth-map estimation failed!");
-		return false;
-	}
 	DepthEvaluator evaluator;
-	FOREACH(i, scene.images) {
-		String imageFileName;
-		IIndexArr IDs;
-		cv::Size imageSize;
-		KMatrix K; RMatrix R; CMatrix C;
-		Depth dMin, dMax;
-		DepthMap depthMap; NormalMap normalMap; ConfidenceMap confMap; ViewsMap viewsMap;
-		if (!ImportDepthDataRaw(ComposeDepthFilePath(scene.images[i].ID, "dmap"), imageFileName, IDs, imageSize, K, R, C, dMin, dMax,
-				depthMap, normalMap, confMap, viewsMap, HeaderDepthDataRaw::HAS_DEPTH|HeaderDepthDataRaw::HAS_NORMAL)) {
-			VERBOSE("ERROR: SyntheticDepthBaselineTest: missing depth-map of image %u!", i);
-			return false;
-		}
-		const SynthView& view = views[faceIDs[i]];
-		evaluator.Add(view.depthMap, view.normalMap, depthMap, normalMap, view.camera.model);
-	}
+	double seconds;
+	if (!SynthEstimateDepth(views, faceIDs, evaluator, seconds))
+		return false;
 	VERBOSE("SyntheticDepthBaselineTest: CPU PatchMatch on %u cube faces of %dx%d px:\n%s",
 		faceIDs.size(), views[faceIDs[0]].camera.width, views[faceIDs[0]].camera.height, evaluator.Print().c_str());
 	// measured (Debug, CPU, two runs): all: completeness 0.854, abs-rel median 0.0027, <1% 0.749..0.754,
@@ -758,6 +791,130 @@ bool MVS::SyntheticDepthBaselineTest()
 		return false;
 	}
 	VERBOSE("SyntheticDepthBaselineTest passed (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+
+// CPU PatchMatch on panoramas of the synthetic scene (and, if faces, separately on their cube faces):
+// prints the accuracy per band and the estimation wall time per estimated pixel; returns the evaluators
+static bool SynthSphericalRun(int panoWidth, unsigned numPanos, bool faces, DepthEvaluator& sphereEval, DepthEvaluator& faceEval, unsigned maxViews=0, unsigned maxThreads=0)
+{
+	SynthConfig config;
+	config.panoWidth = panoWidth;
+	config.firstPano = 3;
+	config.numRenderPanos = numPanos;
+	config.numBrown = 0;
+	config.faces = faces;
+	config.supersample = 3;
+	SynthViewArr views;
+	SynthGenerate(config, views);
+	IIndexArr panoIDs, faceIDs;
+	FOREACH(i, views)
+		(views[i].face < 0 ? panoIDs : faceIDs).push_back(i);
+	double seconds;
+	if (!SynthEstimateDepth(views, panoIDs, sphereEval, seconds, maxViews, maxThreads))
+		return false;
+	const DepthEvaluator::Stats sphereAll(sphereEval.GetStats(DepthEvaluator::ALL));
+	VERBOSE("synthetic spherical: CPU PatchMatch on %u panoramas of %dx%d px: %.2f s, %.3f us/px\n%s",
+		panoIDs.size(), views[panoIDs[0]].camera.width, views[panoIDs[0]].camera.height,
+		seconds, seconds*1e6/sphereAll.numGT, sphereEval.Print().c_str());
+	if (faces) {
+		if (!SynthEstimateDepth(views, faceIDs, faceEval, seconds, maxViews, maxThreads))
+			return false;
+		const DepthEvaluator::Stats faceAll(faceEval.GetStats(DepthEvaluator::ALL));
+		VERBOSE("synthetic spherical: CPU PatchMatch on their %u cube faces of %dx%d px: %.2f s, %.3f us/px\n%s",
+			faceIDs.size(), views[faceIDs[0]].camera.width, views[faceIDs[0]].camera.height,
+			seconds, seconds*1e6/faceAll.numGT, faceEval.Print().c_str());
+	}
+	return true;
+}
+
+// the cost of scoring one plane hypothesis at one pixel against one view, through the PatchMatch
+// estimator of the reference model: ns per ScorePixel of the GT plane over the reference pixels whose
+// patch the target sees whole (score below thRobust), each pixel prepared once and scored rounds times
+template<template<typename> class MODEL>
+static double SynthScoreBench(const SynthView& ref, const SynthView& trg, unsigned rounds, size_t& numPixels)
+{
+	Image images[2];
+	DepthData depthData;
+	const SynthView* views[2] = {&ref, &trg};
+	for (int i = 0; i < 2; ++i) {
+		const SynthView& view = *views[i];
+		Image& image = images[i];
+		image.ID = i;
+		image.poseID = 0;
+		image.model = view.camera.model;
+		image.width = view.camera.width;
+		image.height = view.camera.height;
+		image.camera.K = view.camera.GetK();
+		image.camera.R = view.camera.R;
+		image.camera.C = view.camera.C;
+		image.camera.ComposeP();
+		DepthData::ViewData& viewData = depthData.images.AddEmpty();
+		viewData.scale = 1;
+		viewData.pImageData = &image;
+		viewData.camera = image.camera;
+		Image8U gray;
+		cv::cvtColor(view.image, gray, cv::COLOR_BGR2GRAY);
+		gray.convertTo(viewData.image, CV_32F, 1.0/255.0);
+	}
+	depthData.images[1].Init(depthData.images[0].camera);
+	const cv::Size size(ref.camera.width, ref.camera.height);
+	depthData.depthMap.create(size); depthData.normalMap.create(size); depthData.confMap.create(size);
+	depthData.dMin = 0.1f; depthData.dMax = 100.f;
+	DepthEstimatorBase::WeightMap weightMap;
+	weightMap.resize(size.area());
+	DepthEstimatorBase::MapRefArr coords;
+	volatile Thread::safe_t idxPixel(-1);
+	std::unique_ptr<DepthEstimatorBase::PixelPending[]> pending(new DepthEstimatorBase::PixelPending[size.area()]);
+	DepthEstimatorT<MODEL> estimator(0, depthData, idxPixel, pending.get(), weightMap, coords);
+	// the reference pixels seen whole by the target
+	std::vector<ImageRef> pixels;
+	for (int r = DepthEstimatorBase::nSizeHalfWindow; r < size.height-DepthEstimatorBase::nSizeHalfWindow; r += 2) {
+		for (int c = DepthEstimatorBase::nSizeHalfWindow; c < size.width-DepthEstimatorBase::nSizeHalfWindow; c += 2) {
+			const ImageRef x(c, r);
+			if (!estimator.PreparePixelPatch(x) || !estimator.FillPixelPatch())
+				continue;
+			if (estimator.ScorePixel(ref.depthMap(x), ref.normalMap(x)) < estimator.thRobust)
+				pixels.push_back(x);
+		}
+	}
+	numPixels = pixels.size();
+	if (pixels.empty())
+		return 0;
+	float sum(0);
+	const auto t0(std::chrono::steady_clock::now());
+	for (const ImageRef& x: pixels) {
+		estimator.PreparePixelPatch(x);
+		estimator.FillPixelPatch();
+		for (unsigned round = 0; round < rounds; ++round)
+			sum += estimator.ScorePixel(ref.depthMap(x), ref.normalMap(x));
+	}
+	const double seconds(std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+	ASSERT(sum >= 0);
+	return seconds*1e9/(double(rounds)*pixels.size());
+}
+
+bool MVS::SyntheticSphericalTest()
+{
+	TD_TIMER_START();
+	DepthEvaluator evaluator, unused;
+	if (!SynthSphericalRun(512, 3, false, evaluator, unused))
+		return false;
+	const DepthEvaluator::Stats all(evaluator.GetStats(DepthEvaluator::ALL)), equator(evaluator.GetStats(DepthEvaluator::EQUATOR));
+	const DepthEvaluator::Stats seam(evaluator.GetStats(DepthEvaluator::SEAM));
+	const DepthEvaluator::Stats north(evaluator.GetStats(DepthEvaluator::NORTH)), south(evaluator.GetStats(DepthEvaluator::SOUTH));
+	// measured (Release, CPU): all: completeness 0.956, abs-rel median 0.0015, <1% 0.92, <5% 0.985, normal
+	// median 4.0 deg; equator completeness 0.994, <5% 0.967; seam 0.951, <5% 0.996; north 0.857, <5% 0.999;
+	// south 0.797, <5% 0.986 (the 4 rows next to each pole are not estimated)
+	if (!(all.completeness > 0.93) || !(all.absRelMedian < 0.0025) || !(all.within1 > 0.88) || !(all.within5 > 0.97) || !(all.normalMedianDeg < 5.5) ||
+		!(seam.completeness > 0.95*equator.completeness) || !(seam.within5 > equator.within5) ||
+		!(north.completeness > 0.8) || !(north.within5 > 0.95) || !(south.completeness > 0.75) || !(south.within5 > 0.95)) {
+		VERBOSE("ERROR: SyntheticSphericalTest: depth accuracy below the baseline!");
+		return false;
+	}
+	VERBOSE("SyntheticSphericalTest passed (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 /*----------------------------------------------------------------*/
@@ -950,8 +1107,184 @@ bool MVS::SynthTool(int argc, LPCTSTR* argv)
 	}
 	if (mode == "synthtest")
 		return SyntheticDepthBaselineTest();
+	if (mode == "scorebench") {
+		// ns per hypothesis and view: scorebench <verbosity> [panoWidth=1536] [rounds=4] [maxElevation] [faceWidth=panoWidth/4]
+		// (faces as large as the panorama, panoWidth/sqrt(2), compare at the same image memory footprint)
+		const int panoWidth(argc > 2 ? std::atoi(argv[2]) : 1536);
+		const unsigned rounds(argc > 3 ? (unsigned)std::atoi(argv[3]) : 4u);
+		struct MaxElevationRestore {
+			const float prev;
+			~MaxElevationRestore() { DepthEstimatorBase::fSphericalWarpMaxElevation = prev; }
+		} const maxElevationRestore{DepthEstimatorBase::fSphericalWarpMaxElevation};
+		if (argc > 4)
+			DepthEstimatorBase::fSphericalWarpMaxElevation = (float)std::atof(argv[4]);
+		const int faceWidth(argc > 5 ? std::atoi(argv[5]) : panoWidth/4);
+		OPTDENSE::init();
+		OPTDENSE::update();
+		// panorama 3 against panorama 4, and each cube face of 3 against the same face of 4
+		SynthConfig config;
+		config.firstPano = 3;
+		config.numRenderPanos = 2;
+		config.numBrown = 0;
+		config.supersample = 1;
+		config.panoWidth = panoWidth;
+		config.faces = false;
+		SynthViewArr panos;
+		SynthGenerate(config, panos);
+		config.panoWidth = faceWidth*4;
+		config.spherical = false;
+		config.faces = true;
+		SynthViewArr faces;
+		SynthGenerate(config, faces);
+		// alternate the two measurements and keep the fastest of each, the machine being shared
+		double nsSphereMin(DBL_MAX), nsFacesMin(DBL_MAX);
+		for (int repeat = 0; repeat < 5; ++repeat) {
+			size_t numPixels;
+			const double nsSphere(SynthScoreBench<Spherical>(panos[0], panos[1], rounds, numPixels));
+			double nsFaces(0); size_t numFacePixels(0);
+			for (int f = 0; f < 6; ++f) {
+				size_t n;
+				const double ns(SynthScoreBench<Pinhole>(faces[f], faces[6+f], rounds, n));
+				nsFaces += ns*n;
+				numFacePixels += n;
+			}
+			nsFaces /= numFacePixels;
+			VERBOSE("scorebench: panorama %dx%d %.1f ns over %zu pixels, faces %dx%d %.1f ns over %zu pixels",
+				panoWidth, panoWidth/2, nsSphere, numPixels, faceWidth, faceWidth, nsFaces, numFacePixels);
+			nsSphereMin = MINF(nsSphereMin, nsSphere);
+			nsFacesMin = MINF(nsFacesMin, nsFaces);
+		}
+		VERBOSE("scorebench: spherical %.1f ns, pinhole faces %.1f ns per ScorePixel (one view): ratio %.3f", nsSphereMin, nsFacesMin, nsSphereMin/nsFacesMin);
+		return true;
+	}
+	if (mode == "sphtest") {
+		// panoramas vs their cube faces: sphtest <verbosity> [panoWidth=512] [numPanos=3] [faces=1] [maxElevation] [maxViews] [maxThreads]
+		const int panoWidth(argc > 2 ? std::atoi(argv[2]) : 512);
+		const unsigned numPanos(argc > 3 ? (unsigned)std::atoi(argv[3]) : 3u);
+		const bool faces(argc > 4 ? std::atoi(argv[4]) != 0 : true);
+		struct MaxElevationRestore {
+			const float prev;
+			~MaxElevationRestore() { DepthEstimatorBase::fSphericalWarpMaxElevation = prev; }
+		} const maxElevationRestore{DepthEstimatorBase::fSphericalWarpMaxElevation};
+		if (argc > 5)
+			DepthEstimatorBase::fSphericalWarpMaxElevation = (float)std::atof(argv[5]);
+		const unsigned maxViews(argc > 6 ? (unsigned)std::atoi(argv[6]) : 0u);
+		const unsigned maxThreads(argc > 7 ? (unsigned)std::atoi(argv[7]) : 0u);
+		if (panoWidth <= 0 || panoWidth % 8 || numPanos < 2 || numPanos > 5) {
+			std::printf("error: panoWidth must be a positive multiple of 8, numPanos in [2,5]\n");
+			return false;
+		}
+		DepthEvaluator sphereEval, faceEval;
+		if (!SynthSphericalRun(panoWidth, numPanos, faces, sphereEval, faceEval, maxViews, maxThreads))
+			return false;
+		std::fputs(sphereEval.Print().c_str(), stdout);
+		if (faces)
+			std::fputs(faceEval.Print().c_str(), stdout);
+		return true;
+	}
 	if (mode == "cameratest")
 		return InterfaceV8Test() && BrownUndistortOnLoadTest();
+	if (mode == "facescene" && argc >= 5) {
+		// the cube-face baseline of a spherical scene: facescene <scene.mvs> <gtFolder> <outFolder> <panoWidth> [faceSize]:
+		// every panorama resized to panoWidth is rendered into 6 cube faces (faceSize, default the same pixels
+		// per steradian: panoWidth/sqrt(12)), its GT range depth-map (gtFolder/depthXXXX.dmap) into face GT z
+		// depth-maps (outFolder/gt), and the sparse points are kept with the faces they project into
+		const String sceneFileName(Util::getFullPath(argv[1])), gtFolder(Util::getFullPath(argv[2]));
+		String outFolder(Util::getFullPath(argv[3]));
+		Util::ensureValidFolderPath(outFolder);
+		Util::ensureFolder(outFolder + "gt/");
+		const int panoWidth(std::atoi(argv[4]));
+		const int faceSize(argc > 5 ? std::atoi(argv[5]) : ROUND2INT(panoWidth/SQRT(12.0)/8)*8);
+		Scene scene;
+		{
+			const SynthWorkingFolder workingFolder(Util::getFilePath(sceneFileName));
+			if (scene.Load(sceneFileName) == Scene::SCENE_NA)
+				return false;
+		}
+		const SphereCubeMap::TangentFacesGeometry faces(SphereCubeMap::MakeTangentFacesGeometry(6, faceSize));
+		const Pinhole<double> facePinhole{faces.K(0,0), faces.K(1,1), faces.K(0,2), faces.K(1,2)};
+		Scene faceScene;
+		const float scale(Camera::GetNormalizationScale(faceSize, faceSize));
+		FOREACH(i, scene.images) {
+			const Image& imageData = scene.images[i];
+			ASSERT(imageData.IsValid() && imageData.model == CameraModelType::SPHERICAL);
+			Image8U3 pano;
+			if (imageData.ReadPixels(pano) == NULL)
+				return false;
+			cv::resize(pano, pano, cv::Size(panoWidth, panoWidth/2), 0, 0, cv::INTER_AREA);
+			const std::vector<Image8U3> faceImages(SphereCubeMap::SphericalToTangentialFaces(pano, faces));
+			// the GT range of the panorama, sampled at the nearest pixel of each face ray
+			String imageFileName; IIndexArr IDs; cv::Size imageSize; KMatrix K; RMatrix R; CMatrix C; Depth dMin, dMax;
+			DepthMap gtRange; NormalMap gtNormals; ConfidenceMap confMap; ViewsMap viewsMap;
+			if (!ImportDepthDataRaw(gtFolder + String::FormatString("/depth%04u.dmap", imageData.ID), imageFileName, IDs, imageSize, K, R, C, dMin, dMax,
+					gtRange, gtNormals, confMap, viewsMap, HeaderDepthDataRaw::HAS_DEPTH))
+				return false;
+			const Spherical<double> sphere(Spherical<double>::FromSize(gtRange.width(), gtRange.height()));
+			Platform& platform = faceScene.platforms.AddEmpty();
+			platform.name = String::FormatString("pano%04u", imageData.ID);
+			Platform::Pose& pose = platform.poses.AddEmpty();
+			pose.R = imageData.camera.R;
+			pose.C = imageData.camera.C;
+			for (int f = 0; f < 6; ++f) {
+				Platform::Camera& camera = platform.cameras.AddEmpty();
+				camera.K = KMatrix::IDENTITY;
+				camera.K(0,0) = faces.K(0,0) / scale;
+				camera.K(1,1) = faces.K(1,1) / scale;
+				camera.R = faces.rotations[f];
+				camera.C = Point3::ZERO;
+				Image& face = faceScene.images.AddEmpty();
+				face.ID = faceScene.images.size()-1;
+				face.platformID = faceScene.platforms.size()-1;
+				face.cameraID = f;
+				face.poseID = 0;
+				face.width = face.height = faceSize;
+				face.scale = 1;
+				face.name = outFolder + String::FormatString("pano%04u_face%d.png", imageData.ID, f);
+				if (!faceImages[f].Save(face.name))
+					return false;
+				face.UpdateCamera(faceScene.platforms);
+				DepthMap gt(faceSize, faceSize);
+				const Eigen::Matrix3d Rt(EMat3(faces.rotations[f]).transpose());
+				for (int r = 0; r < faceSize; ++r) {
+					for (int c = 0; c < faceSize; ++c) {
+						const EVec3 ray(facePinhole.Ray(EVec2(c, r)));
+						EVec2 x;
+						sphere.Project(Rt*ray, x);
+						const Depth range(gtRange(MINF(ROUND2INT(x.y()), gtRange.height()-1), (ROUND2INT(x.x()) + gtRange.width()) % gtRange.width()));
+						gt(r, c) = range > 0 ? (Depth)(range/ray.norm()) : 0.f;
+					}
+				}
+				const NormalMap noNormals;
+				if (!ExportDepthDataRaw(outFolder + String::FormatString("gt/depth%04u.dmap", face.ID), face.name, IIndexArr{face.ID}, gt.size(),
+						face.camera.K, face.camera.R, face.camera.C, 0.f, FLT_MAX, gt, noNormals, ConfidenceMap(), ViewsMap()))
+					return false;
+			}
+		}
+		faceScene.nCalibratedImages = faceScene.images.size();
+		// the sparse points with the faces they project into, among the faces of their panoramas
+		FOREACH(p, scene.pointcloud.points) {
+			const Point3 X(Cast<REAL>(scene.pointcloud.points[p]));
+			PointCloud::ViewArr views;
+			for (const PointCloud::View v: scene.pointcloud.pointViews[p]) {
+				for (int f = 0; f < 6; ++f) {
+					const Image& face = faceScene.images[v*6+f];
+					const Point3 Xc(face.camera.TransformPointW2C(X));
+					if (Xc.z > 0 && face.camera.IsInside(Point2f(face.camera.TransformPointC2I(Xc)), Point2f(face.GetSize())))
+						views.push_back(v*6+f);
+				}
+			}
+			if (views.size() < 2)
+				continue;
+			views.Sort();
+			faceScene.pointcloud.points.emplace_back(scene.pointcloud.points[p]);
+			faceScene.pointcloud.pointViews.emplace_back(std::move(views));
+		}
+		const SynthWorkingFolder workingFolder(outFolder);
+		if (!faceScene.SaveInterface(outFolder + "scene_faces.mvs"))
+			return false;
+		std::printf("%u faces of %dx%d px, %zu sparse points\n", faceScene.images.size(), faceSize, faceSize, (size_t)faceScene.pointcloud.points.size());
+		return true;
+	}
 	if (mode == "undistortbench" && argc >= 2) {
 		// image load cost of the undistortion over the first numImages images undistorted on read:
 		// the file decode and the remap ReadPixels adds to it, timed apart; the first image also
@@ -999,51 +1332,80 @@ bool MVS::SynthTool(int argc, LPCTSTR* argv)
 		return true;
 	}
 	if (mode == "evaldepth" && argc >= 3) {
-		DepthMap maps[2]; NormalMap normals[2]; KMatrix Ks[2];
-		for (int i = 0; i < 2; ++i) {
-			String imageFileName;
-			IIndexArr IDs;
-			cv::Size imageSize;
-			RMatrix R; CMatrix C;
-			Depth dMin, dMax;
-			ConfidenceMap confMap; ViewsMap viewsMap;
-			if (!ImportDepthDataRaw(argv[1+i], imageFileName, IDs, imageSize, Ks[i], R, C, dMin, dMax, maps[i], normals[i], confMap, viewsMap,
-					HeaderDepthDataRaw::HAS_DEPTH|HeaderDepthDataRaw::HAS_NORMAL)) {
-				std::printf("error: cannot read the depth-map '%s'\n", argv[1+i]);
-				return false;
-			}
-		}
-		// the model only selects the bands: SPHERICAL if named or if the GT camera matrix is the equirect one
-		const Spherical<double> sphere(Spherical<double>::FromSize(maps[0].width(), maps[0].height()));
+		// one GT/estimate pair, or every GT depth*.dmap of a folder against the same file name in the
+		// estimate folder (a missing estimate counts as no estimate)
 		const String model(argc > 3 ? String(argv[3]) : String());
-		const bool spherical(model.empty() ? ABS(Ks[0](0,0) - sphere.fx) < 1e-9*sphere.fx && ABS(Ks[0](1,1) - sphere.fy) < 1e-9*sphere.fy : model == "spherical");
-		// a GT of another resolution is sampled at the nearest pixel of each estimated pixel center
-		if (maps[0].size() != maps[1].size()) {
-			if (int64_t(maps[0].width())*maps[1].height() != int64_t(maps[0].height())*maps[1].width()) {
-				std::printf("error: GT %dx%d and estimate %dx%d differ in aspect ratio\n", maps[0].width(), maps[0].height(), maps[1].width(), maps[1].height());
-				return false;
-			}
-			const double scale(double(maps[0].width()) / maps[1].width());
-			DepthMap gt(maps[1].size());
-			NormalMap gtNormals(maps[1].size());
-			for (int r = 0; r < gt.height(); ++r) {
-				for (int c = 0; c < gt.width(); ++c) {
-					const int rg(MINF(FLOOR2INT((r + 0.5)*scale), maps[0].height() - 1)), cg(MINF(FLOOR2INT((c + 0.5)*scale), maps[0].width() - 1));
-					gt(r, c) = maps[0](rg, cg);
-					gtNormals(r, c) = normals[0](rg, cg);
+		DepthEvaluator evaluator;
+		const auto Evaluate = [&](const String& gtFileName, const String& estFileName) {
+			DepthMap maps[2]; NormalMap normals[2]; KMatrix Ks[2];
+			for (int i = 0; i < 2; ++i) {
+				String imageFileName;
+				IIndexArr IDs;
+				cv::Size imageSize;
+				RMatrix R; CMatrix C;
+				Depth dMin, dMax;
+				ConfidenceMap confMap; ViewsMap viewsMap;
+				if (!ImportDepthDataRaw(i ? estFileName : gtFileName, imageFileName, IDs, imageSize, Ks[i], R, C, dMin, dMax, maps[i], normals[i], confMap, viewsMap,
+						HeaderDepthDataRaw::HAS_DEPTH|HeaderDepthDataRaw::HAS_NORMAL)) {
+					if (i == 0) {
+						std::printf("error: cannot read the depth-map '%s'\n", gtFileName.c_str());
+						return false;
+					}
+					std::printf("warning: no estimate '%s'\n", estFileName.c_str());
+					maps[1].create(maps[0].size());
+					maps[1].memset(0);
 				}
 			}
-			maps[0] = std::move(gt);
-			normals[0] = std::move(gtNormals);
+			if (normals[0].empty()) {
+				normals[0].create(maps[0].size());
+				normals[0].memset(0);
+			}
+			// the model only selects the bands: SPHERICAL if named or if the GT camera matrix is the equirect one
+			const Spherical<double> sphere(Spherical<double>::FromSize(maps[0].width(), maps[0].height()));
+			const bool spherical(model.empty() ? ABS(Ks[0](0,0) - sphere.fx) < 1e-9*sphere.fx && ABS(Ks[0](1,1) - sphere.fy) < 1e-9*sphere.fy : model == "spherical");
+			// a GT of another resolution is sampled at the nearest pixel of each estimated pixel center
+			if (maps[0].size() != maps[1].size()) {
+				if (int64_t(maps[0].width())*maps[1].height() != int64_t(maps[0].height())*maps[1].width()) {
+					std::printf("error: GT %dx%d and estimate %dx%d differ in aspect ratio\n", maps[0].width(), maps[0].height(), maps[1].width(), maps[1].height());
+					return false;
+				}
+				const double scale(double(maps[0].width()) / maps[1].width());
+				DepthMap gt(maps[1].size());
+				NormalMap gtNormals(maps[1].size());
+				for (int r = 0; r < gt.height(); ++r) {
+					for (int c = 0; c < gt.width(); ++c) {
+						const int rg(MINF(FLOOR2INT((r + 0.5)*scale), maps[0].height() - 1)), cg(MINF(FLOOR2INT((c + 0.5)*scale), maps[0].width() - 1));
+						gt(r, c) = maps[0](rg, cg);
+						gtNormals(r, c) = normals[0](rg, cg);
+					}
+				}
+				maps[0] = std::move(gt);
+				normals[0] = std::move(gtNormals);
+			}
+			evaluator.Add(maps[0], normals[0], maps[1], normals[1], spherical ? CameraModelType::SPHERICAL : CameraModelType::PINHOLE);
+			return true;
+		};
+		if (std::filesystem::is_directory(argv[1])) {
+			std::vector<std::string> names;
+			for (const auto& entry: std::filesystem::directory_iterator(argv[1]))
+				if (entry.is_regular_file() && entry.path().extension() == ".dmap")
+					names.push_back(entry.path().filename().string());
+			std::sort(names.begin(), names.end());
+			for (const std::string& name: names)
+				if (!Evaluate((std::filesystem::path(argv[1]) / name).string(), (std::filesystem::path(argv[2]) / name).string()))
+					return false;
+			std::printf("%zu depth-maps\n", names.size());
+		} else if (!Evaluate(argv[1], argv[2])) {
+			return false;
 		}
-		DepthEvaluator evaluator;
-		evaluator.Add(maps[0], normals[0], maps[1], normals[1], spherical ? CameraModelType::SPHERICAL : CameraModelType::PINHOLE);
 		std::fputs(evaluator.Print().c_str(), stdout);
 		return true;
 	}
 	std::printf("usage:\n"
 		"  Tests synth <outDir> [panoWidth=512]\n"
-		"  Tests evaldepth <gt.dmap> <est.dmap> [pinhole|brown|spherical, default from the GT camera matrix]\n");
+		"  Tests evaldepth <gt.dmap> <est.dmap> [pinhole|brown|spherical, default from the GT camera matrix]\n"
+		"  Tests sphtest <verbosity> [panoWidth=512] [numPanos=3] [faces=1] [maxElevation: exact warp above, degrees] [maxViews] [maxThreads]\n"
+		"  Tests facescene <scene.mvs> <gtFolder> <outFolder> <panoWidth> [faceSize]\n");
 	return false;
 }
 /*----------------------------------------------------------------*/

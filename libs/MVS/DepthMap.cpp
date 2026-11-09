@@ -1320,7 +1320,7 @@ Point3f DepthEstimatorT<Pinhole>::ComputeNeighborPoint(const ImageRef& nx, Depth
 	return Cast<float>(image0.camera.TransformPointI2C(Point3(nx, depth)));
 }
 
-template struct DepthEstimatorT<Pinhole>;
+template struct MVS_API DepthEstimatorT<Pinhole>;
 
 
 // spherical reference: the geometric consistency through the camera models of the target depth-map
@@ -1337,7 +1337,7 @@ Point3f DepthEstimatorT<Spherical>::ComputeNeighborPoint(const ImageRef& nx, Dep
 	return Cast<float>(Point3(camera0.Ray(Eigen::Vector2d((REAL)nx.x, (REAL)nx.y))*REAL(depth)));
 }
 
-template struct DepthEstimatorT<Spherical>;
+template struct MVS_API DepthEstimatorT<Spherical>;
 /*----------------------------------------------------------------*/
 
 

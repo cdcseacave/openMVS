@@ -453,4 +453,97 @@ bool TestCameraModels()
 }
 /*----------------------------------------------------------------*/
 
+// spherical patch warps against the exact per-texel warp (the mirror of the P5 prototype): random
+// reference pixels, planes facing the reference camera and target poses; the tangent-plane warp
+// trg.PixelHomography(H*r0)*H*ref.RayFrame(x0) must stay within the error bands of the target
+// elevation of the patch center (99th percentile and max of the per-patch max texel error), across
+// the seam too; the affine variant (the homogeneous divisor frozen at the patch center) is measured
+// alongside and must be far worse (median)
+bool TestSphericalPatchWarp()
+{
+	typedef Eigen::Vector2d Vec2;
+	typedef Eigen::Vector3d Vec3;
+	typedef Eigen::Matrix3d Mat3;
+	const Spherical<double> sphere(Spherical<double>::FromSize(2880, 1440));
+	std::mt19937 rng(1);
+	std::uniform_real_distribution<double> U(0, 1);
+	std::normal_distribution<double> N(0, 1);
+	const auto R = [&](double a, double b) { return a + (b - a) * U(rng); };
+	const auto RandomUnit = [&]() { return Vec3(N(rng), N(rng), N(rng)).normalized(); };
+	constexpr int half(4), step(2);
+	// error bands by target elevation |el| (deg): upper bound, p99 and max error allowed (equatorial pixels)
+	struct Band { double elevation, maxP99, maxError; FloatArr errors, errorsAffine; };
+	Band bands[] = {{30, 0.06, 0.2}, {50, 0.12, 0.5}, {70, 0.3, 1.2}, {90, 1e9, 1e9}};
+	size_t numSeam(0);
+	double worstSeam(0);
+	for (int trial = 0; trial < 40000; ++trial) {
+		const Vec2 x0(R(0, sphere.cx*2), R(half + 1, sphere.cy*2 - 1 - half));
+		const Vec3 r0(sphere.Ray(x0));
+		const double lambda(R(1, 10));
+		const Vec3 X(r0 * lambda);
+		Vec3 n;
+		do n = RandomUnit(); while (!(n.dot(r0) < -std::cos(D2R(75.0))));
+		const Mat3 Rj(Eigen::AngleAxisd(R(0, D2R(35.0)), RandomUnit()).toRotationMatrix());
+		const Vec3 Cj(Vec3(N(rng), N(rng), N(rng)) * lambda * 0.15);
+		const Vec3 t(-Rj * Cj);
+		const Mat3 M(PlanePatchWarp(sphere, sphere, Rj, t, n, X, x0));
+		const Vec3 q0(PlaneRayHomography(Rj, t, n, X) * r0);
+		const double elevation(R2D(std::asin(ABS(q0.y()) / q0.norm())));
+		double err(0), errAffine(0), minX(DBL_MAX), maxX(-DBL_MAX);
+		bool valid(true);
+		for (int i = -half; i <= half && valid; i += step) {
+			for (int j = -half; j <= half; j += step) {
+				const Vec3 r(sphere.Ray(x0 + Vec2(j, i)));
+				const double den(n.dot(r));
+				if (den >= 0) { valid = false; break; }
+				Vec2 xa;
+				sphere.Project(Rj * (r * (n.dot(X) / den)) + t, xa);
+				const Vec3 h(M * Vec3(j, i, 1));
+				const Vec2 xb(h.head<2>() / h.z()), xf(h.head<2>() / M(2,2));
+				// great-circle distance in equatorial pixels
+				const auto Dist = [&](const Vec2& a) { return std::acos(CLAMP(sphere.Ray(a).dot(sphere.Ray(xa)), -1.0, 1.0)) * sphere.fy; };
+				err = MAXF(err, Dist(xb));
+				errAffine = MAXF(errAffine, Dist(xf));
+				minX = MINF(minX, xa.x()); maxX = MAXF(maxX, xa.x());
+			}
+		}
+		if (!valid)
+			continue;
+		for (Band& band: bands) {
+			if (elevation < band.elevation) {
+				band.errors.push_back((float)err);
+				band.errorsAffine.push_back((float)errAffine);
+				break;
+			}
+		}
+		if (maxX - minX > sphere.cx && elevation < 70) {
+			++numSeam;
+			worstSeam = MAXF(worstSeam, err);
+		}
+	}
+	for (Band& band: bands) {
+		if (band.errors.size() < 100) {
+			VERBOSE("error: spherical patch warp: target elevation < %.0f deg: only %u patches", band.elevation, (unsigned)band.errors.size());
+			return false;
+		}
+		band.errors.Sort();
+		const float p50(band.errors[band.errors.size()/2]), p99(band.errors[band.errors.size()*99/100]), worst(band.errors.Last());
+		const float affine50(band.errorsAffine.GetMedian());
+		VERBOSE("spherical patch warp: target elevation < %2.0f deg: %6u patches, error p50 %.4f p99 %.4f max %.4f px (affine p50 %.3f px)",
+			band.elevation, (unsigned)band.errors.size(), p50, p99, worst, affine50);
+		if (p99 > band.maxP99 || worst > band.maxError || (band.maxError < 1e9 && affine50 < 0.5)) {
+			VERBOSE("error: spherical patch warp: target elevation < %.0f deg: error p99 %.4f max %.4f px (allowed %.2f, %.2f), affine p50 %.3f px",
+				band.elevation, p99, worst, band.maxP99, band.maxError, affine50);
+			return false;
+		}
+	}
+	VERBOSE("spherical patch warp: %zu seam-crossing patches below 70 deg, max error %.4f px", numSeam, worstSeam);
+	if (numSeam < 20 || worstSeam > 1.2) {
+		VERBOSE("error: spherical patch warp: %zu seam-crossing patches, max error %.4f px", numSeam, worstSeam);
+		return false;
+	}
+	return true;
+}
+/*----------------------------------------------------------------*/
+
 } // namespace SEACAVE
