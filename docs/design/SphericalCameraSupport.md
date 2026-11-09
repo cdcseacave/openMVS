@@ -187,16 +187,22 @@ app; only the Python bindings (`libs/SFM/PythonWrapper.cpp`) and hand-constructe
   `Image::LoadMask` remaps a segmentation mask with nearest-neighbour sampling.
 - The undistorted pixels whose bilinear source footprint leaves the image file are unset in
   `CameraUndistortMaps::mask`; `DepthEstimator::ImportIgnoreMask` ANDs it into the ignore mask
-  of a Brown image whatever the ignore label (densify CPU and CUDA, refine), and the texturing
-  validity mask detects them as the black regions it already handles.
+  of a Brown image whatever the ignore label and whether a segmentation mask exists (densify CPU,
+  CUDA and Metal, refine); the texturing validity mask (`ComputeValidityMask`, `SceneTexture.cpp`)
+  takes it through the same function and, with the label -1, ANDs it with the black regions it
+  detects.
 - Observations (`HAS_OBSERVATIONS`) are undistorted into `K'` (`BrownDistortion::Undistort`) into
   `PointCloud::pointObservations`; `Scene::SaveInterface` distorts them back and writes the camera
   back as it was read (`K`, resolution and coefficients).
 - **`SPHERICAL`:** loaded and saved as is; `DensifyPointCloud` estimates the depth-maps with the CPU,
   CUDA or Metal PatchMatch and fuses them on the CPU, the fusion dispatching on the image model
   through `ModelCamera` (`libs/MVS/Image.h`); see `SphericalPatchMatch.md`. `Scene::DenseReconstruction`
-  refuses the scene for SGM (`HasSphericalImages`, `libs/MVS/SceneDensify.cpp`) and switches the
-  confidence recalibration off for it.
+  refuses the scene for SGM (`Scene::HasSphericalImages`) and switches the confidence recalibration
+  off for it. The stages that project through the pinhole model refuse a scene with spherical
+  images through `Scene::CheckPinholeOnly(stage)`, an error that names `--spherical-export cubemap`:
+  ReconstructMesh, RefineMesh (CPU and CUDA), TextureMesh, `ComputeVertexColors`,
+  `ExportMeshToDepthMaps`, the mesh-based neighbor selection of densify and the apps' calls of
+  `RemoveUnseenMeshFaces`. `MvgMvsPipeline.py` exports cube-maps when it runs a mesh step.
 
 ## 3. Parameters and defaults
 
@@ -276,9 +282,8 @@ app; only the Python bindings (`libs/SFM/PythonWrapper.cpp`) and hand-constructe
   form rather than `UnprojectNormalized`; whether any live caller invokes them on a spherical image
   has not been audited.
 - The confidence recalibration of the depth-maps is not available for spherical scenes (off).
-- ReconstructMesh, RefineMesh, TextureMesh and the Viewer do not check the camera model; with a
-  spherical scene they treat the angular `K` as a pinhole one. Supporting spherical cameras there is a
-  separate piece of work.
+- The mesh stages refuse spherical scenes (a 360 dataset meshes through `--spherical-export cubemap`);
+  supporting spherical cameras there is a separate piece of work. The Viewer does not check the model.
 - The semi-global matcher does not apply the undistortion validity mask (the ignore mask) of the
   Brown images.
 - The other Interface producers (InterfaceCOLMAP import, InterfaceMetashape, InterfacePolycam)

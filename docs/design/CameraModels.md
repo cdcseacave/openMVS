@@ -178,3 +178,7 @@ own state and call the models. The depth-map algorithms built on the models are 
 - InterfaceCOLMAP, InterfaceMetashape and InterfacePolycam still undistort on their own instead of
   passing the distortion through.
 - Metal runs the hand mirror on Apple hardware only; it is checked there by `MetalModelMathTest`.
+- Nothing bounds the Brown coefficients in the SfM bundle adjustment (no parameter bounds, no check
+  after it), so BA can converge to a distortion that folds inside the image, typically in the corners
+  with few observations; `BrownDistortion::Undistort` (Newton) ASSERTs a positive Jacobian
+  determinant and does not handle such a fold.
