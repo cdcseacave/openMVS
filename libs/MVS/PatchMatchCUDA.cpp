@@ -267,15 +267,15 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 	IIndex prevNumImages = (IIndex)images.size();
 	const IIndex numImages = depthData.images.size();
 	// the camera models: a slot whose model changes gets textures of the new addressing
-	const uint32_t prevSphericalViews = params.sphericalViews;
+	// the view gate of the model kernels keeps one bit per neighbor view, the camera models one per view
+	ASSERT(numImages - 1 <= 32);
+	const uint64_t prevSphericalViews = params.sphericalViews;
 	params.sphericalViews = 0;
 	for (IIndex i = 0; i < numImages; ++i)
 		if (depthData.images[i].IsSpherical())
-			params.sphericalViews |= 1u << i;
+			params.sphericalViews |= uint64_t(1) << i;
 	params.fSinSqWarpMaxElevation = SQUARE(SIN(D2R(DepthEstimatorBase::fSphericalWarpMaxElevation)));
 	params.fCosMinViewAngle = COS(D2R(OPTDENSE::fMinAngle));
-	// the view gate of the model kernels keeps one bit per neighbor view and the all-gated mask
-	ASSERT(params.sphericalViews == 0 || numImages - 1 < 32);
 	// the confidence recalibration is pinhole only (switched off for scenes with spherical images)
 	ASSERT(!pConfRequest || params.sphericalViews == 0);
 	params.nNumViews = (int)numImages-1;
