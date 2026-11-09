@@ -141,6 +141,10 @@ bool SyntheticDepthBaselineTest();
 // overall and per band (the seam and the poles against the equator)
 bool SyntheticSphericalTest();
 
+// CUDA PatchMatch on the panoramas of SyntheticSphericalTest, held to that test's CPU accuracy;
+// skipped without a CUDA device
+bool SyntheticSphericalCUDATest(bool forceCPU);
+
 // Brown views of the synthetic scene loaded through an Interface v8 Brown camera: MVS::Image reads
 // them undistorted as the pinhole render at K', the pixels without a source are in the ignore mask,
 // and the observations of GT points land on their K' projections
@@ -150,8 +154,9 @@ bool BrownUndistortOnLoadTest();
 //   synth <outDir> [panoWidth=512]: write the default dataset
 //   evaldepth <gt.dmap> <est.dmap> [pinhole|brown|spherical]: print the evaluation table
 //   synthtest [verbosity]: run SyntheticDepthBaselineTest alone
-//   sphtest <verbosity> [panoWidth=512] [numPanos=3] [faces=1] [maxElevation] [maxViews] [maxThreads]: CPU PatchMatch on panoramas and on
-//     their cube faces; maxElevation overrides DepthEstimatorBase::fSphericalWarpMaxElevation (0: exact warp only)
+//   sphtest <verbosity> [panoWidth=512] [numPanos=3] [faces=1] [maxElevation] [maxViews] [maxThreads] [gpu=0]: CPU (gpu: CUDA)
+//     PatchMatch on panoramas and on their cube faces; maxElevation overrides DepthEstimatorBase::fSphericalWarpMaxElevation
+//     (0: exact warp only)
 //   facescene <scene.mvs> <gtFolder> <outFolder> <panoWidth> [faceSize]: the cube-face scene of a spherical scene
 //     and the face GT depth-maps, the baseline of its spherical depth-maps
 bool SynthTool(int argc, LPCTSTR* argv);

@@ -333,6 +333,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!MVS::SyntheticSphericalTest())
 				return false;
+			if (!MVS::SyntheticSphericalCUDATest(forceCPU))
+				return false;
 		}
 		return true;
 	}();
