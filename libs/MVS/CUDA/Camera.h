@@ -101,6 +101,10 @@ struct LinearCameraModel {
 	__host__ __device__ inline SEACAVE::Pinhole<float> AsPinhole() const {
 		return SEACAVE::Pinhole<float>{f.x(), f.y(), p.x(), p.y()};
 	}
+	// an equirectangular camera keeps its angular K in the same fields
+	__host__ __device__ inline SEACAVE::Spherical<float> AsSpherical() const {
+		return SEACAVE::Spherical<float>{f.x(), f.y(), p.x(), p.y()};
+	}
 };
 /*----------------------------------------------------------------*/
 

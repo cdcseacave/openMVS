@@ -826,10 +826,11 @@ String CloudEvaluator::Print() const
 /*----------------------------------------------------------------*/
 
 
-// CPU PatchMatch on the given views of the synthetic scene, at full resolution, depth-maps only, in
-// a temporary folder; the estimates are scored against the GT into evaluator, the estimation wall
-// time goes to seconds; maxViews > 0 caps the neighbor views of a depth-map, maxThreads > 0 the threads
-static bool SynthEstimateDepth(const SynthViewArr& views, const IIndexArr& viewIDs, DepthEvaluator& evaluator, double& seconds, unsigned maxViews=0, unsigned maxThreads=0)
+// CPU (or, if gpu, CUDA) PatchMatch on the given views of the synthetic scene, at full resolution,
+// depth-maps only, in a temporary folder; the estimates are scored against the GT into evaluator, the
+// estimation wall time goes to seconds; maxViews > 0 caps the neighbor views of a depth-map, maxThreads > 0
+// the threads; the caller checks that a CUDA device is available for gpu (SynthCUDAAvailable)
+static bool SynthEstimateDepth(const SynthViewArr& views, const IIndexArr& viewIDs, DepthEvaluator& evaluator, double& seconds, unsigned maxViews=0, unsigned maxThreads=0, bool gpu=false)
 {
 	const ScopedTempDir tmpDir(_T("SyntheticDepth"));
 	if (!tmpDir.IsValid())
@@ -841,7 +842,9 @@ static bool SynthEstimateDepth(const SynthViewArr& views, const IIndexArr& viewI
 		const String prev;
 		~DevicesRestore() { SEACAVE::CUDA::desiredDeviceIDs = prev; }
 	} const devicesRestore{SEACAVE::CUDA::desiredDeviceIDs};
-	SEACAVE::CUDA::desiredDeviceIDs.clear();
+	SEACAVE::CUDA::desiredDeviceIDs = gpu ? String("-1") : String();
+	#else
+	ASSERT(!gpu);
 	#endif
 	Scene scene;
 	if (!SynthBuildScene(views, viewIDs, folder, scene))
@@ -852,6 +855,9 @@ static bool SynthEstimateDepth(const SynthViewArr& views, const IIndexArr& viewI
 	OPTDENSE::update();
 	OPTDENSE::nResolutionLevel = 0;
 	OPTDENSE::nMinResolution = 64;
+	// full resolution, as the GT: the default cap (3200 px) would scale a 4K panorama down
+	for (const IIndex viewID: viewIDs)
+		OPTDENSE::nMaxResolution = MAXF(OPTDENSE::nMaxResolution, (unsigned)MAXF(views[viewID].camera.width, views[viewID].camera.height));
 	if (maxViews)
 		OPTDENSE::nMaxViews = OPTDENSE::nNumViews = maxViews;
 	const auto t0(std::chrono::steady_clock::now());
@@ -946,10 +952,22 @@ bool MVS::SyntheticDepthBaselineTest()
 /*----------------------------------------------------------------*/
 
 
-// CPU PatchMatch on panoramas of the synthetic scene (and, if faces, separately on their cube faces):
-// prints the accuracy per band and the estimation wall time per estimated pixel; returns the evaluators
-static bool SynthSphericalRun(int panoWidth, unsigned numPanos, bool faces, DepthEvaluator& sphereEval, DepthEvaluator& faceEval, unsigned maxViews=0, unsigned maxThreads=0)
+// whether a CUDA device runs the GPU PatchMatch (CI machines have none)
+static bool SynthCUDAAvailable()
 {
+	#ifdef _USE_CUDA
+	return SEACAVE::CUDA::isEnabled() || SEACAVE::CUDA::initDevices("-1") == CUDA_SUCCESS;
+	#else
+	return false;
+	#endif
+}
+
+// CPU (or, if gpu, CUDA) PatchMatch on panoramas of the synthetic scene (and, if faces, separately on
+// their cube faces): prints the accuracy per band and the estimation wall time per estimated pixel;
+// returns the evaluators
+static bool SynthSphericalRun(int panoWidth, unsigned numPanos, bool faces, DepthEvaluator& sphereEval, DepthEvaluator& faceEval, unsigned maxViews=0, unsigned maxThreads=0, bool gpu=false)
+{
+	LPCTSTR const backend(gpu ? _T("CUDA") : _T("CPU"));
 	SynthConfig config;
 	config.panoWidth = panoWidth;
 	config.firstPano = 3;
@@ -963,18 +981,18 @@ static bool SynthSphericalRun(int panoWidth, unsigned numPanos, bool faces, Dept
 	FOREACH(i, views)
 		(views[i].face < 0 ? panoIDs : faceIDs).push_back(i);
 	double seconds;
-	if (!SynthEstimateDepth(views, panoIDs, sphereEval, seconds, maxViews, maxThreads))
+	if (!SynthEstimateDepth(views, panoIDs, sphereEval, seconds, maxViews, maxThreads, gpu))
 		return false;
 	const DepthEvaluator::Stats sphereAll(sphereEval.GetStats(DepthEvaluator::ALL));
-	VERBOSE("synthetic spherical: CPU PatchMatch on %u panoramas of %dx%d px: %.2f s, %.3f us/px\n%s",
-		panoIDs.size(), views[panoIDs[0]].camera.width, views[panoIDs[0]].camera.height,
+	VERBOSE("synthetic spherical: %s PatchMatch on %u panoramas of %dx%d px: %.2f s, %.3f us/px\n%s",
+		backend, panoIDs.size(), views[panoIDs[0]].camera.width, views[panoIDs[0]].camera.height,
 		seconds, seconds*1e6/sphereAll.numGT, sphereEval.Print().c_str());
 	if (faces) {
-		if (!SynthEstimateDepth(views, faceIDs, faceEval, seconds, maxViews, maxThreads))
+		if (!SynthEstimateDepth(views, faceIDs, faceEval, seconds, maxViews, maxThreads, gpu))
 			return false;
 		const DepthEvaluator::Stats faceAll(faceEval.GetStats(DepthEvaluator::ALL));
-		VERBOSE("synthetic spherical: CPU PatchMatch on their %u cube faces of %dx%d px: %.2f s, %.3f us/px\n%s",
-			faceIDs.size(), views[faceIDs[0]].camera.width, views[faceIDs[0]].camera.height,
+		VERBOSE("synthetic spherical: %s PatchMatch on their %u cube faces of %dx%d px: %.2f s, %.3f us/px\n%s",
+			backend, faceIDs.size(), views[faceIDs[0]].camera.width, views[faceIDs[0]].camera.height,
 			seconds, seconds*1e6/faceAll.numGT, faceEval.Print().c_str());
 	}
 	return true;
@@ -1170,6 +1188,33 @@ bool MVS::SyntheticSphericalTest()
 		return false;
 	}
 	VERBOSE("SyntheticSphericalTest passed (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+bool MVS::SyntheticSphericalCUDATest(bool forceCPU)
+{
+	if (forceCPU || !SynthCUDAAvailable()) {
+		VERBOSE("SyntheticSphericalCUDATest skipped: no CUDA device");
+		return true;
+	}
+	TD_TIMER_START();
+	DepthEvaluator evaluator, unused;
+	if (!SynthSphericalRun(512, 3, false, evaluator, unused, 0, 0, true))
+		return false;
+	const DepthEvaluator::Stats all(evaluator.GetStats(DepthEvaluator::ALL)), equator(evaluator.GetStats(DepthEvaluator::EQUATOR));
+	const DepthEvaluator::Stats seam(evaluator.GetStats(DepthEvaluator::SEAM)), center(evaluator.GetStats(DepthEvaluator::CENTER));
+	const DepthEvaluator::Stats north(evaluator.GetStats(DepthEvaluator::NORTH)), south(evaluator.GetStats(DepthEvaluator::SOUTH));
+	// measured (Release, CUDA): all: completeness 0.964, abs-rel median 0.0014, <1% 0.93, <5% 0.989, normal
+	// median 3.2 deg; equator completeness 0.991, <5% 0.974; seam 0.969, <5% 0.994; north 0.857, <5% 1.000;
+	// south 0.849, <5% 0.989; center (the seam's antipode) 0.966, <5% 0.990; every band at or above the CPU
+	// estimator (SyntheticSphericalTest); the seam is held to its antipodal band as there
+	if (!(all.completeness > 0.94) || !(all.absRelMedian < 0.002) || !(all.within1 > 0.90) || !(all.within5 > 0.975) || !(all.normalMedianDeg < 4.5) ||
+		!(seam.completeness > 0.99*center.completeness) || !(seam.within5 > center.within5 - 0.01) ||
+		!(north.completeness > 0.8) || !(north.within5 > 0.97) || !(south.completeness > 0.8) || !(south.within5 > 0.97)) {
+		VERBOSE("ERROR: SyntheticSphericalCUDATest: depth accuracy below the CPU baseline!");
+		return false;
+	}
+	VERBOSE("SyntheticSphericalCUDATest passed (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 /*----------------------------------------------------------------*/
@@ -1436,7 +1481,7 @@ bool MVS::SynthTool(int argc, LPCTSTR* argv)
 		return true;
 	}
 	if (mode == "sphtest") {
-		// panoramas vs their cube faces: sphtest <verbosity> [panoWidth=512] [numPanos=3] [faces=1] [maxElevation] [maxViews] [maxThreads]
+		// panoramas vs their cube faces: sphtest <verbosity> [panoWidth=512] [numPanos=3] [faces=1] [maxElevation] [maxViews] [maxThreads] [gpu=0]
 		const int panoWidth(argc > 2 ? std::atoi(argv[2]) : 512);
 		const unsigned numPanos(argc > 3 ? (unsigned)std::atoi(argv[3]) : 3u);
 		const bool faces(argc > 4 ? std::atoi(argv[4]) != 0 : true);
@@ -1448,12 +1493,17 @@ bool MVS::SynthTool(int argc, LPCTSTR* argv)
 			DepthEstimatorBase::fSphericalWarpMaxElevation = (float)std::atof(argv[5]);
 		const unsigned maxViews(argc > 6 ? (unsigned)std::atoi(argv[6]) : 0u);
 		const unsigned maxThreads(argc > 7 ? (unsigned)std::atoi(argv[7]) : 0u);
+		const bool gpu(argc > 8 && std::atoi(argv[8]) != 0);
+		if (gpu && !SynthCUDAAvailable()) {
+			std::printf("error: no CUDA device\n");
+			return false;
+		}
 		if (panoWidth <= 0 || panoWidth % 8 || numPanos < 2 || numPanos > 5) {
 			std::printf("error: panoWidth must be a positive multiple of 8, numPanos in [2,5]\n");
 			return false;
 		}
 		DepthEvaluator sphereEval, faceEval;
-		if (!SynthSphericalRun(panoWidth, numPanos, faces, sphereEval, faceEval, maxViews, maxThreads))
+		if (!SynthSphericalRun(panoWidth, numPanos, faces, sphereEval, faceEval, maxViews, maxThreads, gpu))
 			return false;
 		std::fputs(sphereEval.Print().c_str(), stdout);
 		if (faces)
@@ -1751,7 +1801,7 @@ bool MVS::SynthTool(int argc, LPCTSTR* argv)
 	std::printf("usage:\n"
 		"  Tests synth <outDir> [panoWidth=512]\n"
 		"  Tests evaldepth <gt.dmap> <est.dmap> [pinhole|brown|spherical, default from the GT camera matrix]\n"
-		"  Tests sphtest <verbosity> [panoWidth=512] [numPanos=3] [faces=1] [maxElevation: exact warp above, degrees] [maxViews] [maxThreads]\n"
+		"  Tests sphtest <verbosity> [panoWidth=512] [numPanos=3] [faces=1] [maxElevation: exact warp above, degrees] [maxViews] [maxThreads] [gpu=0]\n"
 		"  Tests facescene <scene.mvs> <gtFolder> <outFolder> <panoWidth> [faceSize]\n"
 		"  Tests sphfuse <verbosity> [panoWidth=512] [numPanos=3] [faces=1] [fusionFilter=2] [maxThreads]\n"
 		"  Tests evalcloud <cloud.ply|scene.mvs> <gtFolder> <evalWidth> [th1%=1 th2%=2 th3%=5]\n");

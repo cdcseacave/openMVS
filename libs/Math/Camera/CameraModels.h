@@ -28,10 +28,35 @@ namespace SEACAVE {
 //  - pixel centers lie at integer coordinates (OpenCV/MVS): pixel (0,0) covers [-0.5,0.5]^2;
 //  - camera frame x-right, y-down, z-forward;
 //  - Ray(x) is the camera-space direction of pixel x, Project(X, x) its inverse (returns
-//    whether X is visible), and Depth(X) the distance along the ray that Ray(x) scales;
+//    whether X is visible), ProjectFast(X, x) the same for single precision hot loops, and
+//    Depth(X) the distance along the ray that Ray(x) scales;
 //  - RayFrame(x) maps pixel offsets (dx,dy,1) around x to rays (columns: the ray derivatives
 //    along x and y, then Ray(x)), PixelHomography(r) maps rays near r to homogeneous pixels;
 //    the plane-induced patch warp between two views is composed from these two.
+
+// the small hot helpers below are always inlined, on the host and on the device
+#ifdef __CUDACC__
+#define CAMERAMODELS_FORCEINLINE __forceinline__
+#else
+#define CAMERAMODELS_FORCEINLINE FORCEINLINE
+#endif
+
+// atan2 in single precision by a minimax polynomial of atan on [0,1] (max error 1.3e-7 rad, the
+// precision of the float atan2), several times cheaper than the library atan2 on the CPU and the GPU;
+// the CPU packet version (DepthMap.cpp) evaluates the same polynomial lane by lane
+HOST_DEVICE CAMERAMODELS_FORCEINLINE float FastAtan2(float y, float x) {
+	const float ax(x < 0.f ? -x : x), ay(y < 0.f ? -y : y);
+	const float mx(ax > ay ? ax : ay);
+	if (mx == 0.f)
+		return 0.f;
+	const float a((ax < ay ? ax : ay)/mx), s(a*a);
+	float r((((((((-0.0040540580f*s + 0.0218612288f)*s - 0.0559098861f)*s + 0.0964200441f)*s - 0.1390853351f)*s + 0.1994653599f)*s - 0.3332985605f)*s + 0.9999993329f)*a);
+	if (ay > ax)
+		r = float(3.14159265358979323846/2) - r;
+	if (x < 0.f)
+		r = float(3.14159265358979323846) - r;
+	return y < 0.f ? -r : r;
+}
 
 // model ids, stored in the scene files
 enum class CameraModelType : uint8_t {
@@ -73,6 +98,9 @@ struct Pinhole {
 	HOST_DEVICE bool Project(const Vec3& X, Vec2& x) const {
 		x = NormalizedToPixel(Perspective(X));
 		return X.z() > T(0);
+	}
+	HOST_DEVICE CAMERAMODELS_FORCEINLINE bool ProjectFast(const Vec3& X, Vec2& x) const {
+		return Project(X, x);
 	}
 	HOST_DEVICE static T Depth(const Vec3& X) {
 		return X.z();
@@ -216,6 +244,20 @@ struct Spherical {
 			fx * atan2(X.x(), X.z()) + cx,
 			fy * atan2(X.y(), sqrt(X.x()*X.x() + X.z()*X.z())) + cy);
 		return X.squaredNorm() > T(0);
+	}
+	// Project in single precision through FastAtan2, for the patch warps' hot loops, given
+	// rho = sqrt(X.x^2+X.z^2) (which PixelHomography takes too)
+	HOST_DEVICE CAMERAMODELS_FORCEINLINE bool ProjectFast(const Vec3& X, Vec2& x, T rho) const {
+		using std::sqrt;
+		ASSERT(rho == sqrt(X.x()*X.x() + X.z()*X.z()));
+		x = Vec2(
+			fx * FastAtan2(X.x(), X.z()) + cx,
+			fy * FastAtan2(X.y(), rho) + cy);
+		return rho > T(0) || X.y() != T(0);
+	}
+	HOST_DEVICE CAMERAMODELS_FORCEINLINE bool ProjectFast(const Vec3& X, Vec2& x) const {
+		using std::sqrt;
+		return ProjectFast(X, x, sqrt(X.x()*X.x() + X.z()*X.z()));
 	}
 	HOST_DEVICE static T Depth(const Vec3& X) {
 		return X.norm();

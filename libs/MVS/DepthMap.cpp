@@ -687,21 +687,6 @@ inline bool SampleDepth(const DepthMap& depthMap, const Point2f& pt, Depth& v, c
 		return depthMap.sample(v, pt, functor);
 	}
 }
-// atan2 in single precision by a minimax polynomial of atan on [0,1] (max error 1.3e-7 rad, the
-// precision of the float atan2), several times cheaper than std::atan2
-FORCEINLINE float FastAtan2(float y, float x) {
-	const float ax(ABS(x)), ay(ABS(y));
-	const float mx(MAXF(ax, ay));
-	if (mx == 0.f)
-		return 0.f;
-	const float a(MINF(ax, ay)/mx), s(a*a);
-	float r((((((((-0.0040540580f*s + 0.0218612288f)*s - 0.0559098861f)*s + 0.0964200441f)*s - 0.1390853351f)*s + 0.1994653599f)*s - 0.3332985605f)*s + 0.9999993329f)*a);
-	if (ay > ax)
-		r = FHALF_PI - r;
-	if (x < 0.f)
-		r = FPI - r;
-	return y < 0.f ? -r : r;
-}
 typedef Eigen::internal::packet_traits<float>::type PacketF;
 // the square root as the SIMD instruction (std::sqrt is a library call under /fp:strict), correctly
 // rounded like it
@@ -709,7 +694,8 @@ FORCEINLINE float FastSqrt(float x) {
 	using namespace Eigen::internal;
 	return pfirst(psqrt(pset1<PacketF>(x)));
 }
-// the same on a SIMD packet of floats, lane by lane identical to FastAtan2
+// FastAtan2 (CameraModels.h) on a SIMD packet of floats, lane by lane identical to it
+using SEACAVE::FastAtan2;
 FORCEINLINE PacketF FastAtan2(const PacketF& y, const PacketF& x) {
 	using namespace Eigen::internal;
 	const PacketF ax(pabs(x)), ay(pabs(y));
@@ -726,21 +712,14 @@ FORCEINLINE PacketF FastAtan2(const PacketF& y, const PacketF& x) {
 	r = pselect(pcmp_lt(x, pzero(x)), psub(pset1<PacketF>(FPI), r), r);
 	return pselect(pcmp_lt(y, pzero(y)), pnegate(r), r);
 }
-// the pixel of a target camera-frame point in the warps: Project, through FastAtan2 for a spherical
-// target (its two atan2 dominate the exact warp per texel, the tangent-plane one per hypothesis)
+// the pixel of a target camera-frame point in the warps: the model's ProjectFast, its rho by FastSqrt
+// for a spherical target
 template <typename TRG>
 inline bool ProjectFast(const TRG& trg, const Eigen::Vector3f& X, Eigen::Vector2f& x) {
-	return trg.Project(X, x);
-}
-inline bool ProjectFast(const Spherical<float>& trg, const Eigen::Vector3f& X, Eigen::Vector2f& x, float rho) {
-	ASSERT(rho == FastSqrt(X.x()*X.x() + X.z()*X.z()));
-	x = Eigen::Vector2f(
-		trg.fx*FastAtan2(X.x(), X.z()) + trg.cx,
-		trg.fy*FastAtan2(X.y(), rho) + trg.cy);
-	return rho > 0.f || X.y() != 0.f;
+	return trg.ProjectFast(X, x);
 }
 inline bool ProjectFast(const Spherical<float>& trg, const Eigen::Vector3f& X, Eigen::Vector2f& x) {
-	return ProjectFast(trg, X, x, FastSqrt(X.x()*X.x() + X.z()*X.z()));
+	return trg.ProjectFast(X, x, FastSqrt(X.x()*X.x() + X.z()*X.z()));
 }
 
 // the texels of the patch warped by warp, in the order of the reference texels
@@ -918,7 +897,7 @@ bool DepthEstimatorT<MODEL>::SampleModelPatch(const DepthData::ViewData& image1,
 		return SampleExactPatch(image1, trg, depth, normal, texels);
 	const float rho(FastSqrt(SQUARE(q0.x()) + SQUARE(q0.z())));
 	Eigen::Vector2f xc;
-	ProjectFast(trg, q0, xc, rho);
+	trg.ProjectFast(q0, xc, rho);
 	MulMat3(trg.PixelHomography(q0, xc, rho).data(), HF, M);
 	return SampleTangentPatch(image1.image, MakePatchWarp(M), texels);
 }

@@ -179,6 +179,10 @@ bool SyntheticDepthBaselineTest();
 // overall and per band (the seam and the poles against the equator)
 bool SyntheticSphericalTest();
 
+// CUDA PatchMatch on the panoramas of SyntheticSphericalTest, held to that test's CPU accuracy;
+// skipped without a CUDA device
+bool SyntheticSphericalCUDATest(bool forceCPU);
+
 // CPU PatchMatch and dense fusion of three equirectangular panoramas of the synthetic scene: the fused
 // cloud scored against the analytic surface, overall and per band (the seam and the poles against the
 // equator)
@@ -193,8 +197,9 @@ bool BrownUndistortOnLoadTest();
 //   synth <outDir> [panoWidth=512]: write the default dataset
 //   evaldepth <gt.dmap> <est.dmap> [pinhole|brown|spherical]: print the evaluation table
 //   synthtest [verbosity]: run SyntheticDepthBaselineTest alone
-//   sphtest <verbosity> [panoWidth=512] [numPanos=3] [faces=1] [maxElevation] [maxViews] [maxThreads]: CPU PatchMatch on panoramas and on
-//     their cube faces; maxElevation overrides DepthEstimatorBase::fSphericalWarpMaxElevation (0: exact warp only)
+//   sphtest <verbosity> [panoWidth=512] [numPanos=3] [faces=1] [maxElevation] [maxViews] [maxThreads] [gpu=0]: CPU (gpu: CUDA)
+//     PatchMatch on panoramas and on their cube faces; maxElevation overrides DepthEstimatorBase::fSphericalWarpMaxElevation
+//     (0: exact warp only)
 //   facescene <scene.mvs> <gtFolder> <outFolder> <panoWidth> [faceSize]: the cube-face scene of a spherical scene
 //     and the face GT depth-maps, the baseline of its spherical depth-maps
 //   sphfuse <verbosity> [panoWidth=512] [numPanos=3] [faces=1] [fusionFilter=2] [maxThreads]: CPU PatchMatch and
