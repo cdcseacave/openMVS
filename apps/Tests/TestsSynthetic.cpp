@@ -705,6 +705,9 @@ static bool SynthEstimateDepth(const SynthViewArr& views, const IIndexArr& viewI
 	OPTDENSE::update();
 	OPTDENSE::nResolutionLevel = 0;
 	OPTDENSE::nMinResolution = 64;
+	// full resolution, as the GT: the default cap (3200 px) would scale a 4K panorama down
+	for (const IIndex viewID: viewIDs)
+		OPTDENSE::nMaxResolution = MAXF(OPTDENSE::nMaxResolution, (unsigned)MAXF(views[viewID].camera.width, views[viewID].camera.height));
 	if (maxViews)
 		OPTDENSE::nMaxViews = OPTDENSE::nNumViews = maxViews;
 	const auto t0(std::chrono::steady_clock::now());
