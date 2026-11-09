@@ -12,8 +12,19 @@ Brown (undistorted on load, see `SphericalCameraSupport.md`; the models: `Camera
 
 Scope: depth-maps and their fusion into the dense cloud, with the photometric confidence: the
 depth-maps on the CPU (`--gpu-device -2`), CUDA or Metal, the fusion on the CPU. `Scene::DenseReconstruction`
-refuses a scene with spherical images for SGM (`--fusion-mode` < 0), with a clear error; the confidence
-recalibration is switched off for it.
+refuses a scene with spherical images for SGM (`--fusion-mode` < 0) and for the neighbor views selected
+from a mesh, with a clear error; the confidence recalibration is switched off for it, and so is the
+tower mode (`Scene::InitTowerScene`, with a warning). The scene split of the scalable pipeline
+(`Scene::Split`) back-projects the depth-maps through `ModelCamera`.
+
+The stages past the dense cloud project through the pinhole camera only and refuse a scene with
+spherical images (`Scene::CheckPinholeOnly`: an error naming the stage and `--spherical-export cubemap`,
+the cube-map export of `CreateStructure` that runs the whole mesh pipeline): `Scene::ReconstructMesh`,
+`RefineMesh`, `RefineMeshCUDA`, `TextureMesh`, `ComputeVertexColors`, `ExportMeshToDepthMaps`, and the
+apps before `RemoveUnseenMeshFaces` (ReconstructMesh, TextureMesh, TransformScene). `MvgMvsPipeline.py`
+passes `--spherical-export cubemap` to `CreateStructure` when the run includes a mesh step (19-21);
+`MvsScalablePipeline.py` takes a scene as it is, so a native spherical scene stops at its mesh step
+with that error.
 
 ## 2. Algorithm as implemented
 
@@ -124,6 +135,11 @@ from them, with no trigonometry per pixel.
 - `Scene::EstimateGravityDirection`: a panorama supports only the gravity candidates along its
   image-down axis (any horizontal direction is perpendicular to its x axis, so the pinhole roll
   test would accept its forward direction).
+- Image sizes: every size of a spherical image (the load scale of `--max-resolution` and of the
+  resolution levels, the neighbor scale, the pyramid levels) comes from `Image::ComputeResize`, which
+  rounds the width to an even number and derives the height from that uniform factor: a 2:1 panorama
+  stays 2:1 at every level (5472 px at level 5: 172x86, not 171x86), and its red/black propagation
+  gets the even width it needs.
 - Pyramid levels and neighbor scaling scale K per axis, so a spherical view keeps
   fx = W/2π, fy = H/π, c = (size−1)/2 on its grid; the estimator ASSERTs it.
 - Per-pixel view gate: the per-view triangulation angle of `Scene::FilterNeighborViews` (an average
@@ -133,7 +149,8 @@ from them, with no trigonometry per pixel.
   1. X = depth·Ray(x0), the hypothesis point in the reference frame; a view is gated where the
      angle at X between the reference center (the origin) and the view's center (`viewCenters0`,
      cached per estimator) is below `OPTDENSE::fMinAngle` (3°): X·(X−C) > cos(fMinAngle)·|X|·|X−C|;
-  2. if that gates every view, none is gated;
+  2. if that gates every view, none is gated (the gated views are marked `thRobust` in `scores`
+     and counted, so there is no limit on the number of views);
   3. a gated view scores `thRobust`, like a view that does not see the patch (the min-mean
      aggregation leaves it out); the others score their NCC as usual.
 
@@ -177,10 +194,11 @@ equirectangular reference; `RunCUDA` picks it from the per-view mask `Params::sp
   seam. Rows outside the image are clamped (the pole row), where the CPU rejects the view.
 - Propagation: the 8 sampling directions and the 4-neighbors wrap their columns; the red/black
   parity of a pixel and its wrapped neighbors agrees only for an even width (ASSERTed in
-  `RunCUDA`); the poles are not crossed (a crossing moves the column by W/2, which flips the parity
+  `RunCUDA`, produced by `Image::ComputeResize`); the poles are not crossed (a crossing moves the column by W/2, which flips the parity
   when W = 2H). The 4 rows next to each pole are not estimated (cost `FLT_MAX`, never a neighbor).
 - The per-pixel view gate of the CPU estimator, per (pixel, hypothesis) on every scoring call: the
-  views are gated together first (a bit mask; none if all would be), a gated view scores the bad cost
+  views are gated together first (a bit mask; none if its population count is the number of views),
+  a gated view scores the bad cost
   as a view that does not see the patch, the others are scored as usual.
 - Normals: random and perturbed normals are isotropic, made camera-facing against the pixel ray
   F.col(2), so they are the same in the ray's local frame; the surface normal and the plane
@@ -190,7 +208,9 @@ equirectangular reference; `RunCUDA` picks it from the per-view mask `Params::sp
 - View gate (`MultiViewScorePlane`, the model kernels): per (pixel, hypothesis), as `ScorePixel`, a view
   whose center C (`g_views`, reference frame) sees X = depth·r at X·(X−C) > cos(`fMinAngle`)·|X||X−C|
   scores the bad cost of a view that does not see the patch, unless every view is gated; its
-  geometric-consistency term is added as for any unseen view. At most 31 views (ASSERT).
+  geometric-consistency term is added as for any unseen view. Up to `MAX_VIEWS` (32) neighbor views:
+  the gate mask holds one bit per neighbor view, the camera-model mask `Params::sphericalViews` (64 bits)
+  one per view with the reference.
 - The model kernels inline the whole scoring path (`__forceinline__`): under `-rdc` a callee is
   compiled with its own register count and must fit the 128 registers of the launch bounds.
 - Pinhole scenes run the unchanged kernels: their SASS is identical but for the stack layout of the
@@ -227,9 +247,9 @@ HOST_DEVICE headers.
   normals; the model geometric consistency with the wrapped column distance.
 - The per-pixel view gate of the CPU estimator (`MultiViewScorePlaneModel`): per (pixel, hypothesis), on
   every scoring call, X = F.col(2)*depth and each view v with `X.(X-C_v) > cos(fMinAngle)|X||X-C_v|` sets
-  its bit in a mask; a full mask is cleared; a masked view scores the bad cost without its warp, as a view
-  that does not see the patch (the geometric term is added to it as to any such view). The host ASSERTs
-  fewer than 32 neighbor views.
+  its bit in a mask; a mask with a bit for every view (`popcount`) is cleared; a masked view scores the bad
+  cost without its warp, as a view that does not see the patch (the geometric term is added to it as to any
+  such view). `MAX_VIEWS` (32) counts the reference, so at most 31 neighbor views.
 - Differences from CUDA: the plane propagation and the surface normal of an equirectangular reference take
   their rays and ray frame from the trig tables, as the CPU estimator does (CUDA evaluates `Ray` and
   `RayFrame` from the float angles there). The view poses are composed in double precision. The random
@@ -248,9 +268,15 @@ Everything downstream of the estimator reaches a view's geometry through `ModelC
 camera with the model of its view, whose pinhole calls are the camera's own (the pinhole results are
 bit-identical) and whose spherical calls go through `Spherical<REAL>` built from the angular K:
 - `TransformPointI2C/I2W(x, depth)`: the point of pixel x at the depth along the model's ray;
-  `ProjectPointP(X)`: pixel and depth (range) of a world point; `TransformPointW2I`, `RayPoint`;
+  `ProjectPointP(X)`: pixel and depth (range) of a world point, `ProjectPointC(Xc)` the same of a
+  camera-frame point (the sparse init of `InitViews`); `TransformPointW2I`, `RayPoint`;
 - `GetPixel(x, size, ir)`: the rounded pixel, its column wrapped for a panorama, false if outside;
-  `ColumnOffset(a, b, width)`: the shortest column offset around a panorama; `WrapColumn`.
+  `ColumnOffset(a, b, width)`: the shortest column offset around a panorama;
+- `EstimateNormalMap(ModelCamera, ...)` (`DepthMap.h`): the normal-map of either model.
+
+One `WrapColumn(c, width)` (`DepthGeometry.h`, `HOST_DEVICE`) wraps a column within one width of a
+panorama for the host code (`GetPixel`, `Col0`, the samplers, `FitDepthGradient`, the filters); the CUDA
+and Metal kernels keep their own copy.
 
 The consumers, each with the model of every view it touches, so mixed pinhole and spherical
 scenes fuse as such:
@@ -450,9 +476,8 @@ alike: it looks behind the camera, at the operator (masked) and the path walked.
   per-pixel ray frames, amortized over few hypotheses in `scorebench`.
 - Metal: not yet run on Apple hardware; still to be done there: `MetalModelMathTest`, the parity with
   the CPU and CUDA estimators (synthetic panoramas per band, Holo360D) and the cost per pixel.
-- CUDA: an equirectangular reference needs an even width at every pyramid level (ASSERT); the
-  rows are clamped at the poles where the CPU rejects the view; mixed pinhole/spherical scenes run
-  the `MODEL_PINHOLE_REF` kernels, untested (Metal: the same).
+- CUDA: the rows are clamped at the poles where the CPU rejects the view; mixed pinhole/spherical
+  scenes run the `MODEL_PINHOLE_REF` kernels, untested (Metal: the same).
 - The confidence recalibration (`ConfidenceRefine.h`, `ConfidenceCUDA.cu`) is pinhole only and
   stays off for scenes with spherical images (`AdjustConfidenceSweep` ASSERTs a pinhole reference).
 - The view gate still ranks hypotheses that leave a pixel different views: a closer depth that

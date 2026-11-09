@@ -137,6 +137,9 @@ __device__ constexpr void SetBit(unsigned& input, unsigned i) {
 __device__ constexpr int IsBitSet(unsigned input, unsigned i) {
 	return (input >> i) & 1u;
 }
+__device__ constexpr int IsBitSet(uint64_t input, unsigned i) {
+	return (int)((input >> i) & 1u);
+}
 
 // Read-only-cache loaders for planes[]. Safe within a checkerboard pass
 // because every offset in `dirs` and `neighborPositions` has odd Manhattan
@@ -639,8 +642,7 @@ __device__ __forceinline__ void MultiViewScorePlane(const RefPatchCache& cache, 
 			if (X.dot(D) > g_params.fCosMinViewAngle * sqrtf(sqNormX * D.squaredNorm()))
 				gatedViews |= 1u << (imgId-1);
 		}
-		ASSERT(nNumViews < 32);
-		if (gatedViews == (1u << nNumViews) - 1u)
+		if (__popc(gatedViews) == nNumViews)
 			gatedViews = 0;
 		for (int imgId = 1; imgId <= nNumViews; ++imgId)
 			costVector[imgId-1] = (gatedViews >> (imgId-1)) & 1u ? fBadCost : ScorePlaneModel(cache, ref, images[imgId], imgId, p, plane, lowDepth);

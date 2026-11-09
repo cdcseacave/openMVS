@@ -98,6 +98,16 @@ public:
 		GetSpherical().Project(Eigen::Vector3d(Xc.x, Xc.y, Xc.z), x);
 		return {TPoint2<TYPE>(TYPE(x.x()), TYPE(x.y())), TYPE(norm(Xc))};
 	}
+	// pixel and depth of a camera-frame point; the depth is not positive if the point is behind a
+	// pinhole camera or at the center of a spherical one
+	inline std::tuple<Point2,REAL> ProjectPointC(const Point3& Xc) const {
+		if (!bSpherical)
+			return {camera.TransformPointC2I(Xc), Xc.z};
+		const Eigen::Vector3d X(Xc.x, Xc.y, Xc.z);
+		Eigen::Vector2d x;
+		GetSpherical().Project(X, x);
+		return {Point2(x.x(), x.y()), Spherical<REAL>::Depth(X)};
+	}
 	// pixel of a world point in front of the camera
 	inline Point2 TransformPointW2I(const Point3& X) const {
 		if (!bSpherical)
@@ -112,11 +122,6 @@ public:
 		if (bSpherical)
 			ir.x = WrapColumn(ir.x, size.width);
 		return Image8U::isInside(ir, size);
-	}
-	// a column at most one width off the image, wrapped onto it (equirectangular images)
-	static inline int WrapColumn(int c, int width) {
-		ASSERT(c >= -width && c < 2*width);
-		return c < 0 ? c + width : (c >= width ? c - width : c);
 	}
 	// the column offset a-b, the shortest one around the panorama for a spherical camera
 	template <typename TYPE>
@@ -165,6 +170,11 @@ public:
 	inline cv::Size GetSize() const { return cv::Size(width, height); }
 	REAL GetSizeScale(unsigned nMaxResolution) const;
 	cv::Size GetSize(unsigned nMaxResolution) const;
+	// the size of a raster of the given size scaled by the given factor, as TImage::computeResize; an
+	// equirectangular raster keeps an even width, which the seam-wrapped red/black propagation of its
+	// depth-map needs at every level: the width is rounded to an even number and the height follows
+	// from that uniform factor, so a 2:1 panorama stays 2:1 (its angular K keeps fx=W/2pi, fy=H/pi)
+	static cv::Size ComputeResize(const cv::Size& size, REAL scale, bool bSpherical);
 
 	// read image data from the file
 	static IMAGEPTR OpenImage(const String& fileName);

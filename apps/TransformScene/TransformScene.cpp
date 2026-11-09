@@ -367,6 +367,8 @@ int main(int argc, LPCTSTR* argv)
 			VERBOSE("error: removing the unseen faces needs the scene's cameras");
 			return EXIT_FAILURE;
 		}
+		if (!scene.CheckPinholeOnly(_T("the removal of the unseen faces")))
+			return EXIT_FAILURE;
 		scene.RemoveUnseenMeshFaces(OPT::nRemoveUnseenFaces);
 	}
 

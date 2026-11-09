@@ -212,6 +212,10 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SEACAVE::TestSphericalPatchWarp())
 				return false;
+			if (!MVS::PlatformArchiveCompatibilityTest())
+				return false;
+			if (!MVS::SphericalImageSizeTest())
+				return false;
 			if (!SFM::TestSimilarityTransform())
 				return false;
 			if (!SFM::KnownPosesImportTest())

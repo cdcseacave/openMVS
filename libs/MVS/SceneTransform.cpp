@@ -115,11 +115,15 @@ bool Scene::Scale(const REAL* pScale)
 } // Scale
 
 // scale image resolutions with the given scale or max-resolution;
-// if folderName is specified, the scaled images are stored there
+// if folderName is specified, the scaled images are stored there, and the observations of the points,
+// at the resolution of the image files, move with them
 bool Scene::ScaleImages(unsigned nMaxResolution, REAL scale, const String& folderName)
 {
 	ASSERT(nMaxResolution > 0 || scale > 0);
 	Util::ensureFolder(folderName);
+	// per image, the map of its pixels at the file resolution onto the stored ones: x' = a*x + b
+	struct PixelMap { Point2f a, b; };
+	CLISTDEF0IDX(PixelMap,IIndex) pixelMaps(images.size());
 	FOREACH(idx, images) {
 		Image& image = images[idx];
 		if (!image.IsValid())
@@ -130,10 +134,18 @@ bool Scene::ScaleImages(unsigned nMaxResolution, REAL scale, const String& folde
 			nResolution = ROUND2INT(nResolution*scale);
 		if (nMaxResolution > 0 && nResolution > nMaxResolution)
 			nResolution = nMaxResolution;
-		if (!image.ReloadImage(nResolution, !folderName.empty()))
+		// the pixels as the camera sees them at the file resolution, then scaled
+		if (!image.ReloadImage(0, !folderName.empty()))
 			return false;
+		const cv::Size fileSize(image.GetSize());
+		image.scale = image.ResizeImage(nResolution);
 		image.UpdateCamera(platforms);
 		if (!folderName.empty()) {
+			const KMatrix fileK(image.GetCamera(platforms, fileSize).K), K(image.camera.K);
+			ASSERT(ISZERO(fileK(0,1)) && ISZERO(K(0,1)));
+			PixelMap& pixelMap = pixelMaps[idx];
+			pixelMap.a = Point2f(float(K(0,0)/fileK(0,0)), float(K(1,1)/fileK(1,1)));
+			pixelMap.b = Point2f(float(K(0,2)-fileK(0,2)*K(0,0)/fileK(0,0)), float(K(1,2)-fileK(1,2)*K(1,1)/fileK(1,1)));
 			if (image.ID == NO_ID)
 				image.ID = idx;
 			image.name = folderName + String::FormatString("%05u%s", image.ID, Util::getFileExt(image.name).c_str());
@@ -142,6 +154,18 @@ bool Scene::ScaleImages(unsigned nMaxResolution, REAL scale, const String& folde
 		}
 	}
 	if (!folderName.empty()) {
+		// the observations are undistorted already (PointCloud::pointObservations): they only scale
+		FOREACH(idxPoint, pointcloud.pointObservations) {
+			const PointCloud::ViewArr& views = pointcloud.pointViews[idxPoint];
+			PointCloud::ObservationArr& observations = pointcloud.pointObservations[idxPoint];
+			ASSERT(observations.size() == views.size());
+			FOREACH(v, observations) {
+				ASSERT(images[views[v]].IsValid());
+				const PixelMap& pixelMap = pixelMaps[views[v]];
+				Point2f& x = observations[v];
+				x = Point2f(pixelMap.a.x*x.x + pixelMap.b.x, pixelMap.a.y*x.y + pixelMap.b.y);
+			}
+		}
 		// the stored images are the ones the cameras see: a Brown camera is now the pinhole camera K' of its files
 		for (Platform& platform: platforms)
 			for (Platform::Camera& camera: platform.cameras)

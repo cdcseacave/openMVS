@@ -61,9 +61,10 @@ DEFINE_LOG_NAME(lt, _T("Scene   "));
 //  - sampling: sampling density per squared unit area (if >0), or
 //              absolute number of points (if <0), or
 //              use existing vertices as samples (if ==0)
+// pinhole cameras only (CheckPinholeOnly)
 void Scene::SampleMeshWithVisibility(REAL sampling, unsigned maxResolution)
 {
-	ASSERT(!mesh.IsEmpty());
+	ASSERT(!mesh.IsEmpty() && !HasSphericalImages());
 	pointcloud.Release();
 	if (sampling < 0) {
 		// absolute number of points
@@ -125,6 +126,8 @@ void Scene::SampleMeshWithVisibility(REAL sampling, unsigned maxResolution)
 bool Scene::ExportMeshToDepthMaps(const String& baseName)
 {
 	ASSERT(!images.empty() && !mesh.IsEmpty());
+	if (!CheckPinholeOnly(_T("the mesh depth-map export")))
+		return false;
 	const String ext(Util::getFileExt(baseName).ToLower());
 	const int nType(ext == _T(".dmap") ? 2 : (ext == _T(".pfm") ? 1 : 0));
 	if (nType == 2)
@@ -379,15 +382,8 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 	if (neighbors.empty()) {
 		// the pixel of the point in the image, false if outside: any direction lands in a spherical image
 		const auto ProjectPoint = [](const Image& image, const PointCloud::Point& X, Point2f& x) {
-			if (image.model != CameraModelType::SPHERICAL) {
-				x = std::get<0>(image.camera.ProjectPointP(X));
-				return image.camera.IsInside(x, Point2f(image.GetSize()));
-			}
-			const Point3 Xc(image.camera.TransformPointW2C(Cast<REAL>(X)));
-			Eigen::Vector2d px;
-			MakeCameraModel<Spherical<REAL>>(image.camera).Project(Eigen::Vector3d(Xc.x, Xc.y, Xc.z), px);
-			x = Point2f((float)px.x(), (float)px.y());
-			return true;
+			x = std::get<0>(image.GetModelCamera().ProjectPointP(X));
+			return image.IsSpherical() || image.camera.IsInside(x, Point2f(image.GetSize()));
 		};
 		Point2fArr projs(0, points.size());
 		FOREACH(IDB, images) {

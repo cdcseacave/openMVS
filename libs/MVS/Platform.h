@@ -71,10 +71,13 @@ public:
 		inline Camera(const Matrix3x3& _K, const Matrix3x3& _R, const Point3& _C) : CameraIntern(_K, _R, _C), model(CameraModelType::PINHOLE) {}
 
 		#ifdef _USE_BOOST
-		// implement BOOST serialization
+		// implement BOOST serialization; the fields of CameraIntern are written here, not through its
+		// base object, so the archive of a version 0 camera (a CameraIntern) reads as one
 		template <class Archive>
 		void serialize(Archive& ar, const unsigned int version) {
-			ar & boost::serialization::base_object<CameraIntern>(*this);
+			ar & K;
+			ar & R;
+			ar & C;
 			if (version > 0) {
 				uint8_t modelID(static_cast<uint8_t>(model));
 				ar & modelID;

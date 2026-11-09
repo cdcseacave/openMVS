@@ -277,11 +277,11 @@ struct MVS_API DepthData {
 			return ABS(scale-1.f) >= 0.15f;
 		}
 		template <typename IMAGE>
-		static bool ScaleImage(const IMAGE& image, IMAGE& imageScaled, float scale) {
+		static bool ScaleImage(const IMAGE& image, IMAGE& imageScaled, float scale, bool bSpherical) {
 			if (!NeedScaleImage(scale))
 				return false;
 			// the camera of the scaled view comes from GetCamera(), so scale on its uniform grid
-			Image::ResizeUniform(image, imageScaled, Image8U::computeResize(image.size(), scale), scale>1?cv::INTER_CUBIC:cv::INTER_AREA);
+			Image::ResizeUniform(image, imageScaled, Image::ComputeResize(image.size(), scale, bSpherical), scale>1?cv::INTER_CUBIC:cv::INTER_AREA);
 			return true;
 		}
 	};
@@ -616,7 +616,7 @@ struct DepthEstimatorT : DepthEstimatorBase {
 	// the reference image column c: wrapped for a spherical reference, whose patches cross the seam
 	inline int Col0(int c) const {
 		if constexpr (bSphericalRef)
-			return c < 0 ? c + size.width : (c >= size.width ? c - size.width : c);
+			return WrapColumn(c, size.width);
 		return c;
 	}
 	// spherical reference: the ray of the pixel (c,r), the column within one width of the image
@@ -760,6 +760,13 @@ inline void EstimateNormalMap(const Spherical<float>& camera, const DepthMap& de
 				Normal(NormalFromDepthGradient(camera, x, depth, gradient)) : Normal::ZERO;
 		}
 	}
+}
+// the same for the depth-map of a camera of either model
+inline void EstimateNormalMap(const ModelCamera& camera, const DepthMap& depthMap, NormalMap& normalMap) {
+	if (camera.bSpherical)
+		EstimateNormalMap(MakeCameraModel<Spherical<float>>(camera.camera), depthMap, normalMap);
+	else
+		EstimateNormalMap(camera.camera.K, depthMap, normalMap);
 }
 
 // Standalone confidence estimators, deriving a confidence-map from the geometry of one

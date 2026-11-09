@@ -122,13 +122,14 @@ float Scene::Split(ImagesChunkArr& chunks, float maxMemory, int depthMapStep) co
 				continue;
 			}
 			const Camera camera(imageData.GetCamera(platforms, depthData.depthMap.size()));
+			const ModelCamera modelCamera(camera, imageData.model);
 			for (int r=(depthData.depthMap.rows%depthMapStep)/2; r<depthData.depthMap.rows; r+=depthMapStep) {
 				for (int c=(depthData.depthMap.cols%depthMapStep)/2; c<depthData.depthMap.cols; c+=depthMapStep) {
 					const Depth depth = depthData.depthMap(r,c);
 					if (depth <= 0)
 						continue;
 					++imageDepths[idxImage];
-					const Point3f X(Cast<float>(camera.TransformPointI2W(Point3(c,r,depth))));
+					const Point3f X(Cast<float>(modelCamera.TransformPointI2W(Point2(c,r), depth)));
 					if (IsBounded() && !obb.Intersects(X))
 						continue;
 					visibility.emplace_back(idxImage);

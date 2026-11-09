@@ -907,7 +907,7 @@ static inline void MultiViewScorePlaneModel(thread const RefCache& cache, thread
         if (dot(X, D) > prm.cosMinViewAngle * sqrt(length_squared(X) * length_squared(D)))
             SetBit(gatedViews, (uint)(imgId-1));
     }
-    if (gatedViews == (1u << nNumViews) - 1u)
+    if (popcount(gatedViews) == (uint)nNumViews)
         gatedViews = 0;
     for (int imgId = 1; imgId <= nNumViews; ++imgId)
         costVector[imgId-1] = IsBitSet(gatedViews, (uint)(imgId-1)) ? fBadCost :

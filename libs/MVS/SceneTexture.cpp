@@ -504,17 +504,21 @@ static Image8U DetectInvalidImageRegions(const Image8U3& image)
 
 // compute the mask of the valid pixels of the given image, at the resolution of its loaded pixels;
 // nIgnoreMaskLabel selects the source of the mask: the label to ignore in the mask stored
-// with the image (>= 0), the regions invalidated by the lens undistortion (-1), or none (-2);
-// the returned mask is set to zero for invalid pixels, and is empty if masking is disabled
+// with the image (>= 0), the regions invalidated by the lens undistortion detected in the image (-1),
+// or none (-2); an image undistorted on read always masks the pixels without a source in its file;
+// the returned mask is set to zero for invalid pixels, and is empty if there is nothing to mask
 static Image8U ComputeValidityMask(const Image& imageData, int nIgnoreMaskLabel)
 {
 	ASSERT(!imageData.image.empty());
 	Image8U mask;
-	if (nIgnoreMaskLabel >= 0) {
-		BitMatrix bmask;
-		DepthEstimator::ImportIgnoreMask(imageData, imageData.image.size(), nIgnoreMaskLabel, bmask, &mask);
-	} else if (nIgnoreMaskLabel == -1) {
-		mask = DetectInvalidImageRegions(imageData.image);
+	BitMatrix bmask;
+	DepthEstimator::ImportIgnoreMask(imageData, imageData.image.size(), nIgnoreMaskLabel, bmask, &mask);
+	if (nIgnoreMaskLabel == -1) {
+		const Image8U detected(DetectInvalidImageRegions(imageData.image));
+		if (mask.empty())
+			mask = detected;
+		else
+			cv::bitwise_and(mask, detected, mask);
 	}
 	ASSERT(mask.empty() || mask.size() == imageData.image.size());
 	return mask;
@@ -2511,6 +2515,8 @@ bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsi
 	bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, Pixel8U colEmpty, float fSharpnessWeight,
 	int nIgnoreMaskLabel, int maxTextureSize, const IIndexArr& views)
 {
+	if (!CheckPinholeOnly(_T("the mesh texturing")))
+		return false;
 	MeshTexture texture(*this, nResolutionLevel, nMinResolution);
 
 	// assign the best view to each face
@@ -2546,7 +2552,7 @@ bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsi
 bool Scene::ComputeVertexColors(unsigned nResolutionLevel, unsigned nMinResolution, unsigned minCommonCameras,
 	float fOutlierThreshold, float fRatioDataSmoothness, Pixel8U colEmpty, int nIgnoreMaskLabel, const IIndexArr& views)
 {
-	if (mesh.IsEmpty())
+	if (mesh.IsEmpty() || !CheckPinholeOnly(_T("the mesh vertex coloring")))
 		return false;
 
 	// assign the best view to each face

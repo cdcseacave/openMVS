@@ -190,7 +190,7 @@ void DepthData::GetNormal(const ImageRef& ir, Point3f& N, const TImage<Point3f>*
 			if (y >= size.height)
 				break;
 			for (int i=0; i<nWindow; i+=nPointsStep) {
-				const int x = ModelCamera::WrapColumn(ptCorner.x+i, size.width);
+				const int x = WrapColumn(ptCorner.x+i, size.width);
 				if (x==ir.x && y==ir.y)
 					continue;
 				const Depth d = depthMap(y,x);
@@ -383,15 +383,16 @@ bool DepthEstimatorBase::ImportIgnoreMask(const Image& image0, const cv::Size& s
 	if (nIgnoreMaskLabel < 0 && !image0.IsUndistortedOnRead())
 		return false;
 	// the mask stored in the scene if there is one, else the file next to the image; resized into a
-	// local buffer, so a mask stored in the scene stays at its own resolution for the next call
+	// local buffer, so a mask stored in the scene stays at its own resolution for the next call;
+	// an image without a segmentation mask keeps the validity mask
 	Image8U mask;
 	if (nIgnoreMaskLabel >= 0) {
-		if (image0.mask.empty() && !image0.LoadMask(mask)) {
+		if (!image0.mask.empty() || image0.LoadMask(mask)) {
+			cv::resize(image0.mask.empty() ? mask : image0.mask, mask, size, 0, 0, cv::INTER_NEAREST);
+			mask = (mask != (uint8_t)nIgnoreMaskLabel);
+		} else {
 			DEBUG("warning: can not load the segmentation mask '%s'", image0.GetMaskFileName().c_str());
-			return false;
 		}
-		cv::resize(image0.mask.empty() ? mask : image0.mask, mask, size, 0, 0, cv::INTER_NEAREST);
-		mask = (mask != (uint8_t)nIgnoreMaskLabel);
 	}
 	if (image0.IsUndistortedOnRead()) {
 		Image8U valid;
@@ -401,6 +402,8 @@ bool DepthEstimatorBase::ImportIgnoreMask(const Image& image0, const cv::Size& s
 		else
 			cv::bitwise_and(mask, valid, mask);
 	}
+	if (mask.empty())
+		return false;
 	if (pMask) {
 		*pMask = mask;
 	} else {
@@ -527,7 +530,6 @@ DepthEstimatorT<MODEL>::DepthEstimatorT(
 		}
 	}
 	if (bModelWarp) {
-		ASSERT(images.size() < 32); // the view gate of ScorePixel holds one bit per view
 		viewRayFrames0.resize(images.size());
 		viewTexelRays0.resize(images.size());
 		bViewTexelRays0.resize(images.size()+1);
@@ -632,11 +634,6 @@ bool DepthEstimatorT<MODEL>::FillPixelPatch()
 	return true;
 }
 
-// the column of an equirectangular map holding pixel column c, for c within one width of the map
-inline int WrapColumn(int c, int width) {
-	ASSERT(c >= -width && c < 2*width);
-	return c < 0 ? c + width : (c >= width ? c - width : c);
-}
 // sample a target image at pt by bilinear interpolation: false if pt is not inside with a border of
 // 1 pixel; the columns of an equirectangular image (WRAPX) wrap, only its rows are bounded (pt.x
 // within one turn either side of the image)
@@ -1025,19 +1022,24 @@ float DepthEstimatorT<MODEL>::ScorePixel(Depth depth, const Normal& normal)
 	// fMinAngle does not constrain its depth and scores as a view that does not see the patch, unless
 	// every view does: then none is gated, else next to the epipoles, where the true depth gates every
 	// view, the closer hypotheses that some view sees at a larger angle would win for that alone
-	uint32_t gatedViews(0);
 	if (bModelWarp) {
+		// mark the gated views with thRobust, the others with any other value, then score the others
 		const Eigen::Vector3f X(Eigen::Vector3f((float)X0.x, (float)X0.y, (float)X0.z)*depth);
+		IIndex numGated(0);
 		FOREACH(idxView, images) {
 			const Eigen::Vector3f D(X - viewCenters0[idxView]);
-			if (X.dot(D) > cosMinViewAngle*SQRT(X.squaredNorm()*D.squaredNorm()))
-				gatedViews |= 1u << idxView;
+			const bool bGated(X.dot(D) > cosMinViewAngle*SQRT(X.squaredNorm()*D.squaredNorm()));
+			scores[idxView] = bGated ? thRobust : 0.f;
+			numGated += bGated;
 		}
-		if (gatedViews == (1u << images.size()) - 1u)
-			gatedViews = 0;
+		const bool bGateNone(numGated == images.size());
+		FOREACH(idxView, images)
+			if (bGateNone || scores[idxView] != thRobust)
+				scores[idxView] = ScorePixelImage(images[idxView], depth, normal);
+	} else {
+		FOREACH(idxView, images)
+			scores[idxView] = ScorePixelImage(images[idxView], depth, normal);
 	}
-	FOREACH(idxView, images)
-		scores[idxView] = (gatedViews >> idxView) & 1u ? thRobust : ScorePixelImage(images[idxView], depth, normal);
 	#if DENSE_AGGNCC == DENSE_AGGNCC_NTH
 	// set score as the nth element
 	return scores.GetNth(idxScore);

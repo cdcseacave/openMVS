@@ -2334,7 +2334,7 @@ bool ImageResizeCameraTest()
 	// a neighbor view scaled to match the reference resolution (DepthMapsData::InitViews)
 	constexpr float neighborScale(0.73f);
 	Image32F neighborGray;
-	if (!DepthData::ViewData::ScaleImage(gray, neighborGray, neighborScale))
+	if (!DepthData::ViewData::ScaleImage(gray, neighborGray, neighborScale, false))
 		return false;
 	const Camera neighborCamera(image.GetCamera(platforms, neighborGray.size()));
 	if (image.GetCamera(platforms, Image8U::computeResize(image.GetSize(), neighborScale)).K != neighborCamera.K) {
@@ -2357,6 +2357,83 @@ bool ImageResizeCameraTest()
 		if (!Check("ScaleDepthData reference", scaled.images[0].camera, scaled.images[0].image, scale) ||
 			!Check("ScaleDepthData neighbor", scaled.images[1].camera, scaled.images[1].image, scale*neighborScale))
 			return false;
+	}
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+// every size of an equirectangular image keeps an even width (the seam-wrapped red/black propagation)
+// and the 2:1 ratio of its angular K (fx=W/2pi, fy=H/pi): the load scale of --max-resolution 3001,
+// the level 5 of a 5472 px panorama (5472>>5 = 171 px), the neighbor scale and the pyramid
+bool SphericalImageSizeTest()
+{
+	const auto IsSphericalSize = [](const cv::Size& size) {
+		return size.width % 2 == 0 && size.width == 2*size.height;
+	};
+	const auto HasAngularK = [](const Camera& camera, const cv::Size& size) {
+		return ISEQUAL(camera.K(0,0)*REAL(TWO_PI), REAL(size.width)) && ISEQUAL(camera.K(1,1)*REAL(PI), REAL(size.height)) &&
+			ISEQUAL(camera.K(0,2), REAL(size.width-1)/2) && ISEQUAL(camera.K(1,2), REAL(size.height-1)/2);
+	};
+	constexpr int width(5472), height(2736);
+	PlatformArr platforms;
+	{
+		const Spherical<REAL> sphere(Spherical<REAL>::FromSize(width, height));
+		KMatrix K(KMatrix::IDENTITY);
+		K(0,0) = sphere.fx; K(1,1) = sphere.fy; K(0,2) = sphere.cx; K(1,2) = sphere.cy;
+		Platform& platform = platforms.emplace_back();
+		platform.cameras.emplace_back(ScaleK(K, REAL(1)/Camera::GetNormalizationScale(width, height)), RMatrix::IDENTITY, CMatrix::ZERO).model = CameraModelType::SPHERICAL;
+		Platform::Pose& pose = platform.poses.emplace_back();
+		pose.R = RMatrix::IDENTITY;
+		pose.C = CMatrix::ZERO;
+	}
+	Image image;
+	image.platformID = image.cameraID = image.poseID = image.ID = 0;
+	image.width = width; image.height = height; image.scale = 1;
+	image.UpdateCamera(platforms);
+	if (!image.IsSpherical() || !HasAngularK(image.camera, image.GetSize())) {
+		VERBOSE("ERROR: SphericalImageSizeTest: the full resolution camera is not the angular one!");
+		return false;
+	}
+	// the load scale of --max-resolution and of the resolution levels (computeMaxResolution)
+	unsigned level(5);
+	for (unsigned maxResolution: {3001u, Image8U::computeMaxResolution(width, height, level, 0), 999u, 2u}) {
+		Image scaled(image);
+		scaled.ResizeImage(maxResolution);
+		scaled.UpdateCamera(platforms);
+		if (!IsSphericalSize(scaled.GetSize()) || scaled.GetSize() != image.GetSize(maxResolution) ||
+			(maxResolution > 2 && std::abs((int)scaled.width-(int)maxResolution) > 1) || !HasAngularK(scaled.camera, scaled.GetSize())) {
+			VERBOSE("ERROR: SphericalImageSizeTest: max resolution %u gives %ux%u", maxResolution, scaled.width, scaled.height);
+			return false;
+		}
+	}
+	// a pinhole image keeps the size of TImage::computeResize
+	const cv::Size pinholeSize(Image::ComputeResize(cv::Size(width, height), 3001.0/width, false));
+	if (pinholeSize != Image8U::computeResize(cv::Size(width, height), 3001.0/width) || pinholeSize.width != 3001) {
+		VERBOSE("ERROR: SphericalImageSizeTest: the pinhole size changed");
+		return false;
+	}
+	// the neighbor scale (DepthMapsData::InitViews) and the pyramid (DepthMapsData::ScaleDepthData) of a
+	// 684x342 view, whose quarter would be 171 px wide
+	image.ResizeImage(684);
+	image.UpdateCamera(platforms);
+	const cv::Size neighborSize(Image::ComputeResize(image.GetSize(), 0.73, true));
+	if (!IsSphericalSize(neighborSize) || !HasAngularK(image.GetCamera(platforms, neighborSize), neighborSize)) {
+		VERBOSE("ERROR: SphericalImageSizeTest: the neighbor scale gives %dx%d", neighborSize.width, neighborSize.height);
+		return false;
+	}
+	DepthData depthData;
+	{
+		DepthData::ViewData& ref = depthData.images.emplace_back();
+		ref.pImageData = &image; ref.scale = 1; ref.camera = image.camera; ref.image.create(image.GetSize());
+		ref.image.memset(0);
+	}
+	for (float scale: {0.5f, 0.25f, 0.125f}) {
+		const DepthData scaled(DepthMapsData::ScaleDepthData(depthData, scale));
+		const DepthData::ViewData& ref = scaled.images[0];
+		if (!IsSphericalSize(ref.image.size()) || !HasAngularK(ref.camera, ref.image.size())) {
+			VERBOSE("ERROR: SphericalImageSizeTest: pyramid scale %g gives %dx%d", scale, ref.image.width(), ref.image.height());
+			return false;
+		}
 	}
 	return true;
 }
@@ -3802,6 +3879,95 @@ bool InterfaceV8Test()
 		}
 	}
 	VERBOSE("InterfaceV8Test passed (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+#ifdef _USE_BOOST
+namespace {
+// the platform of the boost archives saved before the camera models: its cameras are CameraIntern
+struct PlatformV0 {
+	String name;
+	CLISTDEF0IDX(CameraIntern,uint32_t) cameras;
+	Platform::PoseArr poses;
+	template <class Archive>
+	void serialize(Archive& ar, const unsigned int /*version*/) {
+		ar & name;
+		ar & cameras;
+		ar & poses;
+	}
+};
+typedef CLISTDEFIDX(PlatformV0,uint32_t) PlatformV0Arr;
+} // namespace
+#endif
+
+bool PlatformArchiveCompatibilityTest()
+{
+	#ifdef _USE_BOOST
+	const ScopedTempDir tmpDir(_T("PlatformArchiveTest"));
+	if (!tmpDir.IsValid())
+		return false;
+	PlatformV0Arr platformsV0(2);
+	FOREACH(p, platformsV0) {
+		PlatformV0& platform = platformsV0[p];
+		platform.name = String::FormatString("platform%u", p);
+		for (uint32_t c = 0; c <= p; ++c) {
+			CameraIntern& camera = platform.cameras.emplace_back();
+			camera.K = KMatrix::IDENTITY;
+			camera.K(0,0) = 0.81+0.01*c; camera.K(1,1) = 0.79; camera.K(0,2) = 0.51; camera.K(1,2) = 0.37+0.01*p;
+			camera.R = RMatrix(Point3(0.1*c, -0.2, 0.05*p));
+			camera.C = CMatrix(0.01*c, 0.02, -0.03*p);
+		}
+		Platform::Pose& pose = platform.poses.emplace_back();
+		pose.R = RMatrix(Point3(0.3, 0.1*p, -0.1));
+		pose.C = CMatrix(1.5*p, -2.0, 0.25);
+	}
+	// a Brown camera of the current archives, to read back too
+	PlatformArr platformsV1(1);
+	Platform::Camera& brown = platformsV1[0].cameras.emplace_back(platformsV0[1].cameras[1].K, platformsV0[1].cameras[1].R, platformsV0[1].cameras[1].C);
+	brown.model = CameraModelType::BROWN;
+	brown.lens.K = KMatrix::IDENTITY;
+	brown.lens.K(0,0) = 520.25; brown.lens.K(1,1) = 519.5; brown.lens.K(0,2) = 321.125; brown.lens.K(1,2) = 238.375;
+	brown.lens.size = cv::Size(640, 480);
+	brown.lens.distortion = BrownDistortion<REAL>{-0.21, 0.05, 0.0007, 0.0005, 0.01, 0.002, -0.001, 0.0025};
+	platformsV1[0].poses.emplace_back() = platformsV0[0].poses[0];
+	for (const ARCHIVE_TYPE type: {ARCHIVE_TEXT, ARCHIVE_BINARY, ARCHIVE_BINARY_ZIP}) {
+		const String fileV0(tmpDir(String::FormatString("platforms_v0_%d.bin", (int)type)));
+		const String fileV1(tmpDir(String::FormatString("platforms_v1_%d.bin", (int)type)));
+		PlatformArr platforms, platformsBrown;
+		if (!SerializeSave(platformsV0, fileV0, type) || !SerializeLoad(platforms, fileV0, type) ||
+			!SerializeSave(platformsV1, fileV1, type) || !SerializeLoad(platformsBrown, fileV1, type)) {
+			VERBOSE("ERROR: PlatformArchiveCompatibilityTest: archive type %d does not load", (int)type);
+			return false;
+		}
+		if (platforms.size() != platformsV0.size()) {
+			VERBOSE("ERROR: PlatformArchiveCompatibilityTest: archive type %d: %u platforms, expected %u", (int)type, platforms.size(), platformsV0.size());
+			return false;
+		}
+		FOREACH(p, platforms) {
+			const Platform& platform = platforms[p];
+			const PlatformV0& platformV0 = platformsV0[p];
+			bool bEqual(platform.name == platformV0.name && platform.cameras.size() == platformV0.cameras.size() &&
+				platform.poses.size() == platformV0.poses.size() && platform.poses[0].R == platformV0.poses[0].R && platform.poses[0].C == platformV0.poses[0].C);
+			for (uint32_t c = 0; bEqual && c < platform.cameras.size(); ++c) {
+				const Platform::Camera& camera = platform.cameras[c];
+				const CameraIntern& cameraV0 = platformV0.cameras[c];
+				bEqual = camera.model == CameraModelType::PINHOLE && camera.K == cameraV0.K && camera.R == cameraV0.R && camera.C == cameraV0.C;
+			}
+			if (!bEqual) {
+				VERBOSE("ERROR: PlatformArchiveCompatibilityTest: archive type %d: platform %u differs", (int)type, p);
+				return false;
+			}
+		}
+		const Platform::Camera& brownLoaded = platformsBrown[0].cameras[0];
+		if (brownLoaded.model != CameraModelType::BROWN || brownLoaded.K != brown.K || brownLoaded.C != brown.C ||
+			brownLoaded.lens.K != brown.lens.K || brownLoaded.lens.size != brown.lens.size ||
+			memcmp(&brownLoaded.lens.distortion, &brown.lens.distortion, sizeof(BrownDistortion<REAL>)) != 0) {
+			VERBOSE("ERROR: PlatformArchiveCompatibilityTest: archive type %d: the Brown camera differs", (int)type);
+			return false;
+		}
+	}
+	#endif
 	return true;
 }
 /*----------------------------------------------------------------*/
