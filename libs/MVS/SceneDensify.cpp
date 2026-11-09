@@ -2851,23 +2851,18 @@ void DenseDepthMapData::SignalCompleteDepthmapFilter()
 static void* DenseReconstructionEstimateTmp(void*);
 static void* DenseReconstructionFilterTmp(void*);
 
-// the scene has equirectangular images: their depth-maps are estimated by the CPU, CUDA or Metal
-// PatchMatch, with the photometric confidence
-static bool HasSphericalImages(const Scene& scene)
-{
-	for (const Image& image: scene.images)
-		if (image.IsValid() && scene.platforms[image.platformID].cameras[image.cameraID].model == CameraModelType::SPHERICAL)
-			return true;
-	return false;
-}
-
+// the depth-maps of equirectangular images are estimated by the CPU, CUDA or Metal PatchMatch, with the
+// photometric confidence
 bool Scene::DenseReconstruction(int nFusionMode, bool bCrop2ROI, float fBorderROI, float fSampleMeshNeighbors)
 {
-	if (HasSphericalImages(*this)) {
+	if (HasSphericalImages()) {
 		if (nFusionMode < 0) {
 			VERBOSE("error: the scene has spherical images: the semi-global matcher supports pinhole cameras only; use PatchMatch (--fusion-mode 0 or 1)");
 			return false;
 		}
+		// the neighbor views selected from a mesh (SampleMeshWithVisibility in ComputeDepthMaps)
+		if (!mesh.IsEmpty() && !ImagesHaveNeighbors() && !CheckPinholeOnly(_T("the neighbor view selection from a mesh")))
+			return false;
 	}
 	DenseDepthMapData data(*this, nFusionMode, fSampleMeshNeighbors);
 
@@ -3309,7 +3304,7 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		DEBUG("Adaptive confidence %s (auto: %s depth-map estimation)",
 			bCheapConfidence ? "enabled" : "disabled", bCheapConfidence ? "GPU" : "CPU");
 	}
-	if ((OPTDENSE::nOptimize & OPTDENSE::ADJUST_CONFIDENCE) && HasSphericalImages(*this)) {
+	if ((OPTDENSE::nOptimize & OPTDENSE::ADJUST_CONFIDENCE) && HasSphericalImages()) {
 		VERBOSE("warning: the confidence recalibration does not support spherical images; disabled");
 		OPTDENSE::nOptimize &= ~OPTDENSE::ADJUST_CONFIDENCE;
 	}

@@ -61,9 +61,10 @@ DEFINE_LOG_NAME(lt, _T("Scene   "));
 //  - sampling: sampling density per squared unit area (if >0), or
 //              absolute number of points (if <0), or
 //              use existing vertices as samples (if ==0)
+// pinhole cameras only (CheckPinholeOnly)
 void Scene::SampleMeshWithVisibility(REAL sampling, unsigned maxResolution)
 {
-	ASSERT(!mesh.IsEmpty());
+	ASSERT(!mesh.IsEmpty() && !HasSphericalImages());
 	pointcloud.Release();
 	if (sampling < 0) {
 		// absolute number of points
@@ -125,6 +126,8 @@ void Scene::SampleMeshWithVisibility(REAL sampling, unsigned maxResolution)
 bool Scene::ExportMeshToDepthMaps(const String& baseName)
 {
 	ASSERT(!images.empty() && !mesh.IsEmpty());
+	if (!CheckPinholeOnly(_T("the mesh depth-map export")))
+		return false;
 	const String ext(Util::getFileExt(baseName).ToLower());
 	const int nType(ext == _T(".dmap") ? 2 : (ext == _T(".pfm") ? 1 : 0));
 	if (nType == 2)

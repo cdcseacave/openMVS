@@ -77,6 +77,12 @@ public:
 	bool IsValid() const;
 	bool IsEmpty() const;
 	bool ImagesHaveNeighbors() const;
+	// the scene has equirectangular images (Image::IsSpherical)
+	bool HasSphericalImages() const;
+	// the stages that project through the pinhole camera only (the mesh reconstruction, refinement and
+	// texturing, the neighbor views from a mesh) refuse a scene with spherical images: false, with an
+	// error naming the stage and the cube-map export, if the scene has any
+	bool CheckPinholeOnly(LPCTSTR stage) const;
 	bool IsBounded() const { return obb.IsValid(); }
 	bool HasTransform() const { return transform != Matrix4x4::IDENTITY; }
 
@@ -214,7 +220,7 @@ public:
 	// sees a face when a pixel of its rasterization survives the z-buffer depth test or, the
 	// sub-pixel case, when its centroid projects unoccluded into that image. The mesh is
 	// rendered at the resolution nResolutionLevel/nMinResolution select; only the cameras are
-	// used, no image pixels are read
+	// used, no image pixels are read; pinhole cameras only (CheckPinholeOnly)
 	unsigned RemoveUnseenMeshFaces(unsigned nMinViews=1, unsigned nResolutionLevel=0, unsigned nMinResolution=640);
 
 	// Mesh refinement: fThPlanarVertex > 0 removes the vertices of planar patches as the

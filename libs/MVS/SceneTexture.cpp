@@ -2515,6 +2515,8 @@ bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsi
 	bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, Pixel8U colEmpty, float fSharpnessWeight,
 	int nIgnoreMaskLabel, int maxTextureSize, const IIndexArr& views)
 {
+	if (!CheckPinholeOnly(_T("the mesh texturing")))
+		return false;
 	MeshTexture texture(*this, nResolutionLevel, nMinResolution);
 
 	// assign the best view to each face
@@ -2550,7 +2552,7 @@ bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsi
 bool Scene::ComputeVertexColors(unsigned nResolutionLevel, unsigned nMinResolution, unsigned minCommonCameras,
 	float fOutlierThreshold, float fRatioDataSmoothness, Pixel8U colEmpty, int nIgnoreMaskLabel, const IIndexArr& views)
 {
-	if (mesh.IsEmpty())
+	if (mesh.IsEmpty() || !CheckPinholeOnly(_T("the mesh vertex coloring")))
 		return false;
 
 	// assign the best view to each face

@@ -355,6 +355,11 @@ void Scene::InitTowerScene(const int towerMode)
 		return;
 	if (!ComputeTowerCylinder(centerPoint, fRadius, fROIRadius, zMin, zMax, minCamZ, towerMode))
 		return;
+	if (HasSphericalImages()) {
+		// the tower points are seen through the pinhole cameras (DrawCircle)
+		VERBOSE("warning: the tower mode supports pinhole cameras only; disabled for the spherical images");
+		return;
+	}
 
 	// add nTargetPoints points on each circle
 	PointCloud towerPC(BuildTowerMesh(pointcloud, centerPoint, fRadius, fROIRadius, zMin, zMax, minCamZ, false));

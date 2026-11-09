@@ -153,6 +153,23 @@ bool Scene::ImagesHaveNeighbors() const
 	return false;
 }
 
+bool Scene::HasSphericalImages() const
+{
+	for (const Image& image: images)
+		if (image.IsValid() && image.IsSpherical())
+			return true;
+	return false;
+}
+
+bool Scene::CheckPinholeOnly(LPCTSTR stage) const
+{
+	if (!HasSphericalImages())
+		return true;
+	VERBOSE("error: the scene has spherical images, %s supports pinhole cameras only; "
+		"export the scene from the SfM with --spherical-export cubemap to run the mesh pipeline", stage);
+	return false;
+}
+
 
 bool Scene::LoadInterface(const String& fileName)
 {
