@@ -503,6 +503,7 @@ struct DepthEstimatorT : DepthEstimatorBase {
 	TexelRays texelRays0; // the rays of the patch texels at x0, for the exact warp, filled on first use
 	CLISTDEF0IDX(TexelRays,IIndex) viewTexelRays0; // per view, Rrel*texelRays0, filled on first use
 	CLISTDEF0IDX(bool,IIndex) bViewTexelRays0; // per view, viewTexelRays0 is filled for x0 (the last entry: texelRays0)
+	CLISTDEF0IDX(Eigen::Vector3f,IIndex) viewCenters0; // per view, its center in the reference camera frame, if bModelWarp
 	#if DENSE_NCC != DENSE_NCC_WEIGHTED
 	TexelVec texels0; //
 	#endif
@@ -678,6 +679,7 @@ struct DepthEstimatorT : DepthEstimatorBase {
 	const float thPerturbation;
 	#endif
 	const float sinSqWarpMaxElevation; // SQUARE(SIN(fSphericalWarpMaxElevation))
+	const float cosMinViewAngle; // COS(OPTDENSE::fMinAngle): the per-pixel view gate of a model warp (ScorePixel)
 };
 template<> PatchWarp DepthEstimatorT<Pinhole>::ComputePatchWarp(const DepthData::ViewData&, Depth, const Normal&) const;
 template<> float DepthEstimatorT<Pinhole>::ComputeGeometricConsistency(const DepthData::ViewData&, Depth) const;

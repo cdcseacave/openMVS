@@ -506,6 +506,7 @@ DepthEstimatorT<MODEL>::DepthEstimatorT(
 	, thPerturbation(1.f/POW(2.f,float(nIter+1)))
 	#endif
 	, sinSqWarpMaxElevation(SQUARE(SIN(D2R(fSphericalWarpMaxElevation))))
+	, cosMinViewAngle(COS(D2R(OPTDENSE::fMinAngle)))
 {
 	ASSERT(_depthData0.images.size() >= 1);
 	// an equirectangular reference spans 360x180 degrees on its grid, so its columns wrap
@@ -516,6 +517,9 @@ DepthEstimatorT<MODEL>::DepthEstimatorT(
 		viewRayFrames0.resize(images.size());
 		viewTexelRays0.resize(images.size());
 		bViewTexelRays0.resize(images.size()+1);
+		viewCenters0.resize(images.size());
+		FOREACH(v, images)
+			viewCenters0[v] = -(images[v].Rrel.transpose()*images[v].trel);
 	}
 }
 
@@ -927,8 +931,19 @@ float DepthEstimatorT<MODEL>::ScorePixel(Depth depth, const Normal& normal)
 	ASSERT(depth > 0 && normal.dot(Cast<float>(X0)) <= 0);
 	// compute score for this pixel as seen in each view
 	ASSERT(scores.size() == images.size());
-	FOREACH(idxView, images)
+	FOREACH(idxView, images) {
+		if (bModelWarp) {
+			// a view seeing the hypothesis point at a triangulation angle below fMinAngle does not
+			// constrain its depth: it scores as a view that does not see the patch
+			const Eigen::Vector3f X(Eigen::Vector3f((float)X0.x, (float)X0.y, (float)X0.z)*depth);
+			const Eigen::Vector3f D(X - viewCenters0[idxView]);
+			if (X.dot(D) > cosMinViewAngle*SQRT(X.squaredNorm()*D.squaredNorm())) {
+				scores[idxView] = thRobust;
+				continue;
+			}
+		}
 		scores[idxView] = ScorePixelImage(images[idxView], depth, normal);
+	}
 	#if DENSE_AGGNCC == DENSE_AGGNCC_NTH
 	// set score as the nth element
 	return scores.GetNth(idxScore);
