@@ -116,7 +116,7 @@ TextureMesh scene_dense.mvs -m scene_dense_mesh.ply
 ![spherical untextured mesh](https://github.com/cdcseacave/openMVS_sample/blob/master/scene_spherical_dense_mesh.jpg)
 ![spherical reconstruction result](https://github.com/cdcseacave/openMVS_sample/blob/master/scene_spherical_dense.jpg)
 
-Equirectangular images and video are processed natively by the SfM stage. The `.mvs` export writes them as native spherical cameras, which the dense reconstruction does not support yet; `CreateStructure --spherical-export cubemap` writes instead each panorama as an automatic six-face cube-map of pinhole views, which the downstream MVS modules consume as they are — no manual flat-panorama unwrapping is needed.
+Equirectangular images and video are processed natively by the SfM stage. The `.mvs` export writes them as native spherical cameras, whose depth-maps `DensifyPointCloud` estimates on the CPU (`--fusion-mode 1 --gpu-device -2`; their fusion is not supported yet); `CreateStructure --spherical-export cubemap` writes instead each panorama as an automatic six-face cube-map of pinhole views, which the downstream MVS modules consume as they are — no manual flat-panorama unwrapping is needed.
 
 </details>
 

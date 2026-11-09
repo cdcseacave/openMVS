@@ -338,15 +338,6 @@ int main(int argc, LPCTSTR* argv)
 	const Scene::SCENE_TYPE sceneType(scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)));
 	if (sceneType == Scene::SCENE_NA)
 		return EXIT_FAILURE;
-	for (const Platform& platform: scene.platforms) {
-		for (const Platform::Camera& camera: platform.cameras) {
-			if (camera.model == CameraModelType::SPHERICAL) {
-				// the depth estimators (PatchMatch and SGM) and the fusion are pinhole only
-				VERBOSE("error: the scene has spherical cameras, the dense reconstruction supports only pinhole and Brown cameras");
-				return EXIT_FAILURE;
-			}
-		}
-	}
 	if (!OPT::strExportDMAPSPathName.empty() && scene.IsValid()) {
 		// export depth-maps as PNG images
 		Util::ensureValidFolderPath(OPT::strExportDMAPSPathName);

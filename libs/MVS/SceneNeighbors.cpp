@@ -282,7 +282,7 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 		if (views.FindFirst(ID) == PointCloud::ViewArr::NO_INDEX)
 			continue;
 		const PointCloud::Point& point = pointcloud.points[idx];
-		const Depth depth((float)imageData.camera.PointDepth(point));
+		const Depth depth((float)imageData.PointDepth(Cast<REAL>(point)));
 		ASSERT(depth > 0);
 		if (depth <= 0)
 			continue;
@@ -301,7 +301,7 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 			if (view == ID)
 				continue;
 			const Image& imageData2 = images[view];
-			const Depth depth2((float)imageData2.camera.PointDepth(point));
+			const Depth depth2((float)imageData2.PointDepth(Cast<REAL>(point)));
 			ASSERT(depth2 > 0);
 			if (depth2 <= 0)
 				continue;
@@ -346,6 +346,18 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 
 	// select best neighborViews
 	if (neighbors.empty()) {
+		// the pixel of the point in the image, false if outside: any direction lands in a spherical image
+		const auto ProjectPoint = [](const Image& image, const PointCloud::Point& X, Point2f& x) {
+			if (image.model != CameraModelType::SPHERICAL) {
+				x = std::get<0>(image.camera.ProjectPointP(X));
+				return image.camera.IsInside(x, Point2f(image.GetSize()));
+			}
+			const Point3 Xc(image.camera.TransformPointW2C(Cast<REAL>(X)));
+			Eigen::Vector2d px;
+			MakeCameraModel<Spherical<REAL>>(image.camera).Project(Eigen::Vector3d(Xc.x, Xc.y, Xc.z), px);
+			x = Point2f((float)px.x(), (float)px.y());
+			return true;
+		};
 		Point2fArr projs(0, points.size());
 		FOREACH(IDB, images) {
 			const Image& imageDataB = images[IDB];
@@ -357,7 +369,6 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 			ASSERT(ID != IDB);
 			// compute how well the matched features are spread out (image covered area)
 			const Point2f boundsA(imageData.GetSize());
-			const Point2f boundsB(imageDataB.GetSize());
 			ASSERT(projs.empty());
 			for (uint32_t idx: points) {
 				const PointCloud::ViewArr& views = pointcloud.pointViews[idx];
@@ -366,11 +377,11 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 				if (views.FindFirst(IDB) == PointCloud::ViewArr::NO_INDEX)
 					continue;
 				const PointCloud::Point& point = pointcloud.points[idx];
-				Point2f ptB = std::get<0>(imageDataB.camera.ProjectPointP(point));
-				if (!imageDataB.camera.IsInside(ptB, boundsB))
+				Point2f ptB;
+				if (!ProjectPoint(imageDataB, point, ptB))
 					continue;
-				Point2f& ptA = projs.emplace_back(std::get<0>(imageData.camera.ProjectPointP(point)));
-				if (!imageData.camera.IsInside(ptA, boundsA))
+				Point2f& ptA = projs.emplace_back();
+				if (!ProjectPoint(imageData, point, ptA))
 					projs.RemoveLast();
 			}
 			ASSERT(projs.size() <= score.points);

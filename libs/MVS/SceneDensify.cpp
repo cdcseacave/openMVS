@@ -454,10 +454,11 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 			const unsigned nLoadFlags(bLoadNeighborConf ?
 				(HeaderDepthDataRaw::HAS_DEPTH|HeaderDepthDataRaw::HAS_NORMAL|HeaderDepthDataRaw::HAS_CONF) :
 				HeaderDepthDataRaw::HAS_DEPTH);
-			bool bConfAdjustedN(false);
+			bool bConfAdjustedN(false), bSphericalN(false);
 			if (!ImportDepthDataRaw(ComposeDepthFilePath(view.GetID(), "dmap"),
 				imageFileName, IDs, imageSize, view.cameraDepthMap.K, view.cameraDepthMap.R, view.cameraDepthMap.C,
-				dMin, dMax, view.depthMap, normalMap, confMap, viewsMap, nLoadFlags, &bConfAdjustedN))
+				dMin, dMax, view.depthMap, normalMap, confMap, viewsMap, nLoadFlags, &bConfAdjustedN, &bSphericalN) ||
+				bSphericalN != view.IsSpherical())
 			{
 				// neighbor depth-maps are needed during geometric-consistency iterations;
 				// some views may have failed depth estimation, so their depth-map is missing
@@ -498,19 +499,62 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 		Camera camera;
 		ConfidenceMap confMap;
 		ViewsMap viewsMap;
+		bool bSpherical;
 		if (!ImportDepthDataRaw(ComposeDepthFilePath(viewRef.GetID(), "dmap"),
 				imageFileName, IDs, imageSize, camera.K, camera.R, camera.C, depthData.dMin, depthData.dMax,
 				depthData.depthMap, depthData.normalMap, confMap, viewsMap,
-				HeaderDepthDataRaw::HAS_DEPTH|HeaderDepthDataRaw::HAS_NORMAL))
+				HeaderDepthDataRaw::HAS_DEPTH|HeaderDepthDataRaw::HAS_NORMAL, NULL, &bSpherical) ||
+				bSpherical != viewRef.IsSpherical())
 			return false;
 		ASSERT(viewRef.image.size() == depthData.depthMap.size());
 		ASSERT(depthData.normalMap.empty() || viewRef.image.size() == depthData.normalMap.size());
 		if (depthData.normalMap.empty()) {
 			// estimate normal map
-			EstimateNormalMap(viewRef.camera.K, depthData.depthMap, depthData.normalMap);
+			if (viewRef.IsSpherical())
+				EstimateNormalMap(MakeCameraModel<Spherical<float>>(viewRef.camera), depthData.depthMap, depthData.normalMap);
+			else
+				EstimateNormalMap(viewRef.camera.K, depthData.depthMap, depthData.normalMap);
 		}
 	} else if (loadDepthMaps == 0) {
 		// initialize depth and normal maps
+		if (viewRef.IsSpherical()) {
+			// the sparse points as squares of known depth (range) around their pixels, the
+			// columns wrapping, the other pixels random (the sparse triangulation is pinhole only)
+			const Image8U::Size size(viewRef.image.size());
+			depthData.depthMap.create(size); depthData.depthMap.memset(0);
+			depthData.normalMap.create(size);
+			if (depthData.points.empty()) {
+				depthData.dMin = 1e-1f;
+				depthData.dMax = 1e+2f;
+			} else {
+				const Spherical<REAL> camera(MakeCameraModel<Spherical<REAL>>(viewRef.camera));
+				const int nPixelArea(2); // half windows size around a pixel to be initialize with the known depth
+				depthData.dMin = FLT_MAX;
+				depthData.dMax = 0;
+				for (const auto idxPoint: depthData.points) {
+					const Point3 camX(viewRef.camera.TransformPointW2C(Cast<REAL>(scene.pointcloud.points[idxPoint])));
+					const Eigen::Vector3d X(camX.x, camX.y, camX.z);
+					Eigen::Vector2d px;
+					if (!camera.Project(X, px))
+						continue;
+					const ImageRef x(ROUND2INT(px.x()), ROUND2INT(px.y()));
+					const float d((float)camera.Depth(X));
+					for (int y=MAXF(x.y-nPixelArea,0); y<=MINF(x.y+nPixelArea,size.height-1); ++y) {
+						for (int c=x.x-nPixelArea; c<=x.x+nPixelArea; ++c) {
+							const int cw(c < 0 ? c+size.width : (c >= size.width ? c-size.width : c));
+							depthData.depthMap(y,cw) = d;
+							depthData.normalMap(y,cw) = Normal::ZERO;
+						}
+					}
+					if (depthData.dMin > d)
+						depthData.dMin = d;
+					if (depthData.dMax < d)
+						depthData.dMax = d;
+				}
+				depthData.dMin *= 0.9f;
+				depthData.dMax *= 1.1f;
+			}
+		} else
 		if (OPTDENSE::nMinViewsTrustPoint < 2 || depthData.points.empty()) {
 			// compute depth range and initialize known depths, else random
 			const Image8U::Size size(viewRef.image.size());
@@ -586,9 +630,10 @@ bool DepthMapsData::InitDepthMap(DepthData& depthData)
 
 
 // initialize the confidence map (NCC score map) with the score of the current estimates
+template<typename ESTIMATOR>
 void* STCALL DepthMapsData::ScoreDepthMapTmp(void* arg)
 {
-	DepthEstimator& estimator = *((DepthEstimator*)arg);
+	ESTIMATOR& estimator = *((ESTIMATOR*)arg);
 	IDX idx;
 	while ((idx=(IDX)Thread::safeInc(estimator.idxPixel)) < estimator.coords.GetSize()) {
 		const ImageRef& x = estimator.coords[idx];
@@ -615,18 +660,20 @@ void* STCALL DepthMapsData::ScoreDepthMapTmp(void* arg)
 	return NULL;
 }
 // run propagation and random refinement cycles
+template<typename ESTIMATOR>
 void* STCALL DepthMapsData::EstimateDepthMapTmp(void* arg)
 {
-	DepthEstimator& estimator = *((DepthEstimator*)arg);
+	ESTIMATOR& estimator = *((ESTIMATOR*)arg);
 	IDX idx;
 	while ((idx=(IDX)Thread::safeInc(estimator.idxPixel)) < estimator.coords.GetSize())
 		estimator.ProcessPixel(idx);
 	return NULL;
 }
 // remove all estimates with too big score and invert confidence map
+template<typename ESTIMATOR>
 void* STCALL DepthMapsData::EndDepthMapTmp(void* arg)
 {
-	DepthEstimator& estimator = *((DepthEstimator*)arg);
+	ESTIMATOR& estimator = *((ESTIMATOR*)arg);
 	IDX idx;
 	[[maybe_unused]] const float fOptimAngle(D2R(OPTDENSE::fOptimAngle));
 	while ((idx=(IDX)Thread::safeInc(estimator.idxPixel)) < estimator.coords.GetSize()) {
@@ -793,6 +840,15 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 	}
 	#endif // _USE_METAL
 
+	if (arrDepthData[idxImage].GetView().IsSpherical())
+		return EstimateDepthMapCPU<Spherical>(idxImage, nGeometricIter);
+	return EstimateDepthMapCPU<Pinhole>(idxImage, nGeometricIter);
+} // EstimateDepthMap
+
+template<template<typename> class MODEL>
+bool DepthMapsData::EstimateDepthMapCPU(IIndex idxImage, int nGeometricIter)
+{
+	typedef DepthEstimatorT<MODEL> DepthEstimator;
 	TD_TIMER_STARTD();
 
 	const unsigned nMaxThreads(scene.nMaxThreads);
@@ -807,7 +863,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 	if (nMaxThreads > 1)
 		threads.resize(nMaxThreads-1); // current thread is also used
 	volatile Thread::safe_t idxPixel;
-	std::unique_ptr<DepthEstimator::PixelPending[]> pending; // per pixel of the current scale
+	std::unique_ptr<DepthEstimatorBase::PixelPending[]> pending; // per pixel of the current scale
 
 	// Multi-Resolution :
 	DepthData& fullResDepthData(arrDepthData[idxImage]);
@@ -815,7 +871,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 	DepthMap lowResDepthMap;
 	NormalMap lowResNormalMap;
 	#if DENSE_NCC == DENSE_NCC_WEIGHTED
-	DepthEstimator::WeightMap weightMap0;
+	DepthEstimatorBase::WeightMap weightMap0;
 	#else
 	Image64F imageSum0;
 	#endif
@@ -840,26 +896,26 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 			fullResDepthData.confMap.release();
 		}
 		depthData.confMap.create(size);
-		pending.reset(new DepthEstimator::PixelPending[size.area()]);
+		pending.reset(new DepthEstimatorBase::PixelPending[size.area()]);
 
 		// init integral images and index to image-ref map for the reference data
 		#if DENSE_NCC == DENSE_NCC_WEIGHTED
 		weightMap0.clear();
-		weightMap0.resize(size.area()-(size.width+1)*DepthEstimator::nSizeHalfWindow);
+		weightMap0.resize(size.area());
 		#else
 		cv::integral(image.image, imageSum0, CV_64F);
 		#endif
 		if (prevDepthMapSize != size || OPTDENSE::nIgnoreMaskLabel >= 0 || image.pImageData->IsUndistortedOnRead()) {
 			BitMatrix mask;
-			const bool bMasked(DepthEstimator::ImportIgnoreMask(*image.pImageData, depthData.depthMap.size(), OPTDENSE::nIgnoreMaskLabel, mask));
+			const bool bMasked(DepthEstimatorBase::ImportIgnoreMask(*image.pImageData, depthData.depthMap.size(), OPTDENSE::nIgnoreMaskLabel, mask));
 			if (bMasked)
 				depthData.ApplyIgnoreMask(mask);
-			DepthEstimator::MapMatrix2ZigzagIdx(size, coords, mask, MAXF(64,(int)nMaxThreads*8));
+			DepthEstimatorBase::MapMatrix2ZigzagIdx(size, coords, mask, MAXF(64,(int)nMaxThreads*8));
 			#if 0 && !defined(_RELEASE)
 			// show pixels to be processed
 			Image8U cmask(size);
 			cmask.memset(0);
-			for (const DepthEstimator::MapRef& x: coords)
+			for (const DepthEstimatorBase::MapRef& x: coords)
 				cmask(x.y, x.x) = 255;
 			cmask.Show("cmask");
 			#endif
@@ -884,8 +940,8 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 			}
 			ASSERT(estimators.size() == threads.size()+1);
 			FOREACH(i, threads)
-				threads[i].start(ScoreDepthMapTmp, &estimators[i]);
-			ScoreDepthMapTmp(&estimators.back());
+				threads[i].start(ScoreDepthMapTmp<DepthEstimator>, &estimators[i]);
+			ScoreDepthMapTmp<DepthEstimator>(&estimators.back());
 			// wait for the working threads to close
 			FOREACHPTR(pThread, threads)
 				pThread->join();
@@ -905,7 +961,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 			// mark the pixels this pass estimates
 			for (int i=0; i<size.area(); ++i)
 				pending[i].store(0, std::memory_order_relaxed);
-			for (const DepthEstimator::MapRef& x: coords)
+			for (const DepthEstimatorBase::MapRef& x: coords)
 				pending[x.y*size.width+x.x].store(1, std::memory_order_relaxed);
 			// create working threads
 			idxPixel = -1;
@@ -922,8 +978,8 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 			}
 			ASSERT(estimators.size() == threads.size()+1);
 			FOREACH(i, threads)
-				threads[i].start(EstimateDepthMapTmp, &estimators[i]);
-			EstimateDepthMapTmp(&estimators.back());
+				threads[i].start(EstimateDepthMapTmp<DepthEstimator>, &estimators[i]);
+			EstimateDepthMapTmp<DepthEstimator>(&estimators.back());
 			// wait for the working threads to close
 			FOREACHPTR(pThread, threads)
 				pThread->join();
@@ -967,8 +1023,8 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 				coords);
 		ASSERT(estimators.size() == threads.size()+1);
 		FOREACH(i, threads)
-			threads[i].start(EndDepthMapTmp, &estimators[i]);
-		EndDepthMapTmp(&estimators.back());
+			threads[i].start(EndDepthMapTmp<DepthEstimator>, &estimators[i]);
+		EndDepthMapTmp<DepthEstimator>(&estimators.back());
 		// wait for the working threads to close
 		FOREACHPTR(pThread, threads)
 			pThread->join();
@@ -982,7 +1038,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 			String::FormatString("with image %3u estimated", depthData.images[1].GetID()).c_str(),
 		depthData.depthMap.cols, depthData.depthMap.rows, TD_TIMER_GET_FMT().c_str());
 	return true;
-} // EstimateDepthMap
+} // EstimateDepthMapCPU
 /*----------------------------------------------------------------*/
 
 
@@ -2839,8 +2895,34 @@ void DenseDepthMapData::SignalCompleteDepthmapFilter()
 static void* DenseReconstructionEstimateTmp(void*);
 static void* DenseReconstructionFilterTmp(void*);
 
+// the scene has equirectangular images: their depth-maps are estimated only by the CPU PatchMatch,
+// with the photometric confidence, and not fused yet
+static bool HasSphericalImages(const Scene& scene)
+{
+	for (const Image& image: scene.images)
+		if (image.IsValid() && scene.platforms[image.platformID].cameras[image.cameraID].model == CameraModelType::SPHERICAL)
+			return true;
+	return false;
+}
+
 bool Scene::DenseReconstruction(int nFusionMode, bool bCrop2ROI, float fBorderROI, float fSampleMeshNeighbors)
 {
+	if (HasSphericalImages(*this)) {
+		if (nFusionMode != 1) {
+			VERBOSE("error: the scene has spherical images: only their depth-maps can be estimated, by PatchMatch (--fusion-mode 1)");
+			return false;
+		}
+		if (IsEmpty() && !ImagesHaveNeighbors()) {
+			VERBOSE("error: the scene has spherical images: their neighbor views are selected from the sparse points, and there are none");
+			return false;
+		}
+		#if defined(_USE_CUDA) || defined(_USE_METAL)
+		if (!SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs)) {
+			VERBOSE("error: the scene has spherical images: their depth-maps are estimated on the CPU only (--gpu-device -2)");
+			return false;
+		}
+		#endif
+	}
 	DenseDepthMapData data(*this, nFusionMode, fSampleMeshNeighbors);
 
 	// estimate depth-maps
@@ -3280,6 +3362,10 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 			OPTDENSE::nOptimize |= OPTDENSE::ADJUST_CONFIDENCE;
 		DEBUG("Adaptive confidence %s (auto: %s depth-map estimation)",
 			bCheapConfidence ? "enabled" : "disabled", bCheapConfidence ? "GPU" : "CPU");
+	}
+	if ((OPTDENSE::nOptimize & OPTDENSE::ADJUST_CONFIDENCE) && HasSphericalImages(*this)) {
+		VERBOSE("warning: the confidence recalibration does not support spherical images; disabled");
+		OPTDENSE::nOptimize &= ~OPTDENSE::ADJUST_CONFIDENCE;
 	}
 
 	// initialize the queue of images to be processed

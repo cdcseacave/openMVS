@@ -73,6 +73,9 @@ public:
 	bool FetchViewImage(DepthData::ViewData& view);
 	bool InitDepthMap(DepthData& depthData);
 	bool EstimateDepthMap(IIndex idxImage, int nGeometricIter);
+	// the CPU PatchMatch estimation, for a reference of camera model MODEL
+	template<template<typename> class MODEL>
+	bool EstimateDepthMapCPU(IIndex idxImage, int nGeometricIter);
 
 	#ifdef _USE_CUDA
 	// Construct poolSize PatchMatch instances ready for the depth-map phase;
@@ -130,9 +133,9 @@ public:
 	size_t ComputeImageCacheMemory(const IIndexArr& images) const;
 
 protected:
-	static void* STCALL ScoreDepthMapTmp(void*);
-	static void* STCALL EstimateDepthMapTmp(void*);
-	static void* STCALL EndDepthMapTmp(void*);
+	template<typename ESTIMATOR> static void* STCALL ScoreDepthMapTmp(void*);
+	template<typename ESTIMATOR> static void* STCALL EstimateDepthMapTmp(void*);
+	template<typename ESTIMATOR> static void* STCALL EndDepthMapTmp(void*);
 
 public:
 	Scene& scene;

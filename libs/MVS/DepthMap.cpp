@@ -266,7 +266,7 @@ bool DepthData::Save(const String& fileName) const
 		for (const ViewData& image: images)
 			IDs.push_back(image.GetID());
 		const ViewData& image0 = GetView();
-		if (!ExportDepthDataRaw(fileNameTmp, image0.pImageData->name, IDs, depthMap.size(), image0.camera.K, image0.camera.R, image0.camera.C, dMin, dMax, depthMap, normalMap, confMap, viewsMap, bConfAdjusted))
+		if (!ExportDepthDataRaw(fileNameTmp, image0.pImageData->name, IDs, depthMap.size(), image0.camera.K, image0.camera.R, image0.camera.C, dMin, dMax, depthMap, normalMap, confMap, viewsMap, bConfAdjusted, image0.IsSpherical()))
 			return false;
 	}
 	if (!File::renameFile(fileNameTmp, fileName)) {
@@ -283,8 +283,14 @@ bool DepthData::Load(const String& fileName, unsigned flags)
 	IIndexArr IDs;
 	cv::Size imageSize;
 	Camera camera;
-	if (!ImportDepthDataRaw(fileName, imageFileName, IDs, imageSize, camera.K, camera.R, camera.C, dMin, dMax, depthMap, normalMap, confMap, viewsMap, flags, &bConfAdjusted))
+	bool bSpherical;
+	if (!ImportDepthDataRaw(fileName, imageFileName, IDs, imageSize, camera.K, camera.R, camera.C, dMin, dMax, depthMap, normalMap, confMap, viewsMap, flags, &bConfAdjusted, &bSpherical))
 		return false;
+	if (IsValid() && bSpherical != GetView().IsSpherical()) {
+		VERBOSE("error: depth-map '%s' was estimated for another camera model", fileName.c_str());
+		Release();
+		return false;
+	}
 	ASSERT(!IDs.empty() && (!IsValid() || IDs.front() == GetView().GetID()));
 	ASSERT(depthMap.size() == imageSize);
 	if (!IsValid())
@@ -459,6 +465,7 @@ DepthEstimatorT<MODEL>::DepthEstimatorT(
 	dMin(_depthData0.dMin), dMax(_depthData0.dMax),
 	dMinSqr(SQRT(_depthData0.dMin)), dMaxSqr(SQRT(_depthData0.dMax)),
 	dir(nIter%2 ? RB2LT : LT2RB),
+	bModelWarp(bSphericalRef || std::any_of(_depthData0.images.begin()+1, _depthData0.images.end(), [](const DepthData::ViewData& view) { return view.IsSpherical(); })),
 	#if DENSE_AGGNCC == DENSE_AGGNCC_NTH
 	idxScore((_depthData0.images.size()-1)/3),
 	#elif DENSE_AGGNCC == DENSE_AGGNCC_MINMEAN
@@ -479,13 +486,24 @@ DepthEstimatorT<MODEL>::DepthEstimatorT(
 	#endif
 {
 	ASSERT(_depthData0.images.size() >= 1);
+	// an equirectangular reference spans 360x180 degrees on its grid, so its columns wrap
+	ASSERT(!bSphericalRef || (ISEQUAL(camera0.fx*REAL(TWO_PI), REAL(size.width)) && ISEQUAL(camera0.fy*REAL(PI), REAL(size.height)) &&
+		ISEQUAL(camera0.cx, REAL(size.width-1)/2) && ISEQUAL(camera0.cy, REAL(size.height-1)/2)));
+	ASSERT(bSphericalRef == image0.IsSpherical());
+	if (bModelWarp) {
+		viewTexelRays0.resize(images.size());
+		bViewTexelRays0.resize(images.size()+1);
+	}
 }
 
-// center a patch of given size on the segment
+// center a patch of given size on the segment: inside the image, except across the seam of a
+// spherical reference
 template<template<typename> class MODEL>
 bool DepthEstimatorT<MODEL>::PreparePixelPatch(const ImageRef& x)
 {
 	x0 = x;
+	if constexpr (bSphericalRef)
+		return x.y >= nSizeHalfWindow && x.y < size.height-nSizeHalfWindow;
 	return image0.image.isInside(ImageRef(x.x-nSizeHalfWindow, x.y-nSizeHalfWindow)) &&
 	       image0.image.isInside(ImageRef(x.x+nSizeHalfWindow, x.y+nSizeHalfWindow));
 }
@@ -494,6 +512,7 @@ template<template<typename> class MODEL>
 bool DepthEstimatorT<MODEL>::FillPixelPatch()
 {
 	#if DENSE_NCC != DENSE_NCC_WEIGHTED
+	static_assert(!bSphericalRef, "the integral image of the reference does not wrap");
 	const float mean(GetImage0Sum(x0)/nTexels);
 	normSq0 = 0;
 	float* pTexel0 = texels0.data();
@@ -510,7 +529,7 @@ bool DepthEstimatorT<MODEL>::FillPixelPatch()
 			for (int j=-nSizeHalfWindow; j<=nSizeHalfWindow; j+=nSizeStep) {
 				Weight::Pixel& pw = w.weights[n++];
 				w.normSq0 +=
-					(pw.tempWeight = image0.image(x0.y+i, x0.x+j)) *
+					(pw.tempWeight = image0.image(x0.y+i, Col0(x0.x+j))) *
 					(pw.weight = GetWeight(ImageRef(j,i), colCenter));
 				w.sumWeights += pw.weight;
 			}
@@ -529,8 +548,219 @@ bool DepthEstimatorT<MODEL>::FillPixelPatch()
 	#endif
 	if (normSq0 < thMagnitudeSq && (lowResDepthMap.empty() || lowResDepthMap(x0) <= 0))
 		return false;
-	X0 = camera0.Ray(Eigen::Vector2d((REAL)x0.x, (REAL)x0.y));
+	if (bModelWarp)
+		bViewTexelRays0.Memset(0);
+	if constexpr (bSphericalRef) {
+		// the ray frame in single precision, its trigonometry being the main per-pixel cost
+		rayFrame0 = camera0f.RayFrame(Eigen::Vector2f((float)x0.x, (float)x0.y));
+		X0 = Point3((REAL)rayFrame0(0,2), (REAL)rayFrame0(1,2), (REAL)rayFrame0(2,2));
+	} else {
+		X0 = camera0.Ray(Eigen::Vector2d((REAL)x0.x, (REAL)x0.y));
+	}
+	if constexpr (bSphericalRef) {
+		// the longitude and the downward elevation tangents at X0, from its ray frame
+		const Eigen::Vector3f eLon(rayFrame0.col(0).normalized()), eDown(rayFrame0.col(1).normalized());
+		normalFrame0 = Matrix3x3f(
+			(float)eLon.x(), (float)eDown.x(), (float)X0.x,
+			(float)eLon.y(), (float)eDown.y(), (float)X0.y,
+			(float)eLon.z(), (float)eDown.z(), (float)X0.z);
+	}
 	return true;
+}
+
+// the column of an equirectangular map holding pixel column c, for c within one width of the map
+inline int WrapColumn(int c, int width) {
+	ASSERT(c >= -width && c < 2*width);
+	return c < 0 ? c + width : (c >= width ? c - width : c);
+}
+// sample a target image at pt by bilinear interpolation: false if pt is not inside with a border of
+// 1 pixel; the columns of an equirectangular image (WRAPX) wrap, only its rows are bounded (pt.x
+// within one turn either side of the image)
+template <bool WRAPX>
+inline bool SampleTexel(const Image32F& image, const Point2f& pt, float& v) {
+	if constexpr (WRAPX) {
+		if (!(pt.y >= 1.f && pt.y <= float(image.height()-2)))
+			return false;
+		ASSERT(pt.x >= -float(image.width()) && pt.x < float(2*image.width()-1));
+		const int lx0((int)(pt.x+float(image.width())) - image.width()); // floor, pt.x >= -width
+		const float x(pt.x-lx0), x1(1.f-x);
+		const int lx(WrapColumn(lx0, image.width())), lx1(lx+1 < image.width() ? lx+1 : 0);
+		const int ly((int)pt.y);
+		const float y(pt.y-ly), y1(1.f-y);
+		v = (image(ly,lx)*x1 + image(ly,lx1)*x)*y1 + (image(ly+1,lx)*x1 + image(ly+1,lx1)*x)*y;
+	} else {
+		if (!image.isInsideWithBorder<float,1>(pt))
+			return false;
+		v = image.sample(pt);
+	}
+	return true;
+}
+// sample a depth-map at pt by bilinear interpolation over the neighbors meeting the condition, as
+// TImage::sample does, the columns of an equirectangular map (WRAPX) wrapping; false if pt is not
+// inside with a border of 1 pixel or no neighbor meets the condition
+template <bool WRAPX, typename Functor>
+inline bool SampleDepth(const DepthMap& depthMap, const Point2f& pt, Depth& v, const Functor& functor) {
+	if constexpr (WRAPX) {
+		if (!(pt.y >= 1.f && pt.y <= float(depthMap.height()-2)))
+			return false;
+		const int lx0(FLOOR2INT(pt.x));
+		const float x(pt.x-lx0), x1(1.f-x);
+		const int lx(WrapColumn(lx0, depthMap.width())), lx1(lx+1 < depthMap.width() ? lx+1 : 0);
+		const int ly((int)pt.y);
+		const float y(pt.y-ly), y1(1.f-y);
+		const Depth x0y0(depthMap(ly,lx)); const bool b00(functor(x0y0));
+		const Depth x1y0(depthMap(ly,lx1)); const bool b10(functor(x1y0));
+		const Depth x0y1(depthMap(ly+1,lx)); const bool b01(functor(x0y1));
+		const Depth x1y1(depthMap(ly+1,lx1)); const bool b11(functor(x1y1));
+		if (!b00 && !b10 && !b01 && !b11)
+			return false;
+		v = y1*(x1*(b00 ? x0y0 : (b10 ? x1y0 : (b01 ? x0y1 : x1y1))) + x*(b10 ? x1y0 : (b00 ? x0y0 : (b11 ? x1y1 : x0y1)))) +
+			y *(x1*(b01 ? x0y1 : (b11 ? x1y1 : (b00 ? x0y0 : x1y0))) + x*(b11 ? x1y1 : (b01 ? x0y1 : (b10 ? x1y0 : x0y0))));
+		return true;
+	} else {
+		if (!depthMap.isInsideWithBorder<float,1>(pt))
+			return false;
+		return depthMap.sample(v, pt, functor);
+	}
+}
+// atan2 in single precision by a minimax polynomial of atan on [0,1] (max error 1.3e-7 rad, the
+// precision of the float atan2), several times cheaper than std::atan2
+inline float FastAtan2(float y, float x) {
+	const float ax(ABS(x)), ay(ABS(y));
+	const float mx(MAXF(ax, ay));
+	if (mx == 0.f)
+		return 0.f;
+	const float a(MINF(ax, ay)/mx), s(a*a);
+	float r((((((((-0.0040540580f*s + 0.0218612288f)*s - 0.0559098861f)*s + 0.0964200441f)*s - 0.1390853351f)*s + 0.1994653599f)*s - 0.3332985605f)*s + 0.9999993329f)*a);
+	if (ay > ax)
+		r = FHALF_PI - r;
+	if (x < 0.f)
+		r = FPI - r;
+	return y < 0.f ? -r : r;
+}
+// the pixel of a target camera-frame point in the warps: Project, through FastAtan2 for a spherical
+// target (its two atan2 dominate the exact warp per texel)
+template <typename TRG>
+inline bool ProjectFast(const TRG& trg, const Eigen::Vector3f& X, Eigen::Vector2f& x) {
+	return trg.Project(X, x);
+}
+inline bool ProjectFast(const Spherical<float>& trg, const Eigen::Vector3f& X, Eigen::Vector2f& x) {
+	x = Eigen::Vector2f(
+		trg.fx*FastAtan2(X.x(), X.z()) + trg.cx,
+		trg.fy*FastAtan2(X.y(), SQRT(X.x()*X.x() + X.z()*X.z())) + trg.cy);
+	return X.squaredNorm() > 0.f;
+}
+
+// the texels of the patch warped by warp, in the order of the reference texels
+template <bool WRAPX>
+inline bool SampleWarpedPatch(const Image32F& image, const PatchWarp& warp, float* texels) {
+	Point3f X(warp.base);
+	Point3f baseX(X);
+	for (int i=-DepthEstimatorBase::nSizeHalfWindow; i<=DepthEstimatorBase::nSizeHalfWindow; i+=DepthEstimatorBase::nSizeStep) {
+		for (int j=-DepthEstimatorBase::nSizeHalfWindow; j<=DepthEstimatorBase::nSizeHalfWindow; j+=DepthEstimatorBase::nSizeStep) {
+			if (!SampleTexel<WRAPX>(image, Point2f(X), *texels++))
+				return false;
+			X.x += warp.dx.x; X.y += warp.dx.y; X.z += warp.dx.z;
+		}
+		baseX.x += warp.dy.x; baseX.y += warp.dy.y; baseX.z += warp.dy.z;
+		X = baseX;
+	}
+	return true;
+}
+// the reference texels of the patch through the plane (depth, normal), each texel ray intersected
+// with the plane and projected exactly into the target: Method A, the reference warp of every model
+template<template<typename> class MODEL>
+template<typename TRG>
+bool DepthEstimatorT<MODEL>::SampleExactPatch(const DepthData::ViewData& image1, const TRG& trg, Depth depth, const Normal& normal, float* texels)
+{
+	ASSERT(bModelWarp);
+	// the texel rays in the reference frame, and turned into this view's frame
+	if (!bViewTexelRays0.back()) {
+		int k(0);
+		for (int i=-nSizeHalfWindow; i<=nSizeHalfWindow; i+=nSizeStep)
+			for (int j=-nSizeHalfWindow; j<=nSizeHalfWindow; j+=nSizeStep)
+				texelRays0.rays[k++] = camera0f.Ray(Eigen::Vector2f(float(x0.x+j), float(x0.y+i)));
+		ASSERT(k == nTexels);
+		bViewTexelRays0.back() = true;
+	}
+	const IIndex idxView((IIndex)(&image1-images.data()));
+	TexelRays& viewRays(viewTexelRays0[idxView]);
+	if (!bViewTexelRays0[idxView]) {
+		for (int k=0; k<nTexels; ++k)
+			viewRays.rays[k] = image1.Rrel*texelRays0.rays[k];
+		bViewTexelRays0[idxView] = true;
+	}
+	const Eigen::Vector3f n(normal.x, normal.y, normal.z);
+	const float nX(depth*normal.dot(Cast<float>(X0))); // n.X of the plane point at x0
+	ASSERT(nX < 0);
+	constexpr bool bWrapX(std::is_same<TRG, Spherical<float>>::value);
+	for (int k=0; k<nTexels; ++k) {
+		// the texel ray meets the plane in front of the reference camera
+		const float den(n.dot(texelRays0.rays[k]));
+		if (den >= 0)
+			return false;
+		Eigen::Vector2f x;
+		if (!ProjectFast(trg, viewRays.rays[k]*(nX/den) + image1.trel, x))
+			return false;
+		if (!SampleTexel<bWrapX>(image1.image, Point2f(x.x(), x.y()), texels[k]))
+			return false;
+	}
+	return true;
+}
+
+// the warp into the target view when every camera is pinhole: the cached plane homography
+template<template<typename> class MODEL>
+bool DepthEstimatorT<MODEL>::SamplePinholePatch(const DepthData::ViewData& image1, Depth depth, const Normal& normal, float* texels)
+{
+	ASSERT(!bModelWarp && !image1.IsSpherical());
+	if constexpr (bSphericalRef)
+		return false; // a spherical reference always has bModelWarp
+	else
+		return SampleWarpedPatch<false>(image1.image, ComputePatchWarp(image1, depth, normal), texels);
+}
+// the warp into the target view as soon as a spherical camera is involved: the cached homography
+// between pinhole cameras, the exact per-texel warp (Method A) for any pair with a spherical camera;
+// the target model is resolved once per (pixel, hypothesis, view)
+template<template<typename> class MODEL>
+bool DepthEstimatorT<MODEL>::SampleModelPatch(const DepthData::ViewData& image1, Depth depth, const Normal& normal, float* texels)
+{
+	if constexpr (!bSphericalRef) {
+		if (!image1.IsSpherical())
+			return SampleWarpedPatch<false>(image1.image, ComputePatchWarp(image1, depth, normal), texels);
+	}
+	if (!image1.IsSpherical())
+		return SampleExactPatch(image1, MakeCameraModel<Pinhole<float>>(image1.camera), depth, normal, texels);
+	return SampleExactPatch(image1, MakeCameraModel<Spherical<float>>(image1.camera), depth, normal, texels);
+}
+
+// the geometric consistency against a target depth-map of any camera model: the distance between
+// the reference pixel and its round trip through the target depth, mapped to [0,4] (4 if the target
+// holds no similar depth there)
+template<template<typename> class MODEL>
+template<typename TRG>
+float DepthEstimatorT<MODEL>::GeometricConsistency(const DepthData::ViewData& image1, const TRG& trg, Depth depth) const
+{
+	ASSERT(!image1.depthMap.empty());
+	const Eigen::Vector3f X(Eigen::Vector3f((float)X0.x, (float)X0.y, (float)X0.z)*depth);
+	const Eigen::Vector3f X1(image1.RrelDM*X + image1.trelDM);
+	Eigen::Vector2f x1;
+	if (!ProjectFast(trg, X1, x1))
+		return 4.f;
+	const Depth depth1Expected(trg.Depth(X1));
+	Depth depth1;
+	if (!SampleDepth<std::is_same<TRG, Spherical<float>>::value>(image1.depthMap, Point2f(x1.x(), x1.y()), depth1,
+			[depth1Expected](Depth d) { return IsDepthSimilar(depth1Expected, d, 0.03f); }))
+		return 4.f;
+	// the target point at the sampled depth, along the ray of x1, which is X1's
+	const Eigen::Vector3f Xb(image1.RrelDM.transpose()*(X1*(depth1/depth1Expected) - image1.trelDM));
+	Eigen::Vector2f xb;
+	if (!ProjectFast(camera0f, Xb, xb))
+		return 4.f;
+	float dx(float(x0.x)-xb.x());
+	if constexpr (bSphericalRef)
+		dx -= float(size.width)*ROUND2INT(dx/float(size.width));
+	const float dist(SQRT(SQUARE(dx) + SQUARE(float(x0.y)-xb.y())));
+	return MINF(SQRT(dist*(dist+2.f)), 4.f);
 }
 
 // compute pixel's NCC score in the given target image
@@ -538,10 +768,9 @@ template<template<typename> class MODEL>
 float DepthEstimatorT<MODEL>::ScorePixelImage(const DepthData::ViewData& image1, Depth depth, const Normal& normal)
 {
 	// center a patch of given size on the segment and fetch the pixel values in the target image
-	const PatchWarp warp(ComputePatchWarp(image1, depth, normal));
-	Point3f X(warp.base);
-	Point3f baseX(X);
-	int n(0);
+	float values[nTexels];
+	if (!SamplePatch(image1, depth, normal, values))
+		return thRobust;
 	float sum(0);
 	#if DENSE_NCC != DENSE_NCC_DEFAULT
 	float sumSq(0), num(0);
@@ -549,31 +778,22 @@ float DepthEstimatorT<MODEL>::ScorePixelImage(const DepthData::ViewData& image1,
 	#if DENSE_NCC == DENSE_NCC_WEIGHTED
 	const Weight& w = weightMap0[x0.y*image0.image.width()+x0.x];
 	#endif
-	for (int i=-nSizeHalfWindow; i<=nSizeHalfWindow; i+=nSizeStep) {
-		for (int j=-nSizeHalfWindow; j<=nSizeHalfWindow; j+=nSizeStep) {
-			const Point2f pt(X);
-			if (!image1.image.isInsideWithBorder<float,1>(pt))
-				return thRobust;
-			const float v(image1.image.sample(pt));
-			#if DENSE_NCC == DENSE_NCC_FAST
-			sum += v;
-			sumSq += SQUARE(v);
-			num += texels0(n++)*v;
-			#elif DENSE_NCC == DENSE_NCC_WEIGHTED
-			const Weight::Pixel& pw = w.weights[n++];
-			const float vw(v*pw.weight);
-			sum += vw;
-			sumSq += v*vw;
-			num += v*pw.tempWeight;
-			#else
-			sum += texels1(n++)=v;
-			#endif
-			X.x += warp.dx.x; X.y += warp.dx.y; X.z += warp.dx.z;
-		}
-		baseX.x += warp.dy.x; baseX.y += warp.dy.y; baseX.z += warp.dy.z;
-		X = baseX;
+	for (int n=0; n<nTexels; ++n) {
+		const float v(values[n]);
+		#if DENSE_NCC == DENSE_NCC_FAST
+		sum += v;
+		sumSq += SQUARE(v);
+		num += texels0(n)*v;
+		#elif DENSE_NCC == DENSE_NCC_WEIGHTED
+		const Weight::Pixel& pw = w.weights[n];
+		const float vw(v*pw.weight);
+		sum += vw;
+		sumSq += v*vw;
+		num += v*pw.tempWeight;
+		#else
+		sum += texels1(n)=v;
+		#endif
 	}
-	ASSERT(n == nTexels);
 	// score similarity of the reference and target texture patches
 	#if DENSE_NCC == DENSE_NCC_FAST
 	const float normSq1(sumSq-SQUARE(sum/nSizeWindow));
@@ -695,12 +915,22 @@ void DepthEstimatorT<MODEL>::ProcessPixel(IDX idx)
 	ASSERT(dir == LT2RB || dir == RB2LT);
 	const ImageRef& x(dir == LT2RB ? coords[idx] : coords[coords.GetSize()-1-idx]);
 	const int step(dir == LT2RB ? -1 : 1);
-	for (const ImageRef nx: {ImageRef(x.x+step, x.y), ImageRef(x.x, x.y+step)}) {
-		if (nx.x < 0 || nx.y < 0 || nx.x >= size.width || nx.y >= size.height)
-			continue;
+	const auto Wait = [this](const ImageRef& nx) {
 		const PixelPending& flag = pending[nx.y*size.width+nx.x];
 		while (flag.load(std::memory_order_acquire))
 			std::this_thread::yield();
+	};
+	for (const ImageRef nx: {ImageRef(x.x+step, x.y), ImageRef(x.x, x.y+step)}) {
+		if (nx.x < 0 || nx.y < 0 || nx.x >= size.width || nx.y >= size.height)
+			continue;
+		Wait(nx);
+	}
+	if constexpr (bSphericalRef) {
+		// the seam: the column visited last in this pass is next to the one visited first, so it waits
+		// for it, while the first reads the last one as the previous pass left it (the last one
+		// waits until the first is estimated, through this rule)
+		if (dir == LT2RB ? x.x == size.width-1 : x.x == 0)
+			Wait(ImageRef(dir == LT2RB ? 0 : size.width-1, x.y));
 	}
 	if (PreparePixelPatch(x) && FillPixelPatch())
 		EstimatePixel();
@@ -744,28 +974,31 @@ void DepthEstimatorT<MODEL>::EstimatePixel()
 				});
 		}
  	};
+	// the left and right neighbors: across the seam too for a spherical reference
+	const bool bLeft(bSphericalRef || x0.x > nSizeHalfWindow), bRight(bSphericalRef || x0.x < size.width-nSizeHalfWindow);
+	const ImageRef xLeft(Col0(x0.x-1), x0.y), xRight(Col0(x0.x+1), x0.y);
 	if (dir == LT2RB) {
 		// direction from left-top to right-bottom corner
-		if (x0.x > nSizeHalfWindow)
-			AddDirectionNeighbor(ImageRef(x0.x-1, x0.y));
+		if (bLeft)
+			AddDirectionNeighbor(xLeft);
 		if (x0.y > nSizeHalfWindow)
 			AddDirectionNeighbor(ImageRef(x0.x, x0.y-1));
 		#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
-		if (x0.x < size.width-nSizeHalfWindow)
-			AddDirection(ImageRef(x0.x+1, x0.y));
+		if (bRight)
+			AddDirection(xRight);
 		if (x0.y < size.height-nSizeHalfWindow)
 			AddDirection(ImageRef(x0.x, x0.y+1));
 		#endif
 	} else {
 		ASSERT(dir == RB2LT);
 		// direction from right-bottom to left-top corner
-		if (x0.x < size.width-nSizeHalfWindow)
-			AddDirectionNeighbor(ImageRef(x0.x+1, x0.y));
+		if (bRight)
+			AddDirectionNeighbor(xRight);
 		if (x0.y < size.height-nSizeHalfWindow)
 			AddDirectionNeighbor(ImageRef(x0.x, x0.y+1));
 		#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
-		if (x0.x > nSizeHalfWindow)
-			AddDirection(ImageRef(x0.x-1, x0.y));
+		if (bLeft)
+			AddDirection(xLeft);
 		if (x0.y > nSizeHalfWindow)
 			AddDirection(ImageRef(x0.x, x0.y-1));
 		#endif
@@ -833,7 +1066,7 @@ void DepthEstimatorT<MODEL>::EstimatePixel()
 	float scaleRange(scaleRanges[idxScaleRange]);
 	const float depthRange(MaxDepthDifference(depth, OPTDENSE::fRandomDepthRatio));
 	Point2f p;
-	Normal2Dir(normal, p);
+	NormalToDir(normal, p);
 	Normal nnormal;
 	for (unsigned iter=0; iter<OPTDENSE::nRandomIters; ++iter) {
 		const Depth ndepth(rnd.randomMeanRange(depth, depthRange*scaleRange));
@@ -841,6 +1074,7 @@ void DepthEstimatorT<MODEL>::EstimatePixel()
 			continue;
 		const Point2f np(rnd.randomMeanRange(p.x, angle1Range*scaleRange), rnd.randomMeanRange(p.y, angle2Range*scaleRange));
 		Dir2Normal(np, nnormal);
+		nnormal = NormalFromLocal(nnormal);
 		if (nnormal.dot(viewDir) >= 0)
 			continue;
 		#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
@@ -1005,6 +1239,8 @@ template<>
 float DepthEstimatorT<Pinhole>::ComputeGeometricConsistency(const DepthData::ViewData& image1, Depth depth) const
 {
 	ASSERT(!image1.depthMap.empty());
+	if (image1.IsSpherical())
+		return GeometricConsistency(image1, MakeCameraModel<Spherical<float>>(image1.cameraDepthMap), depth);
 	float consistency(4.f);
 	const Point3f X1(image1.Tl*Point3f(float(X0.x)*depth,float(X0.y)*depth,depth)+image1.Tm); // Kj * Rj * (Ri.t() * X + Ci - Cj)
 	if (X1.z > 0) {
@@ -1027,6 +1263,23 @@ Point3f DepthEstimatorT<Pinhole>::ComputeNeighborPoint(const ImageRef& nx, Depth
 }
 
 template struct DepthEstimatorT<Pinhole>;
+
+
+// spherical reference: the geometric consistency through the camera models of the target depth-map
+template<>
+float DepthEstimatorT<Spherical>::ComputeGeometricConsistency(const DepthData::ViewData& image1, Depth depth) const
+{
+	if (image1.IsSpherical())
+		return GeometricConsistency(image1, MakeCameraModel<Spherical<float>>(image1.cameraDepthMap), depth);
+	return GeometricConsistency(image1, MakeCameraModel<Pinhole<float>>(image1.cameraDepthMap), depth);
+}
+template<>
+Point3f DepthEstimatorT<Spherical>::ComputeNeighborPoint(const ImageRef& nx, Depth depth) const
+{
+	return Cast<float>(Point3(camera0.Ray(Eigen::Vector2d((REAL)nx.x, (REAL)nx.y))*REAL(depth)));
+}
+
+template struct DepthEstimatorT<Spherical>;
 /*----------------------------------------------------------------*/
 
 
@@ -2037,7 +2290,7 @@ bool MVS::ExportDepthDataRaw(const String& fileName, const String& imageFileName
 	const KMatrix& K, const RMatrix& R, const CMatrix& C,
 	Depth dMin, Depth dMax,
 	const DepthMap& depthMap, const NormalMap& normalMap, const ConfidenceMap& confMap, const ViewsMap& viewsMap,
-	bool bConfAdjusted)
+	bool bConfAdjusted, bool bSpherical)
 {
 	ASSERT(!IDs.empty() && IDs.size() < 256);
 	ASSERT(!depthMap.empty());
@@ -2054,6 +2307,8 @@ bool MVS::ExportDepthDataRaw(const String& fileName, const String& imageFileName
 	data.header.dMax = dMax;
 	if (bConfAdjusted)
 		data.header.type |= HeaderDepthDataRaw::CONF_ADJUSTED; // carried through by the codec (cross-process double-adjust guard)
+	if (bSpherical)
+		data.header.type |= HeaderDepthDataRaw::SPHERICAL;
 	// store the image path relative to the depth-map, so that the two travel together
 	data.imageFileName = MAKE_PATH_REL(Util::getFullPath(Util::getFilePath(fileName)), Util::getFullPath(imageFileName));
 	data.IDs.assign(IDs.begin(), IDs.end());
@@ -2074,7 +2329,7 @@ bool MVS::ImportDepthDataRaw(const String& fileName, String& imageFileName,
 	KMatrix& K, RMatrix& R, CMatrix& C,
 	Depth& dMin, Depth& dMax,
 	DepthMap& depthMap, NormalMap& normalMap, ConfidenceMap& confMap, ViewsMap& viewsMap, unsigned flags,
-	bool* pbConfAdjusted)
+	bool* pbConfAdjusted, bool* pbSpherical)
 {
 	static_assert(sizeof(double) == sizeof(REAL));
 	static_assert(sizeof(uint32_t) == sizeof(IIndex));
@@ -2097,6 +2352,8 @@ bool MVS::ImportDepthDataRaw(const String& fileName, String& imageFileName,
 	imageSize.height = (int)data.header.imageHeight;
 	if (pbConfAdjusted)
 		*pbConfAdjusted = (data.header.type & HeaderDepthDataRaw::CONF_ADJUSTED) != 0;
+	if (pbSpherical)
+		*pbSpherical = (data.header.type & HeaderDepthDataRaw::SPHERICAL) != 0;
 	return true;
 } // ImportDepthDataRaw
 /*----------------------------------------------------------------*/

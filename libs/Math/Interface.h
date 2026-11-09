@@ -948,6 +948,8 @@ struct HeaderDepthDataRaw {
 		// content bits from the maps it is handed and carries these through from the caller's header
 		CONF_ADJUSTED = (1<<4), // the stored confMap is the recalibrated (fusion-survival)
 			// confidence, already adjusted once -- a second adjust pass must not re-run on it
+		SPHERICAL = (1<<5), // the maps belong to an equirectangular view: the depth is the range along
+			// the pixel ray, K holds the angular fx=fy=width/(2*pi) and the center (Platform::Camera::SPHERICAL)
 	};
 	uint16_t name; // file type
 	uint8_t type; // content type

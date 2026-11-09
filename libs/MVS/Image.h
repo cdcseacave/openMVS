@@ -79,6 +79,8 @@ public:
 	// the pixels of the image file are undistorted when read (BROWN), which leaves the
 	// undistorted pixels without a source invalid (see GetUndistortMaps()->mask)
 	inline bool IsUndistortedOnRead() const { return model == CameraModelType::BROWN; }
+	// the depth of a world point along the ray of the camera model: z, or the range for a spherical image
+	inline REAL PointDepth(const Point3& X) const { return model == CameraModelType::SPHERICAL ? camera.Distance(X) : camera.PointDepth(X); }
 	inline String GetMaskFileName() const { return maskName.empty() ? Util::getFileFullName(name)+".mask.png" : maskName; }
 	inline bool HasResolution() const { return width > 0 && height > 0; }
 	inline cv::Size GetSize() const { return cv::Size(width, height); }

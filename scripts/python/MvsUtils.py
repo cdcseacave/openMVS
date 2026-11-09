@@ -24,6 +24,9 @@ DMAP_CONTENT_MASK = DMAP_HAS_DEPTH | DMAP_HAS_NORMAL | DMAP_HAS_CONF | DMAP_HAS_
 # the stored confidence-map is the recalibrated (fusion-survival) confidence, already
 # adjusted once: a second adjust pass must not re-run on it
 DMAP_CONF_ADJUSTED = 1 << 4
+# the maps belong to an equirectangular view: the depth is the range along the pixel ray and K
+# holds the angular fx=fy=width/(2*pi) and the center
+DMAP_SPHERICAL = 1 << 5
 
 
 def scale_K(K, sx, sy):
@@ -127,6 +130,7 @@ def loadDMAP(dmap_path: str):
     has_conf = bool(content_type & DMAP_HAS_CONF)
     has_views = bool(content_type & DMAP_HAS_VIEWS)
     conf_adjusted = bool(content_type & DMAP_CONF_ADJUSTED)
+    spherical = bool(content_type & DMAP_SPHERICAL)
 
     image_width, image_height = np.frombuffer(dmap.read(8), dtype=np.uint32)
     depth_width, depth_height = np.frombuffer(dmap.read(8), dtype=np.uint32)
@@ -156,6 +160,7 @@ def loadDMAP(dmap_path: str):
       'has_conf': has_conf,
       'has_views': has_views,
       'conf_adjusted': conf_adjusted,
+      'spherical': spherical,
       'image_width': image_width,
       'image_height': image_height,
       'depth_width': depth_width,
@@ -227,6 +232,8 @@ def saveDMAP(data: dict, dmap_path: str):
   # run would recalibrate it a second time (see the cross-process double-adjust guard)
   if data.get('conf_adjusted', False):
     content_type |= DMAP_CONF_ADJUSTED
+  if data.get('spherical', False):
+    content_type |= DMAP_SPHERICAL
 
   depth_map = np.asarray(data['depth_map'], dtype=np.float32)
   # take the exponent from the data rather than from depth_max, which callers may set
