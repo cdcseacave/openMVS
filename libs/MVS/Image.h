@@ -98,6 +98,16 @@ public:
 		GetSpherical().Project(Eigen::Vector3d(Xc.x, Xc.y, Xc.z), x);
 		return {TPoint2<TYPE>(TYPE(x.x()), TYPE(x.y())), TYPE(norm(Xc))};
 	}
+	// pixel and depth of a camera-frame point; the depth is not positive if the point is behind a
+	// pinhole camera or at the center of a spherical one
+	inline std::tuple<Point2,REAL> ProjectPointC(const Point3& Xc) const {
+		if (!bSpherical)
+			return {camera.TransformPointC2I(Xc), Xc.z};
+		const Eigen::Vector3d X(Xc.x, Xc.y, Xc.z);
+		Eigen::Vector2d x;
+		GetSpherical().Project(X, x);
+		return {Point2(x.x(), x.y()), Spherical<REAL>::Depth(X)};
+	}
 	// pixel of a world point in front of the camera
 	inline Point2 TransformPointW2I(const Point3& X) const {
 		if (!bSpherical)

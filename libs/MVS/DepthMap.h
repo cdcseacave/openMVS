@@ -761,6 +761,13 @@ inline void EstimateNormalMap(const Spherical<float>& camera, const DepthMap& de
 		}
 	}
 }
+// the same for the depth-map of a camera of either model
+inline void EstimateNormalMap(const ModelCamera& camera, const DepthMap& depthMap, NormalMap& normalMap) {
+	if (camera.bSpherical)
+		EstimateNormalMap(MakeCameraModel<Spherical<float>>(camera.camera), depthMap, normalMap);
+	else
+		EstimateNormalMap(camera.camera.K, depthMap, normalMap);
+}
 
 // Standalone confidence estimators, deriving a confidence-map from the geometry of one
 // depth-map alone -- no images, no neighboring views, no matching cost. The dense

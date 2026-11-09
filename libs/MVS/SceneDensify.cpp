@@ -510,53 +510,13 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 		ASSERT(depthData.normalMap.empty() || viewRef.image.size() == depthData.normalMap.size());
 		if (depthData.normalMap.empty()) {
 			// estimate normal map
-			if (viewRef.IsSpherical())
-				EstimateNormalMap(MakeCameraModel<Spherical<float>>(viewRef.camera), depthData.depthMap, depthData.normalMap);
-			else
-				EstimateNormalMap(viewRef.camera.K, depthData.depthMap, depthData.normalMap);
+			EstimateNormalMap(viewRef.GetModelCamera(), depthData.depthMap, depthData.normalMap);
 		}
 	} else if (loadDepthMaps == 0) {
-		// initialize depth and normal maps
-		if (viewRef.IsSpherical()) {
-			// the sparse points as squares of known depth (range) around their pixels, the
-			// columns wrapping, the other pixels random (the sparse triangulation is pinhole only)
-			const Image8U::Size size(viewRef.image.size());
-			depthData.depthMap.create(size); depthData.depthMap.memset(0);
-			depthData.normalMap.create(size);
-			if (depthData.points.empty()) {
-				depthData.dMin = 1e-1f;
-				depthData.dMax = 1e+2f;
-			} else {
-				const Spherical<REAL> camera(MakeCameraModel<Spherical<REAL>>(viewRef.camera));
-				const int nPixelArea(2); // half windows size around a pixel to be initialize with the known depth
-				depthData.dMin = FLT_MAX;
-				depthData.dMax = 0;
-				for (const auto idxPoint: depthData.points) {
-					const Point3 camX(viewRef.camera.TransformPointW2C(Cast<REAL>(scene.pointcloud.points[idxPoint])));
-					const Eigen::Vector3d X(camX.x, camX.y, camX.z);
-					Eigen::Vector2d px;
-					if (!camera.Project(X, px))
-						continue;
-					const ImageRef x(ROUND2INT(px.x()), ROUND2INT(px.y()));
-					const float d((float)camera.Depth(X));
-					for (int y=MAXF(x.y-nPixelArea,0); y<=MINF(x.y+nPixelArea,size.height-1); ++y) {
-						for (int c=x.x-nPixelArea; c<=x.x+nPixelArea; ++c) {
-							const int cw(c < 0 ? c+size.width : (c >= size.width ? c-size.width : c));
-							depthData.depthMap(y,cw) = d;
-							depthData.normalMap(y,cw) = Normal::ZERO;
-						}
-					}
-					if (depthData.dMin > d)
-						depthData.dMin = d;
-					if (depthData.dMax < d)
-						depthData.dMax = d;
-				}
-				depthData.dMin *= 0.9f;
-				depthData.dMax *= 1.1f;
-			}
-		} else
-		if (OPTDENSE::nMinViewsTrustPoint < 2 || depthData.points.empty()) {
-			// compute depth range and initialize known depths, else random
+		// initialize depth and normal maps (the sparse triangulation of InitDepthMap is pinhole only)
+		if (viewRef.IsSpherical() || OPTDENSE::nMinViewsTrustPoint < 2 || depthData.points.empty()) {
+			// compute depth range and initialize known depths, else random: the sparse points as squares
+			// of known depth around their pixels (the columns of a spherical image wrapping)
 			const Image8U::Size size(viewRef.image.size());
 			depthData.depthMap.create(size); depthData.depthMap.memset(0);
 			depthData.normalMap.create(size);
@@ -566,20 +526,23 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 				depthData.dMax = 1e+2f;
 			} else {
 				// initialize with the sparse point-cloud
+				const ModelCamera camera(viewRef.GetModelCamera());
 				const int nPixelArea(2); // half windows size around a pixel to be initialize with the known depth
 				depthData.dMin = FLT_MAX;
 				depthData.dMax = 0;
-				FOREACHPTR(pPoint, depthData.points) {
-					const PointCloud::Point& X = scene.pointcloud.points[*pPoint];
-					const Point3 camX(viewRef.camera.TransformPointW2C(Cast<REAL>(X)));
-					const ImageRef x(ROUND2INT(viewRef.camera.TransformPointC2I(camX)));
-					const float d((float)camX.z);
-					const ImageRef sx(MAXF(x.x-nPixelArea,0), MAXF(x.y-nPixelArea,0));
-					const ImageRef ex(MINF(x.x+nPixelArea,size.width-1), MINF(x.y+nPixelArea,size.height-1));
-					for (int y=sx.y; y<=ex.y; ++y) {
-						for (int x=sx.x; x<=ex.x; ++x) {
-							depthData.depthMap(y,x) = d;
-							depthData.normalMap(y,x) = Normal::ZERO;
+				for (const auto idxPoint: depthData.points) {
+					const auto [px, depth] = camera.ProjectPointC(viewRef.camera.TransformPointW2C(Cast<REAL>(scene.pointcloud.points[idxPoint])));
+					if (depth <= 0)
+						continue;
+					const ImageRef x(ROUND2INT(px));
+					const float d((float)depth);
+					for (int y=MAXF(x.y-nPixelArea,0); y<=MINF(x.y+nPixelArea,size.height-1); ++y) {
+						for (int c=x.x-nPixelArea; c<=x.x+nPixelArea; ++c) {
+							ImageRef ir;
+							if (!camera.GetPixel(Point2f((float)c, (float)y), size, ir))
+								continue;
+							depthData.depthMap(ir) = d;
+							depthData.normalMap(ir) = Normal::ZERO;
 						}
 					}
 					if (depthData.dMin > d)
@@ -1974,11 +1937,7 @@ void DepthMapsData::EstimateNormalMaps()
 		ASSERT(!depthData.IsEmpty());
 		ASSERT(!scene.images[idxImage].neighbors.empty());
 		if (depthData.normalMap.empty()) {
-			const DepthData::ViewData& view = depthData.GetView();
-			if (view.IsSpherical())
-				EstimateNormalMap(MakeCameraModel<Spherical<float>>(view.camera), depthData.depthMap, depthData.normalMap);
-			else
-				EstimateNormalMap(view.camera.K, depthData.depthMap, depthData.normalMap);
+			EstimateNormalMap(depthData.GetView().GetModelCamera(), depthData.depthMap, depthData.normalMap);
 			if (!depthData.Save(fileName)) {
 				#ifdef DENSE_USE_OPENMP
 				bAbort = true;
