@@ -133,6 +133,42 @@ protected:
 	Accum bands[NUM_BANDS];
 };
 
+// a point-cloud against the GT range maps of panoramas: precision (the share of the cloud within
+// th*range of a GT point) and recall (the share of the GT points within th*range of a cloud point),
+// the range being the distance to the nearest panorama, per band of the point's direction from that
+// panorama (the bands of DepthEvaluator, the seam band as wide as the angle 16 pixels span at
+// bandWidth); a cloud point whose direction holds no GT in that panorama (masked) is not scored
+class CloudEvaluator {
+public:
+	enum { NUM_TH = 3 };
+	struct Stats {
+		size_t numGT, numCloud; // GT and scored cloud points in the band
+		double precision[NUM_TH], recall[NUM_TH]; // per threshold
+	};
+	CloudEvaluator(int bandWidth, const float thresholds[NUM_TH]);
+	// the GT range map of a panorama (0 = no GT) with its pose: X = C + R^T*Ray(x)*range; every pixel is
+	// a GT point of the precision, every recallStride-th pixel of every recallStride-th row one of the
+	// recall (the GT on the grid of the evaluated images, as dense as the cloud)
+	void AddView(const Matrix3x3& R, const Point3& C, const DepthMap& ranges, int recallStride);
+	// score the cloud against the GT of the views added so far
+	void Evaluate(const PointCloud::PointArr& cloud);
+	const Stats& GetStats(DepthEvaluator::Band band) const { return bands[band]; }
+	// header plus one line per non-empty band
+	String Print() const;
+
+protected:
+	struct View { Matrix3x3 R; Point3 C; DepthMap ranges; };
+	// the nearest view, the range from it and the bands of the direction of X; false if that view
+	// holds no GT in this direction
+	bool Classify(const Point3f& X, float& range, int bands[3], int& numBands) const;
+
+	const double seamDeg; // the longitude band around the seam
+	float thresholds[NUM_TH]; // relative to the range
+	std::vector<View> views;
+	PointCloud::PointArr gtPoints, gtRecallPoints;
+	Stats bands[DepthEvaluator::NUM_BANDS];
+};
+
 // GT consistency across the camera models, then CPU PatchMatch on the cube faces of three
 // panoramas scored against the GT
 bool SyntheticDepthBaselineTest();
@@ -140,6 +176,11 @@ bool SyntheticDepthBaselineTest();
 // CPU PatchMatch on three equirectangular panoramas of the synthetic scene scored against the GT,
 // overall and per band (the seam and the poles against the equator)
 bool SyntheticSphericalTest();
+
+// CPU PatchMatch and dense fusion of three equirectangular panoramas of the synthetic scene: the fused
+// cloud scored against the analytic surface, overall and per band (the seam and the poles against the
+// equator)
+bool SyntheticSphericalFusionTest();
 
 // Brown views of the synthetic scene loaded through an Interface v8 Brown camera: MVS::Image reads
 // them undistorted as the pinhole render at K', the pixels without a source are in the ignore mask,
@@ -154,6 +195,10 @@ bool BrownUndistortOnLoadTest();
 //     their cube faces; maxElevation overrides DepthEstimatorBase::fSphericalWarpMaxElevation (0: exact warp only)
 //   facescene <scene.mvs> <gtFolder> <outFolder> <panoWidth> [faceSize]: the cube-face scene of a spherical scene
 //     and the face GT depth-maps, the baseline of its spherical depth-maps
+//   sphfuse <verbosity> [panoWidth=512] [numPanos=3] [faces=1] [fusionFilter=2] [maxThreads]: CPU PatchMatch and
+//     fusion of the panoramas and of their cube faces, the clouds scored by CloudEvaluator
+//   evalcloud <cloud.ply|scene.mvs> <gtFolder> [th1% th2% th3%]: a cloud against the GT points of the
+//     range/depth-maps depth*.dmap of gtFolder (their cameras from the .dmap headers)
 bool SynthTool(int argc, LPCTSTR* argv);
 
 } // namespace MVS
