@@ -8,7 +8,7 @@ template parameter (`DepthEstimatorT<Pinhole>`, `DepthEstimatorT<Spherical>`, `l
 the CUDA PatchMatch as a kernel template argument (`libs/MVS/PatchMatchCUDA.cu`, "CUDA estimator" below),
 the Metal PatchMatch as a function constant (`libs/MVS/PatchMatchMetal.metal`, "Metal estimator" below),
 and all resolve the camera model of each neighbor view once per (pixel, hypothesis, view). Pinhole,
-Brown (undistorted on load, see `SphericalCameraSupport.md`) and spherical views can be mixed.
+Brown (undistorted on load, see `SphericalCameraSupport.md`; the models: `CameraModels.md`) and spherical views can be mixed.
 
 Scope: depth-maps and their fusion into the dense cloud, with the photometric confidence: the
 depth-maps on the CPU (`--gpu-device -2`), CUDA or Metal, the fusion on the CPU. `Scene::DenseReconstruction`
@@ -147,7 +147,7 @@ from them, with no trigonometry per pixel.
 
 ### Depth-map files
 
-The `.dmap` header carries the flag bit `SPHERICAL` (`HeaderDepthDataRaw`, `Interface.h`,
+The `.dmap` header carries the flag bit `SPHERICAL` (`HeaderDepthDataRaw`, `libs/Math/Interface.h`,
 `MvsUtils.py`): `DepthData::Save` sets it from the reference camera model; `DepthData::Load` and the
 depth-map loads of `InitViews` reject a file whose flag disagrees with the view's model.
 
