@@ -180,6 +180,25 @@ void DepthData::GetNormal(const ImageRef& ir, Point3f& N, const TImage<Point3f>*
 	const ImageRef ptCorner(ir.x-nWindowHalf, ir.y-nWindowHalf);
 	const ImageRef ptCornerRel(ptCorner.x>=0?0:-ptCorner.x, ptCorner.y>=0?0:-ptCorner.y);
 	Point3Arr points(1, nPoints*nPoints);
+	if (GetView().IsSpherical()) {
+		// the window of an equirectangular map wraps its columns
+		ASSERT(pPointMap == NULL);
+		const ModelCamera modelCamera(GetView().GetModelCamera());
+		points[0] = modelCamera.TransformPointI2C(Point2(ir.x,ir.y), depthMap(ir));
+		for (int j=ptCornerRel.y; j<nWindow; j+=nPointsStep) {
+			const int y = ptCorner.y+j;
+			if (y >= size.height)
+				break;
+			for (int i=0; i<nWindow; i+=nPointsStep) {
+				const int x = ModelCamera::WrapColumn(ptCorner.x+i, size.width);
+				if (x==ir.x && y==ir.y)
+					continue;
+				const Depth d = depthMap(y,x);
+				if (d > 0)
+					points.Insert(modelCamera.TransformPointI2C(Point2(x,y), d));
+			}
+		}
+	} else
 	if (pPointMap) {
 		points[0] = (*pPointMap)(ir);
 		for (int j=ptCornerRel.y; j<nWindow; j+=nPointsStep) {
@@ -403,6 +422,7 @@ bool DepthEstimatorBase::ImportIgnoreMask(const Image& image0, const cv::Size& s
 //                        7 8 9
 void DepthEstimatorBase::MapMatrix2ZigzagIdx(const cv::Size& size, MapRefArr& coords, const BitMatrix& mask, int rawStride)
 {
+	ASSERT(rawStride >= nZigzagMinStride);
 	const int w = size.width;
 	const int w1 = size.width-1;
 	coords.clear();
@@ -487,6 +507,7 @@ DepthEstimatorT<MODEL>::DepthEstimatorT(
 	, thPerturbation(1.f/POW(2.f,float(nIter+1)))
 	#endif
 	, sinSqWarpMaxElevation(SQUARE(SIN(D2R(fSphericalWarpMaxElevation))))
+	, cosMinViewAngle(COS(D2R(OPTDENSE::fMinAngle)))
 {
 	ASSERT(_depthData0.images.size() >= 1);
 	// an equirectangular reference spans 360x180 degrees on its grid, so its columns wrap
@@ -506,9 +527,13 @@ DepthEstimatorT<MODEL>::DepthEstimatorT(
 		}
 	}
 	if (bModelWarp) {
+		ASSERT(images.size() < 32); // the view gate of ScorePixel holds one bit per view
 		viewRayFrames0.resize(images.size());
 		viewTexelRays0.resize(images.size());
 		bViewTexelRays0.resize(images.size()+1);
+		viewCenters0.resize(images.size());
+		FOREACH(v, images)
+			viewCenters0[v] = -(images[v].Rrel.transpose()*images[v].trel);
 	}
 }
 
@@ -996,8 +1021,23 @@ float DepthEstimatorT<MODEL>::ScorePixel(Depth depth, const Normal& normal)
 	ASSERT(depth > 0 && normal.dot(Cast<float>(X0)) <= 0);
 	// compute score for this pixel as seen in each view
 	ASSERT(scores.size() == images.size());
+	// the view gate of a model warp: a view seeing the hypothesis point at a triangulation angle below
+	// fMinAngle does not constrain its depth and scores as a view that does not see the patch, unless
+	// every view does: then none is gated, else next to the epipoles, where the true depth gates every
+	// view, the closer hypotheses that some view sees at a larger angle would win for that alone
+	uint32_t gatedViews(0);
+	if (bModelWarp) {
+		const Eigen::Vector3f X(Eigen::Vector3f((float)X0.x, (float)X0.y, (float)X0.z)*depth);
+		FOREACH(idxView, images) {
+			const Eigen::Vector3f D(X - viewCenters0[idxView]);
+			if (X.dot(D) > cosMinViewAngle*SQRT(X.squaredNorm()*D.squaredNorm()))
+				gatedViews |= 1u << idxView;
+		}
+		if (gatedViews == (1u << images.size()) - 1u)
+			gatedViews = 0;
+	}
 	FOREACH(idxView, images)
-		scores[idxView] = ScorePixelImage(images[idxView], depth, normal);
+		scores[idxView] = (gatedViews >> idxView) & 1u ? thRobust : ScorePixelImage(images[idxView], depth, normal);
 	#if DENSE_AGGNCC == DENSE_AGGNCC_NTH
 	// set score as the nth element
 	return scores.GetNth(idxScore);
@@ -1062,6 +1102,28 @@ void DepthEstimatorT<MODEL>::ProcessPixel(IDX idx)
 	const ImageRef x(dir == LT2RB ? coords[idx] : coords[coords.size()-1-idx]);
 	PixelPending& flag = pending[x.y*size.width+x.x];
 	ASSERT(flag.load(std::memory_order_relaxed) == 1);
+	// a preceding 4-neighbor (left and up from left-top to right-bottom, right and down the other way;
+	// the one across the seam of a spherical reference comes later in the order) still in flight fewer
+	// than nZigzagMinStride pixels before x lies on the short anti-diagonals of a stripe corner, where the
+	// concurrent estimators work on consecutive anti-diagonals: x waits for it and reads it as a single
+	// thread does; elsewhere a preceding neighbor is a whole anti-diagonal back and done, or its estimator
+	// is preempted and x reads the previous pass's estimate rather than stall
+	const int step(dir == LT2RB ? -1 : 1);
+	for (const ImageRef nx: {ImageRef(x.x+step, x.y), ImageRef(x.x, x.y+step)}) {
+		if (nx.x < 0 || nx.y < 0 || nx.x >= size.width || nx.y >= size.height)
+			continue;
+		const PixelPending& nflag = pending[nx.y*size.width+nx.x];
+		if (nflag.load(std::memory_order_acquire) == 0)
+			continue;
+		for (IDX k=1; k<=MINF((IDX)nZigzagMinStride, idx); ++k) {
+			const ImageRef p(dir == LT2RB ? coords[idx-k] : coords[coords.size()-1-(idx-k)]);
+			if (p.x == nx.x && p.y == nx.y) {
+				while (nflag.load(std::memory_order_acquire))
+					std::this_thread::yield();
+				break;
+			}
+		}
+	}
 	if (PreparePixelPatch(x) && FillPixelPatch()) {
 		Depth depth(depthMap0(x));
 		Normal normal(normalMap0(x));
@@ -1901,7 +1963,7 @@ void MVS::EstimatePointColors(ImageArr& images, PointCloud& pointcloud)
 			const Image& imageData = images[idxImage];
 			ASSERT(imageData.IsValid());
 			// compute the distance from the 3D point to the image
-			const REAL distance(imageData.camera.PointDepth(point));
+			const REAL distance(imageData.PointDepth(point));
 			ASSERT(distance > 0);
 			if (bestDistance > distance) {
 				bestDistance = distance;
@@ -1966,11 +2028,15 @@ void MVS::EstimatePointColors(ImageArr& images, PointCloud& pointcloud)
 			++numFailedImages;
 			continue;
 		}
+		const ModelCamera camera(imageData.GetModelCamera());
 		for (IIndex i=idxPointsStart; i<idxPointsEnd; ++i) {
 			const PointCloud::Index idxPoint(imagePoints[i]);
-			const auto [proj, depth] = imageData.camera.ProjectPointP(pointcloud.points[idxPoint]);
+			const auto [proj, depth] = camera.ProjectPointP(pointcloud.points[idxPoint]);
+			ImageRef x;
 			if (depth > 0 && imageData.image.isInsideWithBorder<float,1>(proj))
 				pointcloud.colors[idxPoint] = imageData.image.sample(proj);
+			else if (camera.bSpherical && camera.GetPixel(proj, imageData.image.size(), x))
+				pointcloud.colors[idxPoint] = imageData.image(x); // next to the seam or a pole
 		}
 		if (bReleaseImage)
 			imageData.ReleaseImage();
@@ -2011,8 +2077,9 @@ void MVS::EstimatePointSegmentation(const ImageArr& images, PointCloud& pointclo
 			if (imageData.mask.empty())
 				continue;
 			// get image mask label
-			const ImageRef proj(ROUND2INT(std::get<0>(imageData.camera.ProjectPointP(point))));
-			if (!imageData.mask.isInside(proj))
+			const ModelCamera camera(imageData.GetModelCamera());
+			ImageRef proj;
+			if (!camera.GetPixel(std::get<0>(camera.ProjectPointP(point)), imageData.mask.size(), proj))
 				continue;
 			const PointCloud::Label& maskLabel = imageData.mask(proj);
 			++labelVotes[maskLabel];
@@ -2395,7 +2462,7 @@ bool MVS::ExportConfidenceMap(const String& fileName, const ConfidenceMap& confM
 bool MVS::ExportPointCloud(const String& fileName, const Image& imageData, const DepthMap& depthMap, const NormalMap& normalMap)
 {
 	ASSERT(!depthMap.empty());
-	const Camera& P0 = imageData.camera;
+	const ModelCamera P0(imageData.GetModelCamera());
 	// the 3D point of every valid depth, with its color and normal
 	const size_t nPoints((size_t)cv::countNonZero(depthMap));
 	std::vector<Point3f> points, normals;
@@ -2414,9 +2481,9 @@ bool MVS::ExportPointCloud(const String& fileName, const Image& imageData, const
 			ASSERT(depth >= 0);
 			if (depth <= 0)
 				continue;
-			points.emplace_back(P0.TransformPointI2W(Point3(i,j,depth)));
+			points.emplace_back(P0.TransformPointI2W(Point2(i,j), depth));
 			if (!normalMap.empty())
-				normals.emplace_back(P0.R.t() * Cast<REAL>(normalMap(j,i)));
+				normals.emplace_back(P0.camera.R.t() * Cast<REAL>(normalMap(j,i)));
 			colors.emplace_back(imageData.image.empty() ? Pixel8U::WHITE :
 				imageData.image(FLOOR2INT(scaleImage.y*(j+0.5f)), FLOOR2INT(scaleImage.x*(i+0.5f))));
 		}
