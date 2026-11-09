@@ -432,7 +432,8 @@ struct MVS_API DepthEstimatorBase {
 	typedef CLISTDEFIDX(Weight,int) WeightMap;
 	#endif
 
-	// per-pixel flag of a propagation pass: set for the pixels still to be estimated
+	// per-pixel state of a propagation pass: 1 while the pixel is not estimated yet in this pass, 2 while
+	// its estimate is written to the maps, 0 once it is
 	typedef std::atomic<uint8_t> PixelPending;
 
 	// the mask stored in the scene, else the file next to the image, resized into a local buffer (the
@@ -466,11 +467,11 @@ struct MVS_API DepthEstimatorBase {
 // ComputeGeometricConsistency and ComputeNeighborPoint, specialized per reference model in
 // DepthMap.cpp; the target model of a neighbor view is resolved there once per (pixel, hypothesis,
 // view), never per texel.
-// Concurrent estimators pull pixels in the zigzag order of coords; a pixel waits until its neighbors
-// preceding it in that order are estimated, so every estimate reads its 4-neighbors exactly as a
-// single thread would (lower neighbors final, higher ones untouched in this pass). The columns of a
-// spherical reference wrap: the first and the last column are neighbors, and in each pass the one
-// visited second waits for the other.
+// Concurrent estimators pull pixels in the zigzag order of coords; an estimate is written to the maps
+// as a whole at the end of its pixel, so a neighbor's estimate is read whole: the one of this pass if
+// that neighbor is done, else the previous pass's (a single thread reads lower neighbors final and
+// higher ones from the previous pass). The columns of a spherical reference wrap: the first and the
+// last column are neighbors.
 template<template<typename> class MODEL>
 struct DepthEstimatorT : DepthEstimatorBase {
 	typedef MODEL<REAL> Model; // in the precision of the reference rays
@@ -480,7 +481,7 @@ struct DepthEstimatorT : DepthEstimatorBase {
 	SEACAVE::Random rnd;
 
 	volatile Thread::safe_t& idxPixel; // current image index to be processed
-	PixelPending* const pending; // per pixel of the reference image, set until estimated in this propagation pass
+	PixelPending* const pending; // per pixel of the reference image, its state in this propagation pass
 	#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_NA
 	CLISTDEF0IDX(NeighborData,IIndex) neighbors; // neighbor pixels coordinates to be processed
 	#else
@@ -489,6 +490,7 @@ struct DepthEstimatorT : DepthEstimatorBase {
 	#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
 	CLISTDEF0IDX(NeighborEstimate,IIndex) neighborsClose; // close neighbor pixel depths to be used for smoothing
 	#endif
+	CLISTDEF0IDX(float,IIndex) neighborsConf; // the confidence of each of the neighbors
 	Point3 X0;	      //
 	ImageRef x0;	  // constants during one pixel loop
 	float normSq0;	  //
@@ -554,7 +556,8 @@ struct DepthEstimatorT : DepthEstimatorBase {
 	float ScorePixelImage(const DepthData::ViewData& image1, Depth, const Normal&);
 	float ScorePixel(Depth, const Normal&);
 	void ProcessPixel(IDX idx);
-	void EstimatePixel();
+	void ReadEstimate(const ImageRef&, Depth&, Normal&, float& conf) const;
+	void EstimatePixel(Depth&, Normal&, float& conf);
 	Depth InterpolatePixel(const ImageRef&, Depth, const Normal&) const;
 	// model-dependent: the patch warp of the plane (depth, normal) at x0 into a pinhole target view,
 	// the geometric-consistency cost of that depth against the target's depth-map, and the
@@ -676,11 +679,11 @@ struct DepthEstimatorT : DepthEstimatorBase {
 	#endif
 	const float sinSqWarpMaxElevation; // SQUARE(SIN(fSphericalWarpMaxElevation))
 };
-template<> PatchWarp DepthEstimatorT<Pinhole>::ComputePatchWarp(const DepthData::ViewData&, Depth, const Normal&) const;
-template<> float DepthEstimatorT<Pinhole>::ComputeGeometricConsistency(const DepthData::ViewData&, Depth) const;
-template<> Point3f DepthEstimatorT<Pinhole>::ComputeNeighborPoint(const ImageRef&, Depth) const;
-template<> float DepthEstimatorT<Spherical>::ComputeGeometricConsistency(const DepthData::ViewData&, Depth) const;
-template<> Point3f DepthEstimatorT<Spherical>::ComputeNeighborPoint(const ImageRef&, Depth) const;
+template<> FORCEINLINE PatchWarp DepthEstimatorT<Pinhole>::ComputePatchWarp(const DepthData::ViewData&, Depth, const Normal&) const;
+template<> FORCEINLINE float DepthEstimatorT<Pinhole>::ComputeGeometricConsistency(const DepthData::ViewData&, Depth) const;
+template<> FORCEINLINE Point3f DepthEstimatorT<Pinhole>::ComputeNeighborPoint(const ImageRef&, Depth) const;
+template<> FORCEINLINE float DepthEstimatorT<Spherical>::ComputeGeometricConsistency(const DepthData::ViewData&, Depth) const;
+template<> FORCEINLINE Point3f DepthEstimatorT<Spherical>::ComputeNeighborPoint(const ImageRef&, Depth) const;
 // the estimators are instantiated in DepthMap.cpp, and exported for the tests
 #ifdef MVS_EXPORTS
 extern template struct DepthEstimatorT<Pinhole>;

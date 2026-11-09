@@ -964,68 +964,83 @@ float DepthEstimatorT<MODEL>::ScorePixel(Depth depth, const Normal& normal)
 	#endif
 }
 
-// estimate the pixel of the given index in the pass order, once its 4-neighbors preceding it in
-// that order are estimated: (x-1,y) and (x,y-1) from left-top to right-bottom, (x+1,y) and (x,y+1)
-// in the opposite direction (the zigzag order visits a pixel after those two)
+// estimate the pixel of the given index in the pass order; its estimate is written to the maps at the
+// end, as a whole and flagged, so the concurrent estimators of its neighbors read either this estimate
+// or the previous pass's (ReadEstimate), never a mix
 template<template<typename> class MODEL>
 void DepthEstimatorT<MODEL>::ProcessPixel(IDX idx)
 {
 	ASSERT(dir == LT2RB || dir == RB2LT);
-	const ImageRef& x(dir == LT2RB ? coords[idx] : coords[coords.GetSize()-1-idx]);
-	const int step(dir == LT2RB ? -1 : 1);
-	const auto Wait = [this](const ImageRef& nx) {
-		const PixelPending& flag = pending[nx.y*size.width+nx.x];
-		while (flag.load(std::memory_order_acquire))
-			std::this_thread::yield();
-	};
-	for (const ImageRef nx: {ImageRef(x.x+step, x.y), ImageRef(x.x, x.y+step)}) {
-		if (nx.x < 0 || nx.y < 0 || nx.x >= size.width || nx.y >= size.height)
+	const ImageRef x(dir == LT2RB ? coords[idx] : coords[coords.size()-1-idx]);
+	PixelPending& flag = pending[x.y*size.width+x.x];
+	ASSERT(flag.load(std::memory_order_relaxed) == 1);
+	if (PreparePixelPatch(x) && FillPixelPatch()) {
+		Depth depth(depthMap0(x));
+		Normal normal(normalMap0(x));
+		float conf(confMap0(x));
+		EstimatePixel(depth, normal, conf);
+		flag.store(2, std::memory_order_relaxed);
+		std::atomic_thread_fence(std::memory_order_release);
+		depthMap0(x) = depth;
+		normalMap0(x) = normal;
+		confMap0(x) = conf;
+	}
+	flag.store(0, std::memory_order_release);
+}
+// the estimate of reference pixel nx as one whole, read again if its estimator wrote it meanwhile:
+// the one of this pass if nx is estimated already, else the previous pass's
+template<template<typename> class MODEL>
+void DepthEstimatorT<MODEL>::ReadEstimate(const ImageRef& nx, Depth& depth, Normal& normal, float& conf) const
+{
+	const PixelPending& flag = pending[nx.y*size.width+nx.x];
+	for (;;) {
+		const uint8_t state(flag.load(std::memory_order_acquire));
+		if (state == 2)
 			continue;
-		Wait(nx);
+		depth = depthMap0(nx);
+		normal = normalMap0(nx);
+		conf = confMap0(nx);
+		std::atomic_thread_fence(std::memory_order_acquire);
+		if (flag.load(std::memory_order_relaxed) == state)
+			return;
 	}
-	if constexpr (bSphericalRef) {
-		// the seam: the column visited last in this pass is next to the one visited first, so it waits
-		// for it, while the first reads the last one as the previous pass left it (the last one
-		// waits until the first is estimated, through this rule)
-		if (dir == LT2RB ? x.x == size.width-1 : x.x == 0)
-			Wait(ImageRef(dir == LT2RB ? 0 : size.width-1, x.y));
-	}
-	if (PreparePixelPatch(x) && FillPixelPatch())
-		EstimatePixel();
-	pending[x.y*size.width+x.x].store(0, std::memory_order_release);
 }
 
 // run propagation and random refinement cycles on the prepared pixel x0;
 // the solution belonging to the target image can be also propagated
 template<template<typename> class MODEL>
-void DepthEstimatorT<MODEL>::EstimatePixel()
+void DepthEstimatorT<MODEL>::EstimatePixel(Depth& depth, Normal& normal, float& conf)
 {
 	// find neighbors
 	neighbors.Empty();
+	neighborsConf.Empty();
 	#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
 	neighborsClose.Empty();
 	#endif
 	const auto AddDirectionNeighbor = [this] (const ImageRef& nx) {
-		const Depth ndepth(depthMap0(nx));
+		Depth ndepth; Normal nnormal; float nconf;
+		ReadEstimate(nx, ndepth, nnormal, nconf);
 		if (ndepth > 0) {
+			ASSERT(ISEQUAL(norm(nnormal), 1.f, 1e-2f), "Norm = ", norm(nnormal));
+			neighborsConf.emplace_back(nconf);
 			#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
-			ASSERT(ISEQUAL(norm(normalMap0(nx)), 1.f, 1e-2f), "Norm = ", norm(normalMap0(nx)));
 			neighbors.emplace_back(nx);
-			neighborsClose.emplace_back(NeighborEstimate{ndepth, normalMap0(nx)
+			neighborsClose.emplace_back(NeighborEstimate{ndepth, nnormal
 				#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
 				, ComputeNeighborPoint(nx, ndepth)
 				#endif
 			});
 			#else
-			neighbors.emplace_back(NeighborData{nx,ndepth,normalMap0(nx)});
+			neighbors.emplace_back(NeighborData{nx,ndepth,nnormal});
 			#endif
 		}
 	};
 	const auto AddDirection = [this] (const ImageRef& nx) {
-		const Depth ndepth(depthMap0(nx));
+		Depth ndepth; Normal nnormal; float nconf;
+		ReadEstimate(nx, ndepth, nnormal, nconf);
 		if (ndepth > 0) {
-			ASSERT(ISEQUAL(norm(normalMap0(nx)), 1.f, 1e-2f), "Norm = ", norm(normalMap0(nx)));
-			neighborsClose.emplace_back(NeighborEstimate{ndepth, normalMap0(nx)
+			ASSERT(ISEQUAL(norm(nnormal), 1.f, 1e-2f), "Norm = ", norm(nnormal));
+			neighborsClose.emplace_back(NeighborEstimate{ndepth, nnormal
 				#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
 				, ComputeNeighborPoint(nx, ndepth)
 				#endif
@@ -1061,9 +1076,6 @@ void DepthEstimatorT<MODEL>::EstimatePixel()
 			AddDirection(ImageRef(x0.x, x0.y-1));
 		#endif
 	}
-	float& conf = confMap0(x0);
-	Depth& depth = depthMap0(x0);
-	Normal& normal = normalMap0(x0);
 	const Normal viewDir(Cast<float>(X0));
 	ASSERT(depth > 0 && normal.dot(viewDir) <= 0);
 	#if DENSE_REFINE == DENSE_REFINE_ITER
@@ -1072,10 +1084,11 @@ void DepthEstimatorT<MODEL>::EstimatePixel()
 	FOREACH(n, neighbors) {
 		const ImageRef& nx = neighbors[n];
 	#else
-	for (NeighborData& neighbor: neighbors) {
+	FOREACH(n, neighbors) {
+		NeighborData& neighbor = neighbors[n];
 		const ImageRef& nx = neighbor.x;
 	#endif
-		if (confMap0(nx) >= OPTDENSE::fNCCThresholdKeep)
+		if (neighborsConf[n] >= OPTDENSE::fNCCThresholdKeep)
 			continue;
 		#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
 		NeighborEstimate neighbor = neighborsClose[n];
@@ -1157,10 +1170,11 @@ void DepthEstimatorT<MODEL>::EstimatePixel()
 	FOREACH(n, neighbors) {
 		const ImageRef& nx = neighbors[n];
 	#else
-	for (const NeighborData& neighbor: neighbors) {
+	FOREACH(n, neighbors) {
+		const NeighborData& neighbor = neighbors[n];
 		const ImageRef& nx = neighbor.x;
 	#endif
-		float nconf(confMap0(nx));
+		float nconf(neighborsConf[n]);
 		const unsigned nidxScaleRange(DecodeScoreScale(nconf));
 		ASSERT(nconf >= 0 && nconf <= 2);
 		if (nconf >= OPTDENSE::fNCCThresholdKeep)
@@ -1282,7 +1296,7 @@ DepthEstimatorBase::PixelEstimate DepthEstimatorT<MODEL>::PerturbEstimate(const 
 // pinhole reference: the warp into a pinhole target is the plane-induced homography from the
 // cached ViewData constants, applied to absolute reference pixels
 template<>
-PatchWarp DepthEstimatorT<Pinhole>::ComputePatchWarp(const DepthData::ViewData& image1, Depth depth, const Normal& normal) const
+FORCEINLINE PatchWarp DepthEstimatorT<Pinhole>::ComputePatchWarp(const DepthData::ViewData& image1, Depth depth, const Normal& normal) const
 {
 	const Matrix3x3f H(image1.ComputeHomography(X0, depth, normal));
 	PatchWarp warp;
@@ -1294,7 +1308,7 @@ PatchWarp DepthEstimatorT<Pinhole>::ComputePatchWarp(const DepthData::ViewData& 
 // pinhole reference and target depth-map: the distance between the reference pixel and its round
 // trip through the target depth, mapped to [0,4] (4 if the target holds no similar depth there)
 template<>
-float DepthEstimatorT<Pinhole>::ComputeGeometricConsistency(const DepthData::ViewData& image1, Depth depth) const
+FORCEINLINE float DepthEstimatorT<Pinhole>::ComputeGeometricConsistency(const DepthData::ViewData& image1, Depth depth) const
 {
 	ASSERT(!image1.depthMap.empty());
 	if (image1.IsSpherical())
@@ -1315,7 +1329,7 @@ float DepthEstimatorT<Pinhole>::ComputeGeometricConsistency(const DepthData::Vie
 	return consistency;
 }
 template<>
-Point3f DepthEstimatorT<Pinhole>::ComputeNeighborPoint(const ImageRef& nx, Depth depth) const
+FORCEINLINE Point3f DepthEstimatorT<Pinhole>::ComputeNeighborPoint(const ImageRef& nx, Depth depth) const
 {
 	return Cast<float>(image0.camera.TransformPointI2C(Point3(nx, depth)));
 }
