@@ -753,7 +753,7 @@ bool CloudEvaluator::Classify(const Point3f& X, float& range, int pointBands[3],
 	const Spherical<double> sphere(Spherical<double>::FromSize(view.ranges.width(), view.ranges.height()));
 	EVec2 x;
 	sphere.Project(EVec3(Xc.x, Xc.y, Xc.z), x);
-	const ImageRef ir(ModelCamera::WrapColumn(ROUND2INT(x.x()), view.ranges.width()), MINF(MAXF(ROUND2INT(x.y()), 0), view.ranges.height()-1));
+	const ImageRef ir(WrapColumn(ROUND2INT(x.x()), view.ranges.width()), MINF(MAXF(ROUND2INT(x.y()), 0), view.ranges.height()-1));
 	if (!(view.ranges(ir.y, ir.x) > 0))
 		return false;
 	range = (float)SQRT(bestDistSq);

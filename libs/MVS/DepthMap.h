@@ -616,7 +616,7 @@ struct DepthEstimatorT : DepthEstimatorBase {
 	// the reference image column c: wrapped for a spherical reference, whose patches cross the seam
 	inline int Col0(int c) const {
 		if constexpr (bSphericalRef)
-			return c < 0 ? c + size.width : (c >= size.width ? c - size.width : c);
+			return WrapColumn(c, size.width);
 		return c;
 	}
 	// spherical reference: the ray of the pixel (c,r), the column within one width of the image

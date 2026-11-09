@@ -1090,8 +1090,8 @@ bool DepthMapsData::RemoveSmallSegments(DepthData& depthData)
 					neighbor[2] = ImageRef(addr_curr.x  , addr_curr.y-1);
 					neighbor[3] = ImageRef(addr_curr.x  , addr_curr.y+1);
 					if (bSpherical) {
-						neighbor[0].x = ModelCamera::WrapColumn(neighbor[0].x, size.x);
-						neighbor[1].x = ModelCamera::WrapColumn(neighbor[1].x, size.x);
+						neighbor[0].x = WrapColumn(neighbor[0].x, size.x);
+						neighbor[1].x = WrapColumn(neighbor[1].x, size.x);
 					}
 
 					// for all neighbors do
@@ -1306,7 +1306,7 @@ void DepthMapsData::ComputeIntraMapPrior(const DepthData& depthData, ConfidenceM
 				if (rr<0 || rr>=depthMap.rows) continue;
 				for (int x=-1; x<=1; ++x) {
 					if (x==0 && y==0) continue;
-					const int cc(bSpherical ? ModelCamera::WrapColumn(c+x, depthMap.cols) : c+x);
+					const int cc(bSpherical ? WrapColumn(c+x, depthMap.cols) : c+x);
 					if (cc<0 || cc>=depthMap.cols) continue;
 					const Depth dN(depthMap(rr,cc));
 					if (dN <= 0) continue;

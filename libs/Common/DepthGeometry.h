@@ -29,6 +29,12 @@ namespace SEACAVE {
 
 template<typename T> struct Pinhole; // Math/Camera/CameraModels.h
 
+// the column of an equirectangular map of the given width holding column c, for c within one width of it
+HOST_DEVICE inline int WrapColumn(int c, int width) {
+	ASSERT(c >= -width && c < 2*width);
+	return c < 0 ? c + width : (c >= width ? c - width : c);
+}
+
 // relative difference of depth d1 to depth d0
 template<typename T>
 HOST_DEVICE inline T DepthSimilarity(T d0, T d1) {
@@ -86,7 +92,7 @@ HOST_DEVICE inline bool FitDepthGradient(const DEPTHMAP& depthMap, const Eigen::
 		for (int i = -1; i <= 1; ++i) {
 			int c = x.x() + i;
 			if (wrapCols)
-				c = c < 0 ? c + depthMap.cols : (c >= depthMap.cols ? c - depthMap.cols : c);
+				c = WrapColumn(c, depthMap.cols);
 			if ((i == 0 && j == 0) || c < 0 || c >= depthMap.cols)
 				continue;
 			const float d = depthMap(r, c);

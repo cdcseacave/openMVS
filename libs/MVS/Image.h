@@ -113,11 +113,6 @@ public:
 			ir.x = WrapColumn(ir.x, size.width);
 		return Image8U::isInside(ir, size);
 	}
-	// a column at most one width off the image, wrapped onto it (equirectangular images)
-	static inline int WrapColumn(int c, int width) {
-		ASSERT(c >= -width && c < 2*width);
-		return c < 0 ? c + width : (c >= width ? c - width : c);
-	}
 	// the column offset a-b, the shortest one around the panorama for a spherical camera
 	template <typename TYPE>
 	inline TYPE ColumnOffset(TYPE a, TYPE b, int width) const {

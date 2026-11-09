@@ -190,7 +190,7 @@ void DepthData::GetNormal(const ImageRef& ir, Point3f& N, const TImage<Point3f>*
 			if (y >= size.height)
 				break;
 			for (int i=0; i<nWindow; i+=nPointsStep) {
-				const int x = ModelCamera::WrapColumn(ptCorner.x+i, size.width);
+				const int x = WrapColumn(ptCorner.x+i, size.width);
 				if (x==ir.x && y==ir.y)
 					continue;
 				const Depth d = depthMap(y,x);
@@ -634,11 +634,6 @@ bool DepthEstimatorT<MODEL>::FillPixelPatch()
 	return true;
 }
 
-// the column of an equirectangular map holding pixel column c, for c within one width of the map
-inline int WrapColumn(int c, int width) {
-	ASSERT(c >= -width && c < 2*width);
-	return c < 0 ? c + width : (c >= width ? c - width : c);
-}
 // sample a target image at pt by bilinear interpolation: false if pt is not inside with a border of
 // 1 pixel; the columns of an equirectangular image (WRAPX) wrap, only its rows are bounded (pt.x
 // within one turn either side of the image)
