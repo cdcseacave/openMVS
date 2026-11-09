@@ -396,8 +396,8 @@ longitudes 16 pixels from the seam.
 
 | case | points | P / R / F @1% | P / R / F @2% | per band |
 |---|---|---|---|---|
-| synthetic 3 panoramas 1536x768 | 784178 | 0.999 / 0.952 / 0.975 | 1.000 / 0.982 / 0.991 | F@1% equator 0.963, north 1.000, south 0.964, seam 0.973 |
-| their 18 cube faces 384x384 | 592042 | 0.997 / 0.821 / 0.901 | 1.000 / 0.902 / 0.948 | F@1% equator 0.939, north 1.000, south 0.715, seam 0.923 |
+| synthetic 3 panoramas 1536x768 | 784255 | 0.999 / 0.952 / 0.975 | 1.000 / 0.982 / 0.991 | F@1% equator 0.963, north 1.000, south 0.964, seam 0.974 |
+| their 18 cube faces 384x384 | 596123 | 0.997 / 0.825 / 0.903 | 1.000 / 0.903 / 0.949 | F@1% equator 0.940, north 1.000, south 0.711, seam 0.917 |
 | synthetic 3 panoramas 512x256 | 81705 | 0.979 / 0.685 / 0.806 | 0.997 / 0.874 / 0.931 | F@1% equator 0.714, north 0.981, south 0.646, seam 0.802 |
 | their 18 cube faces 128x128 | 43452 | 0.973 / 0.474 / 0.637 | 0.996 / 0.618 / 0.757 | F@1% equator 0.618, north 0.980, south 0.227, seam 0.651 |
 | the panoramas and faces fused together (mixed scene) | 112856 | 0.984 / 0.793 / 0.878 | 0.998 / 0.930 / 0.963 | |
@@ -424,6 +424,62 @@ Holo360D, its first 10 frames at 720 px (thresholds 2 / 5 / 10 %, F; precision @
 
 The seam band of Holo360D has a lower recall than the equator for the panoramas and the cube faces
 alike: it looks behind the camera, at the operator (masked) and the path walked.
+
+### Method comparison: A, B, C
+
+A = exact warp everywhere (`fSphericalWarpMaxElevation` 0), B = tangent warp with A above 70° (default), C = the
+panoramas rendered to 6 cube faces and the unchanged pinhole PatchMatch (`CreateStructure --spherical-export
+cubemap`, `Tests facescene`). Synthetic 1536x768 (C: 18 faces 384x384), `sphtest` / `sphfuse`:
+
+| method | device | completeness | abs-rel median | <1% | <5% | fused F@1% | timing (us per GT pixel, P-core pinned, min of 3) |
+|---|---|---|---|---|---|---|---|
+| A | CPU | 0.911 | 0.00047 | 0.983 | 0.994 | 0.975 | 5.08 |
+| B | CPU | 0.911 | 0.00050 | 0.982 | 0.994 | 0.975 | 4.07 |
+| C | CPU | 0.913 | 0.00079 | 0.913 | 0.952 | 0.903 | 3.85–3.93 |
+| A | CUDA | 0.983 | 0.00039 | 0.987 | 0.995 | | 0.197 |
+| B | CUDA | 0.983 | 0.00041 | 0.986 | 0.995 | | 0.141 |
+| C | CUDA | 0.970 | 0.00056 | 0.945 | 0.966 | | 0.183 |
+
+`scorebench` (ns per ScorePixel): A 231, B 156, B only 153, pinhole faces 127 (1.82 / 1.23 / 1.20x).
+
+Holo360D, 40 frames at 1440 (C: faces 416x416), fused-cloud F at 2 / 5 / 10 % and depth:
+
+| method | device | F@2% | F@5% | F@10% | completeness | abs-rel median | <5% |
+|---|---|---|---|---|---|---|---|
+| A | CPU | 0.346 | 0.535 | 0.679 | 0.954 | 0.182 | 0.352 |
+| B | CPU | 0.338 | 0.522 | 0.667 | 0.954 | 0.201 | 0.346 |
+| C | CPU | 0.308 | 0.562 | 0.734 | 0.774 | 0.130 | 0.375 |
+| A | CUDA | 0.412 | 0.631 | 0.755 | 0.680 | 0.0460 | 0.513 |
+| B | CUDA | 0.404 | 0.617 | 0.744 | 0.681 | 0.0471 | 0.509 |
+| C | CUDA | 0.264 | 0.480 | 0.646 | 0.644 | 0.0945 | 0.406 |
+
+Holo360D, 10 frames at 720 (C: faces 208x208), F@2 / 5 / 10 %: A CPU 0.230 / 0.384 / 0.498, B CPU 0.227 / 0.378 /
+0.492, C CPU 0.164 / 0.341 / 0.484; A CUDA 0.258 / 0.440 / 0.576, B CUDA 0.247 / 0.417 / 0.557, C CUDA 0.153 /
+0.292 / 0.399.
+
+Real captures (7680x3840 keyframes, no GT; A/B at `--max-resolution 1440`, C faces at 416; depth share = share of
+the sphere with a depth, reference views without a depth-map counted as empty; wall = min of 3 after a warm-up,
+exclusive machine, unless marked shared):
+
+| capture | method | device | fused points | depth share | wall |
+|---|---|---|---|---|---|
+| Cocarascu, 120 frames | A | CUDA | 2.38 M | 0.896 | 166 s |
+| | B | CUDA | 2.36 M | 0.898 | 165 s |
+| | C | CUDA | 2.30 M | 0.701 | 34 s + 635 s face export |
+| | B | CPU | 2.99 M | 0.564 | 1345 s (one run) |
+| | C | CPU | 3.07 M | 0.481 | 505 s (one run) |
+| MaidenLane, 91 frames | A | CUDA | 6.03 M | 0.971 | 206 s shared |
+| | B | CUDA | 5.99 M | 0.972 | 105 s shared |
+| | C | CUDA | 8.94 M | 0.955 | 70 s shared + 176 s face export |
+| | A | CPU | 7.67 M | 0.888 | 3211 s shared |
+| | B | CPU | 7.66 M | 0.888 | 957 s shared |
+| | C | CPU | 10.84 M | 0.881 | 545 s shared |
+
+A matches B in accuracy (synthetic abs-rel 0.00047 vs 0.00050, Holo within 0.01 F) and costs 1.3x (CPU) to 3.4x (real
+CPU runs) more; on CUDA the wall is I/O-bound on the real captures. C is less accurate and complete on the synthetic
+room and on Holo360D CUDA, recovers more ground recall only on Holo360D CPU (F@5 / 10 %), loses whole faces
+(Cocarascu: 160 of 720 reference views without neighbors) and needs a face export; its estimation wall is shorter
+because the faces are pre-rendered.
 
 ## 5. Rejected alternatives
 
