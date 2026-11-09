@@ -2895,8 +2895,8 @@ void DenseDepthMapData::SignalCompleteDepthmapFilter()
 static void* DenseReconstructionEstimateTmp(void*);
 static void* DenseReconstructionFilterTmp(void*);
 
-// the scene has equirectangular images: their depth-maps are estimated only by the CPU PatchMatch,
-// with the photometric confidence, and not fused yet
+// the scene has equirectangular images: their depth-maps are estimated only by the CPU or the CUDA
+// PatchMatch, with the photometric confidence, and not fused yet
 static bool HasSphericalImages(const Scene& scene)
 {
 	for (const Image& image: scene.images)
@@ -2916,9 +2916,9 @@ bool Scene::DenseReconstruction(int nFusionMode, bool bCrop2ROI, float fBorderRO
 			VERBOSE("error: the scene has spherical images: their neighbor views are selected from the sparse points, and there are none");
 			return false;
 		}
-		#if defined(_USE_CUDA) || defined(_USE_METAL)
+		#ifdef _USE_METAL
 		if (!SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs)) {
-			VERBOSE("error: the scene has spherical images: their depth-maps are estimated on the CPU only (--gpu-device -2)");
+			VERBOSE("error: the scene has spherical images: their depth-maps are estimated on the CPU or by CUDA, not by Metal (--gpu-device -2)");
 			return false;
 		}
 		#endif

@@ -66,6 +66,8 @@ public:
 		bool bGeomConsistency = false;
 		bool bLowResProcessed = false;
 		float fThresholdKeepCost = 0;
+		uint32_t sphericalViews = 0; // bit i set: view i (0 the reference) is equirectangular
+		float fSinSqWarpMaxElevation = 0; // squared sine of the target elevation above which the exact warp replaces the tangent-plane one
 	};
 
 public:
@@ -86,9 +88,10 @@ public:
 private:
 	void ReleaseCUDA();
 	void AllocatePatchMatchCUDA(const cv::Mat1f& image);
-	void AllocateImageCUDA(size_t i, const cv::Mat1f& image, bool bInitImage, bool bInitDepthMap);
+	// an equirectangular view's textures take normalized coordinates, wrapping the columns
+	void AllocateImageCUDA(size_t i, const cv::Mat1f& image, bool bInitImage, bool bInitDepthMap, bool bSpherical);
 	void RunCUDA(float* ptrCostMap=NULL, uint32_t* ptrViewsMap=NULL);
-	void UploadCameras(); // upload host cameras into __constant__ g_cameras
+	void UploadCameras(); // upload host cameras into __constant__ g_cameras (and g_views if a view is spherical)
 	void UploadParams();  // upload host params into __constant__ g_params
 	// For images large enough that the per-call driver-staging stall dominates
 	// (default threshold ~1.5 MP), copy a pageable cv::Mat1f into a per-instance
