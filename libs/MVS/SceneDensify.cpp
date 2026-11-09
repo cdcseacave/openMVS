@@ -1052,6 +1052,8 @@ bool DepthMapsData::RemoveSmallSegments(DepthData& depthData)
 	ConfidenceMap& confMap = depthData.confMap;
 	ASSERT(!depthMap.empty());
 	const ImageRef size(depthMap.size());
+	// the segments of an equirectangular map continue across the seam
+	const bool bSpherical(depthData.GetView().IsSpherical());
 
 	// allocate memory on heap for dynamic programming arrays
 	TImage<bool> done_map(size, false);
@@ -1087,6 +1089,10 @@ bool DepthMapsData::RemoveSmallSegments(DepthData& depthData)
 					neighbor[1] = ImageRef(addr_curr.x+1, addr_curr.y  );
 					neighbor[2] = ImageRef(addr_curr.x  , addr_curr.y-1);
 					neighbor[3] = ImageRef(addr_curr.x  , addr_curr.y+1);
+					if (bSpherical) {
+						neighbor[0].x = ModelCamera::WrapColumn(neighbor[0].x, size.x);
+						neighbor[1].x = ModelCamera::WrapColumn(neighbor[1].x, size.x);
+					}
 
 					// for all neighbors do
 					for (int i=0; i<4; ++i) {
@@ -1147,132 +1153,107 @@ bool DepthMapsData::GapInterpolation(DepthData& depthData)
 	ASSERT(!depthMap.empty());
 	const ImageRef size(depthMap.size());
 
+	// interpolate the count pixels Pixel(1..count) of a gap between the valid pixels xFirst and xLast,
+	// if their depths are similar
+	const auto InterpolateGap = [&](const ImageRef& xFirst, const ImageRef& xLast, unsigned count, const auto& Pixel) {
+		const Depth& depthFirst = depthMap(xFirst);
+		const Depth& depth = depthMap(xLast);
+		if (!IsDepthSimilar(depthFirst, depth, fDepthDiffThreshold))
+			return;
+		const Depth diff((depth-depthFirst)/(count+1));
+		Depth d(depthFirst);
+		const float c(confMap.empty() ? 0.f : MINF(confMap(xFirst), confMap(xLast)));
+		if (normalMap.empty()) {
+			for (unsigned i=1; i<=count; ++i) {
+				const ImageRef x(Pixel(i));
+				depthMap(x) = (d+=diff);
+				if (!confMap.empty()) confMap(x) = c;
+			}
+		} else {
+			Point2f dir1, dir2;
+			Normal2Dir(normalMap(xFirst), dir1);
+			Normal2Dir(normalMap(xLast), dir2);
+			const Point2f dirDiff((dir2-dir1)/float(count+1));
+			for (unsigned i=1; i<=count; ++i) {
+				const ImageRef x(Pixel(i));
+				depthMap(x) = (d+=diff);
+				dir1 += dirDiff;
+				Dir2Normal(dir1, normalMap(x));
+				if (!confMap.empty()) confMap(x) = c;
+			}
+		}
+	};
+
 	// 1. Row-wise:
-	// for each row do
-	for (int v=0; v<size.y; ++v) {
-		// init counter
-		unsigned count = 0;
-
-		// for each element of the row do
-		for (int u=0; u<size.x; ++u) {
-			// get depth of this location
-			const Depth& depth = depthMap(v,u);
-
-			// if depth not valid => count and skip it
-			if (depth <= 0) {
-				++count;
+	if (depthData.GetView().IsSpherical()) {
+		// the rows of an equirectangular map are circles: each is walked once around from its first
+		// valid pixel, so a gap across the seam is filled like any other
+		for (int v=0; v<size.y; ++v) {
+			int u0(0);
+			while (u0 < size.x && depthMap(v,u0) <= 0)
+				++u0;
+			if (u0 == size.x)
 				continue;
-			}
-			if (count == 0)
-				continue;
-
-			// check if speckle is small enough
-			// and value in range
-			if (count <= nIpolGapSize && (unsigned)u > count) {
-				// first value index for interpolation
-				int u_curr(u-count);
-				const int u_first(u_curr-1);
-				// compute mean depth
-				const Depth& depthFirst = depthMap(v,u_first);
-				if (IsDepthSimilar(depthFirst, depth, fDepthDiffThreshold)) {
-					#if 0
-					// set all values with the average
-					const Depth avg((depthFirst+depth)*0.5f);
-					do {
-						depthMap(v,u_curr) = avg;
-					} while (++u_curr<u);
-					#else
-					// interpolate values
-					const Depth diff((depth-depthFirst)/(count+1));
-					Depth d(depthFirst);
-					const float c(confMap.empty() ? 0.f : MINF(confMap(v,u_first), confMap(v,u)));
-					if (normalMap.empty()) {
-						do {
-							depthMap(v,u_curr) = (d+=diff);
-							if (!confMap.empty()) confMap(v,u_curr) = c;
-						} while (++u_curr<u);
-					} else {
-						Point2f dir1, dir2;
-						Normal2Dir(normalMap(v,u_first), dir1);
-						Normal2Dir(normalMap(v,u), dir2);
-						const Point2f dirDiff((dir2-dir1)/float(count+1));
-						do {
-							depthMap(v,u_curr) = (d+=diff);
-							dir1 += dirDiff;
-							Dir2Normal(dir1, normalMap(v,u_curr));
-							if (!confMap.empty()) confMap(v,u_curr) = c;
-						} while (++u_curr<u);
-					}
-					#endif
+			unsigned count = 0;
+			for (int k=1; k<=size.x; ++k) {
+				const int u((u0+k) % size.x);
+				if (depthMap(v,u) <= 0) {
+					++count;
+					continue;
 				}
+				if (count > 0 && count <= nIpolGapSize) {
+					const int u_first((u+size.x-(int)count-1) % size.x);
+					InterpolateGap(ImageRef(u_first,v), ImageRef(u,v), count, [&](unsigned i) { return ImageRef((u_first+(int)i) % size.x, v); });
+				}
+				count = 0;
 			}
-
-			// reset counter
-			count = 0;
+		}
+	} else {
+		// for each row do
+		for (int v=0; v<size.y; ++v) {
+			// init counter
+			unsigned count = 0;
+			// for each element of the row do
+			for (int u=0; u<size.x; ++u) {
+				// if depth not valid => count and skip it
+				if (depthMap(v,u) <= 0) {
+					++count;
+					continue;
+				}
+				if (count == 0)
+					continue;
+				// check if speckle is small enough
+				// and value in range
+				if (count <= nIpolGapSize && (unsigned)u > count) {
+					const int u_first(u-(int)count-1);
+					InterpolateGap(ImageRef(u_first,v), ImageRef(u,v), count, [&](unsigned i) { return ImageRef(u_first+(int)i, v); });
+				}
+				// reset counter
+				count = 0;
+			}
 		}
 	}
 
 	// 2. Column-wise:
 	// for each column do
 	for (int u=0; u<size.x; ++u) {
-
 		// init counter
 		unsigned count = 0;
-
 		// for each element of the column do
 		for (int v=0; v<size.y; ++v) {
-			// get depth of this location
-			const Depth& depth = depthMap(v,u);
-
 			// if depth not valid => count and skip it
-			if (depth <= 0) {
+			if (depthMap(v,u) <= 0) {
 				++count;
 				continue;
 			}
 			if (count == 0)
 				continue;
-
 			// check if gap is small enough
 			// and value in range
 			if (count <= nIpolGapSize && (unsigned)v > count) {
-				// first value index for interpolation
-				int v_curr(v-count);
-				const int v_first(v_curr-1);
-				// compute mean depth
-				const Depth& depthFirst = depthMap(v_first,u);
-				if (IsDepthSimilar(depthFirst, depth, fDepthDiffThreshold)) {
-					#if 0
-					// set all values with the average
-					const Depth avg((depthFirst+depth)*0.5f);
-					do {
-						depthMap(v_curr,u) = avg;
-					} while (++v_curr<v);
-					#else
-					// interpolate values
-					const Depth diff((depth-depthFirst)/(count+1));
-					Depth d(depthFirst);
-					const float c(confMap.empty() ? 0.f : MINF(confMap(v_first,u), confMap(v,u)));
-					if (normalMap.empty()) {
-						do {
-							depthMap(v_curr,u) = (d+=diff);
-							if (!confMap.empty()) confMap(v_curr,u) = c;
-						} while (++v_curr<v);
-					} else {
-						Point2f dir1, dir2;
-						Normal2Dir(normalMap(v_first,u), dir1);
-						Normal2Dir(normalMap(v,u), dir2);
-						const Point2f dirDiff((dir2-dir1)/float(count+1));
-						do {
-							depthMap(v_curr,u) = (d+=diff);
-							dir1 += dirDiff;
-							Dir2Normal(dir1, normalMap(v_curr,u));
-							if (!confMap.empty()) confMap(v_curr,u) = c;
-						} while (++v_curr<v);
-					}
-					#endif
-				}
+				const int v_first(v-(int)count-1);
+				InterpolateGap(ImageRef(u,v_first), ImageRef(u,v), count, [&](unsigned i) { return ImageRef(u, v_first+(int)i); });
 			}
-
 			// reset counter
 			count = 0;
 		}
@@ -1294,7 +1275,10 @@ void DepthMapsData::ComputeIntraMapPrior(const DepthData& depthData, ConfidenceM
 	const DepthMap& depthMap = depthData.depthMap;
 	const NormalMap& normalMap = depthData.normalMap;
 	const bool bHasNormal(!normalMap.empty());
-	const Pinhole<float> camera(MakeCameraModel<Pinhole<float>>(depthData.GetView().camera));
+	// an equirectangular map wraps its columns
+	const bool bSpherical(depthData.GetView().IsSpherical());
+	const Pinhole<float> camera(bSpherical ? Pinhole<float>{} : MakeCameraModel<Pinhole<float>>(depthData.GetView().camera));
+	const Spherical<float> sphere(bSpherical ? MakeCameraModel<Spherical<float>>(depthData.GetView().camera) : Spherical<float>{});
 	// relative planarity band, in units of the calibrated depth noise (the GPU PriorKernel derives
 	// the same band from Params::thDepth == CONFIRM_DEPTH)
 	const float band(ConfRefine::CONFIRM_DEPTH * 3.f);
@@ -1310,7 +1294,7 @@ void DepthMapsData::ComputeIntraMapPrior(const DepthData& depthData, ConfidenceM
 			const ImageRef pos(c,r);
 			Depth w;
 			Eigen::Vector2f gradient;
-			if (!FitDepthGradient(depthMap, pos, w, gradient))
+			if (!FitDepthGradient(depthMap, pos, w, gradient, bSpherical))
 				continue;                                          // no depth, or not on a locally coherent surface
 			const float wx(gradient.x()), wy(gradient.y());
 			// slope-aware planarity + inlier quorum over the 3x3 window:
@@ -1322,7 +1306,7 @@ void DepthMapsData::ComputeIntraMapPrior(const DepthData& depthData, ConfidenceM
 				if (rr<0 || rr>=depthMap.rows) continue;
 				for (int x=-1; x<=1; ++x) {
 					if (x==0 && y==0) continue;
-					const int cc(c+x);
+					const int cc(bSpherical ? ModelCamera::WrapColumn(c+x, depthMap.cols) : c+x);
 					if (cc<0 || cc>=depthMap.cols) continue;
 					const Depth dN(depthMap(rr,cc));
 					if (dN <= 0) continue;
@@ -1340,7 +1324,7 @@ void DepthMapsData::ComputeIntraMapPrior(const DepthData& depthData, ConfidenceM
 			// is unconstrained and disagrees with the geometry-implied gradient normal => Pnorm collapses.
 			float Pnorm(1.f);
 			if (bHasNormal) {
-				const Normal nGrad(NormalFromDepthGradient(camera, pos, w, gradient));
+				const Normal nGrad(bSpherical ? NormalFromDepthGradient(sphere, pos, w, gradient) : NormalFromDepthGradient(camera, pos, w, gradient));
 				Pnorm = MAXF(0.f, nGrad.dot(normalMap(r,c)));
 			}
 			priorMap(r,c) = CLAMP(Pplane*Pnorm*gate, 0.f, 1.f);
@@ -1718,6 +1702,8 @@ static bool AdjustConfidenceSweep(DepthMapsData& depthMapsData, DepthData& depth
 	const ConfRefine::Params crp(MakeConfRefineParams());
 	const float minConfidence(crp.minConfidence), epsConf(crp.epsConf), violMargin(crp.violMargin);
 	const Depth thDepth(crp.thDepth);
+	// the recalibration is pinhole only: ComputeDepthMaps switches it off for scenes with spherical images
+	ASSERT(!imageRef.IsSpherical());
 	const Matrix3x3f Kref(imageRef.camera.K);
 	const float invFx(1.f/Kref(0,0)), invFy(1.f/Kref(1,1)), cx(Kref(0,2)), cy(Kref(1,2));
 
@@ -1988,7 +1974,11 @@ void DepthMapsData::EstimateNormalMaps()
 		ASSERT(!depthData.IsEmpty());
 		ASSERT(!scene.images[idxImage].neighbors.empty());
 		if (depthData.normalMap.empty()) {
-			EstimateNormalMap(depthData.images.front().camera.K, depthData.depthMap, depthData.normalMap);
+			const DepthData::ViewData& view = depthData.GetView();
+			if (view.IsSpherical())
+				EstimateNormalMap(MakeCameraModel<Spherical<float>>(view.camera), depthData.depthMap, depthData.normalMap);
+			else
+				EstimateNormalMap(view.camera.K, depthData.depthMap, depthData.normalMap);
 			if (!depthData.Save(fileName)) {
 				#ifdef DENSE_USE_OPENMP
 				bAbort = true;
@@ -2050,6 +2040,7 @@ void DepthMapsData::MergeDepthMaps(PointCloud& pointcloud, bool bEstimateColor, 
 			!imageData.ReloadImageAtPreparedResolution())
 			DEBUG("warning: image %u could not be decoded; its points stay uncolored", imageData.ID);
 		const size_t nNumPointsPrev(pointcloud.points.size());
+		const ModelCamera camera(image.GetModelCamera());
 		for (int i=0; i<depthData.depthMap.rows; ++i) {
 			for (int j=0; j<depthData.depthMap.cols; ++j) {
 				// ignore invalid depth
@@ -2059,7 +2050,7 @@ void DepthMapsData::MergeDepthMaps(PointCloud& pointcloud, bool bEstimateColor, 
 					continue;
 				ASSERT(ISINSIDE(depth, depthData.dMin, depthData.dMax));
 				// create the corresponding 3D point
-				pointcloud.points.emplace_back(image.camera.TransformPointI2W(Point3(Cast<float>(x),depth)));
+				pointcloud.points.emplace_back(camera.TransformPointI2W(Point2(Cast<float>(x)), depth));
 				pointcloud.pointViews.emplace_back().push_back(idxImage);
 				if (bEstimateColor)
 					pointcloud.colors.emplace_back(imageData.image.empty() ?
@@ -2373,6 +2364,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 			depthIdxs.memset((uint8_t)NO_ID);
 		}
 		const size_t nNumPointsPrev(pointcloud.points.size());
+		const ModelCamera camera(imageData.GetModelCamera());
 		for (int i=0; i<depthData.size.height; ++i) {
 			for (int j=0; j<depthData.size.width; ++j) {
 				const ImageRef x(j,i);
@@ -2387,7 +2379,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 				// create the corresponding 3D point
 				idxPoint = (uint32_t)pointcloud.points.size();
 				PointCloud::Point& point = pointcloud.points.emplace_back();
-				point = imageData.camera.TransformPointI2W(Point3(Point2f(x),depth));
+				point = camera.TransformPointI2W(Point2(Point2f(x)), depth);
 				PointCloud::ViewArr& views = pointcloud.pointViews.emplace_back();
 				views.emplace_back(idxImage);
 				PointCloud::WeightArr& weights = pointcloud.pointWeights.emplace_back();
@@ -2412,12 +2404,13 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 					if (depthDataB.IsEmpty())
 						continue;
 					const Image& imageDataB = scene.images[idxImageB];
-					const auto [pt, depthProjB] = imageDataB.camera.ProjectPointP(point);
+					const ModelCamera cameraB(imageDataB.GetModelCamera());
+					const auto [pt, depthProjB] = cameraB.ProjectPointP(point);
 					if (depthProjB <= 0)
 						continue;
-					const ImageRef xB(ROUND2INT(pt));
 					DepthMap& depthMapB = depthDataB.depthMap;
-					if (!depthMapB.isInside(xB))
+					ImageRef xB;
+					if (!cameraB.GetPixel(pt, depthMapB.size(), xB))
 						continue;
 					Depth& depthB = depthMapB(xB);
 					if (depthB == 0)
@@ -2438,7 +2431,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 							weights.InsertAt(idx, confB);
 							pointProjs.InsertAt(idx, Proj(xB));
 							idxPointB = idxPoint;
-							X += imageDataB.camera.TransformPointI2W(Point3(Point2f(xB),depthB))*REAL(confidenceB);
+							X += cameraB.TransformPointI2W(Point2(Point2f(xB)), depthB)*REAL(confidenceB);
 							if (bEstimateColor && !imageDataB.image.empty())
 								C += Cast<float>(imageDataB.image(xB))*confidenceB;
 							if (bEstimateNormal)
@@ -2611,12 +2604,13 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 			if (conf < (depthData.bConfAdjusted ? ConfRefine::FUSE_MIN_CONF : minConfidenceRaw))
 				return;
 			const DepthData::ViewData& image = depthData.GetView();
+			const ModelCamera camera(image.GetModelCamera());
 			// if the fusion depth is greater than zero, the initial reference pixel
 			// has already been added and we need to check for consistency
 			PointCloud::Normal normal;
 			if (fuseDepth > 0) {
 				// project reference point into current view
-				const auto [pt, depthProj] = image.camera.ProjectPointP(refPoint);
+				const auto [pt, depthProj] = camera.ProjectPointP(refPoint);
 				// check if depth agrees with current depth
 				ASSERT(depthProj > Depth(0) || !IsDepthSimilar(depth, depthProj, OPTDENSE::fDepthDiffThreshold));
 				if (!IsDepthSimilar(depth, depthProj, OPTDENSE::fDepthDiffThreshold)) {
@@ -2628,7 +2622,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 					return;
 				}
 				// check reprojection error of the reference point in the current view
-				const Point2f diff(pt - Cast<float>(x));
+				const Point2f diff(camera.ColumnOffset(pt.x, float(x.x), depthData.size.width), pt.y - float(x.y));
 				if (normSq(diff) > maxReprojErrorSq)
 					return;
 				// check if normals agree
@@ -2648,7 +2642,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 			if (bRecycleDropped)
 				clusterMembers.push_back(MapPixel{ID, x});
 			// compute 3D location of the current depth
-			const PointCloud::Point X(image.camera.TransformPointI2W(Point3(REAL(x.x), REAL(x.y), REAL(depth))));
+			const PointCloud::Point X(camera.TransformPointI2W(Point2(REAL(x.x), REAL(x.y)), REAL(depth)));
 			// accumulate statistics for fused point
 			{
 				fusedPoints[0].push_back(X(0));
@@ -2687,7 +2681,10 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 				if (!neighbors[nextID])
 					continue;
 				const DepthData& nextDepthData = arrDepthData[nextID];
-				const ImageRef nextx(ROUND2INT(std::get<0>(nextDepthData.GetCamera().ProjectPointP(X))));
+				const ModelCamera nextCamera(nextDepthData.GetView().GetModelCamera());
+				ImageRef nextx;
+				if (!nextCamera.GetPixel(std::get<0>(nextCamera.ProjectPointP(X)), nextDepthData.size, nextx))
+					continue;
 				FusePointImpl(nextID, nextx, fuseDepth, FusePointImpl);
 			}
 		};
@@ -2896,7 +2893,7 @@ static void* DenseReconstructionEstimateTmp(void*);
 static void* DenseReconstructionFilterTmp(void*);
 
 // the scene has equirectangular images: their depth-maps are estimated only by the CPU PatchMatch,
-// with the photometric confidence, and not fused yet
+// with the photometric confidence
 static bool HasSphericalImages(const Scene& scene)
 {
 	for (const Image& image: scene.images)
@@ -2908,12 +2905,8 @@ static bool HasSphericalImages(const Scene& scene)
 bool Scene::DenseReconstruction(int nFusionMode, bool bCrop2ROI, float fBorderROI, float fSampleMeshNeighbors)
 {
 	if (HasSphericalImages(*this)) {
-		if (nFusionMode != 1) {
-			VERBOSE("error: the scene has spherical images: only their depth-maps can be estimated, by PatchMatch (--fusion-mode 1)");
-			return false;
-		}
-		if (IsEmpty() && !ImagesHaveNeighbors()) {
-			VERBOSE("error: the scene has spherical images: their neighbor views are selected from the sparse points, and there are none");
+		if (nFusionMode < 0) {
+			VERBOSE("error: the scene has spherical images: the semi-global matcher supports pinhole cameras only; use PatchMatch (--fusion-mode 0 or 1)");
 			return false;
 		}
 		#if defined(_USE_CUDA) || defined(_USE_METAL)
@@ -4001,8 +3994,10 @@ void Scene::PointCloudFilter(int thRemove)
 	Collectors collectors; collectors.reserve(images.size());
 	FOREACH(idxView, images) {
 		const Image& image = images[idxView];
+		// the cone of each point is the ray from the camera center to it (Collector::Init), its aperture
+		// the angle a pixel spans (on the equator of a panorama)
 		const Ray3f ray(Cast<float>(image.camera.C), Cast<float>(image.camera.Direction()));
-		const float angle(float(image.ComputeFOV(0)/image.width));
+		const float angle(float(image.IsSpherical() ? 1/image.camera.K(0,0) : image.ComputeFOV(0)/image.width));
 		collectors.emplace_back(ray, angle, pointcloud, visibility);
 	}
 

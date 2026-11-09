@@ -255,6 +255,9 @@ struct MVS_API DepthData {
 		inline bool IsSpherical() const {
 			return pImageData->model == CameraModelType::SPHERICAL;
 		}
+		inline ModelCamera GetModelCamera() const {
+			return ModelCamera(camera, pImageData->model);
+		}
 		// homography from reference pixels to this view's pixels induced by the plane through the
 		// reference camera-frame point X0*depth with the given normal (pinhole cameras, cached constants)
 		inline Matrix3x3f ComputeHomography(const Point3& X0, Depth depth, const Normal& normal) const {

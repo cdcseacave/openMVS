@@ -180,6 +180,25 @@ void DepthData::GetNormal(const ImageRef& ir, Point3f& N, const TImage<Point3f>*
 	const ImageRef ptCorner(ir.x-nWindowHalf, ir.y-nWindowHalf);
 	const ImageRef ptCornerRel(ptCorner.x>=0?0:-ptCorner.x, ptCorner.y>=0?0:-ptCorner.y);
 	Point3Arr points(1, nPoints*nPoints);
+	if (GetView().IsSpherical()) {
+		// the window of an equirectangular map wraps its columns
+		ASSERT(pPointMap == NULL);
+		const ModelCamera modelCamera(GetView().GetModelCamera());
+		points[0] = modelCamera.TransformPointI2C(Point2(ir.x,ir.y), depthMap(ir));
+		for (int j=ptCornerRel.y; j<nWindow; j+=nPointsStep) {
+			const int y = ptCorner.y+j;
+			if (y >= size.height)
+				break;
+			for (int i=0; i<nWindow; i+=nPointsStep) {
+				const int x = ModelCamera::WrapColumn(ptCorner.x+i, size.width);
+				if (x==ir.x && y==ir.y)
+					continue;
+				const Depth d = depthMap(y,x);
+				if (d > 0)
+					points.Insert(modelCamera.TransformPointI2C(Point2(x,y), d));
+			}
+		}
+	} else
 	if (pPointMap) {
 		points[0] = (*pPointMap)(ir);
 		for (int j=ptCornerRel.y; j<nWindow; j+=nPointsStep) {
@@ -1792,7 +1811,7 @@ void MVS::EstimatePointColors(ImageArr& images, PointCloud& pointcloud)
 			const Image& imageData = images[idxImage];
 			ASSERT(imageData.IsValid());
 			// compute the distance from the 3D point to the image
-			const REAL distance(imageData.camera.PointDepth(point));
+			const REAL distance(imageData.PointDepth(point));
 			ASSERT(distance > 0);
 			if (bestDistance > distance) {
 				bestDistance = distance;
@@ -1857,11 +1876,15 @@ void MVS::EstimatePointColors(ImageArr& images, PointCloud& pointcloud)
 			++numFailedImages;
 			continue;
 		}
+		const ModelCamera camera(imageData.GetModelCamera());
 		for (IIndex i=idxPointsStart; i<idxPointsEnd; ++i) {
 			const PointCloud::Index idxPoint(imagePoints[i]);
-			const auto [proj, depth] = imageData.camera.ProjectPointP(pointcloud.points[idxPoint]);
+			const auto [proj, depth] = camera.ProjectPointP(pointcloud.points[idxPoint]);
+			ImageRef x;
 			if (depth > 0 && imageData.image.isInsideWithBorder<float,1>(proj))
 				pointcloud.colors[idxPoint] = imageData.image.sample(proj);
+			else if (camera.bSpherical && camera.GetPixel(proj, imageData.image.size(), x))
+				pointcloud.colors[idxPoint] = imageData.image(x); // next to the seam or a pole
 		}
 		if (bReleaseImage)
 			imageData.ReleaseImage();
@@ -1902,8 +1925,9 @@ void MVS::EstimatePointSegmentation(const ImageArr& images, PointCloud& pointclo
 			if (imageData.mask.empty())
 				continue;
 			// get image mask label
-			const ImageRef proj(ROUND2INT(std::get<0>(imageData.camera.ProjectPointP(point))));
-			if (!imageData.mask.isInside(proj))
+			const ModelCamera camera(imageData.GetModelCamera());
+			ImageRef proj;
+			if (!camera.GetPixel(std::get<0>(camera.ProjectPointP(point)), imageData.mask.size(), proj))
 				continue;
 			const PointCloud::Label& maskLabel = imageData.mask(proj);
 			++labelVotes[maskLabel];
@@ -2286,7 +2310,7 @@ bool MVS::ExportConfidenceMap(const String& fileName, const ConfidenceMap& confM
 bool MVS::ExportPointCloud(const String& fileName, const Image& imageData, const DepthMap& depthMap, const NormalMap& normalMap)
 {
 	ASSERT(!depthMap.empty());
-	const Camera& P0 = imageData.camera;
+	const ModelCamera P0(imageData.GetModelCamera());
 	// the 3D point of every valid depth, with its color and normal
 	const size_t nPoints((size_t)cv::countNonZero(depthMap));
 	std::vector<Point3f> points, normals;
@@ -2305,9 +2329,9 @@ bool MVS::ExportPointCloud(const String& fileName, const Image& imageData, const
 			ASSERT(depth >= 0);
 			if (depth <= 0)
 				continue;
-			points.emplace_back(P0.TransformPointI2W(Point3(i,j,depth)));
+			points.emplace_back(P0.TransformPointI2W(Point2(i,j), depth));
 			if (!normalMap.empty())
-				normals.emplace_back(P0.R.t() * Cast<REAL>(normalMap(j,i)));
+				normals.emplace_back(P0.camera.R.t() * Cast<REAL>(normalMap(j,i)));
 			colors.emplace_back(imageData.image.empty() ? Pixel8U::WHITE :
 				imageData.image(FLOOR2INT(scaleImage.y*(j+0.5f)), FLOOR2INT(scaleImage.x*(i+0.5f))));
 		}
