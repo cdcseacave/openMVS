@@ -3494,4 +3494,203 @@ bool DMapCacheKeepsRequestedImageTest()
 }
 /*----------------------------------------------------------------*/
 
+
+namespace {
+typedef Interface::Platform::Camera ICamera;
+
+// an Interface with one platform per given camera model, two posed images per platform, and
+// points seen by every image pair of a platform; the camera K at full resolution
+Interface MakeTestInterface(const std::vector<std::pair<uint8_t,size_t>>& models, bool bObservations)
+{
+	Interface obj;
+	for (size_t p = 0; p < models.size(); ++p) {
+		Interface::Platform& platform = obj.platforms.emplace_back();
+		platform.name = String::FormatString("platform%u", (unsigned)p);
+		ICamera& camera = platform.cameras.emplace_back();
+		camera.name = String::FormatString("camera%u", (unsigned)p);
+		camera.model = models[p].first;
+		camera.R = Interface::Mat33d::eye();
+		camera.C = Interface::Pos3d(0, 0, 0);
+		camera.K = Interface::Mat33d::eye();
+		if (camera.model == ICamera::SPHERICAL) {
+			camera.width = 1024; camera.height = 512;
+			const Spherical<REAL> sphere(Spherical<REAL>::FromSize(1024, 512));
+			camera.K(0,0) = sphere.fx; camera.K(1,1) = sphere.fy; camera.K(0,2) = sphere.cx; camera.K(1,2) = sphere.cy;
+		} else {
+			camera.width = 640; camera.height = 480;
+			camera.K(0,0) = 520.25; camera.K(1,1) = 519.5; camera.K(0,2) = 321.125; camera.K(1,2) = 238.375;
+			const double params[8] = {-0.21, 0.05, 0.0007, -0.0005, 0.01, 0.002, -0.001, 0.0005};
+			camera.params.assign(params, params + models[p].second);
+		}
+		for (int i = 0; i < 2; ++i) {
+			Interface::Platform::Pose& pose = platform.poses.emplace_back();
+			pose.R = Interface::Mat33d::eye();
+			pose.C = Interface::Pos3d(0.3*i, 0.1*p, 0);
+			Interface::Image& image = obj.images.emplace_back();
+			image.name = String::FormatString("image%u_%d.png", (unsigned)p, i);
+			image.platformID = (uint32_t)p;
+			image.cameraID = 0;
+			image.poseID = (uint32_t)i;
+			image.ID = (uint32_t)obj.images.size()-1;
+		}
+	}
+	for (int v = 0; v < 20; ++v) {
+		Interface::Vertex& vertex = obj.vertices.emplace_back();
+		vertex.X = Interface::Pos3f(0.1f*v - 1.f, 0.05f*v - 0.5f, 4.f + 0.01f*v);
+		const uint32_t p((uint32_t)(v % models.size()));
+		for (uint32_t i = 0; i < 2; ++i) {
+			Interface::Vertex::View& view = vertex.views.emplace_back();
+			view.imageID = 2*p + i;
+			view.confidence = 0;
+			view.x = Interface::Pos2f(40.f + 23.5f*v + 3.f*i, 30.f + 17.25f*v - 2.f*i);
+		}
+	}
+	if (bObservations)
+		obj.flags |= Interface::HAS_OBSERVATIONS;
+	return obj;
+}
+
+bool EqualMat(const Interface::Mat33d& a, const Interface::Mat33d& b, double eps)
+{
+	for (int i = 0; i < 9; ++i)
+		if (std::abs(a.val[i] - b.val[i]) > eps * std::max(1.0, std::abs(a.val[i])))
+			return false;
+	return true;
+}
+
+// the content of two Interfaces, apart from the version-dependent members
+bool EqualInterfaces(const Interface& a, const Interface& b, bool bObservations, double epsK, double epsX, const char* what)
+{
+	if (a.platforms.size() != b.platforms.size() || a.images.size() != b.images.size() || a.vertices.size() != b.vertices.size()) {
+		VERBOSE("ERROR: InterfaceV8Test %s: sizes differ", what);
+		return false;
+	}
+	FOREACH(p, a.platforms) {
+		const ICamera& ca = a.platforms[p].cameras[0];
+		const ICamera& cb = b.platforms[p].cameras[0];
+		if (ca.model != cb.model || ca.params != cb.params || ca.width != cb.width || ca.height != cb.height || !EqualMat(ca.K, cb.K, epsK)) {
+			VERBOSE("ERROR: InterfaceV8Test %s: camera %u differs (model %u/%u, %u/%u params)", what, (unsigned)p,
+				(unsigned)ca.model, (unsigned)cb.model, (unsigned)ca.params.size(), (unsigned)cb.params.size());
+			return false;
+		}
+	}
+	FOREACH(i, a.vertices) {
+		const Interface::Vertex& va = a.vertices[i];
+		const Interface::Vertex& vb = b.vertices[i];
+		if (va.views.size() != vb.views.size()) {
+			VERBOSE("ERROR: InterfaceV8Test %s: vertex %u views differ", what, (unsigned)i);
+			return false;
+		}
+		FOREACH(v, va.views) {
+			if (va.views[v].imageID != vb.views[v].imageID ||
+				(bObservations && (std::abs(va.views[v].x.x - vb.views[v].x.x) > epsX || std::abs(va.views[v].x.y - vb.views[v].x.y) > epsX))) {
+				VERBOSE("ERROR: InterfaceV8Test %s: vertex %u view %u differs", what, (unsigned)i, (unsigned)v);
+				return false;
+			}
+		}
+	}
+	if (a.HasObservations() != bObservations || b.HasObservations() != bObservations) {
+		VERBOSE("ERROR: InterfaceV8Test %s: observation flags %d/%d, expected %d", what, a.HasObservations(), b.HasObservations(), bObservations);
+		return false;
+	}
+	return true;
+}
+} // namespace
+
+bool InterfaceV8Test()
+{
+	TD_TIMER_START();
+	const ScopedTempDir tmpDir(_T("InterfaceV8Test"));
+	if (!tmpDir.IsValid())
+		return false;
+	const std::vector<std::pair<uint8_t,size_t>> allModels{{ICamera::PINHOLE, 0}, {ICamera::BROWN, 5}, {ICamera::BROWN, 8}, {ICamera::SPHERICAL, 0}};
+	const std::vector<std::pair<uint8_t,size_t>> pinholeModels{{ICamera::PINHOLE, 0}, {ICamera::PINHOLE, 0}};
+
+	// Interface round trip of every model, with and without observations
+	for (int bObservations = 0; bObservations < 2; ++bObservations) {
+		const Interface obj(MakeTestInterface(allModels, bObservations != 0));
+		const String fileName(tmpDir(String::FormatString("models%d.mvs", bObservations)));
+		Interface loaded;
+		uint32_t version(0);
+		if (!ARCHIVE::SerializeSave(obj, fileName) || !ARCHIVE::SerializeLoad(loaded, fileName, &version) || version != MVSI_PROJECT_VER) {
+			VERBOSE("ERROR: InterfaceV8Test: v8 save/load failed");
+			return false;
+		}
+		if (!EqualInterfaces(obj, loaded, bObservations != 0, 0, 0, "v8 round trip"))
+			return false;
+	}
+
+	// a v7 stream loads, and the v8 size identity
+	{
+		const Interface obj(MakeTestInterface(pinholeModels, false));
+		const String fileName7(tmpDir("pinhole7.mvs")), fileName8(tmpDir("pinhole8.mvs"));
+		Interface loaded7;
+		uint32_t version(0);
+		if (!ARCHIVE::SerializeSave(obj, fileName7, 7) || !ARCHIVE::SerializeLoad(loaded7, fileName7, &version) || version != 7 ||
+			!ARCHIVE::SerializeSave(obj, fileName8)) {
+			VERBOSE("ERROR: InterfaceV8Test: v7 save/load failed");
+			return false;
+		}
+		if (!EqualInterfaces(obj, loaded7, false, 0, 0, "v7 load"))
+			return false;
+		const uintmax_t size7(std::filesystem::file_size(fileName7.c_str())), size8(std::filesystem::file_size(fileName8.c_str()));
+		if (size8 != size7 + pinholeModels.size() + 1) {
+			VERBOSE("ERROR: InterfaceV8Test: v8 size %u, expected v7 size %u + %u cameras + 1", (unsigned)size8, (unsigned)size7, (unsigned)pinholeModels.size());
+			return false;
+		}
+	}
+
+	// MVS::Scene load/save round trip: the models, the lens of the image files kept exactly, the
+	// observations in the undistorted frame and back; the K' rule identical between SfM and MVS
+	for (int bObservations = 0; bObservations < 2; ++bObservations) {
+		const Interface obj(MakeTestInterface(allModels, bObservations != 0));
+		const String fileName(tmpDir(String::FormatString("scene%d.mvs", bObservations)));
+		const String fileNameOut(tmpDir(String::FormatString("scene%d_out.mvs", bObservations)));
+		if (!ARCHIVE::SerializeSave(obj, fileName))
+			return false;
+		Scene scene;
+		if (scene.Load(fileName) != Scene::SCENE_INTERFACE || !scene.SaveInterface(fileNameOut)) {
+			VERBOSE("ERROR: InterfaceV8Test: scene load/save failed");
+			return false;
+		}
+		Interface saved;
+		if (!ARCHIVE::SerializeLoad(saved, fileNameOut))
+			return false;
+		// the pinhole and spherical K go through the normalization, the observations through
+		// the undistortion and back
+		if (!EqualInterfaces(obj, saved, bObservations != 0, 1e-12, 1e-3f, "scene round trip"))
+			return false;
+		FOREACH(p, obj.platforms) {
+			const ICamera& camera = obj.platforms[p].cameras[0];
+			const Platform::Camera& mvsCamera = scene.platforms[(uint32_t)p].cameras[0];
+			if ((uint8_t)mvsCamera.model != camera.model) {
+				VERBOSE("ERROR: InterfaceV8Test: MVS camera %u model %u, expected %u", (unsigned)p, (unsigned)mvsCamera.model, (unsigned)camera.model);
+				return false;
+			}
+			if (camera.model != ICamera::BROWN)
+				continue;
+			// the camera every MVS consumer sees is K' of the one rule, the same the SfM undistortion uses
+			const cv::Size size((int)camera.width, (int)camera.height);
+			const KMatrix K(camera.K);
+			const BrownDistortion<REAL>& distortion = mvsCamera.lens.distortion;
+			const KMatrix Ku(UndistortedK(K, distortion, size));
+			UndistortMaps sfmMaps;
+			sfmMaps.Init(K, distortion, size, UNDISTORT_ALPHA);
+			if (!EqualMat(Ku, UndistortedK(K, distortion, size), 0) || !EqualMat(Ku, sfmMaps.K, 0) ||
+				!EqualMat(Ku, GetCameraUndistortMaps(K, distortion, size)->K, 0)) {
+				VERBOSE("ERROR: InterfaceV8Test: the undistorted camera K' differs between its users");
+				return false;
+			}
+			const Image& imageData = scene.images[(uint32_t)(2*p)];
+			if (!EqualMat(Ku, imageData.camera.K, 1e-12) || !imageData.IsUndistortedOnRead()) {
+				VERBOSE("ERROR: InterfaceV8Test: image camera of Brown camera %u is not K'", (unsigned)p);
+				return false;
+			}
+		}
+	}
+	VERBOSE("InterfaceV8Test passed (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
 } // namespace MVS

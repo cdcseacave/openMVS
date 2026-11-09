@@ -32,7 +32,9 @@
 #include "../../libs/MVS.h"
 #include "../../libs/Math/Camera/CameraUndistort.h"
 #include "Tests.h"
+#include "TestsMVS.h"
 #include "TestsSynthetic.h"
+#include <chrono>
 #include <fstream>
 
 using namespace MVS;
@@ -761,6 +763,155 @@ bool MVS::SyntheticDepthBaselineTest()
 /*----------------------------------------------------------------*/
 
 
+bool MVS::BrownUndistortOnLoadTest()
+{
+	TD_TIMER_START();
+	SynthConfig config;
+	config.panoWidth = 1024;
+	config.spherical = false;
+	config.faces = false;
+	config.numRenderPanos = 3;
+	config.numBrown = 2;
+	SynthViewArr views;
+	SynthGenerate(config, views);
+	ASSERT(views.size() == 2 && views[0].camera.model == CameraModelType::BROWN);
+	const ScopedTempDir tmpDir(_T("BrownUndistortOnLoadTest"));
+	if (!tmpDir.IsValid())
+		return false;
+
+	// the Brown views as an Interface v8 scene: one camera (the views share the lens), its
+	// original image files, and GT points observed in the distorted images
+	const SynthCamera& lens = views[0].camera;
+	Interface obj;
+	Interface::Platform& platform = obj.platforms.emplace_back();
+	Interface::Platform::Camera& camera = platform.cameras.emplace_back();
+	camera.model = Interface::Platform::Camera::BROWN;
+	camera.width = (uint32_t)lens.width;
+	camera.height = (uint32_t)lens.height;
+	camera.K = lens.GetK();
+	camera.R = Interface::Mat33d::eye();
+	camera.C = Interface::Pos3d(0, 0, 0);
+	camera.params = {lens.distortion.k1, lens.distortion.k2, lens.distortion.p1, lens.distortion.p2, lens.distortion.k3};
+	// two images per view (the views look at different objects, so a point seen by two images
+	// is seen by the two images of one view): images 2*v and 2*v+1 are view v
+	FOREACH(v, views) {
+		const SynthView& view = views[v];
+		ASSERT(view.camera.model == CameraModelType::BROWN && view.camera.Params() == lens.Params());
+		if (!view.image.Save(tmpDir(view.name + ".png")))
+			return false;
+		Interface::Platform::Pose& pose = platform.poses.emplace_back();
+		pose.R = view.camera.R;
+		pose.C = view.camera.C;
+		for (int k = 0; k < 2; ++k) {
+			Interface::Image& image = obj.images.emplace_back();
+			image.name = tmpDir(view.name + ".png");
+			image.platformID = 0;
+			image.cameraID = 0;
+			image.poseID = (uint32_t)v;
+			image.ID = (uint32_t)obj.images.size()-1;
+		}
+	}
+	// GT points at a grid of pixel centers of each view, observed at their distorted projection
+	std::vector<std::pair<Point3,IIndex>> points; // point, view
+	FOREACH(v, views) {
+		const SynthCamera& cam = views[v].camera;
+		for (int r = 8; r < lens.height; r += 16) {
+			for (int c = 8; c < lens.width; c += 16) {
+				const EVec3 X(EMat3(cam.R).transpose() * (views[v].depthMap(r, c) * cam.Ray(EVec2(c, r))) + EVec3(cam.C));
+				EVec2 x;
+				if (!cam.Project(EMat3(cam.R) * (X - EVec3(cam.C)), x))
+					continue;
+				Interface::Vertex& vertex = obj.vertices.emplace_back();
+				vertex.X = Interface::Pos3f((float)X.x(), (float)X.y(), (float)X.z());
+				for (int k = 0; k < 2; ++k) {
+					Interface::Vertex::View& view = vertex.views.emplace_back();
+					view.imageID = (uint32_t)(2*v + k);
+					view.confidence = 0;
+					view.x = Interface::Pos2f((float)x.x(), (float)x.y());
+				}
+				points.emplace_back(Point3(X.x(), X.y(), X.z()), v);
+			}
+		}
+	}
+	obj.flags |= Interface::HAS_OBSERVATIONS;
+	const String fileName(tmpDir("scene.mvs"));
+	if (!ARCHIVE::SerializeSave(obj, fileName))
+		return false;
+
+	// load the scene: each image read through MVS::Image is the pinhole render at K'
+	Scene scene;
+	if (scene.Load(fileName) != Scene::SCENE_INTERFACE || scene.pointcloud.pointObservations.size() != points.size()) {
+		VERBOSE("ERROR: BrownUndistortOnLoadTest: scene load failed");
+		return false;
+	}
+	FOREACH(v, views) {
+		const IIndex i(2*v);
+		Image& imageData = scene.images[i];
+		if (!imageData.ReloadImage(0))
+			return false;
+		ASSERT(imageData.IsUndistortedOnRead() && imageData.image.size() == cv::Size(lens.width, lens.height));
+		SynthView pinhole;
+		pinhole.camera.model = CameraModelType::PINHOLE;
+		pinhole.camera.width = lens.width;
+		pinhole.camera.height = lens.height;
+		const KMatrix& K = imageData.camera.K;
+		pinhole.camera.pinhole = Pinhole<double>{K(0,0), K(1,1), K(0,2), K(1,2)};
+		pinhole.camera.R = views[v].camera.R;
+		pinhole.camera.C = views[v].camera.C;
+		SynthRender(pinhole, config.supersample);
+		// the valid pixels match the render, the others are masked through the ignore mask
+		const Image8U& valid = imageData.GetUndistortMaps()->mask;
+		BitMatrix unusedMask;
+		Image8U ignoreMask;
+		if (!DepthEstimator::ImportIgnoreMask(imageData, imageData.image.size(), -1, unusedMask, &ignoreMask) ||
+			cv::countNonZero(ignoreMask != valid) != 0) {
+			VERBOSE("ERROR: BrownUndistortOnLoadTest: the ignore mask is not the undistortion mask");
+			return false;
+		}
+		double sumDiff(0);
+		size_t numValid(0);
+		for (int r = 0; r < lens.height; ++r) {
+			for (int c = 0; c < lens.width; ++c) {
+				if (!valid(r, c))
+					continue;
+				const Pixel8U& a = imageData.image(r, c);
+				const Pixel8U& b = pinhole.image(r, c);
+				sumDiff += (std::abs((int)a.r - (int)b.r) + std::abs((int)a.g - (int)b.g) + std::abs((int)a.b - (int)b.b)) / 3.0;
+				++numValid;
+			}
+		}
+		const double meanDiff(sumDiff / numValid);
+		const double invalidRatio(1.0 - (double)numValid / valid.area());
+		// observations: the GT points of this view through the pinhole camera K', in both its images
+		double maxObsErr(0);
+		size_t numPoints(0);
+		FOREACH(j, points) {
+			if (points[j].second != v)
+				continue;
+			EVec2 x;
+			const EVec3 X(points[j].first.x, points[j].first.y, points[j].first.z);
+			pinhole.camera.Project(EMat3(pinhole.camera.R) * (X - EVec3(pinhole.camera.C)), x);
+			const PointCloud::ViewArr& pointViews = scene.pointcloud.pointViews[(uint32_t)j];
+			const PointCloud::ObservationArr& observations = scene.pointcloud.pointObservations[(uint32_t)j];
+			ASSERT(pointViews.size() == 2 && pointViews[0] == i && pointViews[1] == i+1);
+			for (const Point2f& o: observations)
+				maxObsErr = MAXF(maxObsErr, (EVec2(o.x, o.y) - x).norm());
+			++numPoints;
+		}
+		VERBOSE("BrownUndistortOnLoadTest: view %u: mean abs difference %.3f over %zu valid px, %.2f%% invalid, max observation error %.2e px (%u points)",
+			v, meanDiff, numValid, invalidRatio*100, maxObsErr, (unsigned)numPoints);
+		// measured: mean abs difference 0.96 (supersampled render vs bilinear remap), 4.6% invalid
+		if (!(meanDiff < 1.5) || !(invalidRatio > 0.01 && invalidRatio < 0.1) || !(maxObsErr < 1e-3) || numPoints < 100) {
+			VERBOSE("ERROR: BrownUndistortOnLoadTest: the undistorted view %u does not match the pinhole render at K'", v);
+			return false;
+		}
+	}
+	VERBOSE("BrownUndistortOnLoadTest passed (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+
 bool MVS::SynthTool(int argc, LPCTSTR* argv)
 {
 	ASSERT(argc > 0);
@@ -799,6 +950,54 @@ bool MVS::SynthTool(int argc, LPCTSTR* argv)
 	}
 	if (mode == "synthtest")
 		return SyntheticDepthBaselineTest();
+	if (mode == "cameratest")
+		return InterfaceV8Test() && BrownUndistortOnLoadTest();
+	if (mode == "undistortbench" && argc >= 2) {
+		// image load cost of the undistortion over the first numImages images undistorted on read:
+		// the file decode and the remap ReadPixels adds to it, timed apart; the first image also
+		// builds the maps shared by its camera; the image paths of the scene are relative to its folder
+		String fileName(argv[1]);
+		Util::ensureValidPath(fileName);
+		fileName = MAKE_PATH_FULL(WORKING_FOLDER_FULL, fileName);
+		WORKING_FOLDER = Util::getFilePath(fileName);
+		INIT_WORKING_FOLDER;
+		Scene scene;
+		if (scene.Load(fileName) == Scene::SCENE_NA)
+			return false;
+		const unsigned numImages(argc >= 3 ? (unsigned)std::atoi(argv[2]) : 8u);
+		typedef std::chrono::steady_clock Clock;
+		const auto ms = [](Clock::time_point a, Clock::time_point b) { return std::chrono::duration<double,std::milli>(b - a).count(); };
+		double decodeMs(0), remapMs(0), mapsMs(0);
+		unsigned n(0);
+		for (const Image& imageData: scene.images) {
+			if (n == numImages)
+				break;
+			if (!imageData.IsUndistortedOnRead())
+				continue;
+			Image8U3 pixels, undistorted;
+			const Clock::time_point t0(Clock::now());
+			if (Image::ReadImage(imageData.name, pixels) == NULL)
+				return false;
+			const Clock::time_point t1(Clock::now());
+			const std::shared_ptr<const CameraUndistortMaps> maps(imageData.GetUndistortMaps());
+			const Clock::time_point t2(Clock::now());
+			maps->Remap(pixels, undistorted, cv::INTER_LINEAR);
+			const Clock::time_point t3(Clock::now());
+			VERBOSE("image %u %dx%d: decode %.1f ms, maps %.1f ms, remap %.1f ms", imageData.ID, pixels.width(), pixels.height(),
+				ms(t0, t1), ms(t1, t2), ms(t2, t3));
+			decodeMs += ms(t0, t1);
+			mapsMs += ms(t1, t2);
+			remapMs += ms(t2, t3);
+			++n;
+		}
+		if (n == 0) {
+			VERBOSE("error: no image undistorted on read");
+			return false;
+		}
+		VERBOSE("%u images undistorted on read: decode %.1f ms/image, remap %.1f ms/image, maps %.1f ms in total",
+			n, decodeMs/n, remapMs/n, mapsMs);
+		return true;
+	}
 	if (mode == "evaldepth" && argc >= 3) {
 		DepthMap maps[2]; NormalMap normals[2]; KMatrix Ks[2];
 		for (int i = 0; i < 2; ++i) {

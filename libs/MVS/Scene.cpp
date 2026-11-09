@@ -50,6 +50,79 @@ using namespace MVS;
 
 DEFINE_LOG_NAME(lt, _T("Scene   "));
 
+static_assert((uint8_t)CameraModelType::PINHOLE == Interface::Platform::Camera::PINHOLE, "camera model ids differ");
+static_assert((uint8_t)CameraModelType::BROWN == Interface::Platform::Camera::BROWN, "camera model ids differ");
+static_assert((uint8_t)CameraModelType::SPHERICAL == Interface::Platform::Camera::SPHERICAL, "camera model ids differ");
+
+namespace {
+
+// the Interface BROWN params: k1,k2,p1,p2,k3[,k4,k5,k6]
+BrownDistortion<REAL> ParamsToBrownDistortion(const std::vector<double>& params)
+{
+	ASSERT(params.size() == 5 || params.size() == 8);
+	BrownDistortion<REAL> distortion{params[0], params[1], params[2], params[3], params[4], REAL(0), REAL(0), REAL(0)};
+	if (params.size() == 8) {
+		distortion.k4 = params[5];
+		distortion.k5 = params[6];
+		distortion.k6 = params[7];
+	}
+	return distortion;
+}
+// the 8-value form only if the rational terms are used
+std::vector<double> BrownDistortionToParams(const BrownDistortion<REAL>& distortion)
+{
+	std::vector<double> params{distortion.k1, distortion.k2, distortion.p1, distortion.p2, distortion.k3};
+	if (distortion.k4 != 0 || distortion.k5 != 0 || distortion.k6 != 0) {
+		params.push_back(distortion.k4);
+		params.push_back(distortion.k5);
+		params.push_back(distortion.k6);
+	}
+	return params;
+}
+
+// maps the observations of an image between its file and the image as the camera sees it, both at
+// the image file resolution: the identity unless the image is undistorted on read
+class ObservationMap {
+public:
+	explicit ObservationMap(const Image& imageData) : bUndistort(imageData.IsUndistortedOnRead()) {
+		if (!bUndistort)
+			return;
+		const CameraLens& lens = imageData.lens;
+		const KMatrix undistortedK(UndistortedK(lens.K, lens.distortion, lens.size));
+		ASSERT(ISZERO(lens.K(0,1)) && ISZERO(undistortedK(0,1)));
+		file = Pinhole<REAL>{lens.K(0,0), lens.K(1,1), lens.K(0,2), lens.K(1,2)};
+		undistorted = Pinhole<REAL>{undistortedK(0,0), undistortedK(1,1), undistortedK(0,2), undistortedK(1,2)};
+		distortion = lens.distortion;
+	}
+	Point2f FileToCamera(const Interface::Pos2f& x) const {
+		if (!bUndistort)
+			return Point2f(x.x, x.y);
+		const Eigen::Vector2d u(undistorted.NormalizedToPixel(distortion.Undistort(file.PixelToNormalized(Eigen::Vector2d(x.x, x.y)))));
+		return Point2f((float)u.x(), (float)u.y());
+	}
+	Interface::Pos2f CameraToFile(const Point2f& x) const {
+		if (!bUndistort)
+			return Interface::Pos2f(x.x, x.y);
+		const Eigen::Vector2d d(file.NormalizedToPixel(distortion.Distort(undistorted.PixelToNormalized(Eigen::Vector2d(x.x, x.y)))));
+		return Interface::Pos2f((float)d.x(), (float)d.y());
+	}
+private:
+	bool bUndistort;
+	Pinhole<REAL> file, undistorted; // cameras of the image file and of the undistorted image
+	BrownDistortion<REAL> distortion;
+};
+typedef std::vector<ObservationMap> ObservationMapArr;
+ObservationMapArr MakeObservationMaps(const ImageArr& images)
+{
+	ObservationMapArr maps;
+	maps.reserve(images.size());
+	for (const Image& imageData: images)
+		maps.emplace_back(imageData);
+	return maps;
+}
+
+} // namespace
+
 void Scene::Release()
 {
 	platforms.Release();
@@ -102,6 +175,28 @@ bool Scene::LoadInterface(const String& fileName)
 			camera.K = itCamera.K;
 			camera.R = itCamera.R;
 			camera.C = itCamera.C;
+			switch (itCamera.model) {
+			case Interface::Platform::Camera::PINHOLE:
+				break;
+			case Interface::Platform::Camera::BROWN:
+				// the camera exposes the undistorted images: K' from the lens of the image files
+				if (!itCamera.HasResolution() || (itCamera.params.size() != 5 && itCamera.params.size() != 8)) {
+					VERBOSE("error: Brown camera %u of platform %u needs its resolution and 5 or 8 distortion coefficients", platform.cameras.size()-1, platforms.size()-1);
+					return false;
+				}
+				camera.model = CameraModelType::BROWN;
+				camera.lens.K = itCamera.K;
+				camera.lens.size = cv::Size((int)itCamera.width, (int)itCamera.height);
+				camera.lens.distortion = ParamsToBrownDistortion(itCamera.params);
+				camera.K = UndistortedK(camera.lens.K, camera.lens.distortion, camera.lens.size);
+				break;
+			case Interface::Platform::Camera::SPHERICAL:
+				camera.model = CameraModelType::SPHERICAL;
+				break;
+			default:
+				VERBOSE("error: unknown model %u of camera %u of platform %u", (unsigned)itCamera.model, platform.cameras.size()-1, platforms.size()-1);
+				return false;
+			}
 			if (!itCamera.IsNormalized()) {
 				// normalize K
 				ASSERT(itCamera.HasResolution());
@@ -175,6 +270,11 @@ bool Scene::LoadInterface(const String& fileName)
 		pointcloud.points.resize(obj.vertices.size());
 		pointcloud.pointViews.resize(obj.vertices.size());
 		pointcloud.pointWeights.resize(obj.vertices.size());
+		ObservationMapArr observationMaps;
+		if (obj.HasObservations()) {
+			pointcloud.pointObservations.resize(obj.vertices.size());
+			observationMaps = MakeObservationMaps(images);
+		}
 		FOREACH(i, pointcloud.points) {
 			const Interface::Vertex& vertex = obj.vertices[i];
 			PointCloud::Point& point = pointcloud.points[i];
@@ -196,6 +296,15 @@ bool Scene::LoadInterface(const String& fileName)
 				if (view.confidence != 0)
 					bValidWeights = true;
 			});
+			if (obj.HasObservations()) {
+				// observations in the frame of the camera, as the images are read
+				PointCloud::ObservationArr& observations = pointcloud.pointObservations[i];
+				observations.resize(views.size());
+				views.ForEach([&](PointCloud::ViewArr::IDX v) {
+					ASSERT(images[views[v]].IsValid());
+					observations[v] = observationMaps[views[v]].FileToCamera(vertex.views[indices[v]].x);
+				});
+			}
 		}
 		if (!bValidWeights)
 			pointcloud.pointWeights.Release();
@@ -239,6 +348,14 @@ bool Scene::SaveInterface(const String& fileName, int version) const
 			cam.K = camera.K;
 			cam.R = camera.R;
 			cam.C = camera.C;
+			cam.model = static_cast<uint8_t>(camera.model);
+			if (camera.model == CameraModelType::BROWN) {
+				// the lens of the image files, at their resolution
+				cam.K = camera.lens.K;
+				cam.width = (uint32_t)camera.lens.size.width;
+				cam.height = (uint32_t)camera.lens.size.height;
+				cam.params = BrownDistortionToParams(camera.lens.distortion);
+			}
 			plat.cameras.emplace_back(cam);
 		}
 		plat.poses.reserve(platform.poses.size());
@@ -286,6 +403,21 @@ bool Scene::SaveInterface(const String& fileName, int version) const
 			view.imageID = views[v];
 			view.confidence = (pointcloud.pointWeights.IsEmpty() ? 0.f : pointcloud.pointWeights[i][v]);
 		});
+	}
+	if (!pointcloud.pointObservations.empty()) {
+		ASSERT(pointcloud.pointObservations.size() == pointcloud.points.size());
+		const ObservationMapArr observationMaps(MakeObservationMaps(images));
+		FOREACH(i, pointcloud.points) {
+			const PointCloud::ViewArr& views = pointcloud.pointViews[i];
+			const PointCloud::ObservationArr& observations = pointcloud.pointObservations[i];
+			ASSERT(observations.size() == views.size());
+			MVS::Interface::Vertex& vertex = obj.vertices[i];
+			views.ForEach([&](PointCloud::ViewArr::IDX v) {
+				ASSERT(images[views[v]].IsValid());
+				vertex.views[v].x = observationMaps[views[v]].CameraToFile(observations[v]);
+			});
+		}
+		obj.flags |= Interface::HAS_OBSERVATIONS;
 	}
 	if (!pointcloud.normals.IsEmpty()) {
 		obj.verticesNormal.resize(pointcloud.normals.size());

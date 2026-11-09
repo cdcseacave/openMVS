@@ -122,15 +122,19 @@ void PointObservations::BuildObservations(const Window& window)
 	sortedByWeight = sortByWeight;
 	hasWeights = !pointcloud.pointWeights.empty();
 	if (imageCacheLayerID != layerID) {
-		// decode the image files at full resolution (the layer images may be loaded rescaled)
-		std::vector<String> names;
-		names.reserve(layer.scene.images.size());
-		for (const MVS::Image& imageData: layer.scene.images)
-			names.emplace_back(imageData.name);
-		imageCache = std::make_shared<MVS::ImageCache>([names = std::move(names)](MVS::IIndex idxImage, cv::Mat& image) {
-			ASSERT(idxImage < names.size());
+		// decode the image files at full resolution (the layer images may be loaded rescaled),
+		// as their cameras see them: the copies carry only what ReadPixels needs
+		std::vector<MVS::Image> files(layer.scene.images.size());
+		FOREACH(i, layer.scene.images) {
+			const MVS::Image& imageData = layer.scene.images[i];
+			files[i].name = imageData.name;
+			files[i].model = imageData.model;
+			files[i].lens = imageData.lens;
+		}
+		imageCache = std::make_shared<MVS::ImageCache>([files = std::move(files)](MVS::IIndex idxImage, cv::Mat& image) {
+			ASSERT(idxImage < files.size());
 			Image8U3 imageColor;
-			if (MVS::Image::ReadImage(names[idxImage], imageColor) == NULL)
+			if (files[idxImage].ReadPixels(imageColor) == NULL)
 				return false;
 			image = imageColor;
 			return true;

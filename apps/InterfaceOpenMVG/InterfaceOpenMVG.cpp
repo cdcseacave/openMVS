@@ -499,6 +499,11 @@ int main(int argc, LPCTSTR* argv)
 				return EXIT_FAILURE;
 			}
 			const MVS::Platform::Camera& camera = platform.cameras[0];
+			if (camera.model != CameraModelType::PINHOLE) {
+				// the exported images are the image files, which only a pinhole camera describes
+				LOG("error: only pinhole cameras can be exported");
+				return EXIT_FAILURE;
+			}
 			openMVS::MVS_IO::Camera cameraBAF;
 			cameraBAF.K = camera.K;
 			sceneBAF.cameras.push_back(cameraBAF);

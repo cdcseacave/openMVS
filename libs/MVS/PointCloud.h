@@ -65,6 +65,10 @@ public:
 	typedef SEACAVE::cList<Weight,const Weight,0,4,uint32_t> WeightArr;
 	typedef CLISTDEFIDX(WeightArr,Index) PointWeightArr;
 
+	typedef Point2f Observation;
+	typedef SEACAVE::cList<Observation,const Observation&,0,4,uint32_t> ObservationArr;
+	typedef CLISTDEFIDX(ObservationArr,Index) PointObservationArr;
+
 	typedef TPoint3<float> Normal;
 	typedef CLISTDEF0IDX(Normal,Index) NormalArr;
 
@@ -83,6 +87,8 @@ public:
 	PointArr points; // array of 3D points in world-space
 	PointViewArr pointViews; // array of views for each point (ordered increasing)
 	PointWeightArr pointWeights; // array of weights for each point, one per view
+	PointObservationArr pointObservations; // array of feature observations for each point, one per view (optional):
+		// the pixel in the image as its camera sees it, at the image file resolution (undistorted for a BROWN camera)
 	NormalArr normals; // array of normals for each point
 	ColorArr colors; // array of colors for each point
 	LabelArr labels; // array of segmentation labels for each point

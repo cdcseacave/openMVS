@@ -134,11 +134,28 @@ Deterministic depth ground truth without data files, used for the spherical Patc
   then CPU PatchMatch on the 18 128x128 faces of 3 panoramas, asserted against calibrated
   thresholds (measured numbers in the code). ~25 s in Debug.
 
-Tool modes (argv[1] is not a number):
+- `BrownUndistortOnLoadTest()` (MVS suite): the two Brown views as an Interface v8 `BROWN` camera
+  of their PNG files; each image read through `MVS::Image` against the pinhole render at `K'` of
+  the same pose (mean abs difference over the valid pixels), the invalid area equal to the
+  `ImportIgnoreMask` output, and the observations of GT points against their `K'` projections.
+
+## Camera models (`TestsMVS.cpp`)
+
+`InterfaceV8Test()` (MVS suite, before the pipeline): Interface v8 round trip of every camera
+model (pinhole, Brown 5 and 8 coefficients, spherical) with and without observations; a v7 stream
+written and loaded back; the size identity (v8 = v7 + 1 byte per camera + 1 flags byte without
+observations); `MVS::Scene` load/save of the models (Brown lens kept exactly, observations within
+1e-3 px); `K'` identical between `UndistortedK`, the SfM `UndistortMaps::Init`, the map cache and the
+loaded image camera.
+
+Tool modes (argv[1] is not a number; they always write `Tests-*.log` in the current directory, and
+only a Debug `_HEADLESS_DEBUG` build also prints to stdout):
 ```
 Tests synth <outDir> [panoWidth=512]          # write the dataset
 Tests evaldepth <gt.dmap> <est.dmap> [model]  # band table (GT resampled to the estimate size)
 Tests synthtest [verbosity]                   # run SyntheticDepthBaselineTest alone
+Tests cameratest [verbosity]                  # run InterfaceV8Test and BrownUndistortOnLoadTest alone
+Tests undistortbench <scene.mvs> [numImages=8] # decode vs remap time per image undistorted on read
 ```
 
 ## Logging Convention

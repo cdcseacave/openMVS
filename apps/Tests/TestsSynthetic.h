@@ -137,6 +137,11 @@ protected:
 // panoramas scored against the GT
 bool SyntheticDepthBaselineTest();
 
+// Brown views of the synthetic scene loaded through an Interface v8 Brown camera: MVS::Image reads
+// them undistorted as the pinhole render at K', the pixels without a source are in the ignore mask,
+// and the observations of GT points land on their K' projections
+bool BrownUndistortOnLoadTest();
+
 // Tests.exe tool modes; argv[0] is the mode:
 //   synth <outDir> [panoWidth=512]: write the default dataset
 //   evaldepth <gt.dmap> <est.dmap> [pinhole|brown|spherical]: print the evaluation table

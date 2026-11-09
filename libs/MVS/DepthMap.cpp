@@ -345,27 +345,43 @@ size_t MVS::DepthData::GetMemorySize() const
 
 // try to load and apply mask to the depth map;
 // the mask for each image is stored in the MVS scene or next to each image with '.mask.png' extension;
-// the mask marks as false (or 0) pixels that should be ignored
+// the mask marks as false (or 0) pixels that should be ignored: the pixels with the ignore label
+// (nIgnoreMaskLabel >= 0, else no segmentation mask is used) and, for an image undistorted on read,
+// the pixels without a source in the image file
 // - pMask: optional output mask; if defined, the mask is returned in this image instead of the BitMatrix
-bool DepthEstimator::ImportIgnoreMask(const Image& image0, const cv::Size& size, uint8_t nIgnoreMaskLabel, BitMatrix& bmask, Image8U* pMask)
+// returns false if there is nothing to mask
+bool DepthEstimator::ImportIgnoreMask(const Image& image0, const cv::Size& size, int nIgnoreMaskLabel, BitMatrix& bmask, Image8U* pMask)
 {
 	ASSERT(image0.IsValid());
+	if (nIgnoreMaskLabel < 0 && !image0.IsUndistortedOnRead())
+		return false;
 	// the mask stored in the scene if there is one, else the file next to the image; resized into a
 	// local buffer, so a mask stored in the scene stays at its own resolution for the next call
 	Image8U mask;
-	if (image0.mask.empty() && !mask.Load(image0.GetMaskFileName())) {
-		DEBUG("warning: can not load the segmentation mask '%s'", image0.GetMaskFileName().c_str());
-		return false;
+	if (nIgnoreMaskLabel >= 0) {
+		if (image0.mask.empty() && !image0.LoadMask(mask)) {
+			DEBUG("warning: can not load the segmentation mask '%s'", image0.GetMaskFileName().c_str());
+			return false;
+		}
+		cv::resize(image0.mask.empty() ? mask : image0.mask, mask, size, 0, 0, cv::INTER_NEAREST);
+		mask = (mask != (uint8_t)nIgnoreMaskLabel);
 	}
-	cv::resize(image0.mask.empty() ? mask : image0.mask, mask, size, 0, 0, cv::INTER_NEAREST);
+	if (image0.IsUndistortedOnRead()) {
+		Image8U valid;
+		cv::resize(image0.GetUndistortMaps()->mask, valid, size, 0, 0, cv::INTER_NEAREST);
+		if (mask.empty())
+			mask = valid;
+		else
+			cv::bitwise_and(mask, valid, mask);
+	}
 	if (pMask) {
-		*pMask = (mask != nIgnoreMaskLabel);
+		*pMask = mask;
 	} else {
 		bmask.create(size);
 		bmask.memset(0xFF);
 		for (int r=0; r<size.height; ++r) {
 			for (int c=0; c<size.width; ++c) {
-				if (mask(r,c) == nIgnoreMaskLabel)
+				if (mask(r,c) == 0)
 					bmask.unset(r,c);
 			}
 		}

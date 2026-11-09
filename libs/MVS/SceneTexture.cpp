@@ -512,7 +512,7 @@ static Image8U ComputeValidityMask(const Image& imageData, int nIgnoreMaskLabel)
 	Image8U mask;
 	if (nIgnoreMaskLabel >= 0) {
 		BitMatrix bmask;
-		DepthEstimator::ImportIgnoreMask(imageData, imageData.image.size(), (uint8_t)nIgnoreMaskLabel, bmask, &mask);
+		DepthEstimator::ImportIgnoreMask(imageData, imageData.image.size(), nIgnoreMaskLabel, bmask, &mask);
 	} else if (nIgnoreMaskLabel == -1) {
 		mask = DetectInvalidImageRegions(imageData.image);
 	}

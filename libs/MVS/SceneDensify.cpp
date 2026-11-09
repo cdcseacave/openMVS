@@ -159,7 +159,7 @@ static bool DecodeImageGray(const Image& imageData, cv::Mat& image) {
 		return true;
 	}
 	Image8U3 imageColor;
-	const auto pImage(Image::ReadImage(imageData.name, imageColor));
+	const auto pImage(imageData.ReadPixels(imageColor));
 	if (pImage == NULL) {
 		LOG("error: failed decoding image '%s'", imageData.name.c_str());
 		return false;
@@ -847,9 +847,10 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 		#else
 		cv::integral(image.image, imageSum0, CV_64F);
 		#endif
-		if (prevDepthMapSize != size || OPTDENSE::nIgnoreMaskLabel >= 0) {
+		if (prevDepthMapSize != size || OPTDENSE::nIgnoreMaskLabel >= 0 || image.pImageData->IsUndistortedOnRead()) {
 			BitMatrix mask;
-			if (OPTDENSE::nIgnoreMaskLabel >= 0 && DepthEstimator::ImportIgnoreMask(*image.pImageData, depthData.depthMap.size(), (uint8_t)OPTDENSE::nIgnoreMaskLabel, mask))
+			const bool bMasked(DepthEstimator::ImportIgnoreMask(*image.pImageData, depthData.depthMap.size(), OPTDENSE::nIgnoreMaskLabel, mask));
+			if (bMasked)
 				depthData.ApplyIgnoreMask(mask);
 			DepthEstimator::MapMatrix2ZigzagIdx(size, coords, mask, MAXF(64,(int)nMaxThreads*8));
 			#if 0 && !defined(_RELEASE)
@@ -860,7 +861,8 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 				cmask(x.y, x.x) = 255;
 			cmask.Show("cmask");
 			#endif
-			prevDepthMapSize = size;
+			// the pixel order of a masked image is not reused by the next image
+			prevDepthMapSize = bMasked ? cv::Size() : size;
 		}
 
 		// initialize the reference confidence map (NCC score map) with the score of the current estimates
