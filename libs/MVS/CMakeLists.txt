@@ -40,6 +40,8 @@ LIST(REMOVE_ITEM LIBRARY_FILES_C "${PATH_PythonWrapper_cpp}")
 # them as a string (compiled at runtime via newLibraryWithSource) by generating
 # PatchMatchMetal_msl.h into the build dir at configure time.
 if(_USE_METAL)
+	# an edit of the kernels re-runs the configure step that embeds them
+	set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/PatchMatchMetal.metal")
 	file(READ "${CMAKE_CURRENT_SOURCE_DIR}/PatchMatchMetal.metal" _PATCHMATCH_MSL_SRC)
 	file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/PatchMatchMetal_msl.h"
 "// AUTO-GENERATED at configure time from PatchMatchMetal.metal -- do not edit.
@@ -67,6 +69,22 @@ if(_USE_METAL)
 		SKIP_PRECOMPILE_HEADERS ON
 		COMPILE_OPTIONS "-fobjc-arc")
 	TARGET_INCLUDE_DIRECTORIES(MVS PRIVATE "${CMAKE_CURRENT_BINARY_DIR}") # generated PatchMatchMetal_msl.h
+	# the kernels are compiled from source at runtime, which a machine without a Metal device never
+	# does: compile them with the offline Metal compiler too when the toolchain has a working one
+	set(_METAL_PROBE "${CMAKE_CURRENT_BINARY_DIR}/MetalProbe.metal")
+	file(WRITE "${_METAL_PROBE}" "kernel void Probe(device float* x [[buffer(0)]]) { x[0] = 0; }\n")
+	execute_process(COMMAND xcrun -sdk macosx metal -c "${_METAL_PROBE}" -o "${CMAKE_CURRENT_BINARY_DIR}/MetalProbe.air"
+		RESULT_VARIABLE _METAL_PROBE_RESULT OUTPUT_QUIET ERROR_QUIET)
+	if(_METAL_PROBE_RESULT EQUAL 0)
+		add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/PatchMatchMetal.air"
+			COMMAND xcrun -sdk macosx metal -c "${CMAKE_CURRENT_SOURCE_DIR}/PatchMatchMetal.metal" -o "${CMAKE_CURRENT_BINARY_DIR}/PatchMatchMetal.air"
+			DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/PatchMatchMetal.metal"
+			COMMENT "Compiling PatchMatchMetal.metal with the offline Metal compiler")
+		add_custom_target(PatchMatchMetalCheck DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/PatchMatchMetal.air")
+		add_dependencies(MVS PatchMatchMetalCheck)
+	else()
+		MESSAGE(STATUS "No offline Metal compiler: PatchMatchMetal.metal is compiled at runtime only")
+	endif()
 endif()
 
 # Manually set Common.h as the precompiled header
