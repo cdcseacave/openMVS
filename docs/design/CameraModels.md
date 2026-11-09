@@ -167,6 +167,7 @@ own state and call the models. The depth-map algorithms built on the models are 
 | ETH3D F1@2cm, native Brown vs undistorted-on-export (pipes / office ICP-refined) | 0.7068 vs 0.7043 / 0.3106 vs 0.3104 |
 | v7 to v8 file size | + one byte per camera + 1 |
 | SfM reconstruct-only vs the code before the move (same matches; BA time P-core pinned, min of 3) | SceauxCastle 11 images: BA 7.50 vs 7.54 s; Herz-Jesu-P25 25 images: BA 20.23 vs 20.25 s; same registrations, points and final cost (Herz-Jesu single-thread logs identical apart from timings) |
+| SfM reconstruct-only on 10 scenes vs the code before the move (ETH3D pipes, office, kicker, courtyard, facade; EPFL castle-P30; CasaBatllo; House; TerasaVama; Zei; one pinned run each) | registered images identical on all 10; points within 0.02 % (CasaBatllo within its run-to-run spread, 61.5-62.1k); reprojection errors equal; summed BA 1129 vs 1134 s |
 | Spherical SfM from the video, ExtractKeyframes + CreateStructure (MaidenLane, 91 keyframes) | 91/91 registered both; 977k vs 981k points; reprojection 1.03 vs 1.01 px |
 
 ## 6. Rejected alternatives
