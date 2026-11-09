@@ -62,12 +62,11 @@ inline void ProjectPinhole(
 {
 	typedef Eigen::Matrix<T,2,1> Vec2;
 	typedef Eigen::Matrix<T,3,1> Vec3;
-	const Pinhole<T> camera{intrinsics[0], intrinsics[0] * intrinsics[1], intrinsics[2], intrinsics[3]};
-	// the distortion coefficients are passed by reference, not copied into a BrownDistortion (Jets are large)
-	const Vec2 x(camera.NormalizedToPixel(DistortBrown(Pinhole<T>::Perspective(Eigen::Map<const Vec3>(p_cam)),
-		intrinsics[4], intrinsics[5], intrinsics[7], intrinsics[8], intrinsics[6], intrinsics[9], intrinsics[10], intrinsics[11])));
-	projected[0] = x.x();
-	projected[1] = x.y();
+	// the intrinsics are used in place, not copied into a Pinhole and a BrownDistortion (Jets are large)
+	const Vec2 x(DistortBrown(Pinhole<T>::Perspective(Eigen::Map<const Vec3>(p_cam)),
+		intrinsics[4], intrinsics[5], intrinsics[7], intrinsics[8], intrinsics[6], intrinsics[9], intrinsics[10], intrinsics[11]));
+	projected[0] = intrinsics[0] * x.x() + intrinsics[2];
+	projected[1] = intrinsics[0] * intrinsics[1] * x.y() + intrinsics[3];
 }
 
 // Reprojection error cost functor for pinhole cameras

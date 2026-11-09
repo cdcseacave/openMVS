@@ -17,6 +17,8 @@
 
 // D E F I N E S ///////////////////////////////////////////////////
 
+namespace ceres { template <typename T, int N> struct Jet; }
+
 
 namespace SEACAVE {
 
@@ -40,6 +42,12 @@ namespace SEACAVE {
 #else
 #define CAMERAMODELS_FORCEINLINE FORCEINLINE
 #endif
+
+// the plain scalar of T: T itself, or the value type of a Ceres Jet; the constants of the models that
+// Ceres differentiates are written in it, so that a Jet is offset or scaled by a scalar instead of
+// combined with a constant Jet (a full Jet operation per constant in the bundle adjustment)
+template<typename T> struct ScalarOf { typedef T type; };
+template<typename T, int N> struct ScalarOf<ceres::Jet<T,N>> { typedef T type; };
 
 // atan2 in single precision by a minimax polynomial of atan on [0,1] (max error 1.3e-7 rad, the
 // precision of the float atan2), several times cheaper than the library atan2 on the CPU and the GPU;
@@ -86,8 +94,8 @@ struct Pinhole {
 		return Vec2(fx * n.x() + cx, fy * n.y() + cy);
 	}
 	// camera-space point -> normalized image-plane coordinates
-	HOST_DEVICE static Vec2 Perspective(const Vec3& X) {
-		const T invZ(T(1) / X.z());
+	HOST_DEVICE static CAMERAMODELS_FORCEINLINE Vec2 Perspective(const Vec3& X) {
+		const T invZ(typename ScalarOf<T>::type(1) / X.z());
 		return Vec2(X.x() * invZ, X.y() * invZ);
 	}
 
@@ -131,7 +139,7 @@ struct Pinhole {
 // and meaning: radial (1+k1*r2+k2*r4+k3*r6)/(1+k4*r2+k5*r4+k6*r6), tangential p1, p2;
 // the rational part k4..k6 is zero for the plain polynomial model
 template<typename T>
-HOST_DEVICE inline Eigen::Matrix<T,2,1> DistortBrown(const Eigen::Matrix<T,2,1>& p,
+HOST_DEVICE CAMERAMODELS_FORCEINLINE Eigen::Matrix<T,2,1> DistortBrown(const Eigen::Matrix<T,2,1>& p,
 	const T& k1, const T& k2, const T& p1, const T& p2, const T& k3, const T& k4, const T& k5, const T& k6)
 {
 	const T x2(p.x() * p.x());
@@ -140,10 +148,11 @@ HOST_DEVICE inline Eigen::Matrix<T,2,1> DistortBrown(const Eigen::Matrix<T,2,1>&
 	const T r2(x2 + y2);
 	const T r4(r2 * r2);
 	const T r6(r4 * r2);
-	const T radial((T(1) + k1*r2 + k2*r4 + k3*r6) / (T(1) + k4*r2 + k5*r4 + k6*r6));
+	typedef typename ScalarOf<T>::type S;
+	const T radial((S(1) + k1*r2 + k2*r4 + k3*r6) / (S(1) + k4*r2 + k5*r4 + k6*r6));
 	return Eigen::Matrix<T,2,1>(
-		p.x() * radial + (T(2)*p1*xy + p2*(r2 + T(2)*x2)),
-		p.y() * radial + (p1*(r2 + T(2)*y2) + T(2)*p2*xy));
+		p.x() * radial + (S(2)*p1*xy + p2*(r2 + S(2)*x2)),
+		p.y() * radial + (p1*(r2 + S(2)*y2) + S(2)*p2*xy));
 }
 
 template<typename T>
