@@ -111,6 +111,8 @@ bool SynthSave(const SynthViewArr& views, const String& folder);
 // depth-map accuracy against GT lambda, accumulated over any number of maps, per image band
 class DepthEvaluator {
 public:
+	// spherical: |elevation| below 30 (EQUATOR), above 70 and below -70 deg, the 16 columns either side
+	// of the seam (SEAM) and of longitude 0 (CENTER); pinhole: the 16-pixel BORDER and the CENTER inside
 	enum Band { ALL, EQUATOR, NORTH, SOUTH, SEAM, CENTER, BORDER, NUM_BANDS };
 	struct Stats {
 		size_t numGT, numEst; // GT-valid pixels, those with an estimate
