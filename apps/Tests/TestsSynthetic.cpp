@@ -1560,6 +1560,13 @@ namespace {
 
 // the optional argument i of a tool mode, def if absent
 int ArgInt(int argc, LPCTSTR* argv, int i, int def) { return i < argc ? std::atoi(argv[i]) : def; }
+// a path argument as a full path with the separators the Util path helpers split on
+String ArgPath(LPCTSTR arg)
+{
+	String path(arg);
+	Util::ensureValidPath(path);
+	return Util::getFullPath(path);
+}
 
 // sets DepthEstimatorBase::fSphericalWarpMaxElevation from the optional argument i while it lives
 struct ScopedMaxElevation {
@@ -1588,7 +1595,7 @@ bool ToolSynth(int argc, LPCTSTR* argv)
 		std::printf("error: panoWidth must be a positive multiple of 8\n");
 		return false;
 	}
-	String folder(Util::getFullPath(argv[1]));
+	String folder(ArgPath(argv[1]));
 	Util::ensureValidFolderPath(folder);
 	TD_TIMER_START();
 	SynthViewArr views;
@@ -1738,7 +1745,7 @@ bool ToolEvalCloud(int argc, LPCTSTR* argv)
 	for (int t = 0; t < CloudEvaluator::NUM_TH && 4+t < argc; ++t)
 		thresholds[t] = (float)std::atof(argv[4+t])/100;
 	PointCloud pointcloud;
-	if (!LoadCloud(Util::getFullPath(argv[1]), pointcloud))
+	if (!LoadCloud(ArgPath(argv[1]), pointcloud))
 		return false;
 	const String gtFolder(argv[2]);
 	const StringArr names(ListDMaps(gtFolder));
@@ -1768,8 +1775,8 @@ bool ToolEvalCloud(int argc, LPCTSTR* argv)
 // (outFolder/gt), and the sparse points are kept with the faces they project into
 bool ToolFaceScene(int argc, LPCTSTR* argv)
 {
-	const String sceneFileName(Util::getFullPath(argv[1])), gtFolder(Util::getFullPath(argv[2]));
-	String outFolder(Util::getFullPath(argv[3]));
+	const String sceneFileName(ArgPath(argv[1])), gtFolder(ArgPath(argv[2]));
+	String outFolder(ArgPath(argv[3]));
 	Util::ensureValidFolderPath(outFolder);
 	Util::ensureFolder(outFolder + "gt/");
 	const int panoWidth(std::atoi(argv[4]));
@@ -1877,9 +1884,7 @@ bool ToolFaceScene(int argc, LPCTSTR* argv)
 // a camera also builds its maps
 bool ToolUndistortBench(int argc, LPCTSTR* argv)
 {
-	String fileName(argv[1]);
-	Util::ensureValidPath(fileName);
-	fileName = Util::getFullPath(fileName);
+	const String fileName(ArgPath(argv[1]));
 	const ScopedWorkingFolder workingFolder(Util::getFilePath(fileName));
 	Scene scene;
 	if (scene.Load(fileName) == Scene::SCENE_NA)
