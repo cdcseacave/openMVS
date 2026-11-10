@@ -610,15 +610,25 @@ namespace {
 // the centres per component by GlobalTranslationEstimator reweighted towards the sum of norms (convex,
 // so no start decides). A pair of a component is judged by its own solve, any other pair with a pose
 // and a measurable baseline by the largest solve that places both its images. Marks the removed pairs
-// in `removed`; returns their number.
+// in `removed`; returns their number. Appends every solve to `solves`, the largest first.
 constexpr unsigned minScaleComponent = 10;  // pairs a component of the pair-scale graph needs to be solved
 constexpr unsigned numL1Rounds = 40;        // reweighting rounds of the centres
 constexpr REAL l1Floor = REAL(1e-3);        // the L1 weight's error floor, in median pair lengths
 constexpr float maxScaleResidual = 1.05f;   // the Geman-McClure scale of the pair scales (the merge graph's former scale bar)
 
+// one solved component of the cut: the images it places and their camera centres
+struct CentresSolve { std::vector<bool> placed; std::vector<Point3> centres; };
+
+// the angle in degrees between a pair's baseline direction and the offset of its two camera centres
+REAL DirectionAngle(const Point3& baseline, const Point3& centresOffset)
+{
+	ASSERT(norm(baseline) > ZEROTOLERANCE<REAL>() && norm(centresOffset) > ZEROTOLERANCE<REAL>());
+	return R2D(ACOS(MINF(MAXF(baseline.dot(centresOffset) / (norm(baseline) * norm(centresOffset)), REAL(-1)), REAL(1))));
+}
+
 unsigned RemoveTranslationContradictions(const Scene& scene, const std::vector<Point3>& rotations,
 	const std::vector<uint32_t>& componentOf, const std::vector<float>& scores, float minPairWeight,
-	float maxDirectionResidual, std::vector<bool>& removed)
+	float maxDirectionResidual, std::vector<bool>& removed, std::vector<CentresSolve>& solves)
 {
 	TD_TIMER_STARTD();
 	const uint32_t numPairs = (uint32_t)scene.pairs.size();
@@ -732,12 +742,11 @@ unsigned RemoveTranslationContradictions(const Scene& scene, const std::vector<P
 			if (!own && (scaled[idxPair] || !std::isnan(angles[idxPair]) || !placed[pair.ID1] || !placed[pair.ID2]))
 				continue;
 			const Point3 centresOffset = centres[pair.ID2] - centres[pair.ID1];
-			const REAL length = norm(centresOffset);
-			if (length <= ZEROTOLERANCE<REAL>())
+			if (norm(centresOffset) <= ZEROTOLERANCE<REAL>())
 				continue;
-			const REAL cosAngle = baselines[idxPair].dot(centresOffset) / (norm(baselines[idxPair]) * length);
-			angles[idxPair] = R2D(ACOS(MINF(MAXF(cosAngle, REAL(-1)), REAL(1))));
+			angles[idxPair] = DirectionAngle(baselines[idxPair], centresOffset);
 		}
+		solves.push_back({std::move(placed), std::move(centres)});
 	}
 	unsigned numJudged = 0, numRemoved = 0;
 	for (const IIndex idxPair : judged) {
@@ -756,14 +765,208 @@ unsigned RemoveTranslationContradictions(const Scene& scene, const std::vector<P
 	return numRemoved;
 }
 
+// Repair instead of remove: a pair the contradiction cut removed comes back with a relative pose built from
+// the cut's own solution when its matches agree with it. Its rotation is the averaged one, R_2 R_1^T; its
+// baseline direction is fitted to its track-forming matches at that rotation (FitBaselineDirection). The pair
+// is repaired when
+//  - at least kRepairMinShare of its track-forming matches (and kRepairMinMatches) agree with the direction,
+//  - the largest centres solve placing both its images has their offset within kRepairMaxDirection degrees of
+//    the direction (a pair no solve places is not repaired), and
+//  - the two images are the same spot (joined by pairs under kNearDuplicateRayAngle of ray angle), or some
+//    image of a third spot holds a kept pair with each of them (a block of look-alikes between two spots
+//    vouches only for itself).
+// A repaired pair takes that pose (E, and F between pinholes), keeps its agreeing matches as its sparse and
+// dense segments, the other sparse ones becoming outliers and the other dense ones dropped, and has its ray
+// angle measured again; its weight is left to be recomputed. The pairs are independent, repaired in parallel.
+// `removed` marks the pairs the cut removed, all of them pairs with a pose whose two images one rotation
+// solve reached; `solves` are the centres solves of its translation stage, the largest first. Unmarks the
+// repaired pairs in `removed`; returns their number.
+constexpr REAL kRepairAngle = 1;            // degrees between a match's ray and its epipolar plane
+constexpr unsigned kRepairRounds = 200;     // RANSAC rounds of the direction fit
+constexpr unsigned kRepairMinMatches = 8;   // track-forming matches that must agree
+constexpr float kRepairMinShare = 0.8f;     // share of the track-forming matches that must agree
+constexpr REAL kRepairMaxDirection = 20;    // degrees between the fitted direction and the centres
+
+// The baseline direction t (unit, in camera 1's frame, x_2 = R x_1 + t) of the first numMatches matches (unit
+// bearings) of a pair of rotation R. A match agrees with t when its ray R b_1 lies within kRepairAngle of the
+// epipolar plane of t (t . (R b_1 x b_2) = 0, linear in t): RANSAC over two matches, kRepairRounds rounds from
+// `seed`, then the least squares of the agreeing ones, the sign that puts most of them in front of both
+// cameras. Returns false when fewer than kRepairMinShare of the matches (and kRepairMinMatches) agree with the
+// RANSAC's best; else `agree` flags the matches agreeing with the returned t.
+bool FitBaselineDirection(const Eigen::Matrix3d& R, const std::vector<Eigen::Vector3d>& bearings1,
+	const std::vector<Eigen::Vector3d>& bearings2, unsigned numMatches, unsigned seed, Eigen::Vector3d& t, std::vector<char>& agree)
+{
+	ASSERT(bearings1.size() >= numMatches && bearings2.size() >= numMatches);
+	if (numMatches < kRepairMinMatches)
+		return false;
+	std::vector<Eigen::Vector3d> rays(numMatches), planes(numMatches); // R b_1, and the unit normal of its epipolar plane
+	for (unsigned i = 0; i < numMatches; ++i) {
+		rays[i] = R * bearings1[i];
+		planes[i] = rays[i].cross(bearings2[i]).normalized();
+	}
+	const REAL maxSin = SIN(D2R(kRepairAngle));
+	const auto agrees = [&](unsigned i, const Eigen::Vector3d& direction) { return ABS(planes[i].dot(direction)) <= maxSin; };
+	std::mt19937 rng(seed);
+	std::uniform_int_distribution<unsigned> pick(0, numMatches - 1);
+	Eigen::Vector3d best(Eigen::Vector3d::Zero());
+	unsigned numBest = 0;
+	for (unsigned round = 0; round < kRepairRounds; ++round) {
+		Eigen::Vector3d direction = planes[pick(rng)].cross(planes[pick(rng)]);
+		if (direction.norm() <= ZEROTOLERANCE<double>())
+			continue;
+		direction.normalize();
+		unsigned numAgreeing = 0;
+		for (unsigned i = 0; i < numMatches; ++i)
+			numAgreeing += agrees(i, direction);
+		if (numAgreeing > numBest) {
+			numBest = numAgreeing;
+			best = direction;
+		}
+	}
+	if (numBest < kRepairMinMatches || numBest < kRepairMinShare * numMatches)
+		return false;
+	// the least squares of the matches agreeing with the best: the direction closest to lying in all their planes
+	Eigen::Matrix3d M(Eigen::Matrix3d::Zero());
+	for (unsigned i = 0; i < numMatches; ++i)
+		if (agrees(i, best))
+			M += planes[i] * planes[i].transpose();
+	t = Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d>(M).eigenvectors().col(0);
+	// the sign: the depths d1, d2 of d1 R b_1 + t = d2 b_2 (their normal equations), most matches in front of both
+	int numFront = 0;
+	for (unsigned i = 0; i < numMatches; ++i) {
+		if (!agrees(i, t))
+			continue;
+		const double a12 = -rays[i].dot(bearings2[i]), det = 1 - a12 * a12;
+		if (det <= 1e-12)
+			continue;
+		const double r1 = -rays[i].dot(t), r2 = bearings2[i].dot(t);
+		const double d1 = (r1 - a12 * r2) / det, d2 = (r2 - a12 * r1) / det;
+		numFront += (d1 > 0 && d2 > 0) - (d1 < 0 && d2 < 0);
+	}
+	if (numFront < 0)
+		t = -t;
+	agree.resize(numMatches);
+	for (unsigned i = 0; i < numMatches; ++i)
+		agree[i] = agrees(i, t);
+	return true;
+}
+
+unsigned RepairContradictedPairs(Scene& scene, const std::vector<Point3>& rotations,
+	const std::vector<CentresSolve>& solves, std::vector<bool>& removed)
+{
+	TD_TIMER_STARTD();
+	ASSERT(removed.size() == scene.pairs.size() && rotations.size() == scene.images.size());
+	const uint32_t numImages = (uint32_t)scene.images.size();
+	// the spot of every image (near-duplicate pairs join), and its neighbours over the kept pairs
+	DisjointSet<uint32_t> spots(numImages);
+	std::vector<IIndexArr> neighbours(numImages);
+	IIndexArr candidates;
+	FOREACH(idxPair, scene.pairs) {
+		const ImagePair& pair = scene.pairs[idxPair];
+		if (pair.relativePose.has_value() && !(pair.meanRayAngle >= D2R(kNearDuplicateRayAngle)))
+			spots.Union(pair.ID1, pair.ID2);
+		if (removed[idxPair]) {
+			ASSERT(pair.relativePose.has_value());
+			candidates.push_back((IIndex)idxPair);
+		} else {
+			neighbours[pair.ID1].push_back(pair.ID2);
+			neighbours[pair.ID2].push_back(pair.ID1);
+		}
+	}
+	std::vector<uint32_t> spotOf(numImages);
+	for (uint32_t i = 0; i < numImages; ++i) {
+		spotOf[i] = spots.Find(i);
+		std::sort(neighbours[i].begin(), neighbours[i].end());
+	}
+	// the pose fitted for every candidate and the matches agreeing with it, `repaired` when it passes the guard
+	struct Repair { Pose3D pose; std::vector<char> agree; bool repaired{false}; };
+	std::vector<Repair> repairs(candidates.size());
+	#pragma omp parallel for schedule(dynamic, 8)
+	for (int_t k = 0; k < (int_t)candidates.size(); ++k) {
+		const ImagePair& pair = scene.pairs[candidates[k]];
+		Repair& repair = repairs[k];
+		// the same spot, or an image of a third spot paired with both
+		bool vouched = spotOf[pair.ID1] == spotOf[pair.ID2];
+		if (!vouched) {
+			IIndexArr common;
+			std::set_intersection(neighbours[pair.ID1].begin(), neighbours[pair.ID1].end(),
+				neighbours[pair.ID2].begin(), neighbours[pair.ID2].end(), std::back_inserter(common));
+			for (const IIndex c : common)
+				if (spotOf[c] != spotOf[pair.ID1] && spotOf[c] != spotOf[pair.ID2]) {
+					vouched = true;
+					break;
+				}
+		}
+		if (!vouched)
+			continue;
+		// the largest solve that places both images
+		const CentresSolve* pSolve = NULL;
+		for (const CentresSolve& solve : solves)
+			if (solve.placed[pair.ID1] && solve.placed[pair.ID2]) {
+				pSolve = &solve;
+				break;
+			}
+		if (pSolve == NULL)
+			continue;
+		const Point3 centresOffset = pSolve->centres[pair.ID2] - pSolve->centres[pair.ID1];
+		if (norm(centresOffset) <= ZEROTOLERANCE<REAL>())
+			continue;
+		const RMatrix R1(rotations[pair.ID1]);
+		const Matrix3x3 R = RMatrix(rotations[pair.ID2]) * R1.t();
+		const Eigen::Matrix3d eR((const Matrix3x3::EMat&)R);
+		const auto [bearings1, bearings2] = pair.GetMatchedBearings(scene.images[pair.ID1], scene.images[pair.ID2], true);
+		Eigen::Vector3d t;
+		if (!FitBaselineDirection(eR, bearings1, bearings2, pair.GetNumTrackFormingMatches(), candidates[k], t, repair.agree))
+			continue;
+		// x_2 = R x_1 + t: camera 2 stands at C = -R^T t in camera 1's frame, at R_1^T C from camera 1 in the world
+		const Point3 C(Eigen::Vector3d(-(eR.transpose() * t)));
+		repair.pose = Pose3D(RMatrix(R), CMatrix(C));
+		repair.repaired = DirectionAngle(R1.t() * C, centresOffset) <= kRepairMaxDirection;
+	}
+	unsigned numRepaired = 0;
+	FOREACH(k, candidates) {
+		const Repair& repair = repairs[k];
+		if (!repair.repaired)
+			continue;
+		ImagePair& pair = scene.pairs[candidates[k]];
+		const Image& image1 = scene.images[pair.ID1];
+		const Image& image2 = scene.images[pair.ID2];
+		const unsigned numSparse = pair.GetNumFilteredInliers(), numTrackForming = pair.GetNumTrackFormingMatches();
+		ASSERT(repair.agree.size() == numTrackForming);
+		std::vector<DMatch> sparse, dense;
+		for (unsigned i = 0; i < numTrackForming; ++i) {
+			if (repair.agree[i])
+				(i < numSparse ? sparse : dense).push_back(pair.matches[i]);
+			else if (i < numSparse)
+				pair.outlierMatches.push_back(pair.matches[i]);
+		}
+		pair.outlierMatches.insert(pair.outlierMatches.end(), pair.matches.begin() + numTrackForming, pair.matches.end());
+		pair.numFilteredInliers = (int)sparse.size();
+		pair.numDenseInliers = (int)dense.size();
+		pair.matches = std::move(sparse);
+		pair.matches.insert(pair.matches.end(), dense.begin(), dense.end());
+		pair.weightedInliers = -1.f; // it describes matches that no longer exist
+		pair.relativePose = repair.pose;
+		pair.E = ImagePair::ComposeEssentialMatrix(repair.pose);
+		if (image1.pCamera->GetType() == CameraType::PINHOLE && image2.pCamera->GetType() == CameraType::PINHOLE)
+			pair.F = ImagePair::ComposeFundamentalMatrix(pair.E.value(), image1.GetK(), image2.GetK());
+		pair.meanRayAngle = pair.ComputeMeanRayAngle(image1, image2);
+		removed[candidates[k]] = false;
+		++numRepaired;
+	}
+	VERBOSE("Contradiction cut: repaired %u of the %u removed pairs (%s)", numRepaired, (unsigned)candidates.size(), TD_TIMER_GET_FMT().c_str());
+	return numRepaired;
+}
+
 } // namespace
 /*----------------------------------------------------------------*/
 
 unsigned SFM::FilterPairsByContradiction(Scene& scene, const std::vector<float>& scores,
-	float minPairWeight, float maxDirectionResidual, const PairsWeightingConfig& weightingCfg)
+	float minPairWeight, float maxDirectionResidual, const PairsWeightingConfig& weightingCfg, bool repair)
 {
 	ASSERT(scores.size() == scene.pairs.size());
 	ASSERT(maxDirectionResidual >= 0 && maxDirectionResidual <= 180);
+	ASSERT(!repair || maxDirectionResidual > 0); // the repair guards on the centres of the translation stage
 	TD_TIMER_STARTD();
 	// the pairs the averaging is built from: the usable ones, weighted by the composite weight and the score
 	std::vector<RotationPair> rotationPairs;
@@ -822,9 +1025,16 @@ unsigned SFM::FilterPairsByContradiction(Scene& scene, const std::vector<float>&
 	}
 	VERBOSE("Contradiction cut: removed %u/%u pairs more than %g degrees from the rotations of the weighted averaging of %u usable components (heaviest %.1f)",
 		numRemoved, numJudged, options.maxRelativeRotationAngle, numComponents, maxRemovedWeight);
-	if (maxDirectionResidual > 0)
-		numRemoved += RemoveTranslationContradictions(scene, rotations, componentOf, scores, minPairWeight, maxDirectionResidual, removed);
-	if (numRemoved == 0)
+	unsigned numRepaired = 0;
+	if (maxDirectionResidual > 0) {
+		std::vector<CentresSolve> solves;
+		numRemoved += RemoveTranslationContradictions(scene, rotations, componentOf, scores, minPairWeight, maxDirectionResidual, removed, solves);
+		if (repair && numRemoved > 0) {
+			numRepaired = RepairContradictedPairs(scene, rotations, solves, removed);
+			numRemoved -= numRepaired;
+		}
+	}
+	if (numRemoved == 0 && numRepaired == 0)
 		return 0;
 	// remove the scene pairs, compacting in one pass
 	const unsigned numPairs = scene.pairs.size();

@@ -70,6 +70,23 @@ rest of the graph contradicts, in two stages.
   component is judged by its own solve, any other pair by the largest solve that places both its
   images, and removed when its baseline direction is more than the bar from the centres. 0 skips
   the stage: the rotation stage alone.
+- **The optional repair** (`ReconstructionConfig::repairContradictedPairs`,
+  `--repair-contradicted-pairs`, default off; needs the translation stage, so a bar above 0) brings
+  back a removed pair instead of losing it (`RepairContradictedPairs`, run once after both stages
+  on the pairs they removed, in parallel over those pairs). The pair keeps the averaged rotation
+  `R_2 R_1^T`, and `FitBaselineDirection` fits its baseline direction to its track-forming matches at
+  that rotation: the epipolar constraint is linear in the direction, RANSAC over two matches (200
+  rounds) counts the matches within 1 degree of the epipolar plane, then a least squares of the
+  agreeing ones and the sign that puts most of them in front of both cameras. The pair is repaired
+  when at least 80% of its track-forming matches (and 8) agree, the largest centres solve placing
+  both its images has their offset within 20 degrees of the fitted direction (no such solve: not
+  repaired), and its two images are the same spot (joined by pairs under `kNearDuplicateRayAngle`)
+  or an image of a third spot holds a kept pair with each (a block of look-alikes between two spots
+  vouches only for itself). A repaired pair carries the new relative pose (E, and F between
+  pinholes), its agreeing matches as its sparse and dense segments (the other sparse matches become
+  outliers, the other dense ones are dropped), a ray angle measured again, and counts as kept; the
+  weights are recomputed with everything else. One log line: pairs repaired of those removed and
+  the seconds.
 
 Use the default for a scene without repeated structure (orbits, interiors). Use `--triplet-cut` to
 unfold a symmetric building or a symmetric object orbited by a video, at the price of halving the
@@ -90,6 +107,7 @@ unscored and the contradiction cut runs unweighted.
 | `--triplet-min-score F` | `0.3` | the paper's minimum edge score `m` |
 | `--triplet-second-face-score F` | `0.75` | cutting rule: the stricter ceiling that names the two faces |
 | `--max-pair-direction-residual F` | `45` | the contradiction cut's translation stage: pairs whose baseline direction is more than this many degrees from the camera centres go; 0 = the rotation stage alone |
+| `--repair-contradicted-pairs B` | `false` | repair instead of remove: a removed pair comes back with a baseline direction refitted at the averaged rotation when its matches, the centres and a neighbouring spot agree (needs the bar above 0) |
 
 `minYield` (0.4) has no command-line flag. Python: `TripletFilterConfig` with the attributes
 `enabled`, `cut`, `min_score`, `min_yield` and `second_face_score`,

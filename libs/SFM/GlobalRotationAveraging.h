@@ -192,9 +192,15 @@ private:
 //    place (towards the sum of norms), and every pair whose baseline direction is more than this
 //    many degrees from the centres removed; a pair under kNearDuplicateRayAngle of ray angle is
 //    never judged. In [0,180]; 0 skips the translation stage, the rotation stage alone.
-// The pair weights are recomputed when anything was removed. Returns the number of removed pairs.
+//  - repair: repair instead of remove (needs maxDirectionResidual above 0): a removed pair comes back
+//    when, with its rotation fixed to the averaged one, its matches agree on a baseline direction that
+//    the camera centres of the translation stage confirm and a neighbouring spot vouches for (the
+//    guard is in GlobalRotationAveraging.cpp, RepairContradictedPairs); it then carries that relative
+//    pose and its agreeing matches, and is not counted as removed.
+// The pair weights are recomputed when anything was removed or repaired. Returns the number of removed
+// pairs.
 unsigned SFM_API FilterPairsByContradiction(Scene& scene, const std::vector<float>& scores,
-	float minPairWeight, float maxDirectionResidual, const PairsWeightingConfig& weightingCfg);
+	float minPairWeight, float maxDirectionResidual, const PairsWeightingConfig& weightingCfg, bool repair = false);
 
 } // namespace SFM
 

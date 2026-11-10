@@ -723,7 +723,8 @@ IIndexArr ExportMatchingCSVsAndFilterPairs(Scene& scene, const ReconstructionCon
 	IIndexArr seedViews;
 	std::vector<float> scores;
 	FilterPairsByTriplets(scene, config.tripletFilterCfg, config.matchCfg.weightingCfg, &seedViews, &scores);
-	FilterPairsByContradiction(scene, scores, config.minPairWeight, config.maxPairDirectionResidual, config.matchCfg.weightingCfg);
+	FilterPairsByContradiction(scene, scores, config.minPairWeight, config.maxPairDirectionResidual, config.matchCfg.weightingCfg,
+		config.repairContradictedPairs);
 	return seedViews;
 }
 
