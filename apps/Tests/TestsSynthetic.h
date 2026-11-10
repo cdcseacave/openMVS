@@ -53,11 +53,11 @@ struct SynthCamera {
 	typedef Eigen::Vector2d Vec2;
 	typedef Eigen::Vector3d Vec3;
 
-	CameraModelType model;
-	Pinhole<double> pinhole; // PINHOLE, BROWN
-	BrownDistortion<double> distortion; // BROWN
-	Spherical<double> spherical; // SPHERICAL
-	int width, height;
+	CameraModelType model{};
+	Pinhole<double> pinhole{}; // PINHOLE, BROWN
+	BrownDistortion<double> distortion{}; // BROWN
+	Spherical<double> spherical{}; // SPHERICAL
+	int width = 0, height = 0;
 	Matrix3x3 R; // world to camera rotation: X_cam = R (X - C)
 	Point3 C; // camera center
 
@@ -77,8 +77,8 @@ struct SynthCamera {
 struct SynthView {
 	String name;
 	SynthCamera camera;
-	int pano; // trajectory index of the panorama the view belongs to (Brown: the one before it)
-	int face; // cube-face index (SphereCubeMap::FaceRotations(6)) of a face view, -1 otherwise
+	int pano = -1; // trajectory index of the panorama the view belongs to (Brown: the one before it)
+	int face = -1; // cube-face index (SphereCubeMap::FaceRotations(6)) of a face view, -1 otherwise
 	Image8U3 image; // supersampled color
 	DepthMap depthMap; // GT lambda at the pixel centers, every pixel (the room is closed)
 	NormalMap normalMap; // GT camera-frame unit normal, facing the camera
@@ -172,7 +172,7 @@ protected:
 	float thresholds[NUM_TH]; // relative to the range
 	std::vector<View> views;
 	PointCloud::PointArr gtPoints, gtRecallPoints;
-	Stats bands[DepthEvaluator::NUM_BANDS];
+	Stats bands[DepthEvaluator::NUM_BANDS] = {};
 };
 
 // GT consistency across the camera models, then CPU PatchMatch on the cube faces of three

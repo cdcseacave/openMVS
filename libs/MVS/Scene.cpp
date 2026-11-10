@@ -108,8 +108,8 @@ public:
 	}
 private:
 	bool bUndistort;
-	Pinhole<REAL> file, undistorted; // cameras of the image file and of the undistorted image
-	BrownDistortion<REAL> distortion;
+	Pinhole<REAL> file{}, undistorted{}; // cameras of the image file and of the undistorted image
+	BrownDistortion<REAL> distortion{};
 };
 typedef std::vector<ObservationMap> ObservationMapArr;
 ObservationMapArr MakeObservationMaps(const ImageArr& images)

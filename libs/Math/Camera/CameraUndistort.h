@@ -96,8 +96,8 @@ MATH_API Matrix3x3 FaceIntrinsics(int faceSize, int n);
 struct MATH_API TangentFacesGeometry {
 	std::vector<Matrix3x3> rotations; // N body->face rotations (== FaceRotations(numFaces))
 	Matrix3x3              K;         // shared pinhole intrinsics (== FaceIntrinsics(faceSize, numFaces))
-	int                    numFaces;
-	int                    faceSize;
+	int                    numFaces = 0;
+	int                    faceSize = 0;
 };
 
 // whether numFaces is one of the supported face counts {4,6,8,12,20}

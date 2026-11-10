@@ -50,7 +50,7 @@ namespace MVS {
 // the pinhole camera UndistortedK(K, distortion, size), the one every consumer sees
 struct MVS_API CameraLens {
 	KMatrix K; // camera matrix of the distorted image files, at their resolution
-	BrownDistortion<REAL> distortion; // lens distortion of the image files
+	BrownDistortion<REAL> distortion{}; // lens distortion of the image files
 	cv::Size size; // resolution of the image files
 };
 

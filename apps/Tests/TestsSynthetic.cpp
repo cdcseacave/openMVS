@@ -1071,7 +1071,7 @@ bool MVS::SyntheticDepthBaselineTest()
 	SynthViewArr views;
 	SynthGenerate(config, views);
 	// GT consistency across the models: panorama -> panorama, panorama <-> face, Brown <-> panorama/face
-	IIndex panos[3], faces[3][6], browns[2];
+	IIndex panos[3], faces[3][6], browns[2] = {NO_ID, NO_ID};
 	FOREACH(i, views) {
 		const SynthView& view = views[i];
 		if (view.camera.model == CameraModelType::BROWN)
@@ -1081,6 +1081,7 @@ bool MVS::SyntheticDepthBaselineTest()
 		else
 			faces[view.pano - 3][view.face] = i;
 	}
+	ASSERT(browns[0] != NO_ID && browns[1] != NO_ID);
 	// the face of the first panorama looking closest to where the first Brown view looks
 	const auto forward([&](IIndex i) { return EVec3(EMat3(views[i].camera.R).row(2).transpose()); });
 	int brownFace(0);
