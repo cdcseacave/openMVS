@@ -519,13 +519,17 @@ bool Scene::LoadDMAP(const String& fileName)
 	NormalMap normalMap;
 	ConfidenceMap confMap;
 	ViewsMap viewsMap;
-	if (!ImportDepthDataRaw(fileName, imageFileName, IDs, imageSize, camera.K, camera.R, camera.C, dMin, dMax, depthMap, normalMap, confMap, viewsMap))
+	bool bSpherical;
+	if (!ImportDepthDataRaw(fileName, imageFileName, IDs, imageSize, camera.K, camera.R, camera.C, dMin, dMax, depthMap, normalMap, confMap, viewsMap,
+			HeaderDepthDataRaw::CONTENT_MASK, NULL, &bSpherical))
 		return false;
 
 	// create image
 	Platform& platform = platforms.AddEmpty();
 	platform.name = _T("platform0");
 	platform.cameras.emplace_back(camera.GetScaledK(REAL(1)/CameraIntern::GetNormalizationScale((uint32_t)imageSize.width,(uint32_t)imageSize.height)), RMatrix::IDENTITY, CMatrix::ZERO);
+	if (bSpherical)
+		platform.cameras.back().model = CameraModelType::SPHERICAL; // K is the angular camera matrix, the depth the range
 	platform.poses.emplace_back(Platform::Pose{camera.R, camera.C});
 	Image& image = images.AddEmpty();
 	image.name = MAKE_PATH_FULL(WORKING_FOLDER_FULL, imageFileName);
@@ -550,6 +554,7 @@ bool Scene::LoadDMAP(const String& fileName)
 
 	// create point-cloud
 	camera.K = camera.GetScaledK(imageSize, depthMap.size());
+	const ModelCamera modelCamera(camera, image.model);
 	pointcloud.points.reserve(depthMap.area());
 	pointcloud.pointViews.reserve(depthMap.area());
 	pointcloud.colors.reserve(depthMap.area());
@@ -562,7 +567,7 @@ bool Scene::LoadDMAP(const String& fileName)
 			const Depth depth = depthMap(r,c);
 			if (depth <= 0)
 				continue;
-			pointcloud.points.emplace_back(camera.TransformPointI2W(Point3(c,r,depth)));
+			pointcloud.points.emplace_back(modelCamera.TransformPointI2W(Point2(c,r), depth));
 			pointcloud.pointViews.emplace_back(PointCloud::ViewArr{0});
 			pointcloud.colors.emplace_back(imageColor(r,c));
 			if (!normalMap.empty())

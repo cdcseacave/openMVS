@@ -100,7 +100,8 @@ bool DMapCacheKeepsRequestedImageTest();
 
 // Interface v8: camera models (pinhole, Brown 5/8, spherical) and optional observations round trip,
 // a v7 stream loads, the v8 size identity (v7 + 1 byte per camera + 1 flags byte without observations),
-// MVS::Scene load/save round trip of the models, and the undistorted camera K' rule shared by SfM and MVS
+// MVS::Scene load/save round trip of the models, also through the native archive, the undistorted camera
+// K' rule shared by SfM and MVS, and a standalone spherical .dmap importing as a spherical camera
 bool InterfaceV8Test();
 
 // the boost archives of the platforms saved before the camera models (Platform::Camera a CameraIntern)

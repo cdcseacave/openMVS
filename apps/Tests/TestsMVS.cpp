@@ -3877,6 +3877,48 @@ bool InterfaceV8Test()
 				return false;
 			}
 		}
+		#ifdef _USE_BOOST
+		// the native archive keeps the models and the observations: interface -> native -> interface
+		const String fileNameNative(tmpDir(String::FormatString("scene%d_native.mvs", bObservations)));
+		const String fileNameBack(tmpDir(String::FormatString("scene%d_back.mvs", bObservations)));
+		Scene sceneNative;
+		Interface back;
+		if (!scene.Save(fileNameNative, ARCHIVE_BINARY) || sceneNative.Load(fileNameNative) != Scene::SCENE_MVS ||
+			!sceneNative.SaveInterface(fileNameBack) || !ARCHIVE::SerializeLoad(back, fileNameBack)) {
+			VERBOSE("ERROR: InterfaceV8Test: native scene save/load failed");
+			return false;
+		}
+		if (!EqualInterfaces(obj, back, bObservations != 0, 1e-12, 1e-3f, "native round trip"))
+			return false;
+		#endif
+	}
+
+	// a standalone spherical .dmap imports with its camera model, its depths the ranges
+	{
+		constexpr int width(8), height(4);
+		constexpr Depth range(10);
+		const Spherical<REAL> sphere(Spherical<REAL>::FromSize(width, height));
+		KMatrix K(KMatrix::IDENTITY);
+		K(0,0) = sphere.fx; K(1,1) = sphere.fy; K(0,2) = sphere.cx; K(1,2) = sphere.cy;
+		const String fileName(tmpDir("sphere.dmap"));
+		const DepthMap depthMap(cv::Size(width, height), range);
+		if (!ExportDepthDataRaw(fileName, "sphere.png", IIndexArr{0}, depthMap.size(), K, RMatrix::IDENTITY, CMatrix::ZERO,
+				range, range, depthMap, NormalMap(), ConfidenceMap(), ViewsMap(), false, true)) {
+			VERBOSE("ERROR: InterfaceV8Test: spherical depth-map export failed");
+			return false;
+		}
+		Scene scene;
+		if (!scene.LoadDMAP(fileName) || scene.images.size() != 1 || !scene.images[0].IsSpherical() ||
+			scene.pointcloud.GetSize() != (size_t)depthMap.area()) {
+			VERBOSE("ERROR: InterfaceV8Test: spherical depth-map import lost the camera model or points");
+			return false;
+		}
+		for (const PointCloud::Point& X : scene.pointcloud.points) {
+			if (std::abs(norm(X) - range) > 1e-4f*range) {
+				VERBOSE("ERROR: InterfaceV8Test: spherical depth-map point at distance %g, expected %g", norm(X), range);
+				return false;
+			}
+		}
 	}
 	VERBOSE("InterfaceV8Test passed (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;

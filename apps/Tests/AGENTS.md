@@ -140,8 +140,10 @@ Tests (MVS suite 2), each bound being the measured accuracy less a margin:
 model (pinhole, Brown 5 and 8 coefficients, spherical) with and without observations; a v7 stream
 written and loaded back; the size identity (v8 = v7 + 1 byte per camera + 1 flags byte without
 observations); `MVS::Scene` load/save of the models (Brown lens kept exactly, observations within
-1e-3 px); `K'` identical between `UndistortedK`, the SfM `UndistortMaps::Init`, the map cache and the
-loaded image camera.
+1e-3 px), also through the native boost archive (interface -> native -> interface); `K'` identical
+between `UndistortedK`, the SfM `UndistortMaps::Init`, the map cache and the loaded image camera; a
+standalone spherical `.dmap` loaded by `Scene::LoadDMAP` keeps the SPHERICAL model and its points at
+the stored range.
 
 ## Running
 
