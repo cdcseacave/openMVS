@@ -36,19 +36,20 @@ GET_FILENAME_COMPONENT(PATH_PythonWrapper_cpp ${CMAKE_CURRENT_SOURCE_DIR}/Python
 LIST(REMOVE_ITEM LIBRARY_FILES_C "${PATH_PythonWrapper_cpp}")
 
 # Metal backend: the Objective-C++ source is not matched by the *.cpp glob.
-# The MSL kernels (PatchMatchMetal.metal) are the single source of truth; embed
-# them as a string (compiled at runtime via newLibraryWithSource) by generating
-# PatchMatchMetal_msl.h into the build dir at configure time.
+# The MSL kernels (PatchMatchMetal.metal, ConfidenceMetal.metal) are the single
+# source of truth; embed them as strings (compiled at runtime into one library via
+# newLibraryWithSource) by generating PatchMatchMetal_msl.h into the build dir at
+# configure time.
+set(_METAL_SHADERS PatchMatchMetal ConfidenceMetal)
 if(_USE_METAL)
-	# an edit of the kernels re-runs the configure step that embeds them
-	set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/PatchMatchMetal.metal")
-	file(READ "${CMAKE_CURRENT_SOURCE_DIR}/PatchMatchMetal.metal" _PATCHMATCH_MSL_SRC)
-	file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/PatchMatchMetal_msl.h"
-"// AUTO-GENERATED at configure time from PatchMatchMetal.metal -- do not edit.
-#pragma once
-static const char* kPatchMatchMSL = R\"METALSRC(
-${_PATCHMATCH_MSL_SRC})METALSRC\";
-")
+	set(_METAL_MSL_HEADER "// AUTO-GENERATED at configure time from ${_METAL_SHADERS} (.metal) -- do not edit.\n#pragma once\n")
+	foreach(_SHADER ${_METAL_SHADERS})
+		# an edit of the kernels re-runs the configure step that embeds them
+		set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${_SHADER}.metal")
+		file(READ "${CMAKE_CURRENT_SOURCE_DIR}/${_SHADER}.metal" _MSL_SRC)
+		string(APPEND _METAL_MSL_HEADER "static const char* k${_SHADER}MSL = R\"METALSRC(\n${_MSL_SRC})METALSRC\";\n")
+	endforeach()
+	file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/PatchMatchMetal_msl.h" "${_METAL_MSL_HEADER}")
 	LIST(APPEND LIBRARY_FILES_C "${CMAKE_CURRENT_SOURCE_DIR}/PatchMatchMetal.mm")
 endif()
 
@@ -76,14 +77,18 @@ if(_USE_METAL)
 	execute_process(COMMAND xcrun -sdk macosx metal -c "${_METAL_PROBE}" -o "${CMAKE_CURRENT_BINARY_DIR}/MetalProbe.air"
 		RESULT_VARIABLE _METAL_PROBE_RESULT OUTPUT_QUIET ERROR_QUIET)
 	if(_METAL_PROBE_RESULT EQUAL 0)
-		add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/PatchMatchMetal.air"
-			COMMAND xcrun -sdk macosx metal -c "${CMAKE_CURRENT_SOURCE_DIR}/PatchMatchMetal.metal" -o "${CMAKE_CURRENT_BINARY_DIR}/PatchMatchMetal.air"
-			DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/PatchMatchMetal.metal"
-			COMMENT "Compiling PatchMatchMetal.metal with the offline Metal compiler")
-		add_custom_target(PatchMatchMetalCheck DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/PatchMatchMetal.air")
+		set(_METAL_AIRS)
+		foreach(_SHADER ${_METAL_SHADERS})
+			add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${_SHADER}.air"
+				COMMAND xcrun -sdk macosx metal -c "${CMAKE_CURRENT_SOURCE_DIR}/${_SHADER}.metal" -o "${CMAKE_CURRENT_BINARY_DIR}/${_SHADER}.air"
+				DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${_SHADER}.metal"
+				COMMENT "Compiling ${_SHADER}.metal with the offline Metal compiler")
+			list(APPEND _METAL_AIRS "${CMAKE_CURRENT_BINARY_DIR}/${_SHADER}.air")
+		endforeach()
+		add_custom_target(PatchMatchMetalCheck DEPENDS ${_METAL_AIRS})
 		add_dependencies(MVS PatchMatchMetalCheck)
 	else()
-		MESSAGE(STATUS "No offline Metal compiler: PatchMatchMetal.metal is compiled at runtime only")
+		MESSAGE(STATUS "No offline Metal compiler: the Metal kernels are compiled at runtime only")
 	endif()
 endif()
 

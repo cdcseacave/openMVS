@@ -63,6 +63,20 @@ struct MtlParams {
 	float fSinSqWarpMaxElevation, cosMinViewAngle;
 };
 struct MtlModelView { simd_float3x3 R; simd_float3 t; simd_float3 C; simd_float2 texScale; };
+// the confidence recalibration's parameters and neighbors (ConfidenceMetal.metal: ConfParams, ConfNeighbor)
+struct MtlConfParams {
+	float fx, fy, cx, cy;
+	int width, height, numNeighbors, hasNormal, confFromCost;
+	ConfRefine::Params refine;
+};
+static_assert(sizeof(MtlConfParams) == 19*sizeof(float), "MtlConfParams must match the shader's ConfParams");
+struct MtlConfNeighbor {
+	float A[9], b[3], Rrel[9], cn[3];
+	int width, height;
+	uint32_t depthOffset, confOffset, normalOffset;
+};
+static_assert(sizeof(MtlConfNeighbor) == 29*sizeof(float), "MtlConfNeighbor must match the shader's ConfNeighbor");
+constexpr uint32_t CONF_NO_MAP(0xFFFFFFFFu);
 
 // the camera models a kernel serves: the MODEL function constant of the shader
 enum KernelModel { MODEL_PINHOLE, MODEL_PINHOLE_REF, MODEL_SPHERICAL_REF, NUM_MODELS };
@@ -74,9 +88,13 @@ struct PatchMatch::Impl {
 	// the kernels specialized on the function constants [GEOM][MODEL]
 	id<MTLComputePipelineState> psInit[2][NUM_MODELS] = {}, psBlack[2][NUM_MODELS] = {}, psRed[2][NUM_MODELS] = {};
 	id<MTLComputePipelineState> psFilter = nil;
+	id<MTLComputePipelineState> psConfPrior = nil, psConfSweep = nil; // the confidence recalibration
 	id<MTLTexture> dummyDepth = nil;   // 1x1 zero, stands in for neighbors without a depth-map
 	id<MTLBuffer> dummyTrig = nil;     // stands in for the trig tables of a pinhole reference
 	bool valid = false;
+
+	bool RunConfidence(int W, int H, id<MTLBuffer> planes, id<MTLBuffer> conf,
+		bool hasNormal, bool confFromCost, const ConfAdjustRequest& request, float* confOut) const;
 };
 
 static id<MTLComputePipelineState> MakePipe(id<MTLDevice> dev, id<MTLLibrary> lib,
@@ -99,7 +117,8 @@ PatchMatch::PatchMatch()
 			return;
 		impl->queue = [impl->device newCommandQueue];
 		NSError* err = nil;
-		NSString* src = [NSString stringWithUTF8String:kPatchMatchMSL];
+		// one library of both shader sources: a single runtime compile
+		NSString* src = [NSString stringWithFormat:@"%s\n%s", kPatchMatchMetalMSL, kConfidenceMetalMSL];
 		impl->library = [impl->device newLibraryWithSource:src options:[MTLCompileOptions new] error:&err];
 		if (!impl->library) {
 			VERBOSE("error: the Metal PatchMatch shaders do not compile: %s", err ? err.localizedDescription.UTF8String : "unknown error");
@@ -119,6 +138,8 @@ PatchMatch::PatchMatch()
 			}
 		}
 		impl->psFilter = MakePipe(impl->device, impl->library, @"FilterPlanes", nil);
+		impl->psConfPrior = MakePipe(impl->device, impl->library, @"ConfidencePrior", nil);
+		impl->psConfSweep = MakePipe(impl->device, impl->library, @"ConfidenceSweep", nil);
 		// 1x1 zero depth texture for neighbors that have no depth-map yet
 		MTLTextureDescriptor* ddesc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR32Float width:1 height:1 mipmapped:NO];
 		ddesc.usage = MTLTextureUsageShaderRead;
@@ -126,7 +147,7 @@ PatchMatch::PatchMatch()
 		const float zero = 0.f;
 		[impl->dummyDepth replaceRegion:MTLRegionMake2D(0,0,1,1) mipmapLevel:0 withBytes:&zero bytesPerRow:sizeof(float)];
 		impl->dummyTrig = [impl->device newBufferWithLength:sizeof(simd_float2) options:MTLResourceStorageModeShared];
-		impl->valid = valid && impl->psFilter && impl->dummyTrig;
+		impl->valid = valid && impl->psFilter && impl->psConfPrior && impl->psConfSweep && impl->dummyTrig;
 	}
 }
 
@@ -168,7 +189,91 @@ static MtlCamera ConvertCamera(const Camera& cam, int cols, int rows)
 	return mc;
 }
 
-void PatchMatch::EstimateDepthMap(DepthData& depthData)
+// the confidence recalibration of a WxH pinhole reference (ConfidenceMetal.metal): the intra-map
+// prior and the multi-view confirmation sweep, from the reference planes (normal, depth) and its
+// photometric confidence, or the estimation's ZNCC cost (confFromCost), against the request's
+// neighbors; writes the recalibrated confidence to confOut (W*H) only once the kernels completed,
+// false if they did not
+bool PatchMatch::Impl::RunConfidence(int W, int H, id<MTLBuffer> planes, id<MTLBuffer> conf,
+	bool hasNormal, bool confFromCost, const ConfAdjustRequest& request, float* confOut) const
+{
+	ASSERT(W > 0 && H > 0 && planes.length >= sizeof(simd_float4)*W*H && conf.length >= sizeof(float)*W*H);
+	ASSERT(request.neighbors.size() < METAL_MAX_VIEWS); // setBytes holds at most 4 KB
+	id<MTLDevice> dev = device;
+	// the neighbors, their maps packed one after the other
+	std::vector<MtlConfNeighbor> neighbors(request.neighbors.size());
+	size_t numDepths(0), numConfs(0), numNormals(0);
+	for (size_t k = 0; k < neighbors.size(); ++k) {
+		const ConfNeighborHost& src = request.neighbors[k];
+		MtlConfNeighbor& nb = neighbors[k];
+		std::copy_n(src.A, 9, nb.A); std::copy_n(src.b, 3, nb.b);
+		std::copy_n(src.Rrel, 9, nb.Rrel); std::copy_n(src.cn, 3, nb.cn);
+		nb.width = src.width; nb.height = src.height;
+		const size_t area((size_t)src.width*src.height);
+		nb.depthOffset = (uint32_t)numDepths; numDepths += area;
+		nb.confOffset = src.conf ? (uint32_t)numConfs : CONF_NO_MAP; numConfs += src.conf ? area : 0;
+		nb.normalOffset = src.normal ? (uint32_t)numNormals : CONF_NO_MAP; numNormals += src.normal ? 3*area : 0;
+	}
+	ASSERT(numNormals < CONF_NO_MAP);
+	// a buffer of the given floats, at least one so that every binding holds one
+	const auto newFloats = [dev](size_t count) {
+		return [dev newBufferWithLength:sizeof(float)*MAXF(count, (size_t)1) options:MTLResourceStorageModeShared];
+	};
+	id<MTLBuffer> bDepths = newFloats(numDepths), bConfs = newFloats(numConfs), bNormals = newFloats(numNormals);
+	for (size_t k = 0; k < neighbors.size(); ++k) {
+		const ConfNeighborHost& src = request.neighbors[k];
+		const MtlConfNeighbor& nb = neighbors[k];
+		const size_t area((size_t)src.width*src.height);
+		memcpy((float*)bDepths.contents + nb.depthOffset, src.depth, sizeof(float)*area);
+		if (src.conf)
+			memcpy((float*)bConfs.contents + nb.confOffset, src.conf, sizeof(float)*area);
+		if (src.normal)
+			memcpy((float*)bNormals.contents + nb.normalOffset, src.normal, 3*sizeof(float)*area);
+	}
+	const MtlConfParams params{request.fx, request.fy, request.cx, request.cy,
+		W, H, (int)neighbors.size(), hasNormal ? 1 : 0, confFromCost ? 1 : 0, request.params};
+	id<MTLBuffer> bPrior = newFloats((size_t)W*H), bOut = newFloats((size_t)W*H);
+
+	// two passes, each its own encoder: the sweep reads the prior the first one writes
+	id<MTLCommandBuffer> cb = [queue commandBuffer];
+	const MTLSize grid = MTLSizeMake(W, H, 1), tg = MTLSizeMake(32, 8, 1);
+	{
+		id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+		[enc setComputePipelineState:psConfPrior];
+		[enc setBuffer:planes offset:0 atIndex:0];
+		[enc setBuffer:conf offset:0 atIndex:1];
+		[enc setBytes:&params length:sizeof(params) atIndex:2];
+		[enc setBuffer:bPrior offset:0 atIndex:3];
+		[enc dispatchThreads:grid threadsPerThreadgroup:tg];
+		[enc endEncoding];
+	}
+	{
+		id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+		[enc setComputePipelineState:psConfSweep];
+		[enc setBuffer:planes offset:0 atIndex:0];
+		[enc setBuffer:conf offset:0 atIndex:1];
+		[enc setBytes:&params length:sizeof(params) atIndex:2];
+		[enc setBuffer:bPrior offset:0 atIndex:3];
+		const MtlConfNeighbor noNeighbor{};
+		[enc setBytes:(neighbors.empty() ? &noNeighbor : neighbors.data()) length:sizeof(MtlConfNeighbor)*MAXF(neighbors.size(), (size_t)1) atIndex:4];
+		[enc setBuffer:bDepths offset:0 atIndex:5];
+		[enc setBuffer:bConfs offset:0 atIndex:6];
+		[enc setBuffer:bNormals offset:0 atIndex:7];
+		[enc setBuffer:bOut offset:0 atIndex:8];
+		[enc dispatchThreads:grid threadsPerThreadgroup:tg];
+		[enc endEncoding];
+	}
+	[cb commit];
+	[cb waitUntilCompleted];
+	if (cb.status != MTLCommandBufferStatusCompleted) {
+		VERBOSE("error: Metal confidence recalibration: %s", cb.error ? cb.error.localizedDescription.UTF8String : "not completed");
+		return false;
+	}
+	memcpy(confOut, bOut.contents, sizeof(float)*W*H);
+	return true;
+}
+
+void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* confRequest)
 {
 	if (!IsValid())
 		return;
@@ -421,7 +526,18 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData)
 		[cb commit];
 		[cb waitUntilCompleted];
 
-		// readback: planes -> depth/normal, costs -> conf, sel -> views
+		// the fused confidence recalibration of the last geometric-consistency iteration, from the
+		// estimates and costs still on the device; on failure confMap keeps the photometric
+		// confidence below and the caller falls back to the epilogue
+		bool bConfAdjusted(false);
+		if (confRequest && scaleNumber == 0) {
+			// the recalibration is pinhole only (Scene::ComputeDepthMaps disables it for spherical scenes)
+			ASSERT(geom && model == MODEL_PINHOLE && dd.confMap.isContinuous() && dd.confMap.size() == size);
+			bConfAdjusted = impl->RunConfidence(W, Hh, bPlanes, bCosts, true, true, *confRequest, dd.confMap.ptr<float>());
+			confRequest->done = bConfAdjusted;
+		}
+
+		// readback: planes -> depth/normal, costs -> conf (unless recalibrated), sel -> views
 		const float* costs = (const float*)bCosts.contents;
 		const uint32_t* sel = (const uint32_t*)bSel.contents;
 		for (int r = 0; r < Hh; ++r)
@@ -432,9 +548,11 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData)
 				dd.depthMap(r,c) = depth;
 				dd.normalMap(r,c) = Normal(pl.x, pl.y, pl.z);
 				if (scaleNumber == 0) {
-					float& conf = dd.confMap(r,c);
-					conf = costs[idx];
-					conf = conf >= 1.f ? 0.f : 1.f - conf;
+					if (!bConfAdjusted) {
+						float& conf = dd.confMap(r,c);
+						conf = costs[idx];
+						conf = conf >= 1.f ? 0.f : 1.f - conf;
+					}
 					ViewsID& views = dd.viewsMap(r,c);
 					if (depth > 0) {
 						const uint32_t bitviews = sel[idx];
@@ -471,6 +589,30 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData)
 		depthData.images.front().GetID(),
 		depthData.images.front().image.cols, depthData.images.front().image.rows,
 		TD_TIMER_GET_FMT().c_str());
+}
+
+bool PatchMatch::AdjustConfidence(DepthData& depthData, const ConfAdjustRequest& request) const
+{
+	if (!IsValid())
+		return false;
+	const DepthMap& depthMap = depthData.depthMap;
+	const NormalMap& normalMap = depthData.normalMap;
+	ConfidenceMap& confMap = depthData.confMap;
+	ASSERT(!depthData.GetView().IsSpherical()); // the recalibration is pinhole only
+	ASSERT(!depthMap.empty() && confMap.size() == depthMap.size() && confMap.isContinuous());
+	ASSERT(normalMap.empty() || normalMap.size() == depthMap.size());
+	@autoreleasepool {
+		const int W(depthMap.cols), H(depthMap.rows);
+		id<MTLBuffer> bPlanes = [impl->device newBufferWithLength:sizeof(simd_float4)*W*H options:MTLResourceStorageModeShared];
+		simd_float4* planes = (simd_float4*)bPlanes.contents;
+		for (int r = 0; r < H; ++r)
+			for (int c = 0; c < W; ++c) {
+				const Normal n(normalMap.empty() ? Normal::ZERO : normalMap(r,c));
+				planes[r*W+c] = simd_make_float4(n.x, n.y, n.z, depthMap(r,c));
+			}
+		id<MTLBuffer> bConf = [impl->device newBufferWithBytes:confMap.ptr<float>() length:sizeof(float)*W*H options:MTLResourceStorageModeShared];
+		return impl->RunConfidence(W, H, bPlanes, bConf, !normalMap.empty(), false, request, confMap.ptr<float>());
+	}
 }
 
 bool PatchMatch::EvaluateModelMath(std::vector<ModelMathSample>& samples) const

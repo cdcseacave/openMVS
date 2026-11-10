@@ -46,7 +46,13 @@ like `Pinhole<T>`:
   ρ = |q|·cosφ and (x_c, y_c) = Project(q), which the caller may pass); exact at q, first order
   around it.
 
-### Patch warp per target view (`DepthEstimatorT::SamplePatch`)
+### Patch warp per target view (`DepthEstimatorT::ScorePixelImage`)
+
+Every warp hands the target texels one by one, in the order of the reference texels, to a
+`PatchSums` (the NCC terms, as the GPU kernels accumulate them); `ScorePatch` turns the sums into
+the cost. The samplers copy the sums in and out, and the pinhole path has its own: the sums stay in
+registers through the texel loop whether the sampler is inlined or not (a texel buffer and an
+out-of-line sampler cost the pinhole estimator 15 % on clang/arm64).
 
 - Pinhole reference and pinhole target: the cached plane homography (`ComputePatchWarp`).
 - Otherwise Method B: `M = Trg.PixelHomography(H·r0)·H·Ref.RayFrame(x0)`, with `H·F` built as
@@ -257,11 +263,12 @@ HOST_DEVICE headers.
   the pinhole Metal kernels. The model kernels skip an invalid neighbor in the plane comparison (cost
   `FLT_MAX`, as CUDA); the pinhole Metal kernels aggregate its unwritten costs and reject it afterwards.
 - The host applies the ignore mask, with the validity mask of undistorted images, as CUDA does. The kernels
-  are compiled from source at runtime; CMake also compiles `PatchMatchMetal.metal` with the offline Metal
-  compiler (target `PatchMatchMetalCheck`) when the toolchain has a working one. The configure step that
+  are compiled from source at runtime, with `ConfidenceMetal.metal` into one library; CMake also compiles
+  both with the offline Metal compiler (target `PatchMatchMetalCheck`) when the toolchain has a working one. The configure step that
   embeds the source re-runs when the file changes.
 - `DensifyPointCloud` gives Metal builds the GPU defaults of CUDA builds (`--number-views` 8,
-  `--iters` 4); with the CPU defaults (5 / 3) Metal is below CUDA on Holo360D (section 4).
+  `--iters` 4); with the CPU defaults (5 / 3) Metal is below CUDA on Holo360D (section 4). A CPU run in
+  a GPU build (`--gpu-device cpu`) keeps the CPU defaults for the options not given explicitly.
 - Validated on an Apple M3 Max (section 4): `MetalModelMathTest` within its bounds (the pinhole projection
   error relative to the magnitude of its operands: Metal fuses `fx*n+cx` into an fma, the host does not,
   which leaves one ulp of ~1000 where the two cancel), the synthetic panoramas and Holo360D at the
@@ -389,7 +396,10 @@ P-core pinned, timing-exclusive machine, one discarded warm-up run, min of 3 rot
 with per-pixel waits instead of whole-estimate reads it was 208.6 s (+4.6 %, 3163 CPU-s). The
 corner waits and the model-dispatched fusion leave it there: 202.1 s against 201.4 s for the
 estimator without them in the same session (3080 / 3065 CPU-s; depth-maps 195.9 / 195.3 s, fusion
-4.8 / 4.6 s).
+4.8 / 4.6 s). On clang/arm64 (Apple M3 Max, SceauxCastle 11 images, 5 views, 3 iterations, min of 3
+interleaved runs): one thread at resolution level 2, 62.9 s against 62.3 s (retired instructions
++0.4 %); 14 threads at full resolution, depth-maps 29.0 + 9.1 s against 27.6 + 8.8 s (+5 %), the
+rest being the per-pixel fences, a `dmb` on arm64 where x86 orders the stores for free.
 
 ### Fused clouds
 
@@ -544,8 +554,12 @@ because the faces are pre-rendered.
 - Per-hypothesis cost ~1.24x pinhole against the 1.2x target (section 4): what remains is the
   projection of the patch center (two FastAtan2, one square root, the reciprocal of ρ) and the
   per-pixel ray frames, amortized over few hypotheses in `scorebench`.
-- Metal: the kernels are compiled from source at the first estimation of every process (~3 s on an
-  M3 Max).
+- Metal: the kernels are compiled from source at runtime; macOS caches the library and the
+  specialized pipelines across processes (a warm start takes ~2 ms on an M3 Max, a changed source
+  0.5 s for the library), so only the first run of a new kernel version pays the full compile.
+- Pinhole CPU on arm64: +5 % multi-threaded from the release/acquire fences of the per-pixel estimate
+  hand-over (single-threaded +1 %). GCC keeps `FORCEINLINE` a hint (it fails the build on an
+  always_inline it can not inline); its pinhole cost is unmeasured.
 - CUDA: the rows are clamped at the poles where the CPU rejects the view; mixed pinhole/spherical
   scenes run the `MODEL_PINHOLE_REF` kernels, untested (Metal: the same).
 - The confidence recalibration (`ConfidenceRefine.h`, `ConfidenceCUDA.cu`) is pinhole only and

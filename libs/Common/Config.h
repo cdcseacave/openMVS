@@ -200,7 +200,14 @@
 #	define MEMALLOC __attribute__ ((__malloc__))
 #	define HOT __attribute__((hot)) __attribute__((optimize("-O3"))) __attribute__((optimize("-ffast-math"))) //optimize for speed, even in debug
 #	define COLD __attribute__((cold)) //optimize for size
-#	define FORCEINLINE inline //__attribute__((always_inline))
+#	if defined(__clang__)
+	// inlined as MSVC's __forceinline is: the hot loops are tuned for it (e.g. the PatchMatch patch
+	// samplers, which clang leaves out of line otherwise); GCC fails the build where an always_inline
+	// function can not be inlined, so it keeps the hint
+#	define FORCEINLINE inline __attribute__((always_inline))
+#	else
+#	define FORCEINLINE inline
+#	endif
 #else
 #	define ALIGN(n)
 #	define NOINITVTABLE

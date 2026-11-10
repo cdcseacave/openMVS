@@ -183,6 +183,10 @@ bool SyntheticSphericalTest();
 // test's CPU accuracy; skipped without a GPU
 bool SyntheticSphericalGPUTest(bool forceCPU);
 
+// the confidence recalibration on the GPU (CUDA, or Metal on Apple) against the CPU sweep on the same
+// inputs; skipped without a GPU
+bool GPUConfidenceTest(bool forceCPU);
+
 #ifdef _USE_METAL
 // the Metal kernels' hand mirror of CameraModels.h and DepthGeometry.h against the C++ models on
 // random inputs, evaluated on the device; skipped without a Metal device
@@ -203,6 +207,7 @@ bool BrownUndistortOnLoadTest();
 //   synth <outDir> [panoWidth=512]: write the default dataset
 //   evaldepth <gt.dmap> <est.dmap> [pinhole|brown|spherical]: print the evaluation table
 //   synthtest [verbosity]: run SyntheticDepthBaselineTest alone
+//   conftest [verbosity]: run GPUConfidenceTest alone
 //   sphtest <verbosity> [panoWidth=512] [numPanos=3] [faces=1] [maxElevation] [maxViews] [maxThreads] [gpu=0]: CPU (gpu: CUDA, or Metal on Apple)
 //     PatchMatch on panoramas and on their cube faces; maxElevation overrides DepthEstimatorBase::fSphericalWarpMaxElevation
 //     (0: exact warp only)

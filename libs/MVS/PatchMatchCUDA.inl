@@ -50,10 +50,9 @@
 namespace MVS {
 
 struct DepthData;
+struct ConfAdjustRequest; // ConfidenceGPU.h (fused confidence recalibration)
 
 namespace CUDA {
-
-struct ConfAdjustRequest; // ConfidenceCUDA.h (fused confidence recalibration)
 
 class PatchMatch {
 public:

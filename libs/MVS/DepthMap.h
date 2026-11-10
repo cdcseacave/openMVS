@@ -165,7 +165,7 @@ extern MVS_API int nFuseViolationMax;
 // off by default: worth enabling when the dense point-cloud itself is the final output, not when a
 // mesh reconstruction follows (which interpolates the extra points anyway).
 extern MVS_API bool bFuseRecycleDropped;
-extern MVS_API bool bEstimateConfidenceCUDA; // when CUDA estimation is used, run ADJUST_CONFIDENCE on the GPU integrated into the last geometric-consistency iteration (default); 0 forces the CPU version
+extern MVS_API bool bEstimateConfidenceGPU; // when GPU (CUDA or Metal) estimation is used, run ADJUST_CONFIDENCE on the GPU integrated into the last geometric-consistency iteration (default); 0 forces the CPU version
 extern MVS_API unsigned nEstimationIters;
 extern MVS_API unsigned nEstimationGeometricIters;
 extern MVS_API unsigned nPatchMatchCUDAInstances;
@@ -578,21 +578,61 @@ struct DepthEstimatorT : DepthEstimatorBase {
 	PatchWarp ComputePatchWarp(const DepthData::ViewData& image1, Depth, const Normal&) const;
 	float ComputeGeometricConsistency(const DepthData::ViewData& image1, Depth) const;
 	Point3f ComputeNeighborPoint(const ImageRef& nx, Depth) const;
-	// the texels of the patch of the plane (depth, normal) at x0 as seen in the target view, in the
-	// order of the reference texels (nTexels values); false if one of them is not seen there
-	inline bool SamplePatch(const DepthData::ViewData& image1, Depth depth, const Normal& normal, float* texels) {
-		if constexpr (!bSphericalRef) {
-			if (!bModelWarp)
-				return SamplePinholePatch(image1, depth, normal, texels);
+	// the NCC terms of the target texels of the patch at x0, accumulated texel by texel in the order of
+	// the reference texels as the patch samplers hand them over (sums(value), nTexels calls)
+	struct PatchSums {
+		#if DENSE_NCC == DENSE_NCC_WEIGHTED
+		const typename Weight::Pixel* weights; // of the reference texels
+		#elif DENSE_NCC == DENSE_NCC_FAST
+		const TexelVec* texels0;
+		#else
+		TexelVec* texels1; // the target texels, stored
+		#endif
+		int n;
+		float sum;
+		#if DENSE_NCC != DENSE_NCC_DEFAULT
+		float sumSq, num;
+		#endif
+		FORCEINLINE void operator()(float v) {
+			ASSERT(n < nTexels);
+			#if DENSE_NCC == DENSE_NCC_FAST
+			sum += v;
+			sumSq += SQUARE(v);
+			num += (*texels0)(n++)*v;
+			#elif DENSE_NCC == DENSE_NCC_WEIGHTED
+			const typename Weight::Pixel& pw = weights[n++];
+			const float vw(v*pw.weight);
+			sum += vw;
+			sumSq += v*vw;
+			num += v*pw.tempWeight;
+			#else
+			sum += (*texels1)(n++) = v;
+			#endif
 		}
-		return SampleModelPatch(image1, depth, normal, texels);
+	};
+	inline PatchSums InitPatchSums() {
+		#if DENSE_NCC == DENSE_NCC_WEIGHTED
+		return PatchSums{weightMap0[x0.y*image0.image.width()+x0.x].weights, 0, 0.f, 0.f, 0.f};
+		#elif DENSE_NCC == DENSE_NCC_FAST
+		return PatchSums{&texels0, 0, 0.f, 0.f, 0.f};
+		#else
+		return PatchSums{&texels1, 0, 0.f};
+		#endif
 	}
-	// the same between pinhole cameras, through the cached plane homography
-	bool SamplePinholePatch(const DepthData::ViewData& image1, Depth, const Normal&, float* texels);
+	// the cost of the plane (depth, normal) in the target view from the NCC sums of its whole patch,
+	// with the smoothness, geometric-consistency and depth-prior terms
+	FORCEINLINE float ScorePatch(const DepthData::ViewData& image1, Depth, const Normal&, PatchSums);
+	// the texels of the patch of the plane (depth, normal) at x0 as seen in the target view, handed to
+	// sums one by one in the order of the reference texels; false, after fewer, if one of them is not
+	// seen there; between pinhole cameras, through the cached plane homography
+	template<typename TexelSink>
+	FORCEINLINE bool SamplePinholePatch(const DepthData::ViewData& image1, Depth, const Normal&, TexelSink& sink);
 	// the same as soon as a spherical camera is involved in the scene
-	bool SampleModelPatch(const DepthData::ViewData& image1, Depth, const Normal&, float* texels);
+	template<typename TexelSink>
+	bool SampleModelPatch(const DepthData::ViewData& image1, Depth, const Normal&, TexelSink& sink);
 	// the same through the exact per-texel warp into a spherical target (single precision)
-	bool SampleExactPatch(const DepthData::ViewData& image1, const Spherical<float>& trg, Depth, const Normal&, float* texels);
+	template<typename TexelSink>
+	bool SampleExactPatch(const DepthData::ViewData& image1, const Spherical<float>& trg, Depth, const Normal&, TexelSink& sink);
 	// the geometric-consistency cost against the depth-map of a target of model TRG (single precision)
 	template<typename TRG>
 	float GeometricConsistency(const DepthData::ViewData& image1, const TRG& trg, Depth) const;
