@@ -266,8 +266,9 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 	ViewsMap lowResViewsMap;
 	IIndex prevNumImages = (IIndex)images.size();
 	const IIndex numImages = depthData.images.size();
-	// the view gate of the model kernels keeps one bit per neighbor view
-	ASSERT(numImages - 1 <= 32);
+	// the kernels hold the reference and up to MAX_VIEWS (32) neighbors; SelectViews keeps at most
+	// OPTDENSE::MAX_ESTIMATION_NEIGHBORS of them
+	ASSERT(numImages - 1 <= OPTDENSE::MAX_ESTIMATION_NEIGHBORS);
 	// the camera models, one bit per view: a slot whose model changes gets textures of the new addressing
 	const uint64_t prevSphericalViews = params.sphericalViews;
 	params.sphericalViews = 0;

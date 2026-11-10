@@ -112,6 +112,9 @@ extern MVS_API unsigned nMinResolution;
 extern MVS_API unsigned nSubResolutionLevels;
 extern MVS_API unsigned nMinViews;
 extern MVS_API unsigned nMaxViews;
+// the most neighbor views a depth-map is estimated with, whatever nMaxViews/nNumViews ask for:
+// the GPU estimators hold the reference and at most this many neighbors
+constexpr unsigned MAX_ESTIMATION_NEIGHBORS = 31;
 extern MVS_API unsigned nMinViewsFuse;
 extern MVS_API unsigned nMaxViewsFuse;
 extern MVS_API unsigned nMinViewsTrustPoint;

@@ -310,7 +310,7 @@ bool DepthMapsData::SelectViews(DepthData& depthData)
 	const float fMinScale(0.2f), fMaxScale(3.2f);
 	const float fMinAngle(D2R(OPTDENSE::fMinAngle));
 	const float fMaxAngle(D2R(OPTDENSE::fMaxAngle));
-	const unsigned nMaxViews(MAXF(OPTDENSE::nMaxViews, OPTDENSE::nNumViews));
+	const unsigned nMaxViews(MINF(MAXF(OPTDENSE::nMaxViews, OPTDENSE::nNumViews), OPTDENSE::MAX_ESTIMATION_NEIGHBORS));
 	if (!Scene::FilterNeighborViews(depthData.neighbors, fMinArea, fMinScale, fMaxScale, fMinAngle, fMaxAngle, nMaxViews)) {
 		DEBUG_EXTRA("error: reference image %3u has no good images in view", idxImage);
 		return false;

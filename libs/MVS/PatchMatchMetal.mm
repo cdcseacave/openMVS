@@ -49,6 +49,7 @@
 #include "PatchMatchMetal_msl.h"
 
 #define METAL_MAX_VIEWS 32   // must match MAX_VIEWS in the shader
+static_assert(MVS::OPTDENSE::MAX_ESTIMATION_NEIGHBORS < METAL_MAX_VIEWS, "the shader holds the reference and the neighbors");
 
 namespace MVS {
 
@@ -287,11 +288,9 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* confR
 	NormalMap lowResNormalMap;
 	ViewsMap lowResViewsMap;
 	// the shader's texture arrays hold METAL_MAX_VIEWS entries (reference + neighbors);
-	// clamp so a user-configured OPTDENSE::nMaxViews beyond the cap cannot overflow the
-	// texture bindings or index past the shader arrays (CUDA guards the same cap with an
-	// ASSERT in UploadCameras). images are score-ordered, so we keep the best neighbors.
-	ASSERT(depthData.images.size() <= METAL_MAX_VIEWS);
-	const IIndex numImages = MINF((IIndex)depthData.images.size(), (IIndex)METAL_MAX_VIEWS);
+	// SelectViews keeps at most OPTDENSE::MAX_ESTIMATION_NEIGHBORS neighbors
+	const IIndex numImages = (IIndex)depthData.images.size();
+	ASSERT(numImages <= METAL_MAX_VIEWS);
 	params.nNumViews = (int)numImages - 1;
 	params.nInitTopK = MINF(params.nInitTopK, params.nNumViews);
 	params.fDepthMin = depthData.dMin;

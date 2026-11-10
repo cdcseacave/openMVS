@@ -149,8 +149,8 @@ reject a file whose flag disagrees with the view's model.
 - Normals are camera-facing against the pixel ray; surface normal and propagation use the generic geometry
   of `DepthGeometry.h` on those rays.
   `GeometricConsistencyWeightModel` is the CPU round trip with the wrapped column distance.
-- View gate (`MultiViewScorePlane`, model kernels): the CPU rule on a bit mask over the neighbor views, at
-  most `MAX_VIEWS` (32) including the reference.
+- View gate (`MultiViewScorePlane`, model kernels): the CPU rule on a bit mask over the neighbor views:
+  `SelectViews` keeps at most `OPTDENSE::MAX_ESTIMATION_NEIGHBORS` (31), the Metal shader's limit too.
 - The model kernels are `__forceinline__`: under `-rdc` a callee is compiled with its own register count and
   must fit the 128 registers of the launch bounds.
 - Pinhole scenes run the unchanged kernels; depth-maps are byte-identical.
