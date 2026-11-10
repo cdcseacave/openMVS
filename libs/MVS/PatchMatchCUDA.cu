@@ -384,7 +384,7 @@ struct PatchSums {
 __device__ inline void SampleWarpedPatch(const RefPatchCache& cache, const ImagePixels trgImage, Point3 X, const Point3& dx, const Point3& dy, const float offsetX, const float offsetY, PatchSums& sums)
 {
 	// inline hnormalized() as RCP + 2 FMAs (the texel-center offset rides into the FMA)
-	// replaces 2 IEEE divisions per sample in the 25-sample patch walk; hottest inner loop, ~-29% per-view kernel time
+	// replaces 2 IEEE divisions per sample in the 25-sample patch walk, the hottest inner loop
 	Point3 baseX(X);
 	int idx = 0;
 	#pragma unroll
@@ -472,8 +472,7 @@ struct RefPixel {
 	__device__ Point3 TexelRay(const Point2i& p, int j, int i) const {
 		if constexpr (MODEL == MODEL_SPHERICAL_REF) {
 			const int width = g_cameras[0].size.x();
-			int c = p.x() + j;
-			c = c < 0 ? c + width : (c >= width ? c - width : c);
+			const int c = SEACAVE::WrapColumn(p.x() + j, width);
 			const float2 lon = __ldg(g_params.refTrig + c), el = __ldg(g_params.refTrig + width + p.y() + i);
 			return SEACAVE::Spherical<float>::Ray(lon.x, lon.y, el.x, el.y);
 		} else {
@@ -757,7 +756,7 @@ __device__ __forceinline__ void ProcessPixel(const ImagePixels* images, const Im
 			if constexpr (bWrapCols) {
 				if (!(np.y()>=0 && np.y()<height))
 					continue;
-				np.x() = np.x() < 0 ? np.x() + width : (np.x() >= width ? np.x() - width : np.x());
+				np.x() = SEACAVE::WrapColumn(np.x(), width);
 			} else {
 				if (!(np.x()>=0 && np.y()>=0 && np.x()<width && np.y()<height))
 					continue;

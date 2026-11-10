@@ -266,9 +266,9 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 	ViewsMap lowResViewsMap;
 	IIndex prevNumImages = (IIndex)images.size();
 	const IIndex numImages = depthData.images.size();
-	// the camera models: a slot whose model changes gets textures of the new addressing
-	// the view gate of the model kernels keeps one bit per neighbor view, the camera models one per view
+	// the view gate of the model kernels keeps one bit per neighbor view
 	ASSERT(numImages - 1 <= 32);
+	// the camera models, one bit per view: a slot whose model changes gets textures of the new addressing
 	const uint64_t prevSphericalViews = params.sphericalViews;
 	params.sphericalViews = 0;
 	for (IIndex i = 0; i < numImages; ++i)
@@ -435,7 +435,7 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 
 		// the sines and cosines of the longitude of every column and of the elevation of every row of an
 		// equirectangular reference, its rays and ray frames being built from them
-		std::vector<float2> refTrig;
+		cList<float2, const float2&, 0> refTrig;
 		if (params.sphericalViews & 1u) {
 			const Spherical<double> camera(MakeCameraModel<Spherical<double>>(depthData.images.front().camera));
 			refTrig.resize(size.width + size.height);
