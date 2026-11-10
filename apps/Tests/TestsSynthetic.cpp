@@ -589,7 +589,7 @@ bool MVS::SynthSave(const SynthViewArr& views, const String& folder)
 		}
 		if (!ExportDepthDataRaw(folder + view.name + ".dmap", imageName, IIndexArr{i}, view.depthMap.size(),
 				view.camera.GetK(), RMatrix(view.camera.R), CMatrix(view.camera.C), dMin, dMax,
-				view.depthMap, view.normalMap, ConfidenceMap(), ViewsMap()) ||
+				view.depthMap, view.normalMap, ConfidenceMap(), ViewsMap(), false, view.camera.model == CameraModelType::SPHERICAL) ||
 			!ExportDepthMap(folder + view.name + ".depth.png", view.depthMap))
 			return false;
 		json << (i ? ",\n" : "") << "{\"name\": \"" << view.name << "\", \"pano\": " << view.pano << ", \"face\": " << view.face
