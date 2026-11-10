@@ -30,6 +30,7 @@
 */
 
 #include "PatchMatchCUDA.inl"
+#include "Common/DepthGeometry.h"
 
 // static max supported views
 #define MAX_VIEWS 32
@@ -75,16 +76,14 @@ namespace CUDA {
 #define ImagePixels cudaTextureObject_t
 #define RandState curandState
 
-// nvcc rejects `__constant__ Camera[...]` in Debug because the Eigen-backed
-// Camera type is treated as needing dynamic initialization. Keep Release on
-// the direct Camera array, and use aligned byte storage only for Debug.
-#if defined(_DEBUG)
+// __constant__ memory admits no dynamic initialization, and nvcc treats the
+// user-provided (Eigen) constructors of Camera as one; store the cameras as
+// raw bytes of the same size and alignment instead
 struct alignas(Camera) CameraConstStorage {
 	unsigned char bytes[sizeof(Camera)];
 };
 static_assert(sizeof(CameraConstStorage) == sizeof(Camera), "Camera constant storage must preserve Camera size");
 static_assert(alignof(CameraConstStorage) == alignof(Camera), "Camera constant storage must preserve Camera alignment");
-#endif
 
 // Cameras and runtime params live in __constant__ memory: warp-broadcast
 // reads through the constant cache replace per-thread parameter-stack /
@@ -98,12 +97,8 @@ static_assert(alignof(CameraConstStorage) == alignof(Camera), "Camera constant s
 // PatchMatchCUDA::EstimateDepthMap). If multi-stream / multi-instance
 // parallel use is ever added, switch to per-instance device buffers
 // passed explicitly to kernels.
-#if defined(_DEBUG)
 __constant__ CameraConstStorage g_cameraStorage[MAX_VIEWS + 1];
 #define g_cameras reinterpret_cast<const Camera*>(g_cameraStorage)
-#else
-__constant__ Camera g_cameras[MAX_VIEWS + 1];
-#endif
 __constant__ PatchMatch::Params g_params;
 
 // set/check a bit
@@ -229,49 +224,6 @@ __device__ inline float GeneratePerturbedDepth(float depth, RandState* randState
 	const float lo = fmaxf((1.f - perturbation) * depth, g_params.fDepthMin);
 	const float hi = fminf((1.f + perturbation) * depth, g_params.fDepthMax);
 	return lo + curand_uniform(randState) * (hi - lo);
-}
-
-// interpolate given pixel's estimate to the current position
-__device__ inline float InterpolatePixel(const CUDA::Camera& camera, const Point2i& p, const Point2i& np, float depth, const Point3& normal)
-{
-	float depthNew;
-	if (p.x() == np.x()) {
-		const float nx1 = (p.y() - camera.model.p.y()) / camera.model.f.y();
-		const float denom = normal.z() + nx1 * normal.y();
-		if (fabsf(denom) < FLT_EPSILON)
-			return depth;
-		const float x1 = (np.y() - camera.model.p.y()) / camera.model.f.y();
-		const float nom = depth * (normal.z() + x1 * normal.y());
-		depthNew = nom / denom;
-	} else if (p.y() == np.y()) {
-		const float nx1 = (p.x() - camera.model.p.x()) / camera.model.f.x();
-		const float denom = normal.z() + nx1 * normal.x();
-		if (fabsf(denom) < FLT_EPSILON)
-			return depth;
-		const float x1 = (np.x() - camera.model.p.x()) / camera.model.f.x();
-		const float nom = depth * (normal.z() + x1 * normal.x());
-		depthNew = nom / denom;
-	} else {
-		const float planeD = normal.dot(camera.model.TransformPointI2C(np.cast<float>(), depth));
-		depthNew = planeD / normal.dot(camera.model.TransformPointI2C(p.cast<float>()));
-	}
-	return (depthNew >= g_params.fDepthMin && depthNew <= g_params.fDepthMax) ? depthNew : depth;
-}
-
-// compute normal to the surface given the 4 neighbors
-__device__ inline Point3 ComputeDepthGradient(const LinearCameraModel& model, float depth, const Point2i& pos, const Point4& ndepth) {
-	constexpr float2 nposg[4] = {{0,-1}, {0,1}, {-1,0}, {1,0}};
-	Point2 dg(0,0);
-	// add neighbor depths at the gradient locations
-	for (int i=0; i<4; ++i)
-		dg += Point2(nposg[i].x,nposg[i].y) * (ndepth[i] - depth);
-	// compute depth gradient
-	const Point2 d = dg*0.5f;
-	// compute normal from depth gradient
-	return Point3(
-		model.f.x()*d.x(),
-		model.f.y()*d.y(),
-		(model.p.x()-pos.x())*d.x()+(model.p.y()-pos.y())*d.y()-depth).normalized();
 }
 
 // compose tho homography matrix that transforms a point from reference to source camera through the given plane
@@ -456,7 +408,7 @@ __device__ inline void MultiViewScorePlane(const RefPatchCache& cache, const Ima
 template <bool GEOM>
 __device__ inline float MultiViewScoreNeighborPlane(const RefPatchCache& cache, const ImagePixels* images, const ImagePixels* depthImages, const Point2i& p, const Point2i& np, Point4 plane, const float lowDepth, float* costVector)
 {
-	plane.w() = InterpolatePixel(g_cameras[0], p, np, plane.w(), plane.topLeftCorner<3,1>());
+	plane.w() = SEACAVE::InterpolatePlaneDepth(g_cameras[0].model.f, g_cameras[0].model.p, p, np, plane.w(), plane.topLeftCorner<3,1>(), g_params.fDepthMin, g_params.fDepthMax);
 	MultiViewScorePlane<GEOM>(cache, images, depthImages, p, plane, lowDepth, costVector);
 	return plane.w();
 }
@@ -637,14 +589,13 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 	int numValidPlanes = 3;
 	Point3 surfaceNormal = Point3::Zero();
 	if (valid[0] && valid[1] && valid[2] && valid[3]) {
-		// estimate normal from surrounding surface
-		const Point4 ndepths(
-			LoadPlaneWLDG(&planes[neighborPositions[0]]),
-			LoadPlaneWLDG(&planes[neighborPositions[1]]),
-			LoadPlaneWLDG(&planes[neighborPositions[2]]),
-			LoadPlaneWLDG(&planes[neighborPositions[3]])
-		);
-		surfaceNormal = ComputeDepthGradient(g_cameras[0].model, depth, p, ndepths);
+		// estimate normal from the depth plane through the 4 adjacent neighbors
+		SEACAVE::DepthPlaneFit fit;
+		fit.Add( 0,-1, LoadPlaneWLDG(&planes[neighborPositions[0]]) - depth);
+		fit.Add( 0, 1, LoadPlaneWLDG(&planes[neighborPositions[1]]) - depth);
+		fit.Add(-1, 0, LoadPlaneWLDG(&planes[neighborPositions[2]]) - depth);
+		fit.Add( 1, 0, LoadPlaneWLDG(&planes[neighborPositions[3]]) - depth);
+		surfaceNormal = SEACAVE::NormalFromDepthGradient(g_cameras[0].model.f, g_cameras[0].model.p, p, depth, fit.Gradient());
 		numValidPlanes = 4;
 	}
 	constexpr int numPlanes = 4;
@@ -761,11 +712,7 @@ __host__ void PatchMatch::UploadCameras()
 {
 	const size_t n = cameras.size();
 	ASSERT(n <= MAX_VIEWS + 1);
-	#if defined(_DEBUG)
 	CUDA_CHECK(cudaMemcpyToSymbolAsync(g_cameraStorage, cameras.data(), sizeof(Camera) * n, 0, cudaMemcpyHostToDevice, cudaStream));
-	#else
-	CUDA_CHECK(cudaMemcpyToSymbolAsync(g_cameras, cameras.data(), sizeof(Camera) * n, 0, cudaMemcpyHostToDevice, cudaStream));
-	#endif
 }
 __host__ void PatchMatch::UploadParams()
 {

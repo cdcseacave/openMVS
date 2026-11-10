@@ -24,7 +24,7 @@ Scene (top-level container)
 ```
 
 ### Precompiled Header Chain
-`Common.h` → `MVS/Common.h` → `glad/glad.h` (with `GLAD_GL_IMPLEMENTATION`) → `GLFW/glfw3.h` → `OpenGLDebug.h`
+`Common.h` → `MVS/Common.h` → `glad/gl.h` (GLAD 2, `_USE_GLAD2`) or `glad/glad.h` (GLAD 1) → `GLFW/glfw3.h` → `OpenGLDebug.h`; Common.h is the only place choosing the loader, so every Viewer file gets OpenGL by including it
 
 ### Coordinate System
 `Common.h` defines `gs_convert` — a static 4x4 matrix converting from OpenGL default (Y-up) to camera coordinates (Y-down, Z-backward/NADIR). Helper functions `TransW2L(R,t)` and `TransL2W(R,t)` build world-to-local and local-to-world 4x4 Eigen matrices from rotation + translation.
@@ -174,7 +174,7 @@ Three selection shapes: BOX (rectangular), LASSO (free-form polygon), CIRCLE. Th
 
 **Multi-select**: SelectionController classifies the active visible layer's point cloud points and mesh triangles against the 2D selection region. Results are stored as active-layer-local indices in `Window::selectionIdx`.
 
-**Actions on selection**: `Scene::RemoveSelectedGeometry()` deletes selected points/triangles. `Scene::SetROIFromSelection()` sets region-of-interest from selection. `Scene::CropToPoints()` extracts sub-scene from selected points.
+**Actions on selection**: `Scene::RemoveSelectedGeometry()` deletes selected triangles and the selected points the confidence filter shows (a point selected before the window was narrowed stays selected but hidden, and is kept). `Scene::SetROIFromSelection()` sets region-of-interest from selection. `Scene::CropToPoints()` extracts sub-scene from selected points.
 
 **Index mapping**: `Scene::ImageIdxMVS2Viewer()` converts between active-layer MVS image indices and Viewer-local image indices (which skip invalid images).
 
@@ -183,7 +183,10 @@ Three selection shapes: BOX (rectangular), LASSO (free-form polygon), CIRCLE. Th
 ImGui with docking support, GLFW/OpenGL3 backends, persistent `.ini` settings.
 
 ### Panels
-- Layers (visibility/solo/active, compare off/swipe/split with A|B sides and camera sync, align-to-active), scene info, camera controls, selection controls, render settings
+- Layers (opens by itself once a second layer is loaded; visibility/solo/active, compare off/swipe/split with A|B sides and camera sync, align-to-active), scene info, camera controls, selection controls, render settings
+- Camera colors (Camera Controls): per layer, *Sequence* (jet by image order, `Layer::useCameraJetColor`) or *Solid* (`Layer::cameraColor`); the last choice is persisted as `Window::useCameraJetColor` (ini key `CameraDisplayColor`) and applied to new layers
+- Point Observations (Shift+P, `PointObservations.h`): for the selected point, one patch per view in `pointViews`, centered on its projection and cropped from the full resolution image. Crops run as `BS::light_thread_pool` tasks reading a per-layer `MVS::ImageCache` (color decoder, budget 1/4 of free RAM); the tasks get values only, never the layer, and a generation counter discards superseded requests. *Equalized* scales each patch by the view footprint so all cover the same surface (median view at the zoom), *Original* shows every image's pixels at the zoom; clicking a patch enters that camera's view mode. Rebuilt when the active layer, its `revision` (bumped by `RefreshLayerState`) or the selected point changes
+- Point Confidence (open by default, shown only while the active layer's cloud has `pointWeights`, e.g. a `.dmap`): `Layer::pointConfidence` (`PointConfidenceFilter`, `Common.h`) quantizes each point's confidence (largest view weight) to 8 bits over the cloud's range; the byte rides in the alpha of the RGBA8 point color (no extra VRAM) and the [min, max] window of levels is a per-layer uniform (`confidenceWindow`) of `pointcloud.vert`/`picker_points.vert`/`pointcloudnormals.vert` (the normal lines carry the byte in the w of their vertices)/`geometryselection.vert` (selected points stay hidden), so moving the slider uploads nothing and point indices never change; box/lasso selection applies the same test; a cloud without confidence resets the window to show every point
 - Console overlay (log output), performance overlay (frame stats)
 - Viewport overlay, selection overlay
 
@@ -240,7 +243,7 @@ Async MVS pipeline stages executable from the Viewer UI:
 
 ## Build & Dependencies
 
-**Required packages** (all via vcpkg): GLAD, GLFW3, ImGui, portable-file-dialogs
+**Required packages** (all via vcpkg): GLAD (GLAD 1 from vcpkg; a GLAD 2 CMake package with `glad_add_library` is preferred when found), GLFW3, ImGui, portable-file-dialogs
 **Links against**: MVS library (which brings in Common, IO, Math, Eigen, OpenCV, etc.)
 
 ### Platform-Specific

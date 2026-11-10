@@ -719,76 +719,35 @@ bool Scene::ExportCamerasMLP(const String& fileName, const String& fileNameScene
 } // ExportCamerasMLP
 
 bool Scene::ExportLinesPLY(const String& fileName, const CLISTDEF0IDX(Line3f,uint32_t)& lines, const Pixel8U* colors, bool bBinary) {
-	// define a PLY file format composed only of vertices and edges
-	// vertex definition
-	struct PLYVertex {
-		float x, y, z;
-	};
-	// list of property information for a vertex
-	static PLY::PlyProperty vert_props[] = {
-		{"x", PLY::Float32, PLY::Float32, offsetof(PLYVertex,x), 0, 0, 0, 0},
-		{"y", PLY::Float32, PLY::Float32, offsetof(PLYVertex,y), 0, 0, 0, 0},
-		{"z", PLY::Float32, PLY::Float32, offsetof(PLYVertex,z), 0, 0, 0, 0},
-	};
-	// edge definition
-	struct PLYEdge {
-		int v1, v2;
-		uint8_t r, g, b;
-	};
-	// list of property information for a edge
-	static PLY::PlyProperty edge_props[] = {
-		{"vertex1", PLY::Uint32, PLY::Uint32, offsetof(PLYEdge,v1), 0, 0, 0, 0},
-		{"vertex2", PLY::Uint32, PLY::Uint32, offsetof(PLYEdge,v2), 0, 0, 0, 0},
-		{"red", PLY::Uint8, PLY::Uint8, offsetof(PLYEdge,r), 0, 0, 0, 0},
-		{"green", PLY::Uint8, PLY::Uint8, offsetof(PLYEdge,g), 0, 0, 0, 0},
-		{"blue", PLY::Uint8, PLY::Uint8, offsetof(PLYEdge,b), 0, 0, 0, 0},
-	};
-	// list of the kinds of elements in the PLY
-	static const char* elem_names[] = {
-		"vertex", "edge"
-	};
-
-	// create PLY object
-	ASSERT(!fileName.empty());
-	Util::ensureFolder(fileName);
-	// each line stores two vertices and one edge
-	const size_t memBufferSize(PLY::ComputeMemBufferSize(lines.size(), 2*sizeof(PLYVertex) + sizeof(PLYEdge)));
-	PLY ply;
-	if (!ply.write(fileName, 2, elem_names, bBinary?PLY::BINARY_LE:PLY::ASCII, memBufferSize))
-		return false;
-
-	// describe what properties go into the vertex elements
-	ply.describe_property("vertex", 3, vert_props);
-	PLYVertex v;
+	// a PLY file of vertices and edges: the two end points of each line and the edge joining them
+	std::vector<Point3f> vertices(lines.size()*2);
+	std::vector<uint32_t> edges(lines.size()*2);
 	FOREACH(i, lines) {
 		const Line3f& line = lines[i];
-		v.x = line.pt1.x(); v.y = line.pt1.y(); v.z = line.pt1.z();
-		ply.put_element(&v);
-		v.x = line.pt2.x(); v.y = line.pt2.y(); v.z = line.pt2.z();
-		ply.put_element(&v);
+		vertices[i*2+0] = Point3f(line.pt1.x(), line.pt1.y(), line.pt1.z());
+		vertices[i*2+1] = Point3f(line.pt2.x(), line.pt2.y(), line.pt2.z());
+		edges[i*2+0] = i*2+0;
+		edges[i*2+1] = i*2+1;
 	}
-
-	// describe what properties go into the edge elements
-	if (colors) {
-		ply.describe_property("edge", 5, edge_props);
-		PLYEdge edge;
-		FOREACH(i, lines) {
-			const Pixel8U& color = colors[i];
-			edge.r = color.r; edge.g = color.g; edge.b = color.b;
-			edge.v1 = i*2+0; edge.v2 = i*2+1;
-			ply.put_element(&edge);
+	ASSERT(!fileName.empty());
+	Util::ensureFolder(fileName);
+	PLY ply;
+	if (!lines.empty()) {
+		ply.AddElement("vertex", vertices.size(), {
+			PLY::Scalar("x", &vertices[0].x, sizeof(Point3f)),
+			PLY::Scalar("y", &vertices[0].y, sizeof(Point3f)),
+			PLY::Scalar("z", &vertices[0].z, sizeof(Point3f))});
+		PLY::Bindings edgeBindings{
+			PLY::Scalar("vertex1", &edges[0], sizeof(uint32_t)*2),
+			PLY::Scalar("vertex2", &edges[1], sizeof(uint32_t)*2)};
+		if (colors) {
+			edgeBindings.push_back(PLY::Scalar("red", &colors[0].r, sizeof(Pixel8U)));
+			edgeBindings.push_back(PLY::Scalar("green", &colors[0].g, sizeof(Pixel8U)));
+			edgeBindings.push_back(PLY::Scalar("blue", &colors[0].b, sizeof(Pixel8U)));
 		}
-	} else {
-		ply.describe_property("edge", 2, edge_props);
-		PLYEdge edge;
-		FOREACH(i, lines) {
-			edge.v1 = i*2+0; edge.v2 = i*2+1;
-			ply.put_element(&edge);
-		}
+		ply.AddElement("edge", lines.size(), std::move(edgeBindings));
 	}
-
-	// write to file
-	return ply.header_complete();
+	return ply.Save(fileName, bBinary ? PLY::BINARY_LE : PLY::ASCII);
 } // ExportLinesPLY
 /*----------------------------------------------------------------*/
 

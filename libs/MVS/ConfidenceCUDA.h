@@ -31,11 +31,12 @@ namespace MVS {
 namespace CUDA {
 
 // Host-side descriptor for one confirming neighbor view: the fused single-precision projection
-// transforms (row-major 3x3 A/Ai/Rrel + 3-vectors b/bi, built exactly as the CPU NeighborProj) plus
+// transforms (row-major 3x3 A/Rrel, 3-vectors b/cn, built exactly as the CPU NeighborProj) plus
 // HOST pointers to that neighbor's depth/conf/normal maps (row-major, contiguous). conf/normal may
 // be null (treated as "no confidence" / "no normal gate", matching the CPU).
 struct ConfNeighborHost {
-	float A[9], b[3], Ai[9], bi[3], Rrel[9];
+	float A[9], b[3], Rrel[9];
+	float cn[3];           // neighbor centre in the reference camera frame (triangulation angle)
 	const float* depth;    // width*height
 	const float* conf;     // width*height, or null
 	const float* normal;   // 3*width*height (interleaved x,y,z), or null
@@ -59,10 +60,9 @@ struct ConfNeighborHost {
 struct ConfAdjustRequest {
 	std::vector<ConfNeighborHost> neighbors;
 	ConfRefine::Params params;             // single-precision OPTDENSE snapshot
-	float k00, k11, k02, k12;              // reference camera intrinsics (skew-free)
+	float fx, fy, cx, cy;                  // reference camera intrinsics (skew-free)
 	// outputs
 	bool done = false;                     // fused kernels ran and confMap holds the adjusted conf
-	int64_t computeNS = 0;                 // wall time of the fused launch (kernels + transfers)
 };
 
 // Compute the intra-map prior + one-hop multi-view confirmation on the GPU for one reference view,
@@ -72,7 +72,7 @@ struct ConfAdjustRequest {
 bool RunConfidenceCUDA(
 	int W, int H,
 	const float* refDepth, const float* refNormal /*3*W*H or null*/, const float* refConf,
-	float k00, float k11, float k02, float k12,           // reference camera intrinsics (skew-free)
+	float fx, float fy, float cx, float cy,
 	const ConfNeighborHost* neighbors, int nNeighbors,
 	const ConfRefine::Params& params,
 	float* confOut);
@@ -88,7 +88,7 @@ bool RunConfidenceCUDA(
 bool RunConfidenceFusedCUDA(
 	int W, int H,
 	const void* devDepthNormals, const float* devCosts,
-	float k00, float k11, float k02, float k12,
+	float fx, float fy, float cx, float cy,
 	const ConfNeighborHost* neighbors, int nNeighbors,
 	const ConfRefine::Params& params,
 	void* stream,

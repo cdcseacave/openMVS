@@ -75,9 +75,8 @@ public:
 	bool EstimateDepthMap(IIndex idxImage, int nGeometricIter);
 
 	#ifdef _USE_CUDA
-	// Construct poolSize PatchMatch instances ready for the depth-map phase.
-	// First construction probes CUDA::initDevices(); returns false if the
-	// device set is still empty afterwards (caller falls back to CPU).
+	// Construct poolSize PatchMatch instances ready for the depth-map phase;
+	// returns false if no CUDA device can be used (caller falls back to CPU).
 	bool AllocateCudaPool(unsigned poolSize);
 	// Tear down per-instance state and re-init for the geometric-consistency
 	// phase, resetting the slot counter and bumping the epoch so worker threads
@@ -191,6 +190,9 @@ struct MVS_API DenseDepthMapData {
 	// balanced so the queue ends empty (see DenseReconstructionEstimate), which is
 	// what lets a non-empty queue stay a reliable failure signal.
 	volatile Thread::safe_t nClosing;
+	// outcome of the confidence recalibration integrated into the last geometric-consistency
+	// iteration, counted per depth-map: done on the GPU, done on the CPU (GPU-error fallback), failed
+	volatile Thread::safe_t nConfAdjustedGPU, nConfAdjustedCPU, nConfAdjustFailed;
 	STEREO::SemiGlobalMatcher sgm;
 	// number of workers in the dense-reconstruction ThreadPool; set by
 	// DenseReconstruction once the CUDA pool size is known. Used by the worker

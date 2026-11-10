@@ -69,6 +69,7 @@ Window::Window()
 	, uncertaintyEllipsoidScale(1.f)
 	, cameraDisplayType(CAMERA_DISPLAY_FRUSTUM)
 	, showCameraLookAt(true)
+	, useCameraJetColor(false)
 	, pointSize(3.f)
 	, pointNormalLength(0.02f)
 	, imageOverlayOpacity(0.5f)
@@ -153,7 +154,7 @@ bool Window::Initialize(const cv::Size& size, const String& windowTitle, Scene& 
 	glfwMakeContextCurrent(window);
 
 	// Load OpenGL functions with GLAD
-	if (!gladLoadGL()) {
+	if (!LOAD_OPENGL_FUNCTIONS()) {
 		DEBUG("Failed to initialize GLAD");
 		glfwDestroyWindow(window);
 		glfwTerminate();
@@ -219,7 +220,7 @@ bool Window::Initialize(const cv::Size& size, const String& windowTitle, Scene& 
 		if (!scene.HasBackgroundWork() && activeLayer != NULL && activeLayer->visible && selectionController->hasSelectionPath()) {
 			// Automatically classify geometry when selection is finished
 			if (!scene.GetScene().pointcloud.IsEmpty() && showPointCloud)
-				selectionController->classifyPointCloud(scene.GetScene().pointcloud, camera);
+				selectionController->classifyPointCloud(scene.GetScene().pointcloud, camera, activeLayer->pointConfidence);
 			if (!scene.GetScene().mesh.IsEmpty() && showMesh)
 				selectionController->classifyMesh(scene.GetScene().mesh, camera);
 			RequestRedraw();
@@ -532,6 +533,8 @@ void Window::Render() {
 			ui->ShowSelectionControls(*this);
 			ui->ShowRenderSettings(*this);
 			ui->ShowBoundingBoxControls(*this);
+			ui->ShowPointConfidenceFilter(*this);
+			ui->ShowPointObservations(*this);
 			ui->ShowWorkflowWindows(*this);
 		}
 	}
@@ -944,6 +947,10 @@ void Window::HandleKeyboard(int key, int action, int mods) {
 			return;
 		case GLFW_KEY_B:
 			ui->ToggleBoundingBoxControls();
+			RequestRedraw();
+			return;
+		case GLFW_KEY_P:
+			ui->TogglePointObservations();
 			RequestRedraw();
 			return;
 		default:

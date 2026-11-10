@@ -93,6 +93,7 @@ Single integration test: `MVS::PipelineTest()`.
 ```
 Load scene.mvs
   → DenseReconstruction()        — point cloud >= 50,000 points
+  → SceneSplitTest()             — on the depth-maps: ROI-independent depth term, forced split exported
   → ReconstructMesh()            — faces in [40,000 – 100,000]
   → Mesh::Clean(decimate=0.7)    — faces in [28,000 – 70,000]
   → TestMeshProjectionMT()       — (if OpenMP enabled)
@@ -104,7 +105,7 @@ Load scene.mvs
 The face/quality bounds are deliberately wide plausibility windows: they bracket the
 spread of both the CPU and GPU PatchMatch backends, which differ by design.
 
-Sets `OPTDENSE::bRemoveDmaps = true` to clean intermediate depth maps. Optionally saves `.ply` outputs when verbose.
+Keeps the depth maps on disk (`OPTDENSE::bRemoveDmaps = false`) for `SceneSplitTest` and deletes them right after it, whatever its outcome. Optionally saves `.ply` outputs when verbose (into the data folder: remove them after a verbose run).
 
 ## Logging Convention
 

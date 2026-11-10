@@ -31,6 +31,7 @@
 
 #include "../../libs/MVS.h"
 #include "../../libs/MVS/SceneRefineCommon.h"
+#include "../../libs/MVS/DMapCache.h"
 #include "Tests.h"
 #include "TestsMVS.h"
 #include <halfmesh/RectPacking.h>
@@ -81,6 +82,136 @@ bool MeshVertexColorsPLYTest()
 	if (!pointCloud.Save(fileName) || !loaded.Load(fileName) ||
 		loaded.points != pointCloud.points || loaded.colors != pointCloud.colors || loaded.normals != pointCloud.normals)
 		return false;
+	return true;
+}
+
+// the PLY codec: exact binary and ascii round trips of every kind of property, a big-endian file of
+// other types with a property and an element the loader skips, and malformed files refused
+bool PLYCodecTest()
+{
+	const ScopedTempDir tmpDir(_T("PLYCodecTest"));
+	if (!tmpDir.IsValid())
+		return false;
+
+	// a point-cloud with every attribute, and reals no short decimal carries
+	PointCloud pc;
+	pc.points = {{0.1f, -1e-7f, 12345.678f}, {FLT_MAX, -FLT_MIN, 3.f}, {1.f/3.f, 2.f, -0.5f}};
+	pc.colors = {Pixel8U::RED, Pixel8U::GREEN, Pixel8U::BLUE};
+	pc.normals = {{0.f, 0.f, 1.f}, {0.6f, 0.8f, 0.f}, {1.f, 0.f, 0.f}};
+	pc.pointViews = {{0, 3}, {1}, {2, 4, 5}};
+	pc.pointWeights = {{0.5f, 0.25f}, {1.f}, {0.1f, 0.2f, 0.3f}};
+	pc.labels = {1, 2, 3};
+	for (int format = 0; format < 3; ++format) {
+		const bool bBinary(format != 1), bLegacyTypes(format == 2);
+		const String fileName(tmpDir(String::FormatString("pointcloud%d.ply", format)));
+		PointCloud loaded;
+		if (!pc.Save(fileName, true, bLegacyTypes, bBinary) || !loaded.Load(fileName) ||
+			loaded.points != pc.points || loaded.colors != pc.colors || loaded.normals != pc.normals ||
+			loaded.pointViews != pc.pointViews || loaded.pointWeights != pc.pointWeights || loaded.labels != pc.labels) {
+			VERBOSE("ERROR: PLY point-cloud round trip (%s) is not exact!", bBinary ? (bLegacyTypes ? "binary, legacy types" : "binary") : "ascii");
+			return false;
+		}
+	}
+
+	// a mesh without faces still saves as a mesh: its face element is written, empty, which is how
+	// the sub-scene merge (MvsMergeChunks.py) tells it from a point-cloud
+	{
+		const String fileName(tmpDir(_T("nofaces.ply")));
+		Mesh mesh;
+		mesh.vertices = {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}};
+		const std::string expected(std::string("ply\nformat binary_little_endian 1.0\nelement vertex 3\n"
+			"property float32 x\nproperty float32 y\nproperty float32 z\nelement face 0\nend_header\n") +
+			std::string(reinterpret_cast<const char*>(mesh.vertices.data()), mesh.vertices.GetDataSize()));
+		bool bExact(mesh.Save(fileName));
+		if (bExact) {
+			std::ifstream file(fileName.c_str(), std::ios::binary);
+			bExact = std::string((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>()) == expected;
+		}
+		if (!bExact) {
+			VERBOSE("ERROR: a mesh without faces did not save as a PLY mesh with an empty face element!");
+			return false;
+		}
+	}
+
+	// a big-endian mesh of doubles, with a vertex property and an element the loader skips,
+	// and its triangle as an int-counted "vertex_index" list
+	{
+		std::string body;
+		const auto Put = [&body](auto v) {
+			char bytes[sizeof(v)];
+			memcpy(bytes, &v, sizeof(v));
+			std::reverse(bytes, bytes+sizeof(v));
+			body.append(bytes, sizeof(v));
+		};
+		const double coords[3][3] = {{0.5, 1.25, -2.0}, {1e10, -3.5, 0.0}, {0.1, 0.2, 0.3}};
+		for (const auto& c: coords) {
+			Put(c[0]); Put(c[1]); Put(c[2]);
+			Put(7.f); // quality
+		}
+		Put(uint8_t(2)); Put(int32_t(5)); Put(int32_t(6)); // material ids
+		Put(int32_t(3)); Put(uint32_t(2)); Put(uint32_t(0)); Put(uint32_t(1)); // face
+		const String fileName(tmpDir(_T("bigendian.ply")));
+		std::ofstream(fileName.c_str(), std::ios::binary) << "ply\nformat binary_big_endian 1.0\n"
+			"element vertex 3\nproperty double x\nproperty double y\nproperty double z\nproperty float quality\n"
+			"element material 1\nproperty list uchar int ids\n"
+			"element face 1\nproperty list int uint vertex_index\nend_header\n" << body;
+		Mesh mesh;
+		bool bExact(mesh.Load(fileName) && mesh.vertices.size() == 3 && mesh.faces.size() == 1 && mesh.faces[0] == Mesh::Face(2, 0, 1));
+		for (int v = 0; bExact && v < 3; ++v)
+			bExact = mesh.vertices[v] == Mesh::Vertex((float)coords[v][0], (float)coords[v][1], (float)coords[v][2]);
+		if (!bExact) {
+			VERBOSE("ERROR: a big-endian PLY mesh did not load exactly!");
+			return false;
+		}
+	}
+
+	// malformed files are refused rather than crashed on: a face count the file cannot hold or that
+	// overflows the allocation size, a quad, an ascii record short of a value or with one too many
+	// (each record is one line), a header claiming more vertices than the file holds, and a face
+	// indexing past the vertices
+	const LPCSTR asciiHeader =
+		"ply\nformat ascii 1.0\n"
+		"element vertex 3\nproperty float x\nproperty float y\nproperty float z\n"
+		"element face 2\nproperty list uint int vertex_indices\nend_header\n"
+		"0 0 0\n1 0 0\n0 1 0\n";
+	const auto WriteAscii = [&tmpDir, asciiHeader](LPCSTR faceLines) {
+		const String fileName(tmpDir(_T("malformed.ply")));
+		std::ofstream(fileName.c_str(), std::ios::binary) << asciiHeader << faceLines;
+		return fileName;
+	};
+	const auto WriteBinary = [&tmpDir](int numVertices, uint8_t count, std::initializer_list<uint32_t> indices) {
+		std::string body(3*3*sizeof(float), '\0');
+		body += static_cast<char>(count);
+		for (const uint32_t idx: indices)
+			body.append(reinterpret_cast<const char*>(&idx), sizeof(uint32_t));
+		const String fileName(tmpDir(_T("malformed.ply")));
+		std::ofstream(fileName.c_str(), std::ios::binary) << "ply\nformat binary_little_endian 1.0\nelement vertex " << numVertices <<
+			"\nproperty float x\nproperty float y\nproperty float z\nelement face 1\nproperty list uchar uint vertex_indices\nend_header\n" << body;
+		return fileName;
+	};
+	Mesh mesh;
+	if (!mesh.Load(WriteBinary(3, 3, {0, 1, 2}))) {
+		VERBOSE("ERROR: a well-formed binary PLY triangle was refused!");
+		return false;
+	}
+	if (!mesh.Load(WriteAscii("3 0 1 2\r\n 3 2 1 0 ")) || mesh.faces != Mesh::FaceArr{{0, 1, 2}, {2, 1, 0}}) {
+		VERBOSE("ERROR: well-formed ascii PLY triangles did not load!");
+		return false;
+	}
+	for (const LPCSTR faceLines: {"9 0 1 2\n3 0 1 2\n", "1073741825 0 1 2\n3 0 1 2\n", "4 0 1 2 0\n3 0 1 2\n",
+		"3 0 1\n2 3 0 1 2\n", "3 0 1 2\n3 2 1 0 7\n"}) {
+		if (mesh.Load(WriteAscii(faceLines))) {
+			std::string lines(faceLines);
+			std::replace(lines.begin(), lines.end(), '\n', '|');
+			VERBOSE("ERROR: the ascii PLY faces '%s' were accepted!", lines.c_str());
+			return false;
+		}
+	}
+	if (mesh.Load(WriteBinary(3, 255, {0, 1, 2})) || mesh.Load(WriteBinary(3, 4, {0, 1, 2, 0})) || mesh.Load(WriteBinary(1000, 3, {0, 1, 2})) ||
+		mesh.Load(WriteBinary(3, 3, {0, 1, 3}))) {
+		VERBOSE("ERROR: a malformed binary PLY was accepted!");
+		return false;
+	}
 	return true;
 }
 
@@ -250,6 +381,86 @@ bool MeshHalfMeshProcessingTest()
 		{0, 2, 3}, {0, 3, 4}, {0, 4, 5}, {0, 5, 2},
 		{1, 3, 2}, {1, 4, 3}, {1, 5, 4}, {1, 2, 5}
 	};
+	// the queries and editors halfmesh implements: the unit octahedron bounds 4/3,
+	// split evenly by z=0; its top half alone is open, and closes against z=0 to 2/3
+	{
+		const Mesh& closed(octahedron);
+		REAL above, below;
+		if (!closed.IsWatertight() || !ISEQUAL(closed.ComputeVolume(), REAL(4)/3) ||
+			!ISEQUAL(closed.ComputeVolume(Planef(Planef::VECTOR(0, 0, 1), 0.f), above, below), REAL(4)/3) ||
+			!ISEQUAL(above, REAL(2)/3) || !ISEQUAL(below, REAL(2)/3)) {
+			VERBOSE("ERROR: HalfMesh bridge measured the octahedron's volume wrong!");
+			return false;
+		}
+		Mesh::FaceIdxArr top;
+		for (Mesh::FIndex idxFace: {0u, 1u, 2u, 3u})
+			top.emplace_back(idxFace);
+		const Mesh pyramid(closed.SubMesh(top));
+		if (pyramid.vertices.size() != 5 || pyramid.faces.size() != 4 || pyramid.IsWatertight() ||
+			!ISEQUAL(pyramid.ComputeVolume(Planef(Planef::VECTOR(0, 0, 1), 0.f), above, below), REAL(2)/3)) {
+			VERBOSE("ERROR: HalfMesh bridge extracted the octahedron's top wrong!");
+			return false;
+		}
+		Mesh twice(closed);
+		Mesh shifted(closed);
+		for (Mesh::Vertex& X: shifted.vertices)
+			X.x += 3.f;
+		twice.Join(shifted);
+		if (twice.vertices.size() != 12 || twice.faces.size() != 16 || !twice.IsWatertight() || !ISEQUAL(twice.ComputeVolume(), REAL(8)/3)) {
+			VERBOSE("ERROR: HalfMesh bridge joined two meshes wrong!");
+			return false;
+		}
+		// the viewer merges its layers into an empty mesh: the first keeps its colors
+		Mesh colored(shifted);
+		colored.vertexColors.resize(colored.vertices.size());
+		colored.vertexColors.Memset(255);
+		Mesh merged;
+		merged.Join(colored);
+		if (merged.faces.size() != colored.faces.size() || merged.vertexColors.size() != colored.vertices.size()) {
+			VERBOSE("ERROR: HalfMesh bridge joining onto an empty mesh dropped its attributes!");
+			return false;
+		}
+		Mesh textured(twice);
+		textured.faceTexcoords.resize(textured.faces.size()*3);
+		textured.faceTexcoords.Memset(0);
+		textured.faceTexindices.resize(textured.faces.size());
+		FOREACH(idxFace, textured.faceTexindices)
+			textured.faceTexindices[idxFace] = idxFace < 8 ? 0 : 1;
+		textured.texturesDiffuse.emplace_back(1, 1);
+		textured.texturesDiffuse.emplace_back(2, 2);
+		Mesh::FaceIdxArr mapFaceSubsetIndices;
+		const std::vector<Mesh> perTexture(textured.SplitMeshPerTextureBlob(&mapFaceSubsetIndices));
+		if (perTexture.size() != 2 || perTexture[0].faces.size() != 8 || perTexture[1].faces.size() != 8 ||
+			perTexture[1].texturesDiffuse.size() != 1 || perTexture[1].texturesDiffuse[0].width() != 2 ||
+			!perTexture[1].faceTexindices.empty() || mapFaceSubsetIndices[9] != 1) {
+			VERBOSE("ERROR: HalfMesh bridge split the mesh per texture wrong!");
+			return false;
+		}
+		const ScopedTempDir tmpDir(_T("MeshHalfMeshBridgeTest"));
+		if (!tmpDir.IsValid())
+			return false;
+		const String fileName(tmpDir(_T("octahedron.obj")));
+		Mesh loaded;
+		if (!twice.Save(fileName) || !loaded.Load(fileName) || loaded.vertices.size() != twice.vertices.size() ||
+			memcmp(loaded.vertices.data(), twice.vertices.data(), twice.vertices.GetDataSize()) != 0 ||
+			memcmp(loaded.faces.data(), twice.faces.data(), twice.faces.GetDataSize()) != 0) {
+			VERBOSE("ERROR: HalfMesh bridge OBJ round trip is not exact!");
+			return false;
+		}
+		// a PLY face naming a texture its file does not list is refused at load
+		const String badFileName(tmpDir(_T("texnumber.ply")));
+		std::ofstream(badFileName.c_str()) << "ply\nformat ascii 1.0\ncomment TextureFile a.png\ncomment TextureFile b.png\n"
+			"element vertex 3\nproperty float x\nproperty float y\nproperty float z\nelement face 1\n"
+			"property list uchar uint vertex_indices\nproperty list uchar float texcoord\nproperty int texnumber\nend_header\n"
+			"0 0 0\n1 0 0\n0 1 0\n3 0 1 2 6 0 0 1 0 0 1 2\n";
+		Image8U3 pixel(1, 1);
+		pixel.memset(0);
+		Mesh badTexture;
+		if (!pixel.Save(tmpDir(_T("a.png"))) || !pixel.Save(tmpDir(_T("b.png"))) || badTexture.Load(badFileName)) {
+			VERBOSE("ERROR: a PLY face texture index past the texture files was accepted!");
+			return false;
+		}
+	}
 	Mesh::VertexIdxArr verticesRemove;
 	verticesRemove.emplace_back(0);
 	if (octahedron.RemoveVerticesAndFill(verticesRemove) != 1 || !octahedron.IsWatertight()) {
@@ -1848,6 +2059,192 @@ bool MeshCleanPerVertexTest()
 			return false;
 		}
 	}
+	// the grid above is uniform, so the webbing gate is a no-op on it and the bound survives
+	// whatever runs before it. Give the gate a lid to remove and the two-pass contract is what
+	// gets tested: the gate as its own Clean, the bound measured after it on the vertices the
+	// decimation receives, and the decimation still honouring it.
+	{
+		Mesh mesh;
+		MeshCleanBuildGrid(16, mesh);
+		const size_t numVertsGrid(mesh.vertices.size());
+		// the gate probes at 0.5x..reach x the face's longest edge and calls a face capped when
+		// some probe finds surface within cone(0.35) x that probe's distance, so a lid only trips
+		// it while its height sits inside [0.325, 0.675] x its own span: a 4x4 lid (longest edge
+		// 4*sqrt(2)) is centred in that window at height 0.5*4*sqrt(2). Its longest edge also has
+		// to clear 2x the median longest edge, which the grid pins at sqrt(2).
+		constexpr float lidSpan(4.f), lidHeight(lidSpan*(float)M_SQRT2/2);
+		const Mesh::VIndex lid0((Mesh::VIndex)mesh.vertices.size());
+		mesh.vertices.emplace_back(0.f, 0.f, lidHeight);
+		mesh.vertices.emplace_back(lidSpan, 0.f, lidHeight);
+		mesh.vertices.emplace_back(lidSpan, lidSpan, lidHeight);
+		mesh.faces.emplace_back(lid0, lid0+1, lid0+2);
+		const size_t numFaces(mesh.faces.size());
+		Mesh::CleanParams gateParams;
+		gateParams.maxEdgeScale = 2.f;
+		mesh.Clean(gateParams);
+		if (mesh.faces.size() >= numFaces || mesh.vertices.size() == numVertsGrid + 3) {
+			VERBOSE("ERROR: MeshCleanPerVertexTest webbing gate removed nothing: %u -> %u faces, %u -> %u vertices!",
+				(unsigned)numFaces, mesh.faces.size(), (unsigned)(numVertsGrid+3), mesh.vertices.size());
+			return false;
+		}
+		// the field is measured on the mesh the decimation receives, never before the gate
+		const size_t numFacesGated(mesh.faces.size());
+		FloatArr bounds(mesh.vertices.size());
+		FOREACH(v, mesh.vertices)
+			bounds[v] = mesh.vertices[v].x < 8.f ? -1.f : 1e6f;
+		size_t lockedFaces0(0), lockedFaces1(0);
+		const auto CountLocked = [](const Mesh& m, size_t& faces) {
+			faces = 0;
+			for (const Mesh::Face& f: m.faces)
+				if (m.vertices[f[0]].x < 8.f && m.vertices[f[1]].x < 8.f && m.vertices[f[2]].x < 8.f)
+					++faces;
+		};
+		CountLocked(mesh, lockedFaces0);
+		Mesh::CleanParams params;
+		params.simplifyTarget = 1.f;
+		params.vertexMaxError = &bounds;
+		mesh.Clean(params);
+		CountLocked(mesh, lockedFaces1);
+		if (!(mesh.faces.size() < numFacesGated) || lockedFaces1 != lockedFaces0) {
+			VERBOSE("ERROR: MeshCleanPerVertexTest two-pass bound: %u -> %u faces, locked %u -> %u faces!",
+				(unsigned)numFacesGated, mesh.faces.size(), (unsigned)lockedFaces0, (unsigned)lockedFaces1);
+			return false;
+		}
+	}
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+// render a smooth blob at the given pixel positions (the pixel center convention of the cameras:
+// integer coordinates) into a float image
+static void ResizeTestRenderBlobs(const std::vector<Point2>& centers, double sigma, Image32F& image)
+{
+	image.memset(0);
+	const int radius(CEIL2INT(5*sigma));
+	for (const Point2& c: centers) {
+		for (int r=MAXF(0, FLOOR2INT(c.y)-radius), re=MINF(image.rows-1, FLOOR2INT(c.y)+radius); r<=re; ++r)
+			for (int x=MAXF(0, FLOOR2INT(c.x)-radius), xe=MINF(image.cols-1, FLOOR2INT(c.x)+radius); x<=xe; ++x)
+				image(r,x) += (float)std::exp(-(SQUARE(x-c.x)+SQUARE(r-c.y))/(2*SQUARE(sigma)));
+	}
+}
+// largest distance between where the camera projects each point and the intensity centroid of the
+// blob the resized raster carries there
+static double ResizeTestMaxError(const Camera& camera, const std::vector<Point3>& points, const Image32F& image, double sigma)
+{
+	const int radius(CEIL2INT(5*sigma)+1);
+	double maxError(0);
+	for (const Point3& X: points) {
+		const Point2 x(camera.TransformPointW2I(X));
+		double sw(0), sx(0), sy(0);
+		for (int r=MAXF(0, ROUND2INT(x.y)-radius), re=MINF(image.rows-1, ROUND2INT(x.y)+radius); r<=re; ++r)
+			for (int c=MAXF(0, ROUND2INT(x.x)-radius), ce=MINF(image.cols-1, ROUND2INT(x.x)+radius); c<=ce; ++c) {
+				const double w(image(r,c));
+				sw += w; sx += w*c; sy += w*r;
+			}
+		ASSERT(sw > 0);
+		maxError = MAXF(maxError, norm(Point2(sx/sw, sy/sw) - x));
+	}
+	return maxError;
+}
+// every image resize the pipeline pairs with a camera must move the pixels exactly as that camera's K
+// is scaled: a point must project, through the camera of the resized view, onto the spot the resize
+// actually moved it to. A 1957x1091 view (odd sides, so rounded sizes and scale factors disagree)
+// with an off-center principal point carries smooth blobs at the projections of known points; each
+// resize path is run and every blob is located by its intensity centroid
+bool ImageResizeCameraTest()
+{
+	constexpr int width(1957), height(1091);
+	constexpr double sigma(4.0), maxError(0.05);
+	PlatformArr platforms;
+	{
+		KMatrix K(KMatrix::IDENTITY);
+		K(0,0) = 1163.5; K(1,1) = 1156.2; K(0,2) = 980.9; K(1,2) = 542.8;
+		Platform& platform = platforms.emplace_back();
+		platform.cameras.emplace_back(ScaleK(K, REAL(1)/Camera::GetNormalizationScale(width, height)), RMatrix::IDENTITY, CMatrix::ZERO);
+		Platform::Pose& pose = platform.poses.emplace_back();
+		pose.R = RMatrix::IDENTITY;
+		pose.C = CMatrix::ZERO;
+	}
+	Image image;
+	image.platformID = image.cameraID = image.poseID = image.ID = 0;
+	image.width = width; image.height = height; image.scale = 1;
+	image.UpdateCamera(platforms);
+	// a grid of points covering the view up to near its borders, where the errors are largest
+	std::vector<Point3> points;
+	std::vector<Point2> centers;
+	for (int i=0; i<5; ++i)
+		for (int j=0; j<7; ++j) {
+			const Point2 x(40.3+j*(width-80.)/6, 40.7+i*(height-80.)/4);
+			centers.emplace_back(x);
+			points.emplace_back(image.camera.TransformPointI2W(Point3(x.x, x.y, 5.0)));
+		}
+	Image32F gray(cv::Size(width, height));
+	ResizeTestRenderBlobs(centers, sigma, gray);
+	// the color image the loaders carry, with the blobs in every channel
+	const auto ToColor = [&gray](Image8U3& color) {
+		cv::Mat color32F;
+		cv::merge(std::vector<cv::Mat>(3, cv::Mat(gray*250.f)), color32F);
+		color32F.convertTo(color, CV_8UC3);
+	};
+	const auto Check = [&](const char* what, const Camera& camera, const Image32F& raster, double scale) {
+		const double error(ResizeTestMaxError(camera, points, raster, sigma*scale));
+		if (error > maxError) {
+			VERBOSE("ERROR: ImageResizeCameraTest %s (%dx%d -> %dx%d): blobs %.3f px off their projections!",
+				what, width, height, raster.cols, raster.rows, error);
+			return false;
+		}
+		return true;
+	};
+	if (!Check("full resolution", image.camera, gray, 1.0))
+		return false;
+	// Image::ResizeImage + UpdateCamera: an image loaded at a lower resolution
+	for (unsigned maxResolution: {978u, 640u}) {
+		Image scaled(image);
+		ToColor(scaled.image);
+		scaled.ResizeImage(maxResolution);
+		scaled.UpdateCamera(platforms);
+		Image32F raster;
+		scaled.image.toGray(raster, cv::COLOR_BGR2GRAY, true);
+		if (!Check("ResizeImage", scaled.camera, raster, (double)maxResolution/width))
+			return false;
+	}
+	// Image::GetImage
+	{
+		Image full(image);
+		ToColor(full.image);
+		const Image scaled(full.GetImage(platforms, 0.5));
+		Image32F raster;
+		scaled.image.toGray(raster, cv::COLOR_BGR2GRAY, true);
+		if (!Check("GetImage", scaled.camera, raster, 0.5))
+			return false;
+	}
+	// a neighbor view scaled to match the reference resolution (DepthMapsData::InitViews)
+	constexpr float neighborScale(0.73f);
+	Image32F neighborGray;
+	if (!DepthData::ViewData::ScaleImage(gray, neighborGray, neighborScale))
+		return false;
+	const Camera neighborCamera(image.GetCamera(platforms, neighborGray.size()));
+	if (image.GetCamera(platforms, Image8U::computeResize(image.GetSize(), neighborScale)).K != neighborCamera.K) {
+		VERBOSE("ERROR: ImageResizeCameraTest the neighbor camera differs with and without its pixels!");
+		return false;
+	}
+	if (!Check("neighbor ScaleImage", neighborCamera, neighborGray, neighborScale))
+		return false;
+	// the multi-resolution pyramid of the depth estimation (DepthMapsData::ScaleDepthData), on the
+	// reference view and on a neighbor already scaled onto its uniform grid
+	DepthData depthData;
+	{
+		DepthData::ViewData& ref = depthData.images.emplace_back();
+		ref.pImageData = &image; ref.scale = 1; ref.camera = image.camera; ref.image = gray;
+		DepthData::ViewData& neighbor = depthData.images.emplace_back();
+		neighbor.pImageData = &image; neighbor.scale = neighborScale; neighbor.camera = neighborCamera; neighbor.image = neighborGray;
+	}
+	for (float scale: {0.5f, 0.25f}) {
+		const DepthData scaled(DepthMapsData::ScaleDepthData(depthData, scale));
+		if (!Check("ScaleDepthData reference", scaled.images[0].camera, scaled.images[0].image, scale) ||
+			!Check("ScaleDepthData neighbor", scaled.images[1].camera, scaled.images[1].image, scale*neighborScale))
+			return false;
+	}
 	return true;
 }
 /*----------------------------------------------------------------*/
@@ -1891,6 +2288,98 @@ static bool ROIMeshReconstructionTest(Scene& scene)
 		return false;
 	}
 	scene.pointcloud.Swap(pointcloud);
+	scene.obb = initialOBB;
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+// The scene split on the pipeline's depth-maps: a scene ROI must not shrink the predicted memory of
+// the depth-maps (the fusion loads each one whole), a scene that fits stays whole, and a split one
+// exports its sub-scenes, each with its box as ROI, into a folder created for them.
+static bool SceneSplitTest(Scene& scene)
+{
+	const OBB3f initialOBB(scene.obb);
+	scene.obb.Reset();
+	Scene::ImagesChunkArr chunks;
+	const float wholePeak(scene.Split(chunks, 1000.f));
+	if (wholePeak <= 0 || !chunks.empty()) {
+		VERBOSE("ERROR: SceneSplitTest: the scene (predicted %gGB) does not stay whole in 1000GB (%u sub-scenes)!", wholePeak, chunks.size());
+		return false;
+	}
+	// the ROI: a slab across the middle third of the cloud's longest axis
+	const AABB3f aabb(scene.pointcloud.GetAABB(0.02f, 0.98f));
+	const Point3f size(aabb.GetSize());
+	const int axis(size[0] >= size[1] && size[0] >= size[2] ? 0 : (size[1] >= size[2] ? 1 : 2));
+	AABB3f slab(aabb);
+	slab.ptMin[axis] = aabb.ptMin[axis] + size[axis]/3;
+	slab.ptMax[axis] = aabb.ptMin[axis] + size[axis]*2/3;
+	scene.obb.Set(OBB3f::MATRIX::Identity(), slab.ptMin, slab.ptMax);
+	// all the valid depth-map pixels of the images seeing the slab, and the share of the samples in it
+	double numDepths(0);
+	size_t numSamples(0), numSamplesROI(0);
+	for (const Image& imageData: scene.images) {
+		if (!imageData.IsValid())
+			continue;
+		DepthData depthData;
+		if (!depthData.Load(ComposeDepthFilePath(imageData.ID, "dmap"), HeaderDepthDataRaw::HAS_DEPTH)) {
+			VERBOSE("ERROR: SceneSplitTest: the depth-map of image %u can not be loaded!", imageData.ID);
+			return false;
+		}
+		const Camera camera(imageData.GetCamera(scene.platforms, depthData.depthMap.size()));
+		size_t numValid(0), numInROI(0);
+		for (int r=0; r<depthData.depthMap.rows; ++r) {
+			for (int c=0; c<depthData.depthMap.cols; ++c) {
+				const Depth depth(depthData.depthMap(r,c));
+				if (depth <= 0)
+					continue;
+				++numValid;
+				if (r%8 || c%8)
+					continue;
+				++numSamples;
+				if (scene.obb.Intersects(Cast<float>(camera.TransformPointI2W(Point3(c,r,depth)))))
+					++numInROI;
+			}
+		}
+		numSamplesROI += numInROI;
+		if (numInROI)
+			numDepths += numValid;
+	}
+	// below 2/3 of the samples in the ROI, a depth term shrunk to them falls under the bound below
+	if (numSamplesROI == 0 || numSamplesROI*3 > numSamples*2) {
+		VERBOSE("ERROR: SceneSplitTest: the test ROI holds %u of %u depth-map samples!", numSamplesROI, numSamples);
+		return false;
+	}
+	// the split samples every 8th pixel: 10% margin on the whole maps' count
+	const float roiPeak(scene.Split(chunks, 1000.f));
+	const float depthsPeak(Scene::PredictSubsceneMemory(0.9*numDepths, 0));
+	if (roiPeak <= 0 || !chunks.empty() || roiPeak < depthsPeak || roiPeak > wholePeak) {
+		VERBOSE("ERROR: SceneSplitTest: with the ROI the scene is predicted %gGB, the whole depth-maps of its images alone %gGB, the scene without ROI %gGB!", roiPeak, depthsPeak, wholePeak);
+		return false;
+	}
+	// a budget a tenth of the way from a sub-scene's fixed cost to the scene's peak: the points
+	// alone need three parts
+	scene.obb.Reset();
+	const float fixedCost(Scene::PredictSubsceneMemory(0, 0));
+	if (scene.Split(chunks, fixedCost + (wholePeak-fixedCost)*0.1f) <= 0 || chunks.size() < 2) {
+		VERBOSE("ERROR: SceneSplitTest: a budget of %gGB split the scene in %u sub-scenes!", fixedCost + (wholePeak-fixedCost)*0.1f, chunks.size());
+		return false;
+	}
+	const ScopedTempDir tmpDir(_T("SceneSplitTest"));
+	if (!tmpDir.IsValid())
+		return false;
+	const String folder(tmpDir(_T("subscenes")));
+	if (!scene.ExportChunks(chunks, folder)) {
+		VERBOSE("ERROR: SceneSplitTest: the %u sub-scenes can not be exported to the new folder '%s'!", chunks.size(), folder.c_str());
+		return false;
+	}
+	FOREACH(c, chunks) {
+		Scene subScene;
+		if (subScene.Load(folder + String::FormatString("/scene_%04u.mvs", c)) == Scene::SCENE_NA ||
+			!subScene.IsBounded() || subScene.images.size() != chunks[c].images.size()) {
+			VERBOSE("ERROR: SceneSplitTest: sub-scene %u is not saved with its %u images and its box!", c, (unsigned)chunks[c].images.size());
+			return false;
+		}
+	}
 	scene.obb = initialOBB;
 	return true;
 }
@@ -2097,7 +2586,8 @@ bool PipelineTest(bool forceCPU, bool verbose)
 		return false;
 	}
 	OPTDENSE::init();
-	OPTDENSE::bRemoveDmaps = true;
+	// the depth-maps stay on disk for the scene split test, removed after it (below)
+	OPTDENSE::bRemoveDmaps = false;
 	// every DEFVAR_OPTION starts at zero and only init()/update() install the declared defaults,
 	// so the refiner's configuration space needs the same treatment as OPTDENSE
 	OPTREFINE::init();
@@ -2118,9 +2608,22 @@ bool PipelineTest(bool forceCPU, bool verbose)
 	// asked for the weighted path with --constant-weight 0.
 	// Measured (GPU adjust-ON / CPU adjust-OFF): recon faces 52.9k / 71.4k,
 	// cleaned faces 37.0k / 49.8k, quality 50.4 / 52.2.
-	if (!scene.DenseReconstruction() || scene.pointcloud.GetSize() < 50000u) {
-		VERBOSE("ERROR: TestDataset failed estimating dense point-cloud (%u points)!", scene.pointcloud.GetSize());
-		return false;
+	{
+		// the depth-maps are removed once the scene split test is done, whatever its outcome
+		struct DepthMapsRemover {
+			const Scene& scene;
+			~DepthMapsRemover() {
+				for (const Image& imageData: scene.images)
+					if (imageData.IsValid())
+						File::deleteFile(ComposeDepthFilePath(imageData.ID, "dmap"));
+			}
+		} const depthMapsRemover{scene};
+		if (!scene.DenseReconstruction() || scene.pointcloud.GetSize() < 50000u) {
+			VERBOSE("ERROR: TestDataset failed estimating dense point-cloud (%u points)!", scene.pointcloud.GetSize());
+			return false;
+		}
+		if (!SceneSplitTest(scene))
+			return false;
 	}
 	if (verbose)
 		scene.pointcloud.Save(MAKE_PATH("scene_dense.ply"));
@@ -2144,6 +2647,7 @@ bool PipelineTest(bool forceCPU, bool verbose)
 		return false;
 	constexpr float decimate = 0.7f;
 	Mesh::CleanParams cleanParams;
+	cleanParams.maxEdgeScale = 2.f; // drop cavity-capping faces first
 	cleanParams.simplifyTarget = decimate;
 	cleanParams.spuriousFactor = 10.f;
 	cleanParams.removeSpikes = true;
@@ -2959,6 +3463,32 @@ bool SelectNeighborViewsScaleTest()
 				neighbors[n].ID, neighbors[n].scale, expectedScales[n]);
 			return false;
 		}
+	}
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+bool DMapCacheKeepsRequestedImageTest()
+{
+	// two depth-maps already in memory, each larger than the whole budget: UseImage() accounts
+	// them on first use and ejects to fit, as after loading them from disk
+	DepthDataArr arrDepthData(2);
+	for (DepthData& depthData: arrDepthData) {
+		depthData.images.emplace_back();
+		depthData.depthMap.create(4, 4);
+		depthData.depthMap.setTo(1.f);
+	}
+	DMapCache cache(arrDepthData, 0, 1);
+	cache.UseImage(0);
+	if (arrDepthData[0].IsEmpty()) {
+		VERBOSE("ERROR: DMapCacheKeepsRequestedImageTest ejected the depth-map it was asked for!");
+		return false;
+	}
+	cache.UseImage(1);
+	if (arrDepthData[1].IsEmpty() || !arrDepthData[0].IsEmpty()) {
+		VERBOSE("ERROR: DMapCacheKeepsRequestedImageTest kept depth-maps %d/%d loaded, expected only the second!",
+			!arrDepthData[0].IsEmpty(), !arrDepthData[1].IsEmpty());
+		return false;
 	}
 	return true;
 }

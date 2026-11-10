@@ -892,19 +892,6 @@ inline T MaxDepthDifference(T d, T threshold) {
 	#endif
 }
 template<typename T>
-inline T DepthSimilarity(T d0, T d1) {
-	ASSERT(d0 > 0);
-	#if 0
-	return ABS(d0-d1)*T(2)/(d0+d1);
-	#else
-	return ABS(d0-d1)/d0;
-	#endif
-}
-template<typename T>
-inline bool IsDepthSimilar(T d0, T d1, T threshold=T(0.01)) {
-	return DepthSimilarity(d0, d1) < threshold;
-}
-template<typename T>
 inline bool IsNormalSimilar(const TPoint3<T>& n0, const TPoint3<T>& n1, T threshold=T(0.996194698)/*COS(D2R(5.f))*/) {
 	return ComputeAngle<T,T>(n0.ptr(), n1.ptr()) > threshold;
 }

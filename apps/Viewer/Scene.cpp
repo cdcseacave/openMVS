@@ -212,6 +212,7 @@ public:
 
 		// Clean mesh
 		MVS::Mesh::CleanParams cleanParams;
+		cleanParams.maxEdgeScale = 2.f; // drop cavity-capping faces first
 		cleanParams.simplifyTarget = decimate;
 		cleanParams.spuriousFactor = options.removeSpurious;
 		cleanParams.removeSpikes = options.removeSpikes;
@@ -264,6 +265,7 @@ public:
 		if (decimate <= 0.f)
 			decimate = 1.f;
 		MVS::Mesh::CleanParams cleanParams;
+		cleanParams.maxEdgeScale = 2.f; // drop cavity-capping faces first
 		cleanParams.simplifyTarget = decimate;
 		cleanParams.maxHoleEdges = options.closeHoles;
 		mvsScene.mesh.Clean(cleanParams);
@@ -591,6 +593,7 @@ bool Scene::HasCameraUncertainty() const
 void Scene::RefreshLayerState(Layer& layer, bool rebuildImages)
 {
 	MVS::Scene& scene(layer.scene);
+	++layer.revision;
 	AABB3f bounds(true);
 	AABB3f imageBounds(true);
 
@@ -631,6 +634,7 @@ void Scene::RefreshLayerState(Layer& layer, bool rebuildImages)
 	else
 		layer.sceneSize = Point3f(bounds.GetSize().cast<float>());
 	layer.sceneDistance = layer.images.empty() ? 1.f : scene.ComputeDistanceCameras2Scene(0.1f, true);
+	layer.pointConfidence.Reset(scene.pointcloud);
 	if (layer.label.empty()) {
 		layer.label = Util::getFileNameExt(layer.sceneName);
 	}
@@ -1058,6 +1062,7 @@ bool Scene::AddLayer(const String& fileName, String geometryFileName, bool makeA
 
 	Layer layer;
 	layer.id = nextLayerID++;
+	layer.useCameraJetColor = window.useCameraJetColor;
 	if (!LoadLayer(layer, fileName, geometryFileName)) {
 		if (const Layer* activeLayer = GetActiveLayer())
 			ActivateWorkingFolder(*activeLayer);
@@ -2107,8 +2112,12 @@ void Scene::RemoveSelectedGeometry() {
 
 	// Classify geometry based on current selection
 	if (!scene.pointcloud.IsEmpty()) {
-		// Get selected point indices
-		MVS::PointCloud::IndexArr selectedIndices = selectionController.getSelectedPointIndices();
+		// Get selected point indices, keeping only the points the confidence filter shows
+		// (a point selected before the window was narrowed stays selected, but hidden)
+		MVS::PointCloud::IndexArr selectedIndices;
+		for (MVS::PointCloud::Index idx : selectionController.getSelectedPointIndices())
+			if (layer->pointConfidence.IsShown(scene.pointcloud, idx))
+				selectedIndices.push_back(idx);
 		if (!selectedIndices.empty()) {
 			// Remove selected points
 			bDirtyScene = true;

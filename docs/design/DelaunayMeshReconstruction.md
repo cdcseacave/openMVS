@@ -91,7 +91,7 @@ vertex whose incident faces span more than one connected component.
 `Clean` converts to a `halfmesh::Mesh` once, runs every enabled stage on that single instance, and
 converts back once. In order:
 
-1. **`RemoveLongEdgeFacesCapped(maxEdgeScale)`** (if `maxEdgeScale > 0`) — the webbing gate, a capped-face test. A candidate is a face whose longest edge exceeds `maxEdgeScale ×` the median longest edge over all faces (2× by default, so it looks at the coarse quarter of the mesh, not only at outliers). For each candidate, probe points are placed on both sides of the centroid along the face normal at 0.5, 1, 2, 3 and 4 × its longest edge; the face is removed when the mesh surface nearest to some probe lies within 0.35 × that probe's distance (a cone around the normal, so a hole in the surface behind does not hide it; the face's own plane is a full probe distance away and never counts). Webbing spans occluded space, so it always has real surface close behind or in front of it (the lid across an open truck bed, the sheet under a chassis, a cap over a door recess); a real surface that is merely sampled coarsely (a plain wall, a staircase) has nothing behind it and survives. The test is purely geometric, on the extracted mesh, no image projection or per-vertex view lists; the probes run in parallel on halfmesh's triangle BVH. Edge length alone cannot separate the two cases (§5).
+1. **`RemoveLongEdgeFacesCapped(maxEdgeScale)`** (if `maxEdgeScale > 0`) — the webbing gate, a capped-face test. A candidate is a face whose longest edge exceeds `maxEdgeScale ×` the median longest edge over all faces (2× by default, so it looks at the coarse quarter of the mesh, not only at outliers). For each candidate, probe points are placed on both sides of the centroid along the face normal at 0.5, 1 and 2 × its longest edge (reach 2); the face is removed when the mesh surface nearest to some probe lies within 0.2 × that probe's distance (a cone around the normal, so a hole in the surface behind does not hide it; the face's own plane is a full probe distance away and never counts). Webbing spans occluded space, so it always has real surface close behind or in front of it (the lid across an open truck bed, the sheet under a chassis, a cap over a door recess); a real surface that is merely sampled coarsely (a plain wall, a staircase) has nothing behind it and survives. The test is purely geometric, on the extracted mesh, no image projection or per-vertex view lists; the probes run in parallel on halfmesh's triangle BVH. Edge length alone cannot separate the two cases (§5).
 2. **`RemoveLongEdgeFaces(spuriousFactor)` + `RemoveSpuriousComponents(spuriousFactor)`** (if `spuriousFactor > 0`) — a global (scene-wide p95 edge length) long-edge pass, then an isolated small-component removal pass.
 3. **`RemoveSpikes(maxSpikeIterations)`**.
 4. **`Simplify`** — target-magnitude decimation (`simplifyTarget`, a fraction in `(0,1)` or an absolute face count above 1), or, when a `vertexMaxError` array is supplied, per-vertex bounded decimation (an edge collapses only while its collapse point stays within the smaller quadric-distance bound of its two endpoints).
@@ -186,46 +186,65 @@ under test.
 | `--adaptive-sigma 1` | vs a single global sigma, all four T&T scenes | raw graph-cut surface ΔF1: Ignatius +0.039, Truck +0.015, Barn +0.012, Meetingroom +0.008 (positive on every scene); also the fastest arm tested (Ignatius graph-cut solve 32.4s vs 35-50s for every alternative arm) |
 | `--thickness-factor 1` (library `kSigma=1.f`) | vs the old library default `kSigma=2` | ΔF1 in favor of 1: Ignatius +0.146, Truck +0.043 |
 | `--free-space-support 0` | vs enabling it at default WSS constants | ΔF1 cost of enabling: Ignatius −0.048, Truck −0.052 |
-| `--max-edge-scale 2`, capped-face gate (`RemoveLongEdgeFacesCapped`) | see the gate table below | mean F1 over Herz-Jesu-P8 / Ignatius / Truck 0.6493 vs 0.5905 ungated |
+| `--max-edge-scale 2`, capped-face gate (`RemoveLongEdgeFacesCapped`, reach 2, cone 0.2) | see the gate table below | mean F1 over Herz-Jesu-P8 / Ignatius / Truck 0.6394 vs 0.5939 ungated; 7334 boundary edges on Herz-Jesu vs 17495 at the halfmesh default (reach 4, cone 0.35); chosen over the more accurate reach 4-5 (0.6452-0.6467) because it leaves fewer holes and the mesh looks better |
 
 Long-edge gate, all arms cleaned from the same ungated graph-cut surface per scene (Herz-Jesu-P8:
 EPFL mesh-to-mesh evaluator, tau 0.01, 500k samples, completeness restricted to camera-visible GT;
-Truck, Ignatius: Tanks and Temples toolbox at the official tau). "capped, factor f" = the shipped
-`RemoveLongEdgeFacesCapped` with candidates above f × the median longest edge (reach 4, cone 0.35);
-"ring k" = the halfmesh k-ring median statistic (`RemoveLongEdgeFacesLocal`) at factor 4;
-"reconstruction-side" arms are the gates that used to live inside `Scene::ReconstructMesh` (full
-reconstruction with that binary, so not the same raw surface).
+Truck, Ignatius: Tanks and Temples toolbox at the official tau). Arm "f F, reach R, cone C" =
+`RemoveLongEdgeFacesCapped(F, R, C)`: candidates above F x the median longest edge, probes at 0.5,
+1, 2, ..., R x the longest edge along the normal, capped when mesh surface lies within C x the probe
+distance. "Herz boundary" counts the boundary edges of the cleaned Herz-Jesu mesh, a proxy for the
+holes the gate leaves in surface the graph-cut filled plausibly.
 
-| arm | Herz-Jesu-P8 F1 (P / R) | Ignatius F1 (P / R) | Truck F1 (P / R) |
-|---|---|---|---|
-| ungated | 0.5141 (0.5625 / 0.4733) | 0.7376 (0.7546 / 0.7212) | 0.5198 (0.4211 / 0.6788) |
-| **capped, factor 2 (shipped)** | 0.5212 (0.6141 / 0.4527) | 0.7452 (0.7714 / 0.7208) | 0.6816 (0.6966 / 0.6674) |
-| capped, factor 3 | 0.5221 (0.6110 / 0.4558) | 0.7429 (0.7660 / 0.7212) | 0.6669 (0.6590 / 0.6750) |
-| capped, factor 4 | 0.5232 (0.6100 / 0.4579) | 0.7425 (0.7652 / 0.7212) | 0.6559 (0.6350 / 0.6782) |
-| ring 1 | 0.5143 (0.5635 / 0.4730) | 0.7375 (0.7545 / 0.7212) | 0.5201 (0.4215 / 0.6789) |
-| ring 2 | 0.5228 (0.5904 / 0.4691) | 0.7386 (0.7572 / 0.7210) | 0.5435 (0.4522 / 0.6808) |
-| ring 3 | 0.5251 (0.6113 / 0.4602) | 0.7415 (0.7629 / 0.7211) | 0.6000 (0.5343 / 0.6841) |
-| ring 3, factor 3 | 0.5249 (0.6197 / 0.4552) | 0.7425 (0.7650 / 0.7212) | 0.6129 (0.5551 / 0.6840) |
-| ring 3, factor 6 | 0.5232 (0.5960 / 0.4663) | 0.7393 (0.7585 / 0.7211) | 0.5810 (0.5055 / 0.6830) |
-| reconstruction-side local + common-view gate (rejected, §6) | 0.5151 (0.5654 / 0.4731) | 0.7424 (0.7651 / 0.7211) | 0.6420 (0.6074 / 0.6808) |
-| reconstruction-side global-median gate (rejected, §6) | 0.4739 (0.6160 / 0.3850) | 0.7427 (0.7654 / 0.7212) | 0.6606 (0.6456 / 0.6762) |
+| arm | Herz-Jesu-P8 F1 (P / R) | Herz boundary | Ignatius F1 | Truck F1 (P / R) | mean F1 |
+|---|---|---|---|---|---|
+| ungated | 0.5192 (0.5611 / 0.4830) | 560 | 0.7383 | 0.5244 (0.4257 / 0.6826) | 0.5939 |
+| f 2, reach 4, cone 0.2 | 0.5255 (0.5998 / 0.4676) | 12121 | 0.7456 | 0.6646 (0.6747 / 0.6548) | 0.6452 |
+| f 2, reach 4, cone 0.35 (halfmesh default) | 0.5261 (0.6125 / 0.4610) | 17495 | 0.7459 | 0.6731 (0.6940 / 0.6533) | 0.6484 |
+| f 2, reach 4, cone 0.25 | 0.5255 (0.6037 / 0.4653) | 13774 | 0.7457 | 0.6683 (0.6829 / 0.6543) | 0.6465 |
+| f 2, reach 4, cone 0.15 | 0.5251 (0.5952 / 0.4697) | 10345 | 0.7451 | 0.6636 (0.6673 / 0.6599) | 0.6446 |
+| f 2, reach 4, cone 0.1 | 0.5252 (0.5886 / 0.4742) | 8267 | 0.7446 | 0.6572 (0.6507 / 0.6638) | 0.6423 |
+| f 2, reach 5, cone 0.2 | 0.5252 (0.6035 / 0.4648) | 14075 | 0.7458 | 0.6690 (0.6852 / 0.6534) | 0.6467 |
+| f 2, reach 5, cone 0.15 | 0.5246 (0.5979 / 0.4673) | 12057 | 0.7456 | 0.6680 (0.6786 / 0.6577) | 0.6461 |
+| f 2, reach 6, cone 0.15 | 0.5227 (0.5991 / 0.4635) | 13622 | 0.7458 | 0.6678 (0.6833 / 0.6531) | 0.6454 |
+| f 2, reach 3, cone 0.25 | 0.5256 (0.5985 / 0.4685) | 11550 | 0.7444 | 0.6631 (0.6690 / 0.6574) | 0.6444 |
+| f 2, reach 2, cone 0.35 | 0.5279 (0.6009 / 0.4707) | 10980 | 0.7441 | 0.6605 (0.6631 / 0.6580) | 0.6442 |
+| f 2, reach 2, cone 0.25 | 0.5270 (0.5939 / 0.4736) | 8414 | 0.7436 | 0.6548 (0.6498 / 0.6600) | 0.6418 |
+| **f 2, reach 2, cone 0.2 (shipped)** | 0.5266 (0.5908 / 0.4749) | 7334 | 0.7432 | 0.6485 (0.6374 / 0.6600) | 0.6394 |
+| f 2, reach 1, cone 0.35 | 0.5264 (0.5880 / 0.4765) | 6078 | 0.7431 | 0.6395 (0.6186 / 0.6618) | 0.6363 |
+| f 3, reach 4, cone 0.35 | 0.5257 (0.6058 / 0.4643) | 11032 | 0.7435 | 0.6648 (0.6604 / 0.6693) | 0.6447 |
+| f 3, reach 2, cone 0.25 | 0.5265 (0.5917 / 0.4743) | 6271 | 0.7433 | 0.6513 (0.6296 / 0.6746) | 0.6404 |
 
-The shipped gate has the best mean F1 of every arm (0.6493) and is the only one that beats both
-the ungated surface and the old reconstruction-side global-median gate on every scene: Truck +0.021
-over that gate while Herz-Jesu recall stays at 0.4527 instead of collapsing to 0.3850. Truck's loss
-is pure precision (recall is 0.67-0.68 on every arm): over half of the ungated in-crop area is false
-surface, half of it in a few thousand giant faces forming a lid across the open truck bed, a sheet
-behind the cab and a sheet under the chassis. Those sheets are contiguous and uniformly coarse, so
-no k-ring statistic can see them (their own ring median is as large as their edges: ring 1 is a
-no-op, ring 3 at best halves the loss), and a pure edge-length threshold cannot remove them without
-also removing Herz-Jesu's coarse plain wall and staircase, which are real (best single global
-factor, 8, reaches a mean of only 0.631). What separates the two is that the lid has real surface
-close behind it along its normal and the wall has nothing: the capped-face probes test exactly
-that. Larger candidate factors trade Truck precision for a little Herz-Jesu recall (factor 4:
-Truck 0.6559, Herz-Jesu recall +0.005); the gate costs about 1 s of Clean wall on a 5M-face mesh.
-Statistics more aggressive than the k-ring median (minimum or lower-quartile edge length in the
-k-ring, the minimum of the neighbouring vertices' medians) reach Truck F1 0.65-0.68 but cut
-Herz-Jesu recall to 0.25-0.44.
+Truck's loss without the gate is pure precision (recall is 0.65-0.68 on every arm): over half of the
+ungated in-crop area is false surface, half of it in a few thousand giant faces forming a lid across
+the open truck bed, a sheet behind the cab and a sheet under the chassis. Those sheets are
+contiguous and uniformly coarse, so no k-ring edge statistic can see them (the ring-1 median is a
+no-op on them, ring 3 at best halves the loss, and the more aggressive minimum / lower-quartile
+statistics that do reach Truck F1 0.65-0.68 cut Herz-Jesu recall to 0.25-0.44), and a pure
+edge-length threshold cannot remove them without also removing Herz-Jesu's coarse plain wall and
+staircase, which are real (the best single global edge-length factor, 8, reaches a mean F1 of
+only 0.631). What separates the two is that the lid has real surface close behind it
+along its normal and the wall has nothing: the capped-face probes test exactly that.
+
+The cone sets how the test treats concave creases. A long face at height h above a surface that
+crosses it (the ground under a wall, a column beside it) is capped once h < cone x reach x its
+longest edge, since every probe is h away from that surface whatever its depth; a lid is instead
+hit head-on by the probe nearest its depth. At the halfmesh default (reach 4, cone 0.35) the crease
+term (1.4 x the longest edge) punches holes along every wall base, column and stair side of
+Herz-Jesu, in surface the graph-cut filled plausibly, while the doorway debris and the border skirt
+of giant faces are the only things that must go. Both factors of the term are cut. Cone 0.2 at
+reach 4 already keeps the column, wall base and stair sides in the renders (31% fewer boundary
+edges, Truck -0.0085, Herz-Jesu / Ignatius within 0.001). Reach 2 halves the term again, to 0.4 x the
+longest edge: 7334 boundary edges instead of 12121, visibly fewer holes, and meshes that look
+better to the eye, which is why it ships. What it costs is accuracy: Truck's lid lies more than two
+edge lengths above the truck bed and survives, so Truck loses 0.016 against reach 4 (Herz-Jesu
++0.001, Ignatius -0.002, mean F1 0.6394 vs 0.6452). The most accurate cone-0.2 arm is reach 5
+(0.6467), with reach 4 within 0.002 and reach 5 at cone 0.15 equivalent to reach 4 within 0.003
+everywhere; reach 1 goes too far (Truck -0.034 against reach 4 at cone 0.35). Cones below 0.2 leave
+gaps between the probe windows ((1 - cone) d to (1 + cone) d), so lids at in-between depths survive
+(cone 0.1 at reach 4: Truck -0.016) and the column starts to lose faces again; a larger candidate
+factor leaves the crease faces, which are long themselves, as candidates (factor 3 still holes the
+column and stairs). The gate costs about 1 s of Clean wall on a 5M-face mesh.
 
 ---
 

@@ -64,8 +64,11 @@ if(NOT APPLE)
 endif()
 
 if(CUDA_ENABLED)
-  if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-    set(CMAKE_CUDA_ARCHITECTURES "native")
+  # built once by vcpkg and shipped with the binaries: target every GPU generation
+  # (native code per major version, plus PTX for newer ones); the few kernels
+  # compile quickly
+  if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES AND NOT DEFINED ENV{CUDAARCHS})
+    set(CMAKE_CUDA_ARCHITECTURES "all-major")
   endif()
   set(CMAKE_CUDA_FLAGS_INIT "${CMAKE_CUDA_FLAGS_INIT} -allow-unsupported-compiler")
   enable_language(CUDA)

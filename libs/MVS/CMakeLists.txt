@@ -1,11 +1,11 @@
 # Find required packages
-FIND_PACKAGE(CGAL REQUIRED)
+find_exported_dependency(CGAL REQUIRED)
 if(CGAL_FOUND)
 	include_directories(${CGAL_INCLUDE_DIRS})
 	add_definitions(${CGAL_DEFINITIONS})
 	link_directories(${CGAL_LIBRARY_DIRS})
 endif()
-FIND_PACKAGE(halfmesh CONFIG REQUIRED)
+find_exported_dependency(halfmesh CONFIG REQUIRED)
 # PointCloud.cpp includes <tiny_gltf.h> directly (halfmesh owns the only
 # TINYGLTF_IMPLEMENTATION in the build, this side is declarations only), and
 # vcpkg's tinygltf ships no CMake config, so locate the header by name.
@@ -15,7 +15,7 @@ FIND_PATH(TINYGLTF_INCLUDE_DIR NAMES "tiny_gltf.h" REQUIRED)
 # Ceres and glog need; the SFM library requires the same package, so it is always there
 set(CERES_LIBS "")
 if(OpenMVS_USE_CERES)
-	FIND_PACKAGE(Ceres CONFIG REQUIRED)
+	find_exported_dependency(Ceres CONFIG REQUIRED)
 	set(CERES_LIBS Ceres::ceres)
 endif()
 
@@ -116,3 +116,6 @@ INSTALL(TARGETS MVS
 	ARCHIVE DESTINATION "${INSTALL_LIB_DIR}"
 	RUNTIME DESTINATION "${INSTALL_BIN_DIR}"
 	PUBLIC_HEADER DESTINATION "${INSTALL_INCLUDE_DIR}/MVS")
+if(_USE_CUDA)
+	INSTALL(FILES ${CUDA_LIBRARY_FILES_H} DESTINATION "${INSTALL_INCLUDE_DIR}/MVS/CUDA")
+endif()

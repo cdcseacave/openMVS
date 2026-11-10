@@ -161,6 +161,8 @@ Per-step options can be appended with `--<step-number> <key> <value>` (drop the 
 python MvgMvsPipeline.py <images_folder> <output_folder> --preset SEQUENTIAL --1 p HIGH n 8 --2 n ANNL2
 ```
 
+The dense steps 18-21 split a scene that does not fit this machine's memory into sub-scenes (see [Large Scenes](#large-scenes)); `--sub-scene-memory off` disables the split, a number of GB sets the budget.
+
 For the full step / preset / passthrough reference, invoke `-h`:
 
 ```
@@ -248,13 +250,13 @@ Two options are worth knowing about:
 <details>
 <summary><strong>Dense Point-Cloud Reconstruction using Semi-Global Matching (optional)</strong></summary>
 
-Alternatively, the dense reconstruction module can estimate a dense point-cloud using Semi-Global Matching (SGM) on the CPU: it estimates a disparity-map for each valid image pair, fuses the pairs of each image into its depth-map, and fuses the depth-maps into the final point-cloud:
+Alternatively, the dense reconstruction module can estimate a dense point-cloud using Semi-Global Matching (SGM) on the CPU: it matches each image against all its neighbor views at once to estimate its depth-map, then fuses the depth-maps into the final point-cloud:
 
 ```
 DensifyPointCloud scene.mvs --fusion-mode -2
 ```
 
-`--fusion-mode -1` only estimates and exports the disparity-maps (`.dimap`); a later `--fusion-mode -2` run reuses them.
+`--fusion-mode -1` instead exports the disparity-maps of the rectified image pairs (`.dimap`).
 
 </details>
 
@@ -286,7 +288,7 @@ The obtained mesh:
 The mesh obtained either from the sparse or dense point-cloud can be further refined to recover all fine details or even bigger missing parts. Next the rough mesh obtained only from the sparse point-cloud is refined:
 
 ```
-RefineMesh scene.mvs -m scene_mesh.ply -o scene_mesh_refine.mvs
+RefineMesh scene.mvs -m scene_mesh.ply -o scene_mesh_refined.mvs
 ```
 
 The mesh before and after refinement:
@@ -297,7 +299,7 @@ The mesh before and after refinement:
 Similarly, the rough mesh obtained from the dense point-cloud can be refined:
 
 ```
-RefineMesh scene_dense.mvs -m scene_dense_mesh.ply -o scene_dense_mesh_refine.mvs --scales 1 --max-face-area 16
+RefineMesh scene_dense.mvs -m scene_dense_mesh.ply -o scene_dense_mesh_refined.mvs --scales 1 --max-face-area 16
 ```
 
 The mesh before and after refinement:
@@ -312,7 +314,7 @@ The mesh before and after refinement:
 The mesh obtained in the previous steps is used as the input of the mesh texturing module:
 
 ```
-TextureMesh scene_dense.mvs -m scene_dense_mesh_refine.ply -o scene_dense_mesh_refine_texture.mvs
+TextureMesh scene_dense.mvs -m scene_dense_mesh_refined.ply -o scene_dense_mesh_refined_texture.mvs
 ```
 
 The obtained mesh plus texture:
@@ -323,14 +325,53 @@ Note that the triangles textured in orange (default) are not visible in any of t
 
 </details>
 
+<a name="large-scenes"></a>
+<details>
+<summary><strong>Large Scenes: split into sub-scenes that fit this machine</strong></summary>
+
+A scene with many images or a large dense point-cloud can need more memory for the depth-map fusion, the mesh reconstruction and the refinement than the machine has. [`MvsScalablePipeline.py`](https://github.com/cdcseacave/openMVS/blob/master/scripts/python/MvsScalablePipeline.py) runs the whole dense chain — point-cloud, mesh, refined mesh and texture — and splits the scene only when it has to:
+
+```
+python MvsScalablePipeline.py scene.mvs
+```
+
+1. the depth-maps of the whole scene are estimated (`DensifyPointCloud --fusion-mode 1`);
+2. the memory each stage needs is predicted from the depth-maps (`DensifyPointCloud --sub-scene-memory`): if the scene fits the memory available on this machine (less a 10% reserve, at least 2 GB), it is reconstructed whole, exactly as by the modules themselves; otherwise it is cut into boxes that each fit, written as `subscenes/scene_XXXX.mvs`;
+3. every box is fused, meshed and refined on its own, one after the other;
+4. the box point-clouds and meshes are merged ([`MvsMergeChunks.py`](https://github.com/cdcseacave/openMVS/blob/master/scripts/python/MvsMergeChunks.py): each box keeps what lies inside it) and the merged mesh is textured with all the images.
+
+The results have the usual names: `scene_dense.ply`, `scene_dense_mesh.ply`, `scene_dense_mesh_refined.ply` and `scene_dense_mesh_refined_texture.mvs` (+ `.ply` and texture images).
+
+Options:
+
+| option | meaning |
+|---|---|
+| `--memory auto\|off\|GB` | memory budget per sub-scene: `auto` (default) fits this machine, `off` never splits, a number of GB sets the budget, e.g. to leave room for other programs |
+| `--steps densify,mesh,refine,texture` | the stages to run (default all); without `densify`, the sub-scenes an earlier run wrote are reused |
+| `--densify "..."`, `--mesh "..."`, `--refine "..."`, `--texture "..."` | extra options for that module, e.g. `--densify "--resolution-level 0 --number-views 24"` |
+| `--resume` | skip a stage whose output exists already (continue an interrupted run) |
+| `--bin <folder>` | the OpenMVS binaries, if they are not in `PATH` |
+
+`MvgMvsPipeline.py` runs its dense steps (18-21) through this script by default; `--sub-scene-memory off` restores the plain module calls, and a number of GB sets the budget.
+
+The sub-scenes are not stitched: the merged mesh can show small seams where two boxes meet, so a scene that fits is never split. The split itself can also be run by hand, on depth-maps computed with `--fusion-mode 1`:
+
+```
+DensifyPointCloud scene.mvs --sub-scene-memory -1 -o subscenes/scene.mvs
+```
+
+where `-1` fits this machine and a positive value is a budget in GB. The algorithm, its memory model and its validation are described in [design/SceneSplit.md](https://github.com/cdcseacave/openMVS/blob/master/docs/design/SceneSplit.md).
+
+</details>
+
 <details>
 <summary><strong>Exporting and Viewing Results</strong></summary>
 
 Each of the above commands also writes a `PLY` file that can be used with many third-party tools. The `Viewer` can additionally export the loaded `MVS` projects to `PLY`, `OBJ` or `glTF` (`.glb`). For batch / scripted export — including web-ready formats — use the `TransformScene` app:
 
 ```
-TransformScene scene_dense_mesh_refine_texture.mvs --convert 1 --export-type glb     # → .glb
-TransformScene scene_dense_mesh_refine_texture.mvs --convert 1 --export-type gltf    # → .gltf (text + bin sidecars)
+TransformScene scene_dense_mesh_refined_texture.mvs --convert 1 --export-type glb     # → .glb
+TransformScene scene_dense_mesh_refined_texture.mvs --convert 1 --export-type gltf    # → .gltf (text + bin sidecars)
 TransformScene scene_dense.mvs                     --convert 1 --export-type potree  # → folder of Potree 2.0 tiles
 ```
 
@@ -401,7 +442,7 @@ The input file (or any of the supported formats listed below) can be passed on t
 The user interface is built on Dear ImGui and organized into menus, dockable panels and overlays:
 
 - **File menu** — Open / Save / Save As / Close / Export, plus screenshot capture (with or without UI visible).
-- **View menu** — toggles the Layers panel, Scene Info, Camera Info, Camera Controls, Selection, Render Settings, Bounding Box, Console and the Performance / Workflow / Viewport / Selection overlays.
+- **View menu** — toggles the Layers panel, Scene Info, Camera Info, Camera Controls, Selection, Render Settings, Bounding Box, Point Confidence, Point Observations, Console and the Performance / Workflow / Viewport / Selection overlays. The Layers panel opens by itself once a second layer is loaded.
 - **Render toggles** — one-key switches for Point-cloud, Mesh, Cameras, Wireframe, Textured, and Bounding-box visibility.
 - **Workflow menu** — launches the OpenMVS pipeline steps on the loaded scene: *Estimate ROI*, *Densify*, *Reconstruct Mesh*, *Refine*, *Texture*. Each opens a parameter panel with the corresponding module's options.
 - **Help / About dialogs** — `F1` shows the complete in-app keybinding reference.
@@ -427,7 +468,7 @@ Display toggles
 - `P` point cloud · `M` mesh · `C` cameras · `W` wireframe · `T` textured · `B` bounding box
 
 Panels (Shift + letter)
-- `Shift+A` Scene Info · `Shift+Q` Camera Info · `Shift+C` Camera Controls · `Shift+S` Selection · `Shift+R` Render Settings · `Shift+B` Bounding-Box editor
+- `Shift+A` Scene Info · `Shift+Q` Camera Info · `Shift+C` Camera Controls · `Shift+S` Selection · `Shift+R` Render Settings · `Shift+B` Bounding-Box editor · `Shift+P` Point Observations
 
 Tools
 - `G` toggle selection mode · `Ctrl+B` run ROI estimation
@@ -437,7 +478,8 @@ Tools
 - **Multi-scene layers.** Several scenes or geometry files can be loaded at the same time as independent layers (`-l` on the command line, `Ctrl+O` or drag-and-drop) with per-layer visibility, solo, active selection and appearance controls in the *View ▸ Layers* panel; `[` / `]` cycle the active layer, on which the in-GUI pipeline and all editing tools operate.
 - **Side-by-side compare.** The Layers panel places each layer on side A or B of a vertical divider, in one of two modes: *Swipe* renders both sides with the same full-window camera separated by a draggable divider, so aligned scenes match pixel-exact across it, while *Split* shows two equal viewports with each scene centered in its own frustum. Camera movement is synchronized between the two sides by default; uncheck *Sync Cameras* to adjust each viewport's camera individually with the mouse over it. *Align to Active* moves every other layer onto the active one with a similarity transform estimated from cameras shared between the scenes (matched by photo file name, then by preserved SfM image ID; at least 3 shared cameras are required).
 - **ROI editing.** Press `Shift+B` to overlay an interactive oriented bounding box on the scene; drag the corner, face or rotation handles to define the region that subsequent pipeline stages will focus on. ROI can also be auto-estimated from the scene (`Ctrl+B`) or loaded from a file.
-- **Camera trajectory colouring.** Camera frustums are coloured along a Jet colormap according to their index in the capture sequence — blue at the start, red at the end — making it easy to spot loop closures, gaps or ordering issues. Cameras can be rendered as full frustums or as simple dots; the currently selected camera and its neighbours are highlighted distinctly.
+- **Camera trajectory colouring.** In *Camera Controls ▸ Camera Display Color*, *Sequence* colours the cameras of the active layer along a Jet colormap by their index in the capture sequence — red at the start, blue at the end — making it easy to spot loop closures, gaps or ordering issues; *Solid* uses a single colour picked next to it. The last choice is remembered between sessions and applied to newly loaded layers. Cameras can be rendered as full frustums or as simple dots; the currently selected camera and its neighbours are highlighted distinctly.
+- **Point observations.** Select a point of a cloud that stores its views (e.g. a dense cloud) and press `Shift+P`: the *Point Observations* panel shows, for every view seeing the point, the image patch centered on its projection (red cross), cropped from the full resolution photo in the background. *Equalized* sizes every patch to cover the same surface around the point, *Original* shows every photo's pixels at the same magnification; *Zoom* sets the magnification and *Sort by confidence* orders the views by their fusion confidence. Hovering a patch shows the image name, pixel position, depth, footprint, confidence and angle to the normal; clicking it views the scene from that camera.
 - **Camera-pose navigation.** The left / right arrow keys step through the scene's registered views; `Shift+Q` pins a panel showing the selected camera's intrinsics and extrinsics.
 - **Depth-map inspection.** Load a `.dmap` file directly (command-line, `Ctrl+O` or drag-and-drop) to render the depth map as a coloured 3D surface; the viewer also exports depth maps to `.ply` for use in external tools.
 - **In-GUI pipeline.** The *Workflow* menu launches `DensifyPointCloud`, `ReconstructMesh`, `RefineMesh` and `TextureMesh` on the loaded scene without leaving the viewer, with the result live-reloaded once each step completes.

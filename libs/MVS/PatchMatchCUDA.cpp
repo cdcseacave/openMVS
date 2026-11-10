@@ -85,9 +85,7 @@ void FreeTextureArray(cudaArray_t& array, cudaTextureObject_t& texture)
 PatchMatch::PatchMatch()
 	: cudaStream(0)
 {
-	// initialize CUDA device if needed
-	if (SEACAVE::CUDA::devices.IsEmpty())
-		SEACAVE::CUDA::initDevices(SEACAVE::CUDA::desiredDeviceIDs);
+	ASSERT(SEACAVE::CUDA::isEnabled());
 	CUDA_CHECK(cudaStreamCreate(&cudaStream));
 }
 
@@ -369,8 +367,8 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 			if (params.bGeomConsistency && i > 0 && !view.depthMap.empty()) {
 				// set previously computed depth-map
 				DepthMap depthMap(view.depthMap);
-				if (depthMap.size() != image.size())
-					cv::resize(depthMap, depthMap, image.size(), 0, 0, cv::INTER_LINEAR);
+				if (depthMap.size() != image.size()) // a neighbor image scaled onto its uniform grid
+					MVS::Image::ResizeUniform(depthMap, depthMap, image.size(), cv::INTER_LINEAR);
 				StagedUploadCvMat(cudaDepthArrays[i-1], depthMap, hostDepthPriorStaging, hostDepthPriorStagingArea, (size_t)(i-1));
 			}
 			images[i] = std::move(image);
@@ -475,15 +473,12 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 					n.width == images[n.srcImage].cols && n.height == images[n.srcImage].rows)
 					n.texDepth = (unsigned long long)textureDepths[n.srcImage-1];
 			}
-			const std::chrono::steady_clock::time_point t0(std::chrono::steady_clock::now());
 			bFusedConfDone = RunConfidenceFusedCUDA(size.width, size.height,
 				cudaDepthNormalEstimates, cudaDepthNormalCosts,
-				pConfRequest->k00, pConfRequest->k11, pConfRequest->k02, pConfRequest->k12,
+				pConfRequest->fx, pConfRequest->fy, pConfRequest->cx, pConfRequest->cy,
 				pConfRequest->neighbors.data(), (int)pConfRequest->neighbors.size(),
 				pConfRequest->params,
 				(void*)cudaStream, depthData.confMap.ptr<float>());
-			pConfRequest->computeNS += std::chrono::duration_cast<std::chrono::nanoseconds>(
-				std::chrono::steady_clock::now() - t0).count();
 			pConfRequest->done = bFusedConfDone;
 		}
 

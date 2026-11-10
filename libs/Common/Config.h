@@ -170,6 +170,15 @@
 #define _RELEASE // exclude code useful only for debug
 #endif
 
+// seed every random-number generator with a fixed value instead of an unpredictable one, so that
+// the same input always gives the same result and two builds can be compared estimate by estimate;
+// on in debug builds, and in a release build configured with -DOpenMVS_DETERMINISTIC_RANDOM=ON,
+// which is what an A/B measurement or a reproducible report needs (an estimation spread over
+// several threads also has to run on one thread to be reproducible to the bit)
+#if !defined(_USE_DETERMINISTIC_RANDOM) && !defined(_RELEASE)
+#define _USE_DETERMINISTIC_RANDOM
+#endif
+
 
 // optimization flags
 #if defined(_MSC_VER)
@@ -202,6 +211,13 @@
 #	define HOT
 #	define COLD
 #	define FORCEINLINE inline
+#endif
+
+// function callable from both host code and CUDA device code
+#ifdef __CUDACC__
+#	define HOST_DEVICE __host__ __device__
+#else
+#	define HOST_DEVICE
 #endif
 
 #define SAFE_DELETE(p)		{ if (p!=NULL) { delete (p);     (p)=NULL; } }

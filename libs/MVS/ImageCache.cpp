@@ -45,11 +45,12 @@ using namespace MVS;
 
 DEFINE_LOG_NAME(lt, _T("ImgCache"));
 
-ImageCache::ImageCache(const ImageArr& _images, size_t _max_memory_bytes)
+ImageCache::ImageCache(FncDecode _decode, size_t _max_memory_bytes)
 	:
-	images(_images),
+	decode(std::move(_decode)),
 	maxMemory(_max_memory_bytes), usedMemory(0)
 {
+	ASSERT(decode);
 }
 
 ImageCache::~ImageCache()
@@ -57,7 +58,7 @@ ImageCache::~ImageCache()
 	Reset();
 }
 
-bool ImageCache::Prefetch(const IIndexArr& idxImages) {
+bool ImageCache::Prefetch(const IIndexArr& idxImages, const FncMemorySize& imageMemorySize) {
 	if (maxMemory == 0)
 		return true;
 	// count up front how many fit, so the parallel loop below has no dependency
@@ -65,7 +66,7 @@ bool ImageCache::Prefetch(const IIndexArr& idxImages) {
 	IIndex numImages(0);
 	size_t memory(0);
 	while (numImages < idxImages.size()) {
-		const size_t size((size_t)images[idxImages[numImages]].GetSize().area() * sizeof(float));
+		const size_t size(imageMemorySize(idxImages[numImages]));
 		if (memory + size > maxMemory)
 			break;
 		memory += size;
@@ -76,8 +77,8 @@ bool ImageCache::Prefetch(const IIndexArr& idxImages) {
 	#pragma omp parallel for shared(bSuccess)
 	#endif
 	for (int64_t i=0; i<(int64_t)numImages; ++i) {
-		Image32F imageGray;
-		if (!UseImage(idxImages[(IIndex)i], imageGray))
+		cv::Mat image;
+		if (!UseImage(idxImages[(IIndex)i], image))
 			bSuccess = false;
 	}
 	return bSuccess;
@@ -86,63 +87,31 @@ bool ImageCache::Prefetch(const IIndexArr& idxImages) {
 void ImageCache::Reset(size_t max_memory_bytes) {
 	std::lock_guard<std::mutex> guard(mutex);
 	REPORT_CACHE_HIT_STATS(hitStats, "Image");
-	imagesGray.clear();
+	images.clear();
 	fifo.Clear();
 	usedMemory = 0;
 	maxMemory = max_memory_bytes;
 	hitStats.Reset();
 }
 
-size_t ImageCache::ComputeMemorySize(const ImageArr& images, const IIndexArr& idxImages) {
-	size_t memory(0);
-	for (IIndex idxImage: idxImages) {
-		ASSERT(images[idxImage].HasResolution());
-		memory += (size_t)images[idxImage].GetSize().area() * sizeof(float);
-	}
-	return memory;
-}
-
-bool ImageCache::DecodeImage(const Image& imageData, Image32F& imageGray) {
-	ASSERT(imageData.HasResolution());
-	if (!imageData.image.empty()) {
-		// the color pixels are resident, as the SGM fusion modes keep them
-		ASSERT(imageData.image.size() == imageData.GetSize());
-		imageData.image.toGray(imageGray, cv::COLOR_BGR2GRAY, true);
-		return true;
-	}
-	Image8U3 imageColor;
-	const auto pImage(Image::ReadImage(imageData.name, imageColor));
-	if (pImage == NULL) {
-		LOG("error: failed decoding image '%s'", imageData.name.c_str());
-		return false;
-	}
-	// bring the image to the resolution the depth-maps are estimated at;
-	// Image::GetSize() is the size ReloadImage() resolved when it read the header
-	if (imageColor.size() != imageData.GetSize())
-		cv::resize(imageColor, imageColor, imageData.GetSize(), 0, 0, cv::INTER_AREA);
-	imageColor.toGray(imageGray, cv::COLOR_BGR2GRAY, true);
-	return true;
-}
-
-bool ImageCache::UseImage(IIndex idxImage, Image32F& imageGray) {
-	ASSERT(idxImage < images.size());
+bool ImageCache::UseImage(IIndex idxImage, cv::Mat& image) {
 	if (maxMemory == 0) {
 		// caching disabled: there is not enough memory to keep even a few images,
 		// so decode it for this use only
-		return DecodeImage(images[idxImage], imageGray);
+		return decode(idxImage, image);
 	}
 	std::unique_lock<std::mutex> lock(mutex);
 	while (true) {
-		const auto it = imagesGray.find(idxImage);
-		if (it == imagesGray.end()) {
+		const auto it = images.find(idxImage);
+		if (it == images.end()) {
 			// claim the decode, so the threads asking for the same image wait for
 			// this one instead of decoding it again
-			imagesGray.emplace(idxImage, Image32F());
+			images.emplace(idxImage, cv::Mat());
 			break;
 		}
 		if (!it->second.empty()) {
 			hitStats.Hit();
-			imageGray = it->second;
+			image = it->second;
 			fifo.Put(idxImage);
 			return true;
 		}
@@ -150,16 +119,17 @@ bool ImageCache::UseImage(IIndex idxImage, Image32F& imageGray) {
 	}
 	lock.unlock();
 	// decode outside the lock so the workers do not serialize on the misses
-	Image32F imageDecoded;
-	const bool bDecoded(DecodeImage(images[idxImage], imageDecoded));
+	cv::Mat imageDecoded;
+	const bool bDecoded(decode(idxImage, imageDecoded));
 	lock.lock();
-	imagesGray.erase(idxImage);
+	images.erase(idxImage);
 	if (bDecoded) {
+		ASSERT(!imageDecoded.empty());
 		hitStats.Miss();
-		imageGray = imageDecoded;
+		image = imageDecoded;
 		const size_t size(ComputeImageMemorySize(imageDecoded));
 		if (size <= maxMemory) {
-			imagesGray[idxImage] = imageDecoded;
+			images[idxImage] = imageDecoded;
 			fifo.Put(idxImage);
 			usedMemory += size;
 			Eject();
@@ -172,8 +142,8 @@ bool ImageCache::UseImage(IIndex idxImage, Image32F& imageGray) {
 void ImageCache::Eject() {
 	while (usedMemory > maxMemory) {
 		const IIndex idxOldest(fifo.Pop());
-		usedMemory -= ComputeImageMemorySize(imagesGray[idxOldest]);
-		imagesGray.erase(idxOldest);
+		usedMemory -= ComputeImageMemorySize(images[idxOldest]);
+		images.erase(idxOldest);
 	}
 }
 /*----------------------------------------------------------------*/

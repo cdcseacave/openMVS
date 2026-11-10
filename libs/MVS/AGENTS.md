@@ -70,7 +70,7 @@ class Mesh {
 };
 ```
 Key method (`MeshHalfMesh.cpp`, the bridge to the halfmesh library):
-- `Clean(CleanParams)`: spurious-component removal, spike removal, QEM decimation, hole closing, Taubin smoothing, isotropic remeshing, then a finalize pass (degenerate faces, unreferenced vertices, non-manifold repair) — every enabled stage running on ONE halfmesh instance, so the mesh is converted in and out exactly once per call. The same stages are also exposed individually (`RemoveSpuriousComponents`, `RemoveSpikes`, `Simplify`, `CloseHoles`, `Smooth`), each paying its own conversion, so prefer `Clean` when running more than one. OpenMVS adjacency caches are rebuilt only when they existed before the operation. Authored per-vertex normals are carried across by halfmesh, which keeps them through the operations that only renumber vertices and drops them in the ones that move a vertex; only then are they recomputed, and only for a caller that had them.
+- `Clean(CleanParams)`: spurious-component removal, spike removal, QEM decimation, hole closing, Taubin smoothing, isotropic remeshing, then a finalize pass (degenerate faces, unreferenced vertices, non-manifold repair) — every enabled stage running on ONE halfmesh instance, so the mesh is converted in and out exactly once per call. The same stages are also exposed individually (`RemoveSpuriousComponents`, `RemoveSpikes`, `Simplify`, `CloseHoles`, `Smooth`), each paying its own conversion, so prefer `Clean` when running more than one. The bridge also carries the mesh queries and editors halfmesh implements: `IsWatertight`, `ComputeVolume` (closed, or against a plane: fill and cut), `Join`, `SubMesh` / `SubMeshes` (one conversion for many chunks), `Subdivide`, `SamplePoints`, and the OBJ and glTF codecs. OpenMVS adjacency caches are rebuilt only when they existed before the operation. Authored per-vertex normals are carried across by halfmesh, which keeps them through the operations that only renumber vertices and drops them in the ones that move a vertex; only then are they recomputed, and only for a caller that had them.
 
 ### DepthData (`DepthMap.h`)
 Per-image depth estimation data:
@@ -104,11 +104,11 @@ Scene::DenseReconstruction(nFusionMode, ...)
   -> SelectViews() -> InitViews() -> EstimateDepthMap() -> FuseDepthMaps()
 ```
 - **PatchMatch stereo**: Random init + iterative propagation + sub-pixel refinement
-- **Semi-Global Matching** (`SemiGlobalMatcher.h`): Optional SGM refinement pass
+- **Semi-Global Matching** (`SemiGlobalMatcher.h`): alternative CPU depth-map estimator to PatchMatch (`--fusion-mode -2`), multi-view hierarchical SGM over inverse-depth samples
 - **Confidence filtering**: Multi-view consistency checks
 - **Confidence recalibration** (`ConfidenceRefine.h`, `ConfidenceCUDA.cu`): replaces the photometric `1-NCC` confidence with a posterior predicting fusion survival (intra-map plane prior + soft multi-view confirmation + free-space violations). Controlled by the `ADJUST_CONFIDENCE` bit of `nOptimize`, whose default `ADJUST_CONFIDENCE_AUTO` resolves in `ComputeDepthMaps` to ON only for CUDA estimation (fused into the last geometric iteration, ~3ms/map) and OFF for CPU. The posterior's shape constants are deliberately compile-time in `ConfidenceRefine.h` -- one jointly GT-calibrated operating point, not independent knobs. Design, GT evidence, rejected alternatives and open threads: `docs/design/DepthMapConfidence.md`.
 - **DMapCache** (`DMapCache.h`): LRU disk cache for large-scale processing; also holds the color pixels of the cached depth-maps during fusion
-- **ImageCache** (`ImageCache.h`): LRU cache decoding images on demand during estimation, storing the gray intensities the estimator consumes
+- **ImageCache** (`ImageCache.h`): thread-safe LRU cache decoding images on demand through the decoder it is built with; densify stores the gray intensities the estimator consumes (`DecodeImageGray` in `SceneDensify.cpp`), the Viewer the full resolution color pixels it crops observation patches from
 - **View-locality order** (`SortImagesByViewLocality`): the depth-maps are estimated walking the view graph, so consecutive ones share views and the cache decodes each image once
 - **PatchMatchCUDA** (`PatchMatchCUDA.h`): GPU-accelerated depth estimation
 
@@ -131,7 +131,7 @@ Key params: `nResolutionLevel`, `fDecimateMesh`, `nCloseHoles`, `fRegularityWeig
 ```cpp
 Scene::TextureMesh(nResolutionLevel, ...)
 ```
-Project faces to images -> compute blending weights -> spatial patch grouping -> atlas packing (`halfmesh::PackRectangles`, bounded multi-page skyline packing over `cv::Rect` with rotation) -> global seam leveling -> local seam blending.
+Project faces to images -> compute blending weights -> spatial patch grouping -> atlas packing (each patch's footprint, its rasterized faces plus a 2 px border, packed by `halfmesh::PackFootprints`, bottom-left first-fit on a 4x4-pixel block grid, either orientation; pages cropped to the extent used, so not necessarily square; `halfmesh::PackRectangles` only sizes the spatial page groups) -> global seam leveling -> local seam blending.
 
 `Scene::ComputeVertexColors(...)` shares the same view selection, but instead of building an atlas it samples each vertex in the views texturing the faces around it and stores the weighted average in `mesh.vertexColors`; it releases each image as soon as its faces are consumed.
 

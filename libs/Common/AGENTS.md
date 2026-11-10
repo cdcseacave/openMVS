@@ -66,6 +66,15 @@ All geometry types are templated on `TYPE` (float/double) and `DIMS` (2/3).
 
 Common typedefs: `AABB3f`, `OBB3f`, `Ray3f`, `Plane3f`, `Sphere3f`, `Line3f`, `Triangle3f` (float, 3D).
 
+## Depth-Map Geometry (`DepthGeometry.h`)
+Host and CUDA device functions on Eigen types for a skew-free pinhole camera (focal `f`, principal
+point `pp`), the single implementation used by the CPU depth-map code and the CUDA kernels:
+`DepthSimilarity`/`IsDepthSimilar` (relative depth difference), `DepthPlaneFit` (least-squares depth
+plane from neighbor offsets), `FitDepthGradient` (that fit over the 3x3 depth-similar neighbors of a
+pixel, on any map indexed `(row,col)` with `rows`/`cols`), `NormalFromDepthGradient` (the plane's
+camera-facing normal) and `InterpolatePlaneDepth` (a neighbor's plane carried to a pixel, as in
+PatchMatch propagation). `HOST_DEVICE` (`Config.h`) marks functions compiled for both sides.
+
 ## Threading & Synchronization
 
 | Class | Header | Purpose |

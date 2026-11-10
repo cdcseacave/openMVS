@@ -53,9 +53,8 @@ protected:
 		NodeID nodeID1;
 		NodeID nodeID2;
 		EnergyType weight;
-		std::vector<EnergyType> newMsgs;
-		std::vector<EnergyType> oldMsgs;
-		inline DirectedEdge(NodeID _nodeID1, NodeID _nodeID2, EnergyType _weight) : nodeID1(_nodeID1), nodeID2(_nodeID2), weight(_weight) {}
+		size_t msgs; // offset of its messages, one per label of nodeID2, in oldMsgs/newMsgs
+		inline DirectedEdge(NodeID _nodeID1, NodeID _nodeID2, EnergyType _weight) : nodeID1(_nodeID1), nodeID2(_nodeID2), weight(_weight), msgs(0) {}
 	};
 
 	struct Node {
@@ -68,7 +67,13 @@ protected:
 
 	std::vector<DirectedEdge> edges;
 	std::vector<Node> nodes;
+	// the messages of every directed edge in two flat buffers (one value per label of its target
+	// node), allocated once the labels are final, at the first optimization
+	std::vector<EnergyType> oldMsgs, newMsgs;
 	FncSmoothCost fncSmoothCost;
+	// >= 0 when fncSmoothCost is the Potts model with this cost (0 for two equal labels other than
+	// label 0, pottsCost otherwise): the messages then take O(labels) instead of O(labels^2)
+	EnergyType pottsCost = -1;
 
 public:
 	LBPInference() {}
@@ -97,11 +102,7 @@ public:
 			node.label = label;
 			node.dataCost = dataCost;
 		}
-		for (EdgeID edgeID: node.incomingEdges) {
-			DirectedEdge& incomingEdge = edges[edgeID];
-			incomingEdge.oldMsgs.push_back(0);
-			incomingEdge.newMsgs.push_back(0);
-		}
+		ASSERT(oldMsgs.empty()); // the labels are fixed once the optimization started
 	}
 	inline void SetDataCost(LabelID label, const DataCost& cost) {
 		SetDataCost(label, cost.nodeID, cost.cost);
@@ -113,6 +114,13 @@ public:
 
 	inline void SetSmoothCost(FncSmoothCost func) {
 		fncSmoothCost = func;
+		pottsCost = -1;
+	}
+	// func must be the Potts model of the given cost (see pottsCost)
+	inline void SetSmoothCostPotts(FncSmoothCost func, EnergyType cost) {
+		ASSERT(cost >= 0 && func(0, 0, 1, 1) == 0 && func(0, 0, 1, 2) == cost && func(0, 0, 0, 0) == cost);
+		fncSmoothCost = func;
+		pottsCost = cost;
 	}
 
 	EnergyType ComputeEnergy() const {
@@ -133,6 +141,15 @@ public:
 	}
 
 	void Optimize(unsigned num_iterations) {
+		if (oldMsgs.empty()) {
+			size_t numMsgs(0);
+			for (DirectedEdge& edge: edges) {
+				edge.msgs = numMsgs;
+				numMsgs += nodes[edge.nodeID2].labels.size();
+			}
+			oldMsgs.assign(numMsgs, EnergyType(0));
+			newMsgs.assign(numMsgs, EnergyType(0));
+		}
 		for (unsigned i = 0; i < num_iterations; ++i) {
 			#ifdef LBP_USE_OPENMP
 			#pragma omp parallel for
@@ -141,6 +158,53 @@ public:
 				DirectedEdge& edge = edges[edgeID];
 				const std::vector<LabelID>& labels1 = nodes[edge.nodeID1].labels;
 				const std::vector<LabelID>& labels2 = nodes[edge.nodeID2].labels;
+				if (pottsCost >= 0) {
+					// Potts: the energy of sending label k is the same for every receiving label but
+					// k's own, which costs the smoothness less; with E0/E1 the energies of k at
+					// smoothness 0/pottsCost (summed in the generic loop's order, so the messages
+					// are bit-identical), the message of label j is min(E0[k=j], min_k E1[k]):
+					// E0[k] <= E1[k] makes the excluded E1[k=j] irrelevant; the k of label j is
+					// found in a table indexed by label (1 + k, 0 for a label node1 lacks)
+					const Node& node1 = nodes[edge.nodeID1];
+					thread_local std::vector<EnergyType> e0, e1;
+					thread_local std::vector<uint32_t> labelSlots;
+					e0.resize(labels1.size());
+					e1.resize(labels1.size());
+					EnergyType minE1(std::numeric_limits<EnergyType>::max());
+					for (size_t k = 0; k < labels1.size(); ++k) {
+						const LabelID label1(labels1[k]);
+						if (labelSlots.size() <= label1)
+							labelSlots.resize(label1+1, 0);
+						ASSERT(labelSlots[label1] == 0); // a node's labels are distinct
+						labelSlots[label1] = uint32_t(k+1);
+						EnergyType energy0(node1.dataCosts[k] + EnergyType(0) * edge.weight);
+						EnergyType energy1(node1.dataCosts[k] + pottsCost * edge.weight);
+						for (EdgeID idxIncomingEdge: node1.incomingEdges) {
+							const DirectedEdge& pre_edge = edges[idxIncomingEdge];
+							if (pre_edge.nodeID1 == edge.nodeID2)
+								continue;
+							energy0 += oldMsgs[pre_edge.msgs+k];
+							energy1 += oldMsgs[pre_edge.msgs+k];
+						}
+						e0[k] = energy0;
+						e1[k] = energy1;
+						if (minE1 > energy1)
+							minE1 = energy1;
+					}
+					for (size_t j = 0; j < labels2.size(); ++j) {
+						const LabelID label2(labels2[j]);
+						EnergyType minEnergy(minE1);
+						if (label2 != 0 && label2 < labelSlots.size() && labelSlots[label2] != 0) {
+							const EnergyType energy0(e0[labelSlots[label2]-1]);
+							if (minEnergy > energy0)
+								minEnergy = energy0;
+						}
+						newMsgs[edge.msgs+j] = minEnergy;
+					}
+					for (const LabelID label1: labels1)
+						labelSlots[label1] = 0;
+					continue;
+				}
 				for (size_t j = 0; j < labels2.size(); ++j) {
 					const LabelID label2(labels2[j]);
 					EnergyType minEnergy(std::numeric_limits<EnergyType>::max());
@@ -151,26 +215,28 @@ public:
 							const DirectedEdge& pre_edge = edges[idxIncomingEdge];
 							if (pre_edge.nodeID1 == edge.nodeID2)
 								continue;
-							energy += pre_edge.oldMsgs[k];
+							energy += oldMsgs[pre_edge.msgs+k];
 						}
 						if (minEnergy > energy)
 							minEnergy = energy;
 					}
-					edge.newMsgs[j] = minEnergy;
+					newMsgs[edge.msgs+j] = minEnergy;
 				}
 			}
+			newMsgs.swap(oldMsgs);
 			#ifdef LBP_USE_OPENMP
 			#pragma omp parallel for
 			#endif
 			for (int_t edgeID = 0; edgeID < (int_t)edges.size(); ++edgeID) {
-				DirectedEdge& edge = edges[edgeID];
-				edge.newMsgs.swap(edge.oldMsgs);
+				const DirectedEdge& edge = edges[edgeID];
+				EnergyType* const msgs(oldMsgs.data()+edge.msgs);
+				const size_t numLabels(nodes[edge.nodeID2].labels.size());
 				EnergyType minMsg(std::numeric_limits<EnergyType>::max());
-				for (EnergyType msg: edge.oldMsgs)
-					if (minMsg > msg)
-						minMsg = msg;
-				for (EnergyType& msg: edge.oldMsgs)
-					msg -= minMsg;
+				for (size_t j = 0; j < numLabels; ++j)
+					if (minMsg > msgs[j])
+						minMsg = msgs[j];
+				for (size_t j = 0; j < numLabels; ++j)
+					msgs[j] -= minMsg;
 			}
 		}
 		#ifdef LBP_USE_OPENMP
@@ -182,7 +248,7 @@ public:
 			for (size_t j = 0; j < node.labels.size(); ++j) {
 				EnergyType energy(node.dataCosts[j]);
 				for (EdgeID idxIncomingEdge: node.incomingEdges)
-					energy += edges[idxIncomingEdge].oldMsgs[j];
+					energy += oldMsgs[edges[idxIncomingEdge].msgs+j];
 				if (minEnergy > energy) {
 					minEnergy = energy;
 					node.label = node.labels[j];

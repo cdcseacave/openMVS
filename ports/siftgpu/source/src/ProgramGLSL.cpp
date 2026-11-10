@@ -559,7 +559,25 @@ ShaderBag::ShaderBag()
     f_gaussian_skip1 = NULL;
     f_gaussian_step = NULL;
     _gaussian_step_num = 0;
+	_param_dog_cmin = -1;
+}
 
+// Defines CURVATURE_FLOOR(fxx, fyy, fxy, dark): true when the smaller principal curvature
+// |lambda_min| of the DoG Hessian (det > 0 here, so both curvatures share the sign of the
+// trace) is below the uniform cmin, the minimum scale-normalized curvature
+// sigma^2*|lambda_min| of SiftGPU's -cmin divided by the squared level sigma, times the
+// darkness factor of the DoG threshold (as in the CUDA ComputeKEY_Kernel). It keeps
+// low-contrast extrema that are well curved in both directions (blobs and corners of
+// weakly textured surfaces) and rejects flat and edge-like ones, so a low DoG threshold
+// can be used with it.
+void ShaderBag::WriteMinCurvatureTest(std::ostream& out)
+{
+	if(GlobalUtil::_MinCurvature > 0)
+		out << "uniform float cmin;\n"
+			"#define CURVATURE_FLOOR(fxx, fyy, fxy, dark) "
+			"(0.5 * (abs(fxx + fyy) - sqrt((fxx - fyy) * (fxx - fyy) + 4.0 * fxy * fxy)) < cmin * (dark))\n";
+	else
+		out << "#define CURVATURE_FLOOR(fxx, fyy, fxy, dark) false\n";
 }
 
 ShaderBag::~ShaderBag()
@@ -789,15 +807,18 @@ void ShaderBagGLSL::LoadKeypointShader(float threshold, float edge_threshold)
 	//Y: (CDU) (CENTER 0, DOWN -1, UP    +1)
 	if(GlobalUtil::_DarknessAdaption)
 	{
-		out <<	"#define THRESHOLD0 (" << threshold0 << " * min(2.0 * cc.r + 0.1, 1.0))\n"
-				"#define THRESHOLD1 (" << threshold1 << " * min(2.0 * cc.r + 0.1, 1.0))\n"
+		out <<	"#define DARKNESS min(2.0 * cc.r + 0.1, 1.0)\n"
+				"#define THRESHOLD0 (" << threshold0 << " * DARKNESS)\n"
+				"#define THRESHOLD1 (" << threshold1 << " * DARKNESS)\n"
 				"#define THRESHOLD2 " << threshold2 << "\n";
 	}else
 	{
-		out <<	"#define THRESHOLD0 " << threshold0 << "\n"
+		out <<	"#define DARKNESS 1.0\n"
+				"#define THRESHOLD0 " << threshold0 << "\n"
 				"#define THRESHOLD1 " << threshold1 << "\n"
 				"#define THRESHOLD2 " << threshold2 << "\n";
 	}
+	WriteMinCurvatureTest(out);
 
 	out<<
 	"uniform sampler2DRect tex, texU, texD; void main ()\n"
@@ -847,7 +868,8 @@ void ShaderBagGLSL::LoadKeypointShader(float threshold, float edge_threshold)
 	"	float fxx_plus_fyy = fxx + fyy;\n"
 	"	float score_up = fxx_plus_fyy*fxx_plus_fyy; \n"
 	"	float score_down = (fxx*fyy - fxy*fxy);\n"
-	"	if( score_down <= 0.0 || score_up > THRESHOLD2 * score_down)return;\n";
+	"	if( score_down <= 0.0 || score_up > THRESHOLD2 * score_down)return;\n"
+	"	if(CURVATURE_FLOOR(fxx, fyy, fxy, DARKNESS)) return;\n";
 
 	//...
 	out<<" \n"
@@ -1003,6 +1025,7 @@ void ShaderBagGLSL::LoadKeypointShader(float threshold, float edge_threshold)
 
 	_param_dog_texu = glGetUniformLocation(*program, "texU");
 	_param_dog_texd = glGetUniformLocation(*program, "texD");
+	_param_dog_cmin = GlobalUtil::_MinCurvature > 0 ? glGetUniformLocation(*program, "cmin") : -1;
 }
 
 
@@ -1158,6 +1181,7 @@ void ShaderBagGLSL::LoadOrientationShader()
 	"#define GAUSSIAN_WF float("<<GlobalUtil::_OrientationGaussianFactor<<") \n"
 	"#define SAMPLE_WF float("<<GlobalUtil::_OrientationWindowFactor<< " )\n"
 	"#define ORIENTATION_THRESHOLD "<< GlobalUtil::_MulitiOrientationThreshold << "\n"
+	<< OrientationMomentMacros() <<
 	"uniform sampler2DRect tex;					\n"
 	"uniform sampler2DRect gradTex;				\n"
 	"uniform vec4 size;						\n"
@@ -1168,6 +1192,7 @@ void ShaderBagGLSL::LoadOrientationShader()
 	"	bins[0] = vec4(0.0);bins[1] = vec4(0.0);bins[2] = vec4(0.0);	\n"
 	"	bins[3] = vec4(0.0);bins[4] = vec4(0.0);bins[5] = vec4(0.0);	\n"
 	"	bins[6] = vec4(0.0);bins[7] = vec4(0.0);bins[8] = vec4(0.0);	\n"
+	"	float m0 = 0.0; vec2 m1 = vec2(0.0), m2 = vec2(0.0), m3 = vec2(0.0), m4 = vec2(0.0), m5 = vec2(0.0);\n"
 	"	vec4 loc = texture2DRect(tex, gl_TexCoord[0].xy);	\n"
 	"	vec2 pos = loc.xy;		\n"
 	"	bool orientation_mode = (size.z != 0.0);			\n"
@@ -1209,58 +1234,11 @@ void ShaderBagGLSL::LoadOrientationShader()
 	"			if( sq_dist < dist_threshold){							\n"
 	"				vec4 cc = texture2DRect(gradTex, spos);				\n"
 	"				float grad = cc.b;	float theta = cc.a;				\n"
-	"				float idx = floor(degrees(theta)*0.1);				\n"
-	"				if(idx < 0.0 ) idx += 36.0;									\n"
 	"				float weight = grad*exp(sq_dist * factor);				\n"
-	"				float vidx = fract(idx * 0.25) * 4.0;//mod(idx, 4.0) ;							\n"
-	"				vec4 inc = weight*vec4(equal(vec4(vidx), vec4(0.0,1.0,2.0,3.0)));";
-
-	if(GlobalUtil::_UseDynamicIndexing)
-	{
-		//dynamic indexing may not be faster
-		out<<"\n"
-	"				int iidx = int((idx*0.25));	\n"
-	"				bins[iidx]+=inc;					\n"
+	"				ADD_MOMENTS(weight, theta);								\n"
 	"			}										\n"
 	"		}											\n"
 	"	}";
-
-	}else
-	{
-		//nvfp40 still does not support dynamic array indexing
-		//unrolled binary search...
-		out<<"\n"
-	"				if(idx < 16.0)							\n"
-	"				{										\n"
-	"					if(idx < 8.0)							\n"
-	"					{									\n"
-	"						if(idx < 4.0)	{	bins[0]+=inc;}	\n"
-	"						else		{	bins[1]+=inc;}	\n"
-	"					}else								\n"
-	"					{									\n"
-	"						if(idx < 12.0){	bins[2]+=inc;}	\n"
-	"						else		{	bins[3]+=inc;}	\n"
-	"					}									\n"
-	"				}else if(idx < 32.0)						\n"
-	"				{										\n"
-	"					if(idx < 24.0)						\n"
-	"					{									\n"
-	"						if(idx <20.0)	{	bins[4]+=inc;}	\n"
-	"						else		{	bins[5]+=inc;}	\n"
-	"					}else								\n"
-	"					{									\n"
-	"						if(idx < 28.0){	bins[6]+=inc;}	\n"
-	"						else		{	bins[7]+=inc;}	\n"
-	"					}									\n"
-	"				}else 						\n"
-	"				{										\n"
-	"					bins[8]+=inc;						\n"
-	"				}										\n"
-	"			}										\n"
-	"		}											\n"
-	"	}";
-
-	}
 
 	WriteOrientationCodeToStream(out);
 
@@ -1278,57 +1256,37 @@ void ShaderBagGLSL::LoadOrientationShader()
 }
 
 
+// Orientation density from circular moments instead of a 36-bin histogram (as in the CUDA
+// ComputeOrientation_Kernel): each gradient adds w * exp(i k theta) to M_k, k = 0..5, by complex
+// multiplication with its unit direction; smoothing the density by a wrapped Gaussian of 0.35 rad
+// (the width of the former six [1 1 1]/3 passes) attenuates harmonic k by exp(-k^2 0.35^2 / 2).
+float ShaderBagGLSL::OrientationGain(int k)
+{
+	return 2.0f * expf(-0.5f * k * k * 0.35f * 0.35f);
+}
+
+const char* ShaderBagGLSL::OrientationMomentMacros()
+{
+	return
+	"#define CMUL(a, b) vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x)\n"
+	"#define ADD_MOMENTS(w, th) {vec2 u = vec2(cos(th), sin(th)); vec2 z = (w) * u; m0 += (w); "
+	"m1 += z; z = CMUL(z, u); m2 += z; z = CMUL(z, u); m3 += z; z = CMUL(z, u); m4 += z; z = CMUL(z, u); m5 += z;}\n"
+	"#define DENSITY_TERM(m, k, g) (g) * ((m).x * cos((k) * phi) + (m).y * sin((k) * phi))\n";
+}
+
 void ShaderBagGLSL::WriteOrientationCodeToStream(std::ostream& out)
 {
-	//smooth histogram and find the largest
-/*
-	smoothing kernel:	 (1 3 6 7 6 3 1 )/27
-	the same as 3 pass of (1 1 1)/3 averaging
-	maybe better to use 4 pass on the vectors...
-*/
-
-
-	//the inner loop on different array numbers is always unrolled in fp40
-
-	//bug fixed here:)
-	out<<"\n"
-	"	//mat3 m1 = mat3(1, 0, 0, 3, 1, 0, 6, 3, 1)/27.0;  \n"
-	"	mat3 m1 = mat3(1, 3, 6, 0, 1, 3,0, 0, 1)/27.0;  \n"
-	"	mat4 m2 = mat4(7, 6, 3, 1, 6, 7, 6, 3, 3, 6, 7, 6, 1, 3, 6, 7)/27.0;\n"
-	"	#define FILTER_CODE(i) {						\\\n"
-	"			vec4 newb	=	(bins[i]* m2);			\\\n"
-	"			newb.xyz	+=	( prev.yzw * m1);		\\\n"
-	"			prev = bins[i];							\\\n"
-	"			newb.wzy	+=	( bins[i+1].zyx *m1);	\\\n"
-	"			bins[i] = newb;}\n"
-	"	for (int j=0; j<2; j++)								\n"
-	"	{												\n"
-	"		vec4 prev  = bins[8];						\n"
-	"		bins[9]		 = bins[0];						\n";
-
-	if(GlobalUtil::_KeepShaderLoop)
+	// orientation density smoothed by a wrapped Gaussian, evaluated from the circular moments at
+	// the 36 former bin centres (t + 0.5) * 10 degrees (see OrientationMomentMacros)
+	char density[512];
+	for(int i = 0; i < 9; ++i)
 	{
-		out<<
-	"		for (int i=0; i<9; i++)							\n"
-	"		{												\n"
-	"			FILTER_CODE(i);								\n"
-	"		}												\n"
-	"	}";
-
-	}else
-	{
-		//manually unroll the loop for ATI.
-		out <<
-	"	   FILTER_CODE(0);\n"
-	"	   FILTER_CODE(1);\n"
-	"	   FILTER_CODE(2);\n"
-	"	   FILTER_CODE(3);\n"
-	"	   FILTER_CODE(4);\n"
-	"	   FILTER_CODE(5);\n"
-	"	   FILTER_CODE(6);\n"
-	"	   FILTER_CODE(7);\n"
-	"	   FILTER_CODE(8);\n"
-	"	}\n";
+		sprintf(density, "	{vec4 phi = vec4(%d.5, %d.5, %d.5, %d.5) * 0.17453292519943295;\n"
+			"	bins[%d] = vec4(m0) + DENSITY_TERM(m1, 1.0, %.9g) + DENSITY_TERM(m2, 2.0, %.9g)"
+			" + DENSITY_TERM(m3, 3.0, %.9g) + DENSITY_TERM(m4, 4.0, %.9g) + DENSITY_TERM(m5, 5.0, %.9g);}\n",
+			4 * i, 4 * i + 1, 4 * i + 2, 4 * i + 3, i,
+			OrientationGain(1), OrientationGain(2), OrientationGain(3), OrientationGain(4), OrientationGain(5));
+		out << density;
 	}
 	//find the maximum voting
 	out<<"\n"
@@ -1814,6 +1772,7 @@ void ShaderBagPKSL::LoadOrientationShader(void)
 	"#define GAUSSIAN_WF float("<<GlobalUtil::_OrientationGaussianFactor<<") \n"
 	"#define SAMPLE_WF float("<<GlobalUtil::_OrientationWindowFactor<< " )\n"
 	"#define ORIENTATION_THRESHOLD "<< GlobalUtil::_MulitiOrientationThreshold << "\n"
+	<< ShaderBagGLSL::OrientationMomentMacros() <<
 	"uniform sampler2DRect tex;	uniform sampler2DRect gtex;\n"
 	"uniform sampler2DRect otex; uniform vec4 size;\n"
 	"void main()		\n"
@@ -1822,6 +1781,7 @@ void ShaderBagPKSL::LoadOrientationShader(void)
 	"	bins[0] = vec4(0.0);bins[1] = vec4(0.0);bins[2] = vec4(0.0);	\n"
 	"	bins[3] = vec4(0.0);bins[4] = vec4(0.0);bins[5] = vec4(0.0);	\n"
 	"	bins[6] = vec4(0.0);bins[7] = vec4(0.0);bins[8] = vec4(0.0);	\n"
+	"	float m0 = 0.0; vec2 m1 = vec2(0.0), m2 = vec2(0.0), m3 = vec2(0.0), m4 = vec2(0.0), m5 = vec2(0.0);\n"
 	"	vec4 sift = texture2DRect(tex, gl_TexCoord[0].xy);	\n"
 	"	vec2 pos = sift.xy; \n"
 	"	bool orientation_mode = (size.z != 0.0);		\n"
@@ -1854,73 +1814,13 @@ void ShaderBagPKSL::LoadOrientationShader(void)
 	"				vec4 gg = texture2DRect(gtex, spos);				\n"
 	"				vec4 oo = texture2DRect(otex, spos);				\n"
 	"				vec4 weight = gg * exp(distsq * factor);			\n"
-	"				vec4 idxv  = floor(degrees(oo)*0.1); 				\n"
-	"				idxv+= (vec4(lessThan(idxv, vec4(0.0)))*36.0); 			\n"
-	"				vec4 vidx = fract(idxv * 0.25) * 4.0;//mod(idxv, 4.0);	\n";
-	//
-	if(GlobalUtil::_UseDynamicIndexing)
-	{
-		// it might be slow on some GPUs
-		out<<"\n"
 	"				for(int i = 0 ; i < 4; i++)\n"
 	"				{\n"
-	"					if(inside[i])\n"
-	"					{\n"
-	"						float idx = idxv[i];								\n"
-	"						vec4 inc = weight[i] * vec4(equal(vec4(vidx[i]), vec4(0.0,1.0,2.0,3.0)));	\n"
-	"						int iidx = int(floor(idx*0.25));	\n"
-	"						bins[iidx]+=inc;					\n"
-	"					}										\n"
-	"				}											\n"
-	"			}												\n"
-	"		}													\n"
-	"	}";
-
-	}else
-	{
-		//nvfp40 still does not support dynamic array indexing
-		//unrolled binary search
-		//it seems to be faster than the dyanmic indexing version on some GPUs
-		out<<"\n"
-	"				for(int i = 0 ; i < 4; i++)\n"
-	"				{\n"
-	"					if(inside[i])\n"
-	"					{\n"
-	"						float idx = idxv[i]; 										\n"
-	"						vec4 inc = weight[i] * vec4(equal(vec4(vidx[i]), vec4(0,1,2,3)));	\n"
-	"						if(idx < 16.0)							\n"
-	"						{										\n"
-	"							if(idx < 8.0)							\n"
-	"							{									\n"
-	"								if(idx < 4.0)	{	bins[0]+=inc;}	\n"
-	"								else		{	bins[1]+=inc;}	\n"
-	"							}else								\n"
-	"							{									\n"
-	"								if(idx < 12.0){	bins[2]+=inc;}	\n"
-	"								else		{	bins[3]+=inc;}	\n"
-	"							}									\n"
-	"						}else if(idx < 32.0)						\n"
-	"						{										\n"
-	"							if(idx < 24.0)						\n"
-	"							{									\n"
-	"								if(idx <20.0)	{	bins[4]+=inc;}	\n"
-	"								else		{	bins[5]+=inc;}	\n"
-	"							}else								\n"
-	"							{									\n"
-	"								if(idx < 28.0){	bins[6]+=inc;}	\n"
-	"								else		{	bins[7]+=inc;}	\n"
-	"							}									\n"
-	"						}else 						\n"
-	"						{										\n"
-	"							bins[8]+=inc;						\n"
-	"						}										\n"
-	"					}											\n"
-	"				}												\n"
+	"					if(inside[i]) ADD_MOMENTS(weight[i], oo[i]);\n"
+	"				}\n"
 	"			}										\n"
 	"		}											\n"
 	"	}";
-
-	}
 
 	//reuse the code from the unpacked version..
 	ShaderBagGLSL::WriteOrientationCodeToStream(out);
@@ -2076,7 +1976,8 @@ void ShaderBagPKSL::LoadKeypointShader(float dog_threshold, float edge_threshold
 
 	if(GlobalUtil::_DarknessAdaption)
 	{
-		out <<	"#define THRESHOLD0(i) (" << threshold0 << "* ii[i])\n"
+		out <<	"#define DARKNESS(i) ii[i]\n"
+				"#define THRESHOLD0(i) (" << threshold0 << "* ii[i])\n"
 				"#define THRESHOLD1 (" << threshold1 << "* ii[0])\n"
 				"#define THRESHOLD2 " << threshold2 << "\n"
 				"#define DEFINE_EXTRA() vec4 ii = texture2DRect(texI, gl_TexCoord[0].xy); "
@@ -2085,12 +1986,14 @@ void ShaderBagPKSL::LoadKeypointShader(float dog_threshold, float edge_threshold
 		out << "uniform sampler2DRect texI;\n";
 	}else
 	{
-		out <<	"#define THRESHOLD0(i) " << threshold0 << "\n"
+		out <<	"#define DARKNESS(i) 1.0\n"
+				"#define THRESHOLD0(i) " << threshold0 << "\n"
 				"#define THRESHOLD1 " << threshold1 << "\n"
 				"#define THRESHOLD2 " << threshold2 << "\n"
 				"#define DEFINE_EXTRA()\n"
 				"#define MOVE_EXTRA(idx) \n"	;
 	}
+	WriteMinCurvatureTest(out);
 
 	out<<
 	"uniform sampler2DRect tex; uniform sampler2DRect texU;\n"
@@ -2155,6 +2058,7 @@ void ShaderBagPKSL::LoadKeypointShader(float dog_threshold, float edge_threshold
 	"		float score_up = fxx_plus_fyy*fxx_plus_fyy; \\\n"
 	"		float score_down = (fxx[i]*fyy[i] - fxy[i]*fxy[i]);\\\n"
 	"		if( score_down <= 0.0 || score_up > THRESHOLD2 * score_down)key[i] = 0.0;\\\n"
+	"		else if(CURVATURE_FLOOR(fxx[i], fyy[i], fxy[i], DARKNESS(i))) key[i] = 0.0;\\\n"
 	"	}\n"
 	"	REPEAT4(EDGE_SUPPRESION);\n"
 	"	if(any(notEqual(key, vec4(0.0)))) {\n";
@@ -2308,6 +2212,7 @@ void ShaderBagPKSL::LoadKeypointShader(float dog_threshold, float edge_threshold
 	_param_dog_texu = glGetUniformLocation(*program, "texU");
 	_param_dog_texd = glGetUniformLocation(*program, "texD");
 	if(GlobalUtil::_DarknessAdaption) 	_param_dog_texi = glGetUniformLocation(*program, "texI");
+	_param_dog_cmin = GlobalUtil::_MinCurvature > 0 ? glGetUniformLocation(*program, "cmin") : -1;
 }
 void ShaderBagPKSL::SetDogTexParam(int texU, int texD)
 {

@@ -74,6 +74,8 @@ float k2;
 String strImageIndices;
 unsigned nMaxFeaturesPerCell;
 unsigned nMinFeaturesPerCell;
+bool bSiftGPUDarknessAdaptivity;
+bool bSiftGPUCUDA;
 unsigned maxViewsPerCluster;
 bool bClusterCommunities;
 bool bUseGlobalSolver;
@@ -147,6 +149,8 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("compare-mvs", boost::program_options::value<std::string>(&OPT::strCompareMVS), "compare reconstruction against ground-truth MVS file (optional)")
 		("max-features-per-cell", boost::program_options::value(&OPT::nMaxFeaturesPerCell)->default_value(3000), "maximum features per grid cell (3x3 grid)")
 		("min-features-per-cell", boost::program_options::value(&OPT::nMinFeaturesPerCell)->default_value(500), "minimum features per cell before adjusting sensitivity")
+		("siftgpu-darkness-adaptivity", boost::program_options::value(&OPT::bSiftGPUDarknessAdaptivity)->default_value(false), "SiftGPU: lower the DoG threshold and curvature floor in dark areas")
+		("siftgpu-cuda", boost::program_options::value(&OPT::bSiftGPUCUDA)->default_value(true), "SiftGPU feature extraction and matching backend: 1 = CUDA (if available), 0 = OpenGL/GLSL")
 		("match-mode", boost::program_options::value(&OPT::matchMode)->default_value(1), "match mode: -1=SKIP,0=EXHAUSTIVE,1=VOCABULARY,2=SEQUENTIAL,3=KNOWN_POSES")
 		("match-sequence-overlap", boost::program_options::value(&OPT::matchSequenceOverlap)->default_value(3), "sequence overlap for sequential matching")
 		("vocab-max-pairs", boost::program_options::value(&OPT::maxPairsPerImage)->default_value(50), "target pairs per image for vocabulary and pose-guided matching")
@@ -279,6 +283,7 @@ int main(int argc, LPCTSTR* argv)
 	cfg.featuresCfg.detectorType = FeatureTypeFromString(OPT::strDetectorType);
 	cfg.featuresCfg.maxFeaturesPerCell = OPT::nMaxFeaturesPerCell;
 	cfg.featuresCfg.minFeaturesPerCell = OPT::nMinFeaturesPerCell;
+	cfg.featuresCfg.siftgpuDarknessAdaptivity = OPT::bSiftGPUDarknessAdaptivity;
 	cfg.featuresCfg.importOpenMVGDir = OPT::strImportOpenMVGDir;
 	cfg.featuresCfg.exportOpenMVGDir = OPT::strExportOpenMVGDir;
 	cfg.roma2Cfg.importROMA2Path = OPT::strImportROMA2Path;
@@ -289,7 +294,7 @@ int main(int argc, LPCTSTR* argv)
 	cfg.matchCfg.verificationFeedback = OPT::matchVerificationFeedback;
 	cfg.matchCfg.releaseDescriptors = OPT::releaseDescriptors;
 	#ifdef _USE_CUDA
-	cfg.matchCfg.useCUDA = cfg.featuresCfg.useCUDA = !SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs);
+	cfg.matchCfg.useCUDA = cfg.featuresCfg.useCUDA = OPT::bSiftGPUCUDA && !SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs);
 	#endif
 	cfg.matchImagesOnly = OPT::matchImagesOnly;
 	cfg.viewgraphCfg.maxTwoViewError = 0; // disable pair filtering after ViewGraph calibration

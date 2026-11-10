@@ -77,7 +77,7 @@ public:
 
 	// pConfRequest (optional): on the last geometric-consistency iteration, run the fused GPU
 	// confidence recalibration right after the estimation kernels, reusing the device-resident
-	// reference buffers (see ConfidenceCUDA.h ConfAdjustRequest); its done/computeNS report back
+	// reference buffers (see ConfidenceCUDA.h ConfAdjustRequest); its done flag reports back
 	void EstimateDepthMap(DepthData&, ConfAdjustRequest* pConfRequest = NULL);
 
 	float4 GetPlaneHypothesis(const int index);

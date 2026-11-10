@@ -1,8 +1,8 @@
 # Find required packages are inherited from parent CMakeLists.txt
 
 # Additional Math-specific packages (all available via vcpkg)
-FIND_PACKAGE(SuiteSparse_config QUIET)
-FIND_PACKAGE(CHOLMOD QUIET)  # Required by SuiteSparse_config but explicitly needed for linking
+find_exported_dependency(SuiteSparse_config QUIET)
+find_exported_dependency(CHOLMOD QUIET)  # Required by SuiteSparse_config but explicitly needed for linking
 
 # Check which Math features are available
 SET(MATH_EXTRA_LIBS "")

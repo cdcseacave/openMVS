@@ -93,12 +93,20 @@ bool UnitTests()
 		VERBOSE("ERROR: TestTetraFlow failed!");
 		return false;
 	}
+	if (!SEACAVE::TestLBPPotts()) {
+		VERBOSE("ERROR: TestLBPPotts failed!");
+		return false;
+	}
 	if (Util::toString(L"\x00A9\U0001F600") != "\xC2\xA9\xF0\x9F\x98\x80") {
 		VERBOSE("ERROR: wide string UTF-8 conversion failed!");
 		return false;
 	}
 	if (!MVS::MeshVertexColorsPLYTest()) {
 		VERBOSE("ERROR: MeshVertexColorsPLYTest failed!");
+		return false;
+	}
+	if (!MVS::PLYCodecTest()) {
+		VERBOSE("ERROR: PLYCodecTest failed!");
 		return false;
 	}
 	if (!MVS::MeshBipyramidFixtureTest()) {
@@ -123,6 +131,10 @@ bool UnitTests()
 	}
 	if (!MVS::MeshCleanPerVertexTest()) {
 		VERBOSE("ERROR: MeshCleanPerVertexTest failed!");
+		return false;
+	}
+	if (!MVS::ImageResizeCameraTest()) {
+		VERBOSE("ERROR: ImageResizeCameraTest failed!");
 		return false;
 	}
 	#ifdef _IMAGE_HEIF
@@ -300,6 +312,8 @@ int main(int argc, LPCTSTR* argv)
 			if (!MVS::MeshUnseenFacesTest())
 				return false;
 			if (!MVS::SelectNeighborViewsScaleTest())
+				return false;
+			if (!MVS::DMapCacheKeepsRequestedImageTest())
 				return false;
 		}
 		return true;

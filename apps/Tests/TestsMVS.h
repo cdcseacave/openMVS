@@ -39,6 +39,8 @@ namespace MVS {
 
 // test vertex-colored PLY export and geometry reload
 bool MeshVertexColorsPLYTest();
+// test the PLY codec: exact binary/ascii round trips, big-endian input, skipped data, malformed files
+bool PLYCodecTest();
 bool MeshHalfMeshProcessingTest();
 
 // test the pixel-unit bold-driver optimizer (MeshRefineStep, SceneRefineCommon.h) against
@@ -52,6 +54,10 @@ bool MeshRefineWindowStatsTest();
 // test the per-vertex decimation bound Mesh::Clean routes into halfmesh, on a grid one half of
 // which is locked by a negative bound
 bool MeshCleanPerVertexTest();
+
+// test that every image resize paired with a camera (Image::ResizeImage/GetImage, the neighbor
+// scaling and the depth-estimation pyramid) moves the pixels exactly as the camera's K is scaled
+bool ImageResizeCameraTest();
 
 // test the Delaunay mesh cut on the two hand-solved synthetic fixtures
 // (docs/design/DelaunayMeshReconstruction.md, Appendix)
@@ -83,6 +89,10 @@ bool MeshUnseenFacesTest();
 // unit must change neither the scale nor the neighbors picked, and no neighbor the filter keeps
 // may carry a scale outside its bounds (an image is resampled by it)
 bool SelectNeighborViewsScaleTest();
+
+// test that DMapCache::UseImage() keeps the depth-map it was asked for loaded even when it alone
+// exceeds the memory budget, ejecting the least recently used other depth-maps instead
+bool DMapCacheKeepsRequestedImageTest();
 /*----------------------------------------------------------------*/
 
 } // namespace MVS

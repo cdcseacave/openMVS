@@ -745,7 +745,7 @@ graph TD
 
 **Step 5: Sharpness Enhancement**
 
-- `fSharpnessWeight` (0.5): unsharp masking applied to final texture atlas
+- `fSharpnessWeight` (0, disabled): optional unsharp masking applied to the final texture atlas
 - `colEmpty`: fill color for untextured regions (default orange RGB 255,127,39)
 
 ---
@@ -907,7 +907,7 @@ dMin, dMax: float           — depth range from SFM sparse points
 | SiftGPU | `_USE_SIFTGPU` | disabled | GPU SIFT feature extraction |
 | OpenMP | `_USE_OPENMP` | enabled | Multi-threaded image loops |
 | Geometric-consistency iterations | `OPTDENSE::nEstimationGeometricIters > 0` | 1 | Geometry-consistent depth |
-| SGM densification | `--fusion-mode -2` (`-1` disparity-maps only) | off (PatchMatch) | CPU pairwise SGM instead of PatchMatch |
+| SGM densification | `--fusion-mode -2` (`-1` pair disparity-maps only) | off (PatchMatch) | CPU multi-view SGM instead of PatchMatch |
 | Global vs Hierarchical | `ReconstructionConfig::useGlobalSolver` | false (hierarchical) | SFM solver selection |
 | GPS Alignment | `ReconstructionConfig::thAlignGPS > 0` + GPS in EXIF | enabled | ENU coordinate frame |
 

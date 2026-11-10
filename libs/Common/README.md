@@ -174,6 +174,7 @@ libs/Common/
 ├── Line.h/inl            # Line segment
 ├── Rotation.h/inl        # Quaternion
 ├── Octree.h/inl          # Spatial partitioning
+├── DepthGeometry.h       # Host/device depth similarity, depth-plane fit, plane normal and propagation
 ├── Thread.h              # Cross-platform threading
 ├── CriticalSection.h     # Mutexes, locks, RWLock
 ├── Semaphore.h           # Semaphore

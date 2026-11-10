@@ -33,14 +33,18 @@ stage.
 `apps/RefineMesh/RefineMesh.cpp:main` loads the scene, optionally attaches per-image masks
 (`--mask-path`, `--ignore-mask-label`), loads (or requires) the input mesh, and picks a backend via
 `SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs)` (true for an empty `--gpu-device`,
-`-2`, `cpu` or `none`; false for `-1` = best GPU or `>=0` = device id list). Refinement mutates the
+`-2`, `cpu` or `none`; false for `-1` = best GPU or `>=0` = device id list). `--gpu-device` defaults
+to `-1`, so a CUDA build refines on the best GPU unless the CPU is requested. Refinement mutates the
 mesh in place, so `main` snapshots `scene.mesh.vertices`/`faces` before a CUDA attempt; if
 `Scene::RefineMeshCUDA` returns `false`, it restores the snapshot and runs `Scene::RefineMesh` (CPU)
 on the original input.
 
 `--mesh-file/-m` defaults to `<input-file-without-extension>.ply` only when the archive type is
 `ARCHIVE_MVS`; with a `.mvs` input that resolves to the dense point cloud's `.ply`, not a mesh, and
-refinement fails with "empty initial mesh" — `-m` must be given explicitly in that case. The refined
+refinement fails with "empty initial mesh" — `-m` must be given explicitly in that case.
+`--output-file/-o` defaults to the input mesh's name with `_refined.mvs` appended, in the input
+scene's folder (`scene_dense.mvs -m scene_dense_mesh.ply` -> `scene_dense_mesh_refined.mvs`), or to the
+input scene's name with the same suffix when the mesh comes with the scene. The refined
 mesh is always written to `<out-stem><export-type>` (default `.ply`); the `.mvs` sidecar is written
 only when the archive type isn't `ARCHIVE_MVS` or the input wasn't `Scene::SCENE_INTERFACE`.
 
@@ -71,14 +75,14 @@ Each scale re-inits images (`InitImages`, one worker per view, `MeshRefine::ThIn
 shared `PrepareRefineImage` (`SceneRefineCommon.cpp`) loads, gray-converts, Gaussian-blurs at the
 scale's `sigma` and resizes; `ComputeRefineImageGradient` builds the per-view derivative image both
 backends read (skipped when `OPTREFINE::nImageGradient == 3`, which samples the bilinear
-interpolant directly instead); `PrepareRefineImageMask` builds the per-view keep-mask. `SubdivideMesh`
+interpolant directly instead); `PrepareRefineImageMask` builds the per-view keep-mask. `PrepareRefineMesh`
 then runs the shared mesh preparation (§2.3), and `ListVertexFacesPost` lists incident/boundary
 vertices before the optimization phase (§2.7) runs.
 
 ### 2.3 Mesh preparation
 
-`MeshRefine::SubdivideMesh`/`MeshRefineCUDA::SubdivideMesh` both forward to the template
-`MVS::PrepareRefineMesh` (`SceneRefineCommon.h`), so the two backends cannot drift here.
+Both backends call the template `MVS::PrepareRefineMesh` (`SceneRefineCommon.h`) directly, so they
+cannot drift here.
 
 At the first scale (`fDecimate == 0`, the `--decimate` auto default) the mesh is projected into
 every camera (`ListCameraFaces`, `ListFaceAreas`) to get, per face, its *tightest-pair area*: the
@@ -95,12 +99,15 @@ With `--adaptive-face-size` (default on) the density-setting remesh instead grad
 target: after the plain decimation, the mesh is re-projected once more and every face states its own
 scale (`SeenAreasToEdgeTargets`: a face covering `seenArea` pixels for its world area implies a world
 area of `area*targetArea/seenArea` for the target pixel count, `targetArea` = half `--max-face-area`;
-a vertex averages the equilateral edge length of its incident seen faces). That field is passed to
-`Mesh::Clean` as `CleanParams::vertexSizing`, in its own call, separate from the decimation (§4 #4).
+a vertex averages the equilateral edge length of its incident seen faces). The webbing gate
+(`CleanParams::maxEdgeScale`, §4 #4) runs as its own `Mesh::Clean` pass *before* that re-projection,
+so the field is indexed by the vertices the remesh receives; the field itself is then passed to
+`Mesh::Clean` as `CleanParams::vertexSizing`, again in its own call.
 On a surface seen from roughly constant camera-to-surface distance the field is flat and this reduces
 to the uniform remesh.
 
-Every scale then subdivides: `Mesh::Subdivide(maxAreas, maxArea)` splits 1-to-4 every face whose
+Every scale then subdivides: `Mesh::Subdivide(maxAreas, maxArea)` (`halfmesh::Mesh::SubdivideFaces`, red-green
+closure on the neighbours) splits 1-to-4 every face whose
 tightest-pair projected area exceeds `--max-face-area` (default 16 px² at that scale's resolution),
 and, when `--ensure-edge-size > 1` (force mode), the edge-band remesh above also runs after the
 split on every scale, not only the first.
@@ -119,7 +126,10 @@ per pixel of A:
    sample. A sample is kept only if the visibility test accepts (§2.6) and B's own keep-mask accepts
    the same rounded tap. Rejected/invalid pixels are zero-filled, not seeded with a copy of A.
 2. **Masked local window statistics, 7x7 (`Refine::HalfSize=3`, `SceneRefineCommon.h`).**
-   `ComputeWindowStats` reduces six masked box-filtered sums (over valid pixels only) through
+   `ComputeWindowStats` reduces six masked box-filtered sums (over valid pixels only; on the CPU
+   built per band of 64 rows plus the window halo, so each concurrent pair-direction holds six
+   band-sized buffers instead of six full images, and a gate rejection leaves the mask only after
+   the next band has summed its halo rows) through
    `Refine::WindowStatsFromSums`: rejects a pixel if its window holds fewer than
    `Refine::MinWindowCount` (25) valid samples, floors both variances at `Refine::VarFloor` (1e-4),
    and rejects a pixel pair whose means differ by more than `OPTREFINE::fGateMeanDiff` (default 0.4)
@@ -137,7 +147,11 @@ per pixel of A:
    converts the image-space gradient into a 3D-consistent one.
 4. **Image gradient stencil.** Selected by `OPTREFINE::nImageGradient` (default 1, central
    differences; 0 = separable 3x5; 2 = Sobel-3; 3 = the derivative of the bilinear interpolant the
-   warp itself samples, computed on demand instead of from a precomputed stencil image).
+   warp itself samples). Modes 1 and 3 are computed at the sample from image B itself
+   (`MeshRefine::CentralGradient`/`BilinearGradient`, CUDA `computePhotoPixel`): a linear stencil
+   commutes with the bilinear interpolation, so differencing the image sampled one pixel either
+   side equals sampling the precomputed stencil image. Only the stencils that do not commute (0, 2)
+   build and keep per-view gradient images.
 5. **Per-vertex accumulation.** `photoGrad[v]` sums `sg` over every touching pixel; `photoGradNorm[v]`
    (`c_v`) counts pair-directions that touched `v`, once per direction, not per pixel;
    `footprint[v]` (`depthA/focalA`) is min-reduced over every contributing pixel/direction, resolved
@@ -232,8 +246,9 @@ CUDA refuses `--planar-vertex-ratio > 0` at the entry with an error rather than 
 
 ### 2.8 Post-refinement simplification
 
-When `OPTREFINE::fSimplifyTolerance > 0` (default 0.25 px), both backends end with
-`MeshRefine::SimplifyMesh`/`MeshRefineCUDA::SimplifyMesh`: re-project the final mesh
+When `OPTREFINE::fSimplifyTolerance > 0` (default 0.25 px), both backends end with the template
+`MVS::SimplifyRefinedMesh`: drop the cavity-capping faces in their own `Mesh::Clean` pass
+(`CleanParams::maxEdgeScale`, §4 #4), re-project the final mesh
 (`ListCameraFaces`, `ListFaceAreas`), convert the same tightest-pair seen areas to per-vertex pixels-
 per-scene-unit (`SeenAreasToPixelFactors`), then decimate within that reprojection tolerance
 (`SimplifyMeshWithinTolerance`, `Mesh::Clean` with a per-vertex `vertexMaxError` bound derived by
@@ -268,7 +283,8 @@ the analytic gradient against a numerical one and is exercised by the test suite
 ### 2.10 CPU/CUDA: what is shared vs what legitimately differs
 
 Identical by construction: the shared scalar header (`SceneRefineCommon.h`), the 7x7 window, the
-visibility test, the image-gradient stencil (built once, host-side, shared by both), the rasterizer
+visibility test, the image-gradient stencil (sampled from the image for modes 1/3, built once
+host-side for 0/2), the rasterizer
 convention (front faces only, perspective-correct barycentric coordinates), and the stepper
 (`MeshRefineStep`, one implementation, §2.7). What legitimately differs:
 
@@ -276,7 +292,7 @@ convention (front faces only, perspective-correct barycentric coordinates), and 
 |---|---|---|
 | Camera projection precision | double (`Camera::TransformPointW2C`) | float (`MVS::CUDA::Camera`) |
 | Rasterizer input | an octree-frustum-culled face list per camera, rebuilt every evaluation | the whole mesh into every view; the kernel rejects what a view does not see |
-| Photometric accumulation order | per-pair, under a lock, in thread-completion order — not bit-reproducible run to run unless `--max-threads 1` | face-parallel accumulate + vertex-parallel gather over a fixed order — bit-reproducible |
+| Photometric accumulation order | per-pair, under a lock, in thread-completion order — not bit-reproducible run to run unless `--max-threads 1` | the pair-directions grouped by reference view: each adds its per-pixel terms into the view's pixel sums (with one bit per direction, up to 32), then one face-parallel accumulation per view (a vertex counts the distinct direction bits its faces bring, through a 64-bit group/bits stamp) + vertex-parallel gather over a fixed order — bit-reproducible; one accumulation per view instead of per direction: per-evaluation time −20..−52% (F11, HJ25, Truck), same F1 |
 | Planar-vertex removal (§2.7) | implemented | refused at the entry (loud error); caller falls back to CPU |
 | Ceres arm (§2.9) | implemented | refused at the entry, same fallback |
 | Float reassociation | `cv::boxFilter`/`filter2D`, no FMA | explicit-rounding intrinsics so nvcc cannot silently fuse an FMA the CPU wouldn't; residual disagreement ~0.1-2% per vertex at the tail |
@@ -301,7 +317,7 @@ runs (`MeshRefineCUDA::PrefetchImages`), so a scale switch pays only the vertex/
 | `--adaptive-face-size` | `OPTREFINE::bAdaptiveFaceSize` | `true` | per-vertex sizing field instead of one scalar density |
 | `--simplify-tolerance` | `OPTREFINE::fSimplifyTolerance` | `0.25` (px) | post-refinement decimation tolerance; `0` disables it |
 | `--fast` | preset | `false` | fills unset `--max-face-area 32`/`--simplify-tolerance 0.5` |
-| `--scales` | `OPT::nScales` | `2` | coarse-to-fine passes |
+| `--scales` | `OPT::nScales` | `2` | coarse-to-fine passes (0 returns the input mesh unchanged) |
 | `--scale-step` | `OPT::fScaleStep` | `0.5` | per-scale image scale factor |
 | `--alternate-pair` | `OPT::nAlternatePair` | `0` (both) | `1` alternate, `2` left only, `3` right only |
 | `--regularity-weight` | `OPT::fRegularityWeight` (`w`) | `0.2` | photo-consistency vs. regularization balance |
@@ -336,9 +352,12 @@ runs (`MeshRefineCUDA::PrefetchImages`), so a scale switch pays only the vertex/
 3. **Visibility has no scene-unit tolerance.** The relative test `depth*1.0002 >= z` (§2.6) is
    invariant under uniform scene rescale by construction; there is no absolute-distance visibility
    parameter.
-4. **`CleanParams::vertexSizing` must not follow a vertex-set-changing stage in the same `Mesh::Clean`
-   call.** The sizing field is indexed by vertex, so a decimation that changes the vertex count has
-   to be its own, earlier `Clean` call (§2.3).
+4. **A per-vertex field of `Mesh::Clean` must not follow a vertex-set-changing stage in the same
+   call.** `vertexSizing` and `vertexMaxError` are indexed by the vertices their own stage receives,
+   and the webbing gate, the spurious filter and the spike filter all change that set - removing a
+   face can even *grow* it, by splitting a vertex into two fans. Those stages take their own,
+   earlier `Clean` call and the field is measured after them (§2.3, §2.8); `Mesh::Clean` asserts
+   this. `maxEdgeScale` therefore defaults to 0, like every other stage.
 5. **`w * MeshRefineStep::StepMax <= 1` is required** (explicit-flow stability of the stepper's
    explicit update), enforced at the entry of `Scene::RefineMesh`/`RefineMeshCUDA`; the Ceres arm is
    exempt (a line search has no such bound).
@@ -381,6 +400,18 @@ one `RefineMesh` run per cell, CPU/CUDA as noted.
 
 ## 6. Rejected alternatives
 
+- Keeping the per-vertex field valid by disabling the webbing gate at the two consumers: measured
+  on T&T at R0, the gate is worth +0.0067 F1 on Truck and +0.0029 on Ignatius (-0.0035 on Barn), so
+  dropping it trades away a real gain and silently changes `TextureMesh`, the Viewer and the
+  preparation's decimation as well.
+- Carrying the field across the gate instead, either as a transported per-vertex channel in halfmesh
+  or by having halfmesh return its removed/split vertex lists for the caller to replay: both only
+  propagate an approximation. The field is measured from the images, so a vertex the gate splits
+  would inherit a copied value rather than the one a re-projection gives. Measuring it after the
+  gate is cheaper (both consumers already project at that point) and exact.
+- Reordering the stages inside `Mesh::Clean` so the field consumers run first: the gate is defined to
+  run before any other cleaning, and its median-longest-edge statistic is meaningless once a
+  decimation has changed the edge distribution.
 - Per-vertex normalized, unit-clamped photometric direction: clamping flattens the gradient
   distribution and loses on every scene tested.
 - Retuning the regularity weight to rescue the per-vertex clamp: still loses; the arm does best with
@@ -442,8 +473,8 @@ one `RefineMesh` run per cell, CPU/CUDA as noted.
   do-less effect.
 - Per-vertex step cap in pixels (halved at every direction reversal): loses at every cap tried — the
   global median normalizer already sets the stride.
-- The reference's fixed schedule (fixed evaluations per level, no rejection): loses, same failure
-  mode as the fixed-step control arm.
+- A fixed schedule (fixed evaluations per level, no rejection): loses, same failure mode as the
+  fixed-step control arm — without rejection a bad step is kept and the next scale starts from it.
 - Swapping the umbrella term for the bi-Laplacian wherever the photometric pull opposes it: inert at
   the default weight, mixed and net-negative at higher weights.
 - Pixel-graded isotropic remesh at every scale in place of the 1-to-4 split: worse than the split at
@@ -485,9 +516,8 @@ one `RefineMesh` run per cell, CPU/CUDA as noted.
 - The old `--fast` built on `--max-views 4` instead of `--max-face-area`: a smaller view budget only
   removes per-pixel work, a coarser face cap removes per-pixel and mesh-preparation work together —
   the face-area version is `--fast` now.
-- The reference's tie-point-track pair vote, reimplemented in full (cell voting, angle weighting,
-  transitive-redundancy top-K): too few pairs under-constrain the surface; loses even against a
-  matched-view-budget control.
+- The full tie-point-track pair vote (cell voting, angle weighting, transitive-redundancy top-K):
+  too few pairs under-constrain the surface; loses even against a matched-view-budget control.
 - Tightest-pair reduction taken as the median or mean over the pairs that see a face, instead of the
   max: not a different rule so much as a ~5x rescale of what the face-area cap means; no evidence
   strong enough to redefine the cap around it.
@@ -522,7 +552,11 @@ one `RefineMesh` run per cell, CPU/CUDA as noted.
 5. **The Ceres arm stays opt-in.** It reaches a lower energy than the stepper but never a better F1
    on the scenes it was tested against (§2.9), so it remains a research/reference arm rather than a
    default.
-6. **CUDA device memory scales with resident view count** (roughly 21 bytes/pixel/view: image,
-   gradient textures, depth, face id, optional mask). A very large or very high-resolution scene can
-   exceed a single GPU's memory at the finest scale; the fix is to stream views in and out of
-   residency, which is unimplemented.
+6. **CUDA device memory scales with resident view count** (roughly 9 bytes/pixel/view at the
+   default stencil: image and face id, optional mask; 17 with the stencil modes 0/2, which add
+   two float gradient textures). No depth map is kept per view: the reference view's is
+   recomputed from its face map once per accumulation group (`kernelFaceDepth`), the partner's
+   depth at the warp tap from its face (`pixelDepth`), byte-identical output, Truck (251 x 2 MP)
+   8.85 -> 6.86 GB at +2% wall. A very large or very high-resolution scene can still exceed a
+   single GPU's memory at the finest scale; the fix is to stream views in and out of residency,
+   which is unimplemented.

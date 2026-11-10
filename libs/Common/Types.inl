@@ -112,6 +112,7 @@ INT_TYPE cvRANSACUpdateNumIters(REAL_TYPE p, REAL_TYPE ep, INT_TYPE modelPoints,
 namespace cv {
 
 #if CV_MAJOR_VERSION > 2
+#if CV_MAJOR_VERSION < 5 // OpenCV 5 defines DataType<unsigned> itself (CV_32U)
 template<> class DataType<unsigned>
 {
 public:
@@ -126,6 +127,7 @@ public:
 		type         = CV_MAKETYPE(depth, channels)
 	};
 };
+#endif
 #else
 #if CV_MINOR_VERSION < 4
 template<typename _Tp, typename _AccTp> static inline
@@ -1461,7 +1463,9 @@ DEFINE_CVDATADEPTH(SEACAVE::cuint32_t)
 // define specialized cv:DataType<>
 DEFINE_CVDATATYPE(SEACAVE::hfloat)
 DEFINE_CVDATATYPE(SEACAVE::cuint32_t)
+#if CV_MAJOR_VERSION < 5 // OpenCV 5 defines DataType<uint64_t> itself (CV_64U)
 DEFINE_GENERIC_CVDATATYPE(uint64_t,double)
+#endif
 /*----------------------------------------------------------------*/
 DEFINE_CVDATATYPE(SEACAVE::Point2i)
 DEFINE_CVDATATYPE(SEACAVE::Point2hf)
@@ -2395,13 +2399,21 @@ void TImage<TYPE>::toGray(TImage<T>& out, int code, bool bNormalize, bool bSRGB)
 
 
 // compute scaled size such that the biggest dimension is scaled as desired
-// and the smaller one maintains the aspect ratio as best as it can
+// and the smaller one maintains the aspect ratio as best as it can:
+// the biggest side is rounded and the smaller one follows from the resulting uniform
+// factor (the ratio of the biggest sides), the grid a camera K normalized by its
+// biggest side is scaled to, and the size cv::resize() produces with that factor
 template <typename TYPE>
 cv::Size TImage<TYPE>::computeResize(const cv::Size& size, REAL scale)
 {
-	return cv::Size(
-		cv::saturate_cast<int>((REAL)size.width*scale),
-		cv::saturate_cast<int>((REAL)size.height*scale));
+	ASSERT(size.width > 0 && size.height > 0 && scale > 0);
+	const int maxSide(MAXF(size.width, size.height));
+	const int maxSideScaled(cv::saturate_cast<int>((REAL)maxSide*scale));
+	ASSERT(maxSideScaled > 0);
+	const REAL uniformScale((REAL)maxSideScaled/maxSide);
+	if (size.width >= size.height)
+		return cv::Size(maxSideScaled, cv::saturate_cast<int>((REAL)size.height*uniformScale));
+	return cv::Size(cv::saturate_cast<int>((REAL)size.width*uniformScale), maxSideScaled);
 }
 // compute the final scaled size by performing successive resizes
 // with the given scale value
