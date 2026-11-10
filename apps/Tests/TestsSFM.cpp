@@ -14625,7 +14625,9 @@ bool ContradictionCutTest()
 // says (the same pair at 10 degrees is removed); (4) the scale solve gives the least squares of its
 // equations, a dense SVD's; (5) with the bar 0 the cut is the rotation stage alone: a pair 30 degrees
 // off in rotation goes at either bar, the flipped and the turned baselines only at 45; (6) a connected
-// graph of fewer pairs than a scale component needs is not solved and removes nothing.
+// graph of fewer pairs than a scale component needs is not solved and removes nothing; (7) with the
+// repair on, the planted pairs whose matches still agree come back with the exact pose and a pair
+// whose matches agree with nothing stays removed.
 bool TranslationCutTest()
 {
 	TD_TIMER_START();
@@ -14664,9 +14666,9 @@ bool TranslationCutTest()
 			kept.emplace(pair.ID1, pair.ID2);
 		return kept;
 	};
-	const auto run = [&](Scene& scene, float bar) {
+	const auto run = [&](Scene& scene, float bar, bool repair = false) {
 		const std::vector<float> scores(scene.pairs.size(), TripletScores::unscored);
-		return FilterPairsByContradiction(scene, scores, minPairWeight, bar, weightingCfg);
+		return FilterPairsByContradiction(scene, scores, minPairWeight, bar, weightingCfg, repair);
 	};
 	{
 		Scene scene; build(scene);
@@ -14793,6 +14795,41 @@ bool TranslationCutTest()
 			if (!exact) {
 				VERBOSE("ERROR: TranslationCutTest: bar %g: %u pairs removed of %zu, expected the %zu pairs of the rotated%s", bar,
 					removed, numPairs, expected.size(), bar > 0.f ? ", the flipped and the turned baselines" : " pair alone");
+				return false;
+			}
+		}
+	}
+	{
+		// the repair (the last argument of the cut): the flipped, the turned and the 30 degrees rotated pair of the ring come
+		// back, none counted as removed, each with the rotation of the averaging and the baseline direction its matches
+		// give, which are the exact ones; a flipped pair whose matches are shifted by one feature agrees with nothing and
+		// stays removed
+		Scene scene; build(scene);
+		const size_t numPairs = scene.pairs.size();
+		const std::set<std::pair<IIndex,IIndex>> planted{{3, 9}, {2, 11}, {6, 14}};
+		std::map<std::pair<IIndex,IIndex>, Pose3D> exact;
+		for (const auto& [a, b] : planted)
+			exact[{a, b}] = findPair(scene, a, b)->relativePose.value();
+		flip(*findPair(scene, 3, 9));
+		turn(*findPair(scene, 2, 11));
+		ImagePair* pRotated = findPair(scene, 6, 14);
+		pRotated->relativePose->R = RMatrix(Point3(0, D2R(REAL(30)), 0)) * pRotated->relativePose->R;
+		ImagePair* pShifted = findPair(scene, 4, 12);
+		flip(*pShifted);
+		for (size_t i = 0; i + 1 < pShifted->matches.size(); ++i)
+			pShifted->matches[i].trainIdx = pShifted->matches[i + 1].trainIdx;
+		const unsigned removed = run(scene, maxDirectionResidual, true);
+		const auto kept = keptPairs(scene);
+		if (removed != 1 || kept.size() != numPairs - 1 || kept.count({4, 12})) {
+			VERBOSE("ERROR: TranslationCutTest: the repair: %u pairs removed of %zu, expected only the pair with the shifted matches", removed, numPairs);
+			return false;
+		}
+		for (const auto& [ids, pose] : exact) {
+			const ImagePair& pair = *findPair(scene, ids.first, ids.second);
+			const REAL rotationError = R2D(ACOS(MINF(MAXF(ComputeAngle(pair.relativePose->R, pose.R), REAL(-1)), REAL(1))));
+			const REAL directionError = R2D(ACOS(MINF(MAXF(pair.relativePose->C.dot(pose.C) / (norm(pair.relativePose->C) * norm(pose.C)), REAL(-1)), REAL(1))));
+			if (!(rotationError < 0.1 && directionError < 0.1) || !pair.E.has_value() || !pair.F.has_value()) {
+				VERBOSE("ERROR: TranslationCutTest: the repaired pair (%u,%u) is %g degrees off in rotation and %g in direction", ids.first, ids.second, rotationError, directionError);
 				return false;
 			}
 		}
