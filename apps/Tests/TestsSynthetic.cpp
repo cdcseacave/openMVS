@@ -32,19 +32,15 @@
 #include "../../libs/MVS.h"
 #include "../../libs/Math/Camera/CameraUndistort.h"
 #include "Tests.h"
-#include "TestsMVS.h"
 #include "TestsSynthetic.h"
 #include <chrono>
 #include <fstream>
-#include <random>
 #ifdef _USE_METAL
 #include "../../libs/MVS/PatchMatchMetal.h"
+#include <random>
 #endif
 
 using namespace MVS;
-
-
-// D E F I N E S ///////////////////////////////////////////////////
 
 
 // S T R U C T S ///////////////////////////////////////////////////
@@ -270,15 +266,15 @@ void SynthRender(SynthView& view, unsigned supersample)
 	}
 }
 
-// points WORKING_FOLDER, where MAKE_PATH places the depth-maps and Scene::Save makes the image
-// paths relative to, at folder for its lifetime
-struct SynthWorkingFolder {
+// points WORKING_FOLDER, where MAKE_PATH places the depth-maps and Scene::Load/Save resolve the
+// image paths, at folder for its lifetime
+struct ScopedWorkingFolder {
 	String prev, prevFull;
-	explicit SynthWorkingFolder(const String& folder) : prev(WORKING_FOLDER), prevFull(WORKING_FOLDER_FULL) {
+	explicit ScopedWorkingFolder(const String& folder) : prev(WORKING_FOLDER), prevFull(WORKING_FOLDER_FULL) {
 		WORKING_FOLDER = folder;
 		INIT_WORKING_FOLDER;
 	}
-	~SynthWorkingFolder() {
+	~ScopedWorkingFolder() {
 		WORKING_FOLDER = prev;
 		WORKING_FOLDER_FULL = prevFull;
 	}
@@ -293,6 +289,34 @@ const char* SynthModelName(CameraModelType model)
 	}
 	ASSERT("unknown camera model" == NULL);
 	return "";
+}
+
+// the maps (the normals if asked and stored) and the camera of a .dmap file
+struct DMapFile {
+	DepthMap depthMap;
+	NormalMap normalMap;
+	KMatrix K; RMatrix R; CMatrix C;
+	bool Load(const String& fileName, bool normals) {
+		String imageFileName; IIndexArr IDs; cv::Size imageSize; Depth dMin, dMax;
+		ConfidenceMap confMap; ViewsMap viewsMap;
+		return ImportDepthDataRaw(fileName, imageFileName, IDs, imageSize, K, R, C, dMin, dMax, depthMap, normalMap, confMap, viewsMap,
+			normals ? HeaderDepthDataRaw::HAS_DEPTH|HeaderDepthDataRaw::HAS_NORMAL : HeaderDepthDataRaw::HAS_DEPTH);
+	}
+};
+
+// the sorted names of the .dmap files of a folder
+StringArr ListDMaps(const String& folder)
+{
+	StringArr names;
+	for (const auto& entry: std::filesystem::directory_iterator(folder.c_str()))
+		if (entry.is_regular_file() && entry.path().extension() == ".dmap")
+			names.emplace_back(entry.path().filename().string());
+	names.Sort();
+	return names;
+}
+String JoinPath(const String& folder, const String& name)
+{
+	return String((std::filesystem::path(folder.c_str()) / name.c_str()).string());
 }
 
 } // namespace
@@ -555,7 +579,7 @@ bool MVS::SynthSave(const SynthViewArr& views, const String& folder)
 		const SynthView& view = views[i];
 		const String imageName(folder + view.name + ".png");
 		if (view.face >= 0)
-			faceIDs.push_back(i);
+			faceIDs.push_back(i); // its image is saved with the scene
 		else if (!view.image.Save(imageName))
 			return false;
 		Depth dMin(FLT_MAX), dMax(0);
@@ -585,7 +609,7 @@ bool MVS::SynthSave(const SynthViewArr& views, const String& folder)
 		return false;
 	if (faceIDs.empty())
 		return true;
-	const SynthWorkingFolder workingFolder(folder);
+	const ScopedWorkingFolder workingFolder(folder);
 	Scene scene;
 	return SynthBuildScene(views, faceIDs, folder, scene) && scene.Save(folder + "scene.mvs");
 }
@@ -601,7 +625,7 @@ void DepthEvaluator::Add(const DepthMap& gt, const NormalMap& gtNormals, const D
 	const bool spherical(model == CameraModelType::SPHERICAL);
 	const Spherical<double> sphere(Spherical<double>::FromSize(W, H));
 	for (int r = 0; r < H; ++r) {
-		const double elevation(R2D(sphere.Angles(EVec2(0, r)).y()));
+		const Band latitudeBand(LatitudeBand(R2D(sphere.Angles(EVec2(0, r)).y())));
 		for (int c = 0; c < W; ++c) {
 			const Depth g(gt(r, c));
 			if (!(g > 0))
@@ -609,12 +633,8 @@ void DepthEvaluator::Add(const DepthMap& gt, const NormalMap& gtNormals, const D
 			int pixelBands[3], numPixelBands(0);
 			pixelBands[numPixelBands++] = ALL;
 			if (spherical) {
-				if (ABS(elevation) < 30)
-					pixelBands[numPixelBands++] = EQUATOR;
-				else if (elevation > 70)
-					pixelBands[numPixelBands++] = NORTH;
-				else if (elevation < -70)
-					pixelBands[numPixelBands++] = SOUTH;
+				if (latitudeBand != ALL)
+					pixelBands[numPixelBands++] = latitudeBand;
 				if (c < band || c >= W - band)
 					pixelBands[numPixelBands++] = SEAM;
 				else if (c >= W/2 - band && c < W/2 + band)
@@ -666,16 +686,33 @@ DepthEvaluator::Stats DepthEvaluator::GetStats(Band band) const
 	return stats;
 }
 
+DepthEvaluator::Band DepthEvaluator::LatitudeBand(double elevationDeg)
+{
+	if (ABS(elevationDeg) < 30)
+		return EQUATOR;
+	if (elevationDeg > 70)
+		return NORTH;
+	if (elevationDeg < -70)
+		return SOUTH;
+	return ALL;
+}
+
+const char* DepthEvaluator::BandName(Band band)
+{
+	static const char* const names[NUM_BANDS] = {"all", "equator", "north", "south", "seam", "center", "border"};
+	ASSERT(band >= 0 && band < NUM_BANDS);
+	return names[band];
+}
+
 String DepthEvaluator::Print() const
 {
-	static const char* names[NUM_BANDS] = {"all", "equator", "north", "south", "seam", "center", "border"};
 	String table("band       GT-px  compl  absrel-mean  absrel-med    <1%    <2%    <5%  normal-med\n");
 	for (int b = 0; b < NUM_BANDS; ++b) {
 		const Stats s(GetStats((Band)b));
 		if (s.numGT == 0)
 			continue;
 		table += String::FormatString("%-8s %9zu  %5.3f  %11.5f  %10.5f  %5.3f  %5.3f  %5.3f  %8.2fdeg\n",
-			names[b], s.numGT, s.completeness, s.absRelMean, s.absRelMedian, s.within1, s.within2, s.within5, s.normalMedianDeg);
+			BandName((Band)b), s.numGT, s.completeness, s.absRelMean, s.absRelMedian, s.within1, s.within2, s.within5, s.normalMedianDeg);
 	}
 	return table;
 }
@@ -758,16 +795,12 @@ bool CloudEvaluator::Classify(const Point3f& X, float& range, int pointBands[3],
 		return false;
 	range = (float)SQRT(bestDistSq);
 	const EVec2 angles(sphere.Angles(x));
-	const double elevation(R2D(angles.y())), longitude(R2D(angles.x()));
 	numBands = 0;
 	pointBands[numBands++] = DepthEvaluator::ALL;
-	if (ABS(elevation) < 30)
-		pointBands[numBands++] = DepthEvaluator::EQUATOR;
-	else if (elevation > 70)
-		pointBands[numBands++] = DepthEvaluator::NORTH;
-	else if (elevation < -70)
-		pointBands[numBands++] = DepthEvaluator::SOUTH;
-	if (ABS(longitude) > 180 - seamDeg)
+	const DepthEvaluator::Band latitudeBand(DepthEvaluator::LatitudeBand(R2D(angles.y())));
+	if (latitudeBand != DepthEvaluator::ALL)
+		pointBands[numBands++] = latitudeBand;
+	if (ABS(R2D(angles.x())) > 180 - seamDeg)
 		pointBands[numBands++] = DepthEvaluator::SEAM;
 	return true;
 }
@@ -809,7 +842,6 @@ void CloudEvaluator::Evaluate(const PointCloud::PointArr& cloud)
 
 String CloudEvaluator::Print() const
 {
-	static const char* names[DepthEvaluator::NUM_BANDS] = {"all", "equator", "north", "south", "seam", "center", "border"};
 	String table("band       GT-pts  cloud-pts");
 	for (int t = 0; t < NUM_TH; ++t)
 		table += String::FormatString("   P@%.1f%%  R@%.1f%%  F@%.1f%%", thresholds[t]*100, thresholds[t]*100, thresholds[t]*100);
@@ -818,7 +850,7 @@ String CloudEvaluator::Print() const
 		const Stats& s = bands[b];
 		if (s.numGT == 0 && s.numCloud == 0)
 			continue;
-		table += String::FormatString("%-8s %9zu  %9zu", names[b], s.numGT, s.numCloud);
+		table += String::FormatString("%-8s %9zu  %9zu", DepthEvaluator::BandName((DepthEvaluator::Band)b), s.numGT, s.numCloud);
 		for (int t = 0; t < NUM_TH; ++t) {
 			const double sum(s.precision[t] + s.recall[t]);
 			table += String::FormatString("   %6.4f  %6.4f  %6.4f", s.precision[t], s.recall[t], sum > 0 ? 2*s.precision[t]*s.recall[t]/sum : 0.0);
@@ -830,72 +862,212 @@ String CloudEvaluator::Print() const
 /*----------------------------------------------------------------*/
 
 
-// CPU (or, if gpu, GPU: CUDA, or Metal on Apple) PatchMatch on the given views of the synthetic scene, at full
-// resolution, depth-maps only, in a temporary folder; the estimates are scored against the GT into evaluator,
-// the estimation wall time goes to seconds; maxViews > 0 caps the neighbor views of a depth-map, maxThreads > 0
-// the threads; the caller checks that a GPU is available for gpu (SynthGPUAvailable)
-static bool SynthEstimateDepth(const SynthViewArr& views, const IIndexArr& viewIDs, DepthEvaluator& evaluator, double& seconds, unsigned maxViews=0, unsigned maxThreads=0, bool gpu=false)
+// how SynthDense runs the dense reconstruction; 0 keeps the default
+struct SynthDenseOptions {
+	unsigned maxViews = 0; // neighbor views of a depth-map
+	unsigned maxThreads = 0;
+	bool gpu = false; // GPU PatchMatch (CUDA, or Metal on Apple); the caller checks SynthGPUAvailable()
+	unsigned fusionFilter = OPTDENSE::FUSE_DENSEFILTER; // OPTDENSE::nFuseFilter
+};
+
+// Scene::DenseReconstruction(fusionMode) of the given views in a temporary folder, at full resolution (as
+// the GT); result(scene) runs inside that folder, seconds receives the reconstruction wall time
+template <typename RESULT>
+static bool SynthDense(const SynthViewArr& views, const IIndexArr& viewIDs, const SynthDenseOptions& options, int fusionMode, double& seconds, const RESULT& result)
 {
-	const ScopedTempDir tmpDir(_T("SyntheticDepth"));
+	const ScopedTempDir tmpDir(_T("Synthetic"));
 	if (!tmpDir.IsValid())
 		return false;
 	const String folder(tmpDir.Path() + "/");
-	const SynthWorkingFolder workingFolder(folder);
+	const ScopedWorkingFolder workingFolder(folder);
 	#if defined(_USE_CUDA) || defined(_USE_METAL)
 	struct DevicesRestore {
 		const String prev;
 		~DevicesRestore() { SEACAVE::CUDA::desiredDeviceIDs = prev; }
 	} const devicesRestore{SEACAVE::CUDA::desiredDeviceIDs};
-	SEACAVE::CUDA::desiredDeviceIDs = gpu ? String("-1") : String();
+	SEACAVE::CUDA::desiredDeviceIDs = options.gpu ? String("-1") : String();
 	#else
-	ASSERT(!gpu);
+	ASSERT(!options.gpu);
 	#endif
 	Scene scene;
 	if (!SynthBuildScene(views, viewIDs, folder, scene))
 		return false;
-	if (maxThreads)
-		scene.nMaxThreads = maxThreads;
+	if (options.maxThreads)
+		scene.nMaxThreads = options.maxThreads;
 	OPTDENSE::init();
 	OPTDENSE::update();
 	OPTDENSE::nResolutionLevel = 0;
 	OPTDENSE::nMinResolution = 64;
-	// full resolution, as the GT: the default cap (3200 px) would scale a 4K panorama down
+	// the default cap (3200 px) would scale a 4K panorama down
 	for (const IIndex viewID: viewIDs)
 		OPTDENSE::nMaxResolution = MAXF(OPTDENSE::nMaxResolution, (unsigned)MAXF(views[viewID].camera.width, views[viewID].camera.height));
-	if (maxViews)
-		OPTDENSE::nMaxViews = OPTDENSE::nNumViews = maxViews;
+	if (options.maxViews)
+		OPTDENSE::nMaxViews = OPTDENSE::nNumViews = options.maxViews;
+	OPTDENSE::nFuseFilter = options.fusionFilter;
 	const auto t0(std::chrono::steady_clock::now());
-	if (!scene.DenseReconstruction(1)) {
-		VERBOSE("ERROR: synthetic depth: depth-map estimation failed!");
+	if (!scene.DenseReconstruction(fusionMode)) {
+		VERBOSE("ERROR: synthetic scene: dense reconstruction failed!");
 		return false;
 	}
 	seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-	FOREACH(i, scene.images) {
-		String imageFileName;
-		IIndexArr IDs;
-		cv::Size imageSize;
-		KMatrix K; RMatrix R; CMatrix C;
-		Depth dMin, dMax;
-		DepthMap depthMap; NormalMap normalMap; ConfidenceMap confMap; ViewsMap viewsMap;
-		if (!ImportDepthDataRaw(ComposeDepthFilePath(scene.images[i].ID, "dmap"), imageFileName, IDs, imageSize, K, R, C, dMin, dMax,
-				depthMap, normalMap, confMap, viewsMap, HeaderDepthDataRaw::HAS_DEPTH|HeaderDepthDataRaw::HAS_NORMAL)) {
-			VERBOSE("ERROR: synthetic depth: missing depth-map of image %u!", i);
+	return result(scene);
+}
+
+// PatchMatch depth-maps of the given views scored against their GT into evaluator
+static bool SynthEstimateDepth(const SynthViewArr& views, const IIndexArr& viewIDs, const SynthDenseOptions& options, DepthEvaluator& evaluator, double& seconds)
+{
+	return SynthDense(views, viewIDs, options, 1, seconds, [&](const Scene& scene) {
+		FOREACH(i, scene.images) {
+			DMapFile dmap;
+			if (!dmap.Load(ComposeDepthFilePath(scene.images[i].ID, "dmap"), true)) {
+				VERBOSE("ERROR: synthetic scene: missing depth-map of image %u!", i);
+				return false;
+			}
+			const SynthView& view = views[viewIDs[i]];
+			evaluator.Add(view.depthMap, view.normalMap, dmap.depthMap, dmap.normalMap, view.camera.model);
+		}
+		return true;
+	});
+}
+
+// PatchMatch and fusion of the given views: the fused points
+static bool SynthFuseDepth(const SynthViewArr& views, const IIndexArr& viewIDs, const SynthDenseOptions& options, PointCloud::PointArr& points, double& seconds)
+{
+	return SynthDense(views, viewIDs, options, 0, seconds, [&](Scene& scene) {
+		if (scene.pointcloud.IsEmpty()) {
+			VERBOSE("ERROR: synthetic scene: empty fused cloud!");
 			return false;
 		}
-		const SynthView& view = views[viewIDs[i]];
-		evaluator.Add(view.depthMap, view.normalMap, depthMap, normalMap, view.camera.model);
+		points = std::move(scene.pointcloud.points);
+		return true;
+	});
+}
+
+// numPanos panoramas from the middle of the trajectory (index 3 on), with their cube faces if asked,
+// no Brown views, 3x3 supersampled
+static SynthConfig SynthMiddleConfig(int panoWidth, unsigned numPanos, bool faces)
+{
+	SynthConfig config;
+	config.panoWidth = panoWidth;
+	config.firstPano = 3;
+	config.numRenderPanos = numPanos;
+	config.numBrown = 0;
+	config.faces = faces;
+	config.supersample = 3;
+	return config;
+}
+
+// the panorama and the cube-face views
+static void SynthSplitViews(const SynthViewArr& views, IIndexArr& panoIDs, IIndexArr& faceIDs)
+{
+	FOREACH(i, views) {
+		ASSERT(views[i].camera.model != CameraModelType::BROWN);
+		(views[i].face < 0 ? panoIDs : faceIDs).push_back(i);
 	}
+}
+
+// whether a GPU runs the GPU PatchMatch: a CUDA device, or Metal on Apple (CI machines have none)
+static bool SynthGPUAvailable()
+{
+	#ifdef _USE_CUDA
+	return SEACAVE::CUDA::isEnabled() || SEACAVE::CUDA::initDevices("-1") == CUDA_SUCCESS;
+	#elif defined(_USE_METAL)
+	return SEACAVE::METAL::isRuntimeAvailable();
+	#else
+	return false;
+	#endif
+}
+// the name of the GPU backend
+#ifdef _USE_CUDA
+#define SYNTH_GPU_BACKEND _T("CUDA")
+#else
+#define SYNTH_GPU_BACKEND _T("Metal")
+#endif
+
+// PatchMatch on numPanos panoramas of the synthetic scene scored into sphereEval and, if faceEval, separately
+// on their cube faces scored into faceEval; logs the tables and the wall time per GT pixel
+static bool SynthSphericalRun(int panoWidth, unsigned numPanos, const SynthDenseOptions& options, DepthEvaluator& sphereEval, DepthEvaluator* faceEval)
+{
+	LPCTSTR const backend(options.gpu ? SYNTH_GPU_BACKEND : _T("CPU"));
+	SynthViewArr views;
+	SynthGenerate(SynthMiddleConfig(panoWidth, numPanos, faceEval != NULL), views);
+	IIndexArr panoIDs, faceIDs;
+	SynthSplitViews(views, panoIDs, faceIDs);
+	const auto Run = [&](const IIndexArr& viewIDs, DepthEvaluator& evaluator, const String& what) {
+		double seconds;
+		if (!SynthEstimateDepth(views, viewIDs, options, evaluator, seconds))
+			return false;
+		const SynthCamera& camera = views[viewIDs[0]].camera;
+		VERBOSE("synthetic spherical: %s PatchMatch on %s of %dx%d px: %.2f s, %.3f us/px\n%s",
+			backend, what.c_str(), camera.width, camera.height,
+			seconds, seconds*1e6/evaluator.GetStats(DepthEvaluator::ALL).numGT, evaluator.Print().c_str());
+		return true;
+	};
+	return Run(panoIDs, sphereEval, String::FormatString("%u panoramas", panoIDs.size())) &&
+		(faceEval == NULL || Run(faceIDs, *faceEval, String::FormatString("their %u cube faces", faceIDs.size())));
+}
+
+// the GT range map of a panorama of the synthetic scene ray-cast at the given width
+static DepthMap SynthPanoRanges(const SynthView& pano, int width)
+{
+	ASSERT(pano.camera.model == CameraModelType::SPHERICAL);
+	const Spherical<double> sphere(Spherical<double>::FromSize(width, width/2));
+	const EMat3 Rt(EMat3(pano.camera.R).transpose());
+	DepthMap ranges(cv::Size(width, width/2));
+	for (int r = 0; r < ranges.height(); ++r)
+		for (int c = 0; c < ranges.width(); ++c)
+			ranges(r, c) = (Depth)SynthTrace(EVec3(pano.camera.C), Rt*sphere.Ray(EVec2(c, r))).t;
+	return ranges;
+}
+
+// how SynthSphericalFusionRun treats the cube faces
+enum SynthFaces { FACES_NONE, FACES_APART, FACES_WITH_PANORAMAS };
+
+// PatchMatch and fusion of numPanos panoramas of the synthetic scene scored into sphereEval and, unless
+// FACES_NONE, of their cube faces (FACES_APART) or of the panoramas and their faces together (a mixed
+// scene, FACES_WITH_PANORAMAS) scored into faceEval; the GT is the panoramas ray-cast at 4x their width
+// (at most 4096); logs the tables
+static bool SynthSphericalFusionRun(int panoWidth, unsigned numPanos, SynthFaces faces, const SynthDenseOptions& options,
+	CloudEvaluator& sphereEval, CloudEvaluator* faceEval)
+{
+	ASSERT((faces == FACES_NONE) == (faceEval == NULL));
+	SynthViewArr views;
+	SynthGenerate(SynthMiddleConfig(panoWidth, numPanos, faces != FACES_NONE), views);
+	IIndexArr panoIDs, faceIDs;
+	SynthSplitViews(views, panoIDs, faceIDs);
+	const int gtWidth(MINF(4*panoWidth, 4096));
+	for (IIndex i: panoIDs) {
+		const DepthMap ranges(SynthPanoRanges(views[i], gtWidth));
+		sphereEval.AddView(views[i].camera.R, views[i].camera.C, ranges, gtWidth/panoWidth);
+		if (faceEval)
+			faceEval->AddView(views[i].camera.R, views[i].camera.C, ranges, gtWidth/panoWidth);
+	}
+	PointCloud::PointArr points;
+	double seconds;
+	if (!SynthFuseDepth(views, panoIDs, options, points, seconds))
+		return false;
+	sphereEval.Evaluate(points);
+	VERBOSE("synthetic spherical fusion: %u panoramas of %dx%d px: %u points, %.2f s\n%s",
+		panoIDs.size(), panoWidth, panoWidth/2, points.size(), seconds, sphereEval.Print().c_str());
+	if (faces == FACES_NONE)
+		return true;
+	IIndexArr viewIDs(faceIDs);
+	if (faces == FACES_WITH_PANORAMAS)
+		viewIDs.Join(panoIDs);
+	if (!SynthFuseDepth(views, viewIDs, options, points, seconds))
+		return false;
+	faceEval->Evaluate(points);
+	VERBOSE("synthetic spherical fusion: their %u cube faces of %dx%d px%s: %u points, %.2f s\n%s",
+		faceIDs.size(), views[faceIDs[0]].camera.width, views[faceIDs[0]].camera.height, faces == FACES_WITH_PANORAMAS ? " with the panoramas" : "",
+		points.size(), seconds, faceEval->Print().c_str());
 	return true;
 }
 
 bool MVS::SyntheticDepthBaselineTest()
 {
 	TD_TIMER_START();
-	SynthConfig config;
-	config.firstPano = 3;
-	config.numRenderPanos = 3;
+	SynthConfig config(SynthMiddleConfig(512, 3, true));
 	config.numBrown = 2;
-	config.supersample = 3;
 	SynthViewArr views;
 	SynthGenerate(config, views);
 	// GT consistency across the models: panorama -> panorama, panorama <-> face, Brown <-> panorama/face
@@ -937,12 +1109,11 @@ bool MVS::SyntheticDepthBaselineTest()
 			faceIDs.push_back(i);
 	DepthEvaluator evaluator;
 	double seconds;
-	if (!SynthEstimateDepth(views, faceIDs, evaluator, seconds))
+	if (!SynthEstimateDepth(views, faceIDs, SynthDenseOptions(), evaluator, seconds))
 		return false;
 	VERBOSE("SyntheticDepthBaselineTest: CPU PatchMatch on %u cube faces of %dx%d px:\n%s",
 		faceIDs.size(), views[faceIDs[0]].camera.width, views[faceIDs[0]].camera.height, evaluator.Print().c_str());
-	// measured (Debug, CPU, two runs): all: completeness 0.854, abs-rel median 0.0027, <1% 0.749..0.754,
-	// <5% 0.920..0.922, normal median 4.0..4.1 deg; center completeness 0.988, border 0.682
+	// bounds: the measured accuracy less a margin
 	const DepthEvaluator::Stats all(evaluator.GetStats(DepthEvaluator::ALL));
 	const DepthEvaluator::Stats center(evaluator.GetStats(DepthEvaluator::CENTER)), border(evaluator.GetStats(DepthEvaluator::BORDER));
 	if (!(all.completeness > 0.80) || !(all.absRelMedian < 0.004) || !(all.within1 > 0.70) || !(all.within5 > 0.88) ||
@@ -954,157 +1125,6 @@ bool MVS::SyntheticDepthBaselineTest()
 	return true;
 }
 /*----------------------------------------------------------------*/
-
-
-// whether a GPU runs the GPU PatchMatch: a CUDA device, or Metal on Apple (CI machines have none)
-static bool SynthGPUAvailable()
-{
-	#ifdef _USE_CUDA
-	return SEACAVE::CUDA::isEnabled() || SEACAVE::CUDA::initDevices("-1") == CUDA_SUCCESS;
-	#elif defined(_USE_METAL)
-	return SEACAVE::METAL::isRuntimeAvailable();
-	#else
-	return false;
-	#endif
-}
-// the name of the GPU backend
-#ifdef _USE_CUDA
-#define SYNTH_GPU_BACKEND _T("CUDA")
-#else
-#define SYNTH_GPU_BACKEND _T("Metal")
-#endif
-
-// CPU (or, if gpu, GPU) PatchMatch on panoramas of the synthetic scene (and, if faces, separately on
-// their cube faces): prints the accuracy per band and the estimation wall time per estimated pixel;
-// returns the evaluators
-static bool SynthSphericalRun(int panoWidth, unsigned numPanos, bool faces, DepthEvaluator& sphereEval, DepthEvaluator& faceEval, unsigned maxViews=0, unsigned maxThreads=0, bool gpu=false)
-{
-	LPCTSTR const backend(gpu ? SYNTH_GPU_BACKEND : _T("CPU"));
-	SynthConfig config;
-	config.panoWidth = panoWidth;
-	config.firstPano = 3;
-	config.numRenderPanos = numPanos;
-	config.numBrown = 0;
-	config.faces = faces;
-	config.supersample = 3;
-	SynthViewArr views;
-	SynthGenerate(config, views);
-	IIndexArr panoIDs, faceIDs;
-	FOREACH(i, views)
-		(views[i].face < 0 ? panoIDs : faceIDs).push_back(i);
-	double seconds;
-	if (!SynthEstimateDepth(views, panoIDs, sphereEval, seconds, maxViews, maxThreads, gpu))
-		return false;
-	const DepthEvaluator::Stats sphereAll(sphereEval.GetStats(DepthEvaluator::ALL));
-	VERBOSE("synthetic spherical: %s PatchMatch on %u panoramas of %dx%d px: %.2f s, %.3f us/px\n%s",
-		backend, panoIDs.size(), views[panoIDs[0]].camera.width, views[panoIDs[0]].camera.height,
-		seconds, seconds*1e6/sphereAll.numGT, sphereEval.Print().c_str());
-	if (faces) {
-		if (!SynthEstimateDepth(views, faceIDs, faceEval, seconds, maxViews, maxThreads, gpu))
-			return false;
-		const DepthEvaluator::Stats faceAll(faceEval.GetStats(DepthEvaluator::ALL));
-		VERBOSE("synthetic spherical: %s PatchMatch on their %u cube faces of %dx%d px: %.2f s, %.3f us/px\n%s",
-			backend, faceIDs.size(), views[faceIDs[0]].camera.width, views[faceIDs[0]].camera.height,
-			seconds, seconds*1e6/faceAll.numGT, faceEval.Print().c_str());
-	}
-	return true;
-}
-
-// CPU PatchMatch and fusion (OPTDENSE::nFuseFilter = fusionFilter) of the given views of the synthetic
-// scene, at full resolution, in a temporary folder: the fused points, and the wall time in seconds
-static bool SynthFuseDepth(const SynthViewArr& views, const IIndexArr& viewIDs, unsigned fusionFilter, PointCloud::PointArr& points, double& seconds, unsigned maxThreads=0)
-{
-	const ScopedTempDir tmpDir(_T("SyntheticFusion"));
-	if (!tmpDir.IsValid())
-		return false;
-	const String folder(tmpDir.Path() + "/");
-	const SynthWorkingFolder workingFolder(folder);
-	#if defined(_USE_CUDA) || defined(_USE_METAL)
-	struct DevicesRestore {
-		const String prev;
-		~DevicesRestore() { SEACAVE::CUDA::desiredDeviceIDs = prev; }
-	} const devicesRestore{SEACAVE::CUDA::desiredDeviceIDs};
-	SEACAVE::CUDA::desiredDeviceIDs.clear();
-	#endif
-	Scene scene;
-	if (!SynthBuildScene(views, viewIDs, folder, scene))
-		return false;
-	if (maxThreads)
-		scene.nMaxThreads = maxThreads;
-	OPTDENSE::init();
-	OPTDENSE::update();
-	OPTDENSE::nResolutionLevel = 0;
-	OPTDENSE::nMinResolution = 64;
-	OPTDENSE::nFuseFilter = fusionFilter;
-	const auto t0(std::chrono::steady_clock::now());
-	if (!scene.DenseReconstruction(0) || scene.pointcloud.IsEmpty()) {
-		VERBOSE("ERROR: synthetic fusion: dense reconstruction failed!");
-		return false;
-	}
-	seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-	points = std::move(scene.pointcloud.points);
-	return true;
-}
-
-// the GT range map of a panorama of the synthetic scene ray-cast at the given width
-static DepthMap SynthPanoRanges(const SynthView& pano, int width)
-{
-	ASSERT(pano.camera.model == CameraModelType::SPHERICAL);
-	const Spherical<double> sphere(Spherical<double>::FromSize(width, width/2));
-	const EMat3 Rt(EMat3(pano.camera.R).transpose());
-	DepthMap ranges(cv::Size(width, width/2));
-	for (int r = 0; r < ranges.height(); ++r)
-		for (int c = 0; c < ranges.width(); ++c)
-			ranges(r, c) = (Depth)SynthTrace(EVec3(pano.camera.C), Rt*sphere.Ray(EVec2(c, r))).t;
-	return ranges;
-}
-
-// CPU PatchMatch and fusion of panoramas of the synthetic scene and, if faces is 1, separately of
-// their cube faces, if 2, of the panoramas and their faces together (a mixed scene); the clouds
-// scored by CloudEvaluator against the GT of the panoramas ray-cast at up to 4x their width; prints
-// the tables
-static bool SynthSphericalFusionRun(int panoWidth, unsigned numPanos, int faces, unsigned fusionFilter, const float thresholds[CloudEvaluator::NUM_TH],
-	CloudEvaluator& sphereEval, CloudEvaluator& faceEval, unsigned maxThreads=0)
-{
-	SynthConfig config;
-	config.panoWidth = panoWidth;
-	config.firstPano = 3;
-	config.numRenderPanos = numPanos;
-	config.numBrown = 0;
-	config.faces = faces;
-	config.supersample = 3;
-	SynthViewArr views;
-	SynthGenerate(config, views);
-	IIndexArr panoIDs, faceIDs;
-	FOREACH(i, views)
-		(views[i].face < 0 ? panoIDs : faceIDs).push_back(i);
-	const int gtWidth(MINF(4*panoWidth, 4096));
-	for (IIndex i: panoIDs) {
-		const DepthMap ranges(SynthPanoRanges(views[i], gtWidth));
-		sphereEval.AddView(views[i].camera.R, views[i].camera.C, ranges, gtWidth/panoWidth);
-		if (faces)
-			faceEval.AddView(views[i].camera.R, views[i].camera.C, ranges, gtWidth/panoWidth);
-	}
-	PointCloud::PointArr points;
-	double seconds;
-	if (!SynthFuseDepth(views, panoIDs, fusionFilter, points, seconds, maxThreads))
-		return false;
-	sphereEval.Evaluate(points);
-	VERBOSE("synthetic spherical fusion: %u panoramas of %dx%d px: %u points, %.2f s\n%s",
-		panoIDs.size(), panoWidth, panoWidth/2, points.size(), seconds, sphereEval.Print().c_str());
-	if (faces) {
-		IIndexArr viewIDs(faceIDs);
-		if (faces == 2)
-			viewIDs.Join(panoIDs);
-		if (!SynthFuseDepth(views, viewIDs, fusionFilter, points, seconds, maxThreads))
-			return false;
-		faceEval.Evaluate(points);
-		VERBOSE("synthetic spherical fusion: their %u cube faces of %dx%d px%s: %u points, %.2f s\n%s",
-			faceIDs.size(), views[faceIDs[0]].camera.width, views[faceIDs[0]].camera.height, faces == 2 ? " with the panoramas" : "",
-			points.size(), seconds, faceEval.Print().c_str());
-	}
-	return true;
-}
 
 // the cost of scoring one plane hypothesis at one pixel against one view, through the PatchMatch
 // estimator of the reference model: ns per ScorePixel of the GT plane over the reference pixels whose
@@ -1175,24 +1195,16 @@ static double SynthScoreBench(const SynthView& ref, const SynthView& trg, unsign
 bool MVS::SyntheticSphericalTest()
 {
 	TD_TIMER_START();
-	DepthEvaluator evaluator, unused;
-	if (!SynthSphericalRun(512, 3, false, evaluator, unused))
+	DepthEvaluator evaluator;
+	if (!SynthSphericalRun(512, 3, SynthDenseOptions(), evaluator, NULL))
 		return false;
 	const DepthEvaluator::Stats all(evaluator.GetStats(DepthEvaluator::ALL)), equator(evaluator.GetStats(DepthEvaluator::EQUATOR));
 	const DepthEvaluator::Stats seam(evaluator.GetStats(DepthEvaluator::SEAM)), center(evaluator.GetStats(DepthEvaluator::CENTER));
 	const DepthEvaluator::Stats north(evaluator.GetStats(DepthEvaluator::NORTH)), south(evaluator.GetStats(DepthEvaluator::SOUTH));
-	// measured (Release, CPU, 5 runs): all: completeness 0.956, abs-rel median 0.0015, <1% 0.92, <5%
-	// 0.985..0.988, normal median 4.0 deg; equator completeness 0.993, <5% 0.965..0.974; north 0.857, <5%
-	// 1.000; south 0.797, <5% 0.978..0.987 (the 4 rows next to each pole are not estimated); seam 0.951,
-	// <5% 0.996..0.997; center 0.957, <5% 0.994..0.996.
-	// The panoramas look along their trajectory, so the epipoles of their neighbors lie next to the seam
-	// and next to longitude 0 (pano004 at columns 15 and 271 of 512, pano005 at 3-4 and 259-260), where
-	// the neighbors see the scene at small triangulation angles and the view gate acts: the seam band is
-	// compared with its antipodal band (CENTER), which holds the mirrored epipoles of the same views at
-	// the same latitudes, not with the equator. The two agree within 0.003 <5%, while target patches
-	// across the seam scored as unseen cost the seam 0.06..0.08 (0.904..0.920 vs 0.983..0.984, completeness
-	// 0.945 vs 0.957), hence the 0.01 margin; no propagation across the seam fails the south band
-	// (<5% 0.933..0.947).
+	// bounds: the measured accuracy less a margin. The panoramas look along their trajectory, so the
+	// epipoles of their neighbors lie next to the seam and next to longitude 0, where the view gate acts:
+	// the seam band is held to its antipodal band (CENTER), not to the equator. The pole bands miss the
+	// rows next to each pole.
 	if (!(all.completeness > 0.93) || !(all.absRelMedian < 0.0025) || !(all.within1 > 0.88) || !(all.within5 > 0.97) || !(all.normalMedianDeg < 5.5) ||
 		!(seam.completeness > 0.99*center.completeness) || !(seam.within5 > center.within5 - 0.01) ||
 		!(north.completeness > 0.8) || !(north.within5 > 0.95) || !(south.completeness > 0.75) || !(south.within5 > 0.95)) {
@@ -1210,18 +1222,16 @@ bool MVS::SyntheticSphericalGPUTest(bool forceCPU)
 		return true;
 	}
 	TD_TIMER_START();
-	DepthEvaluator evaluator, unused;
-	if (!SynthSphericalRun(512, 3, false, evaluator, unused, 0, 0, true))
+	SynthDenseOptions options;
+	options.gpu = true;
+	DepthEvaluator evaluator;
+	if (!SynthSphericalRun(512, 3, options, evaluator, NULL))
 		return false;
 	const DepthEvaluator::Stats all(evaluator.GetStats(DepthEvaluator::ALL));
 	const DepthEvaluator::Stats seam(evaluator.GetStats(DepthEvaluator::SEAM)), center(evaluator.GetStats(DepthEvaluator::CENTER));
 	const DepthEvaluator::Stats north(evaluator.GetStats(DepthEvaluator::NORTH)), south(evaluator.GetStats(DepthEvaluator::SOUTH));
-	// measured (Release, CUDA): all: completeness 0.964, abs-rel median 0.0014, <1% 0.93, <5% 0.989, normal
-	// median 3.2 deg; equator completeness 0.991, <5% 0.974; seam 0.969, <5% 0.994; north 0.857, <5% 1.000;
-	// south 0.849, <5% 0.989; center (the seam's antipode) 0.966, <5% 0.990; every band at or above the CPU
-	// estimator (SyntheticSphericalTest). Metal, a hand mirror of the CUDA kernels not yet measured, is held to
-	// the CPU bounds of SyntheticSphericalTest. The seam band is compared with its antipodal band, as in
-	// SyntheticSphericalTest
+	// bounds: CUDA, the measured accuracy less a margin (every band at or above the CPU estimator); Metal,
+	// the CPU bounds of SyntheticSphericalTest; the seam band is held to its antipodal band as there
 	struct Bounds { double completeness, absRel, within1, within5, normalDeg, poleCompleteness[2], poleWithin5; };
 	#ifdef _USE_CUDA
 	const Bounds bounds{0.94, 0.002, 0.90, 0.975, 4.5, {0.8, 0.8}, 0.97};
@@ -1355,14 +1365,13 @@ bool MVS::SyntheticSphericalFusionTest()
 {
 	TD_TIMER_START();
 	const float thresholds[CloudEvaluator::NUM_TH] = {0.005f, 0.01f, 0.02f};
-	CloudEvaluator evaluator(512, thresholds), unused(512, thresholds);
-	if (!SynthSphericalFusionRun(512, 3, 0, OPTDENSE::FUSE_DENSEFILTER, thresholds, evaluator, unused))
+	CloudEvaluator evaluator(512, thresholds);
+	if (!SynthSphericalFusionRun(512, 3, FACES_NONE, SynthDenseOptions(), evaluator, NULL))
 		return false;
 	const CloudEvaluator::Stats& all(evaluator.GetStats(DepthEvaluator::ALL)), &equator(evaluator.GetStats(DepthEvaluator::EQUATOR));
 	const CloudEvaluator::Stats& seam(evaluator.GetStats(DepthEvaluator::SEAM));
 	const CloudEvaluator::Stats& north(evaluator.GetStats(DepthEvaluator::NORTH)), &south(evaluator.GetStats(DepthEvaluator::SOUTH));
-	// measured (Release, CPU, dense fusion): all: precision@1% 0.984, recall@2% 0.871 (82k points);
-	// equator 0.963 / 0.722; seam 0.980 / 0.899; north 1.000 / 1.000; south 0.998 / 0.902
+	// bounds: the measured precision@1% and recall@2% less a margin; the seam band against the equator
 	if (!(all.precision[1] > 0.96) || !(all.recall[2] > 0.83) ||
 		!(seam.precision[1] > 0.97*equator.precision[1]) || !(seam.recall[2] > equator.recall[2]) ||
 		!(north.precision[1] > 0.97) || !(south.precision[1] > 0.97) || !(north.recall[2] > 0.95) || !(south.recall[2] > 0.85)) {
@@ -1512,7 +1521,8 @@ bool MVS::BrownUndistortOnLoadTest()
 		}
 		VERBOSE("BrownUndistortOnLoadTest: view %u: mean abs difference %.3f over %zu valid px, %.2f%% invalid, max observation error %.2e px (%u points)",
 			v, meanDiff, numValid, invalidRatio*100, maxObsErr, (unsigned)numPoints);
-		// measured: mean abs difference 0.96 (supersampled render vs bilinear remap), 4.6% invalid
+		// bounds: the supersampled render and the bilinear remap differ by about one grey level; the lens
+		// leaves a few % of K' without source pixels
 		if (!(meanDiff < 1.5) || !(invalidRatio > 0.01 && invalidRatio < 0.1) || !(maxObsErr < 1e-3) || numPoints < 100) {
 			VERBOSE("ERROR: BrownUndistortOnLoadTest: the undistorted view %u does not match the pinhole render at K'", v);
 			return false;
@@ -1544,419 +1554,462 @@ bool MVS::BrownUndistortOnLoadTest()
 /*----------------------------------------------------------------*/
 
 
+// T O O L S ///////////////////////////////////////////////////////
+
+namespace {
+
+// the optional argument i of a tool mode, def if absent
+int ArgInt(int argc, LPCTSTR* argv, int i, int def) { return i < argc ? std::atoi(argv[i]) : def; }
+
+// sets DepthEstimatorBase::fSphericalWarpMaxElevation from the optional argument i while it lives
+struct ScopedMaxElevation {
+	const float prev;
+	ScopedMaxElevation(int argc, LPCTSTR* argv, int i) : prev(DepthEstimatorBase::fSphericalWarpMaxElevation) {
+		if (i < argc)
+			DepthEstimatorBase::fSphericalWarpMaxElevation = (float)std::atof(argv[i]);
+	}
+	~ScopedMaxElevation() { DepthEstimatorBase::fSphericalWarpMaxElevation = prev; }
+};
+
+bool ValidPanoramas(int panoWidth, unsigned numPanos)
+{
+	if (panoWidth > 0 && panoWidth % 8 == 0 && numPanos >= 2 && numPanos <= 5)
+		return true;
+	std::printf("error: panoWidth must be a positive multiple of 8, numPanos in [2,5]\n");
+	return false;
+}
+
+// synth <outDir> [panoWidth]: write the default dataset (SynthSave) after printing its GT consistency
+bool ToolSynth(int argc, LPCTSTR* argv)
+{
+	SynthConfig config;
+	config.panoWidth = ArgInt(argc, argv, 2, config.panoWidth);
+	if (config.panoWidth <= 0 || config.panoWidth % 8) {
+		std::printf("error: panoWidth must be a positive multiple of 8\n");
+		return false;
+	}
+	String folder(Util::getFullPath(argv[1]));
+	Util::ensureValidFolderPath(folder);
+	TD_TIMER_START();
+	SynthViewArr views;
+	SynthGenerate(config, views);
+	std::printf("rendered %u views (%s)\n", views.size(), TD_TIMER_GET_FMT().c_str());
+	// each panorama against the next, its first face and the Brown view after it
+	for (const SynthView& a: views) {
+		for (const SynthView& b: views) {
+			if (&a == &b || a.camera.model != CameraModelType::SPHERICAL ||
+				!((b.camera.model == CameraModelType::SPHERICAL && b.pano == a.pano + 1) || (b.pano == a.pano && b.face <= 0)))
+				continue;
+			size_t numPixels;
+			const double mismatch(SynthGTMismatch(a, b, numPixels));
+			std::printf("GT %s -> %s: median lambda mismatch %.2e over %zu px\n", a.name.c_str(), b.name.c_str(), mismatch, numPixels);
+		}
+	}
+	if (!SynthSave(views, folder)) {
+		std::printf("error: cannot write the dataset to '%s'\n", folder.c_str());
+		return false;
+	}
+	std::printf("saved to '%s' (%s)\n", folder.c_str(), TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// scorebench <verbosity> [panoWidth] [rounds] [maxElevation] [faceWidth]: ns per ScorePixel against one
+// view, panorama 3 against panorama 4 and each cube face of 3 against the same face of 4 (faceWidth
+// panoWidth/sqrt(2) compares at the same image size)
+bool ToolScoreBench(int argc, LPCTSTR* argv)
+{
+	const int panoWidth(ArgInt(argc, argv, 2, 1536));
+	const unsigned rounds((unsigned)ArgInt(argc, argv, 3, 4));
+	const ScopedMaxElevation maxElevation(argc, argv, 4);
+	const int faceWidth(ArgInt(argc, argv, 5, panoWidth/4));
+	OPTDENSE::init();
+	OPTDENSE::update();
+	SynthConfig config(SynthMiddleConfig(panoWidth, 2, false));
+	config.supersample = 1;
+	SynthViewArr panos;
+	SynthGenerate(config, panos);
+	config.panoWidth = faceWidth*4;
+	config.spherical = false;
+	config.faces = true;
+	SynthViewArr faces;
+	SynthGenerate(config, faces);
+	// alternate the two measurements and keep the fastest of each, the machine being shared
+	double nsSphereMin(DBL_MAX), nsFacesMin(DBL_MAX);
+	for (int repeat = 0; repeat < 5; ++repeat) {
+		size_t numPixels;
+		const double nsSphere(SynthScoreBench<Spherical>(panos[0], panos[1], rounds, numPixels));
+		double nsFaces(0); size_t numFacePixels(0);
+		for (int f = 0; f < 6; ++f) {
+			size_t n;
+			const double ns(SynthScoreBench<Pinhole>(faces[f], faces[6+f], rounds, n));
+			nsFaces += ns*n;
+			numFacePixels += n;
+		}
+		nsFaces /= numFacePixels;
+		VERBOSE("scorebench: panorama %dx%d %.1f ns over %zu pixels, faces %dx%d %.1f ns over %zu pixels",
+			panoWidth, panoWidth/2, nsSphere, numPixels, faceWidth, faceWidth, nsFaces, numFacePixels);
+		nsSphereMin = MINF(nsSphereMin, nsSphere);
+		nsFacesMin = MINF(nsFacesMin, nsFaces);
+	}
+	VERBOSE("scorebench: spherical %.1f ns, pinhole faces %.1f ns per ScorePixel (one view): ratio %.3f", nsSphereMin, nsFacesMin, nsSphereMin/nsFacesMin);
+	return true;
+}
+
+// sphtest <verbosity> [panoWidth] [numPanos] [faces] [maxElevation] [maxViews] [maxThreads] [gpu]: PatchMatch on
+// panoramas and on their cube faces, the depth-maps scored per band
+bool ToolSphTest(int argc, LPCTSTR* argv)
+{
+	const int panoWidth(ArgInt(argc, argv, 2, 512));
+	const unsigned numPanos((unsigned)ArgInt(argc, argv, 3, 3));
+	const bool faces(ArgInt(argc, argv, 4, 1) != 0);
+	const ScopedMaxElevation maxElevation(argc, argv, 5);
+	SynthDenseOptions options;
+	options.maxViews = (unsigned)ArgInt(argc, argv, 6, 0);
+	options.maxThreads = (unsigned)ArgInt(argc, argv, 7, 0);
+	options.gpu = ArgInt(argc, argv, 8, 0) != 0;
+	if (options.gpu && !SynthGPUAvailable()) {
+		std::printf("error: no GPU\n");
+		return false;
+	}
+	if (!ValidPanoramas(panoWidth, numPanos))
+		return false;
+	DepthEvaluator sphereEval, faceEval;
+	if (!SynthSphericalRun(panoWidth, numPanos, options, sphereEval, faces ? &faceEval : NULL))
+		return false;
+	std::fputs(sphereEval.Print().c_str(), stdout);
+	if (faces)
+		std::fputs(faceEval.Print().c_str(), stdout);
+	return true;
+}
+
+// sphfuse <verbosity> [panoWidth] [numPanos] [faces] [fusionFilter] [maxThreads]: PatchMatch and fusion of
+// panoramas and of their cube faces (SynthFaces), the clouds scored per band
+bool ToolSphFuse(int argc, LPCTSTR* argv)
+{
+	const int panoWidth(ArgInt(argc, argv, 2, 512));
+	const unsigned numPanos((unsigned)ArgInt(argc, argv, 3, 3));
+	const int faces(ArgInt(argc, argv, 4, FACES_APART));
+	SynthDenseOptions options;
+	options.fusionFilter = (unsigned)ArgInt(argc, argv, 5, OPTDENSE::FUSE_DENSEFILTER);
+	options.maxThreads = (unsigned)ArgInt(argc, argv, 6, 0);
+	if (!ValidPanoramas(panoWidth, numPanos))
+		return false;
+	if (faces < FACES_NONE || faces > FACES_WITH_PANORAMAS || options.fusionFilter > OPTDENSE::FUSE_DENSEFILTER) {
+		std::printf("error: faces and fusionFilter must be in [0,2]\n");
+		return false;
+	}
+	const float thresholds[CloudEvaluator::NUM_TH] = {0.005f, 0.01f, 0.02f};
+	CloudEvaluator sphereEval(panoWidth, thresholds), faceEval(panoWidth, thresholds);
+	if (!SynthSphericalFusionRun(panoWidth, numPanos, (SynthFaces)faces, options, sphereEval, faces != FACES_NONE ? &faceEval : NULL))
+		return false;
+	std::fputs(sphereEval.Print().c_str(), stdout);
+	if (faces != FACES_NONE)
+		std::fputs(faceEval.Print().c_str(), stdout);
+	return true;
+}
+
+// the point-cloud of a .ply file or of a scene
+bool LoadCloud(const String& fileName, PointCloud& pointcloud)
+{
+	if (Util::getFileExt(fileName).ToLower() == ".mvs") {
+		Scene scene;
+		const ScopedWorkingFolder workingFolder(Util::getFilePath(fileName));
+		if (scene.Load(fileName) == Scene::SCENE_NA)
+			return false;
+		pointcloud = std::move(scene.pointcloud);
+	} else if (!pointcloud.Load(fileName)) {
+		std::printf("error: cannot read the cloud '%s'\n", fileName.c_str());
+		return false;
+	}
+	if (pointcloud.IsEmpty()) {
+		std::printf("error: empty cloud '%s'\n", fileName.c_str());
+		return false;
+	}
+	return true;
+}
+
+// evalcloud <cloud.ply|scene.mvs> <gtFolder> [evalWidth] [th1% th2% th3%]: a cloud against the GT range maps
+// *.dmap of a folder (their poses from the .dmap headers); evalWidth is the panorama width the cloud was
+// estimated at, for the recall grid and the seam band (default the GT width)
+bool ToolEvalCloud(int argc, LPCTSTR* argv)
+{
+	const int evalWidth(ArgInt(argc, argv, 3, 0));
+	float thresholds[CloudEvaluator::NUM_TH] = {0.01f, 0.02f, 0.05f};
+	for (int t = 0; t < CloudEvaluator::NUM_TH && 4+t < argc; ++t)
+		thresholds[t] = (float)std::atof(argv[4+t])/100;
+	PointCloud pointcloud;
+	if (!LoadCloud(Util::getFullPath(argv[1]), pointcloud))
+		return false;
+	const String gtFolder(argv[2]);
+	const StringArr names(ListDMaps(gtFolder));
+	std::unique_ptr<CloudEvaluator> evaluator;
+	for (const String& name: names) {
+		DMapFile gt;
+		if (!gt.Load(JoinPath(gtFolder, name), false) || gt.depthMap.width() != 2*gt.depthMap.height()) {
+			std::printf("error: '%s' is not an equirectangular range map\n", name.c_str());
+			return false;
+		}
+		if (!evaluator)
+			evaluator.reset(new CloudEvaluator(evalWidth > 0 ? evalWidth : gt.depthMap.width(), thresholds));
+		evaluator->AddView(gt.R, gt.C, gt.depthMap, evalWidth > 0 ? MAXF(ROUND2INT(float(gt.depthMap.width())/evalWidth), 1) : 1);
+	}
+	if (!evaluator) {
+		std::printf("error: no GT range map in '%s'\n", gtFolder.c_str());
+		return false;
+	}
+	evaluator->Evaluate(pointcloud.points);
+	VERBOSE("evalcloud: %zu GT range maps, %u cloud points\n%s", (size_t)names.size(), pointcloud.points.size(), evaluator->Print().c_str());
+	return true;
+}
+
+// facescene <scene.mvs> <gtFolder> <outFolder> <panoWidth> [faceSize]: the cube-face baseline of a spherical
+// scene: every panorama resized to panoWidth is rendered into 6 cube faces (faceSize, default the same pixels
+// per steradian: panoWidth/sqrt(12)), its GT range map (gtFolder/depthXXXX.dmap) into face GT z depth-maps
+// (outFolder/gt), and the sparse points are kept with the faces they project into
+bool ToolFaceScene(int argc, LPCTSTR* argv)
+{
+	const String sceneFileName(Util::getFullPath(argv[1])), gtFolder(Util::getFullPath(argv[2]));
+	String outFolder(Util::getFullPath(argv[3]));
+	Util::ensureValidFolderPath(outFolder);
+	Util::ensureFolder(outFolder + "gt/");
+	const int panoWidth(std::atoi(argv[4]));
+	const int faceSize(ArgInt(argc, argv, 5, ROUND2INT(panoWidth/SQRT(12.0)/8)*8));
+	Scene scene;
+	{
+		const ScopedWorkingFolder workingFolder(Util::getFilePath(sceneFileName));
+		if (scene.Load(sceneFileName) == Scene::SCENE_NA)
+			return false;
+	}
+	const SphereCubeMap::TangentFacesGeometry faces(SphereCubeMap::MakeTangentFacesGeometry(6, faceSize));
+	const Pinhole<double> facePinhole{faces.K(0,0), faces.K(1,1), faces.K(0,2), faces.K(1,2)};
+	Scene faceScene;
+	const float scale(Camera::GetNormalizationScale(faceSize, faceSize));
+	FOREACH(i, scene.images) {
+		const Image& imageData = scene.images[i];
+		ASSERT(imageData.IsValid() && imageData.model == CameraModelType::SPHERICAL);
+		Image8U3 pano;
+		if (imageData.ReadPixels(pano) == NULL) {
+			std::printf("error: cannot read the image '%s'\n", imageData.name.c_str());
+			return false;
+		}
+		cv::resize(pano, pano, cv::Size(panoWidth, panoWidth/2), 0, 0, cv::INTER_AREA);
+		const std::vector<Image8U3> faceImages(SphereCubeMap::SphericalToTangentialFaces(pano, faces));
+		DMapFile gt;
+		const String gtFileName(gtFolder + String::FormatString("/depth%04u.dmap", imageData.ID));
+		if (!gt.Load(gtFileName, false)) {
+			std::printf("error: cannot read the GT range map '%s'\n", gtFileName.c_str());
+			return false;
+		}
+		const DepthMap& gtRange = gt.depthMap;
+		const Spherical<double> sphere(Spherical<double>::FromSize(gtRange.width(), gtRange.height()));
+		Platform& platform = faceScene.platforms.AddEmpty();
+		platform.name = String::FormatString("pano%04u", imageData.ID);
+		Platform::Pose& pose = platform.poses.AddEmpty();
+		pose.R = imageData.camera.R;
+		pose.C = imageData.camera.C;
+		for (int f = 0; f < 6; ++f) {
+			Platform::Camera& camera = platform.cameras.AddEmpty();
+			camera.K = KMatrix::IDENTITY;
+			camera.K(0,0) = faces.K(0,0) / scale;
+			camera.K(1,1) = faces.K(1,1) / scale;
+			camera.R = faces.rotations[f];
+			camera.C = Point3::ZERO;
+			Image& face = faceScene.images.AddEmpty();
+			face.ID = faceScene.images.size()-1;
+			face.platformID = faceScene.platforms.size()-1;
+			face.cameraID = f;
+			face.poseID = 0;
+			face.width = face.height = faceSize;
+			face.scale = 1;
+			face.name = outFolder + String::FormatString("pano%04u_face%d.png", imageData.ID, f);
+			if (!faceImages[f].Save(face.name)) {
+				std::printf("error: cannot write '%s'\n", face.name.c_str());
+				return false;
+			}
+			face.UpdateCamera(faceScene.platforms);
+			// the GT range of the panorama at the nearest pixel of each face ray, as z
+			DepthMap faceGT(faceSize, faceSize);
+			const EMat3 Rt(EMat3(faces.rotations[f]).transpose());
+			for (int r = 0; r < faceSize; ++r) {
+				for (int c = 0; c < faceSize; ++c) {
+					const EVec3 ray(facePinhole.Ray(EVec2(c, r)));
+					EVec2 x;
+					sphere.Project(Rt*ray, x);
+					const Depth range(gtRange(MINF(ROUND2INT(x.y()), gtRange.height()-1), (ROUND2INT(x.x()) + gtRange.width()) % gtRange.width()));
+					faceGT(r, c) = range > 0 ? (Depth)(range/ray.norm()) : 0.f;
+				}
+			}
+			if (!ExportDepthDataRaw(outFolder + String::FormatString("gt/depth%04u.dmap", face.ID), face.name, IIndexArr{face.ID}, faceGT.size(),
+					face.camera.K, face.camera.R, face.camera.C, 0.f, FLT_MAX, faceGT, NormalMap(), ConfidenceMap(), ViewsMap())) {
+				std::printf("error: cannot write the face GT of '%s'\n", face.name.c_str());
+				return false;
+			}
+		}
+	}
+	faceScene.nCalibratedImages = faceScene.images.size();
+	// the sparse points with the faces they project into, among the faces of their panoramas
+	FOREACH(p, scene.pointcloud.points) {
+		const Point3 X(Cast<REAL>(scene.pointcloud.points[p]));
+		PointCloud::ViewArr views;
+		for (const PointCloud::View v: scene.pointcloud.pointViews[p]) {
+			for (int f = 0; f < 6; ++f) {
+				const Image& face = faceScene.images[v*6+f];
+				const Point3 Xc(face.camera.TransformPointW2C(X));
+				if (Xc.z > 0 && face.camera.IsInside(Point2f(face.camera.TransformPointC2I(Xc)), Point2f(face.GetSize())))
+					views.push_back(v*6+f);
+			}
+		}
+		if (views.size() < 2)
+			continue;
+		views.Sort();
+		faceScene.pointcloud.points.emplace_back(scene.pointcloud.points[p]);
+		faceScene.pointcloud.pointViews.emplace_back(std::move(views));
+	}
+	const ScopedWorkingFolder workingFolder(outFolder);
+	if (!faceScene.SaveInterface(outFolder + "scene_faces.mvs"))
+		return false;
+	std::printf("%u faces of %dx%d px, %zu sparse points\n", faceScene.images.size(), faceSize, faceSize, (size_t)faceScene.pointcloud.points.size());
+	return true;
+}
+
+// undistortbench <scene.mvs> [numImages]: the load cost of the undistortion over the first numImages images
+// undistorted on read: the file decode and the remap ReadPixels adds to it, timed apart; the first image of
+// a camera also builds its maps
+bool ToolUndistortBench(int argc, LPCTSTR* argv)
+{
+	String fileName(argv[1]);
+	Util::ensureValidPath(fileName);
+	fileName = Util::getFullPath(fileName);
+	const ScopedWorkingFolder workingFolder(Util::getFilePath(fileName));
+	Scene scene;
+	if (scene.Load(fileName) == Scene::SCENE_NA)
+		return false;
+	const unsigned numImages((unsigned)ArgInt(argc, argv, 2, 8));
+	typedef std::chrono::steady_clock Clock;
+	const auto ms = [](Clock::time_point a, Clock::time_point b) { return std::chrono::duration<double,std::milli>(b - a).count(); };
+	double decodeMs(0), remapMs(0), mapsMs(0);
+	unsigned n(0);
+	for (const Image& imageData: scene.images) {
+		if (n == numImages)
+			break;
+		if (!imageData.IsUndistortedOnRead())
+			continue;
+		Image8U3 pixels, undistorted;
+		const Clock::time_point t0(Clock::now());
+		if (Image::ReadImage(imageData.name, pixels) == NULL)
+			return false;
+		const Clock::time_point t1(Clock::now());
+		const std::shared_ptr<const CameraUndistortMaps> maps(imageData.GetUndistortMaps());
+		const Clock::time_point t2(Clock::now());
+		maps->Remap(pixels, undistorted, cv::INTER_LINEAR);
+		const Clock::time_point t3(Clock::now());
+		VERBOSE("image %u %dx%d: decode %.1f ms, maps %.1f ms, remap %.1f ms", imageData.ID, pixels.width(), pixels.height(),
+			ms(t0, t1), ms(t1, t2), ms(t2, t3));
+		decodeMs += ms(t0, t1);
+		mapsMs += ms(t1, t2);
+		remapMs += ms(t2, t3);
+		++n;
+	}
+	if (n == 0) {
+		VERBOSE("error: no image undistorted on read");
+		return false;
+	}
+	VERBOSE("%u images undistorted on read: decode %.1f ms/image, remap %.1f ms/image, maps %.1f ms in total",
+		n, decodeMs/n, remapMs/n, mapsMs);
+	return true;
+}
+
+// add one GT/estimate pair to evaluator; a missing estimate counts as no estimate, a GT of another
+// resolution is sampled at the nearest pixel of each estimated pixel center; the model only selects the
+// bands: spherical if named so, or if not named and the GT camera matrix is the equirectangular one
+bool EvalDepthPair(const String& gtFileName, const String& estFileName, const String& model, DepthEvaluator& evaluator)
+{
+	DMapFile gt, est;
+	if (!gt.Load(gtFileName, true)) {
+		std::printf("error: cannot read the depth-map '%s'\n", gtFileName.c_str());
+		return false;
+	}
+	if (!est.Load(estFileName, true)) {
+		std::printf("warning: no estimate '%s'\n", estFileName.c_str());
+		est.depthMap.create(gt.depthMap.size());
+		est.depthMap.memset(0);
+	}
+	if (gt.normalMap.empty()) {
+		gt.normalMap.create(gt.depthMap.size());
+		gt.normalMap.memset(0);
+	}
+	const Spherical<double> sphere(Spherical<double>::FromSize(gt.depthMap.width(), gt.depthMap.height()));
+	const bool spherical(model.empty() ? ABS(gt.K(0,0) - sphere.fx) < 1e-9*sphere.fx && ABS(gt.K(1,1) - sphere.fy) < 1e-9*sphere.fy : model == "spherical");
+	if (gt.depthMap.size() != est.depthMap.size()) {
+		if (int64_t(gt.depthMap.width())*est.depthMap.height() != int64_t(gt.depthMap.height())*est.depthMap.width()) {
+			std::printf("error: GT %dx%d and estimate %dx%d differ in aspect ratio\n", gt.depthMap.width(), gt.depthMap.height(), est.depthMap.width(), est.depthMap.height());
+			return false;
+		}
+		const double scale(double(gt.depthMap.width()) / est.depthMap.width());
+		DepthMap depthMap(est.depthMap.size());
+		NormalMap normalMap(est.depthMap.size());
+		for (int r = 0; r < depthMap.height(); ++r) {
+			for (int c = 0; c < depthMap.width(); ++c) {
+				const int rg(MINF(FLOOR2INT((r + 0.5)*scale), gt.depthMap.height() - 1)), cg(MINF(FLOOR2INT((c + 0.5)*scale), gt.depthMap.width() - 1));
+				depthMap(r, c) = gt.depthMap(rg, cg);
+				normalMap(r, c) = gt.normalMap(rg, cg);
+			}
+		}
+		gt.depthMap = std::move(depthMap);
+		gt.normalMap = std::move(normalMap);
+	}
+	evaluator.Add(gt.depthMap, gt.normalMap, est.depthMap, est.normalMap, spherical ? CameraModelType::SPHERICAL : CameraModelType::PINHOLE);
+	return true;
+}
+
+// evaldepth <gt.dmap|gtFolder> <est.dmap|estFolder> [pinhole|spherical]: one GT/estimate pair, or every GT
+// *.dmap of a folder against the same file name in the estimate folder, scored per band
+bool ToolEvalDepth(int argc, LPCTSTR* argv)
+{
+	const String model(argc > 3 ? String(argv[3]) : String());
+	DepthEvaluator evaluator;
+	if (std::filesystem::is_directory(argv[1])) {
+		const String gtFolder(argv[1]), estFolder(argv[2]);
+		const StringArr names(ListDMaps(gtFolder));
+		for (const String& name: names)
+			if (!EvalDepthPair(JoinPath(gtFolder, name), JoinPath(estFolder, name), model, evaluator))
+				return false;
+		std::printf("%zu depth-maps\n", (size_t)names.size());
+	} else if (!EvalDepthPair(argv[1], argv[2], model, evaluator)) {
+		return false;
+	}
+	VERBOSE("evaldepth:\n%s", evaluator.Print().c_str());
+	return true;
+}
+
+} // namespace
+
 bool MVS::SynthTool(int argc, LPCTSTR* argv)
 {
 	ASSERT(argc > 0);
-	const String mode(argv[0]);
-	if (mode == "synth" && argc >= 2) {
-		SynthConfig config;
-		if (argc > 2)
-			config.panoWidth = std::atoi(argv[2]);
-		if (config.panoWidth <= 0 || config.panoWidth % 8) {
-			std::printf("error: panoWidth must be a positive multiple of 8\n");
-			return false;
-		}
-		String folder(Util::getFullPath(argv[1]));
-		Util::ensureValidFolderPath(folder);
-		TD_TIMER_START();
-		SynthViewArr views;
-		SynthGenerate(config, views);
-		std::printf("rendered %u views (%s)\n", views.size(), TD_TIMER_GET_FMT().c_str());
-		// GT consistency: each panorama against the next, its first face and the Brown view after it
-		for (const SynthView& a: views) {
-			for (const SynthView& b: views) {
-				if (&a == &b || a.camera.model != CameraModelType::SPHERICAL ||
-					!((b.camera.model == CameraModelType::SPHERICAL && b.pano == a.pano + 1) || (b.pano == a.pano && b.face <= 0)))
-					continue;
-				size_t numPixels;
-				const double mismatch(SynthGTMismatch(a, b, numPixels));
-				std::printf("GT %s -> %s: median lambda mismatch %.2e over %zu px\n", a.name.c_str(), b.name.c_str(), mismatch, numPixels);
-			}
-		}
-		if (!SynthSave(views, folder)) {
-			std::printf("error: cannot write the dataset to '%s'\n", folder.c_str());
-			return false;
-		}
-		std::printf("saved to '%s' (%s)\n", folder.c_str(), TD_TIMER_GET_FMT().c_str());
-		return true;
-	}
-	if (mode == "synthtest")
-		return SyntheticDepthBaselineTest();
-	if (mode == "scorebench") {
-		// ns per hypothesis and view: scorebench <verbosity> [panoWidth=1536] [rounds=4] [maxElevation] [faceWidth=panoWidth/4]
-		// (faces as large as the panorama, panoWidth/sqrt(2), compare at the same image memory footprint)
-		const int panoWidth(argc > 2 ? std::atoi(argv[2]) : 1536);
-		const unsigned rounds(argc > 3 ? (unsigned)std::atoi(argv[3]) : 4u);
-		struct MaxElevationRestore {
-			const float prev;
-			~MaxElevationRestore() { DepthEstimatorBase::fSphericalWarpMaxElevation = prev; }
-		} const maxElevationRestore{DepthEstimatorBase::fSphericalWarpMaxElevation};
-		if (argc > 4)
-			DepthEstimatorBase::fSphericalWarpMaxElevation = (float)std::atof(argv[4]);
-		const int faceWidth(argc > 5 ? std::atoi(argv[5]) : panoWidth/4);
-		OPTDENSE::init();
-		OPTDENSE::update();
-		// panorama 3 against panorama 4, and each cube face of 3 against the same face of 4
-		SynthConfig config;
-		config.firstPano = 3;
-		config.numRenderPanos = 2;
-		config.numBrown = 0;
-		config.supersample = 1;
-		config.panoWidth = panoWidth;
-		config.faces = false;
-		SynthViewArr panos;
-		SynthGenerate(config, panos);
-		config.panoWidth = faceWidth*4;
-		config.spherical = false;
-		config.faces = true;
-		SynthViewArr faces;
-		SynthGenerate(config, faces);
-		// alternate the two measurements and keep the fastest of each, the machine being shared
-		double nsSphereMin(DBL_MAX), nsFacesMin(DBL_MAX);
-		for (int repeat = 0; repeat < 5; ++repeat) {
-			size_t numPixels;
-			const double nsSphere(SynthScoreBench<Spherical>(panos[0], panos[1], rounds, numPixels));
-			double nsFaces(0); size_t numFacePixels(0);
-			for (int f = 0; f < 6; ++f) {
-				size_t n;
-				const double ns(SynthScoreBench<Pinhole>(faces[f], faces[6+f], rounds, n));
-				nsFaces += ns*n;
-				numFacePixels += n;
-			}
-			nsFaces /= numFacePixels;
-			VERBOSE("scorebench: panorama %dx%d %.1f ns over %zu pixels, faces %dx%d %.1f ns over %zu pixels",
-				panoWidth, panoWidth/2, nsSphere, numPixels, faceWidth, faceWidth, nsFaces, numFacePixels);
-			nsSphereMin = MINF(nsSphereMin, nsSphere);
-			nsFacesMin = MINF(nsFacesMin, nsFaces);
-		}
-		VERBOSE("scorebench: spherical %.1f ns, pinhole faces %.1f ns per ScorePixel (one view): ratio %.3f", nsSphereMin, nsFacesMin, nsSphereMin/nsFacesMin);
-		return true;
-	}
-	if (mode == "sphtest") {
-		// panoramas vs their cube faces: sphtest <verbosity> [panoWidth=512] [numPanos=3] [faces=1] [maxElevation] [maxViews] [maxThreads] [gpu=0]
-		const int panoWidth(argc > 2 ? std::atoi(argv[2]) : 512);
-		const unsigned numPanos(argc > 3 ? (unsigned)std::atoi(argv[3]) : 3u);
-		const bool faces(argc > 4 ? std::atoi(argv[4]) != 0 : true);
-		struct MaxElevationRestore {
-			const float prev;
-			~MaxElevationRestore() { DepthEstimatorBase::fSphericalWarpMaxElevation = prev; }
-		} const maxElevationRestore{DepthEstimatorBase::fSphericalWarpMaxElevation};
-		if (argc > 5)
-			DepthEstimatorBase::fSphericalWarpMaxElevation = (float)std::atof(argv[5]);
-		const unsigned maxViews(argc > 6 ? (unsigned)std::atoi(argv[6]) : 0u);
-		const unsigned maxThreads(argc > 7 ? (unsigned)std::atoi(argv[7]) : 0u);
-		const bool gpu(argc > 8 && std::atoi(argv[8]) != 0);
-		if (gpu && !SynthGPUAvailable()) {
-			std::printf("error: no GPU\n");
-			return false;
-		}
-		if (panoWidth <= 0 || panoWidth % 8 || numPanos < 2 || numPanos > 5) {
-			std::printf("error: panoWidth must be a positive multiple of 8, numPanos in [2,5]\n");
-			return false;
-		}
-		DepthEvaluator sphereEval, faceEval;
-		if (!SynthSphericalRun(panoWidth, numPanos, faces, sphereEval, faceEval, maxViews, maxThreads, gpu))
-			return false;
-		std::fputs(sphereEval.Print().c_str(), stdout);
-		if (faces)
-			std::fputs(faceEval.Print().c_str(), stdout);
-		return true;
-	}
-	if (mode == "sphfuse") {
-		// panoramas vs their cube faces, fused: sphfuse <verbosity> [panoWidth=512] [numPanos=3] [faces=1] [fusionFilter=2] [maxThreads]
-		const int panoWidth(argc > 2 ? std::atoi(argv[2]) : 512);
-		const unsigned numPanos(argc > 3 ? (unsigned)std::atoi(argv[3]) : 3u);
-		const int faces(argc > 4 ? std::atoi(argv[4]) : 1);
-		const unsigned fusionFilter(argc > 5 ? (unsigned)std::atoi(argv[5]) : (unsigned)OPTDENSE::FUSE_DENSEFILTER);
-		const unsigned maxThreads(argc > 6 ? (unsigned)std::atoi(argv[6]) : 0u);
-		if (panoWidth <= 0 || panoWidth % 8 || numPanos < 2 || numPanos > 5 || fusionFilter > 2) {
-			std::printf("error: panoWidth must be a positive multiple of 8, numPanos in [2,5], fusionFilter in [0,2]\n");
-			return false;
-		}
-		const float thresholds[CloudEvaluator::NUM_TH] = {0.005f, 0.01f, 0.02f};
-		CloudEvaluator sphereEval(panoWidth, thresholds), faceEval(panoWidth, thresholds);
-		if (!SynthSphericalFusionRun(panoWidth, numPanos, faces, fusionFilter, thresholds, sphereEval, faceEval, maxThreads))
-			return false;
-		std::fputs(sphereEval.Print().c_str(), stdout);
-		if (faces)
-			std::fputs(faceEval.Print().c_str(), stdout);
-		return true;
-	}
-	if (mode == "evalcloud" && argc >= 3) {
-		// a cloud against the GT range maps depth*.dmap of a folder: evalcloud <cloud.ply|scene.mvs> <gtFolder> <evalWidth> [th1% th2% th3%]
-		// (evalWidth: the panorama width the cloud was estimated at, for the recall grid and the seam band)
-		const int evalWidth(argc > 3 ? std::atoi(argv[3]) : 0);
-		float thresholds[CloudEvaluator::NUM_TH] = {0.01f, 0.02f, 0.05f};
-		for (int t = 0; t < CloudEvaluator::NUM_TH && 4+t < argc; ++t)
-			thresholds[t] = (float)std::atof(argv[4+t])/100;
-		const String cloudFileName(Util::getFullPath(argv[1]));
-		PointCloud pointcloud;
-		if (Util::getFileExt(cloudFileName).ToLower() == ".mvs") {
-			Scene scene;
-			const SynthWorkingFolder workingFolder(Util::getFilePath(cloudFileName));
-			if (scene.Load(cloudFileName) == Scene::SCENE_NA)
-				return false;
-			pointcloud = std::move(scene.pointcloud);
-		} else if (!pointcloud.Load(cloudFileName)) {
-			std::printf("error: cannot read the cloud '%s'\n", cloudFileName.c_str());
-			return false;
-		}
-		if (pointcloud.IsEmpty()) {
-			std::printf("error: empty cloud '%s'\n", cloudFileName.c_str());
-			return false;
-		}
-		std::vector<std::string> names;
-		for (const auto& entry: std::filesystem::directory_iterator(argv[2]))
-			if (entry.is_regular_file() && entry.path().extension() == ".dmap")
-				names.push_back(entry.path().filename().string());
-		std::sort(names.begin(), names.end());
-		std::unique_ptr<CloudEvaluator> evaluator;
-		for (const std::string& name: names) {
-			String imageFileName; IIndexArr IDs; cv::Size imageSize; KMatrix K; RMatrix R; CMatrix C; Depth dMin, dMax;
-			DepthMap ranges; NormalMap normals; ConfidenceMap confMap; ViewsMap viewsMap;
-			if (!ImportDepthDataRaw((std::filesystem::path(argv[2]) / name).string(), imageFileName, IDs, imageSize, K, R, C, dMin, dMax,
-					ranges, normals, confMap, viewsMap, HeaderDepthDataRaw::HAS_DEPTH) || ranges.width() != 2*ranges.height()) {
-				std::printf("error: '%s' is not an equirectangular range map\n", name.c_str());
-				return false;
-			}
-			if (!evaluator)
-				evaluator.reset(new CloudEvaluator(evalWidth > 0 ? evalWidth : ranges.width(), thresholds));
-			evaluator->AddView(R, C, ranges, evalWidth > 0 ? MAXF(ROUND2INT(float(ranges.width())/evalWidth), 1) : 1);
-		}
-		if (!evaluator) {
-			std::printf("error: no GT range map in '%s'\n", argv[2]);
-			return false;
-		}
-		evaluator->Evaluate(pointcloud.points);
-		VERBOSE("evalcloud: %zu GT range maps, %u cloud points\n%s", names.size(), pointcloud.points.size(), evaluator->Print().c_str());
-		return true;
-	}
-	if (mode == "cameratest")
-		return InterfaceV8Test() && BrownUndistortOnLoadTest();
-	if (mode == "facescene" && argc >= 5) {
-		// the cube-face baseline of a spherical scene: facescene <scene.mvs> <gtFolder> <outFolder> <panoWidth> [faceSize]:
-		// every panorama resized to panoWidth is rendered into 6 cube faces (faceSize, default the same pixels
-		// per steradian: panoWidth/sqrt(12)), its GT range depth-map (gtFolder/depthXXXX.dmap) into face GT z
-		// depth-maps (outFolder/gt), and the sparse points are kept with the faces they project into
-		const String sceneFileName(Util::getFullPath(argv[1])), gtFolder(Util::getFullPath(argv[2]));
-		String outFolder(Util::getFullPath(argv[3]));
-		Util::ensureValidFolderPath(outFolder);
-		Util::ensureFolder(outFolder + "gt/");
-		const int panoWidth(std::atoi(argv[4]));
-		const int faceSize(argc > 5 ? std::atoi(argv[5]) : ROUND2INT(panoWidth/SQRT(12.0)/8)*8);
-		Scene scene;
-		{
-			const SynthWorkingFolder workingFolder(Util::getFilePath(sceneFileName));
-			if (scene.Load(sceneFileName) == Scene::SCENE_NA)
-				return false;
-		}
-		const SphereCubeMap::TangentFacesGeometry faces(SphereCubeMap::MakeTangentFacesGeometry(6, faceSize));
-		const Pinhole<double> facePinhole{faces.K(0,0), faces.K(1,1), faces.K(0,2), faces.K(1,2)};
-		Scene faceScene;
-		const float scale(Camera::GetNormalizationScale(faceSize, faceSize));
-		FOREACH(i, scene.images) {
-			const Image& imageData = scene.images[i];
-			ASSERT(imageData.IsValid() && imageData.model == CameraModelType::SPHERICAL);
-			Image8U3 pano;
-			if (imageData.ReadPixels(pano) == NULL)
-				return false;
-			cv::resize(pano, pano, cv::Size(panoWidth, panoWidth/2), 0, 0, cv::INTER_AREA);
-			const std::vector<Image8U3> faceImages(SphereCubeMap::SphericalToTangentialFaces(pano, faces));
-			// the GT range of the panorama, sampled at the nearest pixel of each face ray
-			String imageFileName; IIndexArr IDs; cv::Size imageSize; KMatrix K; RMatrix R; CMatrix C; Depth dMin, dMax;
-			DepthMap gtRange; NormalMap gtNormals; ConfidenceMap confMap; ViewsMap viewsMap;
-			if (!ImportDepthDataRaw(gtFolder + String::FormatString("/depth%04u.dmap", imageData.ID), imageFileName, IDs, imageSize, K, R, C, dMin, dMax,
-					gtRange, gtNormals, confMap, viewsMap, HeaderDepthDataRaw::HAS_DEPTH))
-				return false;
-			const Spherical<double> sphere(Spherical<double>::FromSize(gtRange.width(), gtRange.height()));
-			Platform& platform = faceScene.platforms.AddEmpty();
-			platform.name = String::FormatString("pano%04u", imageData.ID);
-			Platform::Pose& pose = platform.poses.AddEmpty();
-			pose.R = imageData.camera.R;
-			pose.C = imageData.camera.C;
-			for (int f = 0; f < 6; ++f) {
-				Platform::Camera& camera = platform.cameras.AddEmpty();
-				camera.K = KMatrix::IDENTITY;
-				camera.K(0,0) = faces.K(0,0) / scale;
-				camera.K(1,1) = faces.K(1,1) / scale;
-				camera.R = faces.rotations[f];
-				camera.C = Point3::ZERO;
-				Image& face = faceScene.images.AddEmpty();
-				face.ID = faceScene.images.size()-1;
-				face.platformID = faceScene.platforms.size()-1;
-				face.cameraID = f;
-				face.poseID = 0;
-				face.width = face.height = faceSize;
-				face.scale = 1;
-				face.name = outFolder + String::FormatString("pano%04u_face%d.png", imageData.ID, f);
-				if (!faceImages[f].Save(face.name))
-					return false;
-				face.UpdateCamera(faceScene.platforms);
-				DepthMap gt(faceSize, faceSize);
-				const Eigen::Matrix3d Rt(EMat3(faces.rotations[f]).transpose());
-				for (int r = 0; r < faceSize; ++r) {
-					for (int c = 0; c < faceSize; ++c) {
-						const EVec3 ray(facePinhole.Ray(EVec2(c, r)));
-						EVec2 x;
-						sphere.Project(Rt*ray, x);
-						const Depth range(gtRange(MINF(ROUND2INT(x.y()), gtRange.height()-1), (ROUND2INT(x.x()) + gtRange.width()) % gtRange.width()));
-						gt(r, c) = range > 0 ? (Depth)(range/ray.norm()) : 0.f;
-					}
-				}
-				const NormalMap noNormals;
-				if (!ExportDepthDataRaw(outFolder + String::FormatString("gt/depth%04u.dmap", face.ID), face.name, IIndexArr{face.ID}, gt.size(),
-						face.camera.K, face.camera.R, face.camera.C, 0.f, FLT_MAX, gt, noNormals, ConfidenceMap(), ViewsMap()))
-					return false;
-			}
-		}
-		faceScene.nCalibratedImages = faceScene.images.size();
-		// the sparse points with the faces they project into, among the faces of their panoramas
-		FOREACH(p, scene.pointcloud.points) {
-			const Point3 X(Cast<REAL>(scene.pointcloud.points[p]));
-			PointCloud::ViewArr views;
-			for (const PointCloud::View v: scene.pointcloud.pointViews[p]) {
-				for (int f = 0; f < 6; ++f) {
-					const Image& face = faceScene.images[v*6+f];
-					const Point3 Xc(face.camera.TransformPointW2C(X));
-					if (Xc.z > 0 && face.camera.IsInside(Point2f(face.camera.TransformPointC2I(Xc)), Point2f(face.GetSize())))
-						views.push_back(v*6+f);
-				}
-			}
-			if (views.size() < 2)
-				continue;
-			views.Sort();
-			faceScene.pointcloud.points.emplace_back(scene.pointcloud.points[p]);
-			faceScene.pointcloud.pointViews.emplace_back(std::move(views));
-		}
-		const SynthWorkingFolder workingFolder(outFolder);
-		if (!faceScene.SaveInterface(outFolder + "scene_faces.mvs"))
-			return false;
-		std::printf("%u faces of %dx%d px, %zu sparse points\n", faceScene.images.size(), faceSize, faceSize, (size_t)faceScene.pointcloud.points.size());
-		return true;
-	}
-	if (mode == "undistortbench" && argc >= 2) {
-		// image load cost of the undistortion over the first numImages images undistorted on read:
-		// the file decode and the remap ReadPixels adds to it, timed apart; the first image also
-		// builds the maps shared by its camera; the image paths of the scene are relative to its folder
-		String fileName(argv[1]);
-		Util::ensureValidPath(fileName);
-		fileName = MAKE_PATH_FULL(WORKING_FOLDER_FULL, fileName);
-		WORKING_FOLDER = Util::getFilePath(fileName);
-		INIT_WORKING_FOLDER;
-		Scene scene;
-		if (scene.Load(fileName) == Scene::SCENE_NA)
-			return false;
-		const unsigned numImages(argc >= 3 ? (unsigned)std::atoi(argv[2]) : 8u);
-		typedef std::chrono::steady_clock Clock;
-		const auto ms = [](Clock::time_point a, Clock::time_point b) { return std::chrono::duration<double,std::milli>(b - a).count(); };
-		double decodeMs(0), remapMs(0), mapsMs(0);
-		unsigned n(0);
-		for (const Image& imageData: scene.images) {
-			if (n == numImages)
-				break;
-			if (!imageData.IsUndistortedOnRead())
-				continue;
-			Image8U3 pixels, undistorted;
-			const Clock::time_point t0(Clock::now());
-			if (Image::ReadImage(imageData.name, pixels) == NULL)
-				return false;
-			const Clock::time_point t1(Clock::now());
-			const std::shared_ptr<const CameraUndistortMaps> maps(imageData.GetUndistortMaps());
-			const Clock::time_point t2(Clock::now());
-			maps->Remap(pixels, undistorted, cv::INTER_LINEAR);
-			const Clock::time_point t3(Clock::now());
-			VERBOSE("image %u %dx%d: decode %.1f ms, maps %.1f ms, remap %.1f ms", imageData.ID, pixels.width(), pixels.height(),
-				ms(t0, t1), ms(t1, t2), ms(t2, t3));
-			decodeMs += ms(t0, t1);
-			mapsMs += ms(t1, t2);
-			remapMs += ms(t2, t3);
-			++n;
-		}
-		if (n == 0) {
-			VERBOSE("error: no image undistorted on read");
-			return false;
-		}
-		VERBOSE("%u images undistorted on read: decode %.1f ms/image, remap %.1f ms/image, maps %.1f ms in total",
-			n, decodeMs/n, remapMs/n, mapsMs);
-		return true;
-	}
-	if (mode == "evaldepth" && argc >= 3) {
-		// one GT/estimate pair, or every GT depth*.dmap of a folder against the same file name in the
-		// estimate folder (a missing estimate counts as no estimate)
-		const String model(argc > 3 ? String(argv[3]) : String());
-		DepthEvaluator evaluator;
-		const auto Evaluate = [&](const String& gtFileName, const String& estFileName) {
-			DepthMap maps[2]; NormalMap normals[2]; KMatrix Ks[2];
-			for (int i = 0; i < 2; ++i) {
-				String imageFileName;
-				IIndexArr IDs;
-				cv::Size imageSize;
-				RMatrix R; CMatrix C;
-				Depth dMin, dMax;
-				ConfidenceMap confMap; ViewsMap viewsMap;
-				if (!ImportDepthDataRaw(i ? estFileName : gtFileName, imageFileName, IDs, imageSize, Ks[i], R, C, dMin, dMax, maps[i], normals[i], confMap, viewsMap,
-						HeaderDepthDataRaw::HAS_DEPTH|HeaderDepthDataRaw::HAS_NORMAL)) {
-					if (i == 0) {
-						std::printf("error: cannot read the depth-map '%s'\n", gtFileName.c_str());
-						return false;
-					}
-					std::printf("warning: no estimate '%s'\n", estFileName.c_str());
-					maps[1].create(maps[0].size());
-					maps[1].memset(0);
-				}
-			}
-			if (normals[0].empty()) {
-				normals[0].create(maps[0].size());
-				normals[0].memset(0);
-			}
-			// the model only selects the bands: SPHERICAL if named or if the GT camera matrix is the equirect one
-			const Spherical<double> sphere(Spherical<double>::FromSize(maps[0].width(), maps[0].height()));
-			const bool spherical(model.empty() ? ABS(Ks[0](0,0) - sphere.fx) < 1e-9*sphere.fx && ABS(Ks[0](1,1) - sphere.fy) < 1e-9*sphere.fy : model == "spherical");
-			// a GT of another resolution is sampled at the nearest pixel of each estimated pixel center
-			if (maps[0].size() != maps[1].size()) {
-				if (int64_t(maps[0].width())*maps[1].height() != int64_t(maps[0].height())*maps[1].width()) {
-					std::printf("error: GT %dx%d and estimate %dx%d differ in aspect ratio\n", maps[0].width(), maps[0].height(), maps[1].width(), maps[1].height());
-					return false;
-				}
-				const double scale(double(maps[0].width()) / maps[1].width());
-				DepthMap gt(maps[1].size());
-				NormalMap gtNormals(maps[1].size());
-				for (int r = 0; r < gt.height(); ++r) {
-					for (int c = 0; c < gt.width(); ++c) {
-						const int rg(MINF(FLOOR2INT((r + 0.5)*scale), maps[0].height() - 1)), cg(MINF(FLOOR2INT((c + 0.5)*scale), maps[0].width() - 1));
-						gt(r, c) = maps[0](rg, cg);
-						gtNormals(r, c) = normals[0](rg, cg);
-					}
-				}
-				maps[0] = std::move(gt);
-				normals[0] = std::move(gtNormals);
-			}
-			evaluator.Add(maps[0], normals[0], maps[1], normals[1], spherical ? CameraModelType::SPHERICAL : CameraModelType::PINHOLE);
-			return true;
-		};
-		if (std::filesystem::is_directory(argv[1])) {
-			std::vector<std::string> names;
-			for (const auto& entry: std::filesystem::directory_iterator(argv[1]))
-				if (entry.is_regular_file() && entry.path().extension() == ".dmap")
-					names.push_back(entry.path().filename().string());
-			std::sort(names.begin(), names.end());
-			for (const std::string& name: names)
-				if (!Evaluate((std::filesystem::path(argv[1]) / name).string(), (std::filesystem::path(argv[2]) / name).string()))
-					return false;
-			std::printf("%zu depth-maps\n", names.size());
-		} else if (!Evaluate(argv[1], argv[2])) {
-			return false;
-		}
-		VERBOSE("evaldepth:\n%s", evaluator.Print().c_str());
-		return true;
-	}
-	std::printf("usage:\n"
-		"  Tests synth <outDir> [panoWidth=512]\n"
-		"  Tests evaldepth <gt.dmap> <est.dmap> [pinhole|brown|spherical, default from the GT camera matrix]\n"
-		"  Tests sphtest <verbosity> [panoWidth=512] [numPanos=3] [faces=1] [maxElevation: exact warp above, degrees] [maxViews] [maxThreads] [gpu=0]\n"
-		"  Tests facescene <scene.mvs> <gtFolder> <outFolder> <panoWidth> [faceSize]\n"
-		"  Tests sphfuse <verbosity> [panoWidth=512] [numPanos=3] [faces=1] [fusionFilter=2] [maxThreads]\n"
-		"  Tests evalcloud <cloud.ply|scene.mvs> <gtFolder> <evalWidth> [th1%=1 th2%=2 th3%=5]\n");
+	struct Mode {
+		LPCTSTR name;
+		int minArgs; // the mode included
+		bool (*run)(int, LPCTSTR*);
+		LPCTSTR usage;
+	};
+	static const Mode modes[] = {
+		{_T("synth"), 2, ToolSynth, _T("<outDir> [panoWidth=512]")},
+		{_T("sphtest"), 1, ToolSphTest, _T("<verbosity> [panoWidth=512] [numPanos=3] [faces=1] [maxElevation: exact warp above, degrees] [maxViews] [maxThreads] [gpu=0]")},
+		{_T("sphfuse"), 1, ToolSphFuse, _T("<verbosity> [panoWidth=512] [numPanos=3] [faces=1 (0: none, 1: apart, 2: with the panoramas)] [fusionFilter=2] [maxThreads]")},
+		{_T("scorebench"), 1, ToolScoreBench, _T("<verbosity> [panoWidth=1536] [rounds=4] [maxElevation] [faceWidth=panoWidth/4]")},
+		{_T("evaldepth"), 3, ToolEvalDepth, _T("<gt.dmap|gtFolder> <est.dmap|estFolder> [pinhole|spherical, default from the GT camera matrix]")},
+		{_T("evalcloud"), 3, ToolEvalCloud, _T("<cloud.ply|scene.mvs> <gtFolder> [evalWidth=GT width] [th1%=1 th2%=2 th3%=5]")},
+		{_T("facescene"), 5, ToolFaceScene, _T("<scene.mvs> <gtFolder> <outFolder> <panoWidth> [faceSize=panoWidth/sqrt(12)]")},
+		{_T("undistortbench"), 2, ToolUndistortBench, _T("<scene.mvs> [numImages=8]")},
+	};
+	const String name(argv[0]);
+	for (const Mode& mode: modes)
+		if (name == mode.name && argc >= mode.minArgs)
+			return mode.run(argc, argv);
+	std::printf("usage:\n");
+	for (const Mode& mode: modes)
+		std::printf("  Tests %s %s\n", mode.name, mode.usage);
 	return false;
 }
 /*----------------------------------------------------------------*/

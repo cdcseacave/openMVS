@@ -127,6 +127,10 @@ public:
 	// header plus one line per non-empty band
 	String Print() const;
 
+	// the latitude band (EQUATOR, NORTH, SOUTH) of an elevation in degrees, ALL if none
+	static Band LatitudeBand(double elevationDeg);
+	static const char* BandName(Band);
+
 protected:
 	struct Accum {
 		size_t numGT = 0;
@@ -199,19 +203,10 @@ bool SyntheticSphericalFusionTest();
 // and the observations of GT points land on their K' projections
 bool BrownUndistortOnLoadTest();
 
-// Tests.exe tool modes; argv[0] is the mode:
-//   synth <outDir> [panoWidth=512]: write the default dataset
-//   evaldepth <gt.dmap> <est.dmap> [pinhole|brown|spherical]: print the evaluation table
-//   synthtest [verbosity]: run SyntheticDepthBaselineTest alone
-//   sphtest <verbosity> [panoWidth=512] [numPanos=3] [faces=1] [maxElevation] [maxViews] [maxThreads] [gpu=0]: CPU (gpu: CUDA, or Metal on Apple)
-//     PatchMatch on panoramas and on their cube faces; maxElevation overrides DepthEstimatorBase::fSphericalWarpMaxElevation
-//     (0: exact warp only)
-//   facescene <scene.mvs> <gtFolder> <outFolder> <panoWidth> [faceSize]: the cube-face scene of a spherical scene
-//     and the face GT depth-maps, the baseline of its spherical depth-maps
-//   sphfuse <verbosity> [panoWidth=512] [numPanos=3] [faces=1] [fusionFilter=2] [maxThreads]: CPU PatchMatch and
-//     fusion of the panoramas and of their cube faces, the clouds scored by CloudEvaluator
-//   evalcloud <cloud.ply|scene.mvs> <gtFolder> [th1% th2% th3%]: a cloud against the GT points of the
-//     range/depth-maps depth*.dmap of gtFolder (their cameras from the .dmap headers)
+// Tests.exe tool modes producing the validation numbers of the design docs (argv[0] is the mode;
+// without a known mode it prints their usage): the synthetic dataset, the synthetic PatchMatch and
+// fusion runs, the ScorePixel cost, depth-map and cloud evaluation against GT, the cube-face
+// baseline of a spherical scene, the undistortion cost on load
 bool SynthTool(int argc, LPCTSTR* argv);
 
 } // namespace MVS
