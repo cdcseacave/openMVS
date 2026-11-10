@@ -371,7 +371,7 @@ int main(int argc, LPCTSTR* argv)
 		return EXIT_FAILURE;
 	}
 	if (!depthMapFiles.empty())
-		UndistortDepthMaps(scene, depthMapFiles, OPT::strUndistortExt.empty() ? (float)UNDISTORT_ALPHA : OPT::undistortAlpha);
+		UndistortDepthMaps(scene, depthMapFiles, OPT::strUndistortExt.empty() ? UNDISTORT_ALPHA : (double)OPT::undistortAlpha);
 	return EXIT_SUCCESS;
 }
 /*----------------------------------------------------------------*/

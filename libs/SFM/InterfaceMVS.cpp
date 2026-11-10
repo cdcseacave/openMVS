@@ -79,7 +79,7 @@ bool SFM::UndistortDMAP(const String& depthMapFile,
 
 bool SFM::UndistortDepthMaps(const Scene& scene,
 	const CLISTDEF2(String)& depthMapFiles,
-	float alpha,
+	double alpha,
 	std::unordered_map<const Camera*, KMatrix>* undistortedIntrinsics)
 {
 	ASSERT(!depthMapFiles.empty());

@@ -37,7 +37,7 @@ SFM_API bool UndistortDMAP(const String& depthMapFile,
 // undistortedIntrinsics receives that undistorted camera per distorted camera.
 SFM_API bool UndistortDepthMaps(const Scene& scene,
 	const CLISTDEF2(String)& depthMapFiles,
-	float alpha=0.6f,
+	double alpha=UNDISTORT_ALPHA,
 	std::unordered_map<const Camera*, KMatrix>* undistortedIntrinsics=NULL);
 
 
