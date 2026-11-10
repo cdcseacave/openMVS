@@ -249,9 +249,32 @@ Scene SceneCluster::ExtractSubScene(
 			subScene.tracks.emplace_back(dstTrack);
 	}
 
-    VERBOSE("Sub-scene: %u images, %u pairs, %u tracks",
+	subScene.gcpCRS = scene.gcpCRS;
+	// Keep control points that remain observable in this sub-scene. This is normally only
+	// needed after the sub-scenes are merged, but it also preserves georeferencing when global
+	// alignment falls back to the largest reconstructed component.
+	for (const GroundControlPoint& srcGCP : scene.gcps) {
+		GroundControlPoint dstGCP;
+		dstGCP.label = srcGCP.label;
+		dstGCP.position = srcGCP.position;
+		dstGCP.accuracy = srcGCP.accuracy;
+		dstGCP.isInlier = srcGCP.isInlier;
+		dstGCP.priorPosition = srcGCP.priorPosition;
+		dstGCP.priorWhitening = srcGCP.priorWhitening;
+		for (const GroundControlPoint::Observation& srcObs : srcGCP.observations) {
+			if (srcObs.imageID >= globalToLocal.size())
+				continue;
+			const IIndex localID = globalToLocal[srcObs.imageID];
+			if (localID != NO_ID)
+				dstGCP.observations.emplace_back(GroundControlPoint::Observation{localID, srcObs.point});
+		}
+		if (dstGCP.observations.GetSize() >= 2)
+			subScene.gcps.emplace_back(std::move(dstGCP));
+	}
+
+	VERBOSE("Sub-scene: %u images, %u pairs, %u tracks, %u GCPs",
 	    subScene.images.size(), subScene.pairs.size(),
-	    subScene.tracks.size());
+	    subScene.tracks.size(), subScene.gcps.size());
 	return subScene;
 }
 

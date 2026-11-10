@@ -21,6 +21,7 @@
 #include "SimilarityTransform.h"
 #include "InterfaceMVS.h"
 #include "ImportCOLMAP.h"
+#include "Georeference.h"
 
 #include <TinyEXIF.h>
 
@@ -35,7 +36,7 @@ using namespace SFM;
 #endif
 
 #define SFM_PROJECT_ID "SFM\0" // identifies the SFM project stream
-#define SFM_PROJECT_VERSION 0  // SFM project stream layout version (bump on any breaking header/serialization change)
+#define SFM_PROJECT_VERSION 2  // SFM project stream layout version (bump on any breaking header/serialization change)
 
 
 // S T R U C T S ///////////////////////////////////////////////////
@@ -94,6 +95,8 @@ Scene& Scene::operator=(const Scene& scene) {
 	// Copy tracks
 	for (const Track& track : scene.tracks)
 		tracks.emplace_back(track);
+	gcps = scene.gcps;
+	gcpCRS = scene.gcpCRS;
 	// Copy status
 	colors = scene.colors;
 	poseUncertainty = scene.poseUncertainty;
@@ -115,6 +118,8 @@ Scene& Scene::operator=(Scene&& scene) noexcept {
 	colors = std::move(scene.colors);
 	poseUncertainty = std::move(scene.poseUncertainty);
 	priorPoses = std::move(scene.priorPoses);
+	gcps = std::move(scene.gcps);
+	gcpCRS = std::move(scene.gcpCRS);
 	transform = scene.transform;
 	obb = scene.obb;
 	status = scene.status;
@@ -130,6 +135,8 @@ void Scene::Release() {
 	colors.clear();
 	poseUncertainty.Release();
 	priorPoses.clear();
+	gcps.Release();
+	gcpCRS.clear();
 	transform = Matrix4x4::IDENTITY;
 	obb = OBB3(true);
 	status = Status();
@@ -144,6 +151,152 @@ bool Scene::HasImagesWithGPS(bool validOnly) const {
 			return true;
 	}
 	return false;
+}
+
+unsigned SFM::ImportGroundControlPointsCSV(const String& fileName, const ImageArr& images, GroundControlPointArr& gcps)
+{
+	gcps.Release();
+	std::ifstream is(fileName);
+	if (!is.is_open()) {
+		VERBOSE("error: cannot open GCP CSV file '%s'", fileName.c_str());
+		return 0;
+	}
+	const auto SplitRow = [](const String& line) {
+		std::vector<String> fields;
+		std::stringstream ss(line);
+		String field;
+		while (std::getline(ss, field, ',')) {
+			if (!field.empty() && field.back() == '\r')
+				field.pop_back();
+			fields.push_back(field);
+		}
+		return fields;
+	};
+
+	std::unordered_map<String, IIndex> stemToIndex;
+	stemToIndex.reserve(images.size());
+	FOREACH(i, images) {
+		const String stem(Util::getFileName(images[i].fileName));
+		if (!stemToIndex.emplace(stem, i).second) {
+			VERBOSE("error: image stem '%s' is not unique; GCP observations cannot be matched safely", stem.c_str());
+			return 0;
+		}
+	}
+
+	String line;
+	if (!std::getline(is, line))
+		return 0;
+	if (!line.empty() && line[0] == '#' && !std::getline(is, line))
+		return 0;
+	const std::vector<String> header(SplitRow(line));
+	std::unordered_map<String, size_t> columns;
+	for (size_t i = 0; i < header.size(); ++i)
+		columns.emplace(header[i], i);
+	const char* requiredColumns[] = {
+		"gcp_label", "image_file_name", "x", "y", "x_map", "y_map", "elev",
+		"x_map_acc", "y_map_acc", "elev_acc"
+	};
+	for (const char* name : requiredColumns) {
+		if (columns.find(name) == columns.end()) {
+			VERBOSE("error: GCP CSV '%s' is missing required column '%s'", fileName.c_str(), name);
+			return 0;
+		}
+	}
+	const auto Column = [&columns](const char* name) { return columns.at(name); };
+	const size_t iLabel = Column("gcp_label");
+	const size_t iImage = Column("image_file_name");
+	const size_t iX = Column("x"), iY = Column("y");
+	const size_t iMapX = Column("x_map"), iMapY = Column("y_map"), iMapZ = Column("elev");
+	const size_t iAccX = Column("x_map_acc"), iAccY = Column("y_map_acc"), iAccZ = Column("elev_acc");
+	const size_t maxColumn = MAXF(MAXF(MAXF(iLabel, iImage), MAXF(iX, iY)),
+		MAXF(MAXF(iMapX, iMapY), MAXF(iMapZ, MAXF(iAccX, MAXF(iAccY, iAccZ)))));
+
+	std::unordered_map<String, IIndex> labelToGCP;
+	unsigned numObservations = 0;
+	unsigned lineNumber = 1;
+	while (std::getline(is, line)) {
+		++lineNumber;
+		if (line.empty())
+			continue;
+		const std::vector<String> fields(SplitRow(line));
+		if (fields.size() <= maxColumn) {
+			VERBOSE("warning: skipping incomplete GCP CSV row %u", lineNumber);
+			continue;
+		}
+		try {
+			const String label(fields[iLabel]);
+			const String stem(Util::getFileName(fields[iImage]));
+			const auto imgIt = stemToIndex.find(stem);
+			if (imgIt == stemToIndex.end())
+				continue;
+
+			GroundControlPoint::Observation obs;
+			obs.imageID = imgIt->second;
+			obs.point.x = std::stof(fields[iX]);
+			obs.point.y = std::stof(fields[iY]);
+
+			const Point3 position(
+				(REAL)std::stod(fields[iMapX]),
+				(REAL)std::stod(fields[iMapY]),
+				(REAL)std::stod(fields[iMapZ]));
+			const Point3 accuracy(
+				(REAL)std::stod(fields[iAccX]),
+				(REAL)std::stod(fields[iAccY]),
+				(REAL)std::stod(fields[iAccZ]));
+			if (!ISFINITE(accuracy) || accuracy.x <= 0 || accuracy.y <= 0 || accuracy.z <= 0) {
+				VERBOSE("warning: skipping GCP CSV row %u: x_map_acc, y_map_acc and elev_acc must be finite and positive", lineNumber);
+				continue;
+			}
+			if (label.empty() || !ISFINITE(obs.point) || !ISFINITE(position)) {
+				VERBOSE("warning: skipping invalid GCP CSV row %u", lineNumber);
+				continue;
+			}
+
+			const auto inserted = labelToGCP.emplace(label, gcps.GetSize());
+			if (inserted.second) {
+				GroundControlPoint& gcp = gcps.emplace_back();
+				gcp.label = label;
+				gcp.position = position;
+				gcp.accuracy = accuracy;
+			} else {
+				const GroundControlPoint& gcp = gcps[inserted.first->second];
+				if (!ISEQUAL(norm(gcp.position-position), 0, 1e-4) ||
+				    !ISEQUAL(norm(gcp.accuracy-accuracy), 0, 1e-4)) {
+					VERBOSE("error: inconsistent coordinates or accuracy for GCP '%s' at row %u",
+						label.c_str(), lineNumber);
+					gcps.Release();
+					return 0;
+				}
+			}
+			GroundControlPoint& gcp = gcps[inserted.first->second];
+			bool duplicate = false;
+			for (const GroundControlPoint::Observation& existing : gcp.observations)
+				duplicate = duplicate || existing.imageID == obs.imageID;
+			if (duplicate) {
+				VERBOSE("warning: skipping duplicate observation of GCP '%s' in image '%s'",
+					label.c_str(), stem.c_str());
+				continue;
+			}
+			gcp.observations.Insert(obs);
+			++numObservations;
+		} catch (const std::exception& e) {
+			VERBOSE("warning: skipping malformed GCP CSV row %u (%s)", lineNumber, e.what());
+			continue;
+		}
+	}
+
+	numObservations = 0;
+	for (IIndex i = 0; i < gcps.GetSize(); ) {
+		if (gcps[i].observations.GetSize() < 2) {
+			gcps.RemoveAtMove(i);
+			continue;
+		}
+		numObservations += gcps[i].observations.GetSize();
+		++i;
+	}
+	VERBOSE("Imported %u GCP observations for %u control points from '%s'",
+		numObservations, gcps.GetSize(), fileName.c_str());
+	return gcps.GetSize();
 }
 
 
@@ -267,7 +420,7 @@ bool Scene::Load(const String& fileName)
 	// load stream type (compression layer used by boost serialization)
 	uint32_t nType;
 	fs.read((char*)&nType, sizeof(uint32_t));
-	// load the stream layout version and reject files written by a newer, incompatible writer
+	// Load the stream layout version; only the current layout is supported.
 	uint32_t nVersion;
 	fs.read((char*)&nVersion, sizeof(uint32_t));
 	// skip reserved bytes
@@ -277,8 +430,8 @@ bool Scene::Load(const String& fileName)
 		VERBOSE("error: invalid SFM project header '%s'", fileName.c_str());
 		return false;
 	}
-	if (nVersion > SFM_PROJECT_VERSION) {
-		VERBOSE("error: unsupported SFM project version %u (this build supports up to %u) in '%s'",
+	if (nVersion != SFM_PROJECT_VERSION) {
+		VERBOSE("error: unsupported SFM project version %u (this build requires %u) in '%s'",
 			nVersion, (unsigned)SFM_PROJECT_VERSION, fileName.c_str());
 		return false;
 	}
@@ -440,7 +593,33 @@ bool Scene::Import(const String& source, const ImportConfig& config)
 			return false;
 	}
 
-	// 2d) Apply forced focal length and distortion parameters to specified images (if configured)
+	// 2d) Import ground control points after either a fresh image import or a resumed scene.
+	if (!config.importGCPsCSV.empty() && ImportGroundControlPointsCSV(config.importGCPsCSV, images, gcps) == 0) {
+		VERBOSE("error: failed to import GCPs from CSV file '%s'", config.importGCPsCSV.c_str());
+		return false;
+	}
+
+	// 2e) Apply forced focal length and distortion parameters to specified images (if configured)
+	if (!config.importGPSCSV.empty() && !ImportGPSCSV(config.importGPSCSV, config.gpsCRS, images))
+		return false;
+	if (config.importGPSCSV.empty() && config.gpsCRS != "EPSG:4979") {
+		VERBOSE("error: --gps-crs describes --import-gps-csv, not EXIF metadata");
+		return false;
+	}
+	if (!config.gcpCRS.empty())
+		gcpCRS = config.gcpCRS;
+	if (!gcpCRS.empty() && gcps.empty()) {
+		VERBOSE("error: --gcp-crs requires ground control points");
+		return false;
+	}
+	if (!gcpCRS.empty()) {
+		Point3Arr targets;
+		std::vector<Matrix3x3> whitening;
+		Point3 origin;
+		if (!PrepareGCPReference(*this, targets, whitening, origin))
+			return false;
+	}
+
 	if (config.focalLength > 0.f || config.k1 != 0.f || config.k2 != 0.f) {
 		IDXArr imageIndices;
 		if (config.imageIndicesStr.empty()) {
@@ -660,8 +839,17 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	                             : !ReconstructHierarchical(config))
 		return false;
 
+	// GCPs with a declared CRS define a shared ENU frame for GPS and survey constraints.
+	// Otherwise their Cartesian survey frame is used and GPS constraints stay disabled.
+	const bool alignedToGCP = config.thAlignGCP > 0 && !gcps.empty() && AlignToGCP(config.thAlignGCP);
+	if (!gcpCRS.empty() && config.thAlignGCP > 0 && !alignedToGCP)
+		return false;
+	if (alignedToGCP && gcpCRS.empty() && config.baConfig.IsRefiningGPS())
+		VERBOSE("warning: GPS constraints disabled in an arbitrary GCP frame; specify --gcp-crs for joint adjustment");
+
 	// Pre-final global bundle adjustment
 	BAConfig finalBaCfg = config.baConfig;
+	finalBaCfg.useGCPConstraints = alignedToGCP;
 	finalBaCfg.maxIterations = 25;
 	finalBaCfg.refineFocalLength = (config.baIntrinsicFlags & ReconstructionConfig::INTRINSIC_FOCAL_LENGTH) != 0;
 	finalBaCfg.refineRadialDistortion123 = (config.baIntrinsicFlags & ReconstructionConfig::INTRINSIC_RADIAL_DIST_123) != 0;
@@ -680,7 +868,14 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	// Filter weakly connected images and resection remaining images into the reconstruction
 	FilterWeaklyConnectedImages(*this);
 	if (status.nCalibratedImages < images.size()) {
-		Resection resection(*this, config.resectionCfg);
+		ResectionConfig resectionCfg(config.resectionCfg);
+		// Keep the scene tied to map coordinates during all full BA passes in resection,
+		// including the final pass performed after registration stops.
+		resectionCfg.fullBAConfig.useGCPConstraints = alignedToGCP;
+		resectionCfg.fullBAConfig.gcpPositionWeight = config.baConfig.gcpPositionWeight;
+		resectionCfg.fullBAConfig.gpsPositionWeight = config.baConfig.gpsPositionWeight;
+		resectionCfg.fullBAConfig.gpsPositionWeightZ = config.baConfig.gpsPositionWeightZ;
+		Resection resection(*this, resectionCfg);
 		resection.RegisterImages();
 		FilterWeaklyConnectedImages(*this);
 	}
@@ -690,7 +885,10 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	// yank the scene out of that very frame), else to GPS if available. A failed prior-pose
 	// alignment leaves the scene in the refined (arbitrary-gauge) frame: it is reported, but
 	// must not discard the finished reconstruction
-	if (config.HasKnownPoses() && !priorPoses.empty()) {
+	if (alignedToGCP) {
+		if (config.HasKnownPoses() || (config.thAlignGPS > 0 && HasImagesWithGPS()))
+			VERBOSE("GCP alignment takes precedence over imported-pose and GPS alignment");
+	} else if (config.HasKnownPoses() && !priorPoses.empty()) {
 		if (!AlignToPriorPoses())
 			VERBOSE("warning: could not align the reconstruction back to the imported pose frame; "
 				"the result is left in the refined (arbitrary) frame");
@@ -1149,6 +1347,9 @@ bool Scene::AlignToGPS(double threshold)
 	transform(2, 3) = centerECEF.z;
 
 	status.nState.set(Status::STATE::GEO_ALIGN);
+	status.nState.unset(Status::STATE::GCP_ALIGN);
+	for (auto& gcp : gcps)
+		gcp.isInlier = false;
 	VERBOSE("Scene aligned to GPS: aligned %u images (scale=%.4f)",
 		(unsigned)camCenters.size(), T_cam_to_enu.scale);
 	return true;
@@ -1247,6 +1448,95 @@ bool Scene::AlignToPriorPoses(float thresholdRatio)
 		"center delta median %g max %g (prior units) | rotation delta median %.3f max %.3f degrees",
 		alignedImages.size(), T_refined_to_prior.scale,
 		posErr.GetMedian(), maxPosErr, rotErrDeg.GetMedian(), maxRotErrDeg);
+	return true;
+}
+
+bool Scene::AlignToGCP(double threshold)
+{
+	if (gcps.empty()) {
+		VERBOSE("error: no ground control points available");
+		return false;
+	}
+	Point3Arr targets;
+	std::vector<Matrix3x3> whitening;
+	Point3 originECEF;
+	if (!PrepareGCPReference(*this, targets, whitening, originECEF))
+		return false;
+	Point3Arr scenePoints;
+	Point3Arr mapPoints;
+	IIndexArr gcpIndices;
+	scenePoints.reserve(gcps.GetSize());
+	mapPoints.reserve(gcps.GetSize());
+	gcpIndices.reserve(gcps.GetSize());
+
+	FOREACH(gcpIdx, gcps) {
+		GroundControlPoint& gcp = gcps[gcpIdx];
+		gcp.isInlier = false;
+		struct CameraData {
+			Matrix3x3::EMat DR;
+			Point3::EVec Dt;
+		};
+		std::vector<CameraData> cams;
+		cams.reserve(gcp.observations.GetSize());
+		for (const GroundControlPoint::Observation& obs : gcp.observations) {
+			if (obs.imageID >= images.GetSize())
+				continue;
+			const Image& img = images[obs.imageID];
+			if (!img.IsValid() || !img.HasCamera())
+				continue;
+			const Point3 dir = img.pCamera->UnprojectNormalized(Cast<REAL>(obs.point));
+			const Matrix3x3 Dcross(
+				0, -dir.z, dir.y,
+				dir.z, 0, -dir.x,
+				-dir.y, dir.x, 0);
+			cams.emplace_back(Dcross * img.R, -Dcross * img.GetT());
+		}
+		if (cams.size() < 2)
+			continue;
+
+		Eigen::MatrixXd A(3*cams.size(), 3);
+		Eigen::VectorXd b(3*cams.size());
+		for (size_t i = 0; i < cams.size(); ++i) {
+			A.block<3,3>(3*i, 0) = cams[i].DR;
+			b.segment<3>(3*i) = cams[i].Dt;
+		}
+		const Point3 p(Point3::EVec(A.jacobiSvd(Eigen::ComputeThinU | Eigen::ComputeThinV).solve(b)));
+		if (!ISFINITE(p))
+			continue;
+		scenePoints.push_back(p);
+		mapPoints.push_back(targets[gcpIdx]);
+		gcpIndices.push_back(gcpIdx);
+	}
+
+	if (scenePoints.size() < 3) {
+		VERBOSE("error: insufficient triangulated GCPs (found %u, need 3+)", (unsigned)scenePoints.size());
+		return false;
+	}
+
+	SEACAVE::Transform T_scene_to_map;
+	std::vector<size_t> inliers;
+	const unsigned numInliers = EstimateSimilarityTransform(
+		scenePoints, mapPoints, T_scene_to_map, threshold, true, 0, 0.9999, &inliers);
+	if (numInliers == 0) {
+		VERBOSE("error: failed to estimate GCP alignment transform");
+		return false;
+	}
+	for (const size_t idx : inliers)
+		gcps[gcpIndices[idx]].isInlier = true;
+	Transform(T_scene_to_map);
+	FOREACH(i, gcps) {
+		gcps[i].priorPosition = targets[i];
+		gcps[i].priorWhitening = whitening[i];
+	}
+	status.nState.set(Status::STATE::GEO_ALIGN, !gcpCRS.empty());
+	transform = Matrix4x4::IDENTITY;
+	if (!gcpCRS.empty()) {
+		transform = ENUToECEFTransform(originECEF);
+		VERBOSE("GCPs transformed from '%s' to local ENU; GPS priors use the same origin", gcpCRS.c_str());
+	}
+	status.nState.set(Status::STATE::GCP_ALIGN);
+	VERBOSE("Scene aligned to GCPs: %u/%u control points inliers (scale=%.4f)",
+		numInliers, (unsigned)scenePoints.size(), T_scene_to_map.scale);
 	return true;
 }
 

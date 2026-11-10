@@ -38,7 +38,7 @@ public:
 		REAL rotationAccuracy{0};   // rotation accuracy (deg)
 		REAL latitude{0};           // WGS84 latitude (deg)
 		REAL longitude{0};          // WGS84 longitude (deg)
-		REAL altitude{0};           // altitude above sea level (m)
+		REAL altitude{0};           // WGS84 ellipsoidal height (m; assumed for EXIF)
 		REAL yawDeg{0};             // yaw/heading (deg)
 		REAL pitchDeg{0};           // pitch (deg)
 		REAL rollDeg{0};            // roll (deg)

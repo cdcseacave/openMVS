@@ -6,6 +6,7 @@
 // (See http://www.boost.org/LICENSE_1_0.txt)
 
 #include "Common.h"
+#include "Georeference.h"
 #include "InterfaceMVS.h"
 #include "Scene.h"
 #include "SphereCubeMap.h"
@@ -562,6 +563,8 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig 
 	}
 	TD_TIMER_STARTD();
 	MVSInterface iface;
+	if (scene.status.nState.isSet(Scene::Status::STATE::GEO_ALIGN))
+		iface.transform = ENUToECEFTransform(scene.GetCenterECEF());
 
 	// Detect whether this scene contains any spherical cameras — if so,
 	// expand them into N-face rigs using the SphereCubeMap geometry.
