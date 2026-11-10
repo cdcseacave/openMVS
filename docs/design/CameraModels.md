@@ -167,8 +167,8 @@ own state and call the models. The depth-map algorithms built on the models are 
 | Remap cost on load (`Tests undistortbench`, ETH3D 6048x4032 JPEG) | 10.5-10.8 ms per image vs 108-121 ms decode; 34-43 ms once per camera for the maps |
 | ETH3D F1@2cm, native Brown vs undistorted-on-export (pipes / office ICP-refined) | 0.7068 vs 0.7043 / 0.3106 vs 0.3104 |
 | v7 to v8 file size | + one byte per camera + 1 |
-| SfM reconstruct-only on 12 scenes against the pre-model code (same matches) | identical registrations, points within 0.02 %, equal reprojection errors, equal BA cost and time |
-| Spherical SfM from video (`ExtractKeyframes` + `CreateStructure`, 91 keyframes) | 91/91 registered, 977k points, reprojection 1.03 px |
+| SfM reconstruct-only on 12 scenes against the pre-model code (same matches) | identical registrations, points within 0.02 % (CasaBatllo within its run-to-run spread), equal reprojection errors, equal BA cost and time |
+| Spherical SfM from video against the pre-model code (`ExtractKeyframes` + `CreateStructure`, 91 keyframes) | 91/91 registered, 977k vs 981k points, reprojection 1.03 vs 1.01 px |
 
 ## 6. Rejected alternatives
 

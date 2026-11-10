@@ -34,7 +34,7 @@ similarity) is written once over `Ray`/`RayFrame`/`PixelHomography` in `libs/Com
 
 ### Patch warp per target view (`DepthEstimatorT::SamplePatch`)
 
-- Pinhole reference and target: the cached plane homography (`ComputePatchWarp`).
+- Pinhole reference and target: the cached plane homography (`PinholePatchWarp`, `DepthMap.cpp`).
 - Otherwise, Method B (tangent warp): `M = Trg.PixelHomography(H·r0)·H·Ref.RayFrame(x0)`, with
   `H·F = Rrel·F + t·(nᵀF)/(n·X)` and `Rrel·F` cached per pixel and view. `M` feeds the same texel loop as the
   pinhole homography. A pinhole target must see the patch center in front of it. For a spherical target the
@@ -285,7 +285,7 @@ per-band <5 % CPU all 0.985-0.988, seam 0.996-0.997; CUDA all 0.964 completeness
 
 - Affine warp (M with its projective row frozen at the patch center): 1-3.6 px median texel error.
 - Method B everywhere: 1/cosφ error at the poles (south band abs-rel 0.00064 vs 0.00042).
-- Method A everywhere: 1.4-1.5x the cost of B.
+- Method A everywhere: 1.25-1.5x the cost of B.
 - Exact warp only above 80°: pole bands lose 20-35 % abs-rel at 512x256 for 1.32x instead of 1.62x the CUDA
   cube-face cost at 1024 px.
 - Padding equirectangular images with wrapped columns: patches off the seam take the plain loop.
