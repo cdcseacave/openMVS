@@ -383,6 +383,8 @@ Each row is one image observation. `x,y` are working-image pixel coordinates, `x
 
 All three accuracies must be finite and strictly positive. Rows with invalid accuracies are skipped with a warning identifying the CSV row. Positive accuracies are used as supplied, without a minimum-value clamp.
 
+Saved SfM scenes retain the controls, their image observations, accuracies, and alignment-inlier status. This uses SfM project layout version 1; older layouts are not supported. Loading a scene through the C++ API restores the controls for constrained BA. The `CreateStructure` CLI still rejects already calibrated scenes as reconstruction inputs; this does not add a CLI refinement mode.
+
 After the initial reconstruction, `AlignToGCP` triangulates the observed control points and robustly estimates a similarity transform into the surveyed frame. Only controls accepted as RANSAC inliers participate in subsequent bundle adjustment. Bundle adjustment then optimizes one latent 3D point per accepted GCP with both image reprojection residuals and an accuracy-weighted coordinate prior. The surveyed coordinates remain immutable. GCP priors anchor the bundle-adjustment gauge and therefore provide absolute pose covariance when pose-quality export is enabled.
 
 The GCP frame is distinct from GPS alignment's local ENU frame: it sets `GCP_ALIGN`, does not set `GEO_ALIGN`, and does not use `Scene::transform` as an ECEF origin. When GCP alignment succeeds it takes precedence over imported-pose and GPS alignment. `--align-gcp-threshold 0` disables GCP alignment and constraints; `--gcp-position-weight 0` keeps alignment but disables the bundle-adjustment constraints.

@@ -2631,6 +2631,40 @@ bool GroundControlPointTest()
 		return false;
 	}
 
+	// Continue the constrained BA below using the controls restored from disk.
+	{
+		const ScopedTempDir tmpDir(_T("GCPPersistenceTest"));
+		if (!tmpDir.IsValid())
+			return false;
+		const String path = tmpDir(_T("scene.sfm"));
+		for (const ARCHIVE_TYPE type : {ARCHIVE_TEXT, ARCHIVE_BINARY, ARCHIVE_BINARY_ZIP}) {
+			Scene restored;
+			if (!scene.Save(path, type) || !restored.Load(path) ||
+				restored.gcps.size() != scene.gcps.size() ||
+				!restored.status.nState.isSet(Scene::Status::STATE::GCP_ALIGN)) {
+				VERBOSE("GroundControlPointTest FAILED: saved scene lost GCPs or alignment status");
+				return false;
+			}
+			FOREACH(i, scene.gcps) {
+				const GroundControlPoint& a = scene.gcps[i];
+				const GroundControlPoint& b = restored.gcps[i];
+				if (a.label != b.label || a.position != b.position || a.accuracy != b.accuracy ||
+					a.isInlier != b.isInlier || a.observations.size() != b.observations.size()) {
+					VERBOSE("GroundControlPointTest FAILED: serialized GCP %u mismatch", i);
+					return false;
+				}
+				FOREACH(j, a.observations) {
+					if (a.observations[j].imageID != b.observations[j].imageID ||
+						a.observations[j].point != b.observations[j].point) {
+						VERBOSE("GroundControlPointTest FAILED: serialized GCP observation mismatch");
+						return false;
+					}
+				}
+			}
+			scene = std::move(restored);
+		}
+	}
+
 	Point3Arr surveyedPositions;
 	for (const GroundControlPoint& gcp : scene.gcps)
 		surveyedPositions.push_back(gcp.position);
