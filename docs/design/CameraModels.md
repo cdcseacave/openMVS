@@ -131,8 +131,7 @@ own state and call the models. The depth-map algorithms built on the models are 
   sampling, and `DepthEstimatorBase::ImportIgnoreMask` ANDs the validity mask into the ignore mask
   (CPU, CUDA and Metal densify). Observations are undistorted into `K'` on load and distorted back on
   save, and the camera is saved as it was read. The native boost archive carries them too
-  (`PointCloud::pointObservations`, class version 1; `Platform::Camera` version 1 carries the model and
-  lens), and `Scene::LoadDMAP` gives a standalone `.dmap` the camera model of its `SPHERICAL` flag.
+  (`PointCloud::pointObservations`; `Platform::Camera` version 1 carries the model and lens), and `Scene::LoadDMAP` gives a standalone `.dmap` the camera model of its `SPHERICAL` flag.
 - PatchMatch: `MakeCameraModel<MODEL>(camera)` (`libs/MVS/DepthMap.h`) builds `Pinhole`/`Spherical`
   from a view's `K`; `ModelCamera` (`libs/MVS/Image.h`) dispatches the pixel/world transforms of fusion
   and the depth-map consumers on the image model (`SphericalPatchMatch.md`).

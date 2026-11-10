@@ -131,14 +131,13 @@ public:
 	#ifdef _USE_BOOST
 	// implement BOOST serialization
 	template <class Archive>
-	void serialize(Archive& ar, const unsigned int version) {
+	void serialize(Archive& ar, const unsigned int /*version*/) {
 		ar & points;
 		ar & pointViews;
 		ar & pointWeights;
+		ar & pointObservations;
 		ar & normals;
 		ar & colors;
-		if (version > 0)
-			ar & pointObservations;
 	}
 	#endif
 };
@@ -208,10 +207,5 @@ typedef CLISTDEF2IDX(ConfidenceMap,IIndex) ConfidenceMapArr;
 /*----------------------------------------------------------------*/
 
 } // namespace MVS
-
-#ifdef _USE_BOOST
-// version 1: pointObservations
-BOOST_CLASS_VERSION(MVS::PointCloud, 1)
-#endif
 
 #endif // _MVS_POINTCLOUD_H_
