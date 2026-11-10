@@ -236,10 +236,14 @@ unsigned SFM::ImportGroundControlPointsCSV(const String& fileName, const ImageAr
 				(REAL)std::stod(fields[iMapY]),
 				(REAL)std::stod(fields[iMapZ]));
 			const Point3 accuracy(
-				(REAL)MAXF(std::stod(fields[iAccX]), 1e-6),
-				(REAL)MAXF(std::stod(fields[iAccY]), 1e-6),
-				(REAL)MAXF(std::stod(fields[iAccZ]), 1e-6));
-			if (label.empty() || !ISFINITE(obs.point) || !ISFINITE(position) || !ISFINITE(accuracy)) {
+				(REAL)std::stod(fields[iAccX]),
+				(REAL)std::stod(fields[iAccY]),
+				(REAL)std::stod(fields[iAccZ]));
+			if (!ISFINITE(accuracy) || accuracy.x <= 0 || accuracy.y <= 0 || accuracy.z <= 0) {
+				VERBOSE("warning: skipping GCP CSV row %u: x_map_acc, y_map_acc and elev_acc must be finite and positive", lineNumber);
+				continue;
+			}
+			if (label.empty() || !ISFINITE(obs.point) || !ISFINITE(position)) {
 				VERBOSE("warning: skipping invalid GCP CSV row %u", lineNumber);
 				continue;
 			}

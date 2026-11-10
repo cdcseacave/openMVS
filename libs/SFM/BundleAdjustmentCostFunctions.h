@@ -463,10 +463,14 @@ struct GCPPositionError {
 		double accuracy_x, double accuracy_y, double accuracy_z,
 		double weight)
 		: x_(x), y_(y), z_(z),
-		  accuracy_x_(MAXF(accuracy_x, 1e-6)),
-		  accuracy_y_(MAXF(accuracy_y, 1e-6)),
-		  accuracy_z_(MAXF(accuracy_z, 1e-6)),
-		  weight_(weight) {}
+		  accuracy_x_(accuracy_x),
+		  accuracy_y_(accuracy_y),
+		  accuracy_z_(accuracy_z),
+		  weight_(weight) {
+		ASSERT(std::isfinite(accuracy_x) && accuracy_x > 0);
+		ASSERT(std::isfinite(accuracy_y) && accuracy_y > 0);
+		ASSERT(std::isfinite(accuracy_z) && accuracy_z > 0);
+	}
 
 	template <typename T>
 	bool operator()(const T* const point, T* residuals) const {

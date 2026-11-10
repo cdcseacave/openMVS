@@ -36,6 +36,7 @@
 #include "../../libs/SFM/PairsWeighting.h"
 #include "../../libs/SFM/ViewGraphCalibrator.h"
 #include "../../libs/SFM/BundleAdjustment.h"
+#include "../../libs/SFM/BundleAdjustmentCostFunctions.h"
 #include "../../libs/SFM/SceneCluster.h"
 #include "../../libs/SFM/GlobalAlignment.h"
 #include "../../libs/SFM/MatchGeometric.h"
@@ -2531,6 +2532,51 @@ bool GroundControlPointTest()
 		{
 			VERBOSE("GroundControlPointTest FAILED: CSV import mismatch");
 			return false;
+		}
+	}
+
+	// Invalid survey accuracies must never turn into near-exact coordinate priors.
+	{
+		const ScopedTempDir tmpDir(_T("GCPAccuracyTest"));
+		if (!tmpDir.IsValid())
+			return false;
+		ImageArr images;
+		images.emplace_back(0, "/images/a.tif");
+		images.emplace_back(1, "/images/b.tif");
+		const String csvPath = tmpDir(_T("gcps.csv"));
+		const char* values[] = {"0", "-1", "nan", "inf", "-inf", "1e-9"};
+		for (unsigned axis = 0; axis < 3; ++axis) {
+			for (const char* value : values) {
+				{
+					std::ofstream os(csvPath);
+					os << "gcp_label,image_file_name,x,y,x_map,y_map,elev,x_map_acc,y_map_acc,elev_acc\n";
+					for (const char* image : {"a.tif", "b.tif"}) {
+						os << "valid," << image << ",10,20,100,200,300,1,1,1\n";
+						os << "candidate," << image << ",10,20,100,200,300";
+						for (unsigned i = 0; i < 3; ++i)
+							os << ',' << (i == axis ? value : "1");
+						os << '\n';
+					}
+				}
+				GroundControlPointArr gcps;
+				const bool positive = String(value) == "1e-9";
+				if (ImportGroundControlPointsCSV(csvPath, images, gcps) != (positive ? 2u : 1u) ||
+					gcps[0].label != "valid" || gcps[0].observations.GetSize() != 2 ||
+					(positive && ABS(gcps[1].accuracy[axis]-REAL(1e-9)) > REAL(1e-15))) {
+					VERBOSE("GroundControlPointTest FAILED: accuracy '%s' on axis %u", value, axis);
+					return false;
+				}
+			}
+		}
+		const GCPPositionError prior(0, 0, 0, 1e-9, 1e-9, 1e-9, 1);
+		const double point[] = {1e-9, 2e-9, 3e-9};
+		double residuals[3];
+		prior(point, residuals);
+		for (unsigned i = 0; i < 3; ++i) {
+			if (ABS(residuals[i]-double(i+1)) > 1e-12) {
+				VERBOSE("GroundControlPointTest FAILED: positive accuracy was clamped in BA");
+				return false;
+			}
 		}
 	}
 
