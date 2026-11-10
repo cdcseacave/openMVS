@@ -136,6 +136,13 @@ struct SFM_API GroundControlPoint {
 	struct Observation {
 		IIndex imageID{NO_ID};
 		Point2f point;
+
+		#ifdef _USE_BOOST
+		template<class Archive>
+		void serialize(Archive& ar, const unsigned int /*version*/) {
+			ar & imageID & point;
+		}
+		#endif
 	};
 
 	String label;
@@ -143,6 +150,13 @@ struct SFM_API GroundControlPoint {
 	Point3 accuracy{1, 1, 1};
 	bool isInlier{false};
 	CLISTDEF0(Observation) observations;
+
+	#ifdef _USE_BOOST
+	template<class Archive>
+	void serialize(Archive& ar, const unsigned int /*version*/) {
+		ar & label & position & accuracy & isInlier & observations;
+	}
+	#endif
 };
 typedef CLISTDEF2(GroundControlPoint) GroundControlPointArr;
 
@@ -176,8 +190,7 @@ public:
 	// refined reconstruction back to the input frame (Scene::AlignToPriorPoses).
 	// Transient: deliberately not serialized, but preserved by regular Scene copies and moves.
 	std::unordered_map<IIndex, Pose3D> priorPoses;
-	// Optional ground control points imported from CSV. Transient reconstruction input:
-	// preserved by Scene copies and sub-scene extraction, but not serialized.
+	// Surveyed ground control points and image observations, persisted with the scene.
 	GroundControlPointArr gcps;
 
 	// Optional transformation used to convert from absolute to relative coordinate system
@@ -467,6 +480,7 @@ public:
 		ar & tracks;
 		ar & colors;
 		ar & poseUncertainty;
+		ar & gcps;
 		ar & transform;
 		ar & obb;
 		ar & status;
