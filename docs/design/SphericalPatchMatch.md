@@ -267,13 +267,14 @@ Cost, synthetic 1536:
 
 | measure | result |
 |---|---|
-| `scorebench`, ns per ScorePixel: A / B / pinhole faces | 231 / 156 / 127 (1.82x / 1.23x) |
+| `scorebench`, ns per ScorePixel (MSVC): A / B / pinhole faces | 225 / 157 / 132 (1.70x / 1.19x) |
 | CPU whole run, µs per GT pixel: A / B / C | 5.08 / 4.07 / 3.9 |
 | CUDA whole run, µs per GT pixel: A / B / C | 0.197 / 0.141 / 0.183 |
 | Metal (M3 Max) whole run, µs per GT pixel | 0.107 (CPU on that machine 2.43) |
 | CUDA kernel, panorama vs faces, 1024 px / 3840 px | 1.62x / 0.70x photometric, 1.27x / 0.47x geometric |
 | pinhole fountain-P11 CPU depth-maps + fusion vs the pre-model estimator | 202.1 s vs 201.4 s (+0.3 %) |
 | pinhole SceauxCastle CPU vs the pre-model estimator, clang/arm64 (M3 Max) | 1 thread +1 %, 14 threads +5 % |
+| pinhole SceauxCastle CPU vs the pre-model estimator, GCC 13 x86-64 (EPYC 7J13) | 1 thread -6 %, 8 threads -7 % |
 
 The CUDA excess at small sizes is Method A near the poles (~4.3x the cost of B on ~12 % of the
 evaluations) and the per-hypothesis model math; at real panorama sizes the spherical kernels are cheaper
@@ -313,8 +314,8 @@ per-band <5 % CPU all 0.985-0.988, seam 0.996-0.997; CUDA all 0.964 completeness
 
 ## 7. Open items
 
-- Per-hypothesis cost is ~1.23x pinhole against a 1.2x target: the center projection (two `FastAtan2`, a
-  square root, a reciprocal) and the per-pixel ray frames, amortized over few hypotheses in `scorebench`.
+- MSVC: accumulating the NCC sums through the texel sink costs the pinhole `scorebench` ~4 % (132 vs 127 ns
+  with a texel buffer summed into locals); a whole single-threaded densify shows no difference, GCC none at all.
 - Pinhole CPU on arm64: +5 % multi-threaded from the release/acquire fences of the per-pixel estimate
   hand-over (a `dmb`, where x86 orders the stores for free).
 - CUDA clamps the rows at the poles where the CPU rejects the view. Mixed pinhole/spherical scenes run the
