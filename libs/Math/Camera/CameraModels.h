@@ -257,8 +257,10 @@ struct Spherical {
 	// Project in single precision through FastAtan2, for the patch warps' hot loops, given
 	// rho = sqrt(X.x^2+X.z^2) (which PixelHomography takes too)
 	HOST_DEVICE CAMERAMODELS_FORCEINLINE bool ProjectFast(const Vec3& X, Vec2& x, T rho) const {
-		using std::sqrt;
-		ASSERT(rho == sqrt(X.x()*X.x() + X.z()*X.z()));
+		using std::abs; using std::sqrt;
+		// rho is the caller's sqrt(X.x^2+X.z^2): equal up to rounding only, as compilers that contract
+		// a*a+b*b into an fma (clang, GCC, nvcc) round the caller's and this expression differently
+		ASSERT(abs(rho - sqrt(X.x()*X.x() + X.z()*X.z())) <= T(1e-5) * rho);
 		x = Vec2(
 			fx * FastAtan2(X.x(), X.z()) + cx,
 			fy * FastAtan2(X.y(), rho) + cy);

@@ -149,7 +149,9 @@ own state and call the models. The depth-map algorithms built on the models are 
 
 - Pixel centers at integer coordinates in every model; `Spherical::FromSize` requires positive sizes.
 - `Pinhole` rays are on z=1 (depth = z); `Spherical` rays are unit (depth = range); `PixelHomography`
-  of `Spherical` requires `rho > 0`.
+  of `Spherical` requires `rho > 0`; the `rho` given to `ProjectFast` is `sqrt(x^2+z^2)` of the same
+  point up to rounding (relative 1e-5: compilers that contract `a*a+b*b` into an fma, clang, GCC and
+  nvcc, round the caller's and the check's expression differently, MSVC does not).
 - `Undistort` requires an invertible distortion between the distorted point and the solution.
 - `MakeCameraModel` requires zero skew.
 - `K'` of a Brown camera depends only on its lens and resolution.
