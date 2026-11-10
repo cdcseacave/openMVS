@@ -704,7 +704,9 @@ template<> FORCEINLINE Point3f DepthEstimatorT<Pinhole>::ComputeNeighborPoint(co
 template<> FORCEINLINE float DepthEstimatorT<Spherical>::ComputeGeometricConsistency(const DepthData::ViewData&, Depth) const;
 template<> FORCEINLINE Point3f DepthEstimatorT<Spherical>::ComputeNeighborPoint(const ImageRef&, Depth) const;
 // the estimators are instantiated in DepthMap.cpp, and exported for the tests
-#ifdef MVS_EXPORTS
+// (MSVC takes dllexport on the instantiation definition alone; GCC/clang take the visibility
+// of the first declaration, so there the extern declaration carries it too)
+#if defined(MVS_EXPORTS) && defined(_MSC_VER)
 extern template struct DepthEstimatorT<Pinhole>;
 extern template struct DepthEstimatorT<Spherical>;
 #else

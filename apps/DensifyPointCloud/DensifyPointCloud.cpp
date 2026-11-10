@@ -123,7 +123,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		;
 
 	// group of options allowed both on command line and in config file
-	#ifdef _USE_CUDA
+	#if defined(_USE_CUDA) || defined(_USE_METAL)
 	const unsigned nNumViewsDefault(8);
 	const unsigned numIters(4);
 	#else

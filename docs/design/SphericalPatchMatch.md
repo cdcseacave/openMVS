@@ -260,6 +260,12 @@ HOST_DEVICE headers.
   are compiled from source at runtime; CMake also compiles `PatchMatchMetal.metal` with the offline Metal
   compiler (target `PatchMatchMetalCheck`) when the toolchain has a working one. The configure step that
   embeds the source re-runs when the file changes.
+- `DensifyPointCloud` gives Metal builds the GPU defaults of CUDA builds (`--number-views` 8,
+  `--iters` 4); with the CPU defaults (5 / 3) Metal is below CUDA on Holo360D (section 4).
+- Validated on an Apple M3 Max (section 4): `MetalModelMathTest` within its bounds (the pinhole projection
+  error relative to the magnitude of its operands: Metal fuses `fx*n+cx` into an fma, the host does not,
+  which leaves one ulp of ~1000 where the two cancel), the synthetic panoramas and Holo360D at the
+  CUDA numbers, the pinhole scenes byte-identical to the Metal estimator before the camera models.
 
 ### Fusion, filters and the other consumers of the depth-maps
 
@@ -438,6 +444,7 @@ cubemap`, `Tests facescene`). Synthetic 1536x768 (C: 18 faces 384x384), `sphtest
 | C | CPU | 0.913 | 0.00079 | 0.913 | 0.952 | 0.903 | 3.85–3.93 |
 | A | CUDA | 0.983 | 0.00039 | 0.987 | 0.995 | | 0.197 |
 | B | CUDA | 0.983 | 0.00041 | 0.986 | 0.995 | | 0.141 |
+| B | Metal | 0.982 | 0.00041 | 0.986 | 0.995 | | 0.107 (M3 Max) |
 | C | CUDA | 0.970 | 0.00056 | 0.945 | 0.966 | | 0.183 |
 
 `scorebench` (ns per ScorePixel): A 231, B 156, B only 153, pinhole faces 127 (1.82 / 1.23 / 1.20x).
@@ -451,11 +458,18 @@ Holo360D, 40 frames at 1440 (C: faces 416x416), fused-cloud F at 2 / 5 / 10 % an
 | C | CPU | 0.308 | 0.562 | 0.734 | 0.774 | 0.130 | 0.375 |
 | A | CUDA | 0.412 | 0.631 | 0.755 | 0.680 | 0.0460 | 0.513 |
 | B | CUDA | 0.404 | 0.617 | 0.744 | 0.681 | 0.0471 | 0.509 |
+| B | Metal | 0.404 | 0.617 | 0.745 | 0.681 | 0.0471 | 0.509 |
 | C | CUDA | 0.264 | 0.480 | 0.646 | 0.644 | 0.0945 | 0.406 |
 
 Holo360D, 10 frames at 720 (C: faces 208x208), F@2 / 5 / 10 %: A CPU 0.230 / 0.384 / 0.498, B CPU 0.227 / 0.378 /
 0.492, C CPU 0.164 / 0.341 / 0.484; A CUDA 0.258 / 0.440 / 0.576, B CUDA 0.247 / 0.417 / 0.557, C CUDA 0.153 /
-0.292 / 0.399.
+0.292 / 0.399; B Metal 0.250 / 0.418 / 0.549.
+
+Metal on an Apple M3 Max (14 cores; CPU rows of the same machine, 14 threads): `sphtest 512` all bands
+0.964 / 0.00139 / 0.931 / 0.989 (CUDA 0.964 / 0.00139 / 0.931 / 0.988, CPU 0.956 / 0.00146 / 0.920 / 0.987);
+at 1536 the panoramas take 0.107 us per GT pixel, their cube faces 0.120, the CPU 2.43 and 2.23 (22x);
+Holo360D 40 frames at 1440 px 36.5 s wall. With the CPU defaults (5 views, 3 iterations) Metal gives
+Holo360D 40 frames F 0.352 / 0.572 / 0.715, abs-rel 0.0554, <5% 0.484, hence the GPU defaults.
 
 Real captures (7680x3840 keyframes, no GT; A/B at `--max-resolution 1440`, C faces at 416; depth share = share of
 the sphere with a depth, reference views without a depth-map counted as empty; wall = min of 3 after a warm-up,
@@ -530,8 +544,8 @@ because the faces are pre-rendered.
 - Per-hypothesis cost ~1.24x pinhole against the 1.2x target (section 4): what remains is the
   projection of the patch center (two FastAtan2, one square root, the reciprocal of ρ) and the
   per-pixel ray frames, amortized over few hypotheses in `scorebench`.
-- Metal: not yet run on Apple hardware; still to be done there: `MetalModelMathTest`, the parity with
-  the CPU and CUDA estimators (synthetic panoramas per band, Holo360D) and the cost per pixel.
+- Metal: the kernels are compiled from source at the first estimation of every process (~3 s on an
+  M3 Max).
 - CUDA: the rows are clamped at the poles where the CPU rejects the view; mixed pinhole/spherical
   scenes run the `MODEL_PINHOLE_REF` kernels, untested (Metal: the same).
 - The confidence recalibration (`ConfidenceRefine.h`, `ConfidenceCUDA.cu`) is pinhole only and

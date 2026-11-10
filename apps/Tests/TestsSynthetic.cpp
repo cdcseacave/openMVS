@@ -1324,7 +1324,9 @@ bool MVS::MetalModelMathTest(bool forceCPU)
 		errPinFrame = std::max(errPinFrame, MaxRel(s.pinFrame, pin.RayFrame(Vec2(s.pixel[0], s.pixel[1]))));
 		Vec2 xp;
 		numVisibility += pin.Project(X, xp) != (s.pinVisible != 0.f);
-		errPinProject = std::max(errPinProject, std::max(std::abs(s.pinProjected[0] - xp.x()) / std::max(1.f, std::abs(xp.x())), std::abs(s.pinProjected[1] - xp.y()) / std::max(1.f, std::abs(xp.y()))));
+		// relative to the magnitude of the operands of fx*n+cx (one rounding of an FMA the Metal compiler fuses
+		// and the host may not is an ulp of max(|x|, c), not of |x| when the two terms cancel)
+		errPinProject = std::max(errPinProject, std::max(std::abs(s.pinProjected[0] - xp.x()) / std::max({1.f, std::abs(xp.x()), pin.cx}), std::abs(s.pinProjected[1] - xp.y()) / std::max({1.f, std::abs(xp.y()), pin.cy})));
 		const float interpolated(InterpolatePlaneDepth(Vec3(s.ray[0], s.ray[1], s.ray[2]), Vec3(s.nRay[0], s.nRay[1], s.nRay[2]),
 			s.nDepth, Vec3(s.normal[0], s.normal[1], s.normal[2]), s.dMin, s.dMax));
 		errInterp = std::max(errInterp, std::abs(s.interpolated - interpolated) / interpolated);

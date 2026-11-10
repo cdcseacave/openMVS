@@ -276,10 +276,10 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData)
 			MTLTextureDescriptor* td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR32Float
 				width:image.cols height:image.rows mipmapped:NO];
 			td.usage = MTLTextureUsageShaderRead;
-			id<MTLTexture> t = [dev newTextureWithDescriptor:td];
-			[t replaceRegion:MTLRegionMake2D(0, 0, image.cols, image.rows) mipmapLevel:0
+			id<MTLTexture> tex = [dev newTextureWithDescriptor:td];
+			[tex replaceRegion:MTLRegionMake2D(0, 0, image.cols, image.rows) mipmapLevel:0
 				withBytes:image.ptr<float>() bytesPerRow:image.step[0]];
-			[texs addObject:t];
+			[texs addObject:tex];
 		}
 
 		// device buffers
