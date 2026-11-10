@@ -3,557 +3,315 @@
 ## 1. Purpose and scope
 
 `DensifyPointCloud` estimates the depth-maps of equirectangular (360x180 degree) images natively,
-without rendering them to cube faces: the CPU PatchMatch takes the reference camera model as a
-template parameter (`DepthEstimatorT<Pinhole>`, `DepthEstimatorT<Spherical>`, `libs/MVS/DepthMap.h`),
-the CUDA PatchMatch as a kernel template argument (`libs/MVS/PatchMatchCUDA.cu`, "CUDA estimator" below),
-the Metal PatchMatch as a function constant (`libs/MVS/PatchMatchMetal.metal`, "Metal estimator" below),
-and all resolve the camera model of each neighbor view once per (pixel, hypothesis, view). Pinhole,
-Brown (undistorted on load, see `SphericalCameraSupport.md`; the models: `CameraModels.md`) and spherical views can be mixed.
+without rendering them to cube faces. The reference camera model is a template parameter of the CPU
+PatchMatch (`DepthEstimatorT<Pinhole>`, `DepthEstimatorT<Spherical>`, `libs/MVS/DepthMap.h`), a kernel
+template argument of the CUDA PatchMatch (`libs/MVS/PatchMatchCUDA.cu`) and a function constant of the
+Metal PatchMatch (`libs/MVS/PatchMatchMetal.metal`). Each resolves the model of every neighbor view once
+per (pixel, hypothesis, view), so pinhole, Brown and spherical views can be mixed. The models are in
+`CameraModels.md`; Brown images are undistorted on load.
 
-Scope: depth-maps and their fusion into the dense cloud, with the photometric confidence: the
-depth-maps on the CPU (`--gpu-device -2`), CUDA or Metal, the fusion on the CPU. `Scene::DenseReconstruction`
-refuses a scene with spherical images for SGM (`--fusion-mode` < 0) and for the neighbor views selected
-from a mesh, with a clear error; the confidence recalibration is switched off for it, and so is the
-tower mode (`Scene::InitTowerScene`, with a warning). The scene split of the scalable pipeline
-(`Scene::Split`) back-projects the depth-maps through `ModelCamera`.
+Scope: depth-maps (CPU with `--gpu-device -2`, CUDA, Metal), the photometric confidence, and the fusion of
+the depth-maps into the dense cloud (CPU). Not supported for a scene with spherical images, with a clear
+error or a warning:
+- SGM (`--fusion-mode` < 0) and the neighbor views selected from a mesh: error;
+- confidence recalibration and tower mode (`Scene::InitTowerScene`): switched off, with a warning.
 
-The stages past the dense cloud project through the pinhole camera only and refuse a scene with
-spherical images (`Scene::CheckPinholeOnly`: an error naming the stage and `--spherical-export cubemap`,
-the cube-map export of `CreateStructure` that runs the whole mesh pipeline): `Scene::ReconstructMesh`,
-`RefineMesh`, `RefineMeshCUDA`, `TextureMesh`, `ComputeVertexColors`, `ExportMeshToDepthMaps`, and the
-apps before `RemoveUnseenMeshFaces` (ReconstructMesh, TextureMesh, TransformScene). `MvgMvsPipeline.py`
-passes `--spherical-export cubemap` to `CreateStructure` when the run includes a mesh step (19-21);
-`MvsScalablePipeline.py` takes a scene as it is, so a native spherical scene stops at its mesh step
-with that error.
+The stages past the dense cloud project through the pinhole camera only and call
+`Scene::CheckPinholeOnly(stage)`, an error that names the stage and `--spherical-export cubemap`:
+`Scene::ReconstructMesh`, `RefineMesh`, `RefineMeshCUDA`, `TextureMesh`, `ComputeVertexColors`,
+`ExportMeshToDepthMaps`, and the apps before `RemoveUnseenMeshFaces`. `MvgMvsPipeline.py` passes
+`--spherical-export cubemap` to `CreateStructure` when the run includes a mesh step;
+`MvsScalablePipeline.py` takes a scene as it is. `Scene::Split` back-projects depth-maps through `ModelCamera`.
 
 ## 2. Algorithm as implemented
 
-### Depth and camera models
+### Depth and geometry
 
-A depth is the distance λ along the model's ray, `X_cam = λ·Ray(x)`. Pinhole rays lie on the z=1
-plane, so λ = z and the pinhole estimator is unchanged (byte-identical depth-maps); spherical rays
-are unit vectors, so λ is the range. The depth geometry (plane propagation `InterpolatePlaneDepth`,
-`NormalFromDepthGradient`, depth similarity) is written once over `Ray`/`RayFrame`
-(`libs/Common/DepthGeometry.h`).
-
-`Spherical<T>` (`libs/Math/Camera/CameraModels.h`, `HOST_DEVICE`, templated on the scalar) has,
-like `Pinhole<T>`:
-- `RayFrame(x0)`: columns ∂r/∂x = (cosφcosθ, 0, −cosφsinθ)/fx, ∂r/∂y = (sinφsinθ, cosφ, sinφcosθ)/fy
-  and r(x0): pixel offsets (dx,dy,1) around x0 to rays, to first order;
-- `PixelHomography(q[, x])`: rays near q to homogeneous pixels, the gnomonic projection on the plane
-  tangent at q scaled by the equirectangular Jacobian, written on the unnormalized q (rows
-  `fx·|q|²/ρ²·(q_z,0,−q_x) + x_c·q`, `fy·(−q_x·q_y/ρ, ρ, −q_z·q_y/ρ) + y_c·q`, `q`, with
-  ρ = |q|·cosφ and (x_c, y_c) = Project(q), which the caller may pass); exact at q, first order
-  around it.
+A depth is the distance λ along the model's ray, `X_cam = λ·Ray(x)`: λ = z for a pinhole (the pinhole
+estimator is unchanged, depth-maps byte-identical), the range for a spherical camera. The depth geometry
+(`InterpolatePlaneDepth`, `NormalFromDepthGradient`, `PlaneRayHomography`, `PlanePatchWarp`, depth
+similarity) is written once over `Ray`/`RayFrame`/`PixelHomography` in `libs/Common/DepthGeometry.h`.
 
 ### Patch warp per target view (`DepthEstimatorT::SamplePatch`)
 
-- Pinhole reference and pinhole target: the cached plane homography (`ComputePatchWarp`).
-- Otherwise Method B: `M = Trg.PixelHomography(H·r0)·H·Ref.RayFrame(x0)`, with `H·F` built as
-  `Rrel·F + t·(nᵀF)/(n·X)` from `Rrel·F` cached per pixel and view, in single precision; M feeds the
-  same base/dx/dy texel loop as the pinhole homography. A pinhole target must see the patch center
-  in front of it. For a spherical target the four patch corners decide: a corner behind the tangent
-  plane (a texel ray more than 90 degrees off the center) rejects the view, a patch off the seam is
-  sampled by the plain pinhole loop, a patch across it by the wrapping one (`SampleTangentPatch`).
-- Method A, the exact warp, where the target sees the patch center above
-  `DepthEstimatorBase::fSphericalWarpMaxElevation`: each texel ray (cached per pixel, and turned
-  into the view frame per pixel and view) is cut with the plane and projected by the target model.
-  A texel whose plane intersection is behind the reference camera scores the view `thRobust`, as an
-  out-of-image texel does. The texel rays are stored as structure-of-arrays padded to whole SIMD
-  packets, and the intersections and projections run on Eigen's packet functions
-  (`Eigen::internal::p*`, SSE or NEON), lane by lane identical to the scalar code; only the bilinear
-  samples are taken per texel.
-- The spherical projections of both warps use `Spherical::ProjectFast` through `FastAtan2`
-  (`CameraModels.h`, shared with CUDA: a minimax polynomial, max error 1.3e-7 rad, the precision of
-  the float atan2; `DepthMap.cpp` evaluates the same polynomial on SIMD packets) and `FastSqrt` (the
-  SIMD square root: `std::sqrt` is a library call under `/fp:strict`). Method B computes
-  ρ = √(q_x²+q_z²) once for the projection of the patch center and for
-  `Spherical::PixelHomography(q, x, ρ)`.
-- The 3x3 products of the warps (`Rrel·F` per pixel and view, `H·F`, `P·(H·F)`, the patch warp and
-  the geometric-consistency transforms) are written out on the Eigen storage (`MulMat3`): MSVC does
-  not inline the fixed-size Eigen products in these builds (`EIGEN_STRONG_INLINE=inline`), and they
-  were the main cost of the model warps.
-
-The error of B grows as 1/cosφ of the target elevation of the patch center, not of the reference
-one. The choice between B and A is one branch per (pixel, hypothesis, view); there is no per-texel
-branch on the model.
+- Pinhole reference and target: the cached plane homography (`ComputePatchWarp`).
+- Otherwise, Method B (tangent warp): `M = Trg.PixelHomography(H·r0)·H·Ref.RayFrame(x0)`, with
+  `H·F = Rrel·F + t·(nᵀF)/(n·X)` and `Rrel·F` cached per pixel and view. `M` feeds the same texel loop as the
+  pinhole homography. A pinhole target must see the patch center in front of it. For a spherical target the
+  four patch corners decide: a corner behind the tangent plane rejects the view; a patch off the seam is
+  sampled by the plain loop, a patch across it by the wrapping one (`SampleTangentPatch`).
+- Method A (exact warp), where the target sees the patch center above
+  `DepthEstimatorBase::fSphericalWarpMaxElevation`: each texel ray is cut with the plane and projected by
+  the target model. A texel whose intersection is behind the reference camera scores the view `thRobust`,
+  as an out-of-image texel does. The texel rays are structure-of-arrays padded to whole SIMD packets;
+  intersections and projections run on Eigen packet functions, lane by lane identical to the scalar code.
+- B's error grows as 1/cosφ of the target elevation of the patch center. The B/A choice is one branch per
+  (pixel, hypothesis, view), never per texel.
+- Spherical projections use `Spherical::ProjectFast` (`FastAtan2`, `FastSqrt`: `CameraModels.md`).
+  Method B computes ρ = √(q_x²+q_z²) once for the center projection and `PixelHomography(q, x, ρ)`.
+- The 3x3 products of the warps and of the geometric-consistency transforms are written out on the Eigen
+  storage (`MulMat3`): MSVC does not inline the fixed-size Eigen products in these builds.
 
 ### Sampling and the seam
 
-- Spherical target images: the columns wrap (bilinear across the seam), the rows keep the 1-pixel
-  border (`SampleTexel<true>`); no padding. Target depth-maps of the geometric consistency wrap the
-  same way (`SampleDepth<true>`).
-- Spherical reference: patches are estimated across the seam (only the 4 rows next to each pole
-  are skipped); the reference patch and the propagation neighbors wrap their columns (`Col0`).
-- Pixel order (pinhole and spherical alike): the estimators pull pixels in the zigzag order and work
-  on a copy of the pixel's estimate, written back to the maps as a whole at the end of the pixel
-  between two state changes of its per-pixel flag (`PixelPending`: 1 not estimated yet in this pass,
-  2 being written, 0 done). A neighbor's estimate is read as a whole (`ReadEstimate`, read again if
-  the flag changed meanwhile): the one of this pass if that neighbor is done, else the previous
-  pass's; never a mix of the two. A single thread reads its lower neighbors final and the higher
-  ones from the previous pass. Several threads wait only on the corners of the zigzag stripes: there
-  the anti-diagonals are shorter than the number of estimators, which then work on adjacent pixels,
-  so a pixel waits for a lower neighbor still in flight fewer than
-  `DepthEstimatorBase::nZigzagMinStride` (64, the smallest stripe height) pixels before it in the
-  order, and reads it as a single thread does. Elsewhere a lower neighbor is a whole anti-diagonal
-  back and done, or its estimator is preempted and the pixel reads the previous pass's estimate
-  rather than stall. The corners of a panorama lie on the seam next to the poles. The first and the
-  last column of a spherical reference are neighbors like any other two (the one across the seam
-  comes later in the order, so nobody waits for it).
+- Spherical target images wrap their columns (`SampleTexel<true>`) and keep the 1-pixel border on the rows;
+  target depth-maps of the geometric consistency wrap the same way (`SampleDepth<true>`). No padding.
+- A spherical reference is estimated across the seam (only the 4 rows next to each pole are skipped); the
+  reference patch and the propagation neighbors wrap their columns (`Col0`).
+- Pixel order, pinhole and spherical alike: the estimators pull pixels in zigzag order and work on a copy of
+  the pixel's estimate, written back as a whole between two state changes of its flag (`PixelPending`: 1 not
+  estimated yet in this pass, 2 being written, 0 done). A neighbor's estimate is read as a whole
+  (`ReadEstimate`): this pass's if that neighbor is done, else the previous pass's, never a mix. Only at the
+  corners of the zigzag stripes, where the anti-diagonals are shorter than the number of estimators, does a
+  pixel wait for a lower neighbor still in flight fewer than `DepthEstimatorBase::nZigzagMinStride` (64)
+  pixels before it. Elsewhere a lower neighbor is a whole anti-diagonal back, or its estimator is preempted
+  and the pixel reads the previous pass's estimate rather than stall. The first and last column of a
+  spherical reference are neighbors like any other two; nobody waits for the one across the seam.
 
 ### Geometric consistency
 
-`GeometricConsistency<TRG>`: the reference point moved into the frame of the target depth-map,
+`GeometricConsistency<TRG>`: the reference point is moved into the frame of the target depth-map and
 projected, the target depth sampled (similar depths only), the target point at that depth
-(`X1·depth/Depth(X1)`, along the same ray) projected back; the pixel distance to x0, its columns
-wrapped for a spherical reference, mapped to [0,4]. The pinhole pair keeps its cached form.
+(`X1·depth/Depth(X1)`) projected back. The pixel distance to x0, columns wrapped for a spherical
+reference, is mapped to [0,4]. The pinhole pair keeps its cached form.
 
 ### Normals
 
-Random and perturbed normals are drawn as directions (`Dir2Normal`) in a frame whose z axis is the
-pixel ray: the camera frame for pinhole (unchanged), the frame (e_lon, e_down, ray) of the pixel
-for spherical (`normalFrame0`, e_lon = (cos lon, 0, −sin lon), e_down = (sin el·sin lon, cos el,
-sin el·cos lon)), where the polar angle of the turned normal is taken by atan2 (the turned vector is
-unit only to the rounding). `CorrectNormal` is ray-based. `EstimateNormalMap` of a spherical map
-fits the depth gradient with wrapped columns.
+Random and perturbed normals are drawn as directions (`Dir2Normal`) in a frame whose z axis is the pixel
+ray: the camera frame for pinhole, `normalFrame0` = (e_lon, e_down, ray) for spherical. `CorrectNormal` is
+ray-based. `EstimateNormalMap` of a spherical map fits the depth gradient with wrapped columns.
 
 ### Reference trigonometry
 
-A spherical reference tabulates, per estimator, the sine and cosine of the longitude of every
-column and of the elevation of every row (`lonSinCos0`, `elSinCos0`): the ray frame at x0
-(`Spherical::RayFrame(sinLon, cosLon, sinEl, cosEl)`), the normal frame, the texel rays of Method A,
-and the rays of the propagation (`InterpolatePlaneDepth` on rays, `ComputeNeighborPoint`) are built
-from them, with no trigonometry per pixel.
+A spherical reference tabulates, per estimator, the sine and cosine of the longitude of every column and
+the elevation of every row (`lonSinCos0`, `elSinCos0`). The ray frame at x0, the normal frame, the texel
+rays of Method A and the propagation rays are built from them: no trigonometry per pixel.
 
 ### Initialization and view selection
 
-- Sparse init of a spherical reference: every sparse point it sees is splatted as a 5x5 square of
-  its range (columns wrapping), the other pixels start random; dMin/dMax are those ranges x0.9/x1.1.
-  The Delaunay triangulation of the sparse points stays pinhole only.
-- `Scene::SelectNeighborViews` and the ROI's camera-to-scene distance take the range as the depth
-  of a spherical image (`Image::PointDepth`); every direction projects inside a panorama.
-- `Scene::EstimateGravityDirection`: a panorama supports only the gravity candidates along its
-  image-down axis (any horizontal direction is perpendicular to its x axis, so the pinhole roll
-  test would accept its forward direction).
-- Image sizes: every size of a spherical image (the load scale of `--max-resolution` and of the
-  resolution levels, the neighbor scale, the pyramid levels) comes from `Image::ComputeResize`, which
-  rounds the width to an even number and derives the height from that uniform factor: a 2:1 panorama
-  stays 2:1 at every level (5472 px at level 5: 172x86, not 171x86), and its red/black propagation
-  gets the even width it needs.
-- Pyramid levels and neighbor scaling scale K per axis, so a spherical view keeps
-  fx = W/2π, fy = H/π, c = (size−1)/2 on its grid; the estimator ASSERTs it.
-- Per-pixel view gate: the per-view triangulation angle of `Scene::FilterNeighborViews` (an average
-  over the shared sparse points) says little about a panorama, which sees a neighbor along its
-  baseline in some directions and across it in others. When a spherical camera is involved
-  (`bModelWarp`), `ScorePixel` also gates every (hypothesis, view), at the hypothesis depth:
-  1. X = depth·Ray(x0), the hypothesis point in the reference frame; a view is gated where the
-     angle at X between the reference center (the origin) and the view's center (`viewCenters0`,
-     cached per estimator) is below `OPTDENSE::fMinAngle` (3°): X·(X−C) > cos(fMinAngle)·|X|·|X−C|;
-  2. if that gates every view, none is gated (the gated views are marked `thRobust` in `scores`
-     and counted, so there is no limit on the number of views);
-  3. a gated view scores `thRobust`, like a view that does not see the patch (the min-mean
-     aggregation leaves it out); the others score their NCC as usual.
+- Sparse init of a spherical reference: every sparse point it sees is splatted as a 5x5 square of its range
+  (columns wrapping), other pixels start random; dMin/dMax are those ranges x0.9/x1.1. The Delaunay
+  triangulation of the sparse points stays pinhole only.
+- `Scene::SelectNeighborViews` and the ROI camera-to-scene distance use the range as depth of a spherical
+  image (`Image::PointDepth`).
+- `Scene::EstimateGravityDirection`: a panorama supports only gravity candidates along its image-down axis.
+- Every size of a spherical image (`--max-resolution`, resolution levels, neighbor scale, pyramid) comes from
+  `Image::ComputeResize`: even width, height from the same uniform factor, so a 2:1 panorama stays 2:1 and
+  its red/black propagation gets the even width it needs. K is scaled per axis, so a spherical view keeps
+  fx = W/2π, fy = H/π, c = (size−1)/2; the estimator ASSERTs it.
+- `Scene::EstimateNeighborViewsPointCloud` (a scene without sparse points): a pair with a panorama gets a
+  grid over the whole first image, at depths log-uniform in [0.1, 10] x the depth where directions normal to
+  the baseline meet at `fOptimAngle`, kept where the second view sees them.
 
-  Step 2 keeps the ranking of the hypotheses of a pixel next to an epipole fair: its true depth
-  gates every view, while a closer depth sees some view at a larger angle; scoring the all-gated
-  hypothesis `thRobust` made the closer ones win for that alone (synthetic: 94 % of those pixels
-  too close by 19–26 % median). The views a pixel sees above fMinAngle at some depth thus still
-  decide alone there, and the pixels no view sees above it are estimated from all of them.
-  Pinhole-only estimators do not gate (bit-identical depth-maps). The CUDA and Metal model kernels
-  apply the same rule (below).
+### Per-pixel view gate
+
+The per-view triangulation angle of `Scene::FilterNeighborViews` (averaged over shared sparse points) says
+little about a panorama, which sees a neighbor along its baseline in some directions and across it in
+others. When a spherical camera is involved (`bModelWarp`), `ScorePixel` gates every (hypothesis, view) at
+the hypothesis depth:
+1. X = depth·Ray(x0); a view is gated where the angle at X between the reference center and the view center
+   (`viewCenters0`) is below `OPTDENSE::fMinAngle` (3°): X·(X−C) > cos(fMinAngle)·|X|·|X−C|;
+2. if that gates every view, none is gated;
+3. a gated view scores `thRobust`, like a view that does not see the patch, and drops out of the min-mean
+   aggregation; the others score their NCC.
+
+Step 2 keeps the ranking of hypotheses fair next to an epipole: there the true depth gates every view while
+a closer depth sees some view at a larger angle. Pinhole-only estimators do not gate. The CUDA and Metal
+model kernels apply the same rule.
 
 ### Depth-map files
 
-The `.dmap` header carries the flag bit `SPHERICAL` (`HeaderDepthDataRaw`, `libs/Math/Interface.h`,
-`MvsUtils.py`): `DepthData::Save` sets it from the reference camera model; `DepthData::Load` and the
-depth-map loads of `InitViews` reject a file whose flag disagrees with the view's model.
+The `.dmap` header flag `SPHERICAL` (`HeaderDepthDataRaw`, `libs/Math/Interface.h`, `MvsUtils.py`) is set by
+`DepthData::Save` from the reference camera model; `DepthData::Load` and the depth-map loads of `InitViews`
+reject a file whose flag disagrees with the view's model.
 
 ### CUDA estimator
 
-The kernels (`InitializeScore`, `BlackPixelProcess`, `RedPixelProcess`) are templates on `<GEOM, MODEL>`:
-`MODEL_PINHOLE` when every view is pinhole (the plane homography of `ComputeHomography`, unchanged),
-`MODEL_PINHOLE_REF` for a pinhole reference with spherical views, `MODEL_SPHERICAL_REF` for an
-equirectangular reference; `RunCUDA` picks it from the per-view mask `Params::sphericalViews`.
-- Per pixel, `RefPixel` holds the reference model and its `RayFrame` F; per view, `__constant__
-  g_views` holds the pose relative to the reference (R, t) and the texture-coordinate scale. An
-  equirectangular reference builds F and the texel rays of the exact warp from the sines and cosines
-  of each column's longitude and each row's elevation (`Params::refTrig`, filled per level on the
-  host), as the CPU estimator does: no transcendental per pixel or texel, no per-pixel ray cache.
-- `ScorePlaneModel`: H·F = R·F + t·(nᵀF)/(n·X) (a plane not facing the reference camera at the pixel,
-  n·X ≥ 0, scores the bad cost); into a spherical target the tangent-plane warp
-  `PixelHomography(q0, ProjectFast(q0))·H·F` with the 4-corner check, or the exact per-texel warp
-  above `fSphericalWarpMaxElevation`, the same per (pixel, hypothesis, view) choice as the CPU; into a
-  pinhole target K·H·F
-  with the patch center in front and inside. The texel walk and the ZNCC are the pinhole ones
-  (`SampleWarpedPatch`, `ScoreNCC`).
-- Sampling: an equirectangular view's image and depth textures take normalized coordinates
-  (`cudaAddressModeWrap` on the columns, the only addressing the hardware wraps, clamp on the rows);
-  the texel-center offset and 1/W, 1/H are folded into the warp rows. The hardware bilinear weights
-  keep their 1/256 quantization: on a random texture the mean interpolation error is 6.9e-4 at
-  3840 px and 6.5e-4 at 1440 px against 6.4e-4 with unnormalized coordinates, the same across the
-  seam. Rows outside the image are clamped (the pole row), where the CPU rejects the view.
-- Propagation: the 8 sampling directions and the 4-neighbors wrap their columns; the red/black
-  parity of a pixel and its wrapped neighbors agrees only for an even width (ASSERTed in
-  `RunCUDA`, produced by `Image::ComputeResize`); the poles are not crossed (a crossing moves the column by W/2, which flips the parity
-  when W = 2H). The 4 rows next to each pole are not estimated (cost `FLT_MAX`, never a neighbor).
-- The per-pixel view gate of the CPU estimator, per (pixel, hypothesis) on every scoring call: the
-  views are gated together first (a bit mask; none if its population count is the number of views),
-  a gated view scores the bad cost
-  as a view that does not see the patch, the others are scored as usual.
-- Normals: random and perturbed normals are isotropic, made camera-facing against the pixel ray
-  F.col(2), so they are the same in the ray's local frame; the surface normal and the plane
-  propagation use the generic `NormalFromDepthGradient`/`InterpolatePlaneDepth`.
-- Geometric consistency (`GeometricConsistencyWeightModel`): the CPU round trip through both
-  models, the column distance wrapped for a spherical reference.
-- View gate (`MultiViewScorePlane`, the model kernels): per (pixel, hypothesis), as `ScorePixel`, a view
-  whose center C (`g_views`, reference frame) sees X = depth·r at X·(X−C) > cos(`fMinAngle`)·|X||X−C|
-  scores the bad cost of a view that does not see the patch, unless every view is gated; its
-  geometric-consistency term is added as for any unseen view. Up to `MAX_VIEWS` (32) neighbor views:
-  the gate mask holds one bit per neighbor view, the camera-model mask `Params::sphericalViews` (64 bits)
-  one per view with the reference.
-- The model kernels inline the whole scoring path (`__forceinline__`): under `-rdc` a callee is
-  compiled with its own register count and must fit the 128 registers of the launch bounds.
-- Pinhole scenes run the unchanged kernels: their SASS is identical but for the stack layout of the
-  local arrays of the two geometric-consistency kernels, and the depth-maps are byte-identical.
+- The kernels (`InitializeScore`, `BlackPixelProcess`, `RedPixelProcess`) are templates on `<GEOM, MODEL>`:
+  `MODEL_PINHOLE` (every view pinhole; the unchanged pinhole kernels), `MODEL_PINHOLE_REF` (pinhole
+  reference, spherical views), `MODEL_SPHERICAL_REF`. `RunCUDA` picks it from `Params::sphericalViews`.
+- `RefPixel` holds the reference model and its `RayFrame`; `__constant__ g_views` holds the per-view pose and
+  texture scale. An equirectangular reference builds the frame and the Method A texel rays from the
+  per-column/row tables `Params::refTrig`, as the CPU does.
+- `ScorePlaneModel`: the CPU warps (B with the 4-corner check, A above `fSphericalWarpMaxElevation`, pinhole
+  target `K·H·F`); a plane not facing the reference camera scores the bad cost. The texel walk and ZNCC are
+  the pinhole ones (`SampleWarpedPatch`, `ScoreNCC`).
+- Sampling: an equirectangular view's image and depth textures take normalized coordinates, wrap on the
+  columns (`cudaAddressModeWrap`) and clamp on the rows (the CPU rejects the view there).
+- Propagation wraps its columns; red/black parity agrees across the seam only for an even width (ASSERTed in
+  `RunCUDA`); the poles are not crossed. The 4 rows next to each pole are not estimated (cost `FLT_MAX`).
+- Normals are camera-facing against the pixel ray; surface normal and propagation use the generic geometry.
+  `GeometricConsistencyWeightModel` is the CPU round trip with the wrapped column distance.
+- View gate (`MultiViewScorePlane`, model kernels): the CPU rule on a bit mask over the neighbor views, at
+  most `MAX_VIEWS` (32) including the reference.
+- The model kernels are `__forceinline__`: under `-rdc` a callee is compiled with its own register count and
+  must fit the 128 registers of the launch bounds.
+- Pinhole scenes run the unchanged kernels; depth-maps are byte-identical.
 
 ### Metal estimator
 
-`PatchMatchMetal.metal` mirrors the CUDA model kernels by hand: MSL cannot include Eigen or the shared
-HOST_DEVICE headers.
-- Specialization: the function constant `MODEL` next to `GEOM`: 0 (`MODEL_PINHOLE`) every view pinhole,
-  the pinhole kernels textually unchanged; 1 (`MODEL_PINHOLE_REF`) a pinhole reference with spherical
-  views; 2 (`MODEL_SPHERICAL_REF`) an equirectangular reference. The model kernels are separate functions
-  (`InitializePixelScoreModel`, `ProcessPixelModel`, `ScorePlaneModel`, `GeometricConsistencyWeightModel`)
-  that the kernels select by `MODEL`. `PatchMatch` builds the pipelines of every (GEOM, MODEL) pair when it
-  is created; `EstimateDepthMap` picks MODEL from the per-view spherical mask, as `RunCUDA` does.
-- Camera models: one delimited block mirrors `CameraModels.h` function by function (`FastAtan2` with the same
-  coefficients; Spherical `Ray` and `RayFrame` from sines and cosines, `ProjectFast` with rho, `Depth`,
-  `PixelHomography` with rho; Pinhole `Ray`, `Project`, `RayFrame`, `PixelHomography`) and `DepthGeometry.h`
-  (`InterpolatePlaneDepth` on rays, the `DepthPlaneFit` gradient of the 4-neighbors, the generic
-  `NormalFromDepthGradient`). A pinhole reference uses the existing `InterpolatePixel` and
-  `ComputeDepthGradient`, which are the closed forms of the pinhole overloads. The test kernel
-  `TestModelMath` evaluates the block for `MetalModelMathTest` (Tests suite 2, Apple only), which compares
-  it with the C++ models on random inputs.
-- Buffers: `Params` adds `sphericalViews`, `fSinSqWarpMaxElevation` and `cosMinViewAngle`. Buffer 8 holds
-  the per-view `ModelView` {R, t, C, texScale}, where C is the view center in the reference frame. Buffer 9
-  holds the reference trig table: W+H (sin, cos) pairs, or a one-entry dummy for a pinhole reference. Both
-  are filled per level on the host.
-- Sampling: a second constexpr sampler (`coord::normalized`, linear, `s_address::repeat`,
-  `t_address::clamp_to_edge`) reads the image and depth textures of an equirectangular view, chosen per view
-  by the mask, at `(x+0.5)*texScale`.
-- The kernel logic is that of the CUDA estimator: `ScorePlaneModel` (Method B with the 4-corner check,
-  Method A above the elevation threshold, the pinhole-target branch); the wrapped propagation without pole
-  crossing and an even-width ASSERT; the pole rows skipped; F.col(2) as the view direction of the random
-  normals; the model geometric consistency with the wrapped column distance.
-- The per-pixel view gate of the CPU estimator (`MultiViewScorePlaneModel`): per (pixel, hypothesis), on
-  every scoring call, X = F.col(2)*depth and each view v with `X.(X-C_v) > cos(fMinAngle)|X||X-C_v|` sets
-  its bit in a mask; a mask with a bit for every view (`popcount`) is cleared; a masked view scores the bad
-  cost without its warp, as a view that does not see the patch (the geometric term is added to it as to any
-  such view). `MAX_VIEWS` (32) counts the reference, so at most 31 neighbor views.
-- Differences from CUDA: the plane propagation and the surface normal of an equirectangular reference take
-  their rays and ray frame from the trig tables, as the CPU estimator does (CUDA evaluates `Ray` and
-  `RayFrame` from the float angles there). The view poses are composed in double precision. The random
-  numbers come from PCG instead of curand, and the bilateral weights from `exp` instead of the LUT, as in
-  the pinhole Metal kernels. The model kernels skip an invalid neighbor in the plane comparison (cost
-  `FLT_MAX`, as CUDA); the pinhole Metal kernels aggregate its unwritten costs and reject it afterwards.
-- The host applies the ignore mask, with the validity mask of undistorted images, as CUDA does. The kernels
-  are compiled from source at runtime; CMake also compiles `PatchMatchMetal.metal` with the offline Metal
-  compiler (target `PatchMatchMetalCheck`) when the toolchain has a working one. The configure step that
-  embeds the source re-runs when the file changes.
-- `DensifyPointCloud` gives Metal builds the GPU defaults of CUDA builds (`--number-views` 8,
-  `--iters` 4); with the CPU defaults (5 / 3) Metal is below CUDA on Holo360D (section 4).
-- Validated on an Apple M3 Max (section 4): `MetalModelMathTest` within its bounds (the pinhole projection
-  error relative to the magnitude of its operands: Metal fuses `fx*n+cx` into an fma, the host does not,
-  which leaves one ulp of ~1000 where the two cancel), the synthetic panoramas and Holo360D at the
-  CUDA numbers, the pinhole scenes byte-identical to the Metal estimator before the camera models.
+`PatchMatchMetal.metal` mirrors the CUDA model kernels by hand (MSL cannot include Eigen).
+- Function constant `MODEL` (0, 1, 2 as in CUDA) next to `GEOM`; the model kernels are separate functions
+  (`InitializePixelScoreModel`, `ProcessPixelModel`, `ScorePlaneModel`, `GeometricConsistencyWeightModel`).
+  `PatchMatch` builds the pipelines of every (GEOM, MODEL) pair; `EstimateDepthMap` picks MODEL from the
+  spherical mask.
+- One delimited block mirrors `CameraModels.h` and `DepthGeometry.h`. The test kernel `TestModelMath` runs it
+  for `MetalModelMathTest` (Tests suite 2, Apple only), which compares it with the C++ models.
+- Buffer 8 holds the per-view `ModelView` {R, t, C, texScale}; buffer 9 the reference trig table (W+H
+  (sin, cos) pairs, a dummy for a pinhole reference). A second sampler (`coord::normalized`, repeat on
+  columns, clamp on rows) reads the textures of an equirectangular view.
+- Kernel logic as in CUDA, including the view gate (`MultiViewScorePlaneModel`).
+- Differences from CUDA: plane propagation and surface normal take their rays from the trig tables; view
+  poses are composed in double precision; random numbers come from PCG, bilateral weights from `exp`.
+- Kernels are compiled from source at runtime; CMake also compiles them offline (target
+  `PatchMatchMetalCheck`) when the toolchain has a working Metal compiler.
+- `DensifyPointCloud` gives Metal builds the CUDA defaults (`--number-views` 8, `--iters` 4).
 
-### Fusion, filters and the other consumers of the depth-maps
+### Fusion, filters and other consumers of the depth-maps
 
 Everything downstream of the estimator reaches a view's geometry through `ModelCamera`
-(`libs/MVS/Image.h`, from `Image::GetModelCamera()` or `DepthData::ViewData::GetModelCamera()`): a
-camera with the model of its view, whose pinhole calls are the camera's own (the pinhole results are
-bit-identical) and whose spherical calls go through `Spherical<REAL>` built from the angular K:
-- `TransformPointI2C/I2W(x, depth)`: the point of pixel x at the depth along the model's ray;
-  `ProjectPointP(X)`: pixel and depth (range) of a world point, `ProjectPointC(Xc)` the same of a
-  camera-frame point (the sparse init of `InitViews`); `TransformPointW2I`, `RayPoint`;
-- `GetPixel(x, size, ir)`: the rounded pixel, its column wrapped for a panorama, false if outside;
-  `ColumnOffset(a, b, width)`: the shortest column offset around a panorama;
-- `EstimateNormalMap(ModelCamera, ...)` (`DepthMap.h`): the normal-map of either model.
-
-One `WrapColumn(c, width)` (`DepthGeometry.h`, `HOST_DEVICE`) wraps a column within one width of a
-panorama for the host code (`GetPixel`, `Col0`, the samplers, `FitDepthGradient`, the filters); the CUDA
-and Metal kernels keep their own copy.
-
-The consumers, each with the model of every view it touches, so mixed pinhole and spherical
-scenes fuse as such:
-- `DepthMapsData::FuseDepthMaps`, `DenseFuseDepthMaps` (back-projection, projection into the
-  neighbor depth-maps with wrapped columns, the reprojection-error test on the wrapped column
-  offset), `MergeDepthMaps`, the intra-map prior of the dense fusion (`ComputeIntraMapPrior`: the
-  depth-gradient fit and the 3x3 window wrap, the gradient normal of the model);
-- the depth-map filters: `RemoveSmallSegments` (4-neighbors wrap), `GapInterpolation` (a row of a
-  panorama is a circle, walked once around from its first valid pixel, so a gap across the seam
-  is filled like any other; columns do not cross the poles), `FilterDepthMap` (per pixel);
-- `EstimateNormalMaps` (the spherical `EstimateNormalMap`), `DepthData::GetNormal` (the window
-  wraps), `EstimatePointColors` (the range picks the closest view; nearest-pixel sampling next to
-  the seam), `EstimatePointSegmentation`, `ExportPointCloud`, `Scene::EstimatePointCloudNormals`;
-- `Scene::PointCloudFilter`: the visibility cone of a point is the ray from the camera center to
-  it, its aperture the angle a pixel spans (1/fx on the equator of a panorama);
-- `Scene::EstimateNeighborViewsPointCloud` (a scene without sparse points): a pair with a panorama
-  gets a grid over the whole first image, at depths log-uniform in [0.1, 10] x the depth where
-  directions normal to the baseline meet at `fOptimAngle`, kept where the second view sees them.
+(`libs/MVS/Image.h`, from `Image::GetModelCamera()` or `DepthData::ViewData::GetModelCamera()`): pinhole
+calls are the camera's own (bit-identical), spherical calls go through `Spherical<REAL>`.
+- `TransformPointI2C/I2W(x, depth)`, `ProjectPointP(X)` (pixel and range), `ProjectPointC(Xc)`,
+  `TransformPointW2I`, `RayPoint`; `GetPixel(x, size, ir)` (rounded pixel, column wrapped, false if
+  outside); `ColumnOffset(a, b, width)` (shortest offset around a panorama).
+- `WrapColumn(c, width)` (`DepthGeometry.h`, `HOST_DEVICE`) is the one column wrap of the host code; the
+  CUDA and Metal kernels keep their own copy.
+- Consumers, each with the model of every view it touches (mixed scenes fuse as such):
+  `DepthMapsData::FuseDepthMaps`, `DenseFuseDepthMaps`, `MergeDepthMaps`, `ComputeIntraMapPrior`;
+  the filters `RemoveSmallSegments`, `GapInterpolation` (a row of a panorama is a circle, so a gap across the
+  seam is filled like any other; columns do not cross the poles) and `FilterDepthMap`;
+  `EstimateNormalMaps`, `DepthData::GetNormal`, `EstimatePointColors`, `EstimatePointSegmentation`,
+  `ExportPointCloud`, `Scene::EstimatePointCloudNormals`;
+  `Scene::PointCloudFilter` (visibility cone aperture = the angle a pixel spans, 1/fx on the equator).
 
 ## 3. Parameters
 
 | parameter | default | meaning |
 |---|---|---|
-| `DepthEstimatorBase::fSphericalWarpMaxElevation` | 70 deg | target elevation above which Method A replaces Method B |
+| `DepthEstimatorBase::fSphericalWarpMaxElevation` | 70° | target elevation above which Method A replaces Method B |
+| `OPTDENSE::fMinAngle` | 3° | view-gate angle (shared with the pinhole triangulation-angle test) |
+| `--number-views` / `--iters` (Metal and CUDA builds) | 8 / 4 | GPU defaults; CPU builds 5 / 3 |
 
 All other PatchMatch options apply unchanged.
 
-## 4. Validation
+## 4. Invariants
 
-Synthetic room (`Tests sphtest`, `Tests scorebench`, `TestSphericalPatchWarp`; CPU unless marked CUDA,
-RelWithDebInfo), Holo360D Outdoor_004 (40 frames at `--max-resolution 1440` unless noted, `Tests evaldepth`):
+- A spherical image is 2:1 with `fx = W/2π`, `fy = H/π`, `c = (size−1)/2` at every pyramid level and
+  neighbor scale; its width is even.
+- Pinhole scenes run the unchanged code paths: depth-maps are byte-identical to the pre-model estimator.
+- A `.dmap` carries `SPHERICAL` iff its view is spherical.
+- Every estimate is read whole, from one pass.
+- The hot loop has no model branch per texel.
 
-| case | completeness | abs-rel median | <1% | <5% | notes |
+## 5. Validation
+
+Synthetic room (`Tests sphtest`, `Tests sphfuse`, `Tests scorebench`; 3 panoramas 1536x768, cube faces
+384x384) and Holo360D Outdoor_004 (40 frames at `--max-resolution 1440`, `Tests evaldepth`, `Tests evalcloud`).
+A = exact warp everywhere, B = tangent warp with A above 70° (default), C = panoramas rendered to cube faces
+and the pinhole PatchMatch (`CreateStructure --spherical-export cubemap`, `Tests facescene`).
+
+Depth-maps, fraction of GT pixels within 1 / 5 % and abs-rel median:
+
+| scene | method | device | completeness | abs-rel median | <1% | <5% |
+|---|---|---|---|---|---|---|
+| synthetic 1536 | A | CPU | 0.911 | 0.00047 | 0.983 | 0.994 |
+| | B | CPU | 0.911 | 0.00050 | 0.982 | 0.994 |
+| | C | CPU | 0.913 | 0.00079 | 0.913 | 0.952 |
+| | A / B / C | CUDA | 0.983 / 0.983 / 0.970 | 0.00039 / 0.00041 / 0.00056 | 0.987 / 0.986 / 0.945 | 0.995 / 0.995 / 0.966 |
+| | B | Metal | 0.982 | 0.00041 | 0.986 | 0.995 |
+| synthetic 512x256 | B | CPU | 0.956 | 0.00147 | 0.919 | 0.986 |
+| | B | CUDA / Metal | 0.964 | 0.00139 | 0.931 | 0.988 |
+| Holo360D 1440 | A / B / C | CPU | 0.954 / 0.954 / 0.774 | 0.182 / 0.201 / 0.130 | | 0.352 / 0.346 / 0.375 |
+| | A / B / C | CUDA | 0.680 / 0.681 / 0.644 | 0.0460 / 0.0471 / 0.0945 | | 0.513 / 0.509 / 0.406 |
+| | B | Metal | 0.681 | 0.0471 | | 0.509 |
+
+Fused clouds (precision / recall / F within th x range of the GT):
+
+| scene | method | F@1% | F@2% | F@5% | F@10% |
 |---|---|---|---|---|---|
-| synthetic 3 panoramas 1536x768, A only | 0.911 | 0.00047 | 0.982 | 0.994 | equator 0.00069, north 0.00030, south 0.00042, seam 0.00051 |
-| same, B + A above 70°, no view gate | 0.911 | 0.00050 | 0.983 | 0.995 | equator 0.00072, north 0.00030, south 0.00041, seam 0.00055 |
-| same, B + A above 80° | 0.911 | 0.00051 | 0.982 | 0.994 | south 0.00049 |
-| same, B only | 0.911 | 0.00053 | 0.982 | 0.994 | south 0.00064, seam 0.00062 |
-| their 18 cube faces 384x384, pinhole | 0.913 | 0.00079 | 0.912 | 0.952 | border band completeness 0.69 |
-| synthetic 512x256, A only / B70, no view gate | 0.956 / 0.956 | 0.00116 / 0.00145 | 0.926 / 0.920 | 0.984 / 0.985 | faces 128x128: 0.854, 0.00273, 0.756, 0.921 |
-| synthetic 512x256, B70, view gate (default), 24 threads, 8 runs | 0.956 | 0.00145–0.00150 | 0.919–0.922 | 0.985–0.988 | <5%: equator 0.965–0.974, south 0.978–0.987, seam 0.996–0.997, center (longitude 0) 0.994–0.996; completeness seam 0.951, center 0.957 |
-| Holo360D, B + A above 70°, no view gate | 0.956 | 0.203 | 0.131 | 0.343 | equator 0.974 / 0.111 / 0.149 / 0.390, seam 0.951 / 0.208 / 0.136 / 0.333, south (the ground under the handheld camera, behind the operator in the neighbors) 0.945 / 1.94 |
-| Holo360D, cube faces 416x416, pinhole | 0.774 | 0.130 | 0.126 | 0.374 | same pipeline on the rendered faces |
-| synthetic 3 panoramas 1536x768, B + A above 70°, view gate (default) | 0.911 | 0.00050 | 0.982 | 0.994 | equator 0.00072 / <5% 0.987, north 0.00031 / 1.000, south 0.00040 / 0.992, seam 0.00054 / 0.998, center 0.00054 / 1.000 |
-| Holo360D, B + A above 70°, view gate (default), 3 runs | 0.953–0.954 | 0.193–0.198 | 0.132–0.134 | 0.341–0.344 | equator 0.972 / 0.111–0.112 / 0.148–0.151 / 0.387–0.389, seam 0.947–0.949 / 0.198–0.213 / 0.136–0.137 / 0.326–0.334 |
-| CUDA: synthetic 512x256, B70, view gate | 0.964 | 0.00139 | 0.931 | 0.988 | equator 0.991 / 0.00218, north 0.857 / 0.00068, south 0.850 / 0.00092, seam 0.968 / 0.00153 / <5% 0.994, center 0.966 / 0.00163 / <5% 0.991 (CPU 0.956 / 0.00147 / 0.919 / 0.986, seam 0.951 / 0.00166, center 0.958 / 0.00168); normal median 3.2° (CPU 4.0°); without the gate 0.964 / 0.00140 |
-| CUDA: Holo360D 10 frames at 720, B70, view gate | 0.711 | 0.056 | 0.209 | 0.483 | CPU with the gate on the same: 0.958 / 0.284 / 0.090 / 0.269; CUDA without the gate 0.718 / 0.057 / 0.203 / 0.481; the CPU's best 71.8 % by confidence (no gate) 0.173 / 0.113 / 0.338 |
+| synthetic 1536 CPU | B | 0.975 | 0.991 | | |
+| | C | 0.903 | 0.949 | | |
+| synthetic 512 CPU | B / C | 0.806 / 0.637 | 0.931 / 0.757 | | |
+| Holo360D 1440 CPU | A / B / C | | 0.346 / 0.338 / 0.308 | 0.535 / 0.522 / 0.562 | 0.679 / 0.667 / 0.734 |
+| Holo360D 1440 CUDA | A / B / C | | 0.412 / 0.404 / 0.264 | 0.631 / 0.617 / 0.480 | 0.755 / 0.744 / 0.646 |
+| Holo360D 1440 Metal | B | | 0.404 | 0.617 | 0.745 |
 
-On Holo360D the CUDA estimator keeps fewer pixels than the CPU one and is more accurate on every band
-(equator 0.79 / 0.047 against 0.97 / 0.20, south 0.62 / 0.51 against 0.95 / 1.99): the pixels only the
-CPU keeps (25 % of the GT pixels, none in the pole rows, which the GT masks) are wrong (abs-rel median
-0.81, 9 % within 5 %, low CPU confidence), and on the pixels both keep CUDA is still better (0.056
-against 0.189). The difference is the estimators' (ACMH view selection, the cost threshold of
-`FilterPlanes`), not the spherical model, as on synthetic data, where CUDA matches or beats the CPU on
-every band.
+Synthetic 1536 B CPU: precision 0.999, recall 0.952 at 1 %; per-band F@1% equator 0.963, north 1.000, south
+0.964, seam 0.974. Against C the panoramas win on every band, most at the south pole (C: 0.711).
 
-The pole bands (|elevation| > 70°) lose the 4 rows next to each pole and the floor below the
-synthetic cameras; their accuracy matches the equator's. Holo360D is a handheld capture whose
-LiDAR-derived GT and poses agree with the images to a few pixels only (a GT-predicted
-correspondence lands within 1 px of the image match in 12–48 % of the cases at 2880 px): both the
-spherical and the cube-face estimates are bounded by it alike.
+Reading the numbers:
+- B matches A in accuracy and costs 0.8x of it on CPU, 0.7x on CUDA. C is less accurate and less complete on the synthetic
+  room and on Holo360D CUDA, recovers more ground recall only on Holo360D CPU at the loose thresholds, loses
+  whole faces on real captures (Cocarascu: 160 of 720 reference views without neighbors) and needs a face
+  export (176-635 s on the real captures).
+- On Holo360D the GPU estimators keep fewer pixels than the CPU one and are more accurate on every band;
+  the pixels only the CPU keeps are wrong (abs-rel median 0.81). The cause is the estimators (view
+  selection, the cost threshold of `FilterPlanes`), not the spherical model: on synthetic data CUDA matches
+  or beats the CPU on every band.
+- Holo360D GT and poses agree with the images to a few pixels only; all methods are bounded by it.
+- The synthetic panoramas look along their trajectory, so the epipoles of their neighbors lie in the seam
+  band and its antipodal band, where the view gate acts. `SyntheticSphericalTest` requires seam <5 % above
+  center − 0.01 and completeness above 0.99 x center.
 
-The synthetic panoramas look along their trajectory, so the epipoles of their neighbors lie in the
-seam band and in its antipodal band at longitude 0 (two of the three panoramas, at columns 15 / 271
-and 3–4 / 259–260 of 512), where the neighbors see the scene at small angles and the view gate
-acts: the seam band is compared with that antipodal band, not with the equator
-(`SyntheticSphericalTest`: seam <5% above center − 0.01, completeness above 0.99 x center). The two
-agree within 0.003; target patches across the seam scored unseen cost the seam 0.06–0.08 (0.904–0.920
-against 0.983–0.984, completeness 0.945 against 0.957), and no propagation across the seam fails the
-south band (<5% 0.933–0.947 against 0.978–0.987). Of the 1983 pixels whose true point both
-neighbors see below 3° (2.0 % of the seam band, 1.3 % of the equator), 1976–1979 are estimated and
-57–60 of them off by more than 5 % (71 without the view gate). Without the corner waits of the
-pixel order, 24 threads left 145–285 wrong estimates per run in the bottom-right corner of the
-zigzag order (the seam next to the south pole) against 11–54 single-threaded, seam <5%
-0.984–0.991 against 0.995 without the view gate; with them 5–31 and 0.997.
+Cost, synthetic 1536:
 
-Patch warp, B against A over random poses and slanted planes (2880x1440, 9x9 patch step 2):
-per-patch max texel error p99 0.042 / 0.079 / 0.140 / 0.757 px for target elevations below
-30 / 50 / 70 / 90°, seam-crossing patches max 0.23 px; the affine warp: median 1.0–3.6 px.
+| measure | result |
+|---|---|
+| `scorebench`, ns per ScorePixel: A / B / pinhole faces | 231 / 156 / 127 (1.82x / 1.23x) |
+| CPU whole run, µs per GT pixel: A / B / C | 5.08 / 4.07 / 3.9 |
+| CUDA whole run, µs per GT pixel: A / B / C | 0.197 / 0.141 / 0.183 |
+| Metal (M3 Max) whole run, µs per GT pixel | 0.107 (CPU on that machine 2.43) |
+| CUDA kernel, panorama vs faces, 1024 px / 3840 px | 1.62x / 0.70x photometric, 1.27x / 0.47x geometric |
+| pinhole fountain-P11 CPU depth-maps + fusion vs the pre-model estimator | 202.1 s vs 201.4 s (+0.3 %) |
 
-Cost (`scorebench`, one ScorePixel against one view, all texels seen, the pixel prepared once per 4
-hypotheses; min of 3x5 alternating runs, timing-exclusive machine): panorama 1536x768 B70 158 ns,
-B only 155 ns, A only 225 ns; cube faces of the same image size 126–129 ns: B70 1.22–1.25x, B only
-~1.21x, A only ~1.8x the pinhole cost. Whole runs (`sphtest 1536`, 24 threads, B70): the 3 panoramas
-take 9.6 s, 2.71 µs per GT pixel, their 18 cube faces 384x384 7.4 s, 2.80 µs per GT pixel (the
-panoramas hold 1.33x the pixels of their faces).
+The CUDA excess at small sizes is Method A near the poles (~4.3x the cost of B on ~12 % of the
+evaluations) and the per-hypothesis model math; at real panorama sizes the spherical kernels are cheaper
+per pixel than the faces. Real captures (7680x3840 keyframes, `--max-resolution 1440`): CUDA B, Cocarascu
+120 frames 165 s, 2.36 M points, depth share 0.898; MaidenLane 91 frames 105 s, 5.99 M points, 0.972.
 
-CUDA kernel time (PMTIME events, black+red ms per MP, view and iteration at full resolution; synthetic,
-4 panoramas and their cube faces, 3 views each, min of 3, one exclusive run): at 1024x512 against
-256x256 faces, photometric 2.37 vs 1.46 ms (1.62x), geometric 2.51 vs 1.98 (1.27x); Method B everywhere
-1.72 (1.18x) and 2.27 (1.15x), Method A everywhere 7.43. The excess over B is Method A near the poles
-(~4.3x the cost of B on ~12 % of the evaluations: two FastAtan2, a square root, a division and a 3x3
-rotation per texel); normalized wrapped texture coordinates cost 2 % (patch-walk micro-benchmark), the
-rest is the per-hypothesis model math and register spills (178/420 B against none for pinhole, at the
-same 128 registers). At 3840x1920 against 960x960 faces the panoramas cost 1.91 vs 2.73 ms (0.70x)
-photometric and 2.30 vs 4.95 (0.47x) geometric: the larger faces sample their neighbors less locally.
-At real panorama sizes the spherical kernels are therefore cheaper per pixel than the cube faces, and
-the 1.62x at 1024 px is a small-image effect; the default threshold stays at 70° rather than trading
-pole accuracy for it (B80: 1.32x photometric at 1024 px, see section 5).
+Warp accuracy (`TestSphericalPatchWarp`, random poses and slanted planes, 2880x1440, 9x9 patch): B against A,
+per-patch max texel error p99 0.042 / 0.079 / 0.140 / 0.757 px for target elevations below 30 / 50 / 70 / 90°;
+seam-crossing patches max 0.23 px; the affine warp has a median error of 1.0-3.6 px.
 
-The pinhole estimator keeps its cost: fountain-P11 CPU depth-maps + fusion (default 24 threads,
-P-core pinned, timing-exclusive machine, one discarded warm-up run, min of 3 rotating runs):
-200.2 s against 199.4 s for the estimator before the camera models (+0.4 %, 3054 / 3046 CPU-s);
-with per-pixel waits instead of whole-estimate reads it was 208.6 s (+4.6 %, 3163 CPU-s). The
-corner waits and the model-dispatched fusion leave it there: 202.1 s against 201.4 s for the
-estimator without them in the same session (3080 / 3065 CPU-s; depth-maps 195.9 / 195.3 s, fusion
-4.8 / 4.6 s).
+Seam and pixel order (synthetic 512, B, 24 threads): the seam band matches its antipodal band within 0.003
+on <5 %. Without the corner waits, the bottom-right corner of the zigzag order has 145-285 wrong estimates
+per run, with them 5-31 (single thread 11-54).
 
-### Fused clouds
+Reference numbers for the regression run (`Tests sphtest 2 512 3 1 70 0 0 0` CPU, `... 0 0 1` CUDA):
+per-band <5 % CPU all 0.985-0.988, seam 0.996-0.997; CUDA all 0.964 completeness, abs-rel 0.00139.
 
-`Tests sphfuse` (synthetic, the GT ray-cast from the panorama centers at 4x the width, at most
-4096) and `Tests evalcloud` (Holo360D, the GT range maps of the frames, masked pixels excluded on
-both sides), CPU, dense fusion, default options. Precision: the share of the cloud within th x
-range of a GT point; recall: the share of the GT points on the grid of the estimated images within
-th x range of a cloud point; the range and the band from the nearest panorama; seam band = the
-longitudes 16 pixels from the seam.
+## 6. Rejected alternatives
 
-| case | points | P / R / F @1% | P / R / F @2% | per band |
-|---|---|---|---|---|
-| synthetic 3 panoramas 1536x768 | 784255 | 0.999 / 0.952 / 0.975 | 1.000 / 0.982 / 0.991 | F@1% equator 0.963, north 1.000, south 0.964, seam 0.974 |
-| their 18 cube faces 384x384 | 596123 | 0.997 / 0.825 / 0.903 | 1.000 / 0.903 / 0.949 | F@1% equator 0.940, north 1.000, south 0.711, seam 0.917 |
-| synthetic 3 panoramas 512x256 | 81705 | 0.979 / 0.685 / 0.806 | 0.997 / 0.874 / 0.931 | F@1% equator 0.714, north 0.981, south 0.646, seam 0.802 |
-| their 18 cube faces 128x128 | 43452 | 0.973 / 0.474 / 0.637 | 0.996 / 0.618 / 0.757 | F@1% equator 0.618, north 0.980, south 0.227, seam 0.651 |
-| the panoramas and faces fused together (mixed scene) | 112856 | 0.984 / 0.793 / 0.878 | 0.998 / 0.930 / 0.963 | |
-| panoramas 512, FuseDepthMaps / MergeDepthMaps | 96059 / 375841 | F 0.838 / 0.943 | F 0.967 / 0.987 | merge keeps every depth, so its recall is the depth-map completeness |
-| panoramas 512 without sparse points (virtual cloud) | 80975 | 0.984 / 0.684 / 0.807 | 0.997 / 0.871 / 0.930 | depth-maps: completeness 0.956, <5% 0.984 |
+- Affine warp (M with its projective row frozen at the patch center): 1-3.6 px median texel error.
+- Method B everywhere: 1/cosφ error at the poles (south band abs-rel 0.00064 vs 0.00042).
+- Method A everywhere: 1.4-1.5x the cost of B.
+- Exact warp only above 80°: pole bands lose 20-35 % abs-rel at 512x256 for 1.32x instead of 1.62x the CUDA
+  cube-face cost at 1024 px.
+- Padding equirectangular images with wrapped columns: patches off the seam take the plain loop.
+- `std::atan2` in the warps: the exact warp spends most of its time there.
+- Pixels waiting for all their preceding neighbors: 5-8 % multi-threaded wall, idle cores.
+- Setting aside a pixel whose preceding neighbors are in progress: +40 % wall.
+- Eigen fixed-size expressions in the per-hypothesis warp code: not inlined by MSVC, ~10 ns per 3x3 product.
+- Pole stride (estimate ~1/cos(elevation) columns per row, fill the rest): south <5 % 0.98 -> 0.44.
+- Isotropic angular patch; filling the 4 pole rows from the nearest estimated row: fused F within noise.
+- An upper triangulation-angle gate (65°): Holo360D abs-rel median 0.28 -> 0.74.
+- Dropping the `FilterNeighborViews` angle filter for panoramas: no change with the per-pixel gate.
+- View-gate variants (an all-gated hypothesis scoring `thRobust`; gated views left out of the aggregation;
+  one view set per pixel and pass; dropping estimates every view sees below `fMinAngle`): F@5 % equal or
+  lower; the shipped rule has the fewest wrong estimates among pixels every neighbor sees below 3°.
 
-Holo360D, 40 frames at 1440 px, the GT of the 2048x1024 range maps (thresholds 2 / 5 / 10 %):
+## 7. Open items
 
-| case | points | P / R / F @2% | P / R / F @5% | P / R / F @10% | F@5% per band |
-|---|---|---|---|---|---|
-| 40 panoramas, view gate (3 runs) | 317445–330978 | 0.785–0.797 / 0.208–0.212 / 0.328–0.335 | 0.908–0.916 / 0.350–0.365 / 0.506–0.521 | 0.968–0.973 / 0.491–0.509 / 0.652–0.668 | equator 0.384–0.403, north 0.898–0.906, south 0.225–0.295, seam 0.489–0.519 |
-| their 240 cube faces 416x416 | 287846 | 0.760 / 0.194 / 0.310 | 0.932 / 0.401 / 0.561 | 0.971 / 0.596 / 0.738 | equator 0.434, north 0.859, south 0.489, seam 0.573 |
-
-The panoramas give the more precise cloud, the faces the higher recall at the loose thresholds,
-most of it on the ground below the handheld camera (south band) and the far equator.
-
-Holo360D, its first 10 frames at 720 px (thresholds 2 / 5 / 10 %, F; precision @5 %):
-
-| case | F@2% | F@5% | F@10% | P@5% | depth abs-rel median / <5% |
-|---|---|---|---|---|---|
-| panoramas, no view gate (3 runs) | 0.204–0.214 | 0.356–0.364, mean 0.360 | 0.471–0.474 | 0.850–0.863 | 0.299–0.333 / 0.260–0.277 |
-| panoramas, view gate (5 runs) | 0.222–0.232 | 0.367–0.379, mean 0.373 | 0.473–0.490 | 0.860–0.901, mean 0.881 | 0.276–0.326 / 0.257–0.273 |
-| 60 cube faces 208x208 | 0.157 | 0.330 | 0.472 | 0.901 | |
-
-The seam band of Holo360D has a lower recall than the equator for the panoramas and the cube faces
-alike: it looks behind the camera, at the operator (masked) and the path walked.
-
-### Method comparison: A, B, C
-
-A = exact warp everywhere (`fSphericalWarpMaxElevation` 0), B = tangent warp with A above 70° (default), C = the
-panoramas rendered to 6 cube faces and the unchanged pinhole PatchMatch (`CreateStructure --spherical-export
-cubemap`, `Tests facescene`). Synthetic 1536x768 (C: 18 faces 384x384), `sphtest` / `sphfuse`:
-
-| method | device | completeness | abs-rel median | <1% | <5% | fused F@1% | timing (us per GT pixel, P-core pinned, min of 3) |
-|---|---|---|---|---|---|---|---|
-| A | CPU | 0.911 | 0.00047 | 0.983 | 0.994 | 0.975 | 5.08 |
-| B | CPU | 0.911 | 0.00050 | 0.982 | 0.994 | 0.975 | 4.07 |
-| C | CPU | 0.913 | 0.00079 | 0.913 | 0.952 | 0.903 | 3.85–3.93 |
-| A | CUDA | 0.983 | 0.00039 | 0.987 | 0.995 | | 0.197 |
-| B | CUDA | 0.983 | 0.00041 | 0.986 | 0.995 | | 0.141 |
-| B | Metal | 0.982 | 0.00041 | 0.986 | 0.995 | | 0.107 (M3 Max) |
-| C | CUDA | 0.970 | 0.00056 | 0.945 | 0.966 | | 0.183 |
-
-`scorebench` (ns per ScorePixel): A 231, B 156, B only 153, pinhole faces 127 (1.82 / 1.23 / 1.20x).
-
-Holo360D, 40 frames at 1440 (C: faces 416x416), fused-cloud F at 2 / 5 / 10 % and depth:
-
-| method | device | F@2% | F@5% | F@10% | completeness | abs-rel median | <5% |
-|---|---|---|---|---|---|---|---|
-| A | CPU | 0.346 | 0.535 | 0.679 | 0.954 | 0.182 | 0.352 |
-| B | CPU | 0.338 | 0.522 | 0.667 | 0.954 | 0.201 | 0.346 |
-| C | CPU | 0.308 | 0.562 | 0.734 | 0.774 | 0.130 | 0.375 |
-| A | CUDA | 0.412 | 0.631 | 0.755 | 0.680 | 0.0460 | 0.513 |
-| B | CUDA | 0.404 | 0.617 | 0.744 | 0.681 | 0.0471 | 0.509 |
-| B | Metal | 0.404 | 0.617 | 0.745 | 0.681 | 0.0471 | 0.509 |
-| C | CUDA | 0.264 | 0.480 | 0.646 | 0.644 | 0.0945 | 0.406 |
-
-Holo360D, 10 frames at 720 (C: faces 208x208), F@2 / 5 / 10 %: A CPU 0.230 / 0.384 / 0.498, B CPU 0.227 / 0.378 /
-0.492, C CPU 0.164 / 0.341 / 0.484; A CUDA 0.258 / 0.440 / 0.576, B CUDA 0.247 / 0.417 / 0.557, C CUDA 0.153 /
-0.292 / 0.399; B Metal 0.250 / 0.418 / 0.549.
-
-Metal on an Apple M3 Max (14 cores; CPU rows of the same machine, 14 threads): `sphtest 512` all bands
-0.964 / 0.00139 / 0.931 / 0.989 (CUDA 0.964 / 0.00139 / 0.931 / 0.988, CPU 0.956 / 0.00146 / 0.920 / 0.987);
-at 1536 the panoramas take 0.107 us per GT pixel, their cube faces 0.120, the CPU 2.43 and 2.23 (22x);
-Holo360D 40 frames at 1440 px 36.5 s wall. With the CPU defaults (5 views, 3 iterations) Metal gives
-Holo360D 40 frames F 0.352 / 0.572 / 0.715, abs-rel 0.0554, <5% 0.484, hence the GPU defaults.
-
-Real captures (7680x3840 keyframes, no GT; A/B at `--max-resolution 1440`, C faces at 416; depth share = share of
-the sphere with a depth, reference views without a depth-map counted as empty; wall = min of 3 after a warm-up,
-exclusive machine, unless marked shared):
-
-| capture | method | device | fused points | depth share | wall |
-|---|---|---|---|---|---|
-| Cocarascu, 120 frames | A | CUDA | 2.38 M | 0.896 | 166 s |
-| | B | CUDA | 2.36 M | 0.898 | 165 s |
-| | C | CUDA | 2.30 M | 0.701 | 34 s + 635 s face export |
-| | B | CPU | 2.99 M | 0.564 | 1345 s (one run) |
-| | C | CPU | 3.07 M | 0.481 | 505 s (one run) |
-| MaidenLane, 91 frames | A | CUDA | 6.03 M | 0.971 | 206 s shared |
-| | B | CUDA | 5.99 M | 0.972 | 105 s shared |
-| | C | CUDA | 8.94 M | 0.955 | 70 s shared + 176 s face export |
-| | A | CPU | 7.67 M | 0.888 | 3211 s shared |
-| | B | CPU | 7.66 M | 0.888 | 957 s shared |
-| | C | CPU | 10.84 M | 0.881 | 545 s shared |
-
-A matches B in accuracy (synthetic abs-rel 0.00047 vs 0.00050, Holo within 0.01 F) and costs 1.3x (CPU) to 3.4x (real
-CPU runs) more; on CUDA the wall is I/O-bound on the real captures. C is less accurate and complete on the synthetic
-room and on Holo360D CUDA, recovers more ground recall only on Holo360D CPU (F@5 / 10 %), loses whole faces
-(Cocarascu: 160 of 720 reference views without neighbors) and needs a face export; its estimation wall is shorter
-because the faces are pre-rendered.
-
-## 5. Rejected alternatives
-
-- Affine warp (M with its projective row frozen at the patch center): 1–3.6 px median texel error.
-- Method B everywhere: 1/cosφ error at the poles (south band 0.00064 vs 0.00042 with A).
-- Method A everywhere: ~3x the cost of B.
-- Exact warp only above 80° (B80): at 512x256 the pole bands lose 20-35 % abs-rel (CUDA north 0.00090 vs
-  0.00069, south 0.00129 vs 0.00096; CPU north 0.00091 vs 0.00075, south 0.00134 vs 0.00107) for 1.32x
-  instead of 1.62x the CUDA cube-face cost at 1024 px; on Holo360D (10 frames at 720) it is within the
-  GT/pose noise (CUDA all 0.719 / 0.0571 vs 0.718 / 0.0572, CPU 0.960 / 0.300 vs 0.958 / 0.305).
-- Padding the equirectangular images with wrapped columns: patches off the seam already take the
-  plain pinhole loop.
-- std::atan2 in the warps: the exact warp spends most of its time there.
-- Pixels waiting for all their preceding neighbors (reads exactly as a single thread, the first race
-  fix): 5–8 % multi-threaded wall on fountain-P11 with the same CPU work, idle cores while waiting;
-  zigzag strides T·8 to T·64 and sleeping instead of yielding change nothing.
-- Setting aside a pixel whose preceding neighbors are in progress and estimating it later: +40 %.
-- Eigen fixed-size expressions in the per-hypothesis warp code: not inlined by MSVC, ~10 ns per 3x3
-  product.
-- Pole stride (~1/cos(elevation) columns estimated per row, the others filled from them after every
-  pass): synthetic 512 px, 3 panoramas: south band <5% 0.98 -> 0.44, north 0.999 -> 0.70, for ~30 %
-  fewer estimated pixels; the filled pixels starve the horizontal propagation.
-- Isotropic angular patch (the patch columns stepped by round(1/cos(elevation)), at most 8):
-  synthetic south completeness 0.797 -> 0.851, fused F@1% +0.004 (within the run-to-run noise of
-  0.003); Holo360D fused precision@2% 0.672 -> 0.631 alone, neutral with the view gate.
-- Filling the rows next to the poles a patch does not fit (the plane of the nearest estimated row
-  along their rays): synthetic completeness north 0.857 -> 1.0, south 0.797 -> 0.933 (the 4 rows
-  are 14 % of the pole band's pixels, 0.06 % of the sphere), fused F@1% +0.002; Holo360D neutral.
-- An upper triangulation-angle gate (65°) beside the lower one: Holo360D depth abs-rel median
-  0.28 -> 0.74.
-- Dropping the per-view angle filter of `FilterNeighborViews` for panoramas: no change (Holo360D
-  F@2% 0.232 / 0.229 vs 0.228; synthetic F@1% 0.809 vs 0.807): with the per-pixel gate it filters
-  nothing that matters.
-- View gate variants (synthetic 512: wrong estimates among the 1983 pixels whose true point every
-  neighbor sees below 3°; Holo360D 10 frames at 720 px: F@5%):
-  - an all-gated hypothesis scoring `thRobust` (no step 2): 1518–1540 wrong, median 24 % too
-    close; F@5% mean 0.375 (4 runs), 40 frames at 1440 px 0.519: the same as the current rule
-    within the noise;
-  - gated views left out of the aggregation, an all-gated hypothesis the maximum cost: the same;
-  - one view set per pixel and pass, gated at the depth the pixel starts the pass with (all passes,
-    or from the second on): 370–410 wrong, F@5% 0.349–0.360 (all) and 0.360–0.370 (second on);
-  - dropping the estimates every view sees below fMinAngle at the end of each pixel: only the ones
-    at a depth that passes the gate survive, 1083–1113 wrong with the current rule (F@5%
-    0.367–0.380), 434–511 with a view set per pixel and pass (F@5% 0.359–0.381).
-
-## 6. Open items
-
-- Per-hypothesis cost ~1.24x pinhole against the 1.2x target (section 4): what remains is the
-  projection of the patch center (two FastAtan2, one square root, the reciprocal of ρ) and the
-  per-pixel ray frames, amortized over few hypotheses in `scorebench`.
-- Metal: the kernels are compiled from source at the first estimation of every process (~3 s on an
-  M3 Max).
-- CUDA: the rows are clamped at the poles where the CPU rejects the view; mixed pinhole/spherical
-  scenes run the `MODEL_PINHOLE_REF` kernels, untested (Metal: the same).
-- The confidence recalibration (`ConfidenceRefine.h`, `ConfidenceCUDA.cu`) is pinhole only and
-  stays off for scenes with spherical images (`AdjustConfidenceSweep` ASSERTs a pinhole reference).
-- The view gate still ranks hypotheses that leave a pixel different views: a closer depth that
-  some views see above fMinAngle is scored by those alone, a farther one that no view sees above
-  it by all of them. On the synthetic scene and Holo360D that costs nothing measurable; a soft
-  weight by the triangulation angle is untested.
-- The corner waits of the pixel order cover up to 64 concurrent estimators; with more threads the
-  corner anti-diagonals between 64 and the thread count are read from the previous pass.
+- Per-hypothesis cost is ~1.23x pinhole against a 1.2x target: the center projection (two `FastAtan2`, a
+  square root, a reciprocal) and the per-pixel ray frames, amortized over few hypotheses in `scorebench`.
+- Metal compiles the kernels from source at the first estimation of every process (~3 s on an M3 Max).
+- CUDA clamps the rows at the poles where the CPU rejects the view. Mixed pinhole/spherical scenes run the
+  `MODEL_PINHOLE_REF` kernels (CUDA, Metal), untested.
+- The confidence recalibration (`ConfidenceRefine.h`, `ConfidenceCUDA.cu`) is pinhole only
+  (`AdjustConfidenceSweep` ASSERTs a pinhole reference).
+- The view gate still ranks hypotheses that leave a pixel different views; a soft weight by the
+  triangulation angle is untested.
+- The corner waits cover up to 64 concurrent estimators; with more threads the corner anti-diagonals between
+  64 and the thread count are read from the previous pass.
 - `GapInterpolation` does not cross the poles; the rows next to the poles stay unestimated.

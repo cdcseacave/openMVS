@@ -89,7 +89,7 @@ own state and call the models. The depth-map algorithms built on the models are 
   coefficients and the source size (concurrent requests for one camera wait for one computation).
   Beyond a fixed budget of 1 GiB the least recently requested entries are dropped from the cache
   (holders keep theirs alive).
-- `SphereCubeMap` (moved here from SfM): `MakeTangentFacesGeometry(numFaces, faceSize)` (4, 6, 8, 12 or
+- `SphereCubeMap`: `MakeTangentFacesGeometry(numFaces, faceSize)` (4, 6, 8, 12 or
   20 faces, `IsSupportedNumFaces`) and `SphericalToTangentialFaces` (bilinear, wraps across the seam;
   `Pixel8U`, `Pixel32F`), used by SfM feature extraction and the cube-map export.
 
@@ -97,7 +97,7 @@ own state and call the models. The depth-map algorithms built on the models are 
 
 `Interface.h` stays a drop-in header (plain data, no dependency on the libraries).
 
-- `Platform::Camera` gains `uint8_t model` (`PINHOLE`, `BROWN`, `SPHERICAL`) and `params`: for `BROWN`,
+- `Platform::Camera` has `uint8_t model` (`PINHOLE`, `BROWN`, `SPHERICAL`) and `params`: for `BROWN`,
   5 (`k1,k2,p1,p2,k3`) or 8 (`+k4,k5,k6`) coefficients in OpenCV order. Serialized as
   `if (version > 7) { ar & model; if (model == BROWN) ar & params; }`: one byte per camera, the
   coefficients only for Brown. The `SPHERICAL` `K` is the angular camera matrix of
@@ -108,7 +108,7 @@ own state and call the models. The depth-map algorithms built on the models are 
   written before the vertices; `View::serialize` reads or writes `x` only when the archive carries the
   flag (`ar.flags`), so an unset observation costs 0 bytes. The flag is set by the producer.
 - `.dmap` header flag `HeaderDepthDataRaw::SPHERICAL` marks depth-maps of an equirectangular view.
-- v7 files load unchanged; v8 files are rejected by older readers.
+- v7 files load as `PINHOLE`; v8 files are rejected by older readers.
 
 ### Users of the library
 
@@ -163,28 +163,26 @@ own state and call the models. The depth-map algorithms built on the models are 
 | Check | Result |
 |---|---|
 | `Undistort(Distort(p))` residual (`TestCameraModels`, `apps/Tests/TestsMath.cpp`) | 3e-16 |
-| `Distort` vs the former SfM implementation | bit-identical |
 | `TestCameraModels`: `Ray`/`Project` round trip, seam, poles, Jets | `Ray`∘`Project` ≤1e-8 px; axis/seam/pole conventions exact to 1e-9 px; Jet values 1e-9 px, derivatives 1e-5 relative |
 | Remap cost on load (`Tests undistortbench`, ETH3D 6048x4032 JPEG) | 10.5-10.8 ms per image vs 108-121 ms decode; 34-43 ms once per camera for the maps |
 | ETH3D F1@2cm, native Brown vs undistorted-on-export (pipes / office ICP-refined) | 0.7068 vs 0.7043 / 0.3106 vs 0.3104 |
 | v7 to v8 file size | + one byte per camera + 1 |
-| SfM reconstruct-only vs the code before the move (same matches; BA time P-core pinned, min of 3) | SceauxCastle 11 images: BA 7.50 vs 7.54 s; Herz-Jesu-P25 25 images: BA 20.23 vs 20.25 s; same registrations, points and final cost (Herz-Jesu single-thread logs identical apart from timings) |
-| SfM reconstruct-only on 10 scenes vs the code before the move (ETH3D pipes, office, kicker, courtyard, facade; EPFL castle-P30; CasaBatllo; House; TerasaVama; Zei; one pinned run each) | registered images identical on all 10; points within 0.02 % (CasaBatllo within its run-to-run spread, 61.5-62.1k); reprojection errors equal; summed BA 1129 vs 1134 s |
-| Spherical SfM from the video, ExtractKeyframes + CreateStructure (MaidenLane, 91 keyframes) | 91/91 registered both; 977k vs 981k points; reprojection 1.03 vs 1.01 px |
+| SfM reconstruct-only on 12 scenes against the pre-model code (same matches) | identical registrations, points within 0.02 %, equal reprojection errors, equal BA cost and time |
+| Spherical SfM from video (`ExtractKeyframes` + `CreateStructure`, 91 keyframes) | 91/91 registered, 977k points, reprojection 1.03 px |
 
 ## 6. Rejected alternatives
 
 - Undistorting once into an on-disk cache folder: every app re-derives the same pixels from the maps,
   no disk state.
-- `K' = K` instead of `getOptimalNewCameraMatrix(alpha)`: SfM already used alpha 0.6; the rule is kept.
+- `K' = K` instead of `getOptimalNewCameraMatrix(alpha)`: the SfM export, the loader and the depth-map undistortion share one rule (alpha 0.6).
 - A flat side array of observations: costs a uint64 when unset and is awkward to index.
 - The spherical axis flip (Y-up): the Y-down frame is identical to the pinhole frame and mirror-free.
 
 ## 7. Open items
 
-- Spherical keypoints in `.sfm` projects written before the pixel-center fix sit half a pixel off in
+- Spherical keypoints in `.sfm` projects extracted with the older half-pixel convention sit half a pixel off in
   latitude in the current model (a spherical camera has no principal point to absorb it): such a project
-  reconstructs with a higher reprojection error (Cocarascu: 1.92 vs 1.80 px) and should be re-extracted.
+  reconstructs with a higher reprojection error and should be re-extracted.
 - InterfaceCOLMAP, InterfaceMetashape and InterfacePolycam still undistort on their own instead of
   passing the distortion through.
 - Metal runs the hand mirror on Apple hardware only; it is checked there by `MetalModelMathTest`.
