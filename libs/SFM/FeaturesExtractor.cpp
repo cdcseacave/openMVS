@@ -28,6 +28,15 @@
 #include "../Math/Camera/CameraUndistort.h"
 #include <opencv2/features2d.hpp>
 #include <opencv2/imgproc.hpp>
+// OpenCV 5 moved AKAZE into the xfeatures2d module of opencv_contrib
+#if CV_MAJOR_VERSION < 5
+#define _USE_AKAZE
+typedef cv::AKAZE AKAZEDetector;
+#elif defined(HAVE_OPENCV_XFEATURES2D)
+#include <opencv2/xfeatures2d.hpp>
+#define _USE_AKAZE
+typedef cv::xfeatures2d::AKAZE AKAZEDetector;
+#endif
 
 #ifdef _USE_SIFTGPU
 #include <glad/glad.h>
@@ -600,8 +609,13 @@ bool FeaturesExtractor::ExtractImage(Image& image, cv::Ptr<cv::Feature2D>& detec
 	if (!detector) {
 		switch (config.detectorType) {
 		case FeatureType::AKAZE:
-			detector = cv::AKAZE::create();
+			#ifdef _USE_AKAZE
+			detector = AKAZEDetector::create();
 			break;
+			#else
+			VERBOSE("error: AKAZE needs the xfeatures2d module of opencv_contrib with OpenCV 5");
+			return false;
+			#endif
 		case FeatureType::ORB:
 			detector = cv::ORB::create((int)config.maxFeaturesPerCell);
 			break;
@@ -653,13 +667,15 @@ bool FeaturesExtractor::ExtractImage(Image& image, cv::Ptr<cv::Feature2D>& detec
 				cellDescriptors.release();
 
 				switch (config.detectorType) {
+				#ifdef _USE_AKAZE
 				case FeatureType::AKAZE: {
-					cv::Ptr<cv::AKAZE> akaze = detector.dynamicCast<cv::AKAZE>();
+					cv::Ptr<AKAZEDetector> akaze = detector.dynamicCast<AKAZEDetector>();
 					const double thresholds[] = {0.0005, 0.0001, 0.00005, 0.00001, 0.000001};
 					akaze->setThreshold(thresholds[retry]);
 					akaze->detectAndCompute(cellImage, cv::noArray(), cellKeypoints, cellDescriptors);
 					akaze->setThreshold(0.001); // Reset to default
 				} break;
+				#endif
 				case FeatureType::ORB: {
 					cv::Ptr<cv::ORB> orb = detector.dynamicCast<cv::ORB>();
 					const int fastThresholds[] = {15, 10, 7, 5, 3};
