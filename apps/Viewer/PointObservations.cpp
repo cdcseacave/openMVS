@@ -121,6 +121,7 @@ void PointObservations::BuildObservations(const Window& window)
 	pointIdx = (uint32_t)window.GetSelectionId();
 	sortedByWeight = sortByWeight;
 	hasWeights = !pointcloud.pointWeights.empty();
+	hasFeatures = !pointcloud.pointObservations.empty();
 	if (imageCacheLayerID != layerID) {
 		// decode the image files at full resolution (the layer images may be loaded rescaled),
 		// as their cameras see them: the copies carry only what ReadPixels needs
@@ -145,14 +146,16 @@ void PointObservations::BuildObservations(const Window& window)
 	const Point3 X(pointcloud.points[pointIdx]);
 	const MVS::PointCloud::ViewArr& views = pointcloud.pointViews[pointIdx];
 	ASSERT(!views.empty());
+	ASSERT(!hasFeatures || pointcloud.pointObservations[pointIdx].size() == views.size());
 	observations.clear();
 	observations.resize(views.size());
 	FOREACH(v, views) {
 		const MVS::IIndex idxImage(views[v]);
 		const MVS::Image& imageData = layer.scene.images[idxImage];
 		ASSERT(imageData.IsValid());
-		const Point3 x(imageData.camera.TransformPointW2I3(X));
-		ASSERT(x.z > 0);
+		const MVS::ModelCamera modelCamera(imageData.GetModelCamera());
+		const auto [x, depth] = modelCamera.ProjectPointP(X);
+		ASSERT(depth > 0);
 		Observation& observation = observations[v];
 		observation.idxImage = idxImage;
 		observation.idxView = scene.ImageIdxMVS2Viewer(idxImage);
@@ -162,8 +165,16 @@ void PointObservations::BuildObservations(const Window& window)
 		observation.proj = Point2f((float)x.x, (float)x.y);
 		observation.width = (float)imageData.width;
 		observation.nativeScale = imageData.scale;
-		observation.depth = (float)x.z;
-		observation.footprint = (float)imageData.camera.GetFootprintImage(x.z);
+		observation.depth = (float)depth;
+		observation.footprint = (float)imageData.camera.GetFootprintImage(depth);
+		if (hasFeatures) {
+			// compare in the current resolution, where a spherical image wraps at its width
+			observation.feature = pointcloud.pointObservations[pointIdx][v];
+			const Point2f feature(MVS::Camera::ScaleImagePixel(observation.feature, observation.nativeScale));
+			observation.featureOffset = Point2f(
+				modelCamera.ColumnOffset(feature.x, observation.proj.x, (int)imageData.width),
+				feature.y-observation.proj.y) * (1.f/observation.nativeScale);
+		}
 		observation.weight = hasWeights ? (float)pointcloud.pointWeights[pointIdx][v] : 0.f;
 		observation.angle = -1.f;
 		if (!pointcloud.normals.empty()) {
@@ -196,25 +207,28 @@ void PointObservations::RequestPatches()
 		const Observation& observation = observations[i];
 		threadPool.detach_task([imageCache = imageCache, croppedPatches = croppedPatches, generation, i,
 			window, bEqualized, footprintRef = footprintRef, idxImage = observation.idxImage,
-			proj = observation.proj, width = observation.width, footprint = observation.footprint]() {
+			proj = observation.proj, width = observation.width, nativeScale = observation.nativeScale,
+			footprint = observation.footprint]() {
 			// stop as soon as the request is superseded
 			if (croppedPatches->generation != generation)
 				return;
 			cv::Mat image;
 			Image8U3 patch;
+			float magnification(0);
 			if (imageCache->UseImage(idxImage, image)) {
 				if (croppedPatches->generation != generation)
 					return;
 				// the projection is given in the resolution the camera is scaled to
 				const float scale((float)image.cols/width);
-				patch = CropPatch(image, MVS::Camera::ScaleImagePixel(proj, scale),
-					bEqualized ? window*footprint*scale/footprintRef : window, PATCH_SIZE);
+				const float windowImage(bEqualized ? window*footprint*scale/footprintRef : window);
+				patch = CropPatch(image, MVS::Camera::ScaleImagePixel(proj, scale), windowImage, PATCH_SIZE);
+				magnification = PATCH_SIZE*scale*nativeScale/windowImage;
 			}
 			if (croppedPatches->generation != generation)
 				return;
 			{
 				std::lock_guard<std::mutex> lock(croppedPatches->mutex);
-				croppedPatches->patches.push_back({generation, i, std::move(patch)});
+				croppedPatches->patches.push_back({generation, i, magnification, std::move(patch)});
 			}
 			glfwPostEmptyEvent();
 		});
@@ -234,8 +248,10 @@ void PointObservations::UploadPatches()
 			continue;
 		Observation& observation = observations[patch.idxObservation];
 		observation.failed = patch.image.empty();
-		if (!observation.failed)
+		if (!observation.failed) {
 			observation.patch.Create(patch.image);
+			observation.patchMagnification = patch.magnification;
+		}
 	}
 }
 /*----------------------------------------------------------------*/

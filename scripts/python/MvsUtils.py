@@ -296,6 +296,38 @@ CAMERA_MODEL_SPHERICAL = 2
 HAS_OBSERVATIONS = 1
 
 
+def projectCamera(K, X, spherical=False):
+  """
+  Project a point given in the camera frame; spherical selects the equirectangular model
+  (Math/Camera/CameraModels.h Spherical) with K the angular camera matrix, else the pinhole.
+  Returns:
+    (x, y, depth): the pixel and the depth, which is the range |X| for spherical and z for pinhole.
+  """
+  X = np.asarray(X, dtype=np.float64)
+  if spherical:
+    rho = np.hypot(X[0], X[2])
+    return (K[0][0]*np.arctan2(X[0], X[2]) + K[0][2], K[1][1]*np.arctan2(X[1], rho) + K[1][2], float(np.linalg.norm(X)))
+  return (K[0][0]*X[0]/X[2] + K[0][1]*X[1]/X[2] + K[0][2], K[1][1]*X[1]/X[2] + K[1][2], float(X[2]))
+
+
+def unprojectDepthMap(depth_map, K, spherical=False):
+  """
+  Back-project a depth map to points in the camera frame (H x W x 3, zero depth gives the zero point).
+  K is the camera matrix at the resolution of the depth map (DMAP 'depth_K'); spherical selects the
+  equirectangular model, whose depth is the range along the unit pixel ray.
+  """
+  h, w = depth_map.shape
+  u, v = np.meshgrid(np.arange(w, dtype=np.float64), np.arange(h, dtype=np.float64))
+  if spherical:
+    lon = (u - K[0][2]) / K[0][0]
+    el = (K[1][2] - v) / K[1][1]
+    ray = np.stack([np.cos(el)*np.sin(lon), -np.sin(el), np.cos(el)*np.cos(lon)], axis=-1)
+  else:
+    y = (v - K[1][2]) / K[1][1]
+    ray = np.stack([(u - K[0][2]) / K[0][0] - K[0][1]*y/K[0][0], y, np.ones_like(u)], axis=-1)
+  return ray * depth_map[..., None]
+
+
 def loadMVSInterface(archive_path):
   """
   Load and parse an MVS (Multi-View Stereo) interface file.
@@ -343,6 +375,8 @@ def loadMVSInterface(archive_path):
     - views (list): A list of views, each containing:
       - image_id (int): The image ID.
       - confidence (float): The confidence.
+      - x (list, optional): The observation [x, y] in the image file as it is on disk (distorted for a
+        BROWN camera), pixel centers at integer coordinates (if flags has HAS_OBSERVATIONS).
   - vertices_normal (list): A list of vertex normals.
   - vertices_color (list): A list of vertex colors.
   - lines (list, optional): A list of lines (if version > 0), each containing:
@@ -546,8 +580,11 @@ def saveMVSInterface(data: dict, archive_path: str):
         mvs.write(np.array(camera['K'], dtype=np.float64).tobytes())
         mvs.write(np.array(camera['R'], dtype=np.float64).tobytes())
         mvs.write(np.array(camera['C'], dtype=np.float64).tobytes())
+        # a v7 stream has no camera model: only a pinhole camera can be written to it
+        assert version > 7 or camera.get('model', CAMERA_MODEL_PINHOLE) == CAMERA_MODEL_PINHOLE,           'stream_version < 8 stores PINHOLE cameras only'
         if version > 7:
           model = camera.get('model', CAMERA_MODEL_PINHOLE)
+          assert model in (CAMERA_MODEL_PINHOLE, CAMERA_MODEL_BROWN, CAMERA_MODEL_SPHERICAL), 'unknown camera model'
           mvs.write(np.array([model], dtype=np.uint8))
           if model == CAMERA_MODEL_BROWN:
             assert len(camera['params']) in (5, 8)

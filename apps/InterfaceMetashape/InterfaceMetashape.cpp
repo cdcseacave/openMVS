@@ -31,7 +31,6 @@
 
 #include "../../libs/MVS/Common.h"
 #include "../../libs/MVS/Scene.h"
-#include "../../libs/Math/Camera/CameraUndistort.h"
 #include <tinyxml2.h>
 #include <boost/program_options.hpp>
 
@@ -54,7 +53,6 @@ namespace OPT {
 String strInputFileName;
 String strPointsFileName;
 String strOutputFileName;
-String strOutputImageFolder;
 unsigned nArchiveType;
 int nProcessPriority;
 unsigned nMaxThreads;
@@ -104,7 +102,6 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input filename containing camera poses and image list")
 		("points-file,p", boost::program_options::value<std::string>(&OPT::strPointsFileName), "input filename containing the 3D points")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the scene")
-		("output-image-folder", boost::program_options::value<std::string>(&OPT::strOutputImageFolder)->default_value("undistorted_images"), "output folder to store undistorted images")
 		;
 
 	boost::program_options::options_description cmdline_options;
@@ -143,7 +140,6 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	// validate input
 	Util::ensureValidPath(OPT::strPointsFileName);
 	Util::ensureValidPath(OPT::strInputFileName);
-	Util::ensureValidFolderPath(OPT::strOutputImageFolder);
 	const bool bInvalidCommand(OPT::strInputFileName.empty());
 	if (OPT::vm.count("help") || bInvalidCommand) {
 		boost::program_options::options_description visible("Available options");
@@ -172,11 +168,19 @@ void Application::Finalize()
 	CLOSE_LOG();
 }
 
-struct DistCoeff : BrownDistortion<REAL> {
-	DistCoeff() : BrownDistortion<REAL>{0, 0, 0, 0, 0, 0, 0, 0} {}
-};
-typedef cList<DistCoeff> DistCoeffs;
-typedef cList<DistCoeffs> PlatformDistCoeffs;
+// the camera of a sensor: the pinhole K normalized, or the Brown lens of the image files if distorted
+// (the images are then undistorted when read)
+bool SetCameraLens(Platform::Camera& camera, const BrownDistortion<REAL>& dc, const cv::Size& resolution)
+{
+	if (dc.IsZero())
+		return true;
+	if (!ISZERO(camera.K(0,1))) {
+		VERBOSE("error: distorted cameras with skew are not supported");
+		return false;
+	}
+	camera.SetBrownLens(camera.GetScaledK(REAL(Camera::GetNormalizationScale(resolution.width, resolution.height))), dc, resolution);
+	return true;
+}
 
 void ImageListParseC(const LPSTR* argv, Point3& C)
 {
@@ -219,7 +223,7 @@ void ImageListParseP(const LPSTR* argv, Matrix3x4& P)
 
 // parse images list containing calibration and pose information
 // and load the corresponding 3D point-cloud
-bool ParseImageListXML(tinyxml2::XMLDocument& doc, Scene& scene, PlatformDistCoeffs& pltDistCoeffs, size_t& nCameras, size_t& nPoses)
+bool ParseImageListXML(tinyxml2::XMLDocument& doc, Scene& scene, size_t& nCameras, size_t& nPoses)
 {
 	String strInputFileName(MAKE_PATH_FULL(WORKING_FOLDER_FULL, OPT::strInputFileName));
 	Util::ensureValidPath(strInputFileName);
@@ -254,6 +258,10 @@ bool ParseImageListXML(tinyxml2::XMLDocument& doc, Scene& scene, PlatformDistCoe
 		mapPlatformID.emplace(ID, scene.platforms.size());
 		Platform& platform = scene.platforms.AddEmpty();
 		LPCTSTR name;
+		if ((name=sensor->Attribute(_T("type"))) != NULL && _tcsicmp(name, _T("frame")) != 0) {
+			VERBOSE("error: unsupported sensor type '%s' (only frame cameras)", name);
+			return false;
+		}
 		if ((name=sensor->Attribute(_T("label"))) != NULL)
 			platform.name = name;
 		// parse intrinsics
@@ -273,7 +281,7 @@ bool ParseImageListXML(tinyxml2::XMLDocument& doc, Scene& scene, PlatformDistCoe
 		camera.K = KMatrix::IDENTITY;
 		camera.R = RMatrix::IDENTITY;
 		camera.C = CMatrix::ZERO;
-		DistCoeff& dc = pltDistCoeffs.AddEmpty().AddEmpty();
+		BrownDistortion<REAL> dc{};
 		for (elem=calibration->FirstChildElement(); elem!=NULL; elem=elem->NextSiblingElement()) {
 			if (0 == _tcsicmp(elem->Value(), _T("f"))) {
 				camera.K(0,0) = camera.K(1,1) = String::FromString<REAL>(elem->GetText());
@@ -320,7 +328,13 @@ bool ParseImageListXML(tinyxml2::XMLDocument& doc, Scene& scene, PlatformDistCoe
 			camera.K(0,2) += resolution.width*REAL(0.5);
 			camera.K(1,2) += resolution.height*REAL(0.5);
 			camera.K = camera.GetScaledK(REAL(1)/Camera::GetNormalizationScale(resolution.width, resolution.height));
+			// Agisoft p1 multiplies (r^2+2x^2) in dx: OpenCV's p2
 			std::swap(dc.p1, dc.p2);
+			if (!SetCameraLens(camera, dc, resolution))
+				return false;
+		} else if (!dc.IsZero()) {
+			VERBOSE("error: distorted camera without resolution");
+			return false;
 		}
 		++nCameras;
 		}
@@ -448,7 +462,7 @@ bool ParseImageListXML(tinyxml2::XMLDocument& doc, Scene& scene, PlatformDistCoe
 }
 
 // parse scene stored in ContextCapture BlocksExchange format containing cameras, images and sparse point-cloud
-bool ParseBlocksExchangeXML(tinyxml2::XMLDocument& doc, Scene& scene, PlatformDistCoeffs& pltDistCoeffs, size_t& nCameras, size_t& nPoses) {
+bool ParseBlocksExchangeXML(tinyxml2::XMLDocument& doc, Scene& scene, size_t& nCameras, size_t& nPoses) {
 	String strInputFileName(MAKE_PATH_FULL(WORKING_FOLDER_FULL, OPT::strInputFileName));
 	Util::ensureValidPath(strInputFileName);
 	const tinyxml2::XMLElement* blocksExchange;
@@ -501,22 +515,22 @@ bool ParseBlocksExchangeXML(tinyxml2::XMLDocument& doc, Scene& scene, PlatformDi
 		if ((elem=photogroup->FirstChildElement("Skew")) != NULL)
 			camera.K(0,1) = elem->DoubleText();
 		camera.K = camera.GetScaledK(REAL(1)/resolutionScale);
-		// parse distortion parameters
-		DistCoeff& dc = pltDistCoeffs.AddEmpty().AddEmpty(); {
-			const tinyxml2::XMLElement* distortion=photogroup->FirstChildElement("Distortion");
-			if (distortion) {
-				if ((elem=distortion->FirstChildElement("K1")) != NULL)
-					dc.k1 = elem->DoubleText();
-				if ((elem=distortion->FirstChildElement("K2")) != NULL)
-					dc.k2 = elem->DoubleText();
-				if ((elem=distortion->FirstChildElement("K3")) != NULL)
-					dc.k3 = elem->DoubleText();
-				if ((elem=distortion->FirstChildElement("P1")) != NULL)
-					dc.p2 = elem->DoubleText();
-				if ((elem=distortion->FirstChildElement("P2")) != NULL)
-					dc.p1 = elem->DoubleText();
-			}
+		// parse distortion parameters; P1 multiplies (r^2+2x^2) in dx: OpenCV's p2
+		BrownDistortion<REAL> dc{};
+		if (const tinyxml2::XMLElement* distortion=photogroup->FirstChildElement("Distortion")) {
+			if ((elem=distortion->FirstChildElement("K1")) != NULL)
+				dc.k1 = elem->DoubleText();
+			if ((elem=distortion->FirstChildElement("K2")) != NULL)
+				dc.k2 = elem->DoubleText();
+			if ((elem=distortion->FirstChildElement("K3")) != NULL)
+				dc.k3 = elem->DoubleText();
+			if ((elem=distortion->FirstChildElement("P1")) != NULL)
+				dc.p2 = elem->DoubleText();
+			if ((elem=distortion->FirstChildElement("P2")) != NULL)
+				dc.p1 = elem->DoubleText();
 		}
+		if (!SetCameraLens(camera, dc, resolutions.back()))
+			return false;
 		++nCameras;
 		for (const tinyxml2::XMLElement* photo=photogroup->FirstChildElement("Photo"); photo!=NULL; photo=photo->NextSiblingElement()) {
 			const IIndex idxImage = scene.images.size();
@@ -588,6 +602,7 @@ bool ParseBlocksExchangeXML(tinyxml2::XMLDocument& doc, Scene& scene, PlatformDi
 	const tinyxml2::XMLElement* tiepoints = document->FirstChildElement("TiePoints");
 	if (tiepoints == NULL)
 		return true;
+	bool bAllObservations(true);
 	for (const tinyxml2::XMLElement* tiepoint=tiepoints->FirstChildElement(); tiepoint!=NULL; tiepoint=tiepoint->NextSiblingElement()) {
 		if ((elem=tiepoint->FirstChildElement("Position")) == NULL)
 			continue;
@@ -602,16 +617,33 @@ bool ParseBlocksExchangeXML(tinyxml2::XMLDocument& doc, Scene& scene, PlatformDi
 				(uint8_t)CLAMP(elem->FirstChildElement("Red")->DoubleText()*255, 0.0, 255.0),
 				(uint8_t)CLAMP(elem->FirstChildElement("Green")->DoubleText()*255, 0.0, 255.0),
 				(uint8_t)CLAMP(elem->FirstChildElement("Blue")->DoubleText()*255, 0.0, 255.0));
-		PointCloud::ViewArr views;
-		for (const tinyxml2::XMLElement* view=tiepoint->FirstChildElement("Measurement"); view!=NULL; view=view->NextSiblingElement())
-			views.emplace_back(mapImageID.at(view->FirstChildElement("PhotoId")->UnsignedText()));
-		scene.pointcloud.pointViews.emplace_back(std::move(views));
+		// the measurements of the posed photos, sorted by image, with their position in the image file
+		// (mapped to the image as its camera sees it once the cameras are set, see main)
+		PointCloud::ViewArr& views = scene.pointcloud.pointViews.emplace_back();
+		PointCloud::ObservationArr& observations = scene.pointcloud.pointObservations.emplace_back();
+		for (const tinyxml2::XMLElement* measurement=tiepoint->FirstChildElement("Measurement"); measurement!=NULL; measurement=measurement->NextSiblingElement("Measurement")) {
+			const auto itImage(mapImageID.find(measurement->FirstChildElement("PhotoId")->UnsignedText()));
+			if (itImage == mapImageID.end() || !scene.images[itImage->second].IsValid())
+				continue;
+			const PointCloud::View idxImage(itImage->second);
+			const PointCloud::ViewArr::IDX idx((PointCloud::ViewArr::IDX)(std::lower_bound(views.begin(), views.end(), idxImage) - views.begin()));
+			if (idx < views.size() && views[idx] == idxImage)
+				continue; // one measurement per image
+			views.InsertAt(idx, idxImage);
+			const tinyxml2::XMLElement* x(measurement->FirstChildElement("x"));
+			const tinyxml2::XMLElement* y(measurement->FirstChildElement("y"));
+			if (x == NULL || y == NULL)
+				bAllObservations = false;
+			observations.InsertAt(idx, x && y ? Point2f((float)x->DoubleText(), (float)y->DoubleText()) : Point2f::ZERO);
+		}
 	}
+	if (!bAllObservations)
+		scene.pointcloud.pointObservations.Release();
 	return true;
 }
 
 // parse scene stored either in Metashape images list format or ContextCapture BlocksExchange format
-bool ParseSceneXML(Scene& scene, PlatformDistCoeffs& pltDistCoeffs, size_t& nCameras, size_t& nPoses)
+bool ParseSceneXML(Scene& scene, size_t& nCameras, size_t& nPoses)
 {
 	// parse XML file
 	const String strInputFileName(MAKE_PATH_SAFE(OPT::strInputFileName));
@@ -632,34 +664,8 @@ bool ParseSceneXML(Scene& scene, PlatformDistCoeffs& pltDistCoeffs, size_t& nCam
 	}
 	// parse scene
 	if (doc.FirstChildElement("BlocksExchange") == NULL)
-		return ParseImageListXML(doc, scene, pltDistCoeffs, nCameras, nPoses);
-	return ParseBlocksExchangeXML(doc, scene, pltDistCoeffs, nCameras, nPoses);
-}
-
-// undistort image using Brown's model
-bool UndistortBrown(Image& imageData, uint32_t ID, const DistCoeff& dc, const String& pathData)
-{
-	// do we need to undistort?
-	if (dc.IsZero())
-		return true;
-
-	// load image pixels
-	if (!imageData.ReloadImage())
-		return false;
-
-	// undistort image, keeping the camera matrix
-	const KMatrix K(imageData.camera.GetK<REAL>(imageData.width, imageData.height));
-	UndistortMaps maps;
-	maps.Init(K, dc, imageData.image.size(), K);
-	Image8U3 imgUndist;
-	maps.Remap(imageData.image, imgUndist, cv::INTER_LINEAR);
-	imageData.ReleaseImage();
-
-	// save undistorted image
-	imageData.image = imgUndist;
-	imageData.name = pathData + String::FormatString(_T("%05u.jxl"), ID);
-	Util::ensureFolder(imageData.name);
-	return imageData.image.Save(imageData.name);
+		return ParseImageListXML(doc, scene, nCameras, nPoses);
+	return ParseBlocksExchangeXML(doc, scene, nCameras, nPoses);
 }
 
 // project all points in this image and keep those looking at the camera and are most in front
@@ -774,9 +780,8 @@ int main(int argc, LPCTSTR* argv)
 	Scene scene(OPT::nMaxThreads);
 
 	// convert data from Metashape format to OpenMVS
-	PlatformDistCoeffs pltDistCoeffs;
 	size_t nCameras(0), nPoses(0);
-	if (!ParseSceneXML(scene, pltDistCoeffs, nCameras, nPoses))
+	if (!ParseSceneXML(scene, nCameras, nPoses))
 		return EXIT_FAILURE;
 
 	// read the 3D point-cloud if available
@@ -786,43 +791,31 @@ int main(int argc, LPCTSTR* argv)
 	if (bAssignPoints)
 		scene.pointcloud.pointViews.resize(scene.pointcloud.GetSize());
 
-	// undistort images
-	const String pathData(MAKE_PATH_FULL(WORKING_FOLDER_FULL, OPT::strOutputImageFolder));
-	Util::Progress progress(_T("Processed images"), scene.images.size());
-	GET_LOGCONSOLE().Pause();
+	// set the image cameras (the distorted images are undistorted when read) and assign the points
 	#ifdef _USE_OPENMP
-	bool bAbort(false);
-	#pragma omp parallel for shared(bAbort) schedule(dynamic)
+	#pragma omp parallel for schedule(dynamic)
 	for (int ID=0; ID<(int)scene.images.size(); ++ID) {
-		#pragma omp flush (bAbort)
-		if (bAbort)
-			continue;
 	#else
 	FOREACH(ID, scene.images) {
 	#endif
-		++progress;
 		Image& imageData = scene.images[ID];
 		if (!imageData.IsValid())
 			continue;
-		if (!UndistortBrown(imageData, ID, pltDistCoeffs[imageData.platformID][imageData.cameraID], pathData)) {
-			#ifdef _USE_OPENMP
-			bAbort = true;
-			#pragma omp flush (bAbort)
-			continue;
-			#else
-			return EXIT_FAILURE;
-			#endif
-		}
 		imageData.UpdateCamera(scene.platforms);
 		if (bAssignPoints)
 			AssignPoints(imageData, ID, scene.pointcloud);
 	}
-	GET_LOGCONSOLE().Play();
-	#ifdef _USE_OPENMP
-	if (bAbort)
-		return EXIT_FAILURE;
-	#endif
-	progress.close();
+	if (!scene.pointcloud.pointObservations.empty()) {
+		// the measurements are in the image files: map them to the images as their cameras see them
+		const ObservationMapArr observationMaps(ObservationMap::MakeMaps(scene.images));
+		FOREACH(i, scene.pointcloud.pointObservations) {
+			const PointCloud::ViewArr& views = scene.pointcloud.pointViews[i];
+			PointCloud::ObservationArr& observations = scene.pointcloud.pointObservations[i];
+			ASSERT(observations.size() == views.size());
+			FOREACH(v, views)
+				observations[v] = observationMaps[views[v]].FileToCamera(observations[v]);
+		}
+	}
 
 	if (scene.pointcloud.IsValid()) {
 		// filter invalid points

@@ -118,8 +118,16 @@ own state and call the models. The depth-map algorithms built on the models are 
   `Pinhole<T>::Perspective` and `DistortBrown` on Jets and applies `fx, fy, cx, cy` from the parameter
   block in place (no `Pinhole` of Jets is built); the spherical angular residual takes its tangent basis
   from `Spherical<double>`.
-- `SFM::Scene::UndistortImages`, `SFM::UndistortDepthMaps` (`libs/SFM/Scene.cpp`, `InterfaceMVS.cpp`) and
-  `apps/InterfaceMetashape` use `UndistortMaps`; SfM feature extraction uses `SphereCubeMap`.
+- `SFM::Scene::UndistortImages` and `SFM::UndistortDepthMaps` (`libs/SFM/Scene.cpp`, `InterfaceMVS.cpp`)
+  use `UndistortMaps`; SfM feature extraction uses `SphereCubeMap`.
+- Importers pass the distortion through, with the feature observations of the sparse points:
+  `InterfaceCOLMAP` maps SIMPLE_RADIAL, RADIAL, OPENCV and FULL_OPENCV to BROWN (the fisheye, FOV and
+  thin-prism models are refused) and reads the observations from `images.bin/txt`; on export it writes a
+  Brown camera as `OPENCV`/`FULL_OPENCV` and the stored observations, else the projections through the
+  distortion. `InterfaceMetashape` makes the distorted Metashape and BlocksExchange sensors BROWN through
+  `Platform::Camera::SetBrownLens` (their `p1`/`p2` are OpenCV's `p2`/`p1`) and reads the BlocksExchange
+  tie-point measurements as observations, mapped into the camera frame by `ObservationMap`
+  (`libs/MVS/Image.h`).
 - SfM export (`SFM::ExportMVS`, `libs/SFM/InterfaceMVS.cpp`) writes Brown cameras natively with the
   original image paths and no undistortion, unless `CreateStructure --undistort-extension` is set;
   spherical cameras are written natively (`--spherical-export native`, default) or through the
@@ -184,8 +192,7 @@ own state and call the models. The depth-map algorithms built on the models are 
 - Spherical keypoints in `.sfm` projects extracted with the older half-pixel convention sit half a pixel off in
   latitude in the current model (a spherical camera has no principal point to absorb it): such a project
   reconstructs with a higher reprojection error and should be re-extracted.
-- InterfaceCOLMAP, InterfaceMetashape and InterfacePolycam still undistort on their own instead of
-  passing the distortion through.
+- InterfacePolycam still undistorts on its own instead of passing the distortion through.
 - Metal runs the hand mirror on Apple hardware only; it is checked there by `MetalModelMathTest`.
 - Nothing bounds the Brown coefficients in the SfM bundle adjustment (no parameter bounds, no check
   after it), so BA can converge to a distortion that folds inside the image, typically in the corners

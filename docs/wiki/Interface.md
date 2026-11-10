@@ -8,9 +8,9 @@
 
 3. [OpenMVG](https://github.com/openMVG/openMVG) output is supported by *OpenMVS*. In order to convert a project from *OpenMVG* to *OpenMVS* either use the *OpenMVG* integrated exporter *openMVG_main_openMVG2openMVS*, or at the building stage make sure to point the *CMake* tool to the *OpenMVG* installation folder to generate an importer.
 
-4. [COLMAP](https://colmap.github.io) dense output (undistorted images and project files) is supported by *OpenMVS* through the `InterfaceCOLMAP` app.
+4. [COLMAP](https://colmap.github.io) projects are supported by *OpenMVS* through the `InterfaceCOLMAP` app: either the dense output (undistorted images and project files) or directly the sparse model with the SIMPLE_PINHOLE, PINHOLE, SIMPLE_RADIAL, RADIAL, OPENCV or FULL_OPENCV cameras (the distorted images are undistorted when read), including the feature observations of the sparse points.
 
-5. [BlocksExchange](https://docs.bentley.com/LiveContent/web/ContextCapture%20Help-v18/en/GUID-59E6CC36-F349-4DE0-A563-FFC47296A624.html) *XML* open exchange format used by Bentley *iTwin Capture Modeler* / *ContextCapture* and Agisoft *Metashape* is supported through `InterfaceMetashape`.
+5. [BlocksExchange](https://docs.bentley.com/LiveContent/web/ContextCapture%20Help-v18/en/GUID-59E6CC36-F349-4DE0-A563-FFC47296A624.html) *XML* open exchange format used by Bentley *iTwin Capture Modeler* / *ContextCapture* and Agisoft *Metashape* is supported through `InterfaceMetashape`, including the Brown lens distortion of the cameras (the images are undistorted when read) and the tie-point measurements as feature observations.
 
 6. [Polycam](https://poly.cam) projects are supported through `InterfacePolycam`.
 

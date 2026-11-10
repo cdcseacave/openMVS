@@ -170,7 +170,7 @@ described in `SphericalPatchMatch.md` §1. `MvgMvsPipeline.py` exports cube-maps
 - `View::Ray()` and `View::UnprojectPoint()` still use the front-hemisphere 2D `Unproject()`; whether a live
   caller invokes them on a spherical image is not audited.
 - The semi-global matcher does not apply the undistortion validity mask (the ignore mask) of Brown images.
-- InterfaceCOLMAP, InterfaceMetashape and InterfacePolycam undistort on their own; InterfaceCOLMAP exports
-  a Brown camera as `OPENCV`/`FULL_OPENCV`.
+- InterfaceCOLMAP and InterfaceMetashape import and export pinhole and Brown cameras only (COLMAP has
+  no equirectangular model; Metashape spherical sensors are refused); InterfacePolycam undistorts on its own.
 - Pose-uncertainty estimation is not validated for spherical cameras (`PoseUncertainty.md` §4).
 - Mesh stages do not support spherical cameras (a 360 dataset meshes through `--spherical-export cubemap`).

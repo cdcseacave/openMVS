@@ -172,9 +172,10 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		boost::program_options::options_description visible("Available options");
 		visible.add(generic).add(config);
 		GET_LOG() << _T("\n"
-			"Import/export 3D reconstruction from COLMAP (TXT/BIN format) and to COLMAP (TXT format). \n"
-			"In order to import a scene, run COLMAP SfM and next undistort the images (only PINHOLE\n"
-			"camera model supported for the moment)."
+			"Import/export 3D reconstruction from COLMAP (TXT/BIN format) and to COLMAP (TXT format).\n"
+			"The SIMPLE_PINHOLE, PINHOLE, SIMPLE_RADIAL, RADIAL, OPENCV and FULL_OPENCV camera models are\n"
+			"supported (the distorted ones as Brown cameras, undistorted when the images are read),\n"
+			"together with the feature observations of the sparse points."
 			"\n")
 			<< visible;
 	}
@@ -238,6 +239,8 @@ const std::vector<String> mapCameraModel {
 	"RADIAL_FISHEYE",
 	"THIN_PRISM_FISHEYE"
 };
+// the number of parameters of each camera model above
+const std::vector<size_t> mapCameraModelNumParams {3, 4, 4, 5, 8, 8, 12, 5, 4, 5, 12};
 
 // tools
 bool NextLine(std::istream& stream, std::istringstream& in, bool bIgnoreEmpty=true) {
@@ -294,6 +297,12 @@ struct Camera {
 		return WriteTXT(stream);
 	}
 
+	// the index of the model in mapCameraModel, NO_ID if unknown
+	static uint32_t ModelIndex(const String& model) {
+		const auto it(std::find(mapCameraModel.begin(), mapCameraModel.end(), model));
+		return it == mapCameraModel.end() ? NO_ID : (uint32_t)std::distance(mapCameraModel.begin(), it);
+	}
+
 	// Camera list with one line of data per camera:
 	//   CAMERA_ID, MODEL, WIDTH, HEIGHT, PARAMS[]
 	bool ReadTXT(std::istream& stream) {
@@ -303,14 +312,14 @@ struct Camera {
 		in >> ID >> model >> width >> height;
 		if (in.fail())
 			return false;
-		params.resize(4);
-		if (model == _T("PINHOLE")) {
-			in >> params[0] >> params[1] >> params[2] >> params[3];
-		} else if (model == _T("SIMPLE_PINHOLE")) {
-			in >> params[0] >> params[2] >> params[3];
-			params[1] = params[0];
-		} else
+		const uint32_t modelIdx(ModelIndex(model));
+		if (modelIdx == NO_ID) {
+			VERBOSE("error: unknown COLMAP camera model '%s'", model.c_str());
 			return false;
+		}
+		params.resize(mapCameraModelNumParams[modelIdx]);
+		for (REAL& param: params)
+			in >> param;
 		return !in.fail();
 	}
 
@@ -326,21 +335,56 @@ struct Camera {
 		}
 
 		ID = ReadBinaryLittleEndian<camera_t>(&stream);
-		model = mapCameraModel[ReadBinaryLittleEndian<int>(&stream)];
+		const int modelIdx(ReadBinaryLittleEndian<int>(&stream));
+		if (modelIdx < 0 || modelIdx >= (int)mapCameraModel.size()) {
+			VERBOSE("error: unknown COLMAP camera model %d", modelIdx);
+			return false;
+		}
+		model = mapCameraModel[modelIdx];
 		width = (uint32_t)ReadBinaryLittleEndian<uint64_t>(&stream);
 		height = (uint32_t)ReadBinaryLittleEndian<uint64_t>(&stream);
-		params.resize(4);
-		if (model == _T("PINHOLE")) {
-			ReadBinaryLittleEndian<double>(&stream, &params);
-		} else if (model == _T("SIMPLE_PINHOLE")) {
-			std::vector<REAL> tmp_params(3);
-			ReadBinaryLittleEndian<double>(&stream, &tmp_params);
-			params[0] = tmp_params[0];
-			params[1] = tmp_params[0];
-			params[2] = tmp_params[1];
-			params[3] = tmp_params[2];
-		} else
+		params.resize(mapCameraModelNumParams[modelIdx]);
+		ReadBinaryLittleEndian<double>(&stream, &params);
+		return !stream.fail();
+	}
+
+	// the Interface camera of this COLMAP camera: the pinhole K at the image resolution (OpenMVS pixel
+	// center convention) and, for the distorted models, the Brown coefficients k1,k2,p1,p2,k3[,k4,k5,k6];
+	// false for the models that are not Brown (fisheye, FOV, thin prism)
+	bool ToInterface(Interface::Platform::Camera& camera) const {
+		ASSERT(params.size() == mapCameraModelNumParams[ModelIndex(model)]);
+		REAL fx, fy, cx, cy;
+		std::vector<double> distortion; // k1,k2,p1,p2,k3,k4,k5,k6
+		if (model == _T("SIMPLE_PINHOLE") || model == _T("SIMPLE_RADIAL") || model == _T("RADIAL")) {
+			fx = fy = params[0]; cx = params[1]; cy = params[2];
+			if (model == _T("SIMPLE_RADIAL"))
+				distortion = {params[3], 0, 0, 0, 0};
+			else if (model == _T("RADIAL"))
+				distortion = {params[3], params[4], 0, 0, 0};
+		} else if (model == _T("PINHOLE") || model == _T("OPENCV") || model == _T("FULL_OPENCV")) {
+			fx = params[0]; fy = params[1]; cx = params[2]; cy = params[3];
+			// OPENCV and FULL_OPENCV list the Brown coefficients in the Interface order
+			if (model == _T("OPENCV"))
+				distortion = {params[4], params[5], params[6], params[7], 0};
+			else if (model == _T("FULL_OPENCV"))
+				distortion.assign(params.begin()+4, params.end());
+		} else {
 			return false;
+		}
+		camera.K = Interface::Mat33d::eye();
+		camera.K(0,0) = fx;
+		camera.K(1,1) = fy;
+		// account for different pixel center conventions as COLMAP uses pixel center at (0.5,0.5)
+		camera.K(0,2) = cx-REAL(0.5);
+		camera.K(1,2) = cy-REAL(0.5);
+		camera.width = width;
+		camera.height = height;
+		if (std::any_of(distortion.begin(), distortion.end(), [](double k) { return k != 0; })) {
+			if (distortion.size() == 8 && distortion[5] == 0 && distortion[6] == 0 && distortion[7] == 0)
+				distortion.resize(5);
+			camera.model = Interface::Platform::Camera::BROWN;
+			camera.params = std::move(distortion);
+		}
 		return true;
 	}
 
@@ -365,8 +409,9 @@ struct Camera {
 		}
 
 		WriteBinaryLittleEndian<camera_t>(&stream, ID);
-		const int64 modelId(std::distance(mapCameraModel.begin(), std::find(mapCameraModel.begin(), mapCameraModel.end(), model)));
-		WriteBinaryLittleEndian<int>(&stream, (int)modelId);
+		const uint32_t modelIdx(ModelIndex(model));
+		ASSERT(modelIdx != NO_ID && params.size() == mapCameraModelNumParams[modelIdx]);
+		WriteBinaryLittleEndian<int>(&stream, (int)modelIdx);
 		WriteBinaryLittleEndian<uint64_t>(&stream, width);
 		WriteBinaryLittleEndian<uint64_t>(&stream, height);
 		for (REAL param: params)
@@ -750,27 +795,23 @@ bool ImportScene(const String& strFolder, const String& strOutFolder, Interface&
 			platform.name = String::FormatString(_T("platform%03u"), colmapCamera.ID); // only one camera per platform supported
 			Interface::Platform::Camera camera;
 			camera.name = colmapCamera.model;
-			camera.K = Interface::Mat33d::eye();
-			// account for different pixel center conventions as COLMAP uses pixel center at (0.5,0.5) 
-			camera.K(0,0) = colmapCamera.params[0];
-			camera.K(1,1) = colmapCamera.params[1];
-			camera.K(0,2) = colmapCamera.params[2]-REAL(0.5);
-			camera.K(1,2) = colmapCamera.params[3]-REAL(0.5);
+			if (!colmapCamera.ToInterface(camera)) {
+				VERBOSE("error: COLMAP camera model %s is not supported (undistort the images with COLMAP first)", colmapCamera.model.c_str());
+				return false;
+			}
 			camera.R = Interface::Mat33d::eye();
 			camera.C = Interface::Pos3d(0,0,0);
-			if (OPT::bNormalizeIntrinsics) {
-				// normalize camera intrinsics
+			if (OPT::bNormalizeIntrinsics && camera.model == Interface::Platform::Camera::PINHOLE) {
+				// normalize camera intrinsics (a Brown camera keeps the resolution of its lens)
 				camera.K = ScaleK<double>(camera.K, 1.0/Camera::GetNormalizationScale(colmapCamera.width, colmapCamera.height));
-			} else {
-				camera.width = colmapCamera.width;
-				camera.height = colmapCamera.height;
+				camera.width = camera.height = 0;
 			}
 			platform.cameras.emplace_back(camera);
 			scene.platforms.emplace_back(platform);
 		}
 	}
 	if (mapCameras.empty()) {
-		VERBOSE("error: no valid cameras (make sure they are in PINHOLE model)");
+		VERBOSE("error: no valid cameras");
 		return false;
 	}
 
@@ -826,9 +867,14 @@ bool ImportScene(const String& strFolder, const String& strOutFolder, Interface&
 			Interface::Vertex vertex;
 			vertex.X = point.p;
 			for (const COLMAP::Point::Track& track: point.tracks) {
+				const auto itImage(mapImages.find(COLMAP::Image(track.idImage)));
+				ASSERT(itImage != mapImages.end() && track.idProj < itImage->first.projs.size());
 				Interface::Vertex::View view;
-				view.imageID = mapImages.at(COLMAP::Image(track.idImage));
+				view.imageID = itImage->second;
 				view.confidence = 0;
+				// the feature observation, in the OpenMVS pixel center convention
+				const Eigen::Vector2f& x = itImage->first.projs[track.idProj].p;
+				view.x = Interface::Pos2f(x.x()-0.5f, x.y()-0.5f);
 				vertex.views.emplace_back(view);
 			}
 			std::sort(vertex.views.begin(), vertex.views.end(),
@@ -836,6 +882,8 @@ bool ImportScene(const String& strFolder, const String& strOutFolder, Interface&
 			scene.vertices.emplace_back(std::move(vertex));
 			scene.verticesColor.emplace_back(Interface::Color{point.c});
 		}
+		if (!scene.vertices.empty())
+			scene.flags |= Interface::HAS_OBSERVATIONS;
 	}
 	pointcloud.Release();
 	if (File::access(filenameDensePoints) && File::access(filenameDenseVisPoints)) {
@@ -1004,6 +1052,15 @@ bool ImportPointCloud(const String& strPointCloudFileName, Interface& scene)
 	return true;
 }
 
+// the pixel of a world point in the image file of a pinhole camera with the given lens distortion
+Point2f ProjectPoint(const Camera& camera, const BrownDistortion<REAL>& distortion, const Point3& X)
+{
+	const Point3 Xc(camera.TransformPointW2C(X));
+	ASSERT(Xc.z > 0);
+	const Eigen::Vector2d u(distortion.Distort(Eigen::Vector2d(Xc.x/Xc.z, Xc.y/Xc.z)));
+	return Point2f(camera.TransformPointC2I(Point3(u.x(), u.y(), REAL(1))));
+}
+
 bool ExportScene(const String& strFolder, const Interface& scene,
 	bool bForceSparsePointCloud = false, bool bForceCommonIntrinsics = false, bool noPoints = false, bool binary = true)
 {
@@ -1011,11 +1068,13 @@ bool ExportScene(const String& strFolder, const Interface& scene,
 
 	// write camera list
 	CLISTDEF0IDX(KMatrix,uint32_t) Ks;
+	CLISTDEF0IDX(BrownDistortion<REAL>,uint32_t) distortions; // all zero for a pinhole camera
 	CLISTDEF0IDX(COLMAP::Camera,uint32_t) cams;
 	{
 		const String filenameCameras(strFolder+(binary?COLMAP_CAMERAS_BIN:COLMAP_CAMERAS_TXT));
 		LOG_OUT() << "Writing cameras: " << filenameCameras << std::endl;
 		std::ofstream file(filenameCameras, binary ? std::ios::trunc|std::ios::binary : std::ios::trunc);
+		file.precision(std::numeric_limits<double>::max_digits10); // the text files keep the full precision
 		if (!file.good()) {
 			VERBOSE("error: unable to open file '%s'", filenameCameras.c_str());
 			return false;
@@ -1082,7 +1141,7 @@ bool ExportScene(const String& strFolder, const Interface& scene,
 				cam.height = camera.height;
 				K = camera.K;
 			}
-			// account for different pixel center conventions as COLMAP uses pixel center at (0.5,0.5) 
+			// account for different pixel center conventions as COLMAP uses pixel center at (0.5,0.5)
 			cam.params[0] = K(0,0);
 			cam.params[1] = K(1,1);
 			cam.params[2] = K(0,2)+REAL(0.5);
@@ -1090,6 +1149,11 @@ bool ExportScene(const String& strFolder, const Interface& scene,
 			if (!cam.Write(file, binary))
 				return false;
 			Ks.emplace_back(K);
+			BrownDistortion<REAL>& distortion = distortions.emplace_back(BrownDistortion<REAL>{});
+			if (camera.model == Interface::Platform::Camera::BROWN)
+				distortion = BrownDistortion<REAL>{cam.params[4], cam.params[5], cam.params[6], cam.params[7],
+					cam.params.size() > 8 ? cam.params[8] : REAL(0), cam.params.size() > 8 ? cam.params[9] : REAL(0),
+					cam.params.size() > 8 ? cam.params[10] : REAL(0), cam.params.size() > 8 ? cam.params[11] : REAL(0)};
 			cams.emplace_back(cam);
 			if (bForceCommonIntrinsics)
 				break;
@@ -1120,7 +1184,7 @@ bool ExportScene(const String& strFolder, const Interface& scene,
 			img.idCamera = bForceCommonIntrinsics ? 0u : image.platformID;
 			img.name = MAKE_PATH_REL(OPT::strImageFolder, MAKE_PATH_FULL(WORKING_FOLDER_FULL, image.name));
 			Camera& camera = cameras[ID];
-			camera.K = Ks[image.platformID];
+			camera.K = Ks[img.idCamera];
 			camera.R = pose.R;
 			camera.C = pose.C;
 			camera.ComposeP();
@@ -1139,6 +1203,7 @@ bool ExportScene(const String& strFolder, const Interface& scene,
 			const String filenamePoints(strFolder+(binary?COLMAP_POINTS_BIN:COLMAP_POINTS_TXT));
 			LOG_OUT() << "Writing points: " << filenamePoints << std::endl;
 			std::ofstream file(filenamePoints, binary ? std::ios::trunc|std::ios::binary : std::ios::trunc);
+			file.precision(std::numeric_limits<double>::max_digits10); // the text files keep the full precision
 			if (!file.good()) {
 				VERBOSE("error: unable to open file '%s'", filenamePoints.c_str());
 				return false;
@@ -1162,11 +1227,10 @@ bool ExportScene(const String& strFolder, const Interface& scene,
 						point.tracks.emplace_back(COLMAP::Point::Track{img.ID, (uint32_t)img.projs.size()});
 						COLMAP::Image::Proj proj;
 						proj.idPoint = ID;
-						const Point3 X(vertex.X);
-						ProjectVertex_3x4_3_2(cameras[view.imageID].P.val, X.ptr(), proj.p.data());
-						// account for different pixel center conventions as COLMAP uses pixel center at (0.5,0.5) 
-						proj.p[0] += REAL(0.5);
-						proj.p[1] += REAL(0.5);
+						// the feature observation if available, else the projection through the camera model
+						const Point2f x(scene.HasObservations() ? Point2f(view.x) : ProjectPoint(cameras[view.imageID], distortions[img.idCamera], Point3(vertex.X)));
+						// account for different pixel center conventions as COLMAP uses pixel center at (0.5,0.5)
+						proj.p = Eigen::Vector2f(x.x+0.5f, x.y+0.5f);
 						img.projs.emplace_back(proj);
 					}
 					point.c = scene.verticesColor.empty() ? Interface::Col3(255,255,255) : scene.verticesColor[ID].c;
@@ -1267,6 +1331,7 @@ bool ExportScene(const String& strFolder, const Interface& scene,
 		const String filenameImages(strFolder+(binary?COLMAP_IMAGES_BIN:COLMAP_IMAGES_TXT));
 		LOG_OUT() << "Writing images: " << filenameImages << std::endl;
 		std::ofstream file(filenameImages, binary ? std::ios::trunc|std::ios::binary : std::ios::trunc);
+		file.precision(std::numeric_limits<double>::max_digits10); // the text files keep the full precision
 		if (!file.good()) {
 			VERBOSE("error: unable to open file '%s'", filenameImages.c_str());
 			return false;

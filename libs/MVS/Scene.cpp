@@ -80,47 +80,6 @@ std::vector<double> BrownDistortionToParams(const BrownDistortion<REAL>& distort
 	return params;
 }
 
-// maps the observations of an image between its file and the image as the camera sees it, both at
-// the image file resolution: the identity unless the image is undistorted on read
-class ObservationMap {
-public:
-	explicit ObservationMap(const Image& imageData) : bUndistort(imageData.IsUndistortedOnRead()) {
-		if (!bUndistort)
-			return;
-		const CameraLens& lens = imageData.lens;
-		const KMatrix undistortedK(UndistortedK(lens.K, lens.distortion, lens.size));
-		ASSERT(ISZERO(lens.K(0,1)) && ISZERO(undistortedK(0,1)));
-		file = Pinhole<REAL>{lens.K(0,0), lens.K(1,1), lens.K(0,2), lens.K(1,2)};
-		undistorted = Pinhole<REAL>{undistortedK(0,0), undistortedK(1,1), undistortedK(0,2), undistortedK(1,2)};
-		distortion = lens.distortion;
-	}
-	Point2f FileToCamera(const Interface::Pos2f& x) const {
-		if (!bUndistort)
-			return Point2f(x.x, x.y);
-		const Eigen::Vector2d u(undistorted.NormalizedToPixel(distortion.Undistort(file.PixelToNormalized(Eigen::Vector2d(x.x, x.y)))));
-		return Point2f((float)u.x(), (float)u.y());
-	}
-	Interface::Pos2f CameraToFile(const Point2f& x) const {
-		if (!bUndistort)
-			return Interface::Pos2f(x.x, x.y);
-		const Eigen::Vector2d d(file.NormalizedToPixel(distortion.Distort(undistorted.PixelToNormalized(Eigen::Vector2d(x.x, x.y)))));
-		return Interface::Pos2f((float)d.x(), (float)d.y());
-	}
-private:
-	bool bUndistort;
-	Pinhole<REAL> file{}, undistorted{}; // cameras of the image file and of the undistorted image
-	BrownDistortion<REAL> distortion{};
-};
-typedef std::vector<ObservationMap> ObservationMapArr;
-ObservationMapArr MakeObservationMaps(const ImageArr& images)
-{
-	ObservationMapArr maps;
-	maps.reserve(images.size());
-	for (const Image& imageData: images)
-		maps.emplace_back(imageData);
-	return maps;
-}
-
 } // namespace
 
 void Scene::Release()
@@ -201,11 +160,7 @@ bool Scene::LoadInterface(const String& fileName)
 					VERBOSE("error: Brown camera %u of platform %u needs its resolution and 5 or 8 distortion coefficients", platform.cameras.size()-1, platforms.size()-1);
 					return false;
 				}
-				camera.model = CameraModelType::BROWN;
-				camera.lens.K = itCamera.K;
-				camera.lens.size = cv::Size((int)itCamera.width, (int)itCamera.height);
-				camera.lens.distortion = ParamsToBrownDistortion(itCamera.params);
-				camera.K = UndistortedK(camera.lens.K, camera.lens.distortion, camera.lens.size);
+				camera.SetBrownLens(itCamera.K, ParamsToBrownDistortion(itCamera.params), cv::Size((int)itCamera.width, (int)itCamera.height));
 				break;
 			case Interface::Platform::Camera::SPHERICAL:
 				camera.model = CameraModelType::SPHERICAL;
@@ -214,7 +169,7 @@ bool Scene::LoadInterface(const String& fileName)
 				VERBOSE("error: unknown model %u of camera %u of platform %u", (unsigned)itCamera.model, platform.cameras.size()-1, platforms.size()-1);
 				return false;
 			}
-			if (!itCamera.IsNormalized()) {
+			if (camera.model != CameraModelType::BROWN && !itCamera.IsNormalized()) {
 				// normalize K
 				ASSERT(itCamera.HasResolution());
 				camera.K = camera.GetScaledK(REAL(1)/Camera::GetNormalizationScale(itCamera.width, itCamera.height));
@@ -290,7 +245,7 @@ bool Scene::LoadInterface(const String& fileName)
 		ObservationMapArr observationMaps;
 		if (obj.HasObservations()) {
 			pointcloud.pointObservations.resize(obj.vertices.size());
-			observationMaps = MakeObservationMaps(images);
+			observationMaps = ObservationMap::MakeMaps(images);
 		}
 		FOREACH(i, pointcloud.points) {
 			const Interface::Vertex& vertex = obj.vertices[i];
@@ -319,7 +274,7 @@ bool Scene::LoadInterface(const String& fileName)
 				observations.resize(views.size());
 				views.ForEach([&](PointCloud::ViewArr::IDX v) {
 					ASSERT(images[views[v]].IsValid());
-					observations[v] = observationMaps[views[v]].FileToCamera(vertex.views[indices[v]].x);
+					observations[v] = observationMaps[views[v]].FileToCamera(Point2f(vertex.views[indices[v]].x));
 				});
 			}
 		}
@@ -423,7 +378,7 @@ bool Scene::SaveInterface(const String& fileName, int version) const
 	}
 	if (!pointcloud.pointObservations.empty()) {
 		ASSERT(pointcloud.pointObservations.size() == pointcloud.points.size());
-		const ObservationMapArr observationMaps(MakeObservationMaps(images));
+		const ObservationMapArr observationMaps(ObservationMap::MakeMaps(images));
 		FOREACH(i, pointcloud.points) {
 			const PointCloud::ViewArr& views = pointcloud.pointViews[i];
 			const PointCloud::ObservationArr& observations = pointcloud.pointObservations[i];

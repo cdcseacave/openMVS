@@ -70,6 +70,10 @@ public:
 		inline Camera() : model(CameraModelType::PINHOLE) {}
 		inline Camera(const Matrix3x3& _K, const Matrix3x3& _R, const Point3& _C) : CameraIntern(_K, _R, _C), model(CameraModelType::PINHOLE) {}
 
+		// make it a BROWN camera of the image files of the given resolution and pixel camera matrix:
+		// K becomes the normalized UndistortedK, the camera every consumer sees
+		void SetBrownLens(const KMatrix& fileK, const BrownDistortion<REAL>& distortion, const cv::Size& size);
+
 		#ifdef _USE_BOOST
 		// implement BOOST serialization; the fields of CameraIntern are written here, not through its
 		// base object, so the archive of a version 0 camera (a CameraIntern) reads as one

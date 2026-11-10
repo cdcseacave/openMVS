@@ -257,6 +257,47 @@ public:
 };
 typedef CLISTDEF2IDX(Image,IIndex) ImageArr;
 
+// maps the feature observations of an image between its file and the image as the camera sees it,
+// both at the image file resolution: the identity unless the image is undistorted on read
+class ObservationMap {
+public:
+	explicit ObservationMap(const Image& imageData) : bUndistort(imageData.IsUndistortedOnRead()) {
+		if (!bUndistort)
+			return;
+		const CameraLens& lens = imageData.lens;
+		const KMatrix undistortedK(UndistortedK(lens.K, lens.distortion, lens.size));
+		ASSERT(ISZERO(lens.K(0,1)) && ISZERO(undistortedK(0,1)));
+		file = Pinhole<REAL>{lens.K(0,0), lens.K(1,1), lens.K(0,2), lens.K(1,2)};
+		undistorted = Pinhole<REAL>{undistortedK(0,0), undistortedK(1,1), undistortedK(0,2), undistortedK(1,2)};
+		distortion = lens.distortion;
+	}
+	Point2f FileToCamera(const Point2f& x) const {
+		if (!bUndistort)
+			return x;
+		const Eigen::Vector2d u(undistorted.NormalizedToPixel(distortion.Undistort(file.PixelToNormalized(Eigen::Vector2d(x.x, x.y)))));
+		return Point2f((float)u.x(), (float)u.y());
+	}
+	Point2f CameraToFile(const Point2f& x) const {
+		if (!bUndistort)
+			return x;
+		const Eigen::Vector2d d(file.NormalizedToPixel(distortion.Distort(undistorted.PixelToNormalized(Eigen::Vector2d(x.x, x.y)))));
+		return Point2f((float)d.x(), (float)d.y());
+	}
+	// one map per image
+	static std::vector<ObservationMap> MakeMaps(const ImageArr& images) {
+		std::vector<ObservationMap> maps;
+		maps.reserve(images.size());
+		for (const Image& imageData: images)
+			maps.emplace_back(imageData);
+		return maps;
+	}
+private:
+	bool bUndistort;
+	Pinhole<REAL> file{}, undistorted{}; // cameras of the image file and of the undistorted image
+	BrownDistortion<REAL> distortion{};
+};
+typedef std::vector<ObservationMap> ObservationMapArr;
+
 static inline IIndex ImageID2Index(const ImageArr& images, IIndex ID) {
 	return images.FindFunc([&ID](const Image& image) { return image.ID == ID; });
 }

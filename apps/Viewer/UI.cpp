@@ -39,6 +39,7 @@
 #include <imgui_impl_opengl3.h>
 #include <portable-file-dialogs.h>
 #include "EmptySceneIcon.h"
+#include "CrossSplat.h"
 
 using namespace VIEWER;
 
@@ -175,6 +176,7 @@ void UI::Release() {
 
 	// Release embedded icon texture if loaded
 	emptySceneIcon.Release();
+	crossSplat.Release();
 	pointObservations.Release();
 }
 
@@ -982,13 +984,50 @@ void UI::ShowPointObservations(Window& window) {
 				"Magnification of the median view" : "Magnification of the image pixels");
 		if (pointObservations.HasWeights())
 			ImGui::Checkbox("Sort by confidence", &pointObservations.sortByWeight);
+
+		// the markers: the cross splat at the reprojection of the 3D point, a circle at the
+		// feature observation stored for the view
+		if (!crossSplat.IsValid()) {
+			const cv::Mat png(1, (int)sizeof(gs_texCrossPNG), CV_8UC1, (void*)gs_texCrossPNG);
+			const cv::Mat image(cv::imdecode(png, cv::IMREAD_UNCHANGED));
+			ASSERT(image.type() == CV_8UC4);
+			crossSplat.Create(image);
+		}
+		ASSERT(crossSplat.IsValid());
+		ImDrawList* drawList = ImGui::GetWindowDrawList();
+		const ImU32 colorFeature = IM_COL32(0, 255, 0, 220);
+		const auto drawReprojection = [&](const ImVec2& center) {
+			const float r(5), d(r*2+1);
+			drawList->AddImage((ImTextureID)(uintptr_t)crossSplat.GetID(),
+				ImVec2(center.x-r, center.y-r), ImVec2(center.x-r+d, center.y-r+d));
+		};
+		const auto drawFeature = [&](const ImVec2& center) {
+			drawList->AddCircle(center, 5.f, colorFeature, 0, 1.5f);
+		};
+		if (pointObservations.HasFeatures()) {
+			const ImVec2 markerSize(ImGui::GetTextLineHeight(), ImGui::GetTextLineHeight());
+			const auto legend = [&](const auto& draw, const char* label) {
+				ImGui::Dummy(markerSize);
+				const ImVec2 rectMin = ImGui::GetItemRectMin();
+				draw(ImVec2(rectMin.x+0.5f*markerSize.x, rectMin.y+0.5f*markerSize.y));
+				ImGui::SameLine();
+				ImGui::TextUnformatted(label);
+			};
+			legend(drawReprojection, "reprojection");
+			ImGui::SameLine();
+			legend(drawFeature, "feature");
+			ImGui::SameLine();
+			ImGui::TextDisabled("(?)");
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Cross: the 3D point projected in the view (patch center)\n"
+					"Circle: the feature observed in the view\n"
+					"The number in the patch is the reprojection error (image file pixels)");
+		}
 		ImGui::Separator();
 
 		// patches grid wrapping to the window width; a click views the scene from that camera
 		const ImVec2 patchSize((float)PointObservations::PATCH_SIZE, (float)PointObservations::PATCH_SIZE);
 		const float maxX = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
-		const ImU32 colorCross = IM_COL32(255, 0, 0, 200);
-		ImDrawList* drawList = ImGui::GetWindowDrawList();
 		for (size_t i = 0; i < observations.size(); ++i) {
 			const PointObservations::Observation& observation = observations[i];
 			ImGui::PushID((int)i);
@@ -1008,20 +1047,36 @@ void UI::ShowPointObservations(Window& window) {
 			}
 			const bool hovered = ImGui::IsItemHovered();
 			const bool clicked = ImGui::IsItemClicked();
-			// mark the projection in the middle of the patch
-			const ImVec2 rectMin = ImGui::GetItemRectMin();
+			// mark the projection in the middle of the patch and the feature observation around it,
+			// at the magnification of the patch, clipped to the patch
+			const ImVec2 rectMin = ImGui::GetItemRectMin(), rectMax = ImGui::GetItemRectMax();
 			const ImVec2 center(rectMin.x+0.5f*patchSize.x, rectMin.y+0.5f*patchSize.y);
-			const float gap = 2.f, arm = 7.f;
-			drawList->AddLine(ImVec2(center.x-arm, center.y), ImVec2(center.x-gap, center.y), colorCross, 1.5f);
-			drawList->AddLine(ImVec2(center.x+gap, center.y), ImVec2(center.x+arm, center.y), colorCross, 1.5f);
-			drawList->AddLine(ImVec2(center.x, center.y-arm), ImVec2(center.x, center.y-gap), colorCross, 1.5f);
-			drawList->AddLine(ImVec2(center.x, center.y+gap), ImVec2(center.x, center.y+arm), colorCross, 1.5f);
+			drawList->PushClipRect(rectMin, rectMax, true);
+			if (pointObservations.HasFeatures() && observation.patch.IsValid()) {
+				ASSERT(observation.patchMagnification > 0);
+				drawFeature(ImVec2(
+					center.x+observation.featureOffset.x*observation.patchMagnification,
+					center.y+observation.featureOffset.y*observation.patchMagnification));
+			}
+			drawReprojection(center);
+			if (pointObservations.HasFeatures()) {
+				const String error(String::FormatString("%.2f px", observation.ReprojectionError()));
+				const ImVec2 textSize = ImGui::CalcTextSize(error.c_str());
+				const ImVec2 textPos(rectMin.x+3, rectMax.y-3-textSize.y);
+				drawList->AddRectFilled(ImVec2(textPos.x-2, textPos.y-1), ImVec2(textPos.x+textSize.x+2, textPos.y+textSize.y+1), IM_COL32(0, 0, 0, 160));
+				drawList->AddText(textPos, IM_COL32(255, 255, 255, 255), error.c_str());
+			}
+			drawList->PopClipRect();
 			ImGui::EndGroup();
 			if (hovered) {
 				const Point2f proj = observation.ProjNative();
 				ImGui::BeginTooltip();
 				ImGui::Text("%s (index %u, ID %u)", observation.name.c_str(), observation.idxImage, observation.ID);
-				ImGui::Text("pixel: %.2f, %.2f", proj.x, proj.y);
+				ImGui::Text("projection: %.2f, %.2f", proj.x, proj.y);
+				if (pointObservations.HasFeatures()) {
+					ImGui::Text("feature: %.2f, %.2f", observation.feature.x, observation.feature.y);
+					ImGui::Text("reprojection error: %.2f px", observation.ReprojectionError());
+				}
 				ImGui::Text("depth: %g", observation.depth);
 				ImGui::Text("footprint: %.3g px per unit", observation.FootprintNative());
 				if (pointObservations.HasWeights())

@@ -31,6 +31,7 @@
 
 #include "Common.h"
 #include "Platform.h"
+#include "../Math/Camera/CameraUndistort.h"
 
 using namespace MVS;
 
@@ -39,6 +40,18 @@ using namespace MVS;
 
 
 // S T R U C T S ///////////////////////////////////////////////////
+
+void Platform::Camera::SetBrownLens(const KMatrix& fileK, const BrownDistortion<REAL>& distortion, const cv::Size& size)
+{
+	ASSERT(size.width > 0 && size.height > 0);
+	ASSERT(fileK(0,0) > 0 && fileK(1,1) > 0);
+	model = CameraModelType::BROWN;
+	lens.K = fileK;
+	lens.size = size;
+	lens.distortion = distortion;
+	K = ScaleK(UndistortedK(lens.K, lens.distortion, lens.size), REAL(1)/GetNormalizationScale((uint32_t)size.width, (uint32_t)size.height));
+}
+/*----------------------------------------------------------------*/
 
 // return the normalized absolute camera pose
 CameraIntern Platform::GetCamera(uint32_t cameraID, uint32_t poseID) const

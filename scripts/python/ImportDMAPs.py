@@ -3,6 +3,7 @@
 """
 Import depth-maps corresponding to the given scene images, stored as plain EXR depth images.
 Each scene image should have a corresponding depth-map with the same name, but with a '.depth.exr' extension.
+PINHOLE cameras take z depths, SPHERICAL (equirectangular) ones the range along the pixel ray; BROWN cameras are refused.
 
 Install:
   pip install opencv-python-headless numpy tqdm argparse Imath OpenEXR scikit-learn
@@ -12,7 +13,7 @@ Example usage:
 """
 
 from argparse import ArgumentParser
-from MvsUtils import loadMVSInterface, scale_K, sample_depth_map, saveDMAP
+from MvsUtils import loadMVSInterface, scale_K, sample_depth_map, saveDMAP, projectCamera, CAMERA_MODEL_BROWN, CAMERA_MODEL_SPHERICAL
 from tqdm import tqdm
 import numpy as np
 import os
@@ -86,6 +87,7 @@ def scale_depth_map(scene, image_idx, depth_map, verbose=False):
   R = np.array(scene["platforms"][image["platform_id"]]["poses"][image["pose_id"]]["R"])
   C = np.array(scene["platforms"][image["platform_id"]]["poses"][image["pose_id"]]["C"])
   K = scale_K(K, depth_map.shape[1] / image_width, depth_map.shape[0] / image_height)
+  spherical = scene["platforms"][image["platform_id"]]["cameras"][image["camera_id"]].get("model") == CAMERA_MODEL_SPHERICAL
   depths_sfm = []
   depths_dmap = []
   mean_depth = 0
@@ -95,11 +97,11 @@ def scale_depth_map(scene, image_idx, depth_map, verbose=False):
         # Project the 3D point to the image plane
         # and get the corresponding depth value
         Xcam = R @ (vertex['X'] - C)
-        depth_sfm = float(Xcam[2])
-        if depth_sfm <= 0:
+        # the depth is z for a pinhole camera and the range |X| for a spherical one
+        if not spherical and Xcam[2] <= 0:
           break
-        x = K @ Xcam
-        x = np.array([x[0]/x[2], x[1]/x[2]])
+        px, py, depth_sfm = projectCamera(K, Xcam, spherical)
+        x = np.array([px, py])
         depth_dmap = sample_depth_map(depth_map, x)
         if depth_dmap <= 0:
           break
@@ -200,6 +202,12 @@ def import_dmaps(scene_file, input_dir, ext, output_file, rescale=True, verbose=
   """
   # Load the MVS scene
   scene = loadMVSInterface(scene_file)
+  # the depth-maps of a BROWN camera belong to its undistorted pinhole camera (cv::getOptimalNewCameraMatrix
+  # of the image-file camera), which the scene does not store: the K saved here would be wrong
+  for platform in scene["platforms"]:
+    for camera in platform["cameras"]:
+      if camera.get("model") == CAMERA_MODEL_BROWN:
+        raise ValueError("BROWN cameras are not supported: the depth-maps need the undistorted camera")
   if verbose:
     print(f"Scene {scene_file} loaded: {len(scene['images'])} images")
 
@@ -243,6 +251,7 @@ def import_dmaps(scene_file, input_dir, ext, output_file, rescale=True, verbose=
       "R": scene["platforms"][image["platform_id"]]["poses"][image["pose_id"]]["R"],
       "C": scene["platforms"][image["platform_id"]]["poses"][image["pose_id"]]["C"],
       "depth_map": depth_map,
+      "spherical": scene["platforms"][image["platform_id"]]["cameras"][image["camera_id"]].get("model") == CAMERA_MODEL_SPHERICAL,
     }
 
     # Save DMAP
