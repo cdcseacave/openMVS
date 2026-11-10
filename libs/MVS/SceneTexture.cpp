@@ -311,8 +311,8 @@ struct MeshTexture {
 	struct SeamVertex {
 		struct Patch {
 			struct Edge {
-				uint32_t idxSeamVertex; // the other vertex of this edge
-				FIndex idxFace; // the face containing this edge in this patch
+				uint32_t idxSeamVertex = NO_ID; // the other vertex of this edge
+				FIndex idxFace = NO_ID; // the face containing this edge in this patch
 
 				Edge() = default;
 				inline Edge(uint32_t _idxSeamVertex) : idxSeamVertex(_idxSeamVertex) {}

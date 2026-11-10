@@ -511,15 +511,15 @@ void TFrustum<TYPE,DIMS>::Set(const VECTOR corners[numCorners])
 {
 	// left clipping plane
 	m_planes[0].Set(corners[0], corners[4], corners[6]);
-	if (DIMS > 1) // right clipping plane
+	if constexpr (DIMS > 1) // right clipping plane
 	m_planes[1].Set(corners[1], corners[7], corners[5]);
-	if (DIMS > 2) // top clipping plane
+	if constexpr (DIMS > 2) // top clipping plane
 	m_planes[2].Set(corners[0], corners[5], corners[4]);
-	if (DIMS > 3) // bottom clipping plane
+	if constexpr (DIMS > 3) // bottom clipping plane
 	m_planes[3].Set(corners[2], corners[6], corners[7]);
-	if (DIMS > 4) // near clipping plane
+	if constexpr (DIMS > 4) // near clipping plane
 	m_planes[4].Set(corners[0], corners[2], corners[3]);
-	if (DIMS > 5) // far clipping plane
+	if constexpr (DIMS > 5) // far clipping plane
 	m_planes[5].Set(corners[4], corners[5], corners[7]);
 } // Set
 // Set frustum planes, normals pointing outwards, from the OpenGL projection-view matrix
@@ -528,15 +528,15 @@ void TFrustum<TYPE,DIMS>::SetProjectionGL(const MATRIX4x4& mProjectionView)
 {
 	// left clipping plane
 	m_planes[0].Set(-mProjectionView.row(3) - mProjectionView.row(0));
-	if (DIMS > 1) // right clipping plane
+	if constexpr (DIMS > 1) // right clipping plane
 	m_planes[1].Set(-mProjectionView.row(3) + mProjectionView.row(0));
-	if (DIMS > 2) // top clipping plane
+	if constexpr (DIMS > 2) // top clipping plane
 	m_planes[2].Set(-mProjectionView.row(3) + mProjectionView.row(1));
-	if (DIMS > 3) // bottom clipping plane
+	if constexpr (DIMS > 3) // bottom clipping plane
 	m_planes[3].Set(-mProjectionView.row(3) - mProjectionView.row(1));
-	if (DIMS > 4) // near clipping plane
+	if constexpr (DIMS > 4) // near clipping plane
 	m_planes[4].Set(-mProjectionView.row(3) - mProjectionView.row(2));
-	if (DIMS > 5) // far clipping plane
+	if constexpr (DIMS > 5) // far clipping plane
 	m_planes[5].Set(-mProjectionView.row(3) + mProjectionView.row(2));
 }
 /*----------------------------------------------------------------*/

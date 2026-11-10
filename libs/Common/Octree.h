@@ -109,7 +109,7 @@ public:
 	};
 
 public:
-	inline TOctree() {}
+	inline TOctree() : m_items(NULL), m_radius(0) {}
 	template <typename Functor>
 	inline TOctree(const ITEMARR_TYPE&, Functor split);
 	template <typename Functor>
