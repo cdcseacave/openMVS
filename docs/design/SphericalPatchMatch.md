@@ -137,8 +137,8 @@ reject a file whose flag disagrees with the view's model.
   `MODEL_PINHOLE` (every view pinhole; the unchanged pinhole kernels), `MODEL_PINHOLE_REF` (pinhole
   reference, spherical views), `MODEL_SPHERICAL_REF`. `RunCUDA` picks it from `Params::sphericalViews`.
 - `RefPixel` holds the reference model and its `RayFrame`; `__constant__ g_views` holds the per-view pose and
-  texture scale. An equirectangular reference builds the frame and the Method A texel rays from the
-  per-column/row tables `Params::refTrig`, as the CPU does.
+  texture scale. An equirectangular reference builds the frame and every ray (Method A texels,
+  propagation, surface normal) from the per-column/row tables `Params::refTrig`, as the CPU does.
 - `ScorePlaneModel`: the CPU warps (B with the 4-corner check, A above `fSphericalWarpMaxElevation`, pinhole
   target `K·H·F`); a plane not facing the reference camera scores the bad cost. The texel walk and ZNCC are
   the pinhole ones (`SampleWarpedPatch`, `ScoreNCC`).
@@ -146,7 +146,8 @@ reject a file whose flag disagrees with the view's model.
   columns (`cudaAddressModeWrap`) and clamp on the rows (the CPU rejects the view there).
 - Propagation wraps its columns; red/black parity agrees across the seam only for an even width (ASSERTed in
   `RunCUDA`); the poles are not crossed. The 4 rows next to each pole are not estimated (cost `FLT_MAX`).
-- Normals are camera-facing against the pixel ray; surface normal and propagation use the generic geometry.
+- Normals are camera-facing against the pixel ray; surface normal and propagation use the generic geometry
+  of `DepthGeometry.h` on those rays.
   `GeometricConsistencyWeightModel` is the CPU round trip with the wrapped column distance.
 - View gate (`MultiViewScorePlane`, model kernels): the CPU rule on a bit mask over the neighbor views, at
   most `MAX_VIEWS` (32) including the reference.
@@ -167,8 +168,8 @@ reject a file whose flag disagrees with the view's model.
   (sin, cos) pairs, a dummy for a pinhole reference). A second sampler (`coord::normalized`, repeat on
   columns, clamp on rows) reads the textures of an equirectangular view.
 - Kernel logic as in CUDA, including the view gate (`MultiViewScorePlaneModel`).
-- Differences from CUDA: plane propagation and surface normal take their rays from the trig tables; view
-  poses are composed in double precision; random numbers come from PCG, bilateral weights from `exp`.
+- Differences from CUDA: view poses are composed in double precision; random numbers come from PCG,
+  bilateral weights from `exp`.
 - Kernels are compiled from source at runtime, with `ConfidenceMetal.metal` into one library; macOS caches
   the library and the pipelines across processes. CMake also compiles both offline (target
   `PatchMatchMetalCheck`) when the toolchain has a working Metal compiler.
@@ -229,7 +230,7 @@ Depth-maps, fraction of GT pixels within 1 / 5 % and abs-rel median:
 | | A / B / C | CUDA | 0.983 / 0.983 / 0.970 | 0.00039 / 0.00041 / 0.00056 | 0.987 / 0.986 / 0.945 | 0.995 / 0.995 / 0.966 |
 | | B | Metal | 0.982 | 0.00041 | 0.986 | 0.995 |
 | synthetic 512x256 | B | CPU | 0.956 | 0.00147 | 0.919 | 0.986 |
-| | B | CUDA / Metal | 0.964 | 0.00139 | 0.931 | 0.988 |
+| | B | CUDA / Metal | 0.964 | 0.00138 / 0.00139 | 0.931 | 0.988 |
 | Holo360D 1440 | A / B / C | CPU | 0.954 / 0.954 / 0.774 | 0.182 / 0.201 / 0.130 | | 0.352 / 0.346 / 0.375 |
 | | A / B / C | CUDA | 0.680 / 0.681 / 0.644 | 0.0460 / 0.0471 / 0.0945 | | 0.513 / 0.509 / 0.406 |
 | | B | Metal | 0.681 | 0.0471 | | 0.509 |
@@ -288,7 +289,7 @@ on <5 %. Without the corner waits, the bottom-right corner of the zigzag order h
 per run, with them 5-31 (single thread 11-54).
 
 Reference numbers for the regression run (`Tests sphtest 2 512 3 1 70 0 0 0` CPU, `... 0 0 1` CUDA):
-per-band <5 % CPU all 0.985-0.988, seam 0.996-0.997; CUDA all 0.964 completeness, abs-rel 0.00139.
+per-band <5 % CPU all 0.985-0.988, seam 0.996-0.997; CUDA all 0.964 completeness, abs-rel 0.00138.
 
 ## 6. Rejected alternatives
 

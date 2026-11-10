@@ -106,17 +106,21 @@ HOST_DEVICE inline bool FitDepthGradient(const DEPTHMAP& depthMap, const Eigen::
 	return true;
 }
 
-// camera-facing unit normal of the depth plane through pixel x at the given depth and gradient
-// (camera frame): the cross product of the plane's tangents along the pixel axes
-template<typename MODEL>
-HOST_DEVICE inline typename MODEL::Vec3 NormalFromDepthGradient(const MODEL& camera, const Eigen::Vector2i& x, typename MODEL::Scalar depth, const typename MODEL::Vec2& gradient) {
-	typedef typename MODEL::Scalar T;
-	typedef typename MODEL::Vec3 Vec3;
+// camera-facing unit normal of the depth plane through the pixel of ray frame F (CameraModels.h
+// RayFrame) at the given depth and gradient (camera frame): the cross product of the plane's tangents
+// along the pixel axes
+template<typename T>
+HOST_DEVICE inline Eigen::Matrix<T,3,1> NormalFromDepthGradient(const Eigen::Matrix<T,3,3>& F, T depth, const Eigen::Matrix<T,2,1>& gradient) {
+	typedef Eigen::Matrix<T,3,1> Vec3;
 	ASSERT(depth > T(0));
-	const typename MODEL::Mat3 F(camera.RayFrame(x.cast<T>()));
 	const Vec3 tx(gradient.x()*F.col(2) + depth*F.col(0));
 	const Vec3 ty(gradient.y()*F.col(2) + depth*F.col(1));
 	return ty.cross(tx).normalized();
+}
+// the same through pixel x of the camera
+template<typename MODEL>
+HOST_DEVICE inline typename MODEL::Vec3 NormalFromDepthGradient(const MODEL& camera, const Eigen::Vector2i& x, typename MODEL::Scalar depth, const typename MODEL::Vec2& gradient) {
+	return NormalFromDepthGradient(camera.RayFrame(x.cast<typename MODEL::Scalar>()), depth, gradient);
 }
 // pinhole: the same normal in closed form
 template<typename T>

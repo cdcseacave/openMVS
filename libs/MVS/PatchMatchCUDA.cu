@@ -454,7 +454,7 @@ __device__ float ScorePlane(const RefPatchCache& cache, const CUDA::Camera& refC
 
 // per-pixel reference state of the model kernels: the reference camera model and its ray frame at the
 // pixel (CameraModels.h RayFrame: the ray derivatives along x and y, then the ray); an equirectangular
-// reference builds both, and the rays of the patch texels, from the sines and cosines of the column's
+// reference builds both, and every other ray it needs, from the sines and cosines of the column's
 // longitude and the row's elevation (Params::refTrig), as the CPU estimator does
 template <int MODEL>
 struct RefPixel {
@@ -468,15 +468,14 @@ struct RefPixel {
 			F = camera.RayFrame(p.cast<float>());
 		}
 	}
-	// the ray of the pixel at offset (j,i) of p, inside the image but for the wrapping columns
-	__device__ Point3 TexelRay(const Point2i& p, int j, int i) const {
+	// the ray of the reference pixel (c,r), inside the image but for the wrapping columns
+	__device__ Point3 Ray(int c, int r) const {
 		if constexpr (MODEL == MODEL_SPHERICAL_REF) {
 			const int width = g_cameras[0].size.x();
-			const int c = SEACAVE::WrapColumn(p.x() + j, width);
-			const float2 lon = __ldg(g_params.refTrig + c), el = __ldg(g_params.refTrig + width + p.y() + i);
+			const float2 lon = __ldg(g_params.refTrig + SEACAVE::WrapColumn(c, width)), el = __ldg(g_params.refTrig + width + r);
 			return SEACAVE::Spherical<float>::Ray(lon.x, lon.y, el.x, el.y);
 		} else {
-			return camera.Ray(Point2(float(p.x() + j), float(p.y() + i)));
+			return camera.Ray(Point2(float(c), float(r)));
 		}
 	}
 };
@@ -506,7 +505,7 @@ __device__ __forceinline__ bool SampleExactPatch(const RefPatchCache& cache, con
 	for (int i = -nSizeHalfWindow; i <= nSizeHalfWindow; i += nSizeStep) {
 		#pragma unroll
 		for (int j = -nSizeHalfWindow; j <= nSizeHalfWindow; j += nSizeStep, ++idx) {
-			const Point3 ray = ref.TexelRay(p, j, i);
+			const Point3 ray = ref.Ray(p.x() + j, p.y() + i);
 			const float den = normal.dot(ray);
 			if (den >= 0.f)
 				return false;
@@ -655,7 +654,10 @@ __device__ __forceinline__ void MultiViewScorePlane(const RefPatchCache& cache, 
 template <bool GEOM, int MODEL>
 __device__ __forceinline__ float MultiViewScoreNeighborPlane(const RefPatchCache& cache, RefPixel<MODEL>& ref, const ImagePixels* images, const ImagePixels* depthImages, const Point2i& p, const Point2i& np, Point4 plane, const float lowDepth, float* costVector)
 {
-	plane.w() = SEACAVE::InterpolatePlaneDepth(RefModel<MODEL>::Get(g_cameras[0]), p, np, plane.w(), plane.topLeftCorner<3,1>(), g_params.fDepthMin, g_params.fDepthMax);
+	if constexpr (MODEL == MODEL_SPHERICAL_REF)
+		plane.w() = SEACAVE::InterpolatePlaneDepth(Point3(ref.F.col(2)), ref.Ray(np.x(), np.y()), plane.w(), Point3(plane.topLeftCorner<3,1>()), g_params.fDepthMin, g_params.fDepthMax);
+	else
+		plane.w() = SEACAVE::InterpolatePlaneDepth(RefModel<MODEL>::Get(g_cameras[0]), p, np, plane.w(), plane.topLeftCorner<3,1>(), g_params.fDepthMin, g_params.fDepthMax);
 	MultiViewScorePlane<GEOM, MODEL>(cache, ref, images, depthImages, p, plane, lowDepth, costVector);
 	return plane.w();
 }
@@ -860,7 +862,10 @@ __device__ __forceinline__ void ProcessPixel(const ImagePixels* images, const Im
 		fit.Add( 0, 1, LoadPlaneWLDG(&planes[neighborPositions[1]]) - depth);
 		fit.Add(-1, 0, LoadPlaneWLDG(&planes[neighborPositions[2]]) - depth);
 		fit.Add( 1, 0, LoadPlaneWLDG(&planes[neighborPositions[3]]) - depth);
-		surfaceNormal = SEACAVE::NormalFromDepthGradient(RefModel<MODEL>::Get(g_cameras[0]), p, depth, fit.Gradient());
+		if constexpr (MODEL == MODEL_SPHERICAL_REF)
+			surfaceNormal = SEACAVE::NormalFromDepthGradient(ref.F, depth, fit.Gradient());
+		else
+			surfaceNormal = SEACAVE::NormalFromDepthGradient(RefModel<MODEL>::Get(g_cameras[0]), p, depth, fit.Gradient());
 		numValidPlanes = 4;
 	}
 	constexpr int numPlanes = 4;
