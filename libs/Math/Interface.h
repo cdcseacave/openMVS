@@ -718,8 +718,8 @@ struct Interface
 	struct Vertex {
 		// structure describing one view for a given 3D feature
 		struct View {
-			uint32_t imageID; // image ID corresponding to this view
-			float confidence; // view's confidence (0 - not available)
+			uint32_t imageID = 0; // image ID corresponding to this view
+			float confidence = 0; // view's confidence (0 - not available)
 			Pos2f x; // observation (optional, stored only if the Interface has HAS_OBSERVATIONS): the feature position
 				// in the image file as it is on disk (distorted for a BROWN camera), pixel-center convention
 
@@ -744,8 +744,8 @@ struct Interface
 	struct Line {
 		// structure describing one view for a given 3D feature
 		struct View {
-			uint32_t imageID; // image ID corresponding to this view
-			float confidence; // view's confidence (0 - not available)
+			uint32_t imageID = 0; // image ID corresponding to this view
+			float confidence = 0; // view's confidence (0 - not available)
 
 			template<class Archive>
 			void serialize(Archive& ar, const unsigned int /*version*/) {
@@ -962,8 +962,9 @@ struct HeaderDepthDataRaw {
 	// number of view IDs followed by view ID and neighbor view IDs: uint32_t nIDs; uint32_t* IDs
 	// camera, rotation and position matrices (row-major) at image resolution: double K[3][3], R[3][3], C[3]
 	// depth, normal, confidence maps: half depthMap[height][width], int16_t normalMap[height][width][2], uint8_t confMap[height][width]
-	inline HeaderDepthDataRaw() : name(0), type(0), depthExp(0), confScale(1.f) {}
-	static uint16_t HeaderDepthDataRawName() { return *reinterpret_cast<const uint16_t*>("D2"); }
+	inline HeaderDepthDataRaw() : name(0), type(0), depthExp(0), imageWidth(0), imageHeight(0), depthWidth(0), depthHeight(0), dMin(0), dMax(0), confScale(1.f) {}
+	// the characters "D2" as they are stored (little-endian)
+	static constexpr uint16_t HeaderDepthDataRawName() { return uint16_t('D' | ('2' << 8)); }
 };
 /*----------------------------------------------------------------*/
 

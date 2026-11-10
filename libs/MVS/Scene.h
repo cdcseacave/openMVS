@@ -270,7 +270,7 @@ public:
 		float score() const { return 100.f * completeness * ssim; }
 	};
 	struct ImageScore : Score {
-		IIndex idxImage;
+		IIndex idxImage = NO_ID;
 	};
 	struct ReconstructionQuality : Score {
 		CLISTDEFIDX(ImageScore, IIndex) imageScores;

@@ -19,7 +19,7 @@
 template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
 inline TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::CELL_TYPE::CELL_TYPE()
 	:
-	m_child(NULL)
+	m_child(NULL), m_leaf()
 {
 } // constructor
 template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>

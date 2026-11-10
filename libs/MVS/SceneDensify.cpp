@@ -1447,9 +1447,9 @@ struct NeighborProj {
 	Point3f    b;    // Kn*Rn*(Cr-Cn)
 	Matrix3x3f Rrel; // Rn*Rr^T : rotates a ref-camera-space normal directly into the nbr camera space
 	Point3f    cn;   // Rr*(Cn-Cr) : nbr centre in the ref camera frame (triangulation angle, GATE 2)
-	const DepthMap* depthMap;
-	const ConfidenceMap* confMap;
-	const NormalMap* normalMap;
+	const DepthMap* depthMap = NULL;
+	const ConfidenceMap* confMap = NULL;
+	const NormalMap* normalMap = NULL;
 };
 
 // forward decl -- shared tail of both AdjustConfidence overloads below, defined after them
@@ -2272,7 +2272,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 				uint16_t x, y; // image pixel coordinates
 			};
 		};
-		inline Proj() {}
+		Proj() = default;
 		inline Proj(uint32_t _idxPixel) : idxPixel(_idxPixel) {}
 		inline Proj(const ImageRef& ir) : x(ir.x), y(ir.y) {}
 		inline ImageRef GetCoord() const { return ImageRef(x,y); }
@@ -3905,9 +3905,9 @@ void Scene::PointCloudFilter(int thRemove)
 		const ConeIntersect coneIntersect;
 		const PointCloud& pointcloud;
 		IntArr& visibility;
-		PointCloud::Index idxPoint;
-		Real distance;
-		int weight;
+		PointCloud::Index idxPoint = 0;
+		Real distance = 0;
+		int weight = 0;
 		#ifdef DENSE_USE_OPENMP
 		uint8_t pcs[sizeof(CriticalSection)];
 		#endif

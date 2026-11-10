@@ -200,16 +200,16 @@ protected:
 
 public:
 	typedef struct DEBUGINFO_TYPE {
-		size_t memSize;		// total memory used
-		size_t memStruct;	// memory used for the tree structure
-		size_t memItems;	// memory used for the contained items
-		size_t numItems;	// number of contained items
-		size_t numNodes;	// total nodes...
-		size_t numLeaves;	// ... from which this number of leaves
-		size_t minDepth;	// minimum tree depth
-		size_t maxDepth;	// maximum tree depth
-		float avgDepth;		// average tree depth
-		void Init() { memset(this, 0, sizeof(DEBUGINFO_TYPE)); }
+		size_t memSize = 0;		// total memory used
+		size_t memStruct = 0;	// memory used for the tree structure
+		size_t memItems = 0;	// memory used for the contained items
+		size_t numItems = 0;	// number of contained items
+		size_t numNodes = 0;	// total nodes...
+		size_t numLeaves = 0;	// ... from which this number of leaves
+		size_t minDepth = std::numeric_limits<size_t>::max();	// minimum tree depth
+		size_t maxDepth = 0;	// maximum tree depth
+		float avgDepth = 0;		// average tree depth
+		void Init() { *this = DEBUGINFO_TYPE(); }
 		void operator += (const DEBUGINFO_TYPE& r) {
 			avgDepth = avgDepth*numNodes + r.avgDepth*r.numNodes;
 			memSize += r.memSize; memStruct += r.memStruct; memItems += r.memItems;

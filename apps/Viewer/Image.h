@@ -61,7 +61,7 @@ public:
 
 public:
 	MVS::IIndex idx; // image index in the current scene
-	double opacity;
+	double opacity = 1;
 	ImagePtrInt pImage;
 
 public:

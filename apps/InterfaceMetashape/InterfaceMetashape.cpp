@@ -372,6 +372,7 @@ bool ParseImageListXML(tinyxml2::XMLDocument& doc, Scene& scene, PlatformDistCoe
 		// set pose
 		CAutoPtrArr<LPSTR> argv;
 		if ((elem=camera->FirstChildElement(_T("transform"))) == NULL ||
+			elem->GetText() == NULL ||
 			(argv=Util::CommandLineToArgvA(elem->GetText(), argc)) == NULL ||
 			(argc != (bMetashapeFile ? 16 : 12)))
 		{
@@ -404,27 +405,30 @@ bool ParseImageListXML(tinyxml2::XMLDocument& doc, Scene& scene, PlatformDistCoe
 	CAutoPtrArr<LPSTR> argv;
 	Point3 C, E; Matrix3x3 R;
 	if ((elem=region->FirstChildElement(_T("center"))) == NULL ||
+		elem->GetText() == NULL ||
 		(argv=Util::CommandLineToArgvA(elem->GetText(), argc)) == NULL ||
 		argc != 3)
 	{
-		VERBOSE("Invalid image list region: %s", elem->GetText());
+		VERBOSE("Invalid image list region: missing or invalid 'center'");
 		goto InvalidDocument;
 	}
 	ImageListParseC(argv, C);
 	if ((elem=region->FirstChildElement(_T("size"))) == NULL ||
+		elem->GetText() == NULL ||
 		(argv=Util::CommandLineToArgvA(elem->GetText(), argc)) == NULL ||
 		argc != 3)
 	{
-		VERBOSE("Invalid image list region: %s", elem->GetText());
+		VERBOSE("Invalid image list region: missing or invalid 'size'");
 		goto InvalidDocument;
 	}
 	ImageListParseC(argv, E);
 	E *= REAL(0.5);
 	if ((elem=region->FirstChildElement(_T("R"))) == NULL ||
+		elem->GetText() == NULL ||
 		(argv=Util::CommandLineToArgvA(elem->GetText(), argc)) == NULL ||
 		argc != 9)
 	{
-		VERBOSE("Invalid image list region: %s", elem->GetText());
+		VERBOSE("Invalid image list region: missing or invalid 'R'");
 		goto InvalidDocument;
 	}
 	ImageListParseR(argv, R);

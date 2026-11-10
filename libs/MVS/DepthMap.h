@@ -195,16 +195,16 @@ struct WeightedPatchFix {
 	};
 	Pixel weights[nTexels];
 	float sumWeights;
-	float normSq0;
-	WeightedPatchFix() : normSq0(0) {}
+	float normSq0; // 0 until the weights are computed, on first use
+	NO_INIT_MEMBERS WeightedPatchFix() : normSq0(0) {}
 };
 
 struct MVS_API DepthData {
 	struct ViewData {
-		float scale; // image scale relative to the reference image
+		float scale = 1; // image scale relative to the reference image
 		Camera camera; // camera matrix corresponding to this image
 		Image32F image; // image float intensities
-		Image* pImageData; // image data
+		Image* pImageData = NULL; // image data
 
 		Matrix3x3 Hl; //
 		Vec3 Hm;      // constants during per-pixel loops
@@ -317,7 +317,7 @@ struct MVS_API DepthData {
 	unsigned references; // how many times this depth-map is referenced (on 0 can be safely unloaded)
 	CriticalSection cs; // used to count references
 
-	inline DepthData() : bConfAdjusted(false), references(0) {}
+	inline DepthData() : dMin(0), dMax(0), bConfAdjusted(false), references(0) {}
 	DepthData(const DepthData&);
 
 	inline void ReleaseImages() {
@@ -413,7 +413,7 @@ struct MVS_API DepthEstimatorBase {
 	};
 	#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
 	struct NeighborEstimate {
-		Depth depth;
+		Depth depth = 0;
 		Normal normal;
 		#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
 		Planef::POINT X;
@@ -488,7 +488,7 @@ struct DepthEstimatorT : DepthEstimatorBase {
 	CLISTDEF0IDX(float,IIndex) neighborsConf; // the confidence of each of the neighbors
 	Point3 X0;	      //
 	ImageRef x0;	  // constants during one pixel loop
-	float normSq0;	  //
+	float normSq0 = 0;	  //
 	Matrix3x3f normalFrame0; // spherical reference: the frame random and perturbed normals are drawn in
 		// (columns: the longitude and the downward elevation tangents at X0, and X0)
 	Eigen::Matrix3f rayFrame0; // Model::RayFrame at x0, if bModelWarp
@@ -498,7 +498,7 @@ struct DepthEstimatorT : DepthEstimatorBase {
 	CLISTDEF0IDX(Eigen::Matrix3f,IIndex) viewRayFrames0; // per view, Rrel*rayFrame0: the ray frame at x0 in the view's camera frame
 	enum { nTexelsPacked = (nTexels+15)/16*16 }; // whole SIMD packets
 	struct TexelRays { float x[nTexelsPacked], y[nTexelsPacked], z[nTexelsPacked]; }; // padded with the last texel
-	TexelRays texelRays0; // the rays of the patch texels at x0, for the exact warp, filled on first use
+	TexelRays texelRays0 = {}; // the rays of the patch texels at x0, for the exact warp, filled on first use
 	CLISTDEF0IDX(TexelRays,IIndex) viewTexelRays0; // per view, Rrel*texelRays0, filled on first use
 	CLISTDEF0IDX(bool,IIndex) bViewTexelRays0; // per view, viewTexelRays0 is filled for x0 (the last entry: texelRays0)
 	CLISTDEF0IDX(Eigen::Vector3f,IIndex) viewCenters0; // per view, its center in the reference camera frame, if bModelWarp

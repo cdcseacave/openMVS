@@ -187,7 +187,7 @@ public:
 
 	// Track-based neighbor information with shared point indices
 	struct ViewScoreWithPoints {
-		MVS::ViewScore score;
+		MVS::ViewScore score{};
 		MVS::PointCloud::IndexArr sharedPoints; // indices of shared points in the pointcloud
 	};
 	typedef CLISTDEFIDX(ViewScoreWithPoints,uint32_t) ViewScoreWithPointsArr;

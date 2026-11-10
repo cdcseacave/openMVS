@@ -169,9 +169,9 @@ struct MeshTexture {
 	struct RasterMesh : TRasterMesh<RasterMesh> {
 		typedef TRasterMesh<RasterMesh> Base;
 		FaceMap& faceMap;
-		FIndex idxFace;
+		FIndex idxFace = NO_ID;
 		Image8U mask; // valid pixels of the image at its working resolution (empty: all valid)
-		bool validFace;
+		bool validFace = false;
 		const float scaleMaskX, scaleMaskY; // working resolution over rendering resolution
 		const int border; // keeps the vertices at least 2 px inside the working image, as GenerateTexture requires
 
@@ -208,8 +208,8 @@ struct MeshTexture {
 
 	// used to store info about a face (view, quality)
 	struct FaceData {
-		IIndex idxView;// the view seeing this face
-		float quality; // how well the face is seen by this view
+		IIndex idxView = NO_ID; // the view seeing this face
+		float quality = 0; // how well the face is seen by this view
 		#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
 		Color color; // additionally store mean color (used to remove outliers)
 		#endif
@@ -225,7 +225,7 @@ struct MeshTexture {
 
 	// represents a texture patch
 	struct TexturePatch {
-		Label label; // view index
+		Label label = NO_ID; // view index
 		Mesh::FaceIdxArr faces; // indices of the faces contained by the patch
 		cv::Rect rect; // the bounding box in the view containing the patch
 	};
@@ -233,7 +233,7 @@ struct MeshTexture {
 
 	struct PatchRect {
 		cv::Rect rect;
-		uint32_t patchIdx;
+		uint32_t patchIdx = NO_ID;
 		bool rotated = false; // the patch is stored turned by cv::ROTATE_90_COUNTERCLOCKWISE (set by the footprint packer)
 	};
 	using PatchRectArr = std::vector<PatchRect>;
@@ -314,7 +314,7 @@ struct MeshTexture {
 				uint32_t idxSeamVertex; // the other vertex of this edge
 				FIndex idxFace; // the face containing this edge in this patch
 
-				inline Edge() {}
+				Edge() = default;
 				inline Edge(uint32_t _idxSeamVertex) : idxSeamVertex(_idxSeamVertex) {}
 				inline bool operator == (uint32_t _idxSeamVertex) const {
 					return (idxSeamVertex == _idxSeamVertex);
@@ -322,7 +322,7 @@ struct MeshTexture {
 			};
 			typedef cList<Edge,const Edge&,0,4,uint32_t> Edges;
 
-			uint32_t idxPatch; // the patch containing this vertex
+			uint32_t idxPatch = NO_ID; // the patch containing this vertex
 			Point2f proj; // the projection of this vertex in this patch
 			Edges edges; // the edges starting from this vertex, contained in this patch (exactly two for manifold meshes)
 
@@ -334,7 +334,7 @@ struct MeshTexture {
 		};
 		typedef cList<Patch,const Patch&,1,4,uint32_t> Patches;
 
-		VIndex idxVertex; // the index of this vertex
+		VIndex idxVertex = NO_ID; // the index of this vertex
 		Patches patches; // the patches meeting at this vertex (two or more)
 
 		inline SeamVertex() {}
@@ -1650,7 +1650,7 @@ void MeshTexture::GlobalSeamLeveling()
 		imageAdj.memset(0);
 		// interpolate color adjustments over the whole patch
 		struct RasterPatch {
-			const TexCoord* tri;
+			const TexCoord* tri = NULL;
 			Color colors[3];
 			ColorMap& image;
 			inline RasterPatch(ColorMap& _image) : image(_image) {}
@@ -2100,8 +2100,8 @@ void MeshTexture::LocalSeamLeveling()
 struct PatchApprox {
 	Point3f centroid;
 	Point3f U, V;
-	float uMin, uMax, vMin, vMax;
-	float surfaceArea; // OBB surface area: (uMax - uMin) * (vMax - vMin)
+	float uMin = 0, uMax = 0, vMin = 0, vMax = 0;
+	float surfaceArea = 0; // OBB surface area: (uMax - uMin) * (vMax - vMin)
 };
 typedef CLISTDEF0IDX(PatchApprox, uint32_t) PatchApproxArr;
 

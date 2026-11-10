@@ -155,7 +155,7 @@ public:
 	float avgDepth; // average depth of the points seen by this camera
 
 public:
-	inline Image() : poseID(NO_ID), model(CameraModelType::PINHOLE), width(0), height(0), avgDepth(0) {}
+	inline Image() : platformID(NO_ID), cameraID(NO_ID), poseID(NO_ID), ID(NO_ID), model(CameraModelType::PINHOLE), width(0), height(0), scale(1), avgDepth(0) {}
 
 	inline bool IsValid() const { return poseID != NO_ID; }
 	// the pixels of the image file are undistorted when read (BROWN), which leaves the

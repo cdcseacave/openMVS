@@ -295,7 +295,7 @@ int main(int argc, LPCTSTR* argv)
 }
 #ifdef _WIN32
 // bridge WinMain -> main()
-int APIENTRY WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
+int APIENTRY WinMain(_In_ HINSTANCE, _In_opt_ HINSTANCE, _In_ LPSTR, _In_ int) {
 	return main(__argc, const_cast<LPCTSTR*>(__argv));
 }
 #endif

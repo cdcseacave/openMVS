@@ -1821,7 +1821,7 @@ public:
 
 protected:
 	const Points& points_; // Normalized input data
-	double logalpha0_; // Alpha0 is used to make the error adaptive to the image size
+	double logalpha0_ = 0; // Alpha0 is used to make the error adaptive to the image size
 	Model model2evaluate; // current model to be evaluated
 };
 

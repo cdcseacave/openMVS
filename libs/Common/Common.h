@@ -157,8 +157,8 @@ extern GENERAL_API String g_strWorkingFolderFull; // full path to current folder
 		opt.state = flags; \
 		val.val = opt.defval = (defval_##name != NULL ? defval_##name : vals[0]); \
 		opt.vals.Insert(opt.defval); \
-		for (size_t i=1; i<sizeof(vals)/sizeof(LPCTSTR); ++i) \
-			opt.vals.Insert(vals[i]); \
+		for (LPCTSTR const* v=vals+1; v!=vals+sizeof(vals)/sizeof(LPCTSTR); ++v) \
+			opt.vals.Insert(*v); \
 		SEACAVE::String::FromString(opt.defval, name); \
 	} \
 	LPCTSTR index_##name() { \

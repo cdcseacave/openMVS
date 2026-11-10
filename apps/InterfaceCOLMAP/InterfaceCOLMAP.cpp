@@ -254,9 +254,9 @@ bool NextLine(std::istream& stream, std::istringstream& in, bool bIgnoreEmpty=tr
 }
 // structure describing a camera
 struct Camera {
-	uint32_t ID; // ID of the camera
+	uint32_t ID = NO_ID; // ID of the camera
 	String model; // camera model name
-	uint32_t width, height; // camera resolution
+	uint32_t width = 0, height = 0; // camera resolution
 	std::vector<REAL> params; // camera parameters
 	uint64_t numCameras{0}; // only for binary format
 
@@ -379,12 +379,12 @@ typedef std::vector<Camera> Cameras;
 struct Image {
 	struct Proj {
 		Eigen::Vector2f p;
-		uint32_t idPoint;
+		uint32_t idPoint = NO_ID;
 	};
-	uint32_t ID; // ID of the image
+	uint32_t ID = NO_ID; // ID of the image
 	Eigen::Quaterniond q; // rotation
 	Eigen::Vector3d t; // translation
-	uint32_t idCamera; // ID of the associated camera
+	uint32_t idCamera = NO_ID; // ID of the associated camera
 	String name; // image file name
 	std::vector<Proj> projs; // known image projections
 	uint64_t numRegImages{0}; // only for binary format
@@ -528,10 +528,10 @@ struct Point {
 		uint32_t idImage;
 		uint32_t idProj;
 	};
-	uint32_t ID; // ID of the point
+	uint32_t ID = NO_ID; // ID of the point
 	Interface::Pos3f p; // position
 	Interface::Col3 c; // BGR color
-	float e; // error
+	float e = 0; // error
 	std::vector<Track> tracks; // point track
 	uint64_t numPoints3D{0}; // only for binary format
 

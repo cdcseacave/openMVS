@@ -37,7 +37,7 @@ public:
 protected:
 	void*		m_png_ptr;
 	void*		m_info_ptr;
-	bool		bRead;
+	bool		bRead = false;
 }; // class CImagePNG
 /*----------------------------------------------------------------*/
 

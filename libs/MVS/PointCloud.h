@@ -147,7 +147,7 @@ struct IndexDist {
 	IDX idx;
 	REAL dist;
 
-	inline IndexDist() : dist(REAL(FLT_MAX)) {}
+	inline IndexDist() : idx(NO_IDX), dist(REAL(FLT_MAX)) {}
 	inline bool IsValid() const { return dist < REAL(FLT_MAX); }
 };
 

@@ -53,17 +53,17 @@ public:
 	};
 
 	struct Observation {
-		MVS::IIndex idxImage; // image index in the MVS scene
-		MVS::IIndex idxView; // image index in the Viewer layer
-		uint32_t ID; // image ID
+		MVS::IIndex idxImage = NO_ID; // image index in the MVS scene
+		MVS::IIndex idxView = NO_ID; // image index in the Viewer layer
+		uint32_t ID = NO_ID; // image ID
 		String name; // image file name
 		Point2f proj; // point projection, in the resolution the camera is currently scaled to
-		float width; // image width the camera is currently scaled to
-		float nativeScale; // current resolution relative to the image file (MVS::Image::scale)
-		float depth; // point depth
-		float footprint; // pixels covered by a unit of surface at the point, in the current resolution
-		float weight; // view confidence (0 if the point-cloud has none)
-		float angle; // angle between the point normal and the view direction (degrees, -1 if no normal)
+		float width = 0; // image width the camera is currently scaled to
+		float nativeScale = 1; // current resolution relative to the image file (MVS::Image::scale)
+		float depth = 0; // point depth
+		float footprint = 0; // pixels covered by a unit of surface at the point, in the current resolution
+		float weight = 0; // view confidence (0 if the point-cloud has none)
+		float angle = 0; // angle between the point normal and the view direction (degrees, -1 if no normal)
 		bool failed{false}; // the image could not be decoded
 		Texture patch; // cropped patch, invalid until its crop task finishes
 

@@ -48,16 +48,16 @@ struct ViewProjectionData {
 	Eigen::Matrix4f projection;
 	Eigen::Matrix4f viewProjection;
 	Eigen::Vector3f cameraPos;
-	float padding; // Alignment
+	float padding = 0; // Alignment
 };
 
 struct LightingData {
 	Eigen::Vector3f lightDirection;
-	float lightIntensity;
+	float lightIntensity = 0;
 	Eigen::Vector3f lightColor;
-	float ambientStrength;
+	float ambientStrength = 0;
 	Eigen::Vector3f ambientColor;
-	float padding; // Alignment
+	float padding = 0; // Alignment
 };
 
 class Renderer {
@@ -180,9 +180,9 @@ private:
 	std::unique_ptr<Shader> gizmoShader;
 	std::unique_ptr<VAO> gizmoVAO;
 	std::unique_ptr<VBO> gizmoVBO, gizmoEBO;
-	size_t gizmoCircleIndexCount; // Circle rendering indices
-	size_t gizmoCenterAxesBaseVertex; // Starting vertex for center axes
-	size_t gizmoCenterAxesVertexCount; // Number of center axes vertices
+	size_t gizmoCircleIndexCount = 0; // Circle rendering indices
+	size_t gizmoCenterAxesBaseVertex = 0; // Starting vertex for center axes
+	size_t gizmoCenterAxesVertexCount = 0; // Number of center axes vertices
 
 	// Picker FBO (ID-only rendering)
 	std::unique_ptr<Shader> pickerMeshShader;
@@ -240,7 +240,7 @@ public:
 		uint32_t index{NO_ID};
 		uint32_t layerID{NO_ID};
 		Point3f points[3];
-		bool isPoint;
+		bool isPoint{false};
 		bool IsValid() const { return index != NO_ID && layerID != NO_ID; }
 	};
 	PickResult PickPrimitiveAt(const Point2f& screenPos, int radius, const Window& window);

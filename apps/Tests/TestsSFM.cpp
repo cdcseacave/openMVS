@@ -639,7 +639,7 @@ struct SceneConfig {
 		PERTURB_ALL = PERTURB_POSES | PERTURB_POINTS | PERTURB_INTRINSICS | PERTURB_KEYPOINTS | PERTURB_PAIR_POSES
 	};
 	struct CameraSpec {
-		CameraType type;
+		CameraType type{PINHOLE};
 		int width{640}, height{480};
 		REAL focal{400.0}; // For pinhole
 		REAL cx{width/2.0}, cy{height/2.0}; // For pinhole principal point

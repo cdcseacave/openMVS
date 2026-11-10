@@ -288,6 +288,7 @@ bool CImage::FilterFormat(void* pDst, PIXELFORMAT formatDst, Size strideDst, con
 			}
 			// from PF_R8G8B8A8 to PF_A8 (just copy the alpha channel)
 			(uint8_t*&)pSrc += 3; //skip the first RGB values
+			[[fallthrough]];
 		case PF_A8:
 		case PF_GRAY8:
 			// from PF_A8 to PF_A8 (just copy)
@@ -398,6 +399,7 @@ bool CImage::FilterFormat(void* pDst, PIXELFORMAT formatDst, Size strideDst, con
 		case PF_R8G8B8:
 			// from PF_R8G8B8 to PF_R8G8B8 (just copy)
 			ASSERT(strideDst != strideSrc);
+			[[fallthrough]];
 		case PF_R8G8B8A8:
 			// from PF_R8G8B8A8 to PF_R8G8B8 (just copy)
 			for (Size i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
@@ -664,6 +666,7 @@ bool CImage::FilterFormat(void* pDst, PIXELFORMAT formatDst, Size strideDst, con
 		case PF_B8G8R8:
 			// from PF_B8G8R8 to PF_B8G8R8 (just copy)
 			ASSERT(strideDst != strideSrc);
+			[[fallthrough]];
 		case PF_B8G8R8A8:
 			// from PF_B8G8R8A8 to PF_B8G8R8 (just copy)
 			for (Size i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {

@@ -612,7 +612,7 @@ public:
 			if (!*cursor || !std::isdigit(*cursor))
 				return false;
 			value = 0;
-			const IDX maxValue = std::numeric_limits<IDX>::max();
+			constexpr IDX maxValue = std::numeric_limits<IDX>::max();
 			while (*cursor && std::isdigit(*cursor)) {
 				const IDX digit = static_cast<IDX>(*cursor - '0');
 				if (value > (maxValue - digit) / 10)
@@ -693,44 +693,20 @@ public:
 	}
 
 	// format given time in milliseconds to higher units
+	// (days, hours, minutes, seconds, milliseconds; the non-zero ones, at least one; once a unit is
+	// printed, stop if fewer than nAproximate+1 units follow it, e.g. 1 drops the milliseconds)
 	static String formatTime(int64_t sTime, uint32_t nAproximate = 0) {
-		char buf[128];
-		uint32_t len = 0;
-		uint32_t nrNumbers = 0;
-
-		uint32_t rez = (uint32_t)(sTime / ((int64_t)24*3600*1000));
-		if (rez) {
-			++nrNumbers;
-			len += _sntprintf(buf, 128, "%ud", rez);
+		static const int64_t units[] = {24*3600*1000, 3600*1000, 60*1000, 1000, 1};
+		static const char names[][3] = {"d", "h", "m", "s", "ms"};
+		String str;
+		for (int u = 0; u < 5; ++u) {
+			const uint32_t rez((uint32_t)((u ? sTime % units[u-1] : sTime) / units[u]));
+			if (rez || (u == 4 && str.empty()))
+				str += String::FormatString("%u%s", rez, names[u]);
+			if (!str.empty() && nAproximate > 3u - u)
+				break;
 		}
-		if (nAproximate > 3 && nrNumbers > 0)
-			return buf;
-		rez = (uint32_t)((sTime%((int64_t)24*3600*1000)) / (3600*1000));
-		if (rez) {
-			++nrNumbers;
-			len += _sntprintf(buf+len, 128-len, "%uh", rez);
-		}
-		if (nAproximate > 2 && nrNumbers > 0)
-			return buf;
-		rez = (uint32_t)((sTime%((int64_t)3600*1000)) / (60*1000));
-		if (rez) {
-			++nrNumbers;
-			len += _sntprintf(buf+len, 128-len, "%um", rez);
-		}
-		if (nAproximate > 1 && nrNumbers > 0)
-			return buf;
-		rez = (uint32_t)((sTime%((int64_t)60*1000)) / (1*1000));
-		if (rez) {
-			++nrNumbers;
-			len += _sntprintf(buf+len, 128-len, "%us", rez);
-		}
-		if (nAproximate > 0 && nrNumbers > 0)
-			return buf;
-		rez = (uint32_t)(sTime%((int64_t)1*1000));
-		if (rez || !nrNumbers)
-			len += _sntprintf(buf+len, 128-len, "%ums", rez);
-
-		return String(buf, len);
+		return str;
 	}
 
 	static String toString(const wchar_t* wsz) {
@@ -785,9 +761,7 @@ public:
 		return atoi(aString);
 	}
 	static uint32_t toUInt32Hex(LPCTSTR aString) {
-		uint32_t val;
-		sscanf(aString, "%x", &val);
-		return val;
+		return (uint32_t)strtoul(aString, NULL, 16);
 	}
 	static uint32_t toUInt32(LPCTSTR aString) {
 		return (uint32_t)atoi(aString);
@@ -805,7 +779,7 @@ public:
 
 	static GENERAL_API uint32_t getTick() {
 		#ifdef _MSC_VER
-		return GetTickCount();
+		return (uint32_t)GetTickCount64();
 		#else
 		timeval tv;
 		gettimeofday(&tv, NULL);

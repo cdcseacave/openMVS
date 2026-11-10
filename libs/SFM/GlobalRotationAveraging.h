@@ -157,7 +157,7 @@ private:
 	std::unordered_map<uint32_t, uint32_t> pairIdToInfo; // map valid pair ID to the position of relative pose in the residual vector
 
 	// The fixed node id. This is used to remove the gauge freedom.
-	uint32_t fixedNodeId;
+	uint32_t fixedNodeId = NO_ID;
 };
 /*----------------------------------------------------------------*/
 
