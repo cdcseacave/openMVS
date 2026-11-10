@@ -218,6 +218,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::GroundControlPointTest())
 				return false;
+			if (!SFM::GeographicControlPointTest())
+				return false;
 			if (!SFM::PairsWeightingTest())
 				return false;
 			if (!SFM::ViewGraphCalibratorTest())

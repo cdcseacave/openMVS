@@ -61,6 +61,7 @@ bool AlignToGPSDegenerateTest();
 
 // GCP CSV import, robust map-frame alignment, and GCP-constrained bundle adjustment
 bool GroundControlPointTest();
+bool GeographicControlPointTest();
 
 // Full-hemisphere spherical reconstruction regression test: exercises the
 // Triangulation + BA pipeline on a spherical scene with 3D points distributed

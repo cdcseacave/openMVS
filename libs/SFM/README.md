@@ -383,11 +383,34 @@ Each row is one image observation. `x,y` are working-image pixel coordinates, `x
 
 All three accuracies must be finite and strictly positive. Rows with invalid accuracies are skipped with a warning identifying the CSV row. Positive accuracies are used as supplied, without a minimum-value clamp.
 
-Saved SfM scenes retain the controls, their image observations, accuracies, and alignment-inlier status. This uses SfM project layout version 1; older layouts are not supported. Loading a scene through the C++ API restores the controls for constrained BA. The `CreateStructure` CLI still rejects already calibrated scenes as reconstruction inputs; this does not add a CLI refinement mode.
+Saved SfM scenes retain the controls, their image observations, accuracies, alignment-inlier status, and georeferencing state. This uses SfM project layout version 2; older layouts are not supported. Loading a scene through the C++ API restores the controls for constrained BA. The `CreateStructure` CLI still rejects already calibrated scenes as reconstruction inputs; this does not add a CLI refinement mode.
 
 After the initial reconstruction, `AlignToGCP` triangulates the observed control points and robustly estimates a similarity transform into the surveyed frame. Only controls accepted as RANSAC inliers participate in subsequent bundle adjustment. Bundle adjustment then optimizes one latent 3D point per accepted GCP with both image reprojection residuals and an accuracy-weighted coordinate prior. The surveyed coordinates remain immutable. GCP priors anchor the bundle-adjustment gauge and therefore provide absolute pose covariance when pose-quality export is enabled.
 
-The GCP frame is distinct from GPS alignment's local ENU frame: it sets `GCP_ALIGN`, does not set `GEO_ALIGN`, and does not use `Scene::transform` as an ECEF origin. When GCP alignment succeeds it takes precedence over imported-pose and GPS alignment. `--align-gcp-threshold 0` disables GCP alignment and constraints; `--gcp-position-weight 0` keeps alignment but disables the bundle-adjustment constraints.
+Without `--gcp-crs`, GCPs define an arbitrary Cartesian survey frame. This sets `GCP_ALIGN`, clears `GEO_ALIGN`, and disables GPS constraints because their coordinate frame is unknown. Successful GCP alignment takes precedence over imported-pose alignment. `--align-gcp-threshold 0` disables GCP alignment and constraints; `--gcp-position-weight 0` keeps alignment but disables the bundle-adjustment constraints.
+
+#### Joint GNSS and GCP adjustment
+
+Supply `--gcp-crs` to interpret surveyed coordinates in a known CRS. GCPs are transformed through WGS84 ECEF to one local ENU frame, centered on the GCP centroid. EXIF GPS positions use the same ENU origin during BA. Both `GCP_ALIGN` and `GEO_ALIGN` are set; the original survey coordinates are retained. The GCP covariance is propagated into ENU, including axis correlations. Accuracy columns are standard deviations in the units of each source coordinate axis: for geographic GCPs, longitude/latitude accuracies are in degrees and height accuracy is in metres.
+
+```bash
+CreateStructure -s images -o scene.sfm \
+  --import-gcp-csv gcps.csv --gcp-crs EPSG:32627 \
+  --align-gcp-threshold 5 --gcp-position-weight 1 \
+  --gps-position-weight 1 --gps-position-weight-z 1
+```
+
+EXIF positions are assumed WGS84 longitude/latitude with ellipsoidal height. External camera position priors can override matching images using `--import-gps-csv cameras.csv --gps-crs EPSG:32627`. The separate GPS CSV does not initialize camera poses or replace camera calibration. Its required named columns, in arbitrary order, are:
+
+```text
+filename,x,y,z,accuracy_xy,accuracy_z
+```
+
+Names match image filename stems. `x,y,z` use longitude/latitude/height for a geographic CRS, or easting/northing/height for a projected CRS. `accuracy_xy` and `accuracy_z` are local horizontal/vertical standard deviations in metres. Both must be finite and positive. Duplicate matching images and malformed rows fail the import. Unmatched EXIF priors remain available. `--gps-crs` defaults to `EPSG:4979` and applies only to this CSV; it never reinterprets EXIF latitude/longitude as projected coordinates.
+
+PROJ >= 9.2 is required. Transformations use traditional GIS axis order and disallow ballpark operations; unavailable required datum grids cause an error. A horizontal-only CRS such as `EPSG:32627` assumes ellipsoidal heights; supply a suitable 3D or compound CRS for other height references, and install the required transformation grids. No automatic EXIF geoid correction is inferred.
+
+The CRS-aware reconstruction, sparse exports and subsequent MVS processing use ENU metres, not the original projected coordinates. The saved SfM scene retains the source GCP CRS, original controls, ENU prior targets, covariances, and origin. Exported MVS scenes carry the ENU-to-WGS84-ECEF affine transform, including its rotation, for subsequent CRS conversion of point clouds. Raw PLY and pose CSV outputs contain ENU coordinates; their CRS must not be labelled UTM. Geographic/map output reprojection is a separate export operation.
 
 ---
 

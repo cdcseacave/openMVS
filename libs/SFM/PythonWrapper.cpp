@@ -273,6 +273,9 @@ void RegisterBindings()
 		.def_readwrite("k2", &SFM::ImportConfig::k2)
 		.DEF_STR_RW("import_poses_file", &SFM::ImportConfig::importPosesFile)
 		.DEF_STR_RW("import_gcps_csv", &SFM::ImportConfig::importGCPsCSV)
+		.DEF_STR_RW("import_gps_csv", &SFM::ImportConfig::importGPSCSV)
+		.DEF_STR_RW("gps_crs", &SFM::ImportConfig::gpsCRS)
+		.DEF_STR_RW("gcp_crs", &SFM::ImportConfig::gcpCRS)
 		.def_readwrite("import_poses_mode", &SFM::ImportConfig::importPosesMode)
 		.def_readwrite("frames_convention", &SFM::ImportConfig::framesConvention);
 

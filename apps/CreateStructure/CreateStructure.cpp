@@ -60,6 +60,9 @@ String strExportPairsCSV;
 String strImportROMA2Path;
 String strCompareMVS;
 String strImportGCPCSV;
+String strImportGPSCSV;
+String strGPSCRS;
+String strGCPCRS;
 int matchMode;
 unsigned importPosesMode;
 unsigned matchSequenceOverlap;
@@ -145,6 +148,9 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("export-openmvg-dir", boost::program_options::value<std::string>(&OPT::strExportOpenMVGDir), "export OpenMVG features to directory (optional)")
 		("export-pairs-csv", boost::program_options::value<std::string>(&OPT::strExportPairsCSV), "export image pairs to CSV file (optional)")
 		("import-gcp-csv", boost::program_options::value<std::string>(&OPT::strImportGCPCSV), "import ground control points from CSV file (optional)")
+		("import-gps-csv", boost::program_options::value<std::string>(&OPT::strImportGPSCSV), "camera position CSV: filename,x,y,z,accuracy_xy,accuracy_z")
+		("gps-crs", boost::program_options::value<std::string>(&OPT::strGPSCRS)->default_value("EPSG:4979"), "CRS of camera position CSV (default WGS84 longitude,latitude,ellipsoidal height)")
+		("gcp-crs", boost::program_options::value<std::string>(&OPT::strGCPCRS), "survey CRS; transforms GCPs to ENU for joint GPS/GCP BA (omitted = Cartesian survey frame)")
 		("import-roma2", boost::program_options::value<std::string>(&OPT::strImportROMA2Path), "import ROMA2 reconstruction from .npz files (folder or semicolon-separated list)")
 		("compare-mvs", boost::program_options::value<std::string>(&OPT::strCompareMVS), "compare reconstruction against ground-truth MVS file (optional)")
 		("max-features-per-cell", boost::program_options::value(&OPT::nMaxFeaturesPerCell)->default_value(3000), "maximum features per grid cell (3x3 grid)")
@@ -171,7 +177,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("align-gps-threshold", boost::program_options::value<float>(&OPT::thAlignGPS)->default_value(5.f), "maximum distance in meters for aligning GPS positions to reconstruction poses (0 = disabled)")
 		("gps-position-weight", boost::program_options::value(&OPT::gpsPositionWeight)->default_value(0.0), "horizontal weight of the GPS position priors used to refine the geo-aligned reconstruction (0 = disabled)")
 		("gps-position-weight-z", boost::program_options::value(&OPT::gpsPositionWeightZ)->default_value(0.0), "vertical weight of the GPS position priors used to refine the geo-aligned reconstruction (0 = disabled)")
-		("align-gcp-threshold", boost::program_options::value<float>(&OPT::thAlignGCP)->default_value(5.f), "maximum distance in map units for aligning GCPs to reconstruction points (0 = disabled)")
+		("align-gcp-threshold", boost::program_options::value<float>(&OPT::thAlignGCP)->default_value(5.f), "GCP alignment distance in survey units, or ENU metres with --gcp-crs (0 = disabled)")
 		("gcp-position-weight", boost::program_options::value(&OPT::gcpPositionWeight)->default_value(1.0), "weight of GCP coordinate priors during bundle adjustment (0 = disabled)")
 		;
 
@@ -239,6 +245,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	Util::ensureValidFolderPath(OPT::strExportOpenMVGDir);
 	Util::ensureValidPath(OPT::strExportPairsCSV);
 	Util::ensureValidPath(OPT::strImportGCPCSV);
+	Util::ensureValidPath(OPT::strImportGPSCSV);
 	Util::ensureValidPath(OPT::strImportROMA2Path);
 	Util::ensureValidPath(OPT::strCompareMVS);
 
@@ -279,6 +286,9 @@ int main(int argc, LPCTSTR* argv)
 	cfg.importCfg.importPosesMode = static_cast<SFM::PoseImportMode>(OPT::importPosesMode);
 	cfg.importCfg.framesConvention = OPT::knownPosesConvention;
 	cfg.importCfg.importGCPsCSV = OPT::strImportGCPCSV;
+	cfg.importCfg.importGPSCSV = OPT::strImportGPSCSV;
+	cfg.importCfg.gpsCRS = OPT::strGPSCRS;
+	cfg.importCfg.gcpCRS = OPT::strGCPCRS;
 	cfg.importCfg.archiveType = (ARCHIVE_TYPE)OPT::nArchiveType;
 	cfg.featuresCfg.detectorType = FeatureTypeFromString(OPT::strDetectorType);
 	cfg.featuresCfg.maxFeaturesPerCell = OPT::nMaxFeaturesPerCell;

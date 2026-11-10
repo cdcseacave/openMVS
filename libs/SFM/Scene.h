@@ -51,6 +51,9 @@ struct SFM_API ImportConfig {
 	// ResolveFramesConvention(), which can only resolve it once the pairs are matched
 	FramesConvention framesConvention = FramesConvention::AUTO;
 	String importGCPsCSV;            // import ground control points from CSV file (optional)
+	String importGPSCSV;             // external camera position priors; overrides matching EXIF positions
+	String gpsCRS{"EPSG:4979"};     // camera CSV CRS; geographic input is longitude, latitude, height
+	String gcpCRS;                   // empty = arbitrary Cartesian survey frame
 	ARCHIVE_TYPE archiveType = ARCHIVE_DEFAULT; // archive type for loading/saving scenes
 };
 
@@ -149,12 +152,14 @@ struct SFM_API GroundControlPoint {
 	Point3 position;
 	Point3 accuracy{1, 1, 1};
 	bool isInlier{false};
+	Point3 priorPosition{Point3::ZERO}; // BA target in the active reconstruction frame
+	Matrix3x3 priorWhitening{Matrix3x3::IDENTITY};
 	CLISTDEF0(Observation) observations;
 
 	#ifdef _USE_BOOST
 	template<class Archive>
 	void serialize(Archive& ar, const unsigned int /*version*/) {
-		ar & label & position & accuracy & isInlier & observations;
+		ar & label & position & accuracy & isInlier & priorPosition & priorWhitening & observations;
 	}
 	#endif
 };
@@ -192,6 +197,7 @@ public:
 	std::unordered_map<IIndex, Pose3D> priorPoses;
 	// Surveyed ground control points and image observations, persisted with the scene.
 	GroundControlPointArr gcps;
+	String gcpCRS;
 
 	// Optional transformation used to convert from absolute to relative coordinate system
 	Matrix4x4 transform;
@@ -206,8 +212,8 @@ public:
 			FEATURES_EXTRACTED = 1,
 			MATCHED = 2,
 			CALIBRATED = 4,
-			GEO_ALIGN = 8, // GPS-aligned local ENU frame; transform stores the ECEF origin
-			GCP_ALIGN = 16 // aligned directly to the imported GCP coordinate frame
+			GEO_ALIGN = 8, // local ENU frame; transform stores the ECEF origin
+			GCP_ALIGN = 16 // aligned to GCPs, in ENU when their CRS is supplied
 		};
 		Flags nState{STATE::EMPTY}; // current state (now type-safe with STATE enum)
 		FeatureType nFeaturesType{FeatureType::NONE}; // type of features extracted (0=none,1=AKAZE,2=ORB,3=SIFT)
@@ -481,6 +487,7 @@ public:
 		ar & colors;
 		ar & poseUncertainty;
 		ar & gcps;
+		ar & gcpCRS;
 		ar & transform;
 		ar & obb;
 		ar & status;

@@ -37,6 +37,8 @@
 #include "../../libs/SFM/ViewGraphCalibrator.h"
 #include "../../libs/SFM/BundleAdjustment.h"
 #include "../../libs/SFM/BundleAdjustmentCostFunctions.h"
+#include "../../libs/SFM/Georeference.h"
+#include "../../libs/Math/GeodeticTransforms.h"
 #include "../../libs/SFM/SceneCluster.h"
 #include "../../libs/SFM/GlobalAlignment.h"
 #include "../../libs/SFM/MatchGeometric.h"
@@ -2606,6 +2608,7 @@ bool GroundControlPointTest()
 	// A gross survey-coordinate outlier must be rejected by alignment and excluded from BA.
 	scene.gcps.back().position += Point3(100, -80, 120);
 
+	scene.status.nState.set(Scene::Status::STATE::GEO_ALIGN);
 	std::mt19937 rng(73);
 	scene.Transform(Transform::Random(rng));
 	if (!scene.AlignToGCP(REAL(0.01)) ||
@@ -2649,6 +2652,7 @@ bool GroundControlPointTest()
 				const GroundControlPoint& a = scene.gcps[i];
 				const GroundControlPoint& b = restored.gcps[i];
 				if (a.label != b.label || a.position != b.position || a.accuracy != b.accuracy ||
+					a.priorPosition != b.priorPosition || a.priorWhitening != b.priorWhitening ||
 					a.isInlier != b.isInlier || a.observations.size() != b.observations.size()) {
 					VERBOSE("GroundControlPointTest FAILED: serialized GCP %u mismatch", i);
 					return false;
@@ -2704,6 +2708,133 @@ bool GroundControlPointTest()
 }
 /*----------------------------------------------------------------*/
 
+
+bool GeographicControlPointTest()
+{
+	VERBOSE("\n=== GeographicControlPointTest ===");
+	Point3Arr projected;
+	if (!ReprojectCoordinates("EPSG:4979", "EPSG:32633", Point3Arr{Point3(15, 0, 100)}, projected) ||
+		norm(projected[0]-Point3(500000, 0, 100)) > 1e-5) {
+		VERBOSE("GeographicControlPointTest FAILED: longitude/latitude axis order or ellipsoidal height");
+		return false;
+	}
+	Point3Arr invalid;
+	if (ReprojectCoordinates("EPSG:invalid", "EPSG:4979", projected, invalid))
+		return false;
+	const ScopedTempDir tmpDir(_T("GeographicControlPointTest"));
+	if (!tmpDir.IsValid()) return false;
+	ImageArr cameras;
+	cameras.emplace_back(0, "/images/a.tif");
+	const String gpsPath = tmpDir(_T("gps.csv"));
+	{
+		std::ofstream os(gpsPath);
+		os << "filename,x,y,z,accuracy_xy,accuracy_z\na.tif,500000,0,100,0.5,1\n";
+	}
+	if (!ImportGPSCSV(gpsPath, "EPSG:32633", cameras) ||
+		ABS(cameras[0].View::metadata.longitude-15) > 1e-8 ||
+		ABS(cameras[0].View::metadata.latitude) > 1e-8 ||
+		ABS(cameras[0].View::metadata.altitude-100) > 1e-6 ||
+		cameras[0].View::metadata.positionAccuracy != 0.5)
+		return false;
+	{
+		std::ofstream os(gpsPath);
+		os << "filename,x,y,z,accuracy_xy,accuracy_z\na.tif,15,0,100,0,1\n";
+	}
+	if (ImportGPSCSV(gpsPath, "EPSG:4979", cameras)) return false;
+
+	Scene truth, scene;
+	SceneConfig config;
+	config.numImages = 6;
+	config.numPoints = 120;
+	config.poseMode = SceneConfig::RANDOM_POSES;
+	GenerateTestScene(truth, config, &scene);
+	Transform placement;
+	placement.R = Matrix3x3::IDENTITY;
+	placement.scale = 1;
+	placement.t = Point3(630000, 7070000, 100);
+	truth.Transform(placement);
+	scene.Transform(placement);
+	scene.gcpCRS = "EPSG:32627";
+	for (unsigned i = 0; i < 12; ++i) {
+		const Track& track = truth.tracks[i];
+		if (track.GetNumObservations() < 2) continue;
+		auto& control = scene.gcps.emplace_back();
+		control.label = String::FormatString("GCP%u", i);
+		control.position = track.position;
+		control.accuracy = Point3(0.02, 0.03, 0.05);
+		for (const auto& obs : track.observations)
+			control.observations.emplace_back(GroundControlPoint::Observation{
+				obs.imageID, truth.images[obs.imageID].keypoints[obs.featureID].pt});
+	}
+	Point3Arr centers, lla;
+	for (const auto& image : truth.images) centers.push_back(image.C);
+	if (!ReprojectCoordinates(scene.gcpCRS, "EPSG:4979", centers, lla)) return false;
+	FOREACH(i, scene.images) {
+		auto& metadata = scene.images[i].View::metadata;
+		metadata.longitude = lla[i].x;
+		metadata.latitude = lla[i].y;
+		metadata.altitude = lla[i].z;
+		metadata.positionAccuracy = 0.5;
+		metadata.positionAccuracyZ = 1;
+	}
+	const Point3 surveyed = scene.gcps[0].position;
+	std::mt19937 random(871);
+	scene.Transform(Transform::Random(random));
+	if (!scene.AlignToGCP(0.05) ||
+		!scene.status.nState.isSet(Scene::Status::STATE::GEO_ALIGN) ||
+		!scene.status.nState.isSet(Scene::Status::STATE::GCP_ALIGN) ||
+		scene.gcps[0].position != surveyed) return false;
+	const Point3 origin = scene.GetCenterECEF();
+	double lat0, lon0, alt0;
+	ECEFToWGS84(origin.x, origin.y, origin.z, lat0, lon0, alt0);
+	Point3Arr expected;
+	const Matrix4x4 absolute = ENUToECEFTransform(origin);
+	FOREACH(i, scene.images) {
+		Point3 position;
+		WGS84ToENU(lla[i].y, lla[i].x, lla[i].z, lat0, lon0, alt0, position.x, position.y, position.z);
+		expected.push_back(position);
+		if (norm(scene.images[i].C-position) > 0.005) return false;
+		Point3 actualECEF;
+		WGS84ToECEF(lla[i].y, lla[i].x, lla[i].z, actualECEF.x, actualECEF.y, actualECEF.z);
+		const Point3 recovered(
+			absolute(0,0)*position.x+absolute(0,1)*position.y+absolute(0,2)*position.z+absolute(0,3),
+			absolute(1,0)*position.x+absolute(1,1)*position.y+absolute(1,2)*position.z+absolute(1,3),
+			absolute(2,0)*position.x+absolute(2,1)*position.y+absolute(2,2)*position.z+absolute(2,3));
+		if (norm(actualECEF-recovered) > 1e-6) return false;
+	}
+	// Reference axes are rotated: the transformed anisotropic prior must retain covariance terms.
+	const Matrix3x3& w = scene.gcps[0].priorWhitening;
+	const Matrix3x3 information(w.t()*w);
+	if (ABS(information(0,1)) < 1e-4) return false;
+	const String scenePath = tmpDir(_T("scene.sfm"));
+	Scene restored;
+	if (!scene.Save(scenePath) || !restored.Load(scenePath) || restored.gcpCRS != scene.gcpCRS ||
+		norm(restored.GetCenterECEF()-origin) > 1e-8 ||
+		restored.gcps[0].priorPosition != scene.gcps[0].priorPosition ||
+		restored.gcps[0].priorWhitening != w) return false;
+	scene = std::move(restored);
+	const String mvsPath = tmpDir(_T("scene.mvs"));
+	MVS::Interface exported;
+	if (!ExportMVS(mvsPath, scene) || !MVS::ARCHIVE::SerializeLoad(exported, mvsPath) ||
+		norm(Point3(exported.transform(0,3), exported.transform(1,3), exported.transform(2,3))-origin) > 1e-6 ||
+		ABS(exported.transform(0,0)-absolute(0,0)) > 1e-9) return false;
+	FOREACH(i, scene.images) scene.images[i].C += Point3(0.03, -0.02, 0.01);
+	BAConfig ba;
+	ba.useGCPConstraints = true;
+	ba.gpsPositionWeight = 1;
+	ba.gpsPositionWeightZ = 1;
+	ba.maxIterations = 30;
+	BundleAdjustment adjustment(scene, ba);
+	if (!adjustment.Adjust()) return false;
+	FOREACH(i, scene.images) {
+		if (norm(scene.images[i].C-expected[i]) > 0.01) {
+			VERBOSE("GeographicControlPointTest FAILED: joint GPS/GCP adjustment moved camera %u", i);
+			return false;
+		}
+	}
+	VERBOSE("GeographicControlPointTest PASSED");
+	return true;
+}
 
 // Small SFM smoke test: build tiny scene and run BundleAdjustment::Adjust
 bool PipelineTest()

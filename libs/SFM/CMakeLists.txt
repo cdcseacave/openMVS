@@ -5,9 +5,11 @@ find_exported_dependency(TinyEXIF CONFIG REQUIRED)
 find_exported_dependency(TinyNPY CONFIG REQUIRED)
 find_exported_dependency(PoseLib CONFIG REQUIRED)
 find_exported_dependency(Ceres CONFIG REQUIRED)
+find_exported_dependency(PROJ 9.2 CONFIG REQUIRED)
 
 # Check which SfM features are available
 SET(SFM_EXTRA_LIBS "")
+LIST(APPEND SFM_EXTRA_LIBS PROJ::proj)
 IF(TinyEXIF_FOUND)
 	MESSAGE(STATUS "TinyEXIF found via CMake config")
 	LIST(APPEND SFM_EXTRA_LIBS TinyEXIF::TinyEXIF)

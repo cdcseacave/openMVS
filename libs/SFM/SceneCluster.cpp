@@ -249,6 +249,7 @@ Scene SceneCluster::ExtractSubScene(
 			subScene.tracks.emplace_back(dstTrack);
 	}
 
+	subScene.gcpCRS = scene.gcpCRS;
 	// Keep control points that remain observable in this sub-scene. This is normally only
 	// needed after the sub-scenes are merged, but it also preserves georeferencing when global
 	// alignment falls back to the largest reconstructed component.
@@ -258,6 +259,8 @@ Scene SceneCluster::ExtractSubScene(
 		dstGCP.position = srcGCP.position;
 		dstGCP.accuracy = srcGCP.accuracy;
 		dstGCP.isInlier = srcGCP.isInlier;
+		dstGCP.priorPosition = srcGCP.priorPosition;
+		dstGCP.priorWhitening = srcGCP.priorWhitening;
 		for (const GroundControlPoint::Observation& srcObs : srcGCP.observations) {
 			if (srcObs.imageID >= globalToLocal.size())
 				continue;

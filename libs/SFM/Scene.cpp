@@ -21,6 +21,7 @@
 #include "SimilarityTransform.h"
 #include "InterfaceMVS.h"
 #include "ImportCOLMAP.h"
+#include "Georeference.h"
 
 #include <TinyEXIF.h>
 
@@ -35,7 +36,7 @@ using namespace SFM;
 #endif
 
 #define SFM_PROJECT_ID "SFM\0" // identifies the SFM project stream
-#define SFM_PROJECT_VERSION 1  // SFM project stream layout version (bump on any breaking header/serialization change)
+#define SFM_PROJECT_VERSION 2  // SFM project stream layout version (bump on any breaking header/serialization change)
 
 
 // S T R U C T S ///////////////////////////////////////////////////
@@ -95,6 +96,7 @@ Scene& Scene::operator=(const Scene& scene) {
 	for (const Track& track : scene.tracks)
 		tracks.emplace_back(track);
 	gcps = scene.gcps;
+	gcpCRS = scene.gcpCRS;
 	// Copy status
 	colors = scene.colors;
 	poseUncertainty = scene.poseUncertainty;
@@ -117,6 +119,7 @@ Scene& Scene::operator=(Scene&& scene) noexcept {
 	poseUncertainty = std::move(scene.poseUncertainty);
 	priorPoses = std::move(scene.priorPoses);
 	gcps = std::move(scene.gcps);
+	gcpCRS = std::move(scene.gcpCRS);
 	transform = scene.transform;
 	obb = scene.obb;
 	status = scene.status;
@@ -133,6 +136,7 @@ void Scene::Release() {
 	poseUncertainty.Release();
 	priorPoses.clear();
 	gcps.Release();
+	gcpCRS.clear();
 	transform = Matrix4x4::IDENTITY;
 	obb = OBB3(true);
 	status = Status();
@@ -596,6 +600,26 @@ bool Scene::Import(const String& source, const ImportConfig& config)
 	}
 
 	// 2e) Apply forced focal length and distortion parameters to specified images (if configured)
+	if (!config.importGPSCSV.empty() && !ImportGPSCSV(config.importGPSCSV, config.gpsCRS, images))
+		return false;
+	if (config.importGPSCSV.empty() && config.gpsCRS != "EPSG:4979") {
+		VERBOSE("error: --gps-crs describes --import-gps-csv, not EXIF metadata");
+		return false;
+	}
+	if (!config.gcpCRS.empty())
+		gcpCRS = config.gcpCRS;
+	if (!gcpCRS.empty() && gcps.empty()) {
+		VERBOSE("error: --gcp-crs requires ground control points");
+		return false;
+	}
+	if (!gcpCRS.empty()) {
+		Point3Arr targets;
+		std::vector<Matrix3x3> whitening;
+		Point3 origin;
+		if (!PrepareGCPReference(*this, targets, whitening, origin))
+			return false;
+	}
+
 	if (config.focalLength > 0.f || config.k1 != 0.f || config.k2 != 0.f) {
 		IDXArr imageIndices;
 		if (config.imageIndicesStr.empty()) {
@@ -815,10 +839,13 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	                             : !ReconstructHierarchical(config))
 		return false;
 
-	// Align the arbitrary SfM frame to map/elevation coordinates before final BA. GCPs define
-	// their own absolute frame; unlike GPS alignment this is not an ENU frame and does not use
-	// Scene::transform as an ECEF origin.
+	// GCPs with a declared CRS define a shared ENU frame for GPS and survey constraints.
+	// Otherwise their Cartesian survey frame is used and GPS constraints stay disabled.
 	const bool alignedToGCP = config.thAlignGCP > 0 && !gcps.empty() && AlignToGCP(config.thAlignGCP);
+	if (!gcpCRS.empty() && config.thAlignGCP > 0 && !alignedToGCP)
+		return false;
+	if (alignedToGCP && gcpCRS.empty() && config.baConfig.IsRefiningGPS())
+		VERBOSE("warning: GPS constraints disabled in an arbitrary GCP frame; specify --gcp-crs for joint adjustment");
 
 	// Pre-final global bundle adjustment
 	BAConfig finalBaCfg = config.baConfig;
@@ -846,6 +873,8 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 		// including the final pass performed after registration stops.
 		resectionCfg.fullBAConfig.useGCPConstraints = alignedToGCP;
 		resectionCfg.fullBAConfig.gcpPositionWeight = config.baConfig.gcpPositionWeight;
+		resectionCfg.fullBAConfig.gpsPositionWeight = config.baConfig.gpsPositionWeight;
+		resectionCfg.fullBAConfig.gpsPositionWeightZ = config.baConfig.gpsPositionWeightZ;
 		Resection resection(*this, resectionCfg);
 		resection.RegisterImages();
 		FilterWeaklyConnectedImages(*this);
@@ -1318,6 +1347,9 @@ bool Scene::AlignToGPS(double threshold)
 	transform(2, 3) = centerECEF.z;
 
 	status.nState.set(Status::STATE::GEO_ALIGN);
+	status.nState.unset(Status::STATE::GCP_ALIGN);
+	for (auto& gcp : gcps)
+		gcp.isInlier = false;
 	VERBOSE("Scene aligned to GPS: aligned %u images (scale=%.4f)",
 		(unsigned)camCenters.size(), T_cam_to_enu.scale);
 	return true;
@@ -1421,6 +1453,15 @@ bool Scene::AlignToPriorPoses(float thresholdRatio)
 
 bool Scene::AlignToGCP(double threshold)
 {
+	if (gcps.empty()) {
+		VERBOSE("error: no ground control points available");
+		return false;
+	}
+	Point3Arr targets;
+	std::vector<Matrix3x3> whitening;
+	Point3 originECEF;
+	if (!PrepareGCPReference(*this, targets, whitening, originECEF))
+		return false;
 	Point3Arr scenePoints;
 	Point3Arr mapPoints;
 	IIndexArr gcpIndices;
@@ -1463,7 +1504,7 @@ bool Scene::AlignToGCP(double threshold)
 		if (!ISFINITE(p))
 			continue;
 		scenePoints.push_back(p);
-		mapPoints.push_back(gcp.position);
+		mapPoints.push_back(targets[gcpIdx]);
 		gcpIndices.push_back(gcpIdx);
 	}
 
@@ -1483,6 +1524,16 @@ bool Scene::AlignToGCP(double threshold)
 	for (const size_t idx : inliers)
 		gcps[gcpIndices[idx]].isInlier = true;
 	Transform(T_scene_to_map);
+	FOREACH(i, gcps) {
+		gcps[i].priorPosition = targets[i];
+		gcps[i].priorWhitening = whitening[i];
+	}
+	status.nState.set(Status::STATE::GEO_ALIGN, !gcpCRS.empty());
+	transform = Matrix4x4::IDENTITY;
+	if (!gcpCRS.empty()) {
+		transform = ENUToECEFTransform(originECEF);
+		VERBOSE("GCPs transformed from '%s' to local ENU; GPS priors use the same origin", gcpCRS.c_str());
+	}
 	status.nState.set(Status::STATE::GCP_ALIGN);
 	VERBOSE("Scene aligned to GCPs: %u/%u control points inliers (scale=%.4f)",
 		numInliers, (unsigned)scenePoints.size(), T_scene_to_map.scale);

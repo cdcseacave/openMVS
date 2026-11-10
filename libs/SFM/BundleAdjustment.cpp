@@ -706,13 +706,12 @@ bool BundleAdjustment::Adjust()
 			if (validObservations.size() < 2)
 				continue;
 
-			gcpParams.push_back({gcp.position.x, gcp.position.y, gcp.position.z});
+			gcpParams.push_back({gcp.priorPosition.x, gcp.priorPosition.y, gcp.priorPosition.z});
 			auto& params = gcpParams.back();
 
 			problem.AddResidualBlock(
 				GCPPositionError::Create(
-					gcp.position.x, gcp.position.y, gcp.position.z,
-					gcp.accuracy.x, gcp.accuracy.y, gcp.accuracy.z,
+					gcp.priorPosition, gcp.priorWhitening,
 					config.gcpPositionWeight),
 				nullptr,
 				params.data());
