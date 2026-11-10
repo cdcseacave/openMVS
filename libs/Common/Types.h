@@ -124,6 +124,10 @@
 // OpenCV 5 moved DistanceTypes (cv::DIST_L1, ...) into the new geometry module
 #include <opencv2/geometry.hpp>
 #endif
+#if CV_MAJOR_VERSION >= 5 && defined(HAVE_OPENCV_XFEATURES2D)
+#include <opencv2/xfeatures2d.hpp>
+namespace cv { using AKAZE = xfeatures2d::AKAZE; }
+#endif
 #ifdef HAVE_OPENCV_GPU
 #if CV_MAJOR_VERSION > 2
 #include <opencv2/cudaarithm.hpp>
