@@ -490,6 +490,8 @@ bool RenderAndSaveSphericalFaces(
 		// render all N faces in one call, consuming the shared geometry
 		const std::vector<Image8U3> faces =
 			SphereCubeMap::SphericalToTangentialFaces<Pixel8U>(img.GetImage8U3(), geometry);
+		if (loadedHere)
+			const_cast<Image&>(img).ReleasePixels();
 
 		const String stem = Util::getFileName(img.fileName);
 		for (int k = 0; k < (int)faces.size(); ++k) {
@@ -501,8 +503,6 @@ bool RenderAndSaveSphericalFaces(
 			}
 			++written;
 		}
-		if (loadedHere)
-			const_cast<Image&>(img).ReleasePixels();
 	}
 	DEBUG("SphereCubeMap: wrote %u face images to '%s'", written, outDir.c_str());
 	return true;
@@ -766,14 +766,10 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig 
 		Point2f x(kp);
 		const auto itK = undistortK.find(img.pCamera);
 		if (itK != undistortK.end()) {
-			// the undistorted image file: the keypoint through the undistorted camera
-			const PinholeCamera& pc = *static_cast<const PinholeCamera*>(img.pCamera);
-			const KMatrix& K = pc.GetK();
+			// the undistorted image file: the undistorted ray of the keypoint through the undistorted camera
+			const Point3 ray(img.pCamera->Unproject(Point2(kp)));
 			const KMatrix& Ku = itK->second;
-			const Pinhole<REAL> distorted{K(0,0), K(1,1), K(0,2), K(1,2)};
-			const Pinhole<REAL> undistorted{Ku(0,0), Ku(1,1), Ku(0,2), Ku(1,2)};
-			const Eigen::Vector2d u(undistorted.NormalizedToPixel(pc.GetDistortion().Undistort(
-				distorted.PixelToNormalized(Eigen::Vector2d(kp.x, kp.y)))));
+			const Eigen::Vector2d u(Pinhole<REAL>{Ku(0,0), Ku(1,1), Ku(0,2), Ku(1,2)}.NormalizedToPixel(Eigen::Vector2d(ray.x, ray.y)));
 			x = Point2f((float)u.x(), (float)u.y());
 		}
 		x = img.ToOriginalOrientation(x);
@@ -802,11 +798,8 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig 
 			}
 			if (srcImg.pCamera->GetType() == CameraType::SPHERICAL && cubeMap) {
 				Point3 featureRay;
-				if (config.includeObservations) {
-					const cv::Point2f& kp = srcImg.keypoints[obs.featureID].pt;
-					const Eigen::Vector3d ray(Spherical<REAL>::FromSize(srcImg.GetWidth(), srcImg.GetHeight()).Ray(Eigen::Vector2d(kp.x, kp.y)));
-					featureRay = Point3(ray.x(), ray.y(), ray.z());
-				}
+				if (config.includeObservations)
+					featureRay = srcImg.pCamera->UnprojectNormalized(Point2(srcImg.keypoints[obs.featureID].pt));
 				ProjectTrackOntoSphericalFaces(
 					track.position, srcImg, sphericalGeom, mvsIDs, config.includeObservations ? &featureRay : NULL, v);
 			} else {

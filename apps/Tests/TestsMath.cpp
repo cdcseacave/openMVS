@@ -453,8 +453,7 @@ bool TestCameraModels()
 }
 /*----------------------------------------------------------------*/
 
-// spherical patch warps against the exact per-texel warp (the mirror of the P5 prototype): random
-// reference pixels, planes facing the reference camera and target poses; the tangent-plane warp
+// spherical patch warps against the exact per-texel warp: random reference pixels, planes facing the reference camera and target poses; the tangent-plane warp
 // trg.PixelHomography(H*r0)*H*ref.RayFrame(x0) must stay within the error bands of the target
 // elevation of the patch center (99th percentile and max of the per-patch max texel error), across
 // the seam too; the affine variant (the homogeneous divisor frozen at the patch center) is measured

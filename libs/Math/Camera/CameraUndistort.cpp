@@ -428,9 +428,9 @@ std::vector<TImage<TYPE>> SphereCubeMap::SphericalToTangentialFaces(
 
 // explicit instantiations, exported from the library; add a row per pixel type a caller needs
 template MATH_API std::vector<Image8U3>
-	SphereCubeMap::SphericalToTangentialFaces<Pixel8U>(
-	const Image8U3&, const SphereCubeMap::TangentFacesGeometry&);
+	SEACAVE::SphereCubeMap::SphericalToTangentialFaces<Pixel8U>(
+	const Image8U3&, const SEACAVE::SphereCubeMap::TangentFacesGeometry&);
 template MATH_API std::vector<Image32F3>
-	SphereCubeMap::SphericalToTangentialFaces<Pixel32F>(
-	const Image32F3&, const SphereCubeMap::TangentFacesGeometry&);
+	SEACAVE::SphereCubeMap::SphericalToTangentialFaces<Pixel32F>(
+	const Image32F3&, const SEACAVE::SphereCubeMap::TangentFacesGeometry&);
 /*----------------------------------------------------------------*/

@@ -184,7 +184,7 @@ struct BrownDistortion {
 		Eigen::Matrix<T,2,2> J;
 		J(0,0) = radial + dRadial*x2 + T(2)*p1*p.y() + T(6)*p2*p.x();
 		J(0,1) = dRadial*xy + T(2)*p1*p.x() + T(2)*p2*p.y();
-		J(1,0) = dRadial*xy + T(2)*p1*p.x() + T(2)*p2*p.y();
+		J(1,0) = J(0,1);
 		J(1,1) = radial + dRadial*y2 + T(6)*p1*p.y() + T(2)*p2*p.x();
 		return J;
 	}
