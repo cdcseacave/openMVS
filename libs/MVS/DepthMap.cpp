@@ -452,9 +452,9 @@ void DepthEstimatorBase::MapMatrix2ZigzagIdx(const cv::Size& size, MapRefArr& co
 	}
 }
 
-// replace POWI(0.5f, idxScaleRange):           0    1      2       3       4         5         6           7           8             9             10              11
 float DepthEstimatorBase::fSphericalWarpMaxElevation(70.f);
 
+// replace POWI(0.5f, idxScaleRange):           0    1      2       3       4         5         6           7           8             9             10              11
 const float DepthEstimatorBase::scaleRanges[12] = {1.f, 0.5f, 0.25f, 0.125f, 0.0625f, 0.03125f, 0.015625f, 0.0078125f, 0.00390625f, 0.001953125f, 0.0009765625f, 0.00048828125f};
 
 template<template<typename> class MODEL>
@@ -540,8 +540,8 @@ DepthEstimatorT<MODEL>::DepthEstimatorT(
 }
 
 // 3x3 float matrices on Eigen's column-major storage, multiplied out here: MSVC does not inline the
-// fixed-size Eigen products in these builds (EIGEN_STRONG_INLINE=inline), and they were the main cost
-// of the model warps
+// fixed-size Eigen products in these builds (EIGEN_STRONG_INLINE=inline), which would otherwise
+// dominate the cost of the model warps
 inline void MulMat3(const float* A, const float* B, float* C) {
 	for (int c=0; c<3; ++c) {
 		const float b0(B[3*c]), b1(B[3*c+1]), b2(B[3*c+2]);
@@ -719,6 +719,12 @@ inline bool ProjectFast(const Spherical<float>& trg, const Eigen::Vector3f& X, E
 	return trg.ProjectFast(X, x, FastSqrt(X.x()*X.x() + X.z()*X.z()));
 }
 
+// patch warp into a target view: the homogeneous target pixel of the patch's top-left texel, and
+// its steps along a patch row (dx) and down a patch column (dy); dehomogenized per texel
+struct PatchWarp {
+	Point3f base, dx, dy;
+};
+
 // the texels of the patch warped by warp, in the order of the reference texels
 template <bool WRAPX>
 FORCEINLINE bool SampleWarpedPatch(const Image32F& image, const PatchWarp& warp, float* texels) {
@@ -766,7 +772,7 @@ inline bool SampleTangentPatch(const Image32F& image, const PatchWarp& warp, flo
 
 // the reference texels of the patch through the plane (depth, normal), each texel ray intersected
 // with the plane and projected exactly into the spherical target (SIMD packets of texels): Method A,
-// the reference warp of every model
+// for a reference of either model
 template<template<typename> class MODEL>
 bool DepthEstimatorT<MODEL>::SampleExactPatch(const DepthData::ViewData& image1, const Spherical<float>& trg, Depth depth, const Normal& normal, float* texels)
 {
@@ -777,19 +783,14 @@ bool DepthEstimatorT<MODEL>::SampleExactPatch(const DepthData::ViewData& image1,
 	// the texel rays in the reference frame, and turned into this view's frame
 	if (!bViewTexelRays0.back()) {
 		int k(0);
-		if constexpr (bSphericalRef) {
-			for (int i=-nSizeHalfWindow; i<=nSizeHalfWindow; i+=nSizeStep) {
-				for (int j=-nSizeHalfWindow; j<=nSizeHalfWindow; j+=nSizeStep, ++k) {
-					const Eigen::Vector3f r(Ray0(x0.x+j, x0.y+i));
-					texelRays0.x[k] = r.x(); texelRays0.y[k] = r.y(); texelRays0.z[k] = r.z();
-				}
-			}
-		} else {
-			for (int i=-nSizeHalfWindow; i<=nSizeHalfWindow; i+=nSizeStep) {
-				for (int j=-nSizeHalfWindow; j<=nSizeHalfWindow; j+=nSizeStep, ++k) {
-					const Eigen::Vector3f r(camera0f.Ray(Eigen::Vector2f(float(x0.x+j), float(x0.y+i))));
-					texelRays0.x[k] = r.x(); texelRays0.y[k] = r.y(); texelRays0.z[k] = r.z();
-				}
+		for (int i=-nSizeHalfWindow; i<=nSizeHalfWindow; i+=nSizeStep) {
+			for (int j=-nSizeHalfWindow; j<=nSizeHalfWindow; j+=nSizeStep, ++k) {
+				Eigen::Vector3f r;
+				if constexpr (bSphericalRef)
+					r = Ray0(x0.x+j, x0.y+i);
+				else
+					r = camera0f.Ray(Eigen::Vector2f(float(x0.x+j), float(x0.y+i)));
+				texelRays0.x[k] = r.x(); texelRays0.y[k] = r.y(); texelRays0.z[k] = r.z();
 			}
 		}
 		ASSERT(k == nTexels);
@@ -846,29 +847,37 @@ inline PatchWarp MakePatchWarp(const float* M) {
 		Point3f(M[3]*s, M[4]*s, M[5]*s)};
 }
 
-// the warp into the target view when every camera is pinhole: the cached plane homography
-template<template<typename> class MODEL>
-FORCEINLINE bool DepthEstimatorT<MODEL>::SamplePinholePatch(const DepthData::ViewData& image1, Depth depth, const Normal& normal, float* texels)
+// the patch warp between pinhole cameras: the plane-induced homography from the cached ViewData
+// constants, applied to absolute reference pixels
+FORCEINLINE PatchWarp PinholePatchWarp(const DepthData::ViewData& image1, const Point3& X0, const ImageRef& x0, Depth depth, const Normal& normal)
 {
-	ASSERT(!bModelWarp && !image1.IsSpherical());
-	if constexpr (bSphericalRef)
-		return false; // a spherical reference always has bModelWarp
-	else
-		return SampleWarpedPatch<false>(image1.image, ComputePatchWarp(image1, depth, normal), texels);
+	constexpr int h(DepthEstimatorBase::nSizeHalfWindow), s(DepthEstimatorBase::nSizeStep);
+	const Matrix3x3f H(image1.ComputeHomography(X0, depth, normal));
+	PatchWarp warp;
+	ProjectVertex_3x3_2_3(H.val, Point2f(float(x0.x-h),float(x0.y-h)).ptr(), warp.base.ptr());
+	warp.dx = Point3f(H(0,0), H(1,0), H(2,0)) * float(s);
+	warp.dy = Point3f(H(0,1), H(1,1), H(2,1)) * float(s);
+	return warp;
 }
-// the warp into the target view as soon as a spherical camera is involved: the cached homography
-// between pinhole cameras, else M = trg.PixelHomography(H*r0)*H*ref.RayFrame(x0) (Method B), or the
-// exact per-texel warp (Method A) where the target sees the patch center above
+
+// between pinhole cameras the cached plane homography, else the warp through the camera models
+template<template<typename> class MODEL>
+FORCEINLINE bool DepthEstimatorT<MODEL>::SamplePatch(const DepthData::ViewData& image1, Depth depth, const Normal& normal, float* texels)
+{
+	if constexpr (!bSphericalRef) {
+		if (!bModelWarp || !image1.IsSpherical())
+			return SampleWarpedPatch<false>(image1.image, PinholePatchWarp(image1, X0, x0, depth, normal), texels);
+	}
+	return SampleModelPatch(image1, depth, normal, texels);
+}
+// the warp when the reference or the target is spherical: M = trg.PixelHomography(H*r0)*H*ref.RayFrame(x0)
+// (Method B), or the exact per-texel warp (Method A) where the target sees the patch center above
 // fSphericalWarpMaxElevation; the target model is resolved once per (pixel, hypothesis, view)
 template<template<typename> class MODEL>
 bool DepthEstimatorT<MODEL>::SampleModelPatch(const DepthData::ViewData& image1, Depth depth, const Normal& normal, float* texels)
 {
-	if constexpr (!bSphericalRef) {
-		if (!image1.IsSpherical())
-			return SampleWarpedPatch<false>(image1.image, ComputePatchWarp(image1, depth, normal), texels);
-	}
+	ASSERT(bModelWarp && (bSphericalRef || image1.IsSpherical()));
 	// H*F = Rrel*F + t*(n^T*F)/(n.X), the first term cached per pixel and view
-	ASSERT(bModelWarp);
 	const float nX(depth*normal.dot(Cast<float>(X0))); // n.X of the plane point at x0
 	ASSERT(nX < 0);
 	const float* const RF(viewRayFrames0[(IIndex)(&image1-images.data())].data());
@@ -906,6 +915,7 @@ template<template<typename> class MODEL>
 template<typename TRG>
 float DepthEstimatorT<MODEL>::GeometricConsistency(const DepthData::ViewData& image1, const TRG& trg, Depth depth) const
 {
+	constexpr bool bSphericalTrg(std::is_same<TRG, Spherical<float>>::value);
 	ASSERT(!image1.depthMap.empty());
 	const float* const R(image1.RrelDM.data());
 	const float* const t(image1.trelDM.data());
@@ -913,9 +923,9 @@ float DepthEstimatorT<MODEL>::GeometricConsistency(const DepthData::ViewData& im
 	Eigen::Vector2f x1;
 	if (!ProjectFast(trg, Eigen::Vector3f(X1.x, X1.y, X1.z), x1))
 		return 4.f;
-	const Depth depth1Expected(std::is_same<TRG, Spherical<float>>::value ? norm(X1) : X1.z); // trg.Depth(X1)
+	const Depth depth1Expected(bSphericalTrg ? norm(X1) : X1.z); // trg.Depth(X1)
 	Depth depth1;
-	if (!SampleDepth<std::is_same<TRG, Spherical<float>>::value>(image1.depthMap, Point2f(x1.x(), x1.y()), depth1,
+	if (!SampleDepth<bSphericalTrg>(image1.depthMap, Point2f(x1.x(), x1.y()), depth1,
 			[depth1Expected](Depth d) { return IsDepthSimilar(depth1Expected, d, 0.03f); }))
 		return 4.f;
 	// the target point at the sampled depth, along the ray of x1, which is X1's
@@ -929,6 +939,45 @@ float DepthEstimatorT<MODEL>::GeometricConsistency(const DepthData::ViewData& im
 		dx -= float(size.width)*ROUND2INT(dx/float(size.width));
 	const float dist(SQRT(SQUARE(dx) + SQUARE(float(x0.y)-xb.y())));
 	return MINF(SQRT(dist*(dist+2.f)), 4.f);
+}
+
+// the geometric consistency against the target depth-map: between pinhole cameras from the cached
+// ViewData constants, else through the camera models
+template<template<typename> class MODEL>
+FORCEINLINE float DepthEstimatorT<MODEL>::ComputeGeometricConsistency(const DepthData::ViewData& image1, Depth depth) const
+{
+	ASSERT(!image1.depthMap.empty());
+	if (image1.IsSpherical())
+		return GeometricConsistency(image1, MakeCameraModel<Spherical<float>>(image1.cameraDepthMap), depth);
+	if constexpr (bSphericalRef) {
+		return GeometricConsistency(image1, MakeCameraModel<Pinhole<float>>(image1.cameraDepthMap), depth);
+	} else {
+		float consistency(4.f);
+		const Point3f X1(image1.Tl*Point3f(float(X0.x)*depth,float(X0.y)*depth,depth)+image1.Tm); // Kj * Rj * (Ri.t() * X + Ci - Cj)
+		if (X1.z > 0) {
+			const Point2f x1(X1);
+			if (image1.depthMap.isInsideWithBorder<float,1>(x1)) {
+				Depth depth1;
+				if (image1.depthMap.sample(depth1, x1, [&X1](Depth d) { return IsDepthSimilar(X1.z, d, 0.03f); })) {
+					const Point2f xb(image1.Tr*Point3f(x1.x*depth1,x1.y*depth1,depth1)+image1.Tn); // Ki * Ri * (Rj.t() * Kj-1 * X + Cj - Ci)
+					const float dist(norm(Point2f(float(x0.x)-xb.x, float(x0.y)-xb.y)));
+					consistency = MINF(SQRT(dist*(dist+2.f)), consistency);
+				}
+			}
+		}
+		return consistency;
+	}
+}
+// the camera-frame point of reference pixel nx at the given depth
+template<template<typename> class MODEL>
+FORCEINLINE Point3f DepthEstimatorT<MODEL>::ComputeNeighborPoint(const ImageRef& nx, Depth depth) const
+{
+	if constexpr (bSphericalRef) {
+		const Eigen::Vector3f ray(Ray0(nx.x, nx.y));
+		return Point3f(ray.x()*depth, ray.y()*depth, ray.z()*depth);
+	} else {
+		return Cast<float>(image0.camera.TransformPointI2C(Point3(nx, depth)));
+	}
 }
 
 // compute pixel's NCC score in the given target image
@@ -1451,65 +1500,7 @@ DepthEstimatorBase::PixelEstimate DepthEstimatorT<MODEL>::PerturbEstimate(const 
 #endif
 
 
-// pinhole reference: the warp into a pinhole target is the plane-induced homography from the
-// cached ViewData constants, applied to absolute reference pixels
-template<>
-FORCEINLINE PatchWarp DepthEstimatorT<Pinhole>::ComputePatchWarp(const DepthData::ViewData& image1, Depth depth, const Normal& normal) const
-{
-	const Matrix3x3f H(image1.ComputeHomography(X0, depth, normal));
-	PatchWarp warp;
-	ProjectVertex_3x3_2_3(H.val, Point2f(float(x0.x-nSizeHalfWindow),float(x0.y-nSizeHalfWindow)).ptr(), warp.base.ptr());
-	warp.dx = Point3f(H(0,0), H(1,0), H(2,0)) * float(nSizeStep);
-	warp.dy = Point3f(H(0,1), H(1,1), H(2,1)) * float(nSizeStep);
-	return warp;
-}
-// pinhole reference and target depth-map: the distance between the reference pixel and its round
-// trip through the target depth, mapped to [0,4] (4 if the target holds no similar depth there)
-template<>
-FORCEINLINE float DepthEstimatorT<Pinhole>::ComputeGeometricConsistency(const DepthData::ViewData& image1, Depth depth) const
-{
-	ASSERT(!image1.depthMap.empty());
-	if (image1.IsSpherical())
-		return GeometricConsistency(image1, MakeCameraModel<Spherical<float>>(image1.cameraDepthMap), depth);
-	float consistency(4.f);
-	const Point3f X1(image1.Tl*Point3f(float(X0.x)*depth,float(X0.y)*depth,depth)+image1.Tm); // Kj * Rj * (Ri.t() * X + Ci - Cj)
-	if (X1.z > 0) {
-		const Point2f x1(X1);
-		if (image1.depthMap.isInsideWithBorder<float,1>(x1)) {
-			Depth depth1;
-			if (image1.depthMap.sample(depth1, x1, [&X1](Depth d) { return IsDepthSimilar(X1.z, d, 0.03f); })) {
-				const Point2f xb(image1.Tr*Point3f(x1.x*depth1,x1.y*depth1,depth1)+image1.Tn); // Ki * Ri * (Rj.t() * Kj-1 * X + Cj - Ci)
-				const float dist(norm(Point2f(float(x0.x)-xb.x, float(x0.y)-xb.y)));
-				consistency = MINF(SQRT(dist*(dist+2.f)), consistency);
-			}
-		}
-	}
-	return consistency;
-}
-template<>
-FORCEINLINE Point3f DepthEstimatorT<Pinhole>::ComputeNeighborPoint(const ImageRef& nx, Depth depth) const
-{
-	return Cast<float>(image0.camera.TransformPointI2C(Point3(nx, depth)));
-}
-
 template struct MVS_API MVS::DepthEstimatorT<Pinhole>;
-
-
-// spherical reference: the geometric consistency through the camera models of the target depth-map
-template<>
-FORCEINLINE float DepthEstimatorT<Spherical>::ComputeGeometricConsistency(const DepthData::ViewData& image1, Depth depth) const
-{
-	if (image1.IsSpherical())
-		return GeometricConsistency(image1, MakeCameraModel<Spherical<float>>(image1.cameraDepthMap), depth);
-	return GeometricConsistency(image1, MakeCameraModel<Pinhole<float>>(image1.cameraDepthMap), depth);
-}
-template<>
-FORCEINLINE Point3f DepthEstimatorT<Spherical>::ComputeNeighborPoint(const ImageRef& nx, Depth depth) const
-{
-	const Eigen::Vector3f ray(Ray0(nx.x, nx.y));
-	return Point3f(ray.x()*depth, ray.y()*depth, ray.z()*depth);
-}
-
 template struct MVS_API MVS::DepthEstimatorT<Spherical>;
 /*----------------------------------------------------------------*/
 

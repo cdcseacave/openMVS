@@ -384,12 +384,6 @@ inline MODEL MakeCameraModel(const Camera& camera) {
 	return MODEL{T(camera.K(0,0)), T(camera.K(1,1)), T(camera.K(0,2)), T(camera.K(1,2))};
 }
 
-// patch warp into a target view: the homogeneous target pixel of the patch's top-left texel, and
-// its steps along a patch row (dx) and down a patch column (dy); dehomogenized per texel
-struct PatchWarp {
-	Point3f base, dx, dy;
-};
-
 // the part of the PatchMatch estimator independent of the camera model: patch layout, pixel order
 // and the shared types
 struct MVS_API DepthEstimatorBase {
@@ -449,15 +443,6 @@ struct MVS_API DepthEstimatorBase {
 	static bool ImportIgnoreMask(const Image&, const cv::Size&, int nIgnoreMaskLabel, BitMatrix&, Image8U* =NULL);
 	static void MapMatrix2ZigzagIdx(const cv::Size& size, MapRefArr& coords, const BitMatrix& mask, int rawStride=nZigzagMinStride);
 
-	static inline Point3 ComputeRelativeC(const DepthData& depthData) {
-		return depthData.images[1].camera.R*(depthData.images[0].camera.C-depthData.images[1].camera.C);
-	}
-	static inline Matrix3x3 ComputeRelativeR(const DepthData& depthData) {
-		RMatrix R;
-		ComputeRelativeRotation(depthData.images[0].camera.R, depthData.images[1].camera.R, R);
-		return R;
-	}
-
 	static const float scaleRanges[12];
 
 	// a spherical target view is sampled through the tangent-plane homography of the patch while the
@@ -468,11 +453,10 @@ struct MVS_API DepthEstimatorBase {
 
 // PatchMatch depth-map estimator of a reference view seen through the camera model MODEL
 // (Math/Camera/CameraModels.h): a depth is the distance lambda along the model's ray, so the
-// camera-frame point of pixel x is lambda*Ray(x). The model enters through the reference ray X0,
-// the DepthGeometry.h functions called with camera0f, and the members ComputePatchWarp,
-// ComputeGeometricConsistency and ComputeNeighborPoint, specialized per reference model in
-// DepthMap.cpp; the target model of a neighbor view is resolved there once per (pixel, hypothesis,
-// view), never per texel.
+// camera-frame point of pixel x is lambda*Ray(x). The code is shared by both models; the reference
+// model enters through camera0/camera0f (the rays and the DepthGeometry.h functions) and the
+// `if constexpr (bSphericalRef)` branches (wrapped columns, tabulated rays, the normal frame); the
+// model of a neighbor view is resolved once per (pixel, hypothesis, view), never per texel.
 // Concurrent estimators pull pixels in the zigzag order of coords; an estimate is written to the maps
 // as a whole at the end of its pixel, so a neighbor's estimate is read whole: the one of this pass if
 // that neighbor is done, else the previous pass's (a single thread reads lower neighbors final and
@@ -572,24 +556,14 @@ struct DepthEstimatorT : DepthEstimatorBase {
 	void ReadEstimate(const ImageRef&, Depth&, Normal&, float& conf) const;
 	void EstimatePixel(Depth&, Normal&, float& conf);
 	Depth InterpolatePixel(const ImageRef&, Depth, const Normal&) const;
-	// model-dependent: the patch warp of the plane (depth, normal) at x0 into a pinhole target view,
-	// the geometric-consistency cost of that depth against the target's depth-map, and the
+	// the geometric-consistency cost of the depth at x0 against the target's depth-map, and the
 	// camera-frame point of reference pixel nx at the given depth
-	PatchWarp ComputePatchWarp(const DepthData::ViewData& image1, Depth, const Normal&) const;
 	float ComputeGeometricConsistency(const DepthData::ViewData& image1, Depth) const;
 	Point3f ComputeNeighborPoint(const ImageRef& nx, Depth) const;
 	// the texels of the patch of the plane (depth, normal) at x0 as seen in the target view, in the
 	// order of the reference texels (nTexels values); false if one of them is not seen there
-	inline bool SamplePatch(const DepthData::ViewData& image1, Depth depth, const Normal& normal, float* texels) {
-		if constexpr (!bSphericalRef) {
-			if (!bModelWarp)
-				return SamplePinholePatch(image1, depth, normal, texels);
-		}
-		return SampleModelPatch(image1, depth, normal, texels);
-	}
-	// the same between pinhole cameras, through the cached plane homography
-	bool SamplePinholePatch(const DepthData::ViewData& image1, Depth, const Normal&, float* texels);
-	// the same as soon as a spherical camera is involved in the scene
+	bool SamplePatch(const DepthData::ViewData& image1, Depth, const Normal&, float* texels);
+	// the same through the camera models, when the reference or the target is spherical
 	bool SampleModelPatch(const DepthData::ViewData& image1, Depth, const Normal&, float* texels);
 	// the same through the exact per-texel warp into a spherical target (single precision)
 	bool SampleExactPatch(const DepthData::ViewData& image1, const Spherical<float>& trg, Depth, const Normal&, float* texels);
@@ -698,11 +672,6 @@ struct DepthEstimatorT : DepthEstimatorBase {
 	const float sinSqWarpMaxElevation; // SQUARE(SIN(fSphericalWarpMaxElevation))
 	const float cosMinViewAngle; // COS(OPTDENSE::fMinAngle): the per-pixel view gate of a model warp (ScorePixel)
 };
-template<> FORCEINLINE PatchWarp DepthEstimatorT<Pinhole>::ComputePatchWarp(const DepthData::ViewData&, Depth, const Normal&) const;
-template<> FORCEINLINE float DepthEstimatorT<Pinhole>::ComputeGeometricConsistency(const DepthData::ViewData&, Depth) const;
-template<> FORCEINLINE Point3f DepthEstimatorT<Pinhole>::ComputeNeighborPoint(const ImageRef&, Depth) const;
-template<> FORCEINLINE float DepthEstimatorT<Spherical>::ComputeGeometricConsistency(const DepthData::ViewData&, Depth) const;
-template<> FORCEINLINE Point3f DepthEstimatorT<Spherical>::ComputeNeighborPoint(const ImageRef&, Depth) const;
 // the estimators are instantiated in DepthMap.cpp, and exported for the tests
 // (MSVC takes dllexport on the instantiation definition alone; GCC/clang take the visibility
 // of the first declaration, so there the extern declaration carries it too)
