@@ -148,7 +148,7 @@ bool Scene::EstimateGravityDirection(Point3f& up) const
 			continue;
 		xAxes.emplace_back(Cast<float>(Point3(image.camera.R.row(0))));
 		yAxes.emplace_back(Cast<float>(Point3(image.camera.R.row(1))));
-		sphericals.push_back(image.model == CameraModelType::SPHERICAL);
+		sphericals.push_back(image.IsSpherical());
 	}
 	const size_t numCameras(xAxes.size());
 	if (numCameras < 4)
@@ -658,7 +658,7 @@ float Scene::ComputeDistanceCameras2Scene(float depthPercentile, bool bForceReco
 					const Point3f& point = pointcloud.points[idxPoint];
 					if (pObb && !pObb->Intersects(point))
 						continue;
-					if (imageData.model == CameraModelType::SPHERICAL) {
+					if (imageData.IsSpherical()) {
 						// a spherical image sees every direction
 						depths.emplace_back(imageData.PointDepth(Cast<REAL>(point)));
 						continue;

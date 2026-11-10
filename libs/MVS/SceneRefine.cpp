@@ -1494,10 +1494,10 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 	// simplification reads the views a scale prepares, so without one it has nothing to run on)
 	if (nScales == 0)
 		return true;
-	// the externally controlled knobs are validated here, at the entry point every caller goes
-	// through: their ASSERT twins inside the stepper are contracts, not input checks
 	if (!CheckPinholeOnly(_T("the mesh refinement")))
 		return false;
+	// the externally controlled knobs are validated here, at the entry point every caller goes
+	// through: their ASSERT twins inside the stepper are contracts, not input checks
 	if (bUseCeres) {
 		#ifndef MESHOPT_CERES
 		VERBOSE("error: this build does not include the Ceres optimizer");
