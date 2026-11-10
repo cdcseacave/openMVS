@@ -32,7 +32,13 @@ estimator is unchanged, depth-maps byte-identical), the range for a spherical ca
 (`InterpolatePlaneDepth`, `NormalFromDepthGradient`, `PlaneRayHomography`, `PlanePatchWarp`, depth
 similarity) is written once over `Ray`/`RayFrame`/`PixelHomography` in `libs/Common/DepthGeometry.h`.
 
-### Patch warp per target view (`DepthEstimatorT::SamplePatch`)
+### Patch warp per target view (`DepthEstimatorT::ScorePixelImage`)
+
+Every warp hands the target texels one by one, in the order of the reference texels, to a
+`PatchSums` (the NCC terms, as the GPU kernels accumulate them); `ScorePatch` turns the sums into
+the cost. The samplers copy the sums in and out, and the pinhole path has its own: the sums stay in
+registers through the texel loop whether the sampler is inlined or not (a texel buffer and an
+out-of-line sampler cost the pinhole estimator 15 % on clang/arm64).
 
 - Pinhole reference and target: the cached plane homography (`PinholePatchWarp`, `DepthMap.cpp`).
 - Otherwise, Method B (tangent warp): `M = Trg.PixelHomography(H·r0)·H·Ref.RayFrame(x0)`, with
@@ -163,9 +169,11 @@ reject a file whose flag disagrees with the view's model.
 - Kernel logic as in CUDA, including the view gate (`MultiViewScorePlaneModel`).
 - Differences from CUDA: plane propagation and surface normal take their rays from the trig tables; view
   poses are composed in double precision; random numbers come from PCG, bilateral weights from `exp`.
-- Kernels are compiled from source at runtime; CMake also compiles them offline (target
+- Kernels are compiled from source at runtime, with `ConfidenceMetal.metal` into one library; macOS caches
+  the library and the pipelines across processes. CMake also compiles both offline (target
   `PatchMatchMetalCheck`) when the toolchain has a working Metal compiler.
-- `DensifyPointCloud` gives Metal builds the CUDA defaults (`--number-views` 8, `--iters` 4).
+- `DensifyPointCloud` gives Metal builds the CUDA defaults (`--number-views` 8, `--iters` 4); a CPU run in a
+  GPU build (`--gpu-device cpu`) keeps the CPU defaults for the options not given explicitly.
 
 ### Fusion, filters and other consumers of the depth-maps
 
@@ -264,6 +272,7 @@ Cost, synthetic 1536:
 | Metal (M3 Max) whole run, µs per GT pixel | 0.107 (CPU on that machine 2.43) |
 | CUDA kernel, panorama vs faces, 1024 px / 3840 px | 1.62x / 0.70x photometric, 1.27x / 0.47x geometric |
 | pinhole fountain-P11 CPU depth-maps + fusion vs the pre-model estimator | 202.1 s vs 201.4 s (+0.3 %) |
+| pinhole SceauxCastle CPU vs the pre-model estimator, clang/arm64 (M3 Max) | 1 thread +1 %, 14 threads +5 % |
 
 The CUDA excess at small sizes is Method A near the poles (~4.3x the cost of B on ~12 % of the
 evaluations) and the per-hypothesis model math; at real panorama sizes the spherical kernels are cheaper
@@ -305,11 +314,12 @@ per-band <5 % CPU all 0.985-0.988, seam 0.996-0.997; CUDA all 0.964 completeness
 
 - Per-hypothesis cost is ~1.23x pinhole against a 1.2x target: the center projection (two `FastAtan2`, a
   square root, a reciprocal) and the per-pixel ray frames, amortized over few hypotheses in `scorebench`.
-- Metal compiles the kernels from source at the first estimation of every process (~3 s on an M3 Max).
+- Pinhole CPU on arm64: +5 % multi-threaded from the release/acquire fences of the per-pixel estimate
+  hand-over (a `dmb`, where x86 orders the stores for free).
 - CUDA clamps the rows at the poles where the CPU rejects the view. Mixed pinhole/spherical scenes run the
   `MODEL_PINHOLE_REF` kernels (CUDA, Metal), untested.
-- The confidence recalibration (`ConfidenceRefine.h`, `ConfidenceCUDA.cu`) is pinhole only
-  (`AdjustConfidenceSweep` ASSERTs a pinhole reference).
+- The confidence recalibration (`ConfidenceRefine.h`, `ConfidenceCUDA.cu`, `ConfidenceMetal.metal`) is
+  pinhole only (`AdjustConfidenceSweep` ASSERTs a pinhole reference).
 - The view gate still ranks hypotheses that leave a pixel different views; a soft weight by the
   triangulation angle is untested.
 - The corner waits cover up to 64 concurrent estimators; with more threads the corner anti-diagonals between

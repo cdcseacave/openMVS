@@ -22,7 +22,7 @@
 // definitions (ConfidenceCUDA.cu) are compiled only in CUDA builds, and every call site is guarded
 // with #ifdef _USE_CUDA, so a non-CUDA build never references the missing symbols.
 
-#include "ConfidenceRefine.h"
+#include "ConfidenceGPU.h"
 
 #include <cstdint>
 #include <vector>
@@ -30,40 +30,9 @@
 namespace MVS {
 namespace CUDA {
 
-// Host-side descriptor for one confirming neighbor view: the fused single-precision projection
-// transforms (row-major 3x3 A/Rrel, 3-vectors b/cn, built exactly as the CPU NeighborProj) plus
-// HOST pointers to that neighbor's depth/conf/normal maps (row-major, contiguous). conf/normal may
-// be null (treated as "no confidence" / "no normal gate", matching the CPU).
-struct ConfNeighborHost {
-	float A[9], b[3], Rrel[9];
-	float cn[3];           // neighbor centre in the reference camera frame (triangulation angle)
-	const float* depth;    // width*height
-	const float* conf;     // width*height, or null
-	const float* normal;   // 3*width*height (interleaved x,y,z), or null
-	int width, height;
-	int srcImage;          // index of this neighbor in depthDataRef.images[] (>=1)
-	// optional resident depth texture (a cudaTextureObject_t handle, kept as an integer so this
-	// header stays CUDA-free): when nonzero the FUSED launcher reads the neighbor depth from it via
-	// exact texel-center tex2D fetches instead of uploading `depth`. Set only by the fused call site
-	// (PatchMatch::EstimateDepthMap) and only when the resident texture holds the UNRESIZED map
-	// (view.depthMap.size() == image.size()), so texture and host buffer are byte-identical; the
-	// standalone/epilogue path (RunConfidenceCUDA) always leaves it 0 and uploads.
-	unsigned long long texDepth;
-};
-
-// Everything the fused in-estimation confidence launch needs, prepared by the dispatch layer
-// (DepthMapsData::EstimateDepthMap) and consumed inside PatchMatch::EstimateDepthMap after the
-// last geometric-consistency kernels. The neighbor host pointers reference this reference's own
-// depthDataRef.images[] maps -- the raw PREVIOUS-iteration snapshots loaded by InitViews
-// (loadDepthMaps==2), preserving the raw-neighbor-confidence invariant (single Jacobi pass,
-// order-independent).
-struct ConfAdjustRequest {
-	std::vector<ConfNeighborHost> neighbors;
-	ConfRefine::Params params;             // single-precision OPTDENSE snapshot
-	float fx, fy, cx, cy;                  // reference camera intrinsics (skew-free)
-	// outputs
-	bool done = false;                     // fused kernels ran and confMap holds the adjusted conf
-};
+// the host descriptors shared with the Metal backend (ConfidenceGPU.h)
+using MVS::ConfNeighborHost;
+using MVS::ConfAdjustRequest;
 
 // Compute the intra-map prior + one-hop multi-view confirmation on the GPU for one reference view,
 // writing the recalibrated confidence into confOut (host buffer, W*H). All input pointers are HOST

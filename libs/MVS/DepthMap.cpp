@@ -117,7 +117,7 @@ MDEFVAR_OPTDENSE_float(fNCCThresholdKeep, "NCC Threshold Keep", "Maximum 1-NCC s
 MDEFVAR_OPTDENSE_float(fFusePriorWeight, "Fuse Prior Weight", "fusion: weight of the intra-map geometric prior as virtual view/pixel support, to keep inliers on a coherent surface seen by too few views/pixels, granted only to points no view contradicts (0 disables)", "4.0")
 MDEFVAR_OPTDENSE_int32(nFuseViolationMax, "Fuse Violation Max", "fusion: contradiction guard; max distinct views contradicting a point rescued only by Fuse Prior Weight's virtual support (seeing behind it, or agreeing in depth but disputing its normal), while a point kept on real support is dropped when the views disputing its normal outnumber its supporting views (-1 disables the guard, 0 - default)", "0")
 MDEFVAR_OPTDENSE_bool(bFuseRecycleDropped, "Fuse Recycle Dropped", "dense-fuse: when the keep-rule drops a cluster, hand its pixels back to the pool so a later seed or probe can still use them (a pixel is otherwise consumed for good, and one doomed cluster locks away every pixel a later cluster needed); trades precision for completeness, off by default", "0")
-DEFVAR_OPTDENSE_bool(bEstimateConfidenceCUDA, "Estimate Confidence CUDA", "when CUDA is available and used for depth-map estimation, run the ADJUST_CONFIDENCE recalibration on the GPU integrated into the last geometric-consistency iteration (1), or force the CPU version anyway (0); no effect when estimation runs on the CPU", "1")
+DEFVAR_OPTDENSE_bool(bEstimateConfidenceGPU, "Estimate Confidence GPU", "when a GPU (CUDA or Metal) is available and used for depth-map estimation, run the ADJUST_CONFIDENCE recalibration on the GPU integrated into the last geometric-consistency iteration (1), or force the CPU version anyway (0); no effect when estimation runs on the CPU", "1")
 DEFVAR_OPTDENSE_uint32(nEstimationIters, "Estimation Iters", "Number of patch-match iterations", "3")
 DEFVAR_OPTDENSE_uint32(nEstimationGeometricIters, "Estimation Geometric Iters", "Number of geometric consistent patch-match iterations (0 - disabled)", "2")
 DEFVAR_OPTDENSE_uint32(nPatchMatchCUDAInstances, "PatchMatch CUDA Instances", "Number of parallel CUDA PatchMatch worker instances (clamped to nMaxThreads)", "4")
@@ -725,27 +725,35 @@ struct PatchWarp {
 	Point3f base, dx, dy;
 };
 
-// the texels of the patch warped by warp, in the order of the reference texels
-template <bool WRAPX>
-FORCEINLINE bool SampleWarpedPatch(const Image32F& image, const PatchWarp& warp, float* texels) {
+// the texels of the patch warped by warp, handed to sink in the order of the reference texels; the
+// sink and the warp are copied in, so that the loop keeps them in registers whether this is inlined
+// or not (through the references, every texel would reload and store them: the image is float too)
+template <bool WRAPX, typename TexelSink>
+FORCEINLINE bool SampleWarpedPatch(const Image32F& image, const PatchWarp& warp, TexelSink& sink) {
+	TexelSink texelSink(sink);
+	const Point3f dx(warp.dx), dy(warp.dy);
 	Point3f X(warp.base);
 	Point3f baseX(X);
 	for (int i=-DepthEstimatorBase::nSizeHalfWindow; i<=DepthEstimatorBase::nSizeHalfWindow; i+=DepthEstimatorBase::nSizeStep) {
 		for (int j=-DepthEstimatorBase::nSizeHalfWindow; j<=DepthEstimatorBase::nSizeHalfWindow; j+=DepthEstimatorBase::nSizeStep) {
-			if (!SampleTexel<WRAPX>(image, Point2f(X), *texels++))
+			float v;
+			if (!SampleTexel<WRAPX>(image, Point2f(X), v))
 				return false;
-			X.x += warp.dx.x; X.y += warp.dx.y; X.z += warp.dx.z;
+			texelSink(v);
+			X.x += dx.x; X.y += dx.y; X.z += dx.z;
 		}
-		baseX.x += warp.dy.x; baseX.y += warp.dy.y; baseX.z += warp.dy.z;
+		baseX.x += dy.x; baseX.y += dy.y; baseX.z += dy.z;
 		X = baseX;
 	}
+	sink = texelSink;
 	return true;
 }
 // the same for the tangent-plane warp into an equirectangular image: the homogeneous coordinate is
 // affine over the patch and the patch maps to a convex quadrilateral, so the corners decide whether
 // every texel is in front of the tangent plane (texel rays more than 90 degrees off the center are
 // not seen) and whether the patch crosses the seam (else no column needs wrapping)
-inline bool SampleTangentPatch(const Image32F& image, const PatchWarp& warp, float* texels) {
+template <typename TexelSink>
+inline bool SampleTangentPatch(const Image32F& image, const PatchWarp& warp, TexelSink& sink) {
 	constexpr float steps(float(2*DepthEstimatorBase::nSizeHalfWindow/DepthEstimatorBase::nSizeStep));
 	const Point3f corners[4] = {warp.base, warp.base+warp.dx*steps, warp.base+warp.dy*steps, warp.base+(warp.dx+warp.dy)*steps};
 	// off the seam by a pixel (the texels accumulate the steps): 2 <= x/z <= width-3 at every corner
@@ -757,7 +765,7 @@ inline bool SampleTangentPatch(const Image32F& image, const PatchWarp& warp, flo
 		bOffSeam &= corner.x >= 2.f*corner.z && corner.x <= maxCol*corner.z;
 	}
 	if (bOffSeam)
-		return SampleWarpedPatch<false>(image, warp, texels);
+		return SampleWarpedPatch<false>(image, warp, sink);
 	// a patch stretched over more than one turn is not a view
 	float minX(FLT_MAX), maxX(-FLT_MAX);
 	for (const Point3f& corner: corners) {
@@ -767,14 +775,15 @@ inline bool SampleTangentPatch(const Image32F& image, const PatchWarp& warp, flo
 	}
 	if (!(minX >= -float(image.width()) && maxX < float(2*image.width()-1)))
 		return false;
-	return SampleWarpedPatch<true>(image, warp, texels);
+	return SampleWarpedPatch<true>(image, warp, sink);
 }
 
 // the reference texels of the patch through the plane (depth, normal), each texel ray intersected
 // with the plane and projected exactly into the spherical target (SIMD packets of texels): Method A,
 // for a reference of either model
 template<template<typename> class MODEL>
-bool DepthEstimatorT<MODEL>::SampleExactPatch(const DepthData::ViewData& image1, const Spherical<float>& trg, Depth depth, const Normal& normal, float* texels)
+template<typename TexelSink>
+bool DepthEstimatorT<MODEL>::SampleExactPatch(const DepthData::ViewData& image1, const Spherical<float>& trg, Depth depth, const Normal& normal, TexelSink& sink)
 {
 	using namespace Eigen::internal;
 	constexpr int nPacket(unpacket_traits<PacketF>::size);
@@ -830,10 +839,14 @@ bool DepthEstimatorT<MODEL>::SampleExactPatch(const DepthData::ViewData& image1,
 	}
 	if (predux_any(behind))
 		return false;
+	TexelSink texelSink(sink); // in registers through the loop, as in SampleWarpedPatch
 	for (int k=0; k<nTexels; ++k) {
-		if (!SampleTexel<true>(image1.image, Point2f(px[k], py[k]), texels[k]))
+		float v;
+		if (!SampleTexel<true>(image1.image, Point2f(px[k], py[k]), v))
 			return false;
+		texelSink(v);
 	}
+	sink = texelSink;
 	return true;
 }
 
@@ -860,23 +873,19 @@ FORCEINLINE PatchWarp PinholePatchWarp(const DepthData::ViewData& image1, const 
 	return warp;
 }
 
-// between pinhole cameras the cached plane homography, else the warp through the camera models
+// the warp as soon as a spherical camera is in the scene: between pinhole cameras the cached plane
+// homography, else M = trg.PixelHomography(H*r0)*H*ref.RayFrame(x0) (Method B), or the exact
+// per-texel warp (Method A) where the target sees the patch center above fSphericalWarpMaxElevation;
+// the target model is resolved once per (pixel, hypothesis, view)
 template<template<typename> class MODEL>
-FORCEINLINE bool DepthEstimatorT<MODEL>::SamplePatch(const DepthData::ViewData& image1, Depth depth, const Normal& normal, float* texels)
+template<typename TexelSink>
+bool DepthEstimatorT<MODEL>::SampleModelPatch(const DepthData::ViewData& image1, Depth depth, const Normal& normal, TexelSink& sink)
 {
+	ASSERT(bModelWarp);
 	if constexpr (!bSphericalRef) {
-		if (!bModelWarp || !image1.IsSpherical())
-			return SampleWarpedPatch<false>(image1.image, PinholePatchWarp(image1, X0, x0, depth, normal), texels);
+		if (!image1.IsSpherical())
+			return SampleWarpedPatch<false>(image1.image, PinholePatchWarp(image1, X0, x0, depth, normal), sink);
 	}
-	return SampleModelPatch(image1, depth, normal, texels);
-}
-// the warp when the reference or the target is spherical: M = trg.PixelHomography(H*r0)*H*ref.RayFrame(x0)
-// (Method B), or the exact per-texel warp (Method A) where the target sees the patch center above
-// fSphericalWarpMaxElevation; the target model is resolved once per (pixel, hypothesis, view)
-template<template<typename> class MODEL>
-bool DepthEstimatorT<MODEL>::SampleModelPatch(const DepthData::ViewData& image1, Depth depth, const Normal& normal, float* texels)
-{
-	ASSERT(bModelWarp && (bSphericalRef || image1.IsSpherical()));
 	// H*F = Rrel*F + t*(n^T*F)/(n.X), the first term cached per pixel and view
 	const float nX(depth*normal.dot(Cast<float>(X0))); // n.X of the plane point at x0
 	ASSERT(nX < 0);
@@ -896,16 +905,16 @@ bool DepthEstimatorT<MODEL>::SampleModelPatch(const DepthData::ViewData& image1,
 		if (q0.z() <= 0)
 			return false;
 		MulMat3(MakeCameraModel<Pinhole<float>>(image1.camera).PixelHomography(q0).data(), HF, M);
-		return SampleWarpedPatch<false>(image1.image, MakePatchWarp(M), texels);
+		return SampleWarpedPatch<false>(image1.image, MakePatchWarp(M), sink);
 	}
 	const Spherical<float> trg(MakeCameraModel<Spherical<float>>(image1.camera));
 	if (SQUARE(q0.y()) > sinSqWarpMaxElevation*(SQUARE(q0.x()) + SQUARE(q0.y()) + SQUARE(q0.z())))
-		return SampleExactPatch(image1, trg, depth, normal, texels);
+		return SampleExactPatch(image1, trg, depth, normal, sink);
 	const float rho(FastSqrt(SQUARE(q0.x()) + SQUARE(q0.z())));
 	Eigen::Vector2f xc;
 	trg.ProjectFast(q0, xc, rho);
 	MulMat3(trg.PixelHomography(q0, xc, rho).data(), HF, M);
-	return SampleTangentPatch(image1.image, MakePatchWarp(M), texels);
+	return SampleTangentPatch(image1.image, MakePatchWarp(M), sink);
 }
 
 // the geometric consistency against a target depth-map of any camera model: the distance between
@@ -980,37 +989,38 @@ FORCEINLINE Point3f DepthEstimatorT<MODEL>::ComputeNeighborPoint(const ImageRef&
 	}
 }
 
-// compute pixel's NCC score in the given target image
+// compute pixel's NCC score in the given target image: the patch sampled in the target view while its
+// NCC terms are accumulated
 template<template<typename> class MODEL>
 float DepthEstimatorT<MODEL>::ScorePixelImage(const DepthData::ViewData& image1, Depth depth, const Normal& normal)
 {
-	// center a patch of given size on the segment and fetch the pixel values in the target image
-	float values[nTexels];
-	if (!SamplePatch(image1, depth, normal, values))
+	// the sums of each path are a local of their own: the pinhole path is inlined here and keeps them in
+	// registers, which the model path, not inlined, would deny it if they were shared
+	if constexpr (!bSphericalRef) {
+		if (!bModelWarp) {
+			PatchSums sums(InitPatchSums());
+			if (!SampleWarpedPatch<false>(image1.image, PinholePatchWarp(image1, X0, x0, depth, normal), sums))
+				return thRobust;
+			return ScorePatch(image1, depth, normal, sums);
+		}
+	}
+	PatchSums sums(InitPatchSums());
+	if (!SampleModelPatch(image1, depth, normal, sums))
 		return thRobust;
-	float sum(0);
+	return ScorePatch(image1, depth, normal, sums);
+}
+template<template<typename> class MODEL>
+FORCEINLINE float DepthEstimatorT<MODEL>::ScorePatch(const DepthData::ViewData& image1, Depth depth, const Normal& normal, PatchSums sums)
+{
+	ASSERT(sums.n == nTexels);
 	#if DENSE_NCC != DENSE_NCC_DEFAULT
-	float sumSq(0), num(0);
+	const float sum(sums.sum), sumSq(sums.sumSq), num(sums.num);
+	#else
+	const float sum(sums.sum);
 	#endif
 	#if DENSE_NCC == DENSE_NCC_WEIGHTED
 	const Weight& w = weightMap0[x0.y*image0.image.width()+x0.x];
 	#endif
-	for (int n=0; n<nTexels; ++n) {
-		const float v(values[n]);
-		#if DENSE_NCC == DENSE_NCC_FAST
-		sum += v;
-		sumSq += SQUARE(v);
-		num += texels0(n)*v;
-		#elif DENSE_NCC == DENSE_NCC_WEIGHTED
-		const Weight::Pixel& pw = w.weights[n];
-		const float vw(v*pw.weight);
-		sum += vw;
-		sumSq += v*vw;
-		num += v*pw.tempWeight;
-		#else
-		sum += texels1(n)=v;
-		#endif
-	}
 	// score similarity of the reference and target texture patches
 	#if DENSE_NCC == DENSE_NCC_FAST
 	const float normSq1(sumSq-SQUARE(sum/nSizeWindow));

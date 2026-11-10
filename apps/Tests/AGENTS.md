@@ -131,6 +131,7 @@ Tests (MVS suite 2), each bound being the measured accuracy less a margin:
 | `SyntheticSphericalTest()` | CPU PatchMatch on 3 512x256 panoramas, overall and per band (seam held to its antipodal band) |
 | `MetalModelMathTest()` | Apple only: the Metal mirror of `CameraModels.h` / `DepthGeometry.h` against the C++ models |
 | `SyntheticSphericalGPUTest()` | the same panoramas on CUDA or Metal; skipped without a GPU or with `forceCPU` |
+| `GPUConfidenceTest()` | the confidence recalibration on CUDA or Metal against the CPU sweep, on noisy GT depth-maps of the cube faces; skipped without a GPU or with `forceCPU` |
 | `SyntheticSphericalFusionTest()` | CPU PatchMatch + dense fusion of the panoramas, cloud precision/recall per band |
 
 ## Camera models (`TestsMVS.cpp`)
@@ -154,6 +155,7 @@ write `Tests-*.log` in the current directory; the result tables go to the log an
 ```
 Tests synth <outDir> [panoWidth=512]                       # the dataset: PNG, GT .dmap, cameras.json, scene.mvs of the faces
 Tests sphtest <verbosity> [panoWidth=512] [numPanos=3] [faces=1] [maxElevation] [maxViews] [maxThreads] [gpu=0]
+Tests conftest <verbosity>                                 # GPUConfidenceTest alone
 Tests sphfuse <verbosity> [panoWidth=512] [numPanos=3] [faces=1] [fusionFilter=2] [maxThreads]   # faces 2: mixed scene
 Tests scorebench <verbosity> [panoWidth=1536] [rounds=4] [maxElevation] [faceWidth=panoWidth/4]  # ns per ScorePixel
 Tests evaldepth <gt.dmap|gtFolder> <est.dmap|estFolder> [pinhole|spherical]

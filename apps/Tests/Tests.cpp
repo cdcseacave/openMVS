@@ -343,6 +343,8 @@ int main(int argc, LPCTSTR* argv)
 			#endif
 			if (!MVS::SyntheticSphericalGPUTest(forceCPU))
 				return false;
+			if (!MVS::GPUConfidenceTest(forceCPU))
+				return false;
 			if (!MVS::SyntheticSphericalFusionTest())
 				return false;
 		}

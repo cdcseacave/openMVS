@@ -187,6 +187,10 @@ bool SyntheticSphericalTest();
 // test's CPU accuracy; skipped without a GPU
 bool SyntheticSphericalGPUTest(bool forceCPU);
 
+// the confidence recalibration on the GPU (CUDA, or Metal on Apple) against the CPU sweep on the same
+// inputs; skipped without a GPU
+bool GPUConfidenceTest(bool forceCPU);
+
 #ifdef _USE_METAL
 // the Metal kernels' hand mirror of CameraModels.h and DepthGeometry.h against the C++ models on
 // random inputs, evaluated on the device; skipped without a Metal device

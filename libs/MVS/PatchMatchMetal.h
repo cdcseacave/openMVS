@@ -45,6 +45,7 @@
 #ifdef _USE_METAL
 
 #include "SceneDensify.h"
+#include "ConfidenceGPU.h"
 
 namespace MVS {
 
@@ -101,7 +102,13 @@ public:
 	void Init(bool bGeomConsistency);
 	void Release();
 
-	void EstimateDepthMap(DepthData&);
+	// estimate the depth-map; given a confidence request (the last geometric-consistency iteration),
+	// also recalibrate its confidence-map from the estimates still on the GPU (confRequest->done)
+	void EstimateDepthMap(DepthData&, ConfAdjustRequest* confRequest=NULL);
+
+	// recalibrate the confidence-map of a reference from its host maps and the request's neighbors
+	// (the epilogue when the fused recalibration did not run); false if the kernels did not run
+	bool AdjustConfidence(DepthData&, const ConfAdjustRequest&) const;
 
 	// evaluate the shader's camera-model math on the given samples' inputs (TestModelMath kernel),
 	// for the unit test against CameraModels.h; false if the kernel did not run

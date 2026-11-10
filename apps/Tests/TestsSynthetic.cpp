@@ -1250,6 +1250,143 @@ bool MVS::SyntheticSphericalGPUTest(bool forceCPU)
 	return true;
 }
 
+// the confidence recalibration on the GPU against the CPU sweep, on the same inputs: a cube face of
+// the synthetic scene and the faces of the two neighboring panoramas, their GT depths with noise and
+// outliers, random photometric confidences and the GT normals (the inputs of the last
+// geometric-consistency iteration: DepthMapsData::AdjustConfidence(DepthData&) and AdjustConfidenceGPU)
+bool MVS::GPUConfidenceTest(bool forceCPU)
+{
+	#if defined(_USE_CUDA) || defined(_USE_METAL)
+	if (forceCPU || !SynthGPUAvailable()) {
+		VERBOSE("GPUConfidenceTest skipped: no GPU");
+		return true;
+	}
+	TD_TIMER_START();
+	SynthConfig config;
+	config.panoWidth = 1024;
+	config.numRenderPanos = 3;
+	config.spherical = false;
+	config.numBrown = 0;
+	config.supersample = 1;
+	SynthViewArr views;
+	SynthGenerate(config, views);
+	// the reference: the first face of the middle panorama; its neighbors: every face of the others
+	IIndex idxRef(NO_ID);
+	IIndexArr viewIDs;
+	FOREACH(i, views) {
+		if (views[i].pano == 1 && views[i].face == 0)
+			idxRef = i;
+		else if (views[i].pano != 1)
+			viewIDs.push_back(i);
+	}
+	ASSERT(idxRef != NO_ID && viewIDs.size() == 12);
+	viewIDs.InsertAt(0, idxRef);
+	const ScopedTempDir tmpDir(_T("GPUConfidence"));
+	if (!tmpDir.IsValid())
+		return false;
+	Scene scene;
+	if (!SynthBuildScene(views, viewIDs, tmpDir.Path() + "/", scene))
+		return false;
+	OPTDENSE::init();
+	OPTDENSE::update();
+	// the noisy estimates of a view: depth within 0.2% of the GT, 5% outliers within 20%, the
+	// confidence uniform in [0.2,1]
+	std::mt19937 rnd(7);
+	std::normal_distribution<float> noise(0.f, 0.002f);
+	std::uniform_real_distribution<float> uniform(0.f, 1.f);
+	struct Estimates { DepthMap depthMap; NormalMap normalMap; ConfidenceMap confMap; BitMatrix outliers; };
+	std::vector<Estimates> estimates(viewIDs.size());
+	FOREACH(i, viewIDs) {
+		const SynthView& view = views[viewIDs[i]];
+		Estimates& e = estimates[i];
+		e.depthMap.create(view.depthMap.size());
+		e.confMap.create(view.depthMap.size());
+		e.normalMap = view.normalMap.clone();
+		e.outliers.create(view.depthMap.size());
+		e.outliers.memset(0);
+		for (int r = 0; r < e.depthMap.rows; ++r) {
+			for (int c = 0; c < e.depthMap.cols; ++c) {
+				const bool bOutlier(uniform(rnd) < 0.05f);
+				e.depthMap(r,c) = view.depthMap(r,c) * (bOutlier ? 0.8f + 0.4f*uniform(rnd) : 1.f + noise(rnd));
+				e.confMap(r,c) = 0.2f + 0.8f*uniform(rnd);
+				if (bOutlier)
+					e.outliers.set(r, c);
+			}
+		}
+	}
+	// the reference's DepthData, the neighbors' maps as InitViews loads them on the last iteration
+	const auto makeDepthData([&]() {
+		DepthData depthData;
+		depthData.images.resize(viewIDs.size());
+		FOREACH(i, viewIDs) {
+			DepthData::ViewData& view = depthData.images[i];
+			view.pImageData = &scene.images[i];
+			view.camera = view.cameraDepthMap = scene.images[i].camera;
+			view.scale = 1;
+			if (i > 0) {
+				view.depthMap = estimates[i].depthMap.clone();
+				view.normalMap = estimates[i].normalMap.clone();
+				view.confMap = estimates[i].confMap.clone();
+			}
+		}
+		depthData.depthMap = estimates[0].depthMap.clone();
+		depthData.normalMap = estimates[0].normalMap.clone();
+		depthData.confMap = estimates[0].confMap.clone();
+		return depthData;
+	});
+	DepthMapsData depthMaps(scene);
+	#ifdef _USE_CUDA
+	const bool bPool(depthMaps.AllocateCudaPool(1));
+	#else
+	const bool bPool(depthMaps.AllocateMetalPool(1));
+	#endif
+	if (!bPool || !depthMaps.HasGPUConfidence()) {
+		VERBOSE("ERROR: GPUConfidenceTest: the %s PatchMatch can not be created!", SYNTH_GPU_BACKEND);
+		return false;
+	}
+	DepthData depthDataCPU(makeDepthData()), depthDataGPU(makeDepthData());
+	if (!depthMaps.AdjustConfidence(depthDataCPU) || !depthMaps.AdjustConfidenceGPU(depthDataGPU)) {
+		VERBOSE("ERROR: GPUConfidenceTest: the confidence recalibration did not run!");
+		return false;
+	}
+	// per pixel: the GPU differs from the CPU in rounding only (single-precision exp, fused
+	// multiply-adds), but for the rare pixel a rounding moves across a gate threshold
+	const ConfidenceMap& confCPU = depthDataCPU.confMap;
+	const ConfidenceMap& confGPU = depthDataGPU.confMap;
+	const Estimates& ref = estimates[0];
+	size_t numPixels(0), numDiffering(0), numInliers(0), numOutliers(0);
+	double maxDiff(0), sumDiff(0), sumInliers(0), sumOutliers(0);
+	for (int r = 0; r < confCPU.rows; ++r) {
+		for (int c = 0; c < confCPU.cols; ++c) {
+			const double diff(ABS((double)confCPU(r,c) - (double)confGPU(r,c)));
+			maxDiff = MAXF(maxDiff, diff);
+			sumDiff += diff;
+			numDiffering += diff > 1e-4;
+			++numPixels;
+			if (ref.outliers.isSet(r, c)) {
+				sumOutliers += confGPU(r,c); ++numOutliers;
+			} else {
+				sumInliers += confGPU(r,c); ++numInliers;
+			}
+		}
+	}
+	const double meanInliers(sumInliers/numInliers), meanOutliers(sumOutliers/numOutliers);
+	VERBOSE("GPUConfidenceTest: %s against CPU over %zu px: mean |diff| %.2e, max %.2e, %zu px (%.3f%%) above 1e-4; "
+		"mean %s confidence of the inliers %.3f, of the outliers %.3f",
+		SYNTH_GPU_BACKEND, numPixels, sumDiff/numPixels, maxDiff, numDiffering, 100.0*numDiffering/numPixels,
+		SYNTH_GPU_BACKEND, meanInliers, meanOutliers);
+	if (!(sumDiff/numPixels < 1e-5) || !(numDiffering < numPixels/1000) || !(meanOutliers < 0.5*meanInliers)) {
+		VERBOSE("ERROR: GPUConfidenceTest: the %s confidence differs from the CPU one!", SYNTH_GPU_BACKEND);
+		return false;
+	}
+	VERBOSE("GPUConfidenceTest passed on %s (%s)", SYNTH_GPU_BACKEND, TD_TIMER_GET_FMT().c_str());
+	return true;
+	#else
+	VERBOSE("GPUConfidenceTest skipped: no GPU backend");
+	return true;
+	#endif
+}
+
 #ifdef _USE_METAL
 bool MVS::MetalModelMathTest(bool forceCPU)
 {
@@ -1689,6 +1826,12 @@ bool ToolSphTest(int argc, LPCTSTR* argv)
 	return true;
 }
 
+// conftest <verbosity>: GPUConfidenceTest alone
+bool ToolConfTest(int, LPCTSTR*)
+{
+	return GPUConfidenceTest(false);
+}
+
 // sphfuse <verbosity> [panoWidth] [numPanos] [faces] [fusionFilter] [maxThreads]: PatchMatch and fusion of
 // panoramas and of their cube faces (SynthFaces), the clouds scored per band
 bool ToolSphFuse(int argc, LPCTSTR* argv)
@@ -2001,6 +2144,7 @@ bool MVS::SynthTool(int argc, LPCTSTR* argv)
 	static const Mode modes[] = {
 		{_T("synth"), 2, ToolSynth, _T("<outDir> [panoWidth=512]")},
 		{_T("sphtest"), 1, ToolSphTest, _T("<verbosity> [panoWidth=512] [numPanos=3] [faces=1] [maxElevation: exact warp above, degrees] [maxViews] [maxThreads] [gpu=0]")},
+		{_T("conftest"), 1, ToolConfTest, _T("<verbosity>")},
 		{_T("sphfuse"), 1, ToolSphFuse, _T("<verbosity> [panoWidth=512] [numPanos=3] [faces=1 (0: none, 1: apart, 2: with the panoramas)] [fusionFilter=2] [maxThreads]")},
 		{_T("scorebench"), 1, ToolScoreBench, _T("<verbosity> [panoWidth=1536] [rounds=4] [maxElevation] [faceWidth=panoWidth/4]")},
 		{_T("evaldepth"), 3, ToolEvalDepth, _T("<gt.dmap|gtFolder> <est.dmap|estFolder> [pinhole|spherical, default from the GT camera matrix]")},
