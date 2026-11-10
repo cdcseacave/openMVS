@@ -88,6 +88,23 @@ rest of the graph contradicts, in two stages.
   weights are recomputed with everything else. One log line: pairs repaired of those removed and
   the seconds.
 
+Validation of the repair (pre-cut matched scenes reloaded at 8 threads, T/records-2026-11-09-repair,
+T/records-2026-11-10-repair-fn): pairs repaired of those the cut removed, their truth against the
+reference, and the reconstruction that follows against the cut without the repair.
+
+| capture | removed | repaired | right-pose TRUE / other | registered, right, wrong (without -> with) | pose score (without -> with) |
+|---|---|---|---|---|---|
+| 4e5c6f6d | 257 | 41 | 38 / 3 | 291, 250, 32 -> 292, 250, 32 | 0.9125 -> 0.9138 |
+| 5ada248e | 513 | 142 | 139 / 3 | 530, 524, 5 -> 530, 524, 5 | 0.9422 -> 0.9548 |
+| 26ccbd51 | 676 | 51 | 50 / 1 | 728, 722, 0 -> 728, 722, 0 | 0.9777 -> 0.9777 |
+| Outdoor_004 | 4384 | 10 | 10 / 0 | 767, 767, 0 -> 767, 767, 0 | 0.7190 -> 0.7194 |
+| Palace | 1826 | 10 | 7 / 3 | 495, 494, 1 -> 495, 494, 1 | 0.8142 -> 0.8105 |
+
+Cost: the repair is a few milliseconds to 0.03 s per capture at 8 threads (0.02 to 0.2 s at 1 thread),
+under 0.003% of a full reconstruction's wall, because only a pair that is vouched for and placed by a centres
+solve is fitted (4e5c6f6d 257 removed pairs 6 ms, 5ada248e 513 pairs 17 ms, alameda 197 pairs
+12 ms).
+
 Use the default for a scene without repeated structure (orbits, interiors). Use `--triplet-cut` to
 unfold a symmetric building or a symmetric object orbited by a video, at the price of halving the
 registrations of an interior.

@@ -765,22 +765,7 @@ unsigned RemoveTranslationContradictions(const Scene& scene, const std::vector<P
 	return numRemoved;
 }
 
-// Repair instead of remove: a pair the contradiction cut removed comes back with a relative pose built from
-// the cut's own solution when its matches agree with it. Its rotation is the averaged one, R_2 R_1^T; its
-// baseline direction is fitted to its track-forming matches at that rotation (FitBaselineDirection). The pair
-// is repaired when
-//  - at least kRepairMinShare of its track-forming matches (and kRepairMinMatches) agree with the direction,
-//  - the largest centres solve placing both its images has their offset within kRepairMaxDirection degrees of
-//    the direction (a pair no solve places is not repaired), and
-//  - the two images are the same spot (joined by pairs under kNearDuplicateRayAngle of ray angle), or some
-//    image of a third spot holds a kept pair with each of them (a block of look-alikes between two spots
-//    vouches only for itself).
-// A repaired pair takes that pose (E, and F between pinholes), keeps its agreeing matches as its sparse and
-// dense segments, the other sparse ones becoming outliers and the other dense ones dropped, and has its ray
-// angle measured again; its weight is left to be recomputed. The pairs are independent, repaired in parallel.
-// `removed` marks the pairs the cut removed, all of them pairs with a pose whose two images one rotation
-// solve reached; `solves` are the centres solves of its translation stage, the largest first. Unmarks the
-// repaired pairs in `removed`; returns their number.
+// The bars of the repair of the contradiction cut (RepairContradictedPairs, below)
 constexpr REAL kRepairAngle = 1;            // degrees between a match's ray and its epipolar plane
 constexpr unsigned kRepairRounds = 200;     // RANSAC rounds of the direction fit
 constexpr unsigned kRepairMinMatches = 8;   // track-forming matches that must agree
@@ -851,6 +836,22 @@ bool FitBaselineDirection(const Eigen::Matrix3d& R, const std::vector<Eigen::Vec
 	return true;
 }
 
+// Repair instead of remove: a pair the contradiction cut removed comes back with a relative pose built from
+// the cut's own solution when its matches agree with it. Its rotation is the averaged one, R_2 R_1^T; its
+// baseline direction is fitted to its track-forming matches at that rotation (FitBaselineDirection). The pair
+// is repaired when
+//  - at least kRepairMinShare of its track-forming matches (and kRepairMinMatches) agree with the direction,
+//  - the largest centres solve placing both its images has their offset within kRepairMaxDirection degrees of
+//    the direction (a pair no solve places is not repaired), and
+//  - the two images are the same spot (joined by pairs under kNearDuplicateRayAngle of ray angle), or some
+//    image of a third spot holds a kept pair with each of them (a block of look-alikes between two spots
+//    vouches only for itself).
+// A repaired pair takes that pose (E, and F between pinholes), keeps its agreeing matches as its sparse and
+// dense segments, the other sparse ones becoming outliers and the other dense ones dropped, and has its ray
+// angle measured again; its weight is left to be recomputed. The pairs are independent, repaired in parallel.
+// `removed` marks the pairs the cut removed, all of them pairs with a pose whose two images one rotation
+// solve reached; `solves` are the centres solves of its translation stage, the largest first. Unmarks the
+// repaired pairs in `removed`; returns their number.
 unsigned RepairContradictedPairs(Scene& scene, const std::vector<Point3>& rotations,
 	const std::vector<CentresSolve>& solves, std::vector<bool>& removed)
 {
