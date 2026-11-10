@@ -125,9 +125,12 @@ own state and call the models. The depth-map algorithms built on the models are 
   thin-prism models are refused) and reads the observations from `images.bin/txt`; on export it writes a
   Brown camera as `OPENCV`/`FULL_OPENCV` and the stored observations, else the projections through the
   distortion. `InterfaceMetashape` makes the distorted Metashape and BlocksExchange sensors BROWN through
-  `Platform::Camera::SetBrownLens` (their `p1`/`p2` are OpenCV's `p2`/`p1`) and reads the BlocksExchange
-  tie-point measurements as observations, mapped into the camera frame by `ObservationMap`
-  (`libs/MVS/Image.h`).
+  `Platform::Camera::SetBrownLens` (their `p1`/`p2` are OpenCV's `p2`/`p1`, `b1`/`b2` go into `fx` and the
+  skew, the Agisoft r^8 `k4` is refused; the cameras XML `cx`/`cy` are offsets from the image center with
+  the pixel centers at +0.5), makes the spherical sensors SPHERICAL (Metashape projects them exactly as
+  `Spherical`; a BlocksExchange spherical photogroup has no `CameraModelType` and the angular focal
+  length), and reads the BlocksExchange tie-point measurements as observations, mapped into the camera
+  frame by `ObservationMap` (`libs/MVS/Image.h`).
 - SfM export (`SFM::ExportMVS`, `libs/SFM/InterfaceMVS.cpp`) writes Brown cameras natively with the
   original image paths and no undistortion, unless `CreateStructure --undistort-extension` is set;
   spherical cameras are written natively (`--spherical-export native`, default) or through the

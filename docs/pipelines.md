@@ -824,7 +824,7 @@ graph TD
 **App**: `InterfaceMetashape` — `apps/InterfaceMetashape/InterfaceMetashape.cpp`
 
 1. Reads a Metashape cameras XML or a BlocksExchange XML (`.xml`)
-2. Parses the sensors/photogroups → camera intrinsics, a distorted one as a BROWN camera (`Platform::Camera::SetBrownLens`, the images are undistorted when read); the cameras/photos → image poses; the BlocksExchange tie points → sparse points with their measurements as feature observations (`ObservationMap::FileToCamera`); else an optional point cloud (`-p`) assigned to the views by visibility
+2. Parses the sensors/photogroups → camera intrinsics, a distorted one as a BROWN camera (`Platform::Camera::SetBrownLens`, the images are undistorted when read), a spherical one as a SPHERICAL camera; the cameras/photos → image poses; the BlocksExchange tie points → sparse points with their measurements as feature observations (`ObservationMap::FileToCamera`); else an optional point cloud (`-p`) assigned to the views by visibility
 3. Moves a geo-referenced BlocksExchange block to local coordinates
 4. Writes `.mvs` via `MVS::Scene::Save()`
 
