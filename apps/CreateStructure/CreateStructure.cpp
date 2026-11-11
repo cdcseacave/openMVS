@@ -68,6 +68,10 @@ bool releaseDescriptors;
 bool matchImagesOnly;
 bool bROMA2;
 String strROMA2Model;
+String strDenseMatcher;
+String strFlexGlueModel;
+float fDenseMinCovisibility;
+bool bFlexGluePose;
 String strROMA2Setting;
 bool bROMA2Match;
 unsigned nROMA2Slots;
@@ -190,6 +194,10 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("roma2-min-confidence", boost::program_options::value(&OPT::fROMA2MinConfidence)->default_value(0.1f), "dense matching: confidence at which a warp cell takes part in the verdict, the keypoint tracking and the dense fill")
 		("roma2-min-overlap", boost::program_options::value(&OPT::fROMA2MinOverlap)->default_value(0.10f), "dense matching: the verdict, as the smaller of the two inlier areas one fitted geometry explains -- of the first image's confident cells and of the second's (0.10 is about 0.15-0.17 of true overlap, 0.15 about 0.25; 0 admits every pair)")
 		("roma2-dense-matches", boost::program_options::value(&OPT::nROMA2DenseMatches)->default_value(2000), "dense matching: correspondences the dense fill adds per FULL FRAME of overlap; a pair draws that density over the part of its overlap its guided sparse matches did not already cover, capped by the smaller of the two inlier areas the verdict measured, so the dense keypoint density is bounded in both images; each costs a keypoint in both images plus a track")
+		("dense-matcher", boost::program_options::value<std::string>(&OPT::strDenseMatcher)->default_value("roma2"), "the dense matcher behind --roma2 true (retrieval descriptors and --roma2-match warps): roma2 or flexglue (needs --flexglue-model; the --roma2-* matching options then apply to its warps)")
+		("flexglue-model", boost::program_options::value<std::string>(&OPT::strFlexGlueModel), "directory with FlexGlue's ONNX graphs flexglue_descriptor.onnx, flexglue_dense.onnx and flexglue_pose_h0.onnx (default: $OPENMVS_FLEXGLUE_MODEL_PATH)")
+		("dense-min-covisibility", boost::program_options::value(&OPT::fDenseMinCovisibility)->default_value(0.2f), "gate before the pair's verdict: a pair whose dense matcher gives a covisibility score (FlexGlue; RoMa2 gives none and is never gated) below this is dropped (0 = off)")
+		("flexglue-pose", boost::program_options::value<bool>(&OPT::bFlexGluePose)->default_value(true), "FlexGlue also gives every pair a coarse relative pose from the intrinsics of the matching stage, stored on the pair and written by --export-pairs-csv (nothing reads it yet); needs a pinhole camera for every image")
 		("roma2-provider", boost::program_options::value<std::string>(&OPT::strROMA2Provider)->default_value("auto"), "ONNX Runtime execution provider: auto (CUDA > CoreML > DirectML > CPU), cuda, coreml, dml or cpu")
 		("camera-type", boost::program_options::value(&OPT::nCameraType)->default_value(-1), "camera model type: -1-from the image metadata (an equirectangular projection tag gives spherical, else pinhole), 0-pinhole, 1-spherical (equirectangular, width = 2 x height)")
 		("default-focal-ratio", boost::program_options::value(&OPT::defaultFocalRatio)->default_value(1.2f), "focal-length is set to ratio * max(width,height) for images with unknown focal-length")
@@ -307,6 +315,15 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		return false;
 	}
 	Util::ensureValidFolderPath(OPT::strROMA2Model);
+	Util::ensureValidFolderPath(OPT::strFlexGlueModel);
+	if (OPT::strDenseMatcher != "roma2" && OPT::strDenseMatcher != "flexglue") {
+		LOG("error: unknown dense matcher '%s' (accepted: roma2, flexglue)", OPT::strDenseMatcher.c_str());
+		return false;
+	}
+	if (!(OPT::fDenseMinCovisibility >= 0.f && OPT::fDenseMinCovisibility <= 1.f)) {
+		LOG("error: --dense-min-covisibility is a covisibility score, it must be in [0,1] (got %g)", OPT::fDenseMinCovisibility);
+		return false;
+	}
 	if (OPT::bROMA2 && !RoMa2Onnx::IsAvailable()) {
 		LOG("error: --roma2 needs a build with ONNX Runtime (-DOpenMVS_USE_ONNXRUNTIME=ON)");
 		return false;
@@ -365,9 +382,11 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		// needed (design decision 10). This check just gives the hint before any feature extraction
 		// runs, for the one case the parser can be sure about regardless of scene state.
 		ROMA2Config roma2Cfg;
+		roma2Cfg.matcher = OPT::strDenseMatcher;
 		roma2Cfg.modelPath = OPT::strROMA2Model;
+		roma2Cfg.flexglueModelPath = OPT::strFlexGlueModel;
 		if (roma2Cfg.ResolveModelPath().empty()) {
-			LOG("error: --roma2-match needs a model (set --roma2-model or $OPENMVS_ROMA2_MODEL_PATH)");
+			LOG("error: --roma2-match needs a model (set %s)", OPT::strDenseMatcher == "flexglue" ? "--flexglue-model or $OPENMVS_FLEXGLUE_MODEL_PATH" : "--roma2-model or $OPENMVS_ROMA2_MODEL_PATH");
 			return false;
 		}
 	}
@@ -432,6 +451,10 @@ int main(int argc, LPCTSTR* argv)
 	cfg.matchCfg.weightingCfg.denseMatchesPerFrame = OPT::nROMA2DenseMatches; // the pair evidence is anchored to the same frame target the matcher draws
 	cfg.roma2Cfg.slotBudget = OPT::nROMA2Slots;
 	cfg.roma2Cfg.provider = OPT::strROMA2Provider;
+	cfg.roma2Cfg.matcher = OPT::strDenseMatcher;
+	cfg.roma2Cfg.flexglueModelPath = OPT::strFlexGlueModel;
+	cfg.roma2Cfg.minCovisibility = OPT::fDenseMinCovisibility;
+	cfg.roma2Cfg.flexgluePose = OPT::bFlexGluePose;
 	#ifdef _USE_CUDA
 	cfg.matchCfg.useCUDA = cfg.featuresCfg.useCUDA = OPT::bSiftGPUCUDA && !SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs);
 	cfg.roma2Cfg.useGPU = !SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs);

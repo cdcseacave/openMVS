@@ -47,6 +47,7 @@
 #include "../../libs/SFM/MatchGeometric.h"
 #include "../../libs/SFM/LensFit.h"
 #include "../../libs/SFM/RoMa2Matcher.h"
+#include "../../libs/SFM/FlexGlueMatcher.h"
 #include "../../libs/SFM/SphereCubeMap.h"
 #include "../../libs/SFM/InterfaceMVS.h"
 #include "../../libs/MVS.h"
@@ -6596,10 +6597,13 @@ static ROMA2PairSummaries SummarizePairs(const Scene& scene)
 // HEIC images and split the shared camera was an uninitialized read in the container-EXIF path of
 // Image::LoadMetadata, fixed there and pinned by ImportMetadataDeterminismTest.)
 // With it off, the stored pairs are exactly what the matching produced.
-static bool ROMA2ReconstructScene(Scene& scene, const String& setting, const String& provider,
-	int expectedDim, bool bUseMatching, unsigned slotBudget,
-	bool bViewGraphCalibration, ROMA2PairSummaries& pairSummaries)
+static bool ROMA2ReconstructScene(Scene& scene, ROMA2Config roma2Cfg,
+	int expectedDim, bool bViewGraphCalibration, ROMA2PairSummaries& pairSummaries)
 {
+	const String& setting = roma2Cfg.setting;
+	const String& provider = roma2Cfg.provider;
+	const bool bUseMatching = roma2Cfg.useMatching;
+	const unsigned slotBudget = roma2Cfg.slotBudget;
 	// the images' own focal, given and so trusted (720.51 px, no distortion), unlike ReconstructTest,
 	// which forces a deliberately wrong 900 px / k1=0.6 / k2=-0.09 and leans on the view-graph
 	// calibrator to recover them from the fundamental matrices. That recovery is exactly what
@@ -6656,12 +6660,7 @@ static bool ROMA2ReconstructScene(Scene& scene, const String& setting, const Str
 	matchCfg.DefaultsForFeatureType(featuresCfg.detectorType);
 	matchCfg.viewGraphCalibrationEnabled = bViewGraphCalibration;
 
-	ROMA2Config roma2Cfg;
 	roma2Cfg.enabled = true;
-	roma2Cfg.setting = setting;
-	roma2Cfg.provider = provider;
-	roma2Cfg.useMatching = bUseMatching;
-	roma2Cfg.slotBudget = slotBudget;
 	// MatchPairs runs the describe pass for RETRIEVAL mode alone (the match mode decides it), not
 	// merely because ROMA2 is enabled; on four images the retrieval proposes every pair, so this
 	// test exercises both of ROMA2's passes together in one model load over the whole graph
@@ -6722,7 +6721,9 @@ static bool ROMA2ReconstructScene(Scene& scene, const String& setting, const Str
 	// pass never proposes a pair outside the candidate list it was handed, and on these four
 	// close-up shots of one small scene its verdict admits every one of them, so the count is the
 	// same either way -- what differs is the evidence each pair carries
-	if (scene.pairs.size() != expectedPairs) {
+	// (a covisibility gate drops pairs on purpose: the caller then checks which ones)
+	const bool bGated = roma2Cfg.matcher == "flexglue" && roma2Cfg.minCovisibility > 0.f;
+	if (bGated ? (scene.pairs.empty() || scene.pairs.size() > expectedPairs) : scene.pairs.size() != expectedPairs) {
 		VERBOSE("ROMA2ReconstructTest FAILED: expected %u geometrically matched pairs, got %u",
 			(unsigned)expectedPairs, (unsigned)scene.pairs.size());
 		return false;
@@ -6779,6 +6780,14 @@ bool ROMA2ReconstructTest()
 	const String setting(envSetting != NULL && *envSetting != 0 ? String(envSetting) : String("base"));
 	const char* const envProvider = getenv("OPENMVS_ROMA2_PROVIDER");
 	const String provider(envProvider != NULL && *envProvider != 0 ? String(envProvider) : String("auto"));
+	const auto roma2Config = [&](bool bUseMatching, unsigned slotBudget) {
+		ROMA2Config cfg;
+		cfg.setting = setting;
+		cfg.provider = provider;
+		cfg.useMatching = bUseMatching;
+		cfg.slotBudget = slotBudget;
+		return cfg;
+	};
 
 	// 1) baseline: the same run with the one pass switched off, i.e. the ordinary descriptor
 	// matching, so that comparing it against the dense run below isolates exactly what the warps
@@ -6792,7 +6801,7 @@ bool ROMA2ReconstructTest()
 	ROMA2PairSummaries baseline;
 	{
 		Scene scene(2);
-		if (!ROMA2ReconstructScene(scene, setting, provider, 2048, false, 64, false, baseline)) {
+		if (!ROMA2ReconstructScene(scene, roma2Config(false, 64), 2048, false, baseline)) {
 			VERBOSE("ROMA2ReconstructTest FAILED: baseline run (one pass off)");
 			return false;
 		}
@@ -6802,7 +6811,7 @@ bool ROMA2ReconstructTest()
 	ROMA2PairSummaries guided;
 	{
 		Scene scene(2);
-		if (!ROMA2ReconstructScene(scene, setting, provider, 2048, true, 64, false, guided)) {
+		if (!ROMA2ReconstructScene(scene, roma2Config(true, 64), 2048, false, guided)) {
 			VERBOSE("ROMA2ReconstructTest FAILED: one-pass dense matching");
 			return false;
 		}
@@ -6924,14 +6933,14 @@ bool ROMA2ReconstructTest()
 	ROMA2PairSummaries tightPool, repeated;
 	{
 		Scene scene(1);
-		if (!ROMA2ReconstructScene(scene, setting, provider, 2048, true, 2, false, tightPool)) {
+		if (!ROMA2ReconstructScene(scene, roma2Config(true, 2), 2048, false, tightPool)) {
 			VERBOSE("ROMA2ReconstructTest FAILED: 2-slot pool run");
 			return false;
 		}
 	}
 	{
 		Scene scene(1);
-		if (!ROMA2ReconstructScene(scene, setting, provider, 2048, true, 2, false, repeated)) {
+		if (!ROMA2ReconstructScene(scene, roma2Config(true, 2), 2048, false, repeated)) {
 			VERBOSE("ROMA2ReconstructTest FAILED: determinism run");
 			return false;
 		}
@@ -6948,6 +6957,164 @@ bool ROMA2ReconstructTest()
 		return false;
 	}
 	VERBOSE("ROMA2ReconstructTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+	#endif
+}
+
+#ifdef _USE_ONNXRUNTIME
+// The angle in degrees of the rotation R
+static double RotationAngleDeg(const Matrix3x3f& R)
+{
+	return R2D(acos(CLAMP(((double)R(0,0) + R(1,1) + R(2,2) - 1.0) * 0.5, -1.0, 1.0)));
+}
+#endif
+
+// FlexGlue as the dense matcher, on the bundled 4-image scene through Scene::MatchPairs (docs/design/DenseMatcher.md): the 1024-D retrieval
+// descriptors its backbone pools (unit, distinct per image), every pair stored with its covisibility score and its coarse relative pose
+// (a rotation, a unit baseline direction, close to the pose the pair's own matches give: the check of the pose head's convention),
+// the pairs CSV carrying both, the covisibility gate dropping exactly the pairs below it, the pose switched off leaving no prior, and ReconstructTest's
+// reconstruction stage on the matched scene. Skipped unless OPENMVS_FLEXGLUE_MODEL_PATH points at the export folder (flexglue_descriptor.onnx,
+// flexglue_dense.onnx, flexglue_pose_h0.onnx); OPENMVS_ROMA2_PROVIDER narrows the execution provider
+bool FlexGlueReconstructTest()
+{
+	#ifndef _USE_ONNXRUNTIME
+	VERBOSE("FlexGlueReconstructTest: skipped (built without ONNX Runtime)");
+	return true;
+	#else
+	if (!RoMa2Onnx::IsAvailable()) {
+		VERBOSE("FlexGlueReconstructTest: skipped (no ONNX Runtime support in this build)");
+		return true;
+	}
+	const char* const envModelPath = getenv("OPENMVS_FLEXGLUE_MODEL_PATH");
+	if (envModelPath == NULL || *envModelPath == 0) {
+		VERBOSE("FlexGlueReconstructTest: skipped (OPENMVS_FLEXGLUE_MODEL_PATH not set)");
+		return true;
+	}
+	TD_TIMER_STARTD();
+	const char* const envProvider = getenv("OPENMVS_ROMA2_PROVIDER");
+	ROMA2Config cfg;
+	cfg.matcher = "flexglue";
+	cfg.flexglueModelPath = envModelPath;
+	cfg.provider = envProvider != NULL && *envProvider != 0 ? String(envProvider) : String("auto");
+	cfg.useMatching = true;
+	cfg.slotBudget = 64;
+	cfg.minCovisibility = 0.f;
+
+	// 1) every pair kept: covisibility, pose prior and the CSV
+	ROMA2PairSummaries summaries;
+	Scene scene(2);
+	if (!ROMA2ReconstructScene(scene, cfg, FlexGlueMatcher::RETRIEVAL_SIZE, false, summaries)) {
+		VERBOSE("FlexGlueReconstructTest FAILED: matching with FlexGlue");
+		return false;
+	}
+	std::vector<float> scores;
+	for (const ImagePair& pair : scene.pairs) {
+		if (!pair.covisibility || !(*pair.covisibility >= 0.f && *pair.covisibility <= 1.f) || !pair.posePrior || !pair.relativePose) {
+			VERBOSE("FlexGlueReconstructTest FAILED: pair (%u, %u) lacks a covisibility score in [0,1], a pose prior or its own relative pose", pair.ID1, pair.ID2);
+			return false;
+		}
+		scores.push_back(*pair.covisibility);
+		const PosePrior& prior = *pair.posePrior;
+		const Matrix3x3f RtR(prior.R.t() * prior.R);
+		const double orthonormality = cv::norm(RtR - Matrix3x3f::IDENTITY), norm = cv::norm(prior.t);
+		if (orthonormality > 1e-4 || ABS(cv::determinant(prior.R) - 1.0) > 1e-4 || ABS(norm - 1.0) > 1e-4) {
+			VERBOSE("FlexGlueReconstructTest FAILED: pair (%u, %u) pose prior is not a rotation and a unit direction (orthonormality %g, |t| %g)", pair.ID1, pair.ID2, orthonormality, norm);
+			return false;
+		}
+		// the prior against the pose the pair's own matches give, both in the pair's convention x2 = R*x1 + s*t: a convention error of the head
+		// (a transposed rotation, the baseline's sign, the frame of t) is far from a few degrees on these pairs of 5 to 14 degrees of rotation and a baseline
+		const Matrix3x3f own(pair.relativePose->R);
+		const double rotationError = RotationAngleDeg(own.t() * prior.R);
+		const CMatrix t(pair.relativePose->GetT());
+		const double directionError = R2D(acos(CLAMP((t.x*prior.t.x + t.y*prior.t.y + t.z*prior.t.z) / cv::norm(t), -1.0, 1.0)));
+		DEBUG_EXTRA("FlexGlueReconstructTest: pair (%u, %u) covisibility %.4f, prior %.2f deg in rotation and %.2f deg in direction from the pair's own pose", pair.ID1, pair.ID2, *pair.covisibility, rotationError, directionError);
+		if (rotationError > 12. || directionError > 30.) {
+			VERBOSE("FlexGlueReconstructTest FAILED: pair (%u, %u) pose prior is %.1f deg in rotation and %.1f deg in direction from the pair's own pose", pair.ID1, pair.ID2, rotationError, directionError);
+			return false;
+		}
+	}
+	{
+		const ScopedTempDir tmpDir(_T("FlexGlueReconstructTest"));
+		if (!tmpDir.IsValid())
+			return false;
+		const String csvPath(tmpDir(_T("pairs.csv")));
+		if (!PairsMatcher::ExportPairsCSV(scene, csvPath, 0.f, 0.f, PairsWeightingConfig())) {
+			VERBOSE("FlexGlueReconstructTest FAILED: cannot export the pairs CSV");
+			return false;
+		}
+		std::ifstream ifs(csvPath);
+		std::string header, row;
+		std::getline(ifs, header);
+		const auto numFields = [](const std::string& line) { return (size_t)std::count(line.begin(), line.end(), ',') + 1; };
+		if (header.find(",Covisibility,PriorQw,PriorQx,PriorQy,PriorQz,PriorTx,PriorTy,PriorTz") == std::string::npos || numFields(header) != 25) {
+			VERBOSE("FlexGlueReconstructTest FAILED: the pairs CSV header lacks the covisibility and pose prior columns: %s", header.c_str());
+			return false;
+		}
+		size_t numRows = 0;
+		while (std::getline(ifs, row)) {
+			if (numFields(row) != 25) {
+				VERBOSE("FlexGlueReconstructTest FAILED: a pairs CSV row has %u fields, expected 25", (unsigned)numFields(row));
+				return false;
+			}
+			++numRows;
+		}
+		if (numRows != scene.pairs.size()) {
+			VERBOSE("FlexGlueReconstructTest FAILED: the pairs CSV has %u rows for %u pairs", (unsigned)numRows, (unsigned)scene.pairs.size());
+			return false;
+		}
+	}
+
+	// 2) the gate keeps the pairs at or above its bar: the median score of the first run, the scores of a second run moving a little with the GPU
+	std::vector<float> sorted(scores);
+	std::sort(sorted.begin(), sorted.end());
+	const float bar = 0.5f * (sorted[sorted.size()/2 - 1] + sorted[sorted.size()/2]);
+	if (!(sorted.front() < bar && bar < sorted.back())) {
+		VERBOSE("FlexGlueReconstructTest FAILED: the six scores do not spread (%g .. %g), the gate has nothing to separate", sorted.front(), sorted.back());
+		return false;
+	}
+	{
+		Scene gated(2);
+		ROMA2Config gateCfg(cfg);
+		gateCfg.minCovisibility = bar;
+		ROMA2PairSummaries gatedSummaries;
+		if (!ROMA2ReconstructScene(gated, gateCfg, FlexGlueMatcher::RETRIEVAL_SIZE, false, gatedSummaries)) {
+			VERBOSE("FlexGlueReconstructTest FAILED: matching with the covisibility gate at %g", bar);
+			return false;
+		}
+		if (gated.pairs.empty() || gated.pairs.size() >= scene.pairs.size()) {
+			VERBOSE("FlexGlueReconstructTest FAILED: the gate at %g kept %u of %u pairs", bar, (unsigned)gated.pairs.size(), (unsigned)scene.pairs.size());
+			return false;
+		}
+		for (const ImagePair& pair : gated.pairs)
+			if (!pair.covisibility || *pair.covisibility < bar) {
+				VERBOSE("FlexGlueReconstructTest FAILED: the gate at %g kept pair (%u, %u) of covisibility %g", bar, pair.ID1, pair.ID2, pair.covisibility ? *pair.covisibility : -1.f);
+				return false;
+			}
+	}
+
+	// 3) the pose switched off: the covisibility stays, no prior
+	{
+		Scene noPose(2);
+		ROMA2Config noPoseCfg(cfg);
+		noPoseCfg.flexgluePose = false;
+		ROMA2PairSummaries noPoseSummaries;
+		if (!ROMA2ReconstructScene(noPose, noPoseCfg, FlexGlueMatcher::RETRIEVAL_SIZE, false, noPoseSummaries)) {
+			VERBOSE("FlexGlueReconstructTest FAILED: matching without the pose head");
+			return false;
+		}
+		for (const ImagePair& pair : noPose.pairs)
+			if (!pair.covisibility || pair.posePrior) {
+				VERBOSE("FlexGlueReconstructTest FAILED: with the pose head off pair (%u, %u) must carry a covisibility and no prior", pair.ID1, pair.ID2);
+				return false;
+			}
+	}
+
+	// 4) the reconstruction stage of ReconstructTest on the matched scene
+	#ifdef _IMAGE_HEIF
+	if (!ReconstructMatchedScene(scene, "FlexGlueReconstructTest", 4000, 12000, 20))
+		return false;
+	#endif
+	VERBOSE("FlexGlueReconstructTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 	#endif
 }

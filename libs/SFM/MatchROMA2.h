@@ -41,6 +41,7 @@ namespace SFM {
 class SFM_API Scene;
 class SFM_API Image;
 class SFM_API RoMa2Onnx;
+class SFM_API DenseMatcher;
 class SFM_API PairsMatcher;
 struct SFM_API PairWarps;
 
@@ -53,6 +54,14 @@ struct SFM_API ROMA2Config {
 	bool useMatching = false;      // one-pass dense pair matching (verdict, guided, fill, store)
 	float minConfidence = 0.1f;    // a warp cell takes part (verdict, tracking, fill) at this confidence or above
 	float minOverlap = 0.10f;      // verdict: min(inlier area A, inlier area B) >= minOverlap
+	// The dense matcher behind the retrieval descriptors and the warps: "roma2" or "flexglue" (docs/design/DenseMatcher.md).
+	// Everything above and below (the verdict, the guided matching, the fill, the lens fit) reads the same warps whichever it is.
+	String matcher = "roma2";
+	String flexglueModelPath;      // folder of FlexGlue's graphs (empty = $OPENMVS_FLEXGLUE_MODEL_PATH), for matcher == "flexglue"
+	// Gate before the verdict: a pair whose matcher gives a covisibility score ("do the two images show the same place", 0..1)
+	// below this is dropped without a verdict. 0 = off. A matcher that gives no score (RoMa2) is not gated.
+	float minCovisibility = 0.2f;
+	bool flexgluePose = true;      // FlexGlue also gives each pair a coarse relative pose (ImagePair::posePrior); needs a pinhole camera for every image
 	// Dense correspondences the fill may draw per FULL FRAME of overlap: a density, not a count per
 	// pair. A pair's draw is that density over the part of its overlap its guided matches did not
 	// already cover (DenseFillGridSide sets the pitch that makes it so), capped by DenseFillCeiling.
@@ -115,11 +124,17 @@ struct SFM_API ROMA2Config {
 	unsigned slotBudget = 64;      // image descriptors kept resident on the device
 	bool useGPU = true;            // allow the GPU execution providers
 
-	// Return the folder holding the exported models: the explicit setting if given, else the
+	// Return the folder holding the selected matcher's exported models: the explicit setting if given, else the
 	// OPENMVS_ROMA2_MODEL_PATH environment variable if set, else the install prefix's own copy
 	// (what `cmake --build . --target roma2-model` fetched) if that is actually present on disk,
 	// else empty
 	inline String ResolveModelPath() const {
+		if (matcher == "flexglue") {
+			if (!flexglueModelPath.empty())
+				return flexglueModelPath;
+			const char* const envFlexGluePath = getenv("OPENMVS_FLEXGLUE_MODEL_PATH");
+			return envFlexGluePath ? String(envFlexGluePath) : String();
+		}
 		if (!modelPath.empty())
 			return modelPath;
 		const char* const envModelPath = getenv("OPENMVS_ROMA2_MODEL_PATH");
@@ -145,7 +160,7 @@ struct SFM_API ROMA2Config {
 // Returns the number of images successfully described; a per-image load/describe failure is
 // logged individually and leaves that image's globalDescriptor empty, so a return value below
 // scene.images.size() is the caller's cue to treat the whole pass as failed.
-SFM_API unsigned ComputeGlobalDescriptorsROMA2(Scene& scene, RoMa2Onnx& roma2);
+SFM_API unsigned ComputeGlobalDescriptorsROMA2(Scene& scene, DenseMatcher& roma2);
 /*----------------------------------------------------------------*/
 
 // What the verdict knows about one pair once it ran
@@ -308,7 +323,7 @@ SFM_API void StorePairROMA2(Scene& scene, std::unordered_map<PairIdx::PairIndex,
 // every candidate storing none and still succeeding; returns false only when the pass could not run
 // at all (the device slot pool could not be allocated), which the caller must treat as a failed
 // matching round rather than as an empty one.
-SFM_API bool MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, const PairIdxArr& candidatePairs,
+SFM_API bool MatchPairsROMA2(PairsMatcher& pairsMatcher, DenseMatcher& roma2, const PairIdxArr& candidatePairs,
 	const ROMA2Config& config, unsigned& numStored);
 /*----------------------------------------------------------------*/
 

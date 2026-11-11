@@ -720,7 +720,7 @@ bool PairsMatcher::MatchPair(
 	return true;
 }
 
-void PairsMatcher::SetROMA2(RoMa2Onnx* model, const ROMA2Config& cfg)
+void PairsMatcher::SetROMA2(DenseMatcher* model, const ROMA2Config& cfg)
 {
 	roma2 = model;
 	roma2Cfg = cfg;
@@ -2353,8 +2353,14 @@ bool PairsMatcher::ExportPairsCSV(const Scene& scene, const String& fileName, fl
 	// so the column can be re-thresholded offline; the Coverage column beside the raw NumMatches
 	// count lets the pair strength (their product) be replayed offline too
 	const TripletScores tripletScores = ComputeTripletScores(scene, 0.f, minYield, weighting);
+	// the columns of what the dense matcher said about the pairs besides its warps (ImagePair::covisibility and posePrior), in the
+	// layout of the Rel* columns (the pose prior's rotation and direction in the pair's own convention), only when some pair has them
+	const bool hasMatcherColumns = std::any_of(scene.pairs.begin(), scene.pairs.end(), [](const ImagePair& pair) { return pair.covisibility.has_value(); });
 	ofs << "ImageA,ImageB,NumMatches,Coverage,Weight,WeightSpatial,WeightConnectivity,WeightTriplet,MeanRayAngle,TripletScore,"
-		   "RelQw,RelQx,RelQy,RelQz,RelTx,RelTy,RelTz\n";
+		   "RelQw,RelQx,RelQy,RelQz,RelTx,RelTy,RelTz";
+	if (hasMatcherColumns)
+		ofs << ",Covisibility,PriorQw,PriorQx,PriorQy,PriorQz,PriorTx,PriorTy,PriorTz";
+	ofs << "\n";
 	FOREACH(idxPair, scene.pairs) {
 		const ImagePair& pair = scene.pairs[idxPair];
 		const String relImageNameA = MAKE_PATH_REL(basePath, scene.images[pair.ID1].fileName);
@@ -2388,6 +2394,21 @@ bool PairsMatcher::ExportPairsCSV(const Scene& scene, const String& fileName, fl
 		}
 		if (!hasPose)
 			ofs << ",,,,,,"; // no relative pose: all seven cells stay empty
+		if (hasMatcherColumns) {
+			ofs << ",";
+			if (pair.covisibility)
+				ofs << *pair.covisibility;
+			ofs << ",";
+			if (pair.posePrior) {
+				const RMatrixBaseF::Quat q(RMatrixBaseF(pair.posePrior->R).GetQuaternion()); // (x,y,z,w): q.val[3] is the scalar part
+				const Point3f& t = pair.posePrior->t;
+				const std::streamsize oldPrecision = ofs.precision(7);
+				ofs << q.val[3] << "," << q.val[0] << "," << q.val[1] << "," << q.val[2] << "," << t.x << "," << t.y << "," << t.z;
+				ofs.precision(oldPrecision);
+			} else {
+				ofs << ",,,,,,";
+			}
+		}
 		ofs << "\n";
 	}
 	ofs.close();

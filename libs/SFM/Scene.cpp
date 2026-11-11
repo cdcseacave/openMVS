@@ -24,6 +24,7 @@
 #include "InterfaceMVS.h"
 #include "ImportCOLMAP.h"
 #include "RoMa2Matcher.h"
+#include "FlexGlueMatcher.h"
 #include "LensFit.h"
 
 #include <TinyEXIF.h>
@@ -589,12 +590,12 @@ bool Scene::ExtractFeatures(const FeatureExtractionConfig& config)
 
 bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, const ViewGraphCalibratorConfig& vgConfig)
 {
-	// In-process ROMA2: one loaded model serves the retrieval descriptors and the dense
+	// In-process dense matcher (RoMa2 or FlexGlue): one loaded model serves the retrieval descriptors and the dense
 	// matching; it lives for this call only (design decision 7). Declared before
-	// pairsMatcher: anything holding a RoMa2Onnx* or a MakeLayers() tensor (pairsMatcher.SetROMA2
-	// below) must be destroyed before the model, so roma2 must outlive it and therefore be
+	// pairsMatcher: anything holding a DenseMatcher* or a MakeCode() tensor (pairsMatcher.SetROMA2
+	// below) must be destroyed before the model, so the model must outlive it and therefore be
 	// declared first (destructors run in reverse declaration order).
-	RoMa2Onnx roma2;
+	std::unique_ptr<DenseMatcher> roma2;
 	PairsMatcher pairsMatcher(*this, config);
 
 	// Which passes this run needs: RETRIEVAL is what makes the global descriptors necessary
@@ -604,9 +605,12 @@ bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, c
 	const String modelPath(roma2Cfg.ResolveModelPath());
 	if (roma2Cfg.enabled && (needsDescriptors || needsWarps) && modelPath.empty()) {
 		// design decision 10: a requested-but-unavailable model is a named error here, not the
-		// generic "failed to load ROMA2 model ''" that roma2.Load() below would report if this
+		// generic "failed to load the roma2 model ''" that Load() below would report if this
 		// fell through to it unchecked
-		VERBOSE("error: ROMA2 requested but no model path given (set --roma2-model or OPENMVS_ROMA2_MODEL_PATH)");
+		if (roma2Cfg.matcher == "flexglue")
+			VERBOSE("error: the FlexGlue dense matcher requested but no model path given (set --flexglue-model or OPENMVS_FLEXGLUE_MODEL_PATH)");
+		else
+			VERBOSE("error: ROMA2 requested but no model path given (set --roma2-model or OPENMVS_ROMA2_MODEL_PATH)");
 		return false;
 	}
 	const bool useROMA2 = roma2Cfg.enabled && (needsDescriptors || needsWarps) && !status.nState.isSet(Status::STATE::MATCHED);
@@ -615,11 +619,18 @@ bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, c
 			VERBOSE("error: ROMA2 model '%s' requested, but this build has no ONNX Runtime support", modelPath.c_str());
 			return false;
 		}
-		if (!roma2.Load(modelPath, roma2Cfg.setting, roma2Cfg.useGPU ? roma2Cfg.provider : String("cpu"))) {
-			VERBOSE("error: failed to load ROMA2 model '%s' (%s)", modelPath.c_str(), roma2Cfg.setting.c_str());
+		ASSERT(roma2Cfg.matcher == "roma2" || roma2Cfg.matcher == "flexglue");
+		#ifdef _USE_ONNXRUNTIME
+		if (roma2Cfg.matcher == "flexglue")
+			roma2.reset(new FlexGlueMatcher(roma2Cfg.flexgluePose));
+		else
+		#endif
+			roma2.reset(new RoMa2Onnx);
+		if (!roma2->Load(modelPath, roma2Cfg.setting, roma2Cfg.useGPU ? roma2Cfg.provider : String("cpu"))) {
+			VERBOSE("error: failed to load the %s model '%s'", roma2Cfg.matcher.c_str(), modelPath.c_str());
 			return false;
 		}
-		if (needsDescriptors && !ComputeGlobalDescriptors(roma2))
+		if (needsDescriptors && !ComputeGlobalDescriptors(*roma2))
 			return false;
 	} else if (roma2Cfg.enabled && config.mode == MatchConfig::RETRIEVAL && !status.nState.isSet(Status::STATE::MATCHED)) {
 		// descriptors are wanted and already stored, and no warps are needed either: retrieval over
@@ -628,7 +639,7 @@ bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, c
 		// weights onto the device for it would buy nothing
 		DEBUG("ROMA2 retrieval reuses the %u global descriptors stored in the scene; no model loaded", images.size());
 	}
-	pairsMatcher.SetROMA2(useROMA2 && needsWarps ? &roma2 : NULL, roma2Cfg);
+	pairsMatcher.SetROMA2(useROMA2 && needsWarps ? roma2.get() : NULL, roma2Cfg);
 
 	if (status.nState.isSet(Status::STATE::MATCHED)) {
 		VERBOSE("warning: pairs already matched, skipping");
@@ -671,7 +682,7 @@ bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, c
 	return true;
 }
 
-bool Scene::ComputeGlobalDescriptors(RoMa2Onnx& roma2)
+bool Scene::ComputeGlobalDescriptors(DenseMatcher& roma2)
 {
 	if (status.nState.isSet(Status::STATE::GLOBAL_DESCRIPTORS))
 		return true;
@@ -683,7 +694,7 @@ bool Scene::ComputeGlobalDescriptors(RoMa2Onnx& roma2)
 	// the retrieval index needs one row per image; Scene::Import already rejected unreadable
 	// images, so a miss here (a per-image load/describe failure) is a real failure
 	if (ComputeGlobalDescriptorsROMA2(*this, roma2) != images.size()) {
-		VERBOSE("error: failed to describe all %u images with the ROMA2 model", (unsigned)images.size());
+		VERBOSE("error: failed to describe all %u images with the dense matcher's model", (unsigned)images.size());
 		return false;
 	}
 	status.nState.set(Status::STATE::GLOBAL_DESCRIPTORS);
