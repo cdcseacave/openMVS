@@ -182,6 +182,51 @@ Scene SceneBlocks::ExtractBlock(
 }
 /*----------------------------------------------------------------*/
 
+void SceneBlocks::RegroupAfterMerge(const std::vector<bool>& placed)
+{
+	ASSERT(IsSplit() && placed.size() == blocks.size());
+	std::vector<Scene> kept;
+	std::vector<IIndexArr> keptLocalToGlobal;
+	FOREACH(b, blocks)
+		if (!placed[b]) {
+			kept.emplace_back(std::move(blocks[b]));
+			keptLocalToGlobal.emplace_back(std::move(localToGlobal[b]));
+		}
+	blocks.clear();
+	localToGlobal.clear();
+	blockOf.MemsetValue(NO_ID);
+	// block 0: the merged model, every posed image of the global scene, extracted as a cluster is
+	IIndexArr model;
+	FOREACH(g, scene.images)
+		if (scene.images[g].HasPose())
+			model.push_back(g);
+	ASSERT(!model.empty());
+	IIndexArr globalToLocal(scene.images.size());
+	globalToLocal.MemsetValue(NO_ID);
+	FOREACH(l, model) {
+		globalToLocal[model[l]] = l;
+		blockOf[model[l]] = 0;
+	}
+	blocks.emplace_back(ExtractBlock(model, globalToLocal, scene.nMaxThreads));
+	blocks.back().RecomputeCalibratedImages();
+	// the merged model's tracks now live in block 0; a pool image's observations join them again at the
+	// next merge through its pairs (connecting pairs), as at the first
+	scene.tracks.Release();
+	scene.colors.Release();
+	scene.status.nTracks = 0;
+	localToGlobal.emplace_back(std::move(model));
+	// then the blocks the merge kept whole, as they were
+	FOREACH(k, kept) {
+		for (const IIndex g : keptLocalToGlobal[k]) {
+			ASSERT(blockOf[g] == NO_ID && !scene.images[g].HasPose());
+			blockOf[g] = (IIndex)blocks.size();
+		}
+		blocks.emplace_back(std::move(kept[k]));
+		localToGlobal.emplace_back(std::move(keptLocalToGlobal[k]));
+	}
+}
+/*----------------------------------------------------------------*/
+
 IIndex SceneBlocks::LocalOf(IIndex block, IIndex globalID) const
 {
 	const IIndexArr& l2g = localToGlobal[block];

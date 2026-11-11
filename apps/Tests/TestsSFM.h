@@ -516,6 +516,7 @@ bool ResectionLinkGateTest();
 // single solve fed by the inlier prefix alone does not do, one whose input grows once it is back takes a second
 // solve, and with ResectionConfig::fullBARepeats 0 the adjustment is one solve of the wider input
 bool RepeatedFullAdjustmentTest();
+bool CappedAdjustmentTriangulationTest();
 // A global solve with the per-image observation cap, one camera held and no GPS, keeps the cameras' scale, so the
 // tracks the cap left out of it are still where their observations see them after it
 bool CappedSolveScaleTest();
@@ -679,6 +680,8 @@ bool WeightlessScaleReadingTest();
 bool RingPlacementTest();
 bool MergeJoinReprojectionTest();
 bool MergeTrackLengthTest();
+bool PooledSeamReadingTest();
+bool MergeRoundsTest();
 bool UnobservableScaleTest();
 bool UnobservableScalePairTest();
 bool AmbiguousPairTest();

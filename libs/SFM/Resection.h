@@ -212,7 +212,9 @@ struct SFM_API ResectionConfig
  * without a point are triangulated again, which is what the next solve would fit. A solve that reached its minimum
  * differs from the next one only through that input, so another one runs, up to config.fullBARepeats of them, only
  * while some camera holding fullBARepeatMinObservations observations in the input has at least fullBARepeatMinChange
- * of them added or removed. The model is left filtered at maxReprojError. Callable by any adjustment that holds its
+ * of them added or removed; the last solve allowed is followed by the same triangulation, so the model ends with the
+ * tracks a stopped solve dropped triangulated again, as when it stops for want of change. The model is left filtered
+ * at maxReprojError. Callable by any adjustment that holds its
  * model to the resection's bars, not only the resection's own.
  * @return the number of solves
  */

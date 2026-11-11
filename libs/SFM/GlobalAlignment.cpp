@@ -109,6 +109,9 @@ constexpr unsigned kDoorMinDepthRatios = 10;
 // square, which settles on one reading rather than the L1 median): its rounds, and the error a
 // reading is never weighed as below -- in log-scale, and in the footprint the two blocks share
 constexpr unsigned kReweightRounds = 40;
+// the cross-block track merge's reprojection guard on a pair match (Guard 3 in
+// MergeTracksWithCrossSubScenePairs), in pixels; 0 = no guard (a value is under evaluation)
+constexpr float kCrossJoinMaxReprojError = 0.f;
 constexpr REAL kReweightScaleFloor = REAL(1e-4);
 constexpr REAL kReweightTranslationFloor = REAL(1e-3);
 
@@ -1068,11 +1071,11 @@ void GlobalAlignment::PrepareSeamEvidence(
 
 void GlobalAlignment::MapBlockPairLinks()
 {
+	// every cross pair, however light: a block pair is read from all of them together (its readings pooled), so
+	// two light pairs of one camera each add up to the evidence one heavy pair carries
 	blockPairLinks.clear();
 	FOREACH(idx, scene.pairs) {
 		const ImagePair& pair = scene.pairs[idx];
-		if (pair.GetNumWeightedInliers() < config.minCommonTracks)
-			continue;
 		const auto it1 = globalToLocal.find(pair.ID1);
 		const auto it2 = globalToLocal.find(pair.ID2);
 		if (it1 == globalToLocal.end() || it2 == globalToLocal.end())
@@ -1117,8 +1120,19 @@ void GlobalAlignment::CollectPairObservations(
 	const auto itLinks = blockPairLinks.find(std::make_pair(a, b));
 	if (itLinks == blockPairLinks.end())
 		return;
+	CollectLinkObservations(subScenes, a, b, itLinks->second, observations, correspondences);
+}
+
+void GlobalAlignment::CollectLinkObservations(
+	const std::vector<Scene>& subScenes, uint32_t a, uint32_t b, const std::vector<uint32_t>& pairIndices,
+	std::vector<SeamObservation>& observations,
+	std::vector<SeamCorrespondence>& correspondences) const
+{
+	ASSERT(a < b);
+	observations.clear();
+	correspondences.clear();
 	std::vector<PairLink> links;
-	ResolvePairLinks(scene, globalToLocal, itLinks->second, a, links);
+	ResolvePairLinks(scene, globalToLocal, pairIndices, a, links);
 	// block B's cameras against block A's points, then block A's cameras against block B's
 	AppendRigObservations(CollectRigCorrespondences(
 		subScenes[b], subScenes[a], blockPointMaps[a], links, true, config.maxReprojError),
@@ -1184,7 +1198,7 @@ PairAgreement GlobalAlignment::MeasureSeamPairs(
 	};
 	for (const uint32_t idx : itLinks->second) {
 		const ImagePair& pair = scene.pairs[idx];
-		if (!IsPoseLinkPair(pair) || pair.GetNumWeightedInliers() < config.minPairInliers)
+		if (!IsPoseLinkPair(pair))
 			continue;
 		const std::pair<uint32_t, IIndex>& local1 = globalToLocal.at(pair.ID1);
 		const std::pair<uint32_t, IIndex>& local2 = globalToLocal.at(pair.ID2);
@@ -1199,6 +1213,9 @@ PairAgreement GlobalAlignment::MeasureSeamPairs(
 		++agreement.numPairs;
 		(d.Within(config.maxPairRotationResidual) ? agreement.agree : agreement.disagree) += (float)pair.GetNumWeightedInliers();
 	}
+	// the pairs are read together: the bar is on the inlier weight read in total, under which they say nothing
+	if (agreement.agree + agreement.disagree < (float)config.minPairInliers)
+		return PairAgreement();
 	return agreement;
 }
 /*----------------------------------------------------------------*/
@@ -1349,7 +1366,14 @@ void GlobalAlignment::SelectSeamGraph(
 	// a block pair on no cycle of the other block pairs (a bridge: no other path tests it) keeps a
 	// reading only where two witnesses besides the reading's own consistency hold: its weaker side
 	// supported by minSeamWeight cameras and the verified image pairs across it not holding against
-	// it (PairAgreement::Holds); until none changes
+	// it (PairAgreement::Holds); until none changes.
+	// A possible improvement, not implemented: read the bridge's witness over every verified cross pair
+	// of the cut the bridge makes (all block pairs between the two sides it separates, against the
+	// component's averaged placement) instead of over its own block pair against its reading, with the
+	// same Holds test. It would matter where the pairs crossing that cut disagree by weight: a light
+	// false door between two blocks, its second camera on one side lent by a false pair, kept as the
+	// bridge while the true but heavier ties of one of its blocks to a third block were cut by the
+	// averaging
 	unsigned numBridgesOff = 0;
 	for (bool changed = true; changed; ) {
 		changed = false;
@@ -1426,7 +1450,7 @@ void GlobalAlignment::SelectSeamGraph(
 /*----------------------------------------------------------------*/
 
 bool GlobalAlignment::MergeScenes(
-	std::vector<Scene>& subScenes, const std::vector<IIndexArr>& localToGlobals, MergeReport& report)
+	std::vector<Scene>& subScenes, const std::vector<IIndexArr>& localToGlobals, MergeReport& report, bool releaseUnplaced)
 {
 	TD_TIMER_STARTD();
 
@@ -1458,7 +1482,7 @@ bool GlobalAlignment::MergeScenes(
 		report.poses.assign(1, BlockPose());
 		report.poses[0].model = 0;
 		report.poses[0].state = BlockPose::ADMITTED;
-		MergeTransformedScenes(subScenes, localToGlobals, report.poses, std::vector<SeamCorrespondence>());
+		MergeTransformedScenes(subScenes, localToGlobals, report.poses, std::vector<SeamCorrespondence>(), releaseUnplaced);
 		report.numPlaced = report.numModels = 1;
 		report.numImagesPlaced = scene.status.nCalibratedImages;
 		DEBUG("Single-block merge completed (%s)", TD_TIMER_GET_FMT().c_str());
@@ -1483,7 +1507,7 @@ bool GlobalAlignment::MergeScenes(
 			mergedModel = model;
 
 	// every block outside it is merged without its poses, for the resection to recover its images
-	// against the model
+	// against the model, or left whole in its scene
 	FOREACH(b, poses) {
 		BlockPose& pose = poses[b];
 		const bool placed = pose.state == BlockPose::ADMITTED && pose.model == mergedModel;
@@ -1515,20 +1539,25 @@ bool GlobalAlignment::MergeScenes(
 		if (poses[candidates[e].sceneA].state == BlockPose::ADMITTED && poses[candidates[e].sceneB].state == BlockPose::ADMITTED)
 			report.modelSeams.push_back(e);
 
-	// the closure: every correspondence of every pair of blocks the merged model holds, whether or
-	// not a reading of it was kept, that the final block poses explain within the loose bar joins its
-	// two tracks by construction: the model never closes its cycles exactly, and a block bent within
-	// the bars is off by about that at its far end, which the merged model's adjustment then
-	// straightens with these matches in its tracks
+	// the closure: every correspondence of the cross pairs of at least minCommonTracks weighted inliers
+	// of every pair of blocks the merged model holds, whether or not a reading of it was kept, that the
+	// final block poses explain within the loose bar joins its two tracks by construction: the model
+	// never closes its cycles exactly, and a block bent within the bars is off by about that at its far
+	// end, which the merged model's adjustment then straightens with these matches in its tracks; the
+	// lighter pairs, which the readings pool, join through the cross-block track merge
 	const REAL looseBar = config.looseSeamFactor * config.maxReprojError;
 	std::vector<SeamCorrespondence> seamInliers;
 	for (const auto& [blockPair, pairIndices] : blockPairLinks) {
 		const BlockPose &poseA = poses[blockPair.first], &poseB = poses[blockPair.second];
 		if (poseA.state != BlockPose::ADMITTED || poseB.state != BlockPose::ADMITTED)
 			continue;
+		std::vector<uint32_t> heavyPairs;
+		for (const uint32_t idx : pairIndices)
+			if (scene.pairs[idx].GetNumWeightedInliers() >= config.minCommonTracks)
+				heavyPairs.push_back(idx);
 		std::vector<SeamObservation> observations;
 		std::vector<SeamCorrespondence> correspondences;
-		CollectPairObservations(subScenes, blockPair.first, blockPair.second, observations, correspondences);
+		CollectLinkObservations(subScenes, blockPair.first, blockPair.second, heavyPairs, observations, correspondences);
 		const Transform T(poseB.T.Invert() * poseA.T);
 		const Transform TInv(T.Invert());
 		FOREACH(i, observations)
@@ -1537,7 +1566,7 @@ bool GlobalAlignment::MergeScenes(
 	}
 
 	// the blocks of the merged model moved into its frame, and every block merged in
-	MergeTransformedScenes(subScenes, localToGlobals, poses, seamInliers);
+	MergeTransformedScenes(subScenes, localToGlobals, poses, seamInliers, releaseUnplaced);
 
 	#if GLOBALALIGNMENT_DEBUG
 	// Export merged scene for debugging
@@ -1557,7 +1586,8 @@ bool GlobalAlignment::MergeTransformedScenes(
 	std::vector<Scene>& subScenes,
 	const std::vector<IIndexArr>& localToGlobals,
 	const std::vector<BlockPose>& poses,
-	const std::vector<SeamCorrespondence>& seamInliers)
+	const std::vector<SeamCorrespondence>& seamInliers,
+	bool releaseUnplaced)
 {
 	// A block still admitted is one the merged model took in: every other block is unplaceable,
 	// and an unplaced block is merged without poses below, so transforming it would be wasted work
@@ -1579,7 +1609,7 @@ bool GlobalAlignment::MergeTransformedScenes(
 		#endif
 	}
 
-	// Unplaced blocks are merged without poses, to be rebuilt by the post-merge resection.
+	// Unplaced blocks are merged without poses, to be rebuilt by the post-merge resection, or left whole
 	std::vector<bool> unplacedImages(scene.images.size(), false);
 	FOREACH(sceneIdx, subScenes)
 		if (!placed[sceneIdx])
@@ -1616,6 +1646,9 @@ bool GlobalAlignment::MergeTransformedScenes(
 			}
 		}
 
+		// an unplaced block kept whole keeps its features, pairs and tracks in its own scene
+		if (!placed[sceneIdx] && !releaseUnplaced)
+			continue;
 		// Merge into global scene
 		MergeSingleScene(subScene, localToGlobal, placed[sceneIdx]);
 	}
@@ -1629,7 +1662,7 @@ bool GlobalAlignment::MergeTransformedScenes(
 	}
 
 	// Merge sub-scene tracks and connect them via cross-sub-scene pairs
-	MergeTracksWithCrossSubScenePairs(unplacedImages, seamInliers);
+	MergeTracksWithCrossSubScenePairs(unplacedImages, seamInliers, releaseUnplaced);
 	FilterTracks(scene, 16.f, 0.5f);
 
 	DEBUG("Merged %u/%u transformed sub-scenes (%u tracks, %u calibrated images)",
@@ -1651,8 +1684,8 @@ void GlobalAlignment::MergeSingleScene(Scene& subScene, const IIndexArr& localTo
 		Image& dstImg = scene.images[globalID];
 
 		if (srcImg.IsValid() && placed) {
-			if (!dstImg.IsValid())
-				++scene.status.nCalibratedImages;
+			// counted whether or not the global shell is posed already (the merged model read again as block 0)
+			++scene.status.nCalibratedImages;
 			dstImg.R = srcImg.R;
 			dstImg.C = srcImg.C;
 		}
@@ -1726,7 +1759,7 @@ void GlobalAlignment::MergeSingleScene(Scene& subScene, const IIndexArr& localTo
 
 
 void GlobalAlignment::MergeTracksWithCrossSubScenePairs(
-	const std::vector<bool>& unplacedImages, const std::vector<SeamCorrespondence>& seamInliers)
+	const std::vector<bool>& unplacedImages, const std::vector<SeamCorrespondence>& seamInliers, bool releaseUnplaced)
 {
 	// Per-root metadata for union-find: 3D position, inlier count, and the set of images the
 	// track already observes (allocated only for the roots that hold a track, which are a
@@ -1888,11 +1921,13 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs(
 		return metaDst.images->size() + metaSrc.images->size() <= 255;
 	};
 
-	// Guard 3, for the pair matches: the position of a root must reproject within the loose bar into every
-	// posed observation of the other, judged as FilterTracks judges (the angle between the observed ray and
-	// the point, the bar converted per camera; behind the camera fails); a root without a position is
-	// checked from the other side alone, one without posed observations offers nothing to check
-	const float looseBar = config.looseSeamFactor * config.maxReprojError;
+	// Guard 3, for the pair matches, when kCrossJoinMaxReprojError is not 0: the position of a root must
+	// reproject within that bar into every posed observation of the other, judged as FilterTracks judges (the
+	// angle between the observed ray and the point, the bar converted per camera; behind the camera fails); a
+	// root without a position is checked from the other side alone, one without posed observations offers
+	// nothing to check. At 0 a pair match joins on guards 1 and 2 alone, as a seam inlier does: the
+	// triangulation and the track filter that follow the merge decide each observation
+	const float looseBar = kCrossJoinMaxReprojError;
 	auto ReprojectsInto = [&](const Point3& X, const RootMeta& meta) -> bool {
 		if (!meta.posedObs)
 			return true;
@@ -1954,6 +1989,9 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs(
 		if (!pair.HasMatches())
 			continue;
 		ASSERT(pair.ID1 < scene.images.size() && pair.ID2 < scene.images.size());
+		// an image of a block kept whole holds no features here
+		if (!releaseUnplaced && (unplacedImages[pair.ID1] || unplacedImages[pair.ID2]))
+			continue;
 		ASSERT(scene.images[pair.ID1].HasFeatures() && scene.images[pair.ID2].HasFeatures());
 		const auto itA = globalToLocal.find(pair.ID1);
 		const auto itB = globalToLocal.find(pair.ID2);
@@ -1996,8 +2034,8 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs(
 						return false;
 					}
 					// Guard 3: each position explains the other root's posed observations
-					if ((metaDst.hasPosition && !ReprojectsInto(metaDst.position, metaSrc)) ||
-						(metaSrc.hasPosition && !ReprojectsInto(metaSrc.position, metaDst))) {
+					if (looseBar > 0.f && ((metaDst.hasPosition && !ReprojectsInto(metaDst.position, metaSrc)) ||
+						(metaSrc.hasPosition && !ReprojectsInto(metaSrc.position, metaDst)))) {
 						++numRejectedReprojection;
 						return false;
 					}

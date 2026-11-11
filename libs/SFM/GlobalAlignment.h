@@ -35,14 +35,14 @@ class SFM_API Scene;
  * one robust averaging of the kept readings says, every reading the poses contradict cut. See
  * docs/design/HierarchicalSFM.md for the full design; this is the short version.
  *
- * Readings (EstimateSeamPair): every block pair joined by cross pairs is measured in whichever
+ * Readings (EstimateSeamPair): every block pair joined by cross pairs (all of them, read together) is measured in whichever
  * mode GlobalAlignmentConfig::alignment selects. ALIGN_CAMERAS reads each direction once: one
  * block's cameras as a generalized rig against the other's inlier tracks (generalized PnP with
  * scale), refined over its inliers at the reprojection bar; a direction whose rig is one camera (a
  * door) is measured by that camera's own pose. The two directions stay two readings. ALIGN_POINTS
  * fits one 3D-3D similarity to the matches lying on an inlier track in both blocks. A reading is
  * scored on every correspondence of the pair -- the cameras that support it on its weaker side --
- * and read against the verified image pairs across it.
+ * and read against the verified image pairs across it, together.
  *
  * Selection (SelectSeamGraph): every component of the kept readings (all of them at first) is
  * averaged (AverageBlockPoses: rotations by GlobalRotationEstimator, log-scales and translations
@@ -55,13 +55,14 @@ class SFM_API Scene;
  * Merge (MergeScenes): transform every block of the model holding the most images, average the
  * intrinsics of a camera shared across blocks, move keypoints, descriptors and pairs back from
  * every block (reversing SceneBlocks::Extract), and merge tracks with a union-find over
- * global feature IDs: every correspondence of every placed block pair that the final block poses
- * explain within the loose bar joins by construction, cross-block pairs join under a
- * duplicate-image, a 255-observation and a reprojection guard, and intra-block pairs are skipped -- their tracks were
- * already correctly formed. AdjustMergedScene (Scene.h) then filters the merged scene at that loose
- * bar and adjusts it, so a block bent within the bars keeps the matches of its far end until the
- * adjustment has straightened it. Every block outside the merged model is merged without a pose,
- * for the post-merge resection to recover.
+ * global feature IDs: every correspondence of the heavy cross pairs (minCommonTracks) of every placed
+ * block pair that the final block poses explain within the loose bar joins by construction, the other
+ * cross-block matches join under a duplicate-image and a 255-observation guard, and intra-block pairs
+ * are skipped -- their tracks were already correctly formed. AdjustMergedScene (Scene.h) then filters
+ * the merged scene at that loose bar and adjusts it, so a block bent within the bars keeps the matches
+ * of its far end until the adjustment has straightened it. Every block outside the merged model is
+ * kept whole for the next round of the merge (Scene::ReconstructHierarchical), or merged without a
+ * pose for the post-merge resection to recover.
  */
 
 // One cross-block correspondence: a feature of image A matched to a feature of image B (global image IDs)
@@ -223,15 +224,19 @@ public:
 	 * On return the scene holds the merged model — the poses of the placed blocks and the
 	 * observations of every block, those of the unplaced ones without poses so the post-merge
 	 * resection can recover them — and the report says what was left out and why.
-	 * @param subScenes the blocks to place and merge (consumed)
+	 * @param subScenes the blocks to place and merge (consumed, but for the unplaced blocks kept whole)
 	 * @param localToGlobals per block, its local image index -> global image ID
+	 * @param releaseUnplaced true: an unplaced block is merged without its poses (its images left to the
+	 *        resection); false: it is left whole in subScenes, its features, pairs and tracks in its own
+	 *        scene, for the next round of the merge (Scene::ReconstructHierarchical)
 	 * @return true when at least one block was placed, which leaves the scene holding a
 	 *         reconstruction whatever the seams said
 	 */
 	bool MergeScenes(
 		std::vector<Scene>& subScenes,
 		const std::vector<IIndexArr>& localToGlobals,
-		MergeReport& report);
+		MergeReport& report,
+		bool releaseUnplaced = true);
 
 	/**
 	 * @brief Fill globalToLocal, blockPairLinks and blockPointMaps from the blocks
@@ -319,8 +324,14 @@ private:
 		uint32_t fixedBlock,
 		std::vector<BlockPose>& poses) const;
 
-	// The cross-block image pairs grouped by block pair, the pair ordered a < b
+	// Every cross-block image pair grouped by block pair, the pair ordered a < b
 	void MapBlockPairLinks();
+
+	// Both directions' correspondences of the given cross pairs (indices into scene.pairs) of block pair a < b
+	void CollectLinkObservations(
+		const std::vector<Scene>& subScenes, uint32_t a, uint32_t b, const std::vector<uint32_t>& pairIndices,
+		std::vector<SeamObservation>& observations,
+		std::vector<SeamCorrespondence>& correspondences) const;
 
 	/**
 	 * @brief The score of T on the given observations: the inliers at the bar and, per side
@@ -336,7 +347,8 @@ private:
 	/**
 	 * @brief What the verified pairs between blocks a and b say of the reading T (A -> B): each
 	 * pair's relative pose against the one T gives its two images (PoseLink.h
-	 * MeasurePairDisagreement); nothing is read when maxPairRotationResidual is 0
+	 * MeasurePairDisagreement), all pairs read together: nothing is read when they weigh under
+	 * minPairInliers weighted inliers in total, or when maxPairRotationResidual is 0
 	 */
 	PairAgreement MeasureSeamPairs(const std::vector<Scene>& subScenes, uint32_t a, uint32_t b, const Transform& T) const;
 
@@ -351,7 +363,8 @@ private:
 	 * @brief Transform the blocks the merged model admitted by their poses and merge every block in
 	 *
 	 * A block the merged model admitted comes in with its poses and its 3D points; every other
-	 * block comes in without them, so its images stay unregistered for the post-merge resection.
+	 * block comes in without them, so its images stay unregistered for the post-merge resection,
+	 * or stays whole in its scene (releaseUnplaced false).
 	 * @param seamInliers the correspondences of the merged model's block pairs its block poses
 	 * explain, passed down to MergeTracksWithCrossSubScenePairs so their two ends join tracks by
 	 * construction
@@ -360,7 +373,8 @@ private:
 		std::vector<Scene>& subScenes,
 		const std::vector<IIndexArr>& localToGlobals,
 		const std::vector<BlockPose>& poses,
-		const std::vector<SeamCorrespondence>& seamInliers);
+		const std::vector<SeamCorrespondence>& seamInliers,
+		bool releaseUnplaced);
 
 	/**
 	 * @brief Merge a single scene into the global scene
@@ -383,8 +397,8 @@ private:
 	 *    its two ends join by construction, on the duplicate-image guard alone
 	 * 3. Process the connecting pairs (two sub-scenes, or an image in no sub-scene: a pool image,
 	 *    whose pairs are the only source of its tracks) to connect tracks across boundaries,
-	 *    a join refused when it would hold one image twice or more than 255 observations, or when a
-	 *    root's position does not reproject within the loose bar into the other root's posed observations
+	 *    a join refused when it would hold one image twice or more than 255 observations; the pairs
+	 *    of an unplaced block kept whole are skipped
 	 * 4. Assemble final tracks, triangulating any new tracks without 3D positions
 	 *
 	 * Tracks of unplaced sub-scenes (all observations in unregistered images) are seeded with
@@ -392,8 +406,9 @@ private:
 	 * post-merge resection to re-triangulate.
 	 * @param unplacedImages per-global-image flags marking images of blocks that were not placed
 	 * @param seamInliers the correspondences of the merged model's block pairs its block poses explain
+	 * @param releaseUnplaced false: the unplaced blocks are kept whole, their images hold no features here
 	 */
-	void MergeTracksWithCrossSubScenePairs(const std::vector<bool>& unplacedImages, const std::vector<SeamCorrespondence>& seamInliers);
+	void MergeTracksWithCrossSubScenePairs(const std::vector<bool>& unplacedImages, const std::vector<SeamCorrespondence>& seamInliers, bool releaseUnplaced);
 
 	// Global image ID -> (sub-scene index, local image index)
 	std::unordered_map<IIndex, std::pair<uint32_t, IIndex>> globalToLocal;

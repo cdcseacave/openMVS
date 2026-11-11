@@ -363,10 +363,13 @@ unsigned SFM::AdjustRepeated(Scene& scene, const BAConfig& baConfig, const Resec
 		BundleAdjustment::Adjust(scene, baConfig);
 		++solves;
 		Filter(config.maxReprojError);
-		if (solves > config.fullBARepeats)
-			break;
-		// the tracks left without a point triangulated again, and what the next solve would fit from the model
+		// the tracks left without a point triangulated again: what the next solve would fit from the model, or,
+		// when no solve is left, what the model holds at the bar as a converged adjustment leaves it
 		TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold);
+		if (solves > config.fullBARepeats) {
+			Filter(config.maxReprojError);
+			break;
+		}
 		Filter(inputErrorPixels);
 		Mark(2);
 		// the largest share of one camera's input that the next solve's input adds or removes

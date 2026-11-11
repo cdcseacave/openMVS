@@ -99,6 +99,15 @@ public:
 	 */
 	void ResectPool(const ResectionConfig& resectionCfg, const ReconstructionConfig& config);
 
+	/**
+	 * @brief The blocks again after a merge round that kept the unplaced blocks whole
+	 * (GlobalAlignment::MergeScenes with releaseUnplaced false): block 0 is the merged model, every posed
+	 * image of the global scene extracted as Extract extracts a cluster (features, the pairs among them and
+	 * the global scene's tracks moved in), then the blocks the merge did not place, as they are
+	 * @param placed per block of the round, whether the merge placed it
+	 */
+	void RegroupAfterMerge(const std::vector<bool>& placed);
+
 private:
 	// one block from a sorted cluster of global image IDs (globalToLocal maps them to the block)
 	Scene ExtractBlock(const IIndexArr& viewIndices, const IIndexArr& globalToLocal, unsigned nThreads);

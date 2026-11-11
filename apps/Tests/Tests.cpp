@@ -502,6 +502,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::RepeatedFullAdjustmentTest())
 				return false;
+			if (!SFM::CappedAdjustmentTriangulationTest())
+				return false;
 			if (!SFM::CappedSolveScaleTest())
 				return false;
 			if (!SFM::DenseReprojectionBarTest())
@@ -591,6 +593,10 @@ int main(int argc, LPCTSTR* argv)
 			if (!SFM::MergeJoinReprojectionTest())
 				return false;
 			if (!SFM::MergeTrackLengthTest())
+				return false;
+			if (!SFM::PooledSeamReadingTest())
+				return false;
+			if (!SFM::MergeRoundsTest())
 				return false;
 			if (!SFM::UnobservableScaleTest())
 				return false;
