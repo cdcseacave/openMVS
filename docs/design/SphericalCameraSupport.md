@@ -175,6 +175,7 @@ app; only the Python bindings (`libs/SFM/PythonWrapper.cpp`) and hand-constructe
 | `PipelineTest` (spherical BA sub-test) | `apps/Tests/TestsSFM.cpp` | Mean reprojection error ≤1.0 px post-BA |
 | `CubeMapBridgeDropTopBottomTest` | `apps/Tests/TestsSFM.cpp` | 4-face geometry shows 0 views for zenith/nadir points vs. 6-face geometry showing the expected face |
 | `CubeMapFaceRenderTest`, `CubeMapBridgeGeometryTest`, `CubeMapBridgeEndToEndTest`, `CubeMapBridgeMVSLoadTest`, `CubeMapBridgeMixedSceneTest` | `apps/Tests/TestsSFM.cpp` | Cube-map rendering, geometry, MVS-export round trip, and mixed pinhole/spherical scenes (no numeric tolerances recorded beyond pass/fail) |
+| `SphericalBottomBandTest` | `apps/Tests/TestsSFM.cpp` | Textured 2048x1024 panorama: 696 keypoints in the bottom 20% of rows with the band off, 0 with 0.2, the 6545 above unchanged; a perspective image gives identical keypoints and descriptors for band 0 and 0.2 |
 
 ## 6. Rejected alternatives
 
