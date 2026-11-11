@@ -91,6 +91,7 @@ String strImageIndices;
 unsigned nMaxFeaturesPerCell;
 unsigned nMinFeaturesPerCell;
 bool bSiftGPUDarknessAdaptivity;
+float fSphericalBottomBand;
 bool bSiftGPUCUDA;
 unsigned maxViewsPerCluster;
 bool bClusterCommunities;
@@ -175,6 +176,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("max-features-per-cell", boost::program_options::value(&OPT::nMaxFeaturesPerCell)->default_value(3000), "maximum features per grid cell (3x3 grid)")
 		("min-features-per-cell", boost::program_options::value(&OPT::nMinFeaturesPerCell)->default_value(500), "minimum features per cell before adjusting sensitivity")
 		("siftgpu-darkness-adaptivity", boost::program_options::value(&OPT::bSiftGPUDarknessAdaptivity)->default_value(false), "SiftGPU: lower the DoG threshold and curvature floor in dark areas")
+		("spherical-bottom-band", boost::program_options::value(&OPT::fSphericalBottomBand)->default_value(FeatureExtractionConfig().sphericalBottomBand), "spherical images: the fraction of the image height, counted from the bottom, whose features are discarded (the operator and the tripod are there), in [0,1); 0 = keep every feature; perspective images are not affected")
 		("siftgpu-cuda", boost::program_options::value(&OPT::bSiftGPUCUDA)->default_value(true), "SiftGPU feature extraction and matching backend: 1 = CUDA (if available), 0 = OpenGL/GLSL")
 		("match-mode", boost::program_options::value(&OPT::matchMode)->default_value(1), "match mode: -1=SKIP,0=EXHAUSTIVE,1=VOCABULARY,2=SEQUENTIAL,3=KNOWN_POSES,4=RETRIEVAL")
 		("match-sequence-overlap", boost::program_options::value(&OPT::matchSequenceOverlap)->default_value(3), "consecutive images each image is matched with: the whole candidate set of the sequential mode, and a prior added to the vocabulary and retrieval candidates (0 = no prior)")
@@ -306,6 +308,10 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		LOG("error: --max-link-direction-error is the resection's direction check bar in degrees, it must be in [0,90] (got %g; 0 = no direction check)", OPT::fMaxLinkDirectionError);
 		return false;
 	}
+	if (!(OPT::fSphericalBottomBand >= 0.f && OPT::fSphericalBottomBand < 1.f)) {
+		LOG("error: --spherical-bottom-band is a fraction of the image height, it must be in [0,1) (got %g; 0 = keep every feature)", OPT::fSphericalBottomBand);
+		return false;
+	}
 	Util::ensureValidFolderPath(OPT::strROMA2Model);
 	if (OPT::bROMA2 && !RoMa2Onnx::IsAvailable()) {
 		LOG("error: --roma2 needs a build with ONNX Runtime (-DOpenMVS_USE_ONNXRUNTIME=ON)");
@@ -414,6 +420,7 @@ int main(int argc, LPCTSTR* argv)
 	cfg.featuresCfg.maxFeaturesPerCell = OPT::nMaxFeaturesPerCell;
 	cfg.featuresCfg.minFeaturesPerCell = OPT::nMinFeaturesPerCell;
 	cfg.featuresCfg.siftgpuDarknessAdaptivity = OPT::bSiftGPUDarknessAdaptivity;
+	cfg.featuresCfg.sphericalBottomBand = OPT::fSphericalBottomBand;
 	cfg.featuresCfg.importOpenMVGDir = OPT::strImportOpenMVGDir;
 	cfg.featuresCfg.exportOpenMVGDir = OPT::strExportOpenMVGDir;
 	cfg.matchCfg.DefaultsForFeatureType(cfg.featuresCfg.detectorType);

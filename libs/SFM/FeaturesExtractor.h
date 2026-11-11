@@ -93,6 +93,7 @@ struct SFM_API FeatureExtractionConfig {
 	int   cubemapFaces = 6;             // 4 | 6 | 8 | 12 | 20
 	int   cubemapFaceSize = 0;          // 0 = auto: max(1024, equirect_width/4)
 	float cubemapDedupAngleDeg = 0.25f; // angular-NMS threshold across face seams
+	float sphericalBottomBand = 0.2f;   // [0,1): fraction of the image height, counted from the bottom, whose features are discarded (the operator, the tripod); 0 = off
 
 	int GetMaxNumFeatures() const {
 		// Total max features per image = maxFeaturesPerCell * 3 * 3 grid
@@ -177,6 +178,11 @@ private:
 	// recursively run the pinhole ExtractImage on each face with skipIO=true,
 	// then reproject + angular-NMS-dedup back to equirectangular coordinates.
 	bool ExtractImageSpherical(Image& image, cv::Ptr<cv::Feature2D>& detector, bool skipIO);
+
+	// Whether a keypoint of a spherical image, at pixel pt of the equirectangular image, lies in
+	// a region that must give no features. The one place that decides it: today the bottom band
+	// of config.sphericalBottomBand, later a per-image mask image read here.
+	bool IsMasked(const Image& image, const cv::Point2f& pt) const;
 
 	Scene& scene;
 	FeatureExtractionConfig config;

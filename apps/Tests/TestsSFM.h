@@ -325,6 +325,12 @@ bool AlignToGPSDegenerateTest();
 // of the Unproject / TriangulateDLT path for spherical cameras.
 bool ReconstructSphericalSyntheticTest();
 
+// Spherical bottom band of the feature extraction: with FeatureExtractionConfig::sphericalBottomBand
+// at 0.2 no keypoint of an equirectangular image lies in its bottom 20% of rows and the rest of the
+// image keeps its features, at 0 the band has features; a perspective image extracts the same
+// keypoints and descriptors with the band at 0.2 or at 0.
+bool SphericalBottomBandTest();
+
 // Integration test for the PairsMatcher -> poselib::estimate_relative_pose_bearings
 // path on a full-sphere spherical scene. Validates RANSAC scoring with
 // cheirality disabled for spherical cameras, plus the Sampson-on-sphere

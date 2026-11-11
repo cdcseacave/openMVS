@@ -795,6 +795,15 @@ cv::Mat FeaturesExtractor::ConvertToRootSIFT(const cv::Mat& siftDesc)
 /*----------------------------------------------------------------*/
 
 
+bool FeaturesExtractor::IsMasked(const Image& image, const cv::Point2f& pt) const
+{
+	ASSERT(image.pCamera && image.pCamera->GetType() == CameraType::SPHERICAL);
+	ASSERT(!image.pixels.empty() && pt.y >= 0 && pt.y <= (float)image.pixels.rows);
+	return pt.y > (1.f - config.sphericalBottomBand) * (float)image.pixels.rows;
+}
+/*----------------------------------------------------------------*/
+
+
 bool FeaturesExtractor::ExtractImageSpherical(Image& image, cv::Ptr<cv::Feature2D>& detector, bool skipIO)
 {
 	// Spherical driver: render N tangent-pinhole faces via the unified
@@ -805,6 +814,7 @@ bool FeaturesExtractor::ExtractImageSpherical(Image& image, cv::Ptr<cv::Feature2
 	// sphere↔face geometry, the per-face wrapping, and the angular-NMS dedup
 	// across face seams.
 	ASSERT(image.pCamera && image.pCamera->GetType() == CameraType::SPHERICAL);
+	ASSERT(config.sphericalBottomBand >= 0.f && config.sphericalBottomBand < 1.f);
 	if (!image.HasPixels() && !image.LoadPixels(false)) {
 		VERBOSE("FeaturesExtractor::ExtractImageSpherical: no pixels loaded for image %u", image.ID);
 		return false;
@@ -880,6 +890,9 @@ bool FeaturesExtractor::ExtractImageSpherical(Image& image, cv::Ptr<cv::Feature2
 			                                        REAL(1));
 			const auto [eq_pt, ok] = sphCam.Project(b_body);
 			if (!ok)
+				continue;
+			const cv::Point2f eq_xy((float)eq_pt.x, (float)eq_pt.y);
+			if (IsMasked(image, eq_xy))
 				continue;
 			cv::KeyPoint eq_kp((float)eq_pt.x, (float)eq_pt.y,
 			                   fkp.size, fkp.angle, fkp.response, k /*octave=faceID*/);

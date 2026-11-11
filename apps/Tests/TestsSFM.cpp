@@ -7879,6 +7879,109 @@ void SimulateSubSceneReconstruction(
 
 
 // ===============================================================================
+// Spherical bottom band of the feature extraction (FeatureExtractionConfig::sphericalBottomBand):
+// a textured equirectangular image gives keypoints all over it with the band off, none in the
+// bottom 20% of rows with the default band and as many above it as before (the band removes
+// keypoints, it does not move the budget); a perspective image of the same texture is unaffected
+// by the option (same keypoints, same descriptors).
+// ===============================================================================
+bool SphericalBottomBandTest()
+{
+	VERBOSE("\n=== SphericalBottomBandTest: features in the bottom rows of a spherical image ===");
+	constexpr int width = 2048, height = 1024;
+	// blurred noise, fine enough for SIFT blobs everywhere
+	cv::RNG rng(7);
+	cv::Mat noise(height, width, CV_8UC3);
+	rng.fill(noise, cv::RNG::UNIFORM, 0, 256);
+	cv::Mat texture;
+	cv::GaussianBlur(noise, texture, cv::Size(0, 0), 2.5);
+	cv::normalize(texture, texture, 0, 255, cv::NORM_MINMAX);
+
+	FeatureExtractionConfig cfg;
+	cfg.detectorType = FeatureType::SIFT;
+	cfg.maxFeaturesPerCell = 200;
+	cfg.minFeaturesPerCell = 100;
+	cfg.cubemapFaceSize = 512;
+	ASSERT(cfg.sphericalBottomBand == 0.2f); // on by default
+
+	auto Extract = [&](float band, bool spherical, std::vector<cv::KeyPoint>& keypoints, cv::Mat& descriptors) {
+		Scene scene;
+		std::unique_ptr<Camera> camera;
+		if (spherical)
+			camera = std::make_unique<SphericalCamera>(cv::Size(width, height));
+		else
+			camera = std::make_unique<PinholeCamera>(cv::Size(width, height), 1000., 1000., width / 2., height / 2.);
+		Image image;
+		image.ID = 0;
+		image.cameraID = 0; // a valid camera ID, the camera is owned here and not freed by the image
+		image.pCamera = camera.get();
+		if (spherical)
+			image.pixels = texture.clone();
+		else
+			cv::cvtColor(texture, image.pixels, cv::COLOR_BGR2GRAY);
+		cfg.sphericalBottomBand = band;
+		FeaturesExtractor extractor(scene, cfg);
+		cv::Ptr<cv::Feature2D> detector;
+		if (!extractor.ExtractImage(image, detector, true))
+			return false;
+		keypoints = image.keypoints;
+		descriptors = image.descriptors.clone();
+		return true;
+	};
+
+	std::vector<cv::KeyPoint> kpOff, kpOn;
+	cv::Mat descOff, descOn;
+	if (!Extract(0.f, true, kpOff, descOff) || !Extract(0.2f, true, kpOn, descOn)) {
+		VERBOSE("SphericalBottomBandTest FAILED: the spherical extraction failed");
+		return false;
+	}
+	const float bandRow = 0.8f * height;
+	size_t offBelow = 0, offAbove = 0, onBelow = 0, onAbove = 0;
+	for (const cv::KeyPoint& kp : kpOff)
+		(kp.pt.y > bandRow ? offBelow : offAbove)++;
+	for (const cv::KeyPoint& kp : kpOn)
+		(kp.pt.y > bandRow ? onBelow : onAbove)++;
+	VERBOSE("  band 0: %u keypoints above row %g, %u below; band 0.2: %u above, %u below",
+		(unsigned)offAbove, bandRow, (unsigned)offBelow, (unsigned)onAbove, (unsigned)onBelow);
+	if (offBelow < 100) {
+		VERBOSE("SphericalBottomBandTest FAILED: the band-0 extraction has only %u keypoints in the bottom 20%% of rows, the test image is not textured enough", (unsigned)offBelow);
+		return false;
+	}
+	if (onBelow != 0) {
+		VERBOSE("SphericalBottomBandTest FAILED: %u keypoints in the discarded bottom band", (unsigned)onBelow);
+		return false;
+	}
+	if (onAbove < offAbove * 9 / 10) {
+		VERBOSE("SphericalBottomBandTest FAILED: the rows above the band lost keypoints (%u of %u)", (unsigned)onAbove, (unsigned)offAbove);
+		return false;
+	}
+	if ((int)onAbove != descOn.rows) {
+		VERBOSE("SphericalBottomBandTest FAILED: %u keypoints but %d descriptor rows", (unsigned)onAbove, descOn.rows);
+		return false;
+	}
+
+	std::vector<cv::KeyPoint> kpP0, kpP2;
+	cv::Mat descP0, descP2;
+	if (!Extract(0.f, false, kpP0, descP0) || !Extract(0.2f, false, kpP2, descP2)) {
+		VERBOSE("SphericalBottomBandTest FAILED: the perspective extraction failed");
+		return false;
+	}
+	if (kpP0.empty() || kpP0.size() != kpP2.size() || cv::norm(descP0, descP2, cv::NORM_INF) != 0) {
+		VERBOSE("SphericalBottomBandTest FAILED: the band changed the perspective extraction (%u vs %u keypoints)", (unsigned)kpP0.size(), (unsigned)kpP2.size());
+		return false;
+	}
+	for (size_t i = 0; i < kpP0.size(); ++i)
+		if (kpP0[i].pt != kpP2[i].pt) {
+			VERBOSE("SphericalBottomBandTest FAILED: the band moved perspective keypoint %u", (unsigned)i);
+			return false;
+		}
+	VERBOSE("SphericalBottomBandTest PASSED");
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+
+// ===============================================================================
 // Spherical camera full-hemisphere reconstruction test
 // Exercises the triangulation + BA pipeline on a spherical scene where 3D points
 // are distributed in ALL directions around the cameras (front, back, sides), so

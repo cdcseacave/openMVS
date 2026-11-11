@@ -42,6 +42,15 @@ the source face ID. Duplicate keypoints straddling a face seam are suppressed by
 non-max-suppression over unit bearings (a 3D octree, radius set by `cubemapDedupAngleDeg`,
 default 0.25°), keeping the highest-response keypoint per angular neighborhood.
 
+**Bottom band.** A keypoint whose equirectangular pixel lies in the bottom `sphericalBottomBand`
+fraction of the image height (default 0.2, 0 = off) is dropped before the dedup, so it neither
+becomes a feature nor suppresses a neighbour. The operator, the tripod and the ground right under
+the camera sit there and give wrong, look-alike or moving matches. The decision is the single
+predicate `FeaturesExtractor::IsMasked(image, pt)`; a per-image mask image would replace its body
+and nothing else. Detection still runs on the whole face, so the face's budget is spent as without
+the band and the rows above it keep exactly the features they had. Perspective images never reach
+the predicate (identical keypoints and descriptors for any band value; `SphericalBottomBandTest`).
+
 ### Matching and pose estimation
 
 - **`PairsMatcher::GeometricFilter`** (`libs/SFM/PairsMatcher.cpp`) — relative pose from bearing
@@ -130,6 +139,7 @@ app; only the Python bindings (`libs/SFM/PythonWrapper.cpp`) and hand-constructe
 | `cubemapFaces` | `FeaturesExtractor` config | 6 | Tangent-face count for feature extraction (4/6/8/12/20) |
 | `cubemapFaceSize` | `FeaturesExtractor` config | 0 (auto = `max(1024, width/4)`) | Tangent-face resolution for feature extraction |
 | `cubemapDedupAngleDeg` | `FeaturesExtractor` config | 0.25° | Angular non-max-suppression radius for cross-face duplicate keypoints |
+| `sphericalBottomBand` | `FeaturesExtractor` config, `CreateStructure --spherical-bottom-band` | 0.2 | Fraction of the image height, from the bottom, whose features a spherical image discards, in [0,1); 0 = off |
 | `sphericalNumFaces` | `ExportMVSConfig` (`InterfaceMVS.h`) | 6 | Tangent-face count for MVS export (4/6/8/12/20; not exposed on any app's CLI) |
 | `sphericalFaceSize` | `ExportMVSConfig` | 1024 px | Tangent-face resolution for MVS export (square; not exposed on any app's CLI) |
 | `--camera-type` | `apps/ExtractKeyframes` | 0 (pinhole) | `0` = pinhole, `1` = spherical |
