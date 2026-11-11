@@ -6972,7 +6972,7 @@ static double RotationAngleDeg(const Matrix3x3f& R)
 // FlexGlue as the dense matcher, on the bundled 4-image scene through Scene::MatchPairs (docs/design/DenseMatcher.md): the 1024-D retrieval
 // descriptors its backbone pools (unit, distinct per image), every pair stored with its covisibility score and its coarse relative pose
 // (a rotation, a unit baseline direction, close to the pose the pair's own matches give: the check of the pose head's convention),
-// the pairs CSV carrying both, the covisibility gate dropping exactly the pairs below it, the pose switched off leaving no prior, and ReconstructTest's
+// the pairs CSV carrying both, the covisibility gate dropping exactly the pairs below it, and ReconstructTest's
 // reconstruction stage on the matched scene. Skipped unless OPENMVS_FLEXGLUE_MODEL_PATH points at the export folder (flexglue_descriptor.onnx,
 // flexglue_dense.onnx, flexglue_pose_h0.onnx); OPENMVS_ROMA2_PROVIDER narrows the execution provider
 bool FlexGlueReconstructTest()
@@ -7092,24 +7092,7 @@ bool FlexGlueReconstructTest()
 			}
 	}
 
-	// 3) the pose switched off: the covisibility stays, no prior
-	{
-		Scene noPose(2);
-		ROMA2Config noPoseCfg(cfg);
-		noPoseCfg.flexgluePose = false;
-		ROMA2PairSummaries noPoseSummaries;
-		if (!ROMA2ReconstructScene(noPose, noPoseCfg, FlexGlueMatcher::RETRIEVAL_SIZE, false, noPoseSummaries)) {
-			VERBOSE("FlexGlueReconstructTest FAILED: matching without the pose head");
-			return false;
-		}
-		for (const ImagePair& pair : noPose.pairs)
-			if (!pair.covisibility || pair.posePrior) {
-				VERBOSE("FlexGlueReconstructTest FAILED: with the pose head off pair (%u, %u) must carry a covisibility and no prior", pair.ID1, pair.ID2);
-				return false;
-			}
-	}
-
-	// 4) the reconstruction stage of ReconstructTest on the matched scene
+	// 3) the reconstruction stage of ReconstructTest on the matched scene
 	#ifdef _IMAGE_HEIF
 	if (!ReconstructMatchedScene(scene, "FlexGlueReconstructTest", 4000, 12000, 20))
 		return false;

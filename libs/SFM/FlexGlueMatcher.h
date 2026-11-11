@@ -42,8 +42,8 @@ namespace SFM {
 // script writes (docs/design/DenseMatcher.md): flexglue_descriptor.onnx (the image squashed to 512 x 512 -> the stride-8
 // feature map, 256 x 64 x 64, and the unit 256-D retrieval descriptor, that map GeM-pooled), flexglue_dense.onnx (two feature
 // maps -> both warps on a 128 x 128 grid with their confidences gated by FlexGlue's own checks, the covisibility score "do
-// the two images show the same place", and the pair-conditioned features pooled to 16 x 16) and, when the pose is wanted,
-// flexglue_pose_h0.onnx (those pooled features and the two cameras -> the coarse relative rotation and baseline direction).
+// the two images show the same place", and the pair-conditioned features pooled to 16 x 16) and flexglue_pose_h0.onnx (those
+// pooled features and the two cameras -> the coarse relative rotation and baseline direction).
 // All sessions run on the provider the descriptor got. Same threading and lifetime rules as RoMa2Onnx.
 #ifdef _USE_ONNXRUNTIME
 class SFM_API FlexGlueMatcher : public DenseMatcher
@@ -57,11 +57,9 @@ public:
 	static constexpr int POOLED_CHANNELS = 512;      // the pose head's input: POOLED_CHANNELS x POOLED_GRID x POOLED_GRID per view
 	static constexpr int POOLED_GRID = 16;
 
-	explicit FlexGlueMatcher(bool computePose) : bPose(computePose) {}
-
 	// Load the graphs of modelDir on the provider ("auto"|"cuda"|"coreml"|"dml"|"cpu"); `setting` is unused (one preset)
 	bool Load(const String& modelDir, const String& setting, const String& provider) override;
-	bool IsLoaded() const override { return descriptor.IsLoaded() && dense.IsLoaded() && (!bPose || pose.IsLoaded()); }
+	bool IsLoaded() const override { return descriptor.IsLoaded() && dense.IsLoaded() && pose.IsLoaded(); }
 	String ProviderName() const override;
 
 	int ImageSize() const override { return IMAGE_SIZE; }
@@ -73,10 +71,9 @@ public:
 	OrtTensor MakeCode() override;
 	bool DescribeImage(const float* planarRgb, OrtTensor& features, std::vector<float>& retrieval) override;
 	bool MatchPair(const OrtTensor& featuresA, const OrtTensor& featuresB, const PairInput& input, PairOutput& out) override;
-	bool NeedsIntrinsics() const override { return bPose; }
+	bool NeedsIntrinsics() const override { return true; }
 
 private:
-	const bool bPose;
 	OnnxModel descriptor, dense, pose;
 	// host inputs and outputs of the graphs, allocated once by Load (one thread uses them)
 	OrtTensor image, retrieval;

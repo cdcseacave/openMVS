@@ -54,7 +54,7 @@ bool FlexGlueMatcher::Load(const String& _modelDir, const String&, const String&
 	if (!descriptor.Load(modelDir + "flexglue_descriptor.onnx", options))
 		return false;
 	options.provider = descriptor.Provider(); // every graph runs where the descriptor does
-	if (!dense.Load(modelDir + "flexglue_dense.onnx", options) || (bPose && !pose.Load(modelDir + "flexglue_pose_h0.onnx", options)))
+	if (!dense.Load(modelDir + "flexglue_dense.onnx", options) || !pose.Load(modelDir + "flexglue_pose_h0.onnx", options))
 		return false;
 	const std::vector<int64_t> featuresShape{1, FEATURE_CHANNELS, GRID, GRID};
 	const std::vector<int64_t> pooledShape{1, POOLED_CHANNELS, POOLED_GRID, POOLED_GRID};
@@ -69,9 +69,9 @@ bool FlexGlueMatcher::Load(const String& _modelDir, const String&, const String&
 		!dense.ExpectOutputShape("confidence0", confidenceShape) || !dense.ExpectOutputShape("confidence1", confidenceShape) ||
 		!dense.ExpectOutputShape("covisibility", {1}) ||
 		!dense.ExpectOutputShape("pooled0", pooledShape) || !dense.ExpectOutputShape("pooled1", pooledShape) ||
-		(bPose && (!pose.ExpectInputShape("pooled0", pooledShape) || !pose.ExpectInputShape("pooled1", pooledShape) ||
-			!pose.ExpectInputShape("intrinsics0", {1, 4}) || !pose.ExpectInputShape("intrinsics1", {1, 4}) ||
-			!pose.ExpectOutputShape("R10", {1, 3, 3}) || !pose.ExpectOutputShape("t10", {1, 3})))) {
+		!pose.ExpectInputShape("pooled0", pooledShape) || !pose.ExpectInputShape("pooled1", pooledShape) ||
+		!pose.ExpectInputShape("intrinsics0", {1, 4}) || !pose.ExpectInputShape("intrinsics1", {1, 4}) ||
+		!pose.ExpectOutputShape("R10", {1, 3, 3}) || !pose.ExpectOutputShape("t10", {1, 3})) {
 		VERBOSE("error: can not load the FlexGlue graphs from '%s'", modelDir.c_str());
 		descriptor.Unload(); dense.Unload(); pose.Unload();
 		return false;
@@ -85,12 +85,10 @@ bool FlexGlueMatcher::Load(const String& _modelDir, const String&, const String&
 		confidence[i] = OrtTensor::Host(confidenceShape);
 		pooled[i] = dense.MakeDeviceTensor(pooledShape);
 	}
-	if (bPose) {
-		for (int i = 0; i < 2; ++i)
-			intrinsics[i] = OrtTensor::Host({1, 4});
-		rotation = OrtTensor::Host({1, 3, 3});
-		direction = OrtTensor::Host({1, 3});
-	}
+	for (int i = 0; i < 2; ++i)
+		intrinsics[i] = OrtTensor::Host({1, 4});
+	rotation = OrtTensor::Host({1, 3, 3});
+	direction = OrtTensor::Host({1, 3});
 	ASSERT(image.IsValid() && retrieval.IsValid() && covisibility.IsValid() && pooled[0].IsValid() && pooled[1].IsValid() &&
 		imageSize[0].IsValid() && imageSize[1].IsValid() && warp[0].IsValid() && warp[1].IsValid() && confidence[0].IsValid() && confidence[1].IsValid());
 	return true;
@@ -161,9 +159,6 @@ bool FlexGlueMatcher::MatchPair(const OrtTensor& featuresA, const OrtTensor& fea
 	memcpy(out.ba.confidence.data, confidence[1].HostData(), cells * sizeof(float));
 	out.covisibility = covisibility.HostData()[0];
 	ASSERT(*out.covisibility >= 0.f && *out.covisibility <= 1.f);
-	out.pose.reset();
-	if (!bPose)
-		return true;
 	// the head reads the cameras in the 512 x 512 frame the features were made in
 	const PinholeIntrinsics* intr[2] = {&input.intrA, &input.intrB};
 	const cv::Size* size[2] = {&input.sizeA, &input.sizeB};

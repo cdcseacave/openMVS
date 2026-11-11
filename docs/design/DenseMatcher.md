@@ -70,7 +70,8 @@ feature maps) runs from three ONNX graphs exported by `export_flexglue.py` (reco
   extra call). The gate is on at 0.2 (`--dense-min-covisibility`, 0 = off). A RoMa2 run is never gated: it gives none.
 - **Pose head.** FlexGluePose's H0 head (216 k parameters) on the final pair-conditioned features of the transformer,
   average-pooled to 16 x 16 inside the dense graph, with the two cameras' rays; one small extra graph call per pair
-  (`--flexglue-pose`, default on; needs a pinhole camera for every image, a spherical scene is refused by name). The
+  (about 8 ms on 104 ms of the pair's graph call, below the 15% bar at which it would have become an option); it needs a pinhole camera
+  for every image and a spherical scene is refused by name. The
   intrinsics are the ones of the matching stage, scaled to the 512 frame. Its output is `R10` (camera-0 to camera-1
   rotation) and `t10` with `x1 = R10 x0 + s t10`, the convention of the pair's `relativePose`.
 - **Retrieval descriptor.** The `features` map GeM-pooled (generalised mean, p = 3, clamped at 1e-6) and L2-normalised
@@ -95,7 +96,6 @@ Nothing in openMVS decides on this: the model files are read from a folder the u
 | `--dense-matcher roma2\|flexglue` | `roma2` | the model behind `--roma2 true` |
 | `--flexglue-model DIR` | `$OPENMVS_FLEXGLUE_MODEL_PATH` | folder with the three graphs |
 | `--dense-min-covisibility F` | `0.2` | gate before the verdict, 0 = off; ignored by a model that gives no score |
-| `--flexglue-pose` | `true` | the relative-pose head; needs pinhole cameras |
 
 The other `--roma2-*` options (`--roma2-slots`, `--roma2-min-confidence`, `--roma2-min-overlap`, `--roma2-dense-matches`,
 `--roma2-provider`) apply to FlexGlue's warps as they do to RoMa2's; `--roma2-model` and `--roma2-setting` are RoMa2's.
@@ -110,7 +110,25 @@ The other `--roma2-*` options (`--roma2-slots`, `--roma2-min-confidence`, `--rom
 
 ## Validation
 
-(filled by the measurements, see the table below)
+Records: `T/records-2026-11-11-flexglue/` (`export_flexglue.py`, `parity_flexglue.py`, `retr_*.py`, `queue.py`, `ident.sh`).
+
+**Export parity against PyTorch** (`parity_4e5c6f6d.md`, 10 pairs, ONNX Runtime CPU): descriptor features max 2.6e-5, retrieval cosine
+0.9999999, dense warps over the cells valid in both max 4.7e-2 normalised units (median 1.8e-5; 1 unit is half the frame),
+covisibility 2.1e-4 against the traced module and 5.8e-4 against upstream float32 FlexGlue, the pose graph against FlexGlue-Pose's own
+head on the same pooled input 0.20 deg in rotation and 0.43 deg in direction (the head's own error against references is 3 to 12 deg).
+
+**Retrieval descriptor** (`retr_eval.md`; candidates = pairs in the top-K of both images, K = 10; recall = share of the truly overlapping
+pairs, reference ties >= 3, among the candidates; mean over 4e5c6f6d, 1c65aab4, 5ada248e and Palace, whose truth is a pose proxy):
+
+| descriptor | dim | recall K=10 | recall K=20 | recall at RoMa2's candidate count, K=10 |
+|---|---|---|---|---|
+| RoMa2 (GeM of DINOv3 ViT facets) | 2048 | 0.171 | 0.261 | 0.155 |
+| FlexGlue feature map, GeM p=3 (shipped) | 256 | 0.165 | 0.249 | 0.144 |
+| backbone last stage, average | 1024 | 0.158 | 0.246 | 0.134 |
+| backbone last stage, GeM p=3 | 1024 | 0.144 | 0.221 | 0.126 |
+
+**Pose prior convention** (`FlexGlueReconstructTest`, 4 images, CPU): rotation within 0.7 to 2.7 deg and baseline direction within 2.2 to
+16.6 deg of the pose the pair's own matches give.
 
 ## Rejected alternatives
 

@@ -622,7 +622,7 @@ bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, c
 		ASSERT(roma2Cfg.matcher == "roma2" || roma2Cfg.matcher == "flexglue");
 		#ifdef _USE_ONNXRUNTIME
 		if (roma2Cfg.matcher == "flexglue")
-			roma2.reset(new FlexGlueMatcher(roma2Cfg.flexgluePose));
+			roma2.reset(new FlexGlueMatcher);
 		else
 		#endif
 			roma2.reset(new RoMa2Onnx);

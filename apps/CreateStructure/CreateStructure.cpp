@@ -71,7 +71,6 @@ String strROMA2Model;
 String strDenseMatcher;
 String strFlexGlueModel;
 float fDenseMinCovisibility;
-bool bFlexGluePose;
 String strROMA2Setting;
 bool bROMA2Match;
 unsigned nROMA2Slots;
@@ -197,7 +196,6 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("dense-matcher", boost::program_options::value<std::string>(&OPT::strDenseMatcher)->default_value("roma2"), "the dense matcher behind --roma2 true (retrieval descriptors and --roma2-match warps): roma2 or flexglue (needs --flexglue-model; the --roma2-* matching options then apply to its warps)")
 		("flexglue-model", boost::program_options::value<std::string>(&OPT::strFlexGlueModel), "directory with FlexGlue's ONNX graphs flexglue_descriptor.onnx, flexglue_dense.onnx and flexglue_pose_h0.onnx (default: $OPENMVS_FLEXGLUE_MODEL_PATH)")
 		("dense-min-covisibility", boost::program_options::value(&OPT::fDenseMinCovisibility)->default_value(0.2f), "gate before the pair's verdict: a pair whose dense matcher gives a covisibility score (FlexGlue; RoMa2 gives none and is never gated) below this is dropped (0 = off)")
-		("flexglue-pose", boost::program_options::value<bool>(&OPT::bFlexGluePose)->default_value(true), "FlexGlue also gives every pair a coarse relative pose from the intrinsics of the matching stage, stored on the pair and written by --export-pairs-csv (nothing reads it yet); needs a pinhole camera for every image")
 		("roma2-provider", boost::program_options::value<std::string>(&OPT::strROMA2Provider)->default_value("auto"), "ONNX Runtime execution provider: auto (CUDA > CoreML > DirectML > CPU), cuda, coreml, dml or cpu")
 		("camera-type", boost::program_options::value(&OPT::nCameraType)->default_value(-1), "camera model type: -1-from the image metadata (an equirectangular projection tag gives spherical, else pinhole), 0-pinhole, 1-spherical (equirectangular, width = 2 x height)")
 		("default-focal-ratio", boost::program_options::value(&OPT::defaultFocalRatio)->default_value(1.2f), "focal-length is set to ratio * max(width,height) for images with unknown focal-length")
@@ -454,7 +452,6 @@ int main(int argc, LPCTSTR* argv)
 	cfg.roma2Cfg.matcher = OPT::strDenseMatcher;
 	cfg.roma2Cfg.flexglueModelPath = OPT::strFlexGlueModel;
 	cfg.roma2Cfg.minCovisibility = OPT::fDenseMinCovisibility;
-	cfg.roma2Cfg.flexgluePose = OPT::bFlexGluePose;
 	#ifdef _USE_CUDA
 	cfg.matchCfg.useCUDA = cfg.featuresCfg.useCUDA = OPT::bSiftGPUCUDA && !SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs);
 	cfg.roma2Cfg.useGPU = !SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs);

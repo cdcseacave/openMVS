@@ -41,7 +41,7 @@ fallback for a pair the warp rejects (One-Pass Dense Pair Matching, below).
 | `--roma2-min-confidence F` | `0.1` | confidence at which a warp cell takes part in the verdict, the keypoint tracking and the dense fill |
 | `--roma2-min-overlap F` | `0.10` | verdict: the pair is admitted iff min(inlier area A, inlier area B) ≥ F |
 | `--roma2-dense-matches N` | `2000` | dense correspondences per FULL FRAME of overlap (a density, not a per-pair count) |
-| `--dense-matcher roma2\|flexglue` | `roma2` | the model behind `--roma2 true`: both seams run on it unchanged (`DenseMatcher.md`); `--flexglue-model`, `--dense-min-covisibility`, `--flexglue-pose` belong to `flexglue` |
+| `--dense-matcher roma2\|flexglue` | `roma2` | the model behind `--roma2 true`: both seams run on it unchanged (`DenseMatcher.md`); `--flexglue-model` and `--dense-min-covisibility` belong to `flexglue` |
 
 Which mode ranks candidate pairs how is a property of `--match-mode` alone, with no crossover: `1`
 VOCABULARY always ranks with the SIFT/AKAZE vocabulary tree, `4` RETRIEVAL always ranks with the

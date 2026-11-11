@@ -1306,7 +1306,7 @@ bool SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, DenseMatcher& roma2, const
 	Scene& scene = pairsMatcher.GetScene();
 	if (roma2.NeedsIntrinsics() && std::any_of(scene.images.begin(), scene.images.end(),
 		[](const Image& img) { return !img.HasCamera() || img.GetCameraType() != CameraType::PINHOLE; })) {
-		VERBOSE("error: the dense matcher's pose head needs a pinhole camera for every image (spherical images: --flexglue-pose false)");
+		VERBOSE("error: the dense matcher's pose head needs a pinhole camera for every image (FlexGlue does not run on spherical images)");
 		return false;
 	}
 	// every candidate pair indexes scene.images directly (slot planning, loads, the pair keys), so
