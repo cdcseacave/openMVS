@@ -597,8 +597,8 @@ FloatArr ComputeMeanDistanceToClosestN(const PointCloud::PointArr &pts, const Un
 } // anonymous namespace
 
 // Compute a weight for each of the selected points in the scene point cloud based on:
-//  - proximity to image center
-//  - depth from camera
+//  - proximity to image center (pinhole views; a panorama has none)
+//  - depth from camera (the range for a panorama)
 //  - mean distance to closest neighbors in the point cloud
 // only the points at the given indices are weighted (pass all indices for the full cloud);
 // medianNeighborDistance receives the median of the mean neighbor distances, a robust
@@ -649,6 +649,17 @@ FloatArr Scene::ROIPointWeights(const UnsignedArr& indices, float& medianNeighbo
 			if (!image.IsValid())
 				continue;
 			const Point3 camX(image.camera.TransformPointW2C(X));
+			if (image.IsSpherical()) {
+				// a panorama sees every direction and has no image center: the depth is the range and
+				// every observation counts as central
+				const float range((float)norm(camX));
+				if (range <= 0)
+					continue;
+				imageDepths[views[idxView]].push_back(range);
+				obsDepth[v] = range;
+				obsRadial[v] = 1.f;
+				continue;
+			}
 			if (camX.z <= 0)
 				continue;
 			imageDepths[views[idxView]].push_back((float)camX.z);

@@ -1451,10 +1451,13 @@ void Scene::PrecomputeTrackBasedNeighbors(std::vector<ViewScoreArr>& neighbors) 
 				const auto [ptB, validB] = otherImage.ProjectPoint(track.position);
 				if (!validB || ptB.x < 0 || ptB.x >= boundsB.x || ptB.y < 0 || ptB.y >= boundsB.y)
 					continue;
-				const auto [ptA, validA] = refImage.ProjectPoint(track.position);
+				// bounds tested on the single precision position the area is binned by: a double just
+				// inside the image can round to its size
+				const auto [ptAd, validA] = refImage.ProjectPoint(track.position);
+				const Point2f ptA(Cast<float>(ptAd));
 				if (!validA || ptA.x < 0 || ptA.x >= boundsA.x || ptA.y < 0 || ptA.y >= boundsA.y)
 					continue;
-				projs.emplace_back(Cast<float>(ptA));
+				projs.emplace_back(ptA);
 			}
 
 			// Add neighbor entry

@@ -459,25 +459,25 @@ void Window::Render() {
 				renderer->RenderCameras(*this);
 			if (showUncertaintyEllipsoids)
 				renderer->RenderUncertaintyEllipsoids(*this);
-			if (!renderActiveLayerExtras)
-				return;
-			renderer->RenderSelection(*this);
-			renderer->RenderSelectedGeometry(*this);
-			if (showBounds)
-				renderer->RenderBounds();
-			// Render the interactive bounding-box edit gizmos while edit mode is active
-			if (currentControlMode == CONTROL_BBOX_EDIT) {
-				const OBB3f& editOBB = bboxEditController->getOBB();
-				if (editOBB.IsValid()) {
-					renderer->RenderBoundingBoxGizmos(
-						editOBB,
-						bboxEditController->getHoverCornerIdx(),
-						bboxEditController->getHoverFaceIdx(),
-						bboxEditController->getHoverAxisIdx());
+			if (renderActiveLayerExtras) {
+				renderer->RenderSelection(*this);
+				renderer->RenderSelectedGeometry(*this);
+				if (showBounds)
+					renderer->RenderBounds();
+				// Render the interactive bounding-box edit gizmos while edit mode is active
+				if (currentControlMode == CONTROL_BBOX_EDIT) {
+					const OBB3f& editOBB = bboxEditController->getOBB();
+					if (editOBB.IsValid()) {
+						renderer->RenderBoundingBoxGizmos(
+							editOBB,
+							bboxEditController->getHoverCornerIdx(),
+							bboxEditController->getHoverFaceIdx(),
+							bboxEditController->getHoverAxisIdx());
+					}
 				}
 			}
-			// Render image overlay when in camera view mode
-			renderer->RenderImageOverlays(*this);
+			// the loaded panoramas of the pass's layers, and the image of the camera view mode
+			renderer->RenderImageOverlays(*this, renderActiveLayerExtras);
 		};
 		const Scene::Layer* activeLayer = scene.GetActiveLayer();
 		if (IsCompareEnabled() && activeLayer != NULL) {
@@ -519,7 +519,7 @@ void Window::Render() {
 
 		// Flush pending screenshot if requested (without UI): capture after every
 		// 3D layer so the screenshot-show flags (cameras, bounds, ...) take effect
-		if (!pendingScreenshotPath.empty() && !pendingScreenshotIncludeUI) {
+		if (!pendingScreenshotPath.empty() && !pendingScreenshotIncludeUI && !scene.HasPendingImageLoads()) {
 			CaptureScreenshot(pendingScreenshotPath);
 			pendingScreenshotPath.clear();
 			if (pendingScreenshotQuit)
@@ -580,7 +580,10 @@ void Window::Render() {
 
 	// Flush pending screenshot if requested (with UI)
 	if (!pendingScreenshotPath.empty()) {
-		if (pendingScreenshotWarmupFrames > 0) {
+		if (scene.HasPendingImageLoads()) {
+			// wait for the image of the camera view mode: its overlay is part of the picture
+			RequestRedraw();
+		} else if (pendingScreenshotWarmupFrames > 0) {
 			--pendingScreenshotWarmupFrames;
 			RequestRedraw();
 		} else {

@@ -380,10 +380,8 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 
 	// select best neighborViews
 	if (neighbors.empty()) {
-		// the pixel of the point in the image, false if outside: any direction lands in a spherical image
 		const auto ProjectPoint = [](const Image& image, const PointCloud::Point& X, Point2f& x) {
-			x = std::get<0>(image.GetModelCamera().ProjectPointP(X));
-			return image.IsSpherical() || image.camera.IsInside(x, Point2f(image.GetSize()));
+			return image.GetModelCamera().ProjectPointInside(X, image.GetSize(), x);
 		};
 		Point2fArr projs(0, points.size());
 		FOREACH(IDB, images) {

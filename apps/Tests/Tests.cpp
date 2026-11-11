@@ -212,8 +212,6 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SEACAVE::TestSphericalPatchWarp())
 				return false;
-			if (!MVS::PlatformArchiveCompatibilityTest())
-				return false;
 			if (!MVS::SphericalImageSizeTest())
 				return false;
 			if (!SFM::TestSimilarityTransform())
@@ -330,6 +328,8 @@ int main(int argc, LPCTSTR* argv)
 			if (!MVS::MeshUnseenFacesTest())
 				return false;
 			if (!MVS::SelectNeighborViewsScaleTest())
+				return false;
+			if (!MVS::SelectNeighborViewsSphericalTest())
 				return false;
 			if (!MVS::DMapCacheKeepsRequestedImageTest())
 				return false;

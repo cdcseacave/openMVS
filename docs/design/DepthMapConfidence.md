@@ -23,7 +23,7 @@ ones) and `libs/MVS/PatchMatchMetal.mm` (their launcher, `PatchMatch::Impl::RunC
 `AdjustConfidenceSweep`), `libs/MVS/PatchMatchCUDA.cpp` and `PatchMatchMetal.mm` (fused launch inside
 `PatchMatch::EstimateDepthMap`), `libs/MVS/DMapCache.{h,cpp}` (phase-lifetime depth-map cache used
 by the standalone sweep), `libs/MVS/DepthMap.h` (`OPTDENSE::DepthFlags`, `DepthData::bConfAdjusted`),
-`libs/Math/Interface.h` (`HeaderDepthDataRaw::CONF_ADJUSTED`).
+`libs/IO/Interface.h` (`HeaderDepthDataRaw::CONF_ADJUSTED`).
 
 Out of scope: fusion's own join/keep gates and `fFusePriorWeight` (see `DepthMapFusion.md`, which
 reuses the same intra-map prior as virtual support); the mesh step's consumption of the stored
@@ -157,7 +157,7 @@ estimates.
 **Double-adjust guards.** In-process: the standalone phase's `AdjustConfidence` overload returns
 `false` immediately when `depthDataRef.bConfAdjusted` is already set. Cross-process: every
 recalibrated dmap carries a `CONF_ADJUSTED` flag bit in its header
-(`HeaderDepthDataRaw::CONF_ADJUSTED`, `libs/Math/Interface.h`), loaded back into
+(`HeaderDepthDataRaw::CONF_ADJUSTED`, `libs/IO/Interface.h`), loaded back into
 `DepthData::bConfAdjusted` on read; the standalone phase checks it before adjusting, and `InitViews`
 checks it before trusting a neighbour's confidence (see above).
 

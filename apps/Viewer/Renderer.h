@@ -147,6 +147,11 @@ private:
 	std::unique_ptr<VBO> imageOverlayVBO;
 	std::unique_ptr<VBO> imageOverlayEBO;
 	size_t imageOverlayIndexCount;
+	// the overlay of a spherical image: the unit sphere of its rays, placed at the image by the shader
+	std::unique_ptr<VAO> panoramaOverlayVAO;
+	std::unique_ptr<VBO> panoramaOverlayVBO;
+	std::unique_ptr<VBO> panoramaOverlayEBO;
+	size_t panoramaOverlayIndexCount = 0;
 
 	// Selection rendering
 	std::unique_ptr<Shader> selectionShader;
@@ -221,7 +226,9 @@ public:
 	void RenderMesh(const Window& window);
 	void RenderCameras(const Window& window);
 	void RenderUncertaintyEllipsoids(const Window& window);
-	void RenderImageOverlays(const Window& window);
+	// the loaded panoramas on the globes of their cameras, and the photo of the camera view mode
+	// (the latter only in the pass showing the active layer)
+	void RenderImageOverlays(const Window& window, bool bActiveLayerPass);
 	void RenderSelection(const Window& window);
 	void RenderSelectionOverlay(const Window& window);
 	void RenderSelectedGeometry(const Window& window);

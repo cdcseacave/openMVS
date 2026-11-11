@@ -1124,7 +1124,7 @@ bool PointCloud::SaveWithScale(const String& fileName, const ImageArr& images, f
 		if (pointWeights.empty()) {
 			confidence = (float)pointViews[i].size();
 			for (IIndex idxView: pointViews[i]) {
-				const float footprint((float)images[idxView].camera.GetFootprintWorld(X));
+				const float footprint((float)images[idxView].camera.GetFootprintWorld(images[idxView].PointDepth(X)));
 				ASSERT(footprint > 0);
 				if (scale > footprint)
 					scale = footprint;
@@ -1134,7 +1134,7 @@ bool PointCloud::SaveWithScale(const String& fileName, const ImageArr& images, f
 			float scaleWeightBest = FLT_MAX;
 			FOREACH(j, pointViews[i]) {
 				const IIndex idxView = pointViews[i][j];
-				const float footprint((float)images[idxView].camera.GetFootprintWorld(X));
+				const float footprint((float)images[idxView].camera.GetFootprintWorld(images[idxView].PointDepth(X)));
 				ASSERT(footprint > 0);
 				const float conf(pointWeights[i][j]);
 				const float scaleWeight(footprint/conf);

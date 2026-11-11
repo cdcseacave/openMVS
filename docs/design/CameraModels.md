@@ -6,7 +6,7 @@
 the SfM library, bundle adjustment, the Metashape importer, the MVS library and the PatchMatch
 backends. It holds three models (pinhole, Brown-Conrady distortion, equirectangular spherical), the
 resampling between them (undistortion maps, depth-map undistortion, equirectangular to tangent
-faces), and is the home of the scene-file camera description (`libs/Math/Interface.h`, version 8).
+faces). The scene-file camera description is in `libs/IO/Interface.h` (version 8).
 
 It does not hold the per-library camera classes: `SFM::PinholeCamera` / `SFM::SphericalCamera`
 (`libs/SFM/Camera.h`) and `MVS::Camera` / `MVS::Image` (`libs/MVS/Camera.h`, `Image.h`) keep their
@@ -93,7 +93,7 @@ own state and call the models. The depth-map algorithms built on the models are 
   20 faces, `IsSupportedNumFaces`) and `SphericalToTangentialFaces` (bilinear, wraps across the seam;
   `Pixel8U`, `Pixel32F`), used by SfM feature extraction and the cube-map export.
 
-### Scene-file camera, Interface version 8 (`libs/Math/Interface.h`, `MVSI_PROJECT_VER 8`)
+### Scene-file camera, Interface version 8 (`libs/IO/Interface.h`, `MVSI_PROJECT_VER 8`)
 
 `Interface.h` stays a drop-in header (plain data, no dependency on the libraries).
 
@@ -124,7 +124,8 @@ own state and call the models. The depth-map algorithms built on the models are 
   `InterfaceCOLMAP` maps SIMPLE_RADIAL, RADIAL, OPENCV and FULL_OPENCV to BROWN (the fisheye, FOV and
   thin-prism models are refused) and reads the observations from `images.bin/txt`; on export it writes a
   Brown camera as `OPENCV`/`FULL_OPENCV` and the stored observations, else the projections through the
-  distortion. `InterfaceMetashape` makes the distorted Metashape and BlocksExchange sensors BROWN through
+  distortion (always the projections for a cloud replaced by `--pointcloud-file`), and fails on a camera
+  COLMAP can not hold. `InterfaceMetashape` makes the distorted Metashape and BlocksExchange sensors BROWN through
   `Platform::Camera::SetBrownLens` (their `p1`/`p2` are OpenCV's `p2`/`p1`, `b1`/`b2` go into `fx` and the
   skew, the Agisoft r^8 `k4` is refused; the cameras XML `cx`/`cy` are offsets from the image center with
   the pixel centers at +0.5), makes the spherical sensors SPHERICAL (Metashape projects them exactly as
@@ -141,8 +142,14 @@ own state and call the models. The depth-map algorithms built on the models are 
   through `GetCameraUndistortMaps` before any resize, `Image::LoadMask` remaps a mask with nearest
   sampling, and `DepthEstimatorBase::ImportIgnoreMask` ANDs the validity mask into the ignore mask
   (CPU, CUDA and Metal densify). Observations are undistorted into `K'` on load and distorted back on
-  save, and the camera is saved as it was read. The native boost archive carries them too
-  (`PointCloud::pointObservations`; `Platform::Camera` version 1 carries the model and lens), and `Scene::LoadDMAP` gives a standalone `.dmap` the camera model of its `SPHERICAL` flag.
+  save, and the camera is saved as it was read. A spherical camera is loaded only with the angular `K`
+  of its image size. `Scene::LoadDMAP` gives a standalone `.dmap` the camera model of its `SPHERICAL` flag.
+- The native boost archive carries the observations (`PointCloud::pointObservations`) and the model and
+  lens of `Platform::Camera` too. Only the interface format is backward compatible: `PROJECT_VER`
+  (`Scene.cpp`) names the native layout, and an archive of another version is refused.
+- The observations follow their points and views: removed with them, subset by `Scene::SubScene`, and
+  released as a whole where points without features join the cloud (the tower points of
+  `Scene::InitTowerScene`).
 - PatchMatch: `MakeCameraModel<MODEL>(camera)` (`libs/MVS/DepthMap.h`) builds `Pinhole`/`Spherical`
   from a view's `K`; `ModelCamera` (`libs/MVS/Image.h`) dispatches the pixel/world transforms of fusion
   and the depth-map consumers on the image model (`SphericalPatchMatch.md`).

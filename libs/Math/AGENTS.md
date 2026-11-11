@@ -72,14 +72,6 @@ struct Transform {
   thread-safe cache of the maps plus their validity mask per lens and size, used by the MVS image
   loader) and `SphereCubeMap` (equirect -> N tangent pinhole faces).
 
-## Scene Interface (`Interface.h`)
-Drop-in header (no `Common/` include, no OpenMVS types) defining the `.mvs` scene and `.dmap`
-depth-map formats, shared by SFM and MVS; see `libs/MVS/AGENTS.md` for its rules. Project
-version 8: per camera a `model` (PINHOLE/BROWN/SPHERICAL, the `CameraModelType` ids, mirrored as
-plain constants and `static_assert`ed equal in `libs/MVS/Scene.cpp`) plus the BROWN `params`, and
-optional per-view observations behind the `HAS_OBSERVATIONS` flag (0 bytes when unset; format in
-`docs/wiki/Interface.md`, Python reader/writer `scripts/python/MvsUtils.py`).
-
 ## Geodetic Transforms (`GeodeticTransforms.h/cpp`)
 WGS84 coordinate conversions for GPS integration.
 

@@ -13,7 +13,7 @@ Example usage:
 import numpy as np
 
 
-# DMAP header content type, mirroring MVS::HeaderDepthDataRaw (libs/Math/Interface.h):
+# DMAP header content type, mirroring MVS::HeaderDepthDataRaw (libs/IO/Interface.h):
 # the low bits list the maps the file stores, the bits above them are flags qualifying
 # them, so each bit has to be tested on its own and the rest masked off
 DMAP_HAS_DEPTH = 1 << 0
@@ -104,7 +104,7 @@ def encodeNormalMap(normal_map: np.ndarray):
   folded = z < 0.0
   xf = np.where(folded, np.copysign(1.0 - np.abs(y), x), x)
   yf = np.where(folded, np.copysign(1.0 - np.abs(x), y), y)
-  # floor(x+0.5), the rounding the C++ encoder in Math/Interface.h applies, so that both
+  # floor(x+0.5), the rounding the C++ encoder in IO/Interface.h applies, so that both
   # produce the same code for a value landing exactly on a tie
   normal_oct = np.floor(np.clip(np.stack([xf, yf], axis=-1), -1.0, 1.0) * 32767.0 + 0.5).astype(np.int16)
   normal_oct[invalid] = -32768
@@ -289,7 +289,7 @@ def saveDMAP(data: dict, dmap_path: str):
       data['views_map'].astype(np.uint8).tofile(dmap)
 
 
-# Interface::Platform::Camera::Model and Interface::Flags (libs/Math/Interface.h)
+# Interface::Platform::Camera::Model and Interface::Flags (libs/IO/Interface.h)
 CAMERA_MODEL_PINHOLE = 0
 CAMERA_MODEL_BROWN = 1
 CAMERA_MODEL_SPHERICAL = 2

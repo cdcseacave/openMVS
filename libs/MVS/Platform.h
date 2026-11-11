@@ -75,23 +75,20 @@ public:
 		void SetBrownLens(const KMatrix& fileK, const BrownDistortion<REAL>& distortion, const cv::Size& size);
 
 		#ifdef _USE_BOOST
-		// implement BOOST serialization; the fields of CameraIntern are written here, not through its
-		// base object, so the archive of a version 0 camera (a CameraIntern) reads as one
+		// implement BOOST serialization
 		template <class Archive>
-		void serialize(Archive& ar, const unsigned int version) {
+		void serialize(Archive& ar, const unsigned int /*version*/) {
 			ar & K;
 			ar & R;
 			ar & C;
-			if (version > 0) {
-				uint8_t modelID(static_cast<uint8_t>(model));
-				ar & modelID;
-				model = static_cast<CameraModelType>(modelID);
-				if (model == CameraModelType::BROWN) {
-					ar & lens.K;
-					ar & lens.distortion.k1 & lens.distortion.k2 & lens.distortion.p1 & lens.distortion.p2;
-					ar & lens.distortion.k3 & lens.distortion.k4 & lens.distortion.k5 & lens.distortion.k6;
-					ar & lens.size.width & lens.size.height;
-				}
+			uint8_t modelID(static_cast<uint8_t>(model));
+			ar & modelID;
+			model = static_cast<CameraModelType>(modelID);
+			if (model == CameraModelType::BROWN) {
+				ar & lens.K;
+				ar & lens.distortion.k1 & lens.distortion.k2 & lens.distortion.p1 & lens.distortion.p2;
+				ar & lens.distortion.k3 & lens.distortion.k4 & lens.distortion.k5 & lens.distortion.k6;
+				ar & lens.size.width & lens.size.height;
 			}
 		}
 		#endif
@@ -136,10 +133,5 @@ typedef CLISTDEFIDX(Platform,uint32_t) PlatformArr;
 /*----------------------------------------------------------------*/
 
 } // namespace MVS
-
-#ifdef _USE_BOOST
-// version 1: model and lens
-BOOST_CLASS_VERSION(MVS::Platform::Camera, 1)
-#endif
 
 #endif // _MVS_PLATFORM_H_

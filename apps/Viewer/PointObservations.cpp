@@ -41,20 +41,46 @@ using namespace VIEWER;
 namespace {
 
 // crop the square patch of the given side, centered at the given pixel and covering
-// the given number of image pixels; the area outside the image is black
-Image8U3 CropPatch(const cv::Mat& image, const Point2f& center, float window, int size)
+// the given number of image pixels; the area outside a pinhole image is black, an
+// equirectangular image has none: past the seam the patch continues on the other side of
+// the image, past a pole on the meridian half a turn away, mirrored
+Image8U3 CropPatch(const cv::Mat& image, const Point2f& center, float window, int size, bool bSpherical)
 {
 	ASSERT(image.type() == CV_8UC3 && window > 0 && size > 0);
 	// sample up to one image pixel per patch pixel, so shrinking averages instead of aliasing
 	const int sampleSize(CLAMP(CEIL2INT(window), size, size*4));
 	const double step((double)window/sampleSize);
 	const double offset(0.5*(sampleSize-1)*step);
-	const cv::Matx23d sample2image(
-		step, 0, center.x-offset,
-		0, step, center.y-offset);
 	Image8U3 patch;
-	cv::warpAffine(image, patch, sample2image, cv::Size(sampleSize, sampleSize),
-		cv::INTER_LINEAR|cv::WARP_INVERSE_MAP, cv::BORDER_CONSTANT);
+	if (bSpherical) {
+		// the image position of every sample, brought back onto the image; the columns wrap in remap
+		const int width(image.cols), height(image.rows);
+		cv::Mat_<float> mapX(sampleSize, sampleSize), mapY(sampleSize, sampleSize);
+		for (int r = 0; r < sampleSize; ++r) {
+			for (int c = 0; c < sampleSize; ++c) {
+				double x(center.x - offset + c*step), y(center.y - offset + r*step);
+				// across a pole (the image rows span [-0.5, height-0.5]): mirrored on the meridian half a turn away
+				if (y < -0.5) {
+					y = -1.0 - y;
+					x += 0.5*width;
+				} else if (y > height - 0.5) {
+					y = 2.0*height - 1.0 - y;
+					x += 0.5*width;
+				}
+				x -= width*std::floor(x/width);
+				mapX(r, c) = (float)x;
+				// the half row next to a pole interpolates within the image (the row across the pole is half a turn away)
+				mapY(r, c) = (float)CLAMP(y, 0.0, height - 1.0);
+			}
+		}
+		cv::remap(image, patch, mapX, mapY, cv::INTER_LINEAR, cv::BORDER_WRAP);
+	} else {
+		const cv::Matx23d sample2image(
+			step, 0, center.x-offset,
+			0, step, center.y-offset);
+		cv::warpAffine(image, patch, sample2image, cv::Size(sampleSize, sampleSize),
+			cv::INTER_LINEAR|cv::WARP_INVERSE_MAP, cv::BORDER_CONSTANT);
+	}
 	if (sampleSize != size)
 		cv::resize(patch, patch, cv::Size(size, size), 0, 0, cv::INTER_AREA);
 	return patch;
@@ -83,9 +109,9 @@ void PointObservations::Update(const Window& window)
 	if (layer->id != layerID || layer->revision != layerRevision ||
 		window.GetSelectionId() != pointIdx || sortByWeight != sortedByWeight) {
 		BuildObservations(window);
-		RequestPatches();
+		RequestPatches(layer->scene);
 	} else if (patchScale != requestedScale || zoom != requestedZoom) {
-		RequestPatches();
+		RequestPatches(layer->scene);
 	}
 	UploadPatches();
 }
@@ -195,7 +221,7 @@ void PointObservations::BuildObservations(const Window& window)
 	ASSERT(footprintRef > 0);
 }
 
-void PointObservations::RequestPatches()
+void PointObservations::RequestPatches(const MVS::Scene& scene)
 {
 	requestedScale = patchScale;
 	requestedZoom = zoom;
@@ -207,7 +233,7 @@ void PointObservations::RequestPatches()
 		const Observation& observation = observations[i];
 		threadPool.detach_task([imageCache = imageCache, croppedPatches = croppedPatches, generation, i,
 			window, bEqualized, footprintRef = footprintRef, idxImage = observation.idxImage,
-			proj = observation.proj, width = observation.width, nativeScale = observation.nativeScale,
+			proj = observation.proj, width = observation.width, spherical = scene.images[observation.idxImage].IsSpherical(), nativeScale = observation.nativeScale,
 			footprint = observation.footprint]() {
 			// stop as soon as the request is superseded
 			if (croppedPatches->generation != generation)
@@ -221,7 +247,7 @@ void PointObservations::RequestPatches()
 				// the projection is given in the resolution the camera is scaled to
 				const float scale((float)image.cols/width);
 				const float windowImage(bEqualized ? window*footprint*scale/footprintRef : window);
-				patch = CropPatch(image, MVS::Camera::ScaleImagePixel(proj, scale), windowImage, PATCH_SIZE);
+				patch = CropPatch(image, MVS::Camera::ScaleImagePixel(proj, scale), windowImage, PATCH_SIZE, spherical);
 				magnification = PATCH_SIZE*scale*nativeScale/windowImage;
 			}
 			if (croppedPatches->generation != generation)

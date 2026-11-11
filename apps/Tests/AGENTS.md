@@ -130,7 +130,7 @@ Tests (MVS suite 2), each bound being the measured accuracy less a margin:
 | `SyntheticDepthBaselineTest()` | GT consistency across the models, then CPU PatchMatch on the 18 128x128 faces of 3 panoramas |
 | `SyntheticSphericalTest()` | CPU PatchMatch on 3 512x256 panoramas, overall and per band (seam held to its antipodal band) |
 | `MetalModelMathTest()` | Apple only: the Metal mirror of `CameraModels.h` / `DepthGeometry.h` against the C++ models |
-| `SyntheticSphericalGPUTest()` | the same panoramas on CUDA or Metal; skipped without a GPU or with `forceCPU` |
+| `SyntheticSphericalGPUTest()` | the same panoramas on CUDA or Metal, moved 1e6 m from the origin (as accurate as there: the estimator only relates the views); skipped without a GPU or with `forceCPU` |
 | `GPUConfidenceTest()` | the confidence recalibration on CUDA or Metal against the CPU sweep, on noisy GT depth-maps of the cube faces; skipped without a GPU or with `forceCPU` |
 | `SyntheticSphericalFusionTest()` | CPU PatchMatch + dense fusion of the panoramas, cloud precision/recall per band |
 

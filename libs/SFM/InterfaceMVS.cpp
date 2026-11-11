@@ -14,7 +14,7 @@
 #ifndef _USE_OPENCV
 #define _USE_OPENCV
 #endif
-#include "../Math/Interface.h"
+#include "../IO/Interface.h"
 
 #ifdef _USE_OPENMP
 #define INTERFACEMVS_USE_OPENMP
@@ -151,7 +151,7 @@ bool SFM::UndistortDepthMaps(const Scene& scene,
 /*----------------------------------------------------------------*/
 
 
-// The DMAP file format and its codec live in Math/Interface.h, which depends on nothing
+// The DMAP file format and its codec live in IO/Interface.h, which depends on nothing
 // but the standard library and OpenCV and so is shared by the SFM and MVS libraries;
 // the two functions below only adapt this library's types to it. Do not reimplement
 // the packing here.

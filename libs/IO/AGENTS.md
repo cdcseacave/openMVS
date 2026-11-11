@@ -58,6 +58,14 @@ Factory pattern with format auto-detection by file extension.
 
 **Texture storage:** Embedded in PLY comments as `TextureFile <filename>`, saved separately as PNG/JPEG.
 
+## Scene Interface (`Interface.h`)
+Drop-in header (no `Common/` include, no OpenMVS types) defining the `.mvs` scene and `.dmap`
+depth-map formats, shared by SFM and MVS; see `libs/MVS/AGENTS.md` for its rules. Project
+version 8: per camera a `model` (PINHOLE/BROWN/SPHERICAL, the `CameraModelType` ids, mirrored as
+plain constants and `static_assert`ed equal in `libs/MVS/Scene.cpp`) plus the BROWN `params`, and
+optional per-view observations behind the `HAS_OBSERVATIONS` flag (0 bytes when unset; format in
+`docs/wiki/Interface.md`, Python reader/writer `scripts/python/MvsUtils.py`).
+
 ## Third-Party Components
 - nlohmann JSON comes from the vcpkg `nlohmann-json` port (`<nlohmann/json.hpp>`), linked PUBLIC by IO
 

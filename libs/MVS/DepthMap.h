@@ -309,6 +309,9 @@ struct MVS_API DepthData {
 	ViewsMap viewsMap; // view-IDs map (indexing images vector starting after first view)
 	float dMin, dMax; // global depth range for this image
 	cv::Size size; // image size used to estimate this depth-map
+	// the least width of an equirectangular depth-map at any estimation level: the propagation of the
+	// GPU estimators reaches 23 columns either side of a pixel, which must stay within one turn
+	enum { MIN_SPHERICAL_WIDTH = 32 };
 	bool bConfAdjusted; // the confidence recalibration already ran for this view -- either fused
 		// into the last geometric-consistency estimation itself (resident-buffer reuse, see
 		// DepthMapsData::EstimateDepthMap) or restored by Load() from the dmap header's

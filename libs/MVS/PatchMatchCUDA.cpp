@@ -280,7 +280,7 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 	// the confidence recalibration is pinhole only (switched off for scenes with spherical images)
 	ASSERT(!pConfRequest || params.sphericalViews == 0);
 	params.nNumViews = (int)numImages-1;
-	params.nInitTopK = MINF(params.nInitTopK, params.nNumViews);
+	params.nInitTopK = MINF(Params().nInitTopK, params.nNumViews); // from the default each time: the object is reused
 	params.fDepthMin = depthData.dMin;
 	params.fDepthMax = depthData.dMax;
 	if (prevNumImages < numImages) {
@@ -346,6 +346,11 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 			}
 		}
 
+		// the kernels only relate the views to each other: every center is taken from the reference
+		// center in double precision before the conversion to single precision, which would round the
+		// centers of a scene far from its origin (geo-referenced coordinates) to the float spacing at
+		// that distance, and with them the baselines and the points of the geometric consistency
+		const Eigen::Map<const SEACAVE::Point3::EVec> centerRef(depthData.images[0].camera.C.ptr());
 		for (IIndex i = 0; i < numImages; ++i) {
 			const DepthData::ViewData& view = depthData.images[i];
 			const Image32F image = view.image;
@@ -355,7 +360,7 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 			const Camera camera(
 				Eigen::Map<const SEACAVE::Matrix3x3::EMat>(view.camera.K.val).cast<float>(),
 				Eigen::Map<const SEACAVE::Matrix3x3::EMat>(view.camera.R.val).cast<float>(),
-				Eigen::Map<const SEACAVE::Point3::EVec>(view.camera.C.ptr()).cast<float>(),
+				(Eigen::Map<const SEACAVE::Point3::EVec>(view.camera.C.ptr()) - centerRef).cast<float>(),
 				image.cols, image.rows);
 			// store camera and image
 			if (i == 0 && (prevNumImages < numImages || images[0].size() != image.size())) {

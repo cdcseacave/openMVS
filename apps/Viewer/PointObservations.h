@@ -104,7 +104,7 @@ public:
 private:
 	void Clear();
 	void BuildObservations(const Window& window);
-	void RequestPatches();
+	void RequestPatches(const MVS::Scene& scene);
 	void UploadPatches();
 
 private:

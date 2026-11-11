@@ -217,8 +217,8 @@ GPU code targets compute capabilities 5.0, 7.2, and 7.5+. When CUDA is not avail
 | PLY | `.ply` | Point clouds and meshes (binary or ASCII) |
 | OBJ | `.obj` | Textured mesh export (with .mtl and texture images) |
 | glTF | `.gltf`/`.glb` | Modern 3D format for interchange |
-| Interface | various | COLMAP, OpenMVG import/export via `libs/Math/Interface.h` |
-| Depth-map | `.dmap` | quantized depth/normal/confidence/views, 11 bytes per pixel; the codec lives in `libs/Math/Interface.h`, which is self-contained and can be dropped into any project |
+| Interface | various | COLMAP, OpenMVG import/export via `libs/IO/Interface.h` |
+| Depth-map | `.dmap` | quantized depth/normal/confidence/views, 11 bytes per pixel; the codec lives in `libs/IO/Interface.h`, which is self-contained and can be dropped into any project |
 
 ## Performance and Threading
 

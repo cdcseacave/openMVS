@@ -78,7 +78,7 @@ exposes `--camera-type 0|1` and `--cubemap-faces` (feature-extraction face count
 
 ### MVS export — `libs/SFM/InterfaceMVS.cpp`
 
-`SFM::ExportMVS` writes an Interface v8 project (`libs/Math/Interface.h`, `docs/wiki/Interface.md`), one
+`SFM::ExportMVS` writes an Interface v8 project (`libs/IO/Interface.h`, `docs/wiki/Interface.md`), one
 platform with one camera per SFM camera:
 
 - Pinhole without distortion: `PINHOLE`, the original images.
@@ -117,6 +117,23 @@ depth-map resolution, and stores that `K'`: `alpha` is `UNDISTORT_ALPHA` for a n
 `Scene::LoadInterface` keeps the camera model; `BROWN` is undistorted on load (`CameraModels.md`).
 `SPHERICAL` is loaded and saved as is; `Scene::HasSphericalImages` drives the refusals and switches
 described in `SphericalPatchMatch.md` §1. `MvgMvsPipeline.py` exports cube-maps when it runs a mesh step.
+
+### Viewer
+
+- A spherical camera is drawn as a globe (`AppendCameraGlyphLines`, `apps/Viewer/Renderer.cpp`): the great
+  circles of its equator (the image row of elevation 0) and of the meridians of longitude 0/180 and -90/90
+  degrees, at half the frustum depth, with the same look-at and up indicator as a pinhole camera.
+- Camera view mode (`Camera::SetCameraFromSceneData`): the view is placed at the image center, looking along
+  the image axis with its own field of view, the navigation target close enough to look around in place.
+  The image overlay is the panorama on the sphere of its rays (`Renderer::SetupImageOverlayBuffers`,
+  `RenderImageOverlays`): one unit sphere with the image positions as texture coordinates, placed at the
+  image pose by the overlay shader's `model` matrix, only its far side drawn. Seen from the center every
+  scene point lies on its pixel. Once loaded, a panorama stays on its globe outside the camera view mode
+  too: the camera shows as a ball textured with it, depth tested with the scene.
+- Point projections (selection info, track-based neighbors, Point Observations) go through `ModelCamera`.
+  A Point Observations patch of a panorama continues across the seam and, mirrored, across a pole
+  (`CropPatch`, `apps/Viewer/PointObservations.cpp`).
+- `--screenshot-show i` with `--view-camera` captures the camera view mode with its image overlay.
 
 ## 3. Parameters and defaults
 
@@ -174,3 +191,5 @@ described in `SphericalPatchMatch.md` §1. `MvgMvsPipeline.py` exports cube-maps
   InterfacePolycam undistorts on its own.
 - Pose-uncertainty estimation is not validated for spherical cameras (`PoseUncertainty.md` §4).
 - Mesh stages do not support spherical cameras (a 360 dataset meshes through `--spherical-export cubemap`).
+- The Viewer navigation in the camera view mode of a panorama turns the view about a target close to the
+  image center, not exactly in place; the first-person controls do.

@@ -413,12 +413,13 @@ static inline void ProcessPixel(const array<texture2d<float>, MAX_VIEWS> images,
     uint newSelectedViews = 0;
     for (int imgId = 0; imgId < nNumViews; ++imgId) if (viewWeights[imgId]) SetBit(newSelectedViews, (uint)imgId);
     float finalCosts[8];
-    for (int posId = 0; posId < 8; ++posId) finalCosts[posId] = AggregateMultiViewScores(viewWeights, costArray[posId], nNumViews);
+    for (int posId = 0; posId < 8; ++posId)
+        finalCosts[posId] = valid[posId] ? AggregateMultiViewScores(viewWeights, costArray[posId], nNumViews) : FLT_MAX;
     const int minCostIdx = FindMinIndex(finalCosts, 8);
     float costVector[MAX_VIEWS];
     MultiViewScorePlane(refCache, images, depthImages, cams, p, plane, lowDepth, prm, costVector);
     cost = AggregateMultiViewScores(viewWeights, costVector, nNumViews);
-    if (finalCosts[minCostIdx] < cost && valid[minCostIdx]) {
+    if (finalCosts[minCostIdx] < cost) {
         plane = planes[positions[minCostIdx]];
         plane.w = neighborDepths[minCostIdx];
         cost = finalCosts[minCostIdx];

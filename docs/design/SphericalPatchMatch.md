@@ -99,7 +99,11 @@ rays of Method A and the propagation rays are built from them: no trigonometry p
   (columns wrapping), other pixels start random; dMin/dMax are those ranges x0.9/x1.1. The Delaunay
   triangulation of the sparse points stays pinhole only.
 - `Scene::SelectNeighborViews` and the ROI camera-to-scene distance use the range as depth of a spherical
-  image (`Image::PointDepth`).
+  image (`Image::PointDepth`). The covered area of a spherical reference bins the pixel of each shared
+  point, its column wrapped (the projection spans [-0.5, size-0.5)).
+- `Scene::ROIPointWeights`: a panorama contributes every observation at its range, with the image-center
+  weight of a central pixel (it has no image center). `PointCloud::SaveWithScale` takes the footprint at
+  the range.
 - `Scene::EstimateGravityDirection`: a panorama supports only gravity candidates along its image-down axis.
 - Every size of a spherical image (`--max-resolution`, resolution levels, neighbor scale, pyramid) comes from
   `Image::ComputeResize`: even width, height from the same uniform factor, so a 2:1 panorama stays 2:1 and
@@ -127,7 +131,7 @@ model kernels apply the same rule.
 
 ### Depth-map files
 
-The `.dmap` header flag `SPHERICAL` (`HeaderDepthDataRaw`, `libs/Math/Interface.h`, `MvsUtils.py`) is set by
+The `.dmap` header flag `SPHERICAL` (`HeaderDepthDataRaw`, `libs/IO/Interface.h`, `MvsUtils.py`) is set by
 `DepthData::Save` from the reference camera model; `DepthData::Load` and the depth-map loads of `InitViews`
 reject a file whose flag disagrees with the view's model.
 
@@ -153,7 +157,11 @@ reject a file whose flag disagrees with the view's model.
   `SelectViews` keeps at most `OPTDENSE::MAX_ESTIMATION_NEIGHBORS` (31), the Metal shader's limit too.
 - The model kernels are `__forceinline__`: under `-rdc` a callee is compiled with its own register count and
   must fit the 128 registers of the launch bounds.
-- Pinhole scenes run the unchanged kernels; depth-maps are byte-identical.
+- Pinhole scenes run the unchanged kernels.
+- The host hands the kernels (CUDA and Metal, every model) the camera centers relative to the reference
+  center, subtracted in double precision: the kernels only relate the views to each other, and single
+  precision centers of a scene far from its origin round the baselines and the points of the geometric
+  consistency.
 
 ### Metal estimator
 
@@ -168,8 +176,9 @@ reject a file whose flag disagrees with the view's model.
   (sin, cos) pairs, a dummy for a pinhole reference). A second sampler (`coord::normalized`, repeat on
   columns, clamp on rows) reads the textures of an equirectangular view.
 - Kernel logic as in CUDA, including the view gate (`MultiViewScorePlaneModel`).
-- Differences from CUDA: view poses are composed in double precision; random numbers come from PCG,
-  bilateral weights from `exp`.
+- Differences from CUDA: the relative view poses of the model kernels are composed in double precision
+  (CUDA composes them in single precision from the reference-centered cameras); random numbers come from
+  PCG, bilateral weights from `exp`.
 - Kernels are compiled from source at runtime, with `ConfidenceMetal.metal` into one library; macOS caches
   the library and the pipelines across processes. CMake also compiles both offline (target
   `PatchMatchMetalCheck`) when the toolchain has a working Metal compiler.
@@ -207,8 +216,10 @@ All other PatchMatch options apply unchanged.
 ## 4. Invariants
 
 - A spherical image is 2:1 with `fx = W/2π`, `fy = H/π`, `c = (size−1)/2` at every pyramid level and
-  neighbor scale; its width is even.
-- Pinhole scenes run the unchanged code paths: depth-maps are byte-identical to the pre-model estimator.
+  neighbor scale; its width is even, and at least `DepthData::MIN_SPHERICAL_WIDTH` (32) at the coarsest
+  sub-resolution level (`InitViews` refuses the image otherwise): the propagation reaches 23 columns.
+- Pinhole scenes run the unchanged code paths: the CPU depth-maps are byte-identical to the pre-model
+  estimator.
 - A `.dmap` carries `SPHERICAL` iff its view is spherical.
 - Every estimate is read whole, from one pass.
 - The hot loop has no model branch per texel.
@@ -288,6 +299,16 @@ seam-crossing patches max 0.23 px; the affine warp has a median error of 1.0-3.6
 Seam and pixel order (synthetic 512, B, 24 threads): the seam band matches its antipodal band within 0.003
 on <5 %. Without the corner waits, the bottom-right corner of the zigzag order has 145-285 wrong estimates
 per run, with them 5-31 (single thread 11-54).
+
+Scene far from its origin (tests scene translated along (1,1,1), CUDA, depths kept by the estimator, and
+the depth-maps against those of the scene at the origin, fraction within 1 %; any change of the input
+bits moves a PatchMatch run to 0.845-0.850):
+
+| translation | absolute centers in single precision | centers relative to the reference |
+|---|---|---|
+| 0 | 784 k | 783 k |
+| 1e5 | 652 k, 0.810 | 782 k, 0.845 |
+| 1e7 | 11 k, 0.015 | 797 k, 0.841 |
 
 Reference numbers for the regression run (`Tests sphtest 2 512 3 1 70 0 0 0` CPU, `... 0 0 1` CUDA):
 per-band <5 % CPU all 0.985-0.988, seam 0.996-0.997; CUDA all 0.964 completeness, abs-rel 0.00138.

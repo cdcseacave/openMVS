@@ -39,7 +39,9 @@ using namespace MVS;
 // D E F I N E S ///////////////////////////////////////////////////
 
 #define PROJECT_ID "MVS\0" // identifies the project stream
-#define PROJECT_VER ((uint32_t)2) // identifies the version of a project stream
+// identifies the version of a project stream: the native archive is not backward compatible (only the
+// interface format is), so every change of what the scene serializes changes it
+#define PROJECT_VER ((uint32_t)3)
 
 #pragma push_macro("VERBOSE")
 #undef VERBOSE
@@ -226,6 +228,17 @@ bool Scene::LoadInterface(const String& fileName)
 				return false;
 		}
 		imageData.UpdateCamera(platforms);
+		if (imageData.IsSpherical()) {
+			// an equirectangular camera has no free intrinsics: its K is the angular K of the image size
+			const Spherical<REAL> model(Spherical<REAL>::FromSize((int)imageData.width, (int)imageData.height));
+			const KMatrix& K = imageData.camera.K;
+			if (ABS(K(0,0)-model.fx) > model.fx*1e-3 || ABS(K(1,1)-model.fy) > model.fy*1e-3 ||
+				ABS(K(0,2)-model.cx) > 1e-2 || ABS(K(1,2)-model.cy) > 1e-2 || K(0,1) != 0) {
+				VERBOSE("error: spherical image '%s' (%ux%u) needs the equirectangular camera matrix of its size: fx %g, fy %g, cx %g, cy %g",
+					image.name.c_str(), imageData.width, imageData.height, model.fx, model.fy, model.cx, model.cy);
+				return false;
+			}
+		}
 		// init neighbors
 		imageData.neighbors.CopyOf(image.viewScores.data(), (uint32_t)image.viewScores.size());
 		imageData.avgDepth = image.avgDepth;
@@ -308,6 +321,17 @@ bool Scene::LoadInterface(const String& fileName)
 bool Scene::SaveInterface(const String& fileName, int version) const
 {
 	TD_TIMER_STARTD();
+	// the versions before 8 hold pinhole cameras only
+	if (version >= 0 && version < 8) {
+		for (const Platform& platform: platforms) {
+			for (const Platform::Camera& camera: platform.cameras) {
+				if (camera.model != CameraModelType::PINHOLE) {
+					VERBOSE("error: the interface version %d can not store the Brown or spherical cameras of the scene", version);
+					return false;
+				}
+			}
+		}
+	}
 	Interface obj;
 
 	// export platforms
@@ -678,7 +702,8 @@ Scene::SCENE_TYPE Scene::Load(const String& fileName, bool bImport)
 	uint32_t nVer;
 	fs.read((char*)&nVer, sizeof(uint32_t));
 	if (!fs || nVer != PROJECT_VER) {
-		VERBOSE("error: different project version");
+		VERBOSE("error: project saved by a different version (stream version %u, expected %u): "
+			"regenerate it or exchange the scene in the interface format", nVer, PROJECT_VER);
 		return SCENE_NA;
 	}
 	// load stream type

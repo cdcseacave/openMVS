@@ -1023,7 +1023,8 @@ bool ImportPointCloud(const String& strPointCloudFileName, Interface& scene)
 		VERBOSE("error: loaded point-cloud does not have visibility information");
 		return false;
 	}
-	// replace scene point-cloud with the loaded one
+	// replace scene point-cloud with the loaded one, which carries no feature observations
+	scene.flags &= uint8_t(~Interface::HAS_OBSERVATIONS);
 	scene.vertices.clear();
 	scene.verticesColor.clear();
 	scene.verticesNormal.clear();
@@ -1386,6 +1387,10 @@ bool ExportIntrinsicsTxt(const String& fileName, const Interface& scene)
 	if (idxValidK == NO_ID)
 		return false;
 	const Interface::Image& image = scene.images[idxValidK];
+	if (scene.platforms[image.platformID].cameras[image.cameraID].model != Interface::Platform::Camera::PINHOLE) {
+		VERBOSE("error: the intrinsics file supports only pinhole cameras");
+		return false;
+	}
 	String imagefileName(image.name);
 	Util::ensureValidPath(imagefileName);
 	imagefileName = MAKE_PATH_FULL(WORKING_FOLDER_FULL, imagefileName);
@@ -1536,19 +1541,22 @@ int main(int argc, LPCTSTR* argv)
 		if (!ARCHIVE::SerializeLoad(scene, MAKE_PATH_SAFE(OPT::strInputFileName)))
 			return EXIT_FAILURE;
 		if (Util::getFileExt(OPT::strOutputFileName) == _T(".log")) {
-			// write poses in log format
+			// write poses in log format, and the intrinsics file if the scene has one pinhole camera
 			ExportIntrinsicsTxt(MAKE_PATH_FULL(WORKING_FOLDER_FULL, String("intrinsics.txt")), scene);
-			ExportImagesLog(MAKE_PATH_SAFE(OPT::strOutputFileName), scene);
+			if (!ExportImagesLog(MAKE_PATH_SAFE(OPT::strOutputFileName), scene))
+				return EXIT_FAILURE;
 		} else
 		if (Util::getFileExt(OPT::strOutputFileName) == _T(".camera")) {
 			// write poses in Strecha camera format
-			ExportImagesCamera((OPT::strOutputFileName=Util::getFileFullName(MAKE_PATH_FULL(WORKING_FOLDER_FULL, OPT::strOutputFileName)))+PATH_SEPARATOR, scene);
+			if (!ExportImagesCamera((OPT::strOutputFileName=Util::getFileFullName(MAKE_PATH_FULL(WORKING_FOLDER_FULL, OPT::strOutputFileName)))+PATH_SEPARATOR, scene))
+				return EXIT_FAILURE;
 		} else {
 			// write COLMAP input data
 			if (!OPT::strPointCloudFileName.empty() && !ImportPointCloud(MAKE_PATH_SAFE(OPT::strPointCloudFileName), scene))
 				return EXIT_FAILURE;
 			Util::ensureFolderSlash(OPT::strOutputFileName);
-			ExportScene(MAKE_PATH_SAFE(OPT::strOutputFileName), scene, OPT::bForceSparsePointCloud, OPT::bForceCommonIntrinsics, OPT::bExportNoPoints, OPT::bBinary);
+			if (!ExportScene(MAKE_PATH_SAFE(OPT::strOutputFileName), scene, OPT::bForceSparsePointCloud, OPT::bForceCommonIntrinsics, OPT::bExportNoPoints, OPT::bBinary))
+				return EXIT_FAILURE;
 		}
 		VERBOSE("Input data exported: %u images & %u vertices (%s)", scene.images.size(), scene.vertices.size(), TD_TIMER_GET_FMT().c_str());
 	} else {

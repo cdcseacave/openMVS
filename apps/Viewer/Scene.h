@@ -253,7 +253,7 @@ public:
 	inline bool IsOpen() const { return IsValid() && !layers.empty(); }
 
 	bool SetViewFromFile(const String& viewFileName);
-	bool SetViewFromCamera(unsigned camIndex);
+	bool SetViewFromCamera(unsigned camIndex, bool bCameraViewMode=false);
 
 	// Scene management
 	bool Open(const String& fileName, String geometryFileName = {});

@@ -114,6 +114,22 @@ public:
 			return camera.TransformPointW2I(X);
 		return std::get<0>(ProjectPointP(X));
 	}
+	// the position of a world point inside an image of the given size, in [0,size): false if it falls
+	// outside or behind a pinhole camera; a spherical camera sees every direction, but its projection
+	// spans [-0.5,size-0.5), so the point takes its pixel there, the column wrapped
+	template <typename TYPE>
+	inline bool ProjectPointInside(const TPoint3<TYPE>& X, const cv::Size& size, Point2f& x) const {
+		const auto [pt, depth] = ProjectPointP(X);
+		if (!bSpherical) {
+			x = Point2f(pt);
+			return depth > 0 && camera.IsInside(x, Point2f(size));
+		}
+		ImageRef ir;
+		if (!GetPixel(pt, size, ir))
+			return false;
+		x = Point2f((float)ir.x, (float)ir.y);
+		return true;
+	}
 	// the pixel of an image of the given size closest to x, its column wrapped for a spherical camera;
 	// false if outside the image
 	template <typename TYPE>

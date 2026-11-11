@@ -868,6 +868,7 @@ struct SynthDenseOptions {
 	unsigned maxThreads = 0;
 	bool gpu = false; // GPU PatchMatch (CUDA, or Metal on Apple); the caller checks SynthGPUAvailable()
 	unsigned fusionFilter = OPTDENSE::FUSE_DENSEFILTER; // OPTDENSE::nFuseFilter
+	Point3 translation = Point3::ZERO; // the scene is moved by it before the reconstruction
 };
 
 // Scene::DenseReconstruction(fusionMode) of the given views in a temporary folder, at full resolution (as
@@ -894,6 +895,8 @@ static bool SynthDense(const SynthViewArr& views, const IIndexArr& viewIDs, cons
 		return false;
 	if (options.maxThreads)
 		scene.nMaxThreads = options.maxThreads;
+	if (options.translation != Point3::ZERO)
+		scene.Transform(Matrix3x3::IDENTITY, options.translation, 1);
 	OPTDENSE::init();
 	OPTDENSE::update();
 	OPTDENSE::nResolutionLevel = 0;
@@ -1223,8 +1226,11 @@ bool MVS::SyntheticSphericalGPUTest(bool forceCPU)
 		return true;
 	}
 	TD_TIMER_START();
+	// the scene 1e6 m away from its origin along every axis, where single precision is 6 cm apart: the
+	// estimator only relates the views to each other, so it is as accurate as at the origin
 	SynthDenseOptions options;
 	options.gpu = true;
+	options.translation = Point3(1e6, 1e6, 1e6);
 	DepthEvaluator evaluator;
 	if (!SynthSphericalRun(512, 3, options, evaluator, NULL))
 		return false;

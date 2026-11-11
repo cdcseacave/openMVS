@@ -93,6 +93,9 @@ bool MeshUnseenFacesTest();
 // unit must change neither the scale nor the neighbors picked, and no neighbor the filter keeps
 // may carry a scale outside its bounds (an image is resampled by it)
 bool SelectNeighborViewsScaleTest();
+// the covered area of the neighbors of a spherical reference whose shared points lie past its seam,
+// and the feature observations a sub-scene keeps
+bool SelectNeighborViewsSphericalTest();
 
 // test that DMapCache::UseImage() keeps the depth-map it was asked for loaded even when it alone
 // exceeds the memory budget, ejecting the least recently used other depth-maps instead
@@ -103,10 +106,6 @@ bool DMapCacheKeepsRequestedImageTest();
 // MVS::Scene load/save round trip of the models, also through the native archive, the undistorted camera
 // K' rule shared by SfM and MVS, and a standalone spherical .dmap importing as a spherical camera
 bool InterfaceV8Test();
-
-// the boost archives of the platforms saved before the camera models (Platform::Camera a CameraIntern)
-// load, in the text, binary and compressed archives, and so do the current ones with a Brown camera
-bool PlatformArchiveCompatibilityTest();
 
 // every size of an equirectangular image (load scale, resolution level, neighbor scale, pyramid) keeps
 // an even width, W = 2H, and the angular K of its camera

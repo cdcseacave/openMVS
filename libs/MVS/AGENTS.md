@@ -148,7 +148,7 @@ Renders the textured mesh from each camera viewpoint and compares against the or
 - **Native**: `.mvs` (Boost serialization)
 - **Point clouds**: `.ply` (binary/ASCII), `.gltf`
 - **Meshes**: `.ply`, `.obj` (with MTL), `.gltf`
-- **Interface**: COLMAP, OpenMVG via `Interface.h` (`libs/Math/Interface.h`, shared with SFM)
+- **Interface**: COLMAP, OpenMVG via `Interface.h` (`libs/IO/Interface.h`, shared with SFM)
 - **Depth-maps**: `.dmap`, read and written by `Interface.h` alone
   (`Export/ImportDepthDataRaw`); `DepthMap.cpp` and `SFM/InterfaceMVS.cpp` only adapt
   the scene types to it.

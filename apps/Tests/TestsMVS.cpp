@@ -3658,6 +3658,79 @@ bool SelectNeighborViewsScaleTest()
 }
 /*----------------------------------------------------------------*/
 
+// four panoramas with the same heading, the reference at the origin, sharing 7 points that lie just
+// past the seam of the reference (behind it, on the first half pixel of column -1/2), at 7 elevations:
+// the covered area of every neighbor is those 7 cells of the last column of the 16x16 grid; then the
+// sub-scene of three of the images keeps one observation per view it keeps
+bool SelectNeighborViewsSphericalTest()
+{
+	constexpr int width(512), height(256);
+	constexpr unsigned numPoints(7);
+	static const Point3 camCenters[4] = {Point3(0,0,0), Point3(1,0,0), Point3(-1,0,0), Point3(0,0,1)};
+	Scene scene(1);
+	const Spherical<REAL> sphere(Spherical<REAL>::FromSize(width, height));
+	{
+		KMatrix K(KMatrix::IDENTITY);
+		K(0,0) = sphere.fx; K(1,1) = sphere.fy; K(0,2) = sphere.cx; K(1,2) = sphere.cy;
+		Platform& platform = scene.platforms.emplace_back();
+		platform.cameras.emplace_back(ScaleK(K, REAL(1)/Camera::GetNormalizationScale(width, height)), RMatrix::IDENTITY, CMatrix::ZERO).model = CameraModelType::SPHERICAL;
+		for (unsigned i=0; i<4; ++i) {
+			Platform::Pose& pose = platform.poses.emplace_back();
+			pose.R = RMatrix::IDENTITY;
+			pose.C = camCenters[i];
+			Image& image = scene.images.emplace_back();
+			image.platformID = image.cameraID = 0;
+			image.poseID = image.ID = i;
+			image.width = width; image.height = height; image.scale = 1;
+			image.UpdateCamera(scene.platforms);
+		}
+	}
+	scene.nCalibratedImages = 4;
+	for (unsigned i=0; i<numPoints; ++i) {
+		// a quarter pixel past the seam, the rows 28 pixels apart
+		const Eigen::Vector3d ray(sphere.Ray(Eigen::Vector2d(-0.25, sphere.cy + 28.0*(int(i)-int(numPoints/2)))));
+		scene.pointcloud.points.emplace_back(Point3f(float(ray.x()*10), float(ray.y()*10), float(ray.z()*10)));
+		PointCloud::ViewArr& views = scene.pointcloud.pointViews.emplace_back();
+		PointCloud::ObservationArr& observations = scene.pointcloud.pointObservations.emplace_back();
+		for (PointCloud::View v=0; v<4; ++v) {
+			views.push_back(v);
+			observations.push_back(Cast<float>(scene.images[v].GetModelCamera().TransformPointW2I(Cast<REAL>(scene.pointcloud.points.back()))));
+		}
+	}
+	if (scene.images[0].GetModelCamera().TransformPointW2I(Cast<REAL>(scene.pointcloud.points[0])).x >= 0) {
+		VERBOSE("ERROR: SelectNeighborViewsSphericalTest: the points are not past the seam of the reference!");
+		return false;
+	}
+	IndexArr points;
+	if (!scene.SelectNeighborViews(0, points) || scene.images[0].neighbors.size() != 3) {
+		VERBOSE("ERROR: SelectNeighborViewsSphericalTest found %u neighbors, expected 3!", (unsigned)scene.images[0].neighbors.size());
+		return false;
+	}
+	for (const ViewScore& neighbor: scene.images[0].neighbors) {
+		if (neighbor.points != numPoints || ABS(neighbor.area-float(numPoints)/256) > 1e-6f) {
+			VERBOSE("ERROR: SelectNeighborViewsSphericalTest neighbor %u shares %u points over the area %g, expected %u over %g!",
+				neighbor.ID, neighbor.points, neighbor.area, numPoints, float(numPoints)/256);
+			return false;
+		}
+	}
+	const Scene subScene(scene.SubScene(IIndexArr{0, 1, 3}));
+	const PointCloud& subCloud = subScene.pointcloud;
+	if (subCloud.points.size() != numPoints || subCloud.pointObservations.size() != numPoints) {
+		VERBOSE("ERROR: SelectNeighborViewsSphericalTest: the sub-scene holds %u points with %u observation lists, expected %u of each!",
+			(unsigned)subCloud.points.size(), (unsigned)subCloud.pointObservations.size(), numPoints);
+		return false;
+	}
+	FOREACH(i, subCloud.points) {
+		if (subCloud.pointViews[i].size() != 3 || subCloud.pointObservations[i].size() != 3 ||
+			subCloud.pointObservations[i][2] != scene.pointcloud.pointObservations[i][3]) {
+			VERBOSE("ERROR: SelectNeighborViewsSphericalTest: point %u of the sub-scene lost the observations of its views!", (unsigned)i);
+			return false;
+		}
+	}
+	return true;
+}
+/*----------------------------------------------------------------*/
+
 bool DMapCacheKeepsRequestedImageTest()
 {
 	// two depth-maps already in memory, each larger than the whole budget: UseImage() accounts
@@ -3921,95 +3994,6 @@ bool InterfaceV8Test()
 		}
 	}
 	VERBOSE("InterfaceV8Test passed (%s)", TD_TIMER_GET_FMT().c_str());
-	return true;
-}
-/*----------------------------------------------------------------*/
-
-#ifdef _USE_BOOST
-namespace {
-// the platform of the boost archives saved before the camera models: its cameras are CameraIntern
-struct PlatformV0 {
-	String name;
-	CLISTDEF0IDX(CameraIntern,uint32_t) cameras;
-	Platform::PoseArr poses;
-	template <class Archive>
-	void serialize(Archive& ar, const unsigned int /*version*/) {
-		ar & name;
-		ar & cameras;
-		ar & poses;
-	}
-};
-typedef CLISTDEFIDX(PlatformV0,uint32_t) PlatformV0Arr;
-} // namespace
-#endif
-
-bool PlatformArchiveCompatibilityTest()
-{
-	#ifdef _USE_BOOST
-	const ScopedTempDir tmpDir(_T("PlatformArchiveTest"));
-	if (!tmpDir.IsValid())
-		return false;
-	PlatformV0Arr platformsV0(2);
-	FOREACH(p, platformsV0) {
-		PlatformV0& platform = platformsV0[p];
-		platform.name = String::FormatString("platform%u", p);
-		for (uint32_t c = 0; c <= p; ++c) {
-			CameraIntern& camera = platform.cameras.emplace_back();
-			camera.K = KMatrix::IDENTITY;
-			camera.K(0,0) = 0.81+0.01*c; camera.K(1,1) = 0.79; camera.K(0,2) = 0.51; camera.K(1,2) = 0.37+0.01*p;
-			camera.R = RMatrix(Point3(0.1*c, -0.2, 0.05*p));
-			camera.C = CMatrix(0.01*c, 0.02, -0.03*p);
-		}
-		Platform::Pose& pose = platform.poses.emplace_back();
-		pose.R = RMatrix(Point3(0.3, 0.1*p, -0.1));
-		pose.C = CMatrix(1.5*p, -2.0, 0.25);
-	}
-	// a Brown camera of the current archives, to read back too
-	PlatformArr platformsV1(1);
-	Platform::Camera& brown = platformsV1[0].cameras.emplace_back(platformsV0[1].cameras[1].K, platformsV0[1].cameras[1].R, platformsV0[1].cameras[1].C);
-	brown.model = CameraModelType::BROWN;
-	brown.lens.K = KMatrix::IDENTITY;
-	brown.lens.K(0,0) = 520.25; brown.lens.K(1,1) = 519.5; brown.lens.K(0,2) = 321.125; brown.lens.K(1,2) = 238.375;
-	brown.lens.size = cv::Size(640, 480);
-	brown.lens.distortion = BrownDistortion<REAL>{-0.21, 0.05, 0.0007, 0.0005, 0.01, 0.002, -0.001, 0.0025};
-	platformsV1[0].poses.emplace_back() = platformsV0[0].poses[0];
-	for (const ARCHIVE_TYPE type: {ARCHIVE_TEXT, ARCHIVE_BINARY, ARCHIVE_BINARY_ZIP}) {
-		const String fileV0(tmpDir(String::FormatString("platforms_v0_%d.bin", (int)type)));
-		const String fileV1(tmpDir(String::FormatString("platforms_v1_%d.bin", (int)type)));
-		PlatformArr platforms, platformsBrown;
-		if (!SerializeSave(platformsV0, fileV0, type) || !SerializeLoad(platforms, fileV0, type) ||
-			!SerializeSave(platformsV1, fileV1, type) || !SerializeLoad(platformsBrown, fileV1, type)) {
-			VERBOSE("ERROR: PlatformArchiveCompatibilityTest: archive type %d does not load", (int)type);
-			return false;
-		}
-		if (platforms.size() != platformsV0.size()) {
-			VERBOSE("ERROR: PlatformArchiveCompatibilityTest: archive type %d: %u platforms, expected %u", (int)type, platforms.size(), platformsV0.size());
-			return false;
-		}
-		FOREACH(p, platforms) {
-			const Platform& platform = platforms[p];
-			const PlatformV0& platformV0 = platformsV0[p];
-			bool bEqual(platform.name == platformV0.name && platform.cameras.size() == platformV0.cameras.size() &&
-				platform.poses.size() == platformV0.poses.size() && platform.poses[0].R == platformV0.poses[0].R && platform.poses[0].C == platformV0.poses[0].C);
-			for (uint32_t c = 0; bEqual && c < platform.cameras.size(); ++c) {
-				const Platform::Camera& camera = platform.cameras[c];
-				const CameraIntern& cameraV0 = platformV0.cameras[c];
-				bEqual = camera.model == CameraModelType::PINHOLE && camera.K == cameraV0.K && camera.R == cameraV0.R && camera.C == cameraV0.C;
-			}
-			if (!bEqual) {
-				VERBOSE("ERROR: PlatformArchiveCompatibilityTest: archive type %d: platform %u differs", (int)type, p);
-				return false;
-			}
-		}
-		const Platform::Camera& brownLoaded = platformsBrown[0].cameras[0];
-		if (brownLoaded.model != CameraModelType::BROWN || brownLoaded.K != brown.K || brownLoaded.C != brown.C ||
-			brownLoaded.lens.K != brown.lens.K || brownLoaded.lens.size != brown.lens.size ||
-			memcmp(&brownLoaded.lens.distortion, &brown.lens.distortion, sizeof(BrownDistortion<REAL>)) != 0) {
-			VERBOSE("ERROR: PlatformArchiveCompatibilityTest: archive type %d: the Brown camera differs", (int)type);
-			return false;
-		}
-	}
-	#endif
 	return true;
 }
 /*----------------------------------------------------------------*/

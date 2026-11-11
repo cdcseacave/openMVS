@@ -366,6 +366,8 @@ void Scene::InitTowerScene(const int towerMode)
 	mesh.Release();
 
 	const auto AppendPointCloud = [this](const PointCloud& towerPC) {
+		// the tower points are not features: a cloud holding them has no observation for every point
+		pointcloud.pointObservations.Release();
 		bool bHasNormal(towerPC.normals.size() == towerPC.GetSize());
 		bool bHasColor(towerPC.colors.size() == towerPC.GetSize());
 		bool bHasWeights(towerPC.pointWeights.size() == towerPC.GetSize());

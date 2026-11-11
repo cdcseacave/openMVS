@@ -2209,7 +2209,7 @@ void UI::ShowCameraInfoDialog(Window& window) {
 				// Show if image is calibrated
 				ASSERT(imageData.platformID != NO_ID);
 				ImGui::Text("  Platform ID: %u", imageData.platformID);
-				ImGui::Text("  Camera ID: %u (from %u)", imageData.cameraID, mvs_scene.platforms[imageData.cameraID].cameras.size());
+				ImGui::Text("  Camera ID: %u (from %u)", imageData.cameraID, mvs_scene.platforms[imageData.platformID].cameras.size());
 				ImGui::Text("  Pose ID: %u", imageData.poseID);
 			}
 
@@ -2222,7 +2222,10 @@ void UI::ShowCameraInfoDialog(Window& window) {
 
 			// Show full intrinsic matrix
 			if (ImGui::CollapsingHeader("Camera Additional Information")) {
-				ImGui::Text("  FOV: x=%.2f, y=%.2f", R2D(imageData.ComputeFOV(0)), R2D(imageData.ComputeFOV(1)));
+				if (imageData.IsSpherical())
+					ImGui::Text("  Equirectangular: 360 x 180 degrees");
+				else
+					ImGui::Text("  FOV: x=%.2f, y=%.2f", R2D(imageData.ComputeFOV(0)), R2D(imageData.ComputeFOV(1)));
 				ImGui::Text("  Intrinsic Matrix K:");
 				ImGui::Text("    [%.2f  %.2f  %.2f]", camera.K(0, 0), camera.K(0, 1), camera.K(0, 2));
 				ImGui::Text("    [%.2f  %.2f  %.2f]", camera.K(1, 0), camera.K(1, 1), camera.K(1, 2));
@@ -2836,7 +2839,7 @@ void UI::ShowSelectionOverlay(const Window& window) {
 						const MVS::PointCloud::View idxImage = views[v];
 						if (idxImage < mvs_scene.images.size()) {
 							const MVS::Image& imageData = mvs_scene.images[idxImage];
-							const Point2 x(imageData.camera.TransformPointW2I(Cast<REAL>(window.selectionPoints[0])));
+							const Point2 x(imageData.GetModelCamera().TransformPointW2I(Cast<REAL>(window.selectionPoints[0])));
 							const float conf = mvs_scene.pointcloud.pointWeights.empty() ? 0.f :
 								mvs_scene.pointcloud.pointWeights[selectionIdx][v];
 

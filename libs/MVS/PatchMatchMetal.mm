@@ -178,14 +178,18 @@ void PatchMatch::Init(bool bGeomConsistency)
 // while device/queue/pipelines live for the whole PatchMatch object lifetime.
 void PatchMatch::Release() {}
 
-static MtlCamera ConvertCamera(const Camera& cam, int cols, int rows)
+// the camera of a view for the kernels, which only relate the views to each other: its center is taken
+// from the reference center in double precision before the conversion to single precision, which would
+// round the centers of a scene far from its origin to the float spacing at that distance
+static MtlCamera ConvertCamera(const Camera& cam, const Eigen::Vector3d& centerRef, int cols, int rows)
 {
 	MtlCamera mc;
 	mc.f  = simd_make_float2((float)cam.K(0,0), (float)cam.K(1,1));
 	mc.pp = simd_make_float2((float)cam.K(0,2), (float)cam.K(1,2));
 	for (int j = 0; j < 3; ++j)
 		mc.R.columns[j] = simd_make_float3((float)cam.R(0,j), (float)cam.R(1,j), (float)cam.R(2,j));
-	mc.C = simd_make_float3((float)cam.C.x, (float)cam.C.y, (float)cam.C.z);
+	const Eigen::Vector3d C(Eigen::Map<const SEACAVE::Point3::EVec>(cam.C.ptr()) - centerRef);
+	mc.C = simd_make_float3((float)C.x(), (float)C.y(), (float)C.z());
 	mc.size = simd_make_int2(cols, rows);
 	return mc;
 }
@@ -292,7 +296,7 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* confR
 	const IIndex numImages = (IIndex)depthData.images.size();
 	ASSERT(numImages <= METAL_MAX_VIEWS);
 	params.nNumViews = (int)numImages - 1;
-	params.nInitTopK = MINF(params.nInitTopK, params.nNumViews);
+	params.nInitTopK = MINF(Params().nInitTopK, params.nNumViews); // from the default each time: the object is reused
 	params.fDepthMin = depthData.dMin;
 	params.fDepthMax = depthData.dMax;
 	const int maxPixelViews(MINF(params.nNumViews, 4));
@@ -362,7 +366,7 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* confR
 		for (IIndex i = 0; i < numImages; ++i) {
 			const DepthData::ViewData& view = dd.images[i];
 			const Image32F& image = view.image;
-			cams[i] = ConvertCamera(view.camera, image.cols, image.rows);
+			cams[i] = ConvertCamera(view.camera, Cref, image.cols, image.rows);
 			const bool bSpherical = ((sphericalViews >> i) & 1u) != 0;
 			// an equirectangular camera keeps its angular K on the grid of every level (fx=W/2pi, fy=H/pi)
 			ASSERT(!bSpherical || (ISEQUAL(view.camera.K(0,0)*REAL(TWO_PI), REAL(image.cols)) && ISEQUAL(view.camera.K(1,1)*REAL(PI), REAL(image.rows))));

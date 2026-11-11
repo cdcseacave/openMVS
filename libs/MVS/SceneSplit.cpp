@@ -404,6 +404,7 @@ Scene Scene::SubScene(const IIndexArr& idxImages) const
 	FOREACH(idxPoint, pointcloud.points) {
 		PointCloud::ViewArr subPointViews;
 		PointCloud::WeightArr subPointWeights;
+		PointCloud::ObservationArr subPointObservations;
 		const PointCloud::ViewArr& views = pointcloud.pointViews[idxPoint];
 		FOREACH(idxView, views) {
 			const PointCloud::View idxImage = views[idxView];
@@ -413,6 +414,8 @@ Scene Scene::SubScene(const IIndexArr& idxImages) const
 			subPointViews.push_back(it->second);
 			if (!pointcloud.pointWeights.empty())
 				subPointWeights.push_back(pointcloud.pointWeights[idxPoint][idxView]);
+			if (!pointcloud.pointObservations.empty())
+				subPointObservations.push_back(pointcloud.pointObservations[idxPoint][idxView]);
 		}
 		if (subPointViews.size() < 2)
 			continue;
@@ -420,6 +423,8 @@ Scene Scene::SubScene(const IIndexArr& idxImages) const
 		subScene.pointcloud.pointViews.emplace_back(std::move(subPointViews));
 		if (!subPointWeights.empty())
 			subScene.pointcloud.pointWeights.emplace_back(std::move(subPointWeights));
+		if (!subPointObservations.empty())
+			subScene.pointcloud.pointObservations.emplace_back(std::move(subPointObservations));
 		if (!pointcloud.normals.empty())
 			subScene.pointcloud.normals.emplace_back(pointcloud.normals[idxPoint]);
 		if (!pointcloud.colors.empty())

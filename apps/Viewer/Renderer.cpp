@@ -842,6 +842,52 @@ void Renderer::SetupImageOverlayBuffers() {
 	imageOverlayVAO->EnableAttribute(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
 
 	imageOverlayVAO->Unbind();
+
+	// The overlay of an equirectangular image: the unit sphere of its rays in the camera frame, each
+	// vertex the ray of an image position (Spherical::Ray) with that position as texture coordinate.
+	// The texture is linear in (longitude, elevation), so the cells are small enough for the flat
+	// triangles to stay within a fraction of a pixel of it. The triangles face the center.
+	constexpr int STACKS = 64, SLICES = 128;
+	std::vector<float> vertices;
+	vertices.reserve((STACKS + 1) * (SLICES + 1) * 5);
+	for (int i = 0; i <= STACKS; ++i) {
+		const float v = float(i) / STACKS; // 0 = top row (elevation pi/2)
+		const float el = FHALF_PI - FPI * v;
+		for (int j = 0; j <= SLICES; ++j) {
+			const float u = float(j) / SLICES; // 0 and 1 = the seam (longitude -pi and pi)
+			const float lon = FTWO_PI * u - FPI;
+			const Eigen::Vector3f ray(Spherical<float>::Ray(SIN(lon), COS(lon), SIN(el), COS(el)));
+			vertices.insert(vertices.end(), {ray.x(), ray.y(), ray.z(), u, v});
+		}
+	}
+	std::vector<uint32_t> indices;
+	indices.reserve(STACKS * SLICES * 6);
+	const auto addTriangle = [&](uint32_t a, uint32_t b, uint32_t c) {
+		const Eigen::Map<const Eigen::Vector3f> A(&vertices[a * 5]), B(&vertices[b * 5]), C(&vertices[c * 5]);
+		// counter-clockwise as seen from the center: the normal points to it
+		if ((B - A).cross(C - A).dot(A + B + C) > 0)
+			std::swap(b, c);
+		indices.insert(indices.end(), {a, b, c});
+	};
+	for (int i = 0; i < STACKS; ++i) {
+		for (int j = 0; j < SLICES; ++j) {
+			const uint32_t a = i * (SLICES + 1) + j, b = a + 1, c = a + (SLICES + 1), d = c + 1;
+			addTriangle(a, b, c);
+			addTriangle(b, d, c);
+		}
+	}
+	panoramaOverlayIndexCount = indices.size();
+	panoramaOverlayVAO = std::make_unique<VAO>();
+	panoramaOverlayVBO = std::make_unique<VBO>(GL_ARRAY_BUFFER);
+	panoramaOverlayEBO = std::make_unique<VBO>(GL_ELEMENT_ARRAY_BUFFER);
+	panoramaOverlayVAO->Bind();
+	panoramaOverlayVBO->Bind();
+	panoramaOverlayVBO->SetData(vertices);
+	panoramaOverlayVAO->EnableAttribute(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
+	panoramaOverlayVAO->EnableAttribute(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
+	panoramaOverlayEBO->Bind();
+	panoramaOverlayEBO->SetData(indices);
+	panoramaOverlayVAO->Unbind();
 }
 
 // Reusable circle line-segment builder (see Renderer.h for contract).
@@ -935,7 +981,44 @@ static std::array<Point3f, 4> ComputeCameraFrustumCorners(const MVS::Image& imag
 	return worldCorners;
 }
 
-// Helper function to create camera frustum geometry for a single camera;
+// The wireframe of a camera as line segments (pairs of world points): the frustum of a pinhole
+// camera (the 4 rays to the image corners at the given depth, and the image rectangle), or the globe
+// of a spherical one, which sees every direction: the great circles of its equator (the image row of
+// elevation 0) and of two meridians (the image columns of longitude 0/180 and -90/90 degrees), at
+// half the depth
+static void AppendCameraGlyphLines(const MVS::Image& imageData, float depth, std::vector<Point3f>& lines) {
+	if (!imageData.IsSpherical()) {
+		const Point3f center(imageData.camera.C);
+		const std::array<Point3f, 4> corners = ComputeCameraFrustumCorners(imageData, depth);
+		for (int j = 0; j < 4; ++j) {
+			lines.push_back(center);
+			lines.push_back(corners[j]);
+		}
+		for (int j = 0; j < 4; ++j) {
+			lines.push_back(corners[j]);
+			lines.push_back(corners[(j + 1) % 4]);
+		}
+		return;
+	}
+	constexpr int SEGMENTS = 48;
+	const REAL radius = depth * 0.5f;
+	for (int circle = 0; circle < 3; ++circle) {
+		Point3f prev;
+		for (int k = 0; k <= SEGMENTS; ++k) {
+			const REAL angle = REAL(TWO_PI) * k / SEGMENTS;
+			const REAL s = SIN(angle) * radius, c = COS(angle) * radius;
+			const Point3f X(Cast<float>(imageData.camera.TransformPointC2W(
+				circle == 0 ? Point3(s, 0, c) : (circle == 1 ? Point3(0, s, c) : Point3(c, s, 0)))));
+			if (k > 0) {
+				lines.push_back(prev);
+				lines.push_back(X);
+			}
+			prev = X;
+		}
+	}
+}
+
+// Helper function to create the wireframe of a single camera (see AppendCameraGlyphLines);
 // generate the vertices, colors, and indices for the camera wireframe and
 // returns the number of indices added
 static uint32_t CreateCameraFrustumGeometry(
@@ -948,33 +1031,52 @@ static uint32_t CreateCameraFrustumGeometry(
 	std::vector<float>& colors,
 	std::vector<uint32_t>& indices,
 	size_t baseIndex) {
-	// Camera center (apex of the pyramid)
+	ASSERT(baseIndex == vertices.size() / 3);
+	// Camera center (apex of the pyramid, and start of the look-at indicator)
 	const Point3f center = imageData.camera.C;
 	vertices.insert(vertices.end(), {center.x, center.y, center.z});
 	colors.insert(colors.end(), {centerColor.c2, centerColor.c1, centerColor.c0});
 
-	// Get frustum corners using the helper function,
-	// add the 4 corners to vertices and colors
-	for (const Point3f& worldCorner : ComputeCameraFrustumCorners(imageData, depth)) {
-		vertices.insert(vertices.end(), {worldCorner.x, worldCorner.y, worldCorner.z});
-		colors.insert(colors.end(), {frustumColor.c2, frustumColor.c1, frustumColor.c0});
-	}
+	uint32_t numIndices = 0;
+	if (imageData.IsSpherical()) {
+		// the globe: its line segments, one vertex per end point
+		std::vector<Point3f> lines;
+		AppendCameraGlyphLines(imageData, depth, lines);
+		for (const Point3f& X : lines) {
+			indices.push_back(static_cast<uint32_t>(vertices.size() / 3));
+			vertices.insert(vertices.end(), {X.x, X.y, X.z});
+			colors.insert(colors.end(), {frustumColor.c2, frustumColor.c1, frustumColor.c0});
+		}
+		numIndices += static_cast<uint32_t>(lines.size());
+	} else {
+		// Get frustum corners using the helper function,
+		// add the 4 corners to vertices and colors
+		for (const Point3f& worldCorner : ComputeCameraFrustumCorners(imageData, depth)) {
+			vertices.insert(vertices.end(), {worldCorner.x, worldCorner.y, worldCorner.z});
+			colors.insert(colors.end(), {frustumColor.c2, frustumColor.c1, frustumColor.c0});
+		}
 
-	// Create indices for wireframe lines,
-	// lines from camera center to each corner (4 lines)
-	for (int j = 0; j < 4; ++j) {
-		indices.push_back(baseIndex);           // camera center
-		indices.push_back(baseIndex + 1 + j);   // corner j
-	}
+		// Create indices for wireframe lines,
+		// lines from camera center to each corner (4 lines)
+		for (int j = 0; j < 4; ++j) {
+			indices.push_back(baseIndex);           // camera center
+			indices.push_back(baseIndex + 1 + j);   // corner j
+		}
 
-	// Rectangle connecting the four corners (4 lines)
-	for (int j = 0; j < 4; ++j) {
-		indices.push_back(baseIndex + 1 + j);             // current corner
-		indices.push_back(baseIndex + 1 + ((j + 1) % 4)); // next corner
+		// Rectangle connecting the four corners (4 lines)
+		for (int j = 0; j < 4; ++j) {
+			indices.push_back(baseIndex + 1 + j);             // current corner
+			indices.push_back(baseIndex + 1 + ((j + 1) % 4)); // next corner
+		}
+		numIndices += 16; // 4 lines from center + 4 lines for rectangle = 8 lines
 	}
 	if (!showLookAt)
-		return 16; // 4 lines from center + 4 lines for rectangle = 8 lines = 16 indices
+		return numIndices;
 
+	// The look-at indicator, the same for both models: from the camera center to the point at the given
+	// depth along the optical axis (the pixel at the principal point; for a spherical camera the pixel of
+	// longitude and elevation 0), and a point above it
+	const uint32_t lookAtIndex = static_cast<uint32_t>(vertices.size() / 3);
 	// Add principal center point (green) - point on the image plane at the principal point
 	const Point2 pp = imageData.camera.GetPrincipalPoint();
 	const Point3f worldPrincipalPoint = imageData.camera.TransformPointI2W(Point3(pp.x, pp.y, depth));
@@ -987,14 +1089,14 @@ static uint32_t CreateCameraFrustumGeometry(
 	colors.insert(colors.end(), {0.f, 0.f, 1.f}); // Blue
 
 	// Line from camera center to principal point (look-at indicator).
-	indices.push_back(baseIndex);     // camera center
-	indices.push_back(baseIndex + 5); // principal point (index 5)
+	indices.push_back(static_cast<uint32_t>(baseIndex));
+	indices.push_back(lookAtIndex);
 
 	// Line from principal point to upwards direction indicator.
-	indices.push_back(baseIndex + 5); // principal point (index 5)
-	indices.push_back(baseIndex + 6); // upwards direction indicator (index 6)
+	indices.push_back(lookAtIndex);
+	indices.push_back(lookAtIndex + 1);
 
-	return 20; // 4 lines from center + 4 lines for rectangle + 2 lines for look-at = 10 lines = 20 indices
+	return numIndices + 4;
 }
 
 void Renderer::UploadCameras(const Window& window) {
@@ -1346,22 +1448,11 @@ void Renderer::UploadSelection(const Window& window) {
 			const MVS::Image& selectedImage = scene.images[image.idx];
 			if (!selectedImage.IsValid())
 				continue;
-			std::array<Point3f, 4> worldCorners = ComputeCameraFrustumCorners(selectedImage, depth);
-			// Reserve space for lines: 4 (center to corners) + 4 (corner rectangle) = 8 lines × 2 vertices × 3 coordinates = 48 floats
-			selectionVertices.reserve(selectionVertices.size() + 48);
-			// Lines from camera center to each corner (4 lines)
-			const Point3f center = selectedImage.camera.C;
-			for (int j = 0; j < 4; ++j) {
-				selectionVertices.insert(selectionVertices.end(), {center.x, center.y, center.z});
-				selectionVertices.insert(selectionVertices.end(), {worldCorners[j].x, worldCorners[j].y, worldCorners[j].z});
-			}
-			// Rectangle connecting the four corners (4 lines)
-			for (int j = 0; j < 4; ++j) {
-				const Point3f& corner1 = worldCorners[j];
-				const Point3f& corner2 = worldCorners[(j + 1) % 4];
-				selectionVertices.insert(selectionVertices.end(), {corner1.x, corner1.y, corner1.z});
-				selectionVertices.insert(selectionVertices.end(), {corner2.x, corner2.y, corner2.z});
-			}
+			std::vector<Point3f> lines;
+			AppendCameraGlyphLines(selectedImage, depth, lines);
+			selectionVertices.reserve(selectionVertices.size() + lines.size() * 3);
+			for (const Point3f& X : lines)
+				selectionVertices.insert(selectionVertices.end(), {X.x, X.y, X.z});
 			hasValidCamera = true;
 		}
 		if (!hasValidCamera)
@@ -1378,23 +1469,10 @@ void Renderer::UploadSelection(const Window& window) {
 		const MVS::Image& neighborImage = scene.images[image.idx];
 		ASSERT(neighborImage.IsValid());
 		const float depth = window.GetCamera().GetSceneDistance() * window.cameraSize * 10.f;
-		// Get frustum corners for the neighbor camera
-		std::array<Point3f, 4> worldCorners = ComputeCameraFrustumCorners(neighborImage, depth);
-		// Lines from camera center to each corner (4 lines)
-		const Point3f center = neighborImage.camera.C;
-		for (int j = 0; j < 4; ++j) {
-			// Line from center to corner j
-			selectionVertices.insert(selectionVertices.end(), {center.x, center.y, center.z});
-			selectionVertices.insert(selectionVertices.end(), {worldCorners[j].x, worldCorners[j].y, worldCorners[j].z});
-		}
-		// Rectangle connecting the four corners (4 lines)
-		for (int j = 0; j < 4; ++j) {
-			// Line from corner j to corner (j+1)%4
-			const Point3f& corner1 = worldCorners[j];
-			const Point3f& corner2 = worldCorners[(j + 1) % 4];
-			selectionVertices.insert(selectionVertices.end(), {corner1.x, corner1.y, corner1.z});
-			selectionVertices.insert(selectionVertices.end(), {corner2.x, corner2.y, corner2.z});
-		}
+		std::vector<Point3f> lines;
+		AppendCameraGlyphLines(neighborImage, depth, lines);
+		for (const Point3f& X : lines)
+			selectionVertices.insert(selectionVertices.end(), {X.x, X.y, X.z});
 		neighborSelectionPrimitiveCount = selectionVertices.size() / 3 - neighborVertexOffset;
 	}
 
@@ -1620,51 +1698,100 @@ void Renderer::RenderCameras(const Window& window) {
 	cameraVAO->Unbind();
 }
 
-void Renderer::RenderImageOverlays(const Window& window) {
+// The photos shown in the scene: the image of the camera of the camera view mode, and every panorama
+// whose image is loaded (entering a camera view loads it), on the globe of its camera. A panorama lies on
+// the sphere of its rays around the image center, at the radius of the globe: seen from the center it
+// covers every direction as the image does, seen from outside the camera is a ball showing the panorama
+// (the far side of the sphere, read through the near one). The image of the camera view mode is drawn
+// over the scene; the panoramas of the other cameras are part of it (depth tested).
+void Renderer::RenderImageOverlays(const Window& window, bool bActiveLayerPass) {
 	const Camera& camera(window.GetCamera());
-	if (imageOverlayIndexCount == 0 || !camera.IsCameraViewMode())
-		return;
 	const Scene& sceneController(window.GetScene());
-	const Scene::Layer* layer(sceneController.GetActiveLayer());
-	if (layer == nullptr || !layer->visible)
-		return;
-	const CameraLayerRange* range(FindCameraLayerRange(layer->id));
-	const MVS::IIndex cameraID(camera.GetCurrentCamID());
-	if (range == nullptr || cameraID >= layer->images.size())
-		return;
-	Image& image(const_cast<Image&>(layer->images[cameraID]));
-	if (!image.IsValid()) {
-		if (!image.IsImageValid())
-			return;
-		image.TransferImage();
-	}
+	const Scene::Layer* activeLayer(sceneController.GetActiveLayer());
+	const MVS::IIndex viewCameraID(bActiveLayerPass && camera.IsCameraViewMode() && activeLayer != nullptr && activeLayer->visible ? camera.GetCurrentCamID() : NO_ID);
+	// the texture of the image, uploaded if its pixels are loaded but not transferred yet
+	const auto GetTexture = [](const Image& image) -> Image* {
+		Image& img(const_cast<Image&>(image));
+		if (!img.IsValid()) {
+			if (!img.IsImageValid())
+				return nullptr;
+			img.TransferImage();
+		}
+		return &img;
+	};
 
-	// Set up for 3D rendering with special handling for transparency
-	GL_CHECK(glDisable(GL_DEPTH_TEST)); // Temporarily disable depth testing to ensure visibility
 	GL_CHECK(glEnable(GL_BLEND));
 	GL_CHECK(glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA));
-
-	// Use the 3D overlay shader
 	imageOverlayShader->Use();
-
-	// Set opacity
 	imageOverlayShader->SetFloat("opacity", window.imageOverlayOpacity);
 	imageOverlayShader->SetInt("overlayTexture", 0);
-
-	// Render the specific overlay for this camera
-	imageOverlayVAO->Bind();
-	imageOverlayEBO->Bind();
-
 	GL_CHECK(glActiveTexture(GL_TEXTURE0));
-	image.Bind();
-	const void* indexOffset = reinterpret_cast<const void*>((range->offset + cameraID) * 6 * sizeof(uint32_t));
-	GL_CHECK(glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, indexOffset));
 
-	imageOverlayVAO->Unbind();
+	// the panoramas on their globes
+	const float radius = camera.GetSceneDistance() * window.cameraSize * 0.5f;
+	bool bPanoramaState(false);
+	for (const Scene::Layer& layer : sceneController.GetLayers()) {
+		if (!layer.visible || !IsLayerInPass(layer.id))
+			continue;
+		FOREACH(idx, layer.images) {
+			const MVS::Image& imageData = layer.scene.images[layer.images[idx].idx];
+			if (!imageData.IsSpherical())
+				continue;
+			const bool bViewCamera(&layer == activeLayer && idx == viewCameraID);
+			if (!bViewCamera && !window.showCameras)
+				continue; // the camera glyphs are hidden: only the panorama of the camera view mode
+			Image* const pImage(GetTexture(layer.images[idx]));
+			if (pImage == nullptr)
+				continue;
+			if (!bPanoramaState) {
+				GL_CHECK(glEnable(GL_CULL_FACE));
+				GL_CHECK(glCullFace(GL_BACK));
+				GL_CHECK(glDepthMask(GL_FALSE));
+				panoramaOverlayVAO->Bind();
+				panoramaOverlayEBO->Bind();
+				bPanoramaState = true;
+			}
+			if (bViewCamera)
+				GL_CHECK(glDisable(GL_DEPTH_TEST));
+			pImage->Bind();
+			// seen from its center a sphere covers the view the same at any radius: the panorama of the camera
+			// view mode takes the one halfway between the clip planes, the globe radius being below the near
+			// plane in a scene large next to its camera-to-scene distance
+			const double sphereRadius(bViewCamera ? SQRT(camera.GetNearPlane()*camera.GetFarPlane()) : double(radius));
+			Eigen::Matrix4d model(Eigen::Matrix4d::Identity()); // camera to world: X = R^T * x * radius + C
+			model.topLeftCorner<3,3>() = Eigen::Matrix3d(imageData.camera.R).transpose() * sphereRadius;
+			model.topRightCorner<3,1>() = Eigen::Vector3d(imageData.camera.C);
+			imageOverlayShader->SetMatrix4("model", model.cast<float>());
+			GL_CHECK(glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(panoramaOverlayIndexCount), GL_UNSIGNED_INT, 0));
+			if (bViewCamera)
+				GL_CHECK(glEnable(GL_DEPTH_TEST));
+		}
+	}
+	if (bPanoramaState) {
+		panoramaOverlayVAO->Unbind();
+		GL_CHECK(glDepthMask(GL_TRUE));
+		GL_CHECK(glDisable(GL_CULL_FACE));
+	}
 
-	// Restore previous depth test state
+	// the photo of the pinhole camera of the camera view mode, on the base of its frustum
+	if (viewCameraID != NO_ID && imageOverlayIndexCount > 0 && viewCameraID < activeLayer->images.size() &&
+		!activeLayer->scene.images[activeLayer->images[viewCameraID].idx].IsSpherical()) {
+		const CameraLayerRange* range(FindCameraLayerRange(activeLayer->id));
+		Image* const pImage(range == nullptr ? nullptr : GetTexture(activeLayer->images[viewCameraID]));
+		if (pImage != nullptr) {
+			GL_CHECK(glDisable(GL_DEPTH_TEST)); // drawn over the scene
+			pImage->Bind();
+			imageOverlayShader->SetMatrix4("model", Eigen::Matrix4f::Identity());
+			imageOverlayVAO->Bind();
+			imageOverlayEBO->Bind();
+			const void* indexOffset = reinterpret_cast<const void*>((range->offset + viewCameraID) * 6 * sizeof(uint32_t));
+			GL_CHECK(glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, indexOffset));
+			imageOverlayVAO->Unbind();
+			GL_CHECK(glEnable(GL_DEPTH_TEST));
+		}
+	}
+
 	GL_CHECK(glDisable(GL_BLEND));
-	GL_CHECK(glEnable(GL_DEPTH_TEST));
 }
 
 void Renderer::RenderSelection(const Window& window) {
