@@ -254,7 +254,7 @@ bool RoMa2OnnxParityTest();
 // execution provider and the preset it exercises
 bool ROMA2ReconstructTest();
 
-// FlexGlue as the dense matcher on the same bundled 4-image scene: 1024-D unit retrieval descriptors, a covisibility score and a coarse relative pose
+// FlexGlue as the dense matcher on the same bundled 4-image scene: 256-D unit retrieval descriptors, a covisibility score and a coarse relative pose
 // on every pair (the pose close to the pair's own), the pairs CSV columns, the covisibility gate, and ReconstructTest's reconstruction stage.
 // Skipped unless OPENMVS_FLEXGLUE_MODEL_PATH points at the export folder
 bool FlexGlueReconstructTest();

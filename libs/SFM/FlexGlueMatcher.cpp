@@ -44,6 +44,14 @@ DEFINE_LOG_NAME(lt, _T("FlexGlue"));
 
 #ifdef _USE_ONNXRUNTIME
 
+// Every cell of a confidence map is a probability
+static bool ConfidenceInRange(const Image32F& confidence)
+{
+	double minValue, maxValue;
+	cv::minMaxLoc(confidence, &minValue, &maxValue);
+	return minValue >= 0. && maxValue <= 1.;
+}
+
 bool FlexGlueMatcher::Load(const String& _modelDir, const String&, const String& providerName)
 {
 	ASSERT(!_modelDir.empty() && !IsLoaded());
@@ -89,8 +97,14 @@ bool FlexGlueMatcher::Load(const String& _modelDir, const String&, const String&
 		intrinsics[i] = OrtTensor::Host({1, 4});
 	rotation = OrtTensor::Host({1, 3, 3});
 	direction = OrtTensor::Host({1, 3});
-	ASSERT(image.IsValid() && retrieval.IsValid() && covisibility.IsValid() && pooled[0].IsValid() && pooled[1].IsValid() &&
-		imageSize[0].IsValid() && imageSize[1].IsValid() && warp[0].IsValid() && warp[1].IsValid() && confidence[0].IsValid() && confidence[1].IsValid());
+	// a failed allocation (device memory) is the outside world's failure, not a broken invariant
+	if (!pooled[0].IsValid() || !pooled[1].IsValid()) {
+		VERBOSE("error: can not allocate the FlexGlue pooled feature tensors on the %s provider", ProviderName().c_str());
+		return false;
+	}
+	ASSERT(image.IsValid() && retrieval.IsValid() && covisibility.IsValid() &&
+		imageSize[0].IsValid() && imageSize[1].IsValid() && warp[0].IsValid() && warp[1].IsValid() && confidence[0].IsValid() && confidence[1].IsValid() &&
+		intrinsics[0].IsValid() && intrinsics[1].IsValid() && rotation.IsValid() && direction.IsValid());
 	return true;
 }
 
@@ -159,6 +173,7 @@ bool FlexGlueMatcher::MatchPair(const OrtTensor& featuresA, const OrtTensor& fea
 	memcpy(out.ba.confidence.data, confidence[1].HostData(), cells * sizeof(float));
 	out.covisibility = covisibility.HostData()[0];
 	ASSERT(*out.covisibility >= 0.f && *out.covisibility <= 1.f);
+	ASSERT(ConfidenceInRange(out.ab.confidence) && ConfidenceInRange(out.ba.confidence));
 	// the head reads the cameras in the 512 x 512 frame the features were made in
 	const PinholeIntrinsics* intr[2] = {&input.intrA, &input.intrB};
 	const cv::Size* size[2] = {&input.sizeA, &input.sizeB};
@@ -176,6 +191,9 @@ bool FlexGlueMatcher::MatchPair(const OrtTensor& featuresA, const OrtTensor& fea
 	PosePrior prior;
 	memcpy(prior.R.val, rotation.HostData(), 9 * sizeof(float));
 	prior.t = Point3f(direction.HostData()[0], direction.HostData()[1], direction.HostData()[2]);
+	// the graph builds both by construction (Gram-Schmidt and cross products of normalised vectors, a normalised direction), in float32:
+	// their error is around 1e-6, so 1e-4 only leaves room for the arithmetic of the provider and catches a broken graph
+	ASSERT(cv::norm(prior.R.t() * prior.R - Matrix3x3f::IDENTITY) < 1e-4 && ABS(cv::determinant(prior.R) - 1.0) < 1e-4 && ABS(cv::norm(prior.t) - 1.0) < 1e-4);
 	out.pose = prior;
 	return true;
 }

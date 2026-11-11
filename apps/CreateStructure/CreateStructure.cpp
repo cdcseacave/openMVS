@@ -318,6 +318,14 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		LOG("error: unknown dense matcher '%s' (accepted: roma2, flexglue)", OPT::strDenseMatcher.c_str());
 		return false;
 	}
+	if (OPT::strDenseMatcher == "flexglue" && !OPT::bROMA2) {
+		LOG("error: --dense-matcher flexglue selects the model behind --roma2 true, it does nothing without it");
+		return false;
+	}
+	if (OPT::strDenseMatcher != "flexglue" && !OPT::strFlexGlueModel.empty()) {
+		LOG("error: --flexglue-model given with --dense-matcher %s (it belongs to --dense-matcher flexglue)", OPT::strDenseMatcher.c_str());
+		return false;
+	}
 	if (!(OPT::fDenseMinCovisibility >= 0.f && OPT::fDenseMinCovisibility <= 1.f)) {
 		LOG("error: --dense-min-covisibility is a covisibility score, it must be in [0,1] (got %g)", OPT::fDenseMinCovisibility);
 		return false;

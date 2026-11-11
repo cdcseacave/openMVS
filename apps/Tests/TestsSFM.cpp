@@ -6224,6 +6224,32 @@ bool ResolveModelPathTest()
 		}
 	}
 
+	// the flexglue matcher resolves its own folder: its explicit path, then OPENMVS_FLEXGLUE_MODEL_PATH, else empty -- and never RoMa2's
+	#ifndef _MSC_VER
+	{
+		const char* const prevFlexGlue = getenv("OPENMVS_FLEXGLUE_MODEL_PATH");
+		const String prevValue(prevFlexGlue ? prevFlexGlue : "");
+		ROMA2Config config;
+		config.matcher = "flexglue";
+		EnvGuard::Set("/roma2/env/path");
+		config.modelPath = "/roma2/explicit/path";
+		unsetenv("OPENMVS_FLEXGLUE_MODEL_PATH");
+		bool bOk = config.ResolveModelPath().empty();
+		setenv("OPENMVS_FLEXGLUE_MODEL_PATH", "/flexglue/env/path", 1);
+		bOk = bOk && config.ResolveModelPath() == "/flexglue/env/path";
+		config.flexglueModelPath = "/flexglue/explicit/path";
+		bOk = bOk && config.ResolveModelPath() == "/flexglue/explicit/path";
+		if (prevFlexGlue)
+			setenv("OPENMVS_FLEXGLUE_MODEL_PATH", prevValue.c_str(), 1);
+		else
+			unsetenv("OPENMVS_FLEXGLUE_MODEL_PATH");
+		if (!bOk) {
+			VERBOSE("ResolveModelPathTest FAILED: the flexglue matcher did not resolve its own model folder");
+			return false;
+		}
+	}
+	#endif
+
 	VERBOSE("ResolveModelPathTest PASSED");
 	return true;
 }
@@ -6598,7 +6624,7 @@ static ROMA2PairSummaries SummarizePairs(const Scene& scene)
 // Image::LoadMetadata, fixed there and pinned by ImportMetadataDeterminismTest.)
 // With it off, the stored pairs are exactly what the matching produced.
 static bool ROMA2ReconstructScene(Scene& scene, ROMA2Config roma2Cfg,
-	int expectedDim, bool bViewGraphCalibration, ROMA2PairSummaries& pairSummaries)
+	int expectedDim, bool bViewGraphCalibration, ROMA2PairSummaries& pairSummaries, bool bStaleDescriptors = false)
 {
 	const String& setting = roma2Cfg.setting;
 	const String& provider = roma2Cfg.provider;
@@ -6653,6 +6679,14 @@ static bool ROMA2ReconstructScene(Scene& scene, ROMA2Config roma2Cfg,
 	if (!scene.ExtractFeatures(featuresCfg)) {
 		VERBOSE("ROMA2ReconstructTest FAILED: ExtractFeatures failed");
 		return false;
+	}
+	if (bStaleDescriptors) {
+		// the scene already carries global descriptors of another matcher (2048-D, RoMa2's size): MatchPairs must describe the images again
+		FOREACH(i, scene.images) {
+			scene.images[i].globalDescriptor = cv::Mat::zeros(1, 2048, CV_32F);
+			scene.images[i].globalDescriptor.at<float>(0, i) = 1.f;
+		}
+		scene.status.nState.set(Scene::Status::STATE::GLOBAL_DESCRIPTORS);
 	}
 
 	MatchConfig matchCfg;
@@ -6969,7 +7003,7 @@ static double RotationAngleDeg(const Matrix3x3f& R)
 }
 #endif
 
-// FlexGlue as the dense matcher, on the bundled 4-image scene through Scene::MatchPairs (docs/design/DenseMatcher.md): the 1024-D retrieval
+// FlexGlue as the dense matcher, on the bundled 4-image scene through Scene::MatchPairs (docs/design/DenseMatcher.md): the 256-D retrieval
 // descriptors its backbone pools (unit, distinct per image), every pair stored with its covisibility score and its coarse relative pose
 // (a rotation, a unit baseline direction, close to the pose the pair's own matches give: the check of the pose head's convention),
 // the pairs CSV carrying both, the covisibility gate dropping exactly the pairs below it, and ReconstructTest's
@@ -7003,7 +7037,7 @@ bool FlexGlueReconstructTest()
 	// 1) every pair kept: covisibility, pose prior and the CSV
 	ROMA2PairSummaries summaries;
 	Scene scene(2);
-	if (!ROMA2ReconstructScene(scene, cfg, FlexGlueMatcher::RETRIEVAL_SIZE, false, summaries)) {
+	if (!ROMA2ReconstructScene(scene, cfg, FlexGlueMatcher::RETRIEVAL_SIZE, false, summaries, true)) {
 		VERBOSE("FlexGlueReconstructTest FAILED: matching with FlexGlue");
 		return false;
 	}
@@ -7084,6 +7118,16 @@ bool FlexGlueReconstructTest()
 		if (gated.pairs.empty() || gated.pairs.size() >= scene.pairs.size()) {
 			VERBOSE("FlexGlueReconstructTest FAILED: the gate at %g kept %u of %u pairs", bar, (unsigned)gated.pairs.size(), (unsigned)scene.pairs.size());
 			return false;
+		}
+		// both ways: every pair the first run scored clearly above the bar is kept, every one clearly below it is gone (a second GPU run moves a score
+		// by around 1e-5, so the pairs within that of the bar are not judged)
+		constexpr float noise = 2e-5f;
+		for (const ImagePair& pair : scene.pairs) {
+			const bool bKept = std::any_of(gated.pairs.begin(), gated.pairs.end(), [&](const ImagePair& g) { return g.ID1 == pair.ID1 && g.ID2 == pair.ID2; });
+			if ((*pair.covisibility > bar + noise && !bKept) || (*pair.covisibility < bar - noise && bKept)) {
+				VERBOSE("FlexGlueReconstructTest FAILED: with the gate at %g pair (%u, %u) of covisibility %g was %s", bar, pair.ID1, pair.ID2, *pair.covisibility, bKept ? "kept" : "dropped");
+				return false;
+			}
 		}
 		for (const ImagePair& pair : gated.pairs)
 			if (!pair.covisibility || *pair.covisibility < bar) {

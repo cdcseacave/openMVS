@@ -70,7 +70,8 @@ PairInput MakePairInput(const Image& imgA, const Image& imgB)
 		*intr[i] = PinholeIntrinsics{0.f, 0.f, 0.f, 0.f};
 		if (images[i]->GetCameraType() == CameraType::PINHOLE) {
 			const KMatrix K = images[i]->GetK();
-			*intr[i] = PinholeIntrinsics{(float)K(0,0), (float)K(1,1), (float)K(0,2), (float)K(1,2)};
+			// OpenMVS pixel centres are at integer coordinates (the default principal point is (w-1)/2, Image.cpp), PinholeIntrinsics' origin is the corner
+			*intr[i] = PinholeIntrinsics{(float)K(0,0), (float)K(1,1), (float)K(0,2) + 0.5f, (float)K(1,2) + 0.5f};
 		}
 	}
 	return input;

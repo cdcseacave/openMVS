@@ -52,9 +52,8 @@ some pair has a covisibility, so a RoMa2 or SIFT run writes the file it always w
 ## FlexGlue (`libs/SFM/FlexGlueMatcher.h/cpp`)
 
 FlexGlue (cvg/FlexGlue; a DINOv3 ConvNeXt-B backbone, a stride-8 feature head and a 9-layer transformer that matches two
-feature maps) runs from three ONNX graphs exported by `export_flexglue.py` (records folder
-`T/records-2026-11-11-flexglue/`, traced from the PyTorch modules with the fused-attention conventions of FlexGlue's own
-`onnx/export.py`; model folder `flexglue-onnx-20261111`):
+feature maps) runs from three ONNX graphs written by the export script `export_flexglue.py` (traced from the PyTorch modules with
+the fused-attention conventions of FlexGlue's own `onnx/export.py`):
 
 | graph | inputs -> outputs |
 |---|---|
@@ -103,21 +102,27 @@ The other `--roma2-*` options (`--roma2-slots`, `--roma2-min-confidence`, `--rom
 ## Invariants
 
 - `DescribeImage` returns exactly `RetrievalSize()` floats of unit norm; a `MatchPair` warp is `GridSize()` square with
-  confidence in [0,1]; a covisibility is in [0,1] (asserted).
+  confidence in [0,1]; a covisibility is in [0,1] and a pose prior is a rotation and a unit direction (all asserted in `FlexGlueMatcher::MatchPair`).
+- Global descriptors a scene carries from the other matcher (RoMa2 2048-D, FlexGlue 256-D) are never used: `Scene::MatchPairs` compares
+  their size with the selected matcher's and describes the images again on a mismatch.
+- A pair the gate drops, like one the verdict rejects, is not stored, so a later matching round that proposes it warps it again.
+- `PinholeIntrinsics` have the corner of the top-left pixel as origin (FlexGluePose's convention); OpenMVS keeps pixel centres at integer
+  coordinates, so `MakePairInput` adds 0.5 to the principal point. The head's 512-pixel intrinsics are the per-axis scale 512/w, 512/h of them.
 - A matcher with `NeedsIntrinsics()` runs only on pinhole cameras (checked once, at the start of `MatchPairsROMA2`).
 - The interface adds no state to the shared passes: slot planning, prefetching and the semaphore bounding live warps are
   unchanged.
 
 ## Validation
 
-Records: `T/records-2026-11-11-flexglue/` (`export_flexglue.py`, `parity_flexglue.py`, `retr_*.py`, `queue.py`, `ident.sh`).
+Scripts: `export_flexglue.py` (export), `parity_flexglue.py` (graphs against PyTorch), `retr_*.py` (retrieval study).
 
-**Export parity against PyTorch** (`parity_4e5c6f6d.md`, 10 pairs, ONNX Runtime CPU): descriptor features max 2.6e-5, retrieval cosine
+**Export parity against PyTorch** (10 pairs, ONNX Runtime CPU): descriptor features max 2.6e-5, retrieval cosine
 0.9999999, dense warps over the cells valid in both max 4.7e-2 normalised units (median 1.8e-5; 1 unit is half the frame),
-covisibility 2.1e-4 against the traced module and 5.8e-4 against upstream float32 FlexGlue, the pose graph against FlexGlue-Pose's own
-head on the same pooled input 0.20 deg in rotation and 0.43 deg in direction (the head's own error against references is 3 to 12 deg).
+covisibility 2.1e-4 against the traced module and 5.8e-4 against upstream float32 FlexGlue, the pose graph against FlexGluePose's own
+head on the same pooled input 0.20 deg in rotation and 0.43 deg in direction (the head's own error against references is 3 to 12 deg); the
+PyTorch module the graph is traced from equals that head to float rounding, so the gap is ONNX Runtime CPU arithmetic.
 
-**Retrieval descriptor** (`retr_eval.md`; candidates = pairs in the top-K of both images, K = 10; recall = share of the truly overlapping
+**Retrieval descriptor** (candidates = pairs in the top-K of both images, K = 10; recall = share of the truly overlapping
 pairs, reference ties >= 3, among the candidates; mean over 4e5c6f6d, 1c65aab4, 5ada248e and Palace, whose truth is a pose proxy):
 
 | descriptor | dim | recall K=10 | recall K=20 | recall at RoMa2's candidate count, K=10 |

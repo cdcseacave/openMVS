@@ -598,6 +598,31 @@ bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, c
 	std::unique_ptr<DenseMatcher> roma2;
 	PairsMatcher pairsMatcher(*this, config);
 
+	// Global descriptors a scene carries from another matcher are not this matcher's (RoMa2 2048-D, FlexGlue 256-D): the images are described
+	// again by the selected one. Only known where the selected matcher's descriptor size is (FlexGlue's is fixed, RoMa2's is its manifest's)
+	if (roma2Cfg.enabled && config.mode == MatchConfig::RETRIEVAL && status.nState.isSet(Status::STATE::GLOBAL_DESCRIPTORS) &&
+		!status.nState.isSet(Status::STATE::MATCHED) && !images.empty()) {
+		unsigned expectedDim = 0;
+		if (roma2Cfg.matcher == "flexglue") {
+			#ifdef _USE_ONNXRUNTIME
+			expectedDim = FlexGlueMatcher::RETRIEVAL_SIZE;
+			#endif
+		} else {
+			RoMa2Manifest manifest;
+			String manifestPath(roma2Cfg.ResolveModelPath());
+			if (!manifestPath.empty()) {
+				Util::ensureFolderSlash(manifestPath);
+				if (manifest.Load(manifestPath + "roma_" + roma2Cfg.setting + ".json"))
+					expectedDim = manifest.facetsDim;
+			}
+		}
+		if (expectedDim != 0 && (unsigned)images[0].globalDescriptor.cols != expectedDim) {
+			VERBOSE("warning: the scene's global descriptors are %d-D, the %s matcher's are %u-D: describing the images again",
+				images[0].globalDescriptor.cols, roma2Cfg.matcher.c_str(), expectedDim);
+			status.nState.unset(Status::STATE::GLOBAL_DESCRIPTORS);
+		}
+	}
+
 	// Which passes this run needs: RETRIEVAL is what makes the global descriptors necessary
 	const bool needsDescriptors = config.mode == MatchConfig::RETRIEVAL && !status.nState.isSet(Status::STATE::GLOBAL_DESCRIPTORS);
 	const bool needsWarps = roma2Cfg.useMatching;
