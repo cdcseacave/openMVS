@@ -39,7 +39,7 @@
 // energy evaluation into one step -- one implementation, no CUDA twin to drift.
 //
 // Include rules:
-//  - Everything above the "#ifndef __CUDACC__" guard below (the MVS::Refine constants and the
+//  - Everything above the device-compiler guard below (the MVS::Refine constants and the
 //    HOST_DEVICE window/ZNCC math) is compiled by nvcc as part of SceneRefineCUDA.cu's device
 //    code, so it must never drag in OpenCV or SEACAVE types -- plain float/int only.
 //  - Everything below the guard is host-only. Like DepthMap.h/OPTDENSE, it relies on the
@@ -49,7 +49,7 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
-#ifndef __CUDACC__
+#if !defined(__CUDACC__) && !defined(__HIP__)
 #include "Image.h"
 #include "Mesh.h"
 #endif
@@ -159,7 +159,7 @@ HOST_DEVICE inline void ZnccAndDerivative(const WindowStats& s, float n, float p
 } // namespace Refine
 
 
-#ifndef __CUDACC__
+#if !defined(__CUDACC__) && !defined(__HIP__)
 
 DECOPT_SPACE(OPTREFINE)
 
@@ -612,7 +612,7 @@ protected:
 };
 /*----------------------------------------------------------------*/
 
-#endif // __CUDACC__
+#endif // !__CUDACC__ && !__HIP__
 
 } // namespace MVS
 

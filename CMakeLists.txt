@@ -33,6 +33,7 @@ OPTION(OpenMVS_USE_BREAKPAD "Enable BreakPad library" ON)
 OPTION(OpenMVS_USE_PYTHON "Enable Python library bindings" ON)
 OPTION(OpenMVS_USE_CERES "Enable CERES optimization library" OFF)
 OPTION(OpenMVS_USE_CUDA "Enable CUDA library" ON)
+OPTION(OpenMVS_USE_HIP "Enable HIP (AMD GPU) library, compiling the CUDA kernels with hipcc; needs ROCm" OFF)
 OPTION(OpenMVS_USE_SIFTGPU "Enable SIFTGPU library" ON)
 OPTION(OpenMVS_USE_FAST_FLOAT2INT "Use an optimized code to convert real numbers to int" OFF)
 OPTION(OpenMVS_USE_FAST_INVSQRT "Use an optimized code to compute the inverse square root (slower in fact on modern compilers)" OFF)
@@ -210,7 +211,33 @@ if(OpenMVS_USE_OPENMP)
 	endif()
 endif()
 
-if(OpenMVS_USE_CUDA)
+if(OpenMVS_USE_HIP)
+	# HIP compiles the existing CUDA kernels (.cu) with hipcc: the CUDA names are mapped
+	# to HIP by libs/Common/UtilCUDACompat.h, selected by _USE_HIP
+	find_package(hip REQUIRED CONFIG)
+	find_package(hiprand REQUIRED CONFIG)
+	if(NOT DEFINED GPU_TARGETS)
+		SET(GPU_TARGETS "gfx1201" CACHE STRING "AMD GPU architectures to compile the HIP kernels for")
+	endif()
+	SET(CMAKE_HIP_ARCHITECTURES ${GPU_TARGETS} CACHE STRING "HIP GPU architectures")
+	ENABLE_LANGUAGE(HIP)
+	SET(CMAKE_HIP_STANDARD 17)
+	SET(CMAKE_HIP_STANDARD_REQUIRED ON)
+	# HIP runtime and cuRAND (hipRAND) are the drop-in equivalents of the CUDA ones.
+	# hip::device is deliberately not linked here: its INTERFACE_COMPILE_OPTIONS carry
+	# "-x hip --offload-arch=..." for the CXX language, which would break host .cpp files.
+	# The .cu kernels get the HIP language and architectures from CMAKE_HIP_ARCHITECTURES.
+	LIST(APPEND OpenMVS_EXTRA_LIBS hip::host hip::hiprand)
+	SET(_USE_HIP TRUE)
+	# _USE_CUDA ("GPU kernels compiled in") reaches host code via ConfigLocal.h;
+	# only _USE_HIP goes on the command line, as the .cu kernels and
+	# libs/Common/UtilCUDACompat.h need it without including ConfigLocal.h
+	SET(_USE_CUDA TRUE)
+	ADD_COMPILE_DEFINITIONS(_USE_HIP)
+	MESSAGE(STATUS "Found HIP: ${hip_VERSION} with GPU arch: ${CMAKE_HIP_ARCHITECTURES}")
+endif()
+
+if(OpenMVS_USE_CUDA AND NOT _USE_HIP)
 	INCLUDE(CheckLanguage)
 	CHECK_LANGUAGE(CUDA)
 	if(CMAKE_CUDA_COMPILER)

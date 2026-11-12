@@ -54,6 +54,10 @@ cxx_library_with_type(MVS "Libs" "" "${cxx_default}"
 	${LIBRARY_FILES_C} ${LIBRARY_FILES_H}
 	${CUDA_LIBRARY_FILES_C} ${CUDA_LIBRARY_FILES_H}
 )
+# the CUDA kernels are compiled by hipcc when targeting HIP: the same .cu sources, as HIP language
+if(_USE_HIP)
+	set_source_files_properties(${LIBRARY_FILES_CUDA} ${CUDA_LIBRARY_FILES_CUDA} PROPERTIES LANGUAGE HIP)
+endif()
 # halfmesh's InteropOpenMVS.h includes <MVS/Mesh.h>, so libs/ has to be on the
 # include path; TINYGLTF_INCLUDE_DIR is asked for above rather than relying on
 # halfmesh's exported include directory happening to be the same vcpkg prefix

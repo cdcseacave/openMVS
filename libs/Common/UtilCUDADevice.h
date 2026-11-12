@@ -13,11 +13,7 @@
 
 #include "Config.h"
 
-// CUDA driver
-#include <cuda.h>
-
-// CUDA toolkit
-#include <cuda_runtime.h>
+#include "UtilCUDACompat.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////

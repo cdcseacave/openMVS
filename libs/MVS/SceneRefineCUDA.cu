@@ -194,9 +194,10 @@ __global__ void kernelProjectMesh(
 		}
 	}
 	if (RESOLVE && ownerBits) {
-		// one word per warp of 32 consecutive faces, stored by lane 0: the buffer holds
-		// (numFaces+31)/32 words per view, so the warps past the last face store nothing
-		const unsigned ballot = __ballot_sync(0xffffffffu, owner);
+		// one word per 32 consecutive faces, stored by lane 0: the buffer holds
+		// (numFaces+31)/32 words per view, so the warps past the last face store nothing.
+		// Requires wave32 (32-bit full mask); the HIP launcher checks warpSize == 32 before use
+		const unsigned ballot = __ballot_sync(OPENMVS_WARP_FULL_MASK, owner);
 		if ((tid & 31) == 0 && tid < (int)numFaces)
 			ownerBits[tid >> 5] = ballot;
 	}
@@ -261,34 +262,27 @@ __global__ void kernelCheckProjection(
 // order does not touch the result: a face folds its own pixels, in raster order, into its own
 // slot.
 
-// exclusive prefix sum of one value per thread over the block (blockDim.x a multiple of 32, at
-// most 1024): returns the thread's exclusive prefix and leaves the block total in `total`;
-// warpSums is 32 words of shared memory, free for reuse when this returns
-__device__ inline uint32_t blockScanExclusive(uint32_t v, uint32_t& total, uint32_t* warpSums)
+// exclusive prefix sum of one value per thread over the whole block (blockDim.x at most 1024,
+// block-uniform calls only): returns the thread's exclusive prefix and leaves the block total in
+// `total`. A shared-memory Hillis-Steele scan: no warp shuffles, so it does not depend on the
+// warp width or on the lowering of shuffles to DPP ops (not available on gfx10+ wave32).
+__device__ inline uint32_t blockScanExclusive(uint32_t v, uint32_t& total)
 {
-	const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5, numWarps = blockDim.x >> 5;
+	__shared__ uint32_t buf[1024];
+	const uint32_t n = blockDim.x, i = threadIdx.x;
+	buf[i] = v;
+	__syncthreads();
 	uint32_t incl = v;
-	#pragma unroll
-	for (int d = 1; d < 32; d <<= 1) {
-		const uint32_t t = __shfl_up_sync(0xffffffffu, incl, d);
-		if (lane >= d) incl += t;
+	for (uint32_t d = 1; d < n; d <<= 1) {
+		const uint32_t t = i >= d ? buf[i-d] : 0u;
+		__syncthreads();
+		incl += t;
+		buf[i] = incl;
+		__syncthreads();
 	}
-	if (lane == 31) warpSums[warp] = incl;
-	__syncthreads();
-	if (warp == 0) {
-		uint32_t s = lane < numWarps ? warpSums[lane] : 0u;
-		#pragma unroll
-		for (int d = 1; d < 32; d <<= 1) {
-			const uint32_t t = __shfl_up_sync(0xffffffffu, s, d);
-			if (lane >= d) s += t;
-		}
-		if (lane < numWarps) warpSums[lane] = s;
-	}
-	__syncthreads();
-	const uint32_t prefix = (warp ? warpSums[warp-1] : 0u) + incl - v;
-	total = warpSums[numWarps-1];
-	__syncthreads();
-	return prefix;
+	total = buf[n-1];
+	__syncthreads(); // buf is reused by the next call only after every thread read the total
+	return incl - v;
 }
 
 __global__ void kernelCountOwners(
@@ -296,13 +290,12 @@ __global__ void kernelCountOwners(
 	uint32_t* __restrict__ counts, // 1 per view
 	uint32_t numWords)
 {
-	__shared__ uint32_t warpSums[32];
 	const uint32_t* words = ownerBits + (size_t)blockIdx.x * numWords;
 	uint32_t n = 0;
 	for (uint32_t w = threadIdx.x; w < numWords; w += blockDim.x)
 		n += __popc(words[w]);
 	uint32_t total;
-	blockScanExclusive(n, total, warpSums);
+	blockScanExclusive(n, total);
 	if (threadIdx.x == 0)
 		counts[blockIdx.x] = total;
 }
@@ -312,12 +305,11 @@ __global__ void kernelScanViewCounts(
 	uint32_t* __restrict__ offsets, // numViews+1: the exclusive prefix sum of counts, then the total
 	uint32_t numViews)
 {
-	__shared__ uint32_t warpSums[32];
 	uint32_t running = 0;
 	for (uint32_t base = 0; base < numViews; base += blockDim.x) {
 		const uint32_t i = base + threadIdx.x;
 		uint32_t total;
-		const uint32_t prefix = blockScanExclusive(i < numViews ? counts[i] : 0u, total, warpSums);
+		const uint32_t prefix = blockScanExclusive(i < numViews ? counts[i] : 0u, total);
 		if (i < numViews)
 			offsets[i] = running + prefix;
 		running += total;
@@ -332,7 +324,6 @@ __global__ void kernelCompactOwners(
 	uint32_t* __restrict__ ownerList, // offsets[numViews] entries: every view's owner faces, in face order
 	uint32_t numWords)
 {
-	__shared__ uint32_t warpSums[32];
 	const uint32_t* words = ownerBits + (size_t)blockIdx.x * numWords;
 	uint32_t* list = ownerList + offsets[blockIdx.x];
 	uint32_t running = 0;
@@ -340,7 +331,7 @@ __global__ void kernelCompactOwners(
 		const uint32_t w = base + threadIdx.x;
 		uint32_t bits = w < numWords ? words[w] : 0u;
 		uint32_t total;
-		uint32_t pos = running + blockScanExclusive(__popc(bits), total, warpSums);
+		uint32_t pos = running + blockScanExclusive(__popc(bits), total);
 		while (bits) {
 			list[pos++] = w*32 + (uint32_t)(__ffs(bits) - 1);
 			bits &= bits - 1;
@@ -367,12 +358,11 @@ __global__ void kernelSortOwnersTile(
 	uint32_t* __restrict__ listOut,
 	int tileShiftX, int tileShiftY)
 {
-	extern __shared__ uint32_t hist[]; // the view's tile count + 32 words for the scan
+	extern __shared__ uint32_t hist[]; // the view's tile count
 	const Camera camera = cameras[blockIdx.x];
 	const uint32_t off = offsets[blockIdx.x], n = offsets[blockIdx.x+1] - off;
 	const int tilesX = (camera.size.x() + (1 << tileShiftX) - 1) >> tileShiftX;
 	const int numBuckets = tilesX * ((camera.size.y() + (1 << tileShiftY) - 1) >> tileShiftY);
-	uint32_t* warpSums = hist + numBuckets;
 	for (int b = threadIdx.x; b < numBuckets; b += blockDim.x)
 		hist[b] = 0;
 	__syncthreads();
@@ -392,7 +382,7 @@ __global__ void kernelSortOwnersTile(
 	for (int base = 0; base < numBuckets; base += blockDim.x) {
 		const int b = base + threadIdx.x;
 		uint32_t total;
-		const uint32_t prefix = blockScanExclusive(b < numBuckets ? hist[b] : 0u, total, warpSums);
+		const uint32_t prefix = blockScanExclusive(b < numBuckets ? hist[b] : 0u, total);
 		if (b < numBuckets)
 			hist[b] = running + prefix;
 		running += total;
@@ -610,9 +600,12 @@ __global__ void kernelComputeWindowStats(
 	constexpr int Block = 16;
 	constexpr int Tile = Block + 2*Refine::HalfSize;
 	__shared__ float sA[Tile*Tile], sB[Tile*Tile], sW[Tile*Tile];
+	__shared__ int tileHasMask; // set when any thread of the block staged a masked sample
 	const int x0 = blockIdx.x * Block - Refine::HalfSize;
 	const int y0 = blockIdx.y * Block - Refine::HalfSize;
-	bool any = false; // this thread staged a masked sample
+	if (threadIdx.x == 0 && threadIdx.y == 0)
+		tileHasMask = 0;
+	__syncthreads();
 	for (int i = threadIdx.y * Block + threadIdx.x; i < Tile*Tile; i += Block*Block) {
 		const int gx = x0 + i % Tile, gy = y0 + i / Tile;
 		float a(0.f), b(0.f), w(0.f);
@@ -621,13 +614,14 @@ __global__ void kernelComputeWindowStats(
 			a = readSurfFloat(surfImageA, gx, gy);
 			b = readSurfFloat(surfImageProj, gx, gy);
 			w = 1.f;
-			any = true;
+			atomicOr(&tileHasMask, 1);
 		}
 		sA[i] = a; sB[i] = b; sW[i] = w;
 	}
 	// a tile without a single masked sample (most tiles, in a scene of many small views) writes
-	// its zeros and leaves; the vote is a barrier of its own, so the block leaves together
-	if (!__syncthreads_or(any)) {
+	// its zeros and leaves; the flag is read after the barrier, so the block leaves together
+	__syncthreads();
+	if (!tileHasMask) {
 		if (threadIdx.x == 0 && threadIdx.y == 0) {
 			const int idxBlock = blockIdx.y * gridDim.x + blockIdx.x;
 			blockSums[idxBlock*2 + 0] = 0.f;
@@ -635,7 +629,6 @@ __global__ void kernelComputeWindowStats(
 		}
 		return;
 	}
-	__syncthreads();
 
 	// this thread's contribution to the block's reliability sums: 0 outside the image, the
 	// border, the mask or the gates, exactly the pixels the CPU's ScoreMesh S skips; no early
@@ -1063,7 +1056,7 @@ void LaunchSortOwnersTile(
 	int tileShiftX, int tileShiftY, uint32_t maxBuckets, uint32_t numViews)
 {
 	ASSERT(maxBuckets <= 8192); // static limit of the dynamic shared memory
-	kernelSortOwnersTile<<<numViews, 1024, sizeof(uint32_t)*(maxBuckets + 32)>>>(
+	kernelSortOwnersTile<<<numViews, 1024, sizeof(uint32_t)*maxBuckets>>>(
 		vertices, faces, cameras, offsets, listIn, keys, listOut, tileShiftX, tileShiftY);
 }
 

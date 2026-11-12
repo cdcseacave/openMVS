@@ -354,9 +354,14 @@ __device__ float ScorePlane(const RefPatchCache& cache, const CUDA::Camera& refC
 		#pragma unroll
 		for (int j = -nSizeHalfWindow; j <= nSizeHalfWindow; j += nSizeStep) {
 			const float invZ = __fdividef(1.f, X.z());
-			const float trgPx = X.x() * invZ + 0.5f;
-			const float trgPy = X.y() * invZ + 0.5f;
-			const float trgPix = tex2D<float>(trgImage, trgPx, trgPy);
+			const float trgPx = X.x() * invZ;
+			const float trgPy = X.y() * invZ;
+			// same rule as the CPU ScorePixelImage: every patch sample must lie inside the image
+			// with a 1px border, otherwise the candidate is rejected; the texture is wrap-addressed,
+			// so an out-of-image sample would otherwise read the opposite edge
+			if (trgPx < 1.f || trgPy < 1.f || trgPx > trgCamera.size.x() - 2.f || trgPy > trgCamera.size.y() - 2.f)
+				return fBadCost;
+			const float trgPix = tex2D<float>(trgImage, trgPx + 0.5f, trgPy + 0.5f);
 			const float w = cache.weight[idx];
 			const float wTrg = w * trgPix;
 			sumTrg += wTrg;
@@ -411,6 +416,42 @@ __device__ inline float MultiViewScoreNeighborPlane(const RefPatchCache& cache, 
 	plane.w() = SEACAVE::InterpolatePlaneDepth(g_cameras[0].model.f, g_cameras[0].model.p, p, np, plane.w(), plane.topLeftCorner<3,1>(), g_params.fDepthMin, g_params.fDepthMax);
 	MultiViewScorePlane<GEOM>(cache, images, depthImages, p, plane, lowDepth, costVector);
 	return plane.w();
+}
+
+// neighbor smoothness bonus, the GPU port of the CPU estimator's
+// DENSE_SMOOTHNESS_PLANE term (DepthEstimator::ScorePixelImage): scale the
+// photometric cost of a plane hypothesis down when it agrees with the four
+// adjacent neighbor estimates in depth (point-to-candidate-plane distance,
+// relative to depth) and in normal (angle). Without it the per-pixel winner
+// is photometric-only and the recovered normals are an order of magnitude
+// noisier than the CPU ones, which fusion's normal-agreement test then
+// rejects. Constants match the CPU defaults: fRandomSmoothBonus=0.93,
+// fRandomSmoothDepth=0.02, fRandomSmoothNormal=13deg (DepthMap.cpp).
+struct NeighborSmoothness {
+	Point3 X[4];      // neighbor 3D points (camera space)
+	Point3 normal[4]; // neighbor normals (camera space)
+	int num;
+};
+
+__device__ inline float ComputeSmoothnessFactor(const NeighborSmoothness& nb, const CUDA::Camera& camera, const Point2i& p, const Point4& plane)
+{
+	constexpr float smoothBonusDepth = 1.f - 0.93f;
+	constexpr float smoothBonusNormal = (1.f - 0.93f) * 0.96f;
+	constexpr float smoothSigmaDepth = -1.f / (2.f * 0.02f * 0.02f);
+	constexpr float d2r13 = 13.f * (float)M_PI / 180.f;
+	constexpr float smoothSigmaNormal = -1.f / (2.f * d2r13 * d2r13);
+	const Point3 normal = plane.topLeftCorner<3,1>();
+	const float depth = plane.w();
+	const Point3 X = camera.model.TransformPointI2C(p.cast<float>(), depth);
+	float factor = 1.f;
+	for (int i = 0; i < nb.num; ++i) {
+		const float planeDist = normal.dot(nb.X[i] - X);
+		const float factorDepth = __expf(Square(planeDist / depth) * smoothSigmaDepth);
+		const float cosAngle = min(1.f, max(-1.f, normal.dot(nb.normal[i])));
+		const float factorNormal = __expf(Square(acosf(cosAngle)) * smoothSigmaNormal);
+		factor *= (1.f - smoothBonusDepth * factorDepth) * (1.f - smoothBonusNormal * factorNormal);
+	}
+	return factor;
 }
 
 // aggregate photometric scores from MC-sampled views into one per-pixel
@@ -511,6 +552,23 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 		}
 	}
 
+	// collect the four adjacent neighbor estimates for the smoothness bonus
+	// (the GPU analog of the CPU estimator's neighborsClose list)
+	NeighborSmoothness nbSmooth;
+	nbSmooth.num = 0;
+	{
+		static constexpr int2 adjOffsets[4] = {{0,-1},{0,1},{-1,0},{1,0}};
+		for (int i = 0; i < 4; ++i) {
+			const Point2i np(p.x()+adjOffsets[i].x, p.y()+adjOffsets[i].y);
+			if (!(np.x()>=0 && np.y()>=0 && np.x()<width && np.y()<height))
+				continue;
+			const Point4 nbPlane = LoadPlaneLDG(&planes[neighborPositions[i]]);
+			nbSmooth.X[nbSmooth.num] = g_cameras[0].model.TransformPointI2C(np.cast<float>(), nbPlane.w());
+			nbSmooth.normal[nbSmooth.num] = nbPlane.topLeftCorner<3,1>();
+			++nbSmooth.num;
+		}
+	}
+
 	// multi-hypothesis view selection
 	float viewSelectionPriors[MAX_VIEWS] = {};
 	const int nNumViews = g_params.nNumViews;
@@ -564,13 +622,25 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 	for (int imgId = 0; imgId < nNumViews; ++imgId)
 		if (viewWeights[imgId])
 			SetBit(newSelectedViews, imgId);
+	// smoothness-scaled aggregate cost per candidate plane (CPU: ScorePixel
+	// scales the photometric score by the neighbor smoothness bonus before
+	// hypotheses are compared); per-view costArray entries stay unscaled so
+	// the view selection above is unaffected
 	float finalCosts[8];
-	for (int posId = 0; posId < 8; ++posId)
-		finalCosts[posId] = valid[posId] ? AggregateMultiViewScores(viewWeights, costArray[posId], nNumViews) : FLT_MAX;
+	for (int posId = 0; posId < 8; ++posId) {
+		if (valid[posId]) {
+			Point4 nbPlane = LoadPlaneLDG(&planes[positions[posId]]);
+			nbPlane.w() = neighborDepths[posId];
+			finalCosts[posId] = AggregateMultiViewScores(viewWeights, costArray[posId], nNumViews)
+				* ComputeSmoothnessFactor(nbSmooth, g_cameras[0], p, nbPlane);
+		} else
+			finalCosts[posId] = FLT_MAX;
+	}
 	const int minCostIdx = FindMinIndex(finalCosts, 8);
 	float costVector[MAX_VIEWS];
 	MultiViewScorePlane<GEOM>(refCache, images, depthImages, p, plane, lowDepth, costVector);
-	cost = AggregateMultiViewScores(viewWeights, costVector, nNumViews);
+	cost = AggregateMultiViewScores(viewWeights, costVector, nNumViews)
+		* ComputeSmoothnessFactor(nbSmooth, g_cameras[0], p, plane);
 	if (finalCosts[minCostIdx] < cost) {
 		ASSERT(valid[minCostIdx]);
 		plane = LoadPlaneLDG(&planes[positions[minCostIdx]]);
@@ -606,7 +676,8 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 		newPlane.topLeftCorner<3,1>() = normals[i];
 		newPlane.w() = depths[i];
 		MultiViewScorePlane<GEOM>(refCache, images, depthImages, p, newPlane, lowDepth, costVector);
-		const float costPlane = AggregateMultiViewScores(viewWeights, costVector, nNumViews);
+		const float costPlane = AggregateMultiViewScores(viewWeights, costVector, nNumViews)
+			* ComputeSmoothnessFactor(nbSmooth, g_cameras[0], p, newPlane);
 		if (cost > costPlane) {
 			cost = costPlane;
 			plane = newPlane;
