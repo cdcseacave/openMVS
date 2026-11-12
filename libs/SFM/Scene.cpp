@@ -1012,14 +1012,8 @@ bool Scene::ReconstructHierarchical(const ReconstructionConfig& config, const II
 			return true;
 		}
 
-		// 4. Place the blocks and merge them, then adjust the merged model at the loose bar: the model
-		// holding the most images is merged, every other block's images are left to the resection
-		GlobalAlignment globalAlign(*this, config.globalAlignmentCfg);
-		MergeReport mergeReport;
-		globalAlign.MergeScenes(subScenes, localToGlobals, mergeReport);
-		VERBOSE("Hierarchical merge: %u/%u blocks placed, %u images placed, %u images of unplaced blocks left to the resection",
-			mergeReport.numPlaced, mergeReport.numBlocks, mergeReport.numImagesPlaced, mergeReport.numImagesUnplaced);
-		AdjustMergedScene(*this, config);
+		// 4. The merge, one iterative stage (SceneBlocks::MergeInRounds)
+		sceneBlocks.MergeInRounds(resectionCfg, config);
 	}
 	DEBUG("Hierarchical reconstruction complete: %u/%u images, %u/%u points (%s)",
 		status.nCalibratedImages, images.size(), status.nTracks, tracks.size(), TD_TIMER_GET_FMT().c_str());

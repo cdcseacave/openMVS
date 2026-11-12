@@ -506,6 +506,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::RepeatedFullAdjustmentTest())
 				return false;
+			if (!SFM::CappedAdjustmentTriangulationTest())
+				return false;
 			if (!SFM::CappedSolveScaleTest())
 				return false;
 			if (!SFM::DenseReprojectionBarTest())
@@ -596,6 +598,14 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::MergeTrackLengthTest())
 				return false;
+			if (!SFM::PooledSeamReadingTest())
+				return false;
+			if (!SFM::MergeRoundsTest())
+				return false;
+			if (!SFM::MergeInRoundsTest())
+				return false;
+			if (!SFM::MergeAnchorTest())
+				return false;
 			if (!SFM::UnobservableScaleTest())
 				return false;
 			if (!SFM::UnobservableScalePairTest())
@@ -610,7 +620,7 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::OneCameraSideTest())
 				return false;
-			if (!SFM::OneCameraDoorTest())
+			if (!SFM::OneCameraDirectionTest())
 				return false;
 			if (!SFM::RingLoopClosureTest())
 				return false;

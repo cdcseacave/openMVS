@@ -527,6 +527,7 @@ bool ResectionLinkGateTest();
 // single solve fed by the inlier prefix alone does not do, one whose input grows once it is back takes a second
 // solve, and with ResectionConfig::fullBARepeats 0 the adjustment is one solve of the wider input
 bool RepeatedFullAdjustmentTest();
+bool CappedAdjustmentTriangulationTest();
 // A global solve with the per-image observation cap, one camera held and no GPS, keeps the cameras' scale, so the
 // tracks the cap left out of it are still where their observations see them after it
 bool CappedSolveScaleTest();
@@ -690,6 +691,13 @@ bool WeightlessScaleReadingTest();
 bool RingPlacementTest();
 bool MergeJoinReprojectionTest();
 bool MergeTrackLengthTest();
+bool PooledSeamReadingTest();
+// The merge in rounds: a block kept whole, the regrouping around the merged model, the release (driven by hand)
+bool MergeRoundsTest();
+// The merge's own loop (SceneBlocks::MergeInRounds): a block no seam reaches is kept, read again and released at the fixed point
+bool MergeInRoundsTest();
+// From round 2 on the merged model is the one holding block 0, whatever the other models weigh
+bool MergeAnchorTest();
 bool UnobservableScaleTest();
 bool UnobservableScalePairTest();
 bool AmbiguousPairTest();
@@ -709,9 +717,8 @@ bool RivalModesOnCycleTest();
 // A seam one camera holds on its side weighs one camera, however many correspondences it carries,
 // and no block is placed on it
 bool OneCameraSideTest();
-// A one-camera door closes the triangle that chooses between a pair's true reading and a copy of
-// equal weight
-bool OneCameraDoorTest();
+// A direction seen by one camera gives no reading; a block joined by single cameras only is released
+bool OneCameraDirectionTest();
 // The correspondences a ring of bent blocks leaves past the bar and within the loose bar join their
 // tracks at the merge and end inliers within the bar after the final adjustment
 bool BentBlockClosureTest();

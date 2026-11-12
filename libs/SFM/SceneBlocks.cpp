@@ -9,6 +9,7 @@
 #include "Link2D3D.h"
 #include "PoseLink.h"
 #include "Triangulation.h"
+#include "GlobalAlignment.h"
 
 using namespace SFM;
 
@@ -179,6 +180,98 @@ Scene SceneBlocks::ExtractBlock(
 		subScene.images.size(), subScene.pairs.size(),
 		subScene.tracks.size());
 	return subScene;
+}
+/*----------------------------------------------------------------*/
+
+unsigned SceneBlocks::MergeInRounds(const ResectionConfig& resectionCfg, const ReconstructionConfig& config)
+{
+	ASSERT(IsSplit() && !blocks.empty());
+	// each round places the blocks and merges one model -- the one carrying the most images in round 1, the one
+	// holding block 0 (the merged model read again) after it -- then adjusts it at the loose bar; a block the round
+	// does not place stays whole. While blocks are left, the pool step (the whole-scene resection of the images in
+	// no block, the final pass's own function) runs on the merged model and the next round reads the blocks left
+	// against it. At the fixed point -- the pool step entered no image and the last round placed no block (the
+	// second round always reads the blocks left once) -- one more round releases them, merged without their
+	// poses, their images left to the final pass's resection
+	MergeReport report;
+	bool release = false;
+	unsigned round = 1;
+	for (; ; ++round) {
+		GlobalAlignment globalAlign(scene, config.globalAlignmentCfg);
+		globalAlign.MergeScenes(blocks, localToGlobal, report, release, round == 1 ? NO_ID : 0u);
+		ASSERT(round == 1 || report.poses[0].state == BlockPose::ADMITTED);
+		VERBOSE("Hierarchical merge round %u: %u/%u blocks placed, %u images placed, %u images of unplaced blocks %s",
+			round, report.numPlaced, report.numBlocks, report.numImagesPlaced, report.numImagesUnplaced,
+			release ? "released to the resection" : "kept whole");
+		AdjustMergedScene(scene, config);
+		const uint32_t numModelImages = scene.RecomputeCalibratedImages();
+		if (release || report.numImagesUnplaced == 0)
+			break;
+		// the pool step on the merged model: the images in no block (the kept blocks' images hold no features in
+		// the global scene, so they are no candidates), closing only when it registered one
+		{
+			Resection resection(scene, resectionCfg);
+			if (resection.RegisterImages(false))
+				FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+		}
+		const uint32_t numAfterPool = scene.RecomputeCalibratedImages();
+		ASSERT(numAfterPool >= numModelImages);
+		const uint32_t numEntered = numAfterPool - numModelImages;
+		const unsigned numBlocksPlaced = round == 1 ? 1u : report.numPlaced - 1u; // block 0, the merged model, is placed from round 2 on
+		release = numEntered == 0 && numBlocksPlaced == 0;
+		std::vector<bool> placed(report.poses.size());
+		FOREACH(b, report.poses)
+			placed[b] = report.poses[b].state == BlockPose::ADMITTED;
+		RegroupAfterMerge(placed);
+		VERBOSE("Hierarchical merge round %u: the pool step entered %u images; %u blocks left are read against the merged model%s",
+			round + 1, numEntered, (unsigned)blocks.size() - 1u, release ? " and released (nothing changed)" : "");
+	}
+	return round;
+}
+/*----------------------------------------------------------------*/
+
+void SceneBlocks::RegroupAfterMerge(const std::vector<bool>& placed)
+{
+	ASSERT(IsSplit() && placed.size() == blocks.size());
+	std::vector<Scene> kept;
+	std::vector<IIndexArr> keptLocalToGlobal;
+	FOREACH(b, blocks)
+		if (!placed[b]) {
+			kept.emplace_back(std::move(blocks[b]));
+			keptLocalToGlobal.emplace_back(std::move(localToGlobal[b]));
+		}
+	blocks.clear();
+	localToGlobal.clear();
+	blockOf.MemsetValue(NO_ID);
+	// block 0: the merged model, every posed image of the global scene, extracted as a cluster is
+	IIndexArr model;
+	FOREACH(g, scene.images)
+		if (scene.images[g].HasPose())
+			model.push_back(g);
+	ASSERT(!model.empty());
+	IIndexArr globalToLocal(scene.images.size());
+	globalToLocal.MemsetValue(NO_ID);
+	FOREACH(l, model) {
+		globalToLocal[model[l]] = l;
+		blockOf[model[l]] = 0;
+	}
+	blocks.emplace_back(ExtractBlock(model, globalToLocal, scene.nMaxThreads));
+	blocks.back().RecomputeCalibratedImages();
+	// the merged model's tracks now live in block 0; a pool image's observations join them again at the
+	// next merge through its pairs (connecting pairs), as at the first
+	scene.tracks.Release();
+	scene.colors.Release();
+	scene.status.nTracks = 0;
+	localToGlobal.emplace_back(std::move(model));
+	// then the blocks the merge kept whole, as they were
+	FOREACH(k, kept) {
+		for (const IIndex g : keptLocalToGlobal[k]) {
+			ASSERT(blockOf[g] == NO_ID && !scene.images[g].HasPose());
+			blockOf[g] = (IIndex)blocks.size();
+		}
+		blocks.emplace_back(std::move(kept[k]));
+		localToGlobal.emplace_back(std::move(keptLocalToGlobal[k]));
+	}
 }
 /*----------------------------------------------------------------*/
 

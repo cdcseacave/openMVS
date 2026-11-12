@@ -10,10 +10,12 @@ Four phases, orchestrated by `Scene::ReconstructHierarchical()`:
 Phase 1: SceneCluster::Partition() + SceneBlocks::Extract()  → clusters become blocks, the rest is the pool
 Phase 2: threadPool.detach_loop(blocks)                       → parallel incremental SFM
 Phase 3: SceneBlocks::ResectPool()                            → unregistered images to the pool, registered into the block they connect to best
-Phase 4: GlobalAlignment::MergeScenes()                       → read every block pair, average the block graph, merge
+Phase 4: GlobalAlignment::MergeScenes(), in rounds            → read every block pair, average the block graph, merge; the
+                                                                blocks left out kept whole and read again against the merged
+                                                                model after a pool step, released at the fixed point
 ```
 
-In plain words: the images are split into groups (blocks), each block is reconstructed on its own, every image a block could not register (and every image no block took) is put in one common pool and tried by the block it is best connected to, and then the blocks are placed against each other and merged.
+In plain words: the images are split into groups (blocks), each block is reconstructed on its own, every image a block could not register (and every image no block took) is put in one common pool and tried by the block it is best connected to, and then the blocks are placed against each other and merged; a block that could not be placed is kept whole and tried again against the merged model, until nothing changes, and only then are its images handed to the resection one by one.
 
 ## 2. Algorithm as implemented
 
@@ -97,16 +99,16 @@ Logs: one VERBOSE line per round (passes, attempts, registered, left in the pool
 
 ### Phase 4 — Global Alignment (the block graph)
 
-Each sub-scene — a **block** from here on, `GlobalAlignment`'s own word for it — lives in its own arbitrary coordinate system. `GlobalAlignment::MergeScenes` treats the blocks as the nodes of a small graph and every block pair the cross pairs join as an edge holding the readings of its Sim(3); it places the blocks as the view-graph filter places images — one robust averaging of the kept readings, every reading the averaged poses contradict cut, repeated until the kept set settles — and merges the model holding the most images back into the scene; every block outside it is merged without a pose, for the post-merge resection to recover.
+Each sub-scene — a **block** from here on, `GlobalAlignment`'s own word for it — lives in its own arbitrary coordinate system. `GlobalAlignment::MergeScenes` treats the blocks as the nodes of a small graph and every block pair the cross pairs join as an edge holding the readings of its Sim(3); it places the blocks as the view-graph filter places images — one robust averaging of the kept readings, every reading the averaged poses contradict cut, repeated until the kept set settles — and merges the model holding the most images back into the scene; every block outside it is either kept whole for the next round or, in the round that releases it, merged without a pose for the post-merge resection to recover (see *The merge in rounds* below).
 
 #### Readings
 
-The cross pairs of at least `minCommonTracks` (25) weighted inliers are grouped by block pair (`MapBlockPairLinks`), and every correspondence of a pair is collected in both directions (`CollectPairObservations`): a match counts in the direction "B's cameras on A's points" when its A endpoint lies on an inlier track of A, and in the other when its B endpoint lies on one of B. How a pair is read depends on `GlobalAlignmentConfig::alignment` (`--cluster-alignment`):
+Every cross pair, however light, is grouped by its block pair (`MapBlockPairLinks`): a block pair is read from all its cross pairs together, so two light pairs of one camera each add up to what one heavy pair carries (no per-pair bar). Every correspondence of a pair is collected in both directions (`CollectPairObservations`): a match counts in the direction "B's cameras on A's points" when its A endpoint lies on an inlier track of A, and in the other when its B endpoint lies on one of B. How a pair is read depends on `GlobalAlignmentConfig::alignment` (`--cluster-alignment`):
 
-- **`ALIGN_CAMERAS`** (1, the default) — **each direction is read once**: the rig of one block's cameras against the other block's points by PoseLib's generalized absolute pose with scale (RANSAC on the resection's PnP options), refined over its inliers with Ceres against every bearing it explains at `maxReprojError` (4 px, the resection's own), the residual being the chord between observed and predicted bearings in each camera's own pixels under a Huber loss. A direction whose rig is one camera is a **one-camera door**: that camera's own PnP against the other block's points gives the rotation and the centre, and the median ratio of the depths its points have in the two blocks gives the scale (with fewer than 10 such ratios it observes none). A direction needs `minCommonTracks` correspondences and as many inliers. A reading observes a scale when the cameras holding `minCameraInliers` (10) of its inliers spread over at least `minRigSpreadRatio` (0.03) of their points' median depth. **The two directions stay two readings** of their pair: they are not grouped, and each is a measurement of its edge; where they agree they are each other's test.
-- **`ALIGN_POINTS`** (0) — one 3D-3D similarity by RANSAC over the matches whose two endpoints both lie on an inlier track of their block (`simInlierThresholdFactor` 0.01 of the destination cloud's diagonal, `minSimInlierRatio` 0.3, `simRansacMaxIters` 10000).
+- **`ALIGN_CAMERAS`** (1, the default) — **each direction is read once**: the rig of one block's cameras against the other block's points by PoseLib's generalized absolute pose with scale (RANSAC on the resection's PnP options), refined over its inliers with Ceres against every bearing it explains at `maxReprojError` (4 px, the resection's own), the residual being the chord between observed and predicted bearings in each camera's own pixels under a Huber loss. A direction whose correspondences come from one camera gives **no reading**: one centre observes no scale, and a block is joined by all its cameras together or not at all; its pair is read by the other direction if that one is a rig, and a block no rig reading places is released at the fixed point (*The merge in rounds*), its images registered one by one. A direction needs `minCommonTracks` correspondences and as many inliers. A reading observes a scale when the cameras holding `minCameraInliers` (10) of its inliers spread over at least `minRigSpreadRatio` (0.03) of their points' median depth. **The two directions stay two readings** of their pair: they are not grouped, and each is a measurement of its edge; where they agree they are each other's test.
+- **`ALIGN_POINTS`** (0) — one 3D-3D similarity by RANSAC over the matches of all the pair's cross pairs (pooled, as the camera alignment's) whose two endpoints both lie on an inlier track of their block (`simInlierThresholdFactor` 0.01 of the destination cloud's diagonal, `minSimInlierRatio` 0.3, `simRansacMaxIters` 10000).
 
-Every reading is scored on every correspondence of its pair (`ScoreSeam`): a camera of either block that holds `minCameraInliers` inlier correspondences supports it, and the reading's camera count is the supporting cameras of its **weaker side** — a side held by one camera weighs one, however many correspondences that camera carries (the frame misplaced inside its own block that carries a whole seam on its side). It is also read against the **verified image pairs** across its pair (`MeasureSeamPairs`): a pair of at least `minPairInliers` (30) weighted inliers agrees when the relative rotation and the baseline direction the reading gives its two images are within `maxPairRotationResidual` (5°; the baseline at `atan(tan 5° / ray angle)`) of what it measured; the pairs' **share** is the inlier weight that agrees over all read (1 when none is read), and they **hold** against the reading when more weight disagrees than agrees.
+Every reading is scored on every correspondence of its pair (`ScoreSeam`): a camera of either block that holds `minCameraInliers` inlier correspondences supports it, and the reading's camera count is the supporting cameras of its **weaker side** — a side held by one camera weighs one, however many correspondences that camera carries (the frame misplaced inside its own block that carries a whole seam on its side). It is also read against the **verified image pairs** across its pair (`MeasureSeamPairs`), every pair with a relative pose read, the pairs together: under `minPairInliers` (30) weighted inliers in total they say nothing; a pair agrees when the relative rotation and the baseline direction the reading gives its two images are within `maxPairRotationResidual` (5°; the baseline at `atan(tan 5° / ray angle)`) of what it measured; the pairs' **share** is the inlier weight that agrees over all read (1 when none is read), and they **hold** against the reading when more weight disagrees than agrees.
 
 A reading of the camera alignment always enters the block graph, weighing `max(cameras, 1) × share`. The 3D-3D reading enters only with a supporting camera on each side and its verified pairs not against it, weighing its cameras.
 
@@ -125,9 +127,19 @@ Every reading is then judged against the poses of its component: kept when its r
 
 #### Merge and the merged model's adjustment
 
-The blocks of the merged model are transformed by their poses, a camera shared across blocks gets the average of its intrinsics, and keypoints, descriptors and pairs move back from every block (reversing `SceneBlocks::Extract`). **Closure**: every correspondence of every pair of placed blocks — whether or not a reading of it was kept — that the final block poses explain within the loose bar (`looseSeamFactor` 3 × `maxReprojError` = 12 px) joins its two tracks by construction, on the duplicate-image and length guards alone; the other connecting pairs (two blocks, or a pool image) join under the duplicate-image, length and reprojection guards; intra-block pairs are skipped. Every block outside the merged model is merged without its poses and its tracks without positions, so the resection can register its images one by one. A single block (a split the pool resection leaves with one block) is merged in its own frame through the same path, so its intrinsics and its tracks reach the scene as a placed block's do.
+The blocks of the merged model are transformed by their poses, a camera shared across blocks gets the average of its intrinsics, and keypoints, descriptors and pairs move back from every block (reversing `SceneBlocks::Extract`). **Closure**: every correspondence of the cross pairs of at least `minCommonTracks` (25) weighted inliers of every pair of placed blocks — whether or not a reading of it was kept — that the final block poses explain within the loose bar (`looseSeamFactor` 3 × `maxReprojError` = 12 px) joins its two tracks by construction, on the duplicate-image and length guards alone; the matches of every other connecting pair (two blocks, the lighter cross pairs among them, or a pool image) join on the same two guards after them (no reprojection guard), and the triangulation and the track filter of the merged model's adjustment decide each observation; intra-block pairs are skipped. A block outside the merged model is kept whole in its own scene (`releaseUnplaced` false: its features, pairs and tracks stay there, the connecting pairs to its images are skipped), or, in the round that releases it, merged without its poses and its tracks without positions, so the resection can register its images one by one. A single block (a split the pool resection leaves with one block) is merged in its own frame through the same path, so its intrinsics and its tracks reach the scene as a placed block's do.
 
-`AdjustMergedScene` (`Scene.h`) then filters the merged scene at the loose bar, triangulates again, filters again and runs one bundle adjustment: a model never closes its cycles exactly, and a block bent within the graph bars is off by about the loose bar at its far end, so its far matches stay in their tracks until the adjustment has straightened it. `Scene::ReconstructHierarchical` returns, and the reconstruction's shared tail — track filtering, re-triangulation, the final bundle adjustment at the bar, and the resection of every unregistered image (an unplaced block's images and the pool's among them) against the adjusted model (which always runs and closes with its full adjustment) — runs as for any other reconstruction.
+`AdjustMergedScene` (`Scene.h`) then filters the merged scene at the loose bar, triangulates again, filters again and runs one bundle adjustment: a model never closes its cycles exactly, and a block bent within the graph bars is off by about the loose bar at its far end, so its far matches stay in their tracks until the adjustment has straightened it.
+
+#### The merge in rounds
+
+`SceneBlocks::MergeInRounds`, called by `Scene::ReconstructHierarchical`, runs the merge as one iterative stage. Each round calls `MergeScenes` and `AdjustMergedScene` and recounts the calibrated images. The model merged is the one carrying the most images in round 1, and from round 2 on the one holding block 0, the merged model read again (`MergeScenes`' `anchorBlock`): the merged model is the body that grows, and a heavier model of blocks left out never takes its place. While blocks are left out:
+
+1. **Pool step**: the whole-scene resection (`Resection::RegisterImages(false)`, the final pass's own function, filtering the tracks only when it registered an image) on the merged model; its candidates are the images in no block (the kept blocks' images hold no features in the global scene).
+2. **Regroup** (`SceneBlocks::RegroupAfterMerge`): block 0 becomes the merged model — every posed image of the global scene, extracted as a cluster is, its features, pairs and the scene's tracks moved in — followed by the blocks the round left out, as they are.
+3. **Fixed point**: when the pool step entered no image and the last round placed no block (the second round always reads the blocks left once), the next round is the last: it reads them once more and releases whatever it does not place, merged without poses, to the final pass's resection.
+
+`Scene::ReconstructHierarchical` returns, and the reconstruction's shared tail — track filtering, re-triangulation, the final bundle adjustment at the bar, and the resection of every unregistered image (an unplaced block's images and the pool's among them) against the adjusted model (which always runs and closes with its full adjustment) — runs as for any other reconstruction.
 
 ## 3. Parameters and defaults
 
@@ -160,25 +172,42 @@ Key invariants:
 - A pair lives in the block holding both its images, else in the global scene with global IDs; it moves with the images (split, pool resection, merge)
 - `localToGlobal` stays strictly increasing, so every pair keeps `ID1 < ID2` in local and global IDs
 - Colors are released during track reassembly (indices change) and must be rebuilt downstream
+- From round 2 of the merge, block 0 is the merged model (`SceneBlocks::RegroupAfterMerge`: every posed image of the global scene extracted as a cluster, the scene's tracks moved into it) and is placed in every round (asserted); a kept block's images hold no features and no pose in the global scene until the round that releases them
+
+```
+Merge round r >= 2 (RegroupAfterMerge):
+  Global → Block 0:     the posed images' keypoints, descriptors, pairs (MOVED), tracks (COPIED, then released from the global scene)
+  Kept blocks:          left as they are (their images keep their features in their own scene)
+```
 
 ## 5. Validation of the shipped defaults
 
-### Measured (2026-10-25, 8 threads, one run per arm, the 17 of the 18 test captures that split)
+Measured with the dev build of this design (reproduced byte for byte by the production code on 4e5c6f6d), 8 threads, one run per capture, each run reloading the capture's saved matched scene (`rotconf-20261107-match/precut`). Points = the share of the final tracks valid.
 
-On identical saved blocks (each arm reading the control's blocks and reloading the same matched scene; `merge-retest-20261025.md` of the release tools):
+| capture | registered | right / wrong | pose score | points valid | rounds |
+|---|---|---|---|---|---|
+| 6DCA1E8E | 846 / 872 | 467 / 8 | .7426 | 94.9% | 3 (8 of 12 blocks, then none; 4 released) |
+| 5ada248e | 534 / 540 | 527 / 6 | .9606 | 96.4% | 1 |
+| 4e5c6f6d | 291 / 302 | 249 / 33 | .9123 | 99.0% | 2 (block 0 placed in round 2, wrong: its ties are on block 1's wrong images) |
+| Outdoor_004 | 767 / 824 | 767 / 0 | .7177 | 92.8% | 1 |
+| Palace | 495 / 509 | 494 / 1 | .8199 | 98.4% | 1 |
+| 5828945d | 237 / 238 | 226 / 2 | .9765 | 97.8% | 1 |
+| 1c65aab4 | 513 / 517 | 513 / 0 | .9856 | 98.5% | 1 |
+| 5936fac3 | 468 / 468 | 466 / 0 | .9855 | 98.0% | 1 |
+| 26ccbd51 | 726 / 730 | 720 / 0 | .9764 | 97.5% | 1 |
+| Indoor_044 | 1087 / 1087 | 1087 / 0 | .7149 | 96.7% | 1 |
 
-| | the camera-vote merge it replaces | this merge | the final design (not shipped) | this merge, `--cluster-alignment 0` |
-|---|---|---|---|---|
-| blocks placed, of 103 | 90 | 102 | 102 | 99 |
-| wrong blocks | 0 | 0 | 0 | 1 (alameda block 5, F1 0.9876 against 0.9972) |
-| images registered | 9340 | 9348 | the same as this merge | |
-| merge + its adjustment, wall s summed | 2786 | 1374 (alameda 1284 -> 417) | about this merge's | |
-
-F1 against the replaced merge: 2 captures better, 2 worse (both thread-noisy: Palace, Outdoor_004), 8 ties on the approved and the new references; the resection now registers almost every image of the blocks the replaced merge left out, so its placement gain shows in blocks and time more than in F1. This merge and the final design place and register the same on 17 of 17 captures, F1 within the noise.
+The rounds acted on two of the ten captures and changed the outcome on none; 8-thread reloads vary by about .008 in pose score. The wrong images of 6DCA1E8E (134, 240, 283), 5ada248e (129, 491, 494-496) and 4e5c6f6d (block 1's 16-41) are wrong inside their own block, before the merge.
 
 ## 6. Rejected alternatives
 
 The final design — extra modes on camera evidence, free space, the evidence product, a consensus over spanning forests and an exclusive-evidence bridge rule — places the same blocks on every capture measured and is recorded as an alternative in `docs/design/ExperimentRecord.md`, section "The block merge as one decision over the block graph (the final design, not shipped)".
+
+- **The per-pair bars on the readings and the witness** (a cross pair of at least 25 weighted inliers to link two blocks, of 30 to witness a reading): two light pairs of one camera each say nothing alone where their sum does; with them same-image accuracy is .9114 on 5ada248e (.9424 pooled), within the noise elsewhere, and .619 on 6DCA1E8E (.604 pooled, not explained).
+- **A reprojection guard on the cross-block join, relaxed to 24 or 48 px**: offline, on the refused joins of eight captures judged against their references, it stops 5 (24 px) to 7 (48 px) false joins for each true one it prevents, but no capture's result improved outside the noise (4e5c6f6d, 5ada248e, Palace tie; 6DCA1E8E same-image accuracy .603 -> .553 at 24 px and .585 at 48 px): the merged model's triangulation and filter remove the false joins anyway.
+- **The final scene's weak-image filter on every block and every round's merged model**: it finds some wrong images (4e5c6f6d block 1, 5ada248e image 129), but the pool or the final pass registers them wrong again; no result changed outside the noise of one run per capture (6DCA1E8E .603 -> .613).
+- **The bridge's witness read over the whole cut the bridge makes** (every verified pair between its two sides, against the averaged placement): left out on the user's ruling; kept as a comment at the bridge rule in `SelectSeamGraph`.
+- **Blocks left out never released** (the rounds end with their images unregistered): 6DCA1E8E registers 614 of 872 images against 846, at the same accuracy.
 
 ### Decoupled R → s → t Estimation
 
@@ -194,7 +223,7 @@ On the measured blocks the first reading of each direction is the right reading 
 
 ### Union-Find with Guards
 
-Track merging across blocks reuses the union-find pattern from `BuildTracks`, under three guards. Duplicate image: a joined track never holds one image twice. Length: a joined track never holds more than 255 observations (the inlier count is a byte). Reprojection: because sub-scene tracks have disjoint image sets by construction, the duplicate-image guard alone cannot catch a false match between two blocks, so the position of each root must reproject within the loose bar (12 px, judged as `FilterTracks` judges, behind the camera fails) into every posed observation of the other root (a root without a position is checked from the other side alone; one without posed observations offers nothing to check). It replaced a 3D distance of 2% of the bounding-box diagonal, which is one length for every depth: generous for a near point, strict for a far one whose depth two blocks measure poorly (#62). Every pair with a pool image is a connecting pair: a pool image's observations left its block's tracks, so its pairs are the only source of the tracks the post-merge resection reads for it. The one exception is the closure: a correspondence of a pair of placed blocks that the final block poses explain within the loose bar has already agreed with the placement, so it joins on the duplicate-image and length guards alone.
+Track merging across blocks reuses the union-find pattern from `BuildTracks`, under two guards. Duplicate image: a joined track never holds one image twice. Length: a joined track never holds more than 255 observations (the inlier count is a byte). Every pair with a pool image is a connecting pair: a pool image's observations left its block's tracks, so its pairs are the only source of the tracks the post-merge resection reads for it. No reprojection guard: the merged model's adjustment and filter judge each observation (see the relaxed guard above).
 
 ### Why a block left out is not resected as a block
 
@@ -211,6 +240,8 @@ Tried as an internal-soundness check inside `GlobalAlignment` and abandoned: on 
 ## 7. Open items
 
 - **A non-rigid block** — several bodies at different scales inside one block — cannot be placed by one similarity, and its neighbours' readings through it disagree; the averaging may then place it, or a rigid block next to it, wrong. Measured on older blocks (Outdoor_004 on the blocks of 2026-10-17: 3 of 7 blocks wrong, F1 0.50 against the final design's 0.73, which places such a block by one of its bodies through its extra modes). The current upstream (star evidence, no relative-pose fallback) makes rigid blocks on the new captures; 26ccbd51's sub-scene 1 and Outdoor_004's sub-scene 4 are non-rigid on the current blocks, and both are placed right.
-- **Three planted scenes it places wrong**, none of which any capture of the 18 produces: a 180° chord carried by every camera of a block with no verified pairs to refuse it (only a free-space test sees it); a bridge whose two readings weigh alike a period of a repeated structure apart (only a search for a second mode sees the rival); a copy heavier than the truth on the pair a one-camera door closes.
+- **A light false pair lending a camera**: pooled readings count every camera a cross pair adds, so a reading carried by a few false or copied pairs can gain the second camera a bridge needs, or outweigh the truth on a cycle (4e5c6f6d with three false pairs across one block pair places blocks 0 and 1 wrong). Nothing in the merge separates it; the witness read over the bridge's whole cut would (a comment at the bridge rule in `SelectSeamGraph`), and is not implemented.
+- **Wrong images inside a block** are placed with their block: the merge assumes every image of a block is right in it.
+- **Two planted scenes it places wrong**, neither of which any capture of the 18 produces: a 180° chord carried by every camera of a block with no verified pairs to refuse it (only a free-space test sees it); a bridge whose two readings weigh alike a period of a repeated structure apart (only a search for a second mode sees the rival).
 - **A component the averaging places only in part** — blocks in another rotation frame, or tied to the gauge's side by readings without scale alone — loses the rest: their readings cannot be judged and go off, and their images go to the resection. Not seen on the 18 captures.
 - **The 3D-3D alternative** (`--cluster-alignment 0`) is weaker: alameda places block 5 wrong (F1 0.9876 against 0.9972), 1c65aab4 places 2 of 4 blocks (the resection recovers the images, at 2.6 times the run's CPU), b68e320e one block fewer.

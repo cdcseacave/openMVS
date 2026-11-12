@@ -191,7 +191,10 @@ normalized by its own share of described versus dense correspondences before it 
 since a dense correspondence reaches a lower inlier share than a described one even on a healthy model -- refining
 the main-set intrinsics (focal, k1, k2, as far as `--refine-intrinsics` allows them) until
 `minRefineExtIntrs` (100) images are registered, and after that whatever the intrinsics level allows
-beyond the main set.
+beyond the main set. A full adjustment is repeated (`AdjustRepeated`, `fullBARepeats` 4 solves after the first)
+while the observations within 3 x `maxReprojError` of the model, its next input, change by enough of some camera's
+share; after every solve the model is filtered at the bar and its pointless tracks triangulated again, the last
+allowed solve included, so a capped adjustment ends as a converged one does.
 
 Between the adjustments, the tracks are triangulated and filtered against `maxReprojError` (4 px) and
 `minAngleThreshold`. Both kinds of observation answer to that bar. `FilterTracks` and `TriangulateTracks`
