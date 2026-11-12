@@ -132,6 +132,21 @@ pairs, reference ties >= 3, among the candidates; mean over 4e5c6f6d, 1c65aab4, 
 | backbone last stage, average | 1024 | 0.158 | 0.246 | 0.134 |
 | backbone last stage, GeM p=3 | 1024 | 0.144 | 0.221 | 0.126 |
 
+**Matching and reconstruction from images** (8 threads; right / wrong = images registered right / wrong against the capture's reference; F1 = the pose score; describe and matching passes in seconds; GPU peak = the process's memory):
+
+| capture | matcher | right / wrong | F1 | describe pass | matching passes | GPU peak MiB |
+|---|---|---|---|---|---|---|
+| 4e5c6f6d | RoMa2 | 249 / 30 | .9132 | 64 | 860 | 9718 |
+| 4e5c6f6d | FlexGlue + gate 0.2 | 258 / 21 to 278 / 0 (two runs) | .9231 to .9690 | 4 to 6 | 353 to 398 | 4160 |
+| 1c65aab4 | RoMa2 | 513 / 0 | .9857 | 22 | 634 | 10152 |
+| 1c65aab4 | FlexGlue + gate 0.2 | 514 / 0 | .9865 | 6 | 613 | 4448 |
+| 5ada248e | RoMa2 | 523 / 5 | .9488 | 23 | 664 | 10698 |
+| 5ada248e | FlexGlue + gate 0.2 | 529 / 4 | .9564 | 12 | 782 | 4492 |
+| Palace | RoMa2 | 496 / 1 | .8116 | 46 | 755 | 9962 |
+| Palace | FlexGlue + gate 0.2 | 492 / 1 | .7954 | 7 | 815 | 4296 |
+
+The result on 4e5c6f6d depends on the matched scene, for both matchers: the weakly coupled stretch of its first 42 images registers wrongly from some matched scenes and right from others, and reloading one saved scene gives the same result again. On Palace FlexGlue scores about .01 to .02 lower in F1 than RoMa2, a loss spread over the middle of the trajectory rather than a few images (28% of the images drop one pose grade, 8% gain one), with a coarser warp grid (128 cells, 15 px on the 1920 px side, against RoMa2's 160 cells, 12 px) as the candidate cause.
+
 **Pose prior convention** (`FlexGlueReconstructTest`, 4 images, CPU): rotation within 0.7 to 2.7 deg and baseline direction within 2.2 to
 16.6 deg of the pose the pair's own matches give.
 
