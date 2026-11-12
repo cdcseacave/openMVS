@@ -19949,7 +19949,48 @@ bool PooledSeamReadingTest()
 	ga.MergeScenes(subScenes, localToGlobals, rep);
 	if (!CheckRingMerge("PooledSeamReadingTest", rep, scene, gtPoses, cfg.numBlocks, 1, kRingMergeRotation, kRingMergePosition))
 		return false;
-	VERBOSE("PooledSeamReadingTest PASSED: %u light cross pairs read together closed the ring, %u blocks placed (%s)",
+	// pairs together under minPairInliers say nothing: the closing pair keeps POOLED_UNDER_BAR_PAIRS cross pairs of
+	// one weighted inlier each, still read, its readings witnessed by no pair
+	{
+		constexpr unsigned POOLED_UNDER_BAR_PAIRS = 20;
+		static_assert(POOLED_UNDER_BAR_PAIRS < 30, "the pairs' total must stay under GlobalAlignmentConfig::minPairInliers");
+		Scene thin;
+		std::vector<IIndexArr> thinBlocks;
+		std::vector<Pose3D> thinPoses;
+		GenerateRingScene(cfg, thin, thinBlocks, thinPoses);
+		unsigned numKept = 0;
+		RFOREACH(i, thin.pairs) {
+			ImagePair& pair = thin.pairs[i];
+			if (!((first.count(pair.ID1) && last.count(pair.ID2)) || (first.count(pair.ID2) && last.count(pair.ID1))))
+				continue;
+			if (numKept == POOLED_UNDER_BAR_PAIRS) {
+				thin.pairs.RemoveAtMove(i);
+				continue;
+			}
+			pair.weightedInliers = 1.f;
+			++numKept;
+		}
+		std::vector<Scene> thinScenes;
+		std::vector<IIndexArr> thinL2G;
+		std::vector<SEACAVE::Transform> thinApplied;
+		BuildRingBlocks(cfg, thin, thinBlocks, thinPoses, thinScenes, thinL2G, thinApplied);
+		GlobalAlignment alignment(thin, alignCfg);
+		std::vector<SeamCandidate> candidates;
+		alignment.EstimateSeamCandidates(thinScenes, thinL2G, candidates);
+		unsigned numReadings = 0, numWitnessed = 0;
+		for (const SeamCandidate& c : candidates)
+			if (c.sceneA == 0 && c.sceneB == closing) {
+				++numReadings;
+				numWitnessed += c.pairs.numPairs > 0 ? 1u : 0u;
+			}
+		if (numKept != POOLED_UNDER_BAR_PAIRS || numReadings == 0 || numWitnessed != 0) {
+			VERBOSE("PooledSeamReadingTest FAILED: %u cross pairs of one weighted inlier each across (0, %u) gave %u readings, %u of "
+				"them witnessed (readings expected, none witnessed: %u in total is under minPairInliers %u)",
+				numKept, closing, numReadings, numWitnessed, numKept, alignCfg.minPairInliers);
+			return false;
+		}
+	}
+	VERBOSE("PooledSeamReadingTest PASSED: %u light cross pairs read together closed the ring, %u blocks placed; under the bar in total they witness nothing (%s)",
 		numLight, rep.numPlaced, TD_TIMER_GET_FMT().c_str());
 	return true;
 }
@@ -20034,6 +20075,88 @@ bool MergeRoundsTest()
 	}
 	VERBOSE("MergeRoundsTest PASSED: round 1 placed %u blocks and kept block %u whole, the regrouped model of %u images "
 		"was placed again and the kept block released (%s)", cfg.numBlocks - 1, MERGE_ROUNDS_KEPT, numModel, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+// The merge's own loop (SceneBlocks::MergeInRounds) on a ring whose block MERGE_LOOP_KEPT has no cross match to any
+// other block: round 1 merges the eleven others and keeps it whole; the pool step enters no image (the kept block's
+// images hold no features in the global scene); round 2 reads it against the merged model and places nothing, so the
+// fixed point is reached and round 3 releases it: three rounds, the eleven blocks' images posed, the kept block's
+// images back in the global scene with their features and without poses.
+bool MergeInRoundsTest()
+{
+	TD_TIMER_START();
+	constexpr uint32_t MERGE_LOOP_KEPT = 5;
+	const RingSceneConfig cfg{12, 10};
+	Scene scene;
+	std::vector<IIndexArr> blocks;
+	std::vector<Pose3D> gtPoses;
+	GenerateRingScene(cfg, scene, blocks, gtPoses);
+	ThinSeam(scene, blocks, MERGE_LOOP_KEPT - 1, MERGE_LOOP_KEPT, 0, cfg.camsPerBlock);
+	ThinSeam(scene, blocks, MERGE_LOOP_KEPT, MERGE_LOOP_KEPT + 1, 0, cfg.camsPerBlock);
+	SceneBlocks sceneBlocks(scene);
+	std::vector<SEACAVE::Transform> applied;
+	BuildRingBlocks(cfg, scene, blocks, gtPoses, sceneBlocks.blocks, sceneBlocks.localToGlobal, applied);
+	sceneBlocks.blockOf.resize(scene.images.size());
+	sceneBlocks.blockOf.MemsetValue(NO_ID);
+	FOREACH(b, sceneBlocks.localToGlobal)
+		for (const IIndex g : sceneBlocks.localToGlobal[b])
+			sceneBlocks.blockOf[g] = (IIndex)b;
+	const IIndexArr keptImages(sceneBlocks.localToGlobal[MERGE_LOOP_KEPT]);
+	ReconstructionConfig config;
+	ResectionConfig resectionCfg = config.resectionCfg;
+	resectionCfg.DeriveBAConfigs(config.baConfig);
+	const unsigned numRounds = sceneBlocks.MergeInRounds(resectionCfg, config);
+	const unsigned numModel = (unsigned)(scene.images.size() - keptImages.size());
+	bool released = true;
+	for (const IIndex g : keptImages)
+		released = released && scene.images[g].HasFeatures() && !scene.images[g].HasPose();
+	if (numRounds != 3 || scene.status.nCalibratedImages != numModel || !released) {
+		VERBOSE("MergeInRoundsTest FAILED: %u rounds (3 expected), %u calibrated images (%u expected), block %u's images %s",
+			numRounds, scene.status.nCalibratedImages, numModel, MERGE_LOOP_KEPT, released ? "released" : "not released with their features and without poses");
+		return false;
+	}
+	VERBOSE("MergeInRoundsTest PASSED: %u rounds, %u images placed, block %u released at the fixed point (%s)",
+		numRounds, numModel, MERGE_LOOP_KEPT, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+// From round 2 on the merged model is the one holding block 0 (the previous rounds' merged model), whatever the other
+// models weigh: a ring of four blocks of 10 where block 0 has no cross match to any other, so the averaging gives it a
+// model of its own and blocks 1-3 one model of 30 images. Anchored at block 0 the merge places block 0 alone and keeps
+// blocks 1-3 whole; unanchored it merges the heavier model.
+bool MergeAnchorTest()
+{
+	TD_TIMER_START();
+	const RingSceneConfig cfg{4, 10};
+	const auto Run = [&](uint32_t anchor, MergeReport& rep) {
+		Scene scene;
+		std::vector<IIndexArr> blocks;
+		std::vector<Pose3D> gtPoses;
+		GenerateRingScene(cfg, scene, blocks, gtPoses);
+		ThinSeam(scene, blocks, 0, 1, 0, cfg.camsPerBlock);
+		ThinSeam(scene, blocks, 3, 0, 0, cfg.camsPerBlock);
+		std::vector<Scene> subScenes;
+		std::vector<IIndexArr> localToGlobals;
+		std::vector<SEACAVE::Transform> applied;
+		BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
+		const GlobalAlignmentConfig alignCfg;
+		GlobalAlignment ga(scene, alignCfg);
+		ga.MergeScenes(subScenes, localToGlobals, rep, false, anchor);
+	};
+	MergeReport anchored, free;
+	Run(0u, anchored);
+	Run(NO_ID, free);
+	const auto Placed = [](const MergeReport& rep, uint32_t b) { return rep.poses[b].state == BlockPose::ADMITTED; };
+	if (anchored.numPlaced != 1 || !Placed(anchored, 0) || free.numPlaced != 3 || Placed(free, 0)) {
+		VERBOSE("MergeAnchorTest FAILED: anchored at block 0, %u blocks placed (block 0 %s; block 0 alone expected); unanchored, "
+			"%u placed (block 0 %s; blocks 1-3 expected)", anchored.numPlaced, Placed(anchored, 0) ? "placed" : "not placed",
+			free.numPlaced, Placed(free, 0) ? "placed" : "not placed");
+		return false;
+	}
+	VERBOSE("MergeAnchorTest PASSED: the model holding block 0 merged over the heavier one of blocks 1-3 (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 /*----------------------------------------------------------------*/

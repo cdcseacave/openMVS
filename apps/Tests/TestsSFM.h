@@ -681,7 +681,12 @@ bool RingPlacementTest();
 bool MergeJoinReprojectionTest();
 bool MergeTrackLengthTest();
 bool PooledSeamReadingTest();
+// The merge in rounds: a block kept whole, the regrouping around the merged model, the release (driven by hand)
 bool MergeRoundsTest();
+// The merge's own loop (SceneBlocks::MergeInRounds): a block no seam reaches is kept, read again and released at the fixed point
+bool MergeInRoundsTest();
+// From round 2 on the merged model is the one holding block 0, whatever the other models weigh
+bool MergeAnchorTest();
 bool UnobservableScaleTest();
 bool UnobservableScalePairTest();
 bool AmbiguousPairTest();
@@ -701,8 +706,7 @@ bool RivalModesOnCycleTest();
 // A seam one camera holds on its side weighs one camera, however many correspondences it carries,
 // and no block is placed on it
 bool OneCameraSideTest();
-// A one-camera door closes the triangle that chooses between a pair's true reading and a copy of
-// equal weight
+// A direction seen by one camera gives no reading; a block joined by single cameras only is released
 bool OneCameraDirectionTest();
 // The correspondences a ring of bent blocks leaves past the bar and within the loose bar join their
 // tracks at the merge and end inliers within the bar after the final adjustment

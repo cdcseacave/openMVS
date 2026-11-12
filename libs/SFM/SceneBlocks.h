@@ -108,6 +108,16 @@ public:
 	 */
 	void RegroupAfterMerge(const std::vector<bool>& placed);
 
+	/**
+	 * @brief The merge as one iterative stage, after the pool resection: rounds of GlobalAlignment::MergeScenes and
+	 * AdjustMergedScene, the model merged the one carrying the most images in round 1 and the one holding block 0
+	 * (the merged model, RegroupAfterMerge) after it; between rounds the whole-scene resection of the images in no
+	 * block on the merged model (the pool step); the blocks not placed are kept whole until a round enters no image
+	 * and places no block, and the round after it releases them to the final pass's resection
+	 * @return the number of rounds run
+	 */
+	unsigned MergeInRounds(const ResectionConfig& resectionCfg, const ReconstructionConfig& config);
+
 private:
 	// one block from a sorted cluster of global image IDs (globalToLocal maps them to the block)
 	Scene ExtractBlock(const IIndexArr& viewIndices, const IIndexArr& globalToLocal, unsigned nThreads);

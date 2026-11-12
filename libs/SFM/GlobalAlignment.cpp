@@ -1046,6 +1046,12 @@ void GlobalAlignment::CollectLinkObservations(
 	std::vector<SeamCorrespondence>& correspondences) const
 {
 	ASSERT(a < b);
+	#ifndef _RELEASE
+	for (const uint32_t idx : pairIndices) {
+		const uint32_t block1 = globalToLocal.at(scene.pairs[idx].ID1).first, block2 = globalToLocal.at(scene.pairs[idx].ID2).first;
+		ASSERT(MINF(block1, block2) == a && MAXF(block1, block2) == b);
+	}
+	#endif
 	observations.clear();
 	correspondences.clear();
 	std::vector<PairLink> links;
@@ -1363,12 +1369,14 @@ void GlobalAlignment::SelectSeamGraph(
 /*----------------------------------------------------------------*/
 
 bool GlobalAlignment::MergeScenes(
-	std::vector<Scene>& subScenes, const std::vector<IIndexArr>& localToGlobals, MergeReport& report, bool releaseUnplaced)
+	std::vector<Scene>& subScenes, const std::vector<IIndexArr>& localToGlobals, MergeReport& report, bool releaseUnplaced,
+	uint32_t anchorBlock)
 {
 	TD_TIMER_STARTD();
 
 	ASSERT(!subScenes.empty());
 	ASSERT(subScenes.size() == localToGlobals.size());
+	ASSERT(anchorBlock == NO_ID || anchorBlock < subScenes.size());
 	const uint32_t numBlocks = (uint32_t)subScenes.size();
 	report = MergeReport();
 	report.numBlocks = numBlocks;
@@ -1407,17 +1415,19 @@ bool GlobalAlignment::MergeScenes(
 	std::vector<uint32_t> edgeSeams;
 	SelectSeamGraph(footprints, candidates, poses, edgeSeams);
 
-	// the model the scene is merged at: the one carrying the most images
+	// the model the scene is merged at: the one holding the anchor block, else the one carrying the most images
 	std::map<uint32_t, unsigned> imagesOfModel, blocksOfModel;
 	FOREACH(b, poses)
 		if (poses[b].state == BlockPose::ADMITTED) {
 			imagesOfModel[poses[b].model] += subScenes[b].status.nCalibratedImages;
 			++blocksOfModel[poses[b].model];
 		}
-	uint32_t mergedModel = NO_ID;
-	for (const auto& [model, numImages] : imagesOfModel)
-		if (mergedModel == NO_ID || numImages > imagesOfModel[mergedModel])
-			mergedModel = model;
+	uint32_t mergedModel = anchorBlock == NO_ID ? NO_ID : poses[anchorBlock].model;
+	if (anchorBlock == NO_ID)
+		for (const auto& [model, numImages] : imagesOfModel)
+			if (mergedModel == NO_ID || numImages > imagesOfModel[mergedModel])
+				mergedModel = model;
+	ASSERT(mergedModel != NO_ID);
 
 	// every block outside it is merged without its poses, for the resection to recover its images
 	// against the model, or left whole in its scene

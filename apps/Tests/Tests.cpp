@@ -598,6 +598,10 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::MergeRoundsTest())
 				return false;
+			if (!SFM::MergeInRoundsTest())
+				return false;
+			if (!SFM::MergeAnchorTest())
+				return false;
 			if (!SFM::UnobservableScaleTest())
 				return false;
 			if (!SFM::UnobservableScalePairTest())

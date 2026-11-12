@@ -61,7 +61,7 @@ class SFM_API Scene;
  * are skipped -- their tracks were already correctly formed. AdjustMergedScene (Scene.h) then filters
  * the merged scene at that loose bar and adjusts it, so a block bent within the bars keeps the matches
  * of its far end until the adjustment has straightened it. Every block outside the merged model is
- * kept whole for the next round of the merge (Scene::ReconstructHierarchical), or merged without a
+ * kept whole for the next round of the merge (SceneBlocks::MergeInRounds), or merged without a
  * pose for the post-merge resection to recover.
  */
 
@@ -173,7 +173,7 @@ struct SFM_API GlobalAlignmentConfig
 		ALIGN_CAMERAS = 1, // generalized-camera PnP with scale of one sub-scene's cameras against the other's tracks, both directions
 	};
 	unsigned alignment{ALIGN_CAMERAS};
-	unsigned minCommonTracks{25};      // weighted inliers a cross pair links two blocks with, and inliers a reading needs
+	unsigned minCommonTracks{25};      // weighted inliers of a cross pair the closure joins by construction; correspondences and inliers a direction needs
 	bool mergeTrackInliersOnly{true};  // seed union-find with only inlier observations (true) or all observations (false)
 	float maxReprojError{4.f};         // pixels; the camera alignment's reprojection threshold, the resection's own
 	// A camera supports a reading with this many inlier correspondences, and a reading standing alone
@@ -183,11 +183,12 @@ struct SFM_API GlobalAlignmentConfig
 	unsigned minCameraInliers{10};
 	unsigned minSeamWeight{2};
 	float minRigSpreadRatio{0.03f};    // rig spread over median depth for an observable scale
-	// The verified image pairs across a seam are read against each of its readings: a pair of at
-	// least minPairInliers weighted inliers agrees when the relative rotation and the baseline
-	// direction the reading gives its two images are within maxPairRotationResidual of what it
-	// measured. The share of the inlier weight that agrees weighs a reading of the camera alignment,
-	// and a bridge keeps a reading only where that weight does not hold against it. 0 disables it.
+	// The verified image pairs across a seam are read against each of its readings, together: under
+	// minPairInliers weighted inliers in total they say nothing; a pair agrees when the relative
+	// rotation and the baseline direction the reading gives its two images are within
+	// maxPairRotationResidual of what it measured. The share of the inlier weight that agrees weighs a
+	// reading of the camera alignment, and a bridge keeps a reading only where that weight does not hold
+	// against it. maxPairRotationResidual 0 disables it.
 	unsigned minPairInliers{30};
 	float maxPairRotationResidual{5.f};     // degrees
 	// The graph bars: a reading stays in the block graph while the averaged poses of its component
@@ -228,7 +229,9 @@ public:
 	 * @param localToGlobals per block, its local image index -> global image ID
 	 * @param releaseUnplaced true: an unplaced block is merged without its poses (its images left to the
 	 *        resection); false: it is left whole in subScenes, its features, pairs and tracks in its own
-	 *        scene, for the next round of the merge (Scene::ReconstructHierarchical)
+	 *        scene, for the next round of the merge (SceneBlocks::MergeInRounds)
+	 * @param anchorBlock NO_ID: the model merged is the one carrying the most images; otherwise the one
+	 *        holding this block (the merged model of the previous round, read again as block 0)
 	 * @return true when at least one block was placed, which leaves the scene holding a
 	 *         reconstruction whatever the seams said
 	 */
@@ -236,7 +239,8 @@ public:
 		std::vector<Scene>& subScenes,
 		const std::vector<IIndexArr>& localToGlobals,
 		MergeReport& report,
-		bool releaseUnplaced = true);
+		bool releaseUnplaced = true,
+		uint32_t anchorBlock = NO_ID);
 
 	/**
 	 * @brief Fill globalToLocal, blockPairLinks and blockPointMaps from the blocks

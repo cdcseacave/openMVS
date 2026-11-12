@@ -976,43 +976,8 @@ bool Scene::ReconstructHierarchical(const ReconstructionConfig& config, const II
 			return true;
 		}
 
-		// 4. The merge, one iterative stage: each round places the blocks and merges the model holding the
-		// most images, then adjusts it at the loose bar (AdjustMergedScene); a block the round does not place
-		// stays whole. While blocks are left, the pool step (the whole-scene resection of the images in no
-		// block, the final pass's own function, on the merged model) runs, and the next round reads the
-		// blocks left against the merged model as one block. The stage reaches its fixed point when the pool
-		// step enters no image and the last round placed no block (the second round always reads the blocks
-		// left once): that last round releases them, merged without their poses, their images left to the
-		// final pass's resection
-		MergeReport mergeReport;
-		bool release = false;
-		for (unsigned round = 1; ; ++round) {
-			GlobalAlignment globalAlign(*this, config.globalAlignmentCfg);
-			globalAlign.MergeScenes(subScenes, localToGlobals, mergeReport, release);
-			VERBOSE("Hierarchical merge round %u: %u/%u blocks placed, %u images placed, %u images of unplaced blocks %s",
-				round, mergeReport.numPlaced, mergeReport.numBlocks, mergeReport.numImagesPlaced, mergeReport.numImagesUnplaced,
-				release ? "released to the resection" : "kept whole");
-			AdjustMergedScene(*this, config);
-			const uint32_t numModelImages = RecomputeCalibratedImages();
-			if (release || mergeReport.numImagesUnplaced == 0)
-				break;
-			// the pool step on the merged model: the images in no block (the kept blocks' images hold no
-			// features in the global scene, so they are no candidates), closing only when it registered one
-			{
-				Resection resection(*this, resectionCfg);
-				if (resection.RegisterImages(false))
-					FilterTracks(*this, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
-			}
-			const uint32_t numEntered = RecomputeCalibratedImages() - numModelImages;
-			const unsigned numBlocksPlaced = round == 1 ? 1u : mergeReport.numPlaced - 1u; // the merged model is block 0
-			release = numEntered == 0 && numBlocksPlaced == 0;
-			std::vector<bool> placed(mergeReport.poses.size());
-			FOREACH(b, mergeReport.poses)
-				placed[b] = mergeReport.poses[b].state == BlockPose::ADMITTED;
-			sceneBlocks.RegroupAfterMerge(placed);
-			VERBOSE("Hierarchical merge round %u: the pool step entered %u images; %u blocks left are read against the merged model%s",
-				round + 1, numEntered, (unsigned)subScenes.size() - 1u, release ? " and released (nothing changed)" : "");
-		}
+		// 4. The merge, one iterative stage (SceneBlocks::MergeInRounds)
+		sceneBlocks.MergeInRounds(resectionCfg, config);
 	}
 	DEBUG("Hierarchical reconstruction complete: %u/%u images, %u/%u points (%s)",
 		status.nCalibratedImages, images.size(), status.nTracks, tracks.size(), TD_TIMER_GET_FMT().c_str());
