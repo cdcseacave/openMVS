@@ -213,8 +213,8 @@
 #	define FORCEINLINE inline
 #endif
 
-// function callable from both host code and CUDA device code
-#ifdef __CUDACC__
+// function callable from both host code and CUDA (or HIP) device code
+#if defined(__CUDACC__) || defined(__HIP__)
 #	define HOST_DEVICE __host__ __device__
 #else
 #	define HOST_DEVICE
@@ -273,8 +273,9 @@ __inline__ static void trap_instruction() { __asm__ volatile("brk #0"); }
 
 #ifdef _DEBUG
 
-#if defined(__CUDA_ARCH__)
-// Device-side form. __CUDA_ARCH__ is defined only while nvcc compiles the device side of a .cu
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+// Device-side form. __CUDA_ARCH__ (or __HIP_DEVICE_COMPILE__) is defined only while the device compiler
+// builds the device side of a .cu file
 // file -- never for an ordinary host translation unit, and never for the __host__ side of one --
 // so the host forms below stay in force everywhere else. Device code cannot call the primitives
 // they report and break with, so it uses CUDA's own assert instead: __assertfail() plus a trap,

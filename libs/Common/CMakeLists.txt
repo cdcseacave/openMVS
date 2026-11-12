@@ -30,7 +30,7 @@ if(_USE_METAL)
 		COMPILE_OPTIONS "-fobjc-arc")
 endif()
 
-if(_USE_CUDA)
+if(_USE_CUDA AND NOT _USE_HIP)
 	# the compute capabilities the CUDA code is compiled for, see initDevices()
 	TARGET_COMPILE_DEFINITIONS(Common PRIVATE _CUDA_ARCHS_SASS=${_CUDA_ARCHS_SASS} _CUDA_ARCHS_SASS_EXACT=${_CUDA_ARCHS_SASS_EXACT} _CUDA_ARCH_PTX=${_CUDA_ARCH_PTX})
 endif()

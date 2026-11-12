@@ -51,9 +51,11 @@ void abortCudaCall(cudaError_t error, const char* call, const char* file, int li
 // the compute capabilities (major*10+minor) the CUDA code is compiled for,
 // see CMAKE_CUDA_ARCHITECTURES: native code (SASS), architecture-specific
 // native code and the lowest PTX (0 if none)
+#ifndef _USE_HIP
 static constexpr int cudaArchsSASS[] = {0, _CUDA_ARCHS_SASS};
 static constexpr int cudaArchsSASSExact[] = {0, _CUDA_ARCHS_SASS_EXACT};
 static constexpr int cudaArchPTX(_CUDA_ARCH_PTX);
+#endif
 
 // the CUDA code runs on a device if it holds native code of the same major
 // and an equal or lower minor version, architecture-specific native code
@@ -61,6 +63,11 @@ static constexpr int cudaArchPTX(_CUDA_ARCH_PTX);
 // that the driver can compile for it
 static bool _isComputeCapabilitySupported(int major, int minor)
 {
+	#ifdef _USE_HIP
+	// HIP enumerates only the devices its runtime can drive, and the kernels are built for the
+	// gfx targets of CMAKE_HIP_ARCHITECTURES: the NVIDIA compute-capability check does not apply
+	return true;
+	#else
 	ASSERT(major > 0 && minor >= 0 && minor < 10);
 	const int cc(major*10+minor);
 	for (int arch: cudaArchsSASS)
@@ -70,8 +77,10 @@ static bool _isComputeCapabilitySupported(int major, int minor)
 		if (arch == cc)
 			return true;
 	return cudaArchPTX > 0 && cudaArchPTX <= cc;
+	#endif
 }
 
+#ifndef _USE_HIP
 static String _formatComputeCapabilities()
 {
 	String archs;
@@ -87,6 +96,7 @@ static String _formatComputeCapabilities()
 	archs.pop_back();
 	return archs;
 }
+#endif
 
 // fill the Device struct if the device can run the CUDA code
 static bool _initDevice(int devID, Device& device)
@@ -103,9 +113,11 @@ static bool _initDevice(int devID, Device& device)
 		return false;
 	}
 	if (!_isComputeCapabilitySupported(props.major, props.minor)) {
+		#ifndef _USE_HIP
 		VERBOSE("CUDA device %d (%s) has compute capability %d.%d, but this build contains CUDA code only for %s; "
 			"rebuild with -DCMAKE_CUDA_ARCHITECTURES=%d%d (or all-major) to use it",
 			devID, props.name, props.major, props.minor, _formatComputeCapabilities().c_str(), props.major, props.minor);
+		#endif
 		return false;
 	}
 	device.ID = devID;

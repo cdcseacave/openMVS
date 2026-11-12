@@ -26,14 +26,7 @@ GENERAL_API bool isCpuRequested(const String& deviceIDs);
 
 // I N C L U D E S /////////////////////////////////////////////////
 
-// CUDA driver
-#include <cuda.h>
-
-// CUDA toolkit
-#include <cuda_runtime.h>
-#include <cuda_runtime_api.h>
-#include <curand_kernel.h>
-#include <vector_types.h>
+#include "UtilCUDACompat.h"
 
 #include "UtilCUDADevice.h"
 

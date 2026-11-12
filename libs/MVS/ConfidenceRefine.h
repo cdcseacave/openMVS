@@ -77,7 +77,7 @@ HOST_DEVICE inline void InitParamsShape(Params& p) {
 // exp helper: double std::exp on the host (byte-identical to the CPU EXP<float> = float(std::exp(double))),
 // single-precision expf on the device.
 HOST_DEVICE inline float CRexp(float a) {
-#if defined(__CUDA_ARCH__)
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
 	return expf(a);
 #else
 	return (float)std::exp((double)a);

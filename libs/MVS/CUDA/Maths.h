@@ -42,22 +42,18 @@
 #include <cstdint>
 #include <float.h>
 
-// CUDA toolkit
-#include <cuda_runtime.h>
-#include <math_constants.h>  // next to cuda_runtime.h
-#include <cuda_runtime_api.h>
-#include <curand_kernel.h>
-#include <vector_types.h>
+// CUDA / HIP toolkit
+#include "../../Common/UtilCUDACompat.h"
 
 // Eigen
-#ifdef __CUDACC__
+#if defined(__CUDACC__) || defined(__HIP__)
 #pragma push_macro("EIGEN_DEFAULT_DENSE_INDEX_TYPE")
 #undef EIGEN_DEFAULT_DENSE_INDEX_TYPE
 #define EIGEN_DEFAULT_DENSE_INDEX_TYPE int
 #endif
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
-#ifdef __CUDACC__
+#if defined(__CUDACC__) || defined(__HIP__)
 #pragma pop_macro("EIGEN_DEFAULT_DENSE_INDEX_TYPE")
 #endif
 
@@ -69,7 +65,7 @@
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-#ifndef __CUDACC__
+#if !defined(__CUDACC__) && !defined(__HIP__)
 // host implementations of CUDA functions
 constexpr int max(int a, int b) {
 	return a > b ? a : b;
@@ -259,7 +255,7 @@ __host__ __device__ inline Point3 lerp(Point3 a, Point3 b, float t) {
 	return a + (b-a) * t;
 }
 
-#ifdef __CUDACC__
+#if defined(__CUDACC__) || defined(__HIP__)
 // thread index
 inline __device__ int GetThreadIndex() {
 	return blockIdx.x * blockDim.x + threadIdx.x;

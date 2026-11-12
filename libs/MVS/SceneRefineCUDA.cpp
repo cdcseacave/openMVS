@@ -296,6 +296,17 @@ bool MeshRefineCUDA::InitKernels()
 	// initialize CUDA device if needed
 	if (!SEACAVE::CUDA::isEnabled() && SEACAVE::CUDA::initDevices(SEACAVE::CUDA::desiredDeviceIDs) != CUDA_SUCCESS)
 		return false;
+	#ifdef _USE_HIP
+	// the kernels pack warp ballots into 32-bit words (kernelProjectMesh's ownerBits)
+	// and use 32-lane shuffle patterns, so a wave64 device cannot run them
+	{
+		cudaDeviceProp prop;
+		if (cudaGetDeviceProperties(&prop, SEACAVE::CUDA::devices[0].ID) != cudaSuccess || prop.warpSize != 32) {
+			DEBUG("error: mesh refinement requires a wave32 GPU (warpSize 32, got %d)", prop.warpSize);
+			return false;
+		}
+	}
+	#endif
 	// a blocking stream: ordered after the legacy stream's work before it and before the legacy
 	// stream's after it (the rasterization, compaction and memsets, then the terms download)
 	if (cudaStreamCreate(&stream) != cudaSuccess) {
