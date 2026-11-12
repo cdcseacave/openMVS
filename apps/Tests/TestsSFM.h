@@ -566,6 +566,10 @@ bool PairDirectionToleranceTest();
 // Test function for rotation estimation
 bool RotationEstimatorTest();
 
+// The rotation averaging gives the same rotations, and the same pairs past its bar, whatever the
+// absolute scale of the pair weights (GlobalRotationEstimatorOptions::weightMedian)
+bool RotationWeightScaleTest();
+
 // The contradiction cut's rotation stage: the look-alikes of a symmetric ring, the cross-face pairs of
 // a roof (the tree check) and a wrong pair at the weight cap go, a bridge and a pendant pair never,
 // the unscored start is the symmetric mode, and the translation stage's bar takes 0 and 180

@@ -58,6 +58,17 @@ rest of the graph contradicts, in two stages.
   removed. The scores are what lets the averaging land in the true basin of a symmetric collection:
   look-alike pairs between opposite images outweigh the true neighbours in composite weight, and
   no longer do once the scores scale them.
+  The estimator (`GlobalRotationEstimator::EstimateRotations`: the spanning-tree start, 5 rounds
+  of an L1 fit by 10 ADMM iterations each at a fixed penalty of 1, then IRLS with Geman-McClure at
+  5 degrees) reads the weights as relative confidences only: `SetupLinearSystem` scales them so
+  their median is `GlobalRotationEstimatorOptions::weightMedian` (10, no flag). The L1 step needs
+  it -- its ADMM shrinks the weighted residuals by a fixed amount within a fixed number of
+  iterations, so unscaled it would sit nearer a weighted least-squares fit for heavy weights and
+  nearer an L1 fit for light ones, and the cut would change with the absolute size of the pair
+  weight; the spanning tree reads only their order and the IRLS cancels a common factor, so the
+  whole solve is invariant to multiplying every weight by one number. The merge's block averaging
+  (`AverageBlockPoses`, GlobalAlignment.cpp) runs the same estimator on its seam weights and is
+  scaled the same way.
 - The translation stage runs on the pairs the rotation stage kept, when its bar
   `ReconstructionConfig::maxPairDirectionResidual` (`--max-pair-direction-residual`, 45 degrees) is
   above 0. Every pair with a ray angle past `kNearDuplicateRayAngle` (2 degrees; under it a pair
@@ -104,6 +115,34 @@ Cost: the repair is a few milliseconds to 0.03 s per capture at 8 threads (0.02 
 under 0.003% of a full reconstruction's wall, because only a pair that is vouched for and placed by a centres
 solve is fitted (4e5c6f6d 257 removed pairs 6 ms, 5ada248e 513 pairs 17 ms, alameda 197 pairs
 12 ms).
+
+Validation of the weight scaling (T/records-2026-11-11-weight). Invariance, the rotation stage
+replayed in Python from each capture's pre-cut graph (`replay_all.py`, verdicts identical to the C++
+on every capture) at the weights times 0.25, 1, 4 and 10, today's pair weight: pairs whose verdict
+changes between the four scales without the scaling / with it -- Palace 0 / 0, 4e5c6f6d 0 / 0,
+17ac94cc 8 / 0, 5ada248e 26 / 0, alameda 0 / 0. Against the unscaled cut at the weights as they
+are, the median of 10 changes 0 verdicts on four captures and 5 (all without a reference label) on
+5ada248e; between medians of 3 and 10 the verdicts move by at most 10 pairs on any of the five captures, under
+either pair weight (`replay_c.md`). The
+reconstruction, pre-cut matched scenes reloaded at 8 threads, one run each, unscaled -> scaled:
+
+| capture | registered | right | wrong | pose score | wrong block starts | wrong registrations (block / pool / post-merge) |
+|---|---|---|---|---|---|---|
+| Palace | 495 -> 495 | 494 -> 494 | 1 -> 1 | 0.8120 -> 0.8103 | 0 -> 0 | 8 / 7 / 0 -> 8 / 7 / 0 |
+| 4e5c6f6d | 291 -> 291 | 250 -> 250 | 32 -> 32 | 0.9139 -> 0.9140 | 0 -> 0 | 71 / 0 / 26 -> 71 / 0 / 26 |
+| 17ac94cc | 553 -> 553 | 521 -> 521 | 8 -> 8 | 0.6398 -> 0.6443 | 0 -> 0 | 57 / 1 / 0 -> 57 / 1 / 0 |
+| 5ada248e | 534 -> 530 | 528 -> 524 | 5 -> 5 | 0.9583 -> 0.9562 | 0 -> 0 | 30 / 0 / 42 -> 31 / 0 / 29 |
+| Outdoor_004 | 767 -> 767 | 767 -> 767 | 0 -> 0 | 0.7190 -> 0.7196 | 0 -> 0 | 44 / 0 / 1 -> 44 / 0 / 1 |
+| 6DCA1E8E | 785 -> 841 | 464 -> 464 | 8 -> 7 | 0.7541 -> 0.7527 | - -> 0 | - -> 167 / 1 / 99 |
+
+The pose-score differences are under the 0.008 a reload of the same scene varies by; the 5ada248e
+registration difference is one run (other unscaled reloads of that scene also registered 530, 524
+right). 6DCA1E8E ends one of two ways from run to run (its images 617-871, which no reference judges,
+registered or not): the unscaled run (a reload of another stream, without the monitor's dump) left
+them out, the scaled one registered them; the images the references judge are the same 464 right. Rejected: the L1 step on unit weights (GLOMAP's default) folds Palace (998 pairs removed,
+203 of them right, against 1825 / 0); no L1 step, the IRLS straight from the spanning tree, removes
+45 right pairs on 5ada248e; the ADMM run to convergence folds Palace and costs up to 100 times the
+iterations; weights replaced by their ranks discard how much heavier a pair is.
 
 Use the default for a scene without repeated structure (orbits, interiors). Use `--triplet-cut` to
 unfold a symmetric building or a symmetric object orbited by a video, at the price of halving the

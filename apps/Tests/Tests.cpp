@@ -334,6 +334,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::RotationEstimatorTest())
 				return false;
+			if (!SFM::RotationWeightScaleTest())
+				return false;
 			if (!SFM::ContradictionCutTest())
 				return false;
 			if (!SFM::TranslationCutTest())

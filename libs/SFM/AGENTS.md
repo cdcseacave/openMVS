@@ -255,6 +255,7 @@ Known limits: a non-rigid block can be placed wrong; a heavy wrong chord with no
 
 ### Rotation Averaging (`GlobalRotationAveraging.h`)
 - MST initialization (weighted by match counts)
+- Weights scaled to a median of `weightMedian` (10) inside the estimator: only their ratios count
 - L1 minimization (tangent space, angle-axis)
 - IRLS refinement (Geman-McClure or Half-Norm loss)
 - Options: `maxRelativeRotationAngle`, `skipInitialization` (warm-start)

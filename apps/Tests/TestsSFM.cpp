@@ -14763,6 +14763,81 @@ bool RotationEstimatorTest()
 	return true;
 }
 
+// The rotation averaging does not depend on the absolute scale of the pair weights: a graph of 40
+// rotations joined by noisy pairs, a tenth of them wrong and light, with weights spread over three
+// orders of magnitude, solved with its weights as given and multiplied by 2^-7 and by 2^7 (powers of two, so
+// the scaled weights are exact), gives bit-identical rotations and removes the same pairs past the
+// 12-degree bar. Without the estimator's median scaling the L1 step's fixed-iteration ADMM sees a
+// different problem at each scale and the rotations differ.
+bool RotationWeightScaleTest()
+{
+	TD_TIMER_START();
+	constexpr uint32_t NUM_NODES = 40;
+	std::mt19937 rng(20261112);
+	std::uniform_real_distribution<double> uni(-1.0, 1.0);
+	std::normal_distribution<double> noise(0.0, D2R(1.0));
+	std::uniform_real_distribution<double> logWeight(0.0, 3.0);
+	const auto RandomAxisAngle = [&](double maxAngle) {
+		Point3 axis(uni(rng), uni(rng), uni(rng));
+		axis *= maxAngle * ABS(uni(rng)) / norm(axis);
+		return axis;
+	};
+	std::vector<RMatrix> truth(NUM_NODES);
+	for (RMatrix& R : truth)
+		R = RMatrix(RandomAxisAngle(M_PI * 0.9));
+	std::vector<RotationPair> pairs;
+	for (uint32_t a = 0; a < NUM_NODES; ++a) {
+		for (uint32_t b = a + 1; b < NUM_NODES; ++b) {
+			if (b - a > 3 && uni(rng) < 0.85)
+				continue; // a band around the chain, a few chords
+			RMatrix rel(truth[b] * truth[a].t());
+			const bool wrong = uni(rng) < -0.8;
+			if (wrong)
+				rel = RMatrix(RandomAxisAngle(M_PI * 0.9)); // a wrong pair, weighing at most 10
+			else
+				rel = RMatrix(Point3(noise(rng), noise(rng), noise(rng))) * rel;
+			pairs.emplace_back(a, b, Matrix3x3(rel), (float)POW(10.0, wrong ? logWeight(rng) / 3 : logWeight(rng)));
+		}
+	}
+	const auto Solve = [&](float factor, std::vector<Point3>& rotations, unsigned& numFiltered) {
+		std::vector<RotationPair> scaled(pairs);
+		for (RotationPair& p : scaled)
+			p.weight *= factor;
+		const GlobalRotationEstimatorOptions options;
+		GlobalRotationEstimator estimator(options);
+		rotations.clear();
+		if (!estimator.EstimateRotations(scaled, NUM_NODES, rotations))
+			return false;
+		numFiltered = GlobalRotationEstimator::FilterRelativeRotations(rotations, scaled, options.maxRelativeRotationAngle);
+		return true;
+	};
+	std::vector<Point3> reference;
+	unsigned referenceFiltered;
+	if (!Solve(1.f, reference, referenceFiltered)) {
+		VERBOSE("RotationWeightScaleTest FAILED: the estimator failed on the weights as given");
+		return false;
+	}
+	for (const float factor : {1.f / 128.f, 128.f}) {
+		std::vector<Point3> rotations;
+		unsigned numFiltered;
+		if (!Solve(factor, rotations, numFiltered)) {
+			VERBOSE("RotationWeightScaleTest FAILED: the estimator failed on the weights times %g", factor);
+			return false;
+		}
+		double maxDifference = 0;
+		for (uint32_t i = 0; i < NUM_NODES; ++i)
+			maxDifference = MAXF(maxDifference, (double)norm(rotations[i] - reference[i]));
+		if (maxDifference != 0 || numFiltered != referenceFiltered) {
+			VERBOSE("RotationWeightScaleTest FAILED: the weights times %g move the rotations by up to %g degrees and filter %u pairs against %u; "
+				"the result must not depend on the scale of the weights", factor, R2D(maxDifference), numFiltered, referenceFiltered);
+			return false;
+		}
+	}
+	VERBOSE("RotationWeightScaleTest PASSED: %u pairs, %u past the bar, the same rotations at weights x1, x1/128 and x128 (%s)",
+		(unsigned)pairs.size(), referenceFiltered, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 // The contradiction cut (FilterPairsByContradiction), its rotation stage: (1) an eight-fold symmetric
 // ring, the Palace case -- four look-alike pairs between opposite images claim the same view, heavier
 // in composite weight than the true neighbour pairs of the ring, lighter once weighted by their triplet
