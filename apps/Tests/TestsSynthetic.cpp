@@ -1672,6 +1672,33 @@ bool MVS::BrownUndistortOnLoadTest()
 			return false;
 		}
 	}
+	// the MeshLab project: the raster of a Brown image is its file undistorted onto the exported pinhole camera
+	{
+		const String mlpFileName(tmpDir("scene.mlp"));
+		if (!scene.ExportCamerasMLP(mlpFileName, tmpDir("scene.ply")))
+			return false;
+		std::ifstream mlp(mlpFileName);
+		const std::string text((std::istreambuf_iterator<char>(mlp)), std::istreambuf_iterator<char>());
+		// an attribute of the first raster, the one of image 0
+		const auto Attribute = [&text](const std::string& name) {
+			const size_t pos(text.find(name + "=\""));
+			ASSERT(pos != std::string::npos);
+			const size_t begin(pos + name.size() + 2);
+			return text.substr(begin, text.find('"', begin) - begin);
+		};
+		const Image& imageData = scene.images[0];
+		double focal, cx, cy;
+		std::istringstream(Attribute("FocalMm")) >> focal;
+		std::istringstream(Attribute("CenterPx")) >> cx >> cy;
+		Image8U3 raster, pixels;
+		if (!raster.Load(MAKE_PATH_FULL(WORKING_FOLDER_FULL, String(Attribute("fileName")))) || imageData.ReadPixels(pixels) == NULL ||
+			raster.size() != imageData.GetSize() || cv::norm(raster, pixels, cv::NORM_INF) != 0 ||
+			!(std::abs(focal - imageData.camera.K(0,0)) < 1e-3) ||
+			!(std::abs(cx - imageData.camera.K(0,2)) < 1e-3) || !(std::abs(cy - imageData.camera.K(1,2)) < 1e-3)) {
+			VERBOSE("ERROR: BrownUndistortOnLoadTest: the MeshLab raster does not hold the pixels of its camera");
+			return false;
+		}
+	}
 	// the images stored at half the resolution (Scene::ScaleImages): the cameras become the pinhole K' of
 	// the stored files and the observations move with them
 	if (!scene.ScaleImages((unsigned)lens.width/2, 0, tmpDir("scaled/"))) {

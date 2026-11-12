@@ -126,7 +126,7 @@ Tests (MVS suite 2), each bound being the measured accuracy less a margin:
 
 | Test | Checks |
 |------|--------|
-| `BrownUndistortOnLoadTest()` | Brown views read through `MVS::Image` match the pinhole render at `K'`; ignore mask = undistortion mask; observations on their `K'` projections, also after `Scene::ScaleImages` |
+| `BrownUndistortOnLoadTest()` | Brown views read through `MVS::Image` match the pinhole render at `K'`; ignore mask = undistortion mask; observations on their `K'` projections, also after `Scene::ScaleImages`; the MeshLab raster of a Brown image holds its undistorted pixels and the camera at `K'` |
 | `SyntheticDepthBaselineTest()` | GT consistency across the models, then CPU PatchMatch on the 18 128x128 faces of 3 panoramas |
 | `SyntheticSphericalTest()` | CPU PatchMatch on 3 512x256 panoramas, overall and per band (seam held to its antipodal band) |
 | `MetalModelMathTest()` | Apple only: the Metal mirror of `CameraModels.h` / `DepthGeometry.h` against the C++ models |

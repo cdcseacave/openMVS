@@ -151,6 +151,8 @@ own state and call the models. The depth-map algorithms built on the models are 
 - The observations follow their points and views: removed with them, subset by `Scene::SubScene`, and
   released as a whole where points without features join the cloud (the tower points of
   `Scene::InitTowerScene`).
+- The MeshLab project (`Scene::ExportCamerasMLP`) holds pinhole rasters: the image file of a Brown camera
+  is written undistorted onto `K'` beside it (`<project>_rasters/`), a spherical image is left out.
 - PatchMatch: `MakeCameraModel<MODEL>(camera)` (`libs/MVS/DepthMap.h`) builds `Pinhole`/`Spherical`
   from a view's `K`; `ModelCamera` (`libs/MVS/Image.h`) dispatches the pixel/world transforms of fusion
   and the depth-map consumers on the image model (`SphericalPatchMatch.md`).

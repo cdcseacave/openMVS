@@ -822,13 +822,37 @@ bool Scene::ExportCamerasMLP(const String& fileName, const String& fileNameScene
 	// write MLP header containing the referenced PLY file
 	f.print(mlp_header, Util::getFileName(fileNameScene).c_str(), MAKE_PATH_REL(WORKING_FOLDER_FULL, fileNameScene).c_str());
 
-	// write the raster layers
+	// write the raster layers: MeshLab sees a pinhole camera, so a spherical image is left out, and the
+	// image file of a BROWN camera is written undistorted onto the camera grid (the pixels the camera
+	// describes) in the folder of the rasters
+	const String rastersFolder(MAKE_PATH_FULL(WORKING_FOLDER_FULL, Util::getFileFullName(fileName)) + _T("_rasters") PATH_SEPARATOR_STR);
+	unsigned nSkipped(0);
 	f <<  " <RasterGroup>\n";
 	FOREACH(i, images) {
 		const Image& imageData = images[i];
 		// skip invalid, uncalibrated or discarded images
 		if (!imageData.IsValid())
 			continue;
+		if (imageData.IsSpherical()) {
+			++nSkipped;
+			continue;
+		}
+		String rasterName(imageData.name);
+		if (imageData.IsUndistortedOnRead()) {
+			Image8U3 pixels;
+			if (imageData.ReadPixels(pixels) == NULL) {
+				++nSkipped;
+				continue;
+			}
+			if (pixels.size() != imageData.GetSize())
+				cv::resize(pixels, pixels, imageData.GetSize(), 0, 0, cv::INTER_AREA);
+			rasterName = rastersFolder + String::FormatString("%u_", i) + Util::getFileNameExt(imageData.name);
+			Util::ensureFolder(rasterName);
+			if (!pixels.Save(rasterName)) {
+				++nSkipped;
+				continue;
+			}
+		}
 		const Camera& camera = imageData.camera;
 		f.print(mlp_raster_pos,
 			Util::getFileName(imageData.name).c_str(),
@@ -844,10 +868,12 @@ bool Scene::ExportCamerasMLP(const String& fileName, const String& fileNameScene
 			 camera.R(0,0),  camera.R(0,1),  camera.R(0,2),
 			-camera.R(1,0), -camera.R(1,1), -camera.R(1,2),
 			-camera.R(2,0), -camera.R(2,1), -camera.R(2,2),
-			MAKE_PATH_REL(WORKING_FOLDER_FULL, imageData.name).c_str()
+			MAKE_PATH_REL(WORKING_FOLDER_FULL, rasterName).c_str()
 		);
 	}
 	f << " </RasterGroup>\n</MeshLabProject>\n";
+	if (nSkipped > 0)
+		DEBUG("warning: %u images left out of the MeshLab project: spherical or unreadable", nSkipped);
 
 	return true;
 } // ExportCamerasMLP
