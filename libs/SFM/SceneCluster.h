@@ -160,7 +160,7 @@ struct SFM_API ClusterConfig
 	unsigned minSeamTracks{75};          // seam-usable tracks a cluster pair needs for the neighbour to count as strong
 	unsigned minSeamCameras{3};          // cameras per side with enough seam-usable tracks for the neighbour to count as strong
 	unsigned minSeamCameraTracks{30};    // seam-usable tracks one camera needs to count
-	float minPairWeight{3.f};            // minimum composite weight for pair edge
+	float minPairWeight{0.9f};           // minimum composite weight for a pair to be an edge of the clustering graph (docs/design/PairWeight.md)
 	TrackConflictConfig trackConflictCfg; // how a component holding one image twice is settled when the tracks are built here
 	float minClusterCoupling{0.05f};     // refuse a merge whose interface weight falls below this fraction of the weaker side's internal weight, whatever either side's size, and split any final cluster with such an internal seam (0 = disabled)
 	unsigned minWaistSideViews{10};      // the fewest images either side of a prefix cut must hold for the coupling checks to weigh it: a smaller side's internal weight is a pair or two, too little for the ratio to judge (Playground's under-coupled stretches held 23 and 31)

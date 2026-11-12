@@ -239,7 +239,6 @@ void SFM::ComputePairsWeights(Scene& scene, const PairsWeightingConfig& config, 
 	FOREACH(i, maxNodeWeight)
 		maxNodeWeight[i] = yardsticks[i].Count();
 
-	const float ratioSigma = -1.f / (2.f * SQUARE(config.sigmaInlierPerMatches)); // Gaussian sigma for inliers ratio weighting
 	#ifdef PAIRSWEIGHTING_USE_OPENMP
 	#pragma omp parallel for schedule(dynamic)
 	for (int_t i = 0; i < (int_t)scene.pairs.size(); ++i) {
@@ -254,14 +253,6 @@ void SFM::ComputePairsWeights(Scene& scene, const PairsWeightingConfig& config, 
 		const float max1 = (float)maxNodeWeight[pair.ID1];
 		const float max2 = (float)maxNodeWeight[pair.ID2];
 		pair.weightConnectivity = MINF(SQRT((w * w) / (max1 * max2)), 1.f);
-		// Boost by inlier ratio
-		// the ratio compares like with like: the dense matches enter the match count at the same
-		// scale they enter the evidence, otherwise a dense-only pair of nothing but inliers would
-		// look like a pair of almost none and its boost would collapse
-		const float weightedMatches = (float)(pair.GetNumMatches() - pair.GetNumDenseInliers()) + denseScale*(float)pair.GetNumDenseInliers();
-		const float inliersRatio = w / weightedMatches;
-		const float wInliersRatio = MINF((1.f - EXP(SQUARE(inliersRatio) * ratioSigma)) * 2.f, 1.f);
-		pair.weightConnectivity *= wInliersRatio;
 	}
 
 	// 5. Sort pairs by composite weight (decreasing)

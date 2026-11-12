@@ -244,7 +244,6 @@ MatchConfig& MatchConfig::DefaultsForFeatureType(FeatureType type) {
 		matchDistance = 100.f;
 		matchRatio = 0.9f;
 		minMatches = 50;
-		weightingCfg.sigmaInlierPerMatches = 0.6f; // AKAZE typically have around 70% inliers among matches
 		break;
 	case FeatureType::ORB:
 		descriptorsAreBinary = true;
@@ -252,7 +251,6 @@ MatchConfig& MatchConfig::DefaultsForFeatureType(FeatureType type) {
 		matchDistance = 64.f;
 		matchRatio = 0.9f;
 		minMatches = 50;
-		weightingCfg.sigmaInlierPerMatches = 0.6f; // ORB typically have around 70% inliers among matches
 		break;
 	case FeatureType::SIFT:
 	case FeatureType::SIFTGPU:
@@ -261,7 +259,6 @@ MatchConfig& MatchConfig::DefaultsForFeatureType(FeatureType type) {
 		matchDistance = FLT_MAX; // disable distance test for SIFT
 		matchRatio = 0.8f;
 		minMatches = 15;
-		weightingCfg.sigmaInlierPerMatches = 0.77f; // SIFT typically have around 90% inliers among matches
 		break;
 	default:
 		ASSERT("Unknown feature type for match config defaults" == NULL);

@@ -263,16 +263,15 @@ public:
 	void CheckSparseSegmentIsDescribed(const Image& img1, const Image& img2) const;
 
 	// Compute composite weight from components:
-	// W = numInliers * cbrt(weightSpatial * weightConnectivity * (0.5 + weightTriplet))
-	// The quality factors are combined by geometric mean instead of a raw product: each lives
-	// in [0,1] and a raw product spans many orders of magnitude, so one weak (or noisy) factor
-	// annihilates a pair with hundreds of verified inliers and disconnects valid sub-blocks
-	// from the track graph; the geometric mean preserves the ordering while keeping the weight
-	// commensurate with the inlier evidence.
+	// W = numInliers * coverage * cbrt(angle * weightConnectivity) * (0.25 + weightTriplet)
+	// with weightSpatial = coverage (overlapArea) * angle (the baseline term), so the product below
+	// is cbrt(weightSpatial * overlapArea^2 * weightConnectivity) = coverage * cbrt(angle * connectivity).
+	// The coverage and the triangle consistency count in full, the two terms that rank how well a pair
+	// is matched against the references (#90); the angle and the connectivity keep their geometric mean,
+	// so neither weak term alone annihilates a pair with hundreds of verified inliers.
 	inline float GetCompositeWeight() const {
 		const unsigned nCappedInliers = MINF(GetNumWeightedInliers(), 1000u); // cap inliers to avoid excessive weight
-		const float wQuality = weightSpatial * weightConnectivity * (0.5f + weightTriplet);
-		return nCappedInliers * CBRT(wQuality);
+		return nCappedInliers * CBRT(weightSpatial * SQUARE(overlapArea) * weightConnectivity) * (0.25f + weightTriplet);
 	}
 	inline bool HasValidWeight() const {
 		return GetCompositeWeight() > 0.f;

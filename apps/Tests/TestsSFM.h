@@ -608,8 +608,11 @@ bool PairsWeightingTest();
 // A pair's dense inliers count as evidence in proportion to the matcher's frame target
 // (PairsWeightingConfig::denseFrameInliers over denseMatchesPerFrame): two dense-only pairs of one
 // image keep the order of their counts, a whole dense frame is a modest descriptor pair's evidence,
-// and the connectivity's inlier ratio counts the dense matches at the same scale
+// and the connectivity counts the dense matches at the same scale
 bool PairsWeightingDenseFrameEvidenceTest();
+
+// The composite weight of a hand-set pair equals its formula term by term (ImagePair::GetCompositeWeight)
+bool PairCompositeWeightTest();
 
 // PairsMatcher sequential mode test
 bool PairMatcherTest();
