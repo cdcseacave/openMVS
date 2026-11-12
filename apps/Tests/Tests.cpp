@@ -590,7 +590,7 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::RingPlacementTest())
 				return false;
-			if (!SFM::MergeJoinReprojectionTest())
+			if (!SFM::CrossBlockJoinTest())
 				return false;
 			if (!SFM::MergeTrackLengthTest())
 				return false;
