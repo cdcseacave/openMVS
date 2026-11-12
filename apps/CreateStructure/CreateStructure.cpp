@@ -307,7 +307,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		return false;
 	}
 	if (OPT::bRepairContradictedPairs && !(OPT::fMaxPairDirectionResidual > 0.f)) {
-		LOG("error: --repair-contradicted-pairs needs the translation stage of the contradiction cut, --max-pair-direction-residual above 0");
+		LOG("error: --repair-contradicted-pairs (on by default) needs the translation stage of the contradiction cut, --max-pair-direction-residual above 0; with 0 pass --repair-contradicted-pairs false");
 		return false;
 	}
 	if (!(OPT::fMaxLinkDirectionError >= 0.f && OPT::fMaxLinkDirectionError <= 90.f)) {

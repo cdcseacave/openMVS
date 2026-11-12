@@ -81,40 +81,67 @@ rest of the graph contradicts, in two stages.
   component is judged by its own solve, any other pair by the largest solve that places both its
   images, and removed when its baseline direction is more than the bar from the centres. 0 skips
   the stage: the rotation stage alone.
-- **The optional repair** (`ReconstructionConfig::repairContradictedPairs`,
-  `--repair-contradicted-pairs`, default off; needs the translation stage, so a bar above 0) brings
-  back a removed pair instead of losing it (`RepairContradictedPairs`, run once after both stages
-  on the pairs they removed, in parallel over those pairs). The pair keeps the averaged rotation
-  `R_2 R_1^T`, and `FitBaselineDirection` fits its baseline direction to its track-forming matches at
-  that rotation: the epipolar constraint is linear in the direction, RANSAC over two matches (200
-  rounds) counts the matches within 1 degree of the epipolar plane, then a least squares of the
-  agreeing ones and the sign that puts most of them in front of both cameras. The pair is repaired
-  when at least 80% of its track-forming matches (and 8) agree, the largest centres solve placing
-  both its images has their offset within 20 degrees of the fitted direction (no such solve: not
-  repaired), and its two images are the same spot (joined by pairs under `kNearDuplicateRayAngle`)
-  or an image of a third spot holds a kept pair with each (a block of look-alikes between two spots
-  vouches only for itself). A repaired pair carries the new relative pose (E, and F between
-  pinholes), its agreeing matches as its sparse and dense segments (the other sparse matches become
-  outliers, the other dense ones are dropped), a ray angle measured again, and counts as kept; the
-  weights are recomputed with everything else. One log line: pairs repaired of those removed and
-  the seconds.
+- **The repair** (`ReconstructionConfig::repairContradictedPairs`, `--repair-contradicted-pairs`,
+  default on; needs the translation stage, so a bar above 0, and with a bar of 0 it is passed false)
+  brings back a removed pair instead of losing it (`RepairContradictedPairs`, run once after both
+  stages on the pairs they removed, in parallel over those pairs). The pair keeps the averaged
+  rotation `R_2 R_1^T`, and `FitBaselineDirection` fits its baseline direction to its track-forming
+  matches at that rotation: the epipolar constraint is linear in the direction, RANSAC over two
+  matches (200 rounds) counts the matches within 1 degree of the epipolar plane, then a least
+  squares of the agreeing ones and the sign that puts most of them in front of both cameras. The
+  pair is repaired when at least 80% of its track-forming matches (and 8) agree, the largest
+  centres solve placing both its images has their offset within 20 degrees of the fitted direction
+  (no such solve: not repaired), and its two images are the same spot (joined by pairs under
+  `kNearDuplicateRayAngle`) or an image of a third spot holds a kept pair with each (a block of
+  look-alikes between two spots vouches only for itself). The bars do not depend on the pair's
+  parallax angle. A repaired pair carries the new relative pose (E, and F between pinholes), its
+  agreeing matches as its sparse and dense segments (the other sparse matches become outliers, the
+  other dense ones are dropped), a ray angle measured again, and counts as kept; the weights are
+  recomputed with everything else. One log line: pairs repaired of those removed and the seconds.
 
-Validation of the repair (pre-cut matched scenes reloaded at 8 threads, T/records-2026-11-09-repair,
-T/records-2026-11-10-repair-fn): pairs repaired of those the cut removed, their truth against the
-reference, and the reconstruction that follows against the cut without the repair.
+Cost: the stage takes 1 to 78 ms per capture at 8 threads over the 33 captures of the validation
+(4 to 28 ms on the six below), at most 0.0025% of a reconstruction's wall, because only a pair that
+is vouched for and placed by a centres solve is fitted.
 
-| capture | removed | repaired | right-pose TRUE / other | registered, right, wrong (without -> with) | pose score (without -> with) |
-|---|---|---|---|---|---|
-| 4e5c6f6d | 257 | 41 | 38 / 3 | 291, 250, 32 -> 292, 250, 32 | 0.9125 -> 0.9138 |
-| 5ada248e | 513 | 142 | 139 / 3 | 530, 524, 5 -> 530, 524, 5 | 0.9422 -> 0.9548 |
-| 26ccbd51 | 676 | 51 | 50 / 1 | 728, 722, 0 -> 728, 722, 0 | 0.9777 -> 0.9777 |
-| Outdoor_004 | 4384 | 10 | 10 / 0 | 767, 767, 0 -> 767, 767, 0 | 0.7190 -> 0.7194 |
-| Palace | 1826 | 10 | 7 / 3 | 495, 494, 1 -> 495, 494, 1 | 0.8142 -> 0.8105 |
+Validation of the repair (pre-cut matched scenes reloaded at 8 threads, one run per row, the repair
+off -> on): the pairs the cut removed and the pairs repaired, with the stage's own time, and the
+reconstruction that follows. 6DCA1E8E ends in one of several outcomes from run to run (images 617
+to 871 registered in part or not), so its row is not a comparison of the repair.
 
-Cost: the repair is a few milliseconds to 0.03 s per capture at 8 threads (0.02 to 0.2 s at 1 thread),
-under 0.003% of a full reconstruction's wall, because only a pair that is vouched for and placed by a centres
-solve is fitted (4e5c6f6d 257 removed pairs 6 ms, 5ada248e 513 pairs 17 ms, alameda 197 pairs
-12 ms).
+| capture | removed | repaired | stage | registered | right | wrong | pose score |
+|---|---|---|---|---|---|---|---|
+| 4e5c6f6d | 257 | 41 | 6 ms | 293 -> 291 | 250 -> 250 | 33 -> 32 | 0.9132 -> 0.9141 |
+| 1c65aab4 | 160 | 30 | 4 ms | 513 -> 513 | 513 -> 513 | 0 -> 0 | 0.9852 -> 0.9854 |
+| Palace | 1826 | 10 | 27 ms | 495 -> 495 | 494 -> 494 | 1 -> 1 | 0.8113 -> 0.8119 |
+| 5ada248e | 513 | 142 | 14 ms | 534 -> 530 | 528 -> 524 | 5 -> 5 | 0.9572 -> 0.9557 |
+| 17ac94cc | 496 | 147 | 11 ms | 553 -> 553 | 521 -> 521 | 8 -> 8 | 0.6415 -> 0.6404 |
+| 6DCA1E8E | 1172 | 42 | 13 ms | 785 -> 725 | 464 -> 467 | 8 -> 5 | 0.7541 -> 0.7678 |
+
+5ada248e registers 534 or 530 images from run to run without the repair too (the same four
+images), and no repaired pair touches them. Truth of the repaired pairs against the reference, over
+the 33 captures (1563 repaired of 15389 removed; right = rotation within 5 and direction within 15
+degrees), by the pair's parallax angle:
+
+| parallax angle (deg) | repaired | right | not right (wrong pose / not co-visible / unjudged) |
+|---|---|---|---|
+| under 8 | 47 | 42 | 5 |
+| 8 to 20 | 280 | 262 | 18 |
+| 20 and over | 1236 | 1145 | 91 |
+
+Rejected alternatives, each replayed on the 33 captures' removed pairs: a share bar of 0.5 under 8
+degrees of parallax (+315 right pairs at 92% precision, no change in any registration); the rotation
+refined within a 1 or 2 degree ball before the fit (+76 right at 88%, +104 at 80%); a bar on the
+epipolar residual that carries the parallax (the unnormalised triple product, 0.2 to 0.5 degrees:
+precision 82 to 85%, loses 225 to 1009 right pairs); the centre-angle bar scaled by the parallax
+(`DirectionTolerance`) or tightened at wide baseline (more bad pairs, or right pairs lost for few
+bad ones); matches under 1 to 3 degrees of parallax not voting (+17 to +35 right pairs); a ray-angle
+ceiling (-44 right pairs for 13 fewer bad ones).
+
+Open: a pair the cut keeps at under 2 degrees of parallax is outside the repair's reach (the
+translation stage skips such a pair, and the repair reconsiders only removed ones), yet on
+Outdoor_004 54% of the kept pairs under 1 degree and 21% of those from 1 to 2 degrees have a baseline
+direction more than 30 degrees off the reference (about 5 to 10% on 5ada248e, 6DCA1E8E and
+Indoor_044).
 
 Validation of the weight scaling (T/records-2026-11-11-weight). Invariance, the rotation stage
 replayed in Python from each capture's pre-cut graph (`replay_all.py`, verdicts identical to the C++
@@ -163,7 +190,7 @@ unscored and the contradiction cut runs unweighted.
 | `--triplet-min-score F` | `0.3` | the paper's minimum edge score `m` |
 | `--triplet-second-face-score F` | `0.75` | cutting rule: the stricter ceiling that names the two faces |
 | `--max-pair-direction-residual F` | `45` | the contradiction cut's translation stage: pairs whose baseline direction is more than this many degrees from the camera centres go; 0 = the rotation stage alone |
-| `--repair-contradicted-pairs B` | `false` | repair instead of remove: a removed pair comes back with a baseline direction refitted at the averaged rotation when its matches, the centres and a neighbouring spot agree (needs the bar above 0) |
+| `--repair-contradicted-pairs B` | `true` | repair instead of remove: a removed pair comes back with a baseline direction refitted at the averaged rotation when its matches, the centres and a neighbouring spot agree (needs the bar above 0; pass false with a bar of 0) |
 
 `minYield` (0.4) has no command-line flag. Python: `TripletFilterConfig` with the attributes
 `enabled`, `cut`, `min_score`, `min_yield` and `second_face_score`,
