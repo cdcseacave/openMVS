@@ -177,6 +177,17 @@ app; only the Python bindings (`libs/SFM/PythonWrapper.cpp`) and hand-constructe
 | `CubeMapFaceRenderTest`, `CubeMapBridgeGeometryTest`, `CubeMapBridgeEndToEndTest`, `CubeMapBridgeMVSLoadTest`, `CubeMapBridgeMixedSceneTest` | `apps/Tests/TestsSFM.cpp` | Cube-map rendering, geometry, MVS-export round trip, and mixed pinhole/spherical scenes (no numeric tolerances recorded beyond pass/fail) |
 | `SphericalBottomBandTest` | `apps/Tests/TestsSFM.cpp` | Textured 2048x1024 panorama: 696 keypoints in the bottom 20% of rows with the band off, 0 with 0.2, the 6545 above unchanged; a perspective image gives identical keypoints and descriptors for band 0 and 0.2 |
 
+Bottom band, `sphericalBottomBand` 0.2 against 0, Holo360D panoramas (`--camera-type 1`), SIFT matching, full runs from images at 8 threads, scored on the LiDAR ground truth (`pose_score.py`: completeness = share of trusted images posed within the bar, accuracy = mean pose score of those, F1 of the two). Outdoor_004: three runs per arm (the three agree to 0.0003 F1; points differ by under 60); Indoor_044: one run per arm. Wall times were measured while other jobs shared the machine, so CPU seconds are the cleaner cost.
+
+| Capture, band | registered / right / wrong | completeness | accuracy | F1 | keypoints (removed by the band) | pairs kept | inlier tracks / tracks | blocks | CPU (s) |
+|---|---|---|---|---|---|---|---|---|---|
+| Outdoor_004, 0.2 | 777 / 777 / 0 of 824 | 0.943 | 0.586 | 0.7228-0.7231 | 69.58 M (4.21 M, 5.7%) | 15010 | 642.2 k / 702.9 k (91.4%) | 7 | 4827-6009 |
+| Outdoor_004, 0 | 767 / 767 / 0 of 824 | 0.931 | 0.586 | 0.7190 | 73.79 M | 14511 | 634.8 k / 681.6 k (93.1%) | 8 | 4911-6014 |
+| Indoor_044, 0.2 | 1087 / 1087 / 0 of 1087 | 1.000 | 0.553 | 0.7120 | 46.35 M (5.16 M, 10.0%) | 24668 | 583.4 k / 597.5 k (97.6%) | 10 | 4354 |
+| Indoor_044, 0 | 1087 / 1087 / 0 of 1087 | 1.000 | 0.555 | 0.7138 | 51.51 M | 23261 | 592.6 k / 611.0 k (97.0%) | 8 | 4611 |
+
+Outdoor_004: the 10 images registered only with the band are 9 consecutive frames (8 s of the walk) and one isolated frame; without the band the block that holds them stops growing before them (6 images) or registers 4 of them wrongly, and the weakly-connected filter then removes those 4; with the band the post-merge resection registers all 10 right. Block starts (monitor, against the LiDAR references): with the band 3 of 7 blocks start with a star arm placed wrong (two of them by hundreds of metres, baseline direction of the star pair 85-139 degrees off at 1.4-1.9 degrees of ray angle; the third borderline, centre 0.055 against the 0.03 bar); the weakly-connected filter removes those images and the post-merge resection registers them right, so the final model has 0 wrong. Without the band 0 of 8 block starts are wrong. The Indoor_044 F1 difference (0.0018) is below the 0.008 noise of comparing different matchings and rests on one run per arm.
+
 ## 6. Rejected alternatives
 
 - **Stereographic projection from the back pole** as a 2D unprojection replacement — well-defined
