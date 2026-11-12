@@ -759,8 +759,10 @@ IIndexArr ExportMatchingCSVsAndFilterPairs(Scene& scene, const ReconstructionCon
 	IIndexArr seedViews;
 	std::vector<float> scores;
 	FilterPairsByTriplets(scene, config.tripletFilterCfg, config.matchCfg.weightingCfg, &seedViews, &scores);
+	// the repair confirms a refitted direction against the centres of the translation stage, so
+	// without that stage (a bar of 0) there is nothing for it to act on
 	FilterPairsByContradiction(scene, scores, config.minPairWeight, config.maxPairDirectionResidual, config.matchCfg.weightingCfg,
-		config.repairContradictedPairs);
+		config.repairContradictedPairs && config.maxPairDirectionResidual > 0.f);
 	return seedViews;
 }
 

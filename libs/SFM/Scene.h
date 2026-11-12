@@ -93,8 +93,8 @@ struct SFM_API ReconstructionConfig {
 	float maxPairDirectionResidual{45.f};
 	// Repair instead of remove: a pair the cut removed comes back, with a relative pose refitted
 	// at the averaged rotation, when its matches agree with that pose and the camera centres confirm
-	// its baseline direction (FilterPairsByContradiction; needs maxPairDirectionResidual above 0, so
-	// a bar of 0 needs this false)
+	// its baseline direction (FilterPairsByContradiction); part of the translation stage, so it does
+	// not act when maxPairDirectionResidual is 0
 	bool repairContradictedPairs{true};
 
 	// View graph calibration parameters

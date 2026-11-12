@@ -82,7 +82,7 @@ rest of the graph contradicts, in two stages.
   images, and removed when its baseline direction is more than the bar from the centres. 0 skips
   the stage: the rotation stage alone.
 - **The repair** (`ReconstructionConfig::repairContradictedPairs`, `--repair-contradicted-pairs`,
-  default on; needs the translation stage, so a bar above 0, and with a bar of 0 it is passed false)
+  default on; part of the translation stage, so with a bar of 0 it does not act)
   brings back a removed pair instead of losing it (`RepairContradictedPairs`, run once after both
   stages on the pairs they removed, in parallel over those pairs). The pair keeps the averaged
   rotation `R_2 R_1^T`, and `FitBaselineDirection` fits its baseline direction to its track-forming
@@ -190,7 +190,7 @@ unscored and the contradiction cut runs unweighted.
 | `--triplet-min-score F` | `0.3` | the paper's minimum edge score `m` |
 | `--triplet-second-face-score F` | `0.75` | cutting rule: the stricter ceiling that names the two faces |
 | `--max-pair-direction-residual F` | `45` | the contradiction cut's translation stage: pairs whose baseline direction is more than this many degrees from the camera centres go; 0 = the rotation stage alone |
-| `--repair-contradicted-pairs B` | `true` | repair instead of remove: a removed pair comes back with a baseline direction refitted at the averaged rotation when its matches, the centres and a neighbouring spot agree (needs the bar above 0; pass false with a bar of 0) |
+| `--repair-contradicted-pairs B` | `true` | repair instead of remove: a removed pair comes back with a baseline direction refitted at the averaged rotation when its matches, the centres and a neighbouring spot agree (does not act with the bar at 0) |
 
 `minYield` (0.4) has no command-line flag. Python: `TripletFilterConfig` with the attributes
 `enabled`, `cut`, `min_score`, `min_yield` and `second_face_score`,
