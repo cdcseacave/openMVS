@@ -1404,7 +1404,7 @@ bool GlobalAlignment::MergeScenes(
 		report.poses[0].model = 0;
 		report.poses[0].state = BlockPose::ADMITTED;
 		MergeTransformedScenes(subScenes, localToGlobals, report.poses, std::vector<SeamCorrespondence>(), releaseUnplaced);
-		report.numPlaced = report.numModels = 1;
+		report.numPlaced = 1;
 		report.numImagesPlaced = scene.status.nCalibratedImages;
 		DEBUG("Single-block merge completed (%s)", TD_TIMER_GET_FMT().c_str());
 		return true;
@@ -1457,17 +1457,16 @@ bool GlobalAlignment::MergeScenes(
 			VERBOSE("Block %u not placed: %s (%u images)", (unsigned)b, pose.reason.c_str(), numImages);
 	}
 	report.numImagesUnplaced = report.unplacedImages.size();
-	report.numModels = mergedModel == NO_ID ? 0 : 1;
 	for (const uint32_t e : edgeSeams)
 		if (poses[candidates[e].sceneA].state == BlockPose::ADMITTED && poses[candidates[e].sceneB].state == BlockPose::ADMITTED)
 			report.modelSeams.push_back(e);
 
-	// the closure: every correspondence of the cross pairs of at least minCommonTracks weighted inliers
-	// of every pair of blocks the merged model holds, whether or not a reading of it was kept, that the
-	// final block poses explain within the loose bar joins its two tracks by construction: the model
-	// never closes its cycles exactly, and a block bent within the bars is off by about that at its far
-	// end, which the merged model's adjustment then straightens with these matches in its tracks; the
-	// lighter pairs, which the readings pool, join through the cross-block track merge
+	// the closure, a join priority: the correspondences of the cross pairs of at least minCommonTracks
+	// weighted inliers of every pair of blocks the merged model holds, whether or not a reading of it was
+	// kept, that the final block poses explain within the loose bar (a block bent within the bars is off
+	// by about that at its far end) join their tracks first; the cross-block track merge then visits every
+	// track-forming match of every connecting pair, these heavy pairs' included, under the same guards,
+	// so a seam-consistent match takes a feature before a competing match to the same image
 	const REAL looseBar = config.looseSeamFactor * config.maxReprojError;
 	std::vector<SeamCorrespondence> seamInliers;
 	for (const auto& [blockPair, pairIndices] : blockPairLinks) {

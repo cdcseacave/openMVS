@@ -19604,16 +19604,15 @@ static void DropCrossObservations(Scene& scene, const std::vector<IIndexArr>& bl
 // keypoint noise), and the averaging spreads what twelve of them miss the ring by evenly over it
 static constexpr REAL kRingMergeRotation = 0.3, kRingMergePosition = 0.002;
 
-// The one way a merge test asserts its result: the blocks placed, the models they made, no image
+// The one way a merge test asserts its result: the blocks placed, no image
 // left behind, every registered image accounted for by a placed block, and the merged poses on the
 // truth under the two bars
 static bool CheckRingMerge(const char* test, const MergeReport& rep, const Scene& scene,
-	const std::vector<Pose3D>& gtPoses, unsigned expectedPlaced, unsigned expectedModels,
-	REAL maxRotDeg, REAL maxPosFraction)
+	const std::vector<Pose3D>& gtPoses, unsigned expectedPlaced, REAL maxRotDeg, REAL maxPosFraction)
 {
-	if (rep.numPlaced != expectedPlaced || rep.numModels != expectedModels) {
-		VERBOSE("%s FAILED: %u/%u blocks placed in %u models, expected %u in %u",
-			test, rep.numPlaced, rep.numBlocks, rep.numModels, expectedPlaced, expectedModels);
+	if (rep.numPlaced != expectedPlaced) {
+		VERBOSE("%s FAILED: %u/%u blocks placed, expected %u",
+			test, rep.numPlaced, rep.numBlocks, expectedPlaced);
 		return false;
 	}
 	if (!rep.unplacedImages.empty()) {
@@ -19631,8 +19630,8 @@ static bool CheckRingMerge(const char* test, const MergeReport& rep, const Scene
 			test, rotation, position * 100);
 		return false;
 	}
-	VERBOSE("  %s: %u blocks in %u models, %u images, %.4f deg and %.4f%% from the truth",
-		test, rep.numPlaced, rep.numModels, rep.numImagesPlaced, rotation, position * 100);
+	VERBOSE("  %s: %u blocks, %u images, %.4f deg and %.4f%% from the truth",
+		test, rep.numPlaced, rep.numImagesPlaced, rotation, position * 100);
 	return true;
 }
 /*----------------------------------------------------------------*/
@@ -19994,10 +19993,10 @@ bool RingPlacementTest()
 	// the block poses the averaging leaves, and the model the final adjustment makes of them: the
 	// seams are each biased by a few hundredths of a degree the same way, which the averaging
 	// spreads evenly round the ring and the adjustment takes out
-	if (!CheckRingMerge("RingPlacementTest", rep, scene, gtPoses, cfg.numBlocks, 1, kRingMergeRotation, kRingMergePosition))
+	if (!CheckRingMerge("RingPlacementTest", rep, scene, gtPoses, cfg.numBlocks, kRingMergeRotation, kRingMergePosition))
 		return false;
 	RunFinalAdjustment(scene);
-	if (!CheckRingMerge("RingPlacementTest, adjusted", rep, scene, gtPoses, cfg.numBlocks, 1, 0.1, 0.001))
+	if (!CheckRingMerge("RingPlacementTest, adjusted", rep, scene, gtPoses, cfg.numBlocks, 0.1, 0.001))
 		return false;
 	// every block overlaps the next and the ring closes: the readings lie on the ring's twelve pairs,
 	// and the merged model rests on every one of them
@@ -20023,8 +20022,10 @@ bool RingPlacementTest()
 // 50 px off. The merge joins every one of them on the duplicate-image and length guards alone (no
 // reprojection guard); the merged model's adjustment (AdjustMergedScene: the loose-bar filter, the
 // triangulation, the filter again) decides each observation: the right matches end as inliers of one
-// track, the false ones never do.
-bool MergeJoinReprojectionTest()
+// track, the false ones never do. And the closure's join priority: a far point whose seam match (i, j) and a
+// competing match of a pair (a0, j) visited before it in the connecting pairs' order both put a keypoint of j on
+// its track: the seam match joins first, the competing one is refused for holding image j twice.
+bool CrossBlockJoinTest()
 {
 	TD_TIMER_START();
 	RingSceneConfig cfg{2, 20};
@@ -20040,7 +20041,7 @@ bool MergeJoinReprojectionTest()
 	BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
 	ImagePair* crossPair = scene.FindPair(i, j);
 	if (crossPair == NULL) {
-		VERBOSE("MergeJoinReprojectionTest FAILED: no pair across the seam between images %u and %u", i, j);
+		VERBOSE("CrossBlockJoinTest FAILED: no pair across the seam between images %u and %u", i, j);
 		return false;
 	}
 	const auto LocalOf = [&](uint32_t b, IIndex g) -> IIndex {
@@ -20062,11 +20063,13 @@ bool MergeJoinReprojectionTest()
 	};
 	// a track of block b over two of its images seeing the world point X, held at the world position P;
 	// the feature of its observation in the seam image (i for block 0, j for block 1)
-	const auto AddTrack = [&](uint32_t b, IIndex g1, IIndex g2, const Point3& X, const Point3& P, uint32_t& seamFeature) -> bool {
+	const auto AddTrack = [&](uint32_t b, IIndex g1, IIndex g2, const Point3& X, const Point3& P, uint32_t& seamFeature, uint32_t* otherFeature = NULL) -> bool {
 		uint32_t f1, f2;
 		if (!AddKeypoint(b, g1, X, f1) || !AddKeypoint(b, g2, X, f2))
 			return false;
 		seamFeature = (g1 == i || g1 == j) ? f1 : f2;
+		if (otherFeature)
+			*otherFeature = (g1 == i || g1 == j) ? f2 : f1;
 		Track track(applied[b] * P);
 		track.observations.emplace_back(LocalOf(b, g1), f1);
 		track.observations.emplace_back(LocalOf(b, g2), f2);
@@ -20083,27 +20086,44 @@ bool MergeJoinReprojectionTest()
 	const Point3 near1(mid + out * REAL(4) + up * REAL(0.3)), near2(mid + out * REAL(4) - up * REAL(0.3));
 	const Point3 across(normalized(Ray(j, near1).cross(up)));   // perpendicular to camera j's ray
 	uint32_t fRightI, fRightJ, fFalseI, fFalseJ, fOneRightI, fOneRightJ, fOneFalseI, fOneFalseJ;
+	uint32_t fFirstI, fFirstA0, fFirstJ, fFirstBadJ; // the join priority: a far point with a seam match and a competing one
+	const Point3 far3(mid + out * REAL(30));
 	// two positioned roots, the right match: block 1 holds the far point d too deep along camera j's ray
 	// two positioned roots, the false match: block 1's track is another point d across camera j's ray
 	// one positioned root: block 0's track matched to a lone keypoint of image j, right and 50 px off
 	if (!AddTrack(0, a0, i, far1, far1, fRightI) || !AddTrack(1, j, b1, far1, far1 + Ray(j, far1) * d, fRightJ) ||
 		!AddTrack(0, a0, i, near1, near1, fFalseI) || !AddTrack(1, j, b1, near1 + across * d, near1 + across * d, fFalseJ) ||
 		!AddTrack(0, a0, i, far2, far2, fOneRightI) || !AddKeypoint(1, j, far2, fOneRightJ) ||
-		!AddTrack(0, a0, i, near2, near2, fOneFalseI) || !AddKeypoint(1, j, near2 + across * d, fOneFalseJ)) {
-		VERBOSE("MergeJoinReprojectionTest FAILED: a test point does not project into the seam's four images");
+		!AddTrack(0, a0, i, near2, near2, fOneFalseI) || !AddKeypoint(1, j, near2 + across * d, fOneFalseJ) ||
+		!AddTrack(0, a0, i, far3, far3, fFirstI, &fFirstA0) || !AddTrack(1, j, b1, far3, far3, fFirstJ) ||
+		!AddKeypoint(1, j, far3 + across * REAL(4), fFirstBadJ)) {
+		VERBOSE("CrossBlockJoinTest FAILED: a test point does not project into the seam's four images");
 		return false;
 	}
 	crossPair->matches.emplace_back(fRightI, fRightJ);
 	crossPair->matches.emplace_back(fFalseI, fFalseJ);
 	crossPair->matches.emplace_back(fOneRightI, fOneRightJ);
 	crossPair->matches.emplace_back(fOneFalseI, fOneFalseJ);
+	// the priority: the seam match (i, j) of the far point, and before it in the pairs' order a pair (a0, j) whose
+	// match puts another keypoint of j, 4 across the point, on the same track
+	crossPair->matches.emplace_back(fFirstI, fFirstJ);
+	if (scene.FindPair(a0, j) == NULL)
+		scene.pairs.emplace_back(a0, j);
+	{
+		const auto IndexOf = [&](IIndex x, IIndex y) { FOREACH(k, scene.pairs) if (scene.pairs[k].ID1 == x && scene.pairs[k].ID2 == y) return (IIndex)k; return NO_ID; };
+		const IIndex kCompeting = IndexOf(a0, j), kSeam = IndexOf(i, j);
+		ASSERT(kCompeting != NO_ID && kSeam != NO_ID);
+		if (kCompeting > kSeam)
+			std::swap(scene.pairs[kCompeting], scene.pairs[kSeam]);
+		scene.FindPair(a0, j)->matches.emplace_back(fFirstA0, fFirstBadJ);
+	}
 
 	GlobalAlignmentConfig alignCfg;
 	GlobalAlignment ga(scene, alignCfg);
 	MergeReport rep;
 	ga.MergeScenes(subScenes, localToGlobals, rep);
 	if (rep.numPlaced != 2) {
-		VERBOSE("MergeJoinReprojectionTest FAILED: %u of 2 blocks placed", rep.numPlaced);
+		VERBOSE("CrossBlockJoinTest FAILED: %u of 2 blocks placed", rep.numPlaced);
 		return false;
 	}
 	// joined: one merged track holds both ends of the match (as inliers, when asked)
@@ -20122,10 +20142,18 @@ bool MergeJoinReprojectionTest()
 		}
 		return false;
 	};
+	// the seam-consistent match took the far point's track; the competing one, visited first, was refused
+	const bool firstRight = Joined(fFirstI, fFirstJ, false), firstWrong = Joined(fFirstI, fFirstBadJ, false);
+	if (!firstRight || firstWrong) {
+		VERBOSE("CrossBlockJoinTest FAILED: the seam match of the far point %s and the competing match of the pair visited "
+			"before it %s (the seam match expected to join first, the other refused for holding image %u twice)",
+			firstRight ? "joined" : "did not join", firstWrong ? "joined" : "did not join", j);
+		return false;
+	}
 	const bool joined[4] = {Joined(fRightI, fRightJ, false), Joined(fFalseI, fFalseJ, false),
 		Joined(fOneRightI, fOneRightJ, false), Joined(fOneFalseI, fOneFalseJ, false)};
 	if (!joined[0] || !joined[1] || !joined[2] || !joined[3]) {
-		VERBOSE("MergeJoinReprojectionTest FAILED: the merge joined right %d, false %d, one-sided right %d, one-sided 50 px off %d "
+		VERBOSE("CrossBlockJoinTest FAILED: the merge joined right %d, false %d, one-sided right %d, one-sided 50 px off %d "
 			"(every match expected joined, on the duplicate-image and length guards alone)", joined[0], joined[1], joined[2], joined[3]);
 		return false;
 	}
@@ -20133,11 +20161,11 @@ bool MergeJoinReprojectionTest()
 	const bool right = Joined(fRightI, fRightJ, true), wrong = Joined(fFalseI, fFalseJ, true);
 	const bool oneRight = Joined(fOneRightI, fOneRightJ, true), oneWrong = Joined(fOneFalseI, fOneFalseJ, true);
 	if (!right || wrong || !oneRight || oneWrong) {
-		VERBOSE("MergeJoinReprojectionTest FAILED: after the merged model's adjustment, two positioned roots d=%g apart: right match %s (expected inliers of one track), false match %s (expected not); one positioned root: right %s (expected inliers), 50 px off %s (expected not)",
+		VERBOSE("CrossBlockJoinTest FAILED: after the merged model's adjustment, two positioned roots d=%g apart: right match %s (expected inliers of one track), false match %s (expected not); one positioned root: right %s (expected inliers), 50 px off %s (expected not)",
 			d, right ? "inliers" : "not", wrong ? "inliers" : "not", oneRight ? "inliers" : "not", oneWrong ? "inliers" : "not");
 		return false;
 	}
-	VERBOSE("MergeJoinReprojectionTest PASSED: every match joined, and after the merged model's adjustment the right ones are inliers of one track, the false ones (%g apart, 50 px) not (%s)",
+	VERBOSE("CrossBlockJoinTest PASSED: the seam match joined before a competing one, every match joined, and after the merged model's adjustment the right ones are inliers of one track, the false ones (%g apart, 50 px) not (%s)",
 		d, TD_TIMER_GET_FMT().c_str());
 	return true;
 }
@@ -20244,10 +20272,11 @@ bool PooledSeamReadingTest()
 	GlobalAlignment ga(scene, alignCfg);
 	MergeReport rep;
 	ga.MergeScenes(subScenes, localToGlobals, rep);
-	if (!CheckRingMerge("PooledSeamReadingTest", rep, scene, gtPoses, cfg.numBlocks, 1, kRingMergeRotation, kRingMergePosition))
+	if (!CheckRingMerge("PooledSeamReadingTest", rep, scene, gtPoses, cfg.numBlocks, kRingMergeRotation, kRingMergePosition))
 		return false;
-	// pairs together under minPairInliers say nothing: the closing pair keeps POOLED_UNDER_BAR_PAIRS cross pairs of
-	// one weighted inlier each, still read, its readings witnessed by no pair
+	// the witness has a bar on the total: the closing pair keeps POOLED_UNDER_BAR_PAIRS cross pairs of one weighted
+	// inlier each, under minPairInliers together; it is still read, and its readings are witnessed by no pair (a bar
+	// per pair would give the same; the first case is what shows the pairs read together)
 	{
 		constexpr unsigned POOLED_UNDER_BAR_PAIRS = 20;
 		static_assert(POOLED_UNDER_BAR_PAIRS < 30, "the pairs' total must stay under GlobalAlignmentConfig::minPairInliers");
@@ -20297,8 +20326,9 @@ bool PooledSeamReadingTest()
 // the unplaced blocks whole (MergeScenes with releaseUnplaced false) merges the eleven others and leaves that block in
 // its scene with its features and tracks, its images with no features and no pose in the global scene;
 // SceneBlocks::RegroupAfterMerge makes the merged model block 0 (every posed image, its features and the scene's
-// tracks moved in) and the kept block block 1, as it was; the next round, releasing, places the model again and merges
-// the kept block without its poses, its features back in the global scene for the resection.
+// tracks moved in) and the kept block block 1, as it was; the next round, releasing and anchored at block 0 as
+// MergeInRounds anchors it, places the model again and merges the kept block without its poses, its features back in
+// the global scene for the resection. These are the states between rounds, which MergeInRoundsTest does not see.
 bool MergeRoundsTest()
 {
 	TD_TIMER_START();
@@ -20359,7 +20389,7 @@ bool MergeRoundsTest()
 	}
 	{
 		GlobalAlignment ga(scene, alignCfg);
-		ga.MergeScenes(sceneBlocks.blocks, sceneBlocks.localToGlobal, rep, true);
+		ga.MergeScenes(sceneBlocks.blocks, sceneBlocks.localToGlobal, rep, true, 0u);
 	}
 	bool released = rep.numPlaced == 1 && rep.numImagesUnplaced == keptImages.size() && scene.status.nCalibratedImages == numModel;
 	for (const IIndex g : keptImages)
@@ -20376,22 +20406,22 @@ bool MergeRoundsTest()
 }
 /*----------------------------------------------------------------*/
 
-// The merge's own loop (SceneBlocks::MergeInRounds) on a ring whose block MERGE_LOOP_KEPT has no cross match to any
-// other block: round 1 merges the eleven others and keeps it whole; the pool step enters no image (the kept block's
-// images hold no features in the global scene); round 2 reads it against the merged model and places nothing, so the
-// fixed point is reached and round 3 releases it: three rounds, the eleven blocks' images posed, the kept block's
-// images back in the global scene with their features and without poses.
+// The merge's own loop (SceneBlocks::MergeInRounds) on a ring of four blocks cut in two: blocks 0-1 and blocks 2-3,
+// no cross match between the halves, two models of 20 images that weigh alike. Round 1 merges one half and keeps
+// the other whole; the pool step enters no image; round 2 reads the kept half against the merged model, block 0,
+// and with the two models still weighing alike only the anchor at block 0 makes it merge block 0's; so nothing
+// is placed, the fixed point is reached and round 3 releases the kept half: three rounds, one half posed, the
+// other half's images back in the global scene with their features and without poses.
 bool MergeInRoundsTest()
 {
 	TD_TIMER_START();
-	constexpr uint32_t MERGE_LOOP_KEPT = 5;
-	const RingSceneConfig cfg{12, 10};
+	const RingSceneConfig cfg{4, 10};
 	Scene scene;
 	std::vector<IIndexArr> blocks;
 	std::vector<Pose3D> gtPoses;
 	GenerateRingScene(cfg, scene, blocks, gtPoses);
-	ThinSeam(scene, blocks, MERGE_LOOP_KEPT - 1, MERGE_LOOP_KEPT, 0, cfg.camsPerBlock);
-	ThinSeam(scene, blocks, MERGE_LOOP_KEPT, MERGE_LOOP_KEPT + 1, 0, cfg.camsPerBlock);
+	ThinSeam(scene, blocks, 1, 2, 0, cfg.camsPerBlock);
+	ThinSeam(scene, blocks, 3, 0, 0, cfg.camsPerBlock);
 	SceneBlocks sceneBlocks(scene);
 	std::vector<SEACAVE::Transform> applied;
 	BuildRingBlocks(cfg, scene, blocks, gtPoses, sceneBlocks.blocks, sceneBlocks.localToGlobal, applied);
@@ -20400,22 +20430,28 @@ bool MergeInRoundsTest()
 	FOREACH(b, sceneBlocks.localToGlobal)
 		for (const IIndex g : sceneBlocks.localToGlobal[b])
 			sceneBlocks.blockOf[g] = (IIndex)b;
-	const IIndexArr keptImages(sceneBlocks.localToGlobal[MERGE_LOOP_KEPT]);
 	ReconstructionConfig config;
 	ResectionConfig resectionCfg = config.resectionCfg;
 	resectionCfg.DeriveBAConfigs(config.baConfig);
 	const unsigned numRounds = sceneBlocks.MergeInRounds(resectionCfg, config);
-	const unsigned numModel = (unsigned)(scene.images.size() - keptImages.size());
-	bool released = true;
-	for (const IIndex g : keptImages)
-		released = released && scene.images[g].HasFeatures() && !scene.images[g].HasPose();
-	if (numRounds != 3 || scene.status.nCalibratedImages != numModel || !released) {
-		VERBOSE("MergeInRoundsTest FAILED: %u rounds (3 expected), %u calibrated images (%u expected), block %u's images %s",
-			numRounds, scene.status.nCalibratedImages, numModel, MERGE_LOOP_KEPT, released ? "released" : "not released with their features and without poses");
+	// one half posed, the other released whole
+	unsigned numPosedHalves = 0, numReleasedHalves = 0;
+	for (const IIndexArr half : {IIndexArr{blocks[0]}.Join(blocks[1]), IIndexArr{blocks[2]}.Join(blocks[3])}) {
+		bool posed = true, released = true;
+		for (const IIndex g : half) {
+			posed = posed && scene.images[g].HasPose();
+			released = released && scene.images[g].HasFeatures() && !scene.images[g].HasPose();
+		}
+		numPosedHalves += posed ? 1u : 0u;
+		numReleasedHalves += released ? 1u : 0u;
+	}
+	if (numRounds != 3 || numPosedHalves != 1 || numReleasedHalves != 1 || scene.status.nCalibratedImages != 2 * cfg.camsPerBlock) {
+		VERBOSE("MergeInRoundsTest FAILED: %u rounds (3 expected), %u halves posed and %u released (1 and 1 expected), %u calibrated images (%u expected)",
+			numRounds, numPosedHalves, numReleasedHalves, scene.status.nCalibratedImages, 2 * cfg.camsPerBlock);
 		return false;
 	}
-	VERBOSE("MergeInRoundsTest PASSED: %u rounds, %u images placed, block %u released at the fixed point (%s)",
-		numRounds, numModel, MERGE_LOOP_KEPT, TD_TIMER_GET_FMT().c_str());
+	VERBOSE("MergeInRoundsTest PASSED: %u rounds, one half merged, the other released at the fixed point (%s)",
+		numRounds, TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 /*----------------------------------------------------------------*/
@@ -20481,7 +20517,7 @@ bool UnobservableScaleTest()
 	MergeReport rep;
 	ga.MergeScenes(subScenes, localToGlobals, rep);
 	// the position bar is what proves the tiny block came out at the ring's own scale
-	if (!CheckRingMerge("UnobservableScaleTest", rep, scene, gtPoses, cfg.numBlocks, 1, 0.1, 0.001))
+	if (!CheckRingMerge("UnobservableScaleTest", rep, scene, gtPoses, cfg.numBlocks, 0.1, 0.001))
 		return false;
 	for (const IIndex image : blocks[tiny])
 		if (!scene.images[image].IsValid()) {
@@ -20538,7 +20574,7 @@ bool UnobservableScalePairTest()
 		return false;
 	}
 	// and the scale the two blocks came out at, which can only have come from the other seams
-	if (!CheckRingMerge("UnobservableScalePairTest", rep, scene, gtPoses, cfg.numBlocks, 1, 0.1, 0.001))
+	if (!CheckRingMerge("UnobservableScalePairTest", rep, scene, gtPoses, cfg.numBlocks, 0.1, 0.001))
 		return false;
 	for (const uint32_t b : {tinyA, tinyB})
 		for (const IIndex image : blocks[b])
@@ -20652,7 +20688,7 @@ bool AmbiguousPairTest()
 				seam == NULL ? "no" : "a wrong");
 			return false;
 		}
-		if (!CheckRingMerge("AmbiguousPairTest, three blocks", rep, scene, gtPoses, 3, 1, 0.3, 0.001))
+		if (!CheckRingMerge("AmbiguousPairTest, three blocks", rep, scene, gtPoses, 3, 0.3, 0.001))
 			return false;
 	}
 
@@ -20674,7 +20710,7 @@ bool AmbiguousPairTest()
 			VERBOSE("AmbiguousPairTest FAILED: the lone pair was not merged");
 			return false;
 		}
-		if (!CheckRingMerge("AmbiguousPairTest, two blocks", rep, pairScene, pairPoses, 2, 1, 0.3, 0.001))
+		if (!CheckRingMerge("AmbiguousPairTest, two blocks", rep, pairScene, pairPoses, 2, 0.3, 0.001))
 			return false;
 	}
 	VERBOSE("AmbiguousPairTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
@@ -20831,11 +20867,11 @@ bool RingLoopClosureTest()
 	// at 0.0740 deg and 0.0540% of it, and the bars are held an order of magnitude wider because
 	// what they have to catch is a cycle left open -- a ring this one carries the long way round
 	// and never closes lands at three degrees, the discrepancy of the whole chain
-	if (!CheckRingMerge("RingLoopClosureTest", rep, scene, gtPoses, cfg.numBlocks, 1, 0.6, 0.005))
+	if (!CheckRingMerge("RingLoopClosureTest", rep, scene, gtPoses, cfg.numBlocks, 0.6, 0.005))
 		return false;
 	// and what the reconstruction's own final adjustment then makes of it: 0.0274 deg and 0.0189%
 	RunFinalAdjustment(scene);
-	if (!CheckRingMerge("RingLoopClosureTest, adjusted", rep, scene, gtPoses, cfg.numBlocks, 1, 0.3, 0.005))
+	if (!CheckRingMerge("RingLoopClosureTest, adjusted", rep, scene, gtPoses, cfg.numBlocks, 0.3, 0.005))
 		return false;
 	VERBOSE("RingLoopClosureTest PASSED: %u blocks over %u seams (%s)",
 		rep.numPlaced, (unsigned)rep.modelSeams.size(), TD_TIMER_GET_FMT().c_str());
@@ -20895,10 +20931,10 @@ bool BiasedClosingSeamTest()
 	}
 	// the other branch: the block is in, and the two gradings below say what carrying that seam's
 	// error round the ring cost -- both are printed by CheckRingMerge, against the bars it is given
-	if (!CheckRingMerge("BiasedClosingSeamTest", rep, scene, gtPoses, cfg.numBlocks, 1, 0.6, 0.005))
+	if (!CheckRingMerge("BiasedClosingSeamTest", rep, scene, gtPoses, cfg.numBlocks, 0.6, 0.005))
 		return false;
 	RunFinalAdjustment(scene);
-	if (!CheckRingMerge("BiasedClosingSeamTest, adjusted", rep, scene, gtPoses, cfg.numBlocks, 1, 0.3, 0.005))
+	if (!CheckRingMerge("BiasedClosingSeamTest, adjusted", rep, scene, gtPoses, cfg.numBlocks, 0.3, 0.005))
 		return false;
 	VERBOSE("BiasedClosingSeamTest PASSED, the closing block taken in: the seam planted on %u tracks "
 		"came out %s and the whole ring still answers to the truth (%s)",
@@ -20968,10 +21004,10 @@ bool WeakClosingSeamTest()
 	GlobalAlignment ga(scene, alignCfg);
 	MergeReport rep;
 	ga.MergeScenes(subScenes, localToGlobals, rep);
-	if (!CheckRingMerge("WeakClosingSeamTest", rep, scene, gtPoses, cfg.numBlocks, 1, 0.6, 0.005))
+	if (!CheckRingMerge("WeakClosingSeamTest", rep, scene, gtPoses, cfg.numBlocks, 0.6, 0.005))
 		return false;
 	RunFinalAdjustment(scene);
-	if (!CheckRingMerge("WeakClosingSeamTest, adjusted", rep, scene, gtPoses, cfg.numBlocks, 1, 0.3, 0.005))
+	if (!CheckRingMerge("WeakClosingSeamTest, adjusted", rep, scene, gtPoses, cfg.numBlocks, 0.3, 0.005))
 		return false;
 	VERBOSE("WeakClosingSeamTest PASSED: %u blocks over %u seams, the ring closed by the final adjustment (%s)",
 		rep.numPlaced, (unsigned)rep.modelSeams.size(), TD_TIMER_GET_FMT().c_str());
@@ -21018,10 +21054,10 @@ bool RivalModesOnCycleTest()
 	GlobalAlignment ga(scene, alignCfg);
 	MergeReport rep;
 	ga.MergeScenes(subScenes, localToGlobals, rep);
-	if (!CheckRingMerge("RivalModesOnCycleTest", rep, scene, gtPoses, cfg.numBlocks, 1, kRingMergeRotation, kRingMergePosition))
+	if (!CheckRingMerge("RivalModesOnCycleTest", rep, scene, gtPoses, cfg.numBlocks, kRingMergeRotation, kRingMergePosition))
 		return false;
 	RunFinalAdjustment(scene);
-	if (!CheckRingMerge("RivalModesOnCycleTest, adjusted", rep, scene, gtPoses, cfg.numBlocks, 1, 0.1, 0.001))
+	if (!CheckRingMerge("RivalModesOnCycleTest, adjusted", rep, scene, gtPoses, cfg.numBlocks, 0.1, 0.001))
 		return false;
 	// the pair's hypotheses: the copy, the heaviest, and the true one, the one the model rests on
 	uint32_t right = NO_ID, copy = NO_ID;
@@ -21177,7 +21213,7 @@ bool OneCameraDirectionTest()
 		GlobalAlignment ga(scene, alignCfg);
 		MergeReport rep;
 		ga.MergeScenes(subScenes, localToGlobals, rep);
-		if (!CheckRingMerge("OneCameraDirectionTest", rep, scene, gtPoses, cfg.numBlocks, 1, kRingMergeRotation, kRingMergePosition))
+		if (!CheckRingMerge("OneCameraDirectionTest", rep, scene, gtPoses, cfg.numBlocks, kRingMergeRotation, kRingMergePosition))
 			return false;
 	}
 	{
@@ -21305,7 +21341,7 @@ bool BentBlockClosureTest()
 			numKept, (unsigned)farMatches.size());
 		return false;
 	}
-	if (!CheckRingMerge("BentBlockClosureTest, adjusted", rep, scene, gtPoses, cfg.numBlocks, 1, 0.1, 0.002))
+	if (!CheckRingMerge("BentBlockClosureTest, adjusted", rep, scene, gtPoses, cfg.numBlocks, 0.1, 0.002))
 		return false;
 	VERBOSE("BentBlockClosureTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
@@ -21364,7 +21400,7 @@ bool SecondModelTest()
 	GlobalAlignment ga(scene, alignCfg);
 	MergeReport rep;
 	ga.MergeScenes(subScenes, localToGlobals, rep);
-	if (!CheckRingMerge("SecondModelTest", rep, scene, gtPoses, cfg.numBlocks, 1, 0.1, 0.001))
+	if (!CheckRingMerge("SecondModelTest", rep, scene, gtPoses, cfg.numBlocks, 0.1, 0.001))
 		return false;
 	// the bridge is what carries blocks 9, 10 and 11, and the merged model rests on it
 	if (ModelSeamOf(rep, 8, 9) == NULL) {
@@ -21453,7 +21489,7 @@ bool BentRingKeepsSeamsTest()
 		}
 	}
 	RunFinalAdjustment(scene);
-	if (!CheckRingMerge("BentRingKeepsSeamsTest, adjusted", rep, scene, gtPoses, cfg.numBlocks, 1, 0.1, 0.002))
+	if (!CheckRingMerge("BentRingKeepsSeamsTest, adjusted", rep, scene, gtPoses, cfg.numBlocks, 0.1, 0.002))
 		return false;
 	VERBOSE("BentRingKeepsSeamsTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
@@ -21546,7 +21582,7 @@ bool FalseChordTest()
 		VERBOSE("FalseChordTest FAILED: the planted chord was %s", !measured ? "never measured" : "kept or not indicted");
 		return false;
 	}
-	if (!CheckRingMerge("FalseChordTest", rep, scene, gtPoses, cfg.numBlocks, 1, kRingMergeRotation, kRingMergePosition))
+	if (!CheckRingMerge("FalseChordTest", rep, scene, gtPoses, cfg.numBlocks, kRingMergeRotation, kRingMergePosition))
 		return false;
 	VERBOSE("FalseChordTest PASSED: the chord planted on %u tracks cut by the cycles, %u blocks placed (%s)", planted,
 		rep.numPlaced, TD_TIMER_GET_FMT().c_str());
@@ -21585,7 +21621,7 @@ bool SeamInliersBecomeTracksTest()
 	GlobalAlignment ga(scene, alignCfg);
 	MergeReport rep;
 	ga.MergeScenes(subScenes, localToGlobals, rep);
-	if (!CheckRingMerge("SeamInliersBecomeTracksTest", rep, scene, gtPoses, cfg.numBlocks, 1, 0.1, 0.001))
+	if (!CheckRingMerge("SeamInliersBecomeTracksTest", rep, scene, gtPoses, cfg.numBlocks, 0.1, 0.001))
 		return false;
 	if (rep.modelSeams.empty()) {
 		VERBOSE("SeamInliersBecomeTracksTest FAILED: the merged model rests on no seam");

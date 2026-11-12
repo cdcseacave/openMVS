@@ -689,7 +689,9 @@ bool RotationOnlyReadingTest();
 bool BarsReEntryTest();
 bool WeightlessScaleReadingTest();
 bool RingPlacementTest();
-bool MergeJoinReprojectionTest();
+// The cross-block track join: seam matches first, every match on the duplicate-image and length guards, the merged
+// model's adjustment keeping the right observations
+bool CrossBlockJoinTest();
 bool MergeTrackLengthTest();
 bool PooledSeamReadingTest();
 // The merge in rounds: a block kept whole, the regrouping around the merged model, the release (driven by hand)

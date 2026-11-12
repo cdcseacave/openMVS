@@ -297,12 +297,13 @@ Input: Images + matched pairs (from common front-end)
 │       reading past 5 deg / 1.20 / 0.20, repeat; a bridge │
 │       needs two cameras and its pairs not against it     │
 │                        ▼                                 │
-│    c. Merge the model with the most images: apply its    │
+│    c. Merge one model (the most images; from round 2     │
+│       the one holding the merged model): apply its       │
 │       block poses, average shared camera intrinsics,     │
-│       merge tracks via union-find + reprojection guards  │
-│       (every placed pair's correspondences within the    │
-│       loose bar join by construction); every other block │
-│       is merged without a pose, for the resection        │
+│       merge tracks via union-find (duplicate-image and   │
+│       length guards; seam-consistent matches first);     │
+│       every other block is kept whole for the next       │
+│       round, released to the resection at the end        │
 │                        ▼                                 │
 │    d. AdjustMergedScene: filter at the loose bar, one BA │
 │                                                          │
