@@ -44,7 +44,7 @@ struct SFM_API ViewGraphCalibratorConfig
 
 	// Image pair filtering
 	float maxTwoViewError = 2.f;  // Two-view error threshold (reject pairs with residual above this)
-	float minPairWeight = 3.f;    // Minimum composite weight for image pairs to be included
+	float minPairWeight = 0.9f;   // Minimum composite weight for a pair to give a focal residual (docs/design/PairWeight.md)
 
 	// Solver options
 	double lossThreshold = 1e-1;  // Loss function threshold for robust estimation

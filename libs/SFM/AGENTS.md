@@ -187,7 +187,7 @@ GPS. Clustering is never involved.
 - Threshold: `maxEpipolarError` (pixels), min inliers (default 50)
 
 ### Pair Weighting (`PairsWeighting.h`)
-Composite weight = `spatial x connectivity x triplet`
+Composite weight = `min(WI, 1000) x coverage x cbrt(angle x connectivity) x (0.25 + triplet)` (`docs/design/PairWeight.md`); bars: tracks and the contradiction cut 1.22, clustering and view-graph calibration 0.9
 - **Spatial**: Grid-based feature coverage across image
 - **Connectivity**: Relative importance in local graph
 - **Triplet**: 3-view loop consistency (most reliable)

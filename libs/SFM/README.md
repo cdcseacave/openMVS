@@ -94,7 +94,7 @@ class ImagePair {
 };
 ```
 
-The **composite weight** (`spatial × connectivity × triplet`) ranks pairs by reliability. Triplet weight is the strongest quality signal -- it measures consistency across three-view loops.
+The **composite weight** (capped weighted inliers × coverage × ∛(angle × connectivity) × (0.25 + triplet), `docs/design/PairWeight.md`) ranks pairs by reliability. Triplet weight is the strongest quality signal -- it measures consistency across three-view loops.
 
 A **near-duplicate** pair -- two frames from almost the same spot, covering nearly the same view -- gets the most matches of any pair yet fixes no distance. `ImagePair::IsNearDuplicate` flags it when its overlap (`overlapArea`, rewritten by every weighting pass) is above `PairsWeightingConfig::maxDuplicateOverlap` (0.75) and its measured ray angle is under `maxDuplicateRayAngle` (1.5 degrees); such a pair is never the yardstick of an image's connectivity (`Yardstick`: the image's strongest pair that is not one, or its strongest pair when every pair is one) -- not in the connectivity weight, the star's reference view, floor and scale gauge, nor the triplet yield's capacity. The pair itself stays: it makes tracks and links like any other.
 

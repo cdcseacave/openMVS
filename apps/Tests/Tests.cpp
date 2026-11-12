@@ -312,6 +312,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::PairsWeightingDenseFrameEvidenceTest())
 				return false;
+			if (!SFM::PairCompositeWeightTest())
+				return false;
 			if (!SFM::ViewGraphCalibratorTest())
 				return false;
 			if (!SFM::BAPinholeReprojectionJacobianTest())

@@ -58,7 +58,6 @@ struct SFM_API PairsWeightingConfig
 {
     int gridSize = 10; // grid size for intrinsic weight computation
     unsigned minInliers = 15; // minimum inliers to consider pair for weighting
-    float sigmaInlierPerMatches = 0.6f; // expected inlier vs. number of matches ratio (0.6 - AKAZE/ORB, 0.77 - SIFT)
     float tripletSaturation = 5.f; // saturation point for triplet weighting
     float maxAngleTripletDegrees = 5.f; // maximum allowed rotation error (degrees) for triplet consistency
     // What a pair's DENSE (ROMAv2 warp sampled, descriptor-less) inliers are worth as EVIDENCE that

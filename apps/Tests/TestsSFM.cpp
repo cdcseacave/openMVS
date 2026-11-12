@@ -2861,10 +2861,11 @@ bool BuildTracksConflictTest()
 			ImagePair& pair = scene.pairs.emplace_back(link.ID1, link.ID2);
 			pair.matches.emplace_back(link.q, link.t);
 			pair.numFilteredInliers = 1;
-			// W = numInliers * cbrt(weightSpatial * weightConnectivity * (0.5 + weightTriplet))
+			// W = numInliers * cbrt(weightSpatial * overlapArea^2 * weightConnectivity) * (0.25 + weightTriplet)
 			pair.weightConnectivity = 1.f;
-			pair.weightTriplet = 0.5f;
+			pair.weightTriplet = 0.75f;
 			pair.weightSpatial = POWI(link.weight, 3);
+			pair.overlapArea = 1.f; // the coverage, a full factor of the composite weight
 			ASSERT(ISEQUAL(pair.GetCompositeWeight(), link.weight));
 		}
 	};
@@ -4041,7 +4042,7 @@ Matrix3x3 LensTestRotation(Point3 axis, REAL deg)
 // the true focal times `givenFocalScale` (1: the true focal) and the true centre, trust them and have
 // NO lens, and every pair is verified through that pinhole exactly as the matching verifies it
 // (PairsMatcher::GeometricFilter at the default MatchConfig); a pair that fails is not stored. A
-// stored pair weighs its inlier count (unit quality factors, triplet 0.5). truePoses receives each
+// stored pair weighs its inlier count (unit quality factors, triplet 0.75). truePoses receives each
 // stored pair's true relative pose (x2 = R x1 + t), keyed by the pair's image IDs: neither the order
 // the pairs are built in (a pair that fails leaves a gap) nor their position in scene.pairs
 // (ComputePairsWeights sorts them) names a pair. `given`, where not empty, gives each camera its own focal scale and kind
@@ -4170,7 +4171,8 @@ void BuildLensTestScene(Scene& scene, const std::vector<LensTestCamera>& cameras
 			if (!matcher.GeometricFilter(img1, img2, pair))
 				continue;
 			pair.weightSpatial = pair.weightConnectivity = 1.f;
-			pair.weightTriplet = 0.5f;
+			pair.overlapArea = 1.f; // the coverage, a full factor of the composite weight
+			pair.weightTriplet = 0.75f;
 			truePoses.emplace(PairIdx(pair.ID1, pair.ID2), pose2 / pose1);
 			scene.pairs.emplace_back(std::move(pair));
 		}
@@ -7839,6 +7841,7 @@ void GenerateTwoClusterScene(
 		if (inA || inB) {
 			// Intra-cluster: keep all matches, boost weight
 			pair.weightSpatial = 10.f;
+			pair.overlapArea = 1.f; // the coverage, a full factor of the composite weight
 			pair.weightConnectivity = 10.f;
 			pair.weightTriplet = 10.f;
 		} else if (keepCross[i]) {
@@ -7846,6 +7849,7 @@ void GenerateTwoClusterScene(
 			if (pair.matches.size() > matchesPerCrossPair)
 				pair.matches.resize(matchesPerCrossPair);
 			pair.weightSpatial = 1.f;
+			pair.overlapArea = 1.f; // the coverage, a full factor of the composite weight
 			pair.weightConnectivity = 1.f;
 			pair.weightTriplet = 0.f;
 		} else {
@@ -10921,6 +10925,7 @@ bool StarReferenceViewTest()
 		ImagePair& pair = scene.pairs.back();
 		pair.relativePose = Pose3D::Identity();
 		pair.weightSpatial = 1.f;
+		pair.overlapArea = 1.f; // the coverage, a full factor of the composite weight
 		pair.weightConnectivity = 1.f;
 	};
 	addPair(0, 1, 3000);
@@ -11094,6 +11099,7 @@ bool StarEvidenceTest()
 			pair.E = ImagePair::ComposeEssentialMatrix(pair.relativePose.value());
 			pair.F = ImagePair::ComposeFundamentalMatrix(pair.E.value(), scene.images[0].GetK(), scene.images[j].GetK());
 			pair.weightSpatial = 1.f;
+			pair.overlapArea = 1.f; // the coverage, a full factor of the composite weight
 			pair.weightConnectivity = 1.f;
 		}
 		scene.status.nCalibratedImages = scene.images.size();
@@ -11559,6 +11565,7 @@ void AddResectionPair(Scene& scene, IIndex idA, IIndex idB, unsigned numInliers)
 	pair.relativePose = scene.images[pair.ID2] / scene.images[pair.ID1];
 	pair.weightedInliers = (float)numInliers;
 	pair.weightSpatial = 1.f;
+	pair.overlapArea = 1.f; // the coverage, a full factor of the composite weight
 	pair.weightConnectivity = 1.f;
 	scene.pairs.emplace_back(std::move(pair));
 }
@@ -13787,6 +13794,7 @@ bool PairDirectionToleranceTest()
 	pair.relativePose = image / neighbour;
 	pair.weightedInliers = 100.f;
 	pair.weightSpatial = 1.f;
+	pair.overlapArea = 1.f; // the coverage, a full factor of the composite weight
 	pair.weightConnectivity = 1.f;
 	Pose3D placed(image);
 	placed.C = Point3(1, DIRECTION_OFF, 0);
@@ -14533,7 +14541,8 @@ bool ContradictionCutTest()
 			degrees = -degrees;
 		pair.relativePose = Pose3D(RMatrix(Point3(0, D2R(degrees), 0)), CMatrix(1, 0, 0));
 		pair.weightSpatial = pair.weightConnectivity = 1.f;
-		pair.weightTriplet = 0.5f;
+		pair.overlapArea = 1.f; // the coverage, a full factor of the composite weight
+		pair.weightTriplet = 0.75f; // 0.25 + 0.75 = 1: the weight is the inlier count
 		pair.weightedInliers = (float)numInliers;
 	};
 	const auto keptPairs = [](const Scene& scene) {
@@ -15868,13 +15877,44 @@ bool PairsWeightingTest()
 }
 
 
+// The composite weight of a pair from its terms (ImagePair::GetCompositeWeight): the weighted
+// inliers capped at 1000, times the coverage in full, times the cube root of the angle term times
+// the connectivity, times 0.25 plus the triangle consistency; weightSpatial holds coverage x angle
+bool PairCompositeWeightTest()
+{
+	TD_TIMER_START();
+	struct Case { float inliers, coverage, angle, connectivity, triplet; };
+	const Case cases[] = {
+		{ 400.f, 0.5f, 0.8f, 0.6f, 0.35f },
+		{ 1600.f, 0.2f, 0.3f, 1.f, 0.f },  // past the cap: counts 1000
+		{ 50.f, 0.9f, 1.f, 0.05f, 1.f },
+	};
+	for (const Case& c : cases) {
+		ImagePair pair(0, 1);
+		pair.weightedInliers = c.inliers;
+		pair.overlapArea = c.coverage;
+		pair.weightSpatial = c.coverage * c.angle;
+		pair.weightConnectivity = c.connectivity;
+		pair.weightTriplet = c.triplet;
+		const double expected = MINF((double)c.inliers, 1000.0) * c.coverage * std::cbrt((double)c.angle * c.connectivity) * (0.25 + c.triplet);
+		if (ABS(pair.GetCompositeWeight() - expected) > 1e-4 * expected) {
+			VERBOSE("PairCompositeWeightTest FAILED: inliers %g, coverage %g, angle %g, connectivity %g, triangles %g weigh %g, expected %g",
+				c.inliers, c.coverage, c.angle, c.connectivity, c.triplet, pair.GetCompositeWeight(), expected);
+			return false;
+		}
+	}
+	VERBOSE("PairCompositeWeightTest PASSED: %u hand-set pairs weigh capped inliers x coverage x cbrt(angle x connectivity) x (0.25 + triangles) (%s)",
+		(unsigned)(sizeof(cases) / sizeof(cases[0])), TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 // A pair's dense inliers count as evidence in proportion to the matcher's frame target, not up to
 // a cap: 10 sparse and 400 dense inliers weigh 10 + 25 * 400/2000 = 15 at the default of 25 frame
 // inliers, and 110 at 500, the weight the old discount of a quarter per dense inlier gave. Two
 // dense-only pairs of one image keep their order (1600 dense outweighs 400 -- a cap flattened them
-// to the same weight), and the connectivity's inlier ratio counts the dense matches at the same
-// scale as the evidence, so a dense-only pair of nothing but inliers gets the boost of a sparse-only
-// pair of nothing but inliers instead of collapsing against its raw match count.
+// to the same weight), and the connectivity reads the dense matches at the same scale as the
+// evidence, so a dense-only pair and a sparse-only pair that are each their images' only pair carry
+// the same connectivity.
 bool PairsWeightingDenseFrameEvidenceTest()
 {
 	TD_TIMER_START();
@@ -15946,9 +15986,8 @@ bool PairsWeightingDenseFrameEvidenceTest()
 		}
 	}
 
-	// 3. the inlier ratio: a sparse-only pair and a dense-only pair, each of nothing but inliers and
-	// each its images' only pair, carry the same connectivity weight (1: the whole share of the node
-	// maximum, the whole boost)
+	// 3. the connectivity: a sparse-only pair and a dense-only pair, each its images' only pair, carry
+	// the same connectivity weight (1: the whole share of the node maximum)
 	{
 		Scene scene;
 		BuildImages(scene, 4, 2000);
@@ -15958,12 +15997,12 @@ bool PairsWeightingDenseFrameEvidenceTest()
 		const float cSparse = scene.pairs[0].weightConnectivity, cDense = scene.pairs[1].weightConnectivity;
 		if (!ISEQUAL(cSparse, cDense) || !ISEQUAL(cSparse, 1.f)) {
 			VERBOSE("PairsWeightingDenseFrameEvidenceTest FAILED: connectivity %.4f for the sparse-only pair and %.4f for the dense-only one; "
-				"both are all inliers and their images' only pair, so both must be 1", cSparse, cDense);
+				"both are their images' only pair, so both must be 1", cSparse, cDense);
 			return false;
 		}
 	}
 
-	VERBOSE("PairsWeightingDenseFrameEvidenceTest PASSED: dense inliers count in proportion to the matcher's frame target, in order, with a consistent inlier ratio (%s)", TD_TIMER_GET_FMT().c_str());
+	VERBOSE("PairsWeightingDenseFrameEvidenceTest PASSED: dense inliers count in proportion to the matcher's frame target, in order, with a consistent connectivity (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 
@@ -16974,14 +17013,17 @@ bool SceneClusterSmallClusterRescueTest()
 
 		if (intraA || intraB) {
 			pair.weightSpatial = 10.f;
+			pair.overlapArea = 1.f; // the coverage, a full factor of the composite weight
 			pair.weightConnectivity = 10.f;
 			pair.weightTriplet = 10.f;
 		} else if (weakToA) {
 			pair.weightSpatial = 2.f;
+			pair.overlapArea = 1.f; // the coverage, a full factor of the composite weight
 			pair.weightConnectivity = 2.f;
 			pair.weightTriplet = 0.f;
 		} else if (intraW) {
 			pair.weightSpatial = 1.f;
+			pair.overlapArea = 1.f; // the coverage, a full factor of the composite weight
 			pair.weightConnectivity = 1.f;
 			pair.weightTriplet = 0.f;
 		} else {
@@ -17051,13 +17093,14 @@ bool SceneClusterSubFloorCouplingTest()
 	scene.pairs.clear();
 	scene.tracks.clear();
 
-	// a pair whose composite weight is exactly the given number: unit quality factors, triplet 0.5
+	// a pair whose composite weight is exactly the given number: unit quality factors, triplet 0.75 (0.25 + 0.75 = 1)
 	const auto AddPair = [&scene](IIndex a, IIndex b, float weight) {
 		ImagePair pair(a, b);
 		pair.weightedInliers = weight;
 		pair.weightSpatial = 1.f;
+		pair.overlapArea = 1.f; // the coverage, a full factor of the composite weight
 		pair.weightConnectivity = 1.f;
-		pair.weightTriplet = 0.5f;
+		pair.weightTriplet = 0.75f;
 		scene.pairs.emplace_back(std::move(pair));
 	};
 	// A = [0,10): a hub at 0 and a chain, so the greedy assembles it one image at a time
@@ -17129,13 +17172,14 @@ bool SceneClusterStandaloneCommunityTest()
 		GenerateTestScene(scene, cfg);
 		scene.pairs.clear();
 		scene.tracks.clear();
-		// a pair whose composite weight is exactly the given number: unit quality factors, triplet 0.5
+		// a pair whose composite weight is exactly the given number: unit quality factors, triplet 0.75 (0.25 + 0.75 = 1)
 		const auto AddPair = [&scene](IIndex a, IIndex b, float weight) {
 			ImagePair pair(a, b);
 			pair.weightedInliers = weight;
 			pair.weightSpatial = 1.f;
+			pair.overlapArea = 1.f; // the coverage, a full factor of the composite weight
 			pair.weightConnectivity = 1.f;
-			pair.weightTriplet = 0.5f;
+			pair.weightTriplet = 0.75f;
 			scene.pairs.emplace_back(std::move(pair));
 		};
 		// A = [0,10): a hub at 0 and a chain; B = [10,21): the same around a hub at 10
@@ -17230,13 +17274,14 @@ bool SceneClusterCoupledOrphanSkippedTest()
 	scene.pairs.clear();
 	scene.tracks.clear();
 
-	// a pair whose composite weight is exactly the given number: unit quality factors, triplet 0.5
+	// a pair whose composite weight is exactly the given number: unit quality factors, triplet 0.75 (0.25 + 0.75 = 1)
 	const auto AddPair = [&scene](IIndex a, IIndex b, float weight) {
 		ImagePair pair(a, b);
 		pair.weightedInliers = weight;
 		pair.weightSpatial = 1.f;
+		pair.overlapArea = 1.f; // the coverage, a full factor of the composite weight
 		pair.weightConnectivity = 1.f;
-		pair.weightTriplet = 0.5f;
+		pair.weightTriplet = 0.75f;
 		scene.pairs.emplace_back(std::move(pair));
 	};
 	// A = [0,11): a hub at 0 and a chain, so the greedy assembles it one image at a time
@@ -17319,13 +17364,14 @@ bool SceneClusterBalanceCouplingTest()
 	scene.pairs.clear();
 	scene.tracks.clear();
 
-	// a pair whose composite weight is exactly the given number: unit quality factors, triplet 0.5
+	// a pair whose composite weight is exactly the given number: unit quality factors, triplet 0.75 (0.25 + 0.75 = 1)
 	const auto AddPair = [&scene](IIndex a, IIndex b, float weight) {
 		ImagePair pair(a, b);
 		pair.weightedInliers = weight;
 		pair.weightSpatial = 1.f;
+		pair.overlapArea = 1.f; // the coverage, a full factor of the composite weight
 		pair.weightConnectivity = 1.f;
-		pair.weightTriplet = 0.5f;
+		pair.weightTriplet = 0.75f;
 		scene.pairs.emplace_back(std::move(pair));
 	};
 	const auto AddChain = [&](IIndex first, IIndex last) {
@@ -17390,13 +17436,14 @@ bool SceneClusterThinStretchTest()
 		scene.pairs.clear();
 		scene.tracks.clear();
 
-		// a pair whose composite weight is exactly the given number: unit quality factors, triplet 0.5
+		// a pair whose composite weight is exactly the given number: unit quality factors, triplet 0.75 (0.25 + 0.75 = 1)
 		const auto AddPair = [&scene](IIndex a, IIndex b, float weight) {
 			ImagePair pair(a, b);
 			pair.weightedInliers = weight;
 			pair.weightSpatial = 1.f;
+			pair.overlapArea = 1.f; // the coverage, a full factor of the composite weight
 			pair.weightConnectivity = 1.f;
-			pair.weightTriplet = 0.5f;
+			pair.weightTriplet = 0.75f;
 			scene.pairs.emplace_back(std::move(pair));
 		};
 		const auto AddChain = [&](IIndex first, IIndex last) {
@@ -17897,8 +17944,10 @@ bool PoolResectionLinkOnlyTest()
 			continue;
 		ImagePair pair(a, image);
 		pair.weightedInliers = 1000.f;
-		pair.weightSpatial = 20.f;
+		pair.weightSpatial = 1000.f; // quality factors far past any real pair's: 10000 each, the heaviest pairs of the scene
+		pair.overlapArea = 1.f;
 		pair.weightConnectivity = 1.f;
+		pair.weightTriplet = 0.75f;
 		scene.pairs.emplace_back(std::move(pair));
 	}
 	float weightA = 0.f, weightB = 0.f; // the image's F-only pairs to block 0, its links to block 1
@@ -22018,12 +22067,14 @@ static void GenerateThreeClusterScene(
 		ImagePair& pair = scene.pairs[i];
 		if (pair.ID1 / clusterSize == pair.ID2 / clusterSize) {
 			pair.weightSpatial = 10.f;
+			pair.overlapArea = 1.f; // the coverage, a full factor of the composite weight
 			pair.weightConnectivity = 10.f;
 			pair.weightTriplet = 10.f;
 		} else if (keepCross[i]) {
 			if (pair.matches.size() > matchesPerCrossPair)
 				pair.matches.resize(matchesPerCrossPair);
 			pair.weightSpatial = 1.f;
+			pair.overlapArea = 1.f; // the coverage, a full factor of the composite weight
 			pair.weightConnectivity = 1.f;
 			pair.weightTriplet = 0.f;
 		} else {
