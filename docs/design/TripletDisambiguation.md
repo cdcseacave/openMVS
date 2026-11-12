@@ -133,11 +133,13 @@ reconstruction, pre-cut matched scenes reloaded at 8 threads, one run each, unsc
 | 17ac94cc | 553 -> 553 | 521 -> 521 | 8 -> 8 | 0.6398 -> 0.6443 | 0 -> 0 | 57 / 1 / 0 -> 57 / 1 / 0 |
 | 5ada248e | 534 -> 530 | 528 -> 524 | 5 -> 5 | 0.9583 -> 0.9562 | 0 -> 0 | 30 / 0 / 42 -> 31 / 0 / 29 |
 | Outdoor_004 | 767 -> 767 | 767 -> 767 | 0 -> 0 | 0.7190 -> 0.7196 | 0 -> 0 | 44 / 0 / 1 -> 44 / 0 / 1 |
-| 6DCA1E8E | DCA_ROW |
+| 6DCA1E8E | 785 -> 841 | 464 -> 464 | 8 -> 7 | 0.7541 -> 0.7527 | - -> 0 | - -> 167 / 1 / 99 |
 
 The pose-score differences are under the 0.008 a reload of the same scene varies by; the 5ada248e
 registration difference is one run (other unscaled reloads of that scene also registered 530, 524
-right). Rejected: the L1 step on unit weights (GLOMAP's default) folds Palace (998 pairs removed,
+right). 6DCA1E8E ends one of two ways from run to run (its images 617-871, which no reference judges,
+registered or not): the unscaled run (a reload of another stream, without the monitor's dump) left
+them out, the scaled one registered them; the images the references judge are the same 464 right. Rejected: the L1 step on unit weights (GLOMAP's default) folds Palace (998 pairs removed,
 203 of them right, against 1825 / 0); no L1 step, the IRLS straight from the spanning tree, removes
 45 right pairs on 5ada248e; the ADMM run to convergence folds Palace and costs up to 100 times the
 iterations; weights replaced by their ranks discard how much heavier a pair is.
