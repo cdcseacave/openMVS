@@ -25,9 +25,11 @@ namespace SFM {
  * Hierarchical SfM -- the blocks and the pool
  * ===========================================
  *
- * Owns the state between the partition (SceneCluster) and the merge (GlobalAlignment): one Scene
- * per block, each with its own cameras, images, pairs and tracks in local image IDs, and the pool,
- * the images no block holds, which stay in the global scene.
+ * Owns the state from the partition (SceneCluster) through the merge (GlobalAlignment, run in rounds
+ * by MergeInRounds): one Scene per block, each with its own cameras, images, pairs and tracks in local
+ * image IDs, and the pool, the images no block holds, which stay in the global scene. From the second
+ * round of the merge, block 0 is the merged model (RegroupAfterMerge) and the other blocks are the
+ * ones the merge left whole.
  *
  * Invariants:
  * - a block's local IDs are ordered as the global ones (localToGlobal strictly increasing), so a
@@ -42,7 +44,7 @@ namespace SFM {
  * between blocks through the pool: every block hands back the images it could not register, and each
  * pool image is offered to the block its links (verified pairs with a relative pose) to registered
  * images weigh most on, where that block's ordinary resection tries it. Release and Insert are the two moves; both renumber the
- * block through one remap and keep every invariant above.
+ * block through one remap and keep every invariant above. After it, MergeInRounds runs the merge.
  */
 class SFM_API SceneBlocks
 {
