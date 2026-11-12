@@ -421,6 +421,10 @@ void Window::Render() {
 	// Keep the compare cameras consistent with the current mode and active layer
 	UpdateCompareState();
 
+	// a pending screenshot waits for the images being loaded (the photo of the camera view mode is part
+	// of the picture): tested once, before drawing, so a load finishing during the frame waits for the next
+	const bool bScreenshotReady(!pendingScreenshotPath.empty() && !GetScene().HasPendingImageLoads());
+
 	// Enable depth testing
 	GL_CHECK(glEnable(GL_DEPTH_TEST));
 	GL_CHECK(glDepthFunc(GL_LESS));
@@ -519,7 +523,7 @@ void Window::Render() {
 
 		// Flush pending screenshot if requested (without UI): capture after every
 		// 3D layer so the screenshot-show flags (cameras, bounds, ...) take effect
-		if (!pendingScreenshotPath.empty() && !pendingScreenshotIncludeUI && !scene.HasPendingImageLoads()) {
+		if (bScreenshotReady && !pendingScreenshotIncludeUI) {
 			CaptureScreenshot(pendingScreenshotPath);
 			pendingScreenshotPath.clear();
 			if (pendingScreenshotQuit)
@@ -578,10 +582,10 @@ void Window::Render() {
 	// Render UI
 	ui->Render(*this);
 
-	// Flush pending screenshot if requested (with UI)
+	// Flush pending screenshot if requested (with UI; a ready one without UI was taken before the UI,
+	// unless no scene is open)
 	if (!pendingScreenshotPath.empty()) {
-		if (scene.HasPendingImageLoads()) {
-			// wait for the image of the camera view mode: its overlay is part of the picture
+		if (!bScreenshotReady) {
 			RequestRedraw();
 		} else if (pendingScreenshotWarmupFrames > 0) {
 			--pendingScreenshotWarmupFrames;

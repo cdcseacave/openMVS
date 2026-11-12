@@ -552,12 +552,14 @@ bool ParseBlocksExchangeXML(tinyxml2::XMLDocument& doc, Scene& scene, size_t& nC
 			} else {
 				camera.K(0,0) = camera.K(1,1) = photogroup->FirstChildElement("FocalLength")->DoubleText() * resolutionScale / photogroup->FirstChildElement("SensorSize")->DoubleText();
 			}
+			// BlocksExchange pixel coordinates (principal point, tie-point measurements) have the pixel centers at
+			// integers, as ours: Metashape writes W/2+cx-0.5 and its key points less 0.5
 			if ((elem=photogroup->FirstChildElement("PrincipalPoint")) != NULL) {
 				camera.K(0,2) = elem->FirstChildElement("x")->DoubleText();
 				camera.K(1,2) = elem->FirstChildElement("y")->DoubleText();
 			} else {
-				camera.K(0,2) = resolutions.back().width*REAL(0.5);
-				camera.K(1,2) = resolutions.back().height*REAL(0.5);
+				camera.K(0,2) = (resolutions.back().width-1)*REAL(0.5);
+				camera.K(1,2) = (resolutions.back().height-1)*REAL(0.5);
 			}
 			if ((elem=photogroup->FirstChildElement("AspectRatio")) != NULL)
 				camera.K(1,1) *= elem->DoubleText();

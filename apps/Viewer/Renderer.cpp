@@ -1727,66 +1727,61 @@ void Renderer::RenderImageOverlays(const Window& window, bool bActiveLayerPass) 
 	imageOverlayShader->SetInt("overlayTexture", 0);
 	GL_CHECK(glActiveTexture(GL_TEXTURE0));
 
-	// the panoramas on their globes
-	const float radius = camera.GetSceneDistance() * window.cameraSize * 0.5f;
-	bool bPanoramaState(false);
-	for (const Scene::Layer& layer : sceneController.GetLayers()) {
-		if (!layer.visible || !IsLayerInPass(layer.id))
-			continue;
-		FOREACH(idx, layer.images) {
-			const MVS::Image& imageData = layer.scene.images[layer.images[idx].idx];
-			if (!imageData.IsSpherical())
-				continue;
-			const bool bViewCamera(&layer == activeLayer && idx == viewCameraID);
-			if (!bViewCamera && !window.showCameras)
-				continue; // the camera glyphs are hidden: only the panorama of the camera view mode
-			Image* const pImage(GetTexture(layer.images[idx]));
-			if (pImage == nullptr)
-				continue;
-			if (!bPanoramaState) {
-				GL_CHECK(glEnable(GL_CULL_FACE));
-				GL_CHECK(glCullFace(GL_BACK));
-				GL_CHECK(glDepthMask(GL_FALSE));
-				panoramaOverlayVAO->Bind();
-				panoramaOverlayEBO->Bind();
-				bPanoramaState = true;
-			}
-			if (bViewCamera)
-				GL_CHECK(glDisable(GL_DEPTH_TEST));
-			pImage->Bind();
-			// seen from its center a sphere covers the view the same at any radius: the panorama of the camera
-			// view mode takes the one halfway between the clip planes, the globe radius being below the near
-			// plane in a scene large next to its camera-to-scene distance
-			const double sphereRadius(bViewCamera ? SQRT(camera.GetNearPlane()*camera.GetFarPlane()) : double(radius));
-			Eigen::Matrix4d model(Eigen::Matrix4d::Identity()); // camera to world: X = R^T * x * radius + C
-			model.topLeftCorner<3,3>() = Eigen::Matrix3d(imageData.camera.R).transpose() * sphereRadius;
-			model.topRightCorner<3,1>() = Eigen::Vector3d(imageData.camera.C);
-			imageOverlayShader->SetMatrix4("model", model.cast<float>());
-			GL_CHECK(glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(panoramaOverlayIndexCount), GL_UNSIGNED_INT, 0));
-			if (bViewCamera)
-				GL_CHECK(glEnable(GL_DEPTH_TEST));
-		}
-	}
-	if (bPanoramaState) {
+	// a panorama on the sphere of the given radius around its camera center (far side only)
+	const auto DrawPanorama = [&](const MVS::Image& imageData, Image& image, double sphereRadius) {
+		image.Bind();
+		Eigen::Matrix4d model(Eigen::Matrix4d::Identity()); // camera to world: X = R^T * x * radius + C
+		model.topLeftCorner<3,3>() = Eigen::Matrix3d(imageData.camera.R).transpose() * sphereRadius;
+		model.topRightCorner<3,1>() = Eigen::Vector3d(imageData.camera.C);
+		imageOverlayShader->SetMatrix4("model", model.cast<float>());
+		GL_CHECK(glEnable(GL_CULL_FACE));
+		GL_CHECK(glCullFace(GL_BACK));
+		GL_CHECK(glDepthMask(GL_FALSE));
+		panoramaOverlayVAO->Bind();
+		panoramaOverlayEBO->Bind();
+		GL_CHECK(glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(panoramaOverlayIndexCount), GL_UNSIGNED_INT, 0));
 		panoramaOverlayVAO->Unbind();
 		GL_CHECK(glDepthMask(GL_TRUE));
 		GL_CHECK(glDisable(GL_CULL_FACE));
+	};
+
+	// the panoramas of the other cameras on their globes, part of the scene
+	if (window.showCameras) {
+		const double radius(camera.GetSceneDistance() * window.cameraSize * 0.5f);
+		for (const Scene::Layer& layer : sceneController.GetLayers()) {
+			if (!layer.visible || !IsLayerInPass(layer.id))
+				continue;
+			FOREACH(idx, layer.images) {
+				const MVS::Image& imageData = layer.scene.images[layer.images[idx].idx];
+				if (!imageData.IsSpherical() || (&layer == activeLayer && idx == viewCameraID))
+					continue;
+				if (Image* const pImage = GetTexture(layer.images[idx]))
+					DrawPanorama(imageData, *pImage, radius);
+			}
+		}
 	}
 
-	// the photo of the pinhole camera of the camera view mode, on the base of its frustum
-	if (viewCameraID != NO_ID && imageOverlayIndexCount > 0 && viewCameraID < activeLayer->images.size() &&
-		!activeLayer->scene.images[activeLayer->images[viewCameraID].idx].IsSpherical()) {
-		const CameraLayerRange* range(FindCameraLayerRange(activeLayer->id));
-		Image* const pImage(range == nullptr ? nullptr : GetTexture(activeLayer->images[viewCameraID]));
+	// the photo of the camera of the camera view mode, drawn over the scene: a panorama on the sphere halfway
+	// between the clip planes (seen from its center a sphere covers the view the same at any radius, and
+	// the globe radius falls below the near plane in a scene large next to its camera-to-scene distance),
+	// a pinhole photo on the base of its frustum
+	if (viewCameraID != NO_ID && viewCameraID < activeLayer->images.size()) {
+		const MVS::Image& imageData = activeLayer->scene.images[activeLayer->images[viewCameraID].idx];
+		const CameraLayerRange* range(imageData.IsSpherical() || imageOverlayIndexCount == 0 ? nullptr : FindCameraLayerRange(activeLayer->id));
+		Image* const pImage(imageData.IsSpherical() || range != nullptr ? GetTexture(activeLayer->images[viewCameraID]) : nullptr);
 		if (pImage != nullptr) {
-			GL_CHECK(glDisable(GL_DEPTH_TEST)); // drawn over the scene
-			pImage->Bind();
-			imageOverlayShader->SetMatrix4("model", Eigen::Matrix4f::Identity());
-			imageOverlayVAO->Bind();
-			imageOverlayEBO->Bind();
-			const void* indexOffset = reinterpret_cast<const void*>((range->offset + viewCameraID) * 6 * sizeof(uint32_t));
-			GL_CHECK(glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, indexOffset));
-			imageOverlayVAO->Unbind();
+			GL_CHECK(glDisable(GL_DEPTH_TEST));
+			if (imageData.IsSpherical()) {
+				DrawPanorama(imageData, *pImage, SQRT(camera.GetNearPlane()*camera.GetFarPlane()));
+			} else {
+				pImage->Bind();
+				imageOverlayShader->SetMatrix4("model", Eigen::Matrix4f::Identity());
+				imageOverlayVAO->Bind();
+				imageOverlayEBO->Bind();
+				const void* indexOffset = reinterpret_cast<const void*>((range->offset + viewCameraID) * 6 * sizeof(uint32_t));
+				GL_CHECK(glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, indexOffset));
+				imageOverlayVAO->Unbind();
+			}
 			GL_CHECK(glEnable(GL_DEPTH_TEST));
 		}
 	}

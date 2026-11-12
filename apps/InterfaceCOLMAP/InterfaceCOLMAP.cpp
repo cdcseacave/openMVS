@@ -1067,10 +1067,13 @@ bool ExportScene(const String& strFolder, const Interface& scene,
 {
 	Util::ensureFolder(strFolder+COLMAP_SPARSE_FOLDER);
 
-	// write camera list
+	// write camera list: the camera of each platform, index-aligned with the platforms (the COLMAP camera
+	// ID is the platform ID), or only the first one, shared by all images; a camera of unknown size that
+	// no posed image uses is not written (its width stays 0)
 	CLISTDEF0IDX(KMatrix,uint32_t) Ks;
 	CLISTDEF0IDX(BrownDistortion<REAL>,uint32_t) distortions; // all zero for a pinhole camera
 	CLISTDEF0IDX(COLMAP::Camera,uint32_t) cams;
+	uint32_t idCommonCamera(NO_ID);
 	{
 		const String filenameCameras(strFolder+(binary?COLMAP_CAMERAS_BIN:COLMAP_CAMERAS_TXT));
 		LOG_OUT() << "Writing cameras: " << filenameCameras << std::endl;
@@ -1080,19 +1083,20 @@ bool ExportScene(const String& strFolder, const Interface& scene,
 			VERBOSE("error: unable to open file '%s'", filenameCameras.c_str());
 			return false;
 		}
-		COLMAP::Camera cam;
-		if (binary) {
-			cam.numCameras = 0;
-			for (const Interface::Platform& platform: scene.platforms)
-				cam.numCameras += (uint32_t)platform.cameras.size();
-		} else {
+		if (!binary) {
 			file << _T("# Camera list with one line of data per camera:") << std::endl;
 			file << _T("#   CAMERA_ID, MODEL, WIDTH, HEIGHT, PARAMS[]") << std::endl;
 		}
+		Ks.reserve((uint32_t)scene.platforms.size());
+		distortions.reserve((uint32_t)scene.platforms.size());
+		cams.reserve((uint32_t)scene.platforms.size());
 		for (uint32_t ID=0; ID<(uint32_t)scene.platforms.size(); ++ID) {
 			const Interface::Platform& platform = scene.platforms[ID];
 			ASSERT(platform.cameras.size() == 1); // only one camera per platform supported
 			const Interface::Platform::Camera& camera = platform.cameras[0];
+			COLMAP::Camera& cam = cams.emplace_back();
+			KMatrix& K = Ks.emplace_back(KMatrix::IDENTITY);
+			BrownDistortion<REAL>& distortion = distortions.emplace_back(BrownDistortion<REAL>{});
 			// COLMAP OPENCV / FULL_OPENCV list the Brown coefficients in the same order: k1,k2,p1,p2[,k3,k4,k5,k6]
 			switch (camera.model) {
 			case Interface::Platform::Camera::PINHOLE:
@@ -1116,7 +1120,6 @@ bool ExportScene(const String& strFolder, const Interface& scene,
 				return false;
 			}
 			cam.ID = ID;
-			KMatrix K;
 			if (camera.width == 0 || camera.height == 0) {
 				// find one image using this camera
 				const Interface::Image* pImage(NULL);
@@ -1127,7 +1130,7 @@ bool ExportScene(const String& strFolder, const Interface& scene,
 					}
 				}
 				if (pImage == NULL) {
-					LOG("error: no image using camera %u of platform %u", 0, ID);
+					LOG("warning: camera %u of platform %u not exported: no posed image uses it", 0, ID);
 					continue;
 				}
 				IMAGEPTR ptrImage(Image::ReadImageHeader(MAKE_PATH_SAFE(pImage->name)));
@@ -1147,18 +1150,24 @@ bool ExportScene(const String& strFolder, const Interface& scene,
 			cam.params[1] = K(1,1);
 			cam.params[2] = K(0,2)+REAL(0.5);
 			cam.params[3] = K(1,2)+REAL(0.5);
-			if (!cam.Write(file, binary))
-				return false;
-			Ks.emplace_back(K);
-			BrownDistortion<REAL>& distortion = distortions.emplace_back(BrownDistortion<REAL>{});
 			if (camera.model == Interface::Platform::Camera::BROWN)
 				distortion = BrownDistortion<REAL>{cam.params[4], cam.params[5], cam.params[6], cam.params[7],
 					cam.params.size() > 8 ? cam.params[8] : REAL(0), cam.params.size() > 8 ? cam.params[9] : REAL(0),
 					cam.params.size() > 8 ? cam.params[10] : REAL(0), cam.params.size() > 8 ? cam.params[11] : REAL(0)};
-			cams.emplace_back(cam);
-			if (bForceCommonIntrinsics)
+			if (bForceCommonIntrinsics) {
+				idCommonCamera = ID;
 				break;
+			}
 		}
+		if (binary) {
+			uint64_t numCameras(0);
+			for (const COLMAP::Camera& cam: cams)
+				numCameras += cam.width > 0;
+			COLMAP::WriteBinaryLittleEndian<uint64_t>(&file, numCameras);
+		}
+		for (COLMAP::Camera& cam: cams)
+			if (cam.width > 0 && !cam.Write(file, binary))
+				return false;
 	}
 
 	// create images list
@@ -1182,7 +1191,8 @@ bool ExportScene(const String& strFolder, const Interface& scene,
 			img.ID = image.ID;
 			img.q = Eigen::Quaterniond(Eigen::Map<const EMat33d>(pose.R.val));
 			img.t = -(img.q * Eigen::Map<const EVec3d>(&pose.C.x));
-			img.idCamera = bForceCommonIntrinsics ? 0u : image.platformID;
+			img.idCamera = bForceCommonIntrinsics ? idCommonCamera : image.platformID;
+			ASSERT(img.idCamera < cams.size() && cams[img.idCamera].width > 0);
 			img.name = MAKE_PATH_REL(OPT::strImageFolder, MAKE_PATH_FULL(WORKING_FOLDER_FULL, image.name));
 			Camera& camera = cameras[ID];
 			camera.K = Ks[img.idCamera];

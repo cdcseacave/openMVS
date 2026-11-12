@@ -432,12 +432,17 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 		}
 	}
 	depthData.size = viewRef.pImageData->GetSize();
-	if (viewRef.IsSpherical() && (depthData.size.width >> OPTDENSE::nSubResolutionLevels) < DepthData::MIN_SPHERICAL_WIDTH) {
-		// the seam-wrapped propagation and patches reach less than one turn around the panorama
-		VERBOSE("error: panorama '%s' is %d pixels wide at the coarsest of the %u sub-resolution levels, less than the %d needed; use fewer levels or a higher resolution",
-			viewRef.pImageData->name.c_str(), depthData.size.width >> OPTDENSE::nSubResolutionLevels, OPTDENSE::nSubResolutionLevels, (int)DepthData::MIN_SPHERICAL_WIDTH);
-		depthData.images.Release();
-		return false;
+	if (loadImages && viewRef.IsSpherical()) {
+		// the seam-wrapped propagation and patches of the estimator must reach less than one turn around the
+		// panorama at its coarsest level: the photometric pass starts at the last sub-resolution level, the
+		// geometric passes run at full resolution
+		const unsigned nLevels(loadDepthMaps == 0 ? OPTDENSE::nSubResolutionLevels : 0u);
+		if ((depthData.size.width >> nLevels) < DepthData::MIN_SPHERICAL_WIDTH) {
+			VERBOSE("error: panorama '%s' is %d pixels wide at the coarsest of the %u sub-resolution levels, less than the %d needed; use fewer levels or a higher resolution",
+				viewRef.pImageData->name.c_str(), depthData.size.width >> nLevels, nLevels, (int)DepthData::MIN_SPHERICAL_WIDTH);
+			depthData.images.Release();
+			return false;
+		}
 	}
 
 	// initialize views

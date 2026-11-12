@@ -217,7 +217,8 @@ All other PatchMatch options apply unchanged.
 
 - A spherical image is 2:1 with `fx = W/2π`, `fy = H/π`, `c = (size−1)/2` at every pyramid level and
   neighbor scale; its width is even, and at least `DepthData::MIN_SPHERICAL_WIDTH` (32) at the coarsest
-  sub-resolution level (`InitViews` refuses the image otherwise): the propagation reaches 23 columns.
+  level it is estimated at (`InitViews` refuses to estimate it otherwise: the coarsest sub-resolution
+  level in the photometric pass, full resolution in the geometric ones): the propagation reaches 23 columns.
 - Pinhole scenes run the unchanged code paths: the CPU depth-maps are byte-identical to the pre-model
   estimator.
 - A `.dmap` carries `SPHERICAL` iff its view is spherical.
