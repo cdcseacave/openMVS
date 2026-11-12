@@ -358,6 +358,21 @@ bool GlobalRotationEstimator::SetupLinearSystem(const std::vector<RotationPair>&
 		currPos += 3;
 	}
 
+	// The weights are relative confidences, scaled here so that their median is options.weightMedian:
+	// the L1 step's ADMM shrinks the weighted residuals by a fixed amount within a fixed number of
+	// iterations, so without this its result would depend on the absolute scale of the input weights
+	// (the IRLS that follows is unaffected either way, its weights entering both sides of its equations)
+	ASSERT(options.weightMedian > 0);
+	if (!vecWeights.empty()) {
+		std::vector<double> sortedWeights(vecWeights);
+		std::nth_element(sortedWeights.begin(), sortedWeights.begin() + sortedWeights.size() / 2, sortedWeights.end());
+		const double medianWeight = sortedWeights[sortedWeights.size() / 2];
+		ASSERT(medianWeight > 0);
+		const double scale = options.weightMedian / medianWeight;
+		for (double& weight : vecWeights)
+			weight *= scale;
+	}
+
 	// Build sparse matrix
 	const unsigned numDof = numFreeNodes * 3; // 3 DOF per rotation (angle-axis), fixed node is included
 	sparseMatrix.resize(currPos, numDof);

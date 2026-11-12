@@ -67,6 +67,13 @@ struct SFM_API GlobalRotationEstimatorOptions
 		HALF_NORM,
 	} weightType = GEMAN_MCCLURE;
 
+	// The median the pair weights are scaled to inside the estimator (> 0): the weights count only
+	// relative to each other, so the result does not depend on their absolute scale. It sets where
+	// the L1 step's fixed-iteration ADMM sits between a weighted least-squares fit (large values) and
+	// an L1 fit (small values); 10 reproduces the cut of the pre-normalisation weights on the captures
+	// measured (docs/design/TripletDisambiguation.md).
+	double weightMedian = 10.0;
+
 	// Flag to use maximum spanning tree for initialization
 	bool skipInitialization = false;
 
