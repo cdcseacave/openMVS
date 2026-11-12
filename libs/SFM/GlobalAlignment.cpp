@@ -101,9 +101,6 @@ namespace {
 // The translation unit of a pair is the smaller block's extent, never under this share of the
 // larger's: a block of two cameras a millimetre apart has no footprint of its own to be judged by.
 constexpr float kMinExtentShare = 0.2f;
-// A one-camera door takes its scale from the depths its points have in both blocks only with this many
-// of them; with fewer it observes no scale.
-constexpr unsigned kDoorMinDepthRatios = 10;
 // The reweighting of the scales and the translations of the block graph, every reading's weight
 // times the inverse of its error as the estimators' row scale (their normal equations weigh its
 // square, which settles on one reading rather than the L1 median): its rounds, and the error a
@@ -588,86 +585,14 @@ struct SeamReading
 	bool scaleObservable{true};
 };
 
-// What a one-camera door reads beyond the pair's observations: the rig block's own structure, the
-// depths of which give the door its scale
-struct DoorContext
-{
-	const Scene& rigScene;
-	const std::unordered_map<PairIdx, uint32_t>& rigPointMap;
-	const std::unordered_map<IIndex, std::pair<uint32_t, IIndex>>& globalToLocal;
-	const std::vector<SeamCorrespondence>& correspondences;
-};
-
-// A direction whose rig is one camera, which the generalized estimate cannot measure: that camera's
-// pose against the other block's points (P3P RANSAC on its bearings), its own pose in its block giving
-// the rotation and the translation, and the scale the median ratio of the depths its points have in
-// the two blocks, over the correspondences whose keypoint is also an observation of a track of its
-// own block; camera holds the direction's correspondences, grouped as the rig's one camera
-bool EstimateDoorReading(
-	const std::vector<SeamObservation>& observations, const std::vector<uint32_t>& direction,
-	const CameraCorrespondences& camera, bool forward, const DoorContext& door, const GlobalAlignmentConfig& config,
-	SeamReading& reading)
-{
-	ASSERT(!direction.empty() && camera.size() == direction.size());
-	const SeamObservation& first = observations[direction.front()];
-	poselib::AbsolutePoseOptions opt;
-	opt.ransac = SeamRansacOptions();
-	opt.max_error = first.pixelPerRadian > 0 ? (double)config.maxReprojError / first.pixelPerRadian : 0.0;
-	if (!(opt.max_error > 0))
-		return false;
-	poselib::CameraPose pose;
-	std::vector<char> inliers;
-	const poselib::RansacStats stats = poselib::estimate_absolute_pose_bearings(camera.bearings, camera.points, opt, &pose, &inliers);
-	if (stats.num_inliers < config.minCommonTracks)
-		return false;
-	// the camera in the point block's frame (x_cam = R X + t), and the depths its inlier points have
-	// there and in the rig block's own triangulation of them
-	const RMatrix Rp(Eigen::Matrix3d(pose.R()));
-	const Point3 Cp(Rp.t() * Point3(-pose.t[0], -pose.t[1], -pose.t[2]));
-	std::vector<REAL> ratios;
-	FOREACH(k, direction) {
-		if (!inliers[k])
-			continue;
-		const SeamObservation& obs = observations[direction[k]];
-		const SeamCorrespondence& corr = door.correspondences[direction[k]];
-		const auto itLocal = door.globalToLocal.find(forward ? corr.imageB : corr.imageA);
-		if (itLocal == door.globalToLocal.end())
-			continue;
-		const auto itTrack = door.rigPointMap.find(PairIdx(itLocal->second.second, forward ? corr.featureB : corr.featureA));
-		if (itTrack == door.rigPointMap.end())
-			continue;
-		const REAL depthRig = norm(door.rigScene.tracks[itTrack->second].position - obs.C);
-		const REAL depthPoint = norm(obs.X - Cp);
-		if (depthRig > 0 && depthPoint > 0)
-			ratios.push_back(depthRig / depthPoint);
-	}
-	reading.scaleObservable = ratios.size() >= kDoorMinDepthRatios;
-	REAL scale = 1;
-	if (reading.scaleObservable) {
-		std::nth_element(ratios.begin(), ratios.begin() + ratios.size() / 2, ratios.end());
-		scale = ratios[ratios.size() / 2];
-	}
-	// the point block's frame into the rig block's: the camera's two rotations composed, its centre
-	// carried across
-	Transform pointToRig;
-	pointToRig.R = RMatrix(first.R.t() * Rp);
-	pointToRig.scale = scale;
-	pointToRig.t = first.C - (pointToRig.R * Cp) * scale;
-	reading.T = forward ? pointToRig : pointToRig.Invert();
-	reading.source = forward ? SeamCandidate::RIG_B_ON_A : SeamCandidate::RIG_A_ON_B;
-	DEBUG_EXTRA("Seam door of one camera: %u of %u correspondences, scale %g from %u depth ratios%s",
-		(unsigned)stats.num_inliers, (unsigned)direction.size(), scale, (unsigned)ratios.size(),
-		reading.scaleObservable ? "" : String::FormatString(", observes no scale: needs %u", kDoorMinDepthRatios).c_str());
-	return true;
-}
-
 // The reading of one direction of a block pair (forward: the rig of B on the points of A): the
-// generalized estimate refined over its inliers at the bar, or a door's reading when the rig is one
-// camera; none when the direction holds fewer than minCommonTracks correspondences, or the reading
-// fewer inliers
+// generalized estimate over every camera of the direction at once, refined over its inliers at the bar;
+// none when the direction holds fewer than minCommonTracks correspondences, comes from a single camera
+// (one centre observes no scale, and a block is joined by all its cameras together or not at all), or
+// the reading explains fewer
 bool EstimateDirectionReading(
-	const std::vector<SeamObservation>& observations, bool forward,
-	const DoorContext& door, const GlobalAlignmentConfig& config, SeamReading& reading)
+	const std::vector<SeamObservation>& observations, bool forward, const GlobalAlignmentConfig& config,
+	SeamReading& reading)
 {
 	std::vector<uint32_t> direction;
 	FOREACH(i, observations)
@@ -678,23 +603,19 @@ bool EstimateDirectionReading(
 	RigCorrespondences rc;
 	std::vector<std::vector<uint32_t>> indexOf;
 	GroupRigObservations(observations, direction, config.maxReprojError, rc, indexOf);
-	// a direction of one rig camera is a door, measured by that camera's own pose
-	const bool door1 = rc.cameraExt.size() == 1 && EstimateDoorReading(observations, direction, rc.cameras.front(), forward, door, config, reading);
-	if (!door1) {
-		Transform T;
-		std::vector<std::vector<char>> ransacInliers;
-		if (EstimateRigAgainstPoints(rc, SeamRansacOptions(), T, ransacInliers) == 0)
-			return false;
-		// the rig of B on A's points solves A into B, the rig of A on B's points B into A
-		reading.T = forward ? T : T.Invert();
-		reading.source = forward ? SeamCandidate::RIG_B_ON_A : SeamCandidate::RIG_A_ON_B;
-		std::vector<uint32_t> fitted;
-		FOREACH(r, ransacInliers)
-			FOREACH(k, ransacInliers[r])
-				if (ransacInliers[r][k])
-					fitted.push_back(indexOf[r][k]);
-		RefineSimilarity(SelectObservations(observations, fitted), config.maxReprojError, reading.T);
-	}
+	Transform T;
+	std::vector<std::vector<char>> ransacInliers;
+	if (EstimateRigAgainstPoints(rc, SeamRansacOptions(), T, ransacInliers) == 0)
+		return false;
+	// the rig of B on A's points solves A into B, the rig of A on B's points B into A
+	reading.T = forward ? T : T.Invert();
+	reading.source = forward ? SeamCandidate::RIG_B_ON_A : SeamCandidate::RIG_A_ON_B;
+	std::vector<uint32_t> fitted;
+	FOREACH(r, ransacInliers)
+		FOREACH(k, ransacInliers[r])
+			if (ransacInliers[r][k])
+				fitted.push_back(indexOf[r][k]);
+	RefineSimilarity(SelectObservations(observations, fitted), config.maxReprojError, reading.T);
 	if (!ISFINITE(reading.T.scale) || reading.T.scale <= 0)
 		return false;
 	// what it explains at the bar, of its direction
@@ -704,8 +625,7 @@ bool EstimateDirectionReading(
 			reading.inliers.push_back(i);
 	if (reading.inliers.size() < config.minCommonTracks)
 		return false;
-	if (!door1)
-		reading.scaleObservable = RigObservesScale(observations, reading.inliers, reading.T, config);
+	reading.scaleObservable = RigObservesScale(observations, reading.inliers, reading.T, config);
 	return true;
 }
 
@@ -1240,14 +1160,10 @@ void GlobalAlignment::EstimateSeamPair(
 		if (EstimatePointReading(scene, globalToLocal, blockPointMaps, subScenes, a, b, itLinks->second, config, reading))
 			readings.emplace_back(std::move(reading));
 	} else {
-		// B's cameras on A's points, then A's cameras on B's, the rig block of each direction giving
-		// a door its scale
-		const DoorContext doors[2] = {
-			{subScenes[b], blockPointMaps[b], globalToLocal, correspondences},
-			{subScenes[a], blockPointMaps[a], globalToLocal, correspondences}};
+		// B's cameras on A's points, then A's cameras on B's
 		for (int d = 0; d < 2; ++d) {
 			SeamReading reading;
-			if (EstimateDirectionReading(observations, d == 0, doors[d], config, reading))
+			if (EstimateDirectionReading(observations, d == 0, config, reading))
 				readings.emplace_back(std::move(reading));
 		}
 	}
@@ -1260,7 +1176,7 @@ void GlobalAlignment::EstimateSeamPair(
 		ScoreSeam(observations, correspondences, reading.T, sideOf, c.score);
 		c.pairs = MeasureSeamPairs(subScenes, a, b, reading.T);
 		// a reading of the camera alignment always enters the block graph, weighing the supporting
-		// cameras of its weaker side (at least one: a door's single camera) times the share of the
+		// cameras of its weaker side (at least one) times the share of the
 		// verified pairs' inlier weight it reproduces; the 3D-3D reading enters only with supporting
 		// cameras on both sides and its verified pairs not against it, weighing its cameras
 		const bool enters = !pointAlignment || (c.score.Weight() > 0 && c.pairs.Holds());
@@ -1371,9 +1287,9 @@ void GlobalAlignment::SelectSeamGraph(
 	// of the cut the bridge makes (all block pairs between the two sides it separates, against the
 	// component's averaged placement) instead of over its own block pair against its reading, with the
 	// same Holds test. It would matter where the pairs crossing that cut disagree by weight: a light
-	// false door between two blocks, its second camera on one side lent by a false pair, kept as the
+	// false tie between two blocks, its second camera on one side lent by a false pair, kept as the
 	// bridge while the true but heavier ties of one of its blocks to a third block were cut by the
-	// averaging
+	// averaging (a known limit of the pooled readings, docs/design/HierarchicalSFM.md)
 	unsigned numBridgesOff = 0;
 	for (bool changed = true; changed; ) {
 		changed = false;

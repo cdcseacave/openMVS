@@ -20708,70 +20708,84 @@ bool OneCameraSideTest()
 }
 /*----------------------------------------------------------------*/
 
-// Three blocks of a ring, each joined to the other two: the pair (1, 2) carries the true reading and
-// a copy one period along the wall on the same five cameras of block 2, weighing alike, and the pair
-// (0, 2) is joined through one camera a side. Without the door, (1, 2) is a bridge between rivals
-// of equal weight and block 2 stays out; measured from its two cameras, the door closes the
-// triangle, and the cycle chooses the true reading by the translation it puts block 2 at.
-bool OneCameraDoorTest()
+// A direction whose correspondences come from one camera gives no reading: a block is joined by all its cameras
+// together, never by one camera's pose. Three blocks of a ring, each joined to the other two.
+// - The cross pairs of (0, 2) kept only where they hold block 0's first camera: the direction of block 2's cameras on
+//   block 0's points is a rig and gives the pair's one reading, the direction of that single camera on block 2's points
+//   none; the ring is placed whole.
+// - Then (0, 2) and (1, 2) each kept to one cross pair (one camera a side): block 2 has no rig reading, stays unplaced,
+//   and its images are released (merged with their features, without poses) for the resection.
+bool OneCameraDirectionTest()
 {
 	TD_TIMER_START();
 	const RingSceneConfig cfg{3, 16};
-	constexpr REAL PERIOD = 5; // how far along the wall the copy sits, in the ring's units
-	constexpr REAL KEEP = 0.4; // the share of its true evidence block 2 keeps toward block 1
-	Scene scene;
-	std::vector<IIndexArr> blocks;
-	std::vector<Pose3D> gtPoses;
-	GenerateRingScene(cfg, scene, blocks, gtPoses);
-	// (0, 2): only the cross pair of block 0's first camera and block 2's last
-	const IIndex door0 = blocks[0].front(), door2 = blocks[2].back();
-	const std::set<IIndex> block0(blocks[0].begin(), blocks[0].end()), block2(blocks[2].begin(), blocks[2].end());
-	RFOREACH(i, scene.pairs) {
-		const ImagePair& pair = scene.pairs[i];
-		const bool cross = (block0.count(pair.ID1) && block2.count(pair.ID2)) || (block2.count(pair.ID1) && block0.count(pair.ID2));
-		if (cross && !(MINF(pair.ID1, pair.ID2) == MINF(door0, door2) && MAXF(pair.ID1, pair.ID2) == MAXF(door0, door2)))
-			scene.pairs.RemoveAtMove(i);
+	const auto KeepCrossPairs = [](Scene& scene, const IIndexArr& blockA, const IIndexArr& blockB, const std::function<bool(IIndex, IIndex)>& keep) {
+		const std::set<IIndex> a(blockA.begin(), blockA.end()), b(blockB.begin(), blockB.end());
+		RFOREACH(i, scene.pairs) {
+			const ImagePair& pair = scene.pairs[i];
+			const IIndex imgA = a.count(pair.ID1) ? pair.ID1 : pair.ID2, imgB = imgA == pair.ID1 ? pair.ID2 : pair.ID1;
+			if (a.count(imgA) && b.count(imgB) && !keep(imgA, imgB))
+				scene.pairs.RemoveAtMove(i);
+		}
+	};
+	const GlobalAlignmentConfig alignCfg;
+	{
+		Scene scene;
+		std::vector<IIndexArr> blocks;
+		std::vector<Pose3D> gtPoses;
+		GenerateRingScene(cfg, scene, blocks, gtPoses);
+		const IIndex door0 = blocks[0].front();
+		KeepCrossPairs(scene, blocks[0], blocks[2], [door0](IIndex imgA, IIndex) { return imgA == door0; });
+		std::vector<Scene> subScenes;
+		std::vector<IIndexArr> localToGlobals;
+		std::vector<SEACAVE::Transform> applied;
+		BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
+		GlobalAlignment alignment(scene, alignCfg);
+		std::vector<SeamCandidate> candidates;
+		alignment.EstimateSeamCandidates(subScenes, localToGlobals, candidates);
+		unsigned numReadings = 0, numRig = 0;
+		for (const SeamCandidate& c : candidates)
+			if (c.sceneA == 0 && c.sceneB == 2) {
+				++numReadings;
+				numRig += c.source == SeamCandidate::RIG_B_ON_A ? 1u : 0u;
+			}
+		if (numReadings != 1 || numRig != 1) {
+			VERBOSE("OneCameraDirectionTest FAILED: the pair (0, 2) seen by one camera of block 0 gave %u readings, %u of them "
+				"block 2's rig on block 0's points (1 and 1 expected: no reading from the single camera)", numReadings, numRig);
+			return false;
+		}
+		GlobalAlignment ga(scene, alignCfg);
+		MergeReport rep;
+		ga.MergeScenes(subScenes, localToGlobals, rep);
+		if (!CheckRingMerge("OneCameraDirectionTest", rep, scene, gtPoses, cfg.numBlocks, 1, kRingMergeRotation, kRingMergePosition))
+			return false;
 	}
-	// (1, 2): the truth on block 2's first five cameras, thinned, and a copy on the same five
-	std::vector<unsigned> far(cfg.camsPerBlock - 5);
-	std::iota(far.begin(), far.end(), 5u);
-	DropCrossObservations(scene, blocks, 2, far, 1, 0);
-	DropCrossObservations(scene, blocks, 2, {0, 1, 2, 3, 4}, 1, KEEP);
-	const unsigned planted = PlantFalseSeam(scene, blocks, 2, 1, 600, 5, WallCopy(REAL(2) * REAL(M_PI) * 2 / cfg.numBlocks, PERIOD));
-	if (planted < 100) {
-		VERBOSE("OneCameraDoorTest FAILED: only %u tracks of block 1 could be copied onto block 2", planted);
-		return false;
+	{
+		Scene scene;
+		std::vector<IIndexArr> blocks;
+		std::vector<Pose3D> gtPoses;
+		GenerateRingScene(cfg, scene, blocks, gtPoses);
+		const IIndex door0 = blocks[0].front(), door1 = blocks[1].back(), door2 = blocks[2].back(), door2b = blocks[2].front();
+		KeepCrossPairs(scene, blocks[0], blocks[2], [=](IIndex imgA, IIndex imgB) { return imgA == door0 && imgB == door2; });
+		KeepCrossPairs(scene, blocks[1], blocks[2], [=](IIndex imgA, IIndex imgB) { return imgA == door1 && imgB == door2b; });
+		std::vector<Scene> subScenes;
+		std::vector<IIndexArr> localToGlobals;
+		std::vector<SEACAVE::Transform> applied;
+		BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
+		GlobalAlignment ga(scene, alignCfg);
+		MergeReport rep;
+		ga.MergeScenes(subScenes, localToGlobals, rep, true);
+		bool released = rep.numPlaced == 2 && rep.poses[2].state != BlockPose::ADMITTED;
+		for (const IIndex g : blocks[2])
+			released = released && scene.images[g].HasFeatures() && !scene.images[g].HasPose();
+		if (!released) {
+			VERBOSE("OneCameraDirectionTest FAILED: block 2, joined by one camera a side only, %s; %u blocks placed (2 expected, "
+				"block 2 released without poses)", rep.poses[2].state == BlockPose::ADMITTED ? "was placed" : "is not released whole", rep.numPlaced);
+			return false;
+		}
 	}
-	ComputePairsWeights(scene);
-	std::vector<Scene> subScenes;
-	std::vector<IIndexArr> localToGlobals;
-	std::vector<SEACAVE::Transform> applied;
-	BuildRingBlocks(cfg, scene, blocks, gtPoses, subScenes, localToGlobals, applied);
-	const REAL extent1 = RingBlockExtents(subScenes)[1];
-	const SEACAVE::Transform truth(applied[2] * applied[1].Invert());
-
-	// the verified pairs left unread, so the copy stands on its cameras as the truth does
-	GlobalAlignmentConfig alignCfg;
-	alignCfg.maxPairRotationResidual = 0;
-	GlobalAlignment ga(scene, alignCfg);
-	MergeReport rep;
-	ga.MergeScenes(subScenes, localToGlobals, rep);
-	const SeamCandidate* door = ModelSeamOf(rep, 0, 2);
-	if (door == NULL) {
-		VERBOSE("OneCameraDoorTest FAILED: the merged model rests on no hypothesis of the door (0, 2)");
-		return false;
-	}
-	const SeamCandidate* seam = ModelSeamOf(rep, 1, 2);
-	const auto [rotation, translation] = seam == NULL ? std::make_pair(REAL(FLT_MAX), REAL(FLT_MAX)) : SeamOffset(seam->T, truth, extent1);
-	if (rotation > alignCfg.maxGraphRotationResidual || translation > alignCfg.maxGraphTranslationResidual) {
-		VERBOSE("OneCameraDoorTest FAILED: the merged model rests on %s hypothesis of (1, 2), %.2f deg and %.2f%% off the truth",
-			seam == NULL ? "no" : "a wrong", rotation, translation * 100);
-		return false;
-	}
-	if (!CheckRingMerge("OneCameraDoorTest", rep, scene, gtPoses, cfg.numBlocks, 1, kRingMergeRotation, kRingMergePosition))
-		return false;
-	VERBOSE("OneCameraDoorTest PASSED: the door of weight %.2f closes the triangle, the copy planted on %u tracks left out (%s)",
-		door->weight, planted, TD_TIMER_GET_FMT().c_str());
+	VERBOSE("OneCameraDirectionTest PASSED: a single-camera direction gives no reading, the rig direction places its pair, and "
+		"a block joined by single cameras only is released (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 /*----------------------------------------------------------------*/

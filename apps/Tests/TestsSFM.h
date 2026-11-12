@@ -703,7 +703,7 @@ bool RivalModesOnCycleTest();
 bool OneCameraSideTest();
 // A one-camera door closes the triangle that chooses between a pair's true reading and a copy of
 // equal weight
-bool OneCameraDoorTest();
+bool OneCameraDirectionTest();
 // The correspondences a ring of bent blocks leaves past the bar and within the loose bar join their
 // tracks at the merge and end inliers within the bar after the final adjustment
 bool BentBlockClosureTest();

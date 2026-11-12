@@ -25,7 +25,7 @@ class SFM_API Scene;
 
 // How an image's 2D features reach a model's 3D points, for every absolute pose estimated from them:
 // the resection's PnP of one image against its model's inlier tracks, and the merge's generalized PnP
-// of one block's cameras against another block's points (and its one-camera door). Which pairs join
+// of one block's cameras against another block's points. Which pairs join
 // an image to a model's registered images (its links) is read in PoseLink.h.
 
 // The angle a pixel error spans in the image's camera, at the camera's feature noise scale: the bar

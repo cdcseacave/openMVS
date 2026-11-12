@@ -38,8 +38,8 @@ class SFM_API Scene;
  * Readings (EstimateSeamPair): every block pair joined by cross pairs (all of them, read together) is measured in whichever
  * mode GlobalAlignmentConfig::alignment selects. ALIGN_CAMERAS reads each direction once: one
  * block's cameras as a generalized rig against the other's inlier tracks (generalized PnP with
- * scale), refined over its inliers at the reprojection bar; a direction whose rig is one camera (a
- * door) is measured by that camera's own pose. The two directions stay two readings. ALIGN_POINTS
+ * scale), refined over its inliers at the reprojection bar; a direction whose correspondences come
+ * from one camera gives no reading. The two directions stay two readings. ALIGN_POINTS
  * fits one 3D-3D similarity to the matches lying on an inlier track in both blocks. A reading is
  * scored on every correspondence of the pair -- the cameras that support it on its weaker side --
  * and read against the verified image pairs across it, together.
@@ -178,8 +178,8 @@ struct SFM_API GlobalAlignmentConfig
 	float maxReprojError{4.f};         // pixels; the camera alignment's reprojection threshold, the resection's own
 	// A camera supports a reading with this many inlier correspondences, and a reading standing alone
 	// in the block graph (a bridge) needs this many supporting cameras on its weaker side: a frame
-	// misplaced inside its own block that carries a whole seam on its side, and a door of one camera,
-	// weigh one, and stand only where a cycle corroborates them
+	// misplaced inside its own block that carries a whole seam on its side weighs one, and stands only
+	// where a cycle corroborates it
 	unsigned minCameraInliers{10};
 	unsigned minSeamWeight{2};
 	float minRigSpreadRatio{0.03f};    // rig spread over median depth for an observable scale

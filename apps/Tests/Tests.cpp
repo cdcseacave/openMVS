@@ -612,7 +612,7 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::OneCameraSideTest())
 				return false;
-			if (!SFM::OneCameraDoorTest())
+			if (!SFM::OneCameraDirectionTest())
 				return false;
 			if (!SFM::RingLoopClosureTest())
 				return false;
