@@ -29,6 +29,7 @@
 
 #include "Common.h" // SFM_API, Image8U3, Image32F, Image32F2
 #include "OnnxRuntime.h" // OrtTensor (an inert stand-in in builds without ONNX Runtime)
+#include "DenseMatcher.h"
 
 #include <cstdint>
 #include <memory>
@@ -88,13 +89,13 @@ struct SFM_API RoMa2Manifest
 // All calls on one instance must come from a single thread (ONNX Runtime sessions are used
 // through one IoBinding each). Available only in builds with ONNX Runtime: elsewhere
 // IsAvailable() is false and Load() fails with a message.
-class SFM_API RoMa2Onnx
+class SFM_API RoMa2Onnx : public DenseMatcher
 {
 public:
 	RoMa2Onnx();
 	RoMa2Onnx(const RoMa2Onnx&) = delete;
 	RoMa2Onnx& operator=(const RoMa2Onnx&) = delete;
-	~RoMa2Onnx();
+	~RoMa2Onnx() override;
 
 	// True if this build can run the exported graphs at all
 	static bool IsAvailable();
@@ -103,13 +104,22 @@ public:
 	// requested execution provider ("auto"|"cuda"|"coreml"|"dml"|"cpu"); the coarse-match
 	// graph is loaded on the first MatchCoarse call, on the provider the descriptor got.
 	// Returns false, with a message, on any manifest, file, or session problem.
-	bool Load(const String& modelDir, const String& setting = "base", const String& provider = "auto");
+	bool Load(const String& modelDir, const String& setting = "base", const String& provider = "auto") override;
 
-	bool IsLoaded() const;
+	bool IsLoaded() const override;
 	const RoMa2Manifest& Manifest() const;
-	String ProviderName() const; // execution provider of the descriptor session
+	String ProviderName() const override; // execution provider of the descriptor session
 
-	inline int ImageSize() const { return Manifest().imageSize; }
+	// the DenseMatcher interface, thin adapters over the calls below
+	inline int ImageSize() const override { return Manifest().imageSize; }
+	inline int GridSize() const override { return Manifest().warpSize; }
+	inline unsigned RetrievalSize() const override { return Manifest().facetsDim; }
+	void Preprocess(const Image8U3& bgr, std::vector<float>& planarRgb) const override;
+	OrtTensor MakeCode() override { return MakeLayers(); }
+	bool DescribeImage(const float* planarRgb, OrtTensor& layers, std::vector<float>& retrieval) override { return Describe(planarRgb, layers, NULL, retrieval); }
+	bool MatchPair(const OrtTensor& layersA, const OrtTensor& layersB, const PairInput&, PairOutput& out) override; // the coarse warps; RoMa2 has no covisibility or pose to give
+	inline bool NeedsIntrinsics() const override { return false; }
+
 	inline int WarpSize() const { return Manifest().warpSize; }
 	inline const std::vector<int64_t>& LayersShape() const { return Manifest().layersShape; }
 	unsigned NumPatches() const; // G*G, the descriptor grid cells one image is described by

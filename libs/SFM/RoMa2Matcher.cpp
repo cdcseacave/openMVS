@@ -545,6 +545,16 @@ bool RoMa2Onnx::MatchCoarse(const OrtTensor& layersA, const OrtTensor& layersB,
 	return true;
 }
 
+void RoMa2Onnx::Preprocess(const Image8U3& bgr, std::vector<float>& planarRgb) const
+{
+	PreprocessImageRoMa2(bgr, ImageSize(), planarRgb);
+}
+
+bool RoMa2Onnx::MatchPair(const OrtTensor& layersA, const OrtTensor& layersB, const PairInput&, PairOutput& out)
+{
+	return MatchCoarse(layersA, layersB, out.ab.warp, out.ab.confidence, out.ba.warp, out.ba.confidence);
+}
+
 #else // _USE_ONNXRUNTIME
 
 // Inert stand-in for builds without ONNX Runtime: no graph can ever be loaded, so the manifest
@@ -587,6 +597,17 @@ bool RoMa2Onnx::Describe(const float*, OrtTensor&, std::vector<float>*, std::vec
 }
 
 bool RoMa2Onnx::MatchCoarse(const OrtTensor&, const OrtTensor&, Image32F2&, Image32F&, Image32F2&, Image32F&)
+{
+	ASSERT(false); // unreachable: Load() always fails, so no caller ever gets a loaded model
+	return false;
+}
+
+void RoMa2Onnx::Preprocess(const Image8U3&, std::vector<float>&) const
+{
+	ASSERT(false); // unreachable: Load() always fails, so no caller ever gets a loaded model
+}
+
+bool RoMa2Onnx::MatchPair(const OrtTensor&, const OrtTensor&, const PairInput&, PairOutput&)
 {
 	ASSERT(false); // unreachable: Load() always fails, so no caller ever gets a loaded model
 	return false;

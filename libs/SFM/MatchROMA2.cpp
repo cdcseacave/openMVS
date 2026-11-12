@@ -28,6 +28,7 @@
 #include "MatchROMA2.h"
 #include "Scene.h"
 #include "RoMa2Matcher.h"
+#include "DenseMatcher.h"
 #include "PairsMatcher.h"
 #include "MatchGeometric.h"
 #include "ROMA2Warp.h"
@@ -56,18 +57,38 @@ typedef std::vector<float> PlanarImage;
 
 #ifdef _USE_ONNXRUNTIME
 
+// What a dense matcher is told about the pair (A, B): the pixel sizes and, for a pinhole camera, the intrinsics
+// the pipeline holds now (the matching stage runs before the lens fit and the focal refinement)
+PairInput MakePairInput(const Image& imgA, const Image& imgB)
+{
+	PairInput input;
+	input.sizeA = imgA.GetSize();
+	input.sizeB = imgB.GetSize();
+	PinholeIntrinsics* intr[2] = {&input.intrA, &input.intrB};
+	const Image* images[2] = {&imgA, &imgB};
+	for (int i = 0; i < 2; ++i) {
+		*intr[i] = PinholeIntrinsics{0.f, 0.f, 0.f, 0.f};
+		if (images[i]->GetCameraType() == CameraType::PINHOLE) {
+			const KMatrix K = images[i]->GetK();
+			// OpenMVS pixel centres are at integer coordinates (the default principal point is (w-1)/2, Image.cpp), PinholeIntrinsics' origin is the corner
+			*intr[i] = PinholeIntrinsics{(float)K(0,0), (float)K(1,1), (float)K(0,2) + 0.5f, (float)K(1,2) + 0.5f};
+		}
+	}
+	return input;
+}
+
 // Pool task: load (if not already resident) and preprocess one image into the planar RGB
 // buffer the descriptor graph expects. Uses the working-orientation pixels (Image::LoadPixels
 // rotates portrait to landscape -- design decision 12), the same pixels the keypoints were
 // extracted from. Each image is touched by exactly one pool task, and by the calling thread
 // only after that task's future has resolved (PrefetchRing::Take, below), so no locking is
 // needed on Image.
-bool PrepareImageROMA2(Image& img, int size, PlanarImage& planar)
+bool PrepareImageROMA2(Image& img, const DenseMatcher& matcher, PlanarImage& planar)
 {
 	const bool hadPixels = img.HasPixels();
 	if (!hadPixels && !img.LoadPixels())
 		return false;
-	PreprocessImageRoMa2(img.GetImage8U3(), size, planar);
+	matcher.Preprocess(img.GetImage8U3(), planar);
 	if (!hadPixels)
 		img.ReleasePixels();
 	return true;
@@ -100,8 +121,8 @@ bool PrepareImageROMA2(Image& img, int size, PlanarImage& planar)
 class PrefetchRing
 {
 public:
-	PrefetchRing(Scene& _scene, unsigned capacity, int _size)
-		: scene(_scene), size(_size), planars(capacity) {}
+	PrefetchRing(Scene& _scene, unsigned capacity, const DenseMatcher& _matcher)
+		: scene(_scene), matcher(_matcher), planars(capacity) {}
 	PrefetchRing(const PrefetchRing&) = delete;
 	PrefetchRing& operator=(const PrefetchRing&) = delete;
 
@@ -126,7 +147,7 @@ public:
 		ASSERT(CanSubmit(image));
 		const size_t idxPlanar = numSubmitted++ % planars.size();
 		pending.push_back(Submission{image, scene.threadPool.submit_task([this, image, idxPlanar]() {
-			return PrepareImageROMA2(scene.images[image], size, planars[idxPlanar]);
+			return PrepareImageROMA2(scene.images[image], matcher, planars[idxPlanar]);
 		})});
 	}
 
@@ -147,7 +168,7 @@ private:
 	};
 
 	Scene& scene;
-	int size;
+	const DenseMatcher& matcher;
 	std::vector<PlanarImage> planars;
 	std::deque<Submission> pending;
 	size_t numSubmitted = 0, numTaken = 0; // both count buffers of the ring, modulo its capacity
@@ -317,7 +338,7 @@ struct WarpPassStats {
 // One pair's bidirectional warp, handed to a pool thread: the pair's index in the pass's list, its
 // images, the warps themselves (the task owns them) and the index of the private descriptor
 // matcher it may use.
-typedef std::function<void(size_t idxPair, const PairIdx& pair, PairWarps& warps, unsigned threadIdx)> WarpConsumer;
+typedef std::function<void(size_t idxPair, const PairIdx& pair, PairOutput& output, unsigned threadIdx)> WarpConsumer;
 
 // Drive the ROMAv2 coarse-match graph over the given pairs, handing each pair's bidirectional warp
 // to the thread pool: plan the device slots (Belady over the pairs in (ID1,ID2) order), pipeline the
@@ -329,7 +350,7 @@ typedef std::function<void(size_t idxPair, const PairIdx& pair, PairWarps& warps
 // is drained, and the OpenCV thread count, log console and progress bar restored, on every exit path
 // including an exceptional one (Describe, MatchCoarse and the consumers can all throw).
 // Returns false only when the device slot pool could not be allocated (nothing was warped).
-bool ForEachWarpROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, const PairIdxArr& pairs,
+bool ForEachWarpROMA2(PairsMatcher& pairsMatcher, DenseMatcher& roma2, const PairIdxArr& pairs,
 	unsigned slotBudget, LPCTSTR progressCaption, const WarpConsumer& consume, WarpPassStats& stats)
 {
 	ASSERT(!pairs.empty() && std::is_sorted(pairs.begin(), pairs.end()));
@@ -343,7 +364,7 @@ bool ForEachWarpROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, const PairId
 	const SlotPlan plan(MakeSlotPlan(pairs, slotBudget, (IIndex)scene.images.size()));
 	std::vector<OrtTensor> slotLayers(plan.numSlots);
 	for (OrtTensor& layers : slotLayers) {
-		layers = roma2.MakeLayers();
+		layers = roma2.MakeCode();
 		if (!layers.IsValid()) {
 			VERBOSE("error: ROMA2 slot pool: could not allocate the %u descriptor slots the plan needs (lower --roma2-slots)", plan.numSlots);
 			return false;
@@ -365,7 +386,7 @@ bool ForEachWarpROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, const PairId
 		for (const SlotPlan::Load& load : step.loads)
 			loads.push_back(load);
 	ScopedPassState state(scene, progressCaption, pairs.size());
-	PrefetchRing ring(scene, MINF(2u*nThreads, 8u), roma2.ImageSize());
+	PrefetchRing ring(scene, MINF(2u*nThreads, 8u), roma2);
 	// the detached consumers capture every local above by reference, so the pool must be drained
 	// before any of them dies -- on the exceptional path too. Declared last, so that its
 	// destructor is the first one to run.
@@ -387,7 +408,7 @@ bool ForEachWarpROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, const PairId
 			const PlanarImage* const planar = ring.Take();
 			slotImage[load.slot] = NO_ID;
 			// value_facets stays on the device: the warp pass never reads it back (design decision 4)
-			if (planar && roma2.Describe(planar->data(), slotLayers[load.slot], NULL, discardedRetrieval)) {
+			if (planar && roma2.DescribeImage(planar->data(), slotLayers[load.slot], discardedRetrieval)) {
 				slotImage[load.slot] = load.image;
 			} else {
 				++stats.numFailedLoads;
@@ -400,15 +421,14 @@ bool ForEachWarpROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, const PairId
 			++state.progress; // a load failed: drop the pair rather than match it against a stale slot
 			continue;
 		}
-		PairWarps warps;
-		if (!roma2.MatchCoarse(slotLayers[step.slotA], slotLayers[step.slotB],
-			warps.ab.warp, warps.ab.confidence, warps.ba.warp, warps.ba.confidence)) {
+		PairOutput warps;
+		if (!roma2.MatchPair(slotLayers[step.slotA], slotLayers[step.slotB], MakePairInput(scene.images[pair.i], scene.images[pair.j]), warps)) {
 			++stats.numFailedMatches;
 			DEBUG_EXTRA("error: could not dense match pair (% 4u, % 4u)", pair.i, pair.j);
 			++state.progress;
 			continue;
 		}
-		ASSERT(warps.IsValid() && warps.ab.warp.rows == roma2.WarpSize());
+		ASSERT(warps.IsValid() && warps.ab.warp.rows == roma2.GridSize());
 		inFlight.Wait();
 		scene.threadPool.detach_task([&, p, pair, warps = std::move(warps)]() mutable {
 			const ScopedSemaphore released(inFlight); // returned however this task ends (see the struct)
@@ -592,25 +612,24 @@ void MakeFitImages(const std::vector<Point2f>& pointsA, const std::vector<Point2
 
 // D E S C R I B E   P A S S //////////////////////////////////////////
 
-unsigned SFM::ComputeGlobalDescriptorsROMA2(Scene& scene, RoMa2Onnx& roma2)
+unsigned SFM::ComputeGlobalDescriptorsROMA2(Scene& scene, DenseMatcher& roma2)
 {
 #ifdef _USE_ONNXRUNTIME
 	ASSERT(roma2.IsLoaded());
 	TD_TIMER_STARTD();
 	const IIndex nImages = (IIndex)scene.images.size();
-	const int size = roma2.ImageSize();
 	const unsigned nPrefetch = MINF(2u*(unsigned)scene.threadPool.get_thread_count(), 8u);
 
 	// destruction order matters on every exit path (normal or exceptional): ring must destruct
 	// before state, so it is declared after state (reverse declaration order == destruction
 	// order) -- every pool task is drained before cv::setNumThreads/log console are restored
 	ScopedPassState state(scene, _T("Describe images"), nImages);
-	PrefetchRing ring(scene, nPrefetch, size);
+	PrefetchRing ring(scene, nPrefetch, roma2);
 	for (IIndex i = 0; i < MINF(nPrefetch, nImages); ++i)
 		ring.Submit(i);
 
 	unsigned numDescribed = 0;
-	OrtTensor layers(roma2.MakeLayers()); // reused across every image (design decision 7: the describe pass keeps only the pooled vector, not the layers)
+	OrtTensor layers(roma2.MakeCode()); // reused across every image (design decision 7: the describe pass keeps only the pooled vector, not the layers)
 	if (!layers.IsValid()) {
 		VERBOSE("error: could not allocate the ROMA2 layers tensor");
 		return 0;
@@ -622,7 +641,8 @@ unsigned SFM::ComputeGlobalDescriptorsROMA2(Scene& scene, RoMa2Onnx& roma2)
 		Image& img = scene.images[i];
 		// the graph's own on-device retrieval pooling (RoMa2Onnx::Describe), read straight into
 		// descriptor -- the CPU pooling this pass used to fall back to is gone, one path remains
-		if (planar && roma2.Describe(planar->data(), layers, NULL, descriptor)) {
+		if (planar && roma2.DescribeImage(planar->data(), layers, descriptor)) {
+			ASSERT(descriptor.size() == roma2.RetrievalSize());
 			img.globalDescriptor = cv::Mat(1, (int)descriptor.size(), CV_32F, descriptor.data()).clone();
 			++numDescribed;
 		} else {
@@ -634,11 +654,8 @@ unsigned SFM::ComputeGlobalDescriptorsROMA2(Scene& scene, RoMa2Onnx& roma2)
 	}
 	state.Finish(); // unpause the log console before the summary line below (see struct comment)
 
-	// descriptor may be empty (no image was ever successfully described): fall back to the
-	// manifest's declared dimension so the summary line stays meaningful
-	const unsigned descriptorDim = descriptor.empty() ? roma2.Manifest().facetsDim : (unsigned)descriptor.size();
 	DEBUG("Global descriptors computed for %u/%u images (%u-D, %s provider, %s)",
-		numDescribed, (unsigned)nImages, descriptorDim, roma2.ProviderName().c_str(), TD_TIMER_GET_FMT().c_str());
+		numDescribed, (unsigned)nImages, roma2.RetrievalSize(), roma2.ProviderName().c_str(), TD_TIMER_GET_FMT().c_str());
 	return numDescribed;
 #else // _USE_ONNXRUNTIME
 	// unreachable: RoMa2Onnx::IsAvailable() is false in this build, so Scene::MatchPairs never
@@ -1278,7 +1295,7 @@ void SFM::StorePairROMA2(Scene& scene, std::unordered_map<PairIdx::PairIndex, II
 
 // T H E   O N E   P A S S ////////////////////////////////////////////
 
-bool SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, const PairIdxArr& candidatePairs,
+bool SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, DenseMatcher& roma2, const PairIdxArr& candidatePairs,
 	const ROMA2Config& config, unsigned& numStored)
 {
 	numStored = 0;
@@ -1288,6 +1305,11 @@ bool SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, const Pa
 		return true;
 	TD_TIMER_STARTD();
 	Scene& scene = pairsMatcher.GetScene();
+	if (roma2.NeedsIntrinsics() && std::any_of(scene.images.begin(), scene.images.end(),
+		[](const Image& img) { return !img.HasCamera() || img.GetCameraType() != CameraType::PINHOLE; })) {
+		VERBOSE("error: the dense matcher's pose head needs a pinhole camera for every image (FlexGlue does not run on spherical images)");
+		return false;
+	}
 	// every candidate pair indexes scene.images directly (slot planning, loads, the pair keys), so
 	// image IDs must be their own indices - the convention the whole matcher assumes
 	ASSERT(std::all_of(scene.images.begin(), scene.images.end(),
@@ -1346,14 +1368,21 @@ bool SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, const Pa
 		bool bAssembled = false;
 	};
 	std::vector<AssembledPair> results(pairs.size());
-	std::atomic<unsigned> numJudged{0}, numAdmitted{0};
-	const int warpSize = roma2.WarpSize();
+	std::atomic<unsigned> numJudged{0}, numAdmitted{0}, numGated{0};
+	const int warpSize = roma2.GridSize();
 	WarpPassStats stats;
 	if (!ForEachWarpROMA2(pairsMatcher, roma2, pairs, config.slotBudget, _T("Dense match image pairs"),
-		[&](size_t p, const PairIdx& pairIdx, PairWarps& warps, unsigned threadIdx) {
+		[&](size_t p, const PairIdx& pairIdx, PairOutput& warps, unsigned threadIdx) {
 			const Image& imgA = scene.images[pairIdx.i];
 			const Image& imgB = scene.images[pairIdx.j];
+			// the covisibility gate, before the verdict: a pair the matcher says does not show the same place is dropped
+			if (warps.covisibility && *warps.covisibility < config.minCovisibility) {
+				++numGated;
+				return;
+			}
 			ImagePair pair(pairIdx.i, pairIdx.j);
+			pair.covisibility = warps.covisibility;
+			pair.posePrior = warps.pose;
 			PairVerdict verdict;
 			JudgePairROMA2(pairsMatcher, imgA, imgB, warps, config, pair, verdict);
 			++numJudged;
@@ -1408,6 +1437,8 @@ bool SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, const Pa
 		StorePairROMA2(scene, pairIndexMap, std::move(result.pair), result.dense, warpSize);
 		++numStored;
 	}
+	if (config.minCovisibility > 0.f && numGated.load() + numJudged.load() > 0)
+		DEBUG("ROMA2 covisibility gate: %u of %u warped pairs below %g", numGated.load(), numGated.load() + numJudged.load(), config.minCovisibility);
 	DEBUG("ROMA2 one pass: %u candidates, %u judged, %u admitted, %u stored, %u dense-only; "
 		"%u slots, %u loads, %u reloads; %u already stored, %u unprepared, %u failed loads, %u failed matches, %u dense matches (%s)",
 		candidatePairs.size(), numJudged.load(), numAdmitted.load(), numStored, numDenseOnly,

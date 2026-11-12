@@ -47,6 +47,14 @@ struct SFM_API DMatch
 	#endif
 };
 
+// A dense matcher's coarse guess of a pair's relative pose, to be checked or guided by, never taken as the pose:
+// the rotation and the unit baseline direction in the pair's own convention (x2 = R*x1 + s*t, s > 0 unknown,
+// the one ImagePair::relativePose stores, whose GetT() is t up to scale)
+struct SFM_API PosePrior {
+	Matrix3x3f R;
+	Point3f t;
+};
+
 // ImagePair stores data for two images: matches, relative pose, etc.
 class SFM_API ImagePair
 {
@@ -88,6 +96,11 @@ public:
 
 	// Homography matrix (optional) - useful for overlap computation
 	std::optional<Matrix3x3> H;
+	// What the dense matcher that matched the pair says about it besides its warps (FlexGlue; RoMa2 gives neither):
+	// the covisibility score in [0,1] ("do the two images show the same place") and a coarse relative pose.
+	// Not serialized (the archive layout is read by tools built before them) and not geometry: no Reset clears them
+	std::optional<float> covisibility;
+	std::optional<PosePrior> posePrior;
 
 	// Overlap metrics
 	float overlapRatio;       // ratio of tracked/matched features

@@ -41,6 +41,7 @@ fallback for a pair the warp rejects (One-Pass Dense Pair Matching, below).
 | `--roma2-min-confidence F` | `0.1` | confidence at which a warp cell takes part in the verdict, the keypoint tracking and the dense fill |
 | `--roma2-min-overlap F` | `0.10` | verdict: the pair is admitted iff min(inlier area A, inlier area B) ≥ F |
 | `--roma2-dense-matches N` | `2000` | dense correspondences per FULL FRAME of overlap (a density, not a per-pair count) |
+| `--dense-matcher roma2\|flexglue` | `roma2` | the model behind `--roma2 true`: both seams run on it unchanged (`DenseMatcher.md`); `--flexglue-model` and `--dense-min-covisibility` belong to `flexglue` |
 
 Which mode ranks candidate pairs how is a property of `--match-mode` alone, with no crossover: `1`
 VOCABULARY always ranks with the SIFT/AKAZE vocabulary tree, `4` RETRIEVAL always ranks with the
@@ -71,8 +72,9 @@ now: the SIFT/AKAZE vocabulary tree, `--roma2`/`--match-mode` notwithstanding.
 The in-process integration replaces the earlier NPZ-based ROMA2 import outright (deleted:
 `ImportROMA2.{h,cpp}`, `--import-roma2`, depth-map import) — there is no dual path.
 
-Source: `libs/SFM/OnnxRuntime.h/cpp` (ONNX Runtime session/tensor wrapper), `libs/SFM/RoMa2Matcher.h/cpp`
-(the two RoMa v2 sessions, `RoMa2Onnx::MatchCoarse`), `libs/SFM/MatchROMA2.h/cpp` (describe pass, the
+Source: `libs/SFM/OnnxRuntime.h/cpp` (ONNX Runtime session/tensor wrapper), `libs/SFM/DenseMatcher.h` (the
+interface of the model behind both seams), `libs/SFM/RoMa2Matcher.h/cpp`
+(the two RoMa v2 sessions, `RoMa2Onnx::MatchCoarse`, behind the interface as `RoMa2Onnx::MatchPair`), `libs/SFM/MatchROMA2.h/cpp` (describe pass, the
 verdict, pair assembly and storage, `MatchPairsROMA2`, `ROMA2Config`), `libs/SFM/ROMA2Warp.h/cpp` (warp
 types, coordinate conventions, keypoint tracking, the coverage and complementary draws, dense append),
 `libs/SFM/MatchGeometric.h/cpp` (guided sparse matching, `MatchFeaturesGuided`),
@@ -137,8 +139,9 @@ Python `pool_retrieval` reference (`scripts/python/roma2/graphs.py`) at cosine >
 
 ## Session Lifecycle
 
-One `RoMa2Onnx` per `Scene::MatchPairs` call (`libs/SFM/Scene.cpp`): declared before `PairsMatcher` so
-its destructor runs after (a `RoMa2Onnx*`/tensor held by `PairsMatcher` must not outlive the model).
+One dense matcher (`DenseMatcher`: `RoMa2Onnx`, or `FlexGlueMatcher` for `--dense-matcher flexglue`, see
+`DenseMatcher.md`) per `Scene::MatchPairs` call (`libs/SFM/Scene.cpp`): declared before `PairsMatcher` so
+its destructor runs after (a `DenseMatcher*`/tensor held by `PairsMatcher` must not outlive the model).
 `RoMa2Onnx::Load` loads only the descriptor graph; the coarse-match graph loads lazily on the first
 `MatchCoarse` call, on the same execution provider the descriptor session got, and a load failure is
 remembered so later calls fail fast. `layers` are **not** cached across the describe pass and the
@@ -435,7 +438,7 @@ unsigned SwitchPlanarTwinsROMA2(PairsMatcher&, const ROMA2Config& config);
 void StorePairROMA2(Scene&, std::unordered_map<PairIdx::PairIndex, IIndex>& pairIndexMap,
     ImagePair&& pair, const DenseMatches& dense, int warpSize);
 
-bool MatchPairsROMA2(PairsMatcher&, RoMa2Onnx&, const PairIdxArr& candidatePairs,
+bool MatchPairsROMA2(PairsMatcher&, DenseMatcher&, const PairIdxArr& candidatePairs,
     const ROMA2Config&, unsigned& numStored);
 ```
 

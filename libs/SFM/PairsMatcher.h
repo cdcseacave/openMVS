@@ -251,7 +251,7 @@ public:
 
 	// Attach the in-process ROMAv2 model and its configuration for the dense one-pass matching
 	// path (MatchPairsROMA2); model may be NULL if roma2Cfg leaves that path disabled.
-	void SetROMA2(RoMa2Onnx* model, const ROMA2Config& cfg);
+	void SetROMA2(DenseMatcher* model, const ROMA2Config& cfg);
 
 	// Build the global-descriptor index on demand, unconditionally (RETRIEVAL mode): never
 	// builds nor falls back to the vocabulary tree — the backend is the DINOv3+GeM descriptors
@@ -383,7 +383,7 @@ private:
 	std::unique_ptr<GlobalDescriptors> globalDescriptors;
 
 	// In-process ROMAv2 model and its configuration (NULL/defaults unless SetROMA2 was called)
-	RoMa2Onnx* roma2 = NULL;
+	DenseMatcher* roma2 = NULL;
 	ROMA2Config roma2Cfg;
 
 	// Symmetric fused retrieval score of every pair retrieved by the last

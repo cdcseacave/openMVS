@@ -1,0 +1,97 @@
+/*
+ * DenseMatcher.h
+ *
+ * Copyright (c) 2014-2026 SEACAVE
+ *
+ * Author(s):
+ *
+ *      cDc <cdc.seacave@gmail.com>
+ *
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
+
+
+#ifndef _SFM_DENSEMATCHER_H_
+#define _SFM_DENSEMATCHER_H_
+
+// I N C L U D E S /////////////////////////////////////////////////
+
+#include "Common.h"
+#include "OnnxRuntime.h"
+#include "ROMA2Warp.h"
+
+
+// S T R U C T S ///////////////////////////////////////////////////
+
+namespace SFM {
+
+// A pinhole camera in the pixels of the working-orientation image (the corner of the top-left pixel is the origin)
+struct SFM_API PinholeIntrinsics {
+	float fx, fy, cx, cy;
+};
+
+// What a dense matcher is told about the two images of a pair besides their descriptors
+struct SFM_API PairInput {
+	cv::Size sizeA, sizeB;               // pixel sizes of the two images
+	PinholeIntrinsics intrA, intrB;      // their cameras as the pipeline holds them at the matching stage (before the lens fit and the focal refinement)
+};
+
+// What a dense matcher returns for one pair. The warps (both directions, on the matcher's grid) are the one
+// output every matcher has, the common currency the verdict, the guided matching and the dense fill read; the rest
+// is absent (std::optional) where a matcher does not produce it: the covisibility score in [0,1] and a pose prior.
+struct SFM_API PairOutput : PairWarps {
+	std::optional<float> covisibility;
+	std::optional<PosePrior> pose;
+};
+/*----------------------------------------------------------------*/
+
+// One dense matcher model (RoMa2, FlexGlue), loaded once and driven from a single thread: every image is described once
+// into a descriptor tensor (`code`, resident on the device where the provider keeps tensors there) and a global
+// retrieval descriptor, then two codes are matched into a PairOutput. The passes that describe the images, plan the
+// descriptor slots, prefetch the images and feed the pairs to the thread pool (MatchROMA2.cpp) only need this interface.
+class SFM_API DenseMatcher
+{
+public:
+	virtual ~DenseMatcher() = default;
+
+	// Load the model from its folder ("setting" is the model's preset where it has several) on the provider
+	// ("auto"|"cuda"|"coreml"|"dml"|"cpu"); false with a message on any failure
+	virtual bool Load(const String& modelDir, const String& setting, const String& provider) = 0;
+	virtual bool IsLoaded() const = 0;
+	virtual String ProviderName() const = 0;
+
+	// Side of the square the images are squashed to, and the planar RGB floats Preprocess makes of one image
+	virtual int ImageSize() const = 0;
+	virtual void Preprocess(const Image8U3& bgr, std::vector<float>& planarRgb) const = 0;
+	// Cells per side of the warp grid a MatchPair returns
+	virtual int GridSize() const = 0;
+	// Size of the global retrieval descriptor DescribeImage returns
+	virtual unsigned RetrievalSize() const = 0;
+
+	// One image's descriptor tensor
+	virtual OrtTensor MakeCode() = 0;
+	// Describe a preprocessed image into `code`; `retrieval` receives the image's unit global retrieval descriptor
+	virtual bool DescribeImage(const float* planarRgb, OrtTensor& code, std::vector<float>& retrieval) = 0;
+	// Match the pair of codes (A, B)
+	virtual bool MatchPair(const OrtTensor& codeA, const OrtTensor& codeB, const PairInput& input, PairOutput& out) = 0;
+	// Whether MatchPair reads PairInput's intrinsics, so that the caller must hold a pinhole camera for every image
+	virtual bool NeedsIntrinsics() const = 0;
+};
+/*----------------------------------------------------------------*/
+
+} // namespace SFM
+
+#endif // _SFM_DENSEMATCHER_H_

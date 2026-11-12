@@ -320,10 +320,10 @@ public:
 	 * @brief Describe every image with the in-process ROMAv2 model and pool the result into
 	 * each image's global retrieval descriptor (a no-op returning true if the scene is already
 	 * marked GLOBAL_DESCRIPTORS). Sets the flag only once every image was successfully described.
-	 * @param roma2 an already-loaded ROMAv2 model (RoMa2Onnx::Load)
+	 * @param roma2 an already-loaded dense matcher (RoMa2Onnx or FlexGlueMatcher)
 	 * @return true if every image now carries a global descriptor
 	 */
-	bool ComputeGlobalDescriptors(RoMa2Onnx& roma2);
+	bool ComputeGlobalDescriptors(DenseMatcher& roma2);
 
 	/**
 	 * @brief Run a full reconstruction from a folder or semicolon-separated list

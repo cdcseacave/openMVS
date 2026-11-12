@@ -720,7 +720,7 @@ bool PairsMatcher::MatchPair(
 	return true;
 }
 
-void PairsMatcher::SetROMA2(RoMa2Onnx* model, const ROMA2Config& cfg)
+void PairsMatcher::SetROMA2(DenseMatcher* model, const ROMA2Config& cfg)
 {
 	roma2 = model;
 	roma2Cfg = cfg;
@@ -2353,8 +2353,20 @@ bool PairsMatcher::ExportPairsCSV(const Scene& scene, const String& fileName, fl
 	// so the column can be re-thresholded offline; the Coverage column beside the raw NumMatches
 	// count lets the pair strength (their product) be replayed offline too
 	const TripletScores tripletScores = ComputeTripletScores(scene, 0.f, minYield, weighting);
+	// the columns of what the dense matcher said about the pairs besides its warps (ImagePair::covisibility and posePrior), in the
+	// layout of the Rel* columns (the pose prior's rotation and direction in the pair's own convention), only when some pair has them
+	const bool hasMatcherColumns = std::any_of(scene.pairs.begin(), scene.pairs.end(), [](const ImagePair& pair) { return pair.covisibility.has_value(); });
+	// a pose as the seven cells of the Rel* and Prior* blocks: the quaternion (w,x,y,z, from a Quat's (x,y,z,w) storage) and the unit baseline direction
+	const auto WritePose = [&ofs](double qw, double qx, double qy, double qz, double tx, double ty, double tz) {
+		const std::streamsize oldPrecision = ofs.precision(7);
+		ofs << qw << "," << qx << "," << qy << "," << qz << "," << tx << "," << ty << "," << tz;
+		ofs.precision(oldPrecision);
+	};
 	ofs << "ImageA,ImageB,NumMatches,Coverage,Weight,WeightSpatial,WeightConnectivity,WeightTriplet,MeanRayAngle,TripletScore,"
-		   "RelQw,RelQx,RelQy,RelQz,RelTx,RelTy,RelTz\n";
+		   "RelQw,RelQx,RelQy,RelQz,RelTx,RelTy,RelTz";
+	if (hasMatcherColumns)
+		ofs << ",Covisibility,PriorQw,PriorQx,PriorQy,PriorQz,PriorTx,PriorTy,PriorTz";
+	ofs << "\n";
 	FOREACH(idxPair, scene.pairs) {
 		const ImagePair& pair = scene.pairs[idxPair];
 		const String relImageNameA = MAKE_PATH_REL(basePath, scene.images[pair.ID1].fileName);
@@ -2374,20 +2386,30 @@ bool PairsMatcher::ExportPairsCSV(const Scene& scene, const String& fileName, fl
 		if (pair.relativePose.has_value()) {
 			// relativePose->R, C store the pose in the pair's own convention (x2 = R*x1 + t);
 			// Pose3D stores the camera centre C, not the translation, so t = -R*C = GetT()
-			const RMatrix::Quat q(pair.relativePose->R.GetQuaternion()); // (x,y,z,w): q.val[3] is the scalar part
+			const RMatrix::Quat q(pair.relativePose->R.GetQuaternion());
 			CMatrix t(pair.relativePose->GetT());
 			const REAL tLen = cv::norm(t);
 			if (tLen > REAL(0)) {
 				t *= REAL(1) / tLen; // the scale of a two-view pose is arbitrary: normalize t; a zero baseline has no direction and exports no pose
-				const std::streamsize oldPrecision = ofs.precision(7);
-				ofs << q.val[3] << "," << q.val[0] << "," << q.val[1] << "," << q.val[2] << ","
-					<< t.x << "," << t.y << "," << t.z;
-				ofs.precision(oldPrecision);
+				WritePose(q.val[3], q.val[0], q.val[1], q.val[2], t.x, t.y, t.z);
 				hasPose = true;
 			}
 		}
 		if (!hasPose)
 			ofs << ",,,,,,"; // no relative pose: all seven cells stay empty
+		if (hasMatcherColumns) {
+			ofs << ",";
+			if (pair.covisibility)
+				ofs << *pair.covisibility;
+			ofs << ",";
+			if (pair.posePrior) {
+				const RMatrixBaseF::Quat q(RMatrixBaseF(pair.posePrior->R).GetQuaternion());
+				const Point3f& t = pair.posePrior->t;
+				WritePose(q.val[3], q.val[0], q.val[1], q.val[2], t.x, t.y, t.z);
+			} else {
+				ofs << ",,,,,,";
+			}
+		}
 		ofs << "\n";
 	}
 	ofs.close();

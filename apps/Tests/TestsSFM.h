@@ -254,6 +254,11 @@ bool RoMa2OnnxParityTest();
 // execution provider and the preset it exercises
 bool ROMA2ReconstructTest();
 
+// FlexGlue as the dense matcher on the same bundled 4-image scene: 256-D unit retrieval descriptors, a covisibility score and a coarse relative pose
+// on every pair (the pose close to the pair's own), the pairs CSV columns, the covisibility gate, and ReconstructTest's reconstruction stage.
+// Skipped unless OPENMVS_FLEXGLUE_MODEL_PATH points at the export folder
+bool FlexGlueReconstructTest();
+
 // PinholeReprojectionErrorAnalytic's hand-written Jacobians match the ones auto-diff derives from
 // the same projection, over randomized poses, points and full 12-parameter intrinsics (the whole
 // distortion model live, k3/p1/p2 and the rational denominator k4-k6 included); the quaternion
