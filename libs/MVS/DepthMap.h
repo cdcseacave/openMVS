@@ -813,7 +813,9 @@ inline void EstimateNormalMap(const ModelCamera& camera, const DepthMap& depthMa
 }
 
 // Standalone confidence estimators, deriving a confidence-map from the geometry of one
-// depth-map alone -- no images, no neighboring views, no matching cost. The dense
+// depth-map alone -- no image pixels, no neighboring views, no matching cost; they read
+// only the camera model of the depth-map's view (depthData.images front, with its image
+// data set), as the columns of a panorama wrap. The dense
 // pipeline does not use them: its own estimates come with a photometric score, which
 // DensifyPointCloud can recalibrate against the neighboring views (see
 // OPTDENSE::ADJUST_CONFIDENCE). They are meant for the depth-maps that reach the library

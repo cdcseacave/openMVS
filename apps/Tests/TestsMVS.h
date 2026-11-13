@@ -120,6 +120,8 @@ bool WrapPixelTest();
 
 // EstimateConfidenceFromDepth/Normal read across the column seam of a spherical depth-map
 bool ConfidenceSeamTest();
+
+// Image::ComputeFOV spans 2pi x pi for a full equirectangular image, the pinhole angles otherwise
 bool ComputeFOVTest();
 /*----------------------------------------------------------------*/
 

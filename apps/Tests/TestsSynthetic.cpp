@@ -1323,7 +1323,7 @@ bool MVS::SyntheticMixedGPUTest(bool forceCPU)
 		return false;
 	const DepthEvaluator::Stats all(evaluator.GetStats(DepthEvaluator::ALL));
 	const DepthEvaluator::Stats center(evaluator.GetStats(DepthEvaluator::CENTER)), border(evaluator.GetStats(DepthEvaluator::BORDER));
-	// bounds: the CPU accuracy of SynthMixedRun on the same views less a margin
+	// bounds: the CPU accuracy of SynthMixedRun on the same views (`Tests mixtest 1`) less a margin
 	if (!(all.completeness > 0.80) || !(all.absRelMedian < 0.003) || !(all.within1 > 0.80) || !(all.within5 > 0.96) ||
 		!(all.normalMedianDeg < 3.5) || !(center.completeness > 0.97) || !(border.completeness > 0.65)) {
 		VERBOSE("ERROR: SyntheticMixedGPUTest: %s depth accuracy below the CPU baseline!", SYNTH_GPU_BACKEND);
@@ -2179,6 +2179,20 @@ bool ToolSphTest(int argc, LPCTSTR* argv)
 	return true;
 }
 
+// mixtest <verbosity> [gpu]: PatchMatch on the cube faces of a panorama rig against the panoramas of two other rigs
+// (the run of SyntheticMixedGPUTest), the depth-maps of the faces scored; the table goes to the log
+bool ToolMixTest(int argc, LPCTSTR* argv)
+{
+	SynthDenseOptions options;
+	options.gpu = ArgInt(argc, argv, 2, 0) != 0;
+	if (options.gpu && !SynthGPUAvailable()) {
+		std::printf("error: no GPU\n");
+		return false;
+	}
+	DepthEvaluator evaluator;
+	return SynthMixedRun(384, options, evaluator);
+}
+
 // conftest <verbosity>: GPUConfidenceTest alone
 bool ToolConfTest(int, LPCTSTR*)
 {
@@ -2496,6 +2510,7 @@ bool MVS::SynthTool(int argc, LPCTSTR* argv)
 	};
 	static const Mode modes[] = {
 		{_T("synth"), 2, ToolSynth, _T("<outDir> [panoWidth=512]")},
+		{_T("mixtest"), 1, ToolMixTest, _T("<verbosity> [gpu=0]")},
 		{_T("sphtest"), 1, ToolSphTest, _T("<verbosity> [panoWidth=512] [numPanos=3] [faces=1] [maxElevation: exact warp above, degrees] [maxViews] [maxThreads] [gpu=0]")},
 		{_T("conftest"), 1, ToolConfTest, _T("<verbosity>")},
 		{_T("sphfuse"), 1, ToolSphFuse, _T("<verbosity> [panoWidth=512] [numPanos=3] [faces=1 (0: none, 1: apart, 2: with the panoramas)] [fusionFilter=2] [maxThreads]")},

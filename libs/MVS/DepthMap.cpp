@@ -2208,6 +2208,7 @@ bool MVS::EstimateNormalMap(const Matrix3x3f& K, const DepthMap& depthMap, Norma
 // through a Gaussian of the depth range, mixed with the fraction of neighbors sitting at
 // a similar depth (see the header for what this is for and what it is not)
 void MVS::EstimateConfidenceFromDepth(const DepthData& depthData, ConfidenceMap& confMap, int winHalfSize, int n) {
+	ASSERT(depthData.IsValid() && depthData.GetView().pImageData != NULL);
 	ASSERT(depthData.dMax > depthData.dMin);
 	const float dDepth = depthData.dMax - depthData.dMin;
 	const DepthMap& depthMap = depthData.depthMap;
@@ -2255,6 +2256,7 @@ void MVS::EstimateConfidenceFromDepth(const DepthData& depthData, ConfidenceMap&
 
 // estimate confidence map from normal variance in a window
 void MVS::EstimateConfidenceFromNormal(const DepthData& depthData, ConfidenceMap& confMap, int winHalfSize) {
+	ASSERT(depthData.IsValid() && depthData.GetView().pImageData != NULL);
 	const NormalMap& normalMap = depthData.normalMap;
 	const DepthMap& depthMap = depthData.depthMap;
 	confMap.create(normalMap.size());

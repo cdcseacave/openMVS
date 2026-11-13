@@ -138,6 +138,7 @@ bool Scene::EstimatePointCloudNormals(bool bRefine)
 			#pragma omp flush (bAbort)
 			continue;
 			#else
+			pointcloud.normals.Release();
 			return false;
 			#endif
 		}
@@ -152,8 +153,10 @@ bool Scene::EstimatePointCloudNormals(bool bRefine)
 		}
 	}
 	#ifdef SCENE_USE_OPENMP
-	if (bAbort)
+	if (bAbort) {
+		pointcloud.normals.Release();
 		return false;
+	}
 	#endif
 
 	// Define optimization data structure

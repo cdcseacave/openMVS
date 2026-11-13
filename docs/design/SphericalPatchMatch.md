@@ -64,7 +64,8 @@ out-of-line sampler cost the pinhole estimator 15 % on clang/arm64).
 ### Sampling and the seam
 
 - Spherical target images wrap their columns (`SampleTexel<true>`) and keep the 1-pixel border on the rows;
-  target depth-maps of the geometric consistency wrap the same way (`SampleDepth<true>`). No padding.
+  target depth-maps of the geometric consistency wrap the same way (`SampleDepth<true>`). The estimator pads no image (the transient normal
+  refinement of `Scene::EstimatePointCloudNormals` pads its copies, see the consumers).
 - A spherical reference is estimated across the seam (only the 4 rows next to each pole are skipped); the
   reference patch and the propagation neighbors wrap their columns (`Col0`).
 - Pixel order, pinhole and spherical alike: the estimators pull pixels in zigzag order and work on a copy of
@@ -208,6 +209,10 @@ calls are the camera's own (bit-identical), spherical calls go through `Spherica
   seam is filled like any other; columns do not cross the poles) and `FilterDepthMap`;
   `EstimateNormalMaps`, `DepthData::GetNormal`, `EstimatePointColors`, `EstimatePointSegmentation`,
   `ExportPointCloud`, `Scene::EstimatePointCloudNormals`;
+  `ModelCamera::WrapPixel` also serves `EstimateConfidenceFromDepth/Normal` (their window across the seam) and
+  `InterfaceMetashape::AssignPoints`; `Scene::EstimatePointCloudNormals` works on 1024 px copies of the scene
+  images, a panorama's copy padded with a `cv::BORDER_WRAP` margin of `patchRadius+2` columns on each side and
+  its `cx` moved by the margin, so the pinhole sampling code reads across the seam;
   `Scene::PointCloudFilter` (visibility cone aperture = the angle a pixel spans, 1/fx on the equator).
 
 ## 3. Parameters
@@ -250,7 +255,7 @@ Depth-maps, fraction of GT pixels within 1 / 5 % and abs-rel median:
 | | B | Metal | 0.982 | 0.00041 | 0.986 | 0.995 |
 | synthetic 512x256 | B | CPU | 0.956 | 0.00147 | 0.919 | 0.986 |
 | | B | CUDA / Metal | 0.964 | 0.00138 / 0.00139 | 0.931 | 0.988 |
-| synthetic 384, 6 faces 96x96 against 2 panoramas | B | CPU / Metal | 0.838 / 0.990 | 0.00247 / 0.00225 | 0.839 / 0.880 | 0.976 / 0.977 |
+| synthetic 384, 6 faces 96x96 against 2 panoramas (`Tests mixtest 1`, `Tests mixtest 1 1` on the GPU) | B | CPU / Metal | 0.838 / 0.990 | 0.00247 / 0.00225 | 0.839 / 0.880 | 0.976 / 0.977 |
 | Holo360D 1440 | A / B / C | CPU | 0.954 / 0.954 / 0.774 | 0.182 / 0.201 / 0.130 | | 0.352 / 0.346 / 0.375 |
 | | A / B / C | CUDA | 0.680 / 0.681 / 0.644 | 0.0460 / 0.0471 / 0.0945 | | 0.513 / 0.509 / 0.406 |
 | | B | Metal | 0.681 | 0.0471 | | 0.509 |
@@ -330,6 +335,8 @@ per-band <5 % CPU all 0.985-0.988, seam 0.996-0.997; CUDA all 0.964 completeness
 - Exact warp only above 80°: pole bands lose 20-35 % abs-rel at 512x256 for 1.32x instead of 1.62x the CUDA
   cube-face cost at 1024 px.
 - Padding equirectangular images with wrapped columns: patches off the seam take the plain loop.
+- A wrap-aware sampler and bounds test at each sampling site of the normal refinement, instead of the wrapped
+  margin: more code in the function and a second sampling path to keep in step.
 - `std::atan2` in the warps: the exact warp spends most of its time there.
 - Pixels waiting for all their preceding neighbors: 5-8 % multi-threaded wall, idle cores.
 - Setting aside a pixel whose preceding neighbors are in progress: +40 % wall.
@@ -358,5 +365,5 @@ per-band <5 % CPU all 0.985-0.988, seam 0.996-0.997; CUDA all 0.964 completeness
   64 and the thread count are read from the previous pass.
 - `GapInterpolation` does not cross the poles; the rows next to the poles stay unestimated.
 - `Scene::EstimatePointCloudNormals` (`SceneGeometry.cpp`): the columns of a panorama wrap through a margin,
-  the rows do not. A view whose patch crosses a pole row is not a point's target and scores the largest
-  residual otherwise; a point whose every view has its patch cross a pole row stays unrefined.
+  the rows do not. A view whose patch crosses a pole row is not chosen as a point's target, and as a neighbor it scores the largest
+  residual; a point whose every view has its patch cross a pole row stays unrefined.
