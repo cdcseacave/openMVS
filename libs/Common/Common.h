@@ -78,7 +78,9 @@ namespace SEACAVE { extern GENERAL_API int g_nVerbosityLevel; }
 #define LOG_ERR() GET_LOG() //or std::cerr
 
 
-#ifdef PRINT_ASSERT_MSG
+// a failed assertion is reported on the log's stream; a headless Debug build keeps the report of
+// Config.h, on stderr, which the test runners capture
+#if defined(PRINT_ASSERT_MSG) && !defined(_HEADLESS_DEBUG)
 #undef PRINT_ASSERT_MSG
 #define PRINT_ASSERT_MSG(exp, ...) {std::cout << SEACAVE::PrintMessageToString("ASSERTION FAILED at " __FILE__ ":" TOSTRING(__LINE__) ": (" #exp ") ", ##__VA_ARGS__) << std::endl;}
 #endif
