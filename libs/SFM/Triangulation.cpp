@@ -260,6 +260,9 @@ unsigned SFM::TriangulateTracks(
 			continue;
 		}
 		if (track.GetNumPosedObservations(scene.images) < minInliers) {
+			// the inliers the track still counts are from before its images lost their poses: its
+			// inlier observations must all be posed, as the readers of Track::begin()..end() assume
+			track.numInliers = 0;
 			++numInvalids;
 			continue;
 		}
