@@ -21,7 +21,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 Each app is a standalone executable for specific pipeline stages:
 
 **SFM Stage:**
-- `CreateStructure`: Initialize SFM scene from image metadata and camera parameters
+- `CreateStructure`: Run the whole SFM pipeline on images (features, matching, view-graph filtering, reconstruction, final adjustment) and save the scene, optionally exporting an `.mvs`
 
 **MVS Stage:**
 - `DensifyPointCloud`: Dense reconstruction from sparse SFM points
@@ -150,10 +150,10 @@ image.Save(fileName);  // saves via OpenCV with correct format
 
 ### Headless Debug Mode (`_HEADLESS_DEBUG`) — permanent rule
 - **Every Debug build that an agent runs or tests must define `_HEADLESS_DEBUG`.** Without it a failed `ASSERT` goes to `_CrtDbgReport`: a modal "Microsoft Visual C++ Runtime Library" dialog when a console is attached (the process looks hung, the user has to click it away), or a silent `abort()` (exit code 3, nothing in the `.log`) when stdout is redirected — either way the assertion text is lost. With it the assertion prints `[ASSERT] file:line: expression` to **stderr** and execution continues, so capture stderr (`2> err.txt`) when running Debug binaries.
-- Build flag: `cmake -DOpenMVS_HEADLESS_DEBUG=ON` — controlled via CMake OPTION at CMakeLists.txt:45. It lands in `ConfigLocal.h` for every configuration of that build tree (and stops the apps redirecting cout/cerr), so in a tree that also hosts benchmark RelWithDebInfo binaries define it for the Debug configuration only: append `/D_HEADLESS_DEBUG` to `CMAKE_CXX_FLAGS_DEBUG` and `-D_HEADLESS_DEBUG` (inside `-Xcompiler`) to `CMAKE_CUDA_FLAGS_DEBUG` in that tree's CMake cache and re-run `cmake`.
-- Gating: `ConfigLocal.h.in` template line 71 expands `#cmakedefine _HEADLESS_DEBUG` when the CMake variable is ON
+- Build flag: `cmake -DOpenMVS_HEADLESS_DEBUG=ON` — controlled by the `OpenMVS_HEADLESS_DEBUG` OPTION in the top-level CMakeLists.txt. It lands in `ConfigLocal.h` for every configuration of that build tree (and stops the apps redirecting cout/cerr), so in a tree that also hosts benchmark RelWithDebInfo binaries define it for the Debug configuration only: append `/D_HEADLESS_DEBUG` to `CMAKE_CXX_FLAGS_DEBUG` and `-D_HEADLESS_DEBUG` (inside `-Xcompiler`) to `CMAKE_CUDA_FLAGS_DEBUG` in that tree's CMake cache and re-run `cmake`.
+- Gating: the `build/Templates/ConfigLocal.h.in` template expands `#cmakedefine _HEADLESS_DEBUG` when the CMake variable is ON
 - Effect: prints `[ASSERT]` to stderr and continues (no modal dialogs, no `_CrtDbgBreak()`); `LogConsole::Open()` short-circuits to leave stdout/stderr on inherited terminal
-- Implementation: `Config.h` lines 277–284 redefine `PRINT_ASSERT_MSG` macro and define `_ASSERT_BREAK()` empty; `Config.h` lines 294–300 skip `_CrtDbgReport()` modal when flag is set; `Log.cpp` line 272 short-circuits redirection
+- Implementation: the `#ifdef _HEADLESS_DEBUG` block in `libs/Common/Config.h` redefines the `PRINT_ASSERT_MSG` macro and defines `_ASSERT_BREAK()` empty; the `_HEADLESS_DEBUG` branch of the `_MSC_VER` `ASSERT` definitions in `Config.h` skips the `_CrtDbgReport()` modal; `LogConsole::Open()` and `LogConsole::Close()` in `libs/Common/Log.cpp` short-circuit the redirection
 - Use case: CI/test runners capture all invariant failures in one pass without blocking on popups
 - Production builds (flag OFF): zero code change — byte-identical to baseline
 
@@ -215,7 +215,7 @@ window.Run(scene) →
 ## Pipeline Overview
 
 The typical photogrammetry workflow:
-1. **SFM Stage**: Feature extraction → Pair matching → Bundle adjustment → Global alignment/scale averaging
+1. **SFM Stage**: Import and cameras → Feature extraction → Pair selection and matching (SIFT or dense matcher) → Pair verification and lens fit → Pair weighting, triplet scoring and contradiction cut → Clustering into blocks → Star initialization and incremental resection per block → Merge of the blocks → Final bundle adjustment and resection of leftover images (stage-by-stage reference: `docs/design/SfMPipeline.md`)
 2. **MVS Stage**: Dense point cloud generation → Mesh reconstruction → Mesh refinement → Texturing → Viewer visualization
 
 ## Testing & Debugging

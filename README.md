@@ -18,6 +18,10 @@ See the complete [documentation](https://github.com/cdcseacave/openMVS/wiki) on 
 See the [building](https://github.com/cdcseacave/openMVS/wiki/Building) wiki page. Windows, Ubuntu and MacOS x64 continuous integration status [![Continuous Integration](https://github.com/cdcseacave/openMVS/actions/workflows/continuous_integration.yml/badge.svg)](https://github.com/cdcseacave/openMVS/actions/workflows/continuous_integration.yml)
 Automatic Windows x64 binary builds can be found for each commit on its Artifacts page.
 
+## Structure-from-Motion
+
+The library also contains its own Structure-from-Motion stage (`CreateStructure`, `libs/SFM`), so images alone are enough as input: it extracts and matches features, recovers the camera poses and the sparse point-cloud, and can export the result as an OpenMVS scene. See `docs/design/SfMPipeline.md` for the stages and their options.
+
 ## Example
 
 See the usage [example](https://github.com/cdcseacave/openMVS/wiki/Usage) wiki page.

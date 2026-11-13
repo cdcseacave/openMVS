@@ -2,6 +2,8 @@
 
 The SFM (Structure from Motion) library provides complete photogrammetric reconstruction from images or video. It takes a collection of images, finds feature correspondences, estimates camera poses, and produces a sparse 3D point cloud -- the input that the MVS library needs for dense reconstruction.
 
+The stage-by-stage reference (order, options, option combinations, saved-scene resume) is `docs/design/SfMPipeline.md`.
+
 ## What You Need to Know First
 
 ### SFM vs MVS: two halves of a pipeline
@@ -16,14 +18,13 @@ Images → [SFM: poses + sparse points] → [MVS: dense mesh + texture]
 
 These are **different classes in different namespaces**. `SFM::Scene` stores feature descriptors, image pairs, and tracks. `MVS::Scene` stores depth maps, meshes, and textures. At the handoff point, `SFM::Scene` is converted to `MVS::Scene` via the export functions in `InterfaceMVS.h`.
 
-### Four reconstruction strategies
+### Three solvers
 
-The library supports four approaches, each suited to different scenarios:
+`Scene::Reconstruct` is the entry point: it imports, extracts features, matches, filters the view graph, then calls one of three solvers and runs the shared tail. There is no stand-alone incremental solver; incremental registration runs inside each block of the hierarchical one.
 
-1. **Incremental** (`Scene::Reconstruct`): Registers images one at a time. Most robust, handles difficult cases, but O(N) bundle adjustments.
-2. **Hierarchical** (`Scene::ReconstructHierarchical`): Splits into clusters, reconstructs each independently, then merges. Best for large datasets (1000+ images).
-3. **Global** (`Scene::ReconstructGlobal`): Solves all rotations and translations simultaneously. Fastest when it works, but less robust to outliers.
-4. **Known-poses finetune** (`Scene::ReconstructKnownPoses`): Starts from camera poses that are already known (AR capture, drone flight log, another SfM), triangulates with them and refines. Not a way to reconstruct an unknown scene -- it *requires* the poses.
+1. **Hierarchical** (`Scene::ReconstructHierarchical`, the default): Splits into clusters, reconstructs each independently by star initialization and incremental resection, then merges. Handles small scenes (one cluster) and large ones (1000+ images).
+2. **Global** (`Scene::ReconstructGlobal`): Solves all rotations and translations simultaneously. Fastest when it works, but less robust to outliers.
+3. **Known-poses finetune** (`Scene::ReconstructKnownPoses`): Starts from camera poses that are already known (AR capture, drone flight log, another SfM), triangulates with them and refines. Not a way to reconstruct an unknown scene -- it *requires* the poses.
 
 ## Architecture
 
@@ -100,7 +101,7 @@ A **near-duplicate** pair -- two frames from almost the same spot, covering near
 
 ## The Reconstruction Pipeline
 
-All reconstruction workflows share a common front-end that extracts features, matches images, and builds tracks. They diverge after that: the **hierarchical** workflow clusters the scene and uses incremental reconstruction per cluster, the **global** workflow solves all poses simultaneously, and the **known-poses** workflow skips pose estimation entirely and refines the poses it was given.
+All reconstruction workflows share a common front-end that extracts features, matches images, verifies the pairs and filters the view graph. They diverge after that: the **hierarchical** workflow clusters the scene and uses incremental reconstruction per cluster, the **global** workflow solves all poses simultaneously, and the **known-poses** workflow skips pose estimation entirely and refines the poses it was given.
 
 ```
 Input: Images (or video keyframes)          [+ optional poses file]
@@ -109,15 +110,15 @@ Input: Images (or video keyframes)          [+ optional poses file]
 ┌─────────────────────────────────────────────────────────┐
 │                    COMMON FRONT-END                      │
 │                                                          │
-│  1. Feature Extraction (AKAZE/ORB/SIFT)                 │
+│  1. Feature Extraction (SiftGPU default; AKAZE/ORB/SIFT)│
 │  2. Feature Matching (Vocabulary/Exhaustive/             │
 │                       Sequential/Known-Poses)            │
 │  3. Geometric Verification (RANSAC: E/F/H matrices)      │
 │  4. View Graph Calibration (focal length estimation)     │
 │  4b. Lens fit from pairs (k1, k2 per camera)            │
 │  4c. Planar twin switch (RoMa2 pairs on one plane)      │
-│  5. Track Building (union-find on matches)               │
-│  6. Track & Image Filtering (outliers, weak views)       │
+│  5. Pair weighting, camera-triplet scoring, and the      │
+│     contradiction cut (view-graph filtering)             │
 │                                                          │
 └──────────────────────┬──────────────────────────────────┘
                        │
@@ -165,10 +166,10 @@ These steps are shared by all reconstruction workflows.
 #### 1. Feature Extraction (`FeaturesExtractor.h`)
 
 Supported detectors:
-- **AKAZE** (default): Fast binary descriptors, good for most cases
+- **AKAZE**: Fast binary descriptors (the `FeatureExtractionConfig` default)
 - **ORB**: Lighter weight, binary descriptors
 - **SIFT**: Highest quality, float descriptors (slower)
-- **SiftGPU**: CUDA-accelerated SIFT (optional)
+- **SiftGPU**: CUDA-accelerated SIFT (optional; the `CreateStructure --detector-type` default)
 
 The 3x3 grid extraction ensures features aren't concentrated in textured areas while ignoring featureless regions. Each cell targets up to 3000 features, giving ~27k features per image.
 
@@ -187,11 +188,11 @@ Five matching strategies:
 
   Note that the score deliberately has **no** camera-center cheirality (mutual-frustum) test: in an orbit capture the neighboring camera centers lie tangentially to the view direction, and in a nadir aerial capture perpendicularly to it, so the strongest overlapping pairs are exactly the ones such a test would discard. Baseline is a ranking preference, not a rejection criterion -- the distance at which two views still overlap varies by orders of magnitude between close-range and aerial captures.
 
-**Verification feedback** (VOCABULARY and KNOWN_POSES, on by default when `maxPairsPerImage >= 10`, disable with `--match-verification-feedback 0`): matching runs in two rounds. The first round collects and matches candidates from *uninflated* per-image lists at 80% of the target (single-round matching inflates the lists to compensate the strictness of mutual agreement; here the second round does that job instead); the remaining budget — everything up to `maxPairsPerImage*N/2` total attempted pairs, including the part the strict mutual-agreement rule leaves unspent — is then re-invested in pairs suggested by the geometrically *verified* matches of the first round: KNOWN_POSES closes the triangles of the verified pair graph (two images sharing verified neighbors most likely overlap too, ranked by the number of common neighbors — this recovers true pairs the view-angle gate or the baseline preference mis-ranked), while VOCABULARY propagates each verified pair to the top-5 retrieval candidates of its endpoints (the retrieval analogue of triangle closing). Images left with the weakest verified connectivity refill any leftover budget from their next best-ranked first-round candidates (2 pairs per image).
+**Verification feedback** (VOCABULARY, RETRIEVAL and KNOWN_POSES, on by default when `maxPairsPerImage >= 10`, disable with `--match-verification-feedback 0`): matching runs in two rounds. The first round collects and matches candidates from *uninflated* per-image lists at 80% of the target (single-round matching inflates the lists to compensate the strictness of mutual agreement; here the second round does that job instead); the remaining budget — everything up to `maxPairsPerImage*N/2` total attempted pairs, including the part the strict mutual-agreement rule leaves unspent — is then re-invested in pairs suggested by the geometrically *verified* matches of the first round: KNOWN_POSES closes the triangles of the verified pair graph (two images sharing verified neighbors most likely overlap too, ranked by the number of common neighbors — this recovers true pairs the view-angle gate or the baseline preference mis-ranked), while VOCABULARY and RETRIEVAL propagate each verified pair to the top-5 retrieval candidates of its endpoints (the retrieval analogue of triangle closing). Images left with the weakest verified connectivity refill any leftover budget from their next best-ranked first-round candidates (2 pairs per image).
 
 The matching pipeline:
 1. **Descriptor matching**: FLANN (LSH for binary, KDTree for float) or brute-force
-2. **Lowe's ratio test**: Keep match only if best/second-best distance ratio < 0.8
+2. **Lowe's ratio test**: Keep match only if best/second-best distance ratio below `matchRatio` (0.9 for AKAZE/ORB, 0.8 for SIFT and SiftGPU)
 3. **Cross-check** (optional): Both images must agree on the match
 4. **Geometric verification**: RANSAC to estimate E (calibrated) or F (uncalibrated) matrix
 5. **Cheirality check**: Points must be in front of both cameras
@@ -259,7 +260,7 @@ Input: Images + matched pairs (from common front-end)
 │    │    Select most-connected reference view       │     │
 │    │    Register multiple views simultaneously     │     │
 │    │    Triangulate initial points                 │     │
-│    │    Estimate global scale from median depths   │     │
+│    │    Estimate global scale from pair scales        │     │
 │    └───────────────────┬───────────────────────────┘     │
 │                        ▼                                 │
 │    ┌───────────────────────────────────────────────┐     │
@@ -311,8 +312,9 @@ Input: Images + matched pairs (from common front-end)
   │
   ▼
 ┌─────────────────────────────────────────────────────────┐
-│ 4. Final Bundle Adjustment (optional)                    │
-│    Global BA on the merged scene                         │
+│ 4. Shared tail of Scene::Reconstruct (always runs)       │
+│    Track filter, one global BA on the merged scene,      │
+│    weak-image filter, resection of leftover images       │
 │    Optional GPS alignment (SimilarityTransform.h)        │
 └─────────────────────────────────────────────────────────┘
   │
@@ -322,7 +324,7 @@ Output: Calibrated poses + sparse point cloud
 
 **Key implementation details**:
 
-- **Scene Clustering** (`SceneCluster.h`): Builds a covisibility graph (nodes = images, edges = inlier match counts), then uses bottom-up aggregative clustering. It merges the highest-weight edge at each step, aiming for `targetViewsPerCluster` (two thirds of `maxViewsPerCluster`, default 150) and never crossing the ceiling itself. Six refinement passes then merge small clusters, move boundary images for better modularity and balance, split disconnected or thin-waisted components, and merge away any cluster the merge could not otherwise register against; a cluster still under the floor (not a standalone community) goes to the pool.
+- **Scene Clustering** (`SceneCluster.h`): Builds a covisibility graph (nodes = images, edges = inlier match counts), then uses bottom-up aggregative clustering. It merges the highest-weight edge at each step, aiming for `targetViewsPerCluster` (two thirds of `maxViewsPerCluster`, default 133) and never crossing the ceiling itself. Six refinement passes then merge small clusters, move boundary images for better modularity and balance, split disconnected or thin-waisted components, and merge away any cluster the merge could not otherwise register against; a cluster still under the floor (not a standalone community) goes to the pool.
 
 - **Pool resection** (`SceneBlocks.h`): after the blocks are reconstructed and before the merge, every image a block could not register goes to a common pool with the images the clustering left in no block; each pool image is tried by the block its links (verified pairs with a relative pose) to registered images weigh most on (the sum the resection orders its candidates by), with that block's ordinary resection, in passes and rounds until a round registers nothing.
 
@@ -383,8 +385,9 @@ Input: Images + matched pairs (from common front-end)
   │
   ▼
 ┌─────────────────────────────────────────────────────────┐
-│ 4. Optional Bundle Adjustment                            │
-│    Refine all poses + points + intrinsics jointly         │
+│ 4. Two Bundle Adjustments (always run)                   │
+│    12 iterations with rotations fixed, then 25 with      │
+│    poses + points free; intrinsics per --refine-intrinsics│
 │    Optional GPS alignment                                │
 └─────────────────────────────────────────────────────────┘
   │
@@ -558,7 +561,7 @@ another layout is regenerated by re-running the matching stage from the images
 
 ```cpp
 KeyframeConfig config;
-config.detectorType = "AKAZE";
+config.detectorType = FeatureType::AKAZE;
 config.overlapThreshold = 0.8f;     // 80% overlap between keyframes
 
 Scene scene;
@@ -568,16 +571,10 @@ KeyframeExtractor::ExtractFromVideo("video.mp4", config, scene);
 ### Full Reconstruction
 
 ```cpp
+// One call runs import, features, matching, view-graph filtering, the solver and the tail
+ReconstructionConfig config;           // defaults: hierarchical solver, vocabulary matching
 Scene scene;
-// ... load images, extract features ...
-
-// Match image pairs (builds the vocabulary tree on demand in VOCABULARY mode)
-scene.MatchPairs(matchConfig);
-
-// Build tracks and reconstruct
-BuildTracks(scene);
-StarInitializer().Initialize(scene);
-// ... incremental resection + BA ...
+scene.Reconstruct("images_folder", config);
 
 // Export to MVS format
 SFM::ExportMVS("scene.mvs", scene);
@@ -629,13 +626,15 @@ libs/SFM/
 ├── Scene.h/cpp                         # Central container
 │
 │ # Feature pipeline
-├── FeaturesExtractor.h/cpp             # AKAZE/ORB/SIFT extraction
+├── FeaturesExtractor.h/cpp             # AKAZE/ORB/SIFT/SiftGPU extraction
 ├── VocabularyTree.h/cpp                # Visual vocabulary for retrieval
 ├── GlobalDescriptors.h/cpp             # RoMa v2 global-descriptor pooling + cosine retrieval index
 ├── PairsMatcher.h/cpp                  # Matching strategies
 ├── MatchGeometric.h/cpp                # RANSAC geometric verification
 ├── OnnxRuntime.h/cpp                   # ONNX Runtime session/tensor wrapper (CUDA/CoreML/DML/CPU)
 ├── RoMa2Matcher.h/cpp                  # RoMa v2 ONNX graphs: describe + coarse-match sessions
+├── DenseMatcher.h/cpp                  # Dense matcher interface (RoMa v2 or FlexGlue)
+├── FlexGlueMatcher.h/cpp               # FlexGlue ONNX graphs: describe + match sessions
 ├── MatchROMA2.h/cpp                    # In-process RoMa v2 describe pass, dense-matching pass, config
 ├── ROMA2Warp.h/cpp                     # RoMa v2 warp coordinates, keypoint tracking, warp draws, dense append
 ├── PairsWeighting.h/cpp                # Composite pair quality scores
@@ -658,10 +657,14 @@ libs/SFM/
 ├── SceneBlocks.h/cpp                   # The blocks and the pool: extraction, pool resection
 ├── GlobalAlignment.h/cpp               # Block pair readings, block-graph averaging, merging
 ├── GlobalRotationAveraging.h/cpp       # SO(3) rotation averaging; the view graph's contradiction cut
+├── RobustAveraging.h                   # Robust (Geman-McClure) averaging shared by the global estimators
 ├── GlobalScaleAveraging.h/cpp          # Log-space scale averaging
 ├── GlobalTranslationAveraging.h/cpp    # Linear translation solving
 ├── GlobalPositioning.h/cpp             # Translation refinement
 ├── SimilarityTransform.h/cpp           # 7-DOF transform + GPS / prior-pose alignment
+│
+│ # Spherical images
+├── SphereCubeMap.h/cpp                 # Equirectangular to tangent cube-map faces
 │
 │ # Video support
 ├── KeyframeExtractor.h/cpp             # Keyframe selection from video
