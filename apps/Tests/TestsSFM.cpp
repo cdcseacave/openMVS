@@ -732,6 +732,59 @@ bool CameraTypeImportTest()
 }
 /*----------------------------------------------------------------*/
 
+// A spherical import of an image that is not 2:1 is a wrong input file: Image::LoadMetadata logs an error
+// naming the image and fails, and Scene::Import treats it as it treats any image whose metadata fails (the
+// image stays in the scene with no camera, the others import) instead of reaching the SphericalCamera
+// constructor's contract. The fixtures are two 64x32 JPEGs and one 64x40 JPEG; forced spherical, the 64x40
+// image holds no camera and the two 2:1 ones hold a spherical camera; the same three imported as pinholes
+// (the 64x40 is a legitimate photo then) all hold a camera. The image-level failure is checked directly too
+bool SphericalImageSizeImportTest()
+{
+	TD_TIMER_START();
+	const ScopedTempDir tmpDir(_T("SphericalImageSizeImportTest"));
+	if (!tmpDir.IsValid())
+		return false;
+	for (unsigned i = 0; i < 3; ++i) {
+		const int height = i < 2 ? 32 : 40;
+		const cv::Mat grey(height, 64, CV_8UC3, cv::Scalar::all(96 + 32 * i));
+		if (!cv::imwrite(tmpDir(String::FormatString("pano%u.jpg", i)), grey)) {
+			VERBOSE("SphericalImageSizeImportTest FAILED: cannot write the fixture images");
+			return false;
+		}
+	}
+	{
+		Image image;
+		image.fileName = tmpDir("pano2.jpg");
+		if (image.LoadMetadata(1.2f, CameraType::SPHERICAL) || image.HasCamera()) {
+			VERBOSE("SphericalImageSizeImportTest FAILED: LoadMetadata of a 64x40 image forced spherical did not fail");
+			return false;
+		}
+	}
+	for (const CameraType forced : {CameraType::SPHERICAL, CameraType::PINHOLE}) {
+		Scene scene;
+		ImportConfig importCfg;
+		importCfg.cameraType = forced;
+		if (!scene.Import(tmpDir.Path(), importCfg) || scene.images.size() != 3) {
+			VERBOSE("SphericalImageSizeImportTest FAILED: the import (camera type %s) did not keep the three images",
+				CameraTypeToString(forced).c_str());
+			return false;
+		}
+		for (const Image& image : scene.images) {
+			const bool bad = forced == CameraType::SPHERICAL && Util::getFileName(image.fileName) == "pano2";
+			if (image.HasCamera() == bad || (image.HasCamera() && image.GetCameraType() != forced)) {
+				VERBOSE("SphericalImageSizeImportTest FAILED: camera type %s: '%s' holds %s camera, expected %s",
+					CameraTypeToString(forced).c_str(), Util::getFileName(image.fileName).c_str(),
+					image.HasCamera() ? "a" : "no", bad ? "none" : "one of the forced type");
+				return false;
+			}
+		}
+	}
+	VERBOSE("SphericalImageSizeImportTest PASSED: a 64x40 image forced spherical fails with an error and holds no camera, the 2:1 images import, and as a pinhole it imports (%s)",
+		TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
 
 // Pose-frame detection: a frames.json declares neither the camera axes it uses nor, for an
 // EXIF-rotated image, how much in-plane rotation separates its camera frame from the working

@@ -385,6 +385,8 @@ bool ExifFocalUntrustedTest();
 // The camera model an import gives every image: read from the metadata by default, forced spherical or
 // pinhole by ImportConfig::cameraType (an equirectangular panorama that carries no projection tag)
 bool CameraTypeImportTest();
+// A spherical import of an image that is not 2:1 logs an error naming the image and leaves it without a camera, like any image whose metadata fails.
+bool SphericalImageSizeImportTest();
 
 // Pose-frame detection: recover both the camera-axes convention and, for EXIF-rotated images,
 // the in-plane rotation of an imported frames.json from the matched pairs
