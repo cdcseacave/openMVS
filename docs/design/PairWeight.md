@@ -45,8 +45,10 @@ geometric mean, so neither weak term alone annihilates a pair of hundreds of inl
 | `ClusterConfig::minPairWeight` | 0.9 | the edges of the clustering graph and its interface sums (`SceneCluster`, >=), and the tracks the clustering measures its seams on when the scene arrives without tracks |
 | `ViewGraphCalibratorConfig::minPairWeight` | 0.9 | the pairs that give a focal residual to the view-graph calibration (>=; it runs during matching, for pinhole cameras left untrusted after the lens fit) |
 
-The track/cut bar is 1.22 and not 0.9: on Outdoor_004 the pairs a bar of 0.9 adds are the ones
-that put a block wrong, and on the normal-camera captures they buy nothing (see Validation). The
+The track/cut bar is 1.22. A bar of 0.9, the value of the other two, is the more aggressive
+setting: it lets more pairs form tracks and enter the cut. On the normal-camera captures the two
+values give the same results; on the panorama capture Outdoor_004 the pairs 0.9 adds are the ones
+that put a block wrong (see Validation). The
 rotation averaging that reads `W` (the cut) scales the weights to a fixed median inside the
 estimator (`GlobalRotationEstimatorOptions::weightMedian`), so it reads only their ratios.
 
@@ -100,7 +102,7 @@ that spot follow it (78 images right in their own blocks, wrong in the model). T
 - That squared weight for the tracks while the cut keeps the previous one: two weights for one
   quantity, no gain (Palace 0.8009).
 - The cut weighted without the triplet score: loses Palace's 78 right junction pairs.
-- A track/cut bar of 0.9: about 100 wrong images on Outdoor_004, no gain elsewhere.
+- A track/cut bar of 0.9 as the default (it stays the more aggressive setting): about 100 wrong images on Outdoor_004, no gain elsewhere.
 - The inlier-ratio boost on the connectivity: rank correlation 0.05 with the references' ranking.
 - The triplet score raised to a power in the cut: no more false pairs removed.
 

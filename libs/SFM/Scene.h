@@ -101,7 +101,7 @@ struct SFM_API ReconstructionConfig {
 	ViewGraphCalibratorConfig viewgraphCfg;
 
 	// Tracks parameters
-	float minPairWeight{1.22f}; // minimum composite weight for a pair to form tracks and to enter the contradiction cut's averaging (0 = disabled); not 0.9 like the other bars: at 0.9 the panorama pairs it adds put ~100 images wrong on Outdoor_004 and buy nothing elsewhere (docs/design/PairWeight.md)
+	float minPairWeight{1.22f}; // minimum composite weight for a pair to form tracks and to enter the contradiction cut's averaging (0 = disabled); 0.9, the value of the other two bars, is the more aggressive setting: it lets more pairs in, equal on the normal-camera captures and ~100 images wrong on the panorama capture Outdoor_004 (docs/design/PairWeight.md)
 	TrackConflictConfig trackConflictCfg; // how a component holding one image twice is settled
 	float maxReprojError{4.f}; // Reprojection error for coarse triangulation and filtering
 	float maxFineReprojError{2.f}; // Reprojection error for fine triangulation and filtering
