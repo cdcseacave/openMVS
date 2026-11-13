@@ -38,13 +38,30 @@
 
 namespace SFM {
 
-// FlexGlue (a DINOv3 ConvNeXt-B backbone and a transformer matcher) as a DenseMatcher, from the three graphs the export
-// script writes (docs/design/DenseMatcher.md): flexglue_descriptor.onnx (the image squashed to 512 x 512 -> the stride-8
-// feature map, 256 x 64 x 64, and the unit 256-D retrieval descriptor, that map GeM-pooled), flexglue_dense.onnx (two feature
-// maps -> both warps on a 128 x 128 grid with their confidences gated by FlexGlue's own checks, the covisibility score "do
-// the two images show the same place", and the pair-conditioned features pooled to 16 x 16) and flexglue_pose_h0.onnx (those
-// pooled features and the two cameras -> the coarse relative rotation and baseline direction).
-// All sessions run on the provider the descriptor got. Same threading and lifetime rules as RoMa2Onnx.
+// The manifest of a FlexGlue model bundle, flexglue_<setting>.json (docs/FlexGlueModel.md): the two graph files and the sizes the
+// graphs are built for, checked against the shapes this build reads
+struct SFM_API FlexGlueManifest
+{
+	String setting;          // preset name (one today: base)
+	int imageSize = 0;       // S: the descriptor graph takes S x S images
+	int warpSize = 0;        // the match graph's warp grid side
+	unsigned retrievalDim = 0; // the descriptor graph's retrieval output
+	String descriptorFile;   // descriptor graph: image -> features, retrieval
+	String matchFile;        // match graph: two feature maps -> warps, confidences, covisibility, the H1 pose
+
+	// Parse the manifest; false with a message naming the file and the key on a missing file, another format version or model,
+	// a missing or ill-typed key, or a bundle without the pose head
+	bool Load(const String& fileName);
+};
+/*----------------------------------------------------------------*/
+
+// FlexGlue (a DINOv3 ConvNeXt-B backbone and a transformer matcher) as a DenseMatcher, from the model bundle the export script writes
+// (docs/design/DenseMatcher.md): the manifest flexglue_<setting>.json and its two graphs, the descriptor graph (the image squashed to
+// 512 x 512 -> the stride-8 feature map, 256 x 64 x 64, and the unit 256-D retrieval descriptor, that map GeM-pooled) and the match graph
+// (two feature maps -> both warps on a 128 x 128 grid with their confidences gated by FlexGlue's own checks, the covisibility score
+// "do the two images show the same place", and the H1 pose head's coarse relative rotation and baseline direction, read from the
+// pair's layer-9 features in the same pass, with no camera).
+// Both sessions run on the provider the descriptor got. Same threading and lifetime rules as RoMa2Onnx.
 #ifdef _USE_ONNXRUNTIME
 class SFM_API FlexGlueMatcher : public DenseMatcher
 {
@@ -52,14 +69,13 @@ public:
 	static constexpr int IMAGE_SIZE = 512;           // the descriptor's input side
 	static constexpr int FEATURE_CHANNELS = 256;     // feature map: FEATURE_CHANNELS x GRID x GRID
 	static constexpr int GRID = IMAGE_SIZE / 8;
-	static constexpr int WARP_GRID = IMAGE_SIZE / 4; // the dense graph's grid (coarse stride 4)
+	static constexpr int WARP_GRID = IMAGE_SIZE / 4; // the match graph's grid (coarse stride 4)
 	static constexpr int RETRIEVAL_SIZE = 256;       // the unit global descriptor: the feature map GeM-pooled (p = 3)
-	static constexpr int POOLED_CHANNELS = 512;      // the pose head's input: POOLED_CHANNELS x POOLED_GRID x POOLED_GRID per view
-	static constexpr int POOLED_GRID = 16;
 
-	// Load the graphs of modelDir on the provider ("auto"|"cuda"|"coreml"|"dml"|"cpu"); `setting` is unused (one preset)
+	// Load the bundle of modelDir (its manifest flexglue_<setting>.json and the graphs it names) on the provider
+	// ("auto"|"cuda"|"coreml"|"dml"|"cpu")
 	bool Load(const String& modelDir, const String& setting, const String& provider) override;
-	bool IsLoaded() const override { return descriptor.IsLoaded() && dense.IsLoaded() && pose.IsLoaded(); }
+	bool IsLoaded() const override { return descriptor.IsLoaded() && match.IsLoaded(); }
 	String ProviderName() const override;
 
 	int ImageSize() const override { return IMAGE_SIZE; }
@@ -71,15 +87,13 @@ public:
 	OrtTensor MakeCode() override;
 	bool DescribeImage(const float* planarRgb, OrtTensor& features, std::vector<float>& retrieval) override;
 	bool MatchPair(const OrtTensor& featuresA, const OrtTensor& featuresB, const PairInput& input, PairOutput& out) override;
-	bool NeedsIntrinsics() const override { return true; }
+	bool NeedsIntrinsics() const override { return false; }
 
 private:
-	OnnxModel descriptor, dense, pose;
+	OnnxModel descriptor, match;
 	// host inputs and outputs of the graphs, allocated once by Load (one thread uses them)
 	OrtTensor image, retrieval;
-	OrtTensor imageSize[2], warp[2], confidence[2], covisibility;
-	OrtTensor pooled[2];                  // dense -> pose, on the device when the provider keeps tensors there
-	OrtTensor intrinsics[2], rotation, direction;
+	OrtTensor imageSize[2], warp[2], confidence[2], covisibility, rotation, direction;
 };
 #endif // _USE_ONNXRUNTIME
 /*----------------------------------------------------------------*/

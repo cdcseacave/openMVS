@@ -1,0 +1,18 @@
+# SHA256 checksums for the published FlexGlue ONNX model, verified by
+# scripts/fetch_model.py --model flexglue --setting <setting> --precision <precision> --dest <dir>.
+#
+# Same format and rules as models/roma2/checksums.txt: one entry per line, "<sha256>  <relative/path>"
+# (two spaces, sha256sum-compatible), '#' starts a comment, blank lines are ignored. Paths are the
+# *published* paths -- on the Hugging Face repo and on the GitHub-release mirror -- beginning with
+# "<setting>-<precision>/" ("base-fp16": the match graph runs its transformer layers in float16, the
+# descriptor graph and every head in float32). The fetch writes the files flat into --dest, the folder
+# FlexGlueMatcher::Load reads (flexglue_<setting>.json and the two graphs it names).
+#
+# Regenerate it from the export run (the bundle's export.log names the script) whenever a new bundle is
+# published, and replace every entry below in the same commit.
+
+3e021cb8727d1bc25ad9f0578cdf705beb1dee7494d2db4eb0b1aef421b1ca3f  base-fp16/flexglue_base.json
+45f668d4287ee6bdd5e9714d22d8e594b5eea19db4fe6f4c07ac245bce4ba1e7  base-fp16/flexglue_base_descriptor_fp32.onnx
+11f1c39249519d4674f046ad380fa63d3d8eb1a4701556f797ccbfad43d68057  base-fp16/flexglue_base_descriptor_fp32.export.json
+de9a32948c69949b651db8bb0b410537375fcf31e6727f363606a8274631a2c6  base-fp16/flexglue_base_match_fp16.onnx
+b3b8791ec4de43f4f3fb3649764516ea63d9e10a283318ac59f9ca1ba7f646f8  base-fp16/flexglue_base_match_fp16.export.json

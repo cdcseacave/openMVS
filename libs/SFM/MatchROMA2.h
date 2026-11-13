@@ -123,28 +123,24 @@ struct SFM_API ROMA2Config {
 	unsigned slotBudget = 64;      // image descriptors kept resident on the device
 	bool useGPU = true;            // allow the GPU execution providers
 
-	// Return the folder holding the selected matcher's exported models: the explicit setting if given, else the
-	// OPENMVS_ROMA2_MODEL_PATH environment variable if set, else the install prefix's own copy
-	// (what `cmake --build . --target roma2-model` fetched) if that is actually present on disk,
-	// else empty
+	// Return the folder holding the selected matcher's model bundle, the same way for every matcher: its explicit setting
+	// (modelPath for roma2, flexglueModelPath for flexglue) if given, else the OPENMVS_<MATCHER>_MODEL_PATH environment variable
+	// if set, else the install prefix's own copy (what `cmake --build . --target <matcher>-model` fetched into
+	// share/openMVS/<matcher>) if that is actually present on disk, else empty
 	inline String ResolveModelPath() const {
-		if (matcher == "flexglue") {
-			if (!flexglueModelPath.empty())
-				return flexglueModelPath;
-			const char* const envFlexGluePath = getenv("OPENMVS_FLEXGLUE_MODEL_PATH");
-			return envFlexGluePath ? String(envFlexGluePath) : String();
-		}
-		if (!modelPath.empty())
-			return modelPath;
-		const char* const envModelPath = getenv("OPENMVS_ROMA2_MODEL_PATH");
+		ASSERT(matcher == "roma2" || matcher == "flexglue");
+		const String& explicitPath = matcher == "flexglue" ? flexglueModelPath : modelPath;
+		if (!explicitPath.empty())
+			return explicitPath;
+		const char* const envModelPath = getenv(matcher == "flexglue" ? "OPENMVS_FLEXGLUE_MODEL_PATH" : "OPENMVS_ROMA2_MODEL_PATH");
 		if (envModelPath)
 			return String(envModelPath);
-		#ifdef OPENMVS_ROMA2_MODEL_INSTALL_DIR
-		// last: what `cmake --build . --target roma2-model` fetched. Only when it is actually there --
-		// an uninstalled build must keep producing the "needs a model" error rather than a path that
-		// does not exist.
-		if (File::isFolder(OPENMVS_ROMA2_MODEL_INSTALL_DIR))
-			return String(OPENMVS_ROMA2_MODEL_INSTALL_DIR);
+		#ifdef OPENMVS_MODEL_INSTALL_DIR
+		// last: what the fetch target installed. Only when it is actually there -- an uninstalled build must keep producing
+		// the "needs a model" error rather than a path that does not exist.
+		const String installPath(String(OPENMVS_MODEL_INSTALL_DIR "/") + matcher);
+		if (File::isFolder(installPath))
+			return installPath;
 		#endif
 		return String();
 	}

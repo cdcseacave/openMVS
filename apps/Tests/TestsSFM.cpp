@@ -6148,109 +6148,122 @@ bool RoMa2ManifestVersionTest()
 	return true;
 }
 
-// ROMA2Config::ResolveModelPath precedence test: an explicit modelPath wins over everything
-// (even a set environment variable); with modelPath empty, $OPENMVS_ROMA2_MODEL_PATH wins; with
-// both absent, the result falls back to the install prefix's own copy
-// (OPENMVS_ROMA2_MODEL_INSTALL_DIR) when that directory actually exists on disk, else it is empty.
-// This is the precedence the whole --roma2 pipeline depends on -- it decides whether the CLI's own
-// "needs a model" error fires -- so it is checked here directly rather than only indirectly through
-// CreateStructure. The third case below must not create that directory, so it reads the same
-// File::isFolder check the implementation uses and asserts against whichever outcome is already
-// true on this machine.
+// FlexGlue manifest test: a manifest of format_version 1 naming its two graphs and the H1 pose head loads with its sizes; another
+// format version, another model, a missing key and another pose head are each rejected. Pure JSON parsing.
+bool FlexGlueManifestTest()
+{
+	const ScopedTempDir tmpDir(_T("FlexGlueManifestTest"));
+	if (!tmpDir.IsValid())
+		return false;
+	const auto WriteManifest = [&tmpDir](const String& fileName, int formatVersion, const char* model, const char* poseHead, bool bFiles) -> String {
+		const String path = tmpDir(fileName);
+		std::ofstream os(path.c_str());
+		os << "{\"format_version\":" << formatVersion << ",\"model\":\"" << model << "\",\"setting\":\"base\",\"image_size\":512,\"warp_size\":128,"
+		      "\"retrieval_recipes\":{\"features\":{\"dim\":256,\"gem_p\":3}},";
+		if (bFiles)
+			os << "\"files\":{\"descriptor\":\"d.onnx\",\"match\":\"m.onnx\"},";
+		os << "\"heads\":{\"covisibility\":{\"output\":\"covisibility\"},\"pose\":{\"name\":\"" << poseHead << "\"}}}";
+		return path;
+	};
+	FlexGlueManifest manifest;
+	if (!manifest.Load(WriteManifest(_T("flexglue_ok.json"), 1, "flexglue", "H1", true)) || manifest.setting != "base" || manifest.imageSize != 512 ||
+		manifest.warpSize != 128 || manifest.retrievalDim != 256 || manifest.descriptorFile != "d.onnx" || manifest.matchFile != "m.onnx") {
+		VERBOSE("FlexGlueManifestTest FAILED: a valid manifest did not load with its sizes and files");
+		return false;
+	}
+	const struct { const char* name; int version; const char* model; const char* head; bool bFiles; } bad[] = {
+		{"flexglue_v2.json", 2, "flexglue", "H1", true}, {"flexglue_roma.json", 1, "roma2", "H1", true},
+		{"flexglue_nofiles.json", 1, "flexglue", "H1", false}, {"flexglue_h0.json", 1, "flexglue", "H0", true}};
+	for (const auto& b : bad) {
+		FlexGlueManifest rejected;
+		if (rejected.Load(WriteManifest(b.name, b.version, b.model, b.head, b.bFiles))) {
+			VERBOSE("FlexGlueManifestTest FAILED: '%s' loaded, expected rejection", b.name);
+			return false;
+		}
+	}
+	VERBOSE("FlexGlueManifestTest PASSED");
+	return true;
+}
+
+// ROMA2Config::ResolveModelPath precedence test, for each matcher (roma2: modelPath and $OPENMVS_ROMA2_MODEL_PATH, flexglue:
+// flexglueModelPath and $OPENMVS_FLEXGLUE_MODEL_PATH): the explicit path wins over everything (even a set environment variable);
+// with it empty, the matcher's environment variable wins; with both absent, the result falls back to the install prefix's own
+// copy (OPENMVS_MODEL_INSTALL_DIR/<matcher>) when that directory actually exists on disk, else it is empty. And a matcher never
+// resolves to the other one's explicit path or environment variable. This is the precedence the whole --roma2 pipeline depends on
+// -- it decides whether the CLI's own "needs a model" error fires -- so it is checked here directly rather than only indirectly
+// through CreateStructure. The fallback case must not create that directory, so it reads the same File::isFolder check the
+// implementation uses and asserts against whichever outcome is already true on this machine.
 bool ResolveModelPathTest()
 {
-	// Save/restore OPENMVS_ROMA2_MODEL_PATH around this test: RoMa2OnnxParityTest and
-	// ROMA2ReconstructTest run right after it in the same process and read this same variable to
-	// decide whether to skip, so every exit path here must put the environment back exactly as
-	// it was found.
+	// Save/restore both variables around this test: the parity and reconstruct tests run right after it in the same process and
+	// read them to decide whether to skip, so every exit path here must put the environment back exactly as it was found.
 	struct EnvGuard {
+		const char* const name;
 		const bool hadPrev;
 		const String prevValue;
-		EnvGuard() : hadPrev(getenv("OPENMVS_ROMA2_MODEL_PATH") != NULL),
-		             prevValue(hadPrev ? getenv("OPENMVS_ROMA2_MODEL_PATH") : "") {}
+		explicit EnvGuard(const char* _name) : name(_name), hadPrev(getenv(_name) != NULL), prevValue(hadPrev ? getenv(_name) : "") {}
 		~EnvGuard() { Set(hadPrev ? prevValue.c_str() : NULL); }
-		static void Set(const char* value) {
+		void Set(const char* value) const {
 			#ifdef _MSC_VER
-			_putenv_s("OPENMVS_ROMA2_MODEL_PATH", value ? value : "");
+			_putenv_s(name, value ? value : "");
 			#else
 			if (value)
-				setenv("OPENMVS_ROMA2_MODEL_PATH", value, 1);
+				setenv(name, value, 1);
 			else
-				unsetenv("OPENMVS_ROMA2_MODEL_PATH");
+				unsetenv(name);
 			#endif
 		}
-	} envGuard;
-
-	// explicit modelPath wins over the environment, even when the environment is also set
-	{
+	};
+	const EnvGuard roma2Env("OPENMVS_ROMA2_MODEL_PATH"), flexglueEnv("OPENMVS_FLEXGLUE_MODEL_PATH");
+	for (const String& matcher : {String("roma2"), String("flexglue")}) {
+		const bool bFlexGlue = matcher == "flexglue";
+		const EnvGuard& ownEnv = bFlexGlue ? flexglueEnv : roma2Env;
+		const EnvGuard& otherEnv = bFlexGlue ? roma2Env : flexglueEnv;
 		ROMA2Config config;
-		config.modelPath = "/explicit/model/path";
-		EnvGuard::Set("/env/model/path");
-		const String resolved = config.ResolveModelPath();
+		config.matcher = matcher;
+		String& ownPath = bFlexGlue ? config.flexglueModelPath : config.modelPath;
+		String& otherPath = bFlexGlue ? config.modelPath : config.flexglueModelPath;
+		// the other matcher's explicit path and variable are set throughout: they must never be what this matcher resolves to
+		otherPath = "/other/explicit/path";
+		otherEnv.Set("/other/env/path");
+
+		// explicit path wins over the environment, even when the environment is also set
+		ownPath = "/explicit/model/path";
+		ownEnv.Set("/env/model/path");
+		String resolved = config.ResolveModelPath();
 		if (resolved != "/explicit/model/path") {
-			VERBOSE("ResolveModelPathTest FAILED: explicit modelPath did not win over the environment (got '%s')", resolved.c_str());
+			VERBOSE("ResolveModelPathTest FAILED: %s: the explicit path did not win over the environment (got '%s')", matcher.c_str(), resolved.c_str());
 			return false;
 		}
-	}
 
-	// modelPath empty, OPENMVS_ROMA2_MODEL_PATH set: the environment variable wins
-	{
-		ROMA2Config config;
-		EnvGuard::Set("/env/model/path");
-		const String resolved = config.ResolveModelPath();
+		// explicit path empty, the matcher's variable set: the environment variable wins
+		ownPath.clear();
+		resolved = config.ResolveModelPath();
 		if (resolved != "/env/model/path") {
-			VERBOSE("ResolveModelPathTest FAILED: OPENMVS_ROMA2_MODEL_PATH did not win with modelPath empty (got '%s')", resolved.c_str());
+			VERBOSE("ResolveModelPathTest FAILED: %s: its environment variable did not win with the explicit path empty (got '%s')", matcher.c_str(), resolved.c_str());
 			return false;
 		}
-	}
 
-	// both absent: modelPath empty, no environment variable -- the result depends on whether the
-	// install-prefix fallback directory actually exists on disk. Read that with the same
-	// File::isFolder check the implementation uses rather than creating (or assuming the absence
-	// of) the directory, so this test is hermetic on any machine, installed or not.
-	{
-		ROMA2Config config;
-		EnvGuard::Set(NULL);
-		const String resolved = config.ResolveModelPath();
-		#ifdef OPENMVS_ROMA2_MODEL_INSTALL_DIR
-		if (File::isFolder(OPENMVS_ROMA2_MODEL_INSTALL_DIR)) {
-			if (resolved != OPENMVS_ROMA2_MODEL_INSTALL_DIR) {
-				VERBOSE("ResolveModelPathTest FAILED: expected the install-prefix fallback '%s' since it exists on disk, got '%s'", OPENMVS_ROMA2_MODEL_INSTALL_DIR, resolved.c_str());
+		// both absent: the result depends on whether the install-prefix fallback directory actually exists on disk. Read that with
+		// the same File::isFolder check the implementation uses rather than creating (or assuming the absence of) the directory, so
+		// this test is hermetic on any machine, installed or not.
+		ownEnv.Set(NULL);
+		resolved = config.ResolveModelPath();
+		#ifdef OPENMVS_MODEL_INSTALL_DIR
+		const String installPath(String(OPENMVS_MODEL_INSTALL_DIR "/") + matcher);
+		if (File::isFolder(installPath)) {
+			if (resolved != installPath) {
+				VERBOSE("ResolveModelPathTest FAILED: %s: expected the install-prefix fallback '%s' since it exists on disk, got '%s'", matcher.c_str(), installPath.c_str(), resolved.c_str());
 				return false;
 			}
 		} else
 		#endif
 		if (!resolved.empty()) {
-			VERBOSE("ResolveModelPathTest FAILED: expected an empty result with modelPath and the environment both absent and no install-prefix folder on disk, got '%s'", resolved.c_str());
+			VERBOSE("ResolveModelPathTest FAILED: %s: expected an empty result with the explicit path and the environment both absent and no install-prefix folder on disk, got '%s'", matcher.c_str(), resolved.c_str());
 			return false;
 		}
+		otherEnv.Set(NULL);
 	}
-
-	// the flexglue matcher resolves its own folder: its explicit path, then OPENMVS_FLEXGLUE_MODEL_PATH, else empty -- and never RoMa2's
-	#ifndef _MSC_VER
-	{
-		const char* const prevFlexGlue = getenv("OPENMVS_FLEXGLUE_MODEL_PATH");
-		const String prevValue(prevFlexGlue ? prevFlexGlue : "");
-		ROMA2Config config;
-		config.matcher = "flexglue";
-		EnvGuard::Set("/roma2/env/path");
-		config.modelPath = "/roma2/explicit/path";
-		unsetenv("OPENMVS_FLEXGLUE_MODEL_PATH");
-		bool bOk = config.ResolveModelPath().empty();
-		setenv("OPENMVS_FLEXGLUE_MODEL_PATH", "/flexglue/env/path", 1);
-		bOk = bOk && config.ResolveModelPath() == "/flexglue/env/path";
-		config.flexglueModelPath = "/flexglue/explicit/path";
-		bOk = bOk && config.ResolveModelPath() == "/flexglue/explicit/path";
-		if (prevFlexGlue)
-			setenv("OPENMVS_FLEXGLUE_MODEL_PATH", prevValue.c_str(), 1);
-		else
-			unsetenv("OPENMVS_FLEXGLUE_MODEL_PATH");
-		if (!bOk) {
-			VERBOSE("ResolveModelPathTest FAILED: the flexglue matcher did not resolve its own model folder");
-			return false;
-		}
-	}
-	#endif
 
 	VERBOSE("ResolveModelPathTest PASSED");
 	return true;
@@ -7009,8 +7022,10 @@ static double RotationAngleDeg(const Matrix3x3f& R)
 // descriptors its backbone pools (unit, distinct per image), every pair stored with its covisibility score and its coarse relative pose
 // (a rotation, a unit baseline direction, close to the pose the pair's own matches give: the check of the pose head's convention),
 // the pairs CSV carrying both, the covisibility gate dropping exactly the pairs below it, and ReconstructTest's
-// reconstruction stage on the matched scene. Skipped unless OPENMVS_FLEXGLUE_MODEL_PATH points at the export folder (flexglue_descriptor.onnx,
-// flexglue_dense.onnx, flexglue_pose_h0.onnx); OPENMVS_ROMA2_PROVIDER narrows the execution provider
+// reconstruction stage on the matched scene. The run sees no RoMa2 model at all (its explicit path names a folder that does not exist and
+// OPENMVS_ROMA2_MODEL_PATH is unset for the duration): the describe pass, the retrieval and the matching load the FlexGlue bundle alone.
+// Skipped unless OPENMVS_FLEXGLUE_MODEL_PATH points at a FlexGlue bundle (flexglue_base.json and its two graphs); OPENMVS_ROMA2_PROVIDER
+// narrows the execution provider
 bool FlexGlueReconstructTest()
 {
 	#ifndef _USE_ONNXRUNTIME
@@ -7035,12 +7050,29 @@ bool FlexGlueReconstructTest()
 	cfg.useMatching = true;
 	cfg.slotBudget = 64;
 	cfg.minCovisibility = 0.f;
+	// no RoMa2 model reachable: a RoMa2 load anywhere on the FlexGlue route fails the matching below
+	cfg.modelPath = "/nonexistent/roma2-model";
+	const String prevRoMa2Path(getenv("OPENMVS_ROMA2_MODEL_PATH") ? getenv("OPENMVS_ROMA2_MODEL_PATH") : "");
+	const bool bHadRoMa2Path = getenv("OPENMVS_ROMA2_MODEL_PATH") != NULL;
+	#ifdef _MSC_VER
+	_putenv_s("OPENMVS_ROMA2_MODEL_PATH", "");
+	#else
+	unsetenv("OPENMVS_ROMA2_MODEL_PATH");
+	#endif
 
 	// 1) every pair kept: covisibility, pose prior and the CSV
 	ROMA2PairSummaries summaries;
 	Scene scene(2);
-	if (!ROMA2ReconstructScene(scene, cfg, FlexGlueMatcher::RETRIEVAL_SIZE, false, summaries, true)) {
-		VERBOSE("FlexGlueReconstructTest FAILED: matching with FlexGlue");
+	const bool bMatched = ROMA2ReconstructScene(scene, cfg, FlexGlueMatcher::RETRIEVAL_SIZE, false, summaries, true);
+	if (bHadRoMa2Path) {
+		#ifdef _MSC_VER
+		_putenv_s("OPENMVS_ROMA2_MODEL_PATH", prevRoMa2Path.c_str());
+		#else
+		setenv("OPENMVS_ROMA2_MODEL_PATH", prevRoMa2Path.c_str(), 1);
+		#endif
+	}
+	if (!bMatched) {
+		VERBOSE("FlexGlueReconstructTest FAILED: matching with FlexGlue (no RoMa2 model reachable)");
 		return false;
 	}
 	std::vector<float> scores;

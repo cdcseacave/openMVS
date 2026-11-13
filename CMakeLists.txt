@@ -391,7 +391,7 @@ endif()")
 	ENDIF()
 ENDIF()
 
-# Opt-in target: fetch the published RoMa v2 ONNX model (~1.4 GB) on demand. Never at configure
+# Opt-in targets: fetch the published RoMa v2 (~1.4 GB) or FlexGlue (~0.46 GB) ONNX model on demand. Never at configure
 # time -- that would be hostile and would break offline and CI builds -- and never part of `all`.
 IF(OpenMVS_USE_ONNXRUNTIME)
 	# Python3_EXECUTABLE is not guaranteed to be set yet here: OpenMVS_USE_PYTHON's own
@@ -401,13 +401,19 @@ IF(OpenMVS_USE_ONNXRUNTIME)
 	FIND_PACKAGE(Python3 COMPONENTS Interpreter QUIET)
 	IF(Python3_EXECUTABLE)
 		ADD_CUSTOM_TARGET(roma2-model
-			COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/fetch_roma2_model.py
-			        --setting base --precision fp32
+			COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/fetch_model.py
+			        --model roma2 --setting base --precision fp32
 			        --dest ${CMAKE_INSTALL_PREFIX}/share/openMVS/roma2
 			COMMENT "Fetching the RoMa v2 ONNX model (~1.4 GB, DINOv3 License)"
 			USES_TERMINAL)
+		ADD_CUSTOM_TARGET(flexglue-model
+			COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/fetch_model.py
+			        --model flexglue --setting base --precision fp16
+			        --dest ${CMAKE_INSTALL_PREFIX}/share/openMVS/flexglue
+			COMMENT "Fetching the FlexGlue ONNX model (~0.46 GB, DINOv3 License)"
+			USES_TERMINAL)
 	ELSE()
-		MESSAGE(STATUS "No Python3 interpreter found; the 'roma2-model' fetch target is not available (run scripts/fetch_roma2_model.py by hand instead)")
+		MESSAGE(STATUS "No Python3 interpreter found; the 'roma2-model' and 'flexglue-model' fetch targets are not available (run scripts/fetch_model.py by hand instead)")
 	ENDIF()
 ENDIF()
 

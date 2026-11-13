@@ -1,29 +1,25 @@
 #!/usr/bin/env python3
-"""Fetch the published RoMa v2 ONNX model (a DINOv3 descriptor graph + a bidirectional
-coarse-match graph) that `--roma2` needs at runtime, without the OpenMVS repository ever
-carrying a byte of it.
+"""Fetch a published dense-matcher ONNX model bundle that `--roma2` needs at runtime -- RoMa v2 (a DINOv3
+descriptor graph + a bidirectional coarse-match graph) or FlexGlue (a DINOv3 ConvNeXt descriptor graph + a match
+graph carrying the covisibility and pose heads) -- without the OpenMVS repository ever carrying a byte of it.
+One script and one checksums scheme for both: `--model` picks the bundle, everything else is the same.
 
-    fetch_roma2_model.py [--setting base] [--precision fp32]
-                          [--dest DIR] [--repo ID] [--revision REV] [--mirror URL]
+    fetch_model.py --model {roma2,flexglue} [--setting base] [--precision P]
+                   [--dest DIR] [--repo ID] [--revision REV] [--mirror URL]
 
-`--dest` *is* the model directory the C++ side consumes -- the same thing
-`--roma2-model DIR` and `OPENMVS_ROMA2_MODEL_PATH` have always meant (`RoMa2Onnx::Load` reads
-`modelDir + "roma_" + setting + ".json"` and every graph file directly under it, no further
-nesting). So the files this script writes to `--dest` are flat: `roma_<setting>.json`,
-`roma_<setting>_descriptor_<precision>.onnx[.data]`,
-`roma_<setting>_match_coarse_<precision>.onnx[.data]`, and their `.export.json` sidecars.
+`--dest` *is* the model directory the C++ side consumes -- the same thing `--roma2-model DIR` /
+`OPENMVS_ROMA2_MODEL_PATH` (RoMa2) and `--flexglue-model DIR` / `OPENMVS_FLEXGLUE_MODEL_PATH` (FlexGlue) mean:
+the loader reads the manifest (`roma_<setting>.json`, `flexglue_<setting>.json`) and every graph file directly
+under it, no further nesting. So the files this script writes to `--dest` are flat.
 
-`models/roma2/checksums.txt` still names each file under a `<setting>-<precision>/` prefix --
-that is the *published* path on both hosts (the Hub repo really does nest by preset, and so does
-the reconstructed tree on the mirror side), not the local one. Mapping published path -> local
-path is one line (`Path(published).name`), done in exactly one place below.
+`models/<model>/checksums.txt` still names each file under a `<setting>-<precision>/` prefix -- that is the
+*published* path on both hosts (the Hub repo really does nest by preset, and so does the reconstructed tree on the
+mirror side), not the local one. Mapping published path -> local path is one line (`Path(published).name`), done in
+exactly one place below.
 
-Multiple presets can coexist in one `--dest`: `roma_<setting>.json` and the graph filenames
-already carry `setting` and `precision`, so `--roma2-setting` picks between presets already
-fetched into the same directory. The one real collision would be two *precisions of the same
-setting* (e.g. base/fp32 and a future base/fp16): both manifests would want the name
-`roma_base.json`, so a base/fp16 bundle -- not published today -- will need a distinct manifest
-name of its own before it can share a `--dest` with base/fp32.
+Multiple presets can coexist in one `--dest`: the manifest and the graph filenames already carry `setting` and
+`precision`. The one real collision would be two *precisions of the same setting*: both manifests would want the
+same name, so such a pair will need a distinct manifest name of its own before it can share a `--dest`.
 
 Two sources, the Hub tried first:
 
@@ -42,15 +38,15 @@ Two sources, the Hub tried first:
     to directly. GitHub flattens release assets (no subdirectories), so the mirror's bare file
     names are already this script's local names -- nothing to reconstruct on that side.
 
-Every fetched file is verified against `models/roma2/checksums.txt` (read relative to this
+Every fetched file is verified against `models/<model>/checksums.txt` (read relative to this
 script, not the current directory) -- that file is what pins the published artefact's exact
 bytes without the repository carrying them, and what makes the mirror as trustworthy as the
 canonical host. A file already present with the right digest is left alone and counted as
 "cached"; one with the wrong digest is deleted before a fresh attempt. A mismatch after
 fetching deletes the file, prints the expected and actual digests, and exits 1.
 
-This is never run at configure time -- see the opt-in `roma2-model` CMake target -- and nothing
-about it is exercised automatically in CI: the model is ~1.4 GB and requires network access.
+This is never run at configure time -- see the opt-in `roma2-model` and `flexglue-model` CMake targets -- and
+nothing about it is exercised automatically in CI: the models are 0.5-1.4 GB and need network access.
 """
 from __future__ import annotations
 
@@ -66,36 +62,68 @@ from pathlib import Path
 from typing import Dict, Optional
 
 # --- Publishing targets: the only place these are named -------------------------------------
-# Canonical host: the Hugging Face model repo carrying the exported RoMa v2 graphs.
-HF_REPO = "cDcSeacave/openmvs-roma2-onnx"
-# Mirror: a release of the OpenMVS repo itself, holding the same files as flat release assets
-# (GitHub does not let a release asset carry a subdirectory).
+# Per model: the canonical host (the Hugging Face model repo carrying the exported graphs), the mirror (a release of the
+# OpenMVS repo itself, holding the same files as flat release assets: GitHub does not let a release asset carry a
+# subdirectory), the Hub commit that published the bundle models/<model>/checksums.txt pins (a re-export moves both
+# together), the preset fetched by default, the environment variable the C++ side reads, and the licence notice.
 GITHUB_MIRROR_REPO = "cdcseacave/openMVS"
-GITHUB_MIRROR_TAG = "roma2-model"
-DEFAULT_MIRROR_URL = f"https://github.com/{GITHUB_MIRROR_REPO}/releases/download/{GITHUB_MIRROR_TAG}"
-# The Hub commit that published the bundle models/roma2/checksums.txt pins; a re-export moves
-# both together.
-DEFAULT_REVISION = "ea2b04648ba0fb1c33d1dac2bdc65bfb17b0ef5f"
+MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 
-# models/roma2/checksums.txt lives in the OpenMVS repo, next to this script's own parent
-# directory -- resolved from __file__ so a fetch works regardless of the caller's cwd.
-CHECKSUMS_PATH = Path(__file__).resolve().parent.parent / "models" / "roma2" / "checksums.txt"
 
-DINOV3_NOTICE = (
-    "-----------------------------------------------------------------------------\n"
-    "The RoMa v2 descriptor graph embeds DINOv3 (Meta) weights, distributed under\n"
-    "Meta's DINOv3 License -- NOT MIT/BSD. RoMa v2's own code is MIT (Johan Edstedt).\n"
-    "By fetching this model you accept the DINOv3 License terms; see docs/RoMa2Model.md\n"
-    "(Licence section) for a summary, and LICENSE-DINOv3.md in the published repo itself\n"
-    f"({HF_REPO} on Hugging Face, or the GitHub-release mirror) for the pinned text --\n"
-    "it is not one of the files this script fetches into --dest.\n"
-    "-----------------------------------------------------------------------------"
-)
+def _dinov3_notice(what: str, repo: str) -> str:
+    return (
+        "-----------------------------------------------------------------------------\n"
+        f"{what}\n"
+        "distributed under Meta's DINOv3 License -- NOT MIT/BSD. By fetching this model\n"
+        "you accept the DINOv3 License terms; see docs/DenseMatcherModels.md (Licence)\n"
+        "for a summary, and LICENSE-DINOv3.md in the published repo itself\n"
+        f"({repo} on Hugging Face, or the GitHub-release mirror) for the pinned text --\n"
+        "it is not one of the files this script fetches into --dest.\n"
+        "-----------------------------------------------------------------------------"
+    )
+
+
+@dataclass(frozen=True)
+class ModelSpec:
+    hf_repo: str
+    mirror_tag: str
+    revision: str
+    setting: str
+    precision: str
+    env: str
+    notice: str
+
+    @property
+    def mirror_url(self) -> str:
+        return f"https://github.com/{GITHUB_MIRROR_REPO}/releases/download/{self.mirror_tag}"
+
+
+MODELS: Dict[str, ModelSpec] = {
+    "roma2": ModelSpec(
+        hf_repo="cDcSeacave/openmvs-roma2-onnx", mirror_tag="roma2-model",
+        revision="ea2b04648ba0fb1c33d1dac2bdc65bfb17b0ef5f", setting="base", precision="fp32",
+        env="OPENMVS_ROMA2_MODEL_PATH",
+        notice=_dinov3_notice("The RoMa v2 descriptor graph embeds DINOv3 (Meta) weights, RoMa v2's own code\n"
+                              "is MIT (Johan Edstedt); the DINOv3 weights are", "cDcSeacave/openmvs-roma2-onnx")),
+    "flexglue": ModelSpec(
+        # "main" until the bundle is uploaded: then the commit the upload prints replaces it (docs/DenseMatcherModels.md)
+        hf_repo="cDcSeacave/openmvs-flexglue-onnx", mirror_tag="flexglue-model",
+        revision="main", setting="base", precision="fp16",
+        env="OPENMVS_FLEXGLUE_MODEL_PATH",
+        notice=_dinov3_notice("The FlexGlue descriptor graph embeds the DINOv3 ConvNeXt-B (Meta) backbone;\n"
+                              "FlexGlue's own code and its other weights are MIT; the DINOv3 weights are",
+                              "cDcSeacave/openmvs-flexglue-onnx")),
+}
+
+
+def checksums_path_of(model: str) -> Path:
+    """models/<model>/checksums.txt, resolved from __file__ so a fetch works regardless of the caller's cwd"""
+    return MODELS_DIR / model / "checksums.txt"
 
 
 class ModelFetchError(RuntimeError):
     """Raised when the model cannot be fetched, or a file fails to verify against
-    models/roma2/checksums.txt."""
+    models/<model>/checksums.txt."""
 
 
 @dataclass
@@ -142,7 +170,7 @@ def verify_digest(path: Path, expected_sha256: str) -> bool:
 
 
 def read_checksums(checksums_path: Path) -> Dict[str, str]:
-    """Parse `models/roma2/checksums.txt`: lines of `<sha256>  <relative/path>`, '#' comments
+    """Parse `models/<model>/checksums.txt`: lines of `<sha256>  <relative/path>`, '#' comments
     and blank lines ignored. Raises ModelFetchError naming `checksums_path` when it has no
     entries at all -- the placeholder the repo ships until the controller regenerates it from
     the export run and pastes the digests in."""
@@ -163,7 +191,7 @@ def read_checksums(checksums_path: Path) -> Dict[str, str]:
         entries[relpath.strip()] = digest.strip()
     if not entries:
         raise ModelFetchError(
-            f"'{checksums_path}' has no checksum entries yet -- the RoMa v2 model has not been "
+            f"'{checksums_path}' has no checksum entries yet -- the model has not been "
             "published, or this checkout predates the publish; refusing to fetch with nothing to "
             "verify against"
         )
@@ -207,8 +235,8 @@ def _fetch_via_huggingface(dest: Path, repo: str, revision: str, setting: str, p
         # when the same local_dir is handed back on a later call. A directory thrown away at the
         # end of every call -- even one ended by an exception -- can never reuse that state, so a
         # download interrupted partway through a multi-gigabyte file used to restart from zero
-        # every time. `dest` is stable across runs (it is `--roma2-model`/
-        # `$OPENMVS_ROMA2_MODEL_PATH` itself), so it is what makes resuming possible.
+        # every time. `dest` is stable across runs (it is the model directory itself, `--roma2-model`/
+        # `$OPENMVS_ROMA2_MODEL_PATH` or its FlexGlue counterpart), so it is what makes resuming possible.
         nested_dir = dest / prefix
         if nested_dir.is_dir() and any(nested_dir.iterdir()):
             print(f"resuming a Hugging Face download already in progress under '{nested_dir}'",
@@ -299,7 +327,7 @@ def _cleanup_huggingface_resume_metadata(dest: Path, prefix: str) -> None:
 
 def _ensure_dest_writable(dest: Path) -> None:
     """Raise a ModelFetchError naming `dest` if it cannot be created or written to. Meant to be
-    called once, before either fetch branch runs: `roma2-model`'s CMake target defaults `--dest`
+    called once, before either fetch branch runs: the `<model>-model` CMake targets default `--dest`
     to the CMake install prefix, which an unprivileged user cannot write, and that must be
     reported plainly rather than escaping as a raw traceback or being blamed on Hugging Face."""
     try:
@@ -307,27 +335,29 @@ def _ensure_dest_writable(dest: Path) -> None:
     except OSError as e:
         raise ModelFetchError(
             f"cannot write to '{dest}': {e} -- re-run with sudo, or pass --dest to a directory "
-            "you own (then set OPENMVS_ROMA2_MODEL_PATH to it)"
+            "you own (then set the model's OPENMVS_<MODEL>_MODEL_PATH to it)"
         ) from e
     if not os.access(dest, os.W_OK):
         raise ModelFetchError(
             f"cannot write to '{dest}': permission denied -- re-run with sudo, or pass --dest to "
-            "a directory you own (then set OPENMVS_ROMA2_MODEL_PATH to it)"
+            "a directory you own (then set the model's OPENMVS_<MODEL>_MODEL_PATH to it)"
         )
 
 
 def fetch(
     dest,
-    setting: str = "base",
-    precision: str = "fp32",
-    repo: str = HF_REPO,
-    revision: str = DEFAULT_REVISION,
-    mirror: str = DEFAULT_MIRROR_URL,
-    checksums_path=CHECKSUMS_PATH,
+    model: str,
+    setting: Optional[str] = None,
+    precision: Optional[str] = None,
+    repo: Optional[str] = None,
+    revision: Optional[str] = None,
+    mirror: Optional[str] = None,
+    checksums_path=None,
 ) -> FetchResult:
-    """Fetch (or verify already-present copies of) every file `models/roma2/checksums.txt`
+    """Fetch (or verify already-present copies of) every file `models/<model>/checksums.txt`
     publishes under `<setting>-<precision>/`, writing them flat into `dest` -- the model
-    directory `RoMa2Onnx::Load` / `--roma2-model` / `OPENMVS_ROMA2_MODEL_PATH` reads directly.
+    directory the C++ loader reads directly. Every argument left None takes the model's own
+    default (MODELS).
 
     Idempotent: a file already present with the right digest costs one hash and is left
     untouched. A file present with the wrong digest is deleted before a fresh attempt. Raises
@@ -337,6 +367,15 @@ def fetch(
     huggingface_hub being absent) falls back to the mirror instead of giving up, since the two
     are pinned to the same digests and are meant to be interchangeable.
     """
+    if model not in MODELS:
+        raise ModelFetchError(f"unknown model '{model}' (known: {', '.join(sorted(MODELS))})")
+    spec = MODELS[model]
+    setting = setting or spec.setting
+    precision = precision or spec.precision
+    repo = repo or spec.hf_repo
+    revision = revision or spec.revision
+    mirror = mirror or spec.mirror_url
+    checksums_path = checksums_path or checksums_path_of(model)
     dest = Path(dest)
     checksums_path = Path(checksums_path)
     entries = _entries_for(read_checksums(checksums_path), setting, precision, checksums_path)
@@ -366,7 +405,7 @@ def fetch(
         return result
 
     # Checked before any network attempt, and before either fetch branch creates `dest` itself,
-    # so a destination the caller cannot write to (e.g. the roma2-model CMake target's default
+    # so a destination the caller cannot write to (e.g. a <model>-model CMake target's default
     # install prefix) is always reported by name instead of surfacing as a raw traceback (the
     # mirror branch used to create `dest` outside any try) or being blamed on Hugging Face (the
     # Hub branch used to create `dest` as the first statement inside its own try).
@@ -415,48 +454,53 @@ def fetch(
     return result
 
 
-def resolve_dest(dest_arg: Optional[str]) -> Path:
-    """`--dest` if given; else $OPENMVS_ROMA2_MODEL_PATH; else `~/.cache/openMVS/roma2`. The
-    CMake target always passes --dest explicitly, so this default only ever serves a hand-run --
-    and it must not be a path under the current directory: the obvious hand-run has a checkout
-    for its cwd, which does not gitignore it, and the DINOv3 weights this fetches must never enter
-    the OpenMVS repository (see docs/RoMa2Model.md's Licence section)."""
+def resolve_dest(dest_arg: Optional[str], model: str) -> Path:
+    """`--dest` if given; else the model's environment variable (OPENMVS_<MODEL>_MODEL_PATH); else
+    `~/.cache/openMVS/<model>`. The CMake targets always pass --dest explicitly, so this default only
+    ever serves a hand-run -- and it must not be a path under the current directory: the obvious hand-run
+    has a checkout for its cwd, which does not gitignore it, and the DINOv3 weights this fetches must
+    never enter the OpenMVS repository (see docs/DenseMatcherModels.md's Licence section)."""
     if dest_arg:
         return Path(dest_arg).expanduser()
-    env = os.environ.get("OPENMVS_ROMA2_MODEL_PATH")
+    env = os.environ.get(MODELS[model].env)
     if env:
         return Path(env).expanduser()
-    return Path("~/.cache/openMVS/roma2").expanduser()
+    return Path(f"~/.cache/openMVS/{model}").expanduser()
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Fetch the published RoMa v2 ONNX model (DINOv3 descriptor + coarse-match graphs).")
-    parser.add_argument("--setting", default="base", help="RoMa v2 preset: turbo|fast|base (default: base)")
-    parser.add_argument("--precision", default="fp32", help="exported precision (default: fp32)")
+        description="Fetch a published dense-matcher ONNX model bundle (RoMa v2 or FlexGlue).")
+    parser.add_argument("--model", required=True, choices=sorted(MODELS), help="the bundle: roma2 or flexglue")
+    parser.add_argument("--setting", default=None,
+                        help="preset (default: base; RoMa v2 also has turbo|fast, not published yet)")
+    parser.add_argument("--precision", default=None,
+                        help="exported precision (default: the published one, roma2 fp32, flexglue fp16)")
     parser.add_argument("--dest", default=None,
-                         help="destination directory -- the model directory itself, flat "
-                              "(default: $OPENMVS_ROMA2_MODEL_PATH, else ~/.cache/openMVS/roma2)")
-    parser.add_argument("--repo", default=HF_REPO, help=f"Hugging Face model repo id (default: {HF_REPO})")
-    parser.add_argument("--revision", default=DEFAULT_REVISION,
-                         help=f"Hugging Face revision/commit to fetch (default: {DEFAULT_REVISION})")
-    parser.add_argument("--mirror", default=DEFAULT_MIRROR_URL,
-                         help="mirror base URL, used when huggingface_hub is not importable or "
-                              f"the Hugging Face fetch fails (default: {DEFAULT_MIRROR_URL})")
+                        help="destination directory -- the model directory itself, flat "
+                             "(default: $OPENMVS_<MODEL>_MODEL_PATH, else ~/.cache/openMVS/<model>)")
+    parser.add_argument("--repo", default=None, help="Hugging Face model repo id (default: the model's own)")
+    parser.add_argument("--revision", default=None,
+                        help="Hugging Face revision/commit to fetch (default: the commit that published "
+                             "the bundle models/<model>/checksums.txt pins)")
+    parser.add_argument("--mirror", default=None,
+                        help="mirror base URL, used when huggingface_hub is not importable or "
+                             "the Hugging Face fetch fails (default: the model's GitHub release)")
     return parser
 
 
 def main(argv=None) -> int:
     args = build_argument_parser().parse_args(argv)
-    dest = resolve_dest(args.dest)
+    spec = MODELS[args.model]
+    dest = resolve_dest(args.dest, args.model)
     # --dest has no way to see the CMake install prefix (a Python script can't read
     # a compile definition), so a hand-run relying on the default must never be surprised by where
     # things landed.
     print(f"destination: {dest.resolve()}")
 
     try:
-        result = fetch(dest, setting=args.setting, precision=args.precision,
-                        repo=args.repo, revision=args.revision, mirror=args.mirror)
+        result = fetch(dest, args.model, setting=args.setting, precision=args.precision,
+                       repo=args.repo, revision=args.revision, mirror=args.mirror)
     except ModelFetchError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
@@ -466,15 +510,16 @@ def main(argv=None) -> int:
     else:
         print("already present: every file verified against checksums.txt, nothing downloaded")
     print()
-    print(DINOV3_NOTICE)
+    print(spec.notice)
     print()
-    # --dest *is* the model directory -- RoMa2Onnx::Load reads its files directly,
+    # --dest *is* the model directory -- the loader reads its files directly,
     # with no "<setting>-<precision>" segment to append.
+    option = "--flexglue-model" if args.model == "flexglue" else "--roma2-model"
     print(f"model ready at: {dest.resolve()}")
-    print(f"set OPENMVS_ROMA2_MODEL_PATH={dest.resolve()} (or pass --roma2-model {dest.resolve()} "
-          "to CreateStructure) so --roma2 finds it. If --dest was the CMake install prefix's own "
-          "share/openMVS/roma2, ROMA2Config::ResolveModelPath()'s install-prefix fallback already "
-          "finds it with no environment variable needed.")
+    print(f"set {spec.env}={dest.resolve()} (or pass {option} {dest.resolve()} to CreateStructure) so "
+          f"--roma2 finds it. If --dest was the CMake install prefix's own share/openMVS/{args.model}, "
+          "ROMA2Config::ResolveModelPath()'s install-prefix fallback already finds it with no environment "
+          "variable needed.")
     return 0
 
 

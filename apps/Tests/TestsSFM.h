@@ -226,12 +226,16 @@ bool RoMa2PreprocessTest();
 // nor OPENMVS_ROMA2_MODEL_PATH.
 bool RoMa2ManifestVersionTest();
 
-// ROMA2Config::ResolveModelPath precedence test: an explicit modelPath wins over everything
-// (including a set environment variable); with modelPath empty, $OPENMVS_ROMA2_MODEL_PATH wins;
-// with both absent, the result falls back to this build's install-prefix directory when that
-// directory actually exists on disk, else it is empty -- read with the same File::isFolder check
-// the implementation uses, so this test does not create anything under the install prefix. Pure
-// config logic, so it needs neither ONNX Runtime nor an actual model.
+// FlexGlue manifest test: a format_version 1 manifest with its two graphs and the H1 pose head loads with its sizes; another
+// version, another model, a missing key and another pose head are rejected. Pure JSON parsing, needs no model.
+bool FlexGlueManifestTest();
+
+// ROMA2Config::ResolveModelPath precedence test, for each matcher (roma2, flexglue): its explicit path wins over everything
+// (including a set environment variable); with it empty, its $OPENMVS_<MATCHER>_MODEL_PATH wins; with both absent, the result
+// falls back to this build's install-prefix directory share/openMVS/<matcher> when that directory actually exists on disk, else
+// it is empty -- read with the same File::isFolder check the implementation uses, so this test does not create anything under the
+// install prefix; and neither matcher ever resolves to the other one's path or variable. Pure config logic, so it needs neither
+// ONNX Runtime nor an actual model.
 bool ResolveModelPathTest();
 
 // RoMa2 ONNX parity test: runs the exported descriptor and coarse-match graphs through
@@ -255,8 +259,8 @@ bool RoMa2OnnxParityTest();
 bool ROMA2ReconstructTest();
 
 // FlexGlue as the dense matcher on the same bundled 4-image scene: 256-D unit retrieval descriptors, a covisibility score and a coarse relative pose
-// on every pair (the pose close to the pair's own), the pairs CSV columns, the covisibility gate, and ReconstructTest's reconstruction stage.
-// Skipped unless OPENMVS_FLEXGLUE_MODEL_PATH points at the export folder
+// on every pair (the pose close to the pair's own), the pairs CSV columns, the covisibility gate, and ReconstructTest's reconstruction stage,
+// with no RoMa2 model reachable. Skipped unless OPENMVS_FLEXGLUE_MODEL_PATH points at a FlexGlue bundle
 bool FlexGlueReconstructTest();
 
 // PinholeReprojectionErrorAnalytic's hand-written Jacobians match the ones auto-diff derives from
